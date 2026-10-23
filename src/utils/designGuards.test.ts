@@ -19,6 +19,8 @@ import {
   findTappableWithoutKeyboard,
   countClickActionTags,
   findTruncationWithoutTitle,
+  findPreWrapWithoutBreak,
+  countPreWrapSites,
   checkTextFieldFocusRing,
   checkSelectionContract,
   findNestedThemeRuleIssues,
@@ -875,6 +877,124 @@ test("src 下所有 .vue 的截断文本都带了 title / aria-label", () => {
   assert.deepEqual(bad, [], `发现被截断却没有 title 的文本：\n${bad.join("\n")}`);
 });
 
+// 用户 2026-10-23：群公告里打一串数字 ⇒ 横向滚动条。`whitespace-pre-wrap` 只保留换行、
+// 仍按**词**断行，一整串数字是一个词 ⇒ 撑出容器；外层 `overflow-y:auto` 又会让 overflow-x
+// 算成 auto ⇒ 长出横向条。这条判据盯的就是「pre-wrap 却没配断词」这个形状。
+test("whitespace-pre-wrap 必须配强制断词（长数字/URL 不许撑出横向滚动条）", () => {
+  const buggy = `<template><p class="whitespace-pre-wrap px-3 py-2 text-sm">{{ text }}</p></template>`;
+  const issues = findPreWrapWithoutBreak(buggy);
+  assert.equal(issues.length, 1, "只写 pre-wrap、没有断词 ⇒ 必须报一条");
+  assert.match(issues[0].message, /横向滚动条|断词/);
+
+  // 三种断词出口各认一次（少认一种就是下一次换写法时静默漏掉）
+  for (const exit of ["break-words", "break-all", "break-anywhere"]) {
+    assert.deepEqual(
+      findPreWrapWithoutBreak(`<template><p class="whitespace-pre-wrap ${exit}">{{ t }}</p></template>`),
+      [],
+      `断词出口 ${exit} 必须被认成已处理`,
+    );
+  }
+  // 内联 :style 的 word-break 也是出口
+  assert.deepEqual(
+    findPreWrapWithoutBreak(
+      `<template><div class="whitespace-pre-wrap" :style="{ wordBreak: 'break-word' }">{{ t }}</div></template>`,
+    ),
+    [],
+    "内联 word-break 写法不该误伤",
+  );
+
+  const fixed = `<template><p class="whitespace-pre-wrap break-words px-3 py-2">{{ t }}</p></template>`;
+  assert.deepEqual(findPreWrapWithoutBreak(fixed), []);
+
+  // 注释里提一句不能让护栏报红（与本仓其它 class 判据同口径）
+  const commentOnly = `<script setup>
+/** 这里原来漏了 whitespace-pre-wrap，后来补上的 */
+</script>
+<template><p>{{ t }}</p></template>`;
+  assert.deepEqual(findPreWrapWithoutBreak(commentOnly), [], "注释里的类名不算挂上了类");
+
+  const optedOut = `<template><!-- prewrap-break-ok：代码块按横向滚动设计 -->
+    <pre class="whitespace-pre-wrap">{{ code }}</pre></template>`;
+  assert.deepEqual(findPreWrapWithoutBreak(optedOut), [], "逃生阀整文件跳过");
+
+  // 正控：往**真实组件**里注入一处，证明扫描器读的是真模板而不是只判假字符串
+  const srcDir = join(import.meta.dirname, "..");
+  const real = readFileSync(join(srcDir, "components", "GroupMemberPanel.vue"), "utf8");
+  const mutated = real.replace(
+    '<div class="mb-1.5 flex items-baseline justify-between gap-2">',
+    '<div class="whitespace-pre-wrap mb-1.5 flex items-baseline justify-between gap-2">',
+  );
+  assert.notEqual(mutated, real, "注入锚点漂了：GroupMemberPanel 的那一行改了");
+  assert.equal(findPreWrapWithoutBreak(mutated).length, 1, "往真实组件里塞一处裸 pre-wrap 必须被报出");
+});
+
+test("src 下所有 .vue 的 whitespace-pre-wrap 都配了断词", () => {
+  const srcDir = join(import.meta.dirname, "..");
+  const files = collectVueFiles(srcDir);
+  const bad: string[] = [];
+  let preWrapSites = 0;
+  for (const f of files) {
+    const raw = readFileSync(f, "utf8");
+    preWrapSites += countPreWrapSites(raw);
+    for (const issue of findPreWrapWithoutBreak(raw)) {
+      bad.push(`${f.replace(srcDir + "/", "")}:${issue.line}  ${issue.message}`);
+    }
+  }
+  // 非空转下限：这条判据守的是一族站点，数量掉到 8 以下说明提取器或类名改了形状
+  assert.ok(
+    preWrapSites >= 8,
+    `只认出 ${preWrapSites} 处 whitespace-pre-wrap（下限 8）⇒ 量具或写法变了形状，这条判据可能已空转`,
+  );
+  assert.deepEqual(bad, [], `发现 pre-wrap 却没有断词的文本：\n${bad.join("\n")}`);
+});
+
+// 用户 2026-10-23：「我发起的图片渲染失败，不应该有点击图片重新获取的功能」。
+// 「重新获取」= 请对端按 cid 再发一份，这是**收件方**才成立的出口；自己发出去的那张图，
+// 对端是接收方。这一条钉住两个出口都按 mine 分过叉（不是钉文案，文案改了它不该瞎红）。
+test("向对端索取内容的两个出口都必须按 mine 分叉", () => {
+  const srcDir = join(import.meta.dirname, "..");
+  const bubble = readFileSync(join(srcDir, "components", "message", "MessageImageBubble.vue"), "utf8");
+  const item = readFileSync(join(srcDir, "components", "MessageItem.vue"), "utf8");
+
+  // 气泡那一支：emit("refetch") 必须被 mine 闸住，且**只此一处**出口
+  const emits = [...bubble.matchAll(/\bemit\("refetch"\)/g)];
+  assert.equal(emits.length, 1, "refetch 出口出现第二个家 ⇒ 闸就守不住了");
+  assert.match(bubble, /if \(!props\.mine\) emit\("refetch"\)/, "气泡的 refetch 没有按 mine 分叉");
+  // 反向：把闸摘掉，判据必须变红（证明它不是恒真）
+  const unguarded = bubble.replace(/if \(!props\.mine\) emit\("refetch"\);/, 'emit("refetch");');
+  assert.notEqual(unguarded, bubble, "变异锚点漂了");
+  assert.ok(!/if \(!props\.mine\) emit\("refetch"\)/.test(unguarded), "摘掉闸后这条断言必须不再成立");
+
+  // 「已被清理」那一格：文案与点击都分叉
+  assert.match(item, /@click="mine \? undefined : refetchContent\(\)"/, "清理占位的点击没有按 mine 分叉");
+  assert.match(item, /mine \? t\("msg\.imageCleanedMineHint"\) : t\("msg\.imageReRequest"\)/,
+    "清理占位的第二行没有按 mine 分叉 ⇒ 自己发的图会写着「可向对方重新索取」");
+
+  // 接线：气泡拿到没拿到 `mine` 是另一件事（组件里分叉对了、父组件不传就全是 false）。
+  // 按**出现次数**钉：每一个 `<MessageImageBubble` 都必须带 `:mine="mine"`，
+  // 少一个就等于那条消息永远按"对方"渲染（重新获取又冒出来）。
+  const bubbles = [...item.matchAll(/<MessageImageBubble\b/g)].length;
+  const mineBound = [...item.matchAll(/<MessageImageBubble\b[^>]*?:mine="mine"/g)].length;
+  assert.ok(bubbles >= 2, `只找到 ${bubbles} 处 <MessageImageBubble ⇒ 锚点漂了`);
+  assert.equal(mineBound, bubbles, `${bubbles} 处图片气泡里只有 ${mineBound} 处传了 :mine`);
+});
+
+// 用户 2026-10-23：「聊天界面点我自己的头像也可以进入自己的资料页面」。
+// 原来那一支是 `senderId === 自己 ⇒ return`（点了没反应）。这条钉住"自己那条分支必须走路由"，
+// 而不是只钉"函数里出现过 profile 这个词"。
+test("点自己的头像会进入资料页（不是 return 掉）", () => {
+  const src = readFileSync(
+    join(import.meta.dirname, "..", "components", "ChatWindow.vue"),
+    "utf8",
+  );
+  const fn = /function openSenderProfile\(senderId: string\) \{([\s\S]*?)\n\}/.exec(src);
+  assert.ok(fn, "openSenderProfile 不见了（改名就重钉这条）");
+  const body = fn[1];
+  assert.ok(!/senderId === app\.device\?\.device_id\) return;/.test(body),
+    "自己那一支又被 return 掉了 ⇒ 点自己头像没反应");
+  assert.match(body, /senderId === app\.device\?\.device_id[\s\S]{0,240}?router\.push\(\{ name: app\.isMobile \? "profile" : "settings" \}\)/,
+    "自己那一支没有跳到资料页（移动端 profile / 桌面 settings）");
+});
 // 原生 <select> 已迁到 Reka。正控用**真实组件**注入，证明扫描器确实读的是模板：
 // 只判一句假字符串的话，模板抽取写错了也照样绿。
 test("原生 <select> 不得回到模板；真实组件注入必须报（正控）", () => {
@@ -3110,6 +3230,82 @@ test("收藏页 active 必须先于 useBackLayer 声明（immediate watch 在 se
     "useBackLayer 用 immediate watch 在 setup 里同步读 active；声明在后会在移动端 TDZ 崩溃");
 });
 
+test("浮层与导航同帧时：弹窗必须在路由落地之后才关（同 URL 条目会撤销刚推进的页面）", () => {
+  // 机制（用户 2026-10-23「点发起聊天应该就是直接进入聊天窗口，而不是关掉」）：
+  // 弹窗那层 `useBackLayer` 释放时会 `history.back()` 退掉自己压的**同 URL**条目。
+  // Vue 的 watcher 跑在微任务里、早于 vue-router 写历史条目 ⇒ "先关弹窗再跳转"时
+  // 那次 back() 排在推送之后执行，把刚进去的聊天页原路退了回来。真浏览器实测：
+  // 旧顺序停在 /contacts，新顺序进 /chats/<peer> 且输入框在场；返回键再回 /contacts。
+  const rl = readFileSync(join(import.meta.dirname, "..", "layouts", "ResponsiveLayout.vue"), "utf8");
+  const sig = "async function openChatFromFriend";
+  const at = rl.indexOf(sig);
+  const end = rl.indexOf("\n}", at);
+  assert.ok(at > 0 && end > at, "锚点缺失：发起聊天的处理函数被改名或没正常闭合");
+  const body = rl.slice(at, end);
+  const pushAt = body.indexOf("await router.push(");
+  const closeAt = body.indexOf("addFriendOpen.value = false");
+  assert.ok(pushAt > 0, "必须 await 导航（不 await 就是旧顺序）");
+  assert.ok(closeAt > 0, "弹窗仍要在这一帧里关掉");
+  assert.ok(pushAt < closeAt, "导航必须排在关弹窗之前，否则同 URL 条目会把聊天页退掉");
+  assert.match(body, /finally\s*\{[\s\S]{0,120}addFriendOpen\.value = false/,
+    "关弹窗必须在 finally 里：导航被守卫挡掉时不许把弹窗卡成永远关不上");
+  assert.doesNotMatch(body, /void router\.push\(/, "退回 fire-and-forget 的 push 就是重新引入这个缺陷");
+
+  // 端口的两条腿也要在：拒绝回退要如实回报，纯逻辑必须按回报决定要不要减计数/预吃 pop
+  // （否则用户下一次真按返回键会被静默吞掉）；而且判据要**按层**拿 URL —— 只记最后一次压入
+  // 会让"弹窗套弹窗 + 中间导航过"的第二层拿不到判据。
+  const hook = readFileSync(
+    join(import.meta.dirname, "..", "composables", "useBackLayer.ts"), "utf8");
+  assert.match(hook, /back\(layerId: number\): boolean/, "端口必须回报 back() 到底退没退，且知道退的是哪一层");
+  assert.match(hook, /pushedHref\.set\(id, location\.href\)/, "压入成功时必须按层记下落点 URL");
+  assert.match(hook, /pushedHref\.get\(layerId\)/, "回退时必须按那一层的 URL 判");
+  assert.match(hook, /location\.href !== href/, "必须有「压入之后导航过 ⇒ 条目留下」的判据");
+  const pure = readFileSync(join(import.meta.dirname, "..", "utils", "backStack.ts"), "utf8");
+  assert.match(pure, /if \(port\.back\(id\)\) \{/, "释放必须带着层 id 按端口回报分支");
+  assert.doesNotMatch(pure, /pushed--;\s*\n\s*ignoreNextPop = true;\s*\n\s*port\.back\(\);/,
+    "不许退回「无条件退条目」的老形状（减计数与预吃 pop 都必须以真的退了为前提）");
+});
+
+/**
+ * 聊天输入框粘贴大段文字必须**一次插入**（用户 2026-10-23：粘进去会卡一下才显示）。
+ *
+ * 为什么源码这一半也要钉：真正的量具是运行时探针 `--only=pasteframe`（数 input 次数与子元素数），
+ * 而那层 CI 不跑 —— 把粘贴退回 `document.execCommand("insertText")` 不报错、不影响构建，
+ * 只有人手粘一段长文才会撞上。这里钉的是"退回旧写法必红"的三件事：
+ * ① 粘贴走 `insertPastedText`；② 原生 `execCommand("insertText")` 只剩**兜底那一处**
+ * （拿不到 caret/range 时才用），不许回到主路径；③ 手动插入不进原生 undo 栈，
+ * 所以撤销必须由 `restorePasteUndo` 接上，且回灌要走白名单（不许裸 innerHTML 回灌）。
+ */
+test("粘贴长文本：一次插入 + 撤销自己接住，不许退回逐行 execCommand", () => {
+  const src = readFileSync(
+    join(import.meta.dirname, "..", "components", "chat", "MessageComposer.vue"), "utf8");
+  // 计数一律先剥注释：这个文件的说明里就写着 `document.execCommand("insertText")` 这个名字
+  // （为什么不用它是本次修复的核心），不剥就会把注释数进"代码里有几处"里，判据永远多两格。
+  const code = stripCommentsJs(src);
+  const call = "insertPastedText(text.slice(0, room))";
+  assert.equal(code.split(call).length - 1, 1, "粘贴主路径必须是 insertPastedText（且只有一处调用）");
+  assert.match(src, /if \(!insertPastedText\(text\.slice\(0, room\)\)\) \{/,
+    "兜底分支的写法变了 ⇒ 下面那条「只剩一处」的计数失去意义");
+
+  const execAt = (needle: string) => {
+    const hits: number[] = [];
+    for (let i = code.indexOf(needle); i >= 0; i = code.indexOf(needle, i + 1)) hits.push(i);
+    return hits;
+  };
+  const inserts = execAt('document.execCommand("insertText"');
+  assert.equal(inserts.length, 1, "原生 insertText 只允许出现在兜底那一处");
+  const head = code.slice(Math.max(0, inserts[0] - 220), inserts[0]);
+  assert.ok(head.includes("if (!insertPastedText("),
+    "那一处原生 insertText 必须在 insertPastedText 失败的兜底分支里（回到主路径就是重新引入卡顿）");
+
+  const undoCalls = execAt("restorePasteUndo()");
+  assert.equal(undoCalls.length, 2, "定义 1 处 + onKeydown 里接住 ⌘/Ctrl+Z 1 处");
+  assert.match(src, /pasteUndo = \{ html: before, chars:/,
+    "粘贴前必须留快照（手动插入不进原生 undo 栈）");
+  assert.match(src, /el\.innerHTML = sanitizeDraftHtml\(snap\.html\)/,
+    "撤销回灌必须走那张白名单，不许裸回灌 innerHTML");
+});
+
 test("字体默认档不得用空串 option value（Reka SelectItem 不渲染空串）", () => {
   const src = readFileSync(
     join(import.meta.dirname, "..", "components", "settings", "AppearanceSection.vue"), "utf8");
@@ -4238,13 +4434,36 @@ test("52 has-caption 的写者恰好是 TitleBar 一处，且与 caption 的渲�
  * 所以这条判据钉的不是"某个文件里有守卫"，而是**轴**：
  * 凡「可编辑元素 + keydown/keyup 绑定」⇒ 该文件必须引这个家。漏一处就红。
  *
+ * ⚠️ 2026-10-23 又量到第二型：模板写 `ime.enter(fn)`（没传 `$event`）时，
+ *    Vue 把内联绑定编译成 `($event) => ime.enter(fn)` —— 返回的处理器被丢掉，
+ *    回车**静默不执行**。全仓 16 处当时都是这个形状，用户的原话正是"不用每次自己手点"。
+ *    所以这条同时钉「引家」和「内联调用必须拿到事件」两件事。
+ *
  * ⚠️ 解析按**起始标签**逐元素走，不按行：本仓的 `<input>` 属性是跨 6~10 行写的，
  *    按行搜 `@keydown.enter` 会把"标签是 input"这个前提丢掉（也就会把 tabindex 卡片算进来）。
  */
 const EDITABLE_TAG_693 = /^(input|textarea)$/i;
 const KEY_BIND_693 = /(?:@|v-on:)(?:keydown|keyup)(?:\.[a-z-]+)*[=]/i;
-const ENTER_BIND_693 = /(?:@|v-on:)(?:keydown|keyup)\.enter\b/i;
+const ENTER_BIND_693 = /(?:@|v-on:)(?:keydown|keyup)(?:\.[a-z-]+)*\.enter\b/i;
 const GUARD_REF_693 = /useImeEnterGuard|isImeKey/;
+/**
+ * 模板内联绑定里调用了 `ime.enter(fn)` 却没把事件传进去的那些。
+ *
+ * Vue 把 `@keydown.enter="ime.enter(fn)"` 编译成 `($event) => ime.enter(fn)`：
+ * 表达式执行了，但**返回的处理器被丢掉**，动作永远不执行。2026-10-23 探针实测：
+ * 补上 `$event` 之前，链接表单的回车「按了、preventDefault 也发生了，但 saveDraft 一次都没跑」。
+ * 所以「引了这个家」还不够，内联绑定必须写成 `ime.enter(fn, $event)`（或把返回值绑成处理器）。
+ */
+const INLINE_KEY_ATTR_693 = /(?:@|v-on:)(?:keydown|keyup)(?:\.[a-z-]+)*\s*=\s*"([^"]*)"/gi;
+function inlineEnterWithoutEvent693(text) {
+  const bad = [];
+  for (const { tag, attrs } of startTags693(text)) {
+    for (const m of attrs.matchAll(INLINE_KEY_ATTR_693)) {
+      if (/ime\.enter\(/.test(m[1]) && !/\$event/.test(m[1])) bad.push(`${tag}: ${m[1]}`);
+    }
+  }
+  return bad;
+}
 
 /** 从源码里摘出每个**起始标签**的 `{tag, attrs}`（属性里的引号、跨行都算进同一个元素）。 */
 function startTags693(text) {
@@ -4273,10 +4492,11 @@ const editableKeyBinds693 = (text) =>
   startTags693(text).filter(({ tag, attrs }) =>
     (EDITABLE_TAG_693.test(tag) || /contenteditable/i.test(attrs)) && KEY_BIND_693.test(attrs));
 
-test("53 可编辑元素上的按键绑定，所在文件必须引输入法守卫这个家（漏一处就红）", () => {
+test("53 可编辑元素上的按键绑定：必须引输入法守卫这个家，且 ime.enter 必须拿到 $event（漏一处就红）", () => {
   const files = walk691(srcDir691).filter((f) => f.endsWith(".vue"));
   assert.ok(files.length >= 60, "只扫到 " + files.length + " 份 .vue ⇒ 分母塌了，下面是在测空气");
   const missing = [];
+  const droppedEvent = [];
   let enterBinds = 0;
   let keyBinds = 0;
   for (const f of files) {
@@ -4287,8 +4507,12 @@ test("53 可编辑元素上的按键绑定，所在文件必须引输入法守�
     if (binds.length && !GUARD_REF_693.test(src)) {
       missing.push(rel692(f) + "(" + binds.map((b) => b.tag).join(",") + ")");
     }
+    const bad = inlineEnterWithoutEvent693(src);
+    if (bad.length) droppedEvent.push(rel692(f) + "(" + bad.join(" | ") + ")");
   }
   assert.deepEqual(missing, [], "这些可编辑字段挂了按键动作却没引守卫：" + missing.join(" "));
+  assert.deepEqual(droppedEvent, [],
+    "模板里 ime.enter(fn) 没传 $event（Vue 会丢掉返回的处理器，回车静默失效）：" + droppedEvent.join(" "));
   // 分母现算 + 下限：提取器一旦漂成认不出（比如只按行搜），上面那条会白过。
   assert.ok(keyBinds >= 10, "只认出 " + keyBinds + " 处「可编辑元素+按键绑定」，比这批的实测值少 ⇒ 提取器漂了");
   assert.ok(enterBinds >= 9, "只认出 " + enterBinds + " 处 Enter 提交，改前实测是 11 ⇒ 提取器漂了");
@@ -4311,6 +4535,13 @@ test("53 量具自己：正控认得出漏守卫的输入框，反控不许把 t
   // 反控之二：属性值里带 ">" 的引号内文本不许提前结束标签
   const quoted = editableKeyBinds693(`<input :placeholder="a > b ? 'x' : '搜索'" @keydown.enter="save" />`);
   assert.equal(quoted.length, 1, "引号里的 > 把标签切断了：" + JSON.stringify(quoted));
+  // 正控：丢 `$event` 的写法必须被认出来；反控：传了事件（或直接绑处理器）不许误伤。
+  assert.equal(inlineEnterWithoutEvent693(`<input @keydown.enter="ime.enter(save)" />`).length, 1,
+    "丢 $event 的内联写法没被认出来 ⇒ 上面那条缺席断言在测空气");
+  assert.equal(inlineEnterWithoutEvent693(`<input @keydown.enter="ime.enter(save, $event)" />`).length, 0,
+    "正确写法被误判成丢事件");
+  assert.equal(inlineEnterWithoutEvent693(`<input @keydown.enter="ime.enter(save)($event)" />`).length, 0,
+    "显式调用返回处理器的写法被误判成丢事件");
 });
 
 test("53 家还是那一个：四个出口齐、enter 走 isImeKey、模板接线统一成 ime.enter", () => {
@@ -4707,6 +4938,130 @@ test("外链导入导出三条路径都真接线（文件 / 线上 / 导出清�
   assert.match(links, /cleanupExternalLinksExport/, "导出临时文件没有清理");
 });
 
+test("外链入口都有可见文案，且新增/编辑与导入各自一个弹窗（导入不混进新增/编辑）", () => {
+  const links = readFileSync(join(import.meta.dirname, "..", "components", "LinksList.vue"), "utf8");
+  // 可见文案 = 模板文本节点，而不只是 title/aria-label（否则又退回"看图标猜功能"）。
+  const visibleText = (key: string) =>
+    new RegExp(`\\{\\{\\s*t\\(\\s*["']${key.replaceAll(".", "\\.")}["']\\s*\\)\\s*\\}\\}`).test(links);
+  for (const key of ["links.add", "links.import", "links.export"]) {
+    assert.ok(visibleText(key), `${key} 没有渲染成可见文案（又退回只有图标/title 的按钮了）`);
+  }
+  const blockOf = (open: string) => {
+    const start = links.indexOf(`:open="${open}"`);
+    assert.ok(start >= 0, `找不到 ${open} 弹窗`);
+    const end = links.indexOf("</BaseModal>", start);
+    assert.ok(end > start, `${open} 弹窗没有闭合标签`);
+    return links.slice(start, end);
+  };
+  const edit = blockOf("dialogOpen");
+  const imp = blockOf("importOpen");
+  assert.match(edit, /draft\.name/, "dialogOpen 切块没切到表单内容 ⇒ 下面的缺席断言在测空串");
+  assert.match(imp, /importFile/, "导入弹窗没有文件导入动作");
+  assert.match(imp, /importFromUrl/, "导入弹窗没有网址导入动作");
+  assert.doesNotMatch(edit, /importFile|importFromUrl/, "新增/编辑弹窗里又混进了导入动作");
+  assert.doesNotMatch(edit, /exportLinks/, "备份动作不该塞进新增/编辑弹窗");
+});
+
+test("确认型表单支持回车：建群、群公告、任务草稿各自接到保存动作", () => {
+  // 单行输入用裸 Enter；textarea 的裸 Enter 属于换行，所以用 ⌘/Ctrl+Enter 提交。
+  const read = (p: string) => readFileSync(join(import.meta.dirname, "..", "components", p), "utf8");
+  const create = read("GroupCreateModal.vue");
+  assert.match(create, /@keydown\.enter="ime\.enter\(create, \$event\)"/,
+    "建群名称回车没有接到 create（或没把 $event 传进去）");
+  const member = read("GroupMemberPanel.vue");
+  for (const mod of ["meta", "ctrl"]) {
+    assert.match(member, new RegExp(`@keydown\\.${mod}\\.enter\\.prevent="ime\\.enter\\(publishAnnouncement, \\$event\\)"`),
+      `群公告 textarea 的 ${mod}+Enter 没有接到发布（或没把 $event 传进去）`);
+  }
+  const tasks = read("GroupTasksBoard.vue");
+  assert.match(tasks, /@keydown\.enter="ime\.enter\(saveDraft, \$event\)"/,
+    "任务自定义类型回车没有接到保存（或没把 $event 传进去）");
+  for (const mod of ["meta", "ctrl"]) {
+    assert.match(tasks, new RegExp(`@keydown\\.${mod}\\.enter\\.prevent="ime\\.enter\\(saveDraft, \\$event\\)"`),
+      `任务描述 textarea 的 ${mod}+Enter 没有接到保存（或没把 $event 传进去）`);
+  }
+});
+
+test("气泡尖角：位置只有 style.css 那一个家，五处挂尖角的气泡全查", () => {
+  // 用户 2026-10-23 截图点名代码气泡：它的尾巴还钉在卡片**底栏**上，跟头像完全错开 ——
+  // 根因是组件里又写了一遍 `.bubble-tail { top: auto; bottom: 12px }`。位置一旦有第二个家，
+  // 全局那条「对准头像中心」就管不到它，所以这条钉的是「只许有一个家」，不是「某个文件对」。
+  const SECOND_HOME = /\.bubble-tail[^{]*\{[^}]*\b(?:top|bottom)\s*:/;
+  const files = walk691(srcDir691).filter((f) => f.endsWith(".vue"));
+  const hosts = [];
+  const secondHomes = [];
+  for (const f of files) {
+    const raw = readFileSync(f, "utf8");
+    if (!/class="bubble-tail"/.test(raw)) continue;
+    const src = code691(raw);
+    hosts.push(rel692(f));
+    if (SECOND_HOME.test(src)) secondHomes.push(rel692(f));
+    assert.match(src, /class="bubble-tail" :class="mine \? 'tail-mine' : 'tail-other'"/,
+      `${rel692(f)} 的尖角没有按 mine 分方向（左右两列会各指错一边）`);
+  }
+  // 分母现算 + 下限：文本 / 文件 / 代码 / 合并卡片 / 群任务卡片
+  assert.ok(hosts.length >= 5, "只扫到 " + hosts.length + " 处挂尖角的气泡 ⇒ 提取器漂了：" + hosts.join(","));
+  assert.deepEqual(secondHomes, [], "这些组件又给 .bubble-tail 钉了一次 top/bottom ⇒ " + secondHomes.join(", "));
+  // 正控：被删掉的那种形状必须认得出来（认不出 ⇒ 上面那条缺席断言在测空气）
+  assert.ok(SECOND_HOME.test(".bubble-tail { top: auto; bottom: 12px; }"),
+    "签名认不出「组件里再钉一次位置」⇒ 这一格在测空气");
+  // 反控：只补颜色的那一档（代码气泡按 toolbar 混色）不算第二个家
+  assert.ok(!SECOND_HOME.test(".bubble-tail.tail-mine { border-left-color: red; }"),
+    "只改颜色的规则被误判成第二个家");
+  // 唯一那一家还在，而且带 --bubble-tail-offset，并用 max(0px, …) 夹住（缺了 offset，群聊那行
+  // 昵称会把尖角顶歪；少了 max，群聊尖角会有一半露到气泡上面 —— 用户 2026-10-23 两轮反馈）
+  const css = readFileSync(join(srcDir691, "style.css"), "utf8");
+  assert.match(css,
+    /\.bubble-tail\s*\{[\s\S]{0,600}?top:\s*max\(0px,\s*calc\(12px - var\(--bubble-tail-offset, 0px\)\)\)/,
+    "style.css 里那条唯一的定位不在了（或被改回写死的 bottom / 丢了 max 夹紧）");
+});
+
+/**
+ * 图片预览左右切换键的定位（用户 2026-10-23：「按靠上的地方会把图关掉」「点击反馈向下移太夸张」）。
+ *
+ * 根因不是按钮写错了值，而是**两条 `transform` 抢同一条声明**：Tailwind 的
+ * `-translate-y-1/2`（一条类 = 特异度 0,1,0）与全局按压规则
+ * `:where(button…):active { transform: scale(.97) }`（`:where` 记 0，`:active` 记 0,1,0）
+ * 同特异度，而全局那条在 style.css 里位于 `@tailwind utilities` 之后 ⇒ 按下瞬间
+ * `-translate-y-1/2` 被整个顶掉，按钮下移 22px（半个 h-11）。按在顶部时 pointerup 已落到
+ * 遮罩上，click 派发到共同祖先（遮罩）⇒ 顺带关窗。
+ *
+ * 判据不是"某行有某个类"，而是：两颗切换键的 class 里**不许**出现定位 translate，
+ * 定位必须在外层元素上（这样按钮只负责 `active:scale-95` 的缩小反馈）。
+ */
+test("图片预览切换键：定位 translate 不许挂在按钮上（按下会被全局 scale 顶掉而下移）", () => {
+  const file = readFileSync(
+    join(import.meta.dirname, "..", "components", "message", "ImageLightbox.vue"),
+    "utf8",
+  );
+  const template = file.slice(file.indexOf("<template>"));
+  /** 同一把尺子：挑出带 `h-11`（切换键尺寸）的 <button> 块。 */
+  const navButtons = (src: string) =>
+    [...src.matchAll(/<button\b[\s\S]*?<\/button>/g)]
+      .map((m) => m[0])
+      .filter((b) => /class="[^"]*\bh-11\b[^"]*"/.test(b));
+
+  const navs = navButtons(template);
+  assert.equal(navs.length, 2, `切换键现数 ${navs.length} 颗（必须恰好两颗：上一张 / 下一张）`);
+  for (const b of navs) {
+    assert.doesNotMatch(b, /(?:^|\s)-translate-[xy]-1\/2/,
+      "切换键自己带了定位 translate —— 按下时全局 `button:active` 的 scale 会顶掉它，按钮整体下移");
+  }
+  // 定位挪到外层：否则按钮不居中了
+  assert.match(template, /class="absolute (?:left|right)-4 top-1\/2 z-10 -translate-y-1\/2"/,
+    "居中定位没有落在按钮的外层元素上（按钮会掉到基线附近）");
+  // 遮罩关窗的按下源守卫：在控件上按下的手势不许被当成"点了遮罩"
+  assert.match(file, /@pointerdown="onShadePointerDown"/, "遮罩没有记录按下源");
+  assert.match(file, /@click="onShadeClick"/, "遮罩仍直接 emit close（没有走按下源守卫）");
+  assert.match(file, /if \(e\.target !== lastPointerDownTarget\) return;/,
+    "遮罩点击没有核对按下源（click 落到遮罩就会关窗）");
+  // 正控：旧形状（定位写在按钮上）必须被同一把尺子认出来，否则上面的缺席断言在测空气
+  const legacy = '<button class="absolute left-4 top-1/2 z-10 flex h-11 w-11 -translate-y-1/2 items-center justify-center">x</button>';
+  const old = navButtons(legacy);
+  assert.equal(old.length, 1, "正控没认出旧形状（h-11 选择器漂了）");
+  assert.match(old[0], /(?:^|\s)-translate-[xy]-1\/2/, "正控没认出旧形状的定位 translate");
+});
+
 test("收藏列表是普通一级 tab，底栏显示条件不再为收藏开特例", () => {
   const routes = readFileSync(join(import.meta.dirname, "..", "router", "mainRoutes.ts"), "utf8");
   const layout = readFileSync(join(import.meta.dirname, "..", "layouts", "ResponsiveLayout.vue"), "utf8");
@@ -4818,7 +5173,18 @@ test("无效路径参数有明确回退（不是 UI 空态挂着错 URL）", () 
   assert.match(layout, /chat\.conversationsLoaded && chat\.groupsLoaded/, "群深链没有要求会话+群表");
   assert.match(layout, /chat\.conversationsLoaded && chat\.friendsLoaded/, "单聊深链没有要求会话+好友表");
   assert.match(layout, /if \(current && current !== convId\) return;/, "后台 activeConv 变化会覆盖当前会话 URL");
-  assert.match(layout, /name === "friend"[\s\S]{0,400}router\.replace\(\{ name: "contacts" \}\)/, "无效好友没有回通讯录");
+  // 好友那一档按**分支块**取，不按字符距离：往这一档里加一句解释就把距离窗口撑破（4965 行旧形状
+  // 实测红过一次），距离窗口是贴形状的锚点、注释一变就假红。切到下一档的判断为止，
+  // 判据仍然绑在 friend 分支上，不会误认另一档的 replace。
+  const friendAt = layout.indexOf('if (name === "friend")');
+  const nextAt = layout.indexOf('if (name !== "conversation")', friendAt);
+  assert.ok(friendAt > 0 && nextAt > friendAt, "锚点缺失：好友深链校验分支或下一档的判断被改名");
+  const friendBranch = layout.slice(friendAt, nextAt);
+  assert.match(friendBranch, /router\.replace\(\{ name: "contacts" \}\)/, "无效好友没有回通讯录");
+  // 「自己」不是自己的好友，但它是**合法**的资料页对象（用户 2026-10-23：点联系人里自己那行
+  // 被弹回通讯录并提示"内容不存在"）。这一档与会话那一档必须同一个口径。
+  assert.match(friendBranch, /id !== app\.device\?\.device_id/, "好友深链把「自己」当不存在弹回通讯录");
+  assert.match(layout, /if \(id === app\.device\?\.device_id\) return true;/, "会话存在性判据不再认自聊 id");
   const fav = readFileSync(join(import.meta.dirname, "..", "components", "FavoritePanel.vue"), "utf8");
   assert.match(fav, /loadedOnce/, "收藏无效参数判据没有等待首轮读取");
   assert.match(fav, /t\("favorite\.notFound"\)[\s\S]{0,120}router\.replace\(\{ name: "favorites" \}\)/, "无效 favId 没有回列表");

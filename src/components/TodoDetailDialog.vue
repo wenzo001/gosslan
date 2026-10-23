@@ -285,7 +285,7 @@ const fullCode = computed(() =>
             :maxlength="TODO_CUSTOM_CATEGORY_MAX_LEN"
             class="min-w-0 flex-1 rounded-[var(--gosslan-radius-md)] border border-transparent bg-[var(--gosslan-bg)] px-2.5 py-1.5 text-body outline-none transition focus:border-transparent"
             :placeholder="t('todo.categoryCustomPlaceholder')"
-            @keydown.enter.prevent="ime.enter(applyCustomCategory)"
+            @keydown.enter="ime.enter(applyCustomCategory, $event)"
             @compositionstart="ime.onStart"
             @compositionend="ime.onEnd"
           />

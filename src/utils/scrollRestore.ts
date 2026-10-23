@@ -1,0 +1,39 @@
+/**
+ * 「离开再回来，落回上次读到的那一屏」的判定（用户 2026-10-23）。
+ *
+ * 三条口径（这里是唯一实现，ChatWindow 只负责保存/调用）：
+ * ① 离开超过 `SCROLL_RESTORE_TTL_MS` ⇒ **贴底**。隔很久回来还停在一屏旧内容上，
+ *    用户得自己往下滑才能看到新消息，那比"丢掉位置"更烦人。
+ * ② 回来时已有未读跳转 ⇒ 位置让给未读（未读才是用户最需要看的那条）。
+ * ③ 离开时本来就在底部 ⇒ 回来也贴底：那是"看最新"的意图，不是一个像素坐标。
+ *
+ * 边界取闭区间外的严格大于：**恰好** 3 分钟仍算"刚离开"（与时间窗判据的通用口径一致：
+ * 阈值那一格走"仍然恢复"）。这个值由用户拍板，改它只改这一个常量。
+ */
+export interface SavedScroll {
+  /** 离开时的 scrollTop（px）。 */
+  top: number;
+  /** 离开时刻（ms，`Date.now()`）。 */
+  at: number;
+  /** 离开时是否已经在底部。 */
+  atBottom: boolean;
+}
+
+/** 阅读位置的有效期：超过这个时长回来一律贴底。 */
+export const SCROLL_RESTORE_TTL_MS = 3 * 60_000;
+
+/**
+ * 该不该把视口恢复到 `saved.top`。
+ *
+ * 返回 `false` 的三种情况都表示"交给默认的贴底行为"：过期、有未读、离开时就在底部。
+ */
+export function shouldRestoreScroll(
+  saved: SavedScroll | undefined,
+  now: number,
+  unreadWins: boolean,
+): boolean {
+  if (!saved) return false;
+  if (unreadWins) return false;
+  if (saved.atBottom) return false;
+  return now - saved.at <= SCROLL_RESTORE_TTL_MS;
+}

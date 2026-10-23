@@ -66,14 +66,12 @@ const tailBg = computed(() => surface.value);
 </template>
 
 <style scoped>
-/* 代码气泡尖角：代码卡片顶部是 32px toolbar，尖角对齐到 toolbar 中线（16px）。
-   颜色必须取「卡片底 + toolbar 蒙层」的等效色——尖角整段都落在 toolbar 高度内，
-   相邻色就是 toolbar 而不是卡片本体；直接用卡片色会比 toolbar 亮一档，仍能看出边界。
-   蒙层与 CodeBlock 的 toolbarBg 保持同款（亮色 4% 黑 / 暗色 5% 白）。 */
-.bubble-tail {
-  top: auto;
-  bottom: 12px;
-}
+/* 代码气泡尖角：**位置跟全局 `.bubble-tail`（竖向对准头像中心），这里只补颜色。**
+   卡片顶部是 32px 的 CodeBlock toolbar，尖角落在这一档里 ⇒ 相邻色是 toolbar 而不是卡片本体，
+   直接用卡片色会比 toolbar 亮一档、仍能看出边界；蒙层与 CodeBlock 的 toolbarBg 同款
+   （亮色 4% 黑 / 暗色 5% 白）。
+   ⚠️ 旧版这里还写着 `top: auto; bottom: 12px`（把尖角钉在卡片底栏上），与头像完全错开 ——
+   用户 2026-10-23 截图点名的就是这一格。位置只有全局那一个家，别在这里再钉一份。 */
 .bubble-tail.tail-mine {
   border-left-color: color-mix(in srgb, var(--bubble-bg) 96%, #000);
 }

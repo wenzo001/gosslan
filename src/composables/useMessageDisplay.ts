@@ -36,6 +36,24 @@ export function useMessageDisplay(opts: {
   /** 气泡配色："theme" 预设按当前主题色运行时派生（本机消息跟随我的主题色，
    *  对方消息按对方广播的偏好渲染），其余预设取表中明/暗值。 */
   const colors = computed(() => resolveChatColors(preset.value.key, app.themeColor, app.dark));
+  /**
+   * 尖角那一侧的**上圆角**要跟着尖角走（用户 2026-10-23：「群聊里尾巴没有和气泡融合」）。
+   *
+   * 群聊有昵称行，气泡顶边被推到与头像中心齐平 ⇒ 尖角落在气泡的**左上/右上圆角**上。
+   * 胶囊圆角是 18px：在尖角那 12px 的高度里，气泡边缘已经从 x=18 收到 x≈4.6，直边三角形
+   * 只能碰到弧线的一个点，中间露出背景色，看起来就是"断开"。把这一侧的圆角压到 2px，
+   * 尖角才贴在直边上（微信同形）。单聊没有昵称行、尖角在胶囊最左侧那条直边上，
+   * `--bubble-tail-corner` 缺省回落到原胶囊值 ⇒ 形状一点不动。
+   *
+   * ⚠️ 必须写在**内联样式**里（主题预设也要读圆角），CSS 规则压不过内联。
+   */
+  const tailCornerRadius = "var(--bubble-tail-corner, var(--gosslan-bubble-radius, 4px))";
+  const tailCorner = computed<CSSProperties>(() =>
+    mine.value
+      ? { borderTopRightRadius: tailCornerRadius }
+      : { borderTopLeftRadius: tailCornerRadius },
+  );
+
   /** 气泡：圆角/尖角取微信式，配色仍由用户预设决定（--bubble-bg 供尖角取色）。 */
   const bubbleStyle = computed<CSSProperties>(
     () =>
@@ -44,6 +62,7 @@ export function useMessageDisplay(opts: {
         background: "var(--bubble-bg)",
         color: mine.value ? colors.value.mineText : colors.value.otherText,
         borderRadius: "var(--gosslan-bubble-radius, 4px)",
+        ...tailCorner.value,
         border: mine.value ? "1px solid transparent" : "1px solid var(--gosslan-border)",
         position: "relative",
         // 真实底色（hex），供子组件 mentionHighlightColor 算对比度。
@@ -66,6 +85,7 @@ export function useMessageDisplay(opts: {
         background: "var(--bubble-bg)",
         color: "var(--gosslan-card-ink)",
         borderRadius: "var(--gosslan-bubble-radius, 4px)",
+        ...tailCorner.value,
         border: "1px solid var(--gosslan-card-line)",
         // 不加阴影：学微信，纯色卡片 + 1px 描边就够，阴影反而显脏
         position: "relative",

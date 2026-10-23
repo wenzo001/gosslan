@@ -7,6 +7,7 @@ import BaseModal from "@/components/BaseModal.vue";
 import { avatarSeedFor } from "@/utils/avatarSeed";
 import { Check } from "@/components/ui/icons";
 import { useSubmitGuard } from "@/composables/useSubmitGuard";
+import { useImeEnterGuard } from "@/composables/useImeEnterGuard";
 import { groupNameSchema, MAX_GROUP_NAME_CHARS } from "@/utils/validation";
 import CharCounter from "@/components/ui/CharCounter.vue";
 
@@ -19,6 +20,7 @@ const name = ref("");
 const selected = ref<string[]>([]);
 /** 建群是在途提交只放行一次：双击不会建出两个群。 */
 const { busy: creating, run: runCreate } = useSubmitGuard();
+const ime = useImeEnterGuard();
 
 watch(
   () => props.open,
@@ -75,6 +77,10 @@ async function create() {
         class="w-full rounded-[var(--gosslan-radius-md)] border border-transparent bg-[var(--gosslan-bg)] px-3 py-2 text-sm outline-none transition focus:border-transparent"
         :placeholder="t('group.namePlaceholder')"
         :maxlength="MAX_GROUP_NAME_CHARS"
+        enterkeyhint="done"
+        @keydown.enter="ime.enter(create, $event)"
+        @compositionstart="ime.onStart"
+        @compositionend="ime.onEnd"
       />
     </div>
 

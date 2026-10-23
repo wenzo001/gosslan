@@ -1,18 +1,36 @@
 <script setup lang="ts">
 import { t } from "@/i18n";
-import { onUnmounted, ref, watch } from "vue";
+import { computed, onUnmounted, ref, watch } from "vue";
 import { ImageIcon } from "lucide-vue-next";
 import { ImageOff } from "@/components/ui/icons";
 import { IMAGE_BUBBLE_HEIGHT, IMAGE_PLACEHOLDER_HEIGHT } from "@/utils/previewMetrics";
 
-const props = defineProps<{ src: string }>();
+const props = withDefaults(
+  defineProps<{ src: string; mine?: boolean }>(),
+  { mine: false },
+);
 const emit = defineEmits<{ (e: "open", src: string): void; (e: "refetch"): void }>();
 
-/** 加载失败时点一下：先本地重试，同时请对端按 cid 再发一份（ADR-0019 点击重取）。 */
+/**
+ * 加载失败时点一下。
+ *
+ * ⚠️ 「重新获取」是**收件方**的语义：它请对端按 cid 再发一份。自己发出去的那张图，
+ * 文件本来就在本机 —— 对端是**接收方**，向它索取要么拿不到、要么拿到一份没意义的副本，
+ * 而点了按钮的人真正想知道的是「为什么我看得见这条消息却看不见图」。所以 mine 那一支
+ * 只做本地重取（换 key 让浏览器重新发起加载），不外发请求。（用户 2026-10-23）
+ */
 function onFailedClick() {
   retry();
-  emit("refetch");
+  if (!props.mine) emit("refetch");
 }
+
+/**
+ * 失败原因。这里能**诚实**说出口的只有两种，而且分界是看得见的：
+ * `src` 为空 = 本机根本没有可加载的地址（文件被清理/移动/删除，或预览没做出来）；
+ * `src` 有值却报错 = 地址在但读不出图（文件损坏、格式不支持、objectURL 随页面一起失效）。
+ * 再细的原因（对端没发完、解密失败）这一层拿不到信号，就不编。
+ */
+const failReasonKey = computed(() => (props.src ? "msg.imageFailDecode" : "msg.imageFailNoLocal"));
 
 /** 加载态：先撑出骨架占位，避免大图加载时气泡高度塌陷、列表跳动。 */
 const state = ref<"loading" | "loaded" | "failed">("loading");
@@ -128,9 +146,16 @@ onUnmounted(clearTimer);
       <ImageOff v-if="state === 'failed'" class="size-6 opacity-50" />
       <ImageIcon v-else class="size-6 animate-pulse opacity-40" />
     </div>
-    <span v-if="state === 'failed'" class="absolute inset-x-0 bottom-1 text-center text-caption opacity-70">
-      {{ t("msg.imageLoadFailed") }}
-    </span>
+    <div
+      v-if="state === 'failed'"
+      class="absolute inset-x-0 bottom-1 px-2 text-center text-caption leading-snug opacity-70"
+    >
+      <div>{{ t("msg.imageLoadFailed") }}</div>
+      <!-- 用户 2026-10-23：「应该给用户讲为啥渲染失败」。原因只报这一层**真拿得到**的分界：
+           有没有可加载的地址。再细的（对端没发完 / 解密失败）在这里没有信号，不编。 -->
+      <div>{{ t(failReasonKey) }}</div>
+      <div>{{ mine ? t("msg.imageFailHintMine") : t("msg.imageFailHintPeer") }}</div>
+    </div>
     <!-- img-eager-ok：这张图必须 eager，不许加 loading="lazy"。
          它在自身 @load 触发前被 `hidden`（display:none）藏着，而懒加载只对"在视口附近、
          参与排版"的元素发请求 —— display:none 的懒加载图**永不发请求**（Chromium/WebKit/WebView2

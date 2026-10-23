@@ -936,4 +936,117 @@ CASES: list[Case] = [
         expect_fail_hint="必须成对",
         tags=["frontend", "new-guards", "modal"],
     ),
+    Case(
+        name="浮层释放撤销刚推进的页面（先关弹窗再跳转的旧顺序）必须被抓住",
+        why="用户 2026-10-23「加好友页点发起聊天应该直接进聊天窗口，而不是关掉」。弹窗那层 "
+        "     `useBackLayer` 释放时会 `history.back()` 退自己压的**同 URL**条目，而 Vue 的 watcher "
+        "     跑在微任务里、早于 vue-router 写历史条目 ⇒ 那次 back 排在跳转之后执行，把刚进去的页面"
+        "     原路退了回来。真浏览器实测过两态：旧顺序停在 /contacts，新顺序进 /chats/<peer> 且输入框在场。"
+        "     纯逻辑那半边另有 `backStack.test.ts` 的「端口拒退」一格，这一条钉的是**调用点顺序**"
+        "     （它没有任何其它机器凭据，退回 fire-and-forget 不报错也不影响构建）。"
+        "     注入 = 退回「先关弹窗 + void router.push」那一份原样代码。",
+        file=ROOT / "src" / "layouts" / "ResponsiveLayout.vue",
+        injections=[(
+            """  try {
+    await router.push({ name: "conversation", params: { convId: peerId } });
+  } finally {
+    // 导航被守卫挡掉也要关弹窗，否则弹窗永远关不上。
+    addFriendOpen.value = false;
+  }""",
+            """  addFriendOpen.value = false;
+  void router.push({ name: "conversation", params: { convId: peerId } });""",
+        )],
+        cmd=["node", "--test", "--experimental-strip-types", "--disable-warning=ExperimentalWarning",
+             "src/utils/designGuards.test.ts"],
+        cwd=ROOT,
+        expect_fail_hint="必须 await 导航",
+        tags=["frontend", "new-guards", "modal", "navigation"],
+    ),
+    Case(
+        name="分层返回无条件退历史条目（端口不再回报退没退）必须被抓住",
+        why="同上一条的另一半：压入之后发生过导航时，那条同 URL 条目已经是合法的「后退到上一级」目标，"
+        "     退掉它等于撤销用户的跳转。端口于是必须如实回报 back() 到底退没退，纯逻辑要按回报决定"
+        "     要不要减计数与预吃那次 pop —— 当成「退了」就会静默吞掉用户下一次真按返回键。"
+        "     注入 = 退回「无条件 pushed-- / ignoreNextPop = true / port.back()」那三行原样形状。",
+        file=ROOT / "src" / "utils" / "backStack.ts",
+        injections=[(
+            """          if (port.back(id)) {
+            pushed--;
+            ignoreNextPop = true;
+          }""",
+            """          pushed--;
+          ignoreNextPop = true;
+          port.back(id);""",
+        )],
+        cmd=["node", "--test", "--experimental-strip-types", "--disable-warning=ExperimentalWarning",
+             "src/utils/designGuards.test.ts"],
+        cwd=ROOT,
+        expect_fail_hint="释放必须带着层 id 按端口回报分支",
+        tags=["frontend", "new-guards", "navigation", "mobile"],
+    ),
+    Case(
+        name="气泡尖角在组件里再钉一份竖向位置（代码气泡那一格）必须被抓住",
+        why="用户 2026-10-23 截图点名：代码气泡的尖角吊在卡片底栏上、跟头像完全错开。根因是组件里又写了"
+        "     一遍 `.bubble-tail { top: auto; bottom: 12px }`，位置长出第二个家 ⇒ 全局那条对准头像中心的"
+        "     规则对它无效。运行时那半边由探针 --only=rowpair 量五种气泡（含群聊那档的包含块判据，"
+        "     本机实测：钉回 bottom:12px 时中心线 124.5 vs 56.5 直接红），而那层 CI 不跑 ⇒ 源码这一半"
+        "     必须自己会红。注入 = 把那份原样规则塞回代码气泡的 style 块。",
+        file=ROOT / "src" / "components" / "message" / "MessageCodeBubble.vue",
+        injections=[(
+            """.bubble-tail.tail-mine {
+  border-left-color: color-mix(in srgb, var(--bubble-bg) 96%, #000);""",
+            """.bubble-tail {
+  top: auto;
+  bottom: 12px;
+}
+.bubble-tail.tail-mine {
+  border-left-color: color-mix(in srgb, var(--bubble-bg) 96%, #000);""",
+        )],
+        cmd=["node", "--test", "--experimental-strip-types", "--disable-warning=ExperimentalWarning",
+             "src/utils/designGuards.test.ts"],
+        cwd=ROOT,
+        expect_fail_hint="又给 .bubble-tail 钉了一次",
+        tags=["frontend", "new-guards", "chat"],
+    ),
+    Case(
+        name="聊天框粘贴退回逐行 execCommand（用户那句「卡一下才显示」的根因）必须被抓住",
+        why="`document.execCommand(\"insertText\")` 会把带换行的文本逐行开编辑事务："
+        "     本机真 ⌘V 实测 300 行 ⇒ 299 个子元素 + 599 次 input 事件、按键回执 562–662 ms，"
+        "     50k 字符 ⇒ 4367 ms，整段同步跑在 paste 事件里 ⇒ 粘贴的文字要等它做完才画得出来。"
+        "     运行时那半边由探针 --only=pasteframe 量（input 次数 == 1、子元素 == 0），"
+        "     而那层 CI 不跑 ⇒ 源码这一半必须自己会红。注入 = 把粘贴那一格改回旧写法。",
+        file=ROOT / "src" / "components" / "chat" / "MessageComposer.vue",
+        injections=[(
+            """  if (!insertPastedText(text.slice(0, room))) {
+    // 拿不到 caret/range（极端情形，例如编辑器没被聚焦就收到粘贴）：退回原生插入。
+    // 宁可那一次慢一点，也不能把用户粘贴的内容吞掉。
+    document.execCommand("insertText", false, text.slice(0, room));
+  }""",
+            """  document.execCommand("insertText", false, text.slice(0, room));""",
+        )],
+        cmd=["node", "--test", "--experimental-strip-types", "--disable-warning=ExperimentalWarning",
+             "src/utils/designGuards.test.ts"],
+        cwd=ROOT,
+        expect_fail_hint="粘贴主路径必须是 insertPastedText",
+        tags=["frontend", "new-guards", "chat", "paste"],
+    ),
+    Case(
+        name="粘贴的撤销没接上（一次 DOM 插入不进原生 undo 栈）必须被抓住",
+        why="换成一次插入之后，Chromium 的 undo 栈里没有这一步（实测：手动插入后按 ⌘/Ctrl+Z"
+        "     什么都不回退）。「粘错了立刻撤销」是聊天框最常用的反悔动作 ⇒ 组件必须自己接住"
+        "     紧跟粘贴的那一次按键。注入 = 摘掉 onKeydown 里那一格（函数留着，看代码看不出问题）。",
+        file=ROOT / "src" / "components" / "chat" / "MessageComposer.vue",
+        injections=[(
+            """  if ((e.metaKey || e.ctrlKey) && !e.shiftKey && e.key.toLowerCase() === "z" && restorePasteUndo()) {
+    e.preventDefault();
+    return;
+  }""",
+            "",
+        )],
+        cmd=["node", "--test", "--experimental-strip-types", "--disable-warning=ExperimentalWarning",
+             "src/utils/designGuards.test.ts"],
+        cwd=ROOT,
+        expect_fail_hint="定义 1 处 + onKeydown 里接住",
+        tags=["frontend", "new-guards", "chat", "paste"],
+    ),
 ]

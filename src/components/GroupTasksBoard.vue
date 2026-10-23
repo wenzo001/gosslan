@@ -1388,7 +1388,7 @@ watch(
           :disabled="!draftCanEditTitle"
           class="w-full rounded-[var(--gosslan-radius-md)] border border-transparent bg-[var(--gosslan-bg)] px-3 py-2 text-sm outline-none transition focus:border-transparent disabled:opacity-60"
           :placeholder="t('todo.titlePlaceholder')"
-          @keydown.enter.prevent="ime.enter(saveDraft)"
+          @keydown.enter="ime.enter(saveDraft, $event)"
           @compositionstart="ime.onStart"
           @compositionend="ime.onEnd"
         />
@@ -1445,6 +1445,9 @@ watch(
             :maxlength="TODO_CUSTOM_CATEGORY_MAX_LEN"
             class="min-w-0 flex-1 rounded-[var(--gosslan-radius-md)] border border-transparent bg-[var(--gosslan-bg)] px-2.5 py-1.5 text-body outline-none transition focus:border-transparent"
             :placeholder="t('todo.categoryCustomPlaceholder')"
+            @keydown.enter="ime.enter(saveDraft, $event)"
+            @compositionstart="ime.onStart"
+            @compositionend="ime.onEnd"
           />
           <CharCounter :text="draft.customCategory" :max="TODO_CUSTOM_CATEGORY_MAX_LEN" />
         </div>
@@ -1467,6 +1470,10 @@ watch(
           rows="3"
           class="w-full resize-y rounded-[var(--gosslan-radius-md)] border border-transparent bg-[var(--gosslan-bg)] px-3 py-2 text-sm outline-none transition focus:border-transparent"
           :placeholder="t('todo.descriptionPlaceholder')"
+          @keydown.meta.enter.prevent="ime.enter(saveDraft, $event)"
+          @keydown.ctrl.enter.prevent="ime.enter(saveDraft, $event)"
+          @compositionstart="ime.onStart"
+          @compositionend="ime.onEnd"
         ></textarea>
       </div>
 
@@ -1546,20 +1553,23 @@ watch(
       </div>
 
       <!-- 操作 -->
-      <div class="flex items-center justify-end gap-2 border-t border-[var(--gosslan-divider)] pt-3">
+      <div class="flex items-center justify-between gap-2 border-t border-[var(--gosslan-divider)] pt-3">
+        <span class="text-caption text-[var(--gosslan-text-2)]">{{ t("todo.draftEnterHint") }}</span>
+        <div class="flex items-center gap-2">
           <button
             class="tap-safe rounded-[var(--gosslan-radius-md)] px-3 py-1.5 text-body text-[var(--gosslan-text-2)] transition hover:bg-[var(--gosslan-hover)]"
             @click="closeDraft()"
           >
             {{ t("common.cancel") }}
           </button>
-        <button
-          class="tap-safe rounded-[var(--gosslan-radius-md)] bg-[var(--gosslan-primary)] px-3 py-1.5 text-body text-white transition hover:opacity-90 disabled:opacity-50"
-          :disabled="saving"
-          @click="saveDraft"
-        >
-          {{ t("todo.save") }}
-        </button>
+          <button
+            class="tap-safe rounded-[var(--gosslan-radius-md)] bg-[var(--gosslan-primary)] px-3 py-1.5 text-body text-white transition hover:opacity-90 disabled:opacity-50"
+            :disabled="saving"
+            @click="saveDraft"
+          >
+            {{ t("todo.save") }}
+          </button>
+        </div>
       </div>
     </div>
   </BaseModal>

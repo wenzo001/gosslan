@@ -353,6 +353,59 @@ export function findTruncationWithoutTitle(src: string): GuardIssue[] {
   return out.sort((a, b) => a.line - b.line);
 }
 
+/**
+ * 挂了 `whitespace-pre-wrap` 却没有强制断词的元素必须报出。
+ *
+ * 真实缺陷（用户 2026-10-23：群管理弹窗里的群公告「打了一堆数字，出现了横向滚动条」）：
+ * `whitespace-pre-wrap` 只保证**保留换行**，它管的仍是「按词断行」。一整串数字、一条超长
+ * URL、一段 sha256 都是**一个词** ⇒ 词长超过容器时它不换行而把内容撑出去；而外层弹窗的
+ * 滚动容器写着 `overflow-y:auto`，规范上 `overflow-x:visible` 会随之**算成 auto**
+ * ⇒ 于是出现一条横向滚动条。这类缺陷编译过、类型对、功能全正常，只有往框里粘一串
+ * 数字才看得见，所以必须机器盯。
+ *
+ * 判据只看**真实 class 属性**（与 ③/截断那条同一口径）：注释里写一句
+ * `whitespace-pre-wrap` 不能让护栏「因为注释而报红」，也不能让它「因为注释而通过」。
+ * 断词的三种合法出口都算数：`break-words`（overflow-wrap:break-word）、
+ * `break-all`、`break-anywhere`；用 `:style="{ wordBreak: … }"` 内联的也算。
+ * 确需横向滚动的容器（代码块、日志行），在文件内加 `prewrap-break-ok` 注释整文件跳过。
+ */
+const PREWRAP_BREAK_EXITS = ["break-words", "break-all", "break-anywhere"];
+
+/**
+ * 数一份源码里挂了多少处 `whitespace-pre-wrap`（按**真实 class 属性**，注释不算）。
+ *
+ * 单独导出是为了让判据的「非空转下限」和判据本体用**同一个提取器**数分母 ——
+ * 测试里再抄一份正则的话，提取器坏了而分母照数得出，那条判据就静默空转了。
+ */
+export function countPreWrapSites(src: string): number {
+  let n = 0;
+  for (const m of src.matchAll(CLASS_ATTR_RE)) {
+    if (m[1].split(/\s+/).includes("whitespace-pre-wrap")) n += 1;
+  }
+  return n;
+}
+
+export function findPreWrapWithoutBreak(src: string): GuardIssue[] {
+  if (src.includes("prewrap-break-ok")) return [];
+  const out: GuardIssue[] = [];
+  for (const m of src.matchAll(CLASS_ATTR_RE)) {
+    const classes = m[1].split(/\s+/).filter(Boolean);
+    if (!classes.includes("whitespace-pre-wrap")) continue;
+    if (classes.some((c) => PREWRAP_BREAK_EXITS.includes(c))) continue;
+    // 内联 :style 里的 word-break / overflow-wrap 同样是出口，别误伤
+    const tag = enclosingTag(src, m.index ?? 0);
+    if (/word-?break|overflow-wrap/i.test(tag)) continue;
+    out.push({
+      line: lineAt(src, m.index ?? 0),
+      message:
+        "`whitespace-pre-wrap` 没有配强制断词 —— 一整串数字/URL/sha 是**一个词**，" +
+        "它不换行而把内容撑出容器，外层 `overflow-y:auto` 会连带长出横向滚动条。" +
+        "补 `break-words`（要按字符断用 `break-all`）；确需横向滚动的容器加 `prewrap-break-ok`。",
+    });
+  }
+  return out.sort((a, b) => a.line - b.line);
+}
+
 // ---------------- ⑤b 自绘菜单必须自带底（`.gosslan-menu` 只管形状，底在 `.frost`） ----------------
 
 /**

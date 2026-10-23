@@ -36,6 +36,7 @@ import MobilePageFrame from "@/components/MobilePageFrame.vue";
 import ProfileSection from "@/components/settings/ProfileSection.vue";
 import { ScrollText, Settings, UserCircle } from "lucide-vue-next";
 import type { ExternalLink, Friend, PendingRequest } from "@/types";
+import { selfFriendOf } from "@/utils/selfChat";
 import { storageGet, storageSet } from "../utils/safeStorage.ts";
 const app = useAppStore();
 const chat = useChatStore();
@@ -355,15 +356,30 @@ async function onOpenSearchHit(payload: { convId: string; msgId: string }) {
   if (r !== "found") app.toast(t("search.locateFail"), "error");
 }
 
-/** 添加好友页里点「发起聊天」：关掉弹窗，直接打开与该好友的单聊。 */
-function openChatFromFriend(peerId: string) {
-  addFriendOpen.value = false;
+/**
+ * 添加好友页里点「发起聊天」：直接进入与该好友的单聊。
+ * 用户 2026-10-23：「如果已经是好友了，点发起聊天应该就是直接进入聊天窗口、可以发消息，
+ * 而不是关掉」—— 之前弹窗是关了，人却留在通讯录。
+ *
+ * ⚠️ 顺序是有原因的：**先等导航落地，再关弹窗**。弹窗那层 `useBackLayer` 释放时会
+ * `history.back()` 退掉自己压的同 URL 条目，而 Vue 的 watcher 跑在微任务里、**早于**
+ * vue-router 写历史条目 —— 于是"先关弹窗再跳转"时那次 `back()` 排在推送之后执行，
+ * 把刚进去的聊天页原路退了回来（症状就是"点了没反应"）。
+ * 导航完成后再关，URL 已经变了，`useBackLayer` 的端口据此判定"这条条目现在是合法的
+ * 后退目标"，只摘登记、不退历史（移动端返回键于是回到通讯录，而不是退出应用）。
+ */
+async function openChatFromFriend(peerId: string) {
   if (app.isMobile) app.mobileView = "chat";
   const opening = chat.openConversation(peerId);
-  void router.push({ name: "conversation", params: { convId: peerId } });
   void opening.catch((e: unknown) => {
     app.toastError(e, t("common.operationFail"));
   });
+  try {
+    await router.push({ name: "conversation", params: { convId: peerId } });
+  } finally {
+    // 导航被守卫挡掉也要关弹窗，否则弹窗永远关不上。
+    addFriendOpen.value = false;
+  }
 }
 
 function openFriendProfile(f: Friend) {
@@ -425,7 +441,11 @@ async function sendMessageTo(id: string) {
   if (app.isMobile) app.mobileView = "chat";
   // 「自己」的会话行可能还不存在：先 ensure（后端有 self 分支，会用本机昵称/头像命名），
   // 否则列表里会显示成一串 gosslan-xxxx。
-  if (id === app.device?.device_id) await api.ensureConversation(id);
+  // ⚠️ 这次 ensure **失败也必须继续往下走**（实测：ensure 一 reject，这个 `await` 就把后面的
+  // `openConversation` + 路由推进整段带走 —— 症状是"点自己资料页的『发消息』毫无反应，
+  // 而资料页已经被上面那行清空"）。ensure 只是命名优化：会话行还缺时，store 的
+  // `openConversation` 自己会再兜底 ensure 一次，所以吞掉错误不会留下半截状态。
+  if (id === app.device?.device_id) await api.ensureConversation(id).catch(() => {});
   // 先同步写 activeConv，再落路由：路由 watcher 看到已打开就不会重复拉一次，
   // 同时地址栏/返回链立刻正确。
   const opening = chat.openConversation(id);
@@ -563,7 +583,11 @@ watch(
       }
     } else if (route.name === "friend") {
       const id = String(route.params.friendId ?? "");
-      const f = chat.friends.find((x) => x.device_id === id);
+      // 「自己」不在好友表里，但通讯录那行自己与自己的资料页走的是同一条渲染路径
+      // （`selfFriendOf` 那个家）；深链 / 聊天里点自己头像进来时也要还原得出这一条，
+      // 否则右侧会停在通讯录空态。
+      const f = chat.friends.find((x) => x.device_id === id)
+        ?? (id && id === app.device?.device_id ? selfFriendOf(app.device, app.present) : null);
       if (f) profileFriend.value = f;
     } else if (route.name === "contacts") {
       // 通讯录一级列表 = 没有打开任何资料页（修 D-B：点 rail「通讯录」不再停在上一个好友）。
@@ -586,7 +610,11 @@ watch(
       // 好友表没读成功时无从判断“不存在”，不能把人踢回通讯录。
       if (!chat.friendsLoaded) return;
       const id = String(friendId ?? "");
-      if (!id || !chat.friends.some((f) => f.device_id === id)) {
+      // 「自己」不是自己的好友（好友表里当然没有），但它是一个**合法**的资料页对象
+      // —— 通讯录那行「自己」与聊天里点自己头像都走这条路由。把它当不存在来弹回通讯录，
+      // 就是用户 2026-10-23 报的那句「内容不存在或已不可访问」。
+      // 与下面会话那一档的 `id === app.device?.device_id` 同一个口径。
+      if (!id || (!chat.friends.some((f) => f.device_id === id) && id !== app.device?.device_id)) {
         app.toast(t("layout.routeMissing"), "info");
         void router.replace({ name: "contacts" });
       }
@@ -1135,12 +1163,17 @@ function onResizeEnd() {
       <MobilePageFrame
         v-if="app.isMobile && profileOpen"
         mode="overlay"
+        :scroll="false"
         :title="t('nav.profile')"
         @back="closeProfile"
       >
-        <!-- 资料卡走满宽（用户 2026-10-23：这里的样式是对的）：设置里点「资料」也路由到
-             这一页，不再套一层 p-4，否则窄屏上按钮排布会和这里不一致。 -->
-        <ProfileSection :active="profileOpen" :reload-token="profileReloadToken" />
+        <!-- 页面级内边距与设置一级/二级页同口径（p-4）。⚠️ 这一层当天改过两回：
+             先按「资料卡走满宽」删掉 p-4，用户随后回报「个人资料周围没有边距」并拍板恢复
+             —— 满宽那版是拿**卡片内部**的按钮排布说的，不是要卡片贴屏幕边。
+             别再删这一层：卡片的圆角与描边需要页边距才看得出来。 -->
+        <div class="scrollbar-both min-h-0 flex-1 overflow-y-auto overflow-x-hidden p-4">
+          <ProfileSection :active="profileOpen" :reload-token="profileReloadToken" />
+        </div>
       </MobilePageFrame>
     </Transition>
 

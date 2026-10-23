@@ -349,6 +349,12 @@ function onKeydown(e: KeyboardEvent) {
   //   · 若该 Enter 其实是给内容的，则走浏览器默认行为插入换行
   //     （用户要的"回车应该响应聊天内容的回车"）—— 两种情形都不该由我们发送。
   if (imeKey(e)) return;
+  // 紧跟一次粘贴的 ⌘/Ctrl+Z 由这里接住：粘贴是一次 DOM 插入，原生 undo 栈里没有那一步
+  // （实测按 ⌘/Ctrl+Z 什么都不回退）。不满足条件（粘贴后又编辑过 / 按的是 redo）一律放行给原生。
+  if ((e.metaKey || e.ctrlKey) && !e.shiftKey && e.key.toLowerCase() === "z" && restorePasteUndo()) {
+    e.preventDefault();
+    return;
+  }
   // 微信式 token 联删：caret 前是「token + 尾随 nbsp」时一次退格删掉两者
   // （token 本身是原子，浏览器默认已整删；只补 nbsp 这一格的差距）。
   if (e.key === "Backspace" && !e.isComposing && deleteMentionBeforeCaret()) {
@@ -568,6 +574,10 @@ function syncDraftState() {
 
 /** input 统一入口：投影 hasDraft、规范化空壳、非组合输入时更新 @ 触发态。 */
 function onInput(e: Event) {
+  // 粘贴那次是我们自己补发的 input（见 `insertPastedText`），不算"用户又编辑过"；
+  // 之后的任何 input 都把粘贴快照作废 —— 那时按 ⌘/Ctrl+Z 该撤销的是这次编辑，交回原生。
+  if (pasteUndoOwnEvent) pasteUndoOwnEvent = false;
+  else pasteUndo = null;
   syncDraftState();
   normalizeEmpty();
   scheduleDraftSave();
@@ -669,6 +679,70 @@ function insertEmoji(e: string) {
   });
 }
 
+/**
+ * 粘贴那一次的「撤销快照」。为什么需要：见 `insertPastedText` —— 粘贴改成一次 DOM 插入之后，
+ * 原生 undo 栈里就没有这一步了（实测：手动插入后按 ⌘/Ctrl+Z 什么都不回退），
+ * 而"粘错了立刻撤销"是聊天框最常用的反悔动作，不能悄悄没了。
+ * `chars` 是**粘贴完成后**的字符数：只有内容还停在那个状态，这次按键才算"撤销粘贴"。
+ */
+let pasteUndo: { html: string; chars: number } | null = null;
+/** `insertPastedText` 自己补发的那个 input 事件 —— `onInput` 见到它要跳过一次失效逻辑。 */
+let pasteUndoOwnEvent = false;
+
+/**
+ * 把一段纯文本一次插进编辑器。
+ *
+ * ⚠️ 这里刻意**不再**用 `document.execCommand("insertText")`：带换行的文本会被 Chromium
+ * 逐行开编辑事务（本机实测 300 行 ⇒ 299 个子元素、599 次 `input` 事件），整段同步跑在
+ * paste 事件里 ⇒ 粘贴的文字要等它全部做完才画得出来。实测同一段文本：
+ *   · 10k 字符 / 300 行：execCommand 70–86 ms，本函数 1.1–1.5 ms
+ *   · 50k 字符 / 1500 行（草稿上限）：execCommand 780–863 ms，本函数 3.4–5 ms
+ * 用户报的「粘贴大段文字会卡一下才显示」就是那一段阻塞。
+ * 编辑区自己是 `whitespace-pre-wrap`（见模板那个类），文本节点里的 `\n` 就是换行，
+ * 所以一个节点就够，不需要每行一个元素；`serializeDraft` 走 innerText 读回换行也照旧。
+ *
+ * 代价与它的补偿：手动改 DOM 不产生原生 undo 步骤，也不触发 `input` 事件 ⇒
+ * 这里自己补发一个（`syncDraftState`/草稿保存/@ 触发态都靠它），并把撤销接到 `pasteUndo`。
+ */
+function insertPastedText(text: string): boolean {
+  const el = editorRef.value;
+  const sel = window.getSelection();
+  if (!el || !sel || sel.rangeCount === 0) return false;
+  const range = sel.getRangeAt(0);
+  if (!el.contains(range.startContainer)) return false;
+  const before = el.innerHTML;
+  range.deleteContents();
+  const node = document.createTextNode(text);
+  range.insertNode(node);
+  // caret 落在**这个文本节点内部的末尾**，而不是 `setStartAfter(node)`（那会把 caret
+  // 的容器变成编辑器本身）。`caretContext()` 只认文本节点上的 caret ⇒ 容器错了就会出现
+  // "粘完接着打 @ 不弹成员选择"这类看不出来的错。原生插入也是落在节点内。
+  range.setStart(node, node.length);
+  range.collapse(true);
+  sel.removeAllRanges();
+  sel.addRange(range);
+  pasteUndo = { html: before, chars: (el.textContent ?? "").length };
+  pasteUndoOwnEvent = true;
+  el.dispatchEvent(new InputEvent("input", { bubbles: true, inputType: "insertText", data: text }));
+  return true;
+}
+
+/** 紧跟粘贴的那一次 ⌘/Ctrl+Z：回到粘贴前。返回 false = 交回原生 undo。 */
+function restorePasteUndo(): boolean {
+  const snap = pasteUndo;
+  const el = editorRef.value;
+  pasteUndo = null;
+  if (!snap || !el) return false;
+  // 粘贴之后用户又编辑过（长度不再是粘贴完成那一刻）⇒ 这次按键该撤销的是编辑，不是粘贴。
+  if ((el.textContent ?? "").length !== snap.chars) return false;
+  // 回灌也走那张白名单（与 `restoreDraft` 同一条口径）：快照里只允许编辑器自己产出的结构。
+  el.innerHTML = sanitizeDraftHtml(snap.html);
+  syncDraftState();
+  scheduleDraftSave();
+  focusEditor();
+  return true;
+}
+
 async function onPaste(e: ClipboardEvent) {
   const cd = e.clipboardData;
   if (!cd) return;
@@ -732,8 +806,10 @@ async function onPaste(e: ClipboardEvent) {
     return;
   }
 
-  // 纯文本：contenteditable 默认粘贴会带外来 HTML 结构（污染 token/样式），
-  // 统一拦掉按纯文本插入（execCommand 保 undo 栈；含 \n 时 Chromium 自行转 <br>）。
+  // 纯文本：contenteditable 默认粘贴会带外来 HTML 结构（污染 token/样式），统一拦下来
+  // 自己插。⚠️ 这里**不能**用 `document.execCommand("insertText")` 塞多行文本 ——
+  // 它会被逐行开编辑事务，粘贴的文字要等全部做完才画得出来（实测 50k 字符阻塞 780–863 ms）。
+  // 一次插入的写法与非显然之处全在 `insertPastedText` 的注释里。
   const text = cd.getData("text/plain");
   if (!text) return;
   // ⚠️ 上限要按**草稿总量**算，不能只看这一次粘贴的文本：按住 Ctrl+V 连发时
@@ -747,7 +823,11 @@ async function onPaste(e: ClipboardEvent) {
     return;
   }
   if (text.length > room) warnDraftFull();
-  document.execCommand("insertText", false, text.slice(0, room));
+  if (!insertPastedText(text.slice(0, room))) {
+    // 拿不到 caret/range（极端情形，例如编辑器没被聚焦就收到粘贴）：退回原生插入。
+    // 宁可那一次慢一点，也不能把用户粘贴的内容吞掉。
+    document.execCommand("insertText", false, text.slice(0, room));
+  }
 }
 
 </script>

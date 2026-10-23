@@ -757,18 +757,37 @@ window.__probe = (() => {
     document.body.appendChild(host);
     window.__probe.imeCalls = 0;
     const ime = mod.useImeEnterGuard();
+    window.__probe.imeAreaCalls = 0;
+    // 多行框那一档：模板里同时写 @keydown.meta.enter.prevent 与 @keydown.ctrl.enter.prevent，
+    // Vue 编译成**一个 onKeydown 挂两枚处理器**（各自 withKeys(withModifiers(...))）。
+    // 这里按同一串挂，量的是"裸回车不许提交（那一下属于换行）、Ctrl+Enter 必须提交"这一对
+    // —— 群公告与任务描述用的就是这个形状。
+    const areaCommit = function () { window.__probe.imeAreaCalls += 1; };
+    const areaHandler = (modName) => V.withKeys(
+      V.withModifiers(function (e) { ime.enter(areaCommit, e); }, [modName, 'prevent']),
+      ['enter'],
+    );
     const Root = {
       render() {
-        return V.h('input', {
-          id: 'ime-field',
-          onKeydown: ime.enter(function () { window.__probe.imeCalls += 1; }),
-          onCompositionstart: ime.onStart,
-          onCompositionend: ime.onEnd,
-        });
+        return V.h('div', {}, [
+          V.h('input', {
+            id: 'ime-field',
+            onKeydown: ime.enter(function () { window.__probe.imeCalls += 1; }),
+            onCompositionstart: ime.onStart,
+            onCompositionend: ime.onEnd,
+          }),
+          V.h('textarea', {
+            id: 'ime-area',
+            onKeydown: [areaHandler('meta'), areaHandler('ctrl')],
+            onCompositionstart: ime.onStart,
+            onCompositionend: ime.onEnd,
+          }),
+        ]);
       },
     };
     V.createApp(Root).mount(host);
-    return { ok: true, hasField: !!document.getElementById('ime-field') };
+    return { ok: true, hasField: !!document.getElementById('ime-field'),
+      hasArea: !!document.getElementById('ime-area') };
   };
   /** 按参数决定这一轮先后发哪些事件；Enter 的 isComposing 也由参数钉（要能造出 macOS 那个顺序）。 */
   H.imePress = (o) => {
@@ -1482,14 +1501,18 @@ window.__probe = (() => {
   H.apiCalls = async (name) => (window.__probeCalls && window.__probeCalls[name]) || 0;
 
   /**
-   * 外部链接的四条命令 + 一份内存表（--only=links 的**写路径**）。
-   * 四条命令都返回**整份数组**（与 Rust 那侧同形）⇒ 才量得到"写成功把返回值写回读缓存"
-   * 与"没有再拉一次 list"。每条命令各计一次调用数，用来证明走的是哪一条。
+   * 外部链接的读写命令 + 一份内存表（--only=links 的**写路径**）。
+   * 增/改/删都返回**整份数组**（与 Rust 那侧同形）⇒ 才量得到"写成功把返回值写回读缓存"
+   * 与"没有再拉一次 list"；线上导入返回合并结果。每条命令各计一次调用数。
    */
   H.linksStore = async (initial) => {
     const m = await import('/src/api/index.ts');
     const rows = initial.map((x) => ({ id: x.id, name: x.name, url: x.url }));
-    window.__links = { rows: rows, calls: { list: 0, add: 0, update: 0, remove: 0 }, seq: 0, last: null, fail: null };
+    window.__links = {
+      rows: rows,
+      calls: { list: 0, add: 0, update: 0, remove: 0, importUrl: 0, export: 0 },
+      seq: 0, last: null, fail: null,
+    };
     const snap = () => rows.map((x) => ({ id: x.id, name: x.name, url: x.url }));
     const trip = (kind) => {
       if (window.__links.fail !== kind) return;
@@ -1521,6 +1544,21 @@ window.__probe = (() => {
       window.__links.last = { kind: 'remove', id: id };
       return snap();
     };
+    // 线上导入：返回合并结果（links 是导入后的完整列表），并让列表多一行可核对。
+    m.api.importExternalLinksFromUrl = async (url) => {
+      window.__links.calls.importUrl += 1;
+      window.__links.seq += 1;
+      rows.push({ id: 'n' + window.__links.seq, name: '导入的链接', url: 'https://imported.example.com' });
+      window.__links.last = { kind: 'importUrl', url: url };
+      return { links: snap(), added: 1, skipped: 0, invalid: 0 };
+    };
+    m.api.importExternalLinksFile = async () => ({ links: snap(), added: 0, skipped: 0, invalid: 0 });
+    m.api.importPickedFile = async (path) => path;
+    m.api.exportExternalLinks = async () => {
+      window.__links.calls.export += 1;
+      return '/tmp/gosslan-links.json';
+    };
+    m.api.cleanupExternalLinksExport = async () => {};
     return true;
   };
   H.linksStats = () => (window.__links ? JSON.parse(JSON.stringify(window.__links.calls)) : null);
@@ -2686,6 +2724,8 @@ async function main() {
     const touchroster = want("touchroster");
     const locale = want("locale");
     const rowpair = want("rowpair");
+    const ctxguard = want("ctxguard");
+    const pasteframe = want("pasteframe");
     const errtext = want("errtext");
     const namecap = want("namecap");
     const friendfilter = want("friendfilter");
@@ -2739,6 +2779,8 @@ async function main() {
     if (tasksmobile) await runTasksMobile(cdp, url);
     if (locale) await runLocale(cdp, url);
     if (rowpair) await runRowPair(cdp, url);
+    if (ctxguard) await runContextGuard(cdp, url);
+    if (pasteframe) await runPasteFrame(cdp, url);
     if (errtext) await runErrorText(cdp, url);
     if (touchroster) await runTouchRoster(cdp, url);
     process.exitCode = results.every((r) => r.ok) ? 0 : 1;
@@ -3907,6 +3949,33 @@ async function runImeCommit(cdp, url) {
   const after = await cdp.eval('window.__probe.imePress({})');
   check("过窗之后再按一次干净回车 ⇒ 又触发（证明上一条不是「永远不触发」）",
     after.ok === true && after.calls === 2, "calls=2", JSON.stringify(after));
+
+  // ⑤ 多行框那一档（真按键，不是合成事件）：裸回车留给换行，Ctrl+Enter 才提交。
+  //    群公告与任务描述就是这个形状 —— 它同时钉住 Vue 的 meta/ctrl 守卫与
+  //    `ime.enter(fn, $event)` 这两层，少任何一层这里就红。
+  const focusArea = () => cdp.eval(`(() => {
+    const t = document.getElementById('ime-area');
+    if (!t) return false;
+    t.focus();
+    return document.activeElement === t;
+  })()`);
+  const keyEnterWith = async (modifiers) => {
+    const base = {
+      key: 'Enter', code: 'Enter', windowsVirtualKeyCode: 13, nativeVirtualKeyCode: 13, modifiers,
+    };
+    // 两条同帧发出（逐条 await = 按住不放，见文件头纪律 1）
+    cdp.send("Input.dispatchKeyEvent", { type: 'keyDown', ...base, text: '\r' });
+    cdp.send("Input.dispatchKeyEvent", { type: 'keyUp', ...base });
+    await sleep(150);
+    return cdp.eval("window.__probe.imeAreaCalls");
+  };
+  const areaFocused = await focusArea();
+  const areaPlain = await keyEnterWith(0);
+  check("多行框·裸回车不提交（那一下属于换行）",
+    areaFocused === true && areaPlain === 0, "imeAreaCalls=0", JSON.stringify({ areaFocused, areaPlain }));
+  const areaCtrl = await (async () => { await focusArea(); return keyEnterWith(2); })();
+  check("多行框·Ctrl+Enter 提交一次（群公告 / 任务描述那条）",
+    areaCtrl === 1, "imeAreaCalls=1", JSON.stringify({ areaCtrl }));
 }
 
 /**
@@ -4790,24 +4859,47 @@ async function runRowPair(cdp, url) {
    */
   const BASE = 1_700_000_000_000;
   const MIN = 60_000;
-  /** 挂一条正文消息 + 一条 `ts = BASE - gapMs` 的上文；`isGroup` 决定昵称行那一支。 */
-  const mount = async (gapMs, isGroup) => {
+  /** 挂一条正文消息 + 一条 `ts = BASE - gapMs` 的上文；`isGroup` 决定昵称行那一支；
+   *  `kind` 换气泡种类（text / code / file / merge / todo），`content` 给该种类要的载荷。 */
+  const mount = async (gapMs, isGroup, kind = "text", content = null, senderId = "peer-a") => {
     await cdp.send("Page.navigate", { url });
     await sleep(3_000);
     await cdp.eval(PAGE_FIXTURE);
+    const bodyByKind = {
+      text: "这一条只用来量高度：写成一行不折行的短文本。",
+      code: "SELECT id FROM messages WHERE conv_id = 'c' ORDER BY seq;",
+      file: JSON.stringify({ name: "季度报告.pdf", path: "/tmp/report.pdf", size: 123456 }),
+      merge: JSON.stringify({
+        title: "群聊的聊天记录",
+        items: [{ sender: "甲", text: "第一条" }, { sender: "乙", text: "第二条" }],
+      }),
+      // 用户截图里第三种带尖角的就是群任务卡片：只给 parseTodo 认的最低限度字段。
+      todo: JSON.stringify({
+        todo_id: "t-rowpair", title: "季度报告复核", status: "pending",
+        creator: "peer-a", assignees: ["peer-a"], priority: "normal",
+        category: "normal", number: 1,
+      }),
+    };
     const props = {
       message: {
-        msg_id: "m-rowpair", sender_id: "peer-a", kind: "text",
-        content: "这一条只用来量高度：写成一行不折行的短文本。", ts: BASE, conv_id: "c-rowpair", seq: 2,
+        msg_id: "m-rowpair", sender_id: senderId, kind,
+        content: content ?? bodyByKind[kind] ?? bodyByKind.text,
+        ts: BASE, conv_id: "c-rowpair", seq: 2,
       },
       prev: {
-        msg_id: "m-rowpair-prev", sender_id: "peer-a", kind: "text",
+        msg_id: "m-rowpair-prev", sender_id: senderId, kind: "text",
         content: "上一条。", ts: BASE - gapMs, conv_id: "c-rowpair", seq: 1,
       },
       canReact: false, isGroup: !!isGroup, senderName: "对方",
     };
     const r = await cdp.eval("window.__probe.install('/src/components/MessageItem.vue', '', "
       + JSON.stringify(JSON.stringify(props)) + ")");
+    // 自己的消息（右列）必须先种身份再量：`mine` 由 app.device.device_id 现推。
+    // seedDevice 依赖 install 之后的 pinia ⇒ 只能在挂载之后调，且 store 变了组件会自己重渲染。
+    if (senderId !== "peer-a") {
+      await cdp.eval("window.__probe.seedDevice('" + senderId + "')");
+      await sleep(250);
+    }
     await sleep(350);
     return !!r && r.ok === true;
   };
@@ -4827,12 +4919,48 @@ async function runRowPair(cdp, url) {
     const kids = col ? [...col.children] : [];
     const nick = kids.find((el) => el.textContent.trim() === '对方') || null;
     const rowEl = nick ? kids[kids.indexOf(nick) + 1] : null;
+    // 尖角与头像的竖向中心：尾巴"对着头像"这件事只有量两条中心线才判得出来，
+    // 而且它同时是 MessageItem 那个 --bubble-tail-offset(18) 与 CSS 那句 calc 的成对核对 ——
+    // 昵称行改了高度而这里没跟着改，两数就会岔开。
+    // ★ 2026-10-23 追加：群聊里**尖角不许越出气泡顶边**（tailTop - bubbleTop）。
+    // 上一版把尖角中心对到头像中心（= 气泡顶边），于是上半截露在气泡外面，用户截图里
+    // 就是"插在昵称行上的一面小旗"，所以这一格改成量顶边包含关系，不再量中心重合。
+    const tail = document.querySelector('.bubble-tail');
+    const avatar = root.querySelector('.gosslan-avatar-box');
+    const tr = tail ? tail.getBoundingClientRect() : null;
+    const ar = avatar ? avatar.getBoundingClientRect() : null;
+    // 尖角与**气泡本体**的横向关系（用户 2026-10-23：「群聊里气泡渲染尾巴没有和气泡融合」）。
+    // 尖角是 6px 边框撑出的三角形，靠气泡那一侧是**底边**：底边必须压在气泡边缘上
+    // （reach ∈ [0, 6]）；reach < 0 = 中间露出一条缝（不融合），> 6 = 整个三角形埋进气泡里看不见。
+    // 用气泡根的 border box 作基准：left/right 的负值相对它的 padding box，
+    // 1px 描边带来的差在这条判据的公差里。
+    // 气泡本体：尖角的**父元素**就是气泡根（每个气泡组件都把尖角当最后一个子节点）。
+    // 别用「昵称行的下一个孩子」找 —— 单聊没有昵称行，那一支会取到 null，横向就量不到了。
+    const bubble = tail ? tail.parentElement : rowEl;
+    const br = bubble ? bubble.getBoundingClientRect() : null;
+    const isMine = tail ? /tail-mine/.test(tail.className) : null;
+    // 尖角那一侧的**上圆角**：胶囊 18px 的时候，尖角那 12px 高度里气泡边缘已经从 x=18 收到 ≈4.6，
+    // 直边三角形只碰到弧线上一个点 ⇒ 看着"断开"。群聊要把这一侧压平（<=2px）才真的贴住。
+    const bcs = bubble ? getComputedStyle(bubble) : null;
+    const cornerRad = bcs
+      ? parseFloat(isMine ? bcs.borderTopRightRadius : bcs.borderTopLeftRadius)
+      : null;
+    const reach = tr && br
+      ? +((isMine ? br.right - tr.left : tr.right - br.left)).toFixed(2)
+      : null;
     return {
       row: +root.getBoundingClientRect().height.toFixed(2),
       divider: div ? +div.getBoundingClientRect().height.toFixed(2) : null,
       nick: nick && rowEl
         ? +(rowEl.getBoundingClientRect().top - col.getBoundingClientRect().top).toFixed(2)
         : null,
+      tailCenter: tr ? +(tr.top + tr.height / 2).toFixed(2) : null,
+      avatarCenter: ar ? +(ar.top + ar.height / 2).toFixed(2) : null,
+      tailTop: tr ? +tr.top.toFixed(2) : null,
+      bubbleTop: br ? +br.top.toFixed(2) : null,
+      isMine,
+      reach,
+      cornerRad,
     };
   })()`);
   /** 估高端现算：引的是应用自己那份 `messageHeight`，这里不重述任何高度常量。 */
@@ -4903,10 +5031,253 @@ async function runRowPair(cdp, url) {
   check("昵称行占位配对：估高的「群聊 − 单聊」差 == 渲染端昵称行占的那一段（|差| <= 1px）",
     Math.abs(dNickEst - dNickRow) <= 1, "两者相差 <= 1px",
     JSON.stringify({ dNickEst, dNickRow }));
+
+  // ============ 尖角的竖向位置（用户 2026-10-23：尾巴原来吊在气泡底部；随后又报"群聊还没修好"）============
+  // 两档口径：
+  //  · 单聊：没有昵称行 ⇒ 尖角中心正好落在头像中心（12px 顶边 + 6px 半高 = 18px）；
+  //  · 群聊（对方的消息，有 18px 昵称行）：头像中心 = 气泡顶边，尖角若继续以中心对齐就会
+  //    一半露到气泡上面（截图里像插在昵称行上的小旗）⇒ 要求**顶边不越出气泡顶边**，
+  //    同时仍贴在最上面那一格（<=1.5px），不是被按到气泡中间。
+  const dTailDm = gFar ? +(gFar.tailCenter - gFar.avatarCenter).toFixed(2) : NaN;
+  const groupTailAboveTop = gGroup && gGroup.tailTop !== null && gGroup.bubbleTop !== null
+    ? +(gGroup.tailTop - gGroup.bubbleTop).toFixed(2) : NaN;
+  console.log("  · 尖角竖向实测：" + JSON.stringify({
+    dm: gFar && { tailTop: gFar.tailTop, bubbleTop: gFar.bubbleTop, avatar: gFar.avatarCenter },
+    group: gGroup && { tailTop: gGroup.tailTop, bubbleTop: gGroup.bubbleTop, avatar: gGroup.avatarCenter },
+  }));
+  check("非空转·尖角：单聊与群聊都读到了尾巴、气泡与头像的矩形",
+    !!gFar && typeof gFar.tailCenter === "number" && typeof gFar.avatarCenter === "number"
+      && typeof gFar.bubbleTop === "number"
+      && !!gGroup && typeof gGroup.tailTop === "number" && typeof gGroup.bubbleTop === "number"
+      && typeof gGroup.avatarCenter === "number",
+    "读数都是数", JSON.stringify({ far: gFar, group: gGroup }));
+  check("尖角对准头像中心·单聊：两中心相差 <= 1px",
+    Math.abs(dTailDm) <= 1, "|差| <= 1px", JSON.stringify({ dTailDm }));
+  check("尖角不越出气泡顶边·群聊（昵称行把气泡推下 18px）：0 <= tailTop - bubbleTop <= 1.5px",
+    groupTailAboveTop >= 0 && groupTailAboveTop <= 1.5,
+    "0 <= 差 <= 1.5px", JSON.stringify({ groupTailAboveTop, tailTop: gGroup && gGroup.tailTop, bubbleTop: gGroup && gGroup.bubbleTop }));
+
+  // ============ 尖角与气泡**横向融合**（用户 2026-10-23：群聊里尾巴没和气泡融合）============
+  // 竖向对上了不等于长在一起：三角形靠气泡那一侧是底边，底边必须压在气泡边缘上。
+  // reach = 底边越过气泡边缘的像素数；<0 是露出一条缝（截图那种"断开"），>6 是整块埋进去。
+  // 两个方向都要量：对方（尖角在左）与我自己（尖角在右）是两条独立的 CSS 分支。
+  for (const [where, isGroup, senderId, wantMine] of [
+    ["对方·单聊", false, "peer-a", false],
+    ["对方·群聊", true, "peer-a", false],
+    ["自己·单聊", false, "dev-me", true],
+    ["自己·群聊", true, "dev-me", true],
+  ]) {
+    check("行配对：挂一条文本消息（" + where + "）", await mount(FAR, isGroup, "text", null, senderId), "install 成功");
+    const g = await geom();
+    console.log("  · 尖角横向融合实测（" + where + "）："
+      + JSON.stringify(g && { reach: g.reach, isMine: g.isMine, cornerRad: g.cornerRad }));
+    check("非空转·尖角横向（" + where + "）：读到了底边与气泡边缘，且方向就是预期的那个分支",
+      !!g && typeof g.reach === "number" && g.isMine === wantMine,
+      "reach 是数 + isMine == " + wantMine, JSON.stringify(g && { reach: g.reach, isMine: g.isMine }));
+    check("尖角与气泡融合（" + where + "）：底边压在气泡边缘上（0 <= reach <= 6）",
+      !!g && g.reach >= 0 && g.reach <= 6, "0 <= reach <= 6", JSON.stringify({ where, reach: g && g.reach }));
+    // 圆角这一侧必须是**直的**才贴得上。注意"要不要压平"跟群聊/单聊不是一回事：
+    // 自己的消息在群聊里**不画昵称行**（`showNickname` 只给别人的消息），气泡没有被推下去，
+    // 尖角仍在胶囊最左侧 ⇒ 维持原圆角。所以压平的条件 = 群聊 **且** 对方。
+    const pushedDown = isGroup && !wantMine;
+    check("尖角侧上圆角（" + where + "）：被昵称行推下去的那一侧压平到 <=2px，其余保持胶囊",
+      !!g && typeof g.cornerRad === "number"
+        && (pushedDown ? g.cornerRad <= 2 : g.cornerRad >= 8),
+      pushedDown ? "圆角 <= 2px" : "圆角 >= 8px",
+      JSON.stringify({ where, cornerRad: g && g.cornerRad, pushedDown }));
+  }
+  // 取证帧：群聊·对方那一条，正好是用户截图里"尾巴断开"的形状，人眼可复核
+  if (SHOT_PATH) {
+    await mount(FAR, true);
+    const shot = await cdp.send("Page.captureScreenshot", { format: "png" });
+    fs.writeFileSync(SHOT_PATH.replace(/\.png$/, "-tail.png"), Buffer.from(shot.data, "base64"));
+    console.log("  📷 尖角取证帧 → " + SHOT_PATH.replace(/\.png$/, "-tail.png"));
+  }
+
+  // ---- 其余挂尖角的气泡种类（用户 2026-10-23：「把所有的气泡尾巴都检查下」）----
+  // 代码气泡那一格是截图点名的：它原来在组件里**又钉了一份** `top: auto; bottom: 12px`，
+  // 把尖角按在卡片底栏上 ⇒ 与头像完全错开。位置现在只有 `style.css` 那一个家。
+  // 每一格单聊/群聊各一遍：群聊那一支顺带判"尖角的包含块是不是气泡自己"
+  // （`bubbleStyle`/`cardStyle` 都设了 position: relative；哪天某个卡片根丢了 relative，
+  // 尖角会挂到整列上，群聊那档直接差 18px —— 只量单聊量不出来）。
+  const TAIL_KINDS = [
+    ["代码气泡", "code"], ["文件气泡", "file"], ["合并转发卡片", "merge"],
+    // 用户截图里那张带「待办」徽标的就是它：cardStyle 的圆角与 data-msg-col 的偏移都走同一份，
+    // 这一格是"卡片类也真的没露到气泡上面"的正面证据。
+    ["群任务卡片", "todo"],
+  ];
+  for (const [kindLabel, kind] of TAIL_KINDS) {
+    for (const [where, isGroup] of [["单聊", false], ["群聊", true]]) {
+      check("行配对：挂一条" + kindLabel + "（" + where + "）",
+        await mount(FAR, isGroup, kind), "install 成功");
+      const g = await geom();
+      const d = g ? +(g.tailCenter - g.avatarCenter).toFixed(2) : NaN;
+      // 群聊这一挂是**对方**的消息（mount 默认 peer-a）⇒ 有昵称行，按"不越顶"判；
+      // 单聊按"中心对头像"判。两种口径见上面那一段的说明。
+      const above = g && g.tailTop !== null && g.bubbleTop !== null
+        ? +(g.tailTop - g.bubbleTop).toFixed(2) : NaN;
+      console.log("  · " + kindLabel + "尖角实测（" + where + "）："
+        + JSON.stringify(g && { tail: g.tailCenter, avatar: g.avatarCenter, above }));
+      check("非空转·" + kindLabel + "（" + where + "）：读到尾巴、气泡与头像矩形（这一种没挂尖角就是 null）",
+        !!g && typeof g.tailCenter === "number" && typeof g.avatarCenter === "number"
+          && typeof g.bubbleTop === "number",
+        "读数都是数", JSON.stringify(g));
+      if (isGroup) {
+        check("尖角不越出气泡顶边·" + kindLabel + "·" + where + "：0 <= tailTop - bubbleTop <= 1.5px",
+          above >= 0 && above <= 1.5, "0 <= 差 <= 1.5px", JSON.stringify({ kindLabel, where, above }));
+      } else {
+        check("尖角对准头像中心·" + kindLabel + "·" + where + "：两中心相差 <= 1px",
+          Math.abs(d) <= 1, "|差| <= 1px", JSON.stringify({ kindLabel, where, d }));
+      }
+    }
+  }
+  /*
+   * 反向对照：把上一版的几何（尖角顶边 -6px，上半截露在气泡外）注入当前这条消息，
+   * 同一把尺子必须读到负数。这一格不碰源码，只证明「tailTop - bubbleTop」这个量具
+   * 不是恒绿 —— 判据红了的时候能归因到几何本身，而不是量错元素。
+   */
+  const reverseAbove = await cdp.eval(`(() => {
+    const tail = document.querySelector('.bubble-tail');
+    const bubble = tail ? tail.parentElement : null;
+    if (!tail || !bubble) return null;
+    const prev = tail.style.top;
+    tail.style.top = '-6px';
+    const above = +(tail.getBoundingClientRect().top - bubble.getBoundingClientRect().top).toFixed(2);
+    tail.style.top = prev;
+    return above;
+  })()`);
+  console.log("  · 反向对照·尖角越顶：" + JSON.stringify({ reverseAbove }));
+  check("反向对照·尖角越顶量具：注入旧几何（-6px）时同一把尺子读到 < 0（判据不是恒绿）",
+    typeof reverseAbove === "number" && reverseAbove <= -5,
+    "读到 <= -5px", JSON.stringify({ reverseAbove }));
+
+  // 最后一挂是合并转发卡片那条 ⇒ 这张帧是"卡片 + 尖角"的形状。
+  if (SHOT_PATH) {
+    const shot = await cdp.send("Page.captureScreenshot", { format: "png" });
+    fs.writeFileSync(SHOT_PATH.replace(/\.png$/, "-rowpair.png"), Buffer.from(shot.data, "base64"));
+    console.log("  📷 行配对取证帧 → " + SHOT_PATH.replace(/\.png$/, "-rowpair.png"));
+  }
 }
 
-async function runTouchRoster(cdp, url) {
-  // 触摸仿真必须在**页面加载前**开：`canHover` 是 utils/platform 的模块级常量。
+/**
+ * 粘贴大段文字必须**当帧就画出来**（用户 2026-10-23：粘进去会先卡一下才显示）。
+ *
+ * 根因不是 JS 慢，是**插入方式**：`document.execCommand("insertText")` 会把带换行的文本
+ * 逐行开编辑事务。本机实测（真 ⌘V、同一个输入框）：
+ *   · 10k 字符 / 300 行 ⇒ 299 个子元素、599 次 input 事件、按键回执 562–662 ms
+ *   · 50k 字符 / 1500 行 ⇒ 1419 个子元素、按键回执 4367 ms
+ * 整段同步跑在 paste 事件里 ⇒ 粘贴的文字要等它全部做完才画得出来，这就是那"一下"。
+ * 改成"一次插入一个文本节点 + 补发一次 input"之后：同一动作 6–9 ms / 19–36 ms。
+ * （那两个"按键回执"数是在**真聊天页**上量的：输入框上面还有消息列表与整张卡片，
+ * 每行事务都要带着它们重排。本段是单独挂一个编辑器，旧写法在这里只测到 ~68 ms ⇒
+ * 所以耗时那格只当兜底，真正咬人的是 input 次数与子元素数那两格。）
+ *
+ * 三条口径（别改回去）：
+ * 1. **主判据钉的是机制形状（一次 input、零个子元素），不是耗时**。耗时随机器档位飘，
+ *    而"逐行插入"必然把这两数顶起来 ⇒ 退回旧写法必红。耗时那格只给宽松上限兜底。
+ * 2. 编辑器是 `whitespace-pre-wrap` ⇒ 文本节点里的换行符就是换行；这里断 innerText
+ *    读回的换行数，保证"快"没有以"序列化丢换行"为代价（`serializeDraft` 走的就是 innerText）。
+ * 3. caret 必须落在**文本节点内部**的末尾：`caretContext()` 只认文本节点 caret，
+ *    落在编辑器元素上会出现"粘完接着打 @ 不弹成员选择"这种看不见的错。
+ */
+async function runPasteFrame(cdp, url) {
+  const LINES = 300;
+  const text = Array.from({ length: LINES }, (_, i) => "第" + i + "行 混排文本 English 与标点。").join("\n");
+  await cdp.send("Page.navigate", { url });
+  await sleep(3_000);
+  await cdp.eval(PAGE_FIXTURE);
+  const props = { convId: "c-paste-frame", mentionMembers: [{ id: "dev-42", name: "小明" }] };
+  const mounted = await cdp.eval("window.__probe.install('/src/components/chat/MessageComposer.vue', '', "
+    + JSON.stringify(JSON.stringify(props)) + ")");
+  check("粘贴首帧：挂出真 MessageComposer", !!mounted && mounted.ok === true, "install 成功",
+    JSON.stringify(mounted).slice(0, 200));
+  await sleep(400);
+
+  const run = await cdp.eval("(async () => {"
+    + " const ed = document.querySelector('#probe-host [contenteditable=true]');"
+    + " if (!ed) return { err: 'no editor' };"
+    + " const text = " + JSON.stringify(text) + ";"
+    + " ed.textContent = '';"
+    + " ed.focus();"
+    + " const sel0 = window.getSelection();"
+    + " const r0 = document.createRange();"
+    + " r0.selectNodeContents(ed); r0.collapse(false);"
+    + " sel0.removeAllRanges(); sel0.addRange(r0);"
+    + " await new Promise((r) => requestAnimationFrame(r));"
+    + " let inputs = 0;"
+    + " const count = (e) => { if (e.isTrusted || e.inputType) inputs += 1; };"
+    + " ed.addEventListener('input', count, true);"
+    + " const dt = new DataTransfer(); dt.setData('text/plain', text);"
+    + " const t0 = performance.now();"
+    + " ed.dispatchEvent(new ClipboardEvent('paste', { clipboardData: dt, bubbles: true, cancelable: true }));"
+    + " const handlerMs = performance.now() - t0;"
+    + " ed.removeEventListener('input', count, true);"
+    + " const frameMs = await new Promise((r) => requestAnimationFrame(() => r(performance.now() - t0)));"
+    + " const sel = window.getSelection();"
+    + " const node = sel.focusNode;"
+    + " return {"
+    + "   handlerMs: +handlerMs.toFixed(1), frameMs: +frameMs.toFixed(1), inputEvents: inputs,"
+    + "   childEls: ed.querySelectorAll('*').length,"
+    + "   chars: (ed.textContent || '').length,"
+    + "   inner: ed.innerText.length,"
+    + "   innerNewlines: (ed.innerText.match(/\\n/g) || []).length,"
+    + "   caretInText: !!node && node.nodeType === 3,"
+    + "   caretAtNodeEnd: !!node && node.nodeType === 3 && sel.focusOffset === node.length,"
+    + "   sendEnabled: !Array.from(document.querySelectorAll('button'))"
+    + "     .filter((b) => (b.textContent || '').indexOf('发送') >= 0 || (b.getAttribute('aria-label') || '').indexOf('发送') >= 0)"
+    + "     .every((b) => b.disabled)"
+    + " };"
+    + "})()");
+  check("粘贴首帧：读数拿得到（编辑器没挂上就是 null）", !!run && run.err === undefined, "有读数", JSON.stringify(run).slice(0, 200));
+  console.log("  · 粘贴实测（" + LINES + " 行 / " + text.length + " 字符）：" + JSON.stringify(run));
+  check("非空转·粘贴首帧：文本全在，且换行是**文本节点里的真换行符**（逐行造 div 时 textContent 会少掉这些字符）",
+    !!run && run.chars >= text.length - 2 && run.innerNewlines === LINES - 1,
+    "textContent 与行数都对", JSON.stringify(run));
+  check("粘贴是一次插入：整段只发 1 次 input（逐行插入会是每行两次）",
+    !!run && run.inputEvents === 1, "inputEvents == 1", JSON.stringify({ got: run && run.inputEvents }));
+  check("粘贴不逐行造元素：编辑器里没有子元素（旧写法 300 行 ⇒ 299 个）",
+    !!run && run.childEls === 0, "childEls == 0", JSON.stringify({ got: run && run.childEls }));
+  check("粘贴当帧不阻塞首帧：按键到下一帧 < 250ms（兜底格；主判据是上面两条机制形状）",
+    !!run && run.frameMs < 250, "frameMs < 250", JSON.stringify({ frameMs: run && run.frameMs }));
+  check("caret 落在文本节点内部的末尾（落在编辑器上会让 @ 触发态静默失效）",
+    !!run && run.caretInText && run.caretAtNodeEnd, "文本节点内 + 偏移 == 节点长度",
+    JSON.stringify({ caretInText: run && run.caretInText, atEnd: run && run.caretAtNodeEnd }));
+  check("粘贴后发送键立刻可用（hasDraft 投影跟得上）", !!run && run.sendEnabled === true,
+    "可发送", JSON.stringify({ sendEnabled: run && run.sendEnabled }));
+
+  // 手动插入不进原生 undo 栈 ⇒ 组件自己接住紧跟粘贴的那一次 ⌘/Ctrl+Z
+  const undo = await cdp.eval("(async () => {"
+    + " const ed = document.querySelector('#probe-host [contenteditable=true]');"
+    + " if (!ed) return { err: 'no editor' };"
+    + " ed.textContent = '前置内容';"
+    + " ed.focus();"
+    + " const sel = window.getSelection(); const r = document.createRange();"
+    + " r.selectNodeContents(ed); r.collapse(false); sel.removeAllRanges(); sel.addRange(r);"
+    + " await new Promise((x) => requestAnimationFrame(x));"
+    + " const dt = new DataTransfer(); dt.setData('text/plain', " + JSON.stringify(text) + ");"
+    + " ed.dispatchEvent(new ClipboardEvent('paste', { clipboardData: dt, bubbles: true, cancelable: true }));"
+    + " const afterPaste = (ed.textContent || '').length;"
+    + " const kz = new KeyboardEvent('keydown', { key: 'z', metaKey: true, bubbles: true, cancelable: true });"
+    + " ed.dispatchEvent(kz);"
+    + " await new Promise((x) => requestAnimationFrame(x));"
+    + " const afterUndo = (ed.textContent || '').length;"
+    + " const dt2 = new DataTransfer(); dt2.setData('text/plain', 'ABC');"
+    + " ed.dispatchEvent(new ClipboardEvent('paste', { clipboardData: dt2, bubbles: true, cancelable: true }));"
+    + " ed.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'insertText', data: 'x' }));"
+    + " const kz2 = new KeyboardEvent('keydown', { key: 'z', metaKey: true, bubbles: true, cancelable: true });"
+    + " ed.dispatchEvent(kz2);"
+    + " return { afterPaste, afterUndo, prevented: kz.defaultPrevented,"
+    + "   preventedAfterEdit: kz2.defaultPrevented };"
+    + "})()");
+  console.log("  · 粘贴撤销实测：" + JSON.stringify(undo));
+  check("紧跟粘贴的 ⌘/Ctrl+Z 回到粘贴前（手动插入不进原生 undo 栈，得自己接）",
+    !!undo && undo.prevented === true && undo.afterUndo === "前置内容".length,
+    "被接住且内容回到 4 字符", JSON.stringify(undo));
+  check("粘贴之后又编辑过 ⇒ ⌘/Ctrl+Z 不许被我们吞掉（该撤销的是那次编辑，交回原生）",
+    !!undo && undo.preventedAfterEdit === false, "不拦截", JSON.stringify({ got: undo && undo.preventedAfterEdit }));
+}
+
+async function runTouchRoster(cdp, url) {  // 触摸仿真必须在**页面加载前**开：`canHover` 是 utils/platform 的模块级常量。
   // 这里只验证长按名单这一条，不改变其它段（本段放在最后，结束即关浏览器）。
   await cdp.send("Emulation.setDeviceMetricsOverride", {
     width: 390, height: 844, deviceScaleFactor: 2, mobile: true,
@@ -5097,6 +5468,14 @@ async function runVirtualList(cdp, url) {
     if (prevSign !== 0 && sign !== prevSign) reversals += 1;
     prevSign = sign;
   }
+  // 读数留在日志里：`reversals` 是这条判据的核心量（阈值 <=3），写成永久档案，
+  // 以后改贴底逻辑时能直接看出"变好还是变坏"，不用靠印象。
+  console.log("  ℹ 切会话抖动读数 → " + JSON.stringify({
+    reversals, frames: samples.length,
+    first: samples.slice(0, 20),
+    finalTop: afterSwap.scrollTop,
+    maxScroll: afterSwap.scrollHeight - afterSwap.clientHeight,
+  }));
   check("VirtualList：切换会话后滚动位置收敛，不来回快速抖动",
     reversals <= 3 && afterSwap.scrollHeight > afterSwap.clientHeight
       && afterSwap.scrollHeight - afterSwap.scrollTop - afterSwap.clientHeight < 150,
@@ -7137,9 +7516,10 @@ async function runDiag(cdp, url) {
 }
 
 /**
- * 外部链接左栏（--only=links）：真实组件 + 一份四条命令都在的内存表。
- * 重点照增/改草稿的内联表单、编辑预填、行点击真的把链接交给父级，
- * 以及**写路径**（§6.98：增/改/删共用一枚 mutation，成功时把返回的整份数组写回读缓存）。
+ * 外部链接左栏（--only=links）：真实组件 + 一份读写命令都在的内存表。
+ * 重点照入口的可见文案、新增/编辑与导入的**弹窗职责分离**、表单回车提交、编辑预填、
+ * 行点击真的把链接交给父级，以及**写路径**（§6.98：增/改/删共用一枚 mutation，
+ * 成功时把返回的整份数组写回读缓存）。
  */
 async function runLinks(cdp, url) {
   const links = [
@@ -7169,12 +7549,19 @@ async function runLinks(cdp, url) {
       const inputs = [...document.querySelectorAll('input')].map((i) => ({
         ph: i.placeholder, value: i.value,
       }));
+      const btn = (label) => [...document.querySelectorAll('button')]
+        .find((b) => ((b.innerText || '').trim() === label));
+      const addBtn = btn('添加');
+      const importBtn = btn('导入');
+      const backupBtn = btn('备份');
       return {
         txt, inputs,
-        add: !!document.querySelector('button[aria-label="添加链接"]'),
-        importFile: !!document.querySelector('button[aria-label="从 JSON 文件导入"]'),
-        importUrl: !!document.querySelector('button[aria-label="从线上 JSON 导入"]'),
-        exportLink: !!document.querySelector('button[aria-label="导出链接"]'),
+        add: !!addBtn,
+        importBtn: !!importBtn,
+        backup: !!backupBtn,
+        backupTitle: backupBtn ? backupBtn.getAttribute('title') : null,
+        filePick: !!btn('选择 JSON 文件…'),
+        urlAction: !!btn('读取并导入'),
         edits: [...document.querySelectorAll('button[aria-label="编辑链接"]')].length,
         removes: [...document.querySelectorAll('button[aria-label="删除链接"]')].length,
         rowTitles: [...document.querySelectorAll('button[title]')]
@@ -7193,7 +7580,34 @@ async function runLinks(cdp, url) {
       const r = el.getBoundingClientRect();
       return { x: r.left + r.width / 2, y: r.top + r.height / 2 };
     })()`);
+    /**
+     * 等那层弹窗遮罩真的从 DOM 里撤掉。
+     * Reka 的 Presence 要等 **animationend** 才撤 DOM（`data-state="closed"` 那几条是
+     * `gosslan-dialog-fade-out 150ms`），而 headless 的合成器可以**不回这个事件**
+     * （2026-10-23 实测：单独跑这一段遮罩 300ms 内就没了；接在 --only=toast 后面跑，
+     * 同一层遮罩 1.3s 后还停在 opacity 0.032 且永远不撤）。那层看不见的遮罩带命中，
+     * 会把后面每一次鼠标事件全吃掉，读数就长成"弹窗根本没打开"。
+     * 所以：先等，等过 600ms 还没撤就替它把动画放完（补发 animationend —— 只推时钟，
+     * 不改产品状态），再等；到预算仍不撤就带着读数继续，让那一格自己说看到了什么。
+     */
+    /**
+     * 等弹窗那层遮罩真的从 DOM 里撤掉再点下一处。
+     * Reka 的 Presence 要等 **animationend** 才撤 DOM（`data-state="closed"` 那几条是 150ms 淡出），
+     * 而 headless 的合成器在长跑里可以不回这个事件 —— 那层透明的遮罩会一直吃掉鼠标事件，
+     * 读数就长成"弹窗根本没打开"。所以每次点之前等状态，不靠固定毫秒。
+     * ⚠️ 这里**不替产品**把遮罩的命中关掉：真留下撤不掉的遮罩是要红的那一类缺陷。
+     */
+    const overlayCount = () => cdp.eval("document.querySelectorAll('.gosslan-dialog-overlay').length");
+    const waitDialogGone = async () => {
+      const t0 = Date.now();
+      for (;;) {
+        const n = await overlayCount();
+        if (!n || Date.now() - t0 > 3_000) return n;
+        await sleep(120);
+      }
+    };
     const clickText = async (needle) => {
+      await waitDialogGone();
       const pt = await rectOf(needle);
       if (!pt) return false;
       await cdp.click(pt.x, pt.y);
@@ -7202,23 +7616,29 @@ async function runLinks(cdp, url) {
     };
 
     let s = await info();
-    check("链接左栏：标题 / 两条链接 / 常显编辑与删除 / 导入导出入口齐全",
+    check("链接左栏：标题 / 两条链接 / 常显编辑与删除 / 添加·导入·备份入口齐全且都有可见文案",
       mounted && mounted.ok === true && s.txt.includes("外部链接") && s.rowTitles.length === 2
-        && s.edits === 2 && s.removes === 2 && s.add && s.importFile && s.importUrl && s.exportLink,
-      "2 行 + 2 编辑 + 2 删除 + 添加/文件导入/URL 导入/导出",
+        && s.edits === 2 && s.removes === 2 && s.add && s.importBtn && s.backup
+        && s.backupTitle === "导出链接备份（JSON）",
+      "2 行 + 2 编辑 + 2 删除 + 「添加 / 导入 / 备份」三个入口同一行同样式、文案可见 + 备份 title 说明 JSON",
       JSON.stringify({ rows: s.rowTitles, edits: s.edits, removes: s.removes, add: s.add,
-        importFile: s.importFile, importUrl: s.importUrl, exportLink: s.exportLink }));
+        importBtn: s.importBtn, backup: s.backup, backupTitle: s.backupTitle }));
 
-    const urlPanel = await clickText("从线上 JSON 导入");
+    const importOpened = await clickText("导入");
     s = await info();
-    check("线上 JSON 导入：点按钮出现 URL 输入框，取消能收起",
-      urlPanel === true && s.inputs.some((i) => i.ph === "https://example.com/links.json"),
-      "URL 输入框出现", JSON.stringify(s.inputs));
+    check("导入：入口打开独立弹窗，文件与网址两种来源都在这一处，且不出现新增/编辑字段",
+      importOpened === true && s.txt.includes("导入链接") && s.txt.includes("从文件导入")
+        && s.txt.includes("从网址导入") && s.filePick && s.urlAction
+        && s.inputs.some((i) => i.ph === "https://example.com/links.json")
+        && !s.inputs.some((i) => i.ph === "显示名称"),
+      "导入弹窗含「从文件导入 / 从网址导入」，无「显示名称」",
+      JSON.stringify({ inputs: s.inputs, filePick: s.filePick, urlAction: s.urlAction }));
     await clickText("取消");
     s = await info();
-    check("线上 JSON 导入：取消后输入框撤掉，列表不受影响",
-      !s.inputs.some((i) => i.ph === "https://example.com/links.json") && s.rowTitles.length === 2,
-      "URL 输入框消失 + 2 行", JSON.stringify({ inputs: s.inputs, rows: s.rowTitles }));
+    check("导入取消：弹窗收起，列表不受影响",
+      !s.txt.includes("导入链接") && !s.inputs.some((i) => i.ph === "https://example.com/links.json")
+        && s.rowTitles.length === 2,
+      "导入弹窗消失 + 2 行", JSON.stringify({ inputs: s.inputs, rows: s.rowTitles }));
 
     const opened = await clickText("https://intra.example.com");
     s = await info();
@@ -7226,12 +7646,13 @@ async function runLinks(cdp, url) {
       opened && s.events.some((e) => e[0] === "open-id"), "事件表出现 open-id",
       JSON.stringify(s.events));
 
-    await clickText("添加链接");
+    await clickText("添加");
     s = await info();
-    check("点右上角添加：内联表单出现两个输入（显示名称 / 网址）且为空",
+    check("点添加：弹窗只有名称/网址两个空输入，不再混入 JSON 导入",
       s.inputs.length === 2 && s.inputs.some((i) => i.ph === "显示名称" && i.value === "")
-        && s.inputs.some((i) => i.ph === "https://example.com" && i.value === ""),
-      "两个空输入", JSON.stringify(s.inputs));
+        && s.inputs.some((i) => i.ph === "https://example.com" && i.value === "")
+        && !s.txt.includes("从文件导入") && !s.txt.includes("从网址导入"),
+      "两个空输入，且无导入入口", JSON.stringify(s.inputs));
     // 新增/编辑现在是同一个 BaseModal：先关掉新增弹窗，才能点到列表行上的编辑。
     await clickText("取消");
 
@@ -7248,26 +7669,28 @@ async function runLinks(cdp, url) {
       if (!name) return { found: false };
       const row = name.parentElement;
       const span = row ? row.querySelector('span.tabular-nums') : null;
-      const host = document.getElementById('probe-host');
+      // 表单已搬进 BaseModal（Portal 到 body），量的是弹窗卡片右沿，不是原列表宿主。
+      const card = name.closest('.elevated') || name.closest('[role="dialog"]');
       const ni = name.getBoundingClientRect();
-      const hr = host.getBoundingClientRect();
+      const cr = card ? card.getBoundingClientRect() : null;
       const r = span ? span.getBoundingClientRect() : null;
       return {
         found: true,
+        cardFound: !!card,
         text: span ? span.textContent.trim() : null,
         spanLeft: r ? Math.round(r.left) : null,
         spanRight: r ? Math.round(r.right) : null,
         inputRight: Math.round(ni.right),
         inputWidth: Math.round(ni.width),
-        hostRight: Math.round(hr.right),
+        cardRight: cr ? Math.round(cr.right) : null,
         attr: name.getAttribute('maxlength'),
       };
     })()`);
-    check("链接名读数在 360 窄栏与输入框同排共存：两者都可见、互不重叠、不越出面板",
-      cap.found && cap.attr === "32" && /^\d+\/32$/.test(String(cap.text || ""))
+    check("链接名读数在弹窗里与输入框同排共存：两者都可见、互不重叠、不越出卡片",
+      cap.found && cap.cardFound && cap.attr === "32" && /^\d+\/32$/.test(String(cap.text || ""))
         && cap.inputWidth >= 120 && cap.spanLeft >= cap.inputRight - 1
-        && cap.spanRight <= cap.hostRight + 1,
-      "输入框宽度 >=120、读数右沿 <= 面板右沿、且读数在输入框右侧",
+        && cap.spanRight <= cap.cardRight + 1,
+      "输入框宽度 >=120、读数右沿 <= 卡片右沿、且读数在输入框右侧",
       JSON.stringify(cap));
 
     await clickText("取消");
@@ -7279,15 +7702,45 @@ async function runLinks(cdp, url) {
     // ---- 写路径（§6.98）：三条命令共用一个 mutation，成功时把后端返回的整份数组写回读缓存 ----
     // 判据要的三件事：① 真的发的是对应那条命令；② 列表**立刻**变成返回值的形状（不是等下次重开）；
     // ③ list 的调用次数全程不变（`setQueryData` 写回，不是 `invalidateQueries` 再拉一次）。
-    const fill = (ph, value) => cdp.eval(`(() => {
-      const i = [...document.querySelectorAll('input')].find((x) => x.placeholder === ${JSON.stringify(ph)});
-      if (!i) return false;
-      i.value = ${JSON.stringify(value)};
-      i.dispatchEvent(new Event('input', { bubbles: true }));
+    /** 填某个 placeholder 的输入框（等它真出现，最多 2s —— 弹窗刚开那一下在长跑里会慢）。 */
+    const fill = async (ph, value) => {
+      const t0 = Date.now();
+      for (;;) {
+        const ok = await cdp.eval(`(() => {
+          const i = [...document.querySelectorAll('input')].find((x) => x.placeholder === ${JSON.stringify(ph)});
+          if (!i) return false;
+          i.value = ${JSON.stringify(value)};
+          i.dispatchEvent(new Event('input', { bubbles: true }));
+          return true;
+        })()`);
+        if (ok || Date.now() - t0 > 2_000) return ok;
+        await sleep(120);
+      }
+    };
+    /**
+     * 在指定 placeholder 的输入框上按一次**真**回车：聚焦后走 CDP 的 `Input.dispatchKeyEvent`，
+     * 与用户按键同一条管线（不用 `new KeyboardEvent` 伪造）。聚焦不上就返回 false（同样等 2s）。
+     */
+    const pressEnter = async (ph) => {
+      const t0 = Date.now();
+      let focused = false;
+      for (;;) {
+        focused = await cdp.eval(`(() => {
+          const i = [...document.querySelectorAll('input')].find((x) => x.placeholder === ${JSON.stringify(ph)});
+          if (!i) return false;
+          i.focus();
+          return document.activeElement === i;
+        })()`);
+        if (focused || Date.now() - t0 > 2_000) break;
+        await sleep(120);
+      }
+      if (!focused) return false;
+      await cdp.key("Enter", "Enter", "\r", 13);
       return true;
-    })()`);
+    };
     /** 按行定位那颗按钮（同一页里每行都有一枚「编辑/删除」，不能按文字取第一枚）。 */
     const clickRowBtn = async (rowUrl, aria) => {
+      await waitDialogGone();
       const pt = await cdp.eval(`(() => {
         const link = [...document.querySelectorAll('button[title]')]
           .find((b) => b.getAttribute('title') === ${JSON.stringify(rowUrl)});
@@ -7306,7 +7759,11 @@ async function runLinks(cdp, url) {
     };
 
     const stats0 = await cdp.eval("window.__probe.linksStats()");
-    await clickText("添加链接");
+    // 这一格按「保存」按钮走；**真按键**那两格排在段尾（见文件末尾那两格）。
+    // 为什么排序要紧：这台引擎的 CSS 动画时钟在长跑里会停摆，Reka 的离场要等 animationend
+    // ⇒ 遮罩撤不掉、后面的点击全被吃掉。实测同一段单独跑 13/13，接在 --only=toast 之后
+    // 就会红 —— 那是量具的时序，不是产品行为。把真按键那两格放到最后，红也只红它们自己。
+    await clickText("添加");
     await fill("显示名称", "周报");
     await fill("https://example.com", "https://weekly.example.com");
     await clickText("保存");
@@ -7349,7 +7806,7 @@ async function runLinks(cdp, url) {
     // `links.addFail` 拼出来的那句；③ 草稿还开着、列表没变（失败不许显示成成功态）。
     const hud = await cdp.eval("window.__probe.mountToastHud()");
     await cdp.eval("window.__probe.linksFailNext('add')");
-    await clickText("添加链接");
+    await clickText("添加");
     await fill("显示名称", "会失败");
     await fill("https://example.com", "https://boom.example.com");
     await clickText("保存");
@@ -7366,6 +7823,42 @@ async function runLinks(cdp, url) {
       "add=2、1 条 error toast 含「添加链接失败」、2 行、草稿仍开着",
       JSON.stringify({ hud, toast, st4, rows: s.rows, inputs: s.inputs }));
     await clickText("取消");
+
+    // ==== 段尾两格：真按键（CDP Input.dispatchKeyEvent）提交 ====
+    // 用户 2026-10-23 那句"不用每次自己手点"要的就是这两格：静态判据只能证明模板里写了
+    // ime.enter(fn, $event)，证不了按下回车真的把动作发出去（2026-10-23 之前那 16 处
+    // 全都写成 ime.enter(fn)，静态看着对、运行时一次都没执行）。
+    // ① 新增：网址框按回车 = 保存（此时列表 2 行：删掉周报之后）
+    await clickText("添加");
+    await fill("显示名称", "周报二");
+    await fill("https://example.com", "https://weekly2.example.com");
+    const addEnter = await pressEnter("https://example.com");
+    await sleep(400);
+    s = await info();
+    const st5 = await cdp.eval("window.__probe.linksStats()");
+    const last5 = await cdp.eval("window.__probe.linksLast()");
+    check("新增：在网址框按回车就保存（add=3）、列表立刻回填 3 行含「周报二」、弹窗自己收起",
+      addEnter === true && st5.add === 3 && st5.list === stats0.list
+        && last5 && last5.kind === "add" && last5.name === "周报二"
+        && s.rows.length === 3 && s.txt.includes("周报二") && s.inputs.length === 0,
+      "回车提交：add=3、list 不变、3 行含「周报二」、弹窗收起",
+      JSON.stringify({ addEnter, st5, last5, rows: s.rows, inputs: s.inputs.length }));
+
+    // ② 线上导入：网址框按回车 = 拉取并导入
+    const importAgain = await clickText("导入");
+    await fill("https://example.com/links.json", "https://backup.example.com/links.json");
+    const importEnter = await pressEnter("https://example.com/links.json");
+    await sleep(500);
+    s = await info();
+    const st6 = await cdp.eval("window.__probe.linksStats()");
+    const last6 = await cdp.eval("window.__probe.linksLast()");
+    check("线上导入：在网址框按回车就导入（importUrl=1），返回的整份数组立刻回填、弹窗收起",
+      importAgain && importEnter && st6.importUrl === 1 && st6.list === stats0.list
+        && last6 && last6.kind === "importUrl" && last6.url === "https://backup.example.com/links.json"
+        && s.rows.length === 4 && s.txt.includes("导入的链接")
+        && !s.inputs.some((i) => i.ph === "https://example.com/links.json"),
+      "回车提交：importUrl=1、list 不变、4 行含「导入的链接」、弹窗收起",
+      JSON.stringify({ st6, last6, rows: s.rows, inputs: s.inputs }));
     if (SHOT_PATH) {
       const shot = await cdp.send("Page.captureScreenshot", { format: "png" });
       fs.writeFileSync(SHOT_PATH.replace(/\.png$/, "-links.png"), Buffer.from(shot.data, "base64"));
@@ -7660,6 +8153,157 @@ async function runSettingsMobile(cdp, url) {
     s = await read();
     check("移动端设置：返回键回到一级列表（二级页不是死路）",
       back === true && s.hasList === true, "返回后列表重新出现", JSON.stringify(s));
+
+    // ── 按压不变形（用户 2026-10-23：「点击选项整个列表都缩小」）──
+    // 真按住一次再读 computed transform，而不是查 data-no-press 存不存在：
+    // 类名在 ≠ 效果对。**正控**是标题栏那颗返回键（普通按钮，必须照旧缩）——
+    // 没有它，整个探针读不到缩放也可能是量具坏了。
+    const pressBy = async (pickJs) => {
+      const r = await cdp.eval(`(() => {
+        const b = (${pickJs});
+        if (!b) return null;
+        const q = b.getBoundingClientRect();
+        return { x: Math.round(q.left + q.width / 2), y: Math.round(q.top + q.height / 2) };
+      })()`);
+      if (!r) return null;
+      await cdp.send("Input.dispatchMouseEvent", { type: "mousePressed", x: r.x, y: r.y, button: "left", clickCount: 1 });
+      await sleep(180);
+      const tr = await cdp.eval(`(() => {
+        const b = (${pickJs});
+        if (!b) return null;
+        return {
+          transform: getComputedStyle(b).transform,
+          noPress: b.hasAttribute('data-no-press'),
+          text: (b.textContent || '').trim().slice(0, 12),
+        };
+      })()`);
+      // 抬手点故意挪开：同一元素上 press+release 会合成一次 click（按列表项就会跳页、
+      // 按返回就会退出），这条探针只想要 :active 期间的计算样式，不想要副作用。
+      await cdp.send("Input.dispatchMouseEvent", { type: "mouseReleased", x: r.x, y: Math.max(1, r.y - 260), button: "left", clickCount: 1 });
+      await sleep(120);
+      return tr;
+    };
+    // ⚠️ 两个选择器必须**各自独立**：写成「文案是外观 或 aria 含返回」的单一谓词时，
+    // 头部那颗返回键排在内容前面 ⇒ 两次都会按到它，rowPress 拿到的其实是返回键（实测踩过）。
+    const rowPick = `[...document.querySelectorAll('button')].find((x) => (x.textContent || '').trim() === '外观')`;
+    const backPick = `[...document.querySelectorAll('button')].find((x) => (x.getAttribute('aria-label') || '').includes('返回'))`;
+    const rowPress = await pressBy(rowPick);
+    const backPress = await pressBy(backPick);
+    const scaled = (t) => !t ? null : (t !== "none" && !/matrix\(1,\s*0,\s*0,\s*1,\s*0,\s*0\)/.test(t));
+    check("移动端设置：按住列表项整行不缩放（按压反馈只给普通按钮）",
+      rowPress?.noPress === true && /外观/.test(rowPress.text) && scaled(rowPress.transform) === false
+        && scaled(backPress?.transform) === true,
+      "列表项(外观)带 data-no-press 且 transform 不缩放 + 返回键(正控)照旧缩放",
+      JSON.stringify({ rowPress, backPress }));
+
+    // 量的是**同一个元素**的 left 在「刚进入」与「滑到底」两处的差，不是文案、不是类名。
+    // 边距会漂只有两类来源：某一层滚动容器在滚动过程中长出了滚动条（吃掉宽度），或者某个
+    // 祖先的 padding 被 class 切换改掉。这段把每一层滚动容器的 clientWidth/offsetWidth 一起打出来，
+    // 红了能直接指到是哪一层。
+    const openNetwork = await cdp.eval(`(() => {
+      const b = [...document.querySelectorAll('button')]
+        .find((x) => (x.textContent || '').trim() === '网络');
+      if (!b) return false;
+      b.click();
+      return true;
+    })()`);
+    await sleep(900);
+    const drift = await cdp.eval(`(() => {
+      const card = [...document.querySelectorAll('[class*="rounded-"][class*="border"]')]
+        .find((el) => el.getClientRects().length > 0 && el.textContent.includes('蓝牙通道'));
+      if (!card) return { found: false };
+      const scrollers = [];
+      for (let el = card.parentElement; el; el = el.parentElement) {
+        const cs = getComputedStyle(el);
+        if (cs.overflowY === 'auto' || cs.overflowY === 'scroll') {
+          scrollers.push({
+            cls: String(el.className).slice(0, 60),
+            clientW: el.clientWidth,
+            offsetW: el.offsetWidth,
+            scrollH: el.scrollHeight,
+            clientH: el.clientHeight,
+            gutter: cs.scrollbarGutter,
+            padL: cs.paddingLeft,
+          });
+        }
+      }
+      const inner = scrollers[0] ? card.parentElement.closest('[class*="overflow-y-auto"]') : null;
+      const readAt = () => +card.getBoundingClientRect().left.toFixed(1);
+      const atTop = readAt();
+      // ⚠️ 非空转：隔离安装里网络段的异步数据是桩，页面可能根本不够高 ⇒ 滚不动 ⇒
+      // 「滚动前后一样」会凭空空转。滚不动就塞一段撑高的填充物，强制进入「滑到底」那一态。
+      let forced = false;
+      if (inner) {
+        if (inner.scrollHeight <= inner.clientHeight + 8) {
+          const filler = document.createElement('div');
+          filler.setAttribute('data-probe-filler', '');
+          filler.style.height = '2000px';
+          inner.appendChild(filler);
+          forced = true;
+        }
+        inner.scrollTop = inner.scrollHeight;
+      }
+      return {
+        found: true, atTop, atBottom: readAt(), scrollers, forced,
+        scrollTop: inner ? Math.round(inner.scrollTop) : null,
+        scrollH: inner ? inner.scrollHeight : null,
+        clientH: inner ? inner.clientHeight : null,
+      };
+    })()`);
+    await sleep(300);
+    const driftAfter = await cdp.eval(`(() => {
+      const card = [...document.querySelectorAll('[class*="rounded-"][class*="border"]')]
+        .find((el) => el.getClientRects().length > 0 && el.textContent.includes('蓝牙通道'));
+      return card ? +card.getBoundingClientRect().left.toFixed(1) : null;
+    })()`);
+    console.log("  ℹ 网络页边距读数 → " + JSON.stringify({ drift, driftAfter }));
+    if (SHOT_PATH) {
+      const shot = await cdp.send("Page.captureScreenshot", { format: "png" });
+      const p = SHOT_PATH.replace(/\.png$/, "-network.png");
+      fs.writeFileSync(p, Buffer.from(shot.data, "base64"));
+      console.log("  📷 网络页取证帧 → " + p);
+    }
+    check("移动端设置·网络页：滑到底之后卡片左边缘不动（边距不漂）",
+      openNetwork === true && drift.found === true && driftAfter !== null
+        && drift.scrollTop > 0
+        && Math.abs(driftAfter - drift.atTop) <= 1,
+      "确实滚动了（scrollTop>0）+ 同一张卡 left 在滚动前后相差 <=1px",
+      JSON.stringify({ drift, driftAfter }));
+    // 嵌套滚动容器是「滑一会边距变了」的机制本身：外层壳一旦也开滚动，触屏滚到底会串联到
+    // 它（整块内容位移），两层又各留一条 gutter（左右各多吃 8px）。这里钉**唯一一层**。
+    check("移动端设置·网络页：内容区只有一层滚动容器（没有嵌套滚动）",
+      drift.found === true && Array.isArray(drift.scrollers) && drift.scrollers.length === 1,
+      "从卡片往上只有 1 个 overflow-y 滚动祖先",
+      JSON.stringify(drift.scrollers));
+
+    // 资料页与设置二级页同一口径的页边距（用户 2026-10-23：「个人资料周围没有边距」）。
+    // 量的是同一张卡在**两个不同页面**上的 left 相等 —— 只比类名是抓不住「有一页忘了 p-4」的。
+    await cdp.eval(`(() => {
+      const b = [...document.querySelectorAll('button')].find((x) => {
+        const a = x.getAttribute('aria-label') || '';
+        return a.includes('返回') || /\\bBack\\b/i.test(a);
+      });
+      if (b) b.click();
+    })()`);
+    await sleep(400);
+    const openProfile = await cdp.eval(`(() => {
+      const b = [...document.querySelectorAll('button')]
+        .find((x) => (x.textContent || '').trim() === '个人资料');
+      if (!b) return false;
+      b.click();
+      return true;
+    })()`);
+    await sleep(700);
+    const profileLeft = await cdp.eval(`(() => {
+      const card = [...document.querySelectorAll('[class*="rounded-"][class*="border"]')]
+        .find((el) => el.getClientRects().length > 0 && el.textContent.includes('上传头像'));
+      return card ? +card.getBoundingClientRect().left.toFixed(1) : null;
+    })()`);
+    check("移动端设置·资料页：卡片左边缘与网络页同口径（都有页面边距）",
+      openProfile === true && profileLeft !== null && drift.found === true
+        && Math.abs(profileLeft - drift.atTop) <= 1 && profileLeft >= 8,
+      "资料卡 left == 网络卡 left 且 >=8",
+      JSON.stringify({ profileLeft, networkLeft: drift.atTop }));
   } finally {
     await cdp.send("Emulation.clearDeviceMetricsOverride").catch(() => {});
   }
@@ -7925,6 +8569,113 @@ async function runShareDirectory(cdp, url) {
  * （不构成焦点陷阱），且关闭归还与卸载时机都由我们自己维护。现在 Tab 环、逃逸拉回、
  * 卸载归还都交给 Reka FocusScope —— 本段读的是真按键 / 真焦点，不是源码里有没有 import。
  */
+/**
+ * 消息右键：**有选区也必须归应用**（用户 2026-10-23：「有时候会把 web 的右键打开」）。
+ *
+ * 根因在 `shouldPreventContextMenu` 原先的「有选区一律放行」：选区不会因为右键而消失，
+ * 只要之前双击选过词 / 拖选过正文，再右键气泡就会弹 WebKit 原生菜单，应用菜单根本不出现。
+ * 这一段用**真右键**跑两条路径：气泡本体，以及群聊昵称行（它在消息行之外 —— 处理器若只挂在
+ * 消息行上，这一格就会漏）。两条都要求：应用菜单出现 + 事件被 preventDefault。
+ *
+ * ⚠️ 默认窗口宽 754px 会落进移动端布局（`app.isMobile=true` ⇒ `openContextMenu` 提前 return），
+ * 所以进段先切到 1100px 的桌面视口，并把「宽度 > 767」作为环境判据（不满足直接红，不是跳过）。
+ */
+async function runContextGuard(cdp, url) {
+  await cdp.send("Emulation.setDeviceMetricsOverride", {
+    width: 1100, height: 800, deviceScaleFactor: 1, mobile: false,
+    screenWidth: 1100, screenHeight: 800,
+  });
+  await cdp.send("Page.bringToFront").catch(() => {});
+  await cdp.send("Page.navigate", { url });
+  await sleep(3_000);
+  await cdp.eval(PAGE_FIXTURE);
+  const env = await cdp.eval(`(() => ({
+    width: window.innerWidth,
+    narrow: matchMedia('(max-width: 767px)').matches,
+  }))()`);
+  console.log("  · 消息右键段环境：" + JSON.stringify(env));
+  check("环境：消息右键段在桌面视口里跑（宽度 > 767px，否则右键走移动端分支）",
+    !!env && env.width > 767 && env.narrow === false,
+    "width > 767 且不是窄布局", JSON.stringify(env));
+
+  const propsFor = (isGroup) => ({
+    message: {
+      msg_id: "m-ctxguard", sender_id: "peer-a", kind: "text",
+      content: "右键这条消息：即使有选区也要弹应用自己的菜单。", ts: 1700000000000,
+      conv_id: isGroup ? "group:g1" : "dm:peer-a", seq: 1,
+    },
+    isGroup, senderName: "对方",
+  });
+  const rightClickAt = async (x, y) => {
+    await cdp.send("Input.dispatchMouseEvent", { type: "mousePressed", x, y, button: "right", clickCount: 1 });
+    await cdp.send("Input.dispatchMouseEvent", { type: "mouseReleased", x, y, button: "right", clickCount: 1 });
+    await sleep(320);
+  };
+  const ctxState = () => cdp.eval(`(() => ({
+    menu: !!document.querySelector('[role="menu"].gosslan-menu'),
+    prevented: window.__ctxDefault ?? null,
+  }))()`);
+
+  // ① 单聊气泡：先选中正文（模拟"之前双击选过词"），再右键气泡中心
+  const okDm = await cdp.eval("window.__probe.install('/src/components/MessageItem.vue', '', "
+    + JSON.stringify(JSON.stringify(propsFor(false))) + ")");
+  await sleep(420);
+  const dm = await cdp.eval(`(() => {
+    const bubble = document.querySelector('#probe-host .gosslan-bubble-text');
+    if (!bubble) return null;
+    const sel = window.getSelection();
+    const range = document.createRange();
+    range.selectNodeContents(bubble);
+    sel.removeAllRanges();
+    sel.addRange(range);
+    window.__ctxDefault = null;
+    window.addEventListener('contextmenu', (e) => { window.__ctxDefault = e.defaultPrevented; });
+    const r = bubble.getBoundingClientRect();
+    return {
+      selected: sel.toString().slice(0, 8),
+      x: Math.round(r.left + r.width / 2),
+      y: Math.round(r.top + r.height / 2),
+    };
+  })()`);
+  check("非空转·右键：消息装上了，且右键前页面里确实有非折叠选区",
+    !!okDm && okDm.ok === true && !!dm && dm.selected.length > 0,
+    "install ok + 有选区", JSON.stringify({ okDm, dm }));
+  await rightClickAt(dm ? dm.x : 0, dm ? dm.y : 0);
+  const afterDm = await ctxState();
+  check("桌面右键消息气泡：有选区也弹应用菜单，且默认菜单被 preventDefault（旧实现弹 WebKit 原生菜单）",
+    afterDm.menu === true && afterDm.prevented === true,
+    "menu=true / prevented=true", JSON.stringify(afterDm));
+  await cdp.key("Escape", "Escape", "", 27);
+  await sleep(220);
+
+  // ② 群聊：右键落在昵称行（消息行之外）—— 处理器必须挂在整条消息的根上
+  const okGroup = await cdp.eval("window.__probe.install('/src/components/MessageItem.vue', '', "
+    + JSON.stringify(JSON.stringify(propsFor(true))) + ")");
+  await sleep(420);
+  const nick = await cdp.eval(`(() => {
+    const bubble = document.querySelector('#probe-host .gosslan-bubble-text');
+    const nickEl = [...document.querySelectorAll('[data-msg-col] > div')]
+      .find((el) => el.textContent.trim() === '对方');
+    if (!bubble || !nickEl) return null;
+    const sel = window.getSelection();
+    const range = document.createRange();
+    range.selectNodeContents(bubble);
+    sel.removeAllRanges();
+    sel.addRange(range);
+    window.__ctxDefault = null;
+    const r = nickEl.getBoundingClientRect();
+    return { x: Math.round(r.left + Math.min(20, r.width / 2)), y: Math.round(r.top + r.height / 2) };
+  })()`);
+  await rightClickAt(nick ? nick.x : 0, nick ? nick.y : 0);
+  const afterGroup = await ctxState();
+  check("桌面右键群聊昵称行（在消息行之外）：同样拦默认菜单并弹应用菜单（处理器挂在整条消息的根上）",
+    !!okGroup && okGroup.ok === true && !!nick
+      && afterGroup.menu === true && afterGroup.prevented === true,
+    "menu=true / prevented=true", JSON.stringify({ okGroup, nick, afterGroup }));
+  await cdp.key("Escape", "Escape", "", 27);
+  await cdp.eval("window.getSelection().removeAllRanges(); 1");
+}
+
 async function runLightbox(cdp, url) {
   await cdp.send("Page.bringToFront").catch(() => {});
   await cdp.send("Emulation.setFocusEmulationEnabled", { enabled: true }).catch(() => {});
@@ -7943,6 +8694,11 @@ async function runLightbox(cdp, url) {
     const scope = dlg ? dlg.firstElementChild : null;
     const btns = dlg ? [...dlg.querySelectorAll('button')] : [];
     const img = dlg ? dlg.querySelector('img') : null;
+    // 预览样式的三个读数（用户 2026-10-23）：
+    //  · imgRadius —— 预览图**不许切圆角**（完整展示）；
+    //  · navBg/navShadow —— 左右切换键在**白图**上也要看得见 ⇒ 深色底 + 阴影。
+    const navBtn = btns.find((b) => String(b.className).includes('h-11')) || null;
+    const navCs = navBtn ? getComputedStyle(navBtn) : null;
     return {
       open: !!dlg,
       modal: dlg ? dlg.getAttribute('aria-modal') : null,
@@ -7953,6 +8709,9 @@ async function runLightbox(cdp, url) {
       focusId: ae ? (ae.id || ae.tagName) : 'null',
       alt: img ? img.getAttribute('alt') : null,
       index: window.__lbState ? window.__lbState.index : -1,
+      imgRadius: img ? getComputedStyle(img).borderTopLeftRadius : null,
+      navBg: navCs ? navCs.backgroundColor : null,
+      navShadow: navCs ? navCs.boxShadow : null,
     };
   })()`);
 
@@ -7961,6 +8720,28 @@ async function runLightbox(cdp, url) {
     s.open && s.modal === "true" && s.focusInScope && s.focusIsScope,
     "open / aria-modal=true / activeElement 是焦点容器",
     JSON.stringify(s));
+
+  /*
+   * 预览图不许切圆角 + 左右切换键在白图上也看得见（用户 2026-10-23）。
+   * 量的是**计算样式**，不是类名：`rounded-*` 被删了但 `overflow-hidden` 还在、
+   * 或者底色写成 white/10 这类"类名看着有、实际看不见"的写法，只有读计算值才抓得住。
+   */
+  const navAlpha = (() => {
+    const m = /rgba?\(([^)]+)\)/.exec(s.navBg || "");
+    if (!m) return null;
+    const parts = m[1].split(",").map((x) => x.trim());
+    return parts.length === 4 ? Number(parts[3]) : 1;
+  })();
+  console.log("  ℹ 预览样式读数 → " + JSON.stringify({
+    imgRadius: s.imgRadius, navBg: s.navBg, navAlpha, navShadow: s.navShadow,
+  }));
+  check("图片预览：预览图不切圆角（完整展示）",
+    s.imgRadius === "0px", "border-radius 0px", JSON.stringify({ imgRadius: s.imgRadius }));
+  check("图片预览：左右切换键有足够深的底色 + 阴影（白图上不隐形）",
+    typeof navAlpha === "number" && navAlpha >= 0.3
+      && !!s.navShadow && s.navShadow !== "none",
+    "底色 alpha>=0.3 且 box-shadow 不为 none",
+    JSON.stringify({ navBg: s.navBg, navAlpha, navShadow: s.navShadow }));
 
   /*
    * 顶部让位**只许算一遍**（2026-10-20，用户报「移动端弹窗上方被刘海/状态栏压住」时
@@ -8057,6 +8838,115 @@ async function runLightbox(cdp, url) {
   check("ArrowRight 仍然切到下一张（业务按键没被焦点层接管）",
     s.index === 1 && s.alt === "two.gif",
     "index=1 / alt=two.gif", JSON.stringify(s));
+
+  /*
+   * 左右切换键的按下反馈与点击穿透（用户 2026-10-23：
+   * 「按靠上的地方有可能会把这个图关掉」「点击反馈向下移太夸张了」「点的是图标不要穿透到遮罩」）。
+   *
+   * 根因：按钮自己挂 `-translate-y-1/2`，而全局 `button:active { transform: scale(.97) }`
+   * 与它同优先级且在样式表更靠后 ⇒ 按下瞬间整颗按钮下移 22px（半个按钮高）。
+   * 这里用**真指针按住不放**读矩形：中心不许动（只许绕中心缩小），顶边位移 <= 2px。
+   * 然后在靠上的位置原位抬起：必须切到上一张且窗不关（旧实现 pointerup 已落到遮罩）。
+   * 第二发把抬起扔到遮罩角落：click 会被派发到共同祖先（遮罩），按下源守卫必须拒绝关窗。
+   */
+  const navRect = () => cdp.eval(`(() => {
+    const dlg = document.querySelector('[role="dialog"]');
+    const btns = dlg
+      ? [...dlg.querySelectorAll('button')].filter((b) => String(b.className).includes('h-11'))
+      : [];
+    const b = btns[0];
+    if (!b) return null;
+    const r = b.getBoundingClientRect();
+    return {
+      left: +r.left.toFixed(2), top: +r.top.toFixed(2), w: +r.width.toFixed(2), h: +r.height.toFixed(2),
+      cx: +(r.left + r.width / 2).toFixed(2), cy: +(r.top + r.height / 2).toFixed(2),
+    };
+  })()`);
+  const lightboxState = () => cdp.eval(`(() => ({
+    open: !!document.querySelector('[role="dialog"]'),
+    index: window.__lbState ? window.__lbState.index : -1,
+    closes: (window.__probe.events || []).filter((e) => Array.isArray(e) && e[0] === 'close').length,
+  }))()`);
+
+  const beforePress = await navRect();
+  const pressX = beforePress ? Math.round(beforePress.cx) : 0;
+  const pressY = beforePress ? Math.round(beforePress.top + 3) : 0;
+  await cdp.send("Input.dispatchMouseEvent",
+    { type: "mousePressed", x: pressX, y: pressY, button: "left", clickCount: 1 });
+  await sleep(140);
+  const whileHeld = await navRect();
+  await cdp.send("Input.dispatchMouseEvent",
+    { type: "mouseReleased", x: pressX, y: pressY, button: "left", clickCount: 1 });
+  await sleep(220);
+  const afterTopPress = await lightboxState();
+  console.log("  ℹ 切换键按压实测 → " + JSON.stringify({ beforePress, whileHeld, afterTopPress }));
+  check("左右切换键：按住时绕中心缩小（|中心位移|<=0.5px 且 |顶边位移|<=2px，不再整体下移）",
+    !!beforePress && !!whileHeld
+      && Math.abs(whileHeld.cy - beforePress.cy) <= 0.5
+      && Math.abs(whileHeld.top - beforePress.top) <= 2,
+    "中心不动 / 顶边位移 <= 2px", JSON.stringify({ beforePress, whileHeld }));
+  check("左右切换键：在靠上位置按下并原位抬起 ⇒ 切到上一张，窗不关（旧实现 click 落遮罩会关窗）",
+    !!beforePress && afterTopPress.open === true && afterTopPress.closes === 0
+      && afterTopPress.index === 0,
+    "open=true / closes=0 / index=0", JSON.stringify(afterTopPress));
+
+  const b2 = await navRect();
+  await cdp.send("Input.dispatchMouseEvent", {
+    type: "mousePressed",
+    x: b2 ? Math.round(b2.cx) : 0,
+    y: b2 ? Math.round(b2.cy) : 0,
+    button: "left", clickCount: 1,
+  });
+  await cdp.send("Input.dispatchMouseEvent",
+    { type: "mouseReleased", x: 4, y: 4, button: "left", clickCount: 1 });
+  await sleep(220);
+  const afterEscapeToShade = await lightboxState();
+  check("左右切换键：图标上按下、抬起落到遮罩 ⇒ 不许穿透关窗（按下源守卫）",
+    afterEscapeToShade.open === true && afterEscapeToShade.closes === 0,
+    "open=true / closes=0", JSON.stringify(afterEscapeToShade));
+
+  /*
+   * 反向对照：给按钮临时注入一条 `:active { transform: translateY(10px) !important }`，
+   * 按住时同一把尺子必须读到 > 2px。旧代码读到的正是 22px；这格证明「顶边位移」这个量
+   * 真的跟着按压 transform 走，而不是恒 0 的空转判据。
+   */
+  const jumpBefore = await navRect();
+  const jumpReady = await cdp.eval(`(() => {
+    const st = document.createElement('style');
+    st.id = 'probe-jump';
+    st.textContent = 'button.probe-jump:active { transform: translateY(10px) !important; }';
+    document.head.appendChild(st);
+    const b = [...document.querySelectorAll('[role="dialog"] button')]
+      .find((x) => String(x.className).includes('h-11'));
+    if (!b) return false;
+    b.classList.add('probe-jump');
+    return true;
+  })()`);
+  await cdp.send("Input.dispatchMouseEvent", {
+    type: "mousePressed",
+    x: jumpBefore ? Math.round(jumpBefore.cx) : 0,
+    y: jumpBefore ? Math.round(jumpBefore.cy) : 0,
+    button: "left", clickCount: 1,
+  });
+  await sleep(140);
+  const jumpHeld = await navRect();
+  await cdp.send("Input.dispatchMouseEvent", {
+    type: "mouseReleased",
+    x: jumpBefore ? Math.round(jumpBefore.cx) : 0,
+    y: jumpBefore ? Math.round(jumpBefore.cy) : 0,
+    button: "left", clickCount: 1,
+  });
+  await cdp.eval(`(() => {
+    document.getElementById('probe-jump')?.remove();
+    document.querySelectorAll('button.probe-jump').forEach((b) => b.classList.remove('probe-jump'));
+    return true;
+  })()`);
+  await sleep(120);
+  const jumpDelta = jumpBefore && jumpHeld ? +(jumpHeld.top - jumpBefore.top).toFixed(2) : NaN;
+  console.log("  · 反向对照·切换键位移：" + JSON.stringify({ jumpReady, jumpDelta, jumpBefore, jumpHeld }));
+  check("反向对照·切换键位移量具：注入 10px 按压位移后同一把尺子读到 > 2px（判据不是恒绿）",
+    jumpReady === true && jumpDelta > 2,
+    "读到 > 2px", JSON.stringify({ jumpReady, jumpDelta }));
 
   // 关闭后焦点归还，DOM 撤净（leave 过渡 100ms）。
   await cdp.key("Escape", "Escape", "", 27);
