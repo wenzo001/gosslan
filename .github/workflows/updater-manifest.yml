@@ -63,31 +63,43 @@ jobs:
             exit 1
           fi
 
-      - name: Wait for all desktop updater assets
+      - name: Wait for all release assets（草稿态走列表 API）
         env:
           GH_TOKEN: ${{ github.token }}
           REPO: ${{ github.repository }}
         run: |
           set -euo pipefail
           deadline=$((SECONDS + 2700))
+          # ★ draft-until-complete（2026-10-23）：四条构建腿现在只创建/补挂**草稿**，
+          #   谁先跑完都不能把半个 Release 对外公开；发布由本 workflow 在四类产物齐了之后统一做。
+          #   草稿对 `releases/tags/<tag>` 可能 404（本仓 2026-10-22 实测）⇒ 一律用列表 API 拿 id。
           while [ "$SECONDS" -lt "$deadline" ]; do
-            names=$(gh release view "$TAG" --repo "$REPO" --json assets --jq '.assets[].name' || true)
+            rel_id=$(gh api "repos/$REPO/releases?per_page=100" \
+              --jq ".[] | select(.tag_name == \"$TAG\") | .id" 2>/dev/null | head -1 || true)
+            names=""
+            if [ -n "$rel_id" ]; then
+              names=$(gh api "repos/$REPO/releases/$rel_id" --jq '.assets[].name' 2>/dev/null || true)
+            fi
             ok=1
-            # 签名与安装包由同一个 release job 一次上传；先等四个安装包齐，
-            # 签名是否成对交给 updater-manifest.mjs 做最后裁决（它会直接红）。
+            # 四类产物：桌面 updater（.app.tar.gz + setup.exe）、内置 WebView2 档、
+            # Android 两个 ABI、macOS dmg。签名是否成对交给 updater-manifest.mjs 做最后裁决（它会直接红）。
             for needle in \
               "Gosslan-arm64.app.tar.gz" "Gosslan-x86_64.app.tar.gz" \
-              "_x64-setup.exe" "_arm64-setup.exe"; do
+              "_x64-setup.exe" "_arm64-setup.exe" \
+              "_x64-setup-webview2-bundled.exe" "_arm64-setup-webview2-bundled.exe" \
+              "-arm64-v8a-release.apk" "-armeabi-v7a-release.apk" \
+              "_x64.dmg" "_aarch64.dmg"; do
               if ! printf '%s\n' "$names" | grep -Fq -- "$needle"; then
                 echo "等待：$needle"
                 ok=0
               fi
             done
             if [ "$ok" -eq 1 ]; then
-              echo "所有桌面 updater 产物已就绪"
+              echo "四类资产齐全 ⇒ 进入收口（release id ${rel_id}）"
+              echo "REL_ID=$rel_id" >> "$GITHUB_ENV"
               exit 0
             fi
-            # 快速失败（2026-10-22）：桌面构建已经红了就别再等满 45 分钟 ——
+            # 快速失败（2026-10-22）：构建已经红了就别再等满 45 分钟 ——
             # v5.5.17 与 v5.5.18 各白等过一整轮，而真因（签名 secret）早就写在构建注解里了。
             # 只认**每个 workflow 最新一次**运行的结论，避免被同提交上的旧失败 run 误判。
             failed=$(gh run list --repo "$REPO" --commit "$GITHUB_SHA" --limit 30 \
@@ -95,28 +107,32 @@ jobs:
               --jq '[group_by(.workflowName)[] | max_by(.createdAt) | select(.conclusion=="failure") | .workflowName] | join(", ")' \
               2>/dev/null || true)
             case "$failed" in
-              *"Build macOS"*|*"Build Windows (x64"*)
-                echo "::error title=桌面构建已失败::不再等产物。失败的 workflow：${failed}（先看它的注解，签名问题的原因在那里）" >&2
+              *"Build macOS"*|*"Build Windows"*|*"Build Android"*)
+                echo "::error title=构建已失败::不再等产物。失败的 workflow：${failed}（先看它的注解，签名问题的原因在那里）" >&2
                 exit 1 ;;
             esac
             sleep 30
           done
-          echo "等待 updater 产物超时（45 分钟）；不生成 latest.json" >&2
+          echo "等待产物超时（45 分钟）；不生成 latest.json、不发布 Release" >&2
           exit 1
 
-      - name: Download updater assets
+      - name: Download updater assets（按资产 id，草稿也下得动）
         env:
           GH_TOKEN: ${{ github.token }}
           REPO: ${{ github.repository }}
         run: |
           set -euo pipefail
           mkdir -p assets
-          gh release download "$TAG" --repo "$REPO" --dir assets --clobber \
-            --pattern "Gosslan-*.app.tar.gz" \
-            --pattern "*.sig" \
-            --pattern "*_x64-setup.exe" \
-            --pattern "*_arm64-setup.exe" \
-            --pattern "*.nsis.zip"
+          gh api "repos/$REPO/releases/$REL_ID/assets?per_page=100" \
+            --jq '.[] | "\(.id)\t\(.name)"' > /tmp/assets.tsv
+          while IFS=$'\t' read -r id name; do
+            case "$name" in
+              Gosslan-*.app.tar.gz|*.sig|*_x64-setup.exe|*_arm64-setup.exe|*.nsis.zip)
+                gh api "repos/$REPO/releases/assets/$id" \
+                  -H "Accept: application/octet-stream" -H "Cache-Control: no-cache" > "assets/$name" ;;
+            esac
+          done < /tmp/assets.tsv
+          printf '下载完成：%s 个文件\n' "$(find assets -type f | wc -l | tr -d ' ')"
 
       - name: Build latest.json
         env:
@@ -129,11 +145,30 @@ jobs:
             --dir assets --tag "$TAG" --repo "$REPO" \
             --out latest.json --changelog CHANGELOG.md
 
-      - name: Upload latest.json
+      - name: Upload latest.json（按资产 id，草稿也能传）
         env:
           GH_TOKEN: ${{ github.token }}
           REPO: ${{ github.repository }}
-        run: gh release upload "$TAG" latest.json --repo "$REPO" --clobber
+        run: |
+          set -euo pipefail
+          # 重跑时同名资产会 422（already_exists）⇒ 先删后传（等价于 --clobber）。
+          existing=$(gh api "repos/$REPO/releases/$REL_ID/assets?per_page=100" \
+            --jq '.[] | select(.name=="latest.json") | .id' 2>/dev/null | head -1 || true)
+          if [ -n "$existing" ]; then
+            gh api --method DELETE "repos/$REPO/releases/assets/$existing" >/dev/null
+          fi
+          gh api --method POST "repos/$REPO/releases/$REL_ID/assets?name=latest.json" \
+            -H "Content-Type: application/octet-stream" --input latest.json >/dev/null
+          echo "latest.json 已挂到 release ${REL_ID}（仍是草稿）"
+
+      - name: Publish Release（四类资产 + latest.json 齐了才取消草稿）
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          gh api --method PATCH "repos/$REPO/releases/$REL_ID" -F draft=false >/dev/null
+          echo "Release $TAG 已发布（桌面 updater / WebView2 / APK / dmg / latest.json 全齐）"
 
       - name: Verify public manifest
         env:

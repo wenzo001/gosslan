@@ -450,6 +450,9 @@ const steps = [
     cwd: ROOT,
     cmd: NODE_EXE,
     args: ["scripts/check-test-manifest.mjs", "--only", "rust"],
+    // ⚠️ 这一步会**自己再跑一次** `cargo test --lib -- --list`（debug 壳）——
+    // 不上同一个清单环境就还是 0xc0000139（2026-10-23 CI 实测：单测那步绿、守卫这步红）。
+    env: windowsTestLinkEnv(),
   },
 ];
 

@@ -129,17 +129,20 @@ function run(
   };
 }
 
-test("人工草稿 Release：不判红；上传完把它发布出去（否则对外永远不可见）", () => {
+test("人工草稿 Release：不判红；脚本只补文件，**绝不自己发布**（draft-until-complete）", () => {
   const r = run("draft");
   assert.equal(r.code, 0, r.out);
   assert.deepEqual(
     r.calls.filter((c) => c.startsWith("release create")),
-    ["release create v9.9.9 --repo octo/thing --target deadbeef --generate-notes --title v9.9.9"],
-    "创建仍只试一次（草稿顶红是预期内的）",
+    ["release create v9.9.9 --repo octo/thing --target deadbeef --draft --generate-notes --title v9.9.9"],
+    "创建仍只试一次（草稿顶红是预期内的），且必须建**草稿**",
   );
   assert.equal(r.calls.filter((c) => c.startsWith("release upload")).length, 1, "产物照常上传");
-  const edits = r.calls.filter((c) => c.startsWith("release edit"));
-  assert.deepEqual(edits, ["release edit v9.9.9 --repo octo/thing --draft=false"], "上传后必须把草稿发布出去");
+  assert.deepEqual(
+    r.calls.filter((c) => c.startsWith("release edit")),
+    [],
+    "发布必须由 updater-manifest 在四类资产齐了之后统一做 —— 这里一旦自己发布，就是半个 Release 对外可见",
+  );
 });
 
 test("新建：Release 不存在且创建成功 ⇒ 建一次、上传一次", () => {
@@ -147,8 +150,8 @@ test("新建：Release 不存在且创建成功 ⇒ 建一次、上传一次", (
   assert.equal(r.code, 0, r.out);
   assert.deepEqual(
     r.calls.filter((c) => c.startsWith("release create")),
-    ["release create v9.9.9 --repo octo/thing --target deadbeef --generate-notes --title v9.9.9"],
-    "创建那条必须显式带 --repo：不带就是 v4.31.40 全红的形状",
+    ["release create v9.9.9 --repo octo/thing --target deadbeef --draft --generate-notes --title v9.9.9"],
+    "创建那条必须显式带 --repo（v4.31.40 全红的形状）且必须是 --draft（draft-until-complete）",
   );
   assert.ok(r.calls.every((c) => !c.startsWith("release upload") || c.includes("--repo octo/thing")),
     "上传那条也得带 --repo（同一条 job 里没有 git 工作目录）");

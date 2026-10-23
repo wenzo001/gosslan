@@ -113,10 +113,6 @@ release_exists_any_state() {
   "$gh_bin" api "repos/$repo/releases?per_page=100" \
     --jq ".[] | select(.tag_name == \"$tag\") | .id" 2>/dev/null | grep -q .
 }
-release_is_draft() {
-  [ "$("$gh_bin" api "repos/$repo/releases?per_page=100" \
-        --jq ".[] | select(.tag_name == \"$tag\") | .draft" 2>/dev/null | head -1)" = "true" ]
-}
 
 if release_exists; then
   echo "Release $tag 已存在 ⇒ 不重复创建，只补文件"
@@ -127,7 +123,7 @@ else
     echo "Release $tag 不存在，而创建它必须知道挂在哪条提交 ⇒ 传 --sha（本地可用 git rev-parse $tag^{commit}）" >&2
     exit 2
   fi
-  if ! create_err=$("$gh_bin" release create "$tag" --repo "$repo" --target "$sha" --generate-notes --title "$tag" 2>&1); then
+  if ! create_err=$("$gh_bin" release create "$tag" --repo "$repo" --target "$sha" --draft --generate-notes --title "$tag" 2>&1); then
     echo "创建没成功（原样贴出，方便分清是被抢先建好还是权限/网络）："
     echo "$create_err"
     # ★ 竞争窗口就在这一次复查询里收掉：后到的那条不报错，它只是"来晚了"。
@@ -158,13 +154,9 @@ done
 echo "已把 ${#files[@]} 个文件挂到 ${tag}："
 printf '  %s\n' "${files[@]}"
 
-# 草稿状态对外**不可见**：`latest.json` 与用户都看不到它 ⇒ 上传完必须把它发布出去，
-# 否则"构建全绿、下载页却什么都没有"（2026-10-22 就是这么卡住的）。
-if release_is_draft; then
-  echo "Release $tag 目前是**草稿** ⇒ 现在发布它"
-  if ! "$gh_bin" release edit "$tag" --repo "$repo" --draft=false; then
-    echo "草稿发布失败 ⇒ 不假装成功（产物已挂上，但对外不可见）" >&2
-    exit 1
-  fi
-  echo "Release $tag 已发布（不再有草稿遮挡）"
-fi
+# ★ draft-until-complete（2026-10-23 用户拍板）：**本脚本绝不发布 Release**。
+#   四条腿（mac / win base / webview2 / android）谁先跑完谁先传，谁都不能把半个 Release
+#   对外公开 —— v5.5.22 只挂着 Android、v5.5.23 只挂着 WebView2+Android，都是这么来的。
+#   「发布」是 `updater-manifest.yml` 那一步的职责：它等到四类产物 + latest.json 都齐了，
+#   才 `--draft=false`。这里只负责建草稿、传文件。
+echo "Release $tag 保持**草稿**（由 updater-manifest 在产物齐后统一发布）"
