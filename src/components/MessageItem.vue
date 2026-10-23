@@ -24,6 +24,7 @@ import { haptic } from "@/utils/haptics";
 import { shouldStartLongPress, shouldSwallowLongPressRelease } from "@/utils/longPress";
 import { shouldPreventContextMenu } from "@/utils/contextMenu";
 import { isRecallableKind, isWithinRecallWindow } from "@/utils/recall";
+import type { MessageGroupSide } from "@/utils/messageKinds";
 import { cancelSendChannelFor } from "@/utils/cancelSend";
 import { cancelOutcome } from "@/utils/cancelFeedback";
 import { hasTextSelection, isSelectableTextTarget, selectionTextWithin } from "@/utils/textSelection";
@@ -60,6 +61,11 @@ const props = withDefaults(
     prev?: MessageRecord | null;
     /** 群聊：显示发送者昵称 */
     isGroup?: boolean;
+    /**
+     * 本条在「连续消息组」里的位置（会话层用 `messageKinds.groupSide` 算好传入）。
+     * 它同时决定：间距、相邻边圆角、群聊是否展示头像/昵称；缺省 single = 老调用点行为。
+     */
+    groupSide?: MessageGroupSide;
     /** 本会话是否允许添加/取消回应（群与好友单聊 = true；自聊 = false）。
      *  刻意与 isGroup 分开：入口开在哪一类会话是**产品口径**，不是「这是不是群」。 */
     canReact?: boolean;
@@ -98,6 +104,7 @@ const props = withDefaults(
   {
     prev: null,
     isGroup: false,
+    groupSide: "single",
     canReact: false,
     showUnreadDivider: false,
     senderName: "",
@@ -182,6 +189,7 @@ const display = useMessageDisplay({
   message: () => props.message,
   prev: () => props.prev,
   isGroup: () => props.isGroup,
+  groupSide: () => props.groupSide,
 });
 const {
   mine,
@@ -348,6 +356,9 @@ const isLongText = computed(
  * 两边各写一份的话，估算与实际渲染差一行就会让虚拟列表的两条消息互相遮挡。
  */
 const isTip = computed(() => isTipKind(props.message.kind));
+
+/** 组首：群聊的头像与昵称只在这里出现（连续消息不重复展示身份信息）。 */
+const atGroupStart = computed(() => props.groupSide === "first" || props.groupSide === "single");
 
 /** 自聊消息（收发双方都是本机）：不挂回执（见模板里的说明）。 */
 const isSelfMsg = computed(() => isSelfMessage(props.message));
@@ -1222,7 +1233,7 @@ async function copyFileToClipboard() {
          见 needsTopPad），这样时间/未读分割行不会重复给间距，
          各项总高与改动前逐像素一致（messageHeight 的高度估算表不用动）。 -->
     <div
-      class="relative pb-1.5"
+      class="relative pb-1"
     >
     <!-- 多选态：透明覆盖层 + 左侧勾选框，两者都**绝对定位**，不进 flex 流。
          为什么必须这样：气泡宽度是 `max-w-[72%]`，勾选框若作为 flex 兄弟插进来会挤窄气泡、
@@ -1279,7 +1290,7 @@ async function copyFileToClipboard() {
     <div
       v-if="isTip"
       class="px-4 text-center text-xs text-[var(--gosslan-text-2)]"
-      :class="needsTopPad ? 'pt-1.5' : ''"
+      :class="needsTopPad && atGroupStart ? 'pt-1.5' : ''"
     >
       {{ message.kind === "recalled" ? t("msg.recalled") : message.content }}
     </div>
@@ -1297,7 +1308,7 @@ async function copyFileToClipboard() {
       v-else
       class="relative flex items-start gap-2 px-4 transition"
       :class="[
-        needsTopPad ? 'pt-1.5' : '',
+        needsTopPad && atGroupStart ? 'pt-1.5' : '',
         mine ? 'flex-row-reverse' : '',
         selectMode && !mine ? 'pl-10' : '',
       ]"
@@ -1316,17 +1327,25 @@ async function copyFileToClipboard() {
            裁掉上下内边距（⑥的误解：那样块与块之间会空 12px，与⑤⑦矛盾）。
            ⚠️ 不要加 `background-clip`、`-inset-*`、`w-fit`、`ring-*`，不要换回绝对定位的框，
            也不要把底色挪到这一行上（行盒 = 消息本身，挪过去就没有"头像上面/气泡下面"的间距了）。 -->
-      <!-- 头像：每条消息独立完整渲染。点对方头像进好友资料；自己头像不参与（没有“我的资料”弹层）。 -->
-      <button
-        v-if="!mine"
-        type="button"
-        class="tap-safe shrink-0 rounded-[var(--gosslan-avatar-radius)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary"
-        :aria-label="t('friend.openProfile', { name: avatarName })"
-        @click="emit('open-profile', message.sender_id)"
-      >
-        <MessageAvatar :id="message.sender_id" :name="avatarName" :avatar="avatarSrc" />
-      </button>
-      <MessageAvatar v-else :id="message.sender_id" :name="avatarName" :avatar="avatarSrc" />
+      <!-- 头像：单聊两方都不显示（联系人信息在顶部会话栏）；群聊只有对方、且只在组首显示。
+           组内其余消息留一个同宽空位，气泡左边缘才不会一条一条地跳。 -->
+      <template v-if="isGroup && !mine">
+        <button
+          v-if="atGroupStart"
+          type="button"
+          class="tap-safe shrink-0 rounded-[var(--gosslan-avatar-radius)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary"
+          :aria-label="t('friend.openProfile', { name: avatarName })"
+          @click="emit('open-profile', message.sender_id)"
+        >
+          <MessageAvatar :id="message.sender_id" :name="avatarName" :avatar="avatarSrc" />
+        </button>
+        <span
+          v-else
+          aria-hidden="true"
+          class="shrink-0"
+          :style="{ width: 'var(--gosslan-msg-avatar)' }"
+        ></span>
+      </template>
 
       <!-- 勾选框（微信款）：18px 圆、未选 1px 细边、选中实底 + 细白勾。
            为什么不用 border-2：2px 的环在 16-18px 的圆里内孔只剩 12-14px，深色下是一圈
@@ -1369,7 +1388,8 @@ async function copyFileToClipboard() {
            ⚠️ 触屏长按从这一列起手（不再只挂消息行）：昵称/引用块等非正文区也能开面板。 -->
       <div
         data-msg-col
-        class="relative flex min-w-0 max-w-[72%] flex-col"
+        class="msg-stack relative flex min-w-0 max-w-[var(--gosslan-msg-max)] flex-col"
+        :data-pos="groupSide"
         :class="mine ? 'items-end' : 'items-start'"
         :style="{
           '--bubble-tail-offset': showNickname ? '18px' : '0px',
@@ -1482,6 +1502,7 @@ async function copyFileToClipboard() {
 
           <!-- 文本 -->
           <MessageTextBubble
+            :tail="!isGroup"
             v-if="message.kind === 'text'"
             :content="message.content"
             :bubble-style="bubbleStyle"
@@ -1500,6 +1521,7 @@ async function copyFileToClipboard() {
 
           <!-- 代码：inline code 消息与代码附件同一套预览；超过 5 行裁断，全文进 Modal -->
           <MessageCodeBubble
+            :tail="!isGroup"
             v-else-if="streamCode !== null"
             :code="streamCode"
             :clamped="streamCodeClamped"
@@ -1554,6 +1576,7 @@ async function copyFileToClipboard() {
 
           <!-- 文件 -->
           <MessageFileBubble
+            :tail="!isGroup"
             v-else-if="message.kind === 'file' && fileMeta"
             :meta="fileMeta"
             :bubble-style="cardStyle"
@@ -1578,6 +1601,7 @@ async function copyFileToClipboard() {
           <!-- 合并转发的聊天记录（微信式卡片）：定高 96px，与 `messageHeight.MERGE_CARD`
                的估算对齐（改卡片尺寸必须同时改那里，否则虚拟列表会遮挡相邻消息）。 -->
           <MergeCard
+            :tail="!isGroup"
             v-else-if="message.kind === 'merge'"
             :content="message.content"
             :card-style="cardStyle"
@@ -1587,6 +1611,7 @@ async function copyFileToClipboard() {
 
           <!-- 群任务卡片（`todo` = Card kind）：把 JSON 载荷渲染成可读卡片，替代原始 JSON 兜底 -->
           <TodoCardBubble
+            :tail="!isGroup"
             v-else-if="message.kind === 'todo'"
             :message="message"
             :card-style="cardStyle"

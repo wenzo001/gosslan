@@ -8,6 +8,8 @@
 
 import { fontPx, type FontSizeKey } from "@/utils/chatStyle";
 import { parseQuote, quoteBody } from "@/utils/quote";
+// 连续消息合并的时间窗与时间分割线同值：超过它一定有一条分割行，组自然断开（唯一家在这里）。
+import { GROUP_GAP_MS } from "@/utils/messageKinds";
 
 /** 消息流内预览行数上限（文本 / 代码 / 附件代码一致），超出部分只能在 Modal 里看。 */
 export const PREVIEW_LINES = 5;
@@ -41,9 +43,9 @@ const CODE_PADDING = 12;
 const CODE_LINE_HEIGHT = 20;
 /** 代码块下方操作条：mt-1(4) + py-1(8) + leading-4(16)。 */
 const CODE_ACTION_BAR = 28;
-/** 一个视觉行的半角列数（气泡 max-w-[72%] 实测 ≈37 个半角字符 / 14px 正文）。
+/** 一个视觉行的半角列数（气泡 max-w 78%（`--gosslan-msg-max`）实测 ≈40 个半角字符 / 14px 正文）。
  *  改 MessageItem 的气泡宽度上限时，这里必须同步（偏小只会多留白，偏大会遮挡下一条）。 */
-const COLUMNS_PER_LINE = 37;
+const COLUMNS_PER_LINE = 40;
 /** COLUMNS_PER_LINE 对应的基准字号；字号变大时每行放不下的字符按比例减少。 */
 const BASE_FONT_PX = 14;
 
@@ -179,7 +181,7 @@ export const IMAGE_PLACEHOLDER_HEIGHT = 128;
  * 空值口径收在 `shouldShowTimeDivider` 里：只有 `prevTs == null` 才算首条。
  * **不许**写成 `!prevTs` —— 那会把 `ts === 0` 的消息当成首条，少画一行也少估 32px。
  */
-export const TIME_DIVIDER_GAP = 5 * 60 * 1000;
+export const TIME_DIVIDER_GAP = GROUP_GAP_MS;
 
 /** 这一条前面要不要放时间分割行：没有上一条，或与上一条间隔达到阈值。 */
 export function shouldShowTimeDivider(ts: number, prevTs: number | null | undefined): boolean {

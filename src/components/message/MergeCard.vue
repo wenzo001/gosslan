@@ -25,6 +25,8 @@ const props = defineProps<{
   mine?: boolean;
   /** 从父层 MessageItem 透传的卡片样式（固定底色，不跟随 mine/other）。 */
   cardStyle?: CSSProperties;
+  /** 单聊显示气泡尾巴；群聊不显示（2026-10-23：群聊改为无尾巴的整体气泡）。 */
+  tail?: boolean;
 }>();
 const emit = defineEmits<{ (e: "open"): void }>();
 
@@ -69,6 +71,6 @@ const previewLines = computed(() =>
     </div>
     <!-- 指向发送者头像的小尖角（与文本/代码气泡同款 .bubble-tail）：卡片无描边，
          直接用标准 -5px 偏移即可贴合，尖角色取 --bubble-bg（= panel 底色）。 -->
-    <BubbleTail :mine="mine" />
+    <BubbleTail v-if="tail" :mine="mine" />
   </button>
 </template>

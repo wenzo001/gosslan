@@ -24,18 +24,19 @@
  * - 描边色取 `--bubble-line`（由 `useMessageDisplay` 按这条消息的边框色给出），
  *   自己的消息边框透明 ⇒ 描边也透明，只留填充。
  */
+// 2026-10-23：单聊去掉头像后，尾巴不再指头像，改成贴在气泡**底角向下**的弧形；
+// 群聊不渲染（`tail` 由 MessageItem 按 `isGroup` 给）。朝向靠 `.tail-mine { scaleX(-1) }` 镜像，
+// 形状只有一份 —— 两份路径迟早会漂。
 withDefaults(defineProps<{ mine?: boolean }>(), { mine: false });
 </script>
 
 <template>
   <span aria-hidden="true" class="bubble-tail" :class="mine ? 'tail-mine' : 'tail-other'">
     <svg viewBox="0 0 14 14">
-      <!-- 对方消息：尾巴在气泡左侧 -->
-      <path class="tail-fill tail-fill-other" d="M14 0H10C4 1 2 4 2 7c0 3 3 5 8 5h4z" />
-      <path class="tail-line tail-line-other" d="M10 0C4 1 2 4 2 7c0 3 3 5 8 5" />
-      <!-- 自己的消息：镜像到右侧 -->
-      <path class="tail-fill tail-fill-mine" d="M0 0h4c6 1 8 4 8 7 0 3-3 5-8 5H0z" />
-      <path class="tail-line tail-line-mine" d="M4 0c6 1 8 4 8 7 0 3-3 5-8 5" />
+      <!-- 一条向左下卷的弧：外缘从气泡底边 (10,0) 弯到 (2,12)，内缘收回顶边。
+           填充盖住气泡底边那一段边框 ⇒ 接缝处不会出现「气泡有线、尾巴没线」。 -->
+      <path class="tail-fill" d="M10 0C10 5 7 9 2 12C3 8 3 4 3 0Z" />
+      <path class="tail-line" d="M10 0C10 5 7 9 2 12" />
     </svg>
   </span>
 </template>

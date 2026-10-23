@@ -3549,7 +3549,12 @@ test("㊸ 真实树：阈值与判定只有 previewMetrics 一个家（分母现
     `只有 ${importers} 份生产文件调用 shouldShowTimeDivider（应为渲染端 + 估算端两份）⇒ 这条判据在空扫`,
   );
   const home = readFileSync(join(srcDir, HOME), "utf8");
-  assert.match(home, /export const TIME_DIVIDER_GAP = 5 \* 60 \* 1000;/);
+  // 2026-10-23：连续消息分组需要同一个 5 分钟窗，而 `messageKinds` 必须零 import（真值表用）。
+  // 于是**字面量挪到 messageKinds 的 GROUP_GAP_MS**，previewMetrics 只做别名 —— 值仍只有一处；
+  // 两头都钉住（少钉一头就会出现"别名指向不存在的常量"或"两个字面量各写一份"）。
+  const gapHome = readFileSync(join(srcDir, "utils/messageKinds.ts"), "utf8");
+  assert.match(gapHome, /export const GROUP_GAP_MS = 5 \* 60 \* 1000;/);
+  assert.match(home, /export const TIME_DIVIDER_GAP = GROUP_GAP_MS;/);
   assert.match(home, /return prevTs == null \|\| ts - prevTs >= TIME_DIVIDER_GAP;/);
   console.log(`· ㊸ 分母：生产文件 ${files.length} 份 / 调用那个家 ${importers} 份 / 违规 0`);
 });
@@ -5013,6 +5018,11 @@ test("气泡尖角：位置只有 style.css 那一个家，五处挂尖角的气
     "components/TodoCardBubble.vue"]
     .filter((rel) => /<BubbleTail\b/.test(readFileSync(join(srcDir691, rel), "utf8")));
   assert.equal(tailUsers.length, 5, "有气泡组件没有引用 BubbleTail：" + tailUsers.join(","));
+  // 群聊不显示尾巴：五处都必须带 v-if="tail"，开关由 MessageItem 按 isGroup 给。
+  for (const rel of tailUsers) {
+    const src = readFileSync(join(srcDir691, rel), "utf8");
+    assert.match(src, /<BubbleTail v-if="tail"/, `${rel} 的尾巴没有 tail 开关（群聊会漏出尾巴）`);
+  }
   assert.deepEqual(secondHomes, [], "这些组件又给 .bubble-tail 钉了一次 top/bottom ⇒ " + secondHomes.join(", "));
   // 正控：被删掉的那种形状必须认得出来（认不出 ⇒ 上面那条缺席断言在测空气）
   assert.ok(SECOND_HOME.test(".bubble-tail { top: auto; bottom: 12px; }"),
@@ -5024,9 +5034,17 @@ test("气泡尖角：位置只有 style.css 那一个家，五处挂尖角的气
   // 昵称会把尖角顶歪；少了 max，群聊尖角会有一半露到气泡上面 —— 用户 2026-10-23 两轮反馈）；
   // 末尾那 -1px 是让叶形的起笔点落在气泡**外框**上（描边才接得上气泡自己的边框）。
   const css = readFileSync(join(srcDir691, "style.css"), "utf8");
+  // 2026-10-23：单聊去掉头像后，尾巴不再指头像，改成**贴在气泡底角向下**。
+  // 这里钉的是新口径：定位只有 bottom 一处、且落在气泡外沿 7px（上半截压住底边描边）。
   assert.match(css,
-    /\.bubble-tail\s*\{[\s\S]{0,600}?top:\s*calc\(max\(0px,\s*calc\(12px - var\(--bubble-tail-offset, 0px\)\)\) - 1px\)/,
-    "style.css 里那条唯一的定位不在了（或被改回写死的 bottom / 丢了 max 夹紧）");
+    /\.bubble-tail\s*\{[\s\S]{0,600}?bottom:\s*-7px;/,
+    "style.css 里那条尾巴定位不在了（或被改回顶边/写死到别处）");
+  assert.match(css,
+    /\.tail-other\s*\{\s*left:\s*6px/,
+    "对方气泡的尾巴横向位置不在了");
+  assert.match(css,
+    /\.tail-mine\s*\{[\s\S]{0,120}?transform:\s*scaleX\(-1\)/,
+    "自己的尾巴必须靠镜像复用同一份形状（两条路径迟早会漂）");
 
   // 用户 2026-10-23（第二次）：「气泡有边框、尾巴没有 ⇒ 接缝对不上；上边不丝滑」。
   // 现在尾巴是 **SVG 叶形 + 1px 描边**：填充盖住气泡那段边框，描边把轮廓接成一条线。
