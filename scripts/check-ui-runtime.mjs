@@ -5342,6 +5342,171 @@ async function runRowPair(cdp, url) {
     "亮暗不同色", JSON.stringify({ light: lightMine && lightMine.mine.bg, dark: darkMine && darkMine.mine.bg }));
   await setTheme("theme", wasDark === true);
 
+  // ============ 连续消息组：组内/组间距、相邻圆角、身份信息各出现几次 ============
+  /*
+   * 这一段补的是前面所有段都量不到的一格：**多条消息同时挂在树上**时的相对几何。
+   * `mount()` 一次只挂一条，所以「组内 2~4px / 组间 8~12px」「相邻两侧压成小圆角」
+   * 「连续消息不重复展示头像与昵称」这几条设计口径一直没有运行时凭据 ——
+   * 单条挂载时上间距由 `needsTopPad && atGroupStart` 决定，而 atGroupStart 恰好恒真，
+   * 于是"间距变小"这件事在单挂形态下**根本不可能被观察到**（不是没测到，是没有）。
+   *
+   * 三条口径：
+   * 1. **档位由应用自己算**：这里的 first/middle/last/single 不是探针手写的，
+   *    而是在页面里 import 正牌 `messageKinds.groupSide` + `previewMetrics.shouldShowTimeDivider`
+   *    按 ChatWindow.groupSideAt 的同一条映射现算 —— 探的是「判定 → prop → CSS → 像素」整条链。
+   * 2. **只比相对量**：组内间距必须**严格小于**组间间距，且两侧都落在设计基线区间里；
+   *    不把 4/6/10px 写成第三个家（常数仍只在 messageKinds 与 style.css 那两处）。
+   * 3. **反向对照另挂一版**：同一组消息改成"全同一个发送者" ⇒ 原本那条组间距必须变成组内距、
+   *    头像与昵称必须从 2 个塌成 1 个。塌不动就说明这些读数与发送者归属无关，量具是假的。
+   */
+  const STACK = [
+    { sender: "peer-a", name: "甲" },
+    { sender: "peer-a", name: "甲" },
+    { sender: "peer-a", name: "甲" },
+    { sender: "peer-a", name: "甲" },
+    { sender: "peer-b", name: "乙" },
+  ];
+  /** 造出与 ChatWindow 喂给 MessageItem 完全同形的 props（prev 取上一条消息本体）。 */
+  const stackMsgs = (senders) => senders.map((sid, i) => ({
+    msg_id: "m-stack-" + i, sender_id: sid, kind: "text",
+    content: "第 " + (i + 1) + " 条：连续消息组的间距与圆角量具。",
+    ts: BASE + i * MIN, conv_id: "g-stack", seq: i + 1,
+  }));
+  /** 页面里现算档位：与 `ChatWindow.groupSideAt` 逐字段同形（unread 这一段恒为 -1，不带未读分界）。 */
+  const stackSides = (msgs) => cdp.eval(`(async () => {
+    const M = await import('/src/utils/messageKinds.ts');
+    const P = await import('/src/utils/previewMetrics.ts');
+    const msgs = ${JSON.stringify(msgs)};
+    const pick = (m) => (m ? { kind: m.kind, senderId: m.sender_id, ts: m.ts } : null);
+    return msgs.map((cur, index) => M.groupSide({
+      kind: cur.kind, senderId: cur.sender_id, ts: cur.ts,
+      prev: pick(msgs[index - 1]),
+      next: pick(msgs[index + 1]),
+      breakAbove: P.shouldShowTimeDivider(cur.ts, msgs[index - 1] ? msgs[index - 1].ts : null),
+      breakBelow: msgs[index + 1]
+        ? P.shouldShowTimeDivider(msgs[index + 1].ts, cur.ts) : false,
+    }));
+  })()`);
+  const stackMount = async (msgs, sides) => {
+    const props = msgs.map((m, i) => ({
+      message: m,
+      prev: i > 0 ? msgs[i - 1] : null,
+      isGroup: true,
+      groupSide: sides[i],
+      senderName: STACK[i].name,
+      canReact: false,
+    }));
+    const r = await cdp.eval("window.__probe.installMessages("
+      + JSON.stringify(JSON.stringify(props)) + ")");
+    await sleep(600);
+    return !!r && r.ok === true;
+  };
+  /**
+   * 逐条读气泡矩形 + 四角半径 + 昵称行，外加整列的头像数。
+   * 昵称行没有 data-* 锚点 ⇒ 按"该列里文本正好等于昵称的那个子节点"认（内容行文本更长，不会撞）。
+   *
+   * ⚠️ 间距量的是**「上一条气泡下沿 → 本条第一个可见块上沿」**（`gap`），不是气泡到气泡。
+   * 第一版量的后者，换发送者那一格读到 28px ⇒ 看着像"组间距做错了"，其实是**尺子把昵称行
+   * 算进了间距**：新的一组先画 18px 的身份行再画气泡，那 18px 是身份信息占的，不是留白。
+   * 设计口径里「组间距 8~12px」说的是两组**之间**的空，身份行属于下一组自己。
+   * 所以这里两列都留：`gap` 拿去断言，`bubbleGap`（气泡到气泡）只打印不判 —— 它就是观感上
+   * 那一屏的实际空档，将来要按它定口径得先改设计基线，不能悄悄换量具。
+   */
+  const stackGeom = () => cdp.eval(`(() => {
+    const cols = [...document.querySelectorAll('#probe-host [data-msg-col]')];
+    const rows = cols.map((col) => {
+      const bub = col.querySelector('.gosslan-bubble-text');
+      if (!bub) return null;
+      const r = bub.getBoundingClientRect();
+      const cr = col.getBoundingClientRect();
+      const cs = getComputedStyle(bub);
+      const nicks = [...col.children].filter((el) => {
+        const t = el.textContent.trim();
+        return t === '甲' || t === '乙';
+      }).length;
+      return {
+        pos: col.getAttribute('data-pos'),
+        top: +r.top.toFixed(1),
+        bottom: +r.bottom.toFixed(1),
+        colTop: +cr.top.toFixed(1),
+        radii: [cs.borderTopLeftRadius, cs.borderTopRightRadius,
+          cs.borderBottomRightRadius, cs.borderBottomLeftRadius].map((v) => parseFloat(v)),
+        nicks,
+      };
+    });
+    return { rows, avatars: document.querySelectorAll('#probe-host .gosslan-avatar-box').length };
+  })()`);
+  /** 组间/组内的留白：上一条气泡下沿 → 本条第一个可见块上沿。 */
+  const gapsOf = (rows) => rows.slice(1).map((r, i) => +(r.colTop - rows[i].bottom).toFixed(1));
+  /** 观感上的整段空档（含下一组的身份行）：只打印，不参与判定。 */
+  const bubbleGapsOf = (rows) => rows.slice(1).map((r, i) => +(r.top - rows[i].bottom).toFixed(1));
+  const tight = (v) => typeof v === "number" && v >= 5 && v <= 8;
+  const full = (v) => typeof v === "number" && v >= 17 && v <= 19;
+
+  const msgsMixed = stackMsgs(STACK.map((s) => s.sender));
+  const sidesMixed = await stackSides(msgsMixed);
+  check("连续消息组：判定端先给出预期档位（首/中/中/尾/独）",
+    Array.isArray(sidesMixed) && String(sidesMixed) === "first,middle,middle,last,single",
+    "first,middle,middle,last,single", JSON.stringify(sidesMixed));
+  check("连续消息组：五条挂上树", await stackMount(msgsMixed, sidesMixed), "installMessages ok", "");
+  const mixed = await stackGeom();
+  const gaps = gapsOf(mixed.rows || []);
+  console.log("  · 连续组读数：pos=" + JSON.stringify((mixed.rows || []).map((r) => r && r.pos))
+    + " 留白=" + JSON.stringify(gaps)
+    + " 含身份行的观感空档=" + JSON.stringify(bubbleGapsOf(mixed.rows || []))
+    + " 头像=" + mixed.avatars
+    + " 四角=" + JSON.stringify((mixed.rows || []).map((r) => r && r.radii)));
+  check("连续消息组：五条都在树上且档位逐条落进 data-pos",
+    (mixed.rows || []).length === 5
+      && String((mixed.rows || []).map((r) => r.pos)) === sidesMixed.join(","),
+    "5 行且 data-pos == 判定结果", JSON.stringify((mixed.rows || []).map((r) => r.pos)));
+  // 组内三格留白（0→1、1→2、2→3）：设计基线 2~4px。
+  check("连续消息组：组内相邻留白落在 2~4px（三格全查）",
+    gaps.slice(0, 3).every((g) => g >= 2 && g <= 4), "2~4", JSON.stringify(gaps.slice(0, 3)));
+  // 组间那一格（3→4，换发送者）：设计基线 8~12px，且必须**严格大于**组内。
+  check("连续消息组：换发送者那一格的组间留白落在 8~12px",
+    typeof gaps[3] === "number" && gaps[3] >= 8 && gaps[3] <= 12, "8~12", JSON.stringify({ gap: gaps[3] }));
+  check("连续消息组非空转：组间留白比组内至少大 4px",
+    typeof gaps[3] === "number" && gaps.slice(0, 3).every((g) => gaps[3] - g >= 4),
+    "差 >= 4", JSON.stringify({ gaps }));
+  // 相邻那一侧压成小圆角（5~8px），外侧仍是 17~19px 的胶囊。
+  const radiusOk = (row, wantTop, wantBottom) => !!row
+    && (wantTop ? tight(row.radii[0]) && tight(row.radii[1])
+      : full(row.radii[0]) && full(row.radii[1]))
+    && (wantBottom ? tight(row.radii[2]) && tight(row.radii[3])
+      : full(row.radii[2]) && full(row.radii[3]));
+  check("连续消息组：组首上圆角=胶囊、下圆角（接下一条）=小角",
+    radiusOk(mixed.rows[0], false, true), "上 17~19 / 下 5~8", JSON.stringify(mixed.rows[0] && mixed.rows[0].radii));
+  check("连续消息组：组中上下都压成小角",
+    radiusOk(mixed.rows[1], true, true) && radiusOk(mixed.rows[2], true, true),
+    "四角 5~8", JSON.stringify([mixed.rows[1] && mixed.rows[1].radii, mixed.rows[2] && mixed.rows[2].radii]));
+  check("连续消息组：组尾上小角、下胶囊",
+    radiusOk(mixed.rows[3], true, false), "上 5~8 / 下 17~19", JSON.stringify(mixed.rows[3] && mixed.rows[3].radii));
+  check("连续消息组：换发送者那条（独占一组）四角都是胶囊",
+    radiusOk(mixed.rows[4], false, false), "四角 17~19", JSON.stringify(mixed.rows[4] && mixed.rows[4].radii));
+  // 身份信息只在组首出现：4 条同一人 + 1 条换人 ⇒ 头像与昵称各 2，不是 5。
+  check("连续消息组：群头像只在组首出现（2 个而不是 5 个）",
+    mixed.avatars === 2, "2", JSON.stringify({ avatars: mixed.avatars }));
+  check("连续消息组：昵称只在组首出现（2 行而不是 5 行）",
+    (mixed.rows || []).reduce((n, r) => n + (r ? r.nicks : 0), 0) === 2,
+    "2", JSON.stringify((mixed.rows || []).map((r) => r && r.nicks)));
+
+  // ── 反向对照：全部同一个发送者 ⇒ 组距塌成组内距、身份塌成 1 ──
+  const msgsFlat = stackMsgs(STACK.map(() => "peer-a"));
+  const sidesFlat = await stackSides(msgsFlat);
+  check("连续消息组反向：同发送者时判定变成 首/中/中/中/尾",
+    String(sidesFlat) === "first,middle,middle,middle,last",
+    "first,middle,middle,middle,last", JSON.stringify(sidesFlat));
+  await stackMount(msgsFlat, sidesFlat);
+  const flat = await stackGeom();
+  const flatGaps = gapsOf(flat.rows || []);
+  console.log("  · 反向对照（全同一发送者）：间距=" + JSON.stringify(flatGaps) + " 头像=" + flat.avatars);
+  check("连续消息组反向：最后一条的间距跟着塌进组内区间（2~4px）",
+    flatGaps.every((g) => g >= 2 && g <= 4), "2~4", JSON.stringify(flatGaps));
+  check("连续消息组反向：头像与昵称各只剩 1 个（与上一条同组）",
+    flat.avatars === 1 && (flat.rows || []).reduce((n, r) => n + (r ? r.nicks : 0), 0) === 1,
+    "各 1", JSON.stringify({ avatars: flat.avatars, nicks: (flat.rows || []).map((r) => r && r.nicks) }));
+
   // 最后一挂是合并转发卡片那条 ⇒ 这张帧是"卡片 + 尖角"的形状。
   if (SHOT_PATH) {
     const shot = await cdp.send("Page.captureScreenshot", { format: "png" });

@@ -1048,18 +1048,13 @@ html.has-caption {
   left: 6px;
 }
 
-/* 连续消息合并：组内相邻边压到 6px。只作用于文本气泡 —— 图片/文件/合并/待办
-   各自是一张完整卡片，压平一角会让它看起来像"画错了"。 */
-.msg-stack[data-pos="middle"] .gosslan-bubble-text,
-.msg-stack[data-pos="last"] .gosslan-bubble-text {
-  border-top-left-radius: var(--gosslan-bubble-radius-tight);
-  border-top-right-radius: var(--gosslan-bubble-radius-tight);
-}
-.msg-stack[data-pos="middle"] .gosslan-bubble-text,
-.msg-stack[data-pos="first"] .gosslan-bubble-text {
-  border-bottom-left-radius: var(--gosslan-bubble-radius-tight);
-  border-bottom-right-radius: var(--gosslan-bubble-radius-tight);
-}
+/* 连续消息合并那一格：**这里没有规则**。四角（相邻侧收成 --gosslan-bubble-radius-tight、
+   外侧保持 --gosslan-bubble-radius）出自 `useMessageDisplay.bubbleStyle` 的**内联样式** ——
+   上一版把这些声明写在样式表的 `.msg-stack[data-pos=…] .gosslan-bubble-text` 上，
+   而同一个元素的 border-radius 本来就是内联的 ⇒ 内联压过样式表，四角恒为 18px，
+   规则形同废纸（2026-10-23 由探针的「连续消息组」那一格量出来）。
+   `data-pos` 仍然留在 DOM 上：它是"会话层的档位判定真的到了界面"的可见锚点，运行时探针按它逐条对账。
+   两个半径令牌的家还是下面 :root 那两行。 */
 /* 尖角那一侧的**上圆角**跟着尖角走 —— 值在 `useMessageDisplay` 的 bubbleStyle/cardStyle 里，
    不在这里：圆角是**内联样式**（主题预设也要读它），样式表规则压不过内联。
    群聊里尖角贴在气泡顶边，18px 胶囊在那个高度已收进 18px，圆弧尾巴接上去会露缝。 */
