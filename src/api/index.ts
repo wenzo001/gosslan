@@ -308,8 +308,9 @@ export const api = {
   windowToggleFullscreen: () => invoke<boolean>("window_toggle_fullscreen"),
   windowClose: () => invoke<void>("window_close"),
 
+  /** 取消一条文件传输：返回的是**台账**口径（这一单现在算不算被取消），不是"有没有命中在途任务"。 */
   cancelFileTransfer: (transferId: string) =>
-    invoke<boolean>("cancel_file_transfer", { transferId }),
+    invoke<{ cancelled: boolean; alreadyDone: boolean }>("cancel_file_transfer", { transferId }),
   sendFileAuto: (friendId: string, path: string) =>
     invoke<string>("send_file_auto", { friendId, path }),
   sendGroupFile: (groupId: string, path: string) =>

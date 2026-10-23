@@ -241,8 +241,8 @@ CASES: list[Case] = [
         "「用户取消发送」⇒ N 个成员里只有最后一个发得完（真机三成员群必现，且报错原因是假的）",
         file=TAURI / "src" / "commands" / "group_file_dispatch.rs",
         injections=[(
-            "let cancel_key = file::file_cancel_key(transfer_id, recipient);",
-            "let cancel_key = transfer_id.to_string();",
+            "let (mut cancel_rx, _cancel_slot) = file::install_cancel_slot(state, transfer_id, recipient);",
+            "let (mut cancel_rx, _cancel_slot) = file::install_cancel_slot(state, transfer_id, transfer_id);",
         )],
         cmd=cargo(
             "test",
@@ -321,7 +321,7 @@ CASES: list[Case] = [
         file=TAURI / "src" / "db" / "file_transfer.rs",
         injections=[(
             "             progress = excluded.progress\n"
-            "         WHERE file_transfers.status <> 'done'\",",
+            "         WHERE file_transfers.status <> 'done' AND file_transfers.cancel_terminal = 0\",",
             "             progress = excluded.progress\",",
         )],
         cmd=cargo("test", "--lib", "a_completed_transfer_row_is_never_downgraded"),
@@ -338,13 +338,108 @@ CASES: list[Case] = [
         "     注入方式：照那份建议把集合写成三个状态（编译照过、正向判据照绿），反向判据必须红。",
         file=TAURI / "src" / "db" / "file_transfer.rs",
         injections=[(
-            "         WHERE file_transfers.status <> 'done'\",",
-            "         WHERE file_transfers.status NOT IN ('done', 'failed', 'cancelled')\",",
+            "         WHERE file_transfers.status <> 'done' AND file_transfers.cancel_terminal = 0\",",
+            "         WHERE file_transfers.status NOT IN ('done', 'failed', 'cancelled')"
+            " AND file_transfers.cancel_terminal = 0\",",
         )],
         cmd=cargo("test", "--lib", "a_failed_row_can_be_reactivated_by_the_next_attempt"),
         cwd=TAURI,
         expect_fail_hint="改回 active",
         tags=["rust", "db", "files", "terminal-state", "new-guards"],
+    ),
+    # ---- B1：取消墓碑（`cancel_terminal`）一族，四格各管一条边界 ----
+    Case(
+        name="用户取消之后，晚到的进度/done 写不得把它复活",
+        why="取消信号是**异步**回流的：`cancel_file_transfer` 落库时投递任务还在链路上跑，"
+        "它带着上一轮进度（甚至带着这次真发完了的 done 判定）回来时，没有墓碑就会被写回\n"
+        "「发送中 92%」或「已完成」—— 用户看到的就是「按了取消它自己又活了」。\n"
+        "     注入方式：去掉 DO UPDATE 尾巴上那句 `AND cancel_terminal = 0`（最自然的「简化」：\n"
+        "     看着像重复的第二个条件），判据必须红。",
+        file=TAURI / "src" / "db" / "file_transfer.rs",
+        injections=[(
+            "         WHERE file_transfers.status <> 'done' AND file_transfers.cancel_terminal = 0\",",
+            "         WHERE file_transfers.status <> 'done'\",",
+        )],
+        cmd=cargo(
+            "test",
+            "--lib",
+            "a_user_cancelled_transfer_is_never_revived_by_a_late_write",
+        ),
+        cwd=TAURI,
+        expect_fail_hint="墓碑必须挡住晚到的",
+        tags=["rust", "db", "files", "terminal-state", "new-guards"],
+    ),
+    Case(
+        name="反向：自动判死（超时/放弃）不许盖墓碑 —— 断点续传的门得留着",
+        why="墓碑只属于「主动取消」。给自动 failed 也盖上，`retry_incomplete_content` 与\n"
+        "     下一次 attempt 就再也写不回 active —— 一次超时=永远停在失败，而字节其实还在流。\n"
+        "     这条是给「把墓碑条件顺手放宽成 changed」的下一次准备的（形状与上面那条反向一致）。\n"
+        "     注入方式：`if cancelled && changed && !already_done` 放宽成 `if changed`。",
+        file=TAURI / "src" / "db" / "file_transfer.rs",
+        injections=[(
+            "        if cancelled && changed && !already_done {",
+            "        if changed {",
+        )],
+        cmd=cargo("test", "--lib", "an_auto_expired_transfer_keeps_its_resume_door_open"),
+        cwd=TAURI,
+        expect_fail_hint="自动判死落 failed",
+        tags=["rust", "db", "files", "terminal-state", "new-guards"],
+    ),
+    Case(
+        name="已送达（done）那一单不许被盖上取消墓碑",
+        why="`changed` 在 done 行上也可以是 true：`upsert_transfer` 被 `status <> 'done'` 挡住时\n"
+        "     返回 Ok 且改 0 行 —— 所以「这一个动作是不是用户取消成功」不能只看 changed。\n"
+        "     少了单独的 `!already_done`，一个「已送达」的行会带着墓碑被读成「已取消」。\n"
+        "     注入方式：去掉 `&& !already_done`（留着的两个条件都还是 true，看着毫无线索）。",
+        file=TAURI / "src" / "db" / "file_transfer.rs",
+        injections=[(
+            "        if cancelled && changed && !already_done {",
+            "        if cancelled && changed {",
+        )],
+        cmd=cargo(
+            "test",
+            "--lib",
+            "a_cancel_on_an_already_done_transfer_writes_no_tombstone",
+        ),
+        cwd=TAURI,
+        expect_fail_hint="已送达的行不许被盖上取消墓碑",
+        tags=["rust", "db", "files", "terminal-state", "new-guards"],
+    ),
+    Case(
+        name="抢占 outbox 行必须如实回报「有没有真的迁移成功」",
+        why="取消可能发生在 `list_pending_file_outbox` 之后、这一笔之前：`WHERE status='pending'`\n"
+        "     让 UPDATE 改 0 行（数据库侧是对的），但旧签名 `Result<()>` 让调用方看不出来，\n"
+        "     照样把整份文件发出去 —— 用户按了取消，对面还是收到一份完整文件（快照竞态）。\n"
+        "     注入方式：`Ok(n > 0)` 改成恒真 `Ok(true)`（编译照过、队列照样只认 pending）。",
+        file=TAURI / "src" / "db" / "file_offline.rs",
+        injections=[("    Ok(n > 0)", "    Ok(true)")],
+        cmd=cargo(
+            "test",
+            "--lib",
+            "claiming_an_outbox_row_reports_whether_it_was_actually_claimed",
+        ),
+        cwd=TAURI,
+        expect_fail_hint="必须报 false",
+        tags=["rust", "db", "files", "terminal-state", "new-guards"],
+    ),
+    Case(
+        name="取消优先于重试预算：裁决必须是 Cancelled 不是 GiveUp",
+        why="`cancelled` 也是 `retryable=false`。若裁决先走 `!retryable` 那一格，取消就顺着\n"
+        "     `GiveUp` 落库口径写成 failed 并把进度打回 0%（INV-P26 说的正是这两件事不许混）。\n"
+        "     注入方式：把那一格短路成 `if false` —— 三个断言里第一个就会红。",
+        file=TAURI / "src" / "network" / "file.rs",
+        injections=[(
+            "    if err.cancelled {\n        return RetryVerdict::Cancelled;\n    }",
+            "    if false {\n        return RetryVerdict::Cancelled;\n    }",
+        )],
+        cmd=cargo(
+            "test",
+            "--lib",
+            "a_user_cancel_never_enters_the_retry_queue_and_is_not_a_failure",
+        ),
+        cwd=TAURI,
+        expect_fail_hint="取消必须判成 Cancelled",
+        tags=["rust", "file", "terminal-state", "new-guards"],
     ),
     Case(
         name="用户取消不得记成失败（file_outbox 的 cancelled 与 failed 是两个口径）",

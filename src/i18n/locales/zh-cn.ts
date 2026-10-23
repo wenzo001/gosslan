@@ -628,8 +628,10 @@ export const zhCN: MessageDict = {
   // 英文界面下会看到中文 toast —— 而同一函数里 @cancel 的入口文案走了 t()，自相矛盾。
   // 不复用 `msg.canceled`：那条是"已取消发送"（onFileCancelled 的事件提示），
   // 而这三条讲的是"用户点了取消之后发生了什么"，语义不同、语气也不同。
+  // `alreadyDone` 取代旧的 `alreadyEnded`（"标记为已取消（传输可能已结束）"）：
+  // 后端现在按台账回答，"可能已结束"这种含糊话不再需要 —— 已收完就是收完了。
   "msg.cancelSend.requested": "已请求取消发送",
-  "msg.cancelSend.alreadyEnded": "标记为已取消（传输可能已结束）",
+  "msg.cancelSend.alreadyDone": "这一单已经传完，无法取消",
   "msg.cancelSend.fail": "取消发送失败",
   "msg.reactionToggle": "切换回应 {emoji}",
   "msg.reactionWho": "{n} 人回应",

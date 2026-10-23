@@ -820,10 +820,10 @@ function doCancelSend() {
   else if (mid.startsWith("gfile-")) transferId = mid.slice(6);
   if (!transferId) return;
   api.cancelFileTransfer(transferId).then(
-    (signalled) => {
+    (res) => {
       app.toast(
-        t(signalled ? "msg.cancelSend.requested" : "msg.cancelSend.alreadyEnded"),
-        "info",
+        t(res.alreadyDone ? "msg.cancelSend.alreadyDone" : "msg.cancelSend.requested"),
+        res.alreadyDone ? "info" : "success",
       );
     },
     (e: unknown) => app.toastError(e, t("msg.cancelSend.fail")),

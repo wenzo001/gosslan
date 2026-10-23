@@ -53,6 +53,12 @@ pub async fn send_file_from_path_at(
         ),
     );
 
+    // ---- 用户取消登记（提前到哈希之前）----
+    // 整文件 SHA-256 是这条链路上最长的一段静默（600MB 要几十秒到几分钟），槽位若等哈希
+    // 结束才登记，这段时间里用户点的"取消"会静默丢掉 —— 界面上的表现就是"按了没反应"，
+    // 而哈希跑完照样把整份文件灌上链路。键含收件人：见 `file_cancel_key`。
+    let (mut cancel_rx, _cancel_slot) = install_cancel_slot(state, transfer_id, peer_id);
+
     // ---- E2EE：本 transfer 独立的随机文件会话密钥（CSPRNG），仅存内存 ----
     let file_key = crypto::random_key();
     // 整文件哈希放阻塞线程池（群路径 group_announcements.rs 早就是这么做的）：这是 async
@@ -62,6 +68,11 @@ pub async fn send_file_from_path_at(
         .await
         .map_err(|e| SendFileError::permanent(format!("哈希任务失败：{e}")))?
         .map_err(SendFileError::permanent)?;
+    // 哈希期间被取消也要当场停：后面每一段（Offer 等待、分片循环、FileDone、ACK 等待）
+    // 都各自盯这个槽位，唯独这一段是同步阻塞、盯不到 —— 所以补这一格检查。
+    if cancel_requested(&mut cancel_rx) {
+        return Err(SendFileError::cancelled("用户取消发送"));
+    }
     // 发送行的 sha256 在建记录时是空的（不能让气泡等一次 O(体积) 扫描），这里用真正用于
     // 校验的那份补上 —— 同一值、幂等，重试的后续尝试进来也是 no-op。
     // 气泡的 size 同理：建行时写的是点击那一刻的磁盘大小；源文件在发送前变小/变大时，
@@ -155,22 +166,7 @@ pub async fn send_file_from_path_at(
     }
 
     let _ = from_seq;
-    // ---- 用户取消注册表（L3 fix: 提前到 deadline 外层注册，覆盖 E2E） ----
-    // 键含收件人：见 `file_cancel_key`（单键会让同 transfer_id 的并发投递互相挤掉登记）。
-    let cancel_key = file_cancel_key(transfer_id, peer_id);
-    let (cancel_tx, mut cancel_rx) = tokio::sync::oneshot::channel::<()>();
-    state
-        .file_send_cancels
-        .lock()
-        .unwrap_or_else(|e| e.into_inner())
-        .insert(cancel_key.clone(), cancel_tx);
-    let cancel_cleanup = || {
-        state
-            .file_send_cancels
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .remove(&cancel_key);
-    };
+    // 取消槽位在哈希之前登记（见上面 `install_cancel_slot`），回收由守卫负责。
 
     // ---- 整体 deadline（L3 fix: 从 Offer 循环入口开始计时，覆盖 E2E） ----
     // 之前 FILE_SEND_DEADLINE 只包住 stream_file（Offer 接受后），
@@ -188,7 +184,7 @@ pub async fn send_file_from_path_at(
         // 就从该偏移续发 —— 发送端永远以接收端的真实进度为准，绝不重头覆盖。
         let mut resume_from = from_bytes;
         for _attempt in 0..3 {
-            let (tx, rx) = tokio::sync::oneshot::channel::<Result<(), u64>>();
+            let (tx, mut rx) = tokio::sync::oneshot::channel::<Result<(), u64>>();
             state
                 .pending_file_accept
                 .lock()
@@ -225,7 +221,16 @@ pub async fn send_file_from_path_at(
                     "[FILE] offer SENT peer={peer_id} tid={transfer_id} waiting FileAccept (15s)"
                 ),
             );
-            match tokio::time::timeout(Duration::from_secs(15), rx).await {
+            // Offer 等待也要盯取消（B1）：这一段原来是整条链上唯一"取消进不去"的等待 ——
+            // 15s × 3 次重投最坏 45s 里，用户点了取消界面不动，因为这里只在等 `rx`。
+            let accept = tokio::select! {
+                biased;
+                _ = &mut cancel_rx => {
+                    return Err(SendFileError::cancelled("用户取消发送"));
+                }
+                res = tokio::time::timeout(Duration::from_secs(15), &mut rx) => res,
+            };
+            match accept {
                 Ok(Ok(Ok(()))) => {
                     state.logger.info(
                         "file",
@@ -292,9 +297,9 @@ pub async fn send_file_from_path_at(
     })
     .await;
 
-    // 无论成功、失败还是 timeout，都从 state 里移除 cancel sender。
-    // timeout 时内部 stream_file/Offer 循环被 drop，但 sender 已注册 —— 必须显式清理。
-    cancel_cleanup();
+    // 取消槽位的回收由 `_cancel_slot` 守卫在函数退出时做 —— 包括上面那个整轮 deadline
+    // 丢掉内层 future 的情况（旧写法是手写 `cancel_cleanup()` 在这里调一次，
+    // 那种写法只在"走到函数末尾"时生效）。
     // 同一件事对 accept 等待者：外层 timeout 丢掉内层 future 时，Offer 循环自己的
     // remove 分支根本走不到 ⇒ 这里无条件再摘一次（键是 transfer_id，下一次重投会重建）。
     state
@@ -489,7 +494,7 @@ async fn stream_file(
         // biased: cancel 优先，避免与文件读公平竞争导致取消延迟。
         let n = tokio::select! {
             biased;
-            _ = &mut *cancel_rx => return Err(SendFileError::permanent("用户取消发送")),
+            _ = &mut *cancel_rx => return Err(SendFileError::cancelled("用户取消发送")),
             _ = &mut ack_rx => {
                 // 接收端已对某一片判死并回了否定确认 ⇒ 立刻停手，别再把剩余字节灌进一条
                 // 已经死掉的传输。旧行为：整份发完 → FileDone 无人应答 → 干等一个
@@ -518,7 +523,7 @@ async fn stream_file(
         // 等待期间每 `FILE_STALL_TICK` 醒一次做停滞检查 —— 对端不收时这里就是唯一的观测点。
         tokio::select! {
             biased;
-            _ = &mut *cancel_rx => return Err(SendFileError::permanent("用户取消发送")),
+            _ = &mut *cancel_rx => return Err(SendFileError::cancelled("用户取消发送")),
             r = crate::network::transport::send_on_link_with_tick(
                 &link,
                 &chunk,
@@ -605,7 +610,7 @@ async fn stream_file(
     };
     tokio::select! {
         biased;
-        _ = &mut *cancel_rx => return Err(SendFileError::permanent("用户取消发送")),
+        _ = &mut *cancel_rx => return Err(SendFileError::cancelled("用户取消发送")),
         r = send_on_link(&link, &done) => {
             r.map_err(SendFileError::retryable)?;
         }
@@ -613,7 +618,7 @@ async fn stream_file(
     // wait_complete_ack 也支持 cancel —— ack 窗口最长 ~90s，用户不想等就该立刻释放。
     let completed = tokio::select! {
         biased;
-        _ = &mut *cancel_rx => return Err(SendFileError::permanent("用户取消发送")),
+        _ = &mut *cancel_rx => return Err(SendFileError::cancelled("用户取消发送")),
         done = wait_complete_ack(state, transfer_id, peer_id, ack_rx) => done,
     };
     // 进展记录与完成登记都由各自的守卫在离开作用域时回收（成功与所有失败路径同一处）。

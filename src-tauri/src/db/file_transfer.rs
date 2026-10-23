@@ -29,6 +29,10 @@ pub fn upsert_transfer(
     //   `cascade_tests::a_completed_transfer_row_is_never_downgraded`（正向）与
     //   `cascade_tests::a_failed_row_can_be_reactivated_by_the_next_attempt`（反向，
     //   专门给"顺手扩大集合"的下一次准备）。
+    //
+    //   `cancel_terminal=1` 是**唯一例外**：只有用户/对端主动取消会置位；它必须挡住
+    //   后续 active/done 的晚到写，否则取消只是界面状态。自动 failed（超时/放弃）
+    //   不置位，仍可续传。
     conn.execute(
         "INSERT INTO file_transfers(id, peer_id, name, size, direction, status, path, progress, created_at)
          VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
@@ -36,7 +40,7 @@ pub fn upsert_transfer(
              size = excluded.size,
              path = COALESCE(excluded.path, file_transfers.path),
              progress = excluded.progress
-         WHERE file_transfers.status <> 'done'",
+         WHERE file_transfers.status <> 'done' AND file_transfers.cancel_terminal = 0",
         params![id, peer_id, name, size as i64, direction, status, path, progress, now_ms()],
     )?;
     Ok(())
@@ -180,6 +184,21 @@ pub fn finalize_file_failure(
     }
 
     if changed || already_done {
+        // 主动取消的终态墓碑。三条限制都是语义：
+        //  · `cancelled`：自动超时/重试耗尽**不盖**墓碑 —— 那些行要能被下一轮 attempt
+        //    复活（断点续传 + `retry_incomplete_content` 复用同一个 transfer_id）。
+        //  · `changed`：只对真的推进了的状态写，失败重放时不重复盖。
+        //  · `!already_done`：已收完的那一单没有"被取消"这回事。注意 `changed` 在 done 行上
+        //    也可以是 true（`upsert_transfer` 被 `status <> 'done'` 挡住时返回 Ok 且改 0 行），
+        //    所以这一条必须单独判，否则一个"已送达"的行会带着墓碑被读成"已取消"。
+        //    判据：`cascade_tests::a_cancel_on_an_already_done_transfer_writes_no_tombstone`。
+        // 顺序：墓碑 → 关队列行 —— 关行是破坏性写，永远排最后。
+        if cancelled && changed && !already_done {
+            conn.execute(
+                "UPDATE file_transfers SET cancel_terminal = 1 WHERE id = ?1",
+                params![transfer_id],
+            )?;
+        }
         // ★ 永远排在最后
         match end {
             FileJobEnd::Cancelled => mark_file_outbox_cancelled(conn, transfer_id)?,

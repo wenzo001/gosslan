@@ -2820,13 +2820,17 @@ export const useChatStore = defineStore("chat", () => {
       },
       onFileCancelled: (transferId) => {
         // 后端 cancel_file_transfer emit 的：用户手动取消了一条文件发送
-        // 前端把这条消息标记 failed（如果还在发送中）+ 刷新列表
+        // 前端把这条消息在**所有**缓存会话里标成 cancelled + 刷新传输列表。
+        // ⚠️ 写 `cancelled` 不是 `failed`：库里那一笔写的就是 cancelled（INV-P26 把
+        // 「用户主动取消」与「自动判死」分成两个口径），而 `loadMessages` 只对当前在看的
+        // 会话重查 ⇒ 以前写 failed 时，没在看的会话会把"已取消"一直显示成"发送失败"，
+        // 直到用户下次打开那个会话才被库里的真值纠正过来。
         for (const [, msgs] of Object.entries(messages.value)) {
           const msg = msgs.find(m =>
             m.msg_id === `file-${transferId}` || m.msg_id === `gfile-${transferId}`
           );
           if (msg) {
-            msg.status = "failed";
+            msg.status = "cancelled";
             app.toast(t("msg.canceled"), "info");
           }
         }
@@ -2842,7 +2846,7 @@ export const useChatStore = defineStore("chat", () => {
       },
       onMessageStatusChanged: (msgId) => {
         // 后端 emit 的状态变更事件 —— 我们直接从数据库拉最新状态覆盖本地
-        // 目前只在 cancel_file_transfer 里发（cancel 后 mark failed，前端同步一下）
+        // 目前只在 cancel_file_transfer 里发（取消后库里落 cancelled，前端同步一下）
         // 只处理**活跃**会话：loadMessages 的结果对非活跃会话必被 activeConv
         // 守卫丢弃（两次 IPC 纯浪费），而且切换回来时 openConversation 会重查。
         // （修复前它还会顺带把全局 loadSeq +1，取消活跃会话飞行中的加载 →

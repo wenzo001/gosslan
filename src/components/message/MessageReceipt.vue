@@ -7,7 +7,7 @@ import { useExclusivePopup } from "@/composables/useExclusivePopup";
 import { PopoverContent, PopoverPortal, PopoverRoot, PopoverTrigger } from "reka-ui";
 import { avatarSeedFor } from "@/utils/avatarSeed";
 import type { SendState } from "@/composables/useMessageDisplay";
-import { CheckCheck } from "lucide-vue-next";
+import { Ban, CheckCheck } from "lucide-vue-next";
 import { Check } from "@/components/ui/icons";
 import { X } from "@/components/ui/icons";
 
@@ -162,6 +162,19 @@ function readerAvatar(id: string): string | null {
       :aria-label="title"
     >
       <X class="h-4 w-4" stroke-width="2.5" />
+    </span>
+    <!-- 已取消：静态指示。本仓没有"把一条已取消的文件发送重新点起来"这条通道
+         （`retrySend` 第一行就对 kind==="file" return），给按钮就是界面在撒谎。
+         形状与失败同一族、颜色不同：用户自己按下的取消不是错误（INV-P26 把这两格分开记），
+         所以它要**看得见**，但不该被 danger 红吓用户。 -->
+    <span
+      v-else-if="state === 'cancelled'"
+      class="flex h-5 w-5 items-center justify-center text-[var(--gosslan-text-2)]"
+      role="img"
+      :title="title"
+      :aria-label="title"
+    >
+      <Ban class="h-4 w-4" stroke-width="2.5" />
     </span>
     <span v-else class="relative flex items-center" role="img" :title="title" :aria-label="title">
       <!-- 状态切换给一次短促的弹入：单勾→双勾→主题色双勾是聊天里最常盯的一处，

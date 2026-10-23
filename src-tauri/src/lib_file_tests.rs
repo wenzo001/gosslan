@@ -83,22 +83,83 @@ fn receiver_abort_notifies_the_sender_inside_the_loop() {
     );
 }
 
-/// P3-05：整轮超时会把内层 future 丢掉，Offer 等待者的清理分支不会执行。
-/// 外层必须无条件再摘一次（键是 transfer_id，下一次重投会重建）。
+/// P3-05：整轮超时会把内层 future 丢掉，Offer 等待者的清理分支不会执行 ⇒ 外层必须
+/// 无条件再摘一次（键是 transfer_id，下一次重投会重建）。
+///
+/// B1 换了这段的形状，判据跟着换，**不是放宽**：
+///  · 旧写法拿 `cancel_cleanup();` 当"收尾段起点"的位置锚 —— 那个手写闭包已被
+///    `install_cancel_slot` 的 RAII 守卫取代（判据 `cancel_slot_has_exactly_one_home`），
+///    它本来也管不到"内层 future 被 drop"那一格，正是这次要修的；
+///  · 这里剩下的那件事照旧钉：accept 等待者的摘除必须排在整轮 timeout **之后**；
+///  · 另加一条反向位置判据：取消槽位必须登记在 timeout 之前，否则哈希与 Offer 等待
+///    期间的取消没有接收者（用户点了没反应，文件照发）。
 #[test]
 fn offer_timeout_clears_the_accept_registration() {
     let f = code_flat(&crate::network::file_src_for_guards());
     let at = f
         .find("timeout(send_deadline,async{")
         .expect("offer 整轮的超时锚点改名/搬家了 ⇒ 同步改这条判据");
-    let tail = &f[at..];
-    let cancel = tail
-        .find("cancel_cleanup();")
-        .expect("超时之后必须有 cancel_cleanup()（同一段收尾）");
     assert!(
-        tail[cancel..].contains("pending_file_accept.lock()"),
+        f[..at].contains("install_cancel_slot(state,transfer_id,peer_id)"),
+        "取消槽位必须登记在整轮 timeout 之前：哈希/Offer 期间的取消要有接收者，否则静默丢掉"
+    );
+    assert!(
+        f[at..].contains("pending_file_accept.lock()"),
         "超时收尾必须摘掉可能还挂着的 accept 等待者（内层 future 被 drop 时它走不到）"
     );
+}
+
+/// 取消槽位的登记与回收**只有一个家**（B1）。
+///
+/// 三条投递路径原先三种写法：群投递已经是 RAII 守卫，单聊直发与中继直发各手写一个
+/// 清理闭包、在函数末尾调一次。闭包那一族的失效形状是这一族反复付过钱的：
+/// 外层 `timeout(deadline, async {…})` 触发时内层 future 被直接 drop，函数末尾那句
+/// 照样执行 ⇒ 槽位残留、表单调增长；而同键的下一次 `insert` 把残留 `Sender` 挤掉，
+/// 对方的 rx 当场以 `Err(RecvError)` 完成 ⇒ 下一次投递"一进来就被取消"。
+///
+/// ⚠️ 用**去掉整行注释**后的文本判定：缺席型判据吃全文的话，任何一句"这里以前写着 X"
+/// 的说明都会把自己判红（本仓踩过 —— 注释里的名字不是代码里的名字）。
+#[test]
+fn cancel_slot_has_exactly_one_home() {
+    let code_only = |src: &str| -> String {
+        src.lines()
+            .map(str::trim_start)
+            .filter(|t| !(t.starts_with("//") || t.starts_with("/*") || t.starts_with('*')))
+            .flat_map(|t| t.chars().filter(|c| !c.is_whitespace()))
+            .collect()
+    };
+    let file_src = code_only(&crate::network::file_src_for_guards());
+    let dispatch = code_only(include_str!("commands/group_file_dispatch.rs"));
+    assert_eq!(
+        file_src.matches("fninstall_cancel_slot").count(),
+        1,
+        "登记 + 回收的那个家必须恰好一个实现（出现第二个就是同一件事两个口径）"
+    );
+    // 三个调用点：单聊直发、中继直发、群投递（定义那处带 `state:` 不是 `state,`，不计入）。
+    assert_eq!(
+        file_src
+            .matches("install_cancel_slot(state,transfer_id,")
+            .count(),
+        2,
+        "单聊直发与中继直发都必须由这个家登记（少一处就是那条路径还自己手写一份）"
+    );
+    assert!(
+        dispatch.contains("install_cancel_slot(state,transfer_id,recipient)"),
+        "群投递必须由同一个家登记，键仍按收件人"
+    );
+    assert!(
+        !dispatch.contains("CancelSlotGuard"),
+        "群投递不许再自带一份取消槽守卫：守卫只有一个家"
+    );
+    for (name, src) in [
+        ("network/file.rs（send + relay_push）", file_src.clone()),
+        ("commands/group_file_dispatch.rs", dispatch.clone()),
+    ] {
+        assert!(
+            !src.contains("cancel_cleanup"),
+            "{name} 的代码里不许再出现手写清理：整轮超时丢掉内层 future 时它走不到"
+        );
+    }
 }
 
 /// **群文件投递的取消登记必须按 (transfer_id, recipient) 分键**（真机：三成员以上
@@ -111,15 +172,27 @@ fn offer_timeout_clears_the_accept_registration() {
 /// 只能钉源码：这是语言级细节，行为测试要先构造出"顶替"才看得到。
 #[test]
 fn group_file_cancel_registry_is_scoped_per_recipient() {
+    // B1 起登记与键都收进了那个唯一的家，所以两头一起钉：调用方必须把 recipient 传进去，
+    // 家内部必须用 `file_cancel_key(transfer_id, recipient)` 成键。只钉一头的话，
+    // "调用方传了 recipient 但家里改回裸 id"或"键正确但某条路径不走家"都能溜过去。
     let dispatch = code_flat(include_str!("commands/group_file_dispatch.rs"));
     let fanout = code_flat(include_str!("commands/group_announcements.rs"));
+    let file_src = code_flat(&crate::network::file_src_for_guards());
     assert!(
-        dispatch.contains("file_cancel_key(transfer_id,recipient)"),
+        dispatch.contains("install_cancel_slot(state,transfer_id,recipient)"),
         "群投递的取消登记必须带 recipient（否则同 transfer_id 的任务互相挤掉登记）"
+    );
+    assert!(
+        file_src.contains("letkey=file_cancel_key(transfer_id,recipient)"),
+        "取消登记的家必须按 (transfer_id, recipient) 成键"
     );
     assert!(
         !dispatch.contains(".insert(transfer_id.to_string(),cancel_tx)"),
         "不得回退成 transfer_id 单键"
+    );
+    assert!(
+        !dispatch.contains(".insert(transfer_id.to_string(),"),
+        "群投递不许自己往任何内存表按裸 transfer_id 登记取消槽"
     );
     // ★ 出错必须落终态，而且**两条投递路径共用同一个裁决**（#154-4）。
     // 原先只有群发那条写状态、且按错误**文案**猜 cancelled/failed；离线补发那条
@@ -240,8 +313,9 @@ fn group_file_send_concurrency_is_gated_at_the_scheduler() {
     );
     // 取消槽位必须在**并发闸之前**登记：排队期间点"取消发送"时，信号才有接收者。
     // 顺序用位置判（两处都在，但挪回闸后时数量不变、只有顺序变）。
+    // B1 起登记走那个唯一的家（`file::install_cancel_slot`），键仍按收件人。
     let cancel_at = dispatch
-        .find("file::file_cancel_key")
+        .find("file::install_cancel_slot(state,transfer_id,recipient)")
         .expect("取消登记不见了");
     let gate_at = dispatch
         .find("group_file_permits.acquire()")
@@ -251,8 +325,8 @@ fn group_file_send_concurrency_is_gated_at_the_scheduler() {
         "取消登记必须排在并发闸之前（否则排队期间的取消被静默丢掉）"
     );
     assert!(
-        dispatch.contains("CancelSlotGuard") && !dispatch.contains("cancel_cleanup"),
-        "取消槽位必须 RAII 回收，不得手写清理"
+        !dispatch.contains("file_send_cancels"),
+        "群投递不许直接碰取消表：登记与回收只有 install_cancel_slot 一个家"
     );
 }
 

@@ -57,8 +57,9 @@ const cancelling = ref<string | null>(null);
 /**
  * 取消一条仍在排队/发送中的文件。
  *
- * 复用 `cancel_file_transfer`（它会发在途取消信号、走终态出口并 emit），
- * 即使 `signalled=false` 也会把台账落 cancelled —— 用户按了取消，界面必须响应。
+ * 复用 `cancel_file_transfer`（它会发在途取消信号、走终态出口并 emit）。
+ * 返回的是台账口径：排队中的任务没有"在途信号"可发，但取消照样成立 ⇒ 这里不看返回值，
+ * 只在意后的 `refreshTransfers()` 把列表刷新成库里的真状态。
  */
 async function cancelRow(row: TransferInfo) {
   if (cancelling.value) return;

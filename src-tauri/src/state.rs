@@ -1326,9 +1326,13 @@ pub struct AppState {
     /// 一对一文件离线投递进行中标记：同一 peer 同时最多一个投递任务。
     pub file_sending: Mutex<std::collections::HashSet<String>>,
     /// 文件发送取消信号注册表：transfer_id -> oneshot Sender。
-    /// 用户点"取消发送"时我们 send(())，send_file_from_path_deadline_inner 的 chunk loop
-    /// 里 select! 这个信号，cleanup + 返回 retryable 让 outbox 走超限失败。
-    /// （取消不会直接 mark failed —— 让它走正常 outbox 路径，cancel 只是"让这次尝试立刻返回"。）
+    /// 用户点"取消发送"时我们 send(())，三条投递路径（单聊直发 / 中继直发 / 群投递）
+    /// 在哈希、排队、Offer 等待、分片循环、ACK 等待每一段都盯这一格。
+    /// 取消**不是**"让这次尝试立刻返回然后交给 outbox 判死"：投递任务带着
+    /// `SendFileError::cancelled` 退出，调用方按 `RetryVerdict::Cancelled` 落 `cancelled`
+    /// 终态（INV-P26：取消不许记成 failed），同时 `cancel_file_transfer` 已经先把
+    /// `cancel_terminal` 墓碑写好 ⇒ 任何晚到的 attempt 都改不回 active。
+    /// 登记与回收只此一个家：`network::file::install_cancel_slot`。
     pub file_send_cancels: Mutex<HashMap<String, tokio::sync::oneshot::Sender<()>>>,
     /// 群文件接收端 `.part` 状态：transfer_id -> 接收状态。
     /// 与一对一 `file_receivers` 生命周期独立；复用 FileReceiver 结构

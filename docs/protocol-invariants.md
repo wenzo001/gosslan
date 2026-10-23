@@ -1102,10 +1102,31 @@ mesh 没有服务器也没有强制升级 ⇒ 混合版本是常态，不是边�
 * **emit 由写库结果门控**（与 INV-P15 / 审计 A3 同一口径）：已经 `done` 的行没被改动，
   就不该为它发 `file-failed`。为一个躺在下载目录里能打开的文件弹"传输失败"是谎话。
 
-**非空转证明**：两条 `verify-guards` 变异用例 —— 摘掉 `WHERE status <> 'done'` ⇒ 正向判据红；
-照本条落地前的建议把集合写成 `NOT IN ('done','failed','cancelled')` ⇒ 反向判据红。
+**用户主动取消是第二个不可降级条件（2026-10-23 B1）**：`done` 的证据在磁盘上，
+而 `cancelled` 的证据是**用户这个动作本身** —— 它一旦成立，就不该被一个更晚到达的
+异步写推翻。这一格以前只能靠"谁最后写"决定，所以真机形状是：按了取消 → 界面闪一下
+"已取消" → 上一轮 attempt 的进度回来又变成"发送中 92%"。落法：
 
-- 钩子：`guards:upsert_transfer 的「done 不可降级」闸门不得被摘掉` `db::cascade_tests::a_completed_transfer_row_is_never_downgraded` `db::tests::complete_ack_failure_cannot_downgrade_completed`
+* 台账加一列 `file_transfers.cancel_terminal`（迁移 v11→v12，**只由**主动取消置位），
+  `upsert_transfer` 的闸门扩成 `status <> 'done' AND cancel_terminal = 0`。
+* 墓碑**只属于主动取消**：`Expired` / `GiveUp`（自动判死）不置位 ⇒ 上面那条
+  "failed 必须还能改回 active"一字未动。已 `done` 的行也不置位（它没有被取消这回事，
+  而 `changed` 在这一格可以是 true —— `upsert_transfer` 被 `done` 挡住时返回 Ok 且改 0 行）。
+* 投递侧的取消退出是**第三种**错误种类（`SendFileError::cancelled` ⇒ `RetryVerdict::Cancelled`），
+  不再复用 `permanent`：取消不许进重试队列，也不许顺着 `GiveUp` 落 `failed`。
+* 取消槽位（`file_send_cancels`）的登记与回收只有一个家
+  （`network/file::install_cancel_slot`），且登记排在**任何慢步骤之前**
+  （整文件哈希 / 群发并发闸排队 / Offer 等待）—— 否则那段时间的取消静默丢掉。
+
+**非空转证明**：`verify-guards` 变异用例 —— 摘掉 `WHERE status <> 'done'` ⇒ 正向判据红；
+照本条落地前的建议把集合写成 `NOT IN ('done','failed','cancelled')` ⇒ 反向判据红；
+去掉 `AND cancel_terminal = 0` ⇒ 晚到的进度写复活已取消的行（正向）；
+把墓碑条件放宽成 `if changed` ⇒ 自动判死的行被盖上墓碑、续传的门被关掉（反向）；
+去掉 `&& !already_done` ⇒ 已送达的行被盖上取消墓碑；
+`mark_file_outbox_sending` 的 `Ok(n > 0)` 改成恒真 ⇒ 抢占回报失真（快照竞态复活）；
+`send_retry_verdict` 里取消那一格短路 ⇒ 取消被重试上限改写成失败。
+
+- 钩子：`guards:upsert_transfer 的「done 不可降级」闸门不得被摘掉` `db::cascade_tests::a_completed_transfer_row_is_never_downgraded` `db::tests::complete_ack_failure_cannot_downgrade_completed` `db::cascade_tests::a_user_cancelled_transfer_is_never_revived_by_a_late_write` `db::cascade_tests::a_cancel_on_an_already_done_transfer_writes_no_tombstone` `db::cascade_tests::claiming_an_outbox_row_reports_whether_it_was_actually_claimed` `network::file::tests::a_user_cancel_never_enters_the_retry_queue_and_is_not_a_failure` `tests::cancel_slot_has_exactly_one_home`
 
 ### INV-P27 — 「用户在看这个会话」只有一个口径，抑制必须共用它
 

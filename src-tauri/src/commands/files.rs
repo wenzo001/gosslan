@@ -442,7 +442,11 @@ pub async fn flush_pending_files(state: &Arc<AppState>, peer_id: &str) {
             }
             {
                 let dbc = st.db.lock().unwrap_or_else(|e| e.into_inner());
-                db::mark_file_outbox_sending(&dbc, &transfer_id, 0).ok();
+                // 取消可能发生在 list_pending_file_outbox 之后、这里之前：只有真的
+                // 从 pending 迁移成功才允许发；否则跳过，别再发完整份。
+                if !db::mark_file_outbox_sending(&dbc, &transfer_id, 0).unwrap_or(false) {
+                    continue;
+                }
             }
             match file::send_file_from_path(
                 &st,
@@ -481,6 +485,29 @@ pub async fn flush_pending_files(state: &Arc<AppState>, peer_id: &str) {
                             let dbc = st.db.lock().unwrap_or_else(|e| e.into_inner());
                             db::mark_file_outbox_pending(&dbc, &transfer_id, backoff_ms).ok();
                         }
+                        // 用户取消：退出投递任务时**必须**继续按 cancelled 收尾，不能顺着
+                        // `GiveUp` 那一格落 `failed`。取消信号是异步的 —— `cancel_file_transfer`
+                        // 先写好墓碑，本任务在下一个观测点（分片之间 / Offer 等待 / ACK 等待）
+                        // 才退回来；回来时若按 GiveUp 收尾，就把用户刚按下的"已取消"改成了
+                        // "失败"并把进度打回 0%（墓碑只挡住台账那一笔，气泡与 emit 不在其内）。
+                        file::RetryVerdict::Cancelled => {
+                            st.logger.info(
+                                "file",
+                                format!("[CANCELLED] transfer={transfer_id} 用户取消，本次投递退出且不再重发"),
+                            );
+                            let announce = {
+                                let dbc = st.db.lock().unwrap_or_else(|e| e.into_inner());
+                                db::finalize_file_failure(
+                                    &dbc,
+                                    &transfer_id,
+                                    db::FileJobEnd::Cancelled,
+                                )
+                                .unwrap_or(false)
+                            };
+                            if announce {
+                                let _ = st.app.emit("file-cancelled", &transfer_id);
+                            }
+                        }
                     }
                 }
             }
@@ -499,8 +526,10 @@ pub async fn flush_pending_files(state: &Arc<AppState>, peer_id: &str) {
 ///    判据自动扫全部收尾路径）。用户主动取消记 `cancelled`，不记 `failed`（INV-P26）。
 /// 3. 通知前端 emit `file-cancelled` + `message-status-changed`。
 ///
-/// 如果文件已经发完或 sender 已关闭，signalled=false 但仍会落 cancelled 并 emit 事件 ——
-/// 用户按了取消，界面必须立刻响应。已经 `done` 的传输行不会被改成"已取消"（INV-P26 的闸门）。
+/// 如果这一单没有匹配的在途投递任务（排队中、或任务已经退出），取消**照样成立**：
+/// 落库与 emit 都照做 —— 用户按了取消，界面必须立刻响应。返回值说的是台账，不是内存。
+/// 已经 `done` 的传输行不会被改成"已取消"（INV-P26 的闸门 + `cancel_terminal` 墓碑的反面：
+/// 墓碑只挡"取消之后再被写回 active/done"，`done` 闸门挡"取消把已收完的降级"）。
 ///
 /// 注意：file_sending（spawn loop 里按 peer_id 存的 HashSet）不需要我们清 ——
 /// spawn loop 收到 cancel 信号后会自己走到下一条或清掉。
@@ -549,11 +578,27 @@ pub(crate) fn cancel_send_transfers_for_peer(s: &AppState, peer_id: &str) {
     }
 }
 
+/// 取消一条文件传输的结果 —— 界面按这两个数说话，不再自己猜。
+///
+/// 为什么不再返回 `signalled`（"有没有命中在途投递任务"）：那个数描述的是**本机内存**，
+/// 不是用户关心的事。用户点了取消要知道的是"这一单现在算不算被取消了"，而唯一权威是台账：
+///  · 排队中（`pending`）根本没有在途任务 ⇒ `signalled=false`，但取消**成立**；
+///  · 已经收完（`done`）时墓碑与终态闸门都不允许改成 cancelled ⇒ 取消**不成立**。
+/// 旧返回值把这两种情况都说成"传输可能已结束"，而它们是完全相反的两件事。
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FileCancelResult {
+    /// 这一单现在面向用户的状态是"已取消"（本次推进，或本来就是）。
+    pub cancelled: bool,
+    /// 这一单已经完整收下（台账 `done`）⇒ 取消不成立，界面要说"已送达"。
+    pub already_done: bool,
+}
+
 #[tauri::command(async)]
 pub async fn cancel_file_transfer(
     state: State<'_, Arc<AppState>>,
     transfer_id: String,
-) -> Result<bool, String> {
+) -> Result<FileCancelResult, String> {
     let s = state.inner();
 
     // 1. 发 cancel 信号 —— 一个 transfer_id 可能对应**多条**在途流（群文件是每个成员一条，
@@ -586,6 +631,13 @@ pub async fn cancel_file_transfer(
     //    按下的取消。三条队列查询只认 pending/sending，所以功能等价、台账不等价。
     //    终态守卫保证幂等：已 delivered/read 的不会被覆盖；已 done 的传输行也不会被降级
     //    （INV-P26）。
+    //
+    // 「已送达」要在动手写之前问一次：`finalize_file_failure` 里的 `done` 闸门会拒绝降级，
+    // 所以这一读的用途只有"给界面说实话"，不参与任何写序（写在后面，破坏性写仍在最后）。
+    let already_done = {
+        let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());
+        db::is_transfer_done(&dbc, &transfer_id).unwrap_or(false)
+    };
     {
         let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());
         // 落库并入唯一出口（同一份顺序与 `done` 闸门）。取消与失败的区别在这里说得通：
@@ -607,10 +659,13 @@ pub async fn cancel_file_transfer(
 
     s.logger.info(
         "file",
-        format!("用户取消文件发送 transfer={transfer_id} (cancel_signal={signalled})"),
+        format!("用户取消文件发送 transfer={transfer_id} (cancel_signal={signalled} already_done={already_done})"),
     );
 
-    Ok(signalled)
+    Ok(FileCancelResult {
+        cancelled: !already_done,
+        already_done,
+    })
 }
 
 /// 请对端**按 cid 再发一份**内容（ADR-0019 Phase 3「点击重取」）。

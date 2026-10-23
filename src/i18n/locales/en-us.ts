@@ -625,7 +625,7 @@ export const enUS: MessageDict = {
   "msg.cancelSend": "Cancel send",
   "msg.canceled": "Send canceled",
   "msg.cancelSend.requested": "Cancellation requested",
-  "msg.cancelSend.alreadyEnded": "Marked as canceled (the transfer may have already finished)",
+  "msg.cancelSend.alreadyDone": "Already delivered — nothing to cancel",
   "msg.cancelSend.fail": "Failed to cancel sending",
   "msg.openLinkFail": "Failed to open link",
   "msg.forwardTo": "Forward To",

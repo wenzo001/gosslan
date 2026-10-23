@@ -560,6 +560,160 @@ fn a_failed_row_can_be_reactivated_by_the_next_attempt() {
     }
 }
 
+// ---------------------------------------------------------------------------
+// B1：用户取消的终态墓碑（`cancel_terminal`）。
+//
+// 上面那条反向断言说的对：`cancelled` 今天必须还能被下一轮 attempt 改回 active ——
+// 因为**自动**写下的 cancelled（对端拒绝、中继判死）确实该能重来。但用户主动取消是
+// 另一件事：`cancel_file_transfer` 落库之后，投递任务是**异步**退出的，它可能带着上一轮
+// 的进度、甚至带着"这次其实发完了"的 done 判定回来。没有墓碑时，那几笔晚到的写会把
+// 用户刚按下的"已取消"改回"发送中 92%"或"已完成"。
+//
+// 所以这一族把两件事拆开：主动取消 ⇒ 盖墓碑、此后任何写都不许动它；自动终态 ⇒ 不盖。
+// ---------------------------------------------------------------------------
+
+fn transfer_row(conn: &Connection, id: &str) -> (String, f64, i64) {
+    conn.query_row(
+        "SELECT status, progress, cancel_terminal FROM file_transfers WHERE id = ?1",
+        params![id],
+        |r| {
+            Ok((
+                r.get::<_, String>(0)?,
+                r.get::<_, f64>(1)?,
+                r.get::<_, i64>(2)?,
+            ))
+        },
+    )
+    .unwrap()
+}
+
+/// 正向：用户取消之后，晚到的进度写、晚到的 done 都改不动这一行。
+#[test]
+fn a_user_cancelled_transfer_is_never_revived_by_a_late_write() {
+    let conn = fresh_db();
+    upsert_transfer(&conn, "t1", "p1", "a.bin", 100, "send", "active", None, 0.3).unwrap();
+    assert!(
+        finalize_file_failure(&conn, "t1", FileJobEnd::Cancelled).unwrap(),
+        "取消是用户动作：面向用户的写落地后必须回报 true"
+    );
+    assert_eq!(
+        transfer_row(&conn, "t1"),
+        ("cancelled".to_string(), 0.0, 1),
+        "取消必须同时落 status=cancelled 与墓碑"
+    );
+
+    // 晚到的进度 tick（上一轮 attempt 还堵在链路队列里的那个形状）
+    upsert_transfer(
+        &conn, "t1", "p1", "a.bin", 100, "send", "active", None, 0.92,
+    )
+    .unwrap();
+    assert_eq!(
+        transfer_row(&conn, "t1"),
+        ("cancelled".to_string(), 0.0, 1),
+        "墓碑必须挡住晚到的 active —— 用户看到的就是\"取消了又自己变成发送中 92%\""
+    );
+
+    // 晚到的 done（对端真的收完了才回 ACK，而用户已经取消）同样不许把它升成完成：
+    // 那会让界面从"已取消"跳到"✓"，与用户按下的动作相反。
+    upsert_transfer(&conn, "t1", "p1", "a.bin", 100, "send", "done", None, 1.0).unwrap();
+    assert_eq!(
+        transfer_row(&conn, "t1").0,
+        "cancelled",
+        "墓碑行也不许被晚到的 done 升级（终态口径以用户动作为准）"
+    );
+
+    // 启动复位那条"active→failed"的批量写也必须绕开它（它只吃 active，墓碑行是 cancelled）
+    assert_eq!(fail_interrupted_transfers_on_startup(&conn).unwrap(), 0);
+    assert_eq!(transfer_row(&conn, "t1").0, "cancelled");
+}
+
+/// 反向：自动判死（超时/重试耗尽）**不许**盖墓碑 —— 那些行要能被断点续传救回来。
+/// 这条是给"顺手把墓碑扩大到所有终态"的下一次准备的。
+#[test]
+fn an_auto_expired_transfer_keeps_its_resume_door_open() {
+    let conn = fresh_db();
+    upsert_transfer(
+        &conn, "t2", "p1", "b.bin", 100, "receive", "active", None, 0.4,
+    )
+    .unwrap();
+    finalize_file_failure(&conn, "t2", FileJobEnd::Expired).unwrap();
+    assert_eq!(
+        transfer_row(&conn, "t2"),
+        ("failed".to_string(), 0.0, 0),
+        "自动判死落 failed，且墓碑必须是 0（落库口径与续传能力都靠这一格区分）"
+    );
+    upsert_transfer(
+        &conn, "t2", "p1", "b.bin", 100, "receive", "active", None, 0.5,
+    )
+    .unwrap();
+    assert_eq!(
+        transfer_row(&conn, "t2").0,
+        "active",
+        "同一 transfer_id 的续传必须还能把它改回 active —— 否则一次超时就永远停在失败"
+    );
+}
+
+/// 已收完的那一单没有"被取消"这回事：`upsert_transfer` 被 `done` 闸门挡住时返回 Ok
+/// 且改 0 行，所以 `changed` 会是 true —— 墓碑必须单独判 `already_done`，
+/// 不然一个"已送达"的行会带着墓碑被读成"已取消"。
+#[test]
+fn a_cancel_on_an_already_done_transfer_writes_no_tombstone() {
+    let conn = fresh_db();
+    upsert_transfer(
+        &conn,
+        "t3",
+        "p1",
+        "c.bin",
+        100,
+        "receive",
+        "done",
+        Some("/d/c.bin"),
+        1.0,
+    )
+    .unwrap();
+    finalize_file_failure(&conn, "t3", FileJobEnd::Cancelled).unwrap();
+    let (status, _, tomb) = transfer_row(&conn, "t3");
+    assert_eq!(status, "done", "done 行不许被取消降级（INV-P26）");
+    assert_eq!(
+        tomb, 0,
+        "已送达的行不许被盖上取消墓碑 —— 墓碑的语义是\"这一单被主动中止\"，与它相反"
+    );
+    // 本地路径仍在（前端靠它打开文件）
+    assert_eq!(get_transfer_path(&conn, "t3").as_deref(), Some("/d/c.bin"));
+}
+
+/// 投递开始的抢占必须**如实回报**有没有真的迁移成功。
+///
+/// 旧签名是 `Result<()>`：取消发生在 `list_pending_file_outbox` 之后、这一笔之前时，
+/// `WHERE status='pending'` 让 UPDATE 改 0 行（对的），但调用方看不出来，
+/// 照样把整份文件发出去 —— 快照竞态。判据两头：pending 抢到 = true；已被取消 = false。
+#[test]
+fn claiming_an_outbox_row_reports_whether_it_was_actually_claimed() {
+    let conn = fresh_db();
+    conn.execute(
+        "INSERT INTO file_outbox(transfer_id, peer_id, local_path, name, size, status,
+                                 attempts, next_attempt_at, created_at)
+         VALUES('t4','p1','/d/a.bin','a.bin',10,'pending',0,0,1)",
+        [],
+    )
+    .unwrap();
+    assert!(
+        mark_file_outbox_sending(&conn, "t4", 0).unwrap(),
+        "第一次必须真的从 pending 迁移成功"
+    );
+    assert!(
+        !mark_file_outbox_sending(&conn, "t4", 0).unwrap(),
+        "第二次（已被自己置 sending）必须报 false —— 调用方靠这个数决定发不发"
+    );
+    mark_file_outbox_cancelled(&conn, "t4").unwrap();
+    assert!(
+        !mark_file_outbox_sending(&conn, "t4", 0).unwrap(),
+        "用户取消过的队列行再抢一次必须 false：false = 不发完整份"
+    );
+    // 不存在的那一行同样 false（不是 Err）—— 调用方不区分"没这行"和"被别人抢走"
+    assert!(!mark_file_outbox_sending(&conn, "t-none", 0).unwrap());
+}
+
 /// **终态写入只有一个家**：除 `db/file_transfer.rs` 之外，不许再有第二处直接
 /// `UPDATE file_transfers SET status = …`。
 ///
