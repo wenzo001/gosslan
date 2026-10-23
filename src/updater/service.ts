@@ -231,7 +231,49 @@ export function createUpdaterService(
     downloadInFlight = null;
   }
 
-  return { state, check, download, cancel, install, dismiss, dispose };
+  /**
+   * 用**后端那份全局状态**补齐本窗口的 UI 状态（B5）。
+   *
+   * 为什么需要：每个窗口各有一份 UI 服务，而下载任务在后端是全局单例。设置窗关掉再打开时，
+   * 这份服务回到 `idle`，用户看到的是"检查更新"按钮 —— 明明后台还在下那几十 MB。
+   * 本窗口自己发起过下载时服务里有更细的进度（channel 逐块），那种情况**不覆盖**
+   * （`phase !== "idle"` 直接返回）：粗粒度快照不该盖掉细粒度读数。
+   */
+  function restore(snapshot: {
+    phase: string;
+    downloaded: number;
+    total: number | null;
+    version: string | null;
+  }) {
+    if (state.phase !== "idle") return;
+    const info = snapshot.version
+      ? { currentVersion: state.currentVersion, version: snapshot.version, notes: null, publishedAt: null }
+      : null;
+    switch (snapshot.phase) {
+      case "downloading":
+        state.phase = "downloading";
+        state.info = info;
+        state.downloaded = snapshot.downloaded;
+        state.total = snapshot.total;
+        break;
+      case "ready":
+        state.phase = "ready";
+        state.info = info;
+        state.downloaded = snapshot.total ?? snapshot.downloaded;
+        state.total = snapshot.total;
+        break;
+      case "installing":
+        state.phase = "installing";
+        state.info = info;
+        break;
+      default:
+        // idle / checking / failed / cancelled / unsupported：这几种在本窗口不值得"恢复"，
+        // 保持 idle（用户点一下检查就知道了；失败也没有可展示的上下文）。
+        break;
+    }
+  }
+
+  return { state, check, download, cancel, install, dismiss, dispose, restore };
 }
 
 export type UpdaterService = ReturnType<typeof createUpdaterService>;

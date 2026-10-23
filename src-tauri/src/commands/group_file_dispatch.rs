@@ -23,25 +23,10 @@ impl Drop for ResumeWaiterGuard<'_> {
     }
 }
 
-/// 取消登记槽位的 RAII 守卫（与 `PendingCompleteGuard` 同一条纪律）。
-///
-/// 登记**必须在并发闸之前**：任务可能排队几十秒甚至更久，用户在这期间点"取消发送"
-/// 时，槽位若还没登记，`send(())` 会失败、取消被静默丢掉，排到队后照样把文件发出去。
-/// 守卫保证任何退出路径（取消 / 超时 / 提前 return / panic）都摘掉槽位。
-struct CancelSlotGuard<'a> {
-    state: &'a std::sync::Arc<crate::state::AppState>,
-    key: String,
-}
-
-impl Drop for CancelSlotGuard<'_> {
-    fn drop(&mut self) {
-        self.state
-            .file_send_cancels
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .remove(&self.key);
-    }
-}
+// 取消槽位的守卫不在这里：三条投递路径（单聊直发 / 中继直发 / 群投递）共用
+// `crate::network::file::install_cancel_slot` 那一个家（登记 + RAII 回收）。
+// 群这条最早改成守卫，另两条当时还各自手写 `cancel_cleanup()` 闭包 —— 闭包只在
+// "走到函数末尾"时生效，外层 deadline 丢掉内层 future 时槽位就永久残留。
 
 /// 向单个 recipient 执行完整群文件投递：Offer → 流式 Chunk → Done。
 /// 元数据/源路径/密钥均从 DB 与运行态恢复，支持离线 pending 的延迟投递。
@@ -111,17 +96,28 @@ async fn dispatch_group_file_to_peer(
     // （group_announcements.rs 的 fan-out 循环）。只按 transfer_id 登记时，后注册的任务会
     // 把前一个的 Sender 挤掉 ⇒ 前者的 cancel_rx 以 Err(RecvError) 完成 ⇒ 被取消分支当成
     // 「用户取消发送」，N 个成员里只有最后一个发得完（真机三成员群必现）。
-    let cancel_key = file::file_cancel_key(transfer_id, recipient);
-    let (cancel_tx, mut cancel_rx) = tokio::sync::oneshot::channel::<()>();
-    state
-        .file_send_cancels
-        .lock()
-        .unwrap_or_else(|e| e.into_inner())
-        .insert(cancel_key.clone(), cancel_tx);
-    let _cancel_slot = CancelSlotGuard {
-        state,
-        key: cancel_key,
+    let (mut cancel_rx, _cancel_slot) = file::install_cancel_slot(state, transfer_id, recipient);
+    // 取消闸门（B2）：这一单**或这一格**已经被用户取消 ⇒ 当场退出。三层各管一段时间，
+    // 少一层就会"界面上取消了、链路上照样发完"：
+    //  · 离线补发的查询只捞 `pending` ⇒ 管"取消之后对方才上线"；
+    //  · `upsert_group_file_receive`（同一单再进来一次的复位入口）不碰 `cancelled`
+    //    ⇒ 管"重投同一单时把已取消的成员点亮"；
+    //  · 这里管**已经在内存里排队的任务** —— 取消发生在并发闸排队期间时，拿到许可后
+    //    必须再问一次库，否则排队几十秒后排到了就照发（用户看到的就是"按了没用"）。
+    let cancelled_here = {
+        let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
+        db::is_group_file_cancelled(&dbc, transfer_id)
+            || db::is_group_file_recipient_cancelled(&dbc, transfer_id, recipient)
     };
+    if cancelled_here {
+        app_handle_log(
+            state,
+            &format!(
+                "群文件已被取消，跳过投递 transfer={transfer_id} recipient={recipient}（不占并发闸许可）"
+            ),
+        );
+        return Err(GroupFileSendErr::Cancelled);
+    }
     // 全局并发闸（拍板 4A(8)）：群发是"每可达成员一个任务"，无闸时 200 成员会同时
     // 占住 200 份读缓冲（每份约 1.2 MB）与 200 条链路的队列（每条预算 8 MiB）。
     // 闸放在**传输调度层**（本函数是群发与离线补发的唯一投递入口），才同时管住
@@ -135,11 +131,8 @@ async fn dispatch_group_file_to_peer(
         .map_err(|_| GroupFileSendErr::Retryable("群文件并发闸已关闭".into()))?;
     // 排队期间用户可能已经点了取消：拿到许可后先看这一格，别把已取消的文件真发出去。
     // （槽位在闸前登记 ⇒ 排队时的取消也能在这里被看到。）
-    match cancel_rx.try_recv() {
-        Ok(()) | Err(tokio::sync::oneshot::error::TryRecvError::Closed) => {
-            return Err(GroupFileSendErr::Cancelled);
-        }
-        Err(tokio::sync::oneshot::error::TryRecvError::Empty) => {}
+    if file::cancel_requested(&mut cancel_rx) {
+        return Err(GroupFileSendErr::Cancelled);
     }
     let gf = db::get_group_file(
         &state.db.lock().unwrap_or_else(|e| e.into_inner()),

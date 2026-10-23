@@ -51,6 +51,114 @@ fn group_frame_is_current(state: &AppState, transfer_id: &str, attempt: Option<u
     file::group_frame_round_is_current(attempt, cur)
 }
 
+/// 收到「取消这一格」的帧（B3b）：发送方与接收方都可能发，方向由**谁发**决定。
+///
+/// 三种落法（都先把「这一帧是不是关于这一单的」验掉，再动手）：
+///
+/// 1. 本机是**发送方** + 成员说他不再收了 ⇒ 点亮那一格的取消槽位（在途投递循环自己退出）
+///    + 那一行落 `cancelled`（硬终态：离线补发与续传复位都看不见它）；
+/// 2. 本机是**接收方** + 发送方说这一格停了 ⇒ 摘接收器、删 `.part`、整单行落 `cancelled`；
+/// 3. 其余（既不是我的单、group_id 对不上、recipient 不是我）⇒ 记一条日志丢掉。
+///
+/// 不做「收到取消再回一条取消」的回声：回执的语义是「我停了」，双方各说一次就够了 ——
+/// 回声会让两边在链路上互相确认到对方超时。
+pub(crate) async fn handle_group_file_cancel(
+    state: &Arc<AppState>,
+    peer_id: &str,
+    transfer_id: String,
+    group_id: String,
+    recipient: String,
+    from: String,
+) {
+    if from != peer_id || from == state.device_id {
+        return;
+    }
+    let gf = {
+        let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
+        db::get_group_file(&dbc, &transfer_id)
+    };
+    let Some(gf) = gf else {
+        state.logger.warn(
+            "group_file",
+            format!("收到 GroupFileCancel 但本机没有这一单 transfer={transfer_id} peer={peer_id}"),
+        );
+        return;
+    };
+    if gf.group_id != group_id {
+        state.logger.warn(
+            "group_file",
+            format!(
+                "收到 GroupFileCancel 但 group 对不上 transfer={transfer_id} frame_group={group_id} ledger_group={} peer={peer_id}",
+                gf.group_id
+            ),
+        );
+        return;
+    }
+    if gf.sender_id == state.device_id {
+        // 我是发送方：只有本人能说"我不收了"。
+        if recipient != from {
+            state.logger.warn(
+                "group_file",
+                format!("收到 GroupFileCancel 但 recipient 不是发帧那台设备 transfer={transfer_id} recipient={recipient} from={from}"),
+            );
+            return;
+        }
+        let signalled = file::signal_cancel_slot(state, &transfer_id, &recipient);
+        let cancelled = {
+            let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
+            db::cancel_group_file_recipient(&dbc, &transfer_id, &recipient).unwrap_or(false)
+        };
+        if cancelled {
+            let _ = state
+                .app
+                .emit("message-status-changed", &format!("gfile-{transfer_id}"));
+        }
+        state.logger.info(
+            "group_file",
+            format!(
+                "对端取消了这一格 transfer={transfer_id} recipient={recipient} signalled={signalled} row_cancelled={cancelled}"
+            ),
+        );
+        return;
+    }
+    if recipient == state.device_id {
+        // 我是接收方：发送方说这一格停了。删 `.part` 是阻塞活 ⇒ 挪出 worker（INV-P34）。
+        let s2 = state.clone();
+        let tid = transfer_id.clone();
+        let stopped = match tokio::task::spawn_blocking(move || {
+            file::cancel_group_receive(&s2, &tid)
+        })
+        .await
+        {
+            Ok(v) => v,
+            Err(e) => {
+                state.logger.error(
+                    "group_file",
+                    format!("对端取消后收尾被线程池中断 transfer={transfer_id}：{e}（.part 可能还在）"),
+                );
+                false
+            }
+        };
+        {
+            let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
+            let _ = db::mark_group_file_cancelled(&dbc, &transfer_id);
+        }
+        let _ = state.app.emit("file-cancelled", &transfer_id);
+        let _ = state
+            .app
+            .emit("message-status-changed", &format!("gfile-{transfer_id}"));
+        state.logger.info(
+            "group_file",
+            format!("发送方取消了这一格，本机已停手 transfer={transfer_id} stopped={stopped}"),
+        );
+        return;
+    }
+    state.logger.warn(
+        "group_file",
+        format!("收到 GroupFileCancel 但与本机无关 transfer={transfer_id} recipient={recipient} peer={peer_id}"),
+    );
+}
+
 /// 收到接收端的续传回执：把 `received` 交给正在等这个成员回执的发送任务。
 async fn handle_group_file_resume(
     state: &Arc<AppState>,
@@ -1289,7 +1397,51 @@ pub(crate) fn sweep_stale_group_file_keys(state: &AppState) -> usize {
         .lock()
         .unwrap_or_else(|e| e.into_inner())
         .retain(|tid, _| live.contains(tid));
+
+    // 在线目标快照（进度分母）也在**这一个**清扫点回收（10-23 审计 P2-C）。
+    // 判据用台账状态而不是盲 TTL：快照是气泡分母的来源，还在传的时候清掉会让分母退回"未知"；
+    // 而一单到终态（completed/failed/cancelled）或台账行已经不在了，这块快照就没人会再读。
+    let stale_targets: Vec<String> = {
+        let keys: Vec<String> = state
+            .group_file_online_targets
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .keys()
+            .cloned()
+            .collect();
+        let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
+        keys.into_iter()
+            .filter(|tid| {
+                !online_targets_entry_is_live(db::get_group_file(&dbc, tid).map(|g| g.status).as_deref())
+            })
+            .collect()
+    };
+    if !stale_targets.is_empty() {
+        let mut targets = state
+            .group_file_online_targets
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        for tid in &stale_targets {
+            targets.remove(tid);
+        }
+        state.logger.info(
+            "group_file",
+            format!(
+                "code=GFILE_TARGETS_TTL_EXPIRED removed={} —— 已到终态/没有台账的单不再留分母快照",
+                stale_targets.len()
+            ),
+        );
+    }
     removed
+}
+
+/// 这张"发送那一刻在线成员"的快照还值得留吗（唯一判据，P2-C）。
+///
+/// 只留**还在传**的单：`None` = 台账行都不在了（删群/清理），`completed/failed/cancelled`
+/// = 终态 ⇒ 气泡不会再展示"K 人待收"，快照没人读。`pending/sending` 必须留 ——
+/// 那时分母正是用户在看的那个数。
+pub(crate) fn online_targets_entry_is_live(status: Option<&str>) -> bool {
+    matches!(status, Some("pending") | Some("sending"))
 }
 
 /// 卡住的群文件投递清扫（P2-01）。
@@ -2178,5 +2330,24 @@ mod group_offer_retry_tests {
             1,
             "密钥 TTL 清扫必须由后台清扫器驱动且只调一次（0 次 = 永不淘汰）"
         );
+    }
+}
+
+/// 分母快照（`group_file_online_targets`）的留/删判据（10-23 审计 P2-C）。
+///
+/// 单独一个模块而不是塞进已有的气泡测试：那边只 `use super::{group_file_bubble, retry_ack_write}`，
+/// 往里加一条会让"这个模块测什么"变糊（第一版就是插错位置、还把下一条用例的 doc 顶掉了）。
+#[cfg(test)]
+mod online_targets_tests {
+    use super::online_targets_entry_is_live;
+
+    #[test]
+    fn online_targets_snapshot_is_kept_only_while_the_transfer_is_live() {
+        for live in [Some("pending"), Some("sending")] {
+            assert!(online_targets_entry_is_live(live), "{live:?} 还在传，分母要留");
+        }
+        for dead in [Some("completed"), Some("failed"), Some("cancelled"), None] {
+            assert!(!online_targets_entry_is_live(dead), "{dead:?} 没人再读这块快照");
+        }
     }
 }

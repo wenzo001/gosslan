@@ -241,8 +241,8 @@ CASES: list[Case] = [
         "「用户取消发送」⇒ N 个成员里只有最后一个发得完（真机三成员群必现，且报错原因是假的）",
         file=TAURI / "src" / "commands" / "group_file_dispatch.rs",
         injections=[(
-            "let cancel_key = file::file_cancel_key(transfer_id, recipient);",
-            "let cancel_key = transfer_id.to_string();",
+            "let (mut cancel_rx, _cancel_slot) = file::install_cancel_slot(state, transfer_id, recipient);",
+            "let (mut cancel_rx, _cancel_slot) = file::install_cancel_slot(state, transfer_id, transfer_id);",
         )],
         cmd=cargo(
             "test",
@@ -321,7 +321,7 @@ CASES: list[Case] = [
         file=TAURI / "src" / "db" / "file_transfer.rs",
         injections=[(
             "             progress = excluded.progress\n"
-            "         WHERE file_transfers.status <> 'done'\",",
+            "         WHERE file_transfers.status <> 'done' AND file_transfers.cancel_terminal = 0\",",
             "             progress = excluded.progress\",",
         )],
         cmd=cargo("test", "--lib", "a_completed_transfer_row_is_never_downgraded"),
@@ -338,13 +338,108 @@ CASES: list[Case] = [
         "     注入方式：照那份建议把集合写成三个状态（编译照过、正向判据照绿），反向判据必须红。",
         file=TAURI / "src" / "db" / "file_transfer.rs",
         injections=[(
-            "         WHERE file_transfers.status <> 'done'\",",
-            "         WHERE file_transfers.status NOT IN ('done', 'failed', 'cancelled')\",",
+            "         WHERE file_transfers.status <> 'done' AND file_transfers.cancel_terminal = 0\",",
+            "         WHERE file_transfers.status NOT IN ('done', 'failed', 'cancelled')"
+            " AND file_transfers.cancel_terminal = 0\",",
         )],
         cmd=cargo("test", "--lib", "a_failed_row_can_be_reactivated_by_the_next_attempt"),
         cwd=TAURI,
         expect_fail_hint="改回 active",
         tags=["rust", "db", "files", "terminal-state", "new-guards"],
+    ),
+    # ---- B1：取消墓碑（`cancel_terminal`）一族，四格各管一条边界 ----
+    Case(
+        name="用户取消之后，晚到的进度/done 写不得把它复活",
+        why="取消信号是**异步**回流的：`cancel_file_transfer` 落库时投递任务还在链路上跑，"
+        "它带着上一轮进度（甚至带着这次真发完了的 done 判定）回来时，没有墓碑就会被写回\n"
+        "「发送中 92%」或「已完成」—— 用户看到的就是「按了取消它自己又活了」。\n"
+        "     注入方式：去掉 DO UPDATE 尾巴上那句 `AND cancel_terminal = 0`（最自然的「简化」：\n"
+        "     看着像重复的第二个条件），判据必须红。",
+        file=TAURI / "src" / "db" / "file_transfer.rs",
+        injections=[(
+            "         WHERE file_transfers.status <> 'done' AND file_transfers.cancel_terminal = 0\",",
+            "         WHERE file_transfers.status <> 'done'\",",
+        )],
+        cmd=cargo(
+            "test",
+            "--lib",
+            "a_user_cancelled_transfer_is_never_revived_by_a_late_write",
+        ),
+        cwd=TAURI,
+        expect_fail_hint="墓碑必须挡住晚到的",
+        tags=["rust", "db", "files", "terminal-state", "new-guards"],
+    ),
+    Case(
+        name="反向：自动判死（超时/放弃）不许盖墓碑 —— 断点续传的门得留着",
+        why="墓碑只属于「主动取消」。给自动 failed 也盖上，`retry_incomplete_content` 与\n"
+        "     下一次 attempt 就再也写不回 active —— 一次超时=永远停在失败，而字节其实还在流。\n"
+        "     这条是给「把墓碑条件顺手放宽成 changed」的下一次准备的（形状与上面那条反向一致）。\n"
+        "     注入方式：`if cancelled && changed && !already_done` 放宽成 `if changed`。",
+        file=TAURI / "src" / "db" / "file_transfer.rs",
+        injections=[(
+            "        if cancelled && changed && !already_done {",
+            "        if changed {",
+        )],
+        cmd=cargo("test", "--lib", "an_auto_expired_transfer_keeps_its_resume_door_open"),
+        cwd=TAURI,
+        expect_fail_hint="自动判死落 failed",
+        tags=["rust", "db", "files", "terminal-state", "new-guards"],
+    ),
+    Case(
+        name="已送达（done）那一单不许被盖上取消墓碑",
+        why="`changed` 在 done 行上也可以是 true：`upsert_transfer` 被 `status <> 'done'` 挡住时\n"
+        "     返回 Ok 且改 0 行 —— 所以「这一个动作是不是用户取消成功」不能只看 changed。\n"
+        "     少了单独的 `!already_done`，一个「已送达」的行会带着墓碑被读成「已取消」。\n"
+        "     注入方式：去掉 `&& !already_done`（留着的两个条件都还是 true，看着毫无线索）。",
+        file=TAURI / "src" / "db" / "file_transfer.rs",
+        injections=[(
+            "        if cancelled && changed && !already_done {",
+            "        if cancelled && changed {",
+        )],
+        cmd=cargo(
+            "test",
+            "--lib",
+            "a_cancel_on_an_already_done_transfer_writes_no_tombstone",
+        ),
+        cwd=TAURI,
+        expect_fail_hint="已送达的行不许被盖上取消墓碑",
+        tags=["rust", "db", "files", "terminal-state", "new-guards"],
+    ),
+    Case(
+        name="抢占 outbox 行必须如实回报「有没有真的迁移成功」",
+        why="取消可能发生在 `list_pending_file_outbox` 之后、这一笔之前：`WHERE status='pending'`\n"
+        "     让 UPDATE 改 0 行（数据库侧是对的），但旧签名 `Result<()>` 让调用方看不出来，\n"
+        "     照样把整份文件发出去 —— 用户按了取消，对面还是收到一份完整文件（快照竞态）。\n"
+        "     注入方式：`Ok(n > 0)` 改成恒真 `Ok(true)`（编译照过、队列照样只认 pending）。",
+        file=TAURI / "src" / "db" / "file_offline.rs",
+        injections=[("    Ok(n > 0)", "    Ok(true)")],
+        cmd=cargo(
+            "test",
+            "--lib",
+            "claiming_an_outbox_row_reports_whether_it_was_actually_claimed",
+        ),
+        cwd=TAURI,
+        expect_fail_hint="必须报 false",
+        tags=["rust", "db", "files", "terminal-state", "new-guards"],
+    ),
+    Case(
+        name="取消优先于重试预算：裁决必须是 Cancelled 不是 GiveUp",
+        why="`cancelled` 也是 `retryable=false`。若裁决先走 `!retryable` 那一格，取消就顺着\n"
+        "     `GiveUp` 落库口径写成 failed 并把进度打回 0%（INV-P26 说的正是这两件事不许混）。\n"
+        "     注入方式：把那一格短路成 `if false` —— 三个断言里第一个就会红。",
+        file=TAURI / "src" / "network" / "file.rs",
+        injections=[(
+            "    if err.cancelled {\n        return RetryVerdict::Cancelled;\n    }",
+            "    if false {\n        return RetryVerdict::Cancelled;\n    }",
+        )],
+        cmd=cargo(
+            "test",
+            "--lib",
+            "a_user_cancel_never_enters_the_retry_queue_and_is_not_a_failure",
+        ),
+        cwd=TAURI,
+        expect_fail_hint="取消必须判成 Cancelled",
+        tags=["rust", "file", "terminal-state", "new-guards"],
     ),
     Case(
         name="用户取消不得记成失败（file_outbox 的 cancelled 与 failed 是两个口径）",
@@ -357,13 +452,128 @@ CASES: list[Case] = [
         "     ⚠️ 反向也要成立：`mark_queued_transfer_failed`（自动判死）那边仍写 failed —— 两个口径不许合并。",
         file=TAURI / "src" / "commands" / "files.rs",
         injections=[(
-            "db::finalize_file_failure(&dbc, &transfer_id, db::FileJobEnd::Cancelled);",
+            "db::finalize_file_failure(&dbc, transfer_id, db::FileJobEnd::Cancelled);",
             "db::finalize_file_failure(&dbc, &transfer_id, db::FileJobEnd::Expired);",
         )],
         cmd=cargo("test", "--lib", "a_user_cancel_is_not_recorded_as_a_failure"),
         cwd=TAURI,
         expect_fail_hint="取消必须走",
         tags=["rust", "db", "files", "terminal-state", "new-guards"],
+    ),
+    # ---- B2：群文件取消（`group_file_recipients` / `group_files` 的 cancelled 硬终态）----
+    Case(
+        name="群文件摘要：已取消的成员不许算成「还在等」",
+        why="摘要里 `waiting` 以前是 `NOT IN ('completed','failed')` ⇒ 用户取消掉的成员永远留在"
+        "「等待在线 K 人」那一格里（那几个人再也不会收了）。\n"
+        "     注入方式：把 cancelled 从 waiting 的排除集合里拿掉（四格求和立刻不等于 total）。",
+        file=TAURI / "src" / "db" / "group_files.rs",
+        injections=[(
+            "               SUM(CASE WHEN status NOT IN ('completed','failed','cancelled') THEN 1 ELSE 0 END)",
+            "               SUM(CASE WHEN status NOT IN ('completed','failed') THEN 1 ELSE 0 END)",
+        )],
+        cmd=cargo("test", "--lib", "delivery_summary_counts_each_recipient_into_exactly_one_bucket"),
+        cwd=TAURI,
+        expect_fail_hint="已取消的不算在等",
+        tags=["rust", "db", "files", "group", "terminal-state", "new-guards"],
+    ),
+    Case(
+        name="已取消的成员行是硬终态：晚到的进度/ACK 改不动它",
+        why="取消信号是异步回流的：投递任务在下一个观测点才退回来，带着上一轮的进度或这次真发完了"
+        "的 completed 判定 ⇒ 没有闸门时那一格会被晚到的写改回 sending/completed（与 file_transfers"
+        " 的 cancel_terminal 同一族缺陷，只是这张表用状态本身当墓碑）。\n"
+        "     注入方式：去掉 UPDATE 尾巴上那句 `AND status <> 'cancelled'`。",
+        file=TAURI / "src" / "db" / "group_files.rs",
+        injections=[(
+            "         WHERE transfer_id = ?1 AND recipient_id = ?2 AND status <> 'cancelled'",
+            "         WHERE transfer_id = ?1 AND recipient_id = ?2",
+        )],
+        cmd=cargo("test", "--lib", "a_cancelled_recipient_row_is_a_hard_terminal"),
+        cwd=TAURI,
+        expect_fail_hint="已取消的行不许被",
+        tags=["rust", "db", "files", "group", "terminal-state", "new-guards"],
+    ),
+    Case(
+        name="群文件行落 cancelled 也不许降级 completed",
+        why="与 INV-P26 同一条口径：已经全部收完的那一单，取消不成立。少这句 WHERE，"
+        "气泡会从「已送达」翻成「已取消」。\n"
+        "     注入方式：去掉 `AND status <> 'completed'`（正向判据的 t5 那一格立刻红）。",
+        file=TAURI / "src" / "db" / "group_files.rs",
+        injections=[(
+            "         WHERE transfer_id = ?1 AND status <> 'completed'",
+            "         WHERE transfer_id = ?1",
+        )],
+        cmd=cargo("test", "--lib", "group_file_row_cancel_does_not_downgrade_completed"),
+        cwd=TAURI,
+        expect_fail_hint="已收完的群文件行不许被降级成已取消",
+        tags=["rust", "db", "files", "group", "terminal-state", "new-guards"],
+    ),
+    Case(
+        name="取消群文件只动未到终态的成员（completed/failed 各说各的事）",
+        why="把「已收到」改成「已取消」是谎报，把「已失败」覆盖成「已取消」会让下一个排查的人"
+        "读错这一单死于什么。\n"
+        "     注入方式：把 `status IN ('pending','sending')` 放宽成 `status <> 'completed'`"
+        "（被改写的行数与 failed 那一格的断言各红一次）。",
+        file=TAURI / "src" / "db" / "group_files.rs",
+        injections=[(
+            "         WHERE transfer_id = ?1 AND status IN ('pending', 'sending')",
+            "         WHERE transfer_id = ?1 AND status <> 'completed'",
+        )],
+        cmd=cargo("test", "--lib", "cancelling_a_group_file_touches_only_the_members_that_are_not_terminal"),
+        cwd=TAURI,
+        expect_fail_hint="completed/failed 一行都不许动",
+        tags=["rust", "db", "files", "group", "terminal-state", "new-guards"],
+    ),
+    Case(
+        name="重建接收会话不许把已取消的成员点亮回 sending",
+        why="`upsert_group_file_receive` 是「同一单再来一次」的复位入口，以前只放过 completed ⇒"
+        "已取消的成员会被复位成 sending 再传一遍（界面上取消了、链路上照发）。\n"
+        "     注入方式：把成员行那句复位退回旧写法（只放过 completed）。",
+        file=TAURI / "src" / "db" / "group_files.rs",
+        injections=[(
+            "         WHERE transfer_id = ?1 AND recipient_id = ?3 AND status NOT IN ('completed', 'cancelled')",
+            "         WHERE transfer_id = ?1 AND recipient_id = ?3 AND status != 'completed'",
+        )],
+        cmd=cargo("test", "--lib", "a_cancelled_group_file_is_not_requeued_by_the_offline_or_sweep_paths"),
+        cwd=TAURI,
+        expect_fail_hint="重建接收会话不许",
+        tags=["rust", "db", "files", "group", "terminal-state", "new-guards"],
+    ),
+    Case(
+        name="群投递闸门两头都得判：整单取消那一半不许被摘掉",
+        why="群文件是「一个 transfer_id × N 个成员」。整单取消（用户取消这条消息）写的是"
+        "`group_files.status`，按成员取消写的是 `group_file_recipients.status` —— 只判一头时，"
+        "另一头取消的那一次照样会把这份文件发给那个成员。\n"
+        '     注入方式：把整单那一半换成恒 `false`（`if cancelled_here {` 那句原样留着 ⇒ '
+        "位置判据与『看这一格』那半都不受影响，只有『必须先看整单』这一格会红）。",
+        file=TAURI / "src" / "commands" / "group_file_dispatch.rs",
+        injections=[(
+            "        db::is_group_file_cancelled(&dbc, transfer_id)\n"
+            "            || db::is_group_file_recipient_cancelled(&dbc, transfer_id, recipient)",
+            "        false\n"
+            "            || db::is_group_file_recipient_cancelled(&dbc, transfer_id, recipient)",
+        )],
+        cmd=cargo("test", "--lib", "group_file_cancel_gate_is_checked_before_the_permit"),
+        cwd=TAURI,
+        expect_fail_hint="闸门必须先看整单是否已取消",
+        tags=["rust", "file", "group", "terminal-state", "new-guards"],
+    ),
+    Case(
+        name="群投递入口必须先看取消闸门，再看并发闸许可",
+        why="任务可能在并发闸后面排队几十秒：闸门排在 `acquire().await` 之后时，取消发生在排队"
+        "期间的那一次会拿到许可、把整份文件发出去（用户看到「按了没反应」）。数量不变、只有顺序变，"
+        "所以判据必须是**位置**。\n"
+        "     注入方式：把闸门那句改成 `if false {` —— 那条 `if cancelled_here {` 锚点随之消失，"
+        "判据的第一个 `.expect` 就用「取消闸门不见了」这句话红（这一格证的是：这条形状判据"
+        "真的读的是那道闸门，不是一段永远存在的文本）。",
+        file=TAURI / "src" / "commands" / "group_file_dispatch.rs",
+        injections=[(
+            "    if cancelled_here {",
+            "    if false {",
+        )],
+        cmd=cargo("test", "--lib", "group_file_cancel_gate_is_checked_before_the_permit"),
+        cwd=TAURI,
+        expect_fail_hint="取消闸门不见了",
+        tags=["rust", "file", "group", "terminal-state", "new-guards"],
     ),
     Case(
         name="群文件终态：取消要写 gfile 气泡、超时/放弃不许写（两个方向都钉）",
@@ -697,4 +907,143 @@ CASES: list[Case] = [
         cwd=TAURI,
         expect_fail_hint="不门控就等于对老端发新语义",
         tags=["rust", "file", "stability", "new-guards", "file-epoch"],
-    ),]
+    ),
+    # ---- B3：`FileCancel` 帧（取消要真的通知到对端）----
+    # 这一族每格都只改**一处**，且改完必须还能编译 —— 让编译当「失败」是把量具坏了当成产品坏了。
+    # ⚠️ 这里刻意**没有**「分发臂列了而分册没接」那一格：那条坏法只能靠
+    # `dispatch_arms_and_volume_arms_agree` 的**计数**去抓，而"把分册那条臂删掉"或
+    # "把模式改成 `_`"都会先撞上编译器（臂体里的 `transfer_id`/`from` 失去绑定 ⇒ E0425），
+    # 于是变异只会得到一条编译错误，而不是一次断言红 —— 那种 Case 证明不了判据会失败，
+    # 本仓不写。位置/接线那两格仍由 `lib_file_tests.rs` 的形状用例守着（它们能红，见 B3 那两条）。
+    Case(
+        name="对端取消的臂体里自己抄一份收尾（emit 出现第二个家）",
+        why="`FileCancel` 与用户点取消在语义上是同一件事 ⇒ 收尾只许有一个家"
+        "（`commands::apply_local_cancel`）。\n"
+        "     注入方式：在臂里额外补一次 emit —— 功能上「多通知一次」看起来无害，"
+        "实际是同一件事两处各写一遍，下一处改事件名的人只会改到其中一边。\n"
+        "     形状守卫按**臂体**取窗口，所以整册里别的臂的 emit 不算违规。",
+        file=TAURI / "src" / "network" / "transport" / "handle_file.rs",
+        injections=[(
+            """            let res = crate::commands::apply_local_cancel(state, &transfer_id, "peer").await;""",
+            """            let res = crate::commands::apply_local_cancel(state, &transfer_id, "peer").await;
+            let _ = state.app.emit("file-cancelled", &transfer_id);""",
+        )],
+        cmd=cargo("test", "--lib", "file_cancel_and_user_cancel_share_one_local_home"),
+        cwd=TAURI,
+        expect_fail_hint="不许出现 app.emit",
+        tags=["rust", "network", "file", "terminal-state", "new-guards", "file-cancel"],
+    ),
+    Case(
+        name="取消通知不门控能力位就对老端发新帧",
+        why="INV-P24 第 4 条：新帧必须先按对端声明门控。老端虽然会把未知 tag 折成 `Unknown` 忽略，"
+        "但那是**依赖对方解析器形状**的赌注；门控之后兼容面回到「不发」这一确定状态。\n"
+        "     注入方式：把 `if !declared` 短路成 `if false`（最自然的「简化」：看着像多余的判断）。",
+        file=TAURI / "src" / "commands" / "files.rs",
+        # 注入点跟着 B3b 搬家：门控从内联 if 收成了 `peer_declares_file_cancel` 一个家，
+        # 于是变异改成"让那个家恒真" —— 效果一样（对老端也发新帧），而且仍是单点、仍能编译。
+        injections=[(
+            "        .is_some_and(|f| f & crate::protocol::CONTENT_FEATURE_FILE_CANCEL != 0)",
+            "        .is_some_and(|_f| true)",
+        )],
+        cmd=cargo("test", "--lib", "file_cancel_notice_is_gated_and_never_blocks_the_local_cancel"),
+        cwd=TAURI,
+        expect_fail_hint="门控函数里必须读那一位",
+        tags=["rust", "file", "stability", "new-guards", "file-cancel"],
+    ),
+    Case(
+        name="FILE_CANCEL 忘了 advertise ⇒ 取消永远通知不到对端而门禁全绿",
+        why="门控读的是「对端声明过的位图」，而本机自己声明的那一份在 `content_features()` 里。\n"
+        "     漏了这一处时两侧都拿不到这一位 ⇒ 这条帧永远不会发出去，"
+        "而编译、单测、界面**一字不变地全绿**（功能为零的形状）。\n"
+        "     注入方式：从 `content_features()` 的并集里摘掉那一项。",
+        file=TAURI / "src" / "protocol.rs",
+        injections=[(
+            "        | CONTENT_FEATURE_RENDER\n        | CONTENT_FEATURE_FILE_CANCEL\n}",
+            "        | CONTENT_FEATURE_RENDER\n}",
+        )],
+        cmd=cargo("test", "--lib", "file_cancel_frame_is_advertised_distinct_and_round_trips"),
+        cwd=TAURI,
+        expect_fail_hint="声明了 FILE_CANCEL 门控却没 advertise",
+        tags=["rust", "protocol", "file", "new-guards", "file-cancel"],
+    ),
+    Case(
+        name="FileCancel 留在普通档 ⇒ 排在它要打断的那批分片后面",
+        why="链路的 Low 队列能装 1024 槽，一个 1MB 文件一秒内就全部入队 ⇒"
+        "取消帧若不在 High，它排在**自己要不要停掉的那些字节之后**，症状仍是「对面还在发」。\n"
+        "     注入方式：把分发表 High 那一组里的 `| Message::FileCancel { .. }` 摘掉"
+        "（落到 `_ => Normal`，编译照过）。",
+        file=TAURI / "src" / "network" / "dispatch.rs",
+        injections=[(
+            "        | Message::FileCancel { .. }\n",
+            "",
+        )],
+        cmd=cargo("test", "--lib", "file_cancel_outranks_the_chunk_stream_it_stops"),
+        cwd=TAURI,
+        expect_fail_hint="FileCancel 必须钉在 High",
+        tags=["rust", "network", "file", "stability", "new-guards", "file-cancel"],
+    ),
+    Case(
+        name="撤回白名单漏了 file ⇒ 对着还在传的文件也能撤",
+        why="撤回只改**消息行**，停不掉一条正在跑的文件传输 ⇒ 对着文件按撤回会得到"
+        "「气泡已撤回、字节照样在发」。\n"
+        "     注入方式：把 `file` 加进 `RECALLABLE_KINDS` —— 编译器照过、"
+        "撤回链路照走，只有这一格判据会红。",
+        file=TAURI / "src" / "protocol.rs",
+        injections=[(
+            'pub const RECALLABLE_KINDS: [&str; 3] = ["text", "code", "merge"];',
+            'pub const RECALLABLE_KINDS: [&str; 4] = ["text", "code", "merge", "file"];',
+        )],
+        cmd=cargo("test", "--lib", "recall_only_accepts_textual_kinds"),
+        cwd=TAURI,
+        expect_fail_hint="非文本族必须拒绝撤回",
+        tags=["rust", "protocol", "recall", "new-guards"],
+    ),
+    Case(
+        name="Ack 收尾不看「队列行还在不在」⇒ 已取消的消息被提成已送达",
+        why="取消在消息表上的落地方式就是**删掉那条 outbox 行**：`ack_delivered` 先验证"
+        "「这一单还在队列里」，行没了就返回 false ⇒ 晚到的 Ack 改不动状态。\n"
+        "     把这个前置判据短路掉的后果正是用户在真机上会看到的那一下：按了取消、过几秒回执"
+        "又从「已取消」跳回「已送达」。\n"
+        "     注入方式：把 `if !expected` 改成 `if false`（最自然的「简化」：看着像多余的判断）。",
+        file=TAURI / "src" / "db" / "messages.rs",
+        injections=[("    if !expected {", "    if false {")],
+        cmd=cargo("test", "--lib", "a_late_ack_cannot_promote_a_cancelled_message"),
+        cwd=TAURI,
+        expect_fail_hint="晚到的 Ack 必须命中不到队列行",
+        tags=["rust", "db", "messages", "terminal-state", "new-guards"],
+    ),
+    Case(
+        name="按成员取消不看状态 ⇒ 已收完的成员被改成已取消",
+        why="群文件是「一单对多成员」，每一格各说各的：`completed` 是他真的收到了，"
+        "`failed` 已经说清它死于什么。\n"
+        "     按成员取消只许动 `pending|sending` —— 少了这个状态过滤，摘要里"
+        "「收到的人」会凭空少一个，而文件其实就在他盘上。\n"
+        "     注入方式：把 `AND status IN ('pending', 'sending')` 从那条 UPDATE 里摘掉"
+        "（编译照过、其余成员不受影响，只有这一格判据会红）。",
+        file=TAURI / "src" / "db" / "group_files.rs",
+        injections=[(
+            "         WHERE transfer_id = ?1 AND recipient_id = ?2 AND status IN ('pending', 'sending')",
+            "         WHERE transfer_id = ?1 AND recipient_id = ?2",
+        )],
+        cmd=cargo("test", "--lib", "cancelling_one_recipient_leaves_the_others_alone"),
+        cwd=TAURI,
+        expect_fail_hint="重复取消同一格必须返回 false",
+        tags=["rust", "db", "group-file", "terminal-state", "new-guards"],
+    ),
+    Case(
+        name="删好友只读不摘样式缓存 ⇒ 删掉的人还留在表里",
+        why="`settings.chat_peer_styles` 是设备级缓存，唯一的删除出口以前是「恢复默认设置」。"
+        "\n     删好友那条路不摘的话，删掉的人会永久留一行 JSON，下次同设备再加回来还继承上次配色。"
+        "\n     注入方式：把 `map.remove(peer_id)` 换成只读的 `map.get(peer_id)`"
+        "（编译照过、函数照返回，只有「删掉的那台设备不许留样式」那一格会红）。",
+        file=TAURI / "src" / "db" / "settings.rs",
+        injections=[(
+            "    if map.remove(peer_id).is_none() {",
+            "    if map.get(peer_id).is_none() {",
+        )],
+        cmd=cargo("test", "--lib", "removing_a_friend_forgets_its_chat_style"),
+        cwd=TAURI,
+        expect_fail_hint="删掉的那台设备不许留样式",
+        tags=["rust", "db", "friends", "new-guards"],
+    ),
+]

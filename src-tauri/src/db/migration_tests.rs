@@ -1323,6 +1323,125 @@ fn v10_to_v11_adds_mention_targets_column_without_touching_existing_rows() {
     assert_eq!(read_user_version(&conn), DB_VERSION);
 }
 
+// ---------------------------------------------------------------------------
+// B1：用户取消必须活过一次重启。
+//
+// "取消不许被晚到的 attempt 改回 active"这件事，光在 `upsert_transfer` 里加 WHERE 条件
+// 只挡住了**新库**：已经在用的库里 `file_transfers` 根本没有这一列，那条 SQL 会以
+// "no such column" 报错 —— 而它的调用点有 39 个（进度、终态、启动复位全在里面），
+// 报错就是"每一次传输写都失败"。所以这一列只能由迁移补，判据要钉三件事：
+// ① 新装（只走 SCHEMA）就有这一列；
+// ② 老库升级后既有行的 status/progress 一个字节都不动，新列读回来是 0；
+// ③ 0 = "没有被用户取消" ⇒ 老的自动失败行仍能被下一轮 attempt 复活（断点续传不许被打死）。
+// ---------------------------------------------------------------------------
+
+/// `file_transfers` 的列名（上面那个 `column_names` 是按 `messages` 写死的）。
+fn transfer_column_names(conn: &Connection) -> Vec<String> {
+    let mut stmt = conn.prepare("PRAGMA table_info(file_transfers)").unwrap();
+    stmt.query_map([], |r| r.get::<_, String>(1))
+        .unwrap()
+        .filter_map(|r| r.ok())
+        .collect()
+}
+
+#[test]
+fn v11_to_v12_adds_cancel_terminal_without_touching_existing_rows() {
+    // ① 新装用户：SCHEMA 那份就该有这一列
+    let fresh = Connection::open_in_memory().unwrap();
+    fresh.execute_batch(SCHEMA).unwrap();
+    assert!(
+        transfer_column_names(&fresh)
+            .iter()
+            .any(|c| c == "cancel_terminal"),
+        "新库（只走 SCHEMA）就该有 cancel_terminal —— 缺了它，全新安装的用户取消完、重启后又会被写回发送中"
+    );
+
+    // ② 造"升级前的库"：手抄一份 v11 形状（与上面那条 v10 用例同一招），
+    //    并用"新 SCHEMA 去掉这一列"现算的期望值钉住它没漂。
+    let conn = Connection::open_in_memory().unwrap();
+    conn.execute_batch(SCHEMA).unwrap();
+    conn.execute_batch(
+        "DROP TABLE file_transfers;
+         CREATE TABLE file_transfers (
+             id         TEXT PRIMARY KEY,
+             peer_id    TEXT NOT NULL,
+             name       TEXT NOT NULL,
+             size       INTEGER NOT NULL,
+             direction  TEXT NOT NULL,
+             status     TEXT NOT NULL,
+             path       TEXT,
+             progress   REAL NOT NULL DEFAULT 0,
+             created_at INTEGER NOT NULL
+         );",
+    )
+    .unwrap();
+    let mut want = transfer_column_names(&fresh);
+    want.retain(|c| c != "cancel_terminal");
+    assert_eq!(
+        transfer_column_names(&conn),
+        want,
+        "本用例手抄的 v11 形状 ≠ 新 SCHEMA 去掉 cancel_terminal ⇒ SCHEMA 改过了，这里要一起改"
+    );
+
+    // 既有行：一条自动失败（必须还能续传）、一条已完成（终态不许被动）
+    conn.execute_batch(
+        "INSERT INTO file_transfers(id, peer_id, name, size, direction, status, path, progress, created_at)
+         VALUES ('t-fail','p1','a.bin',100,'receive','failed','/d/a.bin',0.4,10),
+                ('t-done','p1','b.bin',200,'send','done',NULL,1.0,11);",
+    )
+    .unwrap();
+
+    conn.execute_batch("PRAGMA user_version = 11;").unwrap();
+    run_migrations(&conn, 11).expect("v11→v12 迁移本身不许报错");
+
+    assert!(
+        transfer_column_names(&conn)
+            .iter()
+            .any(|c| c == "cancel_terminal"),
+        "迁移没给 file_transfers 补上 cancel_terminal ⇒ `upsert_transfer` 那条 WHERE 在老库上直接报错，所有传输写全废"
+    );
+    let rows: Vec<(String, String, f64, i64)> = {
+        let mut stmt = conn
+            .prepare("SELECT id, status, progress, cancel_terminal FROM file_transfers ORDER BY id")
+            .unwrap();
+        stmt.query_map([], |r| {
+            Ok((
+                r.get::<_, String>(0)?,
+                r.get::<_, String>(1)?,
+                r.get::<_, f64>(2)?,
+                r.get::<_, i64>(3)?,
+            ))
+        })
+        .unwrap()
+        .filter_map(|r| r.ok())
+        .collect()
+    };
+    assert_eq!(
+        rows,
+        vec![
+            ("t-done".to_string(), "done".to_string(), 1.0, 0),
+            ("t-fail".to_string(), "failed".to_string(), 0.4, 0),
+        ],
+        "补列不许改动既有行的 status/progress；老行墓碑一律 0（=没有被用户取消）"
+    );
+    assert_eq!(read_user_version(&conn), DB_VERSION);
+}
+
+/// 迁移重跑必须幂等：`ALTER … ADD COLUMN` 撞到已有列会直接 Err，而迁移报错 = 启动被拒 =
+/// 用户打不开应用。这一条钉"列已经在的库再走一遍那一步不许报错"——刻意走 `run_migrations`
+/// 那个真入口（而不是直接调那一步的闭包），因为"重复启动"在现实里就是走这条。
+#[test]
+fn v11_to_v12_is_idempotent_when_the_column_already_exists() {
+    let conn = Connection::open_in_memory().unwrap();
+    conn.execute_batch(SCHEMA).unwrap();
+    conn.execute_batch("PRAGMA user_version = 11;").unwrap();
+    run_migrations(&conn, 11).expect("第一次 v11→v12 必须成功");
+    // 把版本号按回 11 再走一遍：列已存在，那一步必须靠"先数一遍再决定加不加"扛住
+    conn.execute_batch("PRAGMA user_version = 11;").unwrap();
+    run_migrations(&conn, 11).expect("重复执行不许报错（ALTER 撞已有列 = 启动被拒 = 应用打不开）");
+    assert_eq!(read_user_version(&conn), DB_VERSION);
+}
+
 /// 写入 → 读回的三态保真。**刻意走两条读路径**（`get_message_record` 与 `get_latest_messages`）：
 /// 只改一条 = 前端某条路上落点无声消失。
 #[test]

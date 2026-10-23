@@ -81,14 +81,23 @@ pub fn delete_outbox(conn: &Connection, id: i64) -> Result<()> {
 /// 调用方用 `should_fail_expired_outbox` 区分「对端离线（保留）」与「可达无 Ack（放弃）」。
 ///
 /// Ack 到达时 outbox 行已被删除，所以残留的必然是"发不出去"或"发出去但对端没回应"的条目。
+/// 一次清扫最多读多少条过期行（10-23 审计 P3-D）。
+///
+/// 为什么要有上界：这条查询在**唯一那把 DB 锁**里跑，而它的候选集是"所有过期且没 Ack 的行"——
+/// 离线一周之后那可能是几千条。清扫器每个 tick 都会再来一次，所以本轮只处理前 N 条完全够；
+/// 没有上界时这一读会把整条消息落库链路（以及所有在等这把锁的传输）一起按下屏息。
+/// 与 `list_outbox` 那种"一个对端的全部待发"不同：那条的规模由单个会话的消息量决定，
+/// 这条是**全库**。
+pub const OUTBOX_SWEEP_BATCH: i64 = 500;
+
 pub fn list_expired_outbox(
     conn: &Connection,
     deadline_ms: i64,
 ) -> Result<Vec<(i64, String, String, i64)>> {
     let mut stmt = conn.prepare(
-        "SELECT id, msg_id, peer_id, created_at FROM outbox WHERE created_at < ?1 ORDER BY id",
+        "SELECT id, msg_id, peer_id, created_at FROM outbox WHERE created_at < ?1 ORDER BY id LIMIT ?2",
     )?;
-    let rows = stmt.query_map(params![deadline_ms], |r| {
+    let rows = stmt.query_map(params![deadline_ms, OUTBOX_SWEEP_BATCH], |r| {
         Ok((
             r.get::<_, i64>(0)?,
             r.get::<_, String>(1)?,
@@ -197,5 +206,80 @@ mod offline_queue_tests {
         // 「对端离线（保留）」与「可达无 Ack（放弃）」——回归 2026-09-19 P0。
         assert_eq!(peer_id, "peer-a");
         assert_eq!(*created_at, 0);
+    }
+
+    /// **读数型判据**（10-23 审计 A3 要的那一份）：队列 N 行时，一轮到期扫描读多久。
+    ///
+    /// 刻意**不断言**时间阈值（CI 机器负载会把一个猜的数变成掷硬币），只打印机器值 ——
+    /// 用法是"想判断这条查询有没有变慢时，复跑它并对比同一个数量级"。
+    /// 唯一断言的是一致性：有界那 500 条确实拿到了（没有 LIMIT 时这里会是 N）。
+    #[test]
+    fn expired_sweep_read_cost_reading() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE outbox (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                msg_id TEXT NOT NULL UNIQUE,
+                peer_id TEXT NOT NULL,
+                payload TEXT NOT NULL,
+                created_at INTEGER NOT NULL
+            );
+            CREATE INDEX idx_outbox_created ON outbox(created_at);",
+        )
+        .unwrap();
+        const N: i64 = 20_000;
+        {
+            let tx = conn.unchecked_transaction().unwrap();
+            for i in 0..N {
+                tx.execute(
+                    "INSERT INTO outbox(msg_id, peer_id, payload, created_at) VALUES (?1, 'p', '{}', ?2)",
+                    params![format!("m-{i}"), i],
+                )
+                .unwrap();
+            }
+            tx.commit().unwrap();
+        }
+        let started = std::time::Instant::now();
+        let got = list_expired_outbox(&conn, N + 1).unwrap();
+        let elapsed = started.elapsed();
+        println!(
+            "· 到期扫描读数：队列 {N} 行 / 一轮读 {} 行 / 耗时 {:.3} ms（上界 {}）",
+            got.len(),
+            elapsed.as_secs_f64() * 1000.0,
+            OUTBOX_SWEEP_BATCH
+        );
+        assert_eq!(got.len() as i64, OUTBOX_SWEEP_BATCH);
+    }
+
+    /// 过期清扫的读是**有界**的（10-23 审计 P3-D）：全库候选集离线一周能到几千条，
+    /// 而它跑在唯一那把 DB 锁里。上界之外的行留给下一个 tick —— 不许"一次全捞"。
+    #[test]
+    fn expired_sweep_read_is_bounded() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE outbox (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                msg_id TEXT NOT NULL UNIQUE,
+                peer_id TEXT NOT NULL,
+                payload TEXT NOT NULL,
+                created_at INTEGER NOT NULL
+            );",
+        )
+        .unwrap();
+        for i in 0..(OUTBOX_SWEEP_BATCH + 7) {
+            conn.execute(
+                "INSERT INTO outbox(msg_id, peer_id, payload, created_at) VALUES (?1, 'p', '{}', ?2)",
+                params![format!("m-{i}"), i],
+            )
+            .unwrap();
+        }
+        let got = list_expired_outbox(&conn, 10_000).unwrap();
+        assert_eq!(
+            got.len() as i64,
+            OUTBOX_SWEEP_BATCH,
+            "一次清扫最多读 {OUTBOX_SWEEP_BATCH} 条：多出来的留给下一个 tick"
+        );
+        // 而且取的是**最早的**那一批（ORDER BY id），否则尾部永远轮不到
+        assert_eq!(got.first().map(|r| r.1.as_str()), Some("m-0"));
     }
 }

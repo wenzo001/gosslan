@@ -302,6 +302,26 @@ export interface TransferInfo {
   progress: number;
   /** 排队中为什么不动；稳定短码，前端映射文案。null = 没有额外阻塞信息。 */
   blocked_reason: string | null;
+  /** 建行时刻（毫秒）。传输面板与统一任务中心共用这一个排序键。 */
+  created_at: number;
+}
+
+/**
+ * 统一任务中心里"消息还没送到对端"那一行（`db::PendingMessageOp`）。
+ * 起点是补发队列（`outbox` / `group_outbox`）而不是 `messages.status`；
+ * `peer_offline` 由命令层用 `has_link` 填 —— 数据库不知道链路在不在。
+ */
+export interface PendingMessageOp {
+  msg_id: string;
+  kind: string;
+  peer_id: string | null;
+  group_id: string | null;
+  /** 还有几个人没收到：1:1 恒为 1，群消息是仍在队列里的成员数。 */
+  waiting_for: number;
+  created_at: number;
+  /** 只有 text/code 给正文截断；其它 kind 是 JSON 载荷 ⇒ null，界面按 kind 说类型。 */
+  preview: string | null;
+  peer_offline: boolean;
 }
 
 export interface FileProgress {
@@ -460,6 +480,20 @@ export interface UpdaterInfo {
 }
 
 /** `updater_download` 的进度通道载荷（与 Rust `commands/updater.rs` 同形）。 */
+/**
+ * 更新这件事的可查询状态（B5）。两个窗口共用一份（后端 `UpdaterSession` 是 managed state），
+ * 事件 `updater-status` 是它唯一的推送口径；刚打开的窗口用 `api.updaterStatus()` 补拉。
+ */
+export interface UpdaterStatus {
+  /** `idle | checking | downloading | ready | installing | failed | cancelled`；移动端恒为 `unsupported`。 */
+  phase: string;
+  /** 已收到字节；`total` 缺失时它是唯一读数。 */
+  downloaded: number;
+  total: number | null;
+  version: string | null;
+  error: string | null;
+}
+
 export type UpdaterDownloadEvent =
   | { event: "Started"; data?: { contentLength?: number | null } }
   | { event: "Progress"; data?: { chunkLength?: number } }

@@ -1322,6 +1322,86 @@ mod tests {
         );
     }
 
+    /// `FileCancel` 那一帧的三条底线（B3）：位要声明、bit 不许撞、线格式要能往返。
+    ///
+    /// 为什么这三条各测一件事：漏声明 = 这条帧永远发不出去（功能为零而门禁全绿）；
+    /// 撞了别人的 bit = 两个门控互相误开（编译器不报，只在现场表现为"老端收到了新帧"）；
+    /// 往返写错 = 对端解不出来，而它收到的是 `Message::Unknown` ⇒ **取消静默失效**，
+    /// 这一格最坏的形状就是"看起来发了"。
+    #[test]
+    fn file_cancel_frame_is_advertised_distinct_and_round_trips() {
+        assert_ne!(
+            content_features() & CONTENT_FEATURE_FILE_CANCEL,
+            0,
+            "声明了 FILE_CANCEL 门控却没 advertise ⇒ 取消永远通知不到对端，两边都静默"
+        );
+        // 新位必须独占一个 bit：撞车的表现是"两个门控互相误开"，编译器不会报
+        assert_eq!(
+            CONTENT_FEATURE_FILE_CANCEL
+                & (CONTENT_FEATURE_PULL
+                    | CONTENT_FEATURE_MERGE
+                    | CONTENT_FEATURE_FILE_EPOCH
+                    | CONTENT_FEATURE_FLEX_DM_KIND
+                    | CONTENT_FEATURE_GROUP_HISTORY
+                    | CONTENT_FEATURE_GROUP_FILE_RESUME
+                    | CONTENT_FEATURE_NUDGE
+                    | CONTENT_FEATURE_RENDER),
+            0,
+            "能力位撞车：FILE_CANCEL 复用了已经被占用的 bit"
+        );
+        let frame = Message::FileCancel {
+            transfer_id: "t-1".into(),
+            from: "dev-b".into(),
+        };
+        let json = serde_json::to_string(&frame).unwrap();
+        // 线上 tag 是 **snake_case**（`Message` 顶上带 `rename_all`）：这一格钉的就是这个字面量 ——
+        // 它是"对端认不认得"的唯一依据，改名/改大小写都会让老端把取消当成 Unknown，
+        // 而老端收到 Unknown 是**安静忽略**（INV-P24 第 1 条），所以这种漂移在现场只表现为
+        // "我取消了，对面还在发"，没有任何报错。
+        assert!(
+            json.contains("\"type\":\"file_cancel\""),
+            "线上帧名漂了（期望 tag=file_cancel）：{json}"
+        );
+        let back: Message = serde_json::from_str(&json).unwrap();
+        match back {
+            Message::FileCancel { transfer_id, from } => {
+                assert_eq!(transfer_id, "t-1");
+                assert_eq!(from, "dev-b");
+            }
+            other => panic!("往返之后帧变了形状：{other:?}"),
+        }
+    }
+
+    /// `GroupFileCancel` 的线格式（B3b）：tag 与字段名同样是"对端认不认得"的唯一依据。
+    #[test]
+    fn group_file_cancel_frame_round_trips() {
+        let frame = Message::GroupFileCancel {
+            transfer_id: "t-9".into(),
+            group_id: "g-1".into(),
+            recipient: "dev-b".into(),
+            from: "dev-b".into(),
+        };
+        let json = serde_json::to_string(&frame).unwrap();
+        assert!(
+            json.contains("\"type\":\"group_file_cancel\""),
+            "线上帧名漂了（期望 tag=group_file_cancel）：{json}"
+        );
+        match serde_json::from_str::<Message>(&json).unwrap() {
+            Message::GroupFileCancel {
+                transfer_id,
+                group_id,
+                recipient,
+                from,
+            } => {
+                assert_eq!(transfer_id, "t-9");
+                assert_eq!(group_id, "g-1");
+                assert_eq!(recipient, "dev-b");
+                assert_eq!(from, "dev-b");
+            }
+            other => panic!("往返之后帧变了形状：{other:?}"),
+        }
+    }
+
     // ---------------- #122：呈现层要能区分"同名的两个人" ----------------
     // 判定层早在 31eccbd 就绑了设备 id；剩下的这一半是**哪一段文字算谁**。
     // 用「第几次出现」而不是字符偏移：Rust 按字节、JS 按 UTF-16，偏移跨语言一定错
@@ -1590,23 +1670,33 @@ mod tests {
     #[test]
     fn recall_verdict_covers_author_conversation_and_window() {
         let now = 1_000_000;
-        assert!(recall_verdict("me", "me", "peer", "peer", now - 1, now).is_ok());
+        assert!(recall_verdict("me", "me", "text", "peer", "peer", now - 1, now).is_ok());
         assert!(
-            recall_verdict("peer", "me", "peer", "peer", now - 1, now).is_err(),
+            recall_verdict("peer", "me", "text", "peer", "peer", now - 1, now).is_err(),
             "非作者必须拒绝"
         );
         assert!(
-            recall_verdict("me", "me", "other", "peer", now - 1, now).is_err(),
+            recall_verdict("me", "me", "text", "other", "peer", now - 1, now).is_err(),
             "目标不属于该会话必须拒绝"
         );
         assert!(
-            recall_verdict("me", "me", "peer", "peer", now - RECALL_WINDOW_MS, now).is_ok(),
+            recall_verdict(
+                "me",
+                "me",
+                "text",
+                "peer",
+                "peer",
+                now - RECALL_WINDOW_MS,
+                now
+            )
+            .is_ok(),
             "正好 5 分钟仍在窗口内"
         );
         assert!(
             recall_verdict(
                 "me",
                 "me",
+                "text",
                 "peer",
                 "peer",
                 now - RECALL_WINDOW_MS - 1,
@@ -1616,8 +1706,39 @@ mod tests {
             "超过 5 分钟必须拒绝"
         );
         assert!(
-            recall_verdict("me", "me", "peer", "peer", 0, now).is_ok(),
+            recall_verdict("me", "me", "text", "peer", "peer", 0, now).is_ok(),
             "ts=0 的历史行只跳过时间判据，作者/会话仍是硬门槛"
+        );
+    }
+
+    /// 撤回只收**文本族**（负责人 2026-10-23：文件/图片走取消，不撤回）。
+    ///
+    /// 这一格的意义不在"多拦一种"，而在**拦对了方向**：撤回只改消息行、停不掉传输，
+    /// 对着还在传的文件按撤回会得到"气泡已撤回、字节照样在发"。三种文本族必须都放行 ——
+    /// 判据两边都查，只钉 file 会造成"顺手把 code/merge 也拦掉"没人发现。
+    #[test]
+    fn recall_only_accepts_textual_kinds() {
+        let now = 1_000_000;
+        for kind in RECALLABLE_KINDS {
+            assert!(
+                recall_verdict("me", "me", kind, "peer", "peer", now - 1, now).is_ok(),
+                "{kind} 属于文本族，必须能撤回"
+            );
+        }
+        for kind in ["file", "image", "todo", "poll", "announcement", "recall", "pin"] {
+            let err = recall_verdict("me", "me", kind, "peer", "peer", now - 1, now)
+                .expect_err("非文本族必须拒绝撤回");
+            assert!(
+                err.contains("取消"),
+                "拒绝文案要把人引到「取消」那条正路，实际：{err}"
+            );
+        }
+        // 用切片比较而不是数组比较：数组比较在"加了一种"时是**编译错误**，
+        // 于是变异注入得到的是编译红而不是断言红 —— 那种 Case 证明不了判据会失败。
+        assert_eq!(
+            RECALLABLE_KINDS.as_slice(),
+            ["text", "code", "merge"].as_slice(),
+            "白名单本身也是口径：改名/加一种都要同时改前端 src/utils/recall.ts"
         );
     }
 }

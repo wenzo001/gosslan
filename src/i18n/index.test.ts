@@ -202,6 +202,54 @@ test("词典里不留全仓引不到的死文案（反向：定义了却没人�
   );
 });
 
+// ---------------- 查表式 key：不在 t() 字面量里的那一批 ----------------
+/**
+ * 上面两条判据合起来仍留一个洞：把 key 放进查表常量／switch 返回值、再由调用方
+ * `t(theKey)` 取用。这种写法本仓是真在用的（`blockedReasonKey`、`FALLBACK_TITLE_KEYS`、
+ * `runningTextKey`），而 `t(...)` 那一条只认字面量调用点 ⇒ 表里少一条文案，
+ * 界面上就出现裸 key，而且**只有走到那一格的用户**看得见。
+ *
+ * 分母从源码现解析（不是把 key 手抄一遍）：手抄的清单会漂，加一 case 忘了同步测试就等于没测。
+ * 认两种真写法：`case "x": return "a.b";`（switch 映射）与 `x: "a.b",`（Record 表）。
+ * 扫 `src/utils` 与 `src/components` 两处：后者装的是按钮文案表（`actionLabel` 那一族），
+ * 本批现读 28 条**全部命中真实 key**（0 误报），所以把它一起收进来；以后若出现一个
+ * 形状像 key 又不是 key 的字面量，红的是这条判据，改法是那个字面量自己，不是放宽判据。
+ * 下限（>= 60）是防"正则失配 ⇒ 0 条 ⇒ 假绿"：本批落地时现读 92 条。
+ */
+test("查表映射出来的 i18n key 也要在中英两册都存在（分母从源码现解析）", () => {
+  const root = join(import.meta.dirname, "../..");
+  const files: string[] = [];
+  const walk = (dir: string) => {
+    for (const e of readdirSync(dir, { withFileTypes: true })) {
+      if (e.name === "node_modules" || e.name.startsWith(".")) continue;
+      const p = join(dir, e.name);
+      if (e.isDirectory()) walk(p);
+      // .vue 也要扫：按钮文案表就写在组件里（`t(actionLabel[act])` 那种动态取用）
+      else if (/\.(?:vue|ts)$/.test(e.name) && !/\.test\.ts$/.test(e.name)) files.push(p);
+    }
+  };
+  walk(join(root, "src", "utils"));
+  walk(join(root, "src", "components"));
+  const keys = new Set<string>();
+  for (const f of files) {
+    const src = readFileSync(f, "utf8");
+    for (const m of src.matchAll(/return\s*(["'])([a-z][\w]*(?:\.[\w]+)+)\1/g)) keys.add(m[2]);
+    for (const m of src.matchAll(/^\s*[\w_]+:\s*(["'])([a-z][\w]*(?:\.[\w]+)+)\1,\s*$/gm)) keys.add(m[2]);
+  }
+  assert.ok(keys.size >= 60, `只解析到 ${keys.size} 个查表 key ⇒ 量具本身失效（写法或目录变了）`);
+  const missing: string[] = [];
+  for (const key of keys) {
+    for (const [name, dict] of [["zh-CN", zhCN], ["en-US", enUS]] as const) {
+      if (!dict[key]) missing.push(`${name} 缺 ${key}`);
+    }
+  }
+  assert.deepEqual(
+    [...missing].sort(),
+    [],
+    `查表里的 key 在词典里没有 ⇒ 走到那一格时界面会印出裸 key：\n${[...missing].join("\n")}\n（解析到 ${keys.size} 个查表 key）`,
+  );
+});
+
 // ---------------- 系统语言检测（纯函数） ----------------
 
 test("detectSystemLocale：zh* → 中文，en* → 英文，非中英 → 英文", () => {

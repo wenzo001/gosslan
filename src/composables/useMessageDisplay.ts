@@ -7,7 +7,7 @@ import { shouldShowTimeDivider } from "@/utils/previewMetrics";
 import { shouldShowNickname } from "@/utils/messageKinds";
 import type { MessageRecord } from "@/types";
 
-export type SendState = "sending" | "sent" | "delivered" | "read" | "failed";
+export type SendState = "sending" | "sent" | "delivered" | "read" | "failed" | "cancelled";
 
 /**
  * 消息外观与版面判定（气泡配色、时间行、发送状态）。
@@ -117,6 +117,12 @@ export function useMessageDisplay(opts: {
         return t("msg.read");
       case "failed":
         return t("msg.sendFailed");
+      // 用户主动取消。`messages.status='cancelled'` 已经写了好几个版本，而这份映射里
+      // 一直没有它 ⇒ 取消掉的发送回执走 default 返回**空串**：图标位是空的、读屏也什么都
+      // 读不到，用户只能靠"内容没发出去"反推自己按过取消。与 INV-P26 的口径一起补上：
+      // 取消与失败是两格，各自都要有能看见的名字。
+      case "cancelled":
+        return t("msg.canceled");
       default:
         return "";
     }

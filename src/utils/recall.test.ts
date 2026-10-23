@@ -2,7 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import { RECALL_WINDOW_MS, isWithinRecallWindow } from "./recall.ts";
+import { RECALLABLE_KINDS, RECALL_WINDOW_MS, isRecallableKind, isWithinRecallWindow } from "./recall.ts";
 
 const root = join(import.meta.dirname, "..", "..");
 
@@ -39,5 +39,58 @@ test("MessageItem 接上窗口判据，且单聊不再被 isGroup 挡掉", () =>
     item,
     /if \(!convId\.startsWith\("group:"\)\) return;/,
     "旧的“非群直接 return”会把单聊撤回静默吞掉",
+  );
+});
+
+// ---------------- 撤回只收文本族（2026-10-23 负责人：文件/图片走取消，不撤回） ----------------
+
+/**
+ * 白名单两侧逐字对账（分母从 Rust 那一份**现解析**，不在这里手抄一遍）。
+ *
+ * 为什么要对账而不是各写各的：老端可能没拦、直接发来一条对文件消息的撤回，Rust 那侧
+ * 必须再判一次；而前端若比后端宽，用户会看到一个"点了没反应"的撤回入口（后端拒绝），
+ * 若比后端窄则文本族某一种悄悄没有入口。两边同一份清单是唯一稳态。
+ */
+test("RECALLABLE_KINDS 与 protocol.rs 的白名单逐项对上", () => {
+  const protocol = readFileSync(join(root, "src-tauri", "src", "protocol.rs"), "utf8");
+  const decl = protocol.match(
+    /pub const RECALLABLE_KINDS: \[&str; (\d+)\] = \[([^\]]+)\];/,
+  );
+  assert.ok(decl, "protocol.rs 里找不到 RECALLABLE_KINDS（改名/搬家时这里必须同步）");
+  const declaredLen = Number(decl[1]);
+  const rustKinds = [...decl[2].matchAll(/"([^"]+)"/g)].map((m) => m[1]);
+  assert.equal(
+    declaredLen,
+    rustKinds.length,
+    "数组长度声明与实际项数不一致：这就是那种「加了一种却没人改长度」的漂移",
+  );
+  assert.deepEqual(
+    [...RECALLABLE_KINDS].sort(),
+    [...rustKinds].sort(),
+    "前端可撤回清单与 Rust 不一致：两侧都要拦，清单必须同一份",
+  );
+  assert.ok(
+    protocol.includes("pub fn is_recallable_kind("),
+    "Rust 侧必须有唯一的类型判据（命令层不许各写一份 matches!）",
+  );
+});
+
+test("isRecallableKind：文本族三种放行，附件与机器事件一律不放行", () => {
+  for (const kind of ["text", "code", "merge"]) {
+    assert.equal(isRecallableKind(kind), true, `${kind} 属于文本族`);
+  }
+  for (const kind of ["file", "image", "todo", "poll", "announcement", "pin", "recall", ""]) {
+    assert.equal(isRecallableKind(kind), false, `${kind} 不该有撤回入口`);
+  }
+  assert.equal(isRecallableKind(undefined), false);
+  assert.equal(isRecallableKind(null), false);
+});
+
+test("MessageItem 的撤回入口接了类型判据（不然文件/图片仍会显示「撤回」）", () => {
+  const item = readFileSync(join(root, "src", "components", "MessageItem.vue"), "utf8");
+  assert.match(
+    item,
+    /isRecallableKind\(props\.message\.kind\)/,
+    "canRecallNow 必须接类型白名单：撤回只改消息行、停不掉传输",
   );
 });

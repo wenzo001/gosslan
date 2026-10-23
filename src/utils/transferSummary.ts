@@ -47,21 +47,6 @@ export function liveTransfers<T extends TransferLike>(list: readonly T[]): T[] {
 }
 
 /**
- * 面板里的行序：**真在传的排前面**，同档按进度从多到少。
- *
- * 不按文件名/时间排：用户点开面板是为了看「哪个快好了、哪个卡着」，
- * 把已经 99% 的那条压在三行排队后面等于让他自己找。
- */
-export function sortLiveTransfers<T extends TransferLike>(list: readonly T[]): T[] {
-  const rank = (item: T) => (transferDisplayKind(item.status) === "active" ? 0 : 1);
-  return [...list].sort((a, b) => {
-    const byRank = rank(a) - rank(b);
-    if (byRank !== 0) return byRank;
-    return clampProgress(b.progress) - clampProgress(a.progress);
-  });
-}
-
-/**
  * 聚合进度：**按字节加权**，不是按条数平均。
  *
  * 一个 2GB 的视频传到 50% + 一张 20KB 的图排队，条数平均会说 25%，

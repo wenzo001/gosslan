@@ -107,8 +107,35 @@ pub fn start(state: &Arc<AppState>, specs: &'static [WorkerSpec]) {
             .iter()
             .map(|s| (s.name, s.spawn, (s.spawn)(&st), 0))
             .collect();
+        // 活性证据（10-23 审计 P3-F）：看门狗自己不登记进清单、也没人监督它 ——
+        // 没有启动行与周期行时，"它到底还在不在"在日志里永远读不出来
+        // （只在重启/放弃时说话，等于"安静可能是一切正常，也可能是它已经死了"）。
+        st.logger.info(
+            "worker",
+            format!(
+                "code=WORKER_WATCHDOG_STARTED workers={} tick_s={}",
+                running.len(),
+                SUPERVISOR_TICK.as_secs()
+            ),
+        );
+        let mut ticks: u64 = 0;
         loop {
             tokio::time::sleep(SUPERVISOR_TICK).await;
+            ticks += 1;
+            // 每 30 拍（默认 5 分钟）留一行：与重启日志区分开，定期可被 grep 到。
+            if ticks % 30 == 0 {
+                st.logger.info(
+                    "worker",
+                    format!(
+                        "code=WORKER_WATCHDOG_ALIVE supervised={} restarts={:?}",
+                        running.len(),
+                        running
+                            .iter()
+                            .map(|(n, _, _, r)| (*n, *r))
+                            .collect::<Vec<_>>()
+                    ),
+                );
+            }
             running.retain_mut(|(name, spawn, handle, restarts)| {
                 match verdict(handle.inner().is_finished(), *restarts) {
                     WorkerVerdict::Alive => true,
@@ -141,6 +168,24 @@ pub fn start(state: &Arc<AppState>, specs: &'static [WorkerSpec]) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// 看门狗必须留**启动行**与**周期行**（10-23 审计 P3-F）。
+    ///
+    /// 这两行是"它还在不在"的唯一证据：只有重启/放弃日志时，安静既可能是正常、
+    /// 也可能是它自己死了。判据读生产码（切掉本测试模块，避免把自己的字面量数进去）。
+    #[test]
+    fn watchdog_leaves_start_and_heartbeat_evidence() {
+        let src = include_str!("worker_supervisor.rs");
+        let prod = &src[..src.find("#[cfg(test)]").unwrap_or(src.len())];
+        assert!(
+            prod.contains("code=WORKER_WATCHDOG_STARTED"),
+            "看门狗启动必须留一行（否则重启次数全为 0 时，日志里没有任何\"它在跑\"的痕迹）"
+        );
+        assert!(
+            prod.contains("code=WORKER_WATCHDOG_ALIVE"),
+            "看门狗必须周期留一行：安静可能是一起正常，也可能是它已经死了"
+        );
+    }
 
     #[test]
     fn verdict_truth_table() {

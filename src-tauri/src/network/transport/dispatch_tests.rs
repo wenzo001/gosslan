@@ -188,15 +188,18 @@ fn friend_message_blocked_has_original_sender() {
 #[test]
 fn dispatch_arms_and_volume_arms_agree() {
     let view = crate::network::transport_src_for_guards();
-    // 台账是现读 `network/transport.rs` 的分发臂逐组数出来的（合计 37 个变体）：
-    //   file 6 = FileOffer / FileAccept / FileReject / FileCompleteAck / FileChunk / FileDone
+    // 台账是现读 `network/transport.rs` 的分发臂逐组数出来的（合计 38 个变体）：
+    //   file 7 = FileOffer / FileAccept / FileReject / FileCompleteAck / FileChunk / FileDone
+    //          / FileCancel（2026-10-23 B3：对端取消的通知帧，两侧臂表必须同时出现，
+    //           只加分发臂 = 帧掉进分册的 `_ => {{}}` 静默丢弃 —— 正是这条守卫存在的理由）
     let families: [(&str, usize); 5] = [
-        ("handle_file_messages", 6),
+        ("handle_file_messages", 7),
         ("handle_share_and_relay_messages", 6),
-        // 14 = 上面那 11 个群帧 + `GroupHistoryRequest` / `GroupHistoryReply`
+        // 15 = 上面那 11 个群帧 + `GroupHistoryRequest` / `GroupHistoryReply`
         //（2026-10-16 群历史同步：同一族的两个新臂，处理体借道 `network/group_history.rs`）
         // + `GroupFileResume`（2026-10-21 P1-03 真续传：接收端 → 发送端的偏移回执）
-        ("handle_group_messages", 14),
+        // + `GroupFileCancel`（2026-10-23 B3b：按成员取消，发送方 ↔ 接收方两个方向）
+        ("handle_group_messages", 15),
         ("handle_identity_and_friend_messages", 8),
         ("handle_messaging_arm", 4),
     ];
