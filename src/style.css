@@ -230,6 +230,12 @@
   --gosslan-bubble-radius-tight: 6px;
   --gosslan-msg-avatar: 30px;
   --gosslan-msg-max: 78%;
+  /* 兄弟节点（表情回应条 / 强提醒条）要和气泡的左/右边缘对齐时让出的那一列：
+     = 消息行的 `px-4`(16) + 头像列(--gosslan-msg-avatar) + 行 `gap-2`(8)。
+     ⚠️ 那 16 与 8 写在 `MessageItem.vue:1330` 的行 class 上，这里再抄一份是**有意的**：
+       两侧的等式由运行时探针 `rowpair` 段在真浏览器里量着（同组四条气泡左缘极差 <= 1px、
+       头像宽 == 组内空位宽），漂了红的是判据，不是这条注释。 */
+  --gosslan-msg-gutter: calc(var(--gosslan-msg-avatar) + 24px);
 
   /* 窗口外圈描边线：窗口外缘一整圈细浅灰圆角描边（DWM 边框视觉），
      用 inset ring 画在最外层容器上，不占布局；深色下用微亮线 */
