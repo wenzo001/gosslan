@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<!--
+  只给 **Windows 上的 Rust 测试壳** 用（scripts/verify.mjs 的 Rust 单测那一步通过
+  RUSTFLAGS 的 /MANIFESTINPUT 合并进去）。
+
+  为什么必须有：tauri-build 会给**正式二进制**嵌入一份带
+  Microsoft.Windows.Common-Controls v6 依赖的清单，而 libtest 的测试壳没有。
+  `rfd`（来自 tauri-plugin-dialog）静态导入了 `comctl32!TaskDialogIndirect` ——
+  这个符号只在 v6 里有；没有清单时 Windows 解析到 System32 的 v5.82，
+  进程在**加载期**就以 0xc0000139 STATUS_ENTRYPOINT_NOT_FOUND 死掉，零测试输出。
+  2026-10-23 由 CI 的「缺的导出」注解直接点名（376 项里缺 1 个）。
+
+  只声明这一条依赖，不引入 UAC/DPI 等会改变行为的东西。
+-->
+<assembly xmlns="urn:schemas-microsoft-com:asm.v1" manifestVersion="1.0">
+  <dependency>
+    <dependentAssembly>
+      <assemblyIdentity
+        type="win32"
+        name="Microsoft.Windows.Common-Controls"
+        version="6.0.0.0"
+        processorArchitecture="*"
+        publicKeyToken="6595b64144ccf1df"
+        language="*" />
+    </dependentAssembly>
+  </dependency>
+</assembly>
