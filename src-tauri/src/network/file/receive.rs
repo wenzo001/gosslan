@@ -622,6 +622,68 @@ pub fn fail_receive(state: &AppState, transfer_id: &str, peer_id: &str, reason: 
     true
 }
 
+/// 用户取消一条**正在接收**的文件：把本机这一侧停手（B3a）。
+///
+/// 与 `fail_receive` 的三处区别每一条都是语义，不是风格：
+///  · **删 `.part`**。`fail_receive` 刻意保留它当续传前缀；而用户说"不要了"，那半截文件
+///    既不该留在下载目录里，更不该被下一次同单投递当成"已经收了 N 字节"接着写。
+///  · 内容记 `FailReason::Cancelled` ⇒ **Rejected**（终态、不自动重取）。记成 `Partial`
+///    就走 Incomplete ⇒ 下一次建链 `retry_incomplete_content` 会把用户刚取消的东西
+///    自己再拉一遍（"取消了又自己开始"那一族，与 `file_transfers.cancel_terminal` 同案）。
+///  · 不核对 `peer_id`：这是用户动作，来源是谁都得停。
+///
+/// 台账那一笔（`cancelled` + 墓碑 + 气泡）不在这里写 —— 唯一出口仍是
+/// `db::finalize_file_failure(.., Cancelled)`，由取消命令统一调（一份顺序、一处 emit）。
+/// 返回值 = 本机是否真有一路在收的传输被停下（`false` 也要继续落 cancelled：
+/// 对端可能已经不再发了，但用户要的是"这一单别再出现在我的进行中"）。
+pub fn cancel_receive(state: &AppState, transfer_id: &str) -> bool {
+    let taken = {
+        let mut recv = state
+            .file_receivers
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        recv.remove(transfer_id)
+    };
+    let Some(r) = taken else {
+        return false;
+    };
+    let tmp_path = r.tmp_path.clone();
+    let peer_id = r.peer_id.clone();
+    let cid = r.expected_sha256.clone();
+    // 先让持有 `File` 句柄的接收器离开作用域，再去删文件：Windows 上句柄未关时
+    // `remove_file` 会失败（同一份纪律见 `fail_taken_receive` 里"句柄与磁盘动作的先后"）。
+    drop(r);
+    if let Err(e) = std::fs::remove_file(&tmp_path) {
+        if e.kind() != std::io::ErrorKind::NotFound {
+            state.logger.warn(
+                "file",
+                format!("取消接收后删除 .part 失败 transfer={transfer_id}：{e}"),
+            );
+        }
+    }
+    {
+        let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
+        if let Err(e) = crate::content::store::record_failure(
+            &dbc,
+            &cid,
+            &peer_id,
+            crate::content::model::Direction::Receive,
+            crate::content::model::FailReason::Cancelled,
+            db::now_ms(),
+        ) {
+            state.logger.error(
+                "file",
+                format!("取消接收后内容状态没落成 Rejected cid={cid} transfer={transfer_id}：{e}（下一次建链可能自动重取这一单）"),
+            );
+        }
+    }
+    state.logger.info(
+        "file",
+        format!("用户取消接收：已停手并删除 .part transfer={transfer_id} peer={peer_id}"),
+    );
+    true
+}
+
 /// 静默接收器的**原子**回收单位：判据与摘表在同一次持锁里完成。
 ///
 /// 为什么不能"先快照一批 id、再逐个收尾"：那两步之间完全可以挤进一个新 FileOffer

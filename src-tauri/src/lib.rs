@@ -745,6 +745,7 @@ pub fn run() {
             commands::respond_friend_request,
             commands::send_message,
             commands::get_messages,
+            commands::get_pending_message_operations,
             commands::get_group_todo_messages,
             commands::get_latest_messages,
             commands::get_conv_link,

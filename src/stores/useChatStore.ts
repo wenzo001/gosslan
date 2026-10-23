@@ -91,10 +91,17 @@ import type {
   GroupReadInfo,
   MessageRecord,
   Peer,
+  PendingMessageOp,
   PendingRequest,
   ContentTransfer,
   TransferInfo,
 } from "@/types";
+import {
+  countOperations,
+  deriveOperations,
+  sortOperations,
+  type OperationRow,
+} from "@/utils/taskCenter";
 
 /** 上次打开的会话（重启后恢复，纯前端 UI 状态，各端统一）。 */
 const LAST_CONV_KEY = "gosslan.lastConv";
@@ -162,6 +169,12 @@ export const useChatStore = defineStore("chat", () => {
   const transfers = ref<TransferInfo[]>([]);
   /** 统一内容状态（ADR-0019）：未完成/失败的气泡据此显示「点击重试」。 */
   const contentTransfers = ref<ContentTransfer[]>([]);
+  /**
+   * 还没送到对端的消息行（后端读的是补发队列，不是 `messages.status`）。
+   * 与 `transfers` / `contentTransfers` 同一次 `refreshTransfers` 拉回 ⇒ 任务中心
+   * 那四行种类**永远来自同一份快照**，不会一条是新的、一条是旧的。
+   */
+  const messageOps = ref<PendingMessageOp[]>([]);
   const messages = ref<Record<string, MessageRecord[]>>({});
   /** 首屏消息读失败：convId → 原始错误。成功后清空；UI 只在列表为空时展示。 */
   const messageLoadErrors = ref<Record<string, string>>({});
@@ -184,6 +197,26 @@ export const useChatStore = defineStore("chat", () => {
     () => conversations.value.find((c) => c.id === activeConv.value) ?? null,
   );
   const totalUnread = computed(() => conversations.value.reduce((s, c) => s + c.unread, 0));
+
+  /**
+   * 统一后台任务中心的那张表（只含未完成）。
+   *
+   * 归一逻辑全在 `@/utils/taskCenter`，这里只做四份真值的拼装 —— 组件不许自己再推一遍
+   * "什么算卡住"，否则会长出第二套状态口径（那张的成因见 taskCenter.ts 文件头）。
+   * `groupHistorySync` 是 Record，`Object.values` 取值顺序不参与显示（下面自己排序）。
+   */
+  const operations = computed<OperationRow[]>(() =>
+    sortOperations(
+      deriveOperations({
+        transfers: transfers.value,
+        contentTransfers: contentTransfers.value,
+        messageOps: messageOps.value,
+        groupHistory: Object.values(groupHistorySync.value),
+      }),
+    ),
+  );
+  /** 药丸上的数：还有几件事没办完。 */
+  const liveOperationCount = computed(() => countOperations(operations.value));
 
   // ---------------- 系统通知（后台 / 非当前会话才触发） ----------------
   const app = useAppStore();
@@ -1214,9 +1247,12 @@ export const useChatStore = defineStore("chat", () => {
   /** 并发触发时只让**最新那次**写回结果（迁入 `refreshGuard`，与上面几个共用同一份实现）。 */
   async function refreshTransfers() {
     const req = refreshGuard.begin("transfers");
-    const [list, contents] = await Promise.all([
+    const [list, contents, msgOps] = await Promise.all([
       api.getTransfers(),
       api.getContentTransfers().catch(() => []),
+      // 任务中心的第四类行（还没送到对端的消息）。失败不拖累另两路：
+      // 拿不到就当这一类没有任务，而不是让整个传输面板报错——它读的是同一批事实。
+      api.getPendingMessageOperations().catch(() => []),
     ]);
     // 后发先至的旧快照必须丢掉：多选发送时每个文件都会 `void refreshTransfers()`，
     // 旧快照里**没有**刚建的那条 transfer ⇒ 覆盖回来后，后续 file-progress 全部落空
@@ -1225,6 +1261,7 @@ export const useChatStore = defineStore("chat", () => {
     transfers.value = list;
     // 顺带刷新统一内容状态：未完成 / 校验失败的气泡据此显示「点击重试」。
     contentTransfers.value = contents;
+    messageOps.value = msgOps;
   }
   /** 进度/done 事件早于 transfer 行进内存时的一次性补拉（防抖，不放大 IPC）。 */
   let transfersRepairTimer: ReturnType<typeof setTimeout> | null = null;
@@ -3054,6 +3091,9 @@ export const useChatStore = defineStore("chat", () => {
     groups,
     transfers,
     contentTransfers,
+    messageOps,
+    operations,
+    liveOperationCount,
     messages,
     groupReads,
     groupHistorySync,

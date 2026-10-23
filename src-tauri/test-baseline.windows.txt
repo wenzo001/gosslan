@@ -79,6 +79,7 @@ commands::todo_priority_tests::priority_defaults_to_medium
 commands::todo_priority_tests::unknown_priority_is_rejected
 content::model::tests::fail_reason_separates_retryable_from_terminal
 content::model::tests::status_round_trips_and_classifies
+content::policy::tests::a_cancelled_receive_is_rejected_and_never_requeued
 content::policy::tests::backoff_is_monotonic_and_capped
 content::policy::tests::failure_maps_to_resumable_or_terminal
 content::policy::tests::resume_only_from_chunk_boundaries
@@ -166,6 +167,10 @@ db::group_rename_tests::group_relation_sync_refreshes_title_but_never_creates_a_
 db::group_rename_tests::rename_group_of_missing_group_leaves_conversation_row_untouched
 db::group_rename_tests::rename_group_updates_both_group_row_and_its_conversation_title
 db::group_rename_tests::replace_group_members_drops_members_who_left
+db::message_ops_tests::a_multibyte_message_is_truncated_by_characters_not_bytes
+db::message_ops_tests::a_queue_row_without_its_message_row_is_still_listed
+db::message_ops_tests::merge_sorts_and_truncates_globally_not_per_queue
+db::message_ops_tests::pending_message_ops_cover_both_queues_and_count_group_waiters
 db::message_render_tests::render_lww_only_applies_newer_events
 db::migration_tests::a_backup_can_be_restored_and_migrated_again_without_losing_rows
 db::migration_tests::a_corrupt_database_is_rejected_and_left_byte_for_byte_untouched

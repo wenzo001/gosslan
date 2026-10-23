@@ -58,6 +58,21 @@ pub fn get_transfer_path(conn: &Connection, id: &str) -> Option<String> {
     .flatten()
 }
 
+/// 这一单在本机台账里的方向（`send` / `receive`）。
+///
+/// 取消入口按它分派（B3a）：接收中的那一单没有"在途发送任务"可以通知，取消的含义是
+/// "本机停手 + 别再出现在进行中"，而不是"给对端发信号"。读不到行 = 不是本机记过账的单。
+pub fn get_transfer_direction(conn: &Connection, id: &str) -> Option<String> {
+    conn.query_row(
+        "SELECT direction FROM file_transfers WHERE id = ?1",
+        params![id],
+        |r| r.get(0),
+    )
+    .optional()
+    .ok()
+    .flatten()
+}
+
 /// 只把**仍处 active** 的传输行标为 failed，返回是否有行被改。
 ///
 /// 回收中继态时给接收端一个显式失败终态（2026-09-23 审计 A2：旧行为只从内存
@@ -240,7 +255,8 @@ pub fn list_transfers(conn: &Connection) -> Result<Vec<TransferInfo>> {
                   WHEN t.direction = 'send' AND t.status = 'pending' AND o.next_attempt_at > ?1
                     THEN 'waiting_retry'
                   ELSE NULL
-                END
+                END,
+                t.created_at
          FROM file_transfers t
          LEFT JOIN file_outbox o ON o.transfer_id = t.id
          ORDER BY t.created_at DESC",
@@ -258,6 +274,10 @@ pub fn list_transfers(conn: &Connection) -> Result<Vec<TransferInfo>> {
                 path: r.get(6)?,
                 progress: r.get(7)?,
                 blocked_reason: r.get(8)?,
+                // 任务中心要按"最近发生的在前"排序，而这一列本来就已经是这张表的排序键
+                // （`ORDER BY t.created_at DESC`）—— 带上它不是新增事实，只是把已经在用的
+                // 那个顺序交给读侧，省得前端按数组下标猜时间（下标会被合并/过滤改乱）。
+                created_at: r.get(9)?,
             })
         },
     )?;

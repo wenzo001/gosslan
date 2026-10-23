@@ -1136,22 +1136,46 @@ export const zhCN: MessageDict = {
   "send.stalled": "网络停滞，等待恢复…",
   "send.noProgress": "传输已停止：{secs} 秒没有任何进展，可以取消后重发",
   "send.queued": "排队中…",
-  // ---- 全局「正在传输」面板（UI 审计 D-18）----
-  // 复用 send.sendingPct / send.receivingPct / send.queued 作行内文案，
-  // 这里只补"入口 + 面板"需要的五条。
-  "transfer.pill": "正在传输 {n} 个",
-  "transfer.open": "查看正在传输的文件（{n} 个）",
-  "transfer.title": "正在传输",
-  "transfer.empty": "没有正在传输的文件",
-  "transfer.note": "切到其他会话不会中断传输",
+  // ---- 统一后台任务中心（负责人 2026-10-23：能看见、能取消、看得懂卡在哪个节点）----
+  // 行内那句「发送中 62%」复用 send.sendingPct / send.receivingPct / send.queued：
+  // 面板与气泡对同一件事说同一句话，用户不必学第二套措辞。
+  // 原来那八条 `transfer.pill/open/title/empty/note/cancel/cancelDone/cancelFail`
+  // 随 `TransferCenter.vue` 一起删掉了（死文案护栏会现算引用面，别留着）。
+  "task.pill": "还有 {n} 件事没办完",
+  "task.open": "查看后台任务（{n} 个）",
+  "task.title": "后台任务",
+  "task.empty": "没有进行中的任务",
+  "task.note": "关掉面板不会中断任务；按住那颗药丸能拖到四个角",
+  "task.dragHint": "按住可拖到四个角",
+  "task.to": "给 {name}",
+  "task.from": "来自 {name}",
+  "task.attempts": "已重试 {n} 次",
+  "task.waitingFor": "还有 {n} 个人没收到",
+  "task.cancel": "取消",
+  "task.cancelDone": "已取消",
+  "task.retryNow": "立即重试",
+  "task.syncNow": "立即同步",
+  "task.openChat": "去会话",
+  "task.actionFail": "操作失败",
+  "task.alreadyGone": "这件事已经办完了",
+  "task.state.waiting": "等待中",
+  "task.state.running": "进行中",
+  "task.state.syncing": "同步中 {pct}%",
+  "task.state.resending": "重发中",
+  "task.kind.fileSend": "发送文件",
+  "task.kind.fileReceive": "接收文件",
+  "task.kind.contentFetch": "获取内容",
+  "task.kind.messageSend": "补发消息",
+  "task.kind.groupHistory": "群历史同步",
   "transfer.blocked.queueMissing": "发送队列记录已丢失，可直接取消",
   "transfer.blocked.queueClosed": "发送队列已关闭，可直接取消",
   "transfer.blocked.retryExhausted": "重试次数已用尽，可直接取消",
   "transfer.blocked.waitingRetry": "等待下次重试",
   "transfer.blocked.peerOffline": "对方离线，上线后会自动重试",
-  "transfer.cancel": "取消发送",
-  "transfer.cancelDone": "已取消发送",
-  "transfer.cancelFail": "取消失败",
+  // 下面三条是任务中心独有的格子：等对方回执 / 在本机补发队列里 / 群里没人再有这份内容。
+  "transfer.blocked.waitingAck": "已经发到对方那儿，等对方确认",
+  "transfer.blocked.queuedByBackend": "在本机队列里排着，会自己继续",
+  "transfer.blocked.noSource": "暂时找不到有这份数据的设备",
   "send.unknownState": "状态未知，可重新发送",
   "msg.cleaned": "已被清理",
   // 预览失败的两种确定性原因之一（另一种复用上面的 msg.cleaned）。

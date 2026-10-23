@@ -746,6 +746,9 @@ pub struct TransferInfo {
     /// 排队中为什么不动；只对发送侧的 pending 行有意义。`None` = 没有额外阻塞信息。
     /// 取值由 `db::file_transfer::list_transfers` 与 `get_transfers` 的链路判据共同给出。
     pub blocked_reason: Option<String>,
+    /// 建行的时刻（毫秒）。面板的排序键本来就是 `created_at DESC`，把它交给读侧，
+    /// 统一任务中心才能跨四种任务排"最近的在前"——按数组下标猜时间会被过滤改乱。
+    pub created_at: i64,
 }
 
 /// 本机这一群的**历史同步进度**（`settings` 里 `ghsync:group:<gid>` 那份 JSON）。

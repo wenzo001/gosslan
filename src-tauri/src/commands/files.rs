@@ -632,6 +632,32 @@ pub async fn cancel_file_transfer(
     //    终态守卫保证幂等：已 delivered/read 的不会被覆盖；已 done 的传输行也不会被降级
     //    （INV-P26）。
     //
+    // 1b. 方向分派（B3a）：接收中的那一单没有"在途发送任务"可通知 —— 取消的含义是
+    // **本机停手**：摘掉接收器、删掉 `.part`（不留下会被下一次投递当成续传前缀的半截文件）、
+    // 内容状态记成 Rejected（不自动重取）。台账那一笔仍然只走下面那一个出口。
+    // 群文件的接收侧不在这里（它有自己的接收器表与气泡，随 B3 的 Cancel 帧一起做）。
+    let is_receive = {
+        let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());
+        db::get_transfer_direction(&dbc, &transfer_id).as_deref() == Some("receive")
+    };
+    let receive_stopped = if is_receive {
+        // 删文件 + 落内容状态都是阻塞活 ⇒ 挪出 tokio worker（INV-P34，与 `get_transfers` 同形）
+        let s2 = s.clone();
+        let tid = transfer_id.clone();
+        match tokio::task::spawn_blocking(move || file::cancel_receive(&s2, &tid)).await {
+            Ok(stopped) => stopped,
+            Err(e) => {
+                s.logger.error(
+                    "file",
+                    format!("取消接收的收尾任务被线程池中断 transfer={transfer_id}：{e}（.part 可能还在）"),
+                );
+                false
+            }
+        }
+    } else {
+        false
+    };
+
     // 「已送达」要在动手写之前问一次：`finalize_file_failure` 里的 `done` 闸门会拒绝降级，
     // 所以这一读的用途只有"给界面说实话"，不参与任何写序（写在后面，破坏性写仍在最后）。
     let already_done = {
@@ -685,7 +711,7 @@ pub async fn cancel_file_transfer(
     s.logger.info(
         "file",
         format!(
-            "用户取消文件发送 transfer={transfer_id} (cancel_signal={signalled} already_done={already_done} group_recipients_cancelled={cancelled_recipients})"
+            "用户取消文件传输 transfer={transfer_id} (cancel_signal={signalled} already_done={already_done} group_recipients_cancelled={cancelled_recipients} receive_stopped={receive_stopped})"
         ),
     );
 

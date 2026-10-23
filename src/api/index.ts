@@ -2,7 +2,7 @@
 
 import { Channel, invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
-import type { AppSettings, CacheInfo, CleanupReport, ContentAudience, ContentTransfer, Conversation, DeviceInfo, DiscoveryDiag, ExportSummary, ExternalLink, ExternalLinkImportResult, FavoriteEntry, FileDoneInfo, FileFailedInfo, FileProgress, FileStalledInfo, Friend, FriendKeyRotation, Group, GroupHistoryProgress, GroupReadInfo, InterfaceInfo, LinkState, LogEntry, MessageRecord, Peer, PeerReadInfo, PendingRequest, RelayConfig, RelayProbe, RoutedEndpoint, RuntimeDiag, RuntimeSnapshot, TransferInfo } from "@/types";
+import type { AppSettings, CacheInfo, CleanupReport, ContentAudience, ContentTransfer, Conversation, DeviceInfo, DiscoveryDiag, ExportSummary, ExternalLink, ExternalLinkImportResult, FavoriteEntry, FileDoneInfo, FileFailedInfo, FileProgress, FileStalledInfo, Friend, FriendKeyRotation, Group, GroupHistoryProgress, GroupReadInfo, InterfaceInfo, LinkState, LogEntry, MessageRecord, Peer, PeerReadInfo, PendingMessageOp, PendingRequest, RelayConfig, RelayProbe, RoutedEndpoint, RuntimeDiag, RuntimeSnapshot, TransferInfo } from "@/types";
 import type { TodoImage } from "@/utils/todos";
 import { chatSearchGroupSchema, groupFileEntrySchema, parseIpcList, shareEntrySchema } from "@/utils/validation";
 import type { PreviewGallery, PreviewImage } from "@/types";
@@ -325,6 +325,12 @@ export const api = {
   applyMacosWindowShape: (dark: boolean) =>
     invoke<void>("apply_macos_window_shape", { dark }),
   getTransfers: () => invoke<TransferInfo[]>("get_transfers"),
+  /**
+   * 统一任务中心：还没送到对端的消息行。与 `getTransfers` 同一族（都是"还没办完的事"），
+   * 起点是补发队列；`peer_offline` 由后端用 `has_link` 填，前端不许按 peers 列表再猜。
+   */
+  getPendingMessageOperations: () =>
+    invoke<PendingMessageOp[]>("get_pending_message_operations"),
   /** 统一内容传输状态（ADR-0019）：未完成/失败的内容气泡据此显示重试。 */
   getContentTransfers: () => invoke<ContentTransfer[]>("get_content_transfers"),
 

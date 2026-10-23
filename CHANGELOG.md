@@ -13,6 +13,46 @@
 
 ## [Unreleased]
 
+## [5.5.27] - 2026-10-23
+
+### 统一后台任务中心 + 接收侧本地取消（取消/撤回全链路 · 第 3 批：B3a + T1）
+
+- **接收未完成取消得动**（负责人那句"接受中没有完成的都是可以取消的"）：`cancel_file_transfer`
+  现在先读台账的 `direction`，是接收就走新的 `file::cancel_receive` —— 原子摘掉接收器、
+  删掉那份 `{transfer_id}.part` 续传前缀（`NotFound` 容忍）、内容台账记一条 `Cancelled` 失败原因，
+  终态那一步仍交给 `finalize_file_failure` 落（写终态只有一个家）。`FailReason::Cancelled`
+  是不可重试那一档，于是"用户取消的东西不会再被后台自己捞回来"有了政策层的判据
+  （`content::policy::tests::a_cancelled_receive_is_rejected_and_never_requeued`）。
+- **统一后台任务中心**（负责人那句"所有有进度、有目标、有完成态的任务都可以看到并取消"）：
+  散在四处的进度并成一张表 —— 文件收发（`file_transfers`）、按 cid 取内容（`content_transfers`）、
+  消息补发（新命令 `get_pending_message_operations`，读 `outbox` + `group_outbox`，上限 200、
+  SQLite 在 `spawn_blocking` 里）、群历史同步（既有进度）。归一逻辑只有
+  `src/utils/taskCenter.ts` 一家：输入四份真值 ⇒ 输出 `queued | running | blocked` 三种状态、
+  稳定短码的卡住原因、以及**只引用今天已存在的命令**的动作（取消 / 立即重取 / 立即同步 / 去会话）。
+  终态一律不列（"已经完成的在这个列表里应该是不展示"），而 `sent`（字节已写出、等对方回执）
+  在任务中心是"还在等"、在气泡是"已完成" —— 两种读法是语义，两处共用同一个函数、不许在组件里再推一遍。
+- **100% 但未终态仍可取消**：`progress=1` 而状态还是 `sent`/`active` 的行照旧列出来并给取消键。
+- 药丸**可以拖到四个角**（负责人那句"它一直挡在右下角，有可能挡到发送界面"）：按住拖动、松手吸附到
+  最近那一角、位置存 localStorage；几何在 `src/utils/pillAnchor.ts`（四象限、越界夹回、
+  点按与拖动靠 6px 阈值分开 —— 没这道闸，点一下会先被判成拖动而打不开面板）。
+  四个位置全部从既有 token 推（顶部让开 caption/刘海 + 页头，移动端底部让开 TabBar）。
+- 面板取代 `TransferCenter.vue`（同一屏不该有两颗浮动的进度入口）；`utils/transferSummary.ts`
+  里随之没人用的 `sortLiveTransfers` 一并删掉，行序现在只由 `sortOperations` 一处决定
+  （blocked → running → queued，同档按最近发生）。
+- 排队短码三家新增三格并把它们接进唯一那份映射（`transferState.blockedReasonKey`）：
+  `waiting_ack` / `queued_by_backend` / `no_source`；`TransferInfo` 补 `created_at` 作排序键。
+- 文案：新增 26 条 `task.*`（中英同批）、删掉随面板一起没人的 8 条 `transfer.*`；
+  新判据一条在 `src/i18n/index.test.ts` —— **查表／switch 返回的 key 也要两册都有**，
+  分母从 `src/utils` + `src/components` 源码现解析（现读 92 个 key、下限 60），
+  摘掉一条文案实测会红（旧的两条只认 `t("字面量")` 调用点与"定义了没人用"，中间那一格是漏的）。
+- 判据：前端新增 19 条用例（`taskCenter` 13 + `pillAnchor` 6）+ 上面那条字典护栏；
+  Rust 新增 5 条用例已纳入基线（macos 1125 / windows 1104）。契约图登记了新命令
+  `get_pending_message_operations`（`mapContract` 那条双向核对现在是绿的，它会在缺登记时具名报红）。
+- ⚠️ **还没有的两件事，别读成已验**：① 取消接收**不会通知对面**——线格式里还没有 Cancel 帧，
+  那是对端继续发字节、直到超时或队列判死为止（B3 剩下那半）；② 消息行的"取消"要等 B4
+  （今天没有"把还在队列里的消息撤下来"的命令，所以界面上不给这个按钮）；更新下载要等 B5 的状态出口。
+
+
 ## [5.5.26] - 2026-10-23
 
 ### 群文件取消：按成员的那本账也得算数（取消/撤回全链路 · 第 2 批）

@@ -930,3 +930,35 @@ pub async fn delete_conversation(
     .map_err(|e| format!("会话删除被线程池中断: {e}"))?
 }
 
+/// 任务中心（统一后台任务列表）里"消息还没送到对端"那一类行。
+///
+/// 起点是补发队列（`outbox` / `group_outbox`），读法与为什么不是从 `messages.status`
+/// 起查，都写在 `db::list_pending_message_operations` 那段注释里（一处说一次）。
+///
+/// `peer_offline` 只能在这里填：链路是内存里的事实，而"能不能发"的判据必须是
+/// `flush_pending_files` 用的那一条 `has_link` —— 前端拿到的 `peers` 是"发现过的邻居"，
+/// 按它判会把"刚掉线的对端"说成在线（用户看到的就是一句假的"发送中"）。
+///
+/// ⚠️ 整段读库走 `spawn_blocking`（INV-P34 的棘轮判据 `worker_bound_heavy_commands_do_not_grow`
+/// 会点名把 SQLite 留在 tokio worker 上的命令，加一条就红）：与 `get_transfers` 同一形状 ——
+/// 持锁的 SQLite 读挪出 worker，链路判据（`await`）留在外面。
+#[tauri::command(async)]
+pub async fn get_pending_message_operations(
+    state: State<'_, Arc<AppState>>,
+) -> Result<Vec<db::PendingMessageOp>, String> {
+    let s = state.inner().clone();
+    let s_db = s.clone();
+    let mut ops = tokio::task::spawn_blocking(move || -> Result<Vec<db::PendingMessageOp>, String> {
+        let dbc = s_db.db.lock().unwrap_or_else(|e| e.into_inner());
+        db::list_pending_message_operations(&dbc, db::MESSAGE_OPS_LIMIT).map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| format!("消息补发队列读取被线程池中断: {e}"))??;
+    for row in &mut ops {
+        if let Some(peer) = row.peer_id.as_deref() {
+            row.peer_offline = !s.has_link(peer).await;
+        }
+    }
+    Ok(ops)
+}
+
