@@ -200,8 +200,19 @@ let settleTimer = 0;
  * 可见行一批批实测 → `totalHeight` 每变一次就写一次 `scrollTop = scrollHeight`；
  * 估算与实测来回修正时，滚动条被反复拽动。这里在切换后的静默窗口内不逐次贴底，
  * 由 `settleTimer` 结束时统一贴一次；追加新消息/图片加载不受影响（它们不设这个窗口）。
+ *
+ * ⚠️ 用户 2026-10-23 仍报「有概率抖一会才好」。两个补丁（缺一个都会复发）：
+ * ① `scrollToBottom()` **不再清零**这个窗口 —— 切会话时 ChatWindow 在 `nextTick` 后还会
+ *    调一次它来"首屏贴底"，那一下原来会把本窗口拆掉，逐次贴底立刻恢复；
+ * ② 窗口不是固定 300ms 就结束，而是**安静期**：每来一次实测修正就顺延
+ *    `SWAP_SETTLE_QUIET_MS`，直到连续这么久没有高度变化才落定（上限 `SWAP_SETTLE_MAX_MS`）。
+ *    高度收敛慢的会话（图片很多）不会再"抖到 300ms 就继续抖"。
  */
 let pinHoldUntil = 0;
+/** 收敛窗口的硬上限：再怎么顺延也不能一直不贴底。 */
+let pinHoldHardUntil = 0;
+const SWAP_SETTLE_QUIET_MS = 120;
+const SWAP_SETTLE_MAX_MS = 900;
 let pinRaf = 0;
 /** 置位：下一次 computeScrollState 把 scrollTop 下降视为程序化滚动，不计用户上滚。 */
 let programmaticTop = false;
@@ -219,6 +230,29 @@ function setScrollTop(v: number) {
 
 function suppressTransient() {
   suppressNearBottomUntil = Math.max(suppressNearBottomUntil, Date.now() + 300);
+}
+
+/**
+ * 收敛窗口：顺延"落定时刻"并（重）排一次收口。
+ *
+ * 只在切换会话后调用 / 在窗口内被高度变化触发。窗口结束只做两件事：贴一次真实底部、
+ * 重算一次可见状态 —— 中间所有 totalHeight 变化都不碰滚动条。
+ */
+function armSettleHold() {
+  const now = Date.now();
+  if (!pinHoldHardUntil) pinHoldHardUntil = now + SWAP_SETTLE_MAX_MS;
+  pinHoldUntil = Math.min(pinHoldHardUntil, now + SWAP_SETTLE_QUIET_MS);
+  if (settleTimer) {
+    window.clearTimeout(settleTimer);
+    settleTimer = 0;
+  }
+  settleTimer = window.setTimeout(() => {
+    settleTimer = 0;
+    pinHoldUntil = 0;
+    pinHoldHardUntil = 0;
+    pinToBottom();
+    computeScrollState();
+  }, Math.max(0, pinHoldUntil - now) + 16);
 }
 
 /** 贴底也按帧合并：一次重测风暴只写一次 scrollTop。 */
@@ -263,6 +297,7 @@ function computeScrollState() {
       settleTimer = window.setTimeout(() => {
         settleTimer = 0;
         pinHoldUntil = 0;
+        pinHoldHardUntil = 0;
         pinToBottom();
         computeScrollState();
       }, suppressNearBottomUntil - Date.now() + 30);
@@ -334,7 +369,9 @@ function scrollToBottom() {
     pinned = true;
     emit("nearBottom", true);
   }
-  pinHoldUntil = 0;
+  // ⚠️ 这里**不清**收敛窗口：切会话时 ChatWindow 在 nextTick 后还会调一次本函数"首屏贴底"，
+  // 清掉窗口 = 逐次贴底立刻恢复 = 用户说的"抖一会才好"（见 pinHoldUntil 的注释）。
+  // 这一次贴底照做；窗口内后续的高度变化仍由 armSettleHold 收口。
   suppressTransient();
   setScrollTop(el.scrollHeight);
 }
@@ -488,14 +525,10 @@ watch(
     scheduleRemeasure();
     if (isSwap && props.autoScrollOnSwap) {
       // 切换后先贴一次估算底部；随后的重测收敛期间不再逐次贴底（见 pinHoldUntil），
-      // 由静默期结束统一贴一次，避免滚动条被估算/实测来回拽出小幅快速抖动。
-      // 若上一个瞬态窗口的 settleTimer 还在，必须按新的 300ms 边界重排，否则它会提前
-      // 触发、把 pinHold 清零，抖动又回来。
-      if (settleTimer) {
-        window.clearTimeout(settleTimer);
-        settleTimer = 0;
-      }
-      pinHoldUntil = Date.now() + 300;
+      // 由安静期结束统一贴一次，避免滚动条被估算/实测来回拽出小幅快速抖动。
+      // `armSettleHold` 会按当前的落定时刻重排 settleTimer —— 上一轮的 timer 必须被它接管，
+      // 否则它会提前触发、把 pinHold 清零，抖动又回来。
+      armSettleHold();
       // post flush：DOM 已是新会话内容，此刻按真实 scrollHeight 贴底，比 pre-flush
       // 阶段对着旧高度滚的那次准确（修「定位到合并消息首行」）
       void nextTick(() => {
@@ -516,8 +549,13 @@ watch(
 // 防误伤交给两个条件：用户上滚豁免（recentScrollUp）+ 外部显式 setPinned(false)
 // （未读跳转 / 引用定位后由父组件解除贴底）。
 watch(totalHeight, () => {
-  // 切换会话后的收敛窗口：只允许 settleTimer 在窗口结束贴一次，不能每变一次高度就拽一次。
-  if (Date.now() < pinHoldUntil) return;
+  // 切换会话后的收敛窗口：**不是忽略，而是顺延** —— 每来一次实测修正就把落定时刻往后推
+  // `SWAP_SETTLE_QUIET_MS`（硬上限 SWAP_SETTLE_MAX_MS），由 settleTimer 在安静期结束时贴一次。
+  // 原来这里只是 `return`：窗口一过就恢复逐次贴底，而慢会话的实测修正常常晚于 300ms ⇒ 继续抖。
+  if (Date.now() < pinHoldUntil) {
+    armSettleHold();
+    return;
+  }
   schedulePin();
 });
 

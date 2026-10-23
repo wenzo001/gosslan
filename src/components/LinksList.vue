@@ -31,7 +31,7 @@ import {
   isValidExternalUrl,
   validateLinkInput,
 } from "@/utils/externalLinks";
-import { Download, ExternalLink as ExternalLinkIcon, Link2, Pencil, Plus, Upload } from "lucide-vue-next";
+import { Download, ExternalLink as ExternalLinkIcon, FileJson, Pencil, Plus, Upload } from "lucide-vue-next";
 import { Trash2 } from "@/components/ui/icons";
 import type { ExternalLink, ExternalLinkImportResult } from "@/types";
 
@@ -63,6 +63,10 @@ const loadError = computed(() =>
 
 /** 当前草稿（`id === null` = 新增）。 */
 const draft = ref<{ id: string | null; name: string; url: string } | null>(null);
+/** 新增/编辑弹窗与导入弹窗各自独立：一个弹窗只干一件事（用户 2026-10-23）。 */
+const dialogOpen = ref(false);
+const importOpen = ref(false);
+const urlImport = ref("");
 
 /**
  * 三条写命令（增 / 改 / 删）后端都返回**整份数组** ⇒ 成功时直接写回读缓存，
@@ -113,13 +117,17 @@ function startEdit(l: ExternalLink) {
   draft.value = { id: l.id, name: l.name, url: l.url };
   dialogOpen.value = true;
 }
-/** 新增/编辑/线上导入/文件导入统一一个弹窗；关闭时把三种状态一起收掉。 */
-const dialogOpen = ref(false);
 function closeDialog() {
   draft.value = null;
-  urlImportOpen.value = false;
-  urlImport.value = "";
   dialogOpen.value = false;
+}
+function openImport() {
+  urlImport.value = "";
+  importOpen.value = true;
+}
+function closeImport() {
+  urlImport.value = "";
+  importOpen.value = false;
 }
 
 const ime = useImeEnterGuard();
@@ -156,8 +164,6 @@ function remove(l: ExternalLink) {
 // ---------------- JSON 导入 / 导出 ----------------
 
 const transferBusy = ref<"" | "export" | "file" | "url">("");
-const urlImportOpen = ref(false);
-const urlImport = ref("");
 
 function applyImport(res: ExternalLinkImportResult) {
   queryClient.setQueryData(panelKey("links", ""), res.links);
@@ -200,7 +206,7 @@ async function importFile() {
     transferBusy.value = "file";
     const localPath = await api.importPickedFile(String(rawPath), "links.json");
     applyImport(await api.importExternalLinksFile(localPath));
-    dialogOpen.value = false;
+    importOpen.value = false;
   } catch (e) {
     app.toastError(e, t("links.importReport"));
   } finally {
@@ -218,9 +224,7 @@ async function importFromUrl() {
   transferBusy.value = "url";
   try {
     applyImport(await api.importExternalLinksFromUrl(url));
-    urlImportOpen.value = false;
-    urlImport.value = "";
-    dialogOpen.value = false;
+    closeImport();
   } catch (e) {
     app.toastError(e, t("links.importReport"));
   } finally {
@@ -239,133 +243,150 @@ async function importFromUrl() {
     :title="t('links.title')"
     @back="emit('back')"
   >
-    <template #actions>
+    <!-- 三个入口同一行、同一档样式（用户 2026-10-23：一个大蓝按钮在上、一个描边按钮在下，
+         既突兀又不像一组）。图标只作辅助，文案才是主标识；「添加」保留主色描边表达层级，
+         不再用整块实底按钮 —— 左栏最窄只有 200px，实底大按钮会把标题挤没。 -->
+    <div class="flex shrink-0 flex-wrap items-center gap-1 border-b border-[var(--gosslan-divider)] px-2 py-1.5">
       <button
-        class="tap-safe flex h-8 w-8 shrink-0 items-center justify-center rounded-[var(--gosslan-radius-md)] text-[var(--gosslan-text-2)] transition hover:bg-[var(--gosslan-hover)] disabled:opacity-50"
-        :title="t('links.importFile')"
-        :aria-label="t('links.importFile')"
-        :disabled="!!transferBusy"
-        :aria-busy="transferBusy === 'file' || undefined"
-        @click="dialogOpen = true"
+        type="button"
+        class="tap-safe inline-flex h-8 items-center gap-1 rounded-[var(--gosslan-radius-md)] border border-[var(--gosslan-primary)] px-2 text-meta text-[var(--gosslan-accent-ink)] transition hover:bg-[var(--gosslan-hover)]"
+        @click="startAdd"
       >
-        <Spinner v-if="transferBusy === 'file'" size-class="h-4 w-4" decorative />
-        <Upload v-else class="h-[18px] w-[18px]" />
+        <Plus class="h-4 w-4" />
+        {{ t("links.add") }}
       </button>
       <button
-        class="tap-safe flex h-8 w-8 shrink-0 items-center justify-center rounded-[var(--gosslan-radius-md)] text-[var(--gosslan-text-2)] transition hover:bg-[var(--gosslan-hover)] disabled:opacity-50"
-        :title="t('links.importUrl')"
-        :aria-label="t('links.importUrl')"
+        type="button"
+        class="tap-safe inline-flex h-8 items-center gap-1 rounded-[var(--gosslan-radius-md)] border border-[var(--gosslan-border)] px-2 text-meta text-[var(--gosslan-text)] transition hover:bg-[var(--gosslan-hover)] disabled:opacity-50"
+        :title="t('links.importHint')"
         :disabled="!!transferBusy"
-        :aria-expanded="urlImportOpen"
-        @click="urlImportOpen = true; dialogOpen = true"
+        @click="openImport"
       >
-        <Link2 class="h-[18px] w-[18px]" />
+        <Upload class="h-4 w-4" />
+        {{ t("links.import") }}
       </button>
       <button
         v-if="links.length > 0"
-        class="tap-safe flex h-8 w-8 shrink-0 items-center justify-center rounded-[var(--gosslan-radius-md)] text-[var(--gosslan-text-2)] transition hover:bg-[var(--gosslan-hover)] disabled:opacity-50"
-        :title="t('links.export')"
-        :aria-label="t('links.export')"
+        type="button"
+        class="tap-safe inline-flex h-8 items-center gap-1 rounded-[var(--gosslan-radius-md)] border border-[var(--gosslan-border)] px-2 text-meta text-[var(--gosslan-text)] transition hover:bg-[var(--gosslan-hover)] disabled:opacity-50"
+        :title="t('links.exportHint')"
         :disabled="!!transferBusy"
         :aria-busy="transferBusy === 'export' || undefined"
         @click="exportLinks"
       >
         <Spinner v-if="transferBusy === 'export'" size-class="h-4 w-4" decorative />
-        <Download v-else class="h-[18px] w-[18px]" />
+        <Download v-else class="h-4 w-4" />
+        {{ t("links.export") }}
       </button>
-      <button
-        v-if="!draft"
-        class="tap-safe flex h-8 w-8 shrink-0 items-center justify-center rounded-[var(--gosslan-radius-md)] text-[var(--gosslan-text-2)] transition hover:bg-[var(--gosslan-hover)]"
-        :title="t('links.add')"
-        :aria-label="t('links.add')"
-        @click="startAdd"
-      >
-        <Plus class="h-[18px] w-[18px]" />
-      </button>
-    </template>
+    </div>
 
     <div class="min-h-0 flex-1 overflow-y-auto px-2 pb-2">
-      <!-- 新增 / 编辑 / 线上导入 / 文件导入 统一走一个弹窗（用户 2026-10-22）。 -->
-      <BaseModal :open="dialogOpen" :title="t('links.title')" @close="closeDialog">
-        <div class="mb-2 flex justify-end">
-          <button
-            class="tap-safe rounded-[var(--gosslan-radius-md)] border border-[var(--gosslan-border)] px-3 py-1.5 text-meta text-[var(--gosslan-text)] transition hover:bg-[var(--gosslan-hover)] disabled:opacity-50"
-            :disabled="!!transferBusy"
-            @click="importFile"
-          >
-            {{ t("links.importFile") }}
-          </button>
-        </div>
-      <!-- 线上 JSON 导入：后端拉取，避免 WebView CORS。 -->
-      <div
-        v-if="urlImportOpen"
-        class="mb-2 space-y-2 rounded-[var(--gosslan-radius-md)] border border-[var(--gosslan-border)] bg-[var(--gosslan-card)] p-2.5"
+      <!-- 新增 / 编辑：只负责一条链接的名称与网址。 -->
+      <BaseModal
+        :open="dialogOpen"
+        :title="draft?.id ? t('links.edit') : t('links.addTitle')"
+        @close="closeDialog"
       >
-        <div class="flex items-center gap-2">
+        <div v-if="draft" class="space-y-2">
+          <div class="flex items-baseline gap-2">
+            <input
+              v-model="draft.name"
+              type="text"
+              enterkeyhint="done"
+              :maxlength="MAX_LINK_NAME_CHARS"
+              :placeholder="t('links.namePlaceholder')"
+              class="min-w-0 flex-1 rounded-[var(--gosslan-radius-md)] border border-transparent bg-[var(--gosslan-bg)] px-3 py-1.5 text-body outline-none transition focus:border-transparent"
+              @keydown.enter="ime.enter(saveDraft, $event)"
+              @compositionstart="ime.onStart"
+              @compositionend="ime.onEnd"
+            />
+            <CharCounter :text="draft.name" :max="MAX_LINK_NAME_CHARS" />
+          </div>
           <input
-            v-model="urlImport"
-            type="url"
-            inputmode="url"
-            autocomplete="off"
-            :placeholder="t('links.importUrlPlaceholder')"
-            class="min-w-0 flex-1 rounded-[var(--gosslan-radius-md)] border border-transparent bg-[var(--gosslan-bg)] px-3 py-1.5 text-body outline-none transition focus:border-transparent"
-            @keyup.enter="ime.enter(importFromUrl)"
-            @compositionstart="ime.onStart"
-            @compositionend="ime.onEnd"
-          />
-          <PrimaryBtn :disabled="!!transferBusy || !urlImport.trim()" @click="importFromUrl">
-            {{ t("links.importUrlAction") }}
-          </PrimaryBtn>
-        </div>
-        <div class="flex justify-end">
-          <button
-            class="tap-safe rounded-[var(--gosslan-radius-md)] px-3 py-1 text-meta text-[var(--gosslan-text-2)] transition hover:bg-[var(--gosslan-hover)]"
-            @click="closeDialog"
-          >
-            {{ t("common.cancel") }}
-          </button>
-        </div>
-      </div>
-
-      <!-- 新增 / 编辑表单 -->
-      <div
-        v-if="draft"
-        class="mb-2 space-y-2 rounded-[var(--gosslan-radius-md)] border border-[var(--gosslan-border)] bg-[var(--gosslan-card)] p-2.5"
-      >
-        <div class="flex items-baseline gap-2">
-          <input
-            v-model="draft.name"
+            v-model="draft.url"
             type="text"
-            :maxlength="MAX_LINK_NAME_CHARS"
-            :placeholder="t('links.namePlaceholder')"
-            class="min-w-0 flex-1 rounded-[var(--gosslan-radius-md)] border border-transparent bg-[var(--gosslan-bg)] px-3 py-1.5 text-body outline-none transition focus:border-transparent"
-            @keyup.enter="ime.enter(saveDraft)"
+            enterkeyhint="done"
+            :placeholder="t('links.urlPlaceholder')"
+            class="w-full rounded-[var(--gosslan-radius-md)] border border-transparent bg-[var(--gosslan-bg)] px-3 py-1.5 text-body outline-none transition focus:border-transparent"
+            @keydown.enter="ime.enter(saveDraft, $event)"
             @compositionstart="ime.onStart"
             @compositionend="ime.onEnd"
           />
-          <CharCounter :text="draft.name" :max="MAX_LINK_NAME_CHARS" />
+          <div class="flex justify-end gap-2 pt-1">
+            <button
+              class="tap-safe rounded-[var(--gosslan-radius-md)] px-3 py-1.5 text-body text-[var(--gosslan-text-2)] transition hover:bg-[var(--gosslan-hover)]"
+              @click="closeDialog"
+            >
+              {{ t("common.cancel") }}
+            </button>
+            <PrimaryBtn :disabled="saving" @click="saveDraft">
+              {{ t("common.save") }}
+            </PrimaryBtn>
+          </div>
         </div>
-        <input
-          v-model="draft.url"
-          type="text"
-          :placeholder="t('links.urlPlaceholder')"
-          class="w-full rounded-[var(--gosslan-radius-md)] border border-transparent bg-[var(--gosslan-bg)] px-3 py-1.5 text-body outline-none transition focus:border-transparent"
-          @keyup.enter="ime.enter(saveDraft)"
-          @compositionstart="ime.onStart"
-          @compositionend="ime.onEnd"
-        />
-        <div class="flex justify-end gap-2">
-          <button
-            class="tap-safe rounded-[var(--gosslan-radius-md)] px-3 py-1.5 text-body text-[var(--gosslan-text-2)] transition hover:bg-[var(--gosslan-hover)]"
-            @click="closeDialog"
-          >
-            {{ t("common.cancel") }}
-          </button>
-          <PrimaryBtn :disabled="saving" @click="saveDraft">
-            {{ t("common.save") }}
-          </PrimaryBtn>
+      </BaseModal>
+
+      <!-- 导入：只负责导入，文件与网址两种来源都在这一个弹窗里。 -->
+      <BaseModal :open="importOpen" :title="t('links.importTitle')" @close="closeImport">
+        <div class="space-y-4">
+          <div>
+            <div class="mb-1.5 text-xs text-[var(--gosslan-text-2)]">{{ t("links.importFile") }}</div>
+            <button
+              type="button"
+              class="tap-safe flex w-full items-center justify-center gap-2 rounded-[var(--gosslan-radius-md)] border border-[var(--gosslan-border)] bg-[var(--gosslan-bg)] px-3 py-2 text-body text-[var(--gosslan-text)] transition hover:bg-[var(--gosslan-hover)] disabled:opacity-50"
+              :disabled="!!transferBusy"
+              @click="importFile"
+            >
+              <Spinner v-if="transferBusy === 'file'" size-class="h-4 w-4" decorative />
+              <FileJson v-else class="h-4 w-4" />
+              {{ t("links.importFileAction") }}
+            </button>
+            <p class="mt-1.5 text-caption leading-relaxed text-[var(--gosslan-text-2)]">
+              {{ t("links.importFileHint") }}
+            </p>
+          </div>
+
+          <div class="h-px bg-[var(--gosslan-divider)]"></div>
+
+          <div>
+            <div class="mb-1.5 text-xs text-[var(--gosslan-text-2)]">{{ t("links.importUrl") }}</div>
+            <div class="flex items-center gap-2">
+              <input
+                v-model="urlImport"
+                type="url"
+                inputmode="url"
+                enterkeyhint="go"
+                autocomplete="off"
+                :placeholder="t('links.importUrlPlaceholder')"
+                class="min-w-0 flex-1 rounded-[var(--gosslan-radius-md)] border border-transparent bg-[var(--gosslan-bg)] px-3 py-1.5 text-body outline-none transition focus:border-transparent"
+                @keydown.enter="ime.enter(importFromUrl, $event)"
+                @compositionstart="ime.onStart"
+                @compositionend="ime.onEnd"
+              />
+              <PrimaryBtn :disabled="!!transferBusy || !urlImport.trim()" @click="importFromUrl">
+                <span class="inline-flex items-center gap-1">
+                  <Spinner v-if="transferBusy === 'url'" size-class="h-3.5 w-3.5" decorative />
+                  {{ t("links.importUrlAction") }}
+                </span>
+              </PrimaryBtn>
+            </div>
+            <p class="mt-1.5 text-caption leading-relaxed text-[var(--gosslan-text-2)]">
+              {{ t("links.importUrlHint") }}
+            </p>
+          </div>
+
+          <p class="text-caption leading-relaxed text-[var(--gosslan-text-2)]">
+            {{ t("links.importMergeHint") }}
+          </p>
+          <div class="flex justify-end">
+            <button
+              class="tap-safe rounded-[var(--gosslan-radius-md)] px-3 py-1.5 text-body text-[var(--gosslan-text-2)] transition hover:bg-[var(--gosslan-hover)]"
+              @click="closeImport"
+            >
+              {{ t("common.cancel") }}
+            </button>
+          </div>
         </div>
-      </div>
       </BaseModal>
 
       <p v-if="loading" class="px-2 py-3 text-xs text-[var(--gosslan-text-2)]">{{ t("links.loading") }}</p>

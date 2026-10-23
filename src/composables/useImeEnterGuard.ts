@@ -38,17 +38,25 @@ export function useImeEnterGuard() {
     /** true ⇒ 这次按键属于输入法提交，调用方必须直接 return（不要执行动作）。 */
     isIme: (e: KeyboardEvent) => isImeKey(e, composing.value, endedAt, Date.now()),
     /**
-     * 「回车 = 一个动作」的免接线版：把它直接挂到 `@keydown.enter` / `@keyup.enter` 上，
-     * 输入法让路这件事就由这里管，调用方只写动作本身。
+     * 「回车 = 一个动作」的免接线版。
      *
-     * 为什么要有这一格（2026-10-20）：`isIme` 那套管用是因为调用方**拿得到事件**，
-     * 但全仓 12 处 Enter 提交里有 9 处的模板写成 `@keyup.enter="保存"`（零参数处理器），
-     * 接线要各自再写一个包事件的函数 —— 实测同一缺陷正因为"每处自己接"才会漏。
-     * 挂这一格后模板只剩一次 `ime.enter(fn)`，漏不漏由判据 53 数，不靠人记得。
+     * ⚠️ 模板里必须把事件一起传进来：`@keydown.enter="ime.enter(save, $event)"`。
+     * 只写 `ime.enter(save)` 是**静默失效**的 —— Vue 把内联绑定编译成
+     * `($event) => ime.enter(save)`，拿到的是这里返回的函数却不会替你调用它
+     * （2026-10-23 探针实测：`save` 一次都没执行，直到补上 `$event`）。判据 53 会红。
+     *
+     * 脚本里仍可把返回值当处理器用：`const onEnter = ime.enter(save)`。
+     *
+     * @param fn 动作
+     * @param e 模板传进来的事件；不传则返回一个处理器
      */
-    enter: (fn: () => void) => (e: KeyboardEvent) => {
-      if (isImeKey(e, composing.value, endedAt, Date.now())) return;
-      fn();
+    enter: (fn: () => void, e?: KeyboardEvent) => {
+      const handler = (ev: KeyboardEvent) => {
+        if (isImeKey(ev, composing.value, endedAt, Date.now())) return;
+        fn();
+      };
+      if (e) handler(e);
+      return handler;
     },
   };
 }

@@ -196,9 +196,14 @@ function onSettingsBack() {
   <!-- 移动端：二级 push 导航，iOS 设置风格。头部（返回 + 标题）统一交给 MobilePageFrame，
        详情页不再各自画返回键（用户 2026-09-20）。二级→一级→关闭 由 onSettingsBack 路由。 -->
   <Transition v-if="app.isMobile" name="page-slide">
+    <!-- `:scroll="false"`：本页的每一格（一级列表 / 二级页）自己就是 `flex-1 overflow-y-auto`
+         的滚动容器。壳也开滚动 ⇒ 两层滚动容器套在一起，触屏滚到底会**串联**到外层（内容整体
+         位移，看起来就是「滑一会边距变了」），而且两层各留一条 `scrollbar-gutter` ⇒ 左右各多
+         吃 8px、实际内边距 32px 而不是设计上的 16px。`LogViewer` 早就是这个写法。 -->
     <MobilePageFrame
       v-if="open"
       mode="overlay"
+      :scroll="false"
       :title="settingsTitle"
       @back="onSettingsBack"
     >
@@ -209,9 +214,14 @@ function onSettingsBack() {
             {{ t(g.titleKey) }}
           </div>
           <div class="overflow-hidden rounded-[var(--gosslan-radius-md)] border border-[var(--gosslan-border)] bg-[var(--gosslan-panel)]">
+            <!-- data-no-press：整行是**列表项**，不是按钮。全站 `button:active` 的 scale(0.97)
+                 挂在满宽行上会让整张分组卡看起来「缩了一下」——单行的分组（安全 / 关于）里
+                 这一行就是整张卡。（用户 2026-10-23：「点击选项整个列表都缩小」）
+                 按压反馈保留：`.tap-safe:active` 的背景色那条不涉及几何。 -->
             <button
               v-for="(item, idx) in g.items"
               :key="item.key"
+              data-no-press
               class="tap-safe flex w-full items-center gap-3 px-3 py-3 text-left text-emphasis transition hover:bg-[var(--gosslan-hover)]"
               :class="idx > 0 ? 'border-t border-[var(--gosslan-divider)]' : ''"
               @click="selectSection(item.key)"

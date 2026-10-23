@@ -383,11 +383,13 @@ function openContextMenu(e: MouseEvent) {
 }
 
 /**
- * contextmenu 的统一入口：**先问选区**，再决定拦不拦。
+ * contextmenu 的统一入口：**触屏选字才让位**，其余一律拦默认菜单。
  *
  * 之前模板写的是 `@contextmenu.prevent` —— 组件级 prevent 在 handler 之前执行，
  * 即使 `openContextMenu` 在移动端提前 return，系统复制菜单也已经被吃掉。
- * 现在有选区/选择模式就完全放行，交给系统工具条；其余才 prevent 并开自定义菜单。
+ * 现在桌面**不再因为"有选区"放行**（用户 2026-10-23：右键气泡偶尔弹出 WebKit 原生菜单，
+ * 根因就是之前双击选过词/拖选过正文，选区还在 ⇒ `shouldPreventContextMenu` 放行）；
+ * 只有触屏的选字/选择模式仍交给系统工具条。
  */
 function onContextMenu(e: MouseEvent) {
   const sel = window.getSelection();
@@ -1090,7 +1092,7 @@ async function copyFileToClipboard() {
        ⚠️ 不要给它加 `background-clip`/`-inset-*`/`w-fit`/`ring-*`，也不要把底色挪回 `.group/msg`
        或消息行上：挪回 `.group/msg` 就露出那 4px 白缝；挪到消息行则连"头像上面 / 气泡下面"
        的 6px 内边距都没有了 —— 这几条都被用户逐个否过。 -->
-  <div class="group/msg" :class="tintClass" :style="tintStyle">
+  <div class="group/msg" :class="tintClass" :style="tintStyle" @contextmenu="onContextMenu">
     <!-- 消息块：纵向内边距只留 `pb-1.5`（那 6px 的上半段由"本项第一个可见块"自己带，
          见 needsTopPad），这样时间/未读分割行不会重复给间距，
          各项总高与改动前逐像素一致（messageHeight 的高度估算表不用动）。 -->
@@ -1228,10 +1230,20 @@ async function copyFileToClipboard() {
         <Check v-if="selected" class="h-2.5 w-2.5 text-white" :stroke-width="2.5" aria-hidden="true" />
       </span>
 
+      <!-- `--bubble-tail-offset`：气泡顶边被**行顶**往下推了多少（群聊那行昵称占 18px，
+           与 `messageHeight.NICKNAME_ROW` 是同一格）。气泡上的尖角要对着头像中心就得知道这个
+           下沉量，CSS 那边只做「头像中心 18 − 尖角半高 6 − 本值」。这两个数对不对不由这里自证 ——
+           量矩形的是运行时探针 `--only=rowpair` 那一段（尾巴中心 vs 头像中心，<=1px）。
+           带引用块的那条还会再把气泡往下推一截，那一档不追中心重合：尾巴仍贴着气泡上缘、
+           朝头像那一侧，比原来吊在气泡底部近得多。 -->
       <div
         data-msg-col
         class="relative flex min-w-0 max-w-[72%] flex-col"
         :class="mine ? 'items-end' : 'items-start'"
+        :style="{
+          '--bubble-tail-offset': showNickname ? '18px' : '0px',
+          '--bubble-tail-corner': showNickname ? '2px' : 'var(--gosslan-bubble-radius)',
+        }"
       >
         <!-- 表情回应入口（飞书式）：悬停本条消息 ⇒ **气泡外侧**出现笑脸按钮，
              点开 = 完整表情选择器（见下方 EmojiPicker），选中即作为表情回应发送/取消。
@@ -1317,7 +1329,6 @@ async function copyFileToClipboard() {
           class="group/row flex w-full items-end gap-1.5"
           :class="mine ? 'justify-end' : 'justify-start'"
           :title="fullTime"
-          @contextmenu="onContextMenu"
           @touchstart="onTouchStart"
           @touchend="cancelLongPress"
           @touchmove="onTouchMove"
@@ -1381,17 +1392,21 @@ async function copyFileToClipboard() {
             type="button"
             class="flex w-52 cursor-pointer flex-col items-center justify-center gap-1 rounded-[var(--gosslan-bubble-radius)] bg-[var(--gosslan-hover)] text-caption text-[var(--gosslan-text-2)] transition hover:bg-[var(--gosslan-pressed)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary "
             :style="{ height: `${IMAGE_PLACEHOLDER_HEIGHT}px` }"
-            @click="refetchContent"
+            :aria-disabled="mine ? 'true' : undefined"
+            @click="mine ? undefined : refetchContent()"
           >
             <ImageOff class="h-6 w-6 opacity-50" />
             <span>{{ t("msg.imageCleaned") }}</span>
-            <span class="opacity-70">{{ t("msg.imageReRequest") }}</span>
+            <!-- 「向对方重新索取」是收件方才成立的出口：自己发出去的那张图，对端是接收方，
+                 向它要一份既拿不到原图也没有意义。自己这一支只说清「为什么看不见了」。 -->
+            <span class="opacity-70">{{ mine ? t("msg.imageCleanedMineHint") : t("msg.imageReRequest") }}</span>
           </button>
 
           <!-- 图片 -->
           <MessageImageBubble
             v-else-if="message.kind === 'image'"
             :src="imageDataUrl"
+            :mine="mine"
             @open="openImageLightbox"
             @refetch="refetchContent"
           />
@@ -1400,6 +1415,7 @@ async function copyFileToClipboard() {
           <MessageImageBubble
             v-else-if="message.kind === 'file' && attachmentUrl"
             :src="attachmentUrl"
+            :mine="mine"
             @open="openImageLightbox"
             @refetch="refetchContent"
           />

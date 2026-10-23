@@ -23,7 +23,7 @@ import ConfirmDialog from "@/components/ui/ConfirmDialog.vue";
 import UnreadBadge from "@/components/UnreadBadge.vue";
 import { APP_ACTION, onAction } from "@/api";
 import { groupByInitial } from "@/utils/nameGroup";
-import { isSelfConversation } from "@/utils/selfChat";
+import { isSelfConversation, selfFriendOf } from "@/utils/selfChat";
 import { MAX_SEARCH_KEYWORD_CHARS } from "@/utils/validation";
 import { createInitScope } from "@/utils/initScope";
 import { Plus, Search, UserPlus, UsersRound } from "lucide-vue-next";
@@ -69,17 +69,7 @@ const listConversations = computed(() => chat.conversations);
  * 发消息由资料页按钮触发）。此前是钉在「新的朋友」下面的一行特殊入口，既不排序、
  * 又像永远选中，还有一份独立的"点开直接聊"逻辑。
  */
-const selfFriend = computed<Friend | null>(() => {
-  const d = app.device;
-  if (!d?.device_id) return null;
-  return {
-    device_id: d.device_id,
-    nickname: d.nickname,
-    avatar: d.avatar ?? null,
-    device_type: d.device_type ?? "",
-    online: app.present,
-  };
-});
+const selfFriend = computed<Friend | null>(() => selfFriendOf(app.device, app.present));
 
 /**
  * 「这一行是不是我自己」（用户 2026-09-24 #31：通讯录里那行自己要标「（我）」）。

@@ -275,6 +275,7 @@ const NOT_A_GATE = new Map<string, string>([
   ["components/VirtualList.vue", "「最近往上滚过」⇒ 暂停贴底（窗口判定）"],
   ["utils/messages.ts", "在线状态 TTL 清扫（过期判定）"],
   ["utils/todos.ts", "完成后满 N 天归档（年龄判定）"],
+  ["utils/scrollRestore.ts", "阅读位置有效期：超过 N 分钟就别恢复、直接贴底（年龄判定，不是限流放行）"],
   ["components/AddFriendModal.vue", "冷却只决定按钮置灰与文案，解除由定时器负责，不认领额度"],
 ]);
 

@@ -8,6 +8,8 @@
  * 语义（每条都有测试）：
  * - 每压一层 → 压一条历史条目；返回键（`onPop`）= 只关**最上面**那层；
  * - UI 主动关闭栈顶那层 → 把对应历史条目**回退掉**（否则返回键要多按几次才有反应）；
+ * - 但**只有端口真的退了**才减计数、才预吃 pop —— 端口会拒退（压入之后发生过导航，
+ *   那条同 URL 条目已经是合法的"后退到上一级"目标，退掉它等于把刚推进的页面撤销）；
  * - UI 主动关闭**非栈顶**那层（少见）→ 只摘登记、保留条目，避免关错层；
  * - `onPop` 时没有层 → 什么都不做，交给系统（Android 上就是退出应用）；
  * - 端口压条目失败（自定义协议下 pushState 与 hash 都不可用）→ 记 0 条，返回键行为退化为现状；
@@ -26,8 +28,21 @@ export interface HistoryPort {
    * 「弹窗一出现就消失 / 点了没反应」，而且**只在 pushState 不可用的平台**上出现。
    */
   push(state: unknown): "pushState" | "hash" | null;
-  /** 回退一条历史条目（会异步触发 pop）。 */
-  back(): void;
+  /**
+   * 回退**这一层**压入的那条历史条目，返回**到底退没退**：
+   * `true` = 条目已回退，随后会有一次 `popstate`（调用方要把那一次预吃掉）；
+   * `false` = 端口拒绝退（见 `composables/useBackLayer.ts`：压入之后发生过导航，
+   * 这条条目现在是合法的"后退到上一级"目标），**不会有任何 popstate**。
+   *
+   * ⚠️ 为什么要带 `layerId`：一个栈里可以同时开着多层（弹窗套灯箱）。端口必须知道
+   * "现在要退的是哪一层的条目"，才能拿那一层压入时的 URL 与当前 URL 比 —— 只记"最后一次
+   * 压入的 URL"会在第一层被拒退之后让第二层拿不到判据，退错条目。
+   *
+   * ⚠️ 为什么返回值要如实回报：无条件当成"退了"就会既减条目计数、又预吃一次 pop，
+   * 于是用户下一次真按返回键被静默吞掉。用户 2026-10-23 报的「加好友页点发起聊天
+   * 没反应、还停在通讯录」是同一处的另一面 —— 那次 `back()` 把刚推进的聊天页退掉了。
+   */
+  back(layerId: number): boolean;
 }
 
 interface Layer {
@@ -69,9 +84,12 @@ export function createBackStack(port: HistoryPort): BackStack {
         const wasTop = stack.length > 0 && stack[stack.length - 1].id === id;
         stack = stack.filter((l) => l.id !== id);
         if (wasTop && pushed > 0) {
-          pushed--;
-          ignoreNextPop = true;
-          port.back();
+          // 端口**拒绝**回退时（压入之后发生过导航，这条条目现在是合法的"后退到上一级"目标）：
+          // 既不能减计数，也不能预吃一次 pop —— 根本没有 pop 会来。
+          if (port.back(id)) {
+            pushed--;
+            ignoreNextPop = true;
+          }
         }
       };
     },

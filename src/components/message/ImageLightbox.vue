@@ -279,6 +279,26 @@ function onPointerUp(e: PointerEvent) {
   dragging = false;
 }
 
+/**
+ * 点击遮罩关窗：只认**按下与点击落在同一个元素**的那一次。
+ *
+ * 用户 2026-10-23：「上一张/下一张按钮按靠上的地方会把这个图关掉」。根因是那两颗按钮原先
+ * 用 `-translate-y-1/2` 定位，而全局按压规则 `button:active { transform: scale(.97) }`
+ * 与它**同优先级、在样式表里更靠后** ⇒ 按下瞬间整颗按钮下移 22px。按在顶部那半时，
+ * pointerup 已经落到遮罩上，浏览器把 click 派发到二者的共同祖先（= 遮罩）⇒ 直接关窗。
+ *
+ * 定位改成不占 transform 的居中后按钮不再移动；这里再加一道与实现无关的守卫：
+ * 在控件（或图片）上按下的手势，即使因为任何布局/动画错位让 click 落到遮罩上，也不许关窗。
+ */
+let lastPointerDownTarget: EventTarget | null = null;
+function onShadePointerDown(e: PointerEvent) {
+  lastPointerDownTarget = e.target;
+}
+function onShadeClick(e: MouseEvent) {
+  if (e.target !== lastPointerDownTarget) return;
+  emit("close");
+}
+
 function onKey(e: KeyboardEvent) {
   if (!props.open) return;
   if (e.key === "Escape") {
@@ -334,7 +354,8 @@ useEventListener(window, "keydown", onKey);
         role="dialog"
         aria-modal="true"
         :aria-label="t('common.image')"
-        @click="emit('close')"
+        @pointerdown="onShadePointerDown"
+        @click="onShadeClick"
         @wheel="onWheel"
       >
         <!-- FocusScope 只包**内容层**（全屏命中与遮罩仍是外面那一层 fixed 外壳，
@@ -358,9 +379,11 @@ useEventListener(window, "keydown", onKey);
           class="absolute right-4 z-10 flex items-center gap-1"
           :style="{ top: '1rem' }"
         >
-          <!-- 加 drop-shadow 让白字在白色图片上也可见（问题修复：白背景白字→隐形） -->
+          <!-- 加 drop-shadow 让白字在白色图片上也可见（问题修复：白背景白字→隐形）。
+               用户 2026-10-23 追加：一律再加一圈 ring 描边 —— 阴影在纯白图 + 浅色遮罩下
+               仍然会糊掉，描边是几何边界，不依赖对比度。 -->
           <button
-            class="flex h-9 items-center gap-1.5 rounded-full px-3 text-body text-white/90 transition hover:bg-white/15"
+            class="flex h-9 items-center gap-1.5 rounded-full bg-black/35 px-3 text-body text-white ring-1 ring-white/25 transition hover:bg-black/55"
             style="text-shadow: 0 1px 2px rgba(0,0,0,0.55); filter: drop-shadow(0 1px 2px rgba(0,0,0,0.35));"
             :title="t('common.saveImage')"
             @click.stop="saveImage"
@@ -373,7 +396,7 @@ useEventListener(window, "keydown", onKey);
                否则跟关闭按钮堆成一团显得多余。 -->
           <button
             v-if="scale !== 1"
-            class="tap-safe flex h-9 w-9 items-center justify-center rounded-full text-white/90 transition hover:bg-white/15"
+            class="tap-safe flex h-9 w-9 items-center justify-center rounded-full bg-black/35 text-white ring-1 ring-white/25 transition hover:bg-black/55"
             style="text-shadow: 0 1px 2px rgba(0,0,0,0.55); filter: drop-shadow(0 1px 2px rgba(0,0,0,0.35));"
             :title="t('common.resetZoom')" :aria-label="t('common.resetZoom')"
             @click.stop="reset()"
@@ -382,7 +405,7 @@ useEventListener(window, "keydown", onKey);
           </button>
           <button
             v-if="!hideClose"
-            class="tap-safe flex h-9 w-9 items-center justify-center rounded-full text-white/90 transition hover:bg-white/15"
+            class="tap-safe flex h-9 w-9 items-center justify-center rounded-full bg-black/35 text-white ring-1 ring-white/25 transition hover:bg-black/55"
             style="text-shadow: 0 1px 2px rgba(0,0,0,0.55); filter: drop-shadow(0 1px 2px rgba(0,0,0,0.35));"
             :title="t('common.closeEsc')" :aria-label="t('common.closeEsc')"
             @click.stop="emit('close')"
@@ -391,25 +414,34 @@ useEventListener(window, "keydown", onKey);
           </button>
         </div>
 
-        <!-- 上一张 -->
-        <button
-          v-if="hasMultiple"
-          class="absolute left-4 top-1/2 z-10 flex h-11 w-11 -translate-y-1/2 items-center justify-center rounded-full bg-white/10 text-white/90 transition hover:bg-white/20"
-          :title="t('common.prev')" :aria-label="t('common.prev')"
-          @click.stop="go(-1)"
-        >
-          <ChevronLeft class="h-6 w-6" />
-        </button>
+        <!-- 上一张。⚠️ 控件底必须是**实色/深色**，不是 white/10：白图放大时
+             `bg-white/10` 完全看不见（用户 2026-10-23：「白色图片放大看不清」）。
+             ⚠️ 竖向居中交给**外层 div** 的 `-translate-y-1/2`，按钮自己不带定位 transform：
+             全局按压规则会写 `button:active { transform: scale(.97) }`（同优先级、更靠后），
+             写在按钮上会把 `-translate-y-1/2` 整个顶掉 ⇒ 按下时按钮下移 22px、顶部的点击
+             落到遮罩上直接关窗（用户 2026-10-23 实测）。按钮只负责缩小反馈。 -->
+        <div v-if="hasMultiple" class="absolute left-4 top-1/2 z-10 -translate-y-1/2">
+          <button
+            class="flex h-11 w-11 items-center justify-center rounded-full bg-black/55 text-white shadow-lg ring-1 ring-white/30 transition hover:bg-black/70 active:scale-95"
+            style="filter: drop-shadow(0 2px 6px rgba(0,0,0,0.55));"
+            :title="t('common.prev')" :aria-label="t('common.prev')"
+            @click.stop="go(-1)"
+          >
+            <ChevronLeft class="h-6 w-6" />
+          </button>
+        </div>
 
         <!-- 下一张 -->
-        <button
-          v-if="hasMultiple"
-          class="absolute right-4 top-1/2 z-10 flex h-11 w-11 -translate-y-1/2 items-center justify-center rounded-full bg-white/10 text-white/90 transition hover:bg-white/20"
-          :title="t('common.next')" :aria-label="t('common.next')"
-          @click.stop="go(1)"
-        >
-          <ChevronRight class="h-6 w-6" />
-        </button>
+        <div v-if="hasMultiple" class="absolute right-4 top-1/2 z-10 -translate-y-1/2">
+          <button
+            class="flex h-11 w-11 items-center justify-center rounded-full bg-black/55 text-white shadow-lg ring-1 ring-white/30 transition hover:bg-black/70 active:scale-95"
+            style="filter: drop-shadow(0 2px 6px rgba(0,0,0,0.55));"
+            :title="t('common.next')" :aria-label="t('common.next')"
+            @click.stop="go(1)"
+          >
+            <ChevronRight class="h-6 w-6" />
+          </button>
+        </div>
 
         <!-- 图片主体 -->
         <!-- img-eager-ok：这一支是用户**主动点开**、占满屏幕中央的那一张，不在虚拟列表里 ⇒
@@ -420,7 +452,7 @@ useEventListener(window, "keydown", onKey);
           <div class="flex items-center justify-center">
             <motion.img :alt="current?.name || t('msg.imagePreview')"
               :src="src"
-              class="max-h-[85vh] max-w-[88vw] touch-none select-none rounded-[var(--gosslan-radius-lg)] shadow-2xl"
+              class="max-h-[85vh] max-w-[88vw] touch-none select-none shadow-2xl"
               :style="{
                 x: txMV,
                 y: tyMV,
@@ -440,7 +472,8 @@ useEventListener(window, "keydown", onKey);
         </template>
         <div
           v-else
-          class="flex h-48 flex-col items-center justify-center gap-3 px-8 text-center text-sm text-white/70"
+          class="flex h-48 flex-col items-center justify-center gap-3 rounded-[var(--gosslan-radius-md)] bg-black/45 px-8 text-center text-sm text-white/90 ring-1 ring-white/15"
+          style="text-shadow: 0 1px 2px rgba(0,0,0,0.55);"
         >
           <template v-if="resolving">
             <Spinner size-class="h-4 w-4" class="text-white/80" decorative />
@@ -451,7 +484,7 @@ useEventListener(window, "keydown", onKey);
             <button
               v-if="current?.msgId || current?.cid"
               type="button"
-              class="tap-safe rounded-[var(--gosslan-radius-md)] bg-white/15 px-3 py-1.5 text-xs text-white transition hover:bg-white/25"
+              class="tap-safe rounded-[var(--gosslan-radius-md)] bg-white/20 px-3 py-1.5 text-xs text-white ring-1 ring-white/30 transition hover:bg-white/30"
               @click.stop="resolveCurrent()"
             >
               {{ t("common.retry") }}
@@ -461,8 +494,8 @@ useEventListener(window, "keydown", onKey);
 
         <!-- 底部提示：计数 + 操作说明 -->
         <div
-          class="absolute left-1/2 -translate-x-1/2 rounded-full bg-black/45 px-3 py-1 text-xs text-white/85"
-          :style="{ bottom: 'calc(env(safe-area-inset-bottom, 0px) + 1.25rem)' }"
+          class="absolute left-1/2 -translate-x-1/2 rounded-full bg-black/55 px-3 py-1 text-xs text-white/95 shadow-lg ring-1 ring-white/20"
+          :style="{ bottom: 'calc(env(safe-area-inset-bottom, 0px) + 1.25rem)', textShadow: '0 1px 2px rgba(0,0,0,0.6)' }"
         >
           <template v-if="hasMultiple">{{ t("msg.lightbox.multiHint", { i: index + 1, n: images.length }) }}</template>
           <template v-else>{{ t("msg.lightbox.singleHint") }}</template>
