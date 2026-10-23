@@ -13,6 +13,19 @@
 
 ## [Unreleased]
 
+## [5.5.23] - 2026-10-23
+
+### 发版链修复（5.5.22 桌面产物缺失）
+
+- 恢复自动更新通道：5.5.22 的 tag 打在带坏 `build.rs` 的提交上，桌面构建全红、
+  `latest.json` 未生成 ⇒ `releases/latest/download/latest.json` 返回 404。
+  5.5.23 从修好的提交重新出四端产物。
+- Windows Rust 单测壳合并 Common-Controls v6 清单（`windows-test.manifest`），
+  修掉加载期 `0xc0000139 STATUS_ENTRYPOINT_NOT_FOUND`（`comctl32!TaskDialogIndirect`
+  只有 v6 有，而 libtest 的壳没有 tauri-build 给正式二进制嵌的那份清单）。
+- CI 诊断：Windows 失败诊断改看 `target\release\deps`（测试跑的是 release）、
+  按 `Symbol:` 解析导入函数（上一版按 `Name:` 抓永远 0 条）、补应用程序错误事件日志。
+
 ## [5.5.22] - 2026-10-23
 
 ### 移动端设置与资料页统一
