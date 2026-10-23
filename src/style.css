@@ -14,7 +14,11 @@
      lighten/darken 按另一个比例再算一份 ⇒ 首屏会出现"主色已换成用户的、hover/浅底还是出厂蓝"的分裂。 */
   --gosslan-primary: #3b82f6;
   --gosslan-primary-hover: color-mix(in srgb, var(--gosslan-primary) 92%, #ffffff);
-  /* 承载白字的填充档：过 4.5 由 tokenContrast.test.ts 判（同一族里 danger 也是为这条压深的）。 */
+  /* 承载白字的填充档。⚠️ 以前这里写"过 4.5 由 tokenContrast.test.ts 判"，那句话**只在出厂蓝上成立**
+     （主色是 inline 写在 <html> 上的，静态解析看不见用户可选的六档）：实测
+     绿 #00b578 = 3.61、橙 #ff6b35 = 3.83、天蓝 #0ea5e9 = 3.76 三档白字不过 4.5，
+     现在由 tokenContrast.test.ts 的"六套可选主色"那一节逐档量并把它们登记成已知偏差
+     （混黑从 15% 加到 ≥28% 可全部达标，但那会同时压深全站主色按钮/徽标，另案决策）。 */
   --gosslan-primary-active: color-mix(in srgb, var(--gosslan-primary) 85%, #000000);
   --gosslan-primary-light: color-mix(in srgb, var(--gosslan-primary) 12%, transparent);
   /* 主题色半透明版（color-mix 运行时派生，跟随 applyTheme 换色自动变）。
@@ -24,7 +28,9 @@
   /* 主题色当「文字/图标」用时的可读版本（--gosslan-primary 只作填充面）。
      直接用主题色写字，亮色下 3.7 / 暗色下 4.0，都够不到正文 4.5——老坑见 chatStyle.ts。
      按 Apple 的做法「同色相、按外观调明度」：亮色压暗、暗色提亮，
-     两者都取 72% 主题色 + 28% 黑/白。六套预置主题色实测 4.85~7.10（亮）/ 5.10~7.11（暗）。
+     两者都取 72% 主题色 + 28% 黑/白。六套预置主题色实测 4.43~7.10（亮）/ 5.10~7.11（暗）
+     —— 这六个数是 tokenContrast.test.ts「六套可选主色」那一节逐档算出来的，别手抄改新值；
+     亮色那格的 4.43 是绿色 #00b578 落在列表底上，已登记为该节的已知偏差（离 4.5 差 0.07）。
      因为主色是用户可选、且由 applyTheme 以 inline style 写在 <html> 上，
      暗色版本**不能**靠 `.dark { --gosslan-primary: … }` 覆盖（inline 优先级更高），
      只能用 color-mix 派生出这个独立 token —— 这正是本项目保留它的原因。 */
