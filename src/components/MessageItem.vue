@@ -888,6 +888,23 @@ const cancelSendChannel = computed(() =>
 );
 const canCancelSend = computed(() => cancelSendChannel.value !== "none");
 
+/**
+ * 这一条的**消息行**里有没有头像那一列（= 群聊里别人的消息）。
+ * 表情回应条和强提醒条是消息行的**兄弟节点**（不是行内的一支），要和气泡的边对齐，
+ * 就得把同一列让出来。⚠️ 让多少不能按"我/他"写死：5.7 起自己的行和单聊两方都没有头像列，
+ * 再让 60px 就会把胶囊推离气泡边 44px（运行时探针 `roster` 段实测到并判红过）。
+ */
+const avatarCol = computed(() => props.isGroup && !mine.value);
+const avatarGutterClass = computed(() =>
+  avatarCol.value
+    ? mine.value
+      ? "justify-end pr-[60px]"
+      : "pl-[60px]"
+    : mine.value
+      ? "justify-end pr-4"
+      : "pl-4",
+);
+
 function doCancelSend() {
   closeContextMenu();
   closeActionSheet();
@@ -1333,7 +1350,7 @@ async function copyFileToClipboard() {
            也不要把底色挪到这一行上（行盒 = 消息本身，挪过去就没有"头像上面/气泡下面"的间距了）。 -->
       <!-- 头像：单聊两方都不显示（联系人信息在顶部会话栏）；群聊只有对方、且只在组首显示。
            组内其余消息留一个同宽空位，气泡左边缘才不会一条一条地跳。 -->
-      <template v-if="isGroup && !mine">
+      <template v-if="avatarCol">
         <button
           v-if="atGroupStart"
           type="button"
@@ -1657,12 +1674,12 @@ async function copyFileToClipboard() {
        MessageReactionBar 的注释）。以前这里挂着 `pl-1`/`pr-1`、册内挂着 `pl-12`/`pr-12`，
        两档同属性互相覆盖 ⇒ 生效的只有 48px 那一档，实测两侧各差 12px（用户 2026-10-07 报的对不齐）。 -->
   <!-- 强提醒标识：气泡下方一条（发起方看总览/接收方看本机相），接收方未确认时带「我知道了」。
-       对齐与 MessageReactionBar 同一套 60px 让出（父容器是块级 div，self-* 不生效）：
-       右发让出右侧头像列，左收让出左侧头像列，胶囊边与气泡边对齐。 -->
+       让出多少由 `avatarGutterClass` 现算（和表情条同一把尺）：有头像列的那侧让 60px，
+       没有头像列的那侧只让行的 16px 内边距 —— 写死 60 会让胶囊离气泡边 44px。 -->
   <div
     v-if="showReminderBadge && !isTip"
     class="flex max-w-full flex-wrap items-center gap-2 pb-0.5"
-    :class="mine ? 'justify-end pr-[60px]' : 'pl-[60px]'"
+    :class="avatarGutterClass"
   >
     <span
       :class="[
@@ -1687,7 +1704,7 @@ async function copyFileToClipboard() {
     :chips="reactions ?? EMPTY_REACTION_CHIPS"
     :mine="mine"
     :interactive="canReact"
-    :class="mine ? 'self-end' : 'self-start'"
+    :class="[mine ? 'self-end' : 'self-start', avatarGutterClass]"
     @toggle="emit('react', $event)"
   />
   </div>
