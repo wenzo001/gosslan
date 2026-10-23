@@ -28,9 +28,19 @@ export interface TokenPair {
 }
 
 export interface ContrastFailure extends TokenPair {
+  /** 哪一档外观报的红。合流前暗色行会被静默跳过，所以这个字段以前没有意义。 */
+  theme: "light" | "dark";
   ratio: number;
   fgResolved: string;
   bgResolved: string;
+}
+
+/** 某外观下**解析不出颜色**的一对（token 在该作用域取不到 / 值语法不认识）。 */
+export interface UnresolvedPair {
+  theme: "light" | "dark";
+  fg: string;
+  bg: string;
+  why: string;
 }
 
 interface Rgba {
@@ -205,22 +215,59 @@ export const TOKEN_CONTRAST_CONTRACT: Record<"light" | "dark", TokenPair[]> = {
   ],
 };
 
-/** 逐对核算；返回所有不达标的组合。 */
+/**
+ * 逐对核算；返回所有不达标的组合。
+ *
+ * ★ 暗色作用域必须**叠在 :root 之上**解析，不能只读 `.dark{}` 那一块。
+ * `.dark` 就挂在 `<html>` 上，所以 `:root` 里那些"故意不按外观覆盖"的 token
+ * （`--gosslan-primary` 就是，见 style.css 里那段"inline 优先级更高"的注释）
+ * 在暗色下**本来就有值**。以前两边各解析各的 ⇒ `--gosslan-accent-ink`
+ * （= `color-mix(... var(--gosslan-primary) ...)`）在暗色里解析成 null，
+ * 于是暗色的 accent-ink × panel/list 与 `#ffffff` × `--gosslan-primary-active`
+ * 三行**从没被算过** —— 而 style.css 的注释正拿着这三行的结论说事
+ * （"六套预置主题色实测 … 5.10~7.11（暗）"）。合流后实测暗色 5.10~7.11，
+ * 那句结论第一次有了机器凭据。
+ */
 export function findTokenContrastFailures(css: string): ContrastFailure[] {
+  return evaluateContract(css).fails;
+}
+
+/**
+ * 认不出的组合（token 缺失 / 值语法解析不了）。
+ *
+ * 单列出来是因为 `null ⇒ 跳过` 是本文件头注释点名要消灭的那类失败：
+ * 一行被跳过时，护栏照样全绿，而屏幕上什么都没有。调用方把它当 0 断言，
+ * 漂移（删 token、改名、写成浏览器也不认的语法）就会当场报红。
+ */
+export function findTokenContrastUnresolved(css: string): UnresolvedPair[] {
+  return evaluateContract(css).unresolved;
+}
+
+function evaluateContract(css: string): {
+  fails: ContrastFailure[];
+  unresolved: UnresolvedPair[];
+} {
   const scopes = parseTokenScopes(css);
-  const out: ContrastFailure[] = [];
+  const fails: ContrastFailure[] = [];
+  const unresolved: UnresolvedPair[] = [];
   for (const theme of ["light", "dark"] as const) {
-    const scope = scopes[theme];
+    const scope =
+      theme === "light"
+        ? scopes.light
+        : new Map([...scopes.light, ...[...scopes.dark]]);
     for (const pair of TOKEN_CONTRAST_CONTRACT[theme]) {
       const bgOver = pair.bgOver ? resolveToken(pair.bgOver, scope) : null;
       const fg = resolveToken(pair.fg, scope);
       const bg = resolveToken(pair.bg, scope, bgOver ?? undefined);
-      if (!fg || !bg) continue; // 认不出的值（color-mix 等）跳过，由人工审计覆盖
+      if (!fg || !bg) {
+        unresolved.push({ theme, fg: pair.fg, bg: pair.bg, why: pair.why });
+        continue;
+      }
       const ratio = contrastRatio(toHex(fg), toHex(bg));
       if (ratio < pair.min) {
-        out.push({ ...pair, ratio, fgResolved: toHex(fg), bgResolved: toHex(bg) });
+        fails.push({ ...pair, theme, ratio, fgResolved: toHex(fg), bgResolved: toHex(bg) });
       }
     }
   }
-  return out;
+  return { fails, unresolved };
 }

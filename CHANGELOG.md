@@ -13,6 +13,35 @@
 
 ## [Unreleased]
 
+## [5.7.6] - 2026-10-24
+
+### 对比度护栏的暗色盲区补上：主色可选档第一次被逐档量
+
+- `parseTokenScopes` 把 `:root` 与 `.dark` **各解析各的**，而 `.dark` 就挂在 `<html>` 上、
+  与 `:root` 是同一个元素 —— 于是那些"故意不按外观覆盖"的 token（`--gosslan-primary` 正是，
+  style.css 里还专门写了"inline 优先级更高所以不能用 .dark 覆盖"）在暗色作用域里取不到值，
+  凡由它派生的行（`--gosslan-accent-ink` × panel/list、`#ffffff` × `--gosslan-primary-active`）
+  全部解析成 null，撞上 `findTokenContrastFailures` 那句 `if (!fg || !bg) continue`
+  ⇒ **暗色三行从没被算过，而护栏全绿**。这正是本文件头注释点名要消灭的失败形状。
+- 改法：暗色作用域按 `:root` 打底再叠 `.dark`（真实层叠关系），并把"算不出颜色"从静默跳过
+  改成单独出口 `findTokenContrastUnresolved()`，测试钉它在真实 CSS 上必须为 0 条。
+  `ContrastFailure` 顺带带上 `theme` —— 以前报红都不说哪一档外观。
+- 第一次真量出来的缺口（已登记为已知偏差并各带实测下限，比记录值更差即红）：
+  承载白字的 `--gosslan-primary-active` 在用户可选的三档主色上不过 4.5 ——
+  绿 `#00b578` **3.61**、橙 `#ff6b35` **3.83**、天蓝 `#0ea5e9` **3.76**（明暗同值，
+  因为填充档不随外观变），另加绿档 `--gosslan-accent-ink` 落在列表底上 **4.43**。
+  `--gosslan-accent-ink` 暗色实测 5.10~7.11 与注释里的结论一致 —— 那句话今天第一次有机器凭据。
+- 同批把 style.css 里两处手抄结论改正：亮色区间实际是 **4.43~7.10** 而不是写的 4.85~7.10；
+  "过 4.5 由 tokenContrast.test.ts 判"只在全站出厂蓝上成立，注释改成实际覆盖范围。
+- 混黑从 15% 加到 ≥28% 可让六档全过，但那会同时压深全站主色按钮与徽标，
+  超出聊天界面改造的范围 ⇒ **不改色值，交单独决策**。
+- 反控也补了两侧（并记下一次自我翻车）：最初写的变异是"把 85% 改成 5%"，
+  而 `color-mix(A 5%, black)` 取的是 5% 的 A ⇒ 那是在把填充**压深**，断言"必须报红"永远等不到。
+  现在 100%（更浅）必须两档外观各报一次、5%（更深）必须一条都不报，方向本身也被钉住。
+- 实测：`node --test src/utils/tokenContrast.test.ts` 11/11 绿（新增 3 条）；
+  `npm test` 1338/1338；`npm run verify` 17/18，唯一红仍是本分支既有的
+  Change Budget 判据3（`presentation` 在最近 5 个修补形状提交里 4 次）。
+
 ## [5.7.5] - 2026-10-24
 
 ### 补 5.7.4 漏提交的那个令牌定义（`--gosslan-msg-gutter`）
