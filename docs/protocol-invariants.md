@@ -1148,6 +1148,22 @@ mesh 没有服务器也没有强制升级 ⇒ 混合版本是常态，不是边�
 * 通知失败（离线/队列满）**不回滚取消**：本机已经停了手，对方还有自己的 deadline 兜着；
   日志里记一条"没送出去"，台账照旧是 `cancelled`。
 
+**群文件的「接收侧取消」也是真取消（2026-10-23 B3b）**：在这之前，对一条「别人发给我的群文件」
+按取消只 emit 了一个 `file-cancelled` —— 界面显示已取消，接收器还在写 `.part`、下一次 Offer 还会
+把它拉起来。这比「没这个功能」更糟：**界面在撒谎**。落法：
+
+* 取消入口的第 0 步先认「这是不是别人发给我的群文件」（`file_transfers` 里没有、`group_files` 里
+  的那个发送者不是本机）；是就整段走 `cancel_group_receive_side`：摘接收器 → 删 `.part` →
+  气泡 `gfile-` 写 `cancelled` → **最后**才把整单行落 `cancelled`（写序与
+  `every_finalize_path_defers_the_destructive_write` 同一条：面向用户的写在前，踢出补发集合的写在最后）。
+* 群接收的 `.part` **必须删**：那是「失败要保留、取消不许留」的分界 —— 留着的话下一次 Offer
+  会把它当续传前缀（用户眼里的「取消了它自己又开始传」）。
+* 新帧 `GroupFileCancel { transfer_id, group_id, recipient, from }`（tag `group_file_cancel`，
+  High 优先级、复用同一位能力位）：接收方→发送方 =「这一格我不收了」；发送方→该成员 =「这一格停了」。
+  **只影响这一格**：发送方那侧只点亮 `(transfer_id, 该成员)` 的槽位、只把那一行落 cancelled，
+  整单那一对（`signal_cancel_slots` / `cancel_group_file_recipients`）一个字都不许碰 ——
+  否则一个成员退出会让其余成员一起停。认人也只认本人：`recipient` 必须等于发帧那台设备。
+
 **非空转证明**：`verify-guards` 变异用例 —— 摘掉 `WHERE status <> 'done'` ⇒ 正向判据红；
 照本条落地前的建议把集合写成 `NOT IN ('done','failed','cancelled')` ⇒ 反向判据红；
 去掉 `AND cancel_terminal = 0` ⇒ 晚到的进度写复活已取消的行（正向）；
@@ -1156,6 +1172,7 @@ mesh 没有服务器也没有强制升级 ⇒ 混合版本是常态，不是边�
 `mark_file_outbox_sending` 的 `Ok(n > 0)` 改成恒真 ⇒ 抢占回报失真（快照竞态复活）；
 `send_retry_verdict` 里取消那一格短路 ⇒ 取消被重试上限改写成失败；
 对端取消的臂体里自己补一次 emit ⇒ 形状判据报「收尾里的 emit 出现第二个家」；
+把按成员取消那条 UPDATE 的状态过滤摘掉 ⇒ 已收完的成员被改成已取消（幂等那一格先红）；
 把 `FileCancel` 从 High 摘到普通档 ⇒ 优先级判据红（它排在了要停掉的分片后面）；
 `content_features()` 漏声明这一位 ⇒ 帧永远发不出去，而其余门禁全绿；
 群文件那一族另加五条：去掉成员行的 `AND status <> 'cancelled'` / 去掉群文件行的

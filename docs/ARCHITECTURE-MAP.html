@@ -839,7 +839,7 @@ const SEM = {
 
   /* ── commands/files.rs ── */
   send_file_auto: { d: "按当前最佳链路自动选普通 / 中继路径。" },
-  cancel_file_transfer: { d: "取消。同一 <code>transfer_id</code> 的<b>多个接收人 / 多条流一起取消</b>（群文件是一 id 多收件人）。本机收尾只有一个家 <code>commands::apply_local_cancel</code>（用户点取消与对端发来的 <code>FileCancel</code> 帧共用它）；随后在<b>对端声明了 <code>CONTENT_FEATURE_FILE_CANCEL</code></b> 时补发一条 <code>FileCancel</code> 让对面也停手（老端不发 ⇒ 它自己走到 deadline，本机取消照旧成立）。返回<b>台账</b>口径：<code>cancelled</code>=这一单现在是「已取消」（排队中没有在途信号也算成立），<code>alreadyDone</code>=已经收完、取消不成立。「已送达」的行不盖取消墓碑；盖了墓碑的行拒绝任何晚到的进度/attempt/done 写回。" },
+  cancel_file_transfer: { d: "取消。同一 <code>transfer_id</code> 的<b>多个接收人 / 多条流一起取消</b>（群文件是一 id 多收件人）。本机收尾只有一个家 <code>commands::apply_local_cancel</code>（用户点取消与对端发来的 <code>FileCancel</code> 帧共用它）；随后在<b>对端声明了 <code>CONTENT_FEATURE_FILE_CANCEL</code></b> 时补发一条 <code>FileCancel</code> 让对面也停手（老端不发 ⇒ 它自己走到 deadline，本机取消照旧成立）。群文件两条更细的路：本机是<b>发送方</b>时给每个还在传的成员各发一条 <code>GroupFileCancel</code>；本机是<b>接收方</b>时先摘接收器、删 <code>.part</code>、气泡落 cancelled，再告诉发送方这一格停了。返回<b>台账</b>口径：<code>cancelled</code>=这一单现在是「已取消」（排队中没有在途信号也算成立），<code>alreadyDone</code>=已经收完、取消不成立。「已送达」的行不盖取消墓碑；盖了墓碑的行拒绝任何晚到的进度/attempt/done 写回。" },
   get_transfers: { d: "传输台账（<code>file_transfers</code>，双向）。" },
   get_content_transfers: { d: "cid 视角的传输状态（ADR-0019）：<code>queued|active|verifying|complete|incomplete|rejected</code> + attempts / next_attempt_at。" },
   list_group_files: { d: "群文件列表，带 <code>local_state ∈ local|receiving|remote|failed</code> 与 <code>delivered/total</code>。" },
@@ -1518,7 +1518,7 @@ function buildDir() {
       '<div class="stat"><div class="num">' + CMDS.filter((r) => !SEM[r[0]] || !SEM[r[0]].dead).length + '</div><div>前端有调用</div></div>' +
       '<div class="stat"><div class="num">29</div><div>后端字面量事件名（表内合并成 ' + EVENTS.length + ' 行；动态拼的不计）</div></div>' +
       '<div class="stat"><div class="num">19</div><div>SQLite 表</div></div>' +
-      '<div class="stat"><div class="num">257</div><div>护栏非空转用例（改坏即红·这个数由 scripts/guard_cases/*.py 的 CASES 现算，判据 E 对账）</div></div>' +
+      '<div class="stat"><div class="num">258</div><div>护栏非空转用例（改坏即红·这个数由 scripts/guard_cases/*.py 的 CASES 现算，判据 E 对账）</div></div>' +
       '<div class="stat"><div class="num">local</div><div>跨进程 E2E：正向轮接进 <code>verify</code> 的 <code>local</code> 组，要第三个真实实例那一轮单独挂在 <code>release</code> 组（发版前才跑，落点＝发版检查单点名）；每轮断言数由 <code>check-doc-numbers.mjs</code> 从 harness 现算对账，手写即红；入口 <code>npm run verify:e2e</code> / <code>npm run verify:release</code>；<b>两层 CI 都不跑</b></div></div>' +
       '<div class="stat"><div class="num">现算</div><div>Rust / 前端测试条数：分别由 <code>cargo test</code> 与 <code>npm test</code> 自己打印，图上不抄</div></div>' +
       '<div class="stat"><div class="num">20</div><div>反证 / 判据自查档的红数基线（<code>npm run selfproof:check</code>，量具不进门禁）</div></div>' +

@@ -33,6 +33,21 @@ test("文件消息 ⇒ 走传输通道（按 id 前缀认，不看 kind）", () 
   assert.equal(cancelSendChannelFor(ctx({ msgId: "gfile-t2", kind: "file", group: true })), "transfer");
 });
 
+test("群文件：**收到的**也能取消（B3b：本机停手 + 通知发送方那一格）", () => {
+  assert.equal(
+    cancelSendChannelFor(
+      ctx({ msgId: "gfile-t3", kind: "file", group: true, mine: false }),
+    ),
+    "transfer",
+    "收到的群文件不是「我发的」，但停掉自己这一份接收仍然是我的事",
+  );
+  // 但没在传的时候不给：已收完/已失败的格子没有可取消的字节
+  assert.equal(
+    cancelSendChannelFor(ctx({ msgId: "gfile-t3", mine: false, status: "sent" })),
+    "none",
+  );
+});
+
 test("文件/图片的真实消息不走消息通道：那条通道停不掉字节", () => {
   assert.equal(cancelSendChannelFor(ctx({ kind: "file" })), "none");
   assert.equal(cancelSendChannelFor(ctx({ kind: "image" })), "none");

@@ -918,8 +918,8 @@ fn file_cancel_and_user_cancel_share_one_local_home() {
         code_flat(&crate::network::file_src_for_guards())
             .matches(".file_send_cancels.lock()")
             .count(),
-        3,
-        "槽位的登记 / 点亮 / 回收必须在同一个文件里（现算三处）；多出来的那处就是第二个家"
+        4,
+        "槽位的登记 / 整单点亮 / 单格点亮（B3b 按成员取消）/ 回收必须在同一个文件里（现算四处）；多出来的那处就是第二个家"
     );
     assert_eq!(
         code_flat(&cmds).matches(".file_send_cancels.lock()").count(),
@@ -932,18 +932,25 @@ fn file_cancel_and_user_cancel_share_one_local_home() {
 #[test]
 fn file_cancel_notice_is_gated_and_never_blocks_the_local_cancel() {
     let cmds = all_commands_src();
-    let notify = rust_fn_body(&cmds, "async fn notify_peer_file_cancel(");
-    assert!(
-        notify.contains("CONTENT_FEATURE_FILE_CANCEL"),
-        "发 FileCancel 之前必须看对端能力位（INV-P24 第 4 条：不门控不许发）"
+    let notify = rust_fn_body(&cmds, "async fn send_cancel_notice(");
+    // 门控只有一个家：`peer_declares_file_cancel`。通知那三种形状必须**逐条**先问它 ——
+    // 少问一条就是"某一种取消会对老端发新帧"（INV-P24 第 4 条），而其余两条照旧。
+    assert_eq!(
+        notify.matches("peer_declares_file_cancel(s,").count(),
+        3,
+        "1:1 / 群成员逐个 / 群接收方→发送方，三种通知都要各自过门控"
     );
+    let gate = rust_fn_body(&cmds, "fn peer_declares_file_cancel(");
     assert!(
-        notify.contains("if !declared") && notify.contains('{'),
-        "对端没声明时必须直接 return（老端的降级是「不发这条帧」，不是报错）"
+        gate.contains("CONTENT_FEATURE_FILE_CANCEL"),
+        "门控函数里必须读那一位（INV-P24 第 4 条：不门控不许发）"
     );
+    // 「没记过账的单不许通知」这一条搬进了 `plan_cancel_notice`：两本账都查不到就返回 None
+    // （群文件那一步的 `?` 就是这个意思）。发给一个猜出来的对端比不发更糟。
+    let plan = rust_fn_body(&cmds, "fn plan_cancel_notice(");
     assert!(
-        notify.contains("let Some((direction, peer_id)) = route"),
-        "没记过账的单不许通知：发给一个猜出来的对端比不发更糟"
+        plan.contains("db::get_transfer_route(") && plan.contains("db::get_group_file(&dbc, transfer_id)?"),
+        "通知名单必须从两本台账里读出来；两本都没有 ⇒ None（不许凭空造一个对端）"
     );
     // 顺序判据：先落本机终态，再发通知 —— 反过来就是"通知的 await 挡住了取消的响应"
     let body = rust_fn_body(&cmds, "pub async fn cancel_file_transfer(");
@@ -951,10 +958,69 @@ fn file_cancel_notice_is_gated_and_never_blocks_the_local_cancel() {
         .find("apply_local_cancel(s, &transfer_id, \"user\")")
         .expect("取消命令必须调用本机收尾那个家");
     let notify_at = body
-        .find("notify_peer_file_cancel(s, &transfer_id)")
+        .find("send_cancel_notice(s, &transfer_id, notice)")
         .expect("取消命令必须通知对端（声明过能力位的话）");
     assert!(
         cancel_at < notify_at,
         "本机收尾必须先于通知：取消的界面响应不能等一次网络 await"
+    );
+}
+
+/// B3b：按成员取消那一帧的三件事 —— 路由接住、臂可达、**只动这一格**。
+///
+/// 第三件是这条帧与"整单取消"最容易混淆的地方：发送方取消一条群文件是每个成员各一条
+/// （`signal_cancel_slots` / `cancel_group_file_recipients`），而"某个成员不收了"必须
+/// 只命中 `(transfer_id, 这个成员)` —— 用整单那一对函数会让其余成员一起停。
+#[test]
+fn group_file_cancel_is_routed_handled_and_scoped_per_recipient() {
+    let transport = code_flat(&crate::network::transport_src_for_guards());
+    // 群那一族是一条 `m @ (A | B | … ) => handle_group_messages(…)` 或模式，变体之间用 `|` 相连，
+    // 所以判"在不在这一族里"只能查**变体本身**是否出现在路由视图里；"它真的被接住"由下面
+    // 臂体位置 + `dispatch_arms_and_volume_arms_agree`（两侧逐一对应，含数量）共同钉住。
+    assert!(
+        transport.contains("Message::GroupFileCancel{..}"),
+        "GroupFileCancel 没进 transport 的路由视图 ⇒ 它在那层就被丢掉（帧发了等于没发）"
+    );
+    let arms = include_str!("network/transport/handle_group.rs");
+    let body = rust_fn_body(arms, "async fn handle_group_messages(");
+    let arm_at = body
+        .find("Message::GroupFileCancel {")
+        .expect("handle_group 里没有 GroupFileCancel 的处理臂 ⇒ 这一帧今天没人接");
+    let catch_at = body.rfind("_ => {}").expect("catch-all 不见了 ⇒ 锚点失效");
+    assert!(
+        arm_at < catch_at,
+        "处理臂排在 catch-all 之后就是死代码：症状与漏路由一样（取消静默失效）"
+    );
+    let arm = &body[arm_at..catch_at];
+    assert!(
+        arm.contains("handle_group_file_cancel("),
+        "臂体必须把这件事交给群文件那一册（判定与落库都在那儿）"
+    );
+
+    let handler = rust_fn_body(
+        include_str!("network/transport/group_file.rs"),
+        "pub(crate) async fn handle_group_file_cancel(",
+    );
+    assert!(
+        handler.contains("file::signal_cancel_slot("),
+        "发送方那一侧必须点亮**单格**槽位（`signal_cancel_slot`）"
+    );
+    assert!(
+        handler.contains("db::cancel_group_file_recipient("),
+        "那时必须只落这一格（`cancel_group_file_recipient`）"
+    );
+    for whole in ["signal_cancel_slots(", "cancel_group_file_recipients("] {
+        assert!(
+            !handler.contains(whole),
+            "这条帧不许碰整单那一对（{whole}）：一个成员不收了，其余成员还要继续收"
+        );
+    }
+    assert!(
+        handler.contains("recipient != from"),
+        "发送方只接受**本人**说「我不收了」：别人不能替他取消"
+    );
+    assert!(
+        handler.contains("file::cancel_group_receive("),
+        "接收方那一侧必须停掉自己的接收器（否则界面说取消了、`.part` 还在写）"
     );
 }

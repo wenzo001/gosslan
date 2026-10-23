@@ -195,6 +195,73 @@ pub fn take_stalled_group_receive(state: &AppState, now: i64) -> Option<(String,
     recv.remove(&key).map(|r| (key, r))
 }
 
+/// **用户取消**一单群文件的接收：摘接收器、删 `.part`、内容状态记 `Cancelled`。返回是否真停了什么。
+///
+/// 与 [`fail_group_receive`] 的区别是**证据的归属**：失败要保留 `.part` 作续传前缀
+/// （对端上线/重连还能接着收），而"用户主动取消"不许留 —— 留着的话下一次 Offer
+/// 会把它当成半截进度续上（用户眼里的"取消了它自己又开始传"）。
+///
+/// 与单聊 `receive::cancel_receive` 是两份实现而不是一份参数化：群接收器的清理面
+/// 多一张表（`group_files` 的那一行由调用方落 cancelled），且这一册的恒等判据按分册钉
+/// （见文件头），参数化会把两处的失败口径搅在一起。
+pub fn cancel_group_receive(state: &AppState, transfer_id: &str) -> bool {
+    let taken = {
+        let mut recv = state
+            .group_file_receivers
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        recv.remove(transfer_id)
+    };
+    // 没有活跃接收器时，磁盘上仍可能留着上次的 `.part`（停滞被回收过）——照样要删。
+    let mut stopped = false;
+    let downloads = state
+        .downloads_dir
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .clone();
+    let fallback = downloads.join(format!("{transfer_id}.part"));
+    let mut tmp_path = fallback.clone();
+    if let Some(r) = taken {
+        tmp_path = r.tmp_path.clone();
+        let peer_id = r.peer_id.clone();
+        let cid = r.expected_sha256.clone();
+        // 句柄先离开作用域再删文件（Windows 上未关句柄时 remove_file 会失败，同 `cancel_receive`）
+        drop(r);
+        stopped = true;
+        if !cid.is_empty() {
+            let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
+            if let Err(e) = crate::content::store::record_failure(
+                &dbc,
+                &cid,
+                &peer_id,
+                crate::content::model::Direction::Receive,
+                crate::content::model::FailReason::Cancelled,
+                db::now_ms(),
+            ) {
+                state.logger.warn(
+                    "group_file",
+                    format!("取消群文件接收后内容状态没落成 Rejected cid={cid} transfer={transfer_id}：{e}"),
+                );
+            }
+        }
+    }
+    if let Err(e) = std::fs::remove_file(&tmp_path) {
+        if e.kind() != std::io::ErrorKind::NotFound {
+            state.logger.warn(
+                "group_file",
+                format!("取消群文件接收后删除 .part 失败 transfer={transfer_id}：{e}"),
+            );
+        }
+    } else {
+        stopped = true;
+    }
+    state.logger.info(
+        "group_file",
+        format!("用户取消群文件接收 transfer={transfer_id} stopped={stopped}"),
+    );
+    stopped
+}
+
 /// 摘表之后的群接收收尾（与单聊同一份口径：`.part` 保留、状态记 Incomplete 可重取）。
 pub fn fail_taken_group_receive(state: &AppState, r: &FileReceiver) {
     // **保留 .part**（不删）：断点续传的前缀（群友从种子拉取时也走 resume_receive）。

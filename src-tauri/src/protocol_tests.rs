@@ -1372,6 +1372,36 @@ mod tests {
         }
     }
 
+    /// `GroupFileCancel` 的线格式（B3b）：tag 与字段名同样是"对端认不认得"的唯一依据。
+    #[test]
+    fn group_file_cancel_frame_round_trips() {
+        let frame = Message::GroupFileCancel {
+            transfer_id: "t-9".into(),
+            group_id: "g-1".into(),
+            recipient: "dev-b".into(),
+            from: "dev-b".into(),
+        };
+        let json = serde_json::to_string(&frame).unwrap();
+        assert!(
+            json.contains("\"type\":\"group_file_cancel\""),
+            "线上帧名漂了（期望 tag=group_file_cancel）：{json}"
+        );
+        match serde_json::from_str::<Message>(&json).unwrap() {
+            Message::GroupFileCancel {
+                transfer_id,
+                group_id,
+                recipient,
+                from,
+            } => {
+                assert_eq!(transfer_id, "t-9");
+                assert_eq!(group_id, "g-1");
+                assert_eq!(recipient, "dev-b");
+                assert_eq!(from, "dev-b");
+            }
+            other => panic!("往返之后帧变了形状：{other:?}"),
+        }
+    }
+
     // ---------------- #122：呈现层要能区分"同名的两个人" ----------------
     // 判定层早在 31eccbd 就绑了设备 id；剩下的这一半是**哪一段文字算谁**。
     // 用「第几次出现」而不是字符偏移：Rust 按字节、JS 按 UTF-16，偏移跨语言一定错

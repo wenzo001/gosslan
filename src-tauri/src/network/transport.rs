@@ -1251,6 +1251,8 @@ pub async fn handle_message(state: &Arc<AppState>, peer_id: &str, msg: Message) 
         | Message::GroupFileDone { .. }
         | Message::GroupFileCompleteAck { .. }
         | Message::GroupFileResume { .. }
+        // 按成员取消（B3b）：同属群文件那族 —— 它要动的就是这本账。
+        | Message::GroupFileCancel { .. }
         // 群历史同步两帧（2026-10-16 需求）：同属"群"这一族 —— 受众按群算、正文用群密钥密封、
         // 前提同样是密钥已经先到（`GroupKey` 排在前面）。处理体在 `group_history` 引擎那册。
         | Message::GroupHistoryRequest { .. }

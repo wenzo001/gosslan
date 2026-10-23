@@ -219,6 +219,27 @@ pub(crate) fn install_cancel_slot<'a>(
 /// 谁调用：**用户点取消**（`commands::cancel_file_transfer`）与**对端发来的 `FileCancel` 帧**
 /// （`transport::handle_file`）—— 两件事在协议上是同一个语义："这一单不再继续了"，
 /// 所以走同一个入口、落同一个终态；`by` 只进日志，不新增状态。
+/// 只点亮**某一格**（群文件按成员取消时用：`(transfer_id, recipient)`），返回是否命中。
+///
+/// 与 [`signal_cancel_slots`] 的关系：那条是"整单"（用户取消一条群文件 = 每个成员一格），
+/// 这条是"这一格"（某个成员说他不再收了）。两者共用同一张表与同一个键函数，
+/// 区别只是前缀 vs 精确键 —— 所以都住在这个文件里，映射本身仍然只有一家。
+pub fn signal_cancel_slot(state: &AppState, transfer_id: &str, recipient: &str) -> bool {
+    let key = file_cancel_key(transfer_id, recipient);
+    let tx = state
+        .file_send_cancels
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .remove(&key);
+    match tx {
+        Some(tx) => {
+            let _ = tx.send(());
+            true
+        }
+        None => false,
+    }
+}
+
 pub fn signal_cancel_slots(state: &AppState, transfer_id: &str) -> usize {
     let mut cancels = state
         .file_send_cancels

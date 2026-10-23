@@ -939,10 +939,15 @@ CASES: list[Case] = [
         "但那是**依赖对方解析器形状**的赌注；门控之后兼容面回到「不发」这一确定状态。\n"
         "     注入方式：把 `if !declared` 短路成 `if false`（最自然的「简化」：看着像多余的判断）。",
         file=TAURI / "src" / "commands" / "files.rs",
-        injections=[("    if !declared {", "    if false {")],
+        # 注入点跟着 B3b 搬家：门控从内联 if 收成了 `peer_declares_file_cancel` 一个家，
+        # 于是变异改成"让那个家恒真" —— 效果一样（对老端也发新帧），而且仍是单点、仍能编译。
+        injections=[(
+            "        .is_some_and(|f| f & crate::protocol::CONTENT_FEATURE_FILE_CANCEL != 0)",
+            "        .is_some_and(|_f| true)",
+        )],
         cmd=cargo("test", "--lib", "file_cancel_notice_is_gated_and_never_blocks_the_local_cancel"),
         cwd=TAURI,
-        expect_fail_hint="对端没声明时必须直接 return",
+        expect_fail_hint="门控函数里必须读那一位",
         tags=["rust", "file", "stability", "new-guards", "file-cancel"],
     ),
     Case(
@@ -1006,5 +1011,23 @@ CASES: list[Case] = [
         cwd=TAURI,
         expect_fail_hint="晚到的 Ack 必须命中不到队列行",
         tags=["rust", "db", "messages", "terminal-state", "new-guards"],
+    ),
+    Case(
+        name="按成员取消不看状态 ⇒ 已收完的成员被改成已取消",
+        why="群文件是「一单对多成员」，每一格各说各的：`completed` 是他真的收到了，"
+        "`failed` 已经说清它死于什么。\n"
+        "     按成员取消只许动 `pending|sending` —— 少了这个状态过滤，摘要里"
+        "「收到的人」会凭空少一个，而文件其实就在他盘上。\n"
+        "     注入方式：把 `AND status IN ('pending', 'sending')` 从那条 UPDATE 里摘掉"
+        "（编译照过、其余成员不受影响，只有这一格判据会红）。",
+        file=TAURI / "src" / "db" / "group_files.rs",
+        injections=[(
+            "         WHERE transfer_id = ?1 AND recipient_id = ?2 AND status IN ('pending', 'sending')",
+            "         WHERE transfer_id = ?1 AND recipient_id = ?2",
+        )],
+        cmd=cargo("test", "--lib", "cancelling_one_recipient_leaves_the_others_alone"),
+        cwd=TAURI,
+        expect_fail_hint="重复取消同一格必须返回 false",
+        tags=["rust", "db", "group-file", "terminal-state", "new-guards"],
     ),
 ]

@@ -372,6 +372,25 @@ pub fn cancel_group_file_recipients(conn: &Connection, transfer_id: &str) -> Res
     Ok(n)
 }
 
+/// 取消群文件里的**一格**（按成员取消，B3b）。
+///
+/// 与 [`cancel_group_file_recipients`] 的差别只有受众：那条是"整单取消"（用户点取消一条群文件），
+/// 这条是"某个成员说他不收了" / "发送方让某个成员别再收"。只动 `pending|sending`：
+/// `completed` 是他真的收到了，`failed` 已经说清它死于什么，`cancelled` 是幂等的目标态。
+/// 返回 `true` = 这一格确实从"还在传"变成了"已取消"。
+pub fn cancel_group_file_recipient(
+    conn: &Connection,
+    transfer_id: &str,
+    recipient: &str,
+) -> Result<bool> {
+    let n = conn.execute(
+        "UPDATE group_file_recipients SET status = 'cancelled', progress = 0.0, updated_at = ?3
+         WHERE transfer_id = ?1 AND recipient_id = ?2 AND status IN ('pending', 'sending')",
+        params![transfer_id, recipient, now_ms()],
+    )?;
+    Ok(n > 0)
+}
+
 /// 群文件这一单本身落 `cancelled`（台账摘要、离线补发的入口都读它）。
 /// `completed` 不动 —— 与 `file_transfers` 的终态契约同一条口径。
 pub fn mark_group_file_cancelled(conn: &Connection, transfer_id: &str) -> Result<usize> {
@@ -542,7 +561,8 @@ pub fn upsert_group_file_receive(
 #[cfg(test)]
 mod group_file_delivery_tests {
     use super::{
-        cancel_group_file_recipients, get_group_file_delivery_summary, is_group_file_cancelled,
+        cancel_group_file_recipient, cancel_group_file_recipients,
+        get_group_file_delivery_summary, is_group_file_cancelled,
         is_group_file_recipient_cancelled, list_pending_group_files_for_recipient,
         list_stale_group_file_sending, mark_group_file_cancelled, requeue_stale_group_file_sending,
         update_group_file_recipient, upsert_group_file_receive,
@@ -875,5 +895,49 @@ mod group_file_delivery_tests {
         );
         let not_expired = list_stale_group_file_sending(&conn, 50, 0, "me").unwrap();
         assert!(!not_expired[0].expired, "max_age_before=0 时同一行没过期");
+    }
+
+    /// 按**单个成员**取消（B3b）：只动还在传的那一格，`completed` 与 `failed` 各说各的事。
+    ///
+    /// 为什么这一格必须是"只动 pending/sending"：`completed` 是他真的收到了 ——
+    /// 把他一起改成 cancelled，摘要里"收到的人"会凭空少一个，而文件其实在他盘上。
+    #[test]
+    fn cancelling_one_recipient_leaves_the_others_alone() {
+        let conn = mem();
+        seed(&conn, "t9", "a", "sending");
+        seed(&conn, "t9", "b", "pending");
+        seed(&conn, "t9", "c", "completed");
+        seed(&conn, "t9", "d", "failed");
+
+        assert!(cancel_group_file_recipient(&conn, "t9", "a").unwrap());
+        // 幂等：再按一次返回 false（没有还在传的行可改），但状态仍是 cancelled
+        assert!(
+            !cancel_group_file_recipient(&conn, "t9", "a").unwrap(),
+            "重复取消同一格必须返回 false（幂等：这一格已经不是还在传的状态了）"
+        );
+        // 已收完 / 已失败的那两格不许被这条路径改写
+        assert!(
+            !cancel_group_file_recipient(&conn, "t9", "c").unwrap(),
+            "已收到的那一格不许被按成员取消改写"
+        );
+        assert!(
+            !cancel_group_file_recipient(&conn, "t9", "d").unwrap(),
+            "失败那一格不许被按成员取消改写"
+        );
+        // 没点名的成员不受影响
+        assert!(cancel_group_file_recipient(&conn, "t9", "b").unwrap());
+
+        let read = |rid: &str| -> (String, f64) {
+            conn.query_row(
+                "SELECT status, progress FROM group_file_recipients WHERE transfer_id='t9' AND recipient_id=?1",
+                params![rid],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap()
+        };
+        assert_eq!(read("a"), ("cancelled".to_string(), 0.0), "取消的格子进度归零");
+        assert_eq!(read("b"), ("cancelled".to_string(), 0.0));
+        assert_eq!(read("c").0, "completed", "已收到的那一格不许被按成员取消改写");
+        assert_eq!(read("d").0, "failed", "失败那一格已经说清了它死于什么");
     }
 }

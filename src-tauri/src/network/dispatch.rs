@@ -49,6 +49,7 @@ pub fn message_priority(msg: &Message) -> MessagePriority {
         // 取消帧的目的就是"打断一条正占着队列的分片流"。留在 Low/Normal 等于让它排在
         // 自己要不要停掉的那批字节后面 —— 那这条帧就没有存在意义了。
         | Message::FileCancel { .. }
+        | Message::GroupFileCancel { .. }
         | Message::GroupAck { .. }
         | Message::GroupReadReceipt { .. }
         | Message::FriendRequest { .. }
@@ -148,11 +149,23 @@ mod tests {
             transfer_id: "t".into(),
             attempt: None,
         };
+        let group_cancel = Message::GroupFileCancel {
+            transfer_id: "t".into(),
+            group_id: "g".into(),
+            recipient: "dev-b".into(),
+            from: "dev-a".into(),
+        };
         assert_eq!(
             message_priority(&cancel),
             MessagePriority::High,
             "FileCancel 必须钉在 High：留在 Normal/Low 它会排在自己要停掉的那批分片之后"
         );
+        assert_eq!(
+            message_priority(&group_cancel),
+            MessagePriority::High,
+            "按成员取消（GroupFileCancel）同理：它要停的也是正在跑的群分片"
+        );
+        assert!(message_priority(&group_cancel) < message_priority(&chunk));
         assert_eq!(
             message_priority(&chunk),
             MessagePriority::Low,

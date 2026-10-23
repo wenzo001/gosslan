@@ -13,6 +13,37 @@
 
 ## [Unreleased]
 
+## [5.5.32] - 2026-10-23
+
+### 群文件的接收取消不再是空操作（取消/撤回全链路 · 第 6 批 B3b）
+
+- 在这之前，对一条**别人发给我的**群文件按取消，只在界面上 emit 了一个 `file-cancelled` ——
+  接收器还在写 `.part`、下一次 Offer 还会把它拉起来。**界面在撒谎**，比"没这个功能"更糟。
+- 现在取消入口的第 0 步先认"这是不是别人发给我的群文件"（`file_transfers` 里没有、`group_files`
+  那一行的发送者不是本机）：是就整段走 `cancel_group_receive_side` —— 摘接收器 → 删 `.part` →
+  气泡 `gfile-` 写 `cancelled` → **最后**才把整单行落 `cancelled`。写序与前几批同一条铁律：
+  面向用户的写在前，踢出补发集合的写在最后（进程死在两步之间不会留下"永远发送中"的孤儿）。
+- 新帧 `GroupFileCancel { transfer_id, group_id, recipient, from }`（tag `group_file_cancel`，
+  High 优先级、复用 `CONTENT_FEATURE_FILE_CANCEL`）：接收方→发送方 = "这一格我不收了"；
+  发送方→该成员 = "这一格停了"。**只影响这一格**：发送方那侧只点亮 `(transfer_id, 该成员)`
+  的取消槽位、只把那一行落 cancelled —— 整单那一对（`signal_cancel_slots` /
+  `cancel_group_file_recipients`）一个字都不碰，否则一个成员退出会让其余成员一起停。
+- 认人只认本人：发送方收到 `recipient != from` 的帧直接丢弃（别人不能替他取消）；
+  帧的 `group_id` 与台账对不上也丢弃（防串单）。
+- 通知名单在收尾**之前**读（`plan_cancel_notice`）：`apply_local_cancel` 会把成员行落成
+  cancelled，取消之后再读就只剩"已经取消的"，谁都收不到通知 —— 顺序即语义。
+- 判据：Rust 新增 3 条（单格取消只动 `pending/sending`、帧往返、"路由 + 臂位置 + 只碰单格 +
+  只认本人"的形状）；`dispatch_arms_and_volume_arms_agree` 的群族台账 14 → 15；
+  `verify-guards` 新增 1 条变异（Case 257 → 258）：把单格取消那条 UPDATE 的状态过滤摘掉 ⇒
+  已收完的成员被改成已取消（幂等那一格先红）。第一条门控变异也跟着门控搬家换了注入点
+  （从内联 `if !declared` 到 `peer_declares_file_cancel` 的家）。
+- 前端那一格：`utils/cancelSend` 现在允许取消**收到的**群文件（`gfile-` 前缀不再要求
+  `mine`）—— 收到的群文件不是「我发的」，但停掉自己这一份接收仍然是我的事；
+  状态不是 `sending` 时照旧不给入口。
+- ⚠️ **仍未证**：两台真机之间"对面真的停了 / 这一格真的不再收到字节"没有跨进程判据；
+  群消息（文本）的取消也仍未做（群队列是每成员一行，删多少行算取消要单独的账）。
+
+
 ## [5.5.31] - 2026-10-23
 
 ### 排队中的消息也能取消发送（取消/撤回全链路 · 第 5 批 B4 的另一半）

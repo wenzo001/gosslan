@@ -565,6 +565,70 @@ pub struct FileCancelResult {
     pub already_done: bool,
 }
 
+/// 群文件的**接收**侧取消（B3b 的第 0 步）：认出"这一单是不是别人发给我的群文件"，
+/// 是就本机停手并落终态，返回 `Some(结果)`；不是（1:1 或本机是发送方）返回 `None`，
+/// 让调用方继续走 1:1 / 整单那两条老路。
+///
+/// 写序与 `every_finalize_path_defers_the_destructive_write` 那条判据一致：
+/// **面向用户的写（气泡 `gfile-` 状态）在前，把这一单踢出补发集合的写（整单行 cancelled）在后** ——
+/// 反过来的话，进程在两步之间死掉会留下"补发再也不会碰它、但气泡还停在发送中"的孤儿。
+async fn cancel_group_receive_side(
+    s: &Arc<AppState>,
+    transfer_id: &str,
+    by: &str,
+) -> Option<FileCancelResult> {
+    let completed = {
+        let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());
+        if db::get_transfer_route(&dbc, transfer_id).is_some() {
+            return None;
+        }
+        let gf = db::get_group_file(&dbc, transfer_id)?;
+        if gf.sender_id == s.device_id {
+            return None;
+        }
+        gf.status == "completed"
+    };
+    // 已经收完 = 没有可取消的字节（与 1:1 的 `already_done` 同一格口径）。
+    if completed {
+        return Some(FileCancelResult {
+            cancelled: false,
+            already_done: true,
+        });
+    }
+    let s2 = s.clone();
+    let tid = transfer_id.to_string();
+    let stopped = match tokio::task::spawn_blocking(move || file::cancel_group_receive(&s2, &tid))
+        .await
+    {
+        Ok(v) => v,
+        Err(e) => {
+            s.logger.error(
+                "group_file",
+                format!("取消群文件接收的收尾任务被线程池中断 transfer={transfer_id}：{e}（.part 可能还在）"),
+            );
+            false
+        }
+    };
+    {
+        let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());
+        // 面向用户的写先做（气泡）；随后那一笔才是"踢出补发集合"的。
+        let _ = db::set_message_status(&dbc, &format!("gfile-{transfer_id}"), "cancelled");
+        let _ = db::mark_group_file_cancelled(&dbc, transfer_id);
+    }
+    let _ = s.app.emit("file-cancelled", transfer_id);
+    let _ = s
+        .app
+        .emit("message-status-changed", &format!("gfile-{transfer_id}"));
+    s.logger.info(
+        "group_file",
+        format!("群文件接收已按取消收尾 transfer={transfer_id} by={by} stopped={stopped}"),
+    );
+    Some(FileCancelResult {
+        cancelled: true,
+        already_done: false,
+    })
+}
+
 /// 「本机把这一单按已取消收尾」的**唯一**入口（B3）。
 ///
 /// 两个调用方，语义是同一件事——"这一单不再继续了"：
@@ -591,6 +655,13 @@ pub(crate) async fn apply_local_cancel(
     transfer_id: &str,
     by: &str,
 ) -> FileCancelResult {
+    // 0. 群文件的**接收**侧（B3b）：这一单在 `file_transfers` 里根本没有行（群文件是另一本账），
+    //    所以必须先认出来，否则下面的每一步都"成立但什么也没动"，而 emit 会让界面显示已取消 ——
+    //    那正是这条分支要消灭的谎话（接收器还在写 `.part`、下一次 Offer 还会把它拉起来）。
+    if let Some(res) = cancel_group_receive_side(s, transfer_id, by).await {
+        return res;
+    }
+
     // 1. 发 cancel 信号 —— 一个 transfer_id 可能对应**多条**在途流（群文件是每个成员一条，
     //    登记键见 `file::file_cancel_key`），必须按前缀全部命中，不能只拿一条。
     let signalled = file::signal_cancel_slots(s, transfer_id) > 0;
@@ -607,7 +678,7 @@ pub(crate) async fn apply_local_cancel(
     // 1b. 方向分派（B3a）：接收中的那一单没有"在途发送任务"可通知 —— 取消的含义是
     // **本机停手**：摘掉接收器、删掉 `.part`（不留下会被下一次投递当成续传前缀的半截文件）、
     // 内容状态记成 Rejected（不自动重取）。台账那一笔仍然只走下面那一个出口。
-    // 群文件的接收侧不在这里（它有自己的接收器表与气泡，随 B3 的 Cancel 帧一起做）。
+    // 群文件的接收侧在**上面第 0 步**就分流走了（它不在这张表里）。
     let is_receive = {
         let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());
         db::get_transfer_route(&dbc, transfer_id).is_some_and(|(d, _)| d == "receive")
@@ -704,57 +775,142 @@ pub async fn cancel_file_transfer(
     transfer_id: String,
 ) -> Result<FileCancelResult, String> {
     let s = state.inner();
+    // 通知名单必须在收尾**之前**读：`apply_local_cancel` 会把成员行落成 cancelled，
+    // 之后再看就只剩"已经取消的"，谁都收不到通知（顺序即语义）。
+    let notice = plan_cancel_notice(s, &transfer_id);
     let res = apply_local_cancel(s, &transfer_id, "user").await;
-    notify_peer_file_cancel(s, &transfer_id).await;
+    send_cancel_notice(s, &transfer_id, notice).await;
     Ok(res)
 }
 
-/// 取消的**通知**那一半：查方向与对端，声明过能力位才发 `FileCancel`。
+/// 取消该通知谁 —— 三种形状，读一次台账就能分清。
 ///
-/// 方向决定"该不该发"，不决定"发给谁"——两种方向的 `peer_id` 都是对面那台设备：
-///  · `send`   —— 我是发送方：告诉接收方"别再往我这儿收了，`.part` 我会删"；
-///  · `receive`—— 我是接收方：告诉发送方"停手，不用再发分片了"。
-/// 读不到台账行（没记过账的单）就什么都不发 —— 宁可不通知，也不能发给一个猜出来的对端。
-/// 发送失败（离线/队列满）**不回滚取消**：本机已经停了手，通知只是让对方也早点知道，
-/// 对方自己有 deadline 与队列判死兜着，不会因此永远传下去。
-async fn notify_peer_file_cancel(s: &Arc<AppState>, transfer_id: &str) {
-    let route = {
-        let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());
-        db::get_transfer_route(&dbc, transfer_id)
-    };
-    // 没记过账的单不通知：宁可不发，也不要发给一个猜出来的对端。
-    let Some((direction, peer_id)) = route else { return };
-    // 这里不看 direction——两个方向都要通知。留着它是让日志说得清"我是哪一侧"。
-    let declared = s
-        .peer_content_features
+/// 为什么要有这一层而不是在 `apply_local_cancel` 里顺手发：那条入口是**本机收尾**的家，
+/// 它也被"对端已经取消了"那条路复用；在它里面发通知会造成"收到取消 → 又回一条取消"的回声。
+enum CancelNotice {
+    /// 1:1（发送或接收）。
+    Dm { peer_id: String, direction: String },
+    /// 群文件、本机是发送方：每个还在传的成员各一条。
+    GroupMembers { group_id: String, members: Vec<String> },
+    /// 群文件、本机是接收方：告诉发送方"这一格我不收了"。
+    GroupSender { group_id: String, sender: String },
+}
+
+fn plan_cancel_notice(s: &AppState, transfer_id: &str) -> Option<CancelNotice> {
+    let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some((direction, peer_id)) = db::get_transfer_route(&dbc, transfer_id) {
+        return Some(CancelNotice::Dm { peer_id, direction });
+    }
+    let gf = db::get_group_file(&dbc, transfer_id)?;
+    if gf.sender_id == s.device_id {
+        let members = db::list_group_file_recipients(&dbc, transfer_id)
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|r| r.status == "pending" || r.status == "sending")
+            .map(|r| r.recipient_id)
+            .collect();
+        Some(CancelNotice::GroupMembers {
+            group_id: gf.group_id,
+            members,
+        })
+    } else {
+        Some(CancelNotice::GroupSender {
+            group_id: gf.group_id,
+            sender: gf.sender_id,
+        })
+    }
+}
+
+/// 对端是否声明过"能处理取消帧"。门控只有这一处口径（INV-P24 第 4 条）。
+fn peer_declares_file_cancel(s: &AppState, peer_id: &str) -> bool {
+    s.peer_content_features
         .lock()
         .unwrap_or_else(|e| e.into_inner())
-        .get(&peer_id)
-        .is_some_and(|f| f & crate::protocol::CONTENT_FEATURE_FILE_CANCEL != 0);
-    if !declared {
-        s.logger.info(
-            "file",
-            format!(
-                "取消不通知对端 transfer={transfer_id} dir={direction} peer={peer_id}（对端未声明 FILE_CANCEL ⇒ 它自己会走到 deadline）"
-            ),
-        );
+        .get(peer_id)
+        .is_some_and(|f| f & crate::protocol::CONTENT_FEATURE_FILE_CANCEL != 0)
+}
+
+/// 取消的**通知**那一半：只发给声明过 `CONTENT_FEATURE_FILE_CANCEL` 的对端。
+///
+/// 发送失败（离线/队列满）**不回滚取消**：本机已经停了手，通知只是让对方也早点知道；
+/// 对方自己有 deadline 与队列判死兜着，不会因此永远传下去。
+async fn send_cancel_notice(s: &Arc<AppState>, transfer_id: &str, notice: Option<CancelNotice>) {
+    let Some(notice) = notice else {
+        // 没记过账的单不通知：宁可不发，也不要发给一个猜出来的对端。
         return;
-    }
-    let msg = Message::FileCancel {
-        transfer_id: transfer_id.to_string(),
-        from: s.device_id.clone(),
     };
-    match try_send(s, &peer_id, &msg).await {
-        Ok(()) => s.logger.info(
-            "file",
-            format!("已通知对端取消 transfer={transfer_id} dir={direction} peer={peer_id}"),
-        ),
-        Err(e) => s.logger.warn(
-            "file",
-            format!(
-                "通知对端取消没送出去 transfer={transfer_id} dir={direction} peer={peer_id}：{e}（本机取消已成立）"
-            ),
-        ),
+    match notice {
+        CancelNotice::Dm { peer_id, direction } => {
+            if !peer_declares_file_cancel(s, &peer_id) {
+                s.logger.info(
+                    "file",
+                    format!(
+                        "取消不通知对端 transfer={transfer_id} dir={direction} peer={peer_id}（对端未声明 FILE_CANCEL ⇒ 它自己会走到 deadline）"
+                    ),
+                );
+                return;
+            }
+            let msg = Message::FileCancel {
+                transfer_id: transfer_id.to_string(),
+                from: s.device_id.clone(),
+            };
+            match try_send(s, &peer_id, &msg).await {
+                Ok(()) => s.logger.info(
+                    "file",
+                    format!("已通知对端取消 transfer={transfer_id} dir={direction} peer={peer_id}"),
+                ),
+                Err(e) => s.logger.warn(
+                    "file",
+                    format!(
+                        "通知对端取消没送出去 transfer={transfer_id} dir={direction} peer={peer_id}：{e}（本机取消已成立）"
+                    ),
+                ),
+            }
+        }
+        CancelNotice::GroupMembers { group_id, members } => {
+            for member in members {
+                if !peer_declares_file_cancel(s, &member) {
+                    continue;
+                }
+                let msg = Message::GroupFileCancel {
+                    transfer_id: transfer_id.to_string(),
+                    group_id: group_id.clone(),
+                    recipient: member.clone(),
+                    from: s.device_id.clone(),
+                };
+                if let Err(e) = try_send(s, &member, &msg).await {
+                    s.logger.warn(
+                        "group_file",
+                        format!("群文件取消通知没送到 recipient={member} transfer={transfer_id}：{e}（本机取消已成立）"),
+                    );
+                }
+            }
+        }
+        CancelNotice::GroupSender { group_id, sender } => {
+            if !peer_declares_file_cancel(s, &sender) {
+                s.logger.info(
+                    "group_file",
+                    format!("群文件接收取消不通知发送方 transfer={transfer_id} sender={sender}（未声明 FILE_CANCEL）"),
+                );
+                return;
+            }
+            let msg = Message::GroupFileCancel {
+                transfer_id: transfer_id.to_string(),
+                group_id,
+                recipient: s.device_id.clone(),
+                from: s.device_id.clone(),
+            };
+            match try_send(s, &sender, &msg).await {
+                Ok(()) => s.logger.info(
+                    "group_file",
+                    format!("已通知发送方取消这一格 transfer={transfer_id} sender={sender}"),
+                ),
+                Err(e) => s.logger.warn(
+                    "group_file",
+                    format!("群文件取消通知没送到 sender={sender} transfer={transfer_id}：{e}（本机取消已成立）"),
+                ),
+            }
+        }
     }
 }
 

@@ -30,10 +30,12 @@ export interface CancelSendContext {
 }
 
 export function cancelSendChannelFor(ctx: CancelSendContext): CancelSendChannel {
-  if (!ctx.mine || ctx.selfChat) return "none";
   if (ctx.status !== "sending") return "none";
-  if (ctx.msgId.startsWith("file-")) return "transfer";
+  // 群文件：**发送侧与接收侧都能取消**。接收侧那条就是 B3b —— 本机停手（摘接收器、删 `.part`）
+  // 再通知发送方这一格停了；所以这里不能要求 `mine`（收到的群文件不是"我发的"）。
   if (ctx.msgId.startsWith("gfile-")) return "transfer";
+  if (!ctx.mine || ctx.selfChat) return "none";
+  if (ctx.msgId.startsWith("file-")) return "transfer";
   // 文件/图片的**真实**消息（后端 `send_file*` 造的那条，id 不是前缀形式）也只走传输通道；
   // 它们的取消入口在文件卡片上（`@cancel`），不在消息菜单里。
   if (ctx.kind === "file" || ctx.kind === "image") return "none";

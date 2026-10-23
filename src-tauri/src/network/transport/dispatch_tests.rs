@@ -195,10 +195,11 @@ fn dispatch_arms_and_volume_arms_agree() {
     let families: [(&str, usize); 5] = [
         ("handle_file_messages", 7),
         ("handle_share_and_relay_messages", 6),
-        // 14 = 上面那 11 个群帧 + `GroupHistoryRequest` / `GroupHistoryReply`
+        // 15 = 上面那 11 个群帧 + `GroupHistoryRequest` / `GroupHistoryReply`
         //（2026-10-16 群历史同步：同一族的两个新臂，处理体借道 `network/group_history.rs`）
         // + `GroupFileResume`（2026-10-21 P1-03 真续传：接收端 → 发送端的偏移回执）
-        ("handle_group_messages", 14),
+        // + `GroupFileCancel`（2026-10-23 B3b：按成员取消，发送方 ↔ 接收方两个方向）
+        ("handle_group_messages", 15),
         ("handle_identity_and_friend_messages", 8),
         ("handle_messaging_arm", 4),
     ];

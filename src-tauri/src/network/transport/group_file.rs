@@ -51,6 +51,114 @@ fn group_frame_is_current(state: &AppState, transfer_id: &str, attempt: Option<u
     file::group_frame_round_is_current(attempt, cur)
 }
 
+/// 收到「取消这一格」的帧（B3b）：发送方与接收方都可能发，方向由**谁发**决定。
+///
+/// 三种落法（都先把「这一帧是不是关于这一单的」验掉，再动手）：
+///
+/// 1. 本机是**发送方** + 成员说他不再收了 ⇒ 点亮那一格的取消槽位（在途投递循环自己退出）
+///    + 那一行落 `cancelled`（硬终态：离线补发与续传复位都看不见它）；
+/// 2. 本机是**接收方** + 发送方说这一格停了 ⇒ 摘接收器、删 `.part`、整单行落 `cancelled`；
+/// 3. 其余（既不是我的单、group_id 对不上、recipient 不是我）⇒ 记一条日志丢掉。
+///
+/// 不做「收到取消再回一条取消」的回声：回执的语义是「我停了」，双方各说一次就够了 ——
+/// 回声会让两边在链路上互相确认到对方超时。
+pub(crate) async fn handle_group_file_cancel(
+    state: &Arc<AppState>,
+    peer_id: &str,
+    transfer_id: String,
+    group_id: String,
+    recipient: String,
+    from: String,
+) {
+    if from != peer_id || from == state.device_id {
+        return;
+    }
+    let gf = {
+        let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
+        db::get_group_file(&dbc, &transfer_id)
+    };
+    let Some(gf) = gf else {
+        state.logger.warn(
+            "group_file",
+            format!("收到 GroupFileCancel 但本机没有这一单 transfer={transfer_id} peer={peer_id}"),
+        );
+        return;
+    };
+    if gf.group_id != group_id {
+        state.logger.warn(
+            "group_file",
+            format!(
+                "收到 GroupFileCancel 但 group 对不上 transfer={transfer_id} frame_group={group_id} ledger_group={} peer={peer_id}",
+                gf.group_id
+            ),
+        );
+        return;
+    }
+    if gf.sender_id == state.device_id {
+        // 我是发送方：只有本人能说"我不收了"。
+        if recipient != from {
+            state.logger.warn(
+                "group_file",
+                format!("收到 GroupFileCancel 但 recipient 不是发帧那台设备 transfer={transfer_id} recipient={recipient} from={from}"),
+            );
+            return;
+        }
+        let signalled = file::signal_cancel_slot(state, &transfer_id, &recipient);
+        let cancelled = {
+            let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
+            db::cancel_group_file_recipient(&dbc, &transfer_id, &recipient).unwrap_or(false)
+        };
+        if cancelled {
+            let _ = state
+                .app
+                .emit("message-status-changed", &format!("gfile-{transfer_id}"));
+        }
+        state.logger.info(
+            "group_file",
+            format!(
+                "对端取消了这一格 transfer={transfer_id} recipient={recipient} signalled={signalled} row_cancelled={cancelled}"
+            ),
+        );
+        return;
+    }
+    if recipient == state.device_id {
+        // 我是接收方：发送方说这一格停了。删 `.part` 是阻塞活 ⇒ 挪出 worker（INV-P34）。
+        let s2 = state.clone();
+        let tid = transfer_id.clone();
+        let stopped = match tokio::task::spawn_blocking(move || {
+            file::cancel_group_receive(&s2, &tid)
+        })
+        .await
+        {
+            Ok(v) => v,
+            Err(e) => {
+                state.logger.error(
+                    "group_file",
+                    format!("对端取消后收尾被线程池中断 transfer={transfer_id}：{e}（.part 可能还在）"),
+                );
+                false
+            }
+        };
+        {
+            let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
+            let _ = db::mark_group_file_cancelled(&dbc, &transfer_id);
+        }
+        let _ = state.app.emit("file-cancelled", &transfer_id);
+        let _ = state
+            .app
+            .emit("message-status-changed", &format!("gfile-{transfer_id}"));
+        state.logger.info(
+            "group_file",
+            format!("发送方取消了这一格，本机已停手 transfer={transfer_id} stopped={stopped}"),
+        );
+        return;
+    }
+    state.logger.warn(
+        "group_file",
+        format!("收到 GroupFileCancel 但与本机无关 transfer={transfer_id} recipient={recipient} peer={peer_id}"),
+    );
+}
+
 /// 收到接收端的续传回执：把 `received` 交给正在等这个成员回执的发送任务。
 async fn handle_group_file_resume(
     state: &Arc<AppState>,

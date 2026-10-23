@@ -1996,6 +1996,23 @@ pub enum Message {
     /// `sender_id` = ACK 发送者（即原 recipient），发送方必须校验
     /// sender_id == TCP peer_id，且 transfer 的 group_file.sender_id 是本机。
     /// success = 本地 size/SHA-256 校验通过并已 rename 落盘。
+    /// 取消**群文件里的一格**（`transfer_id` + `recipient`），发送方与接收方都可以发。
+    ///
+    /// 与 1:1 的 `FileCancel` 是同一件事在"按成员那本账"上的版本：谁都不想再传这一格了。
+    ///  · 接收方 → 发送方：`recipient = 我`，意思是"别再往我这儿发"；
+    ///  · 发送方 → 某成员：`recipient = 该成员`，意思是"这一格停了"（其余成员继续）。
+    /// 门控复用 `CONTENT_FEATURE_FILE_CANCEL`（一位管"能处理取消帧"这件能力，不拆两位）。
+    /// 语义细节：只影响这一格；`group_files` 行的 `cancelled` 只在本机是接收方、
+    /// 或发送方取消了**整单**（`cancel_file_transfer`）时才写 —— 单个成员退出不该把
+    /// 整单标成已取消（那会让其他成员的气泡也变样）。
+    GroupFileCancel {
+        transfer_id: String,
+        group_id: String,
+        /// 被取消的那一格（收件人 device_id）。
+        recipient: String,
+        /// 发这帧的那一端。
+        from: String,
+    },
     GroupFileCompleteAck {
         transfer_id: String,
         group_id: String,
