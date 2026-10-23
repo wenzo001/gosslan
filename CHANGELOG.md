@@ -13,6 +13,18 @@
 
 ## [Unreleased]
 
+## [5.7.1] - 2026-10-23
+
+### 连续消息间距判定补真值表（5.7.1）
+
+- 把「组首 6px / 组内 0px / 分割行 0px」这一层从 `messageHeight` 提到零依赖的
+  `messageKinds.messageTopGap()`（外加 `MSG_GAP_NEW/TIGHT`），估高端改为调用它。
+  理由：`messageHeight` 依赖 `@/utils/*` 别名，`node --test` 加载不了（实测
+  `ERR_MODULE_NOT_FOUND: @/utils`），能跑行为真值表的只有零 import 的那个家。
+- 新增 5 条断言：组首/孤立 6、组内 0、有分割行一律 0，且常量本身是 6/0。
+  渲染端（`MessageItem`）与估高端继续取同一份判定；DOM 矩形那半边仍由
+  `check-ui-runtime --only=rowpair` 覆盖。
+
 ## [5.7.0] - 2026-10-23
 
 ### 聊天界面 iMessage 化 · 第一片：单聊/群聊版面与连续消息合并（5.7.0）
