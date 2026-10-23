@@ -30,7 +30,12 @@ export interface CancelSendContext {
 }
 
 export function cancelSendChannelFor(ctx: CancelSendContext): CancelSendChannel {
-  if (ctx.status !== "sending") return "none";
+  // `sent` 也算：群消息在**入队那一刻**就写 `sent`（`window.rs` 的群发送内核），
+  // 1:1 则是"已经写进 writer 队列"。两者的共同点是**还没有 Ack 被处理**，
+  // 后端 `cancel_message` 的判据也正是这个（只有 delivered/read/recalled 才拒绝）。
+  // 代价与文件取消同一条：字节可能已在对方链路上、Ack 还在飞 —— 界面说"已取消"，
+  // 但不承诺"对方没收到"。
+  if (ctx.status !== "sending" && ctx.status !== "sent") return "none";
   // 群文件：**发送侧与接收侧都能取消**。接收侧那条就是 B3b —— 本机停手（摘接收器、删 `.part`）
   // 再通知发送方这一格停了；所以这里不能要求 `mine`（收到的群文件不是"我发的"）。
   if (ctx.msgId.startsWith("gfile-")) return "transfer";
@@ -39,6 +44,8 @@ export function cancelSendChannelFor(ctx: CancelSendContext): CancelSendChannel 
   // 文件/图片的**真实**消息（后端 `send_file*` 造的那条，id 不是前缀形式）也只走传输通道；
   // 它们的取消入口在文件卡片上（`@cancel`），不在消息菜单里。
   if (ctx.kind === "file" || ctx.kind === "image") return "none";
-  if (ctx.group) return "none";
+  // 群消息也能取消（B4 后半）：判据是"还没有任何成员的 Ack 被处理过"，
+  // 后端删的是**每个成员那一行** —— 只要没人确认过，删完之后迟到的 Ack 命中不到，
+  // 状态停在 cancelled（与 1:1 同一条仲裁）。
   return "message";
 }

@@ -70,12 +70,50 @@ pub fn ack_group_delivered(conn: &Connection, msg_id: &str, peer_id: &str) -> Re
 /// 生产收尾已改用 [`ack_group_delivered`]（状态 + 删行同事务）；这个低层原语只剩
 /// 测试与将来的维护路径在用，保留它是为了不在测试里复制一份 DELETE。
 #[allow(dead_code)]
-pub fn delete_group_outbox(conn: &Connection, msg_id: &str, peer_id: &str) -> Result<()> {
-    conn.execute(
-        "DELETE FROM group_outbox WHERE msg_id = ?1 AND peer_id = ?2",
-        params![msg_id, peer_id],
+/// 取消一条**还没被任何成员确认**的群消息（用户按「取消发送」）。
+///
+/// 判据不是"看还剩几行"，而是**消息状态**：`GroupAck` 的处理是「置 delivered + 删那一行」
+/// 同一个事务（见 [`ack_group_delivered`]）⇒ 只要状态还没到 `delivered`/`read`，
+/// 就说明**还没有任何一个成员的 Ack 被处理过**。第一发 Ack 之后 `ack_group_delivered`
+/// 就命中不到队列行（全被本函数删了）⇒ 状态停在 cancelled，提不回已送达（与 1:1 同一条仲裁）。
+///
+/// ⚠️ 已知且接受的边界（与 1:1 相同）：字节可能已经写到某个成员的链路上、Ack 还在飞 ——
+/// 那种情况取消会显示"已取消"而对方其实收到了。UI 的措辞是「已取消」，不承诺"对方没收到"。
+#[derive(Debug, PartialEq, Eq)]
+pub enum GroupMessageCancelOutcome {
+    Cancelled,
+    AlreadyDelivered,
+    NotFound,
+}
+
+pub fn cancel_queued_group_message(
+    conn: &Connection,
+    msg_id: &str,
+) -> Result<GroupMessageCancelOutcome> {
+    let tx = conn.unchecked_transaction()?;
+    let status: Option<String> = tx
+        .query_row(
+            "SELECT status FROM messages WHERE msg_id = ?1",
+            params![msg_id],
+            |r| r.get(0),
+        )
+        .optional()?;
+    let Some(status) = status else {
+        return Ok(GroupMessageCancelOutcome::NotFound);
+    };
+    if matches!(status.as_str(), "delivered" | "read" | "recalled") {
+        return Ok(GroupMessageCancelOutcome::AlreadyDelivered);
+    }
+    // 先删队列行再改状态：删完之后任何迟到的 Ack 都命中不到"这一单还在队列里"。
+    tx.execute("DELETE FROM group_outbox WHERE msg_id = ?1", params![msg_id])?;
+    tx.execute(
+        "UPDATE messages SET status = 'cancelled'
+          WHERE msg_id = ?1
+            AND status NOT IN ('delivered', 'read', 'recalled', 'cancelled')",
+        params![msg_id],
     )?;
-    Ok(())
+    tx.commit()?;
+    Ok(GroupMessageCancelOutcome::Cancelled)
 }
 
 /// 删除指定群的全部待发记录（删除群 / 清空数据时使用）。
@@ -175,6 +213,10 @@ pub fn group_outbox_row_expired(peer_reachable: bool, age_ms: i64) -> bool {
 }
 
 /// 删掉一条消息里**指定成员**的待发行（逐行放弃时用；不影响其它成员的行）。
+/// 删掉**某一个成员**的群待发行（Ack 收尾、清扫、取消都用这一条）。
+///
+/// ⚠️ 这里曾经有第二个同义函数 `delete_group_outbox`（逐字相同的 SQL），生产侧只用这一个
+/// ⇒ 那一个长期是死代码（clippy `dead-code` 点过名），已删。要按成员删就用这条，别再新建。
 pub fn delete_group_outbox_row(conn: &Connection, msg_id: &str, peer_id: &str) -> Result<()> {
     conn.execute(
         "DELETE FROM group_outbox WHERE msg_id = ?1 AND peer_id = ?2",

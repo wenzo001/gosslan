@@ -41,11 +41,15 @@ test("群文件：**收到的**也能取消（B3b：本机停手 + 通知发送�
     "transfer",
     "收到的群文件不是「我发的」，但停掉自己这一份接收仍然是我的事",
   );
-  // 但没在传的时候不给：已收完/已失败的格子没有可取消的字节
-  assert.equal(
-    cancelSendChannelFor(ctx({ msgId: "gfile-t3", mine: false, status: "sent" })),
-    "none",
-  );
+  // 但没在传的时候不给：已收完/已失败/已送达的格子没有可取消的字节。
+  // （`sent` 不在这一列：群消息入队即 sent，见下面「群消息也能取消」那条。）
+  for (const status of ["delivered", "failed", "cancelled"]) {
+    assert.equal(
+      cancelSendChannelFor(ctx({ msgId: "gfile-t3", mine: false, status })),
+      "none",
+      `${status} 没有可取消的字节`,
+    );
+  }
 });
 
 test("文件/图片的真实消息不走消息通道：那条通道停不掉字节", () => {
@@ -53,16 +57,23 @@ test("文件/图片的真实消息不走消息通道：那条通道停不掉字�
   assert.equal(cancelSendChannelFor(ctx({ kind: "image" })), "none");
 });
 
-test("只给自己发的、没出门的、非自聊、非群", () => {
+test("只给自己发的、非自聊；delivered/read/失败/已取消都没有入口", () => {
   assert.equal(cancelSendChannelFor(ctx({ mine: false })), "none", "别人发的没有「我取消」");
   assert.equal(cancelSendChannelFor(ctx({ selfChat: true })), "none", "自聊没有送达这回事");
-  for (const status of ["sent", "delivered", "read", "failed", "cancelled"]) {
+  for (const status of ["delivered", "read", "failed", "cancelled"]) {
     assert.equal(cancelSendChannelFor(ctx({ status })), "none", `${status} 已经不在队列里了`);
   }
+  // `sent` 仍可取消：群消息入队即 sent、1:1 是写进 writer 队列 —— 两者都还没有 Ack 被处理
+  assert.equal(cancelSendChannelFor(ctx({ status: "sent" })), "message");
+});
+
+test("群消息也能取消（B4 后半）：判据是「没有任何成员的 Ack 被处理过」", () => {
+  assert.equal(cancelSendChannelFor(ctx({ group: true, status: "sent" })), "message");
+  assert.equal(cancelSendChannelFor(ctx({ group: true, status: "sending" })), "message");
   assert.equal(
-    cancelSendChannelFor(ctx({ group: true })),
+    cancelSendChannelFor(ctx({ group: true, status: "delivered" })),
     "none",
-    "群消息取消还没做：宁可不给，也不要「界面已取消、其余成员照样收到」",
+    "已经有成员收下 ⇒ 只能撤回",
   );
 });
 

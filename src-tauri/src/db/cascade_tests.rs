@@ -1143,3 +1143,78 @@ fn removing_a_friend_forgets_its_chat_style() {
         "删好友必须调用 forget_chat_peer_style：只写 helper 不接等于没修"
     );
 }
+
+/// 群消息的取消（B4 的群那半）：判据是「**还没有任何成员的 Ack 被处理过**」。
+///
+/// `GroupAck` 是「置 delivered + 删那一行」同一个事务 ⇒ 状态还没到 delivered/read，
+/// 就说明队列行一条都没被 Ack 吃掉。取消删掉全部队列行之后，迟到的 Ack 命中不到
+/// ⇒ 状态停在 cancelled（与 1:1 同一条仲裁，不新加闸门）。
+#[test]
+fn cancelling_a_group_message_drops_every_member_row_and_survives_a_late_ack() {
+    let conn = fresh_db();
+    ins_msg(&conn, "m-g1", "group:g1", "text", "大家好", 1);
+    for member in ["a", "b", "c"] {
+        conn.execute(
+            "INSERT INTO group_outbox(msg_id, group_id, peer_id, payload, created_at)
+             VALUES ('m-g1', 'g1', ?1, '{}', 1)",
+            params![member],
+        )
+        .unwrap();
+    }
+    assert_eq!(
+        super::cancel_queued_group_message(&conn, "m-g1").unwrap(),
+        super::GroupMessageCancelOutcome::Cancelled
+    );
+    assert_eq!(
+        count(
+            &conn,
+            "SELECT COUNT(*) FROM group_outbox WHERE msg_id = 'm-g1'"
+        ),
+        0,
+        "每个成员的队列行都要删：留着谁，下一轮 flush 就会把它发出去"
+    );
+    let status: String = conn
+        .query_row(
+            "SELECT status FROM messages WHERE msg_id = 'm-g1'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(status, "cancelled");
+    // 迟到/在途的 Ack：行已经没了 ⇒ 命中不到 ⇒ 不许把 cancelled 提成 delivered
+    assert!(
+        !super::ack_group_delivered(&conn, "m-g1", "b").unwrap(),
+        "取消之后迟到的 GroupAck 必须命中不到队列行，否则回执会从已取消跳回已送达"
+    );
+    let status: String = conn
+        .query_row(
+            "SELECT status FROM messages WHERE msg_id = 'm-g1'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(status, "cancelled", "取消是硬终态");
+}
+
+/// 已有成员收下（状态 delivered）之后不许再取消：那一步只能走撤回。
+#[test]
+fn a_delivered_group_message_cannot_be_cancelled() {
+    let conn = fresh_db();
+    ins_msg(&conn, "m-g2", "group:g1", "text", "已经有人收到了", 1);
+    conn.execute(
+        "INSERT INTO group_outbox(msg_id, group_id, peer_id, payload, created_at)
+         VALUES ('m-g2', 'g1', 'b', '{}', 1)",
+        [],
+    )
+    .unwrap();
+    assert!(super::ack_group_delivered(&conn, "m-g2", "b").unwrap());
+    assert_eq!(
+        super::cancel_queued_group_message(&conn, "m-g2").unwrap(),
+        super::GroupMessageCancelOutcome::AlreadyDelivered,
+        "有人收下了就只能撤回，不能假装「取消发送」"
+    );
+    assert_eq!(
+        super::cancel_queued_group_message(&conn, "nope").unwrap(),
+        super::GroupMessageCancelOutcome::NotFound
+    );
+}

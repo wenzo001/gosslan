@@ -2142,7 +2142,7 @@ mod tests {
         assert_eq!(list_group_outbox(&conn, "b").unwrap().len(), 1);
         assert_eq!(list_group_outbox(&conn, "c").unwrap().len(), 1);
 
-        delete_group_outbox(&conn, "m1", "b").unwrap();
+        delete_group_outbox_row(&conn, "m1", "b").unwrap();
         assert!(list_group_outbox(&conn, "b").unwrap().is_empty());
         assert_eq!(list_group_outbox(&conn, "c").unwrap().len(), 1);
 
