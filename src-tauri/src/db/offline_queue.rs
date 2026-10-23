@@ -208,6 +208,49 @@ mod offline_queue_tests {
         assert_eq!(*created_at, 0);
     }
 
+    /// **读数型判据**（10-23 审计 A3 要的那一份）：队列 N 行时，一轮到期扫描读多久。
+    ///
+    /// 刻意**不断言**时间阈值（CI 机器负载会把一个猜的数变成掷硬币），只打印机器值 ——
+    /// 用法是"想判断这条查询有没有变慢时，复跑它并对比同一个数量级"。
+    /// 唯一断言的是一致性：有界那 500 条确实拿到了（没有 LIMIT 时这里会是 N）。
+    #[test]
+    fn expired_sweep_read_cost_reading() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE outbox (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                msg_id TEXT NOT NULL UNIQUE,
+                peer_id TEXT NOT NULL,
+                payload TEXT NOT NULL,
+                created_at INTEGER NOT NULL
+            );
+            CREATE INDEX idx_outbox_created ON outbox(created_at);",
+        )
+        .unwrap();
+        const N: i64 = 20_000;
+        {
+            let tx = conn.unchecked_transaction().unwrap();
+            for i in 0..N {
+                tx.execute(
+                    "INSERT INTO outbox(msg_id, peer_id, payload, created_at) VALUES (?1, 'p', '{}', ?2)",
+                    params![format!("m-{i}"), i],
+                )
+                .unwrap();
+            }
+            tx.commit().unwrap();
+        }
+        let started = std::time::Instant::now();
+        let got = list_expired_outbox(&conn, N + 1).unwrap();
+        let elapsed = started.elapsed();
+        println!(
+            "· 到期扫描读数：队列 {N} 行 / 一轮读 {} 行 / 耗时 {:.3} ms（上界 {}）",
+            got.len(),
+            elapsed.as_secs_f64() * 1000.0,
+            OUTBOX_SWEEP_BATCH
+        );
+        assert_eq!(got.len() as i64, OUTBOX_SWEEP_BATCH);
+    }
+
     /// 过期清扫的读是**有界**的（10-23 审计 P3-D）：全库候选集离线一周能到几千条，
     /// 而它跑在唯一那把 DB 锁里。上界之外的行留给下一个 tick —— 不许"一次全捞"。
     #[test]
