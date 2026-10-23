@@ -4321,7 +4321,11 @@ test("㊿ 图片预览：外壳读出口、工具条只留 1rem、那个只为�
 // 本轮换成库组件 —— 所以这条判据里它属于"不许再长回去"的那一格。
 const SVG_ELEM_692 = /<svg[\s>][\s\S]*?<\/svg>/;
 const PATH_ATTR_692 = /d\s*[:=]\s*"M/;   // 两种写法都算：模板属性 d="M…" 与数据对象 d: "M…"
-const SVG_HOMES_692 = ["components/TitleBar.vue"];
+// 内联 svg 只允许两处：TitleBar（窗口字形）与 BubbleTail（气泡尾巴的叶形）。
+// 后者是**形状**不是图标：它要同时给出曲率连续的外缘与沿边界的 1px 描边，border/圆角拼不出来
+// （用户 2026-10-23：尾巴上边不丝滑、与气泡边框接不上），而且必须是**一个家** ——
+// 五个气泡组件都改成引用它，禁止各自再画一份。
+const SVG_HOMES_692 = ["components/TitleBar.vue", "components/message/BubbleTail.vue"];
 const listVue692 = (dir, acc = []) => {
   for (const e of readdirSync(dir, { withFileTypes: true })) {
     if (e.isDirectory()) listVue692(join(dir, e.name), acc);
@@ -4357,7 +4361,7 @@ test("51 手写图标路径只许在 TitleBar（*.test.ts 里的是合成针，�
     .sort();
   assert.deepEqual(
     hits,
-    ["components/TitleBar.vue"],
+    ["components/TitleBar.vue", "components/message/BubbleTail.vue"],
     "手写图标路径的落点变了：" + hits.join(","),
   );
 });
@@ -4991,16 +4995,24 @@ test("气泡尖角：位置只有 style.css 那一个家，五处挂尖角的气
   const hosts = [];
   const secondHomes = [];
   for (const f of files) {
-    const raw = readFileSync(f, "utf8");
-    if (!/class="bubble-tail"/.test(raw)) continue;
-    const src = code691(raw);
-    hosts.push(rel692(f));
+    const src = code691(readFileSync(f, "utf8"));
+    // 位置的家：**扫全部 .vue**（不是只看挂了 class 的那几个）—— 组件里只要再钉一次
+    // `top`/`bottom`，不管它还画不画尾巴，都算开了第二个家（代码气泡那一格就是这么来的）。
     if (SECOND_HOME.test(src)) secondHomes.push(rel692(f));
+    if (!/class="bubble-tail"/.test(readFileSync(f, "utf8"))) continue;
+    hosts.push(rel692(f));
     assert.match(src, /class="bubble-tail" :class="mine \? 'tail-mine' : 'tail-other'"/,
       `${rel692(f)} 的尖角没有按 mine 分方向（左右两列会各指错一边）`);
   }
-  // 分母现算 + 下限：文本 / 文件 / 代码 / 合并卡片 / 群任务卡片
-  assert.ok(hosts.length >= 5, "只扫到 " + hosts.length + " 处挂尖角的气泡 ⇒ 提取器漂了：" + hosts.join(","));
+  // 形状的家只有一个（BubbleTail.vue）；五个气泡组件必须**引用**它而不是各画一份。
+  // 这两件事分开数：前者防"第二个形状"，后者防"某个气泡漏了尾巴"。
+  assert.deepEqual(hosts, ["components/message/BubbleTail.vue"],
+    "挂 class=bubble-tail 的文件不是唯一那个组件：" + hosts.join(","));
+  const tailUsers = ["components/message/MessageTextBubble.vue", "components/message/MessageCodeBubble.vue",
+    "components/message/MessageFileBubble.vue", "components/message/MergeCard.vue",
+    "components/TodoCardBubble.vue"]
+    .filter((rel) => /<BubbleTail\b/.test(readFileSync(join(srcDir691, rel), "utf8")));
+  assert.equal(tailUsers.length, 5, "有气泡组件没有引用 BubbleTail：" + tailUsers.join(","));
   assert.deepEqual(secondHomes, [], "这些组件又给 .bubble-tail 钉了一次 top/bottom ⇒ " + secondHomes.join(", "));
   // 正控：被删掉的那种形状必须认得出来（认不出 ⇒ 上面那条缺席断言在测空气）
   assert.ok(SECOND_HOME.test(".bubble-tail { top: auto; bottom: 12px; }"),
@@ -5009,11 +5021,27 @@ test("气泡尖角：位置只有 style.css 那一个家，五处挂尖角的气
   assert.ok(!SECOND_HOME.test(".bubble-tail.tail-mine { border-left-color: red; }"),
     "只改颜色的规则被误判成第二个家");
   // 唯一那一家还在，而且带 --bubble-tail-offset，并用 max(0px, …) 夹住（缺了 offset，群聊那行
-  // 昵称会把尖角顶歪；少了 max，群聊尖角会有一半露到气泡上面 —— 用户 2026-10-23 两轮反馈）
+  // 昵称会把尖角顶歪；少了 max，群聊尖角会有一半露到气泡上面 —— 用户 2026-10-23 两轮反馈）；
+  // 末尾那 -1px 是让叶形的起笔点落在气泡**外框**上（描边才接得上气泡自己的边框）。
   const css = readFileSync(join(srcDir691, "style.css"), "utf8");
   assert.match(css,
-    /\.bubble-tail\s*\{[\s\S]{0,600}?top:\s*max\(0px,\s*calc\(12px - var\(--bubble-tail-offset, 0px\)\)\)/,
+    /\.bubble-tail\s*\{[\s\S]{0,600}?top:\s*calc\(max\(0px,\s*calc\(12px - var\(--bubble-tail-offset, 0px\)\)\) - 1px\)/,
     "style.css 里那条唯一的定位不在了（或被改回写死的 bottom / 丢了 max 夹紧）");
+
+  // 用户 2026-10-23（第二次）：「气泡有边框、尾巴没有 ⇒ 接缝对不上；上边不丝滑」。
+  // 现在尾巴是 **SVG 叶形 + 1px 描边**：填充盖住气泡那段边框，描边把轮廓接成一条线。
+  // 退回实心块（没有 .tail-line）时这条会红 —— 那正是会露出接缝的形状。
+  assert.match(css, /\.bubble-tail \.tail-fill\s*\{[^}]*fill:\s*var\(--bubble-tail-fill, var\(--bubble-bg\)\)/,
+    "尾巴的填充层必须走 --bubble-tail-fill（默认气泡底色）");
+  assert.match(css, /\.bubble-tail \.tail-line\s*\{[^}]*stroke:\s*currentColor/,
+    "尾巴必须有一层描边（stroke: currentColor）—— 否则与气泡边框接不上");
+  assert.match(css, /\.bubble-tail\s*\{[^}]*color:\s*var\(--bubble-line/,
+    "描边色必须取 --bubble-line（气泡自己的边框色）");
+  const displaySrc = readFileSync(join(srcDir691, "composables", "useMessageDisplay.ts"), "utf8");
+  assert.match(displaySrc, /"--bubble-line":\s*mine\.value \? "transparent" : "var\(--gosslan-border\)"/,
+    "文本气泡没有把 --bubble-line 交给尾巴（自己的消息应为 transparent）");
+  assert.match(displaySrc, /"--bubble-line":\s*"var\(--gosslan-card-line\)"/,
+    "卡片气泡没有把 --bubble-line 交给尾巴");
 });
 
 /**
@@ -5029,7 +5057,7 @@ test("气泡尖角：位置只有 style.css 那一个家，五处挂尖角的气
  * 判据不是"某行有某个类"，而是：两颗切换键的 class 里**不许**出现定位 translate，
  * 定位必须在外层元素上（这样按钮只负责 `active:scale-95` 的缩小反馈）。
  */
-test("图片预览切换键：定位 translate 不许挂在按钮上（按下会被全局 scale 顶掉而下移）", () => {
+test("图片预览切换键：定位 translate 不许挂在按钮上，也不许自挂按压缩放", () => {
   const file = readFileSync(
     join(import.meta.dirname, "..", "components", "message", "ImageLightbox.vue"),
     "utf8",
@@ -5046,6 +5074,11 @@ test("图片预览切换键：定位 translate 不许挂在按钮上（按下会
   for (const b of navs) {
     assert.doesNotMatch(b, /(?:^|\s)-translate-[xy]-1\/2/,
       "切换键自己带了定位 translate —— 按下时全局 `button:active` 的 scale 会顶掉它，按钮整体下移");
+    // 仓库统一按压是全局 `:where(button):active { transform: scale(.97) }`，
+    // 且 reduce 档会把它关掉。组件自挂 `active:scale-*`（0,2,0）会压过 reduce 的
+    // `transform: none`（0,1,0）⇒ 减弱动态效果的用户仍会看到缩放（用户 2026-10-23 审查点名）。
+    assert.doesNotMatch(b, /active:scale-/,
+      "切换键自挂了按压缩放 —— 它会绕过全局 press 与 prefers-reduced-motion 的关闭");
   }
   // 定位挪到外层：否则按钮不居中了
   assert.match(template, /class="absolute (?:left|right)-4 top-1\/2 z-10 -translate-y-1\/2"/,
@@ -5055,11 +5088,43 @@ test("图片预览切换键：定位 translate 不许挂在按钮上（按下会
   assert.match(file, /@click="onShadeClick"/, "遮罩仍直接 emit close（没有走按下源守卫）");
   assert.match(file, /if \(e\.target !== lastPointerDownTarget\) return;/,
     "遮罩点击没有核对按下源（click 落到遮罩就会关窗）");
-  // 正控：旧形状（定位写在按钮上）必须被同一把尺子认出来，否则上面的缺席断言在测空气
+  assert.match(file, /closest\("button, a, input, textarea, select, \[role='button'\]"\)/,
+    "遮罩没有显式排除控件（将来漏了 .stop 的控件会被当成遮罩关闭）");
+  // 正控：旧形状（定位写在按钮上 / 自挂按压缩放）必须被同一把尺子认出来，否则上面的缺席断言在测空气
   const legacy = '<button class="absolute left-4 top-1/2 z-10 flex h-11 w-11 -translate-y-1/2 items-center justify-center">x</button>';
   const old = navButtons(legacy);
   assert.equal(old.length, 1, "正控没认出旧形状（h-11 选择器漂了）");
   assert.match(old[0], /(?:^|\s)-translate-[xy]-1\/2/, "正控没认出旧形状的定位 translate");
+  const legacyScale = '<button class="flex h-11 w-11 active:scale-95">x</button>';
+  const scaled = navButtons(legacyScale);
+  assert.equal(scaled.length, 1, "正控没认出带按压缩放的切换键");
+  assert.match(scaled[0], /active:scale-/, "正控没认出组件自挂的按压缩放");
+});
+
+/**
+ * 触屏选字契约（用户 2026-10-23：「移动端必须保留系统原生的选中文字与复制菜单」）。
+ *
+ * 只有 `[data-msg-col]` 里的 `.gosslan-selectable`（正文）可以原生选字；
+ * 昵称/引用块/卡片/内边距都不可选 ⇒ 长按这些区域才归自定义消息面板。
+ * 如果退回"整个气泡不可选"的老写法，长按正文就再也进不了系统选区 —— 这正是用户报的那条。
+ */
+test("触屏选字契约：消息内容列里只有正文可原生选字（不再整块关掉）", () => {
+  const css = readFileSync(join(import.meta.dirname, "..", "style.css"), "utf8");
+  const anchor = css.indexOf("触屏：**正文**可原生选字");
+  assert.ok(anchor > 0, "找不到触屏选字契约那段注释（style.css 结构变了？）");
+  const block = css.slice(anchor, anchor + 1400);
+  assert.match(block, /@media \(pointer: coarse\)/, "契约没有落在 pointer: coarse 里");
+  assert.match(block, /\[data-msg-col\]\s*\{[\s\S]{0,140}?user-select:\s*none/,
+    "消息内容列（非正文）没有关闭原生选字 ⇒ 长按昵称/卡片会同时拉系统选区与自定义面板");
+  assert.match(block,
+    /\[data-msg-col\] \.gosslan-selectable\s*\{[\s\S]{0,180}?user-select:\s*text[\s\S]{0,100}?-webkit-touch-callout:\s*default/,
+    "正文没有显式开放 user-select:text + touch-callout:default ⇒ 移动端长按进不了系统选字/复制工具条");
+  assert.doesNotMatch(block, /\.gosslan-bubble-text \.gosslan-selectable[\s\S]{0,60}?user-select:\s*none/,
+    "又回到「整块气泡不可选」的老契约 ⇒ 长按正文弹不出系统选字");
+  // 正控：旧写法必须被上面的缺席判据认出来
+  const legacy = "@media (pointer: coarse) { .gosslan-bubble-text .gosslan-selectable { user-select: none; } }";
+  assert.match(legacy, /\.gosslan-bubble-text \.gosslan-selectable[\s\S]{0,60}?user-select:\s*none/,
+    "正控失效：旧契约的签名没认出来");
 });
 
 test("收藏列表是普通一级 tab，底栏显示条件不再为收藏开特例", () => {

@@ -15,20 +15,29 @@
  */
 export interface ContextMenuGuard {
   isMobile: boolean;
-  /** 移动端「选择文字」模式（气泡已开放 user-select 并自动全选）。 */
+  /** 移动端「选择文字」模式（面板里的"全选"快捷入口）。 */
   textSelecting: boolean;
   /** 当前有非折叠选区（`window.getSelection()` 的同一判据）。 */
   hasSelection: boolean;
+  /**
+   * 本次 contextmenu 的落点（或本次触摸的起点）在**可选正文**上。
+   *
+   * 只看 `hasSelection` 不够：系统工具条出现之前那一帧选区可能还没建立，而 WebView
+   * 已经把 contextmenu 派发出来了。落点是正文时也必须放行，否则系统选字会被全局
+   * 兜底吃掉（用户要求：移动端长按文字必须能进原生选字）。
+   */
+  onSelectableText: boolean;
 }
 
 export function shouldPreventContextMenu({
   isMobile,
   textSelecting,
   hasSelection,
+  onSelectableText,
 }: ContextMenuGuard): boolean {
-  // 触屏：选字模式或已有选区 ⇒ 系统复制工具条优先（这条路径没有自定义复制入口）。
-  // 桌面不在此列：选区存在也照样归应用，否则原生菜单会盖掉消息菜单。
-  if (isMobile && (textSelecting || hasSelection)) return false;
-  // 其余：拦掉浏览器默认菜单，桌面弹自定义消息菜单（移动端由长按 ActionSheet 接管）。
+  // 触屏：正文落点 / 选字模式 / 已有选区 ⇒ 系统原生选字与复制工具条优先。
+  // 这条路径没有自定义的"复制选中"（移动端交给系统菜单）。
+  if (isMobile && (textSelecting || hasSelection || onSelectableText)) return false;
+  // 其余：拦掉浏览器默认菜单。桌面弹自定义消息菜单；移动端非正文由长按面板接管。
   return true;
 }

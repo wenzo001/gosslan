@@ -442,6 +442,7 @@ async function removeEndpoint(address: string) {
     <SettingsRow
       :label="t('settings.network.eventBridge')"
       :description="chat.eventBridgeOk ? t('chat.eventBridgeOk') : t('chat.eventBridgeDown')"
+      :description-min-lines="2"
     >
       <button
         type="button"

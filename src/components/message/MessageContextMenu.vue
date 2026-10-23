@@ -3,7 +3,7 @@ import { computed } from "vue";
 import { DropdownMenuItem, DropdownMenuSeparator } from "reka-ui";
 import { t } from "@/i18n";
 import { BellRing, Pin, PinOff, StopCircle, Undo2, Code2, FileText } from "lucide-vue-next";
-import { Copy, CornerUpLeft, ListChecks, Save, Share2, Star } from "lucide-vue-next";
+import { Copy, CornerUpLeft, ListChecks, Save, Share2, Star, TextSelect } from "lucide-vue-next";
 import type { MsgKind } from "@/types";
 import {
   isForwardableKind,
@@ -32,9 +32,17 @@ const props = defineProps<{
   kind: MsgKind;
   /** 本条消息引用的原消息 id（没有引用时为空）—— 决定是否给「定位到引用消息」入口。 */
   quotedId?: string;
+  /**
+   * 右键那一刻的选区文本快照（桌面端「复制选中内容」）。
+   * 空串 = 没有有效选区 ⇒ 不显示该入口；**不在这里重新读 `window.getSelection()`**：
+   * 菜单获得焦点后浏览器可能已经改写/收起选区。
+   */
+  selectedText?: string;
 }>();
 const emit = defineEmits<{
   (e: "close"): void;
+  /** 只复制右键时的选区文本（不是整条消息）。 */
+  (e: "copy-selection"): void;
   (e: "copy-text"): void;
   (e: "copy-image"): void;
   (e: "save-image"): void;
@@ -81,10 +89,20 @@ const hasCopyOps = computed(
        再分隔线，后「转发 / 引用 / 收藏 / 强提醒」—— 与微信把"内容操作"和"消息流转"分组的习惯一致。
        本应用没有 翻译 / 搜一搜 这些能力，就不放空条目。 -->
   <ContextMenu :x="x" :y="y" @close="emit('close')">
+    <!-- 选区复制（桌面端）：只复制右键那一刻选中的文字，与下面的「复制消息」严格区分。
+         没有有效选区时整条不渲染；移动端不经过这个菜单（系统原生菜单负责复制选区）。 -->
+    <DropdownMenuItem
+      v-if="selectedText && selectedText.trim()"
+      class="gosslan-menu-item"
+      @select="emit('copy-selection')"
+    >
+      <TextSelect />
+      {{ t("msg.copySelection") }}
+    </DropdownMenuItem>
     <template v-if="kind === 'text' || kind === 'code'">
       <DropdownMenuItem class="gosslan-menu-item" @select="emit('copy-text')">
         <Copy />
-        {{ t("common.copy") }}
+        {{ t("msg.copyMessage") }}
       </DropdownMenuItem>
     </template>
     <template v-if="kind === 'image'">
@@ -118,7 +136,7 @@ const hasCopyOps = computed(
       @select="emit('copy-text')"
     >
       <Copy />
-      {{ t("common.copy") }}
+      {{ t("msg.copyMessage") }}
     </DropdownMenuItem>
 
     <!-- ⚠️ 分隔线必须**跟着自己那一段有没有内容**走：卡片类消息既没有「复制/保存」也没有

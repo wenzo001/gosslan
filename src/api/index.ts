@@ -312,7 +312,6 @@ export const api = {
   windowMinimize: () => invoke<void>("window_minimize"),
   windowToggleMaximize: () => invoke<boolean>("window_toggle_maximize"),
   windowIsMaximized: () => invoke<boolean>("window_is_maximized"),
-  windowToggleFullscreen: () => invoke<boolean>("window_toggle_fullscreen"),
   windowClose: () => invoke<void>("window_close"),
 
   /** 取消一条文件传输：返回的是**台账**口径（这一单现在算不算被取消），不是"有没有命中在途任务"。 */

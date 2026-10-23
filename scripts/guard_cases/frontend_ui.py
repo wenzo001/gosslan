@@ -993,14 +993,16 @@ CASES: list[Case] = [
         "     必须自己会红。注入 = 把那份原样规则塞回代码气泡的 style 块。",
         file=ROOT / "src" / "components" / "message" / "MessageCodeBubble.vue",
         injections=[(
-            """.bubble-tail.tail-mine {
-  border-left-color: color-mix(in srgb, var(--bubble-bg) 96%, #000);""",
+            """.bubble-tail.tail-mine,
+.bubble-tail.tail-other {
+  --bubble-tail-fill: color-mix(in srgb, var(--bubble-bg) 96%, #000);""",
             """.bubble-tail {
   top: auto;
   bottom: 12px;
 }
-.bubble-tail.tail-mine {
-  border-left-color: color-mix(in srgb, var(--bubble-bg) 96%, #000);""",
+.bubble-tail.tail-mine,
+.bubble-tail.tail-other {
+  --bubble-tail-fill: color-mix(in srgb, var(--bubble-bg) 96%, #000);""",
         )],
         cmd=["node", "--test", "--experimental-strip-types", "--disable-warning=ExperimentalWarning",
              "src/utils/designGuards.test.ts"],

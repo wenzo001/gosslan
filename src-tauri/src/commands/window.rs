@@ -106,30 +106,6 @@ pub fn window_is_maximized(_app: tauri::AppHandle) -> bool {
     false
 }
 
-/// 切换**当前窗口**全屏，返回切换后的状态。
-/// 用于 macOS 绿灯的 option-click（HIG：缩放按钮按住 Option 即进入/退出全屏）。
-#[cfg(desktop)]
-#[tauri::command]
-pub fn window_toggle_fullscreen(window: tauri::WebviewWindow) -> bool {
-    match window.is_fullscreen() {
-        Ok(true) => {
-            let _ = window.set_fullscreen(false);
-            false
-        }
-        _ => {
-            let _ = window.set_fullscreen(true);
-            true
-        }
-    }
-}
-
-/// 移动端无"全屏"概念（窗口本就铺满屏幕），返回 false。
-#[cfg(mobile)]
-#[tauri::command]
-pub fn window_toggle_fullscreen(_app: tauri::AppHandle) -> bool {
-    false
-}
-
 /// 关闭**当前窗口**。
 ///
 /// **主窗口 = 隐藏**（托盘语义：关掉窗口 ≠ 退出应用，与 `tray.rs` 的 CloseRequested 一致）；

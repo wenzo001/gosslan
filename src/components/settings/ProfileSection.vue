@@ -243,7 +243,10 @@ function processAvatar(file: File): Promise<string> {
              用户 2026-09-16 明确不要聚焦色，原本的 `focus:ring-2 focus:ring-primary` 实心方框、
              以及全局焦点环那条外圈方框都已去掉。
              计数与输入同排：给读数留固定宽，第一个字打进去时输入框不会横向跳。 -->
-        <div class="flex items-center gap-2">
+        <!-- 计数与输入同排：给读数留固定宽，第一个字打进去时输入框不会横向跳。
+             用户 2026-10-23（移动端）：这一行要更松——去掉「我在线」那三个字只留绿点，
+             并把输入框与计数之间的空隙收紧（桌面上这三样不变：`:class` 只在 isMobile 时生效）。 -->
+        <div class="flex items-center" :class="app.isMobile ? 'gap-1' : 'gap-2'">
           <input
             v-model="nickname"
             :maxlength="MAX_NICKNAME_CHARS"
@@ -255,13 +258,14 @@ function processAvatar(file: File): Promise<string> {
             @compositionstart="ime.onStart"
             @compositionend="ime.onEnd"
           />
-          <span class="w-12 shrink-0 text-right">
+          <span class="shrink-0 text-right" :class="app.isMobile ? 'w-9' : 'w-12'">
             <CharCounter :text="nickname" :max="MAX_NICKNAME_CHARS" />
           </span>
-          <!-- 在线状态与昵称同一行：窄屏时输入框收缩，不让它被 ml-auto 推到孤行。 -->
+          <!-- 在线状态与昵称同一行：窄屏时输入框收缩，不让它被 ml-auto 推到孤行。
+               移动端只留状态点（用户 2026-10-23：「我在线」三个字去掉）。 -->
           <span class="flex shrink-0 items-center gap-1.5 text-xs text-[var(--gosslan-text-2)]">
             <span class="h-2 w-2 rounded-full" :class="app.present ? 'bg-[var(--gosslan-success)]' : 'bg-[var(--gosslan-status-offline)]'"></span>
-            {{ app.present ? t("settings.profile.online") : t("settings.profile.offline") }}
+            <span v-if="!app.isMobile">{{ app.present ? t("settings.profile.online") : t("settings.profile.offline") }}</span>
           </span>
         </div>
         <div class="mt-1 flex flex-wrap items-center gap-2">

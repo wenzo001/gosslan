@@ -5,6 +5,7 @@ import { useAppStore } from "@/stores/useAppStore";
 import { useChatStore } from "@/stores/useChatStore";
 import { api } from "@/api";
 import { isMac } from "@/utils/platform";
+import { isSelectableTextTarget } from "@/utils/textSelection";
 import ResponsiveLayout from "@/layouts/ResponsiveLayout.vue";
 import TaskCenter from "@/components/TaskCenter.vue";
 
@@ -63,14 +64,18 @@ function reportActivity() {
  * 屏蔽 WebView 默认右键菜单（返回 / 刷新 / 另存为等），改为应用自定义交互：
  * 有功能的元素自行绑定右键菜单（见 MessageItem 的复制菜单），无功能的区域右键无效果。
  *
- * ⚠️ 例外（用户 2026-09-13）：「选中文本之后，没有弹出『复制』等选项」。
- * 一刀切 preventDefault 会把**有选区时**的系统菜单也吃掉 —— 桌面端右键选区拿不到
- * 原生「复制」，Android WebView 的选择工具条同样依赖 contextmenu 的默认行为。
- * 所以：**有非空选区时放行系统菜单**，其余情况维持原来的屏蔽。
+ * ⚠️ 例外（用户 2026-09-13 / 2026-10-23）：
+ *  ① 有非空选区时放行系统菜单 —— 非消息区域（设置、输入框）里的选区复制仍走原生菜单。
+ *     消息内容区的右键由 `MessageItem` 自己接管（桌面弹自定义菜单、移动端让位系统选字），
+ *     它会在需要时 stopPropagation，不会走到这里。
+ *  ② **触屏落在可选正文上**也必须放行：系统原生选字/复制工具条依赖 contextmenu 的默认行为，
+ *     不能因为"选区还没建立"的那一帧被这条全局兜底吃掉。
+ * 其余情况维持原来的屏蔽。
  */
 function suppressContextMenu(e: MouseEvent) {
   const sel = window.getSelection();
   if (sel && !sel.isCollapsed && sel.toString().trim().length > 0) return;
+  if (app.isMobile && isSelectableTextTarget(e.target)) return;
   e.preventDefault();
 }
 

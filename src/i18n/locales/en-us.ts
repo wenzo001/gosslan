@@ -416,9 +416,7 @@ export const enUS: MessageDict = {
   "window.close": "Close",
   "window.minimize": "Minimize",
   "window.restore": "Restore",
-  "window.zoom": "Zoom",
   "window.maximize": "Maximize",
-  "window.fullscreenExit": "Exit Full Screen",
   "window.closeToTray": "Close (minimize to tray, keep receiving messages)",
 
   // ---- Chat header ----
@@ -540,6 +538,8 @@ export const enUS: MessageDict = {
   "msg.fileNotSynced": "File not synced to this device yet",
   "msg.fileCopied": "File copied; paste it into the composer or file manager",
   "msg.copyFail": "Copy failed",
+  "msg.copyMessage": "Copy message",
+  "msg.copySelection": "Copy selection",
   // ---- 错误提示的**文案**（分类器在 utils/errors.ts，它一条文案都不带）----
   "errors.joined": "{prefix}: {detail}",
   "errors.retry": "{prefix}. Please try again later.",
@@ -1031,6 +1031,8 @@ export const enUS: MessageDict = {
   "layout.linksHint": "Pick a link on the left to open it in its own window",
   "layout.routeMissing": "This content no longer exists or is unavailable",
   "layout.tagline": "Serverless · Pure P2P · End-to-end encrypted · Data stays on device",
+  /** English display name stays "Gosslan" (the zh side is 「小院儿」). */
+  "app.name": "Gosslan",
 
   // ---- Network diagnostics (developer) ----
   "diag.title": "Network Diagnostics (Developer)",

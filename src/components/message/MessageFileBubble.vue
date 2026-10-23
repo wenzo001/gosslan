@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { t } from "@/i18n";
+import BubbleTail from "@/components/message/BubbleTail.vue";
 import Spinner from "@/components/ui/Spinner.vue";
 import { computed, type CSSProperties } from "vue";
 import type { FileMeta } from "@/types";
@@ -198,6 +199,6 @@ const canOpen = computed(() => props.ready && props.tappable !== false);
     <div class="empty:hidden" aria-live="polite">
       <div v-if="statusText" class="text-caption" :class="statusToneClass">{{ statusText }}</div>
     </div>
-    <span aria-hidden="true" class="bubble-tail" :class="mine ? 'tail-mine' : 'tail-other'"></span>
+    <BubbleTail :mine="mine" />
   </div>
 </template>

@@ -472,10 +472,12 @@ pub fn run() {
                         .logger
                         .warn("window", format!("恢复 macOS Cmd+W 关闭能力失败: {e}"));
                 }
-                // 关系统阴影（与圆角冲突；NSWindow 级、不被 wry 替换 contentView 影响）。
-                // 圆角本身在 WebView 加载完成后由前端调 `apply_macos_window_shape` 命令设置
+                // macOS 原生窗口键 + 系统阴影（用户 2026-10-23）：补 Titled + FullSizeContentView，
+                // 标题栏透明、标题隐藏 ⇒ 三颗红绿灯由 AppKit 画；titled 的阴影是圆角，可以打开
+                // （旧代码因为 borderless 的矩形阴影只能 setHasShadow(false)，于是整窗没有阴影）。
+                // 圆角本身仍在 WebView 加载完成后由前端调 `apply_macos_window_shape` 设置
                 // （wry 在窗口显示时才用 parent_view 替换 contentView，setup 阶段设圆角会丢）。
-                macos_window::disable_shadow(&win);
+                macos_window::use_native_titlebar(&win);
             }
             // 窗口以 `visible: false` 创建（见 tauri.conf.json），由前端在挂载完成后调用
             // `focus_window` 显示——目的是让窗口露出来的第一帧就是 index.html 的内联骨架，
@@ -768,7 +770,6 @@ pub fn run() {
             commands::window_minimize,
             commands::window_toggle_maximize,
             commands::window_is_maximized,
-            commands::window_toggle_fullscreen,
             commands::window_close,
             commands::send_group_message,
             commands::send_group_reaction,

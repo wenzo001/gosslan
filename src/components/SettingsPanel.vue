@@ -217,17 +217,24 @@ function onSettingsBack() {
             <!-- data-no-press：整行是**列表项**，不是按钮。全站 `button:active` 的 scale(0.97)
                  挂在满宽行上会让整张分组卡看起来「缩了一下」——单行的分组（安全 / 关于）里
                  这一行就是整张卡。（用户 2026-10-23：「点击选项整个列表都缩小」）
-                 按压反馈保留：`.tap-safe:active` 的背景色那条不涉及几何。 -->
+                 按压反馈保留：`.tap-safe:active` 的背景色那条不涉及几何。
+                 ⚠️ 用户同日追加：要的是「中间那一块凹下去 + 一点阴影」，**宽度不许变**。
+                 所以按压形态落在内层这一段（`group-active:` 下沉 0.5px + 内阴影），
+                 行本身只负责背景色；`-mx-1 px-1` 把阴影的可视范围向外扩 4px 而文字位置不动。 -->
             <button
               v-for="(item, idx) in g.items"
               :key="item.key"
               data-no-press
-              class="tap-safe flex w-full items-center gap-3 px-3 py-3 text-left text-emphasis transition hover:bg-[var(--gosslan-hover)]"
+              class="group tap-safe flex w-full items-center gap-3 px-3 py-3 text-left text-emphasis transition hover:bg-[var(--gosslan-hover)]"
               :class="idx > 0 ? 'border-t border-[var(--gosslan-divider)]' : ''"
               @click="selectSection(item.key)"
             >
-              <span class="flex-1 text-[var(--gosslan-text)]">{{ t(item.titleKey) }}</span>
-              <ChevronRight class="h-4 w-4 text-[var(--gosslan-text-2)]" />
+              <span
+                class="-mx-1 flex flex-1 items-center gap-3 rounded-[var(--gosslan-radius-sm)] px-1 py-0.5 transition-[transform,box-shadow] duration-100 group-active:translate-y-[0.5px] group-active:shadow-[inset_0_1px_2px_rgba(0,0,0,0.14)]"
+              >
+                <span class="flex-1 text-[var(--gosslan-text)]">{{ t(item.titleKey) }}</span>
+                <ChevronRight class="h-4 w-4 text-[var(--gosslan-text-2)]" />
+              </span>
             </button>
           </div>
         </div>

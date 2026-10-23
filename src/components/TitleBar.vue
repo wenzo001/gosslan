@@ -83,35 +83,9 @@ async function toggleMaximize() {
  * 也不显示符号），而我们自绘的一直是彩色的 —— 一旦主窗口与设置窗口并排（设置窗口聚焦、
  * 主窗口失焦），两套摆在一起就明显不像。
  */
-const focused = ref(true);
 // 焦点与尺寸两条 Tauri 订阅的卸载句柄都交给同一个 scope：`listen()` 要等一次 IPC 往返才拿到
 // 卸载函数，而这段时间里组件可能已经卸载 —— 直接赋给局部变量就等于**永远没人调用它**。
 const listenerScope = createInitScope();
-
-/** macOS 绿灯的 Option-click → 全屏（HIG：缩放按钮按住 Option 进入/退出全屏）。 */
-const fullscreen = ref(false);
-async function toggleFullscreen() {
-  try {
-    fullscreen.value = await api.windowToggleFullscreen();
-  } catch {
-    fullscreen.value = false;
-  }
-}
-
-/** 主动同步一次全屏状态（挂载/尺寸变化时调；失败就保持 false）。 */
-async function refreshFullscreen() {
-  if (!props.showMaximize) return;
-  try {
-    fullscreen.value = await getCurrentWindow().isFullscreen();
-  } catch {
-    /* 非 Tauri 环境忽略 */
-  }
-}
-
-function onGreenClick(e: MouseEvent) {
-  if (e.altKey) void toggleFullscreen();
-  else void toggleMaximize();
-}
 
 /** 双击判定的时间窗：与系统默认 DoubleClickTime 同量级，取保守的 400ms。 */
 const CAPTION_DOUBLE_PRESS_MS = 400;
@@ -206,33 +180,18 @@ function onKeydown(e: KeyboardEvent) {
 useEventListener(window, "keydown", onKeydown);
 onMounted(() => {
   refreshMaximized();
-  refreshFullscreen();
-  // 焦点跟踪：失败（非 Tauri 环境 / 权限）就保持"聚焦"外观，不影响任何功能。
-  void (async () => {
-    try {
-      const w = getCurrentWindow();
-      focused.value = await w.isFocused();
-      listenerScope.onDispose(
-        await w.onFocusChanged(({ payload }) => {
-          focused.value = payload;
-        }),
-      );
-    } catch {
-      /* 忽略：非 Tauri 环境（纯 vite dev） */
-    }
-  })();
-  // 最大化/全屏状态跟踪：尺寸与全屏变化时把按钮字形刷成"还原"。
+  // 最大化状态跟踪：尺寸变化时把按钮字形刷成"还原"。
   //
   // 只靠 onMounted 问一次是不够的——按钮是用户点的，点了就变，不监听就永远是初始字形
   // （用户 2026-10-12：「点了最大化，图标没有变成还原的样子」）。
-  // 窗口尺寸变化（用户拖角、跨屏、进/出全屏）都会触发 onResized；全屏还有专属事件。
+  // 窗口尺寸变化（用户拖角、跨屏、进/出全屏）都会触发 onResized。
+  // macOS 的三颗键/全屏状态由 AppKit 自己维护（用户 2026-10-23 改原生），这里不再跟踪。
   void (async () => {
     try {
       const w = getCurrentWindow();
       listenerScope.onDispose(
         await w.onResized(() => {
           void refreshMaximized();
-          void refreshFullscreen();
         }),
       );
     } catch {
@@ -261,93 +220,26 @@ onBeforeUnmount(() => {
     v-if="!isMobile"
     class="relative z-[85] flex shrink-0 select-none items-center bg-[var(--gosslan-caption)]"
     data-caption
-    :class="isMac ? 'justify-start pl-[13px]' : 'justify-end'"
+    :class="isMac ? 'justify-start pl-0' : 'justify-end'"
     :style="{ height: 'var(--gosslan-title-h)' }"
     @mousedown="onDragStart"
     @dblclick="onTitlebarDblClick"
   >
-    <!-- macOS：红绿灯。按**原生度量与状态**绘制（用户 2026-09-12 反馈：
-         「mac 自己写的三个关闭按钮，和原生的关闭按钮的样式好像不太一样，还有大小」）：
-         · 尺寸/间距：直径 **12px**、间距 **8px**（圆心相距 20px）、距左 **13px** —— 与系统一致；
-         · 颜色与描边取系统取值（#ff5f57/#febc2e/#28c840 + 各自的深色 1px 内描边），
-           而不是笼统的 `border-black/15`（那会让三个球的重量看起来不匀）；
-         · **失焦整组变灰**（原生行为）：主窗口与设置窗口并排时，这一条差异最显眼；
-         · 符号只在"聚焦 + 悬停整组"时出现，且用与原生一致的细线造型（× / − / 对角三角），
-           不再用 lucide 的箭头（`Maximize2` 那种双箭头与系统造型不同）。
-         组上加 @dblclick.stop：双击红绿灯不应冒泡成"双击标题栏"触发缩放。
-         ⚠️ 绿灯在「不可最大化」的窗口（设置/日志/群任务）里**不渲染**。 -->
-    <div v-if="isMac" class="group/traffic flex h-full items-center" style="gap: 8px" @dblclick.stop>
-      <button data-no-drag-region @mousedown.stop
-        class="traffic-hit flex h-3 w-3 items-center justify-center rounded-full transition-colors"
-        :class="focused
-          ? 'bg-[#ff5f57] shadow-[inset_0_0_0_1px_#e0443e]'
-          : 'bg-[#d4d4d4] dark:bg-[#575757]'"
-        :title="t('window.close')" :aria-label="t('window.close')"
-        @click="api.windowClose()"
-      >
-        <svg
-          v-if="focused"
-          viewBox="0 0 12 12"
-          class="hover-reveal-op h-3 w-3 opacity-0 transition-opacity group-hover/traffic:opacity-100"
-          fill="none" stroke="#4d0000" stroke-width="1.3" stroke-linecap="round"
-        >
-          <path d="M4.2 4.2l3.6 3.6M7.8 4.2L4.2 7.8" />
-        </svg>
-      </button>
-      <button data-no-drag-region @mousedown.stop
-        class="traffic-hit flex h-3 w-3 items-center justify-center rounded-full transition-colors"
-        :class="focused
-          ? 'bg-[#febc2e] shadow-[inset_0_0_0_1px_#dea123]'
-          : 'bg-[#d4d4d4] dark:bg-[#575757]'"
-        :title="t('window.minimize')" :aria-label="t('window.minimize')"
-        @click="api.windowMinimize()"
-      >
-        <svg
-          v-if="focused"
-          viewBox="0 0 12 12"
-          class="hover-reveal-op h-3 w-3 opacity-0 transition-opacity group-hover/traffic:opacity-100"
-          fill="none" stroke="#5a3a00" stroke-width="1.3" stroke-linecap="round"
-        >
-          <path d="M4 6h4" />
-        </svg>
-      </button>
-      <button data-no-drag-region @mousedown.stop
-        v-if="showMaximize"
-        class="traffic-hit flex h-3 w-3 items-center justify-center rounded-full transition-colors"
-        :class="focused
-          ? 'bg-[#28c840] shadow-[inset_0_0_0_1px_#1aab29]'
-          : 'bg-[#d4d4d4] dark:bg-[#575757]'"
-        :title="fullscreen ? t('window.fullscreenExit') : maximized ? t('window.restore') : t('window.zoom')"
-        :aria-label="fullscreen ? t('window.fullscreenExit') : maximized ? t('window.restore') : t('window.zoom')"
-        @click="onGreenClick"
-      >
-        <!-- 原生造型：非全屏时是两个**对角三角**（进出全屏）；全屏/最大化时是收拢的三角。
-             用自绘路径而不是 lucide 箭头，是为了和系统观感一致。 -->
-        <svg
-          v-if="focused"
-          viewBox="0 0 12 12"
-          class="hover-reveal-op h-3 w-3 opacity-0 transition-opacity group-hover/traffic:opacity-100"
-          fill="#0b3d0b"
-        >
-          <template v-if="fullscreen || maximized">
-            <path d="M3.2 3.2h3v3z" />
-            <path d="M8.8 8.8h-3v-3z" />
-          </template>
-          <template v-else>
-            <path d="M3.2 3.2h3.4L3.2 6.6z" />
-            <path d="M8.8 8.8H5.4l3.4-3.4z" />
-          </template>
-        </svg>
-      </button>
-    </div>
+    <!-- macOS：三颗键**交给系统**（用户 2026-10-23：「用原生的，不要自己实现，每个窗口统一」）。
+         后端 `macos_window::use_native_titlebar` 把窗口改成「透明标题栏 + 全尺寸内容」，
+         AppKit 自己画红绿灯、自己在失焦时变灰、自己做悬停符号 —— 这里只让出它们占的宽度。
+         宽度 78px = 系统 13px 左边距 + 三颗 12px + 两个 8px 间距 + 右边余量；
+         之前的自绘实现已删除（保留形状会与系统按钮叠在一起）。 -->
+    <div v-if="isMac" class="h-full w-[78px] shrink-0" aria-hidden="true"></div>
 
-    <!-- 功能名：辅助窗口传 `title`；主窗口不传 ⇒ 空占位（把 Win/Linux 的按钮推到最右）。
+    <!-- 功能名：辅助窗口传 `title`；主窗口不传 ⇒ 退到应用显示名（用户 2026-10-23：
+         改名后在桌面标题栏也看得见），Win/Linux 的按钮仍被 flex-1 推到最右。
          拖拽区本身不接收点击，这里是纯文字，不影响拖拽。 -->
     <div
       class="min-w-0 flex-1 truncate px-3 text-body font-medium text-[var(--gosslan-text-2)]"
-      :title="title || undefined"
+      :title="title || t('app.name')"
     >
-      {{ title }}
+      {{ title || t("app.name") }}
     </div>
 
     <!-- Windows/Linux：右侧三键（顶到窗口最右缘）。
