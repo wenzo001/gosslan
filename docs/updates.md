@@ -57,22 +57,26 @@
 3. 推 `main` 与同名 tag（`v` + `package.json` 里的 version）。四个构建 workflow 分别在构建时：
    - macOS/Windows 基础档带 `--config src-tauri/tauri.updater.conf.json`（仅 tag）生成签名；
    - 上传 `.app.tar.gz`+`.sig` / `*.exe.sig`；
-   - 现有 `publish-release-assets.sh` 把普通安装包和签名挂到同一个 Release。
-4. `updater-manifest.yml` 在 Release 出现后等待四个平台产物齐（45 分钟上限），
-   下载、生成并上传 `latest.json`，最后用公开 URL 校验 200 与四平台齐全。
+   - `publish-release-assets.sh` 把普通安装包和签名挂到同一个 Release，但**只建/补草稿**
+     （draft-until-complete：四条腿谁先跑完都不能把半个 Release 对外公开）。
+4. `updater-manifest.yml` 等 Release 里四类资产齐（桌面 updater / 内置 WebView2 档 /
+   Android APK / macOS dmg，45 分钟上限），下载、生成并上传 `latest.json`，
+   然后才 `--draft=false` 发布，最后用公开 URL 校验 200 与四平台齐全。
+   草稿对 `releases/tags/<tag>` 会 404，所以这一步全程用列表 API 按 release id 读写。
 5. 校验：
    `curl -fsSL https://github.com/wenzo001/gosslan/releases/latest/download/latest.json`
    应含 `darwin-aarch64` / `darwin-x86_64` / `windows-x86_64` / `windows-aarch64`，
    且 `version` 与 tag 一致。
 6. 重复发布/版本冲突：`publish-release-assets.sh` 幂等创建/补附件；
-   `latest.json` 上传用 `--clobber`；同版本重复发 tag 会覆盖旧资产，**不要**这么做。
+   `latest.json` 重传先按资产 id 删除再上传（等价 `--clobber`）；同版本重复发 tag 会覆盖旧资产，**不要**这么做。
 
 ### 3.1 发不出去时的三种真形状（2026-10-22 实测，都踩过）
 
 | 现象 | 真实原因 | 现在怎么被挡住/自动处理 |
 |---|---|---|
-| 四条发布 job 全红，日志只说 `already exists`，而按 tag 查 Release 又是 404 | **网页上有人建了草稿 Release**：草稿对 `releases/tags/<tag>` 返回 404 | `publish-release-assets.sh` 用列表 API 兜底判"存在"，并在上传完成后 **`release edit --draft=false` 主动发布**（判据：`publishRelease.test.ts` 的 draft 场景） |
+| 四条发布 job 全红，日志只说 `already exists`，而按 tag 查 Release 又是 404 | **网页上有人建了草稿 Release**：草稿对 `releases/tags/<tag>` 返回 404 | `publish-release-assets.sh` 用列表 API 兜底判"存在"；现在四条腿本来就只建/补草稿，发布由 `updater-manifest.yml` 在四类资产齐了之后统一做（判据：`publishRelease.test.ts`） |
 | tag 构建跑到签名那一步才红，日志只有 `exit code 1` | `TAURI_SIGNING_PRIVATE_KEY` **填成了文件路径**或被截断（本机同命令 + 本机 key 是能过的） | tag 构建开头的预检会 **base64 解码**并要求解出来以 `untrusted comment:` 开头；不是就**立刻具名报错**（两条腿同口径） |
+| 私钥预检通过、仍然红在签名步 | `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` 粘贴带了行尾空白（密码文件本身含结尾换行，正文没有） | 预检现在**真的签一次临时文件**，不配套时 5 秒内具名报出私钥/密码各自的字符数；构建前统一去掉行尾空白 |
 | 重发同一个版本号 | tag 已存在且指向旧提交，新提交的修复**不会**被带上 | 换新版本号重发（`npm run version:patch` → 新 tag），不要复用旧 tag |
 
 > 排查口诀：**先看公开侧**（`releases/latest` 指向哪个 tag、`latest.json` 是否 404、
