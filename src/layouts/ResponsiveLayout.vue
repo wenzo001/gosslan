@@ -1138,9 +1138,9 @@ function onResizeEnd() {
         :title="t('nav.profile')"
         @back="closeProfile"
       >
-        <div class="p-4">
-          <ProfileSection :active="profileOpen" :reload-token="profileReloadToken" />
-        </div>
+        <!-- 资料卡走满宽（用户 2026-10-23：这里的样式是对的）：设置里点「资料」也路由到
+             这一页，不再套一层 p-4，否则窄屏上按钮排布会和这里不一致。 -->
+        <ProfileSection :active="profileOpen" :reload-token="profileReloadToken" />
       </MobilePageFrame>
     </Transition>
 

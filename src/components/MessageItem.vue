@@ -23,6 +23,7 @@ import { haptic } from "@/utils/haptics";
 import { shouldStartLongPress, shouldSwallowLongPressRelease } from "@/utils/longPress";
 import { shouldPreventContextMenu } from "@/utils/contextMenu";
 import { isWithinRecallWindow } from "@/utils/recall";
+import { detectCode } from "@/utils/codeDetect";
 import { t } from "@/i18n";
 import MessageAvatar from "@/components/message/MessageAvatar.vue";
 import MessageTextBubble from "@/components/message/MessageTextBubble.vue";
@@ -791,11 +792,11 @@ function canRecallNow(): boolean {
   );
 }
 
-/** 仅原作者可切：code↔text 都可逆，保证切到纯文本后还能切回代码块。 */
+/** 仅原作者可切：code→text 总是可切；text→code 只在内容像代码时给入口。 */
 const renderTo = computed<"code" | "text" | null>(() => {
   if (isSelfMsg.value || !mine.value) return null;
   if (props.message.kind === "code") return "text";
-  if (props.message.kind === "text") return "code";
+  if (props.message.kind === "text" && detectCode(props.message.content).likely) return "code";
   return null;
 });
 

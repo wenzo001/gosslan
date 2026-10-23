@@ -124,6 +124,12 @@ watch(
 );
 
 function selectSection(key: string) {
+  // 移动端「Profile」与「我的」头像进的是同一个资料页：只有一份宽度/按钮布局，
+  // 不再在设置壳里再摆一份 ProfileSection（两套内边距会让窄屏按钮换行不一致）。
+  if (key === "profile" && props.routeDriven && routeIsSettings.value && router) {
+    void router.push({ name: "profile" });
+    return;
+  }
   if (props.routeDriven && routeIsSettings.value && router) {
     void router.push({ name: "settings-section", params: { key } });
     return;
