@@ -993,4 +993,18 @@ CASES: list[Case] = [
         expect_fail_hint="非文本族必须拒绝撤回",
         tags=["rust", "protocol", "recall", "new-guards"],
     ),
+    Case(
+        name="Ack 收尾不看「队列行还在不在」⇒ 已取消的消息被提成已送达",
+        why="取消在消息表上的落地方式就是**删掉那条 outbox 行**：`ack_delivered` 先验证"
+        "「这一单还在队列里」，行没了就返回 false ⇒ 晚到的 Ack 改不动状态。\n"
+        "     把这个前置判据短路掉的后果正是用户在真机上会看到的那一下：按了取消、过几秒回执"
+        "又从「已取消」跳回「已送达」。\n"
+        "     注入方式：把 `if !expected` 改成 `if false`（最自然的「简化」：看着像多余的判断）。",
+        file=TAURI / "src" / "db" / "messages.rs",
+        injections=[("    if !expected {", "    if false {")],
+        cmd=cargo("test", "--lib", "a_late_ack_cannot_promote_a_cancelled_message"),
+        cwd=TAURI,
+        expect_fail_hint="晚到的 Ack 必须命中不到队列行",
+        tags=["rust", "db", "messages", "terminal-state", "new-guards"],
+    ),
 ]

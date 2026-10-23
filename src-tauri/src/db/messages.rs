@@ -570,6 +570,56 @@ pub fn set_message_status(conn: &Connection, msg_id: &str, status: &str) -> Resu
     Ok(())
 }
 
+/// 取消一条**还在补发队列里**的消息（用户按「取消发送」）。
+///
+/// 三件事在**同一个事务**里：把状态写成 `cancelled`、删掉 outbox 行、返回结论。
+/// 顺序与 `ack_delivered`（置 delivered + 删行）互斥：两边都靠"队列行还在不在"仲裁 ——
+/// 谁先拿到这把锁，谁的结果成立；**删掉行之后**，晚到的 Ack 在 `ack_delivered` 里
+/// `expected == false` ⇒ 直接返回 false，不会把 `cancelled` 提升成 `delivered`。
+/// 这就是"取消是硬终态"在这张表上的落地方式（INV-P26 的第二个来源，与文件的墓碑同口径）。
+///
+/// 为什么不是 `set_message_status` 一把梭：那条只改状态、不删队列行 ⇒ 下一轮 flush
+/// 照样把它发出去（用户看到"已取消"却又送到了）。队列行才是"还没送达"的那件事实。
+#[derive(Debug, PartialEq, Eq)]
+pub enum MessageCancelOutcome {
+    /// 这次真的取消掉了（状态改写 + 队列行删除，至少一处生效）。
+    Cancelled,
+    /// 已经送达/已读/已撤回 ⇒ 取消不成立，界面要说实话。
+    AlreadyDelivered,
+    /// 查无此消息。
+    NotFound,
+}
+
+pub fn cancel_queued_message(conn: &Connection, msg_id: &str) -> Result<MessageCancelOutcome> {
+    let tx = conn.unchecked_transaction()?;
+    let status: Option<String> = tx
+        .query_row(
+            "SELECT status FROM messages WHERE msg_id = ?1",
+            params![msg_id],
+            |r| r.get(0),
+        )
+        .optional()?;
+    let Some(status) = status else {
+        return Ok(MessageCancelOutcome::NotFound);
+    };
+    if matches!(status.as_str(), "delivered" | "read" | "recalled") {
+        return Ok(MessageCancelOutcome::AlreadyDelivered);
+    }
+    // 队列行必须在**状态之前**删：先写 cancelled 再删的话，中间那一刻的 Ack 仍能命中
+    // outbox 行并把状态推成 delivered（两把锁之间没有别的事务，但顺序让结论更难读）。
+    tx.execute("DELETE FROM outbox WHERE msg_id = ?1", params![msg_id])?;
+    let changed = tx.execute(
+        "UPDATE messages SET status = 'cancelled'
+          WHERE msg_id = ?1
+            AND status NOT IN ('delivered', 'read', 'recalled', 'cancelled')",
+        params![msg_id],
+    )?;
+    tx.commit()?;
+    // 已经是 cancelled（重复点）也算成功：幂等，界面上它就是"已取消"。
+    let _ = changed;
+    Ok(MessageCancelOutcome::Cancelled)
+}
+
 /// Ack 的**原子收尾**：验证 Ack 确实命中"我发给这个 peer 且仍在队列里"的那一行，
 /// 置 `delivered`，再删 outbox 行 —— 三步在**同一个事务**里完成。
 ///

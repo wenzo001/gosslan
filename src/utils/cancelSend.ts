@@ -1,0 +1,42 @@
+/**
+ * 「这条消息现在能不能取消发送、该走哪条通道」的唯一判据。
+ *
+ * 两条通道是两件事，别合并：
+ *  · `transfer` —— 文件/群文件消息：停的是**正在写的字节**（`cancel_file_transfer`，
+ *    对端由 `FileCancel` 帧通知）。判据看消息 id 前缀（`file-` / `gfile-`），因为
+ *    那些消息的 transfer_id 就在前缀后面。
+ *  · `message`  —— 文本族等走补发队列的消息：停的是**还没送出去的队列行**
+ *    （后端删 outbox + 状态写 cancelled；对端还没收到，所以没有"通知"这一步）。
+ *
+ * 三个边界都是刻意的：
+ *  1. 只给**自己发的**（别人发的没有"我取消"这件事），自聊不给（本机自己，没有送达可言）。
+ *  2. 只给 `sending`：`sent`/`delivered`/`read` 已经出门了，那时能做的只有撤回（文本族、5 分钟内）。
+ *  3. 群里的消息这一版**不给**：群的队列是"每个成员一行"，删多少行才算取消要单独的账，
+ *     给一个"界面已取消、其余成员照样收到"的按钮比不给更糟（后端也拒绝）。
+ */
+export type CancelSendChannel = "transfer" | "message" | "none";
+
+export interface CancelSendContext {
+  msgId: string;
+  kind: string;
+  /** 消息状态（`sending` / `sent` / `delivered` / `read` / `failed` / `cancelled`）。 */
+  status: string;
+  /** 会话在群里（`group:` 前缀）。 */
+  group: boolean;
+  /** 自聊会话（conv_id === 本机 device_id）。 */
+  selfChat: boolean;
+  /** 这条是我发的。 */
+  mine: boolean;
+}
+
+export function cancelSendChannelFor(ctx: CancelSendContext): CancelSendChannel {
+  if (!ctx.mine || ctx.selfChat) return "none";
+  if (ctx.status !== "sending") return "none";
+  if (ctx.msgId.startsWith("file-")) return "transfer";
+  if (ctx.msgId.startsWith("gfile-")) return "transfer";
+  // 文件/图片的**真实**消息（后端 `send_file*` 造的那条，id 不是前缀形式）也只走传输通道；
+  // 它们的取消入口在文件卡片上（`@cancel`），不在消息菜单里。
+  if (ctx.kind === "file" || ctx.kind === "image") return "none";
+  if (ctx.group) return "none";
+  return "message";
+}

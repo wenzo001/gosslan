@@ -294,6 +294,13 @@ export const api = {
   /** 撤回自己发的一条单聊消息（仅原作者；服务端 5 分钟窗口）。 */
   recallDirectMessage: (friendId: string, target: string) =>
     invoke<void>("recall_message", { friendId, target }),
+  /**
+   * 取消一条**还在补发队列里**的消息（自己发的、单聊、非文件）。
+   * 返回 `cancelled` = 真的撤下来了；`already_delivered` = 已经送出去，取消不成立。
+   * 只改本机：对端还没收到，所以没有"通知对方"这件事。
+   */
+  cancelMessage: (convId: string, msgId: string) =>
+    invoke<"cancelled" | "already_delivered">("cancel_message", { convId, msgId }),
   /** 切换自己发的代码/文本消息渲染（LWW，所有支持该能力位的成员生效）。 */
   setMessageRender: (convId: string, target: string, mode: "code" | "text") =>
     invoke<void>("set_message_render", { convId, target, mode }),

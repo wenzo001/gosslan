@@ -1018,3 +1018,95 @@ fn fill_message_size_backfills_the_actual_size_once() {
     ins_msg(&conn, "file-bad", "p1", "file", "not json", 2);
     assert!(!fill_message_size(&conn, "file-bad", 1).unwrap());
 }
+
+// ---------------- 取消一条还在队列里的消息（B4 的另一半，2026-10-23） ----------------
+//
+// 三格各管一条边界，缺任何一条都会留下一种"看得见"的错：
+//  · 队列行没删 ⇒ 下一轮 flush 照样把它发出去（界面说已取消，对方照样收到）；
+//  · 晚到的 Ack 能把 cancelled 提成 delivered ⇒ 回执从"已取消"跳回"已送达"；
+//  · 已送达的行被改成 cancelled ⇒ 谎报"撤下来了"。
+
+#[test]
+fn cancelling_a_queued_message_drops_its_outbox_row_and_marks_it_cancelled() {
+    let conn = fresh_db();
+    ins_msg(&conn, "m-c1", "p1", "text", "在吗", 1);
+    conn.execute(
+        "INSERT INTO outbox(msg_id, peer_id, payload, created_at) VALUES ('m-c1','p1','{}',1)",
+        [],
+    )
+    .unwrap();
+    assert_eq!(
+        super::cancel_queued_message(&conn, "m-c1").unwrap(),
+        super::MessageCancelOutcome::Cancelled
+    );
+    assert_eq!(
+        count(&conn, "SELECT COUNT(*) FROM outbox WHERE msg_id = 'm-c1'"),
+        0,
+        "队列行必须删掉：留着它下一轮 flush 就会把「已取消」的消息照常发出去"
+    );
+    let status: String = conn
+        .query_row(
+            "SELECT status FROM messages WHERE msg_id = 'm-c1'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(status, "cancelled");
+}
+
+#[test]
+fn a_late_ack_cannot_promote_a_cancelled_message() {
+    let conn = fresh_db();
+    ins_msg(&conn, "m-c2", "p1", "text", "这条已经被取消了", 1);
+    conn.execute(
+        "INSERT INTO outbox(msg_id, peer_id, payload, created_at) VALUES ('m-c2','p1','{}',1)",
+        [],
+    )
+    .unwrap();
+    super::cancel_queued_message(&conn, "m-c2").unwrap();
+    // 取消之后 Ack 才到（Ack 与取消是两把锁先后拿到的）
+    let acked = super::ack_delivered(&conn, "m-c2", "p1").unwrap();
+    assert!(
+        !acked,
+        "晚到的 Ack 必须命中不到队列行（`ack_delivered` 的 expected 判据）—— 命中就说明它能把取消复活"
+    );
+    let status: String = conn
+        .query_row(
+            "SELECT status FROM messages WHERE msg_id = 'm-c2'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(
+        status, "cancelled",
+        "取消是硬终态：晚到的 Ack 不许把它提升成 delivered"
+    );
+}
+
+#[test]
+fn cancelling_an_already_delivered_message_reports_it_and_changes_nothing() {
+    let conn = fresh_db();
+    ins_msg(&conn, "m-c3", "p1", "text", "已经送到了", 1);
+    conn.execute(
+        "UPDATE messages SET status = 'delivered' WHERE msg_id = 'm-c3'",
+        [],
+    )
+    .unwrap();
+    assert_eq!(
+        super::cancel_queued_message(&conn, "m-c3").unwrap(),
+        super::MessageCancelOutcome::AlreadyDelivered,
+        "已送达就是已送达：界面要说实话，不能假装撤回来了"
+    );
+    let status: String = conn
+        .query_row(
+            "SELECT status FROM messages WHERE msg_id = 'm-c3'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(status, "delivered", "已送达的行不许被取消降级");
+    assert_eq!(
+        super::cancel_queued_message(&conn, "m-nope").unwrap(),
+        super::MessageCancelOutcome::NotFound
+    );
+}

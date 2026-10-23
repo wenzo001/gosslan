@@ -774,6 +774,7 @@ pub fn run() {
             commands::send_group_reaction,
             commands::recall_group_message,
             commands::recall_message,
+            commands::cancel_message,
             commands::set_message_render,
             commands::pin_group_message,
             commands::send_group_announcement,

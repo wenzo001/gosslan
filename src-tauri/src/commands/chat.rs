@@ -11,6 +11,64 @@
 ///
 /// 复用公开的 `send_message(..., "recall")` 走完整的 E2EE / outbox / 幂等管道；
 /// 事件先入可靠队列，成功后再物化本地 —— 顺序反了会出现「本地已撤回、对端没收到」。
+/// 取消一条**还在补发队列里**的消息（用户按「取消发送」）。
+///
+/// 与文件的取消分开两套是刻意的：文件那条停的是"正在写的字节"（`cancel_file_transfer`
+/// + `FileCancel` 帧），消息这条停的是"还没送出去的队列行"（删 outbox + 状态写 cancelled）。
+/// 两者唯一的共同点是**都要真执行**：只改界面状态而不删队列行，下一轮 flush 照样把它发出去。
+///
+/// 边界（都返回可读的错误，不静默降级）：
+///  · 只能取消**自己发的**、且属于该会话的消息；
+///  · 自聊不支持（本机自己，没有"送达"这回事）；
+///  · 文件/图片走传输那条通道（撤回/取消都改不到正在跑的字节）；
+///  · 群消息这一批暂不支持：群的队列是"每个成员一行"，删多少行才算取消需要单独的账
+///    （宁可不给，也不要出现"界面已取消、其余成员照样收到"）。
+#[tauri::command(async)]
+pub async fn cancel_message(
+    state: State<'_, Arc<AppState>>,
+    conv_id: String,
+    msg_id: String,
+) -> Result<String, String> {
+    let s = state.inner().clone();
+    if conv_id == s.device_id {
+        return Err("自聊消息不支持取消".to_string());
+    }
+    if conv_id.starts_with("group:") {
+        return Err("群消息的取消还在做，这一版只支持单聊".to_string());
+    }
+    // SQLite 读写在阻塞池（INV-P34）：这里持锁做几笔写，占住 tokio worker 会拖慢开窗。
+    let s_db = s.clone();
+    let msg_id_db = msg_id.clone();
+    let out = tokio::task::spawn_blocking(move || -> Result<db::MessageCancelOutcome, String> {
+        let dbc = s_db.db.lock().unwrap_or_else(|e| e.into_inner());
+        let Some(msg) = db::get_message_record(&dbc, &msg_id_db) else {
+            return Ok(db::MessageCancelOutcome::NotFound);
+        };
+        if msg.sender_id != s_db.device_id {
+            return Err("只能取消自己发送的消息".to_string());
+        }
+        if msg.conv_id != conv_id {
+            return Err("消息不属于该会话".to_string());
+        }
+        if msg.kind == "file" || msg.kind == "image" {
+            return Err("文件/图片请用「取消发送」的传输通道".to_string());
+        }
+        db::cancel_queued_message(&dbc, &msg_id_db).map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| format!("取消消息被线程池中断: {e}"))??;
+    match out {
+        db::MessageCancelOutcome::NotFound => Err("消息不存在".to_string()),
+        // 已经送出去了：说实话（与文件的 `alreadyDone` 同一口径），不假装取消成功。
+        db::MessageCancelOutcome::AlreadyDelivered => Ok("already_delivered".to_string()),
+        db::MessageCancelOutcome::Cancelled => {
+            // 前端那一条对 `message-status-changed` 的处理是"重查该会话" ⇒ 回执会跟着库走。
+            let _ = s.app.emit("message-status-changed", &msg_id);
+            Ok("cancelled".to_string())
+        }
+    }
+}
+
 #[tauri::command(async)]
 pub async fn recall_message(
     state: State<'_, Arc<AppState>>,

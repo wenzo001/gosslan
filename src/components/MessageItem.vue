@@ -24,6 +24,7 @@ import { haptic } from "@/utils/haptics";
 import { shouldStartLongPress, shouldSwallowLongPressRelease } from "@/utils/longPress";
 import { shouldPreventContextMenu } from "@/utils/contextMenu";
 import { isRecallableKind, isWithinRecallWindow } from "@/utils/recall";
+import { cancelSendChannelFor } from "@/utils/cancelSend";
 import { detectCode } from "@/utils/codeDetect";
 import { t } from "@/i18n";
 import MessageAvatar from "@/components/message/MessageAvatar.vue";
@@ -805,30 +806,53 @@ const renderTo = computed<"code" | "text" | null>(() => {
   return null;
 });
 
-/** 文件消息正在发送中 —— 显示"取消发送"菜单项。
- * 条件：自己发的 + 文件类 + status 是 sending。
- * 群文件（gfile-）也支持取消 —— 后端 cancel_file_transfer 统一处理。 */
-const canCancelSend = computed(() => {
-  if (!isSelfMsg.value) return false;
-  const mid = props.message.msg_id;
-  const isFileMsg = mid.startsWith("file-") || mid.startsWith("gfile-");
-  if (!isFileMsg) return false;
-  return props.message.status === "sending";
-});
+/**
+ * 「取消发送」该不该出现、走哪条通道 —— 判据只有 `utils/cancelSend` 那一份。
+ *
+ * ⚠️ 这里修掉一个旧口径的错：以前的条件是 `if (!isSelfMsg) return false`，
+ * 于是这个入口**只在自聊里出现**（而自聊按 `SELF_CHAT_KINDS` 根本发不了文件）。
+ * 正常单聊/群聊里正在发送的文件反而没有入口 —— 与"所有未完成的发送都能取消"正好相反。
+ */
+const cancelSendChannel = computed(() =>
+  cancelSendChannelFor({
+    msgId: props.message.msg_id,
+    kind: props.message.kind,
+    status: props.message.status,
+    group: props.isGroup,
+    selfChat: isSelfMsg.value,
+    mine: mine.value,
+  }),
+);
+const canCancelSend = computed(() => cancelSendChannel.value !== "none");
 
 function doCancelSend() {
   closeContextMenu();
   closeActionSheet();
-  const mid = props.message.msg_id;
-  let transferId = "";
-  if (mid.startsWith("file-")) transferId = mid.slice(5);
-  else if (mid.startsWith("gfile-")) transferId = mid.slice(6);
-  if (!transferId) return;
-  api.cancelFileTransfer(transferId).then(
-    (res) => {
+  const channel = cancelSendChannel.value;
+  if (channel === "transfer") {
+    const mid = props.message.msg_id;
+    let transferId = "";
+    if (mid.startsWith("file-")) transferId = mid.slice(5);
+    else if (mid.startsWith("gfile-")) transferId = mid.slice(6);
+    if (!transferId) return;
+    api.cancelFileTransfer(transferId).then(
+      (res) => {
+        app.toast(
+          t(res.alreadyDone ? "msg.cancelSend.alreadyDone" : "msg.cancelSend.requested"),
+          res.alreadyDone ? "info" : "success",
+        );
+      },
+      (e: unknown) => app.toastError(e, t("msg.cancelSend.fail")),
+    );
+    return;
+  }
+  if (channel !== "message") return;
+  // 消息通道：后端删队列行 + 状态写 cancelled；对端还没收到，所以没有"通知对方"这一步。
+  api.cancelMessage(props.message.conv_id, props.message.msg_id).then(
+    (outcome) => {
       app.toast(
-        t(res.alreadyDone ? "msg.cancelSend.alreadyDone" : "msg.cancelSend.requested"),
-        res.alreadyDone ? "info" : "success",
+        t(outcome === "cancelled" ? "msg.cancelSend.requested" : "msg.cancelSend.alreadyDone"),
+        outcome === "cancelled" ? "success" : "info",
       );
     },
     (e: unknown) => app.toastError(e, t("msg.cancelSend.fail")),
