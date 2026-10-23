@@ -80,6 +80,22 @@ jobs:
             Write-Host "签名私钥可解码（base64 长度 $($keyNorm.Length)），密码已配置"
           }
 
+          # ⚠️ 2026-10-23：私钥合法 ≠ 密码配套。v5.5.23 的两个 tag 构建都红在**编完之后**
+          # 的签名步，而外部读不到 job 日志（匿名 403）⇒ 只剩一句 exit code 1。
+          # 这里真的签一次临时文件，5 秒内就能在注解里看到是哪一半不对；
+          # 顺带把粘贴常带的行尾空白去掉（密码文件本身 44 字节含结尾换行，正文是 43 字符）。
+          $passNorm = if ($null -eq $env:PASS) { '' } else { $env:PASS.Trim() }
+          $probe = Join-Path $env:RUNNER_TEMP 'sign-preflight.txt'
+          Set-Content -Path $probe -Value 'gosslan release preflight' -NoNewline
+          $env:TAURI_SIGNING_PRIVATE_KEY = $keyNorm
+          $env:TAURI_SIGNING_PRIVATE_KEY_PASSWORD = $passNorm
+          npm run tauri -- signer sign $probe | Out-Null
+          if ($LASTEXITCODE -ne 0) {
+            Write-Host "::error title=签名私钥与密码不配套::私钥 $($keyNorm.Length) 字符、密码 $($passNorm.Length) 字符。正确密码是 gosslan-updater.password 去掉结尾换行后的 43 个字符（不是路径、不带 % 或换行）。"
+            exit 1
+          }
+          Write-Host "签名自检通过（私钥 $($keyNorm.Length) 字符、密码 $($passNorm.Length) 字符）"
+
       - name: Build Windows installer (NSIS)
         # ⚠️ `--features bluetooth` 不能少：BLE 传输在 Cargo 里是**可选 feature**
         # （ADR-0015 §2：不开时依赖不下载、代码不编译）。漏了它打出来的包
@@ -91,6 +107,9 @@ jobs:
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
           TARGET: ${{ matrix.target }}
         run: |
+          # 粘贴带行尾空白时（密码最常见）在这里统一去掉，别让签名在编完之后才炸。
+          $env:TAURI_SIGNING_PRIVATE_KEY = "$env:TAURI_SIGNING_PRIVATE_KEY".Trim()
+          $env:TAURI_SIGNING_PRIVATE_KEY_PASSWORD = "$env:TAURI_SIGNING_PRIVATE_KEY_PASSWORD".Trim()
           # ⚠️ 不要用 `$args` 当局部数组再 `@args` splatting：`$args` 是 PowerShell 的
           # **自动变量**（脚本块里代表未绑定参数），赋值后能否按数组展开取决于宿主实现。
           # 2026-10-22 v5.5.0 的两次 Windows 构建都"构建成功、上传安装包失败"——

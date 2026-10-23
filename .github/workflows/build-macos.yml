@@ -81,6 +81,20 @@ jobs:
           if [ -n "${PASS:-}" ]; then pstate="已配置"; else pstate="为空（仅当私钥未加密时才正确）"; fi
           echo "签名私钥已配置（长度 ${#KEY}），密码${pstate}"
 
+          # ⚠️ 2026-10-23：私钥合法 ≠ 密码配套。v5.5.23 的两个 tag 构建都红在**编完之后**
+          # 的签名步，而外部读不到 job 日志（匿名 403）⇒ 只剩一句 exit code 1。
+          # 这里真的签一次临时文件，5 秒内就能在注解里看到是哪一半不对；
+          # 顺带把粘贴常带的行尾空白去掉（密码文件本身 44 字节含结尾换行，正文是 43 字符）。
+          key_norm="$(printf '%s' "$KEY" | tr -d '[:space:]')"
+          pass_norm="$(printf '%s' "${PASS:-}" | tr -d '\r\n')"
+          printf 'gosslan release preflight\n' > "$RUNNER_TEMP/sign-preflight.txt"
+          if ! TAURI_SIGNING_PRIVATE_KEY="$key_norm" TAURI_SIGNING_PRIVATE_KEY_PASSWORD="$pass_norm" \
+               npm run tauri -- signer sign "$RUNNER_TEMP/sign-preflight.txt" >/dev/null 2>&1; then
+            echo "::error title=签名私钥与密码不配套::私钥 ${#key_norm} 字符、密码 ${#pass_norm} 字符。正确密码是 ~/.tauri/gosslan-updater.password 去掉结尾换行后的 43 个字符（不是路径、不带 % 或换行）。"
+            exit 1
+          fi
+          echo "签名自检通过（私钥 ${#key_norm} 字符、密码 ${#pass_norm} 字符）"
+
       - name: Build .app + .dmg (${{ matrix.label }})
         # ★ 为什么这里要重试而不是直接跑一条：`bundle_dmg.sh`（hdiutil attach + Finder 排版）在
         #   macOS runner 上是**已知会偶发失败**的一步。2026-09-30 实测：同一个 `x86_64` 腿
@@ -96,6 +110,10 @@ jobs:
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         run: |
           set -euo pipefail
+          # 粘贴带行尾空白时（密码最常见）在这里统一去掉，别让签名在编完之后才炸。
+          TAURI_SIGNING_PRIVATE_KEY="$(printf '%s' "${TAURI_SIGNING_PRIVATE_KEY:-}" | tr -d '[:space:]')"
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD="$(printf '%s' "${TAURI_SIGNING_PRIVATE_KEY_PASSWORD:-}" | tr -d '\r\n')"
+          export TAURI_SIGNING_PRIVATE_KEY TAURI_SIGNING_PRIVATE_KEY_PASSWORD
           rel="src-tauri/target/$TARGET/release"
           app="$rel/bundle/macos/Gosslan.app"
           # 只有 tag 构建生成/签名 updater 产物：main 的日常构建不需要私钥，也不会因为
