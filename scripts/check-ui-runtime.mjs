@@ -3558,7 +3558,7 @@ async function rosterChecks(cdp, url) {
     emoji: "[赞]", count: 4, mine: true,
     actors: ["peer-a", "peer-b", "peer-c", "me-1"], latest: "me-1",
   }];
-  const mount = async (sender, mineSide, chips) => {
+  const mount = async (sender, mineSide, chips, group = true) => {
     await cdp.send("Page.navigate", { url });
     await sleep(3_000);
     await cdp.eval(PAGE_FIXTURE);
@@ -3568,7 +3568,7 @@ async function rosterChecks(cdp, url) {
         content: "这条要量回应条与气泡的边缘关系，所以内容写得长一些，让它折成两行以上。",
         ts: 1700000000000, conv_id: "group:g1", seq: 1,
       },
-      canReact: true, isGroup: true, senderName: "测试者", reactions: chips ?? CHIPS,
+      canReact: true, isGroup: group, senderName: "测试者", reactions: chips ?? CHIPS,
     };
     const r = await cdp.eval("window.__probe.install('/src/components/MessageItem.vue', '', "
       + JSON.stringify(JSON.stringify(props)) + ")");
@@ -3659,6 +3659,8 @@ async function rosterChecks(cdp, url) {
     "|chip.right - col.right| <= 1",
     "差 " + gm.deltaRight + "px；chip.right=" + gm.chipRight + " col.right=" + gm.colRight
       + "，条 padding-right=" + gm.padRight);
+
+
   check("右列：与气泡的竖向间距同样是紧凑档（0 <= 差 <= 6px）",
     gm.ok === true && gm.gapToBubble >= 0 && gm.gapToBubble <= 6,
     "0 <= 间距 <= 6", "间距 " + gm.gapToBubble + "px = 条 mt " + gm.barMarginTop + " + 消息行 pb " + gm.rowPadBottom);
@@ -3736,6 +3738,25 @@ async function rosterChecks(cdp, url) {
     emoji: e, count: i + 1, mine: i === 0,
     actors: [i === 0 ? LONG : "同事甲", "同事乙"], latest: "同事乙",
   }));
+  // —— 「这一行没有头像列」的两种形态：让边必须换成消息行自己的 16px ——
+  // 5.7 起头像列只在「群聊 + 别人」那一行里画（判定住在 MessageItem 的 avatarCol）。
+  // 条子内再写死 60px 就把胶囊推离气泡边 44px（= 头像 36 + 行间隙 8）—— 上面那条右列判据
+  // 红过一次就是这么来的。群聊自己发那一行已由右列那条覆盖，这里补单聊的两侧（都没头像列）。
+  for (const side of ["me", "peer"]) {
+    await cdp.eval("window.__probe.reset()");
+    // ⚠️ sender 串必须是段内已有那两个之一：`mine` 由 seedDevice('me-1') 与 sender_id **现推**，
+    //   另编一个号会让整行退化成"对方"那一支，量的就不是我要量的形态了。
+    const okDm = await mount(side === "me" ? "me-1" : "peer-a", side === "me", undefined, false);
+    const gd = await cdp.eval("window.__probe.reactionGeom()");
+    const dd = side === "me" ? gd.deltaRight : gd.deltaLeft;
+    check("单聊·" + (side === "me" ? "自己" : "对方") + "：胶囊与气泡边对齐（无头像列时只让行的 16px）",
+      okDm === true && gd.ok === true && Math.abs(dd) <= 1,
+      "|差| <= 1", "差 " + dd + "px " + JSON.stringify({
+        chipRight: gd.chipRight, colRight: gd.colRight, chipLeft: gd.chipLeft,
+        colLeft: gd.colLeft, padRight: gd.padRight, padLeft: gd.padLeft }));
+  }
+  // ⚠️ 位置有讲究：必须排在上面那两组**反向对照**之后 —— mount() 会重新导航，
+  //   插在中途会把对照赖以生存的「右列那一页」换掉（实测：撤平移那条读成 -473px）。
   check("多颗：挂出一条带 12 颗回应的消息", await mount("peer-a", false, MANY), "install 成功");
   // 长名字必须**先在 store 的名字表里**：`nicknameOf` 查不到会把 id 落成
   // 「未知成员 + 后四位」，下面三条量的就会是那段短兜底文案（探针失真，不是界面错）。
@@ -5621,20 +5642,25 @@ async function runMsgOverflow(cdp, url) {
   }
 
   // ── 窄窗口（390×844）重复最坏的四档 ──
+  // ⚠️ 视口覆盖必须放在 `try/finally` 里清掉：这一档中途抛错（CDP 超时、eval 报错）
+  //   会把 390×844 泄漏给**后面所有段**，于是别处量到"元素跑出屏幕"，红得完全不相干。
   await cdp.send("Emulation.setDeviceMetricsOverride", {
     width: 390, height: 844, deviceScaleFactor: 1, mobile: true,
   });
   await sleep(400);
-  for (const name of ["无空格长英文", "超长链接", "代码超长一行", "超长文件名"]) {
-    const c = CASES.find((x) => x.name === name);
-    const r = await probeOne(c);
-    console.log("  · 390px " + name + "：" + JSON.stringify(r));
-    check("窄窗 390px·" + name + "：整页仍不横滚",
-      !!r && r.pageScroll <= r.vw, "scrollWidth ≤ innerWidth", JSON.stringify(r));
-    check("窄窗 390px·" + name + "：没有后代越出挂载容器",
-      !!r && r.worstOver <= 0.5, "≤ 0.5px", JSON.stringify(r));
+  try {
+    for (const name of ["无空格长英文", "超长链接", "代码超长一行", "超长文件名"]) {
+      const c = CASES.find((x) => x.name === name);
+      const r = await probeOne(c);
+      console.log("  · 390px " + name + "：" + JSON.stringify(r));
+      check("窄窗 390px·" + name + "：整页仍不横滚",
+        !!r && r.pageScroll <= r.vw, "scrollWidth ≤ innerWidth", JSON.stringify(r));
+      check("窄窗 390px·" + name + "：没有后代越出挂载容器",
+        !!r && r.worstOver <= 0.5, "≤ 0.5px", JSON.stringify(r));
+    }
+  } finally {
+    await cdp.send("Emulation.clearDeviceMetricsOverride").catch(() => {});
   }
-  await cdp.send("Emulation.clearDeviceMetricsOverride");
   await sleep(300);
 
   // ── 反向对照：把断词关掉，同一把尺必须报出溢出 ──
@@ -11484,8 +11510,14 @@ async function runTaskCard(cdp, url) {
   const MEASURE = `(() => {
     const thumbs = Array.from(document.querySelectorAll('[role="button"].h-20'));
     const band = thumbs.length ? thumbs[0].parentElement : null;
-    const root = document.querySelector('.bubble-tail');
-    const card = root ? root.closest('div') : null;
+    // 卡片根 = 挂进 #probe-host 的那个元素（TodoCardBubble 的模板根就是一个 div）。
+    // ⚠️ 这里原来借 .bubble-tail 的 closest('div') 定位卡片，而尖角现在是父层
+    //   （MessageItem 用 :tail="!isGroup" 透传）控制的 prop ⇒ 本段**单独挂组件**时永远没有
+    //   尖角，锚点读空、cardH 恒 -1，两条高度判据一起红（看着像产品把卡片撑坏了）。
+    //   量具不许寄生在被测形状上，改成量挂载根。
+    //   （注释里不能出现反引号：这一整块是 JS 模板字符串，反引号会当场截断它。）
+    const host = document.getElementById('probe-host');
+    const card = host ? host.firstElementChild : null;
     const label = ${JSON.stringify(moreLabel)};
     const more = Array.from(document.querySelectorAll('button'))
       .find((b) => (b.textContent || '').trim().startsWith(label));
@@ -11494,6 +11526,10 @@ async function runTaskCard(cdp, url) {
       bandH: band ? +band.getBoundingClientRect().height.toFixed(1) : -1,
       moreH: more ? +more.getBoundingClientRect().height.toFixed(1) : 0,
       cardH: card ? +card.getBoundingClientRect().height.toFixed(1) : -1,
+      // 正控：量到的这一格必须真的**含着**图片带（锚点滑到兄弟/内层小盒子时 cardH 会小于 bandH，
+      // 而"估多了/估少了"两条都可能照样绿 —— 那是在量别的东西）。
+      cardHoldsBand: !!(card && band && card.contains(band)
+        && card.getBoundingClientRect().height >= band.getBoundingClientRect().height - 0.5),
       // 「查看更多」在不在命中区①**里面**（决定它要不要自己 stop）
       moreInBody: more ? !!more.closest('[role="button"][tabindex="0"]') : false,
     };
@@ -11573,9 +11609,14 @@ async function runTaskCard(cdp, url) {
       return h.estimateMessageHeight(rec, undefined,
         { messages: [], isGroup: false, selfId: 'dev-me', fontSize: 'md' });
     })()`);
-    rows.push({ n, rendered: g.rendered, band: g.bandH, more: g.moreH, real: g.cardH, est });
+    rows.push({ n, rendered: g.rendered, band: g.bandH, more: g.moreH, real: g.cardH, holds: g.cardHoldsBand, est });
   }
   console.log("  · 高度实测表（张数/渲染/图片带/查看更多/卡片真实/估算）: " + JSON.stringify(rows));
+  // 锚点正控：上面两条只判"落在区间里"，锚点若滑到某个更小的内层盒子，两条都可能照样绿
+  // （real 变小 ⇒ real ≤ est 更成立）。所以另钉一条：有图的那几行，量到的必须是**含图片带**的祖先。
+  check("锚点正控：量到卡片的那一格必须真的含着图片带（锚点读错对象时这条先红）",
+    rows.filter((r) => r.n > 0).every((r) => r.holds === true),
+    "有图的行 holds 全 true", JSON.stringify(rows.map((r) => [r.n, r.holds])));
   check("每种张数：卡片真实高度 ≤ 估算（估少了就是虚拟列表遮挡）",
     rows.every((r) => r.real > 0 && r.est > 0 && r.real <= r.est),
     "全部 real ≤ est", JSON.stringify(rows));

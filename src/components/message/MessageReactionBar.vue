@@ -174,20 +174,22 @@ onUnmounted(clearPress);
 <template>
   <!-- 没有任何回应且不可交互时整条不渲染，避免给每条消息都留一行空白 -->
   <!-- 与气泡**左/右边缘对齐**（用户 2026-10-07：「左右两条表情回复边缘都与上面气泡对齐」）。
-       本条是消息行的**兄弟节点**，所以要从容器左/右缘让出「消息行的 px-4(16) + 头像 w-9(36)
-       + 行 gap-2(8)」= **60px**，胶囊的那条边才正好落在气泡那条边上。
+       本条是消息行的**兄弟节点**，要让出「消息行的 px-4(16) + 头像 w-9(36) + 行 gap-2(8)」= 60px
+       才能让到气泡那条边上 —— 但**只有那一行真的画了头像列时才让**。
+       ⚠️ 让多少**不在这里算**：5.7 起自己的行与单聊两方都没有头像列，组件内写死 60px
+       就会把胶囊推离气泡边 44px（运行时探针 `roster` 段实测到）。判定住在
+       `MessageItem.vue` 的 `avatarGutterClass`（和强提醒条共用同一个数），由父层挂到根节点上。
        ⚠️ 为什么是一个 60 而不是"px-4 再加头像"：Tailwind 里 `pl-*` 与 `px-*` 同属性、按顺序覆盖
        （实测证据：旧写法 `pr-1` + `pr-12` 同时挂在这一颗元素上，生效的只有 48px 那一档），
        拆成两档写就会静默少掉一层 —— 旧值 48 正是这么来的：注释按"头像 40 + 间距 8"算，
        而头像其实是 36，还整个漏掉了行的 16px 内边距，两边各差 12px。
-       ⚠️ 这个 60 由 `scripts/check-ui-runtime.mjs` 的 roster 段在**真浏览器里**量着（|差| <= 1px），
+       ⚠️ 这条对齐由 `scripts/check-ui-runtime.mjs` 的 roster 段在**真浏览器里**量着（|差| <= 1px），
        所以头像尺寸或行内边距哪天变了，红的是那条判据，不是这段注释。 -->
   <div
     v-if="chips.length > 0 || interactive"
     data-reaction-bar
     :data-open-emoji="String(openEmoji)"
     class="flex flex-wrap items-center gap-1"
-    :class="mine ? 'justify-end pr-[60px]' : 'pl-[60px]'"
   >
     <span v-for="c in chips" :key="c.emoji" class="relative inline-flex">
       <HoverCardRoot
