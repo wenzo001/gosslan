@@ -5443,6 +5443,11 @@ async function runRowPair(cdp, url) {
       const r = bub.getBoundingClientRect();
       const cr = col.getBoundingClientRect();
       const cs = getComputedStyle(bub);
+      const rowEl = col.parentElement;
+      // 组首画的是真头像（MessageAvatar 的盒子），组内画的是一个 aria-hidden 的等宽空位。
+      // 两者读成同一宽度，气泡左缘才不会逐行跳 —— 这两处**分属两个文件**，所以只能这么量。
+      const box = rowEl ? rowEl.querySelector('.gosslan-avatar-box') : null;
+      const spacer = rowEl ? rowEl.querySelector(':scope > [aria-hidden="true"]') : null;
       const nicks = [...col.children].filter((el) => {
         const t = el.textContent.trim();
         return t === '甲' || t === '乙';
@@ -5452,6 +5457,9 @@ async function runRowPair(cdp, url) {
         top: +r.top.toFixed(1),
         bottom: +r.bottom.toFixed(1),
         colTop: +cr.top.toFixed(1),
+        left: +cr.left.toFixed(1),
+        avatarW: box ? +box.getBoundingClientRect().width.toFixed(1) : -1,
+        spacerW: spacer ? +spacer.getBoundingClientRect().width.toFixed(1) : -1,
         radii: [cs.borderTopLeftRadius, cs.borderTopRightRadius,
           cs.borderBottomRightRadius, cs.borderBottomLeftRadius].map((v) => parseFloat(v)),
         nicks,
@@ -5513,6 +5521,34 @@ async function runRowPair(cdp, url) {
   check("连续消息组：昵称只在组首出现（2 行而不是 5 行）",
     (mixed.rows || []).reduce((n, r) => n + (r ? r.nicks : 0), 0) === 2,
     "2", JSON.stringify((mixed.rows || []).map((r) => r && r.nicks)));
+
+  // ── 同一条竖线：组首画的那个头像，必须和组内那个"同宽空位"一样宽 ──
+  /*
+   * 这一段钉的是**横向**对齐，前面所有判据量的都是纵向。头像与空位分属两个文件
+   *（`MessageAvatar.vue` 的 `h-9 w-9` 类 vs `MessageItem.vue` 的 `width: var(--gosslan-msg-avatar)`
+   * 内联样式），所以"同宽"这件事从来没有机器凭据 —— 一旦两边不同值，同一组里
+   * 气泡左缘就逐行跳（组首 = 16+头像+8，组内 = 16+空位+8），而竖向判据全都不会红。
+   * 这里读的是列的真实左缘，不读 class 也不读 CSS 变量：注释和 class 都可能说谎，
+   * 像素不会。两条判据互相兜住："左缘全等"管结果，"头像宽 == 空位宽"管原因
+   *（只有前者时，两侧同时改错仍会绿；只有后者时，量具读空(-1==-1)也会假绿）。
+   */
+  const groupRows = (mixed.rows || []).slice(0, 4);
+  const lefts = groupRows.map((r) => (r ? r.left : NaN));
+  const spread = +((Math.max(...lefts) - Math.min(...lefts)) || 0).toFixed(1);
+  console.log("  · 左缘与头像列：left=" + JSON.stringify(lefts) + " 极差=" + spread
+    + " 头像宽=" + (groupRows[0] && groupRows[0].avatarW)
+    + " 空位宽=" + (groupRows[1] && groupRows[1].spacerW));
+  check("连续消息组：同一组四条的气泡左缘全等（|极差| <= 1px）",
+    lefts.length === 4 && lefts.every((v) => typeof v === "number" && v > 0) && spread <= 1,
+    "|极差| <= 1", JSON.stringify({ lefts, spread }));
+  check("连续消息组：组首头像宽 == 组内空位宽（同一列宽才不会逐行跳）",
+    !!groupRows[0] && !!groupRows[1]
+      && groupRows[0].avatarW > 0 && groupRows[1].spacerW > 0
+      && Math.abs(groupRows[0].avatarW - groupRows[1].spacerW) <= 0.5,
+    "差 <= 0.5px", JSON.stringify({
+      avatarW: groupRows[0] && groupRows[0].avatarW,
+      spacerW: groupRows[1] && groupRows[1].spacerW,
+    }));
 
   // ── 反向对照：全部同一个发送者 ⇒ 组距塌成组内距、身份塌成 1 ──
   const msgsFlat = stackMsgs(STACK.map(() => "peer-a"));
