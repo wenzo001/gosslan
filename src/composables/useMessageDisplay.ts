@@ -39,6 +39,38 @@ export function useMessageDisplay(opts: {
    *  对方消息按对方广播的偏好渲染），其余预设取表中明/暗值。 */
   const colors = computed(() => resolveChatColors(preset.value.key, app.themeColor, app.dark));
 
+  /** 本条在连续消息组里的位置。判定由会话层（`ChatWindow.groupSideAt`）算好传进来，
+   *  与 `messageHeight` 的估高共用同一个函数；没传就是独占一条。 */
+  const groupSide = computed<MessageGroupSide>(() =>
+    opts.groupSide ? toValue(opts.groupSide) : "single",
+  );
+
+  /**
+   * 连续消息的四角：**与相邻那一条齐平的那一侧**收成小角，外侧仍是胶囊。
+   *
+   * 这段必须待在内联样式里。上一版把它写在样式表的
+   * `.msg-stack[data-pos="…"] .gosslan-bubble-text` 上，而气泡的 `border-radius`
+   * 本来就出自下面的 `bubbleStyle` ⇒ 内联压过样式表，四角实测恒为 18px，
+   * 「合并」这件事只剩间距生效（2026-10-23 探针新加的那格连续消息量具抓出来的）。
+   * 值仍只取令牌，像素不在这里。
+   */
+  const stackRadii = computed<Pick<
+    CSSProperties,
+    "borderTopLeftRadius" | "borderTopRightRadius" | "borderBottomLeftRadius" | "borderBottomRightRadius"
+  >>(() => {
+    const full = "var(--gosslan-bubble-radius, 4px)";
+    const tight = "var(--gosslan-bubble-radius-tight, 6px)";
+    const side = groupSide.value;
+    const top = side === "middle" || side === "last" ? tight : full;
+    const bottom = side === "middle" || side === "first" ? tight : full;
+    return {
+      borderTopLeftRadius: top,
+      borderTopRightRadius: top,
+      borderBottomLeftRadius: bottom,
+      borderBottomRightRadius: bottom,
+    };
+  });
+
   /** 气泡：圆角/尖角取微信式，配色仍由用户预设决定（--bubble-bg 供尖角取色）。 */
   const bubbleStyle = computed<CSSProperties>(
     () =>
@@ -46,7 +78,7 @@ export function useMessageDisplay(opts: {
         "--bubble-bg": mine.value ? colors.value.mineBubble : colors.value.otherBubble,
         background: "var(--bubble-bg)",
         color: mine.value ? colors.value.mineText : colors.value.otherText,
-        borderRadius: "var(--gosslan-bubble-radius, 4px)",
+        ...stackRadii.value,
         border: mine.value ? "1px solid transparent" : "1px solid var(--gosslan-border)",
         // 尖角描边取这条消息自己的边框色（`mine` 的边框是透明的 ⇒ 描边也透明，形状只靠填充）。
         // 用户 2026-10-23：「气泡有边框、尾巴没有 ⇒ 接缝对不上」——尾巴与气泡必须同一支线色。
@@ -85,15 +117,14 @@ export function useMessageDisplay(opts: {
   const showTimeDivider = computed(() =>
     shouldShowTimeDivider(message.value.ts, prev.value?.ts),
   );
-  const showNickname = computed(() => {
-    const side = opts.groupSide ? toValue(opts.groupSide) : "single";
-    return shouldShowNickname({
+  const showNickname = computed(() =>
+    shouldShowNickname({
       isGroup: isGroup.value,
       mine: mine.value,
       kind: message.value.kind,
-      atGroupStart: side === "first" || side === "single",
-    });
-  });
+      atGroupStart: groupSide.value === "first" || groupSide.value === "single",
+    }),
+  );
 
   const fullTime = computed(() => fmtDateTime(message.value.ts));
   const timeDividerText = computed(() => fmtTimeDivider(message.value.ts, t, currentLocale()));
