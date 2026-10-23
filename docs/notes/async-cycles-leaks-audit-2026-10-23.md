@@ -118,6 +118,13 @@
   ⇒ 多一个 toast 批次 / 多一次 `refreshTransfers` IPC。
 - 判定：**不是泄露**（有界，≤1）。是否要登记进 `chatInitScope.onDispose` 由 A4 决定；
   若要改，判据应钉"待触发的定时器数量在 init 重入后仍为 0/1"，不是钉出现次数。
+- **状态（2026-10-23，5.5.37）**：已登记。`init()` 里那段 `scope.onDispose` 现在与
+  `markReadTimer` 一起清掉这两个（并归零句柄）。判据在 `storeContract.test.ts`：
+  三个定时器都必须在同一个 onDispose 窗口里出现 `clearTimeout(...)`；删掉其中一个块 ⇒
+  该用例红（实测），恢复即绿。
+  注意实际危害比原文写的还轻：Store 是**单例**，旧回调落在同一份活状态上（不会碰死实例），
+  代价只是多做一次通知合批 / 一次 `refreshTransfers`。登记它的理由是"口径一致"，
+  不是"修了一个漏洞"——别把这条当 P0。
 
 ### P3-F 常驻 worker 的看门狗自己不被人监督
 

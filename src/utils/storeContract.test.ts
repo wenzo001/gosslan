@@ -956,3 +956,24 @@ test("★ 文件的三条终态事件都收回「网络停滞」标记（那个 
     "onFileCancelled 必须收回停滞标记：否则取消过的每一条都永久留在那个 Map 里",
   );
 });
+
+/**
+ * 两个一次性定时器也登记在 init 作用域上（10-23 审计 P3-E）。
+ *
+ * 它们的形状是"只排一次、开火即清、重复排程有 `!== null` 守卫"，所以单次不泄露；
+ * 但 `init()` 会重跑（设置页的"重绑事件"入口），**已排队的那一发不会取消** ——
+ * 它会落在新一代作用域里多跑一次。代价很小，但口径要与 `markReadTimer` 一致：
+ * 作用域销毁就该把还排着的东西一起放掉。
+ */
+test("★ 一次性定时器在 init 作用域销毁时被取消（与 markReadTimer 同一条口径）", () => {
+  const store = readFileSync(join(ROOT, "stores", "useChatStore.ts"), "utf8");
+  const at = store.indexOf("scope.onDispose(() => {");
+  assert.ok(at >= 0, "init 作用域的那段 onDispose 不见了 ⇒ 本判据的锚点失效");
+  const dispose = store.slice(at, at + 900);
+  for (const timer of ["markReadTimer", "notifyTimer", "transfersRepairTimer"]) {
+    assert.ok(
+      dispose.includes(`clearTimeout(${timer})`),
+      `${timer} 必须在 init 作用域销毁时被 clearTimeout：重绑事件不该让上一代的定时器留到下一代`,
+    );
+  }
+});

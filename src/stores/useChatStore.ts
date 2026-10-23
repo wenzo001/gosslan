@@ -2772,6 +2772,18 @@ export const useChatStore = defineStore("chat", () => {
     // 300ms 后发出去（用户已经切走，等于替他判了已读）。
     scope.onDispose(() => {
       if (markReadTimer) clearTimeout(markReadTimer);
+      // 同一条纪律补两个"一次性"定时器（10-23 审计 P3-E）：它们各自只排一次、开火即清、
+      // 重复排程有 `!== null` 守卫，但**重新 init 时不会取消已排队的那一发**。
+      // Store 是单例 ⇒ 那一下作用在同一份活状态上（不会碰死实例），代价只是多做一次
+      // 通知合批 / 一次传输补拉；登记之后连这个也省了，且与 markReadTimer 一个口径。
+      if (notifyTimer !== null) {
+        clearTimeout(notifyTimer);
+        notifyTimer = null;
+      }
+      if (transfersRepairTimer !== null) {
+        clearTimeout(transfersRepairTimer);
+        transfersRepairTimer = null;
+      }
     });
     bindEvents({
       onPeers: (p) => {
