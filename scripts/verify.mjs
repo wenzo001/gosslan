@@ -435,8 +435,13 @@ const steps = [
     // ⚠️ 不要写进 build.rs 的 `cargo:rustc-link-arg-tests`：本包没有 `[[test]]` 目标，
     // cargo 会直接判 `invalid instruction … does not have a test target`（2026-10-23 实测，
     // 那一次把 Windows 构建和 macOS 单测一起带红）。
+    //
+    // ⚠️ Windows 还要 `--lib`（2026-10-23 实测 LNK1123）：RUSTFLAGS 会作用到 cargo 这一次
+    // 编译的**所有** rustc 调用 —— 包括同一个包里顺带编出来的 bin（它已经有 tauri-build
+    // 嵌的清单），两处清单撞在一起就把链接打红了。`--lib` 只编 libtest 那个壳；本包的
+    // bin（`main.rs`）本来就没有用例，测试清单守卫用的也正是 `--lib -- --list`。
     env: windowsTestLinkEnv(),
-    args: ["test", "--features", "bluetooth", ...(process.platform === "win32" ? ["--release"] : [])],
+    args: ["test", "--features", "bluetooth", ...(process.platform === "win32" ? ["--release", "--lib"] : [])],
   },
   {
     group: "rust",
