@@ -1117,6 +1117,19 @@ mesh 没有服务器也没有强制升级 ⇒ 混合版本是常态，不是边�
 * 取消槽位（`file_send_cancels`）的登记与回收只有一个家
   （`network/file::install_cancel_slot`），且登记排在**任何慢步骤之前**
   （整文件哈希 / 群发并发闸排队 / Offer 等待）—— 否则那段时间的取消静默丢掉。
+* **群收件人行与群文件行的 `cancelled` 同样是硬终态**（2026-10-23 B2）：
+  `group_file_recipients` **不需要新列** —— 这张表里只有用户主动取消会写 `cancelled`
+  （自动路径写的是 `failed` / `pending`），所以状态本身就是墓碑。三处必须同时成立，
+  少一处就是"界面上取消了、链路上照样发完"：
+  · 成员行的 `update_group_file_recipient` 带 `AND status <> 'cancelled'`（晚到的进度与
+    迟到的 ACK 改不动它），而"这一格不存在"仍然**继续报错** —— 两种"改 0 行"不许合并成
+    一条错误，否则取消之后的每一笔晚到写都会在生产日志里留一条假故障；
+  · `upsert_group_file_receive`（同一单再进来一次的复位入口）只放过 `completed` **与 `cancelled`**；
+  · 投递入口 `dispatch_group_file_to_peer` 在**拿并发闸许可之前**先看闸门，且两头都读
+    （整单 `is_group_file_cancelled` + 这一格 `is_group_file_recipient_cancelled`）——
+    闸门排在 `acquire().await` 之后时，排队期间发生的取消会照常把整份文件发出去。
+  投递摘要的 `waiting` 从此排除 `cancelled` 并新增 `cancelled` 一格（四格互斥、求和等于 `total`）：
+  已取消的成员**再也不会收**，把他们算进"待上线"就是那句「M 人待上线」永远挂着。
 
 **非空转证明**：`verify-guards` 变异用例 —— 摘掉 `WHERE status <> 'done'` ⇒ 正向判据红；
 照本条落地前的建议把集合写成 `NOT IN ('done','failed','cancelled')` ⇒ 反向判据红；
@@ -1124,9 +1137,13 @@ mesh 没有服务器也没有强制升级 ⇒ 混合版本是常态，不是边�
 把墓碑条件放宽成 `if changed` ⇒ 自动判死的行被盖上墓碑、续传的门被关掉（反向）；
 去掉 `&& !already_done` ⇒ 已送达的行被盖上取消墓碑；
 `mark_file_outbox_sending` 的 `Ok(n > 0)` 改成恒真 ⇒ 抢占回报失真（快照竞态复活）；
-`send_retry_verdict` 里取消那一格短路 ⇒ 取消被重试上限改写成失败。
+`send_retry_verdict` 里取消那一格短路 ⇒ 取消被重试上限改写成失败；
+群文件那一族另加五条：去掉成员行的 `AND status <> 'cancelled'` / 去掉群文件行的
+`AND status <> 'completed'` / 把"只动未到终态成员"放宽成"除 completed 都动" /
+把接收会话的复位退回只放过 completed / 把投递入口那道闸门短路成恒不成立
+（最后一条只有**位置 + 短路**这对判据抓得到，数量判据看不见顺序变化）。
 
-- 钩子：`guards:upsert_transfer 的「done 不可降级」闸门不得被摘掉` `db::cascade_tests::a_completed_transfer_row_is_never_downgraded` `db::tests::complete_ack_failure_cannot_downgrade_completed` `db::cascade_tests::a_user_cancelled_transfer_is_never_revived_by_a_late_write` `db::cascade_tests::a_cancel_on_an_already_done_transfer_writes_no_tombstone` `db::cascade_tests::claiming_an_outbox_row_reports_whether_it_was_actually_claimed` `network::file::tests::a_user_cancel_never_enters_the_retry_queue_and_is_not_a_failure` `tests::cancel_slot_has_exactly_one_home`
+- 钩子：`guards:upsert_transfer 的「done 不可降级」闸门不得被摘掉` `db::cascade_tests::a_completed_transfer_row_is_never_downgraded` `db::tests::complete_ack_failure_cannot_downgrade_completed` `db::cascade_tests::a_user_cancelled_transfer_is_never_revived_by_a_late_write` `db::cascade_tests::a_cancel_on_an_already_done_transfer_writes_no_tombstone` `db::cascade_tests::claiming_an_outbox_row_reports_whether_it_was_actually_claimed` `network::file::tests::a_user_cancel_never_enters_the_retry_queue_and_is_not_a_failure` `tests::cancel_slot_has_exactly_one_home` `db::group_file_delivery_tests::a_cancelled_recipient_row_is_a_hard_terminal` `db::group_file_delivery_tests::cancelling_a_group_file_touches_only_the_members_that_are_not_terminal` `db::group_file_delivery_tests::a_cancelled_group_file_is_not_requeued_by_the_offline_or_sweep_paths` `db::group_file_delivery_tests::group_file_row_cancel_does_not_downgrade_completed` `tests::group_file_cancel_gate_is_checked_before_the_permit`
 
 ### INV-P27 — 「用户在看这个会话」只有一个口径，抑制必须共用它
 

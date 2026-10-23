@@ -775,7 +775,9 @@ pub struct GroupFile {
     pub name: String,
     pub size: u64,
     pub sha256: String,
-    /// 'pending' | 'sending' | 'completed' | 'failed'
+    /// 'pending' | 'sending' | 'completed' | 'failed' | 'cancelled'
+    /// （`cancelled` = 用户主动取消这一单，B2；它是**硬终态**：已取消的成员行与群文件行
+    /// 都不许被晚到的进度、迟到的 ACK 或"重建接收会话"点亮回 `sending`。）
     pub status: String,
     pub created_at: i64,
     /// 归属场景：`chat` = 普通群文件；`todo` = 待办描述图片（不进时间线）
@@ -789,7 +791,8 @@ pub struct GroupFile {
 #[allow(dead_code)]
 pub struct GroupFileRecipient {
     pub recipient_id: String,
-    /// 'pending' | 'sending' | 'completed' | 'failed'
+    /// 'pending' | 'sending' | 'completed' | 'failed' | 'cancelled'（同 `GroupFile::status`：
+    /// `cancelled` 是硬终态，判据 `db::group_file_delivery_tests::a_cancelled_recipient_row_is_a_hard_terminal`）
     pub status: String,
     /// 0.0 ~ 1.0，与 file_transfers.progress 同一表示
     pub progress: f64,

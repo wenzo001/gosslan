@@ -648,6 +648,31 @@ pub async fn cancel_file_transfer(
         let _ = db::finalize_file_failure(&dbc, &transfer_id, db::FileJobEnd::Cancelled);
     }
 
+    // 2b. 群文件（B2）：用户取消的是**整条消息** ⇒ 每个还没到终态的成员都要落 cancelled。
+    // 少这一步的真实后果不是"界面上少一行"，而是**文件会被再发一遍**：
+    //  · 离线补发那条路在成员重新上线时捞 `pending` 的收件人行（`list_pending_group_files_for_recipient`）；
+    //  · 投递失败/续传的复位入口 `db::upsert_group_file_receive`（接收端与续传都走它，
+    //    由 `transport::group_file::ensure_group_file_row` 调用）以前把非 completed 的行
+    //    一律复位成 `sending` ⇒ 已取消的成员会在"同一单再来一次"时被点亮。
+    // 两处都改过之后（见 db/group_files.rs 那两条 NOT IN ('completed','cancelled')），
+    // 已取消的成员既不被补发、也不被点亮。
+    // 只在本机是**发送方**时动这两张表：收件端那条 `group_files` 行是"别人发给我的"，
+    // 取消它属于接收侧协议（B3 的 Cancel 帧），不在这一批。
+    let cancelled_recipients = {
+        let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());
+        let mine = db::get_group_file(&dbc, &transfer_id)
+            .map(|f| f.sender_id == s.device_id)
+            .unwrap_or(false);
+        if mine {
+            let rows = db::cancel_group_file_recipients(&dbc, &transfer_id).unwrap_or(0);
+            // 单条群文件的聚合行也要落 cancelled（`group_files.status` 是气泡与摘要的入口）。
+            db::mark_group_file_cancelled(&dbc, &transfer_id).unwrap_or(0);
+            rows
+        } else {
+            0
+        }
+    };
+
     // 3. 通知前端
     let _ = s.app.emit("file-cancelled", &transfer_id);
     let _ = s
@@ -659,7 +684,9 @@ pub async fn cancel_file_transfer(
 
     s.logger.info(
         "file",
-        format!("用户取消文件发送 transfer={transfer_id} (cancel_signal={signalled} already_done={already_done})"),
+        format!(
+            "用户取消文件发送 transfer={transfer_id} (cancel_signal={signalled} already_done={already_done} group_recipients_cancelled={cancelled_recipients})"
+        ),
     );
 
     Ok(FileCancelResult {

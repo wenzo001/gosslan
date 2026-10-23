@@ -460,6 +460,121 @@ CASES: list[Case] = [
         expect_fail_hint="取消必须走",
         tags=["rust", "db", "files", "terminal-state", "new-guards"],
     ),
+    # ---- B2：群文件取消（`group_file_recipients` / `group_files` 的 cancelled 硬终态）----
+    Case(
+        name="群文件摘要：已取消的成员不许算成「还在等」",
+        why="摘要里 `waiting` 以前是 `NOT IN ('completed','failed')` ⇒ 用户取消掉的成员永远留在"
+        "「等待在线 K 人」那一格里（那几个人再也不会收了）。\n"
+        "     注入方式：把 cancelled 从 waiting 的排除集合里拿掉（四格求和立刻不等于 total）。",
+        file=TAURI / "src" / "db" / "group_files.rs",
+        injections=[(
+            "               SUM(CASE WHEN status NOT IN ('completed','failed','cancelled') THEN 1 ELSE 0 END)",
+            "               SUM(CASE WHEN status NOT IN ('completed','failed') THEN 1 ELSE 0 END)",
+        )],
+        cmd=cargo("test", "--lib", "delivery_summary_counts_each_recipient_into_exactly_one_bucket"),
+        cwd=TAURI,
+        expect_fail_hint="已取消的不算在等",
+        tags=["rust", "db", "files", "group", "terminal-state", "new-guards"],
+    ),
+    Case(
+        name="已取消的成员行是硬终态：晚到的进度/ACK 改不动它",
+        why="取消信号是异步回流的：投递任务在下一个观测点才退回来，带着上一轮的进度或这次真发完了"
+        "的 completed 判定 ⇒ 没有闸门时那一格会被晚到的写改回 sending/completed（与 file_transfers"
+        " 的 cancel_terminal 同一族缺陷，只是这张表用状态本身当墓碑）。\n"
+        "     注入方式：去掉 UPDATE 尾巴上那句 `AND status <> 'cancelled'`。",
+        file=TAURI / "src" / "db" / "group_files.rs",
+        injections=[(
+            "         WHERE transfer_id = ?1 AND recipient_id = ?2 AND status <> 'cancelled'",
+            "         WHERE transfer_id = ?1 AND recipient_id = ?2",
+        )],
+        cmd=cargo("test", "--lib", "a_cancelled_recipient_row_is_a_hard_terminal"),
+        cwd=TAURI,
+        expect_fail_hint="已取消的行不许被",
+        tags=["rust", "db", "files", "group", "terminal-state", "new-guards"],
+    ),
+    Case(
+        name="群文件行落 cancelled 也不许降级 completed",
+        why="与 INV-P26 同一条口径：已经全部收完的那一单，取消不成立。少这句 WHERE，"
+        "气泡会从「已送达」翻成「已取消」。\n"
+        "     注入方式：去掉 `AND status <> 'completed'`（正向判据的 t5 那一格立刻红）。",
+        file=TAURI / "src" / "db" / "group_files.rs",
+        injections=[(
+            "         WHERE transfer_id = ?1 AND status <> 'completed'",
+            "         WHERE transfer_id = ?1",
+        )],
+        cmd=cargo("test", "--lib", "group_file_row_cancel_does_not_downgrade_completed"),
+        cwd=TAURI,
+        expect_fail_hint="已收完的群文件行不许被降级成已取消",
+        tags=["rust", "db", "files", "group", "terminal-state", "new-guards"],
+    ),
+    Case(
+        name="取消群文件只动未到终态的成员（completed/failed 各说各的事）",
+        why="把「已收到」改成「已取消」是谎报，把「已失败」覆盖成「已取消」会让下一个排查的人"
+        "读错这一单死于什么。\n"
+        "     注入方式：把 `status IN ('pending','sending')` 放宽成 `status <> 'completed'`"
+        "（被改写的行数与 failed 那一格的断言各红一次）。",
+        file=TAURI / "src" / "db" / "group_files.rs",
+        injections=[(
+            "         WHERE transfer_id = ?1 AND status IN ('pending', 'sending')",
+            "         WHERE transfer_id = ?1 AND status <> 'completed'",
+        )],
+        cmd=cargo("test", "--lib", "cancelling_a_group_file_touches_only_the_members_that_are_not_terminal"),
+        cwd=TAURI,
+        expect_fail_hint="completed/failed 一行都不许动",
+        tags=["rust", "db", "files", "group", "terminal-state", "new-guards"],
+    ),
+    Case(
+        name="重建接收会话不许把已取消的成员点亮回 sending",
+        why="`upsert_group_file_receive` 是「同一单再来一次」的复位入口，以前只放过 completed ⇒"
+        "已取消的成员会被复位成 sending 再传一遍（界面上取消了、链路上照发）。\n"
+        "     注入方式：把成员行那句复位退回旧写法（只放过 completed）。",
+        file=TAURI / "src" / "db" / "group_files.rs",
+        injections=[(
+            "         WHERE transfer_id = ?1 AND recipient_id = ?3 AND status NOT IN ('completed', 'cancelled')",
+            "         WHERE transfer_id = ?1 AND recipient_id = ?3 AND status != 'completed'",
+        )],
+        cmd=cargo("test", "--lib", "a_cancelled_group_file_is_not_requeued_by_the_offline_or_sweep_paths"),
+        cwd=TAURI,
+        expect_fail_hint="重建接收会话不许",
+        tags=["rust", "db", "files", "group", "terminal-state", "new-guards"],
+    ),
+    Case(
+        name="群投递闸门两头都得判：整单取消那一半不许被摘掉",
+        why="群文件是「一个 transfer_id × N 个成员」。整单取消（用户取消这条消息）写的是"
+        "`group_files.status`，按成员取消写的是 `group_file_recipients.status` —— 只判一头时，"
+        "另一头取消的那一次照样会把这份文件发给那个成员。\n"
+        '     注入方式：把整单那一半换成恒 `false`（`if cancelled_here {` 那句原样留着 ⇒ '
+        "位置判据与『看这一格』那半都不受影响，只有『必须先看整单』这一格会红）。",
+        file=TAURI / "src" / "commands" / "group_file_dispatch.rs",
+        injections=[(
+            "        db::is_group_file_cancelled(&dbc, transfer_id)\n"
+            "            || db::is_group_file_recipient_cancelled(&dbc, transfer_id, recipient)",
+            "        false\n"
+            "            || db::is_group_file_recipient_cancelled(&dbc, transfer_id, recipient)",
+        )],
+        cmd=cargo("test", "--lib", "group_file_cancel_gate_is_checked_before_the_permit"),
+        cwd=TAURI,
+        expect_fail_hint="闸门必须先看整单是否已取消",
+        tags=["rust", "file", "group", "terminal-state", "new-guards"],
+    ),
+    Case(
+        name="群投递入口必须先看取消闸门，再看并发闸许可",
+        why="任务可能在并发闸后面排队几十秒：闸门排在 `acquire().await` 之后时，取消发生在排队"
+        "期间的那一次会拿到许可、把整份文件发出去（用户看到「按了没反应」）。数量不变、只有顺序变，"
+        "所以判据必须是**位置**。\n"
+        "     注入方式：把闸门那句改成 `if false {` —— 那条 `if cancelled_here {` 锚点随之消失，"
+        "判据的第一个 `.expect` 就用「取消闸门不见了」这句话红（这一格证的是：这条形状判据"
+        "真的读的是那道闸门，不是一段永远存在的文本）。",
+        file=TAURI / "src" / "commands" / "group_file_dispatch.rs",
+        injections=[(
+            "    if cancelled_here {",
+            "    if false {",
+        )],
+        cmd=cargo("test", "--lib", "group_file_cancel_gate_is_checked_before_the_permit"),
+        cwd=TAURI,
+        expect_fail_hint="取消闸门不见了",
+        tags=["rust", "file", "group", "terminal-state", "new-guards"],
+    ),
     Case(
         name="群文件终态：取消要写 gfile 气泡、超时/放弃不许写（两个方向都钉）",
         why="合并成一份出口之后，「哪些口径允许碰群气泡」变成这个函数里的一行 `if cancelled`。\n"

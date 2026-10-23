@@ -757,7 +757,7 @@ CREATE TABLE IF NOT EXISTS group_files (
     name        TEXT NOT NULL,
     size        INTEGER NOT NULL,
     sha256      TEXT NOT NULL,
-    status      TEXT NOT NULL DEFAULT 'pending',  -- 'pending' | 'sending' | 'completed' | 'failed'
+    status      TEXT NOT NULL DEFAULT 'pending',  -- 'pending' | 'sending' | 'completed' | 'failed' | 'cancelled'（后者=用户主动取消整条群文件，B2 的硬终态，见 INV-P26）
     created_at  INTEGER NOT NULL,
     scope       TEXT NOT NULL DEFAULT 'chat',      -- 'chat' | 'todo'
     todo_id     TEXT NOT NULL DEFAULT ''
@@ -768,7 +768,7 @@ CREATE INDEX IF NOT EXISTS idx_group_files_group ON group_files(group_id);
 CREATE TABLE IF NOT EXISTS group_file_recipients (
     transfer_id  TEXT NOT NULL,
     recipient_id TEXT NOT NULL,
-    status       TEXT NOT NULL DEFAULT 'pending',  -- 'pending' | 'sending' | 'completed' | 'failed'
+    status       TEXT NOT NULL DEFAULT 'pending',  -- 'pending' | 'sending' | 'completed' | 'failed' | 'cancelled'（后者=用户取消这一格；这张表**不需要墓碑列**：只有主动取消会写 cancelled，状态本身就是墓碑）
     progress     REAL NOT NULL DEFAULT 0,
     updated_at   INTEGER NOT NULL,
     PRIMARY KEY (transfer_id, recipient_id)

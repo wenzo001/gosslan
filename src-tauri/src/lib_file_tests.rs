@@ -330,7 +330,49 @@ fn group_file_send_concurrency_is_gated_at_the_scheduler() {
     );
 }
 
+/// 群投递的取消闸门必须排在**并发闸之前**，并且两头都读（B2）。
+///
+/// 为什么用位置判而不是数量判：任务可能在 `group_file_permits.acquire().await` 后面排队
+/// 几十秒（200 成员群 + 8 路并发），闸门若排在拿到许可之后，**取消发生在排队期间的那一次**
+/// 会照常把整份文件发出去 —— 用户看到的就是"按了取消没反应"。两处代码都在、数量不变、
+/// 只有顺序变，所以只有位置判据抓得到。
+///
+/// 两条变异用例各证一格（"有断言"不等于"被证明会失败"）：
+///  · 把 `if cancelled_here {` 短路成 `if false {` ⇒ 第一个 `.expect` 就红（闸门不再是闸门）；
+///  · 把整单那一半判据换成恒 `false` ⇒ "闸门必须先看整单"那一格红。
+#[test]
+fn group_file_cancel_gate_is_checked_before_the_permit() {
+    let dispatch = code_flat(include_str!("commands/group_file_dispatch.rs"));
+    let gate_at = dispatch
+        .find("ifcancelled_here{")
+        .expect("取消闸门不见了 ⇒ 排队期间的取消没人拦（本条判据的锚点失效）");
+    let permit_at = dispatch
+        .find("group_file_permits.acquire()")
+        .expect("并发闸不见了");
+    assert!(
+        gate_at < permit_at,
+        "取消闸门必须排在并发闸之前（拿到许可那一刻，文件已经开始发了）"
+    );
+    // 两头都要判：只判整单会漏"这一格被单独取消过"，只判这一格会漏"整单已取消而成员行
+    // 由另一条路（离线补发）写进来"。
+    assert!(
+        dispatch.contains("is_group_file_cancelled(&dbc,transfer_id)"),
+        "闸门必须先看整单是否已取消"
+    );
+    assert!(
+        dispatch.contains("is_group_file_recipient_cancelled(&dbc,transfer_id,recipient)"),
+        "闸门必须先看这一格是否已取消"
+    );
+    // 命中闸门时必须走 Cancelled 那一档，不是 Retryable/Unrecoverable（否则台账落 failed）
+    let after_gate = &dispatch[gate_at..];
+    assert!(
+        after_gate.contains("GroupFileSendErr::Cancelled"),
+        "闸门退出必须回报 Cancelled —— 落 failed 就是「取消记成失败」那条旧缺陷"
+    );
+}
+
 /// 发送进度必须落在"已写出链路"上，不许回到"已入队"（v4.22.37 的用户可见症状）。
+///
 ///
 /// 六处同时成立才有意义，所以一起钉：
 ///   ① writer 那唯一的证据点必须**累加片数**（只记时刻的话进度算不出来）；

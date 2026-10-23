@@ -562,6 +562,7 @@ export const enUS: MessageDict = {
   "msg.sentTo": "Sent to {n}",
   "msg.waitingOnline": "{n} waiting to come online",
   "msg.failedCount": "{n} failed",
+  "msg.cancelledCount": "{n} canceled",
   "msg.imageLoadFailed": "Failed to load image",
   "msg.imagePreview": "Image preview",
   "msg.lightbox.loading": "Loading image…",

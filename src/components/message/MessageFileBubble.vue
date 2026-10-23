@@ -22,7 +22,7 @@ const props = defineProps<{
   failed: boolean;
   note: string | null;
   /** 群文件（gfile-）专用：按成员聚合的投递状态（单聊为 null 不显示）。 */
-  delivery?: { completed: number; failed: number; waiting: number } | null;
+  delivery?: { completed: number; failed: number; waiting: number; cancelled: number } | null;
   /** 自己的消息气泡尖角朝右、对方朝左，指向头像。 */
   mine: boolean;
   /** 文件已就绪（本地路径可用）**且文件确实还在**：整卡可点击打开（微信式：下载完成后点消息即打开）。 */
@@ -167,6 +167,10 @@ const canOpen = computed(() => props.ready && props.tappable !== false);
       <span>{{ t("msg.sentTo", { n: delivery.completed }) }}</span>
       <span v-if="delivery.waiting > 0">· {{ t("msg.waitingOnline", { n: delivery.waiting }) }}</span>
       <span v-if="delivery.failed > 0" class="text-[var(--gosslan-danger-ink)]">· {{ t("msg.failedCount", { n: delivery.failed }) }}</span>
+      <!-- 已取消必须单独说，不能并进「待上线」：那几个人**永远不会再收了**，
+           把他们算成"在等"就是这句"M 人待上线"永远挂着、用户等一个不会来的上线（B2）。
+           颜色用次要文字而不是 danger —— 用户自己按下的取消不是错误。 -->
+      <span v-if="delivery.cancelled > 0">· {{ t("msg.cancelledCount", { n: delivery.cancelled }) }}</span>
     </div>
     <!-- 进度条只在活动传输时出现；状态文案独立一行 —— 进度停下来之后那句话还得说得出失败/取消 -->
     <template v-if="progress !== null">

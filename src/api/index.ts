@@ -366,7 +366,7 @@ export const api = {
   readClipboardFilePaths: () => invoke<string[]>("read_clipboard_file_paths"),
   /** 群文件每收件人进度汇总（气泡上「3/5 已收到」）。null = 这条 transfer 没有群投递记录。 */
   getGroupFileDeliverySummary: (transferId: string) =>
-    invoke<{ completed: number; failed: number; waiting: number } | null>(
+    invoke<{ completed: number; failed: number; waiting: number; cancelled: number } | null>(
       "get_group_file_delivery_summary",
       { transferId },
     ),

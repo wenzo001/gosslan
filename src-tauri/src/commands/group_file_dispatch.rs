@@ -97,6 +97,27 @@ async fn dispatch_group_file_to_peer(
     // 把前一个的 Sender 挤掉 ⇒ 前者的 cancel_rx 以 Err(RecvError) 完成 ⇒ 被取消分支当成
     // 「用户取消发送」，N 个成员里只有最后一个发得完（真机三成员群必现）。
     let (mut cancel_rx, _cancel_slot) = file::install_cancel_slot(state, transfer_id, recipient);
+    // 取消闸门（B2）：这一单**或这一格**已经被用户取消 ⇒ 当场退出。三层各管一段时间，
+    // 少一层就会"界面上取消了、链路上照样发完"：
+    //  · 离线补发的查询只捞 `pending` ⇒ 管"取消之后对方才上线"；
+    //  · `upsert_group_file_receive`（同一单再进来一次的复位入口）不碰 `cancelled`
+    //    ⇒ 管"重投同一单时把已取消的成员点亮"；
+    //  · 这里管**已经在内存里排队的任务** —— 取消发生在并发闸排队期间时，拿到许可后
+    //    必须再问一次库，否则排队几十秒后排到了就照发（用户看到的就是"按了没用"）。
+    let cancelled_here = {
+        let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
+        db::is_group_file_cancelled(&dbc, transfer_id)
+            || db::is_group_file_recipient_cancelled(&dbc, transfer_id, recipient)
+    };
+    if cancelled_here {
+        app_handle_log(
+            state,
+            &format!(
+                "群文件已被取消，跳过投递 transfer={transfer_id} recipient={recipient}（不占并发闸许可）"
+            ),
+        );
+        return Err(GroupFileSendErr::Cancelled);
+    }
     // 全局并发闸（拍板 4A(8)）：群发是"每可达成员一个任务"，无闸时 200 成员会同时
     // 占住 200 份读缓冲（每份约 1.2 MB）与 200 条链路的队列（每条预算 8 MiB）。
     // 闸放在**传输调度层**（本函数是群发与离线补发的唯一投递入口），才同时管住

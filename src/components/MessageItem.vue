@@ -140,9 +140,11 @@ const retryableContent = computed(() => {
 const chat = useChatStore();
 const { memberProfile } = useMemberProfile();
 
-// 群文件（gfile-）投递摘要：成员状态语义（已发送给 N 人 · M 人待上线）。
+// 群文件（gfile-）投递摘要：成员状态语义（已发送给 N 人 · M 人待上线 · K 人已取消）。
 // status 变化（含 CompleteAck 推进）时自动刷新。
-const deliverySummary = ref<{ completed: number; failed: number; waiting: number } | null>(null);
+// `cancelled` 与 `waiting` 是两格（B2）：已取消的成员**永远不会再收**，
+// 后端摘要里他们不能留在 waiting —— 那样这句"M 人待上线"会永久挂着。
+const deliverySummary = ref<{ completed: number; failed: number; waiting: number; cancelled: number } | null>(null);
 const isGroupFile = computed(() => props.message.msg_id.startsWith("gfile-"));
 /**
  * 后发先至守卫（审计阶段 4 · 4.2）。这条 watch 的触发源有两个（msg_id 与 status），

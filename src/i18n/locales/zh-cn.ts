@@ -573,6 +573,9 @@ export const zhCN: MessageDict = {
   "msg.sentTo": "已发送给 {n} 人",
   "msg.waitingOnline": "{n} 人待上线",
   "msg.failedCount": "{n} 人失败",
+  // 群文件投递摘要里"用户主动取消的那几个成员"（B2）。不复用 `msg.canceled`：
+  // 那条讲的是"我这条发送被取消了"，这一条讲的是"这一单里 N 个人不会再收了"。
+  "msg.cancelledCount": "{n} 人已取消",
   "msg.imageLoadFailed": "图片加载失败",
   "msg.imagePreview": "图片预览",
   "msg.lightbox.loading": "正在加载图片…",
