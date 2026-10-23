@@ -1699,15 +1699,15 @@ function onLoadMore() {
            规则：UI 先出、数据后到（详见 docs/design-guidelines.md §9）。 -->
       <div v-if="messagesLoading" class="flex flex-col gap-3 px-4 py-5" aria-hidden="true">
         <div class="flex gap-2">
-          <div class="h-9 w-9 shrink-0 animate-pulse rounded-[var(--gosslan-avatar-radius)] bg-[var(--gosslan-hover)]"></div>
+          <div class="h-[var(--gosslan-msg-avatar)] w-[var(--gosslan-msg-avatar)] shrink-0 animate-pulse rounded-[var(--gosslan-avatar-radius)] bg-[var(--gosslan-hover)]"></div>
           <div class="h-9 w-40 animate-pulse rounded-[var(--gosslan-bubble-radius)] bg-[var(--gosslan-hover)]"></div>
         </div>
         <div class="flex flex-row-reverse gap-2">
-          <div class="h-9 w-9 shrink-0 animate-pulse rounded-[var(--gosslan-avatar-radius)] bg-[var(--gosslan-hover)]"></div>
+          <div class="h-[var(--gosslan-msg-avatar)] w-[var(--gosslan-msg-avatar)] shrink-0 animate-pulse rounded-[var(--gosslan-avatar-radius)] bg-[var(--gosslan-hover)]"></div>
           <div class="h-9 w-56 animate-pulse rounded-[var(--gosslan-bubble-radius)] bg-[var(--gosslan-hover)]"></div>
         </div>
         <div class="flex gap-2">
-          <div class="h-9 w-9 shrink-0 animate-pulse rounded-[var(--gosslan-avatar-radius)] bg-[var(--gosslan-hover)]"></div>
+          <div class="h-[var(--gosslan-msg-avatar)] w-[var(--gosslan-msg-avatar)] shrink-0 animate-pulse rounded-[var(--gosslan-avatar-radius)] bg-[var(--gosslan-hover)]"></div>
           <div class="h-9 w-32 animate-pulse rounded-[var(--gosslan-bubble-radius)] bg-[var(--gosslan-hover)]"></div>
         </div>
       </div>
