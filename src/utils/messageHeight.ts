@@ -12,7 +12,7 @@ import {
 import { TODO_CARD_IMAGE_VISIBLE } from "@/utils/todos";
 import type { FontSizeKey } from "@/utils/chatStyle";
 // 昵称行的判定与渲染端共用（提示行没有昵称行这条规则写在那个函数里）
-import { groupSide, isKnownKind, shouldShowNickname } from "@/utils/messageKinds";
+import { groupSide, isKnownKind, messageTopGap, shouldShowNickname } from "@/utils/messageKinds";
 import type { MessageRecord } from "@/types";
 
 /**
@@ -22,8 +22,7 @@ import type { MessageRecord } from "@/types";
  * ⚠️ 与 `MessageItem` 的 `GAP_BASE` / `GAP_TOP_*` 成对，与 `messageKinds.groupSide` 同一个判定。
  */
 const GAP_BASE = 4;
-const GAP_TOP_TIGHT = 0;
-const GAP_TOP_NEW = 6;
+// 上间距的两个档（0 / 6）住在 messageKinds.messageTopGap：零依赖模块才跑得动真值表。
 /** 群聊昵称行：leading-none(11) + mb-[7px](7) = 18px。
  *  字号/行高改动必须同步这里与 MessageItem 的昵称行（两者是同一份高度的两处表达）。
  *  行高取 leading-none 是为了让墨迹贴住行盒顶、与头像顶边齐平（行高 1.5 会往下推 ~3.7px，看着"名字偏低"）。 */
@@ -213,7 +212,7 @@ export function estimateMessageHeight(
   });
 
   // 分割行自己带间距，不再叠加组间距。
-  const topGap = showDivider ? 0 : side === "first" || side === "single" ? GAP_TOP_NEW : GAP_TOP_TIGHT;
+  const topGap = messageTopGap(side, showDivider);
 
   return bubble + GAP_BASE + topGap + (showNickname ? NICKNAME_ROW : 0) + (showDivider ? TIME_DIVIDER : 0);
 }
