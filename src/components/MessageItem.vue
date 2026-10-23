@@ -23,7 +23,7 @@ import { saveImageAs } from "@/utils/saveImageAs";
 import { haptic } from "@/utils/haptics";
 import { shouldStartLongPress, shouldSwallowLongPressRelease } from "@/utils/longPress";
 import { shouldPreventContextMenu } from "@/utils/contextMenu";
-import { isWithinRecallWindow } from "@/utils/recall";
+import { isRecallableKind, isWithinRecallWindow } from "@/utils/recall";
 import { detectCode } from "@/utils/codeDetect";
 import { t } from "@/i18n";
 import MessageAvatar from "@/components/message/MessageAvatar.vue";
@@ -791,6 +791,8 @@ function canRecallNow(): boolean {
     !isSelfMsg.value &&
     mine.value &&
     props.message.kind !== "recalled" &&
+    // 文本族以外的消息不给撤回入口：那个动作停不掉传输（文件/图片的正路是「取消」）。
+    isRecallableKind(props.message.kind) &&
     isWithinRecallWindow(props.message.ts)
   );
 }

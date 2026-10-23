@@ -34,6 +34,7 @@ pub async fn recall_message(
         crate::protocol::recall_verdict(
             &msg.sender_id,
             &s_db.device_id,
+            &msg.kind,
             &msg.conv_id,
             &friend_db,
             msg.ts,
@@ -242,6 +243,7 @@ pub async fn send_message(
                 crate::protocol::recall_verdict(
                     &msg.sender_id,
                     &s.device_id,
+                    &msg.kind,
                     &msg.conv_id,
                     &friend_id,
                     msg.ts,

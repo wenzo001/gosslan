@@ -1640,23 +1640,33 @@ mod tests {
     #[test]
     fn recall_verdict_covers_author_conversation_and_window() {
         let now = 1_000_000;
-        assert!(recall_verdict("me", "me", "peer", "peer", now - 1, now).is_ok());
+        assert!(recall_verdict("me", "me", "text", "peer", "peer", now - 1, now).is_ok());
         assert!(
-            recall_verdict("peer", "me", "peer", "peer", now - 1, now).is_err(),
+            recall_verdict("peer", "me", "text", "peer", "peer", now - 1, now).is_err(),
             "非作者必须拒绝"
         );
         assert!(
-            recall_verdict("me", "me", "other", "peer", now - 1, now).is_err(),
+            recall_verdict("me", "me", "text", "other", "peer", now - 1, now).is_err(),
             "目标不属于该会话必须拒绝"
         );
         assert!(
-            recall_verdict("me", "me", "peer", "peer", now - RECALL_WINDOW_MS, now).is_ok(),
+            recall_verdict(
+                "me",
+                "me",
+                "text",
+                "peer",
+                "peer",
+                now - RECALL_WINDOW_MS,
+                now
+            )
+            .is_ok(),
             "正好 5 分钟仍在窗口内"
         );
         assert!(
             recall_verdict(
                 "me",
                 "me",
+                "text",
                 "peer",
                 "peer",
                 now - RECALL_WINDOW_MS - 1,
@@ -1666,8 +1676,39 @@ mod tests {
             "超过 5 分钟必须拒绝"
         );
         assert!(
-            recall_verdict("me", "me", "peer", "peer", 0, now).is_ok(),
+            recall_verdict("me", "me", "text", "peer", "peer", 0, now).is_ok(),
             "ts=0 的历史行只跳过时间判据，作者/会话仍是硬门槛"
+        );
+    }
+
+    /// 撤回只收**文本族**（负责人 2026-10-23：文件/图片走取消，不撤回）。
+    ///
+    /// 这一格的意义不在"多拦一种"，而在**拦对了方向**：撤回只改消息行、停不掉传输，
+    /// 对着还在传的文件按撤回会得到"气泡已撤回、字节照样在发"。三种文本族必须都放行 ——
+    /// 判据两边都查，只钉 file 会造成"顺手把 code/merge 也拦掉"没人发现。
+    #[test]
+    fn recall_only_accepts_textual_kinds() {
+        let now = 1_000_000;
+        for kind in RECALLABLE_KINDS {
+            assert!(
+                recall_verdict("me", "me", kind, "peer", "peer", now - 1, now).is_ok(),
+                "{kind} 属于文本族，必须能撤回"
+            );
+        }
+        for kind in ["file", "image", "todo", "poll", "announcement", "recall", "pin"] {
+            let err = recall_verdict("me", "me", kind, "peer", "peer", now - 1, now)
+                .expect_err("非文本族必须拒绝撤回");
+            assert!(
+                err.contains("取消"),
+                "拒绝文案要把人引到「取消」那条正路，实际：{err}"
+            );
+        }
+        // 用切片比较而不是数组比较：数组比较在"加了一种"时是**编译错误**，
+        // 于是变异注入得到的是编译红而不是断言红 —— 那种 Case 证明不了判据会失败。
+        assert_eq!(
+            RECALLABLE_KINDS.as_slice(),
+            ["text", "code", "merge"].as_slice(),
+            "白名单本身也是口径：改名/加一种都要同时改前端 src/utils/recall.ts"
         );
     }
 }

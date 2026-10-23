@@ -977,4 +977,20 @@ CASES: list[Case] = [
         expect_fail_hint="FileCancel 必须钉在 High",
         tags=["rust", "network", "file", "stability", "new-guards", "file-cancel"],
     ),
+    Case(
+        name="撤回白名单漏了 file ⇒ 对着还在传的文件也能撤",
+        why="撤回只改**消息行**，停不掉一条正在跑的文件传输 ⇒ 对着文件按撤回会得到"
+        "「气泡已撤回、字节照样在发」。\n"
+        "     注入方式：把 `file` 加进 `RECALLABLE_KINDS` —— 编译器照过、"
+        "撤回链路照走，只有这一格判据会红。",
+        file=TAURI / "src" / "protocol.rs",
+        injections=[(
+            'pub const RECALLABLE_KINDS: [&str; 3] = ["text", "code", "merge"];',
+            'pub const RECALLABLE_KINDS: [&str; 4] = ["text", "code", "merge", "file"];',
+        )],
+        cmd=cargo("test", "--lib", "recall_only_accepts_textual_kinds"),
+        cwd=TAURI,
+        expect_fail_hint="非文本族必须拒绝撤回",
+        tags=["rust", "protocol", "recall", "new-guards"],
+    ),
 ]
