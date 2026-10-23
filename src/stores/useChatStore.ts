@@ -2856,6 +2856,10 @@ export const useChatStore = defineStore("chat", () => {
         void refreshTransfers();
       },
       onFileCancelled: (transferId) => {
+        // 终态一律收回「网络停滞」（与 `onFileDone` / `onFileFailed` 同一口径）。
+        // 漏这一行的后果不是"多一条提示"，而是 `stalledTransfers` 里那一格**永远不会被删**：
+        // 用户一晚上取消十次就积十格，`isTransferStalled` 每次渲染都要查它（10-23 审计 P1-A）。
+        setTransferStalled(transferId, false);
         // 后端 cancel_file_transfer emit 的：用户手动取消了一条文件发送
         // 前端把这条消息在**所有**缓存会话里标成 cancelled + 刷新传输列表。
         // ⚠️ 写 `cancelled` 不是 `failed`：库里那一笔写的就是 cancelled（INV-P26 把
