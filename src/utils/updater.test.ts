@@ -244,3 +244,45 @@ test("安装：把当前版本推进到新版本；失败则回到 error 且不�
   assert.equal(s2.state.phase, "error");
   assert.equal(s2.state.error, "unknown");
 });
+
+// ---------------- 跨窗口恢复（B5）：重开的窗口按后端快照补齐 ----------------
+
+/**
+ * `restore()` 守住的是"设置窗重开不装失忆"这件事的产品行为：
+ * 以前每窗口一份 UI 状态、下载在后端全局跑 ⇒ 重开只看到"检查更新"。
+ * 四条边界缺一不可：下载中要恢复、下完要恢复、**本窗口更细的进度不许被粗快照盖掉**、
+ * 终态/未知相位不该把本窗口拖出 idle。
+ */
+test("恢复：downloading 快照 ⇒ 相位与已下字节都对上", () => {
+  const svc = service(fake().adapter);
+  svc.restore({ phase: "downloading", downloaded: 40, total: 100, version: "5.5.0" });
+  assert.equal(svc.state.phase, "downloading");
+  assert.equal(svc.state.downloaded, 40);
+  assert.equal(svc.state.total, 100);
+  assert.equal(svc.state.info?.version, "5.5.0", "目标版本要跟着恢复（卡片上显示的就是它）");
+});
+
+test("恢复：ready 快照 ⇒ 已下字节补到 total（安装按钮才有意义）", () => {
+  const svc = service(fake().adapter);
+  svc.restore({ phase: "ready", downloaded: 0, total: 512, version: "5.5.0" });
+  assert.equal(svc.state.phase, "ready");
+  assert.equal(svc.state.downloaded, 512);
+});
+
+test("恢复：本窗口已经在跑（非 idle）时**不许**被粗快照覆盖", async () => {
+  // 用"检查到更新"把本窗口推进到非 idle（available）——那之后它的 info 才是权威。
+  const svc = service(fake({ check: async () => INFO }).adapter);
+  await svc.check(true);
+  assert.equal(svc.state.phase, "available");
+  svc.restore({ phase: "downloading", downloaded: 0, total: 999, version: "9.9.9" });
+  assert.equal(svc.state.phase, "available", "相位不许被粗快照改写");
+  assert.equal(svc.state.info?.version, INFO.version, "粗粒度快照不许盖掉本窗口更细的读数");
+});
+
+test("恢复：终态/未知相位不把本窗口拖出 idle", () => {
+  for (const phase of ["idle", "checking", "failed", "cancelled", "unsupported"]) {
+    const svc = service(fake().adapter);
+    svc.restore({ phase, downloaded: 10, total: 20, version: "5.5.0" });
+    assert.equal(svc.state.phase, "idle", `${phase} 不该被恢复成一个可交互的中间态`);
+  }
+});

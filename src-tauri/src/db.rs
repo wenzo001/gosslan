@@ -19,7 +19,7 @@ use crate::state::{
 /// 建表 / 建索引不需要 step：`init()` 在版本分支**之前**跑 `execute_batch(SCHEMA)`，
 /// 而 SCHEMA 全是 `IF NOT EXISTS` ⇒ 新老库每次启动都会被补齐。
 /// 同一条索引同时写在 SCHEMA 与 MIGRATIONS 里 = 两个家（历史上有过，v8→v9 起收敛）。
-pub const DB_VERSION: u32 = 11;
+pub const DB_VERSION: u32 = 12;
 
 /// 迁移 step：(from_version, to_version, 迁移闭包)。
 struct Migration {
@@ -544,6 +544,35 @@ const MIGRATIONS: &[Migration] = &[
             Ok(())
         },
     },
+    // v11 → v12：主动取消的终态墓碑。只有它能让一条 cancelled 行拒绝后续
+    // progress/attempt/续传的复活；自动超时/放弃不置位，断点续传仍可用。
+    // 判据：send 方向取消后 upsert active 不生效；自动 failed 仍可复活
+    // （`cascade_tests::a_user_cancelled_transfer_is_never_revived_by_a_late_write`）。
+    Migration {
+        from: 11,
+        to: 12,
+        description: "file_transfers 加 cancel_terminal 列（用户/对端主动取消的终态墓碑）",
+        run: |conn| {
+            // ⚠️ 先问"这张表在不在"，再问"这一列在不在"：`pragma_table_info('不存在的表')`
+            // 返回**空结果**而不是报错，所以只判列的话这一步会拿着 false 去 ALTER，
+            // 撞出 "no such table: file_transfers" ⇒ 迁移报错 = 启动被拒 = 用户打不开应用。
+            // 真实场景里 `init` 先 apply SCHEMA 再跑迁移，表一定在；这条不是为真机加的，
+            // 是被 `migration_tests::a_failing_migration_step_rolls_back_completely_and_never_advances_the_version`
+            // 抓到的（它直接 run_migrations，喂的是一份没有 file_transfers 的老库形状）。
+            let table: bool = conn.query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'file_transfers'",
+                [],
+                |r| r.get::<_, i64>(0),
+            )? > 0;
+            if table && !column_exists(conn, "file_transfers", "cancel_terminal")? {
+                conn.execute(
+                    "ALTER TABLE file_transfers ADD COLUMN cancel_terminal INTEGER NOT NULL DEFAULT 0",
+                    [],
+                )?;
+            }
+            Ok(())
+        },
+    },
 ];
 
 /// 建表脚本 —— 表结构的**唯一真源**（另有一张 `content` 表由
@@ -685,9 +714,12 @@ CREATE TABLE IF NOT EXISTS file_transfers (
     name       TEXT NOT NULL,
     size       INTEGER NOT NULL,
     direction  TEXT NOT NULL,          -- 'send' | 'receive'
-    status     TEXT NOT NULL,          -- 'pending'|'active'|'done'|'failed'|'sent'（sent=send 侧已写出但无对端回执，终态）
+    status     TEXT NOT NULL,          -- 'pending'|'active'|'done'|'failed'|'sent'|'cancelled'（sent=send 侧已写出但无对端回执；cancelled=用户/对端主动取消）
     path       TEXT,
     progress   REAL NOT NULL DEFAULT 0,
+    -- 1 = 用户/对端主动取消，终态墓碑：之后的进度/attempt/续传不得把 status 写回 active/done。
+    -- 自动超时/重试耗尽仍是 0（保留断点续传的复活能力）。迁移 v11→v12 补列。
+    cancel_terminal INTEGER NOT NULL DEFAULT 0,
     created_at INTEGER NOT NULL
 );
 -- 传输面板首屏是 `ORDER BY created_at DESC` 且**没有任何 WHERE** —— 零索引时
@@ -725,7 +757,7 @@ CREATE TABLE IF NOT EXISTS group_files (
     name        TEXT NOT NULL,
     size        INTEGER NOT NULL,
     sha256      TEXT NOT NULL,
-    status      TEXT NOT NULL DEFAULT 'pending',  -- 'pending' | 'sending' | 'completed' | 'failed'
+    status      TEXT NOT NULL DEFAULT 'pending',  -- 'pending' | 'sending' | 'completed' | 'failed' | 'cancelled'（后者=用户主动取消整条群文件，B2 的硬终态，见 INV-P26）
     created_at  INTEGER NOT NULL,
     scope       TEXT NOT NULL DEFAULT 'chat',      -- 'chat' | 'todo'
     todo_id     TEXT NOT NULL DEFAULT ''
@@ -736,7 +768,7 @@ CREATE INDEX IF NOT EXISTS idx_group_files_group ON group_files(group_id);
 CREATE TABLE IF NOT EXISTS group_file_recipients (
     transfer_id  TEXT NOT NULL,
     recipient_id TEXT NOT NULL,
-    status       TEXT NOT NULL DEFAULT 'pending',  -- 'pending' | 'sending' | 'completed' | 'failed'
+    status       TEXT NOT NULL DEFAULT 'pending',  -- 'pending' | 'sending' | 'completed' | 'failed' | 'cancelled'（后者=用户取消这一格；这张表**不需要墓碑列**：只有主动取消会写 cancelled，状态本身就是墓碑）
     progress     REAL NOT NULL DEFAULT 0,
     updated_at   INTEGER NOT NULL,
     PRIMARY KEY (transfer_id, recipient_id)

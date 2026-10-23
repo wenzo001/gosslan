@@ -560,6 +560,160 @@ fn a_failed_row_can_be_reactivated_by_the_next_attempt() {
     }
 }
 
+// ---------------------------------------------------------------------------
+// B1：用户取消的终态墓碑（`cancel_terminal`）。
+//
+// 上面那条反向断言说的对：`cancelled` 今天必须还能被下一轮 attempt 改回 active ——
+// 因为**自动**写下的 cancelled（对端拒绝、中继判死）确实该能重来。但用户主动取消是
+// 另一件事：`cancel_file_transfer` 落库之后，投递任务是**异步**退出的，它可能带着上一轮
+// 的进度、甚至带着"这次其实发完了"的 done 判定回来。没有墓碑时，那几笔晚到的写会把
+// 用户刚按下的"已取消"改回"发送中 92%"或"已完成"。
+//
+// 所以这一族把两件事拆开：主动取消 ⇒ 盖墓碑、此后任何写都不许动它；自动终态 ⇒ 不盖。
+// ---------------------------------------------------------------------------
+
+fn transfer_row(conn: &Connection, id: &str) -> (String, f64, i64) {
+    conn.query_row(
+        "SELECT status, progress, cancel_terminal FROM file_transfers WHERE id = ?1",
+        params![id],
+        |r| {
+            Ok((
+                r.get::<_, String>(0)?,
+                r.get::<_, f64>(1)?,
+                r.get::<_, i64>(2)?,
+            ))
+        },
+    )
+    .unwrap()
+}
+
+/// 正向：用户取消之后，晚到的进度写、晚到的 done 都改不动这一行。
+#[test]
+fn a_user_cancelled_transfer_is_never_revived_by_a_late_write() {
+    let conn = fresh_db();
+    upsert_transfer(&conn, "t1", "p1", "a.bin", 100, "send", "active", None, 0.3).unwrap();
+    assert!(
+        finalize_file_failure(&conn, "t1", FileJobEnd::Cancelled).unwrap(),
+        "取消是用户动作：面向用户的写落地后必须回报 true"
+    );
+    assert_eq!(
+        transfer_row(&conn, "t1"),
+        ("cancelled".to_string(), 0.0, 1),
+        "取消必须同时落 status=cancelled 与墓碑"
+    );
+
+    // 晚到的进度 tick（上一轮 attempt 还堵在链路队列里的那个形状）
+    upsert_transfer(
+        &conn, "t1", "p1", "a.bin", 100, "send", "active", None, 0.92,
+    )
+    .unwrap();
+    assert_eq!(
+        transfer_row(&conn, "t1"),
+        ("cancelled".to_string(), 0.0, 1),
+        "墓碑必须挡住晚到的 active —— 用户看到的就是\"取消了又自己变成发送中 92%\""
+    );
+
+    // 晚到的 done（对端真的收完了才回 ACK，而用户已经取消）同样不许把它升成完成：
+    // 那会让界面从"已取消"跳到"✓"，与用户按下的动作相反。
+    upsert_transfer(&conn, "t1", "p1", "a.bin", 100, "send", "done", None, 1.0).unwrap();
+    assert_eq!(
+        transfer_row(&conn, "t1").0,
+        "cancelled",
+        "墓碑行也不许被晚到的 done 升级（终态口径以用户动作为准）"
+    );
+
+    // 启动复位那条"active→failed"的批量写也必须绕开它（它只吃 active，墓碑行是 cancelled）
+    assert_eq!(fail_interrupted_transfers_on_startup(&conn).unwrap(), 0);
+    assert_eq!(transfer_row(&conn, "t1").0, "cancelled");
+}
+
+/// 反向：自动判死（超时/重试耗尽）**不许**盖墓碑 —— 那些行要能被断点续传救回来。
+/// 这条是给"顺手把墓碑扩大到所有终态"的下一次准备的。
+#[test]
+fn an_auto_expired_transfer_keeps_its_resume_door_open() {
+    let conn = fresh_db();
+    upsert_transfer(
+        &conn, "t2", "p1", "b.bin", 100, "receive", "active", None, 0.4,
+    )
+    .unwrap();
+    finalize_file_failure(&conn, "t2", FileJobEnd::Expired).unwrap();
+    assert_eq!(
+        transfer_row(&conn, "t2"),
+        ("failed".to_string(), 0.0, 0),
+        "自动判死落 failed，且墓碑必须是 0（落库口径与续传能力都靠这一格区分）"
+    );
+    upsert_transfer(
+        &conn, "t2", "p1", "b.bin", 100, "receive", "active", None, 0.5,
+    )
+    .unwrap();
+    assert_eq!(
+        transfer_row(&conn, "t2").0,
+        "active",
+        "同一 transfer_id 的续传必须还能把它改回 active —— 否则一次超时就永远停在失败"
+    );
+}
+
+/// 已收完的那一单没有"被取消"这回事：`upsert_transfer` 被 `done` 闸门挡住时返回 Ok
+/// 且改 0 行，所以 `changed` 会是 true —— 墓碑必须单独判 `already_done`，
+/// 不然一个"已送达"的行会带着墓碑被读成"已取消"。
+#[test]
+fn a_cancel_on_an_already_done_transfer_writes_no_tombstone() {
+    let conn = fresh_db();
+    upsert_transfer(
+        &conn,
+        "t3",
+        "p1",
+        "c.bin",
+        100,
+        "receive",
+        "done",
+        Some("/d/c.bin"),
+        1.0,
+    )
+    .unwrap();
+    finalize_file_failure(&conn, "t3", FileJobEnd::Cancelled).unwrap();
+    let (status, _, tomb) = transfer_row(&conn, "t3");
+    assert_eq!(status, "done", "done 行不许被取消降级（INV-P26）");
+    assert_eq!(
+        tomb, 0,
+        "已送达的行不许被盖上取消墓碑 —— 墓碑的语义是\"这一单被主动中止\"，与它相反"
+    );
+    // 本地路径仍在（前端靠它打开文件）
+    assert_eq!(get_transfer_path(&conn, "t3").as_deref(), Some("/d/c.bin"));
+}
+
+/// 投递开始的抢占必须**如实回报**有没有真的迁移成功。
+///
+/// 旧签名是 `Result<()>`：取消发生在 `list_pending_file_outbox` 之后、这一笔之前时，
+/// `WHERE status='pending'` 让 UPDATE 改 0 行（对的），但调用方看不出来，
+/// 照样把整份文件发出去 —— 快照竞态。判据两头：pending 抢到 = true；已被取消 = false。
+#[test]
+fn claiming_an_outbox_row_reports_whether_it_was_actually_claimed() {
+    let conn = fresh_db();
+    conn.execute(
+        "INSERT INTO file_outbox(transfer_id, peer_id, local_path, name, size, status,
+                                 attempts, next_attempt_at, created_at)
+         VALUES('t4','p1','/d/a.bin','a.bin',10,'pending',0,0,1)",
+        [],
+    )
+    .unwrap();
+    assert!(
+        mark_file_outbox_sending(&conn, "t4", 0).unwrap(),
+        "第一次必须真的从 pending 迁移成功"
+    );
+    assert!(
+        !mark_file_outbox_sending(&conn, "t4", 0).unwrap(),
+        "第二次（已被自己置 sending）必须报 false —— 调用方靠这个数决定发不发"
+    );
+    mark_file_outbox_cancelled(&conn, "t4").unwrap();
+    assert!(
+        !mark_file_outbox_sending(&conn, "t4", 0).unwrap(),
+        "用户取消过的队列行再抢一次必须 false：false = 不发完整份"
+    );
+    // 不存在的那一行同样 false（不是 Err）—— 调用方不区分"没这行"和"被别人抢走"
+    assert!(!mark_file_outbox_sending(&conn, "t-none", 0).unwrap());
+}
+
 /// **终态写入只有一个家**：除 `db/file_transfer.rs` 之外，不许再有第二处直接
 /// `UPDATE file_transfers SET status = …`。
 ///
@@ -597,9 +751,13 @@ fn terminal_status_writes_have_one_home() {
 #[test]
 fn a_user_cancel_is_not_recorded_as_a_failure() {
     let files = include_str!("../commands/files.rs");
+    // 锚点跟着 B3 搬家：命令体已经抽成唯一入口 `apply_local_cancel`
+    // （对端的 `FileCancel` 帧也走这一个家），所以"取消不许记成失败"这条口径
+    // 现在钉在那个家上，而不是钉在 IPC 包装层上 —— 判据要盯的是**写库那一处**，
+    // 不是谁调它。（盯包装层的话，第二个入口就可以绕过它。）
     let at = files
-        .find("pub async fn cancel_file_transfer(")
-        .expect("cancel_file_transfer 不见了 ⇒ 本测试的锚点失效");
+        .find("pub(crate) async fn apply_local_cancel(")
+        .expect("apply_local_cancel 不见了 ⇒ 本测试的锚点失效");
     let tail = &files[at..];
     let stop = tail
         .find("pub ")
@@ -859,4 +1017,204 @@ fn fill_message_size_backfills_the_actual_size_once() {
     assert!(!fill_message_size(&conn, "missing", 1).unwrap());
     ins_msg(&conn, "file-bad", "p1", "file", "not json", 2);
     assert!(!fill_message_size(&conn, "file-bad", 1).unwrap());
+}
+
+// ---------------- 取消一条还在队列里的消息（B4 的另一半，2026-10-23） ----------------
+//
+// 三格各管一条边界，缺任何一条都会留下一种"看得见"的错：
+//  · 队列行没删 ⇒ 下一轮 flush 照样把它发出去（界面说已取消，对方照样收到）；
+//  · 晚到的 Ack 能把 cancelled 提成 delivered ⇒ 回执从"已取消"跳回"已送达"；
+//  · 已送达的行被改成 cancelled ⇒ 谎报"撤下来了"。
+
+#[test]
+fn cancelling_a_queued_message_drops_its_outbox_row_and_marks_it_cancelled() {
+    let conn = fresh_db();
+    ins_msg(&conn, "m-c1", "p1", "text", "在吗", 1);
+    conn.execute(
+        "INSERT INTO outbox(msg_id, peer_id, payload, created_at) VALUES ('m-c1','p1','{}',1)",
+        [],
+    )
+    .unwrap();
+    assert_eq!(
+        super::cancel_queued_message(&conn, "m-c1").unwrap(),
+        super::MessageCancelOutcome::Cancelled
+    );
+    assert_eq!(
+        count(&conn, "SELECT COUNT(*) FROM outbox WHERE msg_id = 'm-c1'"),
+        0,
+        "队列行必须删掉：留着它下一轮 flush 就会把「已取消」的消息照常发出去"
+    );
+    let status: String = conn
+        .query_row(
+            "SELECT status FROM messages WHERE msg_id = 'm-c1'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(status, "cancelled");
+}
+
+#[test]
+fn a_late_ack_cannot_promote_a_cancelled_message() {
+    let conn = fresh_db();
+    ins_msg(&conn, "m-c2", "p1", "text", "这条已经被取消了", 1);
+    conn.execute(
+        "INSERT INTO outbox(msg_id, peer_id, payload, created_at) VALUES ('m-c2','p1','{}',1)",
+        [],
+    )
+    .unwrap();
+    super::cancel_queued_message(&conn, "m-c2").unwrap();
+    // 取消之后 Ack 才到（Ack 与取消是两把锁先后拿到的）
+    let acked = super::ack_delivered(&conn, "m-c2", "p1").unwrap();
+    assert!(
+        !acked,
+        "晚到的 Ack 必须命中不到队列行（`ack_delivered` 的 expected 判据）—— 命中就说明它能把取消复活"
+    );
+    let status: String = conn
+        .query_row(
+            "SELECT status FROM messages WHERE msg_id = 'm-c2'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(
+        status, "cancelled",
+        "取消是硬终态：晚到的 Ack 不许把它提升成 delivered"
+    );
+}
+
+#[test]
+fn cancelling_an_already_delivered_message_reports_it_and_changes_nothing() {
+    let conn = fresh_db();
+    ins_msg(&conn, "m-c3", "p1", "text", "已经送到了", 1);
+    conn.execute(
+        "UPDATE messages SET status = 'delivered' WHERE msg_id = 'm-c3'",
+        [],
+    )
+    .unwrap();
+    assert_eq!(
+        super::cancel_queued_message(&conn, "m-c3").unwrap(),
+        super::MessageCancelOutcome::AlreadyDelivered,
+        "已送达就是已送达：界面要说实话，不能假装撤回来了"
+    );
+    let status: String = conn
+        .query_row(
+            "SELECT status FROM messages WHERE msg_id = 'm-c3'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(status, "delivered", "已送达的行不许被取消降级");
+    assert_eq!(
+        super::cancel_queued_message(&conn, "m-nope").unwrap(),
+        super::MessageCancelOutcome::NotFound
+    );
+}
+
+/// 删好友要把他的聊天样式缓存也摘掉（10-23 审计 P2-B）。
+///
+/// 那张表（`settings.chat_peer_styles`）是设备级缓存：写入只在对方带 style 的消息到达时发生，
+/// 而删除以前**只有**「恢复默认设置」一处 —— 删掉的好友会留一行 JSON 到进程退出之后，
+/// 下次同设备再加回来还会继承上次的配色。这一格钉两件事：删掉的那个没了、别人的还在。
+#[test]
+fn removing_a_friend_forgets_its_chat_style() {
+    let conn = fresh_db();
+    super::set_setting(
+        &conn,
+        "chat_peer_styles",
+        r#"{"p1":{"font":"x"},"p2":{"font":"y"}}"#,
+    )
+    .unwrap();
+    super::forget_chat_peer_style(&conn, "p1").unwrap();
+    let raw = super::get_setting(&conn, "chat_peer_styles").expect("键还在（还有 p2）");
+    let v: serde_json::Value = serde_json::from_str(&raw).unwrap();
+    assert!(v.get("p1").is_none(), "删掉的那台设备不许留样式");
+    assert!(v.get("p2").is_some(), "别人的样式不许被动");
+    // 幂等：再摘一次、以及摘一个表里没有的 id，都不许报错、也不许把表写坏
+    super::forget_chat_peer_style(&conn, "p1").unwrap();
+    super::forget_chat_peer_style(&conn, "nobody").unwrap();
+    let again: serde_json::Value =
+        serde_json::from_str(&super::get_setting(&conn, "chat_peer_styles").unwrap()).unwrap();
+    assert!(again.get("p2").is_some());
+    // 接线：光有这个 helper 不够，删好友那条路必须真的调它（否则等于没修）
+    let friends = include_str!("../commands/friends.rs");
+    assert!(
+        friends.contains("forget_chat_peer_style("),
+        "删好友必须调用 forget_chat_peer_style：只写 helper 不接等于没修"
+    );
+}
+
+/// 群消息的取消（B4 的群那半）：判据是「**还没有任何成员的 Ack 被处理过**」。
+///
+/// `GroupAck` 是「置 delivered + 删那一行」同一个事务 ⇒ 状态还没到 delivered/read，
+/// 就说明队列行一条都没被 Ack 吃掉。取消删掉全部队列行之后，迟到的 Ack 命中不到
+/// ⇒ 状态停在 cancelled（与 1:1 同一条仲裁，不新加闸门）。
+#[test]
+fn cancelling_a_group_message_drops_every_member_row_and_survives_a_late_ack() {
+    let conn = fresh_db();
+    ins_msg(&conn, "m-g1", "group:g1", "text", "大家好", 1);
+    for member in ["a", "b", "c"] {
+        conn.execute(
+            "INSERT INTO group_outbox(msg_id, group_id, peer_id, payload, created_at)
+             VALUES ('m-g1', 'g1', ?1, '{}', 1)",
+            params![member],
+        )
+        .unwrap();
+    }
+    assert_eq!(
+        super::cancel_queued_group_message(&conn, "m-g1").unwrap(),
+        super::GroupMessageCancelOutcome::Cancelled
+    );
+    assert_eq!(
+        count(
+            &conn,
+            "SELECT COUNT(*) FROM group_outbox WHERE msg_id = 'm-g1'"
+        ),
+        0,
+        "每个成员的队列行都要删：留着谁，下一轮 flush 就会把它发出去"
+    );
+    let status: String = conn
+        .query_row(
+            "SELECT status FROM messages WHERE msg_id = 'm-g1'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(status, "cancelled");
+    // 迟到/在途的 Ack：行已经没了 ⇒ 命中不到 ⇒ 不许把 cancelled 提成 delivered
+    assert!(
+        !super::ack_group_delivered(&conn, "m-g1", "b").unwrap(),
+        "取消之后迟到的 GroupAck 必须命中不到队列行，否则回执会从已取消跳回已送达"
+    );
+    let status: String = conn
+        .query_row(
+            "SELECT status FROM messages WHERE msg_id = 'm-g1'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(status, "cancelled", "取消是硬终态");
+}
+
+/// 已有成员收下（状态 delivered）之后不许再取消：那一步只能走撤回。
+#[test]
+fn a_delivered_group_message_cannot_be_cancelled() {
+    let conn = fresh_db();
+    ins_msg(&conn, "m-g2", "group:g1", "text", "已经有人收到了", 1);
+    conn.execute(
+        "INSERT INTO group_outbox(msg_id, group_id, peer_id, payload, created_at)
+         VALUES ('m-g2', 'g1', 'b', '{}', 1)",
+        [],
+    )
+    .unwrap();
+    assert!(super::ack_group_delivered(&conn, "m-g2", "b").unwrap());
+    assert_eq!(
+        super::cancel_queued_group_message(&conn, "m-g2").unwrap(),
+        super::GroupMessageCancelOutcome::AlreadyDelivered,
+        "有人收下了就只能撤回，不能假装「取消发送」"
+    );
+    assert_eq!(
+        super::cancel_queued_group_message(&conn, "nope").unwrap(),
+        super::GroupMessageCancelOutcome::NotFound
+    );
 }

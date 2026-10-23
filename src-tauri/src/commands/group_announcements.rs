@@ -126,6 +126,7 @@ pub async fn recall_group_message(
         crate::protocol::recall_verdict(
             &msg.sender_id,
             &s.device_id,
+            &msg.kind,
             &msg.conv_id,
             &conv_id,
             msg.ts,

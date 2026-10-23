@@ -59,6 +59,12 @@ async fn relay_push_file(
         .file_name()
         .map(|s| s.to_string_lossy().to_string())
         .unwrap_or_else(|| "unnamed".to_string());
+    // ---- cancel 登记（哈希之前）----
+    // 与直发同一条规矩：整份哈希是这条链上最长的一段静默，槽位必须在那之前登记，
+    // 否则哈希期间的取消点击静默丢掉、跑完照样把整份文件推上链路。
+    // 回收由守卫负责（旧写法手写 `cancel_cleanup()` 在整轮 timeout 之后调一次，
+    // 那条路只在"走到函数末尾"时生效）。
+    let (mut cancel_rx, _cancel_slot) = install_cancel_slot(state, transfer_id, peer_id);
     let file_key = crypto::random_key();
     // ⚠️ 整份文件的哈希交给阻塞线程池（INV-P34；与 `file/send.rs` 直发那一格同一条规矩）。
     // 留在 async 路径上就是钉住一个 tokio worker —— 中继推送的正是共享目录里的文件，
@@ -67,6 +73,9 @@ async fn relay_push_file(
     let file_sha256 = tokio::task::spawn_blocking(move || sha256_file_hex(&hash_path))
         .await
         .unwrap_or_else(|e| Err(format!("中继哈希任务被线程池中断: {e}")))?;
+    if cancel_requested(&mut cancel_rx) {
+        return Err("用户取消发送".to_string());
+    }
     let receiver_pubkey = resolve_member_x25519(state, peer_id)
         .ok_or_else(|| "无法获取对方公钥，无法加密文件".to_string())?;
     let shared = crypto::shared_secret(&state.identity.x25519_secret, &receiver_pubkey)
@@ -133,23 +142,6 @@ async fn relay_push_file(
         file_sha256,
     };
 
-    // ---- cancel + timeout 注册 ----
-    // 键含收件人（与直传同口径，见 `file_cancel_key`）。
-    let cancel_key = file_cancel_key(transfer_id, peer_id);
-    let (cancel_tx, mut cancel_rx) = tokio::sync::oneshot::channel::<()>();
-    state
-        .file_send_cancels
-        .lock()
-        .unwrap_or_else(|e| e.into_inner())
-        .insert(cancel_key.clone(), cancel_tx);
-    let cancel_cleanup = || {
-        state
-            .file_send_cancels
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .remove(&cancel_key);
-    };
-
     let result = tokio::time::timeout(RELAY_FILE_SEND_DEADLINE, async {
         // Offer 一个邻居都没接住 ⇒ 这一帧从未离开本机：直接判失败，既不读盘也不推分片。
         // 方向要说清：这里只用「0 必然没送出」这一侧的下限判据；`≥1` **不等于**送达
@@ -161,7 +153,7 @@ async fn relay_push_file(
         let mut last_report = std::time::Instant::now() - Duration::from_secs(1);
         for seq in 0..chunk_count {
             // 每片开始前先查 cancel —— 用户点了就立刻停，不浪费下一片 I/O
-            if cancel_rx.try_recv().is_ok() {
+            if cancel_requested(&mut cancel_rx) {
                 return Err("用户取消发送".to_string());
             }
             let start = (seq as usize * chunk_size).min(total);
@@ -254,8 +246,6 @@ async fn relay_push_file(
         Ok(())
     })
     .await;
-
-    cancel_cleanup();
 
     match result {
         Ok(inner) => inner,

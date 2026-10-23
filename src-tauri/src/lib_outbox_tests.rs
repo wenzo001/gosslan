@@ -156,12 +156,25 @@ fn every_finalize_path_defers_the_destructive_write() {
         "delete_file_outbox(",
         "delete_outbox_by_msg_id(",
         "delete_group_outbox_by_msg_id(",
+        // B2：群文件的两笔"取消"落库同样是**把这一单踢出补发集合**的写 ——
+        // `list_pending_group_files_for_recipient` 只捞 pending、`ensure_group_file_row`
+        // 不再点亮 cancelled ⇒ 它们一跑，就没有第二个入口会替这一单补状态。
+        // 不列进这一张表，"先关群台账、后面气泡写失败"这种顺序就没人判得出。
+        "cancel_group_file_recipients(",
+        "mark_group_file_cancelled(",
     ];
     /// 终态在界面上的投影：气泡状态、传输台账。
+    ///
+    /// `db::finalize_file_failure(` 也在这里（B2 一起加）：它就是"面向用户的两笔写"的
+    /// 唯一出口（气泡 + 台账都在里面）。不加进来，扫描就看不出
+    /// 「先做面向用户的写、再关集合」这一条在 `cancel_file_transfer` 里其实成立 ——
+    /// 那个函数体里既没有裸 `set_message_status(` 也没有裸 `upsert_transfer(`，
+    /// 于是它会被当成"没有面向用户的写"直接跳过，新加的两笔群台账关行写**没人排序**。
     const USER_FACING: &[&str] = &[
         "set_message_status(",
         "upsert_transfer(",
         "mark_transfer_failed_if_active(",
+        "finalize_file_failure(",
     ];
     let mut scanned = 0usize;
     let mut bad: Vec<String> = Vec::new();

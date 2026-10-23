@@ -249,6 +249,15 @@ async fn handle_group_messages(state: &Arc<AppState>, peer_id: &str, msg: Messag
                 state, peer_id, request_id, from, to, reply,
             );
         }
+        // 按成员取消（B3b）：整单取消与"某一格不再传了"是两件事，这一帧只管后者。
+        Message::GroupFileCancel {
+            transfer_id,
+            group_id,
+            recipient,
+            from,
+        } => {
+            handle_group_file_cancel(state, peer_id, transfer_id, group_id, recipient, from).await;
+        }
         _ => {}
     }
 }

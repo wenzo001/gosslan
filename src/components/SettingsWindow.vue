@@ -136,7 +136,9 @@ const desktopSection = computed<"general" | "network" | "security" | "about">(()
 
 /**
  * 侧边栏升级按钮的一次性导航键：主窗口写入，本窗口 mount/focus 时消费。
- * 只传一个导航意图，不跨 WebView 共享 updater 状态。
+ * 只传一个导航意图。⚠️「不跨 WebView 共享 updater 状态」这句在 B5 之后**不再成立**：
+ * 导航仍然只传意图，但更新**状态**现在由后端统一持有（`updater_status` / `updater-status`），
+ * 两个窗口看到的是同一份事实。
  */
 const SETTINGS_SECTION_KEY = "gosslan:settings-section";
 function consumePendingSection() {
@@ -148,6 +150,15 @@ function consumePendingSection() {
   if (key === "about" && updater.state.phase === "idle") void updater.check(true);
 }
 onMounted(() => {
+  // B5：本窗口的 UI 服务与新开窗口是两份，而下载任务在后端是**全局单例** ⇒
+  // 先按后端那份补一次（相位/已下字节/总字节/目标版本），否则重开设置会看到"检查更新"，
+  // 而后台其实还在下。`restore` 只在本窗口仍是 idle 时生效，不会盖掉本窗口更细的进度。
+  void api
+    .updaterStatus()
+    .then((st) => updater.restore(st))
+    .catch(() => {
+      /* 移动端/命令不可用：保持 idle，界面照旧只有"检查更新" */
+    });
   consumePendingSection();
   window.addEventListener("focus", consumePendingSection);
 });

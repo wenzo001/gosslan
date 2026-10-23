@@ -1251,6 +1251,8 @@ pub async fn handle_message(state: &Arc<AppState>, peer_id: &str, msg: Message) 
         | Message::GroupFileDone { .. }
         | Message::GroupFileCompleteAck { .. }
         | Message::GroupFileResume { .. }
+        // 按成员取消（B3b）：同属群文件那族 —— 它要动的就是这本账。
+        | Message::GroupFileCancel { .. }
         // 群历史同步两帧（2026-10-16 需求）：同属"群"这一族 —— 受众按群算、正文用群密钥密封、
         // 前提同样是密钥已经先到（`GroupKey` 排在前面）。处理体在 `group_history` 引擎那册。
         | Message::GroupHistoryRequest { .. }
@@ -1260,7 +1262,10 @@ pub async fn handle_message(state: &Arc<AppState>, peer_id: &str, msg: Message) 
         | Message::FileReject { .. }
         | Message::FileCompleteAck { .. }
         | Message::FileChunk { .. }
-        | Message::FileDone { .. }) => handle_file_messages(state, peer_id, m).await,
+        | Message::FileDone { .. }
+        // 取消通知同属这一族（处理体在 `transport/handle_file.rs`）：它要动的是
+        // 这一族的接收器与发送槽位，别的族碰不到这些表。
+        | Message::FileCancel { .. }) => handle_file_messages(state, peer_id, m).await,
         Message::Gossip { envelope } => {
             handle_gossip(state, peer_id, envelope).await;
         }

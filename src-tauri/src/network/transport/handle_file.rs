@@ -620,6 +620,49 @@ async fn handle_file_messages(state: &Arc<AppState>, peer_id: &str, msg: Message
                 }
             }
         }
+        // ── 对端取消了这一单（B3：`FileCancel` 帧）───────────────────────────
+        // 语义与"本机用户点了取消"**完全相同** ⇒ 走同一个入口
+        // `commands::files::apply_local_cancel`，落同一格终态（INV-P26 里"取消"这一档的
+        // 第二种来源），这里**不**再抄一份收尾 —— 两处各写一遍就是上一批点过名的漂移形状。
+        //
+        // 多做的只有一件 `FileCompleteAck` 那支早就做了的事：**认人**。
+        // 只接受"台账里这一单的那个对端"发来的取消；否则链路上任何一台设备凭一个
+        // 猜到的 transfer_id 就能把别人的传输打死（transfer_id 不是秘密）。
+        // 读 route 的那把锁必须在 await 之前放开 —— 收尾里有 emit，持锁 emit 是禁的。
+        Message::FileCancel { transfer_id, from } => {
+            let route = {
+                let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
+                db::get_transfer_route(&dbc, &transfer_id)
+            };
+            let Some((direction, peer)) = route else {
+                if log_throttled("file_cancel_no_ledger", 5_000) {
+                    state.logger.warn(
+                        "file",
+                        format!("收到 FileCancel 但本机没有这一单的台账，丢弃 transfer={transfer_id} peer={peer_id}"),
+                    );
+                }
+                return;
+            };
+            if from != peer || peer != peer_id || from == state.device_id {
+                if log_throttled("file_cancel_wrong_peer", 5_000) {
+                    state.logger.warn(
+                        "file",
+                        format!(
+                            "收到 FileCancel 但发它的人不是这一单的对端，丢弃 transfer={transfer_id} frame_from={from} ledger_peer={peer} link_peer={peer_id}"
+                        ),
+                    );
+                }
+                return;
+            }
+            let res = crate::commands::apply_local_cancel(state, &transfer_id, "peer").await;
+            state.logger.info(
+                "file",
+                format!(
+                    "对端取消了这一单，本机按已取消收尾 transfer={transfer_id} dir={direction} already_done={}",
+                    res.already_done
+                ),
+            );
+        }
         _ => {}
     }
 }

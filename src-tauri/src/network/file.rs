@@ -160,6 +160,112 @@ pub fn file_cancel_prefix(transfer_id: &str) -> String {
     file_peer_prefix(transfer_id)
 }
 
+/// 取消槽位的回收守卫：登记之后**任何**退出路径（`?`、提前 return、panic 展开、
+/// 外层 deadline 把内层 future 丢掉）都必须摘掉这一格。
+pub(crate) struct CancelSlotGuard<'a> {
+    state: &'a Arc<AppState>,
+    key: String,
+}
+
+impl Drop for CancelSlotGuard<'_> {
+    fn drop(&mut self) {
+        self.state
+            .file_send_cancels
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .remove(&self.key);
+    }
+}
+
+/// 登记一格取消槽位，返回（接收端，回收守卫）。
+///
+/// 三条投递路径（单聊直传 / 中继直发 / 群投递每成员一任务）原先各有各的登记与清理：
+/// 群那条已经是 RAII，另两条手写 `cancel_cleanup()` 闭包并在函数末尾调一次 ——
+/// 整轮 deadline 丢掉内层 future 时那句**不会执行**，残留的 `Sender` 让表单调增长，
+/// 而同键的下一次投递 `insert` 又把残留挤掉，对方的 rx 当场以 `Err(RecvError)` 完成
+/// ⇒ 一进来就"被取消"。清理只留这一个家（判据：`lib_file_tests::cancel_slot_has_exactly_one_home`）。
+///
+/// ⚠️ 必须在**任何可能慢的步骤之前**调用（整文件哈希、并发闸排队、Offer 等待）：
+/// 槽位还没登记时用户点了取消，信号静默丢掉，排到队后照样把整份文件发出去。
+pub(crate) fn install_cancel_slot<'a>(
+    state: &'a Arc<AppState>,
+    transfer_id: &str,
+    recipient: &str,
+) -> (tokio::sync::oneshot::Receiver<()>, CancelSlotGuard<'a>) {
+    let key = file_cancel_key(transfer_id, recipient);
+    let (tx, rx) = tokio::sync::oneshot::channel::<()>();
+    state
+        .file_send_cancels
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .insert(key.clone(), tx);
+    (rx, CancelSlotGuard { state, key })
+}
+
+/// 这一格是否已经要求取消。
+///
+/// `Closed`（登记被摘掉）也算：投递循环里 `_ = &mut cancel_rx` 那条分支本来就分不清
+/// Ok 与 Err，两处口径必须一致，否则"循环里判取消、循环外判不取消"就是同一件事两个家。
+/// 真取消的入口（`cancel_file_transfer` / `cancel_send_transfers_for_peer`）都是
+/// 先 `send(())` 再 drop ⇒ 走 `Ok(())` 那一格。
+/// 点亮某一单**所有**仍在途的取消槽位，返回点亮的格数。
+///
+/// 一个 `transfer_id` 可以对应多条流（群文件是每个收件人一条，登记键见
+/// [`file_cancel_key`]），所以必须按前缀全取、不能只拿一条。
+///
+/// 摘掉再 send 是刻意的：sender 用掉之后就失效了，留在表里只会让下一次 `install` 覆盖它，
+/// 而"下一轮 attempt 一进门就读到上一轮留下的取消"正是这个映射最坏的错法。
+///
+/// 谁调用：**用户点取消**（`commands::cancel_file_transfer`）与**对端发来的 `FileCancel` 帧**
+/// （`transport::handle_file`）—— 两件事在协议上是同一个语义："这一单不再继续了"，
+/// 所以走同一个入口、落同一个终态；`by` 只进日志，不新增状态。
+/// 只点亮**某一格**（群文件按成员取消时用：`(transfer_id, recipient)`），返回是否命中。
+///
+/// 与 [`signal_cancel_slots`] 的关系：那条是"整单"（用户取消一条群文件 = 每个成员一格），
+/// 这条是"这一格"（某个成员说他不再收了）。两者共用同一张表与同一个键函数，
+/// 区别只是前缀 vs 精确键 —— 所以都住在这个文件里，映射本身仍然只有一家。
+pub fn signal_cancel_slot(state: &AppState, transfer_id: &str, recipient: &str) -> bool {
+    let key = file_cancel_key(transfer_id, recipient);
+    let tx = state
+        .file_send_cancels
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .remove(&key);
+    match tx {
+        Some(tx) => {
+            let _ = tx.send(());
+            true
+        }
+        None => false,
+    }
+}
+
+pub fn signal_cancel_slots(state: &AppState, transfer_id: &str) -> usize {
+    let mut cancels = state
+        .file_send_cancels
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
+    let prefix = file_cancel_prefix(transfer_id);
+    let keys: Vec<String> = cancels
+        .keys()
+        .filter(|k| k.starts_with(prefix.as_str()))
+        .cloned()
+        .collect();
+    for k in &keys {
+        if let Some(tx) = cancels.remove(k) {
+            let _ = tx.send(());
+        }
+    }
+    keys.len()
+}
+
+pub(crate) fn cancel_requested(rx: &mut tokio::sync::oneshot::Receiver<()>) -> bool {
+    match rx.try_recv() {
+        Ok(()) | Err(tokio::sync::oneshot::error::TryRecvError::Closed) => true,
+        Err(tokio::sync::oneshot::error::TryRecvError::Empty) => false,
+    }
+}
+
 /// SHA-256 hex 表示校验（64 位 hex，大小写均可；比较时统一小写）。
 pub fn valid_sha256_hex(s: &str) -> bool {
     s.len() == 64 && s.bytes().all(|b| b.is_ascii_hexdigit())
@@ -261,10 +367,16 @@ pub const MAX_FILE_OUTBOX_RETRIES: i64 = 5;
 
 /// 文件发送失败分类：`retryable = true` 表示链路/超时等可恢复错误，
 /// 应保留在 `file_outbox` 等待重试；`false` 表示文件缺失、非好友、缺公钥等永久错误。
+///
+/// `cancelled` 是**第三种**，不能由前两个拼出来：用户取消既不该重发（`retryable=false`）、
+/// 也不该被记成"失败"（`RetryVerdict::GiveUp` 落的是 `failed`）。旧实现只有
+/// `permanent("用户取消发送")` 这一个形状 ⇒ 取消在台账上与链路判死同格，
+/// 而界面上"失败"与"已取消"是两个口径（INV-P26）。
 #[derive(Debug, Clone, thiserror::Error)]
 #[error("{message}")]
 pub struct SendFileError {
     pub retryable: bool,
+    pub cancelled: bool,
     pub message: String,
 }
 
@@ -272,6 +384,7 @@ impl SendFileError {
     fn retryable(message: impl Into<String>) -> Self {
         Self {
             retryable: true,
+            cancelled: false,
             message: message.into(),
         }
     }
@@ -279,6 +392,16 @@ impl SendFileError {
     fn permanent(message: impl Into<String>) -> Self {
         Self {
             retryable: false,
+            cancelled: false,
+            message: message.into(),
+        }
+    }
+
+    /// 用户（或对端）主动取消：不重发、不落 `failed`。
+    pub(crate) fn cancelled(message: impl Into<String>) -> Self {
+        Self {
+            retryable: false,
+            cancelled: true,
             message: message.into(),
         }
     }
@@ -291,6 +414,13 @@ pub(crate) enum RetryVerdict {
     GiveUp(String),
     /// 回到 pending，`backoff_ms` 之后再试一次。
     Retry { backoff_ms: i64 },
+    /// 用户主动取消：不重发，而且终态是 `cancelled` 不是 `failed`（INV-P26）。
+    ///
+    /// 为什么不能并进 `GiveUp`：`GiveUp` 的落库口径是 `FileJobEnd::GiveUp` ⇒ `failed`。
+    /// 取消信号本身已经由 `cancel_file_transfer` 落了 `cancelled` 墓碑，但投递任务是
+    /// **异步**退出的 —— 它回来时若按 `GiveUp` 收尾，就会把用户刚按下的"已取消"改写成
+    /// "失败"（进度打回 0%，而墓碑只挡住台账那一笔）。
+    Cancelled,
 }
 
 /// 重试退避（与 `db::mark_file_outbox_pending` 的 `next_attempt_at` 同一个数）。
@@ -307,7 +437,12 @@ pub(crate) const FILE_OUTBOX_RETRY_BACKOFF_MS: i64 = 5_000;
 /// 就是那条历史缺陷）。反过来，读不到次数（prepare 失败、行已被别的出口删掉）时
 /// 按 0 次处理 —— 那是本机自己一时出故障，把它当成"已经试满 5 次"会直接毁掉一次
 /// 本可恢复的投递。
+///
+/// 取消排在最前：`cancelled` 也是 `retryable=false`，若让它走上面那一格就会落 `failed`。
 pub(crate) fn send_retry_verdict(err: &SendFileError, attempts: Option<i64>) -> RetryVerdict {
+    if err.cancelled {
+        return RetryVerdict::Cancelled;
+    }
     if !err.retryable {
         return RetryVerdict::GiveUp(err.message.clone());
     }

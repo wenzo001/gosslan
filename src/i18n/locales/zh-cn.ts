@@ -573,6 +573,9 @@ export const zhCN: MessageDict = {
   "msg.sentTo": "已发送给 {n} 人",
   "msg.waitingOnline": "{n} 人待上线",
   "msg.failedCount": "{n} 人失败",
+  // 群文件投递摘要里"用户主动取消的那几个成员"（B2）。不复用 `msg.canceled`：
+  // 那条讲的是"我这条发送被取消了"，这一条讲的是"这一单里 N 个人不会再收了"。
+  "msg.cancelledCount": "{n} 人已取消",
   "msg.imageLoadFailed": "图片加载失败",
   // 失败原因与下一步（用户 2026-10-23：「应该给用户讲为啥渲染失败」）。
   // 分界只有「本机有没有可加载的地址」这一条是这一层真拿得到的，不编更细的原因。
@@ -635,8 +638,10 @@ export const zhCN: MessageDict = {
   // 英文界面下会看到中文 toast —— 而同一函数里 @cancel 的入口文案走了 t()，自相矛盾。
   // 不复用 `msg.canceled`：那条是"已取消发送"（onFileCancelled 的事件提示），
   // 而这三条讲的是"用户点了取消之后发生了什么"，语义不同、语气也不同。
+  // `alreadyDone` 取代旧的 `alreadyEnded`（"标记为已取消（传输可能已结束）"）：
+  // 后端现在按台账回答，"可能已结束"这种含糊话不再需要 —— 已收完就是收完了。
   "msg.cancelSend.requested": "已请求取消发送",
-  "msg.cancelSend.alreadyEnded": "标记为已取消（传输可能已结束）",
+  "msg.cancelSend.alreadyDone": "这一单已经传完，无法取消",
   "msg.cancelSend.fail": "取消发送失败",
   "msg.reactionToggle": "切换回应 {emoji}",
   "msg.reactionWho": "{n} 人回应",
@@ -1149,22 +1154,49 @@ export const zhCN: MessageDict = {
   "send.stalled": "网络停滞，等待恢复…",
   "send.noProgress": "传输已停止：{secs} 秒没有任何进展，可以取消后重发",
   "send.queued": "排队中…",
-  // ---- 全局「正在传输」面板（UI 审计 D-18）----
-  // 复用 send.sendingPct / send.receivingPct / send.queued 作行内文案，
-  // 这里只补"入口 + 面板"需要的五条。
-  "transfer.pill": "正在传输 {n} 个",
-  "transfer.open": "查看正在传输的文件（{n} 个）",
-  "transfer.title": "正在传输",
-  "transfer.empty": "没有正在传输的文件",
-  "transfer.note": "切到其他会话不会中断传输",
+  // ---- 统一后台任务中心（负责人 2026-10-23：能看见、能取消、看得懂卡在哪个节点）----
+  // 行内那句「发送中 62%」复用 send.sendingPct / send.receivingPct / send.queued：
+  // 面板与气泡对同一件事说同一句话，用户不必学第二套措辞。
+  // 原来那八条 `transfer.pill/open/title/empty/note/cancel/cancelDone/cancelFail`
+  // 随 `TransferCenter.vue` 一起删掉了（死文案护栏会现算引用面，别留着）。
+  "task.pill": "还有 {n} 件事没办完",
+  "task.open": "查看后台任务（{n} 个）",
+  "task.title": "后台任务",
+  "task.empty": "没有进行中的任务",
+  "task.note": "关掉面板不会中断任务；按住那颗药丸能拖到四个角",
+  "task.dragHint": "按住可拖到四个角",
+  "task.to": "给 {name}",
+  "task.from": "来自 {name}",
+  "task.attempts": "已重试 {n} 次",
+  "task.waitingFor": "还有 {n} 个人没收到",
+  "task.cancel": "取消",
+  "task.cancelDone": "已取消",
+  "task.retryNow": "立即重试",
+  "task.syncNow": "立即同步",
+  "task.openChat": "去会话",
+  "task.actionFail": "操作失败",
+  "task.alreadyGone": "这件事已经办完了",
+  "task.state.waiting": "等待中",
+  "task.state.running": "进行中",
+  "task.state.syncing": "同步中 {pct}%",
+  "task.state.resending": "重发中",
+  "task.state.downloading": "下载中 {pct}%",
+  "task.kind.fileSend": "发送文件",
+  "task.kind.fileReceive": "接收文件",
+  "task.kind.contentFetch": "获取内容",
+  "task.kind.messageSend": "补发消息",
+  "task.kind.groupHistory": "群历史同步",
+  "task.kind.updateDownload": "更新下载",
   "transfer.blocked.queueMissing": "发送队列记录已丢失，可直接取消",
   "transfer.blocked.queueClosed": "发送队列已关闭，可直接取消",
   "transfer.blocked.retryExhausted": "重试次数已用尽，可直接取消",
   "transfer.blocked.waitingRetry": "等待下次重试",
   "transfer.blocked.peerOffline": "对方离线，上线后会自动重试",
-  "transfer.cancel": "取消发送",
-  "transfer.cancelDone": "已取消发送",
-  "transfer.cancelFail": "取消失败",
+  // 下面三条是任务中心独有的格子：等对方回执 / 在本机补发队列里 / 群里没人再有这份内容。
+  "transfer.blocked.waitingAck": "已经发到对方那儿，等对方确认",
+  "transfer.blocked.queuedByBackend": "在本机队列里排着，会自己继续",
+  "transfer.blocked.noSource": "暂时找不到有这份数据的设备",
+  "transfer.cancelLocalOnly": "已在本机取消（对方版本较旧或不在线时可能仍在继续）",
   "send.unknownState": "状态未知，可重新发送",
   "msg.cleaned": "已被清理",
   // 预览失败的两种确定性原因之一（另一种复用上面的 msg.cleaned）。

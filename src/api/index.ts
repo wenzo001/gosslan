@@ -2,11 +2,11 @@
 
 import { Channel, invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
-import type { AppSettings, CacheInfo, CleanupReport, ContentAudience, ContentTransfer, Conversation, DeviceInfo, DiscoveryDiag, ExportSummary, ExternalLink, ExternalLinkImportResult, FavoriteEntry, FileDoneInfo, FileFailedInfo, FileProgress, FileStalledInfo, Friend, FriendKeyRotation, Group, GroupHistoryProgress, GroupReadInfo, InterfaceInfo, LinkState, LogEntry, MessageRecord, Peer, PeerReadInfo, PendingRequest, RelayConfig, RelayProbe, RoutedEndpoint, RuntimeDiag, RuntimeSnapshot, TransferInfo } from "@/types";
+import type { AppSettings, CacheInfo, CleanupReport, ContentAudience, ContentTransfer, Conversation, DeviceInfo, DiscoveryDiag, ExportSummary, ExternalLink, ExternalLinkImportResult, FavoriteEntry, FileDoneInfo, FileFailedInfo, FileProgress, FileStalledInfo, Friend, FriendKeyRotation, Group, GroupHistoryProgress, GroupReadInfo, InterfaceInfo, LinkState, LogEntry, MessageRecord, Peer, PeerReadInfo, PendingMessageOp, PendingRequest, RelayConfig, RelayProbe, RoutedEndpoint, RuntimeDiag, RuntimeSnapshot, TransferInfo } from "@/types";
 import type { TodoImage } from "@/utils/todos";
 import { chatSearchGroupSchema, groupFileEntrySchema, parseIpcList, shareEntrySchema } from "@/utils/validation";
 import type { PreviewGallery, PreviewImage } from "@/types";
-import type { UpdaterDownloadEvent, UpdaterInfo } from "@/types";
+import type { UpdaterDownloadEvent, UpdaterInfo, UpdaterStatus } from "@/types";
 export const api = {
   /**
    * 监听"**另一个窗口**改了设置"（外观 / 语言 / 资料 / 目录 / 缓存策略）。
@@ -294,6 +294,13 @@ export const api = {
   /** 撤回自己发的一条单聊消息（仅原作者；服务端 5 分钟窗口）。 */
   recallDirectMessage: (friendId: string, target: string) =>
     invoke<void>("recall_message", { friendId, target }),
+  /**
+   * 取消一条**还在补发队列里**的消息（自己发的、单聊、非文件）。
+   * 返回 `cancelled` = 真的撤下来了；`already_delivered` = 已经送出去，取消不成立。
+   * 只改本机：对端还没收到，所以没有"通知对方"这件事。
+   */
+  cancelMessage: (convId: string, msgId: string) =>
+    invoke<"cancelled" | "already_delivered">("cancel_message", { convId, msgId }),
   /** 切换自己发的代码/文本消息渲染（LWW，所有支持该能力位的成员生效）。 */
   setMessageRender: (convId: string, target: string, mode: "code" | "text") =>
     invoke<void>("set_message_render", { convId, target, mode }),
@@ -308,8 +315,9 @@ export const api = {
   windowToggleFullscreen: () => invoke<boolean>("window_toggle_fullscreen"),
   windowClose: () => invoke<void>("window_close"),
 
+  /** 取消一条文件传输：返回的是**台账**口径（这一单现在算不算被取消），不是"有没有命中在途任务"。 */
   cancelFileTransfer: (transferId: string) =>
-    invoke<boolean>("cancel_file_transfer", { transferId }),
+    invoke<{ cancelled: boolean; alreadyDone: boolean; notifiedPeer: boolean }>("cancel_file_transfer", { transferId }),
   sendFileAuto: (friendId: string, path: string) =>
     invoke<string>("send_file_auto", { friendId, path }),
   sendGroupFile: (groupId: string, path: string) =>
@@ -324,6 +332,12 @@ export const api = {
   applyMacosWindowShape: (dark: boolean) =>
     invoke<void>("apply_macos_window_shape", { dark }),
   getTransfers: () => invoke<TransferInfo[]>("get_transfers"),
+  /**
+   * 统一任务中心：还没送到对端的消息行。与 `getTransfers` 同一族（都是"还没办完的事"），
+   * 起点是补发队列；`peer_offline` 由后端用 `has_link` 填，前端不许按 peers 列表再猜。
+   */
+  getPendingMessageOperations: () =>
+    invoke<PendingMessageOp[]>("get_pending_message_operations"),
   /** 统一内容传输状态（ADR-0019）：未完成/失败的内容气泡据此显示重试。 */
   getContentTransfers: () => invoke<ContentTransfer[]>("get_content_transfers"),
 
@@ -365,7 +379,7 @@ export const api = {
   readClipboardFilePaths: () => invoke<string[]>("read_clipboard_file_paths"),
   /** 群文件每收件人进度汇总（气泡上「3/5 已收到」）。null = 这条 transfer 没有群投递记录。 */
   getGroupFileDeliverySummary: (transferId: string) =>
-    invoke<{ completed: number; failed: number; waiting: number } | null>(
+    invoke<{ completed: number; failed: number; waiting: number; cancelled: number } | null>(
       "get_group_file_delivery_summary",
       { transferId },
     ),
@@ -601,6 +615,8 @@ export const api = {
     return invoke<void>("updater_download", { onEvent: channel });
   },
   updaterCancel: () => invoke<void>("updater_cancel"),
+  /** 当前更新状态（B5）：跨窗口共用一份，设置窗重开/任务中心首帧都用它补拉。 */
+  updaterStatus: () => invoke<UpdaterStatus>("updater_status"),
   updaterInstall: () => invoke<void>("updater_install"),
   updaterClose: () => invoke<void>("updater_close"),
   exportExternalLinks: () => invoke<string>("export_external_links"),
@@ -709,6 +725,8 @@ export type EventHandlers = {
   onFileFailed: (d: FileFailedInfo) => void;
   /** 用户手动取消了一条正在发送的文件（transfer_id）。前端据此 mark failed + toast。 */
   onFileCancelled: (transferId: string) => void;
+  /** 更新状态跃迁（B5）：两个窗口都会收到同一份快照。 */
+  onUpdaterStatus: (s: UpdaterStatus) => void;
   /** 某条消息状态变更（msg_id: file-{tid} / gfile-{tid} 等）。前端据此刷新气泡状态。 */
   onMessageStatusChanged: (msgId: string) => void;
   /**
@@ -806,6 +824,7 @@ export async function bindEvents(h: EventHandlers): Promise<UnlistenFn[]> {
     listen<FileDoneInfo>("file-done", (e) => h.onFileDone(e.payload)),
     listen<FileFailedInfo>("file-failed", (e) => h.onFileFailed(e.payload)),
     listen<string>("file-cancelled", (e) => h.onFileCancelled(e.payload)),
+    listen<UpdaterStatus>("updater-status", (e) => h.onUpdaterStatus(e.payload)),
     listen<string>("message-status-changed", (e) => h.onMessageStatusChanged(e.payload)),
     // 后端改了这些消息的状态就发对应事件（sweeper 判失败 / Ack 到达 / 文件被取消）。
     // 分两类，按**事件带不带结论**判：

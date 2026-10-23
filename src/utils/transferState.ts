@@ -53,6 +53,11 @@ export function transferStatusTextKey(status?: string | null): string | null {
  *
  * 后端只回稳定短码（`queue_missing` 等），文案在这里映射；未知短码返回 null，
  * 不许把机器码直接上屏。
+ *
+ * ⚠️ 这一家同时服务**任务中心**（`utils/taskCenter` 的 `blockedReason` 也用它翻译）：
+ * 那三个后加的是任务中心独有的格子 —— `waiting_ack`（字节已写出、等对方回执）、
+ * `queued_by_backend`（在本机的补发队列里排着）、`no_source`（群里没人再有这份内容）。
+ * 两处共用一份映射是刻意的：同一个短码在气泡和任务中心说同一句话。
  */
 export function blockedReasonKey(reason?: string | null): string | null {
   switch (reason) {
@@ -66,6 +71,12 @@ export function blockedReasonKey(reason?: string | null): string | null {
       return "transfer.blocked.waitingRetry";
     case "peer_offline":
       return "transfer.blocked.peerOffline";
+    case "waiting_ack":
+      return "transfer.blocked.waitingAck";
+    case "queued_by_backend":
+      return "transfer.blocked.queuedByBackend";
+    case "no_source":
+      return "transfer.blocked.noSource";
     default:
       return null;
   }

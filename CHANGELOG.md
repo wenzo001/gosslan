@@ -13,6 +13,54 @@
 
 ## [Unreleased]
 
+## [5.6.0] - 2026-10-23
+
+### 统一后台任务中心 + 全链路取消/撤回 + 异步链路审计（5.6.0 一整批）
+
+> 这一批在 feature 分支上按 A0/B1/B2/T1/B3/B4/B5/B7/A1–A4 分了 20 多笔提交（每笔都带自己的判据与
+> 台账）；合并进 main 时收成这一节，逐笔的动机与验证仍可从 git 历史里读到（`git log --oneline 5.5.24..`）。
+
+**后台任务中心（T1）**
+- 新 `TaskCenter.vue`（取代 `TransferCenter.vue`）：把散在四处的进度并成一张表 —— 文件收发、
+  按 cid 取内容、消息补发、群历史、更新下载。归一逻辑只有 `src/utils/taskCenter.ts` 一家：
+  只列**未完成**（`queued | running | blocked`），卡住那行给出稳定短码与**今天真能点的**动作
+  （取消 / 立即重取 / 立即同步 / 去会话）。新命令 `get_pending_message_operations` 提供
+  "还没送到对端"的消息行（读 outbox + group_outbox，上限 200、SQLite 在 `spawn_blocking` 里）。
+- 药丸可拖到四个角并持久化（`utils/pillAnchor.ts`：四象限吸附、越界夹回、点按与拖动靠 6px 阈值分开）。
+- 运行时判据：CDP 探针 `--only=opscenter` **21 格**（真拖动/吸附/接线/DOM 顺序/390 宽/空态/更新行）。
+
+**取消（文件与消息）**
+- 用户取消成为**第二个不可降级终态**：`file_transfers.cancel_terminal` 墓碑（迁移 v11→v12）、
+  `SendFileError::cancelled` ⇒ `RetryVerdict::Cancelled`；群文件按成员的 `cancelled` 是硬终态，
+  三处复活入口（离线补发 / 接收会话重建 / stale 清扫）全部关闭，投递闸门排在并发许可之前。
+- 接收侧也能取消：单聊摘接收器 + 删 `.part`；群文件同样停手，并且**不再只 emit 一个事件骗界面**。
+- **取消通知到对端**：新帧 `FileCancel` / `GroupFileCancel`（High 优先级、能力位 `1<<8` 门控）；
+  用户取消与对端取消共用 `commands::apply_local_cancel` 一个收尾家；群按成员只影响那一格。
+- 消息也能取消：`cancel_message` 在同一个事务里删队列行 + 状态写 `cancelled`；单聊判据靠
+  `ack_delivered` 的"行还在不在"，群消息靠"没有任何成员的 Ack 被处理过"（`GroupAck` 是置 delivered
+  与删行同一事务）。界面区分「已取消」与「**仅本机已取消**」（`notifiedPeer`）。
+- `utils/cancelSend.ts` 是"能不能取消、走哪条通道"的唯一判据（顺手修掉旧条件要求自聊的错位）。
+
+**撤回**
+- 撤回只收文本族（`RECALLABLE_KINDS = text|code|merge`，两侧对账）：撤回只改消息行、停不掉传输，
+  对着还在传的文件按撤回会得到"气泡已撤回、字节照样在发"。
+- 失败/取消的文件与图片可以**再次发送**：`utils/resendChannel.ts` 按 kind × 群 × 本机有无附件
+  分三条通道；顺带修掉图片被按普通消息重发的假成功（对端收到"有名字没有字节"的图、本机还转绿）。
+
+**更新下载**
+- 状态收进 `UpdaterSession`（跨窗口共用）：`updater_status` + `updater-status` 事件（250ms 节流、
+  广播一个家）；任务中心列 `downloading`、设置窗重开按后端快照恢复、`installing` 不可取消。
+
+**异步链路审计（A0 + A1–A4）**
+- 新增门禁 `scripts/check-import-cycles.mjs`（零环才绿、过期白名单也红、带 `--self-test`）；
+  审计报告 `docs/notes/async-cycles-leaks-audit-2026-10-23.md` 的 6 条发现全部收口：
+  取消后收回停滞标记、删好友摘样式缓存、按状态回收群文件分母快照、到期清扫读有界（附 2 万行
+  0.289 ms 的读数）、两个一次性定时器登记进 init 作用域、看门狗留启动/心跳两行活性证据。
+
+**判据规模**：Rust 1147 passed、前端 1310、护栏非空转用例 264 条（本轮新增 12 条，均"改坏即红"）、
+`verify:local` 22/23（唯一红是未推区间的 Change Budget 判据 3）。仍未证的是三格人工项：
+两台真机之间"取消后对面真停 / 这一格不再收字节"、"设置窗重开看到进度"、"按取消后回执停在已取消"。
+
 ## [5.5.26] - 2026-10-23
 
 ### 外部链接的操作入口

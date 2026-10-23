@@ -2355,9 +2355,40 @@ mod tests {
         );
         // 但永久错误与计数无关，仍然当场放弃
         assert!(matches!(
-            send_retry_verdict(&SendFileError::permanent("用户取消发送"), None),
+            send_retry_verdict(&SendFileError::permanent("文件不存在或不可读"), None),
             RetryVerdict::GiveUp(_)
         ));
+    }
+
+    /// 用户取消是**第三种**，既不进重试队列也不落 `failed`（INV-P26）。
+    ///
+    /// 为什么单独立一档而不是复用 `permanent`：`GiveUp` 的落库口径是 `FileJobEnd::GiveUp`
+    /// ⇒ 台账写 `failed`、进度打回 0%。取消信号是异步回流的（投递任务在下一个观测点才退出），
+    /// 回来时若顺着 `permanent` 那一格走，用户刚按下的"已取消"就被改成"失败"。
+    /// 这条同时证明**取消优先于预算**：`cancelled` 也是 `retryable=false`，
+    /// 判据若先走 `!retryable` 那一格就会落错状态。
+    #[test]
+    fn a_user_cancel_never_enters_the_retry_queue_and_is_not_a_failure() {
+        use super::{send_retry_verdict, RetryVerdict, SendFileError};
+        let e = SendFileError::cancelled("用户取消发送");
+        assert_eq!(
+            send_retry_verdict(&e, Some(1)),
+            RetryVerdict::Cancelled,
+            "取消必须判成 Cancelled —— 既不进重试队列，也不许顺着 GiveUp 落 failed"
+        );
+        // 预算耗尽时也仍然要说"取消"，不能说"重试超限"（那是两件事）
+        assert_eq!(
+            send_retry_verdict(&e, Some(MAX_FILE_OUTBOX_RETRIES + 5)),
+            RetryVerdict::Cancelled,
+            "取消不许被重试上限改写成失败"
+        );
+        // 读不到次数同理
+        assert_eq!(send_retry_verdict(&e, None), RetryVerdict::Cancelled);
+        // 反向：取消是"不重发"，但不能把普通永久错误也判成取消
+        assert_ne!(
+            send_retry_verdict(&SendFileError::permanent("文件不存在或不可读"), None),
+            RetryVerdict::Cancelled
+        );
     }
     // ---------------- 台账终态写入失败的留痕 ----------------
 

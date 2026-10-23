@@ -6,7 +6,7 @@ import { useChatStore } from "@/stores/useChatStore";
 import { api } from "@/api";
 import { isMac } from "@/utils/platform";
 import ResponsiveLayout from "@/layouts/ResponsiveLayout.vue";
-import TransferCenter from "@/components/TransferCenter.vue";
+import TaskCenter from "@/components/TaskCenter.vue";
 
 /**
  * 首屏就绪之后再过这么久才去预热辅助窗口。
@@ -131,9 +131,9 @@ watch(() => app.dark, () => void applyWindowShape());
 <template>
   <ResponsiveLayout />
   <!--
-    全局传输入口挂在主窗口壳上，而不是某个会话里：D-18 的问题正是
+    全局后台任务入口挂在主窗口壳上，而不是某个会话里：D-18 的问题正是
     「切到别的会话就看不到还在传的文件」。它自己判断有没有活可干，
-    没有进行中的传输时什么都不渲染。
+    没有未完成的任务时什么都不渲染。
   -->
-  <TransferCenter />
+  <TaskCenter />
 </template>

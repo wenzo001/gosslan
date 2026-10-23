@@ -366,6 +366,33 @@ class Cdp {
     }));
     await sleep(160);
   }
+  /**
+   * 真的按住并拖一段（mousePressed → 若干 mouseMoved → mouseReleased，全程 `button:"left"`）。
+   *
+   * 为什么要新加这一条：任务中心那颗药丸的"拖到四个角"是**指针位移阈值**驱动的
+   * （按下与拖动必须分开，否则点一下会被判成拖动、面板打不开）。这种"按住—移动—松手"
+   * 在 DOM 上派发事件量不到：`dispatchEvent(new PointerEvent(...))` 不经命中测试，
+   * 也不会让浏览器真的把 pointer 捕获到那个元素上。
+   * 中途分多帧移动是必要的 —— 一发到位只会让组件看到"按下即已在终点"，
+   * 阈值那一段（先不动、动过 6px 才算拖）就没有作用点。
+   */
+  async drag(x1, y1, x2, y2, steps = 8) {
+    const send = (type, x, y) => this.ws.send(JSON.stringify({
+      id: ++this.seq, method: "Input.dispatchMouseEvent",
+      params: { type, x, y, button: "left", clickCount: 1 },
+    }));
+    send("mouseMoved", x1, y1);
+    await sleep(40);
+    send("mousePressed", x1, y1);
+    await sleep(60);
+    for (let i = 1; i <= steps; i += 1) {
+      const t = i / steps;
+      send("mouseMoved", Math.round(x1 + (x2 - x1) * t), Math.round(y1 + (y2 - y1) * t));
+      await sleep(30);
+    }
+    send("mouseReleased", x2, y2);
+    await sleep(200);
+  }
 }
 
 // ── 页面侧装进 window 的夹具（一次装好，之后每步只调函数）────────────
@@ -2721,6 +2748,8 @@ async function main() {
     const settingsmobile = want("settingsmobile");
     const composermobile = want("composermobile");
     const tasksmobile = want("tasksmobile");
+    const opscenter = want("opscenter");
+    const resend = want("resend");
     const touchroster = want("touchroster");
     const locale = want("locale");
     const rowpair = want("rowpair");
@@ -2777,6 +2806,8 @@ async function main() {
     if (settingsmobile) await runSettingsMobile(cdp, url);
     if (composermobile) await runComposerMobile(cdp, url);
     if (tasksmobile) await runTasksMobile(cdp, url);
+    if (opscenter) await runOpsCenter(cdp, url);
+    if (resend) await runResend(cdp, url);
     if (locale) await runLocale(cdp, url);
     if (rowpair) await runRowPair(cdp, url);
     if (ctxguard) await runContextGuard(cdp, url);
@@ -8313,6 +8344,412 @@ async function runSettingsMobile(cdp, url) {
  * 移动端群任务（--only=tasksmobile）：390 宽下看板行与详情弹窗的布局。
  * 行为（实时同步、筛选、详情内容）由 --only=tasksrt 覆盖，这里只量移动端视口。
  */
+/**
+ * 统一后台任务中心（`TaskCenter.vue`）的运行时判据。
+ *
+ * 负责人 2026-10-23 的原话里有三件**只有运行时量得到**的事：
+ *   ① "已经完成的在这个列表里应该是不展示" —— 读模型那侧有单测，但"store → 列表 DOM"
+ *      这一根接线只有挂起来才量得到（逻辑全绿而没人接上 = 功能为零）；
+ *   ② "百分之百没完成 / 接收中的都可以取消" —— 每一行到底有没有长出那颗按钮；
+ *   ③ "右下角那个胶囊一拨就可以往四个角移动" —— 这是**指针位移阈值**驱动的行为，
+ *      DOM 上派发事件量不到（不经命中测试、也不产生真的 pointer 捕获），
+ *      所以这里用 `Input.dispatchMouseEvent` 按住—移动—松手走一遍。
+ *
+ * ⚠️ 与所有其它段同一条边界：这是浏览器输入管线里的一次真拖动，
+ * **不等于** WKWebView / WebView2 里的手感（那一半归 Smoke-11 人工）。
+ */
+async function runOpsCenter(cdp, url) {
+  await cdp.send("Emulation.setDeviceMetricsOverride", {
+    width: 1280, height: 800, deviceScaleFactor: 1, mobile: false,
+  });
+  try {
+    await cdp.send("Page.navigate", { url });
+    await sleep(3_000);
+    await cdp.eval(PAGE_FIXTURE);
+    const mounted = await cdp.eval(
+      "window.__probe.install('/src/components/TaskCenter.vue', '', '')",
+    );
+    check("任务中心：组件在真实 DOM 里挂起来了", !!mounted && mounted.ok === true,
+      "install ok", JSON.stringify(mounted));
+
+    // 种四份真值：五种任务各一条 + 一条 done 终态（它**不该**出现在列表里）。
+    // 标题用文件名与正文（与语言无关），判据按这些字符串认行，不认按 locale 拼出来的动作名。
+    const seeded = await cdp.eval(`(async () => {
+      const S = await import('/src/stores/useChatStore.ts');
+      const chat = S.useChatStore();
+      chat.transfers = [
+        { id: 't-send', peer_id: 'p1', name: '设计稿.zip', size: 1000, direction: 'send',
+          status: 'active', path: null, progress: 0.4, blocked_reason: null, created_at: 5 },
+        { id: 't-sent', peer_id: 'p1', name: '会议记录.md', size: 100, direction: 'send',
+          status: 'sent', path: null, progress: 1, blocked_reason: null, created_at: 6 },
+        { id: 't-recv', peer_id: 'p1', name: '照片.jpg', size: 500, direction: 'receive',
+          status: 'active', path: null, progress: 0.6, blocked_reason: null, created_at: 7 },
+        { id: 't-done', peer_id: 'p1', name: '已完成.txt', size: 10, direction: 'send',
+          status: 'done', path: null, progress: 1, blocked_reason: null, created_at: 8 },
+      ];
+      chat.contentTransfers = [{
+        cid: 'a'.repeat(64), peerId: 'p1', groupId: null, name: 'a'.repeat(64), size: 200,
+        direction: 'receive', status: 'incomplete', received: 0, attempts: 2,
+        nextAttemptAt: 0, lastError: null, path: null, createdAt: 3, updatedAt: 3,
+      }];
+      chat.messageOps = [{ msg_id: 'm1', kind: 'text', peer_id: 'p1', group_id: null,
+        waiting_for: 1, created_at: 9, preview: '在吗', peer_offline: true }];
+      chat.groupHistorySync = { g1: { group_id: 'g1', source: 'p1', synced: 30, total: 100,
+        phase: 'running' } };
+      const t = window.__probe.vue;
+      await t.nextTick(); await t.nextTick();
+      return { ops: chat.operations.length, ledger: chat.transfers.length };
+    })()`);
+    check("任务中心：四份真值汇成 6 件未完成任务（done 那条被排除在列之外）",
+      seeded && seeded.ops === 6 && seeded.ledger === 4,
+      "ops=6 / ledger=4", JSON.stringify(seeded));
+
+    const READ = `(() => {
+      const outside = Array.from(document.querySelectorAll('button'))
+        .filter((b) => !b.closest('[role="dialog"]'));
+      const pill = outside.length === 1 ? outside[0] : null;
+      const box = pill ? pill.getBoundingClientRect() : null;
+      const dialog = document.querySelector('[role="dialog"]');
+      const rows = dialog ? Array.from(dialog.querySelectorAll('li')).map((li) => ({
+        title: String((li.querySelector('span') || {}).textContent || '').trim(),
+        buttons: li.querySelectorAll('button').length,
+      })) : [];
+      return {
+        pillButtons: outside.length,
+        pill: box ? { left: Math.round(box.left), top: Math.round(box.top),
+          right: Math.round(box.right), bottom: Math.round(box.bottom) } : null,
+        dialog: !!dialog,
+        rows: rows,
+        corner: localStorage.getItem('taskCenter.corner'),
+        vw: window.innerWidth, vh: window.innerHeight,
+        scrollWidth: document.documentElement.scrollWidth,
+      };
+    })()`;
+    const read = () => cdp.eval(READ);
+
+    // 起跑前把这条键清掉：这一段的头两格判的是"没写过位置时停在右下"，
+    // profile 是每次 mkdtemp 新建的、正常不会留东西，但**同一趟里**这一段被跑第二遍
+    // （--only=opscenter 复跑 / 将来把它挂进别的组合）时，上一遍写的 'br'/'tl' 会让那条
+    // `corner === null` 变成掷硬币。清一次是免费的确定性。
+    await cdp.eval("localStorage.removeItem('taskCenter.corner')");
+    const first = await read();
+    check("药丸渲染出来了，且它是此刻页面里唯一一颗非弹窗按钮（入口接上了）",
+      first.pillButtons === 1 && !!first.pill,
+      "1 颗", JSON.stringify({ pillButtons: first.pillButtons, pill: first.pill }));
+    check("默认停在右下角（没写过位置时与改动前那颗同一位置）",
+      !!first.pill && first.pill.right > first.vw / 2 && first.pill.bottom > first.vh / 2
+        && first.vw - first.pill.right <= 20 && first.corner === null,
+      "贴右边缘、右下象限、localStorage 还没写过",
+      JSON.stringify({ pill: first.pill, vw: first.vw, vh: first.vh, corner: first.corner }));
+
+    // ① 纯点击（指针不位移）必须打开面板 —— 拖动阈值如果把点按吞掉，这一格当场红。
+    await cdp.click(first.pill.left + 40, first.pill.top + 12);
+    const opened = await read();
+    check("点一下（不拖动）打开面板，列表行数等于读模型的 6 行",
+      opened.dialog === true && opened.rows.length === 6,
+      "dialog + 6 行", JSON.stringify({ dialog: opened.dialog, rows: opened.rows.length }));
+    const byTitle = (title) => opened.rows.find((r) => r.title === title);
+    const recv = byTitle('照片.jpg');
+    const sent = byTitle('会议记录.md');
+    const msg = byTitle('在吗');
+    check("接收中的行有按钮（负责人：接受中没有完成的都是可以取消的）",
+      !!recv && recv.buttons >= 1, "≥1", JSON.stringify(recv));
+    check("100% 但未终态（sent）的行有按钮（负责人：百分之百没完成的也可以取消）",
+      !!sent && sent.buttons >= 1, "≥1", JSON.stringify(sent));
+    check("消息行只给「今天真能动的」按钮（取消在 B4，所以这一行是 1 颗=去会话）",
+      !!msg && msg.buttons === 1, "1", JSON.stringify(msg));
+    // 排序：要人处理的那一行必须排最前（blocked → running → queued）。
+    // 这一段里 blocked 的有三条（peer_offline 的消息最新），所以第一行必须是它。
+    check("DOM 顺序 = 读模型的顺序：需要处理的那一行排最前",
+      opened.rows[0] && opened.rows[0].title === '在吗',
+      "第一行是 peer_offline 的那条消息",
+      JSON.stringify(opened.rows.map((r) => r.title)));
+    check("已完成那条不在列表里（DOM 与读模型同一口径）",
+      opened.rows.some((r) => r.title === '已完成.txt') === false,
+      "不含 已完成.txt", JSON.stringify(opened.rows.map((r) => r.title)));
+
+    // 更新下载那一类（B5）：只证明"store 里的可查询状态真的会变成一行 + 一个取消键"。
+    // 相位语义（ready/installing 不列）由读模型单测钉，这里只管接线。
+    await cdp.eval(`(async () => {
+      const S = await import('/src/stores/useChatStore.ts');
+      S.useChatStore().updaterStatus = { phase: 'downloading', downloaded: 40, total: 100,
+        version: '9.9.9', error: null };
+      const t = window.__probe.vue;
+      await t.nextTick(); await t.nextTick();
+      return true;
+    })()`);
+    const withUpdate = await read();
+    const updateRow = withUpdate.rows.find((r) => r.title === 'v9.9.9');
+    check("更新下载在任务中心里长成一行（目标版本号当标题）",
+      withUpdate.rows.length === 7 && !!updateRow,
+      "7 行且含 v9.9.9",
+      JSON.stringify({ rows: withUpdate.rows.map((r) => r.title) }));
+    check("那一行正好一颗「取消」（install 阶段不可取消，所以不是两颗）",
+      !!updateRow && updateRow.buttons === 1, "1 颗", JSON.stringify(updateRow));
+    await cdp.eval(`(async () => {
+      const S = await import('/src/stores/useChatStore.ts');
+      S.useChatStore().updaterStatus = null;
+      const t = window.__probe.vue;
+      await t.nextTick(); await t.nextTick();
+      return true;
+    })()`);
+
+    // ④b 移动端 390：**面板开着**时也不许把页面撑出横向滚动（T1 验证矩阵那一格）。
+    // 放在这里是因为面板此刻正开着（刚点开、还没关）—— 关掉再开需要真实点击，
+    // 而 headless 静止页面不出帧（Reka 的遮罩要等 after-leave），那一步在本段里不稳。
+    await cdp.send("Emulation.setDeviceMetricsOverride", {
+      width: 390, height: 844, deviceScaleFactor: 2, mobile: true,
+    });
+    await sleep(400);
+    const mOpen = await read();
+    check("390 宽、面板打开：没有横向溢出，6 行都在",
+      mOpen.dialog === true && mOpen.scrollWidth <= 390 && mOpen.rows.length === 6,
+      "dialog + scrollWidth ≤ 390 + 6 行",
+      JSON.stringify({ dialog: mOpen.dialog, sw: mOpen.scrollWidth, rows: mOpen.rows.length }));
+    await cdp.send("Emulation.setDeviceMetricsOverride", {
+      width: 1280, height: 800, deviceScaleFactor: 1, mobile: false,
+    });
+    await sleep(400);
+
+    // 关掉面板再拖。这里**不用 Esc**：Esc 要焦点已经落在弹窗里才有作用点，
+    // 而这一段刚才是"真点击坐标"打开的，焦点落点不该被本段当成前提来依赖
+    // （焦点那条出口另有 `--only=overlay` 那 32 条守着）。点卡片外的遮罩是 Reka 的
+    // outside-pointerdown 那条路，与用户"点旁边关掉"是同一件事。
+    // ⚠️ 这一格必须先红再绿：遮罩没关掉时，下面那次拖动的按下会打在**遮罩**上
+    //（遮罩 z-64 在药丸 z-40 之上），于是 corner 永远是 null —— 第一版就是这么红的，
+    // 那不是拖动坏了，是这一段的前置没成立。
+    // 出帧泵：`Page.captureScreenshot` 会强制走一遍更新渲染，rAF 回调在那一步里跑。
+    // 关面板这一步**必须**泵帧：Reka 的遮罩在 `after-leave` 之后才卸载，而 headless 页面
+    // 静止时不出帧 ⇒ 遮罩（z-64）会一直盖在药丸（z-40）上，后续的"点药丸"全打在遮罩上
+    // （本段第一版实测：读数像"药丸点不开"，其实是面板关不干净）。
+    const pumpFrames = async (n = 6) => {
+      for (let i = 0; i < n; i += 1) {
+        await cdp.send("Page.captureScreenshot", { format: "png" }).catch(() => {});
+      }
+    };
+    const closePanel = async () => {
+      await cdp.click(60, 400);
+      await sleep(600);
+      await pumpFrames();
+      return read();
+    };
+    const closed = await closePanel();
+    check("对照前置：点卡片外能把面板关掉（否则拖动是打在遮罩上，读数不可信）",
+      closed.dialog === false && closed.pillButtons === 1,
+      "dialog=false / 1 颗", JSON.stringify({ dialog: closed.dialog, pillButtons: closed.pillButtons }));
+
+    // ② 真的按住拖到左上象限 ⇒ 吸附左上角 + 位置写进 localStorage + **不把面板点开**。
+    const from = { x: closed.pill.left + 40, y: closed.pill.top + 12 };
+    await cdp.drag(from.x, from.y, 120, 120);
+    const moved = await read();
+    check("真拖动之后药丸吸到左上角（哪一角，不是像素）",
+      !!moved.pill && moved.pill.left <= 20 && moved.pill.top <= 140
+        && moved.pill.left < moved.vw / 2 && moved.pill.top < moved.vh / 2,
+      "left≤20 且落在左上象限", JSON.stringify(moved.pill));
+    check("拖动把那一角写进了 localStorage（重启还在：挡住输入区的位置每次都同一处）",
+      moved.corner === "tl", "tl", JSON.stringify({ corner: moved.corner }));
+    check("拖完没有顺手把面板点开（点按与拖动必须分开）",
+      moved.dialog === false, "dialog=false", JSON.stringify({ dialog: moved.dialog }));
+
+    // ③ 拖完还要点得开：`suppressClick` 只许吞掉这一次，不许常驻。
+    await cdp.click(moved.pill.left + 40, moved.pill.top + 12);
+    const reopened = await read();
+    check("拖完之后仍然一点就开（吞点击只吞拖动那一下）",
+      reopened.dialog === true, "dialog=true", JSON.stringify({ dialog: reopened.dialog }));
+
+    // ④ 移动端 390 宽：药丸与列表都不许把页面撑出横向滚动。
+    await cdp.send("Emulation.setDeviceMetricsOverride", {
+      width: 390, height: 844, deviceScaleFactor: 2, mobile: true,
+    });
+    await sleep(400);
+    const narrow = await read();
+    check("390 宽：页面没有横向溢出（药丸 max-w 兜住了）",
+      narrow.scrollWidth <= 390, "scrollWidth ≤ 390",
+      JSON.stringify({ scrollWidth: narrow.scrollWidth }));
+    check("390 宽：药丸仍完整落在视口内（拖过之后也不会跑到屏外）",
+      !!narrow.pill && narrow.pill.left >= 0 && narrow.pill.right <= 390
+        && narrow.pill.top >= 0 && narrow.pill.bottom <= 844,
+      "在视口内", JSON.stringify(narrow.pill));
+
+    // ④c 空态：所有来源都空 ⇒ 药丸整个不渲染（"没有进行中的任务"不是一行空面板，是入口消失）。
+    const cleared = await cdp.eval(`(async () => {
+      const S = await import('/src/stores/useChatStore.ts');
+      // 两个实例都清：本页既跑着真实 app（自己那份 pinia），也挂着探针挂载的那份
+      // （window.__pinia）。只清其中一个时，界面上那颗药丸可能属于另一个 —— 这一格
+      // 判的是"事实为空时入口消失"，不该被实例归属问题判成红。
+      const stores = [S.useChatStore()];
+      if (window.__pinia) stores.push(S.useChatStore(window.__pinia));
+      for (const c of stores) {
+        c.transfers = []; c.contentTransfers = []; c.messageOps = []; c.groupHistorySync = {};
+        c.updaterStatus = null;
+      }
+      const c = stores[0];
+      const t = window.__probe.vue;
+      await t.nextTick(); await t.nextTick();
+      await new Promise((r) => setTimeout(r, 300));
+      const outside = Array.from(document.querySelectorAll('button'))
+        .filter((b) => !b.closest('[role="dialog"]'));
+      return {
+        ops: c.operations.length,
+        transfers: c.transfers.length,
+        domButtons: outside.length,
+        domText: outside.map((b) => (b.innerText || '').replace(/\s+/g, ' ').trim()).slice(0, 2),
+      };
+    })()`);
+    const empty = await read();
+    check("没有未完成任务时药丸不渲染（入口随事实消失，不留一个 0 件的壳）",
+      empty.pillButtons === 0 && empty.pill === null,
+      "0 颗按钮",
+      JSON.stringify({ pillButtons: empty.pillButtons, cleared, dialog: empty.dialog }));
+
+  } finally {
+    await cdp.send("Emulation.clearDeviceMetricsOverride").catch(() => {});
+  }
+}
+
+/**
+ * 「发送失败 / 已取消之后那颗重发」的运行时判据（负责人 2026-10-23："可以有个重试/再次发送…
+ * 可打断 可恢复 可取消这种都应该有"）。
+ *
+ * 这一段判的是**走的是哪条通道**，不是"按钮在不在"：
+ * 图片以前漏在 `retryable` 与 `retrySend` 两处的缝里（两处都只排除 `file`），失败的图片被按
+ * 普通消息重发了一份 JSON 载荷 ⇒ 对端收到"有名字没有字节"的一张图、本机还转成绿色。
+ * 静态判据只能证明"引了这个函数"，**"点一下到底打到哪条命令"只能在这里量**：
+ * 用 `H.stubApi` 把两条命令各换一个计数替身，真按一次回执那颗，读调用次数。
+ *
+ * 附件已被存储清理那一格也在这里判：那时必须**没有**按钮（不给一颗点了没反应的键 = 界面不撒谎）。
+ */
+async function runResend(cdp, url) {
+  await cdp.send("Page.navigate", { url });
+  await sleep(3_000);
+  await cdp.eval(PAGE_FIXTURE);
+
+  const IMG_META = JSON.stringify({ name: "白板照片.png", size: 2048, path: "/tmp/probe-a.png", subtype: "image", sha256: "b".repeat(64) });
+
+  /** 真挂一次消息行（props 由页面里那份对象给出），并返回那颗重发的坐标。 */
+  const mountAndLocate = async (over) => {
+    const msg = Object.assign({
+      id: -1, msg_id: "m-rs-1", sender_id: "dev-me", receiver_id: "p1", conv_id: "p1",
+      kind: "image", content: IMG_META, ts: 1700000000000, seq: 1, status: "failed",
+    }, over);
+    const mounted = await cdp.eval("window.__probe.install('/src/components/MessageItem.vue', '', "
+      + JSON.stringify(JSON.stringify({ message: msg, isGroup: false, senderName: "我" })) + ")");
+    if (!mounted || mounted.ok !== true) return { ok: false, why: "install", mounted };
+    const seeded = await cdp.eval("window.__probe.seedDevice('dev-me')");
+    if (!seeded || seeded.ok !== true) return { ok: false, why: "seedDevice", seeded };
+    await sleep(250);
+    const btn = await cdp.eval(`(async () => {
+      const I = await import('/src/i18n/index.ts');
+      const want = I.t('msg.resend');
+      const hit = Array.from(document.querySelectorAll('button'))
+        .find((b) => b.getAttribute('aria-label') === want && b.getClientRects().length > 0);
+      if (!hit) return { found: false, want: want };
+      const r = hit.getBoundingClientRect();
+      return { found: true, want: want, x: Math.round(r.left + r.width / 2), y: Math.round(r.top + r.height / 2) };
+    })()`);
+    return { ok: true, btn };
+  };
+
+  /** 每条被点的命令都换成"只计数"的替身；顺带把 store 刷新链上那三条读命令兜住。 */
+  const stubAll = async () => {
+    for (const [name, payload] of [
+      ["sendFileAuto", "t-resend-1"],
+      ["sendGroupFile", "t-resend-2"],
+      ["sendMessage", { msg_id: "m-rs-new", conv_id: "p1", sender_id: "dev-me", kind: "text", content: "hi", ts: 1700000000001, seq: 2, status: "sending" }],
+      ["getTransfers", []],
+      ["getContentTransfers", []],
+      ["getPendingMessageOperations", []],
+      ["mediaPresent", true],
+    ]) {
+      await cdp.eval(`window.__probe.stubApi(${JSON.stringify(name)}, ${JSON.stringify(payload)})`);
+    }
+    return true;
+  };
+  const calls = async (name) => cdp.eval(`window.__probe.apiCalls(${JSON.stringify(name)})`);
+
+  // ── ① 失败的**图片**：必须回文件通道，而不是 send_message ──────────────
+  await stubAll();
+  const a = await mountAndLocate({});
+  check("失败图片这行挂出来了，回执那颗是可点的（可访问名 = msg.resend）",
+    a.ok === true && a.btn && a.btn.found === true, "found=true", JSON.stringify(a));
+  if (a.ok && a.btn && a.btn.found) {
+    await cdp.click(a.btn.x, a.btn.y);
+    await sleep(600);
+    const file = await calls("sendFileAuto");
+    const text = await calls("sendMessage");
+    check("★ 点失败图片的重发 ⇒ 走 send_file_auto（恰好一次）",
+      file === 1, "sendFileAuto=1", JSON.stringify({ file }));
+    check("★ 同一下点击**没有**走 send_message（旧那步把 JSON 载荷当普通消息发出去 = 假成功）",
+      text === 0, "sendMessage=0", JSON.stringify({ text }));
+  } else {
+    check("★ 点失败图片的重发 ⇒ 走 send_file_auto（恰好一次）", false,
+      "先要那颗按钮存在", JSON.stringify(a));
+    check("★ 同一下点击**没有**走 send_message（旧那步把 JSON 载荷当普通消息发出去 = 假成功）", false,
+      "上一格没成立，这一格没作用点", JSON.stringify(a));
+  }
+
+  // ── ② 已取消的图片也要能再发（负责人点名"取消了"那一格）────────────────
+  await stubAll();
+  const b = await mountAndLocate({ msg_id: "m-rs-2", status: "cancelled" });
+  check("已取消的图片行也长出可点的重发（取消不是错误，但同样要能恢复）",
+    b.ok === true && b.btn && b.btn.found === true, "found=true", JSON.stringify(b));
+  if (b.ok && b.btn && b.btn.found) {
+    await cdp.click(b.btn.x, b.btn.y);
+    await sleep(600);
+    check("点它 ⇒ 同样走 send_file_auto", (await calls("sendFileAuto")) === 1,
+      "sendFileAuto=1", JSON.stringify({ file: await calls("sendFileAuto") }));
+  } else {
+    check("点它 ⇒ 同样走 send_file_auto", false, "先要那颗按钮存在", JSON.stringify(b));
+  }
+
+  // ── ③ 群里的失败文件 ⇒ 必须走群文件那条命令，而不是单聊那条 ─────────────
+  await stubAll();
+  const c = await mountAndLocate({
+    msg_id: "gfile-1", conv_id: "group:g1", kind: "file", status: "failed",
+  });
+  const cOk = c.ok === true && c.btn && c.btn.found;
+  if (cOk) {
+    await cdp.click(c.btn.x, c.btn.y);
+    await sleep(600);
+    const grp = await calls("sendGroupFile");
+    const dm = await calls("sendFileAuto");
+    check("群文件失败后重发走 send_group_file（而不是把群会话当对端去 send_file_auto）",
+      grp === 1 && dm === 0, "sendGroupFile=1 / sendFileAuto=0", JSON.stringify({ grp, dm }));
+  } else {
+    check("群文件失败后重发走 send_group_file（而不是把群会话当对端去 send_file_auto）", false,
+      "先要那颗按钮存在", JSON.stringify(c));
+  }
+
+  // ── ④ 载荷里没有路径 ⇒ 不许有按钮（没有可发的字节 = 给了就是界面在撒谎）──
+  // ⚠️ 这一格刻意用"content 里没有 path"，**不是**用 mediaPresent=false：
+  // 失败的**图片**行今天拿不到可达性信号（`previewSubtype` 在 failed 时直接返回 null，
+  // 而 `shouldProbePresence` 只给 subtype=file 那份探测 ⇒ 两路都不跑，`attachmentMissing` 恒 false）。
+  // 所以"附件已被存储清理"那一档今天量不到（点它会由后端报错、走 sendFileTo 那条失败 toast，
+  // 不是静默成功）；要收那一格得动 `shouldProbePresence` 那条共享判据，不在本批顺手做。
+  await stubAll();
+  const d = await mountAndLocate({
+    msg_id: "m-rs-4",
+    content: JSON.stringify({ name: "白板照片.png", size: 2048, subtype: "image" }),
+  });
+  check("★ 载荷里没有 path ⇒ 那颗重发不渲染（没有可发的字节就不给按钮）",
+    d.ok === true && d.btn && d.btn.found === false, "found=false", JSON.stringify(d));
+
+  // ── ⑤ 文本失败仍是原地复用那条（`retrySend.test.ts` 的运行时那一半）─────
+  await stubAll();
+  const e = await mountAndLocate({ msg_id: "m-rs-5", kind: "text", content: "在吗" });
+  if (e.ok === true && e.btn && e.btn.found) {
+    await cdp.click(e.btn.x, e.btn.y);
+    await sleep(600);
+    check("文本失败重发仍走 send_message（恰好一次），且不碰文件通道",
+      (await calls("sendMessage")) === 1 && (await calls("sendFileAuto")) === 0,
+      "sendMessage=1 / sendFileAuto=0",
+      JSON.stringify({ text: await calls("sendMessage"), file: await calls("sendFileAuto") }));
+  } else {
+    check("文本失败重发仍走 send_message（恰好一次），且不碰文件通道", false,
+      "先要那颗按钮存在", JSON.stringify(e));
+  }
+}
+
 async function runTasksMobile(cdp, url) {
   await cdp.send("Emulation.setDeviceMetricsOverride", {
     width: 390, height: 844, deviceScaleFactor: 2, mobile: true,

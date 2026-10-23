@@ -288,6 +288,17 @@ const steps = [
   },
   {
     group: "frontend",
+    name: "前端 import 环守卫",
+    why: "挡住「store ⇄ component ⇄ util 互相 import」的模块级环：环的代价（求值顺序、"
+      + "undefined is not a function、store 在模块初始化期被取用）到运行时才显形，而现场表现"
+      + "与「环」毫无关系 ⇒ 只能靠机器判。文件数/边数/环数由该步自己打印，"
+      + "并且带 --self-test 双向夹具（人造环必须判出、菱形必须判 0）防止提取器读空了报绿",
+    cwd: ROOT,
+    cmd: NODE_EXE,
+    args: ["scripts/check-import-cycles.mjs"],
+  },
+  {
+    group: "frontend",
     name: "文档硬数字对账",
     why: "挡住「文档抄了一份数字、下次改代码没人回来改它」——门禁步数由 verify --list 现算对账；取锁点条数一律禁止手写（曾在四处共存三种写法）",
     cwd: ROOT,

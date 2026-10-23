@@ -7,7 +7,7 @@ import { useExclusivePopup } from "@/composables/useExclusivePopup";
 import { PopoverContent, PopoverPortal, PopoverRoot, PopoverTrigger } from "reka-ui";
 import { avatarSeedFor } from "@/utils/avatarSeed";
 import type { SendState } from "@/composables/useMessageDisplay";
-import { CheckCheck } from "lucide-vue-next";
+import { Ban, CheckCheck } from "lucide-vue-next";
 import { Check } from "@/components/ui/icons";
 import { X } from "@/components/ui/icons";
 
@@ -21,19 +21,25 @@ const props = defineProps<{
   /** 消息唯一键：作为全局展开互斥的键。 */
   msgKey?: string | number;
   /**
-   * 失败态这颗红叉**是否真的能重发**（缺省视为可，老调用点不必改）。
+   * 这一格**是否真的能把这条重新发出去**（决定图标是按钮还是静态指示）。
    *
-   * 文件类消息交回 false：本仓没有任何发送侧文件重试通道（`retry_file` / `resend_file`
-   * 这类命令在 `src-tauri/src/commands` 里零命中），而 `retrySend` 第一行就
-   * `msg.kind === "file"` 直接 return ⇒ 按钮对所有 kind 都渲染、点了静默无反应
-   * （10-22 审计 R-27 / D-2）。这不是"少个功能"，是**界面在撒谎**：一个看起来能点的
-   * 修复入口，点了什么都不发生，用户只会再点一次。
-   * 这里不删图标 —— 它是这条消息**失败**的唯一可见指示，删掉等于把失败藏起来；
-   * 改成静态 `role="img"` + 可访问名，失败照样看得见，只是不再假装可点。
+   * 判据不在这里、也不在 `MessageItem` 里各自猜：唯一那份在 `utils/resendChannel`
+   * （它按 kind × 是否群 × 本机还有没有附件 决定通道）。缺省 = `undefined` 一律**不可点**，
+   * 因为"默认就能点"正是 10-22 审计 R-27/D-2 那格的成因：按钮对所有 kind 都渲染、
+   * 而 `retrySend` 只对部分 kind 有出口 ⇒ 点了静默无反应 = 界面在撒谎。
+   * 图标本身不删 —— 它是这条消息失败/被取消的唯一可见指示；只是不再假装可点。
    */
   retryable?: boolean;
 }>();
 const emit = defineEmits<{ (e: "retry"): void }>();
+
+/**
+ * 「失败」与「已取消」两格都可以长出这颗重发（负责人 2026-10-23：取消掉的也想再发一次），
+ * 但都必须先有真通道。其余状态（sending/sent/delivered/read）本来就没有重试可言。
+ */
+const canRetry = computed(
+  () => (props.state === "failed" || props.state === "cancelled") && props.retryable === true,
+);
 
 const chat = useChatStore();
 const readerIds = computed(() => props.readerIds ?? []);
@@ -146,14 +152,14 @@ function readerAvatar(id: string): string | null {
          之前用 RefreshCw 单独当"失败"图标，但 RefreshCw 的语义是「刷新/重试」，
          而不是「这条消息失败了」—— 用户需要的是明确的失败感 + 可修复入口。 -->
     <button
-      v-if="state === 'failed' && retryable !== false"
+      v-if="state === 'failed' && canRetry"
       class="tap-safe flex h-5 w-5 items-center justify-center rounded-[var(--gosslan-radius-xs)] text-[var(--gosslan-danger-ink)] transition hover:bg-[var(--gosslan-danger-soft)]"
       :title="t('msg.resend')" :aria-label="t('msg.resend')"
       @click="emit('retry')"
     >
       <X class="h-4 w-4" stroke-width="2.5" />
     </button>
-    <!-- 不可重发的失败（文件类）：同一个 X 退化成**纯指示**，读屏仍能报出"发送失败"。 -->
+    <!-- 没有真通道的失败：同一个 X 退化成**纯指示**，读屏仍能报出"发送失败"。 -->
     <span
       v-else-if="state === 'failed'"
       class="flex h-5 w-5 items-center justify-center text-[var(--gosslan-danger-ink)]"
@@ -162,6 +168,27 @@ function readerAvatar(id: string): string | null {
       :aria-label="title"
     >
       <X class="h-4 w-4" stroke-width="2.5" />
+    </span>
+    <!-- 已取消：自己按下的取消不是错误（INV-P26 把这两格分开记），所以用灰色而不是 danger，
+         但它**看得见**。这一格现在也能再发一次（负责人 2026-10-23："发送失败、取消了，
+         其实也可以有个重试/再次发送"）—— 前提是 `utils/resendChannel` 算得出真通道；
+         算不出（比如附件已被存储清理删掉）就仍是静态指示，不给一颗点了没反应的键。 -->
+    <button
+      v-else-if="canRetry"
+      class="tap-safe flex h-5 w-5 items-center justify-center rounded-[var(--gosslan-radius-xs)] text-[var(--gosslan-text-2)] transition hover:bg-[var(--gosslan-hover)]"
+      :title="t('msg.resend')" :aria-label="t('msg.resend')"
+      @click="emit('retry')"
+    >
+      <Ban class="h-4 w-4" stroke-width="2.5" />
+    </button>
+    <span
+      v-else-if="state === 'cancelled'"
+      class="flex h-5 w-5 items-center justify-center text-[var(--gosslan-text-2)]"
+      role="img"
+      :title="title"
+      :aria-label="title"
+    >
+      <Ban class="h-4 w-4" stroke-width="2.5" />
     </span>
     <span v-else class="relative flex items-center" role="img" :title="title" :aria-label="title">
       <!-- 状态切换给一次短促的弹入：单勾→双勾→主题色双勾是聊天里最常盯的一处，

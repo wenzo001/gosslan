@@ -917,3 +917,63 @@ test("message-failed 用事件自带的事实盖缓存，不再退化成一次�
   assert.equal(count(mutated, "h.onMessageFailed(e.payload)"), 0);
   assert.equal(count(mutated, "h.onMessageStatusChanged(e.payload)"), 2, "接回去就是第二处重查");
 });
+
+// ---------------- 「网络停滞」标记的回收（10-23 审计 P1-A） ----------------
+
+/**
+ * 三条文件终态事件都必须**收回** `stalledTransfers` 里那一格。
+ *
+ * 为什么这一格值得单独钉：`stalledTransfers` 是一个 Map，`isTransferStalled` 在每次渲染时
+ * 都会查它。少清一处不会当场出错 —— 它只是**慢慢变长**：用户一晚上取消十次就积十格，
+ * 而且那些 id 的 transfer 早就终态了。这种"只增不减"在截图与功能上都看不见，只有真机跑一晚上
+ * 才发现（10-23 审计 P1-A 记的就是这一格）。
+ *
+ * 判据按**每个 handler 自己的函数体**取窗口：整份 store 里 `setTransferStalled(` 出现多次，
+ * 拿整份文件数会让"漏一处"永远绿（同 `file_cancel_and_user_cancel_share_one_local_home`
+ * 那条按臂体取窗口的理由）。
+ */
+test("★ 文件的三条终态事件都收回「网络停滞」标记（那个 Map 只清不涨）", () => {
+  const store = readFileSync(join(ROOT, "stores", "useChatStore.ts"), "utf8");
+  /** 从某段起点截到下一个空行或 1200 字符，够覆盖 handler 开头那几行。 */
+  const window = (from: string) => {
+    const at = store.indexOf(from);
+    assert.ok(at >= 0, `找不到 ${from} —— 改名/搬家时这里必须同步`);
+    return store.slice(at, at + 1200);
+  };
+  assert.match(
+    window("function onFileDone("),
+    /setTransferStalled\(d\.transfer_id, false\)/,
+    "onFileDone 必须收回停滞标记",
+  );
+  assert.match(
+    window("function onFileFailed("),
+    /setTransferStalled\(d\.transfer_id, false\)/,
+    "onFileFailed 必须收回停滞标记",
+  );
+  assert.match(
+    window("onFileCancelled: (transferId) =>"),
+    /setTransferStalled\(transferId, false\)/,
+    "onFileCancelled 必须收回停滞标记：否则取消过的每一条都永久留在那个 Map 里",
+  );
+});
+
+/**
+ * 两个一次性定时器也登记在 init 作用域上（10-23 审计 P3-E）。
+ *
+ * 它们的形状是"只排一次、开火即清、重复排程有 `!== null` 守卫"，所以单次不泄露；
+ * 但 `init()` 会重跑（设置页的"重绑事件"入口），**已排队的那一发不会取消** ——
+ * 它会落在新一代作用域里多跑一次。代价很小，但口径要与 `markReadTimer` 一致：
+ * 作用域销毁就该把还排着的东西一起放掉。
+ */
+test("★ 一次性定时器在 init 作用域销毁时被取消（与 markReadTimer 同一条口径）", () => {
+  const store = readFileSync(join(ROOT, "stores", "useChatStore.ts"), "utf8");
+  const at = store.indexOf("scope.onDispose(() => {");
+  assert.ok(at >= 0, "init 作用域的那段 onDispose 不见了 ⇒ 本判据的锚点失效");
+  const dispose = store.slice(at, at + 900);
+  for (const timer of ["markReadTimer", "notifyTimer", "transfersRepairTimer"]) {
+    assert.ok(
+      dispose.includes(`clearTimeout(${timer})`),
+      `${timer} 必须在 init 作用域销毁时被 clearTimeout：重绑事件不该让上一代的定时器留到下一代`,
+    );
+  }
+});

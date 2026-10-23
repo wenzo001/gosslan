@@ -200,4 +200,44 @@ mod tests {
             next_at
         ));
     }
+
+    /// 用户取消（B3a）必须是 **Rejected**，而且**永远不再自动重取**。
+    ///
+    /// 这条判据守的是一个很容易写错的方向：把它记成 `Partial` 就得到 Incomplete，
+    /// 而 Incomplete 会被建链时的 `retry_incomplete_content` 自己再拉一遍 ——
+    /// 用户刚点掉的东西又出现在"进行中"里。所以两头都钉：状态是 Rejected、
+    /// 下次重试时间为 0（`should_retry_now` 结构上不可能为真）。
+    #[test]
+    fn a_cancelled_receive_is_rejected_and_never_requeued() {
+        // `on_failure` 返回的是 (新状态, 新 attempts, next_attempt_at) —— 顺序以签名为准。
+        let (status, next_attempts, next_at) = on_failure(0, FailReason::Cancelled, 1_000);
+        assert_eq!(
+            status,
+            TransferStatus::Rejected,
+            "取消不是「等一会儿再自动继续」，它是这一单的终态"
+        );
+        assert_eq!(
+            next_at, 0,
+            "终态不带下次重试时间 ⇒ 没有任何入口会再把它拉起来"
+        );
+        assert_eq!(
+            next_attempts, 1,
+            "取消照样记一次数（它是真发生过的一次失败），但次数对终态不起作用"
+        );
+        assert!(
+            !FailReason::Cancelled.retryable(),
+            "retryable 必须是 false —— 它就是 Incomplete/Rejected 的分岔开关"
+        );
+        assert!(
+            !should_retry_now(TransferStatus::Rejected, next_at, 9_999_999),
+            "终态行即使时间走到也不该被判成「现在该重试」"
+        );
+        // 反向对照：可恢复的那一类仍然回 Incomplete（别把这条判据写成"所有失败都终态"）
+        let (partial, _, partial_next) = on_failure(0, FailReason::Partial, 1_000);
+        assert_eq!(partial, TransferStatus::Incomplete);
+        assert!(
+            partial_next > 0,
+            "可恢复失败必须带下次重试时间，否则自动重取就断了"
+        );
+    }
 }

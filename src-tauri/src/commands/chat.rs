@@ -11,6 +11,80 @@
 ///
 /// 复用公开的 `send_message(..., "recall")` 走完整的 E2EE / outbox / 幂等管道；
 /// 事件先入可靠队列，成功后再物化本地 —— 顺序反了会出现「本地已撤回、对端没收到」。
+/// 取消一条**还在补发队列里**的消息（用户按「取消发送」）。
+///
+/// 与文件的取消分开两套是刻意的：文件那条停的是"正在写的字节"（`cancel_file_transfer`
+/// + `FileCancel` 帧），消息这条停的是"还没送出去的队列行"（删 outbox + 状态写 cancelled）。
+/// 两者唯一的共同点是**都要真执行**：只改界面状态而不删队列行，下一轮 flush 照样把它发出去。
+///
+/// 边界（都返回可读的错误，不静默降级）：
+///  · 只能取消**自己发的**、且属于该会话的消息；
+///  · 自聊不支持（本机自己，没有"送达"这回事）；
+///  · 文件/图片走传输那条通道（撤回/取消都改不到正在跑的字节）；
+///  · 群消息：判据是"**还没有任何成员的 Ack 被处理过**"（`GroupAck` 是"置 delivered + 删那一行"
+///    同一个事务 ⇒ 状态没到 delivered/read 就说明一条 Ack 都没处理过）。取消删掉每个成员的队列行，
+///    迟到的 Ack 命中不到 ⇒ 状态停在 cancelled。已有成员收下（delivered）时拒绝 —— 那一步只能走撤回。
+#[tauri::command(async)]
+pub async fn cancel_message(
+    state: State<'_, Arc<AppState>>,
+    conv_id: String,
+    msg_id: String,
+) -> Result<String, String> {
+    let s = state.inner().clone();
+    if conv_id == s.device_id {
+        return Err("自聊消息不支持取消".to_string());
+    }
+    // SQLite 读写在阻塞池（INV-P34）：这里持锁做几笔写，占住 tokio worker 会拖慢开窗。
+    let s_db = s.clone();
+    let msg_id_db = msg_id.clone();
+    // 闭包统一返回短码字符串（单聊与群两本账的结论形状一样，映射只做一次）。
+    let out = tokio::task::spawn_blocking(move || -> Result<String, String> {
+        let dbc = s_db.db.lock().unwrap_or_else(|e| e.into_inner());
+        let Some(msg) = db::get_message_record(&dbc, &msg_id_db) else {
+            return Ok("not_found".to_string());
+        };
+        if msg.sender_id != s_db.device_id {
+            return Err("只能取消自己发送的消息".to_string());
+        }
+        if msg.conv_id != conv_id {
+            return Err("消息不属于该会话".to_string());
+        }
+        if msg.kind == "file" || msg.kind == "image" {
+            return Err("文件/图片请用「取消发送」的传输通道".to_string());
+        }
+        if msg.conv_id.starts_with("group:") {
+            // 群消息：判据是"还没有任何成员的 Ack 被处理过"（见 DB 那册的说明）。
+            let out = db::cancel_queued_group_message(&dbc, &msg_id_db).map_err(|e| e.to_string())?;
+            return Ok(match out {
+                db::GroupMessageCancelOutcome::Cancelled => "cancelled",
+                db::GroupMessageCancelOutcome::AlreadyDelivered => "already_delivered",
+                db::GroupMessageCancelOutcome::NotFound => "not_found",
+            }
+            .to_string());
+        }
+        db::cancel_queued_message(&dbc, &msg_id_db)
+            .map(|o| match o {
+                db::MessageCancelOutcome::Cancelled => "cancelled",
+                db::MessageCancelOutcome::AlreadyDelivered => "already_delivered",
+                db::MessageCancelOutcome::NotFound => "not_found",
+            }
+            .to_string())
+            .map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| format!("取消消息被线程池中断: {e}"))??;
+    match out.as_str() {
+        "not_found" => Err("消息不存在".to_string()),
+        // 已经送出去了：说实话（与文件的 `alreadyDone` 同一口径），不假装取消成功。
+        "already_delivered" => Ok("already_delivered".to_string()),
+        _ => {
+            // 前端那一条对 `message-status-changed` 的处理是"重查该会话" ⇒ 回执会跟着库走。
+            let _ = s.app.emit("message-status-changed", &msg_id);
+            Ok("cancelled".to_string())
+        }
+    }
+}
+
 #[tauri::command(async)]
 pub async fn recall_message(
     state: State<'_, Arc<AppState>>,
@@ -34,6 +108,7 @@ pub async fn recall_message(
         crate::protocol::recall_verdict(
             &msg.sender_id,
             &s_db.device_id,
+            &msg.kind,
             &msg.conv_id,
             &friend_db,
             msg.ts,
@@ -242,6 +317,7 @@ pub async fn send_message(
                 crate::protocol::recall_verdict(
                     &msg.sender_id,
                     &s.device_id,
+                    &msg.kind,
                     &msg.conv_id,
                     &friend_id,
                     msg.ts,
@@ -928,5 +1004,37 @@ pub async fn delete_conversation(
     })
     .await
     .map_err(|e| format!("会话删除被线程池中断: {e}"))?
+}
+
+/// 任务中心（统一后台任务列表）里"消息还没送到对端"那一类行。
+///
+/// 起点是补发队列（`outbox` / `group_outbox`），读法与为什么不是从 `messages.status`
+/// 起查，都写在 `db::list_pending_message_operations` 那段注释里（一处说一次）。
+///
+/// `peer_offline` 只能在这里填：链路是内存里的事实，而"能不能发"的判据必须是
+/// `flush_pending_files` 用的那一条 `has_link` —— 前端拿到的 `peers` 是"发现过的邻居"，
+/// 按它判会把"刚掉线的对端"说成在线（用户看到的就是一句假的"发送中"）。
+///
+/// ⚠️ 整段读库走 `spawn_blocking`（INV-P34 的棘轮判据 `worker_bound_heavy_commands_do_not_grow`
+/// 会点名把 SQLite 留在 tokio worker 上的命令，加一条就红）：与 `get_transfers` 同一形状 ——
+/// 持锁的 SQLite 读挪出 worker，链路判据（`await`）留在外面。
+#[tauri::command(async)]
+pub async fn get_pending_message_operations(
+    state: State<'_, Arc<AppState>>,
+) -> Result<Vec<db::PendingMessageOp>, String> {
+    let s = state.inner().clone();
+    let s_db = s.clone();
+    let mut ops = tokio::task::spawn_blocking(move || -> Result<Vec<db::PendingMessageOp>, String> {
+        let dbc = s_db.db.lock().unwrap_or_else(|e| e.into_inner());
+        db::list_pending_message_operations(&dbc, db::MESSAGE_OPS_LIMIT).map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| format!("消息补发队列读取被线程池中断: {e}"))??;
+    for row in &mut ops {
+        if let Some(peer) = row.peer_id.as_deref() {
+            row.peer_offline = !s.has_link(peer).await;
+        }
+    }
+    Ok(ops)
 }
 

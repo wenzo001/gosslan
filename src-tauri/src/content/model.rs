@@ -109,6 +109,12 @@ pub enum FailReason {
     Unsupported,
     /// 本地问题（路径/权限/磁盘）。
     Local,
+    /// **用户主动取消**这一单接收（B3a）。不可恢复 ⇒ Rejected。
+    ///
+    /// 为什么必须单独一个取值而不是复用 `Partial`：`Partial` 走 Incomplete，
+    /// 而 Incomplete 会被建链时的 `retry_incomplete_content` **自动再拉一遍** ——
+    /// 那正好把用户刚点掉的东西自己又取回来（"取消了又自己开始"那一族）。
+    Cancelled,
 }
 
 impl FailReason {
@@ -128,6 +134,7 @@ impl FailReason {
             FailReason::SourceGone => "source_gone",
             FailReason::Unsupported => "unsupported",
             FailReason::Local => "local",
+            FailReason::Cancelled => "cancelled",
         }
     }
     /// 面向用户的短句（前端直接显示，不再自己拼）。
@@ -140,6 +147,9 @@ impl FailReason {
             FailReason::SourceGone => "对方已没有这份文件",
             FailReason::Unsupported => "对方版本不支持重新获取",
             FailReason::Local => "本机保存失败，可点击重试",
+            // 不说"可重试"：这一格是用户自己按下的取消，状态是 Rejected（终态），
+            // 说"可重试"会让用户以为它还在等着自动继续 —— 与 `retryable() == false` 相反。
+            FailReason::Cancelled => "已取消，不会再自动获取",
         }
     }
 }

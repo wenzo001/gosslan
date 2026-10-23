@@ -91,10 +91,18 @@ import type {
   GroupReadInfo,
   MessageRecord,
   Peer,
+  PendingMessageOp,
   PendingRequest,
+  UpdaterStatus,
   ContentTransfer,
   TransferInfo,
 } from "@/types";
+import {
+  countOperations,
+  deriveOperations,
+  sortOperations,
+  type OperationRow,
+} from "@/utils/taskCenter";
 
 /** 上次打开的会话（重启后恢复，纯前端 UI 状态，各端统一）。 */
 const LAST_CONV_KEY = "gosslan.lastConv";
@@ -162,6 +170,17 @@ export const useChatStore = defineStore("chat", () => {
   const transfers = ref<TransferInfo[]>([]);
   /** 统一内容状态（ADR-0019）：未完成/失败的气泡据此显示「点击重试」。 */
   const contentTransfers = ref<ContentTransfer[]>([]);
+  /**
+   * 还没送到对端的消息行（后端读的是补发队列，不是 `messages.status`）。
+   * 与 `transfers` / `contentTransfers` 同一次 `refreshTransfers` 拉回 ⇒ 任务中心
+   * 那四行种类**永远来自同一份快照**，不会一条是新的、一条是旧的。
+   */
+  const messageOps = ref<PendingMessageOp[]>([]);
+  /**
+   * 更新下载的可查询状态（B5）。后端是全局 managed state，跨窗口共用；
+   * 事件 `updater-status` 是唯一推送口径，首帧由 `refreshUpdaterStatus()` 补拉。
+   */
+  const updaterStatus = ref<UpdaterStatus | null>(null);
   const messages = ref<Record<string, MessageRecord[]>>({});
   /** 首屏消息读失败：convId → 原始错误。成功后清空；UI 只在列表为空时展示。 */
   const messageLoadErrors = ref<Record<string, string>>({});
@@ -184,6 +203,27 @@ export const useChatStore = defineStore("chat", () => {
     () => conversations.value.find((c) => c.id === activeConv.value) ?? null,
   );
   const totalUnread = computed(() => conversations.value.reduce((s, c) => s + c.unread, 0));
+
+  /**
+   * 统一后台任务中心的那张表（只含未完成）。
+   *
+   * 归一逻辑全在 `@/utils/taskCenter`，这里只做四份真值的拼装 —— 组件不许自己再推一遍
+   * "什么算卡住"，否则会长出第二套状态口径（那张的成因见 taskCenter.ts 文件头）。
+   * `groupHistorySync` 是 Record，`Object.values` 取值顺序不参与显示（下面自己排序）。
+   */
+  const operations = computed<OperationRow[]>(() =>
+    sortOperations(
+      deriveOperations({
+        transfers: transfers.value,
+        contentTransfers: contentTransfers.value,
+        messageOps: messageOps.value,
+        groupHistory: Object.values(groupHistorySync.value),
+        updater: updaterStatus.value,
+      }),
+    ),
+  );
+  /** 药丸上的数：还有几件事没办完。 */
+  const liveOperationCount = computed(() => countOperations(operations.value));
 
   // ---------------- 系统通知（后台 / 非当前会话才触发） ----------------
   const app = useAppStore();
@@ -1196,6 +1236,7 @@ export const useChatStore = defineStore("chat", () => {
       refreshConversations(),
       refreshGroups(),
       refreshTransfers(),
+      refreshUpdaterStatus(),
       refreshPending(),
       refreshFriends(),
     ]);
@@ -1212,11 +1253,31 @@ export const useChatStore = defineStore("chat", () => {
     return ids.length > 0 ? ids : EMPTY_STRING_LIST;
   }
   /** 并发触发时只让**最新那次**写回结果（迁入 `refreshGuard`，与上面几个共用同一份实现）。 */
+  /**
+   * 补拉一次更新状态（设置窗重开、任务中心首帧都靠它 —— 事件只在跃迁时发）。
+   *
+   * 走 `refreshGuard`：并发补拉时后发先至的旧快照必须丢掉（与 `refreshPeers` 同一条纪律；
+   * 直写 `x.value = await api.…()` 是那个族里被点过名的形状）。
+   */
+  async function refreshUpdaterStatus() {
+    const tok = refreshGuard.begin("updater");
+    try {
+      const st = await api.updaterStatus();
+      if (!refreshGuard.isCurrent("updater", tok)) return;
+      updaterStatus.value = st;
+    } catch {
+      // 移动端/权限问题：保持原值（任务中心不列它，设置页也不会假装在下载）
+    }
+  }
+
   async function refreshTransfers() {
     const req = refreshGuard.begin("transfers");
-    const [list, contents] = await Promise.all([
+    const [list, contents, msgOps] = await Promise.all([
       api.getTransfers(),
       api.getContentTransfers().catch(() => []),
+      // 任务中心的第四类行（还没送到对端的消息）。失败不拖累另两路：
+      // 拿不到就当这一类没有任务，而不是让整个传输面板报错——它读的是同一批事实。
+      api.getPendingMessageOperations().catch(() => []),
     ]);
     // 后发先至的旧快照必须丢掉：多选发送时每个文件都会 `void refreshTransfers()`，
     // 旧快照里**没有**刚建的那条 transfer ⇒ 覆盖回来后，后续 file-progress 全部落空
@@ -1225,6 +1286,7 @@ export const useChatStore = defineStore("chat", () => {
     transfers.value = list;
     // 顺带刷新统一内容状态：未完成 / 校验失败的气泡据此显示「点击重试」。
     contentTransfers.value = contents;
+    messageOps.value = msgOps;
   }
   /** 进度/done 事件早于 transfer 行进内存时的一次性补拉（防抖，不放大 IPC）。 */
   let transfersRepairTimer: ReturnType<typeof setTimeout> | null = null;
@@ -2710,6 +2772,18 @@ export const useChatStore = defineStore("chat", () => {
     // 300ms 后发出去（用户已经切走，等于替他判了已读）。
     scope.onDispose(() => {
       if (markReadTimer) clearTimeout(markReadTimer);
+      // 同一条纪律补两个"一次性"定时器（10-23 审计 P3-E）：它们各自只排一次、开火即清、
+      // 重复排程有 `!== null` 守卫，但**重新 init 时不会取消已排队的那一发**。
+      // Store 是单例 ⇒ 那一下作用在同一份活状态上（不会碰死实例），代价只是多做一次
+      // 通知合批 / 一次传输补拉；登记之后连这个也省了，且与 markReadTimer 一个口径。
+      if (notifyTimer !== null) {
+        clearTimeout(notifyTimer);
+        notifyTimer = null;
+      }
+      if (transfersRepairTimer !== null) {
+        clearTimeout(transfersRepairTimer);
+        transfersRepairTimer = null;
+      }
     });
     bindEvents({
       onPeers: (p) => {
@@ -2818,15 +2892,26 @@ export const useChatStore = defineStore("chat", () => {
         onFileFailed(d);
         void refreshTransfers();
       },
+      onUpdaterStatus: (st) => {
+        updaterStatus.value = st;
+      },
       onFileCancelled: (transferId) => {
+        // 终态一律收回「网络停滞」（与 `onFileDone` / `onFileFailed` 同一口径）。
+        // 漏这一行的后果不是"多一条提示"，而是 `stalledTransfers` 里那一格**永远不会被删**：
+        // 用户一晚上取消十次就积十格，`isTransferStalled` 每次渲染都要查它（10-23 审计 P1-A）。
+        setTransferStalled(transferId, false);
         // 后端 cancel_file_transfer emit 的：用户手动取消了一条文件发送
-        // 前端把这条消息标记 failed（如果还在发送中）+ 刷新列表
+        // 前端把这条消息在**所有**缓存会话里标成 cancelled + 刷新传输列表。
+        // ⚠️ 写 `cancelled` 不是 `failed`：库里那一笔写的就是 cancelled（INV-P26 把
+        // 「用户主动取消」与「自动判死」分成两个口径），而 `loadMessages` 只对当前在看的
+        // 会话重查 ⇒ 以前写 failed 时，没在看的会话会把"已取消"一直显示成"发送失败"，
+        // 直到用户下次打开那个会话才被库里的真值纠正过来。
         for (const [, msgs] of Object.entries(messages.value)) {
           const msg = msgs.find(m =>
             m.msg_id === `file-${transferId}` || m.msg_id === `gfile-${transferId}`
           );
           if (msg) {
-            msg.status = "failed";
+            msg.status = "cancelled";
             app.toast(t("msg.canceled"), "info");
           }
         }
@@ -2842,7 +2927,7 @@ export const useChatStore = defineStore("chat", () => {
       },
       onMessageStatusChanged: (msgId) => {
         // 后端 emit 的状态变更事件 —— 我们直接从数据库拉最新状态覆盖本地
-        // 目前只在 cancel_file_transfer 里发（cancel 后 mark failed，前端同步一下）
+        // 目前只在 cancel_file_transfer 里发（取消后库里落 cancelled，前端同步一下）
         // 只处理**活跃**会话：loadMessages 的结果对非活跃会话必被 activeConv
         // 守卫丢弃（两次 IPC 纯浪费），而且切换回来时 openConversation 会重查。
         // （修复前它还会顺带把全局 loadSeq +1，取消活跃会话飞行中的加载 →
@@ -3050,6 +3135,11 @@ export const useChatStore = defineStore("chat", () => {
     groups,
     transfers,
     contentTransfers,
+    messageOps,
+    updaterStatus,
+    refreshUpdaterStatus,
+    operations,
+    liveOperationCount,
     messages,
     groupReads,
     groupHistorySync,

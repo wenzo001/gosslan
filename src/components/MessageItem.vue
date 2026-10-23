@@ -13,6 +13,7 @@ import {
   isFavoritableKind, isForwardableKind, isKnownKind, isMultiSelectable, isRemindableKind, isTipKind, kindClass, UNSUPPORTED_KIND_LABEL, } from "@/utils/messageKinds";
 import { cardCopyText } from "@/utils/cardText";
 import { isSelfMessage } from "@/utils/selfChat";
+import { resendChannelFor } from "@/utils/resendChannel";
 import { EMPTY_REACTION_CHIPS, EMPTY_STRING_LIST } from "@/utils/emptyList";
 import { parseQuote, stripQuoteMsgId } from "@/utils/quote";
 import { QUOTE_BG, QUOTE_TEXT_STYLE } from "@/utils/quoteStyle";
@@ -22,7 +23,9 @@ import { saveImageAs } from "@/utils/saveImageAs";
 import { haptic } from "@/utils/haptics";
 import { shouldStartLongPress, shouldSwallowLongPressRelease } from "@/utils/longPress";
 import { shouldPreventContextMenu } from "@/utils/contextMenu";
-import { isWithinRecallWindow } from "@/utils/recall";
+import { isRecallableKind, isWithinRecallWindow } from "@/utils/recall";
+import { cancelSendChannelFor } from "@/utils/cancelSend";
+import { cancelOutcome } from "@/utils/cancelFeedback";
 import { detectCode } from "@/utils/codeDetect";
 import { t } from "@/i18n";
 import MessageAvatar from "@/components/message/MessageAvatar.vue";
@@ -140,9 +143,11 @@ const retryableContent = computed(() => {
 const chat = useChatStore();
 const { memberProfile } = useMemberProfile();
 
-// 群文件（gfile-）投递摘要：成员状态语义（已发送给 N 人 · M 人待上线）。
+// 群文件（gfile-）投递摘要：成员状态语义（已发送给 N 人 · M 人待上线 · K 人已取消）。
 // status 变化（含 CompleteAck 推进）时自动刷新。
-const deliverySummary = ref<{ completed: number; failed: number; waiting: number } | null>(null);
+// `cancelled` 与 `waiting` 是两格（B2）：已取消的成员**永远不会再收**，
+// 后端摘要里他们不能留在 waiting —— 那样这句"M 人待上线"会永久挂着。
+const deliverySummary = ref<{ completed: number; failed: number; waiting: number; cancelled: number } | null>(null);
 const isGroupFile = computed(() => props.message.msg_id.startsWith("gfile-"));
 /**
  * 后发先至守卫（审计阶段 4 · 4.2）。这条 watch 的触发源有两个（msg_id 与 status），
@@ -790,6 +795,8 @@ function canRecallNow(): boolean {
     !isSelfMsg.value &&
     mine.value &&
     props.message.kind !== "recalled" &&
+    // 文本族以外的消息不给撤回入口：那个动作停不掉传输（文件/图片的正路是「取消」）。
+    isRecallableKind(props.message.kind) &&
     isWithinRecallWindow(props.message.ts)
   );
 }
@@ -802,30 +809,60 @@ const renderTo = computed<"code" | "text" | null>(() => {
   return null;
 });
 
-/** 文件消息正在发送中 —— 显示"取消发送"菜单项。
- * 条件：自己发的 + 文件类 + status 是 sending。
- * 群文件（gfile-）也支持取消 —— 后端 cancel_file_transfer 统一处理。 */
-const canCancelSend = computed(() => {
-  if (!isSelfMsg.value) return false;
-  const mid = props.message.msg_id;
-  const isFileMsg = mid.startsWith("file-") || mid.startsWith("gfile-");
-  if (!isFileMsg) return false;
-  return props.message.status === "sending";
-});
+/**
+ * 「取消发送」该不该出现、走哪条通道 —— 判据只有 `utils/cancelSend` 那一份。
+ *
+ * ⚠️ 这里修掉一个旧口径的错：以前的条件是 `if (!isSelfMsg) return false`，
+ * 于是这个入口**只在自聊里出现**（而自聊按 `SELF_CHAT_KINDS` 根本发不了文件）。
+ * 正常单聊/群聊里正在发送的文件反而没有入口 —— 与"所有未完成的发送都能取消"正好相反。
+ */
+const cancelSendChannel = computed(() =>
+  cancelSendChannelFor({
+    msgId: props.message.msg_id,
+    kind: props.message.kind,
+    status: props.message.status,
+    group: props.isGroup,
+    selfChat: isSelfMsg.value,
+    mine: mine.value,
+  }),
+);
+const canCancelSend = computed(() => cancelSendChannel.value !== "none");
 
 function doCancelSend() {
   closeContextMenu();
   closeActionSheet();
-  const mid = props.message.msg_id;
-  let transferId = "";
-  if (mid.startsWith("file-")) transferId = mid.slice(5);
-  else if (mid.startsWith("gfile-")) transferId = mid.slice(6);
-  if (!transferId) return;
-  api.cancelFileTransfer(transferId).then(
-    (signalled) => {
+  const channel = cancelSendChannel.value;
+  if (channel === "transfer") {
+    const mid = props.message.msg_id;
+    let transferId = "";
+    if (mid.startsWith("file-")) transferId = mid.slice(5);
+    else if (mid.startsWith("gfile-")) transferId = mid.slice(6);
+    if (!transferId) return;
+    api.cancelFileTransfer(transferId).then(
+      (res) => {
+        // 三个分支的唯一判据在 `utils/cancelFeedback`：已送达 / 仅本机取消 / 已通知对面。
+        switch (cancelOutcome(res)) {
+          case "already_done":
+            app.toast(t("msg.cancelSend.alreadyDone"), "info");
+            break;
+          case "local_only":
+            app.toast(t("transfer.cancelLocalOnly"), "info");
+            break;
+          default:
+            app.toast(t("msg.cancelSend.requested"), "success");
+        }
+      },
+      (e: unknown) => app.toastError(e, t("msg.cancelSend.fail")),
+    );
+    return;
+  }
+  if (channel !== "message") return;
+  // 消息通道：后端删队列行 + 状态写 cancelled；对端还没收到，所以没有"通知对方"这一步。
+  api.cancelMessage(props.message.conv_id, props.message.msg_id).then(
+    (outcome) => {
       app.toast(
-        t(signalled ? "msg.cancelSend.requested" : "msg.cancelSend.alreadyEnded"),
-        "info",
+        t(outcome === "cancelled" ? "msg.cancelSend.requested" : "msg.cancelSend.alreadyDone"),
+        outcome === "cancelled" ? "success" : "info",
       );
     },
     (e: unknown) => app.toastError(e, t("msg.cancelSend.fail")),
@@ -1023,16 +1060,55 @@ async function doConfirmReminder() {
   }
 }
 
+/**
+ * 「这条能不能再发一次、该走哪条通道」—— 判据只有 `utils/resendChannel` 那一份。
+ *
+ * 附件是否还在本机用 `useMessageFile` 的 `attachmentMissing`（它的真值来自后端
+ * `media_present`），不在这里自己 `fs exists`：那一格已经有一份口径与一条竞态守卫了。
+ */
+const resendChannel = computed(() =>
+  resendChannelFor({
+    kind: props.message.kind,
+    group: props.isGroup || isGroupFile.value,
+    hasLocalFile: !!fileMeta.value?.path && !attachmentMissing.value,
+    mine: mine.value,
+  }),
+);
+
 async function retrySend() {
   const msg = props.message;
-  if (msg.status !== "failed" || msg.kind === "file") return;
+  const channel = resendChannel.value;
+  // 算不出通道 = 这个按钮本来就不该渲染出来（回执那边同一个判据）。这里再挡一次是
+  // 防两条出口将来不一致，不是为了兜错。
+  if (!channel) return;
+  if (channel === "message") {
+    try {
+      // 传 `msg.msg_id`：store 会把**这条 failed 气泡原地**转回 sending 再重发。
+      // 不传的话会新建一条乐观记录，而这条 failed 因为全库无删除路径 +
+      // `appendLocalOnly` 每次重开会话都重新追加 `tmp-*` ⇒ 界面上永远留两条一样的文字。
+      await chat.send(msg.conv_id, msg.content, msg.kind, undefined, msg.msg_id);
+    } catch {
+      // 失败状态已由 send() 内部处理（原地退回 failed）
+    }
+    return;
+  }
+  // 文件与图片**只能回到造它们的那条通道**（`send_file_auto` / `send_group_file`）。
+  // 以前图片漏在这里：`retryable` 与 `retrySend` 都只排除 `file`，于是失败的图片被按
+  // 普通消息重发了一份 JSON 载荷 —— 里面那个 `path` 只在本机存在，对端收到的是
+  // "有名字没有字节"的一张图，而本机这条还转成绿色（假成功）。
+  const path = fileMeta.value?.path;
+  if (!path) return;
   try {
-    // 传 `msg.msg_id`：store 会把**这条 failed 气泡原地**转回 sending 再重发。
-    // 不传的话会新建一条乐观记录，而这条 failed 因为全库无删除路径 +
-    // `appendLocalOnly` 每次重开会话都重新追加 `tmp-*` ⇒ 界面上永远留两条一样的文字。
-    await chat.send(msg.conv_id, msg.content, msg.kind, undefined, msg.msg_id);
+    if (channel === "group-file") {
+      await chat.sendGroupFileTo(msg.conv_id.replace(/^group:/, ""), path);
+    } else {
+      await chat.sendFileTo(msg.conv_id, path);
+    }
+    // 这两条命令自己负责 toast（成功会由后端 emit 出新的气泡与进度；
+    // 与文本族不同，文件的一次重试是**新的一次传输**，所以旧那条失败行留在原地是事实，
+    // 不是重复消息 —— 台账与气泡都各说各的那一次尝试）。
   } catch {
-    // 失败状态已由 send() 内部处理（原地退回 failed）
+    // 发送入口内部已经报过错，这里不再重复提示
   }
 }
 
@@ -1344,7 +1420,7 @@ async function copyFileToClipboard() {
             :is-group="isGroup"
             :reader-ids="groupReaderIds"
             :msg-key="message.msg_id ?? message.id"
-            :retryable="message.kind !== 'file'"
+            :retryable="resendChannel !== null"
             @retry="retrySend"
           />
 

@@ -231,6 +231,282 @@ pub fn list_gfile_message_rows(conn: &Connection) -> Result<Vec<(String, String,
     rows.collect()
 }
 
+/// 任务中心（统一后台任务）里"消息还没送到对端"那一类行的读模型。
+///
+/// 只读派生，不新增表、不新增列。**起点是补发队列本身**（`outbox` / `group_outbox`），
+/// 不是 `messages.status` —— 两条理由：
+///  1. 队列两张表只装"还没送到"的行 ⇒ 天然有界，`ORDER BY created_at DESC LIMIT n` 走的
+///     就是既有的 `idx_outbox_created` / `idx_group_outbox_created`。反过来从
+///     `messages WHERE status='sending'` 起查要扫全历史，而这条查询排在全局那一把
+///     `Mutex<Connection>` 后面 —— 同一个形状在 `idx_messages_conv_kind` 的注释里记过账。
+///  2. "还在队列里"就是用户真正在等的事实（字节还没离开本机链路）；而 `status='sending'`
+///     还包含"已写出、等 ACK"那一格 —— 那一格今天**没有可执行动作**（消息取消在 B4），
+///     列出来只会多一行点不动的任务（计划里那条"不在 UI 造假任务"）。
+#[derive(Clone, Debug, serde::Serialize)]
+pub struct PendingMessageOp {
+    /// 稳定 id：前端按它去重，B4 的撤回/取消也按它下发。
+    pub msg_id: String,
+    /// 1:1 时是对方 device_id（本仓里它同时就是 conv_id）；群消息为 `None`。
+    pub peer_id: Option<String>,
+    /// 群消息的群 id；1:1 为 `None`。
+    pub group_id: Option<String>,
+    pub kind: String,
+    /// 还没收到的成员数：1:1 恒为 1；群消息是仍留在队列里的成员数（已送达的成员不在表里）。
+    pub waiting_for: i64,
+    pub created_at: i64,
+    /// 只有 `text` / `code` 给正文截断；其它 kind 的 `content` 是 JSON 载荷，
+    /// 宁可不给 —— 把机器格式直接上屏等于让界面说胡话，让调用方按 kind 说类型。
+    pub preview: Option<String>,
+    /// 这一刻**没有可用链路**通向这个对端 ⇒ 任务中心要说"对方离线"，不能说"发送中"。
+    /// 数据库侧一律给 `false`：链路是内存里的事实，只有命令层（`has_link`）能填。
+    /// 与 `file_transfers` 那条 `blocked_reason='peer_offline'` 同一口径 ——
+    /// "离线"这个判断只此一个出处，不在前端按 `peers` 列表再猜一遍。
+    pub peer_offline: bool,
+}
+
+/// 一次读取的条数上限：队列行数本身有界（离线保留 7 天），这个数只是防止
+/// "任务中心一次拉走一整段离线历史"把锁握住太久。
+pub const MESSAGE_OPS_LIMIT: i64 = 200;
+
+/// 预览的字符窗口：比要显示的字符数**多一个**。SQLite 的 `substr()` 对 TEXT 值是按
+/// **字符**计数的（不是字节），所以这里不需要"按字节切再怕切半个字"那套；
+/// 多出来的那一个字符只用来判断"后面还有没有"，据此补省略号。
+/// （实测路径：`message_ops_tests::a_multibyte_message_is_truncated_by_characters_not_bytes`
+/// —— 若 `substr` 真按字节，取回的半字符会让 rusqlite 报错，那一行会整个从列表里消失。）
+const PREVIEW_CHAR_WINDOW: i64 = 41;
+const PREVIEW_MAX_CHARS: usize = 40;
+
+/// 只有人能直接读的两种 kind 才给截断；其余 kind 的 `content` 是 JSON 载荷 ⇒ 返回 `None`，
+/// 由界面按 kind 说类型（把 `{"items":…` 直接上屏等于让界面说胡话）。
+fn text_preview(kind: &str, content: Option<&str>) -> Option<String> {
+    if kind != "text" && kind != "code" {
+        return None;
+    }
+    let raw = content?;
+    let mut chars = raw.chars();
+    let head: String = chars.by_ref().take(PREVIEW_MAX_CHARS).collect();
+    if chars.next().is_some() {
+        Some(format!("{head}…"))
+    } else {
+        Some(head)
+    }
+}
+
+/// 还没送达的消息行（1:1 + 群），按入队时间倒序，总量受 `limit` 约束。
+pub fn list_pending_message_operations(
+    conn: &Connection,
+    limit: i64,
+) -> Result<Vec<PendingMessageOp>> {
+    let mut ops: Vec<PendingMessageOp> = Vec::new();
+
+    let mut dm = conn.prepare(
+        "SELECT o.msg_id, o.peer_id,
+                COALESCE(m.kind, 'text'),
+                substr(m.content, 1, ?2),
+                o.created_at
+         FROM outbox o LEFT JOIN messages m ON m.msg_id = o.msg_id
+         ORDER BY o.created_at DESC LIMIT ?1",
+    )?;
+    let dm_rows = dm.query_map(params![limit, PREVIEW_CHAR_WINDOW], |r| {
+        Ok((
+            r.get::<_, String>(0)?,
+            r.get::<_, String>(1)?,
+            r.get::<_, String>(2)?,
+            r.get::<_, Option<String>>(3)?,
+            r.get::<_, i64>(4)?,
+        ))
+    })?;
+    for row in dm_rows.flatten() {
+        let (msg_id, peer_id, kind, content, created_at) = row;
+        let preview = text_preview(&kind, content.as_deref());
+        ops.push(PendingMessageOp {
+            msg_id,
+            peer_id: Some(peer_id),
+            group_id: None,
+            kind,
+            waiting_for: 1,
+            created_at,
+            preview,
+            peer_offline: false,
+        });
+    }
+
+    let mut grp = conn.prepare(
+        "SELECT g.msg_id, g.group_id,
+                COUNT(*),
+                MAX(g.created_at),
+                COALESCE((SELECT m.kind FROM messages m WHERE m.msg_id = g.msg_id LIMIT 1), 'text'),
+                substr((SELECT m.content FROM messages m WHERE m.msg_id = g.msg_id LIMIT 1), 1, ?2)
+         FROM group_outbox g
+         GROUP BY g.msg_id, g.group_id
+         ORDER BY 4 DESC LIMIT ?1",
+    )?;
+    let grp_rows = grp.query_map(params![limit, PREVIEW_CHAR_WINDOW], |r| {
+        Ok((
+            r.get::<_, String>(0)?,
+            r.get::<_, String>(1)?,
+            r.get::<_, i64>(2)?,
+            r.get::<_, i64>(3)?,
+            r.get::<_, String>(4)?,
+            r.get::<_, Option<String>>(5)?,
+        ))
+    })?;
+    for row in grp_rows.flatten() {
+        let (msg_id, group_id, waiting_for, created_at, kind, content) = row;
+        let preview = text_preview(&kind, content.as_deref());
+        ops.push(PendingMessageOp {
+            msg_id,
+            peer_id: None,
+            group_id: Some(group_id),
+            kind,
+            waiting_for,
+            created_at,
+            preview,
+            peer_offline: false,
+        });
+    }
+
+    // 两个队列各按自己的时间倒序取过前 `limit` 条，合并后必须再按全局时间倒序截一次，
+    // 否则"最近 200 条"会变成"最近的 200 条单聊 + 最近的 200 条群聊"（口径不同）。
+    ops.sort_by(|a, b| b.created_at.cmp(&a.created_at).then_with(|| a.msg_id.cmp(&b.msg_id)));
+    ops.truncate(limit.max(0) as usize);
+    Ok(ops)
+}
+
+#[cfg(test)]
+mod message_ops_tests {
+    use super::*;
+    use crate::db::SCHEMA;
+
+    fn mem() -> Connection {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(SCHEMA).unwrap();
+        conn
+    }
+
+    fn ins_msg(conn: &Connection, msg_id: &str, conv: &str, kind: &str, content: &str, ts: i64) {
+        conn.execute(
+            "INSERT INTO messages(msg_id, conv_id, sender_id, receiver_id, kind, content, ts, seq, status)
+             VALUES(?1, ?2, 'me', 'peer', ?3, ?4, ?5, 1, 'sending')",
+            params![msg_id, conv, kind, content, ts],
+        )
+        .unwrap();
+    }
+
+    fn ins_dm(conn: &Connection, msg_id: &str, created_at: i64) {
+        conn.execute(
+            "INSERT INTO outbox(msg_id, peer_id, payload, created_at) VALUES(?1,'p1','{}',?2)",
+            params![msg_id, created_at],
+        )
+        .unwrap();
+    }
+
+    fn ins_group(conn: &Connection, msg_id: &str, member: &str, created_at: i64) {
+        conn.execute(
+            "INSERT INTO group_outbox(msg_id, group_id, peer_id, payload, created_at)
+             VALUES(?1,'g1',?2,'{}',?3)",
+            params![msg_id, member, created_at],
+        )
+        .unwrap();
+    }
+
+    /// 两条队列都要被看见，群消息按"还剩几个人"说话。
+    #[test]
+    fn pending_message_ops_cover_both_queues_and_count_group_waiters() {
+        let conn = mem();
+        ins_msg(&conn, "m1", "p1", "text", "晚上七点老地方见", 10);
+        ins_dm(&conn, "m1", 11);
+        ins_msg(&conn, "m2", "group:g1", "merge", "{\"items\":[]}", 20);
+        ins_group(&conn, "m2", "b", 21);
+        ins_group(&conn, "m2", "c", 21);
+        // 已送达的成员（d）已经被从队列里删掉 ⇒ 不该被数进 waiting_for
+
+        let ops = list_pending_message_operations(&conn, MESSAGE_OPS_LIMIT).unwrap();
+        assert_eq!(ops.len(), 2, "一条单聊 + 一条群聊");
+        let dm = ops.iter().find(|o| o.msg_id == "m1").unwrap();
+        assert_eq!(dm.peer_id.as_deref(), Some("p1"), "1:1 的目标是对端");
+        assert!(dm.group_id.is_none());
+        assert_eq!(dm.waiting_for, 1, "1:1 恒为一个人在等");
+        assert_eq!(dm.preview.as_deref(), Some("晚上七点老地方见"), "文本给正文截断");
+
+        let grp = ops.iter().find(|o| o.msg_id == "m2").unwrap();
+        assert_eq!(grp.group_id.as_deref(), Some("g1"), "群消息的目标是群");
+        assert!(grp.peer_id.is_none(), "群消息没有单个对端（按成员各自一行队列）");
+        assert_eq!(grp.waiting_for, 2, "还剩两个人没收到（已送达的那格不在表里）");
+        assert!(
+            grp.preview.is_none(),
+            "merge 的 content 是 JSON 载荷 ⇒ 宁可不给，让界面按 kind 说类型，别把机器格式上屏"
+        );
+    }
+
+    /// 队列行存在但消息行不见了（孤儿队列行）也必须列出来 —— 那正是"发不出去又没人收"的形状。
+    #[test]
+    fn a_queue_row_without_its_message_row_is_still_listed() {
+        let conn = mem();
+        ins_dm(&conn, "orphan", 30);
+        let ops = list_pending_message_operations(&conn, MESSAGE_OPS_LIMIT).unwrap();
+        assert_eq!(ops.len(), 1, "消息行没了也要看得见这条还堵着");
+        assert_eq!(ops[0].kind, "text", "读不到 kind 时退回最中性的取值，不编一个图标");
+        assert!(ops[0].preview.is_none(), "没有正文可给");
+    }
+
+    /// 合并后的排序与截断必须是**全局**的：各队列自己取前 N 条再拼起来，
+    /// 得到的不是"最近 N 条"，而是"最近 N 条单聊 + 最近 N 条群聊"。
+    #[test]
+    fn merge_sorts_and_truncates_globally_not_per_queue() {
+        let conn = mem();
+        for (id, ts) in [("d1", 100), ("d2", 300)] {
+            ins_msg(&conn, id, "p1", "text", "x", ts);
+            ins_dm(&conn, id, ts);
+        }
+        ins_msg(&conn, "g1m", "group:g1", "text", "y", 200);
+        ins_group(&conn, "g1m", "b", 200);
+
+        let all = list_pending_message_operations(&conn, MESSAGE_OPS_LIMIT).unwrap();
+        assert_eq!(
+            all.iter().map(|o| o.created_at).collect::<Vec<_>>(),
+            vec![300, 200, 100],
+            "两条队列合起来按时间倒序"
+        );
+        let top2 = list_pending_message_operations(&conn, 2).unwrap();
+        assert_eq!(
+            top2.iter().map(|o| o.msg_id.as_str()).collect::<Vec<_>>(),
+            vec!["d2", "g1m"],
+            "limit 截的是全局最近的行"
+        );
+        assert!(
+            list_pending_message_operations(&conn, 0).unwrap().is_empty(),
+            "limit=0 必须是空集，不能忽略参数返回全量"
+        );
+    }
+
+    /// 截断按**字符**不按字节 —— 这条同时是 SQLite 语义的证明：
+    /// 若 `substr` 按字节，窗口 41 会落在第 14 个汉字中间，取回的值不是合法 UTF-8，
+    /// rusqlite 读 `String` 直接报错，而调用方 `flatten()` 会把 Err 吞掉
+    /// ⇒ 这一行**整个从任务列表里消失**（用户看到的"任务不见了"就是这么来的）。
+    #[test]
+    fn a_multibyte_message_is_truncated_by_characters_not_bytes() {
+        let conn = mem();
+        let long = "测".repeat(120); // 360 字节、120 字符
+        ins_msg(&conn, "m-long", "p1", "text", &long, 40);
+        ins_dm(&conn, "m-long", 40);
+        let ops = list_pending_message_operations(&conn, MESSAGE_OPS_LIMIT).unwrap();
+        assert_eq!(ops.len(), 1, "长中文消息不许因为截断方式而从列表里消失");
+        let p = ops[0].preview.clone().unwrap_or_default();
+        assert_eq!(
+            p.chars().count(),
+            PREVIEW_MAX_CHARS + 1,
+            "恰好 40 个字 + 一个省略号（窗口取 41 是为了知道「后面还有没有」）：{p:?}"
+        );
+        assert!(p.ends_with('…'), "被截断必须说出来，不能看起来像原文：{p:?}");
+        assert!(
+            !p.contains('\u{FFFD}'),
+            "不该出现替换符（出现了就说明切在字符中间）：{p:?}"
+        );
+    }
+}
+
+
 /// 按 msg_id 取完整消息记录（需要跨字段判断时用；今天只有 `network/file/receive.rs::resume_receive` 认领续传用它）。
 pub fn get_message_record(conn: &Connection, msg_id: &str) -> Option<MessageRecord> {
     conn.query_row(
@@ -292,6 +568,56 @@ pub fn set_message_status(conn: &Connection, msg_id: &str, status: &str) -> Resu
         params![msg_id, status],
     )?;
     Ok(())
+}
+
+/// 取消一条**还在补发队列里**的消息（用户按「取消发送」）。
+///
+/// 三件事在**同一个事务**里：把状态写成 `cancelled`、删掉 outbox 行、返回结论。
+/// 顺序与 `ack_delivered`（置 delivered + 删行）互斥：两边都靠"队列行还在不在"仲裁 ——
+/// 谁先拿到这把锁，谁的结果成立；**删掉行之后**，晚到的 Ack 在 `ack_delivered` 里
+/// `expected == false` ⇒ 直接返回 false，不会把 `cancelled` 提升成 `delivered`。
+/// 这就是"取消是硬终态"在这张表上的落地方式（INV-P26 的第二个来源，与文件的墓碑同口径）。
+///
+/// 为什么不是 `set_message_status` 一把梭：那条只改状态、不删队列行 ⇒ 下一轮 flush
+/// 照样把它发出去（用户看到"已取消"却又送到了）。队列行才是"还没送达"的那件事实。
+#[derive(Debug, PartialEq, Eq)]
+pub enum MessageCancelOutcome {
+    /// 这次真的取消掉了（状态改写 + 队列行删除，至少一处生效）。
+    Cancelled,
+    /// 已经送达/已读/已撤回 ⇒ 取消不成立，界面要说实话。
+    AlreadyDelivered,
+    /// 查无此消息。
+    NotFound,
+}
+
+pub fn cancel_queued_message(conn: &Connection, msg_id: &str) -> Result<MessageCancelOutcome> {
+    let tx = conn.unchecked_transaction()?;
+    let status: Option<String> = tx
+        .query_row(
+            "SELECT status FROM messages WHERE msg_id = ?1",
+            params![msg_id],
+            |r| r.get(0),
+        )
+        .optional()?;
+    let Some(status) = status else {
+        return Ok(MessageCancelOutcome::NotFound);
+    };
+    if matches!(status.as_str(), "delivered" | "read" | "recalled") {
+        return Ok(MessageCancelOutcome::AlreadyDelivered);
+    }
+    // 队列行必须在**状态之前**删：先写 cancelled 再删的话，中间那一刻的 Ack 仍能命中
+    // outbox 行并把状态推成 delivered（两把锁之间没有别的事务，但顺序让结论更难读）。
+    tx.execute("DELETE FROM outbox WHERE msg_id = ?1", params![msg_id])?;
+    let changed = tx.execute(
+        "UPDATE messages SET status = 'cancelled'
+          WHERE msg_id = ?1
+            AND status NOT IN ('delivered', 'read', 'recalled', 'cancelled')",
+        params![msg_id],
+    )?;
+    tx.commit()?;
+    // 已经是 cancelled（重复点）也算成功：幂等，界面上它就是"已取消"。
+    let _ = changed;
+    Ok(MessageCancelOutcome::Cancelled)
 }
 
 /// Ack 的**原子收尾**：验证 Ack 确实命中"我发给这个 peer 且仍在队列里"的那一行，

@@ -83,22 +83,83 @@ fn receiver_abort_notifies_the_sender_inside_the_loop() {
     );
 }
 
-/// P3-05：整轮超时会把内层 future 丢掉，Offer 等待者的清理分支不会执行。
-/// 外层必须无条件再摘一次（键是 transfer_id，下一次重投会重建）。
+/// P3-05：整轮超时会把内层 future 丢掉，Offer 等待者的清理分支不会执行 ⇒ 外层必须
+/// 无条件再摘一次（键是 transfer_id，下一次重投会重建）。
+///
+/// B1 换了这段的形状，判据跟着换，**不是放宽**：
+///  · 旧写法拿 `cancel_cleanup();` 当"收尾段起点"的位置锚 —— 那个手写闭包已被
+///    `install_cancel_slot` 的 RAII 守卫取代（判据 `cancel_slot_has_exactly_one_home`），
+///    它本来也管不到"内层 future 被 drop"那一格，正是这次要修的；
+///  · 这里剩下的那件事照旧钉：accept 等待者的摘除必须排在整轮 timeout **之后**；
+///  · 另加一条反向位置判据：取消槽位必须登记在 timeout 之前，否则哈希与 Offer 等待
+///    期间的取消没有接收者（用户点了没反应，文件照发）。
 #[test]
 fn offer_timeout_clears_the_accept_registration() {
     let f = code_flat(&crate::network::file_src_for_guards());
     let at = f
         .find("timeout(send_deadline,async{")
         .expect("offer 整轮的超时锚点改名/搬家了 ⇒ 同步改这条判据");
-    let tail = &f[at..];
-    let cancel = tail
-        .find("cancel_cleanup();")
-        .expect("超时之后必须有 cancel_cleanup()（同一段收尾）");
     assert!(
-        tail[cancel..].contains("pending_file_accept.lock()"),
+        f[..at].contains("install_cancel_slot(state,transfer_id,peer_id)"),
+        "取消槽位必须登记在整轮 timeout 之前：哈希/Offer 期间的取消要有接收者，否则静默丢掉"
+    );
+    assert!(
+        f[at..].contains("pending_file_accept.lock()"),
         "超时收尾必须摘掉可能还挂着的 accept 等待者（内层 future 被 drop 时它走不到）"
     );
+}
+
+/// 取消槽位的登记与回收**只有一个家**（B1）。
+///
+/// 三条投递路径原先三种写法：群投递已经是 RAII 守卫，单聊直发与中继直发各手写一个
+/// 清理闭包、在函数末尾调一次。闭包那一族的失效形状是这一族反复付过钱的：
+/// 外层 `timeout(deadline, async {…})` 触发时内层 future 被直接 drop，函数末尾那句
+/// 照样执行 ⇒ 槽位残留、表单调增长；而同键的下一次 `insert` 把残留 `Sender` 挤掉，
+/// 对方的 rx 当场以 `Err(RecvError)` 完成 ⇒ 下一次投递"一进来就被取消"。
+///
+/// ⚠️ 用**去掉整行注释**后的文本判定：缺席型判据吃全文的话，任何一句"这里以前写着 X"
+/// 的说明都会把自己判红（本仓踩过 —— 注释里的名字不是代码里的名字）。
+#[test]
+fn cancel_slot_has_exactly_one_home() {
+    let code_only = |src: &str| -> String {
+        src.lines()
+            .map(str::trim_start)
+            .filter(|t| !(t.starts_with("//") || t.starts_with("/*") || t.starts_with('*')))
+            .flat_map(|t| t.chars().filter(|c| !c.is_whitespace()))
+            .collect()
+    };
+    let file_src = code_only(&crate::network::file_src_for_guards());
+    let dispatch = code_only(include_str!("commands/group_file_dispatch.rs"));
+    assert_eq!(
+        file_src.matches("fninstall_cancel_slot").count(),
+        1,
+        "登记 + 回收的那个家必须恰好一个实现（出现第二个就是同一件事两个口径）"
+    );
+    // 三个调用点：单聊直发、中继直发、群投递（定义那处带 `state:` 不是 `state,`，不计入）。
+    assert_eq!(
+        file_src
+            .matches("install_cancel_slot(state,transfer_id,")
+            .count(),
+        2,
+        "单聊直发与中继直发都必须由这个家登记（少一处就是那条路径还自己手写一份）"
+    );
+    assert!(
+        dispatch.contains("install_cancel_slot(state,transfer_id,recipient)"),
+        "群投递必须由同一个家登记，键仍按收件人"
+    );
+    assert!(
+        !dispatch.contains("CancelSlotGuard"),
+        "群投递不许再自带一份取消槽守卫：守卫只有一个家"
+    );
+    for (name, src) in [
+        ("network/file.rs（send + relay_push）", file_src.clone()),
+        ("commands/group_file_dispatch.rs", dispatch.clone()),
+    ] {
+        assert!(
+            !src.contains("cancel_cleanup"),
+            "{name} 的代码里不许再出现手写清理：整轮超时丢掉内层 future 时它走不到"
+        );
+    }
 }
 
 /// **群文件投递的取消登记必须按 (transfer_id, recipient) 分键**（真机：三成员以上
@@ -111,15 +172,27 @@ fn offer_timeout_clears_the_accept_registration() {
 /// 只能钉源码：这是语言级细节，行为测试要先构造出"顶替"才看得到。
 #[test]
 fn group_file_cancel_registry_is_scoped_per_recipient() {
+    // B1 起登记与键都收进了那个唯一的家，所以两头一起钉：调用方必须把 recipient 传进去，
+    // 家内部必须用 `file_cancel_key(transfer_id, recipient)` 成键。只钉一头的话，
+    // "调用方传了 recipient 但家里改回裸 id"或"键正确但某条路径不走家"都能溜过去。
     let dispatch = code_flat(include_str!("commands/group_file_dispatch.rs"));
     let fanout = code_flat(include_str!("commands/group_announcements.rs"));
+    let file_src = code_flat(&crate::network::file_src_for_guards());
     assert!(
-        dispatch.contains("file_cancel_key(transfer_id,recipient)"),
+        dispatch.contains("install_cancel_slot(state,transfer_id,recipient)"),
         "群投递的取消登记必须带 recipient（否则同 transfer_id 的任务互相挤掉登记）"
+    );
+    assert!(
+        file_src.contains("letkey=file_cancel_key(transfer_id,recipient)"),
+        "取消登记的家必须按 (transfer_id, recipient) 成键"
     );
     assert!(
         !dispatch.contains(".insert(transfer_id.to_string(),cancel_tx)"),
         "不得回退成 transfer_id 单键"
+    );
+    assert!(
+        !dispatch.contains(".insert(transfer_id.to_string(),"),
+        "群投递不许自己往任何内存表按裸 transfer_id 登记取消槽"
     );
     // ★ 出错必须落终态，而且**两条投递路径共用同一个裁决**（#154-4）。
     // 原先只有群发那条写状态、且按错误**文案**猜 cancelled/failed；离线补发那条
@@ -240,8 +313,9 @@ fn group_file_send_concurrency_is_gated_at_the_scheduler() {
     );
     // 取消槽位必须在**并发闸之前**登记：排队期间点"取消发送"时，信号才有接收者。
     // 顺序用位置判（两处都在，但挪回闸后时数量不变、只有顺序变）。
+    // B1 起登记走那个唯一的家（`file::install_cancel_slot`），键仍按收件人。
     let cancel_at = dispatch
-        .find("file::file_cancel_key")
+        .find("file::install_cancel_slot(state,transfer_id,recipient)")
         .expect("取消登记不见了");
     let gate_at = dispatch
         .find("group_file_permits.acquire()")
@@ -251,12 +325,54 @@ fn group_file_send_concurrency_is_gated_at_the_scheduler() {
         "取消登记必须排在并发闸之前（否则排队期间的取消被静默丢掉）"
     );
     assert!(
-        dispatch.contains("CancelSlotGuard") && !dispatch.contains("cancel_cleanup"),
-        "取消槽位必须 RAII 回收，不得手写清理"
+        !dispatch.contains("file_send_cancels"),
+        "群投递不许直接碰取消表：登记与回收只有 install_cancel_slot 一个家"
+    );
+}
+
+/// 群投递的取消闸门必须排在**并发闸之前**，并且两头都读（B2）。
+///
+/// 为什么用位置判而不是数量判：任务可能在 `group_file_permits.acquire().await` 后面排队
+/// 几十秒（200 成员群 + 8 路并发），闸门若排在拿到许可之后，**取消发生在排队期间的那一次**
+/// 会照常把整份文件发出去 —— 用户看到的就是"按了取消没反应"。两处代码都在、数量不变、
+/// 只有顺序变，所以只有位置判据抓得到。
+///
+/// 两条变异用例各证一格（"有断言"不等于"被证明会失败"）：
+///  · 把 `if cancelled_here {` 短路成 `if false {` ⇒ 第一个 `.expect` 就红（闸门不再是闸门）；
+///  · 把整单那一半判据换成恒 `false` ⇒ "闸门必须先看整单"那一格红。
+#[test]
+fn group_file_cancel_gate_is_checked_before_the_permit() {
+    let dispatch = code_flat(include_str!("commands/group_file_dispatch.rs"));
+    let gate_at = dispatch
+        .find("ifcancelled_here{")
+        .expect("取消闸门不见了 ⇒ 排队期间的取消没人拦（本条判据的锚点失效）");
+    let permit_at = dispatch
+        .find("group_file_permits.acquire()")
+        .expect("并发闸不见了");
+    assert!(
+        gate_at < permit_at,
+        "取消闸门必须排在并发闸之前（拿到许可那一刻，文件已经开始发了）"
+    );
+    // 两头都要判：只判整单会漏"这一格被单独取消过"，只判这一格会漏"整单已取消而成员行
+    // 由另一条路（离线补发）写进来"。
+    assert!(
+        dispatch.contains("is_group_file_cancelled(&dbc,transfer_id)"),
+        "闸门必须先看整单是否已取消"
+    );
+    assert!(
+        dispatch.contains("is_group_file_recipient_cancelled(&dbc,transfer_id,recipient)"),
+        "闸门必须先看这一格是否已取消"
+    );
+    // 命中闸门时必须走 Cancelled 那一档，不是 Retryable/Unrecoverable（否则台账落 failed）
+    let after_gate = &dispatch[gate_at..];
+    assert!(
+        after_gate.contains("GroupFileSendErr::Cancelled"),
+        "闸门退出必须回报 Cancelled —— 落 failed 就是「取消记成失败」那条旧缺陷"
     );
 }
 
 /// 发送进度必须落在"已写出链路"上，不许回到"已入队"（v4.22.37 的用户可见症状）。
+///
 ///
 /// 六处同时成立才有意义，所以一起钉：
 ///   ① writer 那唯一的证据点必须**累加片数**（只记时刻的话进度算不出来）；
@@ -721,4 +837,219 @@ fn group_receive_finalize_writes_three_ledgers_in_one_transaction_with_logged_fa
         .find("let_=write_ledgers(&dbc)")
         .expect("事务失败的补写不许被删（删 ⇒ 事务一失败就永不收口，气泡停在中间态）");
     assert!(warn_at < fb_at, "补写必须在 warn 之后、Err 分支之内");
+}
+
+// ---------------- B3：`FileCancel` 帧（对端真的知道这一单不再继续了） ----------------
+//
+// 这一族三格各管一件事，缺任何一件都会有一种**静默**的坏法：
+//  · 漏路由 ⇒ 帧被 transport.rs 的 match 丢掉，编译照过、现场"我取消了，对面还在发"；
+//  · 处理臂排在 `_ => {}` 之后 ⇒ 死代码，症状与漏路由一模一样；
+//  · 臂体里自己抄一份收尾 ⇒ 两处口径迟早漂移（这正是 B1 之前那四行墓碑注释撒谎的形状）。
+
+/// 路由与位置：新帧必须被 **接住**，而且接它的那条臂必须在 catch-all 之前。
+///
+/// 两次失败形状长得分不开：分发臂漏了它 ⇒ 帧在 transport 就被丢；分册漏了它 ⇒
+/// 帧掉进这册末尾的 `_ => {}` 静默丢弃。两种都编译照过、都表现为"我取消了，对面还在发"。
+#[test]
+fn file_cancel_frame_is_routed_and_not_after_the_catch_all() {
+    let transport = code_flat(&crate::network::transport_src_for_guards());
+    assert!(
+        transport.contains("Message::FileCancel{..})=>handle_file_messages"),
+        "FileCancel 没进 transport 的路由表 ⇒ 它在那层就被丢掉（假绿，不是假红 —— 更危险的那种）"
+    );
+    // 只在**函数体内**比位置：本册文件头那段说明里就写着 `_ => {}`，
+    // 拿整份文件去找第一个 catch-all 会落在注释上（判据自己骗自己，实测就这么红的）。
+    let body = rust_fn_body(
+        include_str!("network/transport/handle_file.rs"),
+        "async fn handle_file_messages(",
+    );
+    let arm_at = body
+        .find("Message::FileCancel { transfer_id, from } =>")
+        .expect("handle_file 里没有 FileCancel 的处理臂 ⇒ 这一帧今天没人接");
+    // `rfind` 而不是 `find`：函数体**开头**那两行说明里就写着 `_ => {}`
+    // （"这层 match 的 `_ => {}` 不是吞消息"），`find` 会先撞上注释、把位置判据倒过来。
+    // 外层那条 catch-all 恒在末尾 ⇒ 取最后一次出现才是它。
+    let catch_at = body
+        .rfind("_ => {}")
+        .expect("这册的 catch-all 不见了 ⇒ 本测试的锚点失效（位置判据没有作用点了）");
+    assert!(
+        arm_at < catch_at,
+        "处理臂排在 catch-all 之后就是死代码：症状与漏路由完全一样（取消静默失效）"
+    );
+}
+
+/// 收尾只有一个家：对端取消与用户取消共用 `apply_local_cancel`，臂体里不许再抄一份。
+#[test]
+fn file_cancel_and_user_cancel_share_one_local_home() {
+    let cmds = all_commands_src();
+    assert_eq!(
+        cmds.matches("pub(crate) async fn apply_local_cancel(").count(),
+        1,
+        "「本机按已取消收尾」必须只有一个家（第二个家就是下一处口径漂移的起点）"
+    );
+    let body = rust_fn_body(
+        include_str!("network/transport/handle_file.rs"),
+        "async fn handle_file_messages(",
+    );
+    let arm_at = body
+        .find("Message::FileCancel { transfer_id, from } =>")
+        .expect("处理臂不见了 ⇒ 本测试的锚点失效");
+    let catch_at = body.rfind("_ => {}").expect("catch-all 不见了 ⇒ 锚点失效");
+    // 只取**这一条臂**：整册里别的臂本来就要 emit，拿整册当作用点会把它当成违规。
+    let arm = &body[arm_at..catch_at];
+    assert!(
+        arm.contains("crate::commands::apply_local_cancel(state, &transfer_id, \"peer\")"),
+        "对端取消必须复用同一个收尾入口；`by` 只进日志，不新增状态、不新增列"
+    );
+    // ⚠️ 第三个 needle 刻意写成 `app.emit`（不带左引号）：`src/api/events` 那条
+    // "每个后端事件都要有前端消费者"的守卫会从 Rust 源码里抠 `emit("…"` 的形状，
+    // 测试里写一个**没有收尾引号**的 `emit("` 会让它把后面几百行当成一个事件名
+    // （实测报出的"事件"是一段源码）。判据文本自己不能把别人的量具带偏。
+    for forbidden in ["finalize_file_failure(", "mark_file_outbox_", "app.emit"] {
+        assert!(
+            !arm.contains(forbidden),
+            "FileCancel 这条臂里不许出现 {forbidden}：终态与 emit 都属于那一个家，两处各写一遍就是漂移"
+        );
+    }
+    // 取消槽位的直接读写也只有一个家（`signal_cancel_slots` / 登记 / 守卫回收三处都在 file.rs）。
+    // 数的是**读写点**而不是名字：needle 带着 `.lock()`，注释里那句"点亮 `file_send_cancels`"
+    // 不会被误数成一次读写（现成的 `code_flat` 只剥空白，够用）。
+    assert_eq!(
+        code_flat(&crate::network::file_src_for_guards())
+            .matches(".file_send_cancels.lock()")
+            .count(),
+        4,
+        "槽位的登记 / 整单点亮 / 单格点亮（B3b 按成员取消）/ 回收必须在同一个文件里（现算四处）；多出来的那处就是第二个家"
+    );
+    assert_eq!(
+        code_flat(&cmds).matches(".file_send_cancels.lock()").count(),
+        0,
+        "命令层不许再自己扫这张表：点亮槽位只走 `file::signal_cancel_slots`"
+    );
+}
+
+/// 通知那一半：门控必须存在，而且它**不许挡住**本机自己的收尾。
+#[test]
+fn file_cancel_notice_is_gated_and_never_blocks_the_local_cancel() {
+    let cmds = all_commands_src();
+    let notify = rust_fn_body(&cmds, "async fn send_cancel_notice(");
+    // 门控只有一个家：`peer_declares_file_cancel`。通知那三种形状必须**逐条**先问它 ——
+    // 少问一条就是"某一种取消会对老端发新帧"（INV-P24 第 4 条），而其余两条照旧。
+    assert_eq!(
+        notify.matches("peer_declares_file_cancel(s,").count(),
+        3,
+        "1:1 / 群成员逐个 / 群接收方→发送方，三种通知都要各自过门控"
+    );
+    let gate = rust_fn_body(&cmds, "fn peer_declares_file_cancel(");
+    assert!(
+        gate.contains("CONTENT_FEATURE_FILE_CANCEL"),
+        "门控函数里必须读那一位（INV-P24 第 4 条：不门控不许发）"
+    );
+    // 「没记过账的单不许通知」这一条搬进了 `plan_cancel_notice`：两本账都查不到就返回 None
+    // （群文件那一步的 `?` 就是这个意思）。发给一个猜出来的对端比不发更糟。
+    let plan = rust_fn_body(&cmds, "fn plan_cancel_notice(");
+    assert!(
+        plan.contains("db::get_transfer_route(") && plan.contains("db::get_group_file(&dbc, transfer_id)?"),
+        "通知名单必须从两本台账里读出来；两本都没有 ⇒ None（不许凭空造一个对端）"
+    );
+    // 顺序判据：先落本机终态，再发通知 —— 反过来就是"通知的 await 挡住了取消的响应"
+    let body = rust_fn_body(&cmds, "pub async fn cancel_file_transfer(");
+    let cancel_at = body
+        .find("apply_local_cancel(s, &transfer_id, \"user\")")
+        .expect("取消命令必须调用本机收尾那个家");
+    let notify_at = body
+        .find("send_cancel_notice(s, &transfer_id, notice)")
+        .expect("取消命令必须通知对端（声明过能力位的话）");
+    assert!(
+        cancel_at < notify_at,
+        "本机收尾必须先于通知：取消的界面响应不能等一次网络 await"
+    );
+}
+
+/// B3b：按成员取消那一帧的三件事 —— 路由接住、臂可达、**只动这一格**。
+///
+/// 第三件是这条帧与"整单取消"最容易混淆的地方：发送方取消一条群文件是每个成员各一条
+/// （`signal_cancel_slots` / `cancel_group_file_recipients`），而"某个成员不收了"必须
+/// 只命中 `(transfer_id, 这个成员)` —— 用整单那一对函数会让其余成员一起停。
+#[test]
+fn group_file_cancel_is_routed_handled_and_scoped_per_recipient() {
+    let transport = code_flat(&crate::network::transport_src_for_guards());
+    // 群那一族是一条 `m @ (A | B | … ) => handle_group_messages(…)` 或模式，变体之间用 `|` 相连，
+    // 所以判"在不在这一族里"只能查**变体本身**是否出现在路由视图里；"它真的被接住"由下面
+    // 臂体位置 + `dispatch_arms_and_volume_arms_agree`（两侧逐一对应，含数量）共同钉住。
+    assert!(
+        transport.contains("Message::GroupFileCancel{..}"),
+        "GroupFileCancel 没进 transport 的路由视图 ⇒ 它在那层就被丢掉（帧发了等于没发）"
+    );
+    let arms = include_str!("network/transport/handle_group.rs");
+    let body = rust_fn_body(arms, "async fn handle_group_messages(");
+    let arm_at = body
+        .find("Message::GroupFileCancel {")
+        .expect("handle_group 里没有 GroupFileCancel 的处理臂 ⇒ 这一帧今天没人接");
+    let catch_at = body.rfind("_ => {}").expect("catch-all 不见了 ⇒ 锚点失效");
+    assert!(
+        arm_at < catch_at,
+        "处理臂排在 catch-all 之后就是死代码：症状与漏路由一样（取消静默失效）"
+    );
+    let arm = &body[arm_at..catch_at];
+    assert!(
+        arm.contains("handle_group_file_cancel("),
+        "臂体必须把这件事交给群文件那一册（判定与落库都在那儿）"
+    );
+
+    let handler = rust_fn_body(
+        include_str!("network/transport/group_file.rs"),
+        "pub(crate) async fn handle_group_file_cancel(",
+    );
+    assert!(
+        handler.contains("file::signal_cancel_slot("),
+        "发送方那一侧必须点亮**单格**槽位（`signal_cancel_slot`）"
+    );
+    assert!(
+        handler.contains("db::cancel_group_file_recipient("),
+        "那时必须只落这一格（`cancel_group_file_recipient`）"
+    );
+    for whole in ["signal_cancel_slots(", "cancel_group_file_recipients("] {
+        assert!(
+            !handler.contains(whole),
+            "这条帧不许碰整单那一对（{whole}）：一个成员不收了，其余成员还要继续收"
+        );
+    }
+    assert!(
+        handler.contains("recipient != from"),
+        "发送方只接受**本人**说「我不收了」：别人不能替他取消"
+    );
+    assert!(
+        handler.contains("file::cancel_group_receive("),
+        "接收方那一侧必须停掉自己的接收器（否则界面说取消了、`.part` 还在写）"
+    );
+}
+
+/// 取消结果里那个 `notifiedPeer` 必须是**真事实**，不是常量（B3 的界面口径）。
+///
+/// 为什么这条值得单独钉：界面靠它决定说"已取消"还是"仅本机已取消"。如果它恒为 false，
+/// 用户永远看不到"已取消"（功能看起来坏了）；恒为 true 则又说满了（老端还在传）。
+/// 三处必须连成一条链：`send_cancel_notice` 返回 bool → 命令把它回填 → 结构体带 camelCase 字段。
+#[test]
+fn file_cancel_reports_whether_the_peer_was_actually_notified() {
+    let cmds = all_commands_src();
+    assert!(
+        cmds.contains("pub notified_peer: bool"),
+        "FileCancelResult 必须带 notified_peer 这一格（界面据此选文案）"
+    );
+    let cmd = rust_fn_body(&cmds, "pub async fn cancel_file_transfer(");
+    assert!(
+        cmd.contains("res.notified_peer = send_cancel_notice(s, &transfer_id, notice).await"),
+        "命令必须把通知那半的结论回填到结果里；写死一个常量就是界面在猜"
+    );
+    let notice = rust_fn_body(&cmds, "async fn send_cancel_notice(");
+    assert!(
+        notice.contains("-> bool"),
+        "send_cancel_notice 必须回报「有没有真的发出去」"
+    );
+    // 三个分支都要有结论：没台账/未声明/发送失败 ⇒ false；发成功 ⇒ true。
+    assert!(
+        notice.matches("return false").count() >= 1 && notice.matches("true").count() >= 2,
+        "分支结论缺了：至少要有「不通知 ⇒ false」与「发成功 ⇒ true」两处"
+    );
 }

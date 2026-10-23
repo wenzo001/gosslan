@@ -1102,10 +1102,92 @@ mesh 没有服务器也没有强制升级 ⇒ 混合版本是常态，不是边�
 * **emit 由写库结果门控**（与 INV-P15 / 审计 A3 同一口径）：已经 `done` 的行没被改动，
   就不该为它发 `file-failed`。为一个躺在下载目录里能打开的文件弹"传输失败"是谎话。
 
-**非空转证明**：两条 `verify-guards` 变异用例 —— 摘掉 `WHERE status <> 'done'` ⇒ 正向判据红；
-照本条落地前的建议把集合写成 `NOT IN ('done','failed','cancelled')` ⇒ 反向判据红。
+**用户主动取消是第二个不可降级条件（2026-10-23 B1）**：`done` 的证据在磁盘上，
+而 `cancelled` 的证据是**用户这个动作本身** —— 它一旦成立，就不该被一个更晚到达的
+异步写推翻。这一格以前只能靠"谁最后写"决定，所以真机形状是：按了取消 → 界面闪一下
+"已取消" → 上一轮 attempt 的进度回来又变成"发送中 92%"。落法：
 
-- 钩子：`guards:upsert_transfer 的「done 不可降级」闸门不得被摘掉` `db::cascade_tests::a_completed_transfer_row_is_never_downgraded` `db::tests::complete_ack_failure_cannot_downgrade_completed`
+* 台账加一列 `file_transfers.cancel_terminal`（迁移 v11→v12，**只由**主动取消置位），
+  `upsert_transfer` 的闸门扩成 `status <> 'done' AND cancel_terminal = 0`。
+* 墓碑**只属于主动取消**：`Expired` / `GiveUp`（自动判死）不置位 ⇒ 上面那条
+  "failed 必须还能改回 active"一字未动。已 `done` 的行也不置位（它没有被取消这回事，
+  而 `changed` 在这一格可以是 true —— `upsert_transfer` 被 `done` 挡住时返回 Ok 且改 0 行）。
+* 投递侧的取消退出是**第三种**错误种类（`SendFileError::cancelled` ⇒ `RetryVerdict::Cancelled`），
+  不再复用 `permanent`：取消不许进重试队列，也不许顺着 `GiveUp` 落 `failed`。
+* 取消槽位（`file_send_cancels`）的登记与回收只有一个家
+  （`network/file::install_cancel_slot`），且登记排在**任何慢步骤之前**
+  （整文件哈希 / 群发并发闸排队 / Offer 等待）—— 否则那段时间的取消静默丢掉。
+* **群收件人行与群文件行的 `cancelled` 同样是硬终态**（2026-10-23 B2）：
+  `group_file_recipients` **不需要新列** —— 这张表里只有用户主动取消会写 `cancelled`
+  （自动路径写的是 `failed` / `pending`），所以状态本身就是墓碑。三处必须同时成立，
+  少一处就是"界面上取消了、链路上照样发完"：
+  · 成员行的 `update_group_file_recipient` 带 `AND status <> 'cancelled'`（晚到的进度与
+    迟到的 ACK 改不动它），而"这一格不存在"仍然**继续报错** —— 两种"改 0 行"不许合并成
+    一条错误，否则取消之后的每一笔晚到写都会在生产日志里留一条假故障；
+  · `upsert_group_file_receive`（同一单再进来一次的复位入口）只放过 `completed` **与 `cancelled`**；
+  · 投递入口 `dispatch_group_file_to_peer` 在**拿并发闸许可之前**先看闸门，且两头都读
+    （整单 `is_group_file_cancelled` + 这一格 `is_group_file_recipient_cancelled`）——
+    闸门排在 `acquire().await` 之后时，排队期间发生的取消会照常把整份文件发出去。
+  投递摘要的 `waiting` 从此排除 `cancelled` 并新增 `cancelled` 一格（四格互斥、求和等于 `total`）：
+  已取消的成员**再也不会收**，把他们算进"待上线"就是那句「M 人待上线」永远挂着。
+
+**取消要通知到对端（2026-10-23 B3）**：上面那三条都只让**本机**停手。对端不知道，
+于是"我按了取消，对面还在往这条链路上灌分片，直到它自己的 deadline 或队列判死"——
+这不是"取消"，是"本机放弃"。落法：
+
+* 新帧 `FileCancel { transfer_id, from }`（线格式 tag `file_cancel`，**High 优先级**：
+  它要打断的正是一条占着 Low 队列的分片流，排在分片后面就等于没有这条帧）。
+* 能力位 `CONTENT_FEATURE_FILE_CANCEL`（`1 << 8`）：发送方**只在对端声明过这一位时**才发
+  （INV-P24 第 4 条）。老端收到它会折成 `Message::Unknown` 安静忽略（第 1 条，v4.22.27 起），
+  所以"没声明就不发"是**确定行为**，不是猜对方解析器。
+* **两个入口一个家**：`commands::files::apply_local_cancel` 是"本机按已取消收尾"的唯一实现，
+  用户点取消（IPC）与对端发来的 `FileCancel`（`transport/handle_file` 的那条臂）都走它。
+  臂体里不许再抄一份终态/emit —— 两处各写一遍就是这批之前那四条墓碑注释撒谎的同一种形状。
+* **认人**：帧里的 `from` 必须同时等于"台账里这一单的对端"与"当前链路的对端"；
+  `transfer_id` 不是秘密，不认人的话链路上任何一台设备都能凭一个猜到的 id 打死别人的传输。
+* 通知失败（离线/队列满）**不回滚取消**：本机已经停了手，对方还有自己的 deadline 兜着；
+  日志里记一条"没送出去"，台账照旧是 `cancelled`。
+
+**群文件的「接收侧取消」也是真取消（2026-10-23 B3b）**：在这之前，对一条「别人发给我的群文件」
+按取消只 emit 了一个 `file-cancelled` —— 界面显示已取消，接收器还在写 `.part`、下一次 Offer 还会
+把它拉起来。这比「没这个功能」更糟：**界面在撒谎**。落法：
+
+* 取消入口的第 0 步先认「这是不是别人发给我的群文件」（`file_transfers` 里没有、`group_files` 里
+  的那个发送者不是本机）；是就整段走 `cancel_group_receive_side`：摘接收器 → 删 `.part` →
+  气泡 `gfile-` 写 `cancelled` → **最后**才把整单行落 `cancelled`（写序与
+  `every_finalize_path_defers_the_destructive_write` 同一条：面向用户的写在前，踢出补发集合的写在最后）。
+* 群接收的 `.part` **必须删**：那是「失败要保留、取消不许留」的分界 —— 留着的话下一次 Offer
+  会把它当续传前缀（用户眼里的「取消了它自己又开始传」）。
+* 新帧 `GroupFileCancel { transfer_id, group_id, recipient, from }`（tag `group_file_cancel`，
+  High 优先级、复用同一位能力位）：接收方→发送方 =「这一格我不收了」；发送方→该成员 =「这一格停了」。
+  **只影响这一格**：发送方那侧只点亮 `(transfer_id, 该成员)` 的槽位、只把那一行落 cancelled，
+  整单那一对（`signal_cancel_slots` / `cancel_group_file_recipients`）一个字都不许碰 ——
+  否则一个成员退出会让其余成员一起停。认人也只认本人：`recipient` 必须等于发帧那台设备。
+
+**消息的取消与文件同一条仲裁（2026-10-23 B4 后半）**：`cancel_message` 在同一个事务里把
+`messages.status` 写 `cancelled` 并删掉那条 `outbox` 行。「取消是硬终态」在这里不靠新闸门，
+靠的是 `ack_delivered` 早就有的那条前置判据：**队行行还在不在**。行被删掉之后晚到的 Ack
+命中不到 ⇒ 返回 false、状态停在 `cancelled`；只改状态不删行则下一轮 flush 照样把它发出去
+（界面说已取消、对方照样收到）。文件那侧的 `cancel_terminal` 墓碑与这一条是同一件事的两种材质：
+文件靠"不许被晚到的写降级"，消息靠"晚到的确认找不到可确认的行"。
+
+**非空转证明**：`verify-guards` 变异用例 —— 摘掉 `WHERE status <> 'done'` ⇒ 正向判据红；
+照本条落地前的建议把集合写成 `NOT IN ('done','failed','cancelled')` ⇒ 反向判据红；
+去掉 `AND cancel_terminal = 0` ⇒ 晚到的进度写复活已取消的行（正向）；
+把墓碑条件放宽成 `if changed` ⇒ 自动判死的行被盖上墓碑、续传的门被关掉（反向）；
+去掉 `&& !already_done` ⇒ 已送达的行被盖上取消墓碑；
+`mark_file_outbox_sending` 的 `Ok(n > 0)` 改成恒真 ⇒ 抢占回报失真（快照竞态复活）；
+`send_retry_verdict` 里取消那一格短路 ⇒ 取消被重试上限改写成失败；
+对端取消的臂体里自己补一次 emit ⇒ 形状判据报「收尾里的 emit 出现第二个家」；
+把按成员取消那条 UPDATE 的状态过滤摘掉 ⇒ 已收完的成员被改成已取消（幂等那一格先红）；
+把 `FileCancel` 从 High 摘到普通档 ⇒ 优先级判据红（它排在了要停掉的分片后面）；
+`content_features()` 漏声明这一位 ⇒ 帧永远发不出去，而其余门禁全绿；
+群文件那一族另加五条：去掉成员行的 `AND status <> 'cancelled'` / 去掉群文件行的
+`AND status <> 'completed'` / 把"只动未到终态成员"放宽成"除 completed 都动" /
+把接收会话的复位退回只放过 completed / 把投递入口那道闸门短路成恒不成立
+（最后一条只有**位置 + 短路**这对判据抓得到，数量判据看不见顺序变化）。
+
+- 钩子：`guards:upsert_transfer 的「done 不可降级」闸门不得被摘掉` `db::cascade_tests::a_completed_transfer_row_is_never_downgraded` `db::tests::complete_ack_failure_cannot_downgrade_completed` `db::cascade_tests::a_user_cancelled_transfer_is_never_revived_by_a_late_write` `db::cascade_tests::a_cancel_on_an_already_done_transfer_writes_no_tombstone` `db::cascade_tests::claiming_an_outbox_row_reports_whether_it_was_actually_claimed` `network::file::tests::a_user_cancel_never_enters_the_retry_queue_and_is_not_a_failure` `tests::cancel_slot_has_exactly_one_home` `db::group_file_delivery_tests::a_cancelled_recipient_row_is_a_hard_terminal` `db::group_file_delivery_tests::cancelling_a_group_file_touches_only_the_members_that_are_not_terminal` `db::group_file_delivery_tests::a_cancelled_group_file_is_not_requeued_by_the_offline_or_sweep_paths` `db::group_file_delivery_tests::group_file_row_cancel_does_not_downgrade_completed` `tests::group_file_cancel_gate_is_checked_before_the_permit`
 
 ### INV-P27 — 「用户在看这个会话」只有一个口径，抑制必须共用它
 

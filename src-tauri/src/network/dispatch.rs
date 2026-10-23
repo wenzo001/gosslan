@@ -46,6 +46,10 @@ pub fn message_priority(msg: &Message) -> MessagePriority {
         | Message::Heartbeat { .. }
         | Message::FileAccept { .. }
         | Message::FileReject { .. }
+        // 取消帧的目的就是"打断一条正占着队列的分片流"。留在 Low/Normal 等于让它排在
+        // 自己要不要停掉的那批字节后面 —— 那这条帧就没有存在意义了。
+        | Message::FileCancel { .. }
+        | Message::GroupFileCancel { .. }
         | Message::GroupAck { .. }
         | Message::GroupReadReceipt { .. }
         | Message::FriendRequest { .. }
@@ -121,6 +125,60 @@ mod tests {
             attempt: None,
         };
         assert_eq!(message_priority(&msg), MessagePriority::Low);
+    }
+
+    /// 取消帧必须排在它要打断的那批分片**前面**（B3）。
+    ///
+    /// 这一条不是"越快越好"的偏好：链路的 Low 队列能装 1024 槽，一个 1MB 的文件
+    /// 一秒内就能全部入队（见 `state.rs::file_wire_progress` 那条注释），
+    /// 于是 `FileCancel` 若留在 Low/Normal，它会排在自己要不要停掉的那批字节之后 ——
+    /// 症状恰好是"取消发出去了、对面还在继续传"，也就是这条帧整个没意义。
+    #[test]
+    fn file_cancel_outranks_the_chunk_stream_it_stops() {
+        let cancel = Message::FileCancel {
+            transfer_id: "t".into(),
+            from: "dev-a".into(),
+        };
+        let chunk = Message::FileChunk {
+            transfer_id: "t".into(),
+            seq: 0,
+            data: "a".into(),
+            attempt: None,
+        };
+        let done = Message::FileDone {
+            transfer_id: "t".into(),
+            attempt: None,
+        };
+        let group_cancel = Message::GroupFileCancel {
+            transfer_id: "t".into(),
+            group_id: "g".into(),
+            recipient: "dev-b".into(),
+            from: "dev-a".into(),
+        };
+        assert_eq!(
+            message_priority(&cancel),
+            MessagePriority::High,
+            "FileCancel 必须钉在 High：留在 Normal/Low 它会排在自己要停掉的那批分片之后"
+        );
+        assert_eq!(
+            message_priority(&group_cancel),
+            MessagePriority::High,
+            "按成员取消（GroupFileCancel）同理：它要停的也是正在跑的群分片"
+        );
+        assert!(message_priority(&group_cancel) < message_priority(&chunk));
+        assert_eq!(
+            message_priority(&chunk),
+            MessagePriority::Low,
+            "分片不许被这条改动顺手升档（INV-P20：聊天不许被大块饿死）"
+        );
+        assert_eq!(
+            message_priority(&done),
+            MessagePriority::Low,
+            "终止帧必须与分片同档，否则顺序会被调度打乱"
+        );
+        // 顺序本身也是判据的一部分（Ord 由 High<Normal<Low 派生）
+        assert!(message_priority(&cancel) < message_priority(&chunk));
+        assert!(message_priority(&cancel) < message_priority(&done));
     }
 
     #[test]

@@ -647,9 +647,13 @@ const CMDS = [
   // 折叠与"与我相关"判定都留在前端 utils/todos.ts —— 后端再算一遍就是第三个真源。
   ["get_group_todo_messages", "chat", "conv_ids str[]", "MessageRecord[]"],
   ["get_latest_messages", "chat", "conv_id str; limit int?", "MessageRecord[]"],
+  // 统一后台任务中心「消息还没送到对端」那一类：起点是补发队列（outbox / group_outbox），
+  // 不是 <code>messages.status</code> —— 队列行本身才是"还没送达"这个事实。
+  ["get_pending_message_operations", "chat", "", "PendingMessageOp[]|err"],
   ["mark_read", "chat", "conv_id str", "()|err"],
   ["send_message", "chat", "friend_id str; content str; kind str", "MessageRecord|err"],
   ["recall_message", "chat", "friend_id str; target str", "()|err"],
+  ["cancel_message", "chat", "conv_id str; msg_id str", "str|err"],
   ["set_message_render", "chat", "conv_id str; target str; mode str", "()|err"],
   ["set_conversation_pinned", "chat", "conv_id str; pinned bool", "()|err"],
   ["search_chat_history", "chat_search", "keyword str; sender_id str?; since_ms int?; until_ms int?", "ChatSearchGroup[]|err"],
@@ -666,6 +670,7 @@ const CMDS = [
   ["updater_check", "updater", "", "UpdaterInfo|null|err"],
   ["updater_download", "updater", "onEvent channel", "()|err"],
   ["updater_cancel", "updater", "", "()|err"],
+  ["updater_status", "updater", "", "UpdaterStatus"],
   ["updater_install", "updater", "", "()|err"],
   ["updater_close", "updater", "", "()|err"],
   ["add_favorite", "favorites", "msg_id str; conv_id str", "Favorite|err"],
@@ -677,7 +682,7 @@ const CMDS = [
   ["read_favorite_preview", "favorites", "id str; max_bytes int", "Response|err"],
   ["remove_favorite", "favorites", "id str", "()|err"],
   ["apply_macos_window_shape", "files", "dark bool", "()|err"],
-  ["cancel_file_transfer", "files", "transfer_id str", "bool|err"],
+  ["cancel_file_transfer", "files", "transfer_id str", "{cancelled bool, alreadyDone bool, notifiedPeer bool}|err"],
   ["delete_file", "files", "path str", "()|err"],
   ["get_content_transfers", "files", "", "TransferRecord[]"],
   ["get_group_file_delivery_summary", "files", "transfer_id str", "GroupFileDeliverySummary?"],
@@ -788,8 +793,10 @@ const SEM = {
   /* ── commands/chat.rs · 单聊 ── */
   send_message: { d: "发单聊。门禁三关：<b>是好友 → ≤50 000 字符（拒断不截断）→ 该 kind 需要的能力位对端声明过吗</b>（缺记录按 0 = 拒绝）。取不到对方 x25519 会先 <code>who_has</code> 探一次并等 1.2s，仍无则明确报错。", w: "messages + outbox（同事务）", n: "自聊走纯本地分支" },
   recall_message: { d: "单聊撤回：仅原作者、5 分钟窗口；复用 <code>send_message</code> 的 E2EE / outbox 管道，<b>先发可靠事件再物化本地</b>，与群撤回同一顺序。", w: "group_recalled_messages + messages" },
+  cancel_message: { d: "取消一条**还在补发队列里**的消息（单聊、自己发的、非文件）。三笔写在同一个事务里：状态写 <code>cancelled</code>、删 <code>outbox</code> 行、返回结论；<b>删掉队列行之后晚到的 Ack 在 <code>ack_delivered</code> 里命中不到那一行 ⇒ 不会把已取消提升成已送达</b>（这是"取消是硬终态"在消息表上的落地）。文件/图片走传输取消；**群消息走这条**（判据是"还没有任何成员的 Ack 被处理过"，删的是每个成员那一行；已有人收下时拒绝、只提供撤回）。返回 <code>cancelled</code> / <code>already_delivered</code>。", w: "messages + outbox" },
   set_message_render: { d: "切换自己发的代码/文本消息渲染：静默 <code>render</code> 事件 + <code>message_render</code> LWW；群发送只投给声明了 RENDER 能力位的成员。", w: "message_render + messages" },
   get_messages: { d: "分页读会话消息。<b>排序用 <code>seq</code>（Lamport），不是 <code>ts</code></b>；返回体就是 <code>MessageRecord[]</code>。", w: "读 messages" },
+  get_pending_message_operations: { d: "任务中心读模型之一：还在补发队列里的消息（<code>msg_id · kind · peer_id · group_id · waiting_for · preview · peer_offline</code>）。<b>只读派生、不新增表</b>；上限 200 条，SQLite 读在 <code>spawn_blocking</code> 里（INV-P34），<code>peer_offline</code> 由命令层用 <code>has_link</code> 现填 —— 库里不知道链路在不在。", w: "读 messages + outbox + group_outbox" },
   get_message_count: { d: "该会话总条数（前端算「还能不能继续往前加载」）。<b>冷加载不再问它</b>，只有翻页在用。" },
   get_latest_messages: { d: "一次取会话<b>最新一页</b>（正序）。存在的理由：按 offset 取尾部得先知道总数 = 两轮 IPC，每轮各排一次全局 db 锁，冷会话「先骨架、后半拍才出内容」就是那一轮。等价性由 Rust 侧逐行钉（<code>latest_page_is_identical_to_the_count_plus_offset_two_step</code>）。", w: "读 messages" },
   get_conversations: { d: "会话列表（含 <code>unread / pinned / last_msg / last_ts</code>）。" },
@@ -818,6 +825,7 @@ const SEM = {
   updater_check: { d: "官方 updater 检查 GitHub latest.json，返回版本/说明/发布时间（12s 超时）。", w: "plugins.updater" },
   updater_download: { d: "官方 Update::download；可取消的下载，进度走 Channel（官方实现为内存缓冲）。" },
   updater_cancel: { d: "通知下载 future drop（真停，不是只隐藏 loading）。" },
+  updater_status: { d: "更新这件事的**可查询状态**（B5）：<code>phase ∈ idle|checking|downloading|ready|installing|failed|cancelled</code>（移动端恒 <code>unsupported</code>）+ downloaded / total / version / error。两个窗口共用同一份（`UpdaterSession` 是 managed state），每次跃迁 emit <code>updater-status</code>；刚打开的窗口用这条补拉。任务中心只把 <code>downloading</code> 列成任务（<code>installing</code> 不可取消、<code>ready</code> 是下载完成态）。", w: "读内存（UpdaterSession）" },
   updater_install: { d: "官方 install；macOS/Linux 安装后重启，Windows 交给 NSIS。" },
   updater_close: { d: "用户稍后：释放 Update 与已下载字节。" },
 
@@ -833,11 +841,11 @@ const SEM = {
 
   /* ── commands/files.rs ── */
   send_file_auto: { d: "按当前最佳链路自动选普通 / 中继路径。" },
-  cancel_file_transfer: { d: "取消。同一 <code>transfer_id</code> 的<b>多个接收人 / 多条流一起取消</b>（群文件是一 id 多收件人）。返回是否有东西可取消。" },
+  cancel_file_transfer: { d: "取消。同一 <code>transfer_id</code> 的<b>多个接收人 / 多条流一起取消</b>（群文件是一 id 多收件人）。本机收尾只有一个家 <code>commands::apply_local_cancel</code>（用户点取消与对端发来的 <code>FileCancel</code> 帧共用它）；随后在<b>对端声明了 <code>CONTENT_FEATURE_FILE_CANCEL</code></b> 时补发一条 <code>FileCancel</code> 让对面也停手（老端不发 ⇒ 它自己走到 deadline，本机取消照旧成立）。群文件两条更细的路：本机是<b>发送方</b>时给每个还在传的成员各发一条 <code>GroupFileCancel</code>；本机是<b>接收方</b>时先摘接收器、删 <code>.part</code>、气泡落 cancelled，再告诉发送方这一格停了。返回<b>台账</b>口径 + 一个通知口径（<code>notifiedPeer</code>=取消帧真的进了链路；老端没声明能力位或离线时为 false ⇒ 界面只说「仅本机已取消」，不说「对方也停了」）：<code>cancelled</code>=这一单现在是「已取消」（排队中没有在途信号也算成立），<code>alreadyDone</code>=已经收完、取消不成立。「已送达」的行不盖取消墓碑；盖了墓碑的行拒绝任何晚到的进度/attempt/done 写回。" },
   get_transfers: { d: "传输台账（<code>file_transfers</code>，双向）。" },
   get_content_transfers: { d: "cid 视角的传输状态（ADR-0019）：<code>queued|active|verifying|complete|incomplete|rejected</code> + attempts / next_attempt_at。" },
   list_group_files: { d: "群文件列表，带 <code>local_state ∈ local|receiving|remote|failed</code> 与 <code>delivered/total</code>。" },
-  get_group_file_delivery_summary: { d: "群文件每收件人进度汇总 <code>{completed, failed, waiting}</code>（气泡上的「3/5 已收到」）。" },
+  get_group_file_delivery_summary: { d: "群文件每收件人进度汇总 <code>{total, completed, failed, cancelled, waiting}</code>（气泡上的「已发送给 N 人 · M 人待上线 · K 人已取消」）。<b>四格互斥且求和等于 total</b>；<code>cancelled</code>（B2）必须单独一格 —— 已取消的成员再也不会收，把他们算进 <code>waiting</code> 就是那句「待上线」永远挂着。" },
   request_content: { d: "按 msgId 请求补拉内容。" },
   request_content_by_cid: { d: "按 cid 请求补拉。<b>拥有即授权</b>：任何持有该内容的设备都能当源。⚠️ <b>服务侧不许在入站循环里 await 整条握手</b>（A-14，2026-10-13）：旧形状等对端 <code>FileAccept</code> 才能往下走，而那一帧正是被自己堵住的 reader 读回来的 ⇒ 每次必满 15 秒、同链路群聊/单聊/心跳全进不来。现在投给<b>每对端一条有界串行队列</b>（<code>queue_policy::FileService</code>，容量 8、<code>ServeTicket::{Accepted,Merged,RejectedFull}</code>、<code>close_peer</code> 即取消、generation 防旧 worker 踢掉新的），串行还顺带保住 <code>pending_file_accept</code> 那个<b>只按 transfer_id 登记</b>的单键。受众判定在 handler 不在 <code>find_source</code>（后者只认 <code>cid + path IS NOT NULL</code>）：<code>content_serve_allowed</code> = 好友 <b>或</b> 该内容所属群的成员。" },
   save_outgoing_image: { d: "把剪贴板 / 拖进来的 dataURL 落成临时文件并返回 <code>{path,name,size}</code>（发送前的必经一步）。" },
@@ -1512,7 +1520,7 @@ function buildDir() {
       '<div class="stat"><div class="num">' + CMDS.filter((r) => !SEM[r[0]] || !SEM[r[0]].dead).length + '</div><div>前端有调用</div></div>' +
       '<div class="stat"><div class="num">29</div><div>后端字面量事件名（表内合并成 ' + EVENTS.length + ' 行；动态拼的不计）</div></div>' +
       '<div class="stat"><div class="num">19</div><div>SQLite 表</div></div>' +
-      '<div class="stat"><div class="num">244</div><div>护栏非空转用例（改坏即红·这个数由 scripts/guard_cases/*.py 的 CASES 现算，判据 E 对账）</div></div>' +
+      '<div class="stat"><div class="num">264</div><div>护栏非空转用例（改坏即红·这个数由 scripts/guard_cases/*.py 的 CASES 现算，判据 E 对账）</div></div>' +
       '<div class="stat"><div class="num">local</div><div>跨进程 E2E：正向轮接进 <code>verify</code> 的 <code>local</code> 组，要第三个真实实例那一轮单独挂在 <code>release</code> 组（发版前才跑，落点＝发版检查单点名）；每轮断言数由 <code>check-doc-numbers.mjs</code> 从 harness 现算对账，手写即红；入口 <code>npm run verify:e2e</code> / <code>npm run verify:release</code>；<b>两层 CI 都不跑</b></div></div>' +
       '<div class="stat"><div class="num">现算</div><div>Rust / 前端测试条数：分别由 <code>cargo test</code> 与 <code>npm test</code> 自己打印，图上不抄</div></div>' +
       '<div class="stat"><div class="num">20</div><div>反证 / 判据自查档的红数基线（<code>npm run selfproof:check</code>，量具不进门禁）</div></div>' +

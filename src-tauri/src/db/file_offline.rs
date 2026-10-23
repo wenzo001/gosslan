@@ -38,16 +38,18 @@ pub fn list_pending_file_outbox(conn: &Connection, peer_id: &str) -> Result<Vec<
 /// 投递开始：pending → sending，并累计一次尝试。
 /// 加 `WHERE status = 'pending'` 守卫：cancel_file_transfer 可能已把这条标记 cancelled，
 /// 此时不应该再被我们推进 sending —— 否则 spawn loop 后续可能再 mark pending 把 failed 覆盖掉。
+/// 返回 `true` = 本次真的从 pending 迁移成功；`false` = 已被取消/失败/别的 flush 抢走。
+/// 调用方必须检查返回值并跳过发送（2026-10-23：旧实现忽略返回值，取消后的快照仍会发完整份）。
 pub fn mark_file_outbox_sending(
     conn: &Connection,
     transfer_id: &str,
     backoff_ms: i64,
-) -> Result<()> {
-    conn.execute(
+) -> Result<bool> {
+    let n = conn.execute(
         "UPDATE file_outbox SET status = 'sending', attempts = attempts + 1, next_attempt_at = ?2 WHERE transfer_id = ?1 AND status = 'pending'",
         params![transfer_id, now_ms().saturating_add(backoff_ms)],
     )?;
-    Ok(())
+    Ok(n > 0)
 }
 
 /// 投递失败但可重试：回到 pending，等待下次连接/心跳触发。
