@@ -2784,6 +2784,7 @@ async function main() {
     const touchroster = want("touchroster");
     const locale = want("locale");
     const rowpair = want("rowpair");
+    const msgovf = want("msgovf");
     const ctxguard = want("ctxguard");
     const pasteframe = want("pasteframe");
     const errtext = want("errtext");
@@ -2842,6 +2843,7 @@ async function main() {
     if (resend) await runResend(cdp, url);
     if (locale) await runLocale(cdp, url);
     if (rowpair) await runRowPair(cdp, url);
+    if (msgovf) await runMsgOverflow(cdp, url);
     if (ctxguard) await runContextGuard(cdp, url);
     if (pasteframe) await runPasteFrame(cdp, url);
     if (errtext) await runErrorText(cdp, url);
@@ -5513,6 +5515,207 @@ async function runRowPair(cdp, url) {
     fs.writeFileSync(SHOT_PATH.replace(/\.png$/, "-rowpair.png"), Buffer.from(shot.data, "base64"));
     console.log("  📷 行配对取证帧 → " + SHOT_PATH.replace(/\.png$/, "-rowpair.png"));
   }
+}
+
+/**
+ * 恶劣载荷的溢出矩阵（升级指令 §2.2 / §10「长文本、长昵称、长文件名、长链接、空内容、窄窗口」）。
+ *
+ * 为什么单开一段：气泡的宽度上限与断词全靠 CSS（`max-w-[var(--gosslan-msg-max)]` +
+ * `break-words` + 长链接的中段省略），**读代码看不出它有没有生效**。这类缺陷的形状很安静 ——
+ * 不报错、不白屏，只是把整列推出可视区或让页面出现横向滚动条，用户看到的是"消息歪了"。
+ *
+ * 三条口径：
+ * 1. **量三件不同的溢出**，缺一就漏一类缺陷：整页横向滚动（`documentElement.scrollWidth`）、
+ *    任一后代越出容器右边界（逐元素算最大越界）、容器自身横向可滚（`scrollWidth − clientWidth`）。
+ * 2. **容器取挂载点，不取气泡列**：`system` / `recalled` 是居中的提示行，结构上**没有**
+ *    `[data-msg-col]`（第一版按气泡列量，这两档直接量不到东西 ⇒ 三条判据一起红，
+ *    看着像提示行溢出了，其实是尺子找错了对象）。
+ * 3. **两半都要防假绿**：每档都要求"真的挂出了 ≥3 个节点"（否则"没溢出"只是没画东西）；
+ *    再把一条长文本改成 `white-space: nowrap` ⇒ 同一把尺必须报出越界。
+ *    为什么不用"最宽后代 ≥ 半屏"当约束顶到的证据：**行容器本身就是满宽的**，
+ *    那条断言会恒真（写完实测就发现它在空挂载时也一样绿）。
+ */
+async function runMsgOverflow(cdp, url) {
+  await cdp.send("Page.navigate", { url });
+  await sleep(2_500);
+  await cdp.eval(PAGE_FIXTURE);
+  const LONG = "很长的一段中文用来把气泡撑到上限并且一不留神就溢出出去".repeat(6);
+  const CASES = [
+    { name: "长中文正文", kind: "text", content: LONG },
+    { name: "无空格长英文", kind: "text", content: "Supercalifragilistic".repeat(12) },
+    { name: "超长链接", kind: "text", content: "看下 https://gosslan.example.com/"
+      + "assets/2026/quarterly/report-final-v3/" + "x".repeat(60) + "?trace=1" },
+    { name: "代码超长一行", kind: "code", content: "SELECT " + "column_name,".repeat(40) + " tail" },
+    { name: "超长文件名", kind: "file", content: JSON.stringify({
+      name: "季度经营分析报告-最终版-第三轮修订稿-".repeat(4) + ".pdf",
+      path: "/tmp/report.pdf", size: 5318656 }) },
+    { name: "超长待办标题", kind: "todo", content: JSON.stringify({
+      todo_id: "t-ovf", title: LONG.slice(0, 90), status: "pending", creator: "peer-a",
+      assignees: ["peer-a"], priority: "normal", category: "normal", number: 12345 }) },
+    { name: "合并转发长摘要", kind: "merge", content: JSON.stringify({
+      title: "群聊的聊天记录",
+      items: [{ sender: "甲", text: LONG.slice(0, 60) }, { sender: "乙", text: LONG.slice(0, 60) },
+        { sender: "丙", text: LONG.slice(0, 60) }] }) },
+    { name: "超长系统行", kind: "system", content: "系统提示：" + LONG },
+    { name: "撤回行", kind: "recalled", content: "" },
+    { name: "空正文", kind: "text", content: "" },
+    { name: "未知类型", kind: "voice_note", content: JSON.stringify({ duration: 37, path: "/tmp/a.opus" }) },
+  ];
+  /** 挂一条（群聊、别人发的、**超长昵称** ⇒ 身份行也跟着进同一把尺）后读几何。 */
+  /** 挂一条后读几何：容器一律取挂载点（提示行没有气泡列，见函数头口径 2）。 */
+  const probeOne = async (c) => {
+    const props = {
+      message: {
+        msg_id: "m-ovf", sender_id: "peer-a", kind: c.kind, content: c.content,
+        ts: 1_700_000_000_000, conv_id: "c-ovf", seq: 1,
+      },
+      prev: null, isGroup: true, canReact: false,
+      senderName: "一个非常长的群成员昵称用来验证身份行会不会把版面顶破".repeat(2),
+    };
+    const r = await cdp.eval("window.__probe.installMessages("
+      + JSON.stringify(JSON.stringify([props])) + ")");
+    await sleep(420);
+    if (!r || r.ok !== true) return null;
+    return cdp.eval(`(() => {
+      const host = document.getElementById('probe-host');
+      if (!host) return null;
+      const hr = host.getBoundingClientRect();
+      let worst = 0;
+      for (const el of host.querySelectorAll('*')) {
+        const r = el.getBoundingClientRect();
+        if (r.width === 0 || r.height === 0) continue;
+        const over = r.right - hr.right;
+        if (over > worst) worst = over;
+      }
+      return {
+        hostW: +hr.width.toFixed(1),
+        paintedEls: host.querySelectorAll('*').length,
+        worstOver: +worst.toFixed(1),
+        hostInner: host.scrollWidth - host.clientWidth,
+        pageScroll: document.documentElement.scrollWidth,
+        vw: window.innerWidth,
+      };
+    })()`);
+  };
+  const rows = [];
+  for (const c of CASES) rows.push({ ...c, ...(await probeOne(c) || {}) });
+  console.log("  · 溢出矩阵：" + JSON.stringify(rows.map((r) => ({
+    n: r.name, els: r.paintedEls, hostW: r.hostW, over: r.worstOver,
+    inner: r.hostInner, page: r.pageScroll, vw: r.vw,
+  }))));
+  for (const r of rows) {
+    const tag = "溢出矩阵·" + r.name;
+    check(tag + "：整页没有横向滚动（scrollWidth ≤ 视口）",
+      typeof r.pageScroll === "number" && typeof r.vw === "number" && r.pageScroll <= r.vw,
+      "scrollWidth ≤ innerWidth", JSON.stringify({ pageScroll: r.pageScroll, vw: r.vw }));
+    check(tag + "：没有后代越出挂载容器右边缘",
+      typeof r.worstOver === "number" && r.worstOver <= 0.5, "≤ 0.5px", JSON.stringify({ worstOver: r.worstOver }));
+    check(tag + "：挂载容器自身没有横向可滚内容",
+      typeof r.hostInner === "number" && r.hostInner <= 0, "scrollWidth == clientWidth",
+      JSON.stringify({ hostInner: r.hostInner }));
+    // "没溢出"最容易被"压根没画东西"骗过去。这里只要求**这一档真的挂了节点**，
+    // 而"上限是否真的顶住"由末尾那条 nowrap 反向对照负责 —— 它比"量到多宽"直接。
+    check(tag + "：这一档真的画出了内容（不是空挂载假绿）",
+      typeof r.paintedEls === "number" && r.paintedEls >= 3, "≥ 3 个节点",
+      JSON.stringify({ paintedEls: r.paintedEls }));
+  }
+
+  // ── 窄窗口（390×844）重复最坏的四档 ──
+  await cdp.send("Emulation.setDeviceMetricsOverride", {
+    width: 390, height: 844, deviceScaleFactor: 1, mobile: true,
+  });
+  await sleep(400);
+  for (const name of ["无空格长英文", "超长链接", "代码超长一行", "超长文件名"]) {
+    const c = CASES.find((x) => x.name === name);
+    const r = await probeOne(c);
+    console.log("  · 390px " + name + "：" + JSON.stringify(r));
+    check("窄窗 390px·" + name + "：整页仍不横滚",
+      !!r && r.pageScroll <= r.vw, "scrollWidth ≤ innerWidth", JSON.stringify(r));
+    check("窄窗 390px·" + name + "：没有后代越出挂载容器",
+      !!r && r.worstOver <= 0.5, "≤ 0.5px", JSON.stringify(r));
+  }
+  await cdp.send("Emulation.clearDeviceMetricsOverride");
+  await sleep(300);
+
+  // ── 反向对照：把断词关掉，同一把尺必须报出溢出 ──
+  await probeOne(CASES.find((x) => x.name === "无空格长英文"));
+  await cdp.eval("(() => { const el = document.querySelector('#probe-host .gosslan-selectable');"
+    + " if (el) el.style.whiteSpace = 'nowrap'; return true; })()");
+  await sleep(250);
+  const broken = await cdp.eval(`(() => {
+    const host = document.getElementById('probe-host');
+    const hr = host.getBoundingClientRect();
+    let worst = 0;
+    for (const el of host.querySelectorAll('*')) {
+      const r = el.getBoundingClientRect();
+      if (r.width === 0 || r.height === 0) continue;
+      const over = r.right - hr.right;
+      if (over > worst) worst = over;
+    }
+    return { worstOver: +worst.toFixed(1), inner: host.scrollWidth - host.clientWidth };
+  })()`);
+  console.log("  · 反向对照（nowrap）：" + JSON.stringify(broken));
+  check("溢出矩阵非空转：关掉断词后同一把尺必须报出越界",
+    !!broken && broken.worstOver > 1, "> 1px", JSON.stringify(broken));
+
+  // ============ 动效只许碰 transform/opacity/颜色，不许碰布局尺寸 ============
+  /*
+   * 升级指令 §8 那句"优先使用 transform、opacity 等低成本属性，避免频繁动画布局尺寸"，
+   * 在**消息区**这一格还有另一半更硬的理由：虚拟列表按估算高度排布、只在数据变化时重排，
+   * 一条消息若在过渡里改 height/margin/padding，动画中途的真实高度就对不上估算 ⇒
+   * 就是 roadmap 上反复出现的那族"相邻消息互相遮挡 / 滚动跳动"。
+   * 所以这里读**计算出来的** transition-property（源码写了不等于生效），逐档要求没有出现
+   * 布局属性；`all` 也算命中 —— 它是 Tailwind `transition-*` 之外的形状，会把未来的
+   * 尺寸属性一并吸进过渡里。反向对照同一段末尾的 nowrap 一样靠"改一处在场的样式"造出来。
+   */
+  const layoutProps = ["width", "height", "margin", "padding", "top", "left", "right", "bottom", "inset"];
+  /*
+   * ⚠️ 必须先看**时长**再看属性：`transition-property` 的 CSS 初值就是 `all`，
+   * 只看属性的第一版把 21 个节点全报成命中（`all | none` 而 duration 是 0s ⇒ 压根没在动）。
+   * 真正的形状是"这条过渡时长 > 0 且它的属性表里出现布局尺寸"。
+   */
+  const animScan = await cdp.eval(`(() => {
+    const host = document.getElementById('probe-host');
+    const hits = [];
+    let checked = 0;
+    for (const el of host.querySelectorAll('*')) {
+      const cs = getComputedStyle(el);
+      const td = parseFloat((cs.transitionDuration || '0s').split(',')[0]) || 0;
+      const ad = parseFloat((cs.animationDuration || '0s').split(',')[0]) || 0;
+      const animating = (td > 0 && (cs.transitionProperty || 'none') !== 'none')
+        || (ad > 0 && (cs.animationName || 'none') !== 'none');
+      if (!animating) continue;
+      checked += 1;
+      const list = (td > 0 ? cs.transitionProperty : '') + ' | ' + (ad > 0 ? cs.animationProperty : '');
+      const bad = ${JSON.stringify(layoutProps)}.filter((k) => list.includes(k));
+      if (list.includes('all') || bad.length) {
+        hits.push({ cls: (el.className || '').toString().slice(0, 42), list: list.slice(0, 60), bad });
+      }
+    }
+    return { animating: checked, hits: hits.slice(0, 6) };
+  })()`);
+  console.log("  · 动效属性扫描（只算时长 > 0 的节点）：" + JSON.stringify(animScan));
+  check("动效只碰低成本属性：消息区在动的节点没有一个过渡/动画布局尺寸",
+    !!animScan && animScan.animating >= 1 && animScan.hits.length === 0,
+    "在动节点 ≥1 且命中 0", JSON.stringify(animScan));
+  // 反向对照：给气泡现场加一条 height 过渡，同一把尺必须点名它。
+  await cdp.eval("(() => { const el = document.querySelector('#probe-host .gosslan-bubble-text');"
+    + " if (el) el.style.transition = 'height 200ms ease'; return true; })()");
+  await sleep(200);
+  const animBreak = await cdp.eval(`(() => {
+    const host = document.getElementById('probe-host');
+    let n = 0;
+    for (const el of host.querySelectorAll('*')) {
+      const cs = getComputedStyle(el);
+      const td = parseFloat((cs.transitionDuration || '0s').split(',')[0]) || 0;
+      if (td <= 0) continue;
+      const list = cs.transitionProperty + ' | ' + cs.animationProperty;
+      if (list.includes('all') || ${JSON.stringify(layoutProps)}.some((k) => list.includes(k))) n += 1;
+    }
+    return n;
+  })()`);
+  check("动效扫描非空转：现场给气泡加一条 height 过渡后必须被点名",
+    typeof animBreak === "number" && animBreak >= 1, "≥ 1 个命中", JSON.stringify({ animBreak }));
 }
 
 /**
