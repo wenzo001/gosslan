@@ -205,6 +205,42 @@ if (badChains.length > 0) {
 // 快速检查会因为找不到解释器直接红（分层时很容易顺手漏掉这一条）。
 const python = noGuards || !fullGate ? null : findPython();
 
+/**
+ * Windows 的 Rust 测试壳没有 tauri-build 给正式二进制嵌的那份清单，而 `rfd`
+ * （tauri-plugin-dialog）静态导入了只有 Common-Controls **v6** 才有的
+ * `comctl32!TaskDialogIndirect` ⇒ 加载期 0xc0000139、零测试输出（2026-10-23 CI 诊断点名）。
+ *
+ * 只给「Rust 单测」这一步把 `windows-test.manifest` 合并进测试壳；
+ * `mt.exe` 是 link.exe 合并 /MANIFESTINPUT 时自己找的工具，SDK 的 x64 bin
+ * 不一定在 rustc 继承的 PATH 上，所以这里主动补一节。
+ *
+ * ⚠️ 不能写进 build.rs 的 `cargo:rustc-link-arg-tests`：本包没有 `[[test]]` 目标，
+ * cargo 会直接判 `invalid instruction … does not have a test target`（实测过一次，全红）。
+ */
+function windowsTestLinkEnv() {
+  if (!WIN) return undefined;
+  const env = {
+    RUSTFLAGS: `${process.env.RUSTFLAGS ? `${process.env.RUSTFLAGS} ` : ""}-C link-arg=/MANIFEST:EMBED -C link-arg=/MANIFESTINPUT:${path.join(TAURI, "windows-test.manifest")}`,
+  };
+  try {
+    const kits = path.join(
+      process.env["ProgramFiles(x86)"] || "C:\\Program Files (x86)",
+      "Windows Kits",
+      "10",
+      "bin",
+    );
+    const hit = readdirSync(kits)
+      .sort()
+      .reverse()
+      .map((v) => path.join(kits, v, "x64"))
+      .find((d) => existsSync(path.join(d, "mt.exe")));
+    if (hit) env.PATH = `${hit};${process.env.PATH ?? ""}`;
+  } catch {
+    // 找不到就让 link.exe 自己报错，这里不把它吞成"成功"。
+  }
+  return env;
+}
+
 /** @type {{name: string, why: string, cwd: string, cmd: string, args: string[],
  *          group: "frontend"|"rust"|"android", skipReason?: string|null}[]} */
 const steps = [
@@ -394,16 +430,12 @@ const steps = [
     // ⚠️ 2026-10-23 真因（CI 诊断点名：376 项导入里缺 1 个 —— comctl32.dll!TaskDialogIndirect）：
     // `rfd`（tauri-plugin-dialog）静态导入这个只有 Common-Controls **v6** 才有的符号，
     // 正式二进制由 tauri-build 嵌了带 v6 依赖的清单，**libtest 的测试壳没有** ⇒
-    // 系统解析到 System32 的 v5.82，进程在 main 之前就死。这里只给测试这一步加一个
-    // 只含 v6 依赖的链接响应文件（`windows-test.link.rsp`），app 构建与 clippy 都不受影响。
+    // 系统解析到 System32 的 v5.82，进程在 main 之前就死。只给这一步合并
+    // `windows-test.manifest`（见 windowsTestLinkEnv），app 构建与 clippy 都不受影响。
     // ⚠️ 不要写进 build.rs 的 `cargo:rustc-link-arg-tests`：本包没有 `[[test]]` 目标，
     // cargo 会直接判 `invalid instruction … does not have a test target`（2026-10-23 实测，
     // 那一次把 Windows 构建和 macOS 单测一起带红）。
-    env: process.platform === "win32"
-      ? {
-          RUSTFLAGS: `${process.env.RUSTFLAGS ? `${process.env.RUSTFLAGS} ` : ""}-C link-arg=@${path.join(TAURI, "windows-test.link.rsp")}`,
-        }
-      : undefined,
+    env: windowsTestLinkEnv(),
     args: ["test", "--features", "bluetooth", ...(process.platform === "win32" ? ["--release"] : [])],
   },
   {
