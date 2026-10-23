@@ -7814,6 +7814,12 @@ async function runOpsCenter(cdp, url) {
       !!sent && sent.buttons >= 1, "≥1", JSON.stringify(sent));
     check("消息行只给「今天真能动的」按钮（取消在 B4，所以这一行是 1 颗=去会话）",
       !!msg && msg.buttons === 1, "1", JSON.stringify(msg));
+    // 排序：要人处理的那一行必须排最前（blocked → running → queued）。
+    // 这一段里 blocked 的有三条（peer_offline 的消息最新），所以第一行必须是它。
+    check("DOM 顺序 = 读模型的顺序：需要处理的那一行排最前",
+      opened.rows[0] && opened.rows[0].title === '在吗',
+      "第一行是 peer_offline 的那条消息",
+      JSON.stringify(opened.rows.map((r) => r.title)));
     check("已完成那条不在列表里（DOM 与读模型同一口径）",
       opened.rows.some((r) => r.title === '已完成.txt') === false,
       "不含 已完成.txt", JSON.stringify(opened.rows.map((r) => r.title)));
