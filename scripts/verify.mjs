@@ -390,6 +390,20 @@ const steps = [
     // —— 那是 `hostname`→`winapi` 的链接在 debug 下没被裁掉。而**发行版就是 release**，
     // 冒烟证明它能正常加载 ⇒ 测试与发出去的那份同构，顺带绕开这个只在 debug 出现的导入。
     // macOS 不变（debug 一直正常，改 profile 只会让本地单测慢一截）。
+    //
+    // ⚠️ 2026-10-23 真因（CI 诊断点名：376 项导入里缺 1 个 —— comctl32.dll!TaskDialogIndirect）：
+    // `rfd`（tauri-plugin-dialog）静态导入这个只有 Common-Controls **v6** 才有的符号，
+    // 正式二进制由 tauri-build 嵌了带 v6 依赖的清单，**libtest 的测试壳没有** ⇒
+    // 系统解析到 System32 的 v5.82，进程在 main 之前就死。这里只给测试这一步加一个
+    // 只含 v6 依赖的链接响应文件（`windows-test.link.rsp`），app 构建与 clippy 都不受影响。
+    // ⚠️ 不要写进 build.rs 的 `cargo:rustc-link-arg-tests`：本包没有 `[[test]]` 目标，
+    // cargo 会直接判 `invalid instruction … does not have a test target`（2026-10-23 实测，
+    // 那一次把 Windows 构建和 macOS 单测一起带红）。
+    env: process.platform === "win32"
+      ? {
+          RUSTFLAGS: `${process.env.RUSTFLAGS ? `${process.env.RUSTFLAGS} ` : ""}-C link-arg=@${path.join(TAURI, "windows-test.link.rsp")}`,
+        }
+      : undefined,
     args: ["test", "--features", "bluetooth", ...(process.platform === "win32" ? ["--release"] : [])],
   },
   {
@@ -1204,6 +1218,8 @@ for (const [i, s] of active.entries()) {
     stdio: "inherit",
     shell: WIN,
     timeout: timeoutMs,
+    // 只为个别步骤覆盖环境（Windows 测试壳要 RUSTFLAGS 指向清单响应文件）；不写就完整继承。
+    ...(s.env ? { env: { ...process.env, ...s.env } } : {}),
   });
   const secs = ((Date.now() - start) / 1000).toFixed(1);
 
