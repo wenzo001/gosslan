@@ -366,6 +366,33 @@ class Cdp {
     }));
     await sleep(160);
   }
+  /**
+   * 真的按住并拖一段（mousePressed → 若干 mouseMoved → mouseReleased，全程 `button:"left"`）。
+   *
+   * 为什么要新加这一条：任务中心那颗药丸的"拖到四个角"是**指针位移阈值**驱动的
+   * （按下与拖动必须分开，否则点一下会被判成拖动、面板打不开）。这种"按住—移动—松手"
+   * 在 DOM 上派发事件量不到：`dispatchEvent(new PointerEvent(...))` 不经命中测试，
+   * 也不会让浏览器真的把 pointer 捕获到那个元素上。
+   * 中途分多帧移动是必要的 —— 一发到位只会让组件看到"按下即已在终点"，
+   * 阈值那一段（先不动、动过 6px 才算拖）就没有作用点。
+   */
+  async drag(x1, y1, x2, y2, steps = 8) {
+    const send = (type, x, y) => this.ws.send(JSON.stringify({
+      id: ++this.seq, method: "Input.dispatchMouseEvent",
+      params: { type, x, y, button: "left", clickCount: 1 },
+    }));
+    send("mouseMoved", x1, y1);
+    await sleep(40);
+    send("mousePressed", x1, y1);
+    await sleep(60);
+    for (let i = 1; i <= steps; i += 1) {
+      const t = i / steps;
+      send("mouseMoved", Math.round(x1 + (x2 - x1) * t), Math.round(y1 + (y2 - y1) * t));
+      await sleep(30);
+    }
+    send("mouseReleased", x2, y2);
+    await sleep(200);
+  }
 }
 
 // ── 页面侧装进 window 的夹具（一次装好，之后每步只调函数）────────────
@@ -2683,6 +2710,7 @@ async function main() {
     const settingsmobile = want("settingsmobile");
     const composermobile = want("composermobile");
     const tasksmobile = want("tasksmobile");
+    const opscenter = want("opscenter");
     const touchroster = want("touchroster");
     const locale = want("locale");
     const rowpair = want("rowpair");
@@ -2737,6 +2765,7 @@ async function main() {
     if (settingsmobile) await runSettingsMobile(cdp, url);
     if (composermobile) await runComposerMobile(cdp, url);
     if (tasksmobile) await runTasksMobile(cdp, url);
+    if (opscenter) await runOpsCenter(cdp, url);
     if (locale) await runLocale(cdp, url);
     if (rowpair) await runRowPair(cdp, url);
     if (errtext) await runErrorText(cdp, url);
@@ -7669,6 +7698,202 @@ async function runSettingsMobile(cdp, url) {
  * 移动端群任务（--only=tasksmobile）：390 宽下看板行与详情弹窗的布局。
  * 行为（实时同步、筛选、详情内容）由 --only=tasksrt 覆盖，这里只量移动端视口。
  */
+/**
+ * 统一后台任务中心（`TaskCenter.vue`）的运行时判据。
+ *
+ * 负责人 2026-10-23 的原话里有三件**只有运行时量得到**的事：
+ *   ① "已经完成的在这个列表里应该是不展示" —— 读模型那侧有单测，但"store → 列表 DOM"
+ *      这一根接线只有挂起来才量得到（逻辑全绿而没人接上 = 功能为零）；
+ *   ② "百分之百没完成 / 接收中的都可以取消" —— 每一行到底有没有长出那颗按钮；
+ *   ③ "右下角那个胶囊一拨就可以往四个角移动" —— 这是**指针位移阈值**驱动的行为，
+ *      DOM 上派发事件量不到（不经命中测试、也不产生真的 pointer 捕获），
+ *      所以这里用 `Input.dispatchMouseEvent` 按住—移动—松手走一遍。
+ *
+ * ⚠️ 与所有其它段同一条边界：这是浏览器输入管线里的一次真拖动，
+ * **不等于** WKWebView / WebView2 里的手感（那一半归 Smoke-11 人工）。
+ */
+async function runOpsCenter(cdp, url) {
+  await cdp.send("Emulation.setDeviceMetricsOverride", {
+    width: 1280, height: 800, deviceScaleFactor: 1, mobile: false,
+  });
+  try {
+    await cdp.send("Page.navigate", { url });
+    await sleep(3_000);
+    await cdp.eval(PAGE_FIXTURE);
+    const mounted = await cdp.eval(
+      "window.__probe.install('/src/components/TaskCenter.vue', '', '')",
+    );
+    check("任务中心：组件在真实 DOM 里挂起来了", !!mounted && mounted.ok === true,
+      "install ok", JSON.stringify(mounted));
+
+    // 种四份真值：五种任务各一条 + 一条 done 终态（它**不该**出现在列表里）。
+    // 标题用文件名与正文（与语言无关），判据按这些字符串认行，不认按 locale 拼出来的动作名。
+    const seeded = await cdp.eval(`(async () => {
+      const S = await import('/src/stores/useChatStore.ts');
+      const chat = S.useChatStore();
+      chat.transfers = [
+        { id: 't-send', peer_id: 'p1', name: '设计稿.zip', size: 1000, direction: 'send',
+          status: 'active', path: null, progress: 0.4, blocked_reason: null, created_at: 5 },
+        { id: 't-sent', peer_id: 'p1', name: '会议记录.md', size: 100, direction: 'send',
+          status: 'sent', path: null, progress: 1, blocked_reason: null, created_at: 6 },
+        { id: 't-recv', peer_id: 'p1', name: '照片.jpg', size: 500, direction: 'receive',
+          status: 'active', path: null, progress: 0.6, blocked_reason: null, created_at: 7 },
+        { id: 't-done', peer_id: 'p1', name: '已完成.txt', size: 10, direction: 'send',
+          status: 'done', path: null, progress: 1, blocked_reason: null, created_at: 8 },
+      ];
+      chat.contentTransfers = [{
+        cid: 'a'.repeat(64), peerId: 'p1', groupId: null, name: 'a'.repeat(64), size: 200,
+        direction: 'receive', status: 'incomplete', received: 0, attempts: 2,
+        nextAttemptAt: 0, lastError: null, path: null, createdAt: 3, updatedAt: 3,
+      }];
+      chat.messageOps = [{ msg_id: 'm1', kind: 'text', peer_id: 'p1', group_id: null,
+        waiting_for: 1, created_at: 9, preview: '在吗', peer_offline: true }];
+      chat.groupHistorySync = { g1: { group_id: 'g1', source: 'p1', synced: 30, total: 100,
+        phase: 'running' } };
+      const t = window.__probe.vue;
+      await t.nextTick(); await t.nextTick();
+      return { ops: chat.operations.length, ledger: chat.transfers.length };
+    })()`);
+    check("任务中心：四份真值汇成 6 件未完成任务（done 那条被排除在列之外）",
+      seeded && seeded.ops === 6 && seeded.ledger === 4,
+      "ops=6 / ledger=4", JSON.stringify(seeded));
+
+    const READ = `(() => {
+      const outside = Array.from(document.querySelectorAll('button'))
+        .filter((b) => !b.closest('[role="dialog"]'));
+      const pill = outside.length === 1 ? outside[0] : null;
+      const box = pill ? pill.getBoundingClientRect() : null;
+      const dialog = document.querySelector('[role="dialog"]');
+      const rows = dialog ? Array.from(dialog.querySelectorAll('li')).map((li) => ({
+        title: String((li.querySelector('span') || {}).textContent || '').trim(),
+        buttons: li.querySelectorAll('button').length,
+      })) : [];
+      return {
+        pillButtons: outside.length,
+        pill: box ? { left: Math.round(box.left), top: Math.round(box.top),
+          right: Math.round(box.right), bottom: Math.round(box.bottom) } : null,
+        dialog: !!dialog,
+        rows: rows,
+        corner: localStorage.getItem('taskCenter.corner'),
+        vw: window.innerWidth, vh: window.innerHeight,
+        scrollWidth: document.documentElement.scrollWidth,
+      };
+    })()`;
+    const read = () => cdp.eval(READ);
+
+    // 起跑前把这条键清掉：这一段的头两格判的是"没写过位置时停在右下"，
+    // profile 是每次 mkdtemp 新建的、正常不会留东西，但**同一趟里**这一段被跑第二遍
+    // （--only=opscenter 复跑 / 将来把它挂进别的组合）时，上一遍写的 'br'/'tl' 会让那条
+    // `corner === null` 变成掷硬币。清一次是免费的确定性。
+    await cdp.eval("localStorage.removeItem('taskCenter.corner')");
+    const first = await read();
+    check("药丸渲染出来了，且它是此刻页面里唯一一颗非弹窗按钮（入口接上了）",
+      first.pillButtons === 1 && !!first.pill,
+      "1 颗", JSON.stringify({ pillButtons: first.pillButtons, pill: first.pill }));
+    check("默认停在右下角（没写过位置时与改动前那颗同一位置）",
+      !!first.pill && first.pill.right > first.vw / 2 && first.pill.bottom > first.vh / 2
+        && first.vw - first.pill.right <= 20 && first.corner === null,
+      "贴右边缘、右下象限、localStorage 还没写过",
+      JSON.stringify({ pill: first.pill, vw: first.vw, vh: first.vh, corner: first.corner }));
+
+    // ① 纯点击（指针不位移）必须打开面板 —— 拖动阈值如果把点按吞掉，这一格当场红。
+    await cdp.click(first.pill.left + 40, first.pill.top + 12);
+    const opened = await read();
+    check("点一下（不拖动）打开面板，列表行数等于读模型的 6 行",
+      opened.dialog === true && opened.rows.length === 6,
+      "dialog + 6 行", JSON.stringify({ dialog: opened.dialog, rows: opened.rows.length }));
+    const byTitle = (title) => opened.rows.find((r) => r.title === title);
+    const recv = byTitle('照片.jpg');
+    const sent = byTitle('会议记录.md');
+    const msg = byTitle('在吗');
+    check("接收中的行有按钮（负责人：接受中没有完成的都是可以取消的）",
+      !!recv && recv.buttons >= 1, "≥1", JSON.stringify(recv));
+    check("100% 但未终态（sent）的行有按钮（负责人：百分之百没完成的也可以取消）",
+      !!sent && sent.buttons >= 1, "≥1", JSON.stringify(sent));
+    check("消息行只给「今天真能动的」按钮（取消在 B4，所以这一行是 1 颗=去会话）",
+      !!msg && msg.buttons === 1, "1", JSON.stringify(msg));
+    check("已完成那条不在列表里（DOM 与读模型同一口径）",
+      opened.rows.some((r) => r.title === '已完成.txt') === false,
+      "不含 已完成.txt", JSON.stringify(opened.rows.map((r) => r.title)));
+
+    // 关掉面板再拖。这里**不用 Esc**：Esc 要焦点已经落在弹窗里才有作用点，
+    // 而这一段刚才是"真点击坐标"打开的，焦点落点不该被本段当成前提来依赖
+    // （焦点那条出口另有 `--only=overlay` 那 32 条守着）。点卡片外的遮罩是 Reka 的
+    // outside-pointerdown 那条路，与用户"点旁边关掉"是同一件事。
+    // ⚠️ 这一格必须先红再绿：遮罩没关掉时，下面那次拖动的按下会打在**遮罩**上
+    //（遮罩 z-64 在药丸 z-40 之上），于是 corner 永远是 null —— 第一版就是这么红的，
+    // 那不是拖动坏了，是这一段的前置没成立。
+    const closePanel = async () => {
+      await cdp.click(60, 400);
+      await sleep(600);
+      return read();
+    };
+    const closed = await closePanel();
+    check("对照前置：点卡片外能把面板关掉（否则拖动是打在遮罩上，读数不可信）",
+      closed.dialog === false && closed.pillButtons === 1,
+      "dialog=false / 1 颗", JSON.stringify({ dialog: closed.dialog, pillButtons: closed.pillButtons }));
+
+    // ② 真的按住拖到左上象限 ⇒ 吸附左上角 + 位置写进 localStorage + **不把面板点开**。
+    const from = { x: closed.pill.left + 40, y: closed.pill.top + 12 };
+    await cdp.drag(from.x, from.y, 120, 120);
+    const moved = await read();
+    check("真拖动之后药丸吸到左上角（哪一角，不是像素）",
+      !!moved.pill && moved.pill.left <= 20 && moved.pill.top <= 140
+        && moved.pill.left < moved.vw / 2 && moved.pill.top < moved.vh / 2,
+      "left≤20 且落在左上象限", JSON.stringify(moved.pill));
+    check("拖动把那一角写进了 localStorage（重启还在：挡住输入区的位置每次都同一处）",
+      moved.corner === "tl", "tl", JSON.stringify({ corner: moved.corner }));
+    check("拖完没有顺手把面板点开（点按与拖动必须分开）",
+      moved.dialog === false, "dialog=false", JSON.stringify({ dialog: moved.dialog }));
+
+    // ③ 拖完还要点得开：`suppressClick` 只许吞掉这一次，不许常驻。
+    await cdp.click(moved.pill.left + 40, moved.pill.top + 12);
+    const reopened = await read();
+    check("拖完之后仍然一点就开（吞点击只吞拖动那一下）",
+      reopened.dialog === true, "dialog=true", JSON.stringify({ dialog: reopened.dialog }));
+
+    // ④ 移动端 390 宽：药丸与列表都不许把页面撑出横向滚动。
+    await cdp.send("Emulation.setDeviceMetricsOverride", {
+      width: 390, height: 844, deviceScaleFactor: 2, mobile: true,
+    });
+    await sleep(400);
+    const narrow = await read();
+    check("390 宽：页面没有横向溢出（药丸 max-w 兜住了）",
+      narrow.scrollWidth <= 390, "scrollWidth ≤ 390",
+      JSON.stringify({ scrollWidth: narrow.scrollWidth }));
+    check("390 宽：药丸仍完整落在视口内（拖过之后也不会跑到屏外）",
+      !!narrow.pill && narrow.pill.left >= 0 && narrow.pill.right <= 390
+        && narrow.pill.top >= 0 && narrow.pill.bottom <= 844,
+      "在视口内", JSON.stringify(narrow.pill));
+
+    // 反面对照（就住在这一段里）：再往**对角**拖一次 —— 判据必须跟着换角。
+    // 为什么这一格值得常驻：上面"吸到左上角"那两条如果写成恒真（比如吸附常数写死、
+    // 或位置类名根本没跟着 corner 走），单看一次拖动是照不出来的；来回各拖一次，
+    // "算不出新角"与"算出来但不接"两种坏法都会在其中一格当场红。
+    await cdp.send("Emulation.setDeviceMetricsOverride", {
+      width: 1280, height: 800, deviceScaleFactor: 1, mobile: false,
+    });
+    await sleep(400);
+    // 上一格是"点开"，这一格要的是"在关着的面板上再拖一次" ⇒ 先关掉再读。
+    // 不关掉就按：遮罩（z-64）盖在药丸（z-40）之上，按下打在遮罩上 ⇒ 面板关掉而拖动没发生，
+    // 读数会像"吸附坏了"（第一趟实测就是这么红的）。
+    const back = await closePanel();
+    check("对照前置：对角拖动前面板确实已经关掉（否则按下落在遮罩上，量不到拖动）",
+      back.dialog === false && !!back.pill,
+      "dialog=false 且药丸可读", JSON.stringify({ dialog: back.dialog, pill: back.pill }));
+    const again = back.pill
+      ? (await cdp.drag(back.pill.left + 40, back.pill.top + 12, 1150, 770), await read())
+      : { pill: null, corner: null, dialog: true };
+    check("对照：往对角再拖一次，药丸真的换到了右下（不是只会去一个角）",
+      !!again.pill && again.corner === "br" && again.vw - again.pill.right <= 20
+        && again.pill.bottom > again.vh / 2,
+      "corner=br 且贴右边缘、落在下半屏",
+      JSON.stringify({ pill: again.pill, corner: again.corner, vh: again.vh }));
+  } finally {
+    await cdp.send("Emulation.clearDeviceMetricsOverride").catch(() => {});
+  }
+}
+
 async function runTasksMobile(cdp, url) {
   await cdp.send("Emulation.setDeviceMetricsOverride", {
     width: 390, height: 844, deviceScaleFactor: 2, mobile: true,
