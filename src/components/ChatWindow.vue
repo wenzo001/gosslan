@@ -4,6 +4,7 @@ import Spinner from "@/components/ui/Spinner.vue";
 import { safeStorageBackend } from "../utils/safeStorage.ts";
 import { computed, nextTick, onBeforeUnmount, onMounted, onScopeDispose, ref, watch } from "vue";
 import { progressAdvanced, progressHasStalled } from "@/utils/transferProgressWatch";
+import { shouldRestoreScroll, type SavedScroll } from "@/utils/scrollRestore";
 import { useRouter } from "vue-router";
 import { useEventListener } from "@vueuse/core";
 import { api } from "@/api";
@@ -73,21 +74,36 @@ const listRef = ref<InstanceType<typeof VirtualList> | null>(null);
  * 从设置/资料覆盖层返回。不写进 store —— 它是纯视图状态，重启后群消息位置没有意义。
  * 保存像素而不是消息 id：用户离开时看到的就是这条像素线，回来落在同一处最直观；
  * 缓存上限与消息缓存同量级（50 个会话），不会无界增长。
+ *
+ * 用户 2026-10-23 补的三条口径（缺一条都会变成"回来位置不对"）：
+ * ① **必须在离开后 3 分钟内回来**才恢复原位；超过就贴底 —— 隔了很久回来还停在一屏旧内容上，
+ *    用户还得自己往下滑。3 分钟是拍板值（点进资料/成员页看一眼再回来 10 秒级，够兜住
+ *    "顺手回了别的消息又切回来"）；
+ * ② **来新消息（未读跳转）就贴底**，位置让给未读；
+ * ③ 离开时**本来就在底部** ⇒ 回来也贴底（哪怕只离开 1 秒）：底部是"看最新"的意图，
+ *    不是某个像素位置。
  */
-const scrollPositions = new Map<string, number>();
+const scrollPositions = new Map<string, SavedScroll>();
 const SCROLL_POSITION_MAX = 50;
 const restoreScrollTop = ref<number | null>(null);
 
 function saveScrollPosition(convId: string | null | undefined) {
   if (!convId) return;
-  scrollPositions.set(convId, listRef.value?.getScrollTop() ?? 0);
+  scrollPositions.set(convId, {
+    top: listRef.value?.getScrollTop() ?? 0,
+    at: Date.now(),
+    atBottom: nearBottom.value,
+  });
   trimOldest(scrollPositions, SCROLL_POSITION_MAX);
 }
 function restoreScrollFor(convId: string | null | undefined) {
   const saved = convId ? scrollPositions.get(convId) : undefined;
   // 有未读跳转时以未读为准（未读是用户最需要看到的位置）。
   const unreadWins = !!chat.unreadJump && chat.unreadJump.convId === convId;
-  restoreScrollTop.value = unreadWins ? null : (saved ?? null);
+  // 三条口径（过期 / 未读 / 离开时在底部）都在 `utils/scrollRestore` 里，那份带单测。
+  restoreScrollTop.value = shouldRestoreScroll(saved, Date.now(), unreadWins)
+    ? (saved?.top ?? null)
+    : null;
 }
 async function applyRestoredScroll() {
   if (restoreScrollTop.value === null) return;
@@ -555,7 +571,16 @@ const taskFocusId = ref<string | null>(null);
  * 群里还没加好友的成员没有好友资料，退到群成员面板（那里有名字/在线/管理入口）。
  */
 function openSenderProfile(senderId: string) {
-  if (!senderId || senderId === app.device?.device_id) return;
+  if (!senderId) return;
+  /**
+   * 点**自己的**头像 → 自己的资料页（用户 2026-10-23）。原来这里直接 return（点了没反应）。
+   * 移动端是下钻路由（`profile` 覆盖层，返回落回聊天）；桌面端的「资料」就是设置第一项，
+   * 走 `settings` 路由（`ResponsiveLayout` 用同一份 SettingsPanel 打开，窗口开不出来时回落应用内）。
+   */
+  if (senderId === app.device?.device_id) {
+    void router.push({ name: app.isMobile ? "profile" : "settings" });
+    return;
+  }
   if (!chat.friends.some((f) => f.device_id === senderId)) {
     if (isGroup.value) membersOpen.value = true;
     return;

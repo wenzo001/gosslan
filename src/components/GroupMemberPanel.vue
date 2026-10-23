@@ -251,7 +251,7 @@ async function confirmAction() {
             :maxlength="MAX_GROUP_NAME_CHARS"
             class="w-full rounded-[var(--gosslan-radius-md)] border border-transparent bg-[var(--gosslan-bg)] px-3 py-2 text-sm outline-none transition focus:border-transparent"
             :placeholder="t('group.namePlaceholder')"
-            @keydown.enter.prevent="ime.enter(saveName)"
+            @keydown.enter="ime.enter(saveName, $event)"
             @compositionstart="ime.onStart"
             @compositionend="ime.onEnd"
           />
@@ -284,8 +284,13 @@ async function confirmAction() {
             rows="3"
             class="w-full resize-none rounded-[var(--gosslan-radius-md)] border border-transparent bg-[var(--gosslan-bg)] px-3 py-2 text-sm outline-none transition focus:border-transparent"
             :placeholder="t('group.announcePlaceholder')"
+            @keydown.meta.enter.prevent="ime.enter(publishAnnouncement, $event)"
+            @keydown.ctrl.enter.prevent="ime.enter(publishAnnouncement, $event)"
+            @compositionstart="ime.onStart"
+            @compositionend="ime.onEnd"
           ></textarea>
-          <div class="mt-2 flex justify-end">
+          <div class="mt-2 flex items-center justify-end gap-2">
+            <span class="text-caption text-[var(--gosslan-text-2)]">{{ t("group.announceEnterHint") }}</span>
             <PrimaryBtn
               :disabled="publishing || !announceDraft.trim()"
               @click="publishAnnouncement"
@@ -296,7 +301,7 @@ async function confirmAction() {
         </template>
         <p
           v-else-if="currentAnnouncement?.text"
-          class="whitespace-pre-wrap px-3 py-2 text-sm text-[var(--gosslan-text)]"
+          class="whitespace-pre-wrap break-words px-3 py-2 text-sm text-[var(--gosslan-text)]"
         >
           {{ currentAnnouncement.text }}
         </p>

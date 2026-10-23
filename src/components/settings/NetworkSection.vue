@@ -516,7 +516,7 @@ async function removeEndpoint(address: string) {
         type="text"
         :placeholder="t('settings.network.routed.placeholder')"
         class="min-w-0 flex-1 rounded-[var(--gosslan-radius-md)] border border-[var(--gosslan-border)] bg-transparent px-3 py-1.5 text-body outline-none placeholder:text-[var(--gosslan-text-2)] focus:border-transparent"
-        @keyup.enter="ime.enter(addEndpoint)"
+        @keyup.enter="ime.enter(addEndpoint, $event)"
         @compositionstart="ime.onStart"
         @compositionend="ime.onEnd"
       />
@@ -553,7 +553,7 @@ async function removeEndpoint(address: string) {
         spellcheck="false"
         :placeholder="t('settings.network.relayServer.serverPlaceholder')"
         class="w-44 min-w-0 rounded-[var(--gosslan-radius-md)] border border-[var(--gosslan-border)] bg-transparent px-3 py-1.5 text-right font-mono text-body outline-none placeholder:text-[var(--gosslan-text-2)] focus:border-transparent"
-        @keyup.enter="ime.enter(saveRelayConfig)"
+        @keyup.enter="ime.enter(saveRelayConfig, $event)"
         @compositionstart="ime.onStart"
         @compositionend="ime.onEnd"
       />
@@ -579,7 +579,7 @@ async function removeEndpoint(address: string) {
           :aria-label="t('settings.network.relayServer.token')"
           :placeholder="t('settings.network.relayServer.tokenPlaceholder')"
           class="w-44 min-w-0 rounded-[var(--gosslan-radius-md)] border border-[var(--gosslan-border)] bg-transparent px-3 py-1.5 text-right font-mono text-body outline-none placeholder:text-[var(--gosslan-text-2)] focus:border-transparent"
-          @keyup.enter="ime.enter(saveRelayConfig)"
+          @keyup.enter="ime.enter(saveRelayConfig, $event)"
           @compositionstart="ime.onStart"
           @compositionend="ime.onEnd"
         />

@@ -978,11 +978,20 @@ html.has-caption {
 }
 
 /* 聊天气泡指向头像的小尖角（微信式）。颜色取气泡自身的 --bubble-bg，
-   子组件给根 div 加 position: relative（bubbleStyle 已设），直接挂类即可。 */
+   子组件给根 div 加 position: relative（bubbleStyle 已设），直接挂类即可。
+   ⚠️ 竖向要**对准头像中心**（用户 2026-10-23：尾巴原来吊在气泡底部，跟头像完全不搭）：
+   头像 `h-9` = 36px ⇒ 中心在行顶下 18px；尖角由 6+6 边框撑出 ⇒ 高 12px、半高 6px；
+   所以气泡顶边就是行顶时 `top = 18 - 6 = 12px`。群聊多出的那行昵称把气泡往下推，
+   推了多少由 `MessageItem` 用 `--bubble-tail-offset` 报进来（那个数住在 messageHeight.NICKNAME_ROW），
+   这里只做减法 —— 别在 CSS 里再抄一份 18/12。
+   ⚠️ 但**不许越过气泡顶边**（用户 2026-10-23：「群聊的气泡小标还是没有修复好」）：
+   群聊那 18px 偏移会把算出来的 12-18 变成 -6px，尖角上半截露在气泡外面，看着像插在
+   昵称行上的一面小旗。`max(0px, …)` 把顶边钉在气泡顶边上（尖角中心 = 气泡顶下 6px），
+   横向仍贴着气泡、指向头像那一侧；单聊没有偏移 ⇒ 仍是 12px，中心正好是头像中心。 */
 .bubble-tail {
   position: absolute;
-  top: auto;
-  bottom: 8px;
+  top: max(0px, calc(12px - var(--bubble-tail-offset, 0px)));
+  bottom: auto;
   width: 0;
   height: 0;
   border-style: solid;
@@ -1000,6 +1009,9 @@ html.has-caption {
   border-width: 6px 6px 6px 0;
   border-color: transparent var(--bubble-bg) transparent transparent;
 }
+/* 尖角那一侧的**上圆角**跟着尖角走 —— 值在 `useMessageDisplay` 的 bubbleStyle/cardStyle 里，
+   不在这里：圆角是**内联样式**（主题预设也要读它），样式表规则压不过内联。
+   群聊里尖角贴在气泡顶边，18px 胶囊在那个高度已收进 18px，直边三角形只碰到弧线一个点。 */
 
 /* ── 长链接的「中间省略」（用户 2026-09-16） ────────────────────────────────
  * 缺陷：正文里的超长链接原先把 `displayUrl()` 截断后的字符串当 DOM 文本渲染，

@@ -30,24 +30,45 @@ import { createBackStack, type HistoryPort } from "@/utils/backStack";
  * 会**自己触发一次 `popstate`**（实测：设置 hash 同时触发 hashchange 与 popstate），
  * 纯逻辑要靠这个信息把那次 pop 吃掉 —— 否则"刚压入的那一层"会被立刻关掉，
  * 表现是弹窗一出现就消失（见 `utils/backStack.ts::HistoryPort.push`）。
+ *
+ * ⚠️ `back` 必须如实回报**退没退**：压入之后如果发生过导航（URL 变了），那条同 URL 条目
+ * 已经变成合法的"后退到上一级"目标，此时**不能**退它 —— 退掉它等于把刚推进的页面撤销。
+ * 这正是用户 2026-10-23 报的「加好友页点发起聊天没反应、人还停在通讯录」：弹窗释放时的
+ * `history.back()` 排在 vue-router 写历史条目之后执行，把聊天页原路退了回去。
  */
+/** 每一层压入成功时的 URL（`layerId → href`）—— 判"这条条目还在不在历史栈尖上"要按层比，
+ *  只记最后一次压入的 URL 会让"弹窗套弹窗、中间发生过导航"的第二层拿不到判据。 */
+const pushedHref = new Map<number, string>();
+
 const browserPort: HistoryPort = {
   push(state: unknown): "pushState" | "hash" | null {
+    const id = (state as { gosslanBackLayer: number }).gosslanBackLayer;
     try {
       history.pushState(state, "", location.href);
+      pushedHref.set(id, location.href);
       return "pushState";
     } catch {
       /* 落到 hash 方案 */
     }
     try {
-      location.hash = `gosslan-layer-${(state as { gosslanBackLayer: number }).gosslanBackLayer}`;
+      location.hash = `gosslan-layer-${id}`;
+      pushedHref.set(id, location.href); // hash 方案下 URL 变了，必须记压入**之后**的那一份
       return "hash";
     } catch {
       return null; // 两个都不行：不压条目，返回键行为退化为"直接退出"（不比现状差）
     }
   },
-  back() {
-    history.back();
+  back(layerId: number): boolean {
+    const href = pushedHref.get(layerId);
+    pushedHref.delete(layerId);
+    // 没记到（不该发生）或压入之后导航过 ⇒ 都不退：宁可多一次返回键，也不能撤销一次跳转。
+    if (href === undefined || location.href !== href) return false;
+    try {
+      history.back();
+      return true;
+    } catch {
+      return false;
+    }
   },
 };
 
