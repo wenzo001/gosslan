@@ -480,6 +480,20 @@ export interface UpdaterInfo {
 }
 
 /** `updater_download` 的进度通道载荷（与 Rust `commands/updater.rs` 同形）。 */
+/**
+ * 更新这件事的可查询状态（B5）。两个窗口共用一份（后端 `UpdaterSession` 是 managed state），
+ * 事件 `updater-status` 是它唯一的推送口径；刚打开的窗口用 `api.updaterStatus()` 补拉。
+ */
+export interface UpdaterStatus {
+  /** `idle | checking | downloading | ready | installing | failed | cancelled`；移动端恒为 `unsupported`。 */
+  phase: string;
+  /** 已收到字节；`total` 缺失时它是唯一读数。 */
+  downloaded: number;
+  total: number | null;
+  version: string | null;
+  error: string | null;
+}
+
 export type UpdaterDownloadEvent =
   | { event: "Started"; data?: { contentLength?: number | null } }
   | { event: "Progress"; data?: { chunkLength?: number } }

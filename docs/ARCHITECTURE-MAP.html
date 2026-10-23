@@ -670,6 +670,7 @@ const CMDS = [
   ["updater_check", "updater", "", "UpdaterInfo|null|err"],
   ["updater_download", "updater", "onEvent channel", "()|err"],
   ["updater_cancel", "updater", "", "()|err"],
+  ["updater_status", "updater", "", "UpdaterStatus"],
   ["updater_install", "updater", "", "()|err"],
   ["updater_close", "updater", "", "()|err"],
   ["add_favorite", "favorites", "msg_id str; conv_id str", "Favorite|err"],
@@ -824,6 +825,7 @@ const SEM = {
   updater_check: { d: "官方 updater 检查 GitHub latest.json，返回版本/说明/发布时间（12s 超时）。", w: "plugins.updater" },
   updater_download: { d: "官方 Update::download；可取消的下载，进度走 Channel（官方实现为内存缓冲）。" },
   updater_cancel: { d: "通知下载 future drop（真停，不是只隐藏 loading）。" },
+  updater_status: { d: "更新这件事的**可查询状态**（B5）：<code>phase ∈ idle|checking|downloading|ready|installing|failed|cancelled</code>（移动端恒 <code>unsupported</code>）+ downloaded / total / version / error。两个窗口共用同一份（`UpdaterSession` 是 managed state），每次跃迁 emit <code>updater-status</code>；刚打开的窗口用这条补拉。任务中心只把 <code>downloading</code> 列成任务（<code>installing</code> 不可取消、<code>ready</code> 是下载完成态）。", w: "读内存（UpdaterSession）" },
   updater_install: { d: "官方 install；macOS/Linux 安装后重启，Windows 交给 NSIS。" },
   updater_close: { d: "用户稍后：释放 Update 与已下载字节。" },
 

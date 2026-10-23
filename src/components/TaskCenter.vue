@@ -95,6 +95,7 @@ function detailText(row: OperationRow): string {
 const busy = ref<string | null>(null);
 const actionLabel: Record<OperationAction, string> = {
   cancel: "task.cancel",
+  cancel_update: "task.cancel",
   retry_content: "task.retryNow",
   sync_history_now: "task.syncNow",
   open_conversation: "task.openChat",
@@ -105,6 +106,7 @@ async function runAction(row: OperationRow, action: OperationAction) {
   busy.value = `${row.id}|${action}`;
   try {
     if (action === "cancel") await cancelFile(row);
+    else if (action === "cancel_update") await cancelUpdate();
     else if (action === "retry_content") await retryContent(row);
     else if (action === "sync_history_now") await chat.syncGroupHistoryNow(row.id.slice("group:".length));
     else if (action === "open_conversation") await openConversation(row);
@@ -146,6 +148,17 @@ async function retryContent(row: OperationRow) {
   const ok = await api.requestContentByCid(src.peerId, src.cid, src.name, src.size);
   app.toast(t(ok ? "msg.refetchRequested" : "msg.refetchUnsupported"), ok ? "info" : "error");
   await chat.refreshTransfers();
+}
+
+/**
+ * 取消更新下载（B5）。与文件取消同一句口径："这一单现在算不算被取消了"由后端状态说话：
+ * 取消之后立刻补拉 `updater_status` —— 事件也会来，但同一帧里补拉一次能让这一行**当场**
+ * 消失/变成已取消，不必等下一帧。
+ */
+async function cancelUpdate() {
+  await api.updaterCancel();
+  await chat.refreshUpdaterStatus();
+  app.toast(t("task.cancelDone"), "success");
 }
 
 /** 跳到那个会话：移动端先翻回聊天那一屏，否则 `openConversation` 换了会话也看不见。 */

@@ -34,7 +34,8 @@ export type OperationKind =
   | "file_receive"
   | "content_fetch"
   | "message_send"
-  | "group_history";
+  | "group_history"
+  | "update_download";
 
 /** 归一后的状态：只有这三种会出现（终态不列，见文件头第 1 条边界）。 */
 export type OperationState = "queued" | "running" | "blocked";
@@ -49,6 +50,7 @@ export type OperationState = "queued" | "running" | "blocked";
  */
 export type OperationAction =
   | "cancel"
+  | "cancel_update"
   | "retry_content"
   | "sync_history_now"
   | "open_conversation";
@@ -79,6 +81,16 @@ export interface OperationSources {
   contentTransfers: readonly ContentTransfer[];
   messageOps?: readonly PendingMessageOpView[];
   groupHistory?: readonly GroupHistoryProgress[];
+  /** 更新下载（B5）：后端 `UpdaterStatus` 的前端视图。只有 `downloading` 会变成任务行。 */
+  updater?: UpdaterStatusView | null;
+}
+
+/** `UpdaterStatus` 的最小形状（只读模型需要的那几格）。 */
+export interface UpdaterStatusView {
+  phase: string;
+  downloaded: number;
+  total: number | null;
+  version: string | null;
 }
 
 /** `db::PendingMessageOp` 的前端视图（Rust 侧不 `rename_all` ⇒ 线上就是 snake_case）。 */
@@ -206,6 +218,28 @@ function messageRow(m: PendingMessageOpView): OperationRow {
   };
 }
 
+/**
+ * 更新下载（B5）。
+ *
+ * 只把 `downloading` 当任务：`ready` 是"下完了"（下载这件事的完成态，安装按钮在设置页里），
+ * `installing` 刻意**不可取消**（字节已交给安装器，取消只会留下半装的现场），
+ * `checking` 是不带字节的短动作、`cancelled`/`failed` 是终态 —— 都不进任务中心。
+ * 这条边界就是 B5 之前任务中心不列更新的原因；现在列的是"正在下"这一段。
+ */
+function updaterRow(u: UpdaterStatusView): OperationRow {
+  const total = u.total ?? 0;
+  return {
+    id: "updater",
+    kind: "update_download",
+    // 新版本号就是这一行的目标（"更新到 5.5.33"比"更新下载"更说明问题）；没有就回落到类型文案。
+    title: u.version ? `v${u.version}` : "",
+    state: "running",
+    progress: total > 0 ? ratio(u.downloaded, total) : null,
+    actions: ["cancel_update"],
+    createdAt: 0,
+  };
+}
+
 function historyRow(h: GroupHistoryProgress): OperationRow {
   const blocked = h.phase === "failed";
   return {
@@ -236,6 +270,7 @@ export function deriveOperations(src: OperationSources): OperationRow[] {
   for (const h of src.groupHistory ?? []) {
     if (h.phase === "running" || h.phase === "failed") rows.push(historyRow(h));
   }
+  if (src.updater && src.updater.phase === "downloading") rows.push(updaterRow(src.updater));
   return rows;
 }
 
@@ -256,6 +291,7 @@ export const FALLBACK_TITLE_KEYS: Record<OperationKind, string> = {
   content_fetch: "task.kind.contentFetch",
   message_send: "task.kind.messageSend",
   group_history: "task.kind.groupHistory",
+  update_download: "task.kind.updateDownload",
 };
 
 /**
@@ -276,6 +312,8 @@ export function runningTextKey(kind: OperationKind): string {
       return "send.receivingPct";
     case "group_history":
       return "task.state.syncing";
+    case "update_download":
+      return "task.state.downloading";
     case "message_send":
       return "task.state.resending";
   }

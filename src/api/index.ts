@@ -6,7 +6,7 @@ import type { AppSettings, CacheInfo, CleanupReport, ContentAudience, ContentTra
 import type { TodoImage } from "@/utils/todos";
 import { chatSearchGroupSchema, groupFileEntrySchema, parseIpcList, shareEntrySchema } from "@/utils/validation";
 import type { PreviewGallery, PreviewImage } from "@/types";
-import type { UpdaterDownloadEvent, UpdaterInfo } from "@/types";
+import type { UpdaterDownloadEvent, UpdaterInfo, UpdaterStatus } from "@/types";
 export const api = {
   /**
    * 监听"**另一个窗口**改了设置"（外观 / 语言 / 资料 / 目录 / 缓存策略）。
@@ -615,6 +615,8 @@ export const api = {
     return invoke<void>("updater_download", { onEvent: channel });
   },
   updaterCancel: () => invoke<void>("updater_cancel"),
+  /** 当前更新状态（B5）：跨窗口共用一份，设置窗重开/任务中心首帧都用它补拉。 */
+  updaterStatus: () => invoke<UpdaterStatus>("updater_status"),
   updaterInstall: () => invoke<void>("updater_install"),
   updaterClose: () => invoke<void>("updater_close"),
   exportExternalLinks: () => invoke<string>("export_external_links"),
@@ -723,6 +725,8 @@ export type EventHandlers = {
   onFileFailed: (d: FileFailedInfo) => void;
   /** 用户手动取消了一条正在发送的文件（transfer_id）。前端据此 mark failed + toast。 */
   onFileCancelled: (transferId: string) => void;
+  /** 更新状态跃迁（B5）：两个窗口都会收到同一份快照。 */
+  onUpdaterStatus: (s: UpdaterStatus) => void;
   /** 某条消息状态变更（msg_id: file-{tid} / gfile-{tid} 等）。前端据此刷新气泡状态。 */
   onMessageStatusChanged: (msgId: string) => void;
   /**
@@ -820,6 +824,7 @@ export async function bindEvents(h: EventHandlers): Promise<UnlistenFn[]> {
     listen<FileDoneInfo>("file-done", (e) => h.onFileDone(e.payload)),
     listen<FileFailedInfo>("file-failed", (e) => h.onFileFailed(e.payload)),
     listen<string>("file-cancelled", (e) => h.onFileCancelled(e.payload)),
+    listen<UpdaterStatus>("updater-status", (e) => h.onUpdaterStatus(e.payload)),
     listen<string>("message-status-changed", (e) => h.onMessageStatusChanged(e.payload)),
     // 后端改了这些消息的状态就发对应事件（sweeper 判失败 / Ack 到达 / 文件被取消）。
     // 分两类，按**事件带不带结论**判：

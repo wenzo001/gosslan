@@ -93,6 +93,7 @@ import type {
   Peer,
   PendingMessageOp,
   PendingRequest,
+  UpdaterStatus,
   ContentTransfer,
   TransferInfo,
 } from "@/types";
@@ -175,6 +176,11 @@ export const useChatStore = defineStore("chat", () => {
    * 那四行种类**永远来自同一份快照**，不会一条是新的、一条是旧的。
    */
   const messageOps = ref<PendingMessageOp[]>([]);
+  /**
+   * 更新下载的可查询状态（B5）。后端是全局 managed state，跨窗口共用；
+   * 事件 `updater-status` 是唯一推送口径，首帧由 `refreshUpdaterStatus()` 补拉。
+   */
+  const updaterStatus = ref<UpdaterStatus | null>(null);
   const messages = ref<Record<string, MessageRecord[]>>({});
   /** 首屏消息读失败：convId → 原始错误。成功后清空；UI 只在列表为空时展示。 */
   const messageLoadErrors = ref<Record<string, string>>({});
@@ -212,6 +218,7 @@ export const useChatStore = defineStore("chat", () => {
         contentTransfers: contentTransfers.value,
         messageOps: messageOps.value,
         groupHistory: Object.values(groupHistorySync.value),
+        updater: updaterStatus.value,
       }),
     ),
   );
@@ -1229,6 +1236,7 @@ export const useChatStore = defineStore("chat", () => {
       refreshConversations(),
       refreshGroups(),
       refreshTransfers(),
+      refreshUpdaterStatus(),
       refreshPending(),
       refreshFriends(),
     ]);
@@ -1245,6 +1253,23 @@ export const useChatStore = defineStore("chat", () => {
     return ids.length > 0 ? ids : EMPTY_STRING_LIST;
   }
   /** 并发触发时只让**最新那次**写回结果（迁入 `refreshGuard`，与上面几个共用同一份实现）。 */
+  /**
+   * 补拉一次更新状态（设置窗重开、任务中心首帧都靠它 —— 事件只在跃迁时发）。
+   *
+   * 走 `refreshGuard`：并发补拉时后发先至的旧快照必须丢掉（与 `refreshPeers` 同一条纪律；
+   * 直写 `x.value = await api.…()` 是那个族里被点过名的形状）。
+   */
+  async function refreshUpdaterStatus() {
+    const tok = refreshGuard.begin("updater");
+    try {
+      const st = await api.updaterStatus();
+      if (!refreshGuard.isCurrent("updater", tok)) return;
+      updaterStatus.value = st;
+    } catch {
+      // 移动端/权限问题：保持原值（任务中心不列它，设置页也不会假装在下载）
+    }
+  }
+
   async function refreshTransfers() {
     const req = refreshGuard.begin("transfers");
     const [list, contents, msgOps] = await Promise.all([
@@ -2855,6 +2880,9 @@ export const useChatStore = defineStore("chat", () => {
         onFileFailed(d);
         void refreshTransfers();
       },
+      onUpdaterStatus: (st) => {
+        updaterStatus.value = st;
+      },
       onFileCancelled: (transferId) => {
         // 终态一律收回「网络停滞」（与 `onFileDone` / `onFileFailed` 同一口径）。
         // 漏这一行的后果不是"多一条提示"，而是 `stalledTransfers` 里那一格**永远不会被删**：
@@ -3096,6 +3124,8 @@ export const useChatStore = defineStore("chat", () => {
     transfers,
     contentTransfers,
     messageOps,
+    updaterStatus,
+    refreshUpdaterStatus,
     operations,
     liveOperationCount,
     messages,

@@ -847,6 +847,7 @@ pub fn run() {
             commands::updater_check,
             commands::updater_download,
             commands::updater_cancel,
+            commands::updater_status,
             commands::updater_install,
             commands::updater_close,
             commands::save_todo_image_bytes,

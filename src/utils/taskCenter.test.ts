@@ -280,3 +280,46 @@ test("countOperations 就是药丸上的数（与列表同源，不另算一份�
   assert.equal(countOperations(rows), rows.length);
   assert.equal(countOperations(rows), 1);
 });
+
+// ---------------- 更新下载（B5：任务中心从这一批起列它） ----------------
+
+test("更新下载只在 downloading 时列出，取消键只在那一格", () => {
+  const base = { downloaded: 40, total: 100, version: "5.5.33" };
+  const rows = deriveOperations({
+    transfers: [],
+    contentTransfers: [],
+    updater: { ...base, phase: "downloading" },
+  });
+  assert.equal(rows.length, 1);
+  const row = rows[0];
+  assert.equal(row.kind, "update_download");
+  assert.equal(row.state, "running");
+  assert.equal(row.progress, 0.4);
+  assert.equal(row.title, "v5.5.33", "目标版本号比「更新下载」更说明问题");
+  assert.deepEqual(row.actions, ["cancel_update"], "正在下载才有取消（install 不可取消）");
+});
+
+test("更新下载的其它相位都不进列表：ready 是完成、installing 不可取消、failed/cancelled 是终态", () => {
+  for (const phase of ["idle", "checking", "ready", "installing", "failed", "cancelled", "unsupported"]) {
+    const rows = deriveOperations({
+      transfers: [],
+      contentTransfers: [],
+      updater: { phase, downloaded: 100, total: 100, version: "5.5.33" },
+    });
+    assert.deepEqual(
+      rows.map((r) => r.kind),
+      [],
+      `${phase} 不该出现在任务中心（只列「正在下」这一段）`,
+    );
+  }
+});
+
+test("更新下载没有 total 时进度是 null，不是 0%", () => {
+  const rows = deriveOperations({
+    transfers: [],
+    contentTransfers: [],
+    updater: { phase: "downloading", downloaded: 2048, total: null, version: null },
+  });
+  assert.equal(rows[0].progress, null);
+  assert.equal(rows[0].title, "", "没有版本号就回落成类型文案（界面用 fallbackTitleKey）");
+});
