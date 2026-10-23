@@ -142,6 +142,9 @@ pub async fn remove_friend(state: State<'_, Arc<AppState>>, peer_id: String) -> 
         let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());
         db::remove_friend(&dbc, &peer_id).map_err(|e| e.to_string())?;
         db::delete_file_outbox_for_peer(&dbc, &peer_id).ok();
+        // 删好友的"不留幽灵"那一族：样式缓存也按 device_id 摘掉（10-23 审计 P2-B）。
+        // 它是缓存，失败不阻断删除。
+        db::forget_chat_peer_style(&dbc, &peer_id).ok();
     }
     // ⚠️ **同时解除内存里的身份绑定**（用户 2026-09-13 真机：不这么做就"必须重启"）。
     // `friends` 表那一行删掉只解除了一条腿；`verify_hello` 还会回落到内存 `peers` 表里

@@ -73,6 +73,11 @@
 - 判定：**真实但低风险**。修法二选一，A4 定：① 删好友时顺带把该 device_id 从 map 摘掉
   （与"删除一致性"那一族同口径，判据已有 `db/cascade_tests` 的家）；② 不修，
   在 INV 里写明它是"设备级偏好缓存，只有恢复默认会清"。
+- **状态（2026-10-23，5.5.35）**：按①修了。`db::forget_chat_peer_style` 是摘这条缓存的唯一入口，
+  `remove_friend` 的 DB 块里调它（解析失败当"没有这一项"——缓存坏了不许让删好友失败）。
+  判据 `removing_a_friend_forgets_its_chat_style`：删掉的那个没了、别人的还在、重复摘/摘不存在
+  的 id 都不报错；同一条用例里另有一句**接线**断言（只写 helper 不接 = 没修）。
+  非空转：把 `map.remove(peer_id)` 改成只读的 `map.get(peer_id)` ⇒ 该用例红（实测）。
 - 确信度：写入/删除点**已证实**（`grep -rn '"chat_peer_styles"' src-tauri/src`）；
   "删好友不摘"是 absence 结论，靠上面这条 grep 的全集支撑。
 

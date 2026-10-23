@@ -124,6 +124,7 @@ db::cascade_tests::expired_rows_carry_peer_and_age_for_group_and_file_queues
 db::cascade_tests::fill_message_sha256_backfills_once_and_keeps_other_fields
 db::cascade_tests::fill_message_size_backfills_the_actual_size_once
 db::cascade_tests::migration_v7_purges_legacy_group_orphans_only
+db::cascade_tests::removing_a_friend_forgets_its_chat_style
 db::cascade_tests::search_history_skips_orphan_conversations
 db::cascade_tests::terminal_status_writes_have_one_home
 db::cascade_tests::transfer_progress_upsert_never_erases_the_known_path

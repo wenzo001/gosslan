@@ -1030,4 +1030,20 @@ CASES: list[Case] = [
         expect_fail_hint="重复取消同一格必须返回 false",
         tags=["rust", "db", "group-file", "terminal-state", "new-guards"],
     ),
+    Case(
+        name="删好友只读不摘样式缓存 ⇒ 删掉的人还留在表里",
+        why="`settings.chat_peer_styles` 是设备级缓存，唯一的删除出口以前是「恢复默认设置」。"
+        "\n     删好友那条路不摘的话，删掉的人会永久留一行 JSON，下次同设备再加回来还继承上次配色。"
+        "\n     注入方式：把 `map.remove(peer_id)` 换成只读的 `map.get(peer_id)`"
+        "（编译照过、函数照返回，只有「删掉的那台设备不许留样式」那一格会红）。",
+        file=TAURI / "src" / "db" / "settings.rs",
+        injections=[(
+            "    if map.remove(peer_id).is_none() {",
+            "    if map.get(peer_id).is_none() {",
+        )],
+        cmd=cargo("test", "--lib", "removing_a_friend_forgets_its_chat_style"),
+        cwd=TAURI,
+        expect_fail_hint="删掉的那台设备不许留样式",
+        tags=["rust", "db", "friends", "new-guards"],
+    ),
 ]

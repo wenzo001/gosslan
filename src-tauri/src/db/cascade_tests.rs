@@ -1110,3 +1110,36 @@ fn cancelling_an_already_delivered_message_reports_it_and_changes_nothing() {
         super::MessageCancelOutcome::NotFound
     );
 }
+
+/// 删好友要把他的聊天样式缓存也摘掉（10-23 审计 P2-B）。
+///
+/// 那张表（`settings.chat_peer_styles`）是设备级缓存：写入只在对方带 style 的消息到达时发生，
+/// 而删除以前**只有**「恢复默认设置」一处 —— 删掉的好友会留一行 JSON 到进程退出之后，
+/// 下次同设备再加回来还会继承上次的配色。这一格钉两件事：删掉的那个没了、别人的还在。
+#[test]
+fn removing_a_friend_forgets_its_chat_style() {
+    let conn = fresh_db();
+    super::set_setting(
+        &conn,
+        "chat_peer_styles",
+        r#"{"p1":{"font":"x"},"p2":{"font":"y"}}"#,
+    )
+    .unwrap();
+    super::forget_chat_peer_style(&conn, "p1").unwrap();
+    let raw = super::get_setting(&conn, "chat_peer_styles").expect("键还在（还有 p2）");
+    let v: serde_json::Value = serde_json::from_str(&raw).unwrap();
+    assert!(v.get("p1").is_none(), "删掉的那台设备不许留样式");
+    assert!(v.get("p2").is_some(), "别人的样式不许被动");
+    // 幂等：再摘一次、以及摘一个表里没有的 id，都不许报错、也不许把表写坏
+    super::forget_chat_peer_style(&conn, "p1").unwrap();
+    super::forget_chat_peer_style(&conn, "nobody").unwrap();
+    let again: serde_json::Value =
+        serde_json::from_str(&super::get_setting(&conn, "chat_peer_styles").unwrap()).unwrap();
+    assert!(again.get("p2").is_some());
+    // 接线：光有这个 helper 不够，删好友那条路必须真的调它（否则等于没修）
+    let friends = include_str!("../commands/friends.rs");
+    assert!(
+        friends.contains("forget_chat_peer_style("),
+        "删好友必须调用 forget_chat_peer_style：只写 helper 不接等于没修"
+    );
+}

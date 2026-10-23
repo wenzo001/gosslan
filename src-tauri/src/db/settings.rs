@@ -82,6 +82,31 @@ pub fn get_setting_checked(conn: &Connection, key: &str) -> Result<Option<String
     Ok(value)
 }
 
+/// 删好友时把这一台设备的聊天样式从 `chat_peer_styles` 里摘掉（10-23 审计 P2-B）。
+///
+/// 那张表是"设备级偏好缓存"：写入只在对方带 style 的消息到达时发生（`handle_messaging`），
+/// 而删除以前**只有**"恢复默认设置"一处 —— 删掉的好友会以一行 JSON 永久留在库里，
+/// 下次同名/同设备再加回来时还会继承他上次的样式（用户看到的是"新加的人怎么是上次那个配色"）。
+///
+/// 解析失败当"没有这一项"：这张表是缓存，坏掉的 JSON 不该让**删好友**失败。
+/// 不存在这个键、或表里没有这个人时是 no-op（不写回，避免无意义地脏化设置）。
+pub fn forget_chat_peer_style(conn: &Connection, peer_id: &str) -> Result<()> {
+    let Some(raw) = get_setting(conn, "chat_peer_styles") else {
+        return Ok(());
+    };
+    let Ok(serde_json::Value::Object(mut map)) = serde_json::from_str(&raw) else {
+        return Ok(());
+    };
+    if map.remove(peer_id).is_none() {
+        return Ok(());
+    }
+    set_setting(
+        conn,
+        "chat_peer_styles",
+        &serde_json::Value::Object(map).to_string(),
+    )
+}
+
 pub fn set_setting(conn: &Connection, key: &str, value: &str) -> Result<()> {
     conn.execute(
         "INSERT INTO settings(key, value) VALUES(?1, ?2)
