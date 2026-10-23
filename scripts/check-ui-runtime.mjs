@@ -5214,6 +5214,134 @@ async function runRowPair(cdp, url) {
     typeof reverseBelow === "number" && reverseBelow > 12,
     "读到 > 12px", JSON.stringify({ reverseBelow }));
 
+  // ============ 主题矩阵：7 套气泡配色 × 明暗（渲染端真取色） ============
+  // 需求：「至少验证现有浅色、深色，以及蓝/绿/紫/粉/灰…」—— 这里不看源码常量，
+  // 而是把 UI 真的切到每一套，读**计算色**再算 WCAG 对比度。纯函数那一半在
+  // `chatStyle.test.ts`（7 主题 × 2 档）；本段补的是"DOM 真的用上了这套色"。
+  const rgbOf = (s) => {
+    const m = /rgba?\(([^)]+)\)/.exec(s || "");
+    if (!m) return null;
+    const p = m[1].split(",").map((x) => Number(x.trim()));
+    return [p[0], p[1], p[2]];
+  };
+  const lum = ([r, g, b]) => {
+    const f = (v) => {
+      const x = v / 255;
+      return x <= 0.03928 ? x / 12.92 : ((x + 0.055) / 1.055) ** 2.4;
+    };
+    return 0.2126 * f(r) + 0.7152 * f(g) + 0.0722 * f(b);
+  };
+  const contrast = (a, b) => {
+    const [x, y] = [lum(a), lum(b)].sort((m, n) => n - m);
+    return +((x + 0.05) / (y + 0.05)).toFixed(2);
+  };
+  const setTheme = (preset, dark) => cdp.eval(`(async () => {
+    const piniaUrl = performance.getEntriesByType('resource')
+      .map((e) => e.name || '').find((u) => u.includes('/node_modules/.vite/deps/pinia.js?v='));
+    if (!piniaUrl || !window.__pinia) return 'no-pinia';
+    const P = await import(piniaUrl);
+    const A = await import('/src/stores/useAppStore.ts');
+    P.setActivePinia(window.__pinia);
+    const s = A.useAppStore();
+    s.chatStyle = { ...s.chatStyle, preset: ${JSON.stringify(preset)} };
+    // ⚠️ dark 是 computed（由 appearance + 系统偏好解析而来）—— 直接写 s.dark = true
+    // **不会报错也不会生效**，第一个版本的矩阵因此 14 格读数全等却全绿。真正的写入口是 appearance。
+    s.appearance = ${dark ? "'dark'" : "'light'"};
+    document.documentElement.classList.toggle('dark', ${dark ? "true" : "false"});
+    return { ok: 'ok', dark: s.dark, preset: s.chatStyle.preset };
+  })()`);
+  const readBubbleColors = () => cdp.eval(`(() => {
+    const el = document.querySelector('.gosslan-bubble-text');
+    if (!el) return null;
+    const cs = getComputedStyle(el);
+    const probe = document.createElement('span');
+    probe.style.color = 'var(--gosslan-chat)';
+    document.body.appendChild(probe);
+    const canvas = getComputedStyle(probe).color;
+    probe.remove();
+    return {
+      bg: cs.backgroundColor, fg: cs.color, canvas,
+      radius: parseFloat(cs.borderTopLeftRadius),
+      width: +el.getBoundingClientRect().width.toFixed(1),
+    };
+  })()`);
+  const wasDark = await cdp.eval("document.documentElement.classList.contains('dark')");
+  const PRESETS = ["theme", "classic", "mint", "amber", "celadon", "rose", "slate"];
+  const combos = [];
+  for (const preset of PRESETS) for (const dark of [false, true]) combos.push({ preset, dark });
+
+  // ⚠️ 不能每格都重新 install：install 失败时旧 DOM 还在，14 行读数会**完全一样**却全绿。
+  // 这里改成「挂一次，改 store，读 14 次」—— 顺带量的就是"换主题后气泡真的重渲染了"。
+  const colorsFor = async (senderId) => {
+    const okMount = await mount(FAR, false, "text", null, senderId);
+    check("主题矩阵：挂出 " + senderId + " 的那条", okMount, "install 成功", String(okMount));
+    const out = [];
+    for (const c of combos) {
+      const st = await setTheme(c.preset, c.dark);
+      check("主题矩阵：切换生效 " + c.preset + (c.dark ? "/暗" : "/亮"),
+        !!st && st.ok === "ok" && st.dark === c.dark && st.preset === c.preset,
+        "store 解析出预期档位", JSON.stringify(st));
+      await sleep(140);
+      const col = await readBubbleColors();
+      out.push({ ...c, ...(col || {}) });
+    }
+    return out;
+  };
+  const mineRows = await colorsFor("dev-me");
+  const otherRows = await colorsFor("peer-a");
+
+  const matrix = [];
+  for (let i = 0; i < combos.length; i++) {
+    const other = otherRows[i];
+    const mineC = mineRows[i];
+    const oBg = rgbOf(other && other.bg);
+    const oFg = rgbOf(other && other.fg);
+    const mBg = rgbOf(mineC && mineC.bg);
+    const mFg = rgbOf(mineC && mineC.fg);
+    const canvas = other && rgbOf(other.canvas);
+    const row = {
+      preset: other.preset,
+      dark: other.dark,
+      other: other && { bg: other.bg, fg: other.fg },
+      mine: mineC && { bg: mineC.bg, fg: mineC.fg },
+      canvas: other && other.canvas,
+      otherContrast: oBg && oFg ? contrast(oFg, oBg) : null,
+      mineContrast: mBg && mFg ? contrast(mFg, mBg) : null,
+      otherVsCanvas: oBg && canvas ? contrast(oBg, canvas) : null,
+      radius: other && other.radius,
+    };
+    matrix.push(row);
+    const tag = "主题 " + row.preset + (row.dark ? "/暗" : "/亮");
+    check(tag + "：对方气泡 正文/底色 对比度 >= 4.5",
+      row.otherContrast !== null && row.otherContrast >= 4.5, ">= 4.5", JSON.stringify(row));
+    check(tag + "：自己气泡 正文/底色 对比度 >= 4.5",
+      row.mineContrast !== null && row.mineContrast >= 4.5, ">= 4.5", JSON.stringify(row));
+    check(tag + "：发送方与接收方底色不同（不靠阴影区分归属）",
+      !!row.other && !!row.mine && row.other.bg !== row.mine.bg,
+      "两侧底色不同", JSON.stringify({ other: row.other && row.other.bg, mine: row.mine && row.mine.bg }));
+    check(tag + "：对方气泡与聊天画布可分辨（>= 1.1）",
+      row.otherVsCanvas !== null && row.otherVsCanvas >= 1.1, ">= 1.1",
+      JSON.stringify({ otherVsCanvas: row.otherVsCanvas, canvas: row.canvas }));
+    check(tag + "：气泡圆角落在 17~19px",
+      row.radius !== null && row.radius >= 17 && row.radius <= 19, "17~19", JSON.stringify({ radius: row.radius }));
+  }
+  const distinctOther = new Set(matrix.map((r) => r.other && r.other.bg)).size;
+  const distinctMine = new Set(matrix.map((r) => r.mine && r.mine.bg)).size;
+  console.log("  · 主题矩阵（" + matrix.length + " 格 / 对方底色 " + distinctOther
+    + " 种 / 自己底色 " + distinctMine + " 种）：" + JSON.stringify(matrix.map((r) => ({
+      p: r.preset, d: r.dark, oc: r.otherContrast, mc: r.mineContrast, vc: r.otherVsCanvas, rad: r.radius,
+    }))));
+  // ★ 非空转：如果 store 切换没生效，上面 14 格会**全等**——那是最典型的假绿。
+  // 7 套预设至少 4 种不同底色、明暗两档必须让**自己的**底色不同（暗色实底 vs 亮色浅底）。
+  check("主题矩阵非空转：7 套预设至少落在 4 种不同的自己气泡底色上",
+    distinctMine >= 4, ">= 4 种", JSON.stringify({ distinctMine, distinctOther }));
+  const lightMine = matrix.find((r) => !r.dark && r.preset === "classic");
+  const darkMine = matrix.find((r) => r.dark && r.preset === "classic");
+  check("主题矩阵非空转：同一套预设的亮/暗两档气泡底色不同",
+    !!lightMine && !!darkMine && lightMine.mine.bg !== darkMine.mine.bg,
+    "亮暗不同色", JSON.stringify({ light: lightMine && lightMine.mine.bg, dark: darkMine && darkMine.mine.bg }));
+  await setTheme("theme", wasDark === true);
+
   // 最后一挂是合并转发卡片那条 ⇒ 这张帧是"卡片 + 尖角"的形状。
   if (SHOT_PATH) {
     const shot = await cdp.send("Page.captureScreenshot", { format: "png" });
