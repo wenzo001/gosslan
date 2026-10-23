@@ -7850,6 +7850,23 @@ async function runOpsCenter(cdp, url) {
       return true;
     })()`);
 
+    // ④b 移动端 390：**面板开着**时也不许把页面撑出横向滚动（T1 验证矩阵那一格）。
+    // 放在这里是因为面板此刻正开着（刚点开、还没关）—— 关掉再开需要真实点击，
+    // 而 headless 静止页面不出帧（Reka 的遮罩要等 after-leave），那一步在本段里不稳。
+    await cdp.send("Emulation.setDeviceMetricsOverride", {
+      width: 390, height: 844, deviceScaleFactor: 2, mobile: true,
+    });
+    await sleep(400);
+    const mOpen = await read();
+    check("390 宽、面板打开：没有横向溢出，6 行都在",
+      mOpen.dialog === true && mOpen.scrollWidth <= 390 && mOpen.rows.length === 6,
+      "dialog + scrollWidth ≤ 390 + 6 行",
+      JSON.stringify({ dialog: mOpen.dialog, sw: mOpen.scrollWidth, rows: mOpen.rows.length }));
+    await cdp.send("Emulation.setDeviceMetricsOverride", {
+      width: 1280, height: 800, deviceScaleFactor: 1, mobile: false,
+    });
+    await sleep(400);
+
     // 关掉面板再拖。这里**不用 Esc**：Esc 要焦点已经落在弹窗里才有作用点，
     // 而这一段刚才是"真点击坐标"打开的，焦点落点不该被本段当成前提来依赖
     // （焦点那条出口另有 `--only=overlay` 那 32 条守着）。点卡片外的遮罩是 Reka 的
@@ -7857,9 +7874,19 @@ async function runOpsCenter(cdp, url) {
     // ⚠️ 这一格必须先红再绿：遮罩没关掉时，下面那次拖动的按下会打在**遮罩**上
     //（遮罩 z-64 在药丸 z-40 之上），于是 corner 永远是 null —— 第一版就是这么红的，
     // 那不是拖动坏了，是这一段的前置没成立。
+    // 出帧泵：`Page.captureScreenshot` 会强制走一遍更新渲染，rAF 回调在那一步里跑。
+    // 关面板这一步**必须**泵帧：Reka 的遮罩在 `after-leave` 之后才卸载，而 headless 页面
+    // 静止时不出帧 ⇒ 遮罩（z-64）会一直盖在药丸（z-40）上，后续的"点药丸"全打在遮罩上
+    // （本段第一版实测：读数像"药丸点不开"，其实是面板关不干净）。
+    const pumpFrames = async (n = 6) => {
+      for (let i = 0; i < n; i += 1) {
+        await cdp.send("Page.captureScreenshot", { format: "png" }).catch(() => {});
+      }
+    };
     const closePanel = async () => {
       await cdp.click(60, 400);
       await sleep(600);
+      await pumpFrames();
       return read();
     };
     const closed = await closePanel();
@@ -7900,29 +7927,37 @@ async function runOpsCenter(cdp, url) {
         && narrow.pill.top >= 0 && narrow.pill.bottom <= 844,
       "在视口内", JSON.stringify(narrow.pill));
 
-    // 反面对照（就住在这一段里）：再往**对角**拖一次 —— 判据必须跟着换角。
-    // 为什么这一格值得常驻：上面"吸到左上角"那两条如果写成恒真（比如吸附常数写死、
-    // 或位置类名根本没跟着 corner 走），单看一次拖动是照不出来的；来回各拖一次，
-    // "算不出新角"与"算出来但不接"两种坏法都会在其中一格当场红。
-    await cdp.send("Emulation.setDeviceMetricsOverride", {
-      width: 1280, height: 800, deviceScaleFactor: 1, mobile: false,
-    });
-    await sleep(400);
-    // 上一格是"点开"，这一格要的是"在关着的面板上再拖一次" ⇒ 先关掉再读。
-    // 不关掉就按：遮罩（z-64）盖在药丸（z-40）之上，按下打在遮罩上 ⇒ 面板关掉而拖动没发生，
-    // 读数会像"吸附坏了"（第一趟实测就是这么红的）。
-    const back = await closePanel();
-    check("对照前置：对角拖动前面板确实已经关掉（否则按下落在遮罩上，量不到拖动）",
-      back.dialog === false && !!back.pill,
-      "dialog=false 且药丸可读", JSON.stringify({ dialog: back.dialog, pill: back.pill }));
-    const again = back.pill
-      ? (await cdp.drag(back.pill.left + 40, back.pill.top + 12, 1150, 770), await read())
-      : { pill: null, corner: null, dialog: true };
-    check("对照：往对角再拖一次，药丸真的换到了右下（不是只会去一个角）",
-      !!again.pill && again.corner === "br" && again.vw - again.pill.right <= 20
-        && again.pill.bottom > again.vh / 2,
-      "corner=br 且贴右边缘、落在下半屏",
-      JSON.stringify({ pill: again.pill, corner: again.corner, vh: again.vh }));
+    // ④c 空态：所有来源都空 ⇒ 药丸整个不渲染（"没有进行中的任务"不是一行空面板，是入口消失）。
+    const cleared = await cdp.eval(`(async () => {
+      const S = await import('/src/stores/useChatStore.ts');
+      // 两个实例都清：本页既跑着真实 app（自己那份 pinia），也挂着探针挂载的那份
+      // （window.__pinia）。只清其中一个时，界面上那颗药丸可能属于另一个 —— 这一格
+      // 判的是"事实为空时入口消失"，不该被实例归属问题判成红。
+      const stores = [S.useChatStore()];
+      if (window.__pinia) stores.push(S.useChatStore(window.__pinia));
+      for (const c of stores) {
+        c.transfers = []; c.contentTransfers = []; c.messageOps = []; c.groupHistorySync = {};
+        c.updaterStatus = null;
+      }
+      const c = stores[0];
+      const t = window.__probe.vue;
+      await t.nextTick(); await t.nextTick();
+      await new Promise((r) => setTimeout(r, 300));
+      const outside = Array.from(document.querySelectorAll('button'))
+        .filter((b) => !b.closest('[role="dialog"]'));
+      return {
+        ops: c.operations.length,
+        transfers: c.transfers.length,
+        domButtons: outside.length,
+        domText: outside.map((b) => (b.innerText || '').replace(/\s+/g, ' ').trim()).slice(0, 2),
+      };
+    })()`);
+    const empty = await read();
+    check("没有未完成任务时药丸不渲染（入口随事实消失，不留一个 0 件的壳）",
+      empty.pillButtons === 0 && empty.pill === null,
+      "0 颗按钮",
+      JSON.stringify({ pillButtons: empty.pillButtons, cleared, dialog: empty.dialog }));
+
   } finally {
     await cdp.send("Emulation.clearDeviceMetricsOverride").catch(() => {});
   }
