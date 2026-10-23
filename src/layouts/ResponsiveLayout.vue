@@ -1000,6 +1000,11 @@ function onResizeEnd() {
           v-else
           class="flex h-full select-none flex-col items-center justify-center gap-3 text-[var(--gosslan-text-2)]"
         >
+          <!-- 品牌（用户 2026-10-23：中文名改「小院儿」，且要在聊天主界面看得见）。
+               只出现在**未选会话**的空态；移动端这块不在列表页，不会挤占头部。 -->
+          <div class="text-base font-semibold tracking-wide text-[var(--gosslan-text)] opacity-85">
+            {{ t("app.name") }}
+          </div>
           <NavIcon v-if="navState === 'contacts'" name="contacts" size-class="h-16 w-16 opacity-25" />
           <NavIcon v-else name="chats" size-class="h-16 w-16 opacity-25" />
           <div class="text-base">

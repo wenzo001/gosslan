@@ -398,28 +398,34 @@ body {
   -webkit-touch-callout: default;
 }
 
-/* ── 触屏：气泡默认**不可选**，长按归"消息菜单"；只有进入「选择文字」模式才可选 ──
+/* ── 触屏：**正文**可原生选字；其余消息内容不可选，长按归自定义消息面板 ──
  *
- * 用户 2026-09-13：「长按气泡时，没选文字和弹菜单有点冲突」。
- * 这是**成熟产品的通行做法**（微信 / Telegram / WhatsApp / iMessage 都是这个模型）：
- *   · 长按消息 = 弹上下文菜单（复制整条 / 引用 / 转发 / 删除…）——菜单永远是主行为；
- *   · "部分选字"是**二级模式**：Telegram 的 Select Text、iMessage 的再长按/双击进入；
- *   微信/WhatsApp 干脆不提供自由选字（"复制"就是整条）。
- * 反过来做（长按=自由选字、菜单让路）必然两边都不灵：手指不可能"按住 500ms 又完全不动"，
- * 而且一有选区，系统就会抢走长按去弹自己的工具条。
+ * 用户 2026-10-23：「移动端必须保留系统原生的选中文字与复制菜单」——长按正文要能进
+ * 系统选区（手柄 + 系统复制菜单），不能再用"整块气泡不可选、只有菜单里的二级入口"那套
+ * （那是 2026-09-13 ~ 2026-10-23 的旧模型，已被本段取代）。
+ *
+ * 边界与右键一致：`[data-msg-col]` 是消息内容列。
+ *   · 正文层 `.gosslan-selectable` ⇒ user-select:text（唯一可原生选字的区域）；
+ *   · 昵称 / 引用块 / 卡片文字 / 气泡内边距 ⇒ none（长按这些非正文区才开 Gosslan 面板）。
+ * 两边同时放开会"长按一次进来两个菜单"（系统选区菜单 + 自定义面板），所以必须成对收放。
  *
  * 桌面（鼠标）没有长按冲突 ⇒ 保持默认可拖选（见上面 `.gosslan-selectable`）。
  * ⚠️ 只写 `pointer: coarse`，不要再加 `position` 之类会与工具类打架的声明
  *   （见 style.css 末尾的级联护栏）。 */
 @media (pointer: coarse) {
-  .gosslan-bubble-text,
-  .gosslan-bubble-text .gosslan-selectable {
+  [data-msg-col] {
     -webkit-user-select: none;
     user-select: none;
   }
-  /* 「选择文字」模式：这一条气泡重新开放原生选择 + 系统复制工具条 */
-  .gosslan-bubble-text.gosslan-selecting,
-  .gosslan-bubble-text.gosslan-selecting .gosslan-selectable {
+  [data-msg-col] .gosslan-selectable {
+    -webkit-user-select: text;
+    user-select: text;
+    -webkit-touch-callout: default;
+  }
+  /* 「选择文字」模式：从非正文区长按打开面板后的「全选」快捷入口；
+     选中范围含引用块/正文，因此整列重新开放（正文本来就已开放）。 */
+  [data-msg-col] .gosslan-selecting,
+  [data-msg-col] .gosslan-selecting .gosslan-selectable {
     -webkit-user-select: text;
     user-select: text;
     -webkit-touch-callout: default;
@@ -984,34 +990,60 @@ html.has-caption {
    所以气泡顶边就是行顶时 `top = 18 - 6 = 12px`。群聊多出的那行昵称把气泡往下推，
    推了多少由 `MessageItem` 用 `--bubble-tail-offset` 报进来（那个数住在 messageHeight.NICKNAME_ROW），
    这里只做减法 —— 别在 CSS 里再抄一份 18/12。
-   ⚠️ 但**不许越过气泡顶边**（用户 2026-10-23：「群聊的气泡小标还是没有修复好」）：
-   群聊那 18px 偏移会把算出来的 12-18 变成 -6px，尖角上半截露在气泡外面，看着像插在
-   昵称行上的一面小旗。`max(0px, …)` 把顶边钉在气泡顶边上（尖角中心 = 气泡顶下 6px），
-   横向仍贴着气泡、指向头像那一侧；单聊没有偏移 ⇒ 仍是 12px，中心正好是头像中心。 */
+   ⚠️ 但**不许越过气泡顶边**（用户 2026-10-23「群聊的气泡小标还是没有修复好」）：用 max(0px, …) 夹住。
+   ⚠️ 形状改成一枚**带描边的 SVG 叶形**（用户 2026-10-23 第二次：上边不够丝滑、气泡有边框而
+   尾巴没有 ⇒ 接缝对不上）：
+     · 填充层从气泡内部 3px 处起笔、覆盖掉气泡左（右）边**那一段边框**，再用 1px 描边把轮廓从
+       气泡顶边（或中间某点）连续画到下方接回 —— 尾巴与气泡是**同一条线**，不是贴上去的两块；
+     · 描边色 `--bubble-line` 由 `useMessageDisplay` 按气泡自己的边框色给出（自己的消息边框透明 ⇒
+       描边也透明，只留填充，与无边框气泡一致）；卡片型气泡取 `--gosslan-card-line`。
+     · 用 SVG 而不是 border/圆角拼：外缘是三次贝塞尔，曲率连续；贴在像素网格上的 border-radius
+       在 12px 这种尺寸会有可见的折点（就是用户说的"不丝滑"）。
+     · 填充不透明 ⇒ 行 hover 的底色**不会**从尾巴里透出来（用户同日：「有 hover 样式时小尾巴会暴露」）。
+   14×14 的盒子里，朝左那一支的气泡外框在 x=10、朝右那一支在 x=4 —— 与 `.tail-other{left:-11px}` /
+   `.tail-mine{right:-11px}` 是一对常数，改一个必须同时改另一个。 */
 .bubble-tail {
   position: absolute;
-  top: max(0px, calc(12px - var(--bubble-tail-offset, 0px)));
+  /* 顶边对齐气泡**外框**（内边距顶 − 1px 边框），叶形的起笔点才落在同一条线上 */
+  top: calc(max(0px, calc(12px - var(--bubble-tail-offset, 0px))) - 1px);
   bottom: auto;
-  width: 0;
-  height: 0;
-  border-style: solid;
+  width: 14px;
+  height: 14px;
   pointer-events: none;
+  color: var(--bubble-line, transparent);
 }
-/* 我发的（右侧气泡）：尖角在右，指向右侧头像 */
+.bubble-tail > svg {
+  display: block;
+  width: 100%;
+  height: 100%;
+  overflow: visible;
+}
+/* 填充色可被单个气泡覆盖（代码气泡的尾巴按它自己的 toolbar 混色） */
+.bubble-tail .tail-fill {
+  fill: var(--bubble-tail-fill, var(--bubble-bg));
+}
+.bubble-tail .tail-line {
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1;
+  stroke-linecap: round;
+}
 .tail-mine {
-  right: -5px;
-  border-width: 6px 0 6px 6px;
-  border-color: transparent transparent transparent var(--bubble-bg);
+  right: -11px;
 }
-/* 对方发的（左侧气泡）：尖角在左，指向左侧头像 */
 .tail-other {
-  left: -5px;
-  border-width: 6px 6px 6px 0;
-  border-color: transparent var(--bubble-bg) transparent transparent;
+  left: -11px;
+}
+/* 每个 span 里两个朝向都写好了，按归属只留一组（少一处模板分支 = 少一处漏改） */
+.tail-mine .tail-fill-other,
+.tail-mine .tail-line-other,
+.tail-other .tail-fill-mine,
+.tail-other .tail-line-mine {
+  display: none;
 }
 /* 尖角那一侧的**上圆角**跟着尖角走 —— 值在 `useMessageDisplay` 的 bubbleStyle/cardStyle 里，
    不在这里：圆角是**内联样式**（主题预设也要读它），样式表规则压不过内联。
-   群聊里尖角贴在气泡顶边，18px 胶囊在那个高度已收进 18px，直边三角形只碰到弧线一个点。 */
+   群聊里尖角贴在气泡顶边，18px 胶囊在那个高度已收进 18px，圆弧尾巴接上去会露缝。 */
 
 /* ── 长链接的「中间省略」（用户 2026-09-16） ────────────────────────────────
  * 缺陷：正文里的超长链接原先把 `displayUrl()` 截断后的字符串当 DOM 文本渲染，

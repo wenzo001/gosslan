@@ -94,7 +94,7 @@
             lang = hit;
           }
           el.lang = lang;
-          // 应用显示名本地化：中文「相闻」/ 英文 "Gosslan"（<title> 与骨架 brand 共用）。
+          // 应用显示名本地化：中文「小院儿」/ 英文 "Gosslan"（<title> 与骨架 brand 共用）。
           // 每个窗口的标题由它自己的 HTML 用 data-title-zh / data-title-en 声明
           // （主窗口「相闻」、设置窗口「相闻 · 设置」、日志窗口「相闻 · 运行日志」）——
           // 三个窗口共用这一份脚本，不需要各自写分支。

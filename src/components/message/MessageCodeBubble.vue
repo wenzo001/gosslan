@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { t } from "@/i18n";
+import BubbleTail from "@/components/message/BubbleTail.vue";
 import { computed } from "vue";
 import CodeBlock from "@/components/CodeBlock.vue";
 import { CODE_CLAMP_HEIGHT, CODE_SURFACE } from "@/utils/previewMetrics";
@@ -61,7 +62,7 @@ const tailBg = computed(() => surface.value);
         {{ copied ? t("common.copied") : t("common.copy") }}
       </button>
     </div>
-    <span aria-hidden="true" class="bubble-tail" :class="mine ? 'tail-mine' : 'tail-other'"></span>
+    <BubbleTail :mine="mine" />
   </div>
 </template>
 
@@ -72,17 +73,15 @@ const tailBg = computed(() => surface.value);
    （亮色 4% 黑 / 暗色 5% 白）。
    ⚠️ 旧版这里还写着 `top: auto; bottom: 12px`（把尖角钉在卡片底栏上），与头像完全错开 ——
    用户 2026-10-23 截图点名的就是这一格。位置只有全局那一个家，别在这里再钉一份。 */
-.bubble-tail.tail-mine {
-  border-left-color: color-mix(in srgb, var(--bubble-bg) 96%, #000);
-}
+/* 尾巴现在是 SVG：只换**填充**（描边仍取卡片边线 `--bubble-line`），
+   所以覆盖的是 `--bubble-tail-fill` 而不是 background。 */
+.bubble-tail.tail-mine,
 .bubble-tail.tail-other {
-  border-right-color: color-mix(in srgb, var(--bubble-bg) 96%, #000);
+  --bubble-tail-fill: color-mix(in srgb, var(--bubble-bg) 96%, #000);
 }
-:global(.dark) .bubble-tail.tail-mine {
-  border-left-color: color-mix(in srgb, var(--bubble-bg) 95%, #fff);
-}
+:global(.dark) .bubble-tail.tail-mine,
 :global(.dark) .bubble-tail.tail-other {
-  border-right-color: color-mix(in srgb, var(--bubble-bg) 95%, #fff);
+  --bubble-tail-fill: color-mix(in srgb, var(--bubble-bg) 95%, #fff);
 }
 /* 代码卡片底栏：与上面的 CodeBlock 共用同款底色，衔接成一张完整卡片。
    高度锁死 28px（border-box）= previewMetrics.CODE_ACTION_BAR，不要动。

@@ -535,6 +535,14 @@ useEventListener(document, "click", closeFriendMenu);
       </template>
     </div>
 
+    <!-- 品牌页脚（用户 2026-10-23）：侧栏底部一行小字，中/英随界面语言。
+         放在滚动容器**之外**（不随列表滚走），只在会话/联系人列表这一栏出现。 -->
+    <div
+      class="shrink-0 select-none border-t border-[var(--gosslan-divider)] px-3 py-1.5 text-caption text-[var(--gosslan-text-2)] opacity-70"
+    >
+      {{ t("app.name") }}
+    </div>
+
     <ConversationContextMenu
       v-if="convMenu"
       :x="convMenu.x"

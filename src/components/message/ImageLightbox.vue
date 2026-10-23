@@ -287,14 +287,18 @@ function onPointerUp(e: PointerEvent) {
  * 与它**同优先级、在样式表里更靠后** ⇒ 按下瞬间整颗按钮下移 22px。按在顶部那半时，
  * pointerup 已经落到遮罩上，浏览器把 click 派发到二者的共同祖先（= 遮罩）⇒ 直接关窗。
  *
- * 定位改成不占 transform 的居中后按钮不再移动；这里再加一道与实现无关的守卫：
- * 在控件（或图片）上按下的手势，即使因为任何布局/动画错位让 click 落到遮罩上，也不许关窗。
+ * 定位改成不占 transform 的居中后按钮不再移动；这里再加两条与实现无关的守卫：
+ *  ① 控件上的点击（按钮/链接/输入）一律不关窗 —— 它们自己的 `@click.stop` 已经拦住了，
+ *     这条兜住"将来某个控件漏了 `.stop`"的漏网路径；
+ *  ② 按下与点击**必须是同一个目标** —— 按下在按钮/图片、抬起落到遮罩时，浏览器会把 click
+ *     派发到二者共同祖先（遮罩）；这种手势不是"点遮罩"，不许关窗。
  */
 let lastPointerDownTarget: EventTarget | null = null;
 function onShadePointerDown(e: PointerEvent) {
   lastPointerDownTarget = e.target;
 }
 function onShadeClick(e: MouseEvent) {
+  if (e.target instanceof Element && e.target.closest("button, a, input, textarea, select, [role='button']")) return;
   if (e.target !== lastPointerDownTarget) return;
   emit("close");
 }
@@ -422,7 +426,7 @@ useEventListener(window, "keydown", onKey);
              落到遮罩上直接关窗（用户 2026-10-23 实测）。按钮只负责缩小反馈。 -->
         <div v-if="hasMultiple" class="absolute left-4 top-1/2 z-10 -translate-y-1/2">
           <button
-            class="flex h-11 w-11 items-center justify-center rounded-full bg-black/55 text-white shadow-lg ring-1 ring-white/30 transition hover:bg-black/70 active:scale-95"
+            class="flex h-11 w-11 items-center justify-center rounded-full bg-black/55 text-white shadow-lg ring-1 ring-white/30 transition hover:bg-black/70"
             style="filter: drop-shadow(0 2px 6px rgba(0,0,0,0.55));"
             :title="t('common.prev')" :aria-label="t('common.prev')"
             @click.stop="go(-1)"
@@ -434,7 +438,7 @@ useEventListener(window, "keydown", onKey);
         <!-- 下一张 -->
         <div v-if="hasMultiple" class="absolute right-4 top-1/2 z-10 -translate-y-1/2">
           <button
-            class="flex h-11 w-11 items-center justify-center rounded-full bg-black/55 text-white shadow-lg ring-1 ring-white/30 transition hover:bg-black/70 active:scale-95"
+            class="flex h-11 w-11 items-center justify-center rounded-full bg-black/55 text-white shadow-lg ring-1 ring-white/30 transition hover:bg-black/70"
             style="filter: drop-shadow(0 2px 6px rgba(0,0,0,0.55));"
             :title="t('common.next')" :aria-label="t('common.next')"
             @click.stop="go(1)"

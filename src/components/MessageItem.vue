@@ -26,6 +26,7 @@ import { shouldPreventContextMenu } from "@/utils/contextMenu";
 import { isRecallableKind, isWithinRecallWindow } from "@/utils/recall";
 import { cancelSendChannelFor } from "@/utils/cancelSend";
 import { cancelOutcome } from "@/utils/cancelFeedback";
+import { hasTextSelection, isSelectableTextTarget, selectionTextWithin } from "@/utils/textSelection";
 import { detectCode } from "@/utils/codeDetect";
 import { t } from "@/i18n";
 import MessageAvatar from "@/components/message/MessageAvatar.vue";
@@ -370,46 +371,86 @@ function openImageLightbox() {
 // 展开态参与全局浮层互斥：右键另一条消息（或好友菜单）时，本菜单自动收起。
 // 关键在于右键只触发 contextmenu、不触发 click，靠 document click 关闭靠不住。
 const ctxMenuPopup = useExclusivePopup(`menu:${props.message.msg_id ?? props.message.id}`);
-const ctxMenu = ref<{ x: number; y: number } | null>(null);
+/**
+ * `selectedText` 是**右键那一刻**从选区抓下来的文本快照（不是响应式选区）：
+ * 菜单获得焦点后浏览器可能改写/收起选区，点击菜单项时再读会拿到别的或空文本。
+ */
+const ctxMenu = ref<{ x: number; y: number; selectedText: string } | null>(null);
 
 watch(ctxMenuPopup.isActive, (mine) => {
   if (!mine && ctxMenu.value) ctxMenu.value = null;
 });
 
-function openContextMenu(e: MouseEvent) {
+function openContextMenu(e: MouseEvent, selectedText: string) {
   if (isTip.value) return;
   // 移动端没有右键：长按走底部 ActionSheet。部分 WebView 在长按之后仍会补发
   // `contextmenu`（也会在长按选中文字时弹系统菜单），若这里再弹一次，就会出现
   // 「右键菜单 + ActionSheet」同时挂在屏幕上，而两者 claim 的是**同一个**互斥 key
   // （`menu:${msg_id}`）⇒ 谁也无法通过互斥关掉对方。
   if (app.isMobile) return;
-  ctxMenu.value = { x: e.clientX, y: e.clientY };
+  ctxMenu.value = { x: e.clientX, y: e.clientY, selectedText };
   ctxMenuPopup.claim();
 }
 
 /**
- * contextmenu 的统一入口：**触屏选字才让位**，其余一律拦默认菜单。
+ * 触屏上最近一次落在可选正文上的触摸**属于哪条消息的内容列**。
  *
- * 之前模板写的是 `@contextmenu.prevent` —— 组件级 prevent 在 handler 之前执行，
- * 即使 `openContextMenu` 在移动端提前 return，系统复制菜单也已经被吃掉。
- * 现在桌面**不再因为"有选区"放行**（用户 2026-10-23：右键气泡偶尔弹出 WebKit 原生菜单，
- * 根因就是之前双击选过词/拖选过正文，选区还在 ⇒ `shouldPreventContextMenu` 放行）；
- * 只有触屏的选字/选择模式仍交给系统工具条。
+ * WebKit 有时会把 contextmenu 的 target 从文本节点上提到气泡根/列上；只按 `e.target`
+ * 判会误拦系统选字。这里记住"这次触摸起点是正文"的那一列，同一列内的 contextmenu 也放行；
+ * 换到非正文触摸时立刻清空（长按昵称/卡片仍然走自定义面板）。
+ */
+let lastTouchTextCol: Element | null = null;
+
+/**
+ * contextmenu 的统一入口（处理器挂在本条消息的 `[data-msg-col]` 上，见模板）。
+ *
+ * 两条互斥分支，**桌面与触屏策略刻意不同**：
+ *  · 桌面：一律 preventDefault 并弹自定义消息菜单；有有效选区时把选区文本快照带进菜单，
+ *    由菜单里的「复制选中内容」负责只复制选中部分（「复制消息」仍复制整条）。
+ *  · 触屏：可选正文上的 contextmenu **完全让给 WebView**（系统选字手柄 + 系统复制菜单），
+ *    这里只 stopPropagation，避免 `App.vue` 的全局兜底在"选区还没建立"的那一帧再 prevent 一次；
+ *    非正文区域才 prevent，自定义面板由长按定时器负责。
+ *
+ * ⚠️ 2026-10-23 之前桌面是"有选区就放行原生菜单"，用户实测右键气泡偶尔弹 WebKit 菜单
+ * （之前双击选过词，选区还在）⇒ 现在桌面不再按选区放行。
  */
 function onContextMenu(e: MouseEvent) {
-  const sel = window.getSelection();
-  const hasSelection = !!sel && !sel.isCollapsed && sel.toString().trim().length > 0;
+  // 表情回应的笑脸按钮**在 data-msg-col 里**（绝对定位到气泡外侧）：它是控件，不是消息内容，
+  // 不能因为落在列里就弹消息菜单。头像/表情条在列外，处理器根本不会收到。
+  if (e.target instanceof Element && e.target.closest("[data-reaction-entry]")) return;
+
+  const mobile = app.isMobile;
+  const hasSelection = hasTextSelection();
+  // target 本身是可选正文，或者本次触摸起点是正文、WebKit 把 target 上提到了同一列里的元素。
+  const sameColAsTextTouch = mobile && !!lastTouchTextCol
+    && e.target instanceof Element && e.target.closest("[data-msg-col]") === lastTouchTextCol;
+  const onSelectableText = isSelectableTextTarget(e.target) || sameColAsTextTouch;
   if (
     !shouldPreventContextMenu({
-      isMobile: app.isMobile,
+      isMobile: mobile,
       textSelecting: textSelecting.value,
       hasSelection,
+      onSelectableText,
     })
   ) {
+    if (mobile) e.stopPropagation();
     return;
   }
   e.preventDefault();
-  openContextMenu(e);
+  if (mobile) return;
+  const col = e.currentTarget instanceof Element ? e.currentTarget : null;
+  openContextMenu(e, col ? selectionTextWithin(col) : "");
+}
+
+/**
+ * 复制**右键那一刻的选区快照**（不是整条消息，也不在点击时重新读选区）。
+ * 走与其它复制入口相同的 toast 反馈；菜单先收起，避免浮层压在 toast 上。
+ */
+function copySelectionFromMenu() {
+  const text = ctxMenu.value?.selectedText ?? "";
+  closeContextMenu();
+  if (!text) return;
+  void copyTextWithToast("selection", text);
 }
 
 function closeContextMenu() {
@@ -421,11 +462,11 @@ function closeContextMenu() {
 // 桌面端走右键菜单（MessageContextMenu），移动端没有右键，用长按唤出底部操作面板。
 const sheetOpen = ref(false);
 /**
- * 移动端「选择文字」模式（用户 2026-09-13）。
+ * 移动端「选择文字」快捷模式（2026-10-23 口径更新）。
  *
- * 触屏下气泡**默认不可选**，长按一律弹消息菜单；"部分选字"是菜单里的一个二级入口
- * —— 这是微信 / Telegram / WhatsApp / iMessage 的通行模型，也是唯一能同时要"长按必出菜单"
- * 和"能选字"的做法（见 `style.css` 里 `@media (pointer: coarse)` 那段注释）。
+ * 正文长按现在**直接**进入系统原生选字（见 style.css 的 `pointer: coarse` 块与
+ * `utils/longPress.ts`）；本模式不再负责“开放正文选择”，只作为**非正文区长按面板**
+ * 里的「全选」快捷入口：`MessageTextBubble` 会自动全选，随后交给系统手柄/工具条。
  */
 const textSelecting = ref(false);
 let longPressTimer: ReturnType<typeof setTimeout> | null = null;
@@ -453,6 +494,9 @@ function openActionSheet() {
   // 多选态下不弹操作面板：这一点是"勾选/取消"，弹面板会让用户分不清选上没有
   // （与 `shouldStartLongPress` 的 multiSelect 判据同一条口径，这里是第二道闸门）。
   if (props.selectMode) return;
+  // 系统已经进入选字（手柄/工具条还在）：绝不再叠第二个菜单。长按正文本身不会起
+  // 定时器；这里兜住"先选字、再按住非正文"以及拖动选区手柄时起点落在气泡内边距的情况。
+  if (hasTextSelection()) return;
   sheetOpen.value = true;
   ctxMenuPopup.claim();
 }
@@ -499,7 +543,7 @@ watch(sheetOpen, (open) => {
   }
 });
 
-/** 进「选择文字」：关掉菜单 → 本条气泡开放原生选字（`MessageTextBubble` 会自动全选）。 */
+/** 「全选」快捷入口：关掉面板 → 本条气泡自动全选（原生选字本来就可直接长按进入）。 */
 function enterTextSelect() {
   closeActionSheet();
   textSelecting.value = true;
@@ -521,18 +565,20 @@ watch(textSelecting, (on) => {
 function onTouchStart(e: TouchEvent) {
   cancelLongPress();
   const el = e.target as HTMLElement | null;
-  // 判据全部收在 `utils/longPress.ts`（纯函数、有真值表单测）：
-  // 桌面走右键 / 系统消息没有菜单 / 「选择文字」模式让给系统手柄 /
-  // ⚠️ 触屏下**正文气泡里**的 `.gosslan-selectable` 不再让路 —— 它已经被
-  // `@media (pointer: coarse)` 关掉选中，而那个类还在 DOM 上，之前因此导致
-  // "按在文字上长按不弹、按到内边距才弹"（用户 2026-09-13 实测）。
+  lastTouchTextCol = isSelectableTextTarget(e.target)
+    ? (el?.closest("[data-msg-col]") ?? null)
+    : null;
+  // 表情回应的笑脸按钮在 data-msg-col 里（绝对定位）：它是控件，长按不归消息面板。
+  if (el?.closest("[data-reaction-entry]")) return;
+  // 判据收在 `utils/longPress.ts`（纯函数、真值表单测）：
+  // 桌面走右键 / 系统消息没有菜单 / 选字模式与多选让路 /
+  // **触屏命中可选正文 ⇒ 不起定时器**，把长按完整留给系统原生选字（手柄+系统复制菜单）。
   const canStart = shouldStartLongPress({
     isMobile: app.isMobile,
     isSystem: isTip.value,
     selectMode: textSelecting.value,
     multiSelect: props.selectMode,
     hitSelectable: !!el?.closest(".gosslan-selectable"),
-    insideTextBubble: !!el?.closest(".gosslan-bubble-text"),
   });
   if (!canStart) return;
   const t0 = e.touches[0];
@@ -542,6 +588,9 @@ function onTouchStart(e: TouchEvent) {
   longPressTimer = setTimeout(() => {
     longPressTimer = null;
     longPressOrigin = null;
+    // 系统已经进入选字（拖动选区手柄时起点可能落在气泡内边距）：不再叠第二个菜单。
+    // 这一句也顺手挡住了"先选字、再按住非正文"的长按。
+    if (hasTextSelection()) return;
     // 触觉反馈：长按"到点了"必须有一下明确的反馈，否则用户会以为没生效而反复长按
     // （`heavy` 的语义就是"长按菜单弹出"，见 utils/haptics.ts）
     haptic("heavy");
@@ -1168,7 +1217,7 @@ async function copyFileToClipboard() {
        ⚠️ 不要给它加 `background-clip`/`-inset-*`/`w-fit`/`ring-*`，也不要把底色挪回 `.group/msg`
        或消息行上：挪回 `.group/msg` 就露出那 4px 白缝；挪到消息行则连"头像上面 / 气泡下面"
        的 6px 内边距都没有了 —— 这几条都被用户逐个否过。 -->
-  <div class="group/msg" :class="tintClass" :style="tintStyle" @contextmenu="onContextMenu">
+  <div class="group/msg" :class="tintClass" :style="tintStyle">
     <!-- 消息块：纵向内边距只留 `pb-1.5`（那 6px 的上半段由"本项第一个可见块"自己带，
          见 needsTopPad），这样时间/未读分割行不会重复给间距，
          各项总高与改动前逐像素一致（messageHeight 的高度估算表不用动）。 -->
@@ -1307,11 +1356,17 @@ async function copyFileToClipboard() {
       </span>
 
       <!-- `--bubble-tail-offset`：气泡顶边被**行顶**往下推了多少（群聊那行昵称占 18px，
-           与 `messageHeight.NICKNAME_ROW` 是同一格）。气泡上的尖角要对着头像中心就得知道这个
-           下沉量，CSS 那边只做「头像中心 18 − 尖角半高 6 − 本值」。这两个数对不对不由这里自证 ——
-           量矩形的是运行时探针 `--only=rowpair` 那一段（尾巴中心 vs 头像中心，<=1px）。
-           带引用块的那条还会再把气泡往下推一截，那一档不追中心重合：尾巴仍贴着气泡上缘、
-           朝头像那一侧，比原来吊在气泡底部近得多。 -->
+           与 `messageHeight.NICKNAME_ROW` 是同一格）。CSS 那边只做
+           `top: max(0px, 12px − 本值)`，不在这里再抄一份 18/6。
+           现行判据（2026-10-23 第二版，**不是**旧的"中心对头像"）：
+           · 单聊：尖角中心 = 头像中心（探针判两中心 <=1px）；
+           · 群聊：昵称行把气泡推下 18px，尖角**不许越出气泡顶边**（探针判 tailTop − bubbleTop ∈ [0,1.5]px）。
+           带引用块的那条还会再把气泡往下推一截，那一档同样只要求贴住气泡上缘、朝头像一侧。 -->
+      <!-- 右键/长按的边界就是这一列（消息内容区）：昵称、引用块、正文、回执都在里面；
+           头像、表情回应条、行内空白在列外 ⇒ 不会因为"同属一条消息"就弹消息菜单。
+           表情回应的笑脸按钮虽然在列内（绝对定位到气泡外侧），由 `onContextMenu` /
+           `onTouchStart` 显式排除（`[data-reaction-entry]`）。
+           ⚠️ 触屏长按从这一列起手（不再只挂消息行）：昵称/引用块等非正文区也能开面板。 -->
       <div
         data-msg-col
         class="relative flex min-w-0 max-w-[72%] flex-col"
@@ -1320,6 +1375,11 @@ async function copyFileToClipboard() {
           '--bubble-tail-offset': showNickname ? '18px' : '0px',
           '--bubble-tail-corner': showNickname ? '2px' : 'var(--gosslan-bubble-radius)',
         }"
+        @contextmenu="onContextMenu"
+        @touchstart="onTouchStart"
+        @touchend="cancelLongPress"
+        @touchmove="onTouchMove"
+        @touchcancel="cancelLongPress"
       >
         <!-- 表情回应入口（飞书式）：悬停本条消息 ⇒ **气泡外侧**出现笑脸按钮，
              点开 = 完整表情选择器（见下方 EmojiPicker），选中即作为表情回应发送/取消。
@@ -1405,10 +1465,6 @@ async function copyFileToClipboard() {
           class="group/row flex w-full items-end gap-1.5"
           :class="mine ? 'justify-end' : 'justify-start'"
           :title="fullTime"
-          @touchstart="onTouchStart"
-          @touchend="cancelLongPress"
-          @touchmove="onTouchMove"
-          @touchcancel="cancelLongPress"
         >
           <!-- 回执：自聊消息**没有回执** —— 收发双方都是本机，不存在"已送达/已读"这个过程，
                挂上去只会显示一个永远转圈的圈（后端给自聊消息的状态直接是 read，
@@ -1647,8 +1703,10 @@ async function copyFileToClipboard() {
     :y="ctxMenu.y"
     :kind="message.kind"
     :quoted-id="quotedMsgId || undefined"
+    :selected-text="ctxMenu.selectedText"
     @close="closeContextMenu()"
     @locate-quote="onLocateQuote"
+    @copy-selection="copySelectionFromMenu"
     @copy-text="closeContextMenu(); copyFromMenu()"
     @copy-image="copyImage"
     @save-image="saveImage"
@@ -1681,11 +1739,11 @@ async function copyFileToClipboard() {
         @click="closeActionSheet(); copyFromMenu()"
       >
         <Copy class="h-5 w-5 text-[var(--gosslan-text-2)]" />
-        {{ t("common.copy") }}
+        {{ t("msg.copyMessage") }}
       </button>
-      <!-- 「选择文字」：触屏下部分选字的**唯一入口**（长按已被消息菜单占用）。
-           Telegram 的 Select Text / iMessage 的再长按是同一个模型；微信则在菜单里直接"复制整条"。
-           进入后本条气泡开放原生选字并自动全选，系统工具条随即出现。
+      <!-- 「选择文字」：非正文区长按打开面板后的「全选」快捷入口。
+           正文本身**直接长按**就是系统原生选字（手柄 + 系统复制菜单），不经过这里；
+           该入口只负责把整条正文一次性框进选区（`MessageTextBubble` 自动全选）。
            ⚠️ 只对 **text** 开放：代码气泡的可选元素在 `CodeBlock` 里，本轮没给它接选择模式，
            给个点了没反应的入口比不给更糟。 -->
       <button

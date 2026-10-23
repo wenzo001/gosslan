@@ -8,6 +8,12 @@
 //! | 「按在文字上长按没反应，按到气泡边上才弹」 | 命中 `.gosslan-selectable` 就不起定时器，而正文**整块**都是它 |
 //! | 「一放手立马就缩回去了」 | 弹面板那一下抬手指会被 HeadlessUI 的 outside-click 当成"点了外面" |
 //!
+//! ⚠️ 2026-10-23 产品口径变了（用户：「移动端必须保留系统原生的选中文字与复制菜单」）：
+//! 触屏下**长按正文 = 系统原生选字**（选区手柄 + 系统复制菜单），自定义底部分面板只在
+//! **非正文**区域（内边距 / 昵称 / 引用块 / 卡片）长按时出现。因此命中可选正文时
+//! **必须**返回 false —— 这与 2026-09-13 那版（正文不可选、长按一律弹面板）相反，
+//! 不要把旧注释/旧判据当成现行契约。
+//!
 //! 前两条是**判据**问题（这里），第三条是**事件时序**问题（见 `MessageItem` 里
 //! `swallowLongPressRelease` 的说明，这里只用 `shouldSwallowLongPressRelease` 表达规则）。
 
@@ -29,32 +35,29 @@ export interface LongPressContext {
    * 而是"这一步没有菜单可弹"。
    */
   multiSelect: boolean;
-  /** 手指落点命中了 `.gosslan-selectable`（"可选文本"标记）。 */
-  hitSelectable: boolean;
   /**
-   * 上面那个可选区域**在正文气泡里**（`.gosslan-bubble-text`）。
+   * 手指落点命中了 `.gosslan-selectable`（"可选正文"标记）。
    *
-   * 触屏下它已经被 `@media (pointer: coarse)` 关掉选中（`user-select: none`），
-   * 「部分选字」改成菜单里的二级入口（「选择文字」）⇒ 它**不该**再让长按让路。
-   * 代码块等其它可选区域仍然真的能选字，那里继续让路。
+   * 触屏下只有这一层是 `user-select: text`（见 style.css 的 `pointer: coarse` 块）：
+   * 命中它 = 长按交给系统原生选字；没命中（气泡内边距 / 昵称 / 引用块 / 卡片）= 自定义面板。
    */
-  insideTextBubble: boolean;
+  hitSelectable: boolean;
 }
 
 /**
- * 这次 `touchstart` 要不要启动长按定时器。
+ * 这次 `touchstart` 要不要启动自定义长按面板的定时器。
  *
- * ⚠️ 真机坑（用户 2026-09-13 Android）：「长按气泡**有的时候**弹不出来，有的时候又能弹出来」。
- * 原因就是最后一条 —— 正文气泡里那个 `.gosslan-selectable` 类**还在 DOM 上**（桌面端靠它选字），
- * 于是按在文字上（气泡的绝大部分面积）直接 `return`，只有按到 `px-3 py-1.5` 那圈内边距才弹。
+ * 现行口径（2026-10-23）：**正文长按归系统原生选字**，自定义面板只在非正文区域起步。
+ * 这条判据只决定"要不要起定时器"，不决定 `contextmenu` 拦不拦 —— 后者见
+ * `utils/contextMenu.ts` 与 `MessageItem.onContextMenu` 的移动端分支。
  */
 export function shouldStartLongPress(c: LongPressContext): boolean {
   if (!c.isMobile) return false; // 桌面端走右键菜单
   if (c.isSystem) return false; // 系统消息没有菜单
-  if (c.selectMode) return false; // 「选择文字」模式：长按归系统选区手柄
+  if (c.selectMode) return false; // 「选择文字」快捷模式：长按归系统选区手柄
   if (c.multiSelect) return false; // 多选模式：这一点是勾选，不弹菜单（见字段说明）
-  // 只给"**当前真的还能选字**的可选区域"让路（例如代码块）：正文气泡在触屏下已不可选
-  if (c.hitSelectable && !c.insideTextBubble) return false;
+  // 触屏下可选正文 = 系统原生选字的入口；此时再起定时器会同时弹出两个菜单。
+  if (c.hitSelectable) return false;
   return true;
 }
 

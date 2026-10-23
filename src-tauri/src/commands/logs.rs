@@ -182,14 +182,14 @@ fn install_hide_on_close(win: &tauri::WebviewWindow) {
     });
 }
 
-/// 无边框辅助窗口（`.decorations(false)`）的 macOS 配套处理。
+/// 辅助窗口的 macOS 配套处理（与主窗同一套）。
 ///
-/// 与主窗口（`lib.rs` 里对 `WINDOW_MAIN` 的那两行）同一套：
 /// - `set_closable(true)`：`decorations:false` 让 tao 建出的 NSWindow 是 Borderless，**没有 Closable 位**，
 ///   于是 ⌘W（`menu.rs` 的自定义项走 `.close()`）会失效；
-/// - `disable_shadow`：系统阴影是**矩形**，与窗口自身的圆角冲突（会露出四个直角）。
+/// - `use_native_titlebar`：补 Titled + FullSizeContentView，露出**系统原生**三颗键并打开系统阴影
+///   （用户 2026-10-23：每个窗口都统一用原生按钮、整窗要有阴影）。
 ///
-/// ⚠️ **不要**对外链窗口（`WINDOW_LINK`）调用：它保留系统标题栏，去掉阴影会是可见的退化。
+/// ⚠️ **不要**对外链窗口（`WINDOW_LINK`）调用：它本来就有系统标题栏与原生按钮。
 ///
 /// ## 为什么是"把这几行投回主线程"而不是"把整个命令搬回主线程"
 ///
@@ -207,7 +207,7 @@ fn decorate_aux_window(win: &tauri::WebviewWindow, app: &tauri::AppHandle) {
         let w = win.clone();
         let _ = app.run_on_main_thread(move || {
             let _ = w.set_closable(true);
-            crate::macos_window::disable_shadow(&w);
+            crate::macos_window::use_native_titlebar(&w);
         });
     }
     #[cfg(not(target_os = "macos"))]

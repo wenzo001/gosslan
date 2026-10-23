@@ -118,7 +118,7 @@ export const zhCN: MessageDict = {
   "settings.group.network.footer": "选择网卡后即开启局域网通道并扫描节点；通道开启时可随时切换网卡。",
   "settings.group.storage": "存储",
   "settings.group.storage.footer": "本页只管「本机落盘的图片与文件」（聊天里收到的附件）和聊天数据库占用；聊天文字不会被自动清理。改动即时保存。保持「永久保存 + 无限制」即不做任何自动删除。",
-  "settings.group.about.footer": "Gosslan v{version} · 无服务器 P2P · 端到端加密 · 数据仅存本机",
+  "settings.group.about.footer": "小院儿 v{version} · 无服务器 P2P · 端到端加密 · 数据仅存本机",
   "settings.group.notifications": "通知",
   "settings.group.notifications.footer": "应用在后台、或正在看别的会话时，用系统通知提醒新消息。紧急通知会弹跳 Dock / 闪烁任务栏，系统勿扰不会阻止这一动作",
   "settings.group.files.footer": "接收好友发来的文件放这里；共享目录是你开放给好友浏览的文件夹",
@@ -291,7 +291,7 @@ export const zhCN: MessageDict = {
     "手机上默认开启、无需设置：只要应用在运行，这台设备就是蓝牙 mesh 的一个中继节点；应用被系统回收后自动停止。",
   "settings.network.bluetooth.na": "暂不可用",
   "settings.network.toast.btPermissionHint":
-    "若仍无法开启：请到「系统设置 → 应用 → 相闻 → 权限」里允许「附近的设备」，然后重试。",
+    "若仍无法开启：请到「系统设置 → 应用 → 小院儿 → 权限」里允许「附近的设备」，然后重试。",
   "settings.network.routed": "跨网段连接",
   "settings.network.routed.desc": "当对方不在你的局域网内时（如跨 Tailscale / VPN 连接异地设备），在能同时连上你和对端的设备上，填写对端地址即可，应用会自动中转。",
   "settings.network.routed.empty": "尚未添加跨网段设备",
@@ -416,9 +416,7 @@ export const zhCN: MessageDict = {
   "window.close": "关闭",
   "window.minimize": "最小化",
   "window.restore": "向下还原",
-  "window.zoom": "缩放",
   "window.maximize": "最大化",
-  "window.fullscreenExit": "退出全屏",
   "window.closeToTray": "关闭（最小化到托盘，后台继续收消息）",
 
   // ---- 聊天头部 ----
@@ -551,12 +549,14 @@ export const zhCN: MessageDict = {
   "msg.fileNotSynced": "文件尚未同步到本机",
   "msg.fileCopied": "已复制文件，可粘贴到聊天框或资源管理器",
   "msg.copyFail": "复制失败",
+  "msg.copyMessage": "复制消息",
+  "msg.copySelection": "复制选中内容",
   // ---- 错误提示的**文案**（分类器在 utils/errors.ts，它一条文案都不带）----
   // 那两把「拼装模板」是这条链的形状：`发送失败：<说明>` / `<动作>，请稍后重试`。
   "errors.joined": "{prefix}：{detail}",
   "errors.retry": "{prefix}，请稍后重试",
   "errors.rule.pubkey": "对方尚未上线，暂时无法加密发送。消息已保留，对方上线后会自动补发",
-  "errors.rule.port": "端口被占用，可能已有一个 Gosslan 实例在运行",
+  "errors.rule.port": "端口被占用，可能已有一个小院儿实例在运行",
   "errors.rule.system": "系统或网络暂时不可用，请稍后重试",
   "errors.avatar.notBase64": "编码结果不是 base64 data URL，无法判断体积",
   "errors.avatar.stillTooLarge": "头像压缩后仍超过 1MB，请换一张更小的图",
@@ -919,7 +919,7 @@ export const zhCN: MessageDict = {
   "friend.add.channel.running": "已开启 · 正在运行",
   "friend.add.empty.noChannel": "两条通道都是关的：先在下面打开任意一条，再重新扫描。",
   "friend.add.empty.lanNoPeer":
-    "局域网通道在运行，但附近没有 Gosslan 设备：确认对方开着应用、且和你在同一个 Wi-Fi／同一网段（开了 VPN／访客网络常常互相看不见）。",
+    "局域网通道在运行，但附近没有小院儿设备：确认对方开着应用、且和你在同一个 Wi-Fi／同一网段（开了 VPN／访客网络常常互相看不见）。",
   "friend.add.empty.bleScanning":
     "蓝牙已在扫描附近设备：刚打开时可能要等几秒才会出现（对方需要也开着应用）。这里会自己刷新，不用反复点扫描。",
   "friend.add.empty.onlyCrossNet":
@@ -952,7 +952,7 @@ export const zhCN: MessageDict = {
   "friend.profile.deviceType": "设备类型",
   "friend.profile.version": "对方版本",
   "friend.profile.versionUnknown": "未上报版本号",
-  "friend.profile.versionNewerHint": "对方的 Gosslan 比本机新，部分新类型消息需升级本机后才能查看",
+  "friend.profile.versionNewerHint": "对方的小院儿比本机新，部分新类型消息需升级本机后才能查看",
   "peer.newerShort": "对方版本较新（部分新消息可能需要升级后才能查看）",
   "friend.profile.deviceId": "设备 ID",
   "friend.profile.safety": "安全码",
@@ -1061,6 +1061,10 @@ export const zhCN: MessageDict = {
   "layout.linksHint": "在左侧选择一个链接，将在独立窗口中打开",
   "layout.routeMissing": "内容不存在或已不可访问",
   "layout.tagline": "无服务器 · 纯 P2P · 端到端加密 · 数据仅存本机",
+  // 应用显示名（用户 2026-10-23：中文名由「相闻」改为「小院儿」，英文名仍是 Gosslan）。
+  // ⚠️ 这只是**界面文案**的家；窗口标题/包显示名/托盘另有各自的层（HTML data-title-*、
+  // InfoPlist.strings、state.rs display_name、tray.rs），改名字五层一起改。
+  "app.name": "小院儿",
 
   // ---- 网络诊断（开发者） ----
   "diag.title": "网络诊断（开发者）",
@@ -1203,7 +1207,7 @@ export const zhCN: MessageDict = {
   // 原因由 utils/mediaAvailability.ts 的 PREVIEW_FAILURE_KEYS 给出，这里只放文案。
   "media.tooLarge": "文件过大，无法预览",
   // 认不出的消息类型（对端 Gosslan 比本机新）：可解释的占位，绝不显示载荷原文（INV-P24）
-  "msg.unsupportedKind": "对方发送了一种本机还不支持的消息，升级 Gosslan 后可查看",
+  "msg.unsupportedKind": "对方发送了一种本机还不支持的消息，升级小院儿后可查看",
   "msg.showRawContent": "查看原始内容",
   "msg.hideRawContent": "收起原始内容",
   "msg.filePathUnavailable": "文件路径不可用",

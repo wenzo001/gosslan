@@ -22,7 +22,7 @@ pub const TRAY_ID: &str = "gosslan-tray";
 /// 托盘 tooltip 文案。`unread > 0` 时带上条数 —— 红点只能表达"有"，条数只有文字能给。
 fn tray_tooltip(zh: bool, unread: u32) -> String {
     let base = if zh {
-        "相闻 · 局域网即时通讯"
+        "小院儿 · 局域网即时通讯"
     } else {
         "Gosslan · LAN Messenger"
     };
@@ -536,7 +536,7 @@ mod tests {
     /// 中英两种界面都要有，且 0 条时不能留下"（0 条未读）"这种噪音。
     #[test]
     fn tooltip_carries_unread_count_only_when_positive() {
-        assert_eq!(tray_tooltip(true, 0), "相闻 · 局域网即时通讯");
+        assert_eq!(tray_tooltip(true, 0), "小院儿 · 局域网即时通讯");
         assert_eq!(tray_tooltip(false, 0), "Gosslan · LAN Messenger");
         assert!(tray_tooltip(true, 3).contains("3 条未读"));
         assert!(tray_tooltip(false, 3).contains("3 unread"));

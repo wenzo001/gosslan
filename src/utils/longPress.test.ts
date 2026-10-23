@@ -29,30 +29,21 @@ const base = {
   selectMode: false,
   multiSelect: false,
   hitSelectable: false,
-  insideTextBubble: false,
 };
 
-test("长按判据：触屏下按在正文文字上**必须**起长按（回归：按在文字上没反应）", () => {
-  // 手指落在 `.gosslan-selectable` 正文上（它同时也在 `.gosslan-bubble-text` 气泡里）
+test("长按判据：触屏下按在可选正文上**不起**自定义面板（系统原生选字优先）", () => {
+  // 手指落在 `.gosslan-selectable` 正文上 ⇒ 放手让 WebView 进入原生选字/系统复制菜单。
+  // 2026-10-23 产品口径：移动端必须保留系统原生选字；再起 500ms 定时器会同时弹两个菜单。
   assert.equal(
-    shouldStartLongPress({ ...base, hitSelectable: true, insideTextBubble: true }),
-    true,
-    "正文气泡在触屏下已被 `pointer: coarse` 关掉选中（选字改走菜单里的「选择文字」），" +
-      "不许再让长按让路 —— 否则只有按到气泡内边距才弹面板",
+    shouldStartLongPress({ ...base, hitSelectable: true }),
+    false,
+    "正文是可选的 ⇒ 长按归系统选区（手柄 + 系统复制菜单）；自定义面板只在非正文区起",
   );
-  // 按在气泡内边距/头像侧（没命中 selectable）同样要起
+  // 按在气泡内边距/昵称/引用块/卡片（没命中 selectable）⇒ 起自定义面板
   assert.equal(shouldStartLongPress(base), true);
 });
 
-test("长按判据：真的还能选字的区域（如代码块）继续让路给系统选区", () => {
-  assert.equal(
-    shouldStartLongPress({ ...base, hitSelectable: true, insideTextBubble: false }),
-    false,
-    "代码块等区域在触屏下仍可原生选字，长按要留给系统；不能为了修正文气泡把这里也抢掉",
-  );
-});
-
-test("长按判据：桌面端走右键、系统消息没有菜单、选择文字模式让给系统手柄", () => {
+test("长按判据：桌面端走右键、系统消息没有菜单、选字/多选模式让路", () => {
   assert.equal(shouldStartLongPress({ ...base, isMobile: false }), false, "桌面端不挂长按（有右键菜单）");
   assert.equal(shouldStartLongPress({ ...base, isSystem: true }), false, "系统消息没有可操作内容");
   assert.equal(
@@ -122,19 +113,17 @@ test("操作面板：点任何一项都必须收起（引用/转发会跳到别�
 test("MessageItem：长按判据必须走 utils/longPress 的纯函数，并传全语境", () => {
   const item = read("components/MessageItem.vue");
   assert.match(item, /shouldStartLongPress\(\{/, "长按判据必须调用纯函数（别在组件里再写一份 if）");
-  for (const field of ["isMobile", "isSystem", "selectMode", "multiSelect", "hitSelectable", "insideTextBubble"]) {
+  for (const field of ["isMobile", "isSystem", "selectMode", "multiSelect", "hitSelectable"]) {
     assert.match(
       item,
       new RegExp(`${field}:`),
       `必须把 \`${field}\` 传给判据 —— 少传一个就等于那条规则失效`,
     );
   }
-  assert.match(
-    item,
-    /insideTextBubble:\s*!!el\?\.closest\("\.gosslan-bubble-text"\)/,
-    "`insideTextBubble` 必须真的按 `.gosslan-bubble-text` 判定（正文气泡的标记）",
-  );
-  assert.match(item, /hitSelectable:\s*!!el\?\.closest\("\.gosslan-selectable"\)/);
+  assert.match(item, /hitSelectable:\s*!!el\?\.closest\("\.gosslan-selectable"\)/,
+    "`hitSelectable` 必须真的按 `.gosslan-selectable` 判定（可选正文的标记）");
+  assert.doesNotMatch(item, /insideTextBubble/,
+    "`insideTextBubble` 已从判据删除（触屏正文现在就是可选正文；留着只会误导下一个人）");
 });
 
 test("MessageItem：面板展开期间必须在 window 捕获阶段吞掉抬手那一下", () => {

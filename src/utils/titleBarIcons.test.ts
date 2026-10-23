@@ -50,25 +50,29 @@ test("最大化切换必须真的调后端命令（否则按钮只是装饰）",
  * 这条守卫两个断言分别钉住两侧的接线：订阅函数必须在，且两个刷新函数都要在
  * onMounted/onResized 两条路径上被真正调到。
  */
-test("最大化/全屏状态必须订阅窗口尺寸变化（否则图标永远是初始字形）", () => {
+test("最大化状态必须订阅窗口尺寸变化（否则图标永远是初始字形）", () => {
   assert.ok(
     script.includes("onResized"),
     "TitleBar 必须订阅 onResized —— 只在 onMounted 问一次，用户点了按钮图标也不会变",
   );
-  for (const fn of ["refreshMaximized", "refreshFullscreen"]) {
-    assert.ok(
-      script.includes(`${fn}()`),
-      `${fn} 必须存在且被调用（缺 = 该状态永远不刷新）`,
-    );
-  }
+  assert.ok(
+    script.includes("refreshMaximized()"),
+    "refreshMaximized 必须存在且被调用（缺 = 字形永远不刷新）",
+  );
+  // 2026-10-23：macOS 三颗键改回系统原生（含全屏/缩放），组件不再维护自绘的全屏态 ——
+  // 这里反向钉住「别再把它加回来」，否则会出现一份没人点亮的状态。
+  assert.ok(
+    !script.includes("refreshFullscreen"),
+    "macOS 交给系统后不该再维护自绘全屏态（refreshFullscreen 应已删除）",
+  );
   // onMounted 与 onResized 两条路径都要刷（只刷挂载 = 用户点了没反应；只刷事件 = 首帧错）
   assert.ok(
-    /onMounted\(\(\) => \{[\s\S]*?refreshMaximized\(\);[\s\S]*?refreshFullscreen\(\);/.test(script),
-    "onMounted 里要同时刷 maximized 与 fullscreen",
+    /onMounted\(\(\) => \{[\s\S]*?refreshMaximized\(\);/.test(script),
+    "onMounted 里要刷一次 maximized（首帧）",
   );
   assert.ok(
-    /onResized\(\(\) => \{[\s\S]*?refreshMaximized\(\);[\s\S]*?refreshFullscreen\(\);/.test(script),
-    "onResized 回调里要同时刷 maximized 与 fullscreen",
+    /onResized\(\(\) => \{[\s\S]*?refreshMaximized\(\);/.test(script),
+    "onResized 回调里要刷 maximized（用户拖角/跨屏/进出全屏）",
   );
   // 退订必须成对出现（漏退订 = 组件反复挂载后监听器堆积）。
   // ⚠️ 2026-10-20 换了形状：卸载函数不再存局部变量，而是登记进 `utils/initScope` 的 scope ——
@@ -120,15 +124,29 @@ test("标题栏双击不许按平台早退：Windows 也必须能最大化", () 
 /**
  * 双击与绿灯**必须是同一个出口**（一个判据失真会同时打死两个入口，看起来像两个缺陷 ——
  * 上一轮 `is_maximizable()` 那次就是这个形状）。这里钉的是"不许各写一遍"。
+ *
+ * 2026-10-23：macOS 三颗键改回**系统原生**（后端 `macos_window::use_native_titlebar`），
+ * 组件里的自绘红绿灯与 `onGreenClick` 一起删掉。判据随之改口径（不是放宽）：
+ *   · 仍然钉"自定义缩放出口不许绕过 `toggleMaximize()`"（双击那条）；
+ *   · 反向：组件里**不许**再出现自绘红绿灯（否则会和系统按钮叠一层）；
+ *   · 正向：必须给系统三颗键让出宽度，否则标题会压在红绿灯下面。
  */
-test("双击与绿灯共用同一个缩放出口", () => {
+test("macOS 三颗键交给系统：不许自绘红绿灯，自定义缩放仍只走一个包装函数", () => {
   const dbl = sliceBracedFn(script, "function onTitlebarDblClick()") ?? "";
-  const green = sliceBracedFn(script, "function onGreenClick(") ?? "";
   assert.ok(dbl.includes("toggleMaximize"), "双击那条必须调 toggleMaximize");
-  assert.ok(green.includes("toggleMaximize"), "绿灯那条必须调 toggleMaximize");
   assert.ok(
-    !/api\.windowToggleMaximize/.test(dbl) && !/api\.windowToggleMaximize/.test(green),
-    "两个入口都不许绕过包装函数自己调命令（包装函数负责刷字形与吞错）",
+    !/api\.windowToggleMaximize/.test(dbl),
+    "双击不许绕过包装函数自己调命令（包装函数负责刷字形与吞错）",
+  );
+  assert.ok(!/function onGreenClick/.test(script), "绿灯处理器又回来了 —— macOS 应交给系统");
+  assert.ok(!/group\/traffic/.test(template), "自绘红绿灯又回来了 —— 会和系统按钮叠一层");
+  assert.ok(
+    !/bg-\[#(ff5f57|febc2e|28c840)\]/.test(template),
+    "自绘红绿灯配色又回来了（系统按钮不需要这些类）",
+  );
+  assert.ok(
+    /w-\[78px\]/.test(template),
+    "必须给系统三颗键让出 78px 占位，否则标题内容会压在红绿灯下面",
   );
 });
 

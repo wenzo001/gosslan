@@ -2214,7 +2214,7 @@ impl AppState {
     #[cfg_attr(mobile, allow(dead_code))]
     pub fn display_name(&self) -> String {
         if self.is_zh() {
-            "相闻".to_string()
+            "小院儿".to_string()
         } else {
             "Gosslan".to_string()
         }

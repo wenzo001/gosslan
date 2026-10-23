@@ -785,7 +785,6 @@ const CMDS = [
   ["window_close", "window", "", "()"],
   ["window_is_maximized", "window", "", "bool"],
   ["window_minimize", "window", "", "()"],
-  ["window_toggle_fullscreen", "window", "", "bool"],
   ["window_toggle_maximize", "window", "", "bool"]
 
 ];
@@ -973,7 +972,6 @@ const SEM = {
   window_minimize: { d: "最小化（<code>decorations:false</code> ⇒ 系统按钮没有了，得自己画）。" },
   window_toggle_maximize: { d: "最大化开关，返回新状态。小窗口在 builder 上也设了 <code>maximizable(false)</code>。" },
   window_is_maximized: { d: "当前是否最大化（按钮图标要跟着变）。" },
-  window_toggle_fullscreen: { d: "全屏开关，返回新状态。" },
   window_close: { d: "关窗。<b>常驻窗口会走「拦关闭 + 隐藏」</b>，设置 / 日志才是真销毁。" },
 
   /* ── commands/channel.rs ── */

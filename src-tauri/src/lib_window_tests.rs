@@ -106,12 +106,10 @@
             include_str!("commands/logs.rs"),
             include_str!("commands/network.rs"),
         );
-        let required: [(&str, &str); 8] = [
+        let required: [(&str, &str); 6] = [
             ("allow-maximize", ".maximize()"),
             ("allow-unmaximize", ".unmaximize()"),
-            ("allow-set-fullscreen", ".set_fullscreen("),
             ("allow-is-maximized", ".is_maximized()"),
-            ("allow-is-fullscreen", ".is_fullscreen()"),
             ("allow-minimize", ".minimize()"),
             ("allow-show", ".show()"),
             ("allow-hide", ".hide()"),

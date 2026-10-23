@@ -6,7 +6,7 @@
 	     macOS 英文系统由 en.lproj/InfoPlist.strings 覆盖为 "Gosslan"（见 tauri.conf.json > bundle.macOS.files）；
 	     iOS 的英文本地化需后续在 Xcode 工程补 zh-Hans.lproj / en.lproj。 -->
 	<key>CFBundleDisplayName</key>
-	<string>相闻</string>
+	<string>小院儿</string>
 	<key>NSLocalNetworkUsageDescription</key>
 	<string>Gosslan 需要访问本地网络，用于发现并连接同一局域网内的设备，实现无服务器的即时通讯与文件传输。</string>
 	<!-- 蓝牙 mesh：手机与**不在同一局域网**的设备（例如同一房间里的 Mac）互联。

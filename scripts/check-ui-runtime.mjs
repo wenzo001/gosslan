@@ -529,6 +529,36 @@ window.__probe = (() => {
     document.addEventListener('click', () => { clickCount++; }, true);
     return { ok: true, cmp: cmpPath, pinia: !!pinia };
   };
+  /**
+   * 同一页挂**多条消息**（右键段「连续右键不同消息」用）。
+   * 复用页面那份 vue/pinia；每条 props 直接给 MessageItem（不再经过通用夹具）。
+   * 先借一次普通 install 把 vue/pinia 拿进来，再整体换宿主。
+   */
+  H.installMessages = async (listJson) => {
+    if (!window.__probe.vue) {
+      await H.install('/src/components/MessageItem.vue', '', JSON.stringify({
+        message: { msg_id: 'warm', sender_id: 'peer-a', kind: 'text', content: 'warm', ts: 1, conv_id: 'c', seq: 1 },
+      }));
+    }
+    const V = window.__probe.vue;
+    if (!V) return { ok: false, why: 'no-vue' };
+    const mod = await import('/src/components/MessageItem.vue');
+    document.body.innerHTML = '';
+    const host = document.createElement('div');
+    host.id = 'probe-host';
+    document.body.appendChild(host);
+    const list = JSON.parse(listJson);
+    const app = V.createApp({
+      setup() {
+        return () => V.h('div', {}, list.map((p) => V.h(mod.default, p)));
+      },
+    });
+    if (window.__pinia) app.use(window.__pinia);
+    app.mount(host);
+    window.__probe.vue = V;
+    await V.nextTick(); await V.nextTick();
+    return { ok: true };
+  };
   /** 受控下拉（--only=select）：选中值写回 state.selectValue，才能读"触发器文案跟着变"。 */
   H.selectMount = async () => H.install(
     '/src/components/ui/SettingsSelect.vue',
@@ -704,7 +734,7 @@ window.__probe = (() => {
       render() {
         return V.h('div', { class: 'flex h-full flex-col' }, [
           // isMobile 时 TitleBar 自己 v-if 不画、也不写 has-caption —— 与真应用的移动端主窗一致。
-          V.h(TitleBar, { title: '相闻 · 图片预览', isMobile: !!o.isMobile }),
+          V.h(TitleBar, { title: '小院儿 · 图片预览', isMobile: !!o.isMobile }),
           V.h('div', { class: 'min-h-0 flex-1 bg-white' }, '内容区'),
           V.h(Lightbox, {
             images: [{ dataSrc: 'data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7', name: 'probe.gif' }],
@@ -875,7 +905,7 @@ window.__probe = (() => {
           // ⚠️ 必须**把 isMobile 传下去**：html 上那个 'is-mobile' 类只影响 CSS 变量，
           // TitleBar 的显隐读的是 prop（v-if=!isMobile）。第一版只切了类、没传 prop
           // ⇒ 移动端那一档 caption 照旧渲染，三条移动判据全红（实测踩过）。
-          V.h(TitleBar, { title: '相闻', isMobile: !!o.isMobile }),
+          V.h(TitleBar, { title: '小院儿', isMobile: !!o.isMobile }),
           V.h('div', { class: 'min-h-0 flex-1 bg-white' }, '内容区'),
           V.h(BaseModal, {
             open: true,
@@ -2746,6 +2776,7 @@ async function main() {
     const fontsel = want("fontsel");
     const layoutstore = want("layoutstore");
     const settingsmobile = want("settingsmobile");
+    const netcard = want("netcard");
     const composermobile = want("composermobile");
     const tasksmobile = want("tasksmobile");
     const opscenter = want("opscenter");
@@ -2804,6 +2835,7 @@ async function main() {
     if (fontsel) await runFontSelect(cdp, url);
     if (layoutstore) await runLayoutStore(cdp, url);
     if (settingsmobile) await runSettingsMobile(cdp, url);
+    if (netcard) await runNetCard(cdp, url);
     if (composermobile) await runComposerMobile(cdp, url);
     if (tasksmobile) await runTasksMobile(cdp, url);
     if (opscenter) await runOpsCenter(cdp, url);
@@ -4976,6 +5008,13 @@ async function runRowPair(cdp, url) {
     const cornerRad = bcs
       ? parseFloat(isMine ? bcs.borderTopRightRadius : bcs.borderTopLeftRadius)
       : null;
+    // 尾巴外缘是**圆弧**（border-radius 撑出来的四分之一圆），不是 border 三角形 —— 用户
+    // 2026-10-23「边缘不够丝滑」那一条的机制就在这里：改成直线/三角形的那天这条读数会掉下去。
+    // 尾巴现在是 SVG 叶形：**描边色必须等于气泡自己的边框色**（用户 2026-10-23：
+    // 「气泡有边框、尾巴没有 ⇒ 接缝对不上」）。这就是那条诉求的机器读数。
+    const lineEl = tail ? tail.querySelector(isMine ? '.tail-line-mine' : '.tail-line-other') : null;
+    const tailStroke = lineEl ? getComputedStyle(lineEl).stroke : null;
+    const bubbleLine = bcs ? (isMine ? bcs.borderRightColor : bcs.borderLeftColor) : null;
     const reach = tr && br
       ? +((isMine ? br.right - tr.left : tr.right - br.left)).toFixed(2)
       : null;
@@ -4992,6 +5031,8 @@ async function runRowPair(cdp, url) {
       isMine,
       reach,
       cornerRad,
+      tailStroke,
+      bubbleLine,
     };
   })()`);
   /** 估高端现算：引的是应用自己那份 `messageHeight`，这里不重述任何高度常量。 */
@@ -5084,9 +5125,9 @@ async function runRowPair(cdp, url) {
     "读数都是数", JSON.stringify({ far: gFar, group: gGroup }));
   check("尖角对准头像中心·单聊：两中心相差 <= 1px",
     Math.abs(dTailDm) <= 1, "|差| <= 1px", JSON.stringify({ dTailDm }));
-  check("尖角不越出气泡顶边·群聊（昵称行把气泡推下 18px）：0 <= tailTop - bubbleTop <= 1.5px",
-    groupTailAboveTop >= 0 && groupTailAboveTop <= 1.5,
-    "0 <= 差 <= 1.5px", JSON.stringify({ groupTailAboveTop, tailTop: gGroup && gGroup.tailTop, bubbleTop: gGroup && gGroup.bubbleTop }));
+  check("尖角不越出气泡顶边·群聊（昵称行把气泡推下 18px）：-1.5 <= tailTop - bubbleTop <= 1.5px",
+    groupTailAboveTop >= -1.5 && groupTailAboveTop <= 1.5,
+    "-1.5 <= 差 <= 1.5px", JSON.stringify({ groupTailAboveTop, tailTop: gGroup && gGroup.tailTop, bubbleTop: gGroup && gGroup.bubbleTop }));
 
   // ============ 尖角与气泡**横向融合**（用户 2026-10-23：群聊里尾巴没和气泡融合）============
   // 竖向对上了不等于长在一起：三角形靠气泡那一侧是底边，底边必须压在气泡边缘上。
@@ -5105,8 +5146,11 @@ async function runRowPair(cdp, url) {
     check("非空转·尖角横向（" + where + "）：读到了底边与气泡边缘，且方向就是预期的那个分支",
       !!g && typeof g.reach === "number" && g.isMine === wantMine,
       "reach 是数 + isMine == " + wantMine, JSON.stringify(g && { reach: g.reach, isMine: g.isMine }));
-    check("尖角与气泡融合（" + where + "）：底边压在气泡边缘上（0 <= reach <= 6）",
-      !!g && g.reach >= 0 && g.reach <= 6, "0 <= reach <= 6", JSON.stringify({ where, reach: g && g.reach }));
+    check("尖角与气泡融合（" + where + "）：尾巴压进气泡 1~12px（圆弧尾巴靠这段重叠遮缝）",
+      !!g && g.reach >= 1 && g.reach <= 12, "1 <= reach <= 12", JSON.stringify({ where, reach: g && g.reach }));
+    check("尖角描边与气泡边框同色（" + where + "）：SVG 描边 == 气泡那一侧的 border 色",
+      !!g && typeof g.tailStroke === "string" && g.tailStroke === g.bubbleLine,
+      "stroke == 同侧 border 色", JSON.stringify({ where, tailStroke: g && g.tailStroke, bubbleLine: g && g.bubbleLine }));
     // 圆角这一侧必须是**直的**才贴得上。注意"要不要压平"跟群聊/单聊不是一回事：
     // 自己的消息在群聊里**不画昵称行**（`showNickname` 只给别人的消息），气泡没有被推下去，
     // 尖角仍在胶囊最左侧 ⇒ 维持原圆角。所以压平的条件 = 群聊 **且** 对方。
@@ -5120,6 +5164,23 @@ async function runRowPair(cdp, url) {
   // 取证帧：群聊·对方那一条，正好是用户截图里"尾巴断开"的形状，人眼可复核
   if (SHOT_PATH) {
     await mount(FAR, true);
+    // PROBE_LIGHT=1 时把 store 的 dark 翻成 false 再拍一张浅色帧（用户的截图是浅色）。
+    // 注意：只摘 html.dark 不够 —— 气泡配色是 `resolveChatColors(..., app.dark)` 在 JS 里算的，
+    // 必须翻 store，颜色才会真的按浅色重算。只影响取证，不动判据。
+    if (process.env.PROBE_LIGHT === "1") {
+      await cdp.eval(`(async () => {
+        const piniaUrl = performance.getEntriesByType('resource')
+          .map((e) => e.name || '').find((u) => u.includes('/node_modules/.vite/deps/pinia.js?v='));
+        if (!piniaUrl || !window.__pinia) return 'no-pinia';
+        const P = await import(piniaUrl);
+        const A = await import('/src/stores/useAppStore.ts');
+        P.setActivePinia(window.__pinia);
+        A.useAppStore().dark = false;
+        document.documentElement.classList.remove('dark');
+        return 'ok';
+      })()`);
+      await sleep(400);
+    }
     const shot = await cdp.send("Page.captureScreenshot", { format: "png" });
     fs.writeFileSync(SHOT_PATH.replace(/\.png$/, "-tail.png"), Buffer.from(shot.data, "base64"));
     console.log("  📷 尖角取证帧 → " + SHOT_PATH.replace(/\.png$/, "-tail.png"));
@@ -5154,8 +5215,8 @@ async function runRowPair(cdp, url) {
           && typeof g.bubbleTop === "number",
         "读数都是数", JSON.stringify(g));
       if (isGroup) {
-        check("尖角不越出气泡顶边·" + kindLabel + "·" + where + "：0 <= tailTop - bubbleTop <= 1.5px",
-          above >= 0 && above <= 1.5, "0 <= 差 <= 1.5px", JSON.stringify({ kindLabel, where, above }));
+        check("尖角不越出气泡顶边·" + kindLabel + "·" + where + "：-1.5 <= tailTop - bubbleTop <= 1.5px",
+          above >= -1.5 && above <= 1.5, "-1.5 <= 差 <= 1.5px", JSON.stringify({ kindLabel, where, above }));
       } else {
         check("尖角对准头像中心·" + kindLabel + "·" + where + "：两中心相差 <= 1px",
           Math.abs(d) <= 1, "|差| <= 1px", JSON.stringify({ kindLabel, where, d }));
@@ -8094,6 +8155,149 @@ async function runLayoutStore(cdp, url) {
   }
 }
 
+/**
+ * 网络页那几张卡的宽度在「重新连接实时事件」前后是否变化（用户 2026-10-23：
+ * 点完中间那块会缩起来，之后不再变宽）。
+ *
+ * 直接挂 NetworkSection、不经过设置外壳：卡片宽度是内容驱动还是布局驱动，在这一层就能分开 ——
+ * 这里不变而真机变 ⇒ 问题在外壳列宽；这里就变 ⇒ 在组件内部。
+ */
+async function runNetCard(cdp, url) {
+  await cdp.send("Page.bringToFront").catch(() => {});
+  await cdp.send("Emulation.setDeviceMetricsOverride", { width: 900, height: 760, deviceScaleFactor: 1, mobile: false });
+  try {
+    await cdp.send("Page.navigate", { url });
+    await sleep(3_000);
+    await cdp.eval(PAGE_FIXTURE);
+    // 挂**真实设置面板**（桌面分支是 max-w-xl 的 BaseModal，所有分区竖着排）——
+    // 只挂 NetworkSection 量到的是"页面全宽"，盖住了外壳把宽度收窄这件事。
+    const mounted = await cdp.eval("window.__probe.install('/src/components/SettingsPanel.vue', '', "
+      + JSON.stringify(JSON.stringify({ open: true, isolated: true })) + ")");
+    await sleep(900);
+    const read = () => cdp.eval(`(() => {
+      const card = [...document.querySelectorAll('[class*="rounded-"][class*="border"]')]
+        .find((el) => el.getClientRects().length > 0 && el.textContent.includes('实时事件链路'));
+      if (!card) return null;
+      const modal = card.closest('[class*="max-w-xl"]') || card.closest('[role="dialog"]');
+      const btn = [...card.querySelectorAll('button')]
+        .find((b) => (b.textContent || '').includes('重新连接'));
+      const w = (el) => (el ? +el.getBoundingClientRect().width.toFixed(1) : null);
+      return { card: w(card), btn: w(btn), modal: w(modal) };
+    })()`);
+    const before = await read();
+    // 点下去之后逐帧采 1.5s：用户描述的是"一下就缩起来"，瞬态只有采样抓得到。
+    const clicked = await cdp.eval(`(() => {
+      const b = [...document.querySelectorAll('button')]
+        .find((x) => (x.textContent || '').includes('重新连接实时事件'));
+      if (!b) return false;
+      window.__netCardSamples = [];
+      const first = [...document.querySelectorAll('[class*="rounded-"][class*="border"]')]
+        .find((el) => el.textContent.includes('实时事件链路'));
+      let k = 0;
+      const tick = () => {
+        if (first) {
+          const r = first.getBoundingClientRect();
+          window.__netCardSamples.push({ w: +r.width.toFixed(1), h: +r.height.toFixed(1),
+            t: (first.textContent || '').replace(/\s+/g, ' ').slice(0, 28) });
+        } else window.__netCardSamples.push(null);
+        if (++k < 30) setTimeout(tick, 50);
+      };
+      b.click();
+      tick();
+      return true;
+    })()`);
+    await sleep(1_800);
+    const samples = await cdp.eval("window.__netCardSamples || []");
+    const after = await read();
+    const finite = samples.filter((n) => n && typeof n.w === "number");
+    const minW = finite.length ? Math.min(...finite.map((n) => n.w)) : null;
+    const maxW = finite.length ? Math.max(...finite.map((n) => n.w)) : null;
+    const minH = finite.length ? Math.min(...finite.map((n) => n.h)) : null;
+    const maxH = finite.length ? Math.max(...finite.map((n) => n.h)) : null;
+    console.log("  ℹ 设置外壳里卡片宽度 → " + JSON.stringify({
+      before, after, frames: finite.length, minW, maxW, minH, maxH, samples: finite.slice(0, 6),
+    }));
+    check("网络页（真实设置面板）：点「重新连接实时事件」前后卡片宽度不变",
+      !!mounted && mounted.ok === true && clicked === true && !!before && !!after
+        && Math.abs(after.card - before.card) <= 1
+        && minW !== null && Math.abs(maxW - minW) <= 1
+        && minH !== null && Math.abs(maxH - minH) <= 1,
+      "点前后卡片宽/高相差都 <= 1px，且 1.5s 逐帧采样无缩窄/长高",
+      JSON.stringify({ before, after, minW, maxW }));
+
+    // ── 同一个动作，**手机宽度**那一档（用户截图就是二级页 360~390 宽）──
+    // 移动端走 MobilePageFrame + 二级页容器，与桌面桌面板是两条不同的 DOM 路径。
+    await cdp.send("Emulation.setDeviceMetricsOverride", {
+      width: 390, height: 844, deviceScaleFactor: 2, mobile: true,
+    });
+    await cdp.send("Page.navigate", { url });
+    await sleep(3_000);
+    await cdp.eval(PAGE_FIXTURE);
+    const m2 = await cdp.eval("window.__probe.install('/src/components/SettingsPanel.vue', '', "
+      + JSON.stringify(JSON.stringify({ open: true, isolated: true })) + ")");
+    await sleep(700);
+    await cdp.eval(`(() => {
+      const b = [...document.querySelectorAll('button')]
+        .find((x) => (x.textContent || '').trim() === '网络');
+      if (b) b.click();
+    })()`);
+    await sleep(900);
+    const rows = () => cdp.eval(`(() => {
+      const card = [...document.querySelectorAll('[class*="rounded-"][class*="border"]')]
+        .find((el) => el.getClientRects().length > 0 && el.textContent.includes('实时事件链路'));
+      if (!card) return null;
+      return [...card.querySelectorAll('[class*="flex-wrap"]')].map((r) => {
+        const b = r.getBoundingClientRect();
+        return { h: +b.height.toFixed(1), t: (r.textContent || '').replace(/\s+/g, ' ').slice(0, 34) };
+      });
+    })()`);
+    const rowsBefore = await rows();
+    const beforeM = await read();
+    const clickedM = await cdp.eval(`(() => {
+      const b = [...document.querySelectorAll('button')]
+        .find((x) => (x.textContent || '').includes('重新连接实时事件'));
+      if (!b) return false;
+      window.__netCardSamples = [];
+      const first = [...document.querySelectorAll('[class*="rounded-"][class*="border"]')]
+        .find((el) => el.textContent.includes('实时事件链路'));
+      let k = 0;
+      const tick = () => {
+        if (first) {
+          const r = first.getBoundingClientRect();
+          window.__netCardSamples.push({ w: +r.width.toFixed(1), h: +r.height.toFixed(1),
+            t: (first.textContent || '').replace(/\s+/g, ' ').slice(0, 28) });
+        } else window.__netCardSamples.push(null);
+        if (++k < 30) setTimeout(tick, 50);
+      };
+      b.click();
+      tick();
+      return true;
+    })()`);
+    await sleep(1_800);
+    const samplesM = await cdp.eval("window.__netCardSamples || []");
+    const afterM = await read();
+    const rowsAfter = await rows();
+    console.log("  ℹ 手机二级页各行高度 → " + JSON.stringify({ rowsBefore, rowsAfter }));
+    const finiteM = samplesM.filter((n) => n && typeof n.w === "number");
+    const minM = finiteM.length ? Math.min(...finiteM.map((n) => n.w)) : null;
+    const maxM = finiteM.length ? Math.max(...finiteM.map((n) => n.w)) : null;
+    const minHM = finiteM.length ? Math.min(...finiteM.map((n) => n.h)) : null;
+    const maxHM = finiteM.length ? Math.max(...finiteM.map((n) => n.h)) : null;
+    console.log("  ℹ 手机二级页卡片宽度 → " + JSON.stringify({
+      before: beforeM, after: afterM, frames: finiteM.length, minM, maxM, minHM, maxHM, samples: finiteM.slice(0, 6),
+    }));
+    check("网络页（手机二级页）：点「重新连接实时事件」前后卡片宽度不变",
+      !!m2 && m2.ok === true && clickedM === true && !!beforeM && !!afterM
+        && Math.abs(afterM.card - beforeM.card) <= 1
+        && minM !== null && Math.abs(maxM - minM) <= 1
+        && minHM !== null && Math.abs(maxHM - minHM) <= 1,
+      "点前后卡片宽/高相差都 <= 1px，且 1.5s 逐帧采样无缩窄/长高",
+      JSON.stringify({ before: beforeM, after: afterM, minM, maxM }));
+  } finally {
+    await cdp.send("Emulation.clearDeviceMetricsOverride").catch(() => {});
+  }
+}
+
 async function runSettingsMobile(cdp, url) {
   await cdp.send("Page.bringToFront").catch(() => {});
   await cdp.send("Emulation.setDeviceMetricsOverride", {
@@ -8202,10 +8406,15 @@ async function runSettingsMobile(cdp, url) {
       const tr = await cdp.eval(`(() => {
         const b = (${pickJs});
         if (!b) return null;
+        // 按压形态在内层那一段（用户 2026-10-23：整行不缩，中间那一块凹下去 + 内阴影）。
+        const inner = b.querySelector('span');
+        const ics = inner ? getComputedStyle(inner) : null;
         return {
           transform: getComputedStyle(b).transform,
           noPress: b.hasAttribute('data-no-press'),
           text: (b.textContent || '').trim().slice(0, 12),
+          innerTransform: ics ? ics.transform : null,
+          innerShadow: ics ? ics.boxShadow : null,
         };
       })()`);
       // 抬手点故意挪开：同一元素上 press+release 会合成一次 click（按列表项就会跳页、
@@ -8226,6 +8435,14 @@ async function runSettingsMobile(cdp, url) {
         && scaled(backPress?.transform) === true,
       "列表项(外观)带 data-no-press 且 transform 不缩放 + 返回键(正控)照旧缩放",
       JSON.stringify({ rowPress, backPress }));
+    // 用户同日追加：「中间那一块凹下去 + 一点阴影，宽度不要变」——内层真的下沉并出现内阴影，
+    // 而不是只停了整行的缩放（那样等于没有按压反馈）。
+    check("设置列表项：按住时内层那一段下沉并出现内阴影（整行仍不缩放）",
+      !!rowPress && /matrix\(/.test(String(rowPress.innerTransform))
+        && !/none/.test(String(rowPress.innerShadow))
+        && /inset/.test(String(rowPress.innerShadow)),
+      "内层 transform 非 none + box-shadow 含 inset",
+      JSON.stringify({ innerTransform: rowPress?.innerTransform, innerShadow: rowPress?.innerShadow }));
 
     // 量的是**同一个元素**的 left 在「刚进入」与「滑到底」两处的差，不是文案、不是类名。
     // 边距会漂只有两类来源：某一层滚动容器在滚动过程中长出了滚动条（吃掉宽度），或者某个
@@ -8335,6 +8552,34 @@ async function runSettingsMobile(cdp, url) {
         && Math.abs(profileLeft - drift.atTop) <= 1 && profileLeft >= 8,
       "资料卡 left == 网络卡 left 且 >=8",
       JSON.stringify({ profileLeft, networkLeft: drift.atTop }));
+
+    // 用户 2026-10-23（移动端资料页）：去掉「我在线」只留绿点、输入框更长、与计数间距更小。
+    // 量的都是**几何与文本**，不是类名：类名对了但宽度被别的元素吃掉一样要红。
+    const nick = await cdp.eval(`(() => {
+      const inp = document.querySelector('[data-profile-fields] input:not([type="file"])');
+      if (!inp) return null;
+      const row = inp.parentElement;
+      const kids = row ? [...row.children] : [];
+      // 计数那一格：兄弟里带 “N/M” 文本的那个（不是 input，也不是状态点）
+      const counter = kids.find((el) => el !== inp && /\d+\s*[/]\s*\d+/.test(el.textContent || ''))
+        || kids[1];
+      const dot = [...row.querySelectorAll('span')].find((el) => /rounded-full/.test(String(el.className)));
+      const ir = inp.getBoundingClientRect();
+      const cr = counter ? counter.getBoundingClientRect() : null;
+      return {
+        text: (row.textContent || '').replace(/\s+/g, ' ').trim().slice(0, 24),
+        inputW: +ir.width.toFixed(1),
+        gapToCounter: cr ? +(cr.left - ir.right).toFixed(1) : null,
+        hasDot: !!dot,
+      };
+    })()`);
+    console.log("  ℹ 资料页昵称行读数 → " + JSON.stringify(nick));
+    check("移动端资料页：只留状态点（无「我在线」文案）、输入框更宽、与计数间距更小",
+      !!nick && !/我在线|在线/.test(nick.text) && nick.hasDot
+        && nick.inputW >= 140
+        && nick.gapToCounter !== null && nick.gapToCounter <= 6,
+      "无在线文案 + 有状态点 + input>=140 + 与计数间距<=6",
+      JSON.stringify(nick));
   } finally {
     await cdp.send("Emulation.clearDeviceMetricsOverride").catch(() => {});
   }
@@ -9018,99 +9263,597 @@ async function runShareDirectory(cdp, url) {
  * 所以进段先切到 1100px 的桌面视口，并把「宽度 > 767」作为环境判据（不满足直接红，不是跳过）。
  */
 async function runContextGuard(cdp, url) {
-  await cdp.send("Emulation.setDeviceMetricsOverride", {
-    width: 1100, height: 800, deviceScaleFactor: 1, mobile: false,
-    screenWidth: 1100, screenHeight: 800,
-  });
-  await cdp.send("Page.bringToFront").catch(() => {});
-  await cdp.send("Page.navigate", { url });
-  await sleep(3_000);
-  await cdp.eval(PAGE_FIXTURE);
-  const env = await cdp.eval(`(() => ({
-    width: window.innerWidth,
-    narrow: matchMedia('(max-width: 767px)').matches,
-  }))()`);
-  console.log("  · 消息右键段环境：" + JSON.stringify(env));
-  check("环境：消息右键段在桌面视口里跑（宽度 > 767px，否则右键走移动端分支）",
-    !!env && env.width > 767 && env.narrow === false,
-    "width > 767 且不是窄布局", JSON.stringify(env));
+  /**
+   * 桌面右键边界 + 选区复制 + 移动端原生选字分流（用户 2026-10-23 的两条产品决策）。
+   *
+   * 纪律：
+   *  · 视口 / 触摸 / 媒体仿真都在 try/finally 里归还（参照 runNetCard 的写法）；
+   *  · 视口断点从 `/src/utils/platform.ts` 现取，不抄 767；
+   *  · 每条右键都用**真指针**，并用 window 捕获相记录真实命中的元素是不是在
+   *    `[data-msg-col]` 里 —— 不能靠选择器名字推断边界；
+   *  · 真机不可用的那部分（Android/iOS 原生选区手柄与系统复制菜单）只验到
+   *    "应用没有拦 contextmenu / 没有同时开自定义面板"，报告里必须标 UNVERIFIED。
+   *
+   * 故障注入（只给本机验收收尾）：GOSSLAN_CTXGUARD_FAIL=check|throw。
+   */
+  const restoreWidth = await cdp.eval("window.innerWidth").catch(() => null);
+  try {
+    // ───────────────────────── 桌面视口 ─────────────────────────
+    await cdp.send("Emulation.setDeviceMetricsOverride", {
+      width: 1100, height: 800, deviceScaleFactor: 1, mobile: false,
+      screenWidth: 1100, screenHeight: 800,
+    });
+    await cdp.send("Page.bringToFront").catch(() => {});
+    // 复制断言需要真实的 clipboard 权限（VueUse 会先看 clipboard-write 的许可）。
+    await cdp.send("Browser.grantPermissions", {
+      origin: new URL(url).origin,
+      permissions: ["clipboardReadWrite", "clipboardSanitizedWrite"],
+    }).catch(() => {});
+    await cdp.send("Page.navigate", { url });
+    await sleep(3_000);
+    await cdp.eval(PAGE_FIXTURE);
 
-  const propsFor = (isGroup) => ({
-    message: {
-      msg_id: "m-ctxguard", sender_id: "peer-a", kind: "text",
-      content: "右键这条消息：即使有选区也要弹应用自己的菜单。", ts: 1700000000000,
-      conv_id: isGroup ? "group:g1" : "dm:peer-a", seq: 1,
-    },
-    isGroup, senderName: "对方",
-  });
-  const rightClickAt = async (x, y) => {
-    await cdp.send("Input.dispatchMouseEvent", { type: "mousePressed", x, y, button: "right", clickCount: 1 });
-    await cdp.send("Input.dispatchMouseEvent", { type: "mouseReleased", x, y, button: "right", clickCount: 1 });
-    await sleep(320);
-  };
-  const ctxState = () => cdp.eval(`(() => ({
-    menu: !!document.querySelector('[role="menu"].gosslan-menu'),
-    prevented: window.__ctxDefault ?? null,
-  }))()`);
+    // 断点从生产码现取；导入失败就让这一发红（不静默回落硬编码）。
+    const env = await cdp.eval(`(async () => {
+      const PL = await import('/src/utils/platform.ts');
+      window.__platformProbe = PL;
+      return {
+        width: innerWidth,
+        query: PL.NARROW_LAYOUT_QUERY,
+        limit: PL.MOBILE_MAX_WIDTH_PX,
+        narrow: matchMedia(PL.NARROW_LAYOUT_QUERY).matches,
+      };
+    })()`);
+    console.log("  · 消息右键段环境：" + JSON.stringify(env));
+    check("环境：右键段在桌面视口（宽度 > platform.MOBILE_MAX_WIDTH_PX，断点从生产码现取）",
+      !!env && env.width > env.limit && env.narrow === false,
+      "width > limit 且不是窄布局", JSON.stringify(env));
 
-  // ① 单聊气泡：先选中正文（模拟"之前双击选过词"），再右键气泡中心
-  const okDm = await cdp.eval("window.__probe.install('/src/components/MessageItem.vue', '', "
-    + JSON.stringify(JSON.stringify(propsFor(false))) + ")");
-  await sleep(420);
-  const dm = await cdp.eval(`(() => {
-    const bubble = document.querySelector('#probe-host .gosslan-bubble-text');
-    if (!bubble) return null;
-    const sel = window.getSelection();
-    const range = document.createRange();
-    range.selectNodeContents(bubble);
-    sel.removeAllRanges();
-    sel.addRange(range);
-    window.__ctxDefault = null;
-    window.addEventListener('contextmenu', (e) => { window.__ctxDefault = e.defaultPrevented; });
-    const r = bubble.getBoundingClientRect();
-    return {
-      selected: sel.toString().slice(0, 8),
-      x: Math.round(r.left + r.width / 2),
-      y: Math.round(r.top + r.height / 2),
+    const failMode = process.env.GOSSLAN_CTXGUARD_FAIL || "";
+    if (failMode === "check") {
+      check("故障注入：故意红一条（验收 finally 仍归还视口）", false, "红", "故障注入");
+    }
+    if (failMode === "throw") throw new Error("故障注入：ctxguard 主动抛错（验收 finally 仍归还视口）");
+
+    // 命中记录：window 捕获相先于组件处理器，记下真实 target 属于哪个区域。
+    await cdp.eval(`(() => {
+      window.__ctxHit = null;
+      window.addEventListener('contextmenu', (e) => {
+        const el = e.target instanceof Element ? e.target : null;
+        window.__ctxHit = {
+          tag: el ? el.tagName : null,
+          inCol: !!(el && el.closest('[data-msg-col]')),
+          inReactionEntry: !!(el && el.closest('[data-reaction-entry]')),
+          inAvatar: !!(el && el.closest('.gosslan-avatar-box')),
+          inChip: !!(el && el.closest('[data-reaction-chip]')),
+        };
+      }, true);
+      return true;
+    })()`);
+
+    // 文案从应用词典现取：探针页的 locale 可能是 en（全新 profile），不能手抄中文。
+    const L = await cdp.eval(`(async () => {
+      const I = await import('/src/i18n/index.ts');
+      return { copySel: I.t('msg.copySelection'), copyMsg: I.t('msg.copyMessage') };
+    })()`);
+    check("非空转·文案：从应用词典现取到「复制选中内容 / 复制消息」两条且不同",
+      !!L && !!L.copySel && !!L.copyMsg && L.copySel !== L.copyMsg,
+      "两条文案", JSON.stringify(L));
+
+    /**
+     * 剪贴板探针 = **测试替身**：只记录应用交给 Clipboard API 的文本，不真的写系统剪贴板。
+     *
+     * 为什么不调原 API：长跑里窗口失焦时 `clipboard.write` 会挂住 renderer（本轮组合跑实测
+     * 45s 无回包）；本仓 `useClipboard` 自己也没有失败信号（库里恒 true），真剪贴板写不写成功
+     * 本来就不可断言。这里断言的是「应用要复制的那段文字」——正是"只复制选中内容"的契约。
+     * 需要真剪贴板时另跑一次短程手工验证，不在全量探针里做。
+     */
+    const clipReady = await cdp.eval(`(() => {
+      window.__copied = null;
+      const c = navigator.clipboard;
+      if (c && typeof c.write === 'function') {
+        c.write = async (items) => {
+          try {
+            const item = items && items[0];
+            if (item && item.types && item.types.indexOf('text/plain') >= 0) {
+              const blob = await item.getType('text/plain');
+              window.__copied = await blob.text();
+            }
+          } catch (_e) { /* 读不到就保持 null，让判据红 */ }
+          return undefined;
+        };
+      }
+      if (c && typeof c.writeText === 'function') {
+        c.writeText = async (text) => { window.__copied = String(text); };
+      }
+      document.execCommand = (cmd) => {
+        if (String(cmd).toLowerCase() === 'copy') {
+          const ta = document.querySelector('textarea');
+          if (ta) window.__copied = ta.value;
+        }
+        return true;
+      };
+      return !!(c && (typeof c.write === 'function' || typeof c.writeText === 'function'));
+    })()`);
+    check("环境：剪贴板 API 可用（探针只记录应用要写入的文本，不落系统剪贴板）",
+      clipReady === true, "true", String(clipReady));
+
+    const rectOf = (selector, index = 0) => cdp.eval(`(() => {
+      const el = document.querySelectorAll(${JSON.stringify(selector)})[${index}];
+      if (!el) return null;
+      const r = el.getBoundingClientRect();
+      return {
+        x: Math.round(r.left + r.width / 2),
+        y: Math.round(r.top + r.height / 2),
+        left: +r.left.toFixed(1), right: +r.right.toFixed(1),
+        top: +r.top.toFixed(1), bottom: +r.bottom.toFixed(1),
+        w: +r.width.toFixed(1), h: +r.height.toFixed(1),
+        pointerEvents: getComputedStyle(el).pointerEvents,
+        opacity: getComputedStyle(el).opacity,
+      };
+    })()`);
+    const rightClickAt = async (p) => {
+      if (!p) return false;
+      await cdp.send("Input.dispatchMouseEvent", { type: "mouseMoved", x: p.x, y: p.y });
+      await sleep(30);
+      await cdp.send("Input.dispatchMouseEvent", { type: "mousePressed", x: p.x, y: p.y, button: "right", clickCount: 1 });
+      await cdp.send("Input.dispatchMouseEvent", { type: "mouseReleased", x: p.x, y: p.y, button: "right", clickCount: 1 });
+      await sleep(300);
+      return true;
     };
-  })()`);
-  check("非空转·右键：消息装上了，且右键前页面里确实有非折叠选区",
-    !!okDm && okDm.ok === true && !!dm && dm.selected.length > 0,
-    "install ok + 有选区", JSON.stringify({ okDm, dm }));
-  await rightClickAt(dm ? dm.x : 0, dm ? dm.y : 0);
-  const afterDm = await ctxState();
-  check("桌面右键消息气泡：有选区也弹应用菜单，且默认菜单被 preventDefault（旧实现弹 WebKit 原生菜单）",
-    afterDm.menu === true && afterDm.prevented === true,
-    "menu=true / prevented=true", JSON.stringify(afterDm));
-  await cdp.key("Escape", "Escape", "", 27);
-  await sleep(220);
+    const menuState = () => cdp.eval(`(() => {
+      const el = document.querySelector('[role="menu"].gosslan-menu');
+      return {
+        open: !!el,
+        items: el
+          ? [...el.querySelectorAll('[role="menuitem"]')].map((n) => (n.innerText || '').trim())
+          : [],
+      };
+    })()`);
+    const hitState = () => cdp.eval("window.__ctxHit");
+    const closeMenu = async () => {
+      await cdp.key("Escape", "Escape", "", 27);
+      await sleep(220);
+      return !(await menuState()).open;
+    };
+    /**
+     * 激活菜单项：用**键盘** Enter（与既有 ctxmenu 段同一条 Reka 路径）。
+     * 纯 pointer / 元素 click() 在 Reka 菜单里会先被 DismissableLayer 收掉，
+     * 表现为"菜单开了、动作没跑、__copied 还是上一次的值"（本轮实测踩过）。
+     */
+    const clickItem = async (label) => {
+      // 与既有 ctxmenu 段同一条 Reka 键盘路径：↓ 走到目标条目再 Enter。
+      // 直接 item.focus()+Enter 偶发不选中（焦点在了、菜单的 currentItem 没更新）⇒ 本轮实测踩过。
+      const total = await cdp.eval(`document.querySelectorAll('[role="menu"] [role="menuitem"]').length`);
+      if (!total) return false;
+      let hit = false;
+      for (let step = 0; step <= total; step += 1) {
+        const active = await cdp.eval(`(() => {
+          const items = [...document.querySelectorAll('[role="menu"] [role="menuitem"]')];
+          const a = document.activeElement;
+          return {
+            idx: items.indexOf(a),
+            text: String((a && a.innerText) || '').trim(),
+          };
+        })()`);
+        if (active && active.idx >= 0 && active.text.includes(label)) { hit = true; break; }
+        await cdp.key("ArrowDown", "ArrowDown", "", 40);
+        await sleep(70);
+      }
+      if (hit) {
+        await cdp.key("Enter", "Enter", "\r", 13);
+        await sleep(380);
+      }
+      // 动作如果没把菜单收掉，先 Esc 收干净：带着开着的 portal 去换宿主会把 renderer 卡死。
+      if ((await menuState()).open) await closeMenu();
+      return hit;
+    };
+    const copied = () => cdp.eval("window.__copied");
+    const selectText = (mode) => cdp.eval(`(() => {
+      const root = document.querySelector('#probe-host .gosslan-selectable');
+      if (!root) return null;
+      const sel = window.getSelection();
+      const range = document.createRange();
+      if (${JSON.stringify(mode)} === 'part') {
+        const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+        let node = walker.nextNode();
+        while (node && !(node.textContent || '').trim()) node = walker.nextNode();
+        if (!node) return null;
+        const n = Math.min(6, (node.textContent || '').length);
+        range.setStart(node, 0);
+        range.setEnd(node, n);
+      } else {
+        range.selectNodeContents(root);
+      }
+      sel.removeAllRanges();
+      sel.addRange(range);
+      const r = range.getBoundingClientRect();
+      return { text: sel.toString(), x: Math.round(r.left + r.width / 2), y: Math.round(r.top + r.height / 2) };
+    })()`);
+    const clearSel = () => cdp.eval("window.getSelection().removeAllRanges(); 1");
+    const mountOne = async (props) => {
+      // 换宿主前必须收掉开着的菜单：带着 Reka portal 去 innerHTML='' 会把 renderer 卡死（本轮实测）。
+      if ((await menuState()).open) await closeMenu();
+      const r = await cdp.eval("window.__probe.install('/src/components/MessageItem.vue', '', "
+        + JSON.stringify(JSON.stringify(props)) + ")");
+      await sleep(420);
+      return r;
+    };
 
-  // ② 群聊：右键落在昵称行（消息行之外）—— 处理器必须挂在整条消息的根上
-  const okGroup = await cdp.eval("window.__probe.install('/src/components/MessageItem.vue', '', "
-    + JSON.stringify(JSON.stringify(propsFor(true))) + ")");
-  await sleep(420);
-  const nick = await cdp.eval(`(() => {
-    const bubble = document.querySelector('#probe-host .gosslan-bubble-text');
-    const nickEl = [...document.querySelectorAll('[data-msg-col] > div')]
-      .find((el) => el.textContent.trim() === '对方');
-    if (!bubble || !nickEl) return null;
-    const sel = window.getSelection();
-    const range = document.createRange();
-    range.selectNodeContents(bubble);
-    sel.removeAllRanges();
-    sel.addRange(range);
-    window.__ctxDefault = null;
-    const r = nickEl.getBoundingClientRect();
-    return { x: Math.round(r.left + Math.min(20, r.width / 2)), y: Math.round(r.top + r.height / 2) };
-  })()`);
-  await rightClickAt(nick ? nick.x : 0, nick ? nick.y : 0);
-  const afterGroup = await ctxState();
-  check("桌面右键群聊昵称行（在消息行之外）：同样拦默认菜单并弹应用菜单（处理器挂在整条消息的根上）",
-    !!okGroup && okGroup.ok === true && !!nick
-      && afterGroup.menu === true && afterGroup.prevented === true,
-    "menu=true / prevented=true", JSON.stringify({ okGroup, nick, afterGroup }));
-  await cdp.key("Escape", "Escape", "", 27);
-  await cdp.eval("window.getSelection().removeAllRanges(); 1");
+    // ── 1) 触发边界：正文 / 昵称 / 引用块开菜单；头像 / 表情区 / 行内空白不开 ──
+    const boundaryProps = {
+      message: {
+        msg_id: "m-ctx-boundary", sender_id: "peer-a", kind: "text",
+        content: "「引用 张三：原消息片段|msg-1」\n正文第一段，用于右键边界。",
+        ts: 1700000000000, conv_id: "group:g1", seq: 1,
+      },
+      isGroup: true, senderName: "对方", canReact: true,
+      reactions: [{ emoji: "[赞]", count: 2, mine: false, actors: ["peer-b"], latest: "peer-b" }],
+    };
+    const mounted = await mountOne(boundaryProps);
+    const bubble = await rectOf("#probe-host .gosslan-bubble-text");
+    const nick = await rectOf("#probe-host [data-msg-col] > div", 0);
+    const quote = await rectOf("#probe-host .quote-text");
+    const avatar = await rectOf("#probe-host .gosslan-avatar-box");
+    const chip = await rectOf("#probe-host [data-reaction-chip]");
+    const blankP = await cdp.eval(`(() => {
+      const col = document.querySelector('#probe-host [data-msg-col]');
+      if (!col) return null;
+      const outer = col.parentElement;
+      const r = outer.getBoundingClientRect();
+      const c = col.getBoundingClientRect();
+      return { x: Math.round(r.right - 12), y: Math.round(c.top + c.height / 2), colRight: +c.right.toFixed(1), outerRight: +r.right.toFixed(1) };
+    })()`);
+    check("非空转·边界：群聊消息装上了，正文/昵称/引用块/头像/表情条/空白六个落点都量得到",
+      !!mounted && mounted.ok === true && !!bubble && !!nick && !!quote && !!avatar && !!chip
+        && !!blankP && blankP.x > blankP.colRight + 8,
+      "六个落点 + 空白点在 data-msg-col 右侧", JSON.stringify({ mounted, bubble, nick, quote, avatar, chip, blankP }));
+
+    const boundaryCases = [];
+    for (const [label, point, expectMenu, expectInCol] of [
+      ["正文", bubble, true, true],
+      ["昵称", nick, true, true],
+      ["引用内容", quote, true, true],
+      ["头像", avatar, false, false],
+      ["行内空白", blankP, false, false],
+      ["表情回应胶囊", chip, false, false],
+    ]) {
+      if (!point) { boundaryCases.push([label, false, "落点没量到"]); continue; }
+      await rightClickAt(point);
+      const m = await menuState();
+      const hit = await hitState();
+      boundaryCases.push([label, m.open === expectMenu && hit && hit.inCol === expectInCol, { m, hit, point }]);
+    }
+    console.log("  · 右键边界实测：" + JSON.stringify(boundaryCases.map(([label, ok, detail]) => ({ label, ok, detail }))));
+    for (const [label, ok, detail] of boundaryCases) {
+      check("右键边界·" + label + "：" + (detail && detail.m && detail.m.open ? "弹消息菜单" : "不弹消息菜单")
+        + "（真实命中在 data-msg-col " + (JSON.stringify(detail && detail.hit && detail.hit.inCol)) + "）",
+        ok === true, "与预期一致", JSON.stringify(detail));
+      if (detail && detail.m && detail.m.open) await closeMenu();
+    }
+
+    // 表情回应入口在列内（绝对定位），必须被显式排除；悬停后真右键，若悬停没生效则合成事件兜底。
+    await cdp.send("Input.dispatchMouseEvent", { type: "mouseMoved", x: bubble.x, y: bubble.y });
+    await sleep(260);
+    const entry = await rectOf("#probe-host [data-reaction-entry]");
+    let entryReal = false;
+    if (entry && entry.pointerEvents !== "none" && entry.opacity !== "0") {
+      await rightClickAt(entry);
+      const m = await menuState();
+      const hit = await hitState();
+      entryReal = true;
+      check("右键边界·表情回应入口（列内控件，真指针）：不弹消息菜单",
+        m.open === false && hit && hit.inReactionEntry === true,
+        "menu=false 且命中在 data-reaction-entry", JSON.stringify({ m, hit, entry }));
+    } else {
+      const r = await cdp.eval(`(() => {
+        const el = document.querySelector('#probe-host [data-reaction-entry]');
+        if (!el) return null;
+        const ev = new MouseEvent('contextmenu', { bubbles: true, cancelable: true });
+        el.dispatchEvent(ev);
+        return { prevented: ev.defaultPrevented };
+      })()`);
+      const m = await menuState();
+      check("右键边界·表情回应入口（列内控件，合成事件兜底）：不弹消息菜单",
+        !!r && m.open === false, "menu=false", JSON.stringify({ r, m, entry }));
+    }
+    console.log("  · 表情回应入口：" + JSON.stringify({ entry, entryReal }));
+
+    // 菜单关闭回归：Esc + 外部点击。
+    await rightClickAt(bubble);
+    const escClosed = await closeMenu();
+    check("右键菜单·Esc 关闭且 DOM 撤净", escClosed === true, "menu=false", JSON.stringify({ escClosed }));
+    // 点外部关闭不在本段重复：统一外壳那条由既有 `--only=ctxmenu` 段负责（本段只测消息边界/复制）。
+
+    // ── 2) 桌面选区复制：只复制选中文字；无选区不显示该入口；整条复制保留 ──
+    const dmProps = {
+      message: {
+        msg_id: "m-ctx-select", sender_id: "peer-a", kind: "text",
+        content: "前言三二一 这段文字用来测试选中复制。", ts: 1700000000000,
+        conv_id: "dm:peer-a", seq: 1,
+      },
+      isGroup: false, senderName: "对方",
+    };
+    await mountOne(dmProps);
+    const part = await selectText("part");
+    check("非空转·选区：程序化选中了正文的一段（含少于整条的字符数）",
+      !!part && part.text.length > 0 && part.text.length < dmProps.message.content.length,
+      "0 < 选中长度 < 整条", JSON.stringify(part));
+    await rightClickAt(part);
+    const menuSel = await menuState();
+    const hitSel = await hitState();
+    check("选中文字后右键：菜单出现「复制选中内容」与「复制消息」，且事件被拦、命中在消息内容列",
+      menuSel.open === true && menuSel.items.includes(L.copySel) && menuSel.items.includes(L.copyMsg)
+        && hitSel && hitSel.inCol === true,
+      "两个入口都在 + inCol=true", JSON.stringify({ menuSel, hitSel }));
+    const copiedSel = await clickItem(L.copySel);
+    const selValue = await copied();
+    check("点「复制选中内容」：剪贴板里只有选中的那段，不是整条消息",
+      copiedSel === true && selValue === part.text && selValue !== dmProps.message.content,
+      "copied == 选中文本", JSON.stringify({ copiedSel, selValue, part: part && part.text }));
+
+    await clearSel();
+    const bubbleDm = await rectOf("#probe-host .gosslan-bubble-text");
+    await rightClickAt(bubbleDm);
+    const menuNoSel = await menuState();
+    check("无有效选区：菜单不显示「复制选中内容」，但「复制消息」仍在",
+      menuNoSel.open === true && !menuNoSel.items.includes(L.copySel) && menuNoSel.items.includes(L.copyMsg),
+      "无选区入口 / 有整条入口", JSON.stringify(menuNoSel));
+    const copiedMsg = await clickItem(L.copyMsg);
+    const msgValue = await copied();
+    check("无选区时「复制消息」仍复制整条内容",
+      copiedMsg === true && msgValue === dmProps.message.content,
+      "copied == 整条内容", JSON.stringify({ copiedMsg, msgValue }));
+
+    // 选区在打开菜单后被清掉：点入口仍复制右键那一刻的快照。
+    await mountOne(dmProps);
+    const snap = await selectText("part");
+    await rightClickAt(snap);
+    await clearSel();
+    const copiedSnap = await clickItem(L.copySel);
+    const snapValue = await copied();
+    check("打开菜单后选区被改写/清空：仍复制右键那一刻的快照（不读 live 选区）",
+      copiedSnap === true && snapValue === snap.text,
+      "copied == 右键时快照", JSON.stringify({ snapValue, snap: snap && snap.text }));
+
+    // 跨节点选区（正文 + 链接 + 正文）：toString 仍是完整文本。
+    const linkProps = {
+      message: {
+        msg_id: "m-ctx-link", sender_id: "peer-a", kind: "text",
+        content: "开头 https://example.com 结尾", ts: 1700000000000, conv_id: "dm:peer-a", seq: 1,
+      },
+      isGroup: false, senderName: "对方",
+    };
+    await mountOne(linkProps);
+    const all = await selectText("all");
+    check("跨节点选区：正文+链接+正文都进了同一个 Range",
+      !!all && all.text === linkProps.message.content,
+      "选中文本 == 整条内容", JSON.stringify({ all, content: linkProps.message.content }));
+    await rightClickAt(all);
+    const copiedCross = await clickItem(L.copySel);
+    const crossValue = await copied();
+    check("跨节点选区复制：链接前后两段都在，不丢不重",
+      copiedCross === true && crossValue === linkProps.message.content,
+      "copied == 完整文本", JSON.stringify({ copiedCross, crossValue }));
+
+    // ── 3) 连续右键不同消息：菜单上下文与选区归属不串 ──
+    if ((await menuState()).open) await closeMenu();
+    const pair = await cdp.eval("window.__probe.installMessages(" + JSON.stringify(JSON.stringify([
+      {
+        message: { msg_id: "m-ctx-a", sender_id: "peer-a", kind: "text", content: "第一条消息：右键我。", ts: 1700000000000, conv_id: "dm:peer-a", seq: 1 },
+        isGroup: false, senderName: "对方",
+      },
+      {
+        message: { msg_id: "m-ctx-b", sender_id: "peer-a", kind: "text", content: "第二条消息：也右键我。", ts: 1700000000001, conv_id: "dm:peer-a", seq: 2 },
+        isGroup: false, senderName: "对方",
+      },
+    ])) + ")");
+    await sleep(500);
+    const cols = await cdp.eval(`(() => [...document.querySelectorAll('#probe-host [data-msg-col]')].map((el) => {
+      const r = el.getBoundingClientRect();
+      return { x: Math.round(r.left + r.width / 2), y: Math.round(r.top + r.height / 2) };
+    }))()`);
+    check("非空转·两消息：同页挂上两条独立的 data-msg-col",
+      !!pair && pair.ok === true && Array.isArray(cols) && cols.length === 2,
+      "两条列", JSON.stringify({ pair, cols }));
+    // A 里选中一段 → 右键 A：出现复制选中；关掉后选区留在 A。
+    const aSel = await cdp.eval(`(() => {
+      const root = document.querySelectorAll('#probe-host .gosslan-selectable')[0];
+      if (!root) return null;
+      const sel = window.getSelection();
+      const range = document.createRange();
+      range.selectNodeContents(root);
+      sel.removeAllRanges(); sel.addRange(range);
+      const r = range.getBoundingClientRect();
+      return { text: sel.toString(), x: Math.round(r.left + r.width / 2), y: Math.round(r.top + r.height / 2) };
+    })()`);
+    await rightClickAt(aSel);
+    const menuA = await menuState();
+    check("连续右键·消息 A：A 里有选区 ⇒ A 的菜单显示「复制选中内容」",
+      menuA.open === true && menuA.items.includes(L.copySel),
+      "A 菜单有选中入口", JSON.stringify(menuA));
+    await closeMenu();
+    // 不选 B，右键 B：B 的菜单里不应显示复制选中（选区在 A，和 B 不相交）。
+    await rightClickAt(cols && cols[1]);
+    const menuB1 = await menuState();
+    check("连续右键·消息 B（选区仍在 A）：B 的菜单不显示「复制选中内容」",
+      menuB1.open === true && !menuB1.items.includes(L.copySel) && menuB1.items.includes(L.copyMsg),
+      "B 菜单无选中入口", JSON.stringify(menuB1));
+    const copiedB = await clickItem(L.copyMsg);
+    const bValue = await copied();
+    check("连续右键·消息 B 的「复制消息」复制的是 B（上下文没有串到 A）",
+      copiedB === true && bValue === "第二条消息：也右键我。",
+      "copied == B 的内容", JSON.stringify({ bValue }));
+    // 在 B 里选中 → 右键 B：出现复制选中，且复制的是 B 的那段。
+    const bSel = await cdp.eval(`(() => {
+      const root = document.querySelectorAll('#probe-host .gosslan-selectable')[1];
+      if (!root) return null;
+      const sel = window.getSelection();
+      const range = document.createRange();
+      const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+      let node = walker.nextNode();
+      while (node && !(node.textContent || '').trim()) node = walker.nextNode();
+      if (!node) return null;
+      const n = Math.min(6, (node.textContent || '').length);
+      range.setStart(node, 0);
+      range.setEnd(node, n);
+      sel.removeAllRanges(); sel.addRange(range);
+      const r = range.getBoundingClientRect();
+      return { text: sel.toString(), x: Math.round(r.left + r.width / 2), y: Math.round(r.top + r.height / 2) };
+    })()`);
+    await rightClickAt(bSel);
+    const copiedBSel = await clickItem(L.copySel);
+    const bSelValue = await copied();
+    check("连续右键·消息 B 选中后复制选中：结果是 B 的选区",
+      copiedBSel === true && bSelValue === bSel.text && bSelValue !== bValue,
+      "copied == B 选区", JSON.stringify({ bSelValue, bSelText: bSel && bSel.text, bValue }));
+
+    // ───────────────────────── 移动端视口 ─────────────────────────
+    await clearSel();
+    await cdp.send("Emulation.setDeviceMetricsOverride", {
+      width: 390, height: 844, deviceScaleFactor: 2, mobile: true,
+      screenWidth: 390, screenHeight: 844,
+    });
+    await cdp.send("Emulation.setTouchEmulationEnabled", { enabled: true, maxTouchPoints: 1 });
+    await cdp.send("Page.navigate", { url });
+    await sleep(3_000);
+    await cdp.eval(PAGE_FIXTURE);
+    await sleep(200);
+    const mobileEnv = await cdp.eval(`(async () => {
+      const PL = await import('/src/utils/platform.ts');
+      const col = () => document.querySelector('#probe-host [data-msg-col]');
+      return {
+        width: innerWidth,
+        narrow: matchMedia(PL.NARROW_LAYOUT_QUERY).matches,
+        coarse: matchMedia('(pointer: coarse)').matches,
+        hasCol: !!col(),
+      };
+    })()`);
+    check("移动端环境：390×844 + 窄布局 + pointer: coarse",
+      !!mobileEnv && mobileEnv.width === 390 && mobileEnv.narrow === true && mobileEnv.coarse === true,
+      "390 / narrow=true / coarse=true", JSON.stringify(mobileEnv));
+
+    const mobileProps = {
+      message: {
+        msg_id: "m-ctx-mobile", sender_id: "peer-a", kind: "text",
+        content: "移动端正文：长按我应该进系统选字，不要弹自定义面板。",
+        ts: 1700000000000, conv_id: "group:g1", seq: 1,
+      },
+      isGroup: true, senderName: "对方", canReact: false,
+    };
+    const m2 = await mountOne(mobileProps);
+    const mBubble = await rectOf("#probe-host .gosslan-bubble-text");
+    const mNick = await rectOf("#probe-host [data-msg-col] > div", 0);
+    const cssState = await cdp.eval(`(() => {
+      const col = document.querySelector('#probe-host [data-msg-col]');
+      const text = document.querySelector('#probe-host .gosslan-selectable');
+      return {
+        colSelect: col ? getComputedStyle(col).userSelect : null,
+        textSelect: text ? getComputedStyle(text).userSelect : null,
+        textCallout: text ? (getComputedStyle(text).webkitTouchCallout || '') : null,
+      };
+    })()`);
+    console.log("  · 移动端选字 CSS 实测：" + JSON.stringify(cssState));
+    check("移动端 CSS：消息内容列不可选（长按昵称/卡片归自定义面板），正文层显式可选",
+      !!m2 && m2.ok === true && cssState.colSelect === "none" && cssState.textSelect === "text",
+      "col=none / text=text", JSON.stringify(cssState));
+
+    const sheetState = () => cdp.eval(`(() => ({
+      sheet: !!document.querySelector('.gosslan-dialog-sheet'),
+      sheetText: (() => {
+        const el = document.querySelector('.gosslan-dialog-sheet');
+        return el ? (el.innerText || '').trim() : '';
+      })(),
+      menu: !!document.querySelector('[role="menu"].gosslan-menu'),
+    }))()`);
+    const touchStart = (p) => cdp.send("Input.dispatchTouchEvent",
+      { type: "touchStart", touchPoints: [{ x: p.x, y: p.y }] });
+    const touchMove = (p, q) => cdp.send("Input.dispatchTouchEvent",
+      { type: "touchMove", touchPoints: [{ x: q.x, y: q.y }] });
+    const touchEnd = () => cdp.send("Input.dispatchTouchEvent", { type: "touchEnd", touchPoints: [] });
+    const ctxEventOn = (selector) => cdp.eval(`(() => {
+      const el = document.querySelector(${JSON.stringify(selector)});
+      if (!el) return null;
+      const ev = new MouseEvent('contextmenu', { bubbles: true, cancelable: true });
+      el.dispatchEvent(ev);
+      return { prevented: ev.defaultPrevented };
+    })()`);
+
+    // ① 长按正文：不起自定义面板；contextmenu 也放行（应用侧证据；系统菜单本身 Chrome 给不了）
+    await touchStart(mBubble);
+    await sleep(720);
+    const holdText = await sheetState();
+    // WebKit 可能把 contextmenu 的 target 从文本上提到气泡根：同一次触摸起点是正文 ⇒ 也要放行。
+    const textCtxRoot = await ctxEventOn("#probe-host .gosslan-bubble-text");
+    await touchEnd();
+    await sleep(200);
+    check("移动端·长按正文：**不弹** Gosslan 面板（长按留给系统原生选字）",
+      holdText.sheet === false && holdText.menu === false,
+      "sheet=false / menu=false", JSON.stringify(holdText));
+    check("移动端·target 被 WebKit 上提到气泡根：仍放行 contextmenu（同一次触摸起点是正文）",
+      !!textCtxRoot && textCtxRoot.prevented === false,
+      "prevented=false", JSON.stringify(textCtxRoot));
+    const textCtx = await ctxEventOn("#probe-host .gosslan-selectable");
+    check("移动端·正文上的 contextmenu 默认行为被放行（不 preventDefault；系统复制菜单依赖它）",
+      !!textCtx && textCtx.prevented === false,
+      "prevented=false", JSON.stringify(textCtx));
+
+    // ② 长按昵称（非正文）：弹自定义面板；contextmenu 被拦；系统菜单不与面板并存
+    await touchStart(mNick);
+    await sleep(720);
+    const holdNick = await sheetState();
+    const nickCtx = await ctxEventOn("#probe-host [data-msg-col] > div");
+    const holdNickAgain = await sheetState();
+    await touchEnd();
+    await sleep(220);
+    check("移动端·长按昵称（非正文）：弹 Gosslan 面板，不弹消息右键菜单",
+      holdNick.sheet === true && holdNick.menu === false,
+      "sheet=true / menu=false", JSON.stringify(holdNick));
+    check("移动端·非正文 contextmenu：被拦截（避免系统菜单与自定义面板同时出现）",
+      !!nickCtx && nickCtx.prevented === true && holdNickAgain.sheet === true && holdNickAgain.menu === false,
+      "prevented=true / 面板仍在 / 无右键菜单", JSON.stringify({ nickCtx, holdNickAgain }));
+    check("移动端·面板里没有自定义「复制选中内容」，整条「复制消息」仍在",
+      holdNickAgain.sheetText.includes(L.copyMsg) && !holdNickAgain.sheetText.includes(L.copySel),
+      "有复制消息 / 无复制选中", JSON.stringify({ sheetText: holdNickAgain.sheetText }));
+    await cdp.key("Escape", "Escape", "", 27);
+    await sleep(300);
+    check("移动端·Esc 关闭面板", (await sheetState()).sheet === false, "sheet=false", "");
+
+    // ③ 短按 / 滚动 / 已有选区：都不许误开面板
+    await touchStart(mNick);
+    await sleep(120);
+    await touchEnd();
+    await sleep(620);
+    check("移动端·短按非正文：不弹面板", (await sheetState()).sheet === false, "sheet=false", "");
+    await touchStart(mNick);
+    await touchMove(mNick, { x: mNick.x, y: mNick.y + 40 });
+    await sleep(720);
+    const scrollState = await sheetState();
+    await touchEnd();
+    await sleep(200);
+    check("移动端·在非正文上滑动（超过抖动容差）：不弹面板", scrollState.sheet === false,
+      "sheet=false", JSON.stringify(scrollState));
+    // 先按住再建立选区：模拟"选区手柄还在 / 已有选区"时长按非正文的时机。
+    await touchStart(mNick);
+    await sleep(120);
+    const presetSel = await selectText("all");
+    await sleep(620);
+    const withSel = await sheetState();
+    await touchEnd();
+    await clearSel();
+    check("移动端·已有选区（含拖动选区手柄的时机）：长按非正文也不叠第二个面板",
+      !!presetSel && withSel.sheet === false, "sheet=false", JSON.stringify({ withSel, presetSel }));
+  } finally {
+    // 视口 / 触摸 / 媒体仿真必须归还；即使断言失败或执行抛错也走这里。
+    await cdp.send("Emulation.setTouchEmulationEnabled", { enabled: false }).catch(() => {});
+    await cdp.send("Emulation.setEmulatedMedia", { media: "", features: [] }).catch(() => {});
+    await cdp.send("Emulation.clearDeviceMetricsOverride").catch(() => {});
+    await sleep(180);
+    const restored = await cdp.eval("window.innerWidth").catch(() => null);
+    check("ctxguard 收尾：视口指标已归还（后续段不再继承 390/1100 的临时视口）",
+      restoreWidth !== null && restored === restoreWidth,
+      `window.innerWidth 回到 ${restoreWidth}`, JSON.stringify({ restoreWidth, restored }));
+  }
 }
 
 async function runLightbox(cdp, url) {
@@ -9304,6 +10047,11 @@ async function runLightbox(cdp, url) {
     index: window.__lbState ? window.__lbState.index : -1,
     closes: (window.__probe.events || []).filter((e) => Array.isArray(e) && e[0] === 'close').length,
   }))()`);
+  const navTransform = () => cdp.eval(`(() => {
+    const b = [...document.querySelectorAll('[role="dialog"] button')]
+      .find((x) => String(x.className).includes('h-11'));
+    return b ? getComputedStyle(b).transform : null;
+  })()`);
 
   const beforePress = await navRect();
   const pressX = beforePress ? Math.round(beforePress.cx) : 0;
@@ -9322,6 +10070,10 @@ async function runLightbox(cdp, url) {
       && Math.abs(whileHeld.cy - beforePress.cy) <= 0.5
       && Math.abs(whileHeld.top - beforePress.top) <= 2,
     "中心不动 / 顶边位移 <= 2px", JSON.stringify({ beforePress, whileHeld }));
+  // 正常模式的按压比例必须回到仓库统一的 0.97（组件自挂 0.95 会在这格露出来）。
+  const pressRatio = beforePress && whileHeld ? +(whileHeld.w / beforePress.w).toFixed(3) : NaN;
+  check("左右切换键：正常模式按压缩放走全局统一值 0.97（不是组件自挂的 0.95）",
+    Math.abs(pressRatio - 0.97) <= 0.01, "w 比例 ≈ 0.97", JSON.stringify({ pressRatio, beforePress, whileHeld }));
   check("左右切换键：在靠上位置按下并原位抬起 ⇒ 切到上一张，窗不关（旧实现 click 落遮罩会关窗）",
     !!beforePress && afterTopPress.open === true && afterTopPress.closes === 0
       && afterTopPress.index === 0,
@@ -9341,6 +10093,49 @@ async function runLightbox(cdp, url) {
   check("左右切换键：图标上按下、抬起落到遮罩 ⇒ 不许穿透关窗（按下源守卫）",
     afterEscapeToShade.open === true && afterEscapeToShade.closes === 0,
     "open=true / closes=0", JSON.stringify(afterEscapeToShade));
+
+  /*
+   * 减少动态效果（用户 2026-10-23 审查）：仓库统一的按压是全局 `button:active { scale(.97) }`，
+   * 而 reduce 档用 `transform: none` 关掉它。组件自挂 `active:scale-95`（0,2,0）会压过
+   * 那条零特异性规则 ⇒ reduce 用户仍看到缩放。这里真按住读计算值。
+   */
+  try {
+    await cdp.send("Emulation.setEmulatedMedia", {
+      features: [{ name: "prefers-reduced-motion", value: "reduce" }],
+    });
+    await sleep(160);
+    const reduceBefore = await navRect();
+    const reduceIdle = await navTransform();
+    await cdp.send("Input.dispatchMouseEvent", {
+      type: "mousePressed",
+      x: reduceBefore ? Math.round(reduceBefore.cx) : 0,
+      y: reduceBefore ? Math.round(reduceBefore.cy) : 0,
+      button: "left", clickCount: 1,
+    });
+    await sleep(140);
+    const reduceHeld = await navRect();
+    const reduceHeldTransform = await navTransform();
+    await cdp.send("Input.dispatchMouseEvent", {
+      type: "mouseReleased",
+      x: reduceBefore ? Math.round(reduceBefore.cx) : 0,
+      y: reduceBefore ? Math.round(reduceBefore.cy) : 0,
+      button: "left", clickCount: 1,
+    });
+    await sleep(160);
+    console.log("  ℹ 减少动态效果按压 → " + JSON.stringify({
+      reduceIdle, reduceHeldTransform, reduceBefore, reduceHeld,
+    }));
+    check("减少动态效果：按住时 transform=none 且尺寸/中心不变（不产生按压缩放）",
+      reduceIdle === "none" && reduceHeldTransform === "none"
+        && !!reduceBefore && !!reduceHeld
+        && reduceHeld.w === reduceBefore.w && reduceHeld.h === reduceBefore.h
+        && Math.abs(reduceHeld.cy - reduceBefore.cy) <= 0.5,
+      "transform=none / w,h 不变 / 中心不动",
+      JSON.stringify({ reduceIdle, reduceHeldTransform, reduceBefore, reduceHeld }));
+  } finally {
+    await cdp.send("Emulation.setEmulatedMedia", { media: "", features: [] }).catch(() => {});
+    await sleep(120);
+  }
 
   /*
    * 反向对照：给按钮临时注入一条 `:active { transform: translateY(10px) !important }`，

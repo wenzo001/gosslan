@@ -64,6 +64,9 @@ export function useMessageDisplay(opts: {
         borderRadius: "var(--gosslan-bubble-radius, 4px)",
         ...tailCorner.value,
         border: mine.value ? "1px solid transparent" : "1px solid var(--gosslan-border)",
+        // 尖角描边取这条消息自己的边框色（`mine` 的边框是透明的 ⇒ 描边也透明，形状只靠填充）。
+        // 用户 2026-10-23：「气泡有边框、尾巴没有 ⇒ 接缝对不上」——尾巴与气泡必须同一支线色。
+        "--bubble-line": mine.value ? "transparent" : "var(--gosslan-border)",
         position: "relative",
         // 真实底色（hex），供子组件 mentionHighlightColor 算对比度。
         // CSS 变量字符串无法传入 contrastRatio，必须额外挂一个真实值。
@@ -87,6 +90,7 @@ export function useMessageDisplay(opts: {
         borderRadius: "var(--gosslan-bubble-radius, 4px)",
         ...tailCorner.value,
         border: "1px solid var(--gosslan-card-line)",
+        "--bubble-line": "var(--gosslan-card-line)",
         // 不加阴影：学微信，纯色卡片 + 1px 描边就够，阴影反而显脏
         position: "relative",
       }) as CSSProperties,

@@ -49,7 +49,7 @@ export function parseTree(text) {
   const names = [];
   for (const m of text.matchAll(/\[([A-Za-z]+)\/[^\]]*\] desc="([^"]*)" val="([^"]*)" title="([^"]*)"/g)) {
     const label = m[2] || m[4] || m[3];
-    if (label && label !== "Gosslan" && label !== "相闻") names.push({ role: m[1], label });
+    if (label && label !== "Gosslan" && label !== "小院儿") names.push({ role: m[1], label });
   }
   return {
     histLine, count, total, windowTitle, winRc, names,

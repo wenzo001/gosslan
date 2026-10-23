@@ -1,5 +1,6 @@
 ﻿<script setup lang="ts">
 import { t } from "@/i18n";
+import BubbleTail from "@/components/message/BubbleTail.vue";
 import { computed, nextTick, ref, watch, type CSSProperties } from "vue";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { useAppStore } from "@/stores/useAppStore";
@@ -244,6 +245,6 @@ async function openLink(href: string) {
       </button>
     </div>
     <!-- 普通文本：不显示悬停复制气泡（复制走右键菜单），避免干扰 -->
-    <span aria-hidden="true" class="bubble-tail" :class="mine ? 'tail-mine' : 'tail-other'"></span>
+    <BubbleTail :mine="mine" />
   </div>
 </template>

@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import type { CSSProperties } from "vue";
+import BubbleTail from "@/components/message/BubbleTail.vue";
 /**
  * 合并转发卡片（微信式「聊天记录」）。
  *
@@ -68,6 +69,6 @@ const previewLines = computed(() =>
     </div>
     <!-- 指向发送者头像的小尖角（与文本/代码气泡同款 .bubble-tail）：卡片无描边，
          直接用标准 -5px 偏移即可贴合，尖角色取 --bubble-bg（= panel 底色）。 -->
-    <span aria-hidden="true" class="bubble-tail" :class="mine ? 'tail-mine' : 'tail-other'"></span>
+    <BubbleTail :mine="mine" />
   </button>
 </template>
