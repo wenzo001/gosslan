@@ -1397,7 +1397,51 @@ pub(crate) fn sweep_stale_group_file_keys(state: &AppState) -> usize {
         .lock()
         .unwrap_or_else(|e| e.into_inner())
         .retain(|tid, _| live.contains(tid));
+
+    // 在线目标快照（进度分母）也在**这一个**清扫点回收（10-23 审计 P2-C）。
+    // 判据用台账状态而不是盲 TTL：快照是气泡分母的来源，还在传的时候清掉会让分母退回"未知"；
+    // 而一单到终态（completed/failed/cancelled）或台账行已经不在了，这块快照就没人会再读。
+    let stale_targets: Vec<String> = {
+        let keys: Vec<String> = state
+            .group_file_online_targets
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .keys()
+            .cloned()
+            .collect();
+        let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
+        keys.into_iter()
+            .filter(|tid| {
+                !online_targets_entry_is_live(db::get_group_file(&dbc, tid).map(|g| g.status).as_deref())
+            })
+            .collect()
+    };
+    if !stale_targets.is_empty() {
+        let mut targets = state
+            .group_file_online_targets
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        for tid in &stale_targets {
+            targets.remove(tid);
+        }
+        state.logger.info(
+            "group_file",
+            format!(
+                "code=GFILE_TARGETS_TTL_EXPIRED removed={} —— 已到终态/没有台账的单不再留分母快照",
+                stale_targets.len()
+            ),
+        );
+    }
     removed
+}
+
+/// 这张"发送那一刻在线成员"的快照还值得留吗（唯一判据，P2-C）。
+///
+/// 只留**还在传**的单：`None` = 台账行都不在了（删群/清理），`completed/failed/cancelled`
+/// = 终态 ⇒ 气泡不会再展示"K 人待收"，快照没人读。`pending/sending` 必须留 ——
+/// 那时分母正是用户在看的那个数。
+pub(crate) fn online_targets_entry_is_live(status: Option<&str>) -> bool {
+    matches!(status, Some("pending") | Some("sending"))
 }
 
 /// 卡住的群文件投递清扫（P2-01）。
@@ -2286,5 +2330,24 @@ mod group_offer_retry_tests {
             1,
             "密钥 TTL 清扫必须由后台清扫器驱动且只调一次（0 次 = 永不淘汰）"
         );
+    }
+}
+
+/// 分母快照（`group_file_online_targets`）的留/删判据（10-23 审计 P2-C）。
+///
+/// 单独一个模块而不是塞进已有的气泡测试：那边只 `use super::{group_file_bubble, retry_ack_write}`，
+/// 往里加一条会让"这个模块测什么"变糊（第一版就是插错位置、还把下一条用例的 doc 顶掉了）。
+#[cfg(test)]
+mod online_targets_tests {
+    use super::online_targets_entry_is_live;
+
+    #[test]
+    fn online_targets_snapshot_is_kept_only_while_the_transfer_is_live() {
+        for live in [Some("pending"), Some("sending")] {
+            assert!(online_targets_entry_is_live(live), "{live:?} 还在传，分母要留");
+        }
+        for dead in [Some("completed"), Some("failed"), Some("cancelled"), None] {
+            assert!(!online_targets_entry_is_live(dead), "{dead:?} 没人再读这块快照");
+        }
     }
 }

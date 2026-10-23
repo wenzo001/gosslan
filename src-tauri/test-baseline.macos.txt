@@ -727,6 +727,7 @@ network::transport::group_offer_retry_tests::outbox_sweeper_calls_the_key_ttl_sw
 network::transport::group_offer_retry_tests::outbox_sweeper_calls_the_stale_group_sweep_once
 network::transport::group_offer_retry_tests::stalled_receiver_restarts_but_absent_receiver_is_left_to_chunks
 network::transport::mesh_sync_tests::socket_addr_from_accepts_v4_and_bare_v6
+network::transport::online_targets_tests::online_targets_snapshot_is_kept_only_while_the_transfer_is_live
 network::transport::outbox_reachability_tests::discovery_online_counts_as_reachable_even_without_a_live_link
 network::transport::outbox_reachability_tests::online_window_comes_from_the_discovery_timeout
 network::transport::relay_wiring_tests::cap_counts_existing_relay_circuits
@@ -1143,3 +1144,4 @@ worker_supervisor::tests::finished_signal_comes_from_the_real_handle
 worker_supervisor::tests::lib_rs_wires_the_supervisor_exactly_once
 worker_supervisor::tests::resident_worker_list_is_complete_and_unique
 worker_supervisor::tests::verdict_truth_table
+worker_supervisor::tests::watchdog_leaves_start_and_heartbeat_evidence

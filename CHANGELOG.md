@@ -13,6 +13,24 @@
 
 ## [Unreleased]
 
+## [5.5.39] - 2026-10-23
+
+### 审计最后两格：群文件分母快照随终态回收 + 看门狗留活性证据（P2-C / P3-F）
+
+- **P2-C**：`group_file_online_targets`（发送那一刻的"在线成员"快照，气泡分母的来源）以前只有
+  终态 ACK 那一处删。现在并入**既有**的那个清扫器（`sweep_stale_group_file_keys`，`outbox_sweep`
+  早就在调它，没有新循环）：只留 `pending|sending` 的单，`completed/failed/cancelled` 与
+  "台账行都不在"的一律摘掉。判据是**台账状态**而不是盲 TTL —— 还在传时清掉会让分母退回"未知"。
+  纯谓词 `online_targets_entry_is_live` + 6 个取值的单测。
+- **P3-F**：看门狗自己不登记在清单里、也没人监督它，而它以前只在"重启/放弃"时说话 ⇒
+  日志里的安静既可能是正常、也可能是它已经死了。现在补两行活性证据：启动时
+  `code=WORKER_WATCHDOG_STARTED`（worker 数 + 判活周期），之后每 30 拍（默认 5 分钟）
+  `code=WORKER_WATCHDOG_ALIVE`（在监督的数量 + 每个 worker 的重启次数）。
+  判据 `watchdog_leaves_start_and_heartbeat_evidence`（读生产码、切掉测试模块）。
+- 审计报告的 P2-C / P3-F 两节都已就地标记完成；A0 报告里列出的 6 条发现至此全部收口
+  （P1-A / P2-B / P2-C / P3-D / P3-E / P3-F），其中 A3 要的耗时读数也已补上。
+
+
 ## [5.5.38] - 2026-10-23
 
 ### 到期清扫补一份可复跑的耗时读数（审计 A3 要的那个量）
