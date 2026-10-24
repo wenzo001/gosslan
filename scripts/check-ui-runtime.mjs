@@ -10808,12 +10808,18 @@ async function runContextGuard(cdp, url) {
      * 激活菜单项：用**键盘** Enter（与既有 ctxmenu 段同一条 Reka 路径）。
      * 纯 pointer / 元素 click() 在 Reka 菜单里会先被 DismissableLayer 收掉，
      * 表现为"菜单开了、动作没跑、__copied 还是上一次的值"（本轮实测踩过）。
+     *
+     * ⚠️ Enter 偶发不激活（本文件头部那条已知引擎问题）：headless 静止页面不推进帧，
+     * Reka 的 item 选中状态可能停在上一拍 ⇒ Enter 落空，`__copied` 仍挂着上一次的值，
+     * 后续判据会看起来像"复制错了内容"（同一段单跑绿、组合跑红就是这么来的）。
+     * ⇒ 每次激活前**先清空**替身，Enter 后用截图泵帧并重试，直到替身真的被写入。
      */
     const clickItem = async (label) => {
       // 与既有 ctxmenu 段同一条 Reka 键盘路径：↓ 走到目标条目再 Enter。
       // 直接 item.focus()+Enter 偶发不选中（焦点在了、菜单的 currentItem 没更新）⇒ 本轮实测踩过。
       const total = await cdp.eval(`document.querySelectorAll('[role="menu"] [role="menuitem"]').length`);
       if (!total) return false;
+      await cdp.eval("window.__copied = null");
       let hit = false;
       for (let step = 0; step <= total; step += 1) {
         const active = await cdp.eval(`(() => {
@@ -10829,8 +10835,13 @@ async function runContextGuard(cdp, url) {
         await sleep(70);
       }
       if (hit) {
-        await cdp.key("Enter", "Enter", "\r", 13);
-        await sleep(380);
+        for (let k = 0; k < 3; k += 1) {
+          await cdp.key("Enter", "Enter", "\r", 13);
+          await sleep(300);
+          if (await cdp.eval("window.__copied !== null")) break;
+          // 泵一帧：headless 静止页面不出帧，Reka 的选中/动作回调可能一直没跑。
+          await cdp.send("Page.captureScreenshot", { format: "png" }).catch(() => {});
+        }
       }
       // 动作如果没把菜单收掉，先 Esc 收干净：带着开着的 portal 去换宿主会把 renderer 卡死。
       if ((await menuState()).open) await closeMenu();
