@@ -135,6 +135,26 @@ pub fn window_close(app: tauri::AppHandle) {
     }
 }
 
+/// macOS：按前端布局档显示 / 隐藏系统红绿灯（窄窗口 = 移动布局时隐藏）。
+///
+/// 判据与阈值只在 `TitleBar.vue`（`isMobile` ← `platform.ts::resolveMobileLayout`）那一份，
+/// 这里只做"把 AppKit 画的三颗键收起来"这一件事；非 macOS 是空操作。
+#[cfg(desktop)]
+#[tauri::command]
+pub fn set_native_titlebar_buttons_hidden(window: tauri::WebviewWindow, hidden: bool) {
+    #[cfg(target_os = "macos")]
+    crate::macos_window::set_traffic_lights_hidden(&window, hidden);
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = (window, hidden);
+    }
+}
+
+/// 移动端没有系统标题栏按钮：保持命令存在（前端同一份代码不改）。
+#[cfg(mobile)]
+#[tauri::command]
+pub fn set_native_titlebar_buttons_hidden(_hidden: bool) {}
+
 #[tauri::command(async)]
 /// 群消息发送的**唯一内核**：群密钥加密 → Gossip 信封 → 落库（消息 + 每个成员的 outbox）
 /// → 广播。文本、代码、表情回应等全部走这一条路。

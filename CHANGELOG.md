@@ -13,6 +13,21 @@
 
 ## [Unreleased]
 
+## [5.8.5] - 2026-10-25
+
+### macOS 窄窗口收起系统三键 + 系统控件文案本地化（2026-10-24 用户口径）
+
+- 主窗口拉窄到移动布局时，左上角不再留着系统红绿灯：`TitleBar` 按 `isMobile`
+  调新命令 `set_native_titlebar_buttons_hidden`，Rust 对 AppKit 的
+  Close / Miniaturize / Zoom 三颗键 `setHidden`；拉宽回三栏时自动放回。
+  阈值仍只在 `resolveMobileLayout` 一份，Rust 不另判宽度。
+- `Info.plist` 补 `CFBundleDevelopmentRegion=zh-Hans` 与
+  `CFBundleLocalizations=[zh-Hans, en]`：macOS 才会把 App 当成已本地化包，
+  红绿灯悬停提示等系统控件文案跟随软件语言（此前回落成英文）。
+- 契约图 `ARCHITECTURE-MAP.html` 登记新命令；新增两条静态守卫
+  （前端 isMobile → 命令 → Rust `setHidden` 的接线、Info.plist 本地化声明）。
+- 判据：单测 1370 通过；`cargo check` 通过；build 通过。
+
 ## [5.8.4] - 2026-10-25
 
 ### 移动端设置重写：固定头部 + 单一滚动容器 + 网络页首屏稳定（2026-10-24 用户口径）

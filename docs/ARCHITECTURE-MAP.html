@@ -785,7 +785,8 @@ const CMDS = [
   ["window_close", "window", "", "()"],
   ["window_is_maximized", "window", "", "bool"],
   ["window_minimize", "window", "", "()"],
-  ["window_toggle_maximize", "window", "", "bool"]
+  ["window_toggle_maximize", "window", "", "bool"],
+  ["set_native_titlebar_buttons_hidden", "window", "hidden bool", "()"]
 
 ];
 const SEM = {
@@ -973,6 +974,7 @@ const SEM = {
   window_toggle_maximize: { d: "最大化开关，返回新状态。小窗口在 builder 上也设了 <code>maximizable(false)</code>。" },
   window_is_maximized: { d: "当前是否最大化（按钮图标要跟着变）。" },
   window_close: { d: "关窗。<b>常驻窗口会走「拦关闭 + 隐藏」</b>，设置 / 日志才是真销毁。" },
+  set_native_titlebar_buttons_hidden: { d: "macOS：窗宽切到移动布局时收起系统红绿灯（<code>setHidden</code>），拉宽回来再放回；其它平台空操作。阈值只在 <code>platform.ts::resolveMobileLayout</code> 一份，前端按 <code>isMobile</code> 调。" },
 
   /* ── commands/channel.rs ── */
   set_channel_enabled: { d: "开 / 关 <code>lan | bluetooth</code>。返回全量 <code>RuntimeSnapshot</code> 并<b>只发给其他窗口</b>。⚠️ 区分 <code>enabled</code>（用户意图，落库）与 <code>running</code>（实际在跑）。", w: "settings(lan_enabled/bt_enabled)" },

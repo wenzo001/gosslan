@@ -80,6 +80,36 @@ pub fn use_native_titlebar(window: &tauri::WebviewWindow) {
     }
 }
 
+/// macOS：显示 / 隐藏系统红绿灯（窄窗口切到移动布局时用）。
+///
+/// 为什么由前端驱动而不是 Rust 监听宽度：`decorations:false` 之后三颗键是 AppKit 画的，
+/// 前端那条 `v-if="!isMobile"` 只能管自绘 caption，管不到它们；而"什么算窄到该走移动布局"
+/// 的判据只有前端一份（`platform.ts::resolveMobileLayout`，≤767px 兜底）。Rust 再按宽度
+/// 判一次就会长出第二份阈值 —— 两边漂了以后就是"标题栏没了、按钮还在"。
+///
+/// 调用时机：`TitleBar.vue` 按同一个 `isMobile` prop watch，进入移动布局时 hidden=true，
+/// 窗口拉宽回到三栏时 hidden=false。同步命令在调用线程执行，与 `apply_macos_window_shape`
+/// 同一条路径（AppKit 调用由 Tauri 的命令线程保证在主线程）。
+#[cfg(target_os = "macos")]
+pub fn set_traffic_lights_hidden(window: &tauri::WebviewWindow, hidden: bool) {
+    use objc2_app_kit::{NSWindow, NSWindowButton};
+
+    let Ok(raw) = window.ns_window() else { return };
+    if raw.is_null() {
+        return;
+    }
+    let ns_window: &NSWindow = unsafe { &*(raw as *mut NSWindow) };
+    for button in [
+        NSWindowButton::CloseButton,
+        NSWindowButton::MiniaturizeButton,
+        NSWindowButton::ZoomButton,
+    ] {
+        if let Some(btn) = ns_window.standardWindowButton(button) {
+            btn.setHidden(hidden);
+        }
+    }
+}
+
 /// WebView 加载完成后（前端 onMounted 触发命令）调用：设背景色 + contentView 圆角。
 #[cfg(target_os = "macos")]
 pub fn apply_rounded_corners(window: &tauri::WebviewWindow, dark: bool) -> Result<(), String> {

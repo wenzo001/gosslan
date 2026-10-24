@@ -771,6 +771,7 @@ pub fn run() {
             commands::window_toggle_maximize,
             commands::window_is_maximized,
             commands::window_close,
+            commands::set_native_titlebar_buttons_hidden,
             commands::send_group_message,
             commands::send_group_reaction,
             commands::recall_group_message,

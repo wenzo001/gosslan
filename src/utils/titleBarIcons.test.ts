@@ -213,6 +213,70 @@ test("双击的两条缩放通路必须去重", () => {
 });
 
 /**
+ * macOS 窄窗口：系统原生红绿灯必须跟着前端布局档一起收起。
+ *
+ * 真实反馈（用户 2026-10-24）：「Mac 上把窗口缩成移动端，左上角怎么还有三大金刚键」。
+ * `decorations:false` 后三颗键是 AppKit 画的，`v-if="!isMobile"` 只管自绘 caption；
+ * 阈值只能有一份（`platform.ts::resolveMobileLayout`），所以前端按 `isMobile` 调命令，
+ * Rust 只负责 `setHidden`。
+ */
+test("macOS 窄窗口：系统红绿灯由 isMobile 驱动收起/恢复", () => {
+  assert.ok(script.includes("api.setNativeTitlebarButtonsHidden"), "前端没有调用收起命令");
+  assert.ok(
+    /watch\(\s*\(\) => props\.isMobile,[\s\S]{0,260}?setNativeTitlebarButtonsHidden/.test(script),
+    "收起命令必须挂在 isMobile 的 watch 上（不能另立一个宽度阈值）",
+  );
+  const rust = readFileSync(
+    join(import.meta.dirname, "..", "..", "src-tauri", "src", "macos_window.rs"),
+    "utf8",
+  );
+  assert.ok(rust.includes("pub fn set_traffic_lights_hidden"), "Rust 没有实现收起系统三键");
+  const cmds = readFileSync(
+    join(import.meta.dirname, "..", "..", "src-tauri", "src", "commands", "window.rs"),
+    "utf8",
+  );
+  assert.ok(cmds.includes("set_native_titlebar_buttons_hidden"), "命令没有实现");
+  const lib = readFileSync(
+    join(import.meta.dirname, "..", "..", "src-tauri", "src", "lib.rs"),
+    "utf8",
+  );
+  assert.ok(
+    lib.includes("commands::set_native_titlebar_buttons_hidden"),
+    "命令没有进 invoke_handler（前端调了也会被拒）",
+  );
+});
+
+/**
+ * macOS 打包必须声明本地化，否则系统控件文案（红绿灯的「关闭 / 最小化 / 进入全屏」、
+ * 系统菜单）会回落成英文 —— 用户 2026-10-24：「软件是中文的，全屏按钮的悬停提示却是英文」。
+ * 这一条同时钉住 `Info.plist` 的两个键与两份 `InfoPlist.strings` 的打包映射。
+ */
+test("macOS 打包声明本地化：系统控件文案跟着 App 语言", () => {
+  const root = join(import.meta.dirname, "..", "..", "src-tauri");
+  const plist = readFileSync(join(root, "Info.plist"), "utf8");
+  assert.match(
+    plist,
+    /<key>CFBundleDevelopmentRegion<\/key>\s*<string>zh-Hans<\/string>/,
+    "Info.plist 缺 CFBundleDevelopmentRegion=zh-Hans",
+  );
+  assert.match(
+    plist,
+    /<key>CFBundleLocalizations<\/key>\s*<array>[\s\S]{0,160}?zh-Hans[\s\S]{0,160}?en/,
+    "Info.plist 缺 CFBundleLocalizations（或没有 zh-Hans / en）",
+  );
+  const conf = JSON.parse(readFileSync(join(root, "tauri.conf.json"), "utf8"));
+  const files = conf.bundle?.macOS?.files ?? {};
+  assert.ok(
+    "Resources/zh-Hans.lproj/InfoPlist.strings" in files,
+    "中文 InfoPlist.strings 没有被打包",
+  );
+  assert.ok(
+    "Resources/en.lproj/InfoPlist.strings" in files,
+    "英文 InfoPlist.strings 没有被打包",
+  );
+});
+
+/**
  * 按花括号配对切出一个函数体（从签名之后的第一个 `{` 到与之配对的 `}`）。
  * 找不到签名或括号不闭合返回 null —— 让调用方把"判据失去落点"报成红，而不是静默跳过。
  */
