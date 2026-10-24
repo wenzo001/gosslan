@@ -462,12 +462,28 @@ async fn handle_group_file_offer(
                     };
                     match built {
                         Ok(Ok(r)) => {
-                            state
-                                .group_file_receivers
-                                .lock()
-                                .unwrap_or_else(|e| e.into_inner())
-                                .insert(transfer_id.clone(), r);
-                            true
+                            // 重建出来的接收器同样要占一格入站配额（审计 SEC-05）：
+                            // 群续传以前直接 insert，等于给配额留了一条侧门。
+                            // `replacing=false`：走到这里说明上面已经确认没有活跃接收器。
+                            match file::admit_inbound(state, false, &transfer_id, &sender_id, size) {
+                                Ok(_admission) => {
+                                    state
+                                        .group_file_receivers
+                                        .lock()
+                                        .unwrap_or_else(|e| e.into_inner())
+                                        .insert(transfer_id.clone(), r);
+                                    true
+                                }
+                                Err(why) => {
+                                    state.logger.warn(
+                                        "group_file",
+                                        format!(
+                                            "群文件续传重建被入站配额拒绝 transfer={transfer_id}：{why}"
+                                        ),
+                                    );
+                                    false
+                                }
+                            }
                         }
                         Ok(Err(why)) => {
                             state.logger.warn(

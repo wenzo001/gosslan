@@ -882,6 +882,7 @@ mod tests {
             expected_sha256: expected,
             created_at: crate::db::now_ms(),
             last_progress_at: 0,
+            size: original.len() as u64,
         };
 
         // 模拟 handle_relay_chunk 的接收路径：解密 → add_chunk（去重 + 按 seq 组装）。
@@ -3161,14 +3162,114 @@ mod tests {
     }
 
     /// 拒绝必须**可定位**：上层把这个串写进日志并回 `FileReject`，
-    /// 用户/排障时能直接搜到 `RECV_QUOTA_EXCEEDED` 与当时的占用读数。
+    /// 用户/排障时能直接搜到 `RECV_QUOTA_EXCEEDED`、当时的占用读数，以及**是哪一单**。
     #[test]
     fn a_quota_rejection_is_traceable() {
-        let msg = quota_error(QuotaBreach::Concurrent, 8, 1234, 1024);
+        let msg = quota_error(QuotaBreach::Concurrent, 8, 1234, 1024, "t9", "peer-a");
         assert!(msg.contains("code=RECV_QUOTA_EXCEEDED"), "{msg}");
         assert!(msg.contains("kind=concurrent"), "{msg}");
         assert!(msg.contains("active=8"), "{msg}");
         assert!(msg.contains("inflight=1234"), "{msg}");
+        assert!(
+            msg.contains("transfer=t9") && msg.contains("peer=peer-a"),
+            "只记「超了」不记哪一单，现场归因不到具体对端：{msg}"
+        );
+    }
+
+    /// 占用累加是纯函数：中继表也要算进来（SEC-05 的侧门就是漏掉它）。
+    #[test]
+    fn inbound_usage_sums_every_receiver_table() {
+        use super::usage_sum;
+        assert_eq!(usage_sum(&[]), (0, 0));
+        assert_eq!(
+            usage_sum(&[(2, 100), (0, 0), (3, 250)]),
+            (5, 350),
+            "三张表（单聊 / 群 / 中继）必须逐表相加，空表不改变结果"
+        );
+        assert_eq!(
+            usage_sum(&[(usize::MAX, u64::MAX), (1, 1)]),
+            (usize::MAX, u64::MAX),
+            "溢出必须饱和而不是回绕成小数字（回绕会让配额瞬间失效）"
+        );
+    }
+
+    /// 断链保留的 `.part` 也必须受预算约束：
+    /// 只清"UUID 形状"（本应用建的）且最旧的先删，直到放得下新的一份。
+    #[test]
+    fn retained_parts_are_pruned_oldest_first_within_budget() {
+        use super::{owned_part_stem, parts_to_prune, MAX_RETAINED_PART_BYTES};
+        const GIB: u64 = 1024 * 1024 * 1024;
+
+        // 用户自己的 `.part` 不是本应用建的 ⇒ 永远不许被预算清理删掉
+        assert!(owned_part_stem("6f1c2a44-6d1b-4b0e-9d6f-4f3f0e5d2c11.part").is_some());
+        assert!(owned_part_stem("backup.part").is_none());
+        assert!(owned_part_stem("draft.part").is_none());
+        assert!(owned_part_stem("6f1c2a44-6d1b-4b0e-9d6f-4f3f0e5d2c11").is_none());
+
+        let a = std::path::PathBuf::from("a.part");
+        let b = std::path::PathBuf::from("b.part");
+        let c = std::path::PathBuf::from("c.part");
+        let entries = vec![
+            (b.clone(), 6 * GIB, 200),
+            (a.clone(), 6 * GIB, 100),
+            (c.clone(), 6 * GIB, 300),
+        ];
+        // 总量 18 GiB、预算 16 GiB ⇒ 只清最旧的一份
+        assert_eq!(parts_to_prune(&entries, 0), vec![a.clone()]);
+
+        // 还要给新来的一份腾地方：预算 16 − 8 = 8 GiB ⇒ 从最旧开始清到 ≤ 8
+        assert_eq!(parts_to_prune(&entries, 8 * GIB), vec![a, b]);
+
+        // 新的一份本身就超过预算 ⇒ 现有保留全部清掉（仍然放不下，由调用方拒绝）
+        assert_eq!(
+            parts_to_prune(&entries, MAX_RETAINED_PART_BYTES + 1),
+            vec![
+                std::path::PathBuf::from("a.part"),
+                std::path::PathBuf::from("b.part"),
+                std::path::PathBuf::from("c.part"),
+            ]
+        );
+        assert!(parts_to_prune(&[], 8 * GIB).is_empty());
+    }
+
+    /// 四个入站入口都必须走同一把准入闸（`admit_inbound`），
+    /// 且占用统计必须包含中继表 —— 否则配额只是"三条路里的一条"。
+    ///
+    /// 这是形状判据：配额是安全边界，删掉任意一处的调用都必须在测试里红，
+    /// 不能靠读代码相信它还在。
+    #[test]
+    fn every_inbound_entry_goes_through_the_admission_gate() {
+        let receive = include_str!("file/receive.rs");
+        assert!(
+            receive.contains("admit_inbound(state, replacing, transfer_id, peer_id, size)"),
+            "新建接收器（单聊/群共用）必须过闸"
+        );
+        assert!(
+            receive.contains("admit_inbound(state, replacing_now, transfer_id, peer_id, size)"),
+            "续传读完前缀哈希后必须**再判一次**（初判只防白读）"
+        );
+        // 只断言"文件里出现过 relay_file_keys"太松：把它从 `inbound_usage` 里删掉、
+        // 留在别处（例如清扫器）仍然会绿。判据必须落在**统计函数体**里。
+        let at = receive
+            .find("fn inbound_usage(")
+            .expect("占用统计函数必须叫这个名字（改名时同步改这里）");
+        let body_end = receive[at..]
+            .find("\n}\n")
+            .map(|i| at + i)
+            .expect("函数体必须以顶层 `}` 结束");
+        let usage = &receive[at..body_end];
+        assert!(
+            usage.contains("relay_file_keys"),
+            "占用统计必须把中继接收表算进来，否则配额有侧门：{usage}"
+        );
+        assert!(
+            include_str!("transport/group_file.rs").contains("file::admit_inbound("),
+            "群续传重建必须过闸"
+        );
+        assert!(
+            include_str!("transport/relay_file.rs").contains("file::admit_inbound("),
+            "中继文件 Offer 必须过闸"
+        );
     }
 }
 

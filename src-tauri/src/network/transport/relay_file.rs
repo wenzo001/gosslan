@@ -52,17 +52,33 @@ async fn handle_relay_file_offer(
     };
     // 幂等：重复的 RelayFileOffer（多邻居泛洪）不得覆盖已有会话状态
     //（file_key/expected_sha256/重组表都要保留），否则后续分片全部无处安放。
-    state
+    //
+    // 审计 SEC-05：中继接收也是入站资源，必须先过配额闸。`replacing` 走幂等分支
+    //（同一个 transfer 重复 Offer 不重复占位）。
+    let replacing = state
         .relay_file_keys
         .lock()
         .unwrap_or_else(|e| e.into_inner())
-        .entry(transfer_id.clone())
-        .or_insert_with(|| crate::state::RelayFileReceive {
-            file_key,
-            expected_sha256: file_sha256,
-            created_at: db::now_ms(),
-            last_progress_at: 0,
-        });
+        .contains_key(&transfer_id);
+    {
+        let _admission = match file::admit_inbound(state, replacing, &transfer_id, &from, size) {
+            Ok(a) => a,
+            // `admit_inbound` 已按 `code=RECV_QUOTA_EXCEEDED` 留痕；这里不再重写一遍。
+            Err(_) => return,
+        };
+        state
+            .relay_file_keys
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .entry(transfer_id.clone())
+            .or_insert_with(|| crate::state::RelayFileReceive {
+                file_key,
+                expected_sha256: file_sha256,
+                created_at: db::now_ms(),
+                last_progress_at: 0,
+                size,
+            });
+    }
     // 开好 `.part`（预分配、按 seq 落盘）。失败的两条出路都是**当场拒收**：
     // `chunk_size == 0` = 对端没声明分片尺寸（老版本），不声明就没法流式接收，
     // 而宁可可报错也不退回"整份进内存"—— 那条路就是 600MB 文件把手机撑死的入口。

@@ -873,6 +873,11 @@ pub struct RelayFileReceive {
     /// "界面卡顿"。进度存在这张表里而不是另开一份：它与本行同生同灭，
     /// 分两处存迟早有一边忘清（与 stalledTransfers 同一条教训）。
     pub last_progress_at: i64,
+    /// 发送方声明的文件总字节（审计 SEC-05：中继也是"入站资源"）。
+    ///
+    /// 没有它，中继接收完全落在入站配额之外 —— 一条好友链路可以持续发
+    /// `RelayFileOffer{ 每次新 id、size 任意 }` 把 `relay_file_keys` 与磁盘一起撑大。
+    pub size: u64,
 }
 
 /// 网络运行时句柄
@@ -1356,6 +1361,13 @@ pub struct AppState {
     pub group_file_receivers: Mutex<HashMap<String, FileReceiver>>,
     /// 正在接收的文件：transfer_id -> FileReceiver
     pub file_receivers: Mutex<HashMap<String, FileReceiver>>,
+    /// 入站登记的**唯一闸门**（审计 SEC-05 的 check-then-act 修正）。
+    ///
+    /// 配额判定（数活跃接收器 / 累加字节）与"把新接收器插进表里"必须落在同一个临界区：
+    /// 否则两条链路同时 Offer 时会读到同一份旧占用，双双通过（配额形同虚设）。
+    /// 只圈"判 + 插"这一小段 —— 建 `.part` 与续传前缀哈希是慢活，且不改变占用，
+    /// 它们跑在闸门之外（续传在插入前再判一次，见 `admit_inbound`）。
+    pub inbound_gate: Mutex<()>,
     /// **文件发送的"真的写出去了"进展**：transfer_id -> `FileWireProgress`。
     ///
     /// 两个用途，判据都必须落在**写出**而不是"入队"上 —— 队列能装 1024 帧，1MB 文件会在
@@ -2058,6 +2070,7 @@ impl AppState {
             db_hold_note: Mutex::new(None),
             cache_clean_started: AtomicBool::new(false),
             group_file_receivers: Mutex::new(HashMap::new()),
+            inbound_gate: Mutex::new(()),
             group_file_sending: Mutex::new(std::collections::HashSet::new()),
             group_file_dispatching: Arc::new(Mutex::new(std::collections::HashSet::new())),
             group_file_boot_sweep_pending: std::sync::atomic::AtomicBool::new(true),
