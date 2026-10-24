@@ -2,6 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
+import { disabledOpacityFromClasses, disabledOpacityFromRule } from "./tokenContrast.ts";
 import {
   checkBubbleMetricsCoupling,
   findTemplateSlotIssues,
@@ -5445,4 +5446,35 @@ test("55 :: 真实树全绿，且分母现算（有活调用点才证明这条�
   assert.ok(fills >= 20, `模板里实底调用点只有 ${fills} 处 ⇒ 被守的东西消失了`);
   assert.ok(pairs >= 20, `模板里配档前景只有 ${pairs} 处 ⇒ 成对写法没被接上`);
   console.log(`· 55 分母：扫 ${files.length} 份 .vue，模板内实底 ${fills} 处 / 配档前景 ${pairs} 处，缺陷 0 处`);
+});
+
+// ---------------- 56：禁用态透明度的"家"有几个 ----------------
+//
+// §2.2 明写「禁止每个组件各自定义一套」。禁用态这一族今天有 4 个不同 α、三十多处声明，
+// 而且**没有 token** —— 它是这条规则现存最大的破口（收口会改到约 30 个控件的观感，属单独决策）。
+// 收口之前先把"别再多一家"钉住：档位数量只许降不许升。
+// 这属静默漂移（多加一档没人看得出来），所以才配棘轮；观感本身由 tokenContrast 的
+// DISABLED_CONTRAST_CONTRACT 逐族量比值。
+
+test("56: 禁用态透明度只许现有 4 档，第 5 档就是又各自定义一套", () => {
+  const srcDir = join(import.meta.dirname, "..");
+  const vueFiles = collectVueFiles(join(srcDir, "components")).concat(collectVueFiles(join(srcDir, "layouts")));
+  const tiers = new Set<number>();
+  let sites = 0;
+  for (const f of vueFiles) {
+    for (const a of disabledOpacityFromClasses(readFileSync(f, "utf8"))) {
+      tiers.add(a);
+      sites += 1;
+    }
+  }
+  const css = readFileSync(join(srcDir, "style.css"), "utf8");
+  for (const a of disabledOpacityFromRule(css, "disabled")) {
+    tiers.add(a);
+    sites += 1;
+  }
+  const sorted = [...tiers].sort((a, b) => a - b);
+  console.log(`· 56 禁用态 α：扫 ${vueFiles.length} 份 .vue + style.css，${sites} 处声明，档位 ${sorted.join(" / ")}`);
+  // 分母下限：提取器瞎了会把棘轮变成永真的绿（必须能证明它看见了真实写法）。
+  assert.ok(sites >= 30, `只扫到 ${sites} 处禁用态透明度声明 ⇒ 提取器没吃到真实写法，这条不算证据`);
+  assert.ok(sorted.length <= 4, `禁用态透明度有 ${sorted.length} 档（${sorted.join(", ")}），超过现有 4 档`);
 });

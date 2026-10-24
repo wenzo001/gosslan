@@ -3,7 +3,11 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import {
+  DISABLED_CONTRAST_CONTRACT,
   TOKEN_CONTRAST_CONTRACT,
+  auditDisabledContrast,
+  disabledOpacityFromClasses,
+  disabledOpacityFromRule,
   findTokenContrastFailures,
   findTokenContrastUnresolved,
   parseTokenScopes,
@@ -342,5 +346,137 @@ test("填充/前景/hover 三档必须在 :root 与 .dark 都成对定义（少�
   for (const k of pair.slice(0, 2)) {
     assert.match(String(light.get(k)), /#000000/, `${k} 亮色档应当朝黑混`);
     assert.match(String(dark.get(k)), /#ffffff/, `${k} 暗色档应当朝白混`);
+  }
+});
+
+// ---------------- 禁用态（整元素 opacity）那一族 ----------------
+//
+// §2.3 要「禁用态有足够对比度」，而上面那张契约表**一行都没覆盖它** ——
+// 禁用不走颜色档位，走 `opacity`，于是它一直是"护栏全绿但从没被算过"的形状。
+
+const disabledSources = (): Record<string, string> => ({
+  PrimaryBtn: readFileSync(join(import.meta.dirname, "..", "components", "ui", "PrimaryBtn.vue"), "utf8"),
+  DangerBtn: readFileSync(join(import.meta.dirname, "..", "components", "ui", "DangerBtn.vue"), "utf8"),
+  ChatWindow: readFileSync(join(import.meta.dirname, "..", "components", "ChatWindow.vue"), "utf8"),
+  StyleCss: css,
+});
+
+test("禁用 α 从组件写法里现取，注释里提到的不算", () => {
+  assert.deepEqual(disabledOpacityFromClasses(`<button class="tap-safe disabled:opacity-40">x</button>`), [0.4]);
+  // 反向对照：只在注释里出现 ⇒ 取不到（把注释当调用点会量出一个界面根本不存在的 α）
+  assert.deepEqual(
+    disabledOpacityFromClasses("<!-- 以前这里是 disabled:opacity-10，太淡了 -->\n<button>x</button>"),
+    [],
+    "注释里的类名被当成了 α 的家",
+  );
+  assert.deepEqual(
+    disabledOpacityFromClasses("// 讨论稿：disabled:opacity-10\n<button>x</button>"),
+    [],
+    "// 注释里的类名被当成了 α 的家",
+  );
+  // 正向对照：同档写两次都要算进来，而取最激进的那个才是真实风险
+  assert.deepEqual(
+    disabledOpacityFromClasses(`<a class="disabled:opacity-60"></a><b class="disabled:opacity-40"></b>`),
+    [0.6, 0.4],
+  );
+});
+
+test("禁用 α 按规则块取，不许把另一条规则的更淡值算进来", () => {
+  const fake = `
+:where(input, textarea, select):disabled,
+:where(input, textarea, select)[readonly] {
+  cursor: not-allowed;
+  opacity: 0.62;
+}
+.gosslan-menu-item[data-disabled] {
+  opacity: 0.5;
+}
+/* 设想稿：.gosslan-menu-item[data-disabled] { opacity: 0.1 } */
+`;
+  assert.deepEqual(
+    disabledOpacityFromRule(fake, "select):disabled"),
+    [0.62],
+    "输入框那族必须按它自己的 0.62 算 —— 全文取最小会把它冤枉成红",
+  );
+  assert.deepEqual(disabledOpacityFromRule(fake, ".gosslan-menu-item[data-disabled]"), [0.5]);
+  assert.deepEqual(disabledOpacityFromRule(fake, ".不存在的选择器"), [], "注释里的同名规则不许被命中");
+});
+
+test("真实源码：禁用态六行都算得出 α 与颜色（一行都不许静默跳过）", () => {
+  const audit = auditDisabledContrast(css, disabledSources());
+  assert.deepEqual(audit.unresolved, [], `有行取不到 α 或解析不出颜色：${audit.unresolved.join(" / ")}`);
+  assert.equal(
+    audit.ratings.length,
+    DISABLED_CONTRAST_CONTRACT.length * 2,
+    "每行必须亮/暗各一条读数（少一条 = 那一档外观从没被算过）",
+  );
+  const table = audit.ratings
+    .map((r) => `  · ${r.name}｜${r.theme}｜α=${r.alpha} 未禁用 ${r.ratioUndisabled.toFixed(2)} → 禁用后 ${r.ratio.toFixed(2)}`)
+    .join("\n");
+  console.log(`· 禁用态合成对比度（WCAG 比值，按各行自己的 α 实算）：\n${table}`);
+});
+
+test("实底按钮禁用后过不了 AA —— 这是「填充与标签一起消失」，不是淡一点", () => {
+  // 机制：整元素 opacity 把前景与填充按同一个 α 拉向同一个背景面，
+  // contrast(αF+(1-α)B, αG+(1-α)B) 随 α→0 单调趋于 1 ⇒ 靠"把 α 调大一点"救不回来。
+  const audit = auditDisabledContrast(css, disabledSources());
+  for (const name of ["主色实底按钮", "危险实底按钮"]) {
+    const rows = audit.ratings.filter((r) => r.name === name);
+    assert.equal(rows.length, 2, `${name} 应亮/暗各一条`);
+    for (const r of rows) {
+      assert.ok(
+        r.ratioUndisabled >= 4.5,
+        `${name}（${r.theme}）未禁用时本就该过 AA，实测 ${r.ratioUndisabled.toFixed(2)} —— 契约表那侧有问题`,
+      );
+      assert.ok(
+        r.ratio < 4.5,
+        `${name}（${r.theme}）禁用后按机制必须低于未禁用值；实测 ${r.ratio.toFixed(2)}`,
+      );
+    }
+  }
+});
+
+test("把禁用态调得更淡必须报红（α 是从源码现取的，手抄值做不到这件事）", () => {
+  const base = auditDisabledContrast(css, disabledSources());
+  assert.deepEqual(
+    base.fails.map((f) => `${f.name}/${f.theme}=${f.ratio.toFixed(2)}`),
+    [],
+    `当前实测下限被自己踩破了：${base.fails.map((f) => `${f.name} ${f.theme} ${f.ratio.toFixed(2)}<${f.min}@α${f.alpha}`).join("; ")}`,
+  );
+  const src = disabledSources();
+  const mutated = auditDisabledContrast(css, {
+    ...src,
+    PrimaryBtn: src.PrimaryBtn.replace("disabled:opacity-50", "disabled:opacity-25"),
+  });
+  const red = mutated.fails.find((f) => f.name === "主色实底按钮");
+  assert.ok(
+    red,
+    "把 PrimaryBtn 的禁用 α 从 50 调到 25，护栏必须点名它 —— 没点名叫明 α 根本没参与计算",
+  );
+  assert.equal(red!.alpha, 0.25, `报红要带上真实 α，实际 ${red!.alpha}`);
+  const before = base.ratings.find((r) => r.name === "主色实底按钮" && r.theme === red!.theme)!;
+  assert.ok(red!.ratio < before.ratio, `更淡的 α 必须量出更低的比值：${red!.ratio} vs ${before.ratio}`);
+});
+
+test("删掉禁用态写法不算「通过」—— 取不到 α 就是未决", () => {
+  const src = disabledSources();
+  const audit = auditDisabledContrast(css, {
+    ...src,
+    DangerBtn: src.DangerBtn.replace("disabled:opacity-50", ""),
+  });
+  assert.ok(
+    audit.unresolved.some((u) => u.includes("危险实底按钮")),
+    `写法被删掉时报红方向应是"这行从没被算过"，实际 ${JSON.stringify(audit.unresolved)}`,
+  );
+});
+
+test("禁用态契约的每一行都要有 min 与 why，且 min 不许高于 4.5", () => {
+  for (const row of DISABLED_CONTRAST_CONTRACT) {
+    assert.ok(row.min > 0 && row.min <= 4.5, `${row.name} 的 min=${row.min} 越界（禁用态不是达标线，是实测下限）`);
+    assert.ok(row.why.length > 0, `${row.name} 缺少 why`);
+    assert.ok(
+      row.name !== "禁用输入框" || row.min === 4.5,
+      "输入框那一族是唯一还过 AA 的，按正文档硬钉，别顺手放宽",
+    );
   }
 });
