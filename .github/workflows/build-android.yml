@@ -149,6 +149,11 @@ jobs:
     name: 挂到 GitHub Release（单一任务·带重试）
     needs: build-android
     if: startsWith(github.ref, 'refs/tags/v')
+    # ★ 2026-10-25：四条腿并发创建同 tag 草稿 ⇒ v5.8.0 出现 4 个 Release，
+    #   updater-manifest 挑中空的那个、白等 45 分钟。只串行化 release 任务（构建仍并行）。
+    concurrency:
+      group: publish-release-${{ github.ref_name }}
+      cancel-in-progress: false
     runs-on: ubuntu-latest
     timeout-minutes: 30
     permissions:
