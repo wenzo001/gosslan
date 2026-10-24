@@ -68,6 +68,7 @@ mod desktop {
     use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::{Arc, Mutex};
     use std::time::Duration;
+    use semver::Version;
     use tauri::ipc::Channel;
     use tauri::{AppHandle, Emitter, State};
     use tauri_plugin_updater::{Update, UpdaterExt};
@@ -151,6 +152,21 @@ mod desktop {
         state.snapshot()
     }
 
+    /// 清单版本必须**严格高于**当前版本（禁止降级，2026-10-24 产品裁决）。
+    ///
+    /// 为什么要在自己的代码里再判一次：更新包是签名的，但「签名有效」只证明它出自发布者，
+    /// 不证明它比现在新 —— 清单端点被换、或发布事故把旧包推上 `latest` 时，用户会被安静地
+    /// 回滚到已知漏洞版本。官方插件内部也做版本比较，但那条判据住在上游、本仓钉不住；
+    /// 这一道让结论能留下 `code=UPDATER_DOWNGRADE_BLOCKED` 的痕迹并明确告诉用户。
+    ///
+    /// 版本号解析失败按「不升级」处理（失败关闭）：清单形状不对时宁可拒绝并留痕，也不赌。
+    pub(super) fn is_not_an_upgrade(current: &str, candidate: &str) -> bool {
+        match (Version::parse(current), Version::parse(candidate)) {
+            (Ok(current), Ok(candidate)) => candidate <= current,
+            _ => true,
+        }
+    }
+
     #[tauri::command]
     pub async fn updater_check(
         app: AppHandle,
@@ -184,6 +200,15 @@ mod desktop {
                 .map_err(|e| e.to_string())?;
             match updater.check().await.map_err(|e| e.to_string())? {
                 Some(update) => {
+                    // 禁止降级：清单版本必须严格高于当前版本（见 `is_not_an_upgrade`）。
+                    if is_not_an_upgrade(&update.current_version, &update.version) {
+                        let msg = format!(
+                            "code=UPDATER_DOWNGRADE_BLOCKED：清单版本 {} 不高于当前 {}，已拒绝（禁止降级）",
+                            update.version, update.current_version
+                        );
+                        log_updater_error(&app, &msg);
+                        return Err(msg);
+                    }
                     let info = UpdateInfo {
                         current_version: update.current_version.clone(),
                         version: update.version.clone(),
@@ -444,7 +469,7 @@ mod desktop {
                 // 这是"失败可重试"唯一覆盖不到的一格，必须留痕，不许假装成普通失败。
                 installing.armed = false;
                 let msg = format!("code=UPDATER_INSTALL_FAILED：安装任务中断：{join}");
-                log_install_failure(&app, &msg);
+                log_updater_error(&app, &msg);
                 state.set_status(&app, |st| {
                     st.phase = "failed".to_string();
                     st.error = Some(msg.clone());
@@ -458,7 +483,7 @@ mod desktop {
             *state.update.lock().unwrap_or_else(|e| e.into_inner()) = Some(update);
             *state.bytes.lock().unwrap_or_else(|e| e.into_inner()) = Some(bytes);
             let msg = format!("code=UPDATER_INSTALL_FAILED：{e}");
-            log_install_failure(&app, &msg);
+            log_updater_error(&app, &msg);
             state.set_status(&app, |st| {
                 st.phase = "failed".to_string();
                 st.error = Some(msg.clone());
@@ -482,11 +507,11 @@ mod desktop {
         }
     }
 
-    /// 安装失败留痕（`code=UPDATER_INSTALL_FAILED`）。
+    /// 更新器错误留痕（`code=UPDATER_INSTALL_FAILED` / `code=UPDATER_DOWNGRADE_BLOCKED`）。
     ///
     /// 一条日志写不出去不该连累返回值：`logger` 拿不到时退回 stderr，
     /// 反正这条错误的**可定位性**由返回给前端的同一个字符串兜底。
-    fn log_install_failure(app: &AppHandle, msg: &str) {
+    fn log_updater_error(app: &AppHandle, msg: &str) {
         use tauri::Manager;
         match app.try_state::<std::sync::Arc<crate::state::AppState>>() {
             Some(s) => s.inner().logger.error("updater", msg.to_string()),
@@ -571,6 +596,8 @@ pub fn updater_close() -> Result<(), String> {
 // ---------------- 形状判据（B5：状态可查询、广播一个家、安装不可取消） ----------------
 #[cfg(all(test, desktop))]
 mod status_tests {
+    use super::desktop::is_not_an_upgrade;
+
     /// 取一个顶层函数的函数体（到下一个顶层 `}` 为止，足够覆盖这几条断言）。
     fn body_of<'a>(src: &'a str, needle: &str) -> &'a str {
         let at = src
@@ -662,7 +689,7 @@ mod status_tests {
             "缺一样分支与安装失败分支都必须把整包放回会话，否则用户要重新下载几十 MB"
         );
         assert_eq!(
-            install.matches("log_install_failure(").count(),
+            install.matches("log_updater_error(").count(),
             2,
             "两格失败（install 报错、阻塞任务中断）都要留痕"
         );
@@ -675,6 +702,49 @@ mod status_tests {
         assert!(
             src.contains("struct InstallingPhase") && src.contains("UPDATER_INSTALL_ABORTED"),
             "安装阶段必须有 Drop 守卫，否则窗口一关相位就永久卡在 installing"
+        );
+    }
+
+    /// 禁止降级（审计 §13，2026-10-24 产品裁决）：清单版本必须**严格高于**当前版本。
+    ///
+    /// 三个对照方向都要有，否则「全都拒绝」也能让降级那条通过：
+    /// 更低/相同 ⇒ 拒绝；更高 ⇒ 放行。预发布按 semver 比（`5.8.0-beta.1 < 5.8.0`），
+    /// 解析失败按失败关闭处理 —— 清单形状不对时不许赌。
+    #[test]
+    fn a_manifest_at_or_below_the_current_version_is_refused() {
+        assert!(is_not_an_upgrade("5.7.28", "5.7.27"), "更低版本必须拒绝");
+        assert!(is_not_an_upgrade("5.7.28", "5.7.28"), "相同版本不算更新");
+        assert!(!is_not_an_upgrade("5.7.28", "5.7.29"), "更高补丁版必须放行");
+        assert!(!is_not_an_upgrade("5.7.28", "5.8.0"), "更高次版本必须放行");
+        assert!(
+            is_not_an_upgrade("5.8.0", "5.8.0-beta.1"),
+            "5.8.0-beta.1 低于 5.8.0（预发布按 semver 比较）"
+        );
+        assert!(!is_not_an_upgrade("5.8.0-beta.1", "5.8.0"), "正式版高于同号预发布");
+        assert!(is_not_an_upgrade("5.7.28", "banana"), "非法候选版本必须拒绝");
+        assert!(is_not_an_upgrade("banana", "5.8.0"), "非法当前版本也必须失败关闭");
+    }
+
+    /// 判据必须**接在检查路径上**：只写一个纯函数、`updater_check` 不调用它，等于没做。
+    /// 同时钉住拒绝时的可检索码与日志出口（用户要能在运行日志里找到它）。
+    #[test]
+    fn check_refuses_a_manifest_that_is_not_newer() {
+        let src = include_str!("updater.rs");
+        let check = body_of(src, "pub async fn updater_check(");
+        assert!(
+            check.contains("is_not_an_upgrade("),
+            "检查路径必须调用降级判据"
+        );
+        assert!(
+            check.contains("UPDATER_DOWNGRADE_BLOCKED") && check.contains("log_updater_error("),
+            "拒绝降级必须留 `code=UPDATER_DOWNGRADE_BLOCKED` 的日志痕迹"
+        );
+        // 被拒的那份 `Update` 不许留在会话里（否则用户还能点「下载」把它装回去）。
+        let gate = check.find("is_not_an_upgrade(").unwrap();
+        let insert = check.find("= Some(update)").unwrap();
+        assert!(
+            gate < insert,
+            "降级判定必须发生在把 update 放进会话之前"
         );
     }
 }

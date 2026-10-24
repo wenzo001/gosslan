@@ -1928,7 +1928,13 @@ window.__probe = (() => {
     const r = window.__share.pending[fid];
     if (!r) return false;
     delete window.__share.pending[fid];
-    r(names.map((name) => ({ name, path: fid + '/' + name, is_dir: false, size: 10 })));
+    // 契约是 entries + truncated 的对象（PERF-02：截断位随树一起回来，界面才有东西可提示）。
+    // 还返回裸数组的话，parseIpcValue 会在边界直接拒绝 ⇒ 面板永远显示"目录为空"，
+    // 这不是产品缺陷、是夹具过期（2026-10-24 复跑时实测）。
+    r({
+      entries: names.map((name) => ({ name, path: fid + '/' + name, is_dir: false, size: 10 })),
+      truncated: false,
+    });
     return true;
   };
   /** 切当前会话（共享目录按好友分键的驱动）。 */

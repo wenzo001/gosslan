@@ -410,6 +410,7 @@ export const enUS: MessageDict = {
   "settings.updates.error.signature": "Update signature verification failed; installation was refused",
   "settings.updates.error.manifest": "The update manifest is malformed",
   "settings.updates.error.busy": "Another update task is running; try again shortly",
+  "settings.updates.error.downgrade": "The update manifest points to an older version; installation was refused (downgrades are disabled)",
   "settings.updates.error.unknown": "Update failed. Try again later.",
 
   // ---- Window controls ----
