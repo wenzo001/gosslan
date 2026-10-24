@@ -230,7 +230,24 @@ async fn handle_share_and_relay_messages(state: &Arc<AppState>, peer_id: &str, m
                         match tokio::task::spawn_blocking(move || file::walk_share_dir(Path::new(&dir)))
                             .await
                         {
-                            Ok(entries) => entries,
+                            Ok(tree) => {
+                                if tree.truncated {
+                                    // 截断必须留痕（审计 PERF-02）：请求方只能拿到前
+                                    // `SHARE_TREE_MAX_ENTRIES` 条，而"为什么少了"的答案
+                                    // 只在本机这份日志里 —— 分享帧协议没有截断位，
+                                    // 前端也没有提示位，这一行就是唯一的现场读数。
+                                    state.logger.warn(
+                                        "share",
+                                        format!(
+                                            "code=SHARE_TREE_TRUNCATED entries={} limit={} from={from} —— 共享目录条目超过上限，只回了前 {} 条",
+                                            tree.entries.len(),
+                                            file::SHARE_TREE_MAX_ENTRIES,
+                                            file::SHARE_TREE_MAX_ENTRIES
+                                        ),
+                                    );
+                                }
+                                tree.entries
+                            }
                             Err(e) => {
                                 state.logger.warn(
                                     "share",

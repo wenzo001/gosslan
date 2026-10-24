@@ -3325,4 +3325,84 @@ mod send_complete_guard_tests {
             "守卫离开作用域后登记必须被摘除（覆盖 ? / 提前 return / panic）"
         );
     }
+
+    // ---------------- 共享目录树条数上限（审计 PERF-02） ----------------
+
+    /// 上限之外的条目**一条都不许多装**，而"被截断"必须显式报告。
+    ///
+    /// 这条的原始缺陷形状：`walk_share_dir` 没有上限，条目数完全由对端共享根决定，
+    /// 结果整体塞进 `ShareTreeResponse` ⇒ 遍历 + 序列化 + 单帧三处各付一次内存峰值。
+    #[test]
+    fn share_tree_stops_at_the_cap_and_reports_truncation() {
+        use super::{walk_share_dir, SHARE_TREE_MAX_ENTRIES};
+        let tmp = tempfile::TempDir::new().unwrap();
+        for i in 0..=SHARE_TREE_MAX_ENTRIES {
+            std::fs::File::create(tmp.path().join(format!("f{i}.txt"))).unwrap();
+        }
+        let tree = walk_share_dir(tmp.path());
+        assert_eq!(
+            tree.entries.len(),
+            SHARE_TREE_MAX_ENTRIES,
+            "多一条都必须被上限挡住（这是内存峰值唯一的闸）"
+        );
+        assert!(tree.truncated, "还有没装进来的条目 ⇒ 必须报告 truncated");
+    }
+
+    /// 边界：**恰好**等于上限的目录不算截断。
+    ///
+    /// 这正是不让调用方用 `len == MAX` 猜的理由 —— 猜法会把一个装得下的目录标成
+    /// `SHARE_TREE_TRUNCATED`，日志从此不可信。
+    #[test]
+    fn a_share_tree_exactly_at_the_cap_is_not_truncated() {
+        use super::{walk_share_dir, SHARE_TREE_MAX_ENTRIES};
+        let tmp = tempfile::TempDir::new().unwrap();
+        for i in 0..SHARE_TREE_MAX_ENTRIES {
+            std::fs::File::create(tmp.path().join(format!("f{i}.txt"))).unwrap();
+        }
+        let tree = walk_share_dir(tmp.path());
+        assert_eq!(tree.entries.len(), SHARE_TREE_MAX_ENTRIES);
+        assert!(!tree.truncated, "恰好装得下不是截断");
+    }
+
+    /// 目录递归同样受上限约束（不能"顶层装满了还继续往子目录里走"），
+    /// 且子目录里的条目同样进树（上限不是"只数顶层"）。
+    #[test]
+    fn nested_walk_also_obeys_the_cap() {
+        use super::{walk_share_dir, SHARE_TREE_MAX_ENTRIES};
+        let tmp = tempfile::TempDir::new().unwrap();
+        let sub = tmp.path().join("sub");
+        std::fs::create_dir(&sub).unwrap();
+        // 顶层 1 个目录 + 子目录 MAX 条 ⇒ 总数 MAX+1，必须截断
+        for i in 0..SHARE_TREE_MAX_ENTRIES {
+            std::fs::File::create(sub.join(format!("n{i}.txt"))).unwrap();
+        }
+        let tree = walk_share_dir(tmp.path());
+        assert_eq!(tree.entries.len(), SHARE_TREE_MAX_ENTRIES);
+        assert!(tree.truncated, "子目录条目也要计数，装满后必须停");
+        assert!(
+            tree.entries.iter().any(|e| e.is_dir),
+            "子目录本身必须出现在树里（递归没有被上限提前掐掉）"
+        );
+    }
+
+    /// 截断必须留痕，而且只在真的截断时记。
+    ///
+    /// 请求方只拿到前 N 条，协议里没有截断位 ⇒ 这一行日志是唯一的现场读数；
+    /// 若它变成无条件记录或换了码，现场就再也查不到"为什么少了"。
+    #[test]
+    fn share_tree_truncation_is_logged_behind_the_flag() {
+        let src = include_str!("transport/handle_share.rs");
+        let at = src
+            .find("Ok(tree) => {")
+            .expect("handle_share 的遍历结果分支必须存在");
+        let arm = &src[at..at + src[at..].find("Err(e) =>").unwrap()];
+        assert!(
+            arm.contains("if tree.truncated"),
+            "日志必须在 truncated 为真时才记 —— 无条件记录会让日志失去判据价值"
+        );
+        assert!(
+            arm.contains("code=SHARE_TREE_TRUNCATED"),
+            "截断必须带可检索码，否则用户在界面看到少了一半文件时无从解释"
+        );
+    }
 }
