@@ -267,7 +267,9 @@ export function useMessageFile(
   async function openFile() {
     // 点自己发的文件：静默返回（连 toast 都不给，避免"看起来有反应"）。
     if (!fileTappable.value) return;
-    const path = fileMeta.value?.path;
+    // 打开用**台账路径优先**：消息载荷里的 `path` 由对端写，后端会按 owner 回绑台账，
+    // 这里先取同一份来源，合法文件才不会被自己的载荷字段挡在门外（SEC-01）。
+    const path = transfer.value?.path || fileMeta.value?.path;
     const name = fileMeta.value?.name;
     if (!path || !name) {
       app.toast($t("msg.filePathUnavailable"), "error");
@@ -275,7 +277,7 @@ export function useMessageFile(
     }
     // 平台差异（Android 改走另存为）统一在 utils/localFile 里，与群文件面板同一条路径。
     try {
-      await openLocalFile(path, name);
+      await openLocalFile(path, name, msg.value.msg_id);
     } catch (e) {
       app.toastError(e, $t("msg.openFileFail"));
     }

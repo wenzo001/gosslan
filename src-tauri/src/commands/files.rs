@@ -119,53 +119,106 @@ fn path_under_any(file: &std::path::Path, roots: &[std::path::PathBuf]) -> bool 
     roots.iter().any(|dir| file.starts_with(dir))
 }
 
+/// 从消息 id 取传输 id（`file-{id}` / `gfile-{id}`），其它形状返回 `None`。
+///
+/// 同一映射在 `helpers.rs::resolve_media_path` 里也有一份（读取预览那条链），
+/// 口径必须一致；这里是**打开**那条链的唯一入口。
+fn transfer_id_of_owner(owner: &str) -> Option<&str> {
+    owner
+        .strip_prefix("file-")
+        .or_else(|| owner.strip_prefix("gfile-"))
+}
+
+/// 台账绑定判据（纯函数）：请求路径必须与台账路径（两者都已 canonicalize）一致。
+///
+/// 抽成纯函数是为了能被单测判住 —— “消息里的 path 不等于这条消息的传输台账 path”
+/// 这一格在本机点不出来，只能靠机器。返回值是日志/前端共用的 `code`。
+fn ledger_path_owns(
+    requested: &std::path::Path,
+    ledger: Option<&std::path::Path>,
+) -> Result<(), &'static str> {
+    match ledger {
+        None => Err("OPEN_PATH_UNBOUND"),
+        Some(path) if path != requested => Err("OPEN_PATH_NOT_OWNED"),
+        Some(_) => Ok(()),
+    }
+}
+
 /// 用系统默认应用打开本地文件。
 /// macOS 走 NSWorkspace（沙盒下 /usr/bin/open 被拦）；Android 走 FileProvider + ACTION_VIEW
 /// （私有目录的文件不能以 file:// 交给别的应用，见 android_open.rs）；Windows/Linux 走 opener。
 ///
-/// ⚠️ **只允许打开本应用自己管的那几个目录里的文件**（审计 2026-10-16）。
-/// 这条边界早就存在，只是漏在另一家身上：同文件 `delete_file` 与 `helpers.rs::resolve_media_path`
-/// 都做了 canonicalize + 目录比对，而这里原先把前端来的字符串**原样**交给系统 ——
-/// 而那个字符串是**对端可控**的（消息内容里的 `path` 字段由发送方写，见 `delete_file` 上方注释
-/// 自己写明的担忧）。链路是通的：`MessageItem.vue:610` / `GroupFilesPanel.vue:127`
-/// → `utils/localFile.ts:29` → `api/index.ts:285` → 这里。
-/// ⇒ 一个已过 Hello 验签但被盗用/恶意的好友身份，发一条带 `path` 的消息，本机上的人点一下气泡
-/// 就会用默认应用打开**任意**路径（.exe、\\?\UNC 远程分享、别人的文档都算）。
+/// ⚠️ 信任边界到**对象**，不是到目录（审计 2026-10-24 SEC-01 / SOL-01）。
+/// 消息内容里的 `path` 由**对端**写，只校验"落在托管目录内"挡不住
+/// "本应用托管目录内的任意文件"（对端先前投递的 `.command` / `.app` 也算）。
+///
+/// 判据：调用方传 `owner = msg_id`，后端按 `file-{tid}` / `gfile-{tid}` 回绑
+/// `file_transfers.path`（**沿用现有约定，不新增表列**），请求路径必须与该台账路径
+/// （canonicalize 后）一致；台账行尚未建立时，只允许**本机发出**的消息
+/// （那条路径是本机用户在文件对话框里选的，对端写不了 `sender_id`）。
+/// 无 `owner` 的只剩收藏入口，只允许 `favorites_dir`。
 ///
 /// 拒绝时**必须留痕**（不许静默）：真机有没有合法用例被这条挡住，只有那条日志知道。
 #[tauri::command(async)]
 pub fn open_file_native(
     state: State<'_, Arc<AppState>>,
     path: String,
+    owner: Option<String>,
 ) -> Result<(), String> {
     let s = state.inner();
-    let file = std::fs::canonicalize(&path).map_err(|e| e.to_string())?;
-    let mut roots: Vec<std::path::PathBuf> = Vec::new();
-    for dir in [
-        s.downloads_dir
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .clone()
-            .as_path(),
-        s.cache_dir.as_path(),
-        s.favorites_dir.as_path(),
-    ] {
-        if let Ok(canonical) = std::fs::canonicalize(dir) {
-            roots.push(canonical);
+    let requested = std::fs::canonicalize(&path).map_err(|e| e.to_string())?;
+
+    let allowed = match owner.as_deref() {
+        Some(msg_id) => {
+            let (ledger, mine) = {
+                let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());
+                let ledger = transfer_id_of_owner(msg_id)
+                    .and_then(|tid| db::get_transfer_path(&dbc, tid));
+                // 群文件的气泡在第一条进度上报之前还没有台账行（`file_transfers` 那一行
+                // 是进度节流时写的）；本机发出的那条路径是用户自己选的，可以直接放行。
+                let mine = ledger.is_none()
+                    && db::get_message_record(&dbc, msg_id)
+                        .map(|m| m.sender_id == s.device_id)
+                        .unwrap_or(false);
+                (ledger, mine)
+            };
+            if mine {
+                Ok(())
+            } else {
+                let ledger_canon = ledger
+                    .as_deref()
+                    .and_then(|p| std::fs::canonicalize(p).ok());
+                ledger_path_owns(&requested, ledger_canon.as_deref())
+            }
         }
-    }
-    // 合并转发的暂存目录是运行期才知道的，没设过就没这一格。
-    let share = s.share_dir.lock().unwrap_or_else(|e| e.into_inner()).clone();
-    if let Some(canonical) = share.as_deref().and_then(|p| std::fs::canonicalize(p).ok()) {
-        roots.push(canonical);
-    }
-    if !path_under_any(&file, &roots) {
+        None => {
+            let fav = std::fs::canonicalize(&s.favorites_dir).ok();
+            if fav
+                .as_deref()
+                .map(|dir| requested.starts_with(dir))
+                .unwrap_or(false)
+            {
+                Ok(())
+            } else {
+                Err("OPEN_PATH_UNBOUND")
+            }
+        }
+    };
+
+    if let Err(code) = allowed {
         s.logger.warn(
             "file",
-            format!("拒绝用系统默认应用打开托管目录之外的路径：{path}"),
+            format!(
+                "code={code} 拒绝用系统默认应用打开 file={path} owner={}",
+                owner.as_deref().unwrap_or("-")
+            ),
         );
-        return Err("只能打开本应用保存的文件".to_string());
+        return Err(match code {
+            "OPEN_PATH_NOT_OWNED" => "这个文件不属于这条消息，已拒绝打开".to_string(),
+            _ => "无法确认这个文件属于本应用，已拒绝打开".to_string(),
+        });
     }
+
     // ⚠️ 交给系统的是**原始路径**，不是上面那份 canonical 结果：Windows 的 `canonicalize` 返回
     // `\\?\C:\…` 这种 verbatim 形式，而这条链在 Windows/Linux 上走 `tauri_plugin_opener` → `ShellExecuteW`，
     // **ShellExecute 不支持 `\\?\` 前缀**（macOS 走 NSWorkspace、Android 走 FileProvider，才与它无关）。
