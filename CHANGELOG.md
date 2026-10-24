@@ -13,6 +13,22 @@
 
 ## [Unreleased]
 
+## [5.7.12] - 2026-10-24
+
+### 打开本地文件按消息回绑传输台账（审计 SEC-01）
+
+- `open_file_native` 增加 `owner`（消息 id）：按 `file-{tid}` / `gfile-{tid}` 回绑
+  `file_transfers.path`，请求路径 canonicalize 后必须与台账一致；不一致记
+  `code=OPEN_PATH_NOT_OWNED`，无台账记 `OPEN_PATH_UNBOUND`，两者都拒绝并留日志。
+  旧实现只校验"落在 downloads/cache/favorites/share 内"，挡不住"托管目录内的任意文件"
+  （对端此前投递的 `.command` / `.app` 也算）。
+- 四个调用点全部带上归属：消息气泡与引用消息传消息 `msg_id`，群文件面板传
+  `gfile-{transfer_id}`，收藏入口无归属、只允许 `favorites_dir`。
+- 气泡打开改为**台账路径优先**（`file_transfers.path`），消息载荷里的 `path` 只在
+  传输记录尚未到达时作显示兜底。
+- 顺带修正：本机发出、源文件在下载目录之外（如桌面）的文件，此前会被目录白名单挡下；
+  现在按台账放行（台账路径由本机用户选择，对端无法伪造）。
+
 ## [5.7.11] - 2026-10-24
 
 ### 状态色条补上"画没画在这个元素上"那一半天（决策 3/4 的断言缺口）+ 右键批次两处过时注释

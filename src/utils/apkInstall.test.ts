@@ -18,7 +18,11 @@ test("Android APK 安装接线：前端分流 + Kotlin MIME + Manifest 权限", 
   const localFile = readFileSync(join(root, "src/utils/localFile.ts"), "utf8");
   assert.match(localFile, /isApkName\(name\)/, "Android 入口必须先按名字判 apk");
   assert.match(localFile, /isApkName\(path\)/, "路径也要兜底判 apk");
-  assert.match(localFile, /openFileNative\(path\)/, "apk 必须交给系统打开器，不走另存为");
+  assert.match(
+    localFile,
+    /openFileNative\(path, owner\)/,
+    "apk 必须交给系统打开器（并带上消息归属 owner），不走另存为",
+  );
 
   const kotlin = readFileSync(
     join(

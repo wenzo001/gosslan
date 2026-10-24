@@ -325,8 +325,11 @@ export const api = {
     invoke<{ path: string; name: string; size: number }>("save_outgoing_image", { dataUrl }),
   deleteFile: (path: string) => invoke<void>("delete_file", { path }),
   /** 用系统默认应用打开本地文件：macOS 走 NSWorkspace（沙盒下 /usr/bin/open 被拦），
-   *  Windows/Linux 走 opener。 */
-  openFileNative: (path: string) => invoke<void>("open_file_native", { path }),
+   *  Windows/Linux 走 opener。
+   *  `owner` = 消息 id（`file-{tid}` / `gfile-{tid}`）：后端据此回绑 `file_transfers.path`，
+   *  拒绝打开"不属于这条消息"的路径（SEC-01）。收藏入口传 `null`。 */
+  openFileNative: (path: string, owner: string | null) =>
+    invoke<void>("open_file_native", { path, owner }),
   /** macOS 窗口圆角：WebView 加载完成后调用（setup 阶段设会被 wry 替换 contentView 丢失）。 */
   applyMacosWindowShape: (dark: boolean) =>
     invoke<void>("apply_macos_window_shape", { dark }),

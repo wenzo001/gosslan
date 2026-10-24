@@ -696,7 +696,8 @@ async function viewQuoted() {
       return;
     }
     try {
-      await openLocalFile(meta.path, meta.name || t("common.file"));
+      // owner 传**原消息**的 msg_id：后端回绑该消息的传输台账（SEC-01）。
+      await openLocalFile(meta.path, meta.name || t("common.file"), orig.msg_id);
     } catch (e) {
       app.toastError(e, t("msg.openFileFail"));
     }

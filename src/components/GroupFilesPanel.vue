@@ -155,7 +155,8 @@ async function openFile(f: GroupFileEntry) {
   if (!f.local_path) return;
   // 平台差异（Android 改走另存为）统一在 utils/localFile 里，与消息气泡同一条路径。
   try {
-    await openLocalFile(f.local_path, f.name);
+    // 群文件的 msg_id 恒为 `gfile-{transfer_id}`；后端据此回绑台账（SEC-01）。
+    await openLocalFile(f.local_path, f.name, `gfile-${f.transfer_id}`);
   } catch (e) {
     app.toastError(e, t("msg.openFileFail"));
   }

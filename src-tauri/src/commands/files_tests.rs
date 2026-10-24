@@ -7,7 +7,7 @@
 // 恶意 path"，所以这条只能靠纯函数判 —— 判的是分量比对，不是字符串前缀。
 #[cfg(test)]
 mod files_gate_tests {
-    use super::path_under_any;
+    use super::{ledger_path_owns, path_under_any, transfer_id_of_owner};
     use std::path::Path;
 
     /// 自家目录之内必须放行。
@@ -70,5 +70,53 @@ mod files_gate_tests {
             Path::new("/app/data/downloads/a.png"),
             &[],
         ));
+    }
+
+    /* ---------------- SEC-01 / SOL-01：打开必须绑定到这条消息的传输台账 ---------------- */
+
+    /// `file-{tid}` / `gfile-{tid}` 都要能还原出 tid；其它形状（合并转发、普通文本）返回 None。
+    /// 前缀解析在这条链上只有一份，错一处就会把"无台账"误判成"有台账"。
+    #[test]
+    fn owner_prefix_maps_to_transfer_id() {
+        assert_eq!(transfer_id_of_owner("file-t1"), Some("t1"));
+        assert_eq!(transfer_id_of_owner("gfile-t1"), Some("t1"));
+        for bad in ["merge-1", "t1", "file", "gfile", "", "GFile-t1"] {
+            assert_eq!(
+                transfer_id_of_owner(bad),
+                None,
+                "{bad} 不是文件消息的 msg_id 形状"
+            );
+        }
+    }
+
+    /// **SEC-01 的核心回归**：台账说这条消息的文件是 A，消息载荷却让本机打开 B
+    /// （B 可以是下载目录里此前投递的 `.command`）⇒ 必须拒绝。
+    /// 旧实现只比目录，A 与 B 同在 downloads 内时会放行。
+    #[test]
+    fn forged_payload_path_is_rejected_when_ledger_points_elsewhere() {
+        let ledger = Path::new("/app/data/downloads/real.pdf");
+        let forged = Path::new("/app/data/downloads/payload.command");
+        assert_eq!(
+            ledger_path_owns(forged, Some(ledger)),
+            Err("OPEN_PATH_NOT_OWNED"),
+            "载荷路径与台账不一致时必须拒绝"
+        );
+    }
+
+    /// 合法路径：前端取的就是台账那一份，必须放行。
+    #[test]
+    fn ledger_owned_path_is_allowed() {
+        let path = Path::new("/app/data/downloads/real.pdf");
+        assert_eq!(ledger_path_owns(path, Some(path)), Ok(()));
+    }
+
+    /// 台账行不存在（群文件第一条进度之前、或纯 merge 内容）⇒ 未绑定的必须拒绝，
+    /// 不能因为"查不到"就退化成"目录内都放行"。
+    #[test]
+    fn missing_ledger_row_is_unbound_not_allowed() {
+        assert_eq!(
+            ledger_path_owns(Path::new("/app/data/downloads/x.pdf"), None),
+            Err("OPEN_PATH_UNBOUND")
+        );
     }
 }
