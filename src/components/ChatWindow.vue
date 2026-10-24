@@ -27,6 +27,7 @@ import MergeCardModal from "@/components/message/MergeCardModal.vue";
 import { useImagePreviewStore } from "@/stores/useImagePreview";
 import { estimateMessageHeight } from "@/utils/messageHeight";
 import { trimOldest } from "@/utils/bounded";
+import { computeEnteringId, ENTER_ANIM_MS } from "@/utils/messageEnter";
 import { launchAuxWindow, isWindowOpening } from "@/composables/useWindowLauncher";
 import { useMentionContext } from "@/composables/useMentionContext";
 import { fileToDataUrl } from "@/utils/imageBytes";
@@ -885,6 +886,29 @@ function groupSideAt(index: number) {
 // ---------------- 滚动 ----------------
 const nearBottom = ref(true);
 
+// ---------------- 新消息进入动效 ----------------
+/**
+ * 正在进入的那条 `msg_id`。资格由 `computeEnteringId()` 现算，不交给 CSS 挂载时机 ——
+ * 虚拟列表滚动回收 / 切会话 / prepend 历史都会重建 DOM，挂在挂载时机上会让翻旧消息逐行重放淡入。
+ * 只有一个在飞的定时器：每条新追加都重置它，到点整体清空 ⇒ 不留常驻定时器。
+ */
+const enteringIds = ref<Set<string | number>>(new Set());
+let enterTimer: ReturnType<typeof setTimeout> | null = null;
+onScopeDispose(() => {
+  if (enterTimer) clearTimeout(enterTimer);
+  enterTimer = null;
+});
+
+function markEntering(msgId: string | number) {
+  enteringIds.value = new Set([msgId]);
+  if (enterTimer) clearTimeout(enterTimer);
+  // 多留 40ms：动画还没收尾就摘类名，肉眼会看见跳一下
+  enterTimer = setTimeout(() => {
+    enterTimer = null;
+    enteringIds.value = new Set();
+  }, ENTER_ANIM_MS + 40);
+}
+
 // 打开会话/未读定位：优先跳到第一条未读（该消息贴视口顶部），无未读则贴底。
 // 跳转后显式解除贴底：防止总高度重测的钉底把用户从未读位置拽回底部。
 // unreadJump.index = -1 表示「有未读但消息还在加载、索引未知」，此时不动滚动。
@@ -942,6 +966,7 @@ watch(
 
     const newLast = messages.value.at(-1);
     const newLastId = newLast?.msg_id ?? null;
+    const prevLastId = lastMsgId;
     const isAppend = newLastId !== null && newLastId !== lastMsgId;
     lastMsgId = newLastId;
 
@@ -949,7 +974,17 @@ watch(
       // 自己发的消息无论 nearBottom 都贴底；对方的消息仅在用户已在底部附近时贴底。
       // 用户 1.2s 内主动向上滚动过则不打扰（否则新消息会反复把人拽回底部）
       const isMine = newLast?.sender_id === app.device?.device_id;
-      if ((isMine || nearBottom.value) && !listRef.value?.recentScrollUp?.()) {
+      const willBeVisible = (isMine || nearBottom.value) && !listRef.value?.recentScrollUp?.();
+      // 进入动画与贴底用**同一个**可见性判定：看不见的行不做动效，也不许被拽回底部
+      const entering = computeEnteringId({
+        prevLastId,
+        nextLastId: newLastId,
+        prevLen: oldLen,
+        nextLen: messages.value.length,
+        willBeVisible,
+      });
+      if (entering) markEntering(entering);
+      if (willBeVisible) {
         await nextTick();
         listRef.value?.scrollToBottom();
       }
@@ -1740,6 +1775,7 @@ function onLoadMore() {
         <template #default="{ item, index }">
           <MessageItem
             :message="item"
+            :class="enteringIds.has(item.msg_id) ? 'gosslan-msg-enter' : ''"
             :prev="index > 0 ? messages[index - 1] : null"
             :is-group="isGroup"
             :group-side="groupSideAt(index)"

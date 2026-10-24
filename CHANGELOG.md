@@ -13,6 +13,31 @@
 
 ## [Unreleased]
 
+## [5.7.8] - 2026-10-24
+
+### 补上规范 §8 唯一没落地的一条：新消息进入动效（此前整条链路上没有）
+
+- 新增 [src/utils/messageEnter.ts](src/utils/messageEnter.ts)：`computeEnteringId()` 是一个零依赖纯函数，
+  只有**尾部追加恰好一条、且这一条会出现在视野里**才给动效资格。为什么不挂在 CSS 挂载时机上：
+  虚拟列表滚动回收 / 切会话 / 向上 prepend 历史都会重建 DOM —— 挂在挂载时机 = 翻旧消息逐行重放淡入。
+  四种"不该动"的形状（尾 id 没变 / 原空表填充 / 一次进多条 / 用户在读历史）各有具名用例。
+- [ChatWindow.vue](src/components/ChatWindow.vue)：动效资格与**贴底走同一个可见性判定**
+  （`isMine || nearBottom`，且 1.2s 内主动上滑过则不打扰），所以"给看不见的行做动画"和
+  "把人强行拽回底部"是同一个开关，不会漂成两件事。定时器只有一个、由 `onScopeDispose` 收尾。
+- [style.css](src/style.css)：`gosslan-msg-in` 只动 `opacity` + `transform`（行盒尺寸不动 ⇒
+  虚拟列表测量与滚动锚点不受影响），时长/缓取全站 `--gosslan-duration` + `--gosslan-ease`，
+  并在 `prefers-reduced-motion: reduce` 里显式 `animation: none`。
+- 断言（[messageEnter.test.ts](src/utils/messageEnter.test.ts)，6 条）：真值表 + **接线判据**
+  （调用点恰好 1 处、类名恰好绑 1 处，摘掉绑定就红）+ 关键帧属性白名单（混进 `height` 即红）+
+  TS 常数与 CSS 令牌现读对账 + reduce 档确实关掉。两次单点变异都证过"改坏即红、恢复即绿"。
+- 量具自己先红过两轮，都是它的错：① 数调用点时把注释里那句 `computeEnteringId()` 也数成调用
+  ⇒ 改成只数代码行，并补一条正控（同一把尺子必须读得出 `markEntering(` 的 ≥2 处）；
+  ② `split("@media (prefers-reduced-motion…)")` 拿到的 chunk 会横跨到下一个块，
+  于是先命中的是**没缩进的主规则** ⇒ 改成按花括号配对取每条 reduce 块自己的正文。
+- 真实读数：`npm test` **1349/1349**；`npm run verify` **17/18**（唯一红＝Change Budget 判据 3，
+  与本条无关）；`vue-tsc --noEmit` 与 `vite build` 绿。运行时那一格由 CDP 探针的动效属性扫描看着，
+  浏览器真取值仍欠一条专门断言（见下轮）。
+
 ## [5.7.7] - 2026-10-24
 
 ### 主色实底控件第一次有了「填充 + 前景」这一对：亮色压深、暗色提亮
