@@ -25,6 +25,7 @@
  *    等它们有了再进来，不在这里先画一个动不了的行。
  * 3. **动作只能是对已经存在的命令的引用**（见 `OperationAction` 那张表）。
  *    界面上一个点了什么都不会发生的按钮，比不给按钮更糟。
+ *    （消息取消在 B4 落地后，`cancel_message` 已是一条真命令，消息行因此也有取消键。）
  */
 import type { ContentTransfer, GroupHistoryProgress, TransferInfo } from "@/types";
 
@@ -42,7 +43,9 @@ export type OperationState = "queued" | "running" | "blocked";
 
 /**
  * 可执行动作 —— 每一个都对应一条**今天就有**的通道：
- *  · `cancel`            → `cancel_file_transfer`（文件；消息的取消/撤回在 B4，所以消息行不给它）
+ *  · `cancel`            → `cancel_file_transfer`（文件）
+ *  · `cancel_message`    → `cancel_message`（还没送出去的补发队列行；已送达会被后端拒绝）
+ *  · `cancel_update`     → `updater_cancel`（更新下载）
  *  · `retry_content`     → `request_content_by_cid`（"点击重取"，已有；只给单聊接收行，理由见 `contentRow`）
  *  · `sync_history_now`  → `sync_group_history_now`（已有）
  *  · `open_conversation` → 纯前端跳转，只需要行带得出会话身份
@@ -50,6 +53,7 @@ export type OperationState = "queued" | "running" | "blocked";
  */
 export type OperationAction =
   | "cancel"
+  | "cancel_message"
   | "cancel_update"
   | "retry_content"
   | "sync_history_now"
@@ -201,9 +205,11 @@ function contentRow(c: ContentTransfer): OperationRow {
 function messageRow(m: PendingMessageOpView): OperationRow {
   const offline = !!m.peer_id && m.peer_offline;
   const actions: OperationAction[] = [];
-  // 取消/撤回在 B4 —— 今天没有"把一条还在队列里的消息撤下来"的命令，所以这里只给"去那个会话"。
+  // 补发队列里的行都是本机发出去的（`outbox` / `group_outbox`）⇒ `cancel_message` 可用：
+  // 它删队列行 + 把状态写 `cancelled`；若已经被对方收下，后端回 `already_delivered`，
+  // 界面如实说"已送达，不能取消"（不在前端假装成功）。
   const convId = m.group_id ? `group:${m.group_id}` : m.peer_id ?? undefined;
-  if (convId) actions.push("open_conversation");
+  if (convId) actions.push("cancel_message", "open_conversation");
   return {
     id: m.msg_id,
     kind: "message_send",
