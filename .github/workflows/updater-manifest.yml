@@ -73,9 +73,11 @@ jobs:
           # ★ draft-until-complete（2026-10-23）：四条构建腿现在只创建/补挂**草稿**，
           #   谁先跑完都不能把半个 Release 对外公开；发布由本 workflow 在四类产物齐了之后统一做。
           #   草稿对 `releases/tags/<tag>` 可能 404（本仓 2026-10-22 实测）⇒ 一律用列表 API 拿 id。
+          # ★ 2026-10-25：列表里可能有**同 tag 的多个草稿**（并发创建事故，v5.8.0 出现过 4 个）。
+          #   以前 `head -1` 会挑中空的那个、白等 45 分钟；现在取**资产最多**的那个。
           while [ "$SECONDS" -lt "$deadline" ]; do
             rel_id=$(gh api "repos/$REPO/releases?per_page=100" \
-              --jq ".[] | select(.tag_name == \"$TAG\") | .id" 2>/dev/null | head -1 || true)
+              --jq "[.[] | select(.tag_name == \"$TAG\")] | sort_by(.assets | length) | reverse | .[0].id // empty" 2>/dev/null | head -1 || true)
             names=""
             if [ -n "$rel_id" ]; then
               names=$(gh api "repos/$REPO/releases/$rel_id" --jq '.assets[].name' 2>/dev/null || true)
