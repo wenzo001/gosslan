@@ -1122,15 +1122,15 @@ html.has-caption {
      · 用 SVG 而不是 border/圆角拼：外缘是三次贝塞尔，曲率连续；贴在像素网格上的 border-radius
        在 12px 这种尺寸会有可见的折点（就是用户说的"不丝滑"）。
      · 填充不透明 ⇒ 行 hover 的底色**不会**从尾巴里透出来（用户同日：「有 hover 样式时小尾巴会暴露」）。
-   14×14 的盒子里，朝左那一支的气泡外框在 x=10、朝右那一支在 x=4 —— 与 `.tail-other{left:-11px}` /
-   `.tail-mine{right:-11px}` 是一对常数，改一个必须同时改另一个。 */
+   14×14 的盒子里，朝左那一支的气泡外框在 x=10、朝右那一支在 x=4 —— 与 `.tail-other{left:-10px}` /
+   `.tail-mine{right:-10px}` 是一对常数，改一个必须同时改另一个。 */
 .bubble-tail {
   position: absolute;
-  /* 2026-10-23 口径反转：单聊不再显示头像，尾巴改成**贴在气泡底角向下**的弧形；
-     群聊不渲染（`MessageItem` 按 isGroup 给 tail=false）。
-     盒高 14、底边外露 7px：上半截压在气泡里负责盖住底边那一段描边，下半截才是看得见的尾巴。 */
+  /* 2026-10-24 用户口径：尾巴挂在气泡**左下/右下角、贴底边**，尖朝外，不再向下伸。
+     盒高 14、底边与气泡底边齐（bottom: 0）；根部覆盖边缘 4..12 那一段描边。
+     群聊不渲染（`MessageItem` 按 isGroup 给 tail=false）。 */
   top: auto;
-  bottom: -7px;
+  bottom: 0;
   width: 14px;
   height: 14px;
   pointer-events: none;
@@ -1152,13 +1152,14 @@ html.has-caption {
   stroke-width: 1;
   stroke-linecap: round;
 }
-/* 形状只有一份（朝左），自己的消息整体镜像 ⇒ 两条路径不会漂 */
+/* 形状只有一份（朝左），自己的消息整体镜像 ⇒ 两条路径不会漂。
+   盒子右/左边缘分别伸出气泡外沿 10px：尖端落在气泡外侧，根部压住边缘那一段。 */
 .tail-mine {
-  right: 6px;
+  right: -10px;
   transform: scaleX(-1);
 }
 .tail-other {
-  left: 6px;
+  left: -10px;
 }
 
 /* 连续消息合并那一格：**这里没有规则**。四角（相邻侧收成 --gosslan-bubble-radius-tight、

@@ -75,21 +75,15 @@ const tailBg = computed(() => surface.value);
 </template>
 
 <style scoped>
-/* 代码气泡尖角：**位置跟全局 `.bubble-tail`（竖向对准头像中心），这里只补颜色。**
-   卡片顶部是 32px 的 CodeBlock toolbar，尖角落在这一档里 ⇒ 相邻色是 toolbar 而不是卡片本体，
-   直接用卡片色会比 toolbar 亮一档、仍能看出边界；蒙层与 CodeBlock 的 toolbarBg 同款
-   （亮色 4% 黑 / 暗色 5% 白）。
-   ⚠️ 旧版这里还写着 `top: auto; bottom: 12px`（把尖角钉在卡片底栏上），与头像完全错开 ——
-   用户 2026-10-23 截图点名的就是这一格。位置只有全局那一个家，别在这里再钉一份。 */
-/* 尾巴现在是 SVG：只换**填充**（描边仍取卡片边线 `--bubble-line`），
-   所以覆盖的是 `--bubble-tail-fill` 而不是 background。 */
+/* 代码气泡尖角：位置跟全局 `.bubble-tail`（左下角贴底边），这里只补颜色。
+   2026-10-24：尾巴落在卡片底栏（`actionsStyle` 与代码区同底色 `surface`），
+   所以直接取 `--bubble-bg`（= 同一个 surface）即可 —— 不再混黑/混白。
+   旧版混 4%/5% 是为了让尖角在 toolbar 上「看得见」，那会在浅灰卡片上露出一块深灰尾巴，
+   正是用户截图里「尾巴颜色跟卡片对不上」的来源。
+   位置只有全局那一个家，别在这里再钉一份。 */
 .bubble-tail.tail-mine,
 .bubble-tail.tail-other {
-  --bubble-tail-fill: color-mix(in srgb, var(--bubble-bg) 96%, #000);
-}
-:global(.dark) .bubble-tail.tail-mine,
-:global(.dark) .bubble-tail.tail-other {
-  --bubble-tail-fill: color-mix(in srgb, var(--bubble-bg) 95%, #fff);
+  --bubble-tail-fill: var(--bubble-bg);
 }
 /* 代码卡片底栏：与上面的 CodeBlock 共用同款底色，衔接成一张完整卡片。
    高度锁死 28px（border-box）= previewMetrics.CODE_ACTION_BAR，不要动。

@@ -1419,13 +1419,9 @@ async function copyFileToClipboard() {
         <Check v-if="selected" class="h-2.5 w-2.5 text-[var(--gosslan-on-primary)]" :stroke-width="2.5" aria-hidden="true" />
       </span>
 
-      <!-- `--bubble-tail-offset`：气泡顶边被**行顶**往下推了多少（群聊那行昵称占 18px，
-           与 `messageHeight.NICKNAME_ROW` 是同一格）。CSS 那边只做
-           `top: max(0px, 12px − 本值)`，不在这里再抄一份 18/6。
-           现行判据（2026-10-23 第二版，**不是**旧的"中心对头像"）：
-           · 单聊：尖角中心 = 头像中心（探针判两中心 <=1px）；
-           · 群聊：昵称行把气泡推下 18px，尖角**不许越出气泡顶边**（探针判 tailTop − bubbleTop ∈ [0,1.5]px）。
-           带引用块的那条还会再把气泡往下推一截，那一档同样只要求贴住气泡上缘、朝头像一侧。 -->
+      <!-- 尾巴的纵向位置自 2026-10-24 起不再依赖行顶/昵称行：它挂在气泡**左下/右下角、
+           贴底边**（`bottom: 0`），所以这里不再传 `--bubble-tail-offset`。
+           探针判据：尾巴下沿与气泡下沿齐平、外侧伸出 8~12px、上沿压进 12~16px。 -->
       <!-- 右键/长按的边界就是这一列（消息内容区）：昵称、引用块、正文、回执都在里面；
            头像、表情回应条、行内空白在列外 ⇒ 不会因为"同属一条消息"就弹消息菜单。
            表情回应的笑脸按钮虽然在列内（绝对定位到气泡外侧），由 `onContextMenu` /
@@ -1436,10 +1432,7 @@ async function copyFileToClipboard() {
         class="msg-stack relative flex min-w-0 max-w-[var(--gosslan-msg-max)] flex-col"
         :data-pos="groupSide"
         :class="mine ? 'items-end' : 'items-start'"
-        :style="{
-          '--bubble-tail-offset': showNickname ? '18px' : '0px',
-          '--bubble-tail-corner': showNickname ? '2px' : 'var(--gosslan-bubble-radius)',
-        }"
+        :style="showNickname ? { '--bubble-tail-corner': '2px' } : undefined"
         @contextmenu="onContextMenu"
         @touchstart="onTouchStart"
         @touchend="cancelLongPress"
