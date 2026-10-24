@@ -6042,9 +6042,14 @@ async function runMsgOverflow(cdp, url) {
     await bindFamily("主色实底按钮", "/src/components/ui/PrimaryBtn.vue", dark);
     await bindFamily("危险实底按钮", "/src/components/ui/DangerBtn.vue", dark);
   }
-  // 档位不许外溢给后面的段（同一份脚本里那条介质模拟也守这条）。
-  await setAppearance(wasDark === true);
+  // 档位不许外溢给后面的段（同一份脚本里那条介质模拟也守这条）—— 而且"还原"本身要读回来：
+  // 静默没还原时后面的段就在另一档里跑，读数是另一批 token 值（这条就是那条 `document.hidden` 教训的同族）。
+  const back = await setAppearance(wasDark === true);
   await sleep(140);
+  const nowDark = await cdp.eval("document.documentElement.classList.contains('dark')");
+  check("禁用态绑定不外溢：跑完回到进页面时那一档（store 与 class 都要回来）",
+    !!back && back.ok === "ok" && back.dark === (wasDark === true) && nowDark === (wasDark === true),
+    `回到 ${wasDark ? "dark" : "light"}`, JSON.stringify({ back, nowDark, wasDark }));
 
   // 空转对照：这把尺读的必须是**真元素的计算值**。现场用 inline style 把 α 压到 0.25，
   // 读回来必须跟着变（读不到 ⇒ 上面那几格是在拿常量比常量）。
