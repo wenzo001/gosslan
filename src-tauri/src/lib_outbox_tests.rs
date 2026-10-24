@@ -99,7 +99,7 @@ fn terminal_finalize_defers_the_destructive_write() {
     // `every_finalize_path_defers_the_destructive_write`（自动扫）与
     // `expired_file_*` 那两条行为测试兜着。
     let dbc = all_db_src();
-    let file_body = rust_fn_body(&dbc, "pub fn finalize_file_failure(");
+    let file_body = rust_fn_body(dbc, "pub fn finalize_file_failure(");
     let destructive = file_body
         .find("mark_file_outbox_failed(")
         .expect("文件终态必须仍由 mark_file_outbox_failed 关队列行");

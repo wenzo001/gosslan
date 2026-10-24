@@ -791,7 +791,7 @@ mod tests {
         conn.execute("DROP TABLE messages", []).unwrap();
         let out = insert_message_if_new(&conn, &rec_as("m1", "f1", "text", "hello"));
         assert!(
-            matches!(out, Err(_)),
+            out.is_err(),
             "真实 DB 故障必须是 Err，不能是 Ok(false)"
         );
         assert!(

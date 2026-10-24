@@ -1446,7 +1446,7 @@ mod tests {
 
     #[test]
     fn gossip_plaintext_with_targets_roundtrips_and_old_shape_still_parses() {
-        let targets = vec![MentionTarget {
+        let targets = [MentionTarget {
             id: "id-zs".to_string(),
             name: "张三".to_string(),
             n: 1,

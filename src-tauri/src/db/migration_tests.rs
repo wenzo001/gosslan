@@ -9,10 +9,11 @@
 //!   6. 重复启动 → 不重复执行 Migration
 //!   7. Migration 成功执行 → 原数据完好 + 新增列存在
 //!   8. old_version > DB_VERSION → 拒绝降级（且必须是**带类型**的 InitError::Downgrade）
-//!   8b. 拒绝降级**不建任何表** —— 降级判定必须早于 execute_batch(SCHEMA)
-//!   8c. 降级文案必须可读可行动（两个版本号 + "数据未被修改" + 该升级）。
-//!       非降级错误**没有这份文案可拿** —— `downgrade_message` 只服务降级那一种，
-//!       所以"把降级文案套到文件损坏上"这件事在类型上就不成立，不需要测试去禁。
+//!      8b. 拒绝降级**不建任何表** —— 降级判定必须早于 execute_batch(SCHEMA)
+//!      8c. 降级文案必须可读可行动（两个版本号 + "数据未被修改" + 该升级）。
+//!
+//!      非降级错误**没有这份文案可拿** —— `downgrade_message` 只服务降级那一种，
+//!      所以"把降级文案套到文件损坏上"这件事在类型上就不成立，不需要测试去禁。
 //!   9. Legacy user_version=0 + 空表 → 当作全新库
 //!  10. 0-B 索引一族：热查询必须真的走索引（判据是 EXPLAIN 计划，不是"索引存在"）、
 //!      新库首启即有（`is_fresh` 跳过迁移 ⇒ 只写在 MIGRATIONS 的索引新库没有）、
@@ -433,9 +434,7 @@ fn migration_refuses_downgrade() {
     }
 
     // init 应该返回**带类型的**降级错误（调用方按类型分支，不许按错误字符串猜）
-    let err = init(&path)
-        .err()
-        .expect("user_version=99 > DB_VERSION 应该拒绝打开，实际 Ok");
+    let err = init(&path).expect_err("user_version=99 > DB_VERSION 应该拒绝打开，实际 Ok");
     assert!(
         matches!(err, InitError::Downgrade { current } if current == 99),
         "必须是 InitError::Downgrade{{current:99}}，实际 {err:?}"
@@ -1165,8 +1164,7 @@ fn a_failing_migration_step_rolls_back_completely_and_never_advances_the_version
     .unwrap();
 
     let err = run_migrations(&conn, 2)
-        .err()
-        .expect("v2→v3 的 seq 回填被注入挡住了，run_migrations 却返回了 Ok ⇒ 失败被吞");
+        .expect_err("v2→v3 的 seq 回填被注入挡住了，run_migrations 却返回了 Ok ⇒ 失败被吞");
     assert!(
         err.to_string().contains("注入：本用例不许改 messages"),
         "报错必须来自这条注入 trigger，实际：{err}"
@@ -2342,6 +2340,10 @@ fn backup_sweep_failure_is_logged_not_propagated() {
 // 真实数据副本演练（手动、#[ignore]）
 // ---------------------------------------------------------------------------
 
+/// 演练快照：表名 / 每表行数 / 索引清单（三样都必须跨迁移保持一致）。
+#[cfg(unix)]
+type DrillSnapshot = (Vec<String>, Vec<(String, i64)>, Vec<(String, String)>);
+
 /// 用**真实安装库的只读副本**跑一次生产 `init`，逐表比对行数与关键字段聚合，
 /// 并校验迁移前备份可用。它不是“真实 4.x schema”的替代品，但能证明真实数据
 /// 体量/形状在当前迁移链下不丢行、不改关键字段。
@@ -2362,7 +2364,7 @@ fn real_data_copy_replays_migration_without_losing_rows() {
     let path = PathBuf::from(path);
     assert!(path.exists(), "演练副本不存在：{}", path.display());
 
-    let snapshot = |conn: &Connection| -> (Vec<String>, Vec<(String, i64)>, Vec<(String, String)>) {
+    let snapshot = |conn: &Connection| -> DrillSnapshot {
         let mut stmt = conn
             .prepare(
                 "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name",

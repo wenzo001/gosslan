@@ -346,11 +346,9 @@ mod tests {
         eprintln!(
             "[实测] 库 {before} B → {after} B（省 {} B，{}%），整理耗时 {:?}，结局 {outcome:?}",
             before.saturating_sub(after),
-            if before == 0 {
-                0
-            } else {
-                (before.saturating_sub(after) * 100 / before) as u64
-            },
+            (before.saturating_sub(after) * 100)
+                .checked_div(before)
+                .unwrap_or(0),
             started.elapsed(),
         );
         assert!(outcome.is_completed(), "预算充足必须做完，实得 {outcome:?}");

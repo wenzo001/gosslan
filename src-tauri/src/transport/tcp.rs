@@ -493,7 +493,7 @@ mod tests {
 
     #[tokio::test]
     async fn oversized_payload_is_rejected_on_write() {
-        let big = vec![0u8; MAX_FRAME as usize + 1];
+        let big = vec![0u8; MAX_FRAME + 1];
         let mut buf = Vec::new();
         assert!(write_bytes(&mut buf, &big).await.is_err());
     }

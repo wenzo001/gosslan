@@ -808,6 +808,7 @@ mod tests {
     ///   ⇒ 开关看起来点了没反应；
     /// - 反过来，抖动的调用方（每秒十几次开/关）必须仍然被挡住 —— 每次真实启停都要等满冷却，
     ///   这是 2026-09-12"整个应用顿卡"那个事故的护栏。
+    ///
     /// 两条都在下面钉住。
     #[cfg(feature = "bluetooth")]
     #[test]
@@ -1498,6 +1499,7 @@ mod tests {
     /// 前端 `deliverableToWindow` 也判过一遍，但那是"要不要开新窗"，这里是"开都别让你开"。
     #[cfg(desktop)]
     #[test]
+    #[allow(clippy::assertions_on_constants)] // 钉的是常量策略本身（失败信息要带实际值）
     fn preview_gallery_validation_rejects_unaddressable_and_oversized() {
         use super::{
             validate_preview, PREVIEW_MAX_ITEMS, PREVIEW_MAX_NAME_LEN, AUX_PREVIEW_RESIDENT,

@@ -339,7 +339,7 @@
         let src = all_commands_src();
         let markers = heavy_markers();
         let mut bound: Vec<String> = Vec::new();
-        for (name, _off_main_thread, fn_is_async, body) in command_bodies(&src) {
+        for (name, _off_main_thread, fn_is_async, body) in command_bodies(src) {
             if body.contains("spawn_blocking(") {
                 continue;
             }
@@ -676,7 +676,7 @@
         // 常驻的群任务窗口必须只有**一扇**（固定 label）：动态 label 既需要淘汰逻辑，
         // 也让"不传参数预热"做不到。
         assert!(
-            !code_flat(&commands).contains("WINDOW_GROUP_TODOS_PREFIX"),
+            !code_flat(commands).contains("WINDOW_GROUP_TODOS_PREFIX"),
             "群任务窗口又回到动态 label 了：那样既不累积不了（需要淘汰），也没法不传参数预热"
         );
         // 预热必须是"建好但不显示"：reveal 传 false，且它自己不许出现 show/focus。
@@ -936,8 +936,8 @@
                 open.expect("取锁语句必须落在某个块里（切不出块首 = 本判据不认识这个形状）");
             let mut depth = 0i32;
             let mut close = None;
-            for k in open..bytes.len() {
-                match bytes[k] {
+            for (k, b) in bytes.iter().enumerate().skip(open) {
+                match b {
                     b'{' => depth += 1,
                     b'}' => {
                         depth -= 1;

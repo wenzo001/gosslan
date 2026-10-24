@@ -595,6 +595,7 @@ mod tests {
     /// 反复出现 ⇒ 链路永久建不起来（双方各自重拨、互相打断）。
     /// 原因是 Android 的 notify 按 **central 地址**投递：上一条链路的待发帧会落在新连接上。
     #[test]
+    #[allow(clippy::assertions_on_constants)] // 钉的是额度常量本身的下界
     fn handshake_tolerates_leading_non_hello_frames_but_is_bounded() {
         // Hello 一到就进握手（无论之前丢过几个）
         assert_eq!(preamble_action(0, true), PreambleAction::Hello);

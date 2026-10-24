@@ -13,6 +13,28 @@
 
 ## [Unreleased]
 
+## [5.7.23] - 2026-10-24
+
+### 测试码与 examples 也进 lint 门禁（审计 TEST-01）
+
+- 旧行为：门禁里的 clippy 是 `cargo clippy --features bluetooth -- -D warnings`，**不带
+  `--all-targets`** ⇒ 只编 lib，测试模块与 `examples/e2e_peer.rs` 根本不参与 lint。
+  实测 `--all-targets` 一次点出 **78 条 error**（75 条在 lib test、3 条在 example）——
+  这些异味存在了很久，但门禁看不到，等于不存在。
+- 现在门禁（`scripts/verify.mjs` 的 rust 组）与验收文档统一为
+  `cargo clippy --features bluetooth --all-targets -- -D warnings`，本地与 CI 同一条命令。
+- 清掉的 78 条按性质分三类，都不是"为过 lint 改语义"：
+  - 机器可判的写法问题（45 处，`clippy --fix` 应用）：`needless_borrow`、`redundant_closure`、
+    `useless_vec`、`from_ref`、`io::Error::other`、`MAX_FRAME as usize` 等同型转换；
+  - 文档注释的 markdown 结构（`doc_lazy_continuation` / `doc_overindented_list_items` /
+    `empty_line_after_doc_comments`）：只加空行、调缩进、把一段悬挂说明改成普通注释；
+  - 测试里**故意**断言常量不变量的 10 处（`assertions_on_constants`）：加
+    `#[allow(clippy::assertions_on_constants)]` 并注明理由 —— 这些断言的失败信息要带实际
+    数值，改成 `const` 断言反而丢失现场。
+- 另外两处结构性整理：`migration_tests` 的三元组快照加了 `DrillSnapshot` 别名
+  （`type_complexity`）；`macos_bookmark` 的单臂 `match` 改成 `if let`。
+- 前端/协议/数据库行为零改动；`npm test` 1366 通过、Rust 单测 1176 通过、`--all-targets` 零红。
+
 ## [5.7.22] - 2026-10-24
 
 ### 共享目录树加上限、截断可定位（审计 PERF-02）

@@ -200,15 +200,14 @@ mod tests {
         let bookmark = create(&doomed.to_string_lossy()).expect("至少普通书签该能创建");
         std::fs::remove_dir_all(&doomed).unwrap();
 
-        match resolve(&bookmark) {
-            // 若系统仍能解析（有些情况只是标 stale），路径必须不再存在 —— 也就是
-            // **不能**让上层以为目录还好着
-            Ok(resolved) => assert!(
+        // 若系统仍能解析（有些情况只是标 stale），路径必须不再存在 —— 也就是
+        // **不能**让上层以为目录还好着；解析失败是另一种合法结局。
+        if let Ok(resolved) = resolve(&bookmark) {
+            assert!(
                 !std::path::Path::new(&resolved.path).is_dir(),
                 "目录已删除，解析结果不能还当成可用目录：{}",
                 resolved.path
-            ),
-            Err(_) => {}
+            );
         }
     }
 }

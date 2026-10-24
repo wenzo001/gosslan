@@ -1828,11 +1828,11 @@ mod tests {
         let _ = std::fs::remove_dir_all(&app_data);
     }
 
-    /// 独立通道**有上界** + 写不进去必须**返回 false**（不许 panic、不许假装写成）。
-    ///
-    /// ⚠️ 这两条断言**必须并进** `crash_note_writes_without_a_logger_and_survives_the_reentry_guard`
-    /// 那一条测试里顺序跑：再入闸是进程级 `AtomicBool`，拆成独立测试会被 libtest 的线程池
-    /// 并发执行 —— 一条把闸置起来，另一条的写入被吃掉（本仓已实测过这种假红）。
+    // 独立通道**有上界** + 写不进去必须**返回 false**（不许 panic、不许假装写成）。
+    //
+    // ⚠️ 这两条断言**必须并进** `crash_note_writes_without_a_logger_and_survives_the_reentry_guard`
+    // 那一条测试里顺序跑：再入闸是进程级 `AtomicBool`，拆成独立测试会被 libtest 的线程池
+    // 并发执行 —— 一条把闸置起来，另一条的写入被吃掉（本仓已实测过这种假红）。
 
     /// `>>> panic @ …` 必须判成 panic，而不是"异常终止/强杀"。
     /// 反向那一格钉住"更早那一轮的 panic 不能按到这一轮头上"。

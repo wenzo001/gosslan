@@ -23,7 +23,7 @@
         // 定长字节窗口：中文注释多，字节边界会落在码点中间 —— 实测过一次
         // `end byte index is not a char boundary` 直接把这条测试弄 panic（2026-10-14），
         // 而且窗口本身既可能截进下一个函数、也可能把要判的东西截在外面。
-        let body = rust_fn_body(&commands, "pub async fn send_friend_request(");
+        let body = rust_fn_body(commands, "pub async fn send_friend_request(");
         assert!(
             !body.is_empty(),
             "函数体切出来是空 ⇒ 签名锚点没对上，这条判据在空转"

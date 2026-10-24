@@ -345,14 +345,17 @@ mod tests {
     fn identity_merge_never_overwrites_existing_keys() {
         let mut m = PeerManager::new(10_000, 3);
 
-        let mut id1 = PeerIdentity::default();
-        id1.x25519_public_key = Some("x1".into());
+        let id1 = PeerIdentity {
+            x25519_public_key: Some("x1".into()),
+            ..Default::default()
+        };
         m.merge(PeerCandidate::new("ABC123", id1, lan(), PathKind::Lan));
 
         // 第二次 merge 带一个「不同」的 x25519 公钥 → 不得覆盖
-        let mut id2 = PeerIdentity::default();
-        id2.x25519_public_key = Some("x1-different".into());
-        id2.ed25519_public_key = Some("e2".into());
+        let id2 = PeerIdentity {
+            x25519_public_key: Some("x1-different".into()),
+            ed25519_public_key: Some("e2".into()),
+        };
         m.merge(PeerCandidate::new(
             "ABC123",
             id2,
@@ -374,9 +377,10 @@ mod tests {
     #[test]
     fn forget_identity_clears_keys_but_keeps_the_connection() {
         let mut m = PeerManager::new(10_000, 3);
-        let mut id = PeerIdentity::default();
-        id.x25519_public_key = Some("x1".into());
-        id.ed25519_public_key = Some("e1".into());
+        let id = PeerIdentity {
+            x25519_public_key: Some("x1".into()),
+            ed25519_public_key: Some("e1".into()),
+        };
         m.merge(PeerCandidate::new("ABC123", id, lan(), PathKind::Lan));
 
         assert_eq!(
@@ -402,8 +406,10 @@ mod tests {
             "清身份**不许**动链路（否则删好友会顺带把正在聊的会话打断）"
         );
         // 清完之后，新的公钥可以正常补进来（TOFU 重新绑定）
-        let mut id2 = PeerIdentity::default();
-        id2.ed25519_public_key = Some("e2".into());
+        let id2 = PeerIdentity {
+            ed25519_public_key: Some("e2".into()),
+            ..Default::default()
+        };
         m.merge(PeerCandidate::new("ABC123", id2, lan(), PathKind::Lan));
         assert_eq!(
             m.get("ABC123")

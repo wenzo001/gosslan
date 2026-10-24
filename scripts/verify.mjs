@@ -420,11 +420,22 @@ const steps = [
   },
   {
     group: "rust",
-    name: "cargo clippy（-D warnings，--features bluetooth）",
-    why: "2026-09-17 清理 26 条 warning 后零红。--features bluetooth 不能省，否则 BLE 模块不编译",
+    name: "cargo clippy（-D warnings，--features bluetooth，--all-targets）",
+    why:
+      "2026-09-17 清理 26 条 warning 后零红。--features bluetooth 不能省，否则 BLE 模块不编译。" +
+      " --all-targets 也不能省（2026-10-24 审计 TEST-01）：不带它时测试码与 examples 根本不参与 lint，" +
+      "78 条测试侧异味只能等下一次 `--all-targets` 手工跑才现形 —— 门禁看不到的东西等于不存在",
     cwd: TAURI,
     cmd: "cargo",
-    args: ["clippy", "--features", "bluetooth", "--", "-D", "warnings"],
+    args: [
+      "clippy",
+      "--features",
+      "bluetooth",
+      "--all-targets",
+      "--",
+      "-D",
+      "warnings",
+    ],
   },
   {
     group: "rust",
