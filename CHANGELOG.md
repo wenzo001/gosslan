@@ -13,6 +13,24 @@
 
 ## [Unreleased]
 
+## [5.7.24] - 2026-10-24
+
+### WebView 上 CSP（方案 A：宽松策略，审计 SEC-06）
+
+- 旧行为：`tauri.conf.json` 的 `app.security.csp` 是 `null` —— WebView 不设任何策略，
+  任何注入都能加载任意外部资源、向任意源取数。
+- 现在（用户裁决走方案 A，先不改构建链）：
+  `default-src 'none'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline';
+  img-src 'self' blob: data:; font-src 'self'; media-src 'self' blob:;
+  connect-src 'self' ipc: http://ipc.localhost http://tauri.localhost blob:`
+- 买到的：外链资源与跨源取数被挡住（`default-src 'none'` 兜底）。
+  **没**买到的：防注入 —— 两个 `'unsafe-inline'` 是首屏内联注入（主题决策脚本 + 骨架 CSS）
+  的代价。这一点明写在 `docs/notes/csp-candidate-2026-10-16.md` §五，免得被误读成"已收紧"。
+- 新增判据 `webview_csp_is_configured_with_the_sources_the_frontend_actually_needs`：
+  配置不得退回 `null`、必要来源逐条在场、`unsafe-inline` 恰两处。变异回 `null` 时该用例 FAIL。
+- 未验证：真机冒烟（Windows 优先的 6 条：首屏主题、blob 图片预览、自定义协议预览、
+  收藏/图元、IPC 收发、多窗口）—— 本批 NOT RUN；观察点是 WebView 控制台的 `Refused to …`。
+
 ## [5.7.23] - 2026-10-24
 
 ### 测试码与 examples 也进 lint 门禁（审计 TEST-01）
