@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { routeLocationKey, routerKey } from "vue-router";
 import { ChevronRight } from "lucide-vue-next";
-import { computed, inject, ref, watch } from "vue";
+import { computed, inject, nextTick, ref, watch } from "vue";
 import { useAppStore } from "@/stores/useAppStore";
 import BaseModal from "@/components/BaseModal.vue";
 import MobilePageFrame from "@/components/MobilePageFrame.vue";
@@ -190,16 +190,36 @@ function onSettingsBack() {
   }
   localMobileNav.value = null;
 }
+
+/**
+ * 移动端**唯一**的滚动容器（2026-10-24 重写）。
+ *
+ * 上一版一级/二级各有一层 `overflow-y-auto`：两页是不同节点 ⇒ 切页后旧容器连同它的
+ * `scrollbar-gutter` 一起被换掉，滚动条出现/消失会让整块内容的左边缘横移 8px（"滑一会
+ * 边距变了"）；而页面内容在切过去之后还在异步加载（网络页最明显），用户手指已经在滑那份
+ * 会边滑边长高的文档。现在：**固定头部 + 一层滚动容器 + 页内 padding 只给内容**，
+ * 一级/二级共享同一个滚动容器，切页时显式回到顶端 —— 高度变化只发生在内容里，
+ * 不再有机会重算滚动条宽度或留住上一页的滚动位置。
+ */
+const scrollEl = ref<HTMLElement | null>(null);
+watch(
+  [() => props.open, mobileNav],
+  async () => {
+    await nextTick();
+    if (scrollEl.value) scrollEl.value.scrollTop = 0;
+  },
+  { flush: "post" },
+);
 </script>
 
 <template>
   <!-- 移动端：二级 push 导航，iOS 设置风格。头部（返回 + 标题）统一交给 MobilePageFrame，
        详情页不再各自画返回键（用户 2026-09-20）。二级→一级→关闭 由 onSettingsBack 路由。 -->
   <Transition v-if="app.isMobile" name="page-slide">
-    <!-- `:scroll="false"`：本页的每一格（一级列表 / 二级页）自己就是 `flex-1 overflow-y-auto`
-         的滚动容器。壳也开滚动 ⇒ 两层滚动容器套在一起，触屏滚到底会**串联**到外层（内容整体
-         位移，看起来就是「滑一会边距变了」），而且两层各留一条 `scrollbar-gutter` ⇒ 左右各多
-         吃 8px、实际内边距 32px 而不是设计上的 16px。`LogViewer` 早就是这个写法。 -->
+    <!-- 固定头部 + **单一**滚动容器（2026-10-24 重写，理由见 `scrollEl` 那段注释）。
+         壳保持 `:scroll="false"`：页面自己那一层才是唯一的滚动容器。
+         `overscroll-contain`：滑到尽头不把滚动传给外层的页面壳（触屏上就是"滑一下整块跳"）。
+         padding 放在滚动层**里面**：滚动条贴着视口边缘，内容的左右边距在整个滚动过程中不变。 -->
     <MobilePageFrame
       v-if="open"
       mode="overlay"
@@ -207,52 +227,60 @@ function onSettingsBack() {
       :title="settingsTitle"
       @back="onSettingsBack"
     >
-      <!-- 一级页：分组列表 -->
-      <div v-if="mobileNav === null" class="scrollbar-both min-h-0 flex-1 overflow-y-auto overflow-x-hidden p-4">
-        <div v-for="g in GROUPS" :key="g.key" class="mb-5">
-          <div class="pb-1 text-caption font-medium uppercase tracking-wider text-[var(--gosslan-text-2)]">
-            {{ t(g.titleKey) }}
+      <div
+        ref="scrollEl"
+        data-settings-scroll
+        class="scrollbar-both min-h-0 flex-1 overflow-y-auto overflow-x-hidden overscroll-contain"
+      >
+        <div class="p-4">
+          <!-- 一级页：分组列表 -->
+          <div v-if="mobileNav === null">
+            <div v-for="g in GROUPS" :key="g.key" class="mb-5 last:mb-0">
+              <div class="pb-1 text-caption font-medium uppercase tracking-wider text-[var(--gosslan-text-2)]">
+                {{ t(g.titleKey) }}
+              </div>
+              <div class="overflow-hidden rounded-[var(--gosslan-radius-md)] border border-[var(--gosslan-border)] bg-[var(--gosslan-panel)]">
+                <!-- data-no-press：整行是**列表项**，不是按钮。全站 `button:active` 的 scale(0.97)
+                     挂在满宽行上会让整张分组卡看起来「缩了一下」——单行的分组（安全 / 关于）里
+                     这一行就是整张卡。（用户 2026-10-23：「点击选项整个列表都缩小」）
+                     按压反馈保留：`.tap-safe:active` 的背景色那条不涉及几何。
+                     ⚠️ 用户同日追加：要的是「中间那一块凹下去 + 一点阴影」，**宽度不许变**。
+                     所以按压形态落在内层这一段（`group-active:` 下沉 0.5px + 内阴影），
+                     行本身只负责背景色；`-mx-1 px-1` 把阴影的可视范围向外扩 4px 而文字位置不动。 -->
+                <button
+                  v-for="(item, idx) in g.items"
+                  :key="item.key"
+                  data-no-press
+                  class="group tap-safe flex w-full items-center gap-3 px-3 py-3 text-left text-emphasis transition hover:bg-[var(--gosslan-hover)]"
+                  :class="idx > 0 ? 'border-t border-[var(--gosslan-divider)]' : ''"
+                  @click="selectSection(item.key)"
+                >
+                  <span
+                    class="-mx-1 flex flex-1 items-center gap-3 rounded-[var(--gosslan-radius-sm)] px-1 py-0.5 transition-[transform,box-shadow] duration-100 group-active:translate-y-[0.5px] group-active:shadow-[inset_0_1px_2px_rgba(0,0,0,0.14)]"
+                  >
+                    <span class="flex-1 text-[var(--gosslan-text)]">{{ t(item.titleKey) }}</span>
+                    <ChevronRight class="h-4 w-4 text-[var(--gosslan-text-2)]" />
+                  </span>
+                </button>
+              </div>
+            </div>
           </div>
-          <div class="overflow-hidden rounded-[var(--gosslan-radius-md)] border border-[var(--gosslan-border)] bg-[var(--gosslan-panel)]">
-            <!-- data-no-press：整行是**列表项**，不是按钮。全站 `button:active` 的 scale(0.97)
-                 挂在满宽行上会让整张分组卡看起来「缩了一下」——单行的分组（安全 / 关于）里
-                 这一行就是整张卡。（用户 2026-10-23：「点击选项整个列表都缩小」）
-                 按压反馈保留：`.tap-safe:active` 的背景色那条不涉及几何。
-                 ⚠️ 用户同日追加：要的是「中间那一块凹下去 + 一点阴影」，**宽度不许变**。
-                 所以按压形态落在内层这一段（`group-active:` 下沉 0.5px + 内阴影），
-                 行本身只负责背景色；`-mx-1 px-1` 把阴影的可视范围向外扩 4px 而文字位置不动。 -->
-            <button
-              v-for="(item, idx) in g.items"
-              :key="item.key"
-              data-no-press
-              class="group tap-safe flex w-full items-center gap-3 px-3 py-3 text-left text-emphasis transition hover:bg-[var(--gosslan-hover)]"
-              :class="idx > 0 ? 'border-t border-[var(--gosslan-divider)]' : ''"
-              @click="selectSection(item.key)"
-            >
-              <span
-                class="-mx-1 flex flex-1 items-center gap-3 rounded-[var(--gosslan-radius-sm)] px-1 py-0.5 transition-[transform,box-shadow] duration-100 group-active:translate-y-[0.5px] group-active:shadow-[inset_0_1px_2px_rgba(0,0,0,0.14)]"
-              >
-                <span class="flex-1 text-[var(--gosslan-text)]">{{ t(item.titleKey) }}</span>
-                <ChevronRight class="h-4 w-4 text-[var(--gosslan-text-2)]" />
-              </span>
-            </button>
+
+          <!-- 二级页：完整 Section 组件（与一级页同一个滚动容器、同一份 p-4 边距） -->
+          <div v-else class="space-y-5">
+            <ProfileSection v-if="mobileNav === 'profile'" :active="open" :reload-token="reloadToken" />
+            <GeneralSection v-else-if="mobileNav === 'general'" />
+            <AppearanceSection v-else-if="mobileNav === 'appearance'" />
+            <ChatStyleSection v-else-if="mobileNav === 'chatStyle'" />
+            <NotificationSection v-else-if="mobileNav === 'notification'" />
+            <NetworkSection v-else-if="mobileNav === 'network'" :active="open" :reload-token="reloadToken" />
+            <FilesSection v-else-if="mobileNav === 'files'" :active="open" :reload-token="reloadToken" />
+            <StorageSection v-else-if="mobileNav === 'storage'" :active="open" :reload-token="reloadToken" />
+            <SecuritySection v-else-if="mobileNav === 'security'" />
+            <AboutSection v-else-if="mobileNav === 'about'" @dev-open="devDiagOpen = true" />
+            <ResetSection v-else-if="mobileNav === 'reset'" @restored="reloadToken++" />
           </div>
         </div>
-      </div>
-
-      <!-- 二级页：完整 Section 组件 -->
-      <div v-else class="scrollbar-both min-h-0 flex-1 space-y-5 overflow-y-auto overflow-x-hidden p-4">
-        <ProfileSection v-if="mobileNav === 'profile'" :active="open" :reload-token="reloadToken" />
-        <GeneralSection v-else-if="mobileNav === 'general'" />
-        <AppearanceSection v-else-if="mobileNav === 'appearance'" />
-        <ChatStyleSection v-else-if="mobileNav === 'chatStyle'" />
-        <NotificationSection v-else-if="mobileNav === 'notification'" />
-        <NetworkSection v-else-if="mobileNav === 'network'" :active="open" :reload-token="reloadToken" />
-        <FilesSection v-else-if="mobileNav === 'files'" :active="open" :reload-token="reloadToken" />
-        <StorageSection v-else-if="mobileNav === 'storage'" :active="open" :reload-token="reloadToken" />
-        <SecuritySection v-else-if="mobileNav === 'security'" />
-        <AboutSection v-else-if="mobileNav === 'about'" @dev-open="devDiagOpen = true" />
-        <ResetSection v-else-if="mobileNav === 'reset'" @restored="reloadToken++" />
       </div>
     </MobilePageFrame>
   </Transition>
