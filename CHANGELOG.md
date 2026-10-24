@@ -13,6 +13,26 @@
 
 ## [Unreleased]
 
+## [5.7.16] - 2026-10-24
+
+### 供应链门禁进 push 前闸门 + 依赖整改（审计 SEC-02/07）
+
+- `verify.yml` 的 `supply-chain` 腿此前只在 `schedule` / `workflow_dispatch` 跑 —— push 与 PR
+  **完全不跑**，等于"依赖里出现一条有公告的版本"可以一路合进 main，只有当晚定时那一轮才会红，
+  而没人看定时红。现在与其它腿同档：每次 push / PR 都跑 `cargo deny check` + `cargo audit`
+  （定时那一轮保留，用来接"上游今天刚发了新公告"这类与提交无关的漂移）。
+- `cargo deny --offline check` 从 5 类红修到四项全绿：`tokio 1.53.1 → 1.54.1`
+  （RUSTSEC-2026-0386，`AsyncFd` 的 I/O 安全）、`clipboard-win 5.4.1 → 5.4.3`（yanked），
+  许可证 allow 列表补 `CDLA-Permissive-2.0`（`webpki-roots` / `webpki-root-certs` 的根证书
+  **数据**许可，不是代码许可陷阱）。`Cargo.lock` 只动这两处版本 —— 手工最小化，
+  避免 `cargo update` 顺带把 `syn` / `windows-sys` / `socket2` 的解析重排带进本次提交。
+- `zip 4.6.1` 的三条公告（RUSTSEC-2026-0367/0368/0369）走**带理由的风险接受**：上游
+  `tauri-plugin-updater 2.14.0` 锁死 `zip = "4"`、stable 无更版可升，且 `zip` feature 一关，
+  macOS 的 `.app.tar.gz` 解包（tar + flate2，同在该 feature 下）也会一起停掉。实际暴露面是
+  "只在 Windows 自更新路径、且只在 minisign 签名校验通过**之后**解包"（攻击者需先持有发布私钥）。
+  `deny.toml` 的 `[advisories].ignore` 与 CI 的 `cargo audit --ignore` 两处写同一条理由、
+  互相点名（只改一处会出现"deny 绿、audit 红"的自相矛盾门禁），待上游放开 zip 大版本即删除。
+
 ## [5.7.15] - 2026-10-24
 
 ### 入站接收加并发与字节配额（审计 SEC-05）

@@ -74,7 +74,8 @@ on:
   pull_request:
   workflow_dispatch:
   # 定时：每晚跑「护栏非空转（全量）」+「静态检查」+「供应链审计」三条腿 ——
-  # 其余三个 job 用 job 级 `if` 在 schedule 事件下跳过，免得每晚把前端/Rust/Android 重跑一遍。
+  # 前端/Rust 腿用 job 级 `if` 在 schedule 事件下跳过，免得每晚重跑一遍。
+  # （供应链审计 2026-10-24 起**每次 push / PR 也跑**；定时那一轮留着接"上游新发公告"这类漂移。）
   # ⚠️ GitHub 的 scheduled 工作流**只按默认分支（main）上的这份定义**运行 ⇒ 在 feat/* 上改
   #   cron 不会生效，这条要等它进 main 才持续跑；本分支随时可以用 workflow_dispatch 手动拉。
   schedule:
@@ -520,16 +521,17 @@ jobs:
   # ---------------------------------------------------------------------------
   #  供应链审计：cargo-deny（许可证 / 禁用项 / 来源）+ cargo-audit（RustSec）
   #
-  #  与护栏全量同档：**只在定时与手动触发时跑**。理由是它要下载两套工具与
-  #  RustSec 数据库，单次分钟级；而 push 的兜底已由前端 / Rust / Android / 静态检查
-  #  四条腿承担。发版前手动 dispatch 一次即可把这份证据补齐。
+  #  ⚠️ 2026-10-24（审计 SEC-02）：原先这条腿只在 schedule / workflow_dispatch 跑，
+  #  push 与 PR **完全不跑** —— 等于"依赖里出现了一条有公告的版本"可以一路合进 main，
+  #  只有当晚定时的那一轮才会红，而且没人看定时红。审计要的就是"合入前拦下"，
+  #  所以改成与其它腿同档：**每次 push / PR 都跑**（顺带保留 schedule 那一轮，
+  #  它还能发现"上游今天刚发了新公告"这类与提交无关的漂移）。
   #  cargo-audit 本机已有、cargo-deny 在 CI 用 taiki-e/install-action 装二进制（不编译）。
   # ---------------------------------------------------------------------------
   supply-chain:
     name: 供应链审计（cargo-deny + cargo-audit）
     runs-on: ubuntu-latest
     timeout-minutes: 20
-    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
     steps:
       - uses: actions/checkout@v4
 
@@ -543,4 +545,12 @@ jobs:
 
       - name: cargo-audit（RustSec 漏洞库）
         working-directory: src-tauri
-        run: cargo audit
+        # ⚠️ 这三条 --ignore 与 deny.toml 的 `[advisories].ignore` 是**同一份风险接受**，
+        # 两处必须一起改：cargo-deny 与 cargo-audit 读的是同一个 RustSec 库，
+        # 只改一处会出现"deny 绿、audit 红"（或反过来）的自相矛盾门禁。
+        # 理由（签名校验后才解包、且只在 Windows 更新路径）写在 deny.toml 那段注释里。
+        run: |
+          cargo audit \
+            --ignore RUSTSEC-2026-0367 \
+            --ignore RUSTSEC-2026-0368 \
+            --ignore RUSTSEC-2026-0369
