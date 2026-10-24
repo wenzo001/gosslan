@@ -801,6 +801,29 @@ progress {
    含头部/列表/输入区），纯 transform、不参与布局。由 `prefers-reduced-motion` 统一关闭。 */
 /* 锚定浮层的入场：只做 opacity，不改几何 —— 几何动画会让 floating-ui 的
    首帧测量与探针的贴边判据互相打架，而"出现得硬"只需要一层淡入就能改善。 */
+/* 新消息进入（§8：160–240ms）。只做 opacity + transform —— 行盒尺寸一动，
+   虚拟列表的高度测量与滚动锚点就会被动画带着抖；资格由 computeEnteringId() 现算，
+   挂在这里而不是"元素一挂载就播"，因为滚动回收 / 切会话 / prepend 都会重建 DOM。 */
+@keyframes gosslan-msg-in {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+.gosslan-msg-enter {
+  animation: gosslan-msg-in var(--gosslan-duration) var(--gosslan-ease) both;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .gosslan-msg-enter {
+    animation: none;
+  }
+}
+
 @keyframes gosslan-popover-fade-in {
   from { opacity: 0; }
   to { opacity: 1; }
