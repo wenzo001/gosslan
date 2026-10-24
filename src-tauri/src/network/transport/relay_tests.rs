@@ -32,6 +32,7 @@
             from: "a".into(),
             to: None,
             entries: vec![],
+            truncated: false,
         };
         assert_eq!(
             directed_relay_target(&resp_legacy, me),
@@ -43,6 +44,7 @@
             from: "a".into(),
             to: Some("b".into()),
             entries: vec![],
+            truncated: false,
         };
         assert_eq!(directed_relay_target(&resp_relay, me), Some("b"));
         let file_req = Message::ShareFileRequest {

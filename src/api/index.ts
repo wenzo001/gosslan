@@ -4,7 +4,13 @@ import { Channel, invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import type { AppSettings, CacheInfo, CleanupReport, ContentAudience, ContentTransfer, Conversation, DeviceInfo, DiscoveryDiag, ExportSummary, ExternalLink, ExternalLinkImportResult, FavoriteEntry, FileDoneInfo, FileFailedInfo, FileProgress, FileStalledInfo, Friend, FriendKeyRotation, Group, GroupHistoryProgress, GroupReadInfo, InterfaceInfo, LinkState, LogEntry, MessageRecord, Peer, PeerReadInfo, PendingMessageOp, PendingRequest, RelayConfig, RelayProbe, RoutedEndpoint, RuntimeDiag, RuntimeSnapshot, TransferInfo } from "@/types";
 import type { TodoImage } from "@/utils/todos";
-import { chatSearchGroupSchema, groupFileEntrySchema, parseIpcList, shareEntrySchema } from "@/utils/validation";
+import {
+  chatSearchGroupSchema,
+  groupFileEntrySchema,
+  parseIpcList,
+  parseIpcValue,
+  shareTreeSchema,
+} from "@/utils/validation";
 import type { PreviewGallery, PreviewImage } from "@/types";
 import type { UpdaterDownloadEvent, UpdaterInfo, UpdaterStatus } from "@/types";
 export const api = {
@@ -431,7 +437,7 @@ export const api = {
   openDownloadsDir: () => invoke<void>("open_downloads_dir"),
   requestShareTree: (friendId: string) =>
     invoke<unknown>("request_share_tree", { friendId }).then((v) =>
-      parseIpcList(shareEntrySchema, v, "request_share_tree"),
+      parseIpcValue(shareTreeSchema, v, "request_share_tree"),
     ),
   downloadSharedFile: (friendId: string, remotePath: string) =>
     invoke<string>("download_shared_file", { friendId, remotePath }),

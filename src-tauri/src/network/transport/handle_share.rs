@@ -214,7 +214,7 @@ async fn handle_share_and_relay_messages(state: &Arc<AppState>, peer_id: &str, m
             if !allowed {
                 return;
             }
-            let entries = {
+            let (entries, truncated) = {
                 let share = state
                     .share_dir
                     .lock()
@@ -234,8 +234,7 @@ async fn handle_share_and_relay_messages(state: &Arc<AppState>, peer_id: &str, m
                                 if tree.truncated {
                                     // 截断必须留痕（审计 PERF-02）：请求方只能拿到前
                                     // `SHARE_TREE_MAX_ENTRIES` 条，而"为什么少了"的答案
-                                    // 只在本机这份日志里 —— 分享帧协议没有截断位，
-                                    // 前端也没有提示位，这一行就是唯一的现场读数。
+                                    // 也在这行日志里（响应帧同时带 `truncated` 位，界面会提示）。
                                     state.logger.warn(
                                         "share",
                                         format!(
@@ -246,18 +245,18 @@ async fn handle_share_and_relay_messages(state: &Arc<AppState>, peer_id: &str, m
                                         ),
                                     );
                                 }
-                                tree.entries
+                                (tree.entries, tree.truncated)
                             }
                             Err(e) => {
                                 state.logger.warn(
                                     "share",
                                     format!("code=SHARE_TREE_WALK_FAILED err={e} —— 本次共享目录树按空处理"),
                                 );
-                                Vec::new()
+                                (Vec::new(), false)
                             }
                         }
                     }
-                    None => Vec::new(),
+                    None => (Vec::new(), false),
                 }
             };
             let resp = Message::ShareTreeResponse {
@@ -265,6 +264,7 @@ async fn handle_share_and_relay_messages(state: &Arc<AppState>, peer_id: &str, m
                 from: state.device_id.clone(),
                 to: Some(from.clone()),
                 entries,
+                truncated,
             };
             // 有直连直接回；没有则借一跳中继送回（与请求路径对称）。
             if state.has_link(&from).await {
@@ -277,6 +277,7 @@ async fn handle_share_and_relay_messages(state: &Arc<AppState>, peer_id: &str, m
         Message::ShareTreeResponse {
             request_id,
             entries,
+            truncated,
             ..
         } => {
             if let Some(tx) = state
@@ -285,7 +286,8 @@ async fn handle_share_and_relay_messages(state: &Arc<AppState>, peer_id: &str, m
                 .unwrap_or_else(|e| e.into_inner())
                 .remove(&request_id)
             {
-                let _ = tx.send(entries);
+                // 连 `truncated` 一起交出去：命令层要把它回给前端（界面提示"仅显示前 N 项"）。
+                let _ = tx.send((entries, truncated));
             }
         }
         Message::ShareFileRequest {

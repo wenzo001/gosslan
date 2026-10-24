@@ -43,6 +43,8 @@ const treeQuery = useQuery(
 );
 const snapshot = computed(() => treeQuery.data.value ?? null);
 const entries = computed<ShareEntry[]>(() => snapshot.value?.entries ?? []);
+/** 共享方有条数上限：截断时必须提示，否则用户会把"前 N 条"读成"对方就这些文件"。 */
+const truncated = computed(() => snapshot.value?.truncated ?? false);
 const loading = computed(
   () => !!friendId.value && (treeQuery.isPending.value || treeQuery.isFetching.value),
 );
@@ -85,6 +87,10 @@ async function download(e: ShareEntry) {
         <Spinner v-if="loading" size-class="h-4 w-4" decorative />
         <RefreshCw v-else class="h-4 w-4" />
       </button>
+    </div>
+
+    <div v-if="truncated && entries.length > 0" class="mb-2 rounded-[var(--gosslan-radius-sm)] bg-[var(--gosslan-warning-soft)] px-2 py-1 text-caption text-[var(--gosslan-warning-ink)]" role="status">
+      {{ t("share.truncated", { count: entries.length }) }}
     </div>
 
     <div class="max-h-80 overflow-y-auto">

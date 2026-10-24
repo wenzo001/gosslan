@@ -581,6 +581,20 @@ mod tests {
         assert_eq!(B64.decode(&rr.payload).unwrap(), rr_payload.as_bytes());
     }
 
+    /// 旧端的 `ShareTreeResponse` 没有 `truncated` 字段：必须按 `false` 解出来
+    /// （审计 PERF-02 的前向兼容判据；整帧拒绝会让旧端与新端互相看不见共享目录）。
+    #[test]
+    fn share_tree_response_without_truncated_is_legacy_false() {
+        let legacy = r#"{"type":"share_tree_response","request_id":"r","from":"a","entries":[]}"#;
+        let back: Message = serde_json::from_str(legacy).unwrap();
+        match back {
+            Message::ShareTreeResponse { truncated, .. } => {
+                assert!(!truncated, "旧端没有截断能力 ⇒ 默认 false");
+            }
+            _ => panic!("expect share_tree_response"),
+        }
+    }
+
     #[test]
     fn envelope_encrypted_flag_roundtrip() {
         // 显式 false 往返保持 false

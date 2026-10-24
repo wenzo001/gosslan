@@ -80,12 +80,18 @@ export const groupFileEntrySchema = z.object({
   total: z.int().check(z.nonnegative()),
 });
 
-/** 共享目录行（`request_share_tree`）。 */
+/** 共享目录行（`request_share_tree` 的 entries 元素）。 */
 export const shareEntrySchema = z.object({
   name: z.string(),
   path: z.string(),
   is_dir: z.boolean(),
   size: z.int().check(z.nonnegative()),
+});
+
+/** 共享目录树的读取结果（`request_share_tree`）：条目 + 是否被共享方截断。 */
+export const shareTreeSchema = z.object({
+  entries: z.array(shareEntrySchema),
+  truncated: z.boolean(),
 });
 
 /**
@@ -112,6 +118,24 @@ export const chatSearchGroupSchema = z.object({
   latest_ts: z.number(),
   messages: z.array(chatSearchMessageSchema),
 });
+
+/**
+ * 校验一条 IPC 返回值；形状不符就抛错（让查询进入 error 态并显示可读原因）。
+ * 与 [`parseIpcList`] 同一条口径，只是返回值本身不是数组（例如共享目录树）。
+ */
+export function parseIpcValue<T>(
+  schema: z.ZodMiniType<T>,
+  value: unknown,
+  label: string,
+): T {
+  const parsed = schema.safeParse(value);
+  if (!parsed.success) {
+    const issue = parsed.error.issues[0];
+    const where = issue && issue.path.length ? ` @ ${issue.path.join(".")}` : "";
+    throw new Error(`${label} 返回了非法数据${where}：${issue?.message ?? "schema mismatch"}`);
+  }
+  return parsed.data;
+}
 
 /**
  * 校验一条 IPC 返回的数组；形状不符就抛错（让查询进入 error 态并显示可读原因），

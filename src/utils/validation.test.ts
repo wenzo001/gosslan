@@ -16,7 +16,9 @@ import {
   groupNameSchema,
   nicknameSchema,
   parseIpcList,
+  parseIpcValue,
   shareEntrySchema,
+  shareTreeSchema,
 } from "./validation.ts";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
@@ -94,13 +96,34 @@ test("parseIpcList：坏行抛错并带命令名与字段路径，不把坏数�
   );
 });
 
+test("parseIpcValue：共享目录树必须是 { entries, truncated }，旧形状直接拒绝", () => {
+  assert.deepEqual(
+    parseIpcValue(shareTreeSchema, { entries: [], truncated: false }, "request_share_tree"),
+    { entries: [], truncated: false },
+  );
+  // 旧后端只返回裸数组 ⇒ 必须报错（否则界面读到 `undefined` 的截断位，提示永远不出现）
+  assert.throws(
+    () => parseIpcValue(shareTreeSchema, [], "request_share_tree"),
+    /request_share_tree 返回了非法数据/,
+  );
+  assert.throws(
+    () =>
+      parseIpcValue(
+        shareTreeSchema,
+        { entries: [{ name: "a", path: "/a", is_dir: false, size: 1 }] },
+        "request_share_tree",
+      ),
+    /request_share_tree 返回了非法数据 @ truncated/,
+  );
+});
+
 test("接线判据：四个真实入口必须使用 schema，而不是另写一份手校验", () => {
   const read = (rel: string) => fs.readFileSync(path.join(ROOT, rel), "utf8");
   assert.match(read("components/GroupCreateModal.vue"), /groupNameSchema\.safeParse\(/);
   assert.match(read("components/settings/ProfileSection.vue"), /nicknameSchema\.safeParse\(/);
   const api = read("api/index.ts");
   assert.match(api, /parseIpcList\(groupFileEntrySchema, v, "list_group_files"\)/);
-  assert.match(api, /parseIpcList\(shareEntrySchema, v, "request_share_tree"\)/);
+  assert.match(api, /parseIpcValue\(shareTreeSchema, v, "request_share_tree"\)/);
   assert.match(api, /parseIpcList\(chatSearchGroupSchema, v, "search_chat_history"\)/);
   assert.match(read("utils/externalLinks.ts"), /linkInputSchema\.safeParse\(/);
 });

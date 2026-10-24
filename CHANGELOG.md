@@ -13,6 +13,20 @@
 
 ## [Unreleased]
 
+## [5.7.27] - 2026-10-24
+
+### 共享目录截断在界面上说清楚（审计 PERF-02 复审）
+
+- 旧行为：共享方超过 2000 条时只回前 N 条，`truncated` 只写进共享方日志；
+  请求方界面把"前 N 条"当成全部，用户以为对方目录就这么点文件。
+- 协议：`ShareTreeResponse` 增加 `truncated: bool`（`#[serde(default)]`，旧端缺字段按
+  `false` 解，判据 `share_tree_response_without_truncated_is_legacy_false`）。
+- 命令：`request_share_tree` 的返回从裸数组改为 `{ entries, truncated }`；
+  前端 `parseIpcValue(shareTreeSchema, …)` 校验（旧形状直接报错，不会静默读到 undefined）。
+- 界面：`ShareDirectory` 在截断时显示"对方目录条目过多，仅显示前 {count} 项"（中英双语）；
+  截断位随树缓存，切好友不会串台（`shareTreeQuery.test.ts` 钉住）。
+- 共享方日志保留 `code=SHARE_TREE_TRUNCATED`（现在与界面提示互为证据）。
+
 ## [5.7.26] - 2026-10-24
 
 ### 复审收尾：失败留痕、群取消单事务、DB 落盘原子性（SEC-01/FUNC-02/DB-01/DB-02/REL-01 复审）
