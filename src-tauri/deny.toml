@@ -22,6 +22,22 @@ yanked = "deny"
 # 修复路径是跟随 tauri/btleplug 升级，不能在本仓用一条 deny 规则逼出大范围红。
 unmaintained = "workspace"
 unsound = "workspace"
+# 已知不可修的三条 zip 告警走"风险接受"，理由必须写清楚，且**只在签名之后解包**：
+#
+#   zip 4.6.1 由 tauri-plugin-updater 2.14.0 的可选依赖引入（`zip = "4"`，仅 Windows
+#   自更新解包用）。三条公告的修复版本都要求 zip >= 9.0.0，而上游 stable 最新就是
+#   2.14.0（只有 3.0.0-alpha.3），本仓无法单独升 zip；`zip` feature 也不能关 ——
+#   macOS 的 `.app.tar.gz` 解包（tar + flate2）与 Windows 的 zip 解包同在该 feature 下。
+#
+#   实际暴露面：① 解包只在 Windows 自更新路径（macOS 走 tar/flate2）；② 更新包必须先
+#   通过 tauri.conf.json 里固定的 minisign 公钥校验，签名不对手根本走不到解包 ——
+#   攻击者要利用本告警必须先拿到发布私钥，届时整条更新链已失守，与 zip 无关。
+#   这三条待上游发版后立即删除。
+ignore = [
+  { id = "RUSTSEC-2026-0367", reason = "zip 4.6.1 解包保留 SUID/SGID；仅在 minisign 校验通过后的 Windows 更新路径，上游 tauri-plugin-updater 未放开 zip 大版本" },
+  { id = "RUSTSEC-2026-0368", reason = "zip 4.6.1 symlink 越界写；同上，签名校验通过后才解包，且路径仅在 Windows 自更新 asset 目录" },
+  { id = "RUSTSEC-2026-0369", reason = "zip 4.6.1 经 symlink 继承 Unix 权限；同上，签名校验通过后才解包，待上游放开 zip >= 9 即删除本豁免" },
+]
 
 [licenses]
 # 本仓是私有工作区（不发布到 crates.io），`gosslan` 自身没有 license 字段；
@@ -45,6 +61,9 @@ allow = [
   "Zlib",
   "MPL-2.0",
   "CC0-1.0",
+  # CDLA-Permissive-2.0：webpki-roots / webpki-root-certs 的根证书**数据**许可
+  # （Linux Foundation 社区数据许可，允许自由再分发与修改），不是代码许可陷阱。
+  "CDLA-Permissive-2.0",
   "Unlicense",
   "OpenSSL",
   "bzip2-1.0.6",
