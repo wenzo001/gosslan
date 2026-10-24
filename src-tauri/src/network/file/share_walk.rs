@@ -44,11 +44,6 @@ fn walk(dir: &Path, rel: &str, out: &mut Vec<ShareEntry>, depth: usize) -> bool 
         return false;
     };
     for e in entries.flatten() {
-        // 上限检查放在每个条目之前：凑满就停，不再继续 read_dir 的剩余项，
-        // 也不再把"已满"的目录继续递归下去。
-        if out.len() >= SHARE_TREE_MAX_ENTRIES {
-            return true;
-        }
         let path = e.path();
         let Ok(file_type) = e.file_type() else {
             continue;
@@ -60,6 +55,11 @@ fn walk(dir: &Path, rel: &str, out: &mut Vec<ShareEntry>, depth: usize) -> bool 
         let name = e.file_name().to_string_lossy().to_string();
         if name.starts_with('.') {
             continue;
+        }
+        // 上限检查必须排在**过滤之后**：过滤掉的条目（隐藏文件/符号链接/读不到类型）
+        // 根本不会进树，拿它们触发"截断"会让日志在恰好 2000 条可见项的目录上误报。
+        if out.len() >= SHARE_TREE_MAX_ENTRIES {
+            return true;
         }
         let rel_path = if rel.is_empty() {
             name.clone()

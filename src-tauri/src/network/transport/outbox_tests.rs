@@ -74,7 +74,7 @@
         // 绿路：四步全成功 ⇒ true，outbox 行落 failed（此后不再进重试集合，这是**成功**的表现）
         db::insert_file_outbox(&conn, "t1", "peer", None, "/tmp/x", "x.bin", 10).unwrap();
         db::mark_file_outbox_sending(&conn, "t1", 0).unwrap();
-        assert!(finalize_expired_file(&conn, "t1"));
+        assert!(finalize_expired_file(&conn, "t1").unwrap());
         assert_eq!(
             file_outbox_status(&conn, "t1").as_deref(),
             Some("failed"),
@@ -91,8 +91,8 @@
         db::insert_file_outbox(&conn, "t2", "peer", None, "/tmp/y", "y.bin", 10).unwrap();
         db::mark_file_outbox_sending(&conn, "t2", 0).unwrap();
         assert!(
-            !finalize_expired_file(&conn, "t2"),
-            "任一步写库失败必须返回 false"
+            finalize_expired_file(&conn, "t2").is_err(),
+            "任一步写库失败必须回传 Err（原因要能被调用方写进日志）"
         );
         assert_eq!(
             file_outbox_status(&conn, "t2").as_deref(),
@@ -153,7 +153,7 @@
         db::mark_file_outbox_sending(&conn, "t3", 0).unwrap();
 
         assert!(
-            !finalize_expired_file(&conn, "t3"),
+            !finalize_expired_file(&conn, "t3").unwrap(),
             "台账已 done ⇒ 这一单不是失败，必须回报 false（调用方据此不 emit file-failed）"
         );
         assert_eq!(
@@ -203,7 +203,7 @@
         db::mark_file_outbox_sending(&conn, "t4", 0).unwrap();
 
         assert!(
-            finalize_expired_file(&conn, "t4"),
+            finalize_expired_file(&conn, "t4").unwrap(),
             "单聊这一路的四步写应当照常成功"
         );
         assert_eq!(

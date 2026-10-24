@@ -32,13 +32,14 @@ fn finalize_expired_message(dbc: &rusqlite::Connection, msg_id: &str, group: boo
 /// `emit("file-failed")`）。
 ///
 /// 写序、`done` 闸门、"这一路不碰群气泡"三条都在 `db::finalize_file_failure` 里 ——
-/// 本函数只是把它的 `Result<bool>` 折成清扫器要的 bool（见那里的注释与
-/// `expired_file_never_rewrites_a_completed_transfer` /
+/// 本函数只保留"清扫器这一侧"的两件事：把错误转成可读串，并交出 emit 的门控值
+/// （见 `expired_file_never_rewrites_a_completed_transfer` /
 /// `expired_file_does_not_touch_the_group_bubble` 两条判据）。
-fn finalize_expired_file(dbc: &rusqlite::Connection, transfer_id: &str) -> bool {
+fn finalize_expired_file(dbc: &rusqlite::Connection, transfer_id: &str) -> Result<bool, String> {
     // 实现已并入唯一的出口 `db::finalize_file_failure`（P7：三份收尾合成一份）。
-    // 保留这一层是因为清扫器要的是 bool（emit 的门控条件），而顺序/闸门都在里面。
-    db::finalize_file_failure(dbc, transfer_id, db::FileJobEnd::Expired).unwrap_or(false)
+    // 返回 `Result` 而不是 `bool`：写失败的原因必须能被调用方写进日志
+    // （审计 FUNC-02 复审 —— 折成 false 会让"为什么没落终态"在现场彻底消失）。
+    db::finalize_file_failure(dbc, transfer_id, db::FileJobEnd::Expired).map_err(|e| e.to_string())
 }
 
 /// 「发现层在线」的有效窗口：与 discovery 回收跨跳节点的 45s 同源。
@@ -359,29 +360,38 @@ pub fn spawn_outbox_sweeper(state: &Arc<AppState>) -> tauri::async_runtime::Join
                     let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
                     finalize_expired_file(&dbc, &transfer_id)
                 };
-                if finalized {
-                    state.logger.warn(
+                match finalized {
+                    Ok(true) => {
+                        state.logger.warn(
+                            "outbox",
+                            format!(
+                                "code=FILE_OUTBOX_EXPIRED transfer_id={transfer_id} peer={peer_id} \
+                                 age_ms={} reachable={reachable} action=failed",
+                                now - created_at
+                            ),
+                        );
+                        // 载荷必须是 `FileFailedInfo`（`{transfer_id, reason}`）：前端按这个形状取值。
+                        // 曾经这里发的是裸字符串 ⇒ toast 显示「undefined」、气泡永远停在发送中（N-01）。
+                        let _ = state.app.emit(
+                            "file-failed",
+                            &FileFailedInfo {
+                                transfer_id: transfer_id.clone(),
+                                reason: "文件发送超时：超过重发期限仍未送达".to_string(),
+                            },
+                        );
+                    }
+                    Ok(false) => {
+                        state.logger.warn(
+                            "outbox",
+                            format!("code=FILE_OUTBOX_FINALIZE_FAILED transfer_id={transfer_id} changed=false —— 保留 file_outbox 行下轮重试"),
+                        );
+                    }
+                    Err(e) => state.logger.error(
                         "outbox",
                         format!(
-                            "code=FILE_OUTBOX_EXPIRED transfer_id={transfer_id} peer={peer_id} \
-                             age_ms={} reachable={reachable} action=failed",
-                            now - created_at
+                            "code=FILE_FINALIZE_FAILED transfer_id={transfer_id} ctx=expired err={e} —— 事务已回滚，保留行下轮重试"
                         ),
-                    );
-                    // 载荷必须是 `FileFailedInfo`（`{transfer_id, reason}`）：前端按这个形状取值。
-                    // 曾经这里发的是裸字符串 ⇒ toast 显示「undefined」、气泡永远停在发送中（N-01）。
-                    let _ = state.app.emit(
-                        "file-failed",
-                        &FileFailedInfo {
-                            transfer_id: transfer_id.clone(),
-                            reason: "文件发送超时：超过重发期限仍未送达".to_string(),
-                        },
-                    );
-                } else {
-                    state.logger.warn(
-                        "outbox",
-                        format!("code=FILE_OUTBOX_FINALIZE_FAILED transfer_id={transfer_id} —— 保留 file_outbox 行下轮重试"),
-                    );
+                    ),
                 }
             }
 
@@ -394,8 +404,8 @@ pub fn spawn_outbox_sweeper(state: &Arc<AppState>) -> tauri::async_runtime::Join
                 db::reconcile_pending_send_transfers(&dbc)
             };
             match reconciled {
-                Ok(ids) if !ids.is_empty() => {
-                    for transfer_id in ids {
+                Ok(report) => {
+                    for transfer_id in report.changed {
                         state.logger.warn(
                             "outbox",
                             format!(
@@ -410,8 +420,15 @@ pub fn spawn_outbox_sweeper(state: &Arc<AppState>) -> tauri::async_runtime::Join
                             },
                         );
                     }
+                    for (transfer_id, why) in report.failed {
+                        state.logger.error(
+                            "outbox",
+                            format!(
+                                "code=FILE_FINALIZE_FAILED transfer_id={transfer_id} ctx=orphan_reconcile err={why} —— 保留行下一轮再试"
+                            ),
+                        );
+                    }
                 }
-                Ok(_) => {}
                 Err(e) => state.logger.warn(
                     "outbox",
                     format!("code=FILE_TRANSFER_ORPHAN_RECONCILE_FAILED err={e} —— 下一轮再试"),

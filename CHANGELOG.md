@@ -13,6 +13,37 @@
 
 ## [Unreleased]
 
+## [5.7.26] - 2026-10-24
+
+### 复审收尾：失败留痕、群取消单事务、DB 落盘原子性（SEC-01/FUNC-02/DB-01/DB-02/REL-01 复审）
+
+代码复审发现上一轮有几处"行为改了、可观测性/事务边界没收干净"，本批补齐：
+
+- **FUNC-02 剩余吞错**：`finalize_file_failure(...).unwrap_or(false)` 在四处（永久失败收尾、
+  删好友取消、投递任务取消退出、启动对账）把事务 `Err` 连原因一起丢掉。现在统一走
+  `finalize_with_note`，失败记 `code=FILE_FINALIZE_FAILED transfer=… ctx=… err=…`；
+  `reconcile_pending_send_transfers` 返回 `ReconcileReport { changed, failed }`，
+  `finalize_expired_file` 返回 `Result`；删好友取消读列表失败记 `FILE_CANCEL_LIST_FAILED`。
+- **群取消单事务**：成员行（`group_file_recipients`）与聚合行（`group_files`）原来两笔独立写，
+  第二笔失败会留下"成员已取消、聚合仍 sending"的半落地态。新增
+  `cancel_group_file_atomically`（同一 `unchecked_transaction`），并加触发器回滚用例。
+- **DB-01 复审**：全新库的 `user_version` 原来在 DDL 事务**提交之后**单独写，崩在两者之间
+  会留下"表齐全、版本为 0"的库（下次按老库重放整条迁移链）。现在并入同一个事务；
+  新增用例断言 DDL 失败时版本号也回滚。
+- **DB-02 复审**：备份清扫失败原来只 `eprintln!`（打包版 Windows 没有控制台 = 等于没写）。
+  新增 `db::init_with_notices`，把清扫结果排队交给 `state.rs`，在 `Logger::new` 之后就绪落盘
+  （`code=BACKUP_SWEEP_FAILED`）；`db::init` 收回为 `#[cfg(test)]` 的便捷入口。
+- **REL-01 复审**：worker 重启/放弃日志补 `code=WORKER_RESTART` / `code=WORKER_GIVEUP`。
+- **PERF-02 复审**：共享目录的上限检查移到隐藏文件/符号链接过滤**之后**，避免
+  "恰好 2000 条可见项 + 尾部只剩隐藏项"误报 `SHARE_TREE_TRUNCATED`。
+- **PERF-01 复审**：`installing` 相位加 `Drop` 守卫，命令 future 被丢弃时记
+  `code=UPDATER_INSTALL_ABORTED` 并回到 `failed`，不再永久卡在 installing；
+  回归断言从 `contains` 改计数（两处回填、两处留痕），修掉"缺一样分支满足断言"的假绿。
+- **SEC-01 复审**：前端 `fileMeta.path` 改为**台账优先**（`t?.path || raw.path`），
+  另存为/复制不再拿对端写的源路径；`openFile` 上一轮已改，这一批把其余消费点对齐。
+- 判据：Rust **1182** / npm **1366** / `npm run build` 全绿；群取消回滚用例做了变异验证
+  （拆掉事务后 `第一笔必须随事务回滚` 立刻 FAIL）。
+
 ## [5.7.25] - 2026-10-24
 
 ### 入站配额真正闭环（审计 SEC-05 复审）

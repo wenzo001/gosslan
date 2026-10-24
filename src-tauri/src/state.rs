@@ -1650,7 +1650,7 @@ impl AppState {
         let db_preexisting = std::fs::metadata(&db_path)
             .map(|m| m.len() > 0)
             .unwrap_or(false);
-        let conn = db::init(&db_path)?;
+        let (conn, startup_notices) = db::init_with_notices(&db_path)?;
 
         // 运行日志：多开实例用独立文件（gosslan-1.log），避免测试实例互相覆盖。
         let log_stem = if instance > 0 {
@@ -1691,6 +1691,11 @@ impl AppState {
                     "上一轮记录已载入内存：{seeded} 条（只读，盘上原件不动；内存环有上界会淘汰）"
                 ),
             );
+        }
+        // `db::init_with_notices` 排队的那几条：备份清扫发生在 logger 之前，
+        // 现在补写进日志（审计 DB-02 复审 —— 打包版 Windows 没有控制台，eprintln 等于没写）。
+        for note in startup_notices {
+            logger.warn("db", note);
         }
 
         // ---- 启动数据完整性快照（2026-10-20 P0 的现场证据）----
@@ -1790,14 +1795,26 @@ impl AppState {
         // 或 outbox 已用完重试次数。启动时先收口，避免用户一开机就看到一条永远排队。
         // 只碰 direction='send'；接收行没有 outbox，绝不能进这个对账。
         match db::reconcile_pending_send_transfers(&conn) {
-            Ok(ids) if !ids.is_empty() => logger.warn(
-                "file",
-                format!(
-                    "code=FILE_TRANSFER_ORPHAN_RECONCILED count={} ids={ids:?} action=pending→failed",
-                    ids.len()
-                ),
-            ),
-            Ok(_) => {}
+            Ok(report) => {
+                if !report.changed.is_empty() {
+                    logger.warn(
+                        "file",
+                        format!(
+                            "code=FILE_TRANSFER_ORPHAN_RECONCILED count={} ids={:?} action=pending→failed",
+                            report.changed.len(),
+                            report.changed
+                        ),
+                    );
+                }
+                for (transfer_id, why) in report.failed {
+                    logger.error(
+                        "file",
+                        format!(
+                            "code=FILE_FINALIZE_FAILED transfer_id={transfer_id} ctx=startup_reconcile err={why} —— 下一轮清扫器再试"
+                        ),
+                    );
+                }
+            }
             Err(e) => logger.warn(
                 "file",
                 format!(

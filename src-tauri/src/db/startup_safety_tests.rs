@@ -33,7 +33,7 @@ fn a_failing_ddl_batch_leaves_no_half_schema_behind() {
     // 第一句是合法 DDL（本该建出 half_applied），第二句语法错误 ⇒ 整批必须回滚。
     // 这正是 DB-01 的注入点：旧实现两句分开跑时，这一段会留下 half_applied。
     let ddl = "CREATE TABLE half_applied(x INTEGER);\nCREATE TABLE oops (";
-    let err = apply_base_schema_atomically(&conn, ddl).unwrap_err();
+    let err = apply_base_schema_atomically(&conn, ddl, None).unwrap_err();
     assert_eq!(
         err.code(),
         "SCHEMA_MIGRATE_FAILED",
@@ -60,7 +60,7 @@ fn a_failing_ddl_batch_leaves_no_half_schema_behind() {
 #[test]
 fn the_base_schema_and_the_content_schema_land_together() {
     let conn = Connection::open_in_memory().unwrap();
-    apply_base_schema_atomically(&conn, SCHEMA).unwrap();
+    apply_base_schema_atomically(&conn, SCHEMA, None).unwrap();
     let has = |name: &str| -> bool {
         conn.query_row(
             "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = ?1",
@@ -75,6 +75,31 @@ fn the_base_schema_and_the_content_schema_land_together() {
         has("content_transfers"),
         "内容层 schema 必须与基础 schema 同批提交（分层不变，事务只有一个）"
     );
+}
+
+/// 全新库的 `user_version` 必须和建表在**同一个事务**里（审计 DB-01 复审）。
+///
+/// 旧写法在 DDL 事务提交之后单独 `pragma_update`：崩在两者之间会留下
+/// "表齐全、version=0" 的库，下次启动按老库处理、重放整条迁移链。
+#[test]
+fn fresh_version_is_written_inside_the_ddl_transaction() {
+    let conn = Connection::open_in_memory().unwrap();
+    apply_base_schema_atomically(&conn, SCHEMA, Some(DB_VERSION)).unwrap();
+    let v: u32 = conn
+        .query_row("PRAGMA user_version", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(v, DB_VERSION, "成功路径：版本与表一起落地");
+
+    let conn = Connection::open_in_memory().unwrap();
+    let ddl = "CREATE TABLE half_applied(x INTEGER);\nCREATE TABLE oops (";
+    assert!(
+        apply_base_schema_atomically(&conn, ddl, Some(DB_VERSION)).is_err(),
+        "中途失败的 DDL 必须回传错误"
+    );
+    let v: u32 = conn
+        .query_row("PRAGMA user_version", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(v, 0, "DDL 回滚时版本号也必须回滚（否则就是半迁移状态）");
 }
 
 /// 启动恢复只碰「sending 且两张 outbox 表都没有行」的孤儿。

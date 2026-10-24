@@ -1254,6 +1254,76 @@ fn a_group_only_cancel_writes_no_ghost_transfer_row() {
     );
 }
 
+/// FUNC-02 复审：群取消的**成员行 + 聚合行**必须在同一个事务里。
+///
+/// 旧实现分两笔写：成员行已 cancelled、聚合行仍 sending ⇒ 不会被补发，但气泡/摘要
+/// 一直显示"还在传"，而且没有任何入口会修正它。
+#[test]
+fn group_cancel_writes_recipients_and_summary_atomically() {
+    fn seed(conn: &Connection) {
+        conn.execute_batch(
+            "INSERT INTO group_files(transfer_id, group_id, sender_id, name, size, sha256, status, created_at)
+             VALUES('t13','g1','me','a.bin',10,'x','sending',1);
+             INSERT INTO group_file_recipients(transfer_id, recipient_id, status, progress, updated_at)
+             VALUES('t13','bob','pending',0.0,1),('t13','carol','sending',0.5,1);",
+        )
+        .unwrap();
+    }
+    fn status(conn: &Connection, sql: &str) -> String {
+        conn.query_row(sql, [], |r| r.get(0)).unwrap()
+    }
+
+    let conn = fresh_db();
+    seed(&conn);
+    let n = cancel_group_file_atomically(&conn, "t13").unwrap();
+    assert_eq!(n, 2, "两条还在途的成员行都必须被取消");
+    assert_eq!(
+        status(
+            &conn,
+            "SELECT status FROM group_files WHERE transfer_id='t13'"
+        ),
+        "cancelled",
+        "聚合行必须同批落 cancelled"
+    );
+    assert_eq!(
+        count(
+            &conn,
+            "SELECT COUNT(*) FROM group_file_recipients WHERE status='cancelled'"
+        ),
+        2,
+        "成员行必须同批落 cancelled"
+    );
+
+    // 失败路：第二笔写失败时，第一笔必须一起回滚（不能留下"成员已取消、聚合仍在发送"）
+    let conn = fresh_db();
+    seed(&conn);
+    conn.execute_batch(
+        "CREATE TRIGGER block_group_files BEFORE UPDATE ON group_files
+         BEGIN SELECT RAISE(ABORT, 'simulated disk error'); END;",
+    )
+    .unwrap();
+    assert!(
+        cancel_group_file_atomically(&conn, "t13").is_err(),
+        "写失败必须回传 Err（调用方据此把 ledger_committed 置 false）"
+    );
+    assert_eq!(
+        count(
+            &conn,
+            "SELECT COUNT(*) FROM group_file_recipients WHERE status='cancelled'"
+        ),
+        0,
+        "第一笔必须随事务回滚 —— 否则成员行与聚合行口径分裂"
+    );
+    assert_eq!(
+        status(
+            &conn,
+            "SELECT status FROM group_files WHERE transfer_id='t13'"
+        ),
+        "sending",
+        "聚合行保持原状（事务整体回滚）"
+    );
+}
+
 /// FUNC-04：盖了墓碑的行不许被**启动复位**复活。
 ///
 /// 复现的是崩溃窗口：取消事务已经提交（墓碑 + cancelled 都在），进程在下一次 flush

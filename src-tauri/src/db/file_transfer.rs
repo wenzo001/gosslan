@@ -449,23 +449,32 @@ pub fn list_exhausted_pending_send_transfers(conn: &Connection) -> Result<Vec<St
     Ok(rows.filter_map(|r| r.ok()).collect())
 }
 
-/// 启动 / 每轮清扫器共用的对账：把两种“不会再有人碰”的发送台账走唯一终态出口。
+/// 对账结果：成功推进终态的 id，以及**单条失败**的 `(id, 错误串)`。
 ///
-/// 返回真正被推进终态的 transfer_id（调用方据此 emit `file-failed`）。
-/// 单条失败不阻断其余：下一轮还会再看到它。
-pub fn reconcile_pending_send_transfers(conn: &Connection) -> Result<Vec<String>> {
+/// 单条失败不阻断其余（下一轮还会再看到它），但不能像旧写法那样折成 `false` 静默吞掉：
+/// 调用方要能把"哪一单、为什么"写进日志（审计 FUNC-02 复审）。
+#[derive(Debug, Default, PartialEq, Eq)]
+pub struct ReconcileReport {
+    pub changed: Vec<String>,
+    pub failed: Vec<(String, String)>,
+}
+
+/// 启动 / 每轮清扫器共用的对账：把两种“不会再有人碰”的发送台账走唯一终态出口。
+pub fn reconcile_pending_send_transfers(conn: &Connection) -> Result<ReconcileReport> {
     let cutoff = now_ms().saturating_sub(ORPHAN_PENDING_TRANSFER_GRACE_MS);
     let mut ids = list_orphan_pending_send_transfers(conn, cutoff)?;
     ids.extend(list_exhausted_pending_send_transfers(conn)?);
     ids.sort();
     ids.dedup();
-    let mut changed = Vec::new();
+    let mut report = ReconcileReport::default();
     for id in ids {
-        if finalize_file_failure(conn, &id, FileJobEnd::GiveUp).unwrap_or(false) {
-            changed.push(id);
+        match finalize_file_failure(conn, &id, FileJobEnd::GiveUp) {
+            Ok(true) => report.changed.push(id),
+            Ok(false) => {}
+            Err(e) => report.failed.push((id, e.to_string())),
         }
     }
-    Ok(changed)
+    Ok(report)
 }
 
 #[cfg(test)]
@@ -635,9 +644,10 @@ mod file_transfer_status_tests {
             vec!["exhausted".to_string()]
         );
 
-        let changed = reconcile_pending_send_transfers(&conn).unwrap();
-        assert!(changed.contains(&"old-orphan".to_string()));
-        assert!(changed.contains(&"exhausted".to_string()));
+        let report = reconcile_pending_send_transfers(&conn).unwrap();
+        assert!(report.failed.is_empty(), "本夹具里每条都应能写成：{report:?}");
+        assert!(report.changed.contains(&"old-orphan".to_string()));
+        assert!(report.changed.contains(&"exhausted".to_string()));
         for id in ["old-orphan", "exhausted"] {
             let status: String = conn
                 .query_row(

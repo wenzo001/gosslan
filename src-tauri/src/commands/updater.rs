@@ -351,6 +351,29 @@ mod desktop {
         Ok(())
     }
 
+    /// `installing` 相位的清道夫（复审）：命令 future 被丢弃时（窗口关闭 / 调用方取消
+    /// await），相位不能永久停在 `installing` —— 那会让 `updater_cancel` 永远拒绝、
+    /// 界面永远转圈，用户只能重启应用。正常路径在返回前把 `armed` 置 false。
+    struct InstallingPhase<'a> {
+        app: &'a AppHandle,
+        state: &'a UpdaterSession,
+        armed: bool,
+    }
+
+    impl Drop for InstallingPhase<'_> {
+        fn drop(&mut self) {
+            if self.armed {
+                self.state.set_status(self.app, |st| {
+                    st.phase = "failed".to_string();
+                    st.error = Some(
+                        "code=UPDATER_INSTALL_ABORTED：安装任务被中断（窗口关闭或进程退出）"
+                            .to_string(),
+                    );
+                });
+            }
+        }
+    }
+
     #[tauri::command]
     pub async fn updater_install(
         // Windows 由官方 install 内部退出进程，不经过下面的 restart 分支。
@@ -401,6 +424,12 @@ mod desktop {
             st.phase = "installing".to_string();
             st.error = None;
         });
+        // 从这里起到返回前，future 若被丢弃就由守卫把相位改回 `failed`。
+        let mut installing = InstallingPhase {
+            app: &app,
+            state: state.inner(),
+            armed: true,
+        };
         // 解包/验签/复制是同步重活：放到阻塞池，别占 tokio worker（单 runtime 会被饿死）。
         // 闭包**带回** update/bytes，失败时由调用处放回会话；成功时随闭包一起 drop。
         let outcome = tokio::task::spawn_blocking(move || {
@@ -413,6 +442,7 @@ mod desktop {
             Err(join) => {
                 // 阻塞任务被中断/panic：整包已随闭包 drop，只能让用户重下。
                 // 这是"失败可重试"唯一覆盖不到的一格，必须留痕，不许假装成普通失败。
+                installing.armed = false;
                 let msg = format!("code=UPDATER_INSTALL_FAILED：安装任务中断：{join}");
                 log_install_failure(&app, &msg);
                 state.set_status(&app, |st| {
@@ -424,6 +454,7 @@ mod desktop {
         };
         if let Err(e) = installed {
             // 现场放回去：验签不符/磁盘满/目录被占都是"可以再试一次"的失败。
+            installing.armed = false;
             *state.update.lock().unwrap_or_else(|e| e.into_inner()) = Some(update);
             *state.bytes.lock().unwrap_or_else(|e| e.into_inner()) = Some(bytes);
             let msg = format!("code=UPDATER_INSTALL_FAILED：{e}");
@@ -435,6 +466,7 @@ mod desktop {
             return Err(msg);
         }
         // 成功：两样都已随安装一起用掉（`take` 之后会话里本来就是空的，不必再 clear）。
+        installing.armed = false;
         state.set_status(&app, |st| {
             st.phase = "idle".to_string();
         });
@@ -617,14 +649,32 @@ mod status_tests {
             install.matches("msg.clone()").count(),
             "安装路径里除错误文案外不许出现 clone —— 那正是 PERF-01 的 2× 峰值"
         );
-        assert!(
-            install.contains("= Some(update)") && install.contains("= Some(bytes)"),
-            "失败必须把 update/bytes 原样放回会话，否则用户要重新下载几十 MB"
+        // 回填必须发生在**两处**：缺一样的分支 + 安装失败的分支。
+        // 只断言 contains 会被"缺一样"那一处满足（复审指出过这个假绿）。
+        assert_eq!(
+            install.matches("= Some(update)").count(),
+            2,
+            "缺一样分支与安装失败分支都必须把 update 放回会话"
+        );
+        assert_eq!(
+            install.matches("= Some(bytes)").count(),
+            2,
+            "缺一样分支与安装失败分支都必须把整包放回会话，否则用户要重新下载几十 MB"
+        );
+        assert_eq!(
+            install.matches("log_install_failure(").count(),
+            2,
+            "两格失败（install 报错、阻塞任务中断）都要留痕"
         );
         assert_eq!(
             install.matches("code=UPDATER_INSTALL_FAILED").count(),
             2,
             "两格失败（install 报错、阻塞任务中断）都要留同一个可检索码"
+        );
+        // `installing` 相位的 Drop 守卫（复审）：future 被丢弃时不能永久停在 installing。
+        assert!(
+            src.contains("struct InstallingPhase") && src.contains("UPDATER_INSTALL_ABORTED"),
+            "安装阶段必须有 Drop 守卫，否则窗口一关相位就永久卡在 installing"
         );
     }
 }
