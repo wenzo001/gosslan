@@ -920,10 +920,14 @@ function doCancelSend() {
     if (!transferId) return;
     api.cancelFileTransfer(transferId).then(
       (res) => {
-        // 三个分支的唯一判据在 `utils/cancelFeedback`：已送达 / 仅本机取消 / 已通知对面。
+        // 四个分支的唯一判据在 `utils/cancelFeedback`：
+        // 已送达 / 台账写失败（本机停了但状态待重试）/ 仅本机取消 / 已通知对面。
         switch (cancelOutcome(res)) {
           case "already_done":
             app.toast(t("msg.cancelSend.alreadyDone"), "info");
+            break;
+          case "ledger_pending":
+            app.toast(t("transfer.cancelLedgerPending"), "info");
             break;
           case "local_only":
             app.toast(t("transfer.cancelLocalOnly"), "info");
