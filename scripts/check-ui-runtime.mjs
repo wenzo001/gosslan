@@ -9998,6 +9998,9 @@ async function runOpsCenter(cdp, url) {
       const dialog = document.querySelector('[role="dialog"]');
       const rows = dialog ? Array.from(dialog.querySelectorAll('li')).map((li) => ({
         title: String((li.querySelector('span') || {}).textContent || '').trim(),
+        // 第二颗 span 是右上角那句状态（第一颗是标题）。100% 未确认的行必须在这里
+        // 说「已发出，等对方确认」，而不是泛泛的「等待中」/「100%」。
+        status: String((li.querySelectorAll('span')[1] || {}).textContent || '').trim(),
         buttons: li.querySelectorAll('button').length,
       })) : [];
       return {
@@ -10029,7 +10032,13 @@ async function runOpsCenter(cdp, url) {
       JSON.stringify({ pill: first.pill, vw: first.vw, vh: first.vh, corner: first.corner }));
 
     // ① 纯点击（指针不位移）必须打开面板 —— 拖动阈值如果把点按吞掉，这一格当场红。
-    await cdp.click(first.pill.left + 40, first.pill.top + 12);
+    // 药丸 2026-10-24 收成小圆胶囊（只留转圈 + 件数），点击点取**矩形中心**，
+    // 不再用「left + 40」（那按的是旧版 224px 宽的药丸）。
+    const pillPoint = (p) => ({
+      x: Math.round((p.left + p.right) / 2), y: Math.round((p.top + p.bottom) / 2),
+    });
+    const p0 = pillPoint(first.pill);
+    await cdp.click(p0.x, p0.y);
     const opened = await read();
     check("点一下（不拖动）打开面板，列表行数等于读模型的 6 行",
       opened.dialog === true && opened.rows.length === 6,
@@ -10042,8 +10051,18 @@ async function runOpsCenter(cdp, url) {
       !!recv && recv.buttons >= 1, "≥1", JSON.stringify(recv));
     check("100% 但未终态（sent）的行有按钮（负责人：百分之百没完成的也可以取消）",
       !!sent && sent.buttons >= 1, "≥1", JSON.stringify(sent));
-    check("消息行只给「今天真能动的」按钮（取消在 B4，所以这一行是 1 颗=去会话）",
-      !!msg && msg.buttons === 1, "1", JSON.stringify(msg));
+    // 用户 2026-10-24：「列表里面 100% 的为什么没有过滤掉」——口径不是一律隐藏（对方还没确认
+    // 就不能假装完成），而是**状态必须说清**：这一行的 100% 是"字节已写出"，
+    // 右上角必须写「已发出，等对方确认」。
+    const wantAck = await cdp.eval(
+      "(async () => { const I = await import('/src/i18n/index.ts');"
+      + " return I.t('task.state.waitingAck'); })()",
+    );
+    check("100% 未确认的行状态写「已发出，等对方确认」（不是泛泛的等待中）",
+      !!sent && sent.status === wantAck && wantAck.length > 0,
+      wantAck, JSON.stringify({ status: sent && sent.status, wantAck }));
+    check("消息行给「取消 + 去会话」两颗按钮（cancel_message 已有真命令）",
+      !!msg && msg.buttons === 2, "2", JSON.stringify(msg));
     // 排序：要人处理的那一行必须排最前（blocked → running → queued）。
     // 这一段里 blocked 的有三条（peer_offline 的消息最新），所以第一行必须是它。
     check("DOM 顺序 = 读模型的顺序：需要处理的那一行排最前",
@@ -10125,7 +10144,7 @@ async function runOpsCenter(cdp, url) {
       "dialog=false / 1 颗", JSON.stringify({ dialog: closed.dialog, pillButtons: closed.pillButtons }));
 
     // ② 真的按住拖到左上象限 ⇒ 吸附左上角 + 位置写进 localStorage + **不把面板点开**。
-    const from = { x: closed.pill.left + 40, y: closed.pill.top + 12 };
+    const from = pillPoint(closed.pill);
     await cdp.drag(from.x, from.y, 120, 120);
     const moved = await read();
     check("真拖动之后药丸吸到左上角（哪一角，不是像素）",
@@ -10138,7 +10157,8 @@ async function runOpsCenter(cdp, url) {
       moved.dialog === false, "dialog=false", JSON.stringify({ dialog: moved.dialog }));
 
     // ③ 拖完还要点得开：`suppressClick` 只许吞掉这一次，不许常驻。
-    await cdp.click(moved.pill.left + 40, moved.pill.top + 12);
+    const pm = pillPoint(moved.pill);
+    await cdp.click(pm.x, pm.y);
     const reopened = await read();
     check("拖完之后仍然一点就开（吞点击只吞拖动那一下）",
       reopened.dialog === true, "dialog=true", JSON.stringify({ dialog: reopened.dialog }));

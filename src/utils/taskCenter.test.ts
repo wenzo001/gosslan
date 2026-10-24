@@ -215,7 +215,7 @@ test("「立即重取」只给单聊接收行：群行的 peerId 是 group_id，
   );
 });
 
-test("消息行：有正文给正文，没正文给类型 key；不给取消（那条通道在 B4）", () => {
+test("消息行：有正文给正文，没正文给类型 key；补发队列行给取消（B4 已有真命令）", () => {
   const rows = deriveOperations({
     transfers: [],
     contentTransfers: [],
@@ -227,7 +227,10 @@ test("消息行：有正文给正文，没正文给类型 key；不给取消（�
     ],
   });
   assert.equal(byId(rows, "m-text").title, "晚上七点");
-  assert.equal(byId(rows, "m-text").actions.includes("cancel"), false, "没有真通道就不给按钮");
+  assert.ok(
+    byId(rows, "m-text").actions.includes("cancel_message"),
+    "cancel_message 是真命令 ⇒ 未送达的消息必须能取消",
+  );
   assert.equal(byId(rows, "m-json").title, "", "没有正文就不硬凑标题，回落成「补发消息」");
   assert.equal(byId(rows, "m-offline").state, "blocked");
   assert.equal(byId(rows, "m-offline").blockedReason, "peer_offline");
@@ -235,6 +238,7 @@ test("消息行：有正文给正文，没正文给类型 key；不给取消（�
   assert.equal(grp.convId, "group:g1", "群消息的会话身份带得出来 → 可以跳会话");
   assert.equal(grp.waitingFor, 3, "「还有 3 个人没收到」是这行的目标");
   assert.ok(grp.actions.includes("open_conversation"));
+  assert.ok(grp.actions.includes("cancel_message"), "群补发队列行同样能取消（后端按 Ack 判）");
 });
 
 test("群历史：running 与 failed 都算任务，done 不列", () => {

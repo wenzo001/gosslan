@@ -12,7 +12,7 @@ import {
   type OperationAction,
   type OperationRow,
 } from "@/utils/taskCenter";
-import { aggregateTransferProgress, clampProgress } from "@/utils/transferSummary";
+import { clampProgress } from "@/utils/transferSummary";
 import { blockedReasonKey } from "@/utils/transferState";
 import { cancelOutcome } from "@/utils/cancelFeedback";
 import { storageGet, storageSet } from "@/utils/safeStorage";
@@ -48,11 +48,6 @@ const chat = useChatStore();
 const open = ref(false);
 
 const rows = computed(() => chat.operations);
-/**
- * 药丸上那个百分号只说**字节**（文件传输那本账）：消息补发与群历史没有可信的字节总数，
- * 把它们混进加权平均会算出一个"看着像进度"的数。没有文件行在动时就不显示百分号。
- */
-const fileProgress = computed(() => aggregateTransferProgress(chat.transfers));
 
 function rowTitle(row: OperationRow): string {
   return row.title || t(FALLBACK_TITLE_KEYS[row.kind]);
@@ -77,9 +72,15 @@ function rowTarget(row: OperationRow): string {
 
 function statusText(row: OperationRow): string {
   if (row.state === "queued") return t("send.queued");
+  // `waiting_ack`：字节已经写出去了（所以进度是 100%），但对端还没回执 —— 这一行仍在
+  // "未完成"里，状态必须说清是**等确认**，不能只写一个泛泛的"等待中"（用户 2026-10-24：
+  // "百分之百的为什么没有过滤掉"）。
+  if (row.blockedReason === "waiting_ack") return t("task.state.waitingAck");
   if (row.state === "blocked") return t("task.state.waiting");
   // 读不到 total 时不硬造一个 0%：进度是 null ⇒ 只说"进行中"。
   if (row.progress === null) return t("task.state.running");
+  // 进度已到 1 但还没进终态：收尾（落盘 / 校验 / 等回执）。写"100%"会让人以为已经完成。
+  if (row.progress >= 1) return t("task.state.finalizing");
   return t(runningTextKey(row.kind), { pct: Math.round(row.progress * 100) });
 }
 
@@ -96,6 +97,7 @@ function detailText(row: OperationRow): string {
 const busy = ref<string | null>(null);
 const actionLabel: Record<OperationAction, string> = {
   cancel: "task.cancel",
+  cancel_message: "task.cancel",
   cancel_update: "task.cancel",
   retry_content: "task.retryNow",
   sync_history_now: "task.syncNow",
@@ -107,6 +109,7 @@ async function runAction(row: OperationRow, action: OperationAction) {
   busy.value = `${row.id}|${action}`;
   try {
     if (action === "cancel") await cancelFile(row);
+    else if (action === "cancel_message") await cancelMessage(row);
     else if (action === "cancel_update") await cancelUpdate();
     else if (action === "retry_content") await retryContent(row);
     else if (action === "sync_history_now") await chat.syncGroupHistoryNow(row.id.slice("group:".length));
@@ -116,6 +119,24 @@ async function runAction(row: OperationRow, action: OperationAction) {
   } finally {
     busy.value = null;
   }
+}
+
+/**
+ * 取消一条**还没送出去的消息**（B4 的命令，2026-10-24 接进任务中心）。
+ *
+ * 与文件取消不同：这里没有"本机停了、对面还在跑"这种中间态 —— 后端删掉 outbox 行并写
+ * `cancelled`，要么成功要么已经送达。`already_delivered` 必须如实说出口，
+ * 否则用户点完看到行还没了/还在，只能猜。
+ */
+async function cancelMessage(row: OperationRow) {
+  if (!row.convId) return;
+  const res = await api.cancelMessage(row.convId, row.id);
+  await chat.refreshTransfers();
+  if (res === "already_delivered") {
+    app.toast(t("task.cancelMessageDelivered"), "info");
+    return;
+  }
+  app.toast(t("task.cancelDone"), "success");
 }
 
 /**
@@ -172,12 +193,39 @@ async function cancelUpdate() {
   app.toast(t("task.cancelDone"), "success");
 }
 
-/** 跳到那个会话：移动端先翻回聊天那一屏，否则 `openConversation` 换了会话也看不见。 */
+/**
+ * 跳到那个会话：移动端先翻回聊天那一屏，否则 `openConversation` 换了会话也看不见。
+ *
+ * 为什么要有两道反馈（用户 2026-10-24：「点去会话好像也没有反应」）：
+ *  · 行里带的会话身份可能已经不存在（群被解散/退出、成员被删）——`openConversation`
+ *    照样会写 `activeConv`，但界面上没有任何那一项可高亮，看起来就是"点了没反应"。
+ *    这一类在点之前就问一句，给 toast 而不是静默关面板；
+ *  · 切换本身失败（列表还没加载完 / 会话在切换途中消失）——切完再对一次 `activeConv`，
+ *    没切过去就报错，而不是让面板关掉了事。
+ * ⚠️ 列表还没加载完时不判"不存在"：那时 `conversations/groups` 都是空数组，
+ *    拿它判会把刚启动的正常会话误判成已删除。
+ */
 async function openConversation(row: OperationRow) {
-  if (!row.convId) return;
+  const cid = row.convId;
+  if (!cid) {
+    app.toast(t("task.openChatMissing"), "info");
+    return;
+  }
+  const groupId = cid.startsWith("group:") ? cid.slice("group:".length) : null;
+  const known = groupId
+    ? chat.groups.some((g) => g.id === groupId)
+    : chat.conversations.some((c) => c.id === cid) || chat.friends.some((f) => f.device_id === cid);
+  const listsReady = groupId ? chat.groupsLoaded : chat.conversationsLoaded || chat.friendsLoaded;
+  if (!known && listsReady) {
+    app.toast(t("task.openChatMissing"), "info");
+    return;
+  }
   open.value = false;
   if (app.isMobile) app.mobileView = "chat";
-  await chat.openConversation(row.convId);
+  await chat.openConversation(cid);
+  if (chat.activeConv !== cid) {
+    app.toast(t("task.openChatFail"), "error");
+  }
 }
 
 // ---------------- 药丸：按住拖到四个角 ----------------
@@ -268,50 +316,32 @@ function openPanel() {
 <template>
   <!--
     药丸本身是入口，也是拖动手柄：<button> 而不是 <div>+click ⇒ 键盘 Tab / 回车原生可用。
-    `aria-label` 带数量：读屏用户看不到进度条，但需要知道"还有几件事没办完"。
+    `aria-label` 带数量：读屏用户看不到那颗转圈，但需要知道"还有几件事没办完"。
     `touch-none` 是拖动的前提：不关掉触摸滚动，手指一动就被当成页面滚动，指针事件会断。
+    ⚠️ 2026-10-24 用户口径：「进度条小胶囊的占位有点太大了，小小的一个圆形在转就可以了」：
+    只留一颗小转圈 + 件数，去掉整句文案与那条通栏进度条（进度进面板里逐行看）。
+    尺寸收成 content 宽、单行高 —— 它挡在右下角，越小越好。
   -->
   <button
     v-if="rows.length > 0"
     type="button"
-    class="fixed z-40 flex w-56 max-w-[calc(100vw-1.5rem)] touch-none flex-col gap-1.5 rounded-[var(--gosslan-radius-xl)] border border-[var(--gosslan-border)] bg-[var(--gosslan-panel)] px-3 py-2 text-left shadow-lg select-none"
+    class="fixed z-40 flex touch-none items-center gap-1.5 rounded-full border border-[var(--gosslan-border)] bg-[var(--gosslan-panel)] px-2.5 py-1.5 text-left shadow-lg select-none"
     :class="[
       dragBox ? 'inset-auto' : cornerClass,
       dragging ? 'scale-[1.03] opacity-90' : 'transition-transform duration-200',
     ]"
     :style="dragBox ? { left: `${dragBox.left}px`, top: `${dragBox.top}px` } : undefined"
     :aria-label="t('task.open', { n: rows.length })"
-    :title="t('task.dragHint')"
+    :title="`${t('task.pill', { n: rows.length })} · ${t('task.dragHint')}`"
     @pointerdown="onPointerDown"
     @pointermove="onPointerMove"
     @pointerup="onPointerUp"
     @pointercancel="onPointerCancel"
     @click="openPanel"
   >
-    <span class="flex items-center gap-2">
-      <Spinner size-class="h-4 w-4" decorative />
-      <span class="min-w-0 flex-1 text-xs text-[var(--gosslan-text)]">
-        {{ t("task.pill", { n: rows.length }) }}
-      </span>
-      <span
-        v-if="fileProgress.count > 0"
-        class="shrink-0 text-xs font-semibold tabular-nums text-[var(--gosslan-text)]"
-      >
-        {{ fileProgress.percent }}%
-      </span>
-    </span>
-    <!-- 进度用 scaleX 不用 width：改 width 会触发布局（与 S-5 同一条口径）。
-         没有文件行在动（只有消息补发/群历史）时画脉冲条，不画一个假的 100%。 -->
-    <span class="block h-1 overflow-hidden rounded-full bg-[var(--gosslan-border)]">
-      <span
-        v-if="fileProgress.count > 0"
-        class="block h-full origin-left rounded-full bg-[var(--gosslan-primary)] transition-transform duration-200"
-        :style="{ transform: `scaleX(${fileProgress.percent / 100})` }"
-      />
-      <span
-        v-else
-        class="block h-full w-1/3 animate-pulse rounded-full bg-[var(--gosslan-primary)] opacity-50 motion-reduce:animate-none"
-      />
+    <Spinner size-class="h-3.5 w-3.5" decorative />
+    <span class="text-xs font-semibold leading-none tabular-nums text-[var(--gosslan-text)]">
+      {{ rows.length }}
     </span>
   </button>
 
@@ -373,7 +403,7 @@ function openPanel() {
             type="button"
             class="tap-safe rounded-[var(--gosslan-radius-md)] border px-2.5 py-1 text-meta transition"
             :class="
-              act === 'cancel'
+              act === 'cancel' || act === 'cancel_message' || act === 'cancel_update'
                 ? 'border-[var(--gosslan-border)] text-[var(--gosslan-danger-ink)] hover:bg-[var(--gosslan-hover)]'
                 : 'border-[var(--gosslan-border)] text-[var(--gosslan-text-2)] hover:bg-[var(--gosslan-hover)]'
             "
