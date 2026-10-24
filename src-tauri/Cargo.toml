@@ -1,6 +1,6 @@
 [package]
 name = "gosslan"
-version = "5.7.28"
+version = "5.7.29"
 description = "Gosslan — 无服务器 P2P 局域网即时通讯"
 authors = ["wd.f"]
 edition = "2021"
@@ -90,6 +90,11 @@ tauri-plugin-single-instance = "2"
 machine-uid = "0.5"
 # 桌面端应用内更新：插件只支持 Windows/macOS/Linux；移动端由命令桩返回不支持。
 tauri-plugin-updater = "2.14"
+# 「禁止降级」的显式版本判据（2026-10-24 产品裁决，见审计 §13）。
+# 官方插件的 `check()` 自己也会比较版本，但那条判据住在上游、我们无法在本仓钉住；
+# 这里用自己的比较做第二道，并留下 `code=UPDATER_DOWNGRADE_BLOCKED` 的可检索痕迹。
+# semver 早就在依赖树里（tauri-utils 的间接依赖），这里只是让我们自己也能用它。
+semver = "1"
 
 # Windows 剪贴板文件列表（CF_HDROP）：文件消息「复制」＝复制文件本体，
 # 可在资源管理器粘贴、也可直接粘贴回聊天框发送（微信式）。

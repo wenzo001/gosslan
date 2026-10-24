@@ -17,7 +17,14 @@ export type UpdaterPhase =
   | "up-to-date"
   | "error";
 
-export type UpdaterErrorCode = "timeout" | "network" | "signature" | "manifest" | "busy" | "unknown";
+export type UpdaterErrorCode =
+  | "timeout"
+  | "network"
+  | "signature"
+  | "manifest"
+  | "busy"
+  | "downgrade"
+  | "unknown";
 
 export interface UpdateInfo {
   currentVersion: string;
@@ -57,6 +64,9 @@ const DEFAULT_CHECK_TIMEOUT_MS = 15_000;
 function errorCode(e: unknown): UpdaterErrorCode {
   const text = String((e as { message?: unknown })?.message ?? e);
   if (/UPDATER_CANCELLED|cancel/i.test(text)) return "unknown";
+  // 要在其余关键词之前判：后端文案是「清单版本 … 不高于当前 …，已拒绝」，
+  // 落到 unknown 只会显示「更新失败，请稍后重试」，用户不知道发生了什么（也重试不好）。
+  if (/UPDATER_DOWNGRADE_BLOCKED|禁止降级/i.test(text)) return "downgrade";
   if (/timeout|timed? ?out|超时/i.test(text)) return "timeout";
   if (/签名|signature|verify/i.test(text)) return "signature";
   if (/json|manifest|清单|格式/i.test(text)) return "manifest";

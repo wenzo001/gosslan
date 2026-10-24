@@ -206,6 +206,21 @@ test("下载失败：错误可读，保留更新信息以便重试", async () =>
   assert.equal(s.state.info?.version, "5.5.0");
 });
 
+test("清单版本不高于当前：拒绝并显示 downgrade（不能落到笼统的 unknown）", async () => {
+  const { adapter } = fake({
+    check: async () => {
+      throw new Error(
+        "code=UPDATER_DOWNGRADE_BLOCKED：清单版本 5.4.0 不高于当前 5.4.1，已拒绝（禁止降级）",
+      );
+    },
+  });
+  const s = service(adapter);
+  await s.check(true);
+  assert.equal(s.state.phase, "error");
+  assert.equal(s.state.info, null, "被拒的版本不许留在界面上（否则还能点下载）");
+  assert.equal(s.state.error, "downgrade");
+});
+
 test("稍后：释放后端资源、清掉更新卡片，不留下继续下载的任务", async () => {
   const { adapter, calls } = fake({ check: async () => INFO });
   const s = service(adapter);

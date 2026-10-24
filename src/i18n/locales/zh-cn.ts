@@ -410,6 +410,7 @@ export const zhCN: MessageDict = {
   "settings.updates.error.signature": "更新包签名校验未通过，已拒绝安装",
   "settings.updates.error.manifest": "更新清单格式不正确",
   "settings.updates.error.busy": "已有更新任务在进行，请稍后再试",
+  "settings.updates.error.downgrade": "更新清单指向更旧的版本，已拒绝安装（禁止降级）",
   "settings.updates.error.unknown": "更新失败，请稍后重试",
 
   // ---- 窗口控制 ----
