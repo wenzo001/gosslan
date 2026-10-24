@@ -45,7 +45,9 @@
         );
 
         let check = "if current > DB_VERSION";
-        let write = "conn.execute_batch(SCHEMA)";
+        // DB-01 之后 SCHEMA 的应用点收进 `apply_base_schema_atomically`（同一个 DDL 事务），
+        // 它仍然是"第一次写文件"的位置 ⇒ 降级判定必须排在它前面。
+        let write = "apply_base_schema_atomically(&conn, SCHEMA)?;";
         assert_eq!(
             db.matches(check).count(),
             1,
@@ -58,7 +60,7 @@
         );
         assert!(
             db.find(check).unwrap() < db.find(write).unwrap(),
-            "降级判定必须早于 execute_batch(SCHEMA)：先写再判 = 「数据未被修改」是谎话"
+            "降级判定必须早于应用 SCHEMA（首次写文件）：先写再判 = 「数据未被修改」是谎话"
         );
 
         assert!(
