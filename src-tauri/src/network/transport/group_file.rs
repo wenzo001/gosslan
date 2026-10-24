@@ -141,7 +141,13 @@ pub(crate) async fn handle_group_file_cancel(
         };
         {
             let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
-            let _ = db::mark_group_file_cancelled(&dbc, &transfer_id);
+            // FUNC-02：写失败必须留痕（旧写法 `let _ =` 把台账失败吞掉，界面照样说"已停手"）。
+            if let Err(e) = db::mark_group_file_cancelled(&dbc, &transfer_id) {
+                state.logger.error(
+                    "group_file",
+                    format!("code=GROUP_CANCEL_COMMIT_FAILED transfer={transfer_id} source=peer_cancel：{e}"),
+                );
+            }
         }
         let _ = state.app.emit("file-cancelled", &transfer_id);
         let _ = state
@@ -814,9 +820,18 @@ pub fn sweep_stalled_receives(state: &Arc<AppState>) -> usize {
 }
 
 /// 群文件气泡状态推进：msg_id = gfile-{transfer_id}（收发双方本地记录）。
+///
+/// FUNC-02：写失败必须留痕。旧写法用 `.ok()` 吞掉 —— 气泡停在发送中而没有任何日志，
+/// 排查时只能靠猜。这里只记日志、不改控制流：气泡是**投影**，它的失败不该打断传输本身
+/// （真正的台账写在 `group_files` / `group_file_recipients` 里）。
 fn set_gfile_bubble_status(state: &AppState, transfer_id: &str, status: &str) {
     let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
-    db::set_message_status(&dbc, &format!("gfile-{transfer_id}"), status).ok();
+    if let Err(e) = db::set_message_status(&dbc, &format!("gfile-{transfer_id}"), status) {
+        state.logger.error(
+            "group_file",
+            format!("code=GFILE_BUBBLE_STATUS_FAILED transfer={transfer_id} status={status}：{e}"),
+        );
+    }
 }
 
 /// 处理群文件发送完毕：最终校验（size + SHA-256）→ sync_all → rename → completed。

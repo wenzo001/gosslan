@@ -153,6 +153,11 @@ impl FileJobEnd {
 /// 而"不许把 done 降级"这件事由 `upsert_transfer` 自己守（INV-P26）。
 ///
 /// 返回 `true` = 面向用户的状态真的推进了 ⇒ 调用方据此决定要不要 emit。
+///
+/// SOL-03（2026-10-24 审计）：**这一次的四笔写放进同一个事务** —— 气泡、台账、墓碑、
+/// 关队列行要么一起落地，要么一起不动。此前它们是四条独立语句，中间任一失败都会留下
+/// "界面已取消、台账还在发送中"（FUNC-02）；现在失败会整体回滚并把 `Err` 交给调用方，
+/// 调用方记 `CANCEL_COMMIT_FAILED` 并让界面说"本地已停止、台账待重试"。
 pub fn finalize_file_failure(
     conn: &Connection,
     transfer_id: &str,
@@ -164,21 +169,34 @@ pub fn finalize_file_failure(
     // 也不要在读不到状态时静默放过一个真的失败。
     let already_done = is_transfer_done(conn, transfer_id).unwrap_or(false);
 
+    let tx = conn.unchecked_transaction()?;
+
     let mut changed = false;
     if !already_done || cancelled {
         // 取消是用户动作：界面必须立刻响应。已 done 的行不会被真降级（闸门在 upsert 里）。
-        let mut bubble = set_message_status(conn, &format!("file-{transfer_id}"), status).is_ok();
+        // 两处气泡分开记：`file-` 是 1:1 那一半，`gfile-` 是群那一半。
+        let file_bubble =
+            set_message_status(&tx, &format!("file-{transfer_id}"), status)? > 0;
         // `gfile-` 只在取消时写：取消入口是 1:1 与群文件**共用**的（用户取消整条消息），
         // 而超时/放弃只代表"某一个收件人没收到"，群气泡由 `group_file_recipients` 决定。
         // 两个方向各有判据：`expired_file_does_not_touch_the_group_bubble` /
         // `a_cancelled_group_file_marks_its_own_bubble`。
-        if cancelled {
-            bubble &= set_message_status(conn, &format!("gfile-{transfer_id}"), status).is_ok();
-        }
-        if bubble {
+        let group_bubble = cancelled
+            && set_message_status(&tx, &format!("gfile-{transfer_id}"), status)? > 0;
+        // FUNC-03：**只有 1:1 那一半真的存在时才写 `file_transfers`**。
+        // `upsert_transfer` 的语义是无则插入 —— 只看"有没有气泡"（旧代码用
+        // `set_message_status(..).is_ok()`，无匹配行也是 Ok）会为一条只在 `group_files`
+        // 里存在的群文件插出 peer_id/name 全空的幽灵行。群文件的台账在
+        // `group_files` / `group_file_recipients`，这里不该有它。
+        //
+        // `file_outbox` 也算"这一单存在"：它有队列行 ⇒ 清扫器还扫得到它，必须有人收尾
+        // （那条行不存在时 `upsert_transfer` 报 false，会让关行条件永不成立 ⇒ 清扫器空转）。
+        let has_ledger = transfer_row_exists(&tx, transfer_id)?;
+        let has_queue = file_outbox_row_exists(&tx, transfer_id)?;
+        if file_bubble || has_ledger || has_queue {
             // 终态写入不知道"这次传了多大"，必须沿用台账里已知的 size：A-11 之后
             // `upsert_transfer` 的冲突分支会同步 size，原样传 0 会把已知大小抹掉。
-            let known_size: u64 = conn
+            let known_size: u64 = tx
                 .query_row(
                     "SELECT size FROM file_transfers WHERE id = ?1",
                     params![transfer_id],
@@ -186,8 +204,8 @@ pub fn finalize_file_failure(
                 )
                 .map(|v| v.max(0) as u64)
                 .unwrap_or(0);
-            changed = upsert_transfer(
-                conn,
+            upsert_transfer(
+                &tx,
                 transfer_id,
                 "",
                 "",
@@ -196,9 +214,12 @@ pub fn finalize_file_failure(
                 status,
                 None,
                 0.0,
-            )
-            .is_ok();
+            )?;
         }
+        // 面向用户的状态真的推进了吗：1:1 气泡、群气泡、或这一单确实有台账/队列行要收尾。
+        // 三者都没有（只在 `group_files` 里、且连群气泡都还没有）= 界面看不见这一单，
+        // 那就什么都不写、也回报 false（群文件不走 `file_outbox`）。
+        changed = file_bubble || group_bubble || has_ledger || has_queue;
     }
 
     if changed || already_done {
@@ -212,18 +233,48 @@ pub fn finalize_file_failure(
         //    判据：`cascade_tests::a_cancel_on_an_already_done_transfer_writes_no_tombstone`。
         // 顺序：墓碑 → 关队列行 —— 关行是破坏性写，永远排最后。
         if cancelled && changed && !already_done {
-            conn.execute(
+            tx.execute(
                 "UPDATE file_transfers SET cancel_terminal = 1 WHERE id = ?1",
                 params![transfer_id],
             )?;
         }
         // ★ 永远排在最后
         match end {
-            FileJobEnd::Cancelled => mark_file_outbox_cancelled(conn, transfer_id)?,
-            _ => mark_file_outbox_failed(conn, transfer_id)?,
+            FileJobEnd::Cancelled => mark_file_outbox_cancelled(&tx, transfer_id)?,
+            _ => mark_file_outbox_failed(&tx, transfer_id)?,
         }
     }
+    tx.commit()?;
     Ok(changed)
+}
+
+/// 台账里是否**已有**这一单的行（只判存在，不判状态）。
+///
+/// 收尾路径用它区分"更新一行"与"凭空插一行"（FUNC-03 的幽灵行判据）。
+fn transfer_row_exists(conn: &Connection, id: &str) -> Result<bool> {
+    let row = conn
+        .query_row(
+            "SELECT 1 FROM file_transfers WHERE id = ?1",
+            params![id],
+            |_| Ok(()),
+        )
+        .optional()?;
+    Ok(row.is_some())
+}
+
+/// 队列里是否还有这一单（`file_outbox` 只在单聊文件发送时写；群文件不走这张表）。
+///
+/// 它也是"这一单存在"的证据：队列行还在 ⇒ 清扫器还会扫到它，收尾必须真的做一次，
+/// 否则 `list_expired_file_outbox` 每个 tick 重扫一行又什么都不做（活锁）。
+fn file_outbox_row_exists(conn: &Connection, id: &str) -> Result<bool> {
+    let row = conn
+        .query_row(
+            "SELECT 1 FROM file_outbox WHERE transfer_id = ?1",
+            params![id],
+            |_| Ok(()),
+        )
+        .optional()?;
+    Ok(row.is_some())
 }
 
 /// 该传输是否已完整收下（status='done'）。Offer 判据的单行查询（审计 A6）。

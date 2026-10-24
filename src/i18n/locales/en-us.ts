@@ -1163,6 +1163,7 @@ export const enUS: MessageDict = {
   "transfer.blocked.queuedByBackend": "Queued on this device, it will continue on its own",
   "transfer.blocked.noSource": "No device holding this content is reachable right now",
   "transfer.cancelLocalOnly": "Cancelled on this device (the sender may still be transferring if their build is older or offline)",
+  "transfer.cancelLedgerPending": "Stopped on this device, but the status write failed (it may still show as transferring after a refresh)",
   "send.unknownState": "Unknown state. You can resend it.",
   "msg.cleaned": "Cleaned up",
   "media.tooLarge": "Too large to preview",

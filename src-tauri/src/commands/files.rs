@@ -622,6 +622,14 @@ pub struct FileCancelResult {
     /// （INV-P24 第 4 条），它会继续传/收到自己的 deadline。此时界面若只说"已取消"，
     /// 用户会以为对面也停了 —— 这一格就是让文案能说「对方版本较旧时可能仍在继续」。
     pub notified_peer: bool,
+    /// 台帐那一笔写**成功落地**了吗（FUNC-02）。
+    ///
+    /// 取消的五笔写合并进同一个事务之后，`Err` 会把它们整体回滚（见
+    /// `db::finalize_file_failure`）。本机确实已经停了手（在途槽位已点亮、接收器已摘），
+    /// 但台账与气泡会留在原状态 —— 界面这时说"已取消"就是**比事实更满**：
+    /// 刷新之后那条消息还会显示发送中。所以这一格单独回传，让界面改说
+    /// 「本机已停止，状态待重试」，并已在后端留下 `code=CANCEL_COMMIT_FAILED`。
+    pub ledger_committed: bool,
 }
 
 /// 群文件的**接收**侧取消（B3b 的第 0 步）：认出"这一单是不是别人发给我的群文件"，
@@ -653,6 +661,7 @@ async fn cancel_group_receive_side(
             cancelled: false,
             already_done: true,
             notified_peer: false,
+            ledger_committed: true,
         });
     }
     let s2 = s.clone();
@@ -669,25 +678,48 @@ async fn cancel_group_receive_side(
             false
         }
     };
-    {
+    let ledger_committed = {
         let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());
         // 面向用户的写先做（气泡）；随后那一笔才是"踢出补发集合"的。
-        let _ = db::set_message_status(&dbc, &format!("gfile-{transfer_id}"), "cancelled");
-        let _ = db::mark_group_file_cancelled(&dbc, transfer_id);
-    }
+        // FUNC-02：两笔写都要留痕。旧写法 `let _ =` 把失败吞掉 ⇒ 界面照样弹"已取消"，
+        // 而刷新后气泡还停在发送中，且没有任何日志能说明原因。
+        let bubble = match db::set_message_status(&dbc, &format!("gfile-{transfer_id}"), "cancelled") {
+            Ok(_) => true,
+            Err(e) => {
+                s.logger.error(
+                    "group_file",
+                    format!("code=GROUP_CANCEL_BUBBLE_FAILED transfer={transfer_id} by={by}：{e}"),
+                );
+                false
+            }
+        };
+        let ledger = match db::mark_group_file_cancelled(&dbc, transfer_id) {
+            Ok(_) => true,
+            Err(e) => {
+                s.logger.error(
+                    "group_file",
+                    format!("code=GROUP_CANCEL_COMMIT_FAILED transfer={transfer_id} by={by}：{e}"),
+                );
+                false
+            }
+        };
+        bubble && ledger
+    };
     let _ = s.app.emit("file-cancelled", transfer_id);
     let _ = s
         .app
         .emit("message-status-changed", &format!("gfile-{transfer_id}"));
     s.logger.info(
         "group_file",
-        format!("群文件接收已按取消收尾 transfer={transfer_id} by={by} stopped={stopped}"),
+        format!("群文件接收已按取消收尾 transfer={transfer_id} by={by} stopped={stopped} ledger_committed={ledger_committed}"),
     );
     Some(FileCancelResult {
-        cancelled: true,
+        // 本机确实停了手，但台账没落地时不能说"已取消"（界面按 ledger_committed 改口径）。
+        cancelled: ledger_committed,
         already_done: false,
         // 群接收侧的取消由调用方在收尾之后按 `send_cancel_notice` 的回报补上。
         notified_peer: false,
+        ledger_committed,
     })
 }
 
@@ -769,14 +801,29 @@ pub(crate) async fn apply_local_cancel(
         let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());
         db::is_transfer_done(&dbc, transfer_id).unwrap_or(false)
     };
+    // 台账这一笔是否全部落地（FUNC-02：任何一处 `Err` 都会把事务整体回滚）。
+    let mut ledger_committed = true;
     {
         let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());
         // 落库并入唯一出口（同一份顺序与 `done` 闸门）。取消与失败的区别在这里说得通：
         // 用户取消的是**整条消息**（1:1 与群文件共用这个入口）⇒ `gfile-` 该写；
         // 而超时/放弃只代表"某一个收件人没收到"，不该改写群气泡（见
         // `db::finalize_file_failure` 与 `expired_file_does_not_touch_the_group_bubble`）。
-        // 取消一律照实响应：不看返回值、emit 也不被门控。
-        let _ = db::finalize_file_failure(&dbc, transfer_id, db::FileJobEnd::Cancelled);
+        // 取消一律照实响应：emit 不被门控（本机已经停手，界面必须立刻回话）。
+        //
+        // FUNC-02：**`Err` 不再被吞掉**。四笔写共处一个事务，失败即整体回滚；此时界面
+        // 说"已取消"就是假话（刷新后还是发送中）。记 `CANCEL_COMMIT_FAILED` 并把
+        // `ledger_committed=false` 回传给界面，让文案改说"本机已停止、状态待重试"。
+        match db::finalize_file_failure(&dbc, transfer_id, db::FileJobEnd::Cancelled) {
+            Ok(_) => {}
+            Err(e) => {
+                s.logger.error(
+                    "file",
+                    format!("code=CANCEL_COMMIT_FAILED transfer={transfer_id} by={by}：{e}"),
+                );
+                ledger_committed = false;
+            }
+        }
     }
 
     // 2b. 群文件（B2）：用户取消的是**整条消息** ⇒ 每个还没到终态的成员都要落 cancelled。
@@ -795,9 +842,26 @@ pub(crate) async fn apply_local_cancel(
             .map(|f| f.sender_id == s.device_id)
             .unwrap_or(false);
         if mine {
-            let rows = db::cancel_group_file_recipients(&dbc, transfer_id).unwrap_or(0);
+            let rows = match db::cancel_group_file_recipients(&dbc, transfer_id) {
+                Ok(n) => n,
+                Err(e) => {
+                    // 这一笔失败 = 成员行还是 pending/sending ⇒ 下次上线会被补发。
+                    s.logger.error(
+                        "group_file",
+                        format!("code=GROUP_CANCEL_RECIPIENTS_FAILED transfer={transfer_id} by={by}：{e}"),
+                    );
+                    ledger_committed = false;
+                    0
+                }
+            };
             // 单条群文件的聚合行也要落 cancelled（`group_files.status` 是气泡与摘要的入口）。
-            db::mark_group_file_cancelled(&dbc, transfer_id).unwrap_or(0);
+            if let Err(e) = db::mark_group_file_cancelled(&dbc, transfer_id) {
+                s.logger.error(
+                    "group_file",
+                    format!("code=GROUP_CANCEL_COMMIT_FAILED transfer={transfer_id} by={by}：{e}"),
+                );
+                ledger_committed = false;
+            }
             rows
         } else {
             0
@@ -816,15 +880,17 @@ pub(crate) async fn apply_local_cancel(
     s.logger.info(
         "file",
         format!(
-            "文件传输按已取消收尾 transfer={transfer_id} by={by} (cancel_signal={signalled} already_done={already_done} group_recipients_cancelled={cancelled_recipients} receive_stopped={receive_stopped})"
+            "文件传输按已取消收尾 transfer={transfer_id} by={by} (cancel_signal={signalled} already_done={already_done} group_recipients_cancelled={cancelled_recipients} receive_stopped={receive_stopped} ledger_committed={ledger_committed})"
         ),
     );
 
     FileCancelResult {
-        cancelled: !already_done,
+        // 台账没落地时不能说"已取消"：本机停了手，但刷新后消息还会显示发送中。
+        cancelled: !already_done && ledger_committed,
         already_done,
         // 通知那一半在调用方（命令）之后补上；这里先给"没通知"。
         notified_peer: false,
+        ledger_committed,
     }
 }
 

@@ -1218,3 +1218,116 @@ fn a_delivered_group_message_cannot_be_cancelled() {
         super::GroupMessageCancelOutcome::NotFound
     );
 }
+
+// ---------------------------------------------------------------------------
+// FUNC-02/03/04（2026-10-24 审计）：取消收口一个事务、不造幽灵行、复位尊重墓碑。
+// ---------------------------------------------------------------------------
+
+/// FUNC-03：群文件的台账在 `group_files` / `group_file_recipients` 里 ——
+/// `file_transfers` 里没有它的行。旧实现把"有没有气泡"当成"要不要写台账"的判据，
+/// 而群那一半**只有气泡**（`gfile-`），于是取消一条群文件会插出一行 peer_id/name 全空的
+/// 幽灵记录：任务中心多出一条打不开的传输，且 `file_transfers` 会被它永久污染。
+#[test]
+fn a_group_only_cancel_writes_no_ghost_transfer_row() {
+    let conn = fresh_db();
+    conn.execute(
+        "INSERT INTO messages(msg_id, conv_id, sender_id, receiver_id, kind, content, ts, seq, status)
+         VALUES('gfile-t12', 'group:g1', 'me', '', 'file', 'x', 1000, 1, 'sending')",
+        [],
+    )
+    .unwrap();
+    let before = count(&conn, "SELECT COUNT(*) FROM file_transfers");
+
+    assert!(
+        finalize_file_failure(&conn, "t12", FileJobEnd::Cancelled).unwrap(),
+        "群气泡真的推进了 ⇒ 界面必须被通知（不能因为不写台账就回报 false）"
+    );
+    assert_eq!(
+        message_status(&conn, "gfile-t12"),
+        "cancelled",
+        "群气泡仍必须落 cancelled：这一笔是面向用户的写"
+    );
+    assert_eq!(
+        count(&conn, "SELECT COUNT(*) FROM file_transfers"),
+        before,
+        "不许为一条只在 group_files 里的群文件插出幽灵台账行（FUNC-03）"
+    );
+}
+
+/// FUNC-04：盖了墓碑的行不许被**启动复位**复活。
+///
+/// 复现的是崩溃窗口：取消事务已经提交（墓碑 + cancelled 都在），进程在下一次 flush
+/// 之前死掉，重启时队列行还是 `sending`。旧 SQL 只看 `status='sending'` ⇒ 把它改回
+/// `pending` ⇒ 用户取消过的文件又被重发一遍。对照组证明复位本身没有被整条废掉。
+#[test]
+fn a_tombstoned_file_is_not_requeued_by_startup_reset() {
+    let conn = fresh_db();
+    seed_send_job(&conn, "t9", "active");
+    assert!(finalize_file_failure(&conn, "t9", FileJobEnd::Cancelled).unwrap());
+    conn.execute(
+        "UPDATE file_outbox SET status = 'sending' WHERE transfer_id = 't9'",
+        [],
+    )
+    .unwrap();
+
+    // 对照组：同样的 sending，但没有墓碑 ⇒ 必须照旧复活。
+    seed_send_job(&conn, "t10", "active");
+    conn.execute(
+        "UPDATE file_outbox SET status = 'sending' WHERE transfer_id = 't10'",
+        [],
+    )
+    .unwrap();
+
+    assert_eq!(
+        reset_sending_to_pending(&conn).unwrap(),
+        1,
+        "只该复活对照组那一行 —— 修 FUNC-04 不等于废掉整条崩溃恢复"
+    );
+    assert_eq!(
+        outbox_status(&conn, "t9"),
+        "sending",
+        "墓碑行不许被改回 pending：下一轮 flush 会把它重发一遍"
+    );
+    assert_eq!(
+        outbox_status(&conn, "t10"),
+        "pending",
+        "没有墓碑的在途行仍必须被复位（真机：发了一半的图重启后再也没到）"
+    );
+}
+
+/// FUNC-02：取消的四笔写共处一个事务 —— 任何一处失败都必须**整体回滚**并把 `Err`
+/// 交回调用方，界面据此改说"本机已停止、状态待重试"，而不是谎称"已取消"。
+///
+/// 这里用触发器让**最后一步**（关队列行）失败：前面几笔已经写进去了，正好考回滚。
+/// 如果实现退回"四条独立语句"，气泡与台账会留在改后的状态，这条就会红。
+#[test]
+fn a_failed_cancel_write_rolls_back_the_whole_finalize() {
+    let conn = fresh_db();
+    seed_send_job(&conn, "t11", "active");
+    conn.execute_batch(
+        "CREATE TRIGGER block_outbox_update BEFORE UPDATE ON file_outbox
+         BEGIN SELECT RAISE(ABORT, 'simulated disk error'); END;",
+    )
+    .unwrap();
+
+    assert!(
+        finalize_file_failure(&conn, "t11", FileJobEnd::Cancelled).is_err(),
+        "写失败必须回传 Err：`Ok(false)` 会让调用方以为「没什么要改」，界面继续谎称已取消"
+    );
+    assert_eq!(
+        message_status(&conn, "file-t11"),
+        "sending",
+        "气泡必须跟着回滚：否则刷新前说已取消、刷新后又是发送中"
+    );
+    assert_eq!(transfer_status(&conn, "t11"), "active", "台账必须跟着回滚");
+    assert_eq!(
+        transfer_row(&conn, "t11").2,
+        0,
+        "墓碑必须跟着回滚：落下了就再也不会被重试"
+    );
+    assert_eq!(
+        outbox_status(&conn, "t11"),
+        "pending",
+        "队列行必须还在重试集合里：它失败的那一笔正是要重试的东西"
+    );
+}

@@ -143,9 +143,20 @@ pub fn list_expired_file_outbox(
 ///
 /// 重置为 pending 后：下次 Hello 触发 flush → 这些会被重新捞出来重试。
 /// 重复传输由对端的幂等 FileOffer 处理（同 transfer_id 的重复 offer → 幂等 accept）。
+///
+/// ★ FUNC-04（2026-10-24 审计）：**盖了墓碑的行不许复活**。
+/// `cancel_terminal=1` 是用户主动取消写下的硬终态（`db::file_transfer` 的收尾出口），
+/// 它挡的是"后续 active/done 的晚到写"。但崩溃恢复这条 SQL 此前只看 `status='sending'`：
+/// 取消恰好落在"队列行还是 sending、台账已盖墓碑"之间（两步在同一个事务里，但进程
+/// 可能在提交后、下一次 flush 前死掉）时，重启会把它改回 pending ⇒ 用户取消过的文件
+/// 又被重发一遍。判据：`cascade_tests::a_tombstoned_file_is_not_requeued_by_startup_reset`。
 pub fn reset_sending_to_pending(conn: &Connection) -> Result<i64> {
     let n = conn.execute(
-        "UPDATE file_outbox SET status = 'pending' WHERE status = 'sending'",
+        "UPDATE file_outbox SET status = 'pending' WHERE status = 'sending'
+           AND NOT EXISTS (
+             SELECT 1 FROM file_transfers t
+              WHERE t.id = file_outbox.transfer_id AND t.cancel_terminal = 1
+           )",
         [],
     )?;
     Ok(n as i64)

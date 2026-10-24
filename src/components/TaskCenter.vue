@@ -127,10 +127,14 @@ async function runAction(row: OperationRow, action: OperationAction) {
 async function cancelFile(row: OperationRow) {
   const res = await api.cancelFileTransfer(row.id);
   await chat.refreshTransfers();
-  // 三个分支的唯一判据在 `utils/cancelFeedback`（同一个事实同一句话，不在这里另推一遍）。
+  // 四个分支的唯一判据在 `utils/cancelFeedback`（同一个事实同一句话，不在这里另推一遍）。
   switch (cancelOutcome(res)) {
     case "already_done":
       app.toast(t("msg.cancelSend.alreadyDone"), "info");
+      break;
+    case "ledger_pending":
+      // 台账事务回滚：本机确实停了手，但刷新后这一行还会显示在传 —— 界面不许说得比事实更满。
+      app.toast(t("transfer.cancelLedgerPending"), "info");
       break;
     case "local_only":
       // 对面没收到通知（老端 / 离线）⇒ 它可能仍在继续：界面不许说得比事实更满。

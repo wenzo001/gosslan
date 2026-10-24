@@ -13,6 +13,29 @@
 
 ## [Unreleased]
 
+## [5.7.13] - 2026-10-24
+
+### 取消/终态收口统一到一个事务（审计 FUNC-02/03/04）
+
+- `finalize_file_failure` 的四笔写（气泡、台账、墓碑、关队列行）合并进同一个
+  `unchecked_transaction`：任一步失败整体回滚并把 `Err` 回传调用方。此前是四条独立语句，
+  中间失败会留下「界面已取消、台账还在发送中」。取消入口记 `code=CANCEL_COMMIT_FAILED`，
+  群文件接收侧记 `GROUP_CANCEL_BUBBLE_FAILED` / `GROUP_CANCEL_COMMIT_FAILED`；
+  `FileCancelResult` 新增 `ledgerCommitted`，界面据此多出第四态「本机已停止、状态待重试」，
+  不再把写库失败说成「已取消」。
+- `set_message_status` 改为返回受影响行数。旧签名**无匹配行也返回 `Ok`**，取消路径据此以为
+  「有气泡要收尾」，于是为一条只在 `group_files` 里的群文件插出 peer_id/name 全空的幽灵台账行
+  （FUNC-03）。现在台账只在 1:1 气泡存在、台账已有该行、或仍有队列行时写；群文件仍只落
+  自己的 `gfile-` 气泡与 `group_files` / `group_file_recipients`。
+- 崩溃恢复 `reset_sending_to_pending` 排除 `cancel_terminal=1` 的行（FUNC-04）：取消事务已提交、
+  进程在下次 flush 前死掉时，重启不再把用户取消过的文件改回 `pending` 再发一遍。
+- 群文件气泡状态推进与「对端取消」那一格的落库不再用 `.ok()` / `let _ =` 吞错：
+  失败记 `code=GFILE_BUBBLE_STATUS_FAILED` / `GROUP_CANCEL_COMMIT_FAILED`。
+- 新增回归断言：`a_group_only_cancel_writes_no_ghost_transfer_row`、
+  `a_tombstoned_file_is_not_requeued_by_startup_reset`、
+  `a_failed_cancel_write_rolls_back_the_whole_finalize`（用触发器让最后一步失败，验证整体回滚）；
+  前端 `cancelFeedback` 增第四态用例（含「已送达优先于台账失败」）。
+
 ## [5.7.12] - 2026-10-24
 
 ### 打开本地文件按消息回绑传输台账（审计 SEC-01）

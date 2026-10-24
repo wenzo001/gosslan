@@ -560,14 +560,19 @@ pub fn get_favorite_source(
 /// （原先写在这里的理由「可通过 resend_message 回到 sending」已失效：那条命令 2026-09-25 删了。）
 ///
 /// 典型竞态：Ack 因 outbox 补发晚于 ReadReceipt 到达，`read` 不能被回退成 `delivered`。
-pub fn set_message_status(conn: &Connection, msg_id: &str, status: &str) -> Result<()> {
-    conn.execute(
+///
+/// 返回**实际改动的行数**（SOL-03 / FUNC-03）：调用方据此区分"真的推进了这一行"与
+/// "查无此处/已被硬终态挡住"。旧签名只给 `Result<()>`，无匹配行也是 `Ok`，
+/// 于是取消路径会把"没有气泡可写"误读成"写成功了"，进而在 `upsert_transfer` 里
+/// 凭空插出一条幽灵台账行。
+pub fn set_message_status(conn: &Connection, msg_id: &str, status: &str) -> Result<usize> {
+    let rows = conn.execute(
         "UPDATE messages SET status = ?2
          WHERE msg_id = ?1
            AND status NOT IN ('read', 'delivered', 'recalled')",
         params![msg_id, status],
     )?;
-    Ok(())
+    Ok(rows)
 }
 
 /// 取消一条**还在补发队列里**的消息（用户按「取消发送」）。
