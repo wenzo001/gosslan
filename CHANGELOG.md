@@ -13,6 +13,227 @@
 
 ## [Unreleased]
 
+## [5.7.11] - 2026-10-24
+
+### 状态色条补上"画没画在这个元素上"那一半天（决策 3/4 的断言缺口）+ 右键批次两处过时注释
+
+- 上一节换档那一刀只被**一半**判据看着：把 `todos.ts` 的 `done` 单独改回非 solid 档（`--gosslan-success`，
+  压面板实测 2.54）⇒ `npm test` **1362/1362 绿**、`--only=msgovf` **78/78 绿**。
+  `todos.test.ts` 断的是 `includes("warning"/"success")`（`*-solid` 也含这个词，新旧两档一起过），
+  `--gosslan-success-solid` 在 `LogViewer.vue` 还有别的消费者 ⇒ 连孤儿检测都不响；
+  对比度契约行读的是 `style.css` 里 token **自己的值**，从不读"这一档画没画在这个元素上"。
+- 新判据装在 `scripts/check-ui-runtime.mjs` 的 `tasksrt` 段尾（那里已经挂着 `GroupTasksBoard.vue`）：
+  从行标题按钮走到那一行，读**行直接子元素**那道 `span[aria-hidden]` 的计算底色，
+  亮/暗两档各验一次 —— done 行钉 `--gosslan-success-solid`、todo 行钉 `--gosslan-status-offline`
+  且两行必须异色、overdue 行钉 `--gosslan-warning-solid`；期望值写死 token 名，不从 `TODO_STATUS_BAR` 现推
+  （从那张表推自己等于没断言）。
+- 两个口径坑是量出来的、不是推的：① **「不等于压线那一档」只在亮档成立** —— 暗档
+  `--gosslan-warning` 与 `--gosslan-warning-solid` 同为 rgb(255, 159, 10)、success 对同为 rgb(48, 209, 88)，
+  两档都断 ⇒ 暗档永远不可能绿；这层关系单独钉了一格，因为上面那格的口径依赖它。
+  ② **本节第一版把 overdue 挡在门外的理由（「看板按 id 取数、往 mock 里塞新 todo 进不了 DOM」）是错的**，
+  现读三处已推翻：`getGroupTodoMessages(ids)` 的 ids 是**群会话 id**，不是任务 id；这册 mock 整份返回、
+  根本不吃 ids；本段前面「重新订阅后 D 出现在看板」那格早就证明新注的 `todo` 行会进 DOM。
+  真正卡住的是**时序**：`__unwatch()` + `install()` 重挂后旧监听随之摘掉，此时 emit 只剩 bulk 那条路，
+  而 bulk 的 ids 取自 `conversations` —— 这册夹具里一条群会话都没有（实测 `convGroupIds: []`），
+  ⇒ 永远写不到 `group:g1`。按「push 行 → `watchGroupTodos('g1')` → emit」重跑，store 立刻 7 行、
+  DOM 里出现「取回快递」（`storeHasE:true`）。所以第三行由本段自己造，不是改夹具去凑格；
+  `putTodoRows` 本身没有任何过滤（`putTodoRows(prev, [convId], rows)` 整表替换那一个群）。
+- 自证：`--only=tasksrt` **32/32 绿 / PROBE_EXIT=0**；两发变异各自只红该红的那格：
+  `done` 退回 `--gosslan-success` ⇒ **31/32**，红的是「done 行的左缘条画的就是 success-solid…」；
+  `overdue` 退回 `--gosslan-warning` ⇒ 同样 **31/32**，且**只红亮档那一格**（暗档两 token 同值，
+  「同值=暗档」这条前提本身另有一格钉着）。两次都还原后再跑回 32/32，
+  `git diff --stat src/utils/todos.ts` 回到 6+/2-。`npm test` **1362/1362 绿 / EXIT=0**。
+  非空转对照用 inline 把那道压成 rgb(1, 2, 3) 再读回来，跑完回到进场那一档主题。
+- 顺手把比色那四个助手（`toTriple`/`sameColor`/`pageColor`/`setAppearance`）从 `msgovf` 段内升到模块级
+  （先例是本文件的 `pumpFrames`），第二段复用同一套逻辑而不是抄第二份家。
+- 右键批次交接（那份交接正文只在本会话里被贴出来过，**没有进过版本库**：现读 `docs/notes/` 九份里没有它，
+  `git log --all --diff-filter=A -- 'docs/notes/rightclick*'` 也是空的。我早先在这里写过
+  `docs/notes/rightclick-selection-handoff-2026-10-24.md` 这个路径，那是**指向一条不存在的引用**；
+  它躲过判据 D 只因为 CHANGELOG 按设计豁免裸路径核对，不是因为引用是对的）§4 P2-1：
+  `src/utils/contextMenu.ts` 头注释「三个信号」改为「四个信号」（接口现有 `isMobile`/`textSelecting`/
+  `hasSelection`/`onSelectableText`），并把「局部复制只能用 ⌘/Ctrl+C」更正为桌面菜单另有
+  「复制选中内容」入口（`MessageContextMenu.vue` 的 `msg.copySelection`，仅选区快照非空才出现）。
+  纯注释改动，判据与行为一字未动。
+- 全量套件在**当前内容**上重跑（Brave，`node scripts/check-ui-runtime.mjs` 不带 `--only`）：
+  **893/893 条判据绿、`FULL_PROBE_EXIT=0`**（880 条基线 + `tasksrt` 5 + `pinkb` 多选 6 + `msgovf`
+  未知类型 2）。此前记的 879/880 那格红（`reaction` 段「把选择器那层壳推到视口右缘外」）**本趟没有复现** ——
+  这不等于修好了（它当时已按 `--only=reaction` 20/20、`--only=tasksrt,reaction` 47/47 判为序列脆弱），
+  只记"最近一次全量是绿的"，不把一次绿当成脆弱性已消除。
+- ✅ §10 那条「待办不参与多选」此前**零判据**：`isMultiSelectable`（`messageKinds.ts`，
+  `kind !== "todo"`）只有 5 个生产调用点（MessageItem 的勾选框 / 整行点击 / 菜单入口 +
+  `MessageContextMenu` 的菜单项与分隔线），测试与探针一次都没引用过。现补一条真值表断言
+  （todo=false；text/code/image/file/merge/system/recalled 仍=true）。自证：把谓词改成
+  `return true` ⇒ `npm test` **1363 条里只红这一条**（`fail 1`）；还原后 **1363/1363 绿 / `TEST_EXIT=0`**。
+  注：这补的是**判据**，`isMultiSelectable` 的实现一字未改。
+- ✅ 同一族的另外两个谓词也补了：`isForwardableKind`（9 处生产引用）与 `isFavoritableKind`（6 处）
+  此前同样**零测试引用**，而 §10 点名「转发只允许 text/code/image/file/merge、**卡片不得获得转发能力**」
+  「收藏 = 可转发 + 卡片白名单」。现一条真值表同时钉两侧：5 类可转发也可收藏；3 张卡片**可收藏但不可转发**；
+  system/recalled 两者都不可。自证：把 `todo` 加进转发白名单 ⇒ `npm test` **1364 条里只红这一条**；
+  还原后 **1364/1364 绿 / `TEST_EXIT=0`**（`git diff --stat src/utils/messageKinds.ts` 为空）。
+  `isRemindableKind` 早有 4 处测试引用，不重复补。
+- 本地层 `npm run verify:local`（= `--full-gate --skip-guard-sweep`）在稳定树上跑完：**23 格里 22 绿、
+  1 红**，`LOCAL_EXIT=1`（74.4s）。**之后又改过 `scripts/check-ui-runtime.mjs`（多选 6 格 + 未知类型 2 格）、
+  测试文件与 CHANGELOG，所以整层在最终内容上又重跑了三遍：形状始终是 22 绿 / 1 红、
+  `LOCAL_EXIT=1`（76.8s → 70.7s → 72.4s）**；护栏非空转那一格按 `--skip-guard-sweep` 跳过（约 22.5 分钟，
+  本批没动护栏用例）。最终这趟的内容读数：`npm test` **1364/1364**（`fail 0`）、`npm run build`、
+  `cargo fmt --check --all`、`clippy -D warnings`、Rust 单测、Rust 测试清单（基线 1148 条全在跑）、
+  Android 两条 feature 全绿。
+  红的那格是 Change Budget **判据 3**——`presentation` 在最近
+  5 个修补形状提交里出现 5 次（点名 `2d0932e 52f289e 8a99147 ada1cf2 77793f3`，**全是已落地的提交**，
+  本批未提交的改动不在这个分母里）；判据 1（22 笔全 ✓）与判据 4（Version-Bump ↔ 版本文件 4/4 双向 22 笔全 ✓）
+  都绿。Rust 侧这一批证据里：在改的 16 个文件里没有一个是 `.rs`。
+  ⚠️ 那条后台通知报的是包装脚本的退码 0，真退码在输出文件里的 `LOCAL_EXIT=1`；只看通知会把它读成绿。
+- ✅ **`overdue` 那一半本轮补上了**：本段自己注一条 `status:'overdue'` 的创建记录（第三行），
+  读它的左缘条计算底色，亮/暗两档各一格；另有一格先断言「这一行真的走到了 DOM」，
+  免得夹具没生效时把 `!norow` 误读成"色条画错"。
+  变异 A（`overdue` 退回 `--gosslan-warning`）现在**亮档那格会红**（`31/32`），而此前这条变异是
+  `npm test` 1362/1362、`--only=msgovf` 78/78、`designGuards` 也只在孤儿那侧偶然响（`-solid` 当时恰好
+  只有一个消费者）——三层全静默。暗档那格按设计**保持绿**（两 token 同值），所以要证明它非空转只能看亮档。
+  原先那条 `designGuards` ㊺ 的孤儿检测仍然保留，两侧不再互相顶替。
+  **更正**：本节前两版把这件事写成"补不上"，理由换过两次、**两次都被实测推翻**（"注不进去"→
+  "看板按 id 取数"→ 真因是 emit 时订阅已摘 + 夹具无群会话，见上条②）；"卡点在 `putTodoRows`"
+  那句也是假的，`putTodoRows` 没有任何过滤。这两条假前提已就地改直，不留作后续会话的依据。
+- ✅ §10 的「多选与四项批量操作的**运行时**验证」本轮补上了（`pinkb` 段，`--only=pinkb` **16/16**）：
+  真挂 `ChatWindow` → 真 `contextmenu` 打到 `[data-msg-col]` → 点菜单里的 `multi.enter` →
+  现读「composer 消失 / 四颗批量钮**都可用** / 计数含 1 / 顺序＝逐条转发→合并转发→批量收藏→批量删除」→
+  点「取消」读回输入区；A/B 对照是同一条链打到**待办行**，必须给不出 `multi.enter`（与谓词层
+  `isMultiSelectable('todo') === false` 互为正反）。另补一格：前两颗按钮的可见文案是
+  `hidden sm:inline`，窄档只能靠 `aria-label` 念出来 ⇒ 那两条无障碍名也现读。
+  **两次假红都是量具自己的**：① 工具栏的直接子按钮是「取消」，四颗批量钮在里层 flex 组里，
+  按 `block.querySelectorAll('button')` 会数到 5 颗（改成 `:scope > div > button`）；② 判据按 aria-label
+  取顺序，而后两颗本来就没有 aria-label（文案常显）⇒ 改成按可见文案比顺序，aria 只断言被藏起来那两颗。
+- 夹具上的一次真发现（**不是产品缺陷**）：`ChatWindow.vue` 在 setup 里**无条件**调
+  `getCurrentWebview().onDragDropEvent(...)`，裸浏览器没有 `__TAURI_INTERNALS__` 就同步抛错，
+  那一行之后 setup 不再往下走。段夹具里补了最小 Tauri 内部对象（`metadata` + 吞掉所有命令的 `invoke`），
+  并在 `Page.navigate` 之前把视口钉成 1200×800 桌面档（`app.isMobile` 在 store 创建那一刻由
+  `matchMedia(max-width: 767px)` 定死，窄档下 `openContextMenu` 直接 `return`）。两件事都只属于探针夹具，
+  产品码一字未动。
+- ✅ §4.7/§10 的「未知类型默认不得把原始负载铺在时间线上」本轮也补了真渲染判据（`msgovf` 段尾，
+  `--only=msgovf` **80/80**）：同一份挂载里读两半 —— 默认态 `pre` 节点 0 个、正文里没有载荷键
+  `duration`、折叠钮文案等于 `msg.showRawContent`；点一次之后 `pre` 恰好 1 个、`duration` 与
+  kind 字面量 `voice_note` 都出现、钮换成 `msg.hideRawContent`。此前这一段只量了"未知类型不溢出"，
+  挂在空壳上也会绿。
+  **这次两条红也是量具自己的**：① 那一列里第一个 `button` 是头像钮（文字是 emoji），要点的是折叠钮
+  ⇒ 按 i18n 的两句文案找；② 我这块插在动效扫描之前，把挂载内容换成了未知类型（没有
+  `.gosslan-bubble-text`）⇒ 紧随其后的"给气泡加 height 过渡"反向对照量到 0。修法是把文本档重新挂回去
+  （`probeOne(无空格长英文)`），不是放宽那条对照。
+- 另两处已盘点、**按决策 2 保持原样**（要视觉签字才能定，不属于这批），口径写清楚免得下次数出第三个数：
+  ① `.vue` 模板里的 `disabled:opacity-*` 剩 **29** 处（`-40` 12 / `-50` 15 / `-60` 2；量具自己在
+  `tokenContrast.ts`+`.test.ts` 里那 7 处不算，它数的是别人的字面量）；
+  ② `style.css` 里**生效声明**中的整数毫秒时长 **15** 处，落进 9 个档（110×1、120×1、140×2、150×1、
+  160×3、180×2、200×2、220×2、260×1），另有 3 处本来就在令牌定义里（`--gosslan-duration-fast`
+  `--gosslan-duration` `--gosslan-duration-shake`），`prefers-reduced-motion` 那两行 `0.01ms` 兜底不计。
+  这两处判据覆盖都是零。⚠️ 本批原先把②手抄成"14 个" —— 重算时隔壁会话已改过 `style.css`（10:45 落盘），
+  计数就是这么漂的：prose 里能现算的数字不该留第二份手抄。
+
+### 探针自证：`todopick` 那格「回车后菜单收起」的红归到量具那一侧，收尾屏障第一次有共用的家
+
+- 这条红**早于本批**：与上一轮全量日志同标题、同行号、同读数（`[["update","bug"]]`）⇒ 不是这三笔改出来的。
+- 先排掉两个假前提：① 以为是夹具吞了 emit 导致关不掉 —— 源码里 `pick()` 先 `open=false` 再 emit，
+  而 emit 已被读到 ⇒ 关闭确实发生；② 以为是前一段（`ctxmenu`）的菜单节点漏在这一段的全局
+  `querySelector` 里 —— `runTodoPick` 一进来就 `Page.navigate` 重装夹具，DOM 漏不过去。
+- 真正差的是**负载**：隔离跑（机器空）里裸等 200ms 就够收尾，全量跑（机器忙）里不够 ⇒ 同一棵树两种读数。
+  这正是 INV-P31 第 4 条写过的形状，但那道泵帧屏障当初**只装在 `overlay` 一段里**（注释自己写了「只在本段用」）。
+- 改法是把屏障升成共用的一个家（`pumpFrames`，返回截图失败次数，不吞自己的判据输入），
+  `overlay` 的段内 `pump` 改成引它，`todopick` 的「关掉之后」一律吃泵帧后那份，
+  且「只等不泵／泵帧后」两份都打印 —— 读数不可归因本身就是量具缺陷（那条判据原先只印 emit 那一半）。
+- **为什么这不叫放宽**：屏障只能给收尾时间，永远不关的东西泵十帧仍在那儿；
+  反向自证在同一段里现成 —— 同一趟 `menu()` 既报了 present=true（菜单开着那两格）又报了 present=false（收起这格）。
+- 实测（Brave，`GOSSLAN_CHROME` 指定，引擎 Chrome/156）：
+  `--only=overlay,todopick` **46/46 绿**、读数行「只等不泵=false｜泵帧后=false（截图失败 0 次）」；
+  改前同一棵树全量跑 **842/843**（唯一那格就是这条）。
+- 记进不变量：INV-P31 第 4 条的「量具自己坏过的形状」从四种补到五种（新增：收尾屏障只装在一个段里）。
+
+### 可读性四刀收进同一个令牌系统：语义色补「压白字实底」一档、开关轨道补一个家（决策 3 + 4）
+
+- 缺陷形状是**静默**的：构建不报错、门禁不红、只有切到暗色主题才看得见。四条实测都远不到 AA ——
+  白字压 warning 实底 **2.20**、压 success 实底 **2.54**、TODO 状态栏（超期橙 / 已完成绿）压面板 **2.20 / 2.54**、
+  SettingsToggle 未选中轨道借 `--gosslan-border` 用 **1.23**（白滑块压它 **1.64**）。
+- 为什么不直接改深那两档：`--gosslan-warning` / `--gosslan-success` 同时是**状态点**和**hover 底**，
+  它们只要 3.0（非文字图形），把它们压深就等于把状态点按消失。⇒ 一种色相拆三用：
+  状态点档 / 文字档 `*-ink` / **新增**实底档 `*-solid`（暗色方向反过来 —— 填充不变、前景换深墨 `--gosslan-on-primary`，
+  实测暗色 9.11 / 9.26）。护栏 55 现在同时认这四类填充，写填充不写前景就红。
+- 开关那一档不是"太浅"这么简单：借 divider 的令牌，等于把"描边就该淡"搬到一个**承载状态**的控件上。
+  新家 `--gosslan-toggle-off`（亮 `#7c8698` / 暗 `#64748b`），契约里按用途钉三行（轨道压面板 / 压卡片 ≥ 3.0、
+  白滑块压轨道 ≥ 3.0）。
+- 落点（这两处只是**换 token**，点击区域 / 状态机 / 持久化一概没碰）：`src/utils/todos.ts` 的
+  `TODO_STATUS_BAR.overdue` / `.done` 从 `--gosslan-warning` / `--gosslan-success` 改成 `*-solid`
+  （消费点是 `GroupTasksBoard.vue` 行左缘那道 `w-0.5` 色条），`src/components/LogViewer.vue`
+  「已复制」那一档从 `bg-[var(--gosslan-success)] text-white` 改成
+  `bg-[var(--gosslan-success-solid)] text-[var(--gosslan-on-primary)]`（写死 `text-white` 在暗色下
+  实测 **2.02** —— 暗色那档绿是 `rgb(48, 209, 88)`，比亮色档更亮，白字压它反而更差；前景必须跟着填充走，
+  所以两处都换。口径：用 `src/utils/tokenContrast.ts` 的 `parseTokenScopes` + `resolveToken` 取两档值，
+  按 WCAG 相对亮度公式现算；同一把尺子的四条阳性对照（与已记录读数一字不差）=
+  白压亮 success 2.54、白压亮 warning 2.20、`on-primary` 压暗 warning-solid 9.11、压暗 success-solid 9.26。
+- **这一档另补了一格真渲染绑定**（`--only=msgovf` 里的「开关轨道绑定」10 格）：契约行只读 `style.css` 里
+  它自己点名的 token，"组件把轨道画成哪个 token"以前没人看过。同一份漂移现算 A/B：把
+  `SettingsToggle.vue` 的未选中支改回 `--gosslan-border` ⇒ 浏览器侧 **76/78，红的恰好是明暗那两格**，
+  node 侧 **248/249** —— 但红的是护栏 ㊺「定义了却没人消费的令牌」（因为这一档目前只有开关一个消费者），
+  **不是**对比度契约那六行。**所以别把这条记成"node 全盲"**：㊺ 判的是"有没有人消费"，新格判的是
+  "画没画在这个面上 / 这一档上"，两回事。㊺ 看不见的形状仍然包括：`style.css` 里值写错、
+  `dark:` 变体写歪、后被某条规则或 inline 覆盖、以及第二个组件把这座 token 用到非轨道的元素上。
+- 新增 14 行契约（亮 7 + 暗 7）全部用内存里的变异证过非空转：改回旧值分别复现 2.20 / 2.54 / 1.23 / 1.64，
+  以及暗色"跟着亮色压深"那个反方向（3.73）。那两册（`src/utils/tokenContrast.test.ts` +
+  `src/utils/designGuards.test.ts`）全绿；**条数不抄在这里**，以 `npm test` 自己打印的
+  `ℹ tests / pass / fail` 那三行为准（本批收尾时它们还在长）。
+
+### 禁用态第一次有一个家：机制是一档 α，不是四个数（决策 2）
+
+- 先量语义再动手：`grep -roEn "disabled:[a-z-]+" src --include="*.vue"` + `grep -n ":disabled" src/style.css`
+  ⇒ **全仓禁用态没有一处按颜色表达**（只有 opacity 与 cursor）。所以缺的令牌是透明度，
+  不是"成对的禁用前景/填充/边框色" —— 那套东西现在没人消费、也没人守，**不加**。
+- `style.css` 三条 `:disabled` 规则里的字面 α（0.5 / 0.5 / 0.62）收进
+  `--gosslan-disabled-alpha` 与 `--gosslan-disabled-alpha-field`（字段档里是用户数据，不能压到控件档）。
+  值逐字未动 ⇒ 观感零变化，护栏 56 现算的仍是 **32 处 / 4 档（0.4 / 0.5 / 0.6 / 0.62）**。
+- `.dark` **故意不覆盖 α**，理由给读数不给印象：合成对比度表里暗色每档都 ≥ 亮色
+  （主色实底 2.72 vs 2.25、菜单条目 3.91 vs 3.41、字段 6.89 vs 4.76）。
+  但判据现在**按主题各解一次** var，将来真要覆盖不必再改量具。
+- 搬这一刀把两处耦合一起搬了（只搬样式不改判据 = 把护栏读空）：`disabledOpacityFromRule` 认 `var()`
+  并按作用域解析（解不出 ⇒ 报"这行从没被算过"，不许兜底常数）；护栏 56 的分母改成带 scope 调用。
+  实测：先只改样式时它当场红在 `只扫到 29 处` —— 那条红正是"判据没跟着搬"的应有报警。
+- 剩下 29 处 `disabled:opacity-*` 的字面档位本轮**不动**，边界与耦合清单写进 `docs/design-guidelines.md` §2.5。
+
+### 两条"常量当契约"的行为补上回归判据，一个常数都没改（决策 5）
+
+- 图片重试 `400/800/1600/2400/3200` 原先只有静态判据（数组字面量在不在），节奏本身没人量。
+  新探针段 `imgretry` 用**可控时钟**（挂载前替换 `setTimeout`/`clearTimeout`，产品码零改动）钉四件事：
+  阶梯逐次等于那五个数、5 档用完落 `failed`、失败后再来 error 不许重开阶梯、
+  **`load` 一到就把在飞的定时器清掉**（`cleared >= 1` 且 `pending === 0`，这条才是"成功要止损"那一半）。
+  非空转靠同一段里的 `__paceStop`：把时钟换回真的，那五档读数就不成立。
+- `MergeCard` 96px 原来只有估高端（`messageHeight.MERGE_CARD`）与样式端（`h-24`）各写一遍、没人对账。
+  补一条耦合护栏 `checkMergeCardHeightCoupling`（只读根元素开标签、剥掉 `min-h`/`max-h`，
+  第一版按整文件比 `h-*` 被图标 `h-4` 误伤 2 次 ⇒ 收窄到根标签）+ 探针段 `mergeheight`
+  在真浏览器里量 rect：2 条摘要与 9 条长摘要都 **96.0**、横向不溢出、两者等高，
+  并把 `h-24` 摘掉 + `height:auto` 当尺子的阳性对照（量具若读不出高度差，这条就不算证据）。
+  期望值从 `messageHeight.ts` 现读 `MERGE_CARD`，不在测试里手抄 96。
+- 实测（Brave，`GOSSLAN_CHROME` 指定）：`--only=imgretry,mergeheight` **15/15 绿**；
+  读数 `calls=[400,800,1600,2400,3200] state=failed`、`{"h":96,"w":240,"scrollH":96,"overflowX":false}`。
+
+### 紧凑是有意选择，不是待修偏差：气泡纵向内边距把口径写进规范（决策 1）
+
+- 升级指令的初始基线写「垂直内边距约 7–8px」，实现是 `py-1.5` = **6px 单侧 / 12px 合计**，
+  而 `docs/design-guidelines.md` 通篇没有内边距这一档（现算：`grep -n "内边距\|py-1" docs/design-guidelines.md` 零命中）。
+  ⇒ 要做的不是"改文档去对 7–8px"，是把**已生效的实现**写成验收基线，之后不再按 7–8px 判它不合格。
+- 新增 §8.3：三形态对照表（文本 6 / 合并卡 8 / 文件卡 10，水平都是 12），
+  并写清为什么不统一纵向 —— 行盒、固定高度契约、多行块是三件事，拉平就是把业务绑到一起；
+  行距那一档（同组 4 / 换组 10）的家在 `messageHeight.GAP_BASE` + `messageKinds.MSG_GAP_NEW`，
+  与内边距不是一回事，别混。`style.css` 消息流令牌块补一句"内边距为什么不在这里"，
+  并点名成对方 `previewMetrics.TEXT_BUBBLE_PADDING`（12 = 两侧合计）与护栏 `checkBubbleMetricsCoupling`。
+
+### 文档里确实失效的裸行号引用：先造一把量具，再只修机器能证死的那 20 处（决策 7）
+
+- 第一版量具按 basename 唯一命中解析 ⇒ 1423 条"找不到文件"，那是**尺子坏了**（`network/transport/gossip.rs`
+  这类短写全被冤枉）。改成"引用串是某源文件相对路径的后缀"后真实读数：活文档（不含 `docs/archive/`）
+  968 条引用、543→918 条界内、**越界 23 条、找不到文件 10 条**。
+- 那 10 条不是缺陷：全是第三方 crate 的钉版本路径（`tauri-2.11.5/src/app.rs`、`rusqlite-0.31.0/...`）、
+  node_modules 产物与省略号写法。**只修越界那 23 条里能证死的**：20 处换成路径 + 符号名 / 测试名
+  （`network/transport/e2ee_payload.rs` 的 `reseal_for_send`、`file_tests.rs::stale_attempt_frames_are_filtered_but_legacy_frames_never_are`
+  等，逐条 grep 现验），3 处只摘掉定位符不编新家（`sent` 那一档找不到写的地方 ⇒ 宁可留一句原话，
+  不造一个看着对的锚点）。量具另抓出一条**内容**级失效：`ContextMenu.vue` 现在压根不注册 window/document
+  监听器 ⇒ N20 那格把它列进"已配对"清单已经不成立，按现算划掉。
+- 复跑：`node /tmp/docrefs2.mjs` 的等价口径没入库（一次性量具），入库的是 `docs/stability-roadmap.md` 等三册
+  的锚点本身；`行号越界` 现算 **0**。
+
 ## [5.7.10] - 2026-10-24
 
 ### §六 那条「两套模板不许各写一份业务判断」补上最后一处：置顶入口的谓词第一次有一个家

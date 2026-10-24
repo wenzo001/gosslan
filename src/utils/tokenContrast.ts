@@ -201,6 +201,23 @@ export const TOKEN_CONTRAST_CONTRACT: Record<"light" | "dark", TokenPair[]> = {
     // 现在填充档改深红 `#d43d43`（白字 4.62），hover 从"朝白混"改成"朝暗混"（越 hover 对比度越高）。
     { fg: "#ffffff", bg: "--gosslan-danger", min: 4.5, why: "红徽标数字 / 删除按钮 / 错误 toast（11–14px 白字）" },
     { fg: "#ffffff", bg: "--gosslan-danger-hover", min: 4.5, why: "上面那一族的 hover 态（混色结果，按实算判）" },
+    // 语义色「实底档」这一族（2026-10-24 补）。缺它之前的形状：橙与绿只有"状态点"和"文字"两档，
+    // 于是**压白字的实底按钮**只能拿状态点当底 ⇒ 实测白字 × 橙 2.20、白字 × 绿 2.54（暗色 2.06 / 2.02），
+    // 而那两处界面写的是 `text-white` —— 语义没错、颜色注定不合格。前景取 `--gosslan-on-primary`
+    // （亮色白、暗色深墨）而不是写死 `text-white`：同一族实底在两种外观下**换的是方向不是色相**。
+    { fg: "--gosslan-on-primary", bg: "--gosslan-warning-solid", min: 4.5, why: "橙实底上的标签（实心徽标 / 状态提示）" },
+    { fg: "--gosslan-on-primary", bg: "--gosslan-success-solid", min: 4.5, why: "绿实底上的标签（日志页「已复制」那一档）" },
+    // 同一对 token 的第二维：色条是**非文字图形**（WCAG 1.4.11 的 3:1 对相邻面），
+    // 与上一族的取色同源 ⇒ 一处改动同时受两条判据看（前景压得住 / 边界看得出）。
+    { fg: "--gosslan-warning-solid", bg: "--gosslan-panel", min: 3.0, why: "待办列表「逾期」左侧 2px 色条 vs 行底（非文字）" },
+    { fg: "--gosslan-success-solid", bg: "--gosslan-panel", min: 3.0, why: "待办列表「已完成」色条 vs 行底（同上）" },
+    // 开关（SettingsToggle）未选中态。原来未选中用 `--gosslan-border`：轨道 vs 面板 1.23、
+    // 白滑块 vs 轨道 1.23 —— 那是"分隔线该淡"那一族的设计意图，被借给了一个**必须看得出停在哪一边**的控制件。
+    // ⚠️ 选中态轨道走 `--gosslan-primary`（用户可选主色，由 applyTheme 以 inline 写在 <html> 上），
+    //   契约表读的是 CSS 默认值 ⇒ 那一档不进这张表，归"六套可选主色"那一节逐档算，别在这里假钉一个数。
+    { fg: "--gosslan-toggle-off", bg: "--gosslan-panel", min: 3.0, why: "开关未选中轨道 vs 面板（控件边界要看得出）" },
+    { fg: "--gosslan-toggle-off", bg: "--gosslan-card", min: 3.0, why: "同上，落在卡片底（设置页分组）" },
+    { fg: "#ffffff", bg: "--gosslan-toggle-off", min: 3.0, why: "白色滑块 vs 未选中轨道（滑块位置要读得出来）" },
   ],
   dark: [
     { fg: "--gosslan-text", bg: "--gosslan-chat", min: 4.5, why: "消息正文 / 画布" },
@@ -227,6 +244,18 @@ export const TOKEN_CONTRAST_CONTRACT: Record<"light" | "dark", TokenPair[]> = {
     // 而 `--gosslan-danger-ink` 在暗色仍是鲜红 #ff5548 —— 那是**当文字用**的那一档，别混。
     { fg: "#ffffff", bg: "--gosslan-danger", min: 4.5, why: "红徽标数字 / 删除按钮 / 错误 toast（暗色）" },
     { fg: "#ffffff", bg: "--gosslan-danger-hover", min: 4.5, why: "上面那一族的 hover 态（暗色，混色结果按实算判）" },
+    // 语义色实底档在暗色**换了方向**（填充保持鲜色、前景落深墨 #0b1220）。
+    // 这两行是那一半结论的凭据：暗色若跟着"压深"，深墨前景会掉到 3 以下；
+    // 而填充若留在状态点那档（#ff9f0a / #30d158），压住它的是**换向后的前景**，不是更深的底色。
+    { fg: "--gosslan-on-primary", bg: "--gosslan-warning-solid", min: 4.5, why: "橙实底上的标签（暗色：深墨压鲜橙）" },
+    { fg: "--gosslan-on-primary", bg: "--gosslan-success-solid", min: 4.5, why: "绿实底上的标签（暗色：深墨压鲜绿）" },
+    { fg: "--gosslan-warning-solid", bg: "--gosslan-panel", min: 3.0, why: "待办「逾期」色条 vs 暗行底（非文字）" },
+    { fg: "--gosslan-success-solid", bg: "--gosslan-panel", min: 3.0, why: "待办「已完成」色条 vs 暗行底（同上）" },
+    // 开关未选中轨道：暗色要**抬亮**才看得出边界（`--gosslan-border` 那一档只有 1.64）。
+    // 与亮色同一对判据、方向相反 —— 这正是"深色不是简单反转"的一处具体形状。
+    { fg: "--gosslan-toggle-off", bg: "--gosslan-panel", min: 3.0, why: "开关未选中轨道 vs 暗面板（控件边界要看得出）" },
+    { fg: "--gosslan-toggle-off", bg: "--gosslan-card", min: 3.0, why: "同上，落在暗卡片底" },
+    { fg: "#ffffff", bg: "--gosslan-toggle-off", min: 3.0, why: "白色滑块 vs 暗色未选中轨道" },
   ],
 };
 
@@ -351,15 +380,32 @@ export function disabledOpacityFromClasses(text: string): number[] {
 /**
  * style.css 里某条禁用规则自己的 `opacity:` —— 按**规则块**取，不按全文取。
  *
- * 为什么按规则：`:where(input,textarea,select):disabled` 是 0.62 而菜单条目是 0.5。
- * 全文取最小会**把输入框那行冤枉成红**（它实际按 0.62 渲染，过 AA）。
+ * 为什么按规则：`:where(input,textarea,select):disabled` 是字段档而菜单条目是控件档。
+ * 全文取最小会**把输入框那行冤枉成红**（它实际按更亮的那档渲染，过 AA）。
+ *
+ * 2026-10-24：这两档收进了 `--gosslan-disabled-alpha*` token，所以这里必须认 `var(...)` 写法。
+ * `scope` 给定时按那份作用域解析 token 值（暗色若有覆盖，读到的就是覆盖后的值）；
+ * 认不出 / token 解析不出就**不产出数字** —— 让调用方按"这行从没被算过"报红，
+ * 而不是悄悄回退成一个兜底常数（那正是本文件存在要杀的那类假绿）。
  */
-export function disabledOpacityFromRule(css: string, selector: string): number[] {
+export function disabledOpacityFromRule(
+  css: string,
+  selector: string,
+  scope?: Map<string, string>,
+): number[] {
   const clean = css.replace(/\/\*[\s\S]*?\*\//g, "");
   const out: number[] = [];
   for (const m of clean.matchAll(/([^{}]*)\{([^{}]*)\}/g)) {
     if (!m[1].includes(selector)) continue;
-    for (const o of m[2].matchAll(/opacity:\s*([\d.]+)\s*;/g)) out.push(Number(o[1]));
+    for (const o of m[2].matchAll(/opacity:\s*(?:var\(\s*(--[\w-]+)\s*\)|([\d.]+))\s*;/g)) {
+      if (o[1] !== undefined) {
+        const raw = scope?.get(o[1]);
+        const parsed = raw === undefined ? Number.NaN : Number.parseFloat(raw);
+        if (Number.isFinite(parsed)) out.push(parsed);
+      } else {
+        out.push(Number(o[2]));
+      }
+    }
   }
   return out;
 }
@@ -379,16 +425,20 @@ export function auditDisabledContrast(css: string, sources: Record<string, strin
       unresolved.push(`${row.name}：α 的家 ${row.alpha.source} 没传进来`);
       continue;
     }
-    const alphas = row.alpha.kind === "classes"
-      ? disabledOpacityFromClasses(src)
-      : disabledOpacityFromRule(src, row.alpha.selector);
-    if (alphas.length === 0) {
-      unresolved.push(`${row.name}：在 ${row.alpha.source} 里取不到禁用 α（写法变了？删了？）`);
-      continue;
-    }
-    const alpha = Math.min(...alphas);
     for (const theme of ["light", "dark"] as const) {
       const scope = scopeOf(theme);
+      // α 必须**按主题各取一次**：token 若被 `.dark` 覆盖，暗色就该按覆盖后的值算，
+      // 只算一次再套两个主题等于把暗色的那一档假装没发生。
+      const alphas = row.alpha.kind === "classes"
+        ? disabledOpacityFromClasses(src)
+        : disabledOpacityFromRule(src, row.alpha.selector, scope);
+      if (alphas.length === 0) {
+        unresolved.push(
+          `${row.name}（${theme}）：在 ${row.alpha.source} 里取不到禁用 α（写法变了？删了？token 没定义？）`,
+        );
+        continue;
+      }
+      const alpha = Math.min(...alphas);
       const pageOver = row.pageOver ? resolveToken(row.pageOver, scope) : null;
       const page = resolveToken(row.page, scope, pageOver ?? undefined);
       const fg = resolveToken(row.fg, scope);

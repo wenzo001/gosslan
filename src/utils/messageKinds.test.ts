@@ -10,6 +10,9 @@ import {
   TIP_KINDS,
   UNSUPPORTED_KIND_LABEL,
   isKnownKind,
+  isForwardableKind,
+  isFavoritableKind,
+  isMultiSelectable,
   isRemindableKind,
   isSilentKind,
   isTipKind,
@@ -486,5 +489,40 @@ test("messageTopGap：组首/孤立 6px、组内 0、分割行自己带间距所
   for (const side of ["middle", "last"] as const) {
     assert.equal(messageTopGap(side, false), 0, `${side} 应贴住上一条`);
     assert.equal(messageTopGap(side, true), 0);
+  }
+});
+
+// ---------------- 多选排除表（2026-10-24） ----------------
+// §10 要求「待办不参与多选」必须保留，而此前这条规则**没有任何一条判据**：
+// `isMultiSelectable` 只有 5 个生产调用点（MessageItem 的勾选框/整行点击/菜单入口 +
+// MessageContextMenu 的菜单项与分隔线），测试与探针里一次都没出现过。
+// 所以这里钉住两侧：todo 必须被排除；时间线里其余可多选的类型必须仍然可多选
+//（把谓词改成 `false` 或顺手多排除一类，都会让这条红）。
+test("多选排除表：待办卡片不参与，时间线其余类型仍参与", () => {
+  assert.equal(isMultiSelectable("todo"), false, "待办卡片不得进入批量操作");
+  for (const kind of ["text", "code", "image", "file", "merge", "system", "recalled"]) {
+    assert.equal(isMultiSelectable(kind), true, `${kind} 应可多选`);
+  }
+});
+
+// ---------------- 转发 / 收藏的动作白名单（2026-10-24） ----------------
+// §10 点名「转发严格复用 messageKinds.ts 的类型判断，只允许 text/code/image/file/merge；
+// 卡片不能因外观改版获得转发能力」「收藏保持可转发类型 + 卡片白名单」——而这两个谓词
+// 此前**零测试引用**（生产侧 9 / 6 处调用，判据侧 0）。两侧一起钉：
+//   · 转发**不含卡片**：那是有副作用的动作（跨群转任务得走专用发送路径）；
+//   · 收藏**含卡片**：走后端复制内容，无副作用（收藏夹已按卡片补了渲染分支）。
+test("转发 / 收藏白名单：卡片可收藏、但不得获得转发能力", () => {
+  const forwardable = ["text", "code", "image", "file", "merge"];
+  for (const kind of forwardable) {
+    assert.equal(isForwardableKind(kind), true, `${kind} 应可转发`);
+    assert.equal(isFavoritableKind(kind), true, `${kind} 应可收藏`);
+  }
+  for (const card of ["todo", "announcement", "poll"]) {
+    assert.equal(isForwardableKind(card), false, `${card} 不得获得转发能力`);
+    assert.equal(isFavoritableKind(card), true, `${card} 应可收藏（卡片白名单）`);
+  }
+  for (const kind of ["system", "recalled"]) {
+    assert.equal(isForwardableKind(kind), false, `${kind} 不可转发`);
+    assert.equal(isFavoritableKind(kind), false, `${kind} 不可收藏`);
   }
 });

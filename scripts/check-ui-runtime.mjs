@@ -2910,6 +2910,8 @@ async function main() {
     if (overlay) await runOverlay(cdp, url);
     if (imgskel) await runImageSkeleton(cdp, url);
     if (imgload) await runImageLoad(cdp, url);
+    if (want("imgretry")) await runImageRetryPace(cdp, url);
+    if (want("mergeheight")) await runMergeCardHeight(cdp, url);
     if (pinkb) await runPinKeyboard(cdp, url);
     if (inputpanel) await runInputPanels(cdp, url);
     if (winsafe) await runWindowSafe(cdp, url);
@@ -3173,9 +3175,34 @@ async function runReaction(cdp, url) {
  * 所以"回车之后那一条真的从置顶条上消失了"是界面链路走通的证据。
  */
 async function runPinKeyboard(cdp, url) {
+  // 视口必须先钉成桌面档，再 navigate：`app.isMobile` 在 **store 创建那一刻**就由
+  // `matchMedia(max-width: 767px)` 定死（useAppStore.ts:240），而 `MessageItem.openContextMenu`
+  // 有 `if (app.isMobile) return`（MessageItem.vue:401）—— 窄档下右键菜单这条路根本不存在
+  // （触屏走的是长按 ActionSheet）。不钉的话，这段读到的视口取决于前面某段留下的 emulation。
+  await cdp.send("Emulation.setDeviceMetricsOverride", {
+    width: 1200, height: 800, deviceScaleFactor: 1, mobile: false,
+  });
   await cdp.send("Page.navigate", { url });
   await sleep(3_000);
   await cdp.eval(PAGE_FIXTURE);
+  // 真 ChatWindow 在 setup 里**无条件**调 `getCurrentWebview().onDragDropEvent(...)`（ChatWindow.vue:1437），
+  // 裸浏览器里 `__TAURI_INTERNALS__` 不存在 ⇒ 同步抛错，setup 从那一行起就断了（下面所有 watch 都不注册）。
+  // 这不是产品缺陷（真实宿主里那个对象由 Tauri 注入），但夹具必须补上，否则这段量到的是"残留的半截组件"。
+  // 只给被读到的那几个字段 + 一个吞掉所有命令的 invoke；事件注册拿不到 id 也不会让挂载失败。
+  await cdp.eval(`(() => {
+    window.__TAURI_INTERNALS__ = {
+      metadata: {
+        currentWindow: { label: 'main' },
+        currentWebview: { label: 'main', windowLabel: 'main' },
+      },
+      invoke: async () => null,
+      transformCallback: (cb) => cb,
+      convertFileSrc: (p) => p,
+    };
+    if (!window.__TAURI_EVENT_PLUGIN_INTERNALS__) {
+      window.__TAURI_EVENT_PLUGIN_INTERNALS__ = { unregisterListener: () => {} };
+    }
+  })()`);
 
   const mounted = await cdp.eval("window.__probe.install('/src/components/ChatWindow.vue', '', '{}')");
   check("ChatWindow 挂得起来（置顶条才有得量；挂不起来这一整段就只能记未量）",
@@ -3284,8 +3311,138 @@ async function runPinKeyboard(cdp, url) {
     check("N19 变异可逆：撤掉那条内联 display 后它又回到布局里（没把页面改坏一次）",
       undone.ok === true && undone.display !== "none" && undone.h > 0,
       "display!=none 且 h>0", JSON.stringify(undone));
+
+    // ---------------- 多选工具栏：四项批量操作的**运行时**那一半 ----------------
+    // 为什么接在这一段：这里已经挂着**真** ChatWindow + 真 store 消息，是仓里唯一能走到
+    // "多选态"的夹具（`installMenu` 那套是菜单替身，进不了 ChatWindow 的局部 ref）。
+    // 入口只走真事件链：MessageItem 的右键菜单项（由 `isMultiSelectable(kind)` 门控）→
+    // `emit('multi-select')` → ChatWindow 的 `enterMultiSelect`。不直接改 store/组件状态，
+    // 否则量的就不是"用户点得到"而是"我能塞进去"。
+    const i18nOf = (key, params) => cdp.eval(`(async () => {
+      const { t } = await import('/src/i18n/index.ts');
+      return t(${JSON.stringify(key)}${params ? ", " + JSON.stringify(params) : ""});
+    })()`);
+    const L_MULTI = await i18nOf("multi.enter");
+    const L_COUNT1 = await i18nOf("multi.selected", { n: 1 });
+    const L_CANCEL = await i18nOf("common.cancel");
+    const openRowMenu = (title) => cdp.eval(`(() => {
+      const cols = Array.from(document.querySelectorAll('[data-msg-col]'));
+      const el = cols.find((c) => ((c.textContent || '').includes(${JSON.stringify(title)})));
+      if (!el) return { ok: false, cols: cols.length, texts: cols.map((c) => (c.textContent || '').trim().slice(0, 20)) };
+      const r = el.getBoundingClientRect();
+      el.dispatchEvent(new MouseEvent('contextmenu', {
+        bubbles: true, cancelable: true, button: 2, buttons: 2,
+        clientX: Math.round(r.left + 12), clientY: Math.round(r.top + 12),
+      }));
+      return { ok: true, cols: cols.length, rect: [Math.round(r.left), Math.round(r.top), Math.round(r.width)],
+               w: window.innerWidth, mobile: document.documentElement.classList.contains('is-mobile') };
+    })()`);
+    const menuTexts = () => cdp.eval(`(() => Array.from(document.querySelectorAll('[role="menuitem"]'))
+      .map((el) => (el.textContent || '').trim()))()`);
+    const menuCount = () => cdp.eval(`document.querySelectorAll('[role="menu"], [data-reka-menu-content]').length`);
+    const clickMenu = (label) => cdp.eval(`(() => {
+      const items = Array.from(document.querySelectorAll('[role="menuitem"]'));
+      const hit = items.find((el) => ((el.textContent || '').trim()) === ${JSON.stringify(label)});
+      if (!hit) return { ok: false, items: items.map((el) => (el.textContent || '').trim()) };
+      hit.click();
+      return { ok: true };
+    })()`);
+    /** 现读多选态：输入区是否还在、四颗批量按钮的文案/无障碍名、计数文案。
+     *  工具栏的直接子按钮是「取消」，四颗批量操作在里层那个 flex 组里 ⇒ 只取那一层，
+     *  否则「4 颗」会被取消按成 5 颗（第一次跑就是这么红的）。 */
+    const multiView = () => cdp.eval(`(() => {
+      const composer = !!document.querySelector('.gosslan-composer');
+      const block = document.querySelector('.h-16');
+      const group = block ? block.querySelector(':scope > div') : null;
+      const actions = group ? Array.from(group.querySelectorAll(':scope > button')) : [];
+      return {
+        composer,
+        count: block ? ((((block.querySelector('span') || {}).textContent) || '').trim()) : '',
+        actions: actions.map((b) => ({
+          text: (((b.textContent) || '').trim()),
+          aria: ((b.getAttribute('aria-label')) || '').trim(),
+          disabled: b.disabled === true,
+        })),
+      };
+    })()`);
+
+    const openedText = await openRowMenu("这条被置顶了");
+    await sleep(300);
+    const textMenu = await menuTexts();
+    check("多选·真入口：文本消息的右键菜单里有「多选」一项（文案现从 i18n 取，不抄字面量）",
+      openedText.ok === true && textMenu.includes(L_MULTI),
+      `菜单含「${L_MULTI}」`,
+      JSON.stringify({ openedText, menus: await menuCount(), textMenu }));
+
+    const clicked = await clickMenu(L_MULTI);
+    await sleep(250);
+    const inMulti = await multiView();
+    check("多选·进态：输入区被工具栏替换 —— composer 不在、四颗批量按钮都可用、计数=已选 1",
+      clicked.ok === true && inMulti.composer === false && inMulti.actions.length === 4
+        && inMulti.actions.every((a) => a.disabled === false) && inMulti.count === L_COUNT1,
+      `composer 消失 / 4 颗可选按钮 / 计数=${L_COUNT1}`,
+      JSON.stringify({ clicked, inMulti }));
+
+    // 顺序：逐条转发 → 合并转发 → 批量收藏 → 批量删除（§7 点名的那四项）
+    const wantOrder = await cdp.eval(`(async () => {
+      const { t } = await import('/src/i18n/index.ts');
+      return [t('multi.forwardPerMessage'), t('multi.forwardMerged'), t('multi.favorite'), t('multi.delete')];
+    })()`);
+    const gotOrder = inMulti.actions.map((a) => a.text);
+    check("多选·四项顺序与 §7 一致（逐条转发 → 合并转发 → 批量收藏 → 批量删除）",
+      Array.isArray(wantOrder) && gotOrder.join("|") === wantOrder.join("|"),
+      JSON.stringify(wantOrder), JSON.stringify(gotOrder));
+    // 前两颗的可见文案在窄档是 `hidden sm:inline` ⇒ 无障碍名只能靠 aria-label；另外两颗文案常显。
+    const wantAria = await cdp.eval(`(async () => {
+      const { t } = await import('/src/i18n/index.ts');
+      return [t('multi.forwardPerMessage'), t('multi.forwardMerged')];
+    })()`);
+    check("多选·窄档仍念得出前两颗（文案被 hidden sm:inline 藏掉，aria-label 必须补齐）",
+      inMulti.actions[0] && inMulti.actions[1]
+        && inMulti.actions[0].aria === wantAria[0] && inMulti.actions[1].aria === wantAria[1],
+      JSON.stringify(wantAria), JSON.stringify(inMulti.actions.slice(0, 2)));
+
+    const cancelled = await cdp.eval(`(() => {
+      const block = document.querySelector('.h-16');
+      if (!block) return { ok: false };
+      const b = Array.from(block.querySelectorAll('button'))
+        .find((x) => ((x.textContent || '').trim()) === ${JSON.stringify(L_CANCEL)});
+      if (!b) return { ok: false };
+      b.click();
+      return { ok: true };
+    })()`);
+    await sleep(250);
+    const back = await multiView();
+    check("多选·退出：点「取消」后输入区回来、工具栏消失（不是留在多选态里）",
+      cancelled.ok === true && back.composer === true && back.actions.length === 0,
+      "composer 回来 / 工具栏 0 颗", JSON.stringify({ cancelled, back }));
+
+    // A/B 对照：同一条链在**待办行**上必须给不出这个入口（`isMultiSelectable` 的 UI 侧证据）。
+    await cdp.eval(`(async () => {
+      const { useChatStore } = await import('/src/stores/useChatStore.ts');
+      const chat = useChatStore();
+      chat.enqueueMessage({
+        msg_id: 'm-kb-todo', conv_id: 'group:kb1', sender_id: 'p1', sender_name: '小布',
+        kind: 'todo', seq: 6, ts: 1700000003000,
+        content: JSON.stringify({
+          todo_id: 'kb-todo', title: '买咖啡', assignees: ['dev-me'], status: 'todo',
+          creator: 'p1', deleted: false, description: '', images: [], archived: false,
+          done_at: null, number: 1, priority: 'normal', category: 'task',
+        }),
+      });
+      await new Promise((r) => setTimeout(r, 300));
+      return true;
+    })()`);
+    const openedTodo = await openRowMenu("买咖啡");
+    await sleep(250);
+    const todoMenu = await menuTexts();
+    check("多选·排除（A/B）：待办行的右键菜单里**没有**「多选」—— 与上面那条文本行正相反",
+      openedTodo.ok === true && todoMenu.length > 0 && !todoMenu.includes(L_MULTI),
+      `菜单不含「${L_MULTI}」且非空`, JSON.stringify(todoMenu));
+    await cdp.key("Escape", "Escape", "", 27);
   } finally {
     await cdp.send("Emulation.setFocusEmulationEnabled", { enabled: false }).catch(() => {});
+    await cdp.send("Emulation.clearDeviceMetricsOverride").catch(() => {});
   }
 }
 
@@ -3538,6 +3695,179 @@ async function runImageSkeleton(cdp, url) {
   check("失败态：退避用完后落到紧凑占位（不为一张永远等不来的图撑 288px 灰块）",
     !!failed && failed.ok === true && failed.h === failed.placeholder,
     "state=failed 且 rect.h == IMAGE_PLACEHOLDER_HEIGHT", JSON.stringify(failed));
+}
+
+/**
+ * 图片退避**节奏**那一条（用户 2026-10-24 拍板：「给 400/800/1600/2400/3200 加回归判据，
+ * 但不要改现有常量，并且用可控计时机制 —— 不要慢测试、不要脆弱的真实时间断言」）。
+ *
+ * 机制：在组件模块被加载之前，把 `window.setTimeout` 换成**只记账不计时**的那一份 ——
+ * 回调照收、毫秒数照记，但 ≥300ms 的那一档**不真的等**（夹具自己的 25ms 轮询不受影响）。
+ * 于是判据读的是"组件打算等多久"这个**它自己写下的数**，不是墙钟：
+ *   ① 时序：五档退避的毫秒数依次是 400/800/1600/2400/3200；
+ *   ② 上限：第五档用完后不再排新的重试，状态落到 failed；
+ *   ③ 失败态保持：failed 之后再投 error 不许把梯子重启（那等于无限重试）；
+ *   ④ 成功即停：error 之后再来 load，必须把那一发 clear 掉，且不再排下一发。
+ * 四格都不等真时间：整段只 sleep 到夹具挂载完成。
+ *
+ * ⚠️ 口径边界：这里量的是 `MessageImageBubble` 自己的排期，**不是**网络层重试
+ *   （对端索取 / 本地重取走的是别的路径，归 imgload 段与 e2e）。
+ */
+async function runImageRetryPace(cdp, url) {
+  await cdp.send("Page.navigate", { url });
+  await sleep(3_000);
+  // 假时钟必须先于组件模块落地：组件里的 `setTimeout(...)` 是**调用时**查全局的，
+  // 所以换掉 window 上那一份就够了，不用动组件一行。
+  await cdp.eval(`(() => {
+    const C = { calls: [], cleared: [], pending: new Map(), nextId: 1, raw: window.setTimeout.bind(window), rawClear: window.clearTimeout.bind(window) };
+    window.__pace = C;
+    window.__paceStart = function () { C.calls.length = 0; C.cleared.length = 0; C.pending.clear(); };
+    window.setTimeout = function (fn, ms) {
+      if (typeof ms === 'number' && ms >= 300) {
+        const id = C.nextId++;
+        C.calls.push(ms);
+        C.pending.set(id, fn);
+        return id;
+      }
+      return C.raw(fn, ms);
+    };
+    window.clearTimeout = function (id) {
+      if (C.pending.has(id)) { C.pending.delete(id); C.cleared.push(id); return undefined; }
+      return C.rawClear(id);
+    };
+    // 收尾要能还原：这一格之后还有别的段共用同一个页面会话。
+    window.__paceStop = function () { window.setTimeout = C.raw; window.clearTimeout = C.rawClear; return true; };
+    return true;
+  })()`);
+  await cdp.eval(PAGE_FIXTURE);
+  // 记账从**挂载之前**就开始：`data:,` 这一发在挂载后就会自然报 error，
+  // 先挂再清账会把第一档 400 抹掉（本机实测 calls 少一档 ⇒ 三条判据红，产品没错、量具错了）。
+  await cdp.eval("window.__paceStart()");
+
+  const mount = async () => await cdp.eval("window.__probe.install('/src/components/message/MessageImageBubble.vue', '', "
+    + JSON.stringify(JSON.stringify({ src: "data:," })) + ")");
+  const ok = await mount();
+  check("退避节奏：挂出真 MessageImageBubble（假时钟已在其之前接管 setTimeout）",
+    !!ok && ok.ok === true, "install ok", JSON.stringify(ok));
+
+  const read = () => cdp.eval(`(() => {
+    const box = document.querySelector('[data-img-state]');
+    const el = document.querySelector('[data-img-el]');
+    return { calls: window.__pace.calls.slice(), cleared: window.__pace.cleared.length,
+      pending: window.__pace.pending.size,
+      state: box ? box.getAttribute('data-img-state') : null,
+      hasImg: !!el };
+  })()`);
+  const fireError = () => cdp.eval(`(() => { const el = document.querySelector('[data-img-el]');
+    if (el) el.dispatchEvent(new Event('error'));
+    return !!el; })()`);
+
+  // 自己投 error：组件的 @error 处理器收到的就是这一发（不依赖 404 自然到达，也就不会漂）。
+  // 投到"五档都排出**且**落进 failed"为止 —— 这两件事不是一个时刻：第五档排出的那一刻
+  // 它还在飞（state 仍是 loading），要等这一发也失败（再一个 error）才钉成 failed。
+  // 第一版把两件事当一件写，② 就红了 —— 红的是判据的时序，不是产品。
+  let seq = await read();
+  for (let i = 0; i < 9 && !(seq.calls.length >= 5 && seq.state === "failed"); i += 1) {
+    await fireError();
+    await sleep(60);
+    seq = await read();
+  }
+  console.log("  · 退避节奏读数（假时钟，只记不计时）：calls=" + JSON.stringify(seq.calls)
+    + " state=" + seq.state + " 挂着未跑的重试=" + seq.pending);
+  check("① 时序：组件排出的五档退避依次是 400/800/1600/2400/3200（现读，不抄常量）",
+    JSON.stringify(seq.calls) === JSON.stringify([400, 800, 1600, 2400, 3200]),
+    "[400,800,1600,2400,3200]", JSON.stringify(seq.calls));
+  check("② 上限：第五档用尽后落到 failed，且没有第六档被排出来",
+    seq.state === "failed" && seq.calls.length === 5,
+    "state=failed 且 calls 只有 5 条", JSON.stringify(seq));
+
+  const afterMore = await (async () => { await fireError(); await fireError(); await sleep(80); return read(); })();
+  check("③ 失败态保持：failed 之后再投两次 error 不许把退避梯子重启",
+    afterMore.state === "failed" && afterMore.calls.length === 5,
+    "仍是 5 条、仍是 failed", JSON.stringify(afterMore));
+
+  // ④ 成功即停：重新挂一份干净的组件（同样**先清账再挂**，自然那发 400 才算得进来），
+  //    投一发 error 排出一档，再 load ⇒ 在飞的那一发必须被清掉、且不再排下一发。
+  await cdp.eval("window.__paceStart()");
+  await mount();
+  await sleep(200);
+  await fireError();
+  await sleep(60);
+  const beforeLoad = await read();
+  await cdp.eval(`(() => { const el = document.querySelector('[data-img-el]');
+    if (el) el.dispatchEvent(new Event('load')); return !!el; })()`);
+  await sleep(120);
+  const afterLoad = await read();
+  console.log("  · 成功即停读数：load 前 calls=" + JSON.stringify(beforeLoad.calls)
+    + " 挂着=" + beforeLoad.pending + " ｜ load 后 calls=" + JSON.stringify(afterLoad.calls)
+    + " 已清=" + afterLoad.cleared + " 挂着=" + afterLoad.pending + " state=" + afterLoad.state);
+  check("④ 成功停止：从 400 起排（全新挂载梯子从头走），load 后在飞那一发被取消且不再排下一发",
+    beforeLoad.calls[0] === 400 && beforeLoad.pending === 1
+      && afterLoad.pending === 0 && afterLoad.cleared >= 1
+      && afterLoad.calls.length === beforeLoad.calls.length && afterLoad.state === "loaded",
+    "首档 400 + 在飞 1 → 已清 + calls 不增长 + state=loaded", JSON.stringify({ beforeLoad, afterLoad }));
+
+  // 非空转：假时钟若没接管（组件走真 setTimeout），calls 就会是空的 ⇒ 上面几条必然红。
+  const restored = await cdp.eval("window.__paceStop()");
+  check("对照：假时钟可摘除（摘掉后 calls 归零，证明上面判的确实是这份记账不是真计时）",
+    restored === true, "__paceStop 成功", JSON.stringify({ restored }));
+}
+
+/**
+ * 合并转发卡片**定高 96** 那一格（用户 2026-10-24 拍板：不许改常量，要给回归判据）。
+ *
+ * 契约是两句话：渲染端 `h-24`(=96px) 与估算端 `messageHeight.MERGE_CARD = 96` 必须是同一个数。
+ * 分叉的后果不是"难看"，是虚拟列表按 96 排版而实际画出来的更高/更矮 ⇒ **相邻消息互相遮挡**
+ * （`messageHeight.ts` 文件头那条契约）。所以这里量真矩形，而不是比 class 名：
+ *   ① 折叠态真渲染高度 == 源码里那个 MERGE_CARD（现读，不抄数字）；
+ *   ② 摘要行变多 / 单行变长都不许把卡片撑高（`truncate` + `overflow-hidden` 的作用点）；
+ *   ③ 窄容器下仍不撑高（这条是"折行"那一族的反面）。
+ */
+async function runMergeCardHeight(cdp, url) {
+  const src = fs.readFileSync(path.join(ROOT, "src/utils/messageHeight.ts"), "utf8");
+  const m = /const MERGE_CARD\s*=\s*(\d+)\s*;/.exec(src);
+  check("估算端读得到 MERGE_CARD 这一个数（读不到就是常量改了形状，判据不许静默跳过）",
+    !!m, "const MERGE_CARD = <数字>;", JSON.stringify({ hit: m && m[1] }));
+  const expect = m ? Number(m[1]) : -1;
+
+  await cdp.send("Page.navigate", { url });
+  await sleep(3_000);
+  await cdp.eval(PAGE_FIXTURE);
+
+  const line = (i) => ({ sender: "成员" + i, text: "第 " + i + " 条摘要，故意写得长一些，看它会不会把卡片撑高：" + "很长".repeat(30) });
+  const payloads = [
+    ["2 条摘要", { title: "群聊的聊天记录", items: [line(1), line(2)] }],
+    ["9 条长摘要", { title: "群聊的聊天记录（很长很长很长的一个标题，同样不许撑高）", items: Array.from({ length: 9 }, (_, i) => line(i + 1)) }],
+  ];
+  const seen = [];
+  for (const [label, payload] of payloads) {
+    const props = JSON.stringify(JSON.stringify({ content: JSON.stringify(payload), mine: true }));
+    const ok = await cdp.eval("window.__probe.install('/src/components/message/MergeCard.vue', '', " + props + ")");
+    check("合并卡片挂载：" + label, !!ok && ok.ok === true, "install ok", JSON.stringify(ok));
+    await sleep(220);
+    const g = await cdp.eval(`(() => { const b = document.querySelector('#probe-host button');
+      if (!b) return null; const r = b.getBoundingClientRect();
+      return { h: Math.round(r.height * 100) / 100, w: Math.round(r.width * 100) / 100,
+        scrollH: b.scrollHeight, overflowX: b.scrollWidth > Math.ceil(r.width) }; })()`);
+    seen.push({ label, ...g });
+    console.log("  · " + label + " 实测：" + JSON.stringify(g));
+    check(label + "：折叠态真渲染高度 == 估算端 MERGE_CARD（现读 " + expect + "）",
+      !!g && Math.abs(g.h - expect) <= 0.5,
+      "rect.h == " + expect, JSON.stringify({ label, g, expect }));
+    check(label + "：内容不许横向溢出（撑宽就等于撑破 96 的定高前提）",
+      !!g && g.overflowX === false, "scrollWidth <= rect.width", JSON.stringify({ label, g }));
+  }
+  check("两档摘要（2 条 / 9 条长文）画出来是同一个高度 —— 定高不是「只在短内容时成立」",
+    seen.length === 2 && Math.abs(seen[0].h - seen[1].h) <= 0.5,
+    "两档高度相等", JSON.stringify(seen));
+
+  // 非空转：把高度按回旧的"内容决定"形状（放开定高）⇒ 9 条那一档必须真的变高。
+  const flip = await cdp.eval(`(() => { const b = document.querySelector('#probe-host button');
+    if (!b) return null; b.style.height = 'auto'; b.classList.remove('h-24');
+    const r = b.getBoundingClientRect(); return { h: Math.round(r.height * 100) / 100 }; })()`);
+  check("对照·尺子非空转：摘掉定高后同一份内容读数立刻变化（判据量的确实是高度）",
+    !!flip && Math.abs(flip.h - expect) > 0.5,
+    "height:auto 之后 != " + expect, JSON.stringify({ flip, expect }));
 }
 
 /**
@@ -4158,6 +4488,24 @@ async function runImeCommit(cdp, url) {
 }
 
 /**
+ * 泵帧：让「关掉之后」的那次读数站在界面已经收尾的时刻上（INV-P31 第 4 条）。
+ * 静止页面不出帧、机器忙时 200ms 也走不完一次 leave ⇒ 不泵就读到的是停在中途的壳，
+ * 那是量具的形状不是界面的形状。截图失败次数**必须**回传（吞掉自己的判据输入＝造假红）。
+ */
+async function pumpFrames(cdp, times = 6) {
+  let failed = 0;
+  for (let i = 0; i < times; i += 1) {
+    try {
+      await cdp.send("Page.captureScreenshot", { format: "png" });
+    } catch {
+      failed += 1;
+    }
+    await sleep(50);
+  }
+  return failed;
+}
+
+/**
  * 弹窗 / 浮层那一段（原生体验审计的领域 F：打开与关闭、遮罩与命中、Esc、焦点陷阱与恢复、
  * 快速重复开关之后留下的残骸）。
  *
@@ -4308,10 +4656,7 @@ async function runOverlay(cdp, url) {
    *   `hasFocus()`/visibilityState 一起翻掉，而 emoji 那段有一条断言正按"页面没焦点"写）。
    */
   const pump = async (times = 6) => {
-    for (let i = 0; i < times; i += 1) {
-      await cdp.send("Page.captureScreenshot", { format: "png" }).catch(() => {});
-      await sleep(50);
-    }
+    await pumpFrames(cdp, times);
   };
   /** 关掉之后的一次读数：先泵帧让过渡收尾，再读 DOM。 */
   const readAfterClose = async () => {
@@ -5685,6 +6030,47 @@ async function runRowPair(cdp, url) {
  *    为什么不用"最宽后代 ≥ 半屏"当约束顶到的证据：**行容器本身就是满宽的**，
  *    那条断言会恒真（写完实测就发现它在空挂载时也一样绿）。
  */
+/**
+ * 「token ↔ 屏幕上真画出来的是不是这一个颜色」这一族比较的**家**。
+ *
+ * 原来这四个助手都住在 `runMsgOverflow` 里面，第二段（挂 `GroupTasksBoard` 的那段）要复用时
+ * 正确做法是升成模块级 —— 在第二段抄一份比色逻辑就是给同一语义开第二个家（先例：收尾屏障
+ * 从段私有升成 `pumpFrames`）。切档仍然只能写 `appearance`：`s.dark` 是 computed，
+ * 直接写它**不报错也不生效** —— 主题矩阵第一版就因此 14 格读数全等却全绿。
+ */
+const toTriple = (s) => {
+  const v = String(s || "").trim();
+  let m = /^rgba?\(\s*([\d.]+)[,\s]+([\d.]+)[,\s]+([\d.]+)/.exec(v);
+  if (m) return [+m[1], +m[2], +m[3]];
+  m = /^color\(srgb\s+([\d.]+)\s+([\d.]+)\s+([\d.]+)/.exec(v);
+  if (m) return [1, 2, 3].map((i) => Math.round(parseFloat(m[i]) * 255));
+  m = /^#([0-9a-f]{2})([0-9a-f]{2})([0-9a-f]{2})$/i.exec(v);
+  if (m) return [1, 2, 3].map((i) => parseInt(m[i], 16));
+  return null;
+};
+const sameColor = (a, b) => {
+  const x = toTriple(a) ?? [];
+  const y = toTriple(b) ?? [];
+  return x.length === 3 && y.length === 3 && x.every((n, i) => Math.abs(n - y[i]) <= 1);
+};
+/** 浏览器侧真取一个 token 的计算色（临时探针元素，读完就摘）。 */
+const pageColor = (cdp, tok) => cdp.eval(`(() => { const d = document.createElement('div');
+  d.style.color = 'var(${tok})'; d.style.display = 'none'; document.body.appendChild(d);
+  const v = getComputedStyle(d).color; d.remove(); return v; })()`);
+/** 翻主题：`appearance` 写 store，`.dark` class 一起翻（样式表里的 `.dark` 块靠它）。 */
+const setAppearance = (cdp, dark) => cdp.eval(`(async () => {
+  const piniaUrl = performance.getEntriesByType('resource')
+    .map((e) => e.name || '').find((u) => u.includes('/node_modules/.vite/deps/pinia.js?v='));
+  if (!piniaUrl || !window.__pinia) return { ok: 'no-pinia' };
+  const P = await import(piniaUrl);
+  const A = await import('/src/stores/useAppStore.ts');
+  P.setActivePinia(window.__pinia);
+  const s = A.useAppStore();
+  s.appearance = '${dark ? "dark" : "light"}';
+  document.documentElement.classList.toggle('dark', ${dark ? "true" : "false"});
+  return { ok: 'ok', dark: s.dark === true, appearance: s.appearance };
+})()`);
+
 async function runMsgOverflow(cdp, url) {
   await cdp.send("Page.navigate", { url });
   await sleep(2_500);
@@ -5812,6 +6198,57 @@ async function runMsgOverflow(cdp, url) {
   console.log("  · 反向对照（nowrap）：" + JSON.stringify(broken));
   check("溢出矩阵非空转：关掉断词后同一把尺必须报出越界",
     !!broken && broken.worstOver > 1, "> 1px", JSON.stringify(broken));
+
+  // ── 未知类型：占位是默认形态，原始载荷只能主动展开 ──────────────────────────
+  // 上面那组只量"不溢出"，挂在空壳上也会绿。§4.7/§10 点名的是**默认不许把 original payload
+  // 铺到时间线上**，所以这里量两半：默认状态下 DOM 里一个载荷字节都没有；点一次那个按钮之后
+  // raw 与 kind 才出现。两半在同一次挂载里读，避免"看起来是折叠"其实是没渲染。
+  await probeOne(CASES.find((x) => x.name === "未知类型"));
+  const unknownLabels = await cdp.eval(`(async () => {
+    const { t } = await import('/src/i18n/index.ts');
+    return { show: t('msg.showRawContent'), hide: t('msg.hideRawContent'), title: t('msg.unsupportedKind') };
+  })()`);
+  const readUnknown = () => cdp.eval(`(() => {
+    const host = document.getElementById('probe-host');
+    if (!host) return null;
+    // 按 i18n 的两句文案找那颗折叠钮：这一列里还有头像按钮（文字是 emoji），
+    // 直接取第一个 button 会点到头像上（第一次跑就是这么红的）。
+    const want = ${JSON.stringify([unknownLabels.show, unknownLabels.hide])};
+    const btn = Array.from(host.querySelectorAll('button'))
+      .find((b) => want.includes(((b.textContent || '').trim())));
+    return {
+      text: ((host.textContent || '').replace(/\\s+/g, ' ')).trim(),
+      pre: host.querySelectorAll('pre').length,
+      label: btn ? ((btn.textContent || '').trim()) : '',
+    };
+  })()`);
+  const unknownBefore = await readUnknown();
+  check("未知类型·默认：只有占位文案，原始载荷一个字节都不在 DOM 里",
+    !!unknownBefore && unknownBefore.text.includes(unknownLabels.title)
+      && !unknownBefore.text.includes("duration") && unknownBefore.pre === 0
+      && unknownBefore.label === unknownLabels.show,
+    `含「${unknownLabels.title}」/ 不含 duration / 无 pre / 按钮=「${unknownLabels.show}」`,
+    JSON.stringify(unknownBefore));
+  const clickedUnknown = await cdp.eval(`(() => {
+    const host = document.getElementById('probe-host');
+    const want = ${JSON.stringify([unknownLabels.show, unknownLabels.hide])};
+    const btn = host
+      ? Array.from(host.querySelectorAll('button')).find((b) => want.includes(((b.textContent || '').trim())))
+      : null;
+    if (btn) btn.click();
+    return !!btn;
+  })()`);
+  await sleep(250);
+  const unknownAfter = await readUnknown();
+  check("未知类型·主动展开：raw 与 kind 才出现，按钮换成「收起原始内容」",
+    clickedUnknown === true && !!unknownAfter && unknownAfter.pre === 1
+      && unknownAfter.text.includes("duration") && unknownAfter.text.includes("voice_note")
+      && unknownAfter.label === unknownLabels.hide,
+    `1 个 pre / 含 duration 与 voice_note / 按钮=「${unknownLabels.hide}」`,
+    JSON.stringify({ clickedUnknown, unknownAfter }));
+  // 把挂载内容还给下一段：动效扫描的反向对照靠 `#probe-host .gosslan-bubble-text` 现场加过渡，
+  // 这里刚挂的是未知类型（没有那个类）⇒ 不还原那条对照就会量到 0（第一次跑就是这么红的）。
+  await probeOne(CASES.find((x) => x.name === "无空格长英文"));
 
   // ============ 动效只许碰 transform/opacity/颜色，不许碰布局尺寸 ============
   /*
@@ -5948,48 +6385,8 @@ async function runMsgOverflow(cdp, url) {
     const c = resolveToken(tok, tcScopeFor(dark));
     return c ? `rgb(${Math.round(c.r)}, ${Math.round(c.g)}, ${Math.round(c.b)})` : null;
   };
-  /**
-   * 计算样式里同一个颜色有两种写法：普通色是 `rgb(42, 94, 177)`，而 `color-mix()` 派生档
-   * 是 `color(srgb 0.166588 0.367059 0.694588)`（未取整）。所以**比三元组不比字符串** ——
-   * 顺带这一比就是"手算的混色解析 vs 浏览器自己解出来的"那次对账。
-   */
-  const toTriple = (s) => {
-    const v = String(s || "").trim();
-    let m = /^rgba?\(\s*([\d.]+)[,\s]+([\d.]+)[,\s]+([\d.]+)/.exec(v);
-    if (m) return [+m[1], +m[2], +m[3]];
-    m = /^color\(srgb\s+([\d.]+)\s+([\d.]+)\s+([\d.]+)/.exec(v);
-    if (m) return [1, 2, 3].map((i) => Math.round(parseFloat(m[i]) * 255));
-    m = /^#([0-9a-f]{2})([0-9a-f]{2})([0-9a-f]{2})$/i.exec(v);
-    if (m) return [1, 2, 3].map((i) => parseInt(m[i], 16));
-    return null;
-  };
-  const sameColor = (a, b) => {
-    const x = toTriple(a) ?? [];
-    const y = toTriple(b) ?? [];
-    return x.length === 3 && y.length === 3 && x.every((n, i) => Math.abs(n - y[i]) <= 1);
-  };
-
-  /** 浏览器侧真取一个 token 的计算色（临时探针元素，读完就摘）。 */
-  const pageColor = (tok) => cdp.eval(`(() => { const d = document.createElement('div');
-    d.style.color = 'var(${tok})'; d.style.display = 'none'; document.body.appendChild(d);
-    const v = getComputedStyle(d).color; d.remove(); return v; })()`);
-  /**
-   * 切档只能写 `appearance`：`s.dark` 是 computed（appearance + 系统偏好解析而来），
-   * 直接写它**不报错也不生效** —— 主题矩阵第一版就因此 14 格读数全等却全绿。
-   * class 也要一起翻：样式表里的 `.dark` 块靠它。
-   */
-  const setAppearance = (dark) => cdp.eval(`(async () => {
-    const piniaUrl = performance.getEntriesByType('resource')
-      .map((e) => e.name || '').find((u) => u.includes('/node_modules/.vite/deps/pinia.js?v='));
-    if (!piniaUrl || !window.__pinia) return { ok: 'no-pinia' };
-    const P = await import(piniaUrl);
-    const A = await import('/src/stores/useAppStore.ts');
-    P.setActivePinia(window.__pinia);
-    const s = A.useAppStore();
-    s.appearance = '${dark ? "dark" : "light"}';
-    document.documentElement.classList.toggle('dark', ${dark ? "true" : "false"});
-    return { ok: 'ok', dark: s.dark === true, appearance: s.appearance };
-  })()`);
+  // `toTriple` / `sameColor` / `pageColor` / `setAppearance` 这四个助手在 2026-10-24 升成了
+  // 模块级（第二段要复用同一套比色逻辑），这里直接用，不再有一份段内副本。
 
   /** 挂一个真实的禁用按钮，读回它自己的计算样式。 */
   const mountDisabled = async (cmp) => {
@@ -6020,7 +6417,7 @@ async function runMsgOverflow(cdp, url) {
   const wasDark = await cdp.eval("document.documentElement.classList.contains('dark')");
   for (const dark of [false, true]) {
     const tcTheme = dark ? "dark" : "light";
-    const st = await setAppearance(dark);
+    const st = await setAppearance(cdp, dark);
     check(`禁用态绑定：切到${tcTheme}档真的生效（store 与 class 都得跟上）`,
       !!st && st.ok === "ok" && st.dark === dark,
       `appearance=${dark ? "dark" : "light"} 且 s.dark=${dark}`, JSON.stringify({ st, wasDark }));
@@ -6033,7 +6430,7 @@ async function runMsgOverflow(cdp, url) {
     await sleep(120);
     const pageSeen = await cdp.eval(`(() => { const h = document.getElementById('probe-host');
       return h ? getComputedStyle(h).backgroundColor : null; })()`);
-    const activeSeen = await pageColor("--gosslan-primary-active");
+    const activeSeen = await pageColor(cdp, "--gosslan-primary-active");
     check(`禁用态契约的两个面与浏览器解出的同一个 token 同值（面板面 + 主色实底派生档 / ${tcTheme}）`,
       sameColor(pageSeen, tcRgbFor(dark, "--gosslan-panel"))
         && sameColor(activeSeen, tcRgbFor(dark, "--gosslan-primary-active")),
@@ -6044,7 +6441,7 @@ async function runMsgOverflow(cdp, url) {
   }
   // 档位不许外溢给后面的段（同一份脚本里那条介质模拟也守这条）—— 而且"还原"本身要读回来：
   // 静默没还原时后面的段就在另一档里跑，读数是另一批 token 值（这条就是那条 `document.hidden` 教训的同族）。
-  const back = await setAppearance(wasDark === true);
+  const back = await setAppearance(cdp, wasDark === true);
   await sleep(140);
   const nowDark = await cdp.eval("document.documentElement.classList.contains('dark')");
   check("禁用态绑定不外溢：跑完回到进页面时那一档（store 与 class 都要回来）",
@@ -6063,6 +6460,66 @@ async function runMsgOverflow(cdp, url) {
     return b ? Number(getComputedStyle(b).opacity) : null; })()`);
   check("禁用态绑定尺非空转：inline 把 α 压到 0.25 必须被读回来",
     forced === 0.25, "0.25", JSON.stringify({ forced }));
+
+  // ---------------- 开关轨道 ↔ 真实渲染的绑定（决策 4 那档新家的另一半天） ----------------
+  //
+  // `--gosslan-toggle-off` 是本轮新立的家（此前借 `--gosslan-border`：白滑块压它只有 1.64、
+  // 轨道压面板 1.23）。但契约行只读 `style.css` 里**它自己点名的那个 token**，
+  // 看不见组件真用了哪个 —— 把 `SettingsToggle.vue:37` 那条三元退回 `bg-[var(--gosslan-border)]`，
+  // 契约 6 行照旧全绿、`--only=switch` 那四条也照旧全绿（它们判 role / 可访问名 / emit / 禁用不发事件）：
+  // 上面那格退化在渲染层**没有任何一层看得见**。这一段和禁用态绑定同形，把这条链接上。
+  const mountSwitch = async (modelValue) => {
+    await cdp.eval("window.__probe.install('/src/components/settings/SettingsToggle.vue', '', "
+      + `${JSON.stringify(JSON.stringify({ modelValue, label: "深色模式", size: "md" }))})`);
+    await sleep(200);
+    return await cdp.eval(`(() => { const b = document.querySelector('#probe-host button');
+      if (!b) return null; const t = b.firstElementChild;
+      return { role: b.getAttribute('role'), checked: b.getAttribute('aria-checked'),
+        bg: getComputedStyle(b).backgroundColor,
+        thumbBg: t ? getComputedStyle(t).backgroundColor : null }; })()`);
+  };
+  const wasDarkSw = await cdp.eval("document.documentElement.classList.contains('dark')");
+  for (const dark of [false, true]) {
+    const tcTheme = dark ? "dark" : "light";
+    const st = await setAppearance(cdp, dark);
+    check(`开关轨道绑定：切到${tcTheme}档真的生效（store 与 class 都得跟上）`,
+      !!st && st.ok === "ok" && st.dark === dark,
+      `appearance=${tcTheme} 且 s.dark=${dark}`, JSON.stringify({ st, wasDarkSw }));
+    await sleep(160);
+    const off = await mountSwitch(false);
+    const on = await mountSwitch(true);
+    const wantOff = tcRgbFor(dark, "--gosslan-toggle-off");
+    const wantOn = tcRgbFor(dark, "--gosslan-primary");
+    check(`未选中轨道画出来的底色 == 契约行点名的 --gosslan-toggle-off（${tcTheme}）`,
+      !!off && off.role === "switch" && off.checked === "false" && sameColor(off.bg, wantOff),
+      wantOff, JSON.stringify({ off, wantOff }));
+    // 白滑块是契约「滑块压轨道」那一行的前景；它要是没真画在滑块上，那一行量的就不是这格界面。
+    check(`滑块底色真是契约写的那个白（${tcTheme}）`,
+      !!off && sameColor(off.thumbBg, "#ffffff"), "#ffffff", JSON.stringify({ thumbBg: off?.thumbBg }));
+    // 差分对照：同一条三元（`modelValue ? primary : toggle-off`）的另一支必须换色。
+    // 只断"未选中 == X"的话，一把恒读到同一个底色的尺子也能过 —— 这一格把它钉成"读的是这条三元"。
+    check(`选中那条轨道换成 --gosslan-primary、且与未选中档不同色（${tcTheme}）`,
+      !!on && on.checked === "true" && sameColor(on.bg, wantOn) && !sameColor(on.bg, wantOff),
+      `${wantOn} 且 ≠ ${wantOff}`, JSON.stringify({ on, wantOn, wantOff }));
+  }
+  const backSw = await setAppearance(cdp, wasDarkSw === true);
+  await sleep(140);
+  const nowDarkSw = await cdp.eval("document.documentElement.classList.contains('dark')");
+  check("开关轨道绑定不外溢：跑完回到进页面时那一档（store 与 class 都要回来）",
+    !!backSw && backSw.ok === "ok" && backSw.dark === (wasDarkSw === true)
+      && nowDarkSw === (wasDarkSw === true),
+    `回到 ${wasDarkSw ? "dark" : "light"}`, JSON.stringify({ backSw, nowDarkSw, wasDarkSw }));
+
+  // 空转对照：这把尺读的必须是**真元素的计算样式**（inline 改轨道底色要读得回来）。
+  // `transition: none` 同样必需 —— 根元素带 `transition` 类，底色是过渡属性。
+  await mountSwitch(false);
+  await cdp.eval(`(() => { const b = document.querySelector('#probe-host button');
+    if (b) { b.style.transition = 'none'; b.style.background = 'rgb(1, 2, 3)'; } return true; })()`);
+  await sleep(80);
+  const forcedTrack = await cdp.eval(`(() => { const b = document.querySelector('#probe-host button');
+    return b ? getComputedStyle(b).backgroundColor : null; })()`);
+  check("开关轨道尺非空转：inline 把底色压成 rgb(1, 2, 3) 必须被读回来",
+    forcedTrack === "rgb(1, 2, 3)", "rgb(1, 2, 3)", JSON.stringify({ forcedTrack }));
 }
 
 /**
@@ -11497,8 +11954,16 @@ async function runTodoPick(cdp, url) {
   await sleep(200);
   const ev = await events();
   const gone = await menu();
+  // 「关掉之后」的读数必须站在收尾完成的那一刻上（INV-P31 第 4 条）：菜单的卸载走 leave 收尾，
+  // 机器忙时 200ms 走不完 ⇒ 不泵就读到"还在"。这条红在隔离跑里不复现、在全量跑里复现，
+  // 差的正是这份负载 —— 所以判据吃泵后那份，两份都打印，别把量具的形状升级成产品判据。
+  const pumpFails = await pumpFrames(cdp, 10);
+  const afterPump = await menu();
+  console.log(
+    `  · 读数（不判绿红）：回车后菜单 present 只等不泵=${gone.present}｜泵帧后=${afterPump.present}（截图失败 ${pumpFails} 次）`,
+  );
   check("回车选中：emit update:modelValue=bug 且菜单收起",
-    ev.some((e) => e[0] === "update" && e[1] === "bug") && gone.present === false,
+    ev.some((e) => e[0] === "update" && e[1] === "bug") && afterPump.present === false,
     "update=bug + 菜单消失", JSON.stringify(ev));
 }
 
@@ -12216,6 +12681,153 @@ async function runTasksRealtime(cdp, url) {
       && v6.pills.map((p) => p.count).join(",") === "3,3,0,1",
     "3,3,0,1", JSON.stringify({ t: v6.uniqTitles, pills: v6.pills.map((p) => p.count) }));
   void finalRows;
+
+  // 第三档（overdue）那一行本段原本没有，必须自己造一条**创建记录**（`kind:'todo'` 那条带绝对号，
+  // `foldTodos` 只认它；`todo_update` 不行）。两条实测到的前提，写在这里省下一次重复踩：
+  //   ① 只把行 push 进 `window.__todoRows`（DB 快照）**不够** —— 看板的重读由事件驱动，
+  //      而本段前面已经 `__unwatch()`、`install()` 重挂时旧监听随之摘掉 ⇒ 不先重新订阅，
+  //      emit 出去只有 bulk 那条路会读，而它的 ids 来自 `conversations.filter(kind==='group')`，
+  //      这册 mock 的会话列表是空的（实测 `convGroupIds: []`）⇒ 永远写不到 `group:g1`。
+  //      所以顺序必须是 **push 行 → `watchGroupTodos('g1')` → emit**（照 D 那条已验证的路）。
+  //   ② 反过来，上一版我把"store 没吃到那 7 行"记成了卡点 —— **那是假前提**：按①的顺序重跑后
+  //      store 立即变成 7 行、DOM 里也出现「取回快递」。`putTodoRows`/`reloadGroupTodoRows`
+  //      本身没有过滤（`putTodoRows` 只按 `convIds` 建键、整表替换那一个群）。
+  const T_OVERDUE_ROW = "取回快递"; // status=overdue ⇒ 条应为 warning-solid
+  const injected = await cdp.eval(`(async () => {
+    const chat = await window.__probe.chatStore();
+    const rows = JSON.parse(JSON.stringify(window.__todoRows));
+    const E = window.__mk('E', 9, 'todo', { title: '${T_OVERDUE_ROW}', number: 88, status: 'overdue' }, Date.now());
+    rows.push(E);
+    window.__probe.todoRows(rows);
+    await chat.watchGroupTodos('g1');
+    window.__probe.todoEmit([E]);
+    return true;
+  })()`);
+  const rowTitlesNow = () => cdp.eval(`(() => Array.from(document.querySelectorAll('button.min-w-0.flex-1'))
+    .map((b) => (((b.querySelector('.truncate') || {}).textContent) || '').trim()))()`);
+  const arrived = await waitFor(async () => (await rowTitlesNow()).includes(T_OVERDUE_ROW), 4_000);
+  check("overdue 那一行真的走到了 DOM（这格红 ⇒ 下面的色条读数不作数，不能当成「色条画错」）",
+    !!injected && arrived === true, `${T_OVERDUE_ROW} 在行标题里`, JSON.stringify(await rowTitlesNow()));
+
+  // ---------------- 状态色条 ↔ 真实渲染的绑定（决策 3/4 换档那一刀的另一半天） ----------------
+  // 为什么非补不可（这三层的静默是**跑出来的**，不是推的）：把 `todos.ts` 的 `done` 单独改回
+  // 非 solid 档（`--gosslan-success`，压面板实测 2.54）⇒ `npm test` **1362/1362 全绿**、
+  // `--only=msgovf` **78/78 全绿**。`todos.test.ts` 断的是 `includes("warning"/"success")`
+  // （`*-solid` 也含这个词，新旧两档一起过），`--gosslan-success-solid` 在 `LogViewer.vue`
+  // 还有两个消费者 ⇒ 连孤儿检测都不响；而契约行读的是 `style.css` 里 token 自己的值，
+  // **从不读"这一档到底画没画在这个元素上"**。两档真实值差着 2.54 与 9.26 那一截。
+  // 已有状态里有一行 done（周报已发出）和一行 todo（修打印机），两行各自画着自己那一档的左缘条；
+  // 第三档 overdue 板上原本没有，由本段下面自己造一条（造法见那一段的注释）。
+  // ⚠️ 更正我自己写过的两条假前提（都实测推翻过，写在这里省下一次重复踩）：
+  //    「注新 id 进不了 DOM，因为看板按会话里已有的卡片取 id」—— **错**：`getGroupTodoMessages(ids)`
+  //    的 ids 是**群会话 id**（`refreshOpenTodos` 取 `conversations.filter(kind==="group")`），不是任务 id；
+  //    这册 mock 更是整份返回、根本不吃 ids。
+  //    「store 没吃到那 7 行 ⇒ 卡点在 `putTodoRows`」—— **也错**：`reloadGroupTodoRows` 里是
+  //    `putTodoRows(prev, [convId], rows)` 整表替换、没有任何过滤。真正的原因是**事件驱动的那次重读
+  //    当时没有订阅者**（`__unwatch()` + `install()` 重挂后旧的监听随之摘掉），emit 出去只剩 bulk 那条路，
+  //    而 bulk 的 ids 来自 `conversations` —— 这册 mock 里**一条群会话都没有**（实测 `convGroupIds: []`）
+  //    ⇒ 永远写不到 `group:g1`。按「push 行 → `watchGroupTodos('g1')` → emit」重跑，store 立刻 7 行、
+  //    DOM 里也出现那一行。所以这不是产品缺陷，是探针夹具的时序。
+  // ⚠️ 口径：done 行钉 `--gosslan-success-solid`、todo 行钉 `--gosslan-status-offline`、
+  //    overdue 行钉 `--gosslan-warning-solid`，都是**写死的 token 名**，不是从 `TODO_STATUS_BAR` 现推 ——
+  //    从那张表推自己等于没断言。
+  //    这正好补上实测过的那一半静默：把 `done` 单独改回 `--gosslan-success` 时，
+  //    `npm test` 1362/1362 绿、`--only=msgovf` 78/78 绿，此前**没有任何一层**看得见。
+  const T_DONE_ROW = "周报已发出"; // status=done ⇒ 条应为 success-solid
+  const T_TODO_ROW = "修打印机"; // status=todo  ⇒ 条应为 status-offline（中性灰）
+  await cdp.eval(`(() => { const b = document.querySelectorAll('button[aria-pressed]')[0];
+    if (b) b.click(); return !!b; })()`); // 切「全部」：两行都得在 DOM 里
+  /**
+   * 按行标题找到那一行左缘那道 2px 色条，读它自己的底色；顺带回读整行文字与当前行标题清单。
+   *
+   * ⚠️ 定位起点用**本段自己已经跑绿的那把尺**（`view()` 里的 `button.min-w-0.flex-1`），
+   *    不写 `#probe-host` 前缀：这台机器上挂载点的 id 不止一个名字（本文件里
+   *    `getElementById('mhost') || getElementById('probe-host')` 就是先例），
+   *    第一版用 `#probe-host span[...]` 起头 ⇒ 两行一律读到 null。
+   *    色条用 `:scope > span` 只认**行的直接子元素**，这样同时证明了"它是整行那道左缘条"，
+   *    而不是行里某个也带 aria-hidden 的图标。
+   *    `rowText` 是给"状态真的换档了"那格用的独立可观测量：色条读到的值与行文字来自同一次 eval，
+   *    所以读到旧渲染时行文字也一定是旧的 —— 不用睡固定时长去猜渲染落地（第二版就是这么错的：
+   *    等到"有 rgb"就往下走，结果两格读到的是换档前的绿/灰）。
+   */
+  const barsRead = () => cdp.eval(`(() => {
+    const rowOf = (title) => {
+      const btn = Array.from(document.querySelectorAll('button.min-w-0.flex-1'))
+        .find((b) => (((b.querySelector('.truncate') || {}).textContent) || '').trim() === title);
+      if (!btn) return null;
+      return btn.closest('div.relative'); };
+    const one = (title) => {
+      const row = rowOf(title);
+      if (!row) return '!norow';
+      const bar = row.querySelector(':scope > span[aria-hidden="true"]');
+      if (!bar) return '!nobar:' + Array.from(row.children)
+        .map((c) => c.tagName + (c.getAttribute('aria-hidden') === 'true' ? '[ah]' : '')).join(',');
+      return getComputedStyle(bar).backgroundColor; };
+    const titles = Array.from(document.querySelectorAll('button.min-w-0.flex-1'))
+      .map((b) => (((b.querySelector('.truncate') || {}).textContent) || '').trim());
+    return { d: one('${T_DONE_ROW}'), t: one('${T_TODO_ROW}'), o: one('${T_OVERDUE_ROW}'),
+      titles: [...new Set(titles)] }; })()`);
+  await waitFor(async () => { const b = await barsRead(); return String(b.d).startsWith("rgb") && String(b.t).startsWith("rgb") && String(b.o).startsWith("rgb"); }, 4_000);
+
+  const wasDarkBar = await cdp.eval("document.documentElement.classList.contains('dark')");
+  for (const dark of [false, true]) {
+    const tn = dark ? "暗" : "亮";
+    const st = await setAppearance(cdp, dark);
+    check(`色条绑定·${tn}：主题档真的切过去了（写的是 appearance，不是 computed 的 dark）`,
+      !!st && st.ok === "ok" && st.dark === dark, `dark=${dark}`, JSON.stringify(st));
+    await sleep(200);
+    const bars = await barsRead();
+    check(`色条绑定·${tn}：三行都读到了自己的底色（读不到 rgb 就是没画/没选中，诊断串不算绿）`,
+      String(bars.d).startsWith("rgb") && String(bars.t).startsWith("rgb") && String(bars.o).startsWith("rgb"),
+      "三个都以 rgb 开头", JSON.stringify(bars));
+    const solidD = await pageColor(cdp, "--gosslan-success-solid");
+    const plainD = await pageColor(cdp, "--gosslan-success");
+    const offline = await pageColor(cdp, "--gosslan-status-offline");
+    // 「不等于压线那一档」是**只有亮档才成立**的断言：暗档里 `--gosslan-success` 与
+    // `--gosslan-success-solid` 实测同为 rgb(48, 209, 88)（两档值在暗档收敛，`warning` 那对同形）。
+    // 把它写成两档都断 ⇒ 暗档那格永远不可能绿（第一版正是这么错的）。
+    // 所以拆两件事：画没画在 solid 上（两档都要）＋ 这两档 token 值本身的关系（单独钉住，
+    // 上面那格的口径依赖它；暗档哪天不收敛了得有人被提醒）。
+    const mustDiffer = dark === false;
+    check(`色条绑定·${tn}：done 行的左缘条画的就是 success-solid${mustDiffer ? "（且不是压线 2.54 的 success 档）" : ""}`,
+      sameColor(bars.d, solidD) && (!mustDiffer || !sameColor(bars.d, plainD)),
+      mustDiffer ? `== ${solidD} 且 != ${plainD}` : `== ${solidD}`,
+      `${bars.d}｜solid=${solidD}｜plain=${plainD}`);
+    check(`色条绑定·${tn}：todo 行的左缘条画的是中性灰 status-offline，且与 done 行不同色（防"整片涂成一族"）`,
+      sameColor(bars.t, offline) && !sameColor(bars.d, bars.t),
+      `== ${offline} 且异色`, `todo=${bars.t}｜offline=${offline}｜done=${bars.d}`);
+    const solidW = await pageColor(cdp, "--gosslan-warning-solid");
+    const plainW = await pageColor(cdp, "--gosslan-warning");
+    check(`色条绑定·${tn}：overdue 行的左缘条画的就是 warning-solid${mustDiffer ? "（且不是 warning 档）" : ""}`,
+      sameColor(bars.o, solidW) && (!mustDiffer || !sameColor(bars.o, plainW)),
+      mustDiffer ? `== ${solidW} 且 != ${plainW}` : `== ${solidW}`,
+      `${bars.o}｜solid=${solidW}｜plain=${plainW}`);
+    check(`色条绑定·${tn}：warning 与 warning-solid 是否同值（亮=不同色 / 暗=同值）—— 上面那格口径的前提`,
+      sameColor(plainW, solidW) === dark, `同值=${dark}`, `warning 同值=${sameColor(plainW, solidW)}`);
+    check(`色条绑定·${tn}：success 与 success-solid 是否同值（亮=不同色 / 暗=同值）—— 上面两格口径的前提`,
+      sameColor(plainD, solidD) === dark, `同值=${dark}`, `success 同值=${sameColor(plainD, solidD)}`);
+  }
+  const backBar = await setAppearance(cdp, wasDarkBar === true);
+  check("色条绑定不外溢：跑完回到进页面时那一档（store 与 class 都要回来）",
+    !!backBar && backBar.ok === "ok" && backBar.dark === (wasDarkBar === true),
+    `dark=${wasDarkBar === true}`, JSON.stringify(backBar));
+  // 尺子非空转：色条的底色是 token 类，压不过 inline ⇒ inline 改色必须被读回来
+  await cdp.eval(`(() => { const btn = Array.from(document.querySelectorAll('button.min-w-0.flex-1'))
+      .find((b) => (((b.querySelector('.truncate') || {}).textContent) || '').trim() === '${T_DONE_ROW}');
+    if (!btn) return false;
+    const row = btn.closest('div.relative');
+    const hit = row ? row.querySelector(':scope > span[aria-hidden="true"]') : null;
+    if (hit) { hit.style.transition = 'none'; hit.style.background = 'rgb(1, 2, 3)'; } return !!hit; })()`);
+  await sleep(120);
+  const forcedBar = await barsRead();
+  check("色条尺非空转：inline 把 done 行那道压成 rgb(1, 2, 3) 必须被读回来",
+    forcedBar.d === "rgb(1, 2, 3)", "rgb(1, 2, 3)", String(forcedBar.d));
+  await cdp.eval(`(() => { const btn = Array.from(document.querySelectorAll('button.min-w-0.flex-1'))
+      .find((b) => (((b.querySelector('.truncate') || {}).textContent) || '').trim() === '${T_DONE_ROW}');
+    if (!btn) return false;
+    const row = btn.closest('div.relative');
+    const hit = row ? row.querySelector(':scope > span[aria-hidden="true"]') : null;
+    if (hit) { hit.style.background = ''; hit.style.transition = ''; } return true; })()`);
 }
 
 /**

@@ -1761,6 +1761,78 @@ export function checkImageBubbleHeightSources(
   return out.sort((a, b) => a.line - b.line);
 }
 
+/**
+ * 合并转发卡片的"定高"是一个数还是两个数（2026-10-24，用户拍板：常量不动，补判据）。
+ *
+ * 契约是同一句话的两半：渲染端 `MergeCard.vue` 钉 `h-24`(=96px)，估算端
+ * `messageHeight.MERGE_CARD = 96` 且 merge 分支**返回这个常量**。
+ * 分叉的后果不是"难看"：虚拟列表按 96 排版，画出来更高/更矮 ⇒ 相邻消息互相遮挡
+ * （`messageHeight.ts` 文件头写过的那条契约）。这一族此前**只有注释在守** ——
+ * 改任意一边都不报错、不红，只有滚起来才看得见。
+ *
+ * 三格各自会红的形状：
+ *   ① 卡片根元素没有 `h-24`（换成 `min-h-`/内容决定 ⇒ 高度重新变成载荷的函数）；
+ *   ② `h-24` 与 `MERGE_CARD` 不是同一个像素数（改了一边忘了另一边 —— Tailwind 的
+ *      `h-N` 是 `N × 4px`，所以这里现算，不抄 96）；
+ *   ③ merge 分支不再返回 `MERGE_CARD`（写了内联数字或别的常量：值也许还对，但"一个数"这个事实已经没了）。
+ *
+ * 运行时那一半在 `--only=mergeheight`：这里读源码文本，探针读**真渲染矩形**。
+ */
+export function checkMergeCardHeightCoupling(mergeCardSrc: string, estimatorSrc: string): GuardIssue[] {
+  const out: GuardIssue[] = [];
+  const src = mergeCardSrc
+    .replace(/<!--[\s\S]*?-->/g, (m) => m.replace(/[^\n]/g, " "))
+    .replace(/\/\*[\s\S]*?\*\//g, (m) => m.replace(/[^\n]/g, " "));
+
+  const declared = /const\s+MERGE_CARD\s*=\s*(\d+)\s*;/.exec(estimatorSrc);
+  if (!declared) {
+    out.push({
+      line: 1,
+      message: "估算端读不到 `const MERGE_CARD = <数字>;` —— 判据不许因为形状变了就静默跳过（改名/换写法要同批改这里）。",
+    });
+    return out;
+  }
+  const declaredPx = Number(declared[1]);
+
+  // 只看**根元素那一个开标签**：卡片里的图标自己就写着 `h-4`（16px），
+  // 拿全文的 `h-*` 去比 96 会把每个图标都判成"定高漂移"。契约说的是"这张卡多高"。
+  const tplStart = src.indexOf("<template");
+  const firstTag = tplStart >= 0 ? src.slice(tplStart) : src;
+  const openStart = firstTag.search(/<(?:button|div|article|section|a)\b/);
+  const openEnd = firstTag.indexOf(">", openStart);
+  const rootTag = openStart >= 0 && openEnd > openStart ? firstTag.slice(openStart, openEnd + 1) : "";
+  const used = [...rootTag.replace(/\b(?:min|max)-h-\d+\b/g, "").matchAll(/\bh-(\d+)\b/g)];
+  if (!rootTag || used.length === 0) {
+    out.push({
+      line: lineAt(mergeCardSrc, 0),
+      message: "MergeCard 根元素没有 `h-<N>` 定高 ⇒ 卡片高度重新变成载荷的函数，"
+        + `而估算端仍按 ${declaredPx}px 排版（后果是相邻消息互相遮挡）。`,
+    });
+  }
+  for (const m of used) {
+    const px = Number(m[1]) * 4;
+    if (px !== declaredPx) {
+      out.push({
+        line: lineAt(mergeCardSrc, 0),
+        message: `渲染端 h-${m[1]} = ${px}px 与估算端 MERGE_CARD = ${declaredPx}px 不是同一个数：`
+          + "定高契约要求两边同源（Tailwind h-N 是 N × 4px，这里现算）。",
+      });
+      break;
+    }
+  }
+
+  // merge 分支必须"返回那个常量"，不是"返回一个等于它的数字"。
+  const branch = /case\s+"merge"\s*:\s*(?:\/\/[^\n]*\n\s*)*return\s+([A-Za-z_$][\w$]*|\d+)\s*;/.exec(estimatorSrc);
+  if (!branch || branch[1] !== "MERGE_CARD") {
+    out.push({
+      line: 1,
+      message: "估算端 merge 分支没有 `return MERGE_CARD`（实际读到 "
+        + `${branch ? branch[1] : "没有这一支"}）：值可以照样对，但"渲染高度与估算高度同源"这件事从此没有单一来源。`,
+    });
+  }
+  return out;
+}
+
 /** 这条尺子在这份组件里看得见多少个 class 属性（真实树那半的阳性对照：一个都看不见就是尺子瞎了）。 */
 export function countClassAttrs(raw: string): number {
   const src = raw
@@ -2078,6 +2150,17 @@ const FILL_ACTIVE = "bg-[var(--gosslan-primary-active)]";
 const FILL_HOVER = "bg-[var(--gosslan-primary-hover)]";
 const FILL_RAW = "bg-[var(--gosslan-primary)]";
 const ON_PRIMARY = "text-[var(--gosslan-on-primary)]";
+/**
+ * 语义色那两族（2026-10-24 补，与主色族同一条判据、同一个家）：
+ *  - `FILL_SEMANTIC_SOLID`：**实底档**（`--gosslan-warning-solid` / `--gosslan-success-solid`），
+ *    压的是配对前景 ⇒ 只写填充 = 文字继承父级颜色，同一形状。
+ *  - `FILL_SEMANTIC_DOT`：**状态点档**（`--gosslan-warning` / `--gosslan-success`），
+ *    它只被"图形档 3.0"约束（在线点、色条），从没为"上面有字"设计过 ——
+ *    白字压它实测 2.20 / 2.54（暗色 2.06 / 2.02），这一族的缺陷正是"拿状态点当按钮底"。
+ * 只禁止它配 `text-white`：同一 token 当状态点（无文字）是正确用法，不报。
+ */
+const FILL_SEMANTIC_SOLID = ["bg-[var(--gosslan-warning-solid)]", "bg-[var(--gosslan-success-solid)]"];
+const FILL_SEMANTIC_DOT = ["bg-[var(--gosslan-warning)]", "bg-[var(--gosslan-success)]"];
 
 /** 无闭合标签的元素：取"子树"时按自闭合处理。 */
 const VOID_ELEMENTS = new Set(["area", "base", "br", "col", "embed", "hr", "img", "input", "link", "meta", "source", "track", "wbr"]);
@@ -2130,29 +2213,34 @@ export function findPrimaryFillWithoutOnPrimary(src: string): GuardIssue[] {
     // 只认开标签那一行会把这两处判成缺陷。
     const block = elementBlock(tpl, m.index ?? 0);
     const hasOnPair = block.includes(ON_PRIMARY);
-    const filled = openTag.includes(FILL_ACTIVE) || openTag.includes(FILL_HOVER);
-    if (filled && !hasOnPair) {
+    const solidFill = [FILL_ACTIVE, FILL_HOVER, ...FILL_SEMANTIC_SOLID].find((f) => openTag.includes(f)) ?? "";
+    if (solidFill && !hasOnPair) {
       out.push({
         line: lineAt(src, at),
         message:
-          "主色实底（" +
-          (openTag.includes(FILL_ACTIVE) ? FILL_ACTIVE : FILL_HOVER) +
+          "实底（" +
+          solidFill +
           "）必须在这个元素或其子树里带上 " +
           ON_PRIMARY +
           "。只写填充 ⇒ 文字继承父级颜色；写 text-white ⇒ 暗色那档是提亮填充，白字只剩 1.6~2.0。" +
           "这一对由 tokenContrast 的契约判比值，不由人眼判。",
       });
-    } else if (openTag.includes(FILL_RAW) && openTag.includes("text-white")) {
-      out.push({
-        line: lineAt(src, at),
-        message:
-          "禁止 `bg-[var(--gosslan-primary)] text-white`：主色本身是中间调，白字只有 3.5 左右（不达 AA）。" +
-          "承载文字的实底要用 " +
-          FILL_ACTIVE +
-          " + " +
-          ON_PRIMARY +
-          "（比值由 tokenContrast 契约判）。",
-      });
+    } else {
+      const dotFill = [FILL_RAW, ...FILL_SEMANTIC_DOT].find((f) => openTag.includes(f)) ?? "";
+      if (dotFill && openTag.includes("text-white")) {
+        out.push({
+          line: lineAt(src, at),
+          message:
+            "禁止 `" +
+            dotFill +
+            " text-white`：这一档是给**状态点 / 色条**的（只受图形档 3.0 约束），白字压它实测 2.20（橙）/ 2.54（绿）/ ≈3.5（主色），" +
+            "两种外观下都不合格。承载文字的实底要用 " +
+            FILL_ACTIVE +
+            " 或 `--gosslan-warning-solid` / `--gosslan-success-solid`，配 " +
+            ON_PRIMARY +
+            "（比值由 tokenContrast 契约判）。",
+        });
+      }
     }
   }
   return out.sort((a, b) => a.line - b.line);

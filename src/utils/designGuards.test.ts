@@ -2,7 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
-import { disabledOpacityFromClasses, disabledOpacityFromRule } from "./tokenContrast.ts";
+import { disabledOpacityFromClasses, disabledOpacityFromRule, parseTokenScopes } from "./tokenContrast.ts";
 import {
   checkBubbleMetricsCoupling,
   findTemplateSlotIssues,
@@ -31,6 +31,7 @@ import {
   findFreshEmptyArrayProp,
   countListPropBindings,
   checkImageBubbleHeightSources,
+  checkMergeCardHeightCoupling,
   countClassAttrs,
   findRawPlatformCheckInViewLayer,
   countCommonLayerPlatformImports,
@@ -2708,6 +2709,42 @@ test("㉞ 真实树：MessageImageBubble 与 messageHeight 现在这一份必须
   console.log(`· N22 真实树分母：图片盒 ${attrs} 个 class 属性 / 0 处高度工具类；估算端无本地副本`);
 });
 
+// ---------------- ㉞b 合并转发卡片的定高是一个数还是两个数（2026-10-24 拍板：常量不动、补判据） ----------------
+
+const MERGE_CARD_OK = `<template><button class="relative flex h-24 w-60 flex-col px-3 py-2">卡片</button></template>`;
+const MERGE_EST_OK = `const MERGE_CARD = 96;\nexport function estimate(k: string) {\n  switch (k) {\n    case "merge":\n      return MERGE_CARD;\n    default:\n      return 0;\n  }\n}`;
+
+test("㉞b 合规写法静默；三格各自的坏形状都要红", () => {
+  assert.deepEqual(checkMergeCardHeightCoupling(MERGE_CARD_OK, MERGE_EST_OK), [], "h-24(=96) 与 MERGE_CARD=96 同源");
+
+  const noFixed = MERGE_CARD_OK.replace("h-24", "min-h-0");
+  assert.equal(checkMergeCardHeightCoupling(noFixed, MERGE_EST_OK).length, 1, "① 摘掉定高 ⇒ 红");
+
+  const drifted = MERGE_CARD_OK.replace("h-24", "h-28");
+  const driftIssues = checkMergeCardHeightCoupling(drifted, MERGE_EST_OK);
+  assert.equal(driftIssues.length, 1, "② h-28(=112) 与 96 不是同一个数 ⇒ 红");
+  assert.match(driftIssues[0].message, /112px/, "提示里要报出两边各是多少，别让人回去换算");
+
+  const inline = MERGE_EST_OK.replace("return MERGE_CARD;", "return 96;");
+  const inlineIssues = checkMergeCardHeightCoupling(MERGE_CARD_OK, inline);
+  assert.equal(inlineIssues.length, 1, "③ 分支改写回内联 96（值还对、来源已散）⇒ 红");
+  assert.match(inlineIssues[0].message, /return MERGE_CARD/);
+
+  // 常量被改名/删掉 ⇒ 不许静默跳过（"读不到"本身就是这条判据要报的事）。
+  assert.equal(checkMergeCardHeightCoupling(MERGE_CARD_OK, "export const X = 1;").length, 1,
+    "读不到 MERGE_CARD 要红，不能当没有这一格");
+});
+
+test("㉞b 真实树：MergeCard 与 messageHeight 现在这一份必须合规，且常量仍是 96", () => {
+  const root = join(import.meta.dirname, "..");
+  const card = readFileSync(join(root, "components/message/MergeCard.vue"), "utf8");
+  const est = readFileSync(join(root, "utils/messageHeight.ts"), "utf8");
+  assert.deepEqual(checkMergeCardHeightCoupling(card, est), []);
+  // 96 这个数本身由这里钉住（用户要求：不改常量）。要动它得连着虚拟列表测量一起改。
+  assert.match(est, /const MERGE_CARD = 96;/, "MERGE_CARD 现值必须是 96");
+  assert.match(card, /class="relative flex h-24 /, "渲染端仍是 h-24");
+});
+
 // ---------------- ㉟ 视图层不许裸写平台/输入方式探测（roadmap N11） ----------------
 
 test("㉟ 正向：组件里裸写 matchMedia / UA 类 API 必须逐条报", () => {
@@ -5369,17 +5406,41 @@ test("55 :: 只写填充 / 写死 white / 裸主色配白字 —— 三种缺陷
     ["只写填充（文字继承父级颜色）", `<template><button class="px-3 bg-[var(--gosslan-primary-active)]">保存</button></template>`],
     ["实底配写死 white（暗色失效）", `<template><span class="bg-[var(--gosslan-primary-active)] text-white">9</span></template>`],
     ["hover 档同样要成对", `<template><div class="data-[state=checked]:bg-[var(--gosslan-primary-hover)]">x</div></template>`],
+    // 语义色那一族（2026-10-24）：实底档漏前景 = 与主色族同一形状；状态点档配白字 = 刚修掉的那个缺陷。
+    ["橙实底档只写填充", `<template><button class="bg-[var(--gosslan-warning-solid)]">重试</button></template>`],
+    ["绿实底档配写死 white", `<template><button class="bg-[var(--gosslan-success-solid)] text-white">已复制</button></template>`],
+    ["拿状态点当按钮底（橙 2.20）", `<template><button class="bg-[var(--gosslan-warning)] text-white">逾期</button></template>`],
+    ["拿状态点当按钮底（绿 2.54）", `<template><span class="rounded-full bg-[var(--gosslan-success)] text-white text-[11px]">新</span></template>`],
   ];
   for (const [why, src] of cases) {
     assert.equal(findPrimaryFillWithoutOnPrimary(src).length, 1, `${why} ⇒ 必须报红：\n${src}`);
   }
 
-  // 原缺陷形状：中间调主色 + 白字（≈3.5，不达 AA）。报的必须是"裸主色配白字"那句，不是成对那句。
+  // 原缺陷形状：中间调主色 + 白字（≈3.5，不达 AA）。报的必须是"这一档不该承载白字"那句，不是成对那句。
   const rawWhite = findPrimaryFillWithoutOnPrimary(
     `<template><button class="bg-[var(--gosslan-primary)] text-white">发送</button></template>`,
   );
   assert.equal(rawWhite.length, 1);
-  assert.match(rawWhite[0].message, /不达 AA/, "裸主色+白字要走这一句提示");
+  assert.match(rawWhite[0].message, /都不合格/, "裸主色+白字要走这一句提示");
+  // 报的要能指出**是哪一档**：三族共用一个判据，只说"不合格"等于让人回去猜。
+  assert.match(rawWhite[0].message, /--gosslan-primary/, "提示里要点名命中的那一档");
+  const dotWarn = findPrimaryFillWithoutOnPrimary(
+    `<template><button class="bg-[var(--gosslan-warning)] text-white">逾期</button></template>`,
+  );
+  assert.match(dotWarn[0].message, /--gosslan-warning\)/, "橙那一档要点名橙");
+});
+
+test("55 :: 状态点当状态点用（不配白字）必须静默 —— 否则会把 6 处在线点全判成缺陷", () => {
+  const dot =
+    `<template><span class="h-2 w-2 rounded-full" :class="online ? 'bg-[var(--gosslan-success)]' : 'bg-[var(--gosslan-status-offline)]'"></span></template>`;
+  assert.deepEqual(findPrimaryFillWithoutOnPrimary(dot), [], "在线/离线点：不写 text-white ⇒ 合法（比值那一维由 tokenContrast 判）");
+  // ⚠️ 反向那一格不许松：`*-solid` 与 `-active`/`-hover` 受同一条"必须配对"约束（保守是有意的 ——
+  // 判据分不出"这块底上有没有字"，图标 `<Check>` 吃 currentColor 也算承载前景）。
+  // 所以**色条**这类无文字实底只能留在 `.ts` 常量里（`utils/todos.ts` 的 TODO_STATUS_BAR 不在 .vue 模板里），
+  // 这条边界写在这里，别把它当成"实心档已经能识别是否承载文字"。
+  const barInTemplate = `<template><div class="w-0.5 bg-[var(--gosslan-warning-solid)]"></div></template>`;
+  assert.equal(findPrimaryFillWithoutOnPrimary(barInTemplate).length, 1,
+    "实心档无配对 = 报红（这是已知保守面，不是缺陷；改动这条要连同上面的注释一起改）");
 });
 
 test("55 :: 已知边界：三元分支各写一套时本判据看不见（整块粒度），这条不许被当成覆盖", () => {
@@ -5468,7 +5529,10 @@ test("56: 禁用态透明度只许现有 4 档，第 5 档就是又各自定义�
     }
   }
   const css = readFileSync(join(srcDir, "style.css"), "utf8");
-  for (const a of disabledOpacityFromRule(css, "disabled")) {
+  // 2026-10-24：CSS 侧那两档收进了 `--gosslan-disabled-alpha*`，所以这里**必须带作用域**去解 var ——
+  // 不带就只剩 29 处，分母下限会红（那次红是对"判据没跟着搬"的正确报警，不是提取器坏了）。
+  const scopes = parseTokenScopes(css);
+  for (const a of disabledOpacityFromRule(css, "disabled", scopes.light)) {
     tiers.add(a);
     sites += 1;
   }
@@ -5477,4 +5541,29 @@ test("56: 禁用态透明度只许现有 4 档，第 5 档就是又各自定义�
   // 分母下限：提取器瞎了会把棘轮变成永真的绿（必须能证明它看见了真实写法）。
   assert.ok(sites >= 30, `只扫到 ${sites} 处禁用态透明度声明 ⇒ 提取器没吃到真实写法，这条不算证据`);
   assert.ok(sorted.length <= 4, `禁用态透明度有 ${sorted.length} 档（${sorted.join(", ")}），超过现有 4 档`);
+});
+
+test("56 :: style.css 的禁用规则只许走 token，不许再写字面 opacity", () => {
+  const css = readFileSync(join(import.meta.dirname, "..", "style.css"), "utf8").replace(/\/\*[\s\S]*?\*\//g, "");
+  const bare: string[] = [];
+  for (const m of css.matchAll(/([^{}]*)\{([^{}]*)\}/g)) {
+    if (!m[1].includes("disabled")) continue;
+    for (const o of m[2].matchAll(/opacity:\s*([^;]+);/g)) {
+      if (!o[1].trim().startsWith("var(")) bare.push(`${m[1].trim().replace(/\s+/g, " ")} → opacity: ${o[1].trim()}`);
+    }
+  }
+  assert.deepEqual(bare, [], `禁用态又各自写死透明度了：\n${bare.join("\n")}`);
+
+  // 阳性对照：把真树里的一条按回字面值 ⇒ 这条必须咬（不然它只是个恒真断言）。
+  const mutated = readFileSync(join(import.meta.dirname, "..", "style.css"), "utf8")
+    .replace(".gosslan-menu-item:disabled {\n  opacity: var(--gosslan-disabled-alpha);", ".gosslan-menu-item:disabled {\n  opacity: 0.45;");
+  assert.notEqual(mutated, css, "变异没落到盘上（锚点漂了）⇒ 这条对照不算证据");
+  const hits: string[] = [];
+  for (const m of mutated.replace(/\/\*[\s\S]*?\*\//g, "").matchAll(/([^{}]*)\{([^{}]*)\}/g)) {
+    if (!m[1].includes("disabled")) continue;
+    for (const o of m[2].matchAll(/opacity:\s*([^;]+);/g)) {
+      if (!o[1].trim().startsWith("var(")) hits.push(o[1].trim());
+    }
+  }
+  assert.deepEqual(hits, ["0.45"], "按回字面值必须被抓到");
 });

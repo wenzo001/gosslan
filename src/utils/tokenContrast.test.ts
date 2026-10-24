@@ -402,6 +402,71 @@ test("禁用 α 按规则块取，不许把另一条规则的更淡值算进来"
   assert.deepEqual(disabledOpacityFromRule(fake, ".不存在的选择器"), [], "注释里的同名规则不许被命中");
 });
 
+test("禁用 α 收进 token 后：必须按作用域解 var，解不出就算这行从没被算过", () => {
+  // 2026-10-24：style.css 里那两条禁用规则不再写字面 opacity，改成引用 --gosslan-disabled-alpha*。
+  // 提取器若不认 var，就只会取到空数组 ⇒ 契约那两行变 unresolved（这是对的），
+  // 但**不许**顺手兜底成一个常数 —— 兜底 = 手抄，正是这个文件存在要杀的那类假绿。
+  const fake = `
+:root {
+  --a: 0.5;
+  --field: 0.62;
+}
+.dark {
+  --a: 0.68;
+}
+.gosslan-menu-item:disabled {
+  opacity: var(--a);
+}
+:where(input, textarea, select):disabled {
+  opacity: var(--field);
+}
+.gosslan-chip[data-disabled] {
+  opacity: var(--not-defined);
+}
+`;
+  const sc = parseTokenScopes(fake);
+  assert.deepEqual(disabledOpacityFromRule(fake, ".gosslan-menu-item:disabled", sc.light), [0.5]);
+  assert.deepEqual(
+    disabledOpacityFromRule(fake, ".gosslan-menu-item:disabled", sc.dark),
+    [0.68],
+    "token 被 .dark 覆盖时，暗色必须读到自己那一档（只算一次再套两个主题 = 暗色那档从没被算过）",
+  );
+  assert.deepEqual(disabledOpacityFromRule(fake, "select):disabled", sc.light), [0.62],
+    "字段档与控件档各按各的 token，不许被同一个数盖掉");
+  assert.deepEqual(disabledOpacityFromRule(fake, "[data-disabled]", sc.light), [],
+    "token 没定义 ⇒ 空数组：让调用方报『这行取不到 α』，不许回退成兜底数字");
+
+  // 真实树：搬进 token 不该改变任何一个读数（值完全没动 ⇒ 观感零变化）
+  const real = parseTokenScopes(css);
+  assert.deepEqual(disabledOpacityFromRule(css, ".gosslan-menu-item:disabled", real.light), [0.5]);
+  assert.deepEqual(disabledOpacityFromRule(css, "select):disabled", real.light), [0.62]);
+
+  // 非空转之一：把控件档 token 按坏 ⇒ 菜单那一行必须落进 fails，且读数里的 α 跟着变。
+  const baseline = auditDisabledContrast(css, disabledSources());
+  const baseRating = baseline.ratings.find((r) => r.name === "菜单禁用条目" && r.theme === "light");
+  assert.ok(baseRating !== undefined && baseRating.ratio >= 3.3, "基线读数就不在门槛上，这条变异对照没有意义");
+  const broken = auditDisabledContrast(
+    css.replace("--gosslan-disabled-alpha: 0.5;", "--gosslan-disabled-alpha: 0.15;"),
+    disabledSources(),
+  );
+  assert.ok(
+    broken.fails.some((f) => f.name === "菜单禁用条目" && f.theme === "light"),
+    `按到 0.15 必须报红（还绿 = 契约读的不是 token）；基线 ${baseRating.ratio.toFixed(2)} / 门槛 3.3`,
+  );
+  const brokenRating = broken.ratings.find((r) => r.name === "菜单禁用条目" && r.theme === "light");
+  assert.equal(brokenRating?.alpha, 0.15, "读数里打印的 α 必须是被改后的那个值");
+
+  // 非空转之二：摘掉 token 定义 ⇒ 不许静默通过，要变成 unresolved
+  const missing = auditDisabledContrast(
+    css.replace("--gosslan-disabled-alpha: 0.5;", "--dim-token-removed: 0.5;"),
+    disabledSources(),
+  );
+  assert.ok(
+    missing.unresolved.some((u) => u.includes("菜单禁用条目")),
+    `token 没了要报「这行从没被算过」，实际 ${JSON.stringify(missing.unresolved)}`,
+  );
+});
+
 test("真实源码：禁用态六行都算得出 α 与颜色（一行都不许静默跳过）", () => {
   const audit = auditDisabledContrast(css, disabledSources());
   assert.deepEqual(audit.unresolved, [], `有行取不到 α 或解析不出颜色：${audit.unresolved.join(" / ")}`);

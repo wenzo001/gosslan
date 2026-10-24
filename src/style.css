@@ -134,6 +134,20 @@
   --gosslan-hover: rgba(15, 23, 42, 0.05);
   /* 按压态：比 hover 深一档。iOS 要求交互元素**必须有 press 反馈**，不能只有 hover */
   --gosslan-pressed: rgba(15, 23, 42, 0.09);
+  /* 禁用态的**唯一一档 α**（2026-10-24 收家）。
+     为什么是 α 而不是"成对的禁用前景/填充/边框色"：现算 `grep -rEn "disabled:[a-z-]+" src --include="*.vue"`
+     与 style.css 里三条 `:disabled` 规则 ⇒ 全仓禁用态**没有一处按颜色表达**（只有 opacity 与 cursor），
+     禁用 = 整元素被同一个 α 拉向背景面。凭空加一套 *-disabled 颜色 token 是第二个家，不加。
+     两档按**用途**分，不按外观分：
+       · 控件（按钮/开关/菜单条目）0.5 —— 里面没有需要读的内容，压得下去；
+       · 字段（input/textarea/select 的 disabled 与 readonly）0.62 —— 里面是用户数据，
+         只读不等于"别读"，压到 0.5 就把正文压成了次级文字。
+     ⚠️ **故意不在 .dark 里覆盖**：合成对比度实测（`tokenContrast.test.ts` 打印的六行表）
+       暗色每一档都 ≥ 亮色（如主色实底 2.72 vs 2.25、菜单条目 3.91 vs 3.41），
+       没有一档需要暗色单独抬 α。真要加覆盖时，α 的家用 var 写，判据会从同一份 scope 现读。
+     ⚠️ 这两个数不许手抄进契约：`DISABLED_CONTRAST_CONTRACT` 各行声明自己的 α 家并现取。 */
+  --gosslan-disabled-alpha: 0.5;
+  --gosslan-disabled-alpha-field: 0.62;
   /* 语义色（Apple 系统色，Light 值；Dark 在 .dark 里覆盖）。
      危险/警告只用语义 token，不写死十六进制、也不用 Tailwind 的 red-500 一类固定色阶。
      每个语义色分「填充档」与「文字档」两条（与 --gosslan-success / -success-ink 同一套做法）：
@@ -143,7 +157,8 @@
      所以它和文字档受同一条 4.5 约束。2026-09-26 无障碍实测：原来的系统红 #ff3b30
      白字只有 3.55，hover 混白后 3.11 —— 站内每一处红底白字从来就不合格，
      而契约表当时还没覆盖"白字压实底"这一形状。压深到 #d43d43 → 白字 4.62。
-     ⚠️ 只有"上面有白字"的填充才要压深；不承担白字的填充（如 --gosslan-warning）保持系统色。 */
+     ⚠️ 只有"上面有白字"的填充才要压深；不承担白字的填充（状态点 / 色条）保持系统色，
+     要压白字的橙与绿走下面那一对 `*-solid`（这一族过去没有第三档，所以只能拿状态点当按钮底）。 */
   --gosslan-danger: #d43d43;
   /* 危险色「文字档」：系统红 #ff3b30 当文字只有 3.55（白底），11px 的「发送失败」这类提示读不动。
      压暗到 #cc2418 → 面板 5.48 / 列表 5.00 / 卡片 4.73，全部达标。 */
@@ -157,6 +172,28 @@
      压暗到 #c67600 → 面板 3.50 / 列表 3.20 / 卡片 3.02，跨过图形档；填充档仍是系统橙。 */
   --gosslan-warning-ink: #c67600;
   --gosslan-warning-soft: rgba(255, 149, 0, 0.12);
+  /* 语义色的**实底档**（亮色压深 / 暗色保鲜，见 .dark 那段）。
+     为什么同一族颜色需要第三个值：这一族有三种用途，各受一条约束 ——
+       ① 状态点 / 色条 = 非文字图形，判 3.0（`--gosslan-warning` / `--gosslan-success`）；
+       ② 当文字 / 图标 = 判 4.5 或 3.0，靠压暗同一色相（`*-ink`）；
+       ③ **上面压着白字的实底按钮** = 填充本身判 4.5，方向是"填充压深"，`*-ink` 管不到它。
+     ② 与 ③ 不是一件事：`--gosslan-warning-ink` #c67600 当**图标**达标（3.50），
+     但白字压它只有 **3.50**（同一个数，方向不同结论就不同）⇒ 实底必须再压一档。
+     缺这一档的后果是实测那三组：白字压橙 **2.20**、压绿 **2.54**（暗色 2.06 / 2.02），
+     写代码的人只能拿状态点当按钮底 —— 语义没错，颜色注定不合格。
+     现算：`#ffffff` × #b45309 = 5.02、× #047857 = 5.48；这两档落在面板底上同为 5.02 / 5.48，
+     所以「逾期 / 已完成」的**色条**（`utils/todos.ts` 的 `TODO_STATUS_BAR`）也取这一档，
+     一个 token 同时接住"压白字"和"当色条"两种用途。成对钉在 tokenContrast 的契约表里。 */
+  --gosslan-warning-solid: #b45309;
+  --gosslan-success-solid: #047857;
+  /* 开关（SettingsToggle）**未选中**那一档的轨道色。
+     原来未选中用 `--gosslan-border`：轨道 vs 面板 1.23、白滑块 vs 轨道 1.23 ——
+     量的是**控件边界与状态**（WCAG 1.4.11 非文字档 3.0），而 border 那一族是"分隔线"，
+     按设计就该淡（§3.3 里 1.23 那条"亮色靠阴影表达层级"说的正是它）⇒ 拿它当轨道
+     等于把分隔线的可见度借给了一个必须看得出来状态的控制件。
+     取**跨过 3.0 的最浅一档**（越浅越不抢内容）：#7c8698 vs 面板 3.67 / 列表 3.35 / 卡片 3.17，
+     白滑块压它 3.67。选中态仍走 `--gosslan-primary`（vs 面板 3.68、白滑块 3.68），两档同量级。 */
+  --gosslan-toggle-off: #7c8698;
   /* 键盘焦点环：只用 :focus-visible 触达，鼠标点击不出现 */
   --gosslan-focus-ring: color-mix(in srgb, var(--gosslan-primary) 55%, transparent);
 
@@ -247,6 +284,11 @@
      气泡圆角 18px（17–19 档内）、连续消息相邻侧 6px、群聊头像 30px、气泡宽度 ≤ 80%。
      ⚠️ **行距不在这里**：同组 4px / 换组 10px 由 `messageHeight` 的 GAP_* 一处保管，
        渲染端（MessageItem 的 pt-1.5 / pb-1）与估高端必须同时改 —— 这里再放一份就是第二个家。
+     ⚠️ **气泡内边距也不在这里**：水平 12px 三家一致（`px-3`），纵向按内容形态分档
+       （文本 6 / 合并卡 8 / 文件卡 10）。文本那一档 6px 单侧是**有意的紧凑选择**，
+       验收基线写进 `docs/design-guidelines.md` §8.3，别按"规范说 7–8px"判它不合格；
+       它的成对方是 `previewMetrics.TEXT_BUBBLE_PADDING`（12 = 两侧合计），
+       由 `designGuards.checkBubbleMetricsCoupling` 守着渲染端与估高端。
      ⚠️ 气泡宽度与 `previewMetrics.COLUMNS_PER_LINE` 成对（估高按列数折行），改这里必须现算那里。 */
   --gosslan-bubble-radius-tight: 6px;
   --gosslan-msg-avatar: 30px;
@@ -345,6 +387,19 @@
   --gosslan-success: #30d158;
   --gosslan-success-ink: #30d158;
   --gosslan-success-soft: rgba(48, 209, 88, 0.18);
+  /* 实底档在暗色**换了方向**，而且不是"再压深"：
+     鲜橙/鲜绿压在 #1e293b 面板上本身 7.12 / 7.24（控件边界那一维早就过了），
+     压不住的是**白字**（2.06 / 2.02）。所以这一族在暗色保持鲜色填充，
+     由前景换向解决 —— `--gosslan-on-primary` 在 .dark 是深墨 #0b1220：
+     深墨 × 橙 9.11、× 绿 9.26。这与主色实底按钮是同一套做法（填充提亮 + 深墨压字），
+     不是新发明一档；两档与状态点同值 ⇒ 色条那一维不会因为改字而掉下 3.0。 */
+  --gosslan-warning-solid: #ff9f0a;
+  --gosslan-success-solid: #30d158;
+  /* 开关未选中轨道：暗色要**抬亮**才看得出边界（#3a4a66 vs 面板只有 1.64）。
+     取跨过 3.0 的最淡一档 #64748b：vs 面板 3.07 / vs 卡片 3.27，白滑块压它 4.76。
+     ⚠️ 它比 `--gosslan-border` 亮得多，这是有意的：边界那一族的"该淡"是给分隔线的，
+     不是给一个必须看得出开/关两态的控制件的（亮色那一档同理）。 */
+  --gosslan-toggle-off: #64748b;
   --gosslan-status-offline: #8e8e93;
   --gosslan-app-bg: #0b1220;
   --gosslan-window-ring: rgba(248, 250, 252, 0.09);
@@ -635,7 +690,7 @@ progress {
 :where(input, textarea, select):disabled,
 :where(input, textarea, select)[readonly] {
   cursor: not-allowed;
-  opacity: 0.62;
+  opacity: var(--gosslan-disabled-alpha-field);
 }
 
 /* 一级导航选中态：药丸底 + 主题色 + 弹簧缩放（PC rail 与移动底栏共用这一份） */
@@ -1304,12 +1359,12 @@ img {
 
 .gosslan-menu-item[data-disabled],
 .gosslan-menu-item[aria-disabled="true"] {
-  opacity: 0.5;
+  opacity: var(--gosslan-disabled-alpha);
   cursor: default;
 }
 
 .gosslan-menu-item:disabled {
-  opacity: 0.5;
+  opacity: var(--gosslan-disabled-alpha);
   cursor: default;
 }
 

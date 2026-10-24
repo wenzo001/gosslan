@@ -384,7 +384,7 @@ const rowLevelBg = (lv: string) =>
         </span>
         <button
           class="tap-safe flex h-8 items-center gap-1.5 rounded-[var(--gosslan-radius-sm)] px-2 text-xs transition"
-          :class="copied ? 'bg-[var(--gosslan-success)] text-white' : 'bg-[var(--gosslan-primary-active)] text-[var(--gosslan-on-primary)] hover:bg-[var(--gosslan-primary-hover)]'"
+          :class="copied ? 'bg-[var(--gosslan-success-solid)] text-[var(--gosslan-on-primary)]' : 'bg-[var(--gosslan-primary-active)] text-[var(--gosslan-on-primary)] hover:bg-[var(--gosslan-primary-hover)]'"
           :title="t('logs.copy')"
           :aria-label="t('logs.copy')"
           @click="copyAll"
@@ -556,7 +556,7 @@ const rowLevelBg = (lv: string) =>
         </span>
         <button
           class="tap-safe flex h-8 items-center gap-1.5 rounded-[var(--gosslan-radius-sm)] px-2 text-xs transition"
-          :class="copied ? 'bg-[var(--gosslan-success)] text-white' : 'bg-[var(--gosslan-primary-active)] text-[var(--gosslan-on-primary)] hover:bg-[var(--gosslan-primary-hover)]'"
+          :class="copied ? 'bg-[var(--gosslan-success-solid)] text-[var(--gosslan-on-primary)]' : 'bg-[var(--gosslan-primary-active)] text-[var(--gosslan-on-primary)] hover:bg-[var(--gosslan-primary-hover)]'"
           :title="t('logs.copy')"
           :aria-label="t('logs.copy')"
           @click="copyAll"
