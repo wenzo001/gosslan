@@ -357,3 +357,36 @@
         // GOSSLAN_INSTANCE 只要存在（含空串）就算开发多开 —— 判的是"有没有这个出口"
         assert!(allow_second_instance_launch(Some(""), None));
     }
+
+    /// CSP 必须真的落进配置（审计 SEC-06）：`null` 时 WebView 不设任何策略，
+    /// 任何注入都能加载任意外部资源。
+    ///
+    /// 这条只钉"配置在场 + 前端真实需要的来源都在"；真机是否零违规由
+    /// `docs/notes/csp-candidate-2026-10-16.md` §三那组冒烟回答，本测试答不了那个。
+    /// 来源表的依据同样在那份笔记里（blob: 53 处、IPC 自定义协议、media 预览）。
+    #[test]
+    fn webview_csp_is_configured_with_the_sources_the_frontend_actually_needs() {
+        let conf = include_str!("../tauri.conf.json");
+        assert!(
+            !conf.contains("\"csp\": null"),
+            "csp 退回 null = 这一格回到缺陷原状（WebView 不设任何策略）"
+        );
+        for needle in [
+            "default-src 'none'",
+            "script-src 'self' 'unsafe-inline'",
+            "style-src 'self' 'unsafe-inline'",
+            "img-src 'self' blob: data:",
+            "font-src 'self'",
+            "media-src 'self' blob:",
+            "connect-src 'self' ipc: http://ipc.localhost http://tauri.localhost blob:",
+        ] {
+            assert!(conf.contains(needle), "CSP 缺指令：{needle}");
+        }
+        // 方案 A 的两个 `unsafe-inline` 是首屏内联注入（主题脚本 + 骨架 CSS）的代价，
+        // 明写在决策文档里。有人删掉它就得同时改这里与那份文档 —— 否则首屏会白屏。
+        assert_eq!(
+            conf.matches("'unsafe-inline'").count(),
+            2,
+            "只有 script-src 与 style-src 各一处；多出来的 unsafe-inline 必须被这条挡住"
+        );
+    }
