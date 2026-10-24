@@ -34,7 +34,7 @@ const emit = defineEmits<{ (e: "update:modelValue", v: boolean): void }>();
     class="tap-safe relative shrink-0 rounded-full transition"
     :class="[
       size === 'md' ? 'h-6 w-11' : 'h-5 w-9',
-      modelValue ? 'bg-[var(--gosslan-primary)]' : 'bg-[var(--gosslan-border)]',
+      modelValue ? 'bg-[var(--gosslan-primary)]' : 'bg-[var(--gosslan-toggle-off)]',
       disabled ? 'opacity-50' : '',
     ]"
     :model-value="modelValue"

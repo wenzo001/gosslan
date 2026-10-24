@@ -49,7 +49,7 @@
 4. `connect_to_peer` 的链路 key 来自**握手学到的 `device_id`**，不来自 socket 地址
    （`discovery/routed.rs:11` "身份只能来自握手，不能由端点推测"）。
    ⇒ 一条"经过服务器的字节管道"对上层来说与一条直连 TCP **没有区别**。这是本方案能小到这个程度根本原因。
-5. `known_id == None` 时拨号按**端点地址**去重（`transport.rs:2118-2142`）
+5. `known_id == None` 时拨号按**端点地址**去重（`network/transport/dial.rs`：`known_id` 为 `None` 时按端点地址算 `dial_key` / `already` 那两支）
    ⇒ 多台设备共用同一个服务器地址会被压成一条链路。这是必须处理的真坑，不是理论。
 
 ## 3. Decision

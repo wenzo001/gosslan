@@ -311,14 +311,18 @@ export const TODO_STATUS_PILL: Record<TodoStatus, string> = {
  * （`primary` / `warning` / `success`；「待办」是"还没开始"⇒ 中性灰，与离线点同一个 token），
  * 扫一眼就能分组，又不跟行内的其他颜色抢。
  * ⚠️ 只准用 token、别写死色值：深色模式下这四个 token 另有取值。
+ * ⚠️ 橙与绿取的是 `*-solid` 那一档，不是状态点那档（`--gosslan-warning` / `--gosslan-success`）：
+ *   色条是**非文字图形**，判 3.0 那一维，而状态点档的橙与绿压在面板底（#ffffff）上实测
+ *   只有 2.20 与 2.54 —— 连图形档都不过。`*-solid` 是"压白字的实底"那一档（亮色压深、
+ *   暗色与状态点同值），一 token 两用：同一族颜色在暗色下不新压深度，两档本来就同值。
  */
 export const TODO_STATUS_BAR: Record<TodoStatus, string> = {
   todo: "bg-[var(--gosslan-status-offline)]",
   doing: "bg-[var(--gosslan-primary)]",
-  overdue: "bg-[var(--gosslan-warning)]",
+  overdue: "bg-[var(--gosslan-warning-solid)]",
   // 与「待办」同为灰系但深一档：色条分族（在办=蓝/橙、终态=绿/深灰），区分靠 X 图标与胶囊。
   impossible: "bg-[var(--gosslan-text-2)]",
-  done: "bg-[var(--gosslan-success)]",
+  done: "bg-[var(--gosslan-success-solid)]",
 };
 
 export function isTodoStatus(v: unknown): v is TodoStatus {
