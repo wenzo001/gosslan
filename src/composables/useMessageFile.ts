@@ -56,7 +56,11 @@ export function useMessageFile(
     const t = transfer.value;
     return {
       name: raw.name || t?.name || $t("common.file"),
-      path: raw.path || t?.path || "",
+      // 台账路径优先（SEC-01）：收到的文件真正落盘的位置只在 `file_transfers.path` 里，
+      // 消息载荷里的 `path` 是**对端**写的（发送端自己的源路径）。旧写法让它优先，
+      // 结果"另存为/复制"会去拷一个本机不存在的路径；只有台账还没到达时
+      // （乐观上屏、群文件首帧）才退回载荷做显示兜底。
+      path: t?.path || raw.path || "",
       size: raw.size || t?.size || 0,
       subtype: raw.subtype || (msg.value.kind === "image" ? "image" : "file"),
       sha256: raw.sha256,

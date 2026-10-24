@@ -1062,6 +1062,7 @@ fn ddl_error(stage: &str, e: rusqlite::Error) -> InitError {
 fn apply_base_schema_atomically(
     conn: &Connection,
     ddl: &str,
+    fresh_version: Option<u32>,
 ) -> std::result::Result<(), InitError> {
     let tx = conn
         .unchecked_transaction()
@@ -1069,12 +1070,33 @@ fn apply_base_schema_atomically(
     tx.execute_batch(ddl)
         .map_err(|e| ddl_error("基础 schema", e))?;
     crate::content::store::ensure_schema(&tx).map_err(|e| ddl_error("内容层 schema", e))?;
+    // 全新库的 `user_version` 必须和建表在**同一个事务**里（审计 DB-01 复审）：
+    // 崩在"表建完、版本还没写"之间，下次启动会看到 current=0 + 表齐全 ⇒ 判成老库、
+    // 先备份再重放整条迁移链。写进事务之后只有"全有"与"全无"两种形状。
+    if let Some(version) = fresh_version {
+        tx.pragma_update(None, "user_version", version)
+            .map_err(|e| ddl_error("写入初始版本", e))?;
+    }
     tx.commit().map_err(|e| ddl_error("提交 DDL 事务", e))?;
     Ok(())
 }
 
-/// 打开（或创建）数据库并执行迁移。
+/// 打开（或创建）数据库并执行迁移 —— **测试便捷入口**（生产走 [`init_with_notices`]，
+/// 因为它需要把启动期诊断串交给 logger）。
+///
+/// `#[cfg(test)]`：留一个不带诊断串的签名只会让未来的生产调用点悄悄丢掉那几条日志。
+#[cfg(test)]
 pub fn init(path: &Path) -> std::result::Result<Connection, InitError> {
+    init_with_notices(path).map(|(conn, _)| conn)
+}
+
+/// 同 [`init`]，另外把"启动阶段只能排队、等 logger 就绪后再写"的诊断串带出来。
+///
+/// 审计 DB-02 复审：备份清扫失败原来只 `eprintln!` —— 打包后的 Windows 没有控制台，
+/// 那条 `code=BACKUP_SWEEP_FAILED` 在生产里等于没写。现在由调用方（`state.rs`）
+/// 在 `Logger::new` 之后用 `logger.warn` 落盘。
+pub fn init_with_notices(path: &Path) -> std::result::Result<(Connection, Vec<String>), InitError> {
+    let mut startup_notices: Vec<String> = Vec::new();
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent).ok();
     }
@@ -1127,17 +1149,21 @@ pub fn init(path: &Path) -> std::result::Result<Connection, InitError> {
     // 不该把用户拦在应用外面；但必须带码落日志，否则"备份越堆越多"在日志里看不见。
     match sweep_old_backups(path) {
         Ok(0) => {}
-        Ok(n) => eprintln!("[gosslan-db] 迁移备份清扫：删除 {n} 份过期备份"),
-        Err(e) => eprintln!("[gosslan-db] {e}（code={}）", e.code()),
+        Ok(n) => startup_notices.push(format!(
+            "迁移备份清扫：删除 {n} 份过期备份（保留 {MAX_MIGRATION_BACKUPS} 份）"
+        )),
+        Err(e) => startup_notices.push(format!(
+            "code={} {e} —— 旧迁移备份可能继续堆积，下一次启动会再试",
+            e.code()
+        )),
     }
 
     // DB-01：基础 schema 与内容层 schema 必须在**同一个事务**里落地 —— 分开跑时，
     // 第二段失败会留下半套表（既不是 fresh 也不再是旧版本形状），只能人工恢复。
-    apply_base_schema_atomically(&conn, SCHEMA)?;
+    // 全新库的 `user_version` 也并进这个事务（复审：两笔写之间的崩溃会造出"表齐全但 version=0"）。
+    apply_base_schema_atomically(&conn, SCHEMA, is_fresh.then_some(DB_VERSION))?;
 
-    if is_fresh {
-        conn.pragma_update(None, "user_version", DB_VERSION)?;
-    } else {
+    if !is_fresh {
         run_migrations(&conn, current)?;
     }
     // **两条分支都要经过**这里：有形状是 SCHEMA 表达不了的（见 `ensure_post_schema_shape`），
@@ -1158,7 +1184,7 @@ pub fn init(path: &Path) -> std::result::Result<Connection, InitError> {
     // NORMAL：牺牲极小崩溃一致性换取更高写入吞吐（500-1000 节点高频落库场景）
     conn.pragma_update(None, "synchronous", "NORMAL").ok();
     conn.pragma_update(None, "foreign_keys", "ON").ok();
-    Ok(conn)
+    Ok((conn, startup_notices))
 }
 
 #[cfg(test)]

@@ -183,6 +183,14 @@ pub fn open_file_native(
                 (ledger, mine)
             };
             if mine {
+                // 台账还没建立时只放行**本机发出**的消息：那条路径是本机用户在文件对话框里
+                // 选的（发送端可以从任意目录选文件），对端写不了 `sender_id`
+                // —— `transport/gossip.rs` 的入站校验拒绝 `sender_id == 本机`，
+                // 否则这里就会退化成"任意文件打开"。
+                //
+                // 为什么不在这里加"托管目录地板"（复审提过）：那会把"发一个桌面上的文件，
+                // 在群文件台账建立前点开"这个合法路径一并拒掉；目录地板仍在
+                // `delete_file` / `resolve_media_path` 那两条链上保留。
                 Ok(())
             } else {
                 let ledger_canon = ledger
@@ -398,6 +406,33 @@ fn build_file_message(
     }
 }
 
+/// 走唯一终态出口，并把 `Err` **留痕**（FUNC-02 复审）。
+///
+/// `finalize_file_failure` 现在是一个事务：失败即整体回滚。把它折成 `false` 本身是对的
+/// （界面不该收到一条假"已失败"），但旧写法连**失败原因**一起丢了 —— 现场只剩
+/// "这一单没动"，既不知道是磁盘满、锁中毒还是触发器拦的。三处收尾共用这一个入口。
+fn finalize_with_note(
+    state: &AppState,
+    transfer_id: &str,
+    end: db::FileJobEnd,
+    ctx: &str,
+) -> bool {
+    let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
+    match db::finalize_file_failure(&dbc, transfer_id, end) {
+        Ok(changed) => changed,
+        Err(e) => {
+            state.logger.error(
+                "file",
+                format!(
+                    "code=FILE_FINALIZE_FAILED transfer={transfer_id} ctx={ctx} err={e} —— \
+                     事务已整体回滚，界面不谎报终态"
+                ),
+            );
+            false
+        }
+    }
+}
+
 /// 永久失败收尾：把一单放弃重发的文件落终态，并通知前端。
 ///
 /// ⚠️ 两件事按顺序做，不许颠倒：
@@ -415,10 +450,7 @@ fn build_file_message(
 fn fail_file_job(state: &AppState, transfer_id: &str, reason: &str) {
     // 全部落库都在唯一出口 `db::finalize_file_failure` 里（P7：三份收尾合成一份）：
     // 气泡 → 台账 → 最后才关队列行，`done` 闸门也在那一处。
-    let announce = {
-        let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
-        db::finalize_file_failure(&dbc, transfer_id, db::FileJobEnd::GiveUp).unwrap_or(false)
-    };
+    let announce = finalize_with_note(state, transfer_id, db::FileJobEnd::GiveUp, "fail_job");
     if announce {
         let _ = state.app.emit(
             "file-failed",
@@ -548,15 +580,12 @@ pub async fn flush_pending_files(state: &Arc<AppState>, peer_id: &str) {
                                 "file",
                                 format!("[CANCELLED] transfer={transfer_id} 用户取消，本次投递退出且不再重发"),
                             );
-                            let announce = {
-                                let dbc = st.db.lock().unwrap_or_else(|e| e.into_inner());
-                                db::finalize_file_failure(
-                                    &dbc,
-                                    &transfer_id,
-                                    db::FileJobEnd::Cancelled,
-                                )
-                                .unwrap_or(false)
-                            };
+                            let announce = finalize_with_note(
+                                &st,
+                                &transfer_id,
+                                db::FileJobEnd::Cancelled,
+                                "send_cancelled",
+                            );
                             if announce {
                                 let _ = st.app.emit("file-cancelled", &transfer_id);
                             }
@@ -580,7 +609,17 @@ pub async fn flush_pending_files(state: &Arc<AppState>, peer_id: &str) {
 pub(crate) fn cancel_send_transfers_for_peer(s: &AppState, peer_id: &str) {
     let ids = {
         let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());
-        db::list_open_send_transfer_ids_for_peer(&dbc, peer_id).unwrap_or_default()
+        match db::list_open_send_transfer_ids_for_peer(&dbc, peer_id) {
+            Ok(ids) => ids,
+            Err(e) => {
+                // 读失败 = 这一轮一条都没取消。不记就只剩"删了好友，文件还在队列里发"。
+                s.logger.error(
+                    "file",
+                    format!("code=FILE_CANCEL_LIST_FAILED peer={peer_id} err={e}"),
+                );
+                return;
+            }
+        }
     };
     if ids.is_empty() {
         return;
@@ -588,15 +627,11 @@ pub(crate) fn cancel_send_transfers_for_peer(s: &AppState, peer_id: &str) {
     for id in &ids {
         file::signal_cancel_slots(s, id);
     }
-    let cancelled = {
-        let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());
-        ids.iter()
-            .filter(|id| {
-                db::finalize_file_failure(&dbc, id, db::FileJobEnd::Cancelled).unwrap_or(false)
-            })
-            .cloned()
-            .collect::<Vec<_>>()
-    };
+    let cancelled = ids
+        .iter()
+        .filter(|id| finalize_with_note(s, id, db::FileJobEnd::Cancelled, "peer_cancel"))
+        .cloned()
+        .collect::<Vec<_>>();
     for id in cancelled {
         let _ = s.app.emit("file-cancelled", &id);
     }
@@ -842,27 +877,19 @@ pub(crate) async fn apply_local_cancel(
             .map(|f| f.sender_id == s.device_id)
             .unwrap_or(false);
         if mine {
-            let rows = match db::cancel_group_file_recipients(&dbc, transfer_id) {
+            // 成员行与聚合行在同一个事务里（FUNC-02 复审）：分开写的半落地态是
+            // "成员行已 cancelled、聚合行还在 sending"，界面与补发判据互相矛盾。
+            match db::cancel_group_file_atomically(&dbc, transfer_id) {
                 Ok(n) => n,
                 Err(e) => {
-                    // 这一笔失败 = 成员行还是 pending/sending ⇒ 下次上线会被补发。
                     s.logger.error(
                         "group_file",
-                        format!("code=GROUP_CANCEL_RECIPIENTS_FAILED transfer={transfer_id} by={by}：{e}"),
+                        format!("code=GROUP_CANCEL_COMMIT_FAILED transfer={transfer_id} by={by}：{e}"),
                     );
                     ledger_committed = false;
                     0
                 }
-            };
-            // 单条群文件的聚合行也要落 cancelled（`group_files.status` 是气泡与摘要的入口）。
-            if let Err(e) = db::mark_group_file_cancelled(&dbc, transfer_id) {
-                s.logger.error(
-                    "group_file",
-                    format!("code=GROUP_CANCEL_COMMIT_FAILED transfer={transfer_id} by={by}：{e}"),
-                );
-                ledger_committed = false;
             }
-            rows
         } else {
             0
         }

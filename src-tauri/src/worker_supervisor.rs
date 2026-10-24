@@ -146,7 +146,10 @@ fn spawn_supervisor(state: Arc<AppState>, running: SharedRunning) -> JoinHandle<
                         *restarts += 1;
                         state.logger.warn(
                             "worker",
-                            format!("常驻 worker `{name}` 已结束，正在重启（第 {} 次）", *restarts),
+                            format!(
+                                "code=WORKER_RESTART worker={name} attempt={} —— 已结束，正在重启",
+                                *restarts
+                            ),
                         );
                         let spawn = *spawn;
                         *handle = spawn(&state);
@@ -156,8 +159,8 @@ fn spawn_supervisor(state: Arc<AppState>, running: SharedRunning) -> JoinHandle<
                         state.logger.error(
                             "worker",
                             format!(
-                                "常驻 worker `{name}` 反复结束（已重启 {MAX_RESTARTS} 次），不再自动拉起 —— \
-                                 它守的那条链现在没有兜底，重启应用才能恢复"
+                                "code=WORKER_GIVEUP worker={name} restarts={MAX_RESTARTS} —— \
+                                 反复结束，不再自动拉起；它守的那条链现在没有兜底，重启应用才能恢复"
                             ),
                         );
                         false

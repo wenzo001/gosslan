@@ -986,11 +986,13 @@ fn tables_are_counted_before_the_schema_is_applied() {
         .find("let pre_table_count")
         .expect("init() 里必须数一次表（is_fresh 的条件之一）");
     let applied = body
-        .find("apply_base_schema_atomically(&conn, SCHEMA)?;")
+        .find("apply_base_schema_atomically(&conn, SCHEMA, is_fresh.then_some(DB_VERSION))?;")
         .expect("init() 必须应用 SCHEMA");
     assert_eq!(
-        body.matches("apply_base_schema_atomically(&conn, SCHEMA)?;")
-            .count(),
+        body.matches(
+            "apply_base_schema_atomically(&conn, SCHEMA, is_fresh.then_some(DB_VERSION))?;"
+        )
+        .count(),
         1,
         "SCHEMA 只准应用一次；两次说明锚点已经不能唯一定位这条守卫要判的语句"
     );
@@ -2309,6 +2311,9 @@ fn a_failed_backup_sweep_reports_a_searchable_code() {
 /// 清扫失败**不许拦人开机**（DB-02）：库和备份都还在，删不掉的只是旧副本。
 /// 判据钉在唯一调用点的形状上 —— 写成 `sweep_old_backups(path)?` 就变成
 /// "备份目录权限有问题 ⇒ 应用打不开"。
+///
+/// 复审（2026-10-24）：失败串不再 `eprintln!`（打包版 Windows 没有控制台 = 等于没写），
+/// 改为排队进 `startup_notices`，由 `state.rs` 在 `Logger::new` 之后落盘。
 #[test]
 fn backup_sweep_failure_is_logged_not_propagated() {
     let src = include_str!("../db.rs");
@@ -2325,14 +2330,36 @@ fn backup_sweep_failure_is_logged_not_propagated() {
         "只许一个调用点（统一清扫）：清扫口径一旦散成多处，保留份数就没人负责"
     );
     let at = code.find(call).unwrap() + call.len();
-    let window: String = code[at..].chars().take(200).collect();
+    let window: String = code[at..].chars().take(320).collect();
     assert!(
         !window.trim_start().starts_with('?'),
         "清扫失败不许用 `?` 冒泡：备份目录权限问题会把应用拦在启动外"
     );
     assert!(
-        window.contains("code={}"),
-        "清扫失败必须落一条带错误码的日志（BACKUP_SWEEP_FAILED），否则备份堆积无从发现"
+        window.contains("e.code()"),
+        "清扫失败必须带可检索码（`BackupSweepError::code` = BACKUP_SWEEP_FAILED），否则备份堆积无从发现"
+    );
+    assert!(
+        code.contains("\"BACKUP_SWEEP_FAILED\""),
+        "错误码的字面量只许有一个家（`BackupSweepError::code`）"
+    );
+    assert!(
+        window.contains("startup_notices"),
+        "失败串必须排队给 logger（eprintln 在打包版 Windows 里等于没写）"
+    );
+    // 另一半：调用方必须真的把它写进日志，而不是收了不用。
+    let state = include_str!("../state.rs");
+    assert!(
+        state.contains("db::init_with_notices"),
+        "state.rs 必须用带诊断串的 init"
+    );
+    let at = state
+        .find("for note in startup_notices")
+        .expect("state.rs 必须在 logger 就绪后消费 startup_notices");
+    let window: String = state[at..].chars().take(160).collect();
+    assert!(
+        window.contains("logger.warn"),
+        "排队的诊断串必须真的写进 logger（收了不用等于没写）：{window}"
     );
 }
 

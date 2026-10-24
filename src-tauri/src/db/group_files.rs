@@ -402,6 +402,19 @@ pub fn mark_group_file_cancelled(conn: &Connection, transfer_id: &str) -> Result
     Ok(n)
 }
 
+/// 整单取消群文件：**成员行 + 聚合行必须在同一个事务里**（审计 FUNC-02 复审）。
+///
+/// 分两笔写的后果：第一笔成功、第二笔失败 ⇒ 成员行已经 cancelled（不会被补发），
+/// 而聚合行仍停在 sending（气泡与摘要显示"还在传"），下次启动也没有任何入口会修正它。
+/// 返回被取消的成员行数；任一写失败即整体回滚并回传 `Err`。
+pub fn cancel_group_file_atomically(conn: &Connection, transfer_id: &str) -> Result<usize> {
+    let tx = conn.unchecked_transaction()?;
+    let n = cancel_group_file_recipients(&tx, transfer_id)?;
+    mark_group_file_cancelled(&tx, transfer_id)?;
+    tx.commit()?;
+    Ok(n)
+}
+
 /// 该群文件是否已被用户取消（投递入口的闸门用）。行不存在 = 没取消（1:1 文件走这条路）。
 pub fn is_group_file_cancelled(conn: &Connection, transfer_id: &str) -> bool {
     conn.query_row(

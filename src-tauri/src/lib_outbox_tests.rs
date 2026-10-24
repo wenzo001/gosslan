@@ -50,8 +50,14 @@ fn outbox_sweeper_emits_only_after_db_write_succeeds() {
     );
     assert_eq!(
         body.matches("if finalized {").count(),
-        3,
-        "三处 emit 必须各自被 `if finalized {{ … }}` 门控 —— 写库没成功就不许 emit，否则重复投递"
+        2,
+        "message 两处 emit 必须各自被 `if finalized {{ … }}` 门控 —— 写库没成功就不许 emit，否则重复投递"
+    );
+    // 文件终态改为 `Result` 之后用 `match Ok(true)` 门控（复审：失败原因要能写进日志）。
+    assert_eq!(
+        body.matches("Ok(true) =>").count(),
+        1,
+        "file-failed 的 emit 必须在 `Ok(true)` 分支里（写库成功才发）"
     );
     assert_eq!(
         body.matches("emit(\"message-failed\"").count(),
@@ -67,9 +73,14 @@ fn outbox_sweeper_emits_only_after_db_write_succeeds() {
         "file-failed 两处：过期终态 + 孤儿/耗尽对账；两处都必须由写库成功分支门控"
     );
     assert_eq!(
-        flat.matches("Ok(ids)if!ids.is_empty()").count(),
+        flat.matches("Ok(report)").count(),
         1,
-        "新增的对账 emit 必须由 Ok 且非空门控 —— 没有写成功/没有行就不许 emit"
+        "对账 emit 必须由 `Ok(report)` 分支门控 —— 读库失败就不许 emit"
+    );
+    assert_eq!(
+        flat.matches("fortransfer_idinreport.changed").count(),
+        1,
+        "只在 report.changed 上 emit（写成功的行），失败行只记日志"
     );
     // N-01：载荷必须是 `FileFailedInfo`（前端 listen<FileFailedInfo> 按 {transfer_id, reason} 取值）。
     // 曾经发的是裸 `&transfer_id` ⇒ toast 显示 undefined、气泡永远停在发送中。

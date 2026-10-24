@@ -47,7 +47,7 @@
         let check = "if current > DB_VERSION";
         // DB-01 之后 SCHEMA 的应用点收进 `apply_base_schema_atomically`（同一个 DDL 事务），
         // 它仍然是"第一次写文件"的位置 ⇒ 降级判定必须排在它前面。
-        let write = "apply_base_schema_atomically(&conn, SCHEMA)?;";
+        let write = "apply_base_schema_atomically(&conn, SCHEMA, is_fresh.then_some(DB_VERSION))?;";
         assert_eq!(
             db.matches(check).count(),
             1,
