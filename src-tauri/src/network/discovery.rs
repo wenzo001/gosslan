@@ -1192,6 +1192,7 @@ mod tests {
     /// 时 EHOSTUNREACH），只有子网广播那条腿能用 —— 那是**正常运行**。若把"有一条失败"也算进
     /// 连拍，每台 Mac 每隔几轮就会拆建一次发送 socket，把稳态跑成抖动。
     #[test]
+    #[allow(clippy::assertions_on_constants)] // 钉的是重绑阈值本身的下界
     fn broadcast_streak_counts_only_full_silence() {
         assert_eq!(next_fail_streak(true, 0), 0);
         assert_eq!(
@@ -1443,7 +1444,7 @@ mod tests {
             }
             let non_virtual = !is_virtual_interface_name(name);
             let better = best.as_ref().map_or(true, |(_, _, s, nv)| {
-                score > *s || (score == *s && non_virtual > *nv)
+                score > *s || (score == *s && non_virtual & !*nv)
             });
             if better {
                 best = Some((*ip, name.clone(), score, non_virtual));
@@ -1453,13 +1454,13 @@ mod tests {
     }
 
     /// 3. broadcast_sent / multicast_sent 事件只在 send_to 返回 Ok 时产生；
+    ///
     /// Err 时必须产生 broadcast_error / multicast_error。
     #[test]
     fn broadcast_diag_event_reflects_send_result() {
         let target = "255.255.255.255:59991";
         let ok: std::io::Result<usize> = Ok(123);
-        let err: std::io::Result<usize> =
-            Err(std::io::Error::new(std::io::ErrorKind::Other, "mock fail"));
+        let err: std::io::Result<usize> = Err(std::io::Error::other("mock fail"));
 
         let (ok_kind, ok_detail) = diag_event_from_send_result(target, "broadcast_sent", &ok);
         let (err_kind, err_detail) = diag_event_from_send_result(target, "broadcast_sent", &err);

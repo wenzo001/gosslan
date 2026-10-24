@@ -582,13 +582,13 @@
     #[test]
     fn conn_health_diag_is_wired_and_reads_only() {
         let cmds = all_commands_src();
-        let flat = code_flat(&cmds);
+        let flat = code_flat(cmds);
         assert_eq!(
             flat.matches("result.conn_health=collect_conn_health(").count(),
             1,
             "get_discovery_diag 里必须恰好一处接上连接活性快照：0 处=面板永远空，2 处=重复采集"
         );
-        let body = rust_fn_body(&cmds, "fn collect_conn_health(");
+        let body = rust_fn_body(cmds, "fn collect_conn_health(");
         let body_flat = code_flat(&body);
         assert_eq!(
             body_flat.matches("conn_health_rows(").count(),

@@ -1003,6 +1003,7 @@ mod content_reconcile_tests {
     /// 「用户本来就把文件叫做 `xxx.part`」（浏览器未完成的下载、分卷包都是这个后缀），而那份早收完了。
     /// ⇒ 「正在写」必须由 **mtime** 说话。两个方向都钉住：新鲜 ⇒ 跳过；陈旧 ⇒ 必须放行去对账。
     #[test]
+    #[allow(clippy::assertions_on_constants)] // 夹具时间必须落在对账窗口之外（常量断言）
     fn inflight_part_files_are_skipped_but_a_part_named_deliverable_is_not_starved() {
         use std::fs::OpenOptions;
         use std::time::{Duration, SystemTime};

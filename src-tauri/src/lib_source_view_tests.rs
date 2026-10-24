@@ -125,7 +125,7 @@ fn guard_source_views_register_every_include_subfile() {
                 !p.file_name()
                     // `_tests.rs` 与本仓唯一一份恰好叫 `tests.rs` 的 transport 分册都不算生产码：
                     // 视图里没有它们，这里若还要求登记就会逼着别人把测试文本并进去（假绿形状）。
-                    .map_or(false, |n| {
+                    .is_some_and(|n| {
                         let n = n.to_string_lossy();
                         n.ends_with("_tests.rs") || n == "tests.rs"
                     })

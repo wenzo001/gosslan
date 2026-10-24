@@ -193,7 +193,7 @@ mod tests {
         let now = 1_000_000_000_000i64;
         let entries = vec![
             e(now - 10 * 86_400_000, 100), // 10 天前 → 过期（7 天保留）
-            e(now - 1 * 86_400_000, 100),  // 1 天前 → 未过期
+            e(now - 86_400_000, 100),      // 1 天前 → 未过期
         ];
         let policy = CachePolicy {
             retention_days: Some(7),
@@ -275,7 +275,7 @@ mod tests {
             retention_days: None,
             max_bytes: Some(0),
         };
-        let report = clean_files(&[cache.clone()], policy);
+        let report = clean_files(std::slice::from_ref(&cache), policy);
         assert_eq!(report.removed, 1, "只应删掉 real.txt 一个文件");
         assert!(precious.exists(), "软链指向的外部文件必须幸存");
         assert!(deep.exists(), "目录软链下的文件必须幸存");

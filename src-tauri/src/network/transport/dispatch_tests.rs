@@ -309,8 +309,8 @@ fn dispatch_groups(src: &str) -> Vec<(String, Vec<String>)> {
             if let Some(pos) = line.find("=>") {
                 handler = call_name(&line[pos + 2..]).unwrap_or_default();
                 if handler.is_empty() {
-                    for k in (j + 1)..(j + 4).min(lines.len()) {
-                        if let Some(n) = call_name(lines[k]) {
+                    for cand in lines.iter().take((j + 4).min(lines.len())).skip(j + 1) {
+                        if let Some(n) = call_name(cand) {
                             handler = n;
                             break;
                         }

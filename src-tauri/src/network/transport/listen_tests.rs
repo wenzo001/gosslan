@@ -223,6 +223,7 @@
     /// - 队列 2/4/8 条：就绪事件次数 = 1/3/7（每失败一次吃掉一条），cpu/wall ≤ 15% ⇒ **不是空转**；
     /// - mio 1.2.3 `sys/unix/selector/kqueue.rs:127` 用 `EV_CLEAR`（边缘），tokio 1.53.1
     ///   `TcpListener::accept` 对非 `WouldBlock` 的错误直接 `Poll::Ready(Err)`。
+    ///
     /// ⇒ 所以这条补丁**刻意不加退避、不改循环结构**（那会是没被测过的东西），只补日志与分类。
     ///
     /// 为什么是源码护栏而不是行为测试：accept 循环在 `spawn` 里、吃 `Arc<AppState>`（要真实

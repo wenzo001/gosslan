@@ -554,6 +554,7 @@ mod relay_wiring_tests {
     /// 确定性反相会每一轮都擦身而过，永久配不上。而窗口 ≥ 服务器 `WAIT_TIMEOUT_MS` 时，
     /// 服务器那次主动关闭会被我们读成 EOF ⇒ 被归类成"口令/版本不匹配"的假指控。
     #[test]
+    #[allow(clippy::assertions_on_constants)] // 钉的是三个会合常量的不等式（失败信息要带数值）
     fn relay_window_covers_round_period() {
         // ① 占空比 ≥ 2/3 ⇒ 两端任意相位都有重叠区间（两个各占不到 1/3 周期的空隙盖不满一周）
         assert!(

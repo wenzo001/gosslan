@@ -922,7 +922,7 @@ fn file_cancel_and_user_cancel_share_one_local_home() {
         "槽位的登记 / 整单点亮 / 单格点亮（B3b 按成员取消）/ 回收必须在同一个文件里（现算四处）；多出来的那处就是第二个家"
     );
     assert_eq!(
-        code_flat(&cmds).matches(".file_send_cancels.lock()").count(),
+        code_flat(cmds).matches(".file_send_cancels.lock()").count(),
         0,
         "命令层不许再自己扫这张表：点亮槽位只走 `file::signal_cancel_slots`"
     );
@@ -932,7 +932,7 @@ fn file_cancel_and_user_cancel_share_one_local_home() {
 #[test]
 fn file_cancel_notice_is_gated_and_never_blocks_the_local_cancel() {
     let cmds = all_commands_src();
-    let notify = rust_fn_body(&cmds, "async fn send_cancel_notice(");
+    let notify = rust_fn_body(cmds, "async fn send_cancel_notice(");
     // 门控只有一个家：`peer_declares_file_cancel`。通知那三种形状必须**逐条**先问它 ——
     // 少问一条就是"某一种取消会对老端发新帧"（INV-P24 第 4 条），而其余两条照旧。
     assert_eq!(
@@ -940,20 +940,20 @@ fn file_cancel_notice_is_gated_and_never_blocks_the_local_cancel() {
         3,
         "1:1 / 群成员逐个 / 群接收方→发送方，三种通知都要各自过门控"
     );
-    let gate = rust_fn_body(&cmds, "fn peer_declares_file_cancel(");
+    let gate = rust_fn_body(cmds, "fn peer_declares_file_cancel(");
     assert!(
         gate.contains("CONTENT_FEATURE_FILE_CANCEL"),
         "门控函数里必须读那一位（INV-P24 第 4 条：不门控不许发）"
     );
     // 「没记过账的单不许通知」这一条搬进了 `plan_cancel_notice`：两本账都查不到就返回 None
     // （群文件那一步的 `?` 就是这个意思）。发给一个猜出来的对端比不发更糟。
-    let plan = rust_fn_body(&cmds, "fn plan_cancel_notice(");
+    let plan = rust_fn_body(cmds, "fn plan_cancel_notice(");
     assert!(
         plan.contains("db::get_transfer_route(") && plan.contains("db::get_group_file(&dbc, transfer_id)?"),
         "通知名单必须从两本台账里读出来；两本都没有 ⇒ None（不许凭空造一个对端）"
     );
     // 顺序判据：先落本机终态，再发通知 —— 反过来就是"通知的 await 挡住了取消的响应"
-    let body = rust_fn_body(&cmds, "pub async fn cancel_file_transfer(");
+    let body = rust_fn_body(cmds, "pub async fn cancel_file_transfer(");
     let cancel_at = body
         .find("apply_local_cancel(s, &transfer_id, \"user\")")
         .expect("取消命令必须调用本机收尾那个家");
@@ -1037,12 +1037,12 @@ fn file_cancel_reports_whether_the_peer_was_actually_notified() {
         cmds.contains("pub notified_peer: bool"),
         "FileCancelResult 必须带 notified_peer 这一格（界面据此选文案）"
     );
-    let cmd = rust_fn_body(&cmds, "pub async fn cancel_file_transfer(");
+    let cmd = rust_fn_body(cmds, "pub async fn cancel_file_transfer(");
     assert!(
         cmd.contains("res.notified_peer = send_cancel_notice(s, &transfer_id, notice).await"),
         "命令必须把通知那半的结论回填到结果里；写死一个常量就是界面在猜"
     );
-    let notice = rust_fn_body(&cmds, "async fn send_cancel_notice(");
+    let notice = rust_fn_body(cmds, "async fn send_cancel_notice(");
     assert!(
         notice.contains("-> bool"),
         "send_cancel_notice 必须回报「有没有真的发出去」"

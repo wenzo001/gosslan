@@ -129,6 +129,7 @@ mod offline_queue_tests {
     /// 钉的是"120 秒这一档**不再适用于群**"：群 outbox 行是群消息唯一的补发载体，
     /// 删早了以后就算群密钥补到了也没人再消费那条内容（单聊还有直发 outbox 与内容拉取两条路）。
     #[test]
+    #[allow(clippy::assertions_on_constants)] // 钉的是两个常量窗口的相对关系
     fn group_rows_survive_the_link_flap_window_that_kills_single_chats() {
         use std::time::Duration;
         assert!(

@@ -276,7 +276,7 @@ impl FrameWaiter {
     ) -> Result<Message, String> {
         let deadline = tokio::time::Instant::now() + Duration::from_millis(ms);
         loop {
-            if let Some(i) = self.backlog.iter().position(|m| pred(m)) {
+            if let Some(i) = self.backlog.iter().position(pred) {
                 return Ok(self.backlog.remove(i));
             }
             let remain = deadline.saturating_duration_since(tokio::time::Instant::now());
@@ -640,9 +640,7 @@ async fn main() {
     tokio::time::sleep(Duration::from_millis(500)).await;
 
     // ---- 5. 文件传输 ----
-    let content: Vec<u8> = (0..700_000usize)
-        .map(|i| (b'a' + (i % 26) as u8) as u8)
-        .collect();
+    let content: Vec<u8> = (0..700_000usize).map(|i| b'a' + (i % 26) as u8).collect();
     let file_key = crypto::random_key();
     let file_sha256 = sha256_hex(&content);
     let file_shared = crypto::shared_secret(&identity.x25519_secret, &app_x25519)
@@ -1248,9 +1246,9 @@ async fn main() {
         // ---- --full 落库校验 ----
         if full {
             // 代码 / 大文本消息落库
-            for (label, msg_id, expect) in
-                [("代码消息落库（kind=code）", CODE_MSG_ID, CODE_CONTENT)]
             {
+                let (label, msg_id, expect) =
+                    ("代码消息落库（kind=code）", CODE_MSG_ID, CODE_CONTENT);
                 let c: Option<String> = conn
                     .query_row(
                         "SELECT content FROM messages WHERE msg_id = ?1",

@@ -142,7 +142,7 @@
             ("pub async fn send_group_todo(", "群任务已建 task="),
             ("pub async fn update_group_todo(", "群任务已改 task="),
         ] {
-            let body = rust_fn_body(&commands, head);
+            let body = rust_fn_body(commands, head);
             let send = body.find("send_group_payload(").unwrap_or_else(|| {
                 panic!("{head} 里找不到 send_group_payload ⇒ 形状变了，这条判据要跟着改")
             });
@@ -167,7 +167,7 @@
         // 内核自 emit 之后必须留一行痕迹：双实例 harness 没有任何入口让应用自己执行动作，
         // 所以「A 为什么看得见自己发的那条」只能靠这一行来判（否则永远是循环论证）。
         // 判据仍取顺序：痕迹早于 emit 就成了"还没通知就先记账"，与上面那条同族。
-        let kernel = rust_fn_body(&commands, "async fn send_group_payload(");
+        let kernel = rust_fn_body(commands, "async fn send_group_payload(");
         let emit = kernel
             .find(r#"emit("message-received""#)
             .expect("群发送内核没有回送本机窗口 ⇒ #82 那格修复被移走了");
@@ -356,11 +356,12 @@
     /// 判据刻意取**顺序 + 作用域**，不是"有没有那串字面量"：
     /// - emit 早于 `tx.commit()` ⇒ 会 emit 一条没落库的消息（本仓不变量明令禁止）；
     /// - emit 落在 `s.db.lock()` 的作用域里 ⇒ 持锁 emit（同样是既有不变量）。
+    ///
     /// 这两条任一被破坏，下面的相对位置断言都会红。
     #[test]
     fn group_send_kernel_emits_to_own_windows_after_commit_outside_the_lock() {
         let commands = all_commands_src();
-        let body = rust_fn_body(&commands, "fn send_group_payload(");
+        let body = rust_fn_body(commands, "fn send_group_payload(");
         let lock = body
             .find("s.db.lock()")
             .expect("群发送内核应当有一段持锁写库，找不到 `s.db.lock()` 说明形状变了");
@@ -576,8 +577,8 @@
     /// 群消息的 `GroupAck` 臂必须**把 `messages.status` 一起推进**（INV-006/P15：状态的唯一真相源在库里）。
     ///
     /// 现场是用户 2026-10-12 那份库（只读现算，一个字节没写）：
-    /// `group_outbox` 与 `outbox` 都是 **0 行**，而 **16 条群消息**（9 text + 5 todo_update + 1 todo
-    /// + 1 reaction）的 `messages.status` 永远停在 `sent`；同一时段对端自己的已读标记
+    /// `group_outbox` 与 `outbox` 都是 **0 行**，而 **16 条群消息**（9 text、5 todo_update、
+    /// 1 todo、1 reaction）的 `messages.status` 永远停在 `sent`；同一时段对端自己的已读标记
     /// `group_reads.last_read_ts` 落在这批消息**之后**（12:36:19.873 vs 最后一条 12:36:19）。
     /// ⇒ 队列行不是被清扫器删的（`finalize_expired_message` 判失败会同时把 status 写成 `failed`），
     ///   而是被 **GroupAck** 删的 ⇒ **对面真收到了**，缺的只是本机这一侧的终态写入。

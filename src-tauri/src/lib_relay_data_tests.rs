@@ -813,8 +813,8 @@
     /// 从 `open`（必须是左括号/左花括号）起做配对，返回匹配的右括号下标。
     fn brace_close(chars: &[char], open: usize) -> Option<usize> {
         let mut depth = 0usize;
-        for i in open..chars.len() {
-            match chars[i] {
+        for (i, c) in chars.iter().enumerate().skip(open) {
+            match c {
                 '(' | '{' | '[' => depth += 1,
                 ')' | '}' | ']' => {
                     depth = depth.checked_sub(1)?;

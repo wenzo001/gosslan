@@ -555,7 +555,7 @@ mod tests {
         let mut assembled: Vec<u8> = Vec::new();
         for (seq, wire) in wire_chunks.iter().enumerate() {
             // seq 严格递增校验（write_chunk 语义）：乱序片在这里被拒绝
-            assert_eq!(seq as usize, assembled.chunks(FILE_CHUNK).count());
+            assert_eq!(seq, assembled.chunks(FILE_CHUNK).count());
             let plain = crypto::open_symmetric(&restored_key, wire)
                 .unwrap_or_else(|| panic!("分片 {seq} 解密失败"));
             assembled.extend_from_slice(&plain);
@@ -666,6 +666,7 @@ mod tests {
     /// 一起永久钉住**（24h 的清扫反而永远跳过它）。
     /// 所以"断一条链不再立刻清"必须配这条回收，否则只是把「杀错人」换成「泄漏」。
     #[test]
+    #[allow(clippy::assertions_on_constants)] // 钉的是两个窗口常量的相对关系（失败信息要带数值）
     fn stalled_receiver_is_reclaimed_only_after_the_idle_window() {
         use super::FILE_STALL_ABORT_MS;
         // 窗口内一律不回收：对端可能正在重连后重新 Offer（同一 transfer_id 会覆盖表项）
@@ -687,6 +688,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::assertions_on_constants)] // 钉的是提醒/放弃/期限三个常量的相对顺序
     fn stall_verdict_boundaries() {
         assert_eq!(stall_verdict(0), StallVerdict::Healthy);
         assert_eq!(
@@ -1513,6 +1515,7 @@ mod tests {
     }
 
     /// 19. 空文件：无 Chunk，Done 阶段 size==0 → 空文件 SHA-256 → 正式文件创建，
+    ///
     /// completed / progress 1.0 语义成立。
     #[test]
     fn group_done_empty_file_creates_zero_byte_file() {
@@ -1792,7 +1795,7 @@ mod tests {
 
         let r = receiver_holding("b1-ok", &bytes, bytes.len() as u64, &cid);
         let (name, size, final_path, peer) =
-            finish_receiver_into(&db, &throwaway_logger(), "xfer-b1", r)
+            finish_receiver_into(&db, throwaway_logger(), "xfer-b1", r)
                 .expect("字节齐、SHA 对、rename 成 ⇒ 生产收尾必须成功");
         assert_eq!(
             (name.as_str(), size, peer.as_str()),
@@ -1849,7 +1852,7 @@ mod tests {
 
         // 发送方声明的摘要与真实内容不符 ⇒ fail-closed
         let r = receiver_holding("b1-bad", &bytes, bytes.len() as u64, &"f".repeat(64));
-        let err = finish_receiver_into(&db, &throwaway_logger(), "xfer-b1-bad", r)
+        let err = finish_receiver_into(&db, throwaway_logger(), "xfer-b1-bad", r)
             .expect_err("SHA 不符必须判失败，不许落盘");
         assert!(err.contains("完整性"), "实得：{err}");
 
@@ -1889,7 +1892,7 @@ mod tests {
         db.lock().unwrap().execute_batch(crate::db::SCHEMA).unwrap();
 
         let r = receiver_holding("b1-dberr", &bytes, bytes.len() as u64, &cid);
-        let out = finish_receiver_into(&db, &throwaway_logger(), "xfer-b1-dberr", r);
+        let out = finish_receiver_into(&db, throwaway_logger(), "xfer-b1-dberr", r);
         assert!(
             out.is_ok(),
             "台账写不进去不该把一次真实成功的接收判成失败，实得 {out:?}"
@@ -1977,11 +1980,11 @@ mod tests {
         b.name = a.name.clone();
 
         assert!(
-            finish_receiver_into(&db, &throwaway_logger(), "xfer-a", a).is_ok(),
+            finish_receiver_into(&db, throwaway_logger(), "xfer-a", a).is_ok(),
             "第一份收尾应当成功"
         );
         assert!(
-            finish_receiver_into(&db, &throwaway_logger(), "xfer-b", b).is_ok(),
+            finish_receiver_into(&db, throwaway_logger(), "xfer-b", b).is_ok(),
             "第二份也该收下（拍板＝改名共存，不是拒收）"
         );
 
@@ -2037,7 +2040,7 @@ mod tests {
         // ① 绿路：字节齐 + 哈希对 ⇒ 改名落盘、行是 done 且带真实路径
         let ok = receiver_holding("rcv-ok", &payload, payload.len() as u64, &real_sha);
         let (tmp, final_path) = (ok.tmp_path.clone(), ok.final_path.clone());
-        assert!(finish_receiver_into(&db, &throwaway_logger(), "t-ok", ok).is_ok());
+        assert!(finish_receiver_into(&db, throwaway_logger(), "t-ok", ok).is_ok());
         assert!(!tmp.exists(), "临时文件必须被改名带走（留下就是双份）");
         assert_eq!(
             std::fs::read(&final_path).unwrap(),
@@ -2062,7 +2065,7 @@ mod tests {
         );
         let (tmp, final_path) = (short.tmp_path.clone(), short.final_path.clone());
         assert_eq!(
-            finish_receiver_into(&db, &throwaway_logger(), "t-short", short).err(),
+            finish_receiver_into(&db, throwaway_logger(), "t-short", short).err(),
             Some("文件传输未完成".to_string())
         );
         assert!(
@@ -2078,7 +2081,7 @@ mod tests {
         let bad = receiver_holding("rcv-bad", &corrupted, payload.len() as u64, &real_sha);
         let (tmp, final_path) = (bad.tmp_path.clone(), bad.final_path.clone());
         assert_eq!(
-            finish_receiver_into(&db, &throwaway_logger(), "t-bad", bad).err(),
+            finish_receiver_into(&db, throwaway_logger(), "t-bad", bad).err(),
             Some("文件完整性校验失败".to_string())
         );
         assert!(
@@ -2090,7 +2093,7 @@ mod tests {
         // ④ 发送方没声明哈希（空期望）⇒ **fail-closed**：没有期望值不等于通过
         let nodecl = receiver_holding("rcv-nodecl", &payload, payload.len() as u64, "");
         assert_eq!(
-            finish_receiver_into(&db, &throwaway_logger(), "t-nodecl", nodecl).err(),
+            finish_receiver_into(&db, throwaway_logger(), "t-nodecl", nodecl).err(),
             Some("文件完整性校验失败".to_string()),
             "空 expected_sha256 必须判失败 —— 否则一条不带哈希的 FileDone 就能宣布成功"
         );
@@ -2103,7 +2106,7 @@ mod tests {
             payload.len() as u64,
             &real_sha.to_uppercase(),
         );
-        assert!(finish_receiver_into(&db, &throwaway_logger(), "t-upper", upper).is_ok());
+        assert!(finish_receiver_into(&db, throwaway_logger(), "t-upper", upper).is_ok());
         assert_eq!(row("t-upper").0, "done");
     }
 
@@ -2176,7 +2179,7 @@ mod tests {
 
         std::fs::remove_dir_all(&root).unwrap();
 
-        let err = finish_receiver_into(&db, &throwaway_logger(), "t-rot", r).err();
+        let err = finish_receiver_into(&db, throwaway_logger(), "t-rot", r).err();
         let _ = std::fs::remove_dir_all(&root);
         assert!(
             err.is_some(),
@@ -2206,7 +2209,7 @@ mod tests {
         let db = crate::db_hold::DbLock::new(rusqlite::Connection::open_in_memory().unwrap());
         db.lock().unwrap().execute_batch(crate::db::SCHEMA).unwrap();
 
-        finish_receiver_into(&db, &throwaway_logger(), "t-empty", recv)
+        finish_receiver_into(&db, throwaway_logger(), "t-empty", recv)
             .expect("0 字节的空文件必须能正常完成，不许因 size=0 被判成「没收完」");
         assert_eq!(
             std::fs::metadata(&final_path).unwrap().len(),
@@ -2237,7 +2240,7 @@ mod tests {
         let bad = receiver_holding("rcv-empty-bad", b"", 0, "不是真的哈希");
         let bad_final = bad.final_path.clone();
         assert!(
-            finish_receiver_into(&db, &throwaway_logger(), "t-empty-bad", bad).is_err(),
+            finish_receiver_into(&db, throwaway_logger(), "t-empty-bad", bad).is_err(),
             "空文件摘要不符 ⇒ 必须失败，不许因 size=0 免检"
         );
         assert!(!bad_final.exists(), "摘要不符的空文件不许被改名成交付成品");
@@ -3053,8 +3056,7 @@ mod tests {
         let db = rusqlite::Connection::open_in_memory().unwrap();
         let real = db
             .execute("UPDATE no_such_table SET a = 1", [])
-            .err()
-            .expect("这条语句必然报错");
+            .expect_err("这条语句必然报错");
 
         let one = terminal_ledger_failure_note(LEDGER_STAGE_SHA, "t-1", &real, None);
         assert!(one.contains("stage=sha-mismatch-failed"), "实得：{one}");
@@ -3083,8 +3085,7 @@ mod tests {
         let long_col = format!("zzzzzzzzzz{}tail_sentinel", "x".repeat(4000));
         let err = db
             .execute(&format!("UPDATE t SET {long_col} = 1"), [])
-            .err()
-            .expect("不存在的列必然报错");
+            .expect_err("不存在的列必然报错");
         let raw = err.to_string();
         let head: String = raw.chars().take(80).collect();
         assert!(
