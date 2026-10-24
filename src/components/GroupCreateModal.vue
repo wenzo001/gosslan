@@ -98,9 +98,9 @@ async function create() {
       >
         <div
           class="flex h-4 w-4 items-center justify-center rounded-[var(--gosslan-radius-xs)] border"
-          :class="selected.includes(f.device_id) ? 'border-primary bg-[var(--gosslan-primary)]' : 'border-[var(--gosslan-border)]'"
+          :class="selected.includes(f.device_id) ? 'border-primary bg-[var(--gosslan-primary-active)]' : 'border-[var(--gosslan-border)]'"
         >
-          <Check v-if="selected.includes(f.device_id)" class="h-3 w-3 text-white" />
+          <Check v-if="selected.includes(f.device_id)" class="h-3 w-3 text-[var(--gosslan-on-primary)]" />
         </div>
         <div
           class="gosslan-avatar-box flex h-8 w-8 items-center justify-center overflow-hidden rounded-[var(--gosslan-avatar-radius)] text-white"
@@ -118,7 +118,7 @@ async function create() {
     </div>
 
     <button
-      class="mt-4 w-full rounded-[var(--gosslan-radius-lg)] bg-[var(--gosslan-primary)] py-2.5 text-sm font-medium text-white transition hover:bg-[var(--gosslan-primary-hover)] disabled:opacity-40"
+      class="mt-4 w-full rounded-[var(--gosslan-radius-lg)] bg-[var(--gosslan-primary-active)] py-2.5 text-sm font-medium text-[var(--gosslan-on-primary)] transition hover:bg-[var(--gosslan-primary-hover)] disabled:opacity-40"
       :disabled="selected.length === 0 || !name.trim() || creating"
       @click="create"
     >

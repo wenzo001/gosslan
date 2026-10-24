@@ -184,9 +184,17 @@ export const TOKEN_CONTRAST_CONTRACT: Record<"light" | "dark", TokenPair[]> = {
     { fg: "--gosslan-warning-ink", bg: "--gosslan-card", min: 3.0, why: "同上，落在卡片底" },
     { fg: "--gosslan-status-offline", bg: "--gosslan-panel", min: 3.0, why: "离线状态点（非文字）" },
     { fg: "#ffffff", bg: "--gosslan-hud", bgOver: "--gosslan-chat", min: 4.5, why: "toast 白字（hud 底是半透明，按叠在画布上算）" },
-    // 徽标里的数字是 11px 白字压在**实底色**上，是这套里最容易漏的一类：
-    // 它既不是"文字 token / 背景 token"的组合，也从来没被写进契约表。
-    { fg: "#ffffff", bg: "--gosslan-primary-active", min: 4.5, why: "未完成任务蓝色徽标的数字（11px）" },
+    // 主色实底控件这一族（16 处主色按钮 + 信息徽标）：**填充与前景成对**判，前景取
+    // --gosslan-on-primary 而不是写死 #ffffff —— 暗色下它是深墨（同一族在暗色里换了方向）。
+    // hover 也必须进表：它以前只是"朝白混 8%"的派生档，没有任何判据看过它，
+    // 而按钮 hover 时白字反而更看不见（旧值实测 2.48~3.77，六档全部不过 4.5）。
+    { fg: "--gosslan-on-primary", bg: "--gosslan-primary-active", min: 4.5, why: "主色按钮标签 / 信息徽标数字（压在实底上）" },
+    { fg: "--gosslan-on-primary", bg: "--gosslan-primary-hover", min: 4.5, why: "上面那一族的 hover 态" },
+    // 非文本那一维（WCAG 1.4.11，3:1 对相邻面）：按钮得先"看得出来是个控件"。
+    // ★ 这一维正是暗色不许跟着压深的唯一原因 —— 只盯文字档会得出**反过来**的结论
+    //（压深后白字 4.85 过 AA，但填充 vs 暗面板只剩 2.06~3.01）。
+    { fg: "--gosslan-primary-active", bg: "--gosslan-panel", min: 3.0, why: "主色实底按钮 vs 面板（控件边界要看得出）" },
+    { fg: "--gosslan-primary-hover", bg: "--gosslan-panel", min: 3.0, why: "hover 态同样要看得出是个控件" },
     // 红底白字这一族（未读徽标 / 删除按钮 / 错误 toast / 图片预览的删除浮层）。
     // 2026-09-26 无障碍实测：原来 `--gosslan-danger` 是 Apple 系统红 #ff3b30，白字只有 **3.55**，
     // 暗色 #ff5548 只有 **3.16** ⇒ 站内每一处红底白字都不合格，而这张表过去没覆盖到它。
@@ -207,7 +215,14 @@ export const TOKEN_CONTRAST_CONTRACT: Record<"light" | "dark", TokenPair[]> = {
     { fg: "--gosslan-danger-ink", bg: "--gosslan-list", min: 4.5, why: "同上，落在列表底" },
     { fg: "--gosslan-warning-ink", bg: "--gosslan-panel", min: 3.0, why: "皇冠 / 文件夹图标" },
     { fg: "--gosslan-status-offline", bg: "--gosslan-panel", min: 3.0, why: "离线状态点" },
-    { fg: "#ffffff", bg: "--gosslan-primary-active", min: 4.5, why: "未完成任务蓝色徽标的数字（11px）" },
+    // 主色实底控件在暗色下**换了方向**：填充提亮（要跟 #1e293b 面板分得开），前景换成深墨
+    // （--gosslan-on-primary 在 .dark 里 = --gosslan-app-bg）。这两行就是那一次换向的全部凭据：
+    // 漏掉 .dark 的覆盖 ⇒ 暗色继承压深档，白字仍过 4.5 而"按钮 vs 面板"掉到 2.06~3.01 ——
+    // 只盯文字档看不出问题，所以前景行与非文字行必须成对钉在这里。
+    { fg: "--gosslan-on-primary", bg: "--gosslan-primary-active", min: 4.5, why: "主色按钮标签 / 信息徽标数字（暗色：深墨压亮填充）" },
+    { fg: "--gosslan-on-primary", bg: "--gosslan-primary-hover", min: 4.5, why: "上面那一族的 hover 态（暗色朝更亮走）" },
+    { fg: "--gosslan-primary-active", bg: "--gosslan-panel", min: 3.0, why: "暗色下按钮 vs 面板（控件边界要看得出）" },
+    { fg: "--gosslan-primary-hover", bg: "--gosslan-panel", min: 3.0, why: "hover 态同样要看得出是个控件（暗色）" },
     // 暗色同理：填充档改深红（fg 是白字 ⇒ 与画布无关，只看这两档自身），
     // 而 `--gosslan-danger-ink` 在暗色仍是鲜红 #ff5548 —— 那是**当文字用**的那一档，别混。
     { fg: "#ffffff", bg: "--gosslan-danger", min: 4.5, why: "红徽标数字 / 删除按钮 / 错误 toast（暗色）" },

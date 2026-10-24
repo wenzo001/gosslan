@@ -13,6 +13,45 @@
 
 ## [Unreleased]
 
+## [5.7.7] - 2026-10-24
+
+### 主色实底控件第一次有了「填充 + 前景」这一对：亮色压深、暗色提亮
+
+- 5.7.6 把暗色盲区量开之后暴露的真缺陷是**一个色档被两件事同时要求**：白字压在
+  `--gosslan-primary-active` 上要 ≥4.5 ⇒ 填充亮度 ≤0.183；同一档贴在暗色面板 `#1e293b`
+  上要 ≥3 ⇒ 填充亮度 ≥0.180。窗口只剩 0.003，**两档外观不可能同时满足**（出厂蓝实测：
+  压深到能过白字那一头，按钮和面板就只剩 2.06~3.01）。
+- 负责人拍板按外观分两档（2026-10-24）：`:root` 填充混黑 72%、hover 混黑 66%（越 hover 越深、
+  白字对比度只升）；`.dark` 填充混白 80%、hover 混白 74%（越 hover 越亮），前景换深墨
+  `--gosslan-on-primary: var(--gosslan-app-bg)`。实测六套可选主色：墨字压亮填充 5.84~8.43、
+  亮填充 vs 暗面板 4.56~6.59，两条都过；亮色白字压深填充 4.85~7.10（最低是绿档）。
+  每一档的 hover 都比静态更强调且对比度更高：白字 5.60~7.94、墨字 6.35~8.89、
+  填充 vs 面板 4.96~6.94。
+- 全站 30 处调用点（17 份组件）从 `bg-[var(--gosslan-primary)] + text-white` 换成
+  `bg-[var(--gosslan-primary-active)] + text-[var(--gosslan-on-primary)]`；
+  `UnreadBadge.vue` 的基类不再自带 `text-white`（两档各自声明前景，蓝色档必须吃配档墨色）。
+  清点时先用 `hover` 关键字窄检索得出"16 处"，宽检索才发现还有 9 处白字压在实底上
+  （SegmentedControl / AvatarPresetDialog / UpdatePanel / RemindAudienceDialog /
+  MessageItem 提醒确认 / GroupTasksBoard / TodoDetailDialog）—— 老教训又应验一次。
+- 三把新量具，都是"改坏即红"实测过的：
+  ① `tokenContrast` 契约里那一行 `#ffffff × --gosslan-primary-active` 换成四行
+  （on-primary × active/hover 各带 min 4.5、active/hover × panel 带 min 3.0），亮暗各四行；
+  ② `designGuards.findPrimaryFillWithoutOnPrimary` 钉调用点成对性（只写填充 / 写死 text-white /
+  裸主色配白字三种形状报红，前景在子树里算成对 —— 勾选圈那两型），真实树 94 份 `.vue` 现扫 0 条，
+  分母下限模板内实底 ≥20、配档前景 ≥20（实测 44 / 29）；把 `PrimaryBtn.vue` 那一处前景改成
+  `text-white` 复跑 ⇒ 判据点名 `components/ui/PrimaryBtn.vue:28` 报红，恢复即绿；
+  ③ CDP 探针 accent 段不再手抄混色常数：四条混法 + 暗色前景档全部从 `src/style.css` 现解析
+  并与浏览器 computed 对账，暗色那组要在真加过 `.dark` 的元素上量（少一条 `.dark` 覆盖只有这里会红；
+  删掉 `--gosslan-on-primary` 那一行复跑 ⇒ 三格同时红）。`toRgb` 顺带补十六进制支路 ——
+  暗色前景从磁盘读出来就是 `#0b1220` 这种写法，量具原先只认 `rgb()`/`color(srgb)`，
+  期望值静默变 null，红的是尺子不是产品。
+- 已知边界（不假装穷尽）：成对判据按**整元素含子树**取类名，同一标签里 `:class` 三元两支
+  各写一套那种半成对看不见 —— 已用一条"静默"用例把它钉成显式欠账，兜底在契约与探针两侧。
+- 同批登记的其它语义档缺陷**没动**（各自需要单独决策）：`--gosslan-warning` 上白字 2.20、
+  `--gosslan-success` 上白字 2.54（暗色 2.15）、`LogViewer` 成功分支仍写
+  `bg-[var(--gosslan-success)] text-white`；`todos.ts` 的 TODO 状态条与 `SettingsToggle`
+  用裸主色，非文字填充与暗面板的对比只有 ~3.0 上下。
+
 ## [5.7.6] - 2026-10-24
 
 ### 对比度护栏的暗色盲区补上：主色可选档第一次被逐档量

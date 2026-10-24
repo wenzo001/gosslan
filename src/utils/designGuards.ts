@@ -2049,6 +2049,116 @@ export function findHandWrittenSolidDangerButtons(src: string): GuardIssue[] {
 }
 
 /**
+ * 主色实底控件的「填充 + 前景」是一对，不是两个独立选择。
+ *
+ * 为什么要有机器判据（2026-10-24 无障碍实测）：`--gosslan-primary-active` 在亮色是
+ * 压深档（白字 4.6+），在暗色是**提亮**档（前景换成深墨 `--gosslan-on-primary`）。
+ * 于是这两件缺陷都会**静默**发生：
+ *
+ *   ① 写了 `bg-[var(--gosslan-primary-active)]` 却没写配档前景 ⇒ 文字继承父级颜色，
+ *      亮色下勉强能看、暗色下亮底亮字；
+ *   ② 写了 `text-white` ⇒ 亮色过 AA，暗色下白字压在提亮档上直接掉到 1.6~2.0。
+ *
+ * 两种都编译通过、构建通过、探针不红（探针量的是 token 算得对不对，量不到谁在用），
+ * 只有换到暗色主题才看得见 ⇒ 正是"静默失败"那一族，必须由静态判据盯住。
+ *
+ * 判据按**开标签**取整段（`class` / `:class` / 三元字符串都在这段里），
+ * 不看裸 `src.includes` —— 注释里写一句"改成 bg-[var(--gosslan-primary-active)]"
+ * 会让护栏因为注释而通过（这一族已经踩过两次）。HTML 注释先抹成空格。
+ *
+ * ⚠️ 只管**带文字/图标的那一档**：`-active`/`-hover` 这两档在本仓是给"压在上面的东西"
+ * 用的，所以缺前景就是缺陷。裸 `bg-[var(--gosslan-primary)]`（进度条、状态点、开关底
+ * 这类非文字填充）不要求配对，只禁止它配 `text-white`（那是原缺陷形状：中间调 + 白字 ≈ 3.5）。
+ *
+ * ⚠️ 已知边界：判定粒度是**整个元素（含子树）**。同一个标签里 `:class` 三元两支各写一套
+ * （一支成对、一支只写填充）这一支看不见 —— 已由 `designGuards.test.ts` 的"已知边界"用例
+ * 钉住，别把它当成已覆盖；那一族的比值兜底在 tokenContrast 契约，暗色覆盖兜底在 CDP 探针的 accent 段。
+ */
+const FILL_ACTIVE = "bg-[var(--gosslan-primary-active)]";
+const FILL_HOVER = "bg-[var(--gosslan-primary-hover)]";
+const FILL_RAW = "bg-[var(--gosslan-primary)]";
+const ON_PRIMARY = "text-[var(--gosslan-on-primary)]";
+
+/** 无闭合标签的元素：取"子树"时按自闭合处理。 */
+const VOID_ELEMENTS = new Set(["area", "base", "br", "col", "embed", "hr", "img", "input", "link", "meta", "source", "track", "wbr"]);
+
+/** 从开标签起点取回**整个元素**（含子树）；同名嵌套按深度配对，取不到就只回开标签本身。 */
+function elementBlock(tpl: string, openStart: number): string {
+  const openEnd = tpl.indexOf(">", openStart);
+  if (openEnd < 0) return tpl.slice(openStart);
+  const openTag = tpl.slice(openStart, openEnd + 1);
+  const name = /^<([A-Za-z][\w-]*)/.exec(openTag)?.[1] ?? "";
+  if (!name || openTag.trimEnd().endsWith("/>") || VOID_ELEMENTS.has(name.toLowerCase())) return openTag;
+  const openRe = new RegExp(`^<${name}(?=[\\s/>])`, "");
+  const closeTag = `</${name}>`;
+  let depth = 0;
+  let i = openEnd + 1;
+  while (i < tpl.length) {
+    if (tpl.startsWith(closeTag, i)) {
+      if (depth === 0) return tpl.slice(openStart, i + closeTag.length);
+      depth -= 1;
+      i += closeTag.length;
+      continue;
+    }
+    const rest = tpl.slice(i);
+    if (openRe.test(rest)) {
+      const next = tpl.indexOf(">", i);
+      if (next < 0) break;
+      // 同名标签只可能是这一层的嵌套（openRe 按 name 匹配），自闭合的不进深度。
+      if (!tpl.slice(i, next + 1).trimEnd().endsWith("/>")) depth += 1;
+      i = next + 1;
+      continue;
+    }
+    i += 1;
+  }
+  return openTag;
+}
+
+export function findPrimaryFillWithoutOnPrimary(src: string): GuardIssue[] {
+  const tplStart = src.indexOf("<template");
+  const tplEnd = src.lastIndexOf("</template>");
+  if (tplStart < 0 || tplEnd <= tplStart) return [];
+  const tpl = src
+    .slice(tplStart, tplEnd)
+    .replace(/<!--[\s\S]*?-->/g, (m) => m.replace(/[^\n]/g, " "));
+  const out: GuardIssue[] = [];
+  for (const m of tpl.matchAll(/<[A-Za-z][\s\S]*?>/g)) {
+    const at = tplStart + (m.index ?? 0);
+    const openTag = m[0];
+    // 前景允许写在**同一个元素或它的子树**里：勾选框是"外圈上底色、里面 `<Check>` 吃
+    // currentColor"的形状（GroupCreateModal / MessageItem 多选圈都这样），
+    // 只认开标签那一行会把这两处判成缺陷。
+    const block = elementBlock(tpl, m.index ?? 0);
+    const hasOnPair = block.includes(ON_PRIMARY);
+    const filled = openTag.includes(FILL_ACTIVE) || openTag.includes(FILL_HOVER);
+    if (filled && !hasOnPair) {
+      out.push({
+        line: lineAt(src, at),
+        message:
+          "主色实底（" +
+          (openTag.includes(FILL_ACTIVE) ? FILL_ACTIVE : FILL_HOVER) +
+          "）必须在这个元素或其子树里带上 " +
+          ON_PRIMARY +
+          "。只写填充 ⇒ 文字继承父级颜色；写 text-white ⇒ 暗色那档是提亮填充，白字只剩 1.6~2.0。" +
+          "这一对由 tokenContrast 的契约判比值，不由人眼判。",
+      });
+    } else if (openTag.includes(FILL_RAW) && openTag.includes("text-white")) {
+      out.push({
+        line: lineAt(src, at),
+        message:
+          "禁止 `bg-[var(--gosslan-primary)] text-white`：主色本身是中间调，白字只有 3.5 左右（不达 AA）。" +
+          "承载文字的实底要用 " +
+          FILL_ACTIVE +
+          " + " +
+          ON_PRIMARY +
+          "（比值由 tokenContrast 契约判）。",
+      });
+    }
+  }
+  return out.sort((a, b) => a.line - b.line);
+}
+
+/**
  * 原生 `<select>` 已整体迁到 Reka（`components/ui/SettingsSelect.vue`）。
  * 原生控件的弹出层由 WebView 绘制：不跟随主题、键盘/焦点行为各端不一，
  * 且无法统一 `.gosslan-menu` 外观。只扫 `<template>` 里真正写出的标签；

@@ -166,7 +166,7 @@ const kindLabel = computed(() => KIND_LABELS[props.kind] ?? t("msg.message"));
           {{ t("multi.forwardPerMessage") }}
         </button>
         <button
-          class="tap-safe rounded-[var(--gosslan-radius-md)] bg-[var(--gosslan-primary)] px-4 py-2 text-sm text-white transition hover:bg-[var(--gosslan-primary-hover)] disabled:opacity-40"
+          class="tap-safe rounded-[var(--gosslan-radius-md)] bg-[var(--gosslan-primary-active)] px-4 py-2 text-sm text-[var(--gosslan-on-primary)] transition hover:bg-[var(--gosslan-primary-hover)] disabled:opacity-40"
           :disabled="!picked"
           @click="picked && emit('pick', picked, 'merged')"
         >

@@ -50,11 +50,11 @@ const props = withDefaults(
 
 <template>
   <span
-    class="unread-badge flex h-4 min-w-4 items-center justify-center rounded-full px-1 pb-[1.5px] text-caption font-medium leading-none text-white"
+    class="unread-badge flex h-4 min-w-4 items-center justify-center rounded-full px-1 pb-[1.5px] text-caption font-medium leading-none"
     :class="
       props.tone === 'info'
-        ? 'bg-[var(--gosslan-primary-active)]'
-        : 'bg-[var(--gosslan-danger)]'
+        ? 'bg-[var(--gosslan-primary-active)] text-[var(--gosslan-on-primary)]'
+        : 'bg-[var(--gosslan-danger)] text-white'
     "
   >
     {{ props.count > props.max ? `${props.max}+` : props.count }}

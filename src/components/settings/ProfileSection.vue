@@ -230,7 +230,7 @@ function processAvatar(file: File): Promise<string> {
       >
         <SelfAvatar :preview-src="avatar" class="h-16 w-16 rounded-[var(--gosslan-avatar-radius)]" />
         <span
-          class="pointer-events-none absolute -bottom-1 -right-1 flex h-6 w-6 items-center justify-center rounded-full border-2 border-[var(--gosslan-panel)] bg-[var(--gosslan-primary)] text-white"
+          class="pointer-events-none absolute -bottom-1 -right-1 flex h-6 w-6 items-center justify-center rounded-full border-2 border-[var(--gosslan-panel)] bg-[var(--gosslan-primary-active)] text-[var(--gosslan-on-primary)]"
         >
           <Camera class="h-3.5 w-3.5" :stroke-width="2" />
         </span>

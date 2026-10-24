@@ -235,7 +235,7 @@ const gridTiles = computed(() => {
             :title="t('todo.openForMe', { n: openTasks })"
           >
             <ListChecks
-              class="h-3.5 w-3.5 text-[var(--gosslan-primary-active)]"
+              class="h-3.5 w-3.5 text-[var(--gosslan-accent-ink)]"
               :stroke-width="2.2"
               aria-hidden="true"
             />
