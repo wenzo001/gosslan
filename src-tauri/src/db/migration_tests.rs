@@ -935,17 +935,20 @@ fn tables_are_counted_before_the_schema_is_applied() {
             .expect("init() 之后应当还有分册登记行；找不到说明切片终点锚点失效");
         &tail[..end]
     };
-    // ⚠️ 锚点必须带 `conn.` 与 `?;`：`init()` 顶上那段降级注释里也**提到了**
+    // ⚠️ 锚点必须带 `conn.` / `&conn` 与 `?;`：`init()` 顶上那段降级注释里也**提到了**
     // `execute_batch(SCHEMA)`（不带前缀），只找 `execute_batch(SCHEMA)` 会先撞上注释、
     // 于是这条守卫红在错误的理由上 —— 实测过。
+    // （DB-01 之后 SCHEMA 的应用点收进了一个 DDL 事务，锚点改成那句话；
+    //  判据要守的仍是"数表发生在应用 SCHEMA 之前"，只是应用点换了名字。）
     let counted = body
         .find("let pre_table_count")
         .expect("init() 里必须数一次表（is_fresh 的条件之一）");
     let applied = body
-        .find("conn.execute_batch(SCHEMA)?;")
+        .find("apply_base_schema_atomically(&conn, SCHEMA)?;")
         .expect("init() 必须应用 SCHEMA");
     assert_eq!(
-        body.matches("conn.execute_batch(SCHEMA)?;").count(),
+        body.matches("apply_base_schema_atomically(&conn, SCHEMA)?;")
+            .count(),
         1,
         "SCHEMA 只准应用一次；两次说明锚点已经不能唯一定位这条守卫要判的语句"
     );

@@ -56,6 +56,10 @@ pub enum InitError {
     /// 迁移前备份失败或校验不通过。**原库未改动**，备份文件保留供诊断。
     #[error("迁移前备份失败/校验不通过（原库未改动）：{path}: {reason}")]
     Backup { path: String, reason: String },
+    /// 建表/内容层 DDL 事务失败并**已整体回滚**（审计 DB-01）。
+    /// 与 `Sqlite` 分开：这里是"库能开、但这批 DDL 没落成"，原库仍是启动前的形状。
+    #[error("建表/内容层 DDL 事务失败（已整体回滚）：{reason}")]
+    SchemaMigrate { reason: String },
     /// 其它 SQLite 错误（打不开、迁移失败……）。
     #[error(transparent)]
     Sqlite(#[from] rusqlite::Error),
@@ -75,6 +79,7 @@ impl InitError {
         match self {
             InitError::Downgrade { .. } => "DB_DOWNGRADE",
             InitError::Backup { .. } => "DB_BACKUP_FAILED",
+            InitError::SchemaMigrate { .. } => "SCHEMA_MIGRATE_FAILED",
             InitError::Sqlite(_) => "DB_OPEN_FAILED",
         }
     }
@@ -95,6 +100,17 @@ impl InitError {
                  ---\n\
                  Gosslan could not create/verify a pre-migration backup, so it stopped \
                  BEFORE writing anything. Your original database is unchanged."
+            ),
+            InitError::SchemaMigrate { reason } => format!(
+                "初始化/升级本地数据库表结构失败，已中止启动。\n\
+                 这一批建表语句在同一个事务里，失败后已整体回滚 —— 数据库仍是启动前的形状，\
+                 没有留下半套表。\n\
+                 原因：{reason}\n\
+                 \n\
+                 ---\n\
+                 Gosslan could not apply its schema in one transaction and stopped. \
+                 The whole DDL batch was rolled back, so the database is still in its \
+                 pre-startup shape."
             ),
             InitError::Sqlite(e) => format!(
                 "无法打开或初始化本地数据库，已停止启动：{e}\n\
@@ -952,6 +968,52 @@ fn backup_before_migration(
     Ok(())
 }
 
+/// DDL 阶段的错误分类：**格式问题**（文件不是数据库 / 库损坏）仍按 `Sqlite` 报，
+/// 只有"库是好的、但这批 DDL 没写成"才是 `SchemaMigrate`。
+///
+/// 为什么要分：损坏库的既有判据（`a_corrupt_database_is_rejected_and_left_byte_for_byte_untouched`）
+/// 与启动文案都认 `InitError::Sqlite`；如果一律包成 `SchemaMigrate`，用户会看到
+/// "表结构事务失败"这种指错方向的提示，而实际是文件根本不是数据库。
+fn ddl_error(stage: &str, e: rusqlite::Error) -> InitError {
+    let format_problem = match &e {
+        rusqlite::Error::SqliteFailure(code, _) => matches!(
+            code.code,
+            rusqlite::ErrorCode::NotADatabase | rusqlite::ErrorCode::DatabaseCorrupt
+        ),
+        _ => false,
+    };
+    if format_problem {
+        InitError::Sqlite(e)
+    } else {
+        InitError::SchemaMigrate {
+            reason: format!("{stage}: {e}"),
+        }
+    }
+}
+
+/// 把「基础 schema + 内容层 schema」作为**一个** DDL 事务应用（审计 DB-01）。
+///
+/// 旧实现是两句独立的 `execute_batch`：第一句建完全部表、第二句失败（磁盘满，或两次调用
+/// 之间被 kill）时，库里就留下"一半新、一半旧"的形状 —— 下次启动既不算 fresh（数表 > 0），
+/// 也未必还能按旧版本重放迁移，只能人工恢复。`SCHEMA` 与 `ensure_schema` 里都只有
+/// `CREATE ...` / `ALTER TABLE`，没有 `PRAGMA journal_mode` 那类不能进事务的语句。
+///
+/// `ddl` 在生产路径恒为 `SCHEMA`；这个参数只为回归用例留一个注入点 —— 不给注入点，
+/// "整批回滚"就只能靠人相信（用例会喂一份中途会失败的 DDL）。
+fn apply_base_schema_atomically(
+    conn: &Connection,
+    ddl: &str,
+) -> std::result::Result<(), InitError> {
+    let tx = conn
+        .unchecked_transaction()
+        .map_err(|e| ddl_error("开启 DDL 事务", e))?;
+    tx.execute_batch(ddl)
+        .map_err(|e| ddl_error("基础 schema", e))?;
+    crate::content::store::ensure_schema(&tx).map_err(|e| ddl_error("内容层 schema", e))?;
+    tx.commit().map_err(|e| ddl_error("提交 DDL 事务", e))?;
+    Ok(())
+}
+
 /// 打开（或创建）数据库并执行迁移。
 pub fn init(path: &Path) -> std::result::Result<Connection, InitError> {
     if let Some(parent) = path.parent() {
@@ -1001,9 +1063,9 @@ pub fn init(path: &Path) -> std::result::Result<Connection, InitError> {
         backup_before_migration(&conn, path, current, pre_table_count)?;
     }
 
-    conn.execute_batch(SCHEMA)?;
-    // 内容传输逻辑层自己的表（schema 归它所有，保持分层）。
-    crate::content::store::ensure_schema(&conn)?;
+    // DB-01：基础 schema 与内容层 schema 必须在**同一个事务**里落地 —— 分开跑时，
+    // 第二段失败会留下半套表（既不是 fresh 也不再是旧版本形状），只能人工恢复。
+    apply_base_schema_atomically(&conn, SCHEMA)?;
 
     if is_fresh {
         conn.pragma_update(None, "user_version", DB_VERSION)?;

@@ -13,6 +13,22 @@
 
 ## [Unreleased]
 
+## [5.7.17] - 2026-10-24
+
+### 建表与内容层 schema 收进同一个 DDL 事务（审计 DB-01）
+
+- `db::init` 原先分两句执行 `execute_batch(SCHEMA)` 与 `content::store::ensure_schema`：
+  第一句建完全部业务表、第二句失败（磁盘满，或在两次调用之间被 kill）时，库里会留下
+  "一半新、一半旧"的形状 —— 既不满足 fresh 判据（业务表数 > 0），也未必还能按旧版本
+  重放迁移，只能人工恢复。
+- 现在两段 DDL 走 `apply_base_schema_atomically`：同一个 `unchecked_transaction`，
+  任一句失败即整体回滚，并返回 `code=SCHEMA_MIGRATE_FAILED`（与"库打不开"的
+  `DB_OPEN_FAILED` 区分开），启动文案明确写"数据库仍是启动前的形状"。
+  已逐条确认 `SCHEMA` 与 `ensure_schema` 里只有 `CREATE` / `ALTER TABLE`，
+  没有 `PRAGMA journal_mode` 那类不能进事务的语句。
+- 新增回归断言：喂一份中途语法错误的 DDL ⇒ 第一句已建的表必须一并消失、错误码可检索；
+  正面半边断言基础表与 `content_transfers` 同批提交。
+
 ## [5.7.16] - 2026-10-24
 
 ### 供应链门禁进 push 前闸门 + 依赖整改（审计 SEC-02/07）

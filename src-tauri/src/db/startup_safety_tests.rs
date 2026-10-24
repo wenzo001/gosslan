@@ -27,6 +27,56 @@ fn status(conn: &Connection, msg_id: &str) -> String {
     .unwrap()
 }
 
+#[test]
+fn a_failing_ddl_batch_leaves_no_half_schema_behind() {
+    let conn = Connection::open_in_memory().unwrap();
+    // 第一句是合法 DDL（本该建出 half_applied），第二句语法错误 ⇒ 整批必须回滚。
+    // 这正是 DB-01 的注入点：旧实现两句分开跑时，这一段会留下 half_applied。
+    let ddl = "CREATE TABLE half_applied(x INTEGER);\nCREATE TABLE oops (";
+    let err = apply_base_schema_atomically(&conn, ddl).unwrap_err();
+    assert_eq!(
+        err.code(),
+        "SCHEMA_MIGRATE_FAILED",
+        "DDL 事务失败必须可定位到错误码：{err}"
+    );
+    assert!(
+        err.to_string().contains("基础 schema"),
+        "错误串要指出是哪一段 DDL 失败：{err}"
+    );
+    let tables: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(
+        tables, 0,
+        "DDL 事务失败后一张业务表都不许留下（留下 half_applied 就是 DB-01 的半迁移状态）"
+    );
+}
+
+/// DB-01 的正面半边：两个 DDL 段落地后都在，且内容层那张表也随事务一起提交。
+#[test]
+fn the_base_schema_and_the_content_schema_land_together() {
+    let conn = Connection::open_in_memory().unwrap();
+    apply_base_schema_atomically(&conn, SCHEMA).unwrap();
+    let has = |name: &str| -> bool {
+        conn.query_row(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = ?1",
+            params![name],
+            |r| r.get::<_, i64>(0),
+        )
+        .unwrap()
+            > 0
+    };
+    assert!(has("messages"), "基础 schema 必须建出业务表");
+    assert!(
+        has("content_transfers"),
+        "内容层 schema 必须与基础 schema 同批提交（分层不变，事务只有一个）"
+    );
+}
+
 /// 启动恢复只碰「sending 且两张 outbox 表都没有行」的孤儿。
 /// 有队列行的（还能补发）、以及其他终态的，一个都不许改。
 #[test]
