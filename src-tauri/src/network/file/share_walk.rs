@@ -11,21 +11,44 @@
 // ⚠️ 搬家同批必须做的两件事：`network/mod.rs::file_src_for_guards()` 登记本册（漏了=形状守卫看不见这段生产码，假绿），
 //   以及 `docs/domains.data.mjs` 的 transport/file 领域 paths（漏了=判据 D 报无主文件）。
 
-/// 递归枚举共享目录树（限制深度 8，跳过隐藏文件）。
-pub fn walk_share_dir(root: &Path) -> Vec<ShareEntry> {
-    let mut out = Vec::new();
-    walk(root, "", &mut out, 0);
-    out
+/// 一次共享目录树最多回多少条（审计 PERF-02）。
+///
+/// 条数由**对端的共享根**决定：一个几十万文件的目录会让本机在遍历、序列化、
+/// 单帧发送三处各付一次内存峰值，而 `MAX_FRAME`（64MiB）只保证"帧写得出去"，
+/// 不保证"分配得起"。2000 条按每条 250B 估约 500KB，远低于帧上限；
+/// 对"弹窗里滚动浏览并点下载"这个唯一用法来说也早已超过可读范围。
+pub const SHARE_TREE_MAX_ENTRIES: usize = 2000;
+
+/// 遍历结果：条目 + 是否被上限截断。
+///
+/// `truncated` 必须显式带出来，不能让调用方数 `len == MAX` 猜：恰好 2000 条的目录
+/// 与"2000 条之后还有"是两件事，只有后者该记 `code=SHARE_TREE_TRUNCATED`。
+pub struct ShareTree {
+    pub entries: Vec<ShareEntry>,
+    pub truncated: bool,
 }
 
-fn walk(dir: &Path, rel: &str, out: &mut Vec<ShareEntry>, depth: usize) {
+/// 递归枚举共享目录树（限制深度 8、跳过隐藏文件、条数上限 [`SHARE_TREE_MAX_ENTRIES`]）。
+pub fn walk_share_dir(root: &Path) -> ShareTree {
+    let mut entries = Vec::new();
+    let truncated = walk(root, "", &mut entries, 0);
+    ShareTree { entries, truncated }
+}
+
+/// 返回 `true` = 因上限提前停止（还有条目没装进来）。
+fn walk(dir: &Path, rel: &str, out: &mut Vec<ShareEntry>, depth: usize) -> bool {
     if depth > 8 {
-        return;
+        return false;
     }
     let Ok(entries) = std::fs::read_dir(dir) else {
-        return;
+        return false;
     };
     for e in entries.flatten() {
+        // 上限检查放在每个条目之前：凑满就停，不再继续 read_dir 的剩余项，
+        // 也不再把"已满"的目录继续递归下去。
+        if out.len() >= SHARE_TREE_MAX_ENTRIES {
+            return true;
+        }
         let path = e.path();
         let Ok(file_type) = e.file_type() else {
             continue;
@@ -55,10 +78,11 @@ fn walk(dir: &Path, rel: &str, out: &mut Vec<ShareEntry>, depth: usize) {
             is_dir,
             size,
         });
-        if is_dir {
-            walk(&path, &rel_path, out, depth + 1);
+        if is_dir && walk(&path, &rel_path, out, depth + 1) {
+            return true;
         }
     }
+    false
 }
 
 /// 按文件扩展名（大小写不敏感）保守分类附件类型：`image` / `code` / `file`。
