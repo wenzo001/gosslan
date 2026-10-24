@@ -36,14 +36,17 @@ test("MessageItem 右键边界 = 消息内容列；桌面带选区快照，触�
   const app = readFileSync(join(import.meta.dirname, "..", "App.vue"), "utf8");
 
   // ① 边界：处理器挂在 `[data-msg-col]`（昵称/引用块/正文），不再挂在整条消息根上。
-  //    头像、表情回应条、行内空白在列外 ⇒ 不会因为"同属一条消息"就弹菜单。
+  //    头像、行内空白在列外 ⇒ 不会因为"同属一条消息"就弹菜单。
   assert.match(item, /data-msg-col[\s\S]{0,700}?@contextmenu="onContextMenu"/,
     "contextmenu 处理器没有挂在 data-msg-col（消息内容列）上");
   assert.doesNotMatch(item, /class="group\/msg"[^>]*@contextmenu=/,
-    "处理器仍然挂在整条消息根上 —— 头像/表情条/空白会误触发");
+    "处理器仍然挂在整条消息根上 —— 头像/空白会误触发");
   // 表情回应的笑脸按钮在列内（绝对定位），必须显式排除。
-  assert.match(item, /closest\("\[data-reaction-entry\]"\)/,
+  // 2026-10-24 起回应条也进了列内（它是气泡的底栏），同样必须排除 —— 右键胶囊只该是控件行为。
+  assert.match(item, /closest\("\[data-reaction-entry\][^"]*"\)/,
     "没有排除表情回应入口 ⇒ 右键笑脸会弹消息菜单");
+  assert.match(item, /closest\("[^"]*\[data-reaction-strip\]"\)/,
+    "没有排除表情回应条（已并入气泡、落在消息列内）⇒ 右键胶囊会弹消息菜单");
   assert.doesNotMatch(item, /@contextmenu\.prevent=/, "不许再有无条件 prevent");
   assert.match(item, /shouldPreventContextMenu\(/, "必须调用共享判据");
   assert.match(item, /onSelectableText/, "必须把「落点是否可选正文」传给闸门");

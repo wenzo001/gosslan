@@ -1268,6 +1268,31 @@ img {
   -webkit-user-drag: none;
 }
 
+/* 表情回应条并入气泡（2026-10-24）：底栏与气泡是**同一块**。
+   气泡自己的两个下圆角交给底栏（否则接缝处会露出一道内凹的透明缺口），
+   底边框也隐掉 —— 否则对方消息那 1px 描边会在接缝处横着画一条线。
+   用 !important 是因为圆角/边框写在气泡的**内联样式**里（主题预设要读那份值），
+   普通选择器压不过；作用域收在 `.msg-shell[data-has-reactions]` 内，不影响无回应条的气泡。
+   ⚠️ 必须放在全局 `img` 规则**之后**：`designGuards` 的选区契约用 `indexOf("img")`
+   取那条规则，本段里的 `[data-img-el]` 若排在前面会被它当成全局 img 规则读到。 */
+.msg-shell[data-has-reactions] > [data-msg-bubble] > :first-child {
+  border-bottom-left-radius: 0 !important;
+  border-bottom-right-radius: 0 !important;
+  border-bottom-color: transparent !important;
+}
+/* 图片气泡：外层裁切容器抹平后，里面的图片元素自己的下圆角还得单独抹，
+   否则图片会在底栏上方留下两个圆角缺口。 */
+.msg-shell[data-has-reactions] > [data-msg-bubble] > :first-child > [data-img-el] {
+  border-bottom-left-radius: 0 !important;
+  border-bottom-right-radius: 0 !important;
+}
+/* 代码气泡的可见卡片是 CodeBlock + `.code-actions`（圆角写在组件的 scoped 样式里），
+   这一条特异性高于 `.code-actions[data-v-…]`，不需要 !important。 */
+.msg-shell[data-has-reactions] .code-actions {
+  border-bottom-left-radius: 0;
+  border-bottom-right-radius: 0;
+}
+
 /* ================================================================================
    辅助功能媒体查询：必须留在**文件最末尾**。
    原因：`.glass` / `.frost` 的定义在本文件更靠后处，CSS 同优先级下"后定义者胜"；
