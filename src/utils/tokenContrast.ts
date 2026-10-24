@@ -231,6 +231,195 @@ export const TOKEN_CONTRAST_CONTRACT: Record<"light" | "dark", TokenPair[]> = {
 };
 
 /**
+ * 禁用态的一行契约。
+ *
+ * 为什么单独一类：上面那张表算的是"两个不透明面叠在一起"，而禁用态走的是
+ * **整元素 opacity** —— 前景与填充被同一个 α 拉向同一个背景面，
+ * `contrast(αF+(1-α)B, αG+(1-α)B)` 随 α→0 **单调趋于 1**。
+ * ⇒ 实底控件的禁用态不是"淡一点"，是**填充与标签一起消失**；
+ * ⇒ 所以 α 绝不能手抄进契约：手抄了，组件里把 50 改成 30 时这里照样绿（假护栏）。
+ * 每行都声明自己 α 的家（`alpha`），从那份源码现取。
+ */
+export interface DisabledPair {
+  name: string;
+  /** 前景：文字 token 或字面 hex */
+  fg: string;
+  /** 元素自身的填充档；纯文字控件（无底色）传 null */
+  fill: string | null;
+  /** 元素背后的面 */
+  page: string;
+  /** 背后的面若半透明，先与这一层复合 */
+  pageOver?: string;
+  /** α 的家 */
+  alpha: { source: string; kind: "classes" } | { source: string; kind: "rule"; selector: string };
+  /** 当前实测下限：比它更淡就红（不是"达标线"，达标线见 why 与 docs §3.3） */
+  min: number;
+  why: string;
+}
+
+export interface DisabledRating {
+  name: string;
+  theme: "light" | "dark";
+  alpha: number;
+  /** 禁用后的实际对比度 */
+  ratio: number;
+  /** 没禁用时同一对颜色的对比度（说明这一族被 α 吃掉了多少） */
+  ratioUndisabled: number;
+}
+
+export interface DisabledAudit {
+  ratings: DisabledRating[];
+  fails: { name: string; theme: "light" | "dark"; ratio: number; min: number; alpha: number; why: string }[];
+  /** α 取不到（源码里没有那一条 / 换了写法）或颜色解析不出 —— 调用方必须当 0 断言 */
+  unresolved: string[];
+}
+
+export const DISABLED_CONTRAST_CONTRACT: DisabledPair[] = [
+  {
+    name: "主色实底按钮",
+    fg: "--gosslan-on-primary",
+    fill: "--gosslan-primary-active",
+    page: "--gosslan-panel",
+    alpha: { source: "PrimaryBtn", kind: "classes" },
+    min: 2.2,
+    why: "禁用后标签压在变淡的实底上（PrimaryBtn 是全站主按钮的家）",
+  },
+  {
+    name: "危险实底按钮",
+    fg: "#ffffff",
+    fill: "--gosslan-danger",
+    page: "--gosslan-panel",
+    alpha: { source: "DangerBtn", kind: "classes" },
+    min: 2.1,
+    why: "同上，DangerBtn（`text-white` 直接写白色）",
+  },
+  {
+    name: "多选工具栏文字钮",
+    fg: "--gosslan-text",
+    fill: null,
+    page: "--gosslan-panel",
+    alpha: { source: "ChatWindow", kind: "classes" },
+    min: 2.5,
+    why: "多选四项批量操作未选中时禁用（逐条转发/合并转发/收藏）",
+  },
+  {
+    name: "多选工具栏删除钮",
+    fg: "--gosslan-danger-ink",
+    fill: null,
+    page: "--gosslan-panel",
+    alpha: { source: "ChatWindow", kind: "classes" },
+    min: 1.7,
+    why: "批量删除禁用态：语义色当文字再被 α 拉淡，是全仓最低的一档",
+  },
+  {
+    name: "菜单禁用条目",
+    fg: "--gosslan-text",
+    fill: null,
+    page: "--gosslan-panel-frost",
+    pageOver: "--gosslan-chat",
+    alpha: { source: "StyleCss", kind: "rule", selector: ".gosslan-menu-item:disabled" },
+    min: 3.3,
+    why: "右键/长按菜单里不可用的条目（桌面菜单与 ActionSheet 共用这套类）",
+  },
+  {
+    name: "禁用输入框",
+    fg: "--gosslan-text",
+    fill: "--gosslan-bg",
+    page: "--gosslan-panel",
+    alpha: { source: "StyleCss", kind: "rule", selector: "select):disabled" },
+    min: 4.5,
+    why: "禁用/只读输入框：这一族是唯一还过 AA 正文档的，按 4.5 硬钉",
+  },
+];
+
+const TW_DISABLED = /disabled:opacity-(\d{1,3})\b/g;
+/** 剥注释：`.vue` 里有 `<!-- -->`、`/* */`、`//` 三种，注释里提到类名不算调用点。 */
+function stripCodeComments(text: string): string {
+  return text
+    .replace(/<!--[\s\S]*?-->/g, "")
+    .replace(/\/\*[\s\S]*?\*\//g, "")
+    .split("\n")
+    .filter((line) => !line.trim().startsWith("//"))
+    .join("\n");
+}
+
+/** 组件写法里的禁用 α（`disabled:opacity-50` 这一族，取最激进的一个）。 */
+export function disabledOpacityFromClasses(text: string): number[] {
+  return [...stripCodeComments(text).matchAll(TW_DISABLED)].map((m) => Number(m[1]) / 100);
+}
+
+/**
+ * style.css 里某条禁用规则自己的 `opacity:` —— 按**规则块**取，不按全文取。
+ *
+ * 为什么按规则：`:where(input,textarea,select):disabled` 是 0.62 而菜单条目是 0.5。
+ * 全文取最小会**把输入框那行冤枉成红**（它实际按 0.62 渲染，过 AA）。
+ */
+export function disabledOpacityFromRule(css: string, selector: string): number[] {
+  const clean = css.replace(/\/\*[\s\S]*?\*\//g, "");
+  const out: number[] = [];
+  for (const m of clean.matchAll(/([^{}]*)\{([^{}]*)\}/g)) {
+    if (!m[1].includes(selector)) continue;
+    for (const o of m[2].matchAll(/opacity:\s*([\d.]+)\s*;/g)) out.push(Number(o[1]));
+  }
+  return out;
+}
+
+/** 逐族核算禁用态合成对比度；`sources` 是"α 的家"的源码文本（键与契约里的 `source` 对齐）。 */
+export function auditDisabledContrast(css: string, sources: Record<string, string>): DisabledAudit {
+  const scopes = parseTokenScopes(css);
+  const scopeOf = (theme: "light" | "dark") =>
+    theme === "light" ? scopes.light : new Map([...scopes.light, ...[...scopes.dark]]);
+  const ratings: DisabledRating[] = [];
+  const fails: DisabledAudit["fails"] = [];
+  const unresolved: string[] = [];
+
+  for (const row of DISABLED_CONTRAST_CONTRACT) {
+    const src = sources[row.alpha.source];
+    if (src === undefined) {
+      unresolved.push(`${row.name}：α 的家 ${row.alpha.source} 没传进来`);
+      continue;
+    }
+    const alphas = row.alpha.kind === "classes"
+      ? disabledOpacityFromClasses(src)
+      : disabledOpacityFromRule(src, row.alpha.selector);
+    if (alphas.length === 0) {
+      unresolved.push(`${row.name}：在 ${row.alpha.source} 里取不到禁用 α（写法变了？删了？）`);
+      continue;
+    }
+    const alpha = Math.min(...alphas);
+    for (const theme of ["light", "dark"] as const) {
+      const scope = scopeOf(theme);
+      const pageOver = row.pageOver ? resolveToken(row.pageOver, scope) : null;
+      const page = resolveToken(row.page, scope, pageOver ?? undefined);
+      const fg = resolveToken(row.fg, scope);
+      const fill = row.fill ? resolveToken(row.fill, scope, page ?? undefined) : null;
+      if (!page || !fg || (row.fill && !fill)) {
+        unresolved.push(`${row.name}（${theme}）：token 解析不出`);
+        continue;
+      }
+      // 整元素 opacity：前景与填充各自按同一个 α 拉向背后的面
+      const blend = (c: Rgba) => ({
+        r: c.r * alpha + page.r * (1 - alpha),
+        g: c.g * alpha + page.g * (1 - alpha),
+        b: c.b * alpha + page.b * (1 - alpha),
+        a: 1,
+      });
+      // 填充也要复合：元素整体半透明 ⇒ 实底自己也被拉向背后的面。
+      // ⚠️ 只复合前景会量出未禁用的值（第一版就踩了，主色按钮报出 6.30）。
+      const bgRaw = fill ?? page;
+      const bgEff = fill ? blend(bgRaw) : page;
+      const ratio = contrastRatio(toHex(blend(fg)), toHex(bgEff));
+      const ratioUndisabled = contrastRatio(toHex(fg), toHex(bgRaw));
+      ratings.push({ name: row.name, theme, alpha, ratio, ratioUndisabled });
+      if (ratio < row.min) {
+        fails.push({ name: row.name, theme, ratio, min: row.min, alpha, why: row.why });
+      }
+    }
+  }
+  return { ratings, fails, unresolved };
+}
+
+/**
  * 逐对核算；返回所有不达标的组合。
  *
  * ★ 暗色作用域必须**叠在 :root 之上**解析，不能只读 `.dark{}` 那一块。
