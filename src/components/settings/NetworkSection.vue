@@ -412,7 +412,7 @@ async function removeEndpoint(address: string) {
         :model-value="selectedIp"
         :options="interfaceOptions"
         :select-label="t('settings.network.interface')"
-        trigger-class="max-w-[200px]"
+        trigger-class="w-[180px] max-w-full"
         @update:model-value="onInterfacePicked"
       />
     </SettingsRow>
@@ -609,11 +609,16 @@ async function removeEndpoint(address: string) {
         >
           {{ t("settings.network.relayServer.save") }}
         </button>
-        <!-- 「测一下」：服务器可能是**后**部署的，所以重测不该要求用户先改一遍字段。 -->
+        <!-- 「测一下」：服务器可能是**后**部署的，所以重测不该要求用户先改一遍字段。
+             ⚠️ 2026-10-24：配置是异步读回来的 ⇒ 这一格不能 `v-if`（读回 `enabled` 时
+             按钮突然长出来，整张卡与下面的行都会跳一下，正是用户说的「点进去样式会变」）。
+             改成**始终占位**、未启用时 `invisible` + disabled：高度与宽度在首帧就定死。 -->
         <button
-          v-if="relayCfg.enabled"
           class="shrink-0 rounded-[var(--gosslan-radius-md)] border border-[var(--gosslan-border)] px-3.5 py-1.5 text-body font-medium text-[var(--gosslan-text)] transition hover:bg-[var(--gosslan-hover)] disabled:opacity-40"
-          :disabled="relayProbing || !relayCfg.server.trim() || !relayCfg.token.trim()"
+          :class="relayCfg.enabled ? '' : 'invisible'"
+          :disabled="!relayCfg.enabled || relayProbing || !relayCfg.server.trim() || !relayCfg.token.trim()"
+          :aria-hidden="relayCfg.enabled ? undefined : 'true'"
+          :tabindex="relayCfg.enabled ? undefined : -1"
           @click="runRelayProbe(true)"
         >
           {{ t("settings.network.relayServer.check") }}

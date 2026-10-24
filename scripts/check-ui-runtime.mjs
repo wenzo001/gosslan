@@ -9921,6 +9921,33 @@ async function runSettingsMobile(cdp, url) {
         && nick.gapToCounter !== null && nick.gapToCounter <= 6,
       "无在线文案 + 有状态点 + input>=140 + 与计数间距<=6",
       JSON.stringify(nick));
+
+    // 2026-10-24 重写：一级/二级**共用同一个滚动容器**，切页显式回顶端。
+    // 上面网络页那段已经把它滚到底并塞过填充物 ⇒ 回到一级再进网络，必须从 0 开始。
+    await cdp.eval(`(() => {
+      const b = [...document.querySelectorAll('button')].find((x) => {
+        const a = x.getAttribute('aria-label') || '';
+        return a.includes('返回') || /\\bBack\\b/i.test(a);
+      });
+      if (b) b.click();
+    })()`);
+    await sleep(400);
+    const reopenNet = await cdp.eval(`(() => {
+      const b = [...document.querySelectorAll('button')]
+        .find((x) => (x.textContent || '').trim() === '网络');
+      if (!b) return false;
+      b.click();
+      return true;
+    })()`);
+    await sleep(700);
+    const shared = await cdp.eval(`(() => {
+      const all = document.querySelectorAll('[data-settings-scroll]');
+      const el = all[0];
+      return { count: all.length, top: el ? Math.round(el.scrollTop) : null };
+    })()`);
+    check("移动端设置：二级→一级→再进二级，共享滚动容器回到顶端且全页只有一层",
+      reopenNet === true && shared.count === 1 && shared.top === 0,
+      "count=1 且 scrollTop=0", JSON.stringify(shared));
   } finally {
     await cdp.send("Emulation.clearDeviceMetricsOverride").catch(() => {});
   }

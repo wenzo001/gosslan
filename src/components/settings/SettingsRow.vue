@@ -32,7 +32,10 @@ withDefaults(
         {{ description }}
       </p>
     </div>
-    <div class="shrink-0"><slot /></div>
+    <!-- 控件默认贴右：标签 `flex-1` 会把同一行的控件顶到最右；换行时（手机上输入框/分段
+         选择放不下）这一行只剩控件自己，`ml-auto` 仍然把它压到右边，而不是掉到左边 ——
+         否则网络页的输入框看起来和别的设置行「不是一套」（用户 2026-10-24 报的样式不一致）。 -->
+    <div class="ml-auto max-w-full shrink-0"><slot /></div>
   </div>
   <div v-if="!last" class="ml-4 h-px bg-[var(--gosslan-divider)]" />
 </template>
