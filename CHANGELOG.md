@@ -13,6 +13,25 @@
 
 ## [Unreleased]
 
+## [5.7.28] - 2026-10-24
+
+### CSP 收紧为真正的严格策略（审计 SEC-06 复审）
+
+- 事实修正：上一版按"方案 A"给 `script-src` / `style-src` 加了 `'unsafe-inline'`，
+  但 Tauri 2.12 打包时会给内联 `<script>` 计算 `'sha256-…'`、给 `<style>` 注入 `'nonce-…'`
+  （`tauri-codegen` / `tauri-utils`，本项目未开 `dangerousDisableAssetCspModification`）。
+  CSP3 规定 nonce/hash 在场时 `'unsafe-inline'` **被忽略** ⇒ 那两个声明既没放宽、
+  也没买到任何东西，只是把配置写得不诚实。
+- 现在：删掉两个 `'unsafe-inline'`，补上不从 `default-src` 继承的三条
+  `base-uri 'none'; form-action 'none'; frame-ancestors 'none'`。
+  首屏内联脚本/样式仍由 Tauri 的 hash/nonce 放行（生产行为与上一版等效）。
+- 判据：`webview_csp_is_configured_with_the_sources_the_frontend_actually_needs`
+  改为断言"`'unsafe-inline'` 数量为 0 + 十条指令齐全"；加回 `'unsafe-inline'` 时立即红
+  （已做变异验证）。
+- 决策文档 `docs/notes/csp-candidate-2026-10-16.md`：§一 顶部加事实修正，
+  §五 改写为"最终采用严格 CSP"。
+- 仍未验证（真机才能答）：§三 那 6 条冒烟（首屏主题、blob 预览、自定义协议、IPC、多窗口）。
+
 ## [5.7.27] - 2026-10-24
 
 ### 共享目录截断在界面上说清楚（审计 PERF-02 复审）

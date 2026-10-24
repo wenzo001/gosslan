@@ -5,6 +5,13 @@
 
 ## 一、为什么它不是一行配置
 
+> **2026-10-24 复核修正**：下面这条"`script-src 'self'` 会直接掐死首屏"的前提**不成立**。
+> Tauri 2.12 在打包时会给内联 `<script>` 计算 `'sha256-…'`、给 `<style>` 注入 `'nonce-…'`
+> （`tauri-codegen/src/context.rs` 的 `inject_script_hashes`，以及 `tauri-utils/src/html2.rs`
+> 的 `inject_nonce_token`；本项目没有开 `dangerousDisableAssetCspModification`）。
+> 所以严格 CSP 不需要先改构建链 —— 实际落地见 §五（方案已改为严格，两个
+> `'unsafe-inline'` 已删除）。下面原文保留，作为当时的分析记录。
+
 构建期 `vite.config.ts` 的 `gosslan:inline-boot`（约 36-42 行）把两份资源**以内联形式**塞进每个入口 HTML：
 
 ```
@@ -61,22 +68,24 @@ Windows 优先（它是主平台，也是 WebView2 与 macOS 行为不同的那�
 没有关系，故意分开发：本轮那四处（托盘图标翻转、`open_file_native` 边界、五家留痕、`messages.status` 第二家闸）
 都是**行为面可本机验证**的；CSP 是唯一一条**必须真机验**的。混在一次发，白屏时分不清是谁干的。
 
-## 五、2026-10-24 决策：采用方案 A（已落地）
+## 五、2026-10-24 决策：最终采用**严格 CSP**（方案 A → 收紧）
 
-- 用户裁决：**先上方案 A**（宽松 CSP），不先改构建链；方案 B 留作后续独立一轮。
+- 用户先选方案 A（宽松），随后复核发现方案 A 的两个 `'unsafe-inline'` 在生产里
+  **被 Tauri 的 nonce/hash 忽略**（见 §一 顶部的复核修正）。既然效果相同，
+  配置就该诚实 —— 用户确认改为严格。
 - 实际配置（`src-tauri/tauri.conf.json` → `app.security.csp`，逐字）：
 
   ```
-  default-src 'none'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' blob: data:; font-src 'self'; media-src 'self' blob:; connect-src 'self' ipc: http://ipc.localhost http://tauri.localhost blob:
+  default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' blob: data:; font-src 'self'; media-src 'self' blob:; connect-src 'self' ipc: http://ipc.localhost http://tauri.localhost blob:; base-uri 'none'; form-action 'none'; frame-ancestors 'none'
   ```
 
-- 它买到的：**外链资源与跨源取数被挡住**（`default-src 'none'` 兜底）。
-- 它**没**买到的：防注入 —— `'unsafe-inline'` 正是给内联脚本/样式开的。
-  这是首屏内联注入的代价，明写在这里，免得下一个人以为这一格已经严了。
+- 首屏为什么不会白屏：Tauri 打包时给内联 `<script>` 加 `'sha256-…'`、给 `<style>` 加
+  `'nonce-…'`，两者都在 `script-src`/`style-src` 里生效；`'unsafe-inline'` 即使写着也会被忽略。
+- `base-uri` / `form-action` / `frame-ancestors` **不从** `default-src` 继承，所以单独写；
+  本应用没有 `<base>`、没有表单提交、也不会被别的页面嵌入。
 - 机器判据：`lib_startup_config_tests::webview_csp_is_configured_with_the_sources_the_frontend_actually_needs`
-  钉住"配置在场、必要来源齐全、`unsafe-inline` 恰两处"。它**不能**替代 §三的真机冒烟。
-- 未验证（本批 NOT RUN）：§三那 6 条真机冒烟（Windows 优先）与 macOS 自定义协议预览。
+  钉住"配置在场、必要来源齐全、`'unsafe-inline'` 数量为 0"。它**不能**替代 §三的真机冒烟。
+- 未验证（NOT RUN）：§三那 6 条真机冒烟（Windows 优先）与 macOS 自定义协议预览。
   观察方法：浏览器/WebView 控制台里的 `Refused to …` 那一行。
-- 升级到方案 B 的条件：有人愿意先做 boot 外链化（`gosslan:inline-boot` 改产出外链
-  `theme-boot.js` / `skeleton.css`），并按 §一 的 B 路删掉两个 `'unsafe-inline'`。
-  届时同步改上面那条判据与本节。
+- 若真机发现某条内联样式脚本没有被 Tauri 加 hash/nonce（症状是首屏白屏或样式丢失），
+  正确做法是修构建注入点，**不要**把 `'unsafe-inline'` 加回来（它会被忽略，只会骗人）。
