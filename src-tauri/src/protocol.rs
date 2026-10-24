@@ -1901,6 +1901,12 @@ pub enum Message {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         to: Option<String>,
         entries: Vec<ShareEntry>,
+        /// 共享方是否因为条数上限只回了前 N 条（审计 PERF-02）。
+        ///
+        /// `#[serde(default)]`：旧版本没有这个字段，默认 false（旧端确实没截断能力）。
+        /// 界面据此提示"仅显示前 N 项"，而不是让用户以为目录就这么点东西。
+        #[serde(default)]
+        truncated: bool,
     },
     /// 请求对方共享目录中的文件（触发对方向我方发起文件传输）
     ShareFileRequest {

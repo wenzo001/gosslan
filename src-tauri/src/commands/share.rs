@@ -110,11 +110,22 @@ pub async fn open_downloads_dir(state: State<'_, Arc<AppState>>) -> Result<(), S
     res
 }
 
+/// 共享目录树的读取结果（`request_share_tree`）。
+///
+/// 为什么不再直接返回 `Vec<ShareEntry>`（审计 PERF-02）：共享方有条数上限，
+/// 截断时前端必须能说"只显示前 N 项"，否则用户会把半个目录读成"对方就这些文件"。
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ShareTreeView {
+    pub entries: Vec<ShareEntry>,
+    pub truncated: bool,
+}
+
 #[tauri::command(async)]
 pub async fn request_share_tree(
     state: State<'_, Arc<AppState>>,
     friend_id: String,
-) -> Result<Vec<ShareEntry>, String> {
+) -> Result<ShareTreeView, String> {
     let s = state.inner();
     {
         let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());
@@ -151,7 +162,10 @@ pub async fn request_share_tree(
     }
 
     match tokio::time::timeout(Duration::from_secs(10), rx).await {
-        Ok(Ok(entries)) => Ok(entries),
+        Ok(Ok((entries, truncated))) => Ok(ShareTreeView {
+            entries,
+            truncated,
+        }),
         _ => {
             s.pending_share_tree
                 .lock()

@@ -1008,6 +1008,7 @@ export const zhCN: MessageDict = {
   "share.loading": "正在读取共享目录…",
   "share.loadFail": "共享目录读取失败",
   "share.empty": "对方未设置共享目录或目录为空",
+  "share.truncated": "对方目录条目过多，仅显示前 {count} 项",
   "share.toast.downloading": "开始下载「{name}」",
   "share.toast.downloadFail": "下载失败",
 

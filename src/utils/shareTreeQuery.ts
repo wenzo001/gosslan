@@ -13,16 +13,18 @@ export const SHARE_TREE_QUERY = "shareTree";
 export interface ShareTreeSnapshot {
   friendId: string;
   entries: ShareEntry[];
+  /** 共享方是否因条数上限只回了前 N 条（界面要提示，不能把半个目录当成全部）。 */
+  truncated: boolean;
 }
 
 export const shareTreeKey = (friendId: string) => [SHARE_TREE_QUERY, friendId] as const;
 
 export function shareTreeQueryOptions(
   friendId: string,
-  fetcher: (friendId: string) => Promise<ShareEntry[]>,
+  fetcher: (friendId: string) => Promise<{ entries: ShareEntry[]; truncated: boolean }>,
 ) {
-  return panelQueryOptions<ShareTreeSnapshot>(SHARE_TREE_QUERY, friendId, async (id) => ({
-    friendId: id,
-    entries: await fetcher(id),
-  }));
+  return panelQueryOptions<ShareTreeSnapshot>(SHARE_TREE_QUERY, friendId, async (id) => {
+    const tree = await fetcher(id);
+    return { friendId: id, entries: tree.entries, truncated: tree.truncated };
+  });
 }

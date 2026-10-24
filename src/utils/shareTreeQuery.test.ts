@@ -24,32 +24,46 @@ const entry = (name: string): ShareEntry => ({ name, path: `/${name}`, is_dir: f
 
 test("按好友分键，且快照自带归属（下载不依赖当前会话）", async () => {
   const qc = client();
-  const a = await qc.fetchQuery(shareTreeQueryOptions("A", async () => [entry("a.txt")]));
-  const b = await qc.fetchQuery(shareTreeQueryOptions("B", async () => [entry("b.txt")]));
+  const a = await qc.fetchQuery(
+    shareTreeQueryOptions("A", async () => ({ entries: [entry("a.txt")], truncated: false })),
+  );
+  const b = await qc.fetchQuery(
+    shareTreeQueryOptions("B", async () => ({ entries: [entry("b.txt")], truncated: true })),
+  );
 
   assert.deepEqual(shareTreeKey("A"), [SHARE_TREE_QUERY, "A"]);
   assert.equal(a.friendId, "A");
   assert.equal(b.friendId, "B");
   assert.deepEqual(a.entries.map((e) => e.name), ["a.txt"]);
   assert.deepEqual(b.entries.map((e) => e.name), ["b.txt"]);
+  assert.equal(a.truncated, false, "未截断的树不该提示");
+  assert.equal(b.truncated, true, "截断位必须随树一起缓存（换回 A 不能变成 true）");
+  assert.equal(a.truncated, false, "另一棵树的截断位不得串台");
 });
 
 test("慢的 A 后到：只写回 A 的 key，B 的当前快照不被覆盖", async () => {
   const qc = client();
-  let releaseA: (entries: ShareEntry[]) => void = () => {};
+  let releaseA: (tree: { entries: ShareEntry[]; truncated: boolean }) => void = () => {};
   const slowA = shareTreeQueryOptions(
     "A",
     () =>
-      new Promise<ShareEntry[]>((resolve) => {
+      new Promise<{ entries: ShareEntry[]; truncated: boolean }>((resolve) => {
         releaseA = resolve;
       }),
   );
 
   const inFlight = qc.fetchQuery(slowA);
-  await qc.fetchQuery(shareTreeQueryOptions("B", async () => [entry("b.txt")]));
-  releaseA([entry("a.txt")]);
+  await qc.fetchQuery(
+    shareTreeQueryOptions("B", async () => ({ entries: [entry("b.txt")], truncated: false })),
+  );
+  releaseA({ entries: [entry("a.txt")], truncated: true });
   await inFlight;
 
   assert.equal(qc.getQueryData<{ friendId: string }>(shareTreeKey("B"))?.friendId, "B");
   assert.equal(qc.getQueryData<{ friendId: string }>(shareTreeKey("A"))?.friendId, "A");
+  assert.equal(
+    qc.getQueryData<{ truncated: boolean }>(shareTreeKey("A"))?.truncated,
+    true,
+    "慢树自己的截断位必须写回它自己的 key",
+  );
 });

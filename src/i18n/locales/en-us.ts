@@ -978,6 +978,7 @@ export const enUS: MessageDict = {
   "share.loading": "Loading the shared folder…",
   "share.loadFail": "Couldn't load the shared folder",
   "share.empty": "The peer hasn't set a shared folder, or it's empty",
+  "share.truncated": "Too many entries; showing the first {count}",
   "share.toast.downloading": "Downloading \"{name}\"",
   "share.toast.downloadFail": "Download failed",
 

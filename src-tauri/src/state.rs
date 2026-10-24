@@ -880,6 +880,12 @@ pub struct RelayFileReceive {
     pub size: u64,
 }
 
+/// 共享目录树的应答内容：条目 + 共享方是否因上限截断（审计 PERF-02）。
+pub type ShareTreeReply = (Vec<crate::protocol::ShareEntry>, bool);
+
+/// 共享目录树的待应答表（键 = request_id）。
+pub type PendingShareTree = Mutex<HashMap<String, tokio::sync::oneshot::Sender<ShareTreeReply>>>;
+
 /// 网络运行时句柄
 pub struct NetworkHandle {
     pub shutdown: tokio::sync::watch::Sender<bool>,
@@ -1377,9 +1383,8 @@ pub struct AppState {
     ///   ② 发送进度本身（v4.22.37）：进度条按已写出的分块数换算。旧口径直接拿"入队字节"
     ///      当进度，于是 LAN 上最多 262MB 还在队列里时，界面已经显示 100%。
     pub file_wire_progress: Mutex<HashMap<String, FileWireProgress>>,
-    /// 等待共享目录树响应：request_id -> 应答通道
-    pub pending_share_tree:
-        Mutex<HashMap<String, tokio::sync::oneshot::Sender<Vec<crate::protocol::ShareEntry>>>>,
+    /// 等待共享目录树响应：request_id ->（条目, 是否被上限截断）的应答通道。
+    pub pending_share_tree: PendingShareTree,
     /// 等待群历史应答：request_id -> (问的是哪个群, 应答通道)。
     /// `network/group_history.rs` 的请求方登记，`transport/handle_group.rs` 的应答臂投递。
     ///
