@@ -5917,6 +5917,112 @@ async function runMsgOverflow(cdp, url) {
   })()`);
   check("动效扫描非空转：现场给气泡加一条 height 过渡后必须被点名",
     typeof animBreak === "number" && animBreak >= 1, "≥ 1 个命中", JSON.stringify({ animBreak }));
+
+  // ---------------- 禁用态契约行 ↔ 真实渲染的绑定 ----------------
+  //
+  // `tokenContrast.ts` 的 `DISABLED_CONTRAST_CONTRACT` 全部从**源码文本**里读（token 名 + 各自的 α），
+  // 但"这个 token 真的画在这个按钮上、这个 α 真的作用在这个元素上、这个面真的是契约说的那个面"
+  // 以前没有任何判据看过 —— 组件换成别的填充档，契约照样量它自己那串名字，全绿而说的不是界面。
+  // 这一段用真组件 + 真样式表 + 真计算样式把那条链接上：浏览器自己解 `color-mix`，
+  // 正好是我在手算解析的地面对照（解析跑偏这里当场红）。
+  const { readFileSync } = await import("node:fs");
+  const {
+    DISABLED_CONTRAST_CONTRACT, auditDisabledContrast, parseTokenScopes, resolveToken,
+  } = await import("../src/utils/tokenContrast.ts");
+  const readSrc = (rel) => readFileSync(new URL("../" + rel, import.meta.url), "utf8");
+  const tcCss = readSrc("src/style.css");
+  const tcSources = {
+    PrimaryBtn: readSrc("src/components/ui/PrimaryBtn.vue"),
+    DangerBtn: readSrc("src/components/ui/DangerBtn.vue"),
+    ChatWindow: readSrc("src/components/ChatWindow.vue"),
+    StyleCss: tcCss,
+  };
+  const tcAudit = auditDisabledContrast(tcCss, tcSources);
+
+  const theme = await cdp.eval(`(() => ({
+    dark: document.documentElement.classList.contains('dark'),
+    panel: (() => { const d = document.createElement('div'); d.style.color = 'var(--gosslan-panel)';
+      d.style.display = 'none'; document.body.appendChild(d);
+      const v = getComputedStyle(d).color; d.remove(); return v; })(),
+  }))()`);
+  const tcScope = theme.dark
+    ? new Map([...parseTokenScopes(tcCss).light, ...parseTokenScopes(tcCss).dark])
+    : parseTokenScopes(tcCss).light;
+  const tcTheme = theme.dark ? "dark" : "light";
+  // token → 浏览器那套 `rgb(r, g, b)` 文本（这些档都不透明，混色由浏览器做完）
+  const tcRgb = (tok) => {
+    const c = resolveToken(tok, tcScope);
+    return c ? `rgb(${Math.round(c.r)}, ${Math.round(c.g)}, ${Math.round(c.b)})` : null;
+  };
+  /**
+   * 计算样式里同一个颜色有两种写法：普通色是 `rgb(42, 94, 177)`，而 `color-mix()` 派生档
+   * 是 `color(srgb 0.166588 0.367059 0.694588)`（未取整）。所以**比三元组不比字符串** ——
+   * 顺带这一比就是"手算的混色解析 vs 浏览器自己解出来的"那次对账。
+   */
+  const toTriple = (s) => {
+    const v = String(s || "").trim();
+    let m = /^rgba?\(\s*([\d.]+)[,\s]+([\d.]+)[,\s]+([\d.]+)/.exec(v);
+    if (m) return [+m[1], +m[2], +m[3]];
+    m = /^color\(srgb\s+([\d.]+)\s+([\d.]+)\s+([\d.]+)/.exec(v);
+    if (m) return [1, 2, 3].map((i) => Math.round(parseFloat(m[i]) * 255));
+    m = /^#([0-9a-f]{2})([0-9a-f]{2})([0-9a-f]{2})$/i.exec(v);
+    if (m) return [1, 2, 3].map((i) => parseInt(m[i], 16));
+    return null;
+  };
+  const sameColor = (a, b) => {
+    const x = toTriple(a) ?? [];
+    const y = toTriple(b) ?? [];
+    return x.length === 3 && y.length === 3 && x.every((n, i) => Math.abs(n - y[i]) <= 1);
+  };
+
+  // 契约按"元素坐在面板上"建模 —— 这里就把宿主面显式给成同一个 token，
+  // 顺便验这个面本身：浏览器解出来的 panel 必须与 node 侧解析同值。
+  await cdp.eval(`(() => { const h = document.getElementById('probe-host');
+    if (h) { h.style.background = 'var(--gosslan-panel)'; h.style.padding = '12px'; } return true; })()`);
+  await sleep(120);
+  const pageSeen = await cdp.eval(`(() => { const h = document.getElementById('probe-host');
+    return h ? getComputedStyle(h).backgroundColor : null; })()`);
+  check("禁用态契约的『背后的面』与浏览器解出的同一个 token 同值（面板面 = node 解析）",
+    sameColor(pageSeen, tcRgb("--gosslan-panel")) && sameColor(pageSeen, theme.panel),
+    `${tcRgb("--gosslan-panel")}（${tcTheme}）`, JSON.stringify({ pageSeen, panel: theme.panel }));
+
+  /** 挂一个真实的禁用按钮，读回它自己的计算样式。 */
+  const mountDisabled = async (cmp) => {
+    await cdp.eval(`window.__probe.install('${cmp}', '', ${JSON.stringify(JSON.stringify({ disabled: true }))})`);
+    await sleep(250);
+    return await cdp.eval(`(() => { const b = document.querySelector('#probe-host button');
+      if (!b) return null; const cs = getComputedStyle(b);
+      return { disabled: b.disabled === true, color: cs.color, bg: cs.backgroundColor,
+        opacity: Number(cs.opacity) }; })()`);
+  };
+  /** 契约行 + 真实渲染必须说的是同一批颜色、同一个 α。 */
+  const bindFamily = async (name, cmp) => {
+    const row = DISABLED_CONTRAST_CONTRACT.find((r) => r.name === name);
+    const rating = tcAudit.ratings.find((r) => r.name === name && r.theme === tcTheme);
+    const seen = await mountDisabled(cmp);
+    const wantFg = tcRgb(row.fg);
+    const wantFill = row.fill ? tcRgb(row.fill) : null;
+    check(`${name}：真实禁用按钮画出来的填充/前景/α 与契约行说的是同一批值（${tcTheme}）`,
+      !!seen && seen.disabled && sameColor(seen.bg, wantFill) && sameColor(seen.color, wantFg) &&
+        Math.abs(seen.opacity - (rating?.alpha ?? -1)) < 0.001,
+      `${wantFill} + ${wantFg} @α=${rating?.alpha}`, JSON.stringify({ seen, wantFg, wantFill }));
+    return seen;
+  };
+  await bindFamily("主色实底按钮", "/src/components/ui/PrimaryBtn.vue");
+  await bindFamily("危险实底按钮", "/src/components/ui/DangerBtn.vue");
+
+  // 空转对照：这把尺读的必须是**真元素的计算值**。现场用 inline style 把 α 压到 0.25，
+  // 读回来必须跟着变（读不到 ⇒ 上面那两格是在拿常量比常量）。
+  // `transition: none` 是必需的：按钮对 opacity 有过渡（style.css 那条 transition 列表里就有它），
+  // 不等过渡完读到的是中间值（实测 0.258029），第一版就在这里红过一次。
+  await mountDisabled("/src/components/ui/PrimaryBtn.vue");
+  await cdp.eval(`(() => { const b = document.querySelector('#probe-host button');
+    if (b) { b.style.transition = 'none'; b.style.opacity = '0.25'; } return true; })()`);
+  await sleep(80);
+  const forced = await cdp.eval(`(() => { const b = document.querySelector('#probe-host button');
+    return b ? Number(getComputedStyle(b).opacity) : null; })()`);
+  check("禁用态绑定尺非空转：inline 把 α 压到 0.25 必须被读回来",
+    forced === 0.25, "0.25", JSON.stringify({ forced }));
 }
 
 /**
