@@ -81,52 +81,33 @@ pub async fn set_downloads_dir(
 }
 
 /// 在系统资源管理器中打开文件接收目录。
+///
+/// 打开动作走 [`crate::open_path::open_dir_native`] 这唯一门面：macOS 的沙盒
+/// **禁止 fork** `/usr/bin/open`，旧实现在那条路上点了没反应又不留日志（FUNC-01）。
+/// 失败统一记 `code=OPEN_DIR_FAILED`，前端拿到的仍是可显示的字符串。
 #[tauri::command(async)]
 pub async fn open_downloads_dir(state: State<'_, Arc<AppState>>) -> Result<(), String> {
     let s = state.inner().clone();
     // `create_dir_all` + 打开文件管理器都是文件系统/进程活（审计 R-18）。
-    tokio::task::spawn_blocking(move || -> Result<(), String> {
+    let res = tokio::task::spawn_blocking(move || -> Result<(), String> {
         let p = s
             .downloads_dir
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .clone();
-        std::fs::create_dir_all(&p).map_err(|e| e.to_string())?;
-        open_in_file_manager(&p)
+        std::fs::create_dir_all(&p)
+            .map_err(|e| format!("code=OPEN_DIR_CREATE_FAILED：{e}"))?;
+        crate::open_path::open_dir_native(&p)
     })
     .await
-    .map_err(|e| format!("打开接收目录被线程池中断: {e}"))?
-}
-
-/// 跨平台在系统文件管理器里打开指定目录。
-///
-/// ⚠️ 移动端（Android/iOS）**没有**"文件管理器"这种东西：那里三个平台分支全被裁掉，
-/// `path` 于是成了未使用变量。显式声明"移动端不使用该参数"而不是加 `_`——后者会让
-/// 桌面端也丢掉名字（编译器就再也帮不上忙）。
-#[cfg_attr(mobile, allow(unused_variables))]
-fn open_in_file_manager(path: &std::path::Path) -> Result<(), String> {
-    #[cfg(target_os = "windows")]
-    {
-        std::process::Command::new("explorer")
-            .arg(path)
-            .spawn()
-            .map_err(|e| format!("打开目录失败：{e}"))?;
+    .map_err(|e| format!("打开接收目录被线程池中断: {e}"))?;
+    if let Err(e) = &res {
+        state
+            .inner()
+            .logger
+            .error("share", format!("code=OPEN_DIR_FAILED：{e}"));
     }
-    #[cfg(target_os = "macos")]
-    {
-        std::process::Command::new("open")
-            .arg(path)
-            .spawn()
-            .map_err(|e| format!("打开目录失败：{e}"))?;
-    }
-    #[cfg(target_os = "linux")]
-    {
-        std::process::Command::new("xdg-open")
-            .arg(path)
-            .spawn()
-            .map_err(|e| format!("打开目录失败：{e}"))?;
-    }
-    Ok(())
+    res
 }
 
 #[tauri::command(async)]
