@@ -5939,19 +5939,13 @@ async function runMsgOverflow(cdp, url) {
   };
   const tcAudit = auditDisabledContrast(tcCss, tcSources);
 
-  const theme = await cdp.eval(`(() => ({
-    dark: document.documentElement.classList.contains('dark'),
-    panel: (() => { const d = document.createElement('div'); d.style.color = 'var(--gosslan-panel)';
-      d.style.display = 'none'; document.body.appendChild(d);
-      const v = getComputedStyle(d).color; d.remove(); return v; })(),
-  }))()`);
-  const tcScope = theme.dark
-    ? new Map([...parseTokenScopes(tcCss).light, ...parseTokenScopes(tcCss).dark])
-    : parseTokenScopes(tcCss).light;
-  const tcTheme = theme.dark ? "dark" : "light";
+  const tcScopes = parseTokenScopes(tcCss);
+  const tcScopeFor = (dark) => (dark
+    ? new Map([...tcScopes.light, ...tcScopes.dark])
+    : tcScopes.light);
   // token → 浏览器那套 `rgb(r, g, b)` 文本（这些档都不透明，混色由浏览器做完）
-  const tcRgb = (tok) => {
-    const c = resolveToken(tok, tcScope);
+  const tcRgbFor = (dark, tok) => {
+    const c = resolveToken(tok, tcScopeFor(dark));
     return c ? `rgb(${Math.round(c.r)}, ${Math.round(c.g)}, ${Math.round(c.b)})` : null;
   };
   /**
@@ -5975,16 +5969,27 @@ async function runMsgOverflow(cdp, url) {
     return x.length === 3 && y.length === 3 && x.every((n, i) => Math.abs(n - y[i]) <= 1);
   };
 
-  // 契约按"元素坐在面板上"建模 —— 这里就把宿主面显式给成同一个 token，
-  // 顺便验这个面本身：浏览器解出来的 panel 必须与 node 侧解析同值。
-  await cdp.eval(`(() => { const h = document.getElementById('probe-host');
-    if (h) { h.style.background = 'var(--gosslan-panel)'; h.style.padding = '12px'; } return true; })()`);
-  await sleep(120);
-  const pageSeen = await cdp.eval(`(() => { const h = document.getElementById('probe-host');
-    return h ? getComputedStyle(h).backgroundColor : null; })()`);
-  check("禁用态契约的『背后的面』与浏览器解出的同一个 token 同值（面板面 = node 解析）",
-    sameColor(pageSeen, tcRgb("--gosslan-panel")) && sameColor(pageSeen, theme.panel),
-    `${tcRgb("--gosslan-panel")}（${tcTheme}）`, JSON.stringify({ pageSeen, panel: theme.panel }));
+  /** 浏览器侧真取一个 token 的计算色（临时探针元素，读完就摘）。 */
+  const pageColor = (tok) => cdp.eval(`(() => { const d = document.createElement('div');
+    d.style.color = 'var(${tok})'; d.style.display = 'none'; document.body.appendChild(d);
+    const v = getComputedStyle(d).color; d.remove(); return v; })()`);
+  /**
+   * 切档只能写 `appearance`：`s.dark` 是 computed（appearance + 系统偏好解析而来），
+   * 直接写它**不报错也不生效** —— 主题矩阵第一版就因此 14 格读数全等却全绿。
+   * class 也要一起翻：样式表里的 `.dark` 块靠它。
+   */
+  const setAppearance = (dark) => cdp.eval(`(async () => {
+    const piniaUrl = performance.getEntriesByType('resource')
+      .map((e) => e.name || '').find((u) => u.includes('/node_modules/.vite/deps/pinia.js?v='));
+    if (!piniaUrl || !window.__pinia) return { ok: 'no-pinia' };
+    const P = await import(piniaUrl);
+    const A = await import('/src/stores/useAppStore.ts');
+    P.setActivePinia(window.__pinia);
+    const s = A.useAppStore();
+    s.appearance = '${dark ? "dark" : "light"}';
+    document.documentElement.classList.toggle('dark', ${dark ? "true" : "false"});
+    return { ok: 'ok', dark: s.dark === true, appearance: s.appearance };
+  })()`);
 
   /** 挂一个真实的禁用按钮，读回它自己的计算样式。 */
   const mountDisabled = async (cmp) => {
@@ -5996,23 +6001,53 @@ async function runMsgOverflow(cdp, url) {
         opacity: Number(cs.opacity) }; })()`);
   };
   /** 契约行 + 真实渲染必须说的是同一批颜色、同一个 α。 */
-  const bindFamily = async (name, cmp) => {
+  const bindFamily = async (name, cmp, dark) => {
+    const tcTheme = dark ? "dark" : "light";
     const row = DISABLED_CONTRAST_CONTRACT.find((r) => r.name === name);
     const rating = tcAudit.ratings.find((r) => r.name === name && r.theme === tcTheme);
     const seen = await mountDisabled(cmp);
-    const wantFg = tcRgb(row.fg);
-    const wantFill = row.fill ? tcRgb(row.fill) : null;
+    const wantFg = tcRgbFor(dark, row.fg);
+    const wantFill = row.fill ? tcRgbFor(dark, row.fill) : null;
     check(`${name}：真实禁用按钮画出来的填充/前景/α 与契约行说的是同一批值（${tcTheme}）`,
       !!seen && seen.disabled && sameColor(seen.bg, wantFill) && sameColor(seen.color, wantFg) &&
         Math.abs(seen.opacity - (rating?.alpha ?? -1)) < 0.001,
       `${wantFill} + ${wantFg} @α=${rating?.alpha}`, JSON.stringify({ seen, wantFg, wantFill }));
     return seen;
   };
-  await bindFamily("主色实底按钮", "/src/components/ui/PrimaryBtn.vue");
-  await bindFamily("危险实底按钮", "/src/components/ui/DangerBtn.vue");
+
+  // 明暗两档都要过：只跑进页面时那一档会漏掉 `dark:` 变体写歪的情形 ——
+  // 契约行是从 class 串里取**第一个**填充 token 的，`dark:bg-[…]` 那半它根本没读。
+  const wasDark = await cdp.eval("document.documentElement.classList.contains('dark')");
+  for (const dark of [false, true]) {
+    const tcTheme = dark ? "dark" : "light";
+    const st = await setAppearance(dark);
+    check(`禁用态绑定：切到${tcTheme}档真的生效（store 与 class 都得跟上）`,
+      !!st && st.ok === "ok" && st.dark === dark,
+      `appearance=${dark ? "dark" : "light"} 且 s.dark=${dark}`, JSON.stringify({ st, wasDark }));
+    await sleep(160);
+    // 契约按"元素坐在面板上"建模 —— 这里就把宿主面显式给成同一个 token，
+    // 顺便验这两个面本身：浏览器解出来的值必须与 node 侧解析同值。
+    // `--gosslan-primary-active` 是 color-mix 派生的（所以它同值就顺带证了混色解析与主色基值都没漂）。
+    await cdp.eval(`(() => { const h = document.getElementById('probe-host');
+      if (h) { h.style.background = 'var(--gosslan-panel)'; h.style.padding = '12px'; } return true; })()`);
+    await sleep(120);
+    const pageSeen = await cdp.eval(`(() => { const h = document.getElementById('probe-host');
+      return h ? getComputedStyle(h).backgroundColor : null; })()`);
+    const activeSeen = await pageColor("--gosslan-primary-active");
+    check(`禁用态契约的两个面与浏览器解出的同一个 token 同值（面板面 + 主色实底派生档 / ${tcTheme}）`,
+      sameColor(pageSeen, tcRgbFor(dark, "--gosslan-panel"))
+        && sameColor(activeSeen, tcRgbFor(dark, "--gosslan-primary-active")),
+      `panel=${tcRgbFor(dark, "--gosslan-panel")} active=${tcRgbFor(dark, "--gosslan-primary-active")}`,
+      JSON.stringify({ pageSeen, activeSeen }));
+    await bindFamily("主色实底按钮", "/src/components/ui/PrimaryBtn.vue", dark);
+    await bindFamily("危险实底按钮", "/src/components/ui/DangerBtn.vue", dark);
+  }
+  // 档位不许外溢给后面的段（同一份脚本里那条介质模拟也守这条）。
+  await setAppearance(wasDark === true);
+  await sleep(140);
 
   // 空转对照：这把尺读的必须是**真元素的计算值**。现场用 inline style 把 α 压到 0.25，
-  // 读回来必须跟着变（读不到 ⇒ 上面那两格是在拿常量比常量）。
+  // 读回来必须跟着变（读不到 ⇒ 上面那几格是在拿常量比常量）。
   // `transition: none` 是必需的：按钮对 opacity 有过渡（style.css 那条 transition 列表里就有它），
   // 不等过渡完读到的是中间值（实测 0.258029），第一版就在这里红过一次。
   await mountDisabled("/src/components/ui/PrimaryBtn.vue");

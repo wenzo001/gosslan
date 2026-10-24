@@ -59,6 +59,30 @@
   读到中间值 **0.258029** 而红 —— 又一次是量具的毛病，不是设计的）。
 - `--only=msgovf` 现跑 **62/62 条判据绿**（9444 被并行会话占着，换 `GOSSLAN_PROBE_CDP/PORT` 跑，不动别人进程）。
 
+### 同日再续：这条绑定第一次跑满明暗两档 —— 且暗档量的是暗档自己的数
+
+- 只绑"进页面时那一档"是不够的：契约从 class 串里取的是**第一个**填充 token，
+  `dark:bg-[…]` 那半它根本没读 ⇒ 暗色下组件换成别的档，两面都看不见。
+  现在按 `[亮, 暗]` 各跑一遍（每档 3 格：切档生效 / 两个面同值 / 两族按钮绑定）。
+- 切档只写 `s.appearance`：`s.dark` 是 computed，直接赋值**不报错也不生效**
+  （主题矩阵第一版就因此 14 格读数全等却全绿）。这里把"切档真的生效"单独钉成一格，
+  所以切换静默失败只会红，不会让后面几格退化成套常量比常量。
+- 每档的面检查多读一个 `--gosslan-primary-active`：它是 `color-mix` 派生档，
+  这一格同值就等于"浏览器解的混色 vs 手算解析 + 主色基值"这一整条链在该档都没漂 ——
+  上面两族按钮的填充才有锚。**两档量的确实不是同一个数**（现读 CSS：
+  `--gosslan-panel` 亮 `#ffffff` / 暗 `#1e293b`；`primary-active` 亮＝主色 72%＋黑、暗＝主色 80%＋白）。
+- **暗档凭什么不是重复劳动（A/B 现证）**：给 `PrimaryBtn` 的 class 追加
+  `dark:bg-[var(--gosslan-primary-hover)]` ⇒ 探针 **66/67**，红的恰好只有
+  `主色实底按钮（dark）` 这一格（预期填充 `rgb(98, 155, 248)`、浏览器实际画成 hover
+  ≈ `rgb(110, 163, 248)`），而 `（light）` 那格照旧绿、`node --test tokenContrast` **19/19 照旧绿** ——
+  同一棵树、同一次漂移，只有暗档绑定看见了它。改回后 **67/67** 全绿（`git status` 只剩探针脚本）。
+- 这四次跑都钉在 Brave 上（`GOSSLAN_CHROME` 指 `/Applications/Brave Browser.app`，
+  脚本自报「来源：GOSSLAN_CHROME 指定」，引擎 Chrome/156.0.8078.48）。
+  ⚠️ 本机的默认候选顺序把 playwright 缓存里的 Chrome for Testing 排在系统 Brave **前面**
+  （现读：`~/Library/Caches/ms-playwright/chromium-{1243,1247}/chrome-mac-arm64/Google Chrome for Testing.app`
+  两份都在）⇒ 不显式指定就用另一台引擎。规范 §9.12 说的是本机 UI 浏览器是 Brave，
+  所以这条**每次都要显式钉**，不能靠"反正会找到 Brave"。
+
 ## [5.7.8] - 2026-10-24
 
 ### 补上规范 §8 唯一没落地的一条：新消息进入动效（此前整条链路上没有）
