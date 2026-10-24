@@ -8,9 +8,10 @@ mod tests {
     use super::{
         build_group_resume_receiver, chunk_exceeds_declared, chunk_seq_decision,
         classify_file_subtype, clear_file_wire_progress_in, derive_file_name, file_peer_key,
-        finish_group_receive_into, receive_is_stale, safe_file_name, safe_transfer_id, unique_path,
-        wire_progress_bytes, ChunkSeq, WireLedger, FILE_RECEIVE_IDLE_ABORT_MS,
-        MAX_FILE_OUTBOX_RETRIES,
+        finish_group_receive_into, inbound_quota_verdict, quota_error, receive_is_stale,
+        safe_file_name, safe_transfer_id, unique_path, wire_progress_bytes, ChunkSeq, QuotaBreach,
+        WireLedger, FILE_RECEIVE_IDLE_ABORT_MS, MAX_CONCURRENT_RECEIVES, MAX_FILE_OUTBOX_RETRIES,
+        MAX_INCOMING_FILE_BYTES, MAX_INCOMING_TOTAL_BYTES,
     };
 
     /// 不读日志内容的用例共用这一份。
@@ -3113,6 +3114,60 @@ mod tests {
             note.matches('…').count()
         );
         assert!(!note.contains(&long_col), "整条长列名不许原样进日志");
+    }
+
+    /// SEC-05 回归：入站配额判据。
+    ///
+    /// 旧实现**没有任何会话级上限** —— 对端连续发 Offer，本机就连续建 `.part`、连续插接收表，
+    /// 直到磁盘写满或表撑大。这里把三条闸门逐条钉住：并发数、单文件、总字节。
+    #[test]
+    fn inbound_quota_rejects_the_offer_that_would_exceed_the_budget() {
+        assert_eq!(
+            inbound_quota_verdict(MAX_CONCURRENT_RECEIVES, 0, false, 1024),
+            Err(QuotaBreach::Concurrent),
+            "接收槽位已满时第 N+1 个新 Offer 必须被拒"
+        );
+        assert_eq!(
+            inbound_quota_verdict(0, 0, false, MAX_INCOMING_FILE_BYTES + 1),
+            Err(QuotaBreach::FileTooLarge),
+            "单文件上限必须挡住超大文件（否则 .part 长度由对端决定）"
+        );
+        assert_eq!(
+            inbound_quota_verdict(0, MAX_INCOMING_TOTAL_BYTES, false, 1),
+            Err(QuotaBreach::TotalBytes),
+            "在途总字节加不下这一份时必须拒绝"
+        );
+        assert_eq!(
+            inbound_quota_verdict(0, 0, false, 1024),
+            Ok(()),
+            "额度内必须放行（否则正常传输全被误拒）"
+        );
+    }
+
+    /// 同一 `transfer_id` 的重试/续传**不吃新槽位**：否则槽位一打满，重试永远接不上，
+    /// 那一单会卡在「对端一直重发、本机一直拒绝、界面永远 0%」。
+    #[test]
+    fn a_retry_of_the_same_transfer_is_not_counted_against_the_quota() {
+        assert_eq!(
+            inbound_quota_verdict(MAX_CONCURRENT_RECEIVES, MAX_INCOMING_TOTAL_BYTES, true, 1024),
+            Ok(())
+        );
+        // 但单文件上限是硬边界：换个 transfer_id 也不许拿超大字号的单。
+        assert_eq!(
+            inbound_quota_verdict(0, 0, true, MAX_INCOMING_FILE_BYTES + 1),
+            Err(QuotaBreach::FileTooLarge)
+        );
+    }
+
+    /// 拒绝必须**可定位**：上层把这个串写进日志并回 `FileReject`，
+    /// 用户/排障时能直接搜到 `RECV_QUOTA_EXCEEDED` 与当时的占用读数。
+    #[test]
+    fn a_quota_rejection_is_traceable() {
+        let msg = quota_error(QuotaBreach::Concurrent, 8, 1234, 1024);
+        assert!(msg.contains("code=RECV_QUOTA_EXCEEDED"), "{msg}");
+        assert!(msg.contains("kind=concurrent"), "{msg}");
+        assert!(msg.contains("active=8"), "{msg}");
+        assert!(msg.contains("inflight=1234"), "{msg}");
     }
 }
 
