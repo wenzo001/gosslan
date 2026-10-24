@@ -102,6 +102,19 @@ pub fn resume_receive(
     // 否则「首次收被拦、续传绕过」就会留下一条可用的攻击路径。
     let transfer_id = safe_transfer_id(transfer_id).ok_or("传输标识非法")?;
     let transfer_id = transfer_id.as_str();
+    // 配额判据与新建接收器同一份（SEC-05）：续传会重新占一格接收表，
+    // 不能让"先被拒、再续传"成为绕过并发上限的路径。放在读 `.part` 之前 —— 那是阻塞的。
+    let replacing = state
+        .file_receivers
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .contains_key(transfer_id);
+    let (active, inflight) = inbound_usage(state);
+    if let Err(breach) = inbound_quota_verdict(active, inflight, replacing, size) {
+        let msg = quota_error(breach, active, inflight, size);
+        state.logger.warn("file", msg.clone());
+        return Err(msg);
+    }
     let dl = state
         .downloads_dir
         .lock()
@@ -341,6 +354,83 @@ pub fn restart_segment(state: &AppState, transfer_id: &str) {
     }
 }
 
+/// 入站接收配额（SEC-05）。三个数值是**运营参数**（按需调整），不是协议契约。
+///
+/// 为什么需要：每收到一个 `FileOffer` 就会建一个 `{transfer_id}.part` 并占一格内存表。
+/// 对端（或被盗的好友身份）可以靠连续 Offer 把磁盘写满、把表撑大、拖垮同一个 runtime
+/// 上排队的所有命令。旧实现只有 24h TTL 清扫 —— 那是"事后收尸"，不是"事前拒绝"。
+pub const MAX_CONCURRENT_RECEIVES: usize = 8;
+pub const MAX_INCOMING_FILE_BYTES: u64 = 8 * 1024 * 1024 * 1024;
+pub const MAX_INCOMING_TOTAL_BYTES: u64 = 16 * 1024 * 1024 * 1024;
+
+/// 入站配额超限的原因（拼进 `code=RECV_QUOTA_EXCEEDED kind=…`）。
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum QuotaBreach {
+    Concurrent,
+    FileTooLarge,
+    TotalBytes,
+}
+
+/// 「这份 Offer 还能不能接」的**唯一**判据（纯函数，单测直接钉住）。
+///
+/// `replacing = true` 表示同一个 `transfer_id` 已经在接收表里（对端重试 / 续传同一个文件）：
+/// 它不占新槽位、也不新增字节额度，必须放行 —— 否则一次瞬时的槽位打满就会让重试永远接不上，
+/// 那一单卡在"对端一直重发、本机一直拒绝、界面永远 0%"。
+pub(crate) fn inbound_quota_verdict(
+    active: usize,
+    inflight_bytes: u64,
+    replacing: bool,
+    new_size: u64,
+) -> Result<(), QuotaBreach> {
+    if new_size > MAX_INCOMING_FILE_BYTES {
+        return Err(QuotaBreach::FileTooLarge);
+    }
+    if replacing {
+        return Ok(());
+    }
+    if active >= MAX_CONCURRENT_RECEIVES {
+        return Err(QuotaBreach::Concurrent);
+    }
+    if inflight_bytes.saturating_add(new_size) > MAX_INCOMING_TOTAL_BYTES {
+        return Err(QuotaBreach::TotalBytes);
+    }
+    Ok(())
+}
+
+/// 当前入站占用：活跃接收器数 + 它们声明的总字节数（一对一与群各算一份）。
+///
+/// 两张表**分开取锁、不嵌套**：仓库里已有"先 file 后 group"的取锁点（`commands/helpers.rs`），
+/// 这里若同时持有两把锁，就等于给未来的交叉取锁埋一个顺序问题。
+fn inbound_usage(state: &AppState) -> (usize, u64) {
+    fn one(map: &std::sync::Mutex<HashMap<String, FileReceiver>>) -> (usize, u64) {
+        let g = map.lock().unwrap_or_else(|e| e.into_inner());
+        (
+            g.len(),
+            g.values().map(|r| r.size).fold(0u64, |a, b| a.saturating_add(b)),
+        )
+    }
+    let (a1, b1) = one(&state.file_receivers);
+    let (a2, b2) = one(&state.group_file_receivers);
+    (a1 + a2, b1.saturating_add(b2))
+}
+
+/// 超限时构造给调用方的错误串（上层会把它原样写进日志并回 `FileReject`）。
+pub(crate) fn quota_error(
+    breach: QuotaBreach,
+    active: usize,
+    inflight: u64,
+    size: u64,
+) -> String {
+    let kind = match breach {
+        QuotaBreach::Concurrent => "concurrent",
+        QuotaBreach::FileTooLarge => "file_too_large",
+        QuotaBreach::TotalBytes => "total_bytes",
+    };
+    format!(
+        "code=RECV_QUOTA_EXCEEDED kind={kind} size={size} active={active} inflight={inflight} max_concurrent={MAX_CONCURRENT_RECEIVES} max_file={MAX_INCOMING_FILE_BYTES} max_total={MAX_INCOMING_TOTAL_BYTES}"
+    )
+}
+
 /// 一对一与群文件共用；差异只在写入哪个接收 map 与是否记录 file_transfers。
 #[allow(clippy::too_many_arguments)]
 fn make_receiver(
@@ -359,6 +449,18 @@ fn make_receiver(
     let transfer_id = transfer_id.as_str();
     if size > i64::MAX as u64 {
         return Err("文件过大，无法安全保存".to_string());
+    }
+    // 配额判据（SEC-05）：必须在建 `.part` **之前**。超限就回 `FileReject`，对端知道
+    // 本机这次不收，而不是先落盘再被清扫掉。
+    let replacing = receivers
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .contains_key(transfer_id);
+    let (active, inflight) = inbound_usage(state);
+    if let Err(breach) = inbound_quota_verdict(active, inflight, replacing, size) {
+        let msg = quota_error(breach, active, inflight, size);
+        state.logger.warn("file", msg.clone());
+        return Err(msg);
     }
     // 同一个 transfer_id 又收到一次 Offer = 发送方在**重试**（它每次都从 seq 0 重新开始）。
     // 旧实现这里直接返回「重复的文件传输」⇒ 接收方拒收 ⇒ 发送方 15s 等 accept 超时 ⇒
