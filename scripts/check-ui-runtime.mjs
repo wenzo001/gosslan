@@ -5459,8 +5459,8 @@ async function runRowPair(cdp, url) {
     const avatar = root.querySelector('.gosslan-avatar-box');
     const tr = tail ? tail.getBoundingClientRect() : null;
     const ar = avatar ? avatar.getBoundingClientRect() : null;
-    // 2026-10-23 口径反转：单聊不显示头像 ⇒ 尾巴改成**贴底角向下**，群聊不渲染尾巴。
-    // 所以这里量的是「尾巴露在气泡下沿外多少」与「上半截压进气泡多少」，不再量侧向 reach。
+    // 2026-10-24 口径：单聊的尾巴挂在气泡**左下/右下角、贴底边**，尖朝外，不再向下伸；
+    // 群聊不渲染尾巴。这里量三件事：下沿是否齐平、上沿压进多少、侧向伸出多少。
     const bubble = tail ? tail.parentElement : rowEl;
     const br = bubble ? bubble.getBoundingClientRect() : null;
     const isMine = tail ? /tail-mine/.test(tail.className) : null;
@@ -5469,6 +5469,19 @@ async function runRowPair(cdp, url) {
     const lineEl = tail ? tail.querySelector('.tail-line') : null;
     const tailStroke = lineEl ? getComputedStyle(lineEl).stroke : null;
     const bubbleLine = bcs ? (isMine ? bcs.borderRightColor : bcs.borderLeftColor) : null;
+    // 填充色必须**等于**它所在卡片的底色（用户 2026-10-24：代码卡片混黑后尾巴比卡片深一档）。
+    // 代码卡片根节点没有自己的 background（底色写在内部 CodeBlock/操作条上），只有
+    // --bubble-bg 变量 ⇒ 读不到 backgroundColor 时用变量解析一次，别把"透明"当成卡片底色。
+    const fillEl = tail ? tail.querySelector('.tail-fill') : null;
+    const tailFill = fillEl ? getComputedStyle(fillEl).fill : null;
+    let bubbleBg = bcs ? bcs.backgroundColor : null;
+    if (bubble && (!bubbleBg || bubbleBg === "rgba(0, 0, 0, 0)")) {
+      const probeBg = document.createElement("span");
+      probeBg.style.cssText = "position:absolute;width:0;height:0;background:var(--bubble-bg)";
+      bubble.appendChild(probeBg);
+      bubbleBg = getComputedStyle(probeBg).backgroundColor;
+      probeBg.remove();
+    }
     // 代码卡片**没有描边**（designGuards 与组件注释都写着"去掉了四边描边"），它的线色是卡片线 token。
     // 这里把 token 解析成真实颜色，供"尾巴描边 == 它那条线"逐种气泡核对。
     const probeEl = document.createElement("span");
@@ -5478,6 +5491,10 @@ async function runRowPair(cdp, url) {
     probeEl.remove();
     const tailBelowBubble = tr && br ? +(tr.bottom - br.bottom).toFixed(2) : null;
     const tailInsideBubble = tr && br ? +(br.bottom - tr.top).toFixed(2) : null;
+    // 侧向伸出：对方（tail-other）在左，自己（tail-mine）在右 —— 尖端应落在气泡外侧。
+    const tailSideReach = tr && br
+      ? +(isMine ? tr.right - br.right : br.left - tr.left).toFixed(2)
+      : null;
     const tailCount = document.querySelectorAll('.bubble-tail').length;
     const groupAvatarCount = root.querySelectorAll('.gosslan-avatar-box').length;
     const nickCount = [...document.querySelectorAll('[data-msg-col]')]
@@ -5494,12 +5511,15 @@ async function runRowPair(cdp, url) {
       tailBottom: tr ? +tr.bottom.toFixed(2) : null,
       tailBelowBubble,
       tailInsideBubble,
+      tailSideReach,
       tailCount,
       groupAvatarCount,
       nickCount,
       isMine,
       cornerRad,
       tailStroke,
+      tailFill,
+      bubbleBg,
       bubbleLine,
       cardLineColor,
     };
@@ -5573,25 +5593,36 @@ async function runRowPair(cdp, url) {
     Math.abs(dNickEst - dNickRow) <= 1, "两者相差 <= 1px",
     JSON.stringify({ dNickEst, dNickRow }));
 
-  // ============ 尾巴（2026-10-23 口径反转）============
-  // 单聊：不显示头像 ⇒ 尾巴贴在气泡**底角向下**，上半截压进气泡盖住底边描边；
+  // ============ 尾巴（2026-10-24 口径）============
+  // 单聊：尾巴挂在气泡**左下/右下角、贴底边**，尖朝外，不再向下伸；
   // 群聊：整条不渲染（用户：「群聊去掉」）。
   console.log("  · 尾巴实测：" + JSON.stringify({
-    dm: gFar && { tailCount: gFar.tailCount, below: gFar.tailBelowBubble, inside: gFar.tailInsideBubble },
+    dm: gFar && {
+      tailCount: gFar.tailCount, below: gFar.tailBelowBubble,
+      inside: gFar.tailInsideBubble, side: gFar.tailSideReach,
+    },
     group: gGroup && { tailCount: gGroup.tailCount, avatars: gGroup.groupAvatarCount, nicks: gGroup.nickCount },
   }));
   check("非空转·尾巴：单聊读到了尾巴矩形与气泡矩形",
-    !!gFar && typeof gFar.tailBelowBubble === "number" && typeof gFar.tailInsideBubble === "number",
-    "读数都是数", JSON.stringify(gFar && { below: gFar.tailBelowBubble, inside: gFar.tailInsideBubble }));
-  check("单聊·尾巴露在气泡下沿外 5~9px（贴底角向下，不是一个贴边的点）",
-    !!gFar && gFar.tailBelowBubble >= 5 && gFar.tailBelowBubble <= 9,
-    "5 <= below <= 9", JSON.stringify({ below: gFar && gFar.tailBelowBubble }));
-  check("单聊·尾巴上半截压进气泡 6~10px（盖住底边那段描边 ⇒ 接缝无台阶）",
-    !!gFar && gFar.tailInsideBubble >= 6 && gFar.tailInsideBubble <= 10,
-    "6 <= inside <= 10", JSON.stringify({ inside: gFar && gFar.tailInsideBubble }));
+    !!gFar && typeof gFar.tailBelowBubble === "number" && typeof gFar.tailInsideBubble === "number"
+      && typeof gFar.tailSideReach === "number",
+    "读数都是数",
+    JSON.stringify(gFar && { below: gFar.tailBelowBubble, inside: gFar.tailInsideBubble, side: gFar.tailSideReach }));
+  check("单聊·尾巴下沿与气泡下沿齐平（|差| <= 1px，不再向下伸）",
+    !!gFar && Math.abs(gFar.tailBelowBubble) <= 1,
+    "|below| <= 1", JSON.stringify({ below: gFar && gFar.tailBelowBubble }));
+  check("单聊·尾巴向气泡外侧伸出 8~12px（尖朝外，贴左下/右下角）",
+    !!gFar && gFar.tailSideReach >= 8 && gFar.tailSideReach <= 12,
+    "8 <= side <= 12", JSON.stringify({ side: gFar && gFar.tailSideReach }));
+  check("单聊·尾巴上沿压进气泡 12~16px（盒高 14，盖住边缘那段描边 ⇒ 接缝无台阶）",
+    !!gFar && gFar.tailInsideBubble >= 12 && gFar.tailInsideBubble <= 16,
+    "12 <= inside <= 16", JSON.stringify({ inside: gFar && gFar.tailInsideBubble }));
   check("单聊·描边与气泡边框同色：SVG 描边 == 气泡那一侧的 border 色",
     !!gFar && typeof gFar.tailStroke === "string" && gFar.tailStroke === gFar.bubbleLine,
     "stroke == 同侧 border 色", JSON.stringify({ tailStroke: gFar && gFar.tailStroke, bubbleLine: gFar && gFar.bubbleLine }));
+  check("单聊·尾巴填充 == 气泡底色（不混黑/混白，接缝处看不出第二块颜色）",
+    !!gFar && typeof gFar.tailFill === "string" && gFar.tailFill === gFar.bubbleBg,
+    "fill == backgroundColor", JSON.stringify({ tailFill: gFar && gFar.tailFill, bubbleBg: gFar && gFar.bubbleBg }));
   check("群聊·整条消息不渲染尾巴",
     !!gGroup && gGroup.tailCount === 0, "tailCount == 0", JSON.stringify({ tailCount: gGroup && gGroup.tailCount }));
   check("群聊·自己那条也不渲染尾巴（再挂一次：dev-me）",
@@ -5629,8 +5660,8 @@ async function runRowPair(cdp, url) {
   }
 
   // ---- 其余气泡种类（用户 2026-10-23：「把所有的气泡尾巴都检查下」）----
-  // 新口径（同日第二次反转）：单聊保留尾巴（贴底角向下），群聊整条不渲染。
-  // 每一格单聊/群聊各一遍：单聊量「露在气泡外 / 压进气泡」两个数，群聊量"根本没有尾巴"。
+  // 2026-10-24 口径：单聊保留尾巴（左下/右下角贴底边、尖朝外），群聊整条不渲染。
+  // 每一格单聊/群聊各一遍：单聊量「下沿齐平 / 压进气泡 / 侧向伸出」三个数，群聊量"根本没有尾巴"。
   const TAIL_KINDS = [
     ["代码气泡", "code"], ["文件气泡", "file"], ["合并转发卡片", "merge"],
     ["群任务卡片", "todo"],
@@ -5640,19 +5671,31 @@ async function runRowPair(cdp, url) {
     check("行配对：挂一条" + kindLabel + "（单聊）", await mount(FAR, false, kind), "install 成功");
     const gDm = await geom();
     console.log("  · " + kindLabel + "尾巴实测（单聊）："
-      + JSON.stringify(gDm && { count: gDm.tailCount, below: gDm.tailBelowBubble, inside: gDm.tailInsideBubble }));
+      + JSON.stringify(gDm && {
+        count: gDm.tailCount, below: gDm.tailBelowBubble,
+        inside: gDm.tailInsideBubble, side: gDm.tailSideReach,
+      }));
     check("非空转·" + kindLabel + "（单聊）：读到尾巴矩形与气泡矩形",
-      !!gDm && typeof gDm.tailBelowBubble === "number" && typeof gDm.tailInsideBubble === "number",
-      "读数都是数", JSON.stringify(gDm && { below: gDm.tailBelowBubble, inside: gDm.tailInsideBubble }));
-    check("单聊·" + kindLabel + "尾巴：露在气泡外 5~9px 且压进气泡 6~10px",
-      !!gDm && gDm.tailBelowBubble >= 5 && gDm.tailBelowBubble <= 9
-        && gDm.tailInsideBubble >= 6 && gDm.tailInsideBubble <= 10,
-      "5~9 / 6~10", JSON.stringify({ kindLabel, below: gDm && gDm.tailBelowBubble, inside: gDm && gDm.tailInsideBubble }));
+      !!gDm && typeof gDm.tailBelowBubble === "number" && typeof gDm.tailInsideBubble === "number"
+        && typeof gDm.tailSideReach === "number",
+      "读数都是数",
+      JSON.stringify(gDm && { below: gDm.tailBelowBubble, inside: gDm.tailInsideBubble, side: gDm.tailSideReach }));
+    check("单聊·" + kindLabel + "尾巴：下沿与气泡齐平、外侧伸出 8~12px、压进 12~16px",
+      !!gDm && Math.abs(gDm.tailBelowBubble) <= 1
+        && gDm.tailSideReach >= 8 && gDm.tailSideReach <= 12
+        && gDm.tailInsideBubble >= 12 && gDm.tailInsideBubble <= 16,
+      "|below|<=1 / 8~12 / 12~16", JSON.stringify({
+        kindLabel, below: gDm && gDm.tailBelowBubble,
+        side: gDm && gDm.tailSideReach, inside: gDm && gDm.tailInsideBubble,
+      }));
     // 文本/文件/合并/待办有 1px 描边 ⇒ 比 border 色；代码卡片**无描边** ⇒ 比卡片线 token（它唯一的线）。
     const wantLine = kind === "code" ? (gDm && gDm.cardLineColor) : (gDm && gDm.bubbleLine);
     check("单聊·" + kindLabel + "尾巴描边与它那条边线同色（有描边比 border，无描边的代码卡片比卡片线 token）",
       !!gDm && typeof gDm.tailStroke === "string" && gDm.tailStroke === wantLine,
       "stroke == 期望线色", JSON.stringify({ kindLabel, tailStroke: gDm && gDm.tailStroke, wantLine }));
+    check("单聊·" + kindLabel + "尾巴填充 == 卡片底色（不混色，颜色不许对不上）",
+      !!gDm && typeof gDm.tailFill === "string" && gDm.tailFill === gDm.bubbleBg,
+      "fill == backgroundColor", JSON.stringify({ kindLabel, tailFill: gDm && gDm.tailFill, bubbleBg: gDm && gDm.bubbleBg }));
 
     // 群聊：这一种也不许有尾巴（自己的那条另有一条，见上面）
     check("行配对：挂一条" + kindLabel + "（群聊）", await mount(FAR, true, kind), "install 成功");
