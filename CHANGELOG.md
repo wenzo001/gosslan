@@ -13,6 +13,19 @@
 
 ## [Unreleased]
 
+## [5.7.14] - 2026-10-24
+
+### 打开接收目录走统一门面（审计 FUNC-01）
+
+- macOS 沙盒构建里「打开接收目录」必然失败：旧实现 fork `/usr/bin/open`，而 App Sandbox
+  禁止沙盒应用 fork 外部可执行文件，失败后既不报错也不留日志。现在目录打开走
+  `open_path::open_dir_native` —— macOS 用 `NSWorkspace.openURL`（纯 Foundation API，不 fork），
+  Windows/Linux 用 `tauri-plugin-opener`，移动端保持可调用但无动作。
+- 目录不存在时先给出可读错误，不再出现「点了没反应」；创建接收目录失败记
+  `code=OPEN_DIR_CREATE_FAILED`，打开失败记 `code=OPEN_DIR_FAILED`。
+- 新增回归断言：目录不存在必须返回错误；`commands/share.rs` 不得再出现
+  `Command::new("open")` 且必须经 `open_dir_native` 打开。
+
 ## [5.7.13] - 2026-10-24
 
 ### 取消/终态收口统一到一个事务（审计 FUNC-02/03/04）
