@@ -1206,27 +1206,30 @@ window.__probe = (() => {
   };
 
   /**
-   * 量**表情回应条**与气泡那一列的几何关系（用户 2026-10-07：「左右两条表情回复边缘都与上面气泡对齐，
-   * 并且间距紧凑点」）。两侧各量一次：左列看左边缘、右列看右边缘，容差 1px。
+   * 量表情回应底栏与气泡的几何关系（2026-10-24 起回应条并入气泡）。
+   * 两问：① 底栏与气泡**同宽同边**（它就是气泡的底栏）；② 每枚胶囊都**落在气泡之内**。
    *
-   * ⚠️ 量的是**胶囊自己的边**，不是那条容器的边：回应条是通栏的块级容器，padding 长在盒子**里面**
-   * ⇒ 拿 getBoundingClientRect() 量那条容器去比气泡，两侧都会恒差一个"条的宽度差"（第一版就这么读出
-   * 左右各 60px，差点照着这个假数去改补偿值）。用户那句"边缘对齐"判的是看得到的那两枚胶囊。
-   * 裁切者不写死选择器：从条往上找第一个 overflow 不是 visible 的祖先（消息列表那个滚动容器），
-   * 因为"谁在裁"这件事本身就是这条判据要回答的一半。
+   * ⚠️ 胶囊现在带底栏内边距（px-2 / py-1），所以"胶囊边 == 气泡边"已不再是判据 ——
+   * 那是"回应条是消息行兄弟节点"时代的形状（外挂一排，靠 avatarGutterClass 补边）。
+   * 今天要钉的是底栏（data-reaction-strip）与气泡本体（[data-msg-bubble] > :first-child）。
+   * 裁切者不写死选择器：从条往上找第一个 overflow 不是 visible 的祖先，因为"谁在裁"
+   * 本身就是这条判据要回答的一半。
    */
   H.reactionGeom = () => {
     const bar = document.querySelector('[data-reaction-bar]');
-    const col = document.querySelector('[data-msg-col]');
-    if (!bar || !col) return { ok: false, why: '缺 data-reaction-bar 或 data-msg-col（钩子被改名了？）' };
+    const strip = document.querySelector('[data-reaction-strip]');
+    const bubble = document.querySelector('[data-msg-bubble] > :first-child');
+    if (!bar || !strip || !bubble) {
+      return { ok: false, why: '缺 data-reaction-bar / data-reaction-strip / data-msg-bubble（钩子被改名了？）' };
+    }
     const chips = Array.from(bar.querySelectorAll('[data-reaction-chip]'));
     if (chips.length === 0) return { ok: false, why: '条里一颗胶囊都没有 ⇒ 没有可量的边' };
     const rs = chips.map((b) => b.getBoundingClientRect());
     const chipLeft = Math.min(...rs.map((r) => r.left));
     const chipRight = Math.max(...rs.map((r) => r.right));
     const chipTop = Math.min(...rs.map((r) => r.top));
-    const b = { left: chipLeft, right: chipRight, top: chipTop };
-    const c = col.getBoundingClientRect();
+    const br = bubble.getBoundingClientRect();
+    const sr = strip.getBoundingClientRect();
     let clip = null;
     for (let n = bar.parentElement; n; n = n.parentElement) {
       const s = getComputedStyle(n);
@@ -1235,17 +1238,20 @@ window.__probe = (() => {
     const cr = clip ? clip.getBoundingClientRect() : null;
     return {
       ok: true,
-      deltaLeft: Math.round(b.left - c.left),
-      deltaRight: Math.round(b.right - c.right),
-      gapToBubble: Math.round(b.top - c.bottom),
-      chipLeft: Math.round(b.left), chipRight: Math.round(b.right),
-      colLeft: Math.round(c.left), colRight: Math.round(c.right),
-      padLeft: getComputedStyle(bar).paddingLeft, padRight: getComputedStyle(bar).paddingRight,
-      // 那截竖向间距的构成也要带回来：条自己的 mt 之外，剩下的是**上面那一行**（消息行 = 前一个兄弟节点）
-      // 的下内边距 —— 不知道 6px 从哪来就没法判断"再收紧"该动哪一层（动错层会碰到选中底色）。
-      barMarginTop: getComputedStyle(bar).marginTop,
-      rowPadBottom: bar.previousElementSibling
-        ? getComputedStyle(bar.previousElementSibling).paddingBottom : null,
+      deltaLeft: Math.round(sr.left - br.left),
+      deltaRight: Math.round(sr.right - br.right),
+      chipInsetLeft: Math.round(chipLeft - br.left),
+      chipInsetRight: Math.round(br.right - chipRight),
+      gapStripToBubble: Math.round(sr.top - br.bottom),
+      gapChipToBubble: Math.round(chipTop - br.bottom),
+      chipLeft: Math.round(chipLeft), chipRight: Math.round(chipRight),
+      bubbleLeft: Math.round(br.left), bubbleRight: Math.round(br.right),
+      stripLeft: Math.round(sr.left), stripRight: Math.round(sr.right),
+      padLeft: getComputedStyle(strip).paddingLeft, padRight: getComputedStyle(strip).paddingRight,
+      // 那截竖向间距的构成也要带回来：底栏自己的 padding-top 是多少、上一块（气泡）的下外边距。
+      // 不知道数从哪来就没法判断"再收紧"该动哪一层。
+      stripPadTop: getComputedStyle(strip).paddingTop,
+      bubbleMarginBottom: getComputedStyle(bubble).marginBottom,
       barClass: String(bar.className).slice(0, 120),
       clipTag: clip ? String(clip.className).slice(0, 36) : 'none',
       clipLeft: cr ? Math.round(cr.left) : null,
@@ -1418,20 +1424,20 @@ window.__probe = (() => {
   };
 
   /**
-   * 反面对照（对齐）：把回应条朝外侧**平移 8px** —— 8px 正是修之前那个补偿值差出来的量
-   * （旧写法 4 + 48 = 52，而气泡边缘在 16 + 36 + 8 = 60）。用 margin 而不是改 padding：
-   * padding 上有 px-4 与 pl-* 互相覆盖的顺序问题，拿它做对照会把"对照生效了吗"变成另一个未知。
+   * 反面对照（对齐）：把**底栏整体**朝外侧平移 16px（胶囊是条里的内容，挪条才动得了
+   * 底栏与气泡的相对边）—— 同边判据必须当场不成立。用 margin 而不是改 padding：
+   * padding 上有 px-2 与 pl-* 互相覆盖的顺序问题，拿它做对照会把"对照生效了吗"变成另一个未知。
    */
   H.forceAlignSkew = (on) => {
-    const bar = document.querySelector('[data-reaction-bar]');
+    const strip = document.querySelector('[data-reaction-strip]');
     const col = document.querySelector('[data-msg-col]');
-    if (!bar || !col) return false;
+    if (!strip || !col) return false;
     if (on) {
-      if (col.classList.contains('items-end')) bar.style.marginRight = '8px';
-      else bar.style.marginLeft = '-8px';
+      if (col.classList.contains('items-end')) strip.style.marginRight = '-16px';
+      else strip.style.marginLeft = '-16px';
     } else {
-      bar.style.marginLeft = '';
-      bar.style.marginRight = '';
+      strip.style.marginLeft = '';
+      strip.style.marginRight = '';
     }
     return true;
   };
@@ -4036,15 +4042,20 @@ async function rosterChecks(cdp, url) {
   // ================= 左列（别人发的）：看左边缘 =================
   check("左列：挂出一条带回应的消息", await mount("peer-a", false), "install 成功");
   const gl = await cdp.eval("window.__probe.reactionGeom()");
-  check("左列：胶囊左边缘与气泡那一列左边缘对齐（|差| <= 1px）",
+  check("左列：回应底栏与气泡左边缘同边（|差| <= 1px）",
     gl.ok === true && Math.abs(gl.deltaLeft) <= 1,
-    "|chip.left - col.left| <= 1",
-    "差 " + gl.deltaLeft + "px；chip.left=" + gl.chipLeft + " col.left=" + gl.colLeft
-      + "，条 padding-left=" + gl.padLeft);
-  check("左列：与气泡的竖向间距收到紧凑档（0 <= 差 <= 6px，改之前是 10px）",
-    gl.ok === true && gl.gapToBubble >= 0 && gl.gapToBubble <= 6,
-    "0 <= 间距 <= 6",
-    "间距 " + gl.gapToBubble + "px = 条 mt " + gl.barMarginTop + " + 消息行 pb " + gl.rowPadBottom);
+    "|strip.left - bubble.left| <= 1",
+    "差 " + gl.deltaLeft + "px；strip.left=" + gl.stripLeft + " bubble.left=" + gl.bubbleLeft);
+  check("左列：两枚胶囊都落在气泡之内（左右都不越界）",
+    gl.ok === true && gl.chipInsetLeft >= 0 && gl.chipInsetRight >= 0,
+    "chipInsetLeft >= 0 且 chipInsetRight >= 0",
+    "内缩 " + gl.chipInsetLeft + " / " + gl.chipInsetRight
+      + "px（底栏 padding=" + gl.padLeft + " / " + gl.padRight + "）");
+  check("左列：底栏紧贴气泡下沿（0 <= 差 <= 2px）",
+    gl.ok === true && gl.gapStripToBubble >= 0 && gl.gapStripToBubble <= 2,
+    "0 <= 底栏上沿 - 气泡下沿 <= 2",
+    "间距 " + gl.gapStripToBubble + "px = 底栏 pt " + gl.stripPadTop
+      + " + 气泡 mb " + gl.bubbleMarginBottom);
 
   const hl = await hoverInto(0);
   check("左列：拿得到胶囊的落点（hover 的坐标来源）", !!hl.pt, "chipPoint 非空", JSON.stringify(hl.pt));
@@ -4083,16 +4094,21 @@ async function rosterChecks(cdp, url) {
   // ================= 右列（我自己发的）：看右边缘 + 那条越界 =================
   check("右列：挂出一条自己发的带回应消息", await mount("me-1", true), "install + seed 成功");
   const gm = await cdp.eval("window.__probe.reactionGeom()");
-  check("右列：胶囊右边缘与气泡那一列右边缘对齐（|差| <= 1px）",
+  check("右列：回应底栏与气泡右边缘同边（|差| <= 1px）",
     gm.ok === true && Math.abs(gm.deltaRight) <= 1,
-    "|chip.right - col.right| <= 1",
-    "差 " + gm.deltaRight + "px；chip.right=" + gm.chipRight + " col.right=" + gm.colRight
-      + "，条 padding-right=" + gm.padRight);
+    "|strip.right - bubble.right| <= 1",
+    "差 " + gm.deltaRight + "px；strip.right=" + gm.stripRight + " bubble.right=" + gm.bubbleRight);
+  check("右列：胶囊落在气泡之内（右侧不越界）",
+    gm.ok === true && gm.chipInsetLeft >= 0 && gm.chipInsetRight >= 0,
+    "两侧内缩都 >= 0",
+    "内缩 " + gm.chipInsetLeft + " / " + gm.chipInsetRight
+      + "px（底栏 padding=" + gm.padLeft + " / " + gm.padRight + "）");
 
-
-  check("右列：与气泡的竖向间距同样是紧凑档（0 <= 差 <= 6px）",
-    gm.ok === true && gm.gapToBubble >= 0 && gm.gapToBubble <= 6,
-    "0 <= 间距 <= 6", "间距 " + gm.gapToBubble + "px = 条 mt " + gm.barMarginTop + " + 消息行 pb " + gm.rowPadBottom);
+  check("右列：底栏紧贴气泡下沿（0 <= 差 <= 2px）",
+    gm.ok === true && gm.gapStripToBubble >= 0 && gm.gapStripToBubble <= 2,
+    "0 <= 底栏上沿 - 气泡下沿 <= 2",
+    "间距 " + gm.gapStripToBubble + "px = 底栏 pt " + gm.stripPadTop
+      + " + 气泡 mb " + gm.bubbleMarginBottom);
 
   const hm = await hoverInto(0);
   check("右列：拿得到胶囊的落点（hover 的坐标来源）", !!hm.pt, "chipPoint 非空", JSON.stringify(hm.pt));
@@ -4122,13 +4138,14 @@ async function rosterChecks(cdp, url) {
   // ================= 两把反面对照：证明上面那些数不是恒真 =================
   await cdp.eval("window.__probe.forceAlignSkew(true)");
   const skewed = await cdp.eval("window.__probe.reactionGeom()");
-  check("对照：把回应条朝外侧挪 8px（= 修之前那个补偿差的量）⇒ 对齐判据必须不再成立",
-    skewed.ok === true && Math.abs(skewed.deltaRight) >= 4,
-    "|差| >= 4", "差 " + skewed.deltaRight + "px");
+  check("对照：把底栏朝外平移 16px ⇒ 「底栏与气泡同边」必须不再成立",
+    skewed.ok === true && (Math.abs(skewed.deltaLeft) >= 4 || Math.abs(skewed.deltaRight) >= 4),
+    "|差| >= 4", "左差 " + skewed.deltaLeft + "px / 右差 " + skewed.deltaRight + "px");
   await cdp.eval("window.__probe.forceAlignSkew(false)");
   const back = await cdp.eval("window.__probe.reactionGeom()");
-  check("对照可逆：撤掉平移后右缘又对齐",
-    back.ok === true && Math.abs(back.deltaRight) <= 1, "|差| <= 1", "差 " + back.deltaRight + "px");
+  check("对照可逆：撤掉平移后底栏又与气泡同边",
+    back.ok === true && Math.abs(back.deltaLeft) <= 1 && Math.abs(back.deltaRight) <= 1,
+    "|差| <= 1", "左差 " + back.deltaLeft + "px / 右差 " + back.deltaRight + "px");
 
   await cdp.eval("window.__probe.forceLegacyRoster(true)");
   const legacy = await cdp.eval("window.__probe.reactionRoster()");
@@ -5461,7 +5478,11 @@ async function runRowPair(cdp, url) {
     const ar = avatar ? avatar.getBoundingClientRect() : null;
     // 2026-10-24 口径：单聊的尾巴挂在气泡**左下/右下角、贴底边**，尖朝外，不再向下伸；
     // 群聊不渲染尾巴。这里量三件事：下沿是否齐平、上沿压进多少、侧向伸出多少。
-    const bubble = tail ? tail.parentElement : rowEl;
+    // 2026-10-24：尾巴挂在外壳 data-msg-bubble-shell 上（回应条并入后它是整块的底角），
+    // 所以要量的"气泡"是外壳里的**气泡本体**，不是尾巴的父节点。
+    const bubble = tail
+      ? (tail.parentElement.querySelector('[data-msg-bubble] > :first-child') || rowEl)
+      : rowEl;
     const br = bubble ? bubble.getBoundingClientRect() : null;
     const isMine = tail ? /tail-mine/.test(tail.className) : null;
     const bcs = bubble ? getComputedStyle(bubble) : null;
@@ -10800,7 +10821,9 @@ async function runContextGuard(cdp, url) {
       return r;
     };
 
-    // ── 1) 触发边界：正文 / 昵称 / 引用块开菜单；头像 / 表情区 / 行内空白不开 ──
+    // ── 1) 触发边界：正文 / 昵称 / 引用块开菜单；头像 / 行内空白不开 ──
+    //    表情回应胶囊自 2026-10-24 起在 data-msg-col **之内**（它是气泡的底栏），
+    //    但仍属控件 ⇒ 期望「命中在列内 + 不弹菜单」（由 `[data-reaction-strip]` 显式排除）。
     const boundaryProps = {
       message: {
         msg_id: "m-ctx-boundary", sender_id: "peer-a", kind: "text",
@@ -10836,7 +10859,7 @@ async function runContextGuard(cdp, url) {
       ["引用内容", quote, true, true],
       ["头像", avatar, false, false],
       ["行内空白", blankP, false, false],
-      ["表情回应胶囊", chip, false, false],
+      ["表情回应胶囊", chip, false, true],
     ]) {
       if (!point) { boundaryCases.push([label, false, "落点没量到"]); continue; }
       await rightClickAt(point);

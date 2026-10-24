@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, ref, watch } from "vue";
+import { computed, onBeforeUnmount, ref, watch, type CSSProperties } from "vue";
 import { useAppStore } from "@/stores/useAppStore";
 import { useChatStore } from "@/stores/useChatStore";
 import { useClipboard } from "@/composables/useClipboard";
@@ -8,7 +8,7 @@ import { useMessageDisplay } from "@/composables/useMessageDisplay";
 import { PopoverContent, PopoverPortal, PopoverRoot, PopoverTrigger } from "reka-ui";
 import { useMessageFile } from "@/composables/useMessageFile";
 import { useMemberProfile } from "@/composables/useMemberProfile";
-import { IMAGE_PLACEHOLDER_HEIGHT, textNeedsClamp } from "@/utils/previewMetrics";
+import { CODE_SURFACE, IMAGE_PLACEHOLDER_HEIGHT, textNeedsClamp } from "@/utils/previewMetrics";
 import {
   isFavoritableKind, isForwardableKind, isKnownKind, isMultiSelectable, isRemindableKind, isTipKind, kindClass, UNSUPPORTED_KIND_LABEL, } from "@/utils/messageKinds";
 import { cardCopyText } from "@/utils/cardText";
@@ -38,6 +38,7 @@ import MessageImageBubble from "@/components/message/MessageImageBubble.vue";
 import MessageReceipt from "@/components/message/MessageReceipt.vue";
 import ConfirmDialog from "@/components/ui/ConfirmDialog.vue";
 import MessageReactionBar from "@/components/message/MessageReactionBar.vue";
+import BubbleTail from "@/components/message/BubbleTail.vue";
 import EmojiPicker from "@/components/EmojiPicker.vue";
 import type { ReactionChip } from "@/utils/reactions";
 import type { TodoLive } from "@/utils/todos";
@@ -427,8 +428,14 @@ let lastTouchTextCol: Element | null = null;
  */
 function onContextMenu(e: MouseEvent) {
   // 表情回应的笑脸按钮**在 data-msg-col 里**（绝对定位到气泡外侧）：它是控件，不是消息内容，
-  // 不能因为落在列里就弹消息菜单。头像/表情条在列外，处理器根本不会收到。
-  if (e.target instanceof Element && e.target.closest("[data-reaction-entry]")) return;
+  // 不能因为落在列里就弹消息菜单。表情回应条自 2026-10-24 起也进了列内（它是气泡的底栏），
+  // 同样按控件处理 —— 点胶囊是"切回应"，不该顺手弹一条消息菜单。
+  if (
+    e.target instanceof Element &&
+    e.target.closest("[data-reaction-entry], [data-reaction-strip]")
+  ) {
+    return;
+  }
 
   const mobile = app.isMobile;
   const hasSelection = hasTextSelection();
@@ -580,7 +587,8 @@ function onTouchStart(e: TouchEvent) {
     ? (el?.closest("[data-msg-col]") ?? null)
     : null;
   // 表情回应的笑脸按钮在 data-msg-col 里（绝对定位）：它是控件，长按不归消息面板。
-  if (el?.closest("[data-reaction-entry]")) return;
+  // 回应条（2026-10-24 起是气泡底栏）同理：胶囊自己有一套长按看名单的手势。
+  if (el?.closest("[data-reaction-entry], [data-reaction-strip]")) return;
   // 判据收在 `utils/longPress.ts`（纯函数、真值表单测）：
   // 桌面走右键 / 系统消息没有菜单 / 选字模式与多选让路 /
   // **触屏命中可选正文 ⇒ 不起定时器**，把长按完整留给系统原生选字（手柄+系统复制菜单）。
@@ -907,6 +915,93 @@ const avatarGutterClass = computed(() =>
       ? "justify-end pr-4"
       : "pl-4",
 );
+
+/**
+ * 表情回应条自 2026-10-24 起**并入气泡**（用户：「把所有的表情回复包在气泡里面」）。
+ * 它不再是消息行的兄弟节点，而是气泡外壳的底栏 —— 所以底色必须与上面那块气泡是
+ * **同一格**，否则又是"贴上去的一张条"。
+ * 底色只有这几个来源，按渲染分支取同一个值，组件里不另写一份色：
+ * 文本/兜底/未知 → bubbleStyle · 卡片（文件/合并/任务）→ cardStyle · 代码 → CODE_SURFACE。
+ * 图片没有"气泡底色"（它就是图），用卡片色兜底；它本来也没有尾巴。
+ */
+const hasReactions = computed(() => (props.reactions?.length ?? 0) > 0);
+const cardLikeBubble = computed(
+  () =>
+    props.message.kind === "file" ||
+    props.message.kind === "merge" ||
+    props.message.kind === "todo" ||
+    props.message.kind === "image",
+);
+const reactionSurface = computed(() => {
+  if (props.message.kind === "code") return app.dark ? CODE_SURFACE.dark : CODE_SURFACE.light;
+  if (cardLikeBubble.value) return "var(--gosslan-card)";
+  return String(bubbleStyle.value["--bubble-bg"] ?? "transparent");
+});
+
+/** 外壳只负责两件事：尾巴取色（`--bubble-bg` / `--bubble-line`）与给底栏一层定位。 */
+const shellStyle = computed<CSSProperties>(
+  () =>
+    ({
+      "--bubble-bg": reactionSurface.value,
+      "--bubble-line":
+        props.message.kind === "code" || cardLikeBubble.value
+          ? "var(--gosslan-card-line)"
+          : mine.value
+            ? "transparent"
+            : "var(--gosslan-border)",
+    }) as CSSProperties,
+);
+
+/**
+ * 底栏自己的下圆角必须与**它上面那块气泡**同档：连续消息组里相邻侧收成 tight，
+ * 底栏若一律用 18px，接缝处会豁出一个角。上圆角恒为 0（与气泡是同一块）。
+ */
+const reactionStripStyle = computed<CSSProperties>(() => {
+  const cardRadii =
+    props.message.kind === "code"
+      ? { borderBottomLeftRadius: "var(--gosslan-radius-md)", borderBottomRightRadius: "var(--gosslan-radius-md)" }
+      : cardLikeBubble.value
+        ? { borderBottomLeftRadius: "var(--gosslan-bubble-radius, 4px)", borderBottomRightRadius: "var(--gosslan-bubble-radius, 4px)" }
+        : {
+            borderBottomLeftRadius: bubbleStyle.value.borderBottomLeftRadius,
+            borderBottomRightRadius: bubbleStyle.value.borderBottomRightRadius,
+          };
+  return { background: reactionSurface.value, ...cardRadii };
+});
+
+/**
+ * 尾巴自 2026-10-24 起由**外壳统一画**（气泡组件不再各画一份），这样回应条并入后，
+ * 尾巴自然落在整块（气泡 + 回应条）的左下/右下角。哪些消息有尾巴与改前一致：
+ * 单聊 + 有气泡本体的那几支；图片/未知类型/裸文本兜底/提示行原本就没有。
+ */
+const showTail = computed(() => {
+  if (props.isGroup || isTip.value) return false;
+  const k = props.message.kind;
+  if (k === "text" || k === "code" || k === "merge" || k === "todo") return true;
+  return k === "file" && !attachmentUrl.value && !!fileMeta.value;
+});
+
+/**
+ * 表情回应底栏的高度（表情入口要从列的底边往上让出这一段）。
+ *
+ * 为什么现量而不是按胶囊行数算：胶囊会随列宽折行，同一份回应在宽/窄窗口里的底栏高度不同；
+ * 猜一个"每行 32px"会让入口在窄窗口里压住胶囊、宽窗口里悬空。
+ * 底栏只在真有回应时渲染 ⇒ 没有回应的消息根本不建观察者。
+ */
+const stripEl = ref<HTMLElement | null>(null);
+const entryBottom = ref(0);
+let stripRo: ResizeObserver | null = null;
+watch(stripEl, (el) => {
+  stripRo?.disconnect();
+  stripRo = null;
+  entryBottom.value = el ? el.offsetHeight : 0;
+  if (!el) return;
+  stripRo = new ResizeObserver(() => {
+    entryBottom.value = el.offsetHeight;
+  });
+  stripRo.observe(el);
+});
+onBeforeUnmount(() => stripRo?.disconnect());
 
 function doCancelSend() {
   closeContextMenu();
@@ -1423,9 +1518,9 @@ async function copyFileToClipboard() {
            贴底边**（`bottom: 0`），所以这里不再传 `--bubble-tail-offset`。
            探针判据：尾巴下沿与气泡下沿齐平、外侧伸出 8~12px、上沿压进 12~16px。 -->
       <!-- 右键/长按的边界就是这一列（消息内容区）：昵称、引用块、正文、回执都在里面；
-           头像、表情回应条、行内空白在列外 ⇒ 不会因为"同属一条消息"就弹消息菜单。
-           表情回应的笑脸按钮虽然在列内（绝对定位到气泡外侧），由 `onContextMenu` /
-           `onTouchStart` 显式排除（`[data-reaction-entry]`）。
+           头像、行内空白在列外 ⇒ 不会因为"同属一条消息"就弹消息菜单。
+           表情回应的笑脸按钮与回应底栏虽然也在列内，但它们是控件：
+           由 `onContextMenu` / `onTouchStart` 显式排除（`[data-reaction-entry]` / `[data-reaction-strip]`）。
            ⚠️ 触屏长按从这一列起手（不再只挂消息行）：昵称/引用块等非正文区也能开面板。 -->
       <div
         data-msg-col
@@ -1445,9 +1540,14 @@ async function copyFileToClipboard() {
              （上一版把一排快捷表情挂在流内，一悬停整条长高 ⇒ 「鼠标划过跳来跳去」）。
              选择器由 Reka Popover 传送到 body，位置/翻转/越界由 floating-ui 接管。
              位置：别人的消息在**气泡右侧**（`-right-11`）、自己的消息在**气泡左侧**（`-left-11`），
-             竖向**与气泡底边对齐**（`bottom-0`）—— 用户 2026-09-30：「按钮位置在视觉观感上应该与
+             竖向**与气泡内容底边对齐** —— 用户 2026-09-30：「按钮位置在视觉观感上应该与
              聊天内容最下边对齐」。以前是 `top-1/2 -translate-y-1/2` 居中线，单行消息上看着像
-             浮在半空、多行消息上又和回应条错开。锚在**本列**（列宽=气泡宽）所以按钮紧贴气泡，不贴面板边。
+             浮在半空、多行消息上又和回应条错开。
+             ⚠️ 横向仍锚在**本列**（列宽 = 气泡 + 回执让位后的整块），不能改锚到气泡本体：
+             气泡在本列里往往更窄，锚到气泡会让按钮左移、压到回执上（2026-10-24 实测重叠 6px）。
+             ⚠️ 竖向自 2026-10-24 起要减去**回应底栏的高度**：底栏并入气泡后，本列的底边 =
+             底栏底边；不减的话按钮（连同选择器）会整体下坠 —— 窄窗口里选择器直接被顶出视口。
+             那个高度由底下 `stripEl` 的 ResizeObserver 现量进 `entryBottom`，这里不猜。
              ⚠️ 揭示走 `.kb-reveal`（style.css，roadmap N19）而不是旧的 `hidden group-hover/msg:flex`：
              `display:none` 会**连可聚焦性一起去掉** ⇒ 键盘用户 Tab 跳不到这颗入口。现在它常驻布局
              （本来就 absolute ⇒ 不影响本条高度），悬停本条（组名在 `.group/msg` 上，本列在其内 ✓）、
@@ -1462,6 +1562,7 @@ async function copyFileToClipboard() {
               data-reaction-entry
               class="tap-safe kb-reveal absolute -right-11 bottom-0 z-20 flex h-6 w-6 items-center justify-center rounded-full border border-[var(--gosslan-border)] bg-[var(--gosslan-panel)] shadow-sm transition"
               :class="[mine ? '-left-11' : '-right-11', reactionPickerOpen ? 'kb-reveal-on' : '']"
+              :style="{ bottom: `${entryBottom}px` }"
               :title="t('msg.reactionAddEntry')"
               :aria-label="t('msg.reactionAddEntry')"
             >
@@ -1538,10 +1639,28 @@ async function copyFileToClipboard() {
             @retry="retrySend"
           />
 
-          <!-- 文本 -->
-          <MessageTextBubble
-            :tail="!isGroup"
-            v-if="message.kind === 'text'"
+          <!-- 气泡外壳：**气泡本体 + 表情回应底栏 + 尾巴**是同一块。
+               （用户 2026-10-24：「把所有的表情回复包在气泡里面」；此前回应条是消息行的
+               兄弟节点，连续气泡里看起来像另起了一条小气泡。）
+               · 宽度 = max(气泡内容, 回应条)：底栏永远与气泡同宽，气泡本体撑满这层；
+               · `items-end/items-start` 决定整块贴哪一侧；固定宽度的卡片自己 `self-*` 对齐；
+               · 尾巴挂在这一层（不在气泡组件里）⇒ 有回应条时它落在**整块**的底角，
+                 与底栏同一底色，不会悬在中间；
+               · 回执留在外壳外，与整块底边对齐。 -->
+          <div
+            data-msg-bubble-shell
+            class="msg-shell relative flex min-w-0 max-w-full flex-col"
+            :class="mine ? 'items-end' : 'items-start'"
+            :style="shellStyle"
+            :data-has-reactions="hasReactions ? 'true' : undefined"
+          >
+            <div
+              data-msg-bubble
+              class="relative flex w-full min-w-0 flex-col"
+            >
+              <!-- 文本 -->
+              <MessageTextBubble
+                v-if="message.kind === 'text'"
             :content="message.content"
             :bubble-style="bubbleStyle"
             :card-style="cardStyle"
@@ -1557,10 +1676,9 @@ async function copyFileToClipboard() {
             @locate="emit('locate', $event)"
           />
 
-          <!-- 代码：inline code 消息与代码附件同一套预览；超过 5 行裁断，全文进 Modal -->
-          <MessageCodeBubble
-            :tail="!isGroup"
-            v-else-if="streamCode !== null"
+              <!-- 代码：inline code 消息与代码附件同一套预览；超过 5 行裁断，全文进 Modal -->
+              <MessageCodeBubble
+                v-else-if="streamCode !== null"
             :code="streamCode"
             :clamped="streamCodeClamped"
             :copied="copiedKey === 'code'"
@@ -1582,7 +1700,8 @@ async function copyFileToClipboard() {
           <button
             v-else-if="message.kind === 'image' && attachmentMissing"
             type="button"
-            class="flex w-52 cursor-pointer flex-col items-center justify-center gap-1 rounded-[var(--gosslan-bubble-radius)] bg-[var(--gosslan-hover)] text-caption text-[var(--gosslan-text-2)] transition hover:bg-[var(--gosslan-pressed)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary "
+            class="flex w-52 cursor-pointer flex-col items-center justify-center gap-1 rounded-[var(--gosslan-bubble-radius)] bg-[var(--gosslan-hover)] text-caption text-[var(--gosslan-text-2)] transition hover:bg-[var(--gosslan-pressed)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary"
+            :class="mine ? 'self-end' : 'self-start'"
             :style="{ height: `${IMAGE_PLACEHOLDER_HEIGHT}px` }"
             :aria-disabled="mine ? 'true' : undefined"
             @click="mine ? undefined : refetchContent()"
@@ -1597,6 +1716,7 @@ async function copyFileToClipboard() {
           <!-- 图片 -->
           <MessageImageBubble
             v-else-if="message.kind === 'image'"
+            :class="mine ? 'self-end' : 'self-start'"
             :src="imageDataUrl"
             :mine="mine"
             @open="openImageLightbox"
@@ -1606,6 +1726,7 @@ async function copyFileToClipboard() {
           <!-- 附件图片预览（file + subtype:image，接收完成后显示本地图片） -->
           <MessageImageBubble
             v-else-if="message.kind === 'file' && attachmentUrl"
+            :class="mine ? 'self-end' : 'self-start'"
             :src="attachmentUrl"
             :mine="mine"
             @open="openImageLightbox"
@@ -1614,8 +1735,8 @@ async function copyFileToClipboard() {
 
           <!-- 文件 -->
           <MessageFileBubble
-            :tail="!isGroup"
             v-else-if="message.kind === 'file' && fileMeta"
+            :class="mine ? 'self-end' : 'self-start'"
             :meta="fileMeta"
             :bubble-style="cardStyle"
             :progress="fileProgress"
@@ -1639,8 +1760,8 @@ async function copyFileToClipboard() {
           <!-- 合并转发的聊天记录（微信式卡片）：定高 96px，与 `messageHeight.MERGE_CARD`
                的估算对齐（改卡片尺寸必须同时改那里，否则虚拟列表会遮挡相邻消息）。 -->
           <MergeCard
-            :tail="!isGroup"
             v-else-if="message.kind === 'merge'"
+            :class="mine ? 'self-end' : 'self-start'"
             :content="message.content"
             :card-style="cardStyle"
             :mine="mine"
@@ -1649,8 +1770,8 @@ async function copyFileToClipboard() {
 
           <!-- 群任务卡片（`todo` = Card kind）：把 JSON 载荷渲染成可读卡片，替代原始 JSON 兜底 -->
           <TodoCardBubble
-            :tail="!isGroup"
             v-else-if="message.kind === 'todo'"
+            :class="mine ? 'self-end' : 'self-start'"
             :message="message"
             :card-style="cardStyle"
             :live-todo="todoLive"
@@ -1678,20 +1799,43 @@ async function copyFileToClipboard() {
           <div v-else class="select-text px-3 py-1.5 text-sm leading-normal break-all" :style="bubbleStyle">
             {{ message.content }}
           </div>
+            </div>
+
+            <!-- 表情回应底栏（2026-10-24 起并入气泡）：与气泡**同一块**——
+                 「所有的表情回复包在气泡里面」（用户原话）。底色取上面那块气泡的同一格
+                 （见 `reactionSurface`），上沿贴住气泡、下圆角跟气泡同档；气泡的两个下角
+                 由 style.css 的 `.msg-shell[data-has-reactions]` 抹平，接缝处不会豁口。
+                 只有真有回应时才渲染：群里 `interactive` 恒真，空条也会撑出内边距高度。
+                 ⚠️ 它是控件区：右键/长按都不该弹消息菜单（见 `onContextMenu` / `onTouchStart`）。 -->
+            <div
+              v-if="!isTip && hasReactions"
+              ref="stripEl"
+              data-reaction-strip
+              class="w-full px-2 py-1"
+              :style="reactionStripStyle"
+              @contextmenu.stop
+              @touchstart.stop
+              @touchend.stop
+              @touchmove.stop
+              @touchcancel.stop
+            >
+              <MessageReactionBar
+                :chips="reactions ?? EMPTY_REACTION_CHIPS"
+                :mine="mine"
+                :interactive="canReact"
+                @toggle="emit('react', $event)"
+              />
+            </div>
+            <!-- 尾巴挂在整块外壳上：有回应条时它落在底栏的左下/右下角，与底栏同一底色。 -->
+            <BubbleTail v-if="showTail" :mine="mine" />
+          </div>
         </div>
       </div>
     </div>
   </div>
 
-  <!-- 表情回应条：挂在消息行**下方**（飞书/微信同款位置），与气泡同侧对齐。
-       放在行内会被 `flex items-end` 摆到气泡右侧，语义不对。
-       ⚠️ 它必须留在上面那层"选中底色"的包裹**之内**：它下面还有消息块那层的 pb-1(4px)，群里又恒渲染，
-       漏在外面就会在每条选中块下方多留一条缝（用户 2026-09-21 报的"消息中间一条白线"）。
-       ⚠️ 这里**不再叠横向内边距**：让出头像那一列的宽度由本组件的 `avatarGutterClass` 写
-       （见 MessageReactionBar 的注释）。以前这里挂着 `pl-1`/`pr-1`、册内挂着 `pl-12`/`pr-12`，
-       两档同属性互相覆盖 ⇒ 生效的只有 48px 那一档，实测两侧各差 12px（用户 2026-10-07 报的对不齐）。 -->
   <!-- 强提醒标识：气泡下方一条（发起方看总览/接收方看本机相），接收方未确认时带「我知道了」。
-       让出多少由 `avatarGutterClass` 现算（和表情条同一把尺）：有头像列的那侧让
+       让出多少由 `avatarGutterClass` 现算：有头像列的那侧让
        `--gosslan-msg-gutter`（= 行的 16 + 头像列 30 + 间隙 8），没有头像列的那侧只让行的
        16px 内边距 —— 这两档各被实测判红过一次：写死 60 让胶囊离气泡边 44px（撤头像列之后），
        而只让 16 又会在真有头像列的那行压进气泡。 -->
@@ -1718,14 +1862,6 @@ async function copyFileToClipboard() {
       {{ t("remind.gotIt") }}
     </button>
   </div>
-  <MessageReactionBar
-    v-if="!isTip"
-    :chips="reactions ?? EMPTY_REACTION_CHIPS"
-    :mine="mine"
-    :interactive="canReact"
-    :class="[mine ? 'self-end' : 'self-start', avatarGutterClass]"
-    @toggle="emit('react', $event)"
-  />
   </div>
 
   <!-- ↓ 以下都是**浮层**（弹窗/右键菜单/长按面板）：它们 Teleport 到 body 或 `fixed`，
