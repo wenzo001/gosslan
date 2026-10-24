@@ -27,9 +27,17 @@
 6. 安装前必须用户在「安装并重启」后再确认一次；安装器接管后 Windows 由 NSIS 重启
    （官方 `install` 内部会退出本进程），macOS/Linux 由 `AppHandle::restart()` 重启。
    解包/验签/复制放在 `spawn_blocking`，不占 tokio worker。
-   **安装失败保留已下载字节**（不是先 `take()`）：验签/磁盘/占用任一环失败时用户可以直接重试，
+   **整包移动而不是 clone**（PERF-01）：`update`/`bytes` 先 `take()` 出来交给安装器，
+   失败时原样放回会话 ⇒ 峰值从 2× 包体降到 1×，且验签/磁盘/占用任一环失败都能直接重试，
    不必重新下载几十 MB。
-7. `updater-manifest.yml` 由 **tag push** 触发（不是 `release: published`）：用 `GITHUB_TOKEN`
+   安装阶段有 Drop 守卫：命令 future 被丢弃（窗口关闭/退出）时相位落 `failed` 并记
+   `code=UPDATER_INSTALL_ABORTED`，不会永久停在 `installing`。
+7. **禁止降级**（2026-10-24 产品裁决）：`updater_check` 用自己的 semver 判据再比一次 ——
+   清单版本必须**严格高于**当前版本。不高于当前版本直接拒绝，记
+   `code=UPDATER_DOWNGRADE_BLOCKED`（带双方版本号），且**不把这份 `Update` 放进会话**
+   （否则用户还能点"下载"装回旧版）；版本号解析失败按失败关闭。界面显示
+   "更新清单指向更旧的版本，已拒绝安装"。要回退旧版本只能手动下载安装。
+8. `updater-manifest.yml` 由 **tag push** 触发（不是 `release: published`）：用 `GITHUB_TOKEN`
    创建的 Release 不会再启动新的 workflow run（GitHub 防递归），写在 release 事件上会让
    `latest.json` 永远不生成。它轮询等 Release 与四平台产物齐，再生成并校验清单。
 
@@ -113,7 +121,7 @@
 - `node --test scripts/updaterManifest.test.ts`：**5/5**（四平台配对、webview2 排除、
   缺平台/tag 版本不一致/空签名、CHANGELOG notes 截取，外加**发布收尾等待名与两个构建矩阵
   label 的对账**）。
-- `npm test`：**1230/1230**；`npm run build`（vue-tsc + vite）：通过。
+- `npm test`：**1230/1230**（2026-10-22 当时读数）；`npm run build`（vue-tsc + vite）：通过。
 - Brave 探针 `--only=updater`：**5/5**（发现更新、下载进度条、安装二次确认、移动端说明、390 宽不溢出）。
 - `cargo fmt --check --all`：通过；`cargo clippy --features bluetooth -- -D warnings`：通过；
   `cargo check --features bluetooth`：通过。
@@ -152,6 +160,13 @@
   棘轮顶到 51/50 ⇒ 当前树的 Rust 单测红，同样不属于本模块；未代改。
 - Android 编译 **Finished**，但 0-warning 判据被并行会话 `notifications.rs` 的 3 条未使用
   告警顶红（`slot_allows` / `acquire_click_waiter` / `ClickWaiterGuard`），与本功能无关。
+
+- **2026-10-24 复核（本轮审计修复后）**：
+  `cargo clippy --features bluetooth --all-targets -- -D warnings` **0 红**；
+  `cargo test --features bluetooth --lib` **1185 passed / 0 failed / 1 ignored**；
+  `npm test` **1368 passed / 0 failed**；`npm run build` 通过。
+  updater 新增禁止降级判据（前端 `downgrade` 错误格 1 条 + Rust 六向对照 + 闸门位置守卫），
+  本轮**未重跑**真实签名打包（与上一段 2026-10-22 的打包结论不冲突，那次的签名链路仍然有效）。
 
 **未验**（必须明说）：
 

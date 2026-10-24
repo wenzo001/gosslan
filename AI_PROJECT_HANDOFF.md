@@ -128,7 +128,7 @@ GOSSLAN_CHROME="/Applications/Brave Browser.app/Contents/MacOS/Brave Browser" \
 | 快速 | `npm test` + `cargo test --features bluetooth` | 单元/契约/护栏注入锚点 |
 | 本地全量 | `CODEBUDDY_SAFE_DELETE_ENABLED=0 npm run verify:local` | 22 步：清单/文档/守卫/构建/测试/Android |
 | 护栏非空转 | `python3 scripts/verify-guards.py`（可 `--only frontend`） | 每条判据"改坏必须红"（239 条，耗时长） |
-| UI 运行时 | `npm run test:ui-runtime` | 496 格真实浏览器探针 |
+| UI 运行时 | `npm run test:ui-runtime` | 真实浏览器探针，**格数以命令输出为准**（2026-10-24 复跑 524/529，5 条红为既有/环境项，见 `docs/notes/audit-fix-report-2026-10-24.md` §5.3） |
 | 行为 | `npm run test:e2e:*` | 双/三实例真实进程链路 |
 
 ⚠️ `npm run build` 在 WorkBuddy 沙箱里会假红（宿主批量删除守卫拦 `dist/assets`）⇒ 取真实读数用
