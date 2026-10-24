@@ -38,6 +38,7 @@ import {
   findLiteralRadiusClasses,
   findDirectSemanticIconImports,
   findHandWrittenSolidDangerButtons,
+  findPrimaryFillWithoutOnPrimary,
   findNativeSelect,
   findVHtmlSinks,
   V_HTML_ALLOWED,
@@ -5355,4 +5356,93 @@ test("群任务指派：候选只取当前成员，权威成员表到达时能�
     "群 Gossip 信封只有群主自称的成员表才可整体替换");
   assert.match(gossip, /db::replace_group_members\(&dbc, &gid, &all\)/,
     "群主权威成员表到达后没有调用替换");
+});
+
+// ---------------- 55 主色实底的「填充 + 前景」必须成对（2026-10-24 无障碍实测） ----------------
+// 亮色 -active 是压深档（白字过 AA），暗色 -active 是**提亮**档（前景必须换深墨）。
+// 所以两类缺陷都是静默的：只写填充（文字继承父级颜色）、或写死 text-white（暗色白字掉到 2 以下）。
+// 构建不报错、探针量的是 token 算得对不对（量不到谁在用），只有切到暗色主题才看得见 ⇒ 静态判据盯。
+
+test("55 :: 只写填充 / 写死 white / 裸主色配白字 —— 三种缺陷形状都要报红", () => {
+  const cases: [string, string][] = [
+    ["只写填充（文字继承父级颜色）", `<template><button class="px-3 bg-[var(--gosslan-primary-active)]">保存</button></template>`],
+    ["实底配写死 white（暗色失效）", `<template><span class="bg-[var(--gosslan-primary-active)] text-white">9</span></template>`],
+    ["hover 档同样要成对", `<template><div class="data-[state=checked]:bg-[var(--gosslan-primary-hover)]">x</div></template>`],
+  ];
+  for (const [why, src] of cases) {
+    assert.equal(findPrimaryFillWithoutOnPrimary(src).length, 1, `${why} ⇒ 必须报红：\n${src}`);
+  }
+
+  // 原缺陷形状：中间调主色 + 白字（≈3.5，不达 AA）。报的必须是"裸主色配白字"那句，不是成对那句。
+  const rawWhite = findPrimaryFillWithoutOnPrimary(
+    `<template><button class="bg-[var(--gosslan-primary)] text-white">发送</button></template>`,
+  );
+  assert.equal(rawWhite.length, 1);
+  assert.match(rawWhite[0].message, /不达 AA/, "裸主色+白字要走这一句提示");
+});
+
+test("55 :: 已知边界：三元分支各写一套时本判据看不见（整块粒度），这条不许被当成覆盖", () => {
+  // 一支成对、一支只写填充 —— 缺陷真实存在，但判据按"元素整块"取类名，两支混在同一块里 ⇒ 静默。
+  // 把它钉成"当前就是静默"是为了：① 不许误以为这族已被穷尽；② 真要收紧时这条会红，逼人来改判据。
+  // 这一形状的实际兜底在别处：比值由 tokenContrast 契约判，暗色覆盖由 CDP 探针的 accent 段量。
+  const halfPaired =
+    `<template><span :class="ok ? 'bg-[var(--gosslan-primary-active)] text-[var(--gosslan-on-primary)]' : 'bg-[var(--gosslan-primary-active)]'">n</span></template>`;
+  assert.deepEqual(findPrimaryFillWithoutOnPrimary(halfPaired), [], "整块粒度挡不住半成对 —— 已知欠账，别写成已覆盖");
+});
+
+test("55 :: 成对写法 / 前景在子树（勾选圈） / 非文字填充 / 注释里的示例 —— 都要静默", () => {
+  const paired =
+    `<template><button class="bg-[var(--gosslan-primary-active)] text-[var(--gosslan-on-primary)]">保存</button></template>`;
+  assert.deepEqual(findPrimaryFillWithoutOnPrimary(paired), [], "同标签成对");
+
+  // GroupCreateModal / MessageItem 的真实形状：外圈上底色，里面 `<Check>` 吃 currentColor。
+  const childInk =
+    `<template><div class="bg-[var(--gosslan-primary-active)]"><Check class="h-3 w-3 text-[var(--gosslan-on-primary)]" /></div></template>`;
+  assert.deepEqual(findPrimaryFillWithoutOnPrimary(childInk), [], "前景写在子元素里也算成对");
+
+  // 进度条/开关底/状态点这类**不承载文字**的裸主色填充是合法用法，不许顺手要求配对。
+  assert.deepEqual(
+    findPrimaryFillWithoutOnPrimary(`<template><div class="h-1 w-full bg-[var(--gosslan-primary)]"></div></template>`),
+    [],
+    "非文字填充不该被要求配前景（否则会把 12 处合法用法全判成缺陷）",
+  );
+
+  // ⚠️ 注释不许参与判定：这条曾经让护栏"因为注释而通过"。
+  const commentOnly =
+    `<template><!-- 旧写法 bg-[var(--gosslan-primary-active)] text-white 已废弃 --><span class="text-[var(--gosslan-text)]">ok</span></template>`;
+  assert.deepEqual(findPrimaryFillWithoutOnPrimary(commentOnly), [], "模板注释里的示例不算调用点");
+
+  // script 段里解释设计的字符串同样不算（只扫 <template>）。
+  const scriptOnly =
+    `<script setup>const why = "不要写 bg-[var(--gosslan-primary-active)] text-white";</script>\n<template><p>hi</p></template>`;
+  assert.deepEqual(findPrimaryFillWithoutOnPrimary(scriptOnly), [], "script 里的说明文字不算调用点");
+});
+
+test("55 :: 真实树全绿，且分母现算（有活调用点才证明这条判据不是空转）", () => {
+  const srcDir = join(import.meta.dirname, "..");
+  const files = collectVueFiles(srcDir);
+  assert.ok(files.length > 50, `只扫到 ${files.length} 份 .vue ⇒ 遍历路径大概错了，这条绿不算数`);
+
+  const bad: string[] = [];
+  let fills = 0;
+  let pairs = 0;
+  for (const f of files) {
+    const src = readFileSync(f, "utf8");
+    for (const issue of findPrimaryFillWithoutOnPrimary(src)) {
+      bad.push(`${f.replace(srcDir + "/", "")}:${issue.line}  ${issue.message}`);
+    }
+    // 分母只数**模板里真的写出来的**类名：注释里那句"以前写 …"会把计数抬上去，
+    // 抬上去的下限就变成"注释很多"也算绿，量不到调用点还在不在。
+    const s = src.indexOf("<template");
+    const e = src.lastIndexOf("</template>");
+    if (s < 0 || e <= s) continue;
+    const tpl = src.slice(s, e).replace(/<!--[\s\S]*?-->/g, (m) => m.replace(/[^\n]/g, " "));
+    fills += (tpl.match(/bg-\[var\(--gosslan-primary-(active|hover)\)\]/g) ?? []).length;
+    pairs += (tpl.match(/text-\[var\(--gosslan-on-primary\)\]/g) ?? []).length;
+  }
+  assert.deepEqual(bad, [], `以下位置用了主色实底却没配前景：\n${bad.join("\n")}`);
+  // 下限：填充与前景都必须是"真的在用"，否则这条判据退化成对空文件的断言。
+  assert.ok(fills >= 20, `模板里实底调用点只有 ${fills} 处 ⇒ 被守的东西消失了`);
+  assert.ok(pairs >= 20, `模板里配档前景只有 ${pairs} 处 ⇒ 成对写法没被接上`);
+  console.log(`· 55 分母：扫 ${files.length} 份 .vue，模板内实底 ${fills} 处 / 配档前景 ${pairs} 处，缺陷 0 处`);
 });

@@ -46,7 +46,7 @@ const emit = defineEmits<{
           <div class="text-xs text-[var(--gosslan-text-2)]">{{ t("friend.request.wantsToAdd") }}</div>
         </div>
         <button
-          class="tap-safe flex h-7 w-7 shrink-0 items-center justify-center rounded-[var(--gosslan-avatar-radius)] bg-[var(--gosslan-primary)] text-white transition hover:bg-[var(--gosslan-primary-hover)]"
+          class="tap-safe flex h-7 w-7 shrink-0 items-center justify-center rounded-[var(--gosslan-avatar-radius)] bg-[var(--gosslan-primary-active)] text-[var(--gosslan-on-primary)] transition hover:bg-[var(--gosslan-primary-hover)]"
           :title="t('common.agree')" :aria-label="t('common.agree')"
           @click="emit('accept', r)"
         >

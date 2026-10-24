@@ -522,7 +522,7 @@ async function removeEndpoint(address: string) {
         @compositionend="ime.onEnd"
       />
       <button
-        class="shrink-0 rounded-[var(--gosslan-radius-md)] bg-[var(--gosslan-primary)] px-3.5 py-1.5 text-body font-medium text-white transition hover:bg-[var(--gosslan-primary-hover)]"
+        class="shrink-0 rounded-[var(--gosslan-radius-md)] bg-[var(--gosslan-primary-active)] px-3.5 py-1.5 text-body font-medium text-[var(--gosslan-on-primary)] transition hover:bg-[var(--gosslan-primary-hover)]"
         @click="addEndpoint"
       >
         {{ t("settings.network.routed.add") }}
@@ -603,7 +603,7 @@ async function removeEndpoint(address: string) {
     >
       <div class="flex items-center gap-2">
         <button
-          class="shrink-0 rounded-[var(--gosslan-radius-md)] bg-[var(--gosslan-primary)] px-3.5 py-1.5 text-body font-medium text-white transition hover:bg-[var(--gosslan-primary-hover)] disabled:opacity-40"
+          class="shrink-0 rounded-[var(--gosslan-radius-md)] bg-[var(--gosslan-primary-active)] px-3.5 py-1.5 text-body font-medium text-[var(--gosslan-on-primary)] transition hover:bg-[var(--gosslan-primary-hover)] disabled:opacity-40"
           :disabled="relayBusy || !relayDirty"
           @click="saveRelayConfig"
         >

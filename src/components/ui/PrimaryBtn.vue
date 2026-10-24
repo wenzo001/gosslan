@@ -29,7 +29,7 @@ withDefaults(
     :type="type"
     :disabled="disabled"
     :aria-label="ariaLabel"
-    class="tap-safe rounded-[var(--gosslan-radius-md)] bg-[var(--gosslan-primary)] text-white transition hover:bg-[var(--gosslan-primary-hover)] disabled:opacity-50"
+    class="tap-safe rounded-[var(--gosslan-radius-md)] bg-[var(--gosslan-primary-active)] text-[var(--gosslan-on-primary)] transition hover:bg-[var(--gosslan-primary-hover)] disabled:opacity-50"
     :class="[
       shrink ? 'shrink-0' : '',
       size === 'dense' ? 'px-3 py-2 text-body' : '',

@@ -1563,7 +1563,7 @@ watch(
             {{ t("common.cancel") }}
           </button>
           <button
-            class="tap-safe rounded-[var(--gosslan-radius-md)] bg-[var(--gosslan-primary)] px-3 py-1.5 text-body text-white transition hover:opacity-90 disabled:opacity-50"
+            class="tap-safe rounded-[var(--gosslan-radius-md)] bg-[var(--gosslan-primary-active)] px-3 py-1.5 text-body text-[var(--gosslan-on-primary)] transition hover:opacity-90 disabled:opacity-50"
             :disabled="saving"
             @click="saveDraft"
           >

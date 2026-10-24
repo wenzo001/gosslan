@@ -1398,11 +1398,11 @@ async function copyFileToClipboard() {
         :class="[
           needsTopPad ? 'top-1.5' : 'top-0',
           selected
-            ? 'border-primary bg-[var(--gosslan-primary)]'
+            ? 'border-primary bg-[var(--gosslan-primary-active)]'
             : 'border-[var(--gosslan-border)] bg-[var(--gosslan-panel)]',
         ]"
       >
-        <Check v-if="selected" class="h-2.5 w-2.5 text-white" :stroke-width="2.5" aria-hidden="true" />
+        <Check v-if="selected" class="h-2.5 w-2.5 text-[var(--gosslan-on-primary)]" :stroke-width="2.5" aria-hidden="true" />
       </span>
 
       <!-- `--bubble-tail-offset`：气泡顶边被**行顶**往下推了多少（群聊那行昵称占 18px，
@@ -1705,7 +1705,7 @@ async function copyFileToClipboard() {
     </span>
     <button
       v-if="canConfirm"
-      class="tap-safe rounded-full bg-[var(--gosslan-primary)] px-2.5 py-[1px] text-meta font-medium text-white transition hover:opacity-90"
+      class="tap-safe rounded-full bg-[var(--gosslan-primary-active)] px-2.5 py-[1px] text-meta font-medium text-[var(--gosslan-on-primary)] transition hover:opacity-90"
       @click="doConfirmReminder"
     >
       {{ t("remind.gotIt") }}

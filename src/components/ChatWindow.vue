@@ -1499,7 +1499,7 @@ function onLoadMore() {
         <div class="mt-1.5 flex flex-wrap gap-2">
           <button
             type="button"
-            class="tap-safe inline-flex items-center gap-1 rounded-[var(--gosslan-radius-md)] bg-[var(--gosslan-primary)] px-2.5 py-1 text-meta text-white transition hover:bg-[var(--gosslan-primary-hover)]"
+            class="tap-safe inline-flex items-center gap-1 rounded-[var(--gosslan-radius-md)] bg-[var(--gosslan-primary-active)] px-2.5 py-1 text-meta text-[var(--gosslan-on-primary)] transition hover:bg-[var(--gosslan-primary-hover)]"
             @click="syncKeysOpen = true"
           >
             <KeyRound class="h-3 w-3" aria-hidden="true" />

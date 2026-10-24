@@ -224,35 +224,18 @@ const withPrimary = (hexColor: string): string => {
 /**
  * 已知偏差（实测值 = 本条记录时的那个数，作为**下限**钉住）。
  *
- * 它们**不是**有意的设计取舍，而是这次扫描第一次量出来的缺口：
- * `--gosslan-primary-active`（承载白字的填充档）从主色混 15% 黑，
- * 绿色/橙色/天蓝三档混完仍然太亮 ⇒ 11px 白字只有 3.61/3.83/3.76；
- * 绿色那一档的 accent-ink 落在列表底上差 0.07。
- * 修法是把混黑比例从 85% 降到 ≤72%（实测六档最小 4.85）—— 但那是**全局**主色填充面，
- * 按钮/徽标会整体变深，超出本次聊天界面改造的范围，交单独决策。
- *
- * ⚠️ 填充档只在 `:root` 定义、`.dark` 不覆盖，所以同一主色在**两档外观上是同一个数**
- * （3.61 亮 / 3.61 暗）。这个"两档相等"本身就是暗色合流解析正确的旁证。
- *
- * 这份清单的作用是让缺口**不能被继续放大**：任一条比记录值更差 ⇒ 红；
+ * 清单的作用是让缺口**不能被继续放大**：任一条比记录值更差 ⇒ 红；
  * 某条被修好了 ⇒ 它不再出现在实测集合里，本条判据要求把它从清单删掉。
+ *
+ * 2026-10-23 这一节第一次跑出来时有 7 条：填充档 `--gosslan-primary-active` 在
+ * 绿/橙/天蓝三档上只有 3.61/3.83/3.76（明暗同值 ⇒ 那本来就是暗色合流解析修复的旁证），
+ * 已按拍板把混黑从 15% 提到 28%（实测六档最低升到 4.85）全部修掉并从本清单删除。
+ * 剩下这一条是 accent-ink 差 0.07：绿档主题色当文字用、落在会话列表底上。
+ * 它不在同一次拍板范围内（要动 `--gosslan-accent-ink` 的混法，会影响全站链接/选中态），
+ * 且只差 0.07，留作已知偏差。
  */
-const ACTIVE_FILL_FLOOR: Record<string, number> = {
-  "#00b578": 3.61,
-  "#ff6b35": 3.83,
-  "#0ea5e9": 3.76,
-};
 const KNOWN_SUB_AA: Array<{ theme: string; accent: string; fg: string; bg: string; floor: number }> = [
   { theme: "light", accent: "#00b578", fg: "--gosslan-accent-ink", bg: "--gosslan-list", floor: 4.43 },
-  ...(["light", "dark"] as const).flatMap((theme) =>
-    Object.entries(ACTIVE_FILL_FLOOR).map(([accent, floor]) => ({
-      theme,
-      accent,
-      fg: "#ffffff",
-      bg: "--gosslan-primary-active",
-      floor,
-    })),
-  ),
 ];
 
 test("六套可选主色 × 亮/暗：accent 派生档的对比度逐档核算（含已知偏差棘轮）", () => {
@@ -283,38 +266,81 @@ test("六套可选主色 × 亮/暗：accent 派生档的对比度逐档核算�
   }
 });
 
-test("反控（两侧）：填充档改浅必须报红、改深必须不报红 —— 方向也得钉住", () => {
+test("反控（两侧 × 两档外观）：填充档朝错方向混必须报红，朝对方向必须不报红", () => {
   // 这条最初只写了"把 85% 改成 5%"，然后断言它报红 —— 结果是 0 条，暴露出**我自己把方向搞反**：
   // `color-mix(in srgb, A 5%, black)` 取的是 **5% 的 A**，所以那是在把填充色**压深**，
   // 白字对比度只会更高。一个朝安全方向变的"变异"永远测不出判据在不在空转。
-  // 于是这里两侧都量：100%（= 纯主色，最浅）必须红，5%（最深）必须不红。
-  const ACTIVE_ANCHOR =
-    "--gosslan-primary-active: color-mix(in srgb, var(--gosslan-primary) 85%, #000000);";
-  /** 绿色那档主色 + 把填充档混黑比例换成 `pct%`，返回该族的报红条目。 */
-  const greenActiveFails = (pct: number) => {
+  //
+  // ⚠️ 2026-10-23 这一族换了形状：填充/前景/hover 三档现在**两档外观各有一套**
+  //（暗色提亮填充 + 深墨前景，见 style.css 里那两段注释）。于是"改浅必须两档各报一次"这个
+  // 断言本身失效了 —— 改 :root 只可能让亮色那一档红。现在是**按作用域各测一次方向**：
+  //   亮色：填充不许朝纯主色走（白字掉下 4.5）；
+  //   暗色：填充不许朝纯主色走（那是"不提亮" ⇒ 按钮和 #1e293b 面板分不开，非文字 3:1 先红）。
+  // 两侧都各带一次"朝合法方向变 ⇒ 必须不报红"，否则等于只证明了判据会响。
+  const LIGHT_ACTIVE =
+    "--gosslan-primary-active: color-mix(in srgb, var(--gosslan-primary) 72%, #000000);";
+  const DARK_ACTIVE =
+    "--gosslan-primary-active: color-mix(in srgb, var(--gosslan-primary) 80%, #ffffff);";
+
+  /**
+   * 绿色那档主色 + 把**指定作用域**的填充档混法换成 `pct% + otherColor`，返回该族的报红条目。
+   * 两侧各自都按实测选点（不是"越…越红"的想当然）：
+   *   亮色错向 = 退回纯主色（白字 2.66）；亮色合法 = 继续压深（40% 主色 + 60% 黑）。
+   *   暗色错向 = 把亮色那档照搬过来（72% 主色 + 黑 ⇒ 填充变暗，深墨字只有 3.86）；
+   *   暗色合法 = 继续提亮（95% 主色 + 白 ⇒ 墨字 7.37 / vs 面板 5.76，两条都过）。
+   */
+  const activeFails = (anchor: string, pct: number, otherColor: string) => {
     const base = withPrimary("#00b578");
     assert.ok(
-      base.includes(ACTIVE_ANCHOR),
-      "填充档锚点没命中（--gosslan-primary-active 的写法变了，请同步这条反控）",
+      base.includes(anchor),
+      `填充档锚点没命中：${anchor.slice(0, 40)}…（写法变了，请同步这条反控）`,
     );
-    const mutated = base.replace(
-      ACTIVE_ANCHOR,
-      `--gosslan-primary-active: color-mix(in srgb, var(--gosslan-primary) ${pct}%, #000000);`,
-    );
+    const nextDecl = `--gosslan-primary-active: color-mix(in srgb, var(--gosslan-primary) ${pct}%, ${otherColor});`;
+    const mutated = base.replace(anchor, nextDecl);
     assert.notEqual(mutated, base, "填充档替换没生效 ⇒ 这条反控在空转");
+    assert.ok(mutated.includes(nextDecl), "变异后的声明没落成期望那一份 ⇒ 改的是别的行");
     return findTokenContrastFailures(mutated).filter((f) => f.bg === "--gosslan-primary-active");
   };
 
-  const lighter = greenActiveFails(100);
-  assert.equal(
-    lighter.length,
-    2,
-    `填充档取纯主色时，绿色那档白字应两档外观各报一次，实际 ${lighter.length} ⇒ 扫描在空转`,
+  const lightWrong = activeFails(LIGHT_ACTIVE, 100, "#000000");
+  assert.ok(
+    lightWrong.some((f) => f.theme === "light" && f.fg === "--gosslan-on-primary" && f.ratio < 4.5),
+    `亮色下把填充退回纯主色，白字必须报红（绿档实测 2.66）；实际 ${JSON.stringify(
+      lightWrong.map((f) => `${f.theme}/${f.fg}=${f.ratio.toFixed(2)}`),
+    )}`,
   );
-  for (const f of lighter) {
-    assert.ok(f.ratio < 3.61, `改浅只会更差：实测 ${f.theme}=${f.ratio}，不该不低于记录值 3.61`);
-  }
+  assert.equal(
+    activeFails(LIGHT_ACTIVE, 40, "#000000").length,
+    0,
+    "亮色把填充继续压深是**合法方向**，不该报红（报红说明判据连方向也搞反了）",
+  );
 
-  const darker = greenActiveFails(5);
-  assert.equal(darker.length, 0, "把填充档压深是**修好**它，不该报红（报红说明判据连方向也搞反了）");
+  const darkWrong = activeFails(DARK_ACTIVE, 72, "#000000");
+  assert.ok(
+    darkWrong.some((f) => f.theme === "dark" && f.fg === "--gosslan-on-primary" && f.ratio < 4.5),
+    `把亮色的压深档照搬到暗色，深墨字必须报红（实测 3.86）；实际 ${JSON.stringify(
+      darkWrong.map((f) => `${f.theme}/${f.fg}=${f.ratio.toFixed(2)}`),
+    )}`,
+  );
+  assert.equal(
+    activeFails(DARK_ACTIVE, 95, "#ffffff").length,
+    0,
+    "暗色把填充继续提亮是**合法方向**，不该报红",
+  );
+});
+
+test("填充/前景/hover 三档必须在 :root 与 .dark 都成对定义（少一条就是暗色继承亮色的方向）", () => {
+  // 这一族刚就是因为"只写在 :root"翻过车：压深档在暗色下白字照样过 4.5，
+  // 但按钮与面板的分离度掉到 2.06~3.01 —— 只看文字档永远看不出问题。
+  const { light, dark } = parseTokenScopes(css);
+  const pair = ["--gosslan-primary-active", "--gosslan-primary-hover", "--gosslan-on-primary"];
+  for (const k of pair) {
+    assert.ok(light.has(k), `${k} 在 :root 里缺少定义`);
+    assert.ok(dark.has(k), `${k} 在 .dark 里缺少定义（暗色会继承亮色的混色方向）`);
+  }
+  // 方向必须**相反**，不然这两套就是一份复制：亮色混黑、暗色混白。
+  for (const k of pair.slice(0, 2)) {
+    assert.match(String(light.get(k)), /#000000/, `${k} 亮色档应当朝黑混`);
+    assert.match(String(dark.get(k)), /#ffffff/, `${k} 暗色档应当朝白混`);
+  }
 });

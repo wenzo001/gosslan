@@ -292,7 +292,7 @@ const fullCode = computed(() =>
           <CharCounter :text="customDraft" :max="TODO_CUSTOM_CATEGORY_MAX_LEN" />
           <button
             type="button"
-            class="tap-safe shrink-0 rounded-[var(--gosslan-radius-md)] bg-[var(--gosslan-primary)] px-2.5 py-1.5 text-meta text-white transition hover:opacity-90 disabled:opacity-40"
+            class="tap-safe shrink-0 rounded-[var(--gosslan-radius-md)] bg-[var(--gosslan-primary-active)] px-2.5 py-1.5 text-meta text-[var(--gosslan-on-primary)] transition hover:opacity-90 disabled:opacity-40"
             :disabled="!customDraft.trim()"
             @click="applyCustomCategory"
           >
@@ -413,7 +413,7 @@ const fullCode = computed(() =>
         <button
           v-if="canChangeStatus && !isTodoTerminalStatus(item.status)"
           type="button"
-          class="tap-safe rounded-[var(--gosslan-radius-md)] bg-[var(--gosslan-primary)] px-3 py-1.5 text-body text-white transition hover:bg-[var(--gosslan-primary-hover)]"
+          class="tap-safe rounded-[var(--gosslan-radius-md)] bg-[var(--gosslan-primary-active)] px-3 py-1.5 text-body text-[var(--gosslan-on-primary)] transition hover:bg-[var(--gosslan-primary-hover)]"
           @click="emit('complete')"
         >
           <Check class="mr-1 inline h-3.5 w-3.5" />{{ t("todo.complete") }}

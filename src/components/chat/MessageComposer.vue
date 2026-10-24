@@ -1026,7 +1026,7 @@ async function onPaste(e: ClipboardEvent) {
         <button
           class="tap-safe ml-auto flex h-8 shrink-0 items-center rounded-[var(--gosslan-radius-sm)] px-3.5 text-body font-medium transition"
           :class="hasDraft
-            ? 'bg-[var(--gosslan-primary)] text-white hover:bg-[var(--gosslan-primary-hover)]'
+            ? 'bg-[var(--gosslan-primary-active)] text-[var(--gosslan-on-primary)] hover:bg-[var(--gosslan-primary-hover)]'
             : 'cursor-default bg-[var(--gosslan-hover)] text-[var(--gosslan-text-2)]'"
           :disabled="!hasDraft"
           @mousedown.prevent

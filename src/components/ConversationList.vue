@@ -439,14 +439,14 @@ useEventListener(document, "click", closeFriendMenu);
           <template v-if="!query.trim()">
             <button
               v-if="chat.friends.length"
-              class="tap-safe rounded-[var(--gosslan-radius-md)] bg-[var(--gosslan-primary)] px-3.5 py-1.5 text-xs font-medium text-white transition hover:bg-[var(--gosslan-primary-hover)]"
+              class="tap-safe rounded-[var(--gosslan-radius-md)] bg-[var(--gosslan-primary-active)] px-3.5 py-1.5 text-xs font-medium text-[var(--gosslan-on-primary)] transition hover:bg-[var(--gosslan-primary-hover)]"
               @click="emit('update:view', 'contacts')"
             >
               {{ t("conv.startChat") }}
             </button>
             <button
               v-else
-              class="tap-safe rounded-[var(--gosslan-radius-md)] bg-[var(--gosslan-primary)] px-3.5 py-1.5 text-xs font-medium text-white transition hover:bg-[var(--gosslan-primary-hover)]"
+              class="tap-safe rounded-[var(--gosslan-radius-md)] bg-[var(--gosslan-primary-active)] px-3.5 py-1.5 text-xs font-medium text-[var(--gosslan-on-primary)] transition hover:bg-[var(--gosslan-primary-hover)]"
               @click="emit('open-add-friend')"
             >
               {{ t("common.addFriend") }}

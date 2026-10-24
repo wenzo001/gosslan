@@ -83,31 +83,57 @@ test("applyTheme 只管主色与字体：派生档不许在 JS 里重算，默�
   assert.deepEqual(removed, ["--gosslan-font-family"], "默认档必须清掉内联，让 style.css 的 token 生效");
 });
 
-test("hover/active/light 由主色 color-mix 派生，且混合方向正确", () => {
+test("hover/active/light 由主色 color-mix 派生，且两档外观方向相反", () => {
   const css = readFileSync(join(import.meta.dirname, "..", "style.css"), "utf8").replace(
     /\/\*[\s\S]*?\*\//g,
     "",
   );
-  const decl = (token: string) => {
-    const m = new RegExp(`--gosslan-${token}:\\s*([^;]+);`).exec(css);
+  // 作用域按**行首**认，且必须两边分别解析：2026-10-24 之后 hover/active 在 :root 朝黑混、
+  // 在 .dark 朝白混（同一对 token、相反方向）。用"全文第一个匹配"读出来的只有亮色那份，
+  // 于是"暗色少写一条覆盖"这种缺陷在这条判据上根本不会红。
+  const scope = (re: RegExp) => re.exec(css)?.[1] ?? "";
+  const rootBlock = scope(/^:root\s*\{([\s\S]*?)^\}/m);
+  const darkBlock = scope(/^\.dark\s*\{([\s\S]*?)^\}/m);
+  const decl = (where: string, token: string) => {
+    const m = new RegExp(`--gosslan-${token}:\\s*([^;]+);`).exec(where);
     return m ? m[1].trim() : "";
   };
   // 正控：解析面先要认得出真实声明，否则下面的断言全绿只是因为正则坏了。
-  assert.ok(decl("primary-light").length > 0, "没解析到 --gosslan-primary-light");
-  const toward: Record<string, string> = {
-    "primary-hover": "#ffffff",
-    "primary-active": "#000000",
-    "primary-light": "transparent",
+  assert.ok(rootBlock.length > 0 && darkBlock.length > 0, "没解析到 :root / .dark 两个作用域块");
+  assert.ok(decl(rootBlock, "primary-light").length > 0, "没解析到 --gosslan-primary-light");
+
+  const mixPct = (v: string) => {
+    const m = /^color-mix\(in srgb,\s*var\(--gosslan-primary\)\s+([\d.]+)%\s*,\s*(#[0-9a-fA-F]{3,6}|transparent)\s*\)$/.exec(v);
+    return m ? { pct: Number(m[1]), other: m[2].toLowerCase() } : null;
   };
-  for (const [token, target] of Object.entries(toward)) {
-    const v = decl(token);
-    assert.match(
-      v,
-      /^color-mix\(in srgb,\s*var\(--gosslan-primary\)\s+\d+(?:\.\d+)?%,\s*\S+\)$/,
-      `${token} 必须是从 --gosslan-primary 现派生的 color-mix（写回硬编色值 = 又开第二份实现）`,
-    );
-    assert.ok(v.includes(target), `${token} 应朝 ${target} 混：方向反了白字更看不见`);
+
+  // 形状判据（两档共用）：必须是**从 --gosslan-primary 现派生**的 color-mix，不许写回硬编色值。
+  for (const [where, name] of [[rootBlock, ":root"], [darkBlock, ".dark"]] as const) {
+    for (const token of ["primary-hover", "primary-active"]) {
+      if (!where.includes(`--gosslan-${token}`)) continue; // 这一档允许只在 :root 定义（light 就是）
+      const d = mixPct(decl(where, token));
+      assert.ok(d, `${name} 的 ${token} 必须是 color-mix(in srgb, var(--gosslan-primary) N%, 某色)，实际 "${decl(where, token)}"`);
+    }
   }
+
+  // 方向判据：亮色压深（承载白字）；暗色提亮（前景换成深墨，填充要贴得住暗面板）。
+  const light = { hover: mixPct(decl(rootBlock, "primary-hover")), active: mixPct(decl(rootBlock, "primary-active")) };
+  const dark = { hover: mixPct(decl(darkBlock, "primary-hover")), active: mixPct(decl(darkBlock, "primary-active")) };
+  for (const [k, v] of Object.entries(light)) {
+    assert.ok(v && v.other === "#000000", `:root 的 primary-${k} 必须朝 #000000 压深：白字压在填充上要过 4.5:1`);
+  }
+  for (const [k, v] of Object.entries(dark)) {
+    assert.ok(v && v.other === "#ffffff", `.dark 的 primary-${k} 必须朝 #ffffff 提亮：深底上再压深，按钮和面板只剩 2~3:1`);
+  }
+  // hover 必须是"更强调的那一档"：亮色更深（比例更小 = 混进的黑更多）、暗色更亮。
+  assert.ok(light.hover!.pct < light.active!.pct, "亮色 hover 要比 active 再深一档（混黑比例更高）");
+  assert.ok(dark.hover!.pct < dark.active!.pct, "暗色 hover 要比 active 再亮一档（混白比例更高）");
+
+  // light 档（半透明底）仍走透明混法：跟着主色换 RGBA，不写死。
+  assert.match(decl(rootBlock, "primary-light"), /var\(--gosslan-primary\)/, "primary-light 必须跟着主色");
+  // 前景档两边都要有：暗色漏一条就继承亮色的白，压在提亮档上只剩 1.6~2.0。
+  assert.ok(/--gosslan-on-primary:\s*#ffffff;/.test(rootBlock), ":root 的 --gosslan-on-primary 必须是白");
+  assert.ok(/--gosslan-on-primary:\s*var\(--gosslan-[a-z-]+\);/.test(darkBlock), ".dark 必须换掉前景档（不能留白）");
 });
 
 test("luma: 黑白两端为 0/255，中间色介于其间", () => {

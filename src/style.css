@@ -13,13 +13,28 @@
      同一套做法）。以前这里是两份实现：:root 硬编一份出厂蓝的近似值、utils/color.ts 的
      lighten/darken 按另一个比例再算一份 ⇒ 首屏会出现"主色已换成用户的、hover/浅底还是出厂蓝"的分裂。 */
   --gosslan-primary: #3b82f6;
-  --gosslan-primary-hover: color-mix(in srgb, var(--gosslan-primary) 92%, #ffffff);
-  /* 承载白字的填充档。⚠️ 以前这里写"过 4.5 由 tokenContrast.test.ts 判"，那句话**只在出厂蓝上成立**
-     （主色是 inline 写在 <html> 上的，静态解析看不见用户可选的六档）：实测
-     绿 #00b578 = 3.61、橙 #ff6b35 = 3.83、天蓝 #0ea5e9 = 3.76 三档白字不过 4.5，
-     现在由 tokenContrast.test.ts 的"六套可选主色"那一节逐档量并把它们登记成已知偏差
-     （混黑从 15% 加到 ≥28% 可全部达标，但那会同时压深全站主色按钮/徽标，另案决策）。 */
-  --gosslan-primary-active: color-mix(in srgb, var(--gosslan-primary) 85%, #000000);
+  /* 「主色实底 + 其上放文字/图标」这一对（填充档 + 前景档）—— 两档必须成对改，见 .dark 里同名的三行。
+     亮色：填充压深（白字压得住），hover 朝**更深**走；暗色：填充提亮（与 #1e293b 面板分得开），
+     前景换成深墨，hover 朝**更亮**走。方向都是"更强调"，不是"更亮/更暗"这个常数。
+
+     为什么暗色不能跟着压深（2026-10-23 实测，六档可选主色）：
+       · 压深到 72% 后白字两档外观都过（4.85~7.10），但填充 vs 暗面板只剩 2.06~3.01；
+       · 要白字 ≥4.5，填充亮度必须 ≤0.183；要 vs #1e293b ≥3:1，必须 ≥0.180 —— 只剩 0.003 的窗口。
+       ⇒ 暗色下"白字过 AA"和"按钮跟面板分开"数学上不能同时满足，所以暗色换前景，不换填充的深度方向。
+     对照：`--gosslan-danger` #d43d43 两档同值就成立，因为它本身就够暗（白字 4.62 / vs 暗面板 3.17 双过）。 */
+  --gosslan-primary-hover: color-mix(in srgb, var(--gosslan-primary) 66%, #000000);
+  /* 承载白字的填充档。六套可选主色逐档核算由 tokenContrast.test.ts 判（主色是 inline 写在
+     <html> 上的，静态解析看不见 ⇒ 那一节把 :root 的主色声明逐档替换后再重算全表）。
+     2026-10-23 实测：混黑 15%（=85% 主色）时绿 #00b578 白字只有 3.61、橙 3.83、天蓝 3.76，
+     三档不过 AA 4.5 ⇒ 压到 28% 黑（=72% 主色），六档实测最低 4.85、出厂蓝 6.30。
+     ⚠️ 这一档**只准当填充面**：以前 `ConversationListItem` 的任务图标拿它当文字色用，
+     "压深填充"对那是反方向的。主题色当文字/图标用一律走 --gosslan-accent-ink（同色相、按外观调明度）；
+     压在填充**上面**的前景走 --gosslan-on-primary。 */
+  --gosslan-primary-active: color-mix(in srgb, var(--gosslan-primary) 72%, #000000);
+  /* 实底主色控件上的前景（按钮标签、徽标数字）。亮色=白；暗色见 .dark（换成 --gosslan-app-bg 深墨）。
+     ⚠️ 与 --gosslan-primary-active **成对使用**：只写 `bg-primary-active` 而前景写死 text-white，
+     暗色下就变回"白字压亮填充"，两边都不达标 —— 这条配对由 designGuards 的成对判据盯着。 */
+  --gosslan-on-primary: #ffffff;
   --gosslan-primary-light: color-mix(in srgb, var(--gosslan-primary) 12%, transparent);
   /* 主题色半透明版（color-mix 运行时派生，跟随 applyTheme 换色自动变）。
      /25 用于拖拽条 hover / unread 分隔线；/50 用于 ring/highlight 描边 */
@@ -273,6 +288,14 @@
   /* 主题色的「文字档」暗色版：亮色下是压暗、暗色下必须**提亮**（+28% 白）。
      漏了这一条就会继承 :root 的压暗值 —— 深底上再压暗，方向正好反了。 */
   --gosslan-accent-ink: color-mix(in srgb, var(--gosslan-primary) 72%, #ffffff);
+  /* 主色实底控件的「填充 + 前景」暗色档 —— 与 :root 那三行**成对**，方向相反。
+     暗色下必须提亮填充（否则贴在 list/panel #1e293b 上分不开），前景随之换成深墨；
+     实测六档可选主色：深墨字压亮填充 5.84~8.43，亮填充 vs 暗面板 4.56~6.59，两条都过。
+     ⚠️ 漏掉这一段 = 暗色继承 :root 的压深档 = 白字虽然 4.85 过 AA，但按钮和面板只剩 2.06~3.01。
+     hover 朝**更亮**走（与亮色那档的"更强调"同方向，不是同一个混色常数）。 */
+  --gosslan-primary-active: color-mix(in srgb, var(--gosslan-primary) 80%, #ffffff);
+  --gosslan-primary-hover: color-mix(in srgb, var(--gosslan-primary) 74%, #ffffff);
+  --gosslan-on-primary: var(--gosslan-app-bg);
   --gosslan-caption: #16202f;
   --gosslan-rail: #16202f;
   --gosslan-rail-text: #94a3b8;

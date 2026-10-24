@@ -167,7 +167,7 @@ function formatDate(seconds: number | null | undefined): string {
         <button
           v-if="state.phase === 'available' || (state.phase === 'error' && state.info)"
           type="button"
-          class="tap-safe rounded-[var(--gosslan-radius-md)] bg-[var(--gosslan-primary)] px-3 py-1.5 text-xs text-white transition hover:opacity-90"
+          class="tap-safe rounded-[var(--gosslan-radius-md)] bg-[var(--gosslan-primary-active)] px-3 py-1.5 text-xs text-[var(--gosslan-on-primary)] transition hover:opacity-90"
           @click="emit('download')"
         >
           {{ state.phase === "error" ? t("settings.updates.retry") : t("settings.updates.download") }}
@@ -183,7 +183,7 @@ function formatDate(seconds: number | null | undefined): string {
         <button
           v-if="state.phase === 'ready'"
           type="button"
-          class="tap-safe rounded-[var(--gosslan-radius-md)] bg-[var(--gosslan-primary)] px-3 py-1.5 text-xs text-white transition hover:opacity-90"
+          class="tap-safe rounded-[var(--gosslan-radius-md)] bg-[var(--gosslan-primary-active)] px-3 py-1.5 text-xs text-[var(--gosslan-on-primary)] transition hover:opacity-90"
           @click="confirming = true"
         >
           {{ t("settings.updates.install") }}
@@ -215,7 +215,7 @@ function formatDate(seconds: number | null | undefined): string {
           </button>
           <button
             type="button"
-            class="tap-safe rounded-[var(--gosslan-radius-md)] bg-[var(--gosslan-primary)] px-2.5 py-1 text-meta text-white transition hover:opacity-90"
+            class="tap-safe rounded-[var(--gosslan-radius-md)] bg-[var(--gosslan-primary-active)] px-2.5 py-1 text-meta text-[var(--gosslan-on-primary)] transition hover:opacity-90"
             @click="emit('install')"
           >
             {{ t("settings.updates.confirm") }}

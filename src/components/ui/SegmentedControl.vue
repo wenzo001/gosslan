@@ -66,7 +66,7 @@ const sizeClasses: Record<string, string> = {
       :key="opt.value"
       :value="opt.value"
       :disabled="disabled"
-      class="tap-safe flex flex-1 items-center justify-center gap-1.5 whitespace-nowrap rounded-[var(--gosslan-radius-sm)] border transition disabled:opacity-50 data-[state=checked]:border-transparent data-[state=checked]:bg-[var(--gosslan-primary)] data-[state=checked]:font-medium data-[state=checked]:text-white data-[state=checked]:shadow-sm data-[state=unchecked]:border-transparent data-[state=unchecked]:text-[var(--gosslan-text-2)] hover:data-[state=unchecked]:bg-[var(--gosslan-hover)]"
+      class="tap-safe flex flex-1 items-center justify-center gap-1.5 whitespace-nowrap rounded-[var(--gosslan-radius-sm)] border transition disabled:opacity-50 data-[state=checked]:border-transparent data-[state=checked]:bg-[var(--gosslan-primary-active)] data-[state=checked]:font-medium data-[state=checked]:text-[var(--gosslan-on-primary)] data-[state=checked]:shadow-sm data-[state=unchecked]:border-transparent data-[state=unchecked]:text-[var(--gosslan-text-2)] hover:data-[state=unchecked]:bg-[var(--gosslan-hover)]"
       :class="sizeClasses[size]"
     >
       {{ opt.label }}

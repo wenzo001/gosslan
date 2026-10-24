@@ -78,7 +78,7 @@ function confirm() {
         </span>
         <span
           v-if="selected.has(id)"
-          class="flex h-5 w-5 items-center justify-center rounded-full bg-[var(--gosslan-primary)] text-white"
+          class="flex h-5 w-5 items-center justify-center rounded-full bg-[var(--gosslan-primary-active)] text-[var(--gosslan-on-primary)]"
         >
           <Check class="h-3.5 w-3.5" />
         </span>
@@ -97,7 +97,7 @@ function confirm() {
           {{ t("common.cancel") }}
         </button>
         <button
-          class="tap-safe rounded-[var(--gosslan-radius-md)] bg-[var(--gosslan-primary)] px-4 py-2 text-sm text-white transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-40"
+          class="tap-safe rounded-[var(--gosslan-radius-md)] bg-[var(--gosslan-primary-active)] px-4 py-2 text-sm text-[var(--gosslan-on-primary)] transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-40"
           :disabled="selected.size === 0"
           @click="confirm"
         >
