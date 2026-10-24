@@ -111,7 +111,7 @@ pub fn resume_receive(
         .contains_key(transfer_id);
     let (active, inflight) = inbound_usage(state);
     if let Err(breach) = inbound_quota_verdict(active, inflight, replacing, size) {
-        let msg = quota_error(breach, active, inflight, size);
+        let msg = quota_error(breach, active, inflight, size, transfer_id, peer_id);
         state.logger.warn("file", msg.clone());
         return Err(msg);
     }
@@ -169,6 +169,14 @@ pub fn resume_receive(
         .open(&tmp_path)
         .map_err(|e| e.to_string())?;
     let final_path = unique_path(&dl, &safe_name);
+    // 哈希读完才走到这里：占用可能已经变了（别的链路刚插进来）⇒ **插入前再判一次**，
+    // 并且这一判与 insert 在同一把闸下（上面的初判只是"别白读几个 GB"的快速失败）。
+    let replacing_now = state
+        .file_receivers
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .contains_key(transfer_id);
+    let _admission = admit_inbound(state, replacing_now, transfer_id, peer_id, size)?;
     state
         .file_receivers
         .lock()
@@ -363,12 +371,22 @@ pub const MAX_CONCURRENT_RECEIVES: usize = 8;
 pub const MAX_INCOMING_FILE_BYTES: u64 = 8 * 1024 * 1024 * 1024;
 pub const MAX_INCOMING_TOTAL_BYTES: u64 = 16 * 1024 * 1024 * 1024;
 
+/// **未登记接收器**的 `.part` 保留总量上限（审计 SEC-05 的第二道闸）。
+///
+/// 为什么单列这一项：断链时 `.part` 被刻意保留供续传，而接收器会从内存表里摘掉
+/// ⇒ 它对 `MAX_INCOMING_TOTAL_BYTES` 不再计数。对端只要"发一份、断链、换个新 id 再来"
+/// 就能无限写盘（`.part` 只在 24h 后被清扫）。保留总量与在途总量分开封顶之后，
+/// 磁盘占用上界 = 16 GiB（在途） + 16 GiB（保留），与对端行为无关。
+pub const MAX_RETAINED_PART_BYTES: u64 = MAX_INCOMING_TOTAL_BYTES;
+
 /// 入站配额超限的原因（拼进 `code=RECV_QUOTA_EXCEEDED kind=…`）。
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) enum QuotaBreach {
     Concurrent,
     FileTooLarge,
     TotalBytes,
+    /// 断链保留的 `.part` 已经占满预算（即使清掉最旧的那些也放不下新的一份）。
+    RetainedBytes,
 }
 
 /// 「这份 Offer 还能不能接」的**唯一**判据（纯函数，单测直接钉住）。
@@ -397,10 +415,20 @@ pub(crate) fn inbound_quota_verdict(
     Ok(())
 }
 
-/// 当前入站占用：活跃接收器数 + 它们声明的总字节数（一对一与群各算一份）。
+/// 把若干组 `(条数, 字节)` 累加成一份占用（纯函数，便于钉住中继也算进来）。
+pub(crate) fn usage_sum(parts: &[(usize, u64)]) -> (usize, u64) {
+    parts.iter().fold((0usize, 0u64), |(n, b), (n2, b2)| {
+        (n.saturating_add(*n2), b.saturating_add(*b2))
+    })
+}
+
+/// 当前入站占用：活跃接收器数 + 它们声明的总字节数。
 ///
-/// 两张表**分开取锁、不嵌套**：仓库里已有"先 file 后 group"的取锁点（`commands/helpers.rs`），
+/// 三张表**分开取锁、不嵌套**：仓库里已有"先 file 后 group"的取锁点（`commands/helpers.rs`），
 /// 这里若同时持有两把锁，就等于给未来的交叉取锁埋一个顺序问题。
+///
+/// 中继那张表（`relay_file_keys`）也必须算进来（审计 SEC-05）：它同样是"对端一次性声明
+/// 一份大小、本机就得为它留出磁盘与内存"的入站资源，漏掉它等于给配额开了一扇侧门。
 fn inbound_usage(state: &AppState) -> (usize, u64) {
     fn one(map: &std::sync::Mutex<HashMap<String, FileReceiver>>) -> (usize, u64) {
         let g = map.lock().unwrap_or_else(|e| e.into_inner());
@@ -409,25 +437,198 @@ fn inbound_usage(state: &AppState) -> (usize, u64) {
             g.values().map(|r| r.size).fold(0u64, |a, b| a.saturating_add(b)),
         )
     }
-    let (a1, b1) = one(&state.file_receivers);
-    let (a2, b2) = one(&state.group_file_receivers);
-    (a1 + a2, b1.saturating_add(b2))
+    let relay = {
+        let g = state
+            .relay_file_keys
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        (
+            g.len(),
+            g.values()
+                .map(|r| r.size)
+                .fold(0u64, |a, b| a.saturating_add(b)),
+        )
+    };
+    usage_sum(&[
+        one(&state.file_receivers),
+        one(&state.group_file_receivers),
+        relay,
+    ])
+}
+
+/// 入站登记的准入闸（审计 SEC-05：check-then-act）。
+///
+/// 配额判定与"把接收器插进表里"必须在同一把锁下完成，否则两条链路并发 Offer 时
+/// 会同时读到旧占用、双双通过。守卫活到调用方插入之后（`Drop` 即释放）。
+pub(crate) struct InboundAdmission<'a> {
+    _guard: std::sync::MutexGuard<'a, ()>,
+}
+
+/// 申请一个入站槽位：`replacing = false` 时若不满足配额，返回 `RECV_QUOTA_EXCEEDED`
+/// （含 `transfer=` / `peer=`，能归因到哪一单）；`replacing = true`（同一 transfer 重试/续传）
+/// 不占新槽位，直接放行。
+pub(crate) fn admit_inbound<'a>(
+    state: &'a AppState,
+    replacing: bool,
+    transfer_id: &str,
+    peer_id: &str,
+    size: u64,
+) -> Result<InboundAdmission<'a>, String> {
+    let guard = state
+        .inbound_gate
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
+    let (active, inflight) = inbound_usage(state);
+    if let Err(breach) = inbound_quota_verdict(active, inflight, replacing, size) {
+        let msg = quota_error(breach, active, inflight, size, transfer_id, peer_id);
+        state.logger.warn("file", msg.clone());
+        return Err(msg);
+    }
+    // 第二道闸（只在**新建**槽位时判）：断链保留的 `.part` 不占内存表，但占磁盘。
+    // `replacing` 跳过它 —— 那一份的 `.part` 已经在途表里计过字节。
+    if !replacing {
+        let kept = prune_retained_parts(state, transfer_id, size);
+        if kept.saturating_add(size) > MAX_RETAINED_PART_BYTES {
+            let msg = quota_error(
+                QuotaBreach::RetainedBytes,
+                active,
+                inflight,
+                size,
+                transfer_id,
+                peer_id,
+            );
+            state.logger.warn("file", msg.clone());
+            return Err(msg);
+        }
+    }
+    Ok(InboundAdmission { _guard: guard })
+}
+
+/// 只有**本应用建的** `.part` 才能被预算清理：stem 必须是 UUID。
+///
+/// 接收目录是用户的目录，里面完全可能有 `backup.part` / `draft.part` 这类
+/// 用户自己的文件 —— 按后缀盲删就是删用户数据。生产端所有 transfer_id 都是
+/// `Uuid::new_v4()`，所以 UUID 形状是"这文件是我建的"的可靠判据。
+fn owned_part_stem(name: &str) -> Option<&str> {
+    let stem = name.strip_suffix(".part")?;
+    uuid::Uuid::parse_str(stem).ok().map(|_| stem)
+}
+
+/// 纯函数：给定保留项（路径、字节、mtime 毫秒），按**最旧先删**选出要清掉的那些，
+/// 直到剩余总量加上 `incoming` 不超过预算。
+fn parts_to_prune(entries: &[(std::path::PathBuf, u64, i64)], incoming: u64) -> Vec<std::path::PathBuf> {
+    let budget = MAX_RETAINED_PART_BYTES.saturating_sub(incoming);
+    let mut total: u64 = entries.iter().map(|(_, b, _)| *b).sum();
+    let mut sorted: Vec<&(std::path::PathBuf, u64, i64)> = entries.iter().collect();
+    sorted.sort_by_key(|(_, _, mtime)| *mtime);
+    let mut out = Vec::new();
+    for (path, bytes, _) in sorted {
+        if total <= budget {
+            break;
+        }
+        total = total.saturating_sub(*bytes);
+        out.push(path.clone());
+    }
+    out
+}
+
+/// 把断链保留的 `.part` 清到预算以内，返回清理后的保留总字节。
+///
+/// 只动"UUID 形状 + 当前没登记在任何接收表里"的 `.part`；删不掉只留痕，不阻断。
+/// `incoming` 参与预算：目标是"清完之后还能放下这一份"。
+fn prune_retained_parts(state: &AppState, keep_transfer: &str, incoming: u64) -> u64 {
+    let dl = state
+        .downloads_dir
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .clone();
+    let registered: std::collections::HashSet<String> = {
+        let mut ids: Vec<String> = Vec::new();
+        for map in [&state.file_receivers, &state.group_file_receivers] {
+            ids.extend(
+                map.lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .keys()
+                    .cloned(),
+            );
+        }
+        ids.extend(
+            state
+                .relay_file_keys
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .keys()
+                .cloned(),
+        );
+        ids.into_iter().collect()
+    };
+    let mut entries = Vec::new();
+    if let Ok(rd) = std::fs::read_dir(&dl) {
+        for entry in rd.flatten() {
+            let path = entry.path();
+            let Some(name) = path.file_name().and_then(|s| s.to_str()) else {
+                continue;
+            };
+            let Some(stem) = owned_part_stem(name) else {
+                continue;
+            };
+            if stem == keep_transfer || registered.contains(stem) {
+                continue;
+            }
+            let Ok(meta) = entry.metadata() else {
+                continue;
+            };
+            if !meta.is_file() {
+                continue;
+            }
+            let mtime = meta
+                .modified()
+                .ok()
+                .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                .map(|d| d.as_millis() as i64)
+                .unwrap_or(0);
+            entries.push((path, meta.len(), mtime));
+        }
+    }
+    let total: u64 = entries.iter().map(|(_, b, _)| *b).sum();
+    let victims = parts_to_prune(&entries, incoming);
+    let mut removed_bytes = 0u64;
+    for p in &victims {
+        match std::fs::remove_file(p) {
+            Ok(()) => {
+                if let Some((_, b, _)) = entries.iter().find(|(path, _, _)| path == p) {
+                    removed_bytes = removed_bytes.saturating_add(*b);
+                }
+            }
+            Err(e) => state.logger.warn(
+                "file",
+                format!("code=PART_PRUNE_FAILED path={} err={e}", p.display()),
+            ),
+        }
+    }
+    total.saturating_sub(removed_bytes)
 }
 
 /// 超限时构造给调用方的错误串（上层会把它原样写进日志并回 `FileReject`）。
+///
+/// 带上 `transfer=` / `peer=`：只记"超了"而不记"哪一单"，现场就只能看到一堆超限数字，
+/// 归因不到具体对端（审计 SEC-05 的可定位性要求）。
 pub(crate) fn quota_error(
     breach: QuotaBreach,
     active: usize,
     inflight: u64,
     size: u64,
+    transfer_id: &str,
+    peer_id: &str,
 ) -> String {
     let kind = match breach {
         QuotaBreach::Concurrent => "concurrent",
         QuotaBreach::FileTooLarge => "file_too_large",
         QuotaBreach::TotalBytes => "total_bytes",
+        QuotaBreach::RetainedBytes => "retained_bytes",
     };
     format!(
-        "code=RECV_QUOTA_EXCEEDED kind={kind} size={size} active={active} inflight={inflight} max_concurrent={MAX_CONCURRENT_RECEIVES} max_file={MAX_INCOMING_FILE_BYTES} max_total={MAX_INCOMING_TOTAL_BYTES}"
+        "code=RECV_QUOTA_EXCEEDED kind={kind} transfer={transfer_id} peer={peer_id} size={size} active={active} inflight={inflight} max_concurrent={MAX_CONCURRENT_RECEIVES} max_file={MAX_INCOMING_FILE_BYTES} max_total={MAX_INCOMING_TOTAL_BYTES} max_retained={MAX_RETAINED_PART_BYTES}"
     )
 }
 
@@ -450,18 +651,13 @@ fn make_receiver(
     if size > i64::MAX as u64 {
         return Err("文件过大，无法安全保存".to_string());
     }
-    // 配额判据（SEC-05）：必须在建 `.part` **之前**。超限就回 `FileReject`，对端知道
-    // 本机这次不收，而不是先落盘再被清扫掉。
+    // 配额判据（SEC-05）：必须在建 `.part` **之前**，而且判定与下面的 insert 共用一把闸 ——
+    // 中间隔着 `create_dir_all` / `File::create`，不持闸时两条链路会同时读到旧占用、双双通过。
     let replacing = receivers
         .lock()
         .unwrap_or_else(|e| e.into_inner())
         .contains_key(transfer_id);
-    let (active, inflight) = inbound_usage(state);
-    if let Err(breach) = inbound_quota_verdict(active, inflight, replacing, size) {
-        let msg = quota_error(breach, active, inflight, size);
-        state.logger.warn("file", msg.clone());
-        return Err(msg);
-    }
+    let _admission = admit_inbound(state, replacing, transfer_id, peer_id, size)?;
     // 同一个 transfer_id 又收到一次 Offer = 发送方在**重试**（它每次都从 seq 0 重新开始）。
     // 旧实现这里直接返回「重复的文件传输」⇒ 接收方拒收 ⇒ 发送方 15s 等 accept 超时 ⇒
     // 可恢复失败 ⇒ 再重试 —— 死循环；而新 attempt 的分片与旧状态交错，就报出
