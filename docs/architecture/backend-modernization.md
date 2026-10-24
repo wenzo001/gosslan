@@ -132,6 +132,12 @@
   2026-10-24 审计 DB-02 起，同一处清扫还负责**保留份数**：只留最近
   `MAX_MIGRATION_BACKUPS`（3）份，排序口径与 `find_recovery_backup` 共用；
   删不掉旧副本不中止启动，但会落 `code=BACKUP_SWEEP_FAILED` 的日志。
+- 2026-10-24 审计 DB-03 起，`file_transfers` 的快照读也不再是全表：`list_transfers`
+  只回**未完成 + 最近 `MAX_TERMINAL_TRANSFERS`（200）条终态**，两腿各走一条索引
+  （未完成走部分索引 `idx_file_transfers_open`，终态走 `idx_file_transfers_created`
+  按序扫够就停）。不提供 OFFSET：截掉的终态行在界面上没有消费点（任务中心只列未完成、
+  气泡按 `transfer_id` 点查、打开文件走后端按 msg_id 回查台账）。部分索引的写成本实测
+  **每条 upsert +约 2µs**（20 000 条 275→315ms），且只随"同时在传的条数"增长。
 - 边界：不改变目录权限（可能是共享临时目录）；Windows ACL 未在本批处理。
 
 ### B7（已落地，5.0.27）：日志与崩溃现场权限收紧

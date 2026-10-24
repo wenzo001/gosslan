@@ -294,10 +294,45 @@ pub fn is_transfer_done(conn: &Connection, id: &str) -> Result<bool> {
     Ok(n.is_some())
 }
 
+/// 终态行（`done` / `failed` / `sent` / `cancelled`）最多带回多少条。
+///
+/// DB-03：`file_transfers` 是**只增**的历史表（没有清理策略），而这条读在每次文件活动后
+/// 都会被前端拉一遍（`get_transfers` → `refreshTransfers`），并且持着那唯一一条 db 连接。
+/// 无上限 ⇒ 打开任务中心的代价随使用时长线性增长。
+///
+/// 200 是"够用但不必长大"的一档：前端真正要的是**未完成**（任务中心只列那一半），
+/// 加上最近几条终态给气泡一句话（`failed` / `cancelled` 才有状态文案，`done`/`sent` 本来就不写）；
+/// 更早的终态行在界面上没有任何一处会显示 —— 而**点开文件**那条路是按 msg_id 回后端查台账
+/// （`open_file_native` / `resolve_media_path`），不依赖这份快照。
+pub const MAX_TERMINAL_TRANSFERS: usize = 200;
+
+/// 传输台账快照：**未完成一条不丢 + 最近 `MAX_TERMINAL_TRANSFERS` 条终态**。
+///
+/// 分成两腿是刻意的（DB-03）：
+///  · 未完成（`pending` / `active`）走 `idx_file_transfers_open` 这个部分索引，命中行少且全要；
+///  · 终态走 `idx_file_transfers_created` 按 `created_at DESC` 扫，凑够 N 条就停。
+/// 单条 SQL 做不到"两半各自有界"：`ORDER BY created_at DESC` 加一个总 `LIMIT` 会把
+/// 一条在途传输挤掉（它可能排得很靠后，而界面正靠它画进度条）。
 pub fn list_transfers(conn: &Connection) -> Result<Vec<TransferInfo>> {
-    let now = now_ms();
-    let mut stmt = conn.prepare(
-        "SELECT t.id, t.peer_id, t.name, t.size, t.direction, t.status, t.path, t.progress,
+    list_transfers_with_terminal_cap(conn, MAX_TERMINAL_TRANSFERS)
+}
+
+/// 台账快照的生产 SQL（`?1` = now，`?2` = outbox 重试上限，`?3` = 终态条数上限）。
+///
+/// 抽成常量只为**读取计划能被测试盯住**（`migration_tests::transfer_snapshot_plan_uses_both_indexes`
+/// 拿这同一份 SQL 跑 `EXPLAIN QUERY PLAN`）—— 测试里另抄一遍就等于给这条查询第二个家。
+pub(crate) const LIST_TRANSFERS_SQL: &str = "WITH picked AS (
+            SELECT id, created_at FROM file_transfers
+             WHERE status IN ('pending','active')
+            UNION ALL
+            SELECT id, created_at FROM (
+                SELECT id, created_at FROM file_transfers
+                 WHERE status NOT IN ('pending','active')
+                 ORDER BY created_at DESC
+                 LIMIT ?3
+            )
+         )
+         SELECT t.id, t.peer_id, t.name, t.size, t.direction, t.status, t.path, t.progress,
                 CASE
                   WHEN t.direction = 'send' AND t.status = 'pending' AND o.transfer_id IS NULL
                     THEN 'queue_missing'
@@ -311,12 +346,29 @@ pub fn list_transfers(conn: &Connection) -> Result<Vec<TransferInfo>> {
                   ELSE NULL
                 END,
                 t.created_at
-         FROM file_transfers t
+         FROM picked p
+         JOIN file_transfers t ON t.id = p.id
          LEFT JOIN file_outbox o ON o.transfer_id = t.id
-         ORDER BY t.created_at DESC",
-    )?;
+         ORDER BY p.created_at DESC";
+
+/// `list_transfers` 的可调上限版本（测试用它把"截断"跑在小数据上）。
+///
+/// 生产调用一律走 [`list_transfers`]；**不提供 OFFSET** —— 截断掉的那些终态行在界面上
+/// 没有任何消费点（任务中心只列未完成、气泡只按 transfer_id 点查），分页没有读者。
+fn list_transfers_with_terminal_cap(
+    conn: &Connection,
+    terminal_cap: usize,
+) -> Result<Vec<TransferInfo>> {
+    let now = now_ms();
+    // `picked` 只挑 id + 排序键；列与 CASE 全留在外层一处，避免两腿各抄一遍。
+    // 两腿的 status 集合互斥 ⇒ `UNION ALL` 不会产生重复 id（见 `LIST_TRANSFERS_SQL`）。
+    let mut stmt = conn.prepare(LIST_TRANSFERS_SQL)?;
     let rows = stmt.query_map(
-        params![now, crate::network::file::MAX_FILE_OUTBOX_RETRIES],
+        params![
+            now,
+            crate::network::file::MAX_FILE_OUTBOX_RETRIES,
+            terminal_cap as i64
+        ],
         |r| {
             Ok(crate::state::TransferInfo {
                 id: r.get(0)?,
@@ -435,6 +487,81 @@ mod file_transfer_status_tests {
             params![id, direction, created_at],
         )
         .unwrap();
+    }
+
+    fn terminal(conn: &Connection, id: &str, status: &str, created_at: i64) {
+        conn.execute(
+            "INSERT INTO file_transfers(id,peer_id,name,size,direction,status,path,progress,created_at)
+             VALUES(?1,'peer-a','x.bin',10,'receive',?2,NULL,1.0,?3)",
+            params![id, status, created_at],
+        )
+        .unwrap();
+    }
+
+    /// DB-03 的正向判据：终态只回最近 N 条，**最旧的那批必须真的被截掉**。
+    ///
+    /// 断言"条数 = N"是不够的（把排序写反也满足），所以这里同时钉住首行是最新的、
+    /// 窗口边界那一行还在、再往前一行不在 —— 与 B7 的备份保留同一种写法。
+    #[test]
+    fn terminal_transfers_are_capped_to_the_newest_rows() {
+        let conn = mem();
+        for i in 0..25 {
+            terminal(&conn, &format!("t{i:02}"), "done", 1_000 + i);
+        }
+
+        let ids: Vec<String> = list_transfers_with_terminal_cap(&conn, 10)
+            .unwrap()
+            .into_iter()
+            .map(|r| r.id)
+            .collect();
+
+        assert_eq!(ids.len(), 10, "终态必须被截到上限：{ids:?}");
+        assert_eq!(ids[0], "t24", "最新的终态排第一：{ids:?}");
+        assert!(ids.contains(&"t15".to_string()), "第 10 新仍在窗口内：{ids:?}");
+        assert!(
+            !ids.contains(&"t14".to_string()),
+            "第 11 新的终态必须被删掉：{ids:?}"
+        );
+    }
+
+    /// 反向判据（DB-03 最怕的那一格）：**一条在途传输都不许被终态上限挤掉**。
+    ///
+    /// 任务中心只列未完成、进度条只画 `active` —— 一条比所有终态都老的 `pending`
+    /// 如果被"总行数上限"截走，界面上就是一个永远不动、也不报错的卡片。
+    #[test]
+    fn an_open_transfer_survives_even_the_tightest_terminal_cap() {
+        let conn = mem();
+        transfer(&conn, "old-pending", "send", 10);
+        conn.execute(
+            "INSERT INTO file_transfers(id,peer_id,name,size,direction,status,path,progress,created_at)
+             VALUES('old-active','peer-a','x.bin',10,'receive','active',NULL,0.5,11)",
+            [],
+        )
+        .unwrap();
+        for i in 0..5 {
+            terminal(&conn, &format!("d{i}"), "done", 1_000 + i);
+        }
+
+        let rows = list_transfers_with_terminal_cap(&conn, 1).unwrap();
+        let ids: Vec<&str> = rows.iter().map(|r| r.id.as_str()).collect();
+        assert_eq!(ids, vec!["d4", "old-active", "old-pending"], "实际：{ids:?}");
+    }
+
+    /// 生产默认上限必须真的生效（`list_transfers` 不许因为"反正调用方会截"而回到全表）。
+    #[test]
+    fn the_production_snapshot_caps_terminal_rows() {
+        let conn = mem();
+        for i in 0..(MAX_TERMINAL_TRANSFERS + 5) {
+            terminal(&conn, &format!("t{i:04}"), "failed", 1_000 + i as i64);
+        }
+
+        let rows = list_transfers(&conn).unwrap();
+        assert_eq!(rows.len(), MAX_TERMINAL_TRANSFERS, "生产上限没生效");
+        assert_eq!(
+            rows[0].id,
+            format!("t{:04}", MAX_TERMINAL_TRANSFERS + 4),
+            "最新的那一行必须在"
+        );
     }
 
     fn outbox(conn: &Connection, id: &str, status: &str, attempts: i64, next_attempt_at: i64) {
