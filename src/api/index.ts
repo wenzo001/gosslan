@@ -319,6 +319,9 @@ export const api = {
   windowToggleMaximize: () => invoke<boolean>("window_toggle_maximize"),
   windowIsMaximized: () => invoke<boolean>("window_is_maximized"),
   windowClose: () => invoke<void>("window_close"),
+  /** macOS：窄窗口（前端移动布局）时把系统红绿灯收起 / 拉宽后放回（其它平台空操作）。 */
+  setNativeTitlebarButtonsHidden: (hidden: boolean) =>
+    invoke<void>("set_native_titlebar_buttons_hidden", { hidden }),
 
   /** 取消一条文件传输：返回的是**台账**口径（这一单现在算不算被取消），不是"有没有命中在途任务"。 */
   cancelFileTransfer: (transferId: string) =>

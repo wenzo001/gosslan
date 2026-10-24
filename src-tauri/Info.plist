@@ -7,6 +7,19 @@
 	     iOS 的英文本地化需后续在 Xcode 工程补 zh-Hans.lproj / en.lproj。 -->
 	<key>CFBundleDisplayName</key>
 	<string>小院儿</string>
+	<!-- 本地化声明：macOS 只有看到这两项才会把 App 当成"已本地化"的包去挑语言资源。
+	     缺了它们时，`InfoPlist.strings` 读得到、但系统提供的控件文案（窗口红绿灯的
+	     「关闭 / 最小化 / 进入全屏」提示、菜单等）会回落成英文 —— 正是用户 2026-10-24
+	     报的「软件是中文的，全屏按钮的悬停提示却是英文」。
+	     开发区域取 zh-Hans（主市场），可用语言与 tauri.conf.json 里复制的两份
+	     `*.lproj/InfoPlist.strings` 一一对应。 -->
+	<key>CFBundleDevelopmentRegion</key>
+	<string>zh-Hans</string>
+	<key>CFBundleLocalizations</key>
+	<array>
+		<string>zh-Hans</string>
+		<string>en</string>
+	</array>
 	<key>NSLocalNetworkUsageDescription</key>
 	<string>Gosslan 需要访问本地网络，用于发现并连接同一局域网内的设备，实现无服务器的即时通讯与文件传输。</string>
 	<!-- 蓝牙 mesh：手机与**不在同一局域网**的设备（例如同一房间里的 Mac）互联。

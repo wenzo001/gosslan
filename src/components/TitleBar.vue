@@ -57,6 +57,29 @@ watch(
 );
 onBeforeUnmount(() => document.documentElement.classList.remove("has-caption"));
 
+/**
+ * macOS 窄窗口：把**系统原生**的红绿灯一起收起（用户 2026-10-24：「Mac 上把窗口缩成
+ * 移动端，左上角怎么还有三大金刚键」）。
+ *
+ * 三颗键自 2026-10-23 起由 AppKit 画（`decorations:false` + `Titled`），前端那条
+ * `v-if="!isMobile"` 只能管自绘 caption，管不到它们。这里按**同一个** `isMobile` prop
+ * 调一次命令：进入移动布局 hidden=true，拉宽回三栏 hidden=false。
+ *
+ * ⚠️ 不要在 Rust 里再按宽度判一次：「多窄算移动布局」的阈值只在
+ * `platform.ts::resolveMobileLayout` 一份（≤767px 兜底），两处各判会漂成
+ * "标题栏没了、按钮还在"。非 macOS / 非 Tauri 环境命令不存在，静默忽略。
+ */
+watch(
+  () => props.isMobile,
+  (mobile) => {
+    if (!isMac) return;
+    void api.setNativeTitlebarButtonsHidden(mobile).catch(() => {
+      /* 非 Tauri 环境或命令缺失：不影响自绘标题栏 */
+    });
+  },
+  { immediate: true },
+);
+
 async function refreshMaximized() {
   if (!props.showMaximize) return; // 不可最大化 ⇒ 不必问（也避开无意义的 IPC）
   try {
