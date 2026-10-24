@@ -9,12 +9,12 @@
 ## 0. 结论
 
 - 审计 18 条**全部有落地处置**，没有"文档里列了、代码里没动"的缺口。
-- 共 **19 个修复提交**（B1–B19），版本 `5.7.11 → 5.7.29`。
+- 共 **19 个修复提交**（B1–B19），版本 `5.7.11 → 5.8.0`。
 - 最终读数（HEAD 实跑）：
   - `cargo clippy --features bluetooth --all-targets -- -D warnings`：**0 红**
   - `cargo test --features bluetooth --lib`：**1185 passed / 0 failed / 1 ignored**
   - `npm test`：**1368 passed / 0 failed**
-  - `npm run build`：通过；`npm run version:check`：退出码 0（5.7.29）
+  - `npm run build`：通过；`npm run version:check`：退出码 0（5.8.0）
   - UI 运行时探针：**524/529**（5 条红均与本轮改动无关，见 §7）
 - 关键判据都做了**变异验证**（把修复拆掉/改坏必须变红），不是空转测试。
 - 仍未验证、需要真机或 CI 的项：CSP 真机 6 条冒烟、Windows/macOS 打包安装、双实例 E2E。
@@ -25,34 +25,34 @@
 
 | # | 缺陷 | 批次 | 提交 | 关键判据 |
 |---|---|---|---|---|
-| 1 | SEC-01 打开文件未绑消息身份 | B1 | `735ab08b` | 伪造 `raw.path` 必须被拒；合法台账路径必须通过 |
-| 2 | FUNC-02 取消终态写失败被吞 | B2 | `46e08f40` | 注入写失败 ⇒ 返回 Err 且可定位 |
-| 3 | FUNC-03 群取消写幽灵 `file_transfers` 行 | B2 | `46e08f40` | 群取消后 `file_transfers` 行数不变 |
-| 4 | FUNC-04 「已取消」可被复位复活 | B2 | `46e08f40` | 墓碑在、队列仍 sending ⇒ 重启不复活 |
-| 5 | SEC-05 入站接收无配额 | B4 | `8b0034a7` | 连续两个超配额 Offer，第二个被拒 |
-| 6 | SEC-02 `zip` 供应链漏洞 | B5 | `82d3434e` | `cargo deny check` 无失败 |
-| 7 | SEC-07 CDLA 许可证未在 allow 列表 | B5 | `82d3434e` | 门禁退出码 |
-| 8 | FUNC-01 macOS 沙盒打开接收目录失败 | B3 | `e7ab2961` | macOS `cfg` 单测 + 统一打开门面 |
-| 9 | DB-01 建表/迁移 DDL 未包事务 | B6 | `0a26fb31` | 中断后整体回滚 |
-| 10 | DB-02 迁移备份不自动清理 | B7 | `4796d7e0` | 保留 3 份受控 |
-| 11 | REL-01 看门狗自身不被监督 | B8 | `fc1f4de6` | kill 监督循环后自动拉起（`code=WORKER_DEAD`） |
-| 12 | DB-03 `list_transfers` 返回全表 | B9 | `b79aea9d` | 列表返回上限 + 索引 |
-| 13 | PERF-01 更新器安装整包 clone | B10 | `4d532516` | 整包 take + 失败回填；峰值 1× |
-| 14 | PERF-02 共享目录树一次性入内存 | B11 | `2db8a6c2` | N+1 条目录断言截断 |
-| 15 | SEC-06 CSP 为 null | B13 + B18 | `d0b59fb9` + `0ac90331` | CSP 十条指令、`'unsafe-inline'` 数量 0 |
-| 16 | SEC-09 身份私钥明文存 SQLite | B14 | `100150d8` | 威胁模型文档 + 不引 keyring 的决策 |
-| 17 | TEST-01 `clippy --all-targets` 不绿 | B12 | `f8700ae2` | 门禁 0 警告（78 条清零） |
+| 1 | SEC-01 打开文件未绑消息身份 | B1 | `3696974a` | 伪造 `raw.path` 必须被拒；合法台账路径必须通过 |
+| 2 | FUNC-02 取消终态写失败被吞 | B2 | `723235fc` | 注入写失败 ⇒ 返回 Err 且可定位 |
+| 3 | FUNC-03 群取消写幽灵 `file_transfers` 行 | B2 | `723235fc` | 群取消后 `file_transfers` 行数不变 |
+| 4 | FUNC-04 「已取消」可被复位复活 | B2 | `723235fc` | 墓碑在、队列仍 sending ⇒ 重启不复活 |
+| 5 | SEC-05 入站接收无配额 | B4 | `05f0c88a` | 连续两个超配额 Offer，第二个被拒 |
+| 6 | SEC-02 `zip` 供应链漏洞 | B5 | `aaa496b4` | `cargo deny check` 无失败 |
+| 7 | SEC-07 CDLA 许可证未在 allow 列表 | B5 | `aaa496b4` | 门禁退出码 |
+| 8 | FUNC-01 macOS 沙盒打开接收目录失败 | B3 | `1e68d82c` | macOS `cfg` 单测 + 统一打开门面 |
+| 9 | DB-01 建表/迁移 DDL 未包事务 | B6 | `5557575f` | 中断后整体回滚 |
+| 10 | DB-02 迁移备份不自动清理 | B7 | `fa6ab302` | 保留 3 份受控 |
+| 11 | REL-01 看门狗自身不被监督 | B8 | `a498a7d3` | kill 监督循环后自动拉起（`code=WORKER_DEAD`） |
+| 12 | DB-03 `list_transfers` 返回全表 | B9 | `68675fdb` | 列表返回上限 + 索引 |
+| 13 | PERF-01 更新器安装整包 clone | B10 | `ed0cbad6` | 整包 take + 失败回填；峰值 1× |
+| 14 | PERF-02 共享目录树一次性入内存 | B11 | `8f89f879` | N+1 条目录断言截断 |
+| 15 | SEC-06 CSP 为 null | B13 + B18 | `a95ef261` + `ccd39278` | CSP 十条指令、`'unsafe-inline'` 数量 0 |
+| 16 | SEC-09 身份私钥明文存 SQLite | B14 | `b6812188` | 威胁模型文档 + 不引 keyring 的决策 |
+| 17 | TEST-01 `clippy --all-targets` 不绿 | B12 | `df5c19d7` | 门禁 0 警告（78 条清零） |
 | 18 | TEST-02 负向场景测试缺口 | 随 B1/B2/B4 | — | 恶意路径、取消故障注入、超配额三条负向用例 |
 
 复审阶段补齐的缺口（独立提交）：
 
 | 批次 | 提交 | 内容 |
 |---|---|---|
-| B15 | `21ddb268` | 配额闭环：`inbound_gate` 准入闸、保留 `.part` 预算、群续传/中继入口 |
-| B16 | `88bb2ac9` | 失败留痕、群取消单事务、DDL+`user_version` 同事务、对账逐条报错 |
-| B17 | `d28a96f1` | 共享目录截断：协议位 + 命令形状 + 界面提示 + i18n |
-| B18 | `0ac90331` | CSP 从"宽松声明"收紧为严格策略 |
-| B19 | `5e7c4666` | 更新器禁止降级（审计 §13 产品裁决） |
+| B15 | `5df2ee2d` | 配额闭环：`inbound_gate` 准入闸、保留 `.part` 预算、群续传/中继入口 |
+| B16 | `f1c35938` | 失败留痕、群取消单事务、DDL+`user_version` 同事务、对账逐条报错 |
+| B17 | `b7001c41` | 共享目录截断：协议位 + 命令形状 + 界面提示 + i18n |
+| B18 | `ccd39278` | CSP 从"宽松声明"收紧为严格策略 |
+| B19 | `7058c0c0` | 更新器禁止降级（审计 §13 产品裁决） |
 
 ---
 
@@ -254,7 +254,7 @@ B1–B14 落地后，用三条**只读**子代理分别复看：
 | `cargo test --features bluetooth --lib` | 1185 passed / 0 failed / 1 ignored |
 | `npm test` | 1368 passed / 0 failed |
 | `npm run build` | 通过 |
-| `npm run version:check` | 退出码 0（5.7.29） |
+| `npm run version:check` | 退出码 0（5.8.0） |
 
 ### 5.2 变异验证（拆掉修复必须红）
 
@@ -301,8 +301,8 @@ B1–B14 落地后，用三条**只读**子代理分别复看：
 
 ## 8. 提交清单
 
-`735ab08b` `46e08f40` `e7ab2961` `8b0034a7` `82d3434e` `0a26fb31` `4796d7e0` `fc1f4de6`
-`b79aea9d` `4d532516` `2db8a6c2` `f8700ae2` `d0b59fb9` `100150d8` `21ddb268` `88bb2ac9`
-`d28a96f1` `0ac90331` `5e7c4666`
+`3696974a` `723235fc` `1e68d82c` `05f0c88a` `aaa496b4` `5557575f` `fa6ab302` `a498a7d3`
+`68675fdb` `ed0cbad6` `8f89f879` `df5c19d7` `a95ef261` `b6812188` `5df2ee2d` `f1c35938`
+`b7001c41` `ccd39278` `7058c0c0`
 
 每批可在 `git show <hash>` 看到该批的改动文件、CHANGELOG 条目与验证说明。

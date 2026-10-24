@@ -13,6 +13,29 @@
 
 ## [Unreleased]
 
+## [5.8.0] - 2026-10-24
+
+### 2026-10-24 全项目审计修复（18 条缺陷 · B1–B19）
+
+- **安全**：SEC-01 打开本地文件按消息回绑传输台账（伪造路径被拒）；SEC-05 入站接收配额
+  （并发 / 单文件 / 总量 / 保留 `.part`，直连、群续传、中继全入口一道准入闸）；
+  SEC-06 CSP 收紧为严格策略（无 `'unsafe-inline'`，补 `base-uri` / `form-action` /
+  `frame-ancestors`）；SEC-02/07 供应链门禁（`zip` 升级 + `cargo deny` 进 push 前闸门）；
+  SEC-09 身份私钥威胁模型与「不引 keyring」的决策记录。
+- **可靠性**：取消/终态/复位收进一个事务与 `cancel_terminal` 墓碑（FUNC-02/03/04）；
+  终态写失败留痕（`code=FILE_FINALIZE_FAILED`）；启动清扫失败进启动通知；
+  worker 监督链自监督（REL-01）；建表与迁移 DDL 原子化、`user_version` 同事务（DB-01/02）。
+- **性能**：更新器安装整包移动（内存峰值 2×→1×，失败回填可重试）；共享目录树有界并在
+  界面明确提示截断；传输台账读取有界并加索引（PERF-01/02、DB-03）。
+- **测试**：测试码与 examples 进 `clippy --all-targets` 门禁（TEST-01）；关键判据均做
+  「拆掉修复必须红」的变异验证。
+- **更新器**：**禁止降级** —— 清单版本必须严格高于当前版本，否则拒绝并记
+  `code=UPDATER_DOWNGRADE_BLOCKED`（带双方版本号，不把该 `Update` 放进会话）。
+- **验证**：`clippy --all-targets` 0 红、Rust 1185 passed、npm 1368 passed、`npm run build`
+  通过、UI 运行时探针 524/529（5 条红为既有/环境项）。
+- 详细报告：`docs/notes/audit-fix-report-2026-10-24.md`。
+- **未验证**（需真机/CI）：CSP 真机 6 条冒烟、Windows/macOS 打包安装、双实例 E2E。
+
 ## [5.7.29] - 2026-10-24
 
 ### 禁止更新器降级安装（审计 §13 产品裁决）
