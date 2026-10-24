@@ -762,9 +762,16 @@ CREATE TABLE IF NOT EXISTS file_transfers (
     cancel_terminal INTEGER NOT NULL DEFAULT 0,
     created_at INTEGER NOT NULL
 );
--- 传输面板首屏是 `ORDER BY created_at DESC` 且**没有任何 WHERE** —— 零索引时
--- 每次打开都要全表扫 + 临时 B-tree 排序，而行数是只增的（历史传输不删）。
+-- 传输面板首屏是 `ORDER BY created_at DESC` —— 零索引时每次打开都要全表扫 +
+-- 临时 B-tree 排序，而行数是只增的（历史传输不删）。
 CREATE INDEX IF NOT EXISTS idx_file_transfers_created ON file_transfers(created_at DESC);
+-- DB-03：`list_transfers` 只回「未完成 + 最近 N 条终态」，两条腿各用一条索引。
+-- 终态那条走上面的 `idx_file_transfers_created`（按序扫、凑够 N 条就停）；
+-- 未完成那条必须**自己有一条**：`status IN ('pending','active')` 不在任何索引里，
+-- 否则每次读都要把只增的历史表整扫一遍才能捞出那几行。
+-- 部分索引（partial index）的谓词与查询里的谓词逐字一致，SQLite 才肯用它。
+CREATE INDEX IF NOT EXISTS idx_file_transfers_open ON file_transfers(created_at DESC)
+    WHERE status IN ('pending','active');
 
 -- 文件离线投递队列：断线后重启可恢复，重连后自动补发。
 CREATE TABLE IF NOT EXISTS file_outbox (

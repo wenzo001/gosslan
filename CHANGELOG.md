@@ -13,6 +13,24 @@
 
 ## [Unreleased]
 
+## [5.7.20] - 2026-10-24
+
+### 传输台账读取加上限与索引（审计 DB-03）
+
+- 旧行为：`list_transfers` 按 `created_at DESC` 返回**全表**，没有 LIMIT/OFFSET；而它是
+  每次文件活动后 `get_transfers` 都会跑一遍的读（持着那唯一一条 db 连接），
+  `file_transfers` 又是只增不删的历史表 ⇒ 打开任务中心的代价随使用时长线性增长。
+- 现在只回**未完成一条不丢 + 最近 200 条终态**（`MAX_TERMINAL_TRANSFERS`）：未完成那一腿
+  走新增的部分索引 `idx_file_transfers_open (created_at DESC) WHERE status IN ('pending','active')`，
+  终态那一腿走 `idx_file_transfers_created` 按序扫、凑够 200 条即停。
+- 不做分页（OFFSET）：截掉的终态行在界面上没有消费点 —— 任务中心只列未完成、气泡按
+  `transfer_id` 点查、打开文件走后端按 msg_id 回查台账，加 OFFSET 只是没有读者的 API。
+- 写成本实测（20 000 条 `upsert_transfer`，1% 在途）：275ms → 315ms ⇒ **每条 +约 2µs**；
+  部分索引只随"同时在传的条数"增长，不随历史增长。`hot_tables_carry_exactly_the_intended_indexes`
+  的期望值同步为 2，并附实测依据。
+- 新增回归断言：终态被截到最新 N 条（首行最新、再往前一行必须被删）、一条比所有终态都老的
+  `pending`/`active` 不会被上限挤掉、生产默认上限真的生效、真实 SQL 在真实库上两腿都走索引。
+
 ## [5.7.19] - 2026-10-24
 
 ### 监督循环自己也在被监督（审计 REL-01）

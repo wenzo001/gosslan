@@ -548,8 +548,20 @@ fn hot_queries_use_their_indexes() {
             1,
             "idx_group_recalled_msg",
         ),
-        // db/file_transfer.rs `list_transfers` —— 传输面板首屏
-        ("SELECT id FROM file_transfers ORDER BY created_at DESC", 0, "idx_file_transfers_created"),
+        // db/file_transfer.rs `list_transfers` —— 传输面板首屏。DB-03 之后它分两腿，
+        // 每腿一条索引：未完成那条必须命中部分索引（否则只增的历史表要整扫才能捞几行）；
+        // 终态那条靠 created_at 索引按序扫、凑够 N 条即停。
+        (
+            "SELECT id FROM file_transfers WHERE status IN ('pending','active')",
+            0,
+            "idx_file_transfers_open",
+        ),
+        (
+            "SELECT id FROM file_transfers \
+             WHERE status NOT IN ('pending','active') ORDER BY created_at DESC LIMIT ?1",
+            1,
+            "idx_file_transfers_created",
+        ),
         // content/store.rs `list_resumable_for_peer` —— 每次建链
         (
             "SELECT cid FROM content_transfers \
@@ -590,8 +602,28 @@ fn hot_queries_use_their_indexes() {
     }
 }
 
-/// **新库首启就必须有这些索引**（判据：只跑一次 `init`，不借任何迁移的历史）。
+/// DB-03：传输台账快照的**生产 SQL** 必须两条腿都走索引。
 ///
+/// `hot_queries_use_their_indexes` 钉的是"索引存在且能被这两条谓词命中"，这里钉的是
+/// **真实那条查询**（`LIST_TRANSFERS_SQL`）在真实库上的计划 —— 中间隔着一层 CTE + JOIN
+/// + CASE，谁也不能保证规划器仍按那两腿走。SQL 只取同一份常量，测试里不另抄。
+#[test]
+fn transfer_snapshot_plan_uses_both_indexes() {
+    let path = temp_db_path();
+    let conn = init(&path).expect("init fresh db");
+
+    let plan = query_plan(&conn, crate::db::LIST_TRANSFERS_SQL, 3);
+    assert!(
+        plan.contains("idx_file_transfers_open"),
+        "未完成那腿没走部分索引，计划是\n{plan}"
+    );
+    assert!(
+        plan.contains("idx_file_transfers_created"),
+        "终态那腿没走 created_at 索引，计划是\n{plan}"
+    );
+}
+
+/// **新库首启就必须有这些索引**（判据：只跑一次 `init`，不借任何迁移的历史）。
 /// 这条为什么值得单独钉：`idx_messages_conv_seq` / `idx_outbox_msg_id` 今天**只存在于迁移里**，
 /// 新库却照样有 —— 原因是 `is_fresh` 那支**永远为假**（`pre_table_count` 在
 /// `execute_batch(SCHEMA)` 之后才数表，新库此时已有 19 张表 ⇒ 走的是 else 分支，
@@ -614,6 +646,7 @@ fn fresh_db_has_every_hot_query_index() {
     for want in &[
         "idx_group_recalled_msg",
         "idx_file_transfers_created",
+        "idx_file_transfers_open",
         "idx_content_transfers_peer",
         "idx_file_outbox_peer_due",
         "idx_messages_conv_seq",
@@ -643,6 +676,7 @@ fn schema_alone_repairs_a_current_database() {
         for doomed in [
             "idx_group_recalled_msg",
             "idx_file_transfers_created",
+            "idx_file_transfers_open",
             "idx_content_transfers_peer",
             "idx_file_outbox_peer_due",
         ] {
@@ -657,6 +691,7 @@ fn schema_alone_repairs_a_current_database() {
     for want in [
         "idx_group_recalled_msg",
         "idx_file_transfers_created",
+        "idx_file_transfers_open",
         "idx_content_transfers_peer",
         "idx_file_outbox_peer_due",
     ] {
@@ -822,9 +857,17 @@ fn hot_tables_carry_exactly_the_intended_indexes() {
     //       而它排在全局那把 `Mutex<Connection>` 后面。20 000 行的热会话上 4.6ms → 1.5ms（3.1 倍），
     //       计划从 `idx_messages_conv (conv_id=?)`（扫光该会话所有行再回表判 kind）
     //       变成命中 `idx_messages_conv_kind (conv_id=? AND kind=?)`。
+    //
+    // `file_transfers` 的第二个索引是**部分索引** `idx_file_transfers_open`
+    // `(created_at DESC) WHERE status IN ('pending','active')`（DB-03，2026-10-24 实测）：
+    //   写：20 000 条 `upsert_transfer`（1% 在途 + 99% 终态）275ms → 315ms ⇒ **每条 +约 2µs**；
+    //       而且终态行根本不进这棵 B 树 —— 它只随"同时在传的条数"增长（个位数），不随历史增长。
+    //   读：`list_transfers` 原来那条无 WHERE 的全表读被拆成两腿，未完成那条从
+    //       "整扫只增历史表"变成 `SEARCH file_transfers USING INDEX idx_file_transfers_open`
+    //       （判据：`hot_queries_use_their_indexes`）。
     for (table, want) in [
         ("group_recalled_messages", 1),
-        ("file_transfers", 1),
+        ("file_transfers", 2),
         ("content_transfers", 2),
         ("file_outbox", 2),
         ("outbox", 2),

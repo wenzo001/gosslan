@@ -1315,11 +1315,12 @@ pub async fn send_file_auto(
 
 /// 传输表快照（10-22 审计 R-18 的一处）：整读进阻塞池。
 ///
-/// 前端每次文件活动后都会拉一回这条（`refreshTransfers`），而 `list_transfers` 是对
-/// `file_transfers` 这张**只增历史表**的全表读，且持着那唯一一条 db 连接的锁。
+/// 前端每次文件活动后都会拉一回这条（`refreshTransfers`），且持着那唯一一条 db 连接的锁。
 /// 挂在同步 `fn` 上的 `#[tauri::command(async)]` 不是豁免 —— 宏把函数体投进
 /// `async_runtime::spawn`，跑的是 tokio worker（INV-P34 那段推导在 `helpers.rs`）。
-/// 本机现量 13 行 ⇒ 今天不快，但这条的代价随使用增长，先把线程挪对再说。
+///
+/// DB-03 之后 `list_transfers` 本身是**有界**的（未完成 + 最近 N 条终态），
+/// 所以这里不再随历史行数线性变慢；线程挪对这件事仍然保留。
 #[tauri::command(async)]
 pub async fn get_transfers(
     state: State<'_, Arc<AppState>>,
