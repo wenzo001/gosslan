@@ -179,11 +179,34 @@ pub fn boot_data_counts(conn: &Connection) -> Result<(i64, i64, i64, i64)> {
 /// 迁移备份，**绝不能把它当成首次安装去生成新身份** —— 那正好会把"崩溃后
 /// 主库丢失、备份还在"变成一次不可逆的身份切换。调用方应中止启动并提示恢复。
 pub fn find_recovery_backup(db_path: &Path) -> Option<std::path::PathBuf> {
-    let parent = db_path.parent()?;
-    let stem = db_path.file_stem()?.to_str()?;
+    migration_backups_newest_first(db_path)
+        .ok()?
+        .into_iter()
+        .next()
+}
+
+/// 本库的迁移前备份（`<stem>.pre-v…-to-v….db`），**按 mtime 从新到旧**。
+///
+/// `find_recovery_backup` 与 `sweep_old_backups` 共用这一份口径（DB-02）：两处各写一套
+/// 排序时，清扫有可能删掉"恢复时本会选中的那一份"，而 `find_recovery_backup` 只会安静地
+/// 退回次新的一份 —— 数据没丢，但排查方向会被带偏，而且没人会发现。
+fn migration_backups_newest_first(db_path: &Path) -> std::io::Result<Vec<std::path::PathBuf>> {
+    let Some(parent) = db_path.parent() else {
+        return Ok(Vec::new());
+    };
+    let Some(stem) = db_path.file_stem().and_then(|s| s.to_str()) else {
+        return Ok(Vec::new());
+    };
     let prefix = format!("{stem}.pre-v");
-    let mut best: Option<(SystemTime, std::path::PathBuf)> = None;
-    for entry in std::fs::read_dir(parent).ok()?.flatten() {
+    let rd = match std::fs::read_dir(parent) {
+        Ok(rd) => rd,
+        // 目录不存在 = 还没有任何备份（`db_path` 只有文件名时 parent 是空串，同样落到这里）。
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(e) => return Err(e),
+    };
+    let mut found: Vec<(SystemTime, std::path::PathBuf)> = Vec::new();
+    for entry in rd {
+        let entry = entry?;
         let path = entry.path();
         let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
             continue;
@@ -199,11 +222,12 @@ pub fn find_recovery_backup(db_path: &Path) -> Option<std::path::PathBuf> {
             .metadata()
             .and_then(|m| m.modified())
             .unwrap_or(UNIX_EPOCH);
-        if best.as_ref().map(|(t, _)| mtime > *t).unwrap_or(true) {
-            best = Some((mtime, path));
-        }
+        found.push((mtime, path));
     }
-    best.map(|(_, p)| p)
+    // mtime 相同（同一时间粒度内两份）时按文件名兜底：备份名里带纳秒时间戳，
+    // 等长数字串的字典序与数值序一致。
+    found.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| b.1.cmp(&a.1)));
+    Ok(found.into_iter().map(|(_, p)| p).collect())
 }
 
 /// 启动恢复：把**既不在单聊 outbox、也不在群 outbox** 的 `sending` 消息落终态。
@@ -854,40 +878,67 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_favorites_msg  ON favorites(msg_id);
 CREATE INDEX        IF NOT EXISTS idx_favorites_time ON favorites(favorited_at DESC);
 "#;
 
-/// 启动时把**历史**迁移备份补收紧到 `0600`。
+/// 迁移前备份的保留份数（含本次刚生成的那一份）。
 ///
-/// B6 只保证新产生的备份是 `0600`；5.0.22–5.0.25 创建的备份仍可能是 `0644`。
-/// 只匹配本库的 `<stem>.pre-v…-to-v….db`，不碰同目录其它文件/目录。
-#[cfg(unix)]
-fn sweep_old_backups(db_path: &Path) {
-    let Some(parent) = db_path.parent() else {
-        return;
-    };
-    let Some(stem) = db_path.file_stem().and_then(|s| s.to_str()) else {
-        return;
-    };
-    let prefix = format!("{stem}.pre-v");
-    let Ok(rd) = std::fs::read_dir(parent) else {
-        return;
-    };
-    for entry in rd.flatten() {
-        let p = entry.path();
-        let Some(name) = p.file_name().and_then(|s| s.to_str()) else {
-            continue;
-        };
-        // 先做纯字符串匹配再做 stat：共享临时目录可能有上万条目，
-        // 对每个条目 `is_file()` 会把一次启动扫描放大成秒级。
-        if !name.starts_with(&prefix) || !name.contains("-to-v") || !name.ends_with(".db") {
-            continue;
-        }
-        if p.is_file() {
-            restrict_to_owner(&p);
-        }
+/// 3 份够覆盖"连续两次升级都出问题、要回头看上一版"的场景；再多只是在磁盘上堆积
+/// **完整消息库 + 身份密钥**的副本（审计 DB-02）。迁移是低频事件，所以取小不取大。
+const MAX_MIGRATION_BACKUPS: usize = 3;
+
+/// 迁移备份清扫失败（审计 DB-02）。
+///
+/// **不中止启动**：库和备份都还在，删不掉的是旧副本 —— 那是磁盘/权限问题，不该把用户
+/// 拦在应用外面。但必须带码落日志：否则"备份越堆越多"这件事在日志里完全看不见。
+#[derive(Debug, thiserror::Error)]
+#[error("迁移备份清扫失败：{path}: {reason}")]
+pub struct BackupSweepError {
+    path: String,
+    reason: String,
+}
+
+impl BackupSweepError {
+    /// 给日志与支持人员检索的错误码。
+    pub fn code(&self) -> &'static str {
+        "BACKUP_SWEEP_FAILED"
     }
 }
 
-#[cfg(not(unix))]
-fn sweep_old_backups(_db_path: &Path) {}
+/// 启动/迁移后的**统一清扫**：补齐历史备份的 `0600`，并把超出保留份数的旧备份删掉。
+///
+/// 5.0.22–5.0.25 创建的备份可能是 `0644`（B6 只保证新备份是 `0600`），里面含身份密钥与
+/// 全部消息，所以先统一收紧再谈删。只匹配本库的 `<stem>.pre-v…-to-v….db`，不碰同目录
+/// 其它文件/目录。
+///
+/// 返回删掉的份数（日志用）。某一份删不掉不会让后面可删的继续留着：走完全部候选，
+/// 最后报第一处失败 —— 一次清零比每次启动都剩同一批更有用。
+fn sweep_old_backups(db_path: &Path) -> std::result::Result<usize, BackupSweepError> {
+    let backups = migration_backups_newest_first(db_path).map_err(|e| BackupSweepError {
+        path: db_path
+            .parent()
+            .unwrap_or_else(|| Path::new("."))
+            .display()
+            .to_string(),
+        reason: format!("扫描备份目录: {e}"),
+    })?;
+    for p in &backups {
+        restrict_to_owner(p);
+    }
+    let mut removed = 0usize;
+    let mut first_err: Option<BackupSweepError> = None;
+    for p in backups.into_iter().skip(MAX_MIGRATION_BACKUPS) {
+        match std::fs::remove_file(&p) {
+            Ok(()) => removed += 1,
+            Err(e) => {
+                if first_err.is_none() {
+                    first_err = Some(BackupSweepError {
+                        path: p.display().to_string(),
+                        reason: format!("删除过期备份: {e}"),
+                    });
+                }
+            }
+        }
+    }
+    first_err.map_or(Ok(removed), Err)
+}
 
 /// `gosslan.db` → `gosslan.db-wal` / `gosslan.db-shm`（不能用 `with_extension`，会吃掉 `.db`）。
 fn sidecar_path(path: &Path, suffix: &str) -> std::path::PathBuf {
@@ -903,8 +954,9 @@ fn sidecar_path(path: &Path, suffix: &str) -> std::path::PathBuf {
 /// SQLite 自己开读事务，把**已提交状态**写成一个独立单文件；随后用只读连接校验
 /// `integrity_check=ok`、迁移前版本、业务表数，三者任一不满足就中止迁移并保留原库。
 ///
-/// 备份名带进程 id + 纳秒时间戳：失败重试不会覆盖上一份可用备份；刻意不自动删除
-/// （迁移是低频事件，保留诊断证据比省几 MB 重要）。
+/// 备份名带进程 id + 纳秒时间戳：失败重试不会覆盖上一份可用备份。**不在这里删除旧备份** ——
+/// 保留策略统一由 `sweep_old_backups`（`MAX_MIGRATION_BACKUPS`）在启动路径上裁决，
+/// 否则"谁在什么时候删"会散成好几处口径。
 fn backup_before_migration(
     conn: &Connection,
     db_path: &Path,
@@ -1022,8 +1074,6 @@ pub fn init(path: &Path) -> std::result::Result<Connection, InitError> {
     let conn = Connection::open(path)?;
     // 先收紧主库权限：SQLite 之后新建的 `-wal/-shm` 会沿用主库的权限位。
     restrict_to_owner(path);
-    // 历史版本创建的迁移备份（B6 之前）可能是 0644，启动时一并补收紧。
-    sweep_old_backups(path);
     // 备份 / VACUUM / 其它进程短暂持锁时不要立刻 SQLITE_BUSY；5s 内排队等待。
     // 这不是"把锁竞争藏起来"：等待有上界，超时仍返回错误，调用方照常进入错误态。
     conn.busy_timeout(Duration::from_secs(5))?;
@@ -1061,6 +1111,17 @@ pub fn init(path: &Path) -> std::result::Result<Connection, InitError> {
     // 都不改；不许带着"备份没成功"继续往下迁移。
     if !is_fresh && current < DB_VERSION {
         backup_before_migration(&conn, path, current, pre_table_count)?;
+    }
+
+    // 迁移备份的统一清扫（审计 DB-02）：补齐历史备份的 0600，只保留最近
+    // `MAX_MIGRATION_BACKUPS` 份。放在备份之后 = 一次调用同时覆盖"启动时清理历史积压"
+    // 与"本轮迁移后清理刚多出来的那份"。
+    // **失败不中止启动**：库与备份都还在，删不掉的只是旧副本（磁盘/权限问题），
+    // 不该把用户拦在应用外面；但必须带码落日志，否则"备份越堆越多"在日志里看不见。
+    match sweep_old_backups(path) {
+        Ok(0) => {}
+        Ok(n) => eprintln!("[gosslan-db] 迁移备份清扫：删除 {n} 份过期备份"),
+        Err(e) => eprintln!("[gosslan-db] {e}（code={}）", e.code()),
     }
 
     // DB-01：基础 schema 与内容层 schema 必须在**同一个事务**里落地 —— 分开跑时，

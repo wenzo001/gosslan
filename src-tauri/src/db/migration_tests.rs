@@ -2127,6 +2127,175 @@ fn init_tightens_historical_backups_but_not_unrelated_files() {
 }
 
 // ---------------------------------------------------------------------------
+// 2026-10-24 审计 DB-02：迁移备份保留份数受控 + 统一清扫
+// ---------------------------------------------------------------------------
+
+/// 按 mtime 造新旧顺序：保留策略的判据就是"谁更旧"，不能只靠文件名猜。
+fn set_mtime(p: &Path, secs: u64) {
+    fs::OpenOptions::new()
+        .write(true)
+        .open(p)
+        .unwrap()
+        .set_modified(std::time::UNIX_EPOCH + std::time::Duration::from_secs(secs))
+        .unwrap();
+}
+
+/// 只保留最近 N 份，而且**删的必须是最旧的**。
+///
+/// 只数份数的断言不够：一个"删掉最新那份"的实现同样能数出 N 份，而那一份正是
+/// `find_recovery_backup` 恢复时要用的一份 —— 删了它，恢复会安静地退回次新备份，
+/// 数据没丢但排查方向被带偏，而且没人会发现。
+#[test]
+fn migration_backups_are_capped_to_the_newest_three() {
+    let path = temp_db_path();
+    let dir = path.parent().unwrap().to_path_buf();
+    let stem = path.file_stem().unwrap().to_string_lossy().to_string();
+    let total = super::MAX_MIGRATION_BACKUPS as u64 + 3;
+    let mut made: Vec<PathBuf> = Vec::new();
+    for i in 0..total {
+        let p = dir.join(format!("{stem}.pre-v2-to-v{DB_VERSION}-1-{}.db", 1_000 + i));
+        fs::write(&p, b"backup").unwrap();
+        set_mtime(&p, 1_600_000_000 + i * 60);
+        made.push(p);
+    }
+
+    let removed = super::sweep_old_backups(&path).expect("清扫应成功");
+    assert_eq!(
+        removed,
+        made.len() - super::MAX_MIGRATION_BACKUPS,
+        "超出保留份数的都必须删掉"
+    );
+    let left = backup_paths(&path);
+    assert_eq!(
+        left.len(),
+        super::MAX_MIGRATION_BACKUPS,
+        "保留份数必须受控：{left:?}"
+    );
+    for p in made.iter().take(made.len() - super::MAX_MIGRATION_BACKUPS) {
+        assert!(!p.exists(), "最旧的备份必须被删：{}", p.display());
+    }
+    assert_eq!(
+        super::find_recovery_backup(&path).as_deref(),
+        made.last().map(PathBuf::as_path),
+        "清扫后 find_recovery_backup 仍须选中最新那份（两处排序口径必须一致）"
+    );
+    cleanup_db_and_backups(&path);
+}
+
+/// 端到端：连续多轮"老库启动 ⇒ 迁前备份"，备份不能无限堆积，且每一轮之后
+/// 都还留得下最新那份给恢复用。
+#[test]
+fn repeated_migrations_never_pile_up_backups() {
+    let path = temp_db_path();
+    drop(init(&path).expect("fresh db"));
+
+    for round in 1..=super::MAX_MIGRATION_BACKUPS + 1 {
+        let raw = Connection::open(&path).unwrap();
+        raw.pragma_update(None, "user_version", 2).unwrap();
+        drop(raw);
+        drop(init(&path).expect("旧版本应被备份后迁移"));
+
+        let backups = backup_paths(&path);
+        assert!(
+            backups.len() <= super::MAX_MIGRATION_BACKUPS,
+            "第 {round} 轮之后备份 {} 份，超过上限 {}",
+            backups.len(),
+            super::MAX_MIGRATION_BACKUPS
+        );
+        let newest = super::find_recovery_backup(&path).expect("必须留着可恢复备份");
+        assert!(
+            newest.exists(),
+            "恢复要用的那份不许被清扫删掉：{}",
+            newest.display()
+        );
+    }
+    assert_eq!(
+        backup_paths(&path).len(),
+        super::MAX_MIGRATION_BACKUPS,
+        "跑满 N+1 轮后应正好停在上限"
+    );
+    cleanup_db_and_backups(&path);
+}
+
+/// 清扫失败必须带可检索的错误码（DB-02）。用**本测试独占的子目录**只读来制造删除失败：
+/// 绝不能改共享 temp 目录的权限（同一进程里其它测试正往里写文件）。
+#[cfg(unix)]
+#[test]
+fn a_failed_backup_sweep_reports_a_searchable_code() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let root = std::env::temp_dir().join(format!(
+        "gosslan-sweep-test-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    fs::create_dir_all(&root).unwrap();
+    let path = root.join("gosslan.db");
+    for i in 0..super::MAX_MIGRATION_BACKUPS as u64 + 1 {
+        let p = root.join(format!(
+            "gosslan.pre-v2-to-v{DB_VERSION}-1-{}.db",
+            2_000 + i
+        ));
+        fs::write(&p, b"backup").unwrap();
+        set_mtime(&p, 1_600_000_000 + i * 60);
+    }
+
+    // r-x：能列目录、能 stat，但不能 unlink。
+    fs::set_permissions(&root, fs::Permissions::from_mode(0o500)).unwrap();
+    let result = super::sweep_old_backups(&path);
+    fs::set_permissions(&root, fs::Permissions::from_mode(0o700)).unwrap();
+
+    let err = result.expect_err("只读目录下删不掉过期备份，必须报错而不是静默");
+    assert_eq!(
+        err.code(),
+        "BACKUP_SWEEP_FAILED",
+        "清扫失败必须可检索：{err}"
+    );
+    assert!(
+        backup_paths(&path).len() > super::MAX_MIGRATION_BACKUPS,
+        "删除失败时过期备份确实还在（判据没有空转）"
+    );
+
+    for p in backup_paths(&path) {
+        let _ = fs::remove_file(p);
+    }
+    let _ = fs::remove_dir_all(&root);
+}
+
+/// 清扫失败**不许拦人开机**（DB-02）：库和备份都还在，删不掉的只是旧副本。
+/// 判据钉在唯一调用点的形状上 —— 写成 `sweep_old_backups(path)?` 就变成
+/// "备份目录权限有问题 ⇒ 应用打不开"。
+#[test]
+fn backup_sweep_failure_is_logged_not_propagated() {
+    let src = include_str!("../db.rs");
+    // 只留代码行：db.rs 的注释里也写着这个函数名。
+    let code: String = src
+        .lines()
+        .filter(|l| !l.trim_start().starts_with("//"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    let call = "sweep_old_backups(path)";
+    assert_eq!(
+        code.matches(call).count(),
+        1,
+        "只许一个调用点（统一清扫）：清扫口径一旦散成多处，保留份数就没人负责"
+    );
+    let at = code.find(call).unwrap() + call.len();
+    let window: String = code[at..].chars().take(200).collect();
+    assert!(
+        !window.trim_start().starts_with('?'),
+        "清扫失败不许用 `?` 冒泡：备份目录权限问题会把应用拦在启动外"
+    );
+    assert!(
+        window.contains("code={}"),
+        "清扫失败必须落一条带错误码的日志（BACKUP_SWEEP_FAILED），否则备份堆积无从发现"
+    );
+}
+
+// ---------------------------------------------------------------------------
 // 真实数据副本演练（手动、#[ignore]）
 // ---------------------------------------------------------------------------
 
