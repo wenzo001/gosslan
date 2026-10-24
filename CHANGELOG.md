@@ -13,6 +13,24 @@
 
 ## [Unreleased]
 
+## [5.7.21] - 2026-10-24
+
+### 更新器安装不再 clone 整包（审计 PERF-01）
+
+- 旧行为：`updater_download` 把整包留在 `UpdaterSession.bytes`，`updater_install` 再 `clone()`
+  一份交给官方 `Update::install(&[u8])` ⇒ 下载几十 MB 的安装包时，内存峰值约 **2× 包体**。
+- 现在 `take()` 出来（整包**移动**，峰值降到 1×），并让 `spawn_blocking` 闭包把
+  `update`/`bytes` 一起带回：`install` 失败（验签不符、磁盘满、目录被占）时把两样原样放回
+  会话，用户再点"安装"直接重试，不必重下几十 MB。缺一样时也把已取出那份放回去，
+  避免只 take 一半导致下一次必然失败。
+- 两格失败（`install` 报错、阻塞任务被中断/panic）统一返回并记录
+  `code=UPDATER_INSTALL_FAILED`：中断那一格整包已随闭包 drop，无法回填，但必须在日志里
+  留痕（`logger.error("updater", …)`，拿不到 logger 时退回 stderr）。
+- 不采用"落临时文件再流式安装"：官方 API 签名是 `install(&[u8])`，要求整包在内存，
+  落盘再读回来的峰值与直接移动相同，只多一次磁盘往返。
+- 新增回归断言：安装函数体里 `.take()` 恰 2 次、`.clone()` 只允许出现在错误文案上、
+  失败必须出现 `= Some(update)` / `= Some(bytes)` 回填、`code=UPDATER_INSTALL_FAILED` 恰 2 处。
+
 ## [5.7.20] - 2026-10-24
 
 ### 传输台账读取加上限与索引（审计 DB-03）

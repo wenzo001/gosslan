@@ -354,7 +354,7 @@ mod desktop {
     #[tauri::command]
     pub async fn updater_install(
         // Windows 由官方 install 内部退出进程，不经过下面的 restart 分支。
-        #[allow(unused_variables)] app: AppHandle,
+        app: AppHandle,
         state: State<'_, UpdaterSession>,
     ) -> Result<(), String> {
         if state
@@ -363,40 +363,78 @@ mod desktop {
         {
             return Err("更新仍在下载".to_string());
         }
-        // ⚠️ 这里必须 clone 而不是 take：`install` 会在**验签/解包/复制**任一环节失败
-        // （签名不符、磁盘满、目标目录被占）。take 掉之后这两个字段就空了，
-        // 用户再点"安装"只会得到"没有可安装的更新"—— 几十 MB 已经下完，
-        // 却被迫重新检查 + 重新下载。失败时保留现场，成功后再 clear。
-        let update = state
+        // PERF-01：整包**移动**而不是 clone —— 峰值从 2× 包体降到 1×。
+        //
+        // 上一版用 clone 的理由是真的（`install` 会在验签/解包/复制任一环节失败，
+        // take 掉之后用户再点"安装"只会得到"没有可安装的更新"，几十 MB 白下），
+        // 但那个理由要的是**失败可重试**，不是"必须留一份副本"。所以这里 take，
+        // 失败时把两样原样退回去（见下面的 `Some(` 回填）。
+        let taken_update = state
             .update
             .lock()
             .unwrap_or_else(|e| e.into_inner())
-            .clone()
-            .ok_or_else(|| "没有可安装的更新".to_string())?;
-        let bytes = state
+            .take();
+        let taken_bytes = state
             .bytes
             .lock()
             .unwrap_or_else(|e| e.into_inner())
-            .clone()
-            .ok_or_else(|| "更新尚未下载完成".to_string())?;
+            .take();
+        let missing = if taken_update.is_none() {
+            "没有可安装的更新"
+        } else {
+            "更新尚未下载完成"
+        };
+        let (update, bytes) = match (taken_update, taken_bytes) {
+            (Some(update), Some(bytes)) => (update, bytes),
+            (update, bytes) => {
+                // 缺一样也要把已取出的那份放回去：只 take 一半会让下一次重试同样失败。
+                if let Some(update) = update {
+                    *state.update.lock().unwrap_or_else(|e| e.into_inner()) = Some(update);
+                }
+                if let Some(bytes) = bytes {
+                    *state.bytes.lock().unwrap_or_else(|e| e.into_inner()) = Some(bytes);
+                }
+                return Err(missing.to_string());
+            }
+        };
         state.set_status(&app, |st| {
             st.phase = "installing".to_string();
             st.error = None;
         });
         // 解包/验签/复制是同步重活：放到阻塞池，别占 tokio worker（单 runtime 会被饿死）。
-        let installed = tokio::task::spawn_blocking(move || update.install(&bytes))
-            .await
-            .map_err(|e| e.to_string())?
-            .map_err(|e| e.to_string());
+        // 闭包**带回** update/bytes，失败时由调用处放回会话；成功时随闭包一起 drop。
+        let outcome = tokio::task::spawn_blocking(move || {
+            let result = update.install(&bytes);
+            (result, update, bytes)
+        })
+        .await;
+        let (installed, update, bytes) = match outcome {
+            Ok(v) => v,
+            Err(join) => {
+                // 阻塞任务被中断/panic：整包已随闭包 drop，只能让用户重下。
+                // 这是"失败可重试"唯一覆盖不到的一格，必须留痕，不许假装成普通失败。
+                let msg = format!("code=UPDATER_INSTALL_FAILED：安装任务中断：{join}");
+                log_install_failure(&app, &msg);
+                state.set_status(&app, |st| {
+                    st.phase = "failed".to_string();
+                    st.error = Some(msg.clone());
+                });
+                return Err(msg);
+            }
+        };
         if let Err(e) = installed {
-            let shown = e.clone();
-            state.set_status(&app, move |st| {
+            // 现场放回去：验签不符/磁盘满/目录被占都是"可以再试一次"的失败。
+            *state.update.lock().unwrap_or_else(|e| e.into_inner()) = Some(update);
+            *state.bytes.lock().unwrap_or_else(|e| e.into_inner()) = Some(bytes);
+            let msg = format!("code=UPDATER_INSTALL_FAILED：{e}");
+            log_install_failure(&app, &msg);
+            state.set_status(&app, |st| {
                 st.phase = "failed".to_string();
-                st.error = Some(shown);
+                st.error = Some(msg.clone());
             });
-            return Err(e);
+            return Err(msg);
         }
-        state.clear();
+        // 成功：两样都已随安装一起用掉（`take` 之后会话里本来就是空的，不必再 clear）。
         state.set_status(&app, |st| {
             st.phase = "idle".to_string();
         });
@@ -409,6 +447,18 @@ mod desktop {
         {
             // macOS/Linux：安装完成后由本进程重启到新版本。
             app.restart()
+        }
+    }
+
+    /// 安装失败留痕（`code=UPDATER_INSTALL_FAILED`）。
+    ///
+    /// 一条日志写不出去不该连累返回值：`logger` 拿不到时退回 stderr，
+    /// 反正这条错误的**可定位性**由返回给前端的同一个字符串兜底。
+    fn log_install_failure(app: &AppHandle, msg: &str) {
+        use tauri::Manager;
+        match app.try_state::<std::sync::Arc<crate::state::AppState>>() {
+            Some(s) => s.inner().logger.error("updater", msg.to_string()),
+            None => eprintln!("[gosslan-updater] {msg}"),
         }
     }
 
@@ -545,6 +595,36 @@ mod status_tests {
         assert!(
             cancel.contains("\"installing\"") && cancel.contains("无法取消"),
             "取消必须在 installing 相位直接拒绝（前端不显示按钮是第二道，不是唯一一道）"
+        );
+    }
+
+    /// PERF-01：安装时整包必须**移动**（峰值 2× 包体 → 1×），而失败必须把现场放回去。
+    ///
+    /// 这两条是一起的：只 take 不回填会把"失败可重试"退化成"失败要重下几十 MB"，
+    /// 而只回填不 take 就是原来的 2× 峰值。判据只看这一处函数体，
+    /// `clone` 允许出现的唯一位置是错误文案（它没有整包那么大）。
+    #[test]
+    fn install_moves_the_package_and_restores_it_on_failure() {
+        let src = include_str!("updater.rs");
+        let install = body_of(src, "pub async fn updater_install(");
+        assert_eq!(
+            install.matches(".take()").count(),
+            2,
+            "update 与 bytes 都必须 take 出来（整包移动，不 clone）"
+        );
+        assert_eq!(
+            install.matches(".clone()").count(),
+            install.matches("msg.clone()").count(),
+            "安装路径里除错误文案外不许出现 clone —— 那正是 PERF-01 的 2× 峰值"
+        );
+        assert!(
+            install.contains("= Some(update)") && install.contains("= Some(bytes)"),
+            "失败必须把 update/bytes 原样放回会话，否则用户要重新下载几十 MB"
+        );
+        assert_eq!(
+            install.matches("code=UPDATER_INSTALL_FAILED").count(),
+            2,
+            "两格失败（install 报错、阻塞任务中断）都要留同一个可检索码"
         );
     }
 }
