@@ -147,6 +147,11 @@
   `code=WORKER_WATCHDOG_ALIVE`（在监督的数量 + 每个 worker 的重启次数）。此前只有"重启/放弃"才说话，
   安静既可能是正常、也可能是它已经死了。判据 `watchdog_leaves_start_and_heartbeat_evidence`
   （读生产码、切掉测试模块 —— 否则会把测试里的字面量数进去）。
+- **状态（2026-10-24，审计 REL-01，B8/B16）**：进一步收口 —— `start` 不再丢弃监督循环句柄：
+  句柄表抽成共享 `Arc<Mutex<Vec<_>>>`，二层守护每 tick 判该句柄，结束即带 `code=WORKER_DEAD`
+  重启；重启时接管旧 worker，不重复 spawn。重启/放弃日志另有
+  `code=WORKER_RESTART` / `code=WORKER_GIVEUP`。判据在 `worker_supervisor::tests`
+  （含"kill 掉监督循环后 worker 仍被拉起"与 kill 前后心跳证据）。
 
 ---
 

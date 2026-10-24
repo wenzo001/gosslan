@@ -455,6 +455,11 @@ ADR
 未知扩展应在协议允许的情况下安全忽略。
 
 - 钩子：`tests::unknown_wire_frame_is_tolerated_after_auth` `discovery::routed::tests::device_id_is_optional_and_backward_compatible` `db::migration_tests::migration_fresh_db_gets_latest_version`
+- 当前实例（2026-10-24，PERF-02）：`ShareTreeResponse` 增加 `truncated: bool` 并标
+  `#[serde(default)]` ⇒ 旧端缺字段按 `false` 解（判据
+  `share_tree_response_without_truncated_is_legacy_false`）。同一轮把命令返回形状从裸数组改成
+  `{ entries, truncated }`，那是**命令契约**而非线上协议：前端 `parseIpcValue(shareTreeSchema, …)`
+  对旧形状直接报错，不允许静默读到 `undefined`。
 
 ---
 

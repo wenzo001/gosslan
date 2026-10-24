@@ -495,10 +495,23 @@ pub fn guard_case_fixture_db(
         "     整条链重放一遍（2026-09-25 之前正是这样）：首次启动多打 9 行假的「running v1→v2…」\n"
         "     日志、v7 两句「孤儿清理跳过一条语句」告警、还先建 `idx_outbox_msg_id` 再在 v8→v9 删掉它。\n"
         "     ⚠️ 这个退化在**形状上完全看不出来**（迁移全是幂等的，`user_version` 两种走法都停在\n"
-        "     DB_VERSION）⇒ 只有源码顺序能钉住它，所以本用例的注入就是「把两句话调换顺序」：\n"
-        "     编译照过、测试套照绿，只有这条守卫会红。",
+        "     DB_VERSION）⇒ 只有源码顺序能钉住它。DB-01 之后应用点收进 `apply_base_schema_atomically`，\n"
+        "     注入改成「在数表之前先应用一次 SCHEMA」：编译照过、迁移测试照绿，只有这条守卫会红。",
         file=TAURI / "src" / "db.rs",
-        injections=[('    let pre_table_count: i64 = conn\n        .query_row(\n            "SELECT COUNT(*) FROM sqlite_master WHERE type = \'table\' AND name NOT LIKE \'sqlite_%\'",\n            [],\n            |r| r.get(0),\n        )\n        .unwrap_or(0);\n    // 判据：`user_version` 没写过 **且** 一张业务表都没有。只看前者会把\n    // "老库（v1/v2 时代根本不存在 user_version）"误判成新库 ⇒ 那条库的形状就永远补不回来。\n    let is_fresh = current == 0 && pre_table_count == 0;\n\n    // **迁移前保护**：已有库且需要前进 schema 时，先在**任何写操作之前**做一致性快照。\n    // 这里位于 `execute_batch(SCHEMA)` 之前是语义的一部分：备份失败就中止，原库一个字节\n    // 都不改；不许带着"备份没成功"继续往下迁移。\n    if !is_fresh && current < DB_VERSION {\n        backup_before_migration(&conn, path, current, pre_table_count)?;\n    }\n\n    conn.execute_batch(SCHEMA)?;\n', '    conn.execute_batch(SCHEMA)?;\n    let pre_table_count: i64 = conn\n        .query_row(\n            "SELECT COUNT(*) FROM sqlite_master WHERE type = \'table\' AND name NOT LIKE \'sqlite_%\'",\n            [],\n            |r| r.get(0),\n        )\n        .unwrap_or(0);\n    // 判据：`user_version` 没写过 **且** 一张业务表都没有。只看前者会把\n    // "老库（v1/v2 时代根本不存在 user_version）"误判成新库 ⇒ 那条库的形状就永远补不回来。\n    let is_fresh = current == 0 && pre_table_count == 0;\n\n    // **迁移前保护**：已有库且需要前进 schema 时，先在**任何写操作之前**做一致性快照。\n    // 这里位于 `execute_batch(SCHEMA)` 之前是语义的一部分：备份失败就中止，原库一个字节\n    // 都不改；不许带着"备份没成功"继续往下迁移。\n    if !is_fresh && current < DB_VERSION {\n        backup_before_migration(&conn, path, current, pre_table_count)?;\n    }\n\n')],
+        injections=[
+            # 1) 先把原处的精确调用改成多行（判据只认那一行精确串，它就只剩下面插入的那一处）
+            (
+                "    apply_base_schema_atomically(&conn, SCHEMA, is_fresh.then_some(DB_VERSION))?;",
+                "    apply_base_schema_atomically(\n        &conn,\n        SCHEMA,\n        is_fresh.then_some(DB_VERSION),\n    )?;",
+            ),
+            # 2) 在数表之前插入一次 SCHEMA 应用 ⇒ `pre_table_count` 数到的是建表之后的库
+            (
+                "    let pre_table_count: i64 = conn\n        .query_row(",
+                "    let is_fresh = current == 0;\n"
+                "    apply_base_schema_atomically(&conn, SCHEMA, is_fresh.then_some(DB_VERSION))?;\n"
+                "    let pre_table_count: i64 = conn\n        .query_row(",
+            ),
+        ],
         cmd=cargo("test", "--lib", "tables_are_counted_before_the_schema_is_applied"),
         cwd=TAURI,
         expect_fail_hint="恒为假",

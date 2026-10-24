@@ -452,8 +452,8 @@ CASES: list[Case] = [
         "     ⚠️ 反向也要成立：`mark_queued_transfer_failed`（自动判死）那边仍写 failed —— 两个口径不许合并。",
         file=TAURI / "src" / "commands" / "files.rs",
         injections=[(
-            "db::finalize_file_failure(&dbc, transfer_id, db::FileJobEnd::Cancelled);",
-            "db::finalize_file_failure(&dbc, &transfer_id, db::FileJobEnd::Expired);",
+            "match db::finalize_file_failure(&dbc, transfer_id, db::FileJobEnd::Cancelled) {",
+            "match db::finalize_file_failure(&dbc, transfer_id, db::FileJobEnd::Expired) {",
         )],
         cmd=cargo("test", "--lib", "a_user_cancel_is_not_recorded_as_a_failure"),
         cwd=TAURI,
@@ -577,15 +577,15 @@ CASES: list[Case] = [
     ),
     Case(
         name="群文件终态：取消要写 gfile 气泡、超时/放弃不许写（两个方向都钉）",
-        why="合并成一份出口之后，「哪些口径允许碰群气泡」变成这个函数里的一行 `if cancelled`。\n"
+        why="合并成一份出口之后，「哪些口径允许碰群气泡」变成这个函数里的一个 `let group_bubble = cancelled`。\n"
         "     写窄了：用户取消群文件，气泡原地不动 —— 按了没反应。\n"
         "     写宽了（当年清扫器就是宽的那一侧）：某一个收件人超时/放弃 ⇒ 整条群消息显示失败，\n"
         "     而其余收件人其实收到了 ⇒ 用户重发，群里多出一份重复文件。\n"
-        "     注入方式：把 `if cancelled` 写成 `if true`（放宽到所有口径），反向判据必须红。",
+        "     注入方式：把 `let group_bubble = cancelled` 改成 `= true`（放宽到所有口径），反向判据必须红。",
         file=TAURI / "src" / "db" / "file_transfer.rs",
         injections=[(
-            "        if cancelled {\n            bubble &= set_message_status(conn, &format!(\"gfile-{transfer_id}\")",
-            "        if true {\n            bubble &= set_message_status(conn, &format!(\"gfile-{transfer_id}\")",
+            "        let group_bubble = cancelled\n            && set_message_status(&tx, &format!(\"gfile-{transfer_id}\"), status)? > 0;",
+            "        let group_bubble = true\n            && set_message_status(&tx, &format!(\"gfile-{transfer_id}\"), status)? > 0;",
         )],
         cmd=cargo("test", "--lib", "expired_file_does_not_touch_the_group_bubble"),
         cwd=TAURI,
@@ -606,10 +606,10 @@ CASES: list[Case] = [
         "     这才是本用例要证明的那件事（判据要两头都命中才算命中：先关行、后有面向用户的写）。",
         file=TAURI / "src" / "commands" / "files.rs",
         injections=[(
-            "        db::finalize_file_failure(&dbc, transfer_id, db::FileJobEnd::GiveUp).unwrap_or(false)",
-            "        let _ = db::mark_file_outbox_failed(&dbc, transfer_id);\n"
-            "        let _ = db::set_message_status(&dbc, &format!(\"file-{transfer_id}\"), \"failed\");\n"
-            "        db::finalize_file_failure(&dbc, transfer_id, db::FileJobEnd::GiveUp).unwrap_or(false)",
+            "    let announce = finalize_with_note(state, transfer_id, db::FileJobEnd::GiveUp, \"fail_job\");",
+            "    let _ = db::mark_file_outbox_failed(&state.db.lock().unwrap_or_else(|e| e.into_inner()), transfer_id);\n"
+            "    let _ = db::set_message_status(&state.db.lock().unwrap_or_else(|e| e.into_inner()), &format!(\"file-{transfer_id}\"), \"failed\");\n"
+            "    let announce = finalize_with_note(state, transfer_id, db::FileJobEnd::GiveUp, \"fail_job\");",
         )],
         cmd=cargo("test", "--lib", "every_finalize_path_defers_the_destructive_write"),
         cwd=TAURI,
