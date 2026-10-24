@@ -1054,6 +1054,15 @@ const canRemindEntry = computed(
 );
 
 /**
+ * 置顶入口（规范 §六「群聊且不是 recalled」）。桌面右键与移动端长按是两套独立模板，
+ * 但这一条判断只许有一个家 —— 同族的「撤回」以前就是内联写的、漏了 `isGroup`，
+ * 结果单聊长按也出现「撤回」而点了确认后什么都不发生（见模板里那条注释）。
+ */
+const canPinEntry = computed(
+  () => props.isGroup && props.message.kind !== "recalled",
+);
+
+/**
  * 从「我」的视角看这台设备对应的提醒相：
  * - 发起方：看总览相（群聊＝最慢的一台）；
  * - 接收方：看 perActor 里自己那格（群聊在回执前已由发起名单 base 预填）。
@@ -1774,7 +1783,7 @@ async function copyFileToClipboard() {
     :can-recall="canRecallNow()"
     :can-render="renderTo !== null"
     :render-to="renderTo ?? 'text'"
-    :can-pin="isGroup && message.kind !== 'recalled'"
+    :can-pin="canPinEntry"
     :pinned="!!pinned"
     :can-cancel-send="canCancelSend"
     :can-remind="canRemindEntry"
@@ -1852,9 +1861,11 @@ async function copyFileToClipboard() {
         {{ t("common.quote") }}
       </button>
 
-      <!-- 置顶：任意群成员都能置（可逆、低风险），与撤回不同 -->
+      <!-- 置顶：任意群成员都能置（可逆、低风险），与撤回不同。
+           与桌面菜单**共用同一个判定**（`canPinEntry`）——这条以前在这里是内联写的，
+           和同族「撤回」漏 `isGroup` 那次是同一个形状，改一处漏一处。 -->
       <button
-        v-if="isGroup && message.kind !== 'recalled'"
+        v-if="canPinEntry"
         class="flex items-center gap-3 px-4 py-3 text-left text-title text-[var(--gosslan-text)] transition active:bg-[var(--gosslan-hover)]"
         @click="closeActionSheet(); emit('pin')"
       >
