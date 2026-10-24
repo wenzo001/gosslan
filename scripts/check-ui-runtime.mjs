@@ -5853,6 +5853,52 @@ async function runMsgOverflow(cdp, url) {
   check("动效只碰低成本属性：消息区在动的节点没有一个过渡/动画布局尺寸",
     !!animScan && animScan.animating >= 1 && animScan.hits.length === 0,
     "在动节点 ≥1 且命中 0", JSON.stringify(animScan));
+  // §8 新消息进入动效：这一格只证"那条 CSS 在浏览器里真的落到计算样式上、时长取的是全站令牌、
+  // 而且行盒高度一像素不动（动了就会顶坏虚拟列表的高度测量与滚动锚点）"。
+  // "哪些行才算新消息"的资格判定由 src/utils/messageEnter.test.ts 的真值表钉，两边不重复量。
+  const ENTER_READ = `(() => {
+    const host = document.getElementById('probe-host');
+    if (!host) return null;
+    const box = document.createElement('div');
+    box.className = 'gosslan-bubble-text';
+    box.textContent = '进入动效探针';
+    host.appendChild(box);
+    const h0 = Math.round(box.getBoundingClientRect().height);
+    box.classList.add('gosslan-msg-enter');
+    const cs = getComputedStyle(box);
+    const out = {
+      name: cs.animationName,
+      dur: cs.animationDuration,
+      h0,
+      h1: Math.round(box.getBoundingClientRect().height),
+      token: getComputedStyle(document.documentElement).getPropertyValue('--gosslan-duration').trim(),
+      reduce: matchMedia('(prefers-reduced-motion: reduce)').matches,
+    };
+    box.remove();
+    return out;
+  })()`;
+  const enterOn = await cdp.eval(ENTER_READ);
+  // 计算样式给 "0.24s"、自定义属性给 "240ms" ⇒ 两边都折成秒再比，不许各比各的写法
+  const secOf = (v) => (parseFloat(String(v ?? "0")) || 0) * (String(v).includes("ms") ? 0.001 : 1);
+  check("新消息进入：类名真的带出 animation-name + 全站令牌时长，且行盒高度不涨不缩",
+    !!enterOn && enterOn.name === "gosslan-msg-in"
+      && secOf(enterOn.dur) > 0
+      && Math.abs(secOf(enterOn.dur) - secOf(enterOn.token)) < 1e-6
+      && enterOn.h0 > 0 && enterOn.h0 === enterOn.h1,
+    "animation-name=gosslan-msg-in / duration=--gosslan-duration / 加类前后等高且非零",
+    JSON.stringify(enterOn));
+  await cdp.send("Emulation.setEmulatedMedia", {
+    features: [{ name: "prefers-reduced-motion", value: "reduce" }],
+  }).catch(() => {});
+  const enterOff = await cdp.eval(ENTER_READ);
+  check("减少动效档下这条进入动画确实被关掉（而且模拟介质真的生效了，不是读了个假的 matchMedia）",
+    !!enterOff && enterOff.reduce === true && enterOff.name === "none",
+    "reduce=true 且 animation-name=none", JSON.stringify(enterOff));
+  await cdp.send("Emulation.setEmulatedMedia", { features: [] }).catch(() => {});
+  const enterBack = await cdp.eval(ENTER_READ);
+  check("出档还原后这条动画又回来（模拟介质不许外溢给后面的段）",
+    !!enterBack && enterBack.reduce === false && enterBack.name === "gosslan-msg-in",
+    "reduce=false 且 animation-name=gosslan-msg-in", JSON.stringify(enterBack));
   // 反向对照：给气泡现场加一条 height 过渡，同一把尺必须点名它。
   await cdp.eval("(() => { const el = document.querySelector('#probe-host .gosslan-bubble-text');"
     + " if (el) el.style.transition = 'height 200ms ease'; return true; })()");

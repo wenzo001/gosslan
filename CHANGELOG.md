@@ -35,8 +35,13 @@
   ② `split("@media (prefers-reduced-motion…)")` 拿到的 chunk 会横跨到下一个块，
   于是先命中的是**没缩进的主规则** ⇒ 改成按花括号配对取每条 reduce 块自己的正文。
 - 真实读数：`npm test` **1349/1349**；`npm run verify` **17/18**（唯一红＝Change Budget 判据 3，
-  与本条无关）；`vue-tsc --noEmit` 与 `vite build` 绿。运行时那一格由 CDP 探针的动效属性扫描看着，
-  浏览器真取值仍欠一条专门断言（见下轮）。
+  与本条无关）；`vue-tsc --noEmit` 与 `vite build` 绿。
+- 浏览器真取值也补上了（[check-ui-runtime.mjs](scripts/check-ui-runtime.mjs) 的 `msgovf` 段，3 格）：
+  类名带出的 `animation-name` 与 `animation-duration` 对得上 `--gosslan-duration`（计算样式 `0.24s`
+  与令牌 `240ms` 两边都折成秒再比，不各比各的写法）、**加类前后行盒等高**、减少动效档下落到
+  `animation: none`、出档后动画回来（模拟介质不外溢给后面的段）。该段 **58/58 条判据绿**。
+  变异自证：给关键帧 `from` 加一条 `height: 4px` ⇒ 只有"行盒等高"那一格红（57/58），撤掉即回 58/58。
+  这一格也踩过自己的坑：第一版把 `h0` 漏在返回对象外面 ⇒ `undefined > 0` 为假，红的是量具不是产品。
 
 ## [5.7.7] - 2026-10-24
 
