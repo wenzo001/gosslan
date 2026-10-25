@@ -1230,6 +1230,8 @@ window.__probe = (() => {
     const chipTop = Math.min(...rs.map((r) => r.top));
     const br = bubble.getBoundingClientRect();
     const sr = strip.getBoundingClientRect();
+    const bcs = getComputedStyle(bubble);
+    const scs = getComputedStyle(strip);
     let clip = null;
     for (let n = bar.parentElement; n; n = n.parentElement) {
       const s = getComputedStyle(n);
@@ -1248,6 +1250,12 @@ window.__probe = (() => {
       bubbleLeft: Math.round(br.left), bubbleRight: Math.round(br.right),
       stripLeft: Math.round(sr.left), stripRight: Math.round(sr.right),
       padLeft: getComputedStyle(strip).paddingLeft, padRight: getComputedStyle(strip).paddingRight,
+      // 底栏补的三边描边必须与气泡同色（有描边的气泡才补；无描边的卡片/图片是透明）。
+      stripBorderLeft: scs.borderLeftColor,
+      stripBorderRight: scs.borderRightColor,
+      stripBorderBottom: scs.borderBottomColor,
+      bubbleBorderLeft: bcs.borderLeftColor,
+      bubbleBorderRight: bcs.borderRightColor,
       // 那截竖向间距的构成也要带回来：底栏自己的 padding-top 是多少、上一块（气泡）的下外边距。
       // 不知道数从哪来就没法判断"再收紧"该动哪一层。
       stripPadTop: getComputedStyle(strip).paddingTop,
@@ -4056,6 +4064,18 @@ async function rosterChecks(cdp, url) {
     "0 <= 底栏上沿 - 气泡下沿 <= 2",
     "间距 " + gl.gapStripToBubble + "px = 底栏 pt " + gl.stripPadTop
       + " + 气泡 mb " + gl.bubbleMarginBottom);
+  // 用户 2026-10-25：「上面有 border，下面没有」—— 底栏补的左/右/下三边必须与气泡
+  // 的那一条同色，接缝处的竖线才是连续的；自己的消息气泡边是透明，底栏也应透明。
+  check("左列：底栏左/右/下边框与气泡边框同色（接缝处竖线不断）",
+    gl.ok === true
+      && gl.stripBorderLeft === gl.bubbleBorderLeft
+      && gl.stripBorderRight === gl.bubbleBorderRight
+      && gl.stripBorderBottom === gl.bubbleBorderLeft,
+    "strip 三边 == bubble 边框色",
+    JSON.stringify({
+      strip: [gl.stripBorderLeft, gl.stripBorderRight, gl.stripBorderBottom],
+      bubble: [gl.bubbleBorderLeft, gl.bubbleBorderRight],
+    }));
 
   const hl = await hoverInto(0);
   check("左列：拿得到胶囊的落点（hover 的坐标来源）", !!hl.pt, "chipPoint 非空", JSON.stringify(hl.pt));
@@ -4109,6 +4129,16 @@ async function rosterChecks(cdp, url) {
     "0 <= 底栏上沿 - 气泡下沿 <= 2",
     "间距 " + gm.gapStripToBubble + "px = 底栏 pt " + gm.stripPadTop
       + " + 气泡 mb " + gm.bubbleMarginBottom);
+  check("右列：底栏左/右/下边框与气泡边框同色（自己的气泡是透明边 ⇒ 底栏也透明）",
+    gm.ok === true
+      && gm.stripBorderLeft === gm.bubbleBorderLeft
+      && gm.stripBorderRight === gm.bubbleBorderRight
+      && gm.stripBorderBottom === gm.bubbleBorderLeft,
+    "strip 三边 == bubble 边框色",
+    JSON.stringify({
+      strip: [gm.stripBorderLeft, gm.stripBorderRight, gm.stripBorderBottom],
+      bubble: [gm.bubbleBorderLeft, gm.bubbleBorderRight],
+    }));
 
   const hm = await hoverInto(0);
   check("右列：拿得到胶囊的落点（hover 的坐标来源）", !!hm.pt, "chipPoint 非空", JSON.stringify(hm.pt));
@@ -5486,6 +5516,11 @@ async function runRowPair(cdp, url) {
     const br = bubble ? bubble.getBoundingClientRect() : null;
     const isMine = tail ? /tail-mine/.test(tail.className) : null;
     const bcs = bubble ? getComputedStyle(bubble) : null;
+    // 尾巴那一侧的下圆角必须被 style.css 的 [data-tail-side] 拉平：
+    // 圆角会把气泡底色切掉，尾巴根部就露出一道白缝（用户 2026-10-25 的截图）。
+    const tailCorner = tail && bcs
+      ? parseFloat((isMine ? bcs.borderBottomRightRadius : bcs.borderBottomLeftRadius) || "0")
+      : null;
     const cornerRad = bcs ? parseFloat(bcs.borderBottomRightRadius) : null;
     const lineEl = tail ? tail.querySelector('.tail-line') : null;
     const tailStroke = lineEl ? getComputedStyle(lineEl).stroke : null;
@@ -5538,6 +5573,7 @@ async function runRowPair(cdp, url) {
       nickCount,
       isMine,
       cornerRad,
+      tailCorner,
       tailStroke,
       tailFill,
       bubbleBg,
@@ -5638,6 +5674,9 @@ async function runRowPair(cdp, url) {
   check("单聊·尾巴上沿压进气泡 12~16px（盒高 14，盖住边缘那段描边 ⇒ 接缝无台阶）",
     !!gFar && gFar.tailInsideBubble >= 12 && gFar.tailInsideBubble <= 16,
     "12 <= inside <= 16", JSON.stringify({ inside: gFar && gFar.tailInsideBubble }));
+  check("单聊·尾巴那一侧的下圆角已拉平（圆角会切掉底色、尾巴根部露白缝）",
+    !!gFar && gFar.tailCorner === 0, "0px",
+    JSON.stringify({ tailCorner: gFar && gFar.tailCorner, isMine: gFar && gFar.isMine }));
   check("单聊·描边与气泡边框同色：SVG 描边 == 气泡那一侧的 border 色",
     !!gFar && typeof gFar.tailStroke === "string" && gFar.tailStroke === gFar.bubbleLine,
     "stroke == 同侧 border 色", JSON.stringify({ tailStroke: gFar && gFar.tailStroke, bubbleLine: gFar && gFar.bubbleLine }));
@@ -5724,6 +5763,23 @@ async function runRowPair(cdp, url) {
     check("群聊·" + kindLabel + "整条不渲染尾巴",
       !!gGroupKind && gGroupKind.tailCount === 0, "tailCount == 0",
       JSON.stringify({ kindLabel, tailCount: gGroupKind && gGroupKind.tailCount }));
+  }
+  // 取证帧（--shot）：单聊 + 回应条，用来肉眼复核"尾巴 / 气泡 / 底栏是不是同一块"。
+  if (SHOT_PATH) {
+    const shotProps = {
+      message: {
+        msg_id: "m-shot-dm", sender_id: "peer-a", kind: "text",
+        content: "这一条用来看尾巴和回应条是不是同一块。", ts: BASE, conv_id: "c-rowpair", seq: 1,
+      },
+      isGroup: false, senderName: "对方", canReact: true,
+      reactions: [{ emoji: "[赞]", count: 2, mine: false, actors: ["peer-b", "peer-c"], latest: "peer-c" }],
+    };
+    await cdp.eval("window.__probe.install('/src/components/MessageItem.vue', '', "
+      + JSON.stringify(JSON.stringify(shotProps)) + ")");
+    await sleep(500);
+    const shot = await cdp.send("Page.captureScreenshot", { format: "png" });
+    fs.writeFileSync(SHOT_PATH.replace(/\.png$/, "-tail-reactions.png"), Buffer.from(shot.data, "base64"));
+    console.log("  📷 尾巴+回应条取证帧 → " + SHOT_PATH.replace(/\.png$/, "-tail-reactions.png"));
   }
   /*
    * 反向对照：把尾巴往下推 20px，同一把尺子必须读到「露在外面」明显变大。
@@ -10006,7 +10062,8 @@ async function runOpsCenter(cdp, url) {
         nextAttemptAt: 0, lastError: null, path: null, createdAt: 3, updatedAt: 3,
       }];
       chat.messageOps = [{ msg_id: 'm1', kind: 'text', peer_id: 'p1', group_id: null,
-        waiting_for: 1, created_at: 9, preview: '在吗', peer_offline: true }];
+        waiting_for: 1, created_at: 9, preview: '在吗', peer_offline: true,
+        can_cancel: true, some_delivered: false }];
       chat.groupHistorySync = { g1: { group_id: 'g1', source: 'p1', synced: 30, total: 100,
         phase: 'running' } };
       const t = window.__probe.vue;
@@ -10090,6 +10147,34 @@ async function runOpsCenter(cdp, url) {
       wantAck, JSON.stringify({ status: sent && sent.status, wantAck }));
     check("消息行给「取消 + 去会话」两颗按钮（cancel_message 已有真命令）",
       !!msg && msg.buttons === 2, "2", JSON.stringify(msg));
+
+    // 半送达的群消息（用户 2026-10-25：「明明还在排队，点取消却说已送达不能取消」）：
+    // 行仍要列（"还有 N 人没收到"是真的），但后端已拒绝取消 ⇒ 不给取消键，
+    // 状态改说「部分成员已收到」，而不是泛泛的「排队中」。
+    await cdp.eval(`(async () => {
+      const S = await import('/src/stores/useChatStore.ts');
+      const chat = S.useChatStore();
+      window.__probePartialBefore = chat.messageOps;
+      chat.messageOps = [...chat.messageOps, { msg_id: 'm-partial', kind: 'text', peer_id: null,
+        group_id: 'g1', waiting_for: 1, created_at: 10, preview: '群里等回复', peer_offline: false,
+        can_cancel: false, some_delivered: true }];
+      const t = window.__probe.vue; await t.nextTick(); await t.nextTick(); return true;
+    })()`);
+    const half = await read();
+    const halfRow = half.rows.find((r) => r.title === '群里等回复');
+    const wantPartial = await cdp.eval(
+      "(async () => { const I = await import('/src/i18n/index.ts');"
+      + " return I.t('task.state.partial'); })()",
+    );
+    check("半送达的群消息：状态「部分成员已收到」且只给去会话（不给必失败的取消键）",
+      half.rows.length === 7 && !!halfRow && halfRow.status === wantPartial && halfRow.buttons === 1,
+      "7 行 / 状态=部分成员已收到 / 1 颗按钮",
+      JSON.stringify({ rows: half.rows.map((r) => ({ t: r.title, s: r.status, b: r.buttons })), wantPartial }));
+    await cdp.eval(`(async () => {
+      const S = await import('/src/stores/useChatStore.ts');
+      S.useChatStore().messageOps = window.__probePartialBefore;
+      const t = window.__probe.vue; await t.nextTick(); await t.nextTick(); return true;
+    })()`);
     // 排序：要人处理的那一行必须排最前（blocked → running → queued）。
     // 这一段里 blocked 的有三条（peer_offline 的消息最新），所以第一行必须是它。
     check("DOM 顺序 = 读模型的顺序：需要处理的那一行排最前",

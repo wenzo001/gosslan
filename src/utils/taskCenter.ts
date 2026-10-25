@@ -74,6 +74,8 @@ export interface OperationRow {
   attempts?: number;
   /** 群消息：还有几个成员没收到。 */
   waitingFor?: number;
+  /** 群消息：已有成员确认收到，但队列里还有人（状态要说「部分成员已收到」）。 */
+  someDelivered?: boolean;
   actions: OperationAction[];
   /** 会话身份：1:1 是对端 id、群是 `group:<id>`。拿不到就不给"打开会话"动作。 */
   convId?: string;
@@ -107,6 +109,10 @@ export interface PendingMessageOpView {
   created_at: number;
   preview: string | null;
   peer_offline: boolean;
+  /** 后端与 `cancel_message` 同口径判出来的"这一行现在取消会不会成功"。 */
+  can_cancel: boolean;
+  /** 群消息：已有成员确认收下，但队列里还有人。 */
+  some_delivered: boolean;
 }
 
 /**
@@ -205,11 +211,12 @@ function contentRow(c: ContentTransfer): OperationRow {
 function messageRow(m: PendingMessageOpView): OperationRow {
   const offline = !!m.peer_id && m.peer_offline;
   const actions: OperationAction[] = [];
-  // 补发队列里的行都是本机发出去的（`outbox` / `group_outbox`）⇒ `cancel_message` 可用：
-  // 它删队列行 + 把状态写 `cancelled`；若已经被对方收下，后端回 `already_delivered`，
-  // 界面如实说"已送达，不能取消"（不在前端假装成功）。
+  // 补发队列里的行都是本机发出去的（`outbox` / `group_outbox`），但"能不能取消"要看后端：
+  // 群消息只要**任一成员** Ack 过，取消就会被拒（already_delivered）。界面给一颗点了
+  // 必然失败的按钮，用户看到的就是「还在排队却说已送达」（2026-10-25 实报）。
   const convId = m.group_id ? `group:${m.group_id}` : m.peer_id ?? undefined;
-  if (convId) actions.push("cancel_message", "open_conversation");
+  if (convId && m.can_cancel) actions.push("cancel_message");
+  if (convId) actions.push("open_conversation");
   return {
     id: m.msg_id,
     kind: "message_send",
@@ -217,7 +224,9 @@ function messageRow(m: PendingMessageOpView): OperationRow {
     state: offline ? "blocked" : "queued",
     progress: null,
     blockedReason: offline ? "peer_offline" : undefined,
-    waitingFor: m.waiting_for > 1 ? m.waiting_for : undefined,
+    // 群消息只剩 1 个人也要说出来（以前只在 >1 时给，最后一格会变成没有目标的一行）。
+    waitingFor: m.group_id && m.waiting_for > 0 ? m.waiting_for : undefined,
+    someDelivered: m.some_delivered || undefined,
     convId,
     createdAt: m.created_at,
     actions,

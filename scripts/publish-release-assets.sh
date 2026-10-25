@@ -109,13 +109,18 @@ release_exists() { "$gh_bin" api "repos/$repo/releases/tags/$tag" >/dev/null 2>&
 # ⚠️ **草稿 Release** 对 `releases/tags/<tag>` 是 404（2026-10-22 实测：人工在网页上建了草稿，
 # 于是本脚本判"不存在"→ 去 create → 被顶成 "already exists" → 复查询又 404 → 整步判红）。
 # 列表 API 带得出来（带 token 时草稿可见），所以再补一条"任何状态都算存在"的判据。
+#
+# ★ 2026-10-25 第三次纠正：这条判据以前只在 **create 失败后的复查询**里用，创建前的预检仍走
+#   `releases/tags` ⇒ 四条构建腿（即使被 concurrency 串行）每一条都把前一条建的**草稿**当成
+#   "不存在"，四条各建一个同 tag 的 Release（v5.8.0 / v5.8.5 实测各出现 4 个，只有 1 个带资产）。
+#   预检必须用列表 API（草稿可见）—— 否则并发组只是让它们排队各建一次而已。
 release_exists_any_state() {
   "$gh_bin" api "repos/$repo/releases?per_page=100" \
     --jq ".[] | select(.tag_name == \"$tag\") | .id" 2>/dev/null | grep -q .
 }
 
-if release_exists; then
-  echo "Release $tag 已存在 ⇒ 不重复创建，只补文件"
+if release_exists || release_exists_any_state; then
+  echo "Release $tag 已存在（含草稿）⇒ 不重复创建，只补文件"
 else
   # ★ 创建必须知道挂在哪条提交上。CI 里有 GITHUB_SHA，本地补挂没有 ⇒ 空 `--target` 会被 gh
   #   当成"找一个叫空字符串的对象"，报错还落在下一行，读起来像脚本坏了。所以在这里明确要参数。

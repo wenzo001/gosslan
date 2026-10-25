@@ -73,6 +73,8 @@ function msgOp(over: Partial<PendingMessageOpView>): PendingMessageOpView {
     created_at: 1000,
     preview: "在吗",
     peer_offline: false,
+    can_cancel: true,
+    some_delivered: false,
     ...over,
   };
 }
@@ -239,6 +241,29 @@ test("消息行：有正文给正文，没正文给类型 key；补发队列行�
   assert.equal(grp.waitingFor, 3, "「还有 3 个人没收到」是这行的目标");
   assert.ok(grp.actions.includes("open_conversation"));
   assert.ok(grp.actions.includes("cancel_message"), "群补发队列行同样能取消（后端按 Ack 判）");
+});
+
+test("群消息部分送达：仍列出剩余成员，但不给取消键，状态说「部分成员已收到」", () => {
+  const rows = deriveOperations({
+    transfers: [],
+    contentTransfers: [],
+    messageOps: [
+      msgOp({
+        msg_id: "m-partial", peer_id: null, group_id: "g1",
+        waiting_for: 1, can_cancel: false, some_delivered: true,
+      }),
+    ],
+  });
+  const row = byId(rows, "m-partial");
+  assert.equal(row.someDelivered, true, "已有成员 Ack ⇒ 状态要能说「部分成员已收到」");
+  assert.equal(
+    row.actions.includes("cancel_message"),
+    false,
+    "后端已拒绝取消（already_delivered）⇒ 界面不许给一颗点了必然失败的按钮",
+  );
+  assert.ok(row.actions.includes("open_conversation"));
+  assert.equal(row.waitingFor, 1, "只剩 1 个成员也要说出来（否则这一行没有目标）");
+  assert.equal(row.state, "queued", "剩余成员还在队列里 ⇒ 归到排队档");
 });
 
 test("群历史：running 与 failed 都算任务，done 不列", () => {

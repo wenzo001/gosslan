@@ -322,6 +322,10 @@ export interface PendingMessageOp {
   /** 只有 text/code 给正文截断；其它 kind 是 JSON 载荷 ⇒ null，界面按 kind 说类型。 */
   preview: string | null;
   peer_offline: boolean;
+  /** 这一行现在点取消会不会成功（与后端 `cancel_message` 同一判据）。 */
+  can_cancel: boolean;
+  /** 群消息：已有成员确认收到，但队列里还有人 ⇒ 状态说「部分成员已收到」。 */
+  some_delivered: boolean;
 }
 
 export interface FileProgress {

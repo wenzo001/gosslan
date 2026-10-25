@@ -932,11 +932,51 @@ const cardLikeBubble = computed(
     props.message.kind === "todo" ||
     props.message.kind === "image",
 );
+/**
+ * 这一条最终画出来的气泡**有没有 1px 描边**（决定底栏要不要补边框）。
+ *
+ * 气泡的边框来源只有两处：文本/兜底/未知 = `bubbleStyle.border`（自己的消息是透明边）、
+ * 文件/合并/任务卡 = `cardStyle.border`（卡片线）；**代码卡片与图片没有描边**
+ * （代码 2026-10-24 起去掉了四边描边，图片本身就是图）。
+ * 文件消息但已解析出图片预览（`attachmentUrl`）时画的是图片盒 ⇒ 也没有描边。
+ * 底栏只有在这条为真时才补 `左/右/下` 三边 —— 无描边的卡片补一条只出现在底部的线，
+ * 看起来就是"凭空多出一条边框"。
+ */
+const bubbleHasBorder = computed(() => {
+  const k = props.message.kind;
+  if (k === "code" || k === "image") return false;
+  if (k === "file" && attachmentUrl.value) return false;
+  return true;
+});
+/** 底栏三边描边的颜色：与它上面那条气泡**同一条线**。 */
+const stripBorderColor = computed(() => {
+  if (!bubbleHasBorder.value) return "transparent";
+  if (cardLikeBubble.value) return "var(--gosslan-card-line)";
+  return mine.value ? "transparent" : "var(--gosslan-border)";
+});
 const reactionSurface = computed(() => {
   if (props.message.kind === "code") return app.dark ? CODE_SURFACE.dark : CODE_SURFACE.light;
   if (cardLikeBubble.value) return "var(--gosslan-card)";
   return String(bubbleStyle.value["--bubble-bg"] ?? "transparent");
 });
+
+/**
+ * 尾巴挂在哪一侧（null = 这一条没有尾巴，群聊/提示行/图片/未知/裸文本兜底）。
+ * 尾巴的取色、气泡那一侧的下圆角、底栏那一侧的下圆角都要读同一个 side ——
+ * 分开算就会出现"尾巴在左、圆角却按右拉平"这种一眼能看出的错位。
+ */
+const tailSide = computed<"left" | "right" | null>(() => {
+  if (props.isGroup || isTip.value) return null;
+  const k = props.message.kind;
+  const hasBody =
+    k === "text" ||
+    k === "code" ||
+    k === "merge" ||
+    k === "todo" ||
+    (k === "file" && !attachmentUrl.value && !!fileMeta.value);
+  return hasBody ? (mine.value ? "right" : "left") : null;
+});
+const showTail = computed(() => tailSide.value !== null);
 
 /** 外壳只负责两件事：尾巴取色（`--bubble-bg` / `--bubble-line`）与给底栏一层定位。 */
 const shellStyle = computed<CSSProperties>(
@@ -955,9 +995,11 @@ const shellStyle = computed<CSSProperties>(
 /**
  * 底栏自己的下圆角必须与**它上面那块气泡**同档：连续消息组里相邻侧收成 tight，
  * 底栏若一律用 18px，接缝处会豁出一个角。上圆角恒为 0（与气泡是同一块）。
+ * ★ 尾巴那一侧的下圆角必须拉平：尾巴的根部要覆盖一条**直的**边缘才能与气泡同一条线
+ *   （圆角会把气泡底色切掉，尾巴看起来就是浮在旁边的一张叶片 —— 用户 2026-10-25 的截图）。
  */
 const reactionStripStyle = computed<CSSProperties>(() => {
-  const cardRadii =
+  const radii =
     props.message.kind === "code"
       ? { borderBottomLeftRadius: "var(--gosslan-radius-md)", borderBottomRightRadius: "var(--gosslan-radius-md)" }
       : cardLikeBubble.value
@@ -966,19 +1008,16 @@ const reactionStripStyle = computed<CSSProperties>(() => {
             borderBottomLeftRadius: bubbleStyle.value.borderBottomLeftRadius,
             borderBottomRightRadius: bubbleStyle.value.borderBottomRightRadius,
           };
-  return { background: reactionSurface.value, ...cardRadii };
-});
-
-/**
- * 尾巴自 2026-10-24 起由**外壳统一画**（气泡组件不再各画一份），这样回应条并入后，
- * 尾巴自然落在整块（气泡 + 回应条）的左下/右下角。哪些消息有尾巴与改前一致：
- * 单聊 + 有气泡本体的那几支；图片/未知类型/裸文本兜底/提示行原本就没有。
- */
-const showTail = computed(() => {
-  if (props.isGroup || isTip.value) return false;
-  const k = props.message.kind;
-  if (k === "text" || k === "code" || k === "merge" || k === "todo") return true;
-  return k === "file" && !attachmentUrl.value && !!fileMeta.value;
+  if (tailSide.value === "left") radii.borderBottomLeftRadius = 0;
+  if (tailSide.value === "right") radii.borderBottomRightRadius = 0;
+  return {
+    background: reactionSurface.value,
+    ...radii,
+    // 上面那条边不画（与气泡是同一块）；左右下三边补齐，接缝处的竖线才不会断。
+    borderStyle: "solid",
+    borderWidth: bubbleHasBorder.value ? "0 1px 1px" : "0",
+    borderColor: stripBorderColor.value,
+  };
 });
 
 /**
@@ -1653,6 +1692,7 @@ async function copyFileToClipboard() {
             :class="mine ? 'items-end' : 'items-start'"
             :style="shellStyle"
             :data-has-reactions="hasReactions ? 'true' : undefined"
+            :data-tail-side="tailSide ?? undefined"
           >
             <div
               data-msg-bubble
