@@ -1009,6 +1009,27 @@ export const useChatStore = defineStore("chat", () => {
     }
     // 未知短码（老后端/以后加档）刻意不弹：宁可不解释，也不编一句没有对应文案的话。
   }
+
+  /**
+   * 任务中心「停止同步」（2026-10-25）：后端是协作式取消 —— 当前这一页跑完才停，
+   * 终态由 `group-history-progress` 的 `cancelled` 相位发出，所以这里只回一句"正在停"。
+   *
+   * `not_running` / `no_group` 表示**界面这一行已经过期**（后台早没这一趟了）：
+   * 直接把本地横幅撤掉 —— 留一条不会自己收口的"正在同步"就是在界面里挂一句假话。
+   */
+  async function cancelGroupHistory(groupId: string) {
+    const verdict = await api.cancelGroupHistory(groupId);
+    if (verdict === "requested") {
+      app.toast(t("chat.groupHistory.cancelRequested"), "info");
+      return;
+    }
+    if (verdict === "not_running" || verdict === "no_group") {
+      const next = { ...groupHistorySync.value };
+      delete next[groupId];
+      groupHistorySync.value = next;
+      app.toast(t(verdict === "not_running" ? "chat.groupHistory.cancelNotRunning" : "chat.groupHistory.noGroup"), "info");
+    }
+  }
   /**
    * 「这条会话我在本地已经判过已读」的水位（convId → 时刻）。
    *
@@ -1399,11 +1420,13 @@ export const useChatStore = defineStore("chat", () => {
     // 未读清零走**乐观更新**（用户 2026-09-12 要求「所有异步操作尽量乐观更新」）：
     // 打开会话即视为已读，本地立刻清零，别让红点在 await 期间继续显示。
     clearUnreadLocally(id);
-    // 会话行不存在（如新加好友还没发过消息）→ 后端补建，保证左侧列表有对应可高亮的项。
+    // 会话行不存在（新加好友还没发过消息 / 群会话行还没建）→ 后端补建，保证左侧列表
+    // 有对应可高亮的项。群也走这一条（2026-10-25：任务中心「去会话」对没有会话行的群
+    // 只换了 activeConv，列表无行、标题无名字，看起来就是"没到达"）。
     // ⚠️ **不阻塞消息加载**：补建会话行与 loadMessages 互不依赖，串行 await 会让
     // 「切到一个全新会话」白等一次 IPC（骨架已经渲染，但内容迟迟不来）。
     // 因此并行发起，回来后若仍未出现再补进列表。
-    const ensureConv = conversations.value.some((c) => c.id === id) || id.startsWith("group:")
+    const ensureConv = conversations.value.some((c) => c.id === id)
       ? Promise.resolve()
       : api
           .ensureConversation(id)
@@ -1846,6 +1869,9 @@ export const useChatStore = defineStore("chat", () => {
             retryOfMsgId,
             acked ? { ...rec, status: furthestStatus(rec.status, "delivered") } : rec,
           );
+          // 任务中心那一行来自补发队列快照：发送动作本身不会产生事件（离线时后端只入队），
+          // 不在这里补拉，用户就只能在"关窗重开/等下一次别的刷新"时才看到它（2026-10-25 实报）。
+          void refreshTransfers();
           return rec;
         } catch (e) {
           replaceMessage(convId, retryOfMsgId, { ...reverted, status: "failed" });
@@ -1877,6 +1903,7 @@ export const useChatStore = defineStore("chat", () => {
         ? { ...rec, status: furthestStatus(rec.status, "delivered") }
         : rec;
       replaceMessage(convId, optimistic.msg_id, next);
+      void refreshTransfers();
       return rec;
     } catch (e) {
       // 发送失败：乐观消息标记为失败态（保留内容，用户可重发）
@@ -1898,6 +1925,7 @@ export const useChatStore = defineStore("chat", () => {
     const acked = pendingAcks.delete(msgId);
     const next = acked ? { ...rec, status: furthestStatus(rec.status, "delivered") } : rec;
     replaceMessage(convId, msgId, next);
+    void refreshTransfers();
     return rec;
   }
 
@@ -2801,6 +2829,9 @@ export const useChatStore = defineStore("chat", () => {
     }
     if (p.phase === "failed") {
       app.toast(t("chat.groupHistory.failed"), "info");
+    } else if (p.phase === "cancelled") {
+      // 已拉到的部分保留，标记仍是 pending ⇒ 下次有人在线时清扫任务会自动续。
+      app.toast(t("chat.groupHistory.cancelled"), "info");
     }
   }
 
@@ -2863,7 +2894,13 @@ export const useChatStore = defineStore("chat", () => {
         // 这个事件最多每秒 3 次：不比对就直接换表，等于每 333ms 把整屏消息行重画一遍
         // （消息行模板里的 nicknameOf 读的就是 peers）。没变就不写。
         const merged = mergePeerList(peers.value, p);
-        if (merged) peers.value = merged;
+        if (merged) {
+          peers.value = merged;
+          // 链路表变了（心跳把半开链路摘掉 / 对端重新上线）⇒ 任务中心那几行「发送中」
+          // 与「等待对方上线」的结论要跟着翻面（2026-10-25：用户看到的"一直排队"）。
+          // 与消息事件共用同一个 400ms 防抖，不会把 3/s 的拓扑事件放大成 IPC 风暴。
+          scheduleTransfersRepair();
+        }
         rememberSeenNames(p);
         markFriendsOnlineFrom(friends.value, p);
         // 同步好友/单聊会话的昵称/头像（对方改名后立即生效）
@@ -2936,6 +2973,8 @@ export const useChatStore = defineStore("chat", () => {
           pendingAcks.add(msgId);
           trimOldest(pendingAcks, PENDING_ACKS_MAX);
         }
+        // Ack 到达 = 补发队列那一行被删（送达是终态）：任务中心行必须跟着消失。
+        scheduleTransfersRepair();
       },
       onPeerRead: (p) => {
         // 对方已读到 last_read_ts：我发出的、ts ≤ 该值的消息 → read（绿勾）。
@@ -3009,9 +3048,10 @@ export const useChatStore = defineStore("chat", () => {
         // ⚠️ 文件 / 群文件的状态变更同时是**一条传输行的终态**（群文件接收失败就只走这条）。
         // 只重拉会话不动 `transfers` 的话，全局面板与气泡会继续显示「接收中 X%」——
         // 正是 R-14 那一族"只能靠重启恢复"的残留。补拉是防抖的，多次事件不会放大 IPC。
-        if (msgId.startsWith("file-") || msgId.startsWith("gfile-")) {
-          scheduleTransfersRepair();
-        }
+        //
+        // 2026-10-25：消息通道的状态变更也会改**任务中心**（取消/失败/送达会让补发行出现或消失），
+        // 所以补拉不再只认文件前缀 —— 所有状态变更都走同一条防抖刷新。
+        scheduleTransfersRepair();
         const convId = activeConv.value;
         if (convId && messages.value[convId]?.some((m) => m.msg_id === msgId)) {
           void loadMessages(convId);
@@ -3021,6 +3061,8 @@ export const useChatStore = defineStore("chat", () => {
         // 台账变了（Ack 落地 / 取消剩余成员 / 补发 / 清扫判死）：只重拉那个群的摘要。
         // 不回库重查消息、也不自己改计数 —— 计数来自台账，猜测会造出第二套状态机。
         void refreshGroupDeliveries(`group:${p.group_id}`);
+        // 同一份台账也是任务中心「还有几人没收到 / 还能不能取消」的来源。
+        scheduleTransfersRepair();
       },
       onPeerStyle: (p) => {
         app.applyPeerStyle(p.device_id, p.style);
@@ -3245,6 +3287,7 @@ export const useChatStore = defineStore("chat", () => {
     refreshKeyRotations,
     syncFriendKeys,
     syncGroupHistoryNow,
+    cancelGroupHistory,
     /** 群 → 「与我相关的未完成任务」数（蓝色徽标的数据源，判定见 `utils/todos::openTodosForMe`） */
     openTodoByConv,
     groupTodoRows,

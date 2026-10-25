@@ -172,12 +172,16 @@ function statusText(s: TodoStatus): string {
 
 <template>
   <div class="relative w-64 max-w-full" :style="props.cardStyle">
-    <div class="overflow-hidden rounded-[var(--gosslan-bubble-radius)]">
+    <!-- `data-todo-card`：有表情回应时底栏会接在下面，由 style.css 把这两个下角拉平
+         （用户 2026-10-25：hover 下半区要是一条横条，不是又一块圆角底色）。 -->
+    <div data-todo-card class="overflow-hidden rounded-[var(--gosslan-bubble-radius)]">
     <!-- 命中区①：卡片主体（头部 / 描述 / 指派人）→ 只打开群任务面板，不直达某一条。
          role=button + tabindex 让它与底部真按钮一样键盘可达；hover 给反馈。
-         ⚠️ 这里不许用透明覆盖层：图片与底部操作条是**兄弟**命中区，盖一层会一起吃掉。 -->
+         ⚠️ 这里不许用透明覆盖层：图片与底部操作条是**兄弟**命中区，盖一层会一起吃掉。
+         ⚠️ 2026-10-25：`pb-2` 留在主体里、底部操作条不再 `mt-2` —— hover 背景必须一直铺到
+         分隔线（旧形状在两者之间留了 8px 白缝，看起来就是"上半边 hover 没到底"）。 -->
     <div
-      class="cursor-pointer transition hover:bg-[var(--card-chip)]"
+      class="cursor-pointer pb-2 transition hover:bg-[var(--card-chip)]"
       role="button"
       tabindex="0"
       :aria-label="todo?.title || t('todo.title')"
@@ -311,10 +315,11 @@ function statusText(s: TodoStatus): string {
     </div>
     <!-- /命中区①：主体 -->
 
-    <!-- 命中区②：底部操作条 → 打开看板并直达**这条**任务详情（带 todoId）。 -->
+    <!-- 命中区②：底部操作条 → 打开看板并直达**这条**任务详情（带 todoId）。
+         ⚠️ 不再 `mt-2`：主体 hover 要铺到这条分隔线；间距由主体的 `pb-2` 提供。 -->
     <button
       type="button"
-      class="mt-2 flex w-full items-center justify-center gap-1 border-t border-[var(--card-line)] py-1.5 text-meta text-[var(--card-action)] transition hover:bg-[var(--card-chip)]"
+      class="flex w-full items-center justify-center gap-1 border-t border-[var(--card-line)] py-1.5 text-meta text-[var(--card-action)] transition hover:bg-[var(--card-chip)]"
       @click="emit('open', todoId)"
     >
       {{ t("todo.openPanel") }}

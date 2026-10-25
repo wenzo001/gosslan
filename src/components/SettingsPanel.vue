@@ -77,17 +77,10 @@ const SECTIONS: Record<string, { titleKey: string; render: () => any }> = {
     titleKey: "settings.item.network",
     render: () => NetworkSection,
   },
-  files: {
-    titleKey: "settings.item.files",
-    render: () => FilesSection,
-  },
-  storage: {
-    titleKey: "settings.item.storage",
+  // 2026-10-25：存储与文件合并为一个二级页（旧的 storage / files 键走别名归一）。
+  storageFiles: {
+    titleKey: "settings.item.storageFiles",
     render: () => StorageSection,
-  },
-  security: {
-    titleKey: "settings.item.security",
-    render: () => SecuritySection,
   },
   about: {
     titleKey: "settings.item.about",
@@ -99,11 +92,25 @@ const SECTIONS: Record<string, { titleKey: string; render: () => any }> = {
   },
 };
 
+/**
+ * 旧深链键 → 新二级页。用户 2026-10-25 把「存储」与「文件」并成「存储与文件」、
+ * 把「安全」并进「关于」；已经点过的旧链接（`/me/settings/storage` 等）仍必须落到
+ * 同一处 —— URL 说一个分区、界面却停在列表，是最典型的"深链半截状态"。
+ */
+const SECTION_ALIASES: Record<string, string> = {
+  storage: "storageFiles",
+  files: "storageFiles",
+  security: "about",
+};
+function normalizeSectionKey(key: string): string {
+  return SECTION_ALIASES[key] ?? key;
+}
+
 /** 移动端分区 = 路由派生（可深链、可返回）；桌面回退形态仍用本地 ref。 */
 const routeIsSettings = computed(() => !!route && String(route.name ?? "").startsWith("settings"));
 const routeSection = computed<string | null>(() => {
   if (!props.routeDriven || !routeIsSettings.value || route?.name !== "settings-section") return null;
-  const key = String(route.params.key ?? "");
+  const key = normalizeSectionKey(String(route.params.key ?? ""));
   return key && SECTIONS[key] ? key : null;
 });
 const mobileNav = computed<string | null>(() =>
@@ -137,7 +144,14 @@ function selectSection(key: string) {
   localMobileNav.value = key;
 }
 
-/** 一级列表的分组结构：每组包含多个条目，每条对应一个二级页。 */
+/**
+ * 一级列表的分组结构：每组包含多个条目，每条对应一个二级页。
+ *
+ * 2026-10-25 用户要求与桌面保持**同一套分类**：
+ *  - 通用里不再放「存储」（它属于文件那一类事）；
+ *  - 「存储与文件」= 原存储 + 原文件，放在「网络与文件」分组下；
+ *  - 「安全」并入「关于」，不再单独一组（重置与恢复仍留在通用）。
+ */
 const GROUPS: { key: string; titleKey: string; items: { key: string; titleKey: string }[] }[] = [
   {
     key: "general",
@@ -148,7 +162,6 @@ const GROUPS: { key: string; titleKey: string; items: { key: string; titleKey: s
       { key: "appearance", titleKey: "settings.item.appearance" },
       { key: "chatStyle", titleKey: "settings.item.chatStyle" },
       { key: "notification", titleKey: "settings.item.notification" },
-      { key: "storage", titleKey: "settings.item.storage" },
       { key: "reset", titleKey: "settings.item.reset" },
     ],
   },
@@ -157,13 +170,8 @@ const GROUPS: { key: string; titleKey: string; items: { key: string; titleKey: s
     titleKey: "settings.group.networkFiles",
     items: [
       { key: "network", titleKey: "settings.item.network" },
-      { key: "files", titleKey: "settings.item.files" },
+      { key: "storageFiles", titleKey: "settings.item.storageFiles" },
     ],
-  },
-  {
-    key: "security",
-    titleKey: "settings.group.security",
-    items: [{ key: "security", titleKey: "settings.item.security" }],
   },
   {
     key: "about",
@@ -240,27 +248,21 @@ watch(
                 {{ t(g.titleKey) }}
               </div>
               <div class="overflow-hidden rounded-[var(--gosslan-radius-md)] border border-[var(--gosslan-border)] bg-[var(--gosslan-panel)]">
-                <!-- data-no-press：整行是**列表项**，不是按钮。全站 `button:active` 的 scale(0.97)
-                     挂在满宽行上会让整张分组卡看起来「缩了一下」——单行的分组（安全 / 关于）里
-                     这一行就是整张卡。（用户 2026-10-23：「点击选项整个列表都缩小」）
-                     按压反馈保留：`.tap-safe:active` 的背景色那条不涉及几何。
-                     ⚠️ 用户同日追加：要的是「中间那一块凹下去 + 一点阴影」，**宽度不许变**。
-                     所以按压形态落在内层这一段（`group-active:` 下沉 0.5px + 内阴影），
-                     行本身只负责背景色；`-mx-1 px-1` 把阴影的可视范围向外扩 4px 而文字位置不动。 -->
+                <!-- 标准列表交互（2026-10-25 重写）：整行按压**只换底色**，几何零位移。
+                     旧实现为了"中间凹一下"在行内再套一层 `group-active:translate-y + inset shadow`，
+                     真机上看起来就是整张列表缩了一下（用户原话：「点击下去的时候整个列表还是会缩」）。
+                     `data-no-press` 同时挡住全站 button:active 的 scale(0.97)。
+                     不加 hover：这是移动端面板，触屏上的 hover 会在点完之后粘住一行。 -->
                 <button
                   v-for="(item, idx) in g.items"
                   :key="item.key"
                   data-no-press
-                  class="group tap-safe flex w-full items-center gap-3 px-3 py-3 text-left text-emphasis transition hover:bg-[var(--gosslan-hover)]"
+                  class="flex w-full items-center gap-3 px-4 py-3 text-left text-emphasis transition-colors active:bg-[var(--gosslan-pressed)]"
                   :class="idx > 0 ? 'border-t border-[var(--gosslan-divider)]' : ''"
                   @click="selectSection(item.key)"
                 >
-                  <span
-                    class="-mx-1 flex flex-1 items-center gap-3 rounded-[var(--gosslan-radius-sm)] px-1 py-0.5 transition-[transform,box-shadow] duration-100 group-active:translate-y-[0.5px] group-active:shadow-[inset_0_1px_2px_rgba(0,0,0,0.14)]"
-                  >
-                    <span class="flex-1 text-[var(--gosslan-text)]">{{ t(item.titleKey) }}</span>
-                    <ChevronRight class="h-4 w-4 text-[var(--gosslan-text-2)]" />
-                  </span>
+                  <span class="min-w-0 flex-1 truncate text-[var(--gosslan-text)]" :title="t(item.titleKey)">{{ t(item.titleKey) }}</span>
+                  <ChevronRight class="h-4 w-4 shrink-0 text-[var(--gosslan-text-2)]" />
                 </button>
               </div>
             </div>
@@ -274,10 +276,16 @@ watch(
             <ChatStyleSection v-else-if="mobileNav === 'chatStyle'" />
             <NotificationSection v-else-if="mobileNav === 'notification'" />
             <NetworkSection v-else-if="mobileNav === 'network'" :active="open" :reload-token="reloadToken" />
-            <FilesSection v-else-if="mobileNav === 'files'" :active="open" :reload-token="reloadToken" />
-            <StorageSection v-else-if="mobileNav === 'storage'" :active="open" :reload-token="reloadToken" />
-            <SecuritySection v-else-if="mobileNav === 'security'" />
-            <AboutSection v-else-if="mobileNav === 'about'" @dev-open="devDiagOpen = true" />
+            <!-- 2026-10-25：存储与文件合并成一个二级页（旧 storage / files 深链已别名归一到这里）。 -->
+            <template v-else-if="mobileNav === 'storageFiles'">
+              <StorageSection :active="open" :reload-token="reloadToken" />
+              <FilesSection :active="open" :reload-token="reloadToken" />
+            </template>
+            <!-- 安全并入关于：同一页里先安全、后关于（与桌面分组顺序一致）。 -->
+            <template v-else-if="mobileNav === 'about'">
+              <SecuritySection />
+              <AboutSection @dev-open="devDiagOpen = true" />
+            </template>
             <ResetSection v-else-if="mobileNav === 'reset'" @restored="reloadToken++" />
           </div>
         </div>
@@ -294,11 +302,12 @@ watch(
       <AppearanceSection />
       <ChatStyleSection />
       <NetworkSection :active="open" :reload-token="reloadToken" />
-      <FilesSection :active="open" :reload-token="reloadToken" />
+      <!-- 与桌面独立窗口同一套分类：存储与文件归在网络下面，安全归在关于里。 -->
       <StorageSection :active="open" :reload-token="reloadToken" />
+      <FilesSection :active="open" :reload-token="reloadToken" />
+      <ResetSection @restored="reloadToken++" />
       <SecuritySection />
       <AboutSection @dev-open="devDiagOpen = true" />
-      <ResetSection @restored="reloadToken++" />
     </div>
   </BaseModal>
 

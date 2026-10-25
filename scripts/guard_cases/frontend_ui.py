@@ -560,9 +560,14 @@ CASES: list[Case] = [
         file=ROOT / "src" / "stores" / "useChatStore.ts",
         injections=[
             (
+                # 2026-10-25：合并分支多了一笔任务中心补拉（`scheduleTransfersRepair`），
+                # 锚点跟着收成"前两行 + if 开头"，替换后仍保留那个块的花括号 —
+                # 注入要制造的是「整表直写」这一语义，而不是一个编译不过的残片。
                 "        const merged = mergePeerList(peers.value, p);\n"
-                "        if (merged) peers.value = merged;\n",
-                "        peers.value = p;\n",
+                "        if (merged) {\n"
+                "          peers.value = merged;\n",
+                "        peers.value = p;\n"
+                "        {\n",
             )
         ],
         cmd=npm("test"),

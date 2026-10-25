@@ -767,6 +767,7 @@ pub fn run() {
             commands::get_groups,
             commands::get_group_reads,
             commands::sync_group_history_now,
+            commands::cancel_group_history,
             commands::window_minimize,
             commands::window_toggle_maximize,
             commands::window_is_maximized,

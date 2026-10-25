@@ -9900,34 +9900,36 @@ async function runSettingsMobile(cdp, url) {
     // 类名在 ≠ 效果对。**正控**是标题栏那颗返回键（普通按钮，必须照旧缩）——
     // 没有它，整个探针读不到缩放也可能是量具坏了。
     const pressBy = async (pickJs) => {
-      const r = await cdp.eval(`(() => {
+      const base = await cdp.eval(`(() => {
         const b = (${pickJs});
         if (!b) return null;
         const q = b.getBoundingClientRect();
-        return { x: Math.round(q.left + q.width / 2), y: Math.round(q.top + q.height / 2) };
+        return { x: Math.round(q.left + q.width / 2), y: Math.round(q.top + q.height / 2),
+          left: +q.left.toFixed(1), top: +q.top.toFixed(1),
+          w: +q.width.toFixed(1), h: +q.height.toFixed(1),
+          bg: getComputedStyle(b).backgroundColor };
       })()`);
-      if (!r) return null;
-      await cdp.send("Input.dispatchMouseEvent", { type: "mousePressed", x: r.x, y: r.y, button: "left", clickCount: 1 });
+      if (!base) return null;
+      await cdp.send("Input.dispatchMouseEvent", { type: "mousePressed", x: base.x, y: base.y, button: "left", clickCount: 1 });
       await sleep(180);
       const tr = await cdp.eval(`(() => {
         const b = (${pickJs});
         if (!b) return null;
-        // 按压形态在内层那一段（用户 2026-10-23：整行不缩，中间那一块凹下去 + 内阴影）。
-        const inner = b.querySelector('span');
-        const ics = inner ? getComputedStyle(inner) : null;
+        const q = b.getBoundingClientRect();
         return {
           transform: getComputedStyle(b).transform,
           noPress: b.hasAttribute('data-no-press'),
           text: (b.textContent || '').trim().slice(0, 12),
-          innerTransform: ics ? ics.transform : null,
-          innerShadow: ics ? ics.boxShadow : null,
+          left: +q.left.toFixed(1), top: +q.top.toFixed(1),
+          w: +q.width.toFixed(1), h: +q.height.toFixed(1),
+          bg: getComputedStyle(b).backgroundColor,
         };
       })()`);
       // 抬手点故意挪开：同一元素上 press+release 会合成一次 click（按列表项就会跳页、
       // 按返回就会退出），这条探针只想要 :active 期间的计算样式，不想要副作用。
-      await cdp.send("Input.dispatchMouseEvent", { type: "mouseReleased", x: r.x, y: Math.max(1, r.y - 260), button: "left", clickCount: 1 });
+      await cdp.send("Input.dispatchMouseEvent", { type: "mouseReleased", x: base.x, y: Math.max(1, base.y - 260), button: "left", clickCount: 1 });
       await sleep(120);
-      return tr;
+      return tr ? { ...tr, before: base } : null;
     };
     // ⚠️ 两个选择器必须**各自独立**：写成「文案是外观 或 aria 含返回」的单一谓词时，
     // 头部那颗返回键排在内容前面 ⇒ 两次都会按到它，rowPress 拿到的其实是返回键（实测踩过）。
@@ -9941,14 +9943,17 @@ async function runSettingsMobile(cdp, url) {
         && scaled(backPress?.transform) === true,
       "列表项(外观)带 data-no-press 且 transform 不缩放 + 返回键(正控)照旧缩放",
       JSON.stringify({ rowPress, backPress }));
-    // 用户同日追加：「中间那一块凹下去 + 一点阴影，宽度不要变」——内层真的下沉并出现内阴影，
-    // 而不是只停了整行的缩放（那样等于没有按压反馈）。
-    check("设置列表项：按住时内层那一段下沉并出现内阴影（整行仍不缩放）",
-      !!rowPress && /matrix\(/.test(String(rowPress.innerTransform))
-        && !/none/.test(String(rowPress.innerShadow))
-        && /inset/.test(String(rowPress.innerShadow)),
-      "内层 transform 非 none + box-shadow 含 inset",
-      JSON.stringify({ innerTransform: rowPress?.innerTransform, innerShadow: rowPress?.innerShadow }));
+    // 用户 2026-10-25 重写口径：标准列表交互 = **只换按压底色，几何绝不位移**。
+    // 旧实现的内层 translate/inset shadow 被用户读成"整个列表缩了一下"，已删除。
+    check("设置列表项：按住时只换底色、宽高与位置零位移（标准列表交互）",
+      !!rowPress
+        && rowPress.bg !== rowPress.before.bg
+        && Math.abs(rowPress.w - rowPress.before.w) <= 0.5
+        && Math.abs(rowPress.h - rowPress.before.h) <= 0.5
+        && Math.abs(rowPress.left - rowPress.before.left) <= 0.5
+        && Math.abs(rowPress.top - rowPress.before.top) <= 0.5,
+      "active 背景色变化 + 宽/高/left/top 都不动",
+      JSON.stringify({ before: rowPress?.before, during: rowPress }));
 
     // 量的是**同一个元素**的 left 在「刚进入」与「滑到底」两处的差，不是文案、不是类名。
     // 边距会漂只有两类来源：某一层滚动容器在滚动过程中长出了滚动条（吃掉宽度），或者某个

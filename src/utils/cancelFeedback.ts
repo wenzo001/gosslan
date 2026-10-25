@@ -29,6 +29,29 @@ export function cancelOutcome(res: CancelResultView): CancelOutcome {
 }
 
 /**
+ * 取消文件之后该用哪条文案 —— **唯一**映射（任务中心与气泡共用同一套事实）。
+ *
+ * `wasSent` 由调用方在**发请求之前**读（`row.blockedReason === "waiting_ack"` =
+ * 字节已写出、只在等对端确认）。这一格不能省：用户 2026-10-25 的原话是
+ * "文件 `sent` 取消措辞"——已经发出去的字节收不回来，只说"已取消"会让人以为对方没收到。
+ *
+ * 顺序与 `cancelOutcome` 的四档一致：已送达 > 台账没落地 > 对面可能还在传 > 正常取消。
+ * 只有最后一档才分 `sent` / 未写出两种说法。
+ */
+export function fileCancelKey(outcome: CancelOutcome, wasSent: boolean): string {
+  switch (outcome) {
+    case "already_done":
+      return "msg.cancelSend.alreadyDone";
+    case "ledger_pending":
+      return "transfer.cancelLedgerPending";
+    case "local_only":
+      return "transfer.cancelLocalOnly";
+    default:
+      return wasSent ? "transfer.cancelSent" : "task.cancelDone";
+  }
+}
+
+/**
  * 「取消一条消息」之后该说哪句话 —— 后端结构化结果的**唯一**文案映射。
  *
  * 两个调用方（任务中心与气泡菜单）以前各自 if/else 猜短码，群消息出现

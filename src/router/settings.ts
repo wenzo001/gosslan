@@ -19,6 +19,8 @@ export const SETTINGS_SECTIONS = [
   "network",
   "files",
   "storage",
+  // 2026-10-25：存储与文件合并成一个二级页（旧键保留，深链仍可达）。
+  "storageFiles",
   "security",
   "about",
   "reset",

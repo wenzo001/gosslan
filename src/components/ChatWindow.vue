@@ -1735,20 +1735,34 @@ function onLoadMore() {
       </div>
       <!-- 加载骨架：切会话时**立即**渲染（store 的 loadMessages 完成前 messages[convId] 是 undefined）。
            没有它就会先闪一句"暂无消息，打个招呼吧"再跳出内容——既不准又显得卡。
-           规则：UI 先出、数据后到（详见 docs/design-guidelines.md §9）。 -->
-      <div v-if="messagesLoading" class="flex flex-col gap-3 px-4 py-5" aria-hidden="true">
-        <div class="flex gap-2">
-          <div class="h-[var(--gosslan-msg-avatar)] w-[var(--gosslan-msg-avatar)] shrink-0 animate-pulse rounded-[var(--gosslan-avatar-radius)] bg-[var(--gosslan-hover)]"></div>
-          <div class="h-9 w-40 animate-pulse rounded-[var(--gosslan-bubble-radius)] bg-[var(--gosslan-hover)]"></div>
-        </div>
-        <div class="flex flex-row-reverse gap-2">
-          <div class="h-[var(--gosslan-msg-avatar)] w-[var(--gosslan-msg-avatar)] shrink-0 animate-pulse rounded-[var(--gosslan-avatar-radius)] bg-[var(--gosslan-hover)]"></div>
-          <div class="h-9 w-56 animate-pulse rounded-[var(--gosslan-bubble-radius)] bg-[var(--gosslan-hover)]"></div>
-        </div>
-        <div class="flex gap-2">
-          <div class="h-[var(--gosslan-msg-avatar)] w-[var(--gosslan-msg-avatar)] shrink-0 animate-pulse rounded-[var(--gosslan-avatar-radius)] bg-[var(--gosslan-hover)]"></div>
-          <div class="h-9 w-32 animate-pulse rounded-[var(--gosslan-bubble-radius)] bg-[var(--gosslan-hover)]"></div>
-        </div>
+           规则：UI 先出、数据后到（详见 docs/design-guidelines.md §9）。
+           ⚠️ 2026-10-25：骨架必须与**真实行**同形 —— 单聊两方都没有头像列、群里只有对方
+           在组首显示头像 + 昵称（见 `MessageItem` 的 `avatarCol` / `showNickname`）；
+           旧骨架三行全带头像，切到真内容时整块布局会跳一次。 -->
+      <div v-if="messagesLoading" class="flex flex-col gap-2 px-4 py-4" aria-hidden="true">
+        <template v-if="isGroup">
+          <div class="flex items-start gap-2">
+            <div class="h-[var(--gosslan-msg-avatar)] w-[var(--gosslan-msg-avatar)] shrink-0 animate-pulse rounded-[var(--gosslan-avatar-radius)] bg-[var(--gosslan-hover)]"></div>
+            <div class="flex min-w-0 flex-col gap-1.5">
+              <div class="h-2.5 w-16 animate-pulse rounded-[var(--gosslan-radius-xs)] bg-[var(--gosslan-hover)]"></div>
+              <div class="h-8 w-44 animate-pulse rounded-[var(--gosslan-bubble-radius)] bg-[var(--gosslan-hover)]"></div>
+            </div>
+          </div>
+          <div class="flex justify-end">
+            <div class="h-8 w-56 animate-pulse rounded-[var(--gosslan-bubble-radius)] bg-[var(--gosslan-hover)]"></div>
+          </div>
+          <div class="flex items-start gap-2">
+            <div class="h-[var(--gosslan-msg-avatar)] w-[var(--gosslan-msg-avatar)] shrink-0 animate-pulse rounded-[var(--gosslan-avatar-radius)] bg-[var(--gosslan-hover)]"></div>
+            <div class="h-8 w-32 animate-pulse rounded-[var(--gosslan-bubble-radius)] bg-[var(--gosslan-hover)]"></div>
+          </div>
+        </template>
+        <template v-else>
+          <div class="h-8 w-40 animate-pulse rounded-[var(--gosslan-bubble-radius)] bg-[var(--gosslan-hover)]"></div>
+          <div class="flex justify-end">
+            <div class="h-8 w-56 animate-pulse rounded-[var(--gosslan-bubble-radius)] bg-[var(--gosslan-hover)]"></div>
+          </div>
+          <div class="h-8 w-32 animate-pulse rounded-[var(--gosslan-bubble-radius)] bg-[var(--gosslan-hover)]"></div>
+        </template>
       </div>
       <StateBlock
         v-else-if="messageLoadError"

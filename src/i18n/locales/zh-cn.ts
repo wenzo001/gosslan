@@ -78,9 +78,7 @@ export const zhCN: MessageDict = {
   "settings.item.chatStyle": "聊天气泡",
   "settings.item.notification": "通知",
   "settings.item.network": "网络",
-  "settings.item.files": "文件与共享",
-  "settings.item.storage": "存储",
-  "settings.item.security": "隐私与安全",
+  "settings.item.storageFiles": "存储与文件",
   "settings.item.about": "关于",
   "settings.item.reset": "重置与恢复",
   // ---- 搜索聊天记录（结果页） ----
@@ -444,6 +442,9 @@ export const zhCN: MessageDict = {
   "chat.groupHistory.noGroup": "本机已经没有这个群",
   "chat.groupHistory.error": "没能开始同步",
   "chat.groupHistory.failed": "群消息同步未完成，有成员在线时会自动重试",
+  "chat.groupHistory.cancelRequested": "正在停止同步：当前这一页处理完就停",
+  "chat.groupHistory.cancelNotRunning": "这一群现在没有正在同步",
+  "chat.groupHistory.cancelled": "已停止同步（已拉到的部分保留，之后会自动补齐）",
   // 事件监听绑定失败（实时消息/回执/在线状态全部不可用）：必须显式提示重启，
   // 否则界面"看起来正常"却永远收不到任何事件（2026-09-23 审计 1.6）
   "chat.eventBindFail": "实时消息监听启动失败，新消息可能收不到；请到「设置 · 网络」点「重新连接实时事件」",
@@ -1203,7 +1204,7 @@ export const zhCN: MessageDict = {
   "task.open": "查看后台任务（{n} 个）",
   "task.title": "后台任务",
   "task.empty": "没有进行中的任务",
-  "task.note": "关掉面板不会中断任务；入口在会话列表底部的「小院儿」后面",
+  "task.note": "这里列出还没完成的后台任务；关掉面板不会中断它们，完成后会自动消失",
   "task.to": "给 {name}",
   "task.from": "来自 {name}",
   "task.attempts": "已重试 {n} 次",
@@ -1250,6 +1251,7 @@ export const zhCN: MessageDict = {
   "transfer.blocked.queuedByBackend": "在本机队列里排着，会自己继续",
   "transfer.blocked.noSource": "暂时找不到有这份数据的设备",
   "transfer.cancelLocalOnly": "已在本机取消（对方版本较旧或不在线时可能仍在继续）",
+  "transfer.cancelSent": "已取消；文件字节已经发出，对方可能已收到",
   "transfer.cancelLedgerPending": "本机已停止，但状态没能写进台账（刷新后可能仍显示传输中）",
   "send.unknownState": "状态未知，可重新发送",
   "msg.cleaned": "已被清理",

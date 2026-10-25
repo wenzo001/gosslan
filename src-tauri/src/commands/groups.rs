@@ -494,3 +494,17 @@ pub async fn sync_group_history_now(
         .as_str()
         .to_string())
 }
+
+/// 任务中心「停止同步」：协作式取消（当前页处理完就停，已拉到的部分保留）。
+///
+/// 返回短码 `requested` / `not_running` / `no_group`，与手动同步同一套"前端只认短码"的契约。
+/// 终态由后台那一趟通过 `group-history-progress` 的 `cancelled` 相位发出 —— 命令自己不等。
+#[tauri::command(async)]
+pub async fn cancel_group_history(
+    state: State<'_, Arc<AppState>>,
+    group_id: String,
+) -> Result<String, String> {
+    Ok(crate::network::group_history::request_cancel(state.inner(), &group_id)
+        .as_str()
+        .to_string())
+}

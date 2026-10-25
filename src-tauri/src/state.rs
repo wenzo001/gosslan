@@ -1406,6 +1406,13 @@ pub struct AppState {
     /// 入群钩子、群消息顺手建群那一路、以及每 60 秒的清扫任务都会喊同一声；
     /// 没有这一格，同一个群会同时排两三趟、各要一遍同样的历史（结果一样，开销翻倍）。
     pub group_history_active: Mutex<std::collections::HashSet<String>>,
+    /// 群历史同步的**协作式取消标志**（2026-10-25 用户：任务中心的同步也要能停）。
+    ///
+    /// 只由 `request_cancel` 在"该群确实在飞"时写入；同步体在**每页之间**检查并消费，
+    /// 跑完/失败/被取消时由在飞守卫一并清掉（否则下一次同步会继承一个陈旧标志、刚起跑就停）。
+    /// 不做成强行 abort：当前那一页的应答最多等 20s，而落库本来就在阻塞池里 ——
+    /// 从中间砍掉会留下"请求还在路上、应答没人等"的半截现场。
+    pub group_history_cancels: Mutex<std::collections::HashSet<String>>,
 
     /// 节点表是否需要向前端推送（节流合并用，见 `spawn_peer_emitter`）
     pub peers_dirty: AtomicBool,
@@ -2104,6 +2111,7 @@ impl AppState {
             pending_share_tree: Mutex::new(HashMap::new()),
             pending_group_history: Mutex::new(HashMap::new()),
             group_history_active: Mutex::new(std::collections::HashSet::new()),
+            group_history_cancels: Mutex::new(std::collections::HashSet::new()),
             peers_dirty: AtomicBool::new(false),
             network_generation: AtomicU64::new(0),
             peers_notify: Arc::new(Notify::new()),

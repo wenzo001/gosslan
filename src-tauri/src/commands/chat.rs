@@ -1149,8 +1149,12 @@ pub async fn get_conversations(
     .map_err(|e| format!("会话列表读取被线程池中断: {e}"))?
 }
 
-/// 打开与好友的会话时确保会话行存在（新加好友尚未发过消息时，
-/// 会话列表无对应项 → 左侧无法高亮选中态）。
+/// 打开会话时确保会话行存在（新加好友尚未发过消息、或群会话行还没建时，
+/// 会话列表无对应项 → 左侧无法高亮选中态，任务中心「去会话」看起来"去了但没到"）。
+///
+/// 2026-10-25：`group:<id>` 也走这一条。此前群分支被前端跳过（直接 `Promise.resolve()`），
+/// 任务中心点一个还没有会话行的群（历史同步刚补进来 / 清过会话）就只换了 `activeConv`，
+/// 列表里没有可高亮的行、标题也读不到名字 —— 同一入口两种表现，根因是少建了一行。
 #[tauri::command(async)]
 pub async fn ensure_conversation(
     state: State<'_, Arc<AppState>>,
@@ -1160,9 +1164,15 @@ pub async fn ensure_conversation(
     // 整段进阻塞池：里面是 peers 快照 + db 的 ensure/回读两次，全同步且**不跨 await 持锁**
     // （原来就是一段一段取锁，形状没变，只是搬离 worker —— 审计 R-18）。
     tokio::task::spawn_blocking(move || -> Result<Conversation, String> {
-        // 「和自己聊天」：名字/头像取**本机**的，否则 `resolve_nickname` 会回落到 device_id 原文，
-        // 会话列表里就成了一串 gosslan-xxxx。
-        let (name, avatar) = if friend_id == s.device_id {
+        let is_group = friend_id.starts_with("group:");
+        // 群名只认 `groups` 表（`db::ensure_conversation` 自己会再校正一次）；
+        // 单聊走昵称解析，自聊取本机资料（否则会回落到 device_id 原文）。
+        let (name, avatar) = if is_group {
+            let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());
+            let gid = friend_id.trim_start_matches("group:");
+            let g = db::get_group(&dbc, gid).ok_or_else(|| "群不存在".to_string())?;
+            (g.name, None)
+        } else if friend_id == s.device_id {
             (s.self_display_name(), s.self_avatar())
         } else {
             let name = resolve_nickname(&s, &friend_id);
@@ -1172,9 +1182,10 @@ pub async fn ensure_conversation(
             };
             (name, avatar)
         };
+        let kind = if is_group { "group" } else { "single" };
         {
             let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());
-            db::ensure_conversation(&dbc, &friend_id, "single", &name, avatar.as_deref())
+            db::ensure_conversation(&dbc, &friend_id, kind, &name, avatar.as_deref())
                 .map_err(|e| e.to_string())?;
             // 回读已存在的行：会话可能早已建立且被置顶，凭空造一个 pinned=false
             // 会让前端把它当成「未置顶」从而覆盖掉用户的置顶状态。
@@ -1184,7 +1195,7 @@ pub async fn ensure_conversation(
         }
         Ok(Conversation {
             id: friend_id.clone(),
-            kind: "single".to_string(),
+            kind: kind.to_string(),
             name,
             avatar,
             last_msg: None,

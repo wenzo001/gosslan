@@ -118,6 +118,40 @@ pub fn delete_outbox_by_msg_id(conn: &Connection, msg_id: &str) -> Result<()> {
     Ok(())
 }
 
+/// 删除好友时**自动取消**发给这个人的待发消息（计划 D5-A）。
+///
+/// 判据是 outbox 行而不是 `messages.status`：真正"还会被发出去"的只有队列里有行的那几条。
+/// 一条消息若已被 Ack 推进（delivered/read）、已取消或已判失败，这里只清队列行、不动状态。
+///
+/// 状态落 `failed` 而不是 `cancelled`：这不是用户对某条消息按了取消，而是关系被删除导致的
+/// 投递失败 —— 界面因此显示失败角标（可重发），语义与"我主动不发了"不同（INV-P26）。
+///
+/// 返回真正被改成 `failed` 的 msg_id（调用方据此 emit `message-status-changed`）。
+/// 整段一个事务：删行与置状态必须同时成立，否则会留下"队列空、状态仍 sending"的孤儿。
+pub fn fail_pending_messages_for_peer(conn: &Connection, peer_id: &str) -> Result<Vec<String>> {
+    let tx = conn.unchecked_transaction()?;
+    let msg_ids: Vec<String> = {
+        let mut stmt = tx.prepare("SELECT msg_id FROM outbox WHERE peer_id = ?1 ORDER BY id")?;
+        let rows = stmt.query_map(params![peer_id], |r| r.get::<_, String>(0))?;
+        rows.filter_map(|r| r.ok()).collect()
+    };
+    tx.execute("DELETE FROM outbox WHERE peer_id = ?1", params![peer_id])?;
+    let mut changed = Vec::new();
+    for msg_id in msg_ids {
+        let n = tx.execute(
+            "UPDATE messages SET status = 'failed'
+              WHERE msg_id = ?1
+                AND status NOT IN ('delivered', 'read', 'recalled', 'cancelled', 'partial_cancelled', 'failed')",
+            params![msg_id],
+        )?;
+        if n > 0 {
+            changed.push(msg_id);
+        }
+    }
+    tx.commit()?;
+    Ok(changed)
+}
+
 #[cfg(test)]
 mod offline_queue_tests {
     // 注意：本文件经 include! 拼进 db 模块，模块名在 db 作用域里必须全局唯一
@@ -282,5 +316,64 @@ mod offline_queue_tests {
         );
         // 而且取的是**最早的**那一批（ORDER BY id），否则尾部永远轮不到
         assert_eq!(got.first().map(|r| r.1.as_str()), Some("m-0"));
+    }
+
+    /// D5-A：删好友时清掉这个人的补发队列，并把**仍在路上**的消息落 failed。
+    ///
+    /// 三条都要判，缺一条就会留下另一个现场：
+    /// ① 队列行清空（否则下一次 flush 还会往一个已不是好友的人发）；
+    /// ② 状态从 sent/sending 落 failed（否则气泡永远停在"发送中"）；
+    /// ③ 已 delivered/read、以及根本没有队列行的消息**不许被改写**（那是既成事实）。
+    #[test]
+    fn removing_a_friend_fails_only_the_messages_still_in_the_outbox() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE messages (
+                msg_id TEXT UNIQUE NOT NULL,
+                status TEXT NOT NULL
+            );
+            CREATE TABLE outbox (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                msg_id TEXT NOT NULL UNIQUE,
+                peer_id TEXT NOT NULL,
+                payload TEXT NOT NULL,
+                created_at INTEGER NOT NULL
+            );
+            INSERT INTO messages(msg_id, status) VALUES
+                ('m-pending','sent'),
+                ('m-delivered','delivered'),
+                ('m-no-row','sending'),
+                ('m-other','sent');",
+        )
+        .unwrap();
+        for (msg, peer) in [
+            ("m-pending", "alice"),
+            ("m-delivered", "alice"),
+            ("m-other", "bob"),
+        ] {
+            conn.execute(
+                "INSERT INTO outbox(msg_id, peer_id, payload, created_at) VALUES (?1, ?2, '{}', 1)",
+                params![msg, peer],
+            )
+            .unwrap();
+        }
+
+        let changed = fail_pending_messages_for_peer(&conn, "alice").unwrap();
+        assert_eq!(changed, vec!["m-pending".to_string()], "只有还在队列里的那条落 failed");
+        assert!(list_outbox(&conn, "alice").unwrap().is_empty(), "关系没了就不该再给他的队列补发");
+        assert_eq!(list_outbox(&conn, "bob").unwrap().len(), 1, "别人的队列不许被顺手清掉");
+
+        let status = |msg: &str| -> String {
+            conn.query_row(
+                "SELECT status FROM messages WHERE msg_id = ?1",
+                params![msg],
+                |r| r.get(0),
+            )
+            .unwrap()
+        };
+        assert_eq!(status("m-pending"), "failed");
+        assert_eq!(status("m-delivered"), "delivered", "已送达是既成事实，不许改写");
+        assert_eq!(status("m-no-row"), "sending", "没有队列行的消息不归这次清理管");
+        assert_eq!(status("m-other"), "sent");
     }
 }

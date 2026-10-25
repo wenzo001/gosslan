@@ -202,7 +202,6 @@ test("「立即重取」只给单聊接收行：群行的 peerId 是 group_id，
     contentTransfers: [
       content({ cid: "a".repeat(64), name: "photo.jpg" }),
       content({ cid: "b".repeat(64), name: "g.jpg", groupId: "g1" }),
-      content({ cid: "c".repeat(64), name: "out.jpg", direction: "send", received: 0 }),
     ],
   });
   assert.ok(byId(rows, "a".repeat(64)).actions.includes("retry_content"), "单聊接收：这条通道今天就有");
@@ -211,22 +210,25 @@ test("「立即重取」只给单聊接收行：群行的 peerId 是 group_id，
     false,
     "群内容行的 peerId 存的是 group_id，按 device_id 发出去没人收 ⇒ 宁可不给按钮",
   );
-  assert.equal(
-    byId(rows, "c".repeat(64)).actions.includes("retry_content"),
-    false,
-    "本机发出去的内容不该由任务中心去「重取」",
-  );
   // 取消只给**接收方向**：发送方向的 cid 行是"本机是源"，`cancel_content_fetch` 按 cid 找的是
   // 本机在拉的那一单，给了按钮点下去也只会回 already_done。
   assert.ok(
     byId(rows, "a".repeat(64)).actions.includes("cancel_content"),
     "接收中的内容必须能取消（用户：没到终态的任务都要能停）",
   );
-  assert.equal(
-    byId(rows, "c".repeat(64)).actions.includes("cancel_content"),
-    false,
-    "发送方向的 cid 行不给取消：那条命令只收口本机的接收行",
-  );
+});
+
+test("发送方向的 content 台账不进任务中心：它是「本机可做种」索引，不是本机要办完的事", () => {
+  // 用户 2026-10-25 实报「好多任务是校验中，不知道为什么不能取消」：发送行 `received`
+  // 起手就等于 `size` ⇒ 永远 100%，而 `cancel_content_fetch` 只收口接收行。
+  const rows = deriveOperations({
+    transfers: [],
+    contentTransfers: [
+      content({ cid: "c".repeat(64), name: "out.jpg", direction: "send", received: 100, size: 100 }),
+      content({ cid: "d".repeat(64), name: "in.jpg", direction: "receive", received: 40, size: 100 }),
+    ],
+  });
+  assert.deepEqual(rows.map((r) => r.id), ["d".repeat(64)], "只留接收方向那一行");
 });
 
 test("消息行：有正文给正文，没正文给类型 key；补发队列行给取消（B4 已有真命令）", () => {
@@ -293,6 +295,9 @@ test("群历史：running 与 failed 都算任务，done 不列", () => {
   assert.equal(failed.state, "blocked");
   assert.equal(failed.blockedReason, "no_source");
   assert.ok(failed.actions.includes("sync_history_now"), "已有命令 ⇒ 可以给动作");
+  const running = byId(rows, "group:g1");
+  assert.ok(running.actions.includes("cancel_history"), "正在跑 ⇒ 给「停止」，而不是一颗只会回 already_running 的「立即同步」");
+  assert.equal(running.actions.includes("sync_history_now"), false);
   assert.equal(failed.progress, 0.5);
 });
 

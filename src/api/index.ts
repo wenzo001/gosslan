@@ -193,6 +193,9 @@ export const api = {
    */
   syncGroupHistoryNow: (groupId: string) =>
     invoke<string>("sync_group_history_now", { groupId }),
+  /** 停止一趟正在跑的群历史同步（协作式：当前页处理完就停）。返回短码。 */
+  cancelGroupHistory: (groupId: string) =>
+    invoke<string>("cancel_group_history", { groupId }),
   leaveGroup: (groupId: string) => invoke<void>("leave_group", { groupId }),
   getGroups: () => invoke<Group[]>("get_groups"),
   getGroupReads: (groupId: string) => invoke<GroupReadInfo[]>("get_group_reads", { groupId }),
