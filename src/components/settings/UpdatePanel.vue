@@ -163,7 +163,34 @@ function formatDate(seconds: number | null | undefined): string {
         </p>
       </div>
 
-      <div class="mt-3 flex flex-wrap items-center gap-2">
+      <!-- 二次确认必须出现在「安装」原来的位置（用户 2026-10-25：点确认时底下又弹出一块，
+           看起来像另一个动作）。确认态下动作行整行让位：只剩取消/确认，不再同时出现两个安装入口。 -->
+      <div
+        v-if="confirming"
+        class="mt-3 rounded-[var(--gosslan-radius-md)] border border-[var(--gosslan-border)] bg-[var(--gosslan-hover)] p-2.5"
+      >
+        <p class="text-caption leading-relaxed text-[var(--gosslan-text)]">
+          {{ t("settings.updates.confirmInstall") }}
+        </p>
+        <div class="mt-2 flex justify-end gap-2">
+          <button
+            type="button"
+            class="tap-safe rounded-[var(--gosslan-radius-md)] border border-[var(--gosslan-border)] px-2.5 py-1 text-meta transition hover:bg-[var(--gosslan-panel)]"
+            @click="confirming = false"
+          >
+            {{ t("common.cancel") }}
+          </button>
+          <button
+            type="button"
+            class="tap-safe rounded-[var(--gosslan-radius-md)] bg-[var(--gosslan-primary-active)] px-2.5 py-1 text-meta text-[var(--gosslan-on-primary)] transition hover:opacity-90"
+            @click="emit('install')"
+          >
+            {{ t("settings.updates.confirm") }}
+          </button>
+        </div>
+      </div>
+
+      <div v-else class="mt-3 flex flex-wrap items-center gap-2">
         <button
           v-if="state.phase === 'available' || (state.phase === 'error' && state.info)"
           type="button"
@@ -189,38 +216,13 @@ function formatDate(seconds: number | null | undefined): string {
           {{ t("settings.updates.install") }}
         </button>
         <button
-          v-if="state.phase !== 'downloading' && state.phase !== 'installing'"
+          v-if="state.phase !== 'downloading' && state.phase !== 'installing' && state.phase !== 'ready'"
           type="button"
           class="tap-safe rounded-[var(--gosslan-radius-md)] border border-[var(--gosslan-border)] px-3 py-1.5 text-xs transition hover:bg-[var(--gosslan-hover)]"
           @click="emit('dismiss')"
         >
           {{ t("settings.updates.later") }}
         </button>
-      </div>
-
-      <div
-        v-if="confirming"
-        class="mt-3 rounded-[var(--gosslan-radius-md)] border border-[var(--gosslan-border)] p-2.5"
-      >
-        <p class="text-caption leading-relaxed text-[var(--gosslan-text)]">
-          {{ t("settings.updates.confirmInstall") }}
-        </p>
-        <div class="mt-2 flex justify-end gap-2">
-          <button
-            type="button"
-            class="tap-safe rounded-[var(--gosslan-radius-md)] border border-[var(--gosslan-border)] px-2.5 py-1 text-meta transition hover:bg-[var(--gosslan-hover)]"
-            @click="confirming = false"
-          >
-            {{ t("common.cancel") }}
-          </button>
-          <button
-            type="button"
-            class="tap-safe rounded-[var(--gosslan-radius-md)] bg-[var(--gosslan-primary-active)] px-2.5 py-1 text-meta text-[var(--gosslan-on-primary)] transition hover:opacity-90"
-            @click="emit('install')"
-          >
-            {{ t("settings.updates.confirm") }}
-          </button>
-        </div>
       </div>
     </div>
 

@@ -1576,3 +1576,16 @@ img {
     transition: none;
   }
 }
+
+/* 会话列表页脚：移动布局下让开固定 TabBar，避免任务入口/版本行被底栏盖住。
+   判据与布局同源：`html.is-mobile`（`useAppStore.applyIsMobile()` 独家写），
+   不再在组件里抄一份 `app.isMobile`。 */
+html.is-mobile .conv-footer-safe {
+  margin-bottom: calc(var(--gosslan-mobile-tabbar-h) + env(safe-area-inset-bottom));
+}
+
+/* 虚拟聊天列表关闭**浏览器原生滚动锚定**：高度变化由 `VirtualList` 在同一帧显式补偿。
+   两者同时开启会各写一次 scrollTop（用户 2026-10-25：「加表情整个聊天区上下闪一下」）。 */
+.vlist-no-anchor {
+  overflow-anchor: none;
+}

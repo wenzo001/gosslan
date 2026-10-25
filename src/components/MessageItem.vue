@@ -948,15 +948,15 @@ const bubbleHasBorder = computed(() => {
   if (k === "file" && attachmentUrl.value) return false;
   return true;
 });
-/** 底栏三边描边的颜色：与它上面那条气泡**同一条线**。 */
+/** 底栏三边描边的颜色：与它上面那条气泡**同一条线**（自己的卡片是透明边）。 */
 const stripBorderColor = computed(() => {
   if (!bubbleHasBorder.value) return "transparent";
-  if (cardLikeBubble.value) return "var(--gosslan-card-line)";
+  if (cardLikeBubble.value) return String(cardStyle.value["--bubble-line"] ?? "transparent");
   return mine.value ? "transparent" : "var(--gosslan-border)";
 });
 const reactionSurface = computed(() => {
   if (props.message.kind === "code") return app.dark ? CODE_SURFACE.dark : CODE_SURFACE.light;
-  if (cardLikeBubble.value) return "var(--gosslan-card)";
+  if (cardLikeBubble.value) return String(cardStyle.value["--bubble-bg"] ?? "var(--gosslan-card)");
   return String(bubbleStyle.value["--bubble-bg"] ?? "transparent");
 });
 
@@ -984,11 +984,13 @@ const shellStyle = computed<CSSProperties>(
     ({
       "--bubble-bg": reactionSurface.value,
       "--bubble-line":
-        props.message.kind === "code" || cardLikeBubble.value
+        props.message.kind === "code"
           ? "var(--gosslan-card-line)"
-          : mine.value
-            ? "transparent"
-            : "var(--gosslan-border)",
+          : cardLikeBubble.value
+            ? String(cardStyle.value["--bubble-line"] ?? "transparent")
+            : mine.value
+              ? "transparent"
+              : "var(--gosslan-border)",
     }) as CSSProperties,
 );
 

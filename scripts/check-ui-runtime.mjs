@@ -491,6 +491,8 @@ window.__probe = (() => {
         // 任务卡**主体**（头部/描述/指派人）emit 的是 "open-panel"（不带 id，
         // 与底部"直达这一条详情"区分）。tag 与 open-id 对齐。
         onOpenPanel: () => events.push(['open-panel']),
+        // 标题栏头像（--only=chatheader）：点它必须 emit open-profile。
+        onOpenProfile: () => events.push(['open-profile']),
         // 默认头像选择器（--only=avatar）：确认时把组合记进账本。
         onApply: (seed) => events.push(['apply', seed && seed.emoji, seed && seed.bg]),
         // 输入框那一族（--only=inputpanel）要读得到"这条到底带不带 @ 的名单"：
@@ -2893,6 +2895,8 @@ async function main() {
     const composermobile = want("composermobile");
     const tasksmobile = want("tasksmobile");
     const opscenter = want("opscenter");
+    const chatheader = want("chatheader");
+    const scrollreact = want("scrollreact");
     const resend = want("resend");
     const touchroster = want("touchroster");
     const locale = want("locale");
@@ -2955,6 +2959,8 @@ async function main() {
     if (composermobile) await runComposerMobile(cdp, url);
     if (tasksmobile) await runTasksMobile(cdp, url);
     if (opscenter) await runOpsCenter(cdp, url);
+    if (chatheader) await runChatHeader(cdp, url);
+    if (scrollreact) await runScrollReact(cdp, url);
     if (resend) await runResend(cdp, url);
     if (locale) await runLocale(cdp, url);
     if (rowpair) await runRowPair(cdp, url);
@@ -5927,6 +5933,73 @@ async function runRowPair(cdp, url) {
   check("主题矩阵非空转：同一套预设的亮/暗两档气泡底色不同",
     !!lightMine && !!darkMine && lightMine.mine.bg !== darkMine.mine.bg,
     "亮暗不同色", JSON.stringify({ light: lightMine && lightMine.mine.bg, dark: darkMine && darkMine.mine.bg }));
+  // ============ 卡片配色矩阵：自己的文件/合并/任务卡必须跟随主题 ============
+  // 用户 2026-10-25：「文件/代码卡片/超长文本的气泡颜色好像还是固定的……应该是统一的」。
+  // 这里量的是**渲染端真的用了主题色**：自己的卡片底色随 7 套预设变化、正文对比 ≥4.5、
+  // 与对方卡片可区分、尾巴填充 = 卡片底色（尾巴和卡片是一块）。
+  const readCardColors = () => cdp.eval(`(() => {
+    const bubble = document.querySelector('[data-msg-bubble]');
+    const el = bubble && bubble.firstElementChild;
+    if (!el) return null;
+    const cs = getComputedStyle(el);
+    const tail = document.querySelector('.bubble-tail .tail-fill');
+    const near = [...document.querySelectorAll('.msg-shell *')]
+      .find((x) => (x.textContent || '').trim().length > 0 && x.children.length === 0);
+    return {
+      bg: cs.backgroundColor, fg: cs.color,
+      tailFill: tail ? getComputedStyle(tail).fill : null,
+      radius: parseFloat(cs.borderTopLeftRadius),
+      textSample: near ? near.textContent.trim().slice(0, 12) : null,
+    };
+  })()`);
+  const CARD_KINDS = ["file", "merge", "todo"];
+  const cardRows = [];
+  for (const kind of CARD_KINDS) {
+    for (const [label, sender] of [["mine", "dev-me"], ["other", "peer-a"]]) {
+      const okMount = await mount(0, false, kind, null, sender);
+      check(`卡片矩阵：挂出 ${kind}/${label}`, okMount, "install 成功", String(okMount));
+      for (const c of combos) {
+        const st = await setTheme(c.preset, c.dark);
+        check(`卡片矩阵：${kind}/${label} 切换 ${c.preset}${c.dark ? "/暗" : "/亮"}`,
+          !!st && st.ok === "ok", "store 切换生效", JSON.stringify(st));
+        // 卡片根节点带 `transition`（颜色/底色 150ms），切主题后必须等它落定再读，
+        // 否则读到的是过渡中间色：尾巴（无 transition）已到新色、卡片还停在旧色 ⇒ 假红。
+        await sleep(300);
+        const col = await readCardColors();
+        const bg = col && rgbOf(col.bg);
+        const fg = col && rgbOf(col.fg);
+        const ratio = bg && fg ? contrast(fg, bg) : null;
+        cardRows.push({ kind, label, ...c, ...(col || {}), ratio });
+        check(`卡片 ${kind}/${label} ${c.preset}/${c.dark ? "暗" : "亮"}：正文对比 ≥ 4.5`,
+          ratio !== null && ratio >= 4.5, ">= 4.5", JSON.stringify({ bg: col && col.bg, fg: col && col.fg, ratio }));
+        check(`卡片 ${kind}/${label} ${c.preset}/${c.dark ? "暗" : "亮"}：尾巴填充 = 卡片底色`,
+          !!col && !!col.tailFill && col.tailFill === col.bg,
+          "tailFill === bg", JSON.stringify({ tailFill: col && col.tailFill, bg: col && col.bg }));
+        check(`卡片 ${kind}/${label} ${c.preset}/${c.dark ? "暗" : "亮"}：圆角落在 17~19px`,
+          !!col && col.radius >= 17 && col.radius <= 19, "17~19", JSON.stringify({ radius: col && col.radius }));
+      }
+    }
+  }
+  for (const kind of CARD_KINDS) {
+    const mineRowsForKind = cardRows.filter((r) => r.kind === kind && r.label === "mine");
+    const distinct = new Set(mineRowsForKind.map((r) => r.bg)).size;
+    check(`卡片矩阵非空转：${kind} 的自己卡片底色至少 4 种（真的跟随主题）`,
+      distinct >= 4, ">= 4 种", JSON.stringify({ kind, distinct }));
+    for (const c of combos) {
+      const mine = cardRows.find((r) => r.kind === kind && r.label === "mine"
+        && r.preset === c.preset && r.dark === c.dark);
+      const other = cardRows.find((r) => r.kind === kind && r.label === "other"
+        && r.preset === c.preset && r.dark === c.dark);
+      check(`卡片矩阵：${kind} ${c.preset}/${c.dark ? "暗" : "亮"} 自己/对方底色可区分`,
+        !!mine && !!other && mine.bg !== other.bg,
+        "mine.bg != other.bg",
+        JSON.stringify({ mine: mine && mine.bg, other: other && other.bg }));
+    }
+  }
+  console.log("  · 卡片配色矩阵（" + cardRows.length + " 格）：" + JSON.stringify(cardRows.map((r) => ({
+    k: r.kind, m: r.label === "mine", p: r.preset, d: r.dark, c: r.ratio,
+  }))));
+
   await setTheme("theme", wasDark === true);
 
   // ============ 连续消息组：组内/组间距、相邻圆角、身份信息各出现几次 ============
@@ -8644,6 +8717,15 @@ async function runUpdater(cdp, url) {
     JSON.stringify({ bar, hasCancel: t2.includes("取消下载") }));
 
   await mount({ ...base, phase: "ready" });
+  const readyText = await text();
+  check("ready 状态不再显示会丢弃已下载字节的「稍后」",
+    !readyText.includes("稍后"), "无 稍后 按钮", JSON.stringify({ tail: String(readyText).slice(-120) }));
+  const installRect = await cdp.eval(`(() => {
+    const b = [...document.querySelectorAll('button')].find((x) => (x.innerText || '').includes('安装并重启'));
+    if (!b) return null;
+    const r = b.getBoundingClientRect();
+    return { top: Math.round(r.top), left: Math.round(r.left) };
+  })()`);
   await cdp.eval(`(() => {
     const b = [...document.querySelectorAll('button')].find((x) => (x.innerText || '').includes('安装并重启'));
     if (b) b.click();
@@ -8655,6 +8737,28 @@ async function runUpdater(cdp, url) {
     t3.includes("安装会退出应用并重启") && t3.includes("确认安装"),
     "出现确认文案与确认键",
     JSON.stringify({ head: String(t3).slice(0, 200) }));
+
+  // 用户 2026-10-25：二次确认不该在安装按钮**下面**另起一块，也不该同时留着两个安装入口。
+  const confirmGeom = await cdp.eval(`(() => {
+    const buttons = [...document.querySelectorAll('button')];
+    const install = buttons.filter((b) => (b.innerText || '').includes('安装并重启'));
+    const confirm = buttons.find((b) => (b.innerText || '').trim() === '确认安装');
+    const hint = [...document.querySelectorAll('p')].find((p) => (p.innerText || '').includes('安装会退出应用并重启'));
+    const box = hint ? hint.parentElement.getBoundingClientRect() : null;
+    return {
+      installCount: install.length,
+      confirm: !!confirm,
+      boxTop: box ? Math.round(box.top) : null,
+      confirmTop: confirm ? Math.round(confirm.getBoundingClientRect().top) : null,
+    };
+  })()`);
+  check("二次确认替换了「安装」按钮（不再同时出现两个安装入口）",
+    confirmGeom.installCount === 0 && confirmGeom.confirm === true,
+    "install=0 / confirm=1", JSON.stringify(confirmGeom));
+  check("二次确认出现在原「安装」按钮的位置（不在卡片底部另起一块）",
+    installRect && confirmGeom.boxTop !== null && confirmGeom.boxTop <= installRect.top + 2,
+    "确认块 top ≤ 原安装按钮 top + 2",
+    JSON.stringify({ installRect, confirmGeom }));
 
   await mount({ ...base, info: null, phase: "idle" }, false);
   const t4 = await text();
@@ -10014,18 +10118,273 @@ async function runSettingsMobile(cdp, url) {
  * 行为（实时同步、筛选、详情内容）由 --only=tasksrt 覆盖，这里只量移动端视口。
  */
 /**
+ * 聊天滚动稳定性（--only=scrollreact）。
+ *
+ * 用户 2026-10-25：给倒数第二条消息加表情回应时，整个聊天区上下闪一下。
+ * 这里用真 VirtualList + 可变的普通行复现“高度变化”，逐帧采样 scrollTop / 底边间隙：
+ * - 贴底：每一帧都必须贴着底（gap ≤1），不能先掉 40px 再弹回；
+ * - 同一帧两行变高：delta 必须累计；
+ * - 非贴底：只补视口上方行，正在读的参照行不被拽走。
+ */
+async function runScrollReact(cdp, url) {
+  await cdp.send("Page.navigate", { url });
+  await sleep(3_000);
+  await cdp.eval(PAGE_FIXTURE);
+
+  const mounted = await cdp.eval(`(async () => {
+    // 夹具的 install 才会写 __probe.vue；这段直接手搭 app，所以从资源条目拿页面同一份 Vue。
+    const vueUrl = performance.getEntriesByType('resource')
+      .map((e) => e.name || '').find((u) => u.includes('/node_modules/.vite/deps/vue.js?v='));
+    const V = window.__probe.vue || (vueUrl ? await import(vueUrl) : null);
+    if (!V) return { ok: false, why: 'no-vue' };
+    window.__probe.vue = V;
+    const VL = await import('/src/components/VirtualList.vue');
+    document.body.innerHTML = '';
+    const host = document.createElement('div');
+    host.id = 'sr-host';
+    host.style.cssText = 'height:400px;width:420px;position:relative;';
+    document.body.appendChild(host);
+    const state = V.reactive({ heights: Array.from({ length: 10 }, () => 100) });
+    window.__sr = state;
+    // ⚠️ items 必须是**稳定的数组**：真实聊天里加表情只改回应 prop，不改 messages 数组。
+    // 若把高度塞进 items，每次变高都会触发 watch(items) 的 suppressTransient（hold），
+    // 补偿永远被静默期吃掉 —— 那是夹具自造的假红。
+    const items = Array.from({ length: 10 }, (_, i) => ({ id: 'r' + i }));
+    const app = V.createApp({
+      setup() {
+        return () => V.h(VL.default, {
+          items,
+          estimateHeight: () => 100,
+          overscan: 2,
+          autoScrollOnSwap: false,
+        }, {
+          default: ({ item }) => {
+            const idx = Number(String(item.id).slice(1));
+            return V.h('div', {
+              'data-sr-row': item.id,
+              style: {
+                height: state.heights[idx] + 'px',
+                background: '#d8dee9',
+                borderBottom: '1px solid #94a3b8',
+              },
+            }, item.id);
+          },
+        });
+      },
+    });
+    app.mount(host);
+    await V.nextTick(); await V.nextTick();
+    await new Promise((r) => setTimeout(r, 300));
+    const el = host.querySelector('.vlist-no-anchor');
+    if (!el) return { ok: false };
+    el.scrollTop = el.scrollHeight;
+    await new Promise((r) => requestAnimationFrame(() => r()));
+    return {
+      ok: true,
+      anchor: getComputedStyle(el).overflowAnchor,
+      scrollTop: el.scrollTop,
+      scrollHeight: el.scrollHeight,
+      clientHeight: el.clientHeight,
+    };
+  })()`);
+  check("scrollreact：VirtualList 真挂起来了，且原生锚定已关闭",
+    mounted && mounted.ok === true && mounted.anchor === "none",
+    "mounted + overflow-anchor:none", JSON.stringify(mounted));
+
+  const sample = (mutation) => cdp.eval(`(async () => {
+    const V = window.__probe.vue;
+    const host = document.getElementById('sr-host');
+    const el = host.querySelector('.vlist-no-anchor');
+    ${mutation}
+    await V.nextTick();
+    // 先让这一帧走完 layout + ResizeObserver（补偿在 RO 回调里同步发生），
+    // 下一帧 rAF 读到的才是用户真正看到的画面。
+    await new Promise((r) => requestAnimationFrame(() => r()));
+    const frames = [];
+    for (let i = 0; i < 8; i += 1) {
+      await new Promise((r) => requestAnimationFrame(() => r()));
+      frames.push({
+        top: el.scrollTop,
+        gap: el.scrollHeight - el.scrollTop - el.clientHeight,
+      });
+    }
+    return { frames, sh: el.scrollHeight, ch: el.clientHeight };
+  })()`);
+
+  // ① 贴底 + 倒数第二条变高：每一帧都必须贴着底，且 top 单调不回落。
+  const one = await sample("window.__sr.heights[8] = 140;");
+  const oneBadGap = (one.frames || []).filter((f) => f.gap > 1);
+  const oneMonotonic = (one.frames || []).every(
+    (f, i, a) => i === 0 || f.top >= a[i - 1].top - 0.5,
+  );
+  check("scrollreact：加一条回应后每一帧都贴底（没有先掉 40px 再弹回）",
+    !!one && oneBadGap.length === 0, "8 帧 gap ≤1", JSON.stringify(one));
+  check("scrollreact：scrollTop 单调不回落",
+    oneMonotonic, "8 帧单调", JSON.stringify(one && one.frames));
+
+  // ② 同一帧两行变高：delta 必须累计。
+  //    逐帧 gap 在这里不作为硬判据：两行的 ResizeObserver entry 可能分两批到达，
+  //    浏览器在中间帧本来就会多出一次布局；累计是否正确由最终 top 增量（=40）与
+  //    纯函数 `heightCompensation.test.ts` 的“同一帧多行求和”共同证明。
+  const two = await sample("window.__sr.heights[7] += 20; window.__sr.heights[8] += 20;");
+  const oneFinalTop = one.frames && one.frames.length ? one.frames[one.frames.length - 1].top : 0;
+  const twoFinal = two.frames && two.frames.length ? two.frames[two.frames.length - 1] : null;
+  check("scrollreact：同一帧两行变高，最终贴底且累计了 40px",
+    !!twoFinal && twoFinal.gap <= 1 && twoFinal.top >= oneFinalTop + 39,
+    "final gap ≤1 且 top 增量 ≥39",
+    JSON.stringify({ oneFinalTop, twoFinal, two }));
+
+  // ③ 非贴底：上滚到 200px 后让视口上方行变高，参照行不应下坠。
+  const away = await cdp.eval(`(async () => {
+    const V = window.__probe.vue;
+    const host = document.getElementById('sr-host');
+    const el = host.querySelector('.vlist-no-anchor');
+    window.__sr.heights = Array.from({ length: 10 }, () => 100);
+    await V.nextTick(); await V.nextTick();
+    el.scrollTop = 200;
+    // 换数据会触发 300ms 的 suppressTransient（避免“回到最新”闪现）；等它过掉，
+    // 这一段量的是“用户停在历史位置时”的补偿，不是静默期。
+    await new Promise((r) => setTimeout(r, 350));
+    await new Promise((r) => requestAnimationFrame(() => r()));
+    const ref = host.querySelector('[data-sr-row="r5"]');
+    const before = ref ? ref.getBoundingClientRect().top : null;
+    return { before, top: el.scrollTop };
+  })()`);
+  const awayAfter = await cdp.eval(`(async () => {
+    const V = window.__probe.vue;
+    const host = document.getElementById('sr-host');
+    const ref = host.querySelector('[data-sr-row="r5"]');
+    window.__sr.heights[0] = 140;
+    await V.nextTick();
+    for (let i = 0; i < 8; i += 1) {
+      await new Promise((r) => requestAnimationFrame(() => r()));
+    }
+    const after = ref ? ref.getBoundingClientRect().top : null;
+    const el = host.querySelector('.vlist-no-anchor');
+    return { after, top: el.scrollTop };
+  })()`);
+  const shifted = away && away.before !== null && awayAfter && awayAfter.after !== null
+    ? Math.abs(awayAfter.after - away.before) : null;
+  check("scrollreact：非贴底时只补视口上方行，正在读的内容不被拽走",
+    shifted !== null && shifted <= 1, "参照行位移 ≤1px",
+    JSON.stringify({ away, awayAfter, shifted }));
+}
+
+/**
+ * 单聊标题栏头像（--only=chatheader）。
+ *
+ * 用户 2026-10-25：名字旁边要有对方头像，点它进资料页；群聊不出现单聊头像。
+ * 这里量三件事：头像真的在名字左侧、点它 emit `open-profile`、群聊没有这枚头像；
+ * 再加一档 320 宽，确认加了头像后标题栏不横向溢出。
+ */
+async function runChatHeader(cdp, url) {
+  await cdp.send("Page.navigate", { url });
+  await sleep(3_000);
+  await cdp.eval(PAGE_FIXTURE);
+
+  const SINGLE = {
+    conv: { id: "p-header", kind: "single", name: "好友甲", avatar: null, last_msg: null, last_ts: 0, unread: 0 },
+    isGroup: false,
+    online: true,
+    memberCount: 0,
+    showBack: false,
+    unreadTotal: 0,
+  };
+  const GROUP = {
+    conv: { id: "g-header", kind: "group", name: "项目群", avatar: null, last_msg: null, last_ts: 0, unread: 0 },
+    isGroup: true,
+    online: true,
+    memberCount: 3,
+    showBack: false,
+    unreadTotal: 0,
+  };
+  const mount = async (props) => {
+    await cdp.eval(PAGE_FIXTURE);
+    const r = await cdp.eval(
+      "window.__probe.install('/src/components/chat/ChatHeader.vue', '', "
+      + JSON.stringify(JSON.stringify(props)) + ")",
+    );
+    await sleep(350);
+    return r;
+  };
+  const readHeader = () => cdp.eval(`(() => {
+    const host = document.getElementById('probe-host');
+    if (!host) return { ok: false };
+    const avatars = host.querySelectorAll('.gosslan-avatar-box');
+    const name = host.querySelector('.truncate');
+    const btn = [...host.querySelectorAll('button')].find((b) => {
+      const l = b.getAttribute('aria-label') || '';
+      return l.includes('好友甲') || l.includes('项目群');
+    });
+    const r = btn ? btn.getBoundingClientRect() : null;
+    return {
+      ok: true,
+      avatars: avatars.length,
+      label: btn ? btn.getAttribute('aria-label') : null,
+      avatarLeft: r ? Math.round(r.left) : null,
+      avatarW: r ? Math.round(r.width) : null,
+      nameLeft: name ? Math.round(name.getBoundingClientRect().left) : null,
+      sw: document.documentElement.scrollWidth,
+      vw: innerWidth,
+    };
+  })()`);
+
+  // ① 单聊：头像在名字左侧、可点、emit open-profile。
+  await mount(SINGLE);
+  const single = await readHeader();
+  check("单聊标题栏出现头像（MessageAvatar，不是手画占位）",
+    single.ok === true && single.avatars === 1 && single.avatarW !== null && single.avatarW >= 26,
+    "1 枚 ≥26px 头像", JSON.stringify(single));
+  check("头像是在名字左侧（不是挤到右侧按钮堆里）",
+    single.avatarLeft !== null && single.nameLeft !== null && single.nameLeft > single.avatarLeft,
+    "nameLeft > avatarLeft", JSON.stringify(single));
+  if (single.avatarLeft !== null) {
+    // 点按钮中心
+    const pt = await cdp.eval(`(() => {
+      const host = document.getElementById('probe-host');
+      const b = [...host.querySelectorAll('button')].find((x) => (x.getAttribute('aria-label') || '').includes('好友甲'));
+      if (!b) return null;
+      const r = b.getBoundingClientRect();
+      return { x: Math.round(r.left + r.width / 2), y: Math.round(r.top + r.height / 2) };
+    })()`);
+    if (pt) {
+      await cdp.click(pt.x, pt.y);
+      await sleep(150);
+    }
+  }
+  const emitted = await cdp.eval(
+    "(() => window.__probe.events.filter((e) => e[0] === 'open-profile').length)()",
+  );
+  check("点头像 emit open-profile（资料页入口接上了）", emitted === 1, "1 次", JSON.stringify({ emitted }));
+
+  // ② 群聊：没有单聊头像。
+  await mount(GROUP);
+  const group = await readHeader();
+  check("群聊标题栏不出现单聊头像",
+    group.ok === true && group.avatars === 0,
+    "0 枚头像", JSON.stringify(group));
+
+  // ③ 320 宽：加了头像也不横向溢出。
+  await cdp.send("Emulation.setDeviceMetricsOverride", {
+    width: 320, height: 640, deviceScaleFactor: 2, mobile: true,
+  });
+  await sleep(300);
+  await mount(SINGLE);
+  const narrow = await readHeader();
+  check("320 宽：标题栏没有横向溢出（名字可截断）",
+    narrow.ok === true && narrow.sw <= 320,
+    "scrollWidth ≤ 320", JSON.stringify(narrow));
+  await cdp.send("Emulation.setDeviceMetricsOverride", {
+    width: 1280, height: 800, deviceScaleFactor: 1, mobile: false,
+  });
+}
+
+/**
  * 统一后台任务中心（`TaskCenter.vue`）的运行时判据。
  *
- * 负责人 2026-10-23 的原话里有三件**只有运行时量得到**的事：
- *   ① "已经完成的在这个列表里应该是不展示" —— 读模型那侧有单测，但"store → 列表 DOM"
- *      这一根接线只有挂起来才量得到（逻辑全绿而没人接上 = 功能为零）；
- *   ② "百分之百没完成 / 接收中的都可以取消" —— 每一行到底有没有长出那颗按钮；
- *   ③ "右下角那个胶囊一拨就可以往四个角移动" —— 这是**指针位移阈值**驱动的行为，
- *      DOM 上派发事件量不到（不经命中测试、也不产生真的 pointer 捕获），
- *      所以这里用 `Input.dispatchMouseEvent` 按住—移动—松手走一遍。
- *
- * ⚠️ 与所有其它段同一条边界：这是浏览器输入管线里的一次真拖动，
- * **不等于** WKWebView / WebView2 里的手感（那一半归 Smoke-11 人工）。
+ * 2026-10-25 起入口从浮动药丸迁到会话列表页脚，所以这一段拆成两半：
+ *   ① 面板本身：共享开关打开、只列未完成、100% 未终态的状态文案、按钮数量；
+ *   ② 页脚入口：入口存在、版本号、未完成数、点击打开同一个开关、移动端在 TabBar 之上。
  */
 async function runOpsCenter(cdp, url) {
   await cdp.send("Emulation.setDeviceMetricsOverride", {
@@ -10077,8 +10436,6 @@ async function runOpsCenter(cdp, url) {
     const READ = `(() => {
       const outside = Array.from(document.querySelectorAll('button'))
         .filter((b) => !b.closest('[role="dialog"]'));
-      const pill = outside.length === 1 ? outside[0] : null;
-      const box = pill ? pill.getBoundingClientRect() : null;
       const dialog = document.querySelector('[role="dialog"]');
       const rows = dialog ? Array.from(dialog.querySelectorAll('li')).map((li) => ({
         title: String((li.querySelector('span') || {}).textContent || '').trim(),
@@ -10088,43 +10445,38 @@ async function runOpsCenter(cdp, url) {
         buttons: li.querySelectorAll('button').length,
       })) : [];
       return {
-        pillButtons: outside.length,
-        pill: box ? { left: Math.round(box.left), top: Math.round(box.top),
-          right: Math.round(box.right), bottom: Math.round(box.bottom) } : null,
+        outsideButtons: outside.length,
         dialog: !!dialog,
+        taskOpen: (document.querySelector('[data-task-open]') || {}).getAttribute
+          ? document.querySelector('[data-task-open]').getAttribute('data-open')
+          : null,
         rows: rows,
-        corner: localStorage.getItem('taskCenter.corner'),
         vw: window.innerWidth, vh: window.innerHeight,
         scrollWidth: document.documentElement.scrollWidth,
       };
     })()`;
     const read = () => cdp.eval(READ);
 
-    // 起跑前把这条键清掉：这一段的头两格判的是"没写过位置时停在右下"，
-    // profile 是每次 mkdtemp 新建的、正常不会留东西，但**同一趟里**这一段被跑第二遍
-    // （--only=opscenter 复跑 / 将来把它挂进别的组合）时，上一遍写的 'br'/'tl' 会让那条
-    // `corner === null` 变成掷硬币。清一次是免费的确定性。
-    await cdp.eval("localStorage.removeItem('taskCenter.corner')");
+    // 入口已迁到会话列表页脚：这里只挂面板，药丸整颗不该再存在。
     const first = await read();
-    check("药丸渲染出来了，且它是此刻页面里唯一一颗非弹窗按钮（入口接上了）",
-      first.pillButtons === 1 && !!first.pill,
-      "1 颗", JSON.stringify({ pillButtons: first.pillButtons, pill: first.pill }));
-    check("默认停在右下角（没写过位置时与改动前那颗同一位置）",
-      !!first.pill && first.pill.right > first.vw / 2 && first.pill.bottom > first.vh / 2
-        && first.vw - first.pill.right <= 20 && first.corner === null,
-      "贴右边缘、右下象限、localStorage 还没写过",
-      JSON.stringify({ pill: first.pill, vw: first.vw, vh: first.vh, corner: first.corner }));
+    check("浮动药丸已消失：面板关闭时页面里没有非弹窗按钮",
+      first.outsideButtons === 0 && first.vw > 0,
+      "0 颗", JSON.stringify({ outsideButtons: first.outsideButtons }));
 
-    // ① 纯点击（指针不位移）必须打开面板 —— 拖动阈值如果把点按吞掉，这一格当场红。
-    // 药丸 2026-10-24 收成小圆胶囊（只留转圈 + 件数），点击点取**矩形中心**，
-    // 不再用「left + 40」（那按的是旧版 224px 宽的药丸）。
-    const pillPoint = (p) => ({
-      x: Math.round((p.left + p.right) / 2), y: Math.round((p.top + p.bottom) / 2),
-    });
-    const p0 = pillPoint(first.pill);
-    await cdp.click(p0.x, p0.y);
+    // 用共享开关打开面板（页脚与面板读同一个 store）。
+    const openedState = await cdp.eval(`(async () => {
+      const A = await import('/src/stores/useAppStore.ts');
+      const a = A.useAppStore();
+      a.openTaskCenter();
+      const t = window.__probe.vue;
+      await t.nextTick(); await t.nextTick();
+      return { open: a.taskCenterOpen, pinia: !!window.__pinia };
+    })()`);
+    check("任务面板开关：store 的 taskCenterOpen 真的被置真",
+      !!openedState && openedState.open === true,
+      "taskCenterOpen=true", JSON.stringify(openedState));
     const opened = await read();
-    check("点一下（不拖动）打开面板，列表行数等于读模型的 6 行",
+    check("共享开关打开面板，列表行数等于读模型的 6 行",
       opened.dialog === true && opened.rows.length === 6,
       "dialog + 6 行", JSON.stringify({ dialog: opened.dialog, rows: opened.rows.length }));
     const byTitle = (title) => opened.rows.find((r) => r.title === title);
@@ -10211,34 +10563,10 @@ async function runOpsCenter(cdp, url) {
       return true;
     })()`);
 
-    // ④b 移动端 390：**面板开着**时也不许把页面撑出横向滚动（T1 验证矩阵那一格）。
-    // 放在这里是因为面板此刻正开着（刚点开、还没关）—— 关掉再开需要真实点击，
-    // 而 headless 静止页面不出帧（Reka 的遮罩要等 after-leave），那一步在本段里不稳。
-    await cdp.send("Emulation.setDeviceMetricsOverride", {
-      width: 390, height: 844, deviceScaleFactor: 2, mobile: true,
-    });
-    await sleep(400);
-    const mOpen = await read();
-    check("390 宽、面板打开：没有横向溢出，6 行都在",
-      mOpen.dialog === true && mOpen.scrollWidth <= 390 && mOpen.rows.length === 6,
-      "dialog + scrollWidth ≤ 390 + 6 行",
-      JSON.stringify({ dialog: mOpen.dialog, sw: mOpen.scrollWidth, rows: mOpen.rows.length }));
-    await cdp.send("Emulation.setDeviceMetricsOverride", {
-      width: 1280, height: 800, deviceScaleFactor: 1, mobile: false,
-    });
-    await sleep(400);
+    // ④b 移动端 390 与关闭：统一放在下面（先关面板，再以共享开关重开一次量宽度）。
 
-    // 关掉面板再拖。这里**不用 Esc**：Esc 要焦点已经落在弹窗里才有作用点，
-    // 而这一段刚才是"真点击坐标"打开的，焦点落点不该被本段当成前提来依赖
-    // （焦点那条出口另有 `--only=overlay` 那 32 条守着）。点卡片外的遮罩是 Reka 的
-    // outside-pointerdown 那条路，与用户"点旁边关掉"是同一件事。
-    // ⚠️ 这一格必须先红再绿：遮罩没关掉时，下面那次拖动的按下会打在**遮罩**上
-    //（遮罩 z-64 在药丸 z-40 之上），于是 corner 永远是 null —— 第一版就是这么红的，
-    // 那不是拖动坏了，是这一段的前置没成立。
-    // 出帧泵：`Page.captureScreenshot` 会强制走一遍更新渲染，rAF 回调在那一步里跑。
-    // 关面板这一步**必须**泵帧：Reka 的遮罩在 `after-leave` 之后才卸载，而 headless 页面
-    // 静止时不出帧 ⇒ 遮罩（z-64）会一直盖在药丸（z-40）上，后续的"点药丸"全打在遮罩上
-    // （本段第一版实测：读数像"药丸点不开"，其实是面板关不干净）。
+    // 关掉面板：点卡片外的遮罩是 Reka 的 outside-pointerdown 那条路。
+    // Reka 的遮罩在 after-leave 之后才卸载，而 headless 页面静止时不出帧 ⇒ 必须泵帧。
     const pumpFrames = async (n = 6) => {
       for (let i = 0; i < n; i += 1) {
         await cdp.send("Page.captureScreenshot", { format: "png" }).catch(() => {});
@@ -10251,74 +10579,165 @@ async function runOpsCenter(cdp, url) {
       return read();
     };
     const closed = await closePanel();
-    check("对照前置：点卡片外能把面板关掉（否则拖动是打在遮罩上，读数不可信）",
-      closed.dialog === false && closed.pillButtons === 1,
-      "dialog=false / 1 颗", JSON.stringify({ dialog: closed.dialog, pillButtons: closed.pillButtons }));
+    check("点卡片外能把面板关掉（共享开关回到 false）",
+      closed.dialog === false, "dialog=false", JSON.stringify({ dialog: closed.dialog }));
 
-    // ② 真的按住拖到左上象限 ⇒ 吸附左上角 + 位置写进 localStorage + **不把面板点开**。
-    const from = pillPoint(closed.pill);
-    await cdp.drag(from.x, from.y, 120, 120);
-    const moved = await read();
-    check("真拖动之后药丸吸到左上角（哪一角，不是像素）",
-      !!moved.pill && moved.pill.left <= 20 && moved.pill.top <= 140
-        && moved.pill.left < moved.vw / 2 && moved.pill.top < moved.vh / 2,
-      "left≤20 且落在左上象限", JSON.stringify(moved.pill));
-    check("拖动把那一角写进了 localStorage（重启还在：挡住输入区的位置每次都同一处）",
-      moved.corner === "tl", "tl", JSON.stringify({ corner: moved.corner }));
-    check("拖完没有顺手把面板点开（点按与拖动必须分开）",
-      moved.dialog === false, "dialog=false", JSON.stringify({ dialog: moved.dialog }));
-
-    // ③ 拖完还要点得开：`suppressClick` 只许吞掉这一次，不许常驻。
-    const pm = pillPoint(moved.pill);
-    await cdp.click(pm.x, pm.y);
-    const reopened = await read();
-    check("拖完之后仍然一点就开（吞点击只吞拖动那一下）",
-      reopened.dialog === true, "dialog=true", JSON.stringify({ dialog: reopened.dialog }));
-
-    // ④ 移动端 390 宽：药丸与列表都不许把页面撑出横向滚动。
+    // 390 宽：面板打开也不许把页面撑出横向滚动。
     await cdp.send("Emulation.setDeviceMetricsOverride", {
       width: 390, height: 844, deviceScaleFactor: 2, mobile: true,
     });
     await sleep(400);
-    const narrow = await read();
-    check("390 宽：页面没有横向溢出（药丸 max-w 兜住了）",
-      narrow.scrollWidth <= 390, "scrollWidth ≤ 390",
-      JSON.stringify({ scrollWidth: narrow.scrollWidth }));
-    check("390 宽：药丸仍完整落在视口内（拖过之后也不会跑到屏外）",
-      !!narrow.pill && narrow.pill.left >= 0 && narrow.pill.right <= 390
-        && narrow.pill.top >= 0 && narrow.pill.bottom <= 844,
-      "在视口内", JSON.stringify(narrow.pill));
+    await cdp.eval(`(async () => {
+      const S = await import('/src/stores/useAppStore.ts');
+      S.useAppStore(window.__pinia).openTaskCenter();
+      const t = window.__probe.vue;
+      await t.nextTick(); await t.nextTick();
+      return true;
+    })()`);
+    const mOpen = await read();
+    check("390 宽、面板打开：没有横向溢出，6 行都在",
+      mOpen.dialog === true && mOpen.scrollWidth <= 390 && mOpen.rows.length === 6,
+      "dialog + scrollWidth ≤ 390 + 6 行",
+      JSON.stringify({ dialog: mOpen.dialog, sw: mOpen.scrollWidth, rows: mOpen.rows.length }));
+    await closePanel();
+    await cdp.send("Emulation.setDeviceMetricsOverride", {
+      width: 1280, height: 800, deviceScaleFactor: 1, mobile: false,
+    });
+    await sleep(400);
 
-    // ④c 空态：所有来源都空 ⇒ 药丸整个不渲染（"没有进行中的任务"不是一行空面板，是入口消失）。
-    const cleared = await cdp.eval(`(async () => {
+    // 空态：所有来源都空 ⇒ 面板只剩一句「没有进行中的任务」，不造假行。
+    await cdp.eval(`(async () => {
       const S = await import('/src/stores/useChatStore.ts');
       // 两个实例都清：本页既跑着真实 app（自己那份 pinia），也挂着探针挂载的那份
-      // （window.__pinia）。只清其中一个时，界面上那颗药丸可能属于另一个 —— 这一格
-      // 判的是"事实为空时入口消失"，不该被实例归属问题判成红。
+      // （window.__pinia）。
       const stores = [S.useChatStore()];
       if (window.__pinia) stores.push(S.useChatStore(window.__pinia));
       for (const c of stores) {
         c.transfers = []; c.contentTransfers = []; c.messageOps = []; c.groupHistorySync = {};
         c.updaterStatus = null;
       }
-      const c = stores[0];
+      const T = await import('/src/stores/useAppStore.ts');
+      T.useAppStore().openTaskCenter();
       const t = window.__probe.vue;
       await t.nextTick(); await t.nextTick();
       await new Promise((r) => setTimeout(r, 300));
-      const outside = Array.from(document.querySelectorAll('button'))
-        .filter((b) => !b.closest('[role="dialog"]'));
-      return {
-        ops: c.operations.length,
-        transfers: c.transfers.length,
-        domButtons: outside.length,
-        domText: outside.map((b) => (b.innerText || '').replace(/\s+/g, ' ').trim()).slice(0, 2),
-      };
+      return true;
     })()`);
     const empty = await read();
-    check("没有未完成任务时药丸不渲染（入口随事实消失，不留一个 0 件的壳）",
-      empty.pillButtons === 0 && empty.pill === null,
-      "0 颗按钮",
-      JSON.stringify({ pillButtons: empty.pillButtons, cleared, dialog: empty.dialog }));
+    const emptyText = await cdp.eval(
+      "(() => { const d = document.querySelector('[role=\"dialog\"]'); return d ? (d.innerText || '').trim() : ''; })()",
+    );
+    check("没有未完成任务时面板显示空态（不留 0 件的假行）",
+      empty.dialog === true && empty.rows.length === 0 && String(emptyText).length > 0,
+      "dialog + 0 行 + 空态文案",
+      JSON.stringify({ dialog: empty.dialog, rows: empty.rows.length, text: String(emptyText).slice(0, 40) }));
+    await closePanel();
+
+    // 页脚入口：入口属于会话列表，不属于面板。单独挂一次 ConversationList。
+    const pkgVersion = JSON.parse(fs.readFileSync(path.join(ROOT, "package.json"), "utf8")).version;
+    await cdp.send("Emulation.setDeviceMetricsOverride", {
+      width: 1280, height: 800, deviceScaleFactor: 1, mobile: false,
+    });
+    await sleep(300);
+    const mountedFooter = await cdp.eval(
+      "window.__probe.install('/src/components/ConversationList.vue', '', "
+      + JSON.stringify(JSON.stringify({ view: "chats" })) + ")",
+    );
+    await cdp.eval("(() => { const h = document.getElementById('probe-host'); if (h) h.style.cssText = 'height:760px;display:flex;flex-direction:column;'; return true; })()");
+    await sleep(500);
+    const readFooter = () => cdp.eval(`(() => {
+      const host = document.getElementById('probe-host');
+      const entry = host ? host.querySelector('[data-task-entry]') : null;
+      if (!host || !entry) return { present: false };
+      const r = entry.getBoundingClientRect();
+      const footer = entry.closest('div.shrink-0');
+      const fr = footer ? footer.getBoundingClientRect() : null;
+      return {
+        present: true,
+        text: host.innerText || '',
+        entryText: String(entry.innerText || '').replace(/\s+/g, ' ').trim(),
+        aria: entry.getAttribute('aria-label'),
+        left: Math.round(r.left), right: Math.round(r.right),
+        footerBottom: fr ? Math.round(fr.bottom) : null,
+        vw: innerWidth, vh: innerHeight, sw: document.documentElement.scrollWidth,
+      };
+    })()`);
+    const foot = await readFooter();
+    check("会话列表页脚有任务入口（不再是浮动药丸）",
+      mountedFooter && mountedFooter.ok === true && foot.present === true,
+      "data-task-entry 存在", JSON.stringify({ mounted: !!mountedFooter, foot }));
+    check("页脚同时显示版本号 vX.Y.Z",
+      foot.present && String(foot.text).includes(`v${pkgVersion}`),
+      `含 v${pkgVersion}`, JSON.stringify({ head: String(foot.text).slice(-80), pkgVersion }));
+    await cdp.eval(`(async () => {
+      const S = await import('/src/stores/useChatStore.ts');
+      const chat = S.useChatStore(window.__pinia);
+      chat.messageOps = [{ msg_id: 'm-footer', kind: 'text', peer_id: 'p1', group_id: null,
+        waiting_for: 1, created_at: 1, preview: '页脚入口', peer_offline: true,
+        can_cancel: true, some_delivered: false }];
+      const t = window.__probe.vue;
+      await t.nextTick(); await t.nextTick();
+      return chat.operations.length;
+    })()`);
+    const counted = await readFooter();
+    check("页脚入口带未完成数（与面板同一份读模型）",
+      counted.present && counted.entryText === "1",
+      "入口文本=1", JSON.stringify({ entryText: counted.entryText }));
+
+    // 点页脚入口 → 共享开关打开（面板与入口读同一个 ref）。
+    const entryPoint = { x: Math.round((counted.left + counted.right) / 2), y: 0 };
+    const entryY = await cdp.eval(`(() => {
+      const h = document.getElementById('probe-host');
+      const e = h ? h.querySelector('[data-task-entry]') : null;
+      if (!e) return null;
+      const r = e.getBoundingClientRect();
+      return Math.round(r.top + r.height / 2);
+    })()`);
+    if (entryY !== null) {
+      await cdp.click(entryPoint.x, entryY);
+      await sleep(200);
+    }
+    const openedByEntry = await cdp.eval(
+      "(async () => { const T = await import('/src/stores/useAppStore.ts'); return T.useAppStore().taskCenterOpen; })()",
+    );
+    check("点页脚入口打开共享任务面板", openedByEntry === true, "open=true", JSON.stringify({ openedByEntry }));
+
+    // 390 宽：页脚必须整体在 TabBar 之上（`--gosslan-mobile-tabbar-h`），且不横向溢出。
+    await cdp.send("Emulation.setDeviceMetricsOverride", {
+      width: 390, height: 844, deviceScaleFactor: 2, mobile: true,
+    });
+    await sleep(500);
+    await cdp.eval("(() => { const h = document.getElementById('probe-host'); if (h) h.style.cssText = 'height:820px;display:flex;flex-direction:column;'; return true; })()");
+    // 真实 App 由 `applyIsMobile()` 给 <html> 打 `is-mobile`；探针夹具没有 init，
+    // 这里显式补上，让页脚与布局读同一条判据。
+    await cdp.eval("document.documentElement.classList.add('is-mobile')");
+    // 探针的 pinia 建在 1280 宽，`isMobile` 不会自己跟着视口变（真实 App 由 init 的
+    // matchMedia 维护）⇒ 这里显式切到移动布局，量与线上同一条分支。
+    await cdp.eval(`(async () => {
+      const A = await import('/src/stores/useAppStore.ts');
+      const a = A.useAppStore();
+      a.isMobile = true;
+      a.keyboardOpen = false;
+      const t = window.__probe.vue;
+      await t.nextTick(); await t.nextTick();
+      return a.isMobile;
+    })()`);
+    await sleep(300);
+    const mobileFoot = await readFooter();
+    const tabbar = await cdp.eval(
+      "String(getComputedStyle(document.documentElement).getPropertyValue('--gosslan-mobile-tabbar-h')).trim()",
+    );
+    const tabbarPx = /rem$/.test(String(tabbar))
+      ? (parseFloat(String(tabbar)) || 4) * 16
+      : parseFloat(String(tabbar)) || 64;
+    check("390 宽：页脚在 TabBar 之上（不会被固定底栏盖住）",
+      mobileFoot.present && mobileFoot.footerBottom !== null
+        && mobileFoot.footerBottom <= 820 - tabbarPx + 2,
+      `footerBottom ≤ ${Math.round(820 - tabbarPx + 2)}`,
+      JSON.stringify({ footerBottom: mobileFoot.footerBottom, tabbar, vh: mobileFoot.vh }));
+    check("390 宽：页脚不横向溢出",
+      mobileFoot.present && mobileFoot.sw <= 390,
+      "scrollWidth ≤ 390", JSON.stringify({ sw: mobileFoot.sw }));
 
   } finally {
     await cdp.send("Emulation.clearDeviceMetricsOverride").catch(() => {});

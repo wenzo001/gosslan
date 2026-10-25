@@ -3,7 +3,8 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { contrastRatio, luma, toHsl } from "./color.ts";
-import { CHAT_PRESETS, mentionHighlightColor, resolveChatColors } from "./chatStyle.ts";
+import { CHAT_PRESETS, mentionHighlightColor, readableToneOn, resolveChatColors, UI_TONE_INKS } from "./chatStyle.ts";
+import { parseTokenScopes } from "./tokenContrast.ts";
 
 /** 覆盖冷暖、高/低饱和的代表性主题色：任何人选的自定义色都应安全。 */
 const THEME_COLORS = [
@@ -165,5 +166,44 @@ test("组件调 mentionHighlightColor 不得自带兜底色", () => {
         `${rel} 的调用里出现了硬编码兜底色（底色未知应把空串传下去）：${line.trim()}`,
       );
     }
+  }
+});
+
+/**
+ * 自己卡片改成主题气泡色之后，danger / warning 必须仍能在该底色上读出来。
+ *
+ * 钉的是 7 套预设 × 明暗 × 全部代表主题：`readableToneOn` 返回的颜色对比度 ≥ 4.5。
+ * 少了这一条，"自己卡片跟主题"就会在某些深色实底上变成"状态文字看不见"。
+ */
+test("语气色：自己卡片的 danger/warning 在全部预设与主题下对比 ≥ 4.5", () => {
+  const combos = CHAT_PRESETS.flatMap((p) =>
+    (p.key === "theme" ? THEME_COLORS : [THEME_COLORS[0]]).flatMap((theme) =>
+      [false, true].map((dark) => ({ key: p.key, theme, dark })),
+    ),
+  );
+  for (const c of combos) {
+    const colors = resolveChatColors(c.key, c.theme, c.dark);
+    const tone = c.dark ? "dark" : "light";
+    for (const [name, ink] of [
+      ["danger", UI_TONE_INKS.danger[tone]],
+      ["warning", UI_TONE_INKS.warning[tone]],
+    ] as const) {
+      const fg = readableToneOn(colors.mineBubble, ink);
+      const ratio = contrastRatio(fg, colors.mineBubble);
+      assert.ok(
+        ratio >= 4.5,
+        `${c.key}/${c.dark ? "暗" : "亮"}/${c.theme} 的 ${name} 对比只有 ${ratio.toFixed(2)}：${fg} on ${colors.mineBubble}`,
+      );
+    }
+  }
+});
+
+/** 颜色常量与 `style.css` 的 token 必须同值：写死两份而不对账，下一次改主题就会漂。 */
+test("UI_TONE_INKS 与 style.css 的 danger/warning token 逐值相等", () => {
+  const css = readFileSync(join(import.meta.dirname, "..", "style.css"), "utf8");
+  const { light, dark } = parseTokenScopes(css);
+  for (const [scope, map] of [["light", light], ["dark", dark]] as const) {
+    assert.equal(map.get("--gosslan-danger-ink"), UI_TONE_INKS.danger[scope], `${scope} danger`);
+    assert.equal(map.get("--gosslan-warning-ink"), UI_TONE_INKS.warning[scope], `${scope} warning`);
   }
 });
