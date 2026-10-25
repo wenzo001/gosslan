@@ -187,7 +187,7 @@ db::group_history_db_tests::served_kind_is_not_folded_by_display_kind
 db::group_history_db_tests::summary_counts_by_logical_seq_not_wall_clock
 db::group_history_db_tests::todo_floor_only_raises_and_ignores_a_missing_field
 db::group_history_db_tests::zero_limit_answers_summary_only
-db::group_outbox_removal_tests::deleting_one_expired_row_keeps_the_other_members
+db::group_outbox_removal_tests::failing_one_expired_row_keeps_the_other_members
 db::group_outbox_removal_tests::group_outbox_expiry_is_per_row_not_per_message
 db::group_outbox_removal_tests::removing_a_member_settles_only_messages_that_lose_their_last_row
 db::group_rename_tests::group_relation_sync_refreshes_title_but_never_creates_a_conversation
@@ -316,7 +316,7 @@ db::tests::group_message_creates_conversation
 db::tests::group_msg_id_duplicate_counts_unread_and_event_once
 db::tests::group_name_only_updates_for_the_recorded_creator
 db::tests::group_outbox_delete_by_group
-db::tests::group_outbox_per_peer_and_delete_by_msg_peer
+db::tests::group_outbox_per_peer_and_ack_marks_only_that_peer
 db::tests::group_reads_only_move_forward
 db::tests::group_relation_sync_does_not_create_conversation
 db::tests::init_migrates_existing_db_without_pinned_column

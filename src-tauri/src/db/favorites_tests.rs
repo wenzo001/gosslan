@@ -2132,9 +2132,12 @@ mod tests {
         .ok()
     }
 
-    /// 群消息 outbox：同一 msg_id 对不同 peer 各保留一行；GroupAck 只删对应行。
+    /// 群消息 outbox：同一 msg_id 对不同 peer 各保留一行；GroupAck 只把命中那一格置 delivered。
+    ///
+    /// 2026-10-25：Ack 不再删行（台账要能回答"谁已收/谁没收"）。`list_group_outbox`
+    /// 只取 pending，所以 delivered 的那一格自然不再参与补发，而另一格原样保留。
     #[test]
-    fn group_outbox_per_peer_and_delete_by_msg_peer() {
+    fn group_outbox_per_peer_and_ack_marks_only_that_peer() {
         let conn = mem();
         insert_group_outbox(&conn, "m1", "g1", "b", "p1").unwrap();
         insert_group_outbox(&conn, "m1", "g1", "c", "p1").unwrap();
@@ -2142,9 +2145,12 @@ mod tests {
         assert_eq!(list_group_outbox(&conn, "b").unwrap().len(), 1);
         assert_eq!(list_group_outbox(&conn, "c").unwrap().len(), 1);
 
-        delete_group_outbox_row(&conn, "m1", "b").unwrap();
-        assert!(list_group_outbox(&conn, "b").unwrap().is_empty());
-        assert_eq!(list_group_outbox(&conn, "c").unwrap().len(), 1);
+        assert_eq!(
+            ack_group_delivered(&conn, "m1", "b").unwrap(),
+            GroupAckOutcome::Applied
+        );
+        assert!(list_group_outbox(&conn, "b").unwrap().is_empty(), "已送达的格不再参与补发");
+        assert_eq!(list_group_outbox(&conn, "c").unwrap().len(), 1, "别的成员不许被动");
 
         delete_group_outbox_for_peer_in_group(&conn, "g1", "c").unwrap();
         assert!(list_group_outbox(&conn, "c").unwrap().is_empty());

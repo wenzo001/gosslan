@@ -195,11 +195,11 @@ pub fn cancel_queued_group_message(
 
 /// 清扫器逐行放弃：只把仍为 pending 的行置 `failed`（不删，保留“谁没收到”的证据）。
 pub fn mark_group_outbox_failed(conn: &Connection, msg_id: &str, peer_id: &str) -> Result<usize> {
-    Ok(conn.execute(
+    conn.execute(
         "UPDATE group_outbox SET status = 'failed'
           WHERE msg_id = ?1 AND peer_id = ?2 AND status = 'pending'",
         params![msg_id, peer_id],
-    )?)
+    )
 }
 
 /// 一条消息的 delivered / cancelled 行数（清扫器判断“还能不能整条落 failed”）。
@@ -212,7 +212,6 @@ pub fn group_outbox_progress_counts(conn: &Connection, msg_id: &str) -> Result<(
         params![msg_id],
         |r| Ok((r.get(0)?, r.get(1)?)),
     )
-    .map_err(Into::into)
 }
 
 /// 一条消息在台账里还有没有**任何**行（不论状态）。
@@ -235,11 +234,11 @@ pub fn group_outbox_has_rows(conn: &Connection, msg_id: &str) -> Result<bool> {
 /// 只动 cancelled：delivered/failed 是证据或已放弃，不得复活。
 /// `created_at` 必须刷新为 now —— 否则清扫器会把刚补发的旧行当成年迈行立即判死。
 pub fn resend_cancelled_group_rows(conn: &Connection, msg_id: &str, now: i64) -> Result<usize> {
-    Ok(conn.execute(
+    conn.execute(
         "UPDATE group_outbox SET status = 'pending', created_at = ?2
           WHERE msg_id = ?1 AND status = 'cancelled'",
         params![msg_id, now],
-    )?)
+    )
 }
 
 /// 补发时要知道哪些成员当前还有 pending 行（用于在线立即发/离线等上线）。
@@ -394,20 +393,6 @@ pub fn group_outbox_row_expired(peer_reachable: bool, age_ms: i64) -> bool {
     )
 }
 
-/// 删掉一条消息里**指定成员**的待发行（逐行放弃时用；不影响其它成员的行）。
-/// 删掉**某一个成员**的群待发行（Ack 收尾、清扫、取消都用这一条）。
-///
-/// ⚠️ 这里曾经有第二个同义函数 `delete_group_outbox`（逐字相同的 SQL），生产侧只用这一个
-/// ⇒ 那一个长期是死代码（clippy `dead-code` 点过名），已删。要按成员删就用这条，别再新建。
-pub fn delete_group_outbox_row(conn: &Connection, msg_id: &str, peer_id: &str) -> Result<()> {
-    conn.execute(
-        "DELETE FROM group_outbox
-          WHERE msg_id = ?1 AND peer_id = ?2 AND status = 'pending'",
-        params![msg_id, peer_id],
-    )?;
-    Ok(())
-}
-
 /// 按 msg_id 删除**所有** peer 的 group_outbox 行。
 pub fn delete_group_outbox_by_msg_id(conn: &Connection, msg_id: &str) -> Result<()> {
     conn.execute(
@@ -540,15 +525,34 @@ mod group_outbox_removal_tests {
         );
     }
 
-    /// 逐行放弃只删指定成员那一行，不碰同消息的其它成员。
+    /// 逐行放弃只把**这一格**置 failed，不碰同消息的其它成员，也不把消息判死。
+    ///
+    /// 2026-10-25：清扫器不再删行（`delete_group_outbox_row` 随生产路径一起退场）。
+    /// 删掉就再也回答不了"谁没收到"，补发与部分送达都会失去依据。
     #[test]
-    fn deleting_one_expired_row_keeps_the_other_members() {
+    fn failing_one_expired_row_keeps_the_other_members() {
         let conn = db();
         seed_msg(&conn, "m1", "sending");
         seed_row(&conn, "m1", "online");
         seed_row(&conn, "m1", "offline");
-        delete_group_outbox_row(&conn, "m1", "online").unwrap();
-        assert_eq!(rows_of(&conn, "m1"), 1);
+        assert_eq!(mark_group_outbox_failed(&conn, "m1", "online").unwrap(), 1);
+        let statuses: Vec<(String, String)> = {
+            let mut stmt = conn
+                .prepare("SELECT peer_id, status FROM group_outbox WHERE msg_id='m1' ORDER BY peer_id")
+                .unwrap();
+            stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
+                .unwrap()
+                .filter_map(|r| r.ok())
+                .collect()
+        };
+        assert_eq!(
+            statuses,
+            vec![
+                ("offline".to_string(), "pending".to_string()),
+                ("online".to_string(), "failed".to_string()),
+            ],
+            "只判这一格；另一种成员仍是 pending（下轮还能补）"
+        );
         assert_eq!(
             status(&conn, "m1"),
             "sending",
