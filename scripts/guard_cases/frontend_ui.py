@@ -995,14 +995,14 @@ CASES: list[Case] = [
         injections=[(
             """.bubble-tail.tail-mine,
 .bubble-tail.tail-other {
-  --bubble-tail-fill: color-mix(in srgb, var(--bubble-bg) 96%, #000);""",
+  --bubble-tail-fill: var(--bubble-bg);""",
             """.bubble-tail {
   top: auto;
   bottom: 12px;
 }
 .bubble-tail.tail-mine,
 .bubble-tail.tail-other {
-  --bubble-tail-fill: color-mix(in srgb, var(--bubble-bg) 96%, #000);""",
+  --bubble-tail-fill: var(--bubble-bg);""",
         )],
         cmd=["node", "--test", "--experimental-strip-types", "--disable-warning=ExperimentalWarning",
              "src/utils/designGuards.test.ts"],
