@@ -215,12 +215,18 @@ const App = defineComponent({
       listRef.value?.scrollToIndex(index, align);
       await nextFrame();
       await sleep(150);
+      // 新实现用 `transform: translateY(...)` 定位（GPU 合成，不触发布局），
+      // 所以不能再读 `style.top`（恒 0 ⇒ 所有行被算成重叠）。用真实 rect 换算到内容坐标。
+      const cr = el.getBoundingClientRect();
       const rows = Array.from(el.querySelectorAll<HTMLElement>("[data-vlist-key]"))
-        .map((n) => ({
-          key: n.getAttribute("data-vlist-key") ?? "",
-          top: Number.parseFloat(n.style.top || "0"),
-          h: n.offsetHeight,
-        }))
+        .map((n) => {
+          const r = n.getBoundingClientRect();
+          return {
+            key: n.getAttribute("data-vlist-key") ?? "",
+            top: r.top - cr.top + el.scrollTop,
+            h: r.height,
+          };
+        })
         .sort((a, b) => a.top - b.top);
       let overlap = 0;
       let gap = 0;

@@ -435,7 +435,7 @@
             .find("crate::protocol::partition_remind_actors(&p.actors,&known)")
             .expect("出帧前必须按现读成员快照劈分受众（已离群者不许进 actors）");
         let kernel = body
-            .find("send_group_payload(s,&group_id,\"remind\",content,None)")
+            .find("send_group_payload(s,&group_id,\"remind\",content,None")
             .expect(
                 "群 remind 必须走 send_group_payload：那是离线恢复的唯一来源\
                  （同事务写 group_outbox，GroupAck 才删行）；绕过它 = 离线成员永远收不到",
@@ -489,7 +489,7 @@
             "回执必须指向本群一行真实的 remind 帧，防止凭空确认"
         );
         let kernel = body
-            .find("send_group_payload(s,&group_id,\"remind_ack\",content,None)")
+            .find("send_group_payload(s,&group_id,\"remind_ack\",content,None")
             .expect("remind_ack 也必须走群内核（可靠投递 + 离线补发）");
         // 校验必须在出帧之前
         assert!(ack_parse < kernel, "必须先验回执再出帧");

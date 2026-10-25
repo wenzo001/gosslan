@@ -651,7 +651,7 @@ const CMDS = [
   // 不是 <code>messages.status</code> —— 队列行本身才是"还没送达"这个事实。
   ["get_pending_message_operations", "chat", "", "PendingMessageOp[]|err"],
   ["mark_read", "chat", "conv_id str", "()|err"],
-  ["send_message", "chat", "friend_id str; content str; kind str", "MessageRecord|err"],
+  ["send_message", "chat", "friend_id str; content str; kind str; local_id str?", "MessageRecord|err"],
   ["recall_message", "chat", "friend_id str; target str", "()|err"],
   ["cancel_message", "chat", "conv_id str; msg_id str", "MessageCancelResult|err"],
   // 1:1 原地重投（2026-10-25，计划 D1）：复用原 msg_id/ts/seq，接收端按 msg_id 幂等。
@@ -714,7 +714,7 @@ const CMDS = [
   ["send_todo_image", "group_announcements", "group_id str; todo_id str; path str", "str|err"],
   ["delete_group_announcement", "group_files", "group_id str; ann_id str", "MessageRecord|err"],
   ["send_group_announcement", "group_files", "group_id str; text str", "MessageRecord|err"],
-  ["send_group_message", "group_files", "group_id str; content str; kind str; mentions str[]?", "MessageRecord|err"],
+  ["send_group_message", "group_files", "group_id str; content str; kind str; mentions str[]?; local_id str?", "MessageRecord|err"],
   ["send_group_todo", "group_files", "group_id str; title str; assignees str[]; description str?; images TodoImage[]?; category str?", "MessageRecord|err"],
   ["update_group_todo", "group_files", "group_id str; todo_id str; title str; assignees str[]; status str; deleted bool; description str?; images TodoImage[]?; archived bool?; priority str?; category str?", "MessageRecord|err"],
   ["save_todo_image_bytes", "group_todo_media", "request Request<'_>", "str|err"],
@@ -1193,7 +1193,7 @@ const DOMAINS = [
   {"id": "persistence", "name": "持久化", "tier": "L3", "paths": ["src-tauri/src/db.rs", "src-tauri/src/db", "src-tauri/src/export.rs"], "inv": ["INV-P05", "INV-P14", "INV-008", "INV-P24", "INV-P26", "INV-P29"], "home": "src-tauri/src/db", "cons": [], "notes": "⚠️ **耦合热点**：`db::` 被 13 个文件引用，横跨 network/、transport/、mesh/、content/、file_relay、notifications、export、commands、state —— 即**传输层直接写库**。架构上最值得收口的一处（Phase 7）。"},
   {"id": "platform", "name": "平台外壳", "tier": "L2", "paths": ["src-tauri/src/menu.rs", "src-tauri/src/tray.rs", "src-tauri/src/macos_window.rs", "src-tauri/src/macos_bookmark.rs", "src-tauri/src/open_path.rs", "src-tauri/src/android_open.rs", "src-tauri/src/jni_method.rs", "src-tauri/src/notifications.rs", "src-tauri/src/user_dirs.rs"], "inv": ["INV-P32", "INV-P33"], "home": "src-tauri/src/menu.rs", "cons": ["persistence"], "notes": "按平台分：menu / macos_bookmark / macos_window 是 macOS 专属（模块级 `#[cfg(target_os = \"macos\")]`）；android_open / jni_method 是 Android 专属。这些平台差异正是 Phase 2/4 两条腿存在的原因。"},
   {"id": "observability", "name": "可观测性", "tier": "L2", "paths": ["src-tauri/src/logging.rs"], "inv": ["INV-P16"], "home": "src-tauri/src/logging.rs", "cons": [], "notes": "本项目最强项（结构化日志 + 日志窗口 + 诊断面板 + CHANGELOG 里大量「真机日志定位」）。Phase 8 要补的是**按 msg_id 串起一条消息的生命周期**（Trace）。另有 logs.html 作为独立日志窗口入口。"},
-  {"id": "presentation", "name": "呈现层", "tier": "L2", "paths": ["src/App.vue", "src/stores", "src/components", "src/composables", "src/api", "src/utils"], "inv": ["INV-P24", "INV-P27", "INV-P29", "INV-P30", "INV-P31"], "home": "src/stores", "cons": [], "notes": "⚠️ **没有领域边界**：`src/stores` 只有 3 个文件、`src/utils` 是平铺的一堆 —— **行数与个数一律现算，不许抄在图上**：`wc -l src/stores/*.ts`、`ls src/utils | wc -l`（截至 2026-09-28 现算：stores 共 3427 行、useChatStore.ts 2276 行、utils 119 个文件）。前端状态串味最容易产生 UI 回归 —— 拆分优先级高于后端大文件（Phase 7）。前端已有一整套源码扫描护栏（utils/designGuards.ts）。"}
+  {"id": "presentation", "name": "呈现层", "tier": "L2", "paths": ["src/App.vue", "src/stores", "src/components", "src/composables", "src/api", "src/utils"], "inv": ["INV-P24", "INV-P27", "INV-P29", "INV-P30", "INV-P31"], "home": "src/stores", "cons": [], "notes": "⚠️ **没有领域边界**：`src/stores` 只有 3 个文件、`src/utils` 是平铺的一堆 —— **行数与个数一律现算，不许抄在图上**：`wc -l src/stores/*.ts`、`ls src/utils | wc -l`（截至 2026-09-28 现算：stores 共 3427 行、useChatStore.ts 2276 行、utils 119 个文件）。前端状态串味最容易产生 UI 回归 —— 拆分优先级高于后端大文件（Phase 7）。前端已有一整套源码扫描护栏（utils/designGuards.ts）。消息列表已迁移到 `@tanstack/vue-virtual`（2026-10-25：`anchorTo:"end"` + `measureElement`；日志窗同库），列表 key 用 `messages.local_id`。"}
 
 ];
 const DRIFT = [

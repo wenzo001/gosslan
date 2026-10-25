@@ -26,6 +26,7 @@
             seq: 1,
             status: "sending".into(),
             mention_targets: None,
+            local_id: None,
         };
         assert!(db::insert_message_if_new(&conn, &rec).unwrap());
         conn.execute(
@@ -250,6 +251,7 @@
                 seq: 1,
                 status: "sent".into(),
                 mention_targets: None,
+                local_id: None,
             },
         )
         .unwrap();

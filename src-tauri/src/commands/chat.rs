@@ -363,7 +363,7 @@ pub async fn recall_message(
     };
     let content = serde_json::to_string(&payload).map_err(|e| e.to_string())?;
     // 先发可靠事件（send_message 内部会做好友/目标/能力位校验并写 outbox）。
-    send_message(state, friend_id.clone(), content, "recall".to_string()).await?;
+    send_message(state, friend_id.clone(), content, "recall".to_string(), None).await?;
     let s_db = s.clone();
     let target_db = target.clone();
     let friend_db = friend_id.clone();
@@ -433,10 +433,11 @@ pub async fn set_message_render(
             crate::protocol::KIND_RENDER,
             content,
             None,
+            None,
         )
         .await?
     } else {
-        send_message(state, peer, content, "render".to_string()).await?
+        send_message(state, peer, content, "render".to_string(), None).await?
     };
     let applied = {
         let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());
@@ -520,6 +521,7 @@ pub async fn send_message(
     friend_id: String,
     content: String,
     kind: String,
+    local_id: Option<String>,
 ) -> Result<MessageRecord, String> {
     let s = state.inner();
 
@@ -535,7 +537,7 @@ pub async fn send_message(
                 }
             }
         }
-        return insert_self_message(s, &kind, content);
+        return insert_self_message(s, &kind, content, local_id);
     }
 
     let msg_kind = match kind.as_str() {
@@ -752,6 +754,7 @@ pub async fn send_message(
         seq,
         status: "sending".to_string(),
         mention_targets: None,
+        local_id: local_id.or_else(|| Some(msg_id.clone())),
     };
     // 一律写离线队列兜底（INSERT OR IGNORE 按 msg_id 幂等）：直连链路存在但已失效
     // （半开 TCP）时 broadcast 会静默丢包，此前只在「无链路」时入队导致消息永久丢失。
@@ -986,7 +989,12 @@ pub async fn resend_message(
 ///
 /// 状态直接给 `"read"`：本机既是发送方也是接收方，不存在"在途"阶段；
 /// 前端也不会给自聊消息挂回执（见 `src/utils/selfChat.ts`）。
-fn insert_self_message(s: &AppState, kind: &str, content: String) -> Result<MessageRecord, String> {
+fn insert_self_message(
+    s: &AppState,
+    kind: &str,
+    content: String,
+    local_id: Option<String>,
+) -> Result<MessageRecord, String> {
     // 只支持文本 / 代码：用户 2026-09-16 明确「先只支持文本」。图片与文件要落盘、要文件卡片，
     // 走的是另一条链路（`send_file`），自聊里前端也不会给附件入口 —— 真调到了就明确报错，
     // 不要静默吞掉。
@@ -1004,10 +1012,11 @@ fn insert_self_message(s: &AppState, kind: &str, content: String) -> Result<Mess
     let preview = crate::protocol::preview_text(kind, &content);
     let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());
     let seq = db::next_clock(&dbc, &me).map_err(|e| format!("逻辑时钟推进失败：{e}"))?;
+    // 前缀 `self-` 让它一眼可辨（日志/排障时不会与网络消息的哈希 id 混淆）
+    let msg_id = format!("self-{}", Uuid::new_v4());
     let rec = MessageRecord {
         id: 0,
-        // 前缀 `self-` 让它一眼可辨（日志/排障时不会与网络消息的哈希 id 混淆）
-        msg_id: format!("self-{}", Uuid::new_v4()),
+        msg_id: msg_id.clone(),
         conv_id: me.clone(),
         sender_id: me.clone(),
         receiver_id: me.clone(),
@@ -1017,6 +1026,7 @@ fn insert_self_message(s: &AppState, kind: &str, content: String) -> Result<Mess
         seq,
         status: "read".to_string(),
         mention_targets: None,
+        local_id: local_id.or(Some(msg_id)),
     };
     // ⚠️ `insert_message`（只落库）—— **不是** `insert_message_and_outbox`：
     // 自聊消息没有收件人，进 outbox 就永远排不掉（见上面的第 2 条）。

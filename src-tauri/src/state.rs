@@ -386,6 +386,11 @@ pub struct MessageRecord {
     /// 三态照旧：`None` = 不知道（老行 / 老对端 / 库里那一列写坏了）⇒ 呈现层按昵称兜底。
     #[serde(default)]
     pub mention_targets: Option<Vec<crate::protocol::MentionTarget>>,
+    /// **持久本地身份**（DB v13→v14）。列表（VirtualList）用它做 Vue key：
+    /// 乐观气泡在服务端 `msg_id` 到达之前就有一个稳定值，替换真实记录时 key 不变。
+    /// 老行由迁移回填 `msg_id`；新行由插入 SQL 的 `COALESCE(?local_id, msg_id)` 保证非空。
+    #[serde(default)]
+    pub local_id: Option<String>,
 }
 
 /// `message-received` 实际投递出去的形状 = 消息记录 + **只随本次投递、不落库**的 @ 名单。
@@ -2809,6 +2814,7 @@ mod tests {
             seq: 11,
             status: "delivered".to_string(),
             mention_targets: None,
+            local_id: None,
         };
         let ids = vec!["dev-b".to_string()];
         let with: serde_json::Value = serde_json::to_value(IncomingMessage {

@@ -474,6 +474,7 @@ mod todo_number_tests {
             seq: 1,
             status: "sent".into(),
             mention_targets: None,
+            local_id: None,
         };
         insert_message(conn, &rec).unwrap();
     }
@@ -542,6 +543,7 @@ mod todo_number_tests {
             seq: 1,
             status: "sent".into(),
             mention_targets: None,
+            local_id: None,
         };
         insert_message(&conn, &rec).unwrap();
         assert_eq!(todo_number_high_water(&conn, "g1"), 0);

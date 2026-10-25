@@ -111,6 +111,7 @@ fn real_db_keeps_group_and_dm_conversations_isolated() {
             seq,
             status: "delivered".to_string(),
             mention_targets: None,
+            local_id: None,
         }
     }
 
@@ -555,6 +556,7 @@ fn business_duplicate_still_enters_the_propagation_layer() {
         seq: 1,
         status: "delivered".into(),
         mention_targets: None,
+        local_id: None,
     };
     // Direct 先到并落库 → 它是唯一产生本地副作用的一方
     assert!(db::insert_message_if_new(&conn, &rec).unwrap());

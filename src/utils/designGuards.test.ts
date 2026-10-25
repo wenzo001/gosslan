@@ -2059,7 +2059,7 @@ test("「有人@我」从输入框到对端、再到气泡的接缝必须齐全�
   const SEAMS: [string, string, string][] = [
     ["src/components/chat/MessageComposer.vue", "emit(\"send\", { content: text, kind: k, mentionIds });", "① 输入框没把名单随 send 交出去"],
     ["src/components/ChatWindow.vue", "await chat.send(convId, content, kind, mentionIds);", "② 会话窗口收下了名单却没往下传"],
-    ["src/stores/useChatStore.ts", "api.sendGroupMessage(convId.slice(6), content, kind, mentionIds)", "③ store 发送时丢了这一参"],
+    ["src/stores/useChatStore.ts", "api.sendGroupMessage(convId.slice(6), content, kind, mentionIds", "③ store 发送时丢了这一参"],
     ["src/api/index.ts", "...(mentions ? { mentions } : {})", "④ 门面把『没带』和『空名单』压成了同一种（缺省必须不发这个键）"],
     ["src-tauri/src/commands/group_files.rs", "mentions: Option<Vec<String>>,", "⑤ 命令入口不再收这个参数"],
     ["src-tauri/src/commands/window.rs", "crate::protocol::gossip_plaintext_with_targets(", "⑥ 内核没把名单写进加密明文"],

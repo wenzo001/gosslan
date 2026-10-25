@@ -13,6 +13,23 @@
 
 ## [Unreleased]
 
+## [5.13.0] - 2026-10-25
+
+### 虚拟列表迁移 TanStack + 持久本地消息 id（2026-10-25）
+
+- 消息列表从手写前缀和/二分/自建 RO 迁移到 **@tanstack/vue-virtual**：`anchorTo:"end"` 负责
+  历史前插锚定；真实 `measureElement`（`data-index` 认行、0 高度与 <=1px 抖动不写缓存、rAF 合批）；
+  追加贴底由应用的 `pinned` 独占（库 `followOnAppend` 关闭）；整会话切换延后到收敛窗口统一贴底，
+  底部追加仍立即跟随；宽度失效改挂 `window.resize`（避免滚动条宽反馈环）。
+- 消息身份改用**持久本地 id**（DB v13→v14：`messages.local_id` + 唯一索引）：乐观气泡在服务端
+  `msg_id` 到达之前就有稳定 key，替换真实记录不再整行重挂；老行回填 `msg_id`（真实库副本演练
+  160/160，主库未动）。
+- 群发送内核 `send_group_payload` 保留客户端 `local_id`（单聊/群聊/自聊三个入口都接上）。
+- LogViewer 仍是 TanStack：过滤变化清测量缓存，隐藏/0 高度不写缓存。
+- 探针量具 `perf/vlist.ts` 的定位读数改用真实 rect（新实现用 `transform`）。
+- 验证：`vlist` 13/13、`scrollrestore` 5/5、`mergeheight` 9/9、`msgovf` 80/80；前端 1411、
+  Rust 1215；1000 条冷滚 p95 21.8 ms / 长帧 0，暖滚 p95 19.1 ms，定位 5/5 零重叠零空隙。
+
 ## [5.12.0] - 2026-10-25
 
 ### 崩溃可见、卡死可恢复、托盘重启与 CI 棘轮（2026-10-25）

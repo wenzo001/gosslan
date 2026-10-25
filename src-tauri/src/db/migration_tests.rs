@@ -872,7 +872,9 @@ fn hot_tables_carry_exactly_the_intended_indexes() {
         ("content_transfers", 2),
         ("file_outbox", 2),
         ("outbox", 2),
-        ("messages", 3),
+        // `messages` 的四条：conv_seq / conv_kind / conv（历史）+ local_id 唯一索引
+        // （DB v13→v14：列表 key 的持久本地身份；重复 key 会让两行互相覆盖测量/DOM）。
+        ("messages", 4),
         // `group_outbox` 的四个：`peer_id` / `group_id` / `created_at` 三条老索引 +
         // `idx_group_outbox_pending(created_at) WHERE status='pending'`（2026-10-25 台账索引）。
         // 后者是**部分索引**：墓碑（delivered/cancelled/failed）根本不进这棵 B 树 ⇒
@@ -1328,11 +1330,12 @@ fn v10_to_v11_adds_mention_targets_column_without_touching_existing_rows() {
     // ★ 这份手抄的 v10 形状会不会漂？——由这条断言管：它必须**正好**等于新 SCHEMA 去掉那一列。
     //   以后谁给 `messages` 加/删列而忘了回来改这里，这条当场红（不是等到迁移在真机上炸）。
     let mut want = column_names(&fresh);
-    want.retain(|c| c != "mention_targets");
+    // v10 早于这两列：mention_targets 是 v11 加的，local_id 是 v14 加的。
+    want.retain(|c| c != "mention_targets" && c != "local_id");
     assert_eq!(
         column_names(&conn),
         want,
-        "本用例手抄的 v10 形状 ≠ 新 SCHEMA 去掉 mention_targets ⇒ SCHEMA 改过了，这里要一起改"
+        "本用例手抄的 v10 形状 ≠ 新 SCHEMA 去掉 v11/v14 两列 ⇒ SCHEMA 改过了，这里要一起改"
     );
 
     conn.execute_batch(
@@ -1617,6 +1620,7 @@ fn mention_targets_keep_all_three_states_through_write_then_read() {
         seq: 1,
         status: "sent".to_string(),
         mention_targets,
+        local_id: None,
     };
     // ① 不知道（NULL）② 权威地说"没有落点"（Some(vec![])）③ 两个同名的人各有自己的 n
     super::insert_message_if_new(&conn, &mk("m-none", None)).unwrap();
@@ -2771,4 +2775,77 @@ fn a_real_v10_schema_migrates_with_every_entity_intact() {
 
     drop(conn);
     cleanup_db_and_backups(&path);
+}
+
+#[test]
+fn v13_to_v14_backfills_local_id_and_adds_unique_index() {
+    // ① 新装用户：SCHEMA + post-schema 就该有列与唯一索引。
+    let fresh = Connection::open_in_memory().unwrap();
+    fresh.execute_batch(SCHEMA).unwrap();
+    super::ensure_post_schema_shape(&fresh).unwrap();
+    assert!(super::column_exists(&fresh, "messages", "local_id").unwrap());
+    let n: i64 = fresh
+        .query_row(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type='index' AND name='idx_messages_local_id'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(n, 1, "新库必须建 local_id 唯一索引");
+
+    // ② 造 v13 形状（messages 还没有 local_id），塞两行老数据。
+    let conn = Connection::open_in_memory().unwrap();
+    conn.execute_batch(SCHEMA).unwrap();
+    conn.execute_batch(
+        "DROP TABLE messages;
+         CREATE TABLE messages (
+             id               INTEGER PRIMARY KEY AUTOINCREMENT,
+             msg_id           TEXT UNIQUE NOT NULL,
+             conv_id          TEXT NOT NULL,
+             sender_id        TEXT NOT NULL,
+             receiver_id      TEXT NOT NULL,
+             kind             TEXT NOT NULL,
+             content          TEXT NOT NULL,
+             ts               INTEGER NOT NULL,
+             seq              INTEGER NOT NULL DEFAULT 0,
+             status           TEXT NOT NULL DEFAULT 'sent',
+             mention_targets  TEXT
+         );
+         INSERT INTO messages(msg_id, conv_id, sender_id, receiver_id, kind, content, ts, seq, status)
+         VALUES ('m1','c1','u1','u2','text','a',1,1,'sent'),
+                ('m2','c1','u1','u2','text','b',2,2,'sent');",
+    )
+    .unwrap();
+    conn.execute_batch("PRAGMA user_version = 13;").unwrap();
+    run_migrations(&conn, 13).expect("v13→v14 迁移本身不许报错");
+
+    assert!(
+        super::column_exists(&conn, "messages", "local_id").unwrap(),
+        "迁移没补 local_id ⇒ 新代码的列表 key 只能退回 msg_id，乐观气泡仍会换 key"
+    );
+    let rows: Vec<(String, String)> = conn
+        .prepare("SELECT msg_id, local_id FROM messages ORDER BY id")
+        .unwrap()
+        .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
+        .unwrap()
+        .map(|r| r.unwrap())
+        .collect();
+    assert_eq!(
+        rows,
+        vec![
+            ("m1".to_string(), "m1".to_string()),
+            ("m2".to_string(), "m2".to_string())
+        ],
+        "老行必须回填 msg_id（全局唯一、天然稳定）"
+    );
+
+    let dup = conn.execute(
+        "INSERT INTO messages(msg_id, conv_id, sender_id, receiver_id, kind, content, ts, seq, status, local_id)
+         VALUES ('m3','c1','u1','u2','text','c',3,3,'sent','m1')",
+        [],
+    );
+    assert!(
+        dup.is_err(),
+        "local_id 唯一索引必须拒绝重复 key（两行互相覆盖测量/DOM）"
+    );
 }

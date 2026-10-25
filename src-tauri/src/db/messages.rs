@@ -27,10 +27,13 @@ fn decode_mention_targets(raw: Option<String>) -> Option<Vec<crate::protocol::Me
 /// 「重复」并照常回 Ack，而 Ack 会让发送方删除 outbox 行，导致消息永久丢失。
 pub fn insert_message_if_new(conn: &Connection, m: &MessageRecord) -> Result<bool> {
     let changed = conn.execute(
-        "INSERT OR IGNORE INTO messages(msg_id, conv_id, sender_id, receiver_id, kind, content, ts, seq, status, mention_targets)
-         VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+        // 按 msg_id 幂等用 `WHERE NOT EXISTS`，**不用 `OR IGNORE`**：后者会把
+        // `local_id` 唯一冲突也一起吞掉 ⇒ 新消息被静默丢弃（列表 key 重复反过来又覆盖测量）。
+        "INSERT INTO messages(msg_id, conv_id, sender_id, receiver_id, kind, content, ts, seq, status, mention_targets, local_id)
+         SELECT ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, COALESCE(?11, ?1)
+         WHERE NOT EXISTS (SELECT 1 FROM messages WHERE msg_id = ?1)",
         params![m.msg_id, m.conv_id, m.sender_id, m.receiver_id, m.kind, m.content, m.ts, m.seq, m.status,
-                encode_mention_targets(&m.mention_targets)],
+                encode_mention_targets(&m.mention_targets), m.local_id],
     )?;
     Ok(changed > 0)
 }
@@ -49,8 +52,8 @@ pub fn insert_message_and_outbox(
 ) -> Result<()> {
     let tx = conn.unchecked_transaction()?;
     tx.execute(
-        "INSERT INTO messages(msg_id, conv_id, sender_id, receiver_id, kind, content, ts, seq, status, mention_targets)
-         VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+        "INSERT INTO messages(msg_id, conv_id, sender_id, receiver_id, kind, content, ts, seq, status, mention_targets, local_id)
+         VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, COALESCE(?11, ?1))",
         params![
             m.msg_id,
             m.conv_id,
@@ -61,7 +64,8 @@ pub fn insert_message_and_outbox(
             m.ts,
             m.seq,
             m.status,
-            encode_mention_targets(&m.mention_targets)
+            encode_mention_targets(&m.mention_targets),
+            m.local_id
         ],
     )?;
     tx.execute(
@@ -99,7 +103,7 @@ pub fn get_messages(
     offset: i64,
 ) -> Result<Vec<MessageRecord>> {
     let mut stmt = conn.prepare(
-        "SELECT id, msg_id, conv_id, sender_id, receiver_id, kind, content, ts, seq, status, mention_targets
+        "SELECT id, msg_id, conv_id, sender_id, receiver_id, kind, content, ts, seq, status, mention_targets, local_id
          FROM messages WHERE conv_id = ?1 ORDER BY seq ASC, id ASC LIMIT ?2 OFFSET ?3",
     )?;
     let rows = stmt.query_map(params![conv_id, limit, offset], |r| {
@@ -115,6 +119,7 @@ pub fn get_messages(
             seq: r.get(8)?,
             status: r.get(9)?,
             mention_targets: decode_mention_targets(r.get(10)?),
+                local_id: r.get(11)?,
         })
     })?;
     Ok(rows.filter_map(|r| r.ok()).collect())
@@ -136,7 +141,7 @@ pub fn get_todo_messages_for_conns(
     let mut out = Vec::new();
     for conv_id in conv_ids {
         let mut stmt = conn.prepare(
-            "SELECT id, msg_id, conv_id, sender_id, receiver_id, kind, content, ts, seq, status, mention_targets
+            "SELECT id, msg_id, conv_id, sender_id, receiver_id, kind, content, ts, seq, status, mention_targets, local_id
              FROM messages WHERE conv_id = ?1 AND kind IN ('todo', 'todo_update')
              ORDER BY seq ASC, id ASC",
         )?;
@@ -153,6 +158,7 @@ pub fn get_todo_messages_for_conns(
                 seq: r.get(8)?,
                 status: r.get(9)?,
             mention_targets: decode_mention_targets(r.get(10)?),
+                local_id: r.get(11)?,
             })
         })?;
         out.extend(rows.filter_map(|r| r.ok()));
@@ -180,7 +186,7 @@ pub fn get_latest_messages(
     limit: i64,
 ) -> Result<Vec<MessageRecord>> {
     let mut stmt = conn.prepare(
-        "SELECT id, msg_id, conv_id, sender_id, receiver_id, kind, content, ts, seq, status, mention_targets
+        "SELECT id, msg_id, conv_id, sender_id, receiver_id, kind, content, ts, seq, status, mention_targets, local_id
          FROM messages WHERE conv_id = ?1 ORDER BY seq DESC, id DESC LIMIT ?2",
     )?;
     let rows = stmt.query_map(params![conv_id, limit], |r| {
@@ -196,6 +202,7 @@ pub fn get_latest_messages(
             seq: r.get(8)?,
             status: r.get(9)?,
             mention_targets: decode_mention_targets(r.get(10)?),
+                local_id: r.get(11)?,
         })
     })?;
     let mut out: Vec<MessageRecord> = rows.filter_map(|r| r.ok()).collect();
@@ -623,7 +630,7 @@ mod message_ops_tests {
 /// 按 msg_id 取完整消息记录（需要跨字段判断时用；今天只有 `network/file/receive.rs::resume_receive` 认领续传用它）。
 pub fn get_message_record(conn: &Connection, msg_id: &str) -> Option<MessageRecord> {
     conn.query_row(
-        "SELECT id, msg_id, conv_id, sender_id, receiver_id, kind, content, ts, seq, status, mention_targets
+        "SELECT id, msg_id, conv_id, sender_id, receiver_id, kind, content, ts, seq, status, mention_targets, local_id
          FROM messages WHERE msg_id = ?1",
         params![msg_id],
         |r| {
@@ -639,6 +646,7 @@ pub fn get_message_record(conn: &Connection, msg_id: &str) -> Option<MessageReco
                 seq: r.get(8)?,
                 status: r.get(9)?,
             mention_targets: decode_mention_targets(r.get(10)?),
+                local_id: r.get(11)?,
             })
         },
     )
@@ -1389,5 +1397,63 @@ mod resend_requeue_tests {
         let conn = mem();
         assert_eq!(requeue_message_for_resend(&conn, "nope", "p1", "{}").unwrap(), 0);
         assert_eq!(outbox_n(&conn, "nope"), 0);
+    }
+}
+
+#[cfg(test)]
+mod local_id_tests {
+    use super::*;
+
+    fn mem() -> Connection {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(crate::db::SCHEMA).unwrap();
+        // 唯一索引住在 ensure_post_schema_shape（迁移加列 → 不能进 SCHEMA 批次）；测试里手建同一条。
+        conn.execute_batch(
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_messages_local_id ON messages(local_id);",
+        )
+        .unwrap();
+        conn
+    }
+
+    fn rec(msg_id: &str, local_id: Option<&str>) -> MessageRecord {
+        MessageRecord {
+            id: 0,
+            msg_id: msg_id.to_string(),
+            conv_id: "c1".to_string(),
+            sender_id: "me".to_string(),
+            receiver_id: "peer".to_string(),
+            kind: "text".to_string(),
+            content: "hi".to_string(),
+            ts: 1,
+            seq: 1,
+            status: "sent".to_string(),
+            mention_targets: None,
+            local_id: local_id.map(|s| s.to_string()),
+        }
+    }
+
+    #[test]
+    fn explicit_local_id_is_persisted_and_none_falls_back_to_msg_id() {
+        let conn = mem();
+        insert_message(&conn, &rec("m1", Some("lid-1"))).unwrap();
+        insert_message(&conn, &rec("m2", None)).unwrap();
+        let a = get_message_record(&conn, "m1").expect("m1");
+        let b = get_message_record(&conn, "m2").expect("m2");
+        assert_eq!(a.local_id.as_deref(), Some("lid-1"));
+        assert_eq!(
+            b.local_id.as_deref(),
+            Some("m2"),
+            "未提供本地 id 时必须由 SQL 回填 msg_id（列表 key 不能为空）"
+        );
+    }
+
+    #[test]
+    fn local_id_is_unique() {
+        let conn = mem();
+        insert_message(&conn, &rec("m1", Some("dup"))).unwrap();
+        assert!(
+            insert_message(&conn, &rec("m2", Some("dup"))).is_err(),
+            "重复 local_id 会让列表两行互相覆盖测量/DOM ⇒ 唯一索引必须拒绝"
+        );
     }
 }

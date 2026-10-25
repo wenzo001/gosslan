@@ -476,6 +476,7 @@ async fn handle_relay_chunk(
                     seq,
                     status: "delivered".to_string(),
                     mention_targets: None,
+                    local_id: None,
                 };
                 // 落库失败必须留痕（审计 2026-10-16，与群文件卡片同一格）：吞掉后界面没这张卡、日志无痕。
                 if let Err(e) = db::insert_message(&dbc, &rec) {

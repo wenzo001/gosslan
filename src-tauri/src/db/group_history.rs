@@ -345,6 +345,7 @@ pub fn apply_group_history_page(
             seq: item.seq,
             status: "delivered".to_string(),
             mention_targets: item.mention_targets.clone(),
+            local_id: None,
         };
         let inserted = insert_message_if_new(conn, &rec)?;
         if item.seq > stats.max_seq {
@@ -480,6 +481,7 @@ mod group_history_db_tests {
             seq,
             status: "sent".into(),
             mention_targets: None,
+            local_id: None,
         }
     }
 

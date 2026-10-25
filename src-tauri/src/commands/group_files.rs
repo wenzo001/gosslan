@@ -26,6 +26,7 @@ pub async fn send_group_message(
     content: String,
     kind: String,
     mentions: Option<Vec<String>>,
+    local_id: Option<String>,
 ) -> Result<MessageRecord, String> {
     let wire_kind = match kind.as_str() {
         "text" => "text",
@@ -77,7 +78,15 @@ pub async fn send_group_message(
                 nudge: false,
             };
             let content = serde_json::to_string(&out).map_err(|e| e.to_string())?;
-            return send_group_payload(s, &group_id, "remind", content, None).await;
+            return send_group_payload(
+                s,
+                &group_id,
+                "remind",
+                content,
+                None,
+                local_id.as_deref(),
+            )
+            .await;
         }
         // 群强提醒回执（第 2 阶段）：stage 已在 parse 里校验
         // （alerted＝接收端已触发提醒处理；confirmed＝用户点「我知道了」）。
@@ -102,7 +111,15 @@ pub async fn send_group_message(
                     return Err("对应的强提醒不存在".to_string());
                 }
             }
-            return send_group_payload(s, &group_id, "remind_ack", content, None).await;
+            return send_group_payload(
+                s,
+                &group_id,
+                "remind_ack",
+                content,
+                None,
+                local_id.as_deref(),
+            )
+            .await;
         }
         _ => return Err("群聊不支持该消息类型".to_string()),
     };
@@ -114,7 +131,15 @@ pub async fn send_group_message(
     } else {
         None
     };
-    send_group_payload(state.inner(), &group_id, wire_kind, content, mentions).await
+    send_group_payload(
+        state.inner(),
+        &group_id,
+        wire_kind,
+        content,
+        mentions,
+        local_id.as_deref(),
+    )
+    .await
 }
 
 /// 群任务标题上限：它是卡片上的一行标题，不是长文。
@@ -236,7 +261,7 @@ pub async fn send_group_todo(
     };
     let content = serde_json::to_string(&payload).map_err(|e| e.to_string())?;
     let todo_id = payload.todo_id.clone();
-    let rec = send_group_payload(s, &group_id, "todo", content, None).await?;
+    let rec = send_group_payload(s, &group_id, "todo", content, None, None).await?;
     // §29 可观测性：任务这条链以前**一行日志都不打**（`commands` 目录 29 处 logger 无一与任务有关），
     // 于是"任务没同步过去"只能靠比对两侧的库来定位。这里补上起点：只记 id 与 kind，
     // **不记标题/描述**（那是用户内容，与"token 值不得入日志"同一族约束）。
@@ -820,7 +845,7 @@ pub async fn update_group_todo(
     // ⚠️ 发 `todo_update`（Silent）而不是 `todo`（Card）：改状态/改标题/删除是**状态微调**，
     // 不该给全群记未读、弹通知（创建才该）。两者载荷同构、折叠也是同一条 LWW 规则，
     // 区别只在通知口径 —— 详见 `protocol.rs` 的 `WIRE_KINDS` 注释。
-    let rec = send_group_payload(s, &group_id, "todo_update", content, None).await?;
+    let rec = send_group_payload(s, &group_id, "todo_update", content, None, None).await?;
     // §29：状态迁移是本端与对端最容易各说一套的一段（徽标数字就靠它减），
     // 所以这里记的是**状态本身**而不是标题。
     s.logger.info(
@@ -861,7 +886,7 @@ pub async fn send_group_announcement(
     }
     let content = serde_json::to_string(&crate::protocol::AnnouncementPayload { text })
         .map_err(|e| e.to_string())?;
-    send_group_payload(s, &group_id, "announcement", content, None).await
+    send_group_payload(s, &group_id, "announcement", content, None, None).await
 }
 
 /// 删除一条群公告（仅群主）：发 `announcement_delete` **墓碑**（Silent），全端据此把横幅折掉。
@@ -889,7 +914,7 @@ pub async fn delete_group_announcement(
     }
     let content = serde_json::to_string(&crate::protocol::AnnouncementDeletePayload { ann_id })
         .map_err(|e| e.to_string())?;
-    send_group_payload(s, &group_id, "announcement_delete", content, None).await
+    send_group_payload(s, &group_id, "announcement_delete", content, None, None).await
 }
 
 // ---------------- 群公告 ----------------

@@ -152,11 +152,16 @@ const virtualRows = computed(() => virtualizer.value.getVirtualItems()
 /** Vue 的模板 ref 会给 `Element | 组件实例`；TanStack 只接受真实元素，这里收窄一次。 */
 function measureRow(el: Element | { $el?: Element } | null) {
   const node = el instanceof Element ? el : el?.$el;
-  if (node) virtualizer.value.measureElement(node);
+  // 隐藏/未布局的行会测到 0：写进测量表会让后续 top 全塌到顶部（与消息列表同一失败方向）。
+  if (node && node.getBoundingClientRect().height > 0) virtualizer.value.measureElement(node);
 }
 const totalSize = computed(() => virtualizer.value.getTotalSize());
 // 过滤词一变，旧滚动位置可能已越界（新结果更短）⇒ 回到顶部，否则视口落在空白区。
-watch(trimmedFilter, () => virtualizer.value.scrollToOffset(0));
+watch(trimmedFilter, () => {
+  // 过滤改变的是"行内容与换行高度"：旧实测值不能套到新结果上（宽度没变也可能换行变了）。
+  virtualizer.value.measure();
+  virtualizer.value.scrollToOffset(0);
+});
 
 async function load() {
   // 窗口被隐藏/最小化时不必每 2s 拉一次：`get_logs` 会快照整份日志（几千条时是可观的
