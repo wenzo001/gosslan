@@ -32,6 +32,12 @@ pub fn group_history_state_key(group_id: &str) -> String {
 
 pub const GROUP_HISTORY_STATUS_PENDING: &str = "pending";
 pub const GROUP_HISTORY_STATUS_DONE: &str = "done";
+/// 用户明确在任务中心按了「停止」。
+///
+/// 与 `pending` 分开是语义，不是状态机洁癖：`pending` 会被 60 秒清扫任务自动重跑，
+/// 而用户按「停止」的意思是**现在别再跑**；留 pending 等于 60 秒后又自己开始，
+/// 界面上的「已停止」变成一句只维持一分钟的假话。手动同步会把它重新写回 pending。
+pub const GROUP_HISTORY_STATUS_STOPPED: &str = "stopped";
 
 /// 读本机这一群的历史同步状态。坏 JSON 按"没有状态"处理（返回 `None`），
 /// 因为一次写坏的偏好不该把这个群永久钉成"不同步"。

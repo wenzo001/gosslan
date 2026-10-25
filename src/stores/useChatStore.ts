@@ -2830,7 +2830,8 @@ export const useChatStore = defineStore("chat", () => {
     if (p.phase === "failed") {
       app.toast(t("chat.groupHistory.failed"), "info");
     } else if (p.phase === "cancelled") {
-      // 已拉到的部分保留，标记仍是 pending ⇒ 下次有人在线时清扫任务会自动续。
+      // 已拉到的部分保留；后端把标记写成 stopped，清扫任务不会自动重跑，
+      // 需要用户在群聊顶部手动点同步才会继续（文案与后端语义同一条）。
       app.toast(t("chat.groupHistory.cancelled"), "info");
     }
   }

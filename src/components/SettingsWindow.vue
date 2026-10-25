@@ -201,7 +201,7 @@ useEventListener(window, "keydown", onKeydown);
          左内边距与右侧留白/箭头位置不匹配。这里导航项为纯文字+图标（无展开箭头），
          一旦将来加展开子项，用同一个 `pr-2.5` 承接箭头即可保持对称。 -->
     <nav class="flex w-[176px] shrink-0 flex-col gap-0.5 border-r border-[var(--gosslan-divider)] bg-[var(--gosslan-panel)] px-2 py-3">
-      <!-- 桌面 4 类导航不需要可见返回；⌘[ / Alt+← 键盘返回仍保留。 -->
+      <!-- 桌面 3 类导航不需要可见返回；⌘[ / Alt+← 键盘返回仍保留。 -->
       <button
         v-for="item in navItems"
         :key="item.key"

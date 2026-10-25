@@ -1081,7 +1081,8 @@ mesh 没有服务器也没有强制升级 ⇒ 混合版本是常态，不是边�
 
 ### INV-P26 — 有磁盘证据的状态不可被降级
 
-`file_transfers.status` 今天有 39 个写入点（active 12 / failed 12 / done 6 / pending 3 / sent / cancelled），
+`file_transfers.status` 今天有 31 个生产调用点（现数与计数口径见
+`docs/ARCHITECTURE-MAP.html` 的 `file_transfers` 行；全部写入都经 `upsert_transfer` 的闸门），
 所以"谁能写什么"必须由**写入口**保证，而不是靠每个调用点自觉。
 
 规则只有一条：**`done` 不许被改写成别的状态**。状态、进度、路径三个字段走的是同一条

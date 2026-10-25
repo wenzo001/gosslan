@@ -54,7 +54,7 @@ test("每个顶层导航项都渲染了它承诺的分区组件（标签即内�
       new RegExp(`\\{ key: "${item.key}", label: t\\("${item.labelKey.replace(/\./g, "\\.")}"\\)`),
       `导航项 ${item.key} 应使用标签键 ${item.labelKey}`,
     );
-    // 4 个顶层容器：条件写作 `desktopSection === 'key'`；通用/网络容器内会渲染多个组件。
+    // 3 个顶层容器：条件写作 `desktopSection === 'key'`；通用/网络/关于容器内会渲染多个组件。
     const at = win.indexOf(`desktopSection === '${item.key}'`);
     assert.ok(at >= 0, `SettingsWindow 里没有 ${item.key} 的渲染分支`);
     const window_ = win.slice(Math.max(0, at - 250), at + 2500);
