@@ -569,6 +569,8 @@ export const zhCN: MessageDict = {
   "msg.readByView": "已读 {n} 人，查看已读成员",
   "msg.readMembers": "已读成员（{n}）",
   "msg.resend": "重新发送",
+  // 原地重投被拒（已送达 / 状态已变）或入队失败。不许静默 —— 用户按了按钮就得有回音。
+  "msg.resendFail": "这条消息现在无法重发",
   "msg.sendFailed": "发送失败",
   "msg.clickToOpen": "点击打开文件",
   "msg.receiving": "接收中",
@@ -662,6 +664,12 @@ export const zhCN: MessageDict = {
   "msg.groupResend.allDelivered": "这条消息已送达全部成员，无需补发",
   "msg.groupResend.noLedger": "这条消息没有成员级台账（升级前发出），只能整条重发",
   "msg.groupResend.unsupported": "这种消息不支持按成员补发",
+  // 群气泡旁的成员级投递摘要（台账口径）。全部送达时后端清墓碑 ⇒ 这几句都不会出现。
+  "msg.delivery.pending": "已收到 {delivered}/{total}",
+  "msg.delivery.failed": "{failed} 人未送达",
+  "msg.delivery.cancelled": "{delivered} 人已收到，{cancelled} 人已取消",
+  "msg.delivery.allCancelled": "{cancelled} 人未收到（已取消）",
+  "msg.delivery.detail": "已收到 {delivered} · 待收 {pending} · 已取消 {cancelled} · 未送达 {failed}",
   "msg.reactionToggle": "切换回应 {emoji}",
   "msg.reactionWho": "{n} 人回应",
   "msg.reactionMore": "更多表情",

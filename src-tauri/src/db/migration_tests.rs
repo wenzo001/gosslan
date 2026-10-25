@@ -38,10 +38,10 @@ fn temp_db_path() -> PathBuf {
     let unique = COUNTER.fetch_add(1, Ordering::Relaxed);
     let pid = std::process::id();
     p.push(format!("gosslan-migration-test-{pid}-{unique}.db"));
-    // 清理可能的残留
-    let _ = std::fs::remove_file(&p);
-    let _ = std::fs::remove_file(p.with_extension("db-wal"));
-    let _ = std::fs::remove_file(p.with_extension("db-shm"));
+    // 清理可能的残留。**备份也要清**：macOS 会复用 PID，而文件名只有 pid+计数器 ⇒
+    // 上一次同 PID 的进程若死在 cleanup 之前，这里就会看见它留下的 `.pre-v…` 备份，
+    // 「v{from} 必须恰好一份备份」那条判据于是偶发假红（2026-10-25 实测撞过一次）。
+    cleanup_db_and_backups(&p);
     p
 }
 

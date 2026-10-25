@@ -654,6 +654,8 @@ const CMDS = [
   ["send_message", "chat", "friend_id str; content str; kind str", "MessageRecord|err"],
   ["recall_message", "chat", "friend_id str; target str", "()|err"],
   ["cancel_message", "chat", "conv_id str; msg_id str", "MessageCancelResult|err"],
+  // 1:1 原地重投（2026-10-25，计划 D1）：复用原 msg_id/ts/seq，接收端按 msg_id 幂等。
+  ["resend_message", "chat", "conv_id str; msg_id str", "MessageRecord|err"],
   // 群消息的成员级投递台账（2026-10-25）：摘要给气泡角标，补发按成员重投**原信封**
   // （接收端按 msg_id 幂等，已 Ack 的成员不会收到第二条）。
   ["get_group_delivery_summaries", "chat", "conv_id str", "GroupDeliverySummary[]|err"],

@@ -738,6 +738,54 @@ pub fn cancel_queued_message(conn: &Connection, msg_id: &str) -> Result<MessageC
     Ok(MessageCancelOutcome::Cancelled)
 }
 
+/// 重发一条**本端判失败/被用户取消**的 1:1 消息：重新入队并回到 `sending`。
+///
+/// 与「发一条新消息」的分界（计划 D1）：**复用原 `msg_id` / `ts` / `seq`**。
+/// · 复用 `msg_id` ⇒ 接收端按它去重：如果上一次其实已经送到、只是 Ack 在半开链路上丢了，
+///   对方会**再回一次 Ack** 而不是多出一条消息（这就是幂等的全部意义）。
+/// · 复用 `ts`/`seq` ⇒ 重发不会把一条旧消息顶到会话最底、也不会打乱对方的时间线。
+///
+/// 为什么整段一个事务：`outbox` 行与 `sending` 必须同时成立。先写状态再插行，中间失败
+/// 就留下「sending 但队列里没有行」的孤儿（清扫器看不见、flush 也没得补 ⇒ 永久发送中，
+/// 2026-10-20 P0 同型）。先把行插入、状态写不上时整体回滚，界面仍是 failed/cancelled。
+///
+/// 返回**状态行实际改动数**：0 = 这条当前不是 failed/cancelled（已送达/已读/已撤回/
+/// 正在发），调用方据此如实回答而不是假装重发成功。
+pub fn requeue_message_for_resend(
+    conn: &Connection,
+    msg_id: &str,
+    peer_id: &str,
+    payload: &str,
+) -> Result<usize> {
+    let tx = conn.unchecked_transaction()?;
+    let status: Option<String> = tx
+        .query_row(
+            "SELECT status FROM messages WHERE msg_id = ?1",
+            params![msg_id],
+            |r| r.get(0),
+        )
+        .optional()?;
+    let Some(status) = status else {
+        return Ok(0);
+    };
+    if !matches!(status.as_str(), "failed" | "cancelled") {
+        return Ok(0);
+    }
+    // `INSERT OR IGNORE`：极少数情况下队列行还在（比如心跳 flush 与重发同时到达），
+    // 直接复用它、不产生第二行（`outbox.msg_id` 是内联 UNIQUE）。
+    tx.execute(
+        "INSERT OR IGNORE INTO outbox(msg_id, peer_id, payload, created_at) VALUES(?1, ?2, ?3, ?4)",
+        params![msg_id, peer_id, payload, now_ms()],
+    )?;
+    let changed = tx.execute(
+        "UPDATE messages SET status = 'sending'
+          WHERE msg_id = ?1 AND status IN ('failed', 'cancelled')",
+        params![msg_id],
+    )?;
+    tx.commit()?;
+    Ok(changed)
+}
+
 /// Ack 的**原子收尾**：验证 Ack 确实命中"我发给这个 peer 且仍在队列里"的那一行，
 /// 置 `delivered`，再删 outbox 行 —— 三步在**同一个事务**里完成。
 ///
@@ -1236,4 +1284,110 @@ fn escape_like(s: &str) -> String {
     s.replace('\\', "\\\\")
         .replace('%', "\\%")
         .replace('_', "\\_")
+}
+
+/// 1:1 原地重投（计划 D1）：`requeue_message_for_resend` 的状态门。
+///
+/// 只有 `failed` / `cancelled` 能复活 —— 其余状态要么已经在路上（`sending`/`sent`），
+/// 要么是不可逆的硬终态（`delivered`/`read`/`recalled`）。第二条尤其重要：一条已送达的
+/// 消息被"重发"会让对端收到第二条完全相同的情绪，而库里的 seq 还是旧的。
+#[cfg(test)]
+mod resend_requeue_tests {
+    use super::*;
+
+    fn mem() -> Connection {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(crate::db::SCHEMA).unwrap();
+        conn
+    }
+
+    fn put(conn: &Connection, msg_id: &str, status: &str) {
+        conn.execute(
+            "INSERT INTO messages(msg_id, conv_id, sender_id, receiver_id, kind, content, ts, seq, status)
+             VALUES(?1, 'p1', 'me', 'p1', 'text', 'x', 111, 7, ?2)",
+            params![msg_id, status],
+        )
+        .unwrap();
+    }
+
+    fn status_of(conn: &Connection, msg_id: &str) -> String {
+        conn.query_row(
+            "SELECT status FROM messages WHERE msg_id = ?1",
+            params![msg_id],
+            |r| r.get(0),
+        )
+        .unwrap()
+    }
+
+    fn outbox_n(conn: &Connection, msg_id: &str) -> i64 {
+        conn.query_row(
+            "SELECT COUNT(*) FROM outbox WHERE msg_id = ?1",
+            params![msg_id],
+            |r| r.get(0),
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn failed_and_cancelled_come_back_to_sending_with_a_queue_row() {
+        let conn = mem();
+        for (id, st) in [("f1", "failed"), ("c1", "cancelled")] {
+            put(&conn, id, st);
+            assert_eq!(
+                requeue_message_for_resend(&conn, id, "p1", "{}").unwrap(),
+                1,
+                "{st} 必须能回到 sending"
+            );
+            assert_eq!(status_of(&conn, id), "sending");
+            assert_eq!(outbox_n(&conn, id), 1, "没有队列行 = 下一轮 flush 不会补发");
+            // ts/seq 原样保留（复用稳定身份的一半）。
+            let (ts, seq): (i64, i64) = conn
+                .query_row(
+                    "SELECT ts, seq FROM messages WHERE msg_id = ?1",
+                    params![id],
+                    |r| Ok((r.get(0)?, r.get(1)?)),
+                )
+                .unwrap();
+            assert_eq!((ts, seq), (111, 7), "重发不许改时间戳与逻辑序号");
+        }
+    }
+
+    #[test]
+    fn terminal_and_in_flight_states_are_refused_without_writing() {
+        let conn = mem();
+        for st in ["sending", "sent", "delivered", "read", "recalled"] {
+            let id = format!("m-{st}");
+            put(&conn, &id, st);
+            assert_eq!(
+                requeue_message_for_resend(&conn, &id, "p1", "{}").unwrap(),
+                0,
+                "{st} 不许被重发"
+            );
+            assert_eq!(status_of(&conn, &id), st, "被拒绝时状态一个字都不许动");
+            assert_eq!(outbox_n(&conn, &id), 0, "被拒绝时也不许留下队列行");
+        }
+    }
+
+    /// 队列行已在（心跳 flush 与重发撞在一起）：复用那一行，不产生第二行。
+    #[test]
+    fn an_existing_queue_row_is_reused_not_duplicated() {
+        let conn = mem();
+        put(&conn, "f2", "failed");
+        conn.execute(
+            "INSERT INTO outbox(msg_id, peer_id, payload, created_at) VALUES('f2','p1','{\"old\":1}',5)",
+            [],
+        )
+        .unwrap();
+        assert_eq!(requeue_message_for_resend(&conn, "f2", "p1", "{}").unwrap(), 1);
+        assert_eq!(status_of(&conn, "f2"), "sending");
+        assert_eq!(outbox_n(&conn, "f2"), 1, "outbox.msg_id 是 UNIQUE：重发不许插第二行");
+    }
+
+    /// 一条不存在的消息：0，不报错（调用方据此说"已经不在了"）。
+    #[test]
+    fn an_unknown_message_writes_nothing() {
+        let conn = mem();
+        assert_eq!(requeue_message_for_resend(&conn, "nope", "p1", "{}").unwrap(), 0);
+        assert_eq!(outbox_n(&conn, "nope"), 0);
+    }
 }

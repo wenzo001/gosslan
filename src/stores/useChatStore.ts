@@ -1883,6 +1883,22 @@ export const useChatStore = defineStore("chat", () => {
     }
   }
 
+  /**
+   * 重发一条**本端判失败 / 已取消**的 1:1 消息（复用原 `msg_id`，计划 D1）。
+   *
+   * 为什么不复用 `send()` 的重发分支：那条走 `send_message` ⇒ 新 msg_id、新 seq，
+   * 用户按一次"重发"就等于又发了一条新消息（对端半开链路上最需要幂等时恰恰没有）。
+   * 这里后端原地复活同一条消息，前端也只把**同一个 msg_id** 的气泡换回 sending/sent。
+   */
+  async function resend(convId: string, msgId: string): Promise<MessageRecord> {
+    const rec = await api.resendMessage(convId, msgId);
+    // Ack 可能已在 await 期间到达 ⇒ 与首次发送同一条处理：提升到 delivered 再落盘到缓存。
+    const acked = pendingAcks.delete(msgId);
+    const next = acked ? { ...rec, status: furthestStatus(rec.status, "delivered") } : rec;
+    replaceMessage(convId, msgId, next);
+    return rec;
+  }
+
   /** 单聊/群聊的 invoke 分流（重发与首次发送共用，避免两份实现漂移）。 */
   async function sendToBackend(
     convId: string,
@@ -3245,6 +3261,7 @@ export const useChatStore = defineStore("chat", () => {
     todosLoadedOnce,
     watchGroupTodos,
     send,
+    resend,
     sendReminder,
     shakeConversation,
     shakeSignal,

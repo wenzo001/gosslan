@@ -7,6 +7,7 @@ import { useExclusivePopup } from "@/composables/useExclusivePopup";
 import { PopoverContent, PopoverPortal, PopoverRoot, PopoverTrigger } from "reka-ui";
 import { avatarSeedFor } from "@/utils/avatarSeed";
 import type { SendState } from "@/composables/useMessageDisplay";
+import type { GroupDeliverySummary } from "@/types";
 import { Ban, CheckCheck, HelpCircle } from "lucide-vue-next";
 import { Check } from "@/components/ui/icons";
 import { X } from "@/components/ui/icons";
@@ -30,6 +31,13 @@ const props = defineProps<{
    * 图标本身不删 —— 它是这条消息失败/被取消的唯一可见指示；只是不再假装可点。
    */
   retryable?: boolean;
+  /**
+   * 群消息的成员级投递摘要（**只来自后端台账**，`get_group_delivery_summaries`）。
+   *
+   * 为什么不能自己从 `readerIds` / 群成员数推：那份「已读」与「已收到」是两件事
+   * （收到 ≠ 读过），而台账才是投递的事实。全送达的消息后端已即时清墓碑 ⇒ 这里是 null。
+   */
+  delivery?: GroupDeliverySummary | null;
 }>();
 const emit = defineEmits<{ (e: "retry"): void }>();
 
@@ -50,6 +58,40 @@ const chat = useChatStore();
 const readerIds = computed(() => props.readerIds ?? []);
 const visibleReaders = computed(() => readerIds.value.slice(0, 3));
 const extraReaders = computed(() => readerIds.value.slice(3));
+
+/**
+ * 群消息的「谁收到」摘要 —— 计数原文来自台账，这里只做**呈现**（不重算、不推断）。
+ *
+ * 优先级是语义：还有人没收到（pending）就是说进度；都收尾了才说失败/取消。
+ * 全部送达时后端已经把墓碑清掉 ⇒ `delivery` 为 null，这一格什么都不显示
+ * （正常消息旁边不该永远挂一串「5/5」）。
+ */
+const deliveryTotal = computed(() => {
+  const d = props.delivery;
+  return d ? d.delivered + d.pending + d.cancelled + d.failed : 0;
+});
+const deliveryText = computed(() => {
+  const d = props.delivery;
+  if (!d || deliveryTotal.value === 0) return "";
+  if (d.pending > 0) return t("msg.delivery.pending", { delivered: d.delivered, total: deliveryTotal.value });
+  if (d.failed > 0) return t("msg.delivery.failed", { failed: d.failed });
+  if (d.cancelled > 0) {
+    return d.delivered > 0
+      ? t("msg.delivery.cancelled", { delivered: d.delivered, cancelled: d.cancelled })
+      : t("msg.delivery.allCancelled", { cancelled: d.cancelled });
+  }
+  return "";
+});
+const deliveryTitle = computed(() => {
+  const d = props.delivery;
+  if (!d) return "";
+  return t("msg.delivery.detail", {
+    delivered: d.delivered,
+    pending: d.pending,
+    cancelled: d.cancelled,
+    failed: d.failed,
+  });
+});
 
 /**
  * 「已读成员」弹层：接入全局浮层互斥（同一时刻只允许一个弹层展开）。
@@ -85,6 +127,14 @@ function readerAvatar(id: string): string | null {
 <template>
   <!-- 群聊：状态指示（失败/取消/部分送达/未知） + 已读成员头像 + 展开完整列表 -->
   <div v-if="isGroup" class="relative flex shrink-0 items-center gap-1 pb-1.5">
+    <!-- 成员级投递摘要（台账口径）：还有人没收到时说进度；失败/取消说结论。
+         全部送达时后端已清墓碑 ⇒ 这里为空，正常消息旁边不挂常驻数字。 -->
+    <span
+      v-if="deliveryText"
+      data-delivery
+      class="whitespace-nowrap text-caption leading-none tabular-nums text-[var(--gosslan-text-2)]"
+      :title="deliveryTitle"
+    >{{ deliveryText }}</span>
     <!-- 群消息没有 1:1 那套单勾/双勾，但失败、取消、部分送达、未知都是真实状态，
          此前这一格**什么都不显示**（只渲染已读头像）⇒ 群里的失败消息看起来像已发出。 -->
     <button

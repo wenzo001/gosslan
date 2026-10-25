@@ -1303,6 +1303,18 @@ const resendChannel = computed(() =>
   }),
 );
 
+/**
+ * 这条群消息的成员级投递摘要（**只读 store 里那份后端台账**）。
+ *
+ * 为什么不在组件里数成员/已读：台账回答的是"谁收到"，已读回答的是"谁读过"，
+ * 两者混在一起就会重新造出"排队却显示已送达"的矛盾。摘要为 undefined 时角标什么都不显示。
+ */
+const groupDelivery = computed(() => {
+  if (!props.isGroup) return null;
+  const conv = chat.groupDeliveries[props.message.conv_id];
+  return conv?.[props.message.msg_id] ?? null;
+});
+
 async function retrySend() {
   const msg = props.message;
   const channel = resendChannel.value;
@@ -1325,14 +1337,23 @@ async function retrySend() {
         app.toastError(e, t("msg.sendFailed"));
         return;
       }
+      // 升级前发出的群消息没有台账：原信封已经不在了，**没有身份可复用**，
+      // 只能整条重发（新 msg_id 是事实，旧那条失败行留原地也是事实）。
+      try {
+        await chat.send(msg.conv_id, msg.content, msg.kind, undefined, msg.msg_id);
+      } catch {
+        // 失败状态已由 send() 内部处理（原地退回 failed）
+      }
+      return;
     }
     try {
-      // 传 `msg.msg_id`：store 会把**这条 failed 气泡原地**转回 sending 再重发。
-      // 不传的话会新建一条乐观记录，而这条 failed 因为全库无删除路径 +
-      // `appendLocalOnly` 每次重开会话都重新追加 `tmp-*` ⇒ 界面上永远留两条一样的文字。
-      await chat.send(msg.conv_id, msg.content, msg.kind, undefined, msg.msg_id);
-    } catch {
-      // 失败状态已由 send() 内部处理（原地退回 failed）
+      // 单聊：**复用原 msg_id** 原地重投（计划 D1）。后端复用同一身份/ts/seq，接收端
+      // 按 msg_id 去重 ⇒ 上一次其实送到、只是 Ack 丢了的话，对方只会再回一次 Ack。
+      // 不再走 `chat.send(..., msg.msg_id)`：那条会生成新 msg_id，等于又发了一条新消息。
+      await chat.resend(msg.conv_id, msg.msg_id);
+    } catch (e) {
+      // 重发被如实拒绝（已送达/状态已变）或入队失败：说原因，不静默。
+      app.toastError(e, t("msg.resendFail"));
     }
     return;
   }
@@ -1690,6 +1711,7 @@ async function copyFileToClipboard() {
             :title="receiptTitle"
             :is-group="isGroup"
             :reader-ids="groupReaderIds"
+            :delivery="groupDelivery"
             :msg-key="message.msg_id ?? message.id"
             :retryable="resendChannel !== null"
             @retry="retrySend"

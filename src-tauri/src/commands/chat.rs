@@ -441,6 +441,66 @@ pub async fn set_message_render(
     Ok(())
 }
 
+/// 取某位好友的 X25519 公钥（好友表优先，回退在线节点表，都缺失时探测一次）。
+///
+/// 为什么单独一家：`send_message` 与 `resend_message` 必须用**同一套**取钥与同一条
+/// 「库里那把与在线自报的不一致」告警 —— 重发走另一份实现时，那条 2026-10-13 的
+/// "密钥换了但一直显示已发送"的静默故障会重新长出来一半。
+async fn peer_x25519(s: &AppState, friend_id: &str) -> Option<String> {
+    let from_db = {
+        let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());
+        db::get_friend_x25519(&dbc, friend_id)
+    };
+    let from_peers = s
+        .peers
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .get(friend_id)
+        .and_then(|p| p.x25519_pubkey.clone());
+    // ⚠️ 库里那把**优先**，而它一旦是错的就一直是错的（好友表只填空、绝不覆盖，
+    // 见 `db/friends.rs` 与 `network/transport/e2ee_payload.rs` 同一条说明）。
+    // 两份都在且不同 ⇒ 本机正在用的这把，**不是**界面那串安全码所依据的那一份
+    // ⇒ 「双方安全码对得上」这时并不能证明消息解得开。
+    // 没有这一行时，"我发的他收不到"在发送端日志里完全 invisible：对端解不开是不回
+    // 送达确认的静默丢弃，本机只会一直显示"已发送"（用户 2026-10-13 撞的正是这个形状）。
+    // 只报布尔量与 peer，不报密钥本身（日志会进报告产物）。持续不一致时每条发送各记一行。
+    if let (Some(db_key), Some(peer_key)) = (&from_db, &from_peers) {
+        if db_key != peer_key {
+            s.logger.warn(
+                "dispatch",
+                format!("单聊密封用的密钥与在线自报的不一致（取库里那把）peer={friend_id}"),
+            );
+        }
+    }
+    match from_db.or(from_peers) {
+        Some(k) => Some(k),
+        None => {
+            let triggered =
+                if let Some(tx) = s.probe.lock().unwrap_or_else(|e| e.into_inner()).as_ref() {
+                    let next = tx.borrow().saturating_add(1);
+                    let _ = tx.send(next);
+                    true
+                } else {
+                    false
+                };
+            if triggered {
+                tokio::time::sleep(std::time::Duration::from_millis(1200)).await;
+            }
+            let again_db = {
+                let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());
+                db::get_friend_x25519(&dbc, friend_id)
+            };
+            let again_peers = s
+                .peers
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .get(friend_id)
+                .and_then(|p| p.x25519_pubkey.clone());
+            again_db.or(again_peers)
+        }
+    }
+}
+
 #[tauri::command(async)]
 pub async fn send_message(
     state: State<'_, Arc<AppState>>,
@@ -615,60 +675,7 @@ pub async fn send_message(
     // E2EE 恒开（v0.11.0 起默认且不可关闭）：发送必须拿到对端 X25519 公钥。
     // 好友表优先，回退在线节点表；都缺失时主动探测一次（who_has）等对方/中继
     // announce 落库（约 1.2s）后再查，仍缺失则报错指引。
-    let pubkey = {
-        let from_db = {
-            let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());
-            db::get_friend_x25519(&dbc, &friend_id)
-        };
-        let from_peers = s
-            .peers
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .get(&friend_id)
-            .and_then(|p| p.x25519_pubkey.clone());
-        // ⚠️ 库里那把**优先**，而它一旦是错的就一直是错的（好友表只填空、绝不覆盖，
-        // 见 `db/friends.rs` 与 `network/transport/e2ee_payload.rs` 同一条说明）。
-        // 两份都在且不同 ⇒ 本机正在用的这把，**不是**界面那串安全码所依据的那一份
-        // ⇒ 「双方安全码对得上」这时并不能证明消息解得开。
-        // 没有这一行时，"我发的他收不到"在发送端日志里完全 invisible：对端解不开是不回
-        // 送达确认的静默丢弃，本机只会一直显示"已发送"（用户 2026-10-13 撞的正是这个形状）。
-        // 只报布尔量与 peer，不报密钥本身（日志会进报告产物）。持续不一致时每条发送各记一行。
-        if let (Some(db_key), Some(peer_key)) = (&from_db, &from_peers) {
-            if db_key != peer_key {
-                s.logger.warn(
-                    "dispatch",
-                    format!("单聊密封用的密钥与在线自报的不一致（取库里那把）peer={friend_id}"),
-                );
-            }
-        }
-        match from_db.or(from_peers) {
-            Some(k) => Some(k),
-            None => {
-                let triggered =
-                    if let Some(tx) = s.probe.lock().unwrap_or_else(|e| e.into_inner()).as_ref() {
-                        let next = tx.borrow().saturating_add(1);
-                        let _ = tx.send(next);
-                        true
-                    } else {
-                        false
-                    };
-                if triggered {
-                    tokio::time::sleep(std::time::Duration::from_millis(1200)).await;
-                }
-                let again_db = {
-                    let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());
-                    db::get_friend_x25519(&dbc, &friend_id)
-                };
-                let again_peers = s
-                    .peers
-                    .lock()
-                    .unwrap_or_else(|e| e.into_inner())
-                    .get(&friend_id)
-                    .and_then(|p| p.x25519_pubkey.clone());
-                again_db.or(again_peers)
-            }
-        }
-    };
+    let pubkey = peer_x25519(s, &friend_id).await;
     let Some(pubkey) = pubkey else {
         return Err(format!(
             "尚未获取 {friend_id} 的公钥：对方可能离线或处于不同子网，请让对方上线后重试"
@@ -817,6 +824,134 @@ pub async fn send_message(
     }
 
     Ok(rec)
+}
+
+/// 重发一条**本端判失败 / 被用户取消**的 1:1 消息（计划 D1：复用稳定消息身份）。
+///
+/// 与 `send_message` 的三处刻意相同、一处刻意不同：
+/// · 同一套取钥（`peer_x25519`）、同一套 Gossip 信封与 `enc1:` 直发内容；
+/// · **复用原 `msg_id` / `ts` / `seq`** ⇒ 接收端按 `msg_id` 去重：上一次其实送到了、
+///   只是 Ack 丢了的话，对方只会再回一次 Ack，界面上不会多出一条重复消息；
+/// · 不同的是状态机入口：只允许从 `failed` / `cancelled` 复活，且**先密封、再入队、
+///   最后才置 `sending`**（`requeue_message_for_resend` 一个事务），任何一步失败都留在原态。
+///
+/// 为什么不能让前端继续走 `send_message`：那条会生成**新 msg_id**、新 seq，
+/// 用户按一次"重发"就等于"再发一条新消息" —— 对端半开链路上最需要幂等的那一刻，
+/// 幂等恰好不成立（用户 2026-10-25 的要求正是"重试必须复用稳定消息身份"）。
+#[tauri::command(async)]
+pub async fn resend_message(
+    state: State<'_, Arc<AppState>>,
+    conv_id: String,
+    msg_id: String,
+) -> Result<MessageRecord, String> {
+    let s = state.inner();
+    if conv_id.starts_with("group:") {
+        return Err("群消息请用「按成员补发」".to_string());
+    }
+    if conv_id == s.device_id {
+        return Err("自聊消息不需要重发".to_string());
+    }
+    // ① 校验归属与 kind（这一步只读，不持锁跨 await）。
+    let msg = {
+        let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());
+        let Some(msg) = db::get_message_record(&dbc, &msg_id) else {
+            return Err("消息不存在".to_string());
+        };
+        msg
+    };
+    if msg.sender_id != s.device_id {
+        return Err("只能重发自己发送的消息".to_string());
+    }
+    if msg.conv_id != conv_id {
+        return Err("消息不属于该会话".to_string());
+    }
+    // 文件/图片的"重发"是**一次新的传输**（字节要重新跑），与文本族的原身份重投是两件事，
+    // 走 `send_file_auto` / `send_group_file`；撤回/渲染是控制事件，没有"重发"语义。
+    if matches!(msg.kind.as_str(), "file" | "image" | "recall" | "render") {
+        return Err("这种消息不支持原地重发".to_string());
+    }
+    if !matches!(msg.status.as_str(), "failed" | "cancelled") {
+        return Err("这条消息不是失败/已取消状态，不需要重发".to_string());
+    }
+
+    // ② 取钥（同一套逻辑，含探测与不一致告警）。
+    let peer = conv_id.clone();
+    let Some(pubkey) = peer_x25519(s, &peer).await else {
+        return Err(format!(
+            "尚未获取 {peer} 的公钥：对方可能离线或处于不同子网，请让对方上线后重试"
+        ));
+    };
+
+    // ③ 用**原来的 ts/seq** 重新密封（内容仍是库里的明文；信封里的密文按当前公钥重签）。
+    let ts = msg.ts;
+    let seq = msg.seq;
+    let plaintext = crate::protocol::gossip_plaintext(&msg.kind, &msg.content, None);
+    let shared = crypto::shared_secret(&s.identity.x25519_secret, &pubkey).ok_or("密钥交换失败")?;
+    let sealed = crypto::seal(&shared, plaintext.as_bytes()).ok_or("加密失败")?;
+    let sealed_content = crypto::seal(&shared, msg.content.as_bytes()).ok_or("加密失败")?;
+    let payload_b64 = STANDARD.encode(&sealed);
+    let wire_content = format!("enc1:{}", STANDARD.encode(&sealed_content));
+    let mut env = {
+        let gossip = s.gossip.lock().unwrap_or_else(|e| e.into_inner());
+        gossip.build_envelope(
+            &s.identity,
+            &s.device_id,
+            GossipKind::Chat,
+            None,
+            None,
+            &payload_b64,
+            ts,
+            seq,
+        )
+    };
+    // ⚠️ 这一行是"复用稳定身份"的全部：信封身份默认由 (sender, nonce, payload) 现算，
+    // 重新密封必然换密文 ⇒ 换 ID。这里显式改回原 msg_id，再重签（message_id 参与签名）。
+    // 接收端不重算这个哈希（去重键就是它），所以重签后的信封合法且幂等。
+    env.message_id = msg_id.clone();
+    env.target = Some(peer.clone());
+    env.sender_sig = s.identity.sign_b64(&env.signing_bytes());
+
+    let queued = Message::ChatMessage {
+        msg_id: msg_id.clone(),
+        from: s.device_id.clone(),
+        to: peer.clone(),
+        kind: msg.kind.clone(),
+        content: wire_content,
+        ts,
+        seq,
+    };
+    let payload = serde_json::to_string(&queued).map_err(|e| e.to_string())?;
+
+    // ④ 入队 + 置 sending（一个事务）。0 = 状态在这几步之间被推进/改判 ⇒ 不投递，如实拒绝。
+    let changed = {
+        let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());
+        db::requeue_message_for_resend(&dbc, &msg_id, &peer, &payload)
+            .map_err(|e| format!("重发入队失败：{e}"))?
+    };
+    if changed == 0 {
+        return Err("这条消息已经送达或状态已变，不能重发".to_string());
+    }
+
+    // ⑤ 投递（与 `send_message` 同一条链路；失败不报错 —— outbox 兜底，flush 会补）。
+    let has = s.has_link(&peer).await;
+    let try_ok = if has {
+        try_send(s, &peer, &Message::Gossip { envelope: env }).await.is_ok()
+    } else {
+        broadcast_gossip(s, env).await;
+        true
+    };
+    if try_ok {
+        let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());
+        let _ = db::set_message_status(&dbc, &msg_id, "sent");
+    }
+    s.logger.info(
+        "dispatch",
+        format!("code=DM_RESEND msg_id={msg_id} peer={peer} has_link={has} sent={try_ok}"),
+    );
+    // 复用的身份 ⇒ 前端那条气泡原地换回 sending/sent（不是新气泡）。
+    let _ = s.app.emit("message-status-changed", &msg_id);
+    let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());
+    Ok(db::get_message_record(&dbc, &msg_id).ok_or("重发后消息不见了")?)
 }
 
 // INV-EXCEPTION: INV-P03, INV-P04 — 自聊收发双方都是本机，没有对端可等 Ack：

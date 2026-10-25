@@ -313,6 +313,14 @@ export const api = {
   getGroupDeliverySummaries: (convId: string) =>
     invoke<GroupDeliverySummary[]>("get_group_delivery_summaries", { convId }),
   /**
+   * 重发一条**本端判失败/已取消**的 1:1 消息，复用原 `msg_id` / `ts` / `seq`。
+   *
+   * 接收端按 `msg_id` 去重 —— 上一次其实送到了、只是 Ack 丢了的话，对方只再回一次 Ack，
+   * 不会多出一条重复消息（这正是"重试必须复用稳定消息身份"的全部意义）。
+   */
+  resendMessage: (convId: string, msgId: string) =>
+    invoke<MessageRecord>("resend_message", { convId, msgId }),
+  /**
    * 把一条群消息里被取消的成员行重置为 pending 并补发。
    *
    * 不重签/不重加密：复用原 Gossip 信封，接收端按 msg_id 幂等 ⇒ 已 Ack 的成员不会收到第二条。

@@ -702,6 +702,17 @@ test("返回 MessageRecord 的每条命令，调用点必须把结果 enqueueMes
   const FORWARD_ONLY = new Map<string, string>([
     ["sendToBackend", "单聊/群聊 invoke 分流的共用实现；记录去哪儿由调用方（新建 vs 重发）决定"],
   ]);
+  /**
+   * 原地替换层：调命令但**刻意不** enqueue，而是用 `replaceMessage` 覆盖同一条气泡。
+   *
+   * 2026-10-25 引入 `resend()`（后端 `resend_message`）时撞上本守卫。它不是漏写：
+   * 重发**复用原 msg_id**，结果记录必须盖在旧那一条上；`enqueueMessage` 是追加，
+   * 那样界面上会同时出现"已取消的原文"和"重发后的同一条"——正是 10-03 审计那格的形状。
+   * 这里的自证改成"必须真的调 replaceMessage"，而不是放行一个什么都不做的函数。
+   */
+  const REPLACE_ONLY = new Map<string, string>([
+    ["resend", "resend_message 复用原 msg_id：结果要 replaceMessage 覆盖旧气泡，enqueue 会变成两条"],
+  ]);
   for (const fn of fns) {
     const body = storeLines.slice(fn.from, fn.to + 1).join("\n");
     for (const key of recKeys) {
@@ -709,6 +720,13 @@ test("返回 MessageRecord 的每条命令，调用点必须把结果 enqueueMes
       if (!hits) continue;
       inRange.set(key, (inRange.get(key) ?? 0) + hits);
       if (FORWARD_ONLY.has(fn.name)) continue;
+      if (REPLACE_ONLY.has(fn.name)) {
+        assert.ok(
+          /replaceMessage\(/.test(body),
+          `${fn.name}() 被声明为"原地替换"，却没有 replaceMessage —— 那条消息记录会丢`,
+        );
+        continue;
+      }
       if (!/enqueueMessage\(/.test(body)) missing.push(`${fn.name}() 调 api.${key} 却没 enqueueMessage`);
     }
   }
