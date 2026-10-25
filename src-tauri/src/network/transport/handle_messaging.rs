@@ -126,6 +126,7 @@ async fn handle_messaging_arm(state: &Arc<AppState>, peer_id: &str, msg: Message
                     seq,
                     status: "delivered".to_string(),
                     mention_targets: None,
+                    local_id: None,
                 };
                 let inserted = db::insert_message_if_new(&dbc, &rec);
                 if announced_on(&inserted) {

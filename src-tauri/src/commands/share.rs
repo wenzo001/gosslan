@@ -235,6 +235,7 @@ pub fn insert_system_message(state: &AppState, conv_id: &str, text: &str) {
         seq: db::next_clock(&dbc, conv_id).unwrap_or(1),
         status: "sent".to_string(),
         mention_targets: None,
+        local_id: None,
     };
     // 落库失败必须留痕（审计 2026-10-16）：下面那次 emit 照样发出去 ⇒ 界面闪一下卡片、
     // 重开就没了，而这种形状在日志里原本一字不记。

@@ -1,17 +1,21 @@
 <script setup lang="ts">
+/**
+ * 消息虚拟列表 —— **@tanstack/vue-virtual** 实现（2026-10-25 迁移）。
+ *
+ * 迁移前是手写的前缀和 + 二分 + 自建 ResizeObserver；现在几何、可视区间、
+ * 动态行测量全部交给 TanStack，应用只保留"产品语义"：
+ *   · `pinned`（是否贴底）/ 「回到最新」按钮 / 用户上滚豁免；
+ *   · 切会话后的收敛窗口（避免测量风暴来回拽滚动条）；
+ *   · 历史 prepend 的锚定（TanStack `anchorTo: "end"` 负责）；
+ *   · 跳转落定（`scrollToIndex` 粗定位 + 真实 DOM 轮询校正）；
+ *   · 滚动位置读取/恢复（`getScrollTop`/`scrollToOffset`，供会话切换）。
+ *
+ * 对外 API（props / emits / defineExpose）与迁移前**逐字相同**，ChatWindow 与
+ * perf/vlist 不需要改调用点。
+ */
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { useEventListener } from "@vueuse/core";
-import { trimOldest } from "@/utils/bounded";
-import { compensationFor, type HeightDelta } from "@/utils/heightCompensation";
-
-// 基于"估算高度"的虚拟滚动列表：适合消息列表（高度可变但有上限）。
-// 通过前缀和 + 二分查找定位可视区间，仅渲染可视项，支持向上滚动触发加载更多。
-//
-// 性能与体验要点：
-// - 滚动事件 rAF 节流（每帧至多一次重算，passive 监听不阻塞滚动线程）
-// - 仅纵向滚动：容器 overflow-x-hidden，内容超宽由内部元素（代码块）自行处理
-// - scrollToIndex：跳到指定消息（打开会话定位第一条未读用），任意方向均无布局抖动
-// - prepend 锚定：向上加载历史后按"旧首条消息"锚定滚动位置，视口内容不跳动
+import { useVirtualizer, type VirtualItem, type Virtualizer } from "@tanstack/vue-virtual";
 
 const props = withDefaults(
   defineProps<{
@@ -21,15 +25,18 @@ const props = withDefaults(
     /** 切换会话（末条 key 变化）时是否自动贴底；未读跳转场景由父组件关掉，改走 scrollToIndex */
     autoScrollOnSwap?: boolean;
     /**
+     * 布局签名（字号 / 主题等）。变化时清空测量缓存并重测：宽度/字体变了而继续用旧高度
+     * 会让前插/跳转落到错位置。窗口宽度变化由容器 ResizeObserver 现读，不靠父组件传。
+     */
+    layoutKey?: string;
+    /**
      * 作为**实时日志区域**播报（用户 2026-09-12 HIG 审查）：聊天列表的核心事件是
      * "来了新消息"，但本组件此前没有任何 live region ⇒ 读屏用户**完全听不到新消息**。
-     * 打开后容器带 `role="log" aria-live="polite" aria-relevant="additions"`
-     * （只播报新增，不做整体重读；虚拟列表回收旧行不会造成刷屏）。
-     * 默认关闭：本组件是通用的，其他用途（如设置里的长列表）不该被当作 live region。
+     * 打开后容器带 `role="log" aria-live="polite" aria-relevant="additions"`。
      */
     live?: boolean;
   }>(),
-  { overscan: 6, autoScrollOnSwap: true, live: false },
+  { overscan: 6, autoScrollOnSwap: true, layoutKey: "", live: false },
 );
 
 const emit = defineEmits<{
@@ -38,218 +45,95 @@ const emit = defineEmits<{
 }>();
 
 const container = ref<HTMLElement | null>(null);
-const scrollTop = ref(0);
-const viewport = ref(600);
 
-// 每个已渲染项的「实测高度」覆盖：图片、附件预览和字体布局都以真实 DOM 为准。
-// offsets 用实测值重算，既避免真实内容变高时重叠，也避免估算过大造成假间距。
-// 以 msg_id/id 为键（而非数组下标），向上加载历史（prepend）导致下标偏移时覆盖仍对应正确消息。
-// ⚠️ 只加不删（审计阶段 4 · 4.2 顺带发现）：每实测过一条消息就留一项，且 store 收缩
-// 会话缓存时不会清这里的对应键 ⇒ 长时间滚动的会话里单调增长。上 FIFO 闸：
-// 淘汰的是**最早测过**的那批（= 早就滚出屏幕的），在屏的最近测量必然活着，
-// 所以最坏后果只是"很久以前看过的消息重测一次高度"，不是当前视口抖动。
-const HEIGHT_OVERRIDE_MAX = 2000;
-const heightOverride = new Map<string | number, number>();
-const heightVersion = ref(0);
-/**
- * 同一帧内累计的高度变化（按 key 合并）。
- *
- * 为什么必须累计：回应条/图片可能在同一帧让多行变高；只处理最后一次会把前面的 delta
- * 丢掉，视口会跳。key 用消息 id，合并后 `top/oldHeight` 取第一次变化前的值。
- */
-const pendingDeltas = new Map<string | number, HeightDelta>();
-
-function keyOf(it: any): string | number {
-  return it?.msg_id ?? it?.id ?? "";
-}
-
-function itemHeight(i: number): number {
-  heightVersion.value;
-  const it = props.items[i];
-  const k = keyOf(it);
-  return heightOverride.get(k) ?? props.estimateHeight(it, i);
-}
-
-const offsets = computed(() => {
-  const arr = new Array<number>(props.items.length + 1);
-  arr[0] = 0;
-  for (let i = 0; i < props.items.length; i++) {
-    arr[i + 1] = arr[i] + itemHeight(i);
-  }
-  return arr;
-});
-const totalHeight = computed(() => offsets.value[offsets.value.length - 1] ?? 0);
-
-/**
- * 记录某槽位实测高度，图片加载或预览切换后由 ResizeObserver 及时更新。
- *
- * ⚠️ **保留小数、不取整**（用户 2026-09-21 连报几轮的「两条选中消息之间一条白线」的根因）：
- * 定位用的 `top` 是按这些高度累加出来的，而条目盒子的高度是**内容自然高**（可以是小数，
- * 例如代码气泡的行高就不是整数 ⇒ 256.5px）。先前这里 `Math.round` 成整数，于是
- * `下一格的 top` 比 `本条盒子的下边缘` 多出 0.5px，相邻两条之间就留下一条 0.5px 的缝。
- * 平时整列都是白底、看不出来；一旦两条都铺了选中底色（多选 / 引用定位），那条缝就是白线。
- *
- * 真浏览器实测（VirtualList + MessageItem，代码气泡）：取整时缝 = 0.500px，
- * 改成小数后缝 = 0.000px。若这里再改回 `Math.round`，白线会立刻回来 —— 别改。
- * 抖动由下面的 `> 1` 阈值兜住（亚像素级变化不会触发重排），所以小数不会带来额外重渲染。
- */
-function commitHeight(i: number, measured: number) {
-  if (i < 0 || i >= props.items.length) return;
-  // 快速滚动时部分节点可能处于未布局/隐藏状态，测量值会短暂为 0 或异常值；
-  // 一旦把 0 写进去，后续消息的 top 会全部塌缩到顶部，表现为消息堆叠。
-  if (!Number.isFinite(measured) || measured <= 0) return;
-  const it = props.items[i];
-  const k = keyOf(it);
-  const est = props.estimateHeight(it, i);
-  // 只抹掉浮点噪声（0.01px 以内），保留真实的小数高度
-  const h = Math.round(measured * 100) / 100;
-  const oldH = heightOverride.get(k) ?? est;
-  if (Math.abs(oldH - h) > 1) {
-    // top 必须在写新高度**之前**读：写完之后 offsets 会立即重算。
-    const top = offsets.value[i];
-    heightOverride.set(k, h);
-    trimOldest(heightOverride, HEIGHT_OVERRIDE_MAX);
-    heightVersion.value += 1;
-    const prev = pendingDeltas.get(k);
-    if (prev) prev.delta += h - oldH;
-    else pendingDeltas.set(k, { top, oldHeight: oldH, delta: h - oldH });
-  }
+/** 消息身份：持久本地 id 优先；其次 msg_id；再次行 id。**绝不回退数组下标**。 */
+function keyOf(it: any): string {
+  return String(it?.local_id ?? it?.msg_id ?? it?.id ?? "");
 }
 
 /**
- * 把同一帧累计的 delta **同步**写回 scrollTop。
- *
- * 时机是语义：ResizeObserver 回调发生在布局之后、绘制之前；此刻 spacer 还没更新，
- * 但真实行已经变高。同步补偿一帧就够，不能等下一帧 `schedulePin`（那一帧已经画出去了，
- * 用户看到的就是上下闪一下）。
- *
- * `pendingJump`（跳转落定）期间不补偿：落定会按真实 DOM 位置重写 scrollTop，两者会打架。
+ * TanStack 的关键选项：
+ * - `anchorTo: "end"`：count/edge key 变化时按"当前视口里那一条"重算偏移 ⇒
+ *   历史 prepend 不再需要手写 `prevFirstKey`，且不会把用户正在读的那屏顶走。
+ * - `followOnAppend: true`：只有**当前在底部**时才跟随追加；用户上滚后不会被抢。
+ * - `measureElement` 默认按真实 border-box 高度测；这里换成"高度 <= 0 时不用 0 覆盖"
+ *   的版本 —— 隐藏/未布局的行测到 0 会把后续 top 全塌到顶部。
+ * - options 里显式读 `props.items`：数组被**同长度替换**时也要触发 setOptions，
+ *   否则 anchor 逻辑看不到新的首尾 key。
  */
-function flushHeightCompensation() {
-  if (pendingDeltas.size === 0) return;
-  const deltas = [...pendingDeltas.values()];
-  pendingDeltas.clear();
-  const el = container.value;
-  if (!el || pendingJump) return;
-  const delta = compensationFor(deltas, {
-    pinned,
-    recentScrollUp: recentScrollUp(),
-    hold: Date.now() < pinHoldUntil || Date.now() < suppressNearBottomUntil,
-    scrollTop: el.scrollTop,
-  });
-  if (delta !== 0) setScrollTop(el.scrollTop + delta);
+const virtualizer = useVirtualizer(
+  computed(() => {
+    void props.items;
+    void props.items.length;
+    void props.overscan;
+    return {
+      count: props.items.length,
+      getScrollElement: () => container.value,
+      estimateSize: (i: number) => props.estimateHeight(props.items[i], i),
+      overscan: props.overscan,
+      getItemKey: (i: number) => keyOf(props.items[i]),
+      anchorTo: "end" as const,
+      // 追加贴底由本组件的 `pinned`/`schedulePin` 独占：开着库的 follow 会在
+      // 切会话/高度收敛期间再写一次 scrollTop，与自研收敛窗口抢滚动条。
+      followOnAppend: false,
+      indexAttribute: "data-index",
+      // 把一帧内的多条 ResizeObserver 测量合并成一次更新：冷滚动时逐行首次测量
+      // 会各 bump 一次版本、各触发一次整表测量重算（实测 1000 条冷滚 34 万次 estimate 调用）。
+      useAnimationFrameWithResizeObserver: true,
+      measureElement: (
+        element: HTMLElement,
+        entry: ResizeObserverEntry | undefined,
+        instance: Virtualizer<HTMLElement, HTMLElement>,
+      ): number => {
+        const size =
+          entry?.borderBoxSize?.[0]?.blockSize ??
+          element.getBoundingClientRect().height;
+        const raw = Number(element.getAttribute("data-index"));
+        const index = Number.isFinite(raw) ? raw : 0;
+        const key = keyOf(props.items[index]);
+        const prev = instance.itemSizeCache.get(key);
+        if (!Number.isFinite(size) || size <= 0) {
+          // 隐藏 / 未布局：保留上一次实测或估算值，绝不把 0 写进测量表。
+          if (typeof prev === "number" && prev > 0) return prev;
+          return props.estimateHeight(props.items[index], index);
+        }
+        // 与旧 `commitHeight` 同一口径：保留两位小数（半像素白线），但 <=1px 的变化不重排。
+        // TanStack 默认对每次 RO 都写缓存 ⇒ 亚像素抖动会让 totalSize 每帧变一次，
+        // 贴底态就会每帧重写 scrollTop（走查实测切会话出现 5 次方向反转）。
+        const rounded = Math.round(size * 100) / 100;
+        if (typeof prev === "number" && Math.abs(prev - rounded) <= 1) return prev;
+        return rounded;
+      },
+    };
+  }),
+);
+
+const virtualItems = computed(() => virtualizer.value.getVirtualItems());
+const totalSize = computed(() => virtualizer.value.getTotalSize());
+
+/** 行测量入口：高度 <= 0 时不写缓存（隐藏/未布局）。 */
+function measureRowRef(el: unknown) {
+  if (!(el instanceof HTMLElement)) return;
+  if (el.getBoundingClientRect().height <= 0) return;
+  virtualizer.value.measureElement(el);
 }
 
-function lowerBound(top: number) {
-  const arr = offsets.value;
-  let lo = 0;
-  let hi = arr.length - 1;
-  while (lo < hi) {
-    const mid = (lo + hi) >> 1;
-    if (arr[mid] < top) lo = mid + 1;
-    else hi = mid;
+/** 滚出屏幕的行不再需要实测值：缓存超过上限就整体重测（按会话 × 1000 条留足余量）。 */
+const MAX_MEASURED_KEYS = 6_000;
+function boundMeasureCache() {
+  if (virtualizer.value.itemSizeCache.size > MAX_MEASURED_KEYS) {
+    virtualizer.value.measure();
   }
-  return Math.max(0, lo - 1);
 }
 
-const start = computed(() => Math.max(0, lowerBound(scrollTop.value) - props.overscan));
-const end = computed(() => {
-  const e = lowerBound(scrollTop.value + viewport.value) + props.overscan;
-  return Math.min(props.items.length, e + 1);
-});
-const visible = computed(() => {
-  const out: { item: any; index: number; top: number }[] = [];
-  for (let i = start.value; i < end.value; i++) {
-    out.push({ item: props.items[i], index: i, top: offsets.value[i] });
-  }
-  return out;
-});
-
-// 数据变化 / 窗口变化后，对可见项做一次实测 → 覆盖估算偏差
-let remeasureRaf = 0;
-let rowResizeObserver: ResizeObserver | null = null;
-
-function observeRenderedRows(nodes: NodeListOf<HTMLElement>) {
-  rowResizeObserver?.disconnect();
-  rowResizeObserver = new ResizeObserver((entries) => {
-    for (const entry of entries) {
-      const node = entry.target as HTMLElement;
-      const idx = Number(node.getAttribute("data-vlist-index"));
-      const key = node.getAttribute("data-vlist-key");
-      if (Number.isInteger(idx) && key === String(keyOf(props.items[idx]))) {
-        // 取**小数**高度（`offsetHeight` 是四舍五入过的整数，会重新引入 0.5px 的缝，见 commitHeight）
-        const box = entry.borderBoxSize?.[0];
-        commitHeight(idx, box ? box.blockSize : node.getBoundingClientRect().height);
-      }
-    }
-    // 实测追上来之后，把挂起的「跳到指定消息」按最新 offsets 再落定一次
-    //（用户 2026-09-21：「第一次总是定位不对，第二次就是对的」）
-    flushHeightCompensation();
-    if (pendingJump) applyJump();
-  });
-  nodes.forEach((node) => rowResizeObserver?.observe(node));
-}
-
-function scheduleRemeasure() {
-  if (remeasureRaf) return;
-  remeasureRaf = requestAnimationFrame(() => {
-    remeasureRaf = 0;
-    const el = container.value;
-    if (!el) return;
-    const nodes = el.querySelectorAll<HTMLElement>("[data-vlist-index]");
-    nodes.forEach((node) => {
-      const idx = Number(node.getAttribute("data-vlist-index"));
-      // 同上：要小数高度（否则相邻条目之间会留下半像素的白缝）
-      commitHeight(idx, node.getBoundingClientRect().height);
-    });
-    observeRenderedRows(nodes);
-    // 实测追上来之后，把挂起的「跳到指定消息」再落定一次（同 RO 回调，见上）
-    flushHeightCompensation();
-    if (pendingJump) applyJump();
-  });
-}
-
-// ---------------- 滚动状态机（贴底 / 「回到最新」按钮 的完整逻辑） ----------------
-//
-// 核心只有一个状态：pinned（是否吸附在底部）。
-//   pinned = true  → 新内容自动贴底，「回到最新」按钮隐藏
-//   pinned = false → 不再自动贴底，离开底部足够远(>150px)时显示按钮
-//
-// pinned 的更新只有一个出口：computeScrollState()（滚动 rAF / resize /
-// 总高度变化 / 静默期结束补算 都汇聚到这里）。
-//
-// 两个辅助机制：
-// - settling（静默期）：程序化滚动（scrollToBottom/scrollToIndex/切会话换数据）
-//   后高度重测会造成 scrollHeight 抖动，期间 nearBottom 不可信 → 不对外广播，
-//   静默期结束补算一次，保证最终状态正确、按钮不闪现。
-// - 用户上滚豁免：用户向上滚动后 1.2s 内，一切自动贴底（钉底/新消息贴底）让位，
-//   否则会和新消息贴底"抢滚动条"，用户根本滚不上去。
-//   ⚠ 程序化滚动（贴底/定位/锚定）在静默期内也会移动 scrollTop，必须通过
-//   setScrollTop 打标记，computeScrollState 才能把「程序化下移」与「用户上滚」
-//   区分开——否则静默期结束的 pinToBottom 会把用户刚滚上去的视口拽回底部。
+// ---------------- 滚动状态机（贴底 / 「回到最新」按钮 / 用户上滚豁免） ----------------
 let raf = 0;
 let pinned = true;
 let prevScrollTop = 0;
 let lastScrollUpAt = 0;
 let suppressNearBottomUntil = 0;
 let settleTimer = 0;
-/**
- * 切换会话后的「禁止逐次贴底」窗口。
- *
- * 实测用户 2026-10-22（5.1.2）：切到群聊时滚动区小幅快速抖动一阵才停。根因是切换后
- * 可见行一批批实测 → `totalHeight` 每变一次就写一次 `scrollTop = scrollHeight`；
- * 估算与实测来回修正时，滚动条被反复拽动。这里在切换后的静默窗口内不逐次贴底，
- * 由 `settleTimer` 结束时统一贴一次；追加新消息/图片加载不受影响（它们不设这个窗口）。
- *
- * ⚠️ 用户 2026-10-23 仍报「有概率抖一会才好」。两个补丁（缺一个都会复发）：
- * ① `scrollToBottom()` **不再清零**这个窗口 —— 切会话时 ChatWindow 在 `nextTick` 后还会
- *    调一次它来"首屏贴底"，那一下原来会把本窗口拆掉，逐次贴底立刻恢复；
- * ② 窗口不是固定 300ms 就结束，而是**安静期**：每来一次实测修正就顺延
- *    `SWAP_SETTLE_QUIET_MS`，直到连续这么久没有高度变化才落定（上限 `SWAP_SETTLE_MAX_MS`）。
- *    高度收敛慢的会话（图片很多）不会再"抖到 300ms 就继续抖"。
- */
 let pinHoldUntil = 0;
-/** 收敛窗口的硬上限：再怎么顺延也不能一直不贴底。 */
 let pinHoldHardUntil = 0;
 const SWAP_SETTLE_QUIET_MS = 120;
 const SWAP_SETTLE_MAX_MS = 900;
@@ -259,6 +143,30 @@ let programmaticTop = false;
 
 /** 距底部 150px 内视为底部：容忍高度估算与实测的抖动 */
 const NEAR_BOTTOM_THRESHOLD = 150;
+
+/** 近 ms 毫秒内用户是否向上滚动过（父组件贴底前应检查）。 */
+function recentScrollUp(ms = 1200): boolean {
+  return Date.now() - lastScrollUpAt < ms;
+}
+
+/**
+ * "视口上方那一行变高"要不要自动补 scrollTop。
+ *
+ * 与 TanStack 默认规则同形（首次测量：top 在视口上方；重测：整行完全在视口上方），
+ * 外加两条产品口径：用户刚上滚 1.2s 内不抢；贴底态交给 `schedulePin` 统一钉底。
+ */
+virtualizer.value.shouldAdjustScrollPositionOnItemSizeChange = (
+  item: VirtualItem,
+  _delta: number,
+  inst: Virtualizer<HTMLElement, HTMLElement>,
+) => {
+  if (recentScrollUp()) return false;
+  if (pinned) return false;
+  const offset = inst.scrollOffset ?? 0;
+  const isFirstMeasure = !inst.itemSizeCache.has(item.key);
+  if (isFirstMeasure) return item.start < offset;
+  return item.start + item.size <= offset && inst.scrollDirection !== "backward";
+};
 
 /** 统一入口写 scrollTop：标记为程序化滚动，避免被当成用户上滚。 */
 function setScrollTop(v: number) {
@@ -273,10 +181,8 @@ function suppressTransient() {
 }
 
 /**
- * 收敛窗口：顺延"落定时刻"并（重）排一次收口。
- *
- * 只在切换会话后调用 / 在窗口内被高度变化触发。窗口结束只做两件事：贴一次真实底部、
- * 重算一次可见状态 —— 中间所有 totalHeight 变化都不碰滚动条。
+ * 收敛窗口：切换会话后不逐次贴底，等高度安静下来再统一贴一次。
+ * 用户 2026-10-22 实测：切到群聊时滚动区小幅快速抖动一阵才停。
  */
 function armSettleHold() {
   const now = Date.now();
@@ -290,6 +196,9 @@ function armSettleHold() {
     settleTimer = 0;
     pinHoldUntil = 0;
     pinHoldHardUntil = 0;
+    // 收口这一刻同时结束瞬态窗口：否则 computeScrollState 会再排一个 pin 定时器，
+    // 两个定时器各写一次 scrollTop（走查实测 1000 条切会话出现 5 次方向反转）。
+    suppressNearBottomUntil = 0;
     pinToBottom();
     computeScrollState();
   }, Math.max(0, pinHoldUntil - now) + 16);
@@ -307,14 +216,7 @@ function schedulePin() {
   });
 }
 
-/** 近 ms 毫秒内用户是否向上滚动过（父组件贴底前应检查）。 */
-function recentScrollUp(ms = 1200): boolean {
-  return Date.now() - lastScrollUpAt < ms;
-}
-
-/** 若处于贴底吸附态，把视口钉到当前真实底部。
- *  估算高度与实测高度的偏差会随重测多次修正，每次总高度变化都要重新跟随，
- *  直到高度收敛 —— 否则会停在「估算底部」（实测底部更远处的某条消息上）。 */
+/** 若处于贴底吸附态，把视口钉到当前真实底部。 */
 function pinToBottom() {
   const el = container.value;
   if (el && pinned && !recentScrollUp()) setScrollTop(el.scrollHeight);
@@ -324,20 +226,19 @@ function computeScrollState() {
   const el = container.value;
   if (!el) return;
   const settling = Date.now() < suppressNearBottomUntil;
-  // 程序化滚动（贴底/定位/锚定）不算用户上滚；静默期内的真实上滚也必须记录，
-  // 否则静默期结束的 pinToBottom 会把用户刚滚上去的视口拽回底部。
   if (!programmaticTop && el.scrollTop < prevScrollTop - 1) lastScrollUpAt = Date.now();
   programmaticTop = false;
   prevScrollTop = el.scrollTop;
-  scrollTop.value = el.scrollTop;
   const nearBottom = el.scrollHeight - el.scrollTop - el.clientHeight < NEAR_BOTTOM_THRESHOLD;
-  // 静默期内不广播（按钮会闪现），定时补算一次真实值；补算前先做最终锚定
   if (settling) {
-    if (!settleTimer) {
+    // 收敛窗口由 `armSettleHold` 独占收口；只有"没有 settle 窗口"的瞬态
+    //（scrollToBottom / scrollToIndex / resize）才在这里补一个定时器。
+    if (!settleTimer && !pinHoldUntil) {
       settleTimer = window.setTimeout(() => {
         settleTimer = 0;
         pinHoldUntil = 0;
         pinHoldHardUntil = 0;
+        suppressNearBottomUntil = 0;
         pinToBottom();
         computeScrollState();
       }, suppressNearBottomUntil - Date.now() + 30);
@@ -360,86 +261,44 @@ function onScroll() {
 }
 
 /**
- * 真实用户输入 ⇒ 放弃"待落定"。
- *
- * ⚠️ 判据必须是**输入事件**，不能是 scroll 事件：程序化滚动（贴底/定位/prepend 补偿/
- * 高度 delta 补偿）也会改 scrollTop 并触发 scroll ⇒ 用 scroll 判断会把这次自动位移当成
- * "用户滚了"，于是**刚跳过去就被放弃**、再也没人校正（实测差 353px）。
- * （原生 `overflow-anchor` 已在本容器关闭，见 `.vlist-no-anchor`；这条纪律仍然成立。）
+ * 真实用户输入 ⇒ 放弃"待落定"。判据必须是输入事件而不是 scroll：
+ * 程序化滚动也会触发 scroll，用 scroll 判断会把自动位移当成用户滚动。
  */
 function onUserInput() {
   if (pendingJump) pendingJump = null;
 }
 
 function onResize() {
-  if (container.value) viewport.value = container.value.clientHeight;
-  // 尺寸变化同样瞬态影响 nearBottom，纳入静默
   suppressTransient();
   computeScrollState();
-}
-
-/**
- * 容器自身尺寸的唯一可靠来源（虚拟化最容易坏在这里）。
- *
- * `viewport` 是"可视区高度"，而 `window` 的 resize 只覆盖**窗口变了**这一条路。
- * 还有三类真实路径会改容器高度却不触发 window resize：
- * 移动端软键盘弹出 / 断点切换成整页形态、常驻辅助窗口重新显示、面板开合挤压布局。
- * 这时 `viewport` 停在旧值 —— 旧值偏大就整表都算"可见"（全量渲染，实测 2 万行全进 DOM），
- * 偏小则滚到下方出现空白。两种方向都是缺陷，所以尺寸必须**现读**而不是只读一次。
- */
-let containerResizeObserver: ResizeObserver | null = null;
-function observeContainerSize() {
-  const el = container.value;
-  if (!el) return;
-  containerResizeObserver?.disconnect();
-  containerResizeObserver = new ResizeObserver(() => {
-    // 隐藏时（常驻窗口关闭即隐藏 / display:none）clientHeight 为 0，写进去会让可见区间塌成空。
-    // 与 commitHeight 拒绝 0 高度同一个失败方向：保留上一个可用值，等重新显示时再更新。
-    const h = el.clientHeight;
-    if (h > 0 && h !== viewport.value) onResize();
-  });
-  containerResizeObserver.observe(el);
 }
 
 // ---------------- 定位 ----------------
 function scrollToBottom() {
   const el = container.value;
   if (!el) return;
-  // 显式贴底 = 贴底意图，恢复吸附态（否则重测偏差没人纠正）
   if (!pinned) {
     pinned = true;
     emit("nearBottom", true);
   }
-  // ⚠️ 这里**不清**收敛窗口：切会话时 ChatWindow 在 nextTick 后还会调一次本函数"首屏贴底"，
-  // 清掉窗口 = 逐次贴底立刻恢复 = 用户说的"抖一会才好"（见 pinHoldUntil 的注释）。
-  // 这一次贴底照做；窗口内后续的高度变化仍由 armSettleHold 收口。
   suppressTransient();
+  // 收敛窗口内（切会话后的测量风暴）把贴底交给 settleTimer 统一做一次；
+  // 父组件在 nextTick 后补的那一次也走这里，避免与实测修正各写一次。
+  if (Date.now() < pinHoldUntil) {
+    armSettleHold();
+    return;
+  }
   setScrollTop(el.scrollHeight);
 }
 
 /**
- * 「跳到指定消息」的**待落定**状态（用户 2026-09-21：「第一次总是定位不对，第二次就是对的」，
- * 以及后续几轮"滚动还是错的"）。
- *
- * 两个坑叠在一起：
- * ① 滚动位置按 `offsets` 算，而 offsets = 目标**之前所有条目**高度累加，那些条目跳转前
- *    大多没渲染过（用估算值）⇒ 误差沿路径累加，落点必偏。⇒ 落定改成**以真实 DOM 位置为准**。
- * ② 落定过程中**条目下标会整体位移**：跳过去之后 `scrollTop` 很小 ⇒ 触发 `loadMore` ⇒
- *    更早的历史被 prepend 进来，同一个下标指向的已经是另一条消息了。⇒ 所以待落定记的是
- *    **消息 key（msg_id）而不是下标**，每次校正都按 key 重新找节点；找不到就等（还没渲染）。
+ * 「跳到指定消息」的待落定状态：先按虚拟器粗定位，再按真实 DOM 位置轮询校正。
+ * 待落定记 **key** 而不是下标（prepend 会让下标整体位移）。
  */
-let pendingJump: { key: string; align: "top" | "bottom"; tries: number; until: number } | null = null;
+let pendingJump: { key: string; align: "top" | "bottom"; tries: number; until: number } | null =
+  null;
 let jumpTimer = 0;
 
-/**
- * 落定窗口内**轮询校正**（100ms 一次，最多 1.5s / 10 次）。
- *
- * 为什么不能只靠 ResizeObserver 触发：跳转会让列表滚到接近顶部 ⇒ 触发一次 `loadMore` ⇒
- * 更早的历史 prepend 进来 ⇒ 目标条目**整体下移**（实测能差 353px）。而目标那个 DOM 节点是
- * 被复用/移动的，**尺寸没变 ⇒ ResizeObserver 不会为它触发** ⇒ 没人再校它，位置就永久偏了
- * （用户 2026-09-21：「滚动还是错的」）。轮询与"谁触发了什么"无关，窗口内一定收敛。
- * 用户自己滚（`onScroll` 里非程序化滚动）或窗口结束即停。
- */
 function pollJump() {
   if (jumpTimer) return;
   jumpTimer = window.setInterval(() => {
@@ -456,22 +315,18 @@ function applyJump() {
   const j = pendingJump;
   const el = container.value;
   if (!j || !el) return;
-  // 落定窗口 1.5s：期间任何一次实测/重排（图片加载、历史 prepend 后的锚定、新消息）
-  // 都会再校一次，保证目标**最终仍是贴顶的**；窗口结束或用户自己滚了才放手。
   if (Date.now() > j.until) {
     pendingJump = null;
     return;
   }
-  // ⚠️ 按 **key** 找节点（不是下标）：prepend 历史/新消息都会让下标整体位移
   const node = el.querySelector<HTMLElement>(`[data-vlist-key="${CSS.escape(j.key)}"]`);
-  if (!node) return; // 目标还没渲染出来（等下一次实测/渲染后再校）
+  if (!node) return;
   const cRect = el.getBoundingClientRect();
   const nRect = node.getBoundingClientRect();
-  // 期望：目标顶边距视口顶 8px；底对齐时距视口底 8px
   const desiredTop =
     j.align === "top" ? cRect.top + 8 : cRect.top + el.clientHeight - nRect.height - 8;
   const delta = nRect.top - desiredTop;
-  if (Math.abs(delta) < 0.5) return; // 已经落准，继续留在窗口里盯着（可能又被重排挤偏）
+  if (Math.abs(delta) < 0.5) return;
   setScrollTop(Math.max(0, el.scrollTop + delta));
   computeScrollState();
   j.tries += 1;
@@ -481,97 +336,61 @@ function applyJump() {
 function scrollToIndex(index: number, align: "top" | "bottom" = "top") {
   const el = container.value;
   if (!el || props.items.length === 0) return;
-  // 跳转 = 离开底部（未读定位/引用定位），解除吸附态，防止重测钉底拽回
   if (pinned) {
     pinned = false;
     emit("nearBottom", false);
   }
   suppressTransient();
   const i = Math.max(0, Math.min(index, props.items.length - 1));
-  // ① 先按当前 offsets 粗略滚过去（让目标进入渲染窗口）
-  setScrollTop(Math.max(0, offsets.value[i] - 8));
-  computeScrollState();
-  // ② 再按真实 DOM 位置落准 + 窗口内轮询（见 pendingJump / pollJump 的说明）
-  pendingJump = { key: String(itemKey(props.items[i])), align, tries: 0, until: Date.now() + 1500 };
-  applyJump();
+  pendingJump = {
+    key: keyOf(props.items[i]),
+    align,
+    tries: 0,
+    until: Date.now() + 1500,
+  };
+  virtualizer.value.scrollToIndex(i, {
+    align: align === "bottom" ? "end" : "start",
+    behavior: "instant",
+  });
+  void nextTick(() => applyJump());
   pollJump();
 }
 
-// ---------------- prepend 锚定（向上加载历史时视口不跳动） ----------------
-function itemKey(it: any): string | number {
-  return it?.msg_id ?? it?.id ?? "";
-}
+// ---------------- 数据变化 ----------------
+let prevLastKey: string | null = null;
+let prevFirstKey: string | null = null;
 
-let prevFirstKey: string | number | null = null;
-watch(
-  () => props.items,
-  (arr) => {
-    if (prevFirstKey !== null && arr.length > 0) {
-      // 旧首条消息在新数组中的位置 = 新增的历史条数 → 滚动位置补偿同样的高度
-      const idx = arr.findIndex((it) => itemKey(it) === prevFirstKey);
-      if (idx > 0) {
-        const delta = offsets.value[idx];
-        void nextTick(() => {
-          const el = container.value;
-          if (el) setScrollTop(el.scrollTop + delta);
-        });
-      }
-    }
-    prevFirstKey = arr.length > 0 ? itemKey(arr[0]) : null;
-  },
-  { flush: "post" },
-);
-
-// resize 交给库（组件作用域自动摘挂）；首帧测量仍在 onMounted 里显式做，那部分时序一字未动。
-useEventListener(window, "resize", onResize);
-onMounted(() => {
-  prevFirstKey = props.items.length > 0 ? itemKey(props.items[0]) : null;
-  onResize();
-  observeContainerSize();
-  scheduleRemeasure();
-});
-onBeforeUnmount(() => {
-  rowResizeObserver?.disconnect();
-  containerResizeObserver?.disconnect();
-  if (raf) cancelAnimationFrame(raf);
-  if (remeasureRaf) cancelAnimationFrame(remeasureRaf);
-  if (settleTimer) window.clearTimeout(settleTimer);
-  if (pinRaf) cancelAnimationFrame(pinRaf);
-  // 落定窗口的轮询也必须在这里停：`applyJump` 开头就是 `if (!j || !el) return;`，
-  // 卸载后容器 ref 已是 null ⇒ 那条"过窗自动清表"的分支永远走不到 ⇒ 不显式清就是 10Hz 常驻。
-  if (jumpTimer) {
-    window.clearInterval(jumpTimer);
-    jumpTimer = 0;
+function onItemsChanged() {
+  suppressTransient();
+  // 收敛窗口内**任何** items 变化都顺延（不只是"末条 key 变了"）：切会话后的测量风暴
+  // 常常伴随父组件连续替换数组；漏掉这一条，120ms 安静期会在风暴中途结束、随后逐次贴底。
+  if (Date.now() < pinHoldHardUntil) armSettleHold();
+  const arr = props.items;
+  const newFirstKey = arr.length > 0 ? keyOf(arr[0]) : null;
+  const newLastKey = arr.length > 0 ? keyOf(arr[arr.length - 1]) : null;
+  const isSwap =
+    prevLastKey !== null && newLastKey !== null && newLastKey !== prevLastKey;
+  // **整会话切换**（首尾 key 都变了）与**底部追加**（只有末条变）分开：
+  // 追加要立刻贴底；整会话切换要等测量风暴收敛后统一贴一次，否则立即贴底那一帧
+  // 与随后的实测修正各写一次 scrollTop，表现为切会话后十几像素的来回抖。
+  const isFullSwap =
+    isSwap && prevFirstKey !== null && newFirstKey !== null && newFirstKey !== prevFirstKey;
+  if (isSwap && !pinned) {
+    pinned = true;
+    emit("nearBottom", true);
   }
-});
-
-// 数据或可见窗口变化后重测可见行，收敛估算与实测偏差
-watch(visible, () => scheduleRemeasure(), { flush: "post" });
-let prevLastKey: string | number | null = null;
-watch(
-  () => props.items,
-  (arr) => {
-    // 会话切换/消息增删：内容高度即将大变，静默瞬态期避免「回到最新」闪现
-    suppressTransient();
-    // 切换会话/重新加载（末条消息 key 变化）时按贴底处理：pinned 立即置真、按钮隐藏，
-    // 不沿用上一个会话的旧值；若随后定位不在底部（如未读跳转），
-    // 静默期结束的补算会再正确显示。向上加载历史（prepend）只变首条，不影响。
-    const newLastKey = arr.length > 0 ? itemKey(arr[arr.length - 1]) : null;
-    const isSwap = prevLastKey !== null && newLastKey !== null && newLastKey !== prevLastKey;
-    if (isSwap && !pinned) {
-      pinned = true;
-      emit("nearBottom", true);
-    }
-    prevLastKey = newLastKey;
-    scheduleRemeasure();
-    if (isSwap && props.autoScrollOnSwap) {
-      // 切换后先贴一次估算底部；随后的重测收敛期间不再逐次贴底（见 pinHoldUntil），
-      // 由安静期结束统一贴一次，避免滚动条被估算/实测来回拽出小幅快速抖动。
-      // `armSettleHold` 会按当前的落定时刻重排 settleTimer —— 上一轮的 timer 必须被它接管，
-      // 否则它会提前触发、把 pinHold 清零，抖动又回来。
-      armSettleHold();
-      // post flush：DOM 已是新会话内容，此刻按真实 scrollHeight 贴底，比 pre-flush
-      // 阶段对着旧高度滚的那次准确（修「定位到合并消息首行」）
+  if (isFullSwap) {
+    // 换数据会让 scrollTop 被浏览器/新内容重置；那一次下降不是用户上滚，
+    // 否则 `recentScrollUp()` 会拦住收敛窗口结束时的贴底（实测 finalTop 停在 0）。
+    programmaticTop = true;
+    lastScrollUpAt = 0;
+  }
+  prevFirstKey = newFirstKey;
+  prevLastKey = newLastKey;
+  boundMeasureCache();
+  if (isSwap && props.autoScrollOnSwap) {
+    armSettleHold();
+    if (!isFullSwap) {
       void nextTick(() => {
         const el = container.value;
         if (!el) return;
@@ -580,19 +399,46 @@ watch(
         computeScrollState();
       });
     }
+  }
+}
+
+// **pre-flush** 先立收敛窗口：`onItemsChanged` 是 post，而 `watch(totalSize)` 在渲染期就会跑；
+// 只靠 post 钩子的话，换会话那一帧会先被 totalSize 的贴底写一次（实测 4502→4607），
+// 随后实测修正再写一次 ⇒ 十几像素的来回抖。
+watch(
+  () => props.items,
+  (arr) => {
+    if (Date.now() < pinHoldHardUntil) {
+      // 收敛窗口内任何 items 变化都顺延（换会话后的分批实测、父组件连续替换数组）。
+      armSettleHold();
+      return;
+    }
+    if (prevFirstKey === null || prevLastKey === null) return;
+    const first = arr.length > 0 ? keyOf(arr[0]) : null;
+    const last = arr.length > 0 ? keyOf(arr[arr.length - 1]) : null;
+    if (first && last && first !== prevFirstKey && last !== prevLastKey) {
+      armSettleHold();
+      programmaticTop = true;
+      lastScrollUpAt = 0;
+    }
+  },
+  { flush: "pre" },
+);
+
+watch(() => props.items, onItemsChanged, { flush: "post" });
+
+// 布局签名（字号/主题）变化：清测量缓存，下一次渲染重新实测。
+watch(
+  () => props.layoutKey,
+  () => {
+    suppressTransient();
+    virtualizer.value.measure();
   },
   { flush: "post" },
 );
 
-// 总高度变化（实测修正估算 / 追加消息）后：
-// pinned 时无条件钉住贴底 —— 关键：重测期间估算→实测的高度差必须持续跟随，
-// 否则切会话后会停在"估算底部"（实测底部更远），表现为定位到中间某条消息。
-// 防误伤交给两个条件：用户上滚豁免（recentScrollUp）+ 外部显式 setPinned(false)
-// （未读跳转 / 引用定位后由父组件解除贴底）。
-watch(totalHeight, () => {
-  // 切换会话后的收敛窗口：**不是忽略，而是顺延** —— 每来一次实测修正就把落定时刻往后推
-  // `SWAP_SETTLE_QUIET_MS`（硬上限 SWAP_SETTLE_MAX_MS），由 settleTimer 在安静期结束时贴一次。
-  // 原来这里只是 `return`：窗口一过就恢复逐次贴底，而慢会话的实测修正常常晚于 300ms ⇒ 继续抖。
+// 总高度变化（实测修正估算 / 追加消息）后：贴底态钉住。
+watch(totalSize, () => {
   if (Date.now() < pinHoldUntil) {
     armSettleHold();
     return;
@@ -606,12 +452,10 @@ function setPinned(v: boolean) {
   emit("nearBottom", pinned);
 }
 
-/** 当前滚动位置（按会话保存/恢复用；不是响应式值，调用方按需现读）。 */
 function getScrollTop(): number {
   return container.value?.scrollTop ?? 0;
 }
 
-/** 恢复到保存的像素位置；夹在 [0, scrollHeight - clientHeight] 内，避免过度滚动。 */
 function scrollToOffset(offset: number) {
   const el = container.value;
   if (!el) return;
@@ -620,6 +464,52 @@ function scrollToOffset(offset: number) {
   setScrollTop(Math.min(Math.max(0, offset), max));
   computeScrollState();
 }
+
+/**
+ * 窗口 resize 才清测量缓存（字体/主题由 `layoutKey` 管）。
+ *
+ * ⚠️ **不能**把 `measure()` 挂在容器 RO 的宽度变化上：内容变高/变矮会让滚动条出现或消失，
+ * clientWidth 随之变化 ⇒ 清缓存 ⇒ 高度重估 ⇒ 滚动条再变，形成 18px 级抖动环
+ * （走查实测切会话出现 5 次方向反转）。容器 RO 只负责 nearBottom。
+ */
+function onWindowResize() {
+  suppressTransient();
+  virtualizer.value.measure();
+  computeScrollState();
+}
+useEventListener(window, "resize", onWindowResize);
+
+/** 容器尺寸：只补 nearBottom/瞬态（宽度失效由 window resize 负责）。隐藏时 clientHeight=0 不处理。 */
+let containerResizeObserver: ResizeObserver | null = null;
+function observeContainerSize() {
+  const el = container.value;
+  if (!el) return;
+  containerResizeObserver?.disconnect();
+  containerResizeObserver = new ResizeObserver(() => {
+    if (el.clientHeight > 0) onResize();
+  });
+  containerResizeObserver.observe(el);
+}
+
+onMounted(() => {
+  prevFirstKey = props.items.length > 0 ? keyOf(props.items[0]) : null;
+  prevLastKey = props.items.length > 0 ? keyOf(props.items[props.items.length - 1]) : null;
+  onResize();
+  observeContainerSize();
+  computeScrollState();
+});
+
+onBeforeUnmount(() => {
+  containerResizeObserver?.disconnect();
+  containerResizeObserver = null;
+  if (raf) cancelAnimationFrame(raf);
+  if (settleTimer) window.clearTimeout(settleTimer);
+  if (pinRaf) cancelAnimationFrame(pinRaf);
+  if (jumpTimer) {
+    window.clearInterval(jumpTimer);
+    jumpTimer = 0;
+  }
+});
 
 defineExpose({ scrollToBottom, scrollToIndex, recentScrollUp, setPinned, getScrollTop, scrollToOffset });
 </script>
@@ -636,15 +526,23 @@ defineExpose({ scrollToBottom, scrollToIndex, recentScrollUp, setPinned, getScro
     @touchstart.passive="onUserInput"
     @pointerdown.passive="onUserInput"
   >
-    <div :style="{ height: `${totalHeight}px`, position: 'relative' }">
+    <div :style="{ height: `${totalSize}px`, position: 'relative' }">
       <div
-        v-for="v in visible"
-        :key="(v.item as any).msg_id ?? v.index"
+        v-for="v in virtualItems"
+        :key="String(v.key)"
+        :data-index="v.index"
         :data-vlist-index="v.index"
-        :data-vlist-key="String((v.item as any).msg_id ?? (v.item as any).id ?? '')"
-        :style="{ position: 'absolute', top: `${v.top}px`, left: 0, right: 0 }"
+        :data-vlist-key="keyOf(items[v.index])"
+        :style="{
+          position: 'absolute',
+          top: 0,
+          left: 0,
+          right: 0,
+          transform: `translateY(${v.start}px)`,
+        }"
+        :ref="measureRowRef"
       >
-        <slot :item="v.item" :index="v.index" />
+        <slot :item="items[v.index]" :index="v.index" />
       </div>
     </div>
   </div>

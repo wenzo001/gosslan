@@ -95,6 +95,7 @@
                 seq: 1,
                 status: "delivered".into(),
                 mention_targets: None,
+                local_id: None,
             },
         )
         .unwrap();
@@ -144,6 +145,7 @@
                 seq: 1,
                 status: "delivered".into(),
                 mention_targets: None,
+                local_id: None,
             },
         )
         .unwrap();

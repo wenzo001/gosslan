@@ -1881,9 +1881,12 @@ export const useChatStore = defineStore("chat", () => {
     }
 
     // 乐观消息先占一个很大的逻辑序号，保证它出现在会话底部；后端返回真实记录后会替换为权威 seq。
+    // `local_id` 是**持久本地身份**：传给后端落库，真实记录返回同一个值 ⇒ 列表 key 不换。
+    const localId = crypto.randomUUID();
     const optimistic: MessageRecord = {
       id: -1,
-      msg_id: `tmp-${crypto.randomUUID()}`,
+      msg_id: `tmp-${localId}`,
+      local_id: localId,
       conv_id: convId,
       sender_id: myId,
       receiver_id: convId,
@@ -1895,7 +1898,7 @@ export const useChatStore = defineStore("chat", () => {
     };
     enqueueMessage(optimistic);
     try {
-      const rec = await sendToBackend(convId, content, kind, mentionIds);
+      const rec = await sendToBackend(convId, content, kind, mentionIds, localId);
       // 如果 Ack 已在 await 期间到达：直接把 real record 提升到 delivered，
       // 然后一次性替换 optimistic → real（不再二次 replaceMessage）。
       const acked = pendingAcks.delete(rec.msg_id);
@@ -1935,11 +1938,12 @@ export const useChatStore = defineStore("chat", () => {
     content: string,
     kind: string,
     mentionIds?: string[],
+    localId?: string,
   ): Promise<MessageRecord> {
     if (convId.startsWith("group:")) {
-      return api.sendGroupMessage(convId.slice(6), content, kind, mentionIds);
+      return api.sendGroupMessage(convId.slice(6), content, kind, mentionIds, localId);
     }
-    return api.sendMessage(convId, content, kind);
+    return api.sendMessage(convId, content, kind, localId);
   }
 
   /**
@@ -2526,10 +2530,13 @@ export const useChatStore = defineStore("chat", () => {
       // 避免与真实记录因同 msg_id 去重竞态而丢失元数据。
       return id;
     } catch (e) {
-      // API 失败：插入明确 failed 状态的文件消息，不让消息永久停在 sending
+      // API 失败：插入明确 failed 状态的文件消息，不让消息永久停在 sending。
+      // 同一个值同时当 msg_id / local_id：它是本地独有行，列表 key 必须稳定。
+      const failedId = `file-failed-${Date.now()}`;
       enqueueMessage({
         id: -1,
-        msg_id: `file-failed-${Date.now()}`,
+        msg_id: failedId,
+        local_id: failedId,
         conv_id: convId,
         sender_id: app.device?.device_id ?? "",
         receiver_id: convId,

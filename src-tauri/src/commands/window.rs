@@ -169,12 +169,16 @@ pub fn set_native_titlebar_buttons_hidden(_hidden: bool) {}
 /// 为什么必须只有一条：它们都要 E2EE、都要 outbox 兜底、都要 GroupAck、都要被四层幂等
 /// 去重覆盖。若各写一份，任何一处修 bug（历史上最典型的是「填完 group_creator/members
 /// 后忘了重算重签 → 群消息被静默丢弃」）都只会修到其中一条路径。
+/// 群消息发送内核；`local_id` 是前端乐观气泡的**持久本地 id**
+/// （服务端 `msg_id` 到达后列表 key 不换，见 DB v13→v14）。
+/// 非乐观路径（系统消息 / 任务 / 公告 / 回执…）传 `None`，由插入 SQL 回填 `msg_id`。
 pub(crate) async fn send_group_payload(
     s: &Arc<AppState>,
     group_id: &str,
     kind: &str,
     content: String,
     mentions: Option<&[String]>,
+    local_id: Option<&str>,
 ) -> Result<MessageRecord, String> {
     // 窗口抖动只支持单聊：群侧没有"独立抖动"的产品语义，且旧成员会收到空 target 的
     // 普通强提醒。放在群发送内核最前面，所有入口一次挡住。
@@ -292,6 +296,7 @@ pub(crate) async fn send_group_payload(
         // 自己这一行也带上落点：与刚发出去的那一份**是同一个事实**，不带就等于
         // 让库里那一行比线上少一截（同一件事出现两个真源，正是本仓反复付学费的形状）。
         mention_targets: targets.clone(),
+        local_id: local_id.map(|v| v.to_string()),
     };
     // 群消息与单聊一样需要可靠投递：本地落库 + 每个成员的 outbox 在同一事务里完成，
     // 再由建链 / Hello / 心跳触发 flush_group_outbox 补发，收到 GroupAck 才删行。

@@ -21,8 +21,8 @@ test("LogViewer：长列表走 TanStack Virtual，不再整表渲染", () => {
 test("LogViewer：过滤变化回到顶部（结果变短时不会落在越界滚动位）", () => {
   assert.match(
     SRC,
-    /watch\(trimmedFilter,\s*\(\)\s*=>\s*virtualizer\.value\.scrollToOffset\(0\)\)/,
-    "过滤值一变就 scrollToOffset(0)",
+    /watch\(trimmedFilter,\s*\(\)\s*=>\s*\{[\s\S]{0,240}virtualizer\.value\.measure\(\)[\s\S]{0,240}virtualizer\.value\.scrollToOffset\(0\)/,
+    "过滤值一变就清测量缓存并 scrollToOffset(0)",
   );
 });
 

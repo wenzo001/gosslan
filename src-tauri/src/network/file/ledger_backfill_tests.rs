@@ -74,6 +74,7 @@ mod gfile_ledger_backfill_tests {
             seq: 1,
             status: "delivered".to_string(),
             mention_targets: None,
+            local_id: None,
         };
         db::insert_message(conn, &rec).unwrap();
     }
@@ -322,6 +323,7 @@ mod gfile_ledger_backfill_tests {
                 seq: 1,
                 status: "delivered".to_string(),
                 mention_targets: None,
+                local_id: None,
             };
             db::insert_message(&conn, &rec).unwrap();
             let (again, orphan) = list_gfile_ledger_gaps(&conn, DEVICE).unwrap();
@@ -362,6 +364,7 @@ mod gfile_ledger_backfill_tests {
                 seq: 1,
                 status: "sending".to_string(),
                 mention_targets: None,
+                local_id: None,
             };
             db::insert_message(&conn, &rec).unwrap();
             let (again, orphan) = list_gfile_ledger_gaps(&conn, DEVICE).unwrap();
@@ -389,6 +392,7 @@ mod gfile_ledger_backfill_tests {
                 seq: 1,
                 status: "delivered".to_string(),
                 mention_targets: None,
+                local_id: None,
             };
             db::insert_message(&conn, &rec).unwrap();
             let (again, orphan) = list_gfile_ledger_gaps(&conn, DEVICE).unwrap();

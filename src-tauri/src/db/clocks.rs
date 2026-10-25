@@ -74,6 +74,7 @@ mod clock_contention_tests {
             seq,
             status: "sent".into(),
             mention_targets: None,
+            local_id: None,
         }
     }
 

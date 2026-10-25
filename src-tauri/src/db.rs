@@ -19,7 +19,7 @@ use crate::state::{
 /// 建表 / 建索引不需要 step：`init()` 在版本分支**之前**跑 `execute_batch(SCHEMA)`，
 /// 而 SCHEMA 全是 `IF NOT EXISTS` ⇒ 新老库每次启动都会被补齐。
 /// 同一条索引同时写在 SCHEMA 与 MIGRATIONS 里 = 两个家（历史上有过，v8→v9 起收敛）。
-pub const DB_VERSION: u32 = 13;
+pub const DB_VERSION: u32 = 14;
 
 /// 迁移 step：(from_version, to_version, 迁移闭包)。
 struct Migration {
@@ -308,6 +308,9 @@ fn ensure_post_schema_shape(conn: &Connection) -> Result<()> {
          -- 它让 messages 长出第三个索引，因此 `hot_tables_carry_exactly_the_intended_indexes`
          -- 的期望值跟着从 2 改 3，写放大的实测数字记在那条判据的注释里。
          CREATE INDEX IF NOT EXISTS idx_messages_conv_kind ON messages(conv_id, kind);
+         -- 持久本地身份（v13→v14）。迁移分支在 v13→v14 里建同一条（SQL 逐字相同）。
+         -- 唯一：列表 key 重复会让两行互相覆盖测量/复用 DOM。
+         CREATE UNIQUE INDEX IF NOT EXISTS idx_messages_local_id ON messages(local_id);
          -- 群 outbox 的待发扫描只走 pending：墓碑（delivered/cancelled/failed）不该被
          -- 5s 心跳当成积压。部分索引的 SQL 与迁移 v12→v13 逐字相同（形状测试比对原文）。
          CREATE INDEX IF NOT EXISTS idx_group_outbox_pending ON group_outbox(created_at) WHERE status = 'pending';",
@@ -650,6 +653,34 @@ const MIGRATIONS: &[Migration] = &[
             Ok(())
         },
     },
+    // v13 → v14：messages 加 local_id（持久本地身份）。
+    // 老行回填 msg_id（全局唯一、天然稳定）；新行由插入 SQL 的 COALESCE 保证非空。
+    // 索引与迁移分开写两处（迁移 + ensure_post_schema_shape），SQL 必须逐字相同。
+    Migration {
+        from: 13,
+        to: 14,
+        description: "messages 加 local_id 并回填 msg_id",
+        run: |conn| {
+            let table: bool = conn.query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'messages'",
+                [],
+                |r| r.get::<_, i64>(0),
+            )? > 0;
+            if table {
+                if !column_exists(conn, "messages", "local_id")? {
+                    conn.execute("ALTER TABLE messages ADD COLUMN local_id TEXT", [])?;
+                }
+                conn.execute(
+                    "UPDATE messages SET local_id = msg_id WHERE local_id IS NULL OR local_id = ''",
+                    [],
+                )?;
+                conn.execute_batch(
+                    "CREATE UNIQUE INDEX IF NOT EXISTS idx_messages_local_id ON messages(local_id);",
+                )?;
+            }
+            Ok(())
+        },
+    },
 ];
 
 /// 建表脚本 —— 表结构的**唯一真源**（另有一张 `content` 表由
@@ -698,7 +729,11 @@ CREATE TABLE IF NOT EXISTS messages (
     -- @ 的落点（JSON 数组 `[{id,name,n}]`，见 `protocol::MentionTarget`）。
     -- **可空，NULL = 不知道**（老行 / 老对端 / 这一列写坏了）⇒ 呈现层按昵称兜底。
     -- 不加索引：它只随行读回，从不按内容查（热查询仍走 `idx_messages_conv_seq`）。
-    mention_targets TEXT
+    mention_targets TEXT,
+    -- **持久本地身份**（v13→v14）：乐观气泡在服务端 msg_id 到达之前就要有一个稳定 key；
+    -- 列表（VirtualList）按它做 Vue key，服务端 id 到达后只更新字段、不换 key。
+    -- 老行由迁移回填 msg_id；新行由插入 SQL 的 COALESCE(?local_id, msg_id) 保证非空。
+    local_id TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_messages_conv ON messages(conv_id, ts);
 -- ⚠️ `idx_messages_conv_seq` **不在这里**，而且不能放进来：`seq` 是迁移 v2→v3 才加到

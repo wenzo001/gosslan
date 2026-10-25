@@ -403,6 +403,7 @@ fn build_file_message(
         seq,
         status: "sent".to_string(),
         mention_targets: None,
+        local_id: None,
     }
 }
 

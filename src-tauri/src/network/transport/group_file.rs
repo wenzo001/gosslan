@@ -732,6 +732,7 @@ fn create_group_file_receive_bubble(
         status: "sending".to_string(),
         // 群文件这条没有 @ 落点这回事（发送侧从来不算 mention_targets）⇒ NULL = 不知道。
         mention_targets: None,
+        local_id: None,
     };
     {
         let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
@@ -1111,6 +1112,7 @@ async fn handle_group_file_done(
             status: "delivered".to_string(),
             // 同上：群文件收尾这条不带 @ 落点 ⇒ NULL。
             mention_targets: None,
+            local_id: None,
         };
         // 回填本地 path 到 messages 表：read_file_preview 按 msg_id 反查 content 定位文件。
         // 单聊 FileDone 走 insert_message 直接落库带 path 的内容；群聊 Offer 先落库无 path 的

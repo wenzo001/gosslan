@@ -27,6 +27,7 @@ mod tests {
             seq: 1,
             status: "sent".into(),
             mention_targets: None,
+            local_id: None,
         }
     }
 
@@ -1242,6 +1243,7 @@ mod tests {
                 seq: 1,
                 status: "delivered".into(),
                 mention_targets: None,
+                local_id: None,
             },
         )
         .unwrap();

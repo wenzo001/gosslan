@@ -166,8 +166,8 @@ export const api = {
   respondFriendRequest: (peerId: string, accept: boolean) =>
     invoke<void>("respond_friend_request", { peerId, accept }),
 
-  sendMessage: (friendId: string, content: string, kind: string) =>
-    invoke<MessageRecord>("send_message", { friendId, content, kind }),
+  sendMessage: (friendId: string, content: string, kind: string, localId?: string) =>
+    invoke<MessageRecord>("send_message", { friendId, content, kind, localId }),
   getMessages: (convId: string, limit?: number, offset?: number) =>
     invoke<MessageRecord[]>("get_messages", { convId, limit, offset }),
   /**
@@ -236,12 +236,19 @@ export const api = {
    * 所以这里不能写成 `mentions ?? []` —— 空数组是"明确回答谁都没 @"，语义完全不同。
    * 展开而不是直接传 `mentions`：不依赖序列化器会不会丢掉 undefined。
    */
-  sendGroupMessage: (groupId: string, content: string, kind: string, mentions?: string[]) =>
+  sendGroupMessage: (
+    groupId: string,
+    content: string,
+    kind: string,
+    mentions?: string[],
+    localId?: string,
+  ) =>
     invoke<MessageRecord>("send_group_message", {
       groupId,
       content,
       kind,
       ...(mentions ? { mentions } : {}),
+      localId,
     }),
   listGroupFiles: (groupId: string) =>
     invoke<unknown>("list_group_files", { groupId }).then((v) =>

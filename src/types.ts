@@ -133,6 +133,11 @@ export interface RemindAckPayload {
 export interface MessageRecord {
   id: number;
   msg_id: string;
+  /**
+   * **持久本地身份**（DB v13→v14）：列表 key 用它。乐观气泡在服务端 `msg_id`
+   * 到达之前就有一个稳定值；替换真实记录时 key 不变（不会整行重挂）。
+   */
+  local_id?: string | null;
   conv_id: string;
   sender_id: string;
   receiver_id: string;

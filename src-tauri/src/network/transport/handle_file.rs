@@ -568,6 +568,7 @@ async fn handle_file_messages(state: &Arc<AppState>, peer_id: &str, msg: Message
                             seq,
                             status: "delivered".to_string(),
                             mention_targets: None,
+                            local_id: None,
                         };
                         // 落库失败必须留痕（审计 2026-10-16）：吞掉后界面没这张文件卡、日志无痕。
                         if let Err(e) = db::insert_message(&dbc, &rec) {
