@@ -272,6 +272,19 @@ export const useAppStore = defineStore("app", () => {
     multiSelectActive.value = v;
   }
   /**
+   * 后台任务面板的开关（2026-10-25：入口从浮动药丸迁到会话列表页脚）。
+   *
+   * 为什么放 store 而不是模块级 ref：页脚与 `TaskCenter` 都走同一个 pinia 实例，
+   * 探针、多窗口与 HMR 都不会各自拿到一份"看不见的第二个开关"。
+   */
+  const taskCenterOpen = ref(false);
+  function openTaskCenter() {
+    taskCenterOpen.value = true;
+  }
+  function closeTaskCenter() {
+    taskCenterOpen.value = false;
+  }
+  /**
    * **聊天视图此刻是否真的可见** —— 判已读/发已读回执的唯一判据。
    *
    * 桌面端恒 `true`（聊天气泡就在主窗口里，没有页层级概念）；
@@ -1035,6 +1048,9 @@ export const useAppStore = defineStore("app", () => {
     setMobileChatObscured,
     multiSelectActive,
     setMultiSelectActive,
+    taskCenterOpen,
+    openTaskCenter,
+    closeTaskCenter,
     chatVisible,
     keyboardOpen,
     keyboardInset,

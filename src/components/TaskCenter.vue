@@ -8,22 +8,14 @@ import { useAppStore } from "@/stores/useAppStore";
 import { useChatStore } from "@/stores/useChatStore";
 import {
   FALLBACK_TITLE_KEYS,
-  runningTextKey,
+  operationStatusText,
   type OperationAction,
   type OperationRow,
 } from "@/utils/taskCenter";
 import { clampProgress } from "@/utils/transferSummary";
 import { blockedReasonKey } from "@/utils/transferState";
 import { cancelOutcome } from "@/utils/cancelFeedback";
-import { storageGet, storageSet } from "@/utils/safeStorage";
-import {
-  PILL_CORNER_KEY,
-  clampDragBox,
-  movedFar,
-  nearestPillCorner,
-  parsePillCorner,
-  type PillCorner,
-} from "@/utils/pillAnchor";
+import { sleep } from "@/utils/defer";
 
 /**
  * 统一后台任务中心（负责人 2026-10-23 提的那件："所有有进度、有目标、有完成态的任务都能看见，
@@ -37,15 +29,15 @@ import {
  * - **只列未完成**（`completed/cancelled/failed` 由 toast 和气泡上的回执说话）。
  *   用户原话："已经完成的在这个列表里应该是不展示"。
  * - **只给今天就能动的按钮**。`utils/taskCenter` 的 `OperationAction` 每一项都对着一条已存在的
- *   命令；点了什么都不会发生的按钮比不给按钮更糟（消息的取消在 B4，所以消息行今天没有取消键）。
+ *   命令；点了什么都不会发生的按钮比不给按钮更糟。
  * - **取消不加二次确认**：这条动作可逆（重新发送即可），而这一轮要的是"打断没有摩擦"。
  *
- * 药丸位置（"它一直挡在右下角，可能挡到发送界面"）：按住可拖，松手吸附到最近的那一角，
- * 四个角的位置持久化在 localStorage。几何判据在 `utils/pillAnchor`（可在 Node 单测）。
+ * ⚠️ 2026-10-25：浮动药丸整颗移除。入口改为会话列表页脚的「小院儿」后面
+ * （用户原话："总是在界面上有点挡住使用"）。开关状态住在 `useAppStore`，
+ * 页脚与面板读同一个 store，不靠 props 透传。
  */
 const app = useAppStore();
 const chat = useChatStore();
-const open = ref(false);
 
 const rows = computed(() => chat.operations);
 
@@ -71,20 +63,8 @@ function rowTarget(row: OperationRow): string {
 }
 
 function statusText(row: OperationRow): string {
-  // 群消息：已有成员确认收下、其余人还在队列里。这不是"排队中"也不是"已送达" ——
-  // 两句话都会让用户误判（2026-10-25：「为什么还在排队却说已送达不能取消」）。
-  if (row.someDelivered) return t("task.state.partial");
-  if (row.state === "queued") return t("send.queued");
-  // `waiting_ack`：字节已经写出去了（所以进度是 100%），但对端还没回执 —— 这一行仍在
-  // "未完成"里，状态必须说清是**等确认**，不能只写一个泛泛的"等待中"（用户 2026-10-24：
-  // "百分之百的为什么没有过滤掉"）。
-  if (row.blockedReason === "waiting_ack") return t("task.state.waitingAck");
-  if (row.state === "blocked") return t("task.state.waiting");
-  // 读不到 total 时不硬造一个 0%：进度是 null ⇒ 只说"进行中"。
-  if (row.progress === null) return t("task.state.running");
-  // 进度已到 1 但还没进终态：收尾（落盘 / 校验 / 等回执）。写"100%"会让人以为已经完成。
-  if (row.progress >= 1) return t("task.state.finalizing");
-  return t(runningTextKey(row.kind), { pct: Math.round(row.progress * 100) });
+  // 映射只此一份（`utils/taskCenter::operationStatusText`），组件不再自己推第二套。
+  return operationStatusText(row, t);
 }
 
 /** 卡在哪一句 + 已经试过几次 + 还差几个人。三件都是"为什么还不动"的答案。 */
@@ -99,6 +79,34 @@ function detailText(row: OperationRow): string {
 }
 
 const busy = ref<string | null>(null);
+/** 打开会话的请求令牌：后点的动作作废旧结果（IPC 不能 abort，但 UI 必须有终态）。 */
+let openSeq = 0;
+
+/** 有界等待一个响应式条件成立（50ms 轮询）；超时返回 false，不抛。 */
+async function waitUntil(check: () => boolean, timeoutMs: number): Promise<boolean> {
+  const end = Date.now() + timeoutMs;
+  while (!check() && Date.now() < end) {
+    await sleep(50);
+  }
+  return check();
+}
+
+/** 给不可 abort 的 IPC 包一层超时：超时返回 "timeout"，底层结果被忽略。 */
+function withTimeout<T>(p: Promise<T>, ms: number): Promise<T | "timeout"> {
+  return new Promise<T | "timeout">((resolve, reject) => {
+    const timer = window.setTimeout(() => resolve("timeout"), ms);
+    p.then(
+      (v) => {
+        window.clearTimeout(timer);
+        resolve(v);
+      },
+      (e) => {
+        window.clearTimeout(timer);
+        reject(e);
+      },
+    );
+  });
+}
 const actionLabel: Record<OperationAction, string> = {
   cancel: "task.cancel",
   cancel_message: "task.cancel",
@@ -200,14 +208,14 @@ async function cancelUpdate() {
 /**
  * 跳到那个会话：移动端先翻回聊天那一屏，否则 `openConversation` 换了会话也看不见。
  *
- * 为什么要有两道反馈（用户 2026-10-24：「点去会话好像也没有反应」）：
- *  · 行里带的会话身份可能已经不存在（群被解散/退出、成员被删）——`openConversation`
- *    照样会写 `activeConv`，但界面上没有任何那一项可高亮，看起来就是"点了没反应"。
- *    这一类在点之前就问一句，给 toast 而不是静默关面板；
- *  · 切换本身失败（列表还没加载完 / 会话在切换途中消失）——切完再对一次 `activeConv`，
- *    没切过去就报错，而不是让面板关掉了事。
- * ⚠️ 列表还没加载完时不判"不存在"：那时 `conversations/groups` 都是空数组，
- *    拿它判会把刚启动的正常会话误判成已删除。
+ * 用户 2026-10-25：「任务气泡里的去会话，我也去不了某个会话」。旧实现的硬拦是
+ * `conversations/friends/groups` 里必须已经有目标，否则直接 toast —— 而"会话行还没补建"
+ * 恰恰是最常见的合法状态。现在分四种情况：
+ *  · 会话行已存在（哪怕好友已删）→ 直接打开；
+ *  · 单聊、无会话行、但仍是好友 → 由 `openConversation` 里的 `ensureConversation` 补建；
+ *  · 单聊、无会话行、且已不是好友 → 明确提示，**不**补建幽灵会话；
+ *  · 群、无群且无会话行 → 明确提示（已解散/已退出）。
+ * 列表未加载完时不做"不存在"判定，先打开再核对。
  */
 async function openConversation(row: OperationRow) {
   const cid = row.convId;
@@ -216,140 +224,58 @@ async function openConversation(row: OperationRow) {
     return;
   }
   const groupId = cid.startsWith("group:") ? cid.slice("group:".length) : null;
-  const known = groupId
-    ? chat.groups.some((g) => g.id === groupId)
-    : chat.conversations.some((c) => c.id === cid) || chat.friends.some((f) => f.device_id === cid);
-  const listsReady = groupId ? chat.groupsLoaded : chat.conversationsLoaded || chat.friendsLoaded;
-  if (!known && listsReady) {
-    app.toast(t("task.openChatMissing"), "info");
-    return;
+  const seq = ++openSeq;
+  const readyNow = () =>
+    groupId ? chat.groupsLoaded : chat.conversationsLoaded && chat.friendsLoaded;
+  // 列表未加载完时**等**一会儿，而不是拿空数组判“不存在”。超时后仍然尝试打开。
+  if (!readyNow()) await waitUntil(readyNow, 3000);
+  if (seq !== openSeq) return;
+  const convExists = chat.conversations.some((c) => c.id === cid);
+  const listsReady = readyNow();
+  if (listsReady) {
+    if (groupId) {
+      if (!convExists && !chat.groups.some((g) => g.id === groupId)) {
+        app.toast(t("task.openChatMissing"), "info");
+        return;
+      }
+    } else if (!convExists && !chat.friends.some((f) => f.device_id === cid)) {
+      app.toast(t("task.openChatNotFriend"), "info");
+      return;
+    }
   }
-  open.value = false;
+  app.closeTaskCenter();
   if (app.isMobile) app.mobileView = "chat";
-  await chat.openConversation(cid);
-  if (chat.activeConv !== cid) {
-    app.toast(t("task.openChatFail"), "error");
-  }
-}
-
-// ---------------- 药丸：按住拖到四个角 ----------------
-
-/** 松手落在哪一角就吸哪一角。四个位置全部从既有 token 推，不新写魔法数：
- *  · 顶部让开「窗口安全区（桌面自绘 caption / 移动端刘海）+ 那一屏的页头」；
- *  · 移动端底部让开 TabBar + 底部安全区（与原来那颗药丸同一条算式）；
- *  · 桌面底部就是原来的 1rem 边距。 */
-const cornerClass = computed(() => {
-  const x = corner.value.endsWith("l") ? "left-3" : "right-3";
-  if (corner.value.startsWith("t")) {
-    return `${x} top-[calc(var(--gosslan-safe-top)+var(--gosslan-header-h)+0.5rem)]`;
-  }
-  return app.isMobile
-    ? `${x} bottom-[calc(var(--gosslan-mobile-tabbar-h)+env(safe-area-inset-bottom)+0.75rem)]`
-    : `${x} bottom-4`;
-});
-
-const corner = ref<PillCorner>(parsePillCorner(storageGet(PILL_CORNER_KEY)));
-/** 非 null = 正在跟手，用内联坐标定位（`inset-auto` 先把四边的类名清掉）。 */
-const dragBox = ref<{ left: number; top: number } | null>(null);
-const dragging = ref(false);
-
-let grab: { x: number; y: number; left: number; top: number; w: number; h: number } | null = null;
-/** 拖动收尾那一下浏览器还会补一个 click；用它把"拖完了"和"点开了"分开。 */
-let suppressClick = false;
-
-function onPointerDown(e: PointerEvent) {
-  if (e.pointerType === "mouse" && e.button !== 0) return;
-  const el = e.currentTarget as HTMLElement;
-  const r = el.getBoundingClientRect();
-  grab = { x: e.clientX, y: e.clientY, left: r.left, top: r.top, w: r.width, h: r.height };
-  // 捕获失败（非活跃指针等）只影响跟手性，不影响点开面板，所以不抛。
-  try {
-    el.setPointerCapture(e.pointerId);
-  } catch {
-    /* 忽略 */
-  }
-}
-
-function onPointerMove(e: PointerEvent) {
-  if (!grab) return;
-  const dx = e.clientX - grab.x;
-  const dy = e.clientY - grab.y;
-  if (!dragging.value) {
-    if (!movedFar(dx, dy)) return;
-    dragging.value = true;
-  }
-  dragBox.value = clampDragBox(grab.left + dx, grab.top + dy, grab.w, grab.h, window.innerWidth, window.innerHeight);
-}
-
-function endGrab(e?: PointerEvent) {
-  if (!grab) return;
-  const el = e?.currentTarget as HTMLElement | undefined;
-  try {
-    if (el && e) el.releasePointerCapture(e.pointerId);
-  } catch {
-    /* 忽略：指针已经不在捕获状态 */
-  }
-  if (dragging.value && e) {
-    corner.value = nearestPillCorner(e.clientX, e.clientY, window.innerWidth, window.innerHeight);
-    storageSet(PILL_CORNER_KEY, corner.value);
-    suppressClick = true;
-  }
-  grab = null;
-  dragging.value = false;
-  dragBox.value = null;
-}
-
-function onPointerUp(e: PointerEvent) {
-  endGrab(e);
-}
-
-function onPointerCancel() {
-  // 系统抢走手势（来电、滚动接管）⇒ 只放弃拖动，位置不写盘：半途而废不该覆盖上次那个角。
-  endGrab();
-}
-
-function openPanel() {
-  if (suppressClick) {
-    suppressClick = false;
+  // 打开本身有超时：IPC 不能被真正 abort，但 UI 必须有终态，不能无限转圈。
+  const opened = await withTimeout(chat.openConversation(cid), 5000);
+  if (seq !== openSeq) return;
+  if (opened === "timeout") {
+    app.toast(t("task.openChatTimeout"), "info");
     return;
   }
-  open.value = true;
+  // 核对"确实打开了"：只看 activeConv 不够（`openConversation` 会先写它），
+  // 还要有可高亮的会话行 / 在册群 —— 否则界面看起来就是"点了没反应"。
+  const rowVisible = chat.conversations.some((c) => c.id === cid);
+  const groupVisible = groupId !== null && chat.groups.some((g) => g.id === groupId);
+  if (chat.activeConv !== cid || (!rowVisible && !groupVisible)) {
+    app.toast(t("task.openChatFail"), "error");
+    return;
+  }
+  // 尽量定位到任务对应的那条消息（1:1 文件行是 `file-<transfer_id>`，消息行是 msg_id）。
+  if (row.locateMsgId) {
+    const located = await chat.locateInLoaded(cid, row.locateMsgId);
+    if (seq !== openSeq) return;
+    if (located === "not-found") app.toast(t("task.locateNotFound"), "info");
+    else if (located === "error") app.toast(t("task.locateFail"), "error");
+  }
 }
 </script>
 
 <template>
-  <!--
-    药丸本身是入口，也是拖动手柄：<button> 而不是 <div>+click ⇒ 键盘 Tab / 回车原生可用。
-    `aria-label` 带数量：读屏用户看不到那颗转圈，但需要知道"还有几件事没办完"。
-    `touch-none` 是拖动的前提：不关掉触摸滚动，手指一动就被当成页面滚动，指针事件会断。
-    ⚠️ 2026-10-24 用户口径：「进度条小胶囊的占位有点太大了，小小的一个圆形在转就可以了」：
-    只留一颗小转圈 + 件数，去掉整句文案与那条通栏进度条（进度进面板里逐行看）。
-    尺寸收成 content 宽、单行高 —— 它挡在右下角，越小越好。
-  -->
-  <button
-    v-if="rows.length > 0"
-    type="button"
-    class="fixed z-40 flex touch-none items-center gap-1.5 rounded-full border border-[var(--gosslan-border)] bg-[var(--gosslan-panel)] px-2.5 py-1.5 text-left shadow-lg select-none"
-    :class="[
-      dragBox ? 'inset-auto' : cornerClass,
-      dragging ? 'scale-[1.03] opacity-90' : 'transition-transform duration-200',
-    ]"
-    :style="dragBox ? { left: `${dragBox.left}px`, top: `${dragBox.top}px` } : undefined"
-    :aria-label="t('task.open', { n: rows.length })"
-    :title="`${t('task.pill', { n: rows.length })} · ${t('task.dragHint')}`"
-    @pointerdown="onPointerDown"
-    @pointermove="onPointerMove"
-    @pointerup="onPointerUp"
-    @pointercancel="onPointerCancel"
-    @click="openPanel"
-  >
-    <Spinner size-class="h-3.5 w-3.5" decorative />
-    <span class="text-xs font-semibold leading-none tabular-nums text-[var(--gosslan-text)]">
-      {{ rows.length }}
-    </span>
-  </button>
-
-  <BaseModal :open="open" :title="t('task.title')" width="max-w-md" @close="open = false">
+  <!-- 入口已迁到会话列表页脚（`ConversationList.vue` 的「小院儿」后面），
+       这里只剩面板本身：不再有浮动药丸、拖动或四角吸附。
+       `data-task-open` 是探针锚点：先证明组件读到的是同一份 store，再判弹窗。 -->
+  <div data-task-open :data-open="String(app.taskCenterOpen)">
+    <BaseModal :open="app.taskCenterOpen" :title="t('task.title')" width="max-w-md" @close="app.closeTaskCenter()">
     <p v-if="rows.length === 0" class="py-6 text-center text-sm text-[var(--gosslan-text-2)]">
       {{ t("task.empty") }}
     </p>
@@ -427,4 +353,5 @@ function openPanel() {
       {{ t("task.note") }}
     </p>
   </BaseModal>
+  </div>
 </template>

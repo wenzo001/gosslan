@@ -585,6 +585,9 @@ function openSenderProfile(senderId: string) {
   }
   if (!chat.friends.some((f) => f.device_id === senderId)) {
     if (isGroup.value) membersOpen.value = true;
+    // 单聊里对方已不在通讯录（被删除/尚未重新加回）：资料页没有可读的好友行。
+    // 旧行为是直接 return，用户点了头像完全没反应；现在如实说一句。
+    else app.toast(t("chat.header.profileUnavailable"), "info");
     return;
   }
   if (app.isMobile) app.mobileView = "chat";
@@ -1507,6 +1510,7 @@ function onLoadMore() {
       :show-back="app.isMobile"
       :unread-total="chat.totalUnread"
       @back="onBackToList"
+      @open-profile="conv && openSenderProfile(conv.id)"
       @open-members="membersOpen = true"
       @open-files="filesOpen = true"
       :history-syncing="!!groupHistory"

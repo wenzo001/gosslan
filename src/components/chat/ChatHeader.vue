@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { ArrowUpCircle, CloudDownload, FolderOpen, ListChecks, Monitor, Smartphone, Users } from "lucide-vue-next";
 import BackArrow from "@/components/ui/BackArrow.vue";
+import MessageAvatar from "@/components/message/MessageAvatar.vue";
 import UnreadBadge from "@/components/UnreadBadge.vue";
 import { computed } from "vue";
 import LinkIcon from "@/components/ui/LinkIcon.vue";
@@ -49,6 +50,7 @@ const props = defineProps<{
 }>();
 const emit = defineEmits<{
   (e: "back"): void;
+  (e: "open-profile"): void;
   (e: "open-members"): void;
   (e: "open-files"): void;
   (e: "open-tasks"): void;
@@ -96,6 +98,18 @@ function linkIcon(path: string, hop: number): { icon: LinkIconName; label: strin
         <!-- 徽标用全应用唯一的 `UnreadBadge`（designGuards 禁止再手写一份），
              挂点由调用方给 —— 组件自己的注释明令不要把定位写进去。 -->
         <UnreadBadge v-if="unreadOutside > 0" :count="unreadOutside" class="absolute -right-1.5 -top-1" />
+      </button>
+      <!-- 单聊标题栏头像：与消息行头像同源（`MessageAvatar`），点它进入对方资料页。
+           群聊不显示——群没有单一"对方"，成员入口在右侧。 -->
+      <button
+        v-if="!isGroup && conv"
+        type="button"
+        class="tap-safe -ml-0.5 flex h-7 w-7 shrink-0 items-center justify-center rounded-[var(--gosslan-avatar-radius)] transition hover:opacity-85"
+        :title="t('chat.header.openProfile', { name: conv.name })"
+        :aria-label="t('chat.header.openProfile', { name: conv.name })"
+        @click="emit('open-profile')"
+      >
+        <MessageAvatar :id="conv.id" :name="conv.name" :avatar="conv.avatar" size="28px" />
       </button>
       <span class="truncate text-title font-medium leading-6" :title="conv?.name || t('chat.header.conversation')">{{ conv?.name || t("chat.header.conversation") }}<template v-if="isGroup && memberCount > 0"> ({{ memberCount }})</template></span>
       <span

@@ -127,8 +127,8 @@ test("这个档位必须真的接到气泡上（判据全绿而没人用它 = �
   const bubble = readFileSync("src/components/message/MessageFileBubble.vue", "utf8");
   assert.ok(bubble.includes(':class="statusToneClass"'), "状态行还在用固定灰色");
   assert.ok(
-    bubble.includes("text-[var(--gosslan-warning-ink)]") &&
-      bubble.includes("text-[var(--gosslan-danger-ink)]"),
+    bubble.includes("text-[var(--card-warning)]") &&
+      bubble.includes("text-[var(--card-danger)]"),
     "warn / error 两档没有各自的取色 ⇒ 这个档位只是装饰",
   );
 });

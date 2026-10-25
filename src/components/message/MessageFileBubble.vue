@@ -70,18 +70,19 @@ const accent = computed(() => {
 const statusToneClass = computed(() => {
   switch (props.statusTone) {
     case "error":
-      return "text-[var(--gosslan-danger-ink)]";
+      return "text-[var(--card-danger)]";
     case "warn":
-      return "text-[var(--gosslan-warning-ink)]";
+      return "text-[var(--card-warning)]";
     default:
-      return "opacity-70";
+      return "text-[var(--card-ink-soft)]";
   }
 });
-/** 图标井：底色＝强调色 12% 的超淡调，图标＝强调色实色（lucide 取 currentColor）。 */
-const iconWellStyle = computed(() => ({
-  backgroundColor: rgba(accent.value, 0.12),
-  color: accent.value,
-}));
+/** 图标井：对方卡片＝强调色 12% 的超淡调；自己卡片＝由主题气泡派生的 chip（保证可读）。 */
+const iconWellStyle = computed(() =>
+  props.mine
+    ? { backgroundColor: "var(--card-chip)", color: "var(--card-ink)" }
+    : { backgroundColor: rgba(accent.value, 0.12), color: accent.value },
+);
 const extLabel = computed(() => extBadgeLabel(props.meta.name, t("common.file")));
 /** 传输中按钮上的百分比（微信下载按钮同款：下载中显示进度数字）。 */
 const pct = computed(() => Math.round((props.progress ?? 0) * 100));
@@ -111,8 +112,8 @@ const canOpen = computed(() => props.ready && props.tappable !== false);
       </div>
       <div class="min-w-0 flex-1">
         <div class="line-clamp-2 break-all text-body font-medium leading-snug">{{ meta.name }}</div>
-        <div v-if="failed" class="mt-0.5 text-caption text-[var(--gosslan-danger-ink)]">{{ t("msg.sendFailed") }}</div>
-        <div v-else class="mt-0.5 flex items-center gap-1 text-caption opacity-70">
+        <div v-if="failed" class="mt-0.5 text-caption text-[var(--card-danger)]">{{ t("msg.sendFailed") }}</div>
+        <div v-else class="mt-0.5 flex items-center gap-1 text-caption text-[var(--card-ink-soft)]">
           <span>{{ extLabel }}</span>
           <span>·</span>
           <span>{{ formatBytes(meta.size) }}</span>
@@ -143,7 +144,7 @@ const canOpen = computed(() => props.ready && props.tappable !== false);
         <button
           v-if="progress !== null && mine"
           type="button"
-          class="tap-safe ml-1 flex h-7 w-7 items-center justify-center rounded-[var(--gosslan-radius-sm)] transition hover:bg-[var(--gosslan-hover)]"
+          class="tap-safe ml-1 flex h-7 w-7 items-center justify-center rounded-[var(--gosslan-radius-sm)] transition hover:bg-[var(--card-chip)]"
           :title="t('msg.cancelSend')"
           :aria-label="t('msg.cancelSend')"
           @click.stop="emit('cancel')"
@@ -152,7 +153,7 @@ const canOpen = computed(() => props.ready && props.tappable !== false);
         </button>
         <button
           v-else
-          class="tap-safe flex h-7 w-7 items-center justify-center rounded-[var(--gosslan-radius-sm)] transition hover:bg-[var(--gosslan-hover)]"
+          class="tap-safe flex h-7 w-7 items-center justify-center rounded-[var(--gosslan-radius-sm)] transition hover:bg-[var(--card-chip)]"
           :title="t(contentRetry ? 'msg.imageReRequest' : 'msg.downloadFile')"
           :aria-label="t(contentRetry ? 'msg.imageReRequest' : 'msg.downloadFile')"
           @click="contentRetry ? emit('refetch') : emit('download')"
@@ -165,11 +166,11 @@ const canOpen = computed(() => props.ready && props.tappable !== false);
     <!-- 群文件成员投递状态：独立成底栏，用一条极淡分隔线与文件信息区隔开（微信式卡片层次） -->
     <div
       v-if="delivery"
-      class="flex items-center gap-1.5 border-t border-current/10 pt-1.5 text-caption opacity-70"
+      class="flex items-center gap-1.5 border-t border-current/10 pt-1.5 text-caption text-[var(--card-ink-soft)]"
     >
       <span>{{ t("msg.sentTo", { n: delivery.completed }) }}</span>
       <span v-if="delivery.waiting > 0">· {{ t("msg.waitingOnline", { n: delivery.waiting }) }}</span>
-      <span v-if="delivery.failed > 0" class="text-[var(--gosslan-danger-ink)]">· {{ t("msg.failedCount", { n: delivery.failed }) }}</span>
+      <span v-if="delivery.failed > 0" class="text-[var(--card-danger)]">· {{ t("msg.failedCount", { n: delivery.failed }) }}</span>
       <!-- 已取消必须单独说，不能并进「待上线」：那几个人**永远不会再收了**，
            把他们算成"在等"就是这句"M 人待上线"永远挂着、用户等一个不会来的上线（B2）。
            颜色用次要文字而不是 danger —— 用户自己按下的取消不是错误。 -->
@@ -178,7 +179,7 @@ const canOpen = computed(() => props.ready && props.tappable !== false);
     <!-- 进度条只在活动传输时出现；状态文案独立一行 —— 进度停下来之后那句话还得说得出失败/取消 -->
     <template v-if="progress !== null">
       <div
-        class="h-1 overflow-hidden rounded-full bg-[var(--gosslan-divider)]"
+        class="h-1 overflow-hidden rounded-full bg-[var(--card-chip)]"
         role="progressbar"
         :aria-valuemin="0"
         :aria-valuemax="100"
@@ -187,7 +188,7 @@ const canOpen = computed(() => props.ready && props.tappable !== false);
       >
         <!-- 用 scaleX 而不是 width：进度更新只触发合成层，不参与布局（长列表里尤其重要）。 -->
         <div
-          class="h-full origin-left rounded-full bg-[var(--gosslan-primary)] transition-transform duration-300 ease-[var(--gosslan-ease)]"
+          class="h-full origin-left rounded-full bg-[var(--card-action)] transition-transform duration-300 ease-[var(--gosslan-ease)]"
           :style="{ transform: `scaleX(${Math.min(1, Math.max(0, progress ?? 0))})` }"
         ></div>
       </div>

@@ -79,6 +79,11 @@ export interface OperationRow {
   actions: OperationAction[];
   /** 会话身份：1:1 是对端 id、群是 `group:<id>`。拿不到就不给"打开会话"动作。 */
   convId?: string;
+  /**
+   * 打开会话后要定位的消息 id（拿得到才给）。
+   * 1:1 文件行是 `file-<transfer_id>`；消息行就是 msg_id；内容行/群历史没有精确消息。
+   */
+  locateMsgId?: string;
   createdAt: number;
 }
 
@@ -163,6 +168,9 @@ function fileRow(t: TransferInfo): OperationRow {
     progress: clamp01(t.progress),
     blockedReason: t.blocked_reason ?? (t.status === "sent" ? "waiting_ack" : undefined),
     convId: t.peer_id ? t.peer_id : undefined,
+    // 1:1 文件气泡的消息 id 是 `file-<transfer_id>`（`finalize_file_failure` 同口径）；
+    // 群文件不在 `file_transfers` 里，不会走到这一行。
+    locateMsgId: t.id ? `file-${t.id}` : undefined,
     createdAt: t.created_at ?? 0,
     actions,
   };
@@ -228,6 +236,7 @@ function messageRow(m: PendingMessageOpView): OperationRow {
     waitingFor: m.group_id && m.waiting_for > 0 ? m.waiting_for : undefined,
     someDelivered: m.some_delivered || undefined,
     convId,
+    locateMsgId: m.msg_id,
     createdAt: m.created_at,
     actions,
   };
@@ -285,7 +294,12 @@ export function deriveOperations(src: OperationSources): OperationRow[] {
   for (const h of src.groupHistory ?? []) {
     if (h.phase === "running" || h.phase === "failed") rows.push(historyRow(h));
   }
-  if (src.updater && src.updater.phase === "downloading") rows.push(updaterRow(src.updater));
+  if (src.updater && src.updater.phase === "downloading") {
+    const total = src.updater.total ?? 0;
+    // 字节已下满 = 下载这件事没有后台工作了：任务中心不再保留“100% 收尾中”的行。
+    // 安装入口在设置页；Rust 在 download future 完成后会把 phase 翻成 ready。
+    if (!(total > 0 && src.updater.downloaded >= total)) rows.push(updaterRow(src.updater));
+  }
   return rows;
 }
 
@@ -332,6 +346,45 @@ export function runningTextKey(kind: OperationKind): string {
     case "message_send":
       return "task.state.resending";
   }
+}
+
+/**
+ * 一行右上角那句状态 —— **纯函数**，组件只负责把 `t` 传进来。
+ *
+ * 2026-10-25 用户反馈：「有些任务在收尾中，看不太懂，明明已经 100%」。根因不是进度算错，
+ * 而是所有"100% 但未终态"都共用一句泛称。这里按 kind 给出能解释原因的说法：
+ *  - 更新下载 100% = 字节下完、等安装器，写「下载完成，准备安装」；
+ *  - 内容取回 100% = 在算校验和，写「校验中」；
+ *  - 群历史 100% = 还有落库/收尾，写「历史同步收尾中」；
+ *  - 其余 100% 才落到「正在收尾」。
+ *
+ * ⚠️ 顺序是语义：`waiting_ack` 必须排在 100% 之前 —— 文件"字节已写出、等对方确认"
+ * 也是 100%，但那句话比「正在收尾」更能解释用户看到的事实。
+ */
+export function operationStatusText(
+  row: OperationRow,
+  tr: (key: string, params?: Record<string, string | number>) => string,
+): string {
+  // 群消息：已有成员确认收下、其余人还在队列里。两句话都会让用户误判
+  // （2026-10-25：「为什么还在排队却说已送达不能取消」）。
+  if (row.someDelivered) return tr("task.state.partial");
+  if (row.state === "queued") return tr("send.queued");
+  if (row.blockedReason === "waiting_ack") return tr("task.state.waitingAck");
+  if (row.state === "blocked") return tr("task.state.waiting");
+  // 读不到 total 时不硬造一个 0%：进度是 null ⇒ 只说"进行中"。
+  if (row.progress === null) return tr("task.state.running");
+  // 进度已到 1 但还没进终态：按 kind 说清在做什么，不再一律「收尾中」。
+  if (row.progress >= 1) {
+    switch (row.kind) {
+      case "content_fetch":
+        return tr("task.state.verifying");
+      case "group_history":
+        return tr("task.state.historyFinalizing");
+      default:
+        return tr("task.state.finalizing");
+    }
+  }
+  return tr(runningTextKey(row.kind), { pct: Math.round(row.progress * 100) });
 }
 
 /**

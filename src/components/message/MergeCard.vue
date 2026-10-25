@@ -23,14 +23,12 @@ const props = defineProps<{
   content: string;
   /** 自己发的卡片：尖角朝右指向右侧头像。 */
   mine?: boolean;
-  /** 从父层 MessageItem 透传的卡片样式（固定底色，不跟随 mine/other）。 */
+  /** 从父层 MessageItem 透传的卡片样式（自己的卡片跟随主题气泡色；必须走 `props.` 读，解构会冻在首帧）。 */
   cardStyle?: CSSProperties;
   /** 单聊显示气泡尾巴；群聊不显示（2026-10-23：群聊改为无尾巴的整体气泡）。 */
   tail?: boolean;
 }>();
 const emit = defineEmits<{ (e: "open"): void }>();
-
-const { cardStyle } = props;
 
 const parsed = computed(() => parseMergePayload(props.content));
 const title = computed(() => parsed.value?.title || t("merge.title"));
@@ -46,27 +44,27 @@ const previewLines = computed(() =>
 <template>
   <button
     class="relative flex h-24 w-60 flex-col gap-1 rounded-[var(--gosslan-bubble-radius)] px-3 py-2 text-left transition hover:brightness-[0.97]"
-    :style="cardStyle"
+    :style="props.cardStyle"
     :aria-label="t('merge.open')"
     @click="emit('open')"
   >
     <div class="flex items-center gap-1.5">
-      <ScrollText class="h-4 w-4 shrink-0 opacity-60 text-[var(--gosslan-card-ink)]" aria-hidden="true" />
-      <span class="truncate text-body font-medium text-[var(--gosslan-card-ink)]" :title="title">
+      <ScrollText class="h-4 w-4 shrink-0 text-[var(--card-ink-soft)]" aria-hidden="true" />
+      <span class="truncate text-body font-medium text-[var(--card-ink)]" :title="title">
         {{ title }}
       </span>
     </div>
-    <div class="min-h-0 flex-1 space-y-0.5 overflow-hidden [&>div]:opacity-70">
+    <div class="min-h-0 flex-1 space-y-0.5 overflow-hidden">
       <div
         v-for="(line, i) in previewLines"
         :key="i"
-        class="flex items-center gap-1 text-caption leading-[15px] text-[var(--gosslan-card-ink)] opacity-70"
+        class="flex items-center gap-1 text-caption leading-[15px] text-[var(--card-ink-soft)]"
       >
         <span class="shrink-0 truncate" :title="line.sender">{{ line.sender }}：</span>
         <span class="truncate" :title="line.text">{{ line.text }}</span>
       </div>
     </div>
-    <div class="shrink-0 text-caption leading-[15px] text-[var(--gosslan-card-ink)] opacity-70">
+    <div class="shrink-0 text-caption leading-[15px] text-[var(--card-ink-soft)]">
       {{ t("merge.viewCount", { n: count }) }}
     </div>
     <!-- 指向发送者头像的小尖角（与文本/代码气泡同款 .bubble-tail）：卡片无描边，
