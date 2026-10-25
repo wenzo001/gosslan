@@ -2,6 +2,7 @@
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { useEventListener } from "@vueuse/core";
 import { trimOldest } from "@/utils/bounded";
+import { compensationFor, type HeightDelta } from "@/utils/heightCompensation";
 
 // 基于"估算高度"的虚拟滚动列表：适合消息列表（高度可变但有上限）。
 // 通过前缀和 + 二分查找定位可视区间，仅渲染可视项，支持向上滚动触发加载更多。
@@ -50,6 +51,13 @@ const viewport = ref(600);
 const HEIGHT_OVERRIDE_MAX = 2000;
 const heightOverride = new Map<string | number, number>();
 const heightVersion = ref(0);
+/**
+ * 同一帧内累计的高度变化（按 key 合并）。
+ *
+ * 为什么必须累计：回应条/图片可能在同一帧让多行变高；只处理最后一次会把前面的 delta
+ * 丢掉，视口会跳。key 用消息 id，合并后 `top/oldHeight` 取第一次变化前的值。
+ */
+const pendingDeltas = new Map<string | number, HeightDelta>();
 
 function keyOf(it: any): string | number {
   return it?.msg_id ?? it?.id ?? "";
@@ -95,11 +103,41 @@ function commitHeight(i: number, measured: number) {
   const est = props.estimateHeight(it, i);
   // 只抹掉浮点噪声（0.01px 以内），保留真实的小数高度
   const h = Math.round(measured * 100) / 100;
-  if (Math.abs((heightOverride.get(k) ?? est) - h) > 1) {
+  const oldH = heightOverride.get(k) ?? est;
+  if (Math.abs(oldH - h) > 1) {
+    // top 必须在写新高度**之前**读：写完之后 offsets 会立即重算。
+    const top = offsets.value[i];
     heightOverride.set(k, h);
     trimOldest(heightOverride, HEIGHT_OVERRIDE_MAX);
     heightVersion.value += 1;
+    const prev = pendingDeltas.get(k);
+    if (prev) prev.delta += h - oldH;
+    else pendingDeltas.set(k, { top, oldHeight: oldH, delta: h - oldH });
   }
+}
+
+/**
+ * 把同一帧累计的 delta **同步**写回 scrollTop。
+ *
+ * 时机是语义：ResizeObserver 回调发生在布局之后、绘制之前；此刻 spacer 还没更新，
+ * 但真实行已经变高。同步补偿一帧就够，不能等下一帧 `schedulePin`（那一帧已经画出去了，
+ * 用户看到的就是上下闪一下）。
+ *
+ * `pendingJump`（跳转落定）期间不补偿：落定会按真实 DOM 位置重写 scrollTop，两者会打架。
+ */
+function flushHeightCompensation() {
+  if (pendingDeltas.size === 0) return;
+  const deltas = [...pendingDeltas.values()];
+  pendingDeltas.clear();
+  const el = container.value;
+  if (!el || pendingJump) return;
+  const delta = compensationFor(deltas, {
+    pinned,
+    recentScrollUp: recentScrollUp(),
+    hold: Date.now() < pinHoldUntil || Date.now() < suppressNearBottomUntil,
+    scrollTop: el.scrollTop,
+  });
+  if (delta !== 0) setScrollTop(el.scrollTop + delta);
 }
 
 function lowerBound(top: number) {
@@ -146,6 +184,7 @@ function observeRenderedRows(nodes: NodeListOf<HTMLElement>) {
     }
     // 实测追上来之后，把挂起的「跳到指定消息」按最新 offsets 再落定一次
     //（用户 2026-09-21：「第一次总是定位不对，第二次就是对的」）
+    flushHeightCompensation();
     if (pendingJump) applyJump();
   });
   nodes.forEach((node) => rowResizeObserver?.observe(node));
@@ -165,6 +204,7 @@ function scheduleRemeasure() {
     });
     observeRenderedRows(nodes);
     // 实测追上来之后，把挂起的「跳到指定消息」再落定一次（同 RO 回调，见上）
+    flushHeightCompensation();
     if (pendingJump) applyJump();
   });
 }
@@ -322,9 +362,10 @@ function onScroll() {
 /**
  * 真实用户输入 ⇒ 放弃"待落定"。
  *
- * ⚠️ 判据必须是**输入事件**，不能是 scroll 事件：prepend 历史时浏览器原生滚动锚定
- * （overflow-anchor）也会自动改 scrollTop 并触发 scroll ⇒ 用 scroll 判断会把这次
- * 自动位移当成"用户滚了"，于是**刚跳过去就被放弃**、再也没人校正（实测差 353px）。
+ * ⚠️ 判据必须是**输入事件**，不能是 scroll 事件：程序化滚动（贴底/定位/prepend 补偿/
+ * 高度 delta 补偿）也会改 scrollTop 并触发 scroll ⇒ 用 scroll 判断会把这次自动位移当成
+ * "用户滚了"，于是**刚跳过去就被放弃**、再也没人校正（实测差 353px）。
+ * （原生 `overflow-anchor` 已在本容器关闭，见 `.vlist-no-anchor`；这条纪律仍然成立。）
  */
 function onUserInput() {
   if (pendingJump) pendingJump = null;
@@ -586,7 +627,7 @@ defineExpose({ scrollToBottom, scrollToIndex, recentScrollUp, setPinned, getScro
 <template>
   <div
     ref="container"
-    class="h-full overflow-y-auto overflow-x-hidden pb-6"
+    class="vlist-no-anchor h-full overflow-y-auto overflow-x-hidden pb-6"
     :role="live ? 'log' : undefined"
     :aria-live="live ? 'polite' : undefined"
     :aria-relevant="live ? 'additions' : undefined"

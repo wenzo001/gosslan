@@ -2896,6 +2896,7 @@ async function main() {
     const tasksmobile = want("tasksmobile");
     const opscenter = want("opscenter");
     const chatheader = want("chatheader");
+    const scrollreact = want("scrollreact");
     const resend = want("resend");
     const touchroster = want("touchroster");
     const locale = want("locale");
@@ -2959,6 +2960,7 @@ async function main() {
     if (tasksmobile) await runTasksMobile(cdp, url);
     if (opscenter) await runOpsCenter(cdp, url);
     if (chatheader) await runChatHeader(cdp, url);
+    if (scrollreact) await runScrollReact(cdp, url);
     if (resend) await runResend(cdp, url);
     if (locale) await runLocale(cdp, url);
     if (rowpair) await runRowPair(cdp, url);
@@ -10115,6 +10117,159 @@ async function runSettingsMobile(cdp, url) {
  * 移动端群任务（--only=tasksmobile）：390 宽下看板行与详情弹窗的布局。
  * 行为（实时同步、筛选、详情内容）由 --only=tasksrt 覆盖，这里只量移动端视口。
  */
+/**
+ * 聊天滚动稳定性（--only=scrollreact）。
+ *
+ * 用户 2026-10-25：给倒数第二条消息加表情回应时，整个聊天区上下闪一下。
+ * 这里用真 VirtualList + 可变的普通行复现“高度变化”，逐帧采样 scrollTop / 底边间隙：
+ * - 贴底：每一帧都必须贴着底（gap ≤1），不能先掉 40px 再弹回；
+ * - 同一帧两行变高：delta 必须累计；
+ * - 非贴底：只补视口上方行，正在读的参照行不被拽走。
+ */
+async function runScrollReact(cdp, url) {
+  await cdp.send("Page.navigate", { url });
+  await sleep(3_000);
+  await cdp.eval(PAGE_FIXTURE);
+
+  const mounted = await cdp.eval(`(async () => {
+    // 夹具的 install 才会写 __probe.vue；这段直接手搭 app，所以从资源条目拿页面同一份 Vue。
+    const vueUrl = performance.getEntriesByType('resource')
+      .map((e) => e.name || '').find((u) => u.includes('/node_modules/.vite/deps/vue.js?v='));
+    const V = window.__probe.vue || (vueUrl ? await import(vueUrl) : null);
+    if (!V) return { ok: false, why: 'no-vue' };
+    window.__probe.vue = V;
+    const VL = await import('/src/components/VirtualList.vue');
+    document.body.innerHTML = '';
+    const host = document.createElement('div');
+    host.id = 'sr-host';
+    host.style.cssText = 'height:400px;width:420px;position:relative;';
+    document.body.appendChild(host);
+    const state = V.reactive({ heights: Array.from({ length: 10 }, () => 100) });
+    window.__sr = state;
+    // ⚠️ items 必须是**稳定的数组**：真实聊天里加表情只改回应 prop，不改 messages 数组。
+    // 若把高度塞进 items，每次变高都会触发 watch(items) 的 suppressTransient（hold），
+    // 补偿永远被静默期吃掉 —— 那是夹具自造的假红。
+    const items = Array.from({ length: 10 }, (_, i) => ({ id: 'r' + i }));
+    const app = V.createApp({
+      setup() {
+        return () => V.h(VL.default, {
+          items,
+          estimateHeight: () => 100,
+          overscan: 2,
+          autoScrollOnSwap: false,
+        }, {
+          default: ({ item }) => {
+            const idx = Number(String(item.id).slice(1));
+            return V.h('div', {
+              'data-sr-row': item.id,
+              style: {
+                height: state.heights[idx] + 'px',
+                background: '#d8dee9',
+                borderBottom: '1px solid #94a3b8',
+              },
+            }, item.id);
+          },
+        });
+      },
+    });
+    app.mount(host);
+    await V.nextTick(); await V.nextTick();
+    await new Promise((r) => setTimeout(r, 300));
+    const el = host.querySelector('.vlist-no-anchor');
+    if (!el) return { ok: false };
+    el.scrollTop = el.scrollHeight;
+    await new Promise((r) => requestAnimationFrame(() => r()));
+    return {
+      ok: true,
+      anchor: getComputedStyle(el).overflowAnchor,
+      scrollTop: el.scrollTop,
+      scrollHeight: el.scrollHeight,
+      clientHeight: el.clientHeight,
+    };
+  })()`);
+  check("scrollreact：VirtualList 真挂起来了，且原生锚定已关闭",
+    mounted && mounted.ok === true && mounted.anchor === "none",
+    "mounted + overflow-anchor:none", JSON.stringify(mounted));
+
+  const sample = (mutation) => cdp.eval(`(async () => {
+    const V = window.__probe.vue;
+    const host = document.getElementById('sr-host');
+    const el = host.querySelector('.vlist-no-anchor');
+    ${mutation}
+    await V.nextTick();
+    // 先让这一帧走完 layout + ResizeObserver（补偿在 RO 回调里同步发生），
+    // 下一帧 rAF 读到的才是用户真正看到的画面。
+    await new Promise((r) => requestAnimationFrame(() => r()));
+    const frames = [];
+    for (let i = 0; i < 8; i += 1) {
+      await new Promise((r) => requestAnimationFrame(() => r()));
+      frames.push({
+        top: el.scrollTop,
+        gap: el.scrollHeight - el.scrollTop - el.clientHeight,
+      });
+    }
+    return { frames, sh: el.scrollHeight, ch: el.clientHeight };
+  })()`);
+
+  // ① 贴底 + 倒数第二条变高：每一帧都必须贴着底，且 top 单调不回落。
+  const one = await sample("window.__sr.heights[8] = 140;");
+  const oneBadGap = (one.frames || []).filter((f) => f.gap > 1);
+  const oneMonotonic = (one.frames || []).every(
+    (f, i, a) => i === 0 || f.top >= a[i - 1].top - 0.5,
+  );
+  check("scrollreact：加一条回应后每一帧都贴底（没有先掉 40px 再弹回）",
+    !!one && oneBadGap.length === 0, "8 帧 gap ≤1", JSON.stringify(one));
+  check("scrollreact：scrollTop 单调不回落",
+    oneMonotonic, "8 帧单调", JSON.stringify(one && one.frames));
+
+  // ② 同一帧两行变高：delta 必须累计。
+  //    逐帧 gap 在这里不作为硬判据：两行的 ResizeObserver entry 可能分两批到达，
+  //    浏览器在中间帧本来就会多出一次布局；累计是否正确由最终 top 增量（=40）与
+  //    纯函数 `heightCompensation.test.ts` 的“同一帧多行求和”共同证明。
+  const two = await sample("window.__sr.heights[7] += 20; window.__sr.heights[8] += 20;");
+  const oneFinalTop = one.frames && one.frames.length ? one.frames[one.frames.length - 1].top : 0;
+  const twoFinal = two.frames && two.frames.length ? two.frames[two.frames.length - 1] : null;
+  check("scrollreact：同一帧两行变高，最终贴底且累计了 40px",
+    !!twoFinal && twoFinal.gap <= 1 && twoFinal.top >= oneFinalTop + 39,
+    "final gap ≤1 且 top 增量 ≥39",
+    JSON.stringify({ oneFinalTop, twoFinal, two }));
+
+  // ③ 非贴底：上滚到 200px 后让视口上方行变高，参照行不应下坠。
+  const away = await cdp.eval(`(async () => {
+    const V = window.__probe.vue;
+    const host = document.getElementById('sr-host');
+    const el = host.querySelector('.vlist-no-anchor');
+    window.__sr.heights = Array.from({ length: 10 }, () => 100);
+    await V.nextTick(); await V.nextTick();
+    el.scrollTop = 200;
+    // 换数据会触发 300ms 的 suppressTransient（避免“回到最新”闪现）；等它过掉，
+    // 这一段量的是“用户停在历史位置时”的补偿，不是静默期。
+    await new Promise((r) => setTimeout(r, 350));
+    await new Promise((r) => requestAnimationFrame(() => r()));
+    const ref = host.querySelector('[data-sr-row="r5"]');
+    const before = ref ? ref.getBoundingClientRect().top : null;
+    return { before, top: el.scrollTop };
+  })()`);
+  const awayAfter = await cdp.eval(`(async () => {
+    const V = window.__probe.vue;
+    const host = document.getElementById('sr-host');
+    const ref = host.querySelector('[data-sr-row="r5"]');
+    window.__sr.heights[0] = 140;
+    await V.nextTick();
+    for (let i = 0; i < 8; i += 1) {
+      await new Promise((r) => requestAnimationFrame(() => r()));
+    }
+    const after = ref ? ref.getBoundingClientRect().top : null;
+    const el = host.querySelector('.vlist-no-anchor');
+    return { after, top: el.scrollTop };
+  })()`);
+  const shifted = away && away.before !== null && awayAfter && awayAfter.after !== null
+    ? Math.abs(awayAfter.after - away.before) : null;
+  check("scrollreact：非贴底时只补视口上方行，正在读的内容不被拽走",
+    shifted !== null && shifted <= 1, "参照行位移 ≤1px",
+    JSON.stringify({ away, awayAfter, shifted }));
+}
+
 /**
  * 单聊标题栏头像（--only=chatheader）。
  *
