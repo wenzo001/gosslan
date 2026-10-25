@@ -11,7 +11,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import { cancelOutcome } from "./cancelFeedback.ts";
+import { cancelOutcome, fileCancelKey } from "./cancelFeedback.ts";
 
 const res = (
   over: Partial<{
@@ -52,4 +52,19 @@ test("通知没送出去（老端没声明能力位 / 离线）⇒ 只说「仅�
 
 test("通知真的进了链路 ⇒ 才说「已取消」", () => {
   assert.equal(cancelOutcome(res({})), "notified");
+});
+
+test("文件已写出（sent）后取消 ⇒ 文案必须承认字节可能已到对方", () => {
+  // 用户 2026-10-25：「文件 sent 取消措辞」——已经发出去的字节收不回来，
+  // 只说"已取消"会让人以为对方没收到。
+  assert.equal(fileCancelKey("notified", true), "transfer.cancelSent");
+  assert.equal(
+    fileCancelKey("notified", false),
+    "task.cancelDone",
+    "还没写出去的取消就是干净的「已取消」",
+  );
+  // 另外三档压过 sent/未写出：它们描述的是更根本的事实（已送达 / 台账没落地 / 对面可能还在传）。
+  assert.equal(fileCancelKey("already_done", true), "msg.cancelSend.alreadyDone");
+  assert.equal(fileCancelKey("ledger_pending", true), "transfer.cancelLedgerPending");
+  assert.equal(fileCancelKey("local_only", true), "transfer.cancelLocalOnly");
 });

@@ -995,3 +995,70 @@ test("★ 一次性定时器在 init 作用域销毁时被取消（与 markReadT
     );
   }
 });
+
+/**
+ * 打开会话补建会话行的判据（2026-10-25 用户：「任务中心点去会话到不了对应的会话」）。
+ *
+ * 旧实现只给单聊补建：`conversations.some(...) || id.startsWith("group:")` ⇒ 群直接跳过。
+ * 一个还没有会话行的群于是只换了 `activeConv`：左侧无高亮、标题无名字，看起来就是没到。
+ * 现在群也走 `api.ensureConversation(id)`（后端按 `group:` 前缀取群名建行）。
+ */
+test("★ 打开会话：群没有会话行也要补建（任务中心「去会话」的根因）", () => {
+  const st = stripComments(readFileSync(join(ROOT, "stores", "useChatStore.ts"), "utf8"));
+  const at = st.indexOf("async function openConversation(");
+  const end = st.indexOf("const PAGE_SIZE = 100;", at);
+  assert.ok(at >= 0 && end > at, "找不到 openConversation 的锚点");
+  const body = st.slice(at, end);
+  assert.ok(
+    !/id\.startsWith\("group:"\)\s*\?\s*Promise\.resolve/.test(body),
+    "群分支不许再跳过补建：那正是「只换 activeConv、列表没有行」的根因",
+  );
+  assert.ok(
+    body.includes(".ensureConversation(id)"),
+    "缺会话行时必须真的调 ensureConversation（群与单聊同一个出口）",
+  );
+});
+
+/**
+ * 任务中心快照必须跟着**消息通道**一起刷新（2026-10-25 用户实报：
+ * 「给不在线的人发了文字，气泡是发送中，但任务中心没有那一行；关窗过一会儿才出现」）。
+ *
+ * 根因不是读模型，是刷新时机：`messageOps` 只在 `refreshTransfers()` 里拉，
+ * 而发送成功/失败（离线时后端只入队、不发事件）与 Ack/取消都不会自动触发它。
+ * 这里钉四个**出口**，少一个就会出现"事件里没有、快照也没拉"的空窗：
+ *  ① 首次发送（含重发分支）成功后补拉；
+ *  ② 同 id 重发成功后补拉；
+ *  ③ Ack 到达（行该消失）；
+ *  ④ 任意消息状态变更（取消/失败/送达）。
+ */
+test("★ 发送 / 重发 / Ack / 状态变更都会刷新任务中心快照（否则行不出现或不消失）", () => {
+  const st = stripComments(readFileSync(join(ROOT, "stores", "useChatStore.ts"), "utf8"));
+  const sendStart = st.indexOf("async function send(");
+  const sendEnd = st.indexOf("async function resend(", sendStart);
+  assert.ok(sendStart >= 0 && sendEnd > sendStart, "找不到 send / resend 的锚点");
+  const sendBody = st.slice(sendStart, sendEnd);
+  assert.ok(
+    (sendBody.match(/void refreshTransfers\(\);/g) ?? []).length >= 2,
+    "首次发送与「原地重发旧气泡」两条成功路径都必须补拉任务中心快照",
+  );
+  const resendEnd = st.indexOf("async function sendToBackend(", sendEnd);
+  const resendBody = st.slice(sendEnd, resendEnd);
+  assert.ok(
+    resendBody.includes("void refreshTransfers();"),
+    "同 id 重发也必须在成功后补拉（否则 failed 行一直挂在任务中心）",
+  );
+  for (const [name, next] of [
+    ["onPeers:", "onFriendRequest:"],
+    ["onMessageAcked:", "onPeerRead:"],
+    ["onMessageStatusChanged:", "onGroupDeliveryChanged:"],
+    ["onGroupDeliveryChanged:", "onPeerStyle:"],
+  ]) {
+    const a = st.indexOf(name);
+    const b = st.indexOf(next, a);
+    assert.ok(a >= 0 && b > a, `找不到 ${name} 的锚点`);
+    assert.ok(
+      st.slice(a, b).includes("scheduleTransfersRepair()"),
+      `${name} 里必须补拉一次任务中心快照（防抖 400ms）`,
+    );
+  }
+});

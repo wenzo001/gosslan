@@ -154,7 +154,7 @@
         padding: 18px 16px;
         display: flex;
         flex-direction: column;
-        gap: 14px;
+        gap: 10px;
       }
       .boot-composer {
         flex: none;
@@ -193,9 +193,11 @@
         min-width: 0;
       }
       .boot-bubble {
-        height: 38px;
+        /* 与真实单行文本气泡同高（px-3 py-1.5 + 14px 行高 ≈ 32px）与同档圆角（18px）。
+           旧值 38px / 6px 会让启动瞬间的气泡在切到真界面时"缩一圈"。 */
+        height: 32px;
         width: 38%;
-        border-radius: 6px;
+        border-radius: 18px;
       }
       .boot-bubble.right {
         align-self: flex-end;

@@ -78,6 +78,8 @@ pub enum SyncOutcome {
     },
     /// 中途换不到源 / 页解不开 / 落库报错 ⇒ **不写完成标记**
     Incomplete { synced: i64, reason: String },
+    /// 用户在任务中心按了取消 ⇒ 停在页间边界，已拉到的部分保留，标记保持 pending（下次续）
+    Cancelled { synced: i64 },
 }
 
 /// 摘要问出来的一个候选（只有读数，没有正文）。
@@ -438,6 +440,26 @@ pub async fn run_group_history_sync(state: &Arc<AppState>, group_id: &str) -> Sy
     let mut banner_seen = false;
 
     loop {
+        // 协作式取消（2026-10-25）：只在**页间**检查 —— 当前这一页可能正等对端最多 20s，
+        // 而落库在阻塞池里；从中间砍掉会留下"请求在路上、应答没人等"的半截现场。
+        if take_group_history_cancel(state, group_id) {
+            emit_progress(
+                state,
+                group_id,
+                &source,
+                synced,
+                total_declared,
+                "cancelled",
+                Some("user cancelled"),
+            );
+            state.logger.info(
+                "group",
+                format!(
+                    "群历史同步被用户取消 group={group_id} source={source}：已入库 {synced} 条，标记保持待同步（下次续）"
+                ),
+            );
+            return SyncOutcome::Cancelled { synced };
+        }
         pages += 1;
         if pages > GROUP_HISTORY_MAX_PAGES {
             let reason = format!("取页达到硬上限 {GROUP_HISTORY_MAX_PAGES} 仍未到底");
@@ -775,6 +797,78 @@ fn release_group_history_active(
         .remove(group_id);
 }
 
+/// 消费一枚取消标志（一页之间只认一次；未命中返回 false）。
+fn take_group_history_cancel(state: &Arc<AppState>, group_id: &str) -> bool {
+    state
+        .group_history_cancels
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .remove(group_id)
+}
+
+/// 用户请求取消群历史同步的三种结局（前端只按短码选文案）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CancelVerdict {
+    /// 已点亮取消标志：这一趟会在**当前页**处理完后停下。
+    Requested,
+    /// 没人在飞 ⇒ 没什么可停的（界面说"已经不在同步"）。
+    NotRunning,
+    /// 本机没有这个群（已退群/删群）。
+    NoGroup,
+}
+
+impl CancelVerdict {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            CancelVerdict::Requested => "requested",
+            CancelVerdict::NotRunning => "not_running",
+            CancelVerdict::NoGroup => "no_group",
+        }
+    }
+}
+
+/// 取消裁决表：纯函数，逐格可判（与 `decide_manual_sync` 同形）。
+///
+/// `in_flight` 压过 `has_group`：群刚从界面消失、同步体还停在最后一页时，用户点的
+/// "取消"仍然是一个真实动作（否则标志永远点不亮，横幅要等清扫任务下一次才收）。
+pub fn decide_cancel(has_group: bool, in_flight: bool) -> CancelVerdict {
+    if in_flight {
+        CancelVerdict::Requested
+    } else if has_group {
+        CancelVerdict::NotRunning
+    } else {
+        CancelVerdict::NoGroup
+    }
+}
+
+/// 界面上"停止同步"那颗按钮的后端：只对**正在跑**的那一趟点亮协作式取消标志。
+pub fn request_cancel(state: &Arc<AppState>, group_id: &str) -> CancelVerdict {
+    let in_flight = state
+        .group_history_active
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .contains(group_id);
+    let has_group = || {
+        let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
+        db::get_group(&dbc, group_id).is_some()
+    };
+    let verdict = if in_flight {
+        state
+            .group_history_cancels
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(group_id.to_string());
+        CancelVerdict::Requested
+    } else {
+        decide_cancel(has_group(), false)
+    };
+    state.logger.info(
+        "group",
+        format!("群历史取消请求 group={group_id}：{}", verdict.as_str()),
+    );
+    verdict
+}
+
 /// 在飞闸的 RAII 释放：同步体 panic 时也要把该群摘掉。
 ///
 /// 旧写法在 `run_group_history_sync(...).await` 之后手写 remove；一旦同步体 panic，
@@ -788,6 +882,13 @@ struct GroupHistoryActiveGuard {
 impl Drop for GroupHistoryActiveGuard {
     fn drop(&mut self) {
         release_group_history_active(&self.state.group_history_active, &self.group_id);
+        // 取消标志也随这一趟结束一起清：用户刚好在最后一页之后才点取消时，
+        // 那一枚标志没人消费；留给下一趟就会"刚起跑就停"（界面看起来像同步坏了）。
+        self.state
+            .group_history_cancels
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .remove(&self.group_id);
     }
 }
 
@@ -1485,6 +1586,76 @@ mod group_history_engine_tests {
             "`page_is_within_budget(` 现数到 {} 处（登记 2 处 = 定义 1 + 落库前那一道闸 1）",
             engine_body().matches("page_is_within_budget(").count()
         );
+    }
+
+    /// 取消那一格的裁决表（2026-10-25：任务中心里"正在同步"的行要能停）。
+    ///
+    /// 三格必须互斥且可达：在飞 ⇒ requested（群刚被删也照样能停）；不在飞 ⇒ not_running；
+    /// 本机根本没有这个群 ⇒ no_group。短码是前端选文案的唯一依据，钉住串本身。
+    #[test]
+    fn the_cancel_button_is_a_decision_table_not_a_guess() {
+        use CancelVerdict::*;
+        assert_eq!(decide_cancel(true, true), Requested);
+        assert_eq!(
+            decide_cancel(false, true),
+            Requested,
+            "群记录已经消失、同步体还停在最后一页时，取消仍是一个真实动作"
+        );
+        assert_eq!(decide_cancel(true, false), NotRunning);
+        assert_eq!(decide_cancel(false, false), NoGroup);
+        assert_eq!(
+            [Requested, NotRunning, NoGroup]
+                .iter()
+                .map(|v| v.as_str())
+                .collect::<Vec<_>>()
+                .join(","),
+            "requested,not_running,no_group"
+        );
+    }
+
+    /// 接线判据：取消必须**在页间**检查（不是只在起跑前看一次），且结束守卫要清掉未消费的
+    /// 标志；命令也必须真的注册 —— 否则任务中心那颗按钮点了没人接（本仓"静默失效"那一族）。
+    #[test]
+    fn cancellation_is_checked_between_pages_and_the_flag_never_leaks() {
+        let body = engine_body();
+        let cancel = body
+            .find("take_group_history_cancel(state,group_id)")
+            .expect("页间取消检查必须还在");
+        let page = body
+            .find("try_one_page(state,group_id")
+            .expect("取页调用必须还在");
+        assert!(
+            cancel < page,
+            "取消检查必须在取页之前（每页开头看一眼，而不是只在起跑前看一次）"
+        );
+        assert!(
+            prod_drop_guard_clears_cancel(&body),
+            "结束守卫必须顺手清掉未消费的取消标志：否则下一趟刚起跑就停"
+        );
+        let lib = code_flat(include_str!("../lib.rs"));
+        assert_eq!(
+            lib.matches("commands::cancel_group_history,").count(),
+            1,
+            "取消命令注册现数到 {} 处（登记 1 处）",
+            lib.matches("commands::cancel_group_history,").count()
+        );
+        let cmd = code_flat(include_str!("../commands/groups.rs"));
+        assert_eq!(
+            cmd.matches("group_history::request_cancel(").count(),
+            1,
+            "`request_cancel` 全仓只该有命令那一个调用者"
+        );
+    }
+
+    /// 守卫 Drop 的源码形状判据（取 `impl Drop for GroupHistoryActiveGuard` 后面那一段）。
+    fn prod_drop_guard_clears_cancel(body: &str) -> bool {
+        let Some(start) = body.find("implDropforGroupHistoryActiveGuard{") else {
+            return false;
+        };
+        // 守卫体很短；固定窗口足够覆盖 `drop` 的两笔清理，且不会吃进后面的 `spawn_sync`。
+        let end = (start + 600).min(body.len());
+        let f = &body[start..end];
+        f.contains("group_history_cancels.lock()") && f.contains(".remove(&self.group_id);")
     }
 
     /// 进度事件名在本仓只有**一个**串：常量、`src/api/index.ts` 的 listen 与

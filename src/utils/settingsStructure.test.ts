@@ -15,7 +15,7 @@ import { test } from "node:test";
 const srcDir = join(import.meta.dirname, "..");
 const read = (rel: string) => readFileSync(join(srcDir, rel), "utf8");
 
-/** 4 个顶层容器 → 标签键 → 该容器内渲染的分区组件（firstGroupKey 只对单组件容器生效）。 */
+/** 3 个顶层容器 → 标签键 → 该容器内渲染的分区组件（firstGroupKey 只对单组件容器生效）。 */
 const EXPECTED = [
   {
     key: "general",
@@ -26,7 +26,6 @@ const EXPECTED = [
       "AppearanceSection",
       "ChatStyleSection",
       "NotificationSection",
-      "StorageSection",
       "ResetSection",
     ],
     firstGroupKey: null,
@@ -34,20 +33,16 @@ const EXPECTED = [
   {
     key: "network",
     labelKey: "settings.group.networkFiles",
-    components: ["NetworkSection", "FilesSection"],
+    // 2026-10-25：存储从通用挪到这里，与文件同组（「存储与文件」）。
+    components: ["NetworkSection", "StorageSection", "FilesSection"],
     firstGroupKey: null,
-  },
-  {
-    key: "security",
-    labelKey: "settings.group.security",
-    components: ["SecuritySection"],
-    firstGroupKey: "settings.group.security",
   },
   {
     key: "about",
     labelKey: "settings.item.about",
-    components: ["AboutSection"],
-    firstGroupKey: "settings.item.about",
+    // 安全并入关于，不再单独一组。
+    components: ["SecuritySection", "AboutSection"],
+    firstGroupKey: null,
   },
 ] as const;
 

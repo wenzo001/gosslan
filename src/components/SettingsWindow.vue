@@ -26,7 +26,7 @@ import StorageSection from "@/components/settings/StorageSection.vue";
 import SecuritySection from "@/components/settings/SecuritySection.vue";
 import AboutSection from "@/components/settings/AboutSection.vue";
 import ResetSection from "@/components/settings/ResetSection.vue";
-import { SlidersHorizontal, Wifi, Lock, Info } from "lucide-vue-next";
+import { SlidersHorizontal, Wifi, Info } from "lucide-vue-next";
 import { t } from "@/i18n";
 import { api } from "@/api";
 import { updater } from "@/updater/instance";
@@ -40,6 +40,7 @@ type SectionKey =
   | "network"
   | "files"
   | "storage"
+  | "storageFiles"
   | "security"
   | "about"
   | "reset";
@@ -110,23 +111,27 @@ const devDiagOpen = ref(false);
  *   现在标签也用**条目名**（`settings.item.about` / `settings.group.reset`，与移动端列表同一批键），
  *   与各自分区内的第一组标题一一对应（`settingsStructure` 守卫钉住）。
  *
- * 2026-10-23 用户要求桌面收敛为 4 类；上面的 10 类描述是历史教训，不再描述当前导航。
+ * 2026-10-25 用户追加：桌面收敛为 **3 类** —— 通用 / 网络与文件 / 关于。
+ * 「安全」并入「关于」（不再单独一组）；「存储」从通用挪到「网络与文件」里的
+ * 「存储与文件」（与「文件」合并）。移动端一级列表用同一套分类（见 `SettingsPanel`）。
  */
 const navItems = computed<{ key: SectionKey; label: string; icon: unknown }[]>(() => [
   { key: "general", label: t("settings.group.general"), icon: SlidersHorizontal },
   { key: "network", label: t("settings.group.networkFiles"), icon: Wifi },
-  { key: "security", label: t("settings.group.security"), icon: Lock },
   { key: "about", label: t("settings.item.about"), icon: Info },
 ]);
 
-/** 4 个顶层容器；旧的 10 个深链键仍有效，只是映射到对应容器。 */
-const desktopSection = computed<"general" | "network" | "security" | "about">(() => {
+/** 3 个顶层容器；旧的 10 个深链键仍有效，只是映射到对应容器。 */
+const desktopSection = computed<"general" | "network" | "about">(() => {
   switch (section.value) {
     case "network":
     case "files":
+    // 2026-10-25：「存储」并进「网络与文件」里的「存储与文件」。
+    case "storage":
+    case "storageFiles":
       return "network";
+    // 安全并进关于：深链 `security` 也落到同一页（不再有第四组）。
     case "security":
-      return "security";
     case "about":
       return "about";
     default:
@@ -222,15 +227,17 @@ useEventListener(window, "keydown", onKeydown);
         <AppearanceSection />
         <ChatStyleSection />
         <NotificationSection />
-        <StorageSection :active="true" :reload-token="reloadToken" />
         <ResetSection @restored="reloadToken++" />
       </div>
       <div v-else-if="desktopSection === 'network'" class="space-y-5">
         <NetworkSection :active="true" :reload-token="reloadToken" />
+        <!-- 2026-10-25：存储与文件合并到网络分组下（用户：两者其实是同一类事）。 -->
+        <StorageSection :active="true" :reload-token="reloadToken" />
         <FilesSection :active="true" :reload-token="reloadToken" />
       </div>
-      <SecuritySection v-else-if="desktopSection === 'security'" />
       <div v-else-if="desktopSection === 'about'" class="space-y-5">
+        <!-- 安全并入关于（用户 2026-10-25：桌面不再单独一组）。 -->
+        <SecuritySection />
         <AboutSection @dev-open="devDiagOpen = true" />
       </div>
       </div>

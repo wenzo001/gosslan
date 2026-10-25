@@ -194,14 +194,21 @@ create_new_message()
 
 - 钩子：`db::tests::duplicate_transfer_id_offer_is_idempotent` `content::policy::tests::resume_only_from_chunk_boundaries` `network::file::tests::unknown_attempt_count_is_not_a_death_sentence` `network::file::tests::a_full_length_part_without_rename_is_not_progress` `e2e:故障注入判据③` `e2e:故障注入判据⑧`
 
-### 界面上的「重发」是**已知例外**（2026-09-25 记）
+### 界面上的「重发」回归同 id 重投（2026-10-25）
 
-按 `msg_id` 重投那套实现（`resend_message`）已经删除 —— 前端从未调用过它，
-界面上的「重发」实际是 `chat.send` **重发一条新消息**（新 `msg_id`）。
-所以今天这条不变量在 UI 路径上并不成立，把它写清楚比留一个隐形接口诚实。
+2026-09-25 曾把 `resend_message` 删掉、界面重发改走 `chat.send`（新 `msg_id`）；那条记录当时如实
+写下了"INV-P06 在 UI 路径上不成立"。2026-10-25 起**已改回同 id 重投**，因为它正是本轮需求
+「重试必须复用稳定消息身份」的全部意义：半开链路上 Ack 丢失时，新 `msg_id` 会让对端多收一条。
 
-如果将来真要做「按原 id 重投」，那两条用真事故换来的规则必须连实现一起回来
-（原本是 `lib.rs` 里的两条源码护栏，跟着被删的命令一起走了）：
+今天的两条入口（都不生成新业务消息 id）：
+
+- 1:1：`resend_message` 只接受 `failed` / `cancelled`，**复用原 `msg_id` / `ts` / `seq`**；
+  接收端按 `msg_id` 去重，重复到达只会再回一次 Ack。入队与置 `sending` 在
+  `db::requeue_message_for_resend` 的**一个事务**里（`INSERT OR IGNORE` + 条件 UPDATE）。
+- 群：`resend_group_delivery` 只把台账里的 `cancelled` 行重置为 pending（`msg_id` 不变），
+  已 delivered/failed 的成员不动；`no_ledger`（升级前发出的历史消息）才退回整条重发。
+
+两条用真事故换来的规则仍然必须连实现一起保留：
 
 1. **先密封再入队**：`messages` 存的是**明文**，直接把库内 content 上线就没有 `enc1:` 前缀 ⇒
    接收端 `open_direct_content` 拒收（不落库、不 Ack）⇒ 重发静默变 no-op，
@@ -210,8 +217,13 @@ create_new_message()
    —— 两侧都能「正常加密」，普通单测测不出来。
 2. **所有可失败步骤通过之后才置 `sending`**：旧顺序先 `set_message_status("sending")`
    再判群聊 / 取公钥 / 密钥交换 / 加密，失败路径不回滚 ⇒ 状态永久卡 `sending`，
-   而重发入口的守卫（`"sending" | "sent" => Err`）又把它挡死 ⇒ 这条消息**永远发不出去**，
-   outbox 也从未写入。触发条件是「对任何失败的群消息点重发」，必现。
+   而重发入口的守卫又把它挡死 ⇒ 这条消息**永远发不出去**，outbox 也从未写入。
+   现在的顺序是：校验原记录与状态 → 取钥 → 重密封并重签 → 一个事务入队+置 sending。
+
+- 钩子：`db::resend_requeue_tests::failed_and_cancelled_come_back_to_sending_with_a_queue_row`
+  `db::resend_requeue_tests::terminal_and_in_flight_states_are_refused_without_writing`
+  `db::resend_requeue_tests::an_existing_queue_row_is_reused_not_duplicated`
+  `db::resend_requeue_tests::an_unknown_message_writes_nothing`
 
 ---
 

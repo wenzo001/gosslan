@@ -14,7 +14,7 @@ import {
 } from "@/utils/taskCenter";
 import { clampProgress } from "@/utils/transferSummary";
 import { blockedReasonKey } from "@/utils/transferState";
-import { cancelOutcome, messageCancelNotice } from "@/utils/cancelFeedback";
+import { cancelOutcome, fileCancelKey, messageCancelNotice } from "@/utils/cancelFeedback";
 import { sleep } from "@/utils/defer";
 
 /**
@@ -114,6 +114,7 @@ const actionLabel: Record<OperationAction, string> = {
   cancel_content: "task.cancel",
   retry_content: "task.retryNow",
   sync_history_now: "task.syncNow",
+  cancel_history: "task.cancel",
   open_conversation: "task.openChat",
 };
 
@@ -127,6 +128,7 @@ async function runAction(row: OperationRow, action: OperationAction) {
     else if (action === "cancel_content") await cancelContent(row);
     else if (action === "retry_content") await retryContent(row);
     else if (action === "sync_history_now") await chat.syncGroupHistoryNow(row.id.slice("group:".length));
+    else if (action === "cancel_history") await chat.cancelGroupHistory(row.id.slice("group:".length));
     else if (action === "open_conversation") await openConversation(row);
   } catch (e) {
     app.toastError(e, t("task.actionFail"));
@@ -157,24 +159,14 @@ async function cancelMessage(row: OperationRow) {
  * 在这里说清楚而不是静默刷新 —— 用户点了"取消"却看到行还在，需要知道那是为什么。
  */
 async function cancelFile(row: OperationRow) {
+  // 先记下"点取消的那一刻是不是已经写出去了"：取消之后刷新的行会变成 cancelled，
+  // 那时再读就永远是"没有 waiting_ack"——措辞会退化成一句"已取消"（用户 2026-10-25 指出的）。
+  const wasSent = row.blockedReason === "waiting_ack";
   const res = await api.cancelFileTransfer(row.id);
   await chat.refreshTransfers();
   // 四个分支的唯一判据在 `utils/cancelFeedback`（同一个事实同一句话，不在这里另推一遍）。
-  switch (cancelOutcome(res)) {
-    case "already_done":
-      app.toast(t("msg.cancelSend.alreadyDone"), "info");
-      break;
-    case "ledger_pending":
-      // 台账事务回滚：本机确实停了手，但刷新后这一行还会显示在传 —— 界面不许说得比事实更满。
-      app.toast(t("transfer.cancelLedgerPending"), "info");
-      break;
-    case "local_only":
-      // 对面没收到通知（老端 / 离线）⇒ 它可能仍在继续：界面不许说得比事实更满。
-      app.toast(t("transfer.cancelLocalOnly"), "info");
-      break;
-    default:
-      app.toast(t("task.cancelDone"), "success");
-  }
+  const outcome = cancelOutcome(res);
+  app.toast(t(fileCancelKey(outcome, wasSent)), outcome === "notified" ? "success" : "info");
 }
 
 /**

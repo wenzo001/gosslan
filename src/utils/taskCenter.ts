@@ -49,6 +49,7 @@ export type OperationState = "queued" | "running" | "blocked";
  *  · `cancel_content`    → `cancel_content_fetch`（按 cid 拉取的内容：停接收器 + 台账落 Rejected）
  *  · `retry_content`     → `request_content_by_cid`（"点击重取"，已有；只给单聊接收行，理由见 `contentRow`）
  *  · `sync_history_now`  → `sync_group_history_now`（已有）
+ *  · `cancel_history`    → `cancel_group_history`（正在跑的群历史同步，协作式停）
  *  · `open_conversation` → 纯前端跳转，只需要行带得出会话身份
  * 没有"重新连接"这一条：本仓没有对应命令，链路重建由发现/心跳自己走。
  */
@@ -59,6 +60,7 @@ export type OperationAction =
   | "cancel_content"
   | "retry_content"
   | "sync_history_now"
+  | "cancel_history"
   | "open_conversation";
 
 export interface OperationRow {
@@ -281,7 +283,11 @@ function historyRow(h: GroupHistoryProgress): OperationRow {
     blockedReason: blocked ? (h.reason ?? "no_source") : undefined,
     convId: `group:${h.group_id}`,
     createdAt: 0,
-    actions: ["sync_history_now", "open_conversation"],
+    // 动作按相位给：正在跑时"立即同步"只会返回 already_running（一颗点了没用的按钮），
+    // 该给的是"停止"；只有失败那一格才需要"立即再试"。
+    actions: blocked
+      ? ["sync_history_now", "open_conversation"]
+      : ["cancel_history", "open_conversation"],
   };
 }
 
@@ -292,6 +298,12 @@ export function deriveOperations(src: OperationSources): OperationRow[] {
     if (isLiveTransferStatus(t.status)) rows.push(fileRow(t));
   }
   for (const c of src.contentTransfers) {
+    // **只列接收方向**（2026-10-25 用户实报："好多任务是校验中，不知道为什么不能取消"）。
+    // 发送方向的 content 行是"本机持有这份字节、可以给别人做种"的索引，不是一件本机还要
+    // 办完的事：它的 `received` 起手就等于 `size` ⇒ 界面永远停在 100%，而按 cid 取消
+    // （`cancel_content_fetch`）只收口接收行 ⇒ 那一行既不会消失也没有可用动作。
+    // 真正"我发出去的文件"由 `file_transfers` 那一路负责（有进度、可取消、等 Ack）。
+    if (c.direction !== "receive") continue;
     if (isLiveContentStatus(c.status)) rows.push(contentRow(c));
   }
   for (const m of src.messageOps ?? []) {

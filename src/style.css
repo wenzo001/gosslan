@@ -1302,6 +1302,13 @@ img {
   border-bottom-left-radius: 0;
   border-bottom-right-radius: 0;
 }
+/* 群任务卡（TodoCardBubble）：有回应底栏时下面两个角交给底栏。
+   否则底部操作条的 hover 会被圆角裁成"又一块圆角底色"，而用户要的是横条
+   （2026-10-25：「hover 下半边应该是一个横条状，而不是底下有圆角的」）。 */
+.msg-shell[data-has-reactions] [data-todo-card] {
+  border-bottom-left-radius: 0;
+  border-bottom-right-radius: 0;
+}
 .msg-shell[data-tail-side="left"] .code-actions {
   border-bottom-left-radius: 0;
 }
@@ -1474,7 +1481,9 @@ img {
   pointer-events: none;
 }
 
-/* 设置分区切换：轻微位移 + 淡入，`out-in` 避免两页同时占位。 */
+/* 设置分区切换：轻微位移 + 淡入，`out-in` 避免两页同时占位。
+   ⚠️ 2026-10-25：**不再带 scale**。整页内容缩 0.995 在窄窗口里肉眼就是"列表缩了一下"
+   （用户对移动端一级/二级页的同一句反馈）；位移与淡入已经足够表达"换页了"。 */
 .settings-swap-enter-active,
 .settings-swap-leave-active {
   transition:
@@ -1483,11 +1492,11 @@ img {
 }
 .settings-swap-enter-from {
   opacity: 0;
-  transform: translateY(6px) scale(0.995);
+  transform: translateY(6px);
 }
 .settings-swap-leave-to {
   opacity: 0;
-  transform: translateY(-4px) scale(0.995);
+  transform: translateY(-4px);
 }
 
 @media (prefers-reduced-transparency: reduce) {

@@ -1890,7 +1890,8 @@ async function copyFileToClipboard() {
               v-if="!isTip && hasReactions"
               ref="stripEl"
               data-reaction-strip
-              class="w-full px-2 py-1"
+              class="w-full px-3"
+              :class="cardLikeBubble ? 'pb-1.5 pt-0.5' : 'pb-1.5 pt-1'"
               :style="reactionStripStyle"
               @contextmenu.stop
               @touchstart.stop
