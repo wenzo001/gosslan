@@ -717,7 +717,14 @@ define_class!(
                     error: error.map(|e| e.localizedDescription().to_string()),
                 });
             } else {
-                let service = unsafe { characteristic.service() }.unwrap();
+                // Gosslan 补丁（2026-10-25）：`service()` 是可空弱引用，服务被 CoreBluetooth
+                // 置为失效（`didModifyServices`）后仍可能有迟到的写入回调 ⇒ 上游这里的
+                // `unwrap()` 会 panic 掉整个进程（release `panic = "abort"`）。错误分支
+                // 已经安全返回，成功分支也照同样处理。
+                let Some(service) = (unsafe { characteristic.service() }) else {
+                    warn!("ignoring write callback for a characteristic whose service is gone");
+                    return;
+                };
                 let id = unsafe { peripheral.identifier() };
                 let peripheral_uuid = nsuuid_to_uuid(&id);
                 let raw_service_uuid = unsafe { service.UUID() };
@@ -744,7 +751,12 @@ define_class!(
             // TODO check for error here
             let id = unsafe { peripheral.identifier() };
             let peripheral_uuid = nsuuid_to_uuid(&id);
-            let service = unsafe { characteristic.service() }.unwrap();
+            // Gosslan 补丁（2026-10-25）：同 `didWriteValueForCharacteristic` 的成功分支，
+            // 服务失效后的迟到回调不许把整个进程 panic 掉。
+            let Some(service) = (unsafe { characteristic.service() }) else {
+                warn!("ignoring notification-state callback for a characteristic whose service is gone");
+                return;
+            };
             let raw_service_uuid = unsafe { service.UUID() };
             let service_uuid = cbuuid_to_uuid(&raw_service_uuid);
             let raw_char_uuid = unsafe { characteristic.UUID() };
@@ -811,8 +823,16 @@ define_class!(
                     data: Vec::new(), error: Some(error.localizedDescription().to_string()),
                 });
             } else {
-                let characteristic = unsafe { descriptor.characteristic() }.unwrap();
-                let service = unsafe { characteristic.service() }.unwrap();
+                // Gosslan 补丁（2026-10-25）：描述符/服务在失效后都是可空弱引用，迟到回调
+                // 不许 panic；错误分支已经安全返回，成功分支也照同样处理。
+                let Some(characteristic) = (unsafe { descriptor.characteristic() }) else {
+                    warn!("ignoring descriptor callback whose characteristic is gone");
+                    return;
+                };
+                let Some(service) = (unsafe { characteristic.service() }) else {
+                    warn!("ignoring descriptor callback whose service is gone");
+                    return;
+                };
                 let id = unsafe { peripheral.identifier() };
                 let peripheral_uuid = nsuuid_to_uuid(&id);
                 let raw_service_uuid = unsafe { service.UUID() };
@@ -857,8 +877,16 @@ define_class!(
                     error: Some(error.localizedDescription().to_string()),
                 });
             } else {
-                let characteristic = unsafe { descriptor.characteristic() }.unwrap();
-                let service = unsafe { characteristic.service() }.unwrap();
+                // Gosslan 补丁（2026-10-25）：描述符/服务在失效后都是可空弱引用，迟到回调
+                // 不许 panic；错误分支已经安全返回，成功分支也照同样处理。
+                let Some(characteristic) = (unsafe { descriptor.characteristic() }) else {
+                    warn!("ignoring descriptor callback whose characteristic is gone");
+                    return;
+                };
+                let Some(service) = (unsafe { characteristic.service() }) else {
+                    warn!("ignoring descriptor callback whose service is gone");
+                    return;
+                };
                 let id = unsafe { peripheral.identifier() };
                 let peripheral_uuid = nsuuid_to_uuid(&id);
                 let raw_service_uuid = unsafe { service.UUID() };
