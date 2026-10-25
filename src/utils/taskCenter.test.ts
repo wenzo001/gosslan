@@ -216,6 +216,17 @@ test("「立即重取」只给单聊接收行：群行的 peerId 是 group_id，
     false,
     "本机发出去的内容不该由任务中心去「重取」",
   );
+  // 取消只给**接收方向**：发送方向的 cid 行是"本机是源"，`cancel_content_fetch` 按 cid 找的是
+  // 本机在拉的那一单，给了按钮点下去也只会回 already_done。
+  assert.ok(
+    byId(rows, "a".repeat(64)).actions.includes("cancel_content"),
+    "接收中的内容必须能取消（用户：没到终态的任务都要能停）",
+  );
+  assert.equal(
+    byId(rows, "c".repeat(64)).actions.includes("cancel_content"),
+    false,
+    "发送方向的 cid 行不给取消：那条命令只收口本机的接收行",
+  );
 });
 
 test("消息行：有正文给正文，没正文给类型 key；补发队列行给取消（B4 已有真命令）", () => {

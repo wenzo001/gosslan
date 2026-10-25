@@ -613,9 +613,10 @@
         let group_ack_body =
             rust_fn_body(include_str!("db/group_offline_queue.rs"), "pub fn ack_group_delivered(");
         assert!(
-            group_ack_body.contains("SET status = 'delivered'")
-                && group_ack_body.contains("DELETE FROM group_outbox"),
-            "群 Ack 的事务出口必须真的把状态写成 delivered 并删对应成员的队列行"
+            group_ack_body.contains("UPDATE group_outbox SET status = 'delivered'")
+                && group_ack_body.contains("NOT IN ('cancelled', 'partial_cancelled', 'failed')"),
+            "群 Ack 必须以**台账**为准（2026-10-25）：行条件置 delivered（删行就再也回答不了\
+             「谁没收到」，取消与补发都失去依据），且已取消/已判失败的消息必须保留墓碑"
         );
     }
 

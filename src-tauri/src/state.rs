@@ -2620,7 +2620,7 @@ impl AppState {
         RuntimeCounts {
             sending_msgs: one("SELECT COUNT(*) FROM messages WHERE status = 'sending'"),
             outbox: one("SELECT COUNT(*) FROM outbox"),
-            group_outbox: one("SELECT COUNT(*) FROM group_outbox"),
+            group_outbox: one("SELECT COUNT(*) FROM group_outbox WHERE status = 'pending'"),
             file_outbox: one("SELECT COUNT(*) FROM file_outbox"),
         }
     }

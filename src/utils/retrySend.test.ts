@@ -1,5 +1,5 @@
 /**
- * 「重发」必须**原地复用**那条 failed 气泡，不能新建第二条。
+ * 「重发」必须**原地复用**同一条消息，不能新建第二条。
  *
  * ## 缺陷现场（2026-10-03 审计）
  * `MessageItem.vue::retrySend` 走 `chat.send(...)`，而 `send()` 每次都新建一条
@@ -17,12 +17,13 @@
  *
  * ⇒ 用户点一次「重发」看到两条一样的文字，且失败那条永不消失；切会话重开也一样。
  *
- * ## 为什么不复用同一 msg_id（INV-001 字面做不到）
- * 后端 msg_id = `SHA-256(sender_id + nonce + payload)`（`protocol.rs::compute_message_id`），
- * nonce 每条新消息都不同 ⇒ 重发**必然**是新 msg_id；且 `send_message` 的签名只有
- * `(friend_id, content, kind)`，**没有 msg_id 参数**可传。所以 INV-001 的
- * "重试复用同一 msg_id"在本项目落在**接收侧幂等**（`message_exists` 按 msg_id 去重），
- * 前端这一侧只能做成"旧气泡原地转 sending 再替换"。
+ * ## 2026-10-25：单聊改成**真·原身份重投**（计划 D1）
+ * 后端新增 `resend_message`：复用原 `msg_id` / `ts` / `seq`，重新密封后重新入队，
+ * 接收端按 `msg_id` 去重 ⇒ 上一次其实送到了、只是 Ack 丢了的话，对方只会再回一次 Ack，
+ * 界面上不会多出一条重复消息。前端只把**同一个 msg_id** 的气泡换回 sending/sent。
+ *
+ * 群消息那条（`resend_group_delivery`）按成员台账补发，同样不新建消息；
+ * 只有升级前发出、没有台账的历史消息才退回"整条重发"（`send` 的 retryOfMsgId 分支）。
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
@@ -32,47 +33,47 @@ import { join } from "node:path";
 const ROOT = join(import.meta.dirname, "..");
 const read = (p: string) => readFileSync(join(ROOT, p), "utf8");
 
-test("★ 重发必须把旧 failed 气泡原地转回 sending，而不是新建一条", () => {
-  const store = read("stores/useChatStore.ts");
-  // send() 接受 retryOfMsgId
-  assert.match(
-    store,
-    /async function send\([\s\S]*?retryOfMsgId\?: string,/,
-    "send() 必须接受 retryOfMsgId —— 没有它就区分不出「首次发送」与「重发」。",
-  );
-  // 有那条"原地转回"的分支
-  assert.match(
-    store,
-    /if \(retryOfMsgId\)[\s\S]*?findIndex\(\(m\) => m\.msg_id === retryOfMsgId\)/,
-    "重发分支必须按 msg_id 找到那条 failed 气泡（findIndex），而不是新建。",
-  );
-  assert.match(
-    store,
-    /status: "sending" as const/,
-    "重发必须把旧气泡的状态改回 sending（用户看到的是同一条消息在重试）。",
-  );
-  // 重发成功后替换的是**旧那条**，不是新的
-  assert.match(
-    store,
-    /replaceMessage\(\s*convId,\s*retryOfMsgId,/,
-    "成功后必须 replaceMessage(convId, retryOfMsgId, …) —— 替换旧气泡，" +
-      "若换成 optimistic.msg_id 就等于什么都没做（旧 failed 仍在、新记录另开一条）。",
-  );
-  // 重发失败也要退回 failed，且退回的是同一条
-  assert.match(
-    store,
-    /catch \(e\) \{\s*replaceMessage\(convId, retryOfMsgId, \{ \.\.\.reverted, status: "failed" \}\);/,
-    "重发失败必须把**同一条**气泡退回 failed（reverted 是那份 sending 副本）。",
-  );
-});
-
-test("★ retrySend 必须把旧 msg_id 传下去（否则上面的分支永远进不去）", () => {
+test("★ 单聊重发走 resend_message（复用原 msg_id），不再新建一条", () => {
   const item = read("components/MessageItem.vue");
   assert.match(
     item,
-    /chat\.send\(msg\.conv_id, msg\.content, msg\.kind, undefined, msg\.msg_id\)/,
-    "retrySend 必须传第 5 个参数 msg.msg_id —— 少了它 store 无法定位要复用的那条气泡，" +
-      "会退回新建路径 ⇒ 界面上两条一样的文字。",
+    /await chat\.resend\(msg\.conv_id, msg\.msg_id\)/,
+    "单聊重发必须调 chat.resend(conv_id, msg_id) —— 走后端 resend_message 复用同一身份，" +
+      "否则每次重发都是一条新消息、幂等在最需要的那一刻失效。",
+  );
+  const store = read("stores/useChatStore.ts");
+  const at = store.indexOf("async function resend(");
+  assert.ok(at > 0, "store 必须有 resend() —— 它是「原身份重投」的唯一前端入口");
+  const body = store.slice(at, store.indexOf("\n  }", at));
+  assert.match(body, /api\.resendMessage\(convId, msgId\)/, "resend() 必须调 resend_message");
+  assert.match(
+    body,
+    /replaceMessage\(convId, msgId, next\)/,
+    "成功后必须按**同一个 msg_id** 替换那条气泡（新 msg_id 会让旧气泡留在原地）",
+  );
+  assert.ok(
+    !body.includes("enqueueMessage"),
+    "resend() 里绝不能 enqueueMessage —— 那是「新建第二条」的唯一来源",
+  );
+});
+
+test("★ 群消息重发按成员补发；只有无台账的历史消息才整条重发", () => {
+  const item = read("components/MessageItem.vue");
+  assert.match(
+    item,
+    /api\.resendGroupDelivery\(msg\.conv_id, msg\.msg_id\)/,
+    "群消息重发必须先走 resend_group_delivery（按成员重置 cancelled 行）",
+  );
+  assert.match(
+    item,
+    /res\.outcome !== "no_ledger" && res\.outcome !== "unsupported"/,
+    "只有 no_ledger / unsupported 才允许退回整条重发 —— 其余结论都必须当场说清楚",
+  );
+  assert.match(
+    item,
+    /await chat\.send\(msg\.conv_id, msg\.content, msg\.kind, undefined, msg\.msg_id\)/,
+    "退回整条重发时必须把旧 msg_id 传下去（store 那一步会原地转 sending，" +
+      "否则旧 failed 气泡留在原地、界面上两条一样的文字）",
   );
 });
 
@@ -100,42 +101,51 @@ test("单聊/群聊的 invoke 分流只有一份（重发与首次发送共用�
   const grp = [...body.matchAll(/api\.sendGroupMessage\(/g)].length;
   assert.equal(dm, 1, `sendToBackend 里 api.sendMessage 出现 ${dm} 次，应恰好 1 次`);
   assert.equal(grp, 1, `sendToBackend 里 api.sendGroupMessage 出现 ${grp} 次，应恰好 1 次`);
-  // 且 send() 的两条路径（新建 / 重发）都调它，不自己分流
+  // 且 send() 的两条路径（新建 / 整条重发兜底）都调它，不自己分流
   const calls = [...store.matchAll(/await sendToBackend\(/g)].length;
   assert.equal(
     calls,
     2,
-    `send() 里有 ${calls} 处 await sendToBackend，应恰好 2 处（新建 + 重发）。` +
+    `send() 里有 ${calls} 处 await sendToBackend，应恰好 2 处（新建 + 整条重发）。` +
       `若某条路径自己写了 if (convId.startsWith("group:")) 分流，就是第二个家。`,
   );
 });
 
 /**
- * 钉住后端"msg_id 不可由客户端指定"这个前提。
+ * 钉住后端的两件事：
+ * 1. `send_message` 仍不接受客户端指定 msg_id（首次发送的身份仍由 nonce+payload 派生）；
+ * 2. `resend_message` 才是"复用稳定身份"的那一处 —— 它必须显式覆盖 `env.message_id`、
+ *    用**库里的** ts/seq 重签，并且经 `requeue_message_for_resend` 一步入队+置 sending。
  *
- * `send()` 里那句"⚠️ 为什么不能字面复用同一 msg_id"依赖它：若哪天后端给
- * `send_message` 加了可选 `msg_id` 参数，前端就可以走"真复用"这条路，
- * 本文件关于"必然是新 msg_id"的推理与注释都要重写。
+ * 只写注释不写判据的话，把 `env.message_id = …` 删掉是个**编译通过、测试全绿**的改动，
+ * 而它的后果恰好是最难查的那种：对端多出一条重复消息。
  */
-test("后端 send_message 不接受客户端指定 msg_id（前端「复用」只能靠旧气泡原地转）", async () => {
+test("后端 resend_message 显式复用原 msg_id / ts / seq", () => {
   const rust = readFileSync(join(ROOT, "..", "src-tauri/src/commands/chat.rs"), "utf8");
-  const fn = rust.slice(rust.indexOf("pub async fn send_message("));
-  const sig = fn.slice(0, fn.indexOf(") -> Result<MessageRecord, String>"));
+  const sendFn = rust.slice(rust.indexOf("pub async fn send_message("));
+  const sig = sendFn.slice(0, sendFn.indexOf(") -> Result<MessageRecord, String>"));
   assert.ok(sig.length > 0, "没找到 send_message 的签名");
   assert.ok(
     !/\bmsg_id\b/.test(sig),
-    "send_message 的签名里出现了 msg_id —— 若后端已支持客户端指定 msg_id，" +
-      "前端应改成真复用（同 msg_id 重试），本文件的推理与 store 里的注释都要重写。",
+    "send_message 的签名里出现了 msg_id —— 首次发送的身份仍必须由 nonce+payload 派生；" +
+      "原身份重投是 resend_message 的职责，两条路径不许混。",
   );
-  // 且 msg_id 由 nonce + payload 派生（重发必得新 id）
-  const proto = readFileSync(
-    join(ROOT, "..", "src-tauri/src/protocol.rs"),
-    "utf8",
+
+  const at = rust.indexOf("pub async fn resend_message(");
+  assert.ok(at > 0, "后端必须有 resend_message");
+  const body = rust.slice(at, rust.indexOf("\n// INV-EXCEPTION", at));
+  assert.ok(body.length > 500, "resend_message 切片过短，边界没找对");
+  assert.match(body, /env\.message_id = msg_id\.clone\(\)/, "必须把信封身份改回原 msg_id");
+  assert.match(body, /let ts = msg\.ts;/, "必须复用库里那条消息的 ts");
+  assert.match(body, /let seq = msg\.seq;/, "必须复用库里那条消息的 seq");
+  assert.match(
+    body,
+    /env\.sender_sig = s\.identity\.sign_b64\(&env\.signing_bytes\(\)\)/,
+    "改过 message_id / target 之后必须重签（两者都参与签名）",
   );
   assert.match(
-    proto,
-    /pub fn compute_message_id\(&mut self\)/,
-    "msg_id 由 compute_message_id 计算（SHA-256 of sender_id + nonce + payload）—— " +
-      "nonce 每条新消息不同 ⇒ 重发必得新 msg_id。",
+    body,
+    /db::requeue_message_for_resend\(/,
+    "入队与置 sending 必须走同一个事务出口（先入队、最后才置 sending）",
   );
 });

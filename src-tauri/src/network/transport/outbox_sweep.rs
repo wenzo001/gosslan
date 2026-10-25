@@ -246,19 +246,19 @@ pub fn spawn_outbox_sweeper(state: &Arc<AppState>) -> tauri::async_runtime::Join
                 let all_give_up = expired_peers.len() == rows.len();
                 if !all_give_up {
                     // 在线成员的行独立放弃；离线成员的行继续按 7 天保留（INV-P04）。
-                    // 消息本身仍是 sending（还有成员没收到），不 emit、不改状态。
+                    // 行改成 failed（不是删掉）——删掉就再也说不清“谁没收到”。
                     if !expired_peers.is_empty() {
-                        let failures = {
+                        let (failures, marked) = {
                             let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
                             let mut failures = 0usize;
+                            let mut marked = 0usize;
                             for peer in &expired_peers {
-                                if db::delete_group_outbox_row(&dbc, &msg_id, peer.as_str())
-                                    .is_err()
-                                {
-                                    failures += 1;
+                                match db::mark_group_outbox_failed(&dbc, &msg_id, peer.as_str()) {
+                                    Ok(n) => marked += n,
+                                    Err(_) => failures += 1,
                                 }
                             }
-                            failures
+                            (failures, marked)
                         };
                         if failures > 0 {
                             state.logger.warn(
@@ -273,9 +273,16 @@ pub fn spawn_outbox_sweeper(state: &Arc<AppState>) -> tauri::async_runtime::Join
                                 "outbox",
                                 format!(
                                     "code=OUTBOX_EXPIRED kind=group msg_id={msg_id} \
-                                     group_id={group_id} recipients={} action=row-dropped",
+                                     group_id={group_id} recipients={} action=row-failed",
                                     expired_peers.len()
                                 ),
+                            );
+                        }
+                        if failures == 0 && marked > 0 {
+                            // 气泡的“N 人未收到（已超时）”要跟着变；消息状态不动。
+                            let _ = state.app.emit(
+                                "group-delivery-changed",
+                                &serde_json::json!({ "group_id": group_id, "msg_id": msg_id }),
                             );
                         }
                     }
@@ -293,6 +300,41 @@ pub fn spawn_outbox_sweeper(state: &Arc<AppState>) -> tauri::async_runtime::Join
                             );
                         }
                     }
+                    continue;
+                }
+                let (delivered, cancelled) = {
+                    let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
+                    db::group_outbox_progress_counts(&dbc, &msg_id).unwrap_or((0, 0))
+                };
+                if delivered > 0 || cancelled > 0 {
+                    // 已经有人收到 / 用户已经取消：只把剩余 pending 行置 failed，
+                    // **不**把消息改成 failed（那会把“有人收到/已取消”的事实抹掉）。
+                    let (failures, marked) = {
+                        let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
+                        let mut failures = 0usize;
+                        let mut marked = 0usize;
+                        for peer in &expired_peers {
+                            match db::mark_group_outbox_failed(&dbc, &msg_id, peer.as_str()) {
+                                Ok(n) => marked += n,
+                                Err(_) => failures += 1,
+                            }
+                        }
+                        (failures, marked)
+                    };
+                    if failures == 0 && marked > 0 {
+                        let _ = state.app.emit(
+                            "group-delivery-changed",
+                            &serde_json::json!({ "group_id": group_id, "msg_id": msg_id }),
+                        );
+                    }
+                    state.logger.warn(
+                        "outbox",
+                        format!(
+                            "code=OUTBOX_EXPIRED kind=group msg_id={msg_id} group_id={group_id} \
+                             recipients={} action=partial-failed delivered={delivered} cancelled={cancelled}",
+                            expired_peers.len()
+                        ),
+                    );
                     continue;
                 }
                 let finalized = {

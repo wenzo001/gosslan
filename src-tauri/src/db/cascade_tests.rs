@@ -1144,13 +1144,14 @@ fn removing_a_friend_forgets_its_chat_style() {
     );
 }
 
-/// 群消息的取消（B4 的群那半）：判据是「**还没有任何成员的 Ack 被处理过**」。
+/// 群消息的取消（2026-10-25 每成员台账）：判据是「**台账里还有没有 pending 行**」，
+/// 不再是 `messages.status` —— 后者会被第一个成员的 Ack 推成 delivered，于是
+/// 「明明还在排队」的消息被答成「已送达，不能取消」（用户实报的那条）。
 ///
-/// `GroupAck` 是「置 delivered + 删那一行」同一个事务 ⇒ 状态还没到 delivered/read，
-/// 就说明队列行一条都没被 Ack 吃掉。取消删掉全部队列行之后，迟到的 Ack 命中不到
-/// ⇒ 状态停在 cancelled（与 1:1 同一条仲裁，不新加闸门）。
+/// 行也不再删掉：删除之后就再也回答不了「谁还没收到」，补发与部分送达都失去依据。
+/// 取消 = 把 pending 行置 cancelled；迟到 Ack 只改行（`LateApplied`），消息停在 cancelled。
 #[test]
-fn cancelling_a_group_message_drops_every_member_row_and_survives_a_late_ack() {
+fn cancelling_a_group_message_marks_every_member_row_and_survives_a_late_ack() {
     let conn = fresh_db();
     ins_msg(&conn, "m-g1", "group:g1", "text", "大家好", 1);
     for member in ["a", "b", "c"] {
@@ -1163,15 +1164,18 @@ fn cancelling_a_group_message_drops_every_member_row_and_survives_a_late_ack() {
     }
     assert_eq!(
         super::cancel_queued_group_message(&conn, "m-g1").unwrap(),
-        super::GroupMessageCancelOutcome::Cancelled
+        super::GroupMessageCancelOutcome::Cancelled {
+            delivered: 0,
+            cancelled: 3
+        }
     );
     assert_eq!(
         count(
             &conn,
-            "SELECT COUNT(*) FROM group_outbox WHERE msg_id = 'm-g1'"
+            "SELECT COUNT(*) FROM group_outbox WHERE msg_id = 'm-g1' AND status = 'cancelled'"
         ),
-        0,
-        "每个成员的队列行都要删：留着谁，下一轮 flush 就会把它发出去"
+        3,
+        "每个成员的 pending 行都要落 cancelled：留着谁，下一轮 flush 就会把它发出去"
     );
     let status: String = conn
         .query_row(
@@ -1181,10 +1185,11 @@ fn cancelling_a_group_message_drops_every_member_row_and_survives_a_late_ack() {
         )
         .unwrap();
     assert_eq!(status, "cancelled");
-    // 迟到/在途的 Ack：行已经没了 ⇒ 命中不到 ⇒ 不许把 cancelled 提成 delivered
-    assert!(
-        !super::ack_group_delivered(&conn, "m-g1", "b").unwrap(),
-        "取消之后迟到的 GroupAck 必须命中不到队列行，否则回执会从已取消跳回已送达"
+    // 迟到/在途的 Ack：只改台账（LateApplied），不许把 cancelled 提成 delivered。
+    assert_eq!(
+        super::ack_group_delivered(&conn, "m-g1", "b").unwrap(),
+        super::GroupAckOutcome::LateApplied,
+        "取消之后迟到的 GroupAck 只允许记账，否则回执会从已取消跳回已送达"
     );
     let status: String = conn
         .query_row(
@@ -1193,10 +1198,90 @@ fn cancelling_a_group_message_drops_every_member_row_and_survives_a_late_ack() {
             |r| r.get(0),
         )
         .unwrap();
-    assert_eq!(status, "cancelled", "取消是硬终态");
+    assert_eq!(status, "cancelled", "取消是硬终态（迟到 Ack 不推翻它）");
+    assert_eq!(
+        count(
+            &conn,
+            "SELECT COUNT(*) FROM group_outbox WHERE msg_id = 'm-g1' AND peer_id = 'b' \
+             AND status = 'delivered'"
+        ),
+        1,
+        "已取消消息的 delivered 墓碑必须保留：它是「已取消（对方已收到）」的唯一证据"
+    );
+}
+
+/// 部分送达：有成员已经收下、其余还在排队 ⇒ 取消只停剩余成员，消息落 `partial_cancelled`。
+/// 这是「部分已发送，可补发」的数据基础，也是不再用 `delivered` 一刀切挡住取消的原因。
+#[test]
+fn partially_delivered_group_message_can_cancel_the_rest_then_resend() {
+    let conn = fresh_db();
+    ins_msg(&conn, "m-g3", "group:g1", "text", "一部分人收到", 1);
+    for member in ["a", "b"] {
+        conn.execute(
+            "INSERT INTO group_outbox(msg_id, group_id, peer_id, payload, created_at)
+             VALUES ('m-g3', 'g1', ?1, '{}', 1)",
+            params![member],
+        )
+        .unwrap();
+    }
+    assert_eq!(
+        super::ack_group_delivered(&conn, "m-g3", "a").unwrap(),
+        super::GroupAckOutcome::Applied
+    );
+    assert_eq!(
+        super::cancel_queued_group_message(&conn, "m-g3").unwrap(),
+        super::GroupMessageCancelOutcome::PartiallyCancelled {
+            delivered: 1,
+            cancelled: 1
+        }
+    );
+    let status: String = conn
+        .query_row(
+            "SELECT status FROM messages WHERE msg_id = 'm-g3'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(status, "partial_cancelled");
+    assert_eq!(
+        count(
+            &conn,
+            "SELECT COUNT(*) FROM group_outbox WHERE msg_id = 'm-g3' AND status = 'delivered'"
+        ),
+        1,
+        "已收下的成员不许被取消改写"
+    );
+    // 补发：只把 cancelled 行重置为 pending，并刷新 created_at（否则清扫器会立刻判死旧行）。
+    assert_eq!(
+        super::resend_cancelled_group_rows(&conn, "m-g3", 9_999).unwrap(),
+        1
+    );
+    let (status, created): (String, i64) = conn
+        .query_row(
+            "SELECT status, created_at FROM group_outbox
+              WHERE msg_id = 'm-g3' AND peer_id = 'b'",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!(status, "pending");
+    assert_eq!(created, 9_999, "补发必须刷新 created_at");
+    assert_eq!(
+        super::list_group_pending_peers(&conn, "m-g3").unwrap(),
+        vec!["b".to_string()]
+    );
+    // 已 delivered 的行不能被补发复活（证据不许被抹掉）。
+    assert_eq!(
+        super::resend_cancelled_group_rows(&conn, "m-g3", 10_000).unwrap(),
+        0,
+        "delivered 不是 cancelled：再次补发必须无行可动"
+    );
 }
 
 /// 已有成员收下（状态 delivered）之后不许再取消：那一步只能走撤回。
+///
+/// 全部送达时墓碑已被即时清理（台账 0 行），所以这里同时钉住「空台账必须用消息状态兜底」——
+/// 否则一条真·已送达的消息会被答成 `not_found`。
 #[test]
 fn a_delivered_group_message_cannot_be_cancelled() {
     let conn = fresh_db();
@@ -1207,15 +1292,109 @@ fn a_delivered_group_message_cannot_be_cancelled() {
         [],
     )
     .unwrap();
-    assert!(super::ack_group_delivered(&conn, "m-g2", "b").unwrap());
+    assert_eq!(
+        super::ack_group_delivered(&conn, "m-g2", "b").unwrap(),
+        super::GroupAckOutcome::Applied
+    );
     assert_eq!(
         super::cancel_queued_group_message(&conn, "m-g2").unwrap(),
-        super::GroupMessageCancelOutcome::AlreadyDelivered,
+        super::GroupMessageCancelOutcome::AlreadyDelivered {
+            delivered: 0,
+            remaining: 0
+        },
         "有人收下了就只能撤回，不能假装「取消发送」"
     );
     assert_eq!(
         super::cancel_queued_group_message(&conn, "nope").unwrap(),
         super::GroupMessageCancelOutcome::NotFound
+    );
+}
+
+/// 清扫判死之后才到的 Ack：只改台账（`LateApplied`），不许把 failed 翻成 delivered。
+///
+/// 现实顺序：成员离线超时 ⇒ 清扫器把他的 pending 行置 failed（不删，保留证据）⇒
+/// 该成员其实收到了（半开链路对端已落库）⇒ 迟到 Ack 到达。若这里返回 `Applied`，
+/// 界面会收到第二条"已送达"事件，而库里那条消息早就是 failed。
+#[test]
+fn a_late_ack_after_sweeper_failure_only_updates_the_ledger() {
+    let conn = fresh_db();
+    ins_msg(&conn, "m-g4", "group:g1", "text", "清扫之后才到", 1);
+    conn.execute(
+        "INSERT INTO group_outbox(msg_id, group_id, peer_id, payload, created_at)
+         VALUES ('m-g4', 'g1', 'b', '{}', 1)",
+        [],
+    )
+    .unwrap();
+    assert_eq!(
+        super::mark_group_outbox_failed(&conn, "m-g4", "b").unwrap(),
+        1
+    );
+    conn.execute(
+        "UPDATE messages SET status = 'failed' WHERE msg_id = 'm-g4'",
+        [],
+    )
+    .unwrap();
+    assert_eq!(
+        super::ack_group_delivered(&conn, "m-g4", "b").unwrap(),
+        super::GroupAckOutcome::LateApplied,
+        "failed 行上的迟到 Ack 只记账"
+    );
+    let status: String = conn
+        .query_row(
+            "SELECT status FROM messages WHERE msg_id = 'm-g4'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(status, "failed", "本端判死的结论不会被对端迟到的 Ack 推翻");
+    let (delivered, _) = super::group_outbox_progress_counts(&conn, "m-g4").unwrap();
+    assert_eq!(delivered, 1, "台账要留下「他其实收到了」这一条证据");
+}
+
+/// 投递摘要：正常完成的消息不进摘要（墓碑已清），有尚未送达成员的消息才在。
+#[test]
+fn delivery_summaries_only_list_messages_with_unfinished_rows() {
+    let conn = fresh_db();
+    ins_msg(&conn, "m-g5", "group:g1", "text", "全部送达", 1);
+    ins_msg(&conn, "m-g6", "group:g1", "text", "还差一个", 2);
+    ins_msg(&conn, "m-g7", "group:g2", "text", "别的群", 3);
+    for (mid, gid, peer) in [
+        ("m-g5", "g1", "a"),
+        ("m-g6", "g1", "a"),
+        ("m-g6", "g1", "b"),
+        ("m-g7", "g2", "a"),
+    ] {
+        conn.execute(
+            "INSERT INTO group_outbox(msg_id, group_id, peer_id, payload, created_at)
+             VALUES (?1, ?2, ?3, '{}', 1)",
+            params![mid, gid, peer],
+        )
+        .unwrap();
+    }
+    assert_eq!(
+        super::ack_group_delivered(&conn, "m-g5", "a").unwrap(),
+        super::GroupAckOutcome::Applied
+    );
+    assert_eq!(
+        super::ack_group_delivered(&conn, "m-g6", "a").unwrap(),
+        super::GroupAckOutcome::Applied
+    );
+    let rows = super::group_message_delivery_summaries(&conn, "group:g1").unwrap();
+    assert_eq!(rows.len(), 1, "全部送达的那条必须已经从摘要里消失");
+    assert_eq!(rows[0].msg_id, "m-g6");
+    assert_eq!(
+        (
+            rows[0].delivered,
+            rows[0].pending,
+            rows[0].cancelled,
+            rows[0].failed
+        ),
+        (1, 1, 0, 0),
+        "摘要四个计数直接来自台账"
+    );
+    assert!(
+        super::group_message_delivery_summaries(&conn, "group:g2").unwrap()[0].pending == 1,
+        "别的群互不影响"
     );
 }
 

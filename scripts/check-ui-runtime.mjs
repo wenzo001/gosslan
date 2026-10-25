@@ -493,6 +493,9 @@ window.__probe = (() => {
         onOpenPanel: () => events.push(['open-panel']),
         // 标题栏头像（--only=chatheader）：点它必须 emit open-profile。
         onOpenProfile: () => events.push(['open-profile']),
+        // 回执那颗「重发」（--only=delivery）：取消/部分送达/失败三格的点击都必须落到账本上，
+        // 否则探针只能看到"命令有没有被调"，看不到"这一下到底有没有接上 emit"。
+        onRetry: () => events.push(['retry']),
         // 默认头像选择器（--only=avatar）：确认时把组合记进账本。
         onApply: (seed) => events.push(['apply', seed && seed.emoji, seed && seed.bg]),
         // 输入框那一族（--only=inputpanel）要读得到"这条到底带不带 @ 的名单"：
@@ -2898,6 +2901,7 @@ async function main() {
     const chatheader = want("chatheader");
     const scrollreact = want("scrollreact");
     const resend = want("resend");
+    const delivery = want("delivery");
     const touchroster = want("touchroster");
     const locale = want("locale");
     const rowpair = want("rowpair");
@@ -2962,6 +2966,7 @@ async function main() {
     if (chatheader) await runChatHeader(cdp, url);
     if (scrollreact) await runScrollReact(cdp, url);
     if (resend) await runResend(cdp, url);
+    if (delivery) await runDelivery(cdp, url);
     if (locale) await runLocale(cdp, url);
     if (rowpair) await runRowPair(cdp, url);
     if (msgovf) await runMsgOverflow(cdp, url);
@@ -10871,20 +10876,179 @@ async function runResend(cdp, url) {
   check("★ 载荷里没有 path ⇒ 那颗重发不渲染（没有可发的字节就不给按钮）",
     d.ok === true && d.btn && d.btn.found === false, "found=false", JSON.stringify(d));
 
-  // ── ⑤ 文本失败仍是原地复用那条（`retrySend.test.ts` 的运行时那一半）─────
+  // ── ⑤ 文本失败：走 resend_message（复用原 msg_id），不再新建一条 ───────
   await stubAll();
+  await cdp.eval(`window.__probe.stubApi('resendMessage', ${JSON.stringify({
+    id: 5, msg_id: "m-rs-5", conv_id: "p1", sender_id: "dev-me", receiver_id: "p1",
+    kind: "text", content: "在吗", ts: 1700000000000, seq: 1, status: "sent",
+  })})`);
   const e = await mountAndLocate({ msg_id: "m-rs-5", kind: "text", content: "在吗" });
   if (e.ok === true && e.btn && e.btn.found) {
     await cdp.click(e.btn.x, e.btn.y);
     await sleep(600);
-    check("文本失败重发仍走 send_message（恰好一次），且不碰文件通道",
-      (await calls("sendMessage")) === 1 && (await calls("sendFileAuto")) === 0,
-      "sendMessage=1 / sendFileAuto=0",
-      JSON.stringify({ text: await calls("sendMessage"), file: await calls("sendFileAuto") }));
+    check("★ 文本失败重发走 resend_message（复用原 msg_id），且不新建消息",
+      (await calls("resendMessage")) === 1 && (await calls("sendMessage")) === 0
+        && (await calls("sendFileAuto")) === 0,
+      "resendMessage=1 / sendMessage=0 / sendFileAuto=0",
+      JSON.stringify({
+        resend: await calls("resendMessage"),
+        text: await calls("sendMessage"),
+        file: await calls("sendFileAuto"),
+      }));
   } else {
-    check("文本失败重发仍走 send_message（恰好一次），且不碰文件通道", false,
+    check("★ 文本失败重发走 resend_message（复用原 msg_id），且不新建消息", false,
       "先要那颗按钮存在", JSON.stringify(e));
   }
+}
+
+/**
+ * 群消息的成员级投递台账角标 + 「按成员补发」（2026-10-25，Stage 3B）。
+ *
+ * 钉三件事：
+ * ① 角标只说**台账里的数**（已收到 N/M · 失败/取消的人数），全部送达时完全不出现；
+ * ② 部分送达/已取消那一格的「重发」按钮点下去走 `resend_group_delivery`，
+ *    不是 `send_message` / `resend_message`（后两者会把群会话当单聊对端）；
+ * ③ 那一格在视觉上看得见（warning 色），不是"只有一个静态图标"。
+ */
+async function runDelivery(cdp, url) {
+  await cdp.send("Page.navigate", { url });
+  await sleep(3_000);
+  await cdp.eval(PAGE_FIXTURE);
+
+  /** 挂一条群消息，并把那一格台账写进 store（组件只读 store，不许自己推）。 */
+  const mount = async (msgOver, delivery) => {
+    const msg = Object.assign({
+      id: -1, msg_id: "gm-probe", sender_id: "dev-me", receiver_id: "g1",
+      conv_id: "group:g1", kind: "text", content: "群里等回复",
+      ts: 1700000000000, seq: 1, status: "partial_cancelled",
+    }, msgOver);
+    const mounted = await cdp.eval("window.__probe.install('/src/components/MessageItem.vue', '', "
+      + JSON.stringify(JSON.stringify({ message: msg, isGroup: true, senderName: "我" })) + ")");
+    if (!mounted || mounted.ok !== true) return { ok: false, why: "install", mounted };
+    await cdp.eval("window.__probe.seedDevice('dev-me')");
+    await cdp.eval(`(async () => {
+      const S = await import('/src/stores/useChatStore.ts');
+      const chat = S.useChatStore();
+      chat.groupDeliveries['group:g1'] = ${JSON.stringify(delivery ? { [delivery.msg_id]: delivery } : {})};
+      return true;
+    })()`);
+    await sleep(300);
+    return { ok: true };
+  };
+
+  const readBadge = () => cdp.eval(`(async () => {
+    const I = await import('/src/i18n/index.ts');
+    const el = document.querySelector('[data-delivery]');
+    const btn = Array.from(document.querySelectorAll('button'))
+      .find((b) => b.getAttribute('aria-label') === I.t('msg.resend') && b.getClientRects().length > 0);
+    const r = btn && btn.getBoundingClientRect();
+    return {
+      text: el ? el.textContent.trim() : null,
+      title: el ? el.getAttribute('title') : null,
+      retry: !!btn,
+      retryPoint: r ? { x: Math.round(r.left + r.width / 2), y: Math.round(r.top + r.height / 2) } : null,
+      expectPending: I.t('msg.delivery.pending', { delivered: 2, total: 3 }),
+      expectCancelled: I.t('msg.delivery.cancelled', { delivered: 2, cancelled: 1 }),
+      expectDetail: I.t('msg.delivery.detail', { delivered: 2, pending: 0, cancelled: 1, failed: 0 }),
+      expectFailed: I.t('msg.delivery.failed', { failed: 2 }),
+    };
+  })()`);
+
+  /** 每条被点的命令都换成"只计数"的替身。 */
+  const stubAll = async () => {
+    for (const [name, payload] of [
+      ["resendGroupDelivery", { outcome: "resent", online: 1, offline: 1, remaining: 1 }],
+      ["resendMessage", { msg_id: "gm-probe", conv_id: "group:g1", sender_id: "dev-me", kind: "text", content: "x", ts: 1, seq: 1, status: "sent" }],
+      ["sendMessage", { msg_id: "m-new", conv_id: "group:g1", sender_id: "dev-me", kind: "text", content: "x", ts: 1, seq: 1, status: "sending" }],
+      ["sendGroupMessage", { msg_id: "m-new-g", conv_id: "group:g1", sender_id: "dev-me", kind: "text", content: "x", ts: 1, seq: 1, status: "sending" }],
+      ["getTransfers", []],
+      ["getContentTransfers", []],
+      ["getPendingMessageOperations", []],
+    ]) {
+      await cdp.eval(`window.__probe.stubApi(${JSON.stringify(name)}, ${JSON.stringify(payload)})`);
+    }
+    return true;
+  };
+  const calls = async (name) => cdp.eval(`window.__probe.apiCalls(${JSON.stringify(name)})`);
+  const events = async () => cdp.eval("window.__probe.events.slice()");
+
+  // ── ① 全部送达的墓碑已被后端清掉 ⇒ 角标不出现 ─────────────────────────
+  await stubAll();
+  const a = await mount({ msg_id: "gm-probe", status: "delivered" }, null);
+  const ra = a.ok ? await readBadge() : null;
+  check("全部送达（无台账行）时气泡旁不挂常驻数字", a.ok === true && ra && ra.text === null,
+    "text=null", JSON.stringify({ a, ra }));
+
+  // ── ② 还有成员没收：说进度（已收到 2/3）──────────────────────────────
+  const b = await mount({ msg_id: "gm-probe", status: "sent" },
+    { msg_id: "gm-probe", delivered: 2, pending: 1, cancelled: 0, failed: 0 });
+  const rb = b.ok ? await readBadge() : null;
+  check("★ 还有 1 人没收 ⇒ 角标说「已收到 2/3」（数字只来自台账）",
+    b.ok === true && rb && rb.text === rb.expectPending, "text=已收到 2/3",
+    JSON.stringify({ rb }));
+
+  // ── ③ 部分送达后被取消：角标有结论、重发可点，且走按成员补发 ──────────
+  const c = await mount({ msg_id: "gm-probe", status: "partial_cancelled" },
+    { msg_id: "gm-probe", delivered: 2, pending: 0, cancelled: 1, failed: 0 });
+  const rc = c.ok ? await readBadge() : null;
+  check("★ 已取消剩余 1 人 ⇒ 角标写「2 人已收到，1 人已取消」",
+    c.ok === true && rc && rc.text === rc.expectCancelled, "text=2 人已收到，1 人已取消",
+    JSON.stringify({ rc }));
+  if (rc && rc.retry && rc.retryPoint) {
+    await cdp.click(rc.retryPoint.x, rc.retryPoint.y);
+    await sleep(600);
+    check("★ 重发走 resend_group_delivery（不是单聊那两条命令）",
+      (await calls("resendGroupDelivery")) === 1 && (await calls("resendMessage")) === 0
+        && (await calls("sendMessage")) === 0 && (await calls("sendGroupMessage")) === 0,
+      "resendGroupDelivery=1 / 其余 0",
+      JSON.stringify({
+        group: await calls("resendGroupDelivery"),
+        dm: await calls("resendMessage"),
+        text: await calls("sendMessage"),
+        grp: await calls("sendGroupMessage"),
+      }));
+  } else {
+    check("★ 重发走 resend_group_delivery（不是单聊那两条命令）", false,
+      "先要那颗按钮存在", JSON.stringify({ rc }));
+  }
+
+  // ── ③b 回执那一层自己的契约：点重发必须 emit retry ───────────────────
+  // ⚠️ 必须**独立挂 MessageReceipt**：MessageItem 收到子组件的 retry 之后自己不再往外 emit
+  // （它直接调命令）⇒ 挂在 MessageItem 上数 retry 永远是 0，那是夹具错位，不是组件缺陷。
+  const receiptMount = await cdp.eval("window.__probe.install('/src/components/message/MessageReceipt.vue', '', "
+    + JSON.stringify(JSON.stringify({
+      state: "partial_cancelled", title: "部分成员已收到，其余已取消", isGroup: true, msgKey: "gm-probe",
+      retryable: true,
+      delivery: { msg_id: "gm-probe", delivered: 2, pending: 0, cancelled: 1, failed: 0 },
+    })) + ")");
+  await cdp.eval("window.__probe.seedDevice('dev-me')");
+  await sleep(300);
+  const rp = await cdp.eval(`(async () => {
+    const I = await import('/src/i18n/index.ts');
+    const btn = Array.from(document.querySelectorAll('button'))
+      .find((b) => b.getAttribute('aria-label') === I.t('msg.resend') && b.getClientRects().length > 0);
+    if (!btn) return { found: false };
+    const r = btn.getBoundingClientRect();
+    return { found: true, x: Math.round(r.left + r.width / 2), y: Math.round(r.top + r.height / 2) };
+  })()`);
+  if (receiptMount && receiptMount.ok === true && rp && rp.found) {
+    const before = (await events()).filter((e) => e[0] === "retry").length;
+    await cdp.click(rp.x, rp.y);
+    await sleep(400);
+    const after = (await events()).filter((e) => e[0] === "retry").length;
+    check("★ 回执那一格点下去 emit retry 一次", after === before + 1, "retry+1",
+      JSON.stringify({ before, after }));
+  } else {
+    check("★ 回执那一格点下去 emit retry 一次", false, "先要那颗按钮存在",
+      JSON.stringify({ receiptMount, rp }));
+  }
+
+  // ── ④ 清扫判死的成员：只说结论，不假装还能补发 ─────────────────────────
+  const d = await mount({ msg_id: "gm-probe", status: "failed" },
+    { msg_id: "gm-probe", delivered: 0, pending: 0, cancelled: 0, failed: 2 });
+  const rd = d.ok ? await readBadge() : null;
+  check("★ 2 人未送达 ⇒ 角标写「2 人未送达」", d.ok === true && rd && rd.text === rd.expectFailed,
+    "text=2 人未送达", JSON.stringify({ rd }));
 }
 
 async function runTasksMobile(cdp, url) {

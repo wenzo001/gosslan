@@ -123,9 +123,11 @@
             "门控必须排在自发消息分支之后，否则给自己发合并转发也会被挡"
         );
         // 挡在公钥查找之前：这条根本不会发出去，不该再触发 who_has 探测白等 1.2s。
+        // 2026-10-25：公钥那段抽成了 `peer_x25519`（`send_message` 与 `resend_message`
+        // 共用一套取钥与"库里那把 vs 在线自报"不一致告警）。锚点跟着挪到调用处。
         let probe = body
-            .find("let pubkey = {")
-            .expect("公钥查找块不见了，顺序判据失去锚点");
+            .find("let pubkey = peer_x25519(s, &friend_id).await;")
+            .expect("公钥查找不见了，顺序判据失去锚点");
         assert!(
             gate < probe,
             "门控要早于公钥探测，白探测一次会卡用户 1.2 秒"

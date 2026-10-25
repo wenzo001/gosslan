@@ -14,6 +14,7 @@ import {
   messageMentionsAll,
   messageMentionsMe,
   messageMentionsName,
+  normalizeSendState,
   pickMediaContent,
   preserveDeliveryStatus,
   previewBody,
@@ -1243,6 +1244,38 @@ test("promoteOnPeerRead：failed 与 recalled 是硬终态，回执点不动它�
   assert.equal(out.find((m) => m.msg_id === "f")?.status, "failed", "没发出去的话不许被点亮成已读");
   assert.equal(out.find((m) => m.msg_id === "r")?.status, "recalled", "撤回不许被点亮成已读");
 });
+
+// ==================== 取消是终态：迟到回执/缓存合并都不许点亮它（2026-10-25）====================
+//
+// 群消息的「部分送达后被取消」让这类消息长期留在列表里，而对方可能随后才真正读到。
+// 取消是**用户按下的动作**（INV-P26 把取消与失败分成两格）：它不该被任何"对方已读"的证据
+// 覆盖成绿勾 —— 库里那一笔永远是 cancelled，下一次重查又会跳回来，界面只会来回闪。
+test("promoteOnPeerRead：cancelled / partial_cancelled 不许被回执点亮", () => {
+  const out = promoteOnPeerRead(
+    [dr("c", "cancelled"), dr("p", "partial_cancelled")],
+    "me",
+    999,
+  );
+  assert.equal(out.find((m) => m.msg_id === "c")?.status, "cancelled");
+  assert.equal(out.find((m) => m.msg_id === "p")?.status, "partial_cancelled");
+});
+
+test("furthestStatus：取消态是粘滞的，任何合并都翻不回去", () => {
+  assert.equal(furthestStatus("cancelled", "read"), "cancelled", "已取消不许长回绿勾");
+  assert.equal(furthestStatus("cancelled", "delivered"), "cancelled");
+  assert.equal(furthestStatus("partial_cancelled", "read"), "partial_cancelled");
+  assert.equal(furthestStatus("sent", "partial_cancelled"), "partial_cancelled", "新的取消态要能落地");
+});
+
+test("normalizeSendState：已知状态原样、撤回挂空、其余走 unknown", () => {
+  for (const s of ["sending", "sent", "delivered", "read", "failed", "cancelled", "partial_cancelled"]) {
+    assert.equal(normalizeSendState(s), s);
+  }
+  assert.equal(normalizeSendState("recalled"), "hidden", "撤回由气泡本体表达，不挂回执");
+  assert.equal(normalizeSendState("queued"), "unknown", "不认识的取值必须看得见，不许空着");
+  assert.equal(normalizeSendState(null), "unknown");
+});
+
 
 test("promoteOnPeerRead：别人发的与超出回执时间的都不动", () => {
   const mine = dr("mine", "delivered", { ts: 500 });

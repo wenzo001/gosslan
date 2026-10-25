@@ -653,7 +653,13 @@ const CMDS = [
   ["mark_read", "chat", "conv_id str", "()|err"],
   ["send_message", "chat", "friend_id str; content str; kind str", "MessageRecord|err"],
   ["recall_message", "chat", "friend_id str; target str", "()|err"],
-  ["cancel_message", "chat", "conv_id str; msg_id str", "str|err"],
+  ["cancel_message", "chat", "conv_id str; msg_id str", "MessageCancelResult|err"],
+  // 1:1 原地重投（2026-10-25，计划 D1）：复用原 msg_id/ts/seq，接收端按 msg_id 幂等。
+  ["resend_message", "chat", "conv_id str; msg_id str", "MessageRecord|err"],
+  // 群消息的成员级投递台账（2026-10-25）：摘要给气泡角标，补发按成员重投**原信封**
+  // （接收端按 msg_id 幂等，已 Ack 的成员不会收到第二条）。
+  ["get_group_delivery_summaries", "chat", "conv_id str", "GroupDeliverySummary[]|err"],
+  ["resend_group_delivery", "chat", "conv_id str; msg_id str", "GroupResendResult|err"],
   ["set_message_render", "chat", "conv_id str; target str; mode str", "()|err"],
   ["set_conversation_pinned", "chat", "conv_id str; pinned bool", "()|err"],
   ["search_chat_history", "chat_search", "keyword str; sender_id str?; since_ms int?; until_ms int?", "ChatSearchGroup[]|err"],
@@ -683,6 +689,8 @@ const CMDS = [
   ["remove_favorite", "favorites", "id str", "()|err"],
   ["apply_macos_window_shape", "files", "dark bool", "()|err"],
   ["cancel_file_transfer", "files", "transfer_id str", "{cancelled bool, alreadyDone bool, notifiedPeer bool}|err"],
+  // 按 cid 拉取的内容取消（2026-10-25）：停接收器 + 内容台账落 Rejected(Cancelled)。
+  ["cancel_content_fetch", "files", "cid str", "{cancelled bool, alreadyDone bool, stopped int, ledgerCommitted bool}|err"],
   ["delete_file", "files", "path str", "()|err"],
   ["get_content_transfers", "files", "", "TransferRecord[]"],
   ["get_group_file_delivery_summary", "files", "transfer_id str", "GroupFileDeliverySummary?"],
