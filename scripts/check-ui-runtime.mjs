@@ -456,8 +456,17 @@ window.__probe = (() => {
     // 而且**必须走应用自己那份 todoLiveMap**（import 到的还是组件用的同一个模块实例）：
     // 在这里手写一遍"字母怎么拼、几位要缩短"就是给编号口径开第二个家，探针会先骗过自己。
     const extra = propsJson ? JSON.parse(propsJson) : {};
-    // 受控 v-model 的夹具开关（--only=select）：开了才把 modelValue 接进 state.selectValue，
-    // 其余段一律不注入 modelValue，避免给没有这个 prop 的组件多挂一条 fallthrough 属性。
+    // --only=scrollrestore 要模拟"同一个应用里的组件卸载再挂载"：第二次 install 必须
+    // 复用同一份 pinia（否则消息缓存跟着新 store 一起没了，量到的就不是滚动位置那条链）。
+    // 只在这个显式开关打开时复用，其余段仍是每次全新 store（既有判据的隔离性不变）。
+    if (extra.reusePinia && window.__pinia) pinia = window.__pinia;
+    delete extra.reusePinia;
+    // 可选宿主高度：滚动位置那一段要一个真实视口（否则 ChatWindow 的 h-full 在裸 div 里
+    // 会按内容长高，列表永远没有可滚动距离）。默认不设，其余段尺寸不变。
+    if (extra.hostHeight) {
+      host.style.height = String(extra.hostHeight);
+      delete extra.hostHeight;
+    }
     if (extra.liveModel) state.liveModel = true;
     delete extra.liveModel;
     // 通用夹具会给每个组件塞 open/initialKeyword/groupId。根节点恰好是 SelectRoot 时，
@@ -530,6 +539,9 @@ window.__probe = (() => {
     app.mount(host);
     window.__probe.vue = Vue;
     window.__probe.state = state;
+    // 卸载入口：滚动位置那一段要真的走 onBeforeUnmount（路由切走 = ChatWindow 卸载），
+    // 只把 DOM 换掉不会触发 Vue 的生命周期，保存动作就不会发生。
+    window.__probe.app = app;
     await Vue.nextTick(); await Vue.nextTick();
     document.addEventListener('click', () => { clickCount++; }, true);
     return { ok: true, cmp: cmpPath, pinia: !!pinia };
@@ -2882,6 +2894,10 @@ async function main() {
     const imgskel = want("imgskel");
     const imgload = want("imgload");
     const pinkb = want("pinkb");
+    const scrollrestore = want("scrollrestore");
+    const todosync = want("todosync");
+    const taskpaste = want("taskpaste");
+    const modaltitle = want("modaltitle");
     const inputpanel = want("inputpanel");
     const winsafe = want("winsafe");
     const logs = want("logs");
@@ -2941,6 +2957,10 @@ async function main() {
     if (want("imgretry")) await runImageRetryPace(cdp, url);
     if (want("mergeheight")) await runMergeCardHeight(cdp, url);
     if (pinkb) await runPinKeyboard(cdp, url);
+    if (scrollrestore) await runScrollRestore(cdp, url);
+    if (todosync) await runTodoSync(cdp, url);
+    if (taskpaste) await runTaskPaste(cdp, url);
+    if (modaltitle) await runModalTitle(cdp, url);
     if (inputpanel) await runInputPanels(cdp, url);
     if (winsafe) await runWindowSafe(cdp, url);
     if (logs) await runLogs(cdp, url);
@@ -3475,6 +3495,436 @@ async function runPinKeyboard(cdp, url) {
     await cdp.send("Emulation.setFocusEmulationEnabled", { enabled: false }).catch(() => {});
     await cdp.send("Emulation.clearDeviceMetricsOverride").catch(() => {});
   }
+}
+
+/**
+ * 单聊滚动位置跨挂载保留（--only=scrollrestore）。
+ *
+ * 用户 2026-10-25 实测：往上滑到历史 → 点对方资料 → 返回，视口又贴回底部。
+ * 根因是位置表长在 ChatWindow 的 `<script setup>` 里，资料页会把组件卸载 ⇒ 表随实例消失。
+ * 这一段用**真 ChatWindow + 真 store** 走两遍挂载：第一次滚到中间 → `app.unmount()`
+ * （真实触发 onBeforeUnmount 的保存）→ 复用同一份 pinia 重新挂载 ⇒ 必须落回离开时那一屏。
+ *
+ * ⚠️ 浏览器环境不是 WKWebView；这里证的是组件生命周期 + 位置表这条链，
+ * 真机滚动惯性 / 系统覆盖层仍属人工验收。
+ */
+async function runScrollRestore(cdp, url) {
+  await cdp.send("Emulation.setDeviceMetricsOverride", {
+    width: 1200, height: 800, deviceScaleFactor: 1, mobile: false,
+  });
+  await cdp.send("Page.navigate", { url });
+  await sleep(3_000);
+  await cdp.eval(PAGE_FIXTURE);
+  // 与 --only=pinb 同一份最小宿主替身：ChatWindow 在 setup 里无条件注册 drag-drop。
+  await cdp.eval(`(() => {
+    window.__TAURI_INTERNALS__ = {
+      metadata: {
+        currentWindow: { label: 'main' },
+        currentWebview: { label: 'main', windowLabel: 'main' },
+      },
+      invoke: async () => null,
+      transformCallback: (cb) => cb,
+      convertFileSrc: (p) => p,
+    };
+    if (!window.__TAURI_EVENT_PLUGIN_INTERNALS__) {
+      window.__TAURI_EVENT_PLUGIN_INTERNALS__ = { unregisterListener: () => {} };
+    }
+  })()`);
+  const mounted = await cdp.eval(
+    "window.__probe.install('/src/components/ChatWindow.vue', '', '{\"hostHeight\":\"800px\"}')",
+  );
+  check("ChatWindow 挂得起来（滚动位置这段的入口）",
+    !!mounted && mounted.ok === true, "install ok", JSON.stringify(mounted));
+
+  const seeded = await cdp.eval(`(async () => {
+    const { useChatStore } = await import('/src/stores/useChatStore.ts');
+    const chat = useChatStore();
+    const rows = [];
+    for (let i = 0; i < 30; i += 1) {
+      rows.push({
+        conv_id: 'peer-scroll', msg_id: 'm-scroll-' + i,
+        sender_id: i % 2 ? 'peer' : 'dev-me', sender_name: i % 2 ? '对方' : '我',
+        kind: 'text', content: ('第' + i + '条，用来把列表撑得足够长。').repeat(4),
+        status: 'sent', seq: i + 1, ts: 1700000000000 + i * 60000,
+      });
+    }
+    chat.activeConv = 'peer-scroll';
+    chat.messages['peer-scroll'] = rows;
+    await new Promise((r) => setTimeout(r, 500));
+    const el = document.querySelector('.vlist-no-anchor');
+    return { scrollH: el ? el.scrollHeight : 0, clientH: el ? el.clientHeight : 0 };
+  })()`);
+  check("种子消息把列表撑出可滚动高度（否则这一段量不到任何位移）",
+    !!seeded && seeded.scrollH > seeded.clientH + 400,
+    "scrollHeight > clientHeight + 400", JSON.stringify(seeded));
+
+  const backLabel = await cdp.eval(`(async () => {
+    const { t } = await import('/src/i18n/index.ts');
+    return t('chat.backToLatest');
+  })()`);
+
+  const scrolled = await cdp.eval(`(() => {
+    const el = document.querySelector('.vlist-no-anchor');
+    if (!el) return null;
+    el.scrollTop = Math.min(900, Math.max(0, el.scrollHeight - el.clientHeight - 200));
+    el.dispatchEvent(new Event('scroll', { bubbles: true }));
+    return { top: el.scrollTop, max: el.scrollHeight - el.clientHeight };
+  })()`);
+  await sleep(400);
+  const before = await cdp.eval(`(() => {
+    const el = document.querySelector('.vlist-no-anchor');
+    const back = [...document.querySelectorAll('button')]
+      .some((b) => (b.textContent || '').includes(${JSON.stringify(backLabel)}));
+    return { top: el ? el.scrollTop : -1, back };
+  })()`);
+  check("上滑后离开底部（「回到最新」按钮出现，读数与写入一致）",
+    !!scrolled && scrolled.top > 100 && before.back === true
+      && Math.abs(before.top - scrolled.top) <= 2,
+    "top>100 + 按钮可见 + 读数不漂", JSON.stringify({ scrolled, before }));
+
+  // 真实生命周期：卸载 → 保存；重挂载 → 读同一张模块级表。
+  await cdp.eval("window.__probe.app.unmount()");
+  await sleep(150);
+  const remounted = await cdp.eval(
+    "window.__probe.install('/src/components/ChatWindow.vue', '', '{\"reusePinia\":true,\"hostHeight\":\"800px\"}')",
+  );
+  check("第二次挂载复用了同一份 store（消息还在，量到的才是滚动那条链）",
+    !!remounted && remounted.ok === true && remounted.pinia === true,
+    "install ok + pinia reused", JSON.stringify(remounted));
+  await sleep(800);
+  const after = await cdp.eval(`(() => {
+    const el = document.querySelector('.vlist-no-anchor');
+    return el ? { top: el.scrollTop, max: el.scrollHeight - el.clientHeight } : null;
+  })()`);
+  check("卸载再挂载后落回离开时的位置（没有贴底）",
+    !!after && Math.abs(after.top - before.top) <= 8 && after.max - after.top > 150,
+    "scrollTop 与离开时相差 ≤8px 且离底部 >150px",
+    JSON.stringify({ before: before.top, after }));
+}
+
+/**
+ * 群任务卡片跟随实时数据（--only=todosync）。
+ *
+ * 用户 2026-10-25 实测：在任务面板里给任务加图片 / 改标题，聊天里那张卡片不变。
+ * 卡片载荷是创建那一刻的快照，后续改动走静默 `todo_update` ⇒ 这里用真 ChatWindow + 真 store
+ * 先渲染创建快照，再走 `enqueueMessage`（与后端 emit → 前端合并同一条路）投两次更新：
+ * 标题 / 描述 / 图片都必须在卡片上出现，且图片只画前 4 张 + 「查看更多」。
+ */
+async function runTodoSync(cdp, url) {
+  await cdp.send("Emulation.setDeviceMetricsOverride", {
+    width: 1200, height: 800, deviceScaleFactor: 1, mobile: false,
+  });
+  await cdp.send("Page.navigate", { url });
+  await sleep(3_000);
+  await cdp.eval(PAGE_FIXTURE);
+  await cdp.eval(`(() => {
+    window.__TAURI_INTERNALS__ = {
+      metadata: {
+        currentWindow: { label: 'main' },
+        currentWebview: { label: 'main', windowLabel: 'main' },
+      },
+      invoke: async () => null,
+      transformCallback: (cb) => cb,
+      convertFileSrc: (p) => p,
+    };
+    if (!window.__TAURI_EVENT_PLUGIN_INTERNALS__) {
+      window.__TAURI_EVENT_PLUGIN_INTERNALS__ = { unregisterListener: () => {} };
+    }
+  })()`);
+  const mounted = await cdp.eval(
+    "window.__probe.install('/src/components/ChatWindow.vue', '', '{\"hostHeight\":\"800px\"}')",
+  );
+  check("ChatWindow 挂得起来（任务卡实时同步的入口）",
+    !!mounted && mounted.ok === true, "install ok", JSON.stringify(mounted));
+
+  const initial = await cdp.eval(`(async () => {
+    const { useChatStore } = await import('/src/stores/useChatStore.ts');
+    const chat = useChatStore();
+    const conv = 'group:g1';
+    const base = { conv_id: conv, sender_id: 'dev-me', sender_name: '我', ts: 1700000000000 };
+    const creation = {
+      todo_id: 'todo-sync-1', number: 1, title: '旧标题', assignees: ['dev-me'],
+      status: 'todo', creator: 'dev-me', deleted: false, description: '', images: [],
+      archived: false, done_at: null,
+    };
+    chat.activeConv = conv;
+    chat.messages[conv] = [{ ...base, msg_id: 'm-todo-sync-1', kind: 'todo', seq: 1,
+      content: JSON.stringify(creation) }];
+    await new Promise((r) => setTimeout(r, 500));
+    const card = document.querySelector('[data-todo-card]');
+    return { text: card ? card.innerText : '' };
+  })()`);
+  check("创建快照先渲染出来（旧标题）",
+    !!initial && initial.text.includes('旧标题'), "含旧标题", JSON.stringify(initial));
+
+  const updated = await cdp.eval(`(async () => {
+    const { useChatStore } = await import('/src/stores/useChatStore.ts');
+    const chat = useChatStore();
+    const image = (i) => ({
+      id: 'img-' + i, name: '图' + i + '.png', size: 2048, subtype: 'image',
+      sha256: String(i).repeat(64).slice(0, 64),
+    });
+    chat.enqueueMessage({
+      conv_id: 'group:g1', sender_id: 'dev-me', sender_name: '我',
+      msg_id: 'm-todo-sync-2', kind: 'todo_update', seq: 2, ts: 1700000001000,
+      content: JSON.stringify({
+        todo_id: 'todo-sync-1', number: 1, title: '新标题', assignees: ['dev-me'],
+        status: 'doing', creator: 'dev-me', deleted: false, description: '新说明',
+        images: [image(1), image(2)], archived: false, done_at: null,
+      }),
+    });
+    await new Promise((r) => setTimeout(r, 700));
+    const card = document.querySelector('[data-todo-card]');
+    return card ? {
+      text: card.innerText,
+      thumbs: card.querySelectorAll('[role="button"].h-20').length,
+    } : null;
+  })()`);
+  check("任务面板改了标题/描述/图片 ⇒ 聊天卡片立即更新（不再是创建快照）",
+    !!updated && updated.text.includes('新标题') && !updated.text.includes('旧标题')
+      && updated.text.includes('新说明') && updated.thumbs === 2,
+    "含新标题+新说明、不含旧标题、2 张缩略图", JSON.stringify(updated));
+
+  const many = await cdp.eval(`(async () => {
+    const { useChatStore } = await import('/src/stores/useChatStore.ts');
+    const chat = useChatStore();
+    const image = (i) => ({
+      id: 'img-' + i, name: '图' + i + '.png', size: 2048, subtype: 'image',
+      sha256: String(i).repeat(64).slice(0, 64),
+    });
+    chat.enqueueMessage({
+      conv_id: 'group:g1', sender_id: 'dev-me', sender_name: '我',
+      msg_id: 'm-todo-sync-3', kind: 'todo_update', seq: 3, ts: 1700000002000,
+      content: JSON.stringify({
+        todo_id: 'todo-sync-1', number: 1, title: '新标题', assignees: ['dev-me'],
+        status: 'doing', creator: 'dev-me', deleted: false, description: '新说明',
+        images: [1, 2, 3, 4, 5].map(image), archived: false, done_at: null,
+      }),
+    });
+    await new Promise((r) => setTimeout(r, 700));
+    const { t } = await import('/src/i18n/index.ts');
+    const more = t('todo.viewMoreImages');
+    const card = document.querySelector('[data-todo-card]');
+    return card ? {
+      thumbs: card.querySelectorAll('[role="button"].h-20').length,
+      more: [...document.querySelectorAll('button')]
+        .some((b) => (b.textContent || '').trim().startsWith(more)),
+    } : null;
+  })()`);
+  check("再加图片也实时长出来：只画 4 张 + 出现「查看更多」",
+    !!many && many.thumbs === 4 && many.more === true,
+    "4 张缩略图 + 查看更多", JSON.stringify(many));
+}
+
+/**
+ * 群任务图片：只有图片区被聚焦时 Ctrl+V 才收图（--only=taskpaste）。
+ *
+ * 用户 2026-10-25 实测：焦点在「标题」输入框（光标闪）时按 Ctrl+V，剪贴板里的截图被加进图片区。
+ * 粘贴挂在 document 上，所以必须由组件自己判焦点。这一段用真 GroupTasksBoard + 真草稿弹窗：
+ *   ① 聚焦标题 → 投一次带图片的 paste ⇒ 后端落盘接口一次都不许被调、图片区仍为空；
+ *   ② 点图片区（进入可粘贴态）→ 同一份 paste ⇒ 恰好一次落盘、图片区出现 1 张。
+ */
+async function runTaskPaste(cdp, url) {
+  await cdp.send("Emulation.setDeviceMetricsOverride", {
+    width: 1200, height: 800, deviceScaleFactor: 1, mobile: false,
+  });
+  await cdp.send("Page.navigate", { url });
+  await sleep(3_000);
+  await cdp.eval(PAGE_FIXTURE);
+  await cdp.eval(`(() => {
+    window.__TAURI_INTERNALS__ = {
+      metadata: {
+        currentWindow: { label: 'main' },
+        currentWebview: { label: 'main', windowLabel: 'main' },
+      },
+      invoke: async () => null,
+      transformCallback: (cb) => cb,
+      convertFileSrc: (p) => p,
+    };
+    if (!window.__TAURI_EVENT_PLUGIN_INTERNALS__) {
+      window.__TAURI_EVENT_PLUGIN_INTERNALS__ = { unregisterListener: () => {} };
+    }
+  })()`);
+  // 先挂一个不依赖群资料的组件，把页面那份 pinia 建出来（裸宿主没有活动 pinia，
+  // 直接 import store 会报 "no active Pinia"）。随后真看板复用同一份 store。
+  await cdp.eval(`window.__probe.install('/src/components/MessageItem.vue', '', ${
+    JSON.stringify(JSON.stringify({
+      message: { msg_id: 'warm-paste', conv_id: 'warm', sender_id: 'dev-me', kind: 'text', content: 'warm', ts: 1, seq: 1 },
+    }))})`);
+  // 看板首屏会读任务行；裸浏览器里 invoke 返回 null ⇒ 整块被错误态替换、草稿入口消失。
+  // 只把这一条读接口替成空列表，其余（草稿、粘贴、落盘）全走生产码。
+  await cdp.eval(`(async () => {
+    const { api } = await import('/src/api/index.ts');
+    const { useChatStore } = await import('/src/stores/useChatStore.ts');
+    const chat = useChatStore();
+    const group = { id: 'group-paste', name: '探针群', creator: 'dev-me', members: ['dev-me'] };
+    api.getGroupTodoMessages = async () => [];
+    // 看板/成员名会触发群资料与好友关系重拉；裸浏览器的 invoke 返回 null 会把 store
+    // 里的数组覆盖成 null（组件随即在 groups.find 上崩）。这三条读接口给空数据集。
+    api.getGroups = async () => [group];
+    api.getGroupReads = async () => [];
+    api.getFriends = async () => [];
+    api.getPeers = async () => [];
+    // 真实宿主里这份群资料由启动 bulk 读填好；裸挂看板要自己给一行，
+    // 否则组件在 chat.groups.find 上就崩了（那是夹具缺前置，不是产品问题）。
+    chat.groups = [group];
+  })()`);
+  const mounted = await cdp.eval(`window.__probe.install('/src/components/GroupTasksBoard.vue', '', ${
+    JSON.stringify(JSON.stringify({ reusePinia: true, groupId: 'group-paste', open: true, fill: true }))})`);
+  check("群任务看板挂得起来（粘贴焦点这条判据的入口）",
+    !!mounted && mounted.ok === true, "install ok", JSON.stringify(mounted));
+  await cdp.eval(`(() => {
+    window.__errs = [];
+    window.addEventListener('error', (e) => window.__errs.push(String((e.error && e.error.stack) || e.message)));
+    window.addEventListener('unhandledrejection', (e) => window.__errs.push(String((e.reason && e.reason.stack) || e.reason)));
+    const ce = console.error;
+    console.error = (...a) => { window.__errs.push(a.map(String).join(' ')); ce.apply(console, a); };
+  })()`);
+
+  const createLabel = await cdp.eval(`(async () => {
+    const { t } = await import('/src/i18n/index.ts');
+    return t('todo.create');
+  })()`);
+  const opened = await cdp.eval(`(() => {
+    const b = [...document.querySelectorAll('button')]
+      .find((x) => (x.textContent || '').trim() === ${JSON.stringify(createLabel)});
+    if (!b) return false;
+    b.click();
+    return true;
+  })()`);
+  await sleep(400);
+
+  // 只替换"落盘 + 取元数据"这两个边界：其余全是组件自己的粘贴链路。
+  const stubbed = await cdp.eval(`(async () => {
+    const { api } = await import('/src/api/index.ts');
+    window.__pasteCalls = 0;
+    api.saveTodoImageBytes = async () => {
+      window.__pasteCalls += 1;
+      return '/tmp/probe-paste.png';
+    };
+    api.importPickedFile = async (p) => p;
+    api.todoImageMeta = async () => ({
+      id: 'probe-sha', name: 'probe.png', size: 1024, subtype: 'image',
+      sha256: String(window.__pasteCalls || 1).repeat(64).slice(0, 64),
+    });
+    const title = document.querySelector('input[maxlength="200"]');
+    if (!title) {
+      const store = (await import('/src/stores/useChatStore.ts')).useChatStore();
+      return {
+        ok: false,
+        groups: Array.isArray(store.groups) ? store.groups.length : String(store.groups),
+        inputs: [...document.querySelectorAll('input')].map((i) => ({ max: i.maxLength, ph: i.placeholder })).slice(0, 8),
+        dialogs: document.querySelectorAll('[role="dialog"]').length,
+        buttons: [...document.querySelectorAll('button')].map((b) => (b.textContent || '').trim()).filter(Boolean).slice(-12),
+        errs: (window.__errs || []).slice(-4),
+        tail: (document.body.innerText || '').slice(-200),
+      };
+    }
+    title.focus();
+    return { ok: true, active: document.activeElement === title };
+  })()`);
+  check("草稿已打开且焦点在标题输入框（复现用户那一刻）",
+    opened === true && stubbed && stubbed.ok === true && stubbed.active === true,
+    "draft open + title focused", JSON.stringify({ opened, stubbed }));
+
+  const pasteImage = async (waitMs = 500) => cdp.eval(`(async () => {
+    const file = new File([new Uint8Array([137, 80, 78, 71])], 'probe.png', { type: 'image/png' });
+    const dt = new DataTransfer();
+    dt.items.add(file);
+    const ev = new Event('paste', { bubbles: true, cancelable: true });
+    Object.defineProperty(ev, 'clipboardData', { value: dt });
+    document.dispatchEvent(ev);
+    await new Promise((r) => setTimeout(r, ${waitMs}));
+    const zone = document.querySelector('[data-todo-image-zone]');
+    return {
+      calls: window.__pasteCalls,
+      thumbs: zone ? zone.querySelectorAll('[role="button"].h-20').length : 0,
+      active: document.activeElement ? document.activeElement.tagName : null,
+    };
+  })()`);
+
+  const inTitle = await pasteImage();
+  check("焦点在标题框时按 Ctrl+V：图片不进任务（落盘接口零调用、图片区仍为空）",
+    !!inTitle && inTitle.calls === 0 && inTitle.thumbs === 0,
+    "calls=0 + thumbs=0", JSON.stringify(inTitle));
+
+  const armed = await cdp.eval(`(() => {
+    const zone = document.querySelector('[data-todo-image-zone]');
+    const b = zone ? zone.querySelector('button') : null;
+    if (!b) return { ok: false };
+    b.click();
+    return { ok: document.activeElement === zone };
+  })()`);
+  await sleep(150);
+  check("点图片区后焦点落在图片区（进入可粘贴态）",
+    !!armed && armed.ok === true, "activeElement = 图片区", JSON.stringify(armed));
+
+  const inZone = await pasteImage();
+  check("焦点在图片区时同一份 Ctrl+V：恰好一次落盘、图片区出现 1 张",
+    !!inZone && inZone.calls === 1 && inZone.thumbs === 1,
+    "calls=1 + thumbs=1", JSON.stringify(inZone));
+
+  // 上限 20 张：继续投 24 次（总计 25），第 20 张之后必须既不落盘也不再加图。
+  for (let i = 0; i < 24; i += 1) await pasteImage(80);
+  const capped = await cdp.eval(`(() => {
+    const zone = document.querySelector('[data-todo-image-zone]');
+    return {
+      calls: window.__pasteCalls,
+      thumbs: zone ? zone.querySelectorAll('[role="button"].h-20').length : 0,
+    };
+  })()`);
+  check("图片上限 20 张：第 21 张起不再落盘、也不再增加图片",
+    !!capped && capped.calls === 20 && capped.thumbs === 20,
+    "落盘 20 次 + 图片区 20 张", JSON.stringify(capped));
+}
+
+/**
+ * 弹窗标题的长串截断（--only=modaltitle）。
+ *
+ * 用户 2026-10-25 实测：群任务标题是一长串无空格字符时，Popover 标题把弹窗撑出屏幕边缘。
+ * 判真几何：标题高度 ≤ 2 行、卡片没有横向溢出、完整标题仍留在 title 属性里可悬浮查看。
+ */
+async function runModalTitle(cdp, url) {
+  await cdp.send("Emulation.setDeviceMetricsOverride", {
+    width: 900, height: 700, deviceScaleFactor: 1, mobile: false,
+  });
+  await cdp.send("Page.navigate", { url });
+  await sleep(3_000);
+  await cdp.eval(PAGE_FIXTURE);
+  const longTitle = "R1 " + "1".repeat(300);
+  const mounted = await cdp.eval(`window.__probe.install('/src/components/BaseModal.vue', '', ${
+    JSON.stringify(JSON.stringify({ open: true, title: longTitle, width: "max-w-lg" }))})`);
+  check("BaseModal 挂得起来（长标题这一格的入口）",
+    !!mounted && mounted.ok === true, "install ok", JSON.stringify(mounted));
+  await sleep(400);
+  const measured = await cdp.eval(`(() => {
+    const dialog = document.querySelector('[role="dialog"]');
+    const h3 = dialog ? dialog.querySelector('h3') : null;
+    const card = h3 ? h3.closest('.elevated') : null;
+    if (!h3 || !card) return null;
+    const cs = getComputedStyle(h3);
+    const lineH = parseFloat(cs.lineHeight) || 24;
+    const r = h3.getBoundingClientRect();
+    const c = card.getBoundingClientRect();
+    return {
+      titleH: +r.height.toFixed(1),
+      titleRight: +r.right.toFixed(1),
+      cardRight: +c.right.toFixed(1),
+      cardOverflowX: card.scrollWidth - card.clientWidth,
+      lineH,
+      titleAttr: (h3.getAttribute('title') || '').length,
+      textLen: (h3.textContent || '').length,
+      viewport: innerWidth,
+    };
+  })()`);
+  check("长串标题最多两行、卡片没有横向溢出，完整标题仍在 title 属性里",
+    !!measured
+      && measured.titleH <= measured.lineH * 2 + 2
+      && measured.cardOverflowX <= 1
+      && measured.titleAttr > 300
+      && measured.cardRight <= measured.viewport,
+    "标题高 ≤2 行 + 卡片 scrollWidth 不超 + title 持有全串",
+    JSON.stringify(measured));
 }
 
 /**
@@ -9856,6 +10306,18 @@ async function runSettingsMobile(cdp, url) {
       mounted && mounted.ok === true && s.hasList && s.scrollW <= s.vw + 1 && s.outside.length === 0,
       "列表可见 + scrollWidth<=vw + outside=0", JSON.stringify({ mounted, s }));
 
+    // 用户 2026-10-25（第 4 版）：一级列表必须是 4 组且顺序 = 通用 / 网络 / 文件与存储 / 关于。
+    const groupLabels = await cdp.eval(`(async () => {
+      const { t } = await import('/src/i18n/index.ts');
+      return [t('settings.group.general'), t('settings.item.network'),
+        t('settings.item.storageFiles'), t('settings.item.about')];
+    })()`);
+    const groups = await cdp.eval(`(() => [...document.querySelectorAll('[data-settings-scroll] .uppercase')]
+      .map((e) => (e.textContent || '').trim()).filter(Boolean))()`);
+    check("移动端设置：一级列表是 4 组，顺序为 通用 / 网络 / 文件与存储 / 关于",
+      JSON.stringify(groups) === JSON.stringify(groupLabels),
+      JSON.stringify(groupLabels), JSON.stringify(groups));
+
     const clicked = await cdp.eval(`(() => {
       const b = [...document.querySelectorAll('button')]
         .find((x) => (x.textContent || '').trim().includes('外观'));
@@ -10040,6 +10502,23 @@ async function runSettingsMobile(cdp, url) {
       drift.found === true && Array.isArray(drift.scrollers) && drift.scrollers.length === 1,
       "从卡片往上只有 1 个 overflow-y 滚动祖先",
       JSON.stringify(drift.scrollers));
+
+    // 用户 2026-10-25：中继/中转卡片最后一行下面还挂着一道短横线。判外壳的运行时结果，
+    // 不判源码里有没有那条 class —— 分隔线由 SettingsRow 画、由 SettingsGroup 隐藏。
+    const dividers = await cdp.eval(`(() => {
+      const groups = [...document.querySelectorAll('[data-settings-rows]')];
+      const offenders = [];
+      for (const g of groups) {
+        const last = g.lastElementChild;
+        if (last && last.classList.contains('h-px') && getComputedStyle(last).display !== 'none') {
+          offenders.push(getComputedStyle(last).display);
+        }
+      }
+      return { groups: groups.length, offenders };
+    })()`);
+    check("移动端设置·网络页：每张卡最后一行都不画分隔线（末行分隔线 computed display=none）",
+      !!dividers && dividers.groups >= 3 && dividers.offenders.length === 0,
+      "至少 3 张设置卡 + 没有可见的末行分隔线", JSON.stringify(dividers));
 
     // 资料页与设置二级页同一口径的页边距（用户 2026-10-23：「个人资料周围没有边距」）。
     // 量的是同一张卡在**两个不同页面**上的 left 相等 —— 只比类名是抓不住「有一页忘了 p-4」的。
@@ -10882,6 +11361,31 @@ async function runResend(cdp, url) {
   const b = await mountAndLocate({ msg_id: "m-rs-2", status: "cancelled" });
   check("已取消的图片行也长出可点的重发（取消不是错误，但同样要能恢复）",
     b.ok === true && b.btn && b.btn.found === true, "found=true", JSON.stringify(b));
+  // 用户 2026-10-25：旧图标是一道「禁止」斜线（Ban），看不出"这条没发出去、已经停了"。
+  // 新图标是红色圆形感叹号（AlertCircle = 圆 + 竖线 + 点，共 1 圆 2 线）。
+  const iconShape = await cdp.eval(`(async () => {
+    const { t } = await import('/src/i18n/index.ts');
+    const label = t('msg.resend');
+    const btn = [...document.querySelectorAll('button')]
+      .find((x) => (x.getAttribute('aria-label') || '') === label);
+    if (!btn) return null;
+    const svg = btn.querySelector('svg');
+    const probe = document.createElement('span');
+    probe.style.color = 'var(--gosslan-danger-ink)';
+    document.body.appendChild(probe);
+    const expected = getComputedStyle(probe).color;
+    probe.remove();
+    return {
+      circles: svg ? svg.querySelectorAll('circle').length : 0,
+      lines: svg ? svg.querySelectorAll('line').length : 0,
+      color: getComputedStyle(btn).color,
+      expected,
+    };
+  })()`);
+  check("重发标记是红色圆形感叹号（AlertCircle：1 圆 2 线 + danger 色）",
+    !!iconShape && iconShape.circles === 1 && iconShape.lines === 2
+      && iconShape.color === iconShape.expected,
+    "1 circle + 2 lines + danger-ink 色", JSON.stringify(iconShape));
   if (b.ok && b.btn && b.btn.found) {
     await cdp.click(b.btn.x, b.btn.y);
     await sleep(600);
