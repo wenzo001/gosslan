@@ -4,6 +4,52 @@
 // - ⚠️ 包含 open_settings/open_log/open_group_todos/open_link 四个辅助窗口命令
 // ---------------- 运行日志 ----------------
 
+/// 上一轮运行的结构化报告（崩溃横幅 / 启动失败提示用）。
+///
+/// 报告在 `AppState::init` 里由 `Logger::seed_previous_run` 算好，这里只 clone，
+/// 不做文件 IO —— 启动路径不该再等一次磁盘。
+#[tauri::command(async)]
+pub fn get_previous_exit(state: tauri::State<'_, Arc<AppState>>) -> crate::logging::PreviousRunReport {
+    state.previous_exit.clone()
+}
+
+/// 一键重启（与托盘「重启」同一个入口）：有界收尾 → 销毁单实例锁 → 重启。
+///
+/// 立即返回：真正的收尾/重启在独立线程里做，前端不需要等（也等不到 —— 进程会重启）。
+#[tauri::command(async)]
+pub fn restart_app(app: tauri::AppHandle) -> Result<(), String> {
+    crate::restart::request_restart(&app);
+    Ok(())
+}
+
+/// 前端主窗口心跳：当前在途操作 + 窗口是否可见。看门狗据此判断渲染层是否卡死。
+///
+/// 这是**唯一**允许每秒发一次的 IPC；它不进前端的 invoke 追踪表（否则自我递归）。
+#[tauri::command(async)]
+pub fn ui_heartbeat(
+    state: tauri::State<'_, Arc<AppState>>,
+    current_op: Option<String>,
+    active: bool,
+) {
+    state
+        .ui_heartbeat_ms
+        .store(crate::logging::now_ms(), std::sync::atomic::Ordering::SeqCst);
+    state
+        .ui_heartbeat_active
+        .store(active, std::sync::atomic::Ordering::SeqCst);
+    *state.ui_current_op.lock().unwrap_or_else(|e| e.into_inner()) =
+        current_op.map(|s| s.chars().take(120).collect());
+}
+
+/// 前端慢调用上报（>2 s）：只写一行日志，不回传事件（避免形成回环）。
+#[tauri::command(async)]
+pub fn report_frontend_slow_op(state: tauri::State<'_, Arc<AppState>>, cmd: String, ms: u64) {
+    let cmd: String = cmd.chars().take(80).collect();
+    state
+        .logger
+        .warn("ui", format!("code=SLOW_OP cmd={cmd} ms={ms}"));
+}
+
 /// 读取内存中的运行日志（时间正序：旧 → 新）。
 ///
 /// `since_secs = Some(N)` 只返回最近 N 秒内的日志；None / 0 = 返回全部。

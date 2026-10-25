@@ -33,7 +33,7 @@ use objc2_core_bluetooth::{
 use objc2_foundation::{
     NSArray, NSData, NSDictionary, NSError, NSNumber, NSObject, NSObjectProtocol, NSString,
 };
-use std::convert::TryInto;
+
 use std::{
     collections::HashMap,
     fmt::{self, Debug, Formatter},
@@ -438,8 +438,16 @@ define_class!(
                 .and_then(|name| name.downcast::<NSString>().ok())
                 .and_then(|name| unsafe { nsstring_to_string(&*name as *const NSString) });
 
+            // GOSSLAN PATCH (2026-10-25): 可空弱引用；retain 失败就跳过这次广播，
+            // 不让一条过期回调 abort 整个进程。
+            let Some(cbperipheral) =
+                (unsafe { Retained::retain(peripheral as *const _ as *mut _) })
+            else {
+                warn!("ignoring discovered peripheral: retain returned null");
+                return;
+            };
             self.send_event(CentralDelegateEvent::DiscoveredPeripheral {
-                cbperipheral: unsafe { Retained::retain(peripheral as *const _ as *mut _) }.unwrap(),
+                cbperipheral,
                 advertisement_name,
             });
 
@@ -451,18 +459,24 @@ define_class!(
             let manufacturer_data = adv_data.objectForKey(unsafe { CBAdvertisementDataManufacturerDataKey });
             if let Some(manufacturer_data) = manufacturer_data {
                 // SAFETY: manufacturer_data is `NSData`
-                let manufacturer_data = manufacturer_data.downcast::<NSData>().unwrap();
+                if let Ok(manufacturer_data) = manufacturer_data.downcast::<NSData>() {
+                    if manufacturer_data.len() >= 2 {
+                        let manufacturer_data_vec = manufacturer_data.to_vec();
+                        let (manufacturer_id, manufacturer_data) =
+                            manufacturer_data_vec.split_at(2);
+                        // split_at(2) 保证正好 2 字节；不用 try_into().unwrap()。
+                        let mut id_bytes = [0u8; 2];
+                        id_bytes.copy_from_slice(manufacturer_id);
 
-                if manufacturer_data.len() >= 2 {
-                    let manufacturer_data_vec = manufacturer_data.to_vec();
-                    let (manufacturer_id, manufacturer_data) = manufacturer_data_vec.split_at(2);
-
-                    self.send_event(CentralDelegateEvent::ManufacturerData {
-                        peripheral_uuid,
-                        manufacturer_id: u16::from_le_bytes(manufacturer_id.try_into().unwrap()),
-                        data: Vec::from(manufacturer_data),
-                        rssi: rssi_value,
-                    });
+                        self.send_event(CentralDelegateEvent::ManufacturerData {
+                            peripheral_uuid,
+                            manufacturer_id: u16::from_le_bytes(id_bytes),
+                            data: Vec::from(manufacturer_data),
+                            rssi: rssi_value,
+                        });
+                    }
+                } else {
+                    warn!("ignoring manufacturer data with unexpected type");
                 }
             }
 
@@ -473,7 +487,10 @@ define_class!(
 
                 let mut result = HashMap::new();
                 for uuid in service_data.keys() {
-                    let data = service_data.objectForKey(&uuid).unwrap();
+                    // GOSSLAN PATCH: 键在遍历中被移除时不要 unwrap。
+                    let Some(data) = service_data.objectForKey(&uuid) else {
+                        continue;
+                    };
                     result.insert(cbuuid_to_uuid(&uuid), data.to_vec());
                 }
 
@@ -503,9 +520,8 @@ define_class!(
 
             let tx_power_level = adv_data
                 .objectForKey(unsafe { CBAdvertisementDataTxPowerLevelKey })
-                .map(|val| {
-                    val.downcast::<NSNumber>().unwrap().as_i16()
-                });
+                .and_then(|val| val.downcast::<NSNumber>().ok())
+                .map(|val| val.as_i16());
 
             if let Some(tx_power_level) = tx_power_level {
                 self.send_event(CentralDelegateEvent::TxPowerLevel {
@@ -989,18 +1005,18 @@ fn get_descriptor_value(descriptor: &CBDescriptor) -> Vec<u8> {
         }
 
         match clazz.name().to_bytes() {
-            b"NSString" => {
-                let d: Retained<NSString> = value.downcast().unwrap();
-                d.to_string().into_bytes()
-            }
-            b"NSData" => {
-                let d: Retained<NSData> = value.downcast().unwrap();
-                d.to_vec()
-            }
-            b"NSNumber" => {
-                let d: Retained<NSNumber> = value.downcast().unwrap();
-                d.stringValue().to_string().into_bytes()
-            }
+            b"NSString" => value
+                .downcast::<NSString>()
+                .map(|d| d.to_string().into_bytes())
+                .unwrap_or_default(),
+            b"NSData" => value
+                .downcast::<NSData>()
+                .map(|d| d.to_vec())
+                .unwrap_or_default(),
+            b"NSNumber" => value
+                .downcast::<NSNumber>()
+                .map(|d| d.stringValue().to_string().into_bytes())
+                .unwrap_or_default(),
             _ => {
                 error!("Unknown descriptor value class: {:?}", clazz);
                 Vec::new()

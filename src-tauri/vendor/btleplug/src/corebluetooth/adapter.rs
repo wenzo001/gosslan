@@ -263,7 +263,13 @@ impl Central for Adapter {
                 let central_state = get_central_state(state);
                 return Ok(central_state.clone());
             }
-            _ => panic!("Shouldn't get anything but a AdapterState!"),
+            // GOSSLAN PATCH (2026-10-25): 迟到/重复的适配器状态回执不能让整个进程 abort
+            // （release 是 panic = "abort"；一条过期回执不值得陪葬整个应用）。
+            other => {
+                return Err(Error::RuntimeError(format!(
+                    "unexpected adapter state reply: {other:?}"
+                )))
+            }
         }
     }
 }

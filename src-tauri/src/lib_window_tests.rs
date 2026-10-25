@@ -978,3 +978,83 @@
             );
         }
     }
+
+    /// 卡死看门狗必须**被接上**，而且只接一处（逻辑全绿 ≠ 被接上）。
+    #[test]
+    fn watchdog_is_wired_exactly_once_after_state_is_managed() {
+        let lib = include_str!("lib.rs");
+        let calls = lib.matches("watchdog::start(").count();
+        assert_eq!(calls, 1, "watchdog::start 必须恰好一处（现在 {calls} 处）");
+        let manage = lib.find("app.manage(state.clone())").expect("manage 调用");
+        let start = lib.find("watchdog::start(").expect("start 调用");
+        assert!(manage < start, "必须 manage 之后再起看门狗（它要读 state）");
+        let wd = include_str!("watchdog.rs");
+        assert!(wd.contains("code=HANG"), "看门狗必须写 HANG 现场");
+        assert!(wd.contains("HANG_END"), "恢复时必须写 HANG_END");
+        assert!(wd.contains("show_if_enabled"), "渲染层完全卡死时必须发系统通知");
+        assert!(wd.contains("set_watchdog_tooltip"), "卡死时托盘 tooltip 要改");
+    }
+
+    /// 重启顺序：先写退出路标、先销毁单实例锁，再 re-exec；托盘必须共用同一个入口。
+    #[test]
+    fn restart_destroys_lock_and_marks_exit_before_reexec() {
+        let src = include_str!("restart.rs");
+        let destroy = src
+            .find("tauri_plugin_single_instance::destroy(&app)")
+            .expect("destroy 调用");
+        let marker = src.find("write_exit_marker()").expect("退出路标");
+        let restart = src.find("app.restart()").expect("restart 调用");
+        assert!(
+            destroy < restart,
+            "destroy 必须早于 app.restart（否则新进程会被旧 socket 直接顶掉）"
+        );
+        assert!(marker < restart, "先写正常退出路标，下一轮才不误报崩溃");
+        assert!(
+            src.contains("process::restart(&env)"),
+            "兜底线程必须用 process::restart（macOS bundle 的重启在它里面）"
+        );
+        assert!(src.contains("EXIT_SEEN"), "兜底必须用 EXIT_SEEN 防二次 spawn");
+        let tray = include_str!("tray.rs");
+        assert!(
+            tray.contains("crate::restart::request_restart(app)"),
+            "托盘「重启」必须共用同一入口"
+        );
+        assert!(
+            !tray.contains("app.restart();"),
+            "托盘不许再自己 restart（会绕过有界收尾与兜底）"
+        );
+    }
+
+    /// 文件重组不再用 expect 结束进程；重复完成时按失败收尾。
+    #[test]
+    fn file_relay_duplicate_completion_cannot_abort_the_process() {
+        let src = include_str!("file_relay.rs");
+        assert!(
+            !src.contains(r#"expect("刚拿_mut过")"#),
+            "重组完成路径不许再有 expect（release 是 panic=abort）"
+        );
+        assert!(
+            src.contains("let Some(r) = self.reassemblies.remove(transfer_id) else"),
+            "必须走安全分支"
+        );
+        assert!(
+            src.contains("重组状态丢失（重复完成）"),
+            "失败原因要可读"
+        );
+    }
+
+    /// 心跳/慢调用命令必须接到看门狗的输入字段上（不是只加命令不接线）。
+    #[test]
+    fn ui_heartbeat_feeds_the_watchdog() {
+        let cmd = include_str!("commands/logs.rs");
+        assert!(cmd.contains("ui_heartbeat_ms"));
+        assert!(cmd.contains("ui_heartbeat_active"));
+        assert!(cmd.contains("ui_current_op"));
+        let state = include_str!("state.rs");
+        assert!(
+            state.contains("pub ui_heartbeat_ms"),
+            "AppState 必须有心跳字段"
+        );
+        let wd = include_str!("watchdog.rs");
+        assert!(wd.contains("ui_heartbeat_ms"), "看门狗必须读心跳字段");
+    }

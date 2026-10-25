@@ -511,6 +511,14 @@ window.__probe = (() => {
         // 编辑器上只有 token 的 DOM，载荷才有 mentionIds ⇒ 没有 onSend 就只能看 DOM 猜。
         onSend: (p) => events.push(['send', JSON.stringify(p)]),
         onAttach: () => events.push(['attach']),
+        // 崩溃横幅 / 卡顿提示（--only=crashnotice / hangnotice）：
+        // 组件只 emit，动作接线在 App.vue；探针在这里记账。
+        onCopy: () => events.push(['copy']),
+        onOpenLogs: () => events.push(['open-logs']),
+        onRestart: () => events.push(['restart']),
+        onReEnableBle: () => events.push(['re-enable-ble']),
+        onDismiss: () => events.push(['dismiss']),
+        onWait: () => events.push(['wait']),
         }),
         // TodoPickField 的 v-model：把选中值记进账本（--only=todopick）。
         'onUpdate:modelValue': (v) => {
@@ -2763,6 +2771,106 @@ async function keyOnce(cdp, name, press) {
   return { at, after };
 }
 
+/**
+ * --only=crashnotice：上一轮崩溃横幅（panic + bleSuspect 正例）。
+ * `clean/no_history` 不渲染由 `crashReport.test.ts` 的 shouldShowCrashNotice 守；
+ * 这里证明"信息真的渲染出来 + 五个动作各自 emit 一次 + 不挡界面"。
+ */
+async function runCrashNotice(cdp, url) {
+  await cdp.send("Emulation.setDeviceMetricsOverride", {
+    width: 1200, height: 800, deviceScaleFactor: 1, mobile: false,
+  });
+  await cdp.send("Page.navigate", { url });
+  await sleep(3_000);
+  await cdp.eval(PAGE_FIXTURE);
+  const report = {
+    kind: "panic",
+    code: "BOOT_PREV_PANIC",
+    at: "2026-10-25 10:37:38",
+    version: "5.10.1",
+    panic: {
+      location: "vendor/btleplug/src/corebluetooth/internal.rs:351:17",
+      message: "We should still have a future at this point!",
+    },
+    hang: { seconds: 42, lastOp: "send_message", ended: false },
+    recentPanicCount: 3,
+    bleSuspect: true,
+    crashLog: "/tmp/logs/gosslan-crash.log",
+    logDir: "/tmp/logs",
+  };
+  const props = JSON.stringify(JSON.stringify({ report, mobile: false }));
+  const r = await cdp.eval(`(async () => {
+    const H = window.__probe;
+    H.reset();
+    const mounted = await H.install('/src/components/CrashNotice.vue', '', ${props});
+    const i18n = await import('/src/i18n/index.ts');
+    const notice = document.querySelector('.crash-notice');
+    const card = document.querySelector('.crash-card');
+    const text = document.body.innerText;
+    const buttons = [...document.querySelectorAll('.crash-btn')];
+    for (const b of buttons) b.click();
+    return {
+      mounted: !!mounted && mounted.ok === true,
+      hasCard: !!card,
+      text,
+      code: text.includes('BOOT_PREV_PANIC'),
+      location: text.includes('internal.rs:351:17'),
+      ble: text.includes(i18n.t('crash.bleHeld')),
+      hang: text.includes(i18n.t('crash.hang', { seconds: 42, op: 'send_message' })),
+      pointerOuter: notice ? getComputedStyle(notice).pointerEvents : null,
+      pointerCard: card ? getComputedStyle(card).pointerEvents : null,
+      buttons: buttons.length,
+      events: JSON.stringify(H.events),
+    };
+  })()`);
+  check("崩溃横幅：挂载并渲染出卡片", r.mounted && r.hasCard, "card", JSON.stringify(r).slice(0, 400));
+  check("崩溃横幅：显示 code 与崩溃位置", r.code && r.location, "code + location", r.text.slice(0, 300));
+  check("崩溃横幅：蓝牙熔断提示与上次卡死秒数都在", r.ble && r.hang, "bleHeld + hang", r.text.slice(0, 400));
+  check("崩溃横幅：外层不挡界面、卡片可点",
+    r.pointerOuter === "none" && r.pointerCard === "auto", "none / auto", `${r.pointerOuter} / ${r.pointerCard}`);
+  check("崩溃横幅：五个动作各 emit 一次（顺序固定）",
+    r.events === JSON.stringify([["copy"], ["open-logs"], ["restart"], ["re-enable-ble"], ["dismiss"]]),
+    "5 次", r.events);
+}
+
+/** --only=hangnotice：卡顿条的 10s 档 / 30s 档与两个动作。 */
+async function runHangNotice(cdp, url) {
+  await cdp.send("Emulation.setDeviceMetricsOverride", {
+    width: 1200, height: 800, deviceScaleFactor: 1, mobile: false,
+  });
+  await cdp.send("Page.navigate", { url });
+  await sleep(3_000);
+  await cdp.eval(PAGE_FIXTURE);
+  const p1 = JSON.stringify(JSON.stringify({ label: "send_message", seconds: 12, escalated: false, mobile: false }));
+  const p2 = JSON.stringify(JSON.stringify({ label: "send_message", seconds: 31, escalated: true, mobile: false }));
+  const r = await cdp.eval(`(async () => {
+    const H = window.__probe;
+    H.reset();
+    const i18n = await import('/src/i18n/index.ts');
+    const m1 = await H.install('/src/components/HangNotice.vue', '', ${p1});
+    const text1 = document.body.innerText;
+    const buttons = [...document.querySelectorAll('.hang-btn')];
+    for (const b of buttons) b.click();
+    const events1 = JSON.stringify(H.events);
+    const m2 = await H.install('/src/components/HangNotice.vue', '', ${p2});
+    const text2 = document.body.innerText;
+    return {
+      m1: !!m1 && m1.ok === true,
+      m2: !!m2 && m2.ok === true,
+      text1,
+      text2,
+      expect1: i18n.t('hang.body', { op: 'send_message', seconds: 12 }),
+      expect2: i18n.t('hang.escalated', { seconds: 31 }),
+      buttons: buttons.length,
+      events1,
+    };
+  })()`);
+  check("卡顿条：10s 档文案 = op + 12 秒", r.m1 && r.text1.includes(r.expect1), r.expect1, r.text1.slice(0, 300));
+  check("卡顿条：30s 档升级成更重的文案", r.m2 && r.text2.includes(r.expect2), r.expect2, r.text2.slice(0, 300));
+  check("卡顿条：只有继续等待/重启两个动作，各自 emit 一次",
+    r.buttons === 2 && r.events1 === JSON.stringify([["wait"], ["restart"]]), "2 次", `${r.buttons} 个按钮 / ${r.events1}`);
+}
+
 async function main() {
   const chrome = findChrome();
   if (!chrome) {
@@ -2931,6 +3039,8 @@ async function main() {
     const contactfilter = want("contactfilter");
     const navicon = want("navicon");
     const menufit = want("menufit");
+    const crashnotice = want("crashnotice");
+    const hangnotice = want("hangnotice");
     if (emoji) await runEmoji(cdp, url);
     if (search) await runSearch(cdp, url);
     if (ctxmenu) await runCtxMenu(cdp, url);
@@ -2994,6 +3104,8 @@ async function main() {
     if (pasteframe) await runPasteFrame(cdp, url);
     if (errtext) await runErrorText(cdp, url);
     if (touchroster) await runTouchRoster(cdp, url);
+    if (crashnotice) await runCrashNotice(cdp, url);
+    if (hangnotice) await runHangNotice(cdp, url);
     process.exitCode = results.every((r) => r.ok) ? 0 : 1;
     exitCode = process.exitCode;
   } catch (e) {

@@ -613,3 +613,48 @@
           opacity: 0.75;
         }
       }
+
+/* ---- 启动失败面（boot.ts 的 i18n 版；骨架本身就是不透明全屏层） ---- */
+.boot-failure {
+  max-width: 560px;
+  margin: 12vh auto 0;
+  padding: 20px 22px;
+  border: 1px solid var(--gosslan-danger, #d64545);
+  border-radius: 14px;
+  background: var(--gosslan-card, #fff);
+  color: var(--gosslan-text, #1b1b1f);
+  box-shadow: 0 12px 32px rgb(0 0 0 / 18%);
+  font: 14px/1.6 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+}
+.boot-failure-title {
+  font-weight: 700;
+  font-size: 16px;
+  color: var(--gosslan-danger, #d64545);
+}
+.boot-failure-body {
+  margin: 10px 0 0;
+}
+.boot-failure-detail {
+  margin: 10px 0 0;
+  padding: 8px;
+  border-radius: 8px;
+  background: var(--gosslan-hover, #f4f4f6);
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-size: 12px;
+  max-height: 180px;
+  overflow: auto;
+}
+.boot-failure-actions {
+  display: flex;
+  gap: 8px;
+  margin-top: 12px;
+}
+.boot-failure-btn {
+  padding: 6px 12px;
+  border: 1px solid var(--gosslan-border, #ccc);
+  border-radius: 8px;
+  background: var(--gosslan-hover, #f4f4f6);
+  color: var(--gosslan-text, #1b1b1f);
+  cursor: pointer;
+}

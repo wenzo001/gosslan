@@ -27,7 +27,8 @@ import {
 } from "@/i18n";
 import { isMac } from "@/utils/platform";
 import { pushToast, type ToastKind } from "@/utils/toastManager";
-import type { AppSettings, ChannelStatus, DeviceInfo, InterfaceInfo, RelayPolicy, RuntimeSnapshot } from "@/types";
+import type { AppSettings, ChannelStatus, DeviceInfo, InterfaceInfo, PreviousRunReport, RelayPolicy, RuntimeSnapshot } from "@/types";
+import { decideBleAutostart } from "@/utils/crashLoop";
 import { safeStorageBackend, storageGet, storageRemove, storageSet } from "../utils/safeStorage.ts";
 
 export type { AppearanceMode };
@@ -351,6 +352,11 @@ export const useAppStore = defineStore("app", () => {
   const channels = ref<ChannelStatus[]>([]);
   /** 最近一次运行状态快照（`ble`/`peerCount` 这类只有快照才有的字段从这里读）。 */
   const runtime = ref<RuntimeSnapshot | null>(null);
+  /** 上一轮崩溃报告（启动时异步拉取；**不阻塞** init）。 */
+  const previousExit = ref<PreviousRunReport | null>(null);
+  /** 本次启动是否因"上次在蓝牙模块崩溃"暂停自动开启（权威快照字段）。 */
+  const bleAutostartHeld = computed(() => runtime.value?.bleAutostartHeld ?? null);
+  let previousReportPromise: Promise<PreviousRunReport | null> | null = null;
 
   /**
    * 通道开关的「正在切换」标记（key = 通道名），只给 UI 一个 loading 态用。
@@ -394,6 +400,22 @@ export const useAppStore = defineStore("app", () => {
   }
 
   /**
+   * 等上一轮报告最多 `ms` 毫秒；超时给 `null`（调用方按 **fail-closed** 处理）。
+   *
+   * 只给蓝牙自动开启用：那条路径在启动后 2 s 才跑，可以等一小会儿；
+   * 但绝不能把启动本身拖住 —— `init` 只启动 promise，不 await 它。
+   */
+  async function waitPreviousExit(ms: number): Promise<PreviousRunReport | null> {
+    if (previousExit.value) return previousExit.value;
+    const p = previousReportPromise;
+    if (!p) return null;
+    return await Promise.race([
+      p,
+      new Promise<null>((resolve) => window.setTimeout(() => resolve(null), ms)),
+    ]);
+  }
+
+  /**
    * 按需拉起蓝牙通道（幂等、绝不抛错）。
    *
    * 「像 BitChat 一样默认就开」在**体验**上仍然成立：首次安装 bt_enabled 缺省为开，这里就会
@@ -406,7 +428,7 @@ export const useAppStore = defineStore("app", () => {
    * 通道必然没在跑，若拿 running 判就会把"用户明确关掉"重新打开。
    */
   let bluetoothEnsureTried = false;
-  async function ensureBluetoothOn() {
+  async function ensureBluetoothOn(opts: { manual?: boolean } = {}) {
     if (bluetoothEnsureTried) return;
     try {
       // 快照还没到（首次安装 / 极早的调用）时先拉一次，别把"尚未加载"误判成"用户关了"。
@@ -414,6 +436,24 @@ export const useAppStore = defineStore("app", () => {
       const ch = channels.value.find((c) => c.channel === "bluetooth");
       // 拿不到通道状态 ⇒ 不置位，留给下一次调用（打开「添加好友」/网络设置）重试。
       if (!ch) return;
+      if (!opts.manual) {
+        // 崩溃循环熔断（用户 2026-10-25 拍板）：上一轮崩在蓝牙、或报告读不到（fail-closed）
+        // ⇒ 本次自动路径不拉起。**不置 `bluetoothEnsureTried`**：手动入口仍要能走。
+        let report = previousExit.value;
+        if (!report) report = await waitPreviousExit(800);
+        const decision = decideBleAutostart({
+          manual: false,
+          heldReason: runtime.value?.bleAutostartHeld ?? null,
+          report,
+          reportUnreadable: report === null,
+        });
+        if (!decision.start) {
+          void api
+            .logFrontendError("ble-held", `code=BLE_AUTOSTART_HELD reason=${decision.reason}`)
+            .catch(() => {});
+          return;
+        }
+      }
       bluetoothEnsureTried = true;
       // 用户明确关掉 ⇒ 永远不要自动拉起（本 bug 的修复点）。
       if (!ch.preferred) return;
@@ -741,6 +781,19 @@ export const useAppStore = defineStore("app", () => {
     appInitScope?.dispose();
     const scope = createInitScope();
     appInitScope = scope;
+    // 上一轮报告：**不 await**。启动路径不能为一次日志读取等待；需要它的只有
+    // 蓝牙自动开启（2 s 后）与崩溃横幅（首屏之后）。失败按 fail-closed 处理蓝牙。
+    previousExit.value = null;
+    previousReportPromise = api
+      .getPreviousExit()
+      .then((r) => {
+        previousExit.value = r;
+        return r;
+      })
+      .catch((e) => {
+        console.error("[app] 上一轮崩溃报告读取失败（本次蓝牙按 fail-closed 处理）", e);
+        return null;
+      });
     // 平台标记：供 CSS 按平台差异化（如 macOS 恢复系统 overlay 滚动条）
     if (typeof document !== "undefined") {
       document.documentElement.classList.toggle("platform-mac", isMac);
@@ -1006,6 +1059,9 @@ export const useAppStore = defineStore("app", () => {
   return {
     channels,
     runtime,
+    previousExit,
+    bleAutostartHeld,
+    waitPreviousExit,
     refreshRuntime,
     ensureBluetoothOn,
     setChannelEnabled,

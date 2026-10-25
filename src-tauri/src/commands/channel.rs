@@ -98,6 +98,11 @@ pub async fn build_runtime_snapshot(s: &Arc<AppState>) -> RuntimeSnapshot {
         ble: BleRuntimeFacts {
             feature_compiled: cfg!(feature = "bluetooth"),
         },
+        ble_autostart_held: s
+            .ble_autostart_hold
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone(),
         peer_count,
         routed_endpoints,
         relay: crate::state::RelayRuntimeStatus {
@@ -298,6 +303,14 @@ pub async fn set_channel_enabled(
             #[cfg(feature = "bluetooth")]
             {
                 apply_bluetooth_switch(s, enabled).await?;
+                // 显式开启成功 = 用户已经决定再用蓝牙 ⇒ 清掉"上次崩溃后的自动暂停"。
+                // 自动路径不会走到这条命令（前端闸在 `ensureBluetoothOn`），所以这里
+                // 是**唯一**的清除点。
+                if enabled {
+                    *s.ble_autostart_hold
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner()) = None;
+                }
             }
             #[cfg(not(feature = "bluetooth"))]
             {

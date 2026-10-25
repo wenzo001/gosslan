@@ -342,6 +342,8 @@ pub struct Logger {
     degrade_noted: std::sync::atomic::AtomicBool,
     /// 落盘行计数，用于 [`LOG_RETRY_BACKOFF_LINES`] 的退避窗口节流。
     append_lines: std::sync::atomic::AtomicU64,
+    /// 上一轮的结构化报告：`seed_previous_run` 算一次，命令只 clone。
+    previous_report: OnceLock<PreviousRunReport>,
 }
 
 /// 这个 IO 错误是不是"盘满"类。
@@ -382,9 +384,224 @@ pub enum PreviousExit {
     SilentKill,
 }
 
+/// 上一次运行留给本次启动的结构化报告（启动时算一次，命令只 clone）。
+///
+/// 为什么不让前端解析 `get_logs`：内存环只有 500 条、上一轮种子最多 120 行，
+/// 而判定句是中文文本；`clear_logs` 还会把证据清掉。这里一次算成字段，前端只读字段。
+#[derive(Clone, Serialize, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct PreviousRunReport {
+    /// `panic` | `silent_kill` | `startup_failed` | `clean` | `no_history`
+    pub kind: String,
+    /// 机器码（`BOOT_PREV_*`），用于检索/口述。
+    pub code: String,
+    /// 上一轮启动时刻（现场文件里的 UTC 文本）。
+    pub at: Option<String>,
+    /// 上一轮的版本号。
+    pub version: Option<String>,
+    /// 崩溃位置与消息（panic / 分配失败留痕）。
+    pub panic: Option<PanicDetail>,
+    /// 上一轮是否卡死过（有 HANG 记录）。
+    pub hang: Option<HangDetail>,
+    /// 这次现场窗口里能数到的 panic 条数（用于"最近第 N 次"）。
+    pub recent_panic_count: u32,
+    /// 崩溃点是否落在蓝牙模块（决定本次是否暂停蓝牙自动开启）。
+    pub ble_suspect: bool,
+    pub crash_log: String,
+    pub log_dir: String,
+}
+
+impl Default for PreviousRunReport {
+    fn default() -> Self {
+        Self {
+            kind: "no_history".to_string(),
+            code: "BOOT_PREV_NO_HISTORY".to_string(),
+            at: None,
+            version: None,
+            panic: None,
+            hang: None,
+            recent_panic_count: 0,
+            ble_suspect: false,
+            crash_log: String::new(),
+            log_dir: String::new(),
+        }
+    }
+}
+
+#[derive(Clone, Serialize, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct PanicDetail {
+    /// `vendor/btleplug/src/corebluetooth/internal.rs:351:17`
+    pub location: String,
+    /// panic 消息（有界，来自现场文件）。
+    pub message: String,
+}
+
+#[derive(Clone, Serialize, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct HangDetail {
+    pub seconds: u64,
+    pub last_op: Option<String>,
+    /// 是否已配对写出 `HANG_END`（没配对 ⇒ 上次是卡着退出的）。
+    pub ended: bool,
+}
+
+/// 卡死记录的两种原生行（写现场用，不参与"上一轮怎么结束"的判定）。
+fn is_hang_native_line(line: &str) -> bool {
+    line.starts_with(">>> code=HANG ") || line.starts_with(">>> code=HANG_END ")
+}
+
+/// 从一行现场文本里取 panic 位置与消息。
+///
+/// 两种形状都要认：
+/// - 没有 logger 时的独立通道：`>>> panic @ file:line:col：message`
+/// - 有 logger 时崩溃块里的上下文行：`[dev:…] … error [panic] panic @ file:…：message`
+pub fn parse_panic_line(line: &str) -> Option<PanicDetail> {
+    let rest = &line[line.find("panic @ ")? + "panic @ ".len()..];
+    let (location, message) = rest
+        .split_once('：')
+        .or_else(|| rest.rsplit_once(": "))
+        .unwrap_or((rest, ""));
+    let location = location.trim();
+    if location.is_empty() {
+        return None;
+    }
+    Some(PanicDetail {
+        location: location.to_string(),
+        message: message.trim().to_string(),
+    })
+}
+
+fn ble_marker(s: &str) -> bool {
+    let l = s.to_ascii_lowercase();
+    l.contains("vendor/btleplug") || l.contains("corebluetooth") || l.contains("network/ble")
+}
+
+fn panic_ble_suspect(d: &PanicDetail) -> bool {
+    ble_marker(&d.location) || ble_marker(&d.message)
+}
+
+fn hang_ble_suspect(op: &str) -> bool {
+    let l = op.to_ascii_lowercase();
+    l.contains("bluetooth") || l.contains("ble.")
+}
+
+fn field_u64(s: &str, key: &str) -> Option<u64> {
+    s.split_whitespace()
+        .find_map(|p| p.strip_prefix(key)?.parse().ok())
+}
+
+fn field_str(s: &str, key: &str) -> Option<String> {
+    s.split_whitespace()
+        .find_map(|p| p.strip_prefix(key).map(|v| v.to_string()))
+}
+
+fn parse_hang(lines: &[String]) -> Option<HangDetail> {
+    let (idx, seconds, last_op) = lines
+        .iter()
+        .enumerate()
+        .filter_map(|(i, l)| {
+            let rest = l.strip_prefix(">>> code=HANG ")?;
+            Some((
+                i,
+                field_u64(rest, "seconds=").unwrap_or(0),
+                field_str(rest, "last_op="),
+            ))
+        })
+        .next_back()?;
+    let ended = lines[idx + 1..]
+        .iter()
+        .any(|l| l.starts_with(">>> code=HANG_END "));
+    Some(HangDetail {
+        seconds,
+        last_op,
+        ended,
+    })
+}
+
+/// 取现场文件里**最后一次启动之后**的那一段（后面可能还跟着本轮刚写的启动行）。
+fn last_run_slice(lines: &[String]) -> &[String] {
+    let current = lines
+        .iter()
+        .rposition(|l| l.starts_with("----- 启动 "))
+        .unwrap_or(lines.len());
+    let prev = lines[..current]
+        .iter()
+        .rposition(|l| l.starts_with("----- 启动 "));
+    // 从**上一轮的启动行本身**开始切：版本/时刻就写在那一条上。
+    let start = prev.unwrap_or(0);
+    &lines[start..current]
+}
+
+/// 把上一轮现场算成结构化报告。纯函数（路径只拼字符串），可单测。
+pub fn build_previous_run_report(
+    raw: &[String],
+    crash_log: &std::path::Path,
+    log_dir: &std::path::Path,
+) -> PreviousRunReport {
+    let run = last_run_slice(raw);
+    let run_native: Vec<String> = run
+        .iter()
+        .filter(|l| is_crash_native_line(l))
+        .cloned()
+        .collect();
+    let kind = classify_previous_exit(&run_native);
+    let (kind_s, code) = match kind {
+        PreviousExit::Panic => ("panic", "BOOT_PREV_PANIC"),
+        PreviousExit::StartupFailed => ("startup_failed", "BOOT_PREV_STARTUP_FAILED"),
+        PreviousExit::SilentKill => ("silent_kill", "BOOT_PREV_SILENT_KILL"),
+        PreviousExit::Clean => ("clean", "BOOT_PREV_CLEAN"),
+        PreviousExit::NoHistory => ("no_history", "BOOT_PREV_NO_HISTORY"),
+    };
+    let mut report = PreviousRunReport {
+        kind: kind_s.to_string(),
+        code: code.to_string(),
+        crash_log: crash_log.display().to_string(),
+        log_dir: log_dir.display().to_string(),
+        ..Default::default()
+    };
+    if let Some(start) = run.iter().rev().find(|l| l.starts_with("----- 启动 ")) {
+        let rest = start.trim_start_matches("----- 启动 ");
+        let (at, tail) = match rest.split_once(" 版本 ") {
+            Some((a, t)) => (a, t),
+            None => (rest, ""),
+        };
+        report.at = Some(at.trim().to_string()).filter(|s| !s.is_empty());
+        // 版本号后面紧跟分隔符（`·` 的具体码位不值得在代码里赌）：取第一个空白词。
+        report.version = tail
+            .split_whitespace()
+            .next()
+            .map(|s| s.to_string())
+            .filter(|s| !s.is_empty());
+    }
+    if let Some(p) = run.iter().rev().find_map(|l| parse_panic_line(l)) {
+        report.ble_suspect = panic_ble_suspect(&p);
+        report.panic = Some(p);
+    }
+    report.hang = parse_hang(run);
+    if !report.ble_suspect {
+        if let Some(op) = report.hang.as_ref().and_then(|h| h.last_op.as_ref()) {
+            report.ble_suspect = hang_ble_suspect(op);
+        }
+    }
+    report.recent_panic_count = run
+        .iter()
+        .filter(|l| l.contains("panic @ "))
+        .count()
+        .min(u32::MAX as usize) as u32;
+    report
+}
+
 /// 按现场文件的原生路标序列判定上一轮的结束方式。输入应是**已剔掉本轮"启动"行**
 /// 的那一段（见 [`Logger::seed_previous_run`]）。
 pub fn classify_previous_exit(native_lines: &[String]) -> PreviousExit {
+    // 卡死记录（`code=HANG` / `HANG_END`）不参与"怎么结束"的判定：它们是正交事实，
+    // 由 `PreviousRunReport.hang` 单独表达；留在序列里会让最后一条变成 HANG ⇒ NoHistory。
+    let lines: Vec<&String> = native_lines
+        .iter()
+        .filter(|l| !is_hang_native_line(l))
+        .collect();
+    let native_lines = &lines[..];
     if native_lines.is_empty() {
         return PreviousExit::NoHistory;
     }
@@ -449,6 +666,7 @@ impl Logger {
             disk_low: std::sync::atomic::AtomicBool::new(false),
             degrade_noted: std::sync::atomic::AtomicBool::new(false),
             append_lines: std::sync::atomic::AtomicU64::new(0),
+            previous_report: OnceLock::new(),
         };
         // 把路径交给独立写入器（若 bootstrap 更早绑过，这条就是 no-op；只认第一次）
         bind_crash_file(&logger.crash_path());
@@ -547,6 +765,11 @@ impl Logger {
     /// 那两条路标对上（同一份现场文件里可能混着两三台实例的启动记录）。
     pub fn run_id(&self) -> &str {
         &self.run_id
+    }
+
+    /// 上一轮的结构化报告（`seed_previous_run` 算好后写入；没算过时给 `no_history`）。
+    pub fn previous_run_report(&self) -> PreviousRunReport {
+        self.previous_report.get().cloned().unwrap_or_default()
     }
 
     /// 落盘失败累计次数（含磁盘不足主动跳过的）。
@@ -950,6 +1173,11 @@ impl Logger {
         }
         if seeded.is_empty() && !crash_native_exists(&self.crash_path()) {
             // 盘上什么都没有时不造"上一轮"标题。
+            let _ = self.previous_report.set(PreviousRunReport {
+                crash_log: self.crash_path().display().to_string(),
+                log_dir: self.dir.display().to_string(),
+                ..Default::default()
+            });
             return 0;
         }
 
@@ -970,9 +1198,17 @@ impl Logger {
             out.extend(seeded);
         }
         // 最后一条启动路标是本轮 `Logger::new` 刚写的，剔掉才算上一轮。
-        let mut native: Vec<String> = read_tail_lines(&self.crash_path(), PREV_CRASH_TAIL_BYTES)
-            .into_iter()
+        let raw = read_tail_lines(&self.crash_path(), PREV_CRASH_TAIL_BYTES);
+        // 结构化报告要在剔掉本轮启动行**之前**算：`last_run_slice` 自己按启动行切段。
+        let _ = self.previous_report.set(build_previous_run_report(
+            &raw,
+            &self.crash_path(),
+            &self.dir,
+        ));
+        let mut native: Vec<String> = raw
+            .iter()
             .filter(|l| is_crash_native_line(l))
+            .cloned()
             .collect();
         if native
             .last()
@@ -2147,5 +2383,100 @@ mod tests {
             assert_eq!(mode(&dir.join(name)), 0o600, "{name} 必须在构造时收紧");
         }
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    fn lines(v: &[&str]) -> Vec<String> {
+        v.iter().map(|s| (*s).to_string()).collect()
+    }
+
+    #[test]
+    fn previous_run_report_extracts_panic_and_ble_marker() {
+        let raw = lines(&[
+            "----- 启动 2026-10-25 10:30:00 版本 5.10.1 · macos-aarch64 · release · 设备 [dev:test] · 运行 aa -----",
+            ">>> panic @ vendor/btleplug/src/corebluetooth/internal.rs:351:17：We should still have a future at this point!",
+            "----- 启动 2026-10-25 10:40:00 版本 5.11.1 · macos-aarch64 · debug · 设备 [dev:test] · 运行 bb -----",
+        ]);
+        let r = build_previous_run_report(
+            &raw,
+            std::path::Path::new("/x/crash.log"),
+            std::path::Path::new("/x"),
+        );
+        assert_eq!(r.kind, "panic");
+        assert_eq!(r.code, "BOOT_PREV_PANIC");
+        assert_eq!(r.version.as_deref(), Some("5.10.1"));
+        assert_eq!(r.at.as_deref(), Some("2026-10-25 10:30:00"));
+        let p = r.panic.expect("必须解析出崩溃位置");
+        assert!(p.location.ends_with("internal.rs:351:17"), "{}", p.location);
+        assert!(r.ble_suspect);
+        assert_eq!(r.recent_panic_count, 1);
+        assert_eq!(r.crash_log, "/x/crash.log");
+    }
+
+    #[test]
+    fn previous_run_report_clean_and_startup_failed() {
+        let clean = lines(&[
+            "----- 启动 2026-10-25 10:30:00 版本 5.11.1 · macos-aarch64 · debug · 设备 [dev:test] · 运行 aa -----",
+            "----- 正常退出 2026-10-25 10:35:00 运行 aa -----",
+            "----- 启动 2026-10-25 10:40:00 版本 5.11.1 · macos-aarch64 · debug · 设备 [dev:test] · 运行 bb -----",
+        ]);
+        let r =
+            build_previous_run_report(&clean, std::path::Path::new("c"), std::path::Path::new("d"));
+        assert_eq!(r.kind, "clean");
+        assert!(!r.ble_suspect);
+        assert!(r.panic.is_none());
+
+        let failed = lines(&[
+            "----- 启动 2026-10-25 10:30:00 版本 5.11.1 · macos-aarch64 · debug · 设备 [dev:test] · 运行 aa -----",
+            ">>> code=BOOT_FAILED 启动失败：身份校验失败",
+            "----- 启动 2026-10-25 10:40:00 版本 5.11.1 · macos-aarch64 · debug · 设备 [dev:test] · 运行 bb -----",
+        ]);
+        let r = build_previous_run_report(
+            &failed,
+            std::path::Path::new("c"),
+            std::path::Path::new("d"),
+        );
+        assert_eq!(r.kind, "startup_failed");
+    }
+
+    #[test]
+    fn hang_lines_do_not_change_exit_classification() {
+        let run = lines(&[
+            "----- 启动 2026-10-25 10:30:00 版本 5.11.1 · macos-aarch64 · debug · 设备 [dev:test] · 运行 aa -----",
+            ">>> code=HANG scope=main_thread seconds=42 last_op=send_message",
+        ]);
+        assert_eq!(classify_previous_exit(&run), PreviousExit::SilentKill);
+
+        let with_exit = lines(&[
+            "----- 启动 2026-10-25 10:30:00 版本 5.11.1 · macos-aarch64 · debug · 设备 [dev:test] · 运行 aa -----",
+            ">>> code=HANG scope=main_thread seconds=42 last_op=send_message",
+            ">>> code=HANG_END scope=main_thread seconds=42",
+            "----- 正常退出 2026-10-25 10:35:00 运行 aa -----",
+        ]);
+        assert_eq!(classify_previous_exit(&with_exit), PreviousExit::Clean);
+    }
+
+    #[test]
+    fn previous_run_report_marks_open_hang() {
+        let raw = lines(&[
+            "----- 启动 2026-10-25 10:30:00 版本 5.11.1 · macos-aarch64 · debug · 设备 [dev:test] · 运行 aa -----",
+            ">>> code=HANG scope=ui_renderer seconds=12 last_op=set_channel_enabled(bluetooth)",
+            "----- 启动 2026-10-25 10:40:00 版本 5.11.1 · macos-aarch64 · debug · 设备 [dev:test] · 运行 bb -----",
+        ]);
+        let r =
+            build_previous_run_report(&raw, std::path::Path::new("c"), std::path::Path::new("d"));
+        let h = r.hang.expect("必须解析出卡死记录");
+        assert_eq!(h.seconds, 12);
+        assert!(!h.ended);
+        assert!(r.ble_suspect, "last_op 带 bluetooth ⇒ 疑似蓝牙");
+    }
+
+    #[test]
+    fn parse_panic_line_accepts_logger_context_shape() {
+        let p = parse_panic_line(
+            "[dev:Mac-abc] 2026-10-25 10:37:38 error [panic] panic @ file_relay.rs:230:9：刚拿_mut过",
+        )
+        .expect("logger 崩溃块里的上下文行也要认");
+        assert_eq!(p.location, "file_relay.rs:230:9");
+        assert_eq!(p.message, "刚拿_mut过");
     }
 }

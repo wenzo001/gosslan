@@ -287,6 +287,37 @@ export const zhCN: MessageDict = {
   "settings.network.bluetooth.alwaysOn":
     "手机上默认开启、无需设置：只要应用在运行，这台设备就是蓝牙 mesh 的一个中继节点；应用被系统回收后自动停止。",
   "settings.network.bluetooth.na": "暂不可用",
+  "settings.network.bluetooth.held": "蓝牙自动开启已暂停",
+  "settings.network.bluetooth.reEnable": "重新启用蓝牙",
+
+  // ---- 崩溃 / 卡死 / 启动失败提示 ----
+  "crash.title": "上次运行异常退出",
+  "crash.body":
+    "Gosslan 上次在 {time} 崩溃了（版本 {version}）。崩溃位置：{location}。现场已写进日志，聊天记录不受影响。",
+  "crash.panicCount": "这是最近第 {n} 次异常退出。",
+  "crash.bleHeld":
+    "崩溃发生在蓝牙模块。为避免一打开就再次崩溃，本次已暂停蓝牙自动开启；需要时可在「设置 → 网络」里手动开启。",
+  "crash.silentKill":
+    "上次运行没有正常结束（可能是强制退出、断电或系统内存不足），没能留下具体位置。",
+  "crash.startupFailed": "上次启动被安全中止（数据库/身份校验失败），数据库未被修改。",
+  "crash.hang": "上次界面卡住了 {seconds} 秒，最后一步是 {op}。",
+  "crash.copy": "复制详情",
+  "crash.openLogs": "查看日志",
+  "crash.restart": "重启应用",
+  "crash.dismiss": "知道了",
+  "crash.copied": "已复制",
+  "crash.copyFailed": "复制失败，请打开日志查看",
+  "hang.title": "界面好像卡住了",
+  "hang.body": "正在等待「{op}」已 {seconds} 秒。",
+  "hang.escalated": "已经等了 {seconds} 秒。可以继续等，或重启应用恢复。",
+  "hang.wait": "继续等待",
+  "hang.restart": "重启应用",
+  "boot.title": "界面没有启动起来",
+  "boot.body":
+    "启动时发生错误（UI_BOOT_FAILED）。可以先重新加载；如果反复出现，请复制错误信息发给我们。",
+  "boot.reload": "重新加载",
+  "boot.copy": "复制错误",
+  "boot.restart": "重启应用",
   "settings.network.toast.btPermissionHint":
     "若仍无法开启：请到「系统设置 → 应用 → 小院儿 → 权限」里允许「附近的设备」，然后重试。",
   "settings.network.routed": "跨网段连接",

@@ -1,8 +1,8 @@
 // Tauri 后端调用封装（invoke 参数使用 camelCase，后端自动转换为 snake_case）。
 
-import { Channel, invoke } from "@tauri-apps/api/core";
+import { Channel, invoke as rawInvoke, type InvokeArgs } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
-import type { AppSettings, CacheInfo, CleanupReport, ContentAudience, ContentCancelResult, ContentTransfer, Conversation, DeviceInfo, DiscoveryDiag, ExportSummary, ExternalLink, ExternalLinkImportResult, FavoriteEntry, FileDoneInfo, FileFailedInfo, FileProgress, FileStalledInfo, Friend, FriendKeyRotation, Group, GroupDeliverySummary, GroupHistoryProgress, GroupReadInfo, GroupResendResult, InterfaceInfo, LinkState, LogEntry, MessageCancelResult, MessageRecord, Peer, PeerReadInfo, PendingMessageOp, PendingRequest, RelayConfig, RelayProbe, RoutedEndpoint, RuntimeDiag, RuntimeSnapshot, TransferInfo } from "@/types";
+import type { AppSettings, CacheInfo, CleanupReport, ContentAudience, ContentCancelResult, ContentTransfer, Conversation, DeviceInfo, DiscoveryDiag, ExportSummary, ExternalLink, ExternalLinkImportResult, FavoriteEntry, FileDoneInfo, FileFailedInfo, FileProgress, FileStalledInfo, Friend, FriendKeyRotation, Group, GroupDeliverySummary, GroupHistoryProgress, GroupReadInfo, GroupResendResult, InterfaceInfo, LinkState, LogEntry, MessageCancelResult, MessageRecord, Peer, PeerReadInfo, PendingMessageOp, PendingRequest, PreviousRunReport, RelayConfig, RelayProbe, RoutedEndpoint, RuntimeDiag, RuntimeSnapshot, TransferInfo } from "@/types";
 import type { TodoImage } from "@/utils/todos";
 import {
   chatSearchGroupSchema,
@@ -13,6 +13,35 @@ import {
 } from "@/utils/validation";
 import type { PreviewGallery, PreviewImage } from "@/types";
 import type { UpdaterDownloadEvent, UpdaterInfo, UpdaterStatus } from "@/types";
+import { beginOp, endOp } from "@/utils/ipcTracker";
+
+/**
+ * 统一 IPC 出口：记录每个命令的开始/结束，慢调用（>2 s）上报一行日志。
+ *
+ * 为什么在这一层：156 个调用点全在这一个文件里，而卡死归因需要"卡在哪个命令"。
+ * 包装器**不改变语义**：异常照旧抛、返回值原样透传；追踪本身绝不抛。
+ * 慢调用上报也走本包装器（调用面对账判据要看得见），但它在 `ipcTracker` 的
+ * EXCLUDED 里 ⇒ 不会形成递归追踪，也不会拖慢调用方（不 await）。
+ */
+const SLOW_OP_MS = 2_000;
+
+async function invoke<T>(cmd: string, args?: unknown): Promise<T> {
+  const opId = beginOp(cmd, args);
+  try {
+    return await rawInvoke<T>(cmd, args as InvokeArgs | undefined);
+  } finally {
+    const done = endOp(opId);
+    if (done && done.ms > SLOW_OP_MS) {
+      // 走到本包装器而不是 rawInvoke：调用面对账判据要能看见这条命令；
+      // 它在 EXCLUDED 里，所以不会形成递归追踪。
+      void invoke("report_frontend_slow_op", {
+        cmd: done.label,
+        ms: Math.round(done.ms),
+      }).catch(() => {});
+    }
+  }
+}
+
 export const api = {
   /**
    * 监听"**另一个窗口**改了设置"（外观 / 语言 / 资料 / 目录 / 缓存策略）。
@@ -572,6 +601,18 @@ export const api = {
    * `gosslan-1.log` 与 `gosslan.log` 只差一个数字，拼错就是让用户去复制别人的那一份。
    */
   getLogLocations: () => invoke<LogLocations>("get_log_locations"),
+  /** 上一轮运行报告（崩溃横幅/启动失败提示）。只读后端算好的快照。 */
+  getPreviousExit: () => invoke<PreviousRunReport>("get_previous_exit"),
+  /** 一键重启（与托盘「重启」同一入口）：有界收尾 → 销毁单实例锁 → 重启。 */
+  restartApp: () => invoke<void>("restart_app"),
+  /**
+   * 主窗口心跳：当前在途操作 + 窗口是否可见。
+   *
+   * 它是看门狗判断"渲染层是否卡死"的输入；不进前端追踪表（见 ipcTracker 的 EXCLUDED），
+   * 否则每秒一条的自我记录会把真正的卡死原因淹掉。
+   */
+  uiHeartbeat: (currentOp: string | null, active: boolean) =>
+    invoke<void>("ui_heartbeat", { currentOp, active }),
   /**
    * 导出**脱敏**诊断包到用户选好的落点（纯文本）。
    *

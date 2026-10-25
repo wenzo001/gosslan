@@ -1,23 +1,36 @@
 /**
  * 主窗口入口（`index.html`）。
  *
- * 只有主窗口做"重"初始化：`App.vue` 在挂载后 `await app.init()`（偏好/设备/网卡）
- * 并 `await chat.init()`（会话、好友、网络事件监听）。设置/日志窗口各有自己的入口
- * （`src/entries/settings.ts` / `logs.ts`），不碰聊天状态、不注册聊天事件。
+ * ⚠️ **刻意不静态 import App / router / updater**：静态 import 会在本文件任何一行
+ * 代码之前求值，只要模块图里有一处求值抛错，错误处理器就还没装上 —— 用户看到的
+ * 是"骨架一直停在正在启动…"或白窗（2026-10-25 的真实缺陷）。
+ *
+ * 现在分两层：
+ * 1. `boot-guard.js`（HTML 内联、零依赖）先捕获模块求值期异常并给出可见错误卡；
+ * 2. 本文件再动态加载重图，失败时调同一个 `__gosslan_fail_boot`。
  */
-import App from "@/App.vue";
-import { mainRouter } from "@/router/main";
-import {
-  createWindowApp,
-  installFrontendErrorReporting,
-  mountMainWindow,
-} from "@/boot/boot";
-import { updater } from "@/updater/instance";
-import { scheduleAutoUpdateCheck } from "@/updater/schedule";
+async function bootMainWindow() {
+  try {
+    const [boot, appMod, routerMod, updaterMod, scheduleMod] = await Promise.all([
+      import("@/boot/boot"),
+      import("@/App.vue"),
+      import("@/router/main"),
+      import("@/updater/instance"),
+      import("@/updater/schedule"),
+    ]);
+    boot.installFrontendErrorReporting();
+    const app = boot.createWindowApp(appMod.default);
+    app.use(routerMod.mainRouter);
+    boot.mountMainWindow(app);
+    const { updater } = updaterMod;
+    const { scheduleAutoUpdateCheck } = scheduleMod;
+    // 主界面已可操作后再异步检查一次；失败静默、无弹窗、无重试（离线零打扰）。
+    scheduleAutoUpdateCheck(updater);
+  } catch (e) {
+    const detail =
+      e instanceof Error ? `${e.message}\n${e.stack ?? ""}` : String(e);
+    window.__gosslan_fail_boot?.("import", detail);
+  }
+}
 
-installFrontendErrorReporting();
-const app = createWindowApp(App);
-app.use(mainRouter);
-mountMainWindow(app);
-// 主界面已可操作后再异步检查一次；失败静默、无弹窗、无重试（离线零打扰）。
-scheduleAutoUpdateCheck(updater);
+void bootMainWindow();

@@ -109,6 +109,9 @@ pub struct RuntimeSnapshot {
     pub bound_ip: Option<String>,
     /// 蓝牙里"通道状态装不下"的那部分事实
     pub ble: BleRuntimeFacts,
+    /// 本次启动是否因"上次在蓝牙模块崩溃"暂停了自动开启。
+    /// `Some(原因)` = 已暂停（自动路径不得拉起）；`None` = 正常。
+    pub ble_autostart_held: Option<String>,
     /// 当前在线节点数（不是完整列表）
     pub peer_count: usize,
     /// **我自己的在线状态**（用户 2026-09-12 定的规则）：
@@ -1179,6 +1182,13 @@ pub struct AppState {
     pub db_path: PathBuf,
     /// 应用级运行日志（内存 ring buffer + 落盘文件），供「运行日志」页读取与排查。
     pub logger: Logger,
+    /// 上一轮运行的结构化报告（启动时算一次；`get_previous_exit` 只 clone）。
+    pub previous_exit: crate::logging::PreviousRunReport,
+    /// 上一轮在蓝牙模块崩溃 ⇒ **本次不自动拉起蓝牙**（fail-closed 熔断）。
+    ///
+    /// 值 = 给界面看的原因文本。唯一的清除点是 `set_channel_enabled("bluetooth", true)`
+    /// 成功之后（用户显式开启）；自动路径永远不写它。
+    pub ble_autostart_hold: Mutex<Option<String>>,
     /// 「群任务窗口该展开哪一条任务」的一次性暂存（`groupId → todoId`，桌面端用）。
     ///
     /// 为什么要**暂存 + 定向事件两条路**（用户 2026-09-24 #39：点聊天里的任务卡片，
@@ -1364,6 +1374,12 @@ pub struct AppState {
     /// 面板读的是这份**留档**，不是 `take_summary()` —— 第二个读者会把计数吞掉。
     pub db_hold_note: Mutex<Option<String>>,
     pub cache_clean_started: AtomicBool,
+    /// 主窗口前端心跳（Unix 毫秒；0 = 还没发过）。
+    pub ui_heartbeat_ms: std::sync::atomic::AtomicI64,
+    /// 前端当前在途的 IPC 操作名（看门狗写卡死现场用）。
+    pub ui_current_op: Mutex<Option<String>>,
+    /// 主窗口当前是否前台可见（心跳里带上来；隐藏时前端暂停心跳）。
+    pub ui_heartbeat_active: AtomicBool,
     pub group_file_receivers: Mutex<HashMap<String, FileReceiver>>,
     /// 正在接收的文件：transfer_id -> FileReceiver
     pub file_receivers: Mutex<HashMap<String, FileReceiver>>,
@@ -2023,6 +2039,20 @@ impl AppState {
             db::get_setting(&conn, "relay_allowlist").as_deref(),
         );
 
+        // 上一轮报告在 `seed_previous_run` 里已经算好；这里取一次，决定本次是否熔断蓝牙。
+        let previous_exit = logger.previous_run_report();
+        let ble_autostart_hold = if previous_exit.ble_suspect {
+            let where_ = previous_exit
+                .panic
+                .as_ref()
+                .map(|p| p.location.clone())
+                .or_else(|| previous_exit.hang.as_ref().and_then(|h| h.last_op.clone()))
+                .unwrap_or_else(|| "蓝牙模块".to_string());
+            Some(format!("上次运行在蓝牙模块崩溃（{where_}）"))
+        } else {
+            None
+        };
+
         Ok(Arc::new(AppState {
             app,
             db: DbLock::new(conn),
@@ -2040,6 +2070,8 @@ impl AppState {
             favorites_dir,
             db_path,
             logger,
+            previous_exit,
+            ble_autostart_hold: Mutex::new(ble_autostart_hold),
             identity,
             gossip: Mutex::new(GossipEngine::new(100_000, 10_000, 4, 6)),
             // max_ttl / fanout 与 GossipEngine 对齐（6 / 4），保证行为一致。
@@ -2098,6 +2130,9 @@ impl AppState {
             group_file_round_seq: std::sync::atomic::AtomicU64::new(group_file_round_seed()),
             db_hold_note: Mutex::new(None),
             cache_clean_started: AtomicBool::new(false),
+            ui_heartbeat_ms: std::sync::atomic::AtomicI64::new(0),
+            ui_current_op: Mutex::new(None),
+            ui_heartbeat_active: AtomicBool::new(false),
             group_file_receivers: Mutex::new(HashMap::new()),
             inbound_gate: Mutex::new(()),
             group_file_sending: Mutex::new(std::collections::HashSet::new()),

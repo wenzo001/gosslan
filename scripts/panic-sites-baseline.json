@@ -1,0 +1,710 @@
+{
+  "generatedBy": "scripts/check-panic-sites.mjs --update",
+  "files": {
+    "android_open.rs": {
+      "panic": 0,
+      "expect": 12,
+      "unwrap": 0
+    },
+    "commands.rs": {
+      "panic": 0,
+      "expect": 0,
+      "unwrap": 0
+    },
+    "commands/channel.rs": {
+      "panic": 0,
+      "expect": 0,
+      "unwrap": 0
+    },
+    "commands/chat.rs": {
+      "panic": 0,
+      "expect": 0,
+      "unwrap": 0
+    },
+    "commands/chat_search.rs": {
+      "panic": 0,
+      "expect": 0,
+      "unwrap": 0
+    },
+    "commands/dev_diag.rs": {
+      "panic": 0,
+      "expect": 0,
+      "unwrap": 0
+    },
+    "commands/external_links.rs": {
+      "panic": 0,
+      "expect": 0,
+      "unwrap": 0
+    },
+    "commands/favorites.rs": {
+      "panic": 0,
+      "expect": 0,
+      "unwrap": 0
+    },
+    "commands/files.rs": {
+      "panic": 0,
+      "expect": 0,
+      "unwrap": 0
+    },
+    "commands/friends.rs": {
+      "panic": 0,
+      "expect": 0,
+      "unwrap": 0
+    },
+    "commands/group_announcements.rs": {
+      "panic": 0,
+      "expect": 0,
+      "unwrap": 0
+    },
+    "commands/group_file_dispatch.rs": {
+      "panic": 0,
+      "expect": 0,
+      "unwrap": 0
+    },
+    "commands/group_file_keys.rs": {
+      "panic": 0,
+      "expect": 0,
+      "unwrap": 1
+    },
+    "commands/group_files.rs": {
+      "panic": 0,
+      "expect": 0,
+      "unwrap": 0
+    },
+    "commands/group_todo_media.rs": {
+      "panic": 0,
+      "expect": 0,
+      "unwrap": 0
+    },
+    "commands/groups.rs": {
+      "panic": 0,
+      "expect": 0,
+      "unwrap": 0
+    },
+    "commands/helpers.rs": {
+      "panic": 0,
+      "expect": 0,
+      "unwrap": 0
+    },
+    "commands/logs.rs": {
+      "panic": 0,
+      "expect": 0,
+      "unwrap": 0
+    },
+    "commands/mobile_picker.rs": {
+      "panic": 0,
+      "expect": 0,
+      "unwrap": 0
+    },
+    "commands/network.rs": {
+      "panic": 0,
+      "expect": 0,
+      "unwrap": 0
+    },
+    "commands/relay.rs": {
+      "panic": 0,
+      "expect": 0,
+      "unwrap": 0
+    },
+    "commands/routed.rs": {
+      "panic": 0,
+      "expect": 0,
+      "unwrap": 0
+    },
+    "commands/settings.rs": {
+      "panic": 0,
+      "expect": 0,
+      "unwrap": 0
+    },
+    "commands/share.rs": {
+      "panic": 0,
+      "expect": 0,
+      "unwrap": 0
+    },
+    "commands/system.rs": {
+      "panic": 0,
+      "expect": 0,
+      "unwrap": 0
+    },
+    "commands/updater.rs": {
+      "panic": 1,
+      "expect": 0,
+      "unwrap": 2
+    },
+    "commands/window.rs": {
+      "panic": 0,
+      "expect": 0,
+      "unwrap": 0
+    },
+    "content/mod.rs": {
+      "panic": 0,
+      "expect": 0,
+      "unwrap": 0
+    },
+    "content/model.rs": {
+      "panic": 0,
+      "expect": 0,
+      "unwrap": 0
+    },
+    "content/policy.rs": {
+      "panic": 0,
+      "expect": 0,
+      "unwrap": 0
+    },
+    "content/store.rs": {
+      "panic": 0,
+      "expect": 0,
+      "unwrap": 0
+    },
+    "crypto.rs": {
+      "panic": 0,
+      "expect": 0,
+      "unwrap": 0
+    },
+    "db.rs": {
+      "panic": 0,
+      "expect": 0,
+      "unwrap": 0
+    },
+    "db/clocks.rs": {
+      "panic": 0,
+      "expect": 0,
+      "unwrap": 0
+    },
+    "db/conversations.rs": {
+      "panic": 0,
+      "expect": 0,
+      "unwrap": 0
+    },
+    "db/favorites.rs": {
+      "panic": 0,
+      "expect": 0,
+      "unwrap": 0
+    },
+    "db/file_offline.rs": {
+      "panic": 0,
+      "expect": 0,
+      "unwrap": 0
+    },
+    "db/file_transfer.rs": {
+      "panic": 0,
+      "expect": 0,
+      "unwrap": 0
+    },
+    "db/friends.rs": {
+      "panic": 0,
+      "expect": 0,
+      "unwrap": 0
+    },
+    "db/group_delete_boundary.rs": {
+      "panic": 0,
+      "expect": 0,
+      "unwrap": 0
+    },
+    "db/group_files.rs": {
+      "panic": 0,
+      "expect": 0,
+      "unwrap": 0
+    },
+    "db/group_history.rs": {
+      "panic": 0,
+      "expect": 0,
+      "unwrap": 0
+    },
+    "db/group_offline_queue.rs": {
+      "panic": 0,
+      "expect": 0,
+      "unwrap": 0
+    },
+    "db/groups.rs": {
+      "panic": 0,
+      "expect": 0,
+      "unwrap": 0
+    },
+    "db/message_delete.rs": {
+      "panic": 0,
+      "expect": 0,
+      "unwrap": 0
+    },
+    "db/messages.rs": {
+      "panic": 0,
+      "expect": 0,
+      "unwrap": 0
+    },
+    "db/offline_queue.rs": {
+      "panic": 0,
+      "expect": 0,
+      "unwrap": 0
+    },
+    "db/read_receipts.rs": {
+      "panic": 0,
+      "expect": 0,
+      "unwrap": 0
+    },
+    "db/recalls.rs": {
+      "panic": 0,
+      "expect": 0,
+      "unwrap": 0
+    },
+    "db/settings.rs": {
+      "panic": 0,
+      "expect": 0,
+      "unwrap": 0
+    },
+    "db_hold.rs": {
+      "panic": 0,
+      "expect": 2,
+      "unwrap": 0
+    },
+    "device.rs": {
+      "panic": 0,
+      "expect": 0,
+      "unwrap": 0
+    },
+    "diagnostics.rs": {
+      "panic": 0,
+      "expect": 0,
+      "unwrap": 0
+    },
+    "discovery/mod.rs": {
+      "panic": 0,
+      "expect": 0,
+      "unwrap": 0
+    },
+    "discovery/routed.rs": {
+      "panic": 0,
+      "expect": 0,
+      "unwrap": 0
+    },
+    "export.rs": {
+      "panic": 0,
+      "expect": 0,
+      "unwrap": 0
+    },
+    "file_relay.rs": {
+      "panic": 0,
+      "expect": 0,
+      "unwrap": 0
+    },
+    "gossip_engine.rs": {
+      "panic": 0,
+      "expect": 0,
+      "unwrap": 1
+    },
+    "jni_method.rs": {
+      "panic": 0,
+      "expect": 0,
+      "unwrap": 0
+    },
+    "lib.rs": {
+      "panic": 1,
+      "expect": 0,
+      "unwrap": 0
+    },
+    "logging.rs": {
+      "panic": 0,
+      "expect": 0,
+      "unwrap": 0
+    },
+    "macos_bookmark.rs": {
+      "panic": 0,
+      "expect": 0,
+      "unwrap": 0
+    },
+    "macos_window.rs": {
+      "panic": 0,
+      "expect": 0,
+      "unwrap": 0
+    },
+    "main.rs": {
+      "panic": 0,
+      "expect": 0,
+      "unwrap": 0
+    },
+    "menu.rs": {
+      "panic": 0,
+      "expect": 0,
+      "unwrap": 0
+    },
+    "mesh/candidate.rs": {
+      "panic": 0,
+      "expect": 0,
+      "unwrap": 0
+    },
+    "mesh/connection.rs": {
+      "panic": 0,
+      "expect": 0,
+      "unwrap": 0
+    },
+    "mesh/endpoint.rs": {
+      "panic": 0,
+      "expect": 0,
+      "unwrap": 0
+    },
+    "mesh/gossip_replay.rs": {
+      "panic": 0,
+      "expect": 0,
+      "unwrap": 0
+    },
+    "mesh/manager.rs": {
+      "panic": 0,
+      "expect": 0,
+      "unwrap": 0
+    },
+    "mesh/mod.rs": {
+      "panic": 0,
+      "expect": 0,
+      "unwrap": 0
+    },
+    "mesh/path.rs": {
+      "panic": 0,
+      "expect": 0,
+      "unwrap": 0
+    },
+    "mesh/peer.rs": {
+      "panic": 0,
+      "expect": 0,
+      "unwrap": 0
+    },
+    "mesh/relay_policy.rs": {
+      "panic": 0,
+      "expect": 0,
+      "unwrap": 0
+    },
+    "mesh/router.rs": {
+      "panic": 0,
+      "expect": 0,
+      "unwrap": 0
+    },
+    "mesh/selection.rs": {
+      "panic": 0,
+      "expect": 0,
+      "unwrap": 0
+    },
+    "network/ble.rs": {
+      "panic": 0,
+      "expect": 0,
+      "unwrap": 0
+    },
+    "network/ble/central.rs": {
+      "panic": 0,
+      "expect": 1,
+      "unwrap": 0
+    },
+    "network/ble/frame_io.rs": {
+      "panic": 0,
+      "expect": 0,
+      "unwrap": 0
+    },
+    "network/ble/io_loops.rs": {
+      "panic": 0,
+      "expect": 0,
+      "unwrap": 0
+    },
+    "network/ble/peripheral.rs": {
+      "panic": 0,
+      "expect": 2,
+      "unwrap": 0
+    },
+    "network/discovery.rs": {
+      "panic": 0,
+      "expect": 0,
+      "unwrap": 0
+    },
+    "network/dispatch.rs": {
+      "panic": 0,
+      "expect": 0,
+      "unwrap": 0
+    },
+    "network/file.rs": {
+      "panic": 0,
+      "expect": 0,
+      "unwrap": 0
+    },
+    "network/file/group_receive.rs": {
+      "panic": 0,
+      "expect": 0,
+      "unwrap": 0
+    },
+    "network/file/group_resume.rs": {
+      "panic": 0,
+      "expect": 0,
+      "unwrap": 0
+    },
+    "network/file/ledger_backfill.rs": {
+      "panic": 0,
+      "expect": 0,
+      "unwrap": 0
+    },
+    "network/file/receive.rs": {
+      "panic": 0,
+      "expect": 0,
+      "unwrap": 0
+    },
+    "network/file/relay_push.rs": {
+      "panic": 0,
+      "expect": 0,
+      "unwrap": 0
+    },
+    "network/file/send.rs": {
+      "panic": 0,
+      "expect": 0,
+      "unwrap": 0
+    },
+    "network/file/share_walk.rs": {
+      "panic": 0,
+      "expect": 0,
+      "unwrap": 0
+    },
+    "network/group_history.rs": {
+      "panic": 0,
+      "expect": 0,
+      "unwrap": 0
+    },
+    "network/mod.rs": {
+      "panic": 0,
+      "expect": 0,
+      "unwrap": 0
+    },
+    "network/transport.rs": {
+      "panic": 0,
+      "expect": 0,
+      "unwrap": 0
+    },
+    "network/transport/dial.rs": {
+      "panic": 0,
+      "expect": 0,
+      "unwrap": 0
+    },
+    "network/transport/e2ee_payload.rs": {
+      "panic": 0,
+      "expect": 0,
+      "unwrap": 0
+    },
+    "network/transport/gossip.rs": {
+      "panic": 0,
+      "expect": 0,
+      "unwrap": 0
+    },
+    "network/transport/group_file.rs": {
+      "panic": 0,
+      "expect": 1,
+      "unwrap": 0
+    },
+    "network/transport/group_membership.rs": {
+      "panic": 0,
+      "expect": 0,
+      "unwrap": 0
+    },
+    "network/transport/handle_file.rs": {
+      "panic": 0,
+      "expect": 0,
+      "unwrap": 0
+    },
+    "network/transport/handle_group.rs": {
+      "panic": 0,
+      "expect": 0,
+      "unwrap": 0
+    },
+    "network/transport/handle_identity.rs": {
+      "panic": 0,
+      "expect": 0,
+      "unwrap": 0
+    },
+    "network/transport/handle_messaging.rs": {
+      "panic": 0,
+      "expect": 0,
+      "unwrap": 0
+    },
+    "network/transport/handle_share.rs": {
+      "panic": 0,
+      "expect": 0,
+      "unwrap": 0
+    },
+    "network/transport/handshake.rs": {
+      "panic": 0,
+      "expect": 0,
+      "unwrap": 0
+    },
+    "network/transport/link_state.rs": {
+      "panic": 0,
+      "expect": 0,
+      "unwrap": 0
+    },
+    "network/transport/member_notices.rs": {
+      "panic": 0,
+      "expect": 0,
+      "unwrap": 0
+    },
+    "network/transport/outbound.rs": {
+      "panic": 0,
+      "expect": 0,
+      "unwrap": 0
+    },
+    "network/transport/outbox_flush.rs": {
+      "panic": 0,
+      "expect": 0,
+      "unwrap": 0
+    },
+    "network/transport/outbox_sweep.rs": {
+      "panic": 0,
+      "expect": 0,
+      "unwrap": 0
+    },
+    "network/transport/peer_registry.rs": {
+      "panic": 0,
+      "expect": 0,
+      "unwrap": 0
+    },
+    "network/transport/peer_state.rs": {
+      "panic": 0,
+      "expect": 0,
+      "unwrap": 0
+    },
+    "network/transport/pending_keys.rs": {
+      "panic": 0,
+      "expect": 0,
+      "unwrap": 0
+    },
+    "network/transport/queue_policy.rs": {
+      "panic": 0,
+      "expect": 0,
+      "unwrap": 0
+    },
+    "network/transport/read_receipt.rs": {
+      "panic": 0,
+      "expect": 0,
+      "unwrap": 0
+    },
+    "network/transport/relay.rs": {
+      "panic": 0,
+      "expect": 0,
+      "unwrap": 0
+    },
+    "network/transport/relay_file.rs": {
+      "panic": 0,
+      "expect": 0,
+      "unwrap": 0
+    },
+    "nickname.rs": {
+      "panic": 0,
+      "expect": 0,
+      "unwrap": 0
+    },
+    "notifications.rs": {
+      "panic": 0,
+      "expect": 0,
+      "unwrap": 0
+    },
+    "open_path.rs": {
+      "panic": 0,
+      "expect": 0,
+      "unwrap": 0
+    },
+    "private_fs.rs": {
+      "panic": 0,
+      "expect": 0,
+      "unwrap": 0
+    },
+    "protocol.rs": {
+      "panic": 0,
+      "expect": 0,
+      "unwrap": 0
+    },
+    "restart.rs": {
+      "panic": 0,
+      "expect": 0,
+      "unwrap": 0
+    },
+    "state.rs": {
+      "panic": 0,
+      "expect": 0,
+      "unwrap": 0
+    },
+    "storage/cache_cleaner.rs": {
+      "panic": 0,
+      "expect": 0,
+      "unwrap": 0
+    },
+    "storage/mod.rs": {
+      "panic": 0,
+      "expect": 0,
+      "unwrap": 0
+    },
+    "storage/vacuum.rs": {
+      "panic": 0,
+      "expect": 0,
+      "unwrap": 0
+    },
+    "transport/ble_android.rs": {
+      "panic": 3,
+      "expect": 0,
+      "unwrap": 0
+    },
+    "transport/ble_framing.rs": {
+      "panic": 0,
+      "expect": 0,
+      "unwrap": 0
+    },
+    "transport/ble_pending.rs": {
+      "panic": 0,
+      "expect": 0,
+      "unwrap": 0
+    },
+    "transport/bluetooth.rs": {
+      "panic": 0,
+      "expect": 1,
+      "unwrap": 0
+    },
+    "transport/bluetooth_peripheral.rs": {
+      "panic": 0,
+      "expect": 0,
+      "unwrap": 0
+    },
+    "transport/bluetooth_peripheral_windows.rs": {
+      "panic": 0,
+      "expect": 1,
+      "unwrap": 0
+    },
+    "transport/lan.rs": {
+      "panic": 0,
+      "expect": 0,
+      "unwrap": 0
+    },
+    "transport/mod.rs": {
+      "panic": 0,
+      "expect": 0,
+      "unwrap": 0
+    },
+    "transport/relay_seal.rs": {
+      "panic": 0,
+      "expect": 1,
+      "unwrap": 4
+    },
+    "transport/tcp.rs": {
+      "panic": 0,
+      "expect": 0,
+      "unwrap": 0
+    },
+    "tray.rs": {
+      "panic": 0,
+      "expect": 0,
+      "unwrap": 0
+    },
+    "user_dirs.rs": {
+      "panic": 0,
+      "expect": 0,
+      "unwrap": 0
+    },
+    "watchdog.rs": {
+      "panic": 0,
+      "expect": 0,
+      "unwrap": 0
+    },
+    "worker_supervisor.rs": {
+      "panic": 0,
+      "expect": 0,
+      "unwrap": 0
+    }
+  }
+}

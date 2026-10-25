@@ -227,7 +227,11 @@ impl RelayManager {
                 total_bytes: r.expected_size,
             };
         }
-        let r = self.reassemblies.remove(transfer_id).expect("刚拿_mut过");
+        // 重复完成/并发摘除：这条 transfer 已经没有可变状态了，按失败收尾。
+        // 绝不让整个进程为一条过期回执陪葬（release 是 `panic = "abort"`）。
+        let Some(r) = self.reassemblies.remove(transfer_id) else {
+            return ChunkOutcome::Rejected("重组状态丢失（重复完成）".to_string());
+        };
         // 改名之前必须 flush 到盘：`file-done` 之后界面立刻给"打开文件"，
         // 而崩溃时留在 page cache 里的尾巴会变成"打开就是缺一段"。
         if let Err(e) = r.file.sync_all() {

@@ -40,6 +40,10 @@ function inlineBoot(): Plugin {
           .replace(
             "<!-- GOSSLAN_SKELETON_CSS -->",
             `<style>\n${read("src/boot/skeleton.css")}    </style>`,
+          )
+          .replace(
+            "<!-- GOSSLAN_BOOT_GUARD -->",
+            `<script>\n${read("src/boot/boot-guard.js")}    </script>`,
           );
       },
     },
