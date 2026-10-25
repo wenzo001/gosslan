@@ -359,6 +359,8 @@ function scrollToIndex(index: number, align: "top" | "bottom" = "top") {
 // ---------------- 数据变化 ----------------
 let prevLastKey: string | null = null;
 let prevFirstKey: string | null = null;
+/** 上一次用于判"布局宽度变了"的 clientWidth；首帧初始化，滚动条出现/消失（~15px）不算。 */
+let lastWidth = 0;
 
 function onItemsChanged() {
   suppressTransient();
@@ -486,6 +488,17 @@ function observeContainerSize() {
   if (!el) return;
   containerResizeObserver?.disconnect();
   containerResizeObserver = new ResizeObserver(() => {
+    const w = el.clientWidth;
+    if (w > 0) {
+      if (lastWidth === 0) {
+        lastWidth = w;
+      } else if (Math.abs(w - lastWidth) > 24) {
+        // 面板开合/侧栏折叠这类真实布局变化（>24px）才清测量缓存；
+        // 滚动条出现/消失只差 ~15px，清缓存会形成"高度↔滚动条"反馈环（实测 5 次反转）。
+        lastWidth = w;
+        virtualizer.value.measure();
+      }
+    }
     if (el.clientHeight > 0) onResize();
   });
   containerResizeObserver.observe(el);
@@ -494,6 +507,8 @@ function observeContainerSize() {
 onMounted(() => {
   prevFirstKey = props.items.length > 0 ? keyOf(props.items[0]) : null;
   prevLastKey = props.items.length > 0 ? keyOf(props.items[props.items.length - 1]) : null;
+  const el0 = container.value;
+  if (el0) lastWidth = el0.clientWidth;
   onResize();
   observeContainerSize();
   computeScrollState();

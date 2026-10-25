@@ -20,7 +20,7 @@
 - 消息列表从手写前缀和/二分/自建 RO 迁移到 **@tanstack/vue-virtual**：`anchorTo:"end"` 负责
   历史前插锚定；真实 `measureElement`（`data-index` 认行、0 高度与 <=1px 抖动不写缓存、rAF 合批）；
   追加贴底由应用的 `pinned` 独占（库 `followOnAppend` 关闭）；整会话切换延后到收敛窗口统一贴底，
-  底部追加仍立即跟随；宽度失效改挂 `window.resize`（避免滚动条宽反馈环）。
+  底部追加仍立即跟随；宽度失效 = `window.resize` + 面板宽度变化 >24px（忽略滚动条 ~15px 的反馈环）。
 - 消息身份改用**持久本地 id**（DB v13→v14：`messages.local_id` + 唯一索引）：乐观气泡在服务端
   `msg_id` 到达之前就有稳定 key，替换真实记录不再整行重挂；老行回填 `msg_id`（真实库副本演练
   160/160，主库未动）。
