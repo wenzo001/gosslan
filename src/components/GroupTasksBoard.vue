@@ -750,6 +750,13 @@ function onDocPaste(e: ClipboardEvent) {
   if (!draft.value || isAndroid) return;
   const zone = dropZoneRef.value;
   if (!zone || document.activeElement !== zone) return;
+  // 已到上限就**先拦**：onDocPaste 在 addImageFromPaths 之前还要把位图字节落盘一次，
+  // 放到后面判会让第 21 张起仍然写一次盘再丢掉（白写 + 用户看不出为什么没加上）。
+  if (draft.value.images.length >= MAX_TODO_IMAGES) {
+    e.preventDefault();
+    app.toast(t("todo.imageLimit", { n: MAX_TODO_IMAGES }), "error");
+    return;
+  }
   const cd = e.clipboardData;
   if (!cd) return;
   const files = Array.from(cd.files ?? []);
