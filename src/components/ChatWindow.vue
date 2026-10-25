@@ -4,7 +4,7 @@ import Spinner from "@/components/ui/Spinner.vue";
 import { safeStorageBackend } from "../utils/safeStorage.ts";
 import { computed, nextTick, onBeforeUnmount, onMounted, onScopeDispose, ref, watch } from "vue";
 import { progressAdvanced, progressHasStalled } from "@/utils/transferProgressWatch";
-import { shouldRestoreScroll, type SavedScroll } from "@/utils/scrollRestore";
+import { rememberScrollPosition, savedScrollPosition, shouldRestoreScroll } from "@/utils/scrollRestore";
 import { useRouter } from "vue-router";
 import { useEventListener } from "@vueuse/core";
 import { api } from "@/api";
@@ -26,7 +26,6 @@ import ForwardModal from "@/components/message/ForwardModal.vue";
 import MergeCardModal from "@/components/message/MergeCardModal.vue";
 import { useImagePreviewStore } from "@/stores/useImagePreview";
 import { estimateMessageHeight } from "@/utils/messageHeight";
-import { trimOldest } from "@/utils/bounded";
 import { computeEnteringId, ENTER_ANIM_MS } from "@/utils/messageEnter";
 import { launchAuxWindow, isWindowOpening } from "@/composables/useWindowLauncher";
 import { useMentionContext } from "@/composables/useMentionContext";
@@ -77,6 +76,10 @@ const listRef = ref<InstanceType<typeof VirtualList> | null>(null);
  * 保存像素而不是消息 id：用户离开时看到的就是这条像素线，回来落在同一处最直观；
  * 缓存上限与消息缓存同量级（50 个会话），不会无界增长。
  *
+ * ⚠️ 2026-10-25：表必须放在**模块级**（`utils/scrollRestore`），不能长在这个组件的
+ * `<script setup>` 里。点对方资料会把 ChatWindow 卸载，组件内的 Map 随实例一起消失
+ * ⇒ 返回时查不到任何位置，只能贴底。
+ *
  * 用户 2026-10-23 补的三条口径（缺一条都会变成"回来位置不对"）：
  * ① **必须在离开后 3 分钟内回来**才恢复原位；超过就贴底 —— 隔了很久回来还停在一屏旧内容上，
  *    用户还得自己往下滑。3 分钟是拍板值（点进资料/成员页看一眼再回来 10 秒级，够兜住
@@ -85,21 +88,18 @@ const listRef = ref<InstanceType<typeof VirtualList> | null>(null);
  * ③ 离开时**本来就在底部** ⇒ 回来也贴底（哪怕只离开 1 秒）：底部是"看最新"的意图，
  *    不是某个像素位置。
  */
-const scrollPositions = new Map<string, SavedScroll>();
-const SCROLL_POSITION_MAX = 50;
 const restoreScrollTop = ref<number | null>(null);
 
 function saveScrollPosition(convId: string | null | undefined) {
   if (!convId) return;
-  scrollPositions.set(convId, {
+  rememberScrollPosition(convId, {
     top: listRef.value?.getScrollTop() ?? 0,
     at: Date.now(),
     atBottom: nearBottom.value,
   });
-  trimOldest(scrollPositions, SCROLL_POSITION_MAX);
 }
 function restoreScrollFor(convId: string | null | undefined) {
-  const saved = convId ? scrollPositions.get(convId) : undefined;
+  const saved = convId ? savedScrollPosition(convId) : undefined;
   // 有未读跳转时以未读为准（未读是用户最需要看到的位置）。
   const unreadWins = !!chat.unreadJump && chat.unreadJump.convId === convId;
   // 三条口径（过期 / 未读 / 离开时在底部）都在 `utils/scrollRestore` 里，那份带单测。
@@ -471,6 +471,11 @@ function estimateHeight(m: MessageRecord, index?: number): number {
     isGroup: isGroup.value,
     selfId: app.device?.device_id,
     fontSize: app.chatStyle.fontSize,
+    // 任务卡片的实时尺寸（面板里补的图/描述）——与渲染端读同一张折叠表。
+    todoLive: (todoId) => {
+      const item = todoLive.value.get(todoId);
+      return item ? { images: item.images.length, hasDescription: item.description.length > 0 } : undefined;
+    },
   });
 }
 
@@ -665,13 +670,14 @@ function onShakeAnimEnd(e: AnimationEvent) {
 }
 
 /**
- * 时间线上每张任务卡片的**当前**状态与**当前**编号码（`todo_id` → 那两格）。
+ * 时间线上每张任务卡片的**当前**展示数据（`todo_id` → 折叠结果里那一条）。
  *
  * 为什么必须单独算：卡片气泡读的是**创建那条 `todo` 消息的载荷**，而之后的每次改动都走
  * `todo_update`（静默事件、不进时间线）⇒ 卡片自己的载荷**永远停在创建那一刻**，
  * 而新建任务恒为「待办」，于是"干完了的任务在聊天里还挂着待办"（用户 #23）。
  * 同一句道理管着编号：改成「缺陷」后卡片不该还写着 `R`（用户 2026-09-30 规则 3「只换字母、
- * 数字不变」），所以这里连同**现推的字母码**一起给，而不是只给状态。
+ * 数字不变」）。2026-10-25 用户又补了同一形状的另一面：任务面板里补的图片/标题/描述，
+ * 聊天卡片也必须跟着变 —— 所以整条 `TodoItem` 都进这张表，卡片不再读创建快照。
  * 判据仍只有 `foldTodos` 一份（与看板、成员面板同一折叠结果），这里只是把它换成
  * 按 `todo_id` 查表的形式（`todoLiveMap`）。与 `reactionMap` 同构：**会话层算一次**，
  * 放进气泡里各自折叠就是 O(n²)。

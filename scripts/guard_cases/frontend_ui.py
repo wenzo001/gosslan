@@ -164,11 +164,11 @@ CASES: list[Case] = [
         file=ROOT / "src" / "components" / "TodoCardBubble.vue",
         injections=[(
             '      <MentionText\n'
-            '        :text="todo.description"\n'
+            '        :text="description"\n'
             '        :mention-names="mentionNames"\n'
             '        :self-mention="selfMention"\n'
             '      />',
-            '      {{ todo.description }}',
+            '      {{ description }}',
         )],
         cmd=npm("test"),
         cwd=ROOT,

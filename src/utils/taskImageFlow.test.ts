@@ -90,3 +90,36 @@ test("拖放：落进图片区要加进任务，同时把聊天那侧的接收�
     "抑制逻辑没了 ⇒ 同一份文件会同时被聊天那侧发出去",
   );
 });
+
+/**
+ * 2026-10-25 用户实测：焦点在「标题」输入框（光标还在闪）时按 Ctrl+V，
+ * 剪贴板里的截图被加进了图片区。粘贴挂在 `document` 上，所以必须自己判焦点。
+ */
+test("粘贴只在图片区被聚焦时接收（标题框里的 Ctrl+V 不许把截图收进任务）", () => {
+  const at = SRC.indexOf("function onDocPaste(");
+  assert.ok(at > 0, "找不到 onDocPaste() —— 判据要跟着形状改");
+  const body = SRC.slice(at, SRC.indexOf("\n}", at));
+  assert.match(body, /const zone = dropZoneRef\.value/, "粘贴入口必须取图片区的真实节点");
+  assert.match(
+    body,
+    /document\.activeElement !== zone/,
+    "没有判焦点在图片区 ⇒ 任何输入框里的 Ctrl+V 都会把截图收进任务",
+  );
+  // 正面：图片区自己必须接住 focus（否则「点一下再粘贴」的入口永远不成立）
+  assert.match(SRC, /data-todo-image-zone/, "图片区缺少稳定钩子（探针/守卫无法定位）");
+  assert.match(SRC, /@focus="pasteArmed = true"/, "图片区没有接 focus ⇒ 点击后仍不进入可粘贴状态");
+});
+
+/** 用户 2026-10-25：一条群任务最多 20 张图片。三条加图入口都汇到 `addImageFromPaths`。 */
+test("任务图片上限 20 张：判点只在三条入口的汇合处", () => {
+  assert.match(SRC, /MAX_TODO_IMAGES/, "没有引用共享上限常量 ⇒ 各处会各写一个数");
+  const at = SRC.indexOf("async function addImageFromPaths(");
+  assert.ok(at > 0, "找不到 addImageFromPaths() —— 上限判点没有落点");
+  const body = SRC.slice(at, SRC.indexOf("\n}", at));
+  assert.match(
+    body,
+    /d\.images\.length >= MAX_TODO_IMAGES/,
+    "汇合处没有判上限 ⇒ 选图/粘贴/拖入都能无限加图",
+  );
+  assert.match(body, /t\("todo\.imageLimit"/, "到上限没有任何提示 ⇒ 用户以为图没选上");
+});

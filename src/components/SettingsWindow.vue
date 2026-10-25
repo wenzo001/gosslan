@@ -26,7 +26,7 @@ import StorageSection from "@/components/settings/StorageSection.vue";
 import SecuritySection from "@/components/settings/SecuritySection.vue";
 import AboutSection from "@/components/settings/AboutSection.vue";
 import ResetSection from "@/components/settings/ResetSection.vue";
-import { SlidersHorizontal, Wifi, Info } from "lucide-vue-next";
+import { SlidersHorizontal, Wifi, Info, HardDrive } from "lucide-vue-next";
 import { t } from "@/i18n";
 import { api } from "@/api";
 import { updater } from "@/updater/instance";
@@ -111,26 +111,29 @@ const devDiagOpen = ref(false);
  *   现在标签也用**条目名**（`settings.item.about` / `settings.group.reset`，与移动端列表同一批键），
  *   与各自分区内的第一组标题一一对应（`settingsStructure` 守卫钉住）。
  *
- * 2026-10-25 用户追加：桌面收敛为 **3 类** —— 通用 / 网络与文件 / 关于。
- * 「安全」并入「关于」（不再单独一组）；「存储」从通用挪到「网络与文件」里的
- * 「存储与文件」（与「文件」合并）。移动端一级列表用同一套分类（见 `SettingsPanel`）。
+ * 2026-10-25 用户追加（第 4 版）：桌面与移动端统一为 **4 类** ——
+ * 通用 / 网络 / 文件与存储 / 关于。「安全」并入「关于」；
+ * 「存储」「文件」与「重置与恢复」同属「文件与存储」（重置不再留在通用）。
  */
 const navItems = computed<{ key: SectionKey; label: string; icon: unknown }[]>(() => [
   { key: "general", label: t("settings.group.general"), icon: SlidersHorizontal },
-  { key: "network", label: t("settings.group.networkFiles"), icon: Wifi },
+  { key: "network", label: t("settings.item.network"), icon: Wifi },
+  { key: "storageFiles", label: t("settings.item.storageFiles"), icon: HardDrive },
   { key: "about", label: t("settings.item.about"), icon: Info },
 ]);
 
-/** 3 个顶层容器；旧的 10 个深链键仍有效，只是映射到对应容器。 */
-const desktopSection = computed<"general" | "network" | "about">(() => {
+/** 4 个顶层容器；旧的 10 个深链键仍有效，只是映射到对应容器。 */
+const desktopSection = computed<"general" | "network" | "storageFiles" | "about">(() => {
   switch (section.value) {
     case "network":
+      return "network";
     case "files":
-    // 2026-10-25：「存储」并进「网络与文件」里的「存储与文件」。
+    // 2026-10-25：「存储」「文件」「重置与恢复」同属「文件与存储」。
     case "storage":
     case "storageFiles":
-      return "network";
-    // 安全并进关于：深链 `security` 也落到同一页（不再有第四组）。
+    case "reset":
+      return "storageFiles";
+    // 安全并进关于：深链 `security` 也落到同一页（不再有单独一组）。
     case "security":
     case "about":
       return "about";
@@ -201,7 +204,7 @@ useEventListener(window, "keydown", onKeydown);
          左内边距与右侧留白/箭头位置不匹配。这里导航项为纯文字+图标（无展开箭头），
          一旦将来加展开子项，用同一个 `pr-2.5` 承接箭头即可保持对称。 -->
     <nav class="flex w-[176px] shrink-0 flex-col gap-0.5 border-r border-[var(--gosslan-divider)] bg-[var(--gosslan-panel)] px-2 py-3">
-      <!-- 桌面 3 类导航不需要可见返回；⌘[ / Alt+← 键盘返回仍保留。 -->
+      <!-- 桌面 4 类导航不需要可见返回；⌘[ / Alt+← 键盘返回仍保留。 -->
       <button
         v-for="item in navItems"
         :key="item.key"
@@ -227,13 +230,15 @@ useEventListener(window, "keydown", onKeydown);
         <AppearanceSection />
         <ChatStyleSection />
         <NotificationSection />
-        <ResetSection @restored="reloadToken++" />
       </div>
       <div v-else-if="desktopSection === 'network'" class="space-y-5">
         <NetworkSection :active="true" :reload-token="reloadToken" />
-        <!-- 2026-10-25：存储与文件合并到网络分组下（用户：两者其实是同一类事）。 -->
+      </div>
+      <div v-else-if="desktopSection === 'storageFiles'" class="space-y-5">
+        <!-- 2026-10-25（第 4 版）：存储、文件、重置与恢复同属「文件与存储」。 -->
         <StorageSection :active="true" :reload-token="reloadToken" />
         <FilesSection :active="true" :reload-token="reloadToken" />
+        <ResetSection @restored="reloadToken++" />
       </div>
       <div v-else-if="desktopSection === 'about'" class="space-y-5">
         <!-- 安全并入关于（用户 2026-10-25：桌面不再单独一组）。 -->

@@ -1791,8 +1791,14 @@ test("任务描述必须经统一渲染件出 @，不许再裸插值", () => {
     // 分母数的是"这一族里渲染描述的点"，**两种写法都算**（裸插值与 `:text="x.description"`）：
     // 只数违规那种的话，全部迁完之后 sites=0，这条判据就分不清"迁完了"与"整族被摘掉了"。
     const renders = tpl.match(/[\w$]+(?:\.[\w$]+)*\.description\b/g) ?? [];
-    sites += renders.length;
+    const localRenders = tpl.match(/\{\{\s*description\s*\}\}/g) ?? [];
+    sites += renders.length + localRenders.length;
     for (const m of tpl.matchAll(/\{\{\s*[\w$]+(?:\.[\w$]+)*\.description\s*\}\}/g)) {
+      offenders.push(`${f.replace(srcDir + "/", "")}（${m[0]}）`);
+    }
+    // 卡片先取实时表（`live`）再渲染本地 `description` 也是一种正常形状；
+    // 但若退回裸插值，同样会丢掉 @ 高亮 ⇒ 两种写法都要点名。
+    for (const m of tpl.matchAll(/\{\{\s*description\s*\}\}/g)) {
       offenders.push(`${f.replace(srcDir + "/", "")}（${m[0]}）`);
     }
   }

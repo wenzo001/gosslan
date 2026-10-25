@@ -1499,6 +1499,13 @@ img {
   transform: translateY(-4px);
 }
 
+/* 设置卡片（`SettingsGroup`）的分隔线只画在**两条信息之间**，最后一行下面永远不画。
+   用户 2026-10-25：中继/中转那两张卡最后一行下面还挂着一根短横线，看起来多出一截。
+   判据放在唯一的外壳上，而不是逐个调用方记得传 `last` —— 漏一个就会复发。 */
+[data-settings-rows] > div:last-child.h-px {
+  display: none;
+}
+
 @media (prefers-reduced-transparency: reduce) {
   .frost {
     background: var(--gosslan-panel);
