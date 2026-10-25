@@ -312,9 +312,13 @@ pub async fn send_group_file(
     if scope != "todo" {
         let subtype = file::classify_file_subtype(&name);
         let kind = if subtype == "image" { "image" } else { "file" };
-        let content =
-        serde_json::json!({ "name": name, "path": path, "size": size, "sha256": sha256, "subtype": subtype })
-            .to_string();
+        let content = {
+            let mut c = serde_json::json!({ "name": name, "path": path, "size": size, "sha256": sha256, "subtype": subtype });
+            if kind == "image" {
+                file::attach_image_size(&mut c, std::path::Path::new(&path));
+            }
+            c.to_string()
+        };
         let conv_id = format!("group:{group_id}");
         let seq = {
             let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());

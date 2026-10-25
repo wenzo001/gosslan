@@ -1116,6 +1116,8 @@ export const zhCN: MessageDict = {
   "chat.dropToGroup": "松手发送到群聊",
   "chat.dropToSend": "松手发送文件",
   "chat.empty": "暂无消息，打个招呼吧",
+  "chat.history.loading": "正在加载更早消息…",
+  "chat.history.loadFail": "更早的消息加载失败",
   "chat.backToLatest": "回到最新",
   "chat.notFriend": "对方还不是你的好友，添加好友后才能继续聊天。当前仅可查看聊天记录。",
 

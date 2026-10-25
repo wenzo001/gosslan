@@ -1,0 +1,20 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <title>VirtualList 白屏/抽动诊断（只读量具）</title>
+    <style>
+      html, body { height: 100%; margin: 0; background: #fff; font-family: -apple-system, "PingFang SC", sans-serif; }
+      #probe-root { height: 100vh; display: flex; flex-direction: column; }
+      #probe-head { flex: none; padding: 4px 12px; font: 12px/18px ui-monospace, monospace; background: #e2e8f0; }
+      #probe-scroll { flex: 1; min-height: 0; }
+    </style>
+  </head>
+  <body>
+    <div id="probe-root">
+      <div id="probe-head">scrollprobe</div>
+      <div id="probe-scroll"></div>
+    </div>
+    <script type="module" src="/perf/scrollprobe.ts"></script>
+  </body>
+</html>

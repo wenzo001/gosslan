@@ -143,20 +143,29 @@ export const CLAMPED_CODE_BLOCK_HEIGHT = CODE_CLAMP_HEIGHT + CODE_ACTION_BAR;
  * 图片气泡的**高度上限**，同时是三个用途的同一个数：
  * ① `<img>` 的 `max-height`；② 加载完成前骨架预留的高度；③ 虚拟列表对图片行的估算。
  *
- * 为什么这三件事必须共用一个数（roadmap N22 那一格的落点）：图片容器**定宽** 208px
- * （`w-52`，用户 2026-09-12「图片发出来之后大小应该是固定的」），而消息载荷里
- * **没有原图尺寸**（`content` 的 JSON 只有 name/path/size/sha256/subtype；补这个字段要动
- * 消息协议，为视觉效果排除）⇒ 渲染高度只能在解码后知道：
- * `真实高 = min(本常量, 208 × 原图高 / 原图宽)`。既然解码前只能猜，就把它钉成
- * "预留 == 估算 == 上限"：骨架挂载那一次不再被实测纠正（少一整次整表前缀和重算，
- * 见 N10 那笔账），而竖长图（取到上限那一档）**加载完成零跳变**。
- * 代价（已知并由用户拍板）：横幅图（16:9 截图真高 ≈117px）完成时是**收缩**而不是原来的增长。
+ * 图片容器**定宽** 208px（`w-52`，用户 2026-09-12「图片发出来之后大小应该是固定的」）。
+ * 2026-10-26 起 `content` 会带可选 `w`/`h`（后端从本机文件头读出，无协议/DB 变更），
+ * 此时渲染高 = `min(本常量, 208 × h/w)`（见 `imageBubbleHeight`）⇒ 预留与真实一致、零跳变。
+ * 老消息没有尺寸时仍按本常量预留（`真实高 = min(288, 208 × h/w)` 只能解码后知道，
+ * 横图会收缩一次）——这是兼容路径，不再是唯一路径。
  *
  * ⚠️ 与 `MessageImageBubble.vue` 的骨架 / `<img>` **成对**：那边已从本常量取高度，
  * 所以这里改动会同时改到渲染；不要再在任何组件里写回 `h-*` / `max-h-*` 字面量
  * （由 designGuards ㉞ 与运行时探针 `--only=imgskel` 两段一起盯着）。
  */
 export const IMAGE_BUBBLE_HEIGHT = 288;
+
+/** 图片气泡的固定内容宽（与 `MessageImageBubble` 的 `w-52` 同一份）。 */
+export const IMAGE_BUBBLE_WIDTH = 208;
+
+/**
+ * 有真实像素尺寸时的预留高度：与 CSS 的 `w-52` 定宽 + `object-contain` 同口径。
+ * 旧消息没有 w/h、或图片格式读不出尺寸时回退 `IMAGE_BUBBLE_HEIGHT`（288）。
+ */
+export function imageBubbleHeight(w?: number | null, h?: number | null): number {
+  if (!w || !h || w <= 0 || h <= 0) return IMAGE_BUBBLE_HEIGHT;
+  return Math.min(IMAGE_BUBBLE_HEIGHT, Math.round(((IMAGE_BUBBLE_WIDTH * h) / w) * 100) / 100);
+}
 
 /**
  * 图片**终态**占位块的高度（加载失败 / 本地媒体已被存储清理）：紧凑一档。

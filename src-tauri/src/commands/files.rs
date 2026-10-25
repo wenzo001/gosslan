@@ -379,14 +379,17 @@ fn build_file_message(
     // （真机 Mac 发 600MB：点完要"卡一会儿"才出现发送中气泡）。真正用于校验的那份由投递
     // 任务算（`network/file/send.rs::send_file_from_path_at` → FileOffer.file_sha256），
     // 算完再回填本行的 sha256 字段（`db::fill_message_sha256`），所以最终值同源、不丢。
-    let content = serde_json::json!({
+    let mut content = serde_json::json!({
         "name": name,
         "path": path,
         "size": size,
         "sha256": "",
         "subtype": subtype,
-    })
-    .to_string();
+    });
+    if kind == "image" {
+        file::attach_image_size(&mut content, std::path::Path::new(path));
+    }
+    let content = content.to_string();
     let seq = {
         let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
         db::next_clock(&dbc, friend_id).unwrap_or(1)

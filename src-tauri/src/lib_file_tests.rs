@@ -1092,3 +1092,70 @@ fn content_cancel_stops_the_receiver_then_writes_a_cancelled_terminal() {
         "Incomplete 也算 live：用户取消时它还能被自动重取，必须一起收口"
     );
 }
+
+/// 图片尺寸只读文件头（PNG/JPEG/GIF/WebP），不引解码库。
+/// 这份值写进消息 content 的可选 w/h，供虚拟列表按真实比例预留；读不出就回退 288。
+#[test]
+fn image_dimensions_reads_common_headers_without_decoding() {
+    use crate::network::file::image_dimensions_from_bytes;
+
+    // PNG: 8B 签名 + 4B 长度 + "IHDR" + 宽/高（大端）
+    let mut png = b"\x89PNG\r\n\x1a\n\x00\x00\x00\x0dIHDR".to_vec();
+    png.extend_from_slice(&320u32.to_be_bytes());
+    png.extend_from_slice(&180u32.to_be_bytes());
+    png.extend_from_slice(&[8, 6, 0, 0, 0]);
+    assert_eq!(image_dimensions_from_bytes(&png), Some((320, 180)));
+
+    // GIF: 逻辑屏幕宽高（小端）
+    let mut gif = b"GIF89a".to_vec();
+    gif.extend_from_slice(&640u16.to_le_bytes());
+    gif.extend_from_slice(&480u16.to_le_bytes());
+    gif.extend_from_slice(&[0, 0, 0]);
+    assert_eq!(image_dimensions_from_bytes(&gif), Some((640, 480)));
+
+    // JPEG: SOI → APP0(len 4) → SOF0(h/w)
+    let jpeg = [
+        0xFF, 0xD8, 0xFF, 0xE0, 0x00, 0x04, 0x00, 0x00, 0xFF, 0xC0, 0x00, 0x11, 0x08, 0x00,
+        0xB4, 0x01, 0x40, 0x03, 0x01, 0x11, 0x00,
+    ];
+    assert_eq!(image_dimensions_from_bytes(&jpeg), Some((320, 180)));
+
+    // WebP VP8X: 24 位 w-1 / h-1
+    let mut webp = b"RIFF\x00\x00\x00\x00WEBPVP8X\x00\x00\x00\x00".to_vec();
+    webp.extend_from_slice(&[0, 0, 0, 0]); // flags/reserved
+    webp.extend_from_slice(&[0x3F, 0x01, 0x00]); // 320 - 1
+    webp.extend_from_slice(&[0xB3, 0x00, 0x00]); // 180 - 1
+    assert_eq!(image_dimensions_from_bytes(&webp), Some((320, 180)));
+
+    // 认不出的格式 / 截断：None（调用方回退 288，不影响正确性）
+    assert_eq!(image_dimensions_from_bytes(b"not an image"), None);
+    assert_eq!(image_dimensions_from_bytes(b"\x89PNG\r\n\x1a\nshort"), None);
+}
+
+/// 真实临时文件 → content JSON 补 w/h；读不出尺寸时**不动**原 JSON（旧口径 288）。
+#[test]
+fn attach_image_size_keeps_json_shape_when_dimensions_are_unknown() {
+    use crate::network::file::{attach_image_size, image_dimensions};
+    use std::path::PathBuf;
+
+    let mut path: PathBuf = std::env::temp_dir();
+    path.push(format!("gosslan-img-dims-{}.png", std::process::id()));
+    let mut png = b"\x89PNG\r\n\x1a\n\x00\x00\x00\x0dIHDR".to_vec();
+    png.extend_from_slice(&320u32.to_be_bytes());
+    png.extend_from_slice(&180u32.to_be_bytes());
+    png.extend_from_slice(&[8, 6, 0, 0, 0]);
+    std::fs::write(&path, &png).expect("write temp png");
+    assert_eq!(image_dimensions(&path), Some((320, 180)));
+
+    let mut v = serde_json::json!({ "name": "a.png", "subtype": "image" });
+    attach_image_size(&mut v, &path);
+    assert_eq!(v["w"], 320);
+    assert_eq!(v["h"], 180);
+
+    let missing = path.with_extension("nope");
+    let mut untouched = serde_json::json!({ "name": "a.bin", "subtype": "file" });
+    attach_image_size(&mut untouched, &missing);
+    assert!(untouched.get("w").is_none(), "读不出尺寸时不许凭空写 w");
+    assert!(untouched.get("h").is_none(), "读不出尺寸时不许凭空写 h");
+    let _ = std::fs::remove_file(&path);
+}

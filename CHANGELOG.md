@@ -13,12 +13,12 @@
 
 ## [Unreleased]
 
-## [5.13.0] - 2026-10-25
+## [5.13.1] - 2026-10-26
 
 ### 虚拟列表迁移 TanStack + 持久本地消息 id（2026-10-25）
 
 - 消息列表从手写前缀和/二分/自建 RO 迁移到 **@tanstack/vue-virtual**：`anchorTo:"end"` 负责
-  历史前插锚定；真实 `measureElement`（`data-index` 认行、0 高度与 <=1px 抖动不写缓存、rAF 合批）；
+  历史前插锚定；真实 `measureElement`（`data-index` 认行、0 高度与 <=1px 抖动不写缓存、测量在绘制前）；
   追加贴底由应用的 `pinned` 独占（库 `followOnAppend` 关闭）；整会话切换延后到收敛窗口统一贴底，
   底部追加仍立即跟随；宽度失效 = `window.resize` + 面板宽度变化 >24px（忽略滚动条 ~15px 的反馈环）。
 - 消息身份改用**持久本地 id**（DB v13→v14：`messages.local_id` + 唯一索引）：乐观气泡在服务端
@@ -29,6 +29,32 @@
 - 探针量具 `perf/vlist.ts` 的定位读数改用真实 rect（新实现用 `transform`）。
 - 验证：`vlist` 13/13、`scrollrestore` 5/5、`mergeheight` 9/9、`msgovf` 80/80；前端 1411、
   Rust 1215；1000 条冷滚 p95 21.8 ms / 长帧 0，暖滚 p95 19.1 ms，定位 5/5 零重叠零空隙。
+
+### 长列表连续滚动、动态高度与白屏抽动（2026-10-26）
+
+- **P0 修复：追加消息不再抢走阅读位置**。此前「末条 key 变化」被当成「切会话」，
+  用户上翻阅读超过 1.2 s 后任一新消息都会把 `scrollTop` 拽到底部（实测一帧 +70,702px，
+  底部还回弹一次）。现在切会话由 `conversationKey` 单独判定，追加/前插一律不重置 `pinned`；
+  追加贴底只由 ChatWindow 的 `(isMine || nearBottom) && !recentScrollUp()` 决定。
+- **自适应预渲染**：`rangeExtractor` 按「视口 1.5× / 最近一帧位移 1.5× / 当前平均行高」扩展，
+  前进侧优先、总行数硬上限；固定 6 条 overscan 在 400–800px/帧时不够（冷滚 90 帧最多 83 帧有白带）。
+- **测量回到绘制前**：`useAnimationFrameWithResizeObserver:false` + 贴底时在 RO 回调里同步跟总高增量，
+  修掉"按估算画一帧"的白带与"加表情先掉 40px 再弹回"；非贴底只补完全在视口上方的行。
+  库的 `wasAtEnd` 路径关掉（`scrollEndThreshold:-1`），滚动位置只有一个所有者。
+- **图片预留真实尺寸**：后端从本机图片文件头读 PNG/JPEG/GIF/WebP 的 `w/h` 写进消息 content
+  （可选字段，无协议帧/DB 迁移；旧消息回退 288）。骨架/图片框/估算共用 `imageBubbleHeight`，
+  视口内解码完成零位移（实测 0px / 0 次改高）；附件图在预览 URL 到达前就渲染图片框，
+  不再先文件卡 90px 再换 145px 的整列抖。
+- **代码高亮移出首帧**：纯文本先行，Worker 里算完回填；按内容 LRU 缓存；主题改为构建期静态
+  scoped CSS（Tauri `style-src 'self'` 不允许运行时 `<style>`），CSP 增加 `worker-src 'self'`。
+  冷跳纯代码区首帧 164.1 → 49.2 ms（longtask 166 → 60 ms）。
+- **翻页失败可见可重试**：`loadMorePage` 捕获并记录到 `historyLoadErrors`，顶部显示失败/重试
+  （180ms 后显示加载中），失败后 1.5s 退避挡住滚动触顶的重复 IPC，不再是 unhandled rejection。
+- **身份合并**：`mergeMessages` / `appendLocalOnly` / `replaceOptimistic` 同步按 `local_id ?? msg_id`
+  去重/替换，乐观行与真实记录不会以两个相同列表 key 并存。
+- 验证：前端 1432；Rust 图片尺寸 8 条；探针 `vlist` 13/13、`scrollrestore` 5/5、`scrollreact` 5/5（连跑 3 次）、
+  `imgskel` 7/7、`msgovf` 80/80、`historyerr` 6/6；1200 条混合消息 80–800px/帧上下扫 **0/90 帧空白**；
+  图片延迟 700ms 在视口内完成 **0px 位移 / 0 次改高**；前插 100 条锚点漂移 0。
 
 ## [5.12.0] - 2026-10-25
 

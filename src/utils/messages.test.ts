@@ -1379,3 +1379,37 @@ test("markStatusInCache：已经是那个状态就不算改动（重复事件不
   const messages: Record<string, MessageRecord[]> = { c1: [msg({ msg_id: "m1", status: "failed" })] };
   assert.equal(markStatusInCache(messages, "m1", "failed"), 0);
 });
+
+
+test("local_id 换代：同一持久本地身份的真实记录原地替换乐观行（不并存、状态取更远）", () => {
+  const existing = [
+    msg({ msg_id: "tmp-1", local_id: "L1", status: "sending", ts: 1, seq: 1 }),
+    msg({ msg_id: "m2", ts: 2, seq: 2 }),
+  ];
+  const incoming = [msg({ msg_id: "real-1", local_id: "L1", status: "delivered", ts: 1, seq: 1 })];
+  const out = mergeMessages(existing, incoming);
+  assert.deepEqual(out.map((m) => m.msg_id), ["real-1", "m2"]);
+  assert.equal(out[0].status, "delivered");
+});
+
+test("appendLocalOnly：快照里已有同一 local_id 的权威行时，不再保留 tmp 行", () => {
+  const fresh = [msg({ msg_id: "real-1", local_id: "L1" })];
+  const local = [msg({ msg_id: "tmp-1", local_id: "L1" })];
+  assert.deepEqual(appendLocalOnly(fresh, local).map((m) => m.msg_id), ["real-1"]);
+});
+
+test("replaceOptimistic：tmp msg_id 对不上时按 local_id 认领乐观行", () => {
+  const list = [msg({ msg_id: "tmp-1", local_id: "L1", status: "sending" })];
+  const next = msg({ msg_id: "real-1", local_id: "L1", status: "delivered" });
+  const out = replaceOptimistic(list, "tmp-DIFFERENT", next);
+  assert.ok(out);
+  assert.deepEqual(out!.map((m) => m.msg_id), ["real-1"]);
+  assert.equal(out![0].status, "delivered");
+});
+
+
+test("preserveDeliveryStatus：真实行按 local_id 认领乐观行的更远状态（msg_id 不同）", () => {
+  const fresh = [msg({ msg_id: "real-1", local_id: "L1", status: "sent" })];
+  const local = [msg({ msg_id: "tmp-1", local_id: "L1", status: "read" })];
+  assert.equal(preserveDeliveryStatus(fresh, local)[0].status, "read");
+});

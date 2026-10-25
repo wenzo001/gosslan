@@ -3,11 +3,31 @@ import { t } from "@/i18n";
 import { computed, onUnmounted, ref, watch } from "vue";
 import { ImageIcon } from "lucide-vue-next";
 import { ImageOff } from "@/components/ui/icons";
-import { IMAGE_BUBBLE_HEIGHT, IMAGE_PLACEHOLDER_HEIGHT } from "@/utils/previewMetrics";
+import { IMAGE_BUBBLE_HEIGHT, IMAGE_PLACEHOLDER_HEIGHT, imageBubbleHeight } from "@/utils/previewMetrics";
 
 const props = withDefaults(
-  defineProps<{ src: string; mine?: boolean }>(),
-  { mine: false },
+  defineProps<{
+    src: string;
+    mine?: boolean;
+    /** 载荷里的真实像素尺寸（后端从本机文件头读出）；缺省 = 旧消息，回退 288。 */
+    width?: number;
+    height?: number;
+  }>(),
+  { mine: false, width: undefined, height: undefined },
+);
+
+/** 有真实尺寸就按比例预留；没有就沿用旧口径（上限 288）。 */
+const reservedHeight = computed(() =>
+  props.width && props.height ? imageBubbleHeight(props.width, props.height) : IMAGE_BUBBLE_HEIGHT,
+);
+const hasKnownSize = computed(() => !!(props.width && props.height));
+/**
+ * 失败态高度：**已知尺寸时保持预留高度**，不缩到 128。
+ * 否则"图片加载失败"会再改一次行高，把下方内容推上去 —— 用户要的是"不跳"，
+ * 一张永远不来的图占着预留位比整列抽动好。旧消息（无尺寸）仍退回紧凑占位。
+ */
+const placeholderHeight = computed(() =>
+  state.value === "failed" && !hasKnownSize.value ? IMAGE_PLACEHOLDER_HEIGHT : reservedHeight.value,
 );
 const emit = defineEmits<{ (e: "open", src: string): void; (e: "refetch"): void }>();
 
@@ -126,22 +146,18 @@ onUnmounted(clearTimer);
     @keydown.enter.prevent="state === 'loaded' && emit('open', src)"
     @keydown.space.prevent="state === 'loaded' && emit('open', src)"
   >
-    <!-- 骨架：加载中按**估算端那个同一个数**（previewMetrics.IMAGE_BUBBLE_HEIGHT）整块预留。
-         为什么预留要用上限而不是"常见截图的高度"：载荷里没有原图尺寸（content 的 JSON 只有
-         name/path/size/sha256/subtype，补 w/h 要动消息协议 ⇒ 为视觉效果排除），
-         而图片容器定宽 208px ⇒ 真实高 = min(288, 208 × 原图高/原图宽) 只能在解码后知道。
-         预留 == 估算 ⇒ 这一行挂载那一次不再被实测纠正（少一整次整表前缀和重算，见 N10 那笔账），
-         并且顶到上限的那一档（竖长图/手机截图）**加载完成零跳变**；代价是横幅图（16:9 真高≈117px）
-         完成时收缩约 171px —— 原来是先空出 160px 再长出 189px。这一取舍由用户 2026-10-10 拍板（N22）。
-         终态（失败）退回紧凑的 IMAGE_PLACEHOLDER_HEIGHT：后面不会再有图进来，为一张永远等不来的图
-         撑 288px 灰块是最差的选项；此时估算偏高 ⇒ 只留白、不遮挡。
+    <!-- 骨架按**载荷里的真实像素尺寸**预留（后端从本机文件头读出 w/h 写进 content）。
+         有 w/h：预留 == 真实高 = min(288, 208 × h/w) ⇒ 解码完成零跳变；
+         没有（旧消息/HEIC 等读不出）：回退 288 上限，横图完成时仍会收缩一次（已知残留）。
+         失败态：已知尺寸时**保持预留高度**，不缩到 128 —— 为一张不会来的图撑住空间，
+         比再改一次行高把下方内容推上去好；旧消息无尺寸时仍退回紧凑占位。
          ⚠️ 高度只从 previewMetrics 取，别再写回 h-* / max-h-* 字面量
          （由 designGuards ㉞ 与运行时探针 --only=imgskel 两段一起盯着）。 -->
     <div
       v-if="state !== 'loaded'"
       data-img-skeleton
       class="flex w-full items-center justify-center bg-[var(--gosslan-hover)]"
-      :style="{ height: `${state === 'failed' ? IMAGE_PLACEHOLDER_HEIGHT : IMAGE_BUBBLE_HEIGHT}px` }"
+      :style="{ height: `${placeholderHeight}px` }"
     >
       <ImageOff v-if="state === 'failed'" class="size-6 opacity-50" />
       <ImageIcon v-else class="size-6 animate-pulse opacity-40" />
@@ -169,7 +185,7 @@ onUnmounted(clearTimer);
       :key="loadKey"
       :src="props.src"
       class="block w-full rounded-[var(--gosslan-bubble-radius)] object-contain"
-      :style="{ maxHeight: `${IMAGE_BUBBLE_HEIGHT}px` }"
+      :style="{ maxHeight: `${reservedHeight}px`, height: hasKnownSize ? `${reservedHeight}px` : undefined }"
       :class="state === 'loaded' ? '' : 'hidden'"
       @load="clearTimer(); state = 'loaded'"
       @error="onError()"

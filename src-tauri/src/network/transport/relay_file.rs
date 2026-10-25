@@ -455,14 +455,18 @@ async fn handle_relay_chunk(
                     db::now_ms(),
                 )
                 .ok();
-                let content = serde_json::json!({
+                let subtype = file::classify_file_subtype(&name);
+                let mut content = serde_json::json!({
                     "name": name.clone(),
                     "path": path_str.clone(),
                     "size": expected_size,
                     "sha256": cid.clone(),
-                    "subtype": file::classify_file_subtype(&name),
-                })
-                .to_string();
+                    "subtype": subtype,
+                });
+                if subtype == "image" {
+                    file::attach_image_size(&mut content, std::path::Path::new(&path_str));
+                }
+                let content = content.to_string();
                 let seq = db::next_clock(&dbc, &from).unwrap_or(1);
                 let rec = MessageRecord {
                     id: 0,

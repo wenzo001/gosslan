@@ -277,6 +277,12 @@ export interface FileMeta {
   subtype: string;
   /** 内容指纹（= cid，明文 sha256，ADR-0019）。合并转发卡片按它按需拉取；旧版本消息可能没有。 */
   sha256?: string;
+  /**
+   * 图片像素尺寸（可选；后端在**本机文件头**读出后写入 content，无协议/DB 变更）。
+   * 有值时虚拟列表与骨架都按真实比例预留，图片解码完成不再改高；旧消息没有则回退 288。
+   */
+  w?: number;
+  h?: number;
 }
 
 /** 统一内容传输状态（ADR-0019）：前端气泡据此显示发送中/等待/重试/完成。 */export interface ContentTransfer {

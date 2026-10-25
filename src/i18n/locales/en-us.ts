@@ -1075,6 +1075,8 @@ export const enUS: MessageDict = {
   "chat.dropToGroup": "Drop to send to group",
   "chat.dropToSend": "Drop to send file",
   "chat.empty": "No messages yet, say hi",
+  "chat.history.loading": "Loading earlier messages…",
+  "chat.history.loadFail": "Couldn't load earlier messages",
   "chat.backToLatest": "Back to Latest",
   "chat.notFriend": "Not friends yet. Add them as a friend to continue chatting. You can only view the chat history.",
 

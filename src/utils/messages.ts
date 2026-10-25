@@ -17,13 +17,35 @@ export function mergeMessages(
   existing: MessageRecord[],
   incoming: MessageRecord[],
 ): MessageRecord[] {
-  const seen = new Set<string>(existing.map((m) => m.msg_id));
+  // 去重键：msg_id（全网唯一）**以及** local_id（持久本地身份）。
+  // 后端为乐观消息回传的真实记录会带同一个 local_id、不同的 msg_id（tmp-* → 真实 id）：
+  // 只按 msg_id 去重会让"乐观行 + 真实行"同时存在（虚拟列表 key 相同）；
+  // 按 local_id 认出来就**原地替换**，并保留更远的投递状态。
   const merged: MessageRecord[] = [...existing];
+  const byMsg = new Map<string, number>();
+  const byLocal = new Map<string, number>();
+  merged.forEach((m, i) => {
+    byMsg.set(m.msg_id, i);
+    if (m.local_id) byLocal.set(m.local_id, i);
+  });
   for (const m of incoming) {
-    if (!seen.has(m.msg_id)) {
-      seen.add(m.msg_id);
-      merged.push(m);
+    if (byMsg.has(m.msg_id)) continue;
+    const li = m.local_id ? byLocal.get(m.local_id) : undefined;
+    if (li !== undefined) {
+      const prev = merged[li];
+      merged[li] = {
+        ...m,
+        content: pickMediaContent(prev, m),
+        status: furthestStatus(prev.status, m.status),
+      };
+      byMsg.delete(prev.msg_id);
+      byMsg.set(m.msg_id, li);
+      if (m.local_id) byLocal.set(m.local_id, li);
+      continue;
     }
+    byMsg.set(m.msg_id, merged.length);
+    if (m.local_id) byLocal.set(m.local_id, merged.length);
+    merged.push(m);
   }
   // 排序以每会话逻辑序号为主，id 兜底，完全不依赖墙上时钟。
   merged.sort((a, b) => a.seq - b.seq || a.id - b.id);
@@ -165,8 +187,12 @@ export function preserveDeliveryStatus(
 ): MessageRecord[] {
   if (local.length === 0) return fresh;
   const known = new Map(local.map((m) => [m.msg_id, m]));
+  // 真实记录与乐观行的 msg_id 不同、local_id 相同：状态也要能跨过这次换代。
+  const knownLocal = new Map(
+    local.filter((m) => !!m.local_id).map((m) => [m.local_id as string, m]),
+  );
   return fresh.map((m) => {
-    const prev = known.get(m.msg_id);
+    const prev = known.get(m.msg_id) ?? (m.local_id ? knownLocal.get(m.local_id) : undefined);
     const best = prev ? furthestStatus(m.status, prev.status) : m.status;
     const content = pickMediaContent(prev, m);
     if (best === m.status && content === m.content) return m;
@@ -191,9 +217,11 @@ export function appendLocalOnly(
 ): MessageRecord[] {
   if (local.length === 0) return fresh;
   const freshIds = new Set(fresh.map((m) => m.msg_id));
+  const freshLocal = new Set(fresh.map((m) => m.local_id).filter((v): v is string => !!v));
   const localOnly = local.filter(
     (m) =>
       !freshIds.has(m.msg_id) &&
+      !(m.local_id && freshLocal.has(m.local_id)) &&
       (m.msg_id.startsWith("tmp-") || m.msg_id.startsWith("file-failed-")),
   );
   return localOnly.length ? [...fresh, ...localOnly] : fresh;
@@ -217,21 +245,30 @@ export function replaceOptimistic(
   tmpMsgId: string,
   next: MessageRecord,
 ): MessageRecord[] | null {
-  const i = list.findIndex((m) => m.msg_id === tmpMsgId);
+  // 乐观行按 msg_id 找；若调用方给的 tmpMsgId 对不上（例如重载后 msg_id 变了），
+  // 再用持久 local_id 认一次 —— 不能因为身份换代就把"发送中"永久留在列表里。
+  const i = list.findIndex(
+    (m) => m.msg_id === tmpMsgId || (!!next.local_id && m.local_id === next.local_id),
+  );
   if (i < 0) return null;
-  const existing = list.find((m) => m.msg_id === next.msg_id);
-  if (!existing) {
+  const existingIdx = list.findIndex(
+    (m, k) =>
+      k !== i &&
+      (m.msg_id === next.msg_id || (!!next.local_id && m.local_id === next.local_id)),
+  );
+  if (existingIdx < 0) {
     return [...list.slice(0, i), { ...next, status: furthestStatus(list[i].status, next.status) }, ...list.slice(i + 1)];
   }
   // 真实记录已经在了：把那一条并进最终形态，并**摘掉**乐观行（顺序保持原样）。
+  const existing = list[existingIdx];
   const kept: MessageRecord = {
     ...next,
     content: pickMediaContent(existing, next),
     status: furthestStatus(existing.status, next.status),
   };
   return list
-    .filter((_, k) => k !== i)
-    .map((m) => (m.msg_id === next.msg_id ? kept : m));
+    .map((m, k) => (k === existingIdx ? kept : m))
+    .filter((_, k) => k !== i);
 }
 
 /**

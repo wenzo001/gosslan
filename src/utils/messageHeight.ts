@@ -5,9 +5,11 @@ import {
   CLAMPED_CODE_BLOCK_HEIGHT,
   IMAGE_BUBBLE_HEIGHT,
   codeBlockHeight,
+  imageBubbleHeight,
   shouldShowTimeDivider,
   textBubbleHeight,
 } from "@/utils/previewMetrics";
+import { parseFileMeta } from "@/utils/fileMeta";
 // 可见图片数的唯一家（卡片画几张、这里按几行估高，同一个常量）
 import { TODO_CARD_IMAGE_VISIBLE } from "@/utils/todos";
 import type { FontSizeKey } from "@/utils/chatStyle";
@@ -155,20 +157,18 @@ function computeBubbleHeight(
   switch (m.kind) {
     case "code":
       return codeBlockHeight(m.content);
-    case "image":
-      return IMAGE_BUBBLE_HEIGHT;
+    case "image": {
+      const meta = parseFileMeta(m.content);
+      return meta?.w && meta?.h ? imageBubbleHeight(meta.w, meta.h) : IMAGE_BUBBLE_HEIGHT;
+    }
     case "file": {
-      // 普通文件卡片 92；附件图片 ≤288；附件代码按截断态占位（读文件前预知不了行数）。
-      let sub = "file";
-      let hasPath = false;
-      try {
-        const o = JSON.parse(m.content) as { subtype?: string; path?: string };
-        sub = o?.subtype ?? "file";
-        hasPath = !!o?.path;
-      } catch {
-        /* 历史 / 异常内容按普通 file 卡片估 */
+      // 普通文件卡片 92；附件图片按真实比例（无尺寸回退 288）；附件代码按截断态占位。
+      const meta = parseFileMeta(m.content);
+      const sub = meta?.subtype ?? "file";
+      const hasPath = !!meta?.path;
+      if (hasPath && sub === "image") {
+        return meta?.w && meta?.h ? imageBubbleHeight(meta.w, meta.h) : IMAGE_BUBBLE_HEIGHT;
       }
-      if (hasPath && sub === "image") return IMAGE_BUBBLE_HEIGHT;
       if (hasPath && sub === "code") return CLAMPED_CODE_BLOCK_HEIGHT;
       return FILE_CARD;
     }

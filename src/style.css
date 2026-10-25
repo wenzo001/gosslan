@@ -1,3 +1,4 @@
+@import "./styles/hljs-theme.css";
 @tailwind base;
 @tailwind components;
 @tailwind utilities;

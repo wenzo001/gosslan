@@ -54,3 +54,16 @@ test("旧格式（data URL 正文）不算文件元信息 ⇒ null", () => {
   // 开发阶段遗留的 image 消息正文可能是 data URL，那不是 JSON
   assert.equal(parseFileMeta("data:image/png;base64,AAAA"), null);
 });
+
+
+test("图片像素尺寸：正整数才收，坏值当没有（回退 288）", () => {
+  assert.deepEqual(
+    parseFileMeta(JSON.stringify({ name: "a.png", subtype: "image", w: 320, h: 180, path: "/x" })),
+    { name: "a.png", path: "/x", subtype: "image", w: 320, h: 180 },
+  );
+  assert.deepEqual(parseFileMeta(JSON.stringify({ name: "a.png", w: 0, h: -1 })), { name: "a.png" });
+  assert.deepEqual(parseFileMeta(JSON.stringify({ name: "a.png", w: "320", h: 180 })), {
+    name: "a.png",
+    h: 180,
+  });
+});

@@ -157,6 +157,107 @@ pub fn classify_file_subtype(name: &str) -> &'static str {
     }
 }
 
+/// 从**本地图片文件头**读像素尺寸（只读前 64 KiB，不解码像素）。
+///
+/// 为什么不上图片解码库：这里只需要宽高，而整份解码会引入新依赖与整图内存。
+/// 覆盖本机发送/接收链路会遇到的格式：PNG / JPEG / GIF / WebP（VP8X / VP8 / VP8L）；
+/// 其余（HEIC/AVIF/SVG…）返回 `None`，前端按旧口径 288px 预留，不影响正确性。
+///
+/// 这个值只写进消息 `content` 的可选字段 `w`/`h`（JSON，无协议帧变更、无 DB 迁移）；
+/// 老消息没有这两个字段时仍然回退 288。
+pub fn image_dimensions_from_bytes(b: &[u8]) -> Option<(u32, u32)> {
+    let be32 = |s: &[u8]| u32::from_be_bytes([s[0], s[1], s[2], s[3]]);
+    let be16 = |s: &[u8]| u16::from_be_bytes([s[0], s[1]]) as u32;
+    let le16 = |s: &[u8]| u16::from_le_bytes([s[0], s[1]]) as u32;
+    let le24 = |s: &[u8]| (s[0] as u32) | ((s[1] as u32) << 8) | ((s[2] as u32) << 16);
+
+    // PNG: signature + IHDR
+    if b.len() >= 24 && b.starts_with(b"\x89PNG\r\n\x1a\n") && &b[12..16] == b"IHDR" {
+        return Some((be32(&b[16..20]), be32(&b[20..24])));
+    }
+    // GIF: logical screen width/height（小端）
+    if b.len() >= 10 && (b.starts_with(b"GIF87a") || b.starts_with(b"GIF89a")) {
+        return Some((le16(&b[6..8]), le16(&b[8..10])));
+    }
+    // WebP: RIFF....WEBP
+    if b.len() >= 30 && b.starts_with(b"RIFF") && &b[8..12] == b"WEBP" {
+        match &b[12..16] {
+            b"VP8X" => {
+                let w = le24(&b[24..27]) + 1;
+                let h = le24(&b[27..30]) + 1;
+                return Some((w, h));
+            }
+            // 关键帧头：3 字节 frame tag 后是 3 字节起始码 9d 01 2a，再 2+2 字节宽高（14 位有效）。
+            b"VP8 " if &b[23..26] == b"\x9d\x01\x2a" => {
+                let w = le16(&b[26..28]) & 0x3fff;
+                let h = le16(&b[28..30]) & 0x3fff;
+                return Some((w, h));
+            }
+            b"VP8L" if b[20] == 0x2f => {
+                let bits = (b[21] as u32)
+                    | ((b[22] as u32) << 8)
+                    | ((b[23] as u32) << 16)
+                    | ((b[24] as u32) << 24);
+                let w = (bits & 0x3fff) + 1;
+                let h = ((bits >> 14) & 0x3fff) + 1;
+                return Some((w, h));
+            }
+            _ => {}
+        }
+    }
+    // JPEG: 扫描 SOFn（排除 DHT/JPG/DAC）
+    if b.len() >= 4 && b[0] == 0xff && b[1] == 0xd8 {
+        let mut i = 2usize;
+        while i + 3 < b.len() {
+            if b[i] != 0xff {
+                i += 1;
+                continue;
+            }
+            let mut m = b[i + 1];
+            while m == 0xff && i + 2 < b.len() {
+                i += 1;
+                m = b[i + 1];
+            }
+            if m == 0xd8 || m == 0x01 || (0xd0..=0xd7).contains(&m) {
+                i += 2;
+                continue;
+            }
+            if m == 0xd9 || m == 0xda || i + 4 >= b.len() {
+                break;
+            }
+            let len = be16(&b[i + 2..i + 4]) as usize;
+            let is_sof = (0xc0..=0xcf).contains(&m) && m != 0xc4 && m != 0xc8 && m != 0xcc;
+            if is_sof && i + 9 < b.len() {
+                let h = be16(&b[i + 5..i + 7]);
+                let w = be16(&b[i + 7..i + 9]);
+                return Some((w, h));
+            }
+            if len < 2 {
+                break;
+            }
+            i += 2 + len;
+        }
+    }
+    None
+}
+
+/// 读本地文件的图片尺寸；文件不存在 / 非上述格式 / 读失败一律 `None`。
+pub fn image_dimensions(path: &Path) -> Option<(u32, u32)> {
+    use std::io::Read;
+    let mut f = std::fs::File::open(path).ok()?;
+    let mut buf = [0u8; 64 * 1024];
+    let n = f.read(&mut buf).ok()?;
+    image_dimensions_from_bytes(&buf[..n])
+}
+
+/// 给消息 content 补上可选 `w`/`h`（只在能读出尺寸时写；读不到就保持旧形状）。
+pub fn attach_image_size(v: &mut serde_json::Value, path: &Path) {
+    if let Some((w, h)) = image_dimensions(path) {
+        v["w"] = serde_json::Value::from(w);
+        v["h"] = serde_json::Value::from(h);
+    }
+}
+
 /// 避免重名：`a.txt` -> `a (1).txt`
 pub(crate) fn unique_path(dir: &Path, name: &str) -> PathBuf {
     let base = dir.join(name);

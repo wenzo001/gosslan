@@ -98,5 +98,7 @@ test("公共层不许再手抄单飞：这六行在 src/utils 下只有一个家
     "翻页那格的偏离是刻意的：删掉这张表前先去读它上面那段 ⚠️ 注释");
   // 接线判据按**次数**数，不按存在性：四个预览入口都得真的走 helper。
   const total = [...wired.values()].reduce((a, b) => a + b, 0);
-  assert.equal(total, 4, `走 helper 的预览入口应有 4 处，实测 ${total}（${[...wired]}）`);
+  // 2026-10-26 新增第 5 处：代码高亮（Worker 请求同键去重）。预览入口仍是 4 处，
+  // 所以这里数的是「所有走 helper 的地方」，新增消费者必须同批改这个分母。
+  assert.equal(total, 5, `走 helper 的地方应有 5 处（4 预览 + 1 高亮），实测 ${total}（${[...wired]}）`);
 });
