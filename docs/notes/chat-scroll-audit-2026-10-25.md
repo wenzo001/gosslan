@@ -265,7 +265,7 @@ GOSSLAN_CHROME='/Applications/Brave Browser.app/Contents/MacOS/Brave Browser' \
 | 消息列表 | 手写前缀和/二分/自建 RO → `useVirtualizer`：`anchorTo:"end"`（历史 prepend 锚定）、真实 `measureElement`、rAF 合批测量；`followOnAppend:false`，追加贴底由应用 `pinned` 独占 |
 | 动态高度 | 高度 <= 0 不写缓存；`<=1px` 变化不重排（半像素白线仍保留两位小数）；`measureElement` 靠 `data-index` 认行 |
 | 切会话 | pre-flush 先立收敛窗口；整会话切换（首尾 key 都变）延后到安静期统一贴底；底部追加仍立即跟随；换数据导致的 scrollTop 重置不计为用户上滚 |
-| 布局失效 | 字体/主题走 `layoutKey`；宽度失效从容器 RO 移到 `window.resize`（避免滚动条出现/消失改变 clientWidth 的清缓存反馈环） |
+| 布局失效 | 字体/主题走 `layoutKey`（ChatWindow 传字号+主题）；宽度失效 = `window.resize` + 面板宽度变化 >24px（忽略滚动条 ~15px 的清缓存反馈环） |
 | 缓存边界 | `itemSizeCache > 6000` 整体重测；测量缓存以持久本地 id 为键 |
 | 消息身份 | DB v13→v14：`messages.local_id`（唯一索引），老行回填 `msg_id`；乐观气泡由前端生成并随 `send_message`/`send_group_message` 落库，真实记录返回同一个值 ⇒ 列表 key 不换 |
 | LogViewer | 已是 TanStack；过滤变化 `measure()` 清旧行高，隐藏/0 高度不写缓存 |

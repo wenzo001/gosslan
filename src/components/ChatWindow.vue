@@ -1793,6 +1793,7 @@ function onLoadMore() {
         live
         :auto-scroll-on-swap="restoreScrollTop === null && !(chat.unreadJump && chat.unreadJump.convId === chat.activeConv)"
         :estimate-height="estimateHeight"
+        :layout-key="`${app.chatStyle.fontSize}:${app.dark}`"
         @load-more="onLoadMore"
         @near-bottom="nearBottom = $event"
       >

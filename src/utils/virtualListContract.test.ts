@@ -25,6 +25,11 @@ test("消息列表已迁移到 TanStack，且 key 不回退数组下标", () => 
   assert.doesNotMatch(src, /:key="[^"]*\.index/, "v-for key 不许用数组下标");
 });
 
+test("ChatWindow 把字号/主题传给 VirtualList（布局变化才失效测量缓存）", () => {
+  const chat = read("src/components/ChatWindow.vue");
+  assert.match(chat, /:layout-key=/, "ChatWindow 必须传 layoutKey（字号/主题）");
+});
+
 test("LogViewer 仍是 TanStack 且保留最佳实践选项", () => {
   const src = read("src/components/LogViewer.vue");
   assert.match(src, /useVirtualizer\(/);
