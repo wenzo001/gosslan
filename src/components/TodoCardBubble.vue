@@ -38,7 +38,7 @@ const props = defineProps<{
   message: MessageRecord;
   /** 自己发的卡片：尖角朝右指向右侧头像。 */
   mine?: boolean;
-  /** 从父层 MessageItem 透传的卡片样式（固定底色，不跟随 mine/other）。 */
+  /** 从父层 MessageItem 透传的卡片样式（自己的卡片跟随自己的主题气泡色，对方保持中性）。 */
   cardStyle?: CSSProperties;
   /**
    * 任务 `todo_id` → **当前**状态与当前编号码（会话层折叠一次传下来，见 `ChatWindow.todoLive`）。
@@ -67,8 +67,6 @@ const emit = defineEmits<{
    */
   (e: "open-panel"): void;
 }>();
-
-const { cardStyle } = props;
 
 const { memberProfile } = useMemberProfile();
 
@@ -141,19 +139,45 @@ const code = computed(() =>
 );
 const assignees = computed(() => todo.value?.assignees ?? []);
 
+/**
+ * 自己的卡片（`mine`）底色是自己的主题气泡色 ⇒ 共享的 `TODO_*_CLASS`（给中性底写的）
+ * 不能直接上屏：`--gosslan-text-2` / `--gosslan-primary` 在深色实底上会掉到 4.5 以下。
+ * 这里只覆盖**颜色**，形状/字号/字重仍沿用共享表；对方卡片完全不变。
+ */
+const priorityClass = computed(() => {
+  const key = todo.value?.priority ?? "normal";
+  if (!props.mine) return TODO_PRIORITY_CLASS[key];
+  return key === "high"
+    ? "font-medium text-[var(--card-action)]"
+    : "text-[var(--card-ink-soft)]";
+});
+const categoryClass = computed(() => {
+  const key = todo.value?.category ?? "task";
+  if (!props.mine) return TODO_CATEGORY_TEXT_CLASS[key];
+  if (key === "bug") return "text-[var(--card-danger)]";
+  if (key === "requirement") return "text-[var(--card-action)]";
+  if (key === "custom") return "text-[var(--card-ink)]";
+  return "text-[var(--card-ink-soft)]";
+});
+const statusPillClass = computed(() =>
+  props.mine
+    ? "bg-[var(--card-chip)] text-[var(--card-ink)]"
+    : TODO_STATUS_PILL[status.value],
+);
+
 function statusText(s: TodoStatus): string {
   return t(TODO_STATUS_LABEL_KEY[s]);
 }
 </script>
 
 <template>
-  <div class="relative w-64 max-w-full" :style="cardStyle">
+  <div class="relative w-64 max-w-full" :style="props.cardStyle">
     <div class="overflow-hidden rounded-[var(--gosslan-bubble-radius)]">
     <!-- 命中区①：卡片主体（头部 / 描述 / 指派人）→ 只打开群任务面板，不直达某一条。
          role=button + tabindex 让它与底部真按钮一样键盘可达；hover 给反馈。
          ⚠️ 这里不许用透明覆盖层：图片与底部操作条是**兄弟**命中区，盖一层会一起吃掉。 -->
     <div
-      class="cursor-pointer transition hover:bg-[var(--gosslan-hover)]"
+      class="cursor-pointer transition hover:bg-[var(--card-chip)]"
       role="button"
       tabindex="0"
       :aria-label="todo?.title || t('todo.title')"
@@ -161,7 +185,7 @@ function statusText(s: TodoStatus): string {
       @keydown="openPanelKey"
     >
     <div class="flex items-center gap-2 px-3 pt-2.5">
-      <ListTodo class="h-4 w-4 shrink-0 text-[var(--gosslan-primary)]" />
+      <ListTodo class="h-4 w-4 shrink-0 text-[var(--card-action)]" />
       <!-- 群内固定编号（`R12` / `B2345`）：成员各自库里同一条任务是同一个号，口头引用才对得上。
            没号（旧版本对端建的载荷里没这个键）⇒ 不显示，也不按顺序补一个（补出来的号会随集合变）。
            数字超过 4 位时这一行只显**后四位**（用户 2026-09-30 规则 5），全码有三个出口：
@@ -169,7 +193,7 @@ function statusText(s: TodoStatus): string {
            缩短那一份只是视觉识别码 —— 落库、上线、引用的都是完整编号 + 内部 todoId（规则 7）。 -->
       <span
         v-if="code"
-        class="shrink-0 font-mono text-caption text-[var(--gosslan-text-2)]"
+        class="shrink-0 font-mono text-caption text-[var(--card-ink-soft)]"
         :aria-label="t('todo.codeAria', { code: code.full })"
         :title="code.shortened ? t('todo.codeShortTip', { full: code.full }) : undefined"
       >
@@ -179,7 +203,7 @@ function statusText(s: TodoStatus): string {
            免得三档一起亮反而读不出重点。谁能改见 `canUpdateTodo`（发起人/关联人/群主）。 -->
       <span
         class="shrink-0 text-caption"
-        :class="TODO_PRIORITY_CLASS[todo?.priority ?? 'normal']"
+        :class="priorityClass"
       >
         {{ t(TODO_PRIORITY_LABEL_KEY[todo?.priority ?? "normal"]) }}
       </span>
@@ -189,7 +213,7 @@ function statusText(s: TodoStatus): string {
       <span
         v-if="todo && todo.category !== 'task'"
         class="shrink-0 max-w-[6rem] truncate text-caption"
-        :class="TODO_CATEGORY_TEXT_CLASS[todo.category]"
+        :class="categoryClass"
         :title="todo.category === 'custom' ? todo.customCategory : undefined"
       >
         <!-- 卡片读的是**创建快照**里的类型：自定义档直接显示当时输入的名字，没有名字退回菜单文案。 -->
@@ -198,13 +222,13 @@ function statusText(s: TodoStatus): string {
           : t(TODO_CATEGORY_LABEL_KEY[todo.category]) }}
       </span>
       <span
-        class="min-w-0 flex-1 truncate text-body font-medium text-[var(--gosslan-card-ink)]"
+        class="min-w-0 flex-1 truncate text-body font-medium text-[var(--card-ink)]"
         :title="todo?.title || t('todo.title')"
       >
         {{ todo?.title || t("todo.title") }}
       </span>
       <!-- 状态胶囊走共享映射（`TODO_STATUS_PILL`）；字号 11px 是设计规范的最小可用档。 -->
-      <span class="shrink-0 inline-flex h-[18px] items-center justify-center rounded-full px-1.5 text-caption font-medium leading-none" :class="TODO_STATUS_PILL[status]">
+      <span class="shrink-0 inline-flex h-[18px] items-center justify-center rounded-full px-1.5 text-caption font-medium leading-none" :class="statusPillClass">
         {{ statusText(status) }}
       </span>
     </div>
@@ -216,7 +240,7 @@ function statusText(s: TodoStatus): string {
          否则虚拟列表按旧值排布 ⇒ 相邻消息互相遮挡，那是本仓另一条已记的契约）。 -->
     <p
       v-if="todo?.description"
-      class="mt-1 max-h-[calc(3*1.625em)] overflow-hidden whitespace-pre-wrap break-words px-3 text-meta leading-relaxed text-[var(--gosslan-card-ink)] opacity-70"
+      class="mt-1 max-h-[calc(3*1.625em)] overflow-hidden whitespace-pre-wrap break-words px-3 text-meta leading-relaxed text-[var(--card-ink-soft)]"
     >
       <!-- 描述里的 @ 走与聊天正文**同一份**渲染件（§9）：段怎么切、@到算不算我、
            显示成什么，全部在 utils/linkify 那一处，这里只负责画出来。 -->
@@ -264,7 +288,7 @@ function statusText(s: TodoStatus): string {
     <button
       v-if="cardThumbs.hasMore"
       type="button"
-      class="mt-1.5 flex w-full items-center justify-center gap-1 px-3 py-1 text-meta text-[var(--gosslan-primary)] transition hover:bg-[var(--gosslan-hover)]"
+      class="mt-1.5 flex w-full items-center justify-center gap-1 px-3 py-1 text-meta text-[var(--card-action)] transition hover:bg-[var(--card-chip)]"
       @click.stop="emit('open', todoId)"
     >
       {{ t("todo.viewMoreImages") }}
@@ -275,12 +299,12 @@ function statusText(s: TodoStatus): string {
       <span
         v-for="a in assignees"
         :key="a"
-        class="truncate rounded-full bg-[var(--gosslan-hover)] px-1.5 py-0.5 text-caption text-[var(--gosslan-card-ink)] opacity-70"
+        class="truncate rounded-full bg-[var(--card-chip)] px-1.5 py-0.5 text-caption text-[var(--card-ink)]"
         :title="memberProfile(a).name"
       >
         {{ memberProfile(a).name }}
       </span>
-      <span v-if="assignees.length === 0" class="text-caption text-[var(--gosslan-card-ink)] opacity-70">
+      <span v-if="assignees.length === 0" class="text-caption text-[var(--card-ink-soft)]">
         {{ t("todo.assigneesEmpty") }}
       </span>
     </div>
@@ -290,7 +314,7 @@ function statusText(s: TodoStatus): string {
     <!-- 命中区②：底部操作条 → 打开看板并直达**这条**任务详情（带 todoId）。 -->
     <button
       type="button"
-      class="mt-2 flex w-full items-center justify-center gap-1 border-t border-[var(--gosslan-card-line)] py-1.5 text-meta text-[var(--gosslan-primary)] transition hover:bg-[var(--gosslan-hover)]"
+      class="mt-2 flex w-full items-center justify-center gap-1 border-t border-[var(--card-line)] py-1.5 text-meta text-[var(--card-action)] transition hover:bg-[var(--card-chip)]"
       @click="emit('open', todoId)"
     >
       {{ t("todo.openPanel") }}

@@ -1329,11 +1329,16 @@ export const useChatStore = defineStore("chat", () => {
    * 返回三态而非布尔：翻页中途出错与"翻到顶也没找到"是**两回事**，
    * 调用方要给不同的话（HIG：异步路径必须有终态，且不能说错原因）。
    */
-  async function locateMessageInConv(
+  /**
+   * 会话**已经打开**时的定位：逐页向前找 msg_id，找到就发 `locateRequest` 给 ChatWindow。
+   *
+   * 与 `locateMessageInConv` 拆开是 2026-10-25 任务中心「去会话」的需求：
+   * 那边已经 await 过 `openConversation`，再调一次会把整页重拉一遍、还会重复 markRead。
+   */
+  async function locateInLoaded(
     convId: string,
     msgId: string,
   ): Promise<"found" | "not-found" | "error"> {
-    await openConversation(convId);
     // 用户明确说"我要看这条"，就不要再去跳未读分割线（两者会互相抢滚动位置）
     unreadJump.value = null;
     try {
@@ -1354,6 +1359,14 @@ export const useChatStore = defineStore("chat", () => {
       return "error";
     }
     return "not-found";
+  }
+
+  async function locateMessageInConv(
+    convId: string,
+    msgId: string,
+  ): Promise<"found" | "not-found" | "error"> {
+    await openConversation(convId);
+    return locateInLoaded(convId, msgId);
   }
 
   async function openConversation(id: string) {
@@ -3152,6 +3165,7 @@ export const useChatStore = defineStore("chat", () => {
     locateRequest,
     clearLocateRequest,
     locateMessageInConv,
+    locateInLoaded,
     nicknameOf,
     init,
     refreshPeers,
