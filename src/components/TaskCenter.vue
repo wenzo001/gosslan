@@ -14,7 +14,7 @@ import {
 } from "@/utils/taskCenter";
 import { clampProgress } from "@/utils/transferSummary";
 import { blockedReasonKey } from "@/utils/transferState";
-import { cancelOutcome } from "@/utils/cancelFeedback";
+import { cancelOutcome, messageCancelNotice } from "@/utils/cancelFeedback";
 import { sleep } from "@/utils/defer";
 
 /**
@@ -111,6 +111,7 @@ const actionLabel: Record<OperationAction, string> = {
   cancel: "task.cancel",
   cancel_message: "task.cancel",
   cancel_update: "task.cancel",
+  cancel_content: "task.cancel",
   retry_content: "task.retryNow",
   sync_history_now: "task.syncNow",
   open_conversation: "task.openChat",
@@ -123,6 +124,7 @@ async function runAction(row: OperationRow, action: OperationAction) {
     if (action === "cancel") await cancelFile(row);
     else if (action === "cancel_message") await cancelMessage(row);
     else if (action === "cancel_update") await cancelUpdate();
+    else if (action === "cancel_content") await cancelContent(row);
     else if (action === "retry_content") await retryContent(row);
     else if (action === "sync_history_now") await chat.syncGroupHistoryNow(row.id.slice("group:".length));
     else if (action === "open_conversation") await openConversation(row);
@@ -136,19 +138,16 @@ async function runAction(row: OperationRow, action: OperationAction) {
 /**
  * 取消一条**还没送出去的消息**（B4 的命令，2026-10-24 接进任务中心）。
  *
- * 与文件取消不同：这里没有"本机停了、对面还在跑"这种中间态 —— 后端删掉 outbox 行并写
- * `cancelled`，要么成功要么已经送达。`already_delivered` 必须如实说出口，
- * 否则用户点完看到行还没了/还在，只能猜。
+ * 2026-10-25：后端改成**结构化结果**（群消息可能只取消了剩余成员）。这里不再用
+ * "cancelled / already_delivered" 两句二元判断 —— 文案映射只有一份，在
+ * `utils/cancelFeedback.messageCancelNotice`，与气泡菜单共用。
  */
 async function cancelMessage(row: OperationRow) {
   if (!row.convId) return;
   const res = await api.cancelMessage(row.convId, row.id);
   await chat.refreshTransfers();
-  if (res === "already_delivered") {
-    app.toast(t("task.cancelMessageDelivered"), "info");
-    return;
-  }
-  app.toast(t("task.cancelDone"), "success");
+  const notice = messageCancelNotice(res);
+  app.toast(t(notice.key, notice.params ?? {}), notice.kind);
 }
 
 /**
@@ -192,6 +191,28 @@ async function retryContent(row: OperationRow) {
   const ok = await api.requestContentByCid(src.peerId, src.cid, src.name, src.size);
   app.toast(t(ok ? "msg.refetchRequested" : "msg.refetchUnsupported"), ok ? "info" : "error");
   await chat.refreshTransfers();
+}
+
+/**
+ * 取消一单**按 cid 拉取的内容**（2026-10-25 Stage 4）。
+ *
+ * 与文件取消同一套口径：`alreadyDone` = 这一单已经收完/早判死（那一下什么都没改）；
+ * `ledgerCommitted=false` = 本机停了手但台账没落地，刷新后它可能还挂在列表里 ——
+ * 那时说"已取消"就是比事实更满。取消后内容是 `Rejected(Cancelled)` 终态，
+ * 建链的自动重取**不会**再把它拉回来。
+ */
+async function cancelContent(row: OperationRow) {
+  const res = await api.cancelContentFetch(row.id);
+  await chat.refreshTransfers();
+  if (res.alreadyDone || !res.cancelled) {
+    app.toast(t("task.contentCancelDone"), "info");
+    return;
+  }
+  if (!res.ledgerCommitted) {
+    app.toast(t("transfer.cancelLedgerPending"), "info");
+    return;
+  }
+  app.toast(t("task.contentCancelOk"), "success");
 }
 
 /**

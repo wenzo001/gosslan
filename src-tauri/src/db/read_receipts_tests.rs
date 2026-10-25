@@ -5,6 +5,10 @@
 //!   ② `recalled` 是硬终态，与 `set_message_status` 同一口径；
 //!   ③ 窗口只往前推：`ts > upto_ts` 的不动，不是本端发的不动，别的会话不动；
 //!   ④ `sending` 要能被推到 `read`（这是"自愈"那一半，别连同它一起挡掉）。
+//!
+//! 2026-10-25 补第 ⑤ 条：`cancelled` / `partial_cancelled` 是**用户按下的终态**
+//! （INV-P26）。群消息部分送达后被取消，那条消息仍留在列表里、时间戳也在回执窗口内，
+//! 若不排除它，对方之后读到别的消息会顺手把它点亮成绿勾 —— 而库里永远是 cancelled。
 
 use super::*;
 use rusqlite::Connection;
@@ -86,4 +90,25 @@ fn read_receipt_heals_a_stuck_sending_row() {
     let n = mark_own_messages_read_upto(&conn, "p1", "me", 200).unwrap();
     assert_eq!(n, 1);
     assert_eq!(status_of(&conn, "m-sending"), "read");
+}
+
+/// ⑤ 取消（含部分送达后取消）是用户按下的终态，回执点不亮它。
+#[test]
+fn read_receipt_leaves_cancelled_rows_alone() {
+    let conn = fresh();
+    put(&conn, "m-cancelled", "me", "group:g1", 100, "cancelled");
+    put(
+        &conn,
+        "m-partial",
+        "me",
+        "group:g1",
+        120,
+        "partial_cancelled",
+    );
+    put(&conn, "m-live", "me", "group:g1", 150, "sent");
+    let n = mark_own_messages_read_upto(&conn, "group:g1", "me", 200).unwrap();
+    assert_eq!(n, 1, "只有真在送达路上的那一条该被点亮");
+    assert_eq!(status_of(&conn, "m-cancelled"), "cancelled");
+    assert_eq!(status_of(&conn, "m-partial"), "partial_cancelled");
+    assert_eq!(status_of(&conn, "m-live"), "read");
 }

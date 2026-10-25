@@ -19,7 +19,7 @@ use crate::state::{
 /// 建表 / 建索引不需要 step：`init()` 在版本分支**之前**跑 `execute_batch(SCHEMA)`，
 /// 而 SCHEMA 全是 `IF NOT EXISTS` ⇒ 新老库每次启动都会被补齐。
 /// 同一条索引同时写在 SCHEMA 与 MIGRATIONS 里 = 两个家（历史上有过，v8→v9 起收敛）。
-pub const DB_VERSION: u32 = 12;
+pub const DB_VERSION: u32 = 13;
 
 /// 迁移 step：(from_version, to_version, 迁移闭包)。
 struct Migration {
@@ -252,7 +252,10 @@ pub fn recover_orphan_sending_messages(conn: &Connection) -> Result<usize> {
             AND msg_id NOT LIKE 'file-%'
             AND msg_id NOT LIKE 'gfile-%'
             AND NOT EXISTS (SELECT 1 FROM outbox o WHERE o.msg_id = messages.msg_id)
-            AND NOT EXISTS (SELECT 1 FROM group_outbox g WHERE g.msg_id = messages.msg_id)",
+            AND NOT EXISTS (
+                SELECT 1 FROM group_outbox g
+                 WHERE g.msg_id = messages.msg_id AND g.status = 'pending'
+            )",
         [],
     )?;
     Ok(changed)
@@ -304,7 +307,10 @@ fn ensure_post_schema_shape(conn: &Connection) -> Result<()> {
          -- 与上面那条同理由放在这里（幂等、每次开库确认一次），不再动版本号。
          -- 它让 messages 长出第三个索引，因此 `hot_tables_carry_exactly_the_intended_indexes`
          -- 的期望值跟着从 2 改 3，写放大的实测数字记在那条判据的注释里。
-         CREATE INDEX IF NOT EXISTS idx_messages_conv_kind ON messages(conv_id, kind);",
+         CREATE INDEX IF NOT EXISTS idx_messages_conv_kind ON messages(conv_id, kind);
+         -- 群 outbox 的待发扫描只走 pending：墓碑（delivered/cancelled/failed）不该被
+         -- 5s 心跳当成积压。部分索引的 SQL 与迁移 v12→v13 逐字相同（形状测试比对原文）。
+         CREATE INDEX IF NOT EXISTS idx_group_outbox_pending ON group_outbox(created_at) WHERE status = 'pending';",
     )?;
     Ok(())
 }
@@ -613,6 +619,37 @@ const MIGRATIONS: &[Migration] = &[
             Ok(())
         },
     },
+    // v12 → v13：群消息的**每成员投递台账**。Ack 从“删行”改为“置 delivered”，
+    // 取消从“删光”改为“pending → cancelled”，从而能表达部分送达、按成员补发与迟到 Ack。
+    // 新列默认 pending 只对**迁移后仍在队列里的行**有语义；历史上已 Ack 被删掉的行
+    // 无法重建（见计划 §5.4），不得回填猜测。
+    Migration {
+        from: 12,
+        to: 13,
+        description: "group_outbox 加 status 列（pending/delivered/cancelled/failed）",
+        run: |conn| {
+            let table: bool = conn.query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'group_outbox'",
+                [],
+                |r| r.get::<_, i64>(0),
+            )? > 0;
+            if table {
+                if !column_exists(conn, "group_outbox", "status")? {
+                    conn.execute(
+                        "ALTER TABLE group_outbox ADD COLUMN status TEXT NOT NULL DEFAULT 'pending'",
+                        [],
+                    )?;
+                }
+                // ⚠️ 这条索引必须留在这里（不能进 SCHEMA）：老库走到这一步之前 status 列
+                // 还不存在，SCHEMA 阶段建索引会直接启动失败。fresh 分支不重放迁移，
+                // 由 `ensure_post_schema_shape` 建同一条（两处 SQL 必须逐字相同，形状测试比对原文）。
+                conn.execute_batch(
+                    "CREATE INDEX IF NOT EXISTS idx_group_outbox_pending ON group_outbox(created_at) WHERE status = 'pending';",
+                )?;
+            }
+            Ok(())
+        },
+    },
 ];
 
 /// 建表脚本 —— 表结构的**唯一真源**（另有一张 `content` 表由
@@ -742,6 +779,9 @@ CREATE TABLE IF NOT EXISTS group_outbox (
     peer_id    TEXT NOT NULL,
     payload    TEXT NOT NULL,
     created_at INTEGER NOT NULL,
+    -- 每成员投递台账（迁移 v12→v13）：pending | delivered | cancelled | failed。
+    -- Ack 不再删行：删行后无法回答“谁已收/谁没收”，也无法按成员补发。
+    status     TEXT NOT NULL DEFAULT 'pending',
     UNIQUE(msg_id, peer_id)
 );
 CREATE INDEX IF NOT EXISTS idx_group_outbox_peer ON group_outbox(peer_id);

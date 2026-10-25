@@ -37,10 +37,11 @@ export function mergeMessages(
  * 是家（它的注释就写着"只排除 read 自己"就是缺陷），另外两处是 `gossip.rs` / `transport.rs` 的调用。
  * 前端这份以前只排除了 `read` ⇒ 一条 **`failed`（本端根本没发出去）** 的话会被后面那条已读
  * 一起点亮成「已读」，而它带着 `tmp-*` id、库里没有 ⇒ 每次重读都被 `appendLocalOnly` 追加回来，
- * 错了再也纠不回来。**排除清单三件：`read`（已是）/ `failed`（没送达不可能被读过）/ `recalled`（撤回不许点亮）。**
+ * 错了再也纠不回来。**排除清单五项：`read`（已是）/ `failed`（没送达不可能被读过）/ `recalled`（撤回不许点亮）/
+ * `cancelled` / `partial_cancelled`（2026-10-25：用户按下的取消是终态，迟到回执不许把它点亮）。**
  * `sending` / `delivered` 保留在可推进的一侧（回执比 Ack 更新正是往前推，也是本端状态卡住时唯一的自愈路径）。
  */
-const READ_PROMOTE_BLOCKED = ["read", "failed", "recalled"];
+const READ_PROMOTE_BLOCKED = ["read", "failed", "recalled", "cancelled", "partial_cancelled"];
 
 export function promoteOnPeerRead(
   list: MessageRecord[],
@@ -66,8 +67,56 @@ export function promoteOnPeerRead(
 /** 送达状态推进序：只会前进，不会后退。 */
 const DELIVERY_ORDER = ["sent", "delivered", "read"];
 
-/** 两个送达状态中更靠后的一个；不在推进序上的状态（sending / failed）保持原样。 */
+/**
+ * 气泡角标（回执）会出现的全部状态。
+ *
+ * `partial_cancelled` 是 2026-10-25 新增的群消息态：一部分成员已收到、剩下的人被用户取消。
+ * `unknown` 不是"未来状态"，而是**兜底可见性**：库里出现这份映射不认识的取值时，
+ * 以前回执位是空的（读屏也读不到），用户只能靠内容反推。现在它是一颗问号 + 一句
+ * 「状态未知」，宁可说不知道，也不假装正常。
+ * `hidden` 表示紧挨气泡**不该挂任何回执**（撤回态由气泡本体表达，再挂一个问号才是假状态）。
+ */
+export type SendState =
+  | "sending"
+  | "sent"
+  | "delivered"
+  | "read"
+  | "failed"
+  | "cancelled"
+  | "partial_cancelled"
+  | "unknown"
+  | "hidden";
+
+/**
+ * 把库里的 `messages.status` 归一到回执能表达的状态。
+ *
+ * 纯函数、可单测；不改变库里的值，只决定"这一格怎么呈现"。
+ */
+export function normalizeSendState(raw: string | null | undefined): SendState {
+  switch (raw) {
+    case "sending":
+    case "sent":
+    case "delivered":
+    case "read":
+    case "failed":
+    case "cancelled":
+    case "partial_cancelled":
+      return raw;
+    // 撤回不是送达状态：气泡已经整条换成「已撤回」。
+    case "recalled":
+      return "hidden";
+    default:
+      return "unknown";
+  }
+}
+
+/** 两个送达状态中更靠后的一个；不在推进序上的状态（sending / failed / cancelled）保持原样。 */
 export function furthestStatus(status: string, ahead: string): string {
+  // 取消是**用户按下的终态**（INV-P26）：任何缓存合并/迟到 Ack 都不许把它翻回送达序。
+  // 没有这一条，`furthestStatus("cancelled", "read")` 会答 "read" —— 一条用户亲手停掉的
+  // 消息重新长出绿勾，而它在库里永远是 cancelled（下一次重查又跳回取消，界面来回闪）。
+  if (status === "cancelled" || status === "partial_cancelled") return status;
+  if (ahead === "cancelled" || ahead === "partial_cancelled") return ahead;
   // `sending` 与 `failed` 都不在上面那张表里 ⇒ 两者的 indexOf 都是 -1 ⇒ 查表判不出谁更靠后。
   // 不加这一条，`replaceMessage` 里"取更靠后的状态"会把本端发送失败**吃掉**：
   // 气泡永久停在「发送中」，而重发入口的判据正是 `status === "failed"`。

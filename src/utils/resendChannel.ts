@@ -9,8 +9,10 @@
  * 而那个 path 只在本机存在 ⇒ 对端渲染出一张"有名字没有字节"的图，本机这条还转成绿色。
  * 用户看到的"重试成功"是假的。
  *
- * ## 三条通道与它们的真命令
- *  · `"message"`    → `chat.send(...)`（文本族与所有 payload 型 kind：poll / announcement / todo…）
+ * ## 四条通道与它们的真命令
+ *  · `"message"`    → 文本族与所有 payload 型 kind（poll / announcement / todo…）：
+ *      单聊走 `chat.resend(conv_id, msg_id)`（后端 `resend_message`，**复用原 msg_id/ts/seq**），
+ *      群聊走 `api.resendGroupDelivery`（按成员重置 cancelled 行；无台账的历史消息退回整条重发）。
  *  · `"file"`       → `chat.sendFileTo(convId, path)`（单聊，后端 `send_file_auto` 自己建台账与消息）
  *  · `"group-file"` → `chat.sendGroupFileTo(groupId, path)`（群，后端 `send_group_file`）
  *  · `null`         → 今天没有任何通道能把这条重新发出去 ⇒ **不给按钮**

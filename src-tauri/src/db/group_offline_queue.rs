@@ -19,70 +19,100 @@ pub fn insert_group_outbox(
     Ok(())
 }
 
-/// 取某成员的全部待补发群消息（按插入顺序）。
+/// 取某成员的待补发群消息（只取 `pending`；墓碑不参与 flush）。
 pub fn list_group_outbox(conn: &Connection, peer_id: &str) -> Result<Vec<(i64, String)>> {
-    let mut stmt =
-        conn.prepare("SELECT id, payload FROM group_outbox WHERE peer_id = ?1 ORDER BY id")?;
+    let mut stmt = conn.prepare(
+        "SELECT id, payload FROM group_outbox
+          WHERE peer_id = ?1 AND status = 'pending' ORDER BY id",
+    )?;
     let rows = stmt.query_map(params![peer_id], |r| Ok((r.get(0)?, r.get(1)?)))?;
     Ok(rows.filter_map(|r| r.ok()).collect())
 }
 
-/// GroupAck 的**原子收尾**：验证该成员确实还有待发记录 → 置 delivered → 删这一行。
-///
-/// 与 1:1 的 [`ack_delivered`] 同一条纪律（2026-10-20 永久发送中 P0）：
-/// 旧写法先 `delete_group_outbox`、再 `set_message_status(...).ok()`，删行成功而
-/// 状态写失败时留下「队列行没了、消息还是 sending/sent」的孤儿 —— 清扫器只扫
-/// group_outbox，补发也没有行可发，界面永久发送中。事务保证要么两者都成，要么都不动。
-///
-/// 群语义与 1:1 一致：**任一成员的第一个 Ack 就推进 delivered**（后续成员 Ack 幂等，
-/// `set_message_status` 的 WHERE 保证不把 read 退回 delivered）。
-///
-/// 返回 `Ok(false)` = 没有命中该成员的待发行（伪造/重复 Ack），调用方不得 emit。
-pub fn ack_group_delivered(conn: &Connection, msg_id: &str, peer_id: &str) -> Result<bool> {
-    let tx = conn.unchecked_transaction()?;
-    let expected = tx
-        .query_row(
-            "SELECT 1 FROM group_outbox WHERE msg_id = ?1 AND peer_id = ?2",
-            params![msg_id, peer_id],
-            |_| Ok(()),
-        )
-        .optional()?
-        .is_some();
-    if !expected {
-        return Ok(false);
-    }
-    tx.execute(
-        "UPDATE messages SET status = 'delivered'
-          WHERE msg_id = ?1
-            AND status NOT IN ('read', 'delivered', 'recalled')",
-        params![msg_id],
-    )?;
-    tx.execute(
-        "DELETE FROM group_outbox WHERE msg_id = ?1 AND peer_id = ?2",
-        params![msg_id, peer_id],
-    )?;
-    tx.commit()?;
-    Ok(true)
+/// GroupAck 的处理结论：调用方据此决定 emit 哪个事件。
+#[derive(Debug, PartialEq, Eq)]
+pub enum GroupAckOutcome {
+    /// 原行 pending → delivered：正常送达。
+    Applied,
+    /// 原行已取消/已放弃，但对方仍然 Ack 了：只记台账，**不**推进消息状态。
+    LateApplied,
+    /// 行已是 delivered 或无行（重复/伪造 Ack）：不 emit、不重复写。
+    Duplicate,
 }
 
-/// 收到 GroupAck 后删除指定成员、指定消息的待发记录。
+/// GroupAck 的**原子收尾**（2026-10-25 每成员台账）：
+/// 验证该成员的行存在 → 条件置 `delivered` → 仅当原行是 pending 时推进消息状态 →
+/// 按条件清理 delivered 墓碑。全部在同一事务。
 ///
-/// 生产收尾已改用 [`ack_group_delivered`]（状态 + 删行同事务）；这个低层原语只剩
-/// 测试与将来的维护路径在用，保留它是为了不在测试里复制一份 DELETE。
-#[allow(dead_code)]
-/// 取消一条**还没被任何成员确认**的群消息（用户按「取消发送」）。
+/// 为什么不能再删行：删掉之后无法回答“谁已收/谁没收到”，取消与补发都会失去依据。
+/// 迟到 Ack 只更新行（`LateApplied`），消息停在 cancelled/partial_cancelled（INV-P26）。
+pub fn ack_group_delivered(
+    conn: &Connection,
+    msg_id: &str,
+    peer_id: &str,
+) -> Result<GroupAckOutcome> {
+    let tx = conn.unchecked_transaction()?;
+    let prior: Option<String> = tx
+        .query_row(
+            "SELECT status FROM group_outbox WHERE msg_id = ?1 AND peer_id = ?2",
+            params![msg_id, peer_id],
+            |r| r.get(0),
+        )
+        .optional()?;
+    let Some(prior) = prior else {
+        return Ok(GroupAckOutcome::Duplicate);
+    };
+    if prior == "delivered" {
+        return Ok(GroupAckOutcome::Duplicate);
+    }
+    tx.execute(
+        "UPDATE group_outbox SET status = 'delivered'
+          WHERE msg_id = ?1 AND peer_id = ?2 AND status IN ('pending','cancelled','failed')",
+        params![msg_id, peer_id],
+    )?;
+    if prior == "pending" {
+        tx.execute(
+            "UPDATE messages SET status = 'delivered'
+              WHERE msg_id = ?1
+                AND status NOT IN ('read', 'delivered', 'recalled', 'cancelled', 'partial_cancelled')",
+            params![msg_id],
+        )?;
+    }
+    // delivered 墓碑只在「没有其它非 delivered 行、且消息不是取消/失败态」时删除。
+    // 已取消的消息保留它，用来显示「已取消（对方已收到）」；已判失败的消息也保留 ——
+    // 那意味着「本端以为没送出去，其实他收到了」，这条证据必须挡住"整条重发"的误判。
+    tx.execute(
+        "DELETE FROM group_outbox
+          WHERE msg_id = ?1 AND status = 'delivered'
+            AND NOT EXISTS (
+                SELECT 1 FROM group_outbox g
+                 WHERE g.msg_id = ?1 AND g.status <> 'delivered'
+            )
+            AND (SELECT status FROM messages WHERE msg_id = ?1)
+                NOT IN ('cancelled', 'partial_cancelled', 'failed')",
+        params![msg_id],
+    )?;
+    tx.commit()?;
+    Ok(if prior == "pending" {
+        GroupAckOutcome::Applied
+    } else {
+        GroupAckOutcome::LateApplied
+    })
+}
+
+/// 取消一条群消息的**剩余 pending 成员**（2026-10-25 每成员台账）。
 ///
-/// 判据不是"看还剩几行"，而是**消息状态**：`GroupAck` 的处理是「置 delivered + 删那一行」
-/// 同一个事务（见 [`ack_group_delivered`]）⇒ 只要状态还没到 `delivered`/`read`，
-/// 就说明**还没有任何一个成员的 Ack 被处理过**。第一发 Ack 之后 `ack_group_delivered`
-/// 就命中不到队列行（全被本函数删了）⇒ 状态停在 cancelled，提不回已送达（与 1:1 同一条仲裁）。
-///
-/// ⚠️ 已知且接受的边界（与 1:1 相同）：字节可能已经写到某个成员的链路上、Ack 还在飞 ——
-/// 那种情况取消会显示"已取消"而对方其实收到了。UI 的措辞是「已取消」，不承诺"对方没收到"。
+/// 与旧实现的区别：判据不再是 `messages.status`，而是**台账行**。只要还有 pending 行，
+/// 即使消息已经被某个成员 Ack 推成 `delivered`，也允许取消剩余成员，并落
+/// `partial_cancelled`。已 delivered 的行保持不变；迟到 Ack 只改行、不改消息状态。
 #[derive(Debug, PartialEq, Eq)]
 pub enum GroupMessageCancelOutcome {
-    Cancelled,
-    AlreadyDelivered,
+    Cancelled { delivered: i64, cancelled: i64 },
+    PartiallyCancelled { delivered: i64, cancelled: i64 },
+    AlreadyCancelled { delivered: i64, cancelled: i64 },
+    AlreadyDelivered { delivered: i64, remaining: i64 },
+    AlreadyFailed,
+    Rejected,
     NotFound,
 }
 
@@ -101,19 +131,167 @@ pub fn cancel_queued_group_message(
     let Some(status) = status else {
         return Ok(GroupMessageCancelOutcome::NotFound);
     };
-    if matches!(status.as_str(), "delivered" | "read" | "recalled") {
-        return Ok(GroupMessageCancelOutcome::AlreadyDelivered);
+    if matches!(status.as_str(), "read" | "recalled") {
+        return Ok(GroupMessageCancelOutcome::Rejected);
     }
-    // 先删队列行再改状态：删完之后任何迟到的 Ack 都命中不到"这一单还在队列里"。
-    tx.execute("DELETE FROM group_outbox WHERE msg_id = ?1", params![msg_id])?;
+    let (pending, delivered, cancelled, failed): (i64, i64, i64, i64) = tx.query_row(
+        "SELECT
+           COALESCE(SUM(CASE WHEN status = 'pending'   THEN 1 ELSE 0 END), 0),
+           COALESCE(SUM(CASE WHEN status = 'delivered' THEN 1 ELSE 0 END), 0),
+           COALESCE(SUM(CASE WHEN status = 'cancelled' THEN 1 ELSE 0 END), 0),
+           COALESCE(SUM(CASE WHEN status = 'failed'    THEN 1 ELSE 0 END), 0)
+         FROM group_outbox WHERE msg_id = ?1",
+        params![msg_id],
+        |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+    )?;
+    if pending == 0 {
+        // 全部送达后墓碑会被即时清理 ⇒ 台账可能是空的。此时用消息状态兜底，
+        // 否则一条「已送达」的消息会答成 not_found，界面只能猜。
+        if cancelled > 0 || matches!(status.as_str(), "cancelled" | "partial_cancelled") {
+            return Ok(GroupMessageCancelOutcome::AlreadyCancelled { delivered, cancelled });
+        }
+        if delivered > 0 || matches!(status.as_str(), "delivered" | "read") {
+            return Ok(GroupMessageCancelOutcome::AlreadyDelivered {
+                delivered,
+                remaining: failed,
+            });
+        }
+        if failed > 0 || status == "failed" {
+            return Ok(GroupMessageCancelOutcome::AlreadyFailed);
+        }
+        return Ok(GroupMessageCancelOutcome::NotFound);
+    }
     tx.execute(
-        "UPDATE messages SET status = 'cancelled'
-          WHERE msg_id = ?1
-            AND status NOT IN ('delivered', 'read', 'recalled', 'cancelled')",
+        "UPDATE group_outbox SET status = 'cancelled'
+          WHERE msg_id = ?1 AND status = 'pending'",
         params![msg_id],
     )?;
+    let next_status = if delivered > 0 {
+        "partial_cancelled"
+    } else {
+        "cancelled"
+    };
+    // 群消息例外：delivered 只代表“至少一人已收”，允许被 partial_cancelled 覆盖；
+    // 但 recalled/read 仍然不能被取消改写。
+    tx.execute(
+        "UPDATE messages SET status = ?2
+          WHERE msg_id = ?1 AND status NOT IN ('recalled', 'read')",
+        params![msg_id, next_status],
+    )?;
     tx.commit()?;
-    Ok(GroupMessageCancelOutcome::Cancelled)
+    let cancelled_after = cancelled + pending;
+    Ok(if delivered > 0 {
+        GroupMessageCancelOutcome::PartiallyCancelled {
+            delivered,
+            cancelled: cancelled_after,
+        }
+    } else {
+        GroupMessageCancelOutcome::Cancelled {
+            delivered,
+            cancelled: cancelled_after,
+        }
+    })
+}
+
+/// 清扫器逐行放弃：只把仍为 pending 的行置 `failed`（不删，保留“谁没收到”的证据）。
+pub fn mark_group_outbox_failed(conn: &Connection, msg_id: &str, peer_id: &str) -> Result<usize> {
+    Ok(conn.execute(
+        "UPDATE group_outbox SET status = 'failed'
+          WHERE msg_id = ?1 AND peer_id = ?2 AND status = 'pending'",
+        params![msg_id, peer_id],
+    )?)
+}
+
+/// 一条消息的 delivered / cancelled 行数（清扫器判断“还能不能整条落 failed”）。
+pub fn group_outbox_progress_counts(conn: &Connection, msg_id: &str) -> Result<(i64, i64)> {
+    conn.query_row(
+        "SELECT
+           COALESCE(SUM(CASE WHEN status = 'delivered' THEN 1 ELSE 0 END), 0),
+           COALESCE(SUM(CASE WHEN status = 'cancelled' THEN 1 ELSE 0 END), 0)
+         FROM group_outbox WHERE msg_id = ?1",
+        params![msg_id],
+        |r| Ok((r.get(0)?, r.get(1)?)),
+    )
+    .map_err(Into::into)
+}
+
+/// 一条消息在台账里还有没有**任何**行（不论状态）。
+///
+/// 补发命令用它区分两种"没有可补发的 cancelled 行"：
+/// · 台账空 = 升级前发出的历史消息（没有身份可复用，只能整条重发）；
+/// · 只剩 failed 行 = 本端已经放弃的那批成员（**不许**退回整条重发 —— 那会让
+///   对端收到一条重复内容，而"放弃"被默默说成"重发了"）。
+pub fn group_outbox_has_rows(conn: &Connection, msg_id: &str) -> Result<bool> {
+    let n: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM group_outbox WHERE msg_id = ?1",
+        params![msg_id],
+        |r| r.get(0),
+    )?;
+    Ok(n > 0)
+}
+
+/// 把一条消息里所有 `cancelled` 行重置为 pending（补发）。返回重置行数。
+///
+/// 只动 cancelled：delivered/failed 是证据或已放弃，不得复活。
+/// `created_at` 必须刷新为 now —— 否则清扫器会把刚补发的旧行当成年迈行立即判死。
+pub fn resend_cancelled_group_rows(conn: &Connection, msg_id: &str, now: i64) -> Result<usize> {
+    Ok(conn.execute(
+        "UPDATE group_outbox SET status = 'pending', created_at = ?2
+          WHERE msg_id = ?1 AND status = 'cancelled'",
+        params![msg_id, now],
+    )?)
+}
+
+/// 补发时要知道哪些成员当前还有 pending 行（用于在线立即发/离线等上线）。
+pub fn list_group_pending_peers(conn: &Connection, msg_id: &str) -> Result<Vec<String>> {
+    let mut stmt = conn.prepare(
+        "SELECT DISTINCT peer_id FROM group_outbox
+          WHERE msg_id = ?1 AND status = 'pending' ORDER BY peer_id",
+    )?;
+    let rows = stmt.query_map(params![msg_id], |r| r.get::<_, String>(0))?;
+    Ok(rows.filter_map(|r| r.ok()).collect())
+}
+
+/// 一条群消息的成员级投递摘要（气泡角标用）。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GroupDeliverySummary {
+    pub msg_id: String,
+    pub delivered: i64,
+    pub pending: i64,
+    pub cancelled: i64,
+    pub failed: i64,
+}
+
+/// 取一个会话里**还有非 delivered 行**的消息摘要（按 msg_id 分组）。
+///
+/// delivered 墓碑在“没有其它非 delivered 行”时已被即时删除，所以这里的结果天然很小；
+/// 不用分页，也不会扫到正常完成的消息。
+pub fn group_message_delivery_summaries(
+    conn: &Connection,
+    conv_id: &str,
+) -> Result<Vec<GroupDeliverySummary>> {
+    let mut stmt = conn.prepare(
+        "SELECT g.msg_id,
+                COALESCE(SUM(CASE WHEN g.status = 'delivered' THEN 1 ELSE 0 END), 0),
+                COALESCE(SUM(CASE WHEN g.status = 'pending'   THEN 1 ELSE 0 END), 0),
+                COALESCE(SUM(CASE WHEN g.status = 'cancelled' THEN 1 ELSE 0 END), 0),
+                COALESCE(SUM(CASE WHEN g.status = 'failed'    THEN 1 ELSE 0 END), 0)
+           FROM group_outbox g
+           JOIN messages m ON m.msg_id = g.msg_id
+          WHERE m.conv_id = ?1
+          GROUP BY g.msg_id
+          ORDER BY g.msg_id",
+    )?;
+    let rows = stmt.query_map(params![conv_id], |r| {
+        Ok(GroupDeliverySummary {
+            msg_id: r.get(0)?,
+            delivered: r.get(1)?,
+            pending: r.get(2)?,
+            cancelled: r.get(3)?,
+            failed: r.get(4)?,
+        })
+    })?;
+    Ok(rows.filter_map(|r| r.ok()).collect())
 }
 
 /// 删除指定群的全部待发记录（删除群 / 清空数据时使用）。
@@ -164,7 +342,10 @@ pub fn delete_group_outbox_for_peer_in_group(
             "UPDATE messages SET status = 'failed'
               WHERE msg_id = ?1
                 AND status = 'sending'
-                AND NOT EXISTS (SELECT 1 FROM group_outbox g WHERE g.msg_id = messages.msg_id)",
+                AND NOT EXISTS (
+                    SELECT 1 FROM group_outbox g
+                     WHERE g.msg_id = messages.msg_id AND g.status = 'pending'
+                )",
             params![msg_id],
         )?;
     }
@@ -185,7 +366,8 @@ pub fn list_expired_group_outbox(
     // 可达性分类（2026-09-19 自审建议#5）——某成员离线时他的行必须保留，
     // 只有整条消息的**所有行**都该放弃时，msg 粒度才置 failed。
     let mut stmt = conn.prepare(
-        "SELECT msg_id, group_id, peer_id, created_at FROM group_outbox WHERE created_at < ?1",
+        "SELECT msg_id, group_id, peer_id, created_at FROM group_outbox
+          WHERE created_at < ?1 AND status = 'pending'",
     )?;
     let rows = stmt.query_map(params![deadline_ms], |r| {
         Ok((
@@ -219,7 +401,8 @@ pub fn group_outbox_row_expired(peer_reachable: bool, age_ms: i64) -> bool {
 /// ⇒ 那一个长期是死代码（clippy `dead-code` 点过名），已删。要按成员删就用这条，别再新建。
 pub fn delete_group_outbox_row(conn: &Connection, msg_id: &str, peer_id: &str) -> Result<()> {
     conn.execute(
-        "DELETE FROM group_outbox WHERE msg_id = ?1 AND peer_id = ?2",
+        "DELETE FROM group_outbox
+          WHERE msg_id = ?1 AND peer_id = ?2 AND status = 'pending'",
         params![msg_id, peer_id],
     )?;
     Ok(())

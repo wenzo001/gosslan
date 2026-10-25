@@ -94,7 +94,7 @@ pub fn mark_own_messages_read_upto(
     conn.execute(
         "UPDATE messages SET status = 'read'
          WHERE conv_id = ?1 AND sender_id = ?2
-           AND status NOT IN ('read', 'failed', 'recalled')
+           AND status NOT IN ('read', 'failed', 'recalled', 'cancelled', 'partial_cancelled')
            AND ts <= ?3",
         params![conv_id, my_device_id, upto_ts],
     )

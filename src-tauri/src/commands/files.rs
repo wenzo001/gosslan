@@ -921,6 +921,123 @@ pub(crate) async fn apply_local_cancel(
     }
 }
 
+/// 取消一单**按 cid 拉取内容**（任务中心「取消」；2026-10-25 Stage 4）。
+///
+/// 为什么按 cid 而不是 transfer_id：任务中心那一行只有 cid（内容台账的语义主键）。
+/// 同一份内容可能同时从多个源接收 ⇒ 取消 = 把所有**仍在途的接收方向行**都收口。
+///
+/// 顺序即语义：
+/// 1. 先停本机仍在跑的接收器（`cancel_receive`：摘登记、删 `.part`、记 Cancelled）；
+/// 2. 再对每一条 live 行落 `FailReason::Cancelled` ⇒ `Rejected`（终态）。
+///    记成 `Incomplete` 会被下次建链的 `retry_incomplete_content` **自动再拉一遍** ——
+///    那正是用户说"取消了它又自己开始"的形状。
+#[derive(Debug, Clone, serde::Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ContentCancelResult {
+    /// 这一下真的停了还在途的拉取。
+    pub cancelled: bool,
+    /// 这一单已经收完/早就判死（那一下什么都没改）。
+    pub already_done: bool,
+    /// 被停下的接收器个数（>0 说明本机确实有一路在收）。
+    pub stopped: usize,
+    /// 台账那一笔是否全部落地；false = 界面该说「本机已停止、状态待刷新」。
+    pub ledger_committed: bool,
+}
+
+#[tauri::command(async)]
+pub async fn cancel_content_fetch(
+    state: State<'_, Arc<AppState>>,
+    cid: String,
+) -> Result<ContentCancelResult, String> {
+    let s = state.inner().clone();
+    if cid.is_empty() {
+        return Err("这条内容没有内容指纹，无法取消".to_string());
+    }
+    // SQLite 读写与 `.part` 删除都在阻塞池（INV-P34）：持锁做几笔写，占住 tokio worker
+    // 会把整屏 IPC 一起拖慢（同 `cancel_message` 的理由）。
+    let s_db = s.clone();
+    tokio::task::spawn_blocking(move || -> Result<ContentCancelResult, String> {
+        use crate::content::model::{Direction, FailReason, TransferStatus};
+        let rows = {
+            let dbc = s_db.db.lock().unwrap_or_else(|e| e.into_inner());
+            crate::content::store::list_by_cid(&dbc, &cid)
+                .map_err(|e| format!("读取内容台账失败：{e}"))?
+                .into_iter()
+                .filter(|r| r.direction == Direction::Receive)
+                .collect::<Vec<_>>()
+        };
+        let live: Vec<_> = rows
+            .into_iter()
+            .filter(|r| {
+                matches!(
+                    r.status,
+                    TransferStatus::Queued
+                        | TransferStatus::Active
+                        | TransferStatus::Verifying
+                        | TransferStatus::Incomplete
+                )
+            })
+            .collect();
+        if live.is_empty() {
+            return Ok(ContentCancelResult {
+                cancelled: false,
+                already_done: true,
+                stopped: 0,
+                ledger_committed: true,
+            });
+        }
+
+        // ① 停接收器（它自己会记一次 Cancelled；这里不持着 db 锁去调它，否则自己等自己）。
+        let mut stopped = 0usize;
+        let mut stopped_ids: Vec<String> = Vec::new();
+        for r in &live {
+            if let Some(tid) = r.transfer_id.as_deref().filter(|t| !t.is_empty()) {
+                if crate::network::file::cancel_receive(&s_db, tid) {
+                    stopped += 1;
+                    stopped_ids.push(tid.to_string());
+                }
+            }
+        }
+
+        // ② 台账收口（对没有接收器的行也必须落，否则任务中心那一行会一直挂着）。
+        let now = db::now_ms();
+        let ledger_committed = {
+            let dbc = s_db.db.lock().unwrap_or_else(|e| e.into_inner());
+            live.iter().all(|r| {
+                crate::content::store::record_failure(
+                    &dbc,
+                    &r.cid,
+                    &r.peer_id,
+                    Direction::Receive,
+                    FailReason::Cancelled,
+                    now,
+                )
+                .is_ok()
+            })
+        };
+
+        // ③ 通知界面：被停下的那些接收器与文件取消是同一件事（气泡/传输列表据此收尾）。
+        for tid in &stopped_ids {
+            let _ = s_db.app.emit("file-cancelled", tid);
+        }
+        s_db.logger.info(
+            "file",
+            format!(
+                "用户取消内容拉取 cid={cid} rows={} stopped={stopped} ledger_committed={ledger_committed}",
+                live.len()
+            ),
+        );
+        Ok(ContentCancelResult {
+            cancelled: true,
+            already_done: false,
+            stopped,
+            ledger_committed,
+        })
+    })
+    .await
+    .map_err(|e| format!("取消内容拉取被线程池中断: {e}"))?
+}
+
 /// 用户手动取消一条**没传完**的文件（1:1 与群文件共用这个入口；发送中与接收中都算）。
 ///
 /// 本机收尾走 [`apply_local_cancel`]，然后把"取消"这件事**告诉对端**（B3）：

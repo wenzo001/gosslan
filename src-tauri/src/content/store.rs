@@ -152,6 +152,19 @@ pub fn list(conn: &Connection, limit: usize) -> rusqlite::Result<Vec<TransferRec
     rows.collect()
 }
 
+/// 按 cid 取**所有**台账行（跨对端、跨方向）。
+///
+/// 为什么不能拿 `list(conn, N)` 再过滤（2026-10-25 复审）：内容台账是历史累积的，
+/// 一个用了很久的库在 `list` 的窗口之外仍可能有**在途**的接收行 ——
+/// 取消按 cid 收口时用固定上限过滤，会静默漏掉那一条（"点了取消，它还在跑"）。
+/// 这个查询由 `content_transfers` 的 cid 谓词驱动，行数天然等于"同一份内容的份数"。
+pub fn list_by_cid(conn: &Connection, cid: &str) -> rusqlite::Result<Vec<TransferRecord>> {
+    let mut stmt =
+        conn.prepare("SELECT * FROM content_transfers WHERE cid=?1 ORDER BY updated_at DESC")?;
+    let rows = stmt.query_map(params![cid], row_to_record)?;
+    rows.collect()
+}
+
 /// 该 peer 下仍可恢复的记录（建链时自动重试用）。
 pub fn list_resumable_for_peer(
     conn: &Connection,

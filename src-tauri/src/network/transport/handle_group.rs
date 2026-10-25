@@ -65,26 +65,34 @@ async fn handle_group_messages(state: &Arc<AppState>, peer_id: &str, msg: Messag
             if from != peer_id || from == state.device_id {
                 return;
             }
-            // 只清除该 peer 在该群中的待发记录；不存在时删除是安全的 no-op。
-            // 命中失败不向外暴露，避免用伪造 Ack 探测本地 outbox。
-            //
-            // 状态推进与删行必须在**同一个事务**里（2026-10-20 永久发送中 P0）：
-            // 旧写法先删 `group_outbox`、再 `set_message_status(...).ok()`，删行成功而
-            // 状态写失败就留下「队列行没了、消息还是 sending」的孤儿 —— 清扫器只扫
-            // group_outbox，补发也没有行可发。与 1:1 的 `ack_delivered` 同一纪律。
+            // 每成员台账（2026-10-25）：Ack 不再删行，只把该成员行置 delivered。
+            // Applied  = 正常送达 → 推进消息状态并播报；
+            // LateApplied = 取消/放弃之后才到 → 只记台账，消息状态保持 cancelled/partial；
+            // Duplicate = 重复/伪造/已收尾 → 静默。
             let applied = {
                 let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
                 db::ack_group_delivered(&dbc, &msg_id, &from)
             };
             match applied {
-                Ok(true) => {
+                // Applied / LateApplied 都改了台账，前端都要刷新成员级计数：
+                // · Applied：这一行 pending → delivered（可能还有别的成员没收到 ⇒「N 人待收」变化）；
+                // · LateApplied：取消/放弃之后才到，只记账、消息状态不动（INV-P26）。
+                // 两者都额外 emit `group-delivery-changed` —— 气泡角标读的是台账，
+                // 少了这一条，「已收到 2/5」会停在旧数字直到下次重开会话。
+                Ok(outcome @ (db::GroupAckOutcome::Applied | db::GroupAckOutcome::LateApplied)) => {
+                    if outcome == db::GroupAckOutcome::Applied {
+                        let _ = state.app.emit(
+                            "group-message-acked",
+                            &serde_json::json!({ "group_id": group_id, "msg_id": msg_id }),
+                        );
+                    }
                     let _ = state.app.emit(
-                        "group-message-acked",
+                        "group-delivery-changed",
                         &serde_json::json!({ "group_id": group_id, "msg_id": msg_id }),
                     );
                 }
-                Ok(false) => {
-                    // 伪造 / 重复 / 已收尾的 GroupAck：与旧行为一致，静默丢弃。
+                Ok(db::GroupAckOutcome::Duplicate) => {
+                    // 伪造 / 重复 / 已收尾的 GroupAck：静默丢弃。
                 }
                 Err(e) => {
                     state.logger.error(

@@ -21,15 +21,84 @@
 ///  · 只能取消**自己发的**、且属于该会话的消息；
 ///  · 自聊不支持（本机自己，没有"送达"这回事）；
 ///  · 文件/图片走传输那条通道（撤回/取消都改不到正在跑的字节）；
-///  · 群消息：判据是"**还没有任何成员的 Ack 被处理过**"（`GroupAck` 是"置 delivered + 删那一行"
-///    同一个事务 ⇒ 状态没到 delivered/read 就说明一条 Ack 都没处理过）。取消删掉每个成员的队列行，
-///    迟到的 Ack 命中不到 ⇒ 状态停在 cancelled。已有成员收下（delivered）时拒绝 —— 那一步只能走撤回。
+///  · 群消息：判据是**台账里还有 pending 行**。已 delivered 的成员不受影响；
+///    取消剩余成员后消息落 `partial_cancelled`，迟到 Ack 只记台账、不改消息状态。
+/// 取消结果（2026-10-25）。前端不再靠短码猜计数；`remaining` 是取消后仍未送达的人数。
+#[derive(Debug, Clone, serde::Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct MessageCancelResult {
+    pub outcome: String,
+    pub delivered: i64,
+    pub remaining: i64,
+    /// 取消前是否可能已经写出（1:1 看状态；群一入队就可能被 flush，恒为 true）。
+    pub was_written: bool,
+}
+
+/// 群取消结论 → 界面口径（纯映射）。
+///
+/// 单独一家的理由（brooks-review 2026-10-25）：这段七个分支住在命令体里时，
+/// `cancel_message` 膨胀到 150 行，而它真正的工作只有"校验 → 调 DB → emit"三件。
+/// 映射是**唯一**决定界面说哪句话的地方，抽出来后可以单独读、也便于将来加结论。
+fn group_cancel_result(out: db::GroupMessageCancelOutcome) -> MessageCancelResult {
+    match out {
+        db::GroupMessageCancelOutcome::Cancelled { delivered, cancelled } => MessageCancelResult {
+            outcome: "cancelled".to_string(),
+            delivered,
+            remaining: cancelled,
+            was_written: true,
+        },
+        db::GroupMessageCancelOutcome::PartiallyCancelled { delivered, cancelled } => {
+            MessageCancelResult {
+                outcome: "partial_cancelled".to_string(),
+                delivered,
+                remaining: cancelled,
+                was_written: true,
+            }
+        }
+        db::GroupMessageCancelOutcome::AlreadyCancelled { delivered, cancelled } => {
+            MessageCancelResult {
+                outcome: "already_cancelled".to_string(),
+                delivered,
+                remaining: cancelled,
+                was_written: true,
+            }
+        }
+        db::GroupMessageCancelOutcome::AlreadyDelivered {
+            delivered,
+            remaining,
+        } => MessageCancelResult {
+            outcome: "already_delivered".to_string(),
+            delivered,
+            remaining,
+            was_written: true,
+        },
+        db::GroupMessageCancelOutcome::AlreadyFailed => MessageCancelResult {
+            outcome: "already_failed".to_string(),
+            delivered: 0,
+            remaining: 0,
+            was_written: true,
+        },
+        db::GroupMessageCancelOutcome::Rejected => MessageCancelResult {
+            outcome: "rejected".to_string(),
+            delivered: 0,
+            remaining: 0,
+            was_written: true,
+        },
+        db::GroupMessageCancelOutcome::NotFound => MessageCancelResult {
+            outcome: "not_found".to_string(),
+            delivered: 0,
+            remaining: 0,
+            was_written: false,
+        },
+    }
+}
+
 #[tauri::command(async)]
 pub async fn cancel_message(
     state: State<'_, Arc<AppState>>,
     conv_id: String,
     msg_id: String,
-) -> Result<String, String> {
+) -> Result<MessageCancelResult, String> {
     let s = state.inner().clone();
     if conv_id == s.device_id {
         return Err("自聊消息不支持取消".to_string());
@@ -37,52 +106,219 @@ pub async fn cancel_message(
     // SQLite 读写在阻塞池（INV-P34）：这里持锁做几笔写，占住 tokio worker 会拖慢开窗。
     let s_db = s.clone();
     let msg_id_db = msg_id.clone();
-    // 闭包统一返回短码字符串（单聊与群两本账的结论形状一样，映射只做一次）。
-    let out = tokio::task::spawn_blocking(move || -> Result<String, String> {
+    let conv_id_db = conv_id.clone();
+    let out = tokio::task::spawn_blocking(move || -> Result<MessageCancelResult, String> {
         let dbc = s_db.db.lock().unwrap_or_else(|e| e.into_inner());
         let Some(msg) = db::get_message_record(&dbc, &msg_id_db) else {
-            return Ok("not_found".to_string());
+            return Ok(MessageCancelResult {
+                outcome: "not_found".to_string(),
+                delivered: 0,
+                remaining: 0,
+                was_written: false,
+            });
         };
         if msg.sender_id != s_db.device_id {
             return Err("只能取消自己发送的消息".to_string());
         }
-        if msg.conv_id != conv_id {
+        if msg.conv_id != conv_id_db {
             return Err("消息不属于该会话".to_string());
         }
         if msg.kind == "file" || msg.kind == "image" {
             return Err("文件/图片请用「取消发送」的传输通道".to_string());
         }
         if msg.conv_id.starts_with("group:") {
-            // 群消息：判据是"还没有任何成员的 Ack 被处理过"（见 DB 那册的说明）。
             let out = db::cancel_queued_group_message(&dbc, &msg_id_db).map_err(|e| e.to_string())?;
-            return Ok(match out {
-                db::GroupMessageCancelOutcome::Cancelled => "cancelled",
-                db::GroupMessageCancelOutcome::AlreadyDelivered => "already_delivered",
-                db::GroupMessageCancelOutcome::NotFound => "not_found",
-            }
-            .to_string());
+            return Ok(group_cancel_result(out));
         }
-        db::cancel_queued_message(&dbc, &msg_id_db)
-            .map(|o| match o {
-                db::MessageCancelOutcome::Cancelled => "cancelled",
-                db::MessageCancelOutcome::AlreadyDelivered => "already_delivered",
-                db::MessageCancelOutcome::NotFound => "not_found",
-            }
-            .to_string())
-            .map_err(|e| e.to_string())
+        let was_written = msg.status != "sending";
+        let outcome = db::cancel_queued_message(&dbc, &msg_id_db).map_err(|e| e.to_string())?;
+        Ok(match outcome {
+            db::MessageCancelOutcome::Cancelled => MessageCancelResult {
+                outcome: "cancelled".to_string(),
+                delivered: 0,
+                remaining: 1,
+                was_written,
+            },
+            db::MessageCancelOutcome::AlreadyDelivered => MessageCancelResult {
+                outcome: "already_delivered".to_string(),
+                delivered: 1,
+                remaining: 0,
+                was_written,
+            },
+            db::MessageCancelOutcome::NotFound => MessageCancelResult {
+                outcome: "not_found".to_string(),
+                delivered: 0,
+                remaining: 0,
+                was_written,
+            },
+        })
     })
     .await
     .map_err(|e| format!("取消消息被线程池中断: {e}"))??;
-    match out.as_str() {
-        "not_found" => Err("消息不存在".to_string()),
-        // 已经送出去了：说实话（与文件的 `alreadyDone` 同一口径），不假装取消成功。
-        "already_delivered" => Ok("already_delivered".to_string()),
-        _ => {
-            // 前端那一条对 `message-status-changed` 的处理是"重查该会话" ⇒ 回执会跟着库走。
+
+    let is_group = conv_id.starts_with("group:");
+    match out.outcome.as_str() {
+        "cancelled" | "partial_cancelled" => {
+            // 前端那条对 `message-status-changed` 的处理是"重查该会话" ⇒ 回执会跟着库走。
             let _ = s.app.emit("message-status-changed", &msg_id);
-            Ok("cancelled".to_string())
+            if is_group {
+                let group_id = conv_id.trim_start_matches("group:");
+                let _ = s.app.emit(
+                    "group-delivery-changed",
+                    &serde_json::json!({ "group_id": group_id, "msg_id": msg_id }),
+                );
+                s.logger.info(
+                    "task",
+                    format!(
+                        "code=GROUP_CANCEL msg_id={msg_id} group_id={group_id} \
+                         outcome={} delivered={} remaining={}",
+                        out.outcome, out.delivered, out.remaining
+                    ),
+                );
+            }
         }
+        _ => {}
     }
+    Ok(out)
+}
+
+#[derive(Debug, Clone, serde::Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct GroupDeliverySummaryView {
+    pub msg_id: String,
+    pub delivered: i64,
+    pub pending: i64,
+    pub cancelled: i64,
+    pub failed: i64,
+}
+
+/// 气泡/任务中心读成员级投递摘要（只取仍有非 delivered 行的消息，结果天然很小）。
+#[tauri::command(async)]
+pub async fn get_group_delivery_summaries(
+    state: State<'_, Arc<AppState>>,
+    conv_id: String,
+) -> Result<Vec<GroupDeliverySummaryView>, String> {
+    if !conv_id.starts_with("group:") {
+        return Ok(Vec::new());
+    }
+    let s = state.inner().clone();
+    let conv = conv_id.clone();
+    tokio::task::spawn_blocking(move || {
+        let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());
+        db::group_message_delivery_summaries(&dbc, &conv)
+            .map(|rows| {
+                rows.into_iter()
+                    .map(|r| GroupDeliverySummaryView {
+                        msg_id: r.msg_id,
+                        delivered: r.delivered,
+                        pending: r.pending,
+                        cancelled: r.cancelled,
+                        failed: r.failed,
+                    })
+                    .collect()
+            })
+            .map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| format!("读取群投递摘要被线程池中断: {e}"))?
+}
+
+#[derive(Debug, Clone, serde::Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct GroupResendResult {
+    pub outcome: String,
+    pub online: i64,
+    pub offline: i64,
+    pub remaining: i64,
+}
+
+/// 只把 `cancelled` 行重置为 pending；在线成员立即 flush，离线保留 pending 等上线。
+///
+/// 不重签/不重加密：`group_outbox.payload` 就是原来那个已签名 Gossip 信封，
+/// 接收端按 msg_id 幂等 ⇒ 已 Ack 的成员不会收到第二条。历史消息没有台账时返回 `no_ledger`。
+#[tauri::command(async)]
+pub async fn resend_group_delivery(
+    state: State<'_, Arc<AppState>>,
+    conv_id: String,
+    msg_id: String,
+) -> Result<GroupResendResult, String> {
+    if !conv_id.starts_with("group:") {
+        return Err("只有群消息支持按成员补发".to_string());
+    }
+    let s = state.inner().clone();
+    let s_db = s.clone();
+    let conv = conv_id.clone();
+    let mid = msg_id.clone();
+    let prepared = tokio::task::spawn_blocking(move || -> Result<(String, Vec<String>, i64), String> {
+        let dbc = s_db.db.lock().unwrap_or_else(|e| e.into_inner());
+        let Some(msg) = db::get_message_record(&dbc, &mid) else {
+            return Ok(("not_found".to_string(), Vec::new(), 0));
+        };
+        if msg.sender_id != s_db.device_id || msg.conv_id != conv {
+            return Err("只能补发自己在该群发送的消息".to_string());
+        }
+        if msg.kind == "file" || msg.kind == "image" || msg.kind == "recall" {
+            return Ok(("unsupported".to_string(), Vec::new(), 0));
+        }
+        let changed = db::resend_cancelled_group_rows(&dbc, &mid, crate::db::now_ms())
+            .map_err(|e| e.to_string())?;
+        let pending = db::list_group_pending_peers(&dbc, &mid).map_err(|e| e.to_string())?;
+        if changed == 0 {
+            let (delivered, _) = db::group_outbox_progress_counts(&dbc, &mid)
+                .map_err(|e| e.to_string())?;
+            let any_rows = db::group_outbox_has_rows(&dbc, &mid).map_err(|e| e.to_string())?;
+            let outcome = if !pending.is_empty() {
+                "already_pending"
+            } else if delivered > 0 {
+                "already_delivered"
+            } else if any_rows {
+                // 只剩 failed 行：本端已经放弃这批成员。退回"整条重发"会让对端多收一条
+                // 重复内容，还会把"放弃"说成"重发了"——如实回答，交给界面解释。
+                "already_failed"
+            } else {
+                "no_ledger"
+            };
+            return Ok((outcome.to_string(), pending, delivered));
+        }
+        db::set_message_status(&dbc, &mid, "sent").map_err(|e| e.to_string())?;
+        Ok(("resent".to_string(), pending, 0))
+    })
+    .await
+    .map_err(|e| format!("补发群消息被线程池中断: {e}"))??;
+
+    let (outcome, pending, _delivered) = prepared;
+    let mut online = 0i64;
+    let mut offline = 0i64;
+    if outcome == "resent" {
+        for peer in &pending {
+            if s.has_link(peer).await {
+                online += 1;
+                crate::network::transport::flush_group_outbox(&s, peer).await;
+            } else {
+                offline += 1;
+            }
+        }
+        let _ = s.app.emit("message-status-changed", &msg_id);
+        let group_id = conv_id.trim_start_matches("group:");
+        let _ = s.app.emit(
+            "group-delivery-changed",
+            &serde_json::json!({ "group_id": group_id, "msg_id": msg_id }),
+        );
+        s.logger.info(
+            "task",
+            format!(
+                "code=GROUP_RESEND msg_id={msg_id} group_id={group_id} \
+                 online={online} offline={offline} remaining={}",
+                pending.len()
+            ),
+        );
+    }
+    Ok(GroupResendResult {
+        outcome,
+        online,
+        offline,
+        remaining: pending.len() as i64,
+    })
 }
 
 #[tauri::command(async)]
@@ -215,6 +451,66 @@ pub async fn set_message_render(
         );
     }
     Ok(())
+}
+
+/// 取某位好友的 X25519 公钥（好友表优先，回退在线节点表，都缺失时探测一次）。
+///
+/// 为什么单独一家：`send_message` 与 `resend_message` 必须用**同一套**取钥与同一条
+/// 「库里那把与在线自报的不一致」告警 —— 重发走另一份实现时，那条 2026-10-13 的
+/// "密钥换了但一直显示已发送"的静默故障会重新长出来一半。
+async fn peer_x25519(s: &AppState, friend_id: &str) -> Option<String> {
+    let from_db = {
+        let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());
+        db::get_friend_x25519(&dbc, friend_id)
+    };
+    let from_peers = s
+        .peers
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .get(friend_id)
+        .and_then(|p| p.x25519_pubkey.clone());
+    // ⚠️ 库里那把**优先**，而它一旦是错的就一直是错的（好友表只填空、绝不覆盖，
+    // 见 `db/friends.rs` 与 `network/transport/e2ee_payload.rs` 同一条说明）。
+    // 两份都在且不同 ⇒ 本机正在用的这把，**不是**界面那串安全码所依据的那一份
+    // ⇒ 「双方安全码对得上」这时并不能证明消息解得开。
+    // 没有这一行时，"我发的他收不到"在发送端日志里完全 invisible：对端解不开是不回
+    // 送达确认的静默丢弃，本机只会一直显示"已发送"（用户 2026-10-13 撞的正是这个形状）。
+    // 只报布尔量与 peer，不报密钥本身（日志会进报告产物）。持续不一致时每条发送各记一行。
+    if let (Some(db_key), Some(peer_key)) = (&from_db, &from_peers) {
+        if db_key != peer_key {
+            s.logger.warn(
+                "dispatch",
+                format!("单聊密封用的密钥与在线自报的不一致（取库里那把）peer={friend_id}"),
+            );
+        }
+    }
+    match from_db.or(from_peers) {
+        Some(k) => Some(k),
+        None => {
+            let triggered =
+                if let Some(tx) = s.probe.lock().unwrap_or_else(|e| e.into_inner()).as_ref() {
+                    let next = tx.borrow().saturating_add(1);
+                    let _ = tx.send(next);
+                    true
+                } else {
+                    false
+                };
+            if triggered {
+                tokio::time::sleep(std::time::Duration::from_millis(1200)).await;
+            }
+            let again_db = {
+                let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());
+                db::get_friend_x25519(&dbc, friend_id)
+            };
+            let again_peers = s
+                .peers
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .get(friend_id)
+                .and_then(|p| p.x25519_pubkey.clone());
+            again_db.or(again_peers)
+        }
+    }
 }
 
 #[tauri::command(async)]
@@ -391,60 +687,7 @@ pub async fn send_message(
     // E2EE 恒开（v0.11.0 起默认且不可关闭）：发送必须拿到对端 X25519 公钥。
     // 好友表优先，回退在线节点表；都缺失时主动探测一次（who_has）等对方/中继
     // announce 落库（约 1.2s）后再查，仍缺失则报错指引。
-    let pubkey = {
-        let from_db = {
-            let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());
-            db::get_friend_x25519(&dbc, &friend_id)
-        };
-        let from_peers = s
-            .peers
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .get(&friend_id)
-            .and_then(|p| p.x25519_pubkey.clone());
-        // ⚠️ 库里那把**优先**，而它一旦是错的就一直是错的（好友表只填空、绝不覆盖，
-        // 见 `db/friends.rs` 与 `network/transport/e2ee_payload.rs` 同一条说明）。
-        // 两份都在且不同 ⇒ 本机正在用的这把，**不是**界面那串安全码所依据的那一份
-        // ⇒ 「双方安全码对得上」这时并不能证明消息解得开。
-        // 没有这一行时，"我发的他收不到"在发送端日志里完全 invisible：对端解不开是不回
-        // 送达确认的静默丢弃，本机只会一直显示"已发送"（用户 2026-10-13 撞的正是这个形状）。
-        // 只报布尔量与 peer，不报密钥本身（日志会进报告产物）。持续不一致时每条发送各记一行。
-        if let (Some(db_key), Some(peer_key)) = (&from_db, &from_peers) {
-            if db_key != peer_key {
-                s.logger.warn(
-                    "dispatch",
-                    format!("单聊密封用的密钥与在线自报的不一致（取库里那把）peer={friend_id}"),
-                );
-            }
-        }
-        match from_db.or(from_peers) {
-            Some(k) => Some(k),
-            None => {
-                let triggered =
-                    if let Some(tx) = s.probe.lock().unwrap_or_else(|e| e.into_inner()).as_ref() {
-                        let next = tx.borrow().saturating_add(1);
-                        let _ = tx.send(next);
-                        true
-                    } else {
-                        false
-                    };
-                if triggered {
-                    tokio::time::sleep(std::time::Duration::from_millis(1200)).await;
-                }
-                let again_db = {
-                    let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());
-                    db::get_friend_x25519(&dbc, &friend_id)
-                };
-                let again_peers = s
-                    .peers
-                    .lock()
-                    .unwrap_or_else(|e| e.into_inner())
-                    .get(&friend_id)
-                    .and_then(|p| p.x25519_pubkey.clone());
-                again_db.or(again_peers)
-            }
-        }
-    };
+    let pubkey = peer_x25519(s, &friend_id).await;
     let Some(pubkey) = pubkey else {
         return Err(format!(
             "尚未获取 {friend_id} 的公钥：对方可能离线或处于不同子网，请让对方上线后重试"
@@ -593,6 +836,134 @@ pub async fn send_message(
     }
 
     Ok(rec)
+}
+
+/// 重发一条**本端判失败 / 被用户取消**的 1:1 消息（计划 D1：复用稳定消息身份）。
+///
+/// 与 `send_message` 的三处刻意相同、一处刻意不同：
+/// · 同一套取钥（`peer_x25519`）、同一套 Gossip 信封与 `enc1:` 直发内容；
+/// · **复用原 `msg_id` / `ts` / `seq`** ⇒ 接收端按 `msg_id` 去重：上一次其实送到了、
+///   只是 Ack 丢了的话，对方只会再回一次 Ack，界面上不会多出一条重复消息；
+/// · 不同的是状态机入口：只允许从 `failed` / `cancelled` 复活，且**先密封、再入队、
+///   最后才置 `sending`**（`requeue_message_for_resend` 一个事务），任何一步失败都留在原态。
+///
+/// 为什么不能让前端继续走 `send_message`：那条会生成**新 msg_id**、新 seq，
+/// 用户按一次"重发"就等于"再发一条新消息" —— 对端半开链路上最需要幂等的那一刻，
+/// 幂等恰好不成立（用户 2026-10-25 的要求正是"重试必须复用稳定消息身份"）。
+#[tauri::command(async)]
+pub async fn resend_message(
+    state: State<'_, Arc<AppState>>,
+    conv_id: String,
+    msg_id: String,
+) -> Result<MessageRecord, String> {
+    let s = state.inner();
+    if conv_id.starts_with("group:") {
+        return Err("群消息请用「按成员补发」".to_string());
+    }
+    if conv_id == s.device_id {
+        return Err("自聊消息不需要重发".to_string());
+    }
+    // ① 校验归属与 kind（这一步只读，不持锁跨 await）。
+    let msg = {
+        let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());
+        let Some(msg) = db::get_message_record(&dbc, &msg_id) else {
+            return Err("消息不存在".to_string());
+        };
+        msg
+    };
+    if msg.sender_id != s.device_id {
+        return Err("只能重发自己发送的消息".to_string());
+    }
+    if msg.conv_id != conv_id {
+        return Err("消息不属于该会话".to_string());
+    }
+    // 文件/图片的"重发"是**一次新的传输**（字节要重新跑），与文本族的原身份重投是两件事，
+    // 走 `send_file_auto` / `send_group_file`；撤回/渲染是控制事件，没有"重发"语义。
+    if matches!(msg.kind.as_str(), "file" | "image" | "recall" | "render") {
+        return Err("这种消息不支持原地重发".to_string());
+    }
+    if !matches!(msg.status.as_str(), "failed" | "cancelled") {
+        return Err("这条消息不是失败/已取消状态，不需要重发".to_string());
+    }
+
+    // ② 取钥（同一套逻辑，含探测与不一致告警）。
+    let peer = conv_id.clone();
+    let Some(pubkey) = peer_x25519(s, &peer).await else {
+        return Err(format!(
+            "尚未获取 {peer} 的公钥：对方可能离线或处于不同子网，请让对方上线后重试"
+        ));
+    };
+
+    // ③ 用**原来的 ts/seq** 重新密封（内容仍是库里的明文；信封里的密文按当前公钥重签）。
+    let ts = msg.ts;
+    let seq = msg.seq;
+    let plaintext = crate::protocol::gossip_plaintext(&msg.kind, &msg.content, None);
+    let shared = crypto::shared_secret(&s.identity.x25519_secret, &pubkey).ok_or("密钥交换失败")?;
+    let sealed = crypto::seal(&shared, plaintext.as_bytes()).ok_or("加密失败")?;
+    let sealed_content = crypto::seal(&shared, msg.content.as_bytes()).ok_or("加密失败")?;
+    let payload_b64 = STANDARD.encode(&sealed);
+    let wire_content = format!("enc1:{}", STANDARD.encode(&sealed_content));
+    let mut env = {
+        let gossip = s.gossip.lock().unwrap_or_else(|e| e.into_inner());
+        gossip.build_envelope(
+            &s.identity,
+            &s.device_id,
+            GossipKind::Chat,
+            None,
+            None,
+            &payload_b64,
+            ts,
+            seq,
+        )
+    };
+    // ⚠️ 这一行是"复用稳定身份"的全部：信封身份默认由 (sender, nonce, payload) 现算，
+    // 重新密封必然换密文 ⇒ 换 ID。这里显式改回原 msg_id，再重签（message_id 参与签名）。
+    // 接收端不重算这个哈希（去重键就是它），所以重签后的信封合法且幂等。
+    env.message_id = msg_id.clone();
+    env.target = Some(peer.clone());
+    env.sender_sig = s.identity.sign_b64(&env.signing_bytes());
+
+    let queued = Message::ChatMessage {
+        msg_id: msg_id.clone(),
+        from: s.device_id.clone(),
+        to: peer.clone(),
+        kind: msg.kind.clone(),
+        content: wire_content,
+        ts,
+        seq,
+    };
+    let payload = serde_json::to_string(&queued).map_err(|e| e.to_string())?;
+
+    // ④ 入队 + 置 sending（一个事务）。0 = 状态在这几步之间被推进/改判 ⇒ 不投递，如实拒绝。
+    let changed = {
+        let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());
+        db::requeue_message_for_resend(&dbc, &msg_id, &peer, &payload)
+            .map_err(|e| format!("重发入队失败：{e}"))?
+    };
+    if changed == 0 {
+        return Err("这条消息已经送达或状态已变，不能重发".to_string());
+    }
+
+    // ⑤ 投递（与 `send_message` 同一条链路；失败不报错 —— outbox 兜底，flush 会补）。
+    let has = s.has_link(&peer).await;
+    let try_ok = if has {
+        try_send(s, &peer, &Message::Gossip { envelope: env }).await.is_ok()
+    } else {
+        broadcast_gossip(s, env).await;
+        true
+    };
+    if try_ok {
+        let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());
+        let _ = db::set_message_status(&dbc, &msg_id, "sent");
+    }
+    s.logger.info(
+        "dispatch",
+        format!("code=DM_RESEND msg_id={msg_id} peer={peer} has_link={has} sent={try_ok}"),
+    );
+    // 复用的身份 ⇒ 前端那条气泡原地换回 sending/sent（不是新气泡）。
+    let _ = s.app.emit("message-status-changed", &msg_id);
+    let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());
+    Ok(db::get_message_record(&dbc, &msg_id).ok_or("重发后消息不见了")?)
 }
 
 // INV-EXCEPTION: INV-P03, INV-P04 — 自聊收发双方都是本机，没有对端可等 Ack：

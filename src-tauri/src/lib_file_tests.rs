@@ -1053,3 +1053,42 @@ fn file_cancel_reports_whether_the_peer_was_actually_notified() {
         "分支结论缺了：至少要有「不通知 ⇒ false」与「发成功 ⇒ true」两处"
     );
 }
+
+/// 按 cid 取消内容拉取（2026-10-25 Stage 4）：三件顺序与口径都必须钉住。
+///
+/// ① 只认**接收方向**的行：发送方向的台账是"本机是源"，按 cid 取消会把对端的拉取算成本机的事；
+/// ② 先停接收器、再写台账：反过来的话，`cancel_receive` 之后 `record_failure` 会再覆盖一次，
+///    而那一次若先落地、接收器还在写 `.part` ⇒ 界面说取消、磁盘还在长；
+/// ③ 必须记 `FailReason::Cancelled`：记成 `Partial` 会走 Incomplete，下一次建链的
+///    `retry_incomplete_content` 会**自动再把用户刚取消的东西拉一遍**（用户实报过的形状）。
+#[test]
+fn content_cancel_stops_the_receiver_then_writes_a_cancelled_terminal() {
+    let cmds = all_commands_src();
+    assert!(
+        cmds.contains("pub struct ContentCancelResult"),
+        "内容取消必须有结构化结果（already_done / ledger_committed 都要能说出来）"
+    );
+    let body = rust_fn_body(cmds, "pub async fn cancel_content_fetch(");
+    assert!(
+        body.contains("r.direction == Direction::Receive"),
+        "只认接收方向的行 —— 发送方向的 cid 行不是「本机在拉」"
+    );
+    let stop_at = body
+        .find("crate::network::file::cancel_receive(")
+        .expect("必须先停本机接收器（否则 .part 还在写）");
+    let ledger_at = body
+        .find("record_failure(")
+        .expect("必须落内容台账，否则任务中心那一行永远挂着");
+    assert!(
+        stop_at < ledger_at,
+        "顺序反了：台账先落、接收器还在写 ⇒ 界面说取消、磁盘还在长"
+    );
+    assert!(
+        body.contains("FailReason::Cancelled"),
+        "必须记 Cancelled（Rejected 终态）：记成 Partial 会被建链的自动重取拉回来"
+    );
+    assert!(
+        body.contains("TransferStatus::Incomplete"),
+        "Incomplete 也算 live：用户取消时它还能被自动重取，必须一起收口"
+    );
+}
