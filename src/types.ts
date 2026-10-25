@@ -322,9 +322,9 @@ export interface PendingMessageOp {
   /** 只有 text/code 给正文截断；其它 kind 是 JSON 载荷 ⇒ null，界面按 kind 说类型。 */
   preview: string | null;
   peer_offline: boolean;
-  /** 这一行现在点取消会不会成功（与后端 `cancel_message` 同一判据）。 */
+  /** 这一行现在点取消会不会成功（与后端 `cancel_message` 同一判据：台账里还有 pending 行）。 */
   can_cancel: boolean;
-  /** 群消息：已有成员确认收到，但队列里还有人 ⇒ 状态说「部分成员已收到」。 */
+  /** 群消息：已有成员确认收到（台账里的 delivered 行），但队列里还有人 ⇒ 说「部分成员已收到」。 */
   some_delivered: boolean;
 }
 
@@ -367,6 +367,77 @@ export interface GroupReadInfo {
   group_id: string;
   reader_id: string;
   last_read_ts: number;
+}
+
+/**
+ * 取消一条消息的结构化结果（2026-10-25，与 Rust `MessageCancelResult` 同形）。
+ *
+ * 为什么不再用短码：群消息取消可能是**部分成功**（有人已收、其余还在排队），
+ * 界面要同时说出"几个人收到了"和"几个人没收到"，一个字符串装不下。
+ * `remaining` 是取消之后仍未送达的成员数（含之前就已取消/放弃的）。
+ */
+export interface MessageCancelResult {
+  outcome:
+    | "cancelled"
+    | "partial_cancelled"
+    | "already_cancelled"
+    | "already_delivered"
+    | "already_failed"
+    | "rejected"
+    | "not_found";
+  /** 已经确认收到这条消息的成员数（1:1 是 0/1）。 */
+  delivered: number;
+  /** 取消后仍未送达的成员数。 */
+  remaining: number;
+  /** 取消前是否可能已经写出（1:1 非 sending 即 true；群一入队就可能被 flush，恒为 true）。 */
+  wasWritten: boolean;
+}
+
+/**
+ * 一条群消息的成员级投递台账摘要（`get_group_delivery_summaries`）。
+ *
+ * 只有**还有非 delivered 行**的消息才有这条：全部送达的墓碑已被即时清理。
+ * 这四个计数就是气泡上「X 人已收到 / Y 人未收到」与「补发」按钮的唯一依据 ——
+ * 不允许前端自己从别处推算（那会是第二套真源）。
+ */
+export interface GroupDeliverySummary {
+  msg_id: string;
+  delivered: number;
+  pending: number;
+  cancelled: number;
+  failed: number;
+}
+
+/** 群消息按成员补发的结果（`resend_group_delivery`）。 */
+export interface GroupResendResult {
+  outcome:
+    | "resent"
+    | "already_pending"
+    | "already_delivered"
+    | "already_failed"
+    | "no_ledger"
+    | "not_found"
+    | "unsupported";
+  /** 在线成员数：它们的行被立即 flush（只发原先被取消的那些）。 */
+  online: number;
+  /** 离线成员数：行保持 pending，上线后由 flush 自动补。 */
+  offline: number;
+  /** 补发后仍未送达的成员数（在线 + 离线）。 */
+  remaining: number;
+}
+
+/**
+ * 取消一单按 cid 拉取的内容（`cancel_content_fetch`，2026-10-25）。
+ *
+ * `alreadyDone` / `ledgerCommitted` 与文件取消同一套口径：本机停手 ≠ 台账已收口。
+ */
+export interface ContentCancelResult {
+  cancelled: boolean;
+  alreadyDone: boolean;
+  /** 被停下的接收器个数。 */
+  stopped: number;
+  /** 台账那一笔是否全部落地；false = 界面说「本机已停止、状态待刷新」。 */
+  ledgerCommitted: boolean;
 }
 
 /**

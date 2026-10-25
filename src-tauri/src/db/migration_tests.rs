@@ -38,10 +38,10 @@ fn temp_db_path() -> PathBuf {
     let unique = COUNTER.fetch_add(1, Ordering::Relaxed);
     let pid = std::process::id();
     p.push(format!("gosslan-migration-test-{pid}-{unique}.db"));
-    // 清理可能的残留
-    let _ = std::fs::remove_file(&p);
-    let _ = std::fs::remove_file(p.with_extension("db-wal"));
-    let _ = std::fs::remove_file(p.with_extension("db-shm"));
+    // 清理可能的残留。**备份也要清**：macOS 会复用 PID，而文件名只有 pid+计数器 ⇒
+    // 上一次同 PID 的进程若死在 cleanup 之前，这里就会看见它留下的 `.pre-v…` 备份，
+    // 「v{from} 必须恰好一份备份」那条判据于是偶发假红（2026-10-25 实测撞过一次）。
+    cleanup_db_and_backups(&p);
     p
 }
 
@@ -649,6 +649,8 @@ fn fresh_db_has_every_hot_query_index() {
         "idx_content_transfers_peer",
         "idx_file_outbox_peer_due",
         "idx_messages_conv_seq",
+        // 群投递台账的部分索引（2026-10-25，家在 `ensure_post_schema_shape`）。
+        "idx_group_outbox_pending",
     ] {
         assert!(
             have.iter().any(|h| h == want),
@@ -871,6 +873,11 @@ fn hot_tables_carry_exactly_the_intended_indexes() {
         ("file_outbox", 2),
         ("outbox", 2),
         ("messages", 3),
+        // `group_outbox` 的四个：`peer_id` / `group_id` / `created_at` 三条老索引 +
+        // `idx_group_outbox_pending(created_at) WHERE status='pending'`（2026-10-25 台账索引）。
+        // 后者是**部分索引**：墓碑（delivered/cancelled/failed）根本不进这棵 B 树 ⇒
+        // 写放大只随"同时在队列里的条数"增长，不随历史增长（与 `idx_file_transfers_open` 同型）。
+        ("group_outbox", 4),
     ] {
         assert_eq!(
             count(table),
@@ -1485,6 +1492,105 @@ fn v11_to_v12_is_idempotent_when_the_column_already_exists() {
     // 把版本号按回 11 再走一遍：列已存在，那一步必须靠"先数一遍再决定加不加"扛住
     conn.execute_batch("PRAGMA user_version = 11;").unwrap();
     run_migrations(&conn, 11).expect("重复执行不许报错（ALTER 撞已有列 = 启动被拒 = 应用打不开）");
+    assert_eq!(read_user_version(&conn), DB_VERSION);
+}
+
+/// v12 → v13：`group_outbox` 加**成员级投递台账**的 `status` 列 + 部分索引。
+///
+/// 为什么这一列必须迁移而不能只留在 SCHEMA：`ALTER TABLE` 是"加列"这件事的唯一表达。
+/// 老库的 `group_outbox` 没有它，而新代码的每一条 SQL 都会读写它（`list_group_outbox`
+/// 按 pending 过滤、Ack 条件置 delivered、取消置 cancelled）⇒ 缺列 = 补发/取消/清扫全报错。
+///
+/// 语义边界（不许回填猜测）：默认值 `pending` 只对**迁移后仍在队列里的行**成立 ——
+/// 那些行确实还没被 Ack（旧实现在 Ack 时直接删行）。历史已送达的行早在旧版本就消失了，
+/// 无法、也不许根据其它表反推重建。
+#[test]
+fn v12_to_v13_adds_group_outbox_status_and_partial_index() {
+    // ① 新装用户：SCHEMA 那份就该有这一列（且默认 pending）。
+    let fresh = Connection::open_in_memory().unwrap();
+    fresh.execute_batch(SCHEMA).unwrap();
+    super::ensure_post_schema_shape(&fresh).unwrap();
+    assert!(
+        super::column_exists(&fresh, "group_outbox", "status").unwrap(),
+        "新库（SCHEMA）必须带 group_outbox.status"
+    );
+    let ddl: String = fresh
+        .query_row(
+            "SELECT sql FROM sqlite_master WHERE type='table' AND name='group_outbox'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert!(
+        ddl.contains("status     TEXT NOT NULL DEFAULT 'pending'"),
+        "默认值必须是 pending：老行迁移后若默认 delivered/cancelled 会凭空造出结论"
+    );
+
+    // ② 造 v12 形状（没有 status 列），塞两行在队列里的消息。
+    let conn = Connection::open_in_memory().unwrap();
+    conn.execute_batch(SCHEMA).unwrap();
+    conn.execute_batch(
+        "DROP TABLE group_outbox;
+         CREATE TABLE group_outbox (
+             id         INTEGER PRIMARY KEY AUTOINCREMENT,
+             msg_id     TEXT NOT NULL,
+             group_id   TEXT NOT NULL,
+             peer_id    TEXT NOT NULL,
+             payload    TEXT NOT NULL,
+             created_at INTEGER NOT NULL,
+             UNIQUE(msg_id, peer_id)
+         );
+         INSERT INTO group_outbox(msg_id, group_id, peer_id, payload, created_at)
+         VALUES ('gm-a','g1','b','{}',10), ('gm-a','g1','c','{}',10);",
+    )
+    .unwrap();
+    conn.execute_batch("PRAGMA user_version = 12;").unwrap();
+    run_migrations(&conn, 12).expect("v12→v13 迁移本身不许报错");
+
+    assert!(
+        super::column_exists(&conn, "group_outbox", "status").unwrap(),
+        "迁移没补 status ⇒ 新代码的每条台账 SQL 都会报 no such column"
+    );
+    let rows: Vec<(String, String)> = {
+        let mut stmt = conn
+            .prepare("SELECT peer_id, status FROM group_outbox ORDER BY peer_id")
+            .unwrap();
+        stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
+            .unwrap()
+            .filter_map(|r| r.ok())
+            .collect()
+    };
+    assert_eq!(
+        rows,
+        vec![
+            ("b".to_string(), "pending".to_string()),
+            ("c".to_string(), "pending".to_string()),
+        ],
+        "迁移后的在队列行只能是 pending（它们确实还没被 Ack）"
+    );
+    let idx: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type='index' AND name='idx_group_outbox_pending'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(
+        idx, 1,
+        "部分索引必须随迁移一起建出来（否则补发扫描回到全表）"
+    );
+    assert_eq!(read_user_version(&conn), DB_VERSION);
+}
+
+/// 迁移重跑幂等：`status` 已在的库再走一遍 v12→v13 不许报错。
+#[test]
+fn v12_to_v13_is_idempotent_when_the_column_already_exists() {
+    let conn = Connection::open_in_memory().unwrap();
+    conn.execute_batch(SCHEMA).unwrap();
+    conn.execute_batch("PRAGMA user_version = 12;").unwrap();
+    run_migrations(&conn, 12).expect("第一次 v12→v13 必须成功");
+    conn.execute_batch("PRAGMA user_version = 12;").unwrap();
+    run_migrations(&conn, 12).expect("重复执行不许报错（ALTER 撞已有列 = 启动被拒 = 应用打不开）");
     assert_eq!(read_user_version(&conn), DB_VERSION);
 }
 

@@ -2,7 +2,7 @@
 
 import { Channel, invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
-import type { AppSettings, CacheInfo, CleanupReport, ContentAudience, ContentTransfer, Conversation, DeviceInfo, DiscoveryDiag, ExportSummary, ExternalLink, ExternalLinkImportResult, FavoriteEntry, FileDoneInfo, FileFailedInfo, FileProgress, FileStalledInfo, Friend, FriendKeyRotation, Group, GroupHistoryProgress, GroupReadInfo, InterfaceInfo, LinkState, LogEntry, MessageRecord, Peer, PeerReadInfo, PendingMessageOp, PendingRequest, RelayConfig, RelayProbe, RoutedEndpoint, RuntimeDiag, RuntimeSnapshot, TransferInfo } from "@/types";
+import type { AppSettings, CacheInfo, CleanupReport, ContentAudience, ContentCancelResult, ContentTransfer, Conversation, DeviceInfo, DiscoveryDiag, ExportSummary, ExternalLink, ExternalLinkImportResult, FavoriteEntry, FileDoneInfo, FileFailedInfo, FileProgress, FileStalledInfo, Friend, FriendKeyRotation, Group, GroupDeliverySummary, GroupHistoryProgress, GroupReadInfo, GroupResendResult, InterfaceInfo, LinkState, LogEntry, MessageCancelResult, MessageRecord, Peer, PeerReadInfo, PendingMessageOp, PendingRequest, RelayConfig, RelayProbe, RoutedEndpoint, RuntimeDiag, RuntimeSnapshot, TransferInfo } from "@/types";
 import type { TodoImage } from "@/utils/todos";
 import {
   chatSearchGroupSchema,
@@ -301,12 +301,33 @@ export const api = {
   recallDirectMessage: (friendId: string, target: string) =>
     invoke<void>("recall_message", { friendId, target }),
   /**
-   * 取消一条**还在补发队列里**的消息（自己发的、单聊、非文件）。
-   * 返回 `cancelled` = 真的撤下来了；`already_delivered` = 已经送出去，取消不成立。
-   * 只改本机：对端还没收到，所以没有"通知对方"这件事。
+   * 取消一条**还在投递队列里**的消息（自己发的、非文件）。
+   *
+   * 返回结构化结果：群消息可能只取消了**剩余成员**（有人已经收到），
+   * `delivered` / `remaining` 就是界面要说的两个数；`not_found` 不是错误
+   * （消息可能刚被清理/不存在），由界面自己决定怎么说。
    */
   cancelMessage: (convId: string, msgId: string) =>
-    invoke<"cancelled" | "already_delivered">("cancel_message", { convId, msgId }),
+    invoke<MessageCancelResult>("cancel_message", { convId, msgId }),
+  /** 群消息的成员级投递台账摘要（只含还有非 delivered 行的消息）。 */
+  getGroupDeliverySummaries: (convId: string) =>
+    invoke<GroupDeliverySummary[]>("get_group_delivery_summaries", { convId }),
+  /**
+   * 重发一条**本端判失败/已取消**的 1:1 消息，复用原 `msg_id` / `ts` / `seq`。
+   *
+   * 接收端按 `msg_id` 去重 —— 上一次其实送到了、只是 Ack 丢了的话，对方只再回一次 Ack，
+   * 不会多出一条重复消息（这正是"重试必须复用稳定消息身份"的全部意义）。
+   */
+  resendMessage: (convId: string, msgId: string) =>
+    invoke<MessageRecord>("resend_message", { convId, msgId }),
+  /**
+   * 把一条群消息里被取消的成员行重置为 pending 并补发。
+   *
+   * 不重签/不重加密：复用原 Gossip 信封，接收端按 msg_id 幂等 ⇒ 已 Ack 的成员不会收到第二条。
+   * 在线成员立即发，离线成员保持 pending、上线后自动补。
+   */
+  resendGroupDelivery: (convId: string, msgId: string) =>
+    invoke<GroupResendResult>("resend_group_delivery", { convId, msgId }),
   /** 切换自己发的代码/文本消息渲染（LWW，所有支持该能力位的成员生效）。 */
   setMessageRender: (convId: string, target: string, mode: "code" | "text") =>
     invoke<void>("set_message_render", { convId, target, mode }),
@@ -332,6 +353,14 @@ export const api = {
       /** 台账那一笔写是否真的落地；false = 事务回滚，界面要说「本机已停止、状态待重试」。 */
       ledgerCommitted: boolean;
     }>("cancel_file_transfer", { transferId }),
+  /**
+   * 取消一单**按 cid 拉取的内容**（任务中心内容行的「取消」）。
+   *
+   * 与文件取消同口径：先停本机接收器，再把内容台账落成 Rejected(Cancelled) ——
+   * 后者是终态，所以下一次建链的自动重取**不会**把用户刚取消的东西又拉一遍。
+   */
+  cancelContentFetch: (cid: string) =>
+    invoke<ContentCancelResult>("cancel_content_fetch", { cid }),
   sendFileAuto: (friendId: string, path: string) =>
     invoke<string>("send_file_auto", { friendId, path }),
   sendGroupFile: (groupId: string, path: string) =>
@@ -747,6 +776,13 @@ export type EventHandlers = {
   /** 某条消息状态变更（msg_id: file-{tid} / gfile-{tid} 等）。前端据此刷新气泡状态。 */
   onMessageStatusChanged: (msgId: string) => void;
   /**
+   * 某个群消息的**成员级投递台账**变了（Ack 落地 / 取消剩余成员 / 补发 / 清扫判死）。
+   *
+   * 载荷是 `{group_id, msg_id}`；`group_id` 是**裸 id**（没有 `group:` 前缀）。
+   * 前端只做一件事：重拉那个群的 `get_group_delivery_summaries`。计数不许自己推。
+   */
+  onGroupDeliveryChanged: (p: { group_id: string; msg_id: string }) => void;
+  /**
    * 某条消息**判死**（msg_id）。与上面那条的区别是有没有带事实：outbox 清扫已经把库里
    * 这行写成 failed 才发这个事件，所以事件名就是结论，前端不必回库查（也查不到新东西）。
    */
@@ -843,6 +879,9 @@ export async function bindEvents(h: EventHandlers): Promise<UnlistenFn[]> {
     listen<string>("file-cancelled", (e) => h.onFileCancelled(e.payload)),
     listen<UpdaterStatus>("updater-status", (e) => h.onUpdaterStatus(e.payload)),
     listen<string>("message-status-changed", (e) => h.onMessageStatusChanged(e.payload)),
+    listen<{ group_id: string; msg_id: string }>("group-delivery-changed", (e) =>
+      h.onGroupDeliveryChanged(e.payload),
+    ),
     // 后端改了这些消息的状态就发对应事件（sweeper 判失败 / Ack 到达 / 文件被取消）。
     // 分两类，按**事件带不带结论**判：
     // - 只给 id（`message-status-changed`）：结论得回库查 ⇒ 正在看的会话重查，

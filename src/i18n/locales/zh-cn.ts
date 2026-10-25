@@ -569,6 +569,8 @@ export const zhCN: MessageDict = {
   "msg.readByView": "已读 {n} 人，查看已读成员",
   "msg.readMembers": "已读成员（{n}）",
   "msg.resend": "重新发送",
+  // 原地重投被拒（已送达 / 状态已变）或入队失败。不许静默 —— 用户按了按钮就得有回音。
+  "msg.resendFail": "这条消息现在无法重发",
   "msg.sendFailed": "发送失败",
   "msg.clickToOpen": "点击打开文件",
   "msg.receiving": "接收中",
@@ -646,6 +648,32 @@ export const zhCN: MessageDict = {
   "msg.cancelSend.requested": "已请求取消发送",
   "msg.cancelSend.alreadyDone": "这一单已经传完，无法取消",
   "msg.cancelSend.fail": "取消发送失败",
+  // 取消**消息**（不是文件）的七种结论。两个调用方（任务中心、气泡菜单）共用这一组，
+  // 文案只存在于这里 —— 群消息的部分送达让"取消成功/已送达"两句二元判断不够用了。
+  "msg.cancelSend.delivered": "这条消息已经送达，不能取消",
+  "msg.cancelSend.partial": "已取消剩余 {remaining} 人的发送（{delivered} 人已收到，可在气泡上补发）",
+  "msg.cancelSend.alreadyCancelled": "这条消息已经取消过了",
+  "msg.cancelSend.alreadyFailed": "这条消息已判为发送失败，不能再取消",
+  "msg.cancelSend.rejected": "这条消息已撤回或已被读取，无法取消",
+  "msg.cancelSend.notFound": "找不到这条消息（可能已被清理）",
+  // 群消息按成员补发（台账口径）。四种结论都不能说成"已送达"：在线只是进了链路，
+  // 离线只是排进 pending —— 真正的送达仍以对方 Ack 落台账为准。
+  "msg.groupResend.done": "已补发给 {online} 位在线成员",
+  "msg.groupResend.queued": "已补发：{online} 位在线成员正在发送，{offline} 位离线成员上线后自动补",
+  "msg.groupResend.alreadyPending": "还有 {remaining} 位成员正在补发中",
+  // 说"没有可补发的成员"而不是"已送达全部"：台账里还可能有 failed 行（本端已放弃），
+  // 那句"全部送达"会把放弃说成成功（复审抓出）。
+  "msg.groupResend.allDelivered": "这条消息没有可补发的成员（都已送达或已放弃）",
+  "msg.groupResend.noLedger": "这条消息没有成员级台账（升级前发出），只能整条重发",
+  "msg.groupResend.unsupported": "这种消息不支持按成员补发",
+  // 群气泡旁的成员级投递摘要（台账口径）。全部送达时后端清墓碑 ⇒ 这几句都不会出现。
+  "msg.delivery.pending": "已收到 {delivered}/{total}",
+  "msg.delivery.failed": "{failed} 人未送达",
+  "msg.delivery.cancelled": "{delivered} 人已收到，{cancelled} 人已取消",
+  "msg.delivery.allCancelled": "{cancelled} 人未收到（已取消）",
+  // 已取消/已失败的消息后来收到对方的迟到 Ack：那条证据必须看得见（否则角标是空的）。
+  "msg.delivery.deliveredOnly": "{delivered} 人已收到",
+  "msg.delivery.detail": "已收到 {delivered} · 待收 {pending} · 已取消 {cancelled} · 未送达 {failed}",
   "msg.reactionToggle": "切换回应 {emoji}",
   "msg.reactionWho": "{n} 人回应",
   "msg.reactionMore": "更多表情",
@@ -657,6 +685,11 @@ export const zhCN: MessageDict = {
   "msg.sending": "发送中…",
   "msg.delivered": "对方已收到，未读",
   "msg.read": "对方已读",
+  // 群消息的「部分送达后被取消」：一部分成员已经收到，剩下的人在用户取消时还没收到。
+  // 它与「发送中」不是一回事 —— 取消是用户按下的终态，只是没覆盖所有人。
+  "msg.partialCanceled": "部分成员已收到，其余已取消",
+  // 库里出现了回执映射不认识的取值。宁可说不知道，也不假装正常（以前这一格是空的）。
+  "msg.stateUnknown": "发送状态未知",
   "msg.openLinkFail": "打开链接失败",
   "msg.forwardTo": "转发到",
   "msg.searchConversation": "搜索会话",
@@ -1177,6 +1210,9 @@ export const zhCN: MessageDict = {
   "task.waitingFor": "还有 {n} 个人没收到",
   "task.cancel": "取消",
   "task.cancelDone": "已取消",
+  // 按 cid 拉取的内容被用户取消（终态：建链时不会再自动拉回来）。
+  "task.contentCancelOk": "已取消，不会再自动获取",
+  "task.contentCancelDone": "这一单已经结束，无需取消",
   "task.retryNow": "立即重试",
   "task.syncNow": "立即同步",
   "task.openChat": "去会话",
@@ -1194,7 +1230,6 @@ export const zhCN: MessageDict = {
   "task.locateNotFound": "已打开会话，但没找到对应的消息（可能太早，超出已加载范围）",
   "task.locateFail": "已打开会话，但定位消息失败",
   "task.openChatFail": "没能打开会话",
-  "task.cancelMessageDelivered": "这条消息已经送达，不能取消",
   "task.state.running": "进行中",
   "task.state.syncing": "同步中 {pct}%",
   "task.state.resending": "重发中",
