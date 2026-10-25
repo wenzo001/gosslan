@@ -5097,8 +5097,11 @@ test("气泡尖角：位置只有 style.css 那一个家，五处挂尖角的气
   const displaySrc = readFileSync(join(srcDir691, "composables", "useMessageDisplay.ts"), "utf8");
   assert.match(displaySrc, /"--bubble-line":\s*mine\.value \? "transparent" : "var\(--gosslan-border\)"/,
     "文本气泡没有把 --bubble-line 交给尾巴（自己的消息应为 transparent）");
-  assert.match(displaySrc, /"--bubble-line":\s*"var\(--gosslan-card-line\)"/,
-    "卡片气泡没有把 --bubble-line 交给尾巴");
+  assert.match(displaySrc,
+    /const line = mineCard \? "transparent" : "var\(--gosslan-card-line\)"/,
+    "卡片气泡没有把 --bubble-line 交给尾巴（自己的卡片应为透明边、对方取卡片线）");
+  assert.match(displaySrc, /"--bubble-line": line,/,
+    "卡片气泡的 --bubble-line 没有真的进到样式对象");
 });
 
 /**

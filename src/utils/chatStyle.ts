@@ -2,7 +2,7 @@
 // 本机偏好持久化（后端 settings.chat_style），同时经 ChatStyle 消息广播给
 // 已连接节点：对方设备持久化后按「我的偏好」渲染我发出的消息气泡。
 
-import { adjustHsl, contrastRatio, hslToHex, mixToLuma, toHsl } from "./color.ts";
+import { adjustHsl, contrastRatio, hslToHex, luma, mixHex, mixToLuma, toHsl } from "./color.ts";
 
 export interface ChatPresetColors {
   mineBubble: string;
@@ -160,6 +160,30 @@ export function resolveChatColors(key: string, themeColor: string, dark: boolean
     otherText: "#e2e8f0",
   };
   return dark ? softenMineForDark(darkBase) : light;
+}
+
+/** 语气色（danger / warning）在亮暗两档的实值；与 `style.css` 的 token 同值，测试会对账。 */
+export const UI_TONE_INKS = {
+  danger: { light: "#cc2418", dark: "#ff5548" },
+  warning: { light: "#c67600", dark: "#ff9f0a" },
+} as const;
+
+/**
+ * 在给定底色上取一个**可读**的语气色。
+ *
+ * 用途：自己的卡片改成 `mineBubble` 底之后，`--gosslan-danger-ink` / `--gosslan-warning-ink`
+ * 在深色实底（暗色主题）上可能只有 2~3:1。这里保留原色相，朝黑/白逐步混到 WCAG 4.5；
+ * 原色已经达标就原样返回。纯函数，7 × 2 主题矩阵可在 Node 里逐格断言。
+ */
+export function readableToneOn(bg: string, ink: string, min = 4.5): string {
+  if (contrastRatio(ink, bg) >= min) return ink;
+  const target: [number, number, number] = luma(bg) > 150 ? [0, 0, 0] : [255, 255, 255];
+  let best = ink;
+  for (let i = 1; i <= 20; i += 1) {
+    best = mixHex(ink, target, i / 20);
+    if (contrastRatio(best, bg) >= min) return best;
+  }
+  return best;
 }
 
 export function fontPx(size: FontSizeKey): number {

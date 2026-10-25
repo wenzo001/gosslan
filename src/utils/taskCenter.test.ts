@@ -19,6 +19,7 @@ import {
   deriveOperations,
   FALLBACK_TITLE_KEYS,
   isLiveTransferStatus,
+  operationStatusText,
   sortOperations,
   type ContentTransfer,
   type PendingMessageOpView,
@@ -351,4 +352,56 @@ test("更新下载没有 total 时进度是 null，不是 0%", () => {
   });
   assert.equal(rows[0].progress, null);
   assert.equal(rows[0].title, "", "没有版本号就回落成类型文案（界面用 fallbackTitleKey）");
+});
+
+test("更新下载 100% 时任务行消失（没有后台工作，不再显示「100% 收尾中」）", () => {
+  const rows = deriveOperations({
+    transfers: [],
+    contentTransfers: [],
+    updater: { phase: "downloading", downloaded: 100, total: 100, version: "5.9.0" },
+  });
+  assert.deepEqual(rows, [], "字节已下满 ⇒ 下载任务从任务中心移除");
+});
+
+test("消息行/1:1 文件行带定位消息 id（去会话后尽量定位到原消息）", () => {
+  const rows = deriveOperations({
+    transfers: [transfer({ id: "t-locate", status: "active" })],
+    contentTransfers: [],
+    messageOps: [msgOp({ msg_id: "m-locate" })],
+  });
+  const file = rows.find((r) => r.id === "t-locate");
+  assert.equal(file?.locateMsgId, "file-t-locate", "1:1 文件气泡的消息 id 是 file-<transfer_id>");
+  const msg = rows.find((r) => r.id === "m-locate");
+  assert.equal(msg?.locateMsgId, "m-locate", "消息行直接带 msg_id");
+});
+
+// ---------------- 100% 但未终态的状态文案（2026-10-25 用户反馈） ----------------
+
+test("100% 未终态按 kind 说清在做什么：不再一律「收尾中」", () => {
+  const tr = (key: string, params?: Record<string, unknown>) =>
+    params?.pct !== undefined ? `${key}:${params.pct}` : key;
+
+  // 更新下载 100% 不再进列表（没有后台工作），所以这里只测仍有后台工作的三类。
+  const fetched = deriveOperations({
+    transfers: [],
+    contentTransfers: [content({ status: "active", received: 100, size: 100 })],
+  })[0];
+  assert.equal(operationStatusText(fetched, tr), "task.state.verifying");
+
+  const history = deriveOperations({
+    transfers: [],
+    contentTransfers: [],
+    groupHistory: [{ group_id: "g1", source: "p1", synced: 10, total: 10, phase: "running" }],
+  })[0];
+  assert.equal(operationStatusText(history, tr), "task.state.historyFinalizing");
+
+  const sent = deriveOperations({
+    transfers: [transfer({ status: "sent", progress: 1 })],
+    contentTransfers: [],
+  })[0];
+  assert.equal(
+    operationStatusText(sent, tr),
+    "task.state.waitingAck",
+    "「已发出，等对方确认」比「正在收尾」更能解释 100%",
+  );
 });

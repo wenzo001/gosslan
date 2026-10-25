@@ -15,6 +15,7 @@ import { useChatStore } from "@/stores/useChatStore";
 import { useSearchKeyword } from "@/composables/useSearchKeyword";
 import { useExclusivePopup } from "@/composables/useExclusivePopup";
 import { useImeEnterGuard } from "@/composables/useImeEnterGuard";
+import { version } from "../../package.json";
 import ConversationListItem from "@/components/conversation/ConversationListItem.vue";
 import FriendListItem from "@/components/conversation/FriendListItem.vue";
 import FriendContextMenu from "@/components/conversation/FriendContextMenu.vue";
@@ -26,7 +27,7 @@ import { groupByInitial } from "@/utils/nameGroup";
 import { isSelfConversation, selfFriendOf } from "@/utils/selfChat";
 import { MAX_SEARCH_KEYWORD_CHARS } from "@/utils/validation";
 import { createInitScope } from "@/utils/initScope";
-import { Plus, Search, UserPlus, UsersRound } from "lucide-vue-next";
+import { Plus, ListChecks, Search, UserPlus, UsersRound } from "lucide-vue-next";
 import type { Conversation, Friend } from "@/types";
 
 const props = defineProps<{
@@ -49,6 +50,8 @@ const emit = defineEmits<{
 const app = useAppStore();
 const router = useRouter();
 const chat = useChatStore();
+/** 页脚任务入口上的未完成数：与面板同一份读模型（`chat.operations`），不另算。 */
+const taskCount = computed(() => chat.operations.length);
 /** 回车打开搜索页之前的输入法守卫（见 composable 注释） */
 const ime = useImeEnterGuard();
 
@@ -535,13 +538,37 @@ useEventListener(document, "click", closeFriendMenu);
       </template>
     </div>
 
-    <!-- 品牌页脚（用户 2026-10-23）：侧栏底部一行小字，中/英随界面语言。
-         放在滚动容器**之外**（不随列表滚走），只在会话/联系人列表这一栏出现。 -->
+    <!-- 品牌页脚 + 任务入口（用户 2026-10-25：药丸总挡界面，入口放到「小院儿」后面）。
+         放在滚动容器**之外**（不随列表滚走），只在会话/联系人列表这一栏出现。
+         移动端 TabBar 是 `fixed bottom-0`，页脚必须整体上抬到它之上，否则会被盖住。 -->
     <div
-      class="shrink-0 select-none border-t border-[var(--gosslan-divider)] px-3 py-1.5 text-caption text-[var(--gosslan-text-2)] opacity-70"
+      class="conv-footer-safe shrink-0 select-none border-t border-[var(--gosslan-divider)] px-3 py-1.5 text-caption text-[var(--gosslan-text-2)]"
     >
-      {{ t("app.name") }}
+      <div class="flex items-center gap-1">
+        <span class="truncate opacity-70" :title="t('app.name')">{{ t("app.name") }}</span>
+        <span class="opacity-40">·</span>
+        <span class="shrink-0 tabular-nums opacity-60" :title="`v${version}`">v{{ version }}</span>
+        <span class="flex-1"></span>
+        <!-- 任务入口：图标 + 未完成数。0 件时也给入口（点开是空态），不常驻转圈。 -->
+        <button
+          type="button"
+          data-task-entry
+          class="tap-safe flex shrink-0 items-center gap-1 rounded-[var(--gosslan-radius-sm)] px-1 py-0.5 transition hover:bg-[var(--gosslan-hover)]"
+          :aria-label="taskCount > 0 ? t('task.open', { n: taskCount }) : t('task.title')"
+          :title="taskCount > 0 ? t('task.open', { n: taskCount }) : t('task.title')"
+          @click="app.openTaskCenter"
+        >
+          <ListChecks class="h-3.5 w-3.5" />
+          <span
+            v-if="taskCount > 0"
+            class="rounded-full bg-[var(--gosslan-hover)] px-1 text-caption font-semibold leading-none tabular-nums text-[var(--gosslan-text)]"
+          >
+            {{ taskCount }}
+          </span>
+        </button>
+      </div>
     </div>
+
 
     <ConversationContextMenu
       v-if="convMenu"

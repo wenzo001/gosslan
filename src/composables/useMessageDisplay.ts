@@ -1,7 +1,7 @@
 import { currentLocale, t } from "@/i18n";
 import { computed, toValue, type CSSProperties, type MaybeRefOrGetter } from "vue";
 import { useAppStore } from "@/stores/useAppStore";
-import { findPreset, parsePeerStyle, resolveChatColors } from "@/utils/chatStyle";
+import { findPreset, parsePeerStyle, readableToneOn, resolveChatColors, UI_TONE_INKS } from "@/utils/chatStyle";
 import { fmtDateTime, fmtTimeDivider } from "@/utils/time";
 import { shouldShowTimeDivider } from "@/utils/previewMetrics";
 import { shouldShowNickname, type MessageGroupSide } from "@/utils/messageKinds";
@@ -91,25 +91,55 @@ export function useMessageDisplay(opts: {
   );
 
   /**
-   * 卡片型气泡（文件/代码）走中性色：学微信——非文本气泡不跟随主题色，
-   * 自己发的和对方发的同色，靠左右位置和尖角区分归属，避免满屏都是品牌色。
-   * 配色一律取主题 token（--gosslan-card*）：亮色＝浅灰卡片浮在近白画布上（靠 1px 描边区分），
-   * 暗色＝比画布亮一档的深灰。**不要在组件里写死这两档色值**——
-   * 写死就等于脱离主题，深浅切换时只能靠人肉记住两处都改（这正是本次收敛掉的东西）。
+   * 卡片型气泡（文件/合并/任务）的统一配色。
+   *
+   * 2026-10-25 用户口径：自己发的卡片必须跟自己的主题气泡同色（"文件/代码卡片/超长文本
+   * 的气泡颜色好像还是固定的……应该是统一的"），对方卡片保持中性。
+   * 所有前景色都从这一处派生，组件里不许再写第二份 `--gosslan-card-ink`：
+   *  - `--card-ink` / `--card-ink-soft`：正文与次要文字；
+   *  - `--card-line`：边框与分隔线；
+   *  - `--card-chip`：浅底 chip / 图标井 / 进度槽；
+   *  - `--card-action`：卡片里的操作文字（对方 = 主题色，自己 = 气泡文字色）；
+   *  - `--card-danger` / `--card-warning`：在 `mineBubble` 上现算到 ≥4.5 的语气色。
+   * 代码卡片不读这里（`MessageCodeBubble` 保留 `CODE_SURFACE`）。
    */
-  const cardStyle = computed<CSSProperties>(
-    () =>
-      ({
-        "--bubble-bg": "var(--gosslan-card)",
-        background: "var(--bubble-bg)",
-        color: "var(--gosslan-card-ink)",
-        borderRadius: "var(--gosslan-bubble-radius, 4px)",
-        border: "1px solid var(--gosslan-card-line)",
-        "--bubble-line": "var(--gosslan-card-line)",
-        // 不加阴影：学微信，纯色卡片 + 1px 描边就够，阴影反而显脏
-        position: "relative",
-      }) as CSSProperties,
-  );
+  const cardStyle = computed<CSSProperties>(() => {
+    const mineCard = mine.value;
+    const bg = mineCard ? colors.value.mineBubble : "var(--gosslan-card)";
+    const ink = mineCard ? colors.value.mineText : "var(--gosslan-card-ink)";
+    const line = mineCard ? "transparent" : "var(--gosslan-card-line)";
+    const tone = app.dark ? "dark" : "light";
+    const vars: Record<string, string> = {
+      "--bubble-bg": bg,
+      "--bubble-line": line,
+      "--card-ink": ink,
+      "--card-ink-soft": `color-mix(in srgb, ${ink} 88%, ${bg})`,
+      "--card-line": mineCard
+        ? `color-mix(in srgb, ${ink} 18%, transparent)`
+        : "var(--gosslan-card-line)",
+      "--card-chip": mineCard
+        ? `color-mix(in srgb, ${ink} 10%, ${bg})`
+        : "var(--gosslan-hover)",
+      "--card-action": mineCard ? "var(--card-ink)" : "var(--gosslan-primary)",
+      "--card-danger": mineCard
+        ? readableToneOn(colors.value.mineBubble, UI_TONE_INKS.danger[tone])
+        : "var(--gosslan-danger-ink)",
+      "--card-warning": mineCard
+        ? readableToneOn(colors.value.mineBubble, UI_TONE_INKS.warning[tone])
+        : "var(--gosslan-warning-ink)",
+    };
+    // 真实 hex 只在自己卡片上有（对方卡片是 CSS token，读不到 hex）——供 mention 对比度现算。
+    if (mineCard) vars["--bubble-bg-raw"] = colors.value.mineBubble;
+    return {
+      ...vars,
+      background: "var(--bubble-bg)",
+      color: "var(--card-ink)",
+      borderRadius: "var(--gosslan-bubble-radius, 4px)",
+      border: "1px solid var(--bubble-line)",
+      // 不加阴影：学微信，纯色卡片 + 1px 描边就够，阴影反而显脏
+      position: "relative",
+    } as CSSProperties;
+  });
 
   /** 这一条前面要不要插时间分割行。阈值与判定都取自 `previewMetrics` ——
    *  估算端（`messageHeight`）用的是同一个函数，因为分割行自己占 32px，
