@@ -222,7 +222,7 @@ watch(
       keyword.value = "";
       void app.refreshRuntime(); // 与扫描并发，别让开关状态拖慢"正在扫描"
       // 手机端：打开本页时才按需拉起蓝牙通道（启动路径不碰 BLE，见 useAppStore.ensureBluetoothOn）
-      void app.ensureBluetoothOn();
+      void app.ensureBluetoothOn({ manual: true });
       loading.value = true;
       try {
         await chat.searchNearbyPeers(); // 按需 who_has 群发探测

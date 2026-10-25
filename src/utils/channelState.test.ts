@@ -288,7 +288,10 @@ test("自动拉起蓝牙必须尊重用户的关闭偏好（不能只看运行�
   const store = read("stores/useAppStore.ts");
   const at = store.indexOf("async function ensureBluetoothOn");
   assert.ok(at > 0, "找不到 ensureBluetoothOn（护栏需要同步更新）");
-  const body = store.slice(at, at + 1600);
+  // 窗口要覆盖**整个函数**：原先写死 +1600，2026-10-25 加了熔断块之后偏好判据被截到
+  // 窗口外，报出"顺序反了"的假红（判据没坏，是尺子太短）。切到下一个函数定义为止。
+  const nextFn = store.indexOf("\n  async function", at + 10);
+  const body = store.slice(at, nextFn > at ? nextFn : at + 3200);
   assert.match(
     body,
     /if \(!ch\.preferred\) return;/,
@@ -838,4 +841,33 @@ test("本地清零只有一个家，且会话快照不得点亮已清零的未�
     "refreshConversations 必须经 applyConversationSnapshot 落地，不能整表覆盖",
   );
   assert.match(body, /pruneUnreadClears\(/, "水位要回收，否则这个 Map 跟着会话数无界增长");
+});
+
+/**
+ * 熔断接线：2s 定时器必须走自动路径；两个手动入口必须显式 manual；
+ * 自动路径必须读后端快照的 `bleAutostartHeld`（不是只加字段不接线）。
+ */
+test("蓝牙熔断：自动路径读 hold，手动入口显式放行", () => {
+  const store = read("stores/useAppStore.ts");
+  assert.match(
+    store,
+    /setTimeout\(\(\) => void ensureBluetoothOn\(\), 2000\)/,
+    "2s 定时器必须保持自动路径（不传 manual）",
+  );
+  assert.match(store, /bleAutostartHeld/, "自动路径必须读熔断字段");
+  assert.match(
+    store,
+    /reportUnreadable: report === null/,
+    "报告读不到必须按 fail-closed 表达",
+  );
+  const net = read("components/settings/NetworkSection.vue");
+  assert.ok(
+    net.includes("ensureBluetoothOn({ manual: true })"),
+    "网络设置页的手动入口必须显式 manual",
+  );
+  const add = read("components/AddFriendModal.vue");
+  assert.ok(
+    add.includes("ensureBluetoothOn({ manual: true })"),
+    "添加好友页的手动入口必须显式 manual",
+  );
 });

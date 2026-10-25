@@ -493,6 +493,44 @@ export interface RuntimeSnapshot {
   routedEndpoints: number;
   /** 公网中转状态（只有可公开的事实，**不含口令、不含服务器地址**） */
   relay: { enabled: boolean; connected: boolean };
+  /**
+   * 本次启动是否因"上次在蓝牙模块崩溃"暂停了自动开启。
+   * `Some(原因)` 的中文文本由后端给；界面只展示，不自己拼第二份口径。
+   */
+  bleAutostartHeld: string | null;
+}
+
+/** 上一轮崩溃位置（Rust `logging::PanicDetail`，serde camelCase）。 */
+export interface PanicDetail {
+  location: string;
+  message: string;
+}
+
+/** 上一轮的卡死记录（Rust `logging::HangDetail`）。 */
+export interface HangDetail {
+  seconds: number;
+  lastOp: string | null;
+  ended: boolean;
+}
+
+/**
+ * 上一轮运行报告（Rust `logging::PreviousRunReport`）。
+ *
+ * 启动时由后端从现场文件算一次；前端只读字段，不解析日志文本。
+ */
+export interface PreviousRunReport {
+  /** panic | silent_kill | startup_failed | clean | no_history */
+  kind: string;
+  /** BOOT_PREV_* */
+  code: string;
+  at: string | null;
+  version: string | null;
+  panic: PanicDetail | null;
+  hang: HangDetail | null;
+  recentPanicCount: number;
+  bleSuspect: boolean;
+  crashLog: string;
+  logDir: string;
 }
 
 /**

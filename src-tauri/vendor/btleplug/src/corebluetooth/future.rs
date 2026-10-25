@@ -109,8 +109,7 @@ impl<T> Future for BtlePlugFuture<T> {
     /// [BtlePlugFutureStateShared].
     fn poll(self: Pin<&mut Self>, cx: &mut Context) -> Poll<Self::Output> {
         let mut waker_state = self.waker_state.lock().unwrap();
-        if waker_state.reply_msg.is_some() {
-            let msg = waker_state.reply_msg.take().unwrap();
+        if let Some(msg) = waker_state.reply_msg.take() {
             Poll::Ready(msg)
         } else {
             waker_state.waker = Some(cx.waker().clone());

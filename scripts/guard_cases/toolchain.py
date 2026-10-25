@@ -573,4 +573,21 @@ CASES: list[Case] = [
         cwd=ROOT,
         expect_fail_hint="出现了 3 次",
         tags=["change-budget", "new-guards"],
+    ),
+    Case(
+        name="panic 站点棘轮：生产码新增一处 panic! 必须当场红",
+        why="release 是 panic = \"abort\" ⇒ 任意一处 panic!/unwrap/expect 都会让整个应用消失"
+        "（2026-10-25 macOS 连续 SIGABRT 就是 vendored CoreBluetooth 的一条迟到回调 panic 放大的）。"
+        "本用例把一条生产 panic! 注入 `watchdog.rs` 的 now_ms 开头：棘轮按文件计数，"
+        "基线 0 涨到 1 必须失败；恢复后必须通过。注释/字符串/`#[cfg(test)]` 的剔除由脚本自己的 "
+        "8 条 self-test 守（每次跑都先执行）。",
+        file=TAURI / "src" / "watchdog.rs",
+        injections=[(
+            "fn now_ms() -> i64 {",
+            "fn now_ms() -> i64 {\n    panic!(\"guard mutation: injected panic site\");",
+        )],
+        cmd=["node", "scripts/check-panic-sites.mjs"],
+        cwd=ROOT,
+        expect_fail_hint="棘轮只许降",
+        tags=["rust", "crash", "new-guards"],
     ),]

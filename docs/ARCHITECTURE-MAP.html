@@ -744,14 +744,18 @@ const CMDS = [
   ["get_image_preview_gallery", "logs", "", "PreviewGallery?"],
   ["get_log_locations", "logs", "", "LogLocations"],
   ["get_logs", "logs", "since_secs int?", "LogEntry[]"],
+  ["get_previous_exit", "logs", "", "PreviousRunReport"],
   ["open_group_todos_window", "logs", "group_id str; focus_todo_id str?", "()|err"],
   ["open_image_preview", "logs", "gallery PreviewGallery", "()|err"],
   ["open_link_window", "logs", "url str; name str", "()|err"],
   ["open_log_window", "logs", "", "()|err"],
   ["open_settings_window", "logs", "", "()|err"],
   ["prewarm_aux_windows", "logs", "", "()|err"],
+  ["report_frontend_slow_op", "logs", "cmd str; ms int", "()"],
+  ["restart_app", "logs", "", "()|err"],
   ["request_group_todo_focus", "logs", "group_id str; todo_id str", "()|err"],
   ["take_group_todo_focus", "logs", "group_id str", "str?"],
+  ["ui_heartbeat", "logs", "current_op str?; active bool", "()"],
   ["get_pending_requests", "mobile_picker", "", "PendingRequest[]"],
   ["import_picked_file", "mobile_picker", "path str; suggested_name str?", "str|err"],
   ["respond_friend_request", "mobile_picker", "peer_id str; accept bool", "()|err"],
@@ -1534,7 +1538,7 @@ function buildDir() {
       '<div class="stat"><div class="num">' + CMDS.filter((r) => !SEM[r[0]] || !SEM[r[0]].dead).length + '</div><div>前端有调用</div></div>' +
       '<div class="stat"><div class="num">29</div><div>后端字面量事件名（表内合并成 ' + EVENTS.length + ' 行；动态拼的不计）</div></div>' +
       '<div class="stat"><div class="num">19</div><div>SQLite 表</div></div>' +
-      '<div class="stat"><div class="num">264</div><div>护栏非空转用例（改坏即红·这个数由 scripts/guard_cases/*.py 的 CASES 现算，判据 E 对账）</div></div>' +
+      '<div class="stat"><div class="num">265</div><div>护栏非空转用例（改坏即红·这个数由 scripts/guard_cases/*.py 的 CASES 现算，判据 E 对账）</div></div>' +
       '<div class="stat"><div class="num">local</div><div>跨进程 E2E：正向轮接进 <code>verify</code> 的 <code>local</code> 组，要第三个真实实例那一轮单独挂在 <code>release</code> 组（发版前才跑，落点＝发版检查单点名）；每轮断言数由 <code>check-doc-numbers.mjs</code> 从 harness 现算对账，手写即红；入口 <code>npm run verify:e2e</code> / <code>npm run verify:release</code>；<b>两层 CI 都不跑</b></div></div>' +
       '<div class="stat"><div class="num">现算</div><div>Rust / 前端测试条数：分别由 <code>cargo test</code> 与 <code>npm test</code> 自己打印，图上不抄</div></div>' +
       '<div class="stat"><div class="num">20</div><div>反证 / 判据自查档的红数基线（<code>npm run selfproof:check</code>，量具不进门禁）</div></div>' +

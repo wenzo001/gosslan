@@ -1,11 +1,17 @@
 <script setup lang="ts">
-import { onMounted, watch } from "vue";
+import { computed, onMounted, onUnmounted, ref, watch } from "vue";
 import { useEventListener } from "@vueuse/core";
 import { useAppStore } from "@/stores/useAppStore";
 import { useChatStore } from "@/stores/useChatStore";
 import { api } from "@/api";
+import { t } from "@/i18n";
 import { isMac } from "@/utils/platform";
 import { isSelectableTextTarget } from "@/utils/textSelection";
+import { copyText, formatCrashReport, shouldShowCrashNotice } from "@/utils/crashReport";
+import { inflightOps, lastOpLabel } from "@/utils/ipcTracker";
+import { decideStall, UI_STALL_SNOOZE_MS, type StallView } from "@/utils/uiStall";
+import CrashNotice from "@/components/CrashNotice.vue";
+import HangNotice from "@/components/HangNotice.vue";
 import ResponsiveLayout from "@/layouts/ResponsiveLayout.vue";
 import TaskCenter from "@/components/TaskCenter.vue";
 
@@ -33,6 +39,72 @@ const AUX_PREWARM_DELAY_MS = 1200;
  */
 const app = useAppStore();
 const chat = useChatStore();
+
+// ---------------- 崩溃横幅 / 卡顿提示 / 主窗口心跳 ----------------
+const crashDismissed = ref(false);
+/** 只有 panic / 异常终止 / 启动被中止才提示；正常退出与首次运行不打扰。 */
+const crashReport = computed(() => {
+  const r = app.previousExit;
+  return r && !crashDismissed.value && shouldShowCrashNotice(r.kind) ? r : null;
+});
+const stall = ref<StallView | null>(null);
+let stallSnoozeUntil = 0;
+let stallTimer: number | undefined;
+let heartbeatTimer: number | undefined;
+let heartbeatTick: (() => void) | null = null;
+let lastHeartbeatActive = true;
+
+function startWatchdogTimers() {
+  stallTimer = window.setInterval(() => {
+    stall.value = decideStall(inflightOps(), performance.now(), stallSnoozeUntil);
+  }, 1000);
+  // 心跳只在**主窗口**发；隐藏后先补发一条 active=false，再暂停（省 IPC）。
+  heartbeatTick = () => {
+    const active = !document.hidden;
+    if (!active && !lastHeartbeatActive) return;
+    lastHeartbeatActive = active;
+    void api.uiHeartbeat(active ? lastOpLabel() : null, active).catch(() => {});
+  };
+  heartbeatTimer = window.setInterval(heartbeatTick, 1000);
+  document.addEventListener("visibilitychange", heartbeatTick);
+  heartbeatTick();
+}
+
+function stopWatchdogTimers() {
+  if (stallTimer) window.clearInterval(stallTimer);
+  if (heartbeatTimer) window.clearInterval(heartbeatTimer);
+  if (heartbeatTick) document.removeEventListener("visibilitychange", heartbeatTick);
+  stallTimer = undefined;
+  heartbeatTimer = undefined;
+  heartbeatTick = null;
+}
+
+async function copyCrashReport() {
+  const r = app.previousExit;
+  if (!r) return;
+  const ok = await copyText(formatCrashReport(r));
+  app.toast(ok ? t("crash.copied") : t("crash.copyFailed"), ok ? "success" : "error");
+}
+
+function openCrashLogs() {
+  void api.openLogWindow().catch(() => {});
+}
+
+function restartApp() {
+  void api.restartApp().catch(() => {});
+}
+
+function reEnableBluetoothFromNotice() {
+  crashDismissed.value = true;
+  void app
+    .setChannelEnabled("bluetooth", true)
+    .catch((e) => app.toastError(e, t("settings.network.toast.btFail")));
+}
+
+function waitMore() {
+  stallSnoozeUntil = performance.now() + UI_STALL_SNOOZE_MS;
+  stall.value = null;
+}
 
 /** macOS 窗口圆角：必须在 WebView 加载完成后设（wry 此时才用 parent_view 替换 contentView，
  *  setup 阶段设会被替换丢失），并让窗口背景色跟随主题（消除暗色下圆角外露浅色的"白角"）。 */
@@ -92,6 +164,8 @@ useEventListener(window, "focus", reportActivity);
 useEventListener(window, "blur", reportActivity);
 
 onMounted(async () => {
+  // 先起表：init 一旦卡住，卡顿提示与后端心跳都要已经在线（否则"卡在启动"永远看不见）。
+  startWatchdogTimers();
   try {
     // `app.init()`：只读偏好/设备/网卡（两个窗口都要）。
     // `chat.init()`：会话、好友、网络事件监听 —— **只在主窗口**跑，
@@ -131,9 +205,30 @@ onMounted(async () => {
 
 // 主题切换（浅/深/跟随系统变化）时同步窗口背景色，保持圆角外与内容同色。
 watch(() => app.dark, () => void applyWindowShape());
+
+onUnmounted(stopWatchdogTimers);
 </script>
 
 <template>
+  <CrashNotice
+    v-if="crashReport"
+    :report="crashReport"
+    :mobile="app.isMobile"
+    @copy="copyCrashReport"
+    @open-logs="openCrashLogs"
+    @restart="restartApp"
+    @re-enable-ble="reEnableBluetoothFromNotice"
+    @dismiss="crashDismissed = true"
+  />
+  <HangNotice
+    v-if="stall"
+    :label="stall.label"
+    :seconds="stall.seconds"
+    :escalated="stall.escalated"
+    :mobile="app.isMobile"
+    @wait="waitMore"
+    @restart="restartApp"
+  />
   <ResponsiveLayout />
   <!--
     全局后台任务入口挂在主窗口壳上，而不是某个会话里：D-18 的问题正是

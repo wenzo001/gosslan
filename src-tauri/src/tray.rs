@@ -19,6 +19,9 @@ pub const MAIN_WINDOW_LABEL: &str = "main";
 /// 托盘图标 id（`build_tray` 创建时用的那个）。换图标 / 改 tooltip 都要按 id 找回来。
 pub const TRAY_ID: &str = "gosslan-tray";
 
+/// 最近一次角标读到的未读数：看门狗恢复 tooltip 时要回到同一份口径。
+static LAST_UNREAD: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+
 /// 托盘 tooltip 文案。`unread > 0` 时带上条数 —— 红点只能表达"有"，条数只有文字能给。
 fn tray_tooltip(zh: bool, unread: u32) -> String {
     let base = if zh {
@@ -288,6 +291,7 @@ static TRAY_ICON_STATE: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU
 ///
 /// 幂等、可重复调用；失败一律静默（角标只是锦上添花，不该影响聊天）。
 pub fn set_unread_badge<R: tauri::Runtime>(app: &tauri::AppHandle<R>, unread: u32) {
+    LAST_UNREAD.store(unread, std::sync::atomic::Ordering::Relaxed);
     let zh = app.state::<Arc<crate::state::AppState>>().is_zh();
     if let Some(tray) = app.tray_by_id(TRAY_ID) {
         let _ = tray.set_tooltip(Some(tray_tooltip(zh, unread)));
@@ -350,6 +354,27 @@ pub fn set_unread_badge<R: tauri::Runtime>(app: &tauri::AppHandle<R>, unread: u3
     }
 }
 
+/// 看门狗用：卡死时把提示写进托盘 tooltip；恢复时回到"未读数"口径（不能留下
+/// "界面无响应"的旧字）。`try_state` 是因为看门狗可能在 `manage` 之前就跑到这里。
+pub fn set_watchdog_tooltip<R: tauri::Runtime>(app: &tauri::AppHandle<R>, stalled: Option<&str>) {
+    let Some(tray) = app.tray_by_id(TRAY_ID) else {
+        return;
+    };
+    match stalled {
+        Some(text) => {
+            let _ = tray.set_tooltip(Some(text));
+        }
+        None => {
+            let zh = app
+                .try_state::<Arc<crate::state::AppState>>()
+                .map(|s| s.is_zh())
+                .unwrap_or(true);
+            let text = tray_tooltip(zh, LAST_UNREAD.load(std::sync::atomic::Ordering::Relaxed));
+            let _ = tray.set_tooltip(Some(text));
+        }
+    }
+}
+
 /// 恢复主窗口（取消最小化 → 显示 → 聚焦）。
 pub fn show_main_window<R: tauri::Runtime>(app: &tauri::AppHandle<R>) {
     if let Some(win) = app.get_webview_window(MAIN_WINDOW_LABEL) {
@@ -363,7 +388,11 @@ pub fn show_main_window<R: tauri::Runtime>(app: &tauri::AppHandle<R>) {
 ///
 /// 容错：托盘创建失败时**不拦截关闭**（保持系统默认退出行为），
 /// 避免出现「窗口关不掉、又没有托盘可恢复」的死角。
-pub fn setup<R: tauri::Runtime>(app: &tauri::AppHandle<R>) -> tauri::Result<()> {
+/// 容错：托盘创建失败时**不拦截关闭**（保持系统默认退出行为），
+/// 也**绝不把 Err 交回 setup** —— setup 返回 Err 在 Tauri 里会变成框架 panic，
+/// release 的 `panic = "abort"` 直接把进程带走（"打开就闪退"）。
+/// 这里恒返回 `()`，失败只留一行 stderr。
+pub fn setup<R: tauri::Runtime>(app: &tauri::AppHandle<R>) {
     let state = app.state::<Arc<crate::state::AppState>>();
     match build_tray(app, &state) {
         Ok(()) => {
@@ -373,7 +402,6 @@ pub fn setup<R: tauri::Runtime>(app: &tauri::AppHandle<R>) -> tauri::Result<()> 
             eprintln!("[tray] 系统托盘初始化失败，关闭窗口将直接退出应用：{e}");
         }
     }
-    Ok(())
 }
 
 /// 构建托盘图标与菜单。
@@ -432,16 +460,12 @@ fn build_tray<R: tauri::Runtime>(
                 state.notify_settings_changed(&["notifyEnabled"], Some("tray"), patch);
             }
             "restart" => {
-                // 重启 = 释放网络资源（TCP listener / UDP socket / shutdown 任务）
-                // 后以同一可执行文件重新启动自身。
-                // 必须用 network::stop（不改持久化偏好），不能用 stop_network 命令
-                // ——后者会写 lan_enabled=false，重启后不再自动联网。
-                let app = app.clone();
-                tauri::async_runtime::spawn(async move {
-                    let state = app.state::<std::sync::Arc<crate::state::AppState>>();
-                    crate::network::stop(&state).await;
-                    app.restart();
-                });
+                // 重启 = 有界收尾（内部用 network::stop，不改持久化偏好 —— 不能用
+                // stop_network 命令，那会写 lan_enabled=false，重启后不再自动联网）
+                // → 销毁单实例锁 → 以同一可执行文件重新启动自身。
+                // 收尾超时、主线程卡死的兜底全在 `restart::request_restart` 里，
+                // 这里只保留"一键"这个入口。
+                crate::restart::request_restart(app);
             }
             "quit" => {
                 // 退出前先停网络：等 TCP listener 与后台任务真正退出后再结束进程。

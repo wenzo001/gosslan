@@ -3843,10 +3843,10 @@ test("㊺ 真实树：每个 var(--gosslan-*) 消费点都找得到定义（分�
   assert.ok(defined.size >= 40, `只认出 ${defined.size} 个令牌定义（下限 40）⇒ 定义面的形状变了，上面那句不作数`);
 
   // 反向那一半：从"数量上限"改成**逐格点名 + 写理由**（这是收紧，不是放宽：以前第 5、6 个没人读的名字能混过去，
-  // 现在不在名单里就红）。这 4 格都不是死令牌：前一条是文档明写的语义别名契约，后三条是**还没接线的排版阶梯**
-  // （265 处内联 `text-[NNpx]` 的目标档）⇒ 删了就等于把迁移目的地一起删掉。谁接上了就把那格从名单里删掉。
+  // 现在不在名单里就红）。这 3 格都是**还没接线的排版阶梯**（265 处内联 `text-[NNpx]` 的目标档）
+  // ⇒ 删了就等于把迁移目的地一起删掉。谁接上了就把那格从名单里删掉
+  // （2026-10-25：`--gosslan-item-radius` 被 CrashNotice / HangNotice 接上后已按此删掉）。
   const TOKEN_UNCONSUMED: Array<{ name: string; why: string }> = [
-    { name: "--gosslan-item-radius", why: "语义别名契约（design-guidelines.md 第 44 行 + designGuards.ts 的 DYNAMIC/别名说明），值统一来自 radius-md" },
     { name: "--gosslan-text-title", why: "字号阶梯 style.css:63，等 265 处内联 text-[NNpx] 接线" },
     { name: "--gosslan-text-callout", why: "字号阶梯 style.css:65，同上" },
     { name: "--gosslan-text-footnote", why: "字号阶梯 style.css:66，同上" },

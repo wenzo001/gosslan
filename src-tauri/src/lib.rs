@@ -52,12 +52,14 @@ mod notifications;
 mod open_path;
 mod private_fs;
 pub mod protocol;
+mod restart;
 mod state;
 mod storage;
 mod transport;
 #[cfg(desktop)]
 mod tray;
 mod user_dirs;
+mod watchdog;
 mod worker_supervisor;
 
 use tauri::Manager;
@@ -348,7 +350,7 @@ pub fn run() {
         }));
     }
 
-    let app = builder
+    let built = builder
         .setup(|app| {
             state_mark("boot", "AppState::init 之前");
             let state = match state::AppState::init(app.handle().clone()) {
@@ -433,13 +435,15 @@ pub fn run() {
             // 不要在这里再直接 `spawn_*`，否则同一个 worker 会跑两份。
             worker_supervisor::start(&state, worker_supervisor::RESIDENT_WORKERS);
             app.manage(state.clone());
+            // 卡死看门狗：主线程探针 + 渲染心跳。**接线点只有这一处**（判据钉调用点计数）。
+            watchdog::start(app.handle().clone(), state.clone());
             // 系统托盘：关闭主窗口仅隐藏到托盘，退出需走托盘菜单
             // ⚠️ 三条语句必须一起包进 `#[cfg(desktop)]` 块：属性只作用于**紧跟其后的那一条**，
             //    拆开写会让 `tray::setup(...)` 掉出 cfg ⇒ 移动端编不过（E0433，真踩过）。
             #[cfg(desktop)]
             {
                 state.logger.info("boot", "开始 tray::setup");
-                tray::setup(app.handle())?;
+                tray::setup(app.handle());
                 state.logger.info("boot", "tray::setup 完成");
             }
             // macOS 菜单栏：⌘Q / ⌘, / ⌘W / ⌘M 与标准「编辑」项。
@@ -831,6 +835,10 @@ pub fn run() {
             commands::get_logs,
             commands::clear_logs,
             commands::get_log_locations,
+            commands::get_previous_exit,
+            commands::restart_app,
+            commands::ui_heartbeat,
+            commands::report_frontend_slow_op,
             commands::export_diagnostics_bundle,
             commands::open_log_window,
             commands::open_settings_window,
@@ -861,8 +869,17 @@ pub fn run() {
             commands::delete_group_announcement,
             commands::list_active_group_announcements,
         ])
-        .build(tauri::generate_context!())
-        .expect("error while building tauri application");
+        .build(tauri::generate_context!());
+    let app = match built {
+        Ok(app) => app,
+        Err(e) => {
+            // 事件循环还没跑起来：这里 panic 在 release 会 abort，用户只看到"闪退"。
+            // 改成留痕 + exit(1)：下一轮判定为 STARTUP_FAILED，界面能说清发生过什么。
+            crate::logging::crash_note(&format!("code=BOOT_FAILED 构建应用失败：{e}"));
+            eprintln!("[gosslan] 构建应用失败，无法进入事件循环：{e}");
+            std::process::exit(1);
+        }
+    };
     app.run(|app_handle, event| {
         // 正常退出路标。为什么必须有它：现场文件此前只有两种行（"启动"与"崩溃现场"），
         // 于是"最后一条是启动"被当成"上次不是 panic 死的" —— 但这句话把两种完全不同的事
@@ -874,6 +891,8 @@ pub fn run() {
         //   无崩溃块"这个缺席推断；单实例守卫那条 `exit(0)` 走的是插件里的退出，
         //   由"bootstrap 注册在守卫之前" + 启动留痕兜住（判据 ④）。
         if matches!(event, tauri::RunEvent::Exit) {
+            // 重启兜底线程据此判断"事件循环已经走到 Exit"，不要二次 spawn。
+            crate::restart::EXIT_SEEN.store(true, std::sync::atomic::Ordering::SeqCst);
             {
                 use tauri::Manager as _;
                 if let Some(st) = app_handle.try_state::<std::sync::Arc<crate::state::AppState>>() {

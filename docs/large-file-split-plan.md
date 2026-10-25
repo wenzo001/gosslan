@@ -155,7 +155,7 @@ EOF
    - `cargo test --features bluetooth` 的**断言条数逐字相同**（清单：`src-tauri/test-baseline.macos.txt`，
      其中 transport 出现 153 次；拆完必须现算对账、不许净减）；
    - `cargo clippy --features bluetooth -- -D warnings` 退 0；`cargo fmt --check --all` 退 0；
-   - 快速层 18 步绿；动 Rust 的那一层要跑含 Rust 的层（快速层不含 clippy ⇒ 只跑快速层会把红推上去）。
+   - 快速层 19 步绿；动 Rust 的那一层要跑含 Rust 的层（快速层不含 clippy ⇒ 只跑快速层会把红推上去）。
 3. **机械手法固定**：把连续区间整段搬进 `transport/<concern>.rs`，原位置换成一行
    `include!("transport/<concern>.rs");` ⇒ **同一模块、同一命名空间**：调用点、`use`、可见性、
    测试全名一行都不变（这正是它比 `mod` + 再导出更适合本轮"只搬不改"的原因）。
@@ -561,6 +561,6 @@ GOSSLAN_CHROME="/Applications/Brave Browser.app/Contents/MacOS/Brave Browser" no
 
 一把跑完的便宜层（秒级到十几秒，不含护栏整跑与 E2E）：
 ```bash
-npm run verify        # 快速层 18 步：上面第 3–10 行除了 cargo 侧那两条都在这里
+npm run verify        # 快速层 19 步：上面第 3–10 行除了 cargo 侧那两条都在这里
 cargo test --features bluetooth --lib -- guard_source_views_register   # 第 3 行
 ```

@@ -24,7 +24,8 @@ import { createApp, nextTick, watch, type App, type Component } from "vue";
 import { createPinia } from "pinia";
 import { VueQueryPlugin } from "@tanstack/vue-query";
 import { api } from "@/api";
-import { currentLocale } from "@/i18n";
+import { currentLocale, t } from "@/i18n";
+import { copyText } from "@/utils/crashReport";
 
 // ---------------- 前端异常上报（必须在挂载之前注册） ----------------
 // 为什么需要它：界面上"点了没反应"最常见的原因就是**一次 JS 异常** —— 渲染或事件处理里
@@ -94,6 +95,7 @@ let bootDismissed = false;
 export function dismissBoot() {
   if (bootDismissed) return;
   bootDismissed = true;
+  window.__gosslan_app_ready = true;
   // ⚠️ **刻意不枚举 id**。这里原先写着 `["boot","boot-logs","boot-settings","boot-todos"]`，
   // 于是新增的第 5 个窗口（`boot-preview`）永远撤不掉：那块骨架是
   // `position:fixed; inset:0; z-index:9999` + 不透明底色（见 `skeleton.css`），
@@ -109,7 +111,65 @@ export function dismissBoot() {
 
 function installBootDismissal() {
   window.addEventListener("gosslan:app-ready", dismissBoot);
-  window.setTimeout(dismissBoot, 5000);
+  window.setTimeout(() => {
+    if (window.__gosslan_app_ready || window.__gosslan_boot_failed) return;
+    // 真实数据迟迟没就绪（或根组件 setup 抛错）：把骨架**保留**下来当错误面，
+    // 绝不再像以前那样直接移除 ⇒ 用户看到的是白窗。
+    showBootFailure("timeout", "UI_READY_TIMEOUT");
+  }, 10_000);
+}
+
+/**
+ * 启动失败面：把首屏骨架换成可见的错误卡（i18n 版）。
+ *
+ * 它比内联守卫（`boot-guard.js`）晚加载、但文案完整；两者用 `__gosslan_boot_failed`
+ * 互斥，谁先到谁渲染。骨架是 `position:fixed; inset:0` 的不透明层，正好当错误面。
+ */
+export function showBootFailure(kind: string, detail?: unknown) {
+  if (window.__gosslan_boot_failed) return;
+  window.__gosslan_boot_failed = true;
+  const el = document.querySelector<HTMLElement>(".boot-skeleton");
+  if (!el) return;
+  el.classList.remove("boot-hide");
+  el.setAttribute("aria-hidden", "false");
+  el.innerHTML = "";
+
+  const err = window.__gosslan_boot_error;
+  const text = err
+    ? `${err.kind}: ${err.detail}`
+    : detail instanceof Error
+      ? `${detail.message}\n${detail.stack ?? ""}`
+      : String(detail ?? kind);
+
+  const card = document.createElement("div");
+  card.className = "boot-failure";
+  card.setAttribute("role", "alert");
+  const title = document.createElement("div");
+  title.className = "boot-failure-title";
+  title.textContent = t("boot.title");
+  const body = document.createElement("p");
+  body.className = "boot-failure-body";
+  body.textContent = t("boot.body");
+  const pre = document.createElement("pre");
+  pre.className = "boot-failure-detail";
+  pre.textContent = `${kind}: ${text}`.slice(0, 4000);
+  const actions = document.createElement("div");
+  actions.className = "boot-failure-actions";
+  const mk = (label: string, fn: () => void) => {
+    const b = document.createElement("button");
+    b.type = "button";
+    b.className = "boot-failure-btn";
+    b.textContent = label;
+    b.onclick = fn;
+    return b;
+  };
+  actions.append(
+    mk(t("boot.reload"), () => location.reload()),
+    mk(t("boot.copy"), () => void copyText(pre.textContent ?? "")),
+    mk(t("boot.restart"), () => void api.restartApp().catch(() => {})),
+  );
+  card.append(title, body, pre, actions);
+  el.append(card);
 }
 
 // ---------------- 应用装配 ----------------

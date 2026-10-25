@@ -299,6 +299,18 @@ const steps = [
   },
   {
     group: "frontend",
+    name: "panic 站点棘轮",
+    why:
+      "release 是 `panic = \"abort\"` ⇒ 任意 panic!/unwrap/expect 都会让整个应用消失" +
+      "（2026-10-25 macOS 连续 SIGABRT 就是 vendored CoreBluetooth 的一条迟到回调 panic）。" +
+      "vendored CoreBluetooth 硬零；本仓按文件计数只许降。注释/字符串/`#[cfg(test)]` 条目都剔除，" +
+      "基线只能由脚本自己的 `--update` 生成；每次跑都先过 8 条正反控。",
+    cwd: ROOT,
+    cmd: NODE_EXE,
+    args: ["scripts/check-panic-sites.mjs"],
+  },
+  {
+    group: "frontend",
     name: "文档硬数字对账",
     why: "挡住「文档抄了一份数字、下次改代码没人回来改它」——门禁步数由 verify --list 现算对账；取锁点条数一律禁止手写（曾在四处共存三种写法）",
     cwd: ROOT,

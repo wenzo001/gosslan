@@ -38,7 +38,6 @@ use objc2_core_bluetooth::{
 use objc2_foundation::{NSArray, NSData, NSMutableDictionary, NSNumber, NSString, NSUUID};
 use std::{
     collections::{BTreeSet, HashMap, VecDeque},
-    ffi::CString,
     fmt::{self, Debug, Formatter},
     ops::Deref,
     thread,
@@ -407,12 +406,13 @@ impl PeripheralInternal {
                 Ok(mtu) => CoreBluetoothReply::ServicesDiscovered(services, mtu),
                 Err(error) => CoreBluetoothReply::Err(error),
             };
-            self.services_discovered_future_state
-                .take()
-                .unwrap()
-                .lock()
-                .unwrap()
-                .set_reply(reply);
+            // GOSSLAN PATCH (2026-10-25): 与 `check_discovered` 同源 —— 迟到/重复的服务发现
+            // 回调可能已经没有人等这封回执；没有等待者就把结果丢掉，绝不 panic。
+            if let Some(state) = self.services_discovered_future_state.take() {
+                state.lock().unwrap().set_reply(reply);
+            } else {
+                trace!("services discovered without a waiting future; reply dropped");
+            }
         }
     }
 
@@ -621,7 +621,8 @@ impl CoreBluetoothInternal {
         let (sender, receiver) = mpsc::channel::<CentralDelegateEvent>(256);
         let delegate = CentralDelegate::new(sender);
 
-        let label = CString::new("CBqueue").unwrap();
+        // GOSSLAN PATCH: 编译期常量不含 NUL，直接用 C 字面量，省掉一次 unwrap。
+        let label = c"CBqueue";
         let queue =
             unsafe { ffi::dispatch_queue_create(label.as_ptr(), ffi::DISPATCH_QUEUE_SERIAL) };
         let queue: *mut AnyObject = queue.cast();
@@ -837,11 +838,8 @@ impl CoreBluetoothInternal {
     }
 
     fn on_peripheral_connect(&mut self, peripheral_uuid: Uuid) {
-        if self.peripherals.contains_key(&peripheral_uuid) {
-            let peripheral = self
-                .peripherals
-                .get_mut(&peripheral_uuid)
-                .expect("If we're here we should have an ID");
+        // GOSSLAN PATCH (2026-10-25): 不用 expect —— 迟到的连接回调可能在表清理之后到达。
+        if let Some(peripheral) = self.peripherals.get_mut(&peripheral_uuid) {
             if let Some(future) = peripheral.connected_future_state.take() {
                 future
                     .lock()
@@ -863,11 +861,7 @@ impl CoreBluetoothInternal {
     ) {
         trace!("Got connection fail event!");
         let error = error_description.unwrap_or(String::from("Connection failed"));
-        if self.peripherals.contains_key(&peripheral_uuid) {
-            let peripheral = self
-                .peripherals
-                .get_mut(&peripheral_uuid)
-                .expect("If we're here we should have an ID");
+        if let Some(peripheral) = self.peripherals.get_mut(&peripheral_uuid) {
             if let Some(future) = peripheral.connected_future_state.take() {
                 future
                     .lock()
@@ -886,20 +880,15 @@ impl CoreBluetoothInternal {
         warn!("Adapter powered off, canceling all pending operations");
         let peripheral_uuids: Vec<Uuid> = self.peripherals.keys().cloned().collect();
         for uuid in peripheral_uuids {
-            if let Err(e) = self
-                .peripherals
-                .get_mut(&uuid)
-                .unwrap()
-                .event_sender
-                .send(PeripheralEventInternal::Disconnected)
-                .await
-            {
-                error!("Error sending disconnect event for {}: {}", uuid, e);
+            // GOSSLAN PATCH (2026-10-25): 不用 expect —— 表可能在回调之间被清理。
+            if let Some(p) = self.peripherals.get_mut(&uuid) {
+                if let Err(e) = p.event_sender.send(PeripheralEventInternal::Disconnected).await {
+                    error!("Error sending disconnect event for {}: {}", uuid, e);
+                }
             }
-            self.peripherals
-                .get_mut(&uuid)
-                .unwrap()
-                .confirm_disconnect();
+            if let Some(p) = self.peripherals.get_mut(&uuid) {
+                p.confirm_disconnect();
+            }
             self.dispatch_event(CoreBluetoothEvent::DeviceDisconnected { uuid })
                 .await;
         }
@@ -908,11 +897,8 @@ impl CoreBluetoothInternal {
 
     async fn on_peripheral_disconnect(&mut self, peripheral_uuid: Uuid) {
         trace!("Got disconnect event!");
-        if self.peripherals.contains_key(&peripheral_uuid) {
-            if let Err(e) = self
-                .peripherals
-                .get_mut(&peripheral_uuid)
-                .expect("If we're here we should have an ID")
+        if let Some(peripheral) = self.peripherals.get_mut(&peripheral_uuid) {
+            if let Err(e) = peripheral
                 .event_sender
                 .send(PeripheralEventInternal::Disconnected)
                 .await
@@ -921,10 +907,10 @@ impl CoreBluetoothInternal {
             }
             // Unlike connect, we'll want to fulfill our disconnect future here, which means grabbing
             // our peripheral and having it fire, then dropping it and dispatching our event.
-            self.peripherals
-                .get_mut(&peripheral_uuid)
-                .expect("If we're here we should have an ID")
-                .confirm_disconnect();
+            // GOSSLAN PATCH (2026-10-25): 二次取表可能已被清理，不用 expect。
+            if let Some(peripheral) = self.peripherals.get_mut(&peripheral_uuid) {
+                peripheral.confirm_disconnect();
+            }
             self.peripherals.remove(&peripheral_uuid);
             self.dispatch_event(CoreBluetoothEvent::DeviceDisconnected {
                 uuid: peripheral_uuid,
@@ -1040,8 +1026,9 @@ impl CoreBluetoothInternal {
             // we're trying to do a read, we'll have a future we can
             // fulfill. Otherwise, just treat the returned value as a
             // notification and use the event system.
-            if !characteristic.read_future_state.is_empty() {
-                let state = characteristic.read_future_state.pop_front().unwrap();
+            // GOSSLAN PATCH (2026-10-25): 读回执与超时回调可能竞争同一个队列；
+            // 空了就当这次回执是通知/过期回执，不再 unwrap。
+            if let Some(state) = characteristic.read_future_state.pop_front() {
                 state
                     .lock()
                     .unwrap()
@@ -1530,9 +1517,10 @@ impl CoreBluetoothInternal {
             let identifiers = NSArray::from_retained_slice(
                 &identifiers
                     .into_iter()
-                    .map(|id| {
+                    // GOSSLAN PATCH (2026-10-25): 自己的 Uuid 转字符串不会是坏值；
+                    // 真遇到坏值就跳过这一条，不让整个进程 abort（from_string 返回 Option）。
+                    .filter_map(|id| {
                         NSUUID::from_string(&objc2_foundation::NSString::from_str(&id.to_string()))
-                            .unwrap()
                     })
                     .collect::<Vec<_>>(),
             );
@@ -1984,7 +1972,14 @@ pub fn run_corebluetooth_thread(
     let (sender, receiver) = mpsc::channel::<CoreBluetoothMessage>(256);
     // CoreBluetoothInternal is !Send, so we need to keep it on a single thread.
     thread::spawn(move || {
-        let runtime = runtime::Builder::new_current_thread().build().unwrap();
+        // GOSSLAN PATCH (2026-10-25): 建 runtime 失败（资源耗尽）不该 abort 整个进程。
+        let runtime = match runtime::Builder::new_current_thread().build() {
+            Ok(rt) => rt,
+            Err(e) => {
+                error!("failed to build CoreBluetooth runtime: {e}");
+                return;
+            }
+        };
         runtime.block_on(async move {
             let mut cbi = CoreBluetoothInternal::new(receiver, event_sender);
             loop {

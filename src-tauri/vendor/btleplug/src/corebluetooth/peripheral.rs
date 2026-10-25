@@ -351,7 +351,10 @@ impl api::Peripheral for Peripheral {
                 CBPeripheralState::Connected => Ok(true),
                 _ => Ok(false),
             },
-            _ => panic!("Shouldn't get anything but a State!"),
+            // GOSSLAN PATCH (2026-10-25): 意外/迟到回执 → 本次操作失败，不 abort 进程。
+            _ => Err(Error::RuntimeError(
+                "unexpected IsConnected reply".to_string(),
+            )),
         }
     }
 
@@ -374,7 +377,11 @@ impl api::Peripheral for Peripheral {
                     .emit_event(CentralEvent::DeviceConnected(self.shared.uuid.into()));
             }
             CoreBluetoothReply::Err(msg) => return Err(Error::RuntimeError(msg)),
-            _ => panic!("Shouldn't get anything but connected or err!"),
+            other => {
+                return Err(Error::RuntimeError(format!(
+                    "unexpected connect reply: {other:?}"
+                )))
+            }
         }
         trace!("Device connected!");
         Ok(())
@@ -420,7 +427,11 @@ impl api::Peripheral for Peripheral {
                 return Ok(());
             }
             CoreBluetoothReply::Err(msg) => return Err(Error::RuntimeError(msg)),
-            _ => panic!("Shouldn't get anything but discovered or err!"),
+            other => {
+                return Err(Error::RuntimeError(format!(
+                    "unexpected discover_services reply: {other:?}"
+                )))
+            }
         }
     }
 
@@ -456,7 +467,7 @@ impl api::Peripheral for Peripheral {
         match fut.await {
             CoreBluetoothReply::Ok => {}
             CoreBluetoothReply::Err(msg) => return Err(Error::RuntimeError(msg)),
-            reply => panic!("Unexpected reply: {:?}", reply),
+            reply => return Err(Error::RuntimeError(format!("Unexpected reply: {reply:?}"))),
         }
         Ok(())
     }
@@ -477,7 +488,9 @@ impl api::Peripheral for Peripheral {
             CoreBluetoothReply::ReadResult(chars) => Ok(chars),
             CoreBluetoothReply::Err(msg) => return Err(Error::RuntimeError(msg)),
             _ => {
-                panic!("Shouldn't get anything but read result!");
+                return Err(Error::RuntimeError(
+                    "unexpected read result reply".to_string(),
+                ));
             }
         }
     }
@@ -497,7 +510,7 @@ impl api::Peripheral for Peripheral {
         match fut.await {
             CoreBluetoothReply::Ok => trace!("subscribed!"),
             CoreBluetoothReply::Err(msg) => return Err(Error::RuntimeError(msg)),
-            _ => panic!("Didn't subscribe!"),
+            _ => return Err(Error::RuntimeError("subscribe: unexpected reply".to_string())),
         }
         Ok(())
     }
@@ -517,7 +530,11 @@ impl api::Peripheral for Peripheral {
         match fut.await {
             CoreBluetoothReply::Ok => {}
             CoreBluetoothReply::Err(msg) => return Err(Error::RuntimeError(msg)),
-            _ => panic!("Didn't unsubscribe!"),
+            _ => {
+                return Err(Error::RuntimeError(
+                    "unsubscribe: unexpected reply".to_string(),
+                ))
+            }
         }
         Ok(())
     }
@@ -567,7 +584,9 @@ impl api::Peripheral for Peripheral {
         match fut.await {
             CoreBluetoothReply::ReadRssi(rssi) => Ok(rssi),
             CoreBluetoothReply::Err(msg) => Err(Error::RuntimeError(msg)),
-            _ => panic!("Unexpected reply for read_rssi"),
+            other => Err(Error::RuntimeError(format!(
+                "unexpected read_rssi reply: {other:?}"
+            ))),
         }
     }
 

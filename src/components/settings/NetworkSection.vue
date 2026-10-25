@@ -71,7 +71,7 @@ watch(
   async () => {
     if (!props.active) return;
     // 手机端：打开网络设置时才按需拉起蓝牙通道（同上）
-    void app.ensureBluetoothOn();
+    void app.ensureBluetoothOn({ manual: true });
     selectedIp.value = app.boundIp ?? app.preferredIp ?? "0.0.0.0";
     try {
       await app.refreshInterfaces();
@@ -261,6 +261,11 @@ async function toggleBluetooth() {
     }
     await loadChannels();
   }
+}
+
+/** 熔断行上的「重新启用」：复用开关的权限/失败处理（显式命令会清掉后端的 hold）。 */
+function reEnableBluetooth() {
+  void toggleBluetooth();
 }
 
 // ---- 跨网段（Routed）端点配置 ----
@@ -460,7 +465,7 @@ async function removeEndpoint(address: string) {
       :description="app.isMobile
         ? t('settings.network.bluetooth.alwaysOn')
         : (btStatus?.available ? undefined : t('settings.network.bluetooth.unavailable'))"
-      last
+      :last="!app.bleAutostartHeld"
     >
       <div class="flex items-center gap-2">
         <span class="text-xs text-[var(--gosslan-text-2)]">
@@ -478,6 +483,23 @@ async function removeEndpoint(address: string) {
           @update:model-value="toggleBluetooth"
         />
       </div>
+    </SettingsRow>
+
+    <!-- 崩溃循环熔断：上一轮在蓝牙模块崩溃 ⇒ 本次没有自动开启。原因文本由后端给，
+         界面不自己拼第二份口径；点右侧只走**手动**入口（会清掉后端的 hold）。 -->
+    <SettingsRow
+      v-if="app.bleAutostartHeld"
+      :label="t('settings.network.bluetooth.held')"
+      :description="app.bleAutostartHeld"
+      last
+    >
+      <button
+        type="button"
+        class="rounded-[var(--gosslan-radius-md)] bg-[var(--gosslan-hover)] px-3 py-1.5 text-caption text-[var(--gosslan-text)] transition"
+        @click="reEnableBluetooth"
+      >
+        {{ t("settings.network.bluetooth.reEnable") }}
+      </button>
     </SettingsRow>
   </SettingsGroup>
 

@@ -289,6 +289,38 @@ export const enUS: MessageDict = {
   "settings.network.bluetooth.on": "On",
   "settings.network.bluetooth.off": "Off",
   "settings.network.bluetooth.na": "Unavailable",
+  "settings.network.bluetooth.held": "Bluetooth auto-start paused",
+  "settings.network.bluetooth.reEnable": "Re-enable Bluetooth",
+
+  // ---- crash / hang / boot failure ----
+  "crash.title": "Last run exited unexpectedly",
+  "crash.body":
+    "Gosslan crashed at {time} (version {version}). Crash location: {location}. The report is in the logs; your chat history is intact.",
+  "crash.panicCount": "This is the {n}th abnormal exit recently.",
+  "crash.bleHeld":
+    "The crash happened in the Bluetooth module. Auto-start is paused for this launch; you can enable it manually in Settings → Network.",
+  "crash.silentKill":
+    "The last run did not end normally (force quit, power loss, or out of memory), so no specific location was recorded.",
+  "crash.startupFailed":
+    "The last startup was safely aborted (database/identity check failed). The database was not modified.",
+  "crash.hang": "The UI was unresponsive for {seconds}s last time; the last step was {op}.",
+  "crash.copy": "Copy details",
+  "crash.openLogs": "View logs",
+  "crash.restart": "Restart app",
+  "crash.dismiss": "Got it",
+  "crash.copied": "Copied",
+  "crash.copyFailed": "Copy failed; please open the logs",
+  "hang.title": "The UI seems stuck",
+  "hang.body": "Waiting for “{op}” for {seconds}s.",
+  "hang.escalated": "It has been {seconds}s. You can keep waiting or restart the app.",
+  "hang.wait": "Keep waiting",
+  "hang.restart": "Restart app",
+  "boot.title": "The UI did not start",
+  "boot.body":
+    "An error occurred during startup (UI_BOOT_FAILED). Try reloading; if it keeps happening, copy the error and send it to us.",
+  "boot.reload": "Reload",
+  "boot.copy": "Copy error",
+  "boot.restart": "Restart app",
   "settings.network.bluetooth.alwaysOn":
     "On by default on phones — no setup needed. While the app runs, this device acts as a Bluetooth mesh relay; it stops when the system reclaims the app.",
   "settings.network.toast.btPermissionHint":
