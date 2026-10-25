@@ -1183,6 +1183,7 @@ export const zhCN: MessageDict = {
   "task.actionFail": "操作失败",
   "task.alreadyGone": "这件事已经办完了",
   "task.state.waiting": "等待中",
+  "task.state.partial": "部分成员已收到",
   "task.state.waitingAck": "已发出，等对方确认",
   "task.state.finalizing": "收尾中",
   "task.openChatMissing": "找不到那个会话（可能已删除或退群）",

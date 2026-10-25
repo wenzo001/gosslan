@@ -262,6 +262,16 @@ pub struct PendingMessageOp {
     /// 与 `file_transfers` 那条 `blocked_reason='peer_offline'` 同一口径 ——
     /// "离线"这个判断只此一个出处，不在前端按 `peers` 列表再猜一遍。
     pub peer_offline: bool,
+    /// 这一行**现在点取消会不会成功**（与 `cancel_queued_message` 同一判据：
+    /// 消息状态还没到 `delivered/read/recalled/cancelled`）。
+    /// 为什么不让前端自己猜：群消息只要**任一成员** Ack 过就会把消息状态推成
+    /// `delivered`，但其余成员的队列行还在 ⇒ 任务中心仍该列出"还有几个人没收到"，
+    /// 而取消已经被后端拒绝。界面给一颗点了一定弹"已送达，不能取消"的按钮，
+    /// 用户看到的就是「明明还在排队，为什么说已送达」（2026-10-25 实报）。
+    pub can_cancel: bool,
+    /// 群消息：已经至少有一个成员确认收到（消息状态 delivered/read），但队列里还有人。
+    /// 界面据此把状态写成「部分成员已收到」，而不是泛泛的「排队中」。
+    pub some_delivered: bool,
 }
 
 /// 一次读取的条数上限：队列行数本身有界（离线保留 7 天），这个数只是防止
@@ -300,11 +310,18 @@ pub fn list_pending_message_operations(
     let mut ops: Vec<PendingMessageOp> = Vec::new();
 
     let mut dm = conn.prepare(
+        // 终态的消息不该再挂着一行队列：`ack_delivered` 是「置 delivered + 删行」同一事务，
+        // 但历史库/旧版本可能留下"状态已 delivered、outbox 还在"的孤儿（用户看到一条永远
+        // 取消不掉、进度也不动的任务）。这里按状态把它滤掉；**消息行整体缺失**的孤儿
+        // 仍要列出（`a_queue_row_without_its_message_row_is_still_listed`），那是另一类真实故障。
         "SELECT o.msg_id, o.peer_id,
                 COALESCE(m.kind, 'text'),
                 substr(m.content, 1, ?2),
-                o.created_at
+                o.created_at,
+                m.status
          FROM outbox o LEFT JOIN messages m ON m.msg_id = o.msg_id
+         WHERE COALESCE(m.status, 'sending')
+               NOT IN ('delivered', 'read', 'recalled', 'cancelled')
          ORDER BY o.created_at DESC LIMIT ?1",
     )?;
     let dm_rows = dm.query_map(params![limit, PREVIEW_CHAR_WINDOW], |r| {
@@ -314,10 +331,11 @@ pub fn list_pending_message_operations(
             r.get::<_, String>(2)?,
             r.get::<_, Option<String>>(3)?,
             r.get::<_, i64>(4)?,
+            r.get::<_, Option<String>>(5)?,
         ))
     })?;
     for row in dm_rows.flatten() {
-        let (msg_id, peer_id, kind, content, created_at) = row;
+        let (msg_id, peer_id, kind, content, created_at, status) = row;
         let preview = text_preview(&kind, content.as_deref());
         ops.push(PendingMessageOp {
             msg_id,
@@ -328,16 +346,25 @@ pub fn list_pending_message_operations(
             created_at,
             preview,
             peer_offline: false,
+            // 被上面的 WHERE 过滤后，唯一不可取消的只剩"消息行根本没了的孤儿队列行"：
+            // 后端取消会回 NotFound，界面不该给一颗注定失败的按钮。
+            can_cancel: status.is_some(),
+            some_delivered: false,
         });
     }
 
     let mut grp = conn.prepare(
+        // 群消息：任一成员 Ack 就把消息状态推成 delivered，但其余成员的队列行还在 ——
+        // 这类行仍要列（"还有 N 人没收到"是真实事实），但 `can_cancel=false` 且
+        // `some_delivered=true`（见结构体注释）。
         "SELECT g.msg_id, g.group_id,
                 COUNT(*),
                 MAX(g.created_at),
-                COALESCE((SELECT m.kind FROM messages m WHERE m.msg_id = g.msg_id LIMIT 1), 'text'),
-                substr((SELECT m.content FROM messages m WHERE m.msg_id = g.msg_id LIMIT 1), 1, ?2)
-         FROM group_outbox g
+                COALESCE(m.kind, 'text'),
+                substr(m.content, 1, ?2),
+                m.status
+         FROM group_outbox g LEFT JOIN messages m ON m.msg_id = g.msg_id
+         WHERE COALESCE(m.status, 'sending') NOT IN ('cancelled', 'recalled')
          GROUP BY g.msg_id, g.group_id
          ORDER BY 4 DESC LIMIT ?1",
     )?;
@@ -349,11 +376,13 @@ pub fn list_pending_message_operations(
             r.get::<_, i64>(3)?,
             r.get::<_, String>(4)?,
             r.get::<_, Option<String>>(5)?,
+            r.get::<_, Option<String>>(6)?,
         ))
     })?;
     for row in grp_rows.flatten() {
-        let (msg_id, group_id, waiting_for, created_at, kind, content) = row;
+        let (msg_id, group_id, waiting_for, created_at, kind, content, status) = row;
         let preview = text_preview(&kind, content.as_deref());
+        let status = status.as_deref();
         ops.push(PendingMessageOp {
             msg_id,
             peer_id: None,
@@ -363,6 +392,8 @@ pub fn list_pending_message_operations(
             created_at,
             preview,
             peer_offline: false,
+            can_cancel: matches!(status, Some(s) if !matches!(s, "delivered" | "read")),
+            some_delivered: matches!(status, Some("delivered" | "read")),
         });
     }
 
@@ -428,15 +459,52 @@ mod message_ops_tests {
         assert!(dm.group_id.is_none());
         assert_eq!(dm.waiting_for, 1, "1:1 恒为一个人在等");
         assert_eq!(dm.preview.as_deref(), Some("晚上七点老地方见"), "文本给正文截断");
+        assert!(dm.can_cancel, "还在队列里的单聊行必须可取消");
+        assert!(!dm.some_delivered, "单聊没有「部分成员」这回事");
 
         let grp = ops.iter().find(|o| o.msg_id == "m2").unwrap();
         assert_eq!(grp.group_id.as_deref(), Some("g1"), "群消息的目标是群");
         assert!(grp.peer_id.is_none(), "群消息没有单个对端（按成员各自一行队列）");
         assert_eq!(grp.waiting_for, 2, "还剩两个人没收到（已送达的那格不在表里）");
+        assert!(grp.can_cancel, "还没有任何成员 Ack ⇒ 后端允许取消");
+        assert!(!grp.some_delivered, "还没人确认收下");
         assert!(
             grp.preview.is_none(),
             "merge 的 content 是 JSON 载荷 ⇒ 宁可不给，让界面按 kind 说类型，别把机器格式上屏"
         );
+    }
+
+    /// 群消息只要一个成员 Ack，消息状态就变 `delivered`，但其余成员的队列行还在。
+    ///
+    /// 2026-10-25 用户实报：任务中心给这种行一颗「取消」，点了必弹「已送达，不能取消」，
+    /// 而行上还写着「排队中」—— 状态与底层事实对不上。行仍要列（"还有 N 人没收到"是真的），
+    /// 但必须 `can_cancel=false` + `some_delivered=true`。
+    #[test]
+    fn group_partial_delivery_is_listed_but_not_cancellable() {
+        let conn = mem();
+        ins_msg(&conn, "gm", "group:g1", "text", "群里等回复", 10);
+        conn.execute("UPDATE messages SET status='delivered' WHERE msg_id='gm'", [])
+            .unwrap();
+        ins_group(&conn, "gm", "b", 11);
+
+        let ops = list_pending_message_operations(&conn, MESSAGE_OPS_LIMIT).unwrap();
+        let row = ops.iter().find(|o| o.msg_id == "gm").unwrap();
+        assert_eq!(row.waiting_for, 1, "还剩 1 个成员没收到");
+        assert!(!row.can_cancel, "已有人 Ack ⇒ 后端会拒绝取消，界面不该给按钮");
+        assert!(row.some_delivered, "状态要能说「部分成员已收到」");
+    }
+
+    /// 1:1 的终态消息不该再挂着补发队列行（历史库/旧版本留下的孤儿）：
+    /// 它会变成一条永远取消不掉、进度也不动的任务。消息行整体缺失的孤儿另算（下面那条）。
+    #[test]
+    fn delivered_dm_with_stale_outbox_row_is_not_listed() {
+        let conn = mem();
+        ins_msg(&conn, "dm", "p1", "text", "已经送达", 10);
+        conn.execute("UPDATE messages SET status='delivered' WHERE msg_id='dm'", [])
+            .unwrap();
+        ins_dm(&conn, "dm", 11);
+        let ops = list_pending_message_operations(&conn, MESSAGE_OPS_LIMIT).unwrap();
+        assert!(ops.is_empty(), "状态已终态的单聊行必须从任务列表里消失");
     }
 
     /// 队列行存在但消息行不见了（孤儿队列行）也必须列出来 —— 那正是"发不出去又没人收"的形状。
@@ -448,6 +516,7 @@ mod message_ops_tests {
         assert_eq!(ops.len(), 1, "消息行没了也要看得见这条还堵着");
         assert_eq!(ops[0].kind, "text", "读不到 kind 时退回最中性的取值，不编一个图标");
         assert!(ops[0].preview.is_none(), "没有正文可给");
+        assert!(!ops[0].can_cancel, "取消命令会回 NotFound，不许给一颗注定失败的按钮");
     }
 
     /// 合并后的排序与截断必须是**全局**的：各队列自己取前 N 条再拼起来，

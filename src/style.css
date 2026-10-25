@@ -1270,15 +1270,25 @@ img {
 
 /* 表情回应条并入气泡（2026-10-24）：底栏与气泡是**同一块**。
    气泡自己的两个下圆角交给底栏（否则接缝处会露出一道内凹的透明缺口），
-   底边框也隐掉 —— 否则对方消息那 1px 描边会在接缝处横着画一条线。
+   底边框**去掉宽度**（不是只把颜色涂透明）—— 底栏补了左/右/下三边，
+   竖线要在接缝处严丝合缝地接上，留 1px 透明边就会断一截。
    用 !important 是因为圆角/边框写在气泡的**内联样式**里（主题预设要读那份值），
-   普通选择器压不过；作用域收在 `.msg-shell[data-has-reactions]` 内，不影响无回应条的气泡。
+   普通选择器压不过；作用域收在 `.msg-shell[...]` 内，不影响无回应条的气泡。
    ⚠️ 必须放在全局 `img` 规则**之后**：`designGuards` 的选区契约用 `indexOf("img")`
    取那条规则，本段里的 `[data-img-el]` 若排在前面会被它当成全局 img 规则读到。 */
 .msg-shell[data-has-reactions] > [data-msg-bubble] > :first-child {
   border-bottom-left-radius: 0 !important;
   border-bottom-right-radius: 0 !important;
-  border-bottom-color: transparent !important;
+  border-bottom-width: 0 !important;
+}
+/* 尾巴那一侧的下圆角必须拉平（用户 2026-10-25：尾巴和气泡之间露出一道白缝）。
+   尾巴的根部要贴住一条**直的**边缘：圆角会把气泡底色切掉，尾巴就成了浮在旁边的一片叶子。
+   这一条对"有没有回应条"都成立 —— 没回应条时尾巴直接挂在气泡底角。 */
+.msg-shell[data-tail-side="left"] > [data-msg-bubble] > :first-child {
+  border-bottom-left-radius: 0 !important;
+}
+.msg-shell[data-tail-side="right"] > [data-msg-bubble] > :first-child {
+  border-bottom-right-radius: 0 !important;
 }
 /* 图片气泡：外层裁切容器抹平后，里面的图片元素自己的下圆角还得单独抹，
    否则图片会在底栏上方留下两个圆角缺口。 */
@@ -1290,6 +1300,12 @@ img {
    这一条特异性高于 `.code-actions[data-v-…]`，不需要 !important。 */
 .msg-shell[data-has-reactions] .code-actions {
   border-bottom-left-radius: 0;
+  border-bottom-right-radius: 0;
+}
+.msg-shell[data-tail-side="left"] .code-actions {
+  border-bottom-left-radius: 0;
+}
+.msg-shell[data-tail-side="right"] .code-actions {
   border-bottom-right-radius: 0;
 }
 

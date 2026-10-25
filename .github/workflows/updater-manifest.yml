@@ -159,7 +159,11 @@ jobs:
           if [ -n "$existing" ]; then
             gh api --method DELETE "repos/$REPO/releases/assets/$existing" >/dev/null
           fi
-          gh api --method POST "repos/$REPO/releases/$REL_ID/assets?name=latest.json" \
+          # ★ 上传资产必须走 uploads host（2026-10-25 v5.8.5 实测：用 api.github.com 的
+          #   `releases/$REL_ID/assets` 会 404，而 `gh release upload` 在多草稿时可能挑错 Release）。
+          #   按 release id 传到 uploads.github.com 是唯一能钉住"这一份草稿"的写法。
+          gh api --method POST \
+            "https://uploads.github.com/repos/$REPO/releases/$REL_ID/assets?name=latest.json" \
             -H "Content-Type: application/octet-stream" --input latest.json >/dev/null
           echo "latest.json 已挂到 release ${REL_ID}（仍是草稿）"
 

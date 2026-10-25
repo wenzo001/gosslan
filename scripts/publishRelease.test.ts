@@ -40,8 +40,13 @@ esac
 case "$1 $2" in
   "api "* )
     case "$FAKE_SCENARIO" in
-      race) n=$(bump api); [ "$n" -le 1 ] && exit 1; exit 0 ;;
-      # 人工草稿：按 tag 查 404；列表 API 能查到（draft=true）
+      race)
+        # 被抢先：tags API 对草稿永远 404；列表 API 只有"另一条已经建好"之后才查得到。
+        case "$*" in
+          *"releases?per_page"*) [ -f "$FAKE_GH_STATE/race_created" ] && echo 123 || exit 1 ;;
+          *) exit 1 ;;
+        esac ;;
+      # 人工草稿：按 tag 查 404（草稿不可见）；列表 API 能查到（draft=true）。
       draft)
         case "$*" in
           *"releases?per_page"*) echo true; exit 0 ;;
@@ -52,7 +57,8 @@ case "$1 $2" in
     esac ;;
   "release create" )
     case "$FAKE_SCENARIO" in
-      race|draft) echo "Release $3 already exists" >&2; exit 1 ;;
+      race) : > "$FAKE_GH_STATE/race_created"; echo "Release $3 already exists" >&2; exit 1 ;;
+      draft) echo "Release $3 already exists" >&2; exit 1 ;;
       denied) echo "HTTP 403: Resource not accessible by integration" >&2; exit 1 ;;
       *) echo created; exit 0 ;;
     esac ;;
@@ -129,13 +135,13 @@ function run(
   };
 }
 
-test("人工草稿 Release：不判红；脚本只补文件，**绝不自己发布**（draft-until-complete）", () => {
+test("人工草稿 Release：预检必须认它（草稿对 tags API 是 404），只补文件、绝不重复创建", () => {
   const r = run("draft");
   assert.equal(r.code, 0, r.out);
   assert.deepEqual(
     r.calls.filter((c) => c.startsWith("release create")),
-    ["release create v9.9.9 --repo octo/thing --target deadbeef --draft --generate-notes --title v9.9.9"],
-    "创建仍只试一次（草稿顶红是预期内的），且必须建**草稿**",
+    [],
+    "草稿已存在还去 create ⇒ 每次 tag 都会多出一个同 tag 的草稿（v5.8.0/v5.8.5 各 4 个的真因）",
   );
   assert.equal(r.calls.filter((c) => c.startsWith("release upload")).length, 1, "产物照常上传");
   assert.deepEqual(
@@ -170,9 +176,12 @@ test("被抢先（race）：创建失败但复查询发现已存在 ⇒ 认它�
   assert.equal(r.code, 0, r.out);
   assert.match(r.out, /并发的另一条/);
   assert.equal(r.calls.filter((c) => c.startsWith("release upload")).length, 1);
-  // 顺序本身就是证据：查（不存在）⇒ 创建（失败）⇒ 再查（已存在）⇒ 才上传。少了第二次查询就是"猜"。
-  assert.deepEqual(r.calls.map((c) => c.split(" ").slice(0, 2).join(" ")).slice(0, 4),
-    ["api repos/octo/thing/releases/tags/v9.9.9", "release create", "api repos/octo/thing/releases/tags/v9.9.9", "release upload"],
+  // 顺序本身就是证据：查 tag（404）⇒ 查列表（空）⇒ 创建（失败）⇒ 再查 tag（404）⇒ 再查列表
+  // （另一条建好了）⇒ 才上传。少了第二次列表查询就是"猜"。
+  assert.deepEqual(r.calls.map((c) => c.split(" ").slice(0, 2).join(" ")).slice(0, 5),
+    ["api repos/octo/thing/releases/tags/v9.9.9", "api repos/octo/thing/releases?per_page=100",
+      "release create", "api repos/octo/thing/releases/tags/v9.9.9",
+      "api repos/octo/thing/releases?per_page=100"],
     r.calls.join("\n"));
 });
 

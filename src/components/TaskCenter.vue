@@ -71,6 +71,9 @@ function rowTarget(row: OperationRow): string {
 }
 
 function statusText(row: OperationRow): string {
+  // 群消息：已有成员确认收下、其余人还在队列里。这不是"排队中"也不是"已送达" ——
+  // 两句话都会让用户误判（2026-10-25：「为什么还在排队却说已送达不能取消」）。
+  if (row.someDelivered) return t("task.state.partial");
   if (row.state === "queued") return t("send.queued");
   // `waiting_ack`：字节已经写出去了（所以进度是 100%），但对端还没回执 —— 这一行仍在
   // "未完成"里，状态必须说清是**等确认**，不能只写一个泛泛的"等待中"（用户 2026-10-24：
@@ -90,7 +93,8 @@ function detailText(row: OperationRow): string {
   const key = blockedReasonKey(row.blockedReason);
   if (key) parts.push(t(key));
   if (row.attempts && row.attempts > 0) parts.push(t("task.attempts", { n: row.attempts }));
-  if (row.waitingFor && row.waitingFor > 1) parts.push(t("task.waitingFor", { n: row.waitingFor }));
+  // 只剩 1 个成员也要说（"还有 1 个人没收到"），否则半送达的群消息行会没有目标。
+  if (row.waitingFor && row.waitingFor > 0) parts.push(t("task.waitingFor", { n: row.waitingFor }));
   return parts.join(" · ");
 }
 
