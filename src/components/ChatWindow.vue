@@ -193,6 +193,7 @@ watch([messagesLoading, messageLoadError, () => messages.value.length], ([loadin
 });
 onBeforeUnmount(() => {
   if (listRevealRaf) cancelAnimationFrame(listRevealRaf);
+  if (historyLoadingTimer) window.clearTimeout(historyLoadingTimer);
 });
 function retryMessages() {
   if (chat.activeConv) void chat.loadMessages(chat.activeConv);
@@ -1085,13 +1086,20 @@ async function locateMessage(id: string | number) {
   let idx = find();
   let guard = 0;
   let loaded = false;
-  while (idx < 0 && guard < 20) {
-    guard += 1;
-    const before = messages.value.length;
-    await chat.loadMoreMessages(chat.activeConv ?? "");
-    if (messages.value.length === before) break; // 没有更早的历史了
-    loaded = true;
-    idx = find();
+  try {
+    while (idx < 0 && guard < 20) {
+      guard += 1;
+      const before = messages.value.length;
+      await chat.loadMoreMessages(chat.activeConv ?? "");
+      if (messages.value.length === before) break; // 没有更早的历史了
+      loaded = true;
+      idx = find();
+    }
+  } catch {
+    // 翻页失败已有顶部可重试提示（store 记录）；定位这条路径只需停下并说清原因，
+    // 不再把异常抛进事件处理器变成 unhandled rejection。
+    app.toast(t("chat.history.loadFail"), "info");
+    return;
   }
   if (idx < 0) {
     app.toast(t("chat.toast.originalEarlier"), "info");
@@ -1492,10 +1500,44 @@ async function onSyncGroupHistory() {
   }
 }
 
+/** 当前会话的翻页失败原因（store 记录；失败不再变成 unhandled rejection）。 */
+const historyError = computed(() => chat.historyLoadErrors[chat.activeConv ?? ""] ?? "");
+const historyBusy = ref(false);
+const historyShowLoading = ref(false);
+let historyLoadingTimer = 0;
+/** 失败后的自动重试退避：滚动触顶每帧都会 emit，不挡就会对着同一个坏 IPC 打满。 */
+let historyRetryAt = 0;
+
 /** 触顶加载更早的历史消息。 */
-function onLoadMore() {
+async function onLoadMore() {
   const convId = chat.activeConv;
-  if (convId) void chat.loadMoreMessages(convId);
+  if (!convId || historyBusy.value || Date.now() < historyRetryAt) return;
+  historyBusy.value = true;
+  historyLoadingTimer = window.setTimeout(() => {
+    historyShowLoading.value = true;
+  }, 180);
+  try {
+    await chat.loadMoreMessages(convId);
+  } catch {
+    // 原因已由 store 写进 historyLoadErrors；这里只负责退避，顶部会出现「重试」。
+    historyRetryAt = Date.now() + 1500;
+  } finally {
+    historyBusy.value = false;
+    historyShowLoading.value = false;
+    if (historyLoadingTimer) {
+      window.clearTimeout(historyLoadingTimer);
+      historyLoadingTimer = 0;
+    }
+  }
+}
+
+/** 顶部「重试」：清掉失败标记与退避，立刻再翻一页。 */
+function retryHistory() {
+  const convId = chat.activeConv;
+  if (!convId) return;
+  chat.clearHistoryError(convId);
+  historyRetryAt = 0;
+  void onLoadMore();
 }
 </script>
 
@@ -1784,15 +1826,16 @@ function onLoadMore() {
       >
         {{ t("chat.empty") }}
       </div>
-      <VirtualList
-        v-else
-        ref="listRef"
-        class="transition-opacity duration-150 ease-out"
+      <div v-else class="relative h-full min-h-0">
+        <VirtualList
+          ref="listRef"
+          class="h-full transition-opacity duration-150 ease-out"
         :class="listSwitching ? 'opacity-0' : 'opacity-100'"
         :items="messages"
         live
         :auto-scroll-on-swap="restoreScrollTop === null && !(chat.unreadJump && chat.unreadJump.convId === chat.activeConv)"
         :estimate-height="estimateHeight"
+        :conversation-key="chat.activeConv ?? ''"
         :layout-key="`${app.chatStyle.fontSize}:${app.dark}`"
         @load-more="onLoadMore"
         @near-bottom="nearBottom = $event"
@@ -1831,7 +1874,35 @@ function onLoadMore() {
             :todo-live="todoLive"
           />
         </template>
-      </VirtualList>
+        </VirtualList>
+
+        <!-- 翻页失败：顶部一条可重试提示（不占列表高度，不打断滚动） -->
+        <div
+          v-if="historyError"
+          class="absolute inset-x-0 top-2 z-10 mx-auto flex w-fit max-w-[90%] items-center gap-2 rounded-full border border-[var(--gosslan-border)] bg-[var(--gosslan-panel)] px-3 py-1.5 text-xs text-[var(--gosslan-text-2)] shadow-lg"
+          role="status"
+        >
+          <span class="truncate" :title="t('chat.history.loadFail')">{{ t("chat.history.loadFail") }}</span>
+          <button class="font-medium text-[var(--gosslan-primary)]" @click="retryHistory">
+            {{ t("common.retry") }}
+          </button>
+          <button
+            class="opacity-60 hover:opacity-100"
+            :aria-label="t('common.close')"
+            @click="chat.clearHistoryError(chat.activeConv ?? '')"
+          >
+            ✕
+          </button>
+        </div>
+        <!-- 翻页进行中：只在超过 180ms 才出现，避免快 IPC 闪一下 -->
+        <div
+          v-else-if="historyShowLoading"
+          class="absolute inset-x-0 top-2 z-10 mx-auto w-fit rounded-full bg-[var(--gosslan-panel)] px-3 py-1 text-xs text-[var(--gosslan-text-2)] shadow"
+          role="status"
+        >
+          {{ t("chat.history.loading") }}
+        </div>
+      </div>
 
       <!-- 窗口抖动：会话内临时灰字（不落库、不进虚拟列表，5s 后由 store 清掉） -->
       <div

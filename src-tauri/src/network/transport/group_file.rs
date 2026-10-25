@@ -1098,15 +1098,20 @@ async fn handle_group_file_done(
             sender_id: sender_id.clone(),
             receiver_id: state.device_id.clone(),
             kind: kind.to_string(),
-            content: serde_json::json!({
-                "name": gf.name,
-                "path": final_path.to_string_lossy(),
-                "size": gf.size,
-                "sha256": gf.sha256,
-                "subtype": subtype,
-                "progress": 1.0,
-            })
-            .to_string(),
+            content: {
+                let mut c = serde_json::json!({
+                    "name": gf.name,
+                    "path": final_path.to_string_lossy(),
+                    "size": gf.size,
+                    "sha256": gf.sha256,
+                    "subtype": subtype,
+                    "progress": 1.0,
+                });
+                if kind == "image" {
+                    file::attach_image_size(&mut c, &final_path);
+                }
+                c.to_string()
+            },
             ts: db::now_ms(),
             seq,
             status: "delivered".to_string(),

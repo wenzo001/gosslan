@@ -1479,6 +1479,12 @@ export const useChatStore = defineStore("chat", () => {
    */
   const loadingMore = new Map<string, Promise<void>>();
   /**
+   * 「向上翻历史失败」= 会话 → 可展示的原因。与 `messageLoadErrors`（整页首载失败）分开：
+   * 首载失败要占满整块列表；翻页失败只影响顶部一行，下方已有消息仍可正常看/滚动。
+   * 失败由 `onLoadMore` 捕获并显示可重试提示，不再变成 unhandled rejection。
+   */
+  const historyLoadErrors = ref<Record<string, string>>({});
+  /**
    * 已知"这个会话已翻到最早一页"的会话：不再为它付任何翻页 IPC。
    * ⚠️ 必须在每次 `loadMessages` 重新加载该会话时作废 —— 重新打开只取最新一页，
    * 若沿用旧标记，500 条的会话就再也翻不到第 101 条以前（"翻不动历史"就是这么来的）。
@@ -1597,6 +1603,12 @@ export const useChatStore = defineStore("chat", () => {
       delete messageLoadErrors.value[convId];
       if ((messages.value[convId]?.length ?? 0) === 0) delete messages.value[convId];
     }
+    // 重新加载该会话 = 一次全新的分页生命周期：上一轮的翻页失败提示一并清掉。
+    if (historyLoadErrors.value[convId]) {
+      const next = { ...historyLoadErrors.value };
+      delete next[convId];
+      historyLoadErrors.value = next;
+    }
     // ⚠️ 必须在**函数开头**作废"已翻到顶"这个结论，不能只在成功路径末尾清：
     // IPC 失败会走 catch 提前 return、seq 被后来者抢走也会提前 return —— 那些路径下
     // 内存列表同样是"只有最新一页"，若 historyTops 还留着 true，`loadMoreMessages`
@@ -1654,6 +1666,14 @@ export const useChatStore = defineStore("chat", () => {
     groupDeliveries.value = { ...groupDeliveries.value, [convId]: map };
   }
 
+  /** 清掉某个会话的翻页失败提示（重试/重开会话时）。 */
+  function clearHistoryError(convId: string) {
+    if (!historyLoadErrors.value[convId]) return;
+    const next = { ...historyLoadErrors.value };
+    delete next[convId];
+    historyLoadErrors.value = next;
+  }
+
   /** 向上翻页加载更早的历史消息（VirtualList 触顶时调用）。 */
   async function loadMoreMessages(convId: string): Promise<void> {
     // 两道闸门都必须有（审计阶段 4 · 4.1-2）：`VirtualList` 在"停在距顶 60px 内"期间
@@ -1687,15 +1707,34 @@ export const useChatStore = defineStore("chat", () => {
   /** 真正拉一页。单飞与容量闸都在 `loadMoreMessages` 那一层，这里只管一次 IPC。 */
   async function loadMorePage(convId: string, pages: number): Promise<void> {
     const seq = loadSeqs.get(convId) ?? 0;
-    const total = await api.getMessageCount(convId);
-    if (seq !== (loadSeqs.get(convId) ?? 0)) return;
-    if (pages * PAGE_SIZE >= total) {
-      historyTops.add(convId);
-      return;
+    let total: number;
+    let older: MessageRecord[];
+    try {
+      total = await api.getMessageCount(convId);
+      if (seq !== (loadSeqs.get(convId) ?? 0)) return;
+      // 计数成功也说明后端可达：先把上一轮失败提示清掉，避免"已到顶"这条成功路径留着红条。
+      clearHistoryError(convId);
+      if (pages * PAGE_SIZE >= total) {
+        historyTops.add(convId);
+        return;
+      }
+      // 当前已加载最新 pages 页，继续向更早方向取一页。
+      const offset = Math.max(0, total - (pages + 1) * PAGE_SIZE);
+      older = await api.getMessages(convId, PAGE_SIZE, offset);
+      // 成功拿到响应即清掉上一轮的失败提示（包括"后面没有更早历史"这条成功路径）。
+      clearHistoryError(convId);
+    } catch (e) {
+      // 失败必须**响亮**：记录到该会话、抛出给调用方（ChatWindow 显示顶部重试条 + 退避）。
+      // 旧写法没有 catch，`void loadMoreMessages(...)` 直接变成 unhandled rejection，
+      // 用户只看到"翻不动"，没有任何原因或重试入口。
+      if (seq === (loadSeqs.get(convId) ?? 0)) {
+        historyLoadErrors.value = {
+          ...historyLoadErrors.value,
+          [convId]: e instanceof Error ? e.message : String(e),
+        };
+      }
+      throw e;
     }
-    // 当前已加载最新 pages 页，继续向更早方向取一页。
-    const offset = Math.max(0, total - (pages + 1) * PAGE_SIZE);
-    const older = await api.getMessages(convId, PAGE_SIZE, offset);
     if (seq !== (loadSeqs.get(convId) ?? 0) || older.length === 0) return;
     const existing = messages.value[convId] ?? [];
     messages.value[convId] = mergeMessages(existing, older);
@@ -3317,6 +3356,8 @@ export const useChatStore = defineStore("chat", () => {
     loadMessages,
     messageLoadErrors,
     loadMoreMessages,
+    historyLoadErrors,
+    clearHistoryError,
     loadGroupTodos,
     todosLoadedOnce,
     watchGroupTodos,

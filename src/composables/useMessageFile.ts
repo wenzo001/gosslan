@@ -64,6 +64,10 @@ export function useMessageFile(
       size: raw.size || t?.size || 0,
       subtype: raw.subtype || (msg.value.kind === "image" ? "image" : "file"),
       sha256: raw.sha256,
+      // 真实像素尺寸必须原样透传：漏了这一行，估算按 117 预留而气泡仍按 288 骨架，
+      // 加载完成就变成一次 171px 的纠正（2026-10-26 实测 4 次改高 / 348px 位移）。
+      w: raw.w,
+      h: raw.h,
     };
   });
 

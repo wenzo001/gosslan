@@ -1798,16 +1798,26 @@ async function copyFileToClipboard() {
             :class="mine ? 'self-end' : 'self-start'"
             :src="imageDataUrl"
             :mine="mine"
+            :width="fileMeta?.w"
+            :height="fileMeta?.h"
             @open="openImageLightbox"
             @refetch="refetchContent"
           />
 
           <!-- 附件图片预览（file + subtype:image，接收完成后显示本地图片） -->
+          <!-- ⚠️ 有真实尺寸的附件图**不等预览 URL 就渲染图片框**：先渲染文件卡（90px）
+               再换成图片气泡（145px）会让虚拟列表实测一次 90、再一次 145 ——
+               2026-10-26 实测 7 行 × 55px 的整列上下抖。骨架按 w/h 预留，URL 到了只换内容不换高。 -->
           <MessageImageBubble
-            v-else-if="message.kind === 'file' && attachmentUrl"
+            v-else-if="
+              message.kind === 'file' &&
+              (attachmentUrl || (fileMeta?.subtype === 'image' && fileMeta?.w && fileMeta?.h))
+            "
             :class="mine ? 'self-end' : 'self-start'"
-            :src="attachmentUrl"
+            :src="attachmentUrl ?? ''"
             :mine="mine"
+            :width="fileMeta?.w"
+            :height="fileMeta?.h"
             @open="openImageLightbox"
             @refetch="refetchContent"
           />

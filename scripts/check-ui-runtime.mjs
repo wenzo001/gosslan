@@ -2253,6 +2253,8 @@ window.__probe = (() => {
       nearBottom: null,
       loadMore: 0,
       live: true,
+      // 与 ChatWindow 同形：切会话由 conversationKey 判定（2026-10-25 P0 后追加的行）。
+      conv: 'conv-a',
     });
     // ⚠️ 不能把 ref 放进 reactive：reactive 会自动解包，st.list 读出来是 null，
     // 组件 ref 就永远绑不上。列表 ref 单独放在 window 上。
@@ -2267,6 +2269,7 @@ window.__probe = (() => {
             items: st.items,
             estimateHeight: () => 40,
             live: st.live,
+            conversationKey: st.conv,
             onNearBottom: (v) => { st.nearBottom = v; },
             onLoadMore: () => { st.loadMore += 1; },
           }, {
@@ -2350,6 +2353,9 @@ window.__probe = (() => {
   H.vlistSwap = (n) => {
     const st = window.__vlist;
     if (!st) return false;
+    // 真 ChatWindow 切会话时 activeConv 与 items 同批变化；夹具必须一起改，
+    // 否则列表只能把它看成"同会话整表刷新"，不会贴底（判据会假红）。
+    st.conv = 'conv-b';
     st.items = Array.from({ length: n || 120 }, (_, i) => ({
       id: 'swap-' + i,
       text: 'swap ' + i,
@@ -3041,6 +3047,7 @@ async function main() {
     const menufit = want("menufit");
     const crashnotice = want("crashnotice");
     const hangnotice = want("hangnotice");
+    const historyerr = want("historyerr");
     if (emoji) await runEmoji(cdp, url);
     if (search) await runSearch(cdp, url);
     if (ctxmenu) await runCtxMenu(cdp, url);
@@ -3106,6 +3113,7 @@ async function main() {
     if (touchroster) await runTouchRoster(cdp, url);
     if (crashnotice) await runCrashNotice(cdp, url);
     if (hangnotice) await runHangNotice(cdp, url);
+    if (historyerr) await runHistoryError(cdp, url);
     process.exitCode = results.every((r) => r.ok) ? 0 : 1;
     exitCode = process.exitCode;
   } catch (e) {
@@ -3620,6 +3628,136 @@ async function runPinKeyboard(cdp, url) {
  * ⚠️ 浏览器环境不是 WKWebView；这里证的是组件生命周期 + 位置表这条链，
  * 真机滚动惯性 / 系统覆盖层仍属人工验收。
  */
+/**
+ * 翻页失败必须**可见且可重试**（--only=historyerr）。
+ *
+ * 2026-10-26：`loadMorePage` 原先没有 catch，ChatWindow 又是 `void loadMoreMessages(...)`
+ * ⇒ 失败变成 unhandled rejection，用户只看到"翻不动"。这条用真 ChatWindow + 真 store，
+ * 只把 `get_messages` 换成必失败的 IPC，检查：错误条出现、重试真的再打一次、退避挡住
+ * 自动重试、关闭能收起、且没有未处理的 rejection。
+ */
+async function runHistoryError(cdp, url) {
+  await cdp.send("Emulation.setDeviceMetricsOverride", {
+    width: 1200, height: 800, deviceScaleFactor: 1, mobile: false,
+  });
+  await cdp.send("Page.navigate", { url });
+  await sleep(3_000);
+  await cdp.eval(PAGE_FIXTURE);
+  await cdp.eval(`(() => {
+    window.__TAURI_INTERNALS__ = {
+      metadata: {
+        currentWindow: { label: 'main' },
+        currentWebview: { label: 'main', windowLabel: 'main' },
+      },
+      invoke: async () => null,
+      transformCallback: (cb) => cb,
+      convertFileSrc: (p) => p,
+    };
+    if (!window.__TAURI_EVENT_PLUGIN_INTERNALS__) {
+      window.__TAURI_EVENT_PLUGIN_INTERNALS__ = { unregisterListener: () => {} };
+    }
+    window.__histUnhandled = 0;
+    window.addEventListener('unhandledrejection', () => { window.__histUnhandled += 1; });
+  })()`);
+  await cdp.eval(
+    'window.__probe.install(\'/src/components/ChatWindow.vue\', \'\', \'{\"hostHeight\":\"800px\"}\')',
+  );
+  const seeded = await cdp.eval(`(async () => {
+    const { useChatStore } = await import('/src/stores/useChatStore.ts');
+    const chat = useChatStore();
+    const rows = [];
+    for (let i = 0; i < 30; i += 1) {
+      rows.push({
+        conv_id: 'peer-history', msg_id: 'm-hist-' + i,
+        sender_id: i % 2 ? 'peer' : 'dev-me', sender_name: i % 2 ? '对方' : '我',
+        kind: 'text', content: ('第' + i + '条，用来把列表撑得足够长。').repeat(4),
+        status: 'sent', seq: i + 1, ts: 1700000000000 + i * 60000,
+      });
+    }
+    chat.activeConv = 'peer-history';
+    chat.messages['peer-history'] = rows;
+    window.__hist = { chat, calls: { count: 0, messages: 0 } };
+    window.__TAURI_INTERNALS__.invoke = async (cmd) => {
+      if (cmd === 'get_message_count') { window.__hist.calls.count += 1; return 250; }
+      if (cmd === 'get_messages') {
+        window.__hist.calls.messages += 1;
+        throw new Error('probe-history-fail');
+      }
+      return null;
+    };
+    await new Promise((r) => setTimeout(r, 600));
+    const el = document.querySelector('.vlist-no-anchor');
+    return { ok: !!el, sh: el ? el.scrollHeight : 0, ch: el ? el.clientHeight : 0 };
+  })()`);
+  check("historyerr：列表已撑出可滚动高度（否则触顶事件不会发生）",
+    !!seeded && seeded.ok === true && seeded.sh > seeded.ch + 400, "ok + 可滚动",
+    JSON.stringify(seeded));
+
+  // 触顶：0 + scroll 事件 ⇒ VirtualList emit loadMore ⇒ store 打 IPC 并失败。
+  await cdp.eval(`(() => {
+    const el = document.querySelector('.vlist-no-anchor');
+    el.scrollTop = 0;
+    el.dispatchEvent(new Event('scroll', { bubbles: true }));
+  })()`);
+  await sleep(600);
+  const labels = await cdp.eval(`(async () => {
+    const { t } = await import('/src/i18n/index.ts');
+    const el = document.querySelector('.vlist-no-anchor');
+    const inList = el ? el.parentElement : document.body;
+    const text = inList ? inList.innerText : '';
+    return {
+      fail: t('chat.history.loadFail'), retry: t('common.retry'), close: t('common.close'),
+      hasFail: text.includes(t('chat.history.loadFail')),
+      hasRetry: [...document.querySelectorAll('button')].some((b) => (b.textContent || '').trim() === t('common.retry')),
+      calls: window.__hist.calls,
+      unhandled: window.__histUnhandled,
+    };
+  })()`);
+  check("historyerr：翻页失败出现「加载失败 + 重试」提示（不是静默失败）",
+    !!labels && labels.hasFail === true && labels.hasRetry === true,
+    "错误文案 + 重试按钮", JSON.stringify(labels));
+  check("historyerr：失败没有变成 unhandled rejection",
+    !!labels && labels.unhandled === 0, "unhandled === 0", JSON.stringify(labels));
+
+  // 退避：再次触顶不许立刻再打 IPC。
+  const beforeBackoff = labels ? labels.calls.messages : 0;
+  await cdp.eval(`(() => {
+    const el = document.querySelector('.vlist-no-anchor');
+    el.scrollTop = 0;
+    el.dispatchEvent(new Event('scroll', { bubbles: true }));
+  })()`);
+  await sleep(300);
+  const afterBackoff = await cdp.eval("window.__hist.calls.messages");
+  check("historyerr：失败后 1.5s 内自动触顶不重复打 IPC（有退避）",
+    afterBackoff === beforeBackoff, "调用数不增加",
+    JSON.stringify({ beforeBackoff, afterBackoff }));
+
+  // 重试：必须真的再打一次（点击绕过退避）。
+  await cdp.eval(`(() => {
+    const retry = [...document.querySelectorAll('button')]
+      .find((b) => (b.textContent || '').trim() === ${JSON.stringify(labels ? labels.retry : "重试")});
+    if (retry) retry.click();
+  })()`);
+  await sleep(500);
+  const afterRetry = await cdp.eval("window.__hist.calls.messages");
+  check("historyerr：点「重试」真的再发一次翻页 IPC（不是只关了提示）",
+    afterRetry > afterBackoff, "调用数增加",
+    JSON.stringify({ afterBackoff, afterRetry }));
+
+  // 关闭：错误条收起（错误状态被清掉，不只是视觉隐藏）。
+  const closed = await cdp.eval(`(async () => {
+    const { t } = await import('/src/i18n/index.ts');
+    const btn = [...document.querySelectorAll('button')]
+      .find((b) => (b.getAttribute('aria-label') || '') === t('common.close'));
+    if (btn) btn.click();
+    await new Promise((r) => setTimeout(r, 150));
+    const el = document.querySelector('.vlist-no-anchor');
+    const text = el && el.parentElement ? el.parentElement.innerText : '';
+    return { gone: !text.includes(t('chat.history.loadFail')) };
+  })()`);
+  check("historyerr：关闭按钮收起提示", !!closed && closed.gone === true, "文案消失", JSON.stringify(closed));
+}
+
 async function runScrollRestore(cdp, url) {
   await cdp.send("Emulation.setDeviceMetricsOverride", {
     width: 1200, height: 800, deviceScaleFactor: 1, mobile: false,
@@ -3664,7 +3802,10 @@ async function runScrollRestore(cdp, url) {
     chat.messages['peer-scroll'] = rows;
     await new Promise((r) => setTimeout(r, 500));
     const el = document.querySelector('.vlist-no-anchor');
-    return { scrollH: el ? el.scrollHeight : 0, clientH: el ? el.clientHeight : 0 };
+    return { scrollH: el ? el.scrollHeight : 0, clientH: el ? el.clientHeight : 0,
+      rows: document.querySelectorAll('[data-vlist-key]').length,
+      msgLen: (chat.messages['peer-scroll'] || []).length,
+      spacer: el && el.firstElementChild ? el.firstElementChild.style.height : null };
   })()`);
   check("种子消息把列表撑出可滚动高度（否则这一段量不到任何位移）",
     !!seeded && seeded.scrollH > seeded.clientH + 400,
@@ -10838,11 +10979,17 @@ async function runScrollReact(cdp, url) {
     const V = window.__probe.vue;
     const host = document.getElementById('sr-host');
     const el = host.querySelector('.vlist-no-anchor');
+    const pin = () => el && el.__vueParentComponent ? el.__vueParentComponent.setupState.pinned : null;
+    const pins = { before: pin() };
     ${mutation}
     await V.nextTick();
-    // 先让这一帧走完 layout + ResizeObserver（补偿在 RO 回调里同步发生），
-    // 下一帧 rAF 读到的才是用户真正看到的画面。
+    pins.afterNextTick = pin();
+    // ⚠️ rAF 在 layout / ResizeObserver **之前**（规范顺序：scroll → rAF → layout → RO → paint）。
+    // 只等一帧时，RO 的补偿可能还没发生，读到的是"绘制前"的内部状态；等两帧才对应
+    // 用户真正看到的那一帧。这不是放宽阈值：8 帧 gap≤1 的判据原样保留。
     await new Promise((r) => requestAnimationFrame(() => r()));
+    await new Promise((r) => requestAnimationFrame(() => r()));
+    pins.afterRaf = pin();
     const frames = [];
     for (let i = 0; i < 8; i += 1) {
       await new Promise((r) => requestAnimationFrame(() => r()));
@@ -10851,7 +10998,7 @@ async function runScrollReact(cdp, url) {
         gap: el.scrollHeight - el.scrollTop - el.clientHeight,
       });
     }
-    return { frames, sh: el.scrollHeight, ch: el.clientHeight };
+    return { frames, pins, sh: el.scrollHeight, ch: el.clientHeight };
   })()`);
 
   // ① 贴底 + 倒数第二条变高：每一帧都必须贴着底，且 top 单调不回落。

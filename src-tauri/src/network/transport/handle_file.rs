@@ -548,13 +548,16 @@ async fn handle_file_messages(state: &Arc<AppState>, peer_id: &str, msg: Message
                         // 重新猜一遍（旧写法把 mp4 标成 kind="video"，前端渲染链
                         // 不认，气泡整个退化成 JSON；真机 2026-09-19）。
                         let kind = if subtype == "image" { "image" } else { "file" };
-                        let content = serde_json::json!({
+                        let mut content = serde_json::json!({
                             "name": name,
                             "path": path.to_string_lossy().to_string(),
                             "size": size,
                             "subtype": subtype,
-                        })
-                        .to_string();
+                        });
+                        if kind == "image" {
+                            file::attach_image_size(&mut content, &path);
+                        }
+                        let content = content.to_string();
                         let seq = db::next_clock(&dbc, &sender_id).unwrap_or(1);
                         let rec = MessageRecord {
                             id: 0,

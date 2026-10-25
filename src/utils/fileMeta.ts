@@ -32,5 +32,8 @@ export function parseFileMeta(content: string): Partial<FileMeta> | null {
   if (typeof p.subtype === "string" && p.subtype) out.subtype = p.subtype;
   // sha256（= content store 的 cid）只有新格式消息才有
   if (typeof p.sha256 === "string" && p.sha256) out.sha256 = p.sha256;
+  // 图片像素尺寸：后端从本机文件头读出；只接受正整数，坏值当没有（回退 288）。
+  if (typeof p.w === "number" && Number.isFinite(p.w) && p.w > 0) out.w = Math.round(p.w);
+  if (typeof p.h === "number" && Number.isFinite(p.h) && p.h > 0) out.h = Math.round(p.h);
   return out;
 }

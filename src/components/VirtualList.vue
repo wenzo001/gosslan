@@ -16,6 +16,8 @@
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { useEventListener } from "@vueuse/core";
 import { useVirtualizer, type VirtualItem, type Virtualizer } from "@tanstack/vue-virtual";
+import { classifyItemsChange } from "@/utils/scrollIntent";
+import { computeListBuffer } from "@/utils/listBuffer";
 
 const props = withDefaults(
   defineProps<{
@@ -30,13 +32,21 @@ const props = withDefaults(
      */
     layoutKey?: string;
     /**
+     * 当前会话的稳定标识（ChatWindow 传 `activeConv`）。
+     *
+     * 这是"切会话"的**唯一判据**：此前用"末条 key 变了"代替，结果把「末尾追加一条新消息」
+     * 也当成切会话 ⇒ 用户读历史时被一帧拽到底部（2026-10-25 P0，实测 +70,702px）。
+     * 同一会话内的整表刷新（重连/重载）不算切换，锚点由 TanStack 保留。
+     */
+    conversationKey?: string;
+    /**
      * 作为**实时日志区域**播报（用户 2026-09-12 HIG 审查）：聊天列表的核心事件是
      * "来了新消息"，但本组件此前没有任何 live region ⇒ 读屏用户**完全听不到新消息**。
      * 打开后容器带 `role="log" aria-live="polite" aria-relevant="additions"`。
      */
     live?: boolean;
   }>(),
-  { overscan: 6, autoScrollOnSwap: true, layoutKey: "", live: false },
+  { overscan: 6, autoScrollOnSwap: true, layoutKey: "", conversationKey: "", live: false },
 );
 
 const emit = defineEmits<{
@@ -51,11 +61,90 @@ function keyOf(it: any): string {
   return String(it?.local_id ?? it?.msg_id ?? it?.id ?? "");
 }
 
+// ---------------- 自适应缓冲（范围扩展器，O(1)） ----------------
+//
+// 为什么不是"把 overscan 调大"：条目数缓冲在长行/短行混合时与像素脱钩。
+// 实测 400px/帧时 overscan=6 有 45/90 帧白带，overscan=36 才能归零；但同样 36 在
+// 800px/帧时把 DOM 拉到 81 行、p95 97ms、单帧 700ms（更差）。⇒ 按速度/视口/平均行高算，
+// 并且有硬上限；方向优先给前进侧。
+const edgeBuffer = { forward: 0, backward: 0 };
+/**
+ * 是否把 RO 测量合到一帧：**只在切会话的收敛窗口内**为 true。
+ * 平时 false（逐条、绘制前测量）——贴底时也要逐条，否则"加表情先掉 40px 再弹回"
+ * （scrollreact 的 8 帧判据就是抓这个）。
+ * 必须在 `useVirtualizer` **之前**声明：options 的 computed 在 setup 阶段就会求值，
+ * 引用后面才 `let` 的变量会直接 TDZ。
+ */
+let roBatched = false;
+let velocity = 0;
+let lastVelocityTop = 0;
+let velocityReady = false;
+
+/** 非响应式：TanStack 在 range 变化时会重新调用它，读到的是本帧最新值。 */
+function rangeExtractor(range: {
+  startIndex: number;
+  endIndex: number;
+  count: number;
+  overscan: number;
+  lanes?: number;
+}): number[] {
+  // ⚠️ 自定义 extractor **替换**库的默认实现，默认里那份 `overscan` 必须自己补回来：
+  // 漏了它等于 overscan=0（实测：首帧只有 11 行、200px/帧时白带 16/90）。
+  const base = range.overscan * Math.max(range.lanes ?? 1, 1);
+  const start = Math.max(0, range.startIndex - base - edgeBuffer.backward);
+  const end = Math.min(range.count - 1, range.endIndex + base + edgeBuffer.forward);
+  const out: number[] = [];
+  for (let i = start; i <= end; i++) out.push(i);
+  return out;
+}
+
+/** 每帧只做一次 O(1) 算术；绝不在滚动处理器里遍历条目。 */
+function updateBufferFromScroll(top: number) {
+  const el = container.value;
+  if (!el) return;
+  const delta = top - lastVelocityTop;
+  lastVelocityTop = top;
+  // 一次超过两屏的位移是跳转（原生恢复 / 外部写 scrollTop），不是甩动：
+  // 把 7 万 px 当成速度会让缓冲瞬间顶到上限并一直留着一屏多余的行。
+  velocity = Math.abs(delta) > el.clientHeight * 2 ? 0 : velocity * 0.55 + delta * 0.45;
+  const total = virtualizer.value.getTotalSize();
+  const avg = props.items.length > 0 ? total / props.items.length : 0;
+  const next = computeListBuffer({
+    viewport: el.clientHeight,
+    velocity,
+    avgRow: avg,
+    overscan: props.overscan,
+  });
+  if (next.forward !== edgeBuffer.forward || next.backward !== edgeBuffer.backward) {
+    edgeBuffer.forward = next.forward;
+    edgeBuffer.backward = next.backward;
+  }
+}
+
+/** 程序化跳转/换会话后速度必须归零，否则会拿上一段的甩动速度去预渲染一大片。 */
+function resetBuffer() {
+  velocity = 0;
+  velocityReady = false;
+  lastVelocityTop = container.value?.scrollTop ?? 0;
+  edgeBuffer.forward = 0;
+  edgeBuffer.backward = 0;
+}
+
+/** 收敛窗口内合批测量；窗口结束恢复逐条（绘制前）。 */
+function setRoBatched(next: boolean) {
+  if (roBatched === next) return;
+  roBatched = next;
+  const v = virtualizer.value;
+  if (v) v.options.useAnimationFrameWithResizeObserver = next;
+}
+
 /**
  * TanStack 的关键选项：
  * - `anchorTo: "end"`：count/edge key 变化时按"当前视口里那一条"重算偏移 ⇒
  *   历史 prepend 不再需要手写 `prevFirstKey`，且不会把用户正在读的那屏顶走。
- * - `followOnAppend: true`：只有**当前在底部**时才跟随追加；用户上滚后不会被抢。
+ * - `followOnAppend: false`：追加贴底由本组件的 `pinned`/`schedulePin` 独占（用户上滚后不被抢）；
+ *   实测回调里还会按总高增量同步跟一次（见 `measureElement`），避免贴底晚一帧。
+ * - `rangeExtractor`：按速度/视口/平均行高扩展预渲染范围（见 `edgeBuffer`），替代固定条目 overscan。
  * - `measureElement` 默认按真实 border-box 高度测；这里换成"高度 <= 0 时不用 0 覆盖"
  *   的版本 —— 隐藏/未布局的行测到 0 会把后续 top 全塌到顶部。
  * - options 里显式读 `props.items`：数组被**同长度替换**时也要触发 setOptions，
@@ -71,15 +160,24 @@ const virtualizer = useVirtualizer(
       getScrollElement: () => container.value,
       estimateSize: (i: number) => props.estimateHeight(props.items[i], i),
       overscan: props.overscan,
+      rangeExtractor,
       getItemKey: (i: number) => keyOf(props.items[i]),
       anchorTo: "end" as const,
       // 追加贴底由本组件的 `pinned`/`schedulePin` 独占：开着库的 follow 会在
       // 切会话/高度收敛期间再写一次 scrollTop，与自研收敛窗口抢滚动条。
       followOnAppend: false,
+      // `anchorTo:"end"` 还带一条"在底部时每次实测都按总高度增量同步写 scrollTop"的路径；
+      // 它按**每次 RO 条目**各写一次，切会话/图片改高时 6 条实测就是 6 次方向相反的写入
+      // （探针实测 reversals 5，阈值 3）。把阈值设成 -1 关掉这条路径：贴底由本组件的
+      // `measureElement`（同步跟 delta）+ `schedulePin`（rAF 兜底）负责 —— 单一所有者，
+      // 也仍然保留 prepend 的按键锚定。
+      scrollEndThreshold: -1,
       indexAttribute: "data-index",
-      // 把一帧内的多条 ResizeObserver 测量合并成一次更新：冷滚动时逐行首次测量
-      // 会各 bump 一次版本、各触发一次整表测量重算（实测 1000 条冷滚 34 万次 estimate 调用）。
-      useAnimationFrameWithResizeObserver: true,
+      // 平时 false：RO 在**绘制前**逐条测，避免"先按估算画一帧"的白带
+      // （实测 400px/帧 45/90 → 19/90，800px/帧 83/90 → 33/90）。
+      // 只在切会话的收敛窗口内由 `setRoBatched(true)` 合批：那一阵有 6+ 条实测同时到达，
+      // 逐条写 scrollTop 会出现方向反转（vlist 探针 reversals 5，阈值 3）；安静后恢复逐条。
+      useAnimationFrameWithResizeObserver: roBatched,
       measureElement: (
         element: HTMLElement,
         entry: ResizeObserverEntry | undefined,
@@ -102,6 +200,16 @@ const virtualizer = useVirtualizer(
         // 贴底态就会每帧重写 scrollTop（走查实测切会话出现 5 次方向反转）。
         const rounded = Math.round(size * 100) / 100;
         if (typeof prev === "number" && Math.abs(prev - rounded) <= 1) return prev;
+        // 贴底态的**同步**跟随：RO 回调发生在布局后、绘制前；此刻写 scrollTop 增量，
+        // 这一帧就是贴着底的。交给 `schedulePin`（rAF）会晚一帧 —— scrollreact 实测
+        // 首帧 gap 40px（用户看到的就是"加表情先掉一下再弹回"）。
+        // 只跟总高度增量，不重写 scrollHeight：Vue 还没把新总高 patch 上去。
+        if (pinned && !recentScrollUp() && Date.now() >= pinHoldUntil) {
+          const oldSize = typeof prev === "number" ? prev : props.estimateHeight(props.items[index], index);
+          const delta = rounded - oldSize;
+          const el = container.value;
+          if (el && Math.abs(delta) > 0.5) setScrollTop(el.scrollTop + delta);
+        }
         return rounded;
       },
     };
@@ -160,12 +268,15 @@ virtualizer.value.shouldAdjustScrollPositionOnItemSizeChange = (
   _delta: number,
   inst: Virtualizer<HTMLElement, HTMLElement>,
 ) => {
-  if (recentScrollUp()) return false;
+  // 贴底由 measureElement 的同步增量负责（避免和库各写一次）。
   if (pinned) return false;
   const offset = inst.scrollOffset ?? 0;
   const isFirstMeasure = !inst.itemSizeCache.has(item.key);
+  // **整行完全在视口上方**才补：这是"读着读着，上面一张图变高/变矮"的正解。
+  // 不能再加 `recentScrollUp()` 一票否决 —— 上翻时上方行变高同样会把正在读的内容推走
+  // （scrollreact 实测参照行位移 40px）；跨视口上沿的行（内容在锚点下方变化）仍然不补。
   if (isFirstMeasure) return item.start < offset;
-  return item.start + item.size <= offset && inst.scrollDirection !== "backward";
+  return item.start + item.size <= offset;
 };
 
 /** 统一入口写 scrollTop：标记为程序化滚动，避免被当成用户上滚。 */
@@ -174,6 +285,18 @@ function setScrollTop(v: number) {
   if (!el) return;
   programmaticTop = true;
   el.scrollTop = v;
+}
+
+/**
+ * 贴底态切换的**唯一出口**：同步 `nearBottom`，并切换 RO 测量批次策略。
+ * - 阅读（false）：逐条、绘制前测量 ⇒ 不给"估算高度"任何被画出去的机会；
+ * - 贴底（true）：一帧合批 ⇒ 多条实测不会在同一帧里来回改 scrollTop。
+ * 直接改运行时 options（库在 RO 回调里现读），不重建虚拟器、不触发 anchor 重算。
+ */
+function setPinning(next: boolean) {
+  if (pinned === next) return;
+  pinned = next;
+  emit("nearBottom", next);
 }
 
 function suppressTransient() {
@@ -185,6 +308,7 @@ function suppressTransient() {
  * 用户 2026-10-22 实测：切到群聊时滚动区小幅快速抖动一阵才停。
  */
 function armSettleHold() {
+  setRoBatched(true);
   const now = Date.now();
   if (!pinHoldHardUntil) pinHoldHardUntil = now + SWAP_SETTLE_MAX_MS;
   pinHoldUntil = Math.min(pinHoldHardUntil, now + SWAP_SETTLE_QUIET_MS);
@@ -199,8 +323,12 @@ function armSettleHold() {
     // 收口这一刻同时结束瞬态窗口：否则 computeScrollState 会再排一个 pin 定时器，
     // 两个定时器各写一次 scrollTop（走查实测 1000 条切会话出现 5 次方向反转）。
     suppressNearBottomUntil = 0;
-    pinToBottom();
+    // 窗口结束：恢复逐条测量（绘制前），再按当前几何/上滚记录决定贴底。
+    // 顺序是语义：先按当前几何/上滚记录更新 pinned，再决定要不要贴底。
+    // 反过来会在"用户已在静默期上翻"时用旧的 pinned=true 抢回滚动条。
+    setRoBatched(false);
     computeScrollState();
+    pinToBottom();
   }, Math.max(0, pinHoldUntil - now) + 16);
 }
 
@@ -211,6 +339,12 @@ function schedulePin() {
     pinRaf = 0;
     const el = container.value;
     if (!el) return;
+    if (el.scrollTop < prevScrollTop - 1 && !programmaticTop) {
+      lastScrollUpAt = Date.now();
+      setPinning(false);
+      computeScrollState();
+      return;
+    }
     if (pinned && !recentScrollUp()) setScrollTop(el.scrollHeight);
     computeScrollState();
   });
@@ -226,7 +360,20 @@ function computeScrollState() {
   const el = container.value;
   if (!el) return;
   const settling = Date.now() < suppressNearBottomUntil;
-  if (!programmaticTop && el.scrollTop < prevScrollTop - 1) lastScrollUpAt = Date.now();
+  const top = el.scrollTop;
+  if (!velocityReady) {
+    lastVelocityTop = top;
+    velocityReady = true;
+  } else if (top !== lastVelocityTop) {
+    updateBufferFromScroll(top);
+  }
+  if (!programmaticTop && el.scrollTop < prevScrollTop - 1) {
+    lastScrollUpAt = Date.now();
+    // ⚠️ 静默期也必须立刻解除吸附：否则用户在上翻、而 settleTimer 到期时
+    // `pinToBottom()` 还会按"旧的 pinned=true"把人拽回底部（2026-10-25 实测：
+    // 扫描页在 settle 窗口内滚到 10% 被一帧拉回底部，整轮读数作废）。
+    setPinning(false);
+  }
   programmaticTop = false;
   prevScrollTop = el.scrollTop;
   const nearBottom = el.scrollHeight - el.scrollTop - el.clientHeight < NEAR_BOTTOM_THRESHOLD;
@@ -239,16 +386,13 @@ function computeScrollState() {
         pinHoldUntil = 0;
         pinHoldHardUntil = 0;
         suppressNearBottomUntil = 0;
-        pinToBottom();
         computeScrollState();
+        pinToBottom();
       }, suppressNearBottomUntil - Date.now() + 30);
     }
     return;
   }
-  if (nearBottom !== pinned) {
-    pinned = nearBottom;
-    emit("nearBottom", pinned);
-  }
+  if (nearBottom !== pinned) setPinning(nearBottom);
   if (el.scrollTop < 60) emit("loadMore");
 }
 
@@ -277,10 +421,7 @@ function onResize() {
 function scrollToBottom() {
   const el = container.value;
   if (!el) return;
-  if (!pinned) {
-    pinned = true;
-    emit("nearBottom", true);
-  }
+  setPinning(true);
   suppressTransient();
   // 收敛窗口内（切会话后的测量风暴）把贴底交给 settleTimer 统一做一次；
   // 父组件在 nextTick 后补的那一次也走这里，避免与实测修正各写一次。
@@ -288,6 +429,7 @@ function scrollToBottom() {
     armSettleHold();
     return;
   }
+  resetBuffer();
   setScrollTop(el.scrollHeight);
 }
 
@@ -336,12 +478,10 @@ function applyJump() {
 function scrollToIndex(index: number, align: "top" | "bottom" = "top") {
   const el = container.value;
   if (!el || props.items.length === 0) return;
-  if (pinned) {
-    pinned = false;
-    emit("nearBottom", false);
-  }
+  setPinning(false);
   suppressTransient();
   const i = Math.max(0, Math.min(index, props.items.length - 1));
+  resetBuffer();
   pendingJump = {
     key: keyOf(props.items[i]),
     align,
@@ -357,51 +497,59 @@ function scrollToIndex(index: number, align: "top" | "bottom" = "top") {
 }
 
 // ---------------- 数据变化 ----------------
-let prevLastKey: string | null = null;
-let prevFirstKey: string | null = null;
+let prevEdges: { first: string; last: string } | null = null;
+/** 上一次 items 变化时属于哪个会话（切会话检测，见 `conversationKey`）。 */
+let prevItemsConv: string | null = null;
 /** 上一次用于判"布局宽度变了"的 clientWidth；首帧初始化，滚动条出现/消失（~15px）不算。 */
 let lastWidth = 0;
 
+let keysCacheArr: any[] | null = null;
+let keysCache: string[] = [];
+function keysOfItems(): string[] {
+  const arr = props.items;
+  if (arr === keysCacheArr) return keysCache;
+  const out = new Array<string>(arr.length);
+  for (let i = 0; i < arr.length; i++) out[i] = keyOf(arr[i]);
+  keysCacheArr = arr;
+  keysCache = out;
+  return out;
+}
+
 function onItemsChanged() {
   suppressTransient();
-  // 收敛窗口内**任何** items 变化都顺延（不只是"末条 key 变了"）：切会话后的测量风暴
-  // 常常伴随父组件连续替换数组；漏掉这一条，120ms 安静期会在风暴中途结束、随后逐次贴底。
+  // 收敛窗口内**任何** items 变化都顺延：切会话后的测量风暴常常伴随父组件连续替换数组；
+  // 漏掉这一条，120ms 安静期会在风暴中途结束、随后逐次贴底。
   if (Date.now() < pinHoldHardUntil) armSettleHold();
-  const arr = props.items;
-  const newFirstKey = arr.length > 0 ? keyOf(arr[0]) : null;
-  const newLastKey = arr.length > 0 ? keyOf(arr[arr.length - 1]) : null;
-  const isSwap =
-    prevLastKey !== null && newLastKey !== null && newLastKey !== prevLastKey;
-  // **整会话切换**（首尾 key 都变了）与**底部追加**（只有末条变）分开：
-  // 追加要立刻贴底；整会话切换要等测量风暴收敛后统一贴一次，否则立即贴底那一帧
-  // 与随后的实测修正各写一次 scrollTop，表现为切会话后十几像素的来回抖。
-  const isFullSwap =
-    isSwap && prevFirstKey !== null && newFirstKey !== null && newFirstKey !== prevFirstKey;
-  if (isSwap && !pinned) {
-    pinned = true;
-    emit("nearBottom", true);
-  }
-  if (isFullSwap) {
-    // 换数据会让 scrollTop 被浏览器/新内容重置；那一次下降不是用户上滚，
-    // 否则 `recentScrollUp()` 会拦住收敛窗口结束时的贴底（实测 finalTop 停在 0）。
+  const keys = keysOfItems();
+  const change = classifyItemsChange(prevEdges, keys);
+  prevEdges = keys.length > 0 ? { first: keys[0], last: keys[keys.length - 1] } : null;
+  boundMeasureCache();
+
+  const conv = props.conversationKey ?? "";
+  const convSwitch = prevItemsConv !== null && prevItemsConv !== "" && conv !== prevItemsConv;
+  prevItemsConv = conv;
+
+  if (convSwitch) {
+    // 切会话是**唯一**允许重置贴底意图的时机。autoScrollOnSwap=false 的两种调用
+    // （恢复上次位置 / 未读跳转）保持 pinned=false，由父组件的 scrollToOffset/scrollToIndex 落位。
+    setPinning(props.autoScrollOnSwap);
+    pendingJump = null;
+    if (jumpTimer) {
+      window.clearInterval(jumpTimer);
+      jumpTimer = 0;
+    }
+    resetBuffer();
     programmaticTop = true;
     lastScrollUpAt = 0;
+    if (props.autoScrollOnSwap) armSettleHold();
+    return;
   }
-  prevFirstKey = newFirstKey;
-  prevLastKey = newLastKey;
-  boundMeasureCache();
-  if (isSwap && props.autoScrollOnSwap) {
-    armSettleHold();
-    if (!isFullSwap) {
-      void nextTick(() => {
-        const el = container.value;
-        if (!el) return;
-        suppressTransient();
-        setScrollTop(el.scrollHeight);
-        computeScrollState();
-      });
-    }
-  }
+
+  // 追加 / 前插 / 同会话整表刷新：**一律不重写 pinned、不贴底**。
+  // 追加贴底只由 ChatWindow 的 `(isMine || nearBottom) && !recentScrollUp()` 决定；
+  // 已在底部的会话由 `watch(totalSize)` → `schedulePin()` 跟随（pinned 仍为真）。
+  // 这里只留一条"同会话整替换需要顺延收敛窗口"的防御：测量风暴期间不要逐次贴底。
+  if (change.kind === "swap" && Date.now() < pinHoldHardUntil) armSettleHold();
 }
 
 // **pre-flush** 先立收敛窗口：`onItemsChanged` 是 post，而 `watch(totalSize)` 在渲染期就会跑；
@@ -411,17 +559,14 @@ watch(
   () => props.items,
   (arr) => {
     if (Date.now() < pinHoldHardUntil) {
-      // 收敛窗口内任何 items 变化都顺延（换会话后的分批实测、父组件连续替换数组）。
       armSettleHold();
       return;
     }
-    if (prevFirstKey === null || prevLastKey === null) return;
-    const first = arr.length > 0 ? keyOf(arr[0]) : null;
-    const last = arr.length > 0 ? keyOf(arr[arr.length - 1]) : null;
-    if (first && last && first !== prevFirstKey && last !== prevLastKey) {
-      armSettleHold();
+    if (!prevEdges) return;
+    const keys = arr === keysCacheArr ? keysCache : arr.map(keyOf);
+    if (classifyItemsChange(prevEdges, keys).kind === "swap") {
+      // 同会话重载也可能走到这里；真正"切会话"由 onItemsChanged 的 conversationKey 判定。
       programmaticTop = true;
-      lastScrollUpAt = 0;
     }
   },
   { flush: "pre" },
@@ -450,8 +595,7 @@ watch(totalSize, () => {
 
 /** 外部显式设定贴底态（未读跳转/引用定位后置 false，点击回到最新置 true）。 */
 function setPinned(v: boolean) {
-  pinned = v;
-  emit("nearBottom", pinned);
+  setPinning(v);
 }
 
 function getScrollTop(): number {
@@ -462,6 +606,7 @@ function scrollToOffset(offset: number) {
   const el = container.value;
   if (!el) return;
   suppressTransient();
+  resetBuffer();
   const max = Math.max(0, el.scrollHeight - el.clientHeight);
   setScrollTop(Math.min(Math.max(0, offset), max));
   computeScrollState();
@@ -505,10 +650,13 @@ function observeContainerSize() {
 }
 
 onMounted(() => {
-  prevFirstKey = props.items.length > 0 ? keyOf(props.items[0]) : null;
-  prevLastKey = props.items.length > 0 ? keyOf(props.items[props.items.length - 1]) : null;
+  prevEdges = props.items.length > 0
+    ? { first: keyOf(props.items[0]), last: keyOf(props.items[props.items.length - 1]) }
+    : null;
+  prevItemsConv = props.conversationKey ?? "";
   const el0 = container.value;
   if (el0) lastWidth = el0.clientWidth;
+  resetBuffer();
   onResize();
   observeContainerSize();
   computeScrollState();

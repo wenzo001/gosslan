@@ -473,6 +473,9 @@ export default {
         "src/composables",
         "src/api",
         "src/utils",
+        // 构建期静态样式（代码高亮主题）与前端 Worker：都是呈现层的实现，不单独成域。
+        "src/styles",
+        "src/workers",
         "src/updater", // 更新状态机与 Tauri 适配器（前端侧，IPC 仍走 src/api 门面）
       ],
       invariants: [
