@@ -1206,6 +1206,9 @@ export const zhCN: MessageDict = {
   "task.waitingFor": "还有 {n} 个人没收到",
   "task.cancel": "取消",
   "task.cancelDone": "已取消",
+  // 按 cid 拉取的内容被用户取消（终态：建链时不会再自动拉回来）。
+  "task.contentCancelOk": "已取消，不会再自动获取",
+  "task.contentCancelDone": "这一单已经结束，无需取消",
   "task.retryNow": "立即重试",
   "task.syncNow": "立即同步",
   "task.openChat": "去会话",

@@ -791,6 +791,7 @@ pub fn run() {
             commands::get_group_file_delivery_summary,
             commands::list_group_files,
             commands::cancel_file_transfer,
+            commands::cancel_content_fetch,
             commands::request_content,
             commands::request_content_by_cid,
             commands::get_content_transfers,

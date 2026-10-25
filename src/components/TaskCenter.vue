@@ -111,6 +111,7 @@ const actionLabel: Record<OperationAction, string> = {
   cancel: "task.cancel",
   cancel_message: "task.cancel",
   cancel_update: "task.cancel",
+  cancel_content: "task.cancel",
   retry_content: "task.retryNow",
   sync_history_now: "task.syncNow",
   open_conversation: "task.openChat",
@@ -123,6 +124,7 @@ async function runAction(row: OperationRow, action: OperationAction) {
     if (action === "cancel") await cancelFile(row);
     else if (action === "cancel_message") await cancelMessage(row);
     else if (action === "cancel_update") await cancelUpdate();
+    else if (action === "cancel_content") await cancelContent(row);
     else if (action === "retry_content") await retryContent(row);
     else if (action === "sync_history_now") await chat.syncGroupHistoryNow(row.id.slice("group:".length));
     else if (action === "open_conversation") await openConversation(row);
@@ -189,6 +191,28 @@ async function retryContent(row: OperationRow) {
   const ok = await api.requestContentByCid(src.peerId, src.cid, src.name, src.size);
   app.toast(t(ok ? "msg.refetchRequested" : "msg.refetchUnsupported"), ok ? "info" : "error");
   await chat.refreshTransfers();
+}
+
+/**
+ * 取消一单**按 cid 拉取的内容**（2026-10-25 Stage 4）。
+ *
+ * 与文件取消同一套口径：`alreadyDone` = 这一单已经收完/早判死（那一下什么都没改）；
+ * `ledgerCommitted=false` = 本机停了手但台账没落地，刷新后它可能还挂在列表里 ——
+ * 那时说"已取消"就是比事实更满。取消后内容是 `Rejected(Cancelled)` 终态，
+ * 建链的自动重取**不会**再把它拉回来。
+ */
+async function cancelContent(row: OperationRow) {
+  const res = await api.cancelContentFetch(row.id);
+  await chat.refreshTransfers();
+  if (res.alreadyDone || !res.cancelled) {
+    app.toast(t("task.contentCancelDone"), "info");
+    return;
+  }
+  if (!res.ledgerCommitted) {
+    app.toast(t("transfer.cancelLedgerPending"), "info");
+    return;
+  }
+  app.toast(t("task.contentCancelOk"), "success");
 }
 
 /**

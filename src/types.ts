@@ -426,6 +426,20 @@ export interface GroupResendResult {
 }
 
 /**
+ * 取消一单按 cid 拉取的内容（`cancel_content_fetch`，2026-10-25）。
+ *
+ * `alreadyDone` / `ledgerCommitted` 与文件取消同一套口径：本机停手 ≠ 台账已收口。
+ */
+export interface ContentCancelResult {
+  cancelled: boolean;
+  alreadyDone: boolean;
+  /** 被停下的接收器个数。 */
+  stopped: number;
+  /** 台账那一笔是否全部落地；false = 界面说「本机已停止、状态待刷新」。 */
+  ledgerCommitted: boolean;
+}
+
+/**
  * 群历史同步进度（事件 `group-history-progress`，见 Rust 侧
  * `network/group_history::emit_progress`）。
  *

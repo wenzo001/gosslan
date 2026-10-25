@@ -44,8 +44,9 @@ export type OperationState = "queued" | "running" | "blocked";
 /**
  * 可执行动作 —— 每一个都对应一条**今天就有**的通道：
  *  · `cancel`            → `cancel_file_transfer`（文件）
- *  · `cancel_message`    → `cancel_message`（还没送出去的补发队列行；已送达会被后端拒绝）
+ *  · `cancel_message`    → `cancel_message`（还没送出去的补发队列行；群按成员台账取消剩余成员）
  *  · `cancel_update`     → `updater_cancel`（更新下载）
+ *  · `cancel_content`    → `cancel_content_fetch`（按 cid 拉取的内容：停接收器 + 台账落 Rejected）
  *  · `retry_content`     → `request_content_by_cid`（"点击重取"，已有；只给单聊接收行，理由见 `contentRow`）
  *  · `sync_history_now`  → `sync_group_history_now`（已有）
  *  · `open_conversation` → 纯前端跳转，只需要行带得出会话身份
@@ -55,6 +56,7 @@ export type OperationAction =
   | "cancel"
   | "cancel_message"
   | "cancel_update"
+  | "cancel_content"
   | "retry_content"
   | "sync_history_now"
   | "open_conversation";
@@ -187,12 +189,15 @@ const CID_LIKE = /^[0-9a-f]{64}$/i;
 
 function contentRow(c: ContentTransfer): OperationRow {
   const blocked = c.status === "incomplete" || c.status === "queued";
+  const actions: OperationAction[] = [];
+  // 接收方向才有「取消」：取消的是本机在拉的那一单（停接收器 + 台账落 Rejected）。
+  // 发送方向的 content 行不该由本机按 cid 取消（对端在拉，本机只是源）。
+  if (c.direction === "receive") actions.push("cancel_content");
   // 「立即重取」= 向**那一个对端**按 cid 再要一份（`request_content_by_cid`）。
   // 两个前提缺一不可：①方向是接收（发出去的那份不该由本机去"要"）；
   // ②单聊（群内容行的 `peerId` 存的是 group_id，把它当 device_id 发出去只会石沉大海 ——
   //   群那条今天靠建链时的自动重试收口，界面上不假称有个能用的按钮）。
-  const actions: OperationAction[] =
-    c.direction === "receive" && !c.groupId ? ["retry_content"] : [];
+  if (c.direction === "receive" && !c.groupId) actions.push("retry_content");
   if (c.peerId) actions.push("open_conversation");
   // ⚠️ 台账的 `name` 经常就是 64 位 cid（按 cid 取内容时没有原始文件名可带）。
   // 把机器码直接当标题上屏 = 界面上出现两行 `61d8d9df4a00a8…`，用户读不出那是哪件事

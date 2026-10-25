@@ -1159,6 +1159,8 @@ export const enUS: MessageDict = {
   "task.waitingFor": "{n} members still waiting",
   "task.cancel": "Cancel",
   "task.cancelDone": "Cancelled",
+  "task.contentCancelOk": "Cancelled — it won't be fetched automatically again",
+  "task.contentCancelDone": "This transfer has already finished; nothing to cancel",
   "task.retryNow": "Retry now",
   "task.syncNow": "Sync now",
   "task.openChat": "Open chat",

@@ -689,6 +689,8 @@ const CMDS = [
   ["remove_favorite", "favorites", "id str", "()|err"],
   ["apply_macos_window_shape", "files", "dark bool", "()|err"],
   ["cancel_file_transfer", "files", "transfer_id str", "{cancelled bool, alreadyDone bool, notifiedPeer bool}|err"],
+  // 按 cid 拉取的内容取消（2026-10-25）：停接收器 + 内容台账落 Rejected(Cancelled)。
+  ["cancel_content_fetch", "files", "cid str", "{cancelled bool, alreadyDone bool, stopped int, ledgerCommitted bool}|err"],
   ["delete_file", "files", "path str", "()|err"],
   ["get_content_transfers", "files", "", "TransferRecord[]"],
   ["get_group_file_delivery_summary", "files", "transfer_id str", "GroupFileDeliverySummary?"],
