@@ -13,6 +13,31 @@
 
 ## [Unreleased]
 
+## [5.9.0] - 2026-10-25
+
+### 群消息成员级投递台账：取消 / 部分送达 / 按成员补发（2026-10-25 用户口径）
+
+- `group_outbox` 从「Ack 删行」改为**每成员台账**（数据库 v13）：新增
+  `status`（pending / delivered / cancelled / failed）与部分索引
+  `idx_group_outbox_pending`。迁移只把迁移后仍在队列里的行标成 pending ——
+  历史已 Ack 被删掉的行无法重建，不回填猜测。
+- **取消的判据改成台账**：只要还有 pending 行就能取消，哪怕已有成员收到；
+  剩余行置 cancelled，消息落 `partial_cancelled`，已送达成员不受影响。
+  迟到 Ack 只记台账（LateApplied）、不推翻消息状态。修掉用户实报的
+  「明明在排队，点取消却说已送达不能取消」。
+- 新增 `get_group_delivery_summaries` 与 `resend_group_delivery`：补发只把 cancelled
+  行重置为 pending（并刷新 `created_at`，否则清扫器会立刻把旧行判死），
+  在线成员立即补、离线成员保持 pending 等上线自动补；复用原 Gossip 信封，
+  接收端按 `msg_id` 幂等 ⇒ 已 Ack 的成员不会收到第二条。
+- 清扫器：群行过期改为置 `failed`（不再删行，保留「谁没收到」的证据）；
+  已有人收到或已取消时只判剩余行，不再把整条消息改成 failed。
+- 任务中心消费**结构化**取消结果（取消 / 部分取消 / 已取消 / 已送达 / 已失败 /
+  已撤回或已读 / 找不到，七种结论各自的文案只在一处）；
+  气泡回执新增 `partial_cancelled` 与 `unknown` 兜底呈现，群聊补齐
+  失败/取消/部分送达指示（此前只有已读头像，群里失败的消息看起来像已发出）。
+- 已读回执与缓存合并都把 `cancelled` / `partial_cancelled` 当硬终态：
+  迟到回执不会把用户亲手取消的消息点亮成绿勾。
+
 ## [5.8.8] - 2026-10-25
 
 ### 聊天滚动稳定：高度变化同步补偿（2026-10-25 用户口径）

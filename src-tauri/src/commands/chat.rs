@@ -21,15 +21,25 @@
 ///  · 只能取消**自己发的**、且属于该会话的消息；
 ///  · 自聊不支持（本机自己，没有"送达"这回事）；
 ///  · 文件/图片走传输那条通道（撤回/取消都改不到正在跑的字节）；
-///  · 群消息：判据是"**还没有任何成员的 Ack 被处理过**"（`GroupAck` 是"置 delivered + 删那一行"
-///    同一个事务 ⇒ 状态没到 delivered/read 就说明一条 Ack 都没处理过）。取消删掉每个成员的队列行，
-///    迟到的 Ack 命中不到 ⇒ 状态停在 cancelled。已有成员收下（delivered）时拒绝 —— 那一步只能走撤回。
+///  · 群消息：判据是**台账里还有 pending 行**。已 delivered 的成员不受影响；
+///    取消剩余成员后消息落 `partial_cancelled`，迟到 Ack 只记台账、不改消息状态。
+/// 取消结果（2026-10-25）。前端不再靠短码猜计数；`remaining` 是取消后仍未送达的人数。
+#[derive(Debug, Clone, serde::Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct MessageCancelResult {
+    pub outcome: String,
+    pub delivered: i64,
+    pub remaining: i64,
+    /// 取消前是否可能已经写出（1:1 看状态；群一入队就可能被 flush，恒为 true）。
+    pub was_written: bool,
+}
+
 #[tauri::command(async)]
 pub async fn cancel_message(
     state: State<'_, Arc<AppState>>,
     conv_id: String,
     msg_id: String,
-) -> Result<String, String> {
+) -> Result<MessageCancelResult, String> {
     let s = state.inner().clone();
     if conv_id == s.device_id {
         return Err("自聊消息不支持取消".to_string());
@@ -37,52 +47,266 @@ pub async fn cancel_message(
     // SQLite 读写在阻塞池（INV-P34）：这里持锁做几笔写，占住 tokio worker 会拖慢开窗。
     let s_db = s.clone();
     let msg_id_db = msg_id.clone();
-    // 闭包统一返回短码字符串（单聊与群两本账的结论形状一样，映射只做一次）。
-    let out = tokio::task::spawn_blocking(move || -> Result<String, String> {
+    let conv_id_db = conv_id.clone();
+    let out = tokio::task::spawn_blocking(move || -> Result<MessageCancelResult, String> {
         let dbc = s_db.db.lock().unwrap_or_else(|e| e.into_inner());
         let Some(msg) = db::get_message_record(&dbc, &msg_id_db) else {
-            return Ok("not_found".to_string());
+            return Ok(MessageCancelResult {
+                outcome: "not_found".to_string(),
+                delivered: 0,
+                remaining: 0,
+                was_written: false,
+            });
         };
         if msg.sender_id != s_db.device_id {
             return Err("只能取消自己发送的消息".to_string());
         }
-        if msg.conv_id != conv_id {
+        if msg.conv_id != conv_id_db {
             return Err("消息不属于该会话".to_string());
         }
         if msg.kind == "file" || msg.kind == "image" {
             return Err("文件/图片请用「取消发送」的传输通道".to_string());
         }
         if msg.conv_id.starts_with("group:") {
-            // 群消息：判据是"还没有任何成员的 Ack 被处理过"（见 DB 那册的说明）。
             let out = db::cancel_queued_group_message(&dbc, &msg_id_db).map_err(|e| e.to_string())?;
             return Ok(match out {
-                db::GroupMessageCancelOutcome::Cancelled => "cancelled",
-                db::GroupMessageCancelOutcome::AlreadyDelivered => "already_delivered",
-                db::GroupMessageCancelOutcome::NotFound => "not_found",
-            }
-            .to_string());
+                db::GroupMessageCancelOutcome::Cancelled { delivered, cancelled } => {
+                    MessageCancelResult {
+                        outcome: "cancelled".to_string(),
+                        delivered,
+                        remaining: cancelled,
+                        was_written: true,
+                    }
+                }
+                db::GroupMessageCancelOutcome::PartiallyCancelled { delivered, cancelled } => {
+                    MessageCancelResult {
+                        outcome: "partial_cancelled".to_string(),
+                        delivered,
+                        remaining: cancelled,
+                        was_written: true,
+                    }
+                }
+                db::GroupMessageCancelOutcome::AlreadyCancelled { delivered, cancelled } => {
+                    MessageCancelResult {
+                        outcome: "already_cancelled".to_string(),
+                        delivered,
+                        remaining: cancelled,
+                        was_written: true,
+                    }
+                }
+                db::GroupMessageCancelOutcome::AlreadyDelivered {
+                    delivered,
+                    remaining,
+                } => MessageCancelResult {
+                    outcome: "already_delivered".to_string(),
+                    delivered,
+                    remaining,
+                    was_written: true,
+                },
+                db::GroupMessageCancelOutcome::AlreadyFailed => MessageCancelResult {
+                    outcome: "already_failed".to_string(),
+                    delivered: 0,
+                    remaining: 0,
+                    was_written: true,
+                },
+                db::GroupMessageCancelOutcome::Rejected => MessageCancelResult {
+                    outcome: "rejected".to_string(),
+                    delivered: 0,
+                    remaining: 0,
+                    was_written: true,
+                },
+                db::GroupMessageCancelOutcome::NotFound => MessageCancelResult {
+                    outcome: "not_found".to_string(),
+                    delivered: 0,
+                    remaining: 0,
+                    was_written: false,
+                },
+            });
         }
-        db::cancel_queued_message(&dbc, &msg_id_db)
-            .map(|o| match o {
-                db::MessageCancelOutcome::Cancelled => "cancelled",
-                db::MessageCancelOutcome::AlreadyDelivered => "already_delivered",
-                db::MessageCancelOutcome::NotFound => "not_found",
-            }
-            .to_string())
-            .map_err(|e| e.to_string())
+        let was_written = msg.status != "sending";
+        let outcome = db::cancel_queued_message(&dbc, &msg_id_db).map_err(|e| e.to_string())?;
+        Ok(match outcome {
+            db::MessageCancelOutcome::Cancelled => MessageCancelResult {
+                outcome: "cancelled".to_string(),
+                delivered: 0,
+                remaining: 1,
+                was_written,
+            },
+            db::MessageCancelOutcome::AlreadyDelivered => MessageCancelResult {
+                outcome: "already_delivered".to_string(),
+                delivered: 1,
+                remaining: 0,
+                was_written,
+            },
+            db::MessageCancelOutcome::NotFound => MessageCancelResult {
+                outcome: "not_found".to_string(),
+                delivered: 0,
+                remaining: 0,
+                was_written,
+            },
+        })
     })
     .await
     .map_err(|e| format!("取消消息被线程池中断: {e}"))??;
-    match out.as_str() {
-        "not_found" => Err("消息不存在".to_string()),
-        // 已经送出去了：说实话（与文件的 `alreadyDone` 同一口径），不假装取消成功。
-        "already_delivered" => Ok("already_delivered".to_string()),
-        _ => {
-            // 前端那一条对 `message-status-changed` 的处理是"重查该会话" ⇒ 回执会跟着库走。
+
+    let is_group = conv_id.starts_with("group:");
+    match out.outcome.as_str() {
+        "cancelled" | "partial_cancelled" => {
+            // 前端那条对 `message-status-changed` 的处理是"重查该会话" ⇒ 回执会跟着库走。
             let _ = s.app.emit("message-status-changed", &msg_id);
-            Ok("cancelled".to_string())
+            if is_group {
+                let group_id = conv_id.trim_start_matches("group:");
+                let _ = s.app.emit(
+                    "group-delivery-changed",
+                    &serde_json::json!({ "group_id": group_id, "msg_id": msg_id }),
+                );
+                s.logger.info(
+                    "task",
+                    format!(
+                        "code=GROUP_CANCEL_PARTIAL msg_id={msg_id} group_id={group_id} \
+                         delivered={} remaining={}",
+                        out.delivered, out.remaining
+                    ),
+                );
+            }
         }
+        _ => {}
     }
+    Ok(out)
+}
+
+#[derive(Debug, Clone, serde::Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct GroupDeliverySummaryView {
+    pub msg_id: String,
+    pub delivered: i64,
+    pub pending: i64,
+    pub cancelled: i64,
+    pub failed: i64,
+}
+
+/// 气泡/任务中心读成员级投递摘要（只取仍有非 delivered 行的消息，结果天然很小）。
+#[tauri::command(async)]
+pub async fn get_group_delivery_summaries(
+    state: State<'_, Arc<AppState>>,
+    conv_id: String,
+) -> Result<Vec<GroupDeliverySummaryView>, String> {
+    if !conv_id.starts_with("group:") {
+        return Ok(Vec::new());
+    }
+    let s = state.inner().clone();
+    let conv = conv_id.clone();
+    tokio::task::spawn_blocking(move || {
+        let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());
+        db::group_message_delivery_summaries(&dbc, &conv)
+            .map(|rows| {
+                rows.into_iter()
+                    .map(|r| GroupDeliverySummaryView {
+                        msg_id: r.msg_id,
+                        delivered: r.delivered,
+                        pending: r.pending,
+                        cancelled: r.cancelled,
+                        failed: r.failed,
+                    })
+                    .collect()
+            })
+            .map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| format!("读取群投递摘要被线程池中断: {e}"))?
+}
+
+#[derive(Debug, Clone, serde::Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct GroupResendResult {
+    pub outcome: String,
+    pub online: i64,
+    pub offline: i64,
+    pub remaining: i64,
+}
+
+/// 只把 `cancelled` 行重置为 pending；在线成员立即 flush，离线保留 pending 等上线。
+///
+/// 不重签/不重加密：`group_outbox.payload` 就是原来那个已签名 Gossip 信封，
+/// 接收端按 msg_id 幂等 ⇒ 已 Ack 的成员不会收到第二条。历史消息没有台账时返回 `no_ledger`。
+#[tauri::command(async)]
+pub async fn resend_group_delivery(
+    state: State<'_, Arc<AppState>>,
+    conv_id: String,
+    msg_id: String,
+) -> Result<GroupResendResult, String> {
+    if !conv_id.starts_with("group:") {
+        return Err("只有群消息支持按成员补发".to_string());
+    }
+    let s = state.inner().clone();
+    let s_db = s.clone();
+    let conv = conv_id.clone();
+    let mid = msg_id.clone();
+    let prepared = tokio::task::spawn_blocking(move || -> Result<(String, Vec<String>, i64), String> {
+        let dbc = s_db.db.lock().unwrap_or_else(|e| e.into_inner());
+        let Some(msg) = db::get_message_record(&dbc, &mid) else {
+            return Ok(("not_found".to_string(), Vec::new(), 0));
+        };
+        if msg.sender_id != s_db.device_id || msg.conv_id != conv {
+            return Err("只能补发自己在该群发送的消息".to_string());
+        }
+        if msg.kind == "file" || msg.kind == "image" || msg.kind == "recall" {
+            return Ok(("unsupported".to_string(), Vec::new(), 0));
+        }
+        let changed = db::resend_cancelled_group_rows(&dbc, &mid, crate::db::now_ms())
+            .map_err(|e| e.to_string())?;
+        let pending = db::list_group_pending_peers(&dbc, &mid).map_err(|e| e.to_string())?;
+        if changed == 0 {
+            let (delivered, _) = db::group_outbox_progress_counts(&dbc, &mid)
+                .map_err(|e| e.to_string())?;
+            let outcome = if !pending.is_empty() {
+                "already_pending"
+            } else if delivered > 0 {
+                "already_delivered"
+            } else {
+                "no_ledger"
+            };
+            return Ok((outcome.to_string(), pending, delivered));
+        }
+        db::set_message_status(&dbc, &mid, "sent").map_err(|e| e.to_string())?;
+        Ok(("resent".to_string(), pending, 0))
+    })
+    .await
+    .map_err(|e| format!("补发群消息被线程池中断: {e}"))??;
+
+    let (outcome, pending, _delivered) = prepared;
+    let mut online = 0i64;
+    let mut offline = 0i64;
+    if outcome == "resent" {
+        for peer in &pending {
+            if s.has_link(peer).await {
+                online += 1;
+                crate::network::transport::flush_group_outbox(&s, peer).await;
+            } else {
+                offline += 1;
+            }
+        }
+        let _ = s.app.emit("message-status-changed", &msg_id);
+        let group_id = conv_id.trim_start_matches("group:");
+        let _ = s.app.emit(
+            "group-delivery-changed",
+            &serde_json::json!({ "group_id": group_id, "msg_id": msg_id }),
+        );
+        s.logger.info(
+            "task",
+            format!(
+                "code=GROUP_RESEND msg_id={msg_id} group_id={group_id} \
+                 online={online} offline={offline} remaining={}",
+                pending.len()
+            ),
+        );
+    }
+    Ok(GroupResendResult {
+        outcome,
+        online,
+        offline,
+        remaining: pending.len() as i64,
+    })
 }
 
 #[tauri::command(async)]

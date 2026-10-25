@@ -219,9 +219,10 @@ function contentRow(c: ContentTransfer): OperationRow {
 function messageRow(m: PendingMessageOpView): OperationRow {
   const offline = !!m.peer_id && m.peer_offline;
   const actions: OperationAction[] = [];
-  // 补发队列里的行都是本机发出去的（`outbox` / `group_outbox`），但"能不能取消"要看后端：
-  // 群消息只要**任一成员** Ack 过，取消就会被拒（already_delivered）。界面给一颗点了
-  // 必然失败的按钮，用户看到的就是「还在排队却说已送达」（2026-10-25 实报）。
+  // 补发队列里的行都是本机发出去的（`outbox` / `group_outbox`）。
+  // 2026-10-25 起"能不能取消"由**台账**回答（这一列后端与 `cancel_message` 同口径）：
+  // 群里已经有人收到也照样可以取消**剩余成员**（消息落 partial_cancelled），
+  // 旧实现那套"任一成员 Ack ⇒ 拒绝取消"正是用户实报「排队中却说已送达」的根因。
   const convId = m.group_id ? `group:${m.group_id}` : m.peer_id ?? undefined;
   if (convId && m.can_cancel) actions.push("cancel_message");
   if (convId) actions.push("open_conversation");

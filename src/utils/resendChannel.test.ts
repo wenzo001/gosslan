@@ -94,11 +94,12 @@ test("★ MessageItem 的重发入口按通道分派，旧的 `kind !== 'file'` 
 
 test("★ 回执那颗键的可用性由 retryable 决定，取消那一格不再是「永远静态」", () => {
   const receipt = read("components/message/MessageReceipt.vue");
-  // 失败与取消两格都要能长出可点的重发（负责人：取消了也该能再次发送）
+  // 失败、取消、群消息部分送达三格都要能长出可点的重发（负责人：取消了也该能再次发送；
+  // 2026-10-25：群消息部分送达后要能按成员补发）。允许跨行，判据落在"三态都被接住"。
   assert.match(
     receipt,
-    /props\.state === "failed" \|\| props\.state === "cancelled"/,
-    "回执的 canRetry 必须同时接住 failed 与 cancelled，否则取消掉的文件永远只有一个静态图标",
+    /props\.state === "failed"[\s\S]*props\.state === "cancelled"[\s\S]*props\.state === "partial_cancelled"/,
+    "回执的 canRetry 必须接住 failed / cancelled / partial_cancelled，否则取消掉的永远只有一个静态图标",
   );
   assert.equal(
     receipt.includes(`retryable !== false`),

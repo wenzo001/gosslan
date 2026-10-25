@@ -7,7 +7,7 @@ import { useExclusivePopup } from "@/composables/useExclusivePopup";
 import { PopoverContent, PopoverPortal, PopoverRoot, PopoverTrigger } from "reka-ui";
 import { avatarSeedFor } from "@/utils/avatarSeed";
 import type { SendState } from "@/composables/useMessageDisplay";
-import { Ban, CheckCheck } from "lucide-vue-next";
+import { Ban, CheckCheck, HelpCircle } from "lucide-vue-next";
 import { Check } from "@/components/ui/icons";
 import { X } from "@/components/ui/icons";
 
@@ -34,11 +34,16 @@ const props = defineProps<{
 const emit = defineEmits<{ (e: "retry"): void }>();
 
 /**
- * 「失败」与「已取消」两格都可以长出这颗重发（负责人 2026-10-23：取消掉的也想再发一次），
+ * 「失败」「已取消」「部分送达后被取消」三格都可以长出这颗重发（负责人 2026-10-23：
+ * 取消掉的也想再发一次；2026-10-25：群消息部分送达后也要能按成员补发），
  * 但都必须先有真通道。其余状态（sending/sent/delivered/read）本来就没有重试可言。
  */
 const canRetry = computed(
-  () => (props.state === "failed" || props.state === "cancelled") && props.retryable === true,
+  () =>
+    (props.state === "failed" ||
+      props.state === "cancelled" ||
+      props.state === "partial_cancelled") &&
+    props.retryable === true,
 );
 
 const chat = useChatStore();
@@ -78,8 +83,48 @@ function readerAvatar(id: string): string | null {
 </script>
 
 <template>
-  <!-- 群聊：已读成员头像 + 展开完整列表 -->
-  <div v-if="isGroup" class="relative shrink-0 pb-1.5">
+  <!-- 群聊：状态指示（失败/取消/部分送达/未知） + 已读成员头像 + 展开完整列表 -->
+  <div v-if="isGroup" class="relative flex shrink-0 items-center gap-1 pb-1.5">
+    <!-- 群消息没有 1:1 那套单勾/双勾，但失败、取消、部分送达、未知都是真实状态，
+         此前这一格**什么都不显示**（只渲染已读头像）⇒ 群里的失败消息看起来像已发出。 -->
+    <button
+      v-if="(state === 'failed' || state === 'cancelled' || state === 'partial_cancelled') && canRetry"
+      class="tap-safe flex h-5 w-5 items-center justify-center rounded-[var(--gosslan-radius-xs)] transition hover:bg-[var(--gosslan-hover)]"
+      :class="state === 'failed' ? 'text-[var(--gosslan-danger-ink)]' : state === 'partial_cancelled' ? 'text-[var(--gosslan-warning-ink)]' : 'text-[var(--gosslan-text-2)]'"
+      :title="t('msg.resend')" :aria-label="t('msg.resend')"
+      @click="emit('retry')"
+    >
+      <X v-if="state === 'failed'" class="h-4 w-4" stroke-width="2.5" />
+      <Ban v-else class="h-4 w-4" stroke-width="2.5" />
+    </button>
+    <span
+      v-else-if="state === 'failed'"
+      class="flex h-5 w-5 items-center justify-center text-[var(--gosslan-danger-ink)]"
+      role="img" :title="title" :aria-label="title"
+    >
+      <X class="h-4 w-4" stroke-width="2.5" />
+    </span>
+    <span
+      v-else-if="state === 'partial_cancelled'"
+      class="flex h-5 w-5 items-center justify-center text-[var(--gosslan-warning-ink)]"
+      role="img" :title="title" :aria-label="title"
+    >
+      <Ban class="h-4 w-4" stroke-width="2.5" />
+    </span>
+    <span
+      v-else-if="state === 'cancelled'"
+      class="flex h-5 w-5 items-center justify-center text-[var(--gosslan-text-2)]"
+      role="img" :title="title" :aria-label="title"
+    >
+      <Ban class="h-4 w-4" stroke-width="2.5" />
+    </span>
+    <span
+      v-else-if="state === 'unknown'"
+      class="flex h-5 w-5 items-center justify-center text-[var(--gosslan-text-2)]"
+      role="img" :title="title" :aria-label="title"
+    >
+      <HelpCircle class="h-4 w-4" stroke-width="2.5" />
+    </span>
     <PopoverRoot v-if="readerIds.length > 0" :open="readersOpen" @update:open="onReadersOpenChange">
       <PopoverTrigger as-child>
         <button
@@ -189,6 +234,26 @@ function readerAvatar(id: string): string | null {
       :aria-label="title"
     >
       <Ban class="h-4 w-4" stroke-width="2.5" />
+    </span>
+    <span
+      v-else-if="state === 'partial_cancelled'"
+      class="flex h-5 w-5 items-center justify-center text-[var(--gosslan-warning-ink)]"
+      role="img"
+      :title="title"
+      :aria-label="title"
+    >
+      <Ban class="h-4 w-4" stroke-width="2.5" />
+    </span>
+    <!-- 状态未知：兜底可见性。以前这份映射不认识的取值会走 default 空串 ⇒ 图标位全空，
+         读屏也读不到；用户只能猜"是不是发出去了"。 -->
+    <span
+      v-else-if="state === 'unknown'"
+      class="flex h-5 w-5 items-center justify-center text-[var(--gosslan-text-2)]"
+      role="img"
+      :title="title"
+      :aria-label="title"
+    >
+      <HelpCircle class="h-4 w-4" stroke-width="2.5" />
     </span>
     <span v-else class="relative flex items-center" role="img" :title="title" :aria-label="title">
       <!-- 状态切换给一次短促的弹入：单勾→双勾→主题色双勾是聊天里最常盯的一处，

@@ -5,9 +5,14 @@ import { findPreset, parsePeerStyle, readableToneOn, resolveChatColors, UI_TONE_
 import { fmtDateTime, fmtTimeDivider } from "@/utils/time";
 import { shouldShowTimeDivider } from "@/utils/previewMetrics";
 import { shouldShowNickname, type MessageGroupSide } from "@/utils/messageKinds";
+import { normalizeSendState } from "@/utils/messages";
 import type { MessageRecord } from "@/types";
 
-export type SendState = "sending" | "sent" | "delivered" | "read" | "failed" | "cancelled";
+/**
+ * 气泡角标状态与归一化在 `utils/messages.ts`（纯函数，能直接被 node:test 覆盖）；
+ * 这里只 re-export 类型，保持既有 `import type { SendState } from "…/useMessageDisplay"` 的调用处不变。
+ */
+export type { SendState } from "@/utils/messages";
 
 /**
  * 消息外观与版面判定（气泡配色、时间行、发送状态）。
@@ -159,7 +164,7 @@ export function useMessageDisplay(opts: {
   const fullTime = computed(() => fmtDateTime(message.value.ts));
   const timeDividerText = computed(() => fmtTimeDivider(message.value.ts, t, currentLocale()));
 
-  const sendState = computed(() => message.value.status as SendState);
+  const sendState = computed(() => normalizeSendState(message.value.status));
   const receiptTitle = computed(() => {
     switch (sendState.value) {
       case "sending":
@@ -177,6 +182,10 @@ export function useMessageDisplay(opts: {
       // 取消与失败是两格，各自都要有能看见的名字。
       case "cancelled":
         return t("msg.canceled");
+      case "partial_cancelled":
+        return t("msg.partialCanceled");
+      case "unknown":
+        return t("msg.stateUnknown");
       default:
         return "";
     }

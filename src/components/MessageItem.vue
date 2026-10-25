@@ -26,7 +26,7 @@ import { shouldPreventContextMenu } from "@/utils/contextMenu";
 import { isRecallableKind, isWithinRecallWindow } from "@/utils/recall";
 import type { MessageGroupSide } from "@/utils/messageKinds";
 import { cancelSendChannelFor } from "@/utils/cancelSend";
-import { cancelOutcome } from "@/utils/cancelFeedback";
+import { cancelOutcome, groupResendNotice, messageCancelNotice } from "@/utils/cancelFeedback";
 import { hasTextSelection, isSelectableTextTarget, selectionTextWithin } from "@/utils/textSelection";
 import { detectCode } from "@/utils/codeDetect";
 import { t } from "@/i18n";
@@ -1077,13 +1077,12 @@ function doCancelSend() {
     return;
   }
   if (channel !== "message") return;
-  // 消息通道：后端删队列行 + 状态写 cancelled；对端还没收到，所以没有"通知对方"这一步。
+  // 消息通道：后端把 pending 行置 cancelled + 状态写 cancelled；对端还没收到的人不会再收到。
+  // 群消息可能只取消了剩余成员（有人已收到）—— 结论与计数由 `messageCancelNotice` 统一说。
   api.cancelMessage(props.message.conv_id, props.message.msg_id).then(
-    (outcome) => {
-      app.toast(
-        t(outcome === "cancelled" ? "msg.cancelSend.requested" : "msg.cancelSend.alreadyDone"),
-        outcome === "cancelled" ? "success" : "info",
-      );
+    (res) => {
+      const notice = messageCancelNotice(res);
+      app.toast(t(notice.key, notice.params ?? {}), notice.kind);
     },
     (e: unknown) => app.toastError(e, t("msg.cancelSend.fail")),
   );
@@ -1311,6 +1310,22 @@ async function retrySend() {
   // 防两条出口将来不一致，不是为了兜错。
   if (!channel) return;
   if (channel === "message") {
+    // 群消息：有成员级台账（2026-10-25 起）就**按成员补发原信封** —— 不新建消息、
+    // 不重签，已 Ack 的成员不会收到第二条；取消掉的成员行被重置为 pending。
+    // 没有台账（升级前发出的历史消息）才退回"整条重发"这条旧路径。
+    if (props.isGroup) {
+      try {
+        const res = await api.resendGroupDelivery(msg.conv_id, msg.msg_id);
+        if (res.outcome !== "no_ledger" && res.outcome !== "unsupported") {
+          const notice = groupResendNotice(res);
+          app.toast(t(notice.key, notice.params ?? {}), notice.kind);
+          return;
+        }
+      } catch (e) {
+        app.toastError(e, t("msg.sendFailed"));
+        return;
+      }
+    }
     try {
       // 传 `msg.msg_id`：store 会把**这条 failed 气泡原地**转回 sending 再重发。
       // 不传的话会新建一条乐观记录，而这条 failed 因为全库无删除路径 +
@@ -1670,7 +1685,7 @@ async function copyFileToClipboard() {
                挂上去只会显示一个永远转圈的圈（后端给自聊消息的状态直接是 read，
                但"绿勾已读"出现在自己发给自己上同样没有意义）。见 utils/selfChat。 -->
           <MessageReceipt
-            v-if="mine && !isSelfMsg"
+            v-if="mine && !isSelfMsg && sendState !== 'hidden'"
             :state="sendState"
             :title="receiptTitle"
             :is-group="isGroup"

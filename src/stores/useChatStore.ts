@@ -87,6 +87,7 @@ import type {
   Friend,
   FriendKeyRotation,
   Group,
+  GroupDeliverySummary,
   GroupHistoryProgress,
   GroupReadInfo,
   MessageRecord,
@@ -182,6 +183,15 @@ export const useChatStore = defineStore("chat", () => {
    */
   const updaterStatus = ref<UpdaterStatus | null>(null);
   const messages = ref<Record<string, MessageRecord[]>>({});
+  /**
+   * 群消息的**成员级投递台账摘要**：convId → msgId → `{delivered,pending,cancelled,failed}`。
+   *
+   * 唯一来源是后端 `get_group_delivery_summaries`（台账就是真源）：前端不从
+   * `messages.status`、已读列表或群成员数去推 —— 那会是第二套状态机，而用户报的
+   * "排队中却说已送达"正是两套口径打架的结果。只装**还有非 delivered 行**的消息，
+   * 正常完成的消息不会进这张表（后端已即时清理墓碑）。
+   */
+  const groupDeliveries = ref<Record<string, Record<string, GroupDeliverySummary>>>({});
   /** 首屏消息读失败：convId → 原始错误。成功后清空；UI 只在列表为空时展示。 */
   const messageLoadErrors = ref<Record<string, string>>({});
   // group_id -> reader_id -> reader 已读到的最大时间戳
@@ -1527,6 +1537,8 @@ export const useChatStore = defineStore("chat", () => {
       // 顺序必须在 `delete messages.value[cid]` **之前**取列表（删完就取不到了）。
       releasePreviewsOf(messages.value[cid]);
       delete messages.value[cid];
+      // 投递台账摘要跟着会话走：会话都被逐出了，留着它只会让下次打开先看到过期计数。
+      delete groupDeliveries.value[cid];
       // 分页簿记一并清掉：切回该会话时 loadMessages 会重新从 DB 取最新一页
       pagesLoaded.delete(cid);
       loadSeqs.delete(cid);
@@ -1592,6 +1604,29 @@ export const useChatStore = defineStore("chat", () => {
       ? appendLocalOnly(preserveDeliveryStatus(list, prev), prev)
       : list;
     pagesLoaded.set(convId, 1);
+    // 群会话：顺手取成员级投递台账（气泡角标与「补发」按钮的唯一依据）。
+    // 失败不阻塞消息加载 —— 角标拿不到事实时宁可不显示，也不许猜一个数字出来。
+    if (convId.startsWith("group:")) void refreshGroupDeliveries(convId);
+  }
+
+  /**
+   * 拉一个群会话的成员级投递摘要（`get_group_delivery_summaries`）。
+   *
+   * 只保留该会话的结果；`activeConv` 守卫放在**回填之后**是刻意的：这个函数也会在
+   * 会话没打开时被事件调用（补发/取消发生在任务中心），提前丢弃会让下次打开又白拉一次。
+   * 失败时保留旧值：暂时读不到 ≠ 一切都送达了。
+   */
+  async function refreshGroupDeliveries(convId: string): Promise<void> {
+    if (!convId.startsWith("group:")) return;
+    let list: GroupDeliverySummary[];
+    try {
+      list = await api.getGroupDeliverySummaries(convId);
+    } catch {
+      return;
+    }
+    const map: Record<string, GroupDeliverySummary> = {};
+    for (const s of list) map[s.msg_id] = s;
+    groupDeliveries.value = { ...groupDeliveries.value, [convId]: map };
   }
 
   /** 向上翻页加载更早的历史消息（VirtualList 触顶时调用）。 */
@@ -2957,6 +2992,11 @@ export const useChatStore = defineStore("chat", () => {
           void loadMessages(convId);
         }
       },
+      onGroupDeliveryChanged: (p) => {
+        // 台账变了（Ack 落地 / 取消剩余成员 / 补发 / 清扫判死）：只重拉那个群的摘要。
+        // 不回库重查消息、也不自己改计数 —— 计数来自台账，猜测会造出第二套状态机。
+        void refreshGroupDeliveries(`group:${p.group_id}`);
+      },
       onPeerStyle: (p) => {
         app.applyPeerStyle(p.device_id, p.style);
       },
@@ -3154,6 +3194,8 @@ export const useChatStore = defineStore("chat", () => {
     operations,
     liveOperationCount,
     messages,
+    groupDeliveries,
+    refreshGroupDeliveries,
     groupReads,
     groupHistorySync,
     groupReaderIds,

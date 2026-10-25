@@ -321,7 +321,7 @@ pub fn list_pending_message_operations(
                 m.status
          FROM outbox o LEFT JOIN messages m ON m.msg_id = o.msg_id
          WHERE COALESCE(m.status, 'sending')
-               NOT IN ('delivered', 'read', 'recalled', 'cancelled')
+               NOT IN ('delivered', 'read', 'recalled', 'cancelled', 'partial_cancelled')
          ORDER BY o.created_at DESC LIMIT ?1",
     )?;
     let dm_rows = dm.query_map(params![limit, PREVIEW_CHAR_WINDOW], |r| {
@@ -354,18 +354,24 @@ pub fn list_pending_message_operations(
     }
 
     let mut grp = conn.prepare(
-        // 群消息：任一成员 Ack 就把消息状态推成 delivered，但其余成员的队列行还在 ——
-        // 这类行仍要列（"还有 N 人没收到"是真实事实），但 `can_cancel=false` 且
-        // `some_delivered=true`（见结构体注释）。
+        // 群消息：只列**还有 pending 行**的消息。任一成员 Ack 会被台账记成 delivered，
+        // 其余成员仍在队列里 ⇒ 这类行仍要列（"还有 N 人没收到"是真实事实），
+        // 并且**可以取消剩余成员**（`can_cancel = waiting_for > 0`）。
+        // ⚠️ 不能再用 `WHERE g.status = 'pending'`：那样 delivered 行会被 WHERE 过滤掉，
+        // 下面的 `SUM(delivered)` 恒为 0，`some_delivered` 就永远是假的（10-25 复审抓出）。
         "SELECT g.msg_id, g.group_id,
-                COUNT(*),
-                MAX(g.created_at),
+                COALESCE(SUM(CASE WHEN g.status = 'pending' THEN 1 ELSE 0 END), 0) AS waiting,
+                COALESCE(MAX(CASE WHEN g.status = 'pending' THEN g.created_at END),
+                         MAX(g.created_at)),
                 COALESCE(m.kind, 'text'),
                 substr(m.content, 1, ?2),
-                m.status
+                m.status,
+                COALESCE(SUM(CASE WHEN g.status = 'delivered' THEN 1 ELSE 0 END), 0) AS delivered
          FROM group_outbox g LEFT JOIN messages m ON m.msg_id = g.msg_id
-         WHERE COALESCE(m.status, 'sending') NOT IN ('cancelled', 'recalled')
+         WHERE COALESCE(m.status, 'sending')
+               NOT IN ('cancelled', 'partial_cancelled', 'recalled', 'read')
          GROUP BY g.msg_id, g.group_id
+         HAVING waiting > 0
          ORDER BY 4 DESC LIMIT ?1",
     )?;
     let grp_rows = grp.query_map(params![limit, PREVIEW_CHAR_WINDOW], |r| {
@@ -377,12 +383,12 @@ pub fn list_pending_message_operations(
             r.get::<_, String>(4)?,
             r.get::<_, Option<String>>(5)?,
             r.get::<_, Option<String>>(6)?,
+            r.get::<_, i64>(7)?,
         ))
     })?;
     for row in grp_rows.flatten() {
-        let (msg_id, group_id, waiting_for, created_at, kind, content, status) = row;
+        let (msg_id, group_id, waiting_for, created_at, kind, content, status, delivered) = row;
         let preview = text_preview(&kind, content.as_deref());
-        let status = status.as_deref();
         ops.push(PendingMessageOp {
             msg_id,
             peer_id: None,
@@ -392,8 +398,9 @@ pub fn list_pending_message_operations(
             created_at,
             preview,
             peer_offline: false,
-            can_cancel: matches!(status, Some(s) if !matches!(s, "delivered" | "read")),
-            some_delivered: matches!(status, Some("delivered" | "read")),
+            // 有 pending 行且消息行存在 ⇒ 后端可以取消剩余成员。
+            can_cancel: status.is_some(),
+            some_delivered: delivered > 0,
         });
     }
 
@@ -450,7 +457,19 @@ mod message_ops_tests {
         ins_msg(&conn, "m2", "group:g1", "merge", "{\"items\":[]}", 20);
         ins_group(&conn, "m2", "b", 21);
         ins_group(&conn, "m2", "c", 21);
-        // 已送达的成员（d）已经被从队列里删掉 ⇒ 不该被数进 waiting_for
+        // 已送达的成员（d）的台账行是 delivered 墓碑：不参与 waiting，但要能数出来
+        conn.execute(
+            "UPDATE group_outbox SET status = 'delivered'
+              WHERE msg_id = 'm2' AND peer_id = 'c'",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO group_outbox(msg_id, group_id, peer_id, payload, created_at, status)
+             VALUES('m2', 'g1', 'd', '{}', 21, 'delivered')",
+            [],
+        )
+        .unwrap();
 
         let ops = list_pending_message_operations(&conn, MESSAGE_OPS_LIMIT).unwrap();
         assert_eq!(ops.len(), 2, "一条单聊 + 一条群聊");
@@ -465,33 +484,58 @@ mod message_ops_tests {
         let grp = ops.iter().find(|o| o.msg_id == "m2").unwrap();
         assert_eq!(grp.group_id.as_deref(), Some("g1"), "群消息的目标是群");
         assert!(grp.peer_id.is_none(), "群消息没有单个对端（按成员各自一行队列）");
-        assert_eq!(grp.waiting_for, 2, "还剩两个人没收到（已送达的那格不在表里）");
-        assert!(grp.can_cancel, "还没有任何成员 Ack ⇒ 后端允许取消");
-        assert!(!grp.some_delivered, "还没人确认收下");
+        assert_eq!(grp.waiting_for, 1, "只剩 b 一个人没收到（c/d 已是 delivered）");
+        assert!(grp.can_cancel, "还有 pending 行 ⇒ 取消剩余成员必须成立");
+        assert!(grp.some_delivered, "c/d 的 delivered 行必须被数出来（不能恒为 false）");
         assert!(
             grp.preview.is_none(),
             "merge 的 content 是 JSON 载荷 ⇒ 宁可不给，让界面按 kind 说类型，别把机器格式上屏"
         );
     }
 
-    /// 群消息只要一个成员 Ack，消息状态就变 `delivered`，但其余成员的队列行还在。
+    /// 群消息只要一个成员 Ack，消息状态就变 `delivered`，但其余成员的台账行还是 pending。
     ///
     /// 2026-10-25 用户实报：任务中心给这种行一颗「取消」，点了必弹「已送达，不能取消」，
-    /// 而行上还写着「排队中」—— 状态与底层事实对不上。行仍要列（"还有 N 人没收到"是真的），
-    /// 但必须 `can_cancel=false` + `some_delivered=true`。
+    /// 而行上还写着「排队中」—— 状态与底层事实对不上。
+    /// 修法不是隐藏按钮，而是让取消真的成立：只停剩余成员的 pending 行，消息落
+    /// `partial_cancelled`，已收下的成员原样保留（这就是「部分已发送，可补发」）。
     #[test]
-    fn group_partial_delivery_is_listed_but_not_cancellable() {
+    fn group_partial_delivery_is_listed_and_the_rest_can_be_cancelled() {
         let conn = mem();
         ins_msg(&conn, "gm", "group:g1", "text", "群里等回复", 10);
         conn.execute("UPDATE messages SET status='delivered' WHERE msg_id='gm'", [])
             .unwrap();
+        conn.execute(
+            "INSERT INTO group_outbox(msg_id, group_id, peer_id, payload, created_at, status)
+             VALUES('gm', 'g1', 'a', '{}', 10, 'delivered')",
+            [],
+        )
+        .unwrap();
         ins_group(&conn, "gm", "b", 11);
 
         let ops = list_pending_message_operations(&conn, MESSAGE_OPS_LIMIT).unwrap();
         let row = ops.iter().find(|o| o.msg_id == "gm").unwrap();
         assert_eq!(row.waiting_for, 1, "还剩 1 个成员没收到");
-        assert!(!row.can_cancel, "已有人 Ack ⇒ 后端会拒绝取消，界面不该给按钮");
+        assert!(row.can_cancel, "还有 pending 行 ⇒ 取消必须成立（旧实现答「已送达」是真缺陷）");
         assert!(row.some_delivered, "状态要能说「部分成员已收到」");
+
+        assert_eq!(
+            cancel_queued_group_message(&conn, "gm").unwrap(),
+            crate::db::GroupMessageCancelOutcome::PartiallyCancelled {
+                delivered: 1,
+                cancelled: 1
+            }
+        );
+        let status: String = conn
+            .query_row("SELECT status FROM messages WHERE msg_id='gm'", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(status, "partial_cancelled");
+        assert!(
+            list_pending_message_operations(&conn, MESSAGE_OPS_LIMIT)
+                .unwrap()
+                .is_empty(),
+            "取消之后就没有 pending 行，任务中心必须清掉这一行"
+        );
     }
 
     /// 1:1 的终态消息不该再挂着补发队列行（历史库/旧版本留下的孤儿）：
@@ -903,23 +947,31 @@ mod ack_delivery_tests {
         assert_eq!(outbox_rows(&conn, "m2"), 1);
 
         // 群聊同一纪律：状态与 group_outbox 行同事务收尾，且只认命中的成员。
+        // 2026-10-25 起行不再删掉，而是条件置 delivered；全部送达后变成墓碑被即时清理。
         seed_group(&conn, "gm1", "peer-a");
-        assert!(ack_group_delivered(&conn, "gm1", "peer-a").unwrap());
+        assert_eq!(
+            ack_group_delivered(&conn, "gm1", "peer-a").unwrap(),
+            GroupAckOutcome::Applied
+        );
         assert_eq!(status(&conn, "gm1"), "delivered");
         assert_eq!(group_outbox_rows(&conn, "gm1"), 0);
 
         seed_group(&conn, "gm2", "peer-a");
-        assert!(!ack_group_delivered(&conn, "gm2", "peer-b").unwrap());
+        assert_eq!(
+            ack_group_delivered(&conn, "gm2", "peer-b").unwrap(),
+            GroupAckOutcome::Duplicate,
+            "不匹配的成员 = 攻击面：只读不写，也不许 emit"
+        );
         assert_eq!(status(&conn, "gm2"), "sending");
         assert_eq!(group_outbox_rows(&conn, "gm2"), 1);
     }
 
-    /// 重复 Ack / 迟到 Ack 必须**幂等且不改判**（2026-10-20 验收补）。
+    /// 重复 Ack / 迟到 Ack 必须**幂等且不改判**（2026-10-20 验收补，2026-10-25 改为台账口径）。
     ///
-    /// 调用方只在 `Ok(true)` 时 emit `message-acked`，所以"第二次 Ack 返回 false"
+    /// 调用方只在 `Applied` 时 emit `group-message-acked`，所以"第二次 Ack 返回 Duplicate"
     /// 就是"前端不会收到第二条已送达事件"的唯一保证；这里把它钉在 DB 层。
     /// 场景覆盖：重复 Ack（同 peer）、群聊重复 Ack、以及**已被清扫判失败**的消息收到迟到 Ack
-    /// —— 队列行已随终态一起删掉 ⇒ 没有任何证据能把它改回 delivered，也不会触发重发。
+    /// —— 失败行仍在台账里（不删），迟到 Ack 只改行（`LateApplied`），不改消息状态。
     #[test]
     fn duplicate_and_late_acks_are_idempotent_and_never_change_the_verdict() {
         let conn = db();
@@ -932,8 +984,14 @@ mod ack_delivery_tests {
 
         // ② 重复 GroupAck：群语义是"任一成员首个 Ack 推进 delivered"，后续成员/重复都幂等。
         seed_group(&conn, "gm1", "peer-a");
-        assert!(ack_group_delivered(&conn, "gm1", "peer-a").unwrap());
-        assert!(!ack_group_delivered(&conn, "gm1", "peer-a").unwrap());
+        assert_eq!(
+            ack_group_delivered(&conn, "gm1", "peer-a").unwrap(),
+            GroupAckOutcome::Applied
+        );
+        assert_eq!(
+            ack_group_delivered(&conn, "gm1", "peer-a").unwrap(),
+            GroupAckOutcome::Duplicate
+        );
         assert_eq!(status(&conn, "gm1"), "delivered");
         assert_eq!(group_outbox_rows(&conn, "gm1"), 0);
 

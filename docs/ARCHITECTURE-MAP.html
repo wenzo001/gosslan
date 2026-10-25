@@ -653,7 +653,11 @@ const CMDS = [
   ["mark_read", "chat", "conv_id str", "()|err"],
   ["send_message", "chat", "friend_id str; content str; kind str", "MessageRecord|err"],
   ["recall_message", "chat", "friend_id str; target str", "()|err"],
-  ["cancel_message", "chat", "conv_id str; msg_id str", "str|err"],
+  ["cancel_message", "chat", "conv_id str; msg_id str", "MessageCancelResult|err"],
+  // 群消息的成员级投递台账（2026-10-25）：摘要给气泡角标，补发按成员重投**原信封**
+  // （接收端按 msg_id 幂等，已 Ack 的成员不会收到第二条）。
+  ["get_group_delivery_summaries", "chat", "conv_id str", "GroupDeliverySummary[]|err"],
+  ["resend_group_delivery", "chat", "conv_id str; msg_id str", "GroupResendResult|err"],
   ["set_message_render", "chat", "conv_id str; target str; mode str", "()|err"],
   ["set_conversation_pinned", "chat", "conv_id str; pinned bool", "()|err"],
   ["search_chat_history", "chat_search", "keyword str; sender_id str?; since_ms int?; until_ms int?", "ChatSearchGroup[]|err"],

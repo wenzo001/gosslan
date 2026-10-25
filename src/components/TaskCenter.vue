@@ -14,7 +14,7 @@ import {
 } from "@/utils/taskCenter";
 import { clampProgress } from "@/utils/transferSummary";
 import { blockedReasonKey } from "@/utils/transferState";
-import { cancelOutcome } from "@/utils/cancelFeedback";
+import { cancelOutcome, messageCancelNotice } from "@/utils/cancelFeedback";
 import { sleep } from "@/utils/defer";
 
 /**
@@ -136,19 +136,16 @@ async function runAction(row: OperationRow, action: OperationAction) {
 /**
  * 取消一条**还没送出去的消息**（B4 的命令，2026-10-24 接进任务中心）。
  *
- * 与文件取消不同：这里没有"本机停了、对面还在跑"这种中间态 —— 后端删掉 outbox 行并写
- * `cancelled`，要么成功要么已经送达。`already_delivered` 必须如实说出口，
- * 否则用户点完看到行还没了/还在，只能猜。
+ * 2026-10-25：后端改成**结构化结果**（群消息可能只取消了剩余成员）。这里不再用
+ * "cancelled / already_delivered" 两句二元判断 —— 文案映射只有一份，在
+ * `utils/cancelFeedback.messageCancelNotice`，与气泡菜单共用。
  */
 async function cancelMessage(row: OperationRow) {
   if (!row.convId) return;
   const res = await api.cancelMessage(row.convId, row.id);
   await chat.refreshTransfers();
-  if (res === "already_delivered") {
-    app.toast(t("task.cancelMessageDelivered"), "info");
-    return;
-  }
-  app.toast(t("task.cancelDone"), "success");
+  const notice = messageCancelNotice(res);
+  app.toast(t(notice.key, notice.params ?? {}), notice.kind);
 }
 
 /**
