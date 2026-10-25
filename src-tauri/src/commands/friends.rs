@@ -138,7 +138,7 @@ pub async fn remove_friend(state: State<'_, Arc<AppState>>, peer_id: String) -> 
     let s = state.inner();
     // 删好友前先取消在途发送；否则 outbox 删了、发送任务却可能把 transfer 写回 active。
     crate::commands::cancel_send_transfers_for_peer(s, &peer_id);
-    let failed_messages = {
+    let cleanup = {
         let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());
         db::remove_friend(&dbc, &peer_id).map_err(|e| e.to_string())?;
         db::delete_file_outbox_for_peer(&dbc, &peer_id).ok();
@@ -147,8 +147,21 @@ pub async fn remove_friend(state: State<'_, Arc<AppState>>, peer_id: String) -> 
         db::forget_chat_peer_style(&dbc, &peer_id).ok();
         // D5-A（2026-10-25 用户拍板）：关系没了，还挂在补发队列里的消息永远不会有人收。
         // 一起清队列并落 `failed`（不是 cancelled：用户取消的是"我不发了"，这里是"发不成了"）。
-        // 失败不阻断删好友 —— 清理是顺带，关系解除才是这次调用的事实。
-        db::fail_pending_messages_for_peer(&dbc, &peer_id).unwrap_or_default()
+        // 失败不阻断删好友 —— 清理是顺带，关系解除才是这次调用的事实；但失败必须留痕，
+        // 否则那些消息会永远停在「发送中」，而日志里一个字都没有。
+        db::fail_pending_messages_for_peer(&dbc, &peer_id)
+    };
+    let failed_messages = match cleanup {
+        Ok(ids) => ids,
+        Err(e) => {
+            s.logger.error(
+                "friend",
+                format!(
+                    "code=REMOVE_FRIEND_OUTBOX_FAILED peer={peer_id}：{e} —— 该好友的待发消息可能停在发送中"
+                ),
+            );
+            Vec::new()
+        }
     };
     // 状态变更要在放掉 db 锁之后 emit（INV-P25：持锁 emit 会让监听器回手再抢同一把锁）。
     for msg_id in &failed_messages {

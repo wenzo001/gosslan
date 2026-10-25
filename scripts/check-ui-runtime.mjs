@@ -4070,6 +4070,12 @@ async function rosterChecks(cdp, url) {
     "chipInsetLeft >= 0 且 chipInsetRight >= 0",
     "内缩 " + gl.chipInsetLeft + " / " + gl.chipInsetRight
       + "px（底栏 padding=" + gl.padLeft + " / " + gl.padRight + "）");
+  // 用户 2026-10-25：「文字信息和表情回复的间隔太远，希望跟上下左右一样」。
+  // 横向与正文同档（px-3 = 12px），顶部只留 4px（余下 6px 是气泡自己的下内边距）。
+  check("左列：回应底栏内边距与正文同档（横向 12px、顶部 4px），不再把胶囊推远",
+    gl.ok === true && gl.padLeft === "12px" && gl.padRight === "12px" && gl.stripPadTop === "4px",
+    "padLeft/padRight=12px、stripPadTop=4px",
+    JSON.stringify({ padLeft: gl.padLeft, padRight: gl.padRight, padTop: gl.stripPadTop }));
   check("左列：底栏紧贴气泡下沿（0 <= 差 <= 2px）",
     gl.ok === true && gl.gapStripToBubble >= 0 && gl.gapStripToBubble <= 2,
     "0 <= 底栏上沿 - 气泡下沿 <= 2",
@@ -9986,7 +9992,7 @@ async function runSettingsMobile(cdp, url) {
           });
         }
       }
-      const inner = scrollers[0] ? card.parentElement.closest('[class*="overflow-y-auto"]') : null;
+      const inner = card.closest('[data-settings-scroll]');
       const readAt = () => +card.getBoundingClientRect().left.toFixed(1);
       const atTop = readAt();
       // ⚠️ 非空转：隔离安装里网络段的异步数据是桩，页面可能根本不够高 ⇒ 滚不动 ⇒
@@ -10118,6 +10124,42 @@ async function runSettingsMobile(cdp, url) {
     check("移动端设置：二级→一级→再进二级，共享滚动容器回到顶端且全页只有一层",
       reopenNet === true && shared.count === 1 && shared.top === 0,
       "count=1 且 scrollTop=0", JSON.stringify(shared));
+
+    // ── 返回一级时卡片宽度不许闪一下（用户 2026-10-25）──
+    // 真机症状：进「网络」、上滑、返回 ⇒ 一级列表卡片先变窄、过一会儿又还原。
+    // 机制不是动画：滚动条出现/消失会实时吃掉内容宽度，而 `scrollbar-gutter` 在部分
+    // WebView 上不生效（桌面 Chromium 里量不出来）。这里显式把 gutter 降级成 `auto`
+    // 模拟那一档，再逐帧量同一个滚动容器的 clientWidth —— 修法要求它与内容长短无关。
+    const backSampled = await cdp.eval(`(() => {
+      const el = document.querySelector('[data-settings-scroll]');
+      if (el) {
+        el.style.scrollbarGutter = 'auto';
+        el.scrollTop = el.scrollHeight;
+      }
+      window.__settingsBackWidths = [];
+      const back = [...document.querySelectorAll('button')].find((x) => {
+        const a = x.getAttribute('aria-label') || '';
+        return a.includes('返回') || /\\bBack\\b/i.test(a);
+      });
+      const tick = () => {
+        const s = document.querySelector('[data-settings-scroll]');
+        if (s) window.__settingsBackWidths.push(+s.clientWidth.toFixed(1));
+        if (window.__settingsBackWidths.length < 40) requestAnimationFrame(tick);
+      };
+      if (back) back.click();
+      tick();
+      return !!back;
+    })()`);
+    await sleep(900);
+    const backWidths = await cdp.eval("window.__settingsBackWidths || []");
+    const widthSpan = backWidths.length
+      ? +(Math.max(...backWidths) - Math.min(...backWidths)).toFixed(1)
+      : null;
+    check("移动端设置：从二级页返回时一级列表宽度不随滚动条出现/消失而变（gutter 降级档也稳定）",
+      backSampled === true && backWidths.length >= 5 && widthSpan !== null && widthSpan <= 0.5,
+      "返回后逐帧 clientWidth 极差 <=0.5px",
+      JSON.stringify({ frames: backWidths.length, min: backWidths.length ? Math.min(...backWidths) : null,
+        max: backWidths.length ? Math.max(...backWidths) : null, span: widthSpan }));
   } finally {
     await cdp.send("Emulation.clearDeviceMetricsOverride").catch(() => {});
   }
@@ -12355,8 +12397,13 @@ async function runToast(cdp, url) {
     JSON.stringify({ beforeEsc, s, escPrevented }));
 
   await cdp.eval("window.__toastManager.add({ id: 'short-lived', title: '短命', status: 'info', duration: 80, type: 'background', data: { kind: 'info' } })");
-  await sleep(450);
-  s = await read();
+  // 80ms 是产品计时，不是等待时间：机器忙时一次固定 sleep 可能还没跑到定时器回调。
+  // 有界轮询到 2s —— 仍然证明「到点自动移除」，但不会把机器负载读成产品缺陷。
+  for (let i = 0; i < 20; i += 1) {
+    await sleep(100);
+    s = await read();
+    if (!s.texts.includes("短命")) break;
+  }
   check("duration 到点自动移除（80ms 的短计时，不靠肉眼等 3/6 秒）",
     s.texts.includes("短命") === false,
     "短命已移除", JSON.stringify(s));
@@ -12823,6 +12870,31 @@ async function runTaskCard(cdp, url) {
   const t0 = await text();
   check("卡片渲染出这条任务的标题（用户报的是「看不见」，那就先判标题真在 DOM 里）",
     t0.includes("把周报发出去"), "含标题", t0.slice(0, 80));
+
+  // —— 用户 2026-10-25 的 hover 两半（上半区铺到分隔线 / 有回应时下半区是横条）——
+  const hoverGeom = await cdp.eval(`(() => {
+    const card = document.querySelector('[data-todo-card]');
+    const body = card ? card.querySelector(':scope > [role="button"]') : null;
+    const footer = card ? card.querySelector(':scope > button') : null;
+    if (!body || !footer) return null;
+    const b = body.getBoundingClientRect(), f = footer.getBoundingClientRect();
+    const shell = document.createElement('div');
+    shell.className = 'msg-shell';
+    shell.setAttribute('data-has-reactions', 'true');
+    card.parentElement.appendChild(shell);
+    shell.appendChild(card);
+    return {
+      gap: +(f.top - b.bottom).toFixed(1),
+      joinedRadius: getComputedStyle(card).borderBottomLeftRadius,
+    };
+  })()`);
+  check("任务卡主体 hover 一直铺到底部操作条的分隔线（两者之间没有白缝）",
+    !!hoverGeom && Math.abs(hoverGeom.gap) <= 0.5,
+    "主体矩形底边 == 操作条顶边", JSON.stringify(hoverGeom));
+  check("任务卡有表情回应时下圆角交给回应底栏（hover 下半区是横条而不是圆角底色）",
+    !!hoverGeom && hoverGeom.joinedRadius === "0px",
+    "data-has-reactions 下 [data-todo-card] 的 border-bottom-*-radius = 0px",
+    JSON.stringify(hoverGeom));
   check("卡片不许把载荷当原始 JSON 画出来（内部字段名一个都不该露出）",
     !t0.includes("todo_id") && !t0.includes("done_at"), "不出现内部字段名", t0.slice(0, 80));
   check("状态胶囊显示载荷快照那一档（没传实时表 ⇒ 退回创建时）",

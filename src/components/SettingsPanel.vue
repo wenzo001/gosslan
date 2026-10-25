@@ -235,10 +235,13 @@ watch(
       :title="settingsTitle"
       @back="onSettingsBack"
     >
+      <!-- ⚠️ 必须是 `overflow-y-scroll`，不是 `auto`（用户 2026-10-25：从网络二级页上滑后返回，
+           一级列表卡片先变窄、过一会儿又还原）。`scrollbar-gutter` 在部分 WebView 上不生效，
+           滚动条出现/消失会实时吃掉 8px 内容宽度；固定滚动条槽位后宽度与页面内容长度无关。 -->
       <div
         ref="scrollEl"
         data-settings-scroll
-        class="scrollbar-both min-h-0 flex-1 overflow-y-auto overflow-x-hidden overscroll-contain"
+        class="scrollbar-both min-h-0 flex-1 overflow-y-scroll overflow-x-hidden overscroll-contain"
       >
         <div class="p-4">
           <!-- 一级页：分组列表 -->

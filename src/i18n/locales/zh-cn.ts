@@ -444,7 +444,7 @@ export const zhCN: MessageDict = {
   "chat.groupHistory.failed": "群消息同步未完成，有成员在线时会自动重试",
   "chat.groupHistory.cancelRequested": "正在停止同步：当前这一页处理完就停",
   "chat.groupHistory.cancelNotRunning": "这一群现在没有正在同步",
-  "chat.groupHistory.cancelled": "已停止同步（已拉到的部分保留，之后会自动补齐）",
+  "chat.groupHistory.cancelled": "已停止同步（已拉到的部分保留，可点群聊顶部的同步按钮继续）",
   // 事件监听绑定失败（实时消息/回执/在线状态全部不可用）：必须显式提示重启，
   // 否则界面"看起来正常"却永远收不到任何事件（2026-09-23 审计 1.6）
   "chat.eventBindFail": "实时消息监听启动失败，新消息可能收不到；请到「设置 · 网络」点「重新连接实时事件」",

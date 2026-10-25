@@ -287,17 +287,18 @@
       .boot-set-nav {
         width: 176px;
         flex: none;
-        padding: 14px 10px;
+        /* 与真实设置导航同档：`px-2 py-3` + `gap-0.5`（8/12px、2px）。 */
+        padding: 12px 8px;
         display: flex;
         flex-direction: column;
-        gap: 6px;
+        gap: 2px;
         background: var(--boot-caption);
         border-right: 1px solid var(--boot-line);
       }
       .boot-set-nav i {
         display: block;
         height: 32px;
-        border-radius: 6px;
+        border-radius: 8px; /* = token md，与真实导航项一致 */
       }
       .boot-set-nav i.active {
         background: var(--boot-primary);
@@ -306,7 +307,8 @@
       .boot-set-body {
         flex: 1;
         min-width: 0;
-        padding: 18px 20px;
+        /* 真实内容区是 `px-5 py-4`（20/16px）。 */
+        padding: 16px 20px;
         display: flex;
         flex-direction: column;
         gap: 10px;
@@ -318,7 +320,8 @@
         margin-top: 4px;
       }
       .boot-set-card {
-        border-radius: 10px;
+        /* = token lg，与 SettingsGroup 的 `rounded-lg` 同档 */
+        border-radius: 12px;
         border: 1px solid var(--boot-line);
         background: var(--boot-caption);
         overflow: hidden;
@@ -327,7 +330,8 @@
         display: flex;
         align-items: center;
         gap: 12px;
-        padding: 12px 14px;
+        /* 与 SettingsRow 的 `px-4 py-3` 同档 */
+        padding: 12px 16px;
       }
       .boot-set-row + .boot-set-row {
         border-top: 1px solid var(--boot-line);
@@ -487,7 +491,8 @@
       .boot-preview-frame {
         width: min(72%, 900px);
         height: min(78%, 620px);
-        border-radius: 10px;
+        /* 与预览浮层同档的大圆角（token lg） */
+        border-radius: 12px;
         background: var(--boot-line);
         animation: boot-breathe 1.5s ease-in-out infinite;
       }
@@ -548,7 +553,8 @@
         align-items: center;
         gap: 8px;
         padding: 12px;
-        border-radius: 10px;
+        /* 群任务看板卡片是 token lg（12px） */
+        border-radius: 12px;
         background: var(--boot-caption);
         border: 1px solid var(--boot-line);
       }

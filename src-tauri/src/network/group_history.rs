@@ -78,7 +78,8 @@ pub enum SyncOutcome {
     },
     /// 中途换不到源 / 页解不开 / 落库报错 ⇒ **不写完成标记**
     Incomplete { synced: i64, reason: String },
-    /// 用户在任务中心按了取消 ⇒ 停在页间边界，已拉到的部分保留，标记保持 pending（下次续）
+    /// 用户在任务中心按了取消 ⇒ 停在页间边界，已拉到的部分保留，标记写 `stopped`
+    /// （清扫任务不会自动重跑；手动同步会重新写回 pending 并续扫）
     Cancelled { synced: i64 },
 }
 
@@ -443,6 +444,28 @@ pub async fn run_group_history_sync(state: &Arc<AppState>, group_id: &str) -> Sy
         // 协作式取消（2026-10-25）：只在**页间**检查 —— 当前这一页可能正等对端最多 20s，
         // 而落库在阻塞池里；从中间砍掉会留下"请求在路上、应答没人等"的半截现场。
         if take_group_history_cancel(state, group_id) {
+            // 用户停止 ⇒ 标记写 `stopped`，不是继续 pending：pending 会被 60 秒清扫任务
+            // 自动重跑，那会让"已停止"只维持一分钟。已拉到的部分仍在库里，手动同步会
+            // 把标记写回 pending 并从 -1 全量重扫（落库按 msg_id 幂等，只补缺的）。
+            let marked = {
+                let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
+                db::write_group_history_state(
+                    &dbc,
+                    group_id,
+                    db::GROUP_HISTORY_STATUS_STOPPED,
+                    &source,
+                    synced,
+                    total_declared,
+                )
+            };
+            if let Err(e) = marked {
+                state.logger.error(
+                    "group",
+                    format!(
+                        "群历史已停止但标记写失败 group={group_id}：{e} —— 60 秒后清扫可能自动再跑一趟"
+                    ),
+                );
+            }
             emit_progress(
                 state,
                 group_id,
@@ -455,7 +478,7 @@ pub async fn run_group_history_sync(state: &Arc<AppState>, group_id: &str) -> Sy
             state.logger.info(
                 "group",
                 format!(
-                    "群历史同步被用户取消 group={group_id} source={source}：已入库 {synced} 条，标记保持待同步（下次续）"
+                    "群历史同步被用户取消 group={group_id} source={source}：已入库 {synced} 条，标记 stopped（手动同步可续）"
                 ),
             );
             return SyncOutcome::Cancelled { synced };
@@ -1436,6 +1459,10 @@ mod group_history_engine_tests {
         assert!(should_sync_group(Some(db::GROUP_HISTORY_STATUS_PENDING)));
         assert!(!should_sync_group(Some(db::GROUP_HISTORY_STATUS_DONE)));
         assert!(
+            !should_sync_group(Some(db::GROUP_HISTORY_STATUS_STOPPED)),
+            "用户在任务中心按过停止 ⇒ 60 秒清扫不许自动把它重新排起来（否则「已停止」只维持一分钟）"
+        );
+        assert!(
             !should_sync_group(None),
             "升级前就在群里的老成员不许被动开始拉历史"
         );
@@ -1631,6 +1658,11 @@ mod group_history_engine_tests {
         assert!(
             prod_drop_guard_clears_cancel(&body),
             "结束守卫必须顺手清掉未消费的取消标志：否则下一趟刚起跑就停"
+        );
+        assert_eq!(
+            body.matches("db::GROUP_HISTORY_STATUS_STOPPED,").count(),
+            1,
+            "取消分支必须把标记写 stopped（登记 1 处）：留 pending 会被 60 秒清扫自动重跑"
         );
         let lib = code_flat(include_str!("../lib.rs"));
         assert_eq!(

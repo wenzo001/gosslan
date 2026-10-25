@@ -442,7 +442,7 @@ export const enUS: MessageDict = {
   "chat.groupHistory.failed": "Group message sync didn't finish; it retries once a member is online",
   "chat.groupHistory.cancelRequested": "Stopping sync: it will stop after the current page finishes",
   "chat.groupHistory.cancelNotRunning": "This group isn't syncing right now",
-  "chat.groupHistory.cancelled": "Sync stopped; what's already fetched is kept and will continue later",
+  "chat.groupHistory.cancelled": "Sync stopped; what's already fetched is kept. Use the sync button in the group header to continue",
   "chat.eventBindFail": "Failed to start live message listeners; new messages may not arrive. Open Settings · Network and tap “Reconnect live events”.",
   "chat.eventBridgeOk": "Live event bridge is healthy",
   "chat.eventBridgeDown": "Live event bridge is down: new messages, presence and transfer progress won't arrive in real time.",
