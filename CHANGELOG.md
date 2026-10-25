@@ -13,6 +13,25 @@
 
 ## [Unreleased]
 
+## [5.10.2] - 2026-10-25
+
+### macOS 启动后崩溃：CoreBluetooth 迟到重发现（2026-10-25 用户崩溃日志）
+
+- 崩溃现场（macOS 正式版 5.10.1，启动约 5 秒、`EXC_CRASH (SIGABRT)`、Thread 30 tokio-rt-worker）：
+  最后一条业务日志是 BLE 外设侧会话就绪 `+ble-link(外设)`，紧接着
+  `panic @ vendor/btleplug/src/corebluetooth/internal.rs:351：We should still have a future at this point!`。
+- 真因不在业务代码：CoreBluetooth 在**首轮服务发现已经回复之后**还会投迟到/重复的发现回调，
+  上游 `check_discovered` 假定"全部服务已发现"时一定还有人在等 `ServicesDiscovered`，
+  没有就 `panic!`；release 是 `panic = "abort"` ⇒ 整个应用被杀。
+- 修复：vendored `btleplug` 在 future 已被取走时安全返回（服务表已完整、结果已交回调用方，
+  没有人在等，也不能补发回复）；与 2026-10-22 那处迟到特征回调补丁同一模式。
+- 同一崩溃前反复出现 `Service no longer available`（服务表被 CoreBluetooth 置为失效）：
+  delegate 成功分支里对可空弱引用 `characteristic.service()` / `descriptor.characteristic()`
+  直接 `unwrap()` 也会 abort，已一并改成安全返回并记 `warn`。
+- 新增源码形状守卫 `vendored_btleplug_tolerates_late_service_rediscovery` 与
+  `vendored_btleplug_tolerates_invalidated_delegate_callbacks`，
+  防止重新 vendor 时把补丁覆盖回上游。
+
 ## [5.10.1] - 2026-10-25
 
 ### 移动端设置宽度稳定与取消语义收口（2026-10-25 用户复核）

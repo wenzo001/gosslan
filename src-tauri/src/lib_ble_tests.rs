@@ -644,3 +644,64 @@
             "补丁要写成\"取不到就 return\"，不能换一种写法继续 panic"
         );
     }
+
+    /// 同一份 vendored 源码里的第二处上游 panic：`check_discovered` 假定"全部服务已发现"
+    /// 时一定还有人在等 `ServicesDiscovered`，没有就 `panic!`。
+    ///
+    /// CoreBluetooth 会在**首轮发现已经回复之后**再投迟到/重复的服务发现回调（连接握手完成、
+    /// 特征读干净之后再来的那一轮）。此时 future 已经被 `take()` 交还给调用方 ⇒ 那句 panic
+    /// 直接 abort 整个进程（release 是 `panic = "abort"`）。
+    ///
+    /// 实测现场（macOS 正式版 v5.10.1，2026-10-25 10:34:55 / 10:35:13，Thread 30 tokio-rt-worker）：
+    /// 日志最后一条业务记录是 BLE 外设侧会话就绪 `+ble-link(外设)`，下一行就是这句 panic，
+    /// 应用启动约 5 s 后 SIGABRT。这条判据守的是"重新 vendor 时别把这个补丁丢了"。
+    ///
+    /// ⚠️ 和上一条一样判**代码形状**：补丁注释里会转述上游那句话，按纯文本判会把注释咬成违规。
+    #[test]
+    fn vendored_btleplug_tolerates_late_service_rediscovery() {
+        let src = include_str!("../vendor/btleplug/src/corebluetooth/internal.rs");
+        assert!(
+            src.contains("fn check_discovered("),
+            "读到的不是那份 vendored 源（路径变了？）—— 这条判据会空转"
+        );
+        assert!(
+            !src.contains("panic!(\"We should still have a future at this point!\")"),
+            "vendored btleplug 又变回上游那句 panic 了：首轮服务发现回复之后的迟到重发现会 abort 整个应用"
+        );
+        assert!(
+            src.contains("late re-discovery after services were already reported"),
+            "补丁要写成\"没有等待者就安全返回\"，不能换成别的写法继续 panic 或补发回复"
+        );
+    }
+
+    /// vendored CoreBluetooth delegate 的成功分支不许对**可空弱引用**直接 `unwrap()`。
+    ///
+    /// `CBCharacteristic.service` / `CBDescriptor.characteristic` 都是弱引用。CoreBluetooth
+    /// 在 `didModifyServices` 把服务表置为失效之后，仍可能投递引用了旧对象的迟到回调
+    /// （写入完成、通知状态、描述符读写）。上游成功分支直接 `unwrap()`；release 是
+    /// `panic = "abort"` ⇒ 整个应用被杀。
+    ///
+    /// 实测现场（macOS 正式版 v5.10.1，2026-10-25）：panic 前反复出现
+    /// `Runtime Error: Service no longer available`，说明服务表已经被置为失效。
+    /// 这条判据守的是"重新 vendor 时别把这个补丁丢了"。
+    #[test]
+    fn vendored_btleplug_tolerates_invalidated_delegate_callbacks() {
+        let src = include_str!("../vendor/btleplug/src/corebluetooth/central_delegate.rs");
+        assert!(
+            src.contains("fn delegate_peripheral_didwritevalueforcharacteristic_error"),
+            "读到的不是那份 vendored delegate 源（路径变了？）—— 这条判据会空转"
+        );
+        for shape in [
+            "characteristic.service() }.unwrap()",
+            "descriptor.characteristic() }.unwrap()",
+        ] {
+            assert!(
+                !src.contains(shape),
+                "vendored btleplug 又变回对可空弱引用的 unwrap 了（{shape}）：服务失效后的迟到回调会 abort 整个应用"
+            );
+        }
+        assert!(
+            src.contains("characteristic whose service is gone"),
+            "补丁要写成\"取不到就安全返回\"，不能换成别的写法继续 panic"
+        );
+    }

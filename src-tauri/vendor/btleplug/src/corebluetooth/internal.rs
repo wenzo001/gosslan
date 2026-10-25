@@ -347,8 +347,25 @@ impl PeripheralInternal {
         // back a ServicesDiscovered reply to the waiting future with all of
         // the characteristic info in it.
         if !self.services.values().any(|service| !service.discovered) {
+            // ⚠️ Gosslan 补丁（2026-10-25）：上游这里假定"全部服务已发现"时一定还有人在等
+            // `ServicesDiscovered`，没有就 `panic!`（消息大意：这个点上我们应该还有个 future）。
+            //
+            // 但 CoreBluetooth 会在**首轮发现已经回复之后**再投迟到/重复的回调：典型是连接握手
+            // 完成、特征读干净之后又来一次 `didDiscoverCharacteristicsForService` /
+            // `didUpdateValueFor...` 触发的 service-modified 重发现。此时 future 早已被
+            // `take()` 交还给调用方，这个 `check_discovered` 再次命中"全部 discovered"分支 ⇒
+            // 上游那句 panic 直接 abort 整个进程（release 是 `panic = "abort"`）。
+            //
+            // 实测现场（macOS 正式版 v5.10.1，2026-10-25 10:34:55 / 10:35:13 两次）：
+            // 日志最后一行是 BLE 外设侧会话就绪 `+ble-link(外设) peer=gosslan-612552a0c0809`，
+            // 紧接着 `panic @ vendor/btleplug/src/corebluetooth/internal.rs:351:17：
+            // We should still have a future at this point!`，应用启动约 5 s 后 SIGABRT。
+            //
+            // 这种回调没有可用信息：服务表已经完整、结果也已经交回调用方，没有人在等 ⇒
+            // 安全返回。不能"补发"一次回复，那会把已交付的首轮发现重复消费。
             if self.services_discovered_future_state.is_none() {
-                panic!("We should still have a future at this point!");
+                trace!("late re-discovery after services were already reported; nothing to reply");
+                return;
             }
             let services = self
                 .services
