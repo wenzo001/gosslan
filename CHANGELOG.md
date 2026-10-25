@@ -15,20 +15,7 @@
 
 ## [5.13.1] - 2026-10-26
 
-### 虚拟列表迁移 TanStack + 持久本地消息 id（2026-10-25）
-
-- 消息列表从手写前缀和/二分/自建 RO 迁移到 **@tanstack/vue-virtual**：`anchorTo:"end"` 负责
-  历史前插锚定；真实 `measureElement`（`data-index` 认行、0 高度与 <=1px 抖动不写缓存、测量在绘制前）；
-  追加贴底由应用的 `pinned` 独占（库 `followOnAppend` 关闭）；整会话切换延后到收敛窗口统一贴底，
-  底部追加仍立即跟随；宽度失效 = `window.resize` + 面板宽度变化 >24px（忽略滚动条 ~15px 的反馈环）。
-- 消息身份改用**持久本地 id**（DB v13→v14：`messages.local_id` + 唯一索引）：乐观气泡在服务端
-  `msg_id` 到达之前就有稳定 key，替换真实记录不再整行重挂；老行回填 `msg_id`（真实库副本演练
-  160/160，主库未动）。
-- 群发送内核 `send_group_payload` 保留客户端 `local_id`（单聊/群聊/自聊三个入口都接上）。
-- LogViewer 仍是 TanStack：过滤变化清测量缓存，隐藏/0 高度不写缓存。
-- 探针量具 `perf/vlist.ts` 的定位读数改用真实 rect（新实现用 `transform`）。
-- 验证：`vlist` 13/13、`scrollrestore` 5/5、`mergeheight` 9/9、`msgovf` 80/80；前端 1411、
-  Rust 1215；1000 条冷滚 p95 21.8 ms / 长帧 0，暖滚 p95 19.1 ms，定位 5/5 零重叠零空隙。
+> 5.13.0 从未发布；这一版把 5.13.0 的虚拟列表迁移 / 持久 local id 与本批修复一起发布。
 
 ### 长列表连续滚动、动态高度与白屏抽动（2026-10-26）
 
@@ -55,6 +42,23 @@
 - 验证：前端 1432；Rust 图片尺寸 8 条；探针 `vlist` 13/13、`scrollrestore` 5/5、`scrollreact` 5/5（连跑 3 次）、
   `imgskel` 7/7、`msgovf` 80/80、`historyerr` 6/6；1200 条混合消息 80–800px/帧上下扫 **0/90 帧空白**；
   图片延迟 700ms 在视口内完成 **0px 位移 / 0 次改高**；前插 100 条锚点漂移 0。
+
+## [5.13.0] - 2026-10-25
+
+### 虚拟列表迁移 TanStack + 持久本地消息 id（2026-10-25）
+
+- 消息列表从手写前缀和/二分/自建 RO 迁移到 **@tanstack/vue-virtual**：`anchorTo:"end"` 负责
+  历史前插锚定；真实 `measureElement`（`data-index` 认行、0 高度与 <=1px 抖动不写缓存、测量在绘制前）；
+  追加贴底由应用的 `pinned` 独占（库 `followOnAppend` 关闭）；整会话切换延后到收敛窗口统一贴底，
+  底部追加仍立即跟随；宽度失效 = `window.resize` + 面板宽度变化 >24px（忽略滚动条 ~15px 的反馈环）。
+- 消息身份改用**持久本地 id**（DB v13→v14：`messages.local_id` + 唯一索引）：乐观气泡在服务端
+  `msg_id` 到达之前就有稳定 key，替换真实记录不再整行重挂；老行回填 `msg_id`（真实库副本演练
+  160/160，主库未动）。
+- 群发送内核 `send_group_payload` 保留客户端 `local_id`（单聊/群聊/自聊三个入口都接上）。
+- LogViewer 仍是 TanStack：过滤变化清测量缓存，隐藏/0 高度不写缓存。
+- 探针量具 `perf/vlist.ts` 的定位读数改用真实 rect（新实现用 `transform`）。
+- 验证：`vlist` 13/13、`scrollrestore` 5/5、`mergeheight` 9/9、`msgovf` 80/80；前端 1411、
+  Rust 1215；1000 条冷滚 p95 21.8 ms / 长帧 0，暖滚 p95 19.1 ms，定位 5/5 零重叠零空隙。
 
 ## [5.12.0] - 2026-10-25
 
