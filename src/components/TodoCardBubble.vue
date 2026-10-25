@@ -8,9 +8,9 @@ import BubbleTail from "@/components/message/BubbleTail.vue";
  * 渲染成一张可读的卡片（标题 / 状态 / 描述 / 图片 / 指派人 + 打开面板入口）。
  *
  * 载荷是**创建那一刻的快照**（改状态走的是 `todo_update`，那一条是静默事件、不进时间线），
- * 所以状态与**当前类型**必须查父层传来的实时表 `liveTodo`（用户 #23：不查的话卡片永远挂着「待办」，
- * 而任务其实早干完了）；表里查不到（任务已删 / 那条消息没被折叠进来）才退回快照。
- * 标题/描述/指派人仍是创建时的样子 —— 那些字段没有实时源，看板才是权威列表。
+ * 所以所有展示字段（状态 / 类型 / 标题 / 描述 / 图片 / 指派）都必须查父层传来的实时表
+ * `liveTodo`（用户 #23：不查的话卡片永远挂着「待办」；2026-10-25：任务里补的图也不会出现）；
+ * 表里查不到（任务已删 / 那条消息没被折叠进来）才退回快照。
  */
 import { computed } from "vue";
 import { useMemberProfile } from "@/composables/useMemberProfile";
@@ -73,6 +73,19 @@ const { memberProfile } = useMemberProfile();
 const todo = computed(() => parseTodo(props.message));
 const todoId = computed(() => todo.value?.todoId);
 /**
+ * 折叠表里的**当前**任务（标题 / 描述 / 图片 / 指派 / 优先级 / 类型）。
+ *
+ * 载荷是创建那一刻的快照；2026-10-25 用户实测「在任务里加了图片，聊天里那张卡片没更新」。
+ * 展示字段一律优先读这一份，查不到（任务被删 / 这条消息没折叠进来）才退回快照。
+ */
+const live = computed(() => (todoId.value ? (props.liveTodo?.get(todoId.value) ?? null) : null));
+const title = computed(() => live.value?.title ?? todo.value?.title ?? "");
+const description = computed(() => live.value?.description ?? todo.value?.description ?? "");
+const category = computed(() => live.value?.category ?? todo.value?.category ?? "task");
+const customCategory = computed(() => live.value?.customCategory ?? todo.value?.customCategory ?? "");
+const priority = computed(() => live.value?.priority ?? todo.value?.priority ?? "normal");
+const assignees = computed(() => live.value?.assignees ?? todo.value?.assignees ?? []);
+/**
  * 卡片里的图走**全局那一份**预览（§12「要做就做完整」）。
  *
  * 为什么这一格单独值得写一句：`TodoImageThumb` 的 `clickable` 默认是 **false**，所以"调用点漏给
@@ -83,7 +96,7 @@ const todoId = computed(() => todo.value?.todoId);
  * 两处显示的是同一条任务的同一组图，但"按来源收预览"是精确匹配，共用一个 key 会让一边把另一边的收掉。
  */
 const preview = useImagePreviewStore();
-const cardImages = computed(() => todo.value?.images ?? []);
+const cardImages = computed(() => live.value?.images ?? todo.value?.images ?? []);
 /**
  * 卡片里**只画前 `TODO_CARD_IMAGE_VISIBLE` 张**（用户 2026-10-12：图多时先看几张，
  * 剩下的去详情弹窗）。条数上限共享自 `utils/todos.ts`，`messageHeight.ts` 的
@@ -127,17 +140,14 @@ function openPanelKey(e: KeyboardEvent) {
  * 也不要空着或骗人说已同步。
  */
 const status = computed<TodoStatus>(
-  () => (todoId.value ? props.liveTodo?.get(todoId.value)?.status : undefined) ?? todo.value?.status ?? "todo",
+  () => live.value?.status ?? todo.value?.status ?? "todo",
 );
 /**
  * 卡片上那串编号（字母 + 数字）。口径整份在 `utils/todos.ts` 的 `todoCode`，这里只负责取用：
  * 字母取**当前**类型（折叠表里那一份），查不到才退回创建快照 ⇒「改成缺陷了还写着 R」不会发生；
  * 数字是创建那一刻那一个（`resolveTodoNumbers` 已保证各端对同一批定义算出同一套号）。
  */
-const code = computed(() =>
-  props.liveTodo?.get(todoId.value ?? "")?.code ?? todoCode(todo.value?.category, todo.value?.number),
-);
-const assignees = computed(() => todo.value?.assignees ?? []);
+const code = computed(() => live.value?.code ?? todoCode(todo.value?.category, todo.value?.number));
 
 /**
  * 自己的卡片（`mine`）底色是自己的主题气泡色 ⇒ 共享的 `TODO_*_CLASS`（给中性底写的）
@@ -145,14 +155,14 @@ const assignees = computed(() => todo.value?.assignees ?? []);
  * 这里只覆盖**颜色**，形状/字号/字重仍沿用共享表；对方卡片完全不变。
  */
 const priorityClass = computed(() => {
-  const key = todo.value?.priority ?? "normal";
+  const key = priority.value;
   if (!props.mine) return TODO_PRIORITY_CLASS[key];
   return key === "high"
     ? "font-medium text-[var(--card-action)]"
     : "text-[var(--card-ink-soft)]";
 });
 const categoryClass = computed(() => {
-  const key = todo.value?.category ?? "task";
+  const key = category.value;
   if (!props.mine) return TODO_CATEGORY_TEXT_CLASS[key];
   if (key === "bug") return "text-[var(--card-danger)]";
   if (key === "requirement") return "text-[var(--card-action)]";
@@ -184,7 +194,7 @@ function statusText(s: TodoStatus): string {
       class="cursor-pointer pb-2 transition hover:bg-[var(--card-chip)]"
       role="button"
       tabindex="0"
-      :aria-label="todo?.title || t('todo.title')"
+      :aria-label="title || t('todo.title')"
       @click="openPanel"
       @keydown="openPanelKey"
     >
@@ -209,27 +219,27 @@ function statusText(s: TodoStatus): string {
         class="shrink-0 text-caption"
         :class="priorityClass"
       >
-        {{ t(TODO_PRIORITY_LABEL_KEY[todo?.priority ?? "normal"]) }}
+        {{ t(TODO_PRIORITY_LABEL_KEY[priority]) }}
       </span>
       <!-- 类型：只有「需求 / 缺陷」在这一行占一格（文字档，不画胶囊 —— 见
            `TODO_CATEGORY_TEXT_CLASS` 上那段与 messageHeight 成对的说明）。
            「任务」这一档不占位，旧数据读出来也是它 ⇒ 与不画完全同形。 -->
       <span
-        v-if="todo && todo.category !== 'task'"
+        v-if="category !== 'task'"
         class="shrink-0 max-w-[6rem] truncate text-caption"
         :class="categoryClass"
-        :title="todo.category === 'custom' ? todo.customCategory : undefined"
+        :title="category === 'custom' ? customCategory : undefined"
       >
-        <!-- 卡片读的是**创建快照**里的类型：自定义档直接显示当时输入的名字，没有名字退回菜单文案。 -->
-        {{ todo.category === "custom"
-          ? (todo.customCategory || t(TODO_CATEGORY_LABEL_KEY.custom))
-          : t(TODO_CATEGORY_LABEL_KEY[todo.category]) }}
+        <!-- 类型与自定义名也取**当前值**（任务面板改完，聊天卡片同步）。 -->
+        {{ category === "custom"
+          ? (customCategory || t(TODO_CATEGORY_LABEL_KEY.custom))
+          : t(TODO_CATEGORY_LABEL_KEY[category]) }}
       </span>
       <span
         class="min-w-0 flex-1 truncate text-body font-medium text-[var(--card-ink)]"
-        :title="todo?.title || t('todo.title')"
+        :title="title || t('todo.title')"
       >
-        {{ todo?.title || t("todo.title") }}
+        {{ title || t("todo.title") }}
       </span>
       <!-- 状态胶囊走共享映射（`TODO_STATUS_PILL`）；字号 11px 是设计规范的最小可用档。 -->
       <span class="shrink-0 inline-flex h-[18px] items-center justify-center rounded-full px-1.5 text-caption font-medium leading-none" :class="statusPillClass">
@@ -243,13 +253,13 @@ function statusText(s: TodoStatus): string {
          改行数必须同步 `utils/messageHeight.ts` 的 `TODO_CARD_DESC`（渲染与估算成对，
          否则虚拟列表按旧值排布 ⇒ 相邻消息互相遮挡，那是本仓另一条已记的契约）。 -->
     <p
-      v-if="todo?.description"
+      v-if="description"
       class="mt-1 max-h-[calc(3*1.625em)] overflow-hidden whitespace-pre-wrap break-words px-3 text-meta leading-relaxed text-[var(--card-ink-soft)]"
     >
       <!-- 描述里的 @ 走与聊天正文**同一份**渲染件（§9）：段怎么切、@到算不算我、
            显示成什么，全部在 utils/linkify 那一处，这里只负责画出来。 -->
       <MentionText
-        :text="todo.description"
+        :text="description"
         :mention-names="mentionNames"
         :self-mention="selfMention"
       />

@@ -218,6 +218,15 @@ export const MAX_TODO_TITLE_CHARS = 200;
 export const MAX_TODO_DESC_CHARS = 4000;
 
 /**
+ * 一条任务最多能带几张图片（用户 2026-10-25 拍板：20）。
+ *
+ * 上限只在前端加图入口收口（选图 / 粘贴 / 拖入三条路都汇到 `addImageFromPaths`），
+ * 载荷仍按数组同步 —— 对端旧版本没有这个上限，收到超过 20 张时照常渲染前几张，
+ * 不因为"数量多了"整条任务判废。
+ */
+export const MAX_TODO_IMAGES = 20;
+
+/**
  * 一条任务当前该显示的**类型名**：custom 档显示用户输入的名字，其余档显示枚举的 i18n key
  * （调用方再 `t()`）。custom 名字缺失（旧载荷/异常）时退回枚举文案，不留空白胶囊。
  */
@@ -626,12 +635,36 @@ export interface TodoLive {
   status: TodoStatus;
   /** null = 折叠结果里没有可显示的号（旧版本对端建的）⇒ 卡片退回自己的创建快照。 */
   code: TodoCode | null;
+  /**
+   * 卡片其余展示字段也取**当前值**（2026-10-25 用户实测：在任务里加了图片 / 改了标题，
+   * 聊天里那条卡片仍停在创建快照）。卡片载荷是创建那一刻的快照，之后的改动都走静默的
+   * `todo_update` ⇒ 只查状态与编码是不够的，标题/描述/图片/指派人/优先级/类型同样要查。
+   */
+  title: string;
+  description: string;
+  images: TodoImage[];
+  assignees: string[];
+  priority: TodoPriority;
+  category: TodoCategory;
+  customCategory: string;
+  customIcon: TodoCustomIcon;
 }
 
 export function todoLiveMap(items: TodoItem[]): Map<string, TodoLive> {
   const m = new Map<string, TodoLive>();
   for (const x of items) {
-    m.set(x.todoId, { status: x.status, code: todoCode(x.category, x.number) });
+    m.set(x.todoId, {
+      status: x.status,
+      code: todoCode(x.category, x.number),
+      title: x.title,
+      description: x.description,
+      images: x.images,
+      assignees: x.assignees,
+      priority: x.priority,
+      category: x.category,
+      customCategory: x.customCategory,
+      customIcon: x.customIcon,
+    });
   }
   return m;
 }

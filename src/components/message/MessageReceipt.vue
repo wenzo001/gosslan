@@ -8,9 +8,8 @@ import { PopoverContent, PopoverPortal, PopoverRoot, PopoverTrigger } from "reka
 import { avatarSeedFor } from "@/utils/avatarSeed";
 import type { SendState } from "@/composables/useMessageDisplay";
 import type { GroupDeliverySummary } from "@/types";
-import { Ban, CheckCheck, HelpCircle } from "lucide-vue-next";
-import { Check } from "@/components/ui/icons";
-import { X } from "@/components/ui/icons";
+import { CheckCheck, HelpCircle } from "lucide-vue-next";
+import { AlertCircle, Check } from "@/components/ui/icons";
 
 const props = defineProps<{
   state: SendState;
@@ -139,37 +138,38 @@ function readerAvatar(id: string): string | null {
       :title="deliveryTitle"
     >{{ deliveryText }}</span>
     <!-- 群消息没有 1:1 那套单勾/双勾，但失败、取消、部分送达、未知都是真实状态，
-         此前这一格**什么都不显示**（只渲染已读头像）⇒ 群里的失败消息看起来像已发出。 -->
+         此前这一格**什么都不显示**（只渲染已读头像）⇒ 群里的失败消息看起来像已发出。
+         2026-10-25 用户口径：失败/停止用**红色圆形感叹号**（AlertCircle），一眼就是
+         "没发出去、已经停了"；不会自动重试，只有点这一下才会重新发送。 -->
     <button
       v-if="(state === 'failed' || state === 'cancelled' || state === 'partial_cancelled') && canRetry"
       class="tap-safe flex h-5 w-5 items-center justify-center rounded-[var(--gosslan-radius-xs)] transition hover:bg-[var(--gosslan-hover)]"
-      :class="state === 'failed' ? 'text-[var(--gosslan-danger-ink)]' : state === 'partial_cancelled' ? 'text-[var(--gosslan-warning-ink)]' : 'text-[var(--gosslan-text-2)]'"
+      :class="state === 'partial_cancelled' ? 'text-[var(--gosslan-warning-ink)]' : 'text-[var(--gosslan-danger-ink)]'"
       :title="t('msg.resend')" :aria-label="t('msg.resend')"
       @click="emit('retry')"
     >
-      <X v-if="state === 'failed'" class="h-4 w-4" stroke-width="2.5" />
-      <Ban v-else class="h-4 w-4" stroke-width="2.5" />
+      <AlertCircle class="h-4 w-4" stroke-width="2.5" />
     </button>
     <span
       v-else-if="state === 'failed'"
       class="flex h-5 w-5 items-center justify-center text-[var(--gosslan-danger-ink)]"
       role="img" :title="title" :aria-label="title"
     >
-      <X class="h-4 w-4" stroke-width="2.5" />
+      <AlertCircle class="h-4 w-4" stroke-width="2.5" />
     </span>
     <span
       v-else-if="state === 'partial_cancelled'"
       class="flex h-5 w-5 items-center justify-center text-[var(--gosslan-warning-ink)]"
       role="img" :title="title" :aria-label="title"
     >
-      <Ban class="h-4 w-4" stroke-width="2.5" />
+      <AlertCircle class="h-4 w-4" stroke-width="2.5" />
     </span>
     <span
       v-else-if="state === 'cancelled'"
-      class="flex h-5 w-5 items-center justify-center text-[var(--gosslan-text-2)]"
+      class="flex h-5 w-5 items-center justify-center text-[var(--gosslan-danger-ink)]"
       role="img" :title="title" :aria-label="title"
     >
-      <Ban class="h-4 w-4" stroke-width="2.5" />
+      <AlertCircle class="h-4 w-4" stroke-width="2.5" />
     </span>
     <span
       v-else-if="state === 'unknown'"
@@ -246,18 +246,17 @@ function readerAvatar(id: string): string | null {
        （单勾=已发到链路、双勾=对方已收到、双勾变主题色=对方已读）。
        ♿ 回执是纯图标状态，aria-label 提供语义。 -->
   <span v-else class="flex shrink-0 items-center pb-1.5">
-    <!-- 失败：红叉 + 可点重发（两个并列小图标，X 在左、RefreshCw 在右）。
-         之前用 RefreshCw 单独当"失败"图标，但 RefreshCw 的语义是「刷新/重试」，
-         而不是「这条消息失败了」—— 用户需要的是明确的失败感 + 可修复入口。 -->
+    <!-- 失败：红色圆形感叹号（用户 2026-10-25：比红叉更像"这条没发出去并且已经停了"）。
+         语义不变：不会自动重试，只有主动点这一下才会重新发送；不操作就永远停在失败态。 -->
     <button
       v-if="state === 'failed' && canRetry"
       class="tap-safe flex h-5 w-5 items-center justify-center rounded-[var(--gosslan-radius-xs)] text-[var(--gosslan-danger-ink)] transition hover:bg-[var(--gosslan-danger-soft)]"
       :title="t('msg.resend')" :aria-label="t('msg.resend')"
       @click="emit('retry')"
     >
-      <X class="h-4 w-4" stroke-width="2.5" />
+      <AlertCircle class="h-4 w-4" stroke-width="2.5" />
     </button>
-    <!-- 没有真通道的失败：同一个 X 退化成**纯指示**，读屏仍能报出"发送失败"。 -->
+    <!-- 没有真通道的失败：同一颗红色感叹号退化成**纯指示**，读屏仍能报出"发送失败"。 -->
     <span
       v-else-if="state === 'failed'"
       class="flex h-5 w-5 items-center justify-center text-[var(--gosslan-danger-ink)]"
@@ -265,28 +264,27 @@ function readerAvatar(id: string): string | null {
       :title="title"
       :aria-label="title"
     >
-      <X class="h-4 w-4" stroke-width="2.5" />
+      <AlertCircle class="h-4 w-4" stroke-width="2.5" />
     </span>
-    <!-- 已取消：自己按下的取消不是错误（INV-P26 把这两格分开记），所以用灰色而不是 danger，
-         但它**看得见**。这一格现在也能再发一次（负责人 2026-10-23："发送失败、取消了，
-         其实也可以有个重试/再次发送"）—— 前提是 `utils/resendChannel` 算得出真通道；
-         算不出（比如附件已被存储清理删掉）就仍是静态指示，不给一颗点了没反应的键。 -->
+    <!-- 已取消：自己按下的取消也是"停在这里"的状态，按同一套视觉给红色感叹号；
+         能算出真通道时同样可以再发一次（判据在 `utils/resendChannel`）。 -->
     <button
       v-else-if="canRetry"
-      class="tap-safe flex h-5 w-5 items-center justify-center rounded-[var(--gosslan-radius-xs)] text-[var(--gosslan-text-2)] transition hover:bg-[var(--gosslan-hover)]"
+      class="tap-safe flex h-5 w-5 items-center justify-center rounded-[var(--gosslan-radius-xs)] transition hover:bg-[var(--gosslan-hover)]"
+      :class="state === 'partial_cancelled' ? 'text-[var(--gosslan-warning-ink)]' : 'text-[var(--gosslan-danger-ink)]'"
       :title="t('msg.resend')" :aria-label="t('msg.resend')"
       @click="emit('retry')"
     >
-      <Ban class="h-4 w-4" stroke-width="2.5" />
+      <AlertCircle class="h-4 w-4" stroke-width="2.5" />
     </button>
     <span
       v-else-if="state === 'cancelled'"
-      class="flex h-5 w-5 items-center justify-center text-[var(--gosslan-text-2)]"
+      class="flex h-5 w-5 items-center justify-center text-[var(--gosslan-danger-ink)]"
       role="img"
       :title="title"
       :aria-label="title"
     >
-      <Ban class="h-4 w-4" stroke-width="2.5" />
+      <AlertCircle class="h-4 w-4" stroke-width="2.5" />
     </span>
     <span
       v-else-if="state === 'partial_cancelled'"
@@ -295,7 +293,7 @@ function readerAvatar(id: string): string | null {
       :title="title"
       :aria-label="title"
     >
-      <Ban class="h-4 w-4" stroke-width="2.5" />
+      <AlertCircle class="h-4 w-4" stroke-width="2.5" />
     </span>
     <!-- 状态未知：兜底可见性。以前这份映射不认识的取值会走 default 空串 ⇒ 图标位全空，
          读屏也读不到；用户只能猜"是不是发出去了"。 -->

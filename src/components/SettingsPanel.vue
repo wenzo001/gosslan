@@ -50,7 +50,6 @@ watch(
  * 不要用分组名（`settings.group.*`）：分组是"容器"（如「外观与通知」装着外观/聊天气泡/通知
  * 三条），用它当二级页标题就会名不副实 —— 用户点进「外观」看到的标题却是「外观与通知」
  * （用户 2026-09-21 报的正是这一类：桌面「外观与通知」里只有外观）。
- * 唯一的例外是「重置」：它的页面标题就是分区自己的名字（`settings.group.reset`）。
  */
 const SECTIONS: Record<string, { titleKey: string; render: () => any }> = {
   profile: {
@@ -77,7 +76,8 @@ const SECTIONS: Record<string, { titleKey: string; render: () => any }> = {
     titleKey: "settings.item.network",
     render: () => NetworkSection,
   },
-  // 2026-10-25：存储与文件合并为一个二级页（旧的 storage / files 键走别名归一）。
+  // 2026-10-25（第 4 版）：存储与文件合成「文件与存储」二级页（旧的 storage / files 键走别名归一）；
+  // 重置与恢复是同一分类下的另一页。
   storageFiles: {
     titleKey: "settings.item.storageFiles",
     render: () => StorageSection,
@@ -87,13 +87,13 @@ const SECTIONS: Record<string, { titleKey: string; render: () => any }> = {
     render: () => AboutSection,
   },
   reset: {
-    titleKey: "settings.group.reset",
+    titleKey: "settings.item.reset",
     render: () => ResetSection,
   },
 };
 
 /**
- * 旧深链键 → 新二级页。用户 2026-10-25 把「存储」与「文件」并成「存储与文件」、
+ * 旧深链键 → 新二级页。用户 2026-10-25 把「存储」与「文件」并成「文件与存储」、
  * 把「安全」并进「关于」；已经点过的旧链接（`/me/settings/storage` 等）仍必须落到
  * 同一处 —— URL 说一个分区、界面却停在列表，是最典型的"深链半截状态"。
  */
@@ -147,10 +147,11 @@ function selectSection(key: string) {
 /**
  * 一级列表的分组结构：每组包含多个条目，每条对应一个二级页。
  *
- * 2026-10-25 用户要求与桌面保持**同一套分类**：
- *  - 通用里不再放「存储」（它属于文件那一类事）；
- *  - 「存储与文件」= 原存储 + 原文件，放在「网络与文件」分组下；
- *  - 「安全」并入「关于」，不再单独一组（重置与恢复仍留在通用）。
+ * 2026-10-25 用户最终口径（第 4 版）：
+ *  - 四组：**通用 / 网络 / 文件与存储 / 关于**；
+ *  - 「文件与存储」自己一组，装着存储、文件、重置与恢复（用户原话：
+ *    「所有的文件与存储、重置清除列表、重置与恢复都在那个分类里」）；
+ *  - 「安全」并入「关于」；桌面端与移动端共用这一套（`SettingsWindow` 同序）。
  */
 const GROUPS: { key: string; titleKey: string; items: { key: string; titleKey: string }[] }[] = [
   {
@@ -162,15 +163,19 @@ const GROUPS: { key: string; titleKey: string; items: { key: string; titleKey: s
       { key: "appearance", titleKey: "settings.item.appearance" },
       { key: "chatStyle", titleKey: "settings.item.chatStyle" },
       { key: "notification", titleKey: "settings.item.notification" },
-      { key: "reset", titleKey: "settings.item.reset" },
     ],
   },
   {
     key: "network",
-    titleKey: "settings.group.networkFiles",
+    titleKey: "settings.item.network",
+    items: [{ key: "network", titleKey: "settings.item.network" }],
+  },
+  {
+    key: "storageFiles",
+    titleKey: "settings.item.storageFiles",
     items: [
-      { key: "network", titleKey: "settings.item.network" },
       { key: "storageFiles", titleKey: "settings.item.storageFiles" },
+      { key: "reset", titleKey: "settings.item.reset" },
     ],
   },
   {
@@ -279,7 +284,8 @@ watch(
             <ChatStyleSection v-else-if="mobileNav === 'chatStyle'" />
             <NotificationSection v-else-if="mobileNav === 'notification'" />
             <NetworkSection v-else-if="mobileNav === 'network'" :active="open" :reload-token="reloadToken" />
-            <!-- 2026-10-25：存储与文件合并成一个二级页（旧 storage / files 深链已别名归一到这里）。 -->
+            <!-- 2026-10-25（第 4 版）：存储与文件合成一个「文件与存储」二级页
+                 （旧 storage / files 深链已别名归一到这里）；重置与恢复是同一分类下的另一页。 -->
             <template v-else-if="mobileNav === 'storageFiles'">
               <StorageSection :active="open" :reload-token="reloadToken" />
               <FilesSection :active="open" :reload-token="reloadToken" />
@@ -305,7 +311,7 @@ watch(
       <AppearanceSection />
       <ChatStyleSection />
       <NetworkSection :active="open" :reload-token="reloadToken" />
-      <!-- 与桌面独立窗口同一套分类：存储与文件归在网络下面，安全归在关于里。 -->
+      <!-- 与桌面独立窗口同一套分类：存储、文件、重置与恢复同属「文件与存储」；安全并入关于。 -->
       <StorageSection :active="open" :reload-token="reloadToken" />
       <FilesSection :active="open" :reload-token="reloadToken" />
       <ResetSection @restored="reloadToken++" />

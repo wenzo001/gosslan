@@ -48,6 +48,7 @@ import {
   isTodoRowsLoaded,
   todoRowsLoadState,
   MAX_TODO_DESC_CHARS,
+  MAX_TODO_IMAGES,
   MAX_TODO_TITLE_CHARS,
 } from "@/utils/todos";
 import { TODO_CUSTOM_ICON_COMPONENTS } from "@/utils/todoCustomIcons";
@@ -630,8 +631,8 @@ async function addImage() {
 
 /**
  * 桌面端「点击 → 进入可粘贴/可拖入状态」的唯一动作（用户 2026-09-29 明确要的交互）。
- * 粘贴挂在 `document` 上、拖入挂在 webview 事件上，所以这里**不需要**真的抢到焦点才生效 ——
- * 点亮的是"该按哪一下键 / 该往哪儿放"这个提示，同时把焦点挪进图片区（`tabindex="-1"`）。
+ * 点击只负责**聚焦图片区**（`tabindex="-1"`）并点亮提示；粘贴本身要看到焦点在图片区
+ * （见 `onDocPaste`，用户 2026-10-25：标题框里按 Ctrl+V 不许把截图收进来）。
  */
 function armImageZone() {
   if (isAndroid) {
@@ -640,6 +641,12 @@ function armImageZone() {
   }
   pasteArmed.value = true;
   dropZoneRef.value?.focus({ preventScroll: true });
+}
+
+/** 焦点离开图片区 ⇒ 熄灭提示（点击区内的缩略图按钮不算离开）。 */
+function onImageZoneBlur(e: FocusEvent) {
+  const next = e.relatedTarget as Node | null;
+  if (!next || !dropZoneRef.value?.contains(next)) pasteArmed.value = false;
 }
 
 /**
@@ -657,7 +664,13 @@ function onAddImageButton() {
 async function addImageFromPaths(paths: string[]) {
   const d = draft.value;
   if (!d) return;
+  let limitHit = false;
   for (const p of paths) {
+    // 上限判点只在这里：三条入口都汇到这个函数（用户 2026-10-25：最多 20 张）。
+    if (d.images.length >= MAX_TODO_IMAGES) {
+      limitHit = true;
+      break;
+    }
     try {
       // Android 给 content://，先落成本地路径；桌面原样返回。
       const local = await api.importPickedFile(p);
@@ -674,6 +687,7 @@ async function addImageFromPaths(paths: string[]) {
       app.toastError(e, t("todo.imagePickFail"));
     }
   }
+  if (limitHit) app.toast(t("todo.imageLimit", { n: MAX_TODO_IMAGES }), "error");
 }
 
 // ---------------- 图片的粘贴与拖入（用户 2026-09-17；2026-09-29 把"点击"改成只聚焦） ----------------
@@ -694,10 +708,12 @@ let dropScope: InitScope | null = null;
  *  ⚠️ 按**平台**（`isAndroid`）判，不是按 `app.isMobile` —— 后者是 `max-width:767px` 的视口宽度，
  *  窄桌面窗口也会命中，会误把桌面当移动端、把粘贴/拖入一起关掉（用户 2026-09-20「桌面端也不能粘贴文件」）。 */
 const imageHintText = computed(() => {
-  if (isAndroid) return t("todo.imageHintMobile");
+  if (isAndroid) return t("todo.imageHintMobile", { n: MAX_TODO_IMAGES });
   if (imageDragOver.value) return t("todo.imageDropHere");
   const mb = TODO_IMAGE_LIMIT_MB;
-  return pasteArmed.value ? t("todo.imageArmed", { mb }) : t("todo.imageHint", { mb });
+  return pasteArmed.value
+    ? t("todo.imageArmed", { mb, n: MAX_TODO_IMAGES })
+    : t("todo.imageHint", { mb, n: MAX_TODO_IMAGES });
 });
 
 /** 拖拽位置是否落在图片区上（Tauri 给的是物理像素，除以 DPR 才能跟 DOM 坐标比）。 */
@@ -724,9 +740,16 @@ const IMAGE_PATH_RE = /\.(png|jpe?g|gif|webp|bmp)$/i;
  *      拿真实路径（用户 2026-09-20「桌面端也不能粘贴文件」）。
  * ⚠️ 位图 File 必须在任何 await 之前**同步**抓下来（paste 返回后 clipboardData 会被清空）。
  * ⚠️ 能力按**平台**（`isAndroid`）判，不按 `app.isMobile`（见 `imageHintText` 的说明）。
+ *
+ * ⚠️ 2026-10-25 用户实测：在「标题」输入框里按 Ctrl+V，剪贴板里的截图被加进了图片区。
+ * 粘贴是挂在 `document` 上的，所以必须自己判**焦点在图片区**：只有用户点过图片区
+ * （`armImageZone` / 「添加图片」都会把焦点移进去）之后，图片才归这里；
+ * 标题/描述/其它任何控件聚焦时，带图片的粘贴一律放行给它们（不 `preventDefault`）。
  */
 function onDocPaste(e: ClipboardEvent) {
   if (!draft.value || isAndroid) return;
+  const zone = dropZoneRef.value;
+  if (!zone || document.activeElement !== zone) return;
   const cd = e.clipboardData;
   if (!cd) return;
   const files = Array.from(cd.files ?? []);
@@ -1498,12 +1521,15 @@ watch(
         <div
           ref="dropZoneRef"
           tabindex="-1"
+          data-todo-image-zone
           class="rounded-[var(--gosslan-radius-md)] border transition focus:outline-none"
           :class="isAndroid
             ? 'border-[var(--gosslan-border)]'
             : imageDragOver || pasteArmed
               ? 'border-dashed border-[var(--gosslan-primary)] bg-[var(--gosslan-hover)]'
               : 'border-dashed border-[var(--gosslan-border)]'"
+          @focus="pasteArmed = true"
+          @blur="onImageZoneBlur"
         >
           <button
             v-if="draft.images.length === 0"

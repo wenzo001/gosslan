@@ -93,6 +93,19 @@ export interface EstimateContext {
   /** 本机 device_id：用于判断「非本人」及昵称行。 */
   selfId?: string;
   fontSize: FontSizeKey;
+  /**
+   * 任务卡片**当前**的展示尺寸输入（来自折叠结果）。
+   *
+   * 消息载荷是创建那一刻的快照；任务面板里补的图片/描述只走静默的 `todo_update`。
+   * 卡片渲染已经改成读实时表（`TodoCardBubble`），估算也必须查同一份 —— 否则用户加图后
+   * 卡片真实高度变大、估算还停在旧值，虚拟列表就会按旧高度排布相邻消息（本文件顶部那条契约）。
+   */
+  todoLive?: (todoId: string) => TodoCardLiveMetrics | undefined;
+}
+
+export interface TodoCardLiveMetrics {
+  images: number;
+  hasDescription: boolean;
 }
 
 /**
@@ -113,11 +126,18 @@ const bubbleCache = new Map<string, number>();
 /** 缓存上限：超出后按插入顺序淘汰最早的一条（Map 保序，O(1)）。 */
 const BUBBLE_CACHE_MAX = 50_000;
 
-function bubbleHeightCached(m: MessageRecord, fontSize: FontSizeKey): number {
-  const key = `${fontSize}|${m.msg_id}`;
+function bubbleHeightCached(
+  m: MessageRecord,
+  fontSize: FontSizeKey,
+  live?: TodoCardLiveMetrics,
+): number {
+  // 任务卡片的实时尺寸会变（用户补图/补描述）⇒ 键里带上实时输入，变了自然失效。
+  const key = live
+    ? `${fontSize}|${m.msg_id}|t${live.images}:${live.hasDescription ? 1 : 0}`
+    : `${fontSize}|${m.msg_id}`;
   const hit = bubbleCache.get(key);
   if (hit !== undefined) return hit;
-  const v = computeBubbleHeight(m, fontSize);
+  const v = computeBubbleHeight(m, fontSize, live);
   if (bubbleCache.size >= BUBBLE_CACHE_MAX) {
     const oldest = bubbleCache.keys().next().value;
     if (oldest !== undefined) bubbleCache.delete(oldest);
@@ -127,7 +147,11 @@ function bubbleHeightCached(m: MessageRecord, fontSize: FontSizeKey): number {
 }
 
 /** 气泡本身的高度（不含昵称行 / 时间分割线）。 */
-function computeBubbleHeight(m: MessageRecord, fontSize: FontSizeKey): number {
+function computeBubbleHeight(
+  m: MessageRecord,
+  fontSize: FontSizeKey,
+  live?: TodoCardLiveMetrics,
+): number {
   switch (m.kind) {
     case "code":
       return codeBlockHeight(m.content);
@@ -169,11 +193,29 @@ function computeBubbleHeight(m: MessageRecord, fontSize: FontSizeKey): number {
       } catch {
         /* 异常内容按最小卡片估 */
       }
+      if (live) {
+        desc = live.hasDescription;
+        imgCount = live.images;
+      }
       return TODO_CARD_BASE + (desc ? TODO_CARD_DESC : 0) + todoImageAllowance(imgCount);
     }    // 本机不认识的 kind（对端版本比本机新）⇒ 渲染占位气泡，高度与载荷长度无关
     // （详见 `UNSUPPORTED_BUBBLE` 的说明：按文本估会留出一大片空白）。
     default:
       return isKnownKind(m.kind) ? textBubbleHeight(m.content, fontSize) : UNSUPPORTED_BUBBLE;
+  }
+}
+
+/** 任务消息的实时尺寸输入：载荷里的 `todo_id` → 折叠结果的图片/描述。 */
+function liveTodoMetrics(
+  m: MessageRecord,
+  ctx: EstimateContext,
+): TodoCardLiveMetrics | undefined {
+  if (!ctx.todoLive || m.kind !== "todo") return undefined;
+  try {
+    const o = JSON.parse(m.content) as { todo_id?: unknown };
+    return typeof o?.todo_id === "string" ? ctx.todoLive(o.todo_id) : undefined;
+  } catch {
+    return undefined;
   }
 }
 
@@ -185,7 +227,7 @@ export function estimateMessageHeight(
 ): number {
   const prev = index != null && index > 0 ? ctx.messages[index - 1] : null;
 
-  const bubble = bubbleHeightCached(m, ctx.fontSize);
+  const bubble = bubbleHeightCached(m, ctx.fontSize, liveTodoMetrics(m, ctx));
 
   // 分割行的**判定**与渲染端共用 `shouldShowTimeDivider`（阈值也在那里）：分割行自己占
   // TIME_DIVIDER 那 32px，两边判得不一致就是"相邻消息互相遮挡"本文件顶部那条契约。

@@ -15,7 +15,12 @@ import { test } from "node:test";
 const srcDir = join(import.meta.dirname, "..");
 const read = (rel: string) => readFileSync(join(srcDir, rel), "utf8");
 
-/** 3 个顶层容器 → 标签键 → 该容器内渲染的分区组件（firstGroupKey 只对单组件容器生效）。 */
+/**
+ * 4 个顶层容器 → 标签键 → 该容器内渲染的分区组件（firstGroupKey 只对单组件容器生效）。
+ *
+ * 2026-10-25（用户第 4 版口径）：通用 / 网络 / 文件与存储 / 关于。
+ * 「文件与存储」= 存储 + 文件 + 重置与恢复；「安全」并入「关于」。
+ */
 const EXPECTED = [
   {
     key: "general",
@@ -26,15 +31,20 @@ const EXPECTED = [
       "AppearanceSection",
       "ChatStyleSection",
       "NotificationSection",
-      "ResetSection",
     ],
     firstGroupKey: null,
   },
   {
     key: "network",
-    labelKey: "settings.group.networkFiles",
-    // 2026-10-25：存储从通用挪到这里，与文件同组（「存储与文件」）。
-    components: ["NetworkSection", "StorageSection", "FilesSection"],
+    labelKey: "settings.item.network",
+    components: ["NetworkSection"],
+    firstGroupKey: null,
+  },
+  {
+    key: "storageFiles",
+    labelKey: "settings.item.storageFiles",
+    // 存储、文件与重置与恢复同属这一组（重置不再留在通用）。
+    components: ["StorageSection", "FilesSection", "ResetSection"],
     firstGroupKey: null,
   },
   {
@@ -54,7 +64,7 @@ test("每个顶层导航项都渲染了它承诺的分区组件（标签即内�
       new RegExp(`\\{ key: "${item.key}", label: t\\("${item.labelKey.replace(/\./g, "\\.")}"\\)`),
       `导航项 ${item.key} 应使用标签键 ${item.labelKey}`,
     );
-    // 3 个顶层容器：条件写作 `desktopSection === 'key'`；通用/网络/关于容器内会渲染多个组件。
+    // 4 个顶层容器：条件写作 `desktopSection === 'key'`；各容器内渲染多个组件。
     const at = win.indexOf(`desktopSection === '${item.key}'`);
     assert.ok(at >= 0, `SettingsWindow 里没有 ${item.key} 的渲染分支`);
     const window_ = win.slice(Math.max(0, at - 250), at + 2500);
@@ -97,6 +107,45 @@ test("每个设置分区组件都被两个外壳引用（没有孤儿分区）",
       assert.ok(files.includes(`${component}.vue`), `${component}.vue 不存在`);
     }
   }
+});
+
+test("移动端一级列表与桌面同一套 4 类，且「文件与存储」装着存储/文件/重置", () => {
+  const panel = read("components/SettingsPanel.vue");
+  const groupKeys = [...panel.matchAll(
+    /\{\s*key: "(general|network|storageFiles|about)",\s*titleKey: "[^"]+",\s*items:/g,
+  )].map((m) => m[1]);
+  assert.deepEqual(
+    groupKeys,
+    ["general", "network", "storageFiles", "about"],
+    "移动端分组必须与桌面同序：通用 / 网络 / 文件与存储 / 关于",
+  );
+  // 「文件与存储」组里必须有两条：文件与存储、重置与恢复（用户 2026-10-25）。
+  const start = panel.indexOf('key: "storageFiles",\n    titleKey');
+  assert.ok(start > 0, "找不到「文件与存储」这一组");
+  const group = panel.slice(start, panel.indexOf("];", start) > start ? panel.indexOf("];", start) : undefined);
+  assert.match(group, /key: "storageFiles"/, "缺「文件与存储」条目");
+  assert.match(group, /key: "reset"/, "「重置与恢复」必须留在文件与存储组里，不许回通用");
+});
+
+test("设置卡片最后一行不画分隔线（判点在唯一外壳上，不靠调用方记得传 last）", () => {
+  const group = read("components/settings/SettingsGroup.vue");
+  assert.ok(group.includes("data-settings-rows"), "SettingsGroup 缺少分隔线的统一钩子");
+  const css = read("style.css");
+  assert.match(
+    css,
+    /\[data-settings-rows\] > div:last-child\.h-px\s*\{\s*display: none;/,
+    "样式表里没有「最后一行分隔线隐藏」的规则 ⇒ 中继/中转卡片末尾会多出一道短横线",
+  );
+});
+
+test("弹窗标题最多两行且无空格长串可断行（长任务标题不再把弹窗撑出屏幕）", () => {
+  const modal = read("components/BaseModal.vue");
+  assert.match(
+    modal,
+    /line-clamp-2[\s\S]{0,120}?break-words/,
+    "BaseModal 标题没有两行截断 + 断词 ⇒ 长串会把卡片撑出可视区",
+  );
+  assert.match(modal, /min-w-0 flex-1/, "标题不是可收缩的 flex 项 ⇒ 长标题仍会顶飞关闭按钮");
 });
 
 test("「通知」分区里不得混入非通知项（用户反馈的原缺陷）", () => {

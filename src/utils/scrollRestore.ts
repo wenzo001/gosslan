@@ -23,6 +23,38 @@ export interface SavedScroll {
 export const SCROLL_RESTORE_TTL_MS = 3 * 60_000;
 
 /**
+ * 跨**组件挂载**的阅读位置表（模块生命周期）。
+ *
+ * ⚠️ 2026-10-25 用户实测：单聊往上滑 → 点对方资料 → 返回，视口又回到底部。
+ * 根因是这张表原先长在 `ChatWindow` 的 `<script setup>` 里：点资料页会把 `ChatWindow`
+ * 卸载，表随组件实例一起消失 ⇒ 返回时怎么查都是"没保存过"，只能贴底。
+ * 放到模块级后，下面那三条 TTL/未读/贴底口径才真正有东西可查。
+ */
+const savedPositions = new Map<string, SavedScroll>();
+/** 与消息缓存同量级，防止长时间使用无界增长。 */
+const SAVED_POSITIONS_MAX = 50;
+
+/** 记下一条会话离开时的位置；重复写入按"最近一次"重新排到队尾。 */
+export function rememberScrollPosition(convId: string, saved: SavedScroll): void {
+  savedPositions.delete(convId);
+  savedPositions.set(convId, saved);
+  if (savedPositions.size <= SAVED_POSITIONS_MAX) return;
+  for (const key of savedPositions.keys()) {
+    if (savedPositions.size <= SAVED_POSITIONS_MAX) break;
+    savedPositions.delete(key);
+  }
+}
+
+export function savedScrollPosition(convId: string): SavedScroll | undefined {
+  return savedPositions.get(convId);
+}
+
+/** 测试专用：让每条判据从干净状态起跑（生产代码不调用）。 */
+export function clearSavedScrollPositions(): void {
+  savedPositions.clear();
+}
+
+/**
  * 该不该把视口恢复到 `saved.top`。
  *
  * 返回 `false` 的三种情况都表示"交给默认的贴底行为"：过期、有未读、离开时就在底部。

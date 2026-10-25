@@ -8,6 +8,7 @@ defineProps<{ title: string; footer?: string }>();
       {{ title }}
     </h3>
     <div
+      data-settings-rows
       class="overflow-hidden rounded-[var(--gosslan-radius-lg)] border border-[var(--gosslan-border)] bg-[var(--gosslan-panel)] shadow-sm"
     >
       <slot />

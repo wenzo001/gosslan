@@ -172,7 +172,7 @@ function onOpenChange(value: boolean) {
               >
                 <BackArrow />
               </button>
-              <DialogTitle v-if="title" as="h2" class="text-title font-medium">{{ title }}</DialogTitle>
+              <DialogTitle v-if="title" as="h2" class="min-w-0 flex-1 truncate text-title font-medium" :title="title">{{ title }}</DialogTitle>
               <!-- Reka 要求每份 DialogContent 都有可访问名称；整页形态允许不传 title，
                    这里补一个只给读屏的兜底，避免 aria-labelledby 指向不存在的节点。 -->
               <DialogTitle v-if="!title" class="sr-only">{{ t("common.dialog") }}</DialogTitle>
@@ -201,7 +201,15 @@ function onOpenChange(value: boolean) {
                  （唯一可压缩项）、滚动区自己消化溢出 ⇒ 窗口再矮，标题与 ✕ 也完整可见且可点。 -->
             <DialogTitle v-if="!title" class="sr-only">{{ t("common.dialog") }}</DialogTitle>
             <div v-if="title" class="mb-4 flex shrink-0 items-start justify-between gap-3">
-              <DialogTitle as="h3" class="text-base font-semibold leading-6">
+              <!-- 标题最多两行，超长（尤其是一长串没有空格的字符）强制断词 + 省略：
+                   用户 2026-10-25 实测群任务标题把弹窗撑出屏幕边缘。`break-words`
+                   让 `overflow-wrap: break-word` 对无空格长串也生效；全码在 hover 的
+                   `title` 里仍能看到。 -->
+              <DialogTitle
+                as="h3"
+                class="line-clamp-2 min-w-0 flex-1 break-words text-base font-semibold leading-6"
+                :title="title"
+              >
                 {{ title }}
               </DialogTitle>
               <button

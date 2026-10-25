@@ -675,18 +675,34 @@ test("群任务三处外显同源：卡片实时状态 / 两处计数口径 / �
     "再传给任务卡片（少这一环等于白折）",
   );
   const card = read("components/TodoCardBubble.vue");
+  // 实时表统一从 `live` 取（2026-10-25：状态/编号之外，标题/描述/图片也走同一份，
+  // 任务面板里补图后聊天卡片不再停在创建快照）。
   assert.match(
     card,
-    /const status = computed<TodoStatus>\(\s*\(\) =>[^;]*props\.liveTodo/,
+    /const live = computed\(\(\) => \(todoId\.value \? \(props\.liveTodo\?\.get\(todoId\.value\) \?\? null\) : null\)\)/,
+    "卡片必须先取实时表里那一条任务（查不到才退回创建快照）",
+  );
+  assert.match(
+    card,
+    /const status = computed<TodoStatus>\(\s*\(\) => live\.value\?\.status/,
     "卡片的状态必须优先查实时表，查不到才退回创建快照",
   );
   // 编号那一格是同一个开关的**另一面**（用户 2026-09-30 规则 3：改类型只换字母）：
   // 字母由**当前**类型现推，所以卡片也必须查这张表 —— 只修状态那一面就是"改成缺陷了还写着 R"。
   assert.match(
     card,
-    /const code = computed\(\(\) =>\s*props\.liveTodo\?\.get\(/,
+    /const code = computed\(\(\) => live\.value\?\.code/,
     "卡片的编号码必须优先查实时表：只看创建快照会让改完类型后的字母停在旧值",
   );
+  // 2026-10-25 用户实测：任务里加了图片，聊天卡片没更新 ⇒ 展示字段也必须查实时表。
+  for (const [name, pattern] of [
+    ["标题", /const title = computed\(\(\) => live\.value\?\.title/],
+    ["描述", /const description = computed\(\(\) => live\.value\?\.description/],
+    ["图片", /const cardImages = computed\(\(\) => live\.value\?\.images/],
+    ["指派", /const assignees = computed\(\(\) => live\.value\?\.assignees/],
+  ] as const) {
+    assert.match(card, pattern, `卡片的${name}必须跟着实时表走，不能停在创建快照`);
+  }
 
   for (const f of ["components/GroupTasksPanel.vue", "components/GroupMemberPanel.vue"]) {
     assert.match(
