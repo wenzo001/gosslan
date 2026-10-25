@@ -1188,6 +1188,28 @@ mesh 没有服务器也没有强制升级 ⇒ 混合版本是常态，不是边�
 （界面说已取消、对方照样收到）。文件那侧的 `cancel_terminal` 墓碑与这一条是同一件事的两种材质：
 文件靠"不许被晚到的写降级"，消息靠"晚到的确认找不到可确认的行"。
 
+**群消息的成员级台账是本条在群里的落法（2026-10-25）**：1:1 用"删掉队列行"证明取消；
+群消息不能删 —— 删完就回答不了"谁已收、谁没收到"，取消剩余成员与按成员补发都会失去依据。
+所以 `group_outbox` 改为四态（`pending | delivered | cancelled | failed`，迁移 v13），
+仲裁仍是**行状态**，语义按条逐格：
+
+* Ack 只在原行是 `pending` 时把消息状态推到 `delivered`；原行已是 `cancelled/failed` 时
+  只记台账（`LateApplied`），**不**把 `partial_cancelled` 翻回 `delivered`。
+* 取消只把剩余 `pending` 行置 `cancelled`：有成员已收 ⇒ 消息落 `partial_cancelled`，
+  已 `delivered` 的行保持不动。已 `delivered` 的消息仍按"整条已送达"拒绝取消。
+* 补发只把 `cancelled` 行重置为 `pending`（并刷新 `created_at`，否则清扫器会立刻把旧行判死）；
+  `delivered` / `failed` 是证据或已放弃，不得复活；`no_ledger`（升级前发出的历史消息）才退回整条重发。
+* `delivered` 墓碑只在「没有其它非 delivered 行、且消息不是 cancelled/partial_cancelled/failed」
+  时立即清理；已取消/已失败消息保留它，用来显示「对方已收到」并挡住"整条重发"的误判。
+* 清扫器逐行放弃只把 `pending` 置 `failed`（不删行）；整条消息只有在没有任何
+  delivered/cancelled 行时才落 `failed`。
+
+- 钩子：`db::cascade_tests::cancelling_a_group_message_marks_every_member_row_and_survives_a_late_ack`
+  `db::cascade_tests::partially_delivered_group_message_can_cancel_the_rest_then_resend`
+  `db::cascade_tests::a_late_ack_after_sweeper_failure_only_updates_the_ledger`
+  `db::cascade_tests::delivery_summaries_only_list_messages_with_unfinished_rows`
+  `db::migration_tests::v12_to_v13_adds_group_outbox_status_and_partial_index`
+
 **非空转证明**：`verify-guards` 变异用例 —— 摘掉 `WHERE status <> 'done'` ⇒ 正向判据红；
 照本条落地前的建议把集合写成 `NOT IN ('done','failed','cancelled')` ⇒ 反向判据红；
 去掉 `AND cancel_terminal = 0` ⇒ 晚到的进度写复活已取消的行（正向）；
