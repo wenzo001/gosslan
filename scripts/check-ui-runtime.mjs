@@ -12236,6 +12236,11 @@ async function runOpsCenter(cdp, url) {
       const failCondition = after.active !== jumpCid || (!after.rowVisible && !after.groupVisible);
       return { ok: true, seeded, after, failCondition };
     };
+    // ⚠️ 这三格只判**store 那一半**（到达 + 不报"不存在"）。"屏幕换没换"的另一半权威是路由
+    //   （`navState = navOfRoute()`），但探针**判不了它**：给挂载的组件挂上应用那份 mainRouter
+    //   实例之后，同页里真实应用与探针应用共用同一个 router 与两套 pinia，实测把隔壁格子的
+    //   `chat.operations` 从 6 读成 1、面板行数对不上（2026-10-26 试过，读数在 CHANGELOG）。
+    //   所以路由那一半改由 `utils/taskCenterJump.test.ts` 钉接线，别在这里再试一次。
     for (const shape of ["A", "B", "C"]) {
       const r = await jumpOnce(shape);
       check(`★ 任务中心「去会话」形状 ${shape}：群在真源里就必须到达，不许弹「没能打开会话」`,
