@@ -18,7 +18,9 @@ HEAD 基线 `6ca07ca5`，每条出处都在该 HEAD 重开文件复核过。
 | 9 | 「协议里没有 cancel 帧 ⇒ 这一趟清扫治的是**永久**泄漏，不是界面 spinner（延迟是有意的）」 | `src-tauri/src/lib.rs:633-636` | 取舍陈述本身在原文成立。但**前半句我还没证**：用户主动取消是否真的发 `FileCancel` 帧与这句话并不矛盾（一个指发送方超时/断开的放弃，一个指用户点取消），我没读协议层确认边界 | **待复验**（划归 B2，别照抄这句当结论） |
 | 10 | 「`openConversation` 每次都拉 DB，已实测」 | `src/api/index.ts:939` | 「已实测」三个字后面**没有**测试名、段名或轮次号；本轮未找到对应凭据 | **仅有注释** |
 | 11 | 「后台会话靠带结论的事件覆盖，不挂在重查那一类上」（附当年代价说明） | `src/api/index.ts:936-943` | 分类写法与 `message-failed` 监听（`:944`）在读到的源码内自洽；行为层是否有轮次覆盖未查 | **已读原文**，行为层待查 |
-| 12 | 「单文件超过 512 KB 即轮转」「轮转后保持 owner-only 权限」 | `src-tauri/src/logging.rs:31/140/1070` | `logging.rs:1715` `logger_persists_to_file_and_rotates`、`:1638` `rotated_logs_keep_owner_only_permissions` 是对真实文件的读写测试 | **已证**（上限与访问控制确有凭据，这条是六项标准里「可诊断」的资源/隐私侧） |
+| 13 | 「迟到 Ack 只更新行（`LateApplied`），消息停在 cancelled/partial_cancelled（INV-P26）」 | `src-tauri/src/db/group_offline_queue.rs:48` | `cascade_tests.rs:1188-1203` 真的调 `ack_group_delivered` 并断言返回 `LateApplied` 且 `messages.status` 仍是 `cancelled`（「取消是硬终态」）；`:1336-1339` 断言 failed 行上的迟到 Ack 也只记账 | **已证** |
+| 14 | 「Ack 的语义是『已成功接收并持久化』；打不开就既不落库也不 Ack ⇒ 补发时用最新公钥重新密封」 | `src-tauri/src/network/transport/handle_messaging.rs:91-98` | 前半句与实现一致（`:99-106` 解密失败直接 `return`，无 Ack、无落库）；后半句的「重新密封」在 `e2ee_payload.rs` 的 `reseal_for_send` 族，本轮**未逐行读到**「拿不到公钥就按原样补发」与「msg_id 不变」这两点 | **半证**（前半已证，后半待读） |
+| 15 | 「重复投递也要回 Ack，否则一次丢 ACK = 发送方永远『发送中』」 | `handle_messaging.rs:64-69` | 实现在位并带 `[ACK] 重复消息仍回执` 日志；有 `dispatch_tests` 覆盖去重三态 | **已证**（行为实现 + 测试家族在，具体断言未逐条读） |
 
 ## 读数（对账进度，现算）
 
