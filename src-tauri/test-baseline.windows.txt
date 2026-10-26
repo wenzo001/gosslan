@@ -452,6 +452,11 @@ logging::tests::previous_run_seed_is_wired_at_startup
 logging::tests::previous_run_seed_writes_nothing_to_disk_however_many_times_it_is_called
 logging::tests::startup_marker_carries_the_run_id
 logging::tests::utc_format_and_parse_roundtrip_across_eras
+mem_diag::tests::cache_marks_its_own_age_and_only_overwrites_with_a_reading
+mem_diag::tests::frame_gauge_returns_on_every_exit_and_peaks_on_the_aggregate
+mem_diag::tests::missing_readings_render_as_dash_not_zero
+mem_diag::tests::present_readings_render_in_mib_and_the_column_set_is_stable
+mem_diag::tests::sample_on_the_host_platform_returns_something
 mesh::connection::tests::congestion_can_be_recovered
 mesh::connection::tests::congestion_does_not_affect_is_healthy_at_all
 mesh::connection::tests::congestion_expires_after_window
@@ -1074,6 +1079,7 @@ tests::key_rotation_candidate_requires_friend_and_new_key_self_signature
 tests::link_badge_and_presence_are_live
 tests::link_window_is_not_capability_covered
 tests::main_window_label_matches_tray_constant
+tests::memory_readings_are_wired_into_all_three_crash_surfaces
 tests::never_awaits_while_holding_the_links_lock
 tests::new_message_kinds_are_gated_at_the_send_path
 tests::no_path_can_end_the_process_without_leaving_a_note_first

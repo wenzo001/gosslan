@@ -1696,7 +1696,7 @@ dependencies = [
 
 [[package]]
 name = "gosslan"
-version = "5.14.4"
+version = "5.14.5"
 dependencies = [
  "async-trait",
  "base64 0.22.1",
@@ -1708,6 +1708,7 @@ dependencies = [
  "hostname",
  "if-addrs",
  "jni 0.22.4",
+ "libc",
  "machine-uid",
  "notify-rust",
  "objc2",
@@ -1741,6 +1742,7 @@ dependencies = [
  "walkdir",
  "windows 0.62.2",
  "windows-future 0.3.2",
+ "windows-sys 0.61.2",
  "x25519-dalek",
 ]
 

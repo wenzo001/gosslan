@@ -97,6 +97,17 @@ pub async fn read_bytes_capped<R: AsyncRead + Unpin>(
             "非法帧长度",
         ));
     }
+    // ★ 只计量，不拒绝（负责人 2026-10-26 拍板"先补读数，再动手"）：按**声明长度**预约这个数，
+    //   因为这里要看的就是"对端一句话让我们最多可能同时握着多少字节"——那正是
+    //   `MAX_INBOUND_CONNECTIONS(128) × MAX_FRAME(64MiB)` 那个没人管过的聚合值。
+    //   口径要说准，别当全貌：这一支是**经 `read_bytes_capped` 的帧读**唯一入口
+    //   （`read_bytes` 与 `read_frame` / `read_frame_preauth` 都汇到这儿，入站接受与本机主动拨出都走它）。
+    //   **另一处同形状的按声明长度增长本仪表还没覆盖**：`transport/relay_seal.rs` 的中继解封器
+    //   把内层帧体累进 `self.frame`，上限同样是 `MAX_FRAME`（`relay_seal.rs:473`）——
+    //   它是流式解析器、守卫的生命周期要挂在结构体字段上，所以本批没顺手接，记进 CHANGELOG 的下一批。
+    //   守卫是 RAII，三条出口（成功 / 长度不符 / `read_exact` 出错）都归还，
+    //   所以"声明了却不发数据"的那份预约在对端超时后自然回落。
+    let _read_gauge = crate::mem_diag::FrameReadGauge::new(len as u64);
     let mut buf = Vec::with_capacity(len.min(PREALLOC_CAP));
     // `take` 把总读取量钉死在声明长度；`read_to_end` 按实际到达的数据增长，
     // 不会在数据到达之前按 `len` 预留。

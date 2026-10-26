@@ -1,6 +1,6 @@
 [package]
 name = "gosslan"
-version = "5.14.4"
+version = "5.14.5"
 description = "Gosslan — 无服务器 P2P 局域网即时通讯"
 authors = ["wd.f"]
 edition = "2021"
@@ -100,6 +100,19 @@ semver = "1"
 # 可在资源管理器粘贴、也可直接粘贴回聊天框发送（微信式）。
 [target.'cfg(target_os = "windows")'.dependencies]
 clipboard-win = "5"
+# 崩溃现场的内存/句柄读数（`mem_diag.rs`）：`K32GetProcessMemoryInfo` + `GlobalMemoryStatusEx`
+# + `GetGuiResources`，三个都是**非分配**的系统调用，所以能在分配失败钩子里安全调用。
+#
+# ⚠️ 这不是"新依赖"：`windows-sys` 0.61.2 已经在 `Cargo.lock` 里被别的依赖用着
+# （`cargo tree -i windows-sys@0.61.2` 现算），这里只是我们自己也要用它 + 开四个 feature。
+# 写在上面的 `windows`（WinRT/BLE）不一样 —— 那个是 optional、只在 `--features bluetooth` 下存在，
+# 而诊断读数必须在**每一种构建**里都在。
+windows-sys = { version = "0.61", features = [
+    "Win32_Foundation",
+    "Win32_System_ProcessStatus",
+    "Win32_System_SystemInformation",
+    "Win32_System_Threading",
+] }
 # Windows 的 BLE **外设（GATT server）** 角色：btleplug 只做 central（ADR-0015 §3.1），
 # 而 Windows 要能被手机/其它电脑发现与连入，就必须自己广播并提供 GATT 服务。
 # 原生做法是 WinRT 的 `GattServiceProvider`，feature 列表**照抄 btleplug 的 winrtble 后端**
@@ -128,6 +141,10 @@ windows-future = { version = "0.3", optional = true }
 # layer 设 cornerRadius（公开 API），并关掉与圆角不兼容的系统阴影。
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2 = "0.6"
+# 崩溃现场的内存读数（`mem_diag.rs`）：darwin 上 `getrusage(RUSAGE_SELF).ru_maxrss` 是
+# **唯一不用 mach 端口、也不用 fork 命令**就能拿到的读数。`libc` 0.2.189 早就在
+# `Cargo.lock` 里被别的依赖用着 ⇒ 这里不新增要下载的 crate，只是我们自己声明一次。
+libc = "0.2"
 objc2-app-kit = { version = "0.3", features = ["NSWorkspace", "NSWindow", "NSView", "objc2-quartz-core"] }
 # NSData/NSArray/NSError 是 security-scoped bookmark（共享目录跨重启保活）的必需 feature：
 # objc2-foundation 的 feature 就是类名，书签 API 的 cfg 门要求它们同时打开。

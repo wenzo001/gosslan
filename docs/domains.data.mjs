@@ -448,6 +448,11 @@ export default {
         // 5.0.37 的诊断包出口：它只做一件事 —— 把 logging.rs 落在磁盘上的那三份文件
         // 脱敏之后交出去，所以归属在本域，不在 commands 那一域。
         "src-tauri/src/diagnostics.rs",
+        // 2026-10-27 Windows 崩溃归因补的那一层：进程工作集/私有提交量/系统还能提交多少/
+        // GDI·USER 句柄/正在读的帧字节聚合。接在三个已有出口上 —— `logging.rs` 的现场通道、
+        // `watchdog.rs` 的 HANG 行、`lib.rs` 的分配失败钩子。它自己只 `use crate::logging::now_ms`
+        // （同域 self）⇒ 本域的叶子性没变；被别的域单向调用正是叶子域该有的样子。
+        "src-tauri/src/mem_diag.rs",
       ],
       invariants: ["INV-P16"],
       activeHome: "src-tauri/src/logging.rs",

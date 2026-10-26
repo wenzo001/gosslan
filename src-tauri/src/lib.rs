@@ -38,6 +38,9 @@ mod macos_bookmark;
 /// 见 macos_window.rs 注释（与自绘标题栏的取舍）。
 #[cfg(target_os = "macos")]
 mod macos_window;
+/// 进程内存 / 系统提交量 / GDI·USER 句柄 / 帧读聚合的**现场读数**。
+/// 接线三处：`state.rs` 的 `RUNTIME_SNAPSHOT`、`watchdog.rs` 的 HANG 现场、下面那个分配失败钩子。
+mod mem_diag;
 /// macOS 原生菜单栏（自绘标题栏 + `decorations: false` 导致系统菜单栏缺失，需补回）。
 /// 只在 macOS 建：Windows / Linux 用自绘标题栏，加系统菜单条会顶在标题栏之上破坏布局。
 #[cfg(target_os = "macos")]
@@ -201,9 +204,23 @@ static GLOBAL_ALLOC: NotingAlloc = NotingAlloc;
 
 #[inline]
 fn note_alloc_failure(what: &str, size: usize, align: usize) {
+    // ★ 只有"要 318 KB 都拿不到"这句话，定不死**是谁吃的**内存 —— 2026-10-21 那次就是这样
+    //   查不动的。所以把当时的读数一起写出去：Windows 上这三个调用
+    //   （`K32GetProcessMemoryInfo` / `GlobalMemoryStatusEx` / `GetGuiResources`）
+    //   自己都不申请堆内存，在这条路径上是安全的；读不到的那一列如实写 `-`，不编数。
+    //   采样本身失败时退回上一次缓存，并把它"多少秒前"一起写出来 —— 旧值不能被当成
+    //   "崩的那一刻"。写行仍走 `crash_note` 那份再入闸（`logging.rs` 的 `NOTE_IN_PROGRESS`）。
+    let fresh = crate::mem_diag::sample();
+    let reading = if fresh.has_any() {
+        fresh.line()
+    } else {
+        crate::mem_diag::cached_line()
+    };
     crate::logging::crash_note(&format!(
-        "{what}失败：请求 {size} 字节（对齐 {align}）⇒ 分配器即将 abort（不是 panic，钩子不会跑）"
+        "{what}失败：请求 {size} 字节（对齐 {align}）{reading} ⇒ 分配器即将 abort（不是 panic，钩子不会跑）"
     ));
+    // 这一次的死因也顺手刷进缓存，供下一轮启动的横幅/诊断包对照。
+    crate::mem_diag::remember(&fresh);
 }
 
 /// 最早把崩溃现场路径绑好的插件。

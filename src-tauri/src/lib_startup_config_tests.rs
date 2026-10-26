@@ -447,3 +447,85 @@
             "插件不再注册 ⇒ 辅助窗的 restore_aux_window_size（WindowExt::restore_state）一起失效"
         );
     }
+
+    /// 崩溃现场的内存读数**接在哪三个出口**上 —— 采样函数写得再对，没接上就等于零。
+    ///
+    /// 这是本仓的"接线判据"规矩：钉**出现次数**与**先后顺序**，不钉存在性
+    /// （存在性会被注释里的同名句子喂饱 —— 上面那条 `code_only` 就是为此存在）。
+    /// 三个出口对应三种死法：`RUNTIME_SNAPSHOT` = 长跑趋势；HANG = 冻住的那一刻；
+    /// 分配失败钩子 = 进程消失前的最后一格。少接任何一个，那一种死法就重新变成猜。
+    #[test]
+    fn memory_readings_are_wired_into_all_three_crash_surfaces() {
+        fn code_only(src: &str) -> String {
+            src.lines()
+                .filter(|l| !l.trim_start().starts_with("//"))
+                .collect::<Vec<_>>()
+                .join("\n")
+        }
+
+        // ① 5 分钟一格的结构快照：既采样，也把这一格存成缓存。
+        let state = code_only(include_str!("state.rs"));
+        assert_eq!(
+            state.matches("crate::mem_diag::sample()").count(),
+            1,
+            "RUNTIME_SNAPSHOT 没有恰好一次采样 ⇒ 读数要么没接、要么被抄成第二份平行实现"
+        );
+        assert_eq!(
+            state.matches("crate::mem_diag::remember(&mem)").count(),
+            1,
+            "采样结果没进缓存 ⇒ 下一次分配失败时只能退回 `cached_age=-`（等于白采）"
+        );
+        let snap = state
+            .find("code=RUNTIME_SNAPSHOT")
+            .expect("那条快照行改名/搬家了 ⇒ 同步改这条判据");
+        assert!(
+            state[snap..snap + 900].contains("mem.line()"),
+            "格式串里没有 `mem.line()` ⇒ 采到的数压根没上那一行（假接线）"
+        );
+
+        // ② HANG 现场。
+        let wd = code_only(include_str!("watchdog.rs"));
+        assert_eq!(
+            wd.matches("crate::mem_diag::sample().line()").count(),
+            1,
+            "HANG 现场少了内存那一格 ⇒ 「主线程 + 渲染层同一秒双双停滞」还是只能猜"
+        );
+        let hang = wd
+            .find(">>> code=HANG scope=")
+            .expect("HANG 行的形状变了 ⇒ 同步改 `logging.rs` 的解析与这条判据");
+        assert!(
+            wd[hang..].contains("crate::mem_diag::sample().line()"),
+            "读数必须拼在 HANG 那一行里（写在别处 = 现场文件里查不到）"
+        );
+
+        // ③ 分配失败钩子：新采样优先，采不到才退缓存。
+        let lib = code_only(include_str!("lib.rs"));
+        let hook = lib
+            .find("fn note_alloc_failure")
+            .expect("分配失败钩子改名 ⇒ 这条接线判据同步改");
+        let body = &lib[hook..hook + 1_400];
+        assert!(
+            body.contains("crate::mem_diag::sample()") && body.contains("crate::mem_diag::cached_line()"),
+            "钩子里既要有当场采样、也要有采不到时的缓存兜底"
+        );
+        assert!(
+            body.find("crate::mem_diag::sample()") < body.find("crate::mem_diag::cached_line()"),
+            "必须先试新采样再退缓存（反了 = 每次报的都是五分钟前那一格）"
+        );
+
+        // ④ 帧读仪表：只在**长度校验之后**预约一次。
+        let tcp = code_only(include_str!("transport/tcp.rs"));
+        assert_eq!(
+            tcp.matches("FrameReadGauge::new(").count(),
+            1,
+            "读帧路径上的预约必须恰好一处（两处 = 双计；零处 = 这一格永远是 0）"
+        );
+        let check = tcp
+            .find("len > max")
+            .expect("长度校验的写法变了 ⇒ 这条判据的顺序断言要跟着改");
+        let gauge = tcp.find("FrameReadGauge::new(").unwrap();
+        assert!(
+            gauge > check,
+            "必须先校验长度再预约：否则一个非法长度也会被算进聚合值（那是量具自己造假）"
+        );
+    }
