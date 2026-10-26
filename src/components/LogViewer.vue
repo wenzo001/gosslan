@@ -465,7 +465,7 @@ const rowLevelBg = (lv: string) =>
     </div>
 
     <!-- 日志列表 -->
-    <div ref="logScroll" class="min-h-0 flex-1 overflow-y-auto px-3 py-2 font-mono text-body leading-relaxed">
+    <div ref="logScroll" class="gosslan-selectable min-h-0 flex-1 overflow-y-auto px-3 py-2 font-mono text-body leading-relaxed">
       <StateBlock
         v-if="logs.length === 0 && loadError"
         kind="error"
@@ -632,7 +632,7 @@ const rowLevelBg = (lv: string) =>
         </button>
       </div>
 
-      <div ref="logScroll" class="min-h-0 flex-1 overflow-y-auto px-3 py-2 font-mono text-body leading-relaxed">
+      <div ref="logScroll" class="gosslan-selectable min-h-0 flex-1 overflow-y-auto px-3 py-2 font-mono text-body leading-relaxed">
         <StateBlock
           v-if="logs.length === 0 && loadError"
           kind="error"

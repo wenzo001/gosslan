@@ -498,6 +498,33 @@ body {
   -webkit-touch-callout: default;
 }
 
+/* ── 文本选择的默认方向（负责人 2026-10-26：「全局默认禁用文本选择，文字气泡内的单独开启」）──
+ *
+ * 方向反过来定，是因为"默认开着"要求**每一块界面 chrome 都记得自己补 `select-none`**，
+ * 而这次报出来的现象正是"有些补了、有些没补"（会话行、页脚、卡片标签、面板标题各处不一致）。
+ * 默认关掉之后：新增界面天然不会漏，可复制的内容只剩下面这一份**显式开启清单**，
+ * 判据钉的就是"默认那一格在不在 + 开启清单有没有漏掉可编辑控件"（`designGuards` ⑥-b）。
+ *
+ * 开启清单（就这几家，别处不要再加第二份）：
+ *   · 消息正文 / 引用块 —— `.gosslan-selectable`（上面那条）、`.gosslan-bubble-text`（自带 `select-text`）、`.quote-block`；
+ *   · 代码块、收藏正文、搜索结果正文、日志页正文 —— 同样挂 `.gosslan-selectable`；
+ *   · 可编辑控件 —— 关掉它们等于不能选词与编辑，那是**拿掉已有能力**，不是收紧口径。
+ *
+ * ⚠️ 写在根元素上而不是 `*`：`user-select` 会继承，一条根规则就覆盖整棵树；
+ *   而 `*` 给每个元素都算一次声明，任何一处元素级默认值都要靠更高优先级去压。 */
+html {
+  -webkit-user-select: none;
+  user-select: none;
+}
+
+input,
+textarea,
+select,
+[contenteditable]:not([contenteditable="false"]) {
+  -webkit-user-select: text;
+  user-select: text;
+}
+
 /* ── 触屏：**正文**可原生选字；其余消息内容不可选，长按归自定义消息面板 ──
  *
  * 用户 2026-10-23：「移动端必须保留系统原生的选中文字与复制菜单」——长按正文要能进

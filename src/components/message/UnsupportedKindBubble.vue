@@ -36,7 +36,7 @@ const expanded = ref(false);
     <!-- 展开后才给原文：默认状态时间线上不出现任何载荷字节 -->
     <template v-if="expanded">
       <pre
-        class="mt-1 max-h-40 overflow-y-auto whitespace-pre-wrap break-all rounded-[var(--gosslan-radius-sm)] bg-[var(--gosslan-hover)] p-2 font-mono text-caption"
+        class="gosslan-selectable mt-1 max-h-40 overflow-y-auto whitespace-pre-wrap break-all rounded-[var(--gosslan-radius-sm)] bg-[var(--gosslan-hover)] p-2 font-mono text-caption"
       >{{ content }}</pre>
       <div class="mt-1 font-mono text-caption opacity-60">type: {{ kind }}</div>
     </template>

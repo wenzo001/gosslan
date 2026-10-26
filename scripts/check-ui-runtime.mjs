@@ -11958,6 +11958,16 @@ async function runOpsCenter(cdp, url) {
     })()`);
     const resendingRows = await read();
     const m1Row = resendingRows.rows.find((r) => r.title === '在吗');
+    // 文本选择的默认方向（负责人 2026-10-26）在**真渲染**那一侧的读数：任务中心那一行是界面 chrome，
+    // computed 必须是 none。静态判据只看得到 style.css 里那条规则在不在，看不见级联谁压过了谁
+    // （同一条规则被内联样式压掉时，静态判据全绿而界面上照样能划选 —— 本仓踩过那一型）。
+    const rowSelect = await cdp.eval(`(() => {
+      const li = document.querySelector('[role="dialog"] li');
+      return li ? getComputedStyle(li).userSelect : null;
+    })()`);
+    check("★ 任务中心那一行 computed user-select = none（界面 chrome 默认不可选）",
+      rowSelect === "none", "none", JSON.stringify({ rowSelect }));
+
     check("★ 标记「重发中」后任务中心那一行就说「重发中」（只这一行说，行数不变）",
       !!m1Row && m1Row.status === wantResending && wantResending.length > 0
         && resendingRows.rows.filter((r) => r.status === wantResending).length === 1
@@ -12142,6 +12152,96 @@ async function runOpsCenter(cdp, url) {
       mobileFoot.present && mobileFoot.sw <= 390,
       "scrollWidth ≤ 390", JSON.stringify({ sw: mobileFoot.sw }));
 
+    // ── 「去会话」这一发到底成不成（负责人 2026-10-26：「群明明在，点去会话弹『没能打开会话』」）──
+    // TaskCenter 打开之后要核对"确实打开了"，而它读的三份都是**本机快照**：会话行、群清单、
+    // 两个 loaded 旗标。"我这份快照里看不见"与"它不存在"是两件事 —— 三格把形状分开量：
+    //   A 会话行与群都在快照里（正常态，回归网）；
+    //   B 群在、会话行还没有（`openConversation` 自己会补建 ⇒ 也不该报失败）；
+    //   C 群**在真源里**（getGroups/getConversations 都返回它），但本机快照还没到位 ——
+    //     今天这一格弹的就是用户看到的那句「没能打开会话」；修完之后必须到达。
+    // 判据不读 toast（探针挂的是裸组件，页面里没有 ToastProvider ⇒ 那句提示不会进 DOM），
+    // 而是**用 TaskCenter 同一份输入现算它那个失败条件**：条件为真 ⇔ 用户看到那句报错。
+    await cdp.send("Emulation.setDeviceMetricsOverride", {
+      width: 1280, height: 800, deviceScaleFactor: 1, mobile: false,
+    });
+    const jumpGid = "g-probe-open";
+    const jumpCid = `group:${jumpGid}`;
+    const jumpConv = {
+      id: jumpCid, kind: "group", name: "探针群", avatar: null, last_msg: "在吗",
+      last_ts: 1, unread: 0, mentioned: 0, pinned: 0, muted: 0,
+    };
+    const jumpGroup = { id: jumpGid, name: "探针群", creator: "dev-me", members: ["dev-me", "p1"] };
+    const jumpOnce = async (shape) => {
+      // 每种形状重新挂一次面板（install 会清 body ⇒ 上一格的 DOM 不残留）。
+      await cdp.eval("window.__probe.install('/src/components/TaskCenter.vue', '', '')");
+      await cdp.eval("window.__probe.seedDevice('dev-me')");
+      const seeded = await cdp.eval(`(async () => {
+        const S = await import('/src/stores/useChatStore.ts');
+        const chat = S.useChatStore();
+        const conv = ${JSON.stringify(jumpConv)};
+        const grp = ${JSON.stringify(jumpGroup)};
+        chat.conversations = ${shape === "A" ? "[conv]" : "[]"};
+        chat.groups = ${shape === "A" || shape === "B" ? "[grp]" : "[]"};
+        chat.groupsLoaded = ${shape === "C" ? "false" : "true"};
+        chat.conversationsLoaded = ${shape === "C" ? "false" : "true"};
+        chat.friendsLoaded = ${shape === "C" ? "false" : "true"};
+        chat.activeConv = null;
+        chat.messageOps = [{ msg_id: 'm-jump', kind: 'text', peer_id: 'p1', group_id: ${JSON.stringify(jumpGid)},
+          waiting_for: 1, created_at: 1, preview: '在吗', peer_offline: true, can_cancel: true, some_delivered: false }];
+        const A = await import('/src/stores/useAppStore.ts');
+        A.useAppStore().openTaskCenter();
+        const t = window.__probe.vue; await t.nextTick(); await t.nextTick();
+        const row = chat.operations.find((r) => r.id === 'm-jump') || null;
+        return { convId: row ? row.convId : null, actions: row ? row.actions.join(',') : '' };
+      })()`);
+      // 真源（后端）在三种形状里都说"这个群在"：只有愿意去读一次的那一格才拿得到答案。
+      for (const [name, payload] of [
+        ["getMessages", []],
+        ["markRead", null],
+        ["ensureConversation", jumpConv],
+        ["getConversations", [jumpConv]],
+        ["getGroups", [jumpGroup]],
+        ["getFriends", []],
+        ["getPendingMessageOperations", []],
+        ["getTransfers", []],
+        ["getContentTransfers", []],
+      ]) {
+        await cdp.eval(`window.__probe.stubApi(${JSON.stringify(name)}, ${JSON.stringify(payload)})`);
+      }
+      await sleep(250);
+      const loc = await cdp.eval(`(async () => {
+        const I = await import('/src/i18n/index.ts');
+        const want = I.t('task.openChat');
+        const b = Array.from(document.querySelectorAll('[role="dialog"] button'))
+          .find((x) => (x.textContent || '').trim() === want && x.getClientRects().length > 0);
+        if (!b) return { found: false, want };
+        const r = b.getBoundingClientRect();
+        return { found: true, x: Math.round(r.left + r.width / 2), y: Math.round(r.top + r.height / 2) };
+      })()`);
+      if (!loc || !loc.found) return { ok: false, why: "button", loc, seeded };
+      await cdp.click(loc.x, loc.y);
+      await sleep(1500);
+      const after = await cdp.eval(`(async () => {
+        const S = await import('/src/stores/useChatStore.ts');
+        const chat = S.useChatStore();
+        return {
+          active: chat.activeConv,
+          rowVisible: chat.conversations.some((c) => c.id === ${JSON.stringify(jumpCid)}),
+          groupVisible: chat.groups.some((g) => g.id === ${JSON.stringify(jumpGid)}),
+          groupsLoaded: chat.groupsLoaded,
+          conversationsLoaded: chat.conversationsLoaded,
+        };
+      })()`);
+      // 与 TaskCenter.vue 那一格同一份条件（"我看不见"被当成"它不存在"就是从这里出去的）。
+      const failCondition = after.active !== jumpCid || (!after.rowVisible && !after.groupVisible);
+      return { ok: true, seeded, after, failCondition };
+    };
+    for (const shape of ["A", "B", "C"]) {
+      const r = await jumpOnce(shape);
+      check(`★ 任务中心「去会话」形状 ${shape}：群在真源里就必须到达，不许弹「没能打开会话」`,
+        r.ok === true && !!r.seeded && r.seeded.convId === jumpCid && r.failCondition === false,
+        "到达 group:<gid> 且失败条件为假", JSON.stringify(r));
+    }
   } finally {
     await cdp.send("Emulation.clearDeviceMetricsOverride").catch(() => {});
   }
@@ -12363,6 +12463,22 @@ async function runResend(cdp, url) {
     check("★ 文本失败重发走 resend_message（复用原 msg_id），且不新建消息", false,
       "先要那颗按钮存在", JSON.stringify(e));
   }
+
+  // ── b 文字气泡那一侧的默认方向：正文必须仍然可选（"单独开启"的那一半）──────
+  // 挂的就是上面那条文本消息（`kind: "text"`，正文层 `.gosslan-selectable`）。
+  // 读的是 computed，不是类名：全局 `html { user-select: none }` 加进来之后，
+  // 开启面靠的是元素自己的声明赢过继承 —— 只有算出来的值能证明这件事真的成立。
+  const bubbleSelect = await cdp.eval(`(() => {
+    const body = document.querySelector('.gosslan-bubble-text .gosslan-selectable');
+    const root = document.querySelector('.gosslan-bubble-text');
+    return {
+      body: body ? getComputedStyle(body).userSelect : null,
+      root: root ? getComputedStyle(root).userSelect : null,
+    };
+  })()`);
+  check("★ 文字气泡正文 computed user-select = text（默认关闭之后仍要单独开得回来）",
+    bubbleSelect && bubbleSelect.body === "text" && bubbleSelect.root === "text",
+    "正文与气泡根都是 text", JSON.stringify(bubbleSelect));
 
   // ── ⑥ 确认框里点「取消」⇒ 一条命令都不许发 ────────────────────────────
   // 二次确认不是"多点一下"的装饰：确认键才是动手的那一步，取消必须真的什么都不做。
