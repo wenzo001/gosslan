@@ -44,6 +44,8 @@ HEAD `6ca07ca5`。取值：`PASS` / `PARTIAL` / `FAIL` / `UNVERIFIED` / `BLOCKED
 | F-MSG-060 | 首屏读取与历史分页（`get_messages` / `get_latest_messages` / `list_conversations`） | PASS 三处都在 `spawn_blocking` 里（注释：标了 `(async)` 的同步 fn 仍跑在 tokio worker 上，留在 worker 等锁就是拿稀缺资源换排队位置）；`limit` 夹到 1..500、`offset` 取非负 | 不适用(理由)：纯读操作 | PASS 只读，不产生需要恢复的状态；一次失败在下次成功读时自愈 | **FAIL** 三处都是 `db::…().unwrap_or_default()` ⇒ 读失败变成**空页/空列表**；会话列表整个消失时最像「数据被清空了」⇒ **B1-F7** | PARTIAL messages 读取有 DB 层用例，但「失败必须变 Err 而不是空」没有判据（B1-F7 要补） | **FAIL** 错误对象被 `unwrap_or_default` 丢弃，无日志、无事件 ⇒ **B1-F7** | **PARTIAL** |
 | F-FRN-001 | 好友申请：发送 / 同意 / 拒绝 / 删除 | PASS 发送侧先挡「空 / 自己」；**同意路径只有一份实现**（`commands/mobile_picker.rs:363-371` 说明两个入口都要走它，否则会造出「我这儿有他、他那儿没我」的**单边好友关系**——用户 2026-09-12 实测过） | 不适用(理由)：申请与同意都是即时消息，没有「取消」语义；拒绝即终止 | PASS **先登记再发**：好友申请没有回执，链路一抖就静默丢、而界面照样显示「已发送」（2026-09-12 真机复现过）⇒ 登记后由建链/Hello 补全时重发；`or_insert` 保证连点几次**不重置**补发间隔；`FriendAccept` 也有**唯一**发送实现 + `flush_pending_friend_accept` 重发路径（注释："两处各写一份的话，重发的那份迟早会漏掉定向/重签/加密"） | PASS **缺对端公钥时绝不静默**：warn 一行 + 返回 Err，并写明后果（本地已加好友但回执发不出 ⇒ 单边成立）；同意/拒绝后清 pending | PARTIAL `lib_friend_identity_tests` 有源码断言族；但**跨进程好友关系始终没有 E2E 轮次**（早期矩阵就记着「no J4 proof」）⇒ 这条的"可验证"仍缺最高一档 | PARTIAL 有 warn 但**无具名 `code=`**（并入 B1-F1 族） | **PARTIAL** |
 | F-GRP-002 | 群公告与群任务（创建 / 改状态 / 改结构 / 归档 / 删除 / 公告列表） | PASS 标题长度、状态白名单、**指派人必须是群成员**（`check_todo_assignees`）都校验；优先级/类型只在**给了值**时校验并覆盖，只改状态不会把优先级重置成「常规」 | 不适用(理由)：都是即时定义消息（LWW per `todo_id`），没有取消语义；删除用显式 `deleted` 标志 | PASS **鉴权三档**（`commands/group_files.rs:463-477`）：todo 创建者或群主全权；**被指派人只能改状态与指派人、不能改结构**（标题/描述/图片/删除）；其余无权。**`creator` 与 `done_at` 都不从参数来**：前者服务端从库里最新定义回填（否则传别人的 creator 就能改别人的任务），后者在**首次**完成时记权威时间戳、重复保存沿用原值（否则改个标题就重置 7 天归档计时，且客户端可伪造完成时间绕过自动归档）；LWW 语义使乱序到达也收敛 | PASS 群任务有独立窗口与任务板；徽标**只由前端 `utils/todos.ts::foldTodos` 折叠一份**，后端只回 `kind IN ('todo','todo_update')` 的原始行（注释：用内存缓存算徽标会让「没缓存的群没有数字」，那是假状态） | PARTIAL 有 `todos` 单测与群轮次；但**公告与群待办的跨实例投递仍零证据**（早期探测结论，我本轮未补轮次） | PARTIAL 无具名 `code=`（并入 B1-F1 族） | **PARTIAL** |
+| F-MSG-070 | 聊天记录搜索（关键词 / 发送者 / 时间范围） | PASS 关键词按字符截断、空词直接返回空；`sender`/`since`/`until` 都是可选过滤；命中数与会话数各有上限（`SEARCH_HISTORY_MAX_HITS` / `MAX_CONVS`） | 不适用(理由)：只读查询 | PASS **没有 SQL 注入面**：`?1..?5` 全参数化，唯一的插值是从编译期 `WIRE_KINDS` 派生并逐项加引号的 kind 清单（`protocol.rs:552-560`），不是用户输入；`escape_like` 依次转义 `\\`、`%`、`_`（`db/messages.rs:1291-1295`）⇒ 用户输入的 `%`/`_` 是字面量而不是通配 | PASS 结果按 `ts DESC` 分组，组内与左栏顺序一致；元数据批量预取（旧形状 50 会话 × 60 命中 ≈ 3000 次锁往返，注释记着） | PASS **范围钉在「仍在会话列表里的会话」**上（`conv_id IN (SELECT id FROM conversations)`），注释写明：删除级联收口之前入库的孤儿历史不该出现在搜索里——「点又点不开，还挤占共 N 条」；`system` 与静默类（表情回应/撤回）默认不可搜 | PARTIAL 有 `chatSearch*.test.ts`（纯函数）+ 真库查询；**跨实例无证据**（搜索是本机读） | PARTIAL 无具名 `code=`；但错误是 `?` 向上而非折叠成空（比 F-MSG-060 好） | **PASS** |
+| F-MSG-004 | 重发一条失败/被取消的消息（复活） | PASS 前端拦截：重发前有**二次确认**（`3e3ddac1` 修的就是"重发不确认"）；发送中可取消 | PASS 发送中再次点击由状态机与 `pendingAcks` 挡住（不重复提交） | PASS **状态门只允许 `failed` / `cancelled` 复活**（`db/messages.rs:1297-1301`）：`sending`/`sent` 已在路上，`delivered`/`read`/`recalled` 是不可逆硬终态——注释写明「一条已送达的消息被『重发』会让对端收到第二条完全相同的情绪，而库里的 seq 还是旧的」；有 `resend_requeue_tests` 用例族 | PASS 失败档给「可重发」入口，终态档不给（`MessageReceipt` 按 `resendChannel` 门控） | PARTIAL 有 `resend_requeue_tests`（db 层状态门）+ `retrySend.test.ts`（前端）；**命令体本轮未逐行读**（B 级） | PARTIAL 复活/重发无具名码（并入 B1-F1 族） | **PARTIAL** |
 | F-OBS-002 | 前后端契约双向对账（161 命令 / 事件面） | PASS 门面唯一：`IPC 只能从 src/api 门面走`（含「6 条命令在 api 上根本没有包装」的回归） | 不适用(理由)：这是判据不是用户操作 | 不适用(理由)：同上 | 不适用(理由)：同上 | **PASS（我实跑）** `node --test src/api/events.test.ts src/utils/mapContract.test.ts` ⇒ **EXIT=0，17/17**；另独立 `comm` 复算：注册 161 / 去重调用名 160，孤儿仅 `get_topology`（`events.test.ts:375` 自declare 无 UI 入口） | PASS 命令名与注册表逐条对账、「门面之下不许留没人引用的包装」都是现成判据 | **PASS** |
 | F-OBS-003 | 诊断面：错误分类 / 上限 / 脱敏 / 访问控制 | 不适用(理由)：非用户动作 | 不适用(理由)：同上 | PASS 单文件 512 KB 轮转（`logging.rs:140/1070`），有真文件读写测试 `logger_persists_to_file_and_rotates:1715` | 部分：日志窗口有独立 entry（`logs.html` + `src/entries/logs.ts`），用户可查 | **已证**（上两行测试名 + 我跑通的对账族） | **PARTIAL** 具名 `code=` 共 **87** 个、日志调用 363 处（error 81 / warn 129 / info 153），覆盖面广；但**关键操作结局缺码**（B1-F1）；脱敏是形状级（`diagnostics.rs:19-22`，作者自述并保留文件名/大小以便查传输故障）⇒ 隐私与可查性是**登记过的取舍** | **PARTIAL** |
 
@@ -134,6 +136,7 @@ HEAD `6ca07ca5`。取值：`PASS` / `PARTIAL` / `FAIL` / `UNVERIFIED` / `BLOCKED
 
 | FID | A 级命令（读过函数体/关键分支） |
 |---|---|
+| F-MSG-070 | `search_chat_history` · `search_history` · `escape_like` · `sql_kind_list`（读了 SQL 构造） |
 | F-GRP-002 | `update_group_todo`（读了鉴权三档与 `creator`/`done_at` 的服务端回填） |
 | F-FRN-001 | `send_friend_request`（读了实现：先登记再发的理由与补发路径） |
 | F-MSG-060 | `get_messages` · `get_latest_messages` · `list_conversations`（首屏三处主读，读了实现） |
@@ -149,7 +152,7 @@ HEAD `6ca07ca5`。取值：`PASS` / `PARTIAL` / `FAIL` / `UNVERIFIED` / `BLOCKED
 | F-OBS-007 | `get_logs` · `clear_logs` · `get_log_locations` |
 | F-OBS-008 | `export_external_links` · `cleanup_external_links_export` · `import_external_links_file` · `import_external_links_from_url` |
 
-**A 级合计 24 条命令**（现算脚本报 25 个 token，多出的那个是内部处理器 `handle_group_rename`，它不是 tauri 命令、不计入 161）。这就是我敢说"这 19 条有六格结论"的全部。
+**A 级合计 25 条命令**（现算脚本报 26 个 token，多出的那个是内部处理器 `handle_group_rename`，它不是 tauri 命令、不计入 161）。这就是我敢说"这 19 条有六格结论"的全部。
 
 ### B 级（不计入覆盖，只说明链路形状）
 
@@ -159,7 +162,7 @@ HEAD `6ca07ca5`。取值：`PASS` / `PARTIAL` / `FAIL` / `UNVERIFIED` / `BLOCKED
 
 `get_device_info` · `update_profile` · `list_interfaces` · `get_peers` · `search_nearby_peers` · `focus_window` · `shake_window` · `request_attention` · `set_unread_badge` · 好友四件套（`get_friends`/`send_friend_request`/`respond_friend_request`/`get_pending_requests`/`remove_friend`/`default_nickname`）· `send_message` · `get_messages`/`get_latest_messages`/`get_conversations`/`ensure_conversation`/`set_conversation_pinned`/`get_conv_link`/`get_message_count`/`get_pending_message_operations`/`get_group_todo_messages` · `send_group_message`/`send_group_reaction`/`pin_group_message`/`set_message_render`/`get_group_delivery_summaries`/`resend_group_delivery` · 群公告与群待办六条 · `send_todo_image`/`save_todo_image_bytes`/`todo_image_meta` · `request_content`/`request_content_by_cid`/`cancel_content_fetch`/`get_content_transfers`/`get_transfers` · `delete_file`/`save_outgoing_image`/`open_file_native`/`read_file_preview`/`read_content_preview`/`copy_file_to_clipboard`/`read_clipboard_file_paths`/`media_present` · `export_chat_text` · `get_discovery_diag`/`get_runtime_diag`/`set_app_active` · `window_minimize`/`window_toggle_maximize`/`window_is_maximized`/`window_close`/`set_native_titlebar_buttons_hidden`/`apply_macos_window_shape` · `search_chat_history` · `import_picked_file`/`request_ble_permissions`/`set_ui_language` · `broadcast_chat_style` · `list_favorites`/`add_favorite`/`remove_favorite`/`read_favorite_preview` · `get_cache_info`/`clean_cache_now`/`set_cache_policy` · `create_group`/`leave_group`/`distribute_group_key`/`get_groups` · `get_settings`/`reset_settings` · `get_previous_exit` · `notify_desktop`/`send_test_notification` · `login`/`updater_status` 之外的更新命令 · `ui_heartbeat`/`report_frontend_slow_op`/`log_frontend_error` · `take_group_todo_focus`/`request_group_todo_focus`/`get_group_todos_context`/`get_image_preview_gallery`/`close_settings_window`/`restart_app`。
 
-**所以真实进度是**：**24 条 / 161 条 ≈ 15% 的命令有六格结论**；33 行矩阵里剩下的行讲的是**行为族**（例如"群成员级投递"这一族横跨收发两侧、多张表与清扫器），它们比单条命令大，但不能拿来充命令数。现算命令：
+**所以真实进度是**：**25 条 / 161 条 ≈ 16% 的命令有六格结论**；33 行矩阵里剩下的行讲的是**行为族**（例如"群成员级投递"这一族横跨收发两侧、多张表与清扫器），它们比单条命令大，但不能拿来充命令数。现算命令：
 
 ```bash
 python3 - <<'EOF'
@@ -176,7 +179,7 @@ EOF
 
 ## 五、读数
 
-现算（**只数判级列**，命令：`grep -cE '^\| F-.*\| \*\*(PASS|PARTIAL)\*\* \|$' docs/notes/closedloop-matrix-2026-10-26.md` ⇒ **37**）：已走完六格 **37** 行，其中 **PASS 6**、**PARTIAL 31**；另有若干行含「不适用(理由)」的格（不适用≠通过，也不计入这两档）。⚠️ **不要用 `grep -c '^| F-'`**——本文件第六节的「FID → 命令映射」表同样以 `| F-` 开头，那个命令会把两表相加（实测报 45）。立案 **14** 条（P2 九 / P3 五），保留 **5** 条，撤回 **6** 条。
+现算（**只数判级列**，命令：`grep -cE '^\| F-.*\| \*\*(PASS|PARTIAL)\*\* \|$' docs/notes/closedloop-matrix-2026-10-26.md` ⇒ **39**）：已走完六格 **39** 行，其中 **PASS 7**、**PARTIAL 32**；另有若干行含「不适用(理由)」的格（不适用≠通过，也不计入这两档）。⚠️ **不要用 `grep -c '^| F-'`**——本文件第六节的「FID → 命令映射」表同样以 `| F-` 开头，那个命令会把两表相加（实测报 45）。立案 **14** 条（P2 九 / P3 五），保留 **5** 条，撤回 **6** 条。
 
 **本文件的引用不受任何守卫保护**（实况见主报告「我自己的两处错」第 2 条：`check-doc-citations.mjs` 管 `file:line` 的那条只吃 `LIVE_DOCS` 那 8 份，`docs/notes/**` 不在内）。所以行号会随改动静默腐烂。二选一，**本审计不新建脚本**（按仓里「新判据先找现成的家」与自己编的规矩要撤）：
 
