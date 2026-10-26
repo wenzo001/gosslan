@@ -27,7 +27,8 @@ const props = withDefaults(
     /** 切换会话（末条 key 变化）时是否自动贴底；未读跳转场景由父组件关掉，改走 scrollToIndex */
     autoScrollOnSwap?: boolean;
     /**
-     * 布局签名（字号 / 主题等）。变化时清空测量缓存并重测：宽度/字体变了而继续用旧高度
+     * 布局签名（字号等**真正改变几何**的度量）。变化时清空测量缓存并重测：
+     * 宽度/字体变了而继续用旧高度
      * 会让前插/跳转落到错位置。窗口宽度变化由容器 ResizeObserver 现读，不靠父组件传。
      */
     layoutKey?: string;
@@ -208,7 +209,27 @@ const virtualizer = useVirtualizer(
           const oldSize = typeof prev === "number" ? prev : props.estimateHeight(props.items[index], index);
           const delta = rounded - oldSize;
           const el = container.value;
-          if (el && Math.abs(delta) > 0.5) setScrollTop(el.scrollTop + delta);
+          // 新追加、且完全在视口下方的行：它的高度变化还没进入“用户看到的底部”，
+          // 先补 scrollTop 会把视口往上拽 39px，随后 append 的贴底再把它推回去 ⇒ 一帧闪烁。
+          // 贴底跟随由 append 的贴底负责；这里只补视口内/上方的行。
+          let belowViewport = false;
+          let aboveViewport = false;
+          if (el) {
+            const cr = el.getBoundingClientRect();
+            const nr = element.getBoundingClientRect();
+            const rowTop = nr.top - cr.top;
+            const rowBottom = nr.bottom - cr.top;
+            belowViewport = rowTop >= el.clientHeight - 0.5;
+            aboveViewport = rowBottom <= 0.5;
+          }
+          // 贴底时：
+          // · 变高（delta>0）跟着底部走，除非整行还在视口下方（append 的贴底负责）；
+          // · 变矮（delta<0）只补“整行在视口上方”的行；视口内/底部的变矮交给贴底跟随，
+          //   否则会先往上拽、再被 append 推回（实测 39px 来回闪）。
+          const shouldFollow = delta > 0 ? !belowViewport : aboveViewport;
+          if (el && shouldFollow && Math.abs(delta) > 0.5) {
+            setScrollTop(el.scrollTop + delta);
+          }
         }
         return rounded;
       },
@@ -338,13 +359,16 @@ function schedulePin() {
     pinRaf = 0;
     const el = container.value;
     if (!el) return;
-    if (el.scrollTop < prevScrollTop - 1 && !programmaticTop) {
+    if (el.scrollTop < prevScrollTop - 1 && !programmaticTop
+      && el.scrollHeight - el.scrollTop - el.clientHeight > 1) {
       lastScrollUpAt = Date.now();
       setPinning(false);
       computeScrollState();
       return;
     }
-    if (pinned && !recentScrollUp()) setScrollTop(el.scrollHeight);
+    if (pinned && !recentScrollUp() && el.scrollHeight - el.scrollTop - el.clientHeight > 1) {
+      setScrollTop(el.scrollHeight);
+    }
     computeScrollState();
   });
 }
@@ -352,7 +376,9 @@ function schedulePin() {
 /** 若处于贴底吸附态，把视口钉到当前真实底部。 */
 function pinToBottom() {
   const el = container.value;
-  if (el && pinned && !recentScrollUp()) setScrollTop(el.scrollHeight);
+  if (el && pinned && !recentScrollUp() && el.scrollHeight - el.scrollTop - el.clientHeight > 1) {
+    setScrollTop(el.scrollHeight);
+  }
 }
 
 function computeScrollState() {
@@ -366,7 +392,8 @@ function computeScrollState() {
   } else if (top !== lastVelocityTop) {
     updateBufferFromScroll(top);
   }
-  if (!programmaticTop && el.scrollTop < prevScrollTop - 1) {
+  if (!programmaticTop && el.scrollTop < prevScrollTop - 1
+    && el.scrollHeight - el.scrollTop - el.clientHeight > 1) {
     lastScrollUpAt = Date.now();
     // ⚠️ 静默期也必须立刻解除吸附：否则用户在上翻、而 settleTimer 到期时
     // `pinToBottom()` 还会按"旧的 pinned=true"把人拽回底部（2026-10-25 实测：
@@ -391,7 +418,9 @@ function computeScrollState() {
     }
     return;
   }
-  if (nearBottom !== pinned) setPinning(nearBottom);
+  if (nearBottom !== pinned) {
+    setPinning(nearBottom);
+  }
   if (el.scrollTop < 60) emit("loadMore");
 }
 
@@ -402,7 +431,6 @@ function onScroll() {
     computeScrollState();
   });
 }
-
 /**
  * 真实用户输入 ⇒ 放弃"待落定"。判据必须是输入事件而不是 scroll：
  * 程序化滚动也会触发 scroll，用 scroll 判断会把自动位移当成用户滚动。
@@ -429,7 +457,9 @@ function scrollToBottom() {
     return;
   }
   resetBuffer();
-  setScrollTop(el.scrollHeight);
+  if (el.scrollHeight - el.scrollTop - el.clientHeight > 1) {
+    setScrollTop(el.scrollHeight);
+  }
 }
 
 /**
@@ -502,6 +532,8 @@ function scrollToIndex(index: number, align: "top" | "bottom" = "top") {
     align: align === "bottom" ? "end" : "start",
     behavior: "instant",
   });
+  // 库的定位写入不经过 setScrollTop；标一次程序化，避免紧随的 scroll 事件被当成用户上滚。
+  programmaticTop = true;
   void nextTick(() => applyJump());
   pollJump();
 }
@@ -526,7 +558,6 @@ function keysOfItems(): string[] {
 }
 
 function onItemsChanged() {
-  suppressTransient();
   // 收敛窗口内**任何** items 变化都顺延：切会话后的测量风暴常常伴随父组件连续替换数组；
   // 漏掉这一条，120ms 安静期会在风暴中途结束、随后逐次贴底。
   if (Date.now() < pinHoldHardUntil) armSettleHold();
@@ -538,6 +569,10 @@ function onItemsChanged() {
   const conv = props.conversationKey ?? "";
   const convSwitch = prevItemsConv !== null && prevItemsConv !== "" && conv !== prevItemsConv;
   prevItemsConv = conv;
+
+  // 只有“整会话替换/切会话”才进入瞬态窗口；append、ack、同 key 的数组替换不续期。
+  // 否则一次建任务会被后续的 todo_update/ack 反复续到 300ms，settle 到期再写一次。
+  if (convSwitch || change.kind === "swap") suppressTransient();
 
   if (convSwitch) {
     // 切会话是**唯一**允许重置贴底意图的时机。autoScrollOnSwap=false 的两种调用
@@ -584,12 +619,23 @@ watch(
 
 watch(() => props.items, onItemsChanged, { flush: "post" });
 
-// 布局签名（字号/主题）变化：清测量缓存，下一次渲染重新实测。
+// 布局签名（字号）变化：清测量缓存，按消息身份/底部恢复，下一次渲染重新实测。
 watch(
   () => props.layoutKey,
   () => {
+    const el = container.value;
+    const atBottom = !!el && el.scrollHeight - el.scrollTop - el.clientHeight <= 1;
+    const anchor = el ? getAnchor() : null;
     suppressTransient();
     virtualizer.value.measure();
+    // 真实度量变化（字号）：按身份而不是像素恢复 —— 底部就回底部，否则回到同一消息同一偏移。
+    void nextTick(() => {
+      if (atBottom) {
+        scrollToBottom();
+      } else if (anchor) {
+        scrollToAnchor(anchor.key, anchor.offset, anchor.top);
+      }
+    });
   },
   { flush: "post" },
 );
@@ -683,7 +729,7 @@ function scrollToOffset(offset: number) {
 }
 
 /**
- * 窗口 resize 才清测量缓存（字体/主题由 `layoutKey` 管）。
+ * 窗口 resize 才清测量缓存（字号由 `layoutKey` 管；主题只改颜色，不走测量）。
  *
  * ⚠️ **不能**把 `measure()` 挂在容器 RO 的宽度变化上：内容变高/变矮会让滚动条出现或消失，
  * clientWidth 随之变化 ⇒ 清缓存 ⇒ 高度重估 ⇒ 滚动条再变，形成 18px 级抖动环

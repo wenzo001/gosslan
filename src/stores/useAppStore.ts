@@ -569,6 +569,17 @@ export const useAppStore = defineStore("app", () => {
    */
   const persistSoon = useDebounceFn(() => void persistSettings(), 300);
 
+  /** 主题翻转帧禁用全站过渡；连续切换时只保留最后一个定时器，避免旧定时器提前摘类。 */
+  let themeSwitchTimer = 0;
+  function markThemeSwitching(root: HTMLElement) {
+    root.classList.add("theme-switching");
+    if (themeSwitchTimer) window.clearTimeout(themeSwitchTimer);
+    themeSwitchTimer = window.setTimeout(() => {
+      themeSwitchTimer = 0;
+      root.classList.remove("theme-switching");
+    }, 250);
+  }
+
   /**
    * 切换外观的**唯一**写入口：改模式 → 落 localStorage → 应用到 DOM → 持久化。
    * `theme-switching` 用来在变量整体翻转的那一帧禁用全站过渡（否则会看到渐变色闪一下）。
@@ -576,10 +587,8 @@ export const useAppStore = defineStore("app", () => {
   function applyAppearance(mode: AppearanceMode) {
     appearance.value = mode;
     storageSet(APPEARANCE_STORAGE_KEY, mode);
-    const root = document.documentElement;
-    root.classList.add("theme-switching");
+    markThemeSwitching(document.documentElement);
     applyDarkNow();
-    window.setTimeout(() => root.classList.remove("theme-switching"), 250);
     void persistSettings();
   }
 
@@ -607,9 +616,8 @@ export const useAppStore = defineStore("app", () => {
       systemDark.value = e.matches;
       if (appearance.value !== "system") return;
       const root = document.documentElement;
-      root.classList.add("theme-switching");
+      markThemeSwitching(root);
       applyDarkNow();
-      window.setTimeout(() => root.classList.remove("theme-switching"), 250);
       void persistSettings(); // 解析结果变了，顺手把 darkMode 刷新到位
     };
     mq.addEventListener("change", onChange);

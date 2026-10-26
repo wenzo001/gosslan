@@ -262,6 +262,7 @@ watch([messagesLoading, messageLoadError, () => messages.value.length], ([loadin
 onBeforeUnmount(() => {
   if (listRevealRaf) cancelAnimationFrame(listRevealRaf);
   if (historyLoadingTimer) window.clearTimeout(historyLoadingTimer);
+  if (highlightTimer) window.clearTimeout(highlightTimer);
 });
 function retryMessages() {
   if (chat.activeConv) void chat.loadMessages(chat.activeConv);
@@ -723,16 +724,22 @@ const reminderMap = computed(() => {
  * 正在看该会话时才自增）。挂在整块聊天容器上（见模板根节点）。
  */
 const shaking = ref(false);
+let shakeRaf = 0;
 watch(
   () => chat.shakeSignal,
   () => {
     // 重新触发：先置回 false，下一帧再置 true —— 只增删 class 的话，上一次动画没结束就不会重放。
     shaking.value = false;
-    requestAnimationFrame(() => {
+    if (shakeRaf) cancelAnimationFrame(shakeRaf);
+    shakeRaf = requestAnimationFrame(() => {
+      shakeRaf = 0;
       shaking.value = true;
     });
   },
 );
+onBeforeUnmount(() => {
+  if (shakeRaf) cancelAnimationFrame(shakeRaf);
+});
 /** 只认根容器自己的 animationend（子元素一次性动画会冒泡上来，误关会截断抖动）。 */
 function onShakeAnimEnd(e: AnimationEvent) {
   if (e.target === e.currentTarget) shaking.value = false;
@@ -1904,7 +1911,7 @@ function retryHistory() {
         :auto-scroll-on-swap="restoreScroll === null && !(chat.unreadJump && chat.unreadJump.convId === chat.activeConv)"
         :estimate-height="estimateHeight"
         :conversation-key="chat.activeConv ?? ''"
-        :layout-key="`${app.chatStyle.fontSize}:${app.dark}`"
+        :layout-key="app.chatStyle.fontSize"
         @load-more="onLoadMore"
         @near-bottom="nearBottom = $event"
       >

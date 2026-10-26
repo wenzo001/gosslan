@@ -1,7 +1,7 @@
 {
   "version": 1,
   "created_at": "2026-10-04T12:17:40Z",
-  "updated_at": "2026-10-26T01:23:17Z",
+  "updated_at": "2026-10-26T06:39:50Z",
   "files": {
     ".gitattributes": {
       "role": "index",
@@ -89,9 +89,9 @@
     },
     "aoci.code.txt": {
       "role": "index",
-      "sha256": "5d82c2e88cb3fde4cbc7708143f3c89b2d495f4119129f2f785fe1976288623b",
-      "size": 303835,
-      "normalized_sha256": "5d82c2e88cb3fde4cbc7708143f3c89b2d495f4119129f2f785fe1976288623b"
+      "sha256": "600f498e452819ad9f9c2f8f055d7330237a2c60ca7b3bb84b3aa5c3447aca3b",
+      "size": 304093,
+      "normalized_sha256": "600f498e452819ad9f9c2f8f055d7330237a2c60ca7b3bb84b3aa5c3447aca3b"
     },
     "aoci.meta.txt": {
       "role": "index",
@@ -4014,9 +4014,9 @@
     },
     "src/components/ChatWindow.vue": {
       "role": "index",
-      "sha256": "6e861074643978b248241d3ce7a469a7c57e17d1bc3ceca5df152495269dc663",
-      "size": 102072,
-      "normalized_sha256": "6e861074643978b248241d3ce7a469a7c57e17d1bc3ceca5df152495269dc663"
+      "sha256": "82ac98814521482c9d86ef2ea6092bb7841af421e62baf51f5058e846ccf3774",
+      "size": 102289,
+      "normalized_sha256": "82ac98814521482c9d86ef2ea6092bb7841af421e62baf51f5058e846ccf3774"
     },
     "src/components/CodeBlock.vue": {
       "role": "index",
@@ -4212,9 +4212,9 @@
     },
     "src/components/VirtualList.vue": {
       "role": "index",
-      "sha256": "ae3ad3bd27eaa0122fcd37eca611d243f14ff85504017642befefb30d709e27a",
-      "size": 31291,
-      "normalized_sha256": "ae3ad3bd27eaa0122fcd37eca611d243f14ff85504017642befefb30d709e27a"
+      "sha256": "b870cc63f4d6612c749956b22b72b7698a00acb040e01782d5dcb51ff3b8c4a4",
+      "size": 33823,
+      "normalized_sha256": "b870cc63f4d6612c749956b22b72b7698a00acb040e01782d5dcb51ff3b8c4a4"
     },
     "src/components/chat/ChatHeader.vue": {
       "role": "index",
@@ -4662,9 +4662,9 @@
     },
     "src/stores/useAppStore.ts": {
       "role": "index",
-      "sha256": "0aa0fa86fda1d1cbbf6235041fb5c421367ad4c369ba945a654d6c360d6e892a",
-      "size": 49592,
-      "normalized_sha256": "0aa0fa86fda1d1cbbf6235041fb5c421367ad4c369ba945a654d6c360d6e892a"
+      "sha256": "fc2093052a7f6d823f2f8786ce4070883ae051491c8b6c44bb1d7b0995b3ee89",
+      "size": 53897,
+      "normalized_sha256": "fc2093052a7f6d823f2f8786ce4070883ae051491c8b6c44bb1d7b0995b3ee89"
     },
     "src/stores/useChatStore.ts": {
       "role": "index",

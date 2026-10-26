@@ -25,9 +25,13 @@ test("消息列表已迁移到 TanStack，且 key 不回退数组下标", () => 
   assert.doesNotMatch(src, /:key="[^"]*\.index/, "v-for key 不许用数组下标");
 });
 
-test("ChatWindow 把字号/主题传给 VirtualList（布局变化才失效测量缓存）", () => {
+test("ChatWindow 只把字号传给 layoutKey（主题是纯绘制变化，不许清测量缓存）", () => {
   const chat = read("src/components/ChatWindow.vue");
-  assert.match(chat, /:layout-key=/, "ChatWindow 必须传 layoutKey（字号/主题）");
+  assert.match(chat, /:layout-key="app\.chatStyle\.fontSize"/, "layoutKey 必须只含字号");
+  assert.doesNotMatch(chat, /layout-key="[^"]*app\.dark/, "主题不得进入 layoutKey（会触发全量重测）");
+  const list = read("src/components/VirtualList.vue");
+  assert.match(list, /watch\(\s*\(\) => props\.layoutKey/, "VirtualList 仍必须监听真实度量变化");
+  assert.match(list, /virtualizer\.value\.measure\(\)/, "真实度量变化要清测量缓存");
 });
 
 test("LogViewer 仍是 TanStack 且保留最佳实践选项", () => {

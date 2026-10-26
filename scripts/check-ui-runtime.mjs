@@ -3009,6 +3009,7 @@ async function main() {
     const imgload = want("imgload");
     const pinkb = want("pinkb");
     const scrollrestore = want("scrollrestore");
+    const scrollshake = want("scrollshake");
     const todosync = want("todosync");
     const taskpaste = want("taskpaste");
     const modaltitle = want("modaltitle");
@@ -3075,6 +3076,7 @@ async function main() {
     if (want("mergeheight")) await runMergeCardHeight(cdp, url);
     if (pinkb) await runPinKeyboard(cdp, url);
     if (scrollrestore) await runScrollRestore(cdp, url);
+    if (scrollshake) await runScrollShake(cdp, url);
     if (todosync) await runTodoSync(cdp, url);
     if (taskpaste) await runTaskPaste(cdp, url);
     if (modaltitle) await runModalTitle(cdp, url);
@@ -3948,6 +3950,490 @@ async function runScrollRestore(cdp, url) {
       && Math.abs(switched.afterSwitch.offset - switched.beforeSwitch.offset) <= 2,
     "|Δoffset| ≤2px",
     JSON.stringify(switched));
+}
+
+/**
+ * 亮→暗主题切换 / 新建群任务时的滚动抖动（P0，--only=scrollshake）。
+ *
+ * 真 ChatWindow + 真 store。判据不是“最终位置对不对”，而是：
+ * scrollTop 写入序列的方向反转、单帧最大位移、最终 gap。旧 scrollrestore 只量 scrollTop
+ * 差 ≤8px，在估算布局下会给出伪通过（同一个像素落到另一条消息）。
+ *
+ * 触发前先量安静窗口（必须 0 写入 / 0 反转），并留一个“两帧反向写”的阳性对照，
+ * 证明量具本身能数到反转，不是空转。
+ */
+async function runScrollShake(cdp, url) {
+  await cdp.send("Emulation.setDeviceMetricsOverride", {
+    width: 1200, height: 800, deviceScaleFactor: 1, mobile: false,
+  });
+  await cdp.send("Page.navigate", { url });
+  await sleep(3_000);
+  await cdp.eval(PAGE_FIXTURE);
+  await cdp.eval(`(() => {
+    window.__TAURI_INTERNALS__ = {
+      metadata: {
+        currentWindow: { label: 'main' },
+        currentWebview: { label: 'main', windowLabel: 'main' },
+      },
+      invoke: async () => null,
+      transformCallback: (cb) => cb,
+      convertFileSrc: (p) => p,
+    };
+    if (!window.__TAURI_EVENT_PLUGIN_INTERNALS__) {
+      window.__TAURI_EVENT_PLUGIN_INTERNALS__ = { unregisterListener: () => {} };
+    }
+  })()`);
+
+  const mounted = await cdp.eval(
+    "window.__probe.install('/src/components/ChatWindow.vue', '', '{\"hostHeight\":\"800px\"}')",
+  );
+  check("ChatWindow 挂得起来（抖动段的入口）",
+    !!mounted && mounted.ok === true, "install ok", JSON.stringify(mounted));
+  await cdp.eval("window.__probe.seedDevice('dev-me')");
+
+  const seeded = await cdp.eval(`(async () => {
+    const { useChatStore } = await import('/src/stores/useChatStore.ts');
+    const chat = useChatStore();
+    const conv = 'group:g1';
+    const base = { conv_id: conv, sender_id: 'dev-me', sender_name: '我', ts: 1700000000000 };
+    const rows = [];
+    for (let i = 0; i < 40; i += 1) {
+      const kind = i % 6 === 1 ? 'todo' : i % 5 === 2 ? 'file' : i % 7 === 3 ? 'code' : 'text';
+      let content;
+      if (kind === 'todo') {
+        content = JSON.stringify({
+          todo_id: 'shk-todo-' + i, number: i + 1, title: '任务' + i,
+          assignees: ['dev-me'], status: 'todo', creator: 'dev-me', deleted: false,
+          description: '一行描述', images: [], archived: false, done_at: null,
+        });
+      } else if (kind === 'file') {
+        content = JSON.stringify({ name: 'f' + i + '.bin', path: '/tmp/f' + i + '.bin', size: 1000 });
+      } else if (kind === 'code') {
+        content = 'const x' + i + ' = ' + i + ';';
+      } else {
+        content = ('第' + i + '条，把列表撑长。').repeat(5);
+      }
+      rows.push({ ...base, msg_id: 'm-shake-' + i, local_id: 'm-shake-' + i, kind, content,
+        status: 'sent', seq: i + 1, ts: base.ts + i * 60000 });
+    }
+    chat.activeConv = conv;
+    chat.messages[conv] = rows;
+    await new Promise((r) => setTimeout(r, 900));
+    const el = document.querySelector('.vlist-no-anchor');
+    return { scrollH: el ? el.scrollHeight : 0, clientH: el ? el.clientHeight : 0,
+      rows: document.querySelectorAll('[data-vlist-key]').length };
+  })()`);
+  check("种子消息把群聊撑出可滚动高度（否则量不到任何位移）",
+    !!seeded && seeded.scrollH > seeded.clientH + 600, "scrollHeight > clientHeight + 600",
+    JSON.stringify(seeded));
+
+  const inst = await cdp.eval(`(() => {
+    const el = document.querySelector('.vlist-no-anchor');
+    if (!el) return { ok: false };
+    const proto = Object.getOwnPropertyDescriptor(Element.prototype, 'scrollTop');
+    if (!proto || !proto.set) return { ok: false, why: 'no scrollTop descriptor' };
+    window.__shake = { writes: [], frames: [], running: false, el };
+    Object.defineProperty(el, 'scrollTop', {
+      configurable: true,
+      get() { return proto.get.call(this); },
+      set(v) {
+        proto.set.call(this, v);
+        if (window.__shake.running) {
+          window.__shake.writes.push({ t: performance.now(), top: this.scrollTop,
+            gap: this.scrollHeight - this.scrollTop - this.clientHeight });
+        }
+      },
+    });
+    const summarise = () => {
+      const writes = window.__shake.writes;
+      const frames = window.__shake.frames;
+      let writeRev = 0, dir = 0, prev = window.__shake.startTop;
+      for (const w of writes) {
+        if (prev !== null) {
+          const d = w.top - prev;
+          if (Math.abs(d) > 2) {
+            const s = Math.sign(d);
+            if (dir !== 0 && s !== dir) writeRev += 1;
+            dir = s;
+          }
+        }
+        prev = w.top;
+      }
+      let rev = 0, fdir = 0, last = window.__shake.startTop, maxD = 0;
+      for (const f of frames.slice(2)) {
+        const d = f.top - last;
+        if (Math.abs(d) > 2) {
+          const s = Math.sign(d);
+          if (fdir !== 0 && s !== fdir) rev += 1;
+          fdir = s;
+        }
+        maxD = Math.max(maxD, Math.abs(d));
+        last = f.top;
+      }
+      const end = frames.length ? frames[frames.length - 1] : null;
+      return { writes: writes.length, writeReversals: writeRev, reversals: rev,
+        maxFrameDelta: +maxD.toFixed(1),
+        finalTop: end ? +end.top.toFixed(1) : null,
+        finalGap: end ? +end.gap.toFixed(1) : null, frames: frames.length };
+    };
+    window.__shakeStart = () => {
+      window.__shake.writes = []; window.__shake.frames = []; window.__shake.running = true;
+      window.__shake.startTop = window.__shake.el.scrollTop;
+      const loop = (t) => {
+        if (!window.__shake.running) return;
+        const e = window.__shake.el;
+        window.__shake.frames.push({ t, top: e.scrollTop,
+          gap: e.scrollHeight - e.scrollTop - e.clientHeight });
+        requestAnimationFrame(loop);
+      };
+      requestAnimationFrame(loop);
+    };
+    window.__shakeStop = () => { window.__shake.running = false; return summarise(); };
+    window.__shakeRead = () => { const e = window.__shake.el;
+      return { top: e.scrollTop, gap: e.scrollHeight - e.scrollTop - e.clientHeight }; };
+    return { ok: true, top: el.scrollTop, gap: el.scrollHeight - el.scrollTop - el.clientHeight };
+  })()`);
+  check("滚动量具装得上（scrollTop setter 包装 + rAF 采样）",
+    !!inst && inst.ok === true, "instrument ok", JSON.stringify(inst));
+
+  // 先落到底，等收敛定时器安静下来，再量安静基线。
+  await cdp.eval(`(() => { const el = document.querySelector('.vlist-no-anchor');
+    el.scrollTop = el.scrollHeight; el.dispatchEvent(new Event('scroll', { bubbles: true })); })()`);
+  await sleep(1_200);
+  await cdp.eval("window.__shakeStart()");
+  await sleep(800);
+  const quiet = await cdp.eval("window.__shakeStop()");
+  check("安静窗口 0 写入 / 0 方向反转（量具基线）",
+    !!quiet && quiet.writes === 0 && quiet.writeReversals === 0,
+    "writes=0 且 reversals=0", JSON.stringify(quiet));
+
+  // 阳性对照：先把视口放到离底部 600px 处（pinned 会解除，避免贴底写入搅局），
+  // 再两帧反向写，必须被数到，否则下面的“不抖”是空转。
+  await cdp.eval(`(() => { const el = document.querySelector('.vlist-no-anchor');
+    el.scrollTop = Math.max(0, el.scrollHeight - el.clientHeight - 600);
+    el.dispatchEvent(new Event('scroll', { bubbles: true })); })()`);
+  await sleep(400);
+  await cdp.eval("window.__shakeStart()");
+  await cdp.eval(`(() => { const el = document.querySelector('.vlist-no-anchor');
+    el.scrollTop = Math.max(0, el.scrollTop - 40); })()`);
+  await sleep(120);
+  await cdp.eval(`(() => { const el = document.querySelector('.vlist-no-anchor');
+    el.scrollTop = el.scrollTop + 40; })()`);
+  await sleep(200);
+  const control = await cdp.eval("window.__shakeStop()");
+  check("阳性对照：两帧反向写能数出方向反转（量具不是空转）",
+    !!control && control.writeReversals >= 1, "reversals ≥1", JSON.stringify(control));
+
+  // 对照结束后必须回到“真正贴底”的状态，否则 A1 量的是历史中部，不是用户报的场景。
+  await cdp.eval(`(() => { const el = document.querySelector('.vlist-no-anchor');
+    el.scrollTop = el.scrollHeight; el.dispatchEvent(new Event('scroll', { bubbles: true })); })()`);
+  await sleep(1_000);
+  const atBottom = await cdp.eval(`(() => { const el = document.querySelector('.vlist-no-anchor');
+    return { gap: el.scrollHeight - el.scrollTop - el.clientHeight }; })()`);
+  check("A1 前置：对照组结束后已回到贴底（gap≤2）",
+    !!atBottom && atBottom.gap <= 2, "gap≤2", JSON.stringify(atBottom));
+
+  // A1：底部亮→暗→亮。
+  await cdp.eval("window.__shakeStart()");
+  const dark = await setAppearance(cdp, true);
+  await sleep(900);
+  const light = await setAppearance(cdp, false);
+  await sleep(900);
+  const theme = await cdp.eval("window.__shakeStop()");
+  check("群聊在底部：亮→暗→亮不出现持续抖动（反转 ≤1、单帧 ≤8px、最终贴底）",
+    !!theme && theme.writeReversals <= 1 && theme.maxFrameDelta <= 8 && theme.finalGap <= 2,
+    "reversals≤1 且 maxΔ≤8 且 gap≤2",
+    JSON.stringify({ dark, light, theme }));
+
+  // A2：历史中部连续切主题，阅读位置不能被拉走。
+  const mid = await cdp.eval(`(async () => {
+    const el = document.querySelector('.vlist-no-anchor');
+    el.scrollTop = Math.floor((el.scrollHeight - el.clientHeight) * 0.45);
+    el.dispatchEvent(new Event('scroll', { bubbles: true }));
+    await new Promise((r) => setTimeout(r, 700));
+    const read = () => {
+      const cr = el.getBoundingClientRect();
+      const rows = [...el.querySelectorAll('[data-vlist-key]')].map((n) => {
+        const r = n.getBoundingClientRect();
+        return { key: n.getAttribute('data-vlist-key'), top: r.top - cr.top,
+          bottom: r.bottom - cr.top };
+      }).sort((a, b) => a.top - b.top);
+      const hit = rows.find((r) => r.bottom > 0.5) ?? rows[0];
+      return hit ? { key: hit.key, offset: +hit.top.toFixed(2),
+        gap: el.scrollHeight - el.scrollTop - el.clientHeight } : null;
+    };
+    return { before: read() };
+  })()`);
+  await setAppearance(cdp, true);
+  await sleep(500);
+  await setAppearance(cdp, false);
+  await sleep(500);
+  await setAppearance(cdp, true);
+  await sleep(700);
+  const midAfter = await cdp.eval(`(async () => {
+    const el = document.querySelector('.vlist-no-anchor');
+    const cr = el.getBoundingClientRect();
+    const rows = [...el.querySelectorAll('[data-vlist-key]')].map((n) => {
+      const r = n.getBoundingClientRect();
+      return { key: n.getAttribute('data-vlist-key'), top: r.top - cr.top,
+        bottom: r.bottom - cr.top };
+    }).sort((a, b) => a.top - b.top);
+    const hit = rows.find((r) => r.bottom > 0.5) ?? rows[0];
+    return { anchor: hit ? { key: hit.key, offset: +hit.top.toFixed(2) } : null,
+      gap: el.scrollHeight - el.scrollTop - el.clientHeight };
+  })()`);
+  check("群聊停在历史中部：连续切主题后锚点不漂、也没被拉到底",
+    !!mid && !!mid.before && !!midAfter && !!midAfter.anchor
+      && mid.before.key === midAfter.anchor.key
+      && Math.abs(mid.before.offset - midAfter.anchor.offset) <= 2
+      && midAfter.gap > 150,
+    "同一锚点 key、偏移差 ≤2px、gap>150",
+    JSON.stringify({ mid, midAfter }));
+  await setAppearance(cdp, false);
+  await sleep(500);
+
+  // 落回底部，B：新建群任务（含后端回显导致的同长度数组替换）。
+  await cdp.eval(`(() => { const el = document.querySelector('.vlist-no-anchor');
+    el.scrollTop = el.scrollHeight; el.dispatchEvent(new Event('scroll', { bubbles: true })); })()`);
+  await sleep(900);
+  await cdp.eval("window.__shakeStart()");
+  const created = await cdp.eval(`(async () => {
+    const { useChatStore } = await import('/src/stores/useChatStore.ts');
+    const chat = useChatStore();
+    const rec = {
+      id: 0, msg_id: 'm-shake-new', local_id: 'm-shake-new', conv_id: 'group:g1',
+      sender_id: 'dev-me', sender_name: '我', receiver_id: 'g1', kind: 'todo',
+      content: JSON.stringify({
+        todo_id: 'shk-todo-new', number: 41, title: '抖动探针任务', assignees: ['dev-me'],
+        status: 'todo', creator: 'dev-me', deleted: false, description: '一行描述',
+        images: [], archived: false, done_at: null,
+      }),
+      ts: 1700000000000 + 41 * 60000, seq: 41, status: 'sent',
+    };
+    await window.__probe.stubApi('sendGroupTodo', rec);
+    const sent = await chat.createTodo('group:g1', '抖动探针任务', ['dev-me'], '一行描述');
+    // 与真实链路一致：后端还会把同一条 message-received 回显一次（按 msg_id upsert，
+    // 不重复行，但会替换数组 → 再跑一轮 onItemsChanged）。
+    chat.enqueueMessage(sent ?? rec);
+    return { msg: (sent ?? rec).msg_id, kind: (sent ?? rec).kind,
+      len: (chat.messages['group:g1'] || []).length };
+  })()`);
+  await sleep(1_500);
+  const task = await cdp.eval("window.__shakeStop()");
+  const hasCard = await cdp.eval("!!document.querySelector('[data-todo-card]')");
+  console.log("  · 建任务读数：" + JSON.stringify({ created, hasCard, task }));
+  check("新建群任务：写入 ≤2、反转 ≤1、最终贴底（不靠手动滚停下）",
+    !!task && task.writes <= 2 && task.writeReversals <= 1 && task.finalGap <= 2 && hasCard === true,
+    "writes≤2 且 reversals≤1 且 gap≤2 且卡片在",
+    JSON.stringify({ created, hasCard, task }));
+
+  // B2：连续创建 3 个任务（每次都会 append + 后端回显的同长度替换）。
+  await cdp.eval(`(() => { const el = document.querySelector('.vlist-no-anchor');
+    el.scrollTop = el.scrollHeight; el.dispatchEvent(new Event('scroll', { bubbles: true })); })()`);
+  await sleep(900);
+  await cdp.eval("window.__shakeStart()");
+  const multi = await cdp.eval(`(async () => {
+    const { useChatStore } = await import('/src/stores/useChatStore.ts');
+    const chat = useChatStore();
+    for (let k = 0; k < 3; k += 1) {
+      const rec = {
+        id: 0, msg_id: 'm-shake-multi-' + k, local_id: 'm-shake-multi-' + k,
+        conv_id: 'group:g1', sender_id: 'dev-me', sender_name: '我', receiver_id: 'g1',
+        kind: 'todo', content: JSON.stringify({
+          todo_id: 'shk-todo-multi-' + k, number: 50 + k, title: '批量任务' + k,
+          assignees: ['dev-me'], status: 'todo', creator: 'dev-me', deleted: false,
+          description: '一行描述', images: [], archived: false, done_at: null,
+        }), ts: 1700000000000 + (50 + k) * 60000, seq: 50 + k, status: 'sent',
+      };
+      await window.__probe.stubApi('sendGroupTodo', rec);
+      await chat.createTodo('group:g1', '批量任务' + k, ['dev-me'], '一行描述');
+      chat.enqueueMessage(rec);
+      await new Promise((r) => setTimeout(r, 250));
+    }
+    return { len: (chat.messages['group:g1'] || []).length };
+  })()`);
+  await sleep(1_200);
+  const multiTask = await cdp.eval("window.__shakeStop()");
+  check("连续创建 3 个群任务：不出现循环定位/反向抖动，最终贴底",
+    !!multiTask && multiTask.writeReversals === 0 && multiTask.finalGap <= 2
+      && multiTask.writes <= 4,
+    "reversals=0 且 gap≤2 且 writes≤4",
+    JSON.stringify({ multi, multiTask }));
+
+  // B3：长描述 + 6 张图的任务卡（估算与真实高度差最大的一类）。
+  await cdp.eval(`(() => { const el = document.querySelector('.vlist-no-anchor');
+    el.scrollTop = el.scrollHeight; el.dispatchEvent(new Event('scroll', { bubbles: true })); })()`);
+  await sleep(900);
+  await cdp.eval("window.__shakeStart()");
+  const tall = await cdp.eval(`(async () => {
+    const { useChatStore } = await import('/src/stores/useChatStore.ts');
+    const chat = useChatStore();
+    const images = Array.from({ length: 6 }, (_, i) => ({
+      id: 'img-' + i, name: 'p' + i + '.png', size: 1000,
+      sha256: String(i).repeat(64).slice(0, 64), subtype: 'png',
+    }));
+    const rec = {
+      id: 0, msg_id: 'm-shake-tall', local_id: 'm-shake-tall', conv_id: 'group:g1',
+      sender_id: 'dev-me', sender_name: '我', receiver_id: 'g1', kind: 'todo',
+      content: JSON.stringify({
+        todo_id: 'shk-todo-tall', number: 60, title: '长任务', assignees: ['dev-me', 'peer-a'],
+        status: 'todo', creator: 'dev-me', deleted: false,
+        description: '很长的描述，用来撑高任务卡。'.repeat(12),
+        images, archived: false, done_at: null,
+      }), ts: 1700000000000 + 60 * 60000, seq: 60, status: 'sent',
+    };
+    await window.__probe.stubApi('sendGroupTodo', rec);
+    const sent = await chat.createTodo('group:g1', '长任务', ['dev-me', 'peer-a'],
+      rec.content);
+    chat.enqueueMessage(sent ?? rec);
+    return { images: images.length, len: (chat.messages['group:g1'] || []).length };
+  })()`);
+  await sleep(1_500);
+  const tallTask = await cdp.eval("window.__shakeStop()");
+  check("长描述 + 6 图任务卡：异步/高度差下不反向抖动，最终贴底",
+    !!tallTask && tallTask.writeReversals <= 1 && tallTask.finalGap <= 2,
+    "reversals≤1 且 gap≤2",
+    JSON.stringify({ tall, tallTask }));
+
+  // A3：真实度量变化（字号）时按消息身份保持阅读位置。
+  const fontBefore = await cdp.eval(`(async () => {
+    const { useAppStore } = await import('/src/stores/useAppStore.ts');
+    const app = useAppStore();
+    const el = document.querySelector('.vlist-no-anchor');
+    el.scrollTop = Math.floor((el.scrollHeight - el.clientHeight) * 0.4);
+    el.dispatchEvent(new Event('scroll', { bubbles: true }));
+    await new Promise((r) => setTimeout(r, 600));
+    const read = () => {
+      const cr = el.getBoundingClientRect();
+      const rows = [...el.querySelectorAll('[data-vlist-key]')].map((n) => {
+        const r = n.getBoundingClientRect();
+        return { key: n.getAttribute('data-vlist-key'), top: r.top - cr.top,
+          bottom: r.bottom - cr.top };
+      }).sort((a, b) => a.top - b.top);
+      const hit = rows.find((r) => r.bottom > 0.5) ?? rows[0];
+      return hit ? { key: hit.key, offset: +hit.top.toFixed(2),
+        gap: el.scrollHeight - el.scrollTop - el.clientHeight } : null;
+    };
+    return { anchor: read(), fontSize: app.chatStyle.fontSize };
+  })()`);
+  await cdp.eval(`(async () => {
+    const { useAppStore } = await import('/src/stores/useAppStore.ts');
+    useAppStore().setChatStyle({ fontSize: 'lg' });
+  })()`);
+  await sleep(1_000);
+  const fontAfter = await cdp.eval(`(() => {
+    const el = document.querySelector('.vlist-no-anchor');
+    const cr = el.getBoundingClientRect();
+    const rows = [...el.querySelectorAll('[data-vlist-key]')].map((n) => {
+      const r = n.getBoundingClientRect();
+      return { key: n.getAttribute('data-vlist-key'), top: r.top - cr.top,
+        bottom: r.bottom - cr.top };
+    }).sort((a, b) => a.top - b.top);
+    const hit = rows.find((r) => r.bottom > 0.5) ?? rows[0];
+    return { anchor: hit ? { key: hit.key, offset: +hit.top.toFixed(2) } : null,
+      gap: el.scrollHeight - el.scrollTop - el.clientHeight };
+  })()`);
+  await cdp.eval(`(async () => {
+    const { useAppStore } = await import('/src/stores/useAppStore.ts');
+    useAppStore().setChatStyle({ fontSize: ${JSON.stringify("md")} });
+  })()`);
+  check("字号变化（真实布局变化）：按消息身份保持阅读位置",
+    !!fontBefore && !!fontBefore.anchor && !!fontAfter && !!fontAfter.anchor
+      && fontBefore.anchor.key === fontAfter.anchor.key
+      && Math.abs(fontBefore.anchor.offset - fontAfter.anchor.offset) <= 2
+      && fontAfter.gap > 150,
+    "锚点 key 相同、偏移差 ≤2px、gap>150",
+    JSON.stringify({ fontBefore, fontAfter }));
+  await sleep(600);
+
+  // C/9：用户主动上滚后，追加消息不得把视口抢回底部；静默期过后自己的消息仍应贴底。
+  const userAway = await cdp.eval(`(async () => {
+    const { useChatStore } = await import('/src/stores/useChatStore.ts');
+    const chat = useChatStore();
+    const el = document.querySelector('.vlist-no-anchor');
+    el.scrollTop = Math.floor((el.scrollHeight - el.clientHeight) * 0.35);
+    el.dispatchEvent(new Event('scroll', { bubbles: true }));
+    await new Promise((r) => setTimeout(r, 500));
+    const read = () => {
+      const cr = el.getBoundingClientRect();
+      const rows = [...el.querySelectorAll('[data-vlist-key]')].map((n) => {
+        const r = n.getBoundingClientRect();
+        return { key: n.getAttribute('data-vlist-key'), top: r.top - cr.top,
+          bottom: r.bottom - cr.top };
+      }).sort((a, b) => a.top - b.top);
+      const hit = rows.find((r) => r.bottom > 0.5) ?? rows[0];
+      return hit ? { key: hit.key, offset: +hit.top.toFixed(2),
+        gap: el.scrollHeight - el.scrollTop - el.clientHeight } : null;
+    };
+    const before = read();
+    chat.enqueueMessage({
+      id: 0, msg_id: 'm-shake-away-1', local_id: 'm-shake-away-1', conv_id: 'group:g1',
+      sender_id: 'dev-me', sender_name: '我', receiver_id: 'g1', kind: 'text',
+      content: '用户上滚期间来了一条自己的消息', ts: 1700000000000 + 70 * 60000,
+      seq: 70, status: 'sent',
+    });
+    await new Promise((r) => setTimeout(r, 700));
+    return { before, after: read() };
+  })()`);
+  check("用户主动上滚（1.2s 内）：追加消息不抢视口",
+    !!userAway && !!userAway.before && !!userAway.after
+      && userAway.after.gap > 150
+      && userAway.before.key === userAway.after.key
+      && Math.abs(userAway.before.offset - userAway.after.offset) <= 4,
+    "gap>150 且锚点不变（±4px）", JSON.stringify(userAway));
+
+  await sleep(1_400);
+  await cdp.eval("window.__shakeStart()");
+  await cdp.eval(`(async () => {
+    const { useChatStore } = await import('/src/stores/useChatStore.ts');
+    useChatStore().enqueueMessage({
+      id: 0, msg_id: 'm-shake-away-2', local_id: 'm-shake-away-2', conv_id: 'group:g1',
+      sender_id: 'dev-me', sender_name: '我', receiver_id: 'g1', kind: 'text',
+      content: '静默期已过，自己发的新消息', ts: 1700000000000 + 71 * 60000,
+      seq: 71, status: 'sent',
+    });
+  })()`);
+  await sleep(500);
+  const ownJump = await cdp.eval("window.__shakeStop()");
+  // 自己发消息跳到底是一次性定位（允许大位移）；这里再量一个安静窗口，
+  // 证明跳完之后不再有持续写入/方向反转，而不是把“跳到底”本身当抖动。
+  await cdp.eval("window.__shakeStart()");
+  await sleep(700);
+  const ownSettle = await cdp.eval("window.__shakeStop()");
+  check("静默期过后自己发消息：一次性贴底，之后保持稳定",
+    !!ownJump && ownJump.finalGap <= 2 && !!ownSettle
+      && ownSettle.writes === 0 && ownSettle.writeReversals === 0 && ownSettle.finalGap <= 2,
+    "跳后 gap≤2；随后 700ms 0 写入/0 反转",
+    JSON.stringify({ ownJump, ownSettle }));
+
+  // D/7：连续快速切主题（真实 applyAppearance 路径）+ 卸载，不留下写入。
+  const rapidTheme = await cdp.eval(`(async () => {
+    const { useAppStore } = await import('/src/stores/useAppStore.ts');
+    const app = useAppStore();
+    const el = document.querySelector('.vlist-no-anchor');
+    el.scrollTop = el.scrollHeight;
+    await new Promise((r) => setTimeout(r, 600));
+    window.__shakeStart();
+    for (let i = 0; i < 6; i += 1) app.setAppearance(i % 2 ? 'light' : 'dark');
+    await new Promise((r) => setTimeout(r, 600));
+    const result = window.__shakeStop();
+    return { result, stillSwitching: document.documentElement.classList.contains('theme-switching') };
+  })()`);
+  check("连续快速切主题：不写滚动位置，且过渡抑制类能按时摘掉",
+    !!rapidTheme && rapidTheme.result.writes === 0 && rapidTheme.result.writeReversals === 0
+      && rapidTheme.stillSwitching === false,
+    "0 写入/0 反转 + theme-switching 已摘",
+    JSON.stringify(rapidTheme));
+
+  const unmounted = await cdp.eval(`(async () => {
+    window.__shakeStart();
+    window.__probe.app.unmount();
+    await new Promise((r) => setTimeout(r, 900));
+    return window.__shakeStop();
+  })()`);
+  check("卸载后 900ms：不再有 scrollTop 写入",
+    !!unmounted && unmounted.writes === 0,
+    "writes=0", JSON.stringify(unmounted));
 }
 
 /**
