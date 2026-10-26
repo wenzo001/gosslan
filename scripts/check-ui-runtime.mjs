@@ -4272,19 +4272,19 @@ async function runScrollShake(cdp, url) {
       id: 'img-' + i, name: 'p' + i + '.png', size: 1000,
       sha256: String(i).repeat(64).slice(0, 64), subtype: 'png',
     }));
+    const longDesc = '很长的描述，用来撑高任务卡。'.repeat(12);
     const rec = {
       id: 0, msg_id: 'm-shake-tall', local_id: 'm-shake-tall', conv_id: 'group:g1',
       sender_id: 'dev-me', sender_name: '我', receiver_id: 'g1', kind: 'todo',
       content: JSON.stringify({
         todo_id: 'shk-todo-tall', number: 60, title: '长任务', assignees: ['dev-me', 'peer-a'],
         status: 'todo', creator: 'dev-me', deleted: false,
-        description: '很长的描述，用来撑高任务卡。'.repeat(12),
+        description: longDesc,
         images, archived: false, done_at: null,
       }), ts: 1700000000000 + 60 * 60000, seq: 60, status: 'sent',
     };
     await window.__probe.stubApi('sendGroupTodo', rec);
-    const sent = await chat.createTodo('group:g1', '长任务', ['dev-me', 'peer-a'],
-      rec.content);
+    const sent = await chat.createTodo('group:g1', '长任务', ['dev-me', 'peer-a'], longDesc);
     chat.enqueueMessage(sent ?? rec);
     return { images: images.length, len: (chat.messages['group:g1'] || []).length };
   })()`);
@@ -4316,9 +4316,10 @@ async function runScrollShake(cdp, url) {
     };
     return { anchor: read(), fontSize: app.chatStyle.fontSize };
   })()`);
+  const nextFont = fontBefore && fontBefore.fontSize === "lg" ? "xl" : "lg";
   await cdp.eval(`(async () => {
     const { useAppStore } = await import('/src/stores/useAppStore.ts');
-    useAppStore().setChatStyle({ fontSize: 'lg' });
+    useAppStore().setChatStyle({ fontSize: ${JSON.stringify(nextFont)} });
   })()`);
   await sleep(1_000);
   const fontAfter = await cdp.eval(`(() => {
@@ -4333,9 +4334,10 @@ async function runScrollShake(cdp, url) {
     return { anchor: hit ? { key: hit.key, offset: +hit.top.toFixed(2) } : null,
       gap: el.scrollHeight - el.scrollTop - el.clientHeight };
   })()`);
+  const restoreFont = fontBefore && fontBefore.fontSize ? fontBefore.fontSize : "md";
   await cdp.eval(`(async () => {
     const { useAppStore } = await import('/src/stores/useAppStore.ts');
-    useAppStore().setChatStyle({ fontSize: ${JSON.stringify("md")} });
+    useAppStore().setChatStyle({ fontSize: ${JSON.stringify(restoreFont)} });
   })()`);
   check("字号变化（真实布局变化）：按消息身份保持阅读位置",
     !!fontBefore && !!fontBefore.anchor && !!fontAfter && !!fontAfter.anchor
