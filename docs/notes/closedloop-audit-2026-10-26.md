@@ -1,6 +1,6 @@
 # Gosslan 全项目业务闭环、功能完整性与可恢复性审计
 
-配套文件：`closedloop-matrix-2026-10-26.md`（六格矩阵 + 错误链表）、`closedloop-findings-2026-10-26.md`（立案 12 / 保留 5 / 撤回 6）、`closedloop-claims-2026-10-26.md`（注释承诺 ↔ 机器凭据对账）。
+配套文件：`closedloop-matrix-2026-10-26.md`（六格矩阵 + 错误链表）、`closedloop-findings-2026-10-26.md`（立案 13 / 保留 5 / 撤回 6）、`closedloop-claims-2026-10-26.md`（注释承诺 ↔ 机器凭据对账）。
 
 基线：main、HEAD `6ca07ca5`、开工时 `git status --porcelain | wc -l` = 0（此后本机另一会话在同一棵树里推进 5.14.4，现有 14 个未提交改动 ⇒ **我的数字一律按 HEAD 测、不按工作树测**）、最新 tag v5.14.2。
 
@@ -48,7 +48,7 @@
 
 **6 条 PASS**：群成员级投递（含部分成功与迟到 Ack）／群文件成员台账与重启重放／缓存清理与 VACUUM／崩溃后启动四条对账／更新包完整性与签名／前后端契约双向对账。**23 条 PARTIAL**，行级 FAIL 0。
 
-**立案 12 条**（P2 七 / P3 五）：
+**立案 13 条**（P2 八 / P3 五）：
 - **P2** B1-F3 不可逆操作的取消边界只靠 12 处手抄字面量 + 一条从不调用被测命令的文本断言
 - **P2** B1-F4 设置落库失败不上屏也不留痕（含中继策略 / 允许列表 / 语言 / 通知开关；绑定网卡走独立命令，不含在内）
 - **P2** B1-F5 1:1 收端解密失败双端零记录
@@ -56,6 +56,7 @@
 - **P2** B2-F1 盘满不分类 + 续传前缀反把盘锁死
 - **P2** B4-F1 59 处写库结果被 `.ok()` 丢弃，其中四处托着明确承诺（撤回 / 文件重试 / 已读×2）
 - **P2** B4-F3 通知从不查系统权限、发送失败被丢弃 ⇒ 开了却收不到且无交代
+- **P2** B4-F4 探针 `--only=` 打错名字 = 一段不跑、打印「0/0 条判据绿」、退 0（验证层假绿）
 - **P3** B1-F1 取消类操作结局普遍不留痕
 - **P3** B1-F2 任务中心边界注释与代码不一致
 - **P3** B3-F1 迁移 4 步 skip 仍推进版本
@@ -187,6 +188,7 @@ grep -c '^| F-' docs/notes/closedloop-matrix-2026-10-26.md        # 20
 grep -c '^| F-.*| \*\*PASS\*\* |$' docs/notes/closedloop-matrix-2026-10-26.md     # 6
 grep -c '^| F-.*| \*\*PARTIAL\*\* |$' docs/notes/closedloop-matrix-2026-10-26.md  # 14
 node scripts/check-doc-citations.mjs                              # EXIT=0（但不覆盖本审计四份，见第二节①）
+GOSSLAN_PROBE_PORT=5321 node scripts/check-ui-runtime.mjs --only=convbadge   # 9/9（段名必须用小写现解析值，见 B4-F4）
 ```
 
 结论级验收（实施时）：B1-F3 第 1 刀必须让"改错字面量"变成**编译失败**而不是测试红；其余每条都要一次单点变异自证。
@@ -197,7 +199,9 @@ node scripts/check-doc-citations.mjs                              # EXIT=0（但
 
 **AOCI 不可用**：其 MCP 服务在本会话未连接（`mcp_list` 关键字 `aoci` 返回 0 工具），`aoci_rules`/`aoci_overview` 不可调，只读边界也不许写 `.aoci`。全部认知来自源码直读，**没有用 Memory 冒充仓库当前认知**；无受管对象变化 ⇒ 收尾不调 `aoci_maintain`。
 
-**没跑的层**：`npm run build`（写 `dist/`）、任何 `verify*` 层（写 `target/`，上次冷编回涨 4.7G）、多实例 E2E（要 cargo 产物、起真进程写真实数据目录、几十分钟、与同树冲突）。**CDP 探针本轮也还没跑**——所以"界面点下去到底发生什么"那一格目前是 UNVERIFIED，这是下一轮最该补的空白。已知量具自己红的两段（`docs/stability-roadmap.md:512`：accent 2 格 + scroll 段间污染 5 格，整跑 1368/1375）属工具基线，不算被审功能 FAIL。
+**没跑的层**：`npm run build`（写 `dist/`）、任何 `verify*` 层（写 `target/`，上次冷编回涨 4.7G）、多实例 E2E（要 cargo 产物、起真进程写真实数据目录、几十分钟、与同树冲突）。**CDP 探针本轮跑到了（第一次）**：在 HEAD 的隔离 worktree（`/tmp/gosslan-probe`，`node_modules` 软链，跑完删除）里执行
+`GOSSLAN_PROBE_PORT=5321 node scripts/check-ui-runtime.mjs --only=convbadge` ⇒ **9/9 判据绿**，含反向对照「三态全清时名字恰好等于群名、零枚徽标」。引擎与来源都是探针自己打印的：`Chrome/153.0.8010.12`、`playwright 缓存（Chrome for Testing）`——**不是** WKWebView/WebView2（那一半仍 BLOCKED）。
+两条环境实测：① 首次误用 `--only=ConvBadge` 得到「0/0 条判据绿 + 退 0」⇒ 已立案 **B4-F4**（HEAD 无段名校验，修复在隔壁未提交改动里）；② 端口 5299 被另一个 node 进程占着（`lsof` 读到 PID 35519），**我没动它**，换端口跑完。已知量具自己红的两段（`docs/stability-roadmap.md:512`：accent 2 格 + scroll 段间污染 5 格，整跑 1368/1375）属工具基线，不算被审功能 FAIL。
 
 **BLOCKED**（补什么才能升级）：WKWebView / WebView2 真渲染、Windows / Android / HarmonyOS 行为、多网卡组合、真磁盘满、三实例链式。
 
