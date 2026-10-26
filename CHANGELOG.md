@@ -13,6 +13,30 @@
 
 ## [Unreleased]
 
+## [5.13.4] - 2026-10-26
+
+### 群聊滚动区抖动：主题切换 / 新建群任务（2026-10-26）
+
+- **亮→暗不再触发全量重测**：`layoutKey` 只保留字号，移除 `app.dark`。暗色 CSS 只改颜色与
+  `color-scheme`，把主题当布局变化会让测量缓存整表失效——探针复现 67 次 `measure-delta`
+  写入、4 次方向反转、单帧最大位移 1047px。现在主题切换 0 写入，历史中部连续切主题
+  锚点不漂（≤2px）。
+- **新建群任务不再先上拽再推回**：贴底时只有“变高”跟底（且排除视口下方的新行）、
+  “变矮”只补整行在视口上方的行；刚追加在底部的任务卡不再先补 −39.5px 再被 append
+  推回 +170px。`schedulePin`/`pinToBottom`/`scrollToBottom` 在 `gap≤1` 时幂等跳过。
+- **用户上滚判据排除贴底 clamp**：只有离开底部（gap>1）的下降才算用户意图；库的
+  `scrollToIndex` 写入标记程序化。
+- **瞬态窗口只给切会话/整替换**：append、ack、同 key 数组替换不再续期 300ms；任务连续
+  创建/多成员回执不会把 settle 定时器一路延长。
+- **字号变化按消息身份保持位置**：测量前保存锚点消息 key+行内偏移，测量后恢复；底部回底部。
+  主题过渡定时器改为单例，shake rAF/引用高亮定时器补卸载清理。
+- 取舍记录：曾按社区做法把贴底所有权整体交给 TanStack `followOnAppend`/`scrollEndThreshold`，
+  A/B 下 `vlist` 切会话反转、`scrollreact` 首帧 gap 回归（3 条红），故保留自研状态机，
+  只采用库的“仅更新前已到底才跟随 + 稳定 key”规则。
+- 验证：Brave `--only=scrollshake,vlist,scrollreact,scrollrestore,todosync,msgovf,rowpair,task`
+  **717/717**（`scrollshake` 16/16）；`npm test` 1416；`verify:local` 24/24。
+  **BLOCKED**：真实 Tauri WKWebView / Windows WebView2 / Android WebView 未在本机跑。
+
 ### 门禁：护栏非空转扫描按现读耗时重做（CI 整腿 2h39m ⇒ 约 65 分钟），并把 CI 覆盖关系钉成机器判据（2026-10-26）
 
 - **先量再改**：这个扫描此前**一个耗时都不打印**，手上只剩两个聚合值，"该砍哪一半"无从判断。
