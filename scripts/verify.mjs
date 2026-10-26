@@ -31,14 +31,22 @@
  * ## 用法（2026-09-20 起分两层）
  *
  *     npm run verify              # 快速层：不碰 cargo，秒级~20s（日常迭代就跑这个）
- *     npm run verify:full         # 全量层：加 cargo fmt/clippy/test + Rust 清单 + 护栏扫描 + Android
- *     npm run verify:full -- --full   # 再加**全量**护栏（含 Rust 用例，每条都要重编译，10 分钟以上）
+ *     npm run verify:full         # 全量层：cargo fmt/clippy/test + Rust 清单 + 护栏扫描 + Android
+ *                                 #   ⚠️ 名字里的"护栏扫描"是**前端子集**（打了 frontend 标签那些，
+ *                                 #   全是 `node --test`/脚本 ⇒ 2026-10-26 实测整通道 133.7s）。
+ *                                 #   **cargo 护栏不在这一步里** —— 一条都不跑也不会红。
+ *     npm run verify:full -- --full   # 再加**全量**护栏（含 Rust 用例：每条一次整库重编译，
+ *                                 #   单条实测 25~30s ⇒ 整跑 60 分钟以上，是"没人等它"那一档。
+ *                                 #   CI 按通道拆片跑全覆盖，覆盖关系由
+ *                                 #   `scripts/check-ci-guard-coverage.mjs` 现算对账，不只写在注释里）
  *                                     #   （`--full` 也会自动拉起重门禁层，不会静默跑成快速层）
  *     npm run verify:full -- --no-guards  # 全量层但跳过护栏扫描（护栏工具缺失时的临时绕过，会留痕）
  *     npm run verify:full -- --skip-guard-sweep
- *                                     # **本地日常**：只跳过最长的「护栏非空转」一步（历史 843–1262s），
- *                                     #   其余 22 步照跑；CI / --group release 会拒绝这个开关。
- *                                     #   （快速层本来就不含护栏扫描，那里加这个参数是无操作）
+ *                                     # **本地日常**：只跳过最长的「护栏非空转」一步（`verify:local` 就是它），
+ *                                     #   其余步照跑；CI 上拒绝这个开关。
+ *                                     #   发版层（`--group release`）**本来就不含这一步** —— 它跑的是
+ *                                     #   三实例 E2E；护栏全覆盖由 CI 的 guards-* 两条腿负责。
+ *                                     #   （快速层本来也不含护栏扫描，那里加这个参数是无操作）
  *     npm run verify -- --list    # 只列出会跑哪些步骤（加 -- --full-gate 看全量层）
  *     node scripts/verify.mjs --group <组名>      # 组名只认下面 GROUPS 那份，非法值会自报全部合法值
  *                                 # 只跑某一个 CI job 的步骤（CI 用这个，见下面「CI 归属」）
@@ -137,10 +145,10 @@ const argv = process.argv.slice(2);
 const full = argv.includes("--full");
 const noGuards = argv.includes("--no-guards");
 /**
- * 本地日常开关：只跳过「护栏非空转」那一步（它占全量层的 90% 以上耗时）。
+ * 本地日常开关：只跳过「护栏非空转」那一步（重门禁层里它是数量级最大的一步，占比看每次打印的汇总）。
  *
  * ⚠️ 它**只省时间，不表示护栏通过**：发版与 CI 必须跑完整链。因此：
- * - `--group release` 与 `CI` 环境下拒绝这个开关；
+ * - `CI` 环境下拒绝这个开关（`--group release` 本来就不含这一步，见上面用法那段）；
  * - 起跑与汇总都各留一条醒目记录，不允许绿得看不出少跑了一步。
  */
 const skipGuardSweep = argv.includes("--skip-guard-sweep");
@@ -502,6 +510,10 @@ if (!noGuards && !skipGuardSweep) {
     cwd: ROOT,
     cmd: python ?? "python3",
     args: ["scripts/verify-guards.py", ...(full ? [] : ["--only", "frontend"])],
+    // ⚠️ 必须显式给预算：默认 60 min 会把全量扫描**从中间砍断**（cargo 通道每条一次整库
+    // 重编译，单条实测 25~30s × 143 条 ⇒ 60 分钟以上），报出来的形状是"这一步超时/未能执行"，
+    // 而"跑到第几条为止"全部丢失 —— 那种红没法归因。子集那档实测 3 分钟量级，给 30 min 兜底。
+    timeoutMs: full ? 3 * 60 * 60_000 : 30 * 60_000,
   });
 }
 
@@ -591,8 +603,17 @@ if (groupFlag && !GROUPS.includes(groupFlag)) {
   console.error(`✗ --group 只接受 ${GROUPS.join(" / ")}，收到 "${groupFlag}"`);
   process.exit(1);
 }
-if (skipGuardSweep && (process.env.CI || groupFlag === "release")) {
-  console.error("✗ --skip-guard-sweep 只允许本地日常批次：CI 与 --group release 必须跑完整的「护栏非空转」。");
+if (skipGuardSweep && process.env.CI) {
+  // ⚠️ 这里过去还挂着第二条 `groupFlag === "release"`，注释写的是"--group release 必须跑完整的
+  // 护栏非空转"。2026-10-26 实测：`--group release --list` 把「护栏非空转」列进**本轮没跑**
+  // （那一步挂在 group=frontend，而 `active` 按 `s.group === groupFlag` 选步）⇒ 那句拒绝符号
+  // 底下的承诺从来没有对应的东西在跑。注释挡不住这种漂移，所以改成说真话 + 把"谁真的在跑全量"
+  // 交给 `scripts/check-ci-guard-coverage.mjs` 现算对账（它自己是一条护栏用例）。
+  console.error(
+    "✗ CI 上不许 --skip-guard-sweep。护栏非空转的全量覆盖在 `.github/workflows/verify.yml` 的 " +
+      "guards-cargo（按 --lane cargo --shard 分片）与 guards-web（--lane node,script）两条腿上，" +
+      "并集必须等于全部通道 —— 由 scripts/check-ci-guard-coverage.mjs 对账。",
+  );
   process.exit(1);
 }
 
@@ -1259,7 +1280,9 @@ console.log(
   `=== Gosslan verify —— ${fullGate ? "全量层（含 cargo 编译 / 护栏扫描 / Android）" : "快速层（不编译）"} ===\n`,
 );
 if (skipGuardSweep) {
-  console.warn("⚠️ --skip-guard-sweep：本机跳过「护栏非空转」整步（历史 843–1262s）。");
+  console.warn(
+    "⚠️ --skip-guard-sweep：本机跳过「护栏非空转」整步（前端子集约 3 分钟；全量含 cargo 通道 60 分钟以上）。",
+  );
   console.warn("   这不等于护栏通过；发版/推送前必须跑完整的 `npm run verify:full`（CI 也会跑）。");
 }
 

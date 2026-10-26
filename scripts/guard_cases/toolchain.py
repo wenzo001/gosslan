@@ -18,7 +18,7 @@
 
 from __future__ import annotations
 
-from .base import ROOT, TAURI, Case, cargo, npm
+from .base import ROOT, TAURI, Case, cargo, node_test, npm
 
 CASES: list[Case] = [
     # ---------------- INV-P24 第 4 条：发送侧门控 ----------------
@@ -142,7 +142,7 @@ CASES: list[Case] = [
             '"dist:win": "tauri build --features bluetooth --bundles nsis --target x86_64-pc-windows-msvc"',
             '"dist:win": "tauri build --bundles nsis --target x86_64-pc-windows-msvc"',
         )],
-        cmd=npm("test"),
+        cmd=node_test("src/utils/buildConfig.test.ts"),
         cwd=ROOT,
         expect_fail_hint="没有蓝牙",
         tags=["frontend", "build"],
@@ -153,7 +153,7 @@ CASES: list[Case] = [
         "永远不提升中位，历史台账与门禁同时失真（这类退化不报错、也不影响功能）",
         file=ROOT / "scripts" / "semver.mjs",
         injections=[('feat: "minor",', 'feat: "patch",')],
-        cmd=npm("test"),
+        cmd=node_test("src/utils/versioning.test.ts"),
         cwd=ROOT,
         expect_fail_hint="minor",
         tags=["frontend", "version"],
@@ -590,4 +590,22 @@ CASES: list[Case] = [
         cwd=ROOT,
         expect_fail_hint="棘轮只许降",
         tags=["rust", "crash", "new-guards"],
+    ),
+    Case(
+        name="CI 护栏扫描的覆盖关系：少一片、少一条腿或退成 --only 子集必须报出来",
+        why="护栏非空转是全仓唯一能证明「这 265 条守门测试真的会红」的东西。它按通道拆片之后，"
+        "覆盖关系本来只写在 yml 注释里 —— 而本仓已经吃过同形的一次亏：`verify.mjs` 写着"
+        "「`--group release` 必须跑完整的护栏非空转」，实测 `--group release --list` 却把那一步"
+        "列进本轮没跑 ⇒ 一句话在文档里存在、底下没有任何东西在跑，而门禁全绿。"
+        "注入形状是把 cargo 的三片改成两片：那不是「少跑 1/3 的测试」那么轻 —— 那是约 48 条"
+        "Rust 护栏从此再没人证明过它们改坏了会红，而 CI 三条片全绿。",
+        file=ROOT / ".github" / "workflows" / "verify.yml",
+        injections=[(
+            "        shard: [0, 1, 2]",
+            "        shard: [0, 1]",
+        )],
+        cmd=["node", "scripts/check-ci-guard-coverage.mjs"],
+        cwd=ROOT,
+        expect_fail_hint="缺片",
+        tags=["gates", "ci", "new-guards"],
     ),]

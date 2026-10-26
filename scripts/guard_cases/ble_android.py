@@ -18,7 +18,7 @@
 
 from __future__ import annotations
 
-from .base import ROOT, TAURI, Case, cargo, npm
+from .base import ROOT, TAURI, Case, cargo, node_test, npm
 
 CASES: list[Case] = [
     Case(
@@ -421,7 +421,7 @@ CASES: list[Case] = [
         "特异性相同 ⇒ 触屏设备上按钮掉回文档流、不再贴右下角（桌面 pointer:fine 不复现）",
         file=ROOT / "src" / "style.css",
         injections=[(":where(.tap-safe) {", ".tap-safe {")],
-        cmd=npm("test"),
+        cmd=node_test("src/utils/designGuards.test.ts"),
         cwd=ROOT,
         expect_fail_hint="pointer: coarse",
         tags=["frontend", "css", "android"],
@@ -432,7 +432,7 @@ CASES: list[Case] = [
         "（channels[lan].enabled 与 app.online），两处 UI 各读一份就必然不同步",
         file=ROOT / "src" / "components" / "settings" / "NetworkSection.vue",
         injections=[(':model-value="!!lanStatus?.enabled"', ':model-value="app.online"')],
-        cmd=npm("test"),
+        cmd=node_test("src/api/events.test.ts", "src/utils/channelState.test.ts"),
         cwd=ROOT,
         expect_fail_hint="app.online",
         tags=["frontend", "android", "channel"],
@@ -446,7 +446,7 @@ CASES: list[Case] = [
             '  if (app.isMobile) app.mobileView = "chat";\n  void router.push({ name: "requests" });\n}',
             '  void router.push({ name: "requests" });\n}',
         )],
-        cmd=npm("test"),
+        cmd=node_test("src/utils/channelState.test.ts"),
         cwd=ROOT,
         expect_fail_hint="mobileView",
         tags=["frontend", "android", "nav"],
@@ -763,7 +763,7 @@ CASES: list[Case] = [
         "     解密拿到了名单，emit 时写成 None。护栏按形状扫七处接缝，缺哪一段点哪一段。",
         file=TAURI / "src" / "network" / "transport" / "gossip.rs",
         injections=[("mention_ids: mentions.as_deref(),", "mention_ids: None,")],
-        cmd=npm("test"),
+        cmd=node_test("src/utils/designGuards.test.ts"),
         cwd=ROOT,
         expect_fail_hint="⑦ 接收端解出来了却没回送给界面",
         tags=["frontend", "rust", "group", "stability", "new-guards", "mention-identity"],
