@@ -295,7 +295,7 @@ async function openConversation(row: OperationRow) {
   if (chat.activeConv === cid && !rowVisible && !groupVisible) {
     // 会话确实切过去了，只是清单里看不见 ⇒ 唯一可能是这份快照旧。再读一次真源，
     // 读回来还看不见才是"它真的不在了"。
-    await readListsFromSource(true);
+    await readListsFromSource(groupId !== null);
     if (seq !== openSeq) return;
     rowVisible = chat.conversations.some((c) => c.id === cid);
     groupVisible = groupId !== null && chat.groups.some((g) => g.id === groupId);

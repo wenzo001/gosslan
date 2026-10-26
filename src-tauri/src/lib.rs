@@ -320,14 +320,24 @@ pub fn run() {
     #[cfg(desktop)]
     {
         builder = builder.plugin(tauri_plugin_updater::Builder::new().build());
+        // dev 里**既不保存也不恢复**几何（负责人 2026-10-26：「dev 起来默认就该是电脑端，
+        // 我拖到移动端才是移动端」）。旧写法在 dev 与安装包之间共用同一个数据目录
+        // （identifier `com.gosslan.app` ⇒ 同一份 `.window-state.json`），于是"把窗口拖窄测移动端"
+        // 会变成落盘的默认值：实测活的 dev 窗口 360×681、上一份记录 720×1362，而移动端断点是
+        // `max-width: 767px` ⇒ 每次启动直接进移动端布局，且改不回来（`tauri.conf.json` 里那个
+        // 1000×680 的默认值被恢复逻辑盖掉）。
+        // 插件本身在 dev 里仍然要注册 —— 辅助窗的 `restore_aux_window_size` 走的是它的
+        // `WindowExt::restore_state`，摘掉插件会让那条路径整个失效。
+        #[cfg(debug_assertions)]
+        let window_state_flags = tauri_plugin_window_state::StateFlags::empty();
+        #[cfg(not(debug_assertions))]
+        let window_state_flags = tauri_plugin_window_state::StateFlags::SIZE
+            | tauri_plugin_window_state::StateFlags::POSITION
+            | tauri_plugin_window_state::StateFlags::MAXIMIZED
+            | tauri_plugin_window_state::StateFlags::FULLSCREEN;
         builder = builder.plugin(
             tauri_plugin_window_state::Builder::default()
-                .with_state_flags(
-                    tauri_plugin_window_state::StateFlags::SIZE
-                        | tauri_plugin_window_state::StateFlags::POSITION
-                        | tauri_plugin_window_state::StateFlags::MAXIMIZED
-                        | tauri_plugin_window_state::StateFlags::FULLSCREEN,
-                )
+                .with_state_flags(window_state_flags)
                 // 设置/日志窗口是**关闭即销毁**（每次开窗由 `aux_window_geometry` 重新摆位），
                 // 不让插件按 label 恢复旧几何/最大化 —— 否则会与重新居中打架
                 // （用户 2026-09-17：这两个窗口改为"关闭即销毁"，见 commands.rs 的

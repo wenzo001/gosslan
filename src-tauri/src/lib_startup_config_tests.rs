@@ -397,3 +397,53 @@
             "严格 CSP 不许出现 'unsafe-inline'（它会被 Tauri 的 nonce/hash 忽略）"
         );
     }
+
+    /// 窗口状态插件的恢复范围按**构建配置**分档（负责人 2026-10-26：「dev 起来默认就该是电脑端，
+    /// 我拖到移动端才是移动端」）。
+    ///
+    /// 为什么这条必须钉住：dev 与安装包共用同一个 identifier ⇒ 同一份 `.window-state.json`。
+    /// 插件无条件恢复 SIZE 时，"把窗口拖窄测移动端"会变成落盘的默认值（实测活的 dev 窗口
+    /// 360×681，而移动端断点是 767px）—— 每次启动直接进移动端布局，`tauri.conf.json` 里
+    /// 那个 1000×680 再也用不上，而且用户自己改不回来。
+    ///
+    /// 四格各判一件事：① dev 档 = `StateFlags::empty()`（既不存也不恢复）；② release 档四条
+    /// 一条不少（HIG 那条"重开恢复窗口状态"是给正式版的，不能顺手一起删）；③  builder 读的
+    /// 必须是那个按 cfg 分档的变量（把它改回硬编码 = 两档又合成一档，本条要红）；
+    /// ④ 插件仍然要注册 —— 辅助窗的 `restore_aux_window_size` 走它的 `WindowExt::restore_state`，
+    /// 摘掉插件会让那条路径整个失效（那才是真的"没记住尺寸"）。
+    #[test]
+    fn window_state_geometry_is_restored_only_in_release_builds() {
+        /// 只留代码行：这条判的是"实际传进去的 flags"，而注释里写着 `StateFlags`、
+        /// `restore_state` 这些名字（本仓已经被"判据读自己的注释"咬过两次）。
+        fn code_only(src: &str) -> String {
+            src.lines()
+                .filter(|l| !l.trim_start().starts_with("//"))
+                .collect::<Vec<_>>()
+                .join("\n")
+        }
+        let src = code_only(include_str!("lib.rs"));
+        assert!(
+            src.contains(
+                "#[cfg(debug_assertions)]\n        let window_state_flags = tauri_plugin_window_state::StateFlags::empty();"
+            ),
+            "dev 档没有把窗口状态 flags 收成 empty() ⇒ 开发构建会继续恢复上次几何（拖窄一次就永远是移动端）"
+        );
+        let rel = src
+            .find("#[cfg(not(debug_assertions))]\n        let window_state_flags")
+            .expect("找不到 release 档那条 `let window_state_flags`");
+        let rel_body = &src[rel..rel + 520];
+        for flag in ["SIZE", "POSITION", "MAXIMIZED", "FULLSCREEN"] {
+            assert!(
+                rel_body.contains(&format!("StateFlags::{flag}")),
+                "release 档少了 {flag} ⇒ 正式版丢掉了「重开恢复窗口状态」这条原生体验"
+            );
+        }
+        assert!(
+            src.contains(".with_state_flags(window_state_flags)"),
+            "builder 没有读那个按 cfg 分档的变量（改回硬编码 = dev/release 又合成同一档）"
+        );
+        assert!(
+            src.contains("tauri_plugin_window_state::Builder::default()"),
+            "插件不再注册 ⇒ 辅助窗的 restore_aux_window_size（WindowExt::restore_state）一起失效"
+        );
+    }
