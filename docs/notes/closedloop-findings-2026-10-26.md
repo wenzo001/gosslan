@@ -311,6 +311,28 @@ EOF
 
 ---
 
+## B4-F2 · 第六个常驻循环既不在监督名单、也不在「刻意不碰」的登记里（P3，登记即可）
+
+**适用的六格**：可恢复 / 可诊断 = PARTIAL（面窄，但后果静默且只会慢慢变坏）。
+
+**背景（先给这个仓记一笔功劳）**：`src-tauri/src/worker_supervisor.rs:1-20` 把要治的那一格写得极准——「`AppState::spawn_*` 与 `spawn_outbox_sweeper` 全是 `tauri::async_runtime::spawn` 出来的无限循环，句柄在调用点被丢弃 —— 全仓此前 `is_finished` **0 命中**」；后果也点名了：「outbox 清扫器一死，`sending` 行就再也没有终态出口，用户看到的是"消息永远发送中直到重启"——**而界面一切正常，没有任何信号**」。现在它每 10s 判活、重启上限 `MAX_RESTARTS`、名单单一事实源 `RESIDENT_WORKERS`（`lib.rs:463` 一处注册），并且**明确登记了两类刻意不碰**（`network::start` 那批有 `stop()`/`await_tasks()` 生命周期；`spawn_group_history_sweeper` 动了会改启动时序）。这是一套完整的、可复用的答案。
+
+**缺口**：这名单上只有 **5** 个（`worker_supervisor.rs:53/57/61/65/69`：peer_emitter、outbox_retrier、runtime_diag_reporter、db_hold_reporter、outbox_sweeper）。而 `lib.rs:605-644` 那个**每小时**的清扫循环——它一人担三件只能它做的事：① 过期 `.part` 清理、② 内存中继态清理、③ **回收"再也没被喂片"的接收器**——既不在 `RESIDENT_WORKERS` 里，也不在上面那两条「刻意不碰」的登记里，且循环体内**没有 `break`/`return`**（`sed` 复查）。它以裸 `tauri::async_runtime::spawn` 起、句柄被丢弃。
+
+**为什么这也算问题**：它一旦提前结束，**没有任何信号**，而三件事会静静停掉：磁盘上 `.part` 只涨不降；被对方放弃的接收端（表项 + 文件句柄 + `.part`）**永久留着**——注释自己写着这类泄漏"只能靠这一趟回收"（`:632-636`：协议里没有 cancel 帧 ⇒ 这一趟治的是永久泄漏）。而 `supervisor` 的注释恰好把"循环体 `return`/`break`"点名为「**改代码时最容易漏的那一格**」——偏偏这一格没被它盯着。
+
+**门一（兜底逐一证伪）**：① 启动对账不管它（四条对账只碰 `sending`/`active` 残留行）；② `.part` 还有第二道清理者——缓存清理器，但它按 `retention_days` 删**媒体**、且 `sweep_stale_parts` 会因为"还在接收表里"而跳过该文件（`lib.rs:635` 明写），所以孤儿流那一格**只有这一趟**；③ 没有其它定时器做停滞接收器回收（`sweep_stalled_receives` 全仓只在这里被调）。**三条都不接。**
+
+**建议修法（按便宜排，我推荐第一步）**：
+1. **先登记**：照 `spawn_group_history_sweeper` 那条的写法，在 `worker_supervisor.rs` 头部的"刻意不碰"里写明这个循环为什么暂不受监督（或反过来：直接把它也收编）。这是**零行为变化**的改动，价值是让下一个人不再需要重新发现这条循环、也不会误以为"所有常驻循环都受监督"。
+2. 若要收编：把它从 `lib.rs` 的裸 `spawn` 提成 `AppState::spawn_part_sweeper` 形态并进 `RESIDENT_WORKERS`——代价是**启动时序变化**（同 group-history 那条的理由），按 稳定 > 可维护 排序需单独确认时序再动。
+3. 无论哪条，都建议给 `RESIDENT_WORKERS` 加一条判据：**仓里每出现一个"无限 `loop` + 无 `break`"的 `spawn`，必须出现在监督名单或豁免登记里**。这条判据才是根治——否则下一次新增常驻循环照样会漏。
+
+**爆炸半径**：1 = 一段注释（零代码）；2 = 一处 `spawn_*` 提炼 + 名单加一行（要重跑启动时序相关用例）；3 = 一条静态判据（族里已有 `check-panic-sites.mjs` 这种"扫源码形状+棘轮"的现成家）。
+**验收标准**：做完 1 之后，"哪些常驻循环受监督 / 哪些刻意不受"这一问能在**一处**读完；做完 3 之后，临时在 `lib.rs` 里加一个裸 `loop { }` spawn ⇒ 判据必须红。
+
+---
+
 **B1-K4 · 「这位好友的公钥是哪一把」有两套读取次序，分叉期安全码仍会显示"一致"** —— 逐处读到：解密与 1:1 密封走 `sender_x25519_pubkey` 的**好友表优先、peers 回落**（`network/transport/e2ee_payload.rs:20-33`）；群密钥分发 `resolve_member_x25519`（`network/transport/peer_state.rs:42-51`，`pick_member_x25519 = peers.or(friends)`，顺序有测试钉住 `peer_state_tests.rs:47`）与界面安全码 `get_safety_number`（`commands/friends.rs:39-52`）走**peers 优先**。注释自己把后果写出来了：「**『双方安全码对得上』并不证明消息解得开**」（`e2ee_payload.rs:16-19`）。
 **为什么仍判不修**：① 这个分叉有一个**已存在的补偿机制**——新候选密钥会被登记成 `PendingKeyRotation` 并 `emit("friend-key-changed")`（`network/transport/peer_registry.rs:39-51`），只对好友生效（非好友不许刷换钥横幅，`lib_friend_identity_tests.rs:423-425` 有断言），同一对候选去重；前端收进 `keyRotations`（`src/stores/useChatStore.ts:150`），聊天界面弹「同步新密钥 / 删除好友」横幅。所以"消息突然收不到"这一刻，用户**同时**看得到换钥横幅。② 加密次序（好友表优先）正是安全设计：`update_friend_pubkeys` 用 `COALESCE` **只填空、绝不覆盖**（`db/friends.rs:40-63`，理由写着"覆盖式写入会让一次伪造广播永久改掉好友真实公钥"），`replace_friend_pubkeys` 要用户显式确认 + Hello 自验签（`:65-80`）。把加密也改成 peers 优先，等于把这条信任锚点拆掉。
 **残余（未修的那一小半，属可选改进）**：分叉窗口内安全码**仍显示"一致"**，因为安全码读的是 peers 里的新钥匙，而另一端的核验结果也会一致 ⇒ 唯一能提醒用户的是那条横幅，靠它自己在视线内。若将来要补，正确做法是**让安全码自己知道"存在待确认轮换"并显式标注**，而不是改加密次序。**不做**：按 稳定 > 可维护 排序，这条排在第八条之后，且需要动安全码的呈现口径（属产品决策）。
