@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, ref } from "vue";
+import { useRouter } from "vue-router";
 import BaseModal from "@/components/BaseModal.vue";
 import Spinner from "@/components/ui/Spinner.vue";
 import { api } from "@/api";
@@ -37,6 +38,8 @@ import { cancelOutcome, fileCancelKey, messageCancelNotice } from "@/utils/cance
  */
 const app = useAppStore();
 const chat = useChatStore();
+// 跳转的权威是路由（见下面 openConversation 里那段注释），所以这一份 router 是必需的。
+const router = useRouter();
 
 const rows = computed(() => chat.operations);
 
@@ -280,9 +283,18 @@ async function openConversation(row: OperationRow) {
     }
   }
   app.closeTaskCenter();
-  if (app.isMobile) app.mobileView = "chat";
+  // ★ 跳转的**权威是路由，不是 store**：`ChatWindow` 读 `chat.activeConv`，但"哪一屏可见"由
+  //   `navState = navOfRoute()` 现算（ResponsiveLayout）。只写 activeConv 的后果是负责人实报的那格：
+  //   「去会话不报错，但没跳到对应会话；手动进去之后那条消息倒是高亮的」—— store 那一半做了
+  //   （消息加载 + locate 标记），屏幕没换，因为他当时站在收藏/联系人那一屏。
+  //   所以这里与 `ConversationList.openConv` 同一套两步：先起 `openConversation`（它第一行同步写
+  //   activeConv），紧接着落路由 —— 路由 watcher 看到已打开就跳过，不会重复拉一次消息。
+  //   移动端也不再手写 `app.mobileView`：那个值是这条路由的派生（`route.meta.pane`），手写会被
+  //   路由的 watcher 覆盖，留一份权威就够了。
+  const opening = chat.openConversation(cid);
+  void router.push({ name: "conversation", params: { convId: cid } });
   // 打开本身有超时：IPC 不能被真正 abort，但 UI 必须有终态，不能无限转圈。
-  const opened = await withTimeout(chat.openConversation(cid), 5000);
+  const opened = await withTimeout(opening, 5000);
   if (seq !== openSeq) return;
   if (opened === "timeout") {
     app.toast(t("task.openChatTimeout"), "info");

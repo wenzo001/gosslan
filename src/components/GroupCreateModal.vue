@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { t } from "@/i18n";
 import { ref, watch } from "vue";
+import { useRouter } from "vue-router";
 import { useAppStore } from "@/stores/useAppStore";
 import { useChatStore } from "@/stores/useChatStore";
 import BaseModal from "@/components/BaseModal.vue";
@@ -15,6 +16,7 @@ const props = defineProps<{ open: boolean }>();
 const emit = defineEmits<{ (e: "close"): void }>();
 
 const app = useAppStore();
+const router = useRouter();
 const chat = useChatStore();
 const name = ref("");
 const selected = ref<string[]>([]);
@@ -57,7 +59,10 @@ async function create() {
       const g = await chat.createGroup(parsed.data, selected.value);
       app.toast(t("group.toast.created", { name: g.name }), "success");
       emit("close");
+      // 「打开会话」的入口一律是两步：store + 路由（`navState` 由路由现算，只写 store 的话
+      // 站在收藏/联系人那一屏就看不见换屏）。与 TaskCenter / ConversationList 同一口径。
       chat.openConversation(`group:${g.id}`);
+      void router.push({ name: "conversation", params: { convId: `group:${g.id}` } });
     } catch (e) {
       app.toastError(e, t("group.toast.createFail"));
     }

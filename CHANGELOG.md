@@ -13,6 +13,35 @@
 
 ## [Unreleased]
 
+## [5.14.3] - 2026-10-26
+
+### 「去会话」不报错但屏幕没换：跳转的权威是路由，不是 store（2026-10-26）
+
+- **真实反馈**（v5.14.2 之后）：「dev 重启是桌面版了 ✓；任务中心去会话不报错了，**但没跳到对应会话**，
+  而手动进那个会话时，对应那条消息倒是高亮的」。这句读数本身就是根因：高亮说明 store 那一半做了
+  （`openConversation` 写了 `activeConv`、`locateInLoaded` 标了消息），屏幕没换说明**另一半没人做**。
+- **机制**：`ChatWindow` 读 `chat.activeConv`，但"哪一屏可见"由 `ResponsiveLayout` 的
+  `navState = navOfRoute()` 现算，而 `ChatWindow` 的挂载条件是 `navState === 'chats' && activeConv`。
+  任务中心只写了 store、从没落路由 ⇒ 用户当时站在收藏/联系人那一屏，`navState` 不动，屏幕就不动。
+  对照工作着的样例：`ConversationList.openConv` / `startChatWithFriend` / `ResponsiveLayout` 三处
+  都是**两步**（`openConversation` + `router.push({name:"conversation"})`），任务中心是第 7 个入口却只抄了一半。
+- **修法**：`TaskCenter.openConversation` 补齐那一步，顺序与既有站点一致（先起 `openConversation`
+  —— 它第一行同步写 activeConv —— 紧接着落路由，路由 watcher 看到已打开就跳过，不会重复拉一次消息）。
+  同时删掉手写的 `if (app.isMobile) app.mobileView = "chat"`：那个值是这条路由的派生
+  （`route.meta.pane` → computed → watcher 写回 store），两份权威迟早打架。
+- **判据**：新增 `src/utils/taskCenterJump.test.ts` 四条（两步齐全 / 顺序 + 不许再手写 mobileView /
+  判"不存在"前必须向真源补读 + 两种失败分开留痕 / 建群那一步同样两步）。**五发变异各自红且由自己那条判据点名**：
+  摘掉落路由那一行、把路由挪到打开之前、手写回 `app.mobileView`、去掉打开前的补读、摘掉建群落路由那行；
+  还原即绿。
+- ⚠️ **记一条死路，免得下一个人再走**：这一半本来该由 CDP 探针判（读 `currentRoute`）。试过给挂载的
+  组件挂上应用那份 `mainRouter` 实例 —— 同页里真实应用与探针应用共用同一个 router、两套 pinia，
+  实测把隔壁格子的 `chat.operations` 从 6 读成 1、面板行数对不上（`--only=opscenter` 一度 13/28）。
+  退回后 opscenter 恢复 **28/28**。所以路由那一半钉接线，探针只判 store 那一半（形状 A/B/C 三格）。
+- **同族第二个入口一起收了**（负责人拍板）：`GroupCreateModal` 建群成功后同样只写了 store 那一半 ——
+  那个场景看不出来（刚建完群本来就在聊天屏），但同一件事不该有两套口径。现在它也是两步，
+  判据里多一条专门钉它（少一行落路由就红，四发变异 → 五发）。
+
+
 ## [5.14.2] - 2026-10-26
 
 ### dev 启动不再恢复窗口几何：拖窄一次就永久是移动端布局（2026-10-26）
