@@ -1,6 +1,6 @@
 # Gosslan 全项目业务闭环、功能完整性与可恢复性审计
 
-配套文件：`closedloop-matrix-2026-10-26.md`（六格矩阵 + 状态机 + 错误链表）、`closedloop-findings-2026-10-26.md`（立案 7 条 / 保留 3 条 / 撤回 6 条）、`closedloop-claims-2026-10-26.md`（注释承诺 ↔ 机器凭据对账）。
+配套文件：`closedloop-matrix-2026-10-26.md`（六格矩阵 + 状态机 + 错误链表）、`closedloop-findings-2026-10-26.md`（立案 8 条 / 保留 3 条 / 撤回 6 条）、`closedloop-claims-2026-10-26.md`（注释承诺 ↔ 机器凭据对账）。
 
 **进度声明（不含糊）**：本轮只走完 **B1（messaging + presentation）的一部分**——7 个动作族过了六格，占 B1 全分母的一小截。**B1 未审完，B2/B3/B4 未开始。** 因此本文不给全项目闭环总数；给了就是假数。
 

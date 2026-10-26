@@ -198,6 +198,41 @@ if already_recalled { return Ok(()); }   // chat.rs:358-360
 
 ---
 
+## B3-F1 · 迁移步骤把「读不到 schema」当成「跳过」，版本号照常前进（P3，建议修）
+
+**适用的六格**：可恢复 PARTIAL；**可诊断可追溯 FAIL**（真发生时两端都无痕）。
+
+**断点**：`src-tauri/src/db.rs:265-284`（runner）与 4 处 `Err(e) => eprintln!("… skip …")`。
+
+**机制**：14 个迁移步骤里，有 **4 处**（v1→v2、v2→v3、v3→v4、v4→v5）的写法是：
+
+```
+match column_exists(&tx, "friends", col) {
+    Ok(false) => { tx.execute(alter)?; }
+    Ok(true)  => {}
+    Err(e)    => { eprintln!("[gosslan-db] v1→v2: skip {col}: {e}"); }   // ← 读不到 schema 也继续
+}
+tx.commit()?; Ok(())
+```
+
+而 runner 是 `(step.run)(conn)?;` 紧跟 `conn.pragma_update(user_version, step.to)?;`（`:280-281`）。所以「`column_exists` 出错」这一格的效果是：**DDL 没执行、步骤却报成功、版本号照样前进** ⇒ 列永久缺失，且此后的启动不会再跑这一步。
+
+**先证伪过的兜底**（门一）：① DDL 与建表在单事务里、失败整体回滚（`InitError::SchemaMigrate` 的文案与 `migration_tests` 的 rollback 用例都成立）——但**这条只管"DDL 执行失败"，不管"判定阶段读失败"**；② 迁移前有备份（`db.rs:1042` `backup_before_migration`）⇒ 数据本身能救，但**用户不会知道要救**；③ 降级拒绝与"空库但有迁移备份 ⇒ 不按首次安装生成新身份"（`state.rs:1763-1764`）都成立，但它们判的是**另一种**危险。**三条都不接这一格。**
+
+**为什么判定为 P3 而不是 P2**：`column_exists` 只有在 SQLite 层面失败时才会 `Err`（`pragma_table_info('不存在的表')` 返回 0 行、不报错），而这种时刻下一条语句通常也会失败。**可达性窄**，但模式是错的：读不到 schema 时不能假设"列已存在"。
+
+**第二个、而且是每次都成立的问题**：这 4 处输出走 `eprintln!`，而迁移发生在 logger 就绪之前（`lib.rs:318` 明写"此刻还没有 state，先只打 stderr"）。打包后的 GUI 应用里 stderr 没人读（`lib.rs:141` 自己也记着"安卓上 stdout/stderr 不进文件、Release 也没人读"）。而启动留痕 `BOOT_DB_STATE`（`state.rs:1756-1758`）记录的是数据目录、字节数、安装状态与四张表的行数——**不记 `user_version`，也不记这次迁移从哪版到哪版**。所以「真的跳过了一步」这件事，事后在日志与诊断包里都查不到。
+
+**建议修法（4 行 + 1 个字段）**：
+1. 把 4 处 `Err(e) => eprintln!(…skip…)` 改成 `return Err(e.into())` —— 读不到 schema 就中止启动，这与本仓既有的「宁可停在启动前，也不要在半迁移状态里继续跑」完全一致（`InitError::SchemaMigrate` 已经是这个立场）。
+2. `BOOT_DB_STATE` 那行补 `user_version=…`，以及（若发生过迁移）`migrated={from}→{to}`。这条让「跳过」在事后**可查**，成本是一次读数。
+3. 可选、不建议本轮做：把 init 期的 `eprintln!` 先缓进内存，logger 起来后 flush 一次。改动面大（logger 与 db 初始化顺序耦合），按 稳定 > 可维护 排序不值。
+
+**爆炸半径**：`db.rs` 四处 + `state.rs` 一行日志字段。不动表结构、不动协议、不加依赖。
+**验收标准**：① 让 `column_exists` 在该步返回 Err（隔离库 + 注入一次 prepare 失败），断言启动**失败**且 `user_version` **没有**前进；② 正常迁移一次，`BOOT_DB_STATE` 里能读到 `user_version=14` 与 `migrated=…`；③ 单点变异自证：把任一处的 `return Err` 改回 `eprintln!`，第 ① 条必须红。
+
+---
+
 ## 保留为有意取舍（审过、判定不修，写清理由）
 
 **B1-K1 · 命令层不在任何业务领域内，方向守卫对它零覆盖** — 我一度当成缺陷，复验后是**显式且诚实的豁免**：`scripts/check-domain-deps.mjs:33-34` 写明「落到装配层（`commands` / `state` / `network` / `lib` / `main`）→ 放行（这些是 crosscutting 装配，不该被域管）」，`:77` 给 `commands` 附了理由「6422 行的命令注册表，前后端边界（Phase 7 拆）」；`scripts/check-domain-map.mjs` 实跑 **EXIT=0**，「每个源文件都有归属」。**不修**，两个原因：① 它有登记的后续（Phase 7），不是遗漏；② 把 161 条命令硬塞进某个域，会让 `chat.rs → protocol/network/db/content` 这类正当引用全部变成跨域违规，边界第一天就全红然后被绕过——那段注释（`:46-48`）说的正是这个失败模式。
