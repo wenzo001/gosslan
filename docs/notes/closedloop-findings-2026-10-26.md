@@ -285,6 +285,32 @@ EOF
 
 ---
 
+## B4-F1 · 59 处写库结果被 `.ok()` 丢弃，其中四处托着明确承诺（P2，建议只修这四处 + 一条棘轮）
+
+**适用的六格**：可恢复 / 可诊断可追溯 = PARTIAL（面很宽，但每一处单独看都窄）。
+
+**读数（现算）**：`grep -rnoE 'db::[a-z_]+\([^;]*\)\.ok\(\)' src-tauri/src` ⇒ **59** 处；同一范围内 `db::` 调用共 **833** 处 ⇒ 约 **7%** 的写/读结果被丢弃。分布：`network/transport/gossip.rs` 6、`network/transport.rs` 6、`group_membership.rs` 5、`read_receipt.rs` 4、`commands/chat.rs` 4……
+
+**必须说清的前提**：**59 处里绝大多数是正确的"尽力而为"**（时钟推进、touch_peer、清理删除、设置镜像写入）——它们失败不影响业务结果，硬改成 `?` 只会让无关紧要的写把整条链打断。所以**不建议全改**。真正要处理的是"这一笔写失败会让某个承诺失效"的那一小撮。我逐一确认过的四处：
+
+| 位置 | 托着什么承诺 | 失败后的真实后果 |
+|---|---|---|
+| `commands/chat.rs:373-374` 撤回的 `insert_recall` + `materialize_recall` | "撤回后两端一致" | 已单独立案 **B1-F6**（幂等短路只看账本 ⇒ 永久分裂） |
+| `commands/files.rs:575` `mark_file_outbox_pending(backoff)` | "重试有界、不会卡死" | 行留在 `sending`，而 `list_pending_file_outbox` 只捞 `pending` ⇒ **1:1 文件传输会卡在"发送中"直到下次重启**才被 `reset_sending_to_pending` 捞回；无任何日志 |
+| `commands/chat.rs:1300` `upsert_pending_read` | "已读回执重启后仍可补发" | 内存 `pending_reads` 还在（本次进程内会重发），但**重启即丢** ⇒ 对方永远收不到这条已读。同一函数 `:1293-1294` 的注释正是为这条承诺写的 |
+| `commands/chat.rs:1362` `upsert_pending_group_read` | 同上（群） | 同上 |
+
+**为什么只修这四处就够**：它们的共同点是「**这一笔是某个"重启后可恢复/不会卡死"承诺的唯一凭据**」。其余 55 处的失败都可以被别的事实兜住（重查、下次心跳、启动对账）。按 门二 的排序，改 59 处的风险（把无关紧要的写变成致命错误）**远大于**改 4 处的收益。
+
+**建议修法**：
+1. 这四处改成：失败就 `logger.error("code=…_PERSIST_FAILED …")` 并把错误往上返（能返的地方）；`files.rs:575` 那处至少要在失败时把行**直接落 `failed`**——比留在 `sending` 更诚实（留在 sending 是"界面永远发送中"）。
+2. 加一条**只许降的计数棘轮**（本仓 `check-panic-sites.mjs` 就是这个形状）：把 `.ok()` 的 59 记成基线，**新增一处就红**。这样既不动存量、又不让面继续扩大，且不需要逐处判定"该不该尽善"。
+
+**爆炸半径**：4 处调用点 + 1 条只读判据脚本（家可以放在已有的 `scripts/check-*.mjs` 族里）。不改表结构、不改协议。
+**验收标准**：① 让 `mark_file_outbox_pending` 失败 ⇒ 该传输落 `failed` 且有一行具名码，**不再停在 `sending`**；② 棘轮把基线写成现算值，`--update` 才能降；③ 单点变异自证：把那处的处理改回 `.ok()` ⇒ 判据红。
+
+---
+
 **B1-K4 · 「这位好友的公钥是哪一把」有两套读取次序，分叉期安全码仍会显示"一致"** —— 逐处读到：解密与 1:1 密封走 `sender_x25519_pubkey` 的**好友表优先、peers 回落**（`network/transport/e2ee_payload.rs:20-33`）；群密钥分发 `resolve_member_x25519`（`network/transport/peer_state.rs:42-51`，`pick_member_x25519 = peers.or(friends)`，顺序有测试钉住 `peer_state_tests.rs:47`）与界面安全码 `get_safety_number`（`commands/friends.rs:39-52`）走**peers 优先**。注释自己把后果写出来了：「**『双方安全码对得上』并不证明消息解得开**」（`e2ee_payload.rs:16-19`）。
 **为什么仍判不修**：① 这个分叉有一个**已存在的补偿机制**——新候选密钥会被登记成 `PendingKeyRotation` 并 `emit("friend-key-changed")`（`network/transport/peer_registry.rs:39-51`），只对好友生效（非好友不许刷换钥横幅，`lib_friend_identity_tests.rs:423-425` 有断言），同一对候选去重；前端收进 `keyRotations`（`src/stores/useChatStore.ts:150`），聊天界面弹「同步新密钥 / 删除好友」横幅。所以"消息突然收不到"这一刻，用户**同时**看得到换钥横幅。② 加密次序（好友表优先）正是安全设计：`update_friend_pubkeys` 用 `COALESCE` **只填空、绝不覆盖**（`db/friends.rs:40-63`，理由写着"覆盖式写入会让一次伪造广播永久改掉好友真实公钥"），`replace_friend_pubkeys` 要用户显式确认 + Hello 自验签（`:65-80`）。把加密也改成 peers 优先，等于把这条信任锚点拆掉。
 **残余（未修的那一小半，属可选改进）**：分叉窗口内安全码**仍显示"一致"**，因为安全码读的是 peers 里的新钥匙，而另一端的核验结果也会一致 ⇒ 唯一能提醒用户的是那条横幅，靠它自己在视线内。若将来要补，正确做法是**让安全码自己知道"存在待确认轮换"并显式标注**，而不是改加密次序。**不做**：按 稳定 > 可维护 排序，这条排在第八条之后，且需要动安全码的呈现口径（属产品决策）。
