@@ -144,6 +144,38 @@ HEAD 基线：`6ca07ca5`（本文件内所有 `path:line` 均按此 HEAD 复核�
 
 ---
 
+## B1-F6 · 撤回的「账本」与「物化」是两笔独立写且都 `.ok()`，失败后重试也修不回来（P2，建议修）
+
+**适用的六格**：可执行 = PASS；**可恢复 = FAIL**；**可诊断可追溯 = FAIL**；可感知 = PARTIAL（当时看起来成功，重开会话又出现）。
+
+**断点**：`src-tauri/src/commands/chat.rs:370-377`（以及同形状的另外两处）。
+
+**机制（逐条读到的实况）**：撤回在本地要落两样东西——① 账本行 `group_recalled_messages`（`db::insert_recall`，`INSERT OR IGNORE`，`db/recalls.rs:12-16`）；② 物化到消息行（`db::materialize_recall`，`UPDATE messages SET kind=recalled, content=''`，`recalls.rs:37-43`）。这两笔**是两条独立语句，没有事务**，而且两处结果都被丢掉：`db::insert_recall(…).ok(); db::materialize_recall(…).ok();`（`chat.rs:373-374`）。
+
+**为什么这会造成不可恢复的分裂**：`is_recalled()` 只查**账本**（`recalls.rs:22-32`），不查消息行。而命令开头的幂等短路是：
+
+```
+if already_recalled { return Ok(()); }   // chat.rs:358-360
+```
+
+于是「账本写成功、物化失败」这一格出现后：消息行仍是原 `kind`、正文原样保留，但 `is_recalled` 永远返回 true ⇒ **用户再点一次撤回也会直接 Ok 返回，永远不会补上物化**。`grep` 全部调用点确认：**没有任何启动对账或后台作业会从账本重新物化**（`group_recalled_messages` 的其它写点只有群删除/会话删除的 `DELETE`）。
+
+**用户看到什么**：撤回那一刻 UI 是**直接改缓存**的（`useChatStore.ts:2821-2827` 把 `kind` 改成 `recalled`、正文清空，不重读库）⇒ 看起来成功。**重开这个会话**（走 DB 重查）时，正文又原样回来了。而对方那边收到了撤回帧、已经物化 ⇒ 双方对同一条消息显示出不同事实，且没有任何东西会对账。
+
+**同样的形状还有两处**（按调用点数，不按文件数）：`commands/group_announcements.rs:149-150`、`network/transport/gossip.rs:931-933`，都是一行 `insert_recall(…).ok();` 紧跟一行 `materialize_recall(…).ok();`。
+
+**另一半风险**：撤回帧是在本地物化**之前**发出去的（`chat.rs:366` 先 `send_message`），这本身是对的（可靠投递优先），但它意味着「本机写失败」时**网络副作用已经不可撤回**——所以更不能把本地写失败当成功返回。
+
+**建议修法（两条都做，否则修不干净）**：
+1. `insert_recall` + `materialize_recall` 放进**同一个事务**（本文件族已有先例：`db/group_offline_queue.rs:54` 的 `unchecked_transaction`），要么两笔都落，要么都不落。
+2. 幂等短路改成**看两样**：账本已存在但消息行未物化时，仍要补物化再返回 `Ok(())`；这样「重试」才真的是修复路径，而不是被短路吞掉。
+3. 两处 `.ok()` 改成向上一层返回错误并打 `code=RECALL_LOCAL_WRITE_FAILED msg_id=…`（帧已发出，所以文案要说清「已通知对方，本机状态未更新，可重试」这种实话，别报成功）。
+
+**爆炸半径**：`db/recalls.rs` 加一个事务版函数 + 三处调用点改签名（`.ok()` → `?`）；不动协议、不动帧、不动前端。三处调用点都已经是「先校验后写」，改成事务不改变任何外部契约。**按编译器数影响面：3 个调用点 + 1 个 db 函数。**
+**验收标准**：构造「物化失败」的那一格（隔离库 + 注入一次 `UPDATE` 失败，不碰真实数据目录），断言：① 账本与消息行**同时**回滚；② 再点一次撤回能补上；③ 日志里有一行具名码。另需一次单点变异自证：把幂等短路改回「只看账本」⇒ 第 ② 条必须红。
+
+---
+
 ## 保留为有意取舍（审过、判定不修，写清理由）
 
 **B1-K1 · 命令层不在任何业务领域内，方向守卫对它零覆盖** — 我一度当成缺陷，复验后是**显式且诚实的豁免**：`scripts/check-domain-deps.mjs:33-34` 写明「落到装配层（`commands` / `state` / `network` / `lib` / `main`）→ 放行（这些是 crosscutting 装配，不该被域管）」，`:77` 给 `commands` 附了理由「6422 行的命令注册表，前后端边界（Phase 7 拆）」；`scripts/check-domain-map.mjs` 实跑 **EXIT=0**，「每个源文件都有归属」。**不修**，两个原因：① 它有登记的后续（Phase 7），不是遗漏；② 把 161 条命令硬塞进某个域，会让 `chat.rs → protocol/network/db/content` 这类正当引用全部变成跨域违规，边界第一天就全红然后被绕过——那段注释（`:46-48`）说的正是这个失败模式。
