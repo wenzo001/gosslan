@@ -13,6 +13,30 @@
 
 ## [Unreleased]
 
+## [5.14.2] - 2026-10-26
+
+### dev 启动不再恢复窗口几何：拖窄一次就永久是移动端布局（2026-10-26）
+
+- **现象**：负责人本地 `tauri dev` 每次起来都是移动端小窗口，"dev 默认就该是电脑端，我拖到移动端才是移动端"。
+- **实测读数**（不是推断）：活的 dev 主窗 `System Events` 读到 **360×681**，而移动端断点是
+  `MOBILE_MAX_WIDTH_PX = 767`（`matchMedia("(max-width: 767px)")`）⇒ 判移动端是对的；
+  `tauri.conf.json` 里主窗默认 **1000×680**，能把它变成 360 的只有窗口状态恢复
+  （`.window-state.json` 上一份记录 720×1362，本次退出又会被写成 360×681）。
+- **根因**：`tauri_plugin_window_state` 在 `#[cfg(desktop)]` 下无条件恢复 `SIZE|POSITION|MAXIMIZED|FULLSCREEN`，
+  而 **dev 与安装包共用同一个 identifier**（`com.gosslan.app` ⇒ 同一份状态文件）。于是"把窗口拖窄测移动端"
+  变成落盘的默认值，配置文件那个 1000×680 永远被盖掉，用户自己也改不回来。
+- **修法**：状态 flags 按构建配置分档 —— dev 档 `StateFlags::empty()`（既不保存也不恢复），
+  release 档四条一条不少（"重开恢复窗口状态"那条原生体验是给正式版的）。插件本身在 dev 里**仍然注册**：
+  辅助窗的 `restore_aux_window_size` 走它的 `WindowExt::restore_state`，摘掉插件会连那条一起失效。
+- **判据**：`lib_startup_config_tests::window_state_geometry_is_restored_only_in_release_builds`
+  钉四格（dev 档 = empty / release 档四条齐 / builder 必须读那个分档变量 / 插件仍在注册），
+  判据读源码前先剥整行注释（注释里写着 `StateFlags`、`restore_state` 这些名字）。
+  三发变异各自红且**都是断言红、不是编译红**：dev 档改回 `SIZE`、builder 硬编码 flags、
+  release 档少一条 `POSITION`；还原后即绿。
+- 备注：状态文件里那条 360×681 仍在（正式版会照它恢复）。要立刻回到桌面尺寸，在**安装包**里拖宽一次
+  让它重新记一份即可 —— 这不是代码问题，是它记住的就是上一次。
+
+
 ## [5.14.1] - 2026-10-26
 
 ### 任务中心「去会话」：群明明在，却弹「没能打开会话」（2026-10-26）
