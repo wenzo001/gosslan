@@ -113,13 +113,20 @@ test("活动传输上必须有常驻取消，而且接回父组件那唯一一�
   assert.ok(bubble.includes(`@click.stop="emit('cancel')"`), "不许点取消顺带把整卡的「打开文件」也触发");
   const item = readSrc("components/MessageItem.vue");
   assert.ok(item.includes(`@cancel="doCancelSend"`), "取消必须走父组件那唯一一份 doCancelSend");
-  // `doCancelSend` 全文件出现次数现算 = 3：1 处声明 + 2 个入口（长按/右键菜单的 `@cancel-send`、
-  // 气泡常驻按钮的 `@cancel`）。多一处就是第三个"取消发送"的家，
-  // 而这一族以前正是"每个入口各写一遍、漏一个就挂在界面上"。
+  // `doCancelSend` 全文件出现次数现算 = 4：1 处声明 + 3 个入口（长按/右键菜单的 `@cancel-send`、
+  // 文件气泡常驻按钮的 `@cancel`、2026-10-26 起的文本回执 `@cancel`——用户口径「发送中的话也要能取消」，
+  // 此前取消口只藏在菜单里，看不见就等于拦不下来）。
+  // 入口数会长，**实现只能有一份**：所以下面两条分开钉 —— 总数变了要同步这里的数，
+  // 而声明数不等于 1 就是真的长出了第二个家（那才是这一族以前"每个入口各写一遍、漏一个就挂在界面上"的形状）。
   assert.equal(
     item.split("doCancelSend").length - 1,
-    3,
-    "取消发送必须只有「菜单 + 常驻按钮」两个入口、共用同一份实现（实测出现次数变了就同步这里的数）",
+    4,
+    "取消发送的入口 = 菜单 + 文件气泡 + 文本回执三处、共用同一份实现（实测出现次数变了就同步这里的数）",
+  );
+  assert.equal(
+    item.split("function doCancelSend(").length - 1,
+    1,
+    "doCancelSend 的实现必须只有一份 —— 多加一个入口可以，多长一个家不行",
   );
 });
 

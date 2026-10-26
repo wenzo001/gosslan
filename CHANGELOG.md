@@ -13,6 +13,73 @@
 
 ## [Unreleased]
 
+## [5.14.0] - 2026-10-26
+
+### 群聊时间线：离线成员回来后的第一条消息不再排到当天更早的消息前面（2026-10-26）
+
+- **现象**：用户实报截图里时间分割线读作 15:34 → 12:13 → 12:57，那个人 5 天没上线、且只从老版本升级来。
+- **审计（只凭代码，没有读那台机器的库）**：界面排序权威是每会话逻辑序号 `seq`、显示时间是**本地接收时间**
+  （`handle_messaging.rs:114` / `gossip.rs:994` 两处同一句注释），而每会话时钟只在本机**观察到**的序号上前进
+  （`observe_clock` 取 MAX）。离线 5 天 ⇒ 他的时钟停在离线前；回来后第一条消息的 `seq` 低于群里当天已有的那些
+  ⇒ 在**所有对端**界面上落到当天更早的消息前面，而它显示的时间是最新的。老库迁移那条**不是**原因：
+  v2→v3 的回填按 `ts` 排名赋 `seq`（`db.rs:402`），迁移内部自洽；每次启动还会把时钟兜到
+  `MAX(messages.seq)`（`db.rs:1249`）。
+- **纸面与代码的分歧**：ADR-0012 §3/§7 写着"群聊通过 `GroupKey.clock` 对齐"，而每一帧 `GroupKey` 都带 `clock`
+  （`pending_keys.rs:95`）、建链/Hello 时**每个成员**都会重发一遍（`requeue_group_keys_for_peer`）——
+  但接收侧在"发送方不是群主"那一支**直接 return**（`transport.rs:1342`），那句 `observe_clock`（原 1414 行）
+  对非群主成员从来没执行过。1:1 那一侧同一件事早已修（`handle_identity.rs:80` 的注释正是同一句危害）。
+- **最小修改**：那一支只补"观察时钟"，并要求发送方在本机记录的成员表里；群密钥、群资料、成员表整体替换、
+  新成员历史标记**一概照旧**只在群主帧上生效（`observe_clock` 取 MAX ⇒ 旧读数是无操作；能发可解密群消息的人
+  本来就能推进同一格时钟，不新增信任面）。
+- **残余（写清楚，别读成"已解决一切"）**：对齐只发生在他与某个更高时钟的成员建链/Hello **之后**；那条消息
+  本身仍带旧序号，不回填重排；离线期间缺的那几天群消息今天仍不补（群历史只给"第一次成为成员"的人）。
+- **判据**：新接线守卫 `group_key_from_non_creator_still_advances_the_conversation_clock`
+  （按元素切块 + 先把整行注释摘掉再压平 + 反向钉"这一支不许写群资料/密钥"），两条非空转用例
+  （删掉观察 / 把成员校验换成恒真）各自改坏即红、恢复后逐字节一致；ADR-0012 §3/§7 同步改成真话。
+
+### 头像默认表情池补全小动物（含蛇）（2026-10-26）
+
+- `AVATAR_EMOJIS` 72 → 131：追加 59 个适合做头像的小动物（蛇、蜥蜴、刺猬、水獭、羊驼、孔雀…）。
+  **只在末尾追加**：`AVATAR_PAIRS` 的"每个表情固定配 3 色"按索引算，而
+  `avatarSeedFor = AVATAR_PAIRS[fnv1a(id) % length]` —— 往中间插会让已发出去的头像是整批改脸。
+  全部是单字形、emoji 默认呈现（无 ZWJ 组合，40px 格子撑不破）。
+- 判据：池子下限 120、按码位点名"必须含蛇"等几类、单字形三条；两条变异（截短清单 / 换成带变体选择符的字形）
+  各自红；Brave `--only=avatar` 16/16 真渲染。
+
+### 重发键：二次确认 + 后台任务看得见「重发中」+ 发送中可取消（2026-10-26）
+
+- **点一下不再静默开跑**：`requestResend` 先弹 `ConfirmDialog`（与撤回同一组件、同一套"确认才动手"口径），
+  确认后才 `markResending(msg_id)` 登记并走 `retrySend`；点「取消」一条命令都不发。旧形态是点红叉直接发、
+  图标原地不变只有一句 toast ⇒ 用户读作"没反应"。
+- **任务中心那一行说真话**：`OperationSources.resending` 进读模型，消息行状态从"排队中"变"重发中"
+  （文案仍由 `operationStatusText` 一份给，组件里不摆第二张 map）。
+- **发送中也能拦下来**：`MessageReceipt` 在 `state==='sending'` **且**算得出取消通道时长出 X，
+  它是那个 `role="img"` 图标的**兄弟节点**（放进 img 内部会被 Children Presentational 抹掉角色）；
+  点击走右键/长按菜单里那个**同一个** `doCancelSend`，取消通道由 `MessageItem` 用同一份
+  `cancelSendChannelFor` 算，不在回执里再推一遍。
+- **判据**：`retrySend.test.ts` 两条 + `taskCenter.test.ts` 一格；四格变异各自红、还原即绿。其中 M3 那一格
+  改成按 `<MessageReceipt … />` **元素切块**断言：整文件 `includes(":can-cancel-send")` 会被同一文件里
+  菜单元素上的同名 prop 喂成假绿（删掉回执那一格它照过）。
+- **量具两处真改动**（不是放宽）：`--only=resend` 新增两格（确认前不发命令 / 取消后不发命令）⇒ 11/11；
+  `--only=delivery` 新增发送中取消键的正/反两格 ⇒ 8/8。确认框读数与"过一遍确认"的动作升成 module-level 的
+  `confirmBox`/`confirmGate` 一个家，两段共用（不在第二段抄一份）。顺带抓出一格夹具串味：`delivery` 段
+  群消息那格点完重发后确认框**留着不关**，它的 fixed 底板把后面两格的点击吃掉 ⇒ 读数成"emit 没发生"，
+  改成过一遍确认（那也正是新契约）。
+- 验证（全部本机现跑）：`npm test` **1421**；`cargo test --lib --features bluetooth` **1218/0**、
+  `cargo clippy --features bluetooth --all-targets -- -D warnings` 退 0、`cargo fmt --check` 0；
+  快速层 19 步 38.8s、`verify:local` **24/24**（240.6s）、`verify:full` **25/25**（351.3s，Change Budget 那一步
+  在提交前是**零覆盖**，不是通过）；Rust 用例基线已 `--update` + `--sync-baselines` 纳入那条新守卫
+  （macos 1218→1219 / windows 1196→1197，复查 0 条待纳入）；护栏非空转新增 2 条 **改坏各自红、恢复逐字节一致**
+  （`GUARD_TIMING cargo=57.4s`）；CI 覆盖对账 268 条三通道全覆盖。
+  Brave 真渲染：`resend` **11/11**、`delivery` **8/8**、`avatar` **16/16**、`opscenter` **24/24**
+  （把读模型那一格 `message_send + running → 「重发中」` 摘掉 ⇒ 恰好这条报「进行中」，恢复后字节一致）。
+  ⚠️ 整跑探针 **1368/1375**，7 格红**不属于本批**（本批 `git diff` 里 `.css`/令牌文件 0 个）：`accent` 那 2 格是
+  量具按 `rgb()` 形状解析 computed color，而本机引擎把 `color-mix()` 序列化成 `color(srgb …)`；
+  滚动那 5 格只在整跑里红，四段单独跑 **36/38**（只剩 accent 那 2 格）⇒ 段间共享状态污染。两族已登记进
+  `docs/stability-roadmap.md`（含复跑命令与修法）。
+  **BLOCKED**：真实 WKWebView / WebView2 / Android WebView 未跑；"离线 5 天的双实例回归"没有真机读数
+  （本次交付的是代码审计 + 单测 + 接线守卫 + 非空转用例，对齐效果要等下一次双实例 E2E 或用户回机验证）。
+
 ## [5.13.4] - 2026-10-26
 
 ### 群聊滚动区抖动：主题切换 / 新建群任务（2026-10-26）

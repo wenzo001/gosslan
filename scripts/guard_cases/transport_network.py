@@ -699,6 +699,46 @@ CASES: list[Case] = [
         expect_fail_hint="三处触发点（拨号建链 / Hello / 心跳）都要先重新登记密钥",
         tags=["rust", "group", "stability", "new-guards", "rc2-group-sync"],
     ),
+    # ---------------- 离线成员回来后的逻辑时钟对齐（2026-10-26 用户实报时间错乱） ----------------
+    Case(
+        name="非群主那一支不再观察 GroupKey.clock —— 时钟对齐守卫必须红",
+        why="界面排序权威是 seq、显示时间是本地接收时间，而每会话时钟只在本机**观察到**的序号上前进：\n"
+        "     离线 5 天的成员回来后的第一条消息 seq 低于群里当天已有的那些 ⇒ 在所有对端界面上\n"
+        "     排到当天更早的消息**前面**（用户截图读作 15:34 → 12:13 → 12:57）。\n"
+        "     ADR-0012 §7 说这条靠 `GroupKey.clock` 对齐，而每一帧都带着 clock、每个成员建链/Hello\n"
+        "     都会重发一遍 —— 旧接收侧在「发送方不是群主」那一支直接 return，从没消费过它。\n"
+        "     注入 = 把这一支里的观察整块删掉（回到旧形状）；`clock` 变成未用变量只是 warning。",
+        file=TAURI / "src" / "network" / "transport.rs",
+        injections=[(
+            """            if group.members.iter().any(|m| m == &from) {
+                let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
+                db::observe_clock(&dbc, &format!("group:{group_id}"), clock).ok();
+            }
+            return;""",
+            """            return;""",
+        )],
+        cmd=cargo("test", "--lib", "group_key_from_non_creator_still_advances_the_conversation_clock"),
+        cwd=TAURI,
+        expect_fail_hint="非群主发来的 GroupKey 携带的会话时钟没有被观察",
+        tags=["rust", "group", "ordering", "new-guards", "clock-align"],
+    ),
+    Case(
+        name="观察时钟时不校验发送方在成员表里 —— 「任何好友都能推时钟」必须被抓到",
+        why="放宽给非群主的只有「观察逻辑时钟」这一件事，而它仍然要认人：\n"
+        "     `observe_clock` 取 MAX，任意 LAN 好友都能给任意 group_id 送一个大数 ⇒ 本机这个会话的\n"
+        "     时钟被顶到天上，之后的消息一律排到别人后面（清空边界也按 seq 判）。\n"
+        "     注入 = 把成员表校验换成恒真：代码照跑、行为照常，只有「认不认人」这一格没了 ——\n"
+        "     正是这条判据要钉的那一半（另一半是「不许顺手放宽群资料/密钥的写」）。",
+        file=TAURI / "src" / "network" / "transport.rs",
+        injections=[(
+            "            if group.members.iter().any(|m| m == &from) {",
+            "            if true {",
+        )],
+        cmd=cargo("test", "--lib", "group_key_from_non_creator_still_advances_the_conversation_clock"),
+        cwd=TAURI,
+        expect_fail_hint="观察时钟也要先确认发送方在本机记录的成员表里",
+        tags=["rust", "group", "ordering", "security", "new-guards", "clock-align"],
+    ),
     # ---------------- 「有人@我」从昵称改成绑人（第二阶段 §10／#103） ----------------
     Case(
         name="群明文里摘掉 mentions 键 —— 三态的『明确回答谁都没 @』必须还能发出去",

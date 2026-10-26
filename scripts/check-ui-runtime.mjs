@@ -505,6 +505,9 @@ window.__probe = (() => {
         // 回执那颗「重发」（--only=delivery）：取消/部分送达/失败三格的点击都必须落到账本上，
         // 否则探针只能看到"命令有没有被调"，看不到"这一下到底有没有接上 emit"。
         onRetry: () => events.push(['retry']),
+        // 回执那一格「发送中」的取消键（--only=delivery ③c）：组件只 emit，动作接线在 MessageItem
+        // （它把这一发交给菜单里那个同一个 doCancelSend）⇒ 没有这条记账就量不到"这一下接没接上"。
+        onCancel: () => events.push(['cancel']),
         // 默认头像选择器（--only=avatar）：确认时把组合记进账本。
         onApply: (seed) => events.push(['apply', seed && seed.emoji, seed && seed.bg]),
         // 输入框那一族（--only=inputpanel）要读得到"这条到底带不带 @ 的名单"：
@@ -11939,6 +11942,32 @@ async function runOpsCenter(cdp, url) {
 
     // ④b 移动端 390 与关闭：统一放在下面（先关面板，再以共享开关重开一次量宽度）。
 
+    // 「确认了之后，应该是会在后台任务中加入后台任务重新发送」（负责人 2026-10-26）。
+    // 读模型那一半有 npm 单测与一次真实变异（把 state 里的 resending 分支摘掉 ⇒ 那条红），
+    // 这里量的只剩接线：**那三个字真上屏，而且只上屏在被标记的那一行**，并且不凭空多出一行。
+    const wantResending = await cdp.eval(
+      "(async () => { const I = await import('/src/i18n/index.ts');"
+      + " return I.t('task.state.resending'); })()",
+    );
+    const marked = await cdp.eval(`(async () => {
+      const S = await import('/src/stores/useChatStore.ts');
+      const chat = S.useChatStore();
+      chat.markResending('m1');
+      const t = window.__probe.vue; await t.nextTick(); await t.nextTick();
+      return { ops: chat.operations.length };
+    })()`);
+    const resendingRows = await read();
+    const m1Row = resendingRows.rows.find((r) => r.title === '在吗');
+    check("★ 标记「重发中」后任务中心那一行就说「重发中」（只这一行说，行数不变）",
+      !!m1Row && m1Row.status === wantResending && wantResending.length > 0
+        && resendingRows.rows.filter((r) => r.status === wantResending).length === 1
+        && marked && marked.ops === 6,
+      "1 行说「重发中」/ ops 仍 6",
+      JSON.stringify({
+        status: m1Row && m1Row.status, wantResending, ops: marked && marked.ops,
+        states: resendingRows.rows.map((r) => r.status),
+      }));
+
     // 关掉面板：点卡片外的遮罩是 Reka 的 outside-pointerdown 那条路。
     // Reka 的遮罩在 after-leave 之后才卸载，而 headless 页面静止时不出帧 ⇒ 必须泵帧。
     const pumpFrames = async (n = 6) => {
@@ -12119,6 +12148,41 @@ async function runOpsCenter(cdp, url) {
 }
 
 /**
+ * 二次确认框（`ConfirmDialog`）的读数与"过一遍确认"的动作 —— **module-level 的家**，
+ * 因为 `resend` 与 `delivery` 两段都要它（同一份"点重发先弹框"的契约，不许在第二段抄一遍）。
+ *
+ * 负责人 2026-10-26："点了之后，它会有个二次确认"。读三样：正文有没有上屏、确认键与取消键的坐标。
+ * 按**文本**认，不按 DOM 形状认（页脚两颗键的形状是 ConfirmDialog 自己的事，改样式不该让这段跟着瞎）。
+ */
+async function confirmBox(cdp) {
+  return cdp.eval(`(async () => {
+    const { t } = await import('/src/i18n/index.ts');
+    const vis = (el) => !!el && el.getClientRects().length > 0;
+    const byText = (want) => [...document.querySelectorAll('button')]
+      .filter((b) => vis(b) && (b.textContent || '').trim() === want)[0] || null;
+    const centre = (el) => {
+      const r = el.getBoundingClientRect();
+      return { x: Math.round(r.left + r.width / 2), y: Math.round(r.top + r.height / 2) };
+    };
+    const ok = byText(t('common.confirm'));
+    const cancel = byText(t('common.cancel'));
+    const body = [...document.querySelectorAll('p')]
+      .find((p) => vis(p) && (p.textContent || '').trim() === t('msg.resendConfirm')) || null;
+    return { body: !!body, ok: ok ? centre(ok) : null, cancel: cancel ? centre(cancel) : null };
+  })()`);
+}
+
+/** 点重发 ⇒ 先出确认框 ⇒ 再点确认。返回确认框的读数（要吃它的那格自己断言）。 */
+async function confirmGate(cdp, x, y) {
+  await cdp.click(x, y);
+  await sleep(400);
+  const box = await confirmBox(cdp);
+  if (box && box.ok) await cdp.click(box.ok.x, box.ok.y);
+  await sleep(600);
+  return box;
+}
+
+/**
  * 「发送失败 / 已取消之后那颗重发」的运行时判据（负责人 2026-10-23："可以有个重试/再次发送…
  * 可打断 可恢复 可取消这种都应该有"）。
  *
@@ -12185,6 +12249,13 @@ async function runResend(cdp, url) {
     a.ok === true && a.btn && a.btn.found === true, "found=true", JSON.stringify(a));
   if (a.ok && a.btn && a.btn.found) {
     await cdp.click(a.btn.x, a.btn.y);
+    await sleep(400);
+    const box = await confirmBox(cdp);
+    const early = await calls("sendFileAuto");
+    check("★ 点重发先出二次确认，且**这一步还没有**把命令发出去（旧形态点一下就静默开跑，用户读作没反应）",
+      !!box && box.body === true && !!box.ok && early === 0,
+      "确认框正文上屏 + 有确认键 + sendFileAuto=0", JSON.stringify({ box, early }));
+    if (box && box.ok) await cdp.click(box.ok.x, box.ok.y);
     await sleep(600);
     const file = await calls("sendFileAuto");
     const text = await calls("sendMessage");
@@ -12193,6 +12264,8 @@ async function runResend(cdp, url) {
     check("★ 同一下点击**没有**走 send_message（旧那步把 JSON 载荷当普通消息发出去 = 假成功）",
       text === 0, "sendMessage=0", JSON.stringify({ text }));
   } else {
+    check("★ 点重发先出二次确认，且**这一步还没有**把命令发出去（旧形态点一下就静默开跑，用户读作没反应）", false,
+      "先要那颗按钮存在", JSON.stringify(a));
     check("★ 点失败图片的重发 ⇒ 走 send_file_auto（恰好一次）", false,
       "先要那颗按钮存在", JSON.stringify(a));
     check("★ 同一下点击**没有**走 send_message（旧那步把 JSON 载荷当普通消息发出去 = 假成功）", false,
@@ -12230,10 +12303,9 @@ async function runResend(cdp, url) {
       && iconShape.color === iconShape.expected,
     "1 circle + 2 lines + danger-ink 色", JSON.stringify(iconShape));
   if (b.ok && b.btn && b.btn.found) {
-    await cdp.click(b.btn.x, b.btn.y);
-    await sleep(600);
+    const boxB = await confirmGate(cdp, b.btn.x, b.btn.y);
     check("点它 ⇒ 同样走 send_file_auto", (await calls("sendFileAuto")) === 1,
-      "sendFileAuto=1", JSON.stringify({ file: await calls("sendFileAuto") }));
+      "sendFileAuto=1（要先过二次确认）", JSON.stringify({ file: await calls("sendFileAuto"), boxB }));
   } else {
     check("点它 ⇒ 同样走 send_file_auto", false, "先要那颗按钮存在", JSON.stringify(b));
   }
@@ -12245,8 +12317,7 @@ async function runResend(cdp, url) {
   });
   const cOk = c.ok === true && c.btn && c.btn.found;
   if (cOk) {
-    await cdp.click(c.btn.x, c.btn.y);
-    await sleep(600);
+    await confirmGate(cdp, c.btn.x, c.btn.y);
     const grp = await calls("sendGroupFile");
     const dm = await calls("sendFileAuto");
     check("群文件失败后重发走 send_group_file（而不是把群会话当对端去 send_file_auto）",
@@ -12278,8 +12349,7 @@ async function runResend(cdp, url) {
   })})`);
   const e = await mountAndLocate({ msg_id: "m-rs-5", kind: "text", content: "在吗" });
   if (e.ok === true && e.btn && e.btn.found) {
-    await cdp.click(e.btn.x, e.btn.y);
-    await sleep(600);
+    await confirmGate(cdp, e.btn.x, e.btn.y);
     check("★ 文本失败重发走 resend_message（复用原 msg_id），且不新建消息",
       (await calls("resendMessage")) === 1 && (await calls("sendMessage")) === 0
         && (await calls("sendFileAuto")) === 0,
@@ -12292,6 +12362,31 @@ async function runResend(cdp, url) {
   } else {
     check("★ 文本失败重发走 resend_message（复用原 msg_id），且不新建消息", false,
       "先要那颗按钮存在", JSON.stringify(e));
+  }
+
+  // ── ⑥ 确认框里点「取消」⇒ 一条命令都不许发 ────────────────────────────
+  // 二次确认不是"多点一下"的装饰：确认键才是动手的那一步，取消必须真的什么都不做。
+  // 这一格和 ① 是一对：① 证明"没确认之前没发"，这一格证明"确认被撤回之后也没发"。
+  await stubAll();
+  await cdp.eval(`window.__probe.stubApi('resendMessage', ${JSON.stringify({
+    id: 6, msg_id: "m-rs-6", conv_id: "p1", sender_id: "dev-me", receiver_id: "p1",
+    kind: "text", content: "在吗", ts: 1700000000000, seq: 1, status: "sent",
+  })})`);
+  const f = await mountAndLocate({ msg_id: "m-rs-6", kind: "text", content: "在吗" });
+  if (f.ok === true && f.btn && f.btn.found) {
+    await cdp.click(f.btn.x, f.btn.y);
+    await sleep(400);
+    const box = await confirmBox(cdp);
+    if (box && box.cancel) await cdp.click(box.cancel.x, box.cancel.y);
+    await sleep(500);
+    const after = await confirmBox(cdp);
+    const n = await calls("resendMessage");
+    check("★ 确认框里点「取消」⇒ 不发命令，且框自己收起来",
+      n === 0 && !!box && !!box.cancel && !!after && after.body === false,
+      "resendMessage=0 + 确认框消失", JSON.stringify({ n, box, after }));
+  } else {
+    check("★ 确认框里点「取消」⇒ 不发命令，且框自己收起来", false,
+      "先要那颗按钮存在", JSON.stringify(f));
   }
 }
 
@@ -12389,8 +12484,10 @@ async function runDelivery(cdp, url) {
     c.ok === true && rc && rc.text === rc.expectCancelled, "text=2 人已收到，1 人已取消",
     JSON.stringify({ rc }));
   if (rc && rc.retry && rc.retryPoint) {
-    await cdp.click(rc.retryPoint.x, rc.retryPoint.y);
-    await sleep(600);
+    // 与 `resend` 段同一个家：群消息那颗重发也要先过二次确认（点了直接动手 = 用户读作没反应）。
+    // ⚠️ 这里必须**真的把确认点掉**：确认框留着不关，它那层 fixed 底板会把后面 ③b/③c 的点击吃掉，
+    //    读数变成"emit 没发生"——那是夹具串味，不是组件缺陷。
+    const boxC = await confirmGate(cdp, rc.retryPoint.x, rc.retryPoint.y);
     check("★ 重发走 resend_group_delivery（不是单聊那两条命令）",
       (await calls("resendGroupDelivery")) === 1 && (await calls("resendMessage")) === 0
         && (await calls("sendMessage")) === 0 && (await calls("sendGroupMessage")) === 0,
@@ -12400,6 +12497,7 @@ async function runDelivery(cdp, url) {
         dm: await calls("resendMessage"),
         text: await calls("sendMessage"),
         grp: await calls("sendGroupMessage"),
+        boxC,
       }));
   } else {
     check("★ 重发走 resend_group_delivery（不是单聊那两条命令）", false,
@@ -12431,10 +12529,58 @@ async function runDelivery(cdp, url) {
     await sleep(400);
     const after = (await events()).filter((e) => e[0] === "retry").length;
     check("★ 回执那一格点下去 emit retry 一次", after === before + 1, "retry+1",
-      JSON.stringify({ before, after }));
+      JSON.stringify({ before, after, rp }));
   } else {
     check("★ 回执那一格点下去 emit retry 一次", false, "先要那颗按钮存在",
       JSON.stringify({ receiptMount, rp }));
+  }
+
+  // ── ③c 发送中那一格的取消键（负责人 2026-10-26："发送中的话，也是可以取消的"）──
+  // 同样必须**独立挂 MessageReceipt**：取消通道由父层（MessageItem）算好再传下来，
+  // 挂在 MessageItem 上量不到"回执自己在 sending 且拿到通道时才长键"这一格。
+  const mountSending = async (canCancelSend) => {
+    const mounted = await cdp.eval("window.__probe.install('/src/components/message/MessageReceipt.vue', '', "
+      + JSON.stringify(JSON.stringify({
+        state: "sending", title: "发送中", isGroup: false, msgKey: "m-cancel-probe",
+        retryable: false, canCancelSend,
+      })) + ")");
+    await cdp.eval("window.__probe.seedDevice('dev-me')");
+    await sleep(300);
+    return {
+      mounted: !!mounted && mounted.ok === true,
+      btn: await cdp.eval(`(async () => {
+        const I = await import('/src/i18n/index.ts');
+        const hit = Array.from(document.querySelectorAll('button[data-cancel-send]'))
+          .find((b) => b.getClientRects().length > 0);
+        if (!hit) return { found: false };
+        const r = hit.getBoundingClientRect();
+        return {
+          found: true, labelled: hit.getAttribute('aria-label') === I.t('msg.cancelSend'),
+          x: Math.round(r.left + r.width / 2), y: Math.round(r.top + r.height / 2),
+        };
+      })()`),
+    };
+  };
+  const s1 = await mountSending(true);
+  if (s1.mounted && s1.btn && s1.btn.found) {
+    const before = (await events()).filter((e) => e[0] === "cancel").length;
+    await cdp.click(s1.btn.x, s1.btn.y);
+    await sleep(400);
+    const after = (await events()).filter((e) => e[0] === "cancel").length;
+    check("★ 发送中的回执长出可点的取消键，点下去 emit cancel 一次（带 aria-label）",
+      after === before + 1 && s1.btn.labelled === true, "cancel+1 + 可访问名 = msg.cancelSend",
+      JSON.stringify({ before, after, btn: s1.btn }));
+    // 反向那一格：算不出取消通道（对端离线/没有通道）时**不许**长出这颗键 ——
+    // 按了没反应的按钮比没有按钮更坏（这一族在 10-23 那条"点重发没反应"里记过）。
+    const s0 = await mountSending(false);
+    check("★ 拿不到取消通道时不渲染那颗键（反向格：不给一颗点了没用的按钮）",
+      s0.mounted === true && !!s0.btn && s0.btn.found === false,
+      "found=false", JSON.stringify(s0));
+  } else {
+    check("★ 发送中的回执长出可点的取消键，点下去 emit cancel 一次（带 aria-label）", false,
+      "先要那颗按钮存在", JSON.stringify(s1));
+    check("★ 拿不到取消通道时不渲染那颗键（反向格：不给一颗点了没用的按钮）", false,
+      "上一格没成立，这一格没作用点", JSON.stringify(s1));
   }
 
   // ── ④ 清扫判死的成员：只说结论，不假装还能补发 ─────────────────────────

@@ -602,6 +602,7 @@ export const zhCN: MessageDict = {
   "msg.resend": "重新发送",
   // 原地重投被拒（已送达 / 状态已变）或入队失败。不许静默 —— 用户按了按钮就得有回音。
   "msg.resendFail": "这条消息现在无法重发",
+  "msg.resendConfirm": "重新发送这条消息？对方会再收到一次，任务中心可以看到进度并取消。",
   "msg.sendFailed": "发送失败",
   "msg.clickToOpen": "点击打开文件",
   "msg.receiving": "接收中",

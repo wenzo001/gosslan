@@ -1341,6 +1341,18 @@ async fn handle_group_key(
     };
     if let Some(group) = &known_group {
         if group.creator != from {
+            // 群资料/密钥仍只认群主（下面那批写入一概不做），但**逻辑时钟谁都能推进**：每一帧
+            // `GroupKey` 都带 `clock`，而建链/Hello 时**每个成员**都会重发一遍（`requeue_group_keys_for_peer`）。
+            // 旧写法在这里直接 return ⇒ ADR-0012 §7 承诺的"离线成员靠 `GroupKey.clock` 对齐"对非群主
+            // 从未发生：他回来后的第一条消息 seq 低于群里当天已有的 seq ⇒ 在所有对端界面上排到当天
+            // 更早的消息**前面**（2026-10-26 用户截图 15:34 → 12:13 → 12:57 那一格）。
+            // `observe_clock` 只取 MAX，旧读数是无操作；能发这一帧的人本来就能用群消息的 seq 推进
+            // 同一格时钟（`gossip.rs`），所以这不新增信任面。发送方必须是本机记录里的成员，否则
+            // 任何好友都能给任意 group_id 推时钟。
+            if group.members.iter().any(|m| m == &from) {
+                let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
+                db::observe_clock(&dbc, &format!("group:{group_id}"), clock).ok();
+            }
             return;
         }
     }

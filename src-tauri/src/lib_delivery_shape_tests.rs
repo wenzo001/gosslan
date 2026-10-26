@@ -415,6 +415,60 @@
         );
     }
 
+    /// 离线成员回来后发的第一条消息，不许排到当天更早的消息**前面**（负责人 2026-10-26 实报：
+    /// 群聊时间分割线读作 15:34 → 12:13 → 12:57，那个人 5 天没上线且只从老版本升级来）。
+    ///
+    /// 机理：每会话逻辑时钟只在本机**观察到**的序号上前进（`observe_clock` 取 MAX），而排序权威是
+    /// `seq`、显示时间是本地接收时间（ADR-0012 §2/§3）。成员离线 5 天 ⇒ 他的时钟停在离线前；
+    /// 回来后第一条消息的 `seq` 低于群里当天已有的那些 ⇒ 在**所有对端**界面上落到当天更早的消息
+    /// 前面，而它显示的时间是最新的。ADR-0012 §7 写的补救是"靠 `GroupKey.clock` 对齐"，而
+    /// `Message::GroupKey` 每一帧确实都带 `clock`（`pending_keys::try_send_group_key`），建链/Hello
+    /// 时**每个成员**都会重发一遍（`requeue_group_keys_for_peer`）—— 旧接收侧在"发送方不是群主"
+    /// 那一支直接 return，这一格时钟从来没被消费掉。
+    ///
+    /// 为什么只能钉接线（同上一条 `group_relation_sync_…` 的理由）：`observe_clock` 自己的单调 MAX
+    /// 早有 db 层单测，那条判的是**函数**；这里的缺陷形态是"函数都在、这一支里没有调用点"，
+    /// 任何"函数自身正确"的测试都发现不了。
+    #[test]
+    fn group_key_from_non_creator_still_advances_the_conversation_clock() {
+        let src =
+            rust_fn_body(include_str!("network/transport.rs"), "async fn handle_group_key");
+        // 整行注释先摘掉再压平：`code_flat` 不剥注释，而这一支的注释里正好写着 `observe_clock`
+        // 这类词 —— 留着它们，"没有调用点"也能被注释喂成假绿（提取器会读判据自己的注释）。
+        let code = src
+            .lines()
+            .map(str::trim_start)
+            .filter(|l| !l.starts_with("//"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let body = code_flat(&code);
+        let at = body
+            .find("ifgroup.creator!=from{")
+            .expect("群主早退那一支没了 ⇒ 先确认是不是把整道闸拆了（那是密钥注入的防线，不许拆）");
+        // 只取这一支到 `return;` 为止：早退之后是群主专属路径，算不得"非群主也会推进时钟"的证据。
+        let branch = &body[at..];
+        let end = branch.find("return;").unwrap_or(branch.len());
+        let branch = &branch[..end];
+        assert!(
+            branch.contains(r#"db::observe_clock(&dbc,&format!("group:{group_id}"),clock)"#),
+            "非群主发来的 GroupKey 携带的会话时钟没有被观察 ⇒ 离线成员回来后第一条消息会排到\
+             当天更早的消息前面（2026-10-26 用户截图那一格）。这是 ADR-0012 §7 承诺的对齐通道。"
+        );
+        assert!(
+            branch.contains("group.members.iter().any(|m|m==&from)"),
+            "观察时钟也要先确认发送方在本机记录的成员表里：否则任何好友都能给任意 group_id 推时钟。"
+        );
+        // ★ 反向那一半：这一支**只**观察时钟。把群资料/密钥的写放宽给普通成员才是这条真正的
+        //   危险面（恶意成员用他自己持有的密钥替换受害者的群密钥 ⇒ 读到受害者之后的群消息）。
+        for forbidden in ["db::upsert_group(", "db::replace_group_members(", "state.group_keys"] {
+            assert!(
+                !branch.contains(forbidden),
+                "非群主那一支里出现了 `{forbidden}` ⇒ 把群主专属的群资料/密钥写放宽给了普通成员，\
+                 正是上方注释点名不能放宽的那条（密钥注入）。"
+            );
+        }
+    }
+
     /// 强提醒第 2 阶段①：群 remind 帧**必须搭群消息内核**（⇒ 离线恢复），
     /// 且受众在出帧前按现读成员校验过 —— 空受众 / 目标消息不存在的帧不许出。
     ///

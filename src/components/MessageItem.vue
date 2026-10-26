@@ -1377,6 +1377,30 @@ async function retrySend() {
   }
 }
 
+/**
+ * 「重新发送」的二次确认（2026-10-26 用户：「点了之后要有二次确认，确认后要在后台任务里
+ * 看到这条重新发送」）。
+ *
+ * 为什么要确认而不是直接发：重发是一次**新的投递**（群那条还会给未收到的成员再发一遍），
+ * 旧行为是点一下红叉就静默开始 —— 用户既不知道有没有点上、也没有反悔的机会，
+ * 而「点了没反应」的观感正来自这里（图标原地不变，唯一的反馈是一句 toast）。
+ * 确认后先 `markResending` 再走 `retrySend` ⇒ 任务中心那一行当场就是「重发中」，
+ * 不等后端往返；往返失败时由 store 的剪枝按台账事实摘掉这格标记。
+ */
+const confirmingResend = ref(false);
+
+function requestResend() {
+  closeContextMenu();
+  closeActionSheet();
+  confirmingResend.value = true;
+}
+
+async function confirmResend() {
+  confirmingResend.value = false;
+  chat.markResending(props.message.msg_id);
+  await retrySend();
+}
+
 // ---------------- 文件消息：微信式交互（整卡打开 / 右键保存·转发·复制） ----------------
 
 /** 未就绪时点「下载」：接收是自动的（对方设备上线即传输），这里只解释状态。 */
@@ -1714,7 +1738,9 @@ async function copyFileToClipboard() {
             :delivery="groupDelivery"
             :msg-key="message.msg_id ?? message.id"
             :retryable="resendChannel !== null"
-            @retry="retrySend"
+            :can-cancel-send="canCancelSend"
+            @retry="requestResend"
+            @cancel="doCancelSend"
           />
 
           <!-- 气泡外壳：**气泡本体 + 表情回应底栏 + 尾巴**是同一块。
@@ -1965,6 +1991,17 @@ async function copyFileToClipboard() {
     :body="t('msg.recallConfirm')"
     @cancel="confirmingRecall = false"
     @confirm="confirmRecall"
+  />
+
+  <!-- 重发二次确认（2026-10-26）：与撤回同一套组件、同一套「确认才动手」的口径。
+       移动端长按菜单走的也是同一个 requestResend ⇒ 两端行为一致。 -->
+  <ConfirmDialog
+    :open="confirmingResend"
+    :title="t('msg.resend')"
+    :confirm-label="t('common.confirm')"
+    :body="t('msg.resendConfirm')"
+    @cancel="confirmingResend = false"
+    @confirm="confirmResend"
   />
 
   <MessageContentModal

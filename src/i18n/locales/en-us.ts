@@ -591,6 +591,7 @@ export const enUS: MessageDict = {
   "msg.readMembers": "Readers ({n})",
   "msg.resend": "Resend",
   "msg.resendFail": "This message can't be resent right now",
+  "msg.resendConfirm": "Resend this message? The other side will receive it again. You can watch and cancel it in the task center.",
   "msg.sendFailed": "Send failed",
   "msg.clickToOpen": "Click to open file",
   "msg.receiving": "Receiving",
