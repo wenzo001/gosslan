@@ -88,7 +88,9 @@ test("结果只能取自表里的行，不能是拼出来的第三种东西", ()
 // ---------------- 默认头像选择器（2026-10-22） ----------------
 
 test("选择器的选项集从组合表现推：手动能选的每个表情/颜色，随机算法也都认识", () => {
-  assert.ok(AVATAR_EMOJIS.length >= 30, `表情只有 ${AVATAR_EMOJIS.length} 个`);
+  // 下界 120：2026-10-26 用户要"尽可能全的小动物"，清单 72 → 130。写成下界而不是精确值，
+  // 是为了"以后只许加"这条方向能被机器读到 —— 谁把动物段删回去，这里就红。
+  assert.ok(AVATAR_EMOJIS.length >= 120, `表情只有 ${AVATAR_EMOJIS.length} 个（动物扩充被回退了？）`);
   assert.ok(AVATAR_BACKGROUNDS.length >= 20, `背景色只有 ${AVATAR_BACKGROUNDS.length} 个`);
   assert.equal(new Set(AVATAR_EMOJIS).size, AVATAR_EMOJIS.length, "表情清单里有重复项");
   assert.equal(new Set(AVATAR_BACKGROUNDS).size, AVATAR_BACKGROUNDS.length, "颜色清单里有重复项");
@@ -184,5 +186,33 @@ test("自定义颜色：任意合法 hex 可往返，非 hex 一律拒绝", () =
   }
   for (const bg of ["red", "#12345", "#GGGGGG", "rgb(1,2,3)"]) {
     assert.equal(isAvatarSeed({ emoji: "🦊", bg }), false, `${bg} 应该被拒绝`);
+  }
+});
+
+test("每个条目必须是单字形：ZWJ 组合与多码点会在部分平台裂成两个字、撑破 40px 格子", () => {
+  // 清单头部那句注释一直是"口头承诺"（2026-10-26 之前没有任何判据钉它）⇒ 加动物时
+  // 顺手把它变成判据：允许一个可选的变体选择符 U+FE0F（清单里 🐿 就是这么写的），
+  // 但除它以外只许一个码点，且绝不允许 ZWJ 序列（🐻‍❄️、👨‍‍👧 那一类）。
+  const bad = AVATAR_EMOJIS.filter(
+    (e) => e.includes("\u200D") || [...e].filter((c) => c !== "\uFE0F").length > 1,
+  );
+  assert.deepEqual(bad, [], "这些条目不是单字形（ZWJ 组合或多码点）");
+});
+
+test("动物扩充真的在清单里（用户点名要小蛇）：逐条按码点验，不靠肉眼扫", () => {
+  const required = [
+    "\u{1F40D}", // SNAKE 蛇 —— 用户点名
+    "\u{1F40E}", // HORSE 马
+    "\u{1F411}", // SHEEP 羊
+    "\u{1F9A9}", // FLAMINGO 火烈鸟
+    "\u{1F9AD}", // SEAL 海豹
+    "\u{1FAB2}", // BEETLE 甲虫
+    "\u{1F9AC}", // BISON 野牛
+  ];
+  for (const e of required) {
+    assert.ok(
+      AVATAR_EMOJIS.includes(e),
+      `U+${[...e].map((c) => c.codePointAt(0)!.toString(16).toUpperCase()).join("+U+")} 不在清单里`,
+    );
   }
 });

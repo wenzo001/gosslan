@@ -227,6 +227,7 @@ export const useChatStore = defineStore("chat", () => {
         transfers: transfers.value,
         contentTransfers: contentTransfers.value,
         messageOps: messageOps.value,
+        resending: [...resendingIds.value],
         groupHistory: Object.values(groupHistorySync.value),
         updater: updaterStatus.value,
       }),
@@ -1303,6 +1304,19 @@ export const useChatStore = defineStore("chat", () => {
     }
   }
 
+  /**
+   * 用户点了「重新发送」并确认过的那几条 msg_id（2026-10-26）。
+   *
+   * 只用来把任务中心那一行说成「重发中」—— 库里区分不出首次发送与重发（同为 `sending` +
+   * 同形的 outbox 行），为一句文案去加一列不值得。⚠️ 它**必须**被剪：每次拉到 `messageOps`
+   * 就把已经不在这份台账里的 id 摘掉，否则那条重发成功后，标记会永远留在内存里，
+   * 下一次同一 msg_id 再进队列时会凭空显示成「重发中」。
+   */
+  const resendingIds = ref(new Set<string>());
+  function markResending(msgId: string) {
+    resendingIds.value.add(msgId);
+  }
+
   async function refreshTransfers() {
     const req = refreshGuard.begin("transfers");
     const [list, contents, msgOps] = await Promise.all([
@@ -1320,6 +1334,11 @@ export const useChatStore = defineStore("chat", () => {
     // 顺带刷新统一内容状态：未完成 / 校验失败的气泡据此显示「点击重试」。
     contentTransfers.value = contents;
     messageOps.value = msgOps;
+    // 剪掉已经不在台账里的标记（见上面 `resendingIds` 的注释）。
+    if (resendingIds.value.size) {
+      const live = new Set(msgOps.map((o) => o.msg_id));
+      for (const id of [...resendingIds.value]) if (!live.has(id)) resendingIds.value.delete(id);
+    }
   }
   /** 进度/done 事件早于 transfer 行进内存时的一次性补拉（防抖，不放大 IPC）。 */
   let transfersRepairTimer: ReturnType<typeof setTimeout> | null = null;
@@ -3363,6 +3382,7 @@ export const useChatStore = defineStore("chat", () => {
     watchGroupTodos,
     send,
     resend,
+    markResending,
     sendReminder,
     shakeConversation,
     shakeSignal,

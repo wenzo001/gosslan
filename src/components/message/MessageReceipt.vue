@@ -9,6 +9,7 @@ import { avatarSeedFor } from "@/utils/avatarSeed";
 import type { SendState } from "@/composables/useMessageDisplay";
 import type { GroupDeliverySummary } from "@/types";
 import { CheckCheck, HelpCircle } from "lucide-vue-next";
+import { X } from "@/components/ui/icons";
 import { AlertCircle, Check } from "@/components/ui/icons";
 
 const props = defineProps<{
@@ -37,8 +38,16 @@ const props = defineProps<{
    * （收到 ≠ 读过），而台账才是投递的事实。全送达的消息后端已即时清墓碑 ⇒ 这里是 null。
    */
   delivery?: GroupDeliverySummary | null;
+  /**
+   * 这一格现在能不能取消发送（2026-10-26 用户：「发送中的话，它也是可以取消的」）。
+   *
+   * 判据不在这里：唯一那份是 `utils/cancelSend::cancelSendChannelFor`，由 `MessageItem`
+   * 算好后传进来（与右键菜单同一个出口、同一个 `doCancelSend`）。缺省 `undefined` = 不给按钮，
+   * 理由与 `retryable` 同一条：一颗点了什么都不会发生的按钮，比不给按钮更糟。
+   */
+  canCancelSend?: boolean;
 }>();
-const emit = defineEmits<{ (e: "retry"): void }>();
+const emit = defineEmits<{ (e: "retry"): void; (e: "cancel"): void }>();
 
 /**
  * 「失败」「已取消」「部分送达后被取消」三格都可以长出这颗重发（负责人 2026-10-23：
@@ -330,5 +339,18 @@ function readerAvatar(id: string): string | null {
         </span>
       </Transition>
     </span>
+    <!-- 发送中的取消键。⚠️ 必须是上面那个 `role="img"` 图标的**兄弟节点**，不能塞进它内部：
+         ARIA 的 img 会应用 Children Presentational，把后代的角色/动作整棵抹掉 ——
+         这颗键当年就是这么让读屏用户按不到「重发」的（见本文件上面那段无障碍注释）。
+         取消口此前只在右键/长按菜单里，用户看不见"这条还拦得下来"。 -->
+    <button
+      v-if="state === 'sending' && canCancelSend"
+      class="tap-safe ml-1 flex h-5 w-5 items-center justify-center rounded-[var(--gosslan-radius-xs)] text-[var(--gosslan-text-2)] transition hover:bg-[var(--gosslan-hover)]"
+      :title="t('msg.cancelSend')" :aria-label="t('msg.cancelSend')"
+      data-cancel-send
+      @click="emit('cancel')"
+    >
+      <X class="h-3.5 w-3.5" stroke-width="2.5" />
+    </button>
   </span>
 </template>

@@ -98,6 +98,16 @@ export interface OperationSources {
   groupHistory?: readonly GroupHistoryProgress[];
   /** 更新下载（B5）：后端 `UpdaterStatus` 的前端视图。只有 `downloading` 会变成任务行。 */
   updater?: UpdaterStatusView | null;
+  /**
+   * 用户**刚刚点了「重新发送」并确认**的那几条 msg_id（2026-10-26 用户口径）。
+   *
+   * 为什么由界面给、而不是后端给：库里区分不出"第一次发出还在队列"与"重发在队列"
+   * （两者的 `status` 都是 `sending`，`outbox` 行也同形），而后端为此加一列就是为一句话
+   * 改动落库形状。这一份只是"这件事是我刚要求重做的"的内存标记：
+   * 只影响那一行的**文案**，不影响能不能取消、不影响排序。
+   * 标记由 store 在每次拉到 `messageOps` 时剪掉已经不存在的行 ⇒ 不会留下永久的「重发中」。
+   */
+  resending?: readonly string[];
 }
 
 /** `UpdaterStatus` 的最小形状（只读模型需要的那几格）。 */
@@ -223,7 +233,7 @@ function contentRow(c: ContentTransfer): OperationRow {
   };
 }
 
-function messageRow(m: PendingMessageOpView): OperationRow {
+function messageRow(m: PendingMessageOpView, resending = false): OperationRow {
   const offline = !!m.peer_id && m.peer_offline;
   const actions: OperationAction[] = [];
   // 补发队列里的行都是本机发出去的（`outbox` / `group_outbox`）。
@@ -237,7 +247,8 @@ function messageRow(m: PendingMessageOpView): OperationRow {
     id: m.msg_id,
     kind: "message_send",
     title: m.preview ?? "",
-    state: offline ? "blocked" : "queued",
+    // 「重发中」只改这一行的**说法**：能不能取消、排在哪一档都仍由台账说了算。
+    state: resending ? "running" : offline ? "blocked" : "queued",
     progress: null,
     blockedReason: offline ? "peer_offline" : undefined,
     // 群消息只剩 1 个人也要说出来（以前只在 >1 时给，最后一格会变成没有目标的一行）。
@@ -306,8 +317,9 @@ export function deriveOperations(src: OperationSources): OperationRow[] {
     if (c.direction !== "receive") continue;
     if (isLiveContentStatus(c.status)) rows.push(contentRow(c));
   }
+  const resending = new Set(src.resending ?? []);
   for (const m of src.messageOps ?? []) {
-    rows.push(messageRow(m));
+    rows.push(messageRow(m, resending.has(m.msg_id)));
   }
   for (const h of src.groupHistory ?? []) {
     if (h.phase === "running" || h.phase === "failed") rows.push(historyRow(h));
@@ -387,6 +399,10 @@ export function operationStatusText(
   // （2026-10-25：「为什么还在排队却说已送达不能取消」）。
   if (row.someDelivered) return tr("task.state.partial");
   if (row.state === "queued") return tr("send.queued");
+  // 消息行没有字节进度可画（`progress` 恒 null），所以它进 running 档只有一种来源：
+  // 用户刚点了「重新发送」并确认 ⇒ 直接说「重发中」。不放到下面的 `progress === null`
+  // 那一条之后，否则这句永远读不到（那一条会先把 null 进度判成泛称「进行中」）。
+  if (row.kind === "message_send" && row.state === "running") return tr("task.state.resending");
   if (row.blockedReason === "waiting_ack") return tr("task.state.waitingAck");
   if (row.state === "blocked") return tr("task.state.waiting");
   // 读不到 total 时不硬造一个 0%：进度是 null ⇒ 只说"进行中"。

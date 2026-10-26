@@ -60,7 +60,7 @@
 | 前端测试用例 | **606** | `node --test --test-reporter=tap` 的 `^ok` 计数 |
 | Rust 用例基线 macOS | **690** | `src-tauri/test-baseline.macos.txt` 行数 |
 | Rust 用例基线 Windows | **679** | 同上 windows（2026-09-26 由 `--sync-baselines` 按源码门控推出；差额 14 条全部有名有据） |
-| 护栏非空转用例 | **266** | 现算口径：`python3 scripts/verify-guards.py --print-lanes` 的 `all=`（判据 E 用 `grep -h '^    Case(' ` 数分册）。⚠️ 判据 E 只对账契约图那一格，**本行没有机器守卫** ⇒ 它从 193 一路漂到真值 266 而门禁全绿（2026-10-26 现读）。本行不点名最新用例（名单型声明没有守卫），逐条动机在 `CHANGELOG.md` 的 `[Unreleased]` |
+| 护栏非空转用例 | **268** | 现算口径：`python3 scripts/verify-guards.py --print-lanes` 的 `all=`（判据 E 用 `grep -h '^    Case(' ` 数分册）。⚠️ 判据 E 只对账契约图那一格，**本行没有机器守卫** ⇒ 它曾从 193 一路漂到当时真值 266 而门禁全绿（2026-10-26 现读，本批 +2 条群时钟对齐用例 ⇒ 268）。本行不点名最新用例（名单型声明没有守卫），逐条动机在 `CHANGELOG.md` 的 `[Unreleased]` |
 | 登记不变量 | **26** | `protocol-invariants.md` 的 `^### INV-P` |
 | 其中**有具名钩子绑定** | **26 条全部具名**（P18 于同日补上 `check-key-boundary.mjs`） | 由 `scripts/check-invariant-hooks.mjs` 逐条现算并绑定（条数由该步打印） |
 | 门禁层 | 步数一律由 `verify.mjs --list` 现算（`check-doc-numbers.mjs` 对账），本行不抄数字；CI 3 job | `scripts/verify.mjs` 步骤表 |
@@ -509,6 +509,7 @@ F2 大文件不上 BLE(16MiB)｜F4 fsync 出锁｜F5 群同步①②④｜`#40` 
 | B-1 不变量补钩子 | **GUARDS_LOCKED（2026-09-26）**：绑定本身已成判据（`check-invariant-hooks.mjs` 在快速层）+ 该判据的非空转夹具已登记（改坏即 FAIL、恢复即 PASS） | 26 条全部具名（0 条 NONE），尾巴拆成 B-1a 两格 |
 | **B-1a-P18** 私钥不跨 UI 边界 | **GUARDS_LOCKED（2026-09-26）**：`check-key-boundary.mjs` 两条判据在快速层 + 非空转夹具 1 条（给 `Identity` 补一行 derive ⇒ FAIL，撤掉 ⇒ PASS） | ⚠️ 残留：两步搬运扫不住，根治要密钥字段私有化（属重构核心码，另立） |
 | **B-1a-P03** 解密失败不 Ack | **AUDITED（2026-09-26，缺口已按现物重读并收窄，见 §12.4 末）**：落库那一半有 3 条具名判据，缺的只有"不许发出 Ack"这半边 | 延后（不是缺夹具：`AppState` 持具体 Wry `AppHandle` ⇒ 补这条要先决定"愿不愿意为可测性动最热路径"，与 C-1/C-2 同批，见 §12.4 末） |
+| ★ **UI 探针整跑暴露的两族量具红（2026-10-26，不属于那一批交付）** | 🔴 **已定位，未修（登记）** | 收尾时把探针整跑一遍：**1368/1375**，7 格红全部落在那一批**没碰过**的文件上（`git diff --name-only` 里 `.css`/令牌文件 0 个）。两族：<br>① `accent` 那 2 格**单独跑也红** —— 它把令牌写进一个探针 div 再读 `getComputedStyle().color`，按 `rgb(...)` 形状解析；本机 Brave/Chrome 156 把 `color-mix()` 的结果序列化成 `color(srgb 0.865 0.391 0.410)` ⇒ 读回来是字符串，判据把"解析失败"当成"值不对"。复跑：`GOSSLAN_CHROME=/Applications/Brave\ Browser.app/Contents/MacOS/Brave\ Browser node scripts/check-ui-runtime.mjs --only=accent`。修法是在 `mk()` 里把 `color(srgb …)` 归一到 0–255 三元组（0–1 读数乘 255），⚠️ 而这一段今天**没有非空转用例**（`grep -rn accent scripts/guard_cases/` 命中 0）⇒ 修的时候一并补一条。<br>② `scrollreact`/`scrollrestore`/`scrollshake` 那 5 格只在**整跑**里红：这四段单独跑（`--only=accent,scrollreact,scrollrestore,scrollshake`）= **36/38**，红的只剩 accent 那 2 格 ⇒ 是前面段落留下的共享状态（主题/滚动位置/pinia 持久值）污染，不是滚动实现坏了 —— 与 10-23 记的"全量长跑顺序脆弱"同族。今后判这两族只用上面那两条复跑命令，别拿整跑的红当产品结论。 |
 | C-1/C-2 分册/拆 store | 延后 | 需要 A 阶段暴露具体故障 |
 | D 类 12 项 | 关闭 | 不再重开，除非有新证据 |
 

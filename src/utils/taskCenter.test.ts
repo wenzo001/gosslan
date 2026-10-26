@@ -421,3 +421,22 @@ test("100% 未终态按 kind 说清在做什么：不再一律「收尾中」", 
     "「已发出，等对方确认」比「正在收尾」更能解释 100%",
   );
 });
+
+test("用户确认过的重发：那一行说「重发中」，但可取消性与排序仍由台账决定", () => {
+  // 2026-10-26 用户口径：「确认了之后，它应该是会在后台任务中加入后台任务重新发送」。
+  // 库里区分不出首次发送与重发（同为 sending + 同形 outbox 行），所以这一格是界面给的
+  // **内存标记**，只改文案；断言的另一半是"它不许改动作"——重发中一样能取消。
+  const rows = deriveOperations({
+    transfers: [],
+    contentTransfers: [],
+    messageOps: [msgOp({ msg_id: "m-re" }), msgOp({ msg_id: "m-plain" })],
+    resending: ["m-re"],
+  });
+  const re = byId(rows, "m-re");
+  assert.equal(re.state, "running", "确认过重发 ⇒ 这一行进 running 档");
+  assert.ok(re.actions.includes("cancel_message"), "重发中照样可取消（标记不许吃掉动作）");
+  assert.equal(operationStatusText(re, (k) => k), "task.state.resending", "读到的必须是「重发中」那句");
+  const plain = byId(rows, "m-plain");
+  assert.equal(plain.state, "queued", "没点过重发的补发行不受影响");
+  assert.equal(operationStatusText(plain, (k) => k), "send.queued");
+});

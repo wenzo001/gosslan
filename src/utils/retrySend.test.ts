@@ -149,3 +149,39 @@ test("后端 resend_message 显式复用原 msg_id / ts / seq", () => {
     "入队与置 sending 必须走同一个事务出口（先入队、最后才置 sending）",
   );
 });
+
+test("★ 点「重新发送」必须先过二次确认，确认后才动手并当场登记成后台任务", () => {
+  // 2026-10-26 用户：「点了之后要有二次确认，确认后要在后台任务里看到这条重新发送」。
+  // 旧行为是点一下红叉就静默开始 —— 图标原地不变、只有一句 toast，观感就是"没反应"。
+  const item = read("components/MessageItem.vue");
+  assert.match(item, /@retry="requestResend"/, "回执那颗重发键必须走 requestResend（弹确认），不许直连 retrySend");
+  assert.match(item, /const confirmingResend = ref\(false\);/, "必须有一份确认态");
+  assert.match(item, /:open="confirmingResend"/, "确认框挂在这份态上，且复用现成的 ConfirmDialog");
+  const at = item.indexOf("async function confirmResend()");
+  assert.ok(at > 0, "必须有 confirmResend —— 确认与动手之间要有那一步");
+  const body = item.slice(at, item.indexOf("\n}", at));
+  assert.match(body, /chat\.markResending\(props\.message\.msg_id\)/, "确认后才登记「重发中」⇒ 任务中心那一行靠它");
+  assert.match(body, /await retrySend\(\)/, "登记之后才走真正的重发");
+  assert.ok(!/\n\s*@retry="retrySend"/.test(item), "@retry 不许再有任何一处直连 retrySend");
+});
+
+test("★ 发送中的取消键：通道判据只有 utils/cancelSend 那一份，且按钮是 role=img 的兄弟节点", () => {
+  // 用户：「发送中的话，它也是可以取消的」。此前取消口只藏在右键/长按菜单里。
+  const receipt = read("components/message/MessageReceipt.vue");
+  assert.match(receipt, /v-if="state === 'sending' && canCancelSend"/, "发送中且算得出取消通道才给键");
+  assert.ok(receipt.includes('(e: "cancel"): void'), "组件要能把取消动作发给父层");
+  const item = read("components/MessageItem.vue");
+  // 按**元素**切块断言，不整文件 includes：`:can-cancel-send` 在同一个文件的右键/长按菜单元素上
+  // 也有（那是另一个入口），整文件判据在"回执这一格被删掉"时仍然绿 —— 而用户看到的正是发送中拦不下来。
+  const at = item.indexOf("<MessageReceipt");
+  assert.ok(at > 0, "没找到 <MessageReceipt 的挂载点");
+  const end = item.indexOf("/>", at);
+  assert.ok(end > at, "回执挂载块没找到结尾（切片会退化成整份文件）");
+  const mount = item.slice(at, end);
+  assert.match(
+    mount,
+    /:can-cancel-send="canCancelSend"/,
+    "取消通道由 MessageItem 用同一份 cancelSendChannelFor 算，不许在回执里再推一遍",
+  );
+  assert.match(mount, /@cancel="doCancelSend"/, "点击走的就是菜单里那个同一个 doCancelSend");
+});

@@ -208,6 +208,13 @@ create_new_message()
 - 群：`resend_group_delivery` 只把台账里的 `cancelled` 行重置为 pending（`msg_id` 不变），
   已 delivered/failed 的成员不动；`no_ledger`（升级前发出的历史消息）才退回整条重发。
 
+界面上那一下**先过二次确认**（2026-10-26，负责人："点了之后要有二次确认，确认后要在后台任务里看到这条重新发送"）：
+确认之后才 `markResending(msg_id)` 并让任务中心那一行说"重发中"，点「取消」则一条命令都不发；
+`sending` 那一格的回执上另有一颗取消键，走的是右键/长按菜单里那个**同一个** `doCancelSend`。
+这一格不改上面任何一条规则（还是同 id 重投），只是把"点了没反应"的观感换成"确认了才动手、动手了看得见"。
+判据：`src/utils/retrySend.test.ts` 两条（按 `<MessageReceipt …/>` 元素切块，不是整文件 includes）+
+CDP `--only=resend`、`--only=delivery` 的真渲染读数。
+
 两条用真事故换来的规则仍然必须连实现一起保留：
 
 1. **先密封再入队**：`messages` 存的是**明文**，直接把库内 content 上线就没有 `enc1:` 前缀 ⇒

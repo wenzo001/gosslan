@@ -680,7 +680,7 @@ iMessage 升级指令给的初始基线是「水平约 12px、垂直约 7–8px�
 ❌ 不要给装饰性头像写人名 —— 读屏会把同一个名字念两遍（一次来自行标签、一次来自 alt）。
 
 **默认头像长什么样（#32，2026-09-27）**：没上传头像时不再是「按昵称截字」，而是
-**emoji 小动物 × 逐对挑过的背景色**（`src/utils/avatarSeed.ts`，组合表 108 对，条数由判据现算）。
+**emoji 小动物 × 逐对挑过的背景色**（`src/utils/avatarSeed.ts`；表情清单与组合表条数一律现算 —— `AVATAR_PAIRS.length === AVATAR_EMOJIS.length × 3`，本文不抄数字。复跑：`node --experimental-strip-types -e "import('./src/utils/avatarSeed.ts').then((m) => console.log(m.AVATAR_EMOJIS.length, m.AVATAR_PAIRS.length))"`。2026-10-26 按负责人要求把适合做头像的小动物补齐，清单里含蛇）。
 种子是**设备 id / 群 id**，不是昵称 —— 两条理由都不会自己守住：昵称可改（改一次换一张脸）、
 昵称也能撞（两个人同名就同脸）。现算的额外好处是**不新增跨设备同步字段**：
 任何一端拿到同一个 id 就复算出同一张脸，换设备、重装、清缓存都不变。
