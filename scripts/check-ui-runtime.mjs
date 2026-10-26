@@ -12208,16 +12208,32 @@ async function runOpsCenter(cdp, url) {
       ]) {
         await cdp.eval(`window.__probe.stubApi(${JSON.stringify(name)}, ${JSON.stringify(payload)})`);
       }
-      await sleep(250);
-      const loc = await cdp.eval(`(async () => {
+      // ★ 定点等，不死睡：等到那颗按钮真的画出盒子（getClientRects 非空）为止，预算 2 秒。
+      // 起因是实测两红两绿（2026-10-26）：原来这里是固定 sleep(250) 后一次读几何，机器被别的
+      // 事压住时 Reka 的 DialogContent 那一帧还没布局好 ⇒ 形状 A 偶发报「找不到去会话按钮」。
+      // 变量是负载，不是段相邻（同一对段单独跑也全绿过；openBefore 一直是 true ⇒ 面板本来就开着，
+      // 缺的是那一帧布局）。等待型判据要等"写值的那一方"，这里写值的是布局本身 ⇒ 按条件轮询，
+      // 并把实际等了多久带进负载：等满预算还找不到 = 真有缺陷。
+      const findJumpButton = `(async () => {
+        const A = await import('/src/stores/useAppStore.ts');
+        const openBefore = A.useAppStore().taskCenterOpen;
         const I = await import('/src/i18n/index.ts');
         const want = I.t('task.openChat');
         const b = Array.from(document.querySelectorAll('[role="dialog"] button'))
           .find((x) => (x.textContent || '').trim() === want && x.getClientRects().length > 0);
-        if (!b) return { found: false, want };
+        if (!b) return { found: false, want, openBefore };
         const r = b.getBoundingClientRect();
-        return { found: true, x: Math.round(r.left + r.width / 2), y: Math.round(r.top + r.height / 2) };
-      })()`);
+        return { found: true, openBefore, x: Math.round(r.left + r.width / 2), y: Math.round(r.top + r.height / 2) };
+      })()`;
+      const tFind = Date.now();
+      let loc = null;
+      for (;;) {
+        loc = await cdp.eval(findJumpButton);
+        if (loc && loc.found) break;
+        if (Date.now() - tFind >= 2000) break;
+        await sleep(50);
+      }
+      if (loc) loc.waitedMs = Date.now() - tFind;
       if (!loc || !loc.found) return { ok: false, why: "button", loc, seeded };
       await cdp.click(loc.x, loc.y);
       await sleep(1500);
@@ -12234,7 +12250,7 @@ async function runOpsCenter(cdp, url) {
       })()`);
       // 与 TaskCenter.vue 那一格同一份条件（"我看不见"被当成"它不存在"就是从这里出去的）。
       const failCondition = after.active !== jumpCid || (!after.rowVisible && !after.groupVisible);
-      return { ok: true, seeded, after, failCondition };
+      return { ok: true, seeded, after, failCondition, waitedMs: loc.waitedMs };
     };
     // ⚠️ 这三格只判**store 那一半**（到达 + 不报"不存在"）。"屏幕换没换"的另一半权威是路由
     //   （`navState = navOfRoute()`），但探针**判不了它**：给挂载的组件挂上应用那份 mainRouter

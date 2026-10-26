@@ -13,6 +13,41 @@
 
 ## [Unreleased]
 
+## [5.14.4] - 2026-10-26
+
+### 「去会话」还是没换屏：关弹窗排在导航之前，被弹窗那层返回键原路退回（2026-10-26）
+
+- **负责人把目标说全了**：站在哪一屏都不重要（收藏 / 通讯录 / 其他），点「去会话」之后要
+  ①切到「消息」②进那个会话的聊天窗 ③定位到那条消息。三段逐个对源码核过：
+  ① `navOfRoute()` 把 `conversation` 归到 `chats`（ResponsiveLayout:74-88）—— 5.14.3 补的就是这一半；
+  ② `openConversation` 写 `activeConv` + 落路由 —— 也在；
+  ③ `locateInLoaded` 标消息，`ChatWindow` 那个 `locateRequest` 的 watcher 带 `immediate: true`
+  （ChatWindow.vue:1200-1209）⇒ 挂载先后不构成漏接。三半都在，屏幕还是不动 —— 缺的是**第四件事**。
+- **根因**：`app.closeTaskCenter()` 排在 `router.push` **之前**。`BaseModal` 的 `backLayer` 默认
+  `true`（BaseModal.vue:42），弹窗打开时 `useBackLayer` 压了一条**同 URL** 的历史条目；关弹窗让
+  那一层释放，释放里调 `history.back()`。而 Vue 的 watcher 跑在微任务里、**早于** vue-router 写历史
+  条目 ⇒ 那次 back 排在推送之后执行，把刚推进去的会话页原路退了回来。症状与 2026-10-23 那格
+  「加好友页点发起聊天没反应、人还停在通讯录」**逐字相同**，这条教训早就写在 `useBackLayer.ts:34-37`
+  顶部；5.14.3 补了路由那一半，却把这份顺序留在了错的一边。
+- **修法**：按同族已验证的那一份改 —— `await router.push(...)`，`finally` 里再关弹窗
+  （`ResponsiveLayout.openChatFromFriend` 就是这么修的）。URL 变了之后 `browserPort.back()`
+  自己只摘登记、不退历史；`finally` 保证导航真被守卫挡掉时弹窗也关得上。
+  同族第二个入口一起收：`GroupCreateModal` 建群成功后也是先 `emit("close")` 后落路由，同一形状。
+- **判据**：`taskCenterJump.test.ts` 加第 5 条 —— 跳转必须 `await`、关弹窗必须排在导航之后、
+  必须落在 `finally` 里，并把前提（`BaseModal` 默认 `backLayer: true`）**现读**而不是手抄：
+  默认值哪天被改掉，这条顺序判据就失去意义，要回来重判。**四发变异各自红且由自己那句点名**：
+  TaskCenter 的 `await`→`void`、把 `app.closeTaskCenter()` 挪回导航前、GroupCreateModal 的
+  `await`→`void`、把前提那个默认值翻成 `false`；还原逐字节一致。`npm test` **1427/1427**。
+- ⚠️ **记一条我自己写错的因果句，免得下一个人顺着它再猜一次**：改探针时 opscenter 形状 A 偶发报
+  「找不到去会话按钮」（两红两绿），我先给出的解释是"上一段夹具卸载时 `useBackLayer` 排的那次
+  `history.back()` 落到本段、把刚打开的面板关掉了"，并据此加了一发"重新按下面板"的屏障。
+  **这个说法被自己的读数否证**：让量具自述之后 `openBefore` 恒为 `true` ⇒ 面板一直是开的，
+  缺的是那一帧布局；变量是机器负载，不是段相邻（同一对段单独跑也全绿过三次）。屏障已撤，
+  改成**按条件轮询**（等到那颗按钮真画出盒子，预算 2 秒）并把 `waitedMs` 带进负载：
+  等满预算还找不到 = 真有缺陷，一眼分得开。
+- **残余**：仍欠负责人眼睛确认那一格 —— 站在收藏/通讯录点「去会话」现在换不换屏。判据钉的是
+  顺序与两半接线，屏幕那一半只有真机能看（探针挂不了第二份 router，理由记在上一条与 5.14.3）。
+
 ## [5.14.3] - 2026-10-26
 
 ### 「去会话」不报错但屏幕没换：跳转的权威是路由，不是 store（2026-10-26）

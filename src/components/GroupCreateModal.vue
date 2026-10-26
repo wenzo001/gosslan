@@ -58,11 +58,17 @@ async function create() {
     try {
       const g = await chat.createGroup(parsed.data, selected.value);
       app.toast(t("group.toast.created", { name: g.name }), "success");
-      emit("close");
       // 「打开会话」的入口一律是两步：store + 路由（`navState` 由路由现算，只写 store 的话
       // 站在收藏/联系人那一屏就看不见换屏）。与 TaskCenter / ConversationList 同一口径。
       chat.openConversation(`group:${g.id}`);
-      void router.push({ name: "conversation", params: { convId: `group:${g.id}` } });
+      try {
+        // ⚠️ 关弹窗必须排在导航落地之后：`BaseModal` 默认那层返回键在释放时会 `history.back()`，
+        //   而 Vue 的 watcher 早于 vue-router 写历史条目 ⇒ 先关会把刚进来的群聊页原路退回
+        //   （负责人 2026-10-26 在任务中心实报的那格，同一族；修见 `TaskCenter.openConversation`）。
+        await router.push({ name: "conversation", params: { convId: `group:${g.id}` } });
+      } finally {
+        emit("close");
+      }
     } catch (e) {
       app.toastError(e, t("group.toast.createFail"));
     }

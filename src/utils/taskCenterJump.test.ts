@@ -2,6 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
+import { escapeRe } from "./escapeRe.ts";
 
 /**
  * 任务中心「去会话」的接线判据。
@@ -22,6 +23,15 @@ import { join } from "node:path";
  */
 const root = join(import.meta.dirname, "..", "..");
 const jump = readFileSync(join(root, "src/components/TaskCenter.vue"), "utf8");
+const groupCreate = readFileSync(join(root, "src/components/GroupCreateModal.vue"), "utf8");
+
+/** 只取 `<script>` 那一段并去掉整行注释：模板里的 `@close="…"` 与判据自己的注释都不该被算进来。 */
+function scriptOnly(src: string): string {
+  const end = src.indexOf("</script>");
+  return src.slice(0, end < 0 ? src.length : end).replace(/^[ \t]*\/\/.*$/gm, "");
+}
+const jumpScript = scriptOnly(jump);
+const groupScript = scriptOnly(groupCreate);
 
 test("任务中心「去会话」必须两步齐全：打开会话 + 把路由落到那个会话", () => {
   assert.match(jump, /const router = useRouter\(\);/, "组件必须拿到 router（跳转的权威在路由不在 store）");
@@ -58,6 +68,45 @@ test("判「不存在」之前必须先向真源补读（快照没到 ≠ 群不
     /noteJumpFailure\("active-mismatch"/.test(src) && /noteJumpFailure\("not-in-source"/.test(src),
     "两种失败必须分开留痕（没到达 = error；真源里没有 = info），否则下一次报告还是只能靠猜",
   );
+});
+
+/**
+ * 「先关弹窗、再跳路由」会把刚推进的会话页原路退回 —— 这一格不是推测，是这个仓库
+ * 2026-10-23 已经实地踩过一次的那条（`useBackLayer.ts` 顶部注释把教训写死了）：
+ *
+ *   `BaseModal` 的 `backLayer` 默认 true ⇒ 弹窗一打开就压了一条**同 URL** 的历史条目；
+ *   `app.closeTaskCenter()` / `emit("close")` 让 `useBackLayer` 的 watcher 释放那一层，
+ *   释放里会调 `history.back()`。而 Vue 的 watcher 跑在微任务里，**早于** vue-router 写历史条目，
+ *   于是 back() 排在推送之后执行 ⇒ 人退回原来那一屏（收藏/通讯录）。
+ *   症状正是负责人的第二份报告：「不报错了，但屏幕没换」—— store 与路由两半都做了，
+ *   跳转却被打回。
+ *
+ * 修法是同族已验证的那一份（`ResponsiveLayout.openChatFromFriend`）：**await 导航落历史，
+ * `finally` 里再关弹窗**。URL 变了之后 `browserPort.back()` 自己就只摘登记、不退历史。
+ */
+test("★ 跳转必须等路由落历史之后再关弹窗（否则弹窗那层返回键会把跳转撤销）", () => {
+  // 前提现读不手抄：默认值一旦被改掉，下面这条顺序判据就失去意义，要回来重判。
+  const base = readFileSync(join(root, "src/components/BaseModal.vue"), "utf8");
+  assert.match(base, /backLayer: true/, "前提：BaseModal 的返回层默认开启（弹窗会压一条同 URL 历史条目）");
+
+  const cases = [
+    { name: "TaskCenter", src: jumpScript, close: "app.closeTaskCenter();", push: 'await router.push({ name: "conversation", params: { convId: cid } })' },
+    { name: "GroupCreateModal", src: groupScript, close: 'emit("close");', push: 'await router.push({ name: "conversation", params: { convId: `group:${g.id}` } })' },
+  ];
+  for (const c of cases) {
+    const at = c.src.indexOf(c.push);
+    const close = c.src.indexOf(c.close);
+    assert.ok(at > 0, `${c.name}: 跳转必须 await（不 await 就不知道历史条目何时落定）`);
+    assert.ok(
+      close > at,
+      `${c.name}: 关弹窗(${c.close})必须排在路由落地之后 —— 先关会让 useBackLayer 的 history.back() 撤销这次跳转`,
+    );
+    assert.match(
+      c.src,
+      new RegExp(`finally\\s*\\{[^}]*${escapeRe(c.close)}`),
+      `${c.name}: 关弹窗要放在 try/finally 里 —— 导航被守卫挡掉时弹窗也得关得上`,
+    );
+  }
 });
 
 /**

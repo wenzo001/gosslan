@@ -282,7 +282,6 @@ async function openConversation(row: OperationRow) {
       return;
     }
   }
-  app.closeTaskCenter();
   // ★ 跳转的**权威是路由，不是 store**：`ChatWindow` 读 `chat.activeConv`，但"哪一屏可见"由
   //   `navState = navOfRoute()` 现算（ResponsiveLayout）。只写 activeConv 的后果是负责人实报的那格：
   //   「去会话不报错，但没跳到对应会话；手动进去之后那条消息倒是高亮的」—— store 那一半做了
@@ -292,7 +291,18 @@ async function openConversation(row: OperationRow) {
   //   移动端也不再手写 `app.mobileView`：那个值是这条路由的派生（`route.meta.pane`），手写会被
   //   路由的 watcher 覆盖，留一份权威就够了。
   const opening = chat.openConversation(cid);
-  void router.push({ name: "conversation", params: { convId: cid } });
+  try {
+    // ★ 顺序在这里还有一层，与上面两半无关：`BaseModal` 默认注册返回层（`backLayer: true`），
+    //   弹窗打开时压了一条**同 URL** 的历史条目，关它时 `useBackLayer` 会 `history.back()`。
+    //   Vue 的 watcher 跑在微任务里、早于 vue-router 写历史条目 ⇒ "先关弹窗再跳转"时那次 back()
+    //   排在推送之后执行，把人退回原来那一屏 —— 负责人 2026-10-26 实报的「不报错了但屏幕没换」
+    //   就是这一发（同族先例与修法：`ResponsiveLayout.openChatFromFriend`、`useBackLayer.ts` 顶部）。
+    //   等导航落定再关：URL 已变，那次 back 自己只摘登记、不退历史。
+    await router.push({ name: "conversation", params: { convId: cid } });
+  } finally {
+    // 导航被守卫挡掉也要关，否则任务中心永远挂在那一屏上。
+    app.closeTaskCenter();
+  }
   // 打开本身有超时：IPC 不能被真正 abort，但 UI 必须有终态，不能无限转圈。
   const opened = await withTimeout(opening, 5000);
   if (seq !== openSeq) return;
