@@ -2598,9 +2598,11 @@ impl AppState {
     /// 的读数：WebView 窗口数/隐藏数、在线节点、连接数、sending 消息数、三张 outbox 行数。
     /// 只记数字与 label，不记消息正文、文件名、密钥或地址。
     ///
-    /// ⚠️ 刻意不在这一行里读 RSS：跨平台读进程内存需要新增平台依赖/外部命令，
-    /// 而 `ps`/`tasklist` 本身会干扰被测进程。内存趋势仍由 E2E 内存量具按 pid 采样；
-    /// 这条负责回答"是不是窗口/队列结构在无界增长"。
+    /// 内存那一格（`mem_diag.rs`）从 2026-10-26 起**在同一行里**：工作集/私有提交量/
+    /// 系统还能提交多少/GDI·USER 句柄/正在读的帧字节聚合。以前这里写的是"刻意不读 RSS"，
+    /// 理由是要新增依赖或 fork 命令 —— 那条理由站不住（两个 crate 都在 Cargo.lock 里），
+    /// 而它的后果是两次崩溃都指认不出吃内存的是谁。结构无界增长与内存无界增长是同一个问题的
+    /// 两面，现在一行里同时能看。
     pub fn spawn_runtime_diag_reporter(
         state: &Arc<AppState>,
     ) -> tauri::async_runtime::JoinHandle<()> {
@@ -2642,13 +2644,22 @@ impl AppState {
                     counts.group_outbox,
                     counts.file_outbox,
                 );
+                // ★ 这一格里**有**内存读数了（2026-10-26）：原来这里明写"刻意不读 RSS"，
+                //   理由是"要新增平台依赖/外部命令" —— 现算不成立（`windows-sys`、`libc`
+                //   早在 Cargo.lock 里），而代价是两次死法都指认不出谁吃的内存
+                //   （10-21 分配钩子只差 318 KB；10-26 主线程与渲染层同一秒双双停滞）。
+                //   采样只在这 5 分钟一格，热路径一律不采；读数拿不到就写 `-`，不折 0。
+                let mem = crate::mem_diag::sample();
+                crate::mem_diag::remember(&mem);
                 st.logger.info(
                     "runtime",
                     format!(
                         "code=RUNTIME_SNAPSHOT windows={} hidden={hidden} labels=[{labels}] \
                          peers={peer_count} links={link_count} sending_msgs={sending} \
-                         outbox={outbox} group_outbox={group_outbox} file_outbox={file_outbox}",
-                        windows.len()
+                         outbox={outbox} group_outbox={group_outbox} file_outbox={file_outbox} \
+                         {}",
+                        windows.len(),
+                        mem.line()
                     ),
                 );
             }

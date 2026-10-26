@@ -149,7 +149,11 @@ fn note_hang(scope: &str, ms: i64, op: Option<&str>, notes: &mut u32) {
         .take(80)
         .collect();
     crate::logging::crash_note(&format!(
-        ">>> code=HANG scope={scope} seconds={seconds} last_op={op}"
+        ">>> code=HANG scope={scope} seconds={seconds} last_op={op} {}",
+        // 冻住的那一刻我们占了多少内存 / 正在读多少帧字节 —— 没有这一格，
+        // "主线程 + 渲染层同一秒双双停滞"只能猜，有了它才分得开"代码死循环"与"提交内存耗尽"。
+        // 按 key 取字段的老解析（`logging.rs::field_str`）不受追加影响。
+        crate::mem_diag::sample().line()
     ));
 }
 
