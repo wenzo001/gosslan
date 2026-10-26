@@ -60,7 +60,7 @@
 | 前端测试用例 | **606** | `node --test --test-reporter=tap` 的 `^ok` 计数 |
 | Rust 用例基线 macOS | **690** | `src-tauri/test-baseline.macos.txt` 行数 |
 | Rust 用例基线 Windows | **679** | 同上 windows（2026-09-26 由 `--sync-baselines` 按源码门控推出；差额 14 条全部有名有据） |
-| 护栏非空转用例 | **193** | `verify-guards.py` 里顶格 `^    Case(` 的计数，**由 `check-doc-numbers.mjs` 判据 E 现算对账**（契约图那张统计卡就是被它抓出来的：加了一条用例而图上仍写 189）。**本行不再点名最新用例**（名单型声明没有守卫，加一条就漂一格）—— 逐条的动机写在 `CHANGELOG.md` 的 `[Unreleased]` 里—— 那条断言在 `channelState.test.ts` 里早就有，**但从没进过非空转用例集**，所以它当时只是一条没被证明会红的锁 |
+| 护栏非空转用例 | **266** | 现算口径：`python3 scripts/verify-guards.py --print-lanes` 的 `all=`（判据 E 用 `grep -h '^    Case(' ` 数分册）。⚠️ 判据 E 只对账契约图那一格，**本行没有机器守卫** ⇒ 它从 193 一路漂到真值 266 而门禁全绿（2026-10-26 现读）。本行不点名最新用例（名单型声明没有守卫），逐条动机在 `CHANGELOG.md` 的 `[Unreleased]` |
 | 登记不变量 | **26** | `protocol-invariants.md` 的 `^### INV-P` |
 | 其中**有具名钩子绑定** | **26 条全部具名**（P18 于同日补上 `check-key-boundary.mjs`） | 由 `scripts/check-invariant-hooks.mjs` 逐条现算并绑定（条数由该步打印） |
 | 门禁层 | 步数一律由 `verify.mjs --list` 现算（`check-doc-numbers.mjs` 对账），本行不抄数字；CI 3 job | `scripts/verify.mjs` 步骤表 |

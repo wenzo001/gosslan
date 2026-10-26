@@ -13,11 +13,11 @@
 
 <!-- L2/L3 必须填；L1 填 N/A -->
 <!-- 列出你做过/要做的验证步骤。至少一条；依赖真机/第二台设备的写清楚。 -->
-- [ ] `npm run verify` 本地全绿（13 步）
+- [ ] `npm run verify` 本地全绿（步数由 `node scripts/verify.mjs --list` 现读，本文件不抄）
 - [ ] `cd src-tauri && cargo test --features bluetooth`
 - [ ] `npm test`
 - [ ] （真机/第二台设备）
-- [ ] （verify-guards 非空转：python3 scripts/verify-guards.py）
+- [ ] （护栏非空转：日常由 CI 的 guards-cargo/guards-web 两条腿按通道全覆盖；本地要自己跑全量是 `python3 scripts/verify-guards.py`，属 60 分钟以上那一档，需本人点名）
 
 ## [impact] — 安全/数据/协议影响
 
@@ -35,10 +35,10 @@
 
 | 检查 | 命令 | 结果 |
 |---|---|---|
-| 前端 457 测试 | `npm test` | ✅ / ❌ / ⏭（理由） |
-| Rust 单测 489 | `cargo test --features bluetooth` | ✅ / ❌ / ⏭ |
+| 前端测试（条数由 `npm test` 自己打印） | `npm test` | ✅ / ❌ / ⏭（理由） |
+| Rust 单测（条数由 `cargo test` 自己打印） | `cargo test --features bluetooth` | ✅ / ❌ / ⏭ |
 | verify.mjs 全量 | `npm run verify` | ✅ / ❌ / ⏭ |
-| 非空转护栏 | `python3 scripts/verify-guards.py` | ✅ / ❌ / ⏭ |
+| 非空转护栏（全量 60 分钟以上，需本人点名） | `python3 scripts/verify-guards.py`；按通道 `--lane cargo\|node\|script`、分片 `--shard i/3` | ✅ / ❌ / ⏭ |
 
 ## 涉及的领域（从 domains.data.mjs 选）
 

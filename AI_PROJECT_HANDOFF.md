@@ -106,8 +106,9 @@ test-results/           跑测产物（gitignore）；.workbuddy/ 是任务档�
 npm run dev                      # 开发（Tauri）
 npm run build                    # 前端静态检查 + 构建（vue-tsc + vite）
 npm test                         # 前端全量单测（node --test，零额外依赖）
-npm run verify:local             # ★ 本地门禁 22 步（默认跳过最长的护栏全量）
-npm run verify:full              # 完整门禁（含护栏全量；CI 的 guards job 也跑它）
+npm run verify:local             # ★ 本地日常重门禁（跳过最长那一步「护栏非空转」；步数由 --list 现读）
+npm run verify:full              # 完整重门禁：cargo 三件套 + 护栏扫描（**只前端子集**）+ Android
+npm run verify:full -- --full    # 再加全量护栏（含 cargo 用例，每条整库重编译 ⇒ 60 分钟以上）
 npm run test:e2e:group           # 群聊 E2E（双实例停机预置，37 断言）
 npm run test:e2e:multi-instance  # 双实例 J1/J2/重启
 npm run test:ui-runtime          # UI 运行时探针（本机跑法见下）
@@ -126,8 +127,8 @@ GOSSLAN_CHROME="/Applications/Brave Browser.app/Contents/MacOS/Brave Browser" \
 | 层 | 命令 | 覆盖 |
 |---|---|---|
 | 快速 | `npm test` + `cargo test --features bluetooth` | 单元/契约/护栏注入锚点 |
-| 本地全量 | `CODEBUDDY_SAFE_DELETE_ENABLED=0 npm run verify:local` | 22 步：清单/文档/守卫/构建/测试/Android |
-| 护栏非空转 | `python3 scripts/verify-guards.py`（可 `--only frontend`） | 每条判据"改坏必须红"（239 条，耗时长） |
+| 本地全量 | `CODEBUDDY_SAFE_DELETE_ENABLED=0 npm run verify:local` | 清单/文档/守卫/构建/测试/Android（步数以 `node scripts/verify.mjs --list` 为准；跳过护栏扫描） |
+| 护栏非空转 | `python3 scripts/verify-guards.py`（`--lane cargo\|node\|script`、`--shard i/3`、`--only X`） | 每条判据"改坏必须红 + 红由它自己声明的 hint 报出 + 恢复后逐字节一致"；条数与耗时由它自己打印（`GUARD_LANES` / `GUARD_TIMING`），CI 全覆盖由 `scripts/check-ci-guard-coverage.mjs` 对账 |
 | UI 运行时 | `npm run test:ui-runtime` | 真实浏览器探针，**格数以命令输出为准**（2026-10-24 复跑 524/529，5 条红为既有/环境项，见 `docs/notes/audit-fix-report-2026-10-24.md` §5.3） |
 | 行为 | `npm run test:e2e:*` | 双/三实例真实进程链路 |
 

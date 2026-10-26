@@ -18,7 +18,7 @@
 
 from __future__ import annotations
 
-from .base import ROOT, TAURI, Case, cargo, npm
+from .base import ROOT, TAURI, Case, cargo, node_test, npm
 
 CASES: list[Case] = [
     # ---------------- Rust：主线程阻塞 ----------------
@@ -447,7 +447,7 @@ pub fn guard_case_fixture_db(
         "这类退化不报错、不影响功能，只会让所有 release 包悄悄变慢",
         file=ROOT / "vite.config.ts",
         injections=[("minify: isDebugBuild ? false : \"esbuild\"", "minify: !process.env.TAURI_ENV_DEBUG ? \"esbuild\" : false")],
-        cmd=npm("test"),
+        cmd=node_test("src/utils/buildConfig.test.ts"),
         cwd=ROOT,
         expect_fail_hint="TAURI_ENV_DEBUG",
         tags=["frontend", "build"],

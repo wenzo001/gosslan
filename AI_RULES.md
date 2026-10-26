@@ -1423,22 +1423,29 @@ Use engineering judgment.
 
 ```text
 npm run verify          快速层：不碰 cargo（结构门禁 + 前端断言 + vue-tsc 类型检查），秒级
-npm run verify:local    **本地日常重门禁**：只跳过「护栏非空转」，其余照跑（2026-10-18 实测 64.0s）
-npm run verify:full     完整重门禁：加 cargo fmt/clippy/test、Rust 清单、护栏非空转扫描、Android 交叉编译
+npm run verify:local    **本地日常重门禁**：只跳过「护栏非空转」，其余照跑（2026-10-26 实测 149.1s）
+npm run verify:full     重门禁：cargo fmt/clippy/test + Rust 清单 + **护栏非空转（前端子集）** + Android
 npm run lint            静态检查：ruff（Python）+ shellcheck + markdownlint（CI 的 lint job 每次 push 跑）
 ```
 
-`verify:local` 只省掉最长的一步（「护栏非空转」2026-10-18 实测 843.1s，占 23 步总耗时 922.2s
-的 91%）。它**不是护栏通过的证据**：起跑与汇总都会点名跳过项；CI 与 `--group release`
-拒绝 `--skip-guard-sweep`。本地日常其余 22 步全绿即可继续；完整链留到发版/推送前或交给 CI。
+⚠️ **`verify:full` 那一步护栏扫描只覆盖 `frontend` 标签的子集，cargo 护栏一条都不跑。**
+全量要 `npm run verify:full -- --full`（或直接 `python3 scripts/verify-guards.py`）——
+现在按现读口径改口：子集那一步 2026-10-26 两次实测 **152.2s / 171.7s**（整条 `verify:full` 25 步 **288.8s / 383.1s**）；
+node 通道 89 条合计 133.7s、script 通道 34 条合计 32.6s；全量再多 143 条 cargo 用例，**每条要一次整库重编译（实测单条 25~30s，
+warm 只跑不编 0.7s）** ⇒ 60 分钟以上，属于"没人等它"那一档。
+
+`verify:local` 只省掉最长的一步。它**不是护栏通过的证据**：起跑与汇总都会点名跳过项，
+CI 上拒绝 `--skip-guard-sweep`。本地日常其余步全绿即可继续；完整链留到发版/推送前或交给 CI。
 
 **默认只跑快速层，但它不等于"编得过"。** 层结束时脚本会**逐条列出没跑哪些重门禁**——
 别把本地的绿当成全绿，也别把这一行的省略当成"检查变松了"：
 
 ```text
 只改了文档 / 注释 / 前端文案样式   → npm run verify 足够，push 交给 CI 跑三条腿
-改过 Rust 代码 / Cargo.* / 构建配置 → npm run verify:local（22 步）；完整链留给发版前/CI
-发版、打 tag、给用户出安装包        → npm run verify:full（必要时再加 -- --full）
+改过 Rust 代码 / Cargo.* / 构建配置 → npm run verify:local；完整链留给发版前/CI
+发版、打 tag、给用户出安装包        → npm run verify:full；护栏全量按通道由 CI 的 guards-* 两条腿
+                                    #   全覆盖（覆盖关系由 scripts/check-ci-guard-coverage.mjs 对账）；
+                                    #   本地自己跑全量 = `npm run verify:full -- --full`（60 分钟以上）
 ```
 
 **为什么这样拆（实测）**：一次全量 verify = 412s，其中只有 **5.1s** 真在执行测试
@@ -1455,15 +1462,20 @@ npm run lint            静态检查：ruff（Python）+ shellcheck + markdownli
 以下命令单次耗时 **15 分钟以上**，未经用户明确确认**不要跑**：
 
 ```text
-python3 scripts/verify-guards.py                 # 护栏非空转全量（CI 实测 1h36m）
-npm run verify:full -- --full                    # 本地等价物（实测 843–1262s）
-npm run verify:full                              # 含 cargo fmt/clippy/test + 护栏扫描
-npm run verify:release                           # release 组强制跑全量护栏
+python3 scripts/verify-guards.py                 # 护栏非空转**全量**（2026-10-26 本地按通道投影 ~65 分钟；
+                                                 #   同日 CI 整腿读数 2h39m 是拆片前的形状）
+python3 scripts/verify-guards.py --lane cargo    # 只 cargo 通道也要 60 分钟量级（每条一次整库重编译）
+npm run verify:full -- --full                    # 本地全量护栏（同上那一档）
+npm run verify:e2e / verify:release              # 真进程 E2E 层，几十分钟量级
 ```
 
-日常用 `npm run verify`（秒级）与 `npm run verify:local`（实测 64.0s，只跳过护栏非空转）。
-CI 侧已同步：`.github/workflows/verify.yml` 的 `guards` job 改为**只在定时与手动触发**时跑，
-push / PR 不再自动付这 1.5 小时。需要跑全量护栏时，先问用户，或用 workflow_dispatch 手动拉。
+不在这一档、可以放心跑的：`npm run verify`（秒级）、`npm run verify:local`（实测 149.1s）、
+`npm run verify:full`（重门禁，护栏只子集）、`python3 scripts/verify-guards.py --lane node,script`
+（实测 3 分钟量级）、`--only <名片段>`（秒级自证）。
+CI 侧：`.github/workflows/verify.yml` 的全量护栏拆成 `guards-cargo`（`--lane cargo --shard 0/1/2`）
+与 `guards-web`（`--lane node,script`）两条腿，**只在定时与手动触发时跑** ⇒ push / PR 不再自动付它，
+而"并集 = 全部通道、分片凑满"由 `scripts/check-ci-guard-coverage.mjs` 现算对账（不只写在注释里）。
+需要跑全量护栏时，先问用户，或用 workflow_dispatch 手动拉。
 
 ## 37.2 完成判据
 

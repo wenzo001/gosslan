@@ -18,7 +18,7 @@
 
 from __future__ import annotations
 
-from .base import ROOT, TAURI, Case, cargo, npm
+from .base import ROOT, TAURI, Case, cargo, node_test, npm
 
 CASES: list[Case] = [
     Case(
@@ -83,7 +83,7 @@ CASES: list[Case] = [
             "    channels.value = prev.channels.map((c) => (c.channel === channel ? { ...c, enabled } : c));\n",
             "",
         )],
-        cmd=npm("test"),
+        cmd=node_test("src/utils/channelState.test.ts", "src/utils/todos.test.ts"),
         cwd=ROOT,
         expect_fail_hint="乐观更新",
         tags=["frontend", "channel"],
@@ -99,7 +99,7 @@ CASES: list[Case] = [
             "emit_filter(EVENT_SETTINGS_CHANGED, patch, move |target| {",
             "emit(EVENT_SETTINGS_CHANGED, patch); #[allow(unreachable_code)] let _ = move |target: &tauri::EventTarget| {",
         )],
-        cmd=npm("test"),
+        cmd=node_test("src/api/events.test.ts"),
         cwd=ROOT,
         expect_fail_hint="emit_filter",
         tags=["frontend", "ipc"],
@@ -115,7 +115,7 @@ CASES: list[Case] = [
             "// （注入用例：把 origin 写成 None）\n"
             "    state.notify_settings_changed(&changed, None, patch);",
         )],
-        cmd=npm("test"),
+        cmd=node_test("src/api/events.test.ts"),
         cwd=ROOT,
         expect_fail_hint="没传 origin",
         tags=["frontend", "ipc"],
@@ -126,7 +126,7 @@ CASES: list[Case] = [
         "清除只发生在设置窗口自己的 store 里，主窗口是另一个 WebView",
         file=TAURI / "src" / "commands.rs",
         injections=[("    s.notify_data_cleared(Some(window.label()));\n", "")],
-        cmd=npm("test"),
+        cmd=node_test("src/api/events.test.ts"),
         cwd=ROOT,
         expect_fail_hint="data-cleared",
         tags=["frontend", "ipc"],
@@ -144,7 +144,7 @@ CASES: list[Case] = [
             "!document.hidden && app.chatVisible;",
             "!document.hidden;",
         )],
-        cmd=npm("test"),
+        cmd=node_test("src/utils/channelState.test.ts"),
         cwd=ROOT,
         expect_fail_hint="聊天视图可见",
         tags=["frontend", "mobile"],
@@ -161,7 +161,7 @@ CASES: list[Case] = [
             '  if (info.link === "bluetooth") return "peer.link.bluetooth";',
             '  if (!info.ip || true) return "peer.link.bluetooth";',
         )],
-        cmd=npm("test"),
+        cmd=node_test("src/utils/peerConnectionInfo.test.ts"),
         cwd=ROOT,
         expect_fail_hint="连接图标名与文案同源",
         tags=["frontend", "friend"],
@@ -176,7 +176,7 @@ CASES: list[Case] = [
             "    let present = list.iter().any(|c| c.running);",
             "    let present = online;",
         )],
-        cmd=npm("test"),
+        cmd=node_test("src/api/events.test.ts"),
         cwd=ROOT,
         expect_fail_hint="任一通道在跑",
         tags=["frontend", "ipc"],
@@ -190,7 +190,7 @@ CASES: list[Case] = [
         file=TAURI / "src" / "state.rs",
         injections=[("emit_filter(EVENT_RUNTIME_CHANGED, snapshot, move |target| {",
                      "emit(EVENT_RUNTIME_CHANGED, snapshot); #[allow(unreachable_code)] let _ = move |target: &tauri::EventTarget| {")],
-        cmd=npm("test"),
+        cmd=node_test("src/api/events.test.ts"),
         cwd=ROOT,
         expect_fail_hint="emit_filter",
         tags=["frontend", "ipc"],
@@ -205,7 +205,7 @@ CASES: list[Case] = [
             '  getRuntimeSnapshot: () => invoke<RuntimeSnapshot>("get_runtime_snapshot"),\n'
             '  getChannelStatus: () => invoke<never[]>("get_channel_status"),',
         )],
-        cmd=npm("test"),
+        cmd=node_test("src/api/events.test.ts", "src/utils/channelState.test.ts"),
         cwd=ROOT,
         expect_fail_hint="半份命令",
         tags=["frontend", "ipc"],
@@ -220,7 +220,7 @@ CASES: list[Case] = [
             'listen<SettingsChanged>("settings-changed"',
             'listen<SettingsChanged>("settings-changed-typo"',
         )],
-        cmd=npm("test"),
+        cmd=node_test("src/api/events.test.ts", "src/utils/storeContract.test.ts"),
         cwd=ROOT,
         expect_fail_hint="settings-changed",
         tags=["frontend", "ipc"],
@@ -234,7 +234,7 @@ CASES: list[Case] = [
         # ⚠️ 注入的名字必须是**界面真的在用**的那个导出（当前是 `refreshRuntime`，
         #    用在 `NetworkSection.vue` / `AddFriendModal.vue`）。改成没人用的名字护栏会空转。
         injections=[("    refreshRuntime,\n", "    refreshRuntimeRenamed,\n")],
-        cmd=npm("test"),
+        cmd=node_test("src/utils/storeContract.test.ts"),
         cwd=ROOT,
         expect_fail_hint="refreshRuntime",
         tags=["frontend", "store"],
@@ -251,7 +251,7 @@ CASES: list[Case] = [
                 "const pendingRequests = computed(() =>\n    ((x: unknown) => x)(",
             )
         ],
-        cmd=npm("test"),
+        cmd=node_test("src/utils/friendRequests.test.ts"),
         cwd=ROOT,
         expect_fail_hint="按好友过滤",
         tags=["frontend", "friend"],
@@ -266,7 +266,7 @@ CASES: list[Case] = [
             '  if (info.link === "bluetooth") return false;',
             "  if (false) return false;",
         )],
-        cmd=npm("test"),
+        cmd=node_test("src/utils/peerConnectionInfo.test.ts"),
         cwd=ROOT,
         expect_fail_hint="蓝牙没有 IP 概念",
         tags=["frontend", "peer", "display"],
@@ -332,7 +332,7 @@ CASES: list[Case] = [
 """,
             "",
         )],
-        cmd=npm("test"),
+        cmd=node_test("src/utils/messages.test.ts"),
         cwd=ROOT,
         expect_fail_hint="id 名单不含我",
         tags=["frontend", "group", "stability", "new-guards", "mention-identity"],

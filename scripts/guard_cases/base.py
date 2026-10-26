@@ -77,3 +77,20 @@ def cargo(*args: str) -> list[str]:
 
 def npm(*args: str) -> list[str]:
     return ["npm", *args]
+
+
+def node_test(*files: str) -> list[str]:
+    """`npm("test")` 的窄版：只跑点名的那几个测试文件。
+
+    为什么要有它（2026-10-26 实测）：npm 通道 68 条用例原先每条都跑整套前端断言
+    （单条两遍 16.6s ⇒ 68 条吃掉约 19 分钟），而它们各自真正盯的断言只住在**一个**文件里。
+    收窄后单条约 0.5~4s。**不减少覆盖**：整套 `npm test` 仍是门禁的一步、也是扫描的 npm 通道
+    基线；这里只把"注入态必须红"那一步指到真正会红的那个文件上。
+    """
+    return [
+        "node",
+        "--test",
+        "--experimental-strip-types",
+        "--disable-warning=ExperimentalWarning",
+        *files,
+    ]

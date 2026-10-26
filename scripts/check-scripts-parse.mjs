@@ -16,7 +16,14 @@ const ROOT = path.resolve(process.argv.find((a) => a.startsWith("--root="))?.sli
 
 let refs = new Set();
 const re = /scripts\/[\w.-]+\.(?:mjs|py)/g;
-for (const f of ["scripts/verify.mjs", "package.json"]) {
+// 扫描源 = 门禁步骤表 + npm 脚本 + **护栏用例分册**：分册里每条 Case 的 `cmd` 也是门禁真会
+// 调用的入口（2026-10-26 补这一段：新增 `check-ci-guard-coverage.mjs` 只被一条 Case 引用，
+// 不在前两份里出现 ⇒ 它坏了没有任何便宜层看得见，而它一坏就是"CI 覆盖对账永远绿"）。
+const scanSources = ["scripts/verify.mjs", "package.json"];
+for (const f of fs.readdirSync(path.join(ROOT, "scripts", "guard_cases"))) {
+  if (f.endsWith(".py")) scanSources.push(`scripts/guard_cases/${f}`);
+}
+for (const f of scanSources) {
   const p = path.join(ROOT, f);
   if (!fs.existsSync(p)) continue;
   for (const m of fs.readFileSync(p, "utf8").matchAll(re)) refs.add(m[0]);

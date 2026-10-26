@@ -420,33 +420,43 @@ jobs:
   # ---------------------------------------------------------------------------
   #  护栏非空转（全量）—— 2026-10-19 之前**没有任何自动触发点**
   #
-  #  为什么必须有这条腿（现读口径，不是猜）：`scripts/verify.mjs` 的护栏步按 `full` 分档 ——
+  #  为什么必须有这两条腿（现读口径，不是猜）：`scripts/verify.mjs` 的护栏步按 `--full` 分档 ——
   #  CI 三个 job 分别跑 `--group frontend` / `rust` / `android`，护栏那一格挂在 group=frontend，
-  #  而这些路径都不带 `--full-gate` ⇒ 传给工具的是 `--only frontend`（只扫前端标签那一批）。
-  #  全量扫描（含 Rust 用例，每条都要"改坏 → 重编译 → 跑 → 还原"）此前只有人手动
+  #  而这些路径都不带 `--full` ⇒ 传给工具的是 `--only frontend`（只扫前端标签那一批）。
+  #  全量扫描（含 Rust 用例，每条都要"改坏 → 整库重编译 → 跑 → 逐字节还原"）此前只有人手动
   #  `npm run verify:full -- --full` 才会执行；本地日常批次按用户口径跳过最长那一步
   #  （`verify:local --skip-guard-sweep`）⇒ 于是它实际上没人跑。
   #
-  #  ⚠️ 这一条**不许退化成子集**：命令就是 `python3 scripts/verify-guards.py`，不带 `--only`。
-  #  条数与耗时由该工具自己打印（写死在别处的数字一定腐烂）；不设 `continue-on-error`，
+  #  ⚠️ 这一族**不许退化成 `--only` 子集**。允许的唯一分法是**按通道全覆盖**：
+  #  `guards-cargo` 用 `--lane cargo --shard i/3` 三片取并集，`guards-web` 跑剩下的
+  #  `--lane node,script` ⇒ 两片之和必须等于 `GUARD_LANES` 那行报的全部通道。
+  #  这条覆盖关系不是靠本注释守的，由 `scripts/check-ci-guard-coverage.mjs` 现算对账
+  #  （它自己也是一条护栏用例：摘掉任一条腿的 `--lane` 覆盖，那条用例必须红）。
+  #  条数与耗时由扫描工具自己打印（写死在别处的数字一定腐烂）；不设 `continue-on-error`，
   #  红就是红 —— 失败诊断走 `scripts/ci-run.sh` 的注解通道（唯一可匿名读取的渠道）。
   #
-  #  为什么不用 `needs`：`needs` 会让定时事件下被跳过的上游把这条也拖成 skipped；
-  #  这条本来就是最慢的一腿，和另外三条并行跑不会互相抢 Cargo lock（各自独立 runner）。
-  #  定时只在夜间跑这一腿，见文件顶部 `on.schedule` 与其余三个 job 的 `if`。
+  #  为什么不用 `needs`：`needs` 会让定时事件下被跳过的上游把这些也拖成 skipped；
+  #  cargo 通道本来就是最慢的一腿，和各片并行跑不会互相抢 Cargo lock（各自独立 runner）。
+  #  定时只在夜间跑这两条腿，见文件顶部 `on.schedule` 与其余三个 job 的 `if`。
   # ---------------------------------------------------------------------------
-  guards:
-    name: 护栏非空转（全量，不带 --only）
+  #  cargo 通道拆 3 片并行 —— 2026-10-26 按现读耗时定的，不是拍脑袋：
+  #  这一条整跑（265 条）实测 **2h39m**（run 515 / id 40237651238：`护栏非空转（全量）`
+  #  从 21:54:14Z 跑到 00:33:39Z，结论 success）。本地按通道量到同一个形状：cargo 每条
+  #  用例一次整库重编译 25~30s × 143 条 ⇒ 60 分钟以上是地板（`--lane` / `--shard` 就是为
+  #  这次拆分加的；每次跑都打印 `GUARD_TIMING`，**要数就数那一行，别抄这里的**）。
+  #  为什么不在本地并行：注入改的是同一棵工作树 ⇒ 结构上不能并行；CI 各片独立 runner 才敢拆。
+  #  仓库是 public ⇒ macOS 分钟不额外计费，代价只是排队（10-19 那次排了 34 min）。
+  guards-cargo:
+    name: 护栏非空转 · cargo 通道（分片 ${{ matrix.shard }}/3）
     runs-on: macos-latest
-    # ⚠️ 只在定时与手动触发时跑（2026-10-21）：这条腿实测 1h36m，而它**原本没有 if** ⇒
-    # 每次 push / PR 都自动付 1.5 小时，与本文件顶部「定时：每晚只付这一条腿」的原意相反
-    # （另外三个 job 都有 `if: github.event_name != 'schedule'`，只有它漏了）。
-    # 用户口径：最长的门禁必须经本人确认才跑 ⇒ workflow_dispatch 就是那个确认入口。
-    # 覆盖不削弱：push / PR 仍有前端 + Rust(macOS/Windows 矩阵) + Android 三条腿
-    # （编译 + 单测 + 清单守卫），全量护栏扫描由 nightly 与手动触发兜底。
     if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
-    # 每条 Rust 用例都要重编译一次：给足时间，宁可慢也不要静默截断成"看起来没跑完"。
-    timeout-minutes: 240
+    strategy:
+      # 一片红不许把另外两片一起吃掉：三片各自给出"哪条护栏改坏了也不红"的读数。
+      fail-fast: false
+      matrix:
+        shard: [0, 1, 2]
+    # 单片 ≈ 48 条 × 25s ≈ 20 分钟，另加冷编译与排队 ⇒ 留 55 分钟，宁可慢也不静默截断。
+    timeout-minutes: 55
     steps:
       - uses: actions/checkout@v4
         with:
@@ -454,11 +464,13 @@ jobs:
           #   有一条用例的跑法是 `node scripts/check-change-budget.mjs --range 73d9e20~1..73d9e20`
           #   （`scripts/guard_cases/toolchain.py:435`，它特意不用 `--from-json`，因为要守的那段带
           #   `!fromJson` 条件）。浅克隆里 `73d9e20~1` 这个对象根本不存在 ⇒ git 当场报错
-          #   ⇒ 注入态与还原态**都**红，报出来的形状是「恢复源码之后测试仍然失败」，
-          #   看着像护栏坏，其实是这条 CI 腿少给历史。pack 现读 21 MiB ⇒ 全量克隆代价可接受。
+          #   ⇒ 注入态与「逐字节恢复核对」**都**红，报出来的形状看着像护栏坏，
+          #   其实是这条 CI 腿少给历史。pack 现读 21 MiB ⇒ 全量克隆代价可接受。
+          #   那条用例住 script 通道 ⇒ 真跑它的是下面的 `guards-web`，所以 `fetch-depth: 0`
+          #   **两条腿都要有**；只装一条的话另一片会白红一整轮。
           fetch-depth: 0
 
-      # 护栏里既有前端用例（跑 `npm test`）也有 Rust 用例（跑 `cargo test`），
+      # 护栏里既有前端用例（跑 `node --test <点名文件>`）也有 Rust 用例（跑 `cargo test`），
       # 而 Tauri 的 build.rs 需要 dist/ ⇒ 两样都得先备好，否则整批用例会以"编译不过"的形状红掉。
       - uses: actions/setup-node@v4
         with:
@@ -479,10 +491,60 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: src-tauri
+          # 三片共用一份缓存键 ⇒ 只有第一片付冷编译，另两片命中同一份依赖产物。
+          key: guards-cargo
 
-      - name: 护栏非空转（全量）
+      - name: 护栏非空转（cargo 通道分片）
         shell: bash
-        run: bash scripts/ci-run.sh "护栏非空转（全量）" python3 scripts/verify-guards.py
+        run: >
+          bash scripts/ci-run.sh
+          "护栏非空转 cargo 分片 ${{ matrix.shard }}/3"
+          python3 scripts/verify-guards.py --lane cargo --shard ${{ matrix.shard }}/3
+
+  #  node + script 通道：68 条收窄成 `node_test(<文件>)` 之后（2026-10-26 实测
+  #  node 通道 89 条合计 133.7s、script 通道 33 条合计 32.6s），这一腿整跑不到 5 分钟，
+  #  没必要再拆。⚠️ 它为什么也要 Rust 工具链：script 通道里
+  #  `node scripts/check-test-manifest.mjs --only rust` 那条**内部会起 cargo** 去 dump 名单，
+  #  少了工具链它会以另一种形状红（看着像清单坏，其实是环境缺件）。
+  guards-web:
+    name: 护栏非空转 · node + script 通道
+    runs-on: macos-latest
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # 同 `guards-cargo`：那条 change-budget 用例要跑真实历史，浅克隆会让它两头都红。
+          fetch-depth: 0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .node-version
+          cache: npm
+
+      - name: 安装依赖并构建前端
+        run: |
+          npm ci
+          npm run build
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+          # 与 cargo 那三条腿分开一份键：这一腿的产物是 `--list` dump 用的壳，混用会互相顶掉。
+          key: guards-web
+
+      - name: 护栏非空转（node + script 通道）
+        shell: bash
+        run: >
+          bash scripts/ci-run.sh
+          "护栏非空转 node+script"
+          python3 scripts/verify-guards.py --lane node,script
 
   # ---------------------------------------------------------------------------
   #  静态检查（2026-10-21 首次接入）：ruff / shellcheck / markdownlint

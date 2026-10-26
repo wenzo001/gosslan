@@ -269,15 +269,28 @@ git push origin main && git push origin v1.0.1
 
 ```bash
 npm run verify        # 快速层：结构门禁 + 前端断言 + vue-tsc 类型检查，不碰 cargo（秒级）
-npm run verify:local  # 本地日常重门禁：只跳过「护栏非空转」，其余照跑（2026-10-18 实测 64.0s）
-npm run verify:full   # 完整重门禁：cargo fmt/clippy/test、Rust 清单、护栏非空转、Android 交叉编译
+npm run verify:local  # 本地日常重门禁：只跳过「护栏非空转」，其余照跑（2026-10-26 实测 149.1s）
+npm run verify:full   # 完整重门禁：cargo fmt/clippy/test、Rust 清单、**护栏非空转（前端子集）**、Android
 ```
 
 **默认跑快速层就够日常用**，但它**不等于"编得过"** —— 结束时脚本会列出没跑哪几项。
 改过 Rust 代码 / `Cargo.*` / 构建配置，本地跑 `npm run verify:local`（只跳过最长的护栏非空转，
-起跑与汇总都会点名）；完整 `verify:full` 留到发版/推送前或交给 CI；
-发版或出包前再加 `-- --full`（全部护栏逐条改坏验证，条数由脚本自己打印）。
-CI（`verify.yml`）在任意分支每次 push 全跑，是这套分层的兜底。判据细节见 `AI_RULES.md` §37.1。
+起跑与汇总都会点名）；完整 `verify:full` 留到发版/推送前或交给 CI。
+
+⚠️ **`verify:full` 里那一步护栏扫描只覆盖打了 `frontend` 标签的子集**（全是 `node --test`/脚本；
+2026-10-26 同日两次实测：那一步 152.2s / 171.7s，整条 `verify:full` 25 步 288.8s / 383.1s）
+—— **cargo 护栏一条都不跑**。
+全量（含 Rust 用例，每条要整库重编译一次，单条实测 25~30s ⇒ 整跑 60 分钟以上）要显式加：
+
+```bash
+npm run verify:full -- --full        # 本地全量护栏（慢，属于"没人等它"那一档）
+python3 scripts/verify-guards.py --lane cargo --shard 0/3   # 只跑某个通道 / 某一片
+```
+
+CI 侧全覆盖：`verify.yml` 的 `guards-cargo`（`--lane cargo --shard 0/1/2` 三片并行）+
+`guards-web`（`--lane node,script`）并集 = 全部通道，这条覆盖关系由
+`scripts/check-ci-guard-coverage.mjs` 现算对账（少一片、少一条腿、或退成 `--only` 子集都会红）。
+CI（`verify.yml`）在任意分支每次 push 全跑三条腿，是这套分层的兜底。判据细节见 `AI_RULES.md` §37.1。
 
 ### 前端（node 内置测试运行器，零额外依赖，需 Node ≥ 22）
 
