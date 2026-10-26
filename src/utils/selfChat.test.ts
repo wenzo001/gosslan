@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { SELF_CHAT_KINDS, isSelfConversation, isSelfMessage, selfChatSupports, selfFriendOf } from "./selfChat.ts";
+import { isSelfConversation, isSelfMessage, selfFriendOf } from "./selfChat.ts";
 // `import type` 会被 Node 的类型剥离整句删掉 ⇒ 别名 "@/types" 不需要运行时解析。
 import type { DeviceInfo } from "@/types";
 
@@ -19,14 +19,6 @@ test("isSelfMessage：收发双方相同（普通单聊里自己发的消息不�
   assert.equal(isSelfMessage({ sender_id: ME, receiver_id: "gosslan-bbb" }), false, "自己发给好友 ≠ 自聊");
   assert.equal(isSelfMessage({ sender_id: "gosslan-bbb", receiver_id: ME }), false);
   assert.equal(isSelfMessage({ sender_id: "", receiver_id: "" }), false, "空 id 不算");
-});
-
-test("自聊支持的内容类型：只文本与代码（图片/文件不走这条链路）", () => {
-  assert.deepEqual([...SELF_CHAT_KINDS], ["text", "code"]);
-  assert.ok(selfChatSupports("text") && selfChatSupports("code"));
-  for (const k of ["image", "file", "system", "todo"]) {
-    assert.equal(selfChatSupports(k), false, `${k} 不该被判成自聊可发`);
-  }
 });
 
 /**

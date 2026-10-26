@@ -882,7 +882,7 @@ const renderTo = computed<"code" | "text" | null>(() => {
  * 「取消发送」该不该出现、走哪条通道 —— 判据只有 `utils/cancelSend` 那一份。
  *
  * ⚠️ 这里修掉一个旧口径的错：以前的条件是 `if (!isSelfMsg) return false`，
- * 于是这个入口**只在自聊里出现**（而自聊按 `SELF_CHAT_KINDS` 根本发不了文件）。
+ * 于是这个入口**只在自聊里出现**（而自聊在输入框就拦掉了图片/文件，根本发不出文件）。
  * 正常单聊/群聊里正在发送的文件反而没有入口 —— 与"所有未完成的发送都能取消"正好相反。
  */
 const cancelSendChannel = computed(() =>

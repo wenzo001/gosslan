@@ -27,8 +27,6 @@ export const SETTINGS_SECTIONS = [
   "reset",
 ] as const;
 
-export type SettingsSectionKey = (typeof SETTINGS_SECTIONS)[number];
-
 const RouteView = { name: "SettingsRouteView", render: () => null };
 
 const routes: RouteRecordRaw[] = [

@@ -272,7 +272,7 @@
 
   <!-- ④ 事件契约 -->
   <section class="tab" id="t-evt" role="tabpanel">
-    <p class="lede">后端 → 前端的<b>唯一反向通道</b>：27 个后端字面量事件名（另有 2 个走 <code>format!</code> 动态拼，机器点不齐），同类合并成 28 行。这张表是判"某个状态变化界面看不看得到"的清单：一条状态改动如果没有对应事件，常驻窗口就永远停在旧快照（这类退化本仓库真踩过：设置窗口改语言/主题后主窗不刷新）。</p>
+    <p class="lede">后端 → 前端的<b>唯一反向通道</b>：31 个后端字面量事件名（同表合并成 30 行；动态拼的名字机器点不齐，条数口径见 <code>npm run map:stats</code>）。这张表是判"某个状态变化界面看不看得到"的清单：一条状态改动如果没有对应事件，常驻窗口就永远停在旧快照（这类退化本仓库真踩过：设置窗口改语言/主题后主窗不刷新）。</p>
     <div class="tablewrap"><table id="evttable"><thead><tr><th>事件</th><th>载荷</th><th>谁发 / 何时</th><th>谁收（消费者）</th><th>范围</th></tr></thead><tbody></tbody></table></div>
   </section>
 
@@ -1005,10 +1005,10 @@ const SEM = {
 
 /* 事件契约 */
 const EVENTS = [
-  // ↓ 两条是「后端 emit 了但前端没有监听者」：机器判据在 <code>src/api/events.test.ts</code> 的
-  // <code>ALLOWED_EMIT_WITHOUT_LISTENER</code>（每条都必须写理由），所以它们不是漏接，
-  // 但属于 §二 要的「已废弃但代码仍存在 / dead code」那一类 —— 图上不写就等于没登记。
-  ["group-key-received", "group_id str", "与 <code>groups-updated</code> 同一条路径一起发（收到群密钥时）", "<b>无人监听</b>：前端只处理 groups-updated ⇒ 冗余事件，删除候选", "全体窗口"],
+  // ↓ 「后端 emit 了但前端没有监听者」这一节目前为空：2026-10-26 删掉了最后一条
+  // `group-key-received`（无人监听，且同路径的 `groups-updated` 已覆盖通知），
+  // 机器判据在 <code>src/api/events.test.ts</code> 的 <code>ALLOWED_EMIT_WITHOUT_LISTENER</code>
+  // （每条都必须写理由）。图这一列写「无人监听」就等于漏接，所以异常项必须登记。
   ["group-file-log", "msg str", "群任务图片落盘/投递那条链的诊断输出（commands/group_todo_media.rs）", "<b>已接（10-22 审计 D-3）</b>：chat.groupFileDiag 留最近 50 行 ⇒ DevDiag 面板「群文件投递诊断」一节；不进消息列表、不打 toast", "全体窗口"],
   ["peers-updated", "Peer[]", "发现/建链/清扫改动后，由 300ms 合并窗口的 emitter 统一发（<code>try_lock</code>，抢不到就跳过，绝不卡网络）", "chat.refreshPeers", "全体窗口"],
   ["message-received", "MessageRecord", "对端帧解开并落库成功时；也用于自己发出的那一行的首帧", "chat.enqueueMessage（进时间线/计未读/通知）", "全体窗口"],
@@ -1193,7 +1193,7 @@ const DOMAINS = [
   {"id": "persistence", "name": "持久化", "tier": "L3", "paths": ["src-tauri/src/db.rs", "src-tauri/src/db", "src-tauri/src/export.rs"], "inv": ["INV-P05", "INV-P14", "INV-008", "INV-P24", "INV-P26", "INV-P29"], "home": "src-tauri/src/db", "cons": [], "notes": "⚠️ **耦合热点**：`db::` 被 13 个文件引用，横跨 network/、transport/、mesh/、content/、file_relay、notifications、export、commands、state —— 即**传输层直接写库**。架构上最值得收口的一处（Phase 7）。"},
   {"id": "platform", "name": "平台外壳", "tier": "L2", "paths": ["src-tauri/src/menu.rs", "src-tauri/src/tray.rs", "src-tauri/src/macos_window.rs", "src-tauri/src/macos_bookmark.rs", "src-tauri/src/open_path.rs", "src-tauri/src/android_open.rs", "src-tauri/src/jni_method.rs", "src-tauri/src/notifications.rs", "src-tauri/src/user_dirs.rs"], "inv": ["INV-P32", "INV-P33"], "home": "src-tauri/src/menu.rs", "cons": ["persistence"], "notes": "按平台分：menu / macos_bookmark / macos_window 是 macOS 专属（模块级 `#[cfg(target_os = \"macos\")]`）；android_open / jni_method 是 Android 专属。这些平台差异正是 Phase 2/4 两条腿存在的原因。"},
   {"id": "observability", "name": "可观测性", "tier": "L2", "paths": ["src-tauri/src/logging.rs"], "inv": ["INV-P16"], "home": "src-tauri/src/logging.rs", "cons": [], "notes": "本项目最强项（结构化日志 + 日志窗口 + 诊断面板 + CHANGELOG 里大量「真机日志定位」）。Phase 8 要补的是**按 msg_id 串起一条消息的生命周期**（Trace）。另有 logs.html 作为独立日志窗口入口。"},
-  {"id": "presentation", "name": "呈现层", "tier": "L2", "paths": ["src/App.vue", "src/stores", "src/components", "src/composables", "src/api", "src/utils"], "inv": ["INV-P24", "INV-P27", "INV-P29", "INV-P30", "INV-P31"], "home": "src/stores", "cons": [], "notes": "⚠️ **没有领域边界**：`src/stores` 只有 3 个文件、`src/utils` 是平铺的一堆 —— **行数与个数一律现算，不许抄在图上**：`wc -l src/stores/*.ts`、`ls src/utils | wc -l`（截至 2026-09-28 现算：stores 共 3427 行、useChatStore.ts 2276 行、utils 119 个文件）。前端状态串味最容易产生 UI 回归 —— 拆分优先级高于后端大文件（Phase 7）。前端已有一整套源码扫描护栏（utils/designGuards.ts）。消息列表已迁移到 `@tanstack/vue-virtual`（2026-10-25：`anchorTo:"end"` + `measureElement`；日志窗同库），列表 key 用 `messages.local_id`。"}
+  {"id": "presentation", "name": "呈现层", "tier": "L2", "paths": ["src/App.vue", "src/stores", "src/components", "src/composables", "src/api", "src/utils"], "inv": ["INV-P24", "INV-P27", "INV-P29", "INV-P30", "INV-P31"], "home": "src/stores", "cons": [], "notes": "⚠️ **没有领域边界**：`src/stores` 只有 3 个文件、`src/utils` 是平铺的一堆 —— **行数与个数一律现算，不许抄在图上**：`wc -l src/stores/*.ts`、`ls src/utils | wc -l`（截至 2026-09-28 现算：stores 共 3427 行、useChatStore.ts 2276 行、utils 119 个文件）。前端状态串味最容易产生 UI 回归 —— 拆分优先级高于后端大文件（Phase 7）。前端已有一整套源码扫描护栏（utils/designGuards.ts）。消息列表已迁移到 `@tanstack/vue-virtual`（2026-10-25：`anchorTo: 'end'` + `measureElement`；日志窗同库），列表 key 用 `messages.local_id`。"}
 
 ];
 const DRIFT = [
@@ -1536,8 +1536,8 @@ function buildDir() {
     '<div class="grid2" style="margin-bottom:14px">' +
       '<div class="stat"><div class="num">' + CMDS.length + '</div><div>后端注册命令</div></div>' +
       '<div class="stat"><div class="num">' + CMDS.filter((r) => !SEM[r[0]] || !SEM[r[0]].dead).length + '</div><div>前端有调用</div></div>' +
-      '<div class="stat"><div class="num">29</div><div>后端字面量事件名（表内合并成 ' + EVENTS.length + ' 行；动态拼的不计）</div></div>' +
-      '<div class="stat"><div class="num">19</div><div>SQLite 表</div></div>' +
+      '<div class="stat"><div class="num">31</div><div>后端字面量事件名（表内合并成 ' + EVENTS.length + ' 行；动态拼的不计）</div></div>' +
+      '<div class="stat"><div class="num">20</div><div>SQLite 表（`npm run map:stats` 现算）</div></div>' +
       '<div class="stat"><div class="num">265</div><div>护栏非空转用例（改坏即红·这个数由 scripts/guard_cases/*.py 的 CASES 现算，判据 E 对账）</div></div>' +
       '<div class="stat"><div class="num">local</div><div>跨进程 E2E：正向轮接进 <code>verify</code> 的 <code>local</code> 组，要第三个真实实例那一轮单独挂在 <code>release</code> 组（发版前才跑，落点＝发版检查单点名）；每轮断言数由 <code>check-doc-numbers.mjs</code> 从 harness 现算对账，手写即红；入口 <code>npm run verify:e2e</code> / <code>npm run verify:release</code>；<b>两层 CI 都不跑</b></div></div>' +
       '<div class="stat"><div class="num">现算</div><div>Rust / 前端测试条数：分别由 <code>cargo test</code> 与 <code>npm test</code> 自己打印，图上不抄</div></div>' +

@@ -4,7 +4,12 @@ import Spinner from "@/components/ui/Spinner.vue";
 import { safeStorageBackend } from "../utils/safeStorage.ts";
 import { computed, nextTick, onBeforeUnmount, onMounted, onScopeDispose, ref, watch } from "vue";
 import { progressAdvanced, progressHasStalled } from "@/utils/transferProgressWatch";
-import { rememberScrollPosition, savedScrollPosition, shouldRestoreScroll } from "@/utils/scrollRestore";
+import {
+  rememberScrollPosition,
+  savedScrollPosition,
+  shouldRestoreScroll,
+  type SavedScroll,
+} from "@/utils/scrollRestore";
 import { useRouter } from "vue-router";
 import { useEventListener } from "@vueuse/core";
 import { api } from "@/api";
@@ -71,10 +76,14 @@ const chat = useChatStore();
 const listRef = ref<InstanceType<typeof VirtualList> | null>(null);
 
 /**
- * 每会话滚动位置（像素）。只服务"离开再回来"：切 tab（ChatWindow 卸载）、切会话、
- * 从设置/资料覆盖层返回。不写进 store —— 它是纯视图状态，重启后群消息位置没有意义。
- * 保存像素而不是消息 id：用户离开时看到的就是这条像素线，回来落在同一处最直观；
- * 缓存上限与消息缓存同量级（50 个会话），不会无界增长。
+ * 每会话阅读位置（**消息锚点 + 行内偏移**，不是纯像素）。只服务"离开再回来"：
+ * 切 tab（ChatWindow 卸载）、切会话、从设置/资料覆盖层返回。不写进 store ——
+ * 它是纯视图状态，重启后位置没有意义。
+ *
+ * ⚠️ 2026-10-26 用户实测"回去不是当时离开的位置"：动态高度列表按估算布局，
+ * 只存 scrollTop 会落到另一条消息（实测 m-scroll-5 → m-scroll-9）。
+ * 现在保存上沿消息的 `anchorKey`/`anchorOffset`，恢复按消息身份 + DOM 校正；
+ * `top` 只作锚点不在已加载范围时的兜底。缓存上限 50 个会话。
  *
  * ⚠️ 2026-10-25：表必须放在**模块级**（`utils/scrollRestore`），不能长在这个组件的
  * `<script setup>` 里。点对方资料会把 ChatWindow 卸载，组件内的 Map 随实例一起消失
@@ -88,14 +97,24 @@ const listRef = ref<InstanceType<typeof VirtualList> | null>(null);
  * ③ 离开时**本来就在底部** ⇒ 回来也贴底（哪怕只离开 1 秒）：底部是"看最新"的意图，
  *    不是某个像素位置。
  */
-const restoreScrollTop = ref<number | null>(null);
+const restoreScroll = ref<SavedScroll | null>(null);
+/** 恢复流程防重入：补历史会改 messages，watcher 会再次调进来。 */
+let restoringScroll = false;
+
+/** 与 VirtualList.keyOf 同一口径：持久本地 id 优先，绝不回退排序下标。 */
+function messageKey(m: MessageRecord): string {
+  return String(m.local_id ?? m.msg_id ?? m.id ?? "");
+}
 
 function saveScrollPosition(convId: string | null | undefined) {
   if (!convId) return;
+  const anchor = listRef.value?.getAnchor();
   rememberScrollPosition(convId, {
     top: listRef.value?.getScrollTop() ?? 0,
     at: Date.now(),
     atBottom: nearBottom.value,
+    anchorKey: anchor?.key,
+    anchorOffset: anchor?.offset,
   });
 }
 function restoreScrollFor(convId: string | null | undefined) {
@@ -103,19 +122,68 @@ function restoreScrollFor(convId: string | null | undefined) {
   // 有未读跳转时以未读为准（未读是用户最需要看到的位置）。
   const unreadWins = !!chat.unreadJump && chat.unreadJump.convId === convId;
   // 三条口径（过期 / 未读 / 离开时在底部）都在 `utils/scrollRestore` 里，那份带单测。
-  restoreScrollTop.value = shouldRestoreScroll(saved, Date.now(), unreadWins)
-    ? (saved?.top ?? null)
+  restoreScroll.value = shouldRestoreScroll(saved, Date.now(), unreadWins)
+    ? (saved ?? null)
     : null;
 }
+
+/**
+ * 落回离开时那一屏：**消息 key + 行内偏移**，不是 scrollTop。
+ *
+ * 为什么不能只 `scrollToOffset(top)`：动态高度列表在刚切换/重挂载时按估算布局，
+ * 同一个像素会落到另一条消息（实测 m-scroll-5 → m-scroll-9）。锚点恢复后由
+ * VirtualList 对真实 DOM 再做 100ms×25 的校正；锚点不在已加载范围时先补历史，
+ * 补不到才退回像素兜底。
+ */
 async function applyRestoredScroll() {
-  if (restoreScrollTop.value === null) return;
-  const top = restoreScrollTop.value;
-  restoreScrollTop.value = null;
-  await nextTick();
-  await nextTick();
-  listRef.value?.scrollToOffset(top);
-  listRef.value?.setPinned(false);
+  const saved = restoreScroll.value;
+  if (!saved || restoringScroll) return;
+  restoringScroll = true;
+  const convId = chat.activeConv;
+  let applied = false;
+  try {
+    await nextTick();
+    await nextTick();
+    if (!convId || chat.activeConv !== convId) return;
+    // 子组件还没挂上时**不能把请求扔掉**：旧实现 `listRef.value?.` 空跑后清空，
+    // 重挂载首帧就再也恢复不了（表现正是"回来位置不对"）。保留请求，onMounted 再补一次。
+    if (!listRef.value) return;
+    // 会话缓存被淘汰 / 只重载了最新一页时，锚点可能不在 list 里；逐页补到找到为止。
+    // 上限与 locate 同档；store 自己还有 MAX_PAGES 闸门。
+    let guard = 0;
+    while (
+      saved.anchorKey &&
+      guard < 5 &&
+      messages.value.length > 0 &&
+      !messages.value.some((m) => messageKey(m) === saved.anchorKey)
+    ) {
+      const before = messages.value.length;
+      try {
+        await chat.loadMoreMessages(convId);
+      } catch {
+        break;
+      }
+      if (messages.value.length === before) break;
+      guard += 1;
+      await nextTick();
+    }
+    if (chat.activeConv !== convId) return;
+    const anchored =
+      !!saved.anchorKey &&
+      listRef.value.scrollToAnchor(saved.anchorKey, saved.anchorOffset ?? 0, saved.top) === true;
+    if (!anchored) listRef.value.scrollToOffset(saved.top);
+    listRef.value.setPinned(false);
+    applied = true;
+  } finally {
+    restoringScroll = false;
+    if (applied) restoreScroll.value = null;
+  }
 }
+
+// 子组件挂载完成后再兜一次：切 tab/资料页返回时，数据可能先于 VirtualList 就绪。
+onMounted(() => {
+  if (restoreScroll.value) void applyRestoredScroll();
+});
 onBeforeUnmount(() => saveScrollPosition(chat.activeConv));
 
 const conv = computed(() => chat.activeConversation);
@@ -950,7 +1018,7 @@ watch(
       restoreScrollFor(convId);
       lastMsgId = messages.value.at(-1)?.msg_id ?? null;
       // 有保存位置：等新消息到达后恢复；期间 VirtualList 的 swap 贴底被关掉。
-      if (restoreScrollTop.value !== null) return;
+      if (restoreScroll.value !== null) return;
       // 首次加载（0→N）且没有未读跳转 → 打开即贴底；有未读则等 unreadJump 定位
       if (oldLen === 0 && !(chat.unreadJump && chat.unreadJump.convId === convId)) {
         await nextTick();
@@ -959,7 +1027,7 @@ watch(
       return;
     }
 
-    if (restoreScrollTop.value !== null) {
+    if (restoreScroll.value !== null) {
       lastMsgId = messages.value.at(-1)?.msg_id ?? null;
       await applyRestoredScroll();
       return;
@@ -1007,7 +1075,7 @@ watch(
 watch(
   () => [chat.activeConv, messages.value] as const,
   async ([convId]) => {
-    if (!convId || restoreScrollTop.value === null || messages.value.length === 0) return;
+    if (!convId || restoreScroll.value === null || messages.value.length === 0) return;
     await applyRestoredScroll();
   },
   { flush: "post" },
@@ -1833,7 +1901,7 @@ function retryHistory() {
         :class="listSwitching ? 'opacity-0' : 'opacity-100'"
         :items="messages"
         live
-        :auto-scroll-on-swap="restoreScrollTop === null && !(chat.unreadJump && chat.unreadJump.convId === chat.activeConv)"
+        :auto-scroll-on-swap="restoreScroll === null && !(chat.unreadJump && chat.unreadJump.convId === chat.activeConv)"
         :estimate-height="estimateHeight"
         :conversation-key="chat.activeConv ?? ''"
         :layout-key="`${app.chatStyle.fontSize}:${app.dark}`"

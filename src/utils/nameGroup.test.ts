@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { GROUP_LETTERS, OTHER_GROUP, groupByInitial, initialOf } from "./nameGroup.ts";
+import { OTHER_GROUP, groupByInitial, initialOf } from "./nameGroup.ts";
 
 // ---------------- 首字母 ----------------
 
@@ -76,10 +76,4 @@ test("组内按同一套规则排序（中英混排稳定）", () => {
 
 test("空输入 → 空分组（不抛错、不产出空组）", () => {
   assert.deepEqual(groupByInitial([], (i: { name: string }) => i.name), []);
-});
-
-test("GROUP_LETTERS 是 26 个字母（供 UI 做字母索引条）", () => {
-  assert.equal(GROUP_LETTERS.length, 26);
-  assert.equal(GROUP_LETTERS[0], "A");
-  assert.equal(GROUP_LETTERS[25], "Z");
 });

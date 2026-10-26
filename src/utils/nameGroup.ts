@@ -18,9 +18,6 @@
 
 import { HAN_INITIALS, HAN_START } from "../data/hanInitials.ts";
 
-/** 分组用的字母表（顺序即显示顺序）。 */
-export const GROUP_LETTERS = "ABCDEFGHIJKLMNOPQRSTUVWXYZ".split("");
-
 /** 非拉丁字母开头（数字/符号/表外汉字）归到这一组。 */
 export const OTHER_GROUP = "#";
 

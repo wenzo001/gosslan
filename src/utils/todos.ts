@@ -824,15 +824,6 @@ export function todoTerminalForCreator(
   return { status: d.status, title: d.title };
 }
 
-/**
- * 旧的窄口径包装：只认「完成」。保留给既有调用点/测试；新代码用
- * [`todoTerminalForCreator`]（做不了与完成同族）。
- */
-export function todoCompletedForCreator(rec: MessageRecord, myId: string): string | null {
-  const t = todoTerminalForCreator(rec, myId);
-  return t && t.status === "done" ? t.title : null;
-}
-
 // ---------------- 操作记录（全员对这条任务的改动流水） ----------------
 //
 // 数据源就是消息库里这条任务的全部 `todo`/`todo_update` 事件：任务定义是 LWW 寄存器，
@@ -1002,11 +993,6 @@ export function putTodoRows(
 /** 读到过没有（区分「没有任务」与「还没读过」）。 */
 export function isTodoRowsLoaded(rows: TodoRowsByConv, convId: string): boolean {
   return Object.prototype.hasOwnProperty.call(rows, convId);
-}
-
-/** 取某个会话的任务行。 */
-export function todoRowsFor(rows: TodoRowsByConv, convId: string): MessageRecord[] {
-  return rows[convId] ?? [];
 }
 
 /**

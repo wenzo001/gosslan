@@ -335,15 +335,3 @@ pub(crate) fn safe_transfer_id(id: &str) -> Option<String> {
     Some(id.to_string())
 }
 
-/// 人类可读的文件大小。
-#[allow(dead_code)]
-pub fn human_size(bytes: u64) -> String {
-    const UNITS: [&str; 5] = ["B", "KB", "MB", "GB", "TB"];
-    let mut v = bytes as f64;
-    let mut i = 0;
-    while v >= 1024.0 && i < 4 {
-        v /= 1024.0;
-        i += 1;
-    }
-    format!("{v:.1} {}", UNITS[i])
-}

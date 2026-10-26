@@ -29,12 +29,9 @@ const API_FILE = join(ROOT, "src", "api", "index.ts");
  * 加新条目时请先问自己：真的不需要 UI 反应，还是只是还没接？
  */
 const ALLOWED_EMIT_WITHOUT_LISTENER: Record<string, string> = {
-  "group-key-received":
-    "紧邻 `groups-updated` 一起发（同一条路径），前端只处理后者 —— 冗余事件，可后续删除",
-  // `group-file-log` 已于 2026-10-22 接上消费者（诊断面板，见 api/index.ts 的 bindEvents），
-  // 按下面那条「例外表不许挂着已监听事件」的判据当场从表里删掉。
-  // 它此前挂着的理由是"暂无消费者（保留待接）"——而那两条真缺口（群文件失败原因看不见）
-  // 就藏在这句"待接"里：例外表能容纳一条**没人打算接**的事件而不报错。
+  // 当前为空。2026-10-26：`group-key-received` 是最后一条 —— 它从没被任何前端监听，
+  // 且紧邻的 `groups-updated` 已经承担同一路径的通知，故直接删掉那次 emit（不是"补监听"）。
+  // 更早的 `group-file-log` 已于 2026-10-22 接上诊断面板消费者。
 };
 
 /** 只发给特定窗口、由该窗口自己监听的事件不算漏接（这里是菜单事件，前端已监听）。 */

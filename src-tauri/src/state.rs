@@ -798,7 +798,8 @@ pub struct GroupFile {
 }
 
 /// 群文件单个成员的投递状态（DB 表 group_file_recipients）。
-// 传输流程在后续 GroupFileOffer 步骤启用；本步骤仅 DB 层 + 测试调用。
+// 写入/推进在 network/transport/group_file.rs 与 commands/group_file_dispatch.rs；
+// 这里只是 DB 行 → 前端的映射（list_group_file_recipients 的返回元素）。
 #[allow(dead_code)]
 pub struct GroupFileRecipient {
     pub recipient_id: String,

@@ -20,7 +20,6 @@ import {
   buildTodoHistory,
   parseTodo,
   todoCategoryName,
-  todoCompletedForCreator,
   todoTerminalForCreator,
   todoMentionsMe,
   openTodosForMe,
@@ -36,7 +35,6 @@ import {
   todoCode,
   todoLiveMap,
   mergeIncomingTodoRows,
-  todoRowsFor,
   isTodoRowsLoaded,
   todoRowsLoadState,
 } from "./todos.ts";
@@ -525,29 +523,15 @@ test("todoMentionsMe：命中/未命中指派人；非任务消息永不为真",
 
 /**
  * 「我创建的任务被完成」判定（用户 2026-09-17：任务完成要给创建人提示）。
- * 只认 `todo_update` + `status==done` + `creator==我` + 未删除；其余一律 null（不打扰）。
+ * 只认终态（完成/做不了）、`creator==我`、未删除；其余一律 null（不打扰）。
  */
-test("todoCompletedForCreator：只认「我创建的任务被完成」", () => {
-  const done = { ...def("t1", 5, { status: "done", creator: "me" }), kind: "todo_update" as MessageRecord["kind"] };
-  assert.equal(todoCompletedForCreator(done, "me"), "写周报", "命中并回传标题");
-
-  // 创建不是我 → 不提示（即使完成了）
-  const notMine = { ...def("t2", 5, { status: "done", creator: "alice" }), kind: "todo_update" as MessageRecord["kind"] };
-  assert.equal(todoCompletedForCreator(notMine, "me"), null);
-
-  // 不是完成（改状态到 doing / 改标题） → 不提示
-  const doing = { ...def("t3", 5, { status: "doing", creator: "me" }), kind: "todo_update" as MessageRecord["kind"] };
-  assert.equal(todoCompletedForCreator(doing, "me"), null);
-
-  // 墓碑（删除） → 不提示
-  const removed = { ...def("t4", 5, { status: "done", creator: "me", deleted: true }), kind: "todo_update" as MessageRecord["kind"] };
-  assert.equal(todoCompletedForCreator(removed, "me"), null);
-
-  // 创建消息（`todo`）不算"完成" → 不提示
-  assert.equal(todoCompletedForCreator(def("t5", 1, { status: "done", creator: "me" }), "me"), null);
-
-  // 没有本机 id → 不提示
-  assert.equal(todoCompletedForCreator(done, ""), null);
+test("todoTerminalForCreator：完成与做不了都提示创建人", () => {
+  const impossible = { ...def("t1", 5, { status: "impossible", creator: "me" }), kind: "todo_update" as MessageRecord["kind"] };
+  const done = { ...def("t2", 5, { status: "done", creator: "me" }), kind: "todo_update" as MessageRecord["kind"] };
+  assert.deepEqual(todoTerminalForCreator(impossible, "me"), { status: "impossible", title: "写周报" });
+  assert.deepEqual(todoTerminalForCreator(done, "me"), { status: "done", title: "写周报" });
+  assert.equal(todoTerminalForCreator(done, ""), null, "没有本机 id → 不提示");
+  assert.equal(todoTerminalForCreator(def("t3", 1, { status: "done", creator: "me" }), "me"), null, "创建消息不算终态事件");
 });
 
 // ---------------- 与我相关的未完成任务（蓝色徽标的唯一判据，用户 2026-09-26） ----------------
@@ -713,15 +697,6 @@ test("buildTodoHistory：乱序输入按 (seq,msg_id) 排，图片-only 更新�
   assert.deepEqual(h.map((e) => e.changes[0].kind), ["created", "status"]);
 });
 
-test("todoTerminalForCreator：完成与做不了都提示创建人；旧窄口径包装只认完成", () => {
-  const impossible = { ...def("t1", 5, { status: "impossible", creator: "me" }), kind: "todo_update" as MessageRecord["kind"] };
-  const done = { ...def("t2", 5, { status: "done", creator: "me" }), kind: "todo_update" as MessageRecord["kind"] };
-  assert.deepEqual(todoTerminalForCreator(impossible, "me"), { status: "impossible", title: "写周报" });
-  assert.deepEqual(todoTerminalForCreator(done, "me"), { status: "done", title: "写周报" });
-  assert.equal(todoCompletedForCreator(impossible, "me"), null, "旧窄口径不认做不了");
-  assert.equal(todoCompletedForCreator(done, "me"), "写周报");
-});
-
 
 // ---------------- 看板取数的那一份源（#154-9） ----------------
 //
@@ -736,22 +711,22 @@ test("putTodoRows：点到的每个会话都建档；后端没回的会话是空
   assert.equal(isTodoRowsLoaded(out, "group:g1"), true);
   assert.equal(isTodoRowsLoaded(out, "group:g2"), true, "这次读点到过它 ⇒ 必须能区分「确实没有任务」");
   assert.deepEqual(out["group:g2"], []);
-  assert.equal(todoRowsFor(out, "group:g1").length, 1);
+  assert.equal(out["group:g1"].length, 1);
   assert.equal(isTodoRowsLoaded(out, "group:g3"), false, "没读过的会话不许被顺手建成「已加载」");
 });
 
 test("putTodoRows：整表读覆盖旧值，重复行不许累加", () => {
   const first = putTodoRows({}, ["group:g1"], [def("t1", 1)]);
   const again = putTodoRows(first, ["group:g1"], [def("t1", 1)]);
-  assert.equal(todoRowsFor(again, "group:g1").length, 1, "同一份读重复落两次只有一份行");
+  assert.equal(again["group:g1"].length, 1, "同一份读重复落两次只有一份行");
   const cleared = putTodoRows(again, ["group:g1"], []);
-  assert.deepEqual(todoRowsFor(cleared, "group:g1"), [], "后端说不存在 ⇒ 必须清空，不能留住旧行");
+  assert.deepEqual(cleared["group:g1"], [], "后端说不存在 ⇒ 必须清空，不能留住旧行");
 });
 
 test("putTodoRows：每个会话的任务行有上限，保留最新一段（P2-13）", () => {
   const all = Array.from({ length: MAX_TODO_ROWS_PER_CONV + 5 }, (_, i) => def(`t${i}`, i + 1));
   const out = putTodoRows({}, ["group:g1"], all);
-  const rows = todoRowsFor(out, "group:g1");
+  const rows = out["group:g1"];
   assert.equal(rows.length, MAX_TODO_ROWS_PER_CONV, "行数封顶");
   assert.equal(rows[0].msg_id, all[5].msg_id, "丢掉最旧的 5 条");
   assert.equal(rows[rows.length - 1].msg_id, all[all.length - 1].msg_id, "最新的保留");
@@ -760,7 +735,7 @@ test("putTodoRows：每个会话的任务行有上限，保留最新一段（P2-
 test("mergeIncomingTodoRows：增量追加后仍受同一上限约束（P2-13）", () => {
   const base = Array.from({ length: MAX_TODO_ROWS_PER_CONV }, (_, i) => def(`t${i}`, i + 1));
   const out = mergeIncomingTodoRows({ "group:g1": base }, [def("new", MAX_TODO_ROWS_PER_CONV + 1)]);
-  const rows = todoRowsFor(out, "group:g1");
+  const rows = out["group:g1"];
   assert.equal(rows.length, MAX_TODO_ROWS_PER_CONV, "追加不越界");
   assert.equal(rows[0].msg_id, base[1].msg_id, "最旧的一条被挤掉");
   assert.equal(rows[rows.length - 1].msg_id, `m-new-${MAX_TODO_ROWS_PER_CONV + 1}`, "新事件在尾部");
@@ -770,12 +745,12 @@ test("乐观更新落在同一份源上：只刷已加载的会话，未加载�
   const loaded = putTodoRows({}, ["group:g1"], [def("t1", 1)]);
   // 回填式重发：同一条 msg_id 换内容 ⇒ 刷新那一份，不许折出两条
   const refreshed = mergeIncomingTodoRows(loaded, [{ ...def("t1", 1, { status: "doing" }) }]);
-  const rowsAfter = todoRowsFor(refreshed, "group:g1");
+  const rowsAfter = refreshed["group:g1"];
   assert.equal(rowsAfter.length, 1, "同 msg_id 是刷新不是追加");
   assert.equal(foldTodos(rowsAfter)[0].status, "doing", "刷新必须真的换掉内容");
   // 新一条定义（新 msg_id）⇒ 追加，看板立刻看得见
   const created = mergeIncomingTodoRows(loaded, [def("t9", 7)]);
-  assert.equal(todoRowsFor(created, "group:g1").length, 2, "新任务落在已加载的会话里要立刻看得见");
+  assert.equal(created["group:g1"].length, 2, "新任务落在已加载的会话里要立刻看得见");
   const cold = mergeIncomingTodoRows({}, [def("t8", 1)]);
   assert.equal(isTodoRowsLoaded(cold, "group:g1"), false, "未加载的会话建了键就等于拿局部快照冒充全量");
 });
@@ -784,7 +759,7 @@ test("两份源不再等价：消息缓存里已经没有这个会话时，全�
   const rows = putTodoRows({}, ["group:g1"], [def("t1", 1), def("t2", 2)]);
   const pageCache: Record<string, MessageRecord[]> = {}; // 翻过 8 个会话之后整块被逐出
   assert.equal(foldTodos(pageCache["group:g1"] ?? []).length, 0, "旧取数口在这里折不出任务");
-  assert.equal(foldTodos(todoRowsFor(rows, "group:g1")).length, 2, "看板该走的这一份折得出");
+  assert.equal(foldTodos(rows["group:g1"]).length, 2, "看板该走的这一份折得出");
 });
 
 // 排序键的现状锁（#154 第 10 条另一半）：以前注释写"按创建版本从新到旧"，实现按的是
