@@ -38,8 +38,59 @@ HEAD `6ca07ca5`。取值：`PASS` / `PARTIAL` / `FAIL` / `UNVERIFIED` / `BLOCKED
 | F-GRP-001 | 群管理：建群 / 邀请 / 移除成员 / 移交群主 / 改名 / 退群 | PASS 六个命令都在注册表；**出站授权**逐个读过：`group_add_member` / `group_remove_member` / `transfer_group_creator` / `rename_group` 都判 `group.creator != s.device_id` 并各自给中文原因（`commands/groups.rs:190-192` 等） | 不适用(理由)：群管理是即时命令，没有可中断的长任务；被移出的成员由 `GroupMemberRemoved` 帧告知 | PASS **入站也授权**：`handle_group_rename` 里 `g.creator == from` 才接受并注明「只接受群创建者的改名」（`network/transport/group_membership.rs:6-20`），外层还有 `from != peer_id` 的防冒充判据（`handle_group.rs:129-131`）；成员变化后 `resend_group_key_to` 重发群密钥 | PASS `groups-updated` 事件刷新界面；被移出/群主变更各有独立帧（`GroupMemberRemoved` / `GroupCreatorChanged` / `GroupMemberLeft`） | PARTIAL 群路由/会话有测试族（`route_tests` / `group_tests`），但**「谁能改群名」这类授权断言本轮未见具名用例**（我读的是实现，不是测试） | PARTIAL 改名后 `db::rename_group(...).ok()` 吞掉写失败（并入 B4-F1 族）；群管理路径无具名 `code=` | **PARTIAL** |
 | F-FIL-004 | 共享目录浏览与下载（含中继兜底） | PASS `ShareTreeRequest/Response` + `ShareFileRequest` 两个方向都在注册表；**服务方双好友判定**：既要求「声称的 requester 是我好友」又要求「提出这条链路的对端也是我好友」（`network/transport/handle_share.rs:303-312`，注释记着"`from` 自报可伪造"）；请求方无链路时会尝试中继，**没有任何邻居接住就返回 Err**（`commands/share.rs:199-206`，注释记着旧实现 A1：返回 Ok、界面留一条"你正在下载"而请求从未离开本机） | 不适用(理由)：请求本身是即时帧；真正的传输阶段走标准文件通道，取消归 `cancel_file_transfer`（F-FIL-001/002） | **PARTIAL** 请求发出后若对端始终不推流，聊天里那句「你正在下载…」不会被收回（请求侧无 pending/超时）；但**没有卡住的进度条**——任务中心只列真实传输 → 属文案级瑕疵 | PASS 服务方那条提示用「请求下载」而**不是**「下载了」，理由写在 `handle_share.rs:329-331`：此刻尚无任何成功证据，写成完成时态就是一句可能被证伪的陈述 | PASS **路径安全有三道**：① 服务方 `canonicalize` 两侧后判 `starts_with` + `is_file()`（`:320-325`，这正是"词法前缀不是沙箱"的正解）；② 接收侧文件名一律过 `safe_file_name`（只允许 basename，拒 `/`、`\\`、`.`、`..`、NUL，`file/share_walk.rs:307-316`）；③ `transfer_id` 也被白名单化 `[A-Za-z0-9_-]{1,64}`，注释写明它会被拼进落盘路径且 `File::create` 会截断（`:318-335`）。有穿越用例（`commands/logs_tests.rs:765`） | PARTIAL share 侧无具名 `code=`（并入 B1-F1 族），但 A1 那类"假成功"已被明确修掉 | **PARTIAL** |
 | F-OBS-007 | 日志面（19 条）与辅助窗口生命周期 | PASS 读/清/位置/上次退出/诊断包/前端心跳与慢操作上报都在注册表；**开窗命令全部 `#[tauri::command(async)]`**（`commands/logs.rs:662/741/808/1114/1158/1275`） | 不适用(理由)：读日志与开窗都不是可中断的长任务 | PASS 开窗走**单一入口** `ensure_aux_window`（单例 + 串行创建，注释记着"连点会出怪事"的来源）；常驻/销毁逐窗登记（常驻＝群任务/预览/外链，销毁＝设置/日志）；`decorate_aux_window` **只把 AppKit 那几行投回主线程**、命令本身不跑主线程（`:240-261` 同时解释了 macOS 的 AppKit 约束与 Windows「建 WebView2 会在调用线程泵消息 ⇒ IPC 重入 ⇒ 主线程永久挂死」，并记下 2026-09-20 真机"点设置整个界面无响应只能杀进程"）；`run_on_main_thread` 只入队，而 CreateWindow 走同一队列**且先入队** ⇒ 拿到 `ns_window()` 时不可能为空 | PASS 日志窗口 + `get_log_locations` 给出三条真实路径（多实例 `gosslan-1.log`），注释写明"前端不许自己拼——差一个数字就是别人的日志"；诊断包导出回报 `redactions` 次数 | PASS `logs_tests` 有路径穿越与 `sanitize_file_name` 用例（`:765`）；`lib_window_tests` 有窗口源码断言 | PARTIAL `logger.clear()` 删内存环与两份日志文件**但不写任何标记**（`logging.rs:929-936`）⇒ 若用户清过日志再来报障，支持侧看不出"曾清空"；崩溃现场文件**不参与轮转也不被 clear 删除**（`:944-953`），这一点是好的 | **PARTIAL** |
+| F-OBS-008 | 外链（导入 / 导出 / 清理） | PASS 6 条命令在注册表；URL 导入由**后端**拉取（注释写明是为了避开 WebView 的 CORS），导入前 `validate_external_url` 只放 http/https 且 host 非空（`commands/external_links.rs:41-48`，注释记着"等于把一条本机攻击面交给用户随手粘贴的字符串"） | 不适用(理由)：一次拉取，10s 超时就是它的中断边界 | PASS 三重收口：**10s 超时** + **重定向限 3** + **流式累计截断**（`content_length` 预检之外，还有逐块累加、超 256KB 立即中止，注释写明"不能先 `bytes()` 再量大小 —— 没有 Content-Length 的服务端可以先把几个 GB 拉进内存"）；上限：20 条链接 / 32 字符名 / 256KB 导入 | PASS 所有失败都是具体中文 Err（HTTP 状态码、超限多少、非 UTF-8）；导出回报真实路径供移动端交给系统保存框 | PASS 删除闸是**纯函数** `is_export_artifact_path`（`external_links.rs:297-308`）：要求**父目录恰好等于** `cache/exports` + 文件名形状 + 不含 `..`，并明确写下"不能用 `Path::starts_with` 当安全闸：`cache/exports/../../x` 也会通过" | PARTIAL 无具名 `code=`（并入 B1-F1 族），但错误文案本身可读 | **PARTIAL** |
+| F-PLF-010 | 文件另存 / 复制 / 剪贴板 / 预览（helpers 面） | PASS 7 条命令在注册表；`save_media_as` 的 `destination` 来自用户从系统另存框选出的完整路径，**不是**把远端文件名拼进去 | 不适用(理由)：单次文件操作；大文件另存进阻塞池 | PASS msg→本地路径的解析**只有一处** `resolve_media_path`（`commands/helpers.rs:159-163` 明写"安全边界必须只有一处"），并给出 `Present` / `Unknown` / `Gone` 三态、各自返回具体 Err；Android `content://` 复用 `copy_file` 已验证的 ContentResolver 分支 | PASS 失败都是具体 Err；`media_present` 对未知行返回 true（已登记的宽松口径） | PARTIAL 本轮读到实现，**未读到针对"单一解析器"的断言测试** ⇒ 标待补 | PARTIAL 无具名 `code=`（并入 B1-F1 族） | **PARTIAL** |
 | F-OBS-002 | 前后端契约双向对账（161 命令 / 事件面） | PASS 门面唯一：`IPC 只能从 src/api 门面走`（含「6 条命令在 api 上根本没有包装」的回归） | 不适用(理由)：这是判据不是用户操作 | 不适用(理由)：同上 | 不适用(理由)：同上 | **PASS（我实跑）** `node --test src/api/events.test.ts src/utils/mapContract.test.ts` ⇒ **EXIT=0，17/17**；另独立 `comm` 复算：注册 161 / 去重调用名 160，孤儿仅 `get_topology`（`events.test.ts:375` 自declare 无 UI 入口） | PASS 命令名与注册表逐条对账、「门面之下不许留没人引用的包装」都是现成判据 | **PASS** |
 | F-OBS-003 | 诊断面：错误分类 / 上限 / 脱敏 / 访问控制 | 不适用(理由)：非用户动作 | 不适用(理由)：同上 | PASS 单文件 512 KB 轮转（`logging.rs:140/1070`），有真文件读写测试 `logger_persists_to_file_and_rotates:1715` | 部分：日志窗口有独立 entry（`logs.html` + `src/entries/logs.ts`），用户可查 | **已证**（上两行测试名 + 我跑通的对账族） | **PARTIAL** 具名 `code=` 共 **87** 个、日志调用 363 处（error 81 / warn 129 / info 153），覆盖面广；但**关键操作结局缺码**（B1-F1）；脱敏是形状级（`diagnostics.rs:19-22`，作者自述并保留文件名/大小以便查传输故障）⇒ 隐私与可查性是**登记过的取舍** | **PARTIAL** |
+
+## 六、FID → 命令映射（覆盖度的唯一可辩护口径）
+
+**先说结论：我试过三个口径，前两个都不成立。**
+① 按"该命令的定义文件是否被本审计文档提及" ⇒ 会得到 **161/161 = 100%**——因为我把缺口模块名写进了文档，**指标被我自己的缺口表污染**；
+② 按"命令名是否出现在矩阵里" ⇒ 只有 **19/161 = 12%**——而 `cancel_message` 明明审过（F-MSG-014），只因行内写的是行为描述而没出现名字；
+③ 下表按"**我到底读了什么**"分级，只有 A 级计入覆盖。
+
+**分级定义**：**A = 读过函数体或关键分支**（能说出它怎么决定终态/怎么失败）｜**B = 只读过签名、调用点或结构形状**（知道它存在、参数与所在链路，但没读它内部）｜**C = 只在 `grep pub fn` 里见过名字**。
+
+### A 级（计入覆盖）
+
+| FID | A 级命令（读过函数体/关键分支） |
+|---|---|
+| F-MSG-014 / F-MSG-015 | `cancel_message`（含三态 `MessageCancelOutcome` 与群分支） |
+| F-MSG-040 | `recall_message` |
+| F-MSG-050 | `mark_read` |
+| F-PLF-007 | `updater_cancel` |
+| F-PST-004 | `delete_conversation` · `clear_all_data` |
+| F-FIL-004 | `download_shared_file` |
+| F-IDL-001 | `get_safety_number` · `rename_group` 的入站对应（`handle_group_rename`） |
+| F-GRP-001 | `group_add_member` · `group_remove_member` · `transfer_group_creator` · `rename_group`（creator 门控逐个读过） |
+| F-OBS-007 | `get_logs` · `clear_logs` · `get_log_locations` |
+| F-OBS-008 | `export_external_links` · `cleanup_external_links_export` · `import_external_links_file` · `import_external_links_from_url` |
+
+**A 级合计 19 条命令**（现算脚本报 20 个 token，多出的那个是内部处理器 `handle_group_rename`，它不是 tauri 命令、不计入 161）。这就是我敢说"这 19 条有六格结论"的全部。
+
+### B 级（不计入覆盖，只说明链路形状）
+
+`save_settings`（读了前端 `persistSettings` 与它的 catch，没读 Rust 侧）· `open_settings_window`/`open_log_window`/`open_group_todos_window`/`open_image_preview`/`prewarm_aux_windows`/`open_link_window`（读了 `#[tauri::command(async)]` 形状与 `ensure_aux_window` 的纪律，没读各自函数体）· `save_media_as` · `copy_file` · `save_data_file` · `start_network`/`stop_network`/`set_channel_enabled`/`get_runtime_snapshot`（只在快照与事件契约里见过）· `get_relay_config`/`save_relay_config`/`check_relay_server`/`list_routed_endpoints`/`add_routed_endpoint`/`remove_routed_endpoint`（只在设置页调用面见过）· `send_file_auto` · `request_share_tree` · `export_diagnostics_bundle` · `reset_settings` · `delete_messages` · `sync_friend_keys`/`get_friend_key_rotations`。
+
+### C 级（只在名字清单里出现，**明确未审**）
+
+`get_device_info` · `update_profile` · `list_interfaces` · `get_peers` · `search_nearby_peers` · `focus_window` · `shake_window` · `request_attention` · `set_unread_badge` · 好友四件套（`get_friends`/`send_friend_request`/`respond_friend_request`/`get_pending_requests`/`remove_friend`/`default_nickname`）· `send_message` · `get_messages`/`get_latest_messages`/`get_conversations`/`ensure_conversation`/`set_conversation_pinned`/`get_conv_link`/`get_message_count`/`get_pending_message_operations`/`get_group_todo_messages` · `send_group_message`/`send_group_reaction`/`pin_group_message`/`set_message_render`/`get_group_delivery_summaries`/`resend_group_delivery` · 群公告与群待办六条 · `send_todo_image`/`save_todo_image_bytes`/`todo_image_meta` · `request_content`/`request_content_by_cid`/`cancel_content_fetch`/`get_content_transfers`/`get_transfers` · `delete_file`/`save_outgoing_image`/`open_file_native`/`read_file_preview`/`read_content_preview`/`copy_file_to_clipboard`/`read_clipboard_file_paths`/`media_present` · `export_chat_text` · `get_discovery_diag`/`get_runtime_diag`/`set_app_active` · `window_minimize`/`window_toggle_maximize`/`window_is_maximized`/`window_close`/`set_native_titlebar_buttons_hidden`/`apply_macos_window_shape` · `search_chat_history` · `import_picked_file`/`request_ble_permissions`/`set_ui_language` · `broadcast_chat_style` · `list_favorites`/`add_favorite`/`remove_favorite`/`read_favorite_preview` · `get_cache_info`/`clean_cache_now`/`set_cache_policy` · `create_group`/`leave_group`/`distribute_group_key`/`get_groups` · `get_settings`/`reset_settings` · `get_previous_exit` · `notify_desktop`/`send_test_notification` · `login`/`updater_status` 之外的更新命令 · `ui_heartbeat`/`report_frontend_slow_op`/`log_frontend_error` · `take_group_todo_focus`/`request_group_todo_focus`/`get_group_todos_context`/`get_image_preview_gallery`/`close_settings_window`/`restart_app`。
+
+**所以真实进度是**：**19 条 / 161 条 ≈ 12% 的命令有六格结论**；33 行矩阵里剩下的行讲的是**行为族**（例如"群成员级投递"这一族横跨收发两侧、多张表与清扫器），它们比单条命令大，但不能拿来充命令数。现算命令：
+
+```bash
+python3 - <<'EOF'
+import re
+s=open("docs/notes/closedloop-matrix-2026-10-26.md").read()
+sec=s.split("### A 级（计入覆盖）",1)[1].split("**A 级合计",1)[0]
+names=set()
+for line in sec.splitlines():
+    if line.startswith("| F-"):
+        for tok in re.findall(r"`([a-z_0-9]+)`", line): names.add(tok)
+print("A 级命令数:", len(names), "/ 161")
+EOF
+```
 
 ## 二、读数
 
