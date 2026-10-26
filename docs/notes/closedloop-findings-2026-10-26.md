@@ -245,6 +245,14 @@ tx.commit()?; Ok(())
 
 ---
 
+**B1-K4 · 「这位好友的公钥是哪一把」有两套读取次序，分叉期安全码仍会显示"一致"** —— 逐处读到：解密与 1:1 密封走 `sender_x25519_pubkey` 的**好友表优先、peers 回落**（`network/transport/e2ee_payload.rs:20-33`）；群密钥分发 `resolve_member_x25519`（`network/transport/peer_state.rs:42-51`，`pick_member_x25519 = peers.or(friends)`，顺序有测试钉住 `peer_state_tests.rs:47`）与界面安全码 `get_safety_number`（`commands/friends.rs:39-52`）走**peers 优先**。注释自己把后果写出来了：「**『双方安全码对得上』并不证明消息解得开**」（`e2ee_payload.rs:16-19`）。
+**为什么仍判不修**：① 这个分叉有一个**已存在的补偿机制**——新候选密钥会被登记成 `PendingKeyRotation` 并 `emit("friend-key-changed")`（`network/transport/peer_registry.rs:39-51`），只对好友生效（非好友不许刷换钥横幅，`lib_friend_identity_tests.rs:423-425` 有断言），同一对候选去重；前端收进 `keyRotations`（`src/stores/useChatStore.ts:150`），聊天界面弹「同步新密钥 / 删除好友」横幅。所以"消息突然收不到"这一刻，用户**同时**看得到换钥横幅。② 加密次序（好友表优先）正是安全设计：`update_friend_pubkeys` 用 `COALESCE` **只填空、绝不覆盖**（`db/friends.rs:40-63`，理由写着"覆盖式写入会让一次伪造广播永久改掉好友真实公钥"），`replace_friend_pubkeys` 要用户显式确认 + Hello 自验签（`:65-80`）。把加密也改成 peers 优先，等于把这条信任锚点拆掉。
+**残余（未修的那一小半，属可选改进）**：分叉窗口内安全码**仍显示"一致"**，因为安全码读的是 peers 里的新钥匙，而另一端的核验结果也会一致 ⇒ 唯一能提醒用户的是那条横幅，靠它自己在视线内。若将来要补，正确做法是**让安全码自己知道"存在待确认轮换"并显式标注**，而不是改加密次序。**不做**：按 稳定 > 可维护 排序，这条排在第八条之后，且需要动安全码的呈现口径（属产品决策）。
+
+**B1-K5 · 「同一条消息在气泡与任务中心两种读法」** —— `sent`（字节已写出、对端未回执）在气泡上算完成（不再转圈）、在任务中心算"还有事没办完"（`blocked` + `waiting_ack`）。`src/utils/taskCenter.ts:137-148` 写明"两种读法是语义，不是漂移"，且两处共用同一个判定函数（现算：`isLiveTransferStatus` 的引用只落在 `taskCenter.ts` 与其测试两个文件）。**不修**：改成一种反而丢掉其中一个视图的有效信息。
+
+---
+
 ## 撤回的六条（不要重复立案）
 
 以下六条是我在取证第一阶段提出、随后被自己复验证伪的。写成这段是为了防止以后重新发现一遍。
