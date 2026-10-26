@@ -245,6 +245,46 @@ tx.commit()?; Ok(())
 
 ---
 
+## B3-F2 · 「清除聊天数据」的清表清单是手抄的 15/20，两张台账表会被留下（P3，建议加守卫）
+
+**适用的六格**：可执行 PASS；可恢复 PASS（失败会 `?` 上报、可见）；**可验证 PARTIAL**；**可诊断 PARTIAL**。
+
+**断点**：`src-tauri/src/commands/favorites.rs:528-559`。
+
+**读数（现算）**：schema 里共 **20** 张表，清表循环点名 **15** 张；另外两条用 `LIKE` 局部删（`settings` 的 `gk:%`、`conversation_clocks` 的 `group:%`）。**完整没被清的是 `friends`、`group_file_acks`、`group_recalled_messages`**（复跑命令写在下面）。`friends` 不清是**对**的——那是通讯录不是聊天数据；但另两张是**聊天数据的台账**，而且父表已经被清空：
+
+| 留下的表 | 谁在读（非测试引用数） | 父表已清空后的后果 |
+|---|---|---|
+| `group_file_acks` | **16** 处 | 群文件 ACK 账本里留着指向已删 `group_files` / `group_file_recipients` 的行；30s tick 的 `replay_pending_group_file_acks` 仍会扫到它们（靠"已 received 就跳过"多半只是空转，但**行永不消失**，每次清空都往上叠） |
+| `group_recalled_messages` | **7** 处 | 撤回账本留着已不存在的 msg_id；`is_recalled` 对同名 msg_id 仍返回 true ⇒ 若别处重投同一 msg_id，撤回路径会走 B1-F6 的"只查账本就短路"，把这条旧记录当成"已撤回" |
+
+**这是"手抄清单会漂"的典型**：清表集合是人名一个个列的，而 schema 是另一处事实源，两者之间**没有任何判据**。加表时没人会记得回来加一行 ⇒ 新账本表默认成为"清除数据清不掉的东西"。
+
+**不夸大的定性**：这不是数据丢失，也不会让用户看到错的状态；它是**清理不彻底 + 行慢慢累积**。所以判 P3，修复建议是**加守卫而不是改行为**。
+
+**建议修法（最小，且是本仓最常做的事）**：
+1. 在 `clear_all_data` 旁边加一条判据：从 `SCHEMA`（或 `sqlite_master`）现解析出全部表名，断言「每张表要么在清理集合里、要么在显式豁免表里且写了一句理由」。豁免表当前只该有 `friends`（通讯录）与 `settings`/`conversation_clocks`（键值与非群时钟，按 `LIKE` 局部清）。这样**加一张新表忘记登记就会红**。
+2. 两张台账表按语义决定：清（推荐，它们属聊天数据的派生账）或显式豁免并写理由。若要保留 `group_recalled_messages`，需同时确认"撤销 B1-F6 的幂等短路"不会把旧账本当依据。
+3. 计数不要手抄：判据里的"应清表数"由步骤 1 的解析结果现算，本仓第 8 步「文档硬数字对账」就是这个立场。
+
+**爆炸半径**：`favorites.rs` 一处 + 一条 `node`/`python` 判据脚本（族里已有 `check-invariant-hooks` 一类现成的家，先找它）。不动 schema、不动协议。
+**验收标准**：往 `SCHEMA` 临时加一张表（不登记进清理集合）⇒ 判据必须红；把清理集合里删一张 ⇒ 也必须红（双向）。复跑命令：
+
+```bash
+python3 - <<'EOF'
+import re
+schema=open("src-tauri/src/db.rs").read()
+tables=sorted(set(re.findall(r"CREATE TABLE (?:IF NOT EXISTS )?([a-z_]+)",schema)))
+src=open("src-tauri/src/commands/favorites.rs").read()
+blk=src.split("for table in [",1)[1].split("]",1)[0]
+cleared=sorted(set(re.findall(r'"([a-z_]+)"',blk)))
+print("schema",len(tables),"cleared",len(cleared))
+print("NOT cleared:",[t for t in tables if t not in cleared])
+EOF
+```
+
+---
+
 **B1-K4 · 「这位好友的公钥是哪一把」有两套读取次序，分叉期安全码仍会显示"一致"** —— 逐处读到：解密与 1:1 密封走 `sender_x25519_pubkey` 的**好友表优先、peers 回落**（`network/transport/e2ee_payload.rs:20-33`）；群密钥分发 `resolve_member_x25519`（`network/transport/peer_state.rs:42-51`，`pick_member_x25519 = peers.or(friends)`，顺序有测试钉住 `peer_state_tests.rs:47`）与界面安全码 `get_safety_number`（`commands/friends.rs:39-52`）走**peers 优先**。注释自己把后果写出来了：「**『双方安全码对得上』并不证明消息解得开**」（`e2ee_payload.rs:16-19`）。
 **为什么仍判不修**：① 这个分叉有一个**已存在的补偿机制**——新候选密钥会被登记成 `PendingKeyRotation` 并 `emit("friend-key-changed")`（`network/transport/peer_registry.rs:39-51`），只对好友生效（非好友不许刷换钥横幅，`lib_friend_identity_tests.rs:423-425` 有断言），同一对候选去重；前端收进 `keyRotations`（`src/stores/useChatStore.ts:150`），聊天界面弹「同步新密钥 / 删除好友」横幅。所以"消息突然收不到"这一刻，用户**同时**看得到换钥横幅。② 加密次序（好友表优先）正是安全设计：`update_friend_pubkeys` 用 `COALESCE` **只填空、绝不覆盖**（`db/friends.rs:40-63`，理由写着"覆盖式写入会让一次伪造广播永久改掉好友真实公钥"），`replace_friend_pubkeys` 要用户显式确认 + Hello 自验签（`:65-80`）。把加密也改成 peers 优先，等于把这条信任锚点拆掉。
 **残余（未修的那一小半，属可选改进）**：分叉窗口内安全码**仍显示"一致"**，因为安全码读的是 peers 里的新钥匙，而另一端的核验结果也会一致 ⇒ 唯一能提醒用户的是那条横幅，靠它自己在视线内。若将来要补，正确做法是**让安全码自己知道"存在待确认轮换"并显式标注**，而不是改加密次序。**不做**：按 稳定 > 可维护 排序，这条排在第八条之后，且需要动安全码的呈现口径（属产品决策）。
