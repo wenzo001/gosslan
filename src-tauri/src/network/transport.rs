@@ -1413,7 +1413,6 @@ async fn handle_group_key(
         // 群关系同步，群聊就会凭空重新出现在聊天列表（关系同步 ≠ 聊天同步）。
         db::observe_clock(&dbc, &conv_id, clock).ok();
     }
-    let _ = state.app.emit("group-key-received", &group_id);
     let _ = state.app.emit("groups-updated", &group_id);
     // 第一次成为这个群的成员 ⇒ 记一个"欠一份群历史"的标记并立刻试一趟
     //（负责人 2026-10-16：新进群的人要自动拿到群里的聊天与群任务）。

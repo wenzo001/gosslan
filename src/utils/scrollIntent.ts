@@ -43,13 +43,3 @@ export function classifyItemsChange(
   if (prepended) return { kind: "prepend", firstIdx, lastIdx };
   return { kind: "none", firstIdx, lastIdx };
 }
-
-/** 只有这两种变化才允许把 `pinned` 重置为真（打开会话 / 整会话替换）。 */
-export function shouldPinOnItemsChange(kind: ItemsChangeKind): boolean {
-  return kind === "initial" || kind === "swap";
-}
-
-/** 只有整会话替换才需要"等测量收敛后再统一贴底"的收敛窗口。 */
-export function shouldSettleOnItemsChange(kind: ItemsChangeKind): boolean {
-  return kind === "swap";
-}

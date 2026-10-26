@@ -26,9 +26,6 @@ export function isSelfMessage(msg: Pick<MessageRecord, "sender_id" | "receiver_i
   return !!msg.sender_id && msg.sender_id === msg.receiver_id;
 }
 
-/** 自聊里能发的内容类型（用户 2026-09-16：先只支持文本）。 */
-export const SELF_CHAT_KINDS: readonly string[] = ["text", "code"];
-
 /**
  * 「我自己」当作一条 `Friend` 来渲染：通讯录那行「自己」与自己的资料页走的是好友同一条路径
  * （用户 2026-09-17），深链 `/contacts/<自己的 device_id>` 也要能还原出这一条。
@@ -48,8 +45,4 @@ export function selfFriendOf(
     device_type: device.device_type ?? "",
     online,
   };
-}
-
-export function selfChatSupports(kind: string): boolean {
-  return SELF_CHAT_KINDS.includes(kind);
 }

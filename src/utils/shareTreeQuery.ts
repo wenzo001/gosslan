@@ -17,8 +17,6 @@ export interface ShareTreeSnapshot {
   truncated: boolean;
 }
 
-export const shareTreeKey = (friendId: string) => [SHARE_TREE_QUERY, friendId] as const;
-
 export function shareTreeQueryOptions(
   friendId: string,
   fetcher: (friendId: string) => Promise<{ entries: ShareEntry[]; truncated: boolean }>,

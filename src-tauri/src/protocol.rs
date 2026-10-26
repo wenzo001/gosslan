@@ -1268,37 +1268,6 @@ pub fn todo_custom_icon_is_valid(s: &str) -> bool {
     TODO_CUSTOM_ICONS.contains(&s)
 }
 
-/// 投票的**定义**层（`kind = "poll"`）。结构与任务同构。
-///
-/// ⚠️ **`options` 一旦创建不可变**：否则选项下标会错位，`poll_vote` 的 choices
-/// 会指向错误的选项。要改选项就新建一个投票。
-///
-/// **不做匿名投票**：群密钥全员共享 + 选票必然带签名身份，"匿名"只能是界面隐藏，
-/// 无权可验 —— 那比不做更糟（给人虚假的安全感）。
-#[derive(Serialize, Deserialize, Clone, Debug)]
-pub struct PollPayload {
-    pub poll_id: String,
-    pub question: String,
-    pub options: Vec<String>,
-    /// 是否多选
-    #[serde(default)]
-    pub multi: bool,
-    /// 是否已关闭（关闭后拒绝新票）
-    #[serde(default)]
-    pub closed: bool,
-    #[serde(default)]
-    pub creator: String,
-}
-
-/// 投票的**选票**层（`kind = "poll_vote"`）：每人只写自己那一格。
-/// **撤票 = `choices: []` 的普通更新**，不是单独的删除事件。
-#[derive(Serialize, Deserialize, Clone, Debug)]
-pub struct PollVotePayload {
-    pub poll_id: String,
-    /// 选中的选项下标（空 = 撤票）
-    pub choices: Vec<u32>,
-}
-
 /// 群公告的载荷（`kind = "announcement"`）。
 ///
 /// 「当前公告」= 按 `(seq, msg_id)` 取最大的那条（**不是**墙上时间）——

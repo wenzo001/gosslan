@@ -4,6 +4,8 @@
 > 现在的验收结论、问题清单与发布判定读 **[`rc-5.0-report.md`](rc-5.0-report.md)**（持续更新）；
 > 依赖与决策的现行口径读 [`open-source-replacement-matrix.md`](open-source-replacement-matrix.md)。
 > 本文里的 commit 号、文件数、"已完成/未开始"判断都属于当时那一版。
+> **2026-10-26 后续**：文中点名的零引用导出 `useBackLayer.ts::backLayerDepth` 与
+> `shareTreeKey` 已按用户拍板删除（连同对应断言），当前索引以代码与 AOCI 为准。
 
 > 分支：`feat/5.0` · 基线：`origin/main` @ `643ca1e` · 当前版本：`5.0.21`
 > 当前 tip：`6672ac3`（app，5.0.11–5.0.21）+ docs 提交（矩阵与本报告）；本地未推送。

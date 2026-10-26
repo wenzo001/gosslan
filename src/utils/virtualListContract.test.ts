@@ -130,3 +130,18 @@ test("贴底跟随只有我们自己：库的 end 锚定关掉，测量回调同
   assert.match(src, /setScrollTop\(el\.scrollTop \+ delta\)/, "贴底时测量回调要同步跟 delta");
   assert.match(src, /item\.start \+ item\.size <= offset/, "非贴底只补完全在视口上方的行");
 });
+
+test("阅读位置按消息锚点恢复（不是只回同一像素）", () => {
+  const restore = read("src/utils/scrollRestore.ts");
+  assert.match(restore, /anchorKey\?: string/);
+  assert.match(restore, /anchorOffset\?: number/);
+  const list = read("src/components/VirtualList.vue");
+  assert.match(list, /function getAnchor\(\)/);
+  assert.match(list, /function scrollToAnchor\(/);
+  assert.match(list, /typeof j\.offset === "number"/, "applyJump 必须尊重锚点行内偏移");
+  assert.match(list, /item\.start \+ item\.size <= offset/, "只补整行完全在视口上方的行");
+  const chat = read("src/components/ChatWindow.vue");
+  assert.match(chat, /getAnchor\(\)/, "离开时必须保存锚点");
+  assert.match(chat, /scrollToAnchor\(saved\.anchorKey/, "恢复必须按消息 key 落位");
+  assert.match(chat, /onMounted\(\(\) => \{\s*if \(restoreScroll\.value\)/s, "子组件晚挂载要重试");
+});

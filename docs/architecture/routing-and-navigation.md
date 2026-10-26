@@ -166,7 +166,7 @@ history 选择、导航方向与 router 实例。这样路由契约可以在 Nod
 | 状态 | 实现 | 位置 |
 |---|---|---|
 | 输入草稿 | 模块级 `Map<convId, html>`，切走保存、切回恢复；发送成功即清 | `src/utils/composerDrafts.ts`、`src/components/chat/MessageComposer.vue` |
-| 滚动位置 | `ChatWindow` 按会话保存 `scrollTop`；切回时等新消息到达后恢复，期间关闭 VirtualList 的 swap 贴底 | `src/components/ChatWindow.vue`、`src/components/VirtualList.vue` |
+| 滚动位置 | `ChatWindow` 按会话保存「视口上沿消息 key + 行内偏移」；切回时按锚点恢复（锚点不在已加载缓存先补历史，找不到才退回像素），过期/有未读/离开时在底部则贴底；期间关闭 VirtualList 的 swap 贴底 | `src/components/ChatWindow.vue`、`src/components/VirtualList.vue`、`src/utils/scrollRestore.ts` |
 | 焦点 | 切会话后桌面端聚焦编辑器；弹窗关闭继续走 `BaseModal` 的焦点归还 | `MessageComposer.vue`、`BaseModal.vue` |
 
 草稿存 `innerHTML` 但恢复前经过白名单净化（只保留文本、`<br>`/块边界、token span 的 `data-mention-*`），不把外部标记重新解析执行。

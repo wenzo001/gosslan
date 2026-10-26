@@ -7,7 +7,7 @@
 import assert from "node:assert/strict";
 import test, { afterEach } from "node:test";
 import { QueryClient } from "@tanstack/vue-query";
-import { SHARE_TREE_QUERY, shareTreeKey, shareTreeQueryOptions } from "./shareTreeQuery.ts";
+import { SHARE_TREE_QUERY, shareTreeQueryOptions } from "./shareTreeQuery.ts";
 import type { ShareEntry } from "../types.ts";
 
 const clients: QueryClient[] = [];
@@ -24,14 +24,13 @@ const entry = (name: string): ShareEntry => ({ name, path: `/${name}`, is_dir: f
 
 test("按好友分键，且快照自带归属（下载不依赖当前会话）", async () => {
   const qc = client();
-  const a = await qc.fetchQuery(
-    shareTreeQueryOptions("A", async () => ({ entries: [entry("a.txt")], truncated: false })),
-  );
+  const aOpts = shareTreeQueryOptions("A", async () => ({ entries: [entry("a.txt")], truncated: false }));
+  const a = await qc.fetchQuery(aOpts);
   const b = await qc.fetchQuery(
     shareTreeQueryOptions("B", async () => ({ entries: [entry("b.txt")], truncated: true })),
   );
 
-  assert.deepEqual(shareTreeKey("A"), [SHARE_TREE_QUERY, "A"]);
+  assert.deepEqual(aOpts.queryKey, [SHARE_TREE_QUERY, "A"]);
   assert.equal(a.friendId, "A");
   assert.equal(b.friendId, "B");
   assert.deepEqual(a.entries.map((e) => e.name), ["a.txt"]);
@@ -53,16 +52,18 @@ test("慢的 A 后到：只写回 A 的 key，B 的当前快照不被覆盖", as
   );
 
   const inFlight = qc.fetchQuery(slowA);
-  await qc.fetchQuery(
-    shareTreeQueryOptions("B", async () => ({ entries: [entry("b.txt")], truncated: false })),
-  );
+  const bOpts = shareTreeQueryOptions("B", async () => ({
+    entries: [entry("b.txt")],
+    truncated: false,
+  }));
+  await qc.fetchQuery(bOpts);
   releaseA({ entries: [entry("a.txt")], truncated: true });
   await inFlight;
 
-  assert.equal(qc.getQueryData<{ friendId: string }>(shareTreeKey("B"))?.friendId, "B");
-  assert.equal(qc.getQueryData<{ friendId: string }>(shareTreeKey("A"))?.friendId, "A");
+  assert.equal(qc.getQueryData<{ friendId: string }>(bOpts.queryKey)?.friendId, "B");
+  assert.equal(qc.getQueryData<{ friendId: string }>(slowA.queryKey)?.friendId, "A");
   assert.equal(
-    qc.getQueryData<{ truncated: boolean }>(shareTreeKey("A"))?.truncated,
+    qc.getQueryData<{ truncated: boolean }>(slowA.queryKey)?.truncated,
     true,
     "慢树自己的截断位必须写回它自己的 key",
   );

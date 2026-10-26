@@ -40,8 +40,3 @@ export function getComposerDraft(convId: string | null | undefined): string {
 export function clearComposerDraft(convId: string | null | undefined): void {
   if (convId) drafts.delete(convId);
 }
-
-/** 诊断/测试用：当前草稿条数。 */
-export function composerDraftCount(): number {
-  return drafts.size;
-}

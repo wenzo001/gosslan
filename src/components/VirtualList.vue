@@ -271,11 +271,10 @@ virtualizer.value.shouldAdjustScrollPositionOnItemSizeChange = (
   // 贴底由 measureElement 的同步增量负责（避免和库各写一次）。
   if (pinned) return false;
   const offset = inst.scrollOffset ?? 0;
-  const isFirstMeasure = !inst.itemSizeCache.has(item.key);
   // **整行完全在视口上方**才补：这是"读着读着，上面一张图变高/变矮"的正解。
-  // 不能再加 `recentScrollUp()` 一票否决 —— 上翻时上方行变高同样会把正在读的内容推走
-  // （scrollreact 实测参照行位移 40px）；跨视口上沿的行（内容在锚点下方变化）仍然不补。
-  if (isFirstMeasure) return item.start < offset;
+  // 首次测量也走同一条判据（库的默认是 `item.start < offset`，会把跨上沿的**锚点行**
+  // 自己也补一笔 —— 它的顶端没变，补了只会把锚点往下推；2026-10-26 实测 29px）。
+  // 不能再加 `recentScrollUp()` 一票否决 —— 上翻时上方行变高同样会把正在读的内容推走。
   return item.start + item.size <= offset;
 };
 
@@ -437,8 +436,14 @@ function scrollToBottom() {
  * 「跳到指定消息」的待落定状态：先按虚拟器粗定位，再按真实 DOM 位置轮询校正。
  * 待落定记 **key** 而不是下标（prepend 会让下标整体位移）。
  */
-let pendingJump: { key: string; align: "top" | "bottom"; tries: number; until: number } | null =
-  null;
+let pendingJump: {
+  key: string;
+  align: "top" | "bottom";
+  /** 落点：锚点行上沿相对视口顶的偏移（px，可为负）。缺省 = align 的 8px 边距。 */
+  offset?: number;
+  tries: number;
+  until: number;
+} | null = null;
 let jumpTimer = 0;
 
 function pollJump() {
@@ -465,8 +470,13 @@ function applyJump() {
   if (!node) return;
   const cRect = el.getBoundingClientRect();
   const nRect = node.getBoundingClientRect();
+  // 锚点恢复用保存的行内偏移（可为负）；未读/引用定位缺省 8px 边距。
   const desiredTop =
-    j.align === "top" ? cRect.top + 8 : cRect.top + el.clientHeight - nRect.height - 8;
+    typeof j.offset === "number"
+      ? cRect.top + j.offset
+      : j.align === "top"
+        ? cRect.top + 8
+        : cRect.top + el.clientHeight - nRect.height - 8;
   const delta = nRect.top - desiredTop;
   if (Math.abs(delta) < 0.5) return;
   setScrollTop(Math.max(0, el.scrollTop + delta));
@@ -602,6 +612,66 @@ function getScrollTop(): number {
   return container.value?.scrollTop ?? 0;
 }
 
+/**
+ * 视口上沿那条消息的稳定身份 + 行内偏移（会话离开时保存）。
+ *
+ * 取「第一条底边进入视口」的行：它可能跨过视口上沿（offset 为负），也可能刚好在顶部。
+ * 恢复时把**同一条消息**的同一条顶边放回同一偏移，才是"回到当时那一屏"；
+ * 只存 scrollTop 在动态高度列表里会落到别的消息（见 `utils/scrollRestore` 的说明）。
+ */
+function getAnchor(): { key: string; offset: number; top: number } | null {
+  const el = container.value;
+  if (!el) return null;
+  const cr = el.getBoundingClientRect();
+  const rows = Array.from(el.querySelectorAll<HTMLElement>("[data-vlist-key]"))
+    .map((n) => {
+      const r = n.getBoundingClientRect();
+      return { key: n.getAttribute("data-vlist-key") ?? "", top: r.top - cr.top, bottom: r.bottom - cr.top };
+    })
+    .sort((a, b) => a.top - b.top);
+  const hit = rows.find((r) => r.bottom > 1) ?? rows[0];
+  if (!hit || !hit.key) return null;
+  return { key: hit.key, offset: Math.round(hit.top * 100) / 100, top: el.scrollTop };
+}
+
+/**
+ * 按「消息 key + 行内偏移」恢复位置（锚点恢复）。
+ *
+ * TanStack 的 `scrollToIndex` 在行未实测时用的是估算高度，落点会偏；所以这里先用它把目标
+ * 滚进渲染窗口，再复用 `pendingJump` 的 100ms 轮询按**真实 DOM** 校正（与未读/引用定位同一条链）。
+ * 锚点不在当前已加载的 items 里时退回像素 `fallbackTop`（调用方负责先补历史）。
+ */
+function scrollToAnchor(key: string, offset: number, fallbackTop: number): boolean {
+  const el = container.value;
+  if (!el || !key) {
+    scrollToOffset(fallbackTop);
+    return false;
+  }
+  const i = props.items.findIndex((it) => keyOf(it) === key);
+  if (i < 0) {
+    scrollToOffset(fallbackTop);
+    return false;
+  }
+  setPinning(false);
+  suppressTransient();
+  resetBuffer();
+  pendingJump = { key, align: "top", offset, tries: 0, until: Date.now() + 2500 };
+  // 不用库的 `scrollToIndex`：它会在后续帧继续把目标对齐到 8px，和这里的锚点偏移
+  // （可能是 -21.5px）互相覆盖，表现为 pendingJump 试满 10 次后停在错的位置。
+  // 直接按估算起点滚过去，再由 pendingJump 按真实 DOM 校到**行内偏移**。
+  virtualizer.value.cancelScroll();
+  const targetOffset = virtualizer.value.getOffsetForIndex(i, "start")?.[0];
+  if (typeof targetOffset !== "number") {
+    scrollToOffset(fallbackTop);
+    return false;
+  }
+  setScrollTop(Math.max(0, targetOffset - offset));
+  computeScrollState();
+  void nextTick(() => applyJump());
+  pollJump();
+  return true;
+}
+
 function scrollToOffset(offset: number) {
   const el = container.value;
   if (!el) return;
@@ -674,7 +744,16 @@ onBeforeUnmount(() => {
   }
 });
 
-defineExpose({ scrollToBottom, scrollToIndex, recentScrollUp, setPinned, getScrollTop, scrollToOffset });
+defineExpose({
+  scrollToBottom,
+  scrollToIndex,
+  scrollToAnchor,
+  getAnchor,
+  recentScrollUp,
+  setPinned,
+  getScrollTop,
+  scrollToOffset,
+});
 </script>
 
 <template>

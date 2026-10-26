@@ -116,8 +116,3 @@ export function useBackLayer(active: () => boolean, close: () => void): () => vo
   onBeforeUnmount(dispose);
   return dispose;
 }
-
-/** 诊断用：当前层数。 */
-export function backLayerDepth(): number {
-  return stack.depth();
-}

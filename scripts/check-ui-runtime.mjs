@@ -3790,17 +3790,26 @@ async function runScrollRestore(cdp, url) {
     const { useChatStore } = await import('/src/stores/useChatStore.ts');
     const chat = useChatStore();
     const rows = [];
-    for (let i = 0; i < 30; i += 1) {
+    // 混合高度：file-image 在无后端时渲染文件卡（≈90px），而估算按图片上限 288px；
+    // 这正是"回来位置不准"的真实来源（老消息没有 w/h / 预览未就绪），
+    // 也让下面两条锚点判据能真正咬住，而不是只看 scrollTop 的伪通过。
+    for (let i = 0; i < 50; i += 1) {
+      const kind = i % 5 === 1 ? 'file' : i % 7 === 2 ? 'code' : 'text';
+      const content = kind === 'file'
+        ? JSON.stringify({ name: 'p' + i + '.PNG', path: '/tmp/probe-p' + i + '.PNG', size: 1000, subtype: 'image' })
+        : kind === 'code'
+          ? 'function f' + i + '(x) { const y = x * 2; return y; }'
+          : ('第' + i + '条，用来把列表撑得足够长。').repeat(4);
       rows.push({
-        conv_id: 'peer-scroll', msg_id: 'm-scroll-' + i,
+        conv_id: 'peer-scroll', msg_id: 'm-scroll-' + i, local_id: 'm-scroll-' + i,
         sender_id: i % 2 ? 'peer' : 'dev-me', sender_name: i % 2 ? '对方' : '我',
-        kind: 'text', content: ('第' + i + '条，用来把列表撑得足够长。').repeat(4),
+        kind, content,
         status: 'sent', seq: i + 1, ts: 1700000000000 + i * 60000,
       });
     }
     chat.activeConv = 'peer-scroll';
     chat.messages['peer-scroll'] = rows;
-    await new Promise((r) => setTimeout(r, 500));
+    await new Promise((r) => setTimeout(r, 700));
     const el = document.querySelector('.vlist-no-anchor');
     return { scrollH: el ? el.scrollHeight : 0, clientH: el ? el.clientHeight : 0,
       rows: document.querySelectorAll('[data-vlist-key]').length,
@@ -3816,24 +3825,49 @@ async function runScrollRestore(cdp, url) {
     return t('chat.backToLatest');
   })()`);
 
-  const scrolled = await cdp.eval(`(() => {
+  // 锚点读数：视口上沿第一条（含跨上沿）消息的 key 与相对视口顶的偏移。
+  // ⚠️ 只读 scrollTop 是不够的：估算布局下同一个像素会落在**另一条消息**上。
+  const anchorExpr = `(() => {
     const el = document.querySelector('.vlist-no-anchor');
     if (!el) return null;
-    el.scrollTop = Math.min(900, Math.max(0, el.scrollHeight - el.clientHeight - 200));
+    const cr = el.getBoundingClientRect();
+    const rows = [...el.querySelectorAll('[data-vlist-key]')].map((n) => {
+      const r = n.getBoundingClientRect();
+      return { key: n.getAttribute('data-vlist-key'), top: r.top - cr.top, bottom: r.bottom - cr.top };
+    }).sort((a, b) => a.top - b.top);
+    const hit = rows.find((r) => r.bottom > 0.5) ?? rows[0];
+    return hit ? { key: hit.key, offset: +hit.top.toFixed(2), top: el.scrollTop,
+      max: el.scrollHeight - el.clientHeight } : null;
+  })()`;
+  // 先把 m-scroll-6（file-image：估算 288 / 实际约 90）滚到视口顶下 24px，
+  // 保证锚点落在一个**估算误差最大**的行上；随机中点可能恰好是文本，测不出问题。
+  const scrolled = await cdp.eval(`(async () => {
+    const el = document.querySelector('.vlist-no-anchor');
+    if (!el) return null;
+    el.scrollTop = 0;
+    await new Promise((r) => setTimeout(r, 300));
+    const target = [...el.querySelectorAll('[data-vlist-key]')]
+      .find((n) => n.getAttribute('data-vlist-key') === 'm-scroll-6');
+    if (target) {
+      const cr = el.getBoundingClientRect();
+      const r = target.getBoundingClientRect();
+      el.scrollTop += r.top - cr.top - 24;
+    }
     el.dispatchEvent(new Event('scroll', { bubbles: true }));
     return { top: el.scrollTop, max: el.scrollHeight - el.clientHeight };
   })()`);
-  await sleep(400);
+  await sleep(500);
   const before = await cdp.eval(`(() => {
     const el = document.querySelector('.vlist-no-anchor');
     const back = [...document.querySelectorAll('button')]
       .some((b) => (b.textContent || '').includes(${JSON.stringify(backLabel)}));
-    return { top: el ? el.scrollTop : -1, back };
+    const anchor = ${anchorExpr};
+    return { top: el ? el.scrollTop : -1, back, anchor };
   })()`);
-  check("上滑后离开底部（「回到最新」按钮出现，读数与写入一致）",
+  check("上滑后离开底部（「回到最新」按钮出现，且上沿锚点可读）",
     !!scrolled && scrolled.top > 100 && before.back === true
-      && Math.abs(before.top - scrolled.top) <= 2,
-    "top>100 + 按钮可见 + 读数不漂", JSON.stringify({ scrolled, before }));
+      && !!before.anchor && before.anchor.key !== "" && Math.abs(before.anchor.offset) < 100,
+    "top>100 + 按钮可见 + 锚点可读", JSON.stringify({ scrolled, before }));
 
   // 真实生命周期：卸载 → 保存；重挂载 → 读同一张模块级表。
   await cdp.eval("window.__probe.app.unmount()");
@@ -3844,15 +3878,76 @@ async function runScrollRestore(cdp, url) {
   check("第二次挂载复用了同一份 store（消息还在，量到的才是滚动那条链）",
     !!remounted && remounted.ok === true && remounted.pinia === true,
     "install ok + pinia reused", JSON.stringify(remounted));
-  await sleep(800);
-  const after = await cdp.eval(`(() => {
+  await sleep(900);
+  const after = await cdp.eval(`(async () => {
+    await new Promise((r) => setTimeout(r, 1200));
     const el = document.querySelector('.vlist-no-anchor');
-    return el ? { top: el.scrollTop, max: el.scrollHeight - el.clientHeight } : null;
+    const anchor = ${anchorExpr};
+    const { savedScrollPosition } = await import('/src/utils/scrollRestore.ts');
+    const st = el && el.__vueParentComponent ? el.__vueParentComponent.setupState : null;
+    const pj = st && st.pendingJump ? { key: st.pendingJump.key, offset: st.pendingJump.offset, tries: st.pendingJump.tries, left: st.pendingJump.until - Date.now() } : null;
+    const pick = (k) => {
+      const n = el ? el.querySelector('[data-vlist-key="' + k + '"]') : null;
+      if (!n) return null;
+      const cr = el.getBoundingClientRect(); const r = n.getBoundingClientRect();
+      return { key: k, top: +(r.top - cr.top).toFixed(2), h: +r.height.toFixed(2) };
+    };
+    return el ? { top: el.scrollTop, max: el.scrollHeight - el.clientHeight, anchor, saved: savedScrollPosition('peer-scroll'), pending: pj,
+      around: ['m-scroll-4','m-scroll-5','m-scroll-6'].map(pick) } : null;
   })()`);
-  check("卸载再挂载后落回离开时的位置（没有贴底）",
-    !!after && Math.abs(after.top - before.top) <= 8 && after.max - after.top > 150,
-    "scrollTop 与离开时相差 ≤8px 且离底部 >150px",
-    JSON.stringify({ before: before.top, after }));
+  check("卸载再挂载后落回**同一条消息**（不是只回到同一像素）",
+    !!before.anchor && !!after && !!after.anchor && after.anchor.key === before.anchor.key,
+    "上沿锚点 key 相同",
+    JSON.stringify({ before: before.anchor, after: after && after.anchor }));
+  check("卸载再挂载后锚点偏移不漂（≤2px）且没有贴底",
+    !!before.anchor && !!after && !!after.anchor
+      && Math.abs(after.anchor.offset - before.anchor.offset) <= 2
+      && after.max - after.top > 150,
+    "|Δoffset| ≤2px 且离底部 >150px",
+    JSON.stringify({ before: before.anchor, after: after && after.anchor }));
+
+  // 用户更常走的是「会话 A → 会话 B → 会话 A」，不是卸载重挂。两条路径共用
+  // ChatWindow 的 save/restore，但触发点是 activeConv 变化；这里单独锁一次。
+  const switched = await cdp.eval(`(async () => {
+    const { useChatStore } = await import('/src/stores/useChatStore.ts');
+    const chat = useChatStore();
+    const el = document.querySelector('.vlist-no-anchor');
+    const read = () => {
+      const cr = el.getBoundingClientRect();
+      const rows = [...el.querySelectorAll('[data-vlist-key]')].map((n) => {
+        const r = n.getBoundingClientRect();
+        return { key: n.getAttribute('data-vlist-key'), top: r.top - cr.top, bottom: r.bottom - cr.top };
+      }).sort((a, b) => a.top - b.top);
+      const hit = rows.find((r) => r.bottom > 0.5) ?? rows[0];
+      return hit ? { key: hit.key, offset: +hit.top.toFixed(2), top: el.scrollTop } : null;
+    };
+    const beforeSwitch = read();
+    const other = [];
+    for (let i = 0; i < 12; i += 1) {
+      other.push({
+        conv_id: 'peer-other', msg_id: 'm-other-' + i, local_id: 'm-other-' + i,
+        sender_id: i % 2 ? 'peer' : 'dev-me', kind: 'text',
+        content: ('另一会话第' + i + '条。').repeat(5), status: 'sent', seq: i + 1,
+        ts: 1700000000000 + i * 60000,
+      });
+    }
+    chat.messages['peer-other'] = other;
+    chat.activeConv = 'peer-other';
+    await new Promise((r) => setTimeout(r, 500));
+    chat.activeConv = 'peer-scroll';
+    await new Promise((r) => setTimeout(r, 900));
+    return { beforeSwitch, afterSwitch: read() };
+  })()`);
+  check("A→B→A 切换会话：回来落在**同一条锚点消息**",
+    !!switched && !!switched.beforeSwitch && !!switched.afterSwitch
+      && switched.beforeSwitch.key === switched.afterSwitch.key,
+    "上沿锚点 key 相同",
+    JSON.stringify(switched));
+  check("A→B→A 切换会话：锚点偏移不漂（≤2px）",
+    !!switched && !!switched.beforeSwitch && !!switched.afterSwitch
+      && Math.abs(switched.afterSwitch.offset - switched.beforeSwitch.offset) <= 2,
+    "|Δoffset| ≤2px",
+    JSON.stringify(switched));
 }
 
 /**
@@ -11015,7 +11110,8 @@ async function runScrollReact(cdp, url) {
   // ② 同一帧两行变高：delta 必须累计。
   //    逐帧 gap 在这里不作为硬判据：两行的 ResizeObserver entry 可能分两批到达，
   //    浏览器在中间帧本来就会多出一次布局；累计是否正确由最终 top 增量（=40）与
-  //    纯函数 `heightCompensation.test.ts` 的“同一帧多行求和”共同证明。
+  //    `VirtualList.vue` 内联补偿（`shouldAdjustScrollPositionOnItemSizeChange`：
+  //    `item.start + item.size <= offset`）求和共同证明。
   const two = await sample("window.__sr.heights[7] += 20; window.__sr.heights[8] += 20;");
   const oneFinalTop = one.frames && one.frames.length ? one.frames[one.frames.length - 1].top : 0;
   const twoFinal = two.frames && two.frames.length ? two.frames[two.frames.length - 1] : null;

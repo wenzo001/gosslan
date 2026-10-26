@@ -13,6 +13,44 @@
 
 ## [Unreleased]
 
+## [5.13.2] - 2026-10-26
+
+### 聊天阅读位置按消息锚点恢复（2026-10-26）
+
+- **修掉「离开再回来不是当时那一屏」**：根因是位置只存 `scrollTop`，而动态高度列表按估算布局，
+  同一像素会落到另一条消息（探针实测上沿 `m-scroll-5 @ -21.5px` → 回来 `m-scroll-9 @ -40.5px`）。
+  现在保存「视口上沿消息 key + 行内偏移」，回来按消息身份落位，再由 DOM 轮询校正到行内偏移；
+  锚点不在已加载缓存时先补最多 5 页历史，补不到才退回像素。TTL 3 分钟 / 未读优先 /
+  离开时在底部贴底三条口径不变。
+- 高度补偿只补**整行完全在视口上方**的行（首测与重测同一口径）：跨过视口上沿的锚点行
+  顶部没变，补它的高度差只会把锚点往下推（实测 29px）。锚点恢复不再调用库的 `scrollToIndex`
+  （它会在后续帧把目标重新对齐到 8px，与行内偏移互相覆盖）。
+- 子组件晚挂载时保留恢复请求（旧实现空跑后即清空），由 `onMounted` 再补一次。
+- 验证：`scrollrestore` 探针 **8/8**（卸载重挂 + A→B→A，锚点 key 相同、偏移差 ≤2px）；
+  前端 1416；`verify:local` 24/24。
+
+### 死代码清理与文档/AOCI 同步（2026-10-26）
+
+- 删除全仓零引用的前端模块与导出：`heightCompensation.ts`、`scrollIntent` 的两个测试专用判据、
+  `groupFilesQueryOptions` / `shareTreeKey` / `todoCompletedForCreator` / `todoRowsFor` /
+  `selfChatSupports`（含 `SELF_CHAT_KINDS`）/ `aggregateTransferProgress`（含只服务它的
+  `liveTransfers`、`isLiveTransfer`）/ `GROUP_LETTERS`、`backLayerDepth` / `composerDraftCount` /
+  `SettingsSectionKey`；测试按语义保留或机械改写，不为通过而放宽。
+- 删除 Rust 零引用项：`share_walk::human_size`（`export.rs` 有在用的私有实现）与投票载荷
+  `PollPayload` / `PollVotePayload`（线上 `poll` kind 词表与预览仍在，本次只删未引用的结构体）。
+- 删除无人监听的 `group-key-received` 事件及其例外表条目；契约图事件表同步为 31 个字面量 /
+  30 行，并修正内联脚本里 10-25 遗留的引号转义错误（`anchorTo:"end"` 曾使整段 JS 语法失效）。
+- 文档同步：滚动实现说明更新到
+  [`docs/notes/scroll-restore-anchor-2026-10-26.md`](docs/notes/scroll-restore-anchor-2026-10-26.md)；
+  `routing-and-navigation` 的状态保持表、`design-guidelines` 的测量入口、`state.rs` 的群文件
+  投递注释、`refactor-5.0-report` 的零引用导出后续、契约图的 SQLite 表数（19→20）一并校正；
+  AOCI 的 `selfChat.ts` / `share_walk.rs` / `VirtualList.vue` / `ChatWindow.vue` 条目按现码重写。
+
+### 设置 · 中继服务器按钮顺序（2026-10-26）
+
+- 「保存」移到「测一下」之后（用户拍板）：未启用中继时「测一下」保持占位（`invisible`），
+  保存按钮因此贴到控制区右缘，切换启用前后不再改变行高。
+
 ## [5.13.1] - 2026-10-26
 
 > 5.13.0 从未发布；这一版把 5.13.0 的虚拟列表迁移 / 持久 local id 与本批修复一起发布。

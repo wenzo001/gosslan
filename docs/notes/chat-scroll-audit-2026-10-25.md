@@ -7,6 +7,14 @@
 > `vlist` / `scrollrestore` / `mergeheight` / `msgovf` 段。引擎：headless Brave
 > `Chrome/156.0.8078.48`（`GOSSLAN_CHROME` 显式指定），**不是 WKWebView**。
 
+> **2026-10-26 后续（本文是 10-25 快照，正文不改写）**：高度差补偿已内联进
+> `VirtualList.vue` 的 `shouldAdjustScrollPositionOnItemSizeChange`
+> （谓词 `item.start + item.size <= offset`），独立模块 `heightCompensation.ts` 与其测试已删除；
+> `scrollIntent.ts` 里只被测试引用的两个判据（`shouldPinOnItemsChange` /
+> `shouldSettleOnItemsChange`）也已删除 —— 生产侧的贴底重置点改成按 `conversationKey` 判。
+> 另外 10-25 晚消息列表已迁移到 `@tanstack/vue-virtual`、key 改为 `local_id ?? msg_id ?? id`，
+> 所以下文"手写实现 / msg_id 作 key"等描述同样是**当时的实现**，不是现状。
+
 ## 0. 结论（TL;DR）
 
 1. **"长列表本身滚不动"不是当前主因。** 产品上界是 1000 条/会话
