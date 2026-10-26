@@ -107,7 +107,10 @@ HEAD 基线：`6ca07ca5`（本文件内所有 `path:line` 均按此 HEAD 复核�
 
 所以准确的定性是：**影响业务结果的异常既不可见也不可查询**——正是你那条「不得静默吞掉影响业务结果的错误，不得仅依赖 Toast 作为错误记录」里最坏的那一格（这里连 Toast 都没有）。
 
-**为什么这条不是「无所谓」**：`:532-549` 这份写入里含 `relayPolicy`、`relayAllowlist`、`bindIp`、`language`、`chatStyle`。其中**中继策略与绑定网卡会改变网络行为**——用户显式选了「允许中继」或手动绑了某张网卡，写库失败后界面仍是所选，但重启回到旧值，而他以为自己改成功了。这是"表面成功但真实结果未确认"那一问的实例。
+**为什么这条不是「无所谓」**：`:532-549` 这份写入里含 `themeColor` / `fontFamily` / `darkMode` / `appearanceMode` / `notifyEnabled` / `notifyShowContent` / `remindSound` / `remindVibrate` / `language` / `relayPolicy` / `relayAllowlist` / `bindIp` / `chatStyle`。
+其中**真正会改变行为的用户选择**是：`relayPolicy` 与 `relayAllowlist`（我读到 `setRelayPolicy` / `toggleRelayAllowlist` 都是 `void persistSettings()` 走这条通道，`src/stores/useAppStore.ts:185-195`）、`language`、`notifyEnabled`、`chatStyle`。
+⚠️ **自我更正**：我第一版把「绑定网卡」也算进来，**不准确**——`bindIp` 那一项是从运行快照**回写当前绑定值**（`:546` 取 `boundIp ?? preferredIp`），真正的绑定动作走独立的 `startNetwork(bindIp)` 命令、错误由 NetworkSection 的 `toastError` 上屏。所以静默通道影响的是「中继策略/允许列表/语言/通知开关/聊天样式」，不是绑定本身。
+这是"表面成功但真实结果未确认"那一问的实例。
 
 **已有兜底与残余边界（诚实算）**：
 1. 去抖时序风险**已被兜住**（flush 出口存在，`defer.test.ts` 有凭据）——所以这条**不是**「手快关掉就丢」；
