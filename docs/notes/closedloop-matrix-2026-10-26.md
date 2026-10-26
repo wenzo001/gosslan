@@ -44,7 +44,81 @@ HEAD `6ca07ca5`。取值：`PASS` / `PARTIAL` / `FAIL` / `UNVERIFIED` / `BLOCKED
 | F-OBS-002 | 前后端契约双向对账（161 命令 / 事件面） | PASS 门面唯一：`IPC 只能从 src/api 门面走`（含「6 条命令在 api 上根本没有包装」的回归） | 不适用(理由)：这是判据不是用户操作 | 不适用(理由)：同上 | 不适用(理由)：同上 | **PASS（我实跑）** `node --test src/api/events.test.ts src/utils/mapContract.test.ts` ⇒ **EXIT=0，17/17**；另独立 `comm` 复算：注册 161 / 去重调用名 160，孤儿仅 `get_topology`（`events.test.ts:375` 自declare 无 UI 入口） | PASS 命令名与注册表逐条对账、「门面之下不许留没人引用的包装」都是现成判据 | **PASS** |
 | F-OBS-003 | 诊断面：错误分类 / 上限 / 脱敏 / 访问控制 | 不适用(理由)：非用户动作 | 不适用(理由)：同上 | PASS 单文件 512 KB 轮转（`logging.rs:140/1070`），有真文件读写测试 `logger_persists_to_file_and_rotates:1715` | 部分：日志窗口有独立 entry（`logs.html` + `src/entries/logs.ts`），用户可查 | **已证**（上两行测试名 + 我跑通的对账族） | **PARTIAL** 具名 `code=` 共 **87** 个、日志调用 363 处（error 81 / warn 129 / info 153），覆盖面广；但**关键操作结局缺码**（B1-F1）；脱敏是形状级（`diagnostics.rs:19-22`，作者自述并保留文件名/大小以便查传输故障）⇒ 隐私与可查性是**登记过的取舍** | **PARTIAL** |
 
-## 六、FID → 命令映射（覆盖度的唯一可辩护口径）
+## 二、状态机与跨层一致性（逐转移）
+
+**读法**：每张表只写**读到过证据**的转移；没读到的写「待核」，不猜。列的含义：**唯一写入方**指"谁能决定这个状态"（多处都能写就必须写清谁有最终裁定权）；**落库时点**指崩溃后靠什么恢复。
+
+### 6.1 1:1 消息
+
+| 转移 | 触发 | 唯一写入方 | 落库时点 | 网络副作用 / ACK 语义 | 并发与重复 | 用户可见 | 证据 |
+|---|---|---|---|---|---|---|---|
+| （无）→ `sending` | 用户点发送 | `send_message` | **消息行 + outbox 同一事务**（`db/messages.rs:53`） | 尚未发出；先入队再投递（INV-003） | 同 msg_id 由 `INSERT OR IGNORE` 幂等 | 气泡"发送中" | `chat.rs:745-789` |
+| `sending` → `sent` | `try_send` 成功（进了 mpsc） | 发送侧 | outbox 行仍在 | **`sent` ≠ 对端收到**：只代表进程把帧交给 writer | — | 气泡按"已发出"画 | 注释 `chat.rs:740-744` |
+| `sent` → `delivered` | 对端 `Ack` | `handle_messaging` 的 Ack 臂 | 删 outbox 行 | **对端落库之后才 Ack** ⇒ `delivered`＝对端已持久化（`handle_messaging.rs:91-98`） | 重复 Ack 幂等；迟到 Ack 见 6.2 | 双勾 | 同上 |
+| `delivered` → `read` | 对端 `ReadReceipt` | 读回执臂 | `read_receipts` | 回执本身也带 pending 兜底（见 F-MSG-050） | — | 双勾变色 | `chat.rs:1244-1300` |
+| `sending`/`sent` → `failed` | outbox 期限到 | `outbox_sweep`（**写库成功才 emit**） | 置 failed + 删行 | 只有写成功才 emit `message-failed`；失败则保留行下轮重试（注释："绝不界面说失败、行还在、又重发"） | 离线保留 7d（INV-P04），可达 120s | 气泡失败 + 可重发 | `outbox_sweep.rs:185-206` |
+| `sending` → `cancelled` | 用户取消 | `cancel_message`（**数据库裁定**竞态） | 单事务 | 群分支额外 emit | `AlreadyDelivered` 时拒绝并说"已经传完" | 六档人话（`cancelFeedback`） | `chat.rs:136-155` |
+| 任态 → `recalled` | 撤回 | `recall_message` | 账本 + 物化**两笔独立写**（缺事务） | 帧先发后物化 | 幂等短路只看账本 | 正文清空 | **B1-F6** |
+
+**终态**：`delivered` / `read` / `recalled` / `cancelled` / `failed`（`messages.rs:731`、`offline_queue.rs:375` 有终态守卫，不回退）。
+
+### 6.2 群消息（成员级）
+
+| 转移 | 触发 | 唯一写入方 | 落库 | 语义 | 证据 |
+|---|---|---|---|---|---|
+| （无）→ 每成员一行 `pending` | 发送 | `insert_group_outbox` | 与消息同批 | 一条群消息 = 每成员一行 | `db/group_offline_queue.rs:7` |
+| `pending` → `delivered` | 成员 `GroupAck` | `ack_group_delivered` | 单事务；delivered 墓碑按条件删 | 只有 `prior == pending` 才把**消息**推到 delivered | `:49-101` |
+| 迟到 Ack（行已 cancelled/failed） | 成员 Ack | 同上 | 只改行 | `LateApplied`：**绝不把 cancelled 提成 delivered**（有测试） | `cascade_tests.rs:1188-1203` |
+| `pending` → `cancelled` | 用户取消剩余成员 | `cancel_queued_group_message` | 单事务 | 已 delivered 的行不动；有 pending 才能取消 ⇒ 可能落 `partial_cancelled` | `:103-117` |
+| 行 → `failed` | 逐行过期 | `outbox_sweep` | 行标 failed（**不删**） | 删了就再也说不清"谁没收到"；`delivered>0/cancelled>0` 时**不折消息为 failed** | `outbox_sweep.rs:246-311` |
+| 全行放弃且无人收到 | 期限到 | `finalize_expired_message(group=true)` | 单事务 | 写成功才 emit `message-failed` | `:340-359` |
+
+### 6.3 文件传输
+
+| 转移 | 触发 | 唯一写入方 | 落库 | 语义 | 证据 |
+|---|---|---|---|---|---|
+| （无）→ `pending`/`active` | 发起/接受 | 发送/接收侧 | `file_transfers` | 群里另有 `group_files`/`group_file_recipients` 一本账（FUNC-03 记着幽灵行旧缺陷） | `db/file_transfer.rs:186-191` |
+| 任态 → `done`/`failed`/`cancelled` | 唯一终局出口 | **`finalize_file_failure`**（顺序：气泡→台账→关队列） | 单事务 | `done` **不降级**；`failed` 可被下一轮重新激活（有测试） | `db/file_transfer.rs:23-34,120-180` |
+| 写盘失败（含盘满） | chunk 写错 | `fail_receive` + 回否定确认 | — | 立即告诉发送端停；但**盘满这一档不分类、且保留 `.part`** | **B2-F1** |
+| 用户取消 | 点取消 / 对端 `FileCancel` | **`apply_local_cancel`（两者共用）** | 单事务 | 点亮所有在途槽位 → 停接收 → 落库 → emit；`by` 只进日志 | `commands/files.rs:776-800` |
+
+### 6.4 其余有生命周期的对象
+
+| 对象 | 状态与出口 | 持久化 | 备注 |
+|---|---|---|---|
+| `outbox` / `group_outbox` / `file_outbox` | 行只在 Ack/GroupAck 后删；否则按期限或次数收口 | 三张表 | 发送侧崩溃窗口由"消息+队列同事务"关闭 |
+| 内容取回 `content_transfers` | `queued/active/verifying → complete / rejected / incomplete` | 表 + 磁盘 | 8 次退避后 `Rejected`（终态，不再自动重取）；`incomplete` 是"还能再取" |
+| 更新器 | `idle/checking/downloading/ready/installing/failed/cancelled/unsupported` | **无（纯内存）** | 重启即丢；`installing` 不可取消（**B1-F3** 边界无守卫） |
+| 任务中心 | `queued/running/blocked`（**派生**，无自有状态） | 无 | 只列未完成；状态由三张台账现读（F-PRE-003） |
+
+---
+
+## 三、缺失测试与故障注入计划
+
+### 7.1 现有注入能力（实测，不是转述）
+
+10 类故障 × `_lie` 反向对照：脏 `.part`、续传前缀复用、**部分写后崩溃（SIGKILL）**、对端冻结（SIGSTOP→超时）、接收目录只读（盘满近似）、改名失败、源缩小竞态、同名多文件、100MB 中途停滞、**发送方中途崩溃**。另有 `groupcrash` / `gossip-late` / `lanoff` / `task` 等轮次。**每一轮都读真二进制、真 TCP、真 SQLite 行、真 sha256**。
+
+### 7.2 **没有**注入能力的类别（这正是缺的测试）
+
+| 缺的注入 | 为什么重要 | 最小可行做法 |
+|---|---|---|
+| **用户取消经 IPC** | 5 条取消通道的"取消 vs 完成"竞态只能靠真取消触发 | 在 `group`/`gfile` 轮里加一步：发送中途调 `cancel_message`/`cancel_file_transfer`，断言终态是 `cancelled` 且**不被迟到 Ack 改写** |
+| **重复 / 乱序 / 迟到帧** | 去重与 `LateApplied` 只有单测，没有跨进程证据 | 用代理重放同一帧两次、把 Ack 延迟到超时之后 |
+| **DB busy / 写失败** | **B4-F1** 与 **B1-F6** 都只在"写失败"时才现形 | 在隔离库里加一个一次性失败注入（如 `PRAGMA` 触发 busy），断言落 failed 或重试，而不是静默 |
+| **任意点崩溃**（而非定时 kill） | "提交前/后"窗口是状态机正确性的核心 | 在 `insert_message_and_outbox` 前后各插一个 kill 点，断言重启后要么有消息有队列、要么都没有 |
+| **盘满的真实形态** | 只读目录只是近似；**B2-F1** 要的是 ENOSPC | 小容量挂载或 `ulimit -f`，断言 `.part` 被删且界面说"空间不足" |
+| **网络分区 / 丢包 / 限速** | 现在只有"冻结"这一种 | `pfctl`/`tc` 在隔离网段做 10% 丢包 |
+| **时钟漂移** | 消息排序依赖 `seq`，但"时钟钳制"路径没被测 | 把一端系统时间拨快/拨慢 |
+
+### 7.3 前端行为面（这一层原本完全没有）
+
+- 现状：132 册前端测试里 **69 册是读源码文本**；**零组件渲染、零 store 状态转移**。
+- 本轮已跑：`--only=convbadge` ⇒ **9/9 绿**（含反向对照）。
+- **建议补的段**（按价值排）：① 改设置失败（B1-F4）——注入 `saveSettings` 失败，断言状态行出现且不刷屏；② 撤回后重开会话（B1-F6）——断言正文不"复活"；③ 取消竞态（B1-F1）——断言"已经传完"而不是"已取消"；④ 通知权限被拒（B4-F3）——断言设置页显示"系统已关闭"。
+- **纪律**：每段必须配一条反向对照（改坏必须红），否则又是一条空转判据。
+
+## 四、FID → 命令映射（覆盖度的唯一可辩护口径）
 
 **先说结论：我试过三个口径，前两个都不成立。**
 ① 按"该命令的定义文件是否被本审计文档提及" ⇒ 会得到 **161/161 = 100%**——因为我把缺口模块名写进了文档，**指标被我自己的缺口表污染**；
@@ -94,7 +168,7 @@ print("A 级命令数:", len(names), "/ 161")
 EOF
 ```
 
-## 二、读数
+## 五、读数
 
 现算（**只数判级列**，命令：`grep -cE '^\| F-.*\| \*\*(PASS|PARTIAL)\*\* \|$' docs/notes/closedloop-matrix-2026-10-26.md` ⇒ **34**）：已走完六格 **34** 行，其中 **PASS 6**、**PARTIAL 28**；另有若干行含「不适用(理由)」的格（不适用≠通过，也不计入这两档）。⚠️ **不要用 `grep -c '^| F-'`**——本文件第六节的「FID → 命令映射」表同样以 `| F-` 开头，那个命令会把两表相加（实测报 45）。立案 **13** 条（P2 八 / P3 五），保留 **5** 条，撤回 **6** 条。
 
@@ -119,7 +193,7 @@ console.log(bad.length?"✗ "+bad.length+" 处失效：\n  "+bad.join("\n  "):"�
 
 **这 8 行不等于 B1 审完。** B1 的分母是 161 条命令里挂到 messaging / presentation 的那一部分 + 392 个触发挂点去重后的动作数，已枚举出动作族（消息右键 17 项、气泡 12 项、会话菜单 3 项、好友菜单 3 项、头部导航 7 项、编辑器 6 项、任务中心 8 项、群命令 11 项、收藏 9 项、通道与缓存 9 项），下表是**剩余待审队列**。
 
-## 三、B1 待审队列（每行注明缺哪一格）
+## 六、B1 待审队列（每行注明缺哪一格）
 
 | 族 | 待审内容 | 主要缺的证据 |
 |---|---|---|
@@ -131,7 +205,7 @@ console.log(bad.length?"✗ "+bad.length+" 处失效：\n  "+bad.join("\n  "):"�
 | 设置 | 11 节各写入项的**分域**验收（F-PRE-011 只覆盖了共用的那条写入通道） | 每项设置失败是否都走同一 catch；哪些项影响网络行为需要更高要求 |
 | 搜索 / 收藏 / 链接 | 命令与落库面 | 六格全缺 |
 
-## 四、错误链表（六项标准里「可诊断」的专用视图）
+## 七、错误链表（六项标准里「可诊断」的专用视图）
 
 | 错误路径 | 产生 | 分类记录 | 安全处理 | 用户反馈 | 诊断查询 | 恢复或终止 | 留痕 | 判级 |
 |---|---|---|---|---|---|---|---|---|
