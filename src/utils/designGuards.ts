@@ -994,14 +994,34 @@ function findOverridingPositionInCoarsePointer(css: string): GuardIssue[] {
 
 // ---------------- ⑧ 聊天区「文本选择」契约（用户 2026-09-13） ----------------
 
-/** 取 `selector { … }` 的规则体（朴素匹配：本项目 CSS 里这几条规则都没有嵌套花括号）。 */
+/**
+ * 取 `selector { … }` 的规则体（朴素匹配：本项目 CSS 里这几条规则都没有嵌套花括号）。
+ * ⚠️ 先剥注释再找：style.css 的注释里大量出现 `.quote-block` / `html` / `textarea` 这类**选择器字面量**，
+ * 不剥就会把注释后面那条不相干的规则当成答案（2026-10-26 实测：新增一段说明注释的措辞，
+ * 让隔壁那条引用块判据当场报出假红）。
+ */
 function cssRuleBody(css: string, selector: string): string | null {
-  const i = css.indexOf(selector);
+  const stripped = css.replace(/\/\*[\s\S]*?\*\//g, " ");
+  const i = stripped.indexOf(selector);
   if (i < 0) return null;
-  const open = css.indexOf("{", i);
-  const close = css.indexOf("}", open);
+  const open = stripped.indexOf("{", i);
+  const close = stripped.indexOf("}", open);
   if (open < 0 || close < 0) return null;
-  return css.slice(open + 1, close);
+  return stripped.slice(open + 1, close);
+}
+
+/**
+ * 把 CSS 拆成「选择器 → 声明体」的成对列表，**先剥掉注释**。
+ * 为什么不用上面的 `cssRuleBody`：它是 `indexOf(选择器)` + 下一个 `{`，而本仓 style.css 的
+ * 注释里就写着 `html` / `textarea` 这些词 ⇒ 它会取到注释后面那条不相干的规则。
+ */
+function cssRulesOutsideComments(css: string): Array<[string, string]> {
+  const stripped = css.replace(/\/\*[\s\S]*?\*\//g, " ");
+  const rules: Array<[string, string]> = [];
+  for (const m of stripped.matchAll(/([^{}]+)\{([^{}]*)\}/g)) {
+    rules.push([m[1], m[2]]);
+  }
+  return rules;
 }
 
 /** 取「class 里含 needle 的那个 <img …> 标签」的完整文本。 */
@@ -1125,6 +1145,37 @@ export function checkSelectionContract(s: SelectionContractSources): GuardIssue[
       message:
         "style.css：`.gosslan-selectable` 缺少 `-webkit-touch-callout: default` —— " +
         "`button,[role=button]` 的 `none` 会盖住正文，选中文字后系统不弹「复制/全选」工具条。",
+    });
+  }
+
+  // ⑥-b 默认方向：全局**不可选**，内容区显式开启（负责人 2026-10-26 的口径）。
+  //     为什么钉方向而不是钉每一处 `select-none`：默认开着 ⇒ 每块界面 chrome 都要记得自己补，
+  //     这次报出来的正是"有些补了有些没补"。默认关掉后新增界面天然不会漏，
+  //     于是只剩两件事会被判：默认那一格在不在、可编辑控件有没有被顺手关掉。
+  //     ⚠️ 这里刻意不用 `cssRuleBody`：它是 `indexOf(选择器)` + 下一个 `{`，而 style.css 的
+  //     **注释里就写着 `html` / `textarea`** ⇒ 会取到注释后面那条不相干的规则（假绿/假红都由它）。
+  const rules = cssRulesOutsideComments(s.css);
+  const defaultOffOnRoot = rules.some(
+    ([sel, body]) => /\b(html|:root)\b/.test(sel) && /user-select:\s*none/.test(body),
+  );
+  if (!defaultOffOnRoot) {
+    out.push({
+      line: 0,
+      message:
+        "style.css：根元素（html / :root）缺少 `user-select: none` —— 文本选择回到「默认全开、逐处补 none」，" +
+        "新增界面会继续漏（2026-10-26 定的口径是全局默认禁用、内容区单独开启）。",
+    });
+  }
+  const editableOpened = rules.some(
+    ([sel, body]) =>
+      /\b(input|textarea|select|contenteditable)\b/.test(sel) && /user-select:\s*text/.test(body),
+  );
+  if (!editableOpened) {
+    out.push({
+      line: 0,
+      message:
+        "style.css：`input/textarea/select/[contenteditable]` 没有单独开回 `user-select: text` —— " +
+        "全局默认关掉之后，输入框里没法选词与编辑，那是拿掉已有能力，不是收紧口径。",
     });
   }
 

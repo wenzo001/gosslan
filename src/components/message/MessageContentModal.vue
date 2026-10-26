@@ -85,7 +85,7 @@ async function openLink(href: string) {
       <CodeBlock v-if="kind === 'code'" :code="content" />
       <div
         v-else
-        class="whitespace-pre-wrap break-words text-sm leading-relaxed text-[var(--gosslan-text)]"
+        class="gosslan-selectable whitespace-pre-wrap break-words text-sm leading-relaxed text-[var(--gosslan-text)]"
         :style="{ wordBreak: 'break-word' }"
       >
         <template v-for="(seg, i) in segments" :key="i">

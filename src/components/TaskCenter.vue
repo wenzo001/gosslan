@@ -15,7 +15,6 @@ import {
 import { clampProgress } from "@/utils/transferSummary";
 import { blockedReasonKey } from "@/utils/transferState";
 import { cancelOutcome, fileCancelKey, messageCancelNotice } from "@/utils/cancelFeedback";
-import { sleep } from "@/utils/defer";
 
 /**
  * 统一后台任务中心（负责人 2026-10-23 提的那件："所有有进度、有目标、有完成态的任务都能看见，
@@ -82,13 +81,32 @@ const busy = ref<string | null>(null);
 /** 打开会话的请求令牌：后点的动作作废旧结果（IPC 不能 abort，但 UI 必须有终态）。 */
 let openSeq = 0;
 
-/** 有界等待一个响应式条件成立（50ms 轮询）；超时返回 false，不抛。 */
-async function waitUntil(check: () => boolean, timeoutMs: number): Promise<boolean> {
-  const end = Date.now() + timeoutMs;
-  while (!check() && Date.now() < end) {
-    await sleep(50);
-  }
-  return check();
+/**
+ * 向真源补读一次清单（`refreshGroups/refreshConversations/refreshFriends` 都是现成出口，
+ * 不在这里另写一份读法）。预算 3 秒：读不到就带着现有快照继续 —— 这一发不许变成永久挂起。
+ * 每条各自吞掉异常：`Promise.all` 整体 reject 会冒到调用点的 catch，把一次刷新失败
+ * 说成「操作失败」那种没头没尾的话。
+ */
+async function readListsFromSource(needGroups: boolean) {
+  const jobs = needGroups
+    ? [chat.refreshGroups().catch(() => {}), chat.refreshConversations().catch(() => {})]
+    : [chat.refreshConversations().catch(() => {}), chat.refreshFriends().catch(() => {})];
+  await withTimeout(Promise.all(jobs), 3000);
+}
+
+/**
+ * 这两格失败过去只有屏幕上那一句，日志里什么都没有 ⇒ "去会话报错"这种报告只能靠猜。
+ * 把判定输入写进应用日志（走 `boot.ts` 那条既有前端日志通道），下一次能直接分清
+ * 是"没到达"还是"真源里确实没有这个会话"。
+ */
+function noteJumpFailure(which: string, cid: string, rowVisible: boolean, groupVisible: boolean) {
+  void api
+    .logFrontendError(
+      "task-open",
+      `${which} cid=${cid} active=${chat.activeConv ?? "null"} ` +
+        `rowVisible=${rowVisible} groupVisible=${groupVisible}`,
+    )
+    .catch(() => {});
 }
 
 /** 给不可 abort 的 IPC 包一层超时：超时返回 "timeout"，底层结果被忽略。 */
@@ -228,7 +246,14 @@ async function cancelUpdate() {
  *  · 单聊、无会话行、但仍是好友 → 由 `openConversation` 里的 `ensureConversation` 补建；
  *  · 单聊、无会话行、且已不是好友 → 明确提示，**不**补建幽灵会话；
  *  · 群、无群且无会话行 → 明确提示（已解散/已退出）。
- * 列表未加载完时不做"不存在"判定，先打开再核对。
+ *
+ * ⚠️ 这四条判定只在**向真源补读过一次**之后才允许下结论（负责人 2026-10-26：
+ * 「群明明在，点去会话却弹『没能打开会话』」）。旧写法等的是 `groupsLoaded` 这类旗标，
+ * 而任务中心自己从不加载群清单 ⇒ 旗标可以永远是 false：等满 3 秒（那一下像点了没反应），
+ * 再拿一份空快照去判"不存在"，把**我看不见**说成**它不存在**。
+ * 现在：快照没到位就去 `refreshGroups/refreshConversations/refreshFriends` 读一次；
+ * 打开之后仍然"既没有会话行也没有在册群"也再读一次才定性；两格失败各自留一行日志输入，
+ * 下一次报"去会话失败"能直接从日志分清是哪一种，不用再靠猜。
  */
 async function openConversation(row: OperationRow) {
   const cid = row.convId;
@@ -238,14 +263,12 @@ async function openConversation(row: OperationRow) {
   }
   const groupId = cid.startsWith("group:") ? cid.slice("group:".length) : null;
   const seq = ++openSeq;
-  const readyNow = () =>
+  const listsReady = () =>
     groupId ? chat.groupsLoaded : chat.conversationsLoaded && chat.friendsLoaded;
-  // 列表未加载完时**等**一会儿，而不是拿空数组判“不存在”。超时后仍然尝试打开。
-  if (!readyNow()) await waitUntil(readyNow, 3000);
+  if (!listsReady()) await readListsFromSource(groupId !== null);
   if (seq !== openSeq) return;
   const convExists = chat.conversations.some((c) => c.id === cid);
-  const listsReady = readyNow();
-  if (listsReady) {
+  if (listsReady()) {
     if (groupId) {
       if (!convExists && !chat.groups.some((g) => g.id === groupId)) {
         app.toast(t("task.openChatMissing"), "info");
@@ -267,10 +290,26 @@ async function openConversation(row: OperationRow) {
   }
   // 核对"确实打开了"：只看 activeConv 不够（`openConversation` 会先写它），
   // 还要有可高亮的会话行 / 在册群 —— 否则界面看起来就是"点了没反应"。
-  const rowVisible = chat.conversations.some((c) => c.id === cid);
-  const groupVisible = groupId !== null && chat.groups.some((g) => g.id === groupId);
-  if (chat.activeConv !== cid || (!rowVisible && !groupVisible)) {
+  let rowVisible = chat.conversations.some((c) => c.id === cid);
+  let groupVisible = groupId !== null && chat.groups.some((g) => g.id === groupId);
+  if (chat.activeConv === cid && !rowVisible && !groupVisible) {
+    // 会话确实切过去了，只是清单里看不见 ⇒ 唯一可能是这份快照旧。再读一次真源，
+    // 读回来还看不见才是"它真的不在了"。
+    await readListsFromSource(true);
+    if (seq !== openSeq) return;
+    rowVisible = chat.conversations.some((c) => c.id === cid);
+    groupVisible = groupId !== null && chat.groups.some((g) => g.id === groupId);
+  }
+  if (chat.activeConv !== cid) {
+    noteJumpFailure("active-mismatch", cid, rowVisible, groupVisible);
     app.toast(t("task.openChatFail"), "error");
+    return;
+  }
+  if (!rowVisible && !groupVisible) {
+    // 已经到达那个会话，但真源里既没有会话行也没有在册群 —— 那是"这个会话不在了"，
+    // 不是"打不开"：措辞与级别都要按前者说（error 留给真的没到达）。
+    noteJumpFailure("not-in-source", cid, rowVisible, groupVisible);
+    app.toast(t("task.openChatMissing"), "info");
     return;
   }
   // 尽量定位到任务对应的那条消息（1:1 文件行是 `file-<transfer_id>`，消息行是 msg_id）。

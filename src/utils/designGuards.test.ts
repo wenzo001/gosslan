@@ -1237,17 +1237,44 @@ test("链接省略号的 DOM 顺序被打乱 / 夹了空白 → 报出", () => {
   assert.match(dotted.map((i) => i.message).join("\n"), /省略号 span 里带了文本/);
 });
 
-test("修好之后通过（真实的 6 个源码文件）", () => {
+/** 真实源码那五份 + 一份可替换的 css（两条判据都要在**真实文件**上做减法，合成夹具证明不了真树）。 */
+function realSelectionSources(css: string) {
   const srcDir = join(import.meta.dirname, "..");
-  const issues = checkSelectionContract({
+  return {
     textBubble: readFileSync(join(srcDir, "components", "message", "MessageTextBubble.vue"), "utf8"),
     avatar: readFileSync(join(srcDir, "components", "message", "MessageAvatar.vue"), "utf8"),
     messageItem: readFileSync(join(srcDir, "components", "MessageItem.vue"), "utf8"),
     app: readFileSync(join(srcDir, "..", "src", "App.vue"), "utf8"),
     linkText: readFileSync(join(srcDir, "components", "message", "MessageLinkText.vue"), "utf8"),
-    css: readFileSync(join(srcDir, "style.css"), "utf8"),
-  });
+    css,
+  };
+}
+
+test("修好之后通过（真实的 6 个源码文件）", () => {
+  const css = readFileSync(new URL("../style.css", import.meta.url), "utf8");
+  const issues = checkSelectionContract(realSelectionSources(css));
   assert.deepEqual(issues, [], issues.map((i) => `L${i.line} ${i.message}`).join("\n"));
+});
+
+test("文本选择默认方向：在真实 style.css 上做减法 → 两半各自点名", () => {
+  const css = readFileSync(new URL("../style.css", import.meta.url), "utf8");
+  // 摘掉"根元素默认不可选"那一条（连注释一起摘，避免留下 `html {` 的字面量）
+  const noDefault = css.replace(/html\s*\{[^}]*user-select:\s*none[^}]*\}/, "");
+  assert.notEqual(noDefault, css, "锚点没命中：根上那条 `html { user-select: none }` 变了形状");
+  assert.match(
+    checkSelectionContract(realSelectionSources(noDefault)).map((i) => i.message).join("\n"),
+    /根元素（html \/ :root）缺少 `user-select: none`/,
+  );
+  // 摘掉"可编辑控件开回来"那一条
+  const noEditable = css.replace(
+    /input\s*,\s*textarea\s*,\s*select\s*,\s*\[contenteditable\][^{]*\{[^}]*user-select:\s*text[^}]*\}/,
+    "",
+  );
+  assert.notEqual(noEditable, css, "锚点没命中：`input/textarea/select/[contenteditable]` 那条开回规则变了形状");
+  assert.match(
+    checkSelectionContract(realSelectionSources(noEditable)).map((i) => i.message).join("\n"),
+    /没有单独开回 `user-select: text`/,
+  );
 });
 
 // ---------------- ⑨ 文本输入类的焦点提示：不许画外圈方框 ----------------
