@@ -384,12 +384,22 @@ mod tests {
             "小预算必须中止，实得 {outcome:?}"
         );
         // 决定性判据是上一条 `Aborted`：预算没生效时会一路跑完并得到 `Completed`。
-        // 这里的耗时上界只防"跑完整库才停"，不能卡成 5× 预算 —— 满载跑全量测试时，
-        // 2ms 的检查间隔会被线程调度拖到十几毫秒（2026-10-21 全量门禁实测 14ms），
-        // 而 3 秒预算对应的用户感知仍然是"约 3 秒"，不是"跑到底"。
+        // 耗时上界只防"跑完整库才停"，不能拿固定毫秒卡：Windows runner 的文件 IO 一次
+        // step 就可能卡几百毫秒（2026-10-26 CI 实测：2ms 预算、实际 381ms，结局仍是
+        // Aborted）——那不是预算没生效，是过检间隔被调度/IO 拖长。
+        // 所以用**同机对照**：另起一份同规模库、预算充足跑完，记下完整耗时；
+        // 中止必须严格早于它（跑到完才停的实现在这里会相等而不是小于）。
+        let (c2, _p2) = file_db("budget-full", 60_000);
+        punch_holes(&c2, 500);
+        let full_started = Instant::now();
+        let full = vacuum_with_budget(&c2, 60_000);
+        let full_ms = full_started.elapsed().as_micros() as u64 / 1000;
+        assert!(full.is_completed(), "预算充足必须做完，实得 {full:?}");
+        eprintln!("[实测] 同机完整整理 {full_ms}ms（预算充足）");
+        // `max(250)` 保留原来的快机上界；慢机按自身完整耗时放宽，但要求严格小于它。
         assert!(
-            elapsed < 250,
-            "中止离预算太远（预算 {BUDGET_MS}ms、实际 {elapsed}ms）⇒ 预算机制可能没生效"
+            elapsed < full_ms.max(250),
+            "中止比同机完整整理还慢或一样长（预算 {BUDGET_MS}ms、实际 {elapsed}ms、完整 {full_ms}ms）⇒ 预算机制可能没生效"
         );
         // 中止后库仍然完好
         let integrity: String = c
