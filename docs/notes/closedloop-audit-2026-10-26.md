@@ -2,37 +2,13 @@
 
 配套文件：`closedloop-matrix-2026-10-26.md`（六格矩阵 + 错误链表）、`closedloop-findings-2026-10-26.md`（立案 13 / 保留 5 / 撤回 6）、`closedloop-claims-2026-10-26.md`（注释承诺 ↔ 机器凭据对账）。
 
-**覆盖度实测（这比"尚未覆盖"四个字有用）**：把 161 条注册命令按**定义文件**归组，再看该文件是否出现在本审计四份文档里 ⇒ **86 条（53%）所在模块被审过，75 条所在模块一次都没被引用**。缺口逐文件（条数）：
-
-| 完全未引用的模块 | 命令数 | | 完全未引用的模块 | 命令数 |
-|---|---|---|---|---|
-| `commands/logs.rs` | 19 | | `commands/mobile_picker.rs` | 4 |
-| `commands/external_links.rs` | 8 | | `commands/system.rs` | 3 |
-| `commands/channel.rs` | 7 | | `commands/routed.rs` | 3 |
-| `commands/share.rs` | 7 | | `commands/relay.rs` | 3 |
-| `commands/helpers.rs` | 7 | | `commands/group_todo_media.rs` | 2 |
-| `commands/window.rs` | 5 | | `commands/chat_search.rs` | 1 |
-| `commands/group_files.rs` | 5 | | `commands/dev_diag.rs` | 1 |
-
-⚠️ **这条口径的边界必须说清**：**"文件被引用"≠"该文件每条命令都过了六格"**。例如 `commands/chat.rs` 有 18 条命令，我真正走完六格的动作族只有 5 个左右（取消/撤回/已读/群投递/接收）。所以真实进度比 53% 更低；53% 是**上界**。复跑命令：
-
-```bash
-node -e '
-const fs=require("fs");
-const m=fs.readFileSync("src-tauri/src/lib.rs","utf8").match(/generate_handler!\s*\[([\s\S]*?)\]\s*\)/);
-const e=[...new Set(m[1].split(",").map(s=>s.trim()).filter(Boolean))];
-const d=["matrix","findings","claims","audit"].map(x=>fs.readFileSync("docs/notes/closedloop-"+x+"-2026-10-26.md","utf8")).join("\n");
-const def={};for(const f of fs.readdirSync("src-tauri/src/commands").filter(f=>f.endsWith(".rs"))){
-  const s2=fs.readFileSync("src-tauri/src/commands/"+f,"utf8");
-  for(const mm of s2.matchAll(/pub\s+(?:async\s+)?fn\s+([a-z_0-9]+)/g)) def[mm[1]]=f;}
-const by={};for(const x of e){const n=x.split("::").pop();const f=def[n]||"?";(by[f]=by[f]||{n:0,c:d.includes("commands/"+f)}).n++;}
-let t=0,c=0;for(const k in by){t+=by[k].n;if(by[k].c)c+=by[k].n;}
-console.log("commands",t,"cited-files",c,"missing",t-c);'
-```
+**覆盖度实测（结论：只有 19/161 ≈ 12% 的命令有六格结论）**。
+我试过三个口径，前两个都不成立：① 按"命令的定义文件被文档提过" ⇒ 会得到 **161/161 = 100%**，因为**我把缺口模块名写进了本文**，指标被自己的缺口表污染；② 按"命令名出现在矩阵里" ⇒ 只有 **12%**，但 `cancel_message` 明明审过却没出现名字。
+⇒ 唯一可辩护的是**逐命令分 A/B/C 三级**（A＝读过函数体或关键分支；B＝只读签名/调用点；C＝只见过名字），完整分级表在 `closedloop-matrix-2026-10-26.md` 的「六、FID → 命令映射」。读数：**A 级 19 条**，矩阵 33 行里其余讲的是**行为族**（如"群成员级投递"横跨收发两侧、多张表与清扫器）——它们比单条命令大，但不能拿来充命令数。
 
 基线：main、HEAD `6ca07ca5`、开工时 `git status --porcelain | wc -l` = 0（此后本机另一会话在同一棵树里推进 5.14.4，现有 14 个未提交改动 ⇒ **我的数字一律按 HEAD 测、不按工作树测**）、最新 tag v5.14.2。
 
-**进度声明**：矩阵已走完 **31** 行（`grep -c '^| F-'` 现算），其中 **6 PASS / 25 PARTIAL / 行级 FAIL 0**。覆盖 B1 主链、B2 文件链、B3 持久化、更新链与契约/诊断面。**尚未覆盖**（分母仍在，不许当成已审）：好友关系与身份、发现与连接、路由与中继、BLE、群管理（建群/邀请/移除/移交/公告/待办）、设置 11 节的分域验收、搜索、收藏与导出、平台外壳（托盘/菜单/窗口/通知）。**所以本文不给"全项目闭环率"——那会是把抽样冒充全量。**
+**进度声明**：矩阵已走完 **33** 行（`grep -c '^| F-'` 现算），其中 **6 PASS / 27 PARTIAL / 行级 FAIL 0**。覆盖 B1 主链、B2 文件链、B3 持久化、更新链与契约/诊断面。**尚未覆盖**（分母仍在，不许当成已审）：好友关系与身份、发现与连接、路由与中继、BLE、群管理（建群/邀请/移除/移交/公告/待办）、设置 11 节的分域验收、搜索、收藏与导出、平台外壳（托盘/菜单/窗口/通知）。**所以本文不给"全项目闭环率"——那会是把抽样冒充全量。**
 
 ---
 
@@ -74,7 +50,7 @@ console.log("commands",t,"cited-files",c,"missing",t-c);'
 
 ## 四、结论摘要
 
-**6 条 PASS**：群成员级投递（含部分成功与迟到 Ack）／群文件成员台账与重启重放／缓存清理与 VACUUM／崩溃后启动四条对账／更新包完整性与签名／前后端契约双向对账。**25 条 PARTIAL**，行级 FAIL 0。
+**6 条 PASS**：群成员级投递（含部分成功与迟到 Ack）／群文件成员台账与重启重放／缓存清理与 VACUUM／崩溃后启动四条对账／更新包完整性与签名／前后端契约双向对账。**27 条 PARTIAL**，行级 FAIL 0。
 
 **立案 13 条**（P2 八 / P3 五）：
 - **P2** B1-F3 不可逆操作的取消边界只靠 12 处手抄字面量 + 一条从不调用被测命令的文本断言
