@@ -333,6 +333,31 @@ EOF
 
 ---
 
+## B4-F3 · 通知从来不查系统权限，发送失败也被丢弃（P2，建议修；有真机待确认的一半）
+
+**适用的六格**：**用户可感知 = FAIL**（开了却收不到，且不告诉你为什么）；可诊断 = PARTIAL。
+
+**断点**：`src-tauri/src/notifications.rs`（全模块）+ 其调用点。
+
+**读到的事实**：
+1. **权限**：`grep -rn 'is_permission_granted\|request_permission' src-tauri/src src` ⇒ 只有 BLE 的 `ble_android::request_permissions` 两处（`transport/ble_android.rs:333`、`commands/settings.rs:224`），**通知这条链一次都没有**。虽然 `Cargo.toml:34` 依赖了 `tauri-plugin-notification`，但模块头（`notifications.rs:3-7`）明写刻意**不用插件的 `show()`**，改用同一个底层的 `notify-rust`——于是连插件自带的权限查询也一并没用上。
+2. **失败处理**：`notifications::show*` 返回 `Result<(), String>`（`:257-262`，错误是真的往上返的），但调用点大多直接丢弃：`handshake.rs:332`、`handshake.rs:405`、`watchdog.rs:97` 都是 `let _ = …`（只有 `commands/network.rs:484` 一处 match）。**失败既不记录也不上报。**
+3. 前端有 `notify_enabled` 开关（`notifications.rs:119-123` 与前端同键，有测试 `notify_enabled_defaults_on_and_uses_the_same_key_as_the_frontend`），也就是说**"我开了通知"这件事是有状态的、用户可见的**——恰恰因此，收不到时更该有交代。
+
+**后果**：用户在系统设置里关掉本应用的通知（macOS 系统设置 / Windows 通知与操作），或在首次询问时点了拒绝，应用侧**无从得知**：所有通知被系统静默丢弃，界面里开关仍是"开"，也没有任何日志。用户看到的现象就是"通知开着但收不到"，且诊断包里查不到任何东西。
+
+**必须诚实标出的边界**：本机没有跑真机验证（macOS 通知中心拒绝后的具体表现、Windows 通知关闭后的返回值）⇒ **"系统是否静默丢弃 vs 返回 Err"这一半是 BLOCKED**，需真机读数。但**代码侧那半是确定的**：应用从不查询权限（所以无论系统行为如何都不可能告知用户），且失败被丢弃（所以即便返回 Err 也不会留下任何记录）。
+
+**建议修法（最小）**：
+1. 发送失败处不再 `let _ =`，改成记一行具名码 `code=NOTIFY_SHOW_FAILED app=… err=…`（节流可选，量很小）。这一条**不依赖真机**，先把"有没有失败"变成可查。
+2. 在设置页"通知"那一节显示**权限状态**：桌面端用 `tauri-plugin-notification` 的 `is_permission_granted()`（已在依赖里，**不新增 crate**），没权限时给一句「系统已关闭本应用通知，点这里去开启」——与本仓既有的"状态行说话、不弹窗"风格一致。
+3. 真机各做一次读数（macOS 开/关、Windows 开/关），把结果写进本文件的这一节，然后才谈是否需要在**首次**发送时主动请求权限。
+
+**爆炸半径**：3 处 `let _` → `if let Err` + 一行日志；设置页一处状态行 + 一次插件查询。**不新增依赖**（插件已在树里），不动协议、不动表结构。
+**验收标准**：① 把系统通知关掉后发一条测试通知 ⇒ 日志里能现读到 `code=NOTIFY_SHOW_FAILED`（若系统其实返回 Ok 而是静默丢弃，则第 ② 条是唯一可观测面）；② 设置页能显示"系统已拒绝/已允许"且与实际系统设置一致；③ 单点变异自证：把权限查询恒返回 true ⇒ 第 ② 条必须红。
+
+---
+
 **B1-K4 · 「这位好友的公钥是哪一把」有两套读取次序，分叉期安全码仍会显示"一致"** —— 逐处读到：解密与 1:1 密封走 `sender_x25519_pubkey` 的**好友表优先、peers 回落**（`network/transport/e2ee_payload.rs:20-33`）；群密钥分发 `resolve_member_x25519`（`network/transport/peer_state.rs:42-51`，`pick_member_x25519 = peers.or(friends)`，顺序有测试钉住 `peer_state_tests.rs:47`）与界面安全码 `get_safety_number`（`commands/friends.rs:39-52`）走**peers 优先**。注释自己把后果写出来了：「**『双方安全码对得上』并不证明消息解得开**」（`e2ee_payload.rs:16-19`）。
 **为什么仍判不修**：① 这个分叉有一个**已存在的补偿机制**——新候选密钥会被登记成 `PendingKeyRotation` 并 `emit("friend-key-changed")`（`network/transport/peer_registry.rs:39-51`），只对好友生效（非好友不许刷换钥横幅，`lib_friend_identity_tests.rs:423-425` 有断言），同一对候选去重；前端收进 `keyRotations`（`src/stores/useChatStore.ts:150`），聊天界面弹「同步新密钥 / 删除好友」横幅。所以"消息突然收不到"这一刻，用户**同时**看得到换钥横幅。② 加密次序（好友表优先）正是安全设计：`update_friend_pubkeys` 用 `COALESCE` **只填空、绝不覆盖**（`db/friends.rs:40-63`，理由写着"覆盖式写入会让一次伪造广播永久改掉好友真实公钥"），`replace_friend_pubkeys` 要用户显式确认 + Hello 自验签（`:65-80`）。把加密也改成 peers 优先，等于把这条信任锚点拆掉。
 **残余（未修的那一小半，属可选改进）**：分叉窗口内安全码**仍显示"一致"**，因为安全码读的是 peers 里的新钥匙，而另一端的核验结果也会一致 ⇒ 唯一能提醒用户的是那条横幅，靠它自己在视线内。若将来要补，正确做法是**让安全码自己知道"存在待确认轮换"并显式标注**，而不是改加密次序。**不做**：按 稳定 > 可维护 排序，这条排在第八条之后，且需要动安全码的呈现口径（属产品决策）。
