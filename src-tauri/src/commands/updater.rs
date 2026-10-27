@@ -315,6 +315,8 @@ mod desktop {
             match outcome {
                 Some(Ok(bytes)) => {
                     let bytes_len = bytes.len() as u64;
+                    // 整包是**常驻内存**的一份（`Mutex<Option<Vec<u8>>>`）⇒ 它多大就得记多大。
+                    crate::mem_diag::note_big_alloc("update_package_held", bytes_len);
                     *state.bytes.lock().unwrap_or_else(|e| e.into_inner()) = Some(bytes);
                     state.set_status(&app, move |st| {
                         st.phase = "ready".to_string();
@@ -449,6 +451,16 @@ mod desktop {
             st.phase = "installing".to_string();
             st.error = None;
         });
+        // **更新装完那次"没有关停标记的运行结尾"不是崩溃**（2026-10-27 现场里 01:39 那一趟
+        // 就是这样被读成一次不明死法）。Windows 的 NSIS 安装器成功后直接接管并结束本进程，
+        // 走不到任何 shutdown 钩子 ⇒ 必须在交棒**之前**把它写进不轮转的现场文件。
+        // 版本号只在 BEGIN 里给：`update` 马上要被 `move` 进阻塞任务，为了 DONE 那一行
+        // 再 clone 一份会直接撞上本函数那条 PERF-01 判据（安装路径里除错误文案外不许 clone）。
+        crate::logging::crash_note(&format!(
+            ">>> code=UPDATER_INSTALL_BEGIN version={} pid={}（这一步之后进程被安装器结束属正常）",
+            update.version,
+            std::process::id()
+        ));
         // 从这里起到返回前，future 若被丢弃就由守卫把相位改回 `failed`。
         let mut installing = InstallingPhase {
             app: &app,
@@ -492,6 +504,9 @@ mod desktop {
         }
         // 成功：两样都已随安装一起用掉（`take` 之后会话里本来就是空的，不必再 clear）。
         installing.armed = false;
+        crate::logging::crash_note(
+            ">>> code=UPDATER_INSTALL_DONE（本进程接下来会被结束：Windows 由安装器、其它平台由 restart）",
+        );
         state.set_status(&app, |st| {
             st.phase = "idle".to_string();
         });
@@ -503,6 +518,7 @@ mod desktop {
         #[cfg(not(windows))]
         {
             // macOS/Linux：安装完成后由本进程重启到新版本。
+            crate::logging::crash_note(">>> code=UPDATER_RESTART");
             app.restart()
         }
     }

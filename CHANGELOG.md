@@ -13,6 +13,85 @@
 
 ## [Unreleased]
 
+## [5.14.9] - 2026-10-27
+
+### 崩溃现场要能自己指认来源：WebView2 子进程树 + 子树 CPU 分岔 + 大分配环 + 提交压力快线 + 更新器交棒留痕（2026-10-27）
+
+- **负责人原话**：「现有的日志都没办法解决崩溃 —— 完全解决不了的话，你就加日志，加到你看到日志就能定位到问题」。
+  上一版（5.14.5）解决的是"能不能归因到大类"；这一版补五段，把"看一眼现场就知道是谁、是谁的哪一种死法"补齐。
+- ① **`tree_procs` / `tree_commit`**：我们家那棵 WebView2 子进程树的私有提交量之和。
+  算法是 Toolhelp32 快照沿 `th32ParentProcessID` **爬整棵树**（含孙子层）—— 只数直接子进程会漏，
+  因为 renderer / GPU / utility 挂在 browser 进程下面，而 browser 进程才是我们的子进程。
+  这条补的是本仓 2026-10-15 就定过、而 5.14.5 明写着没做的口径：「内存问题必须测 webview2 子进程，
+  只测主进程＝读错对象」。父链来自系统快照 ⇒ 成环也要收口（`subtree_pids` 是纯函数，有真值表）。
+- ② **`big=` 近期大分配环**（12 格、有界、只记 ≥8 MiB）：TCP 帧体、中继内层帧与密封记录
+  （`read_bytes_capped` 之外**还有这两处**按对端声明长度增长，5.14.5 的注释里明写着"还没接进来"）、
+  导出的两份（`LIMIT -1` 全量读进行 + 整篇 `with_capacity`；字节数用 `size_of::<MessageRecord>()` 现算，
+  不手写"每条大约多少 KB"那种会漂的数）、更新整包。渲染成一整格无空格的 `big=出生地:MiB/年龄s,…` ——
+  带年龄是因为"5 秒前的导出"和"40 分钟前的导出"是两种结论。
+  它挂在 `MemSample::line()` 里 ⇒ 快照、HANG、分配钩子、**以及 panic 的崩溃块**四个出口自动都带
+  （以前现场块只有一句 panic 文本 + 崩前 300 条日志，没有任何"当时占了多少"）。
+- ③ **`code=COMMIT_PRESSURE` 快线**：系统还能提交的量低于 512 MiB 就**当场**往现场文件写一行，
+  不等 5 分钟那一格（上界 = 跟着快照周期，每格最多一条，不会自己刷屏）。
+  读不到数值的平台永不点亮 —— 宁可漏一次预告，也不要把"这台机器读不到"说成"这台机器快死了"。
+  针对的正是 10-21 那次的形状：临界的几分钟里现场什么都没有，回头只剩"崩了"。
+- **今晚第二、第三次崩溃把结论换了方向**（负责人原话：「继续看下，又崩溃两次，找出崩溃原因」）。
+  现场里主进程那一侧**每一格都健康** —— `ws≈52MiB commit≈17MiB`、`avail_commit 1.6–4.9GiB`、
+  `gdi 23–25`、`user 44–51`、`frame_read=0MiB`、`windows=2 hidden=1 labels=[main:shown, preview:hidden]`，
+  Rust 日志照常约 70 行/分钟，01:46:43 看门狗报「界面无响应」，01:57:25 负责人从托盘退出。
+  ⇒ **不是内存、不是句柄、也不是入站帧**，而是渲染层整整 11 分钟一个字都没说。剩下的分岔只有两条：
+  渲染进程被挂起／没了，还是 JS 主线程被卡住在空转 —— 这两条的修法完全不同，而当时**没有任何读数分得开它们**。
+- ④ **`tree_cpu=<毫秒>/<窗口秒>`**：沿同一棵 WebView2 子树用 `GetProcessTimes` 累加 kernel+user，报**增量**。
+  判读口径 —— `tree_procs` 少一个 ⇒ 有子进程没了（`ProcessFailed`）；进程还在而 `tree_cpu` 与窗口同量级
+  （≈每核 100%）⇒ JS 在空转＝卡死；`tree_cpu=0ms/30s` ⇒ 这一格里整棵树一条指令都没执行＝挂起；
+  只涨几十毫秒 ⇒ 活着且空闲，问题不在这棵树里。窗口与增量**必须同一格给**：只有毫秒的话，
+  `1500ms` 分不清是 30 秒（卡死）还是 5 分钟（空闲），得去翻上一条的时间戳 —— 现场文件是给人一眼判读的，
+  不是一道交叉引用题。第一次采样给 `tree_cpu=-` 而不是 `0ms`：`0` 会被读成「一点没烧」＝直接指向挂起。
+  **折叠方向按代价定**也落在这里：`fold_tree_cpu` 规定**树上有一个进程问不到 ⇒ 整格没证据（`-`）**，
+  绝不把"少问了一个"当 0 加进去，而且这种格子**不推进基准**（下一格于是报"从上一次有证据起"的增量，
+  窗口同步变长，占比仍然算得出来）—— 偷偷推进一次就等于把一段未知折成了 0。
+  看门狗那条 HANG 每 30 秒一格 ⇒ 冻结期正好留下 30 秒分辨率的分岔读数（5 分钟那一格太粗）。
+- ⑤ **更新器交棒前留痕**：`UPDATER_INSTALL_BEGIN`（带目标版本与 pid）写在 `update.install(&bytes)` **之前**，
+  `UPDATER_INSTALL_DONE` / `UPDATER_RESTART` 写在各自动作之前。今晚 01:39 那一趟「没有任何收尾标记就结束了」
+  的运行，其实就是装完更新 —— Windows 的 NSIS 安装器成功后直接接管并结束本进程，走不到 shutdown 钩子。
+  以前这种死法与真崩溃在现场里长得一模一样，于是整晚多算了两次"崩溃"。
+- **一处只在 Windows 才成立的漏件（差点让 CI 红）**：子树遍历用的 `CreateToolhelp32Snapshot` 属于
+  `Win32_System_Diagnostics_ToolHelp`，而 `Cargo.toml` 里没点这个 feature。windows-sys 的 feature
+  **没有传递关系**（现读 0.61.2 的 `Cargo.toml`：那四个已声明的各自只展开到 `["Win32_System"]`）⇒
+  mac 上 `cargo check`、clippy、1232 条单测三样全绿，只有 Windows 那条腿编不过。补了 feature，并把这类盲区
+  钉成判据 `every_windows_sys_namespace_used_is_declared_as_a_feature`：分母从 `mem_diag.rs` 里的
+  `use windows_sys::…` **现解析**（不是手抄清单），逐个回 `Cargo.toml` 查有没有点名，另加 `≥5` 下限防"解析器空转"。
+  两向都验过 —— 删掉 feature ⇒ 判据红并点名 `["Win32_System_Diagnostics_ToolHelp"]`；同一份源码在隔离 crate 里
+  删掉同一个 feature ⇒ `error[E0433]: cannot find 'Diagnostics' in 'System'`（负控：这条判据拦的正是那个真实故障）。
+  同一台机器上还现形了一条 Windows-only clippy（`h == std::ptr::null_mut()` ⇒ `h.is_null()`），已改。
+  ⚠️ 方法上的教训单独记一句：/tmp 那个隔离 crate 只证明**这段源码在给定 feature 下编得过**，
+  它的 `Cargo.toml` 是我手写的 —— 所以它结构上不可能发现"本仓没声明这个 feature"。量具覆盖不到的那一半，
+  得靠一条从本仓 `Cargo.toml` 现读的判据补上，不是靠跑得更多。
+- **判据（现算，不靠印象）**：本批新增 **7 条** = `mem_diag` 4 条真值表 + `lib_startup_config_tests` 3 条接线判据；
+  分母用 `git diff HEAD -- src-tauri/test-baseline.macos.txt | grep '^+[^+]' | wc -l` 现数（7 行）。
+  变异自证累计 **十五发**，每发都由自己那句 hint 点名、跑完逐字节还原（`md5` 前后相等）：
+  环没有上界、从最新那头丢、阈值失效、空环渲染成空串、父树只收直接子、"读不到"当成报警、摘掉 updater 那个出生地、
+  崩溃块不带画面、压力行不落现场文件、`BEGIN` 挪到安装调用之后、`TREE_CPU_AT.store` 挪到 `load` 之前、
+  `column_cpu` 丢掉窗口、`Cargo.toml` 删掉 ToolHelp feature、`fold_tree_cpu` 把"问不到的那个进程"当 0 加进去，
+  以及 ⑨(b) 那条量纲（我自己先写反，它自己红给我看）。
+- **两处我自己造出来又当场抓出来的错**（都写下来，因为它们是同一族）：
+  ① 大分配列第一版渲染成 `big[...]`，而环是进程级全局 —— 同一次 `cargo test` 里别的用例先写过它，
+  我那条 `contains("big=")` 就成了**顺序依赖**的假红（真值表测全局态的经典形状）。改成 `big=` 的
+  k=v 无空格形状后，列与环的内容无关；纯函数 `ring_push` / `ring_render` 也让策略可以脱离全局来测。
+  ② `GetCurrentProcessId` 导入了却没用（我改用 `std::process::id()`）—— 这只在 **Windows target**
+  上才现形，本机 clippy 根本看不见。抓它的手段沿用 5.14.5 那条：把整个模块塞进 /tmp 一个只依赖
+  `windows-sys` + `libc` 的独立 crate，`cargo check --target x86_64-pc-windows-msvc --tests`
+  （绕开本仓 `tauri-winres` 要 `llvm-rc` 那一步），零告警才算过。
+- **与那格未查清的矛盾读数的关系**：`export_read_rows` / `export_render_string` 这两笔就是为了让
+  "导出一次吃掉多少"下次能在现场里指名道姓；而 `VacuumOutcome::Aborted` 之后文件却已压缩那一格，
+  仍归 storage/vacuum 自己处理，这批没有动（判据换维度的事我在 10-27 试过，被自己的实测否证后撤销了）。
+- 验证：`cargo test --features bluetooth --lib` **1232 passed / 0 failed / 1 ignored**；
+  clippy `-D warnings --all-targets` 退 0；`cargo fmt --check --all` 退 0；
+  测试清单基线 macos 1233 / windows 1211（各 +7，`--update` → `--sync-baselines` → 再 check 退 0 且零条 ⚠）；
+  Windows 交叉核对（/tmp 隔离 crate，`diff -q` 证的是同一份源码）：
+  `cargo check --target x86_64-pc-windows-msvc --tests` 与同 target 的 `clippy -- -D warnings` **两样退 0、零告警**。
+
+
 ## [5.14.8] - 2026-10-27
 
 ### 向上翻历史：保留 5.14.7 的写法；本版留下的是让"引擎差异"可复核的量具（2026-10-27，当天晚些时候校正）

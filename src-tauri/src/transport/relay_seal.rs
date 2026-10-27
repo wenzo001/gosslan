@@ -477,6 +477,9 @@ impl SealPipe {
                     self.frame.extend_from_slice(&self.head);
                     self.head_len = 0;
                     self.body_need = Some(len);
+                    // 这是 `read_bytes_capped` **之外**的第二处按对端声明长度增长的累积（上限同为
+                    // `MAX_FRAME`）⇒ 不接进来的话 `frame_read` 就只是下限。见 CHANGELOG 5.14.5 那条边界。
+                    crate::mem_diag::note_big_alloc("relay_inner_frame", len as u64);
                 }
                 continue;
             }
@@ -567,6 +570,7 @@ impl OpenPipe {
                     self.record.clear();
                     self.head_len = 0;
                     self.body_need = Some(len);
+                    crate::mem_diag::note_big_alloc("relay_record", len as u64);
                 }
                 continue;
             }

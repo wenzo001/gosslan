@@ -13,6 +13,7 @@
 use std::collections::HashMap;
 
 use crate::db;
+use crate::mem_diag;
 use crate::state::{Conversation, MessageRecord};
 
 /// 导出摘要，回给前端做"导出了多少条"的反馈。
@@ -147,6 +148,9 @@ pub fn render_markdown(
     utc_offset_minutes: i64,
 ) -> String {
     let total: usize = sections.iter().map(|(_, m)| m.len()).sum();
+    // 第二份：整篇文本一次性 `with_capacity`。环里留下这两笔，现场就能分清
+    // "读进来的行占大头"还是"拼出来的字符串占大头"（修法完全不同）。
+    mem_diag::note_big_alloc("export_render_string", (total as u64) * 120);
     let mut out = String::with_capacity(1024 + total * 120);
     out.push_str("# Gosslan 聊天记录\n\n");
     out.push_str(&format!("- 导出时间：{generated_at}\n"));
@@ -222,6 +226,12 @@ pub fn collect_sections(
         // LIMIT -1 = 不限量（SQLite 语义）。导出必须完整，不能像列表那样分页。
         let rows: Vec<MessageRecord> =
             db::get_messages(conn, &conv.id, -1, 0).map_err(|e| e.to_string())?;
+        // `LIMIT -1` 一次把一个会话的全部消息读进 `Vec` ⇒ 这是导出路径上第一个真实峰值。
+        // 字节数取**编译器算的结构体大小 × 条数**，不手写"大约每条多少 KB"（那种数会漂）。
+        mem_diag::note_big_alloc(
+            "export_read_rows",
+            (rows.len() * std::mem::size_of::<MessageRecord>()) as u64,
+        );
         let messages: Vec<ExportMessage> = rows
             .into_iter()
             .map(|m| ExportMessage {

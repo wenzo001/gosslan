@@ -108,6 +108,9 @@ pub async fn read_bytes_capped<R: AsyncRead + Unpin>(
     //   守卫是 RAII，三条出口（成功 / 长度不符 / `read_exact` 出错）都归还，
     //   所以"声明了却不发数据"的那份预约在对端超时后自然回落。
     let _read_gauge = crate::mem_diag::FrameReadGauge::new(len as u64);
+    // 大帧单独记一笔（阈值之上才有意义）：仪表给的是"此刻共多少"，环给的是"最近都有谁"。
+    // 只有 8 MiB 以上才进环，否则 12 格会被正常流量刷满，反而看不见真凶。
+    crate::mem_diag::note_big_alloc("tcp_frame_read", len as u64);
     let mut buf = Vec::with_capacity(len.min(PREALLOC_CAP));
     // `take` 把总读取量钉死在声明长度；`read_to_end` 按实际到达的数据增长，
     // 不会在数据到达之前按 `len` 预留。

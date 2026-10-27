@@ -398,7 +398,13 @@ export default {
       ],
       activeHome: "src-tauri/src/db", // 16 个子模块（include! 物理拆分）
       enforce: false,
-      consumes: ["messaging"], // 2026-09-28 #122 第二段起这是**真生产依赖**：db/messages.rs 的 mention_targets 列存的就是 protocol::MentionTarget，解码走 protocol::parse_mention_targets_column（三态规则只此一家，不在 db 里另写一份）。
+      consumes: [
+        "messaging",
+        // 2026-10-27：导出要往崩溃现场记两笔大分配（读全量行的体积 + 整篇字符串的容量）⇒ 本域确实消耗可观测性。
+        // 领域方向守门只认 `use` 口径 ⇒ 这里写成 `use crate::mem_diag;`，不许退回全限定调用
+        // （那会把它变成判据看不见的内联耦合，棘轮当场红 —— 本次就是被它拦下后才改的）。
+        "observability",
+      ], // 2026-09-28 #122 第二段起这是**真生产依赖**：db/messages.rs 的 mention_targets 列存的就是 protocol::MentionTarget，解码走 protocol::parse_mention_targets_column（三态规则只此一家，不在 db 里另写一份）。
       notes:
         "⚠️ **耦合热点**：`db::` 被 13 个文件引用，横跨 network/、transport/、mesh/、content/、file_relay、notifications、export、commands、state —— 即**传输层直接写库**。架构上最值得收口的一处（Phase 7）。",
     },
