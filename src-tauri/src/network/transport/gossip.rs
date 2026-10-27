@@ -99,6 +99,32 @@ pub(crate) fn group_envelope_consumable(
     members.iter().any(|m| m == me) && members.iter().any(|m| m == sender)
 }
 
+/// 撤销一次「已登记但没消费成功」的去重（补发重入）。
+///
+/// 去重登记发生在解密/落库**之前**（防止伪造 id 污染 Bloom），而发送方补发的是**同一个
+/// 信封**（outbox 存的就是签名后的原始 payload）⇒ 不撤销的话，第一次没消费成功就等于
+/// 之后每一份补发都被判 `Duplicate`，这条消息永远进不来（直到进程重启）。
+///
+/// 两张表都要撤：`MeshRouter` 的帧级去重在外层，`GossipEngine` 的 message_id 去重在里层。
+fn allow_message_retry(state: &AppState, message_id: &str, why: &'static str) {
+    state
+        .mesh_router
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .allow_retry(message_id);
+    state
+        .gossip
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .allow_retry(message_id);
+    if log_throttled(why, 5_000) {
+        state.logger.warn(
+            "chat",
+            format!("已放行补发重入 msg={message_id} reason={why}"),
+        );
+    }
+}
+
 /// 入站信封的会话归属（唯一定义点）。
 ///
 /// 群聊的会话键只能来自 `group_id`；`sender_id` 是「谁说的」，不是「说在哪个会话」。
@@ -368,6 +394,21 @@ async fn handle_gossip(state: &Arc<AppState>, peer_id: &str, env: GossipEnvelope
         &state.device_id,
         &env.sender_id,
     );
+
+    // 解不开 = 这次**没有消费成功**（缺群密钥 / 缺对端 X25519）。放行补发重入，
+    // 否则发送方每一次重试都会被上面的去重判成 Duplicate。只对本机该消费的信封放行：
+    // 替别人转发的密文本来就解不开，撤销只会放大噪声。
+    let addressed_to_me = env
+        .target
+        .as_deref()
+        .map_or(true, |t| t == state.device_id.as_str());
+    if plaintext.is_none()
+        && addressed_to_me
+        && matches!(env.kind, GossipKind::Chat | GossipKind::Group)
+        && group_consumable
+    {
+        allow_message_retry(state, &env.message_id, "no_plaintext");
+    }
 
     // 4. 转发（fan-out，TTL 衰减）— 先过**中继授权**（P2 / M4），再选人转发。
     //
@@ -1048,6 +1089,8 @@ async fn handle_gossip(state: &Arc<AppState>, peer_id: &str, env: GossipEnvelope
                             env.message_id
                         ),
                     );
+                    // 不撤销就会把发送方之后每一份补发都判成重复（同一信封同一 id）。
+                    allow_message_retry(state, &env.message_id, "insert_failed");
                 }
                 // 重复投递与数据库失败都不产生本地副作用；Gossip 的转发已在上面完成。
                 if announced_on(&inserted) {

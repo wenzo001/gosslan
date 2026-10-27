@@ -1259,6 +1259,28 @@ pub fn init_with_notices(path: &Path) -> std::result::Result<(Connection, Vec<St
     // NORMAL：牺牲极小崩溃一致性换取更高写入吞吐（500-1000 节点高频落库场景）
     conn.pragma_update(None, "synchronous", "NORMAL").ok();
     conn.pragma_update(None, "foreign_keys", "ON").ok();
+
+    // 这两个 PRAGMA 决定"掉电会丢多少"，失败**不能静默**：库放在 SMB/NFS/同步盘、或有
+    // 第二个连接时 `journal_mode=WAL` 会失败，而 DELETE 日志 + `synchronous=NORMAL`
+    // 是 SQLite 明确警告**可能损坏**的组合（不只是回滚最近事务）。读回实际值：
+    // · WAL 没生效 ⇒ 把 synchronous 提到 FULL（宁可慢，也不拿"已提交却损坏"的库去换）；
+    // · 两者都不对 ⇒ 至少让 `code=DB_DURABILITY_DEGRADED` 出现在启动日志里。
+    let journal: String = conn
+        .query_row("PRAGMA journal_mode", [], |r| r.get(0))
+        .unwrap_or_default();
+    let sync_level: i64 = conn
+        .query_row("PRAGMA synchronous", [], |r| r.get(0))
+        .unwrap_or(-1);
+    if !journal.eq_ignore_ascii_case("wal") {
+        conn.pragma_update(None, "synchronous", "FULL").ok();
+        startup_notices.push(format!(
+            "code=DB_DURABILITY_DEGRADED journal_mode={journal}（期望 wal）⇒ 已把 synchronous 提到 FULL：写入变慢，但不会出现「已提交却被回滚/损坏」"
+        ));
+    } else if sync_level != 1 {
+        startup_notices.push(format!(
+            "code=DB_DURABILITY_DEGRADED synchronous={sync_level}（期望 1=NORMAL）"
+        ));
+    }
     Ok((conn, startup_notices))
 }
 

@@ -61,23 +61,11 @@ async fn handle_relay_file_offer(
         .unwrap_or_else(|e| e.into_inner())
         .contains_key(&transfer_id);
     {
-        let _admission = match file::admit_inbound(state, replacing, &transfer_id, &from, size) {
+        match file::admit_inbound(state, replacing, &transfer_id, &from, size) {
             Ok(a) => a,
             // `admit_inbound` 已按 `code=RECV_QUOTA_EXCEEDED` 留痕；这里不再重写一遍。
             Err(_) => return,
         };
-        state
-            .relay_file_keys
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .entry(transfer_id.clone())
-            .or_insert_with(|| crate::state::RelayFileReceive {
-                file_key,
-                expected_sha256: file_sha256,
-                created_at: db::now_ms(),
-                last_progress_at: 0,
-                size,
-            });
     }
     // 开好 `.part`（预分配、按 seq 落盘）。失败的两条出路都是**当场拒收**：
     // `chunk_size == 0` = 对端没声明分片尺寸（老版本），不声明就没法流式接收，
@@ -91,6 +79,7 @@ async fn handle_relay_file_offer(
     // 的临时量（这里是 MutexGuard）留到整个块结束 ⇒ 直接写成 `if let Err(..) = 锁().方法()`
     // 就等于"在 relay 锁里 emit"，而这个文件上面的自订规则是"锁只圈住写库，emit 一律出锁再做"
     // （前端收到 file-failed 后的下一次 IPC 要抢同一把锁）。
+
     let began = {
         let mut relay = state.relay.lock().unwrap_or_else(|e| e.into_inner());
         relay.begin_reassemble(&transfer_id, &name, total_chunks, size, chunk_size, &dl)
@@ -108,6 +97,23 @@ async fn handle_relay_file_offer(
             .warn("file", format!("拒收中继文件 offer：{reason}"));
         return;
     }
+
+    // 登记必须排在开单**成功之后**：失败路径（`chunk_size == 0` 的老端、非法 tid）若已经
+    // 占了一条 `relay_file_keys`，那条记录不会有人释放，直到 1h 清扫 —— 而
+    // `inbound_usage` 把这张表的**条数与字节**都算进全局入站配额 ⇒ 两条 8 GiB 的失败
+    // Offer 就能让此后一小时所有入站文件被拒。重复 Offer 的幂等仍由 `or_insert_with` 保证。
+    state
+        .relay_file_keys
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .entry(transfer_id.clone())
+        .or_insert_with(|| crate::state::RelayFileReceive {
+            file_key,
+            expected_sha256: file_sha256,
+            created_at: db::now_ms(),
+            last_progress_at: 0,
+            size,
+        });
     {
         let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
         db::upsert_transfer(

@@ -137,6 +137,9 @@ impl<T> RingBuffer<T> {
 pub struct MeshRouter {
     bloom: BloomFilter,
     seen: LruSet,
+    /// 补发放行名单：本机登记过该 frame_id 但**没有消费成功**时（缺群密钥 / 落库失败），
+    /// 下一次同 id 的补发必须能重入 —— 否则去重表会把所有补发都吃掉。
+    allow_retry: LruSet,
     /// TTL 上限：防止对端自报超大 TTL 导致无限扩散（§7 有界传播）。
     max_ttl: u8,
     /// 有界 fanout：广播时最多向几个下一跳扩散（§20 第一版不做复杂路由算法）。
@@ -162,6 +165,7 @@ impl MeshRouter {
         Self {
             bloom: BloomFilter::new(bloom_capacity, 0.01),
             seen: LruSet::new(seen_capacity),
+            allow_retry: LruSet::new(256),
             max_ttl,
             fanout,
             pending: RingBuffer::new(pending_capacity),
@@ -170,12 +174,21 @@ impl MeshRouter {
 
     /// 是否为首次见到的帧（并完成去重登记）。
     fn is_new_frame(&mut self, frame_id: &str) -> bool {
+        // 补发重入：上一次同 id 没消费成功 ⇒ 放行一次（取走标记）。
+        if self.allow_retry.remove(frame_id) {
+            return true;
+        }
         if self.seen.contains(frame_id) || self.bloom.contains(frame_id) {
             return false;
         }
         self.bloom.insert(frame_id);
         self.seen.insert(frame_id.to_string());
         true
+    }
+
+    /// 撤销一次「已登记但没消费成功」的去重：放下一份同 `frame_id` 的补发进来，只放一次。
+    pub fn allow_retry(&mut self, frame_id: &str) {
+        self.allow_retry.insert(frame_id.to_string());
     }
 
     /// 收到一帧后的处理（§15）：TTL → dedup → 目标判定 → 转发决策。
@@ -306,6 +319,33 @@ mod tests {
             kind: MeshFrameKind::Gosslan,
             payload: b"cipher".to_vec(),
         }
+    }
+
+    /// 同一 frame_id 的补发：默认判重；`allow_retry` 之后放行一次，第三份又判重。
+    #[test]
+    fn allow_retry_reopens_a_frame_id_exactly_once() {
+        let mut r = router();
+        let f = frame("f1", "a", MeshDestination::Broadcast, 3);
+        assert!(matches!(
+            r.on_receive(f.clone(), "me"),
+            ForwardDecision::Forward { .. }
+        ));
+        assert!(matches!(
+            r.on_receive(f.clone(), "me"),
+            ForwardDecision::Drop(DropReason::Duplicate)
+        ));
+        r.allow_retry("f1");
+        assert!(
+            matches!(
+                r.on_receive(f.clone(), "me"),
+                ForwardDecision::Forward { .. }
+            ),
+            "补发被去重吃掉 ⇒ 首次没消费成功的消息永远进不来"
+        );
+        assert!(matches!(
+            r.on_receive(f, "me"),
+            ForwardDecision::Drop(DropReason::Duplicate)
+        ));
     }
 
     /// 广播帧：本机要收，同时以 ttl-1 继续扩散。

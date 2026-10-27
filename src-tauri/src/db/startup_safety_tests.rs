@@ -215,3 +215,31 @@ fn backup_detection_picks_the_newest_migration_backup_and_ignores_the_main_db() 
     );
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// 新库必须真的进 WAL，且**不该**报耐久性降级。
+///
+/// 这条同时钉住「读回校验真的在跑」：两个 PRAGMA 以前是 `.ok()` 吞错，改成读回比对之后，
+/// 正常路径必须一声不响（否则每次启动都刷一条假告警），异常路径才 push 告警。
+#[test]
+fn fresh_database_lands_in_wal_without_a_degraded_notice() {
+    let dir = std::env::temp_dir().join(format!("gosslan-wal-{}-{}", std::process::id(), now_ms()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("t.db");
+    let (conn, notices) = init_with_notices(&path).unwrap();
+    let mode: String = conn
+        .query_row("PRAGMA journal_mode", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(
+        mode.to_ascii_lowercase(),
+        "wal",
+        "新库没进 WAL ⇒ DELETE 日志 + synchronous=NORMAL 是可能损坏的组合"
+    );
+    assert!(
+        notices
+            .iter()
+            .all(|n| !n.contains("DB_DURABILITY_DEGRADED")),
+        "正常路径不该报降级：{notices:?}"
+    );
+    drop(conn);
+    let _ = std::fs::remove_dir_all(&dir);
+}
