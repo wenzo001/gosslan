@@ -242,3 +242,28 @@ post-flush 那一刻 spacer 仍是旧高度 ⇒ 新目标位置被 clamp 回旧�
 `You must enable 'Allow remote automation' in the Developer section of Safari Settings`。
 ⇒ 只要在 **Safari → 设置 → 开发者** 勾一次 "允许远程自动化"，这格就能用 W3C WebDriver 跑，
 不再需要人工点。没勾之前，只能按上面那两手（开发菜单 / 应用内 ⌥⌘I）。
+
+## 13. 资源不持续增长（`PERF_ONLY=mem`，2026-10-27 在 5.14.8 上现跑）
+
+量具是仓库里已有的那台：`perf/run.mjs` 的 mem 档 —— `HeapProfiler.collectGarbage` + `Performance.getMetrics`，
+**不给页面加任何钩子**（量具一改被量对象，量的就是量具自己）。跑法：
+
+```bash
+# 需要一台 vite + 一台带 --remote-debugging-port=9223 的浏览器（run.mjs 的 CDP 端口是硬编码 9223）
+PERF_ONLY=mem PERF_MEM_STEPS=900 PERF_MEM_BLOCK=900 PERF_PORT=5299 node perf/run.mjs 20000
+```
+
+| 读数（900 步/方向，跑完先 GC 再采） | 结果 |
+|---|---|
+| `JSHeapUsedSize` 前后差（9 次） | **−0.11 … +0.53 MB**，其中 8 次落在 ±0.11 内 |
+| `JSEventListeners` | 恒 **12**，前后差 **0**（9/9） |
+| `Nodes` / `document.querySelectorAll('*')` | 359–370 / 192–198 —— **随方向变、不随步数累积** |
+| 逐块曲线（每 900 步一点） | 8.38 → 8.45 MB，**没有上行台阶** |
+
+⇒ "这条路径上没有随滚动累积的东西"是有读数的结论；**但不是"没有泄漏"的证明** ——
+V8 的 `self_size` 不含字符串/Blob 的外部内存（边界见 `perf/heapDelta.mjs` 文件头）。
+
+**必须一起写下来的夹具特征**：`down` 方向有两种模态 —— 「暖」（`offsetsRebuilds 0`、长帧 0–1）与
+「冷」（`offsetsRebuilds` 500–4500、长帧 60–784）。**两臂都会进冷模态**（改前 2/5、改后 1/4），
+而且改前的冷模态更差（133 / 784 长帧 vs 改后 60）。⇒ 这是**夹具的缓存态**性质，不是本轮回归；
+判回归只能看同一臂的**分布**，单看一次跑会得出相反结论（本表就是按分布在读）。
