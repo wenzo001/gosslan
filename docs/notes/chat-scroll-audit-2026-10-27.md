@@ -155,17 +155,27 @@ headed-only 格），该格 headed 单跑 **10/10** ⇒ 合起来 **718/718**；
 属于并行会话在 `mem_diag` 埋点上的在途改动，不是本轮（本轮只碰 `VirtualList.vue`/探针/文档）。
 按 fail-fast 未跑的四步已用**同一条命令**单跑：Change Budget ✅、CHANGELOG 结构 ✅、`npm test` ✅、`npm run build` ✅。
 
-## 8. 修复后复跑上一批的三台夹具（都在 5.14.7 上现跑）
+## 8. 修复后复跑上一批的三台夹具（2026-10-27，**在 5.14.8 树上现跑**）
 
 | 夹具 | 关键读数 | 与上一批比 |
 |---|---|---|
-| `perf/scrollprobe.mjs 1200` | down 80/200/400/800、up 200/400/800、双向换向、慢读上滚：**blankFrames 全 0、maxBlank 0px**；p50 16.3–19.6ms | 持平（上批 0/90） |
-| ↳ `up200 anchorDrift` | **152px，3/3 确定** | 做 A/B 换回改前版本后**同样 152px** ⇒ 既有特征（首次向上扫描时上方未测行的首测漂移），不是本轮引入，不再改 |
-| `perf/scrollscenarios.mjs` | 前插漂移 **25 帧全 0**（scrollDelta 恰 10340）、追加漂移全 0、`appendYank.jumpedPx 0`、图片在视口内完成 **shiftPx 0 / heightChanges 0**、图片立即可用 shiftPx 0 | 全部持平 |
-| `perf/scrollkinds.mjs` | code 首帧 **50.5ms / longtask 60ms / 空白 0**（上批 49.2ms）；text 98.6ms；long 54.7ms（1 帧空白 206px）；image 76.2ms | 持平 |
+| `perf/scrollprobe.mjs 1200`（5 次） | 全部方向 blankFrames **0/90**、maxBlank **0px**；p50 15–37ms | 持平（上批同为 0） |
+| ↳ `up200 anchorDrift` | **152px，每次一致** | A/B 换回改前版本同样 152px ⇒ 既有特征（首次向上扫描时上方未测行的首测漂移），不是本轮引入 |
+| ↳ 量具自检 | 5 次里 **1 次** `control.ok=false`（`restoredBlankPx 24`），该次读数**自己作废**；其余 4 次 `restoredBlankPx 0` | 夹具在负载下会偶发假红，但**不会假绿**（自检不过就不出读数） |
+| `perf/scrollscenarios.mjs`（3 次） | 前插漂移 **25 帧全 0**、追加漂移全 0、`appendYank.jumpedPx 0`、图片在视口内 **shiftPx 0 / heightChanges 0**、图片立即可用同 0 | 全部持平 |
+| ↳ `coldJump_code / coldJump_text` | **1 帧空白 61.5px / 111px**，且 `longTasks` 为空时也复现 ⇒ 上批把它写成"负载噪声"**是错的** | A/B（改前 `bc06d55d`）**1 帧 47.5px / 111px** ⇒ **既有特征**，不是本轮引入；带在案，不再改 |
+| `perf/scrollkinds.mjs`（2 次） | code 首帧 **39.8ms / 0 空白 / 0 长任务**；text 61.3ms；long 33.8ms（**1 帧空白 206.5px**）；image 53.0ms | 持平；`long` 那 1 帧 A/B 里同样存在（改前 239px）⇒ 既有 |
 
-> 同一时段 `scrollscenarios` 曾报 `coldJump_code` 1 帧空白 + 72ms 长任务，`scrollkinds` 复测为 50.5ms/60ms/0
-> ⇒ 那是**并跑浏览器造成的负载噪声**，不是代码变化。
+**A/B 方法（可复跑）**：`git worktree add /tmp/wt-prefix 1e06bb58~1`（不含本轮三处改动）→ 软链 `node_modules` →
+在 worktree 里 `npx vite --port 5399` → 同一个 CDP（`PROBE_CDP`）、同一夹具、`PERF_PORT` 切端口。
+两边都跑 2 次以上，读的是**同一台机、同一时段**；跑完 `git worktree remove --force`。前置：
+worktree 里 `git status` 必须是干净的，否则 A/B 的两臂不只有一处差异。
+
+> **更正一条上批写错的归因**：上批 `scrollscenarios` 报 `coldJump_code` 1 帧空白 + 72ms 长任务后，
+> 因为 `scrollkinds` 复测出 0 空白，就写成"并跑浏览器的负载噪声"。本轮 3 次连跑 + 无长任务时也复现
+> （61.5px），A/B 到改前版本同样 1 帧（47.5px）⇒ 它是**既有特征**，"噪声"那个结论不成立。
+> 教训：**"换一台夹具没复现"不等于"上一次是噪声"** —— 两台夹具的不同格（`scrollkinds` 的 code 格与
+> `scrollscenarios` 的 coldJump 格）根本不是同一个测量，前者为 0 不能否证后者。
 
 ## 9. 本批新增/强化的量具
 
@@ -194,6 +204,10 @@ headed-only 格），该格 headed 单跑 **10/10** ⇒ 合起来 **718/718**；
    残余：静定等待有上限（12 帧）；若那一瞬间还有异步内容在持续改高（图解码 / 字体），重发会放弃 ⇒ 回到未修正的漂移。
 4. 键盘原生滚动在本夹具无判据（UNSUPPORTED），不是"没问题"。
 5. 真机像素级 1 帧闪现只能人眼。
+6. **冷跳 / 超长消息各有 1 帧空白**（`coldJump_code 61.5px`、`coldJump_text 111px`、`long 206.5px`）。
+   A/B 到改前版本同样存在（47.5 / 111 / 239px）⇒ **既有特征，不是本轮引入**，本轮未动；
+   要治得另立一题（方向是"跳转后首帧先按估算画、再等测量"之外的预测量策略），不在①②③范围内。
+7. `up200 anchorDrift 152px`：首次向上扫描时上方未测行的首测漂移，A/B 证明既有，本轮不改。
 
 ## 12. 双引擎对照：③ 的修复被发现只在 Chromium 成立，改为「等 sizer 静定」（v5.14.7 → v5.14.8）
 
