@@ -62,6 +62,8 @@ HEAD `6ca07ca5`。取值：`PASS` / `PARTIAL` / `FAIL` / `UNVERIFIED` / `BLOCKED
 | F-PRE-015 | 读取设置 / 恢复默认设置 | PASS `get_settings` 返回**显式 14 字段**（`theme_color`…`peer_styles`），不是整表 dump ⇒ `gk:{id}` 群密钥与身份私钥根本不在交出值里（INV-P18 的边界由类型形状保证） | 不适用(理由)：读操作 / 一次批量删键 | PASS **恢复默认用显式键清单而不是清空整表**：保留 device_id / x25519_secret / ed25519_secret / 好友 / 聊天记录；**刻意清掉中继口令**（`RELAY_TOKEN_KEY`）并写明理由「留着它比清掉更糟——机器上仍存着一个通往公网的准入口令，而界面上已经看不到这个功能在哪儿配的」；删完**同步重置内存缓存**（relay policy 回默认 All + 热设置缓存失效），否则「用户点了恢复默认、行为却还是旧的限制策略（要重启才生效）」 | PASS 缺省值有合理兜底（`notify_enabled` / `notify_show_content` 缺省 `Some(true)`）；恢复默认后向**其它窗口**广播变更（发起窗口已自行应用，不回发） | PARTIAL 有设置相关测试；**「恢复默认后行为立即生效」这条没有具名判据**（代码注释里那份理由目前只靠人记得）⇒ 待补 | PARTIAL 无具名 `code=`（并入 B1-F1 族） | **PARTIAL** |
 | F-PLF-014 | 另存复制 / 剪贴板文件 / 媒体预览读取 | PASS `copy_file` 有 Android `content://` 分支；`copy_file_to_clipboard` 先判文件存在；`read_file_preview` 经 `resolve_media_path` 三态解析 | 不适用(理由)：单次文件/剪贴板操作 | PASS 三处都挪进阻塞池并写明理由：`copy_file` 是**任意大小**（600 MB 会把一个 worker 按在磁盘复制上数秒）；**剪贴板是系统级独占资源**（别的程序开着要等，Windows 还带 10 次重试）；预览的 `canonicalize`+`read` 可能落在慢盘/网络盘。`copy_file` 的注释还顺带更正了一条普遍误解——**`#[tauri::command(async)]` 挂在同步 `fn` 上不是豁免**（宏把函数体放进 `spawn` 的 future，跑的是 tokio worker），并引到 tauri-macros 2.6.3 / tauri 2.11.5 的具体行号 | PASS 预览有 `max_bytes` 且夹到 15MiB；`TOO_LARGE` 与「文件不存在」各有前端回退（回退文件卡片 / 渲染成「已清理」占位），不是空白也不是错误弹窗 | PARTIAL 有 `helpers_tests` 同族；「超限必须拒」这类断言本轮未逐条读 | PARTIAL 无具名 `code=`（并入 B1-F1 族）；剪贴板失败有具体中文原因 | **PARTIAL** |
 | F-GRP-006 | 退群 / 群列表 / 待办图片落盘 | PASS 退群要求**群主先转让**（否则该群永久失去管理权）；待办图片只接受 raw body + **按 magic bytes 白名单**（`sniff_media_ext` 读首 16 字节，只放 jpg/png/gif/webp/bmp）——改名的 `.command` 混不进来 | 不适用(理由)：退群是一次本地清理 + 一轮通知 | PASS 退群**先通知其余成员、再删本地记录**（成员表要在删除前取）；离线成员的 `GroupMemberLeft` 会丢，但注释说明**成员表会随后续群消息（Gossip group_members / GroupKey）自愈**；本地清理复用「被移出群」同一条路径 `db::delete_group` | PASS 待办图片有大小闸（`todo_image_size_guard`）+ 格式闸，错误文案具体（"图片数据为空"/"只支持粘贴图片"）；写盘进阻塞池（几 MB 截图不卡 async runtime） | PARTIAL 有 `todos` 单测与群轮次；退群/被移出的跨实例行为仍缺轮次 | PARTIAL 退群时 `DELETE FROM settings WHERE key = 'gk:…'` 是 `let _ =`（失败则留下孤儿群密钥，与 B3-F2 同族）；无具名 `code=` | **PARTIAL** |
+| F-OBS-010 | 前端健康：心跳 / 慢操作 / 前端异常 | PASS 心跳是**唯一**允许每秒一次的 IPC，且**不进前端的 invoke 追踪表**（否则自我递归）；`current_op` 截到 120 字符 | 不适用(理由)：都是即时上报 | PASS 看门狗靠心跳时戳 + `active` 判渲染层是否卡死；慢操作**只写一行日志、不回传事件**（避免形成回环） | PASS `log_frontend_error` 的理由写得很实：「界面『点了没反应』最常见的原因就是**一次 JS 异常**，而前端异常此前**不留任何痕迹**」——所以它是一条**现成的落点**（B1-F4 / B1-F5 的修法可以直接用它，不必新造通道）；文本截到 2000 字符 | PASS 有心跳/看门狗断言（`lib_window_tests.rs:994`「渲染层完全卡死时必须发系统通知」） | PARTIAL **同一族里码不一致**：`report_frontend_slow_op` 有 `code=SLOW_OP`，而 `log_frontend_error` 只有 `[前端 kind]` 前缀、没有 code | **PARTIAL** |
+| F-PRE-016 | 界面语言切换 / 聊天样式广播 | PASS `set_ui_language` 先记 hint（macOS 菜单与后端文案的依据），非 macOS 下菜单模块整体不编译但**命令保留**（前端不必按平台分支）；`broadcast_chat_style` 广播给所有已连节点 | 不适用(理由)：单次状态广播 | PASS `set_ui_language` **刻意不发 `settings-changed`**——注释记着一个被修掉的**事件乒乓**：另一窗口收到 → 重拉设置 → `applySettingsSnapshot` 结尾无条件 `pushUiLanguage()` → 又调回这条命令 → 再发一次；`broadcast_chat_style` 同 `update_profile` 的纪律：**锁内只克隆发送端、发送在锁外**（否则一条拥塞链路就能握着全局 links 锁把整个网络层含看门狗拖死） | PASS 大载荷的风格帧按**唯一分类表**降级为 `Low`、不占聊天道；语言切换即时反映到菜单 | PARTIAL 有「设置变更事件两端都在」等回归（我实跑 17/17 那批里）；语言/样式的跨进程行为无轮次 | PARTIAL 无具名 `code=`（并入 B1-F1 族） | **PARTIAL** |
 | F-OBS-002 | 前后端契约双向对账（161 命令 / 事件面） | PASS 门面唯一：`IPC 只能从 src/api 门面走`（含「6 条命令在 api 上根本没有包装」的回归） | 不适用(理由)：这是判据不是用户操作 | 不适用(理由)：同上 | 不适用(理由)：同上 | **PASS（我实跑）** `node --test src/api/events.test.ts src/utils/mapContract.test.ts` ⇒ **EXIT=0，17/17**；另独立 `comm` 复算：注册 161 / 去重调用名 160，孤儿仅 `get_topology`（`events.test.ts:375` 自declare 无 UI 入口） | PASS 命令名与注册表逐条对账、「门面之下不许留没人引用的包装」都是现成判据 | **PASS** |
 | F-OBS-003 | 诊断面：错误分类 / 上限 / 脱敏 / 访问控制 | 不适用(理由)：非用户动作 | 不适用(理由)：同上 | PASS 单文件 512 KB 轮转（`logging.rs:140/1070`），有真文件读写测试 `logger_persists_to_file_and_rotates:1715` | 部分：日志窗口有独立 entry（`logs.html` + `src/entries/logs.ts`），用户可查 | **已证**（上两行测试名 + 我跑通的对账族） | **PARTIAL** 具名 `code=` 共 **87** 个、日志调用 363 处（error 81 / warn 129 / info 153），覆盖面广；但**关键操作结局缺码**（B1-F1）；脱敏是形状级（`diagnostics.rs:19-22`，作者自述并保留文件名/大小以便查传输故障）⇒ 隐私与可查性是**登记过的取舍** | **PARTIAL** |
 
@@ -152,6 +154,8 @@ HEAD `6ca07ca5`。取值：`PASS` / `PARTIAL` / `FAIL` / `UNVERIFIED` / `BLOCKED
 
 | FID | A 级命令（读过函数体/关键分支） |
 |---|---|
+| F-OBS-010 | `ui_heartbeat` · `report_frontend_slow_op` · `log_frontend_error`（读了三条上报口径） |
+| F-PRE-016 | `set_ui_language` · `broadcast_chat_style`（读了事件乒乓与锁纪律） |
 | F-GRP-006 | `leave_group` · `save_todo_image_bytes`（读了群主前置与 magic bytes 白名单） |
 | F-PLF-014 | `copy_file` · `copy_file_to_clipboard` · `read_file_preview`（读了阻塞池理由与回退口径） |
 | F-PRE-015 | `get_settings` · `reset_settings`（读了白名单字段与恢复默认的保留/清除清单） |
@@ -182,7 +186,7 @@ HEAD `6ca07ca5`。取值：`PASS` / `PARTIAL` / `FAIL` / `UNVERIFIED` / `BLOCKED
 | F-OBS-007 | `get_logs` · `clear_logs` · `get_log_locations` |
 | F-OBS-008 | `export_external_links` · `cleanup_external_links_export` · `import_external_links_file` · `import_external_links_from_url` |
 
-**A 级合计 54 条命令**（现算脚本报 55 个 token，多出的那个是内部处理器 `handle_group_rename`，它不是 tauri 命令、不计入 161）。这就是我敢说"这 19 条有六格结论"的全部。
+**A 级合计 59 条命令**（现算脚本报 60 个 token，多出的那个是内部处理器 `handle_group_rename`，它不是 tauri 命令、不计入 161）。这就是我敢说"这 19 条有六格结论"的全部。
 
 ### B 级（不计入覆盖，只说明链路形状）
 
@@ -192,7 +196,7 @@ HEAD `6ca07ca5`。取值：`PASS` / `PARTIAL` / `FAIL` / `UNVERIFIED` / `BLOCKED
 
 `get_device_info` · `update_profile` · `list_interfaces` · `get_peers` · `search_nearby_peers` · `focus_window` · `shake_window` · `request_attention` · `set_unread_badge` · 好友四件套（`get_friends`/`send_friend_request`/`respond_friend_request`/`get_pending_requests`/`remove_friend`/`default_nickname`）· `send_message` · `get_messages`/`get_latest_messages`/`get_conversations`/`ensure_conversation`/`set_conversation_pinned`/`get_conv_link`/`get_message_count`/`get_pending_message_operations`/`get_group_todo_messages` · `send_group_message`/`send_group_reaction`/`pin_group_message`/`set_message_render`/`get_group_delivery_summaries`/`resend_group_delivery` · 群公告与群待办六条 · `send_todo_image`/`save_todo_image_bytes`/`todo_image_meta` · `request_content`/`request_content_by_cid`/`cancel_content_fetch`/`get_content_transfers`/`get_transfers` · `delete_file`/`save_outgoing_image`/`open_file_native`/`read_file_preview`/`read_content_preview`/`copy_file_to_clipboard`/`read_clipboard_file_paths`/`media_present` · `export_chat_text` · `get_discovery_diag`/`get_runtime_diag`/`set_app_active` · `window_minimize`/`window_toggle_maximize`/`window_is_maximized`/`window_close`/`set_native_titlebar_buttons_hidden`/`apply_macos_window_shape` · `search_chat_history` · `import_picked_file`/`request_ble_permissions`/`set_ui_language` · `broadcast_chat_style` · `list_favorites`/`add_favorite`/`remove_favorite`/`read_favorite_preview` · `get_cache_info`/`clean_cache_now`/`set_cache_policy` · `create_group`/`leave_group`/`distribute_group_key`/`get_groups` · `get_settings`/`reset_settings` · `get_previous_exit` · `notify_desktop`/`send_test_notification` · `login`/`updater_status` 之外的更新命令 · `ui_heartbeat`/`report_frontend_slow_op`/`log_frontend_error` · `take_group_todo_focus`/`request_group_todo_focus`/`get_group_todos_context`/`get_image_preview_gallery`/`close_settings_window`/`restart_app`。
 
-**所以真实进度是**：**54 条 / 161 条 ≈ 34% 的命令有六格结论**；33 行矩阵里剩下的行讲的是**行为族**（例如"群成员级投递"这一族横跨收发两侧、多张表与清扫器），它们比单条命令大，但不能拿来充命令数。现算命令：
+**所以真实进度是**：**59 条 / 161 条 ≈ 37% 的命令有六格结论**；33 行矩阵里剩下的行讲的是**行为族**（例如"群成员级投递"这一族横跨收发两侧、多张表与清扫器），它们比单条命令大，但不能拿来充命令数。现算命令：
 
 ```bash
 python3 - <<'EOF'
@@ -209,7 +213,7 @@ EOF
 
 ## 五、读数
 
-现算（**只数判级列**，命令：`grep -cE '^\| F-.*\| \*\*(PASS|PARTIAL)\*\* \|$' docs/notes/closedloop-matrix-2026-10-26.md` ⇒ **55**）：已走完六格 **55** 行，其中 **PASS 9**、**PARTIAL 46**；另有若干行含「不适用(理由)」的格（不适用≠通过，也不计入这两档）。⚠️ **不要用 `grep -c '^| F-'`**——本文件第六节的「FID → 命令映射」表同样以 `| F-` 开头，那个命令会把两表相加（实测报 45）。立案 **14** 条（P2 九 / P3 五），保留 **6** 条，撤回 **6** 条。
+现算（**只数判级列**，命令：`grep -cE '^\| F-.*\| \*\*(PASS|PARTIAL)\*\* \|$' docs/notes/closedloop-matrix-2026-10-26.md` ⇒ **57**）：已走完六格 **57** 行，其中 **PASS 9**、**PARTIAL 48**；另有若干行含「不适用(理由)」的格（不适用≠通过，也不计入这两档）。⚠️ **不要用 `grep -c '^| F-'`**——本文件第六节的「FID → 命令映射」表同样以 `| F-` 开头，那个命令会把两表相加（实测报 45）。立案 **14** 条（P2 九 / P3 五），保留 **6** 条，撤回 **6** 条。
 
 **本文件的引用不受任何守卫保护**（实况见主报告「我自己的两处错」第 2 条：`check-doc-citations.mjs` 管 `file:line` 的那条只吃 `LIVE_DOCS` 那 8 份，`docs/notes/**` 不在内）。所以行号会随改动静默腐烂。二选一，**本审计不新建脚本**（按仓里「新判据先找现成的家」与自己编的规矩要撤）：
 
