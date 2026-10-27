@@ -397,8 +397,17 @@ mod tests {
         assert!(full.is_completed(), "预算充足必须做完，实得 {full:?}");
         eprintln!("[实测] 同机完整整理 {full_ms}ms（预算充足）");
         // `max(250)` 保留原来的快机上界；慢机按自身完整耗时放宽，但要求严格小于它。
+        // Windows runner 上这条**同机对照**本身会抖：step 间隔 + 杀毒/索引 IO 能让"中止"
+        // 比"完整整理"还慢（2026-10-26/27 两次实测，结局都已经是 `Aborted`）。决定性判据
+        // 是上面那条 Aborted —— 预算没生效时它会返回 Completed；这里只防"跑完整库才停"，
+        // 所以 Windows 给 1s 的调度余量，其余平台保持 250ms。
+        let bound = if cfg!(windows) {
+            full_ms.max(1_000)
+        } else {
+            full_ms.max(250)
+        };
         assert!(
-            elapsed < full_ms.max(250),
+            elapsed < bound,
             "中止比同机完整整理还慢或一样长（预算 {BUDGET_MS}ms、实际 {elapsed}ms、完整 {full_ms}ms）⇒ 预算机制可能没生效"
         );
         // 中止后库仍然完好
