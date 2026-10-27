@@ -13,6 +13,22 @@
 
 ## [Unreleased]
 
+## [5.14.8] - 2026-10-27
+
+### 向上翻历史：修复在 WebKit（macOS 出货引擎）下也成立了（2026-10-27）
+
+- **发现**：5.14.7 那笔修复**只在 Chromium 上成立**。新增的双引擎夹具（`perf/wk-check.html`，挂真实
+  `VirtualList`、页面自驱动、结果回传本地信标）实测同一份代码：Chromium `keptKey=true`（drift 0.3px）、
+  **Safari/WebKit `keptKey=false`**（m-188 → m-207）。
+- **成因**：修复的第二半把"重发锚点"放在 `onItemsChanged`（Vue 的 post-flush）里立即做。Chromium 那时
+  spacer 已经长高；**WebKit 还没**，于是重发那一笔又被浏览器 clamp —— 等于回到修复前的行为。
+- **修法**：改成**等 `getTotalSize()` 连续两帧不变（sizer 静定）再发一次**目标；静定之前一个字都不写。
+  Chromium 上几乎立即静定（与原来等价），WebKit 上多等一两帧，但那时高度已经在了。
+- **双引擎读数**（同一夹具、同一数据）：Chromium `keptKey=true / drift −0.5px`；WebKit `keptKey=true / drift 0.3px`；
+  两个引擎的下滚/上滚空白帧都是 **0**、p50 16.6–17ms。
+- **回归**：`vlist/scrollreact/scrollhist/scrollswitch/scrollshake` **54/55、零 FAIL**
+  （唯一 UNSUPPORTED 是 headless 量不到的 headed-only 格）。
+
 ## [5.14.7] - 2026-10-27
 
 ### 向上翻历史：正在读的那一行不再被推走（2026-10-27）
