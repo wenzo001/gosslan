@@ -131,8 +131,9 @@ macOS **App 内真机**（WKWebView + 真实会话切换，A8）**仍未取到**
   该子格只能真硬件。
 - **永久拿不到**：mac 真机像素级 1 帧闪现（`screencapture` 帧率不够）⇒ 只能人眼。
 
-**A8 现状与"能不能绕开 Inspector"（2026-10-27 现测）**：引擎层（Safari 27.2，§12）与 App 层（Chromium 里挂真
-`ChatWindow`，`scrollswitch/scrollhist` 等段）都已有读数；**App 内 WKWebView 的帧级读数仍缺**，而它只有两条取数路：
+**A8 现状（2026-10-27 晚更新：缺口已补）**：引擎层（`perf/wk-a8.mjs`，真 WKWebView）、应用层（Chromium 里挂真
+`ChatWindow` 的 `scrollswitch/scrollhist`）、**App 内 WKWebView（`perf/wk-a8app.mjs`，§18）** 三处都有读数，
+且 App 内那一格在修前代码上会红（丢 key + 649px）⇒ 有功率。早期我曾以为它只有两条取数路：
 ① Safari 开发菜单（或应用内 ⌥⌘I）粘 `perf/wk-scroll-sampler.js`；② 勾「允许远程自动化」后由 `safaridriver` 自动跑。
 
 今天把第三条候选（**系统无障碍控件树**）实测排除了：`scripts/ax-tree.mjs` 解析出来的节点只有 `{role,label}` 两个字段
@@ -267,6 +268,8 @@ worktree 里 `git status` 必须是干净的，否则 A/B 的两臂不只有一�
    两者产品码差异只有 `VirtualList.vue` 的 29+/13−（`reissuePrependAnchor` 一个函数 + 注释）。它的行为有界（最多等 12 帧、每帧一次 `getTotalSize()`），
    两个引擎的现有判据下都绿，但按"证据不足不该修"的口径，它是**防御性改动** —— 保留还是回退，需要拍板。
 3. `perf/wk-a8.mjs` 现在只判**两格扫描**，并把"锚点格无分辨力"写进输出与注释。
+4. **同晚已回退 5.14.8**：App 内格（§18）上 5.14.7 写法与本版都绿、修前红 ⇒ 多等两帧没有判据支撑。
+   `reissuePrependAnchor` 的**函数体已与 `10e67a74` 逐字相同**（`diff` 现算），注释里留下这段决策历史。
 
 以下 12.2 是当天的原始记录，保留它是为了让下一个人看到**结论是怎么被推翻的**。
 
@@ -346,7 +349,7 @@ V8 的 `self_size` 不含字符串/Blob 的外部内存（边界见 `perf/heapDe
 | 6 | 测量/重测/挂载卸载次数 | **有（引擎侧 + 数据侧）** | 引擎侧：`Performance.getMetrics` 围着整套场景取前后差 ⇒ **5.61 次 layout / 10.45 次 style recalc 每帧**（5 次复跑同值，见 §8）；数据侧：`add/rem`（挂载/卸载）、`styleMut`（measure 写 transform）、`itemSizeCache.size`、`offsetsRebuilds`。**没有**逐次 `measureElement` 计数——引擎侧那两个数就是它的可观测量，再加计数会改被量对象 |
 | 7 | 锚点偏移 | **有** | §8 `anchorDrift`（up200 152px 既有）/ `prepend drift 25×0`；§12 双引擎 `keptKey + drift` |
 | 8 | DOM / CPU / 内存增长 | **有** | §13（9 次 900 步：堆 Δ、listeners、nodes/dom、逐块曲线） |
-| 9 | 冷热与双平台差异 | **部分** | 冷热：`coldJump_*`、`imageColdThenWarm`、`scrollswitch` 缓存曲线；平台：§12 双引擎（mac 两引擎都有），**Windows NOT RUN**（用户本轮排除） |
+| 9 | 冷热与双平台差异 | **部分** | 冷热：`coldJump_*`、`imageColdThenWarm`、`scrollswitch` 缓存曲线；平台：mac 两引擎都有**且 App 内也测了**（§12、§18），**Windows NOT RUN**（用户本轮排除） |
 
 读完这张表的正确结论：**九项里八项在本轮有读数**，其中 4/5/6 三项是"换了一把量具"得到的
 （WebKit 没有 longtask ⇒ 帧间隔；逐行身份级延迟与逐次 `measureElement` 计数要往被量对象里挂钩子 ⇒ 用引擎侧的
@@ -369,8 +372,8 @@ layout/style 计数与空带持续时间代替）。**只剩第 9 项的 Windows
    3 行、可单点回退、且有正控格（"真贴底仍会跟"）守着。
 5. **WKWebView 接不上时的调整**：最后走的是"自己写宿主"这条路——`perf/wk-host.swift` 起一个真 WKWebView
    （出货那个渲染器）跑 `perf/wk-check.html`，`node perf/wk-a8.mjs` 一条命令出数，不需要任何授权。
-   剩下的缺口只有 **App 内**（真 `ChatWindow` + 真库 + 真进程）那一层：它仍要靠 Chromium 上挂真 `ChatWindow` 的
-   `scrollswitch/scrollhist` 兜"应用层没额外破坏"，**不**把 WKWebView 的 App 内读数记成通过。
+   **App 内那一层也已补上**：`perf/wk-a8app.mjs` 在真 WKWebView 里挂真 `ChatWindow` + 真 store，
+   连翻三页锚点 ≤2px、两格扫描 0 空白，且修前代码在同一格会红（丢 key + 649px）⇒ 有功率（§18）。
 6. **最易破坏既有行为的修复**：④ 的谓词收窄（会改写 `scrollreact/scrollshake` 里"容差内跟高"的若干格）与
    ③ 的重发（多写一次 `scrollTop`）。守它们的正是那两组正控格；10 段 718/718 就是这条防线现在的读数。
 7. **最重要的未知项**：**Windows（WebView2 + 离散滚轮）整列**——零读数，且输入模型与 macOS 不同。
@@ -436,3 +439,33 @@ headed 补跑（`GOSSLAN_PROBE_HEADLESS=0 --only=scrollswitch`，同一份修前
 1. 新增/改写任何一格滚动判据，**必须先造一次红**（摘掉被测机制或回到修前代码），把那次读数记下来；没红过的格只能算"没报警"，不算"守住了"。
 2. 一台夹具上的"红"不能跨夹具外推：`wk-check.html` 的锚点格在 Safari 上红过一次，但用修前代码在 WKWebView 宿主的 4 种几何下都绿
    ⇒ 那次红**既不能证明修复有效，也不能证明修复必要**。跨宿主/跨几何的结论必须各自带正控（§12.1）。
+
+## 18. App 内（真 `ChatWindow` + 真 store）在真 WKWebView 上的读数 —— A8 那一格补上了
+
+`node perf/wk-a8app.mjs`：宿主 `perf/wk-host.swift` 装**真 App 页面**（vite `/`），运行时从探针里把
+`PAGE_FIXTURE` 原样抽出、与 `perf/wk-app-cell.js` 拼成一份注入（**不抄第二份桩**），
+IPC 走探针同形桩（`api.getMessages` 换成内存分页，600 条历史、每页 100 条）。
+⇒ 组件链、store、滚动与锚点全是生产码；只有"后端分页"是桩。
+
+**四格读数（1200×900，`AppleWebKit/605.1.15` / vendor Apple / WKWebView）**
+
+| 格 | 现在（5.14.7 写法 = 本轮回退后） | 修前 `bc06d55d` | 5.14.8（静定门） |
+|---|---|---|---|
+| 连翻三页都真的加载新页 | ✅ 100→200→300→400 | ✅ | ✅ |
+| 每页前插后同一行仍在原位（\|Δoffset\| ≤2px） | ✅ **−0.5 / 0 / 0** | ❌ **丢 key（m-hist-573 → m-hist-468）+ 漂移 649px** | ✅ |
+| 下滚无空白帧 | ✅ 0 帧、p50 19ms | ✅ | ✅ |
+| 上滚无空白帧 | ✅ 0 帧、p50 17ms | ✅ | ✅ |
+
+**这张表同时办了三件事**：
+1. **A8 补齐**：不再只有"引擎层 + Chromium 应用层"两层替代 —— App 内 WKWebView 有了带功率的读数（修前那列会红）。
+2. **③ 的举证链完整**：`scrollhist`（Chromium 应用层）与 `wk-a8app`（WKWebView 应用层）两处，修前红、修后绿。
+3. **5.14.8 的静定门被裁定为不必要**：同一格上 5.14.7 写法（立即重发）与 5.14.8 写法（等 sizer 静定）**都绿**，
+   而修前那版会红 ⇒ 起作用的只是"重发"这件事本身，多等的两帧没有任何判据支撑。
+   已按"证据不足不该修"**回退** `VirtualList.vue` 的 `reissuePrependAnchor`（函数体与 `10e67a74` 逐字相同，
+   `diff` 现算），并把这段决策历史写进代码注释（下次再看到 clamp 先读那段、用本脚本复现）。
+
+**回退后的现读门禁**：10 段滚动 **717 PASS / 0 FAIL / 1 UNSUPPORTED**（headed 单跑该段 **10/10** ⇒ 合起来 718/718）；
+`node perf/wk-a8.mjs` 两格扫描绿；`node perf/wk-a8app.mjs` 四格绿；`npm test` **1427/1427**；`npm run build` 通过；`vue-tsc` 0。
+
+**边界（不许越过）**：IPC 是桩 ⇒ 证的是渲染/滚动/锚点链，不是数据库或网络；输入是程序化 `scrollTop`，
+不是真触控板惯性；像素级 1 帧闪现仍只能人眼。

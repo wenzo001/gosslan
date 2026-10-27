@@ -22,6 +22,8 @@ guard args.count >= 2, let url = URL(string: args[1]) else {
     exit(2)
 }
 let timeoutSec = args.count >= 3 ? (Double(args[2]) ?? 60) : 60
+// 第 5 个参数：要在 `didFinish` 之后注入的 JS 文件（一次 `evaluateJavaScript`，页面自己回传读数）。
+let scriptPath = args.count >= 5 ? args[4] : nil
 // 第 4 个参数：窗口尺寸 `1024x720`（默认 1000x760）。**几何会影响这个夹具能不能复现夹取**
 // （2026-10-27 实测：同一份 5.14.7 代码在 1000x760 下通过，在 Safari 那档窗口里不通过 ⇒ 尺寸必须能钉）。
 var size = NSSize(width: 1000, height: 760)
@@ -34,6 +36,8 @@ if args.count >= 4 {
 
 final class Host: NSObject, WKNavigationDelegate {
     var failed = false
+    var scriptPath: String? = nil
+    var scriptDelaySec: Double = 2.0
     func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: Error) {
         failed = true
         FileHandle.standardError.write("导航失败：\(error)\n".data(using: .utf8)!)
@@ -43,6 +47,20 @@ final class Host: NSObject, WKNavigationDelegate {
         // 只报告"页面起来了"；读数由页面自己回传。
         print("loaded: \(webView.url?.absoluteString ?? "?")")
         fflush(stdout)
+        guard let path = scriptPath else { return }
+        // 延迟一点再注入：vite 现编译依赖要时间；注入太早会 import 到半成品模块。
+        DispatchQueue.main.asyncAfter(deadline: .now() + scriptDelaySec) {
+            do {
+                let src = try String(contentsOfFile: path, encoding: .utf8)
+                webView.evaluateJavaScript(src) { _, err in
+                    if let err = err {
+                        FileHandle.standardError.write("注入脚本报错：\(err)\n".data(using: .utf8)!)
+                    }
+                }
+            } catch {
+                FileHandle.standardError.write("读不到注入脚本 \(path)：\(error)\n".data(using: .utf8)!)
+            }
+        }
     }
 }
 
@@ -53,6 +71,7 @@ app.setActivationPolicy(.accessory)
 let cfg = WKWebViewConfiguration()
 cfg.websiteDataStore = .nonPersistent()  // 每次从冷态开始，别让上一次的缓存混进来
 let host = Host()
+host.scriptPath = scriptPath
 let web = WKWebView(frame: NSRect(x: 0, y: 0, width: size.width, height: size.height), configuration: cfg)
 web.navigationDelegate = host
 
