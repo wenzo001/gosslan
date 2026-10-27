@@ -3,7 +3,9 @@
 - 范围：`src/components/VirtualList.vue`、`src/components/ChatWindow.vue`、`src/components/MessageItem.vue` 及其子组件、
   `src/utils/{messageHeight,listBuffer,scrollIntent,previewMetrics,scrollRestore,messages}.ts`、`src/stores/useChatStore.ts`
 - 依赖（现读）：`@tanstack/vue-virtual@3.13.47` → `@tanstack/virtual-core@3.19.6`（`package-lock.json` 精确解析，两包各仅一份）
-- 修复版本：**5.14.6**（`1e06bb58`）、**5.14.7**（`10e67a74`）；探针增强 `4c740144`。**均未 push**
+- 修复版本：**5.14.6**（`1e06bb58`）、**5.14.7**（`10e67a74`）；探针增强 `4c740144`。
+  **这两笔修复已随 `v5.14.7` 发布**（tag `35efb210`，Release 非 draft/非 pre，17 个资产，2026-10-27T01:37Z），
+  且都在 `origin/main` 上。**本报告与回归复跑这两笔文档提交当前仅在本机**（未 push）。
 - 量具：`scripts/check-ui-runtime.mjs`（Chromium/headed）、`perf/*`、`perf/wk-scroll-sampler.js`（WKWebView 真机）
 
 ---
