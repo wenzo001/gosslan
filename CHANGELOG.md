@@ -94,8 +94,11 @@
 - **非空转已逐条证明**：删掉预检 ⇒ 接线判据红；把"读不到"拆成独立拒绝分支 ⇒ 同一条红；
   去掉水位 ⇒ 折叠方向判据红；把 `C:\` 改成 `C:` ⇒ 卷根解析判据红；
   从 Cargo.toml 去掉 `Win32_Storage_FileSystem` ⇒ 命名空间护栏红。
-- **未验证**：Windows 那一半**没有本地编译验证**（本机无 MSVC/MinGW 交叉工具链），
-  只有 Windows CI 会验 —— 这一格如实标为待验证。
+- **Windows 那一半的验证**：本机无 MSVC/MinGW 交叉工具链 ⇒ 本地编不出来；
+  **Windows CI 实跑通过**（2026-10-27，run 40528260997 全部 job success）⇒
+  `GetDiskFreeSpaceExW` 那一支与 `Win32_Storage_FileSystem` feature 都真实编译并跑过用例。
+  CI 还当场抓到一处语义分叉并已修（unix 查路径 / Windows 查卷 ⇒ 用例只能断言
+  「定位不到卷 ⇒ 放行」）。**真机盘满注入仍未做**（需要把卷写满，那是破坏性操作）。
 
 ## [5.14.17] - 2026-10-27
 
