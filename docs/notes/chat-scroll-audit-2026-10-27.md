@@ -131,6 +131,16 @@ macOS **App 内真机**（WKWebView + 真实会话切换，A8）**仍未取到**
   该子格只能真硬件。
 - **永久拿不到**：mac 真机像素级 1 帧闪现（`screencapture` 帧率不够）⇒ 只能人眼。
 
+**A8 现状与"能不能绕开 Inspector"（2026-10-27 现测）**：引擎层（Safari 27.2，§12）与 App 层（Chromium 里挂真
+`ChatWindow`，`scrollswitch/scrollhist` 等段）都已有读数；**App 内 WKWebView 的帧级读数仍缺**，而它只有两条取数路：
+① Safari 开发菜单（或应用内 ⌥⌘I）粘 `perf/wk-scroll-sampler.js`；② 勾「允许远程自动化」后由 `safaridriver` 自动跑。
+
+今天把第三条候选（**系统无障碍控件树**）实测排除了：`scripts/ax-tree.mjs` 解析出来的节点只有 `{role,label}` 两个字段
+（实测 66 个节点：12 AXButton / 21 AXPopUpButton / 24 AXStaticText / 9 AXImage，**带 frame/position 的是 0 个**），
+消息列表也不作为 AX 子节点出现；单次 dump **3.6–13.2 s**。
+⇒ 它能判「控件在不在、名字对不对」（它本来就是这个用途），**判不了滚动位置、锚点漂移和空带**。
+换句话说：A8 不是"换个通道就能补"，它卡在一个**只有人能点的一次性开关**上。
+
 ## 7. 门禁与复跑
 
 ```bash
