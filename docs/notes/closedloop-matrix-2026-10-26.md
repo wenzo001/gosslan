@@ -82,6 +82,7 @@ HEAD `6ca07ca5`。取值：`PASS` / `PARTIAL` / `FAIL` / `UNVERIFIED` / `BLOCKED
 | F-GRP-009 | 当前生效的群公告（会话列表 📢 标记的数据源） | PASS 一条 SQL 捞出全部 `announcement` / `announcement_delete` 且 `conv_id LIKE 'group:%'`，按 `(seq, msg_id)` 排序 | 不适用(理由)：纯读 | PASS **为什么不复用前端缓存**写得明白：「前端不能从 `chat.messages` 折叠 —— 那是 ~4 个会话的 LRU 缓存，列表要覆盖**全部**群」（否则"没缓存的群没有标记"就是假状态）；折叠规则与 `ChatWindow.vue` 一致：每群保留最后一条公告、墓碑按 `ann_id == 公告的 msg_id` 命中 | PASS 群聊历史一长就是几百行，且挂在会话打开刷新链上 ⇒ 整段进阻塞池（否则公告扫描会排队别的命令） | PARTIAL 有群轮次；**公告的跨实例投递仍零证据**（同 F-GRP-004） | PARTIAL SQL 错误经 `map_err` 向上（不折叠成空）；但无具名 `code=` | **PARTIAL** |
 | F-PLF-017 | 设置窗关闭 / 辅助窗预热 | PASS `close_settings_window` 用 `close()` 直接销毁（设置窗是**关闭即销毁**，`AUX_WINDOWS_RESIDENT=false`），且标题栏关闭键走**同一条路**（`window_close` → `close()`）；移动端桩存在的原因写明：`generate_handler!` 无条件列出，桌面专属命令必须有对应物否则移动端编译不过 | 不适用(理由)：单次窗口动作 | PASS `prewarm_aux_windows` **刻意不自己查窗口存在性**——`ensure_aux_window(reveal=false)` 的快路径就是"已存在⇒返回、什么都不做"，自己写一次 `get_webview_window` 判存在**正是本仓库那条护栏禁止的形状**（并发下会开出第二个窗口），"而且这里连必要性都没有"；预热与真正打开**共用同一份构造** `ensure_preview_window`（注释：两份 builder 会让"预热出来的窗口和真正打开的不一样"这种缺陷查不出来） | PASS 预热失败`let _=` 是有意的：「失败不影响后续真正打开（那时的错误才是用户需要看到的）」 | PASS `lib_window_tests` 有窗口源码断言族 | 不适用(理由)：窗口预热失败静默是设计，且真正打开时会再报一次错 | **PASS** |
 | F-PRS-004 | 网络诊断快照 | PASS 六个 mutex 快照 + 蓝牙事实 + 数据库文件读数，**整段进阻塞池**（注释：面板每条判据都必须是"此刻"的，但采集不许占住 worker——"不在热路上但会卡住别人"） | 不适用(理由)：纯读 | PASS **两类事实互不冒充**：`mode`/`bound_ip`/`tcp_listen`/`udp_port` 只描述局域网，蓝牙在 `bluetooth` 里独立描述——注释记着「纯蓝牙用户不会再看到『整机 offline』（用户 2026-09-13 的反馈）」；「最近事件」已并进运行日志、这里不再返回（单一事实源） | PASS 三态 `auto/manual/offline` 分明，并区分 **`actual_bound_ip`（auto 模式下 Discovery 实际绑的真实 LAN IP）与配置地址**（`tcp_listen` 仍用配置地址）——不把"配置的"当"实际的" | PARTIAL 有诊断面板与 `lib_tests`；面板仅隐藏开发者入口，**用户侧无正式入口**（这是设计取舍，不是缺） | PARTIAL 诊断命令本身是诊断出口，无 `code=` 需求；但"读失败"路径本轮未读到 | **PARTIAL** |
+| F-FIL-008 | 共享根 / 接收目录设置 | PASS 两者都要求 `is_dir()`（目录存在）；路径来自原生目录选择器 | 不适用(理由)：单次设置 | PASS **macOS 安全作用域书签与路径一起落库**（`user_dirs::store`），注释写明「沙盒里书签是重启后唯一还带权限的来源」；且**书签建不出来不让动作失败**（未沙盒构建会失败，而那时路径本来就能用）；落库成功后才更新内存值 | PASS 目录不存在有明确文案；后续新接收的文件落到新目录 | PARTIAL 有 `user_dirs` 相关测试；书签在沙盒构建下的真实行为属**真机/签名构建**范畴（本轮 BLOCKED） | PARTIAL 无具名 `code=` | **PARTIAL** ★ **一条产品问题**：`set_share_dir` 只校验"是目录"，**指向 `/` 或家目录也会通过** ⇒ 好友即可通过 `ShareTreeRequest` 浏览整盘。这是"用户显式选择"的边界，不是越权；但**界面上没有任何"这个目录范围很大"的提醒**，已列入待拍板 |
 | F-OBS-002 | 前后端契约双向对账（161 命令 / 事件面） | PASS 门面唯一：`IPC 只能从 src/api 门面走`（含「6 条命令在 api 上根本没有包装」的回归） | 不适用(理由)：这是判据不是用户操作 | 不适用(理由)：同上 | 不适用(理由)：同上 | **PASS（我实跑）** `node --test src/api/events.test.ts src/utils/mapContract.test.ts` ⇒ **EXIT=0，17/17**；另独立 `comm` 复算：注册 161 / 去重调用名 160，孤儿仅 `get_topology`（`events.test.ts:375` 自declare 无 UI 入口） | PASS 命令名与注册表逐条对账、「门面之下不许留没人引用的包装」都是现成判据 | **PASS** |
 | F-OBS-003 | 诊断面：错误分类 / 上限 / 脱敏 / 访问控制 | 不适用(理由)：非用户动作 | 不适用(理由)：同上 | PASS 单文件 512 KB 轮转（`logging.rs:140/1070`），有真文件读写测试 `logger_persists_to_file_and_rotates:1715` | 部分：日志窗口有独立 entry（`logs.html` + `src/entries/logs.ts`），用户可查 | **已证**（上两行测试名 + 我跑通的对账族） | **PARTIAL** 具名 `code=` 共 **87** 个、日志调用 363 处（error 81 / warn 129 / info 153），覆盖面广；但**关键操作结局缺码**（B1-F1）；脱敏是形状级（`diagnostics.rs:19-22`，作者自述并保留文件名/大小以便查传输故障）⇒ 隐私与可查性是**登记过的取舍** | **PARTIAL** |
 
@@ -173,6 +174,8 @@ HEAD `6ca07ca5`。取值：`PASS` / `PARTIAL` / `FAIL` / `UNVERIFIED` / `BLOCKED
 下面这份清单是"我读过函数体或关键分支"的命令，**由脚本与 161 条注册表求交并报出拼错的名字**（不是手抄计数）：
 
 ```text
+set_downloads_dir
+set_share_dir
 get_runtime_snapshot
 sync_friend_keys
 send_group_todo
@@ -318,7 +321,7 @@ EOF
 
 ## 五、读数
 
-现算（**只数判级列**，命令：`grep -cE '^\| F-.*\| \*\*(PASS|PARTIAL)\*\* \|$' docs/notes/closedloop-matrix-2026-10-26.md` ⇒ **75**）：已走完六格 **75** 行，其中 **PASS 11**、**PARTIAL 64**；另有若干行含「不适用(理由)」的格（不适用≠通过，也不计入这两档）。⚠️ **不要用 `grep -c '^| F-'`**——本文件第六节的「FID → 命令映射」表同样以 `| F-` 开头，那个命令会把两表相加（实测报 45）。立案 **14** 条（P2 九 / P3 五），保留 **6** 条，撤回 **6** 条。
+现算（**只数判级列**，命令：`grep -cE '^\| F-.*\| \*\*(PASS|PARTIAL)\*\* \|$' docs/notes/closedloop-matrix-2026-10-26.md` ⇒ **76**）：已走完六格 **76** 行，其中 **PASS 11**、**PARTIAL 65**；另有若干行含「不适用(理由)」的格（不适用≠通过，也不计入这两档）。⚠️ **不要用 `grep -c '^| F-'`**——本文件第六节的「FID → 命令映射」表同样以 `| F-` 开头，那个命令会把两表相加（实测报 45）。立案 **14** 条（P2 九 / P3 五），保留 **6** 条，撤回 **6** 条。
 
 **本文件的引用不受任何守卫保护**（实况见主报告「我自己的两处错」第 2 条：`check-doc-citations.mjs` 管 `file:line` 的那条只吃 `LIVE_DOCS` 那 8 份，`docs/notes/**` 不在内）。所以行号会随改动静默腐烂。二选一，**本审计不新建脚本**（按仓里「新判据先找现成的家」与自己编的规矩要撤）：
 
