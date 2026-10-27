@@ -287,6 +287,9 @@ pub struct GroupFileEntry {
 /// 本机持有状态的判定必须**看磁盘**：路径在 DB 里存在不代表文件还在
 /// （缓存清理会删掉媒体文件，见 `clean_cache_now`）。只信 DB 会让面板列出
 /// 一堆点了打不开的条目。
+/// 群文件面板一次最多取多少条（只增表 + 每行点查/stat ⇒ 必须有界）。
+pub const GROUP_FILES_PANEL_LIMIT: i64 = 500;
+
 #[tauri::command(async)]
 pub async fn list_group_files(
     state: State<'_, Arc<AppState>>,
@@ -302,7 +305,9 @@ pub async fn list_group_files(
         type Row = (crate::state::GroupFile, i64, i64, String, Option<String>);
         let rows: Vec<Row> = {
             let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());
-            let files = db::list_group_files(&dbc, &group_id).map_err(|e| e.to_string())?;
+            // 面板只取最近 500 条（见 `list_group_files_page`）；历史同步仍走全量那条。
+            let files = db::list_group_files_page(&dbc, &group_id, GROUP_FILES_PANEL_LIMIT)
+                .map_err(|e| e.to_string())?;
             files
                 .into_iter()
                 .map(|f| {

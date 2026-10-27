@@ -22,6 +22,7 @@
  * 会随页面一起卸载。
  */
 import { computed, inject, onMounted, onUnmounted, ref, watch } from "vue";
+import { refDebounced } from "@vueuse/core";
 import { routeLocationKey, routerKey } from "vue-router";
 import { DropdownMenuItem, DropdownMenuSeparator } from "reka-ui";
 import { t } from "@/i18n";
@@ -38,6 +39,7 @@ import StateBlock from "@/components/ui/StateBlock.vue";
 import { errorText } from "@/composables/useErrorText";
 import { useClipboard } from "@/composables/useClipboard";
 import { fmtConversationTime } from "@/utils/time";
+import { INPUT_DEFER_MS } from "@/utils/defer";
 import { MAX_LIST_FILTER_KEYWORD_CHARS } from "@/utils/validation";
 import { formatBytes } from "@/utils/format";
 import { FILE_KIND_ICONS, extBadgeLabel, fileKindOf, fileKindStyle } from "@/utils/fileKind";
@@ -121,6 +123,11 @@ const loadedOnce = ref(false);
 const loadError = ref("");
 /** 搜索关键词（在标题 / 正文 / 文件名里找）。 */
 const keyword = ref("");
+/**
+ * 搜索用的是**防抖之后**的值：这个 computed 每行还要 `JSON.parse` 一次内容快照，
+ * 收藏上百条时按原值每键重算一次就是输入框掉字的来源（120ms 与其它搜索框同一口径）。
+ */
+const query = refDebounced(keyword, INPUT_DEFER_MS);
 const filterKind = ref<FilterKey>("all");
 /** 图片缩略图：收藏 id → objectURL（按需加载；删除时释放）。 */
 const thumbs = ref<Record<string, string>>({});
@@ -229,7 +236,7 @@ function cardText(f: FavoriteEntry): string | null {
  * 实际记得的信息：文本/代码看正文，图片/文件看文件名，合并转发看标题与每条摘要。
  */
 const filtered = computed(() => {
-  const kw = keyword.value.trim().toLowerCase();
+  const kw = query.value.trim().toLowerCase();
   const byKind = (f: FavoriteEntry) => {
     if (filterKind.value === "all") return true;
     // 合并转发按"文本"归类：它的内容就是一段文字记录（筛选里没有单独的"聊天记录"档）
@@ -389,16 +396,44 @@ const activeMergeItems = computed(() => {
   return parseMergePayload(f.content)?.items ?? [];
 });
 
-/** 图片缩略图按需加载：只对"副本还在这台机器上"的图片收藏读字节。 */
+/**
+ * 图片缩略图按需加载：只对"副本还在这台机器上"的图片收藏读字节。
+ *
+ * 两条约束（审计 P2）：① **并发上限** —— 一次性对几百张图发起 IPC 会把主线程压住；
+ * ② 回包只**写自己那一格**（`thumbs.value[id] = url`），不再整体替换对象 ——
+ * 旧写法每次回包都让 `thumbs` 换引用，watch 重跑 + 全表重渲 ⇒ O(n²) 次 patch。
+ */
+const PREVIEW_CONCURRENCY = 3;
+const previewQueue: FavoriteEntry[] = [];
+const previewSeen = new Set<string>();
+let previewsInFlight = 0;
+
+function pumpPreviews() {
+  while (previewsInFlight < PREVIEW_CONCURRENCY && previewQueue.length > 0) {
+    const f = previewQueue.shift();
+    if (!f) break;
+    previewsInFlight += 1;
+    void loadFavoritePreview(f.id, displayName(f))
+      .then((r) => {
+        if (r.url) thumbs.value[f.id] = r.url;
+      })
+      .finally(() => {
+        previewsInFlight -= 1;
+        pumpPreviews();
+      });
+  }
+}
+
 watch(
   [items, thumbs],
   ([list]) => {
     for (const f of list) {
       if (f.kind !== "image" || !f.available || thumbs.value[f.id]) continue;
-      void loadFavoritePreview(f.id, displayName(f)).then((r) => {
-        if (r.url) thumbs.value = { ...thumbs.value, [f.id]: r.url };
-      });
+      if (previewSeen.has(f.id)) continue;
+      previewSeen.add(f.id);
+      previewQueue.push(f);
     }
+    pumpPreviews();
   },
   { immediate: true },
 );

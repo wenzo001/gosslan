@@ -185,6 +185,24 @@ pub fn list_group_files(conn: &Connection, group_id: &str) -> Result<Vec<GroupFi
     rows.collect()
 }
 
+/// 面板用：只要最近的 `limit` 条。
+///
+/// 群文件是**只增表**（同钉盘语义，清聊天记录不删），长期群能到几千条；而
+/// `list_group_files` 的调用方还要给每行做 3~4 次点查 + 一次磁盘 stat ⇒ 整表取回
+/// 等于"打开面板就冻住几秒"。历史同步仍走全量那条（它要所有行，不能截断）。
+pub fn list_group_files_page(
+    conn: &Connection,
+    group_id: &str,
+    limit: i64,
+) -> Result<Vec<GroupFile>> {
+    let mut stmt = conn.prepare(
+        "SELECT transfer_id, group_id, sender_id, name, size, sha256, status, created_at, scope, todo_id
+         FROM group_files WHERE group_id = ?1 ORDER BY created_at DESC LIMIT ?2",
+    )?;
+    let rows = stmt.query_map(params![group_id, limit], row_to_group_file)?;
+    rows.collect()
+}
+
 /// 离线投递定向查询：某 peer 的全部 pending 群文件（按 recipient 精确命中
 /// idx_group_file_recipients_recipient 索引，不扫描全表）。
 /// 返回 (transfer_id, group_id) 供逐个投递。

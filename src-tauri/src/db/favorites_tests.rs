@@ -1451,6 +1451,25 @@ mod tests {
         assert!(list_group_files(&conn, "nonexistent").unwrap().is_empty());
     }
 
+    /// 面板分页只取最近的 N 条（群文件是只增表；整表取回 + 每行点查/stat 会冻住面板）。
+    /// 反面对照：`list_group_files` 仍必须给全量 —— 历史同步要所有行，截断会漏消息。
+    #[test]
+    fn group_files_page_is_bounded_but_full_list_stays_complete() {
+        let conn = group_file_fixture();
+        for (i, id) in ["gf-a", "gf-b", "gf-c"].iter().enumerate() {
+            let mut f = group_file(id);
+            f.created_at = 1_000 + i as i64;
+            insert_group_file(&conn, &f).unwrap();
+        }
+        let page = list_group_files_page(&conn, "g1", 2).unwrap();
+        assert_eq!(
+            page.iter().map(|f| f.transfer_id.as_str()).collect::<Vec<_>>(),
+            vec!["gf-c", "gf-b"],
+            "只取最近 2 条，且仍是最新在前"
+        );
+        assert_eq!(list_group_files(&conn, "g1").unwrap().len(), 3, "全量那条不许被截断");
+    }
+
     /// 1+2+3：建群文件 + 为 B/C/D 建 recipient state + 分别置 completed/sending/pending。
     #[test]
     fn group_file_recipient_states_persist() {
