@@ -25,6 +25,19 @@ pub fn retained_part_len(state: &AppState, transfer_id: &str) -> u64 {
         .unwrap_or(0)
 }
 
+/// 这一条 `.part` 是不是"本应用自己留下的、可以清"的分片。
+///
+/// 两个判据都要过：名字必须是 `owned_part_stem` 认可的 UUID 形状（接收目录是**用户的**
+/// 目录，`draft.part` / `合同终稿.part` 不是我们的），且该 tid 不在活跃接收表里。
+/// 按后缀盲删就是删用户数据 —— 同文件 `prune_retained_parts` 的注释已经写过这条。
+fn sweepable_part_name<'a>(
+    name: &'a str,
+    active: &std::collections::HashSet<String>,
+) -> Option<&'a str> {
+    let tid = owned_part_stem(name)?;
+    (!active.contains(tid)).then_some(tid)
+}
+
 /// 定期清扫：删除超过 TTL、且当前不在接收中的 .part。
 ///
 /// 为什么需要（审计 §7 风险 2）：可恢复失败会**保留** .part 作续传前缀，若对端一去不回，
@@ -57,13 +70,11 @@ pub fn sweep_stale_parts(state: &AppState) -> usize {
     if let Ok(rd) = std::fs::read_dir(&dl) {
         for entry in rd.flatten() {
             let path = entry.path();
-            if path.extension().and_then(|s| s.to_str()) != Some("part") {
+            let Some(name) = path.file_name().and_then(|s| s.to_str()) else {
                 continue;
-            }
-            if let Some(tid) = path.file_stem().and_then(|s| s.to_str()) {
-                if active.contains(tid) {
-                    continue;
-                }
+            };
+            if sweepable_part_name(name, &active).is_none() {
+                continue;
             }
             let stale = entry
                 .metadata()

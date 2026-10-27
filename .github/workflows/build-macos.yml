@@ -258,6 +258,9 @@ jobs:
     timeout-minutes: 30
     permissions:
       contents: write
+      # 发布门禁（`publish-release-assets.sh`）要读 verify.yml 的 run 结论；
+      # 声明了 permissions 块 ⇒ 未列出的 scope 一律 none，漏了这条整步 403 ⇒ 永远不发版。
+      actions: read
     steps:
       - name: 取出发布脚本（发布逻辑只在 scripts/ 那一处）
         uses: actions/checkout@v4

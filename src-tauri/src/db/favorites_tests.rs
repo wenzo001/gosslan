@@ -2358,4 +2358,80 @@ mod tests {
         assert!(list_pending_group_reads(&conn, "b").unwrap().is_empty());
         assert_eq!(list_pending_group_reads(&conn, "c").unwrap().len(), 1);
     }
+
+    /// 删除文件消息必须同时掐掉**文件队列**：队列按 `transfer_id` 建键，按 `msg_id` 删不到。
+    ///
+    /// 反面对照：只清 `outbox`/`group_outbox` 时，这两条断言都会红 —— 那正是用户
+    /// "我删了它还在传 / 对方还是收到了"的成因。
+    #[test]
+    fn deleting_a_file_message_cancels_the_file_queue_and_ledger() {
+        let conn = mem();
+        ensure_conversation(&conn, "f1", "single", "张三", None).unwrap();
+        insert_message(&conn, &rec_as("file-t1", "f1", "file", "{\"name\":\"a.bin\"}")).unwrap();
+        conn.execute(
+            "INSERT INTO file_outbox(transfer_id, peer_id, group_id, local_path, name, size, status, attempts, next_attempt_at, created_at)
+             VALUES('t1','f1',NULL,'/tmp/a.bin','a.bin',10,'pending',0,0,0)",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO file_transfers(id, peer_id, name, size, direction, status, path, progress, cancel_terminal, created_at)
+             VALUES('t1','f1','a.bin',10,'send','pending',NULL,0.0,0,0)",
+            [],
+        )
+        .unwrap();
+
+        delete_messages(&conn, &["file-t1".to_string()]).unwrap();
+
+        let queued: i64 = conn
+            .query_row("SELECT COUNT(*) FROM file_outbox WHERE transfer_id='t1'", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(queued, 0, "队列行还在 ⇒ 下次建链照样把已删除的文件推出去");
+        let (status, terminal): (String, i64) = conn
+            .query_row(
+                "SELECT status, cancel_terminal FROM file_transfers WHERE id='t1'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(status, "cancelled", "传输行必须落成已取消");
+        assert_eq!(terminal, 1, "缺墓碑列 ⇒ 在途进度会把状态写回 sending");
+    }
+
+    /// 同一口径的群文件分支：成员行与聚合行都要 cancelled，否则离线成员重连仍会被补发。
+    #[test]
+    fn deleting_a_group_file_message_cancels_every_recipient_row() {
+        let conn = mem();
+        ensure_conversation(&conn, "group:g1", "group", "项目群", None).unwrap();
+        insert_message(&conn, &rec_as("gfile-t2", "group:g1", "file", "{\"name\":\"b.bin\"}")).unwrap();
+        conn.execute(
+            "INSERT INTO group_files(transfer_id, group_id, sender_id, name, size, sha256, status, created_at)
+             VALUES('t2','g1','a','b.bin',10,'x','sending',0)",
+            [],
+        )
+        .unwrap();
+        for r in ["b", "c"] {
+            conn.execute(
+                "INSERT INTO group_file_recipients(transfer_id, recipient_id, status, progress, updated_at)
+                 VALUES('t2',?1,'pending',0.0,0)",
+                params![r],
+            )
+            .unwrap();
+        }
+
+        delete_messages(&conn, &["gfile-t2".to_string()]).unwrap();
+
+        let pending: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM group_file_recipients WHERE transfer_id='t2' AND status IN ('pending','sending')",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(pending, 0, "还有 pending/sending 行 ⇒ 离线补发仍会把文件发出去");
+        let gs: String = conn
+            .query_row("SELECT status FROM group_files WHERE transfer_id='t2'", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(gs, "cancelled", "聚合行必须跟着落取消（否则气泡显示还在传）");
+    }
 }

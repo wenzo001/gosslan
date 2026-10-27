@@ -9,10 +9,43 @@ mod tests {
         build_group_resume_receiver, chunk_exceeds_declared, chunk_seq_decision,
         classify_file_subtype, clear_file_wire_progress_in, derive_file_name, file_peer_key,
         finish_group_receive_into, inbound_quota_verdict, quota_error, receive_is_stale,
-        safe_file_name, safe_transfer_id, unique_path, wire_progress_bytes, ChunkSeq, QuotaBreach,
-        WireLedger, FILE_RECEIVE_IDLE_ABORT_MS, MAX_CONCURRENT_RECEIVES, MAX_FILE_OUTBOX_RETRIES,
-        MAX_INCOMING_FILE_BYTES, MAX_INCOMING_TOTAL_BYTES,
+        safe_file_name, safe_transfer_id, sweepable_part_name, unique_path, wire_progress_bytes,
+        ChunkSeq, QuotaBreach, WireLedger, FILE_RECEIVE_IDLE_ABORT_MS, MAX_CONCURRENT_RECEIVES,
+        MAX_FILE_OUTBOX_RETRIES, MAX_INCOMING_FILE_BYTES, MAX_INCOMING_TOTAL_BYTES,
     };
+
+    /// 24h 清扫只许删"本应用自己的"分片：UUID 形状 + 不在活跃表里。
+    ///
+    /// 反面对照是 `draft.part`：按后缀盲删会把它当残留删掉，而它是**用户的**文件
+    /// （接收目录是用户的目录，见 `prune_retained_parts` 的同一条注释）。
+    #[test]
+    fn stale_part_sweep_only_touches_our_own_uuid_shaped_files() {
+        use std::collections::HashSet;
+        let empty: HashSet<String> = HashSet::new();
+        let uuid = "550e8400-e29b-41d4-a716-446655440000";
+        assert_eq!(
+            sweepable_part_name(&format!("{uuid}.part"), &empty),
+            Some(uuid),
+            "UUID 形状的残留分片必须可清（否则续传前缀永远占盘）"
+        );
+        assert_eq!(
+            sweepable_part_name("draft.part", &empty),
+            None,
+            "用户自己的 draft.part 不许被当残留删掉"
+        );
+        assert_eq!(
+            sweepable_part_name("合同终稿.part", &empty),
+            None,
+            "收到的正常文件名（哪怕以 .part 结尾）也不是我们的临时分片"
+        );
+        let mut active: HashSet<String> = HashSet::new();
+        active.insert(uuid.to_string());
+        assert_eq!(
+            sweepable_part_name(&format!("{uuid}.part"), &active),
+            None,
+            "正在接收的那一片绝不能被清扫（会在 hasher 半途删掉文件）"
+        );
+    }
 
     /// 不读日志内容的用例共用这一份。
     fn throwaway_logger() -> &'static crate::logging::Logger {

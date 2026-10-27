@@ -70,6 +70,9 @@ on:
   # 任意分支推送都跑：推上去就能拿到结果，不必先开 PR（见文件头「触发条件」）。
   push:
     branches: ["**"]
+    # tag 也要跑：四个 build workflow 都是 `tags: ["v*"]` 触发，而发布 job 只 `needs`
+    # 构建、不等门禁。不挂 tags 的话，打一个 tag 就能把**从未跑过测试**的 commit 发出去。
+    tags: ["v*"]
   # PR 上仍跑（合并前的关卡）。与上面的 push 事件可能同时触发，由 concurrency 去重。
   pull_request:
   workflow_dispatch:

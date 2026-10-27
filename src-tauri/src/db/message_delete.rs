@@ -50,6 +50,27 @@ pub fn delete_messages(conn: &Connection, msg_ids: &[String]) -> Result<usize> {
         &format!("DELETE FROM group_outbox WHERE msg_id IN ({ph})"),
         params_from_iter(msg_ids.iter()),
     )?;
+    // 文件消息的队列**按 transfer_id 建键**（`file_outbox.transfer_id`、
+    // `group_files.transfer_id`），按 msg_id 删不到 ⇒ 删掉一条"发送中"的文件消息后，
+    // 下一次建链/心跳仍会把整份文件推给对方（用户看到的是"删了还在传"）。
+    // 与 `delete_conversation` 同一条收口：队列行清掉 + 传输行落取消墓碑，群文件走
+    // 既有的"整单取消"（成员行 + 聚合行同事务）。
+    for msg_id in msg_ids {
+        if let Some(tid) = msg_id.strip_prefix("file-") {
+            tx.execute(
+                "DELETE FROM file_outbox WHERE transfer_id = ?1",
+                params![tid],
+            )?;
+            tx.execute(
+                "UPDATE file_transfers SET status = 'cancelled', cancel_terminal = 1
+                 WHERE id = ?1 AND status <> 'done'",
+                params![tid],
+            )?;
+        } else if let Some(tid) = msg_id.strip_prefix("gfile-") {
+            cancel_group_file_recipients(&tx, tid)?;
+            mark_group_file_cancelled(&tx, tid)?;
+        }
+    }
 
     for conv_id in &convs {
         refresh_conversation_summary(&tx, conv_id)?;

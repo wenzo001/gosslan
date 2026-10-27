@@ -38,6 +38,14 @@ case "$1 $2" in
     case "$*" in *"--repo "* ) ;; *) echo "GH requires a repository context" >&2; exit 1 ;; esac ;;
 esac
 case "$1 $2" in
+  "api "*verify.yml/runs*)
+    case "$FAKE_SCENARIO" in
+      verify_red) echo "failure"; exit 0 ;;
+      verify_pending) echo "in_progress"; exit 0 ;;
+      *) echo "success"; exit 0 ;;
+    esac ;;
+esac
+case "$1 $2" in
   "api "* )
     case "$FAKE_SCENARIO" in
       race)
@@ -81,7 +89,7 @@ interface Run {
 /** 跑一次脚本：assets 里放两份假产物，`gh` 换成假的那份。 */
 function run(
   scenario: string,
-  opts: { files?: number; attempts?: number; sha?: string; label?: string; names?: string[] } = {},
+  opts: { files?: number; attempts?: number; sha?: string; label?: string; names?: string[]; env?: Record<string, string> } = {},
 ): Run {
   const dir = mkdtempSync(join(tmpdir(), "rel-case-"));
   const binDir = join(dir, "bin");
@@ -126,6 +134,7 @@ function run(
       FAKE_SCENARIO: scenario,
       FAKE_GH_LOG: log,
       FAKE_GH_STATE: state,
+      ...(opts.env ?? {}),
     },
   });
   return {
@@ -281,3 +290,31 @@ test("未知档位一律红（新加一档忘了声明/声明错，不许默默�
   assert.match(r.out, /未知档位/);
   assert.deepEqual(r.calls, [], "判不准档位就不许碰 gh");
 });
+
+/**
+ * 发布门禁的反面对照：同一个 commit 的 Verify 没绿（失败/还在跑/查不到）时，
+ * **一条 `release` 调用都不许发出**。少了这条对照，"门禁通过"与"门禁根本没跑"同形。
+ */
+test("发布门禁：Verify 未绿必须拒绝发布，且不许碰任何 release 调用", () => {
+  for (const scenario of ["verify_red", "verify_pending"]) {
+    const r = run(scenario, { env: { GITHUB_ACTIONS: "true" } });
+    assert.equal(r.code, 1, `${scenario}：门禁没拦住？输出：${r.out}`);
+    assert.match(r.out, /Verify/);
+    assert.deepEqual(
+      r.calls.filter((c) => c.startsWith("release")),
+      [],
+      `${scenario}：门禁红时仍调了 release —— 那正是"未测代码出包"的形状`,
+    );
+  }
+});
+
+/** 正面对照：Verify 绿了照常发布（否则门禁会变成"永远不发版"）。 */
+test("发布门禁：Verify 绿了照常发布", () => {
+  const r = run("new", { env: { GITHUB_ACTIONS: "true" } });
+  assert.equal(r.code, 0, r.out);
+  assert.ok(
+    r.calls.some((c) => c.startsWith("release upload")),
+    "门禁绿了却没上传产物",
+  );
+});
+

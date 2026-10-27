@@ -104,8 +104,33 @@ elif [ "$label" != "base" ]; then
   exit 1
 fi
 
-release_exists() { "$gh_bin" api "repos/$repo/releases/tags/$tag" >/dev/null 2>&1; }
+# ---- 发布门禁：同一个 commit 的 Verify 必须是绿的 ----
+#
+# 为什么闸放在这里而不是 workflow 的 `needs:`：四条构建腿是**各自独立的 workflow**，
+# 而 `needs` 只能引用同一个 workflow 里的 job；发布逻辑又只有这一份（见文件头）。
+# 于是闸放在"发版唯一入口"上：证明不了"这个 commit 跑过且跑绿了"，就不发。
+#
+# 只在 Actions 里判（GITHUB_ACTIONS=true）：本地与假 `gh` 的用例不该被网络/凭据卡住。
+# 紧急放行：GOSSLAN_SKIP_VERIFY_GATE=1（会在日志里留一行大字）。
+if [ "${GOSSLAN_SKIP_VERIFY_GATE:-0}" = "1" ]; then
+  echo "⚠️ 已按 GOSSLAN_SKIP_VERIFY_GATE=1 跳过 Verify 门禁"
+elif [ "${GITHUB_ACTIONS:-}" = "true" ]; then
+  if [ -z "$sha" ]; then
+    echo "❌ 发布门禁需要 sha（GITHUB_SHA）才能查 Verify 结论" >&2
+    exit 1
+  fi
+  gate=$("$gh_bin" api "repos/$repo/actions/workflows/verify.yml/runs?head_sha=$sha&per_page=50" \
+    --jq '[.workflow_runs[] | select(.event == "push")] | sort_by(.created_at) | last | (.conclusion // .status)' \
+    2>/dev/null || true)
+  if [ "$gate" != "success" ]; then
+    echo "❌ 拒绝发布：commit $sha 的 Verify 结论是『${gate:-查不到}』（要求 success）。" >&2
+    echo "   先让 Verify 跑绿再打 tag；确认要跳过：GOSSLAN_SKIP_VERIFY_GATE=1" >&2
+    exit 1
+  fi
+  echo "Verify 已绿（sha=${sha}）⇒ 允许发布"
+fi
 
+release_exists() { "$gh_bin" api "repos/$repo/releases/tags/$tag" >/dev/null 2>&1; }
 # ⚠️ **草稿 Release** 对 `releases/tags/<tag>` 是 404（2026-10-22 实测：人工在网页上建了草稿，
 # 于是本脚本判"不存在"→ 去 create → 被顶成 "already exists" → 复查询又 404 → 整步判红）。
 # 列表 API 带得出来（带 token 时草稿可见），所以再补一条"任何状态都算存在"的判据。
