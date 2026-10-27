@@ -13,6 +13,17 @@
 
 ## [Unreleased]
 
+## [5.14.15] - 2026-10-27
+
+### 修 CI：Windows 上 vacuum 预算用例的同机对照会抖；护栏条数对账 269（2026-10-27）
+
+- `storage/vacuum.rs` 的 `an_abort_lands_close_to_the_budget` 在 Windows runner 上连续两次红：
+  决定性判据（结局必须是 `Aborted`）一直是对的，红的是"中止必须早于同机完整整理"这条**耗时对照**
+  —— Windows 的 step 间隔 + 索引/杀毒 IO 能让中止比完整整理还慢。现在 Windows 给 1s 调度余量，
+  其余平台保持 250ms；预算没生效时仍会被 `Aborted` 那条当场抓住。
+- 新增 a11y 注入用例后护栏条数 268→269，`docs/ARCHITECTURE-MAP.html` 的现状数同步
+  （`check-doc-numbers` 判据 E 现算）。
+
 ## [5.14.14] - 2026-10-27
 
 ### 修 CI：发布脚本用例在 Actions 里被自家的 Verify 门禁带红（2026-10-27）
