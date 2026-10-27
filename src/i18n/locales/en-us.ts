@@ -885,6 +885,7 @@ export const enUS: MessageDict = {
   "group.files.totalSize": "{n} files · {size}",
   "group.files.loading": "Loading group files…",
   "group.files.loadFail": "Failed to load group files",
+  "group.files.truncated": "Showing the latest 500 only (older ones live in group history)",
   "group.files.empty": "No files have been shared in this group yet",
   "group.files.stateLocal": "On this device",
   "group.files.stateReceiving": "Receiving",

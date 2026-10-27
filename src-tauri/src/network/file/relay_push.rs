@@ -55,6 +55,15 @@ async fn relay_push_file(
         return Err("只能发送普通文件".to_string());
     }
     let size = meta.len();
+    // 与接收侧同一条上限：中继路径以前只在下游检查，超限时对端 `admit_inbound` 直接
+    // return（不 emit），而发送端把分片全推完之后写 'sent' + 100% ⇒ 双方界面都"成功"、
+    // 文件永远不存在。出口先拦一次，失败原因能落到界面上。
+    if size > crate::network::file::MAX_INCOMING_FILE_BYTES {
+        return Err(format!(
+            "文件超过中继接收上限（{} MiB）",
+            crate::network::file::MAX_INCOMING_FILE_BYTES / (1024 * 1024)
+        ));
+    }
     let name = path
         .file_name()
         .map(|s| s.to_string_lossy().to_string())

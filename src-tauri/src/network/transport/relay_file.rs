@@ -63,8 +63,18 @@ async fn handle_relay_file_offer(
     {
         match file::admit_inbound(state, replacing, &transfer_id, &from, size) {
             Ok(a) => a,
-            // `admit_inbound` 已按 `code=RECV_QUOTA_EXCEEDED` 留痕；这里不再重写一遍。
-            Err(_) => return,
+            // `admit_inbound` 已按 `code=RECV_QUOTA_EXCEEDED` 留痕；这里补一条**给界面的**
+            // 失败（旧写法只 return：请求方界面停在"对方正在发送"，永远等不到结果）。
+            Err(breach) => {
+                let _ = state.app.emit(
+                    "file-failed",
+                    &FileFailedInfo {
+                        transfer_id: transfer_id.clone(),
+                        reason: format!("{breach:?}"),
+                    },
+                );
+                return;
+            }
         };
     }
     // 开好 `.part`（预分配、按 seq 落盘）。失败的两条出路都是**当场拒收**：

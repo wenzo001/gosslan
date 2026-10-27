@@ -687,7 +687,6 @@ pub struct PeerVersionDiag {
 pub struct TopologyInfo {
     pub node_count: usize,
     pub relay_count: usize,
-    pub avg_rtt_ms: Option<u64>,
     pub online: bool,
 }
 

@@ -61,6 +61,8 @@ const filesQuery = useQuery(
 const queryClient = useQueryClient();
 
 const files = computed<GroupFileEntry[]>(() => filesQuery.data.value ?? []);
+/** 后端一次最多给 500 条（`GROUP_FILES_PANEL_LIMIT`）—— 达到上限就说明还有更早的。 */
+const truncated = computed(() => files.value.length >= 500);
 const loading = computed(
   () => !!props.groupId && (filesQuery.isPending.value || filesQuery.isFetching.value),
 );
@@ -292,6 +294,9 @@ function stateText(state: GroupFileEntry["local_state"]): string {
             <RotateCw class="h-3.5 w-3.5" />
           </button>
         </div>
+        <p v-if="truncated" class="px-2 py-2 text-caption text-[var(--gosslan-text-2)]">
+          {{ t("group.files.truncated") }}
+        </p>
       </div>
     </div>
   </BaseModal>

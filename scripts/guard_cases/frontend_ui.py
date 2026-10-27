@@ -57,6 +57,22 @@ CASES: list[Case] = [
         expect_fail_hint="兜底色",
         tags=["frontend", "new-guards"],
     ),
+    Case(
+        name="图标按钮缺 aria-label 必须报出（a11y 护栏不许空转）",
+        why="这是全仓唯一守『按钮有可访问名』的地方，而在此之前没有任何注入用例证明它会红；"
+            "逃生阀也曾是裸词 `a11y-label-ok`（<script> 里一句字符串就能整文件关掉两格）。"
+            "本用例把『改坏必红』钉住：去掉一个图标按钮的 :aria-label，只剩 title",
+        file=ROOT / "src" / "components" / "TitleBar.vue",
+        injections=[(
+            ' :aria-label="t(\'window.minimize\')"',
+            "",
+        )],
+        cmd=["node", "--test", "--experimental-strip-types", "--disable-warning=ExperimentalWarning",
+             "src/utils/a11yLabels.test.ts"],
+        cwd=ROOT,
+        expect_fail_hint="发现无名按钮",
+        tags=["frontend", "new-guards"],
+    ),
     # ---------------- 前端：静态设计护栏 ----------------
     Case(
         name="键盘可达（div @click 必须报出）",

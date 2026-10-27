@@ -13,6 +13,34 @@
 
 ## [Unreleased]
 
+## [5.14.13] - 2026-10-27
+
+### 体验与诊断：收藏页不再逐键重算、群文件面板有上界、a11y 护栏被证明会咬、中继超限不再假成功（2026-10-27）
+
+- **收藏页搜索防抖 + 缩略图有并发上限**（`FavoritePanel.vue`）：搜索框以前每敲一个字符就重算
+  `filtered` 并给每行 `JSON.parse` 一次内容快照（收藏上百条时掉字）；现在走 `refDebounced(120ms)`，
+  与其它搜索框同一口径。图片缩略图以前「进页面就对全部图片并发发起 IPC，且每次回包整体替换
+  `thumbs` 对象」⇒ 重跑 watch + 全表重渲；现在最多 3 个在飞、回包只写自己那一格。
+- **群文件面板有条数上界**（`list_group_files_page` + `GROUP_FILES_PANEL_LIMIT = 500`）：
+  群文件是只增表，长期群几千条，而旧实现整表取回后还要给每行做 3~4 次点查 + 一次磁盘 stat ——
+  打开面板就是几秒卡顿。面板只取最近 500 条并显示「仅显示最近 500 个」；群历史同步仍走全量那条
+  （它要所有行，截断会漏消息）。判据：`group_files_page_is_bounded_but_full_list_stays_complete`。
+- **a11y 护栏不再能被一句字符串关掉，且被证明会咬**（`utils/a11yLabels.ts` + `guard_cases/frontend_ui.py`）：
+  逃生阀以前是裸词 `a11y-label-ok`，`<script>` 里一句字符串就能把「无名按钮 / 缺 alt」两格整文件关掉；
+  现在必须写完整注释 `<!-- a11y-label-ok -->`。同时补了一条注入用例（去掉 TitleBar 最小化按钮的
+  `:aria-label`，只剩 `title`）—— 这是这两格**第一次**有「改坏必红」的证据。
+- **中继发送超限不再"假成功"**（`relay_push.rs` + `relay_file.rs`）：中继路径以前只在接收侧检查
+  单文件上限，而接收侧 `admit_inbound` 拒收时只 `return`（不通知）⇒ 发送端把分片推完写 `sent` + 100%，
+  双方界面都"成功"、文件永远不存在。现在发送出口先按同一个常量拦一次（失败原因落到界面），
+  接收侧拒收也补一条 `file-failed`。
+- **删掉恒空的拓扑时延字段**（`get_topology`）：`Peer.rtt_ms` 在生产路径没有写入点（唯一调用方传
+  `None`，ADR-0014 已记录该缺口），返回一个永远 `None` 的 `avg_rtt_ms` 只会让读的人以为链路质量在测；
+  前端从未消费它。字段删除，等真正测了往返再加回来。
+
+- 验证：`npm test` **1434/0**；`cargo test --lib --features bluetooth` **1247/0/1**（新增 1 条分页用例）；
+  `cargo clippy --all-targets -D warnings`、`cargo fmt --check`、`vue-tsc --noEmit` 退 0；
+  a11y 注入用例 `verify-guards.py --only "aria-label 必须报出"` 跑通（改坏即 FAIL、恢复逐字节一致）。
+
 ## [5.14.12] - 2026-10-27
 
 ### 可靠性：补发不再被去重吃掉、共享文件走有界队列、启动不再自锁、中继配额不再泄漏、掉电语义可诊断（2026-10-27）
