@@ -179,6 +179,39 @@ pub fn list_resumable_for_peer(
     rows.collect()
 }
 
+/// 某个 `transfer_id` 下**已经登记过**的内容 cid（去重后的集合）。
+///
+/// ## 为什么需要（2026-10-27 审计 P3 子问 2）
+///
+/// 1:1 续传时，磁盘上的 `{transfer_id}.part` 是**上一轮**留下的前缀。它属于哪一份内容，
+/// 1:1 侧此前**没有任何记录**（`file_transfers` 表没有 sha 列；`content_transfers` 的主键是
+/// `(cid, peer_id, direction)` ⇒ 同一个 transfer_id 配不同的 cid 会**留下多行**）。
+///
+/// 于是这个形状成立：**同一 transfer_id、同长度、内容不同** ⇒ 续传能进 ⇒ 整份白传一遍
+/// 之后末段 SHA 判死并删 `.part`。浪费一整轮带宽，且用户看着"传到 90% 又从头开始"。
+///
+/// 这个查询把那层记录找出来：台账里该 transfer_id 已登记的 cid 集合，
+/// 与本次 Offer 声明的 sha 比 —— 不在其中 ⇒ 前缀属于**另一份内容** ⇒ 判整份重收。
+///
+/// 群侧早就有同形状的实现（`network/file/group_resume.rs::prefix_usable` 比 size + sha），
+/// 1:1 侧此前是空白。
+///
+/// ⚠️ 索引：`content_transfers` 没有 `transfer_id` 索引（现有的两条是 `(status)` 与
+/// `(peer_id, status, updated_at)`）⇒ 这条查询是**按 peer 收窄后**的小扫描，
+/// 不是全表扫。行数是"这个 peer 名下的内容条数"，量级可控。
+pub fn cids_for_transfer_id(
+    conn: &Connection,
+    peer_id: &str,
+    transfer_id: &str,
+) -> rusqlite::Result<Vec<String>> {
+    let mut stmt = conn.prepare(
+        "SELECT DISTINCT cid FROM content_transfers
+         WHERE transfer_id=?1 AND peer_id=?2 AND direction='receive'",
+    )?;
+    let rows = stmt.query_map(params![transfer_id, peer_id], |r| r.get(0))?;
+    rows.collect()
+}
+
 /// 找一份**可用于服务**的完整内容：status=complete 且 path 非空。
 ///
 /// 返回 (peer_id, group_id, path)，多份时取最近更新的那份。

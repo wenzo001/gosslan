@@ -280,9 +280,6 @@ git diff --stat
 **仍未做（都写了为什么，不要误读成"漏了"）**
 
 - **P2 Android 后台保活**：未做，等第 7 节 ① 的产品口径（是否对外承诺"后台可收消息"）。
-- **P3 的"1:1 续传内容身份"判据**（拿 `content_transfers.cid` 与新 Offer 的 sha 比）：未做。
-  它要动 `resume_receive` / Offer 臂，且需要"同 tid 异 cid 必整份重收"的表驱动用例；
-  在发版前动续传路径，回归面大于收益。
 - **P5 设置搜索**：本文件自己建议暂不实现，维持。
 
 **后来补做的（2026-10-27 晚，另一批次）**
@@ -293,6 +290,7 @@ git diff --stat
 | P1 归类（群侧**补 reason**） | **已做** | 群文件此前**只**发 `message-status-changed`（气泡转 failed），完全不送原因；现在六个失败点各带原因，`is_stable_fail_code` 判"只有稳定码才上屏"（否则断链时每个在途群文件弹一次 toast = 噪音回归）；判据 `only_stable_fail_codes_reach_the_user` |
 | P1 归类（前端**可行动文案**） | **已做** | `src/utils/fileFailReason.ts`（码 → 中英文案）；跨语言契约对账用例（后端加码忘了改前端 ⇒ 界面显示裸码，用例红） |
 | P1 预检（`admit_inbound` 余量） | **已做** | `storage/disk_space.rs`（unix `statvfs` / Windows `GetDiskFreeSpaceExW`）+ `admit_inbound` 第三道闸 `code=RECV_DISK_SPACE_INSUFFICIENT`；三条纪律：读不到⇒放行、不替代写失败兜底、一次系统调用不是慢活（INV-P34a 已登记，含钩子与反向两段） |
+| P3 1:1 续传内容身份 | **已做** | `network/file/receive.rs::prefix_identity_usable`（纯函数三态：无历史⇒放行 / 命中⇒续传 / 不命中⇒整份重收）+ `content::store::cids_for_transfer_id`（查台账里该 transfer_id 登记过哪些 cid）；判据接在 `resume_receive` 里**读前缀之前**；`content_transfers` 主键含 cid ⇒ 同 tid 异 cid 会留多行，**不需要新字段/协议改动/迁移**；判据 `resume_prefix_identity_distinguishes_same_content_from_another_one` + `resume_receive_checks_the_prefix_identity_before_reading_it` |
 
 **预检这一批的诚实边界**：**Windows 那一半没有本地编译验证**（本机无 MSVC/MinGW
 交叉工具链，`cargo check --target x86_64-pc-windows-*` 两次都死在工具链缺失而不是
@@ -301,5 +299,7 @@ git diff --stat
 （`C:\` 被截成 `C:`，而 `GetDiskFreeSpaceExW` 只认 `C:\` ⇒ 预检恒"读不到"、
 形同没有这条闸）。真机盘满注入仍未做。
 
-**结论**：本文件第 5 节的 1–6 项里，1（归类 + 预检）、3（日志）、5（朗读）、
-6（README + 收藏判据）已落地；4（续传身份）未做。Android 待拍板。
+**结论**：本文件第 5 节的 1–6 项**全部已落地**（1 归类 + 预检、2 预检、3 日志、
+4 续传身份、5 朗读、6 README + 收藏判据）。仍未做的是需要**产品拍板**或需要**协议改动**
+的那几件：Android 后台保活（等第 7 节 ①）、设置搜索（本文件自己建议暂不做）、
+新增协议字段做端到端前缀指纹（本文件判定"收益不抵成本"）。

@@ -442,6 +442,69 @@ fn frame_reader_does_not_preallocate_the_declared_length() {
     );
 }
 
+/// ---------------- 1:1 续传的内容身份判据（2026-10-27 审计 P3） ----------------
+///
+/// 放在这个模块里而不是 `network/file_tests.rs`，是因为它要用下面那两个
+/// 源码形状辅助函数（`rust_fn_body` / `code_flat`）—— 它们是**模块私有**的。
+#[cfg(test)]
+mod resume_identity_tests {
+    use super::{code_flat, rust_fn_body};
+
+    /// 内容身份判据必须接在 `resume_receive` 里，且**在读前缀之前**。
+    ///
+    /// 为什么位置也是契约：读前缀要把整份 `.part` 喂进哈希器（GB 级慢活）；
+    /// 判据放在读完之后，就等于"先白读一遍 GB，再判出不对"——省下的只有传字节，
+    /// 没省下那次慢活。
+    ///
+    /// 反面对照：把判据那段从 `resume_receive` 里删掉 ⇒ 本用例必须红。
+    #[test]
+    fn resume_receive_checks_the_prefix_identity_before_reading_it() {
+        let recv = include_str!("network/file/receive.rs");
+        let body = code_flat(&rust_fn_body(recv, "pub fn resume_receive("));
+
+        // ① 判据接在续传入口里
+        assert!(
+            body.contains("prefix_identity_usable("),
+            "resume_receive 里必须有内容身份判据（写在别处 ⇒ 续传路径绕过了它）"
+        );
+        // ② 台账查询真的被调到了（不是拿长度糊弄）
+        assert!(
+            body.contains("cids_for_transfer_id("),
+            "判据必须真的查内容台账（不查就没有『这份前缀属于哪份内容』的证据）"
+        );
+        // ③ 三种结果的处置：Unknown / SameContent 放行，DifferentContent 判整份重收。
+        assert!(
+            body.contains("PrefixIdentity::Unknown")
+                && body.contains("PrefixIdentity::SameContent")
+                && body.contains("PrefixIdentity::DifferentContent"),
+            "三种身份关系都必须有处置（Unknown/SameContent 放行、DifferentContent 重收）"
+        );
+        // ④ 「另一份内容」必须**拒绝**（不许放行续传 —— 那就是白传一轮再判死）
+        assert!(
+            body.contains("PrefixIdentity::DifferentContent=>"),
+            "『另一份内容』必须走拒绝分支（放行就是旧行为：只比长度）"
+        );
+        // ⑤ 拒绝必须留可检索的码
+        assert!(
+            body.contains("RESUME_CONTENT_MISMATCH"),
+            "拒绝必须留可检索的码（排障时要能搜到这一条）"
+        );
+        // ⑥ **位置**：判据必须在读前缀之前（`std::fs::metadata(&tmp_path)` 那一行之前）。
+        //    判法是两个锚点在扁平化源码里的下标顺序。
+        let at_verdict = body
+            .find("prefix_identity_usable(")
+            .expect("找不到判据调用点 ⇒ 锚点要跟着改");
+        let at_meta = body
+            .find("std::fs::metadata(&tmp_path)")
+            .expect("找不到读前缀那一行 ⇒ 锚点要跟着改");
+        assert!(
+            at_verdict < at_meta,
+            "内容身份判据必须在**读前缀之前**（读前缀要整份哈希，是 GB 级慢活；\
+             判完之后再判就等于『先白读一遍 GB』）"
+        );
+    }
+}
+
 /// ---------------- 接收前的卷余量预检（2026-10-27 审计 P1） ----------------
 ///
 /// 放在这个模块里而不是 `network/file_tests.rs`，是因为它要用下面那两个
