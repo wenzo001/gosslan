@@ -91,6 +91,59 @@ pub fn sweep_stale_parts(state: &AppState) -> usize {
     removed
 }
 
+/// 磁盘上那份 `.part` 前缀**能不能拿来续传**（1:1 侧的内容身份判据）。
+///
+/// ## 为什么需要（2026-10-27 审计 P3 子问 2）
+///
+/// 1:1 续传此前**只比长度**：`.part` 存在、是文件、`len == from_bytes`、`0 < from_bytes ≤ size`
+///、未过 24h TTL —— 于是这个形状成立：**同一 transfer_id、同长度、内容不同** ⇒ 续传能进
+/// ⇒ 整份白传一遍 ⇒ 末段 SHA 判死并删 `.part`。用户看到的是"传到 90% 又从头开始"。
+///
+/// 群侧早就有同形状的判据（`group_resume.rs::prefix_usable` 比 size + sha），
+/// 1:1 侧此前是空白 —— 现在补上。
+///
+/// ## 判据怎么读
+///
+/// - `known_cids`：这个 transfer_id 在内容台账里**已经登记过**的 cid 集合
+///   （`content::store::cids_for_transfer_id`）。
+/// - `offer_sha`：本次 Offer 声明的文件 sha256（= 内容 cid）。
+///
+/// 三种结果：
+/// · `known_cids` 为空 ⇒ **没有历史** ⇒ 放行（第一次收，前缀无从谈起）；
+/// · `offer_sha` 在集合里 ⇒ **同一份内容** ⇒ 放行续传；
+/// · 集合非空且不含 `offer_sha` ⇒ 前缀属于**另一份内容** ⇒ **判整份重收**
+///   （`Restart`）—— 不许拿它当前缀续。
+///
+/// ⚠️ **只比长度是不够的**（那是本条要替代的旧行为）：长度相同的内容可以完全不同，
+/// 而"长度相同"恰恰是"同长度不同内容"这个形状的伪装。
+pub(crate) fn prefix_identity_usable(
+    known_cids: &[String],
+    offer_sha: &str,
+) -> PrefixIdentity {
+    if known_cids.is_empty() {
+        // 没有历史 ⇒ 无从判别 ⇒ 放行（保守方向：宁可续传一次，也不把正常续传打死）
+        return PrefixIdentity::Unknown;
+    }
+    if known_cids
+        .iter()
+        .any(|c| c.eq_ignore_ascii_case(offer_sha))
+    {
+        return PrefixIdentity::SameContent;
+    }
+    PrefixIdentity::DifferentContent
+}
+
+/// `.part` 前缀与本次 Offer 的内容身份关系（纯判据的输出）。
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum PrefixIdentity {
+    /// 没有历史记录 ⇒ 放行。
+    Unknown,
+    /// 同一份内容 ⇒ 可以续传。
+    SameContent,
+    /// **另一份内容** ⇒ 必须整份重收（拿它续传会白传一轮再判死）。
+    DifferentContent,
+}
+
 /// 断点续传：从已保留的 .part 前缀继续接收。
 ///
 /// 与 begin_receive 的区别：**不再 truncate**，而是读入已有前缀播种 hasher，
@@ -126,11 +179,54 @@ pub fn resume_receive(
         state.logger.warn("file", msg.clone());
         return Err(msg);
     }
+    // **内容身份判据**（2026-10-27 审计 P3 子问 2）：磁盘上那份 `.part` 属于哪一份内容？
+    //
+    // 放在**读前缀之前**（读前缀要整份哈希，是 GB 级慢活）：属于另一份内容时，
+    // 早一步判 Restart 就省掉"整份白传一遍 + 末段 SHA 判死 + 删 .part"这一轮。
+    //
+    // 判据是"台账里这个 transfer_id 登记过哪些 cid"（`content_transfers` 的主键是
+    // `(cid, peer_id, direction)` ⇒ 同一 transfer_id 配不同 cid 会留多行，
+    // 正是这里要的证据）。台账查不到 ⇒ 无从判别 ⇒ 放行（保守方向）。
     let dl = state
         .downloads_dir
         .lock()
         .unwrap_or_else(|e| e.into_inner())
         .clone();
+    {
+        let known = {
+            let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
+            crate::content::store::cids_for_transfer_id(&dbc, peer_id, transfer_id)
+        };
+        let known = match known {
+            Ok(v) => v,
+            Err(e) => {
+                // 台账读不出来 ⇒ 无从判别 ⇒ 放行（保守方向：宁可续传一次，
+                // 也不要把正常续传打死 —— 白传一轮只是浪费带宽，打死续传是功能不可用）。
+                state.logger.warn(
+                    "file",
+                    format!(
+                        "查内容台账失败，按无历史处理（放行续传）transfer={transfer_id} peer={peer_id}: {e}"
+                    ),
+                );
+                Vec::new()
+            }
+        };
+        match prefix_identity_usable(&known, &expected_sha256) {
+            PrefixIdentity::Unknown | PrefixIdentity::SameContent => {}
+            PrefixIdentity::DifferentContent => {
+                // 前缀属于**另一份内容** ⇒ 判整份重收。
+                // 删掉那份前缀：留着它会让下一轮续传再撞一次同样的判定。
+                let _ = std::fs::remove_file(dl.join(format!("{transfer_id}.part")));
+                let msg = format!(
+                    "code=RESUME_CONTENT_MISMATCH transfer={transfer_id} peer={peer_id} \
+                     sha={expected_sha256} known={} —— 磁盘前缀属于另一份内容，整份重收",
+                    known.len()
+                );
+                state.logger.warn("file", msg.clone());
+                return Err(msg);
+            }
+        }
+    }
     let tmp_path = dl.join(format!("{transfer_id}.part"));
     let meta = std::fs::metadata(&tmp_path).map_err(|_| "续传前缀不存在".to_string())?;
     if !meta.is_file() || meta.len() != from_bytes || from_bytes == 0 || from_bytes > size {

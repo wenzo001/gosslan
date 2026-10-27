@@ -8,7 +8,8 @@ mod tests {
     use super::{
         build_group_resume_receiver, chunk_exceeds_declared, chunk_seq_decision,
         classify_file_subtype, clear_file_wire_progress_in, derive_file_name, file_peer_key,
-        finish_group_receive_into, inbound_quota_verdict, quota_error, receive_is_stale,
+        finish_group_receive_into, inbound_quota_verdict, prefix_identity_usable,
+        quota_error, receive_is_stale, PrefixIdentity,
         safe_file_name, safe_transfer_id, sweepable_part_name, unique_path, wire_progress_bytes,
         ChunkSeq, QuotaBreach, WireLedger, FILE_RECEIVE_IDLE_ABORT_MS, MAX_CONCURRENT_RECEIVES,
         MAX_FILE_OUTBOX_RETRIES, MAX_INCOMING_FILE_BYTES, MAX_INCOMING_TOTAL_BYTES,
@@ -3304,6 +3305,54 @@ mod tests {
             "中继文件 Offer 必须过闸"
         );
     }
+    /// 1:1 续传的**内容身份判据**（2026-10-27 审计 P3 子问 2）。
+    ///
+    /// 旧行为只比长度 ⇒ "同 transfer_id、同长度、不同内容"能进续传 ⇒ 整份白传一遍
+    /// 之后末段 SHA 判死并删 `.part`（用户看着"传到 90% 又从头开始"）。
+    ///
+    /// 这条是**表驱动**的：五格分别覆盖"无历史 / 同一份 / 另一份 / 大小写 / 多份历史"。
+    /// 反面对照：把判据改回"只比长度"（恒 `SameContent`）⇒ 第三格必须红。
+    #[test]
+    fn resume_prefix_identity_distinguishes_same_content_from_another_one() {
+        let sha_a = "aa".repeat(32);
+        let sha_b = "bb".repeat(32);
+
+        // ① 没有历史 ⇒ 无从判别 ⇒ 放行（第一次收，前缀无从谈起）
+        assert_eq!(
+            prefix_identity_usable(&[], &sha_a),
+            PrefixIdentity::Unknown,
+            "没有历史记录时必须放行（不许把『判不出』当成『不一样』）"
+        );
+
+        // ② 同一份内容 ⇒ 可以续传（这是**正常**路径，不许被误伤）
+        assert_eq!(
+            prefix_identity_usable(std::slice::from_ref(&sha_a), &sha_a),
+            PrefixIdentity::SameContent,
+            "同一份内容必须能续传（否则每次重试都要整份重传）"
+        );
+
+        // ③ 另一份内容 ⇒ 判整份重收
+        assert_eq!(
+            prefix_identity_usable(std::slice::from_ref(&sha_b), &sha_a),
+            PrefixIdentity::DifferentContent,
+            "同 transfer_id 但内容不同 ⇒ 必须整份重收（续传会白传一轮再判死）"
+        );
+
+        // ④ 大小写不敏感（sha256 hex 的两种写法都是合法表示）
+        assert_eq!(
+            prefix_identity_usable(&[sha_a.to_uppercase()], &sha_a),
+            PrefixIdentity::SameContent,
+            "sha256 hex 的大小写写法必须等价"
+        );
+
+        // ⑤ 集合里有**多份**历史时，只要有一份匹配就算同一份
+        assert_eq!(
+            prefix_identity_usable(&[sha_b.clone(), sha_a.clone()], &sha_a),
+            PrefixIdentity::SameContent,
+            "多份历史里命中任意一份即可续传"
+        );
+    }
+
 }
 
 #[cfg(test)]
@@ -3540,4 +3589,7 @@ mod send_complete_guard_tests {
             "截断必须带可检索码，否则用户在界面看到少了一半文件时无从解释"
         );
     }
+
+
+
 }

@@ -13,6 +13,36 @@
 
 ## [Unreleased]
 
+## [5.14.19] - 2026-10-27
+
+### 1:1 续传补内容身份判据：前缀属于另一份内容就整份重收（2026-10-27）
+
+- **为什么**（审计 P3 子问 2）：1:1 续传此前**只比长度**（`.part` 存在、是文件、
+  `len == from_bytes`、`0 < from_bytes ≤ size`、未过 24h TTL）⇒ "同 transfer_id、
+  同长度、**内容不同**"能进续传 ⇒ 整份白传一遍之后末段 SHA 判死并删 `.part`
+  （用户看着"传到 90% 又从头开始"）。群侧早就有同形状判据
+  （`group_resume.rs::prefix_usable` 比 size + sha），1:1 侧此前是空白。
+- **判据**（`network/file/receive.rs::prefix_identity_usable`，纯函数三态）：
+  · 台账里该 `transfer_id` 登记过哪些 cid（新增 `content::store::cids_for_transfer_id`）
+  · 与本次 Offer 的 sha 比：**无历史 ⇒ 放行**（无从判别）、**命中 ⇒ 放行续传**、
+    **不命中 ⇒ 判整份重收**（并删掉那份前缀，否则下一轮再撞同样的判定）。
+  · `content_transfers` 的主键是 `(cid, peer_id, direction)` ⇒ 同一 transfer_id 配不同 cid
+    会**留下多行** —— 这正是这里要的证据，**不需要新字段、不需要协议改动、不需要迁移**。
+- **位置**：判据接在 `resume_receive` 里、**读前缀之前**（读前缀要把整份 `.part`
+  喂进哈希器，是 GB 级慢活；判完之后再判就等于"先白读一遍 GB"）。
+- **失败形状**：判 Restart ⇒ 上层回 `FileReject{received:0}` ⇒ 对端从 0 重发 = 整份重收
+  （与"续传前缀不存在"那条既有失败出口同一形状）。
+- **保守方向**：台账读不出来 ⇒ 无从判别 ⇒ 放行（白传一轮只是浪费带宽，
+  打死续传是功能不可用）。
+
+- 验证：`cargo test --lib --features bluetooth` 1257/0/1；`npm test` 1438/0；
+  `cargo clippy --all-targets -D warnings`、`cargo fmt --check` 退 0；
+  check-domain-map / domain-deps / doc-numbers / doc-citations / lock-scope /
+  import-cycles / panic-sites 全过。
+- **非空转已逐条证明**：把判据调用改成恒 `Unknown`（等价于"没有这条判据"）⇒ 接线判据红；
+  把"位置"那格的判据反转 ⇒ 同一条红；把纯函数改成恒 `SameContent`（旧行为：只比长度）
+  ⇒ 表驱动用例第三格红。
+
 ## [5.14.18] - 2026-10-27
 
 ### 接收前卷余量预检：磁盘装不下就事前回绝，别写到一半才 ENOSPC（2026-10-27）
