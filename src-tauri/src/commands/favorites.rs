@@ -296,6 +296,15 @@ pub async fn delete_messages(
     if msg_ids.is_empty() {
         return Ok(0);
     }
+    // 在途发送任务由**内存信号槽**停手：`db::delete_messages` 清的是队列与台账，
+    // 打断不了已经在跑的那条发送循环（它只盯 cancel 槽）。文件名消息 -> transfer_id
+    // 与 `msg_id` 同一条约定（`file-{tid}` / `gfile-{tid}`）。
+    for tid in msg_ids
+        .iter()
+        .filter_map(|m| m.strip_prefix("file-").or_else(|| m.strip_prefix("gfile-")))
+    {
+        crate::network::file::signal_cancel_slots(&s, tid);
+    }
     // 上限检查留在 await 侧（纯算术），真正持 db 锁的那一段进阻塞池（审计 R-18）。
     tokio::task::spawn_blocking(move || -> Result<usize, String> {
         let removed = {

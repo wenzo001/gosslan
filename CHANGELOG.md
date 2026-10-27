@@ -13,6 +13,34 @@
 
 ## [Unreleased]
 
+## [5.14.11] - 2026-10-27
+
+### 数据安全：收藏不再被当缓存删、群文件 id 消毒、删消息即停发、发布加 tag 门禁（2026-10-27）
+
+- **收藏的媒体副本永不参与清理**：清理目标从"统计目录"里拆了出来（`commands/channel.rs::cleanable_dirs`）。
+  之前 `media_dirs` 把 `favorites_dir` 一并交给 `plan_removal`，而 `state.rs` 的字段注释写着"清理逻辑不会碰它"
+  —— 用户一旦选了 3/7/30 天保留，6 小时内就会删掉收藏的唯一副本，原消息多半也已删除，点开只剩死链。
+  现在收藏只计入占用统计（配额仍是真数），不进入删除计划。判据：`clean_targets_exclude_favorites_but_keep_counting_them`。
+- **群文件 `transfer_id` 在入口消毒**：这个 id 会被拼成 `<tid>.part` 的**删除路径**（取消与续传 `Restart` 两个汇点），
+  而 `handle_group_file_offer` / `handle_group_file_cancel` 之前都没过 `safe_transfer_id` ⇒ 任意群成员可让受害者
+  删掉下载目录之外的 `*.part`（含其它在途传输的分片），还能用 `metadata` 探测任意路径是否存在。
+  现在两个入口各一行白名单校验，日志只记长度不记对端原串。判据：`both_group_file_entries_validate_the_transfer_id_before_any_side_effect`。
+- **删除文件消息等于取消它**：`file_outbox`/`group_files` 按 `transfer_id` 建键，按 `msg_id` 删不到 ——
+  删掉一条"发送中"的文件消息后，下一次建链/心跳仍会把整份文件推给对方。现在 `db::delete_messages` 在同一事务里
+  清队列、给 `file_transfers` 落 `cancelled + cancel_terminal`、群文件走既有整单取消；命令层再对在途发送打一次
+  `signal_cancel_slots`（DB 改不动正在跑的发送循环）。判据：两条 `deleting_a_*_message_cancels_*`。
+- **24h 残留分片清扫不再按后缀盲删**：接收目录是**用户的**目录，`draft.part` / `合同终稿.part` 都不是我们的临时文件。
+  清扫改成"UUID 形状 + 不在活跃接收表"双判据（复用 `owned_part_stem`）。判据：`stale_part_sweep_only_touches_our_own_uuid_shaped_files`。
+- **打 tag 出包必须先过门禁**：`verify.yml` 的 `push` 增加 `tags: ["v*"]`（原来只挂 branches，tag 推送根本不触发测试）；
+  `publish-release-assets.sh` 增加 Verify 门禁 —— 同一个 SHA 的最新 push 运行必须是 `success`，否则拒绝发布
+  （紧急放行 `GOSSLAN_SKIP_VERIFY_GATE=1` 会留一行大字）。四个 build workflow 的 release job 补 `actions: read`：
+  声明 `permissions` 块后未列出的 scope 全是 `none`，漏了它这一步会 403 ⇒ 变成"永远不发版"。
+  判据：`发布门禁：Verify 未绿必须拒绝发布…` + 正面对照。
+
+- 验证：`cargo test --lib --features bluetooth` **1239/0/1**；`npm test` **1434/0**；
+  `cargo clippy --all-targets -D warnings`、`cargo fmt --check`、`npm run build` 退 0；
+  五条新用例逐条做过「改坏必红 → 还原复绿」，不是"看着通过"。
+
 ## [5.14.10] - 2026-10-27
 
 ### 群任务：编号不再被别人的新任务推走；卡片与看板同源；已归档任务可删（2026-10-27）

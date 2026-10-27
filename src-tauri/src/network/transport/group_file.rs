@@ -73,6 +73,18 @@ pub(crate) async fn handle_group_file_cancel(
     if from != peer_id || from == state.device_id {
         return;
     }
+    // 这个 id 会拼进删除路径（`cancel_group_receive` 的 `<tid>.part`）⇒ 入口必须过白名单。
+    // 只记长度，不把对端给的原串写进日志（它可以带换行/控制字符）。
+    let Some(transfer_id) = file::safe_transfer_id(&transfer_id) else {
+        state.logger.warn(
+            "group_file",
+            format!(
+                "GroupFileCancel 的 transfer_id 非法，丢弃 frame_len={} peer={peer_id}",
+                transfer_id.len()
+            ),
+        );
+        return;
+    };
     let gf = {
         let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
         db::get_group_file(&dbc, &transfer_id)
@@ -271,6 +283,18 @@ async fn handle_group_file_offer(
     if sender_id != peer_id || sender_id == state.device_id {
         return;
     }
+    // 这个 id 会落进台账，并在取消/续传分支拼成 `<tid>.part` 的**删除路径**
+    // （`cancel_group_receive` 与下面 Restart 分支）⇒ 在第一次落库之前就过白名单。
+    let Some(transfer_id) = file::safe_transfer_id(&transfer_id) else {
+        state.logger.warn(
+            "group_file",
+            format!(
+                "GroupFileOffer 的 transfer_id 非法，丢弃 frame_len={} peer={peer_id}",
+                transfer_id.len()
+            ),
+        );
+        return;
+    };
     // ⚠️ 重复 Offer 的处置必须排在权限校验**之后**（下面）：重试会重置接收段，
     // 若不过在群/成员校验，任何群成员都能拿一个已知 transfer_id 打断别人的接收。
     // 权限：本地群存在，且 sender ∈ group_members（防群外 peer 伪造 Offer）

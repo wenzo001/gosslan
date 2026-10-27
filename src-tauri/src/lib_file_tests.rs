@@ -1159,3 +1159,33 @@ fn attach_image_size_keeps_json_shape_when_dimensions_are_unknown() {
     assert!(untouched.get("h").is_none(), "读不出尺寸时不许凭空写 h");
     let _ = std::fs::remove_file(&path);
 }
+
+/// 群文件的两个入口都必须先过 `safe_transfer_id`，且**在第一次写台账/删文件之前**。
+///
+/// 为什么是源码形状而不是行为用例：`transfer_id` 有两个下游汇点（`cancel_group_receive`
+/// 的 fallback 路径、续传 `Restart` 分支的 `remove_file`），两处都直接
+/// `downloads.join(format!("{tid}.part"))`。行为用例要造 AppState + 真群 + 群密钥；
+/// 而这两个入口是**唯一**的收口点，钉住"入口校验 + 顺序"就够了。
+#[test]
+fn both_group_file_entries_validate_the_transfer_id_before_any_side_effect() {
+    let src = include_str!("network/transport/group_file.rs");
+    for (anchor, first_side_effect) in [
+        ("async fn handle_group_file_offer(", "upsert_group_file_receive("),
+        (
+            "pub(crate) async fn handle_group_file_cancel(",
+            "cancel_group_receive(",
+        ),
+    ] {
+        let body = code_flat(&rust_fn_body(src, anchor));
+        let at = body
+            .find("safe_transfer_id(&transfer_id)")
+            .unwrap_or_else(|| panic!("{anchor} 没过 safe_transfer_id ⇒ 越界删除的入口又开了"));
+        let effect = body
+            .find(first_side_effect)
+            .unwrap_or_else(|| panic!("{anchor} 里找不到 {first_side_effect}，锚点要跟着改"));
+        assert!(
+            at < effect,
+            "{anchor} 里校验排在了 {first_side_effect} 之后 ⇒ 脏 id 已经落库/落了盘"
+        );
+    }
+}

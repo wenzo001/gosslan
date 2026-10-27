@@ -348,17 +348,24 @@ fn load_policy(s: &AppState) -> CachePolicy {
     }
 }
 
-/// 纳入统计与清理的目录：接收的图片/文件目录 + 历史遗留的 cache 目录。
-/// 旧的 `cache/` 可能残留早期版本抽取的图片，一并纳入，避免"看不见也清不掉"。
+/// 纳入**占用统计**的目录：接收的图片/文件目录 + 历史遗留的 cache 目录 + 收藏副本。
+/// 旧 `cache/` 可能残留早期版本抽取的图片，一并纳入，避免"看不见也清不掉"。
 fn media_dirs(s: &AppState) -> Vec<PathBuf> {
     let downloads = s
         .downloads_dir
         .lock()
         .unwrap_or_else(|e| e.into_inner())
         .clone();
-    // favorites（收藏的独立媒体副本）必须在内 —— 此前它既不占配额也永不回收，
-    // 收藏越多越接近无限增长（2026-09-19 审计）。
     vec![downloads, s.cache_dir.clone(), s.favorites_dir.clone()]
+}
+
+/// 清理目标 = 统计目录里**去掉收藏**的那一组。
+///
+/// 收藏是"用户明确要留住的东西"（见 `AppState::favorites_dir` 的注释）：原消息删了、
+/// 会话删了、缓存清了，收藏仍要能打开。把它当缓存按 mtime/配额删掉，删掉的是用户
+/// 唯一的那份副本，且不可恢复。所以它只计入占用，永不参与删除。
+fn cleanable_dirs(all: Vec<PathBuf>, favorites: &std::path::Path) -> Vec<PathBuf> {
+    all.into_iter().filter(|d| d != favorites).collect()
 }
 
 /// 自动缓存清理调度（README 承诺的「3/7/30 天 + 配额自动清理」此前只有手动按钮）。
@@ -522,7 +529,7 @@ pub fn spawn_cache_auto_clean(s: &std::sync::Arc<crate::state::AppState>) {
             let st2 = st.clone();
             let _ = tokio::task::spawn_blocking(move || {
                 let policy = load_policy(&st2);
-                let dirs = media_dirs(&st2);
+                let dirs = cleanable_dirs(media_dirs(&st2), &st2.favorites_dir);
                 let report = cache_cleaner::clean_files(&dirs, policy);
                 let vacuumed = report.removed > 0 && cache_clean_should_vacuum(report.freed_bytes);
                 // VACUUM 重写整份 db、期间持住唯一那条连接 ⇒ 用时与失败都必须说出来。
@@ -633,7 +640,7 @@ pub async fn set_cache_policy(
 pub async fn clean_cache_now(state: State<'_, Arc<AppState>>) -> Result<CleanupReport, String> {
     let s = state.inner().clone();
     let policy = load_policy(&s);
-    let dirs = media_dirs(&s);
+    let dirs = cleanable_dirs(media_dirs(&s), &s.favorites_dir);
     // 文件遍历/删除不碰 db：放 spawn_blocking（大缓存/慢盘上秒级起步）。
     // ⚠️ 绝不能持全局 db 锁做这件事（审计 2.1a 的旧形状）：期间全 App 的消息落库/
     // 发送/写好友全在排队等这把锁 —— 用户点一下"立即清理"，整个应用冻住。
@@ -690,6 +697,20 @@ pub async fn clean_cache_now(state: State<'_, Arc<AppState>>) -> Result<CleanupR
 #[cfg(test)]
 mod cache_clean_schedule_tests {
     use super::*;
+
+    /// 收藏必须留在统计里、但**绝不出现在清理目标里**。
+    /// 反面对照：把收藏一起传给 `plan_removal`，用户设了保留期就会删掉唯一副本。
+    #[test]
+    fn clean_targets_exclude_favorites_but_keep_counting_them() {
+        let dl = PathBuf::from("/data/downloads");
+        let cache = PathBuf::from("/data/cache");
+        let fav = PathBuf::from("/data/favorites/media");
+        let all = vec![dl.clone(), cache.clone(), fav.clone()];
+        let clean = cleanable_dirs(all.clone(), &fav);
+        assert_eq!(clean, vec![dl, cache], "清理目标只能是 downloads + cache");
+        assert!(all.contains(&fav), "收藏仍要计入占用统计（否则配额是假数）");
+        assert!(!clean.contains(&fav), "收藏被塞进清理目标 ⇒ 超期即删用户唯一副本");
+    }
 
     /// 阈值两侧：差一字节都不许 VACUUM（这条锁的代价是界面卡几秒，放宽的门槛必须钉住）。
     #[test]
