@@ -261,7 +261,10 @@ worktree 里 `git status` 必须是干净的，否则 A/B 的两臂不只有一�
 **所以三件事要改口径**：
 1. 锚点这一格的**可信证据仍然只有 `scrollhist`（Chromium、真 ChatWindow）**：修前 0 / 丢 key / +710，修后 **0 / 0 / 0**。
    本夹具的 A 格从此**只打印、不判定**。
-2. **5.14.8 的静定门没有可复现的必要性证据**。它的行为有界（最多等 12 帧、每帧一次 `getTotalSize()`），
+2. **5.14.8 的静定门没有可复现的必要性证据**。把 **5.14.7 的原码**跑同一批五段
+   （`scrollreact,scrollshake,scrollswitch,scrollhist,vlist`）现读 **54 PASS / 0 FAIL / 1 UNSUPPORTED**
+   —— 与 5.14.8 的 54/55（同一格 headed-only）逐格相同 ⇒ **保留与回退在两套有功率的判据下没有可观测差异**；
+   两者产品码差异只有 `VirtualList.vue` 的 29+/13−（`reissuePrependAnchor` 一个函数 + 注释）。它的行为有界（最多等 12 帧、每帧一次 `getTotalSize()`），
    两个引擎的现有判据下都绿，但按"证据不足不该修"的口径，它是**防御性改动** —— 保留还是回退，需要拍板。
 3. `perf/wk-a8.mjs` 现在只判**两格扫描**，并把"锚点格无分辨力"写进输出与注释。
 
