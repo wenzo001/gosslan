@@ -354,7 +354,13 @@ pub struct Logger {
 /// `28` = ENOSPC（macOS/Linux/Android）、`112`/`3900` = Windows 的
 /// `ERROR_DISK_FULL`/`ERROR_HANDLE_DISK_FULL`；再加一条按错误文本兜底，
 /// 免得某个平台既给不出这些码又确实写不下。
-fn is_disk_full(e: &std::io::Error) -> bool {
+///
+/// **为什么是 `pub(crate)` 而不再是私有**：接收侧的写盘失败也要判"是不是盘满"——
+/// 那条路径此前只把 `io::Error` 原样转成一句英文（"No space left on device"），
+/// 用户看到的是**不可行动**的措辞，而盘满其实是**可行动**的（清出空间后重试即可）。
+/// 同一个判定有两份实现必然漂移 ⇒ 归到这一份（observability 域的叶子模块；
+/// files / transport 域单向调用它，见 `docs/domains.data.mjs` 的 consumes）。
+pub(crate) fn is_disk_full(e: &std::io::Error) -> bool {
     if matches!(
         e.raw_os_error(),
         Some(28) | Some(112) | Some(3900) | Some(122)
@@ -363,6 +369,27 @@ fn is_disk_full(e: &std::io::Error) -> bool {
     }
     let t = e.to_string().to_lowercase();
     t.contains("no space") || t.contains("not enough space") || t.contains("quota")
+}
+
+/// 接收失败的**稳定失败码**（前端按它挑可行动的文案，而不是显示原始 io 错误）。
+///
+/// 为什么需要码：失败的 `reason` 此前直接是后端的自由文本/英文 io 消息，前端只能
+/// 原样上屏，于是"磁盘满了"与"目录没有权限"长得一模一样，用户不知道该做什么。
+/// 码把"这一类失败"与"这一次的措辞"分开：码是**契约**（前端查表），措辞是实现。
+///
+/// 目前只有一类进这张表。**别把它当成错误码大全** —— 每加一条都要同时补前端映射，
+/// 否则前端只能回落到原始 reason（那条回落路径已留好，见前端 `fileFailReasonText`）。
+pub(crate) const FAIL_CODE_DISK_FULL: &str = "DISK_FULL";
+
+/// 把一次写盘失败归类成稳定失败码：盘满 ⇒ [`FAIL_CODE_DISK_FULL`]，其余 ⇒ `None`。
+///
+/// `None` 表示"没有专属码"，调用方应当保留原始错误文本（那是唯一信息量）。
+pub(crate) fn classify_write_failure(e: &std::io::Error) -> Option<&'static str> {
+    if is_disk_full(e) {
+        Some(FAIL_CODE_DISK_FULL)
+    } else {
+        None
+    }
 }
 
 /// 上一轮是怎么结束的。**判定依据是"缺席"**：进程被 `kill -9`、OOM killer、
@@ -1430,6 +1457,55 @@ fn parse_log_line(line: &str, fingerprint: &str) -> Option<LogEntry> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// 盘满归类：ENOSPC / Windows 的两个码 / 文本兜底 ⇒ 稳定码 `DISK_FULL`；
+    /// 其它错误（权限、无权限目录等）⇒ **没有专属码**（保留原文，那是唯一信息量）。
+    ///
+    /// 这条是"可行动文案"那条链的**决定性判据**：把 `classify_write_failure`
+    /// 改回恒返回 `None`（旧行为：只把 io 错误原样转成英文），本用例必须红。
+    #[test]
+    fn disk_full_is_classified_into_a_stable_code_and_others_are_not() {
+        // 裸 OS 码：28 = ENOSPC（macOS/Linux/Android）
+        let enospc = std::io::Error::from_raw_os_error(28);
+        assert_eq!(
+            classify_write_failure(&enospc),
+            Some(FAIL_CODE_DISK_FULL),
+            "ENOSPC 必须归类成盘满 ⇒ 前端才能给出「清出空间后重试」"
+        );
+        // Windows：112 = ERROR_DISK_FULL、3900 = ERROR_HANDLE_DISK_FULL
+        for code in [112, 3900] {
+            let e = std::io::Error::from_raw_os_error(code);
+            assert_eq!(classify_write_failure(&e), Some(FAIL_CODE_DISK_FULL));
+        }
+        // 文本兜底：某个平台既给不出这些码又确实写不下
+        let by_text = std::io::Error::other("There is not enough space on the disk");
+        assert_eq!(classify_write_failure(&by_text), Some(FAIL_CODE_DISK_FULL));
+
+        // 反例：权限不足**不是**盘满 —— 归错类会让用户去清磁盘（白忙一场），
+        // 而真正的解法是改目录权限。
+        let denied = std::io::Error::from_raw_os_error(13);
+        assert_eq!(
+            classify_write_failure(&denied),
+            None,
+            "EACCES 不许归成盘满 ⇒ 用户的下一步完全不同"
+        );
+        let other = std::io::Error::other("broken pipe");
+        assert_eq!(classify_write_failure(&other), None);
+    }
+
+    /// 失败码是**契约**：前端按它查表翻文案 ⇒ 码必须稳定、且不能与别的码重名。
+    #[test]
+    fn fail_code_disk_full_is_a_stable_identifier() {
+        assert_eq!(FAIL_CODE_DISK_FULL, "DISK_FULL");
+        // 大写 + 下划线：前端那张表是按字面量匹配的（`src/utils/fileFailReason.ts`），
+        // 一旦改成带空格或小写，前端立刻匹配不上 ⇒ 静默回落到原始 reason。
+        assert!(
+            FAIL_CODE_DISK_FULL
+                .chars()
+                .all(|c| c.is_ascii_uppercase() || c == '_' || c.is_ascii_digit()),
+            "失败码必须是大写字母/数字/下划线（前端表按字面量匹配）"
+        );
+    }
 
     #[test]
     fn format_utc_epoch_and_known_dates() {

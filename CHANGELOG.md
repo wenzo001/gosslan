@@ -13,6 +13,34 @@
 
 ## [Unreleased]
 
+## [5.14.17] - 2026-10-27
+
+### 盘满归类 + 可行动文案：失败不再只是一句英文 io 消息（2026-10-27）
+
+- **归类**（`logging.rs`）：`is_disk_full` 从私有提为 `pub(crate)` 共享判定，并新增
+  `classify_write_failure` ⇒ 盘满（ENOSPC 28 / Windows 112·3900 / 文本兜底）归成稳定码
+  `DISK_FULL`，其余（权限不足等）**不归类**（保留原文 —— 归错类会让用户白忙一场）。
+- **单聊接收**（`network/file/receive.rs`）：写盘失败此前只把 io 错误原样转成英文
+  "No space left on device"，用户看到的是**不可行动**的措辞；现在归类成码并留
+  `code=DISK_FULL` 日志（带 transfer/peer/received/size）。
+- **群文件接收**（`network/transport/group_file.rs`）：此前群文件失败**只**发
+  `message-status-changed`（气泡转 failed），**完全不送原因** ⇒ "磁盘满了"与
+  "对方断线了"在界面上长得一模一样。现在六个失败点各带自己的原因，稳定码才额外发
+  `file-failed` 上屏（前端按码翻文案）；自由文本只进日志 —— 否则 peer 断链时
+  每个在途群文件都弹一次 toast（噪音回归）。
+- **前端**（`src/utils/fileFailReason.ts` + 中英词典）：失败码 → 可行动文案
+  （"磁盘空间不足，文件没能接收完成；请释放磁盘空间后重试"）。未知 reason **原样返回**
+  （绝不空白/undefined）；词典缺文案时回落到原始 reason 而不是把 key 印到界面上。
+- **跨语言契约对账**：前端表与后端 `FAIL_CODE_*` 常量逐条对账（分母从源码现解析），
+  后端加码忘了改前端 ⇒ 界面上显示裸码，用例当场红。
+
+- 验证：`cargo test --lib --features bluetooth` 1251/0/1；`npm test` 1438/0；
+  `cargo clippy --all-targets -D warnings`、`cargo fmt --check` 退 0；
+  i18n 死文案护栏 0 条；check-import-cycles / lock-scope / domain-map / domain-deps /
+  panic-sites / doc-numbers / doc-citations / test-manifest 全过。
+- **非空转已逐条证明**：把 `classify_write_failure` 改回恒 `None` ⇒ Rust 用例红；
+  后端加一个码但前端不加 ⇒ 对账用例红；把 `is_stable_fail_code` 改成恒 `true` ⇒ 上屏判据用例红。
+
 ## [5.14.16] - 2026-10-27
 
 ### 审计回填：失败可归因、状态可朗读、README 不再声称前台服务（2026-10-27）

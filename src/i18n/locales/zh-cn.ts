@@ -927,6 +927,7 @@ export const zhCN: MessageDict = {
   "group.files.loadFail": "群文件读取失败",
   "group.files.truncated": "仅显示最近 500 个（更早的请到群历史里找）",
   "group.files.empty": "这个群还没有共享过文件",
+  "file.diskFull": "磁盘空间不足，文件没能接收完成；请释放磁盘空间后重试",
   "group.files.stateLocal": "已在本机",
   "group.files.stateReceiving": "接收中",
   "group.files.stateRemote": "不在本机",

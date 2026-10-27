@@ -793,11 +793,45 @@ fn create_group_file_receive_bubble(
     let _ = state.app.emit("message-received", &rec);
 }
 
+/// 群文件接收失败的**原因文案**。
+///
+/// 为什么集中在这里而不是散在各调用点：同一句原因在两个地方写就会出现两种措辞，
+/// 而"失败原因"是用户据以决定下一步的唯一依据。
+const REASON_STALLED_GROUP_RECEIVE: &str = "接收超时：对方久未继续发送";
+const REASON_NO_CHUNK_RECEIVED: &str = "文件传输未完成：没有收到任何分片";
+const REASON_CHUNK_DECRYPT_FAILED: &str = "文件分片解密失败：内容与本机不匹配";
+const REASON_CHUNK_SEQ_GAP: &str = "文件分片顺序错误：中间缺片";
+const REASON_CHUNK_EXCEEDS_SIZE: &str = "文件分片超出声明大小";
+/// 对端一条链路都不剩（断链）⇒ 这一单收不下去了。
+pub(crate) const REASON_PEER_UNLINKED: &str = "对方连接已断开";
+
+/// 这个失败原因是不是**稳定失败码**（⇒ 要上屏给用户）。
+///
+/// 判据是形状：大写字母 / 数字 / 下划线。中文自由文本一律**不上屏** ——
+/// 群文件失败此前只发 `message-status-changed`（气泡转 failed），界面安静；
+/// 若把每一条原因都发成 `file-failed`，断链时**每个在途群文件都会弹一次 toast**
+/// （peer 断链常常同时挂着一堆传输）⇒ 那是把"可归因"做成"噪音回归"。
+///
+/// 稳定码则相反：它一定对应一件**用户能动手**的事（清出磁盘空间后重试），
+/// 弹一次 toast 正是想要的。前端按码翻成文案（`src/utils/fileFailReason.ts`）。
+fn is_stable_fail_code(reason: &str) -> bool {
+    !reason.is_empty()
+        && reason
+            .chars()
+            .all(|c| c.is_ascii_uppercase() || c == '_' || c.is_ascii_digit())
+}
+
 /// 失败收尾：删除 `.part`、移除接收状态与会话密钥、recipient 置 failed。
 /// 只影响本 transfer，不 panic、不影响其他群文件。
-fn fail_group_file_chunk(state: &Arc<AppState>, transfer_id: &str) {
+///
+/// `reason` 是失败原因（中文自由文本或稳定码）。它**一定进日志**（可归因），
+/// 但只有稳定码才上屏（见 [`is_stable_fail_code`]）。
+/// 此前这里压根不往上送原因：群文件失败只发 `message-status-changed`（气泡转 failed），
+/// 于是"磁盘满了"与"对方断线了"在界面上长得一模一样，用户无从下手。
+/// 稳定失败码（如 `DISK_FULL`）由前端查表翻成文案；自由文本原样上屏。
+fn fail_group_file_chunk(state: &Arc<AppState>, transfer_id: &str, reason: &str) {
     file::fail_group_receive(state, transfer_id);
-    finalize_failed_group_receive(state, transfer_id);
+    finalize_failed_group_receive(state, transfer_id, reason);
 }
 
 /// 摘表之后的群接收**收尾**三件事：气泡转 failed、丢掉内存里的 file_key、台账写 failed。
@@ -805,7 +839,7 @@ fn fail_group_file_chunk(state: &Arc<AppState>, transfer_id: &str) {
 /// 从 `fail_group_file_chunk` 里单列出来，是因为对端下线那条路必须先"原子摘"再"逐个收尾"
 /// （见 `file::take_group_receives_for_peer`）：摘与收尾合成一个函数的话，
 /// 调用点就只能走"快照 id → 逐个收尾"，而那正是本文件 `:5232` 注释判死过的形状。
-fn finalize_failed_group_receive(state: &Arc<AppState>, transfer_id: &str) {
+fn finalize_failed_group_receive(state: &Arc<AppState>, transfer_id: &str, reason: &str) {
     set_gfile_bubble_status(state, transfer_id, "failed");
     state
         .group_file_keys
@@ -824,6 +858,23 @@ fn finalize_failed_group_receive(state: &Arc<AppState>, transfer_id: &str) {
     let _ = state
         .app
         .emit("message-status-changed", &format!("gfile-{transfer_id}"));
+    // **失败原因**：稳定码才上屏（另发一帧 `file-failed`，载荷与单聊同一形状
+    // `{transfer_id, reason}`；前端 `onFileFailed` 本来就认 `gfile-` 前缀，
+    // 那一族是群文件气泡的 msg_id 形状 ⇒ 复用同一帧，不新增协议消息类型）。
+    // 自由文本的原因只进日志（下面那条 warn）—— 上屏会造成断链时的 toast 风暴。
+    if is_stable_fail_code(reason) {
+        let _ = state.app.emit(
+            "file-failed",
+            &crate::state::FileFailedInfo {
+                transfer_id: transfer_id.to_string(),
+                reason: reason.to_string(),
+            },
+        );
+    }
+    state.logger.warn(
+        "group_file",
+        format!("code=GROUP_FILE_RECEIVE_FAILED transfer={transfer_id} reason={reason}"),
+    );
 }
 
 /// 回收"再也没被喂过片"的接收器（第 1 步 · 故障隔离 P1 的另一半）。
@@ -854,7 +905,7 @@ pub fn sweep_stalled_receives(state: &Arc<AppState>) -> usize {
         file::fail_taken_group_receive(state, &r);
         // 剩下的收尾（气泡 / 会话密钥 / recipient）按 transfer_id 定位，与表项在不在无关；
         // 其中的 `fail_group_receive` 会因为已摘而跳过 —— 正好复用同一份收尾，不另写一份。
-        fail_group_file_chunk(state, &id);
+        fail_group_file_chunk(state, &id, REASON_STALLED_GROUP_RECEIVE);
         reclaimed += 1;
     }
     reclaimed
@@ -943,7 +994,7 @@ async fn handle_group_file_done(
             }
         } else {
             // 有声明大小但一个分片都没收到 → 不完整：failed + 清理
-            fail_group_file_chunk(state, &transfer_id);
+            fail_group_file_chunk(state, &transfer_id, REASON_NO_CHUNK_RECEIVED);
             return;
         }
     }
@@ -1974,7 +2025,7 @@ async fn handle_group_file_chunk(
         .unwrap_or(None)
     };
     let Some(plaintext) = plaintext else {
-        fail_group_file_chunk(state, &transfer_id);
+        fail_group_file_chunk(state, &transfer_id, REASON_CHUNK_DECRYPT_FAILED);
         return;
     };
 
@@ -2001,21 +2052,37 @@ async fn handle_group_file_chunk(
         if seq_call == file::ChunkSeq::Gap {
             // 真跳号：中间确实缺片，只能靠重传 ⇒ 终止这一单。
             drop(recv);
-            fail_group_file_chunk(state, &transfer_id);
+            fail_group_file_chunk(state, &transfer_id, REASON_CHUNK_SEQ_GAP);
             return;
         }
         if plaintext.len() as u64 > r.size.saturating_sub(r.received) {
             // 超出声明大小：防恶意 sender
             drop(recv);
-            fail_group_file_chunk(state, &transfer_id);
+            fail_group_file_chunk(state, &transfer_id, REASON_CHUNK_EXCEEDS_SIZE);
             return;
         }
         // 增量哈希（为下一阶段 FileDone 校验准备；本阶段不比对）
         use sha2::Digest;
         r.hasher.update(&plaintext);
-        if r.file.write_all(&plaintext).is_err() {
+        // 写盘失败：**盘满**归类成稳定码（前端据此给"清出空间后可重试"的可行动文案），
+        // 其余错误保留原文。与单聊 `write_chunk` 同一份判定（`logging::classify_write_failure`）。
+        let write_err = r.file.write_all(&plaintext).err();
+        if let Some(e) = write_err {
+            let reason = match crate::logging::classify_write_failure(&e) {
+                Some(code) => {
+                    state.logger.error(
+                        "group_file",
+                        format!(
+                            "code={code} transfer={transfer_id} peer={} received={} size={} —— 磁盘空间不足",
+                            r.peer_id, r.received, r.size
+                        ),
+                    );
+                    code.to_string()
+                }
+                None => e.to_string(),
+            };
             drop(recv);
-            fail_group_file_chunk(state, &transfer_id);
+            fail_group_file_chunk(state, &transfer_id, &reason);
             return;
         }
         r.received += plaintext.len() as u64;
@@ -2411,5 +2478,31 @@ mod online_targets_tests {
         for dead in [Some("completed"), Some("failed"), Some("cancelled"), None] {
             assert!(!online_targets_entry_is_live(dead), "{dead:?} 没人再读这块快照");
         }
+    }
+}
+
+/// 群文件失败原因的**上屏判据**：只有稳定码才发 `file-failed`。
+///
+/// 为什么要钉住（2026-10-27 审计 §5 第 1 项）：
+/// · 稳定码（如 `DISK_FULL`）⇒ 对应一件用户能动手的事 ⇒ 弹一次 toast 是对的；
+/// · 自由文本（超时 / 断链 / 解密失败）⇒ 上屏会造成**toast 风暴**：
+///   peer 断链时常常同时挂着一堆在途群文件（`queue_policy.rs` 那一路逐个收尾），
+///   每条都弹一次 ⇒ 用户被十几条一模一样的 toast 淹没。
+///
+/// 反面对照：把 `is_stable_fail_code` 改成恒 `true` ⇒ 本用例必须红。
+#[cfg(test)]
+mod group_file_fail_reason_tests {
+    use super::{is_stable_fail_code, REASON_PEER_UNLINKED, REASON_STALLED_GROUP_RECEIVE};
+
+    #[test]
+    fn only_stable_fail_codes_reach_the_user() {
+        // 稳定码：上屏（前端按码翻成"清出磁盘空间后重试"）
+        assert!(is_stable_fail_code("DISK_FULL"));
+        assert!(is_stable_fail_code("PERMISSION_DENIED"));
+        // 自由文本：只进日志，不上屏
+        assert!(!is_stable_fail_code(REASON_PEER_UNLINKED));
+        assert!(!is_stable_fail_code(REASON_STALLED_GROUP_RECEIVE));
+        // 边界：空串不是码（否则会发一条空 reason 的 file-failed）
+        assert!(!is_stable_fail_code(""));
     }
 }

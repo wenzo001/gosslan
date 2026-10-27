@@ -336,7 +336,7 @@ async fn reader_loop(
         //   那一半会把台账留在 Active。超时那一路（`sweep_stalled_receives`）一直是成对调的。
         for (tid, r) in taken {
             file::fail_taken_group_receive(&state, &r);
-            finalize_failed_group_receive(&state, &tid);
+            finalize_failed_group_receive(&state, &tid, REASON_PEER_UNLINKED);
         }
     }
     // 内容服务队列跟着这条链路一起收：还排在队列里的回发**不该在死链路上继续尝试**
