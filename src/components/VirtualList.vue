@@ -762,41 +762,32 @@ function noteTopAnchor() {
 }
 
 /**
- * 前插后的锚点重发（第十版，双引擎）。
+ * 前插后的**同帧重发**（2026-10-27；第十版曾改成"等 sizer 静定"，当天晚些时候已回退到这一版）。
  *
- * 事实：库的 anchor 目标算得对，但那一笔在 **sizer 长高之前**写出 ⇒ 被浏览器 clamp。
- * 第八版把重发放在 `onItemsChanged`（post-flush）里立即做 —— **Chromium 成立、WebKit 不成立**
- * （双引擎夹具实测：同一代码 WebKit 下 `keptKey=false`）。差别在**spacer 什么时候长高**：
- * Vue 的 post-flush 早于 WebKit 把新高度落到 sizer 上。
+ * 为什么前七版都绕不出来：Vue 适配器的 options watcher 是 **pre-flush** ⇒ 库的 `anchorTo:"end"`
+ * 在**spacer 高度还没 patch 上去**时就写了位置，所以那一笔必然被浏览器 clamp（实测目标 25355、
+ * 落在 17010）。这不是"算错"，是**时序**。
  *
- * 所以这一版改为：**等 `getTotalSize()` 连续两帧不变**（sizer 已静定）再发**一次**目标；
- * 静定之前一个字都不写。Chromium 上几乎立即静定（等价于原来的同帧重发），
- * WebKit 上会多等一两帧，但那时高度已经在了，写进去不会再被 clamp。
- * 库本来就摆对时残差 ≤2px ⇒ 零写入。
+ * 应用自己的 `onItemsChanged` 是 **post-flush** —— 此刻 spacer 已经是新高度、库的目标也是新测量。
+ * 所以这里只做一件事：在原位置**再发一次**同一个目标（不轮询、不猜残差、不改所有权）。
+ * 库已经摆对时残差 ≤2px ⇒ 零写入。
+ *
+ * ⚠️ **第十版为什么被撤**：当时依据"同一夹具在 Safari 里读到 `keptKey=false`"改成了"等 `getTotalSize()`
+ * 连续两帧不变再发"。后来在**真 WKWebView**（出货渲染器）里做正控 —— 把本函数整段 `return`，
+ * 那台夹具的锚点格**仍然是绿的** ⇒ 它没有分辨力，那次 Safari 读数归因不明。再拿本版（立即重发）
+ * 在真 `ChatWindow` + 真 store 的 App 内格上跑：三页前插 drift −0.5 / 0 / 0，全绿。
+ * ⇒ 多等两帧的静定门没有任何一格能证明它有用，按"证据不足不该修"撤掉。
+ * 若将来在真机再看到 clamp，**先回来读这段**，并用 `perf/wk-a8app.mjs`（App 内格）复现再改。
  */
 function reissuePrependAnchor(key: string, offset: number) {
+  const el = container.value;
+  if (!el) return;
   const idx = props.items.findIndex((it) => keyOf(it) === key);
   if (idx < 0) return;
-  let lastTotal = -1;
-  let stable = 0;
-  let tries = 0;
-  const step = () => {
-    const el = container.value;
-    if (!el) return;
-    const total = virtualizer.value.getTotalSize();
-    if (total === lastTotal) stable += 1; else stable = 0;
-    lastTotal = total;
-    if (stable < 1 && tries < 12) {
-      tries += 1;
-      requestAnimationFrame(step);
-      return;
-    }
-    const target = virtualizer.value.getOffsetForIndex(idx, "start")?.[0];
-    if (typeof target !== "number") return;
-    const desired = Math.max(0, target - offset);
-    if (Math.abs(el.scrollTop - desired) > 2) setScrollTop(desired);
-  };
-  requestAnimationFrame(step);
+  const target = virtualizer.value.getOffsetForIndex(idx, "start")?.[0];
+  if (typeof target !== "number") return;
+  const desired = Math.max(0, target - offset);
+  if (Math.abs(el.scrollTop - desired) > 2) setScrollTop(desired);
 }
 
 function scrollToOffset(offset: number) {
