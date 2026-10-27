@@ -13,6 +13,16 @@
 
 ## [Unreleased]
 
+## [5.14.14] - 2026-10-27
+
+### 修 CI：发布脚本用例在 Actions 里被自家的 Verify 门禁带红（2026-10-27）
+
+- `publishRelease.test.ts` 这套用例测的是**发布行为**，但 GitHub Actions 里 `GITHUB_ACTIONS=true`
+  是全局环境变量 —— 新加的 Verify 门禁会抢在每个用例的 `--sha` 校验之前失败（Android CI 实测
+  三条红：`race` / 「缺 --sha 必须先红」/「已存在时空 sha 不算缺陷」）。
+  修法：测试夹具默认 `GOSSLAN_SKIP_VERIFY_GATE=1`（它们不测门禁），门禁自己的两条用例显式设回 `0`。
+  在本地用 `GITHUB_ACTIONS=true node --test scripts/publishRelease.test.ts` 复现并验证：18/18。
+
 ## [5.14.13] - 2026-10-27
 
 ### 体验与诊断：收藏页不再逐键重算、群文件面板有上界、a11y 护栏被证明会咬、中继超限不再假成功（2026-10-27）
