@@ -96,7 +96,12 @@ HEAD `6ca07ca5`。取值：`PASS` / `PARTIAL` / `FAIL` / `UNVERIFIED` / `BLOCKED
 | F-MSG-060 | 本地批量删除消息（多选 → 删除，微信语义只删本机） | PASS `commands/favorites.rs:284-311` 是 `#[tauri::command(async)]`；上限 500 条（`MAX_DELETE_BATCH`，理由写明：整批一个事务会长期握住单连接的那把 db 锁）、空列表直接返回 0；`db/message_delete.rs:23-59` 只删 `KindClass::Bubble`，Silent（回应/撤回/置顶）与 Card（公告/任务/投票）不在可删范围——注释称之为「第二道闸门」 | 不适用(理由)：不可逆动作没有「取消」，只有事前二次确认（`ChatWindow.vue:1441` 的 `doBatchDelete` 由 `confirmBatchDelete` 驱动）与**事后无撤销**（硬删） | PASS 一个事务里删 `messages` + 连带的 `outbox` / `group_outbox`，再按剩余条数重算会话摘要与未读（`MIN(unread, remaining)`），任一步失败整体回滚；`useChatStore.deleteMessages` 乐观移除、失败按旧快照回滚（注释写明不能让界面停在「看起来删掉了、刷新又回来」） | PASS 成功 toast 带实际删除条数；失败走 `toastError` | PARTIAL 本轮**未读到**覆盖 `outbox`/`group_outbox` 连带删除与「Silent/Card 不可删」的具名用例 | PARTIAL 只有一行 `info`（「本地删除消息 N 条（不影响对方）」）+ 失败向上抛；无具名 `code=` | **PARTIAL** ★ 两处值得记：① `message_delete.rs:2` 文件头写「**标记 `deleted_at` 而非硬删**」，而实现是 `DELETE FROM messages`，全仓 `grep deleted_at` 只命中这条注释 ⇒ 注释在撒谎（同 B1-F2 的注释漂移族）；② 失败回滚是「用旧数组整体替换」`messages.value[convId]`，await 窗口内新到的消息会从界面消失到下次刷新（极窄，与 Ack 乐观竞态同族，本轮不立案） |
 | F-PRE-018 | 收藏一条消息 / 收藏列表 / 副本预览 | PASS `add_favorite` 幂等（先按 `msg_id` 查，命中直接返回原条目，不重复复制文件）；图片/文件复制进 `favorites_dir`，文件名只用 `{id}.{白名单扩展名}`（`favorite_copy_name`，扩展名只留 ASCII 字母数字、限长 10）；复制进阻塞池；`read_favorite_preview` 上限 15 MB | 不适用(理由)：单条写入 | PASS 复制失败 `?` 向上、不留半条记录；插入竞态（`inserted == false`，另一条先落库）会把这次多复制出来的副本删掉再返回已有条目（`favorites.rs:184-198`）；副本路径解析**比原消息更严**：只许落在收藏目录内、没有「本机发出的消息」豁免（`resolve_favorite_media_path:13-39`） | PASS 副本丢失时 `list_favorites` 逐行 stat 填 `available`，界面渲染成「已清理」占位而不是点开才发现；收藏数上限有 toast | PARTIAL 有 `favorites_tests`（含撤回与收藏交互），本轮未逐条读断言 | PARTIAL 无具名 `code=`；成功有 `info`（「已收藏消息 kind=… msg_id=…」） | **PARTIAL** |
 
-
+| F-GRP-030 | 群待办徽标读取 / 任务窗口上下文 / 定向展开 / 待办描述图片 | PASS `get_group_todo_messages` 只取 `kind IN ('todo','todo_update')` 的原始行（注释写明为什么不用内存缓存：会话缓存有上限，冷群没缓存 ⇒ 徽标就是假状态）；群数上限 400（护栏，截断方向＝少算几个群）；`request_group_todo_focus` 对 group_id / todo_id 分别夹紧（≤40 / ≤80、`[A-Za-z0-9_-]`）；`send_todo_image` 复用 `send_group_file` 管线（`scope=todo`，不进时间线、不弹气泡） | 不适用(理由)：读内存 + 单次投递 | PASS 定向展开是「写暂存 + 挂载时取走」两条互补路径（窗口未建好 / 已打开都能命中；注释记着 `launchAuxWindow` 单飞时命令根本不会被调用那个洞） | PASS 徽标来自后端原始行而不是内存缓存；窗口复用后靠 `group-todos-target` 定向通知重读 | PARTIAL 本轮未读到 `get_todo_messages_for_conns` 与折叠的具名用例 | PARTIAL 无具名 `code=`；`get_group_todo_messages` 的读库失败被 `unwrap_or_default()` 折叠成空 ⇒ 徽标全变 0（正是它注释里说的「假状态」），并入 **B1-F7** | **PARTIAL** |
+| F-RTG-004 | 中继配置读取 / 保存前真拨一次 / 跨子网端点增删 | PASS `check_relay_server` **不改任何配置**（注释：「判这地址能不能用是瞬时事」），失败分三档并列出试过的端口；`get_relay_config` 缺省＝关（必须显式开启）；端点地址先规范化再存（「加进去了却删不掉」的反面）；删除时把库里脏数据**再规范化一次**比对（用户反馈过的裸 IP 案例） | 不适用(理由)：单次读 / 探测 | PASS 中继保存三条 `set_setting` **全量写**（没有读-改-写，不存在覆盖风险）；端点增删整段在同一把 db 锁里（判据要看当前列表） | PASS 探测失败给三档原因；口令**只记长度**（日志会被导出、也可能被截图） | PARTIAL 只读到 `relay_config_tests` 两条（默认端口≠LAN 端口、规范化）；`probe_relay_server` 三档与端点归一化的用例本轮未逐条读 | PARTIAL 探测有 `kind/tried/token_len` 日志；读失败折叠成空 ⇒ 显示为空，且端点**增删会写回空+新条目** ⇒ **B3-F3** | **PARTIAL** |
+| F-PRE-019 | 外链列表 / 修改一条外链 | PASS 上限 20；规范化判据在**同一把锁**里看当前列表（「搬出来就是另一份读、另一个答案」）；`update` 按 id 匹配，规范化时用 `Some(&id)` 把自己排除在重名判据外 | 不适用(理由)：单条记录写入 | PASS 先算规范化值（不可变借用）再取可变引用落值；写回整份列表；`remove` 删 0 条就不写（幂等） | PASS 返回更新后的完整列表（前端不用再拉一次）；非法 / 重名给具体原因 | PARTIAL 有 `normalize_link_input` 族纯函数测试，本轮未逐条读 | PARTIAL 无具名 `code=`；`add`/`update` 两处的读失败折叠 + 写回 ⇒ **B3-F3** | **PARTIAL** |
+| F-PLF-021 | 网络启停 / 附近节点探测 / 窗口聚焦 / 权限申请 / UI 语言 / 聊天样式广播 | PASS 起停都返回 `RuntimeSnapshot` 并广播（「一件事只有一份前端状态」）；`search_nearby_peers` 只等 2 s 且同时触发一次 BLE 立刻扫描（真机「蓝牙搜不到」的真因是周期错开）；`focus_window` 先按 `dark_mode` 设窗口底色再 show（冷启动白闪）；`request_ble_permissions` 非 Android 空操作；`set_ui_language` **刻意不发** `settings-changed`（曾造成两窗事件乒乓） | 不适用(理由)：单次动作；唯一长动作是有界的 2 s 等待 | PARTIAL `start_network` / `stop_network` 都是「先起停网络 → 再写 `lan_enabled`」，而写库失败会 `?` 直接返回、**跳过快照广播** ⇒ 网络其实已停、其它窗口仍显示「运行中」直到下次刷新（罕见写库失败，与 B1-F4 同族，不新立案） | PASS 起停回快照 + 广播；附近节点返回的就是当前节点表 | PARTIAL 网络启停本轮未读到具名用例（E2E「关发现轮」验的是 Discovery，不是这两条命令） | PARTIAL 无具名 `code=`；`focus_window` 的四个 `let _` 把 show/focus 失败吞掉（「通知点了没反应」在日志里查不到）★ 另记：`broadcast_chat_style` 直接 `tx.send().await`，**没走** `send_over_order` 的 `SEND_QUEUE_FULL_TIMEOUT` ⇒ 对端写不动时会卡到看门狗收链；调用点是 `void … .catch()`，用户无感，故不立案 | **PARTIAL** |
+| F-GRP-031 | 群文件面板 / 群公告删除 / 共享目录树 | PASS `list_group_files` 先把 DB 行取全**立即放锁**再做 N 次 stat（注释：持锁做 stat 会堵整条消息链路落库）；自己发的文件按磁盘判原件（不参与 recipients）；`delete_group_announcement` 仅群主、发**墓碑**不删行（与接收端 owner-only 校验对齐）；`request_share_tree` 先验好友、有直连精确发、无直连借一跳中继 | PASS `request_share_tree` 有 10 s 超时；发送失败与超时都会把 pending 那条 oneshot 移除（不留悬挂条目） | PASS 共享树超时返回人话错误；群文件面板的信封状态按磁盘真相判（`local_path_state`），不是只看 DB | PASS 群文件面板分 local / receiving / failed / remote 四档；公告删除全端折掉横幅 | PARTIAL 这三条本轮未读到具名用例 | PARTIAL 无具名 `code=`；`get_group_file_recipient_status(...).unwrap_or_default()` 与 `summary=None → (0,0)` 把读失败显示成「尚未登记 / 0 投递」（非破坏性的折叠，同 B1-F7 族） | **PARTIAL** |
+| F-OBS-007 | 诊断包导出 / 运行时诊断 / 默认昵称 / 预览相册 | PASS `export_diagnostics_bundle` 读三份文件 + 脱敏 + 写盘整块进阻塞池并等待；HOME 拿不到只少脱一类不阻断；`get_runtime_diag` 四个 COUNT 进阻塞池（INV-P34 注释）；`default_nickname` 只派生不写库 | 不适用(理由)：单次读 + 写一个文件 | PASS 导出失败返回错误；诊断面不写库、不改状态 | PASS 导出返回 `BundleSummary`；诊断面板与命令读同一份 `RuntimeDiag` | PARTIAL 脱敏只有**形状级**自限（`diagnostics.rs:19` 自陈），本轮未读到脱敏用例 | PARTIAL `runtime_counts` 每条查询 `unwrap_or(-1)`（未知用 -1 而不是 0，方向对），但 `spawn_blocking` 的 join 失败也被折成同一组 -1 哨兵——前端若把 -1 当数字会显示负数；无具名 `code=` | **PARTIAL** |
 ## 二、状态机与跨层一致性（逐转移）
 
 **读法**：每张表只写**读到过证据**的转移；没读到的写「待核」，不猜。列的含义：**唯一写入方**指"谁能决定这个状态"（多处都能写就必须写清谁有最终裁定权）；**落库时点**指崩溃后靠什么恢复。
@@ -185,6 +190,32 @@ HEAD `6ca07ca5`。取值：`PASS` / `PARTIAL` / `FAIL` / `UNVERIFIED` / `BLOCKED
 下面这份清单是"我读过函数体或关键分支"的命令，**由脚本与 161 条注册表求交并报出拼错的名字**（不是手抄计数）：
 
 ```text
+get_group_todo_messages
+get_group_todos_context
+send_todo_image
+request_group_todo_focus
+take_group_todo_focus
+list_group_files
+delete_group_announcement
+list_external_links
+update_external_link
+check_relay_server
+get_relay_config
+list_routed_endpoints
+remove_routed_endpoint
+start_network
+stop_network
+search_nearby_peers
+request_ble_permissions
+request_share_tree
+export_diagnostics_bundle
+get_runtime_diag
+set_ui_language
+broadcast_chat_style
+focus_window
+default_nickname
+resend_group_delivery
+get_image_preview_gallery
 updater_check
 updater_install
 updater_close
@@ -360,15 +391,13 @@ print(len(rest), '条仍未审:'); print(' '.join(rest))
 EOF
 ```
 
-**当前仍未审（26 条）**：
+**当前仍未审（0 条）**：161 条注册命令全部进过 A 级清单，脚本求交为空。
 
-`broadcast_chat_style` · `check_relay_server` · `default_nickname` · `delete_group_announcement` · `export_diagnostics_bundle` · `focus_window` · `get_group_todo_messages` · `get_group_todos_context` · `get_image_preview_gallery` · `get_relay_config` · `get_runtime_diag` · `list_external_links` · `list_group_files` · `list_routed_endpoints` · `remove_routed_endpoint` · `request_ble_permissions` · `request_group_todo_focus` · `request_share_tree` · `resend_group_delivery` · `search_nearby_peers` · `send_todo_image` · `set_ui_language` · `start_network` · `stop_network` · `take_group_todo_focus` · `update_external_link`
-
-`add_favorite` · `broadcast_chat_style` · `check_relay_server` · `default_nickname` · `delete_group_announcement` · `delete_messages` · `export_diagnostics_bundle` · `focus_window` · `get_group_todo_messages` · `get_group_todos_context` · `get_image_preview_gallery` · `get_relay_config` · `get_runtime_diag` · `list_external_links` · `list_group_files` · `list_routed_endpoints` · `read_favorite_preview` · `remove_routed_endpoint` · `request_ble_permissions` · `request_group_todo_focus` · `request_share_tree` · `resend_group_delivery` · `search_nearby_peers` · `send_todo_image` · `set_ui_language` · `start_network` · `stop_network` · `take_group_todo_focus` · `update_external_link` · `updater_check` · `updater_close` · `updater_install` · `updater_status`
+⚠️ **「0 条未审」只说明命令面读完，不说明闭环做完**——矩阵 92 行里仍有 79 行是 PARTIAL。读代码能回答的是「这条路径存不存在、失败怎么处理」，回答不了「界面上真按下那个按钮时，后端有没有被调到」。
 
 ## 五、读数
 
-现算（命令：`grep -cE '^\| F-.*\*\*(PASS|PARTIAL)\*\*' docs/notes/closedloop-matrix-2026-10-26.md` ⇒ **86**；把 `(PASS|PARTIAL)` 换成 `PASS` ⇒ **13**、换成 `PARTIAL` ⇒ **73**）：已走完六格 **86** 行，其中 **PASS 13**、**PARTIAL 73**；另有若干行含「不适用(理由)」的格（不适用≠通过，也不计入这两档）。⚠️ 两个坑：① **不要用** `grep -c '^| F-'`——本文件第四节的「FID → 命令映射」表同样以 `| F-` 开头，会把两表相加（实测报 45）；② **不要用** 要求判级格正好收尾的 `\| \*\*PASS\*\* \|$`——F-FIL-008 那一行的判级格里还接了一段 ★ 说明，会被漏掉（差一行）。立案 **15** 条（P2 九 / P3 六），保留 **6** 条，撤回 **6** 条。
+现算（命令：`grep -cE '^\| F-.*\*\*(PASS|PARTIAL)\*\*' docs/notes/closedloop-matrix-2026-10-26.md` ⇒ **92**；把 `(PASS|PARTIAL)` 换成 `PASS` ⇒ **13**、换成 `PARTIAL` ⇒ **79**）：已走完六格 **92** 行，其中 **PASS 13**、**PARTIAL 79**；另有若干行含「不适用(理由)」的格（不适用≠通过，也不计入这两档）。⚠️ 两个坑：① **不要用** `grep -c '^| F-'`——本文件第四节的「FID → 命令映射」表同样以 `| F-` 开头，会把两表相加（实测报 45）；② **不要用** 要求判级格正好收尾的 `\| \*\*PASS\*\* \|$`——F-FIL-008 那一行的判级格里还接了一段 ★ 说明，会被漏掉（差一行）。立案 **16** 条（P2 十 / P3 六），保留 **6** 条，撤回 **6** 条。
 
 **本文件的引用不受任何守卫保护**（实况见主报告「我自己的两处错」第 2 条：`check-doc-citations.mjs` 管 `file:line` 的那条只吃 `LIVE_DOCS` 那 8 份，`docs/notes/**` 不在内）。所以行号会随改动静默腐烂。二选一，**本审计不新建脚本**（按仓里「新判据先找现成的家」与自己编的规矩要撤）：
 
@@ -391,17 +420,17 @@ console.log(bad.length?"✗ "+bad.length+" 处失效：\n  "+bad.join("\n  "):"�
 
 **这 8 行不等于 B1 审完。** B1 的分母是 161 条命令里挂到 messaging / presentation 的那一部分 + 392 个触发挂点去重后的动作数，已枚举出动作族（消息右键 17 项、气泡 12 项、会话菜单 3 项、好友菜单 3 项、头部导航 7 项、编辑器 6 项、任务中心 8 项、群命令 11 项、收藏 9 项、通道与缓存 9 项），下表是**剩余待审队列**。
 
-## 六、B1 待审队列（每行注明缺哪一格）
+## 六、还剩什么没做（命令面已清零，缺口在行为级证据）
 
-| 族 | 待审内容 | 主要缺的证据 |
+161 条注册命令**全部**进过 A 级清单。剩下的不是「没读的命令」，而是**读代码读不出来的那一层**：
+
+| 缺口 | 现状 | 补它要什么 |
 |---|---|---|
-| 消息操作 | 引用 / 转发 / 收藏 / 强提醒 / 多选批量 / 复制保存图片文件 / 定位原消息 | 六格全缺；`MessageContextMenu` 17 个 emit 与 `MessageItem` 12 个 emit 的**后端落点**未逐条追 |
-| 1:1 主链 | 发送、已读回执、撤回、重发 | 状态机转移表未画完；重发的二次确认与「取消与 ACK 竞态」在 Rust 侧的归属未读 |
-| 群 | 建群 / 邀请 / 移除 / 移交群主 / 群公告 / 群待办 / 成员级投递与补发 | 部分成功与迟到 ACK 的终态归属；`some_delivered` 的表达是否等于「部分成功」 |
-| 会话 | 删除会话 / 清空数据 / 置顶 / 历史边界 | 删除的不可逆边界与二次确认；清空后的跨窗口广播（`events.test.ts` 有「清空数据必须广播」这条测试，需确认覆盖面） |
-| 呈现层 | 浮层返回键栈、`RouteView` 与 pane 双事实源、窄窗移动端 | 属你正在做的线（`6ca07ca5`/`39a7f216`/`c3b21b3c`），本轮只登记 |
-| 设置 | 11 节各写入项的**分域**验收（F-PRE-011 只覆盖了共用的那条写入通道） | 每项设置失败是否都走同一 catch；哪些项影响网络行为需要更高要求 |
-| 搜索 / 收藏 / 链接 | 命令与落库面 | 六格全缺 |
+| 真渲染绑定（界面动作 ↔ 后端落点） | 只有 `convbadge` 一段 CDP 探针拿到真渲染读数（9/9，含反向对照），其余 UI 触发挂点没有运行时证据 | 按动作族补 CDP 段；基础设施已有 67 段 |
+| 跨平台 | macOS 为主；**Windows / Android 的功能闭环仍 BLOCKED**（Windows 崩溃取证已有读数，5.14.5） | 真机 |
+| 部分成功的终态 | `some_delivered`、群文件 `local/receiving/failed/remote`、任务中心三档——代码分档清楚，但缺「真的只送达一半」的注入读数 | E2E `-lie` 轮次已有先例 |
+| 恶意输入形状 | 夹紧规则读到了（ID ≤40/80、批量 ≤500、预览 ≤15 MB、外链 ≤20、群数 ≤400），**但没有注入验证**（越界 ID、超长名、`../`） | 隔离库 / 单测注入 |
+| 真机权限与系统交互 | 通知权限（B4-F3）、macOS 安全作用域书签、蓝牙权限 | 真机 + 签名构建 |
 
 ## 七、错误链表（六项标准里「可诊断」的专用视图）
 
@@ -413,3 +442,4 @@ console.log(bad.length?"✗ "+bad.length+" 处失效：\n  "+bad.join("\n  "):"�
 | 设置落库失败 | ✓ | **✗ 零记录** | **✗ 界面不回滚** | **✗** | **✗** | ✗ 静默回旧值 | **✗** | FAIL（B1-F4） |
 | 崩溃留下 sending/active 行 | ✓ | ✓ 四条启动对账各带具名失败码（`state.rs:1786/1799/1817/1832`，如 `OUTBOX_ORPHAN_RECOVERED` / `TRANSFER_INTERRUPTED_RECOVERED`） | ✓ | 部分（落 failed 后气泡说话） | ✓ | ✓ | ✓ | **PASS**（这是本仓做得最好的一族） |
 | Worker 高亮失败 | ✓ | ✓ `onerror` 全量降级主线程（`codeHighlight.ts:62-69`） | ✓ | 不适用(理由)：降级对用户是无感的正确行为 | 待审 | ✓ | 待审 | 待审 |
+| 读配置失败后写回（外链 / 跨子网端点） | ✓ | **✗ 被折叠成空、无日志** | **✗ 覆盖旧列表**（只剩新加那条） | **✗ 界面显示「已保存」** | ✗ | ✗（只能手动重新填一遍） | 只有一行「保存成功」 | **FAIL（B3-F3）** |
