@@ -36,7 +36,7 @@
 
 ## 三、全量分母（按 HEAD 现算）
 
-161 条注册命令（`generate_handler!`）／**207** 处命令属性（54 裸形 + 153 `(async…)`；松 grep 209 行 = 207 + 2 处注释提及）／159 个前端 invoke 名（另有 160 个去重值的复算，差值来自多行 `invoke(` 写法）／**392** 个 UI 触发挂点（click 297 / select 37 / keydown 37 / contextmenu 6 / input 3 / dblclick 2 / change 1）／96 个 `.vue`／20 张表、schema **14** 版／Rust 发 **21** 种事件、前端 listen 31 个去重名／**260** 处 `tokio::spawn`/`spawn_blocking`（含 `async_runtime::spawn` 与 `thread::spawn` 为 307）、5 个受监督常驻 worker、**2 处不受监督**／`AppState` **61** 处锁、SQLite **单连接**／具名 `code=` **87** 个、日志调用 **363** 处（error 81 / warn 129 / info 153）／**54** 个超时·期限·TTL·退避类常量／`log_throttled` **27** 处调用／前端 132 册测试（**69 册是读源码文本**）、Rust **1172** `#[test]` + 58 `#[tokio::test]`、CDP 探针 67 段、E2E 21 轮、护栏 268 例。
+161 条注册命令（`generate_handler!`）／**207** 处命令属性（54 裸形 + 153 `(async…)`；松 grep 209 行 = 207 + 2 处注释提及）／159 个前端 invoke 名（另有 160 个去重值的复算，差值来自多行 `invoke(` 写法）／**392** 个 UI 触发挂点（click 297 / select 37 / keydown 37 / contextmenu 6 / input 3 / dblclick 2 / change 1）／96 个 `.vue`／20 张表、schema **14** 版／Rust 发 **21** 种事件、前端 listen 31 个去重名／**260** 处 `tokio::spawn`/`spawn_blocking`（含 `async_runtime::spawn` 与 `thread::spawn` 为 307）、5 个受监督常驻 worker、**2 处不受监督**／`AppState` **61** 处锁、SQLite **单连接**／具名 `code=` **87** 个、日志调用 **363** 处（error 81 / warn 129 / info 153）／**54** 个超时·期限·TTL·退避类常量／`log_throttled` **27** 处调用／前端 132 册测试（**69 册是读源码文本**）、Rust **1172** `#[test]` + 58 `#[tokio::test]`（按基线 `6ca07ca5` 计；**当前 HEAD 已 1178**，因为后续提交新增了用例——这类数字随提交单调增长，对账时按「不小于基线」读，不要按相等读）、CDP 探针 67 段、E2E 21 轮、护栏 268 例。
 
 **这些数一律按提交内容测，不按工作树测。** 本机多会话共用同一棵树：按工作树量 `#[test]` 会得到 **1178**，按 `HEAD` 量是 **1172**。凡分母都跑 `git grep … HEAD -- <路径>`。
 
@@ -212,7 +212,7 @@ grep -rhoE '#\[tauri::command(\(async[^)]*\)|\])' src-tauri/src | wc -l   # 207�
 grep -rn '#\[tauri::command' src-tauri/src | wc -l                # 209 = 207 + 2 处注释提及
 grep -rhoE 'code=[A-Z0-9_]+' src-tauri/src | sed 's/code=//' | sort -u | wc -l   # 87
 grep -rln readFileSync src --include='*.test.ts' | wc -l          # 69（静态锚点测试册数）
-git grep -c '#\[test\]' HEAD -- 'src-tauri/src' | awk -F: '{s+=$NF} END{print s}'  # 1172（按 HEAD 测）
+git grep -c '#\[test\]' HEAD -- 'src-tauri/src' | awk -F: '{s+=$NF} END{print s}'  # 基线 1172；HEAD 前进后只会更大
 grep -c '^| F-' docs/notes/closedloop-matrix-2026-10-26.md        # 20
 grep -c '^| F-.*| \*\*PASS\*\* |$' docs/notes/closedloop-matrix-2026-10-26.md     # 6
 grep -c '^| F-.*| \*\*PARTIAL\*\* |$' docs/notes/closedloop-matrix-2026-10-26.md  # 14
