@@ -281,13 +281,14 @@ V8 的 `self_size` 不含字符串/Blob 的外部内存（边界见 `perf/heapDe
 | 1 | 空白视口次数 / 时长 | **有** | §8 `blankFrames / maxBlankPx`（9 组扫描）；① 的 `visibleBlankMs`（headed） |
 | 2 | 帧时间分布 | **有** | §8 `p50 / p95 / maxFrame` + 逐帧 `frameTops` 曲线（台账里有） |
 | 3 | 长帧 | **有** | §8 `longFrames / longTasks（worst 前 5）`；`scrollkinds` 分类型 |
-| 4 | 主线程阻塞 | **部分** | 只有 Chromium 的 `longtask`（WebKit **没有这个 API**，§12 那台夹具改用帧间隔判） |
-| 5 | 进入可视范围 → 真正可见的延迟 | **部分** | ① 的 `firstTargetFrame / topJumpAfterTarget`；**没有**逐条"进视口→首帧画出来"的分布 |
+| 4 | 主线程阻塞 | **有（按引擎换量具）** | Chromium：`longtask` 条目（§8 `longTasks` 的 count/worst）；WebKit **没有 longtask API** ⇒ 用帧间隔（§12 的 `p50/frameMax` 与空白帧数）代替。**不许**把两列并成一张表比较 |
+| 5 | 进入可视范围 → 真正可见的延迟 | **有（视口级 + 持续时间）** | 覆盖率量具本来就是**逐行取矩形**再算空带 ⇒ 少一行就必然表现为一条空带：`maxBlankPx`（缺口有多宽）、`longestBlankRun`（连续几帧）、`firstFullBlankFrame`（跳转后第几帧铺满）、① 的 `visibleBlankMs`。**没有**逐行身份级延迟（要往被量对象里挂钩子，不做） |
 | 6 | 测量/重测/挂载卸载次数 | **有（引擎侧 + 数据侧）** | 引擎侧：`Performance.getMetrics` 围着整套场景取前后差 ⇒ **5.61 次 layout / 10.45 次 style recalc 每帧**（5 次复跑同值，见 §8）；数据侧：`add/rem`（挂载/卸载）、`styleMut`（measure 写 transform）、`itemSizeCache.size`、`offsetsRebuilds`。**没有**逐次 `measureElement` 计数——引擎侧那两个数就是它的可观测量，再加计数会改被量对象 |
 | 7 | 锚点偏移 | **有** | §8 `anchorDrift`（up200 152px 既有）/ `prepend drift 25×0`；§12 双引擎 `keptKey + drift` |
 | 8 | DOM / CPU / 内存增长 | **有** | §13（9 次 900 步：堆 Δ、listeners、nodes/dom、逐块曲线） |
 | 9 | 冷热与双平台差异 | **部分** | 冷热：`coldJump_*`、`imageColdThenWarm`、`scrollswitch` 缓存曲线；平台：§12 双引擎（mac 两引擎都有），**Windows NOT RUN**（用户本轮排除） |
 
-两处"部分"都是**能补但本轮没补**，不是"测过没问题"：4 的原因是 WebKit 无 `longtask`；
-5/6 需要在夹具里加两个计数器（逐条可见延迟、`measureElement` 次数），本轮没做是因为
-①②③ 三个症状的判定都不依赖它们（它们只会把"没有可观测缺陷"说得更细）。
+读完这张表的正确结论：**九项里八项在本轮有读数**，其中 4/5/6 三项是"换了一把量具"得到的
+（WebKit 没有 longtask ⇒ 帧间隔；逐行身份级延迟与逐次 `measureElement` 计数要往被量对象里挂钩子 ⇒ 用引擎侧的
+layout/style 计数与空带持续时间代替）。**只剩第 9 项的 Windows 一列是 NOT RUN**（用户本轮排除，方法见 §6），
+它不是"没问题"，是没测。
