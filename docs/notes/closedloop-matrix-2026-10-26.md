@@ -71,6 +71,7 @@ HEAD `6ca07ca5`。取值：`PASS` / `PARTIAL` / `FAIL` / `UNVERIFIED` / `BLOCKED
 | F-FIL-007 | 手动取消一条没传完的文件（1:1 与群共用） | PASS 一个入口同时覆盖发送中与接收中；结果里带 `notified_peer` | PASS 本机收尾走 `apply_local_cancel`（与「对端取消」共用同一条终态路径） | PASS **顺序即语义**：通知名单必须在收尾**之前**读——`apply_local_cancel` 会把成员行落成 cancelled，之后再看就只剩「已经取消的」，**谁都收不到通知**；通知只在**对端声明了 `CONTENT_FEATURE_FILE_CANCEL`** 时才发（INV-P24 第 4 条），老端不发 ⇒ 它那边行为与今天完全一致（继续收发到自己的 deadline）。三种通知形状（1:1 / 群·我方发送 / 群·我方接收）**只读一次台账**分清，且**刻意放在 `apply_local_cancel` 之外**——那函数也被「对端已取消」复用，写进去会造成「收到取消 → 又回一条取消」的回声 | PASS `notified_peer` 回填后界面能说「对方可能仍在继续」——这正是"取消只是本机停手"这一语义的诚实表达；取消记 `cancelled` 而非 `failed` | PASS 10 组文件故障注入轮覆盖取消路径；`cancelFeedback` 六档文案有 6 条断言 | PASS 取消路径有具名码族（`FILE_CANCEL_LIST_FAILED` / `CANCEL_COMMIT_FAILED`），且失败分支留痕 | **PASS** |
 | F-CNT-003 | 取消内容取回 | PASS 空 `cid` 直接拒（"这条内容没有内容指纹，无法取消"）；SQLite 读写与 `.part` 删除都在阻塞池 | PASS 取消走统一终态出口，不会只改界面 | PASS 返回**三字段结构化结果** `{already_done, stopped, ledger_committed}`——`stopped>0` 说明本机确实有一路在收；`ledger_committed=false` 时界面该说「本机已停止、状态待刷新」（而不是谎报已完成） | PASS 三态各有对应文案（前端按 outcome 分支，`TaskCenter.vue:217-228`） | PASS `contentpull` 36 断言轮 + `cancelFeedback` 六档断言 | PARTIAL 无具名 `code=`；台账写的失败经 `ledger_committed` 表达但**日志里没有对应一行**（并入 B1-F1 族） | **PARTIAL** |
 | F-FRN-004 | 删除好友 | PASS 删前**先取消在途发送**——注释写明"否则 outbox 删了、发送任务却可能把 transfer 写回 active" | 不适用(理由)：关系解除是即时决定 | PASS 顺序与语义都写清了：先解关系（这次调用的事实），再顺带清 file_outbox / 样式缓存（失败不阻断，因为是缓存）；**`fail_pending_messages_for_peer` 是 D5-A（用户 2026-10-25 拍板）**：关系没了，还挂在补发队列里的消息永远没人收 ⇒ 一起清队列并落 **`failed` 而不是 `cancelled`**（"用户取消的是『我不发了』，这里是『发不成了』"）；清理失败**必须留痕**，否则那些消息会永远停在「发送中」而日志里一个字都没有 | PASS 落 failed 后气泡与任务中心都会说话；聊天记录**保留**，对方仍出现在扫描列表可重新添加 | PARTIAL 有 `friends` 相关测试；删除的级联范围未见具名判据 | PARTIAL 清理失败有 `logger.error`（friend 域）但无具名 `code=` | **PARTIAL** |
+| F-PLF-015 | 媒体存在性 / base64 另存 / 剪贴板文件路径 | PASS `media_present` 每条媒体气泡都会问一次，仍进阻塞池（审计 R-18）；`save_data_file` 有 Android `content://` 分支；`read_clipboard_file_paths` 区分「真实文件」与「位图」 | 不适用(理由)：单次检查/写入/读取 | PASS 三处都挪出 worker 且理由不同：媒体检查是**每条气泡都问**、另存是无上限整文件写、剪贴板读**每按一次 Ctrl+V 打一次**（且可能被别的程序占住）。`read_clipboard_file_paths` 读不到（格式不符/被占用）一律按「无文件」处理，前端回退到图片粘贴分支 | PASS **`media_present` 的极性是刻意不对称的**：只有能确定「文件已被删除」才返回 `false`；查不到（如尚未落库的乐观消息）一律按「存在」——注释写明「绝不能把在途消息误标成已清理」。这与 B1-F7（把未知折叠成空）方向相反，而**这里的方向是对的**：假阴性（把在途说成已清理）比假阳性更糟 | PARTIAL `save_data_file` 明确写着**体积没有上限**（「前端解多大我们就写多大」）——用户自选文件场景下可接受，但属登记的开放面 | PASS `helpers_tests` 覆盖同族纯函数；`resolve_media_path` 三态有断言 | PARTIAL 无具名 `code=`（并入 B1-F1 族） | **PARTIAL** |
 | F-OBS-002 | 前后端契约双向对账（161 命令 / 事件面） | PASS 门面唯一：`IPC 只能从 src/api 门面走`（含「6 条命令在 api 上根本没有包装」的回归） | 不适用(理由)：这是判据不是用户操作 | 不适用(理由)：同上 | 不适用(理由)：同上 | **PASS（我实跑）** `node --test src/api/events.test.ts src/utils/mapContract.test.ts` ⇒ **EXIT=0，17/17**；另独立 `comm` 复算：注册 161 / 去重调用名 160，孤儿仅 `get_topology`（`events.test.ts:375` 自declare 无 UI 入口） | PASS 命令名与注册表逐条对账、「门面之下不许留没人引用的包装」都是现成判据 | **PASS** |
 | F-OBS-003 | 诊断面：错误分类 / 上限 / 脱敏 / 访问控制 | 不适用(理由)：非用户动作 | 不适用(理由)：同上 | PASS 单文件 512 KB 轮转（`logging.rs:140/1070`），有真文件读写测试 `logger_persists_to_file_and_rotates:1715` | 部分：日志窗口有独立 entry（`logs.html` + `src/entries/logs.ts`），用户可查 | **已证**（上两行测试名 + 我跑通的对账族） | **PARTIAL** 具名 `code=` 共 **87** 个、日志调用 363 处（error 81 / warn 129 / info 153），覆盖面广；但**关键操作结局缺码**（B1-F1）；脱敏是形状级（`diagnostics.rs:19-22`，作者自述并保留文件名/大小以便查传输故障）⇒ 隐私与可查性是**登记过的取舍** | **PARTIAL** |
 
@@ -162,6 +163,9 @@ HEAD `6ca07ca5`。取值：`PASS` / `PARTIAL` / `FAIL` / `UNVERIFIED` / `BLOCKED
 下面这份清单是"我读过函数体或关键分支"的命令，**由脚本与 161 条注册表求交并报出拼错的名字**（不是手抄计数）：
 
 ```text
+read_clipboard_file_paths
+save_data_file
+media_present
 remove_friend
 cancel_content_fetch
 cancel_file_transfer
@@ -266,7 +270,7 @@ EOF
 
 `get_device_info` · `update_profile` · `list_interfaces` · `get_peers` · `search_nearby_peers` · `focus_window` · `shake_window` · `request_attention` · `set_unread_badge` · 好友四件套（`get_friends`/`send_friend_request`/`respond_friend_request`/`get_pending_requests`/`remove_friend`/`default_nickname`）· `send_message` · `get_messages`/`get_latest_messages`/`get_conversations`/`ensure_conversation`/`set_conversation_pinned`/`get_conv_link`/`get_message_count`/`get_pending_message_operations`/`get_group_todo_messages` · `send_group_message`/`send_group_reaction`/`pin_group_message`/`set_message_render`/`get_group_delivery_summaries`/`resend_group_delivery` · 群公告与群待办六条 · `send_todo_image`/`save_todo_image_bytes`/`todo_image_meta` · `request_content`/`request_content_by_cid`/`cancel_content_fetch`/`get_content_transfers`/`get_transfers` · `delete_file`/`save_outgoing_image`/`open_file_native`/`read_file_preview`/`read_content_preview`/`copy_file_to_clipboard`/`read_clipboard_file_paths`/`media_present` · `export_chat_text` · `get_discovery_diag`/`get_runtime_diag`/`set_app_active` · `window_minimize`/`window_toggle_maximize`/`window_is_maximized`/`window_close`/`set_native_titlebar_buttons_hidden`/`apply_macos_window_shape` · `search_chat_history` · `import_picked_file`/`request_ble_permissions`/`set_ui_language` · `broadcast_chat_style` · `list_favorites`/`add_favorite`/`remove_favorite`/`read_favorite_preview` · `get_cache_info`/`clean_cache_now`/`set_cache_policy` · `create_group`/`leave_group`/`distribute_group_key`/`get_groups` · `get_settings`/`reset_settings` · `get_previous_exit` · `notify_desktop`/`send_test_notification` · `login`/`updater_status` 之外的更新命令 · `ui_heartbeat`/`report_frontend_slow_op`/`log_frontend_error` · `take_group_todo_focus`/`request_group_todo_focus`/`get_group_todos_context`/`get_image_preview_gallery`/`close_settings_window`/`restart_app`。
 
-**所以真实进度是**：**77 条 / 161 条 ≈ 48% 的命令有六格结论**（清单与校验脚本见本节）；33 行矩阵里剩下的行讲的是**行为族**（例如"群成员级投递"这一族横跨收发两侧、多张表与清扫器），它们比单条命令大，但不能拿来充命令数。现算命令：
+**所以真实进度是**：**80 条 / 161 条 ≈ 50% 的命令有六格结论**（清单与校验脚本见本节）；33 行矩阵里剩下的行讲的是**行为族**（例如"群成员级投递"这一族横跨收发两侧、多张表与清扫器），它们比单条命令大，但不能拿来充命令数。现算命令：
 
 ```bash
 python3 - <<'EOF'
@@ -283,7 +287,7 @@ EOF
 
 ## 五、读数
 
-现算（**只数判级列**，命令：`grep -cE '^\| F-.*\| \*\*(PASS|PARTIAL)\*\* \|$' docs/notes/closedloop-matrix-2026-10-26.md` ⇒ **64**）：已走完六格 **64** 行，其中 **PASS 10**、**PARTIAL 54**；另有若干行含「不适用(理由)」的格（不适用≠通过，也不计入这两档）。⚠️ **不要用 `grep -c '^| F-'`**——本文件第六节的「FID → 命令映射」表同样以 `| F-` 开头，那个命令会把两表相加（实测报 45）。立案 **14** 条（P2 九 / P3 五），保留 **6** 条，撤回 **6** 条。
+现算（**只数判级列**，命令：`grep -cE '^\| F-.*\| \*\*(PASS|PARTIAL)\*\* \|$' docs/notes/closedloop-matrix-2026-10-26.md` ⇒ **65**）：已走完六格 **65** 行，其中 **PASS 10**、**PARTIAL 55**；另有若干行含「不适用(理由)」的格（不适用≠通过，也不计入这两档）。⚠️ **不要用 `grep -c '^| F-'`**——本文件第六节的「FID → 命令映射」表同样以 `| F-` 开头，那个命令会把两表相加（实测报 45）。立案 **14** 条（P2 九 / P3 五），保留 **6** 条，撤回 **6** 条。
 
 **本文件的引用不受任何守卫保护**（实况见主报告「我自己的两处错」第 2 条：`check-doc-citations.mjs` 管 `file:line` 的那条只吃 `LIVE_DOCS` 那 8 份，`docs/notes/**` 不在内）。所以行号会随改动静默腐烂。二选一，**本审计不新建脚本**（按仓里「新判据先找现成的家」与自己编的规矩要撤）：
 
