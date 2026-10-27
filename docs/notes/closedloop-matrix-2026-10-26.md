@@ -61,6 +61,7 @@ HEAD `6ca07ca5`。取值：`PASS` / `PARTIAL` / `FAIL` / `UNVERIFIED` / `BLOCKED
 | F-PRS-002 | 节点表读取 / 应用前台状态 / 运行诊断 | PASS `get_peers` 排序后返回并在命令里补 `Peer::link`；`set_app_active` 用**原子交换**作唯一判据（只对真翻转做事）；诊断命令只读 | 不适用(理由)：读操作或单次状态翻转 | PASS `set_app_active` 从后台回前台会**额外 wake 一次扫描**（立刻补一轮，不等完 30s 慢周期）；BLE 节奏 5s/30s 切换且「进程被杀则扫描随进程消失，无需额外代码」；热路径纪律：日志落盘搬进阻塞池，而**原子交换留在 await 侧**（它是判据，不能排到池子后面）；同一函数里还记着一个 clippy 1.98 的坑（非 bluetooth 构建下"提前 return"会成末语句触发 `needless_return`） | PASS **链路类型只在命令里补、事件里恒 `None`**（`links` 是异步锁，节点推送是同步上下文），而界面**只认「字段存在且是 bluetooth」**：以前用 `ip || 蓝牙直连` 反推会把同一 Tailscale 网段（Routed）的设备也标成蓝牙直连（用户 2026-09-12 实测）——这是「别用一个事实反推另一个事实」的现场 | PARTIAL 有 `lib_tests` 与探针；`RuntimeDiag` 的 Rust 字段与 TS interface 有「逐字对应」判据（`src/api/events.test.ts`，我实跑 17/17 的那批里就有它） | PARTIAL 无具名 `code=`；但诊断命令本身就是诊断出口，缺口小于业务命令 | **PARTIAL** |
 | F-PRE-015 | 读取设置 / 恢复默认设置 | PASS `get_settings` 返回**显式 14 字段**（`theme_color`…`peer_styles`），不是整表 dump ⇒ `gk:{id}` 群密钥与身份私钥根本不在交出值里（INV-P18 的边界由类型形状保证） | 不适用(理由)：读操作 / 一次批量删键 | PASS **恢复默认用显式键清单而不是清空整表**：保留 device_id / x25519_secret / ed25519_secret / 好友 / 聊天记录；**刻意清掉中继口令**（`RELAY_TOKEN_KEY`）并写明理由「留着它比清掉更糟——机器上仍存着一个通往公网的准入口令，而界面上已经看不到这个功能在哪儿配的」；删完**同步重置内存缓存**（relay policy 回默认 All + 热设置缓存失效），否则「用户点了恢复默认、行为却还是旧的限制策略（要重启才生效）」 | PASS 缺省值有合理兜底（`notify_enabled` / `notify_show_content` 缺省 `Some(true)`）；恢复默认后向**其它窗口**广播变更（发起窗口已自行应用，不回发） | PARTIAL 有设置相关测试；**「恢复默认后行为立即生效」这条没有具名判据**（代码注释里那份理由目前只靠人记得）⇒ 待补 | PARTIAL 无具名 `code=`（并入 B1-F1 族） | **PARTIAL** |
 | F-PLF-014 | 另存复制 / 剪贴板文件 / 媒体预览读取 | PASS `copy_file` 有 Android `content://` 分支；`copy_file_to_clipboard` 先判文件存在；`read_file_preview` 经 `resolve_media_path` 三态解析 | 不适用(理由)：单次文件/剪贴板操作 | PASS 三处都挪进阻塞池并写明理由：`copy_file` 是**任意大小**（600 MB 会把一个 worker 按在磁盘复制上数秒）；**剪贴板是系统级独占资源**（别的程序开着要等，Windows 还带 10 次重试）；预览的 `canonicalize`+`read` 可能落在慢盘/网络盘。`copy_file` 的注释还顺带更正了一条普遍误解——**`#[tauri::command(async)]` 挂在同步 `fn` 上不是豁免**（宏把函数体放进 `spawn` 的 future，跑的是 tokio worker），并引到 tauri-macros 2.6.3 / tauri 2.11.5 的具体行号 | PASS 预览有 `max_bytes` 且夹到 15MiB；`TOO_LARGE` 与「文件不存在」各有前端回退（回退文件卡片 / 渲染成「已清理」占位），不是空白也不是错误弹窗 | PARTIAL 有 `helpers_tests` 同族；「超限必须拒」这类断言本轮未逐条读 | PARTIAL 无具名 `code=`（并入 B1-F1 族）；剪贴板失败有具体中文原因 | **PARTIAL** |
+| F-GRP-006 | 退群 / 群列表 / 待办图片落盘 | PASS 退群要求**群主先转让**（否则该群永久失去管理权）；待办图片只接受 raw body + **按 magic bytes 白名单**（`sniff_media_ext` 读首 16 字节，只放 jpg/png/gif/webp/bmp）——改名的 `.command` 混不进来 | 不适用(理由)：退群是一次本地清理 + 一轮通知 | PASS 退群**先通知其余成员、再删本地记录**（成员表要在删除前取）；离线成员的 `GroupMemberLeft` 会丢，但注释说明**成员表会随后续群消息（Gossip group_members / GroupKey）自愈**；本地清理复用「被移出群」同一条路径 `db::delete_group` | PASS 待办图片有大小闸（`todo_image_size_guard`）+ 格式闸，错误文案具体（"图片数据为空"/"只支持粘贴图片"）；写盘进阻塞池（几 MB 截图不卡 async runtime） | PARTIAL 有 `todos` 单测与群轮次；退群/被移出的跨实例行为仍缺轮次 | PARTIAL 退群时 `DELETE FROM settings WHERE key = 'gk:…'` 是 `let _ =`（失败则留下孤儿群密钥，与 B3-F2 同族）；无具名 `code=` | **PARTIAL** |
 | F-OBS-002 | 前后端契约双向对账（161 命令 / 事件面） | PASS 门面唯一：`IPC 只能从 src/api 门面走`（含「6 条命令在 api 上根本没有包装」的回归） | 不适用(理由)：这是判据不是用户操作 | 不适用(理由)：同上 | 不适用(理由)：同上 | **PASS（我实跑）** `node --test src/api/events.test.ts src/utils/mapContract.test.ts` ⇒ **EXIT=0，17/17**；另独立 `comm` 复算：注册 161 / 去重调用名 160，孤儿仅 `get_topology`（`events.test.ts:375` 自declare 无 UI 入口） | PASS 命令名与注册表逐条对账、「门面之下不许留没人引用的包装」都是现成判据 | **PASS** |
 | F-OBS-003 | 诊断面：错误分类 / 上限 / 脱敏 / 访问控制 | 不适用(理由)：非用户动作 | 不适用(理由)：同上 | PASS 单文件 512 KB 轮转（`logging.rs:140/1070`），有真文件读写测试 `logger_persists_to_file_and_rotates:1715` | 部分：日志窗口有独立 entry（`logs.html` + `src/entries/logs.ts`），用户可查 | **已证**（上两行测试名 + 我跑通的对账族） | **PARTIAL** 具名 `code=` 共 **87** 个、日志调用 363 处（error 81 / warn 129 / info 153），覆盖面广；但**关键操作结局缺码**（B1-F1）；脱敏是形状级（`diagnostics.rs:19-22`，作者自述并保留文件名/大小以便查传输故障）⇒ 隐私与可查性是**登记过的取舍** | **PARTIAL** |
 
@@ -151,6 +152,7 @@ HEAD `6ca07ca5`。取值：`PASS` / `PARTIAL` / `FAIL` / `UNVERIFIED` / `BLOCKED
 
 | FID | A 级命令（读过函数体/关键分支） |
 |---|---|
+| F-GRP-006 | `leave_group` · `save_todo_image_bytes`（读了群主前置与 magic bytes 白名单） |
 | F-PLF-014 | `copy_file` · `copy_file_to_clipboard` · `read_file_preview`（读了阻塞池理由与回退口径） |
 | F-PRE-015 | `get_settings` · `reset_settings`（读了白名单字段与恢复默认的保留/清除清单） |
 | F-PRS-002 | `get_peers` · `set_app_active` · `get_runtime_diag`（读了链路补全与前台判据） |
@@ -180,7 +182,7 @@ HEAD `6ca07ca5`。取值：`PASS` / `PARTIAL` / `FAIL` / `UNVERIFIED` / `BLOCKED
 | F-OBS-007 | `get_logs` · `clear_logs` · `get_log_locations` |
 | F-OBS-008 | `export_external_links` · `cleanup_external_links_export` · `import_external_links_file` · `import_external_links_from_url` |
 
-**A 级合计 52 条命令**（现算脚本报 53 个 token，多出的那个是内部处理器 `handle_group_rename`，它不是 tauri 命令、不计入 161）。这就是我敢说"这 19 条有六格结论"的全部。
+**A 级合计 54 条命令**（现算脚本报 55 个 token，多出的那个是内部处理器 `handle_group_rename`，它不是 tauri 命令、不计入 161）。这就是我敢说"这 19 条有六格结论"的全部。
 
 ### B 级（不计入覆盖，只说明链路形状）
 
@@ -190,7 +192,7 @@ HEAD `6ca07ca5`。取值：`PASS` / `PARTIAL` / `FAIL` / `UNVERIFIED` / `BLOCKED
 
 `get_device_info` · `update_profile` · `list_interfaces` · `get_peers` · `search_nearby_peers` · `focus_window` · `shake_window` · `request_attention` · `set_unread_badge` · 好友四件套（`get_friends`/`send_friend_request`/`respond_friend_request`/`get_pending_requests`/`remove_friend`/`default_nickname`）· `send_message` · `get_messages`/`get_latest_messages`/`get_conversations`/`ensure_conversation`/`set_conversation_pinned`/`get_conv_link`/`get_message_count`/`get_pending_message_operations`/`get_group_todo_messages` · `send_group_message`/`send_group_reaction`/`pin_group_message`/`set_message_render`/`get_group_delivery_summaries`/`resend_group_delivery` · 群公告与群待办六条 · `send_todo_image`/`save_todo_image_bytes`/`todo_image_meta` · `request_content`/`request_content_by_cid`/`cancel_content_fetch`/`get_content_transfers`/`get_transfers` · `delete_file`/`save_outgoing_image`/`open_file_native`/`read_file_preview`/`read_content_preview`/`copy_file_to_clipboard`/`read_clipboard_file_paths`/`media_present` · `export_chat_text` · `get_discovery_diag`/`get_runtime_diag`/`set_app_active` · `window_minimize`/`window_toggle_maximize`/`window_is_maximized`/`window_close`/`set_native_titlebar_buttons_hidden`/`apply_macos_window_shape` · `search_chat_history` · `import_picked_file`/`request_ble_permissions`/`set_ui_language` · `broadcast_chat_style` · `list_favorites`/`add_favorite`/`remove_favorite`/`read_favorite_preview` · `get_cache_info`/`clean_cache_now`/`set_cache_policy` · `create_group`/`leave_group`/`distribute_group_key`/`get_groups` · `get_settings`/`reset_settings` · `get_previous_exit` · `notify_desktop`/`send_test_notification` · `login`/`updater_status` 之外的更新命令 · `ui_heartbeat`/`report_frontend_slow_op`/`log_frontend_error` · `take_group_todo_focus`/`request_group_todo_focus`/`get_group_todos_context`/`get_image_preview_gallery`/`close_settings_window`/`restart_app`。
 
-**所以真实进度是**：**52 条 / 161 条 ≈ 32% 的命令有六格结论**；33 行矩阵里剩下的行讲的是**行为族**（例如"群成员级投递"这一族横跨收发两侧、多张表与清扫器），它们比单条命令大，但不能拿来充命令数。现算命令：
+**所以真实进度是**：**54 条 / 161 条 ≈ 34% 的命令有六格结论**；33 行矩阵里剩下的行讲的是**行为族**（例如"群成员级投递"这一族横跨收发两侧、多张表与清扫器），它们比单条命令大，但不能拿来充命令数。现算命令：
 
 ```bash
 python3 - <<'EOF'
@@ -207,7 +209,7 @@ EOF
 
 ## 五、读数
 
-现算（**只数判级列**，命令：`grep -cE '^\| F-.*\| \*\*(PASS|PARTIAL)\*\* \|$' docs/notes/closedloop-matrix-2026-10-26.md` ⇒ **54**）：已走完六格 **54** 行，其中 **PASS 9**、**PARTIAL 45**；另有若干行含「不适用(理由)」的格（不适用≠通过，也不计入这两档）。⚠️ **不要用 `grep -c '^| F-'`**——本文件第六节的「FID → 命令映射」表同样以 `| F-` 开头，那个命令会把两表相加（实测报 45）。立案 **14** 条（P2 九 / P3 五），保留 **6** 条，撤回 **6** 条。
+现算（**只数判级列**，命令：`grep -cE '^\| F-.*\| \*\*(PASS|PARTIAL)\*\* \|$' docs/notes/closedloop-matrix-2026-10-26.md` ⇒ **55**）：已走完六格 **55** 行，其中 **PASS 9**、**PARTIAL 46**；另有若干行含「不适用(理由)」的格（不适用≠通过，也不计入这两档）。⚠️ **不要用 `grep -c '^| F-'`**——本文件第六节的「FID → 命令映射」表同样以 `| F-` 开头，那个命令会把两表相加（实测报 45）。立案 **14** 条（P2 九 / P3 五），保留 **6** 条，撤回 **6** 条。
 
 **本文件的引用不受任何守卫保护**（实况见主报告「我自己的两处错」第 2 条：`check-doc-citations.mjs` 管 `file:line` 的那条只吃 `LIVE_DOCS` 那 8 份，`docs/notes/**` 不在内）。所以行号会随改动静默腐烂。二选一，**本审计不新建脚本**（按仓里「新判据先找现成的家」与自己编的规矩要撤）：
 
