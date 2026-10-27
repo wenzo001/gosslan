@@ -407,7 +407,9 @@ layout/style 计数与空带持续时间代替）。**只剩第 9 项的 Windows
 - Phase B 量具：关掉 `--only` 假绿通道、写入归因台账、`scrollhist/scrollswitch/scrollinput`、双引擎夹具 ⇒ 报告 §9 / §12。
 - Phase C 修 ④①：**5.14.6**；Phase D 修 ③：**5.14.7**（Chromium 通过）→ 5.14.8 的静定门**当晚按证据回退**（§12.1），
   产品码停在 5.14.7；5.14.8 净留下量具（真 WKWebView 宿主 + App 内判据，§18）。
-- Phase E（未开始）：A8 一次 App 内读数 / Windows 整列 / 依赖 bump —— 三件都要人拍板或人点一次。
+- Phase E（2026-10-27 深夜收口）：**A8 已补** —— `perf/wk-a8app.mjs` 在真 WKWebView 里挂真 `ChatWindow`，
+  修前会红（丢 key + 649px）、现在 drift −0.5/0/0（§18）；**依赖 bump 已做同轨迹对照**，四条轨迹零差异（§19，落不落库等人拍板）；
+  **Windows 仍是 NOT RUN**（用户本轮排除，方法见 §6）。
 
 **当前验收读数（回退后）**：10 段滚动判据 **718/718**（headed 补齐那格）；`npm test` **1427/1427**；
 `vue-tsc + vite build` 通过；资源 900 步 × 9 次**无增长台阶**；引擎侧 **5.61 layout / 10.45 style recalc 每帧**，A/B 与改前一致。
