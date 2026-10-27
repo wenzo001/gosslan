@@ -142,7 +142,19 @@ npm run verify
 现读：10 段 **716/717 / 零 FAIL**（唯一 UNSUPPORTED 是 headless 量不到的 headed-only 格；headed 单跑 **9/9**）、
 `npm run verify` **19/19**、`npx vue-tsc --noEmit` **0**。
 
-## 8. 本批新增/强化的量具
+## 8. 修复后复跑上一批的三台夹具（都在 5.14.7 上现跑）
+
+| 夹具 | 关键读数 | 与上一批比 |
+|---|---|---|
+| `perf/scrollprobe.mjs 1200` | down 80/200/400/800、up 200/400/800、双向换向、慢读上滚：**blankFrames 全 0、maxBlank 0px**；p50 16.3–19.6ms | 持平（上批 0/90） |
+| ↳ `up200 anchorDrift` | **152px，3/3 确定** | 做 A/B 换回改前版本后**同样 152px** ⇒ 既有特征（首次向上扫描时上方未测行的首测漂移），不是本轮引入，不再改 |
+| `perf/scrollscenarios.mjs` | 前插漂移 **25 帧全 0**（scrollDelta 恰 10340）、追加漂移全 0、`appendYank.jumpedPx 0`、图片在视口内完成 **shiftPx 0 / heightChanges 0**、图片立即可用 shiftPx 0 | 全部持平 |
+| `perf/scrollkinds.mjs` | code 首帧 **50.5ms / longtask 60ms / 空白 0**（上批 49.2ms）；text 98.6ms；long 54.7ms（1 帧空白 206px）；image 76.2ms | 持平 |
+
+> 同一时段 `scrollscenarios` 曾报 `coldJump_code` 1 帧空白 + 72ms 长任务，`scrollkinds` 复测为 50.5ms/60ms/0
+> ⇒ 那是**并跑浏览器造成的负载噪声**，不是代码变化。
+
+## 9. 本批新增/强化的量具
 
 - `--only=` 段名**现解析校验**：打错名字**退 2**（此前是"一段不跑 + 打绿 + 退 0"）；零判据判红；汇总增四态与"已选段"。
 - **写入归因台账**（唯一安装器 `installScrollLedger`）：拦实例 `scrollTop` + `scrollTo`/`scrollBy`/`scrollIntoView`，
@@ -154,14 +166,14 @@ npm run verify
   `scrollinput`（真 wheel / touch+fling / PageDown 对照合成位移）。
 - `perf/wk-scroll-sampler.js`：WKWebView 真机采样器（selfCheck：藏一行 ⇒ blank 必涨；不 ok 就别采数）。
 
-## 9. 明确不做 / 待定
+## 10. 明确不做 / 待定
 
 - **不做**：调 `overscan`/`maxRows`/任何阈值（`git diff` 里这些行一行没动）；换库；固定行高；关动态测量；
   一次性加载全部历史；协议/DB 变更。
 - **暂缓（有理由）**：A2 白带 T1/T2/T3 分型 —— 症状②用户未点名，且真输入三档空白帧都是 0，再建分型不改变任何判断。
 - **待定**：依赖 bump（用户口径"先只 bump 跑同轨迹对照"）；真机格读数（进行中）。
 
-## 10. 残余边界（不假装已消）
+## 11. 残余边界（不假装已消）
 
 1. 群文件/中继的 Offer 阶段没有 `w/h`（完成回填才有）⇒ 用户正看着那张图时仍可能有一次高度修正。
 2. 旧消息无 `w/h`：按 288 骨架预留，横图首次解码会收缩一次。
