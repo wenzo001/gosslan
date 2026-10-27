@@ -15,19 +15,23 @@
 
 ## [5.14.8] - 2026-10-27
 
-### 向上翻历史：修复在 WebKit（macOS 出货引擎）下也成立了（2026-10-27）
+### 向上翻历史：保留 5.14.7 的写法；本版留下的是让"引擎差异"可复核的量具（2026-10-27，当天晚些时候校正）
 
-- **发现**：5.14.7 那笔修复**只在 Chromium 上成立**。新增的双引擎夹具（`perf/wk-check.html`，挂真实
-  `VirtualList`、页面自驱动、结果回传本地信标）实测同一份代码：Chromium `keptKey=true`（drift 0.3px）、
-  **Safari/WebKit `keptKey=false`**（m-188 → m-207）。
-- **成因**：修复的第二半把"重发锚点"放在 `onItemsChanged`（Vue 的 post-flush）里立即做。Chromium 那时
-  spacer 已经长高；**WebKit 还没**，于是重发那一笔又被浏览器 clamp —— 等于回到修复前的行为。
-- **修法**：改成**等 `getTotalSize()` 连续两帧不变（sizer 静定）再发一次**目标；静定之前一个字都不写。
-  Chromium 上几乎立即静定（与原来等价），WebKit 上多等一两帧，但那时高度已经在了。
-- **双引擎读数**（同一夹具、同一数据）：Chromium `keptKey=true / drift −0.5px`；WebKit `keptKey=true / drift 0.3px`；
-  两个引擎的下滚/上滚空白帧都是 **0**、p50 16.6–17ms。
-- **回归**：`vlist/scrollreact/scrollhist/scrollswitch/scrollshake` **54/55、零 FAIL**
-  （唯一 UNSUPPORTED 是 headless 量不到的 headed-only 格）。
+- 当天下午在 Safari 的夹具里读到 `keptKey=false`，据此把重发改成"等 `getTotalSize()` 连续两帧不变（sizer 静定）再发"，
+  并写下"5.14.7 在 WebKit 下不成立"。
+- **当晚被正控推翻**：把 `reissuePrependAnchor` 整段 `return`（等于没有修复），那台夹具的锚点格**仍然是绿的**
+  ⇒ 它**没有分辨力**。5.14.7 的原码在真 WKWebView 宿主（`perf/wk-host.swift`）的 **4 种窗口几何**下都通过；
+  在 **App 内格**（真 `ChatWindow` + 真 store，`perf/wk-a8app.mjs`）上也通过（drift **−0.5 / 0 / 0**），
+  而修前 `bc06d55d` 在同一格会红（第二页**丢 key** m-hist-573 → m-hist-468、第三页漂移 **649px**）。
+- **结论**：起作用的只是"重发"这件事本身（5.14.7）。多等两帧没有任何判据能证明它有用
+  ⇒ `reissuePrependAnchor` **回退到 5.14.7 的写法**（函数体与 `10e67a74` 逐字相同，`diff` 现算），
+  决策历史与复现入口写进了代码注释。
+- **本版实际留下的是量具**：`perf/wk-host.swift`（真 WKWebView 宿主，不需要 Inspector / 授权 / 人点）、
+  `perf/wk-a8.mjs`（引擎层两格扫描）、`perf/wk-a8app.mjs` + `perf/wk-app-cell.js`（App 内四格）、
+  `perf/wk-check.html` 的阶段看门狗（把"没回传"变成能指出卡在哪一步）。
+  每一条都做了正控：摘掉 `rangeExtractor` 的缓冲 ⇒ 下滚 25 / 上滚 26 帧空白；修前代码 ⇒ 两处锚点判据各红一次。
+- **回归（回退后现读）**：10 段滚动判据 **717 PASS / 0 FAIL / 1 UNSUPPORTED**（headed 单跑该段 10/10）、
+  `npm test` **1427/1427**、`npm run build` 通过、`vue-tsc` 0。
 
 ## [5.14.7] - 2026-10-27
 
