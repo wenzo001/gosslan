@@ -88,6 +88,9 @@ HEAD `6ca07ca5`。取值：`PASS` / `PARTIAL` / `FAIL` / `UNVERIFIED` / `BLOCKED
 | F-PLF-018 | 移动端所选文件导入（`content://` → 真实路径） | PASS 非 `content://` 一律原样返回（桌面本来就是真实路径）；Android URI 经 `tauri-plugin-fs`（Android 侧走 ContentResolver）复制到 `cache/imports/.incoming-<uuid>`，再把**真实路径**交回原发送链 | 不适用(理由)：单次导入复制 | PASS **平台差异只在边界处理**：注释写明「后面的图片预览、缩略图、断点重传全都不用改」；整文件复制是 O(体积) 同步 I/O ⇒ 离开 async worker（600MB 复制会占住一个） | PASS 失败文案具体（"打不开所选文件"）；根因记录到用户 2026-09-12 安卓真机实测（"文字能发、代码能发，但发附件/图片总是失败"），并指出插件里 `FilePickerUtils.getPathFromUri` 是**没人调用的死代码** | PARTIAL 有 `mobile_picker` 相关测试；**Android 真机路径本轮 BLOCKED** | PARTIAL 无具名 `code=` | **PARTIAL** |
 | F-PLF-019 | 目录读取 / 打开接收目录 / 密钥轮换查询 | PASS 三个 getter 是薄读取（`get_share_dir` 返回 `Option`，未设置就是 `None`，不编默认路径）；`get_friend_key_rotations` 一次内存快照 + 每个候选一次好友点查 | 不适用(理由)：纯读 | PASS `open_downloads_dir` 的打开动作走 **`open_dir_native` 唯一门面**——注释写明「macOS 的沙盒**禁止 fork** `/usr/bin/open`，旧实现在那条路上**点了没反应又不留日志**（FUNC-01）」；且先 `create_dir_all` 再打开（目录被删也能打开）；`get_friend_key_rotations` **只返回仍是好友的条目**——「删除好友后横幅必须立刻消失」 | PASS **这一族有具名码**：打开失败 `code=OPEN_DIR_FAILED`、建目录失败 `code=OPEN_DIR_CREATE_FAILED`，前端拿到的仍是可显示字符串 | PARTIAL getter 无错误面（本就没有）；有 `lib_friend_identity_tests` | PASS 失败路径带具名码并留痕（同族里少见的正例） | **PARTIAL** |
 | F-PRS-005 | 网卡枚举（设置里的网卡选择器） | PASS 一次 `getifaddrs(3)` 系统调用（VPN/容器网卡多时可慢）进阻塞池 | 不适用(理由)：纯读 | PASS **明确拒绝把失败摊成空列表**：注释写明「回 Result 而不是把失败摊成空列表：**空列表在界面上读起来就是『这块机器没有网卡』**」——这正是 B1-F7 立案的同一个理由，而这里做对了 | PASS 过滤规则有依据：排除回环；`is_lan` = **有广播地址**（真实 LAN 的标志）+ 非 link-local + 非 VPN 段；`is_virtual_ip` 覆盖 198.18/19（基准测试段）、100.64/10（CGNAT/Tailscale）、169.254/16（link-local） | PARTIAL 有 `is_virtual_ip` 单测；真实多网卡组合 BLOCKED | PASS 失败经 Result 返回，不折叠 | **PASS** |
+| F-CNT-005 | 按 cid 读内容预览（合并转发图 / 待办描述图） | PASS cid 即 sha256（content store 主键）；两条取回路径：① `find_local_path`（已登记本机副本）；② 回落 `find_source` + 安全校验（downloads 下或本机自发内容）；上限夹到 15MiB | 不适用(理由)：纯读 | PASS **锁序纪律**：db 锁内**只做两个索引点查**；`canonicalize` 是文件系统操作（网络盘/慢盘可挂任意久），**绝不放在锁持有期间**——注释记着旧形状「持 db 锁等 IO，还构成 **db → downloads_dir 的锁序耦合**（审计 2.1d）」 | PASS `find_source` 返回 `Ok(None)` 时报「内容不存在」而不是空内容；安全边界与 `read_file_preview`/`resolve_media_path` 同口径（单一家） | PASS 有 `content` 侧测试与 `contentpull` 36 轮 | PARTIAL 无具名 `code=` | **PARTIAL** |
+| F-PRE-018 | 收藏列表 / 外链删除 / 缓存信息与策略 | PASS 四条都是薄读或单条写；`remove_external_link` 只在**真删掉**时才写库（按 id 匹配，未命中不落盘） | 不适用(理由)：单条读写 | PASS `list_favorites` 一次全表读 + **每行一次 stat** 填 `available`——前端据此把"副本不在了"渲染成「已清理」占位，**而不是让用户点开才发现打不开**；纯文本/代码没有副本，按"可用"处理（"它没有可丢的东西"）；`get_cache_info` 是媒体目录**递归 walk** + stat 数据库文件，挂在设置页"打开设置就打" ⇒ 必须离开 worker | PASS 缓存策略的 `None`/`0` 明确表示"不限制"；读取失败经 `?`/`map_err` 向上（不折叠成空） | PASS 有 `favorites_tests` 与缓存清理测试族 | PARTIAL 无具名 `code=` | **PARTIAL** |
+| F-PLF-020 | 四个开窗命令（日志 / 群任务 / 图片预览 / 外链） | PASS 四条都是 `#[tauri::command(async)]` 且都走 `ensure_aux_window`；`open_group_todos_window` 的 `group_id` **跨窗口当指令用** ⇒ 先夹紧（非空、≤40、`[A-Za-z0-9_-]`）；`open_image_preview` 先 `validate_preview` | 不适用(理由)：单次开窗 | PASS **"先写当前值，两条路都读它"** 的模式解决了「新建窗口的第一条事件必然发丢」：已开着 ⇒ 定向 emit（`preview-gallery` / `group-todos-target`）叫它重取；刚新建 ⇒ 挂载时自己 `get_image_preview_gallery` / 读暂存上下文——注释写明「两条路都读同一份**当前值**，所以谁先到都一样，**不存在『丢一次点击』**」；`open_link_window` 是**唯一保留系统标题栏**的窗口（加载远端页面，套自绘标题栏要 iframe，而大量站点 `X-Frame-Options` 会直接白屏），关闭即隐藏 | PASS ①「第一次点没反应」这个用户可见症状被上面那条模式正面解决；②`open_log_window` 再次记录 Windows「建 WebView2 会在调用线程泵消息 ⇒ 与 IPC 重入 ⇒ 主线程永久挂死」（2026-09-20 真机），并说明为什么不再需要"整个命令搬回主线程" | PASS `lib_window_tests` 有窗口源码断言族；`get_image_preview_gallery` 与 emit 两条路读同一份值 | 不适用(理由)：开窗失败由各自命令返回 Err，另有 `lib_window_tests` 钉形状 | **PASS** |
 | F-OBS-002 | 前后端契约双向对账（161 命令 / 事件面） | PASS 门面唯一：`IPC 只能从 src/api 门面走`（含「6 条命令在 api 上根本没有包装」的回归） | 不适用(理由)：这是判据不是用户操作 | 不适用(理由)：同上 | 不适用(理由)：同上 | **PASS（我实跑）** `node --test src/api/events.test.ts src/utils/mapContract.test.ts` ⇒ **EXIT=0，17/17**；另独立 `comm` 复算：注册 161 / 去重调用名 160，孤儿仅 `get_topology`（`events.test.ts:375` 自declare 无 UI 入口） | PASS 命令名与注册表逐条对账、「门面之下不许留没人引用的包装」都是现成判据 | **PASS** |
 | F-OBS-003 | 诊断面：错误分类 / 上限 / 脱敏 / 访问控制 | 不适用(理由)：非用户动作 | 不适用(理由)：同上 | PASS 单文件 512 KB 轮转（`logging.rs:140/1070`），有真文件读写测试 `logger_persists_to_file_and_rotates:1715` | 部分：日志窗口有独立 entry（`logs.html` + `src/entries/logs.ts`），用户可查 | **已证**（上两行测试名 + 我跑通的对账族） | **PARTIAL** 具名 `code=` 共 **87** 个、日志调用 363 处（error 81 / warn 129 / info 153），覆盖面广；但**关键操作结局缺码**（B1-F1）；脱敏是形状级（`diagnostics.rs:19-22`，作者自述并保留文件名/大小以便查传输故障）⇒ 隐私与可查性是**登记过的取舍** | **PARTIAL** |
 
@@ -179,6 +182,15 @@ HEAD `6ca07ca5`。取值：`PASS` / `PARTIAL` / `FAIL` / `UNVERIFIED` / `BLOCKED
 下面这份清单是"我读过函数体或关键分支"的命令，**由脚本与 161 条注册表求交并报出拼错的名字**（不是手抄计数）：
 
 ```text
+open_link_window
+open_image_preview
+open_group_todos_window
+open_log_window
+set_cache_policy
+get_cache_info
+remove_external_link
+list_favorites
+read_content_preview
 open_settings_window
 list_interfaces
 get_content_transfers
@@ -344,7 +356,7 @@ EOF
 
 ## 五、读数
 
-现算（**只数判级列**，命令：`grep -cE '^\| F-.*\| \*\*(PASS|PARTIAL)\*\* \|$' docs/notes/closedloop-matrix-2026-10-26.md` ⇒ **81**）：已走完六格 **81** 行，其中 **PASS 12**、**PARTIAL 69**；另有若干行含「不适用(理由)」的格（不适用≠通过，也不计入这两档）。⚠️ **不要用 `grep -c '^| F-'`**——本文件第六节的「FID → 命令映射」表同样以 `| F-` 开头，那个命令会把两表相加（实测报 45）。立案 **15** 条（P2 九 / P3 六），保留 **6** 条，撤回 **6** 条。
+现算（**只数判级列**，命令：`grep -cE '^\| F-.*\| \*\*(PASS|PARTIAL)\*\* \|$' docs/notes/closedloop-matrix-2026-10-26.md` ⇒ **84**）：已走完六格 **84** 行，其中 **PASS 13**、**PARTIAL 71**；另有若干行含「不适用(理由)」的格（不适用≠通过，也不计入这两档）。⚠️ **不要用 `grep -c '^| F-'`**——本文件第六节的「FID → 命令映射」表同样以 `| F-` 开头，那个命令会把两表相加（实测报 45）。立案 **15** 条（P2 九 / P3 六），保留 **6** 条，撤回 **6** 条。
 
 **本文件的引用不受任何守卫保护**（实况见主报告「我自己的两处错」第 2 条：`check-doc-citations.mjs` 管 `file:line` 的那条只吃 `LIVE_DOCS` 那 8 份，`docs/notes/**` 不在内）。所以行号会随改动静默腐烂。二选一，**本审计不新建脚本**（按仓里「新判据先找现成的家」与自己编的规矩要撤）：
 
