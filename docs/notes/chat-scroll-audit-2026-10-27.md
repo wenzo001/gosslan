@@ -228,7 +228,43 @@ worktree 里 `git status` 必须是干净的，否则 A/B 的两臂不只有一�
    要治得另立一题（方向是"跳转后首帧先按估算画、再等测量"之外的预测量策略），不在①②③范围内。
 7. `up200 anchorDrift 152px`：首次向上扫描时上方未测行的首测漂移，A/B 证明既有，本轮不改。
 
-## 12. 双引擎对照：③ 的修复被发现只在 Chromium 成立，改为「等 sizer 静定」（v5.14.7 → v5.14.8）
+## 12. 双引擎对照（**本节结论已被今晚的正控部分推翻，先读 12.1**）
+
+### 12.1 ⚠️ 更正（2026-10-27 晚）：那次"WebKit 下失效"**不可复现**，5.14.8 只能算防御性改动
+
+下午的记录是：在 Safari 27.2 手工跑这台夹具，读到 `keptKey=false`（m-188 → m-207，−131.5 → −66），
+据此判定 5.14.7 的"post-flush 重发"在 WebKit 下被 clamp，于是有了 5.14.8 的静定门。
+
+晚上把它搬进**真 WKWebView 宿主**（`perf/wk-host.swift`；wry 出货用的就是 WKWebView，能自动跑）后，先做了正控：
+
+| 正控 | 做法 | 结果 |
+|---|---|---|
+| 锚点格有分辨力吗 | 把 `reissuePrependAnchor` **整段 `return`**（等于没有重发） | **`keptKey` 仍然 true**，drift 0.3 ⇒ **这格没有分辨力** |
+| 两格扫描有分辨力吗 | 把 `rangeExtractor` 的缓冲整段摘掉（只渲染可视区） | **下滚 25 帧 / 上滚 26 帧空白**（79/81px）⇒ 有分辨力 |
+
+再把**5.14.7 的代码**（`10e67a74`）放进同一个宿主，换 4 种窗口几何重跑：
+
+| 几何 | A 格 | 下滚 | 上滚 |
+|---|---|---|---|
+| 1000×760 | `keptKey=true`，drift 0.3 | 0 帧 | 0 帧 |
+| 1280×900 | `keptKey=true`，drift 0.5 | 0 帧 | 0 帧 |
+| 900×1200 | `keptKey=true`，drift 0.3 | 0 帧 | 0 帧 |
+| 1440×900 | `keptKey=true`，drift 0.8 | 0 帧 | 0 帧 |
+
+⇒ **"5.14.7 在 WebKit 下失效"这个结论，在出货渲染器上不成立。** 那次 Safari 读数现在也无法复核
+（Safari 已开「仅限 HTTPS」：`http://127.0.0.1` 直接被 `WebKitErrorDomain:305` 拦掉，
+`localhost` 会停在"此连接不安全"要人手点）⇒ 按现有证据它**归因不明**。
+
+**所以三件事要改口径**：
+1. 锚点这一格的**可信证据仍然只有 `scrollhist`（Chromium、真 ChatWindow）**：修前 0 / 丢 key / +710，修后 **0 / 0 / 0**。
+   本夹具的 A 格从此**只打印、不判定**。
+2. **5.14.8 的静定门没有可复现的必要性证据**。它的行为有界（最多等 12 帧、每帧一次 `getTotalSize()`），
+   两个引擎的现有判据下都绿，但按"证据不足不该修"的口径，它是**防御性改动** —— 保留还是回退，需要拍板。
+3. `perf/wk-a8.mjs` 现在只判**两格扫描**，并把"锚点格无分辨力"写进输出与注释。
+
+以下 12.2 是当天的原始记录，保留它是为了让下一个人看到**结论是怎么被推翻的**。
+
+### 12.2 原始记录（2026-10-27 下午，现已被 12.1 否证）
 
 新增自驱动夹具 `perf/wk-check.html`（挂**真实 `VirtualList`**，页面自己跑「前插锚点 / 快速下滚 / 快速上滚」，
 结果用 Image 信标回传本地服务）。同一份页面、同一段代码、同一组数据：
@@ -256,14 +292,16 @@ post-flush 那一刻 spacer 仍是旧高度 ⇒ 新目标位置被 clamp 回旧�
 所以它只回答"VirtualList 的锚定/空白/帧时间在两个引擎上是否一致"，不替代 App 内会话切换的真机读数。
 真机格（A8，App 内 WKWebView + 真实会话切换）仍未取到读数。
 
-**让 WKWebView 这一格可以自动化（2026-10-27 现测 + 已写成一条命令）**：
-`node perf/wk-a8.mjs` —— 起 vite（5398）→ 起 safaridriver（4460）→ 开 W3C 会话 → 打开 `perf/wk-check.html`
-→ 收页面用 Image 回传的读数 → 打印三格判据 → 关会话。唯一前置是
-**Safari → 设置 → 开发者 → 勾「允许远程自动化」**（开发者分区没出现时先勾 设置 → 高级 → 显示网页开发者功能）。
-没勾时脚本按 **exit 2（环境不具备，不是通过）** 退出并原样打出那句提示；端口被占也 exit 2，**不换端口接着跑**。
-自证过两条：① 未勾时确实退 2 且 `5398/5401/4460` 三个端口都收干净；② 端口被占时确实拦下（正控）。
-判据三格：前插锚点 `keptKey===true`、下滚/上滚 `blankFrames===0`；并且**必须** `engine.safari===true`，
-否则 exit 2（跑到 Chromium 上的读数不能当 WKWebView 用）。
+**WKWebView 那一格现在能自动跑（2026-10-27 晚，`node perf/wk-a8.mjs`）**：不再需要 Inspector、不需要
+「允许远程自动化」、也不需要人点。做法是 `perf/wk-host.swift` 编一个小宿主（NSWindow + WKWebView，
+`.accessory` 不进 Dock），把 `perf/wk-check.html` 装进去 —— **跑的就是出货那个 WKWebView**，页面自己驱动、
+自己用 Image 信标回传。三条传输都留着：`wkwebview`（默认）/ `open`（Safari，受「仅限 HTTPS」影响）/ `webdriver`。
+判据只有**两格扫描**（下滚/上滚 `blankFrames===0`），正控是"摘掉 `rangeExtractor` 的缓冲 ⇒ 25/26 帧空白"。
+**锚点格不判**（正控证明它无分辨力，见 §12.1）。引擎身份必须 `AppleWebKit` + 厂商 Apple：
+WKWebView 的 UA 里没有 `Safari/` 段，所以 `safari` 会是 false、`wkwebview` 才是 true —— 两者不许混用。
+
+早期更麻烦的两条路（现已不需要）记在这里备查：`safaridriver` 要人在 Safari 设置里勾一次「允许远程自动化」；
+Safari 开了「仅限 HTTPS」后 `http://127.0.0.1` 会被 `WebKitErrorDomain:305` 拦掉。
 
 ## 13. 资源不持续增长（`PERF_ONLY=mem`，2026-10-27 在 5.14.8 上现跑）
 
@@ -323,9 +361,10 @@ layout/style 计数与空带持续时间代替）。**只剩第 9 项的 Windows
    引擎侧 layout/style 计数（怀疑重排时再跑，不必每轮进网）。
 4. **最小风险的第一项产品码修复**：④ 的谓词——`if (pinned) return false` 改成"只在收敛窗口内 return false"，
    3 行、可单点回退、且有正控格（"真贴底仍会跟"）守着。
-5. **WKWebView 接不上时的调整**：已经发生过一半并解决——引擎层用 `perf/wk-check.html` 直接挂真 `VirtualList` 在 Safari 跑通。
-   App 内那一格（A8）的调整方案：先用 Chromium 挂真 `ChatWindow` 的 `scrollswitch/scrollhist` 兜住"应用层没有额外破坏"，
-   **不**把 WKWebView 的 App 内帧级读数记成通过——它等「允许远程自动化」或人工 Inspect 一次。
+5. **WKWebView 接不上时的调整**：最后走的是"自己写宿主"这条路——`perf/wk-host.swift` 起一个真 WKWebView
+   （出货那个渲染器）跑 `perf/wk-check.html`，`node perf/wk-a8.mjs` 一条命令出数，不需要任何授权。
+   剩下的缺口只有 **App 内**（真 `ChatWindow` + 真库 + 真进程）那一层：它仍要靠 Chromium 上挂真 `ChatWindow` 的
+   `scrollswitch/scrollhist` 兜"应用层没额外破坏"，**不**把 WKWebView 的 App 内读数记成通过。
 6. **最易破坏既有行为的修复**：④ 的谓词收窄（会改写 `scrollreact/scrollshake` 里"容差内跟高"的若干格）与
    ③ 的重发（多写一次 `scrollTop`）。守它们的正是那两组正控格；10 段 718/718 就是这条防线现在的读数。
 7. **最重要的未知项**：**Windows（WebView2 + 离散滚轮）整列**——零读数，且输入模型与 macOS 不同。

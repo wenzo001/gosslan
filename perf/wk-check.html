@@ -33,6 +33,29 @@
       const head = document.getElementById("wk-head");
       const say = (s) => { head.textContent = s; console.log(s); };
 
+      // 阶段标记 + 回传口。**看门狗**：WebKit 的后台标签会把 rAF 降频到秒级甚至停住，
+      // 于是"页面跑没跑、跑到哪一步"只能靠页面自己说 —— 25s 还没跑完就先回传一次部分读数，
+      // 让超时变成可诊断的（`partial:true` + `stage` + 可见性），而不是外面干等 150s。
+      let stage = "挂载前";
+      const engineId = () => ({
+        ua: navigator.userAgent.slice(0, 120),
+        vendor: navigator.vendor,
+        webkit: typeof window.webkit !== "undefined",
+        safari: /Safari\//.test(navigator.userAgent) && !/Chrome\//.test(navigator.userAgent),
+        // WKWebView 的 UA 里**没有** `Safari/` 段（所以 safari 会是 false）——这两者要分开认，
+        // 否则"在 WKWebView 里跑出来的读数"会被判成"不是 WebKit"。
+        wkwebview: /AppleWebKit\//.test(navigator.userAgent) && !/Safari\//.test(navigator.userAgent),
+      });
+      const send = (obj) => {
+        if (!report) return;
+        const img = new Image();
+        img.src = report + (report.includes("?") ? "&" : "?") + "r=" + encodeURIComponent(JSON.stringify(obj));
+      };
+      const wd = setTimeout(() => {
+        send({ partial: true, stage, engine: engineId(),
+          visibility: document.visibilityState, hidden: !!document.hidden });
+      }, 25000);
+
       function makeItems(from, n) {
         const out = [];
         for (let i = 0; i < n; i += 1) {
@@ -101,6 +124,7 @@
       }
 
       async function main() {
+        stage = "等挂载";
         await sleep(500); await nextTick(); await sleep(400);
         const el = scroller();
         if (!el) { say("失败：找不到滚动容器"); return; }
@@ -109,9 +133,10 @@
         const canScroll = el.scrollHeight > el.clientHeight + 200;
         const rows = el.querySelectorAll("[data-vlist-key]").length;
         say(`自检：可滚=${canScroll} 渲染行=${rows}`);
-        if (!canScroll || rows < 3) { say("自检不成立 ⇒ 不采数"); return; }
+        if (!canScroll || rows < 3) { say("自检不成立 ⇒ 不采数"); send({ partial: true, stage: "自检不成立", engine: engineId() }); return; }
 
         // A. 前插锚点（③）：停在中间 → 记上沿行 → 前插 100 条 → 等落定 → 再看同一行
+        stage = "A 前插锚点";
         el.scrollTop = Math.floor((el.scrollHeight - el.clientHeight) * 0.45);
         await sleep(500); await frame();
         const before = topRow(el);
@@ -127,6 +152,7 @@
 
         // B/C. 快速下滚 / 上滚：每帧 250px，40 帧，数空白带与帧间隔
         async function sweep(dir) {
+          stage = dir > 0 ? "B 下滚" : "C 上滚";
           const s = scroller();
           s.scrollTop = dir > 0 ? Math.floor((s.scrollHeight - s.clientHeight) * 0.25)
                                 : Math.floor((s.scrollHeight - s.clientHeight) * 0.75);
@@ -135,6 +161,7 @@
           for (let i = 0; i < 40; i += 1) {
             s.scrollTop = Math.max(0, s.scrollTop + dir * 250);
             await frame();
+            stage = (dir > 0 ? "B 下滚 " : "C 上滚 ") + (i + 1) + "/40";
             const b = covered(s);
             if (b > 1) { blank += 1; maxBlank = Math.max(maxBlank, b); }
             const now = performance.now(); gaps.push(now - last); last = now;
@@ -149,19 +176,12 @@
         const up = await sweep(-1);
 
         const out = {
-          engine: {
-            ua: navigator.userAgent.slice(0, 120),
-            vendor: navigator.vendor,
-            webkit: typeof window.webkit !== "undefined",
-            safari: /Safari\//.test(navigator.userAgent) && !/Chrome\//.test(navigator.userAgent),
-          },
+          engine: engineId(),
           rows: currentItems.value.length, A: a, down, up,
         };
         say("结果：" + JSON.stringify(out));
-        if (report) {
-          const img = new Image();
-          img.src = report + (report.includes("?") ? "&" : "?") + "r=" + encodeURIComponent(JSON.stringify(out));
-        }
+        clearTimeout(wd);
+        send(out);
       }
       main().catch((e) => say("异常：" + (e && e.message)));
     </script>
