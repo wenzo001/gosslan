@@ -119,15 +119,35 @@ elif [ "${GITHUB_ACTIONS:-}" = "true" ]; then
     echo "❌ 发布门禁需要 sha（GITHUB_SHA）才能查 Verify 结论" >&2
     exit 1
   fi
-  gate=$("$gh_bin" api "repos/$repo/actions/workflows/verify.yml/runs?head_sha=$sha&per_page=50" \
-    --jq '[.workflow_runs[] | select(.event == "push")] | sort_by(.created_at) | last | (.conclusion // .status)' \
-    2>/dev/null || true)
-  if [ "$gate" != "success" ]; then
-    echo "❌ 拒绝发布：commit $sha 的 Verify 结论是『${gate:-查不到}』（要求 success）。" >&2
-    echo "   先让 Verify 跑绿再打 tag；确认要跳过：GOSSLAN_SKIP_VERIFY_GATE=1" >&2
-    exit 1
-  fi
-  echo "Verify 已绿（sha=${sha}）⇒ 允许发布"
+  # 打 tag 时 Verify 与构建是**并发**起来的：构建要十几分钟，通常门禁早就绿了；
+  # 但刚推完就发版（或重跑）时它可能还在 queued/in_progress —— 这时**等**，不是立刻拒，
+  # 否则"门禁还没跑完"会被读成"门禁失败"。等不到才拒（fail closed）。
+  gate_attempts="${GOSSLAN_VERIFY_GATE_ATTEMPTS:-20}"   # 20 × 30s = 10min 上限
+  gate_sleep="${GOSSLAN_VERIFY_GATE_SLEEP:-30}"
+  attempt=0
+  while :; do
+    gate=$("$gh_bin" api "repos/$repo/actions/workflows/verify.yml/runs?head_sha=$sha&per_page=50" \
+      --jq '[.workflow_runs[] | select(.event == "push")] | sort_by(.created_at) | last | (.conclusion // .status)' \
+      2>/dev/null || true)
+    case "$gate" in
+      success)
+        echo "Verify 已绿（sha=${sha}）⇒ 允许发布"
+        break ;;
+      queued|in_progress|requested|waiting|"")
+        attempt=$((attempt + 1))
+        if [ "$attempt" -ge "$gate_attempts" ]; then
+          echo "❌ 拒绝发布：等了 ${attempt} 轮，commit $sha 的 Verify 仍是『${gate:-查不到}』。" >&2
+          echo "   先让 Verify 跑绿；确认要跳过：GOSSLAN_SKIP_VERIFY_GATE=1" >&2
+          exit 1
+        fi
+        echo "Verify 还没结论（${gate:-查不到}），${gate_sleep}s 后重试（${attempt}/${gate_attempts}）"
+        sleep "$gate_sleep" ;;
+      *)
+        echo "❌ 拒绝发布：commit $sha 的 Verify 结论是『${gate}』（要求 success）。" >&2
+        echo "   先让 Verify 跑绿再打 tag；确认要跳过：GOSSLAN_SKIP_VERIFY_GATE=1" >&2
+        exit 1 ;;
+    esac
+  done
 fi
 
 release_exists() { "$gh_bin" api "repos/$repo/releases/tags/$tag" >/dev/null 2>&1; }
