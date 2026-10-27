@@ -361,6 +361,7 @@ export default {
         "INV-P26", // 文件传输行的终态：本域 network/file/{receive,send,relay_push}.rs 是写入点，闸门那句 WHERE 在 persistence 的 db/file_transfer.rs
         "INV-P28", // 摘表与判据同一次持锁：判据 = network/file_tests.rs 里的 group_receive_atomicity_tests 那两条（单聊侧与群侧各一条）
         "INV-P34", // 慢活只许在阻塞线程池里跑：本域有 file/receive.rs 的续传哈希、file/group_receive.rs 与 file/send.rs 的收尾/发前哈希、file/relay_push.rs:67 的发送前哈希，4.40.9 起还有 file/ledger_backfill.rs 那份补账用的整份哈希（按格判据在 ledger_backfill_tests.rs）
+        "INV-P34a", // 一次系统调用级的元数据查询不是慢活：2026-10-27 的接收前卷余量预检（storage/disk_space.rs 的 statvfs / GetDiskFreeSpaceExW）留在 async 路径上；判据在 lib_source_view_tests.rs 的 inbound_space_preflight_tests
       ],
       activeHome: "src-tauri/src/network/file.rs",
       enforce: false,

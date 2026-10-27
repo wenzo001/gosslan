@@ -279,15 +279,27 @@ git diff --stat
 
 **仍未做（都写了为什么，不要误读成"漏了"）**
 
-- **P1 接收前磁盘余量预检**：未做。它要 `libc::statvfs`（unix）+ `windows-sys` 新命名空间，
-  且按本文件自己的口径得先给 INV-P34 补"一次 statvfs 算不算慢活"，还要带"读不到 ⇒ 放行"的反例格。
-  本轮没有 Windows 编译与真机盘满注入，做一半比不做更危险。**建议单开一批**，顺序：先归因（已完成
-  `code=SHA_MISMATCH`；盘满归因 `DISK_FULL` 仍未做）→ 再预检。
 - **P2 Android 后台保活**：未做，等第 7 节 ① 的产品口径（是否对外承诺"后台可收消息"）。
 - **P3 的"1:1 续传内容身份"判据**（拿 `content_transfers.cid` 与新 Offer 的 sha 比）：未做。
   它要动 `resume_receive` / Offer 臂，且需要"同 tid 异 cid 必整份重收"的表驱动用例；
   在发版前动续传路径，回归面大于收益。
 - **P5 设置搜索**：本文件自己建议暂不实现，维持。
 
-**结论**：本文件第 5 节的 1–6 项里，3（日志）、5（朗读）、6（README + 收藏判据）已落地；
-1 的"归因"只落了 SHA 那一半，盘满归类与 2（预检）未做；4（续传身份）未做。Android 待拍板。
+**后来补做的（2026-10-27 晚，另一批次）**
+
+| 编号 | 状态 | 落点 / 判据 |
+|---|---|---|
+| P1 归类（盘满那一半） | **已做** | `logging.rs::classify_write_failure`（ENOSPC 28 / Windows 112·3900 / 文本兜底 ⇒ 稳定码 `DISK_FULL`；权限不足**不**归类）；单聊 `file/receive.rs` 与群侧 `transport/group_file.rs` 两处写盘失败都归类 + 留 `code=DISK_FULL`；判据 `disk_full_is_classified_into_a_stable_code_and_others_are_not` |
+| P1 归类（群侧**补 reason**） | **已做** | 群文件此前**只**发 `message-status-changed`（气泡转 failed），完全不送原因；现在六个失败点各带原因，`is_stable_fail_code` 判"只有稳定码才上屏"（否则断链时每个在途群文件弹一次 toast = 噪音回归）；判据 `only_stable_fail_codes_reach_the_user` |
+| P1 归类（前端**可行动文案**） | **已做** | `src/utils/fileFailReason.ts`（码 → 中英文案）；跨语言契约对账用例（后端加码忘了改前端 ⇒ 界面显示裸码，用例红） |
+| P1 预检（`admit_inbound` 余量） | **已做** | `storage/disk_space.rs`（unix `statvfs` / Windows `GetDiskFreeSpaceExW`）+ `admit_inbound` 第三道闸 `code=RECV_DISK_SPACE_INSUFFICIENT`；三条纪律：读不到⇒放行、不替代写失败兜底、一次系统调用不是慢活（INV-P34a 已登记，含钩子与反向两段） |
+
+**预检这一批的诚实边界**：**Windows 那一半没有本地编译验证**（本机无 MSVC/MinGW
+交叉工具链，`cargo check --target x86_64-pc-windows-*` 两次都死在工具链缺失而不是
+本仓代码）⇒ 那一格只有 Windows CI 会验，**标为待验证**。为此把"卷根解析"抽成
+不依赖 Windows API 的纯函数，让 mac 上的单测也能钉住它 —— 落地时当场抓到一处真缺陷
+（`C:\` 被截成 `C:`，而 `GetDiskFreeSpaceExW` 只认 `C:\` ⇒ 预检恒"读不到"、
+形同没有这条闸）。真机盘满注入仍未做。
+
+**结论**：本文件第 5 节的 1–6 项里，1（归类 + 预检）、3（日志）、5（朗读）、
+6（README + 收藏判据）已落地；4（续传身份）未做。Android 待拍板。

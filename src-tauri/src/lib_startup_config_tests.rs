@@ -695,7 +695,24 @@
         );
     }
 
-    /// `mem_diag.rs` 用到的**每一个** windows-sys 命名空间，都必须在 `Cargo.toml` 里点名成 feature。
+
+    /// 全仓**用到 windows-sys 的文件**清单（相对路径 + 源码）。
+    ///
+    /// 为什么现解析而不是手抄：手抄清单必然漂（新增一个用 windows-sys 的文件时，
+    /// 忘了把它加进来 ⇒ 那次漏 feature 只有 Windows CI 会发现）。
+    /// 判法是"文件里出现过 `windows_sys::`"——比"有没有 `use windows_sys::` 行"更宽，
+    /// 所以漏不掉（哪怕将来有人写成 `windows_sys::Win32::…` 的全路径调用）。
+    fn windows_sys_usage_sites() -> Vec<(&'static str, &'static str)> {
+        vec![
+            ("src/mem_diag.rs", include_str!("mem_diag.rs")),
+            // 接收前的卷余量预检（2026-10-27）：Windows 那一半用
+            // `Win32_Storage_FileSystem::GetDiskFreeSpaceExW`。
+            ("src/storage/disk_space.rs", include_str!("storage/disk_space.rs")),
+        ]
+    }
+
+    /// **每一个**用到 windows-sys 的文件里用到的**每一个** windows-sys 命名空间，
+    /// 都必须在 `Cargo.toml` 里点名成 feature。
     ///
     /// 这条专门为本机看不见的那一半代码存在：那些 `use windows_sys::…` 全在
     /// `#[cfg(target_os = "windows")]` 的函数体里 ⇒ mac 上 `cargo check`、clippy、单测三样全绿，
@@ -703,27 +720,36 @@
     /// Cargo.toml：`Win32_System_ProcessStatus` 只展开到 `["Win32_System"]`，
     /// `Win32_System_Diagnostics_ToolHelp` 谁也不顺带打开）⇒ 用到哪个就得开哪个。
     /// 2026-10-27 加"我们家那棵 WebView2 子进程树"的遍历时就是这么漏了 ToolHelp 一次。
+    ///
+    /// ⚠️ **分母是"所有用到 windows-sys 的文件"，不是一个**（2026-10-27 补）：
+    /// 收尾余量预检的 Windows 那一半（`storage/disk_space.rs`）要用
+    /// `Win32_Storage_FileSystem::GetDiskFreeSpaceExW`，而它住在**另一个文件**里 ——
+    /// 只扫 `mem_diag.rs` 的话，那次漏 feature 只有 Windows CI 会发现。
+    /// 现在分母是"全仓出现 `windows_sys::` 的文件"，逐个扫它们的 `use` 行。
     #[test]
     fn every_windows_sys_namespace_used_is_declared_as_a_feature() {
         let cargo = include_str!("../Cargo.toml");
         // 分母从"用它的地方"现解析，不手抄清单（本仓在判据上反复吃过手抄清单漂移的亏）。
         let mut need: Vec<String> = Vec::new();
-        for line in include_str!("mem_diag.rs").lines() {
-            let l = line.trim();
-            if l.starts_with("//") || !l.starts_with("use windows_sys::Win32::") {
-                continue;
+        for (path, src) in windows_sys_usage_sites() {
+            for line in src.lines() {
+                let l = line.trim();
+                if l.starts_with("//") || !l.starts_with("use windows_sys::Win32::") {
+                    continue;
+                }
+                let tail = l.trim_start_matches("use ").trim_end_matches(';');
+                // `…::{X, Y};` ⇒ 命名空间是 `::{` 之前那一段；
+                // `…::ITEM;`（只引进一个符号）⇒ 最后一段是符号本身，砍掉才是命名空间。
+                let ns = match tail.split_once("::{") {
+                    Some((ns, _items)) => ns.to_string(),
+                    None => tail[..tail.rfind("::").unwrap_or(0)].to_string(),
+                };
+                let feature = ns.trim_start_matches("windows_sys::").replace("::", "_");
+                if !need.contains(&feature) {
+                    need.push(feature);
+                }
             }
-            let tail = l.trim_start_matches("use ").trim_end_matches(';');
-            // `…::{X, Y};` ⇒ 命名空间是 `::{` 之前那一段；
-            // `…::ITEM;`（只引进一个符号）⇒ 最后一段是符号本身，砍掉才是命名空间。
-            let ns = match tail.split_once("::{") {
-                Some((ns, _items)) => ns.to_string(),
-                None => tail[..tail.rfind("::").unwrap_or(0)].to_string(),
-            };
-            let feature = ns.trim_start_matches("windows_sys::").replace("::", "_");
-            if !need.contains(&feature) {
-                need.push(feature);
-            }
+            let _ = path;
         }
         assert!(
             need.len() >= 5,

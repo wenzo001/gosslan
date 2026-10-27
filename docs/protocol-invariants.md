@@ -1607,6 +1607,39 @@ mesh 没有服务器也没有强制升级 ⇒ 混合版本是常态，不是边�
 
 ---
 
+### INV-P34a — 一次系统调用级的元数据查询**不是**慢活（余量预检可以留在 async 路径）
+
+**这条为什么单开**：INV-P34 管的是"GB 级慢活"（整份哈希、整份 fsync、整份复制）——
+那些的耗时随文件大小线性长，放在 async 路径上会把 tokio worker 钉死。2026-10-27 的
+接收前**卷余量预检**（`storage/disk_space.rs`）要问一句"这个卷还装不装得下这一单"，
+它在 `admit_inbound` 里，而 `admit_inbound` 被 async 路径同步调用
+（`network/file/receive.rs`、`network/transport/{group_file,relay_file}.rs` 四条入口共用）。
+
+**口径（判据的事实依据，不是推测）**：那一次查询是**一次系统调用**
+（unix `statvfs` / Windows `GetDiskFreeSpaceExW`），量级是**微秒**，
+**不读文件内容、不做整份哈希、不 fsync、不随文件大小增长** ⇒ 不属于 INV-P34 管的
+"GB 级慢活"。它留在 async 路径上是安全的。
+
+⚠️ **反过来读这条才是重点**：如果哪天余量查询变成"遍历目录统计占用"或"读配额文件"，
+它就**立刻**变成慢活，必须搬进阻塞线程池并登记进 INV-P34 的家清单。
+判据（`tests::inbound_space_preflight_tests::inbound_admission_preflights_the_disk_space_with_the_right_folding`）
+钉住"预检调用的是 `verdict_for(`（一次系统调用）"，而不是任何目录遍历。
+
+**边界（如实写下，别当成已解决）**：本条只回答"允许留在 async 路径"，**不回答**
+"预检准不准"——余量是 TOCTOU（查完到写之间会变），所以写失败兜底
+（保留 `.part` + 台账 failed + 回 `Ack(false)`）必须原样保留，那才是最终防线。
+另：Windows 那一半在本机**编不出来**（`#[cfg(target_os = "windows")]`），
+只有 Windows CI 会验；本仓为此把"卷根解析"抽成**不依赖 Windows API 的纯函数**
+（`volume_root_of`），让 mac 上的单测也能钉住它（2026-10-27 落地时实测抓到过一次真缺陷：
+`C:\` 被截成 `C:`，而 `GetDiskFreeSpaceExW` 只认 `C:\` ⇒ 预检恒放行、形同没有）。
+
+- 钩子：`tests::inbound_space_preflight_tests::inbound_admission_preflights_the_disk_space_with_the_right_folding` `storage::disk_space::tests::space_verdict_folds_headroom_into_the_decision` `storage::disk_space::tests::volume_root_is_parsed_for_drive_and_unc_paths` `storage::disk_space::tests::available_bytes_is_readable_for_a_real_dir_and_none_for_a_missing_one`
+- 反向：把预检从 `admit_inbound` 里删掉 ⇒ 钩子第一条红；把「读不到 ⇒ 放行」拆成
+  独立分支（`Unknown => return Err(..)`）⇒ 同一条红（**误拒的代价远大于误放**：
+  权限受限的目录会永远收不下文件）；把水位从折叠里去掉（`available >= needed`）
+  ⇒ `space_verdict_folds_headroom_into_the_decision` 红（写满之后连 `.part` 都删不掉）；
+  把卷根解析改成 `C:`（少尾反斜杠）⇒ `volume_root_is_parsed_for_drive_and_unc_paths` 红。
+
 ### INV-P34 — 文件生命周期的 GB 级慢活只许在阻塞线程池里跑（不许钉住 tokio worker）
 
 **这条为什么单开一节**：它不是从理论来的，是从**同一个根因被修了三次、第四次一次收四家**来的 ——

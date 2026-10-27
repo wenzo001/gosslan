@@ -382,6 +382,16 @@ pub const MAX_CONCURRENT_RECEIVES: usize = 8;
 pub const MAX_INCOMING_FILE_BYTES: u64 = 8 * 1024 * 1024 * 1024;
 pub const MAX_INCOMING_TOTAL_BYTES: u64 = 16 * 1024 * 1024 * 1024;
 
+/// 接收前**卷余量预检**要额外留出的水位（字节）。
+///
+/// 为什么留水位：判据是"余量 ≥ 这一单的大小"，而恰好等于时会把卷写到 0 字节 ——
+/// 那时连 `.part` 的元数据、日志、本机数据库的写都放不进去，于是**这一单失败**、
+/// **别的活也跟着失败**。留 64 MiB 水位 ⇒ 收完这一单之后卷上仍有喘气的地方。
+///
+/// 为什么不是 0：0 意味着"刚好塞满"，而 Windows 与某些网络卷会在写满瞬间
+/// 拒绝**所有**写（包括删 `.part`），清理路径一起卡死。
+pub const INBOUND_SPACE_HEADROOM: u64 = 64 * 1024 * 1024;
+
 /// **未登记接收器**的 `.part` 保留总量上限（审计 SEC-05 的第二道闸）。
 ///
 /// 为什么单列这一项：断链时 `.part` 被刻意保留供续传，而接收器会从内存表里摘掉
@@ -510,6 +520,39 @@ pub(crate) fn admit_inbound<'a>(
             );
             state.logger.warn("file", msg.clone());
             return Err(msg);
+        }
+        // 第三道闸：**卷余量预检**（2026-10-27 审计 P1）。
+        //
+        // 前两道闸算的都是"对端声明的 size 之和"，与磁盘真实余量无关 ⇒ 满盘时
+        // 配额照样通过，然后逐片写、写到一半 ENOSPC、整单失败（用户看到一句
+        // 不可行动的英文）。这一道**事前**回绝：装不下就别开始传。
+        //
+        // 三条纪律（`storage/disk_space.rs` 的文件头有完整版）：
+        // ① **读不到 ⇒ 放行**（`Unknown`）—— 误拒的代价（永远收不下）远大于误放。
+        // ② 预检**不替代**写失败兜底（那套完整保留：`.part` + 台账 failed + 回 Ack(false)）。
+        // ③ 一次 `statvfs` 是**系统调用**（微秒级），不是 INV-P34 管的 GB 级慢活
+        //    ⇒ 允许留在 async 路径上（该 INV 的"边界"段已登记这条口径）。
+        let dl = state
+            .downloads_dir
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone();
+        match crate::storage::disk_space::verdict_for(
+            &dl,
+            size,
+            INBOUND_SPACE_HEADROOM,
+        ) {
+            crate::storage::disk_space::SpaceVerdict::Enough
+            | crate::storage::disk_space::SpaceVerdict::Unknown => {}
+            crate::storage::disk_space::SpaceVerdict::NotEnough { available, needed } => {
+                let msg = format!(
+                    "code=RECV_DISK_SPACE_INSUFFICIENT transfer={transfer_id} peer={peer_id} \
+                     size={needed} available={available} headroom={INBOUND_SPACE_HEADROOM} \
+                     —— 磁盘空间不足，请释放空间后重试"
+                );
+                state.logger.warn("file", msg.clone());
+                return Err(msg);
+            }
         }
     }
     Ok(InboundAdmission { _guard: guard })

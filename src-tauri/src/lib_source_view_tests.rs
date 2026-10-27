@@ -441,3 +441,72 @@ fn frame_reader_does_not_preallocate_the_declared_length() {
         "必须按实际到达的数据增量读取（take + read_to_end）"
     );
 }
+
+/// ---------------- 接收前的卷余量预检（2026-10-27 审计 P1） ----------------
+///
+/// 放在这个模块里而不是 `network/file_tests.rs`，是因为它要用下面那两个
+/// 源码形状辅助函数（`rust_fn_body` / `code_flat`）—— 它们是**模块私有**的，
+/// `network::file` 那个模块看不到（跨模块取不到 private fn）。
+#[cfg(test)]
+mod inbound_space_preflight_tests {
+    use super::{code_flat, rust_fn_body};
+
+    /// 接收前的**卷余量预检**必须接在准入闸里（`admit_inbound`），且三条纪律逐条钉住。
+    ///
+    /// 背景（2026-10-27 审计 P1）：入站配额算的是"对端声明的 size 之和"，与磁盘真实
+    /// 余量无关 ⇒ 满盘时配额照样通过，然后逐片写、写到一半 ENOSPC、整单失败。
+    ///
+    /// 这条是**形状判据**：判的是"预检接在哪、怎么折叠"，不是某个具体数值。
+    /// 反面对照：把预检那段从 `admit_inbound` 里删掉 ⇒ 本用例必须红。
+    #[test]
+    fn inbound_admission_preflights_the_disk_space_with_the_right_folding() {
+        let recv = include_str!("network/file/receive.rs");
+        let body = code_flat(&rust_fn_body(recv, "pub(crate) fn admit_inbound"));
+
+        // ① 预检接在准入闸里（不在别处）：判据是 `admit_inbound` 的函数体内出现那次查询。
+        assert!(
+            body.contains("verdict_for("),
+            "admit_inbound 里必须有卷余量预检（写在别处 ⇒ 别的入口绕过了它）"
+        );
+        // ② 三态：读不到 ⇒ 放行。`Unknown` 与 `Enough` 必须**同一个分支**（一起放行）。
+        assert!(
+            body.contains("SpaceVerdict::Enough") && body.contains("SpaceVerdict::Unknown"),
+            "预检必须区分『够』与『读不到』两态（读不到 ⇒ 放行，误拒的代价远大于误放）"
+        );
+        // 「读不到 ⇒ 放行」必须写成**同一个 match 分支**（`Enough | Unknown => {}`），
+        // 而不是两个独立分支 —— 后者给「读不到」留了偷偷改成拒绝的口子。
+        // 判法：数 `SpaceVerdict::` 出现在**分支头上**的次数，并要求 Enough 与 Unknown
+        // 挨在一起（中间只隔一个 `|`）。分开写（`Enough => {}` 后面另起 `Unknown =>`）
+        // 就会让这一格红。
+        let branch_heads = body.matches("SpaceVerdict::").count();
+        assert!(
+            branch_heads >= 3,
+            "预检的 match 分支数不对（{branch_heads}）⇒ 判据自己失效了"
+        );
+        // 判据按**完整路径**匹配（源码里写的是 `crate::storage::disk_space::SpaceVerdict::X`，
+        // 短名匹配不到 ⇒ 判据空转）。两个方向都接受（`| ` 的左右次序由 rustfmt 决定）。
+        let enough = "crate::storage::disk_space::SpaceVerdict::Enough";
+        let unknown = "crate::storage::disk_space::SpaceVerdict::Unknown";
+        assert!(
+            body.contains(&format!("{enough}|{unknown}=>{{}}"))
+                || body.contains(&format!("{unknown}|{enough}=>{{}}")),
+            "『读不到』必须与『够』落在同一个 match 分支（分开写 ⇒ 读不到可能被改成拒绝，\
+             而误拒的代价远大于误放：权限受限的目录会永远收不下文件）"
+        );
+        // ③ 拒绝分支必须留可检索痕迹：码 + 哪一个 transfer + 余量读数。
+        assert!(
+            body.contains("RECV_DISK_SPACE_INSUFFICIENT"),
+            "预检拒绝必须留可检索的码（排障时要能搜到这一条）"
+        );
+        assert!(
+            body.contains("available={available}") && body.contains("size={needed}"),
+            "预检拒绝必须带余量读数（available/needed）"
+        );
+        // ④ 预检**不替代**写失败兜底：那条兜底（保留 .part + 台账 failed + 回 Ack(false)）
+        //    必须还在 —— 预检本质是 TOCTOU（查完到写之间余量会变）。
+        assert!(
+            recv.contains("write_all(&plaintext)"),
+            "写盘兜底必须仍在（预检是 TOCTOU，替代不了它）"
+        );
+    }
+}

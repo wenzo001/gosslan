@@ -13,6 +13,44 @@
 
 ## [Unreleased]
 
+## [5.14.18] - 2026-10-27
+
+### 接收前卷余量预检：磁盘装不下就事前回绝，别写到一半才 ENOSPC（2026-10-27）
+
+- **为什么**：入站配额算的是"对端声明的 size 之和"，与磁盘**真实余量**无关 ⇒ 满盘时
+  配额照样通过，然后逐片写、写到一半 ENOSPC、整单失败（用户看到一句不可行动的英文）。
+- **新模块**（`src-tauri/src/storage/disk_space.rs`）：unix 用 `libc::statvfs`、
+  Windows 用 `windows-sys` 的 `GetDiskFreeSpaceExW`；读的是**当前用户可用**量
+  （`f_bavail` / `freeBytesAvailableToCaller`），不是"总量减已用"。
+  ⚠️ **块大小字段在 unix 内部不是一个东西**：Linux/Android 取 `f_frsize`，
+  macOS/BSD 只有 `f_bsize`（那里它才是块大小）⇒ 写错会静默算错好几倍。
+- **接线**（`network/file/receive.rs` 的 `admit_inbound`）：作为第三道闸，
+  与配额判定同一把闸内；不足则回 `code=RECV_DISK_SPACE_INSUFFICIENT`（带
+  transfer/peer/size/available 读数）。
+- **三条纪律**（写在模块文件头 + INV-P34a）：
+  ① **读不到 ⇒ 放行**（`Unknown` 是独立一态，折成两态就会把"读不到"当成"不够"，
+     于是权限受限的目录永远收不下文件 —— 误拒的代价远大于误放）；
+  ② 预检**不替代**写失败兜底（TOCTOU：查完到写之间余量会变）；
+  ③ 一次 `statvfs` 是**系统调用**（微秒级），不是 INV-P34 管的 GB 级慢活 ⇒ 可留 async 路径。
+- **水位**（64 MiB）：余量恰好等于这一单时**拒绝**（写满之后连 `.part` 都删不掉，
+  Windows 与部分网络卷会拒绝所有写，清理路径一起卡死）。
+- **Windows 那一半本机编不出来**（`#[cfg(target_os = "windows")]`）⇒ 把"卷根解析"
+  抽成**不依赖 Windows API 的纯函数**（`volume_root_of`），mac 上的单测就能钉住它。
+  落地时**当场抓到一处真缺陷**：`C:\` 被截成 `C:`，而 `GetDiskFreeSpaceExW` 只认 `C:\`
+  ⇒ 预检恒"读不到" ⇒ 形同没有这条闸。
+- **护栏**：windows-sys 命名空间那条的分母从"只扫 `mem_diag.rs`"扩到"所有用到
+  windows-sys 的文件"（新代码在另一个文件里，只扫旧的会漏）；INV-P34a 登记含钩子与反向两段。
+
+- 验证：`cargo test --lib --features bluetooth` 1255/0/1；`npm test` 1438/0；
+  `cargo clippy --all-targets -D warnings`、`cargo fmt --check` 退 0；
+  check-domain-map / domain-deps / doc-numbers / doc-citations / lock-scope /
+  import-cycles / panic-sites 全过。
+- **非空转已逐条证明**：删掉预检 ⇒ 接线判据红；把"读不到"拆成独立拒绝分支 ⇒ 同一条红；
+  去掉水位 ⇒ 折叠方向判据红；把 `C:\` 改成 `C:` ⇒ 卷根解析判据红；
+  从 Cargo.toml 去掉 `Win32_Storage_FileSystem` ⇒ 命名空间护栏红。
+- **未验证**：Windows 那一半**没有本地编译验证**（本机无 MSVC/MinGW 交叉工具链），
+  只有 Windows CI 会验 —— 这一格如实标为待验证。
+
 ## [5.14.17] - 2026-10-27
 
 ### 盘满归类 + 可行动文案：失败不再只是一句英文 io 消息（2026-10-27）

@@ -1,6 +1,6 @@
 [package]
 name = "gosslan"
-version = "5.14.17"
+version = "5.14.18"
 description = "Gosslan — 无服务器 P2P 局域网即时通讯"
 authors = ["wd.f"]
 edition = "2021"
@@ -115,8 +115,12 @@ clipboard-win = "5"
 # 那段代码在 `#[cfg(target_os = "windows")]` 里，**mac 上编译与门禁全看不见**，
 # 只有 Windows CI 会红（本仓的跨平台 cfg 盲区老形状，`lib_startup_config_tests.rs`
 # 的 `every_windows_sys_namespace_used_is_declared_as_a_feature` 现在把它钉住了）。
+#
+# `Win32_Storage_FileSystem` 是 2026-10-27 为"接收前查卷余量"（`storage/disk_space.rs`）
+# 加的：`GetDiskFreeSpaceExW` 住在那里。同样没有传递关系，必须显式点名。
 windows-sys = { version = "0.61", features = [
     "Win32_Foundation",
+    "Win32_Storage_FileSystem",
     "Win32_System_ProcessStatus",
     "Win32_System_SystemInformation",
     "Win32_System_Threading",
@@ -150,10 +154,6 @@ windows-future = { version = "0.3", optional = true }
 # layer 设 cornerRadius（公开 API），并关掉与圆角不兼容的系统阴影。
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2 = "0.6"
-# 崩溃现场的内存读数（`mem_diag.rs`）：darwin 上 `getrusage(RUSAGE_SELF).ru_maxrss` 是
-# **唯一不用 mach 端口、也不用 fork 命令**就能拿到的读数。`libc` 0.2.189 早就在
-# `Cargo.lock` 里被别的依赖用着 ⇒ 这里不新增要下载的 crate，只是我们自己声明一次。
-libc = "0.2"
 objc2-app-kit = { version = "0.3", features = ["NSWorkspace", "NSWindow", "NSView", "objc2-quartz-core"] }
 # NSData/NSArray/NSError 是 security-scoped bookmark（共享目录跨重启保活）的必需 feature：
 # objc2-foundation 的 feature 就是类名，书签 API 的 cfg 门要求它们同时打开。
@@ -174,6 +174,22 @@ objc2-core-bluetooth = { version = "0.3", optional = true }
 # 交给别的应用，见 OpenWith.kt）。非 Android 目标不会编译本依赖。
 [target.'cfg(target_os = "android")'.dependencies]
 jni = { version = "0.22" }
+
+# unix 通用（macOS / Linux / Android）：`libc` 里的 `statvfs`。
+#
+# 两处用到它，各有各的理由：
+# · `mem_diag.rs`：darwin 上 `getrusage(RUSAGE_SELF).ru_maxrss` 是**唯一不用 mach 端口、
+#   也不用 fork 命令**就能拿到的读数。
+# · `storage/disk_space.rs`：查目标卷的**可用**字节数（接收前预检，见该文件头的三条纪律）。
+#
+# ⚠️ **不是新依赖**：`libc` 0.2.189 早就在 `Cargo.lock` 里被别的依赖用着 ⇒ 这里只是
+# 我们自己声明一次，不新增要下载的 crate。
+#
+# ⚠️ 为什么从 macOS 段挪到这里：原来它只在 `[target.'cfg(target_os = "macos")']` 里，
+# 而 `statvfs` 是 unix 通用 API —— Linux 与 Android 的构建会**编不过**。
+# macOS 是 unix 的子集 ⇒ 一处声明覆盖三家，不重复。
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
 
 [dev-dependencies]
 # 测试夹具的临时目录：drop 即清理，避免手写 `temp_dir().join(format!("…pid…nanos"))`。
