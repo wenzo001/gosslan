@@ -205,10 +205,10 @@ const virtualizer = useVirtualizer(
         // 这一帧就是贴着底的。交给 `schedulePin`（rAF）会晚一帧 —— scrollreact 实测
         // 首帧 gap 40px（用户看到的就是"加表情先掉一下再弹回"）。
         // 只跟总高度增量，不重写 scrollHeight：Vue 还没把新总高 patch 上去。
+        const el = container.value;
         if (pinned && !recentScrollUp() && Date.now() >= pinHoldUntil) {
           const oldSize = typeof prev === "number" ? prev : props.estimateHeight(props.items[index], index);
           const delta = rounded - oldSize;
-          const el = container.value;
           // 新追加、且完全在视口下方的行：它的高度变化还没进入“用户看到的底部”，
           // 先补 scrollTop 会把视口往上拽 39px，随后 append 的贴底再把它推回去 ⇒ 一帧闪烁。
           // 贴底跟随由 append 的贴底负责；这里只补视口内/上方的行。
@@ -289,13 +289,21 @@ virtualizer.value.shouldAdjustScrollPositionOnItemSizeChange = (
   _delta: number,
   inst: Virtualizer<HTMLElement, HTMLElement>,
 ) => {
-  // 贴底由 measureElement 的同步增量负责（避免和库各写一次）。
-  if (pinned) return false;
   const offset = inst.scrollOffset ?? 0;
-  // **整行完全在视口上方**才补：这是"读着读着，上面一张图变高/变矮"的正解。
-  // 首次测量也走同一条判据（库的默认是 `item.start < offset`，会把跨上沿的**锚点行**
-  // 自己也补一笔 —— 它的顶端没变，补了只会把锚点往下推；2026-10-26 实测 29px）。
-  // 不能再加 `recentScrollUp()` 一票否决 —— 上翻时上方行变高同样会把正在读的内容推走。
+  // **收敛窗口内**（切会话/整表替换的测量风暴）仍由应用独占贴底：那一阵会有几十条行同时改高，
+  // 库逐条补偿会写出方向反转（`vlist` 的"切换会话后滚动位置收敛"就是抓这个的）。
+  // 窗口外：完全在视口上方的行**一律补**（防浏览器把 scrollTop 夹到新最大值 —— 见下）。
+  if (Date.now() < pinHoldUntil) return false;
+  // **整行完全在视口上方** ⇒ 一律补，**贴底与否都补**（2026-10-27 实测修正）。
+  //
+  // 旧版在这里 `if (pinned) return false;`，把补偿全交给 `measureElement` 的同步跟写。
+  // 但那条只跟"视口内/上方增长"，收缩时只补"整行在视口上方"……而一旦 `pinned` 为真，
+  // 这条判据**也不再被调用** ⇒ 上方行收缩时两条路都不补，于是浏览器把 scrollTop 夹到新的
+  // 最大值：用户停在离底 60px，内容收缩 84px ⇒ 直接被夹到底部（实测 gapAtSet 60 → gapPre 0，
+  // 且静置期**零 JS 写入**，纯 clamp）。这正是用户报的"停稳后自己跳回底部"。
+  // 其余情况（跨上沿/视口内/下方）仍交给 `measureElement` 的同步跟写：
+  //   · 贴底：增长跟底、收缩只补整行在上方；
+  //   · 非贴底：不动。
   return item.start + item.size <= offset;
 };
 
@@ -540,6 +548,7 @@ function scrollToIndex(index: number, align: "top" | "bottom" = "top") {
 
 // ---------------- 数据变化 ----------------
 let prevEdges: { first: string; last: string } | null = null;
+
 /** 上一次 items 变化时属于哪个会话（切会话检测，见 `conversationKey`）。 */
 let prevItemsConv: string | null = null;
 /** 上一次用于判"布局宽度变了"的 clientWidth；首帧初始化，滚动条出现/消失（~15px）不算。 */
@@ -586,7 +595,14 @@ function onItemsChanged() {
     resetBuffer();
     programmaticTop = true;
     lastScrollUpAt = 0;
-    if (props.autoScrollOnSwap) armSettleHold();
+    if (props.autoScrollOnSwap) {
+      // **同帧落位**（2026-10-27 实测修正）：`onItemsChanged` 是 post-flush —— 此刻 DOM 已经是
+      // 新会话、但还没绘制，所以这一次写就落在用户看到的第一帧上。旧版只 `armSettleHold()`，
+      // 把落位留给 ~120ms 后的收口，于是第一帧仍停在上一条会话的位置，随后跨帧跳到新会话底部
+      // （探针实测跨帧跳 356px / 291px，正是用户报的"切换时闪一下"）。
+      scrollToBottom();
+      armSettleHold();
+    }
     return;
   }
 
@@ -595,6 +611,7 @@ function onItemsChanged() {
   // 已在底部的会话由 `watch(totalSize)` → `schedulePin()` 跟随（pinned 仍为真）。
   // 这里只留一条"同会话整替换需要顺延收敛窗口"的防御：测量风暴期间不要逐次贴底。
   if (change.kind === "swap" && Date.now() < pinHoldHardUntil) armSettleHold();
+
 }
 
 // **pre-flush** 先立收敛窗口：`onItemsChanged` 是 post，而 `watch(totalSize)` 在渲染期就会跑；
