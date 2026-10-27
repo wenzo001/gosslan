@@ -81,6 +81,41 @@ const ONLY = argv.find((a) => a.startsWith("--only="))?.slice("--only=".length) 
 const SELF_CHECK = argv.includes("--self-check");
 /** `--shot=/tmp/x.png` 时顺手存一张会话行的真图（§10 的后半句要肉眼判）。不给就一字不动。 */
 const SHOT_PATH = argv.find((a) => a.startsWith("--shot="))?.slice("--shot=".length) ?? "";
+
+/**
+ * `--only=` 的**段名校验**（2026-10-27）。
+ *
+ * 为什么必须有：`want()` 只做字符串匹配、不校验名字是否存在，而终局退码是
+ * `results.every(r => r.ok)` —— **空数组的 `.every` 为真**。于是 `--only=scrollshak`
+ * （少一个 e）会起完 vite + 浏览器、一段都不跑、打印「✅ 0/0 条判据绿」、退 0。
+ * 本仓已经在 `--only=` 上栽过一次（:102 那句"逐段试了四趟才圈到 overlay"），
+ * 所以这里 fail-closed：名字不认识 ⇒ **在起任何进程之前**退 2，并把合法名字打出来。
+ *
+ * 合法名字**从本文件现解析**，不手抄清单（手抄的清单会漂，本仓有专门纪律）：
+ * `want(…)` 是段名唯一登记入口，新增一段自动进来。再设一个**下限**防止提取器自己坏了
+ * 把分母读成 0 —— 提取失败与"没有段"必须分得开。
+ * ⚠️ 这条注释本身不写 `want` 的字面调用形状：提取器会读注释（本仓已踩过这条）。
+ */
+const KNOWN_SEGMENTS = (() => {
+  const self = fs.readFileSync(fileURLToPath(import.meta.url), "utf8");
+  const names = new Set();
+  for (const m of self.matchAll(/want\("([A-Za-z0-9_-]+)"\)/g)) names.add(m[1]);
+  return names;
+})();
+const MIN_KNOWN_SEGMENTS = 50;
+if (KNOWN_SEGMENTS.size < MIN_KNOWN_SEGMENTS) {
+  console.error(`✗ 段名提取器失效：只解析出 ${KNOWN_SEGMENTS.size} 个段名（下限 ${MIN_KNOWN_SEGMENTS}）。`);
+  console.error("  这不是「没有段」，是分母读空了 ⇒ 先修提取器，别把这一趟当绿。");
+  process.exit(2);
+}
+const requestedSegments = ONLY ? ONLY.split(",").map((s) => s.trim()).filter(Boolean) : [];
+const unknownSegments = requestedSegments.filter((n) => !KNOWN_SEGMENTS.has(n));
+if (unknownSegments.length > 0) {
+  console.error(`✗ --only 里有不认识的段名：${unknownSegments.join(", ")}`);
+  console.error(`  合法段名（${KNOWN_SEGMENTS.size} 个）：${[...KNOWN_SEGMENTS].sort().join(", ")}`);
+  console.error("  退 2：一个段都不会跑，所以这不是绿。");
+  process.exit(2);
+}
 const VITE_PORT = Number(process.env.GOSSLAN_PROBE_PORT || 5199);
 const CDP_PORT = Number(process.env.GOSSLAN_PROBE_CDP || 9444);
 /**
@@ -97,19 +132,44 @@ const nowMs = () => Date.now();
 // ── 断言账本（终局由台账推导，不看"有没有抛异常"）──────────────────
 const results = [];
 /**
+ * 这一趟**真要跑**的段（`want()` 命中即登记）。汇总行必须印出来：
+ * 没有它时，"选错名字 ⇒ 0/0 条判据绿 ⇒ 退 0"这一格只能靠人眼发现。
+ */
+const RAN_SEGMENTS = [];
+/**
  * 最后一条**已记录**的判据（序号 + 名字前缀）。
  * 为什么要有它：一次 CDP 调用不回包时，旧版只能报"没回包"，谁死在哪一段全靠人复跑二分
  * （2026-10-20 归因全量探针卡死就是这么查的：`--only=` 逐段试了四趟才圈到 overlay）。
  * 判据名字每条都带自己的段标记（`A …`／`左列：…`／`[B] …`），所以"最后一条"就够定位到格。
  */
 let lastCellMark = "(一条判据都还没记录)";
-function check(name, pass, expect, actual) {
-  const ok = pass === true;
-  results.push({ name, ok, expect, actual });
+/**
+ * 判据四态（2026-10-27）：
+ *   PASS / FAIL —— `check()` 记；
+ *   UNSUPPORTED —— 这台机器/这个内核没有该能力（例如 headless 量不到动画）；
+ *   UNKNOWN     —— 采到了，但归因不确定（例如"这次 scrollTop 变化没人能认领"）。
+ * 后两态**都算红**（沿用文件头"缺件是红，不是跳过"），但分开记账：汇总能把
+ * "判据不成立"与"这台机器做不到"分开印出来，免得两者都被读成同一个 ❌。
+ * 它们也绝不算绿 —— 这正是本仓最容易被绕开的那种假绿。
+ */
+const STATE_COUNTS = { PASS: 0, FAIL: 0, UNSUPPORTED: 0, UNKNOWN: 0 };
+function recordCheck(name, state, expect, actual) {
+  const ok = state === "PASS";
+  STATE_COUNTS[state] += 1;
+  results.push({ name, ok, state, expect, actual });
   lastCellMark = `第 ${results.length} 格《${String(name).slice(0, 46)}》`;
-  console.log(`  ${ok ? "✅" : "❌"} ${name}`);
+  console.log(`  ${ok ? "✅" : "❌"} ${state === "PASS" || state === "FAIL" ? "" : `[${state}] `}${name}`);
   if (!ok) console.log(`      预期 ${JSON.stringify(expect)} / 实际 ${JSON.stringify(actual)}`);
   return ok;
+}
+function check(name, pass, expect, actual) {
+  return recordCheck(name, pass === true ? "PASS" : "FAIL", expect, actual);
+}
+function checkState(name, state, expect, actual) {
+  if (state !== "UNSUPPORTED" && state !== "UNKNOWN") {
+    throw new Error(`checkState 只接受 UNSUPPORTED/UNKNOWN，收到 ${String(state)}`);
+  }
+  return recordCheck(name, state, expect, actual);
 }
 
 /**
@@ -2925,8 +2985,18 @@ async function main() {
      */
     const noSandbox = process.env.GOSSLAN_PROBE_NO_SANDBOX === "1";
     if (noSandbox) console.log("· 启动参数：--no-sandbox（GOSSLAN_PROBE_NO_SANDBOX=1；宿主 sandbox 初始化失败时用）");
+    /**
+     * headed 开关（2026-10-27，`GOSSLAN_PROBE_HEADLESS=0`）。
+     * 为什么需要：headless 的合成帧不推动画时钟 ⇒ `transition-opacity` / `animate-pulse` 读到的
+     * computed 值会**停在起点**（本仓 :1161-1164 已记，当时的绕法是冻掉 transition 只判级联规则）。
+     * 但"切会话白一下"这类症状恰恰要量**真实可见性**，所以必须有一条能开窗口的路。
+     * 顺带修掉两处已知失真：headless 的 `visibilityState="hidden"`（:5271）与经典滚动条宽度
+     * （macOS overlay=0 / headless=正数，:1062/:4918）。
+     */
+    const headless = process.env.GOSSLAN_PROBE_HEADLESS !== "0";
+    if (!headless) console.log("· 启动参数：headed（GOSSLAN_PROBE_HEADLESS=0）—— 可量真实动画，但会弹窗口");
     const p = spawn(chrome, [
-      "--headless=new",
+      ...(headless ? ["--headless=new"] : ["--window-size=1200,900"]),
       ...(noSandbox ? ["--no-sandbox"] : []),
       `--remote-debugging-port=${CDP_PORT}`, `--user-data-dir=${profile}`,
       "--no-first-run", "--no-default-browser-check", "--disable-gpu", "about:blank",
@@ -2987,7 +3057,11 @@ async function main() {
 
     // `--only=roster` 跑一段，`--only=reaction,roster` 跑**相邻几段** —— 用来把
     // "单独跑是绿的、整段顺序跑是红的"这类串味红二分出到底是谁污染了谁。
-    const want = (name) => !ONLY || ONLY.split(",").includes(name);
+    const want = (name) => {
+      const on = !ONLY || ONLY.split(",").includes(name);
+      if (on && !RAN_SEGMENTS.includes(name)) RAN_SEGMENTS.push(name);
+      return on;
+    };
     const emoji = want("emoji");
     const search = want("search");
     const ctxmenu = want("ctxmenu");
@@ -3013,6 +3087,9 @@ async function main() {
     const pinkb = want("pinkb");
     const scrollrestore = want("scrollrestore");
     const scrollshake = want("scrollshake");
+    const scrollhist = want("scrollhist");
+    const scrollswitch = want("scrollswitch");
+    const scrollinput = want("scrollinput");
     const todosync = want("todosync");
     const taskpaste = want("taskpaste");
     const modaltitle = want("modaltitle");
@@ -3080,6 +3157,9 @@ async function main() {
     if (pinkb) await runPinKeyboard(cdp, url);
     if (scrollrestore) await runScrollRestore(cdp, url);
     if (scrollshake) await runScrollShake(cdp, url);
+    if (scrollhist) await runScrollHist(cdp, url);
+    if (scrollswitch) await runScrollSwitch(cdp, url);
+    if (scrollinput) await runScrollInput(cdp, url);
     if (todosync) await runTodoSync(cdp, url);
     if (taskpaste) await runTaskPaste(cdp, url);
     if (modaltitle) await runModalTitle(cdp, url);
@@ -3118,14 +3198,24 @@ async function main() {
     if (touchroster) await runTouchRoster(cdp, url);
     if (crashnotice) await runCrashNotice(cdp, url);
     if (hangnotice) await runHangNotice(cdp, url);
+    if (hangnotice) await runHangNotice(cdp, url);
     if (historyerr) await runHistoryError(cdp, url);
-    process.exitCode = results.every((r) => r.ok) ? 0 : 1;
+    // 零判据 = 红：`--only` 选空、段内提前返回、段名不匹配都会落在这里。
+    // 少了这一条，空数组的 `.every` 为真 ⇒ 屏幕打「✅ 0/0 条判据绿」还退 0（2026-10-27 实测确认）。
+    if (results.length === 0) {
+      console.log("✗ 零判据：这一趟一条证据都没有（--only 选空 / 段内提前返回 / 段名不匹配）。");
+    }
+    process.exitCode = results.length > 0 && results.every((r) => r.ok) ? 0 : 1;
     exitCode = process.exitCode;
   } catch (e) {
     check("探针自己跑完了（没在半路抛错）", false, "正常结束", String(e && e.message || e).slice(0, 1200));
     exitCode = 1;
   } finally {
     const tally = results.filter((r) => r.ok).length;
+    console.log(`  · 已选段 ${RAN_SEGMENTS.length} 个：${RAN_SEGMENTS.join(", ") || "(空 —— 这本身就是红)"}`);
+    console.log(`  · 状态 PASS ${STATE_COUNTS.PASS} / FAIL ${STATE_COUNTS.FAIL}`
+      + ` / UNSUPPORTED ${STATE_COUNTS.UNSUPPORTED} / UNKNOWN ${STATE_COUNTS.UNKNOWN}`
+      + "（后两态也算红，只是分开记账）");
     console.log(`\n${exitCode === 0 ? "✅" : "✗"} UI 运行时探针：${tally}/${results.length} 条判据绿`
       + (SELF_CHECK ? "（这一段是反面对照：判据**必须**报红）" : ""));
     vite.kill("SIGTERM");
@@ -3965,6 +4055,250 @@ async function runScrollRestore(cdp, url) {
  * 触发前先量安静窗口（必须 0 写入 / 0 反转），并留一个“两帧反向写”的阳性对照，
  * 证明量具本身能数到反转，不是空转。
  */
+/**
+ * 滚动写入台账的**唯一安装器**（2026-10-27 抽出）。
+ *
+ * 为什么要抽：`scrollshake`（抖动/静止期）与 `scrollhist`（前插锚点）要回答同一个问题
+ * ——"这次 scrollTop 变化是谁写的"。同一族两处各抄一份量具，本仓栽过
+ * （两把尺子互相矛盾，见 `check-ui-runtime-ax.mjs` 的注释）。
+ *
+ * 安装后页面上有 `window.__shake`（writes/frames/ledger/base/tag）与
+ * `__shakeStart()/__shakeStop()`；各字段口径见注入体内的注释。
+ */
+async function installScrollLedger(cdp) {
+  return cdp.eval(`(() => {
+    const el = document.querySelector('.vlist-no-anchor');
+    if (!el) return { ok: false };
+    const proto = Object.getOwnPropertyDescriptor(Element.prototype, 'scrollTop');
+    if (!proto || !proto.set) return { ok: false, why: 'no scrollTop descriptor' };
+    // ── A1（2026-10-27）写入归因。旧量具只包了**实例的 scrollTop 描述符**，而库的写走
+    // scrollElement.scrollTo({top,behavior})（virtual-core 的 scrollWithAdjustments）⇒ 库的
+    // 补偿 / end-anchor / scrollToIndex / pendingScrollAnchor 四类写**一次都没被记过**。
+    // 于是"0 次库写入"曾被当成"库没写"。这里补齐 scrollTo / scrollBy / scrollIntoView，
+    // 并把 owner 分桶。诚实边界：owner 靠栈里的函数名（dev 未压缩才有），分不出来就是
+    // unowned —— 不许为了凑结论硬归因；"无归因 Δ"另有单独一桶（惯性/clamp）。
+    const APP_MARKS = ['setScrollTop', 'schedulePin', 'pinToBottom', 'applyJump',
+      'scrollToAnchor', 'scrollToOffset', 'measureRowRef', 'measureElement'];
+    const LIB_MARKS = ['applyScrollAdjustment', 'scrollWithAdjustments', '_scrollToOffset',
+      'scrollToIndex', 'pendingScrollAnchor', 'reconcileScroll', '_flushHoldIfReady', 'setOptions'];
+    const MARKS = [
+      // 库在前：scrollToOffset 这个名字**两边都有**（core 有 scrollToOffset，本仓 VirtualList
+      // 也 expose 了一个）。同一个位置同时命中时按这个顺序定桶，否则库的写会被记成本仓的。
+      ...LIB_MARKS.map((m) => ({ m, o: 'lib' })),
+      ...APP_MARKS.map((m) => ({ m, o: 'app' })),
+    ];
+    const ownerOf = () => {
+      const st = String((new Error().stack) || '');
+      if (st.indexOf('__shake') >= 0 || st.indexOf('__probe') >= 0) return { o: 'harness', m: 'probe' };
+      const hits = [];
+      for (const mk of MARKS) {
+        const at = st.indexOf(mk.m);
+        if (at >= 0) hits.push({ at, m: mk.m, o: mk.o });
+      }
+      if (hits.length === 0) return { o: 'unowned', m: '?' };
+      hits.sort((a, b) => a.at - b.at);
+      // 取最内两层：只报 setScrollTop 说不出是 measureElement 还是 schedulePin 发的；
+      // A11 就是靠"漏斗<调用者"这一对才认出真凶的。
+      return { o: hits[0].o, m: hits.slice(0, 2).map((h) => h.m).join('<') };
+    };
+    window.__shake = { writes: [], frames: [], running: false, el, tag: null,
+      ledger: { byOwner: {}, bySrc: {}, byMark: {}, clamped: 0, total: 0 } };
+    const bumpLedger = (obj, k) => { obj[k] = (obj[k] || 0) + 1; };
+    // ⚠️ 这里**不许读 scrollHeight / getBoundingClientRect**：那是强制同步布局，会插进库的
+    // 测量/补偿时序里，把被观察的东西改掉（本仓已有"观察者效应门"这条纪律）。gap 一律在
+    // summarise 时由 frames 算。owner 靠抓栈，成本约几十微秒/次；写入次数是几十到几百量级，
+    // 可接受——真正的观察者效应风险来自强制布局，那一条已经去掉。
+    const record = (src, requested, readBack) => {
+      const tagged = window.__shake.tag;
+      const who = tagged ? { o: tagged, m: 'tag' } : ownerOf();
+      window.__shake.tag = null;
+      const rec = { t: performance.now(), src, owner: who.o, mark: who.m,
+        beh: window.__shake.lastBehavior || null,
+        requested: requested == null ? null : +(+requested).toFixed(2),
+        // ⚠️ 必须保留 null：+(+null) 是 0，会把"没有回读值"伪装成"落在了 0"，本仓栽过一次。
+        top: readBack == null ? null : +(+readBack).toFixed(2) };
+      window.__shake.lastBehavior = null;
+      const L = window.__shake.ledger;
+      L.total += 1;
+      bumpLedger(L.byOwner, who.o);
+      bumpLedger(L.bySrc, src);
+      bumpLedger(L.byMark, who.o + ':' + who.m);
+      if (rec.requested != null && rec.top != null
+        && Math.abs(rec.requested - rec.top) > 0.5) L.clamped += 1;
+      if (window.__shake.running) window.__shake.writes.push(rec);
+    };
+    Object.defineProperty(el, 'scrollTop', {
+      configurable: true,
+      get() { return proto.get.call(this); },
+      set(v) { proto.set.call(this, v); record('scrollTop', v, this.scrollTop); },
+    });
+    const wrap = (obj, name, kind) => {
+      const orig = obj && obj[name];
+      if (typeof orig !== 'function') return false;
+      obj[name] = function (a, b) {
+        const mine = this === el;
+        const before = mine ? this.scrollTop : 0;
+        // ⚠️ **必须原样转交实参个数**：scrollTo 只传一个对象参数时，写成 orig.call(this, a, b)
+        // 会把 b=undefined 也传进去，Chromium 的 WebIDL 重载解析于是选了 (x, y) 那个重载 ⇒
+        // 对象被转成 NaN ⇒ **整次滚动静默无效**（2026-10-27 实测：req 1865 / got 0，而且不报错）。
+        // 这一条把"库的写在 0 处落地"伪造成了产品缺陷，是观察者效应门（A1=0 对照）抓出来的。
+        const r = orig.apply(this, arguments);
+        if (mine) {
+          // ⚠️ **不要在这里读 this.scrollTop 回读值**：读 scrollTop 会强制布局刷新，而这条
+          // 原语正好跑在库的测量/补偿循环里 ⇒ 2026-10-27 观察者效应门实测：加了回读后,
+          // 字号那一格从绿变红、离底 600px 的写被吃成 0。回读值改由 summarise 用**帧采样**
+          // 补（帧本来每 rAF 读一次），写入热路径上只做两个纯内存操作。
+          if (kind === 'scrollIntoView') record('scrollIntoView', null, null);
+          else if (kind === 'scrollBy') {
+            const d = a && typeof a === 'object' ? (a.top ?? b ?? 0) : (typeof a === 'number' ? a : 0);
+            record(name, before + d, null);
+          } else {
+            const t = a && typeof a === 'object' ? a.top : (typeof a === 'number' ? a : 0);
+            if (a && typeof a === 'object') window.__shake.lastBehavior = a.behavior || 'auto';
+            record(name, t == null ? null : t, null);
+          }
+        }
+        return r;
+      };
+      return true;
+    };
+    // A1 允许整体关掉（GOSSLAN_PROBE_A1=0）：这是**观察者效应门**的一半 ——
+    // 关掉后如果某一格从红变绿，说明那一格是被量具改出来的，不是产品缺陷。
+    const A1_ON = ${JSON.stringify(process.env.GOSSLAN_PROBE_A1 !== "0")};
+    const hooked = A1_ON
+      ? { scrollTo: wrap(Element.prototype, 'scrollTo', 'scrollTo'),
+        scrollBy: wrap(Element.prototype, 'scrollBy', 'scrollBy'),
+        scrollIntoView: wrap(Element.prototype, 'scrollIntoView', 'scrollIntoView') }
+      : { scrollTo: false, scrollBy: false, scrollIntoView: false, off: true };
+    const summarise = () => {
+      const frames = window.__shake.frames;
+      // scrollTo 的写入不带回读值（热路径不许读 scrollTop）⇒ 用**它之后的第一个帧**补：
+      // 那一帧的 top 就是这次写落到的地方；没有后续帧就用最后一帧。
+      const topAfter = (t) => {
+        for (const f of frames) if (f.t >= t) return f.top;
+        return frames.length ? frames[frames.length - 1].top : null;
+      };
+      const writes = window.__shake.writes.map((w) => (w.top == null
+        ? { ...w, top: topAfter(w.t), resolvedFromFrame: true } : w));
+      let writeRev = 0, dir = 0, prev = window.__shake.startTop;
+      for (const w of writes) {
+        if (prev !== null) {
+          const d = w.top - prev;
+          if (Math.abs(d) > 2) {
+            const s = Math.sign(d);
+            if (dir !== 0 && s !== dir) writeRev += 1;
+            dir = s;
+          }
+        }
+        prev = w.top;
+      }
+      let rev = 0, fdir = 0, last = window.__shake.startTop, maxD = 0;
+      for (const f of frames.slice(2)) {
+        const d = f.top - last;
+        if (Math.abs(d) > 2) {
+          const s = Math.sign(d);
+          if (fdir !== 0 && s !== fdir) rev += 1;
+          fdir = s;
+        }
+        maxD = Math.max(maxD, Math.abs(d));
+        last = f.top;
+      }
+      const end = frames.length ? frames[frames.length - 1] : null;
+      // 帧间隔分布：症状③（"向上翻历史成段顿"）在本仓**从来没有过时间读数** ——
+      // 门禁内历史 longtask 命中 0 处。这里用帧间隔替代（WebKit 没有 longtask，
+      // 但 rAF 间隔两边都有），长帧阈值沿用 perf/ 那套 50ms。
+      const gaps = [];
+      for (let i = 2; i < frames.length; i += 1) gaps.push(frames[i].t - frames[i - 1].t);
+      gaps.sort((a, b) => a - b);
+      const pct = (q) => (gaps.length ? +gaps[Math.min(gaps.length - 1, Math.floor(gaps.length * q))].toFixed(1) : null);
+      // 无归因 Δ：这一帧确实动了，但**没有任何一条写入记录能解释它** ⇒ 原生物理（惯性/滚轮）
+      // 或浏览器 clamp。这一桶必须单独存在：既不能算"我们写的"，更不能算"没滚动"。
+      let unattributed = 0;
+      for (let i = 2; i < frames.length; i += 1) {
+        const d = frames[i].top - frames[i - 1].top;
+        if (Math.abs(d) <= 2) continue;
+        const t0 = frames[i - 1].t;
+        const t1 = frames[i].t;
+        const explained = writes.some((w) => w.t > t0 && w.t <= t1
+          && Math.abs(w.top - frames[i].top) <= 2);
+        if (!explained) unattributed += 1;
+      }
+      const L = window.__shake.ledger;
+      const B = window.__shake.base || { byOwner: {}, bySrc: {}, clamped: 0, total: 0 };
+      const diffMap = (cur, base) => {
+        const out = {};
+        for (const k of Object.keys(cur)) {
+          const d = (cur[k] || 0) - (base[k] || 0);
+          if (d !== 0) out[k] = d;
+        }
+        return out;
+      };
+      // 用**同一帧的** sh/ch 判"这次写是否被内容高度夹住"：requested 超过当时的
+      // scrollHeight-clientHeight 就是被夹（内容还没长上来），与"我们自己算错"是两件事。
+      const maxAt = (t) => {
+        let best = null;
+        for (const f of frames) { if (f.t <= t) best = f; else break; }
+        return best ? best.sh - best.ch : null;
+      };
+      const overContent = writes.filter((w) => {
+        const mx = maxAt(w.t);
+        return mx != null && w.requested != null && w.requested > mx + 0.5;
+      }).length;
+      return { writes: writes.length, writeReversals: writeRev, reversals: rev,
+        maxFrameDelta: +maxD.toFixed(1),
+        startTop: window.__shake.startTop ?? null,
+        finalTop: end ? +end.top.toFixed(1) : null,
+        finalGap: end ? +end.gap.toFixed(1) : null, frames: frames.length,
+        // 前 24 帧的 scrollTop 序列：用来判"读回 0"到底是 clamp、是瞬时塌陷、还是尺子读错。
+        frameTops: frames.slice(0, 24).map((f) => Math.round(f.top)),
+        frameP50: pct(0.5), frameP95: pct(0.95), frameMax: gaps.length ? +gaps[gaps.length - 1].toFixed(1) : null,
+        longFrames: gaps.filter((g) => g > 50).length,
+        unattributedFrames: unattributed,
+        overContent,
+        // 本窗差量才是"这一格是谁写的"；累计值只说明整段里有谁在写。
+        winByOwner: diffMap(L.byOwner, B.byOwner), winBySrc: diffMap(L.bySrc, B.bySrc),
+        winByMark: diffMap(L.byMark || {}, (B.byMark || {})),
+        winClamped: L.clamped - B.clamped, winTotal: L.total - B.total,
+        byOwner: { ...L.byOwner }, bySrc: { ...L.bySrc },
+        byMark: { ...(L.byMark || {}) },
+        clamped: L.clamped, ledgerTotal: L.total,
+        // 前 6 条原始写入：诊断"数到 2 次写却 0 次反转"这类问题只能靠它
+        log: writes.slice(0, 6).map((w) => {
+          const mx = maxAt(w.t);
+          return { src: w.src, owner: w.owner, mark: w.mark, beh: w.beh,
+            req: w.requested, got: w.top, max: mx == null ? null : Math.round(mx),
+            over: mx != null && w.requested != null && w.requested > mx + 0.5 };
+        }) };
+    };
+    window.__shakeStart = () => {
+      window.__shake.writes = []; window.__shake.frames = []; window.__shake.running = true;
+      window.__shake.startTop = window.__shake.el.scrollTop;
+      // 每窗的归因基线：累计台账跨窗不清（整段取证用），窗口读数则要**本窗差量**，
+      // 否则"这一格是谁写的"永远读不出来（第一版就栽在这上面）。
+      const L = window.__shake.ledger;
+      window.__shake.base = { byOwner: { ...L.byOwner }, bySrc: { ...L.bySrc },
+        clamped: L.clamped, total: L.total };
+      const loop = (t) => {
+        if (!window.__shake.running) return;
+        const e = window.__shake.el;
+        // sh/ch 一起采：每帧本来就要读一次 scrollHeight（这一发布局是帧采样自带的），
+        // 复用它在 summarise 里判"这次写是不是被内容高度夹住了"——不必在写入热路径里再强制布局。
+        window.__shake.frames.push({ t, top: e.scrollTop,
+          gap: e.scrollHeight - e.scrollTop - e.clientHeight,
+          sh: e.scrollHeight, ch: e.clientHeight });
+        requestAnimationFrame(loop);
+      };
+      requestAnimationFrame(loop);
+    };
+    window.__shakeStop = () => { window.__shake.running = false; return summarise(); };
+    window.__shakeRead = () => { const e = window.__shake.el;
+      return { top: e.scrollTop, gap: e.scrollHeight - e.scrollTop - e.clientHeight }; };
+    return { ok: true, hooked, top: el.scrollTop,
+      gap: el.scrollHeight - el.scrollTop - el.clientHeight,
+      coverage: 'instance-scrollTop + scrollTo + scrollBy + scrollIntoView' };
+})()`);
+}
+
 async function runScrollShake(cdp, url) {
   await cdp.send("Emulation.setDeviceMetricsOverride", {
     width: 1200, height: 800, deviceScaleFactor: 1, mobile: false,
@@ -4030,74 +4364,16 @@ async function runScrollShake(cdp, url) {
     !!seeded && seeded.scrollH > seeded.clientH + 600, "scrollHeight > clientHeight + 600",
     JSON.stringify(seeded));
 
-  const inst = await cdp.eval(`(() => {
-    const el = document.querySelector('.vlist-no-anchor');
-    if (!el) return { ok: false };
-    const proto = Object.getOwnPropertyDescriptor(Element.prototype, 'scrollTop');
-    if (!proto || !proto.set) return { ok: false, why: 'no scrollTop descriptor' };
-    window.__shake = { writes: [], frames: [], running: false, el };
-    Object.defineProperty(el, 'scrollTop', {
-      configurable: true,
-      get() { return proto.get.call(this); },
-      set(v) {
-        proto.set.call(this, v);
-        if (window.__shake.running) {
-          window.__shake.writes.push({ t: performance.now(), top: this.scrollTop,
-            gap: this.scrollHeight - this.scrollTop - this.clientHeight });
-        }
-      },
-    });
-    const summarise = () => {
-      const writes = window.__shake.writes;
-      const frames = window.__shake.frames;
-      let writeRev = 0, dir = 0, prev = window.__shake.startTop;
-      for (const w of writes) {
-        if (prev !== null) {
-          const d = w.top - prev;
-          if (Math.abs(d) > 2) {
-            const s = Math.sign(d);
-            if (dir !== 0 && s !== dir) writeRev += 1;
-            dir = s;
-          }
-        }
-        prev = w.top;
-      }
-      let rev = 0, fdir = 0, last = window.__shake.startTop, maxD = 0;
-      for (const f of frames.slice(2)) {
-        const d = f.top - last;
-        if (Math.abs(d) > 2) {
-          const s = Math.sign(d);
-          if (fdir !== 0 && s !== fdir) rev += 1;
-          fdir = s;
-        }
-        maxD = Math.max(maxD, Math.abs(d));
-        last = f.top;
-      }
-      const end = frames.length ? frames[frames.length - 1] : null;
-      return { writes: writes.length, writeReversals: writeRev, reversals: rev,
-        maxFrameDelta: +maxD.toFixed(1),
-        finalTop: end ? +end.top.toFixed(1) : null,
-        finalGap: end ? +end.gap.toFixed(1) : null, frames: frames.length };
-    };
-    window.__shakeStart = () => {
-      window.__shake.writes = []; window.__shake.frames = []; window.__shake.running = true;
-      window.__shake.startTop = window.__shake.el.scrollTop;
-      const loop = (t) => {
-        if (!window.__shake.running) return;
-        const e = window.__shake.el;
-        window.__shake.frames.push({ t, top: e.scrollTop,
-          gap: e.scrollHeight - e.scrollTop - e.clientHeight });
-        requestAnimationFrame(loop);
-      };
-      requestAnimationFrame(loop);
-    };
-    window.__shakeStop = () => { window.__shake.running = false; return summarise(); };
-    window.__shakeRead = () => { const e = window.__shake.el;
-      return { top: e.scrollTop, gap: e.scrollHeight - e.scrollTop - e.clientHeight }; };
-    return { ok: true, top: el.scrollTop, gap: el.scrollHeight - el.scrollTop - el.clientHeight };
-  })()`);
-  check("滚动量具装得上（scrollTop setter 包装 + rAF 采样）",
-    !!inst && inst.ok === true, "instrument ok", JSON.stringify(inst));
+  const inst = await installScrollLedger(cdp);
+  if (inst && inst.hooked && inst.hooked.off === true) {
+    console.log("  · A1 原语拦截已按要求关闭（观察者效应门这一趟）：库的写本趟不可见");
+  } else {
+    check("滚动量具装得上（三原语都拦到 + rAF 采样）：库的写不再隐形",
+      !!inst && inst.ok === true && inst.hooked
+        && inst.hooked.scrollTo === true && inst.hooked.scrollBy === true
+        && inst.hooked.scrollIntoView === true,
+      "hooked: scrollTo/scrollBy/scrollIntoView 全 true", JSON.stringify(inst));
+  }
 
   // 先落到底，等收敛定时器安静下来，再量安静基线。
   await cdp.eval(`(() => { const el = document.querySelector('.vlist-no-anchor');
@@ -4112,20 +4388,52 @@ async function runScrollShake(cdp, url) {
 
   // 阳性对照：先把视口放到离底部 600px 处（pinned 会解除，避免贴底写入搅局），
   // 再两帧反向写，必须被数到，否则下面的“不抖”是空转。
-  await cdp.eval(`(() => { const el = document.querySelector('.vlist-no-anchor');
-    el.scrollTop = Math.max(0, el.scrollHeight - el.clientHeight - 600);
-    el.dispatchEvent(new Event('scroll', { bubbles: true })); })()`);
-  await sleep(400);
-  await cdp.eval("window.__shakeStart()");
-  await cdp.eval(`(() => { const el = document.querySelector('.vlist-no-anchor');
-    el.scrollTop = Math.max(0, el.scrollTop - 40); })()`);
-  await sleep(120);
-  await cdp.eval(`(() => { const el = document.querySelector('.vlist-no-anchor');
-    el.scrollTop = el.scrollTop + 40; })()`);
-  await sleep(200);
-  const control = await cdp.eval("window.__shakeStop()");
-  check("阳性对照：两帧反向写能数出方向反转（量具不是空转）",
-    !!control && control.writeReversals >= 1, "reversals ≥1", JSON.stringify(control));
+  // 第一版栽在**前提不自证**：列表当时只剩约 600px 可滚，`max(0, …)` 把目标夹到 0，
+  // 两次写成了 0/40、startTop=0，本来就数不出反转。现在拆成两窗：
+  //   窗 A：把"设到离底 600px"整个包进来 ⇒ 谁把它改回去了，能在 owner/mark 里看见；
+  //   窗 B：前提成立才判反转，否则判 UNSUPPORTED（红），不许当绿。
+  const setup = await cdp.eval(`(async () => {
+    const el = document.querySelector('.vlist-no-anchor');
+    window.__shakeStart();
+    el.scrollTop = el.scrollHeight;
+    el.dispatchEvent(new Event('scroll', { bubbles: true }));
+    await new Promise((r) => setTimeout(r, 300));
+    const wantTop = Math.max(0, el.scrollHeight - el.clientHeight - 600);
+    el.scrollTop = wantTop;
+    el.dispatchEvent(new Event('scroll', { bubbles: true }));
+    await new Promise((r) => setTimeout(r, 400));
+    const pre = { wantTop: +wantTop.toFixed(1), got: +el.scrollTop.toFixed(1),
+      scrollable: el.scrollHeight - el.clientHeight };
+    return { pre, out: window.__shakeStop() };
+  })()`);
+  console.log("  · 对照前摇读数（设到离底 600px 之后发生了什么；这一行是证据，不是判据）："
+    + JSON.stringify(setup));
+
+  // 反转量具本身从**贴底起手**（一定有可滚空间），不依赖"中间位置"那个前提 ——
+  // 前提被上一格当场证伪过（写 1907 后 400ms 回到 0），那本身是一条要找的缺陷，不该让量具跟着瘫掉。
+  const ctl = await cdp.eval(`(async () => {
+    const el = document.querySelector('.vlist-no-anchor');
+    el.scrollTop = el.scrollHeight;
+    el.dispatchEvent(new Event('scroll', { bubbles: true }));
+    await new Promise((r) => setTimeout(r, 350));
+    window.__shakeStart();
+    const startTop = window.__shake.startTop;
+    window.__shake.tag = 'harness';
+    el.scrollTop = Math.max(0, el.scrollTop - 40);
+    await new Promise((r) => setTimeout(r, 120));
+    window.__shake.tag = 'harness';
+    el.scrollTop = el.scrollTop + 40;
+    await new Promise((r) => setTimeout(r, 200));
+    return { startTop, out: window.__shakeStop() };
+  })()`);
+  const ctlPremiseOk = !!ctl && ctl.startTop >= 80;
+  if (!ctlPremiseOk) {
+    checkState("阳性对照前提：贴底之后仍有 ≥80px 可滚（否则本格没有判据）",
+      "UNSUPPORTED", "startTop ≥80", JSON.stringify({ setup, ctl }));
+  } else {
+    check("阳性对照：两帧反向写能数出方向反转（量具不是空转）",
+      !!ctl.out && ctl.out.writeReversals >= 1, "reversals ≥1", JSON.stringify(ctl));
+  }
 
   // 对照结束后必须回到“真正贴底”的状态，否则 A1 量的是历史中部，不是用户报的场景。
   await cdp.eval(`(() => { const el = document.querySelector('.vlist-no-anchor');
@@ -4320,11 +4628,16 @@ async function runScrollShake(cdp, url) {
     return { anchor: read(), fontSize: app.chatStyle.fontSize };
   })()`);
   const nextFont = fontBefore && fontBefore.fontSize === "lg" ? "xl" : "lg";
+  // 诊断窗（2026-10-27）：这一格红过两次。把字号切换整个包进窗口，好让"谁改的滚动位置"
+  // 落进 owner/mark —— 否则只能看见结果（锚点跑到 m-shake-0），看不见动因。
+  await cdp.eval("window.__shakeStart()");
   await cdp.eval(`(async () => {
     const { useAppStore } = await import('/src/stores/useAppStore.ts');
     useAppStore().setChatStyle({ fontSize: ${JSON.stringify(nextFont)} });
   })()`);
   await sleep(1_000);
+  const fontWrites = await cdp.eval("window.__shakeStop()");
+  console.log("  · 字号变化期间的写入：" + JSON.stringify(fontWrites));
   const fontAfter = await cdp.eval(`(() => {
     const el = document.querySelector('.vlist-no-anchor');
     const cr = el.getBoundingClientRect();
@@ -4430,6 +4743,120 @@ async function runScrollShake(cdp, url) {
     "0 写入/0 反转 + theme-switching 已摘",
     JSON.stringify(rapidTheme));
 
+  // ── A1 自证（2026-10-27）：量具必须证明"它看得见库的写"与"它看得见 clamp"，
+  //    否则后面所有 owner 分布都是空转。两格都是我们自己发的，标签写死 harness，不赖给产品。
+  const hookProof = await cdp.eval(`(async () => {
+    const el = document.querySelector('.vlist-no-anchor');
+    el.scrollTop = 0;
+    await new Promise((r) => setTimeout(r, 120));
+    window.__shakeStart();
+    window.__shake.tag = 'harness';
+    el.scrollTo({ top: el.scrollHeight });
+    await new Promise((r) => setTimeout(r, 260));
+    const out = window.__shakeStop();
+    return { endTop: +el.scrollTop.toFixed(1), max: el.scrollHeight - el.clientHeight, out };
+  })()`);
+  // 这一格必须证明的是**透明性**，不只是"拦到了"：包错实参个数会让对象重载静默失效
+  // （Chromium 把 {top} 当 (x,y) 重载的首参转成 NaN ⇒ 整次滚动无效、不报错）。
+  check("A1 自证①：scrollTo 对象重载真生效（endTop≈max）且被拦到",
+    !!hookProof && (hookProof.out.bySrc.scrollTo || 0) >= 1
+      && Math.abs(hookProof.endTop - hookProof.max) <= 2,
+    "endTop≈max 且 bySrc.scrollTo ≥1", JSON.stringify(hookProof));
+
+  const clampProof = await cdp.eval(`(async () => {
+    window.__shakeStart();
+    const el = document.querySelector('.vlist-no-anchor');
+    window.__shake.tag = 'harness';
+    el.scrollTop = el.scrollHeight + 500;
+    await new Promise((r) => setTimeout(r, 80));
+    return window.__shakeStop();
+  })()`);
+  check("A1 自证②：写被 clamp 时 requested≠readBack 能被数到",
+    !!clampProof && clampProof.clamped >= 1, "clamped ≥1", JSON.stringify(clampProof));
+
+  const ledger = await cdp.eval(`(() => { const L = window.__shake.ledger;
+    return { byOwner: { ...L.byOwner }, bySrc: { ...L.bySrc }, total: L.total, clamped: L.clamped }; })()`);
+  const ownerBuckets = Object.keys((ledger && ledger.byOwner) || {})
+    .filter((k) => (ledger.byOwner[k] || 0) > 0);
+  console.log("  · A1 归因台账（本段累计）：" + JSON.stringify(ledger));
+  check("A1 自证③：归因台账至少分出两个 owner 桶（没把一切塌成一个）",
+    ownerBuckets.length >= 2, "≥2 个 owner 桶", JSON.stringify({ ownerBuckets, ledger }));
+
+  // ── A11 基线（2026-10-27，症状④）：**停在离底 60px（pinned=true 的容差内）→ 静置 1.5s
+  //    （> recentScrollUp 的 1.2s 豁免）→ 由后端路径投一条表情回应（已有行改高）**。
+  //    这一格判的是**量具**：静止期确实发生了写入 ⇒ 这条链可观测、可复跑。
+  //    产品对错（"静止后不许推我"）另记在读数里当基线，不在这格判红——修好之后才把它升级成回归判据。
+  const still = await cdp.eval(`(async () => {
+    const el = document.querySelector('.vlist-no-anchor');
+    el.scrollTop = Math.max(0, el.scrollHeight - el.clientHeight - 60);
+    const gapAtSet = el.scrollHeight - el.scrollTop - el.clientHeight;
+    // ★ 静置那一段**必须单独开窗**：它才是"用户停在上面一点、却被自己拽回底部"的证据段。
+    //   第一版把窗口开在注入之后，只看到"回到底部后又被推 36px"，把真正的凶手漏掉了。
+    window.__shakeStart();
+    await new Promise((r) => setTimeout(r, 1500));
+    const idle = window.__shakeStop();
+    const top0 = el.scrollTop;
+    const gapPre = el.scrollHeight - el.scrollTop - el.clientHeight;
+    const cr = el.getBoundingClientRect();
+    const row = [...el.querySelectorAll('[data-vlist-key]')].map((n) => {
+      const r = n.getBoundingClientRect();
+      return { key: n.getAttribute('data-vlist-key'), top: r.top - cr.top, bottom: r.bottom - cr.top };
+    }).sort((a, b) => a.top - b.top).find((r) => r.bottom > 1);
+    window.__shakeStart();
+    const { useChatStore } = await import('/src/stores/useChatStore.ts');
+    const chat = useChatStore();
+    chat.enqueueMessage({
+      id: 0, msg_id: 'm-shake-react-1', conv_id: 'group:g1', sender_id: 'peer-a',
+      sender_name: '对方', receiver_id: 'g1', kind: 'reaction',
+      content: JSON.stringify({ target: row ? row.key : '', emoji: '[赞]', add: true }),
+      ts: Date.now(), seq: 999, status: 'sent',
+    });
+    await new Promise((r) => setTimeout(r, 900));
+    const out = window.__shakeStop();
+    return { target: row ? row.key : null, top0, top1: el.scrollTop,
+      shifted: +(el.scrollTop - top0).toFixed(1), gapAtSet, gapPre, idle, out };
+  })()`);
+  console.log("  · A11 静止期读数：" + JSON.stringify(still));
+  // ★ ④ 的真实判据（2026-10-27 实测修正后）：
+  //   用户停在离底 60px、什么都不做 ⇒ **1.5s 后它还得在 60px**（不许自己跳回底部）。
+  //   第一版只判"注入后位移"，漏掉了真正的凶手：静置期就被拽回底部（gapAtSet 60 → gapPre 0），
+  //   之后那 36px 只是"回到底部后内容长高再跟一次"，是顺从结果的假象。
+  check("A11 静止期（离底 60px、什么也不做 1.5s）：位置不许自己变（gap 仍 ≥59）",
+    !!still && typeof still.gapPre === "number" && still.gapPre >= 59,
+    "gapPre ≥59（仍停在原处）",
+    JSON.stringify({ gapAtSet: still && still.gapAtSet, gapPre: still && still.gapPre,
+      idle: still && still.idle }));
+
+  // 同段正控：C1 收窄的是"已有行改高"，**没有**动"新消息追加"。
+  // 这里直接测那条更危险的半边：停在离底 ~100px（150px 容差内）、追加一条自己的消息 ⇒ 必须跟到底。
+  // （"真贴底 + 行变高仍跟随"由 `scrollreact` ①② 覆盖，那两格在 7 段基线 681/681 里。）
+  const appendFollow = await cdp.eval(`(async () => {
+    const el = document.querySelector('.vlist-no-anchor');
+    el.scrollTop = Math.max(0, el.scrollHeight - el.clientHeight - 100);
+    el.dispatchEvent(new Event('scroll', { bubbles: true }));
+    // 必须等过 recentScrollUp() 的 1.2s 豁免：那次"向上挪 100px"会被记成用户上滚，
+    // 1.2s 内产品**本来就不该跟**（第一版只等了 600ms，量到的是已有的防抢语义，不是 C1 的效果）。
+    await new Promise((r) => setTimeout(r, 1400));
+    const top0 = el.scrollTop;
+    const sh0 = el.scrollHeight;
+    const gap0 = el.scrollHeight - el.scrollTop - el.clientHeight;
+    window.__shakeStart();
+    const { useChatStore } = await import('/src/stores/useChatStore.ts');
+    useChatStore().enqueueMessage({
+      id: 0, msg_id: 'm-shake-append-1', local_id: 'm-shake-append-1', conv_id: 'group:g1',
+      sender_id: 'dev-me', sender_name: '我', receiver_id: 'g1', kind: 'text',
+      content: '追加一条，验证贴底跟随没有被收窄', ts: Date.now(), seq: 1100, status: 'sent',
+    });
+    await new Promise((r) => setTimeout(r, 900));
+    return { top0, top1: el.scrollTop, sh0, sh1: el.scrollHeight, gap0,
+      gap1: el.scrollHeight - el.scrollTop - el.clientHeight, out: window.__shakeStop() };
+  })()`);
+  check("正控：离底 ~100px 时追加自己的消息，仍然跟随到底（append 容差没被收窄）",
+    !!appendFollow && appendFollow.sh1 > appendFollow.sh0 + 1
+      && appendFollow.gap1 <= 2 && appendFollow.top1 > appendFollow.top0 + 1,
+    "内容变长 且 最终 gap ≤2",
+    JSON.stringify(appendFollow));
+
   const unmounted = await cdp.eval(`(async () => {
     window.__shakeStart();
     window.__probe.app.unmount();
@@ -4439,6 +4866,738 @@ async function runScrollShake(cdp, url) {
   check("卸载后 900ms：不再有 scrollTop 写入",
     !!unmounted && unmounted.writes === 0,
     "writes=0", JSON.stringify(unmounted));
+}
+
+/**
+ * 向上翻历史的帧内耗时（--only=scrollhist，2026-10-27）。
+ *
+ * 用户点名的症状③是"向上翻历史成段顿（不白）"。到本轮为止这一族**只有几何判据**
+ * （prepend 后同一 key 留在同一位置、没退化成整表），帧时间一次都没量过 ——
+ * 门禁内浏览器判据历史上 longtask 命中 0 处、performance.now 也只有三处且都不在这条链上
+ * ⇒ ③ 在当前门禁里是**结构上不可见**的。
+ *
+ * 本段用真 ChatWindow + 真 store + store 自己的 `loadMoreMessages`（只把两个 IPC 换成
+ * 会真翻页的桩），把"一次前插"拆成 store 侧（getMessageCount → getMessages → mergeMessages
+ * → 数组替换）与其后的渲染/测量（帧间隔）。
+ *   · 判据只下"锚点不漂"（既有产品要求）；
+ *   · 耗时**先记读数**，阈值必须从这次基线另定（本仓纪律：数字不许凭空发明）。
+ * 这里不装 scrollshake 那台写入台账：③要的是时间与锚点，写入归属由 scrollshake 负责，
+ * 不为同一族再复制一台量具。
+ */
+async function runScrollHist(cdp, url) {
+  await cdp.send("Emulation.setDeviceMetricsOverride", {
+    width: 1200, height: 800, deviceScaleFactor: 1, mobile: false,
+  });
+  await cdp.send("Page.navigate", { url });
+  await sleep(3_000);
+  await cdp.eval(PAGE_FIXTURE);
+  await cdp.eval(`(() => {
+    window.__TAURI_INTERNALS__ = {
+      metadata: { currentWindow: { label: 'main' }, currentWebview: { label: 'main', windowLabel: 'main' } },
+      invoke: async () => null, transformCallback: (cb) => cb, convertFileSrc: (p) => p,
+    };
+    if (!window.__TAURI_EVENT_PLUGIN_INTERNALS__) {
+      window.__TAURI_EVENT_PLUGIN_INTERNALS__ = { unregisterListener: () => {} };
+    }
+  })()`);
+  const mounted = await cdp.eval(
+    "window.__probe.install('/src/components/ChatWindow.vue', '', '{\"hostHeight\":\"800px\"}')",
+  );
+  check("ChatWindow 挂得起来（翻页段的入口）",
+    !!mounted && mounted.ok === true, "install ok", JSON.stringify(mounted));
+  await cdp.eval("window.__probe.seedDevice('dev-me')");
+
+  const seeded = await cdp.eval(`(async () => {
+    const { useChatStore } = await import('/src/stores/useChatStore.ts');
+    const chat = useChatStore();
+    const conv = 'group:hist';
+    window.__hist = { total: 600, served: [] };
+    const api = (await import('/src/api/index.ts')).api;
+    const makeRows = (limit, offset) => {
+      const rows = [];
+      for (let i = 0; i < limit; i += 1) {
+        const seq = offset + i + 1;
+        if (seq < 1 || seq > 600) continue;
+        const kind = seq % 7 === 0 ? 'todo' : seq % 5 === 0 ? 'file' : seq % 9 === 0 ? 'code' : 'text';
+        let content;
+        if (kind === 'todo') {
+          content = JSON.stringify({ todo_id: 'h-todo-' + seq, number: seq, title: '任务' + seq,
+            assignees: ['dev-me'], status: 'todo', creator: 'dev-me', deleted: false,
+            description: '一行描述', images: [], archived: false, done_at: null });
+        } else if (kind === 'file') {
+          content = JSON.stringify({ name: 'h' + seq + '.bin', path: '/tmp/h' + seq + '.bin', size: 1000 });
+        } else if (kind === 'code') {
+          content = 'const h' + seq + ' = ' + seq + ';';
+        } else {
+          content = ('第' + seq + '条历史，把列表撑长。').repeat(4);
+        }
+        rows.push({ id: seq, msg_id: 'm-hist-' + seq, local_id: 'm-hist-' + seq, conv_id: conv,
+          sender_id: 'dev-me', sender_name: '我', receiver_id: 'hist', kind, content,
+          status: 'sent', seq, ts: 1700000000000 + seq * 1000 });
+      }
+      return rows;
+    };
+    api.getMessageCount = async () => window.__hist.total;
+    api.getMessages = async (convId, limit, offset) => {
+      window.__hist.served.push({ limit, offset });
+      return makeRows(limit, offset);
+    };
+    // 只种"最新一页"的 100 条：store 的 pagesLoaded 默认就是 1，往前的页交给桩。
+    chat.activeConv = conv;
+    chat.messages[conv] = makeRows(100, 500);
+    await new Promise((r) => setTimeout(r, 1000));
+    const el = document.querySelector('.vlist-no-anchor');
+    return { len: (chat.messages[conv] || []).length,
+      scrollH: el ? el.scrollHeight : 0, clientH: el ? el.clientHeight : 0 };
+  })()`);
+  check("种子：最新一页 100 条已渲染且可滚",
+    !!seeded && seeded.len === 100 && seeded.scrollH > seeded.clientH + 600,
+    "len=100 且 scrollHeight > clientHeight+600", JSON.stringify(seeded));
+
+  // 前插锚点那 ~9.3k 的缺口要问"是谁写的" ⇒ 复用同一台写入台账（不另抄一份）。
+  const histInst = await installScrollLedger(cdp);
+  check("前插段：写入台账装上了（复用 scrollshake 那一台）",
+    !!histInst && histInst.ok === true, "install ok", JSON.stringify(histInst));
+
+  const measured = await cdp.eval(`(async () => {
+    const el = document.querySelector('.vlist-no-anchor');
+    const { useChatStore } = await import('/src/stores/useChatStore.ts');
+    const chat = useChatStore();
+    const conv = 'group:hist';
+    // ⚠️ 起手位置**不能是 0**：scrollTop<60 会让应用自己每帧 emit loadMore（那是产品行为），
+    // 于是"我调了 3 次"实际会拉 4 页，而且 700ms 后视口已经被它自己挪走了 —— 第一版就是这么
+    // 报出一条假红的。这里从"离底 1200px"起手（不触发 emit），并等它**真的静下来**再读。
+    el.scrollTop = Math.max(0, el.scrollHeight - el.clientHeight - 1200);
+    el.dispatchEvent(new Event('scroll', { bubbles: true }));
+    const settle = async (maxMs = 1500) => {
+      const t0 = performance.now();
+      let lastTop = -1;
+      let stable = 0;
+      while (performance.now() - t0 < maxMs) {
+        await new Promise((r) => requestAnimationFrame(r));
+        const t = el.scrollTop;
+        if (Math.abs(t - lastTop) < 0.5) stable += 1; else stable = 0;
+        lastTop = t;
+        if (stable >= 5) break;
+      }
+      return +(performance.now() - t0).toFixed(1);
+    };
+    const settleMs0 = await settle(1200);
+    const readRows = () => {
+      const cr = el.getBoundingClientRect();
+      return [...el.querySelectorAll('[data-vlist-key]')].map((n) => {
+        const r = n.getBoundingClientRect();
+        return { key: n.getAttribute('data-vlist-key'), top: +(r.top - cr.top).toFixed(2),
+          bottom: +(r.bottom - cr.top).toFixed(2) };
+      }).sort((a, b) => a.top - b.top);
+    };
+    const readAnchor = (rows) => {
+      const hit = rows.find((r) => r.bottom > 0.5) ?? rows[0];
+      return hit ? { key: hit.key, offset: hit.top } : null;
+    };
+    const fixes = [];
+    const gaps = [];
+    let last = 0;
+    let running = true;
+    const tick = (t) => { if (!running) return; if (last) gaps.push(t - last); last = t; requestAnimationFrame(tick); };
+    requestAnimationFrame(tick);
+    const steps = [];
+    for (let k = 0; k < 3; k += 1) {
+      const rows0 = readRows();
+      const before = readAnchor(rows0);
+      const top0 = el.scrollTop;
+      const len0 = (chat.messages[conv] || []).length;
+      const t0 = performance.now();
+      window.__shakeStart();
+      await chat.loadMoreMessages(conv);
+      const msAsync = +(performance.now() - t0).toFixed(1);
+      const settleMs = await settle();
+      const msToFrame = +(performance.now() - t0).toFixed(1);
+      const out = window.__shakeStop();
+      const fixTrace = (window.__prependFix || []).slice(-6);
+      fixes.push({ cap: window.__cap || null, branch: window.__branch || null, fix: fixTrace });
+      // 直接从页面上取帧序列（不依赖 summarise 的字段）：判"读回 0"到底是不是瞬时塌到 0。
+      const tops = window.__shake.frames.slice(0, 24).map((f) => Math.round(f.top));
+      const rows1 = readRows();
+      const after = readAnchor(rows1);
+      // 只读诊断：组件实例上的 virtualizer（script setup 顶层 const 会进 setupState）。
+      // 目的：分辨"库自己算的锚点偏移就错了" vs "库算对了、但 DOM 高度还没跟上"。
+      let lib = null;
+      try {
+        const comp = document.querySelector('.vlist-no-anchor')
+          && document.querySelector('.vlist-no-anchor').__vueParentComponent;
+        const raw = comp && comp.setupState ? comp.setupState.virtualizer : null;
+        const v = raw && typeof raw.getTotalSize !== 'function' && raw.value ? raw.value : raw;
+        if (v && typeof v.getTotalSize === 'function') {
+          const idx = before
+            ? (chat.messages[conv] || []).findIndex((m) => (m.local_id ?? m.msg_id) === before.key)
+            : -1;
+          const off = idx >= 0 && v.getOffsetForIndex ? v.getOffsetForIndex(idx, 'start') : null;
+          lib = { total: Math.round(v.getTotalSize()), idx,
+            offsetFor: off ? Math.round(off[0]) : null,
+            cacheSize: v.itemSizeCache ? v.itemSizeCache.size : null };
+        }
+      } catch (e) { lib = { err: String(e && e.message || e).slice(0, 80) }; }
+      // 明确的三种结局：同一条 key 且偏移没变 / 同一条 key 但在别处 / key 已经不在渲染集里。
+      const kept = before ? rows1.find((r) => r.key === before.key) : null;
+      steps.push({ msAsync, msToFrame, settleMs, len0, len1: (chat.messages[conv] || []).length,
+        tops, lib, fixTrace, out,
+        top0: +top0.toFixed(1), top1: +el.scrollTop.toFixed(1),
+        before, after,
+        keptKey: !!kept, keptOffset: kept ? kept.top : null,
+        drift: kept && before ? +(kept.top - before.offset).toFixed(2) : null });
+      await new Promise((r) => setTimeout(r, 250));
+    }
+    running = false;
+    gaps.sort((a, b) => a - b);
+    return { fixes, steps, settleMs0, served: window.__hist.served, gaps: gaps.length,
+      frameP50: gaps.length ? +gaps[Math.floor(gaps.length * 0.5)].toFixed(1) : null,
+      frameMax: gaps.length ? +gaps[gaps.length - 1].toFixed(1) : null,
+      longFrames: gaps.filter((g) => g > 50).length };
+  })()`);
+  const pagesOk = !!measured && Array.isArray(measured.steps) && measured.steps.length === 3
+    && measured.steps.every((s) => s.len1 - s.len0 === 100);
+  check("前插三段真的各加载了一页（+100 条）—— 否则下面的耗时没有对象",
+    pagesOk, "每段 +100 条", JSON.stringify(measured && measured.steps));
+  const steps = (measured && measured.steps) || [];
+  const anchorOk = steps.length === 3
+    && steps.every((s) => s.keptKey === true && s.drift != null && Math.abs(s.drift) <= 2);
+  check("向上翻历史：每页前插后，正在读的那一行仍在原位（同 key 且 |Δoffset| ≤2px）",
+    anchorOk, "三段同 key 且 |Δ| ≤2px",
+    JSON.stringify({ steps: steps.map((s) => ({ before: s.before && s.before.key,
+      keptKey: s.keptKey, drift: s.drift, top: [s.top0, s.top1],
+      ms: [s.msAsync, s.msToFrame], settle: s.settleMs,
+      // 归因：这一页前插期间到底是谁在写 scrollTop（复用 scrollshake 那台台账）
+      writes: s.out && s.out.writes, marks: s.out && s.out.winByMark,
+      tops: s.tops, lib: s.lib, fix: s.fixTrace, log: s.out && s.out.log })),
+      settleMs0: measured && measured.settleMs0,
+      p50: measured && measured.frameP50, max: measured && measured.frameMax,
+      long: measured && measured.longFrames, pages: measured && measured.served.length }));
+  // 时间棘轮：数字取自 2026-10-27 本机基线（三次前插 frameMax 433ms、长帧 2–3；
+  // 单次 store 侧 70–134ms、到静定 217–531ms）。**不假装当前值合格** —— 这里只挡
+  // 数量级回退（600ms/5 帧），真正的目标值要等 ③ 修完再按新基线收紧。
+  const timing = measured || {};
+  check("向上翻历史：单页前插的帧时间没有数量级回退（frameMax ≤600ms、长帧 ≤5）",
+    typeof timing.frameMax === "number" && timing.frameMax <= 600
+      && typeof timing.longFrames === "number" && timing.longFrames <= 5,
+    "frameMax ≤600 且 longFrames ≤5",
+    JSON.stringify({ frameMax: timing.frameMax, longFrames: timing.longFrames,
+      p50: timing.frameP50 }));
+  console.log("  · 前插兜底决策（每页最近 6 条）：" + JSON.stringify((measured && measured.fixes) || null));
+  console.log("  · 三页前插的 scrollTop 帧序列（各前 24 帧）："
+    + JSON.stringify(((measured && measured.steps) || []).map((s) => ({ k: s.before && s.before.key, tops: s.tops }))));
+  console.log("  · 前插耗时基线（读数；本行是后续优化的对照基准）：" + JSON.stringify({
+    steps: steps.map((s) => ({ msAsync: s.msAsync, msToFrame: s.msToFrame, settleMs: s.settleMs })),
+    settleMs0: measured && measured.settleMs0,
+    frameP50: measured && measured.frameP50, frameMax: measured && measured.frameMax,
+    longFrames: measured && measured.longFrames,
+   页数: measured && measured.served && measured.served.length }));
+}
+
+/**
+ * 切会话的"白一下"（--only=scrollswitch，2026-10-27）。
+ *
+ * 症状①是用户点名的"切会话白一下"。现有门禁对切会话**只判几何与落位**，没有"可见/空白"这一维；
+ * 而 headless 读 computed opacity 会停在动画起点（本仓已记：合成帧不推动画时钟）。
+ * 所以这里不读 opacity 数值，改读两件**跟动画无关**的事实：
+ *   · hidden —— 列表外包层当前带 opacity-0（ChatWindow 直接绑的类）；
+ *   · blank  —— 视口内被行覆盖的长度不足（≤1px）**并且**没有骨架（.animate-pulse = 0）
+ *              ⇒ 用户看到的就是纯色背景。
+ * 两条判据都是产品语义：
+ *   (a) 已揭示却还 blank ⇒ 就是"白一下"；
+ *   (b) 隐藏期间就 blank ⇒ 遮罩期间看到的是纯色（不是"遮住追赶"，是"遮成白屏"）。
+ * 正控走**未缓存会话**（骨架路径）：它必须被判成"隐藏但非纯色"，证明这两件事分得开。
+ */
+async function runScrollSwitch(cdp, url) {
+  await cdp.send("Emulation.setDeviceMetricsOverride", {
+    width: 1200, height: 800, deviceScaleFactor: 1, mobile: false,
+  });
+  await cdp.send("Page.navigate", { url });
+  await sleep(3_000);
+  await cdp.eval(PAGE_FIXTURE);
+  await cdp.eval(`(() => {
+    window.__TAURI_INTERNALS__ = {
+      metadata: { currentWindow: { label: 'main' }, currentWebview: { label: 'main', windowLabel: 'main' } },
+      invoke: async () => null, transformCallback: (cb) => cb, convertFileSrc: (p) => p,
+    };
+    if (!window.__TAURI_EVENT_PLUGIN_INTERNALS__) {
+      window.__TAURI_EVENT_PLUGIN_INTERNALS__ = { unregisterListener: () => {} };
+    }
+  })()`);
+  const mounted = await cdp.eval(
+    "window.__probe.install('/src/components/ChatWindow.vue', '', '{\"hostHeight\":\"800px\"}')",
+  );
+  check("ChatWindow 挂得起来（切换段的入口）",
+    !!mounted && mounted.ok === true, "install ok", JSON.stringify(mounted));
+  await cdp.eval("window.__probe.seedDevice('dev-me')");
+
+  const ready = await cdp.eval(`(async () => {
+    // headless 的 visibilityState 实测也可能是 "visible"（本机 2026-10-27 现读）⇒ 不能拿它判模式。
+    // 模式由 Node 侧显式传进来，页面只负责如实记录。
+    const HEADED = ${JSON.stringify(process.env.GOSSLAN_PROBE_HEADLESS === "0")};
+    const { useChatStore } = await import('/src/stores/useChatStore.ts');
+    const chat = useChatStore();
+    const api = (await import('/src/api/index.ts')).api;
+    const makeRows = (conv, seed, n) => {
+      const rows = [];
+      for (let i = 0; i < n; i += 1) {
+        const seq = i + 1;
+        const kind = seq % 6 === 0 ? 'file' : seq % 7 === 0 ? 'code' : 'text';
+        let content;
+        if (kind === 'file') content = JSON.stringify({ name: 's' + seq + '.bin', path: '/tmp/s' + seq + '.bin', size: 1000 });
+        else if (kind === 'code') content = 'const s' + seq + ' = ' + seq + ';';
+        else content = ('第' + seq + '条，切换用。').repeat(4);
+        rows.push({ id: seed + seq, msg_id: 'm-' + conv + '-' + seq, local_id: 'm-' + conv + '-' + seq,
+          conv_id: conv, sender_id: 'dev-me', sender_name: '我', receiver_id: conv,
+          kind, content, status: 'sent', seq, ts: 1700000000000 + seq * 1000 });
+      }
+      return rows;
+    };
+    window.__sw = { frames: [], running: false, apiCalls: [], headed: HEADED };
+    api.getLatestMessages = async (convId, limit) => {
+      window.__sw.apiCalls.push(['getLatestMessages', convId]);
+      await new Promise((r) => setTimeout(r, 420));
+      return makeRows(convId, 400, 40);
+    };
+    api.getMessageCount = async () => 40;
+    api.getMessages = async () => [];
+    chat.messages['group:swa'] = makeRows('group:swa', 0, 40);
+    chat.messages['group:swb'] = makeRows('group:swb', 200, 40);
+    chat.activeConv = 'group:swa';
+    await new Promise((r) => setTimeout(r, 1000));
+    const el = document.querySelector('.vlist-no-anchor');
+    if (!el) return { ok: false, why: 'no scroller' };
+    // ⚠️ opacity-0 落在**组件根元素自己身上**（Vue 把 class 合并到 VirtualList 的根 div），
+    // 不是它的 parentElement —— 第一版读 parent 得到 hidden 恒 false。
+    const padBottom = parseFloat(getComputedStyle(el).paddingBottom) || 0;
+    window.__sw.el = el;
+    window.__sw.coverPx = 0;
+    const coveredLen = (iv) => {
+      let total = 0;
+      let cur = 0;
+      for (const [a, b] of iv) {
+        if (b <= cur) continue;
+        total += Math.max(0, b - Math.max(a, cur));
+        cur = Math.max(cur, b);
+      }
+      return total;
+    };
+    const sample = () => {
+      // 每帧**重新找**列表：未缓存会话走骨架分支时 ChatWindow 用 v-if 把整个 VirtualList
+      // 卸掉（换成骨架）⇒ 抓在手里的 el 会变成游离节点，读数全是 0（第一版正控就是这么错的）。
+      const cur = document.querySelector('.vlist-no-anchor');
+      const skel = document.querySelectorAll('.animate-pulse').length;
+      if (!cur) {
+        // 列表不在：有骨架 ⇒ 视口被骨架盖住（不是空白）；没骨架 ⇒ 纯背景，按上次高度计。
+        return { rows: 0, skel, blank: skel > 0 ? 0 : (window.__sw.lastH || 800),
+          hidden: true, list: 0, top: 0, firstKey: '' };
+      }
+      window.__sw.lastH = cur.clientHeight;
+      const cr = cur.getBoundingClientRect();
+      const h = cur.clientHeight;
+      const rows = [...cur.querySelectorAll('[data-vlist-key]')].map((n) => {
+        const r = n.getBoundingClientRect();
+        return { key: n.getAttribute('data-vlist-key') || '',
+          top: Math.max(0, r.top - cr.top), bottom: Math.min(h, r.bottom - cr.top) };
+      }).filter((r) => r.bottom > r.top).sort((a, b) => a.top - b.top);
+      return { rows: rows.length,
+        skel,
+        // 容器自带 pb-6（24px）⇒ 贴底时最后一行下面本来就有 24px"留白"，
+        // 那不是白屏，必须从 blank 里扣掉（第一版把它算成 24.5px 白，属尺子错）。
+        blank: Math.max(0, h - padBottom - coveredLen(rows.map((r) => [r.top, r.bottom]))),
+        hidden: cur.classList.contains('opacity-0'),
+        // ★ ① 的验收量：**用户看得见的空白 = opacity < 0.99 或 视口没被铺满**。
+        // headless 下 transition 不推进（读到的值会停在起点），所以这一维只在 headed 可信；
+        // 同一条读数在两种模式下都打印，但只有 headed 那趟进判据（见下方标签）。
+        op: +(parseFloat(getComputedStyle(cur).opacity) || 0).toFixed(3),
+        list: 1,
+        top: +cur.scrollTop.toFixed(1),
+        firstKey: rows.length ? rows[0].key : '' };
+    };
+    window.__sw.run = async (toConv, ms, load) => {
+      window.__sw.frames = [];
+      window.__sw.running = true;
+      const loop = (t) => {
+        if (!window.__sw.running) return;
+        const s = sample();
+        s.t = t;
+        window.__sw.frames.push(s);
+        requestAnimationFrame(loop);
+      };
+      requestAnimationFrame(loop);
+      chat.activeConv = toConv;
+      // 孤立挂 ChatWindow 时没有人替我们调 loadMessages（真机上由外层入口调）⇒
+      // 未缓存会话要自己发一次，否则骨架会永远停在那儿、apiCalls 永远是空。
+      if (load) void chat.loadMessages(toConv);
+      await new Promise((r) => setTimeout(r, ms));
+      window.__sw.running = false;
+      const frames = window.__sw.frames;
+      const pick = (f) => ({ h: f.hidden ? 1 : 0, l: f.list, r: f.rows, s: f.skel,
+        b: Math.round(f.blank), op: f.op, top: Math.round(f.top),
+        k: f.firstKey ? (f.firstKey.indexOf('m-' + toConv + '-') === 0 ? 'T' : 'O') : '' });
+      const revealAt = frames.findIndex((f) => !f.hidden && f.list === 1);
+      // 可见空白总时长：opacity 未到 1 **或** 视口没铺满的帧，按帧间隔累加。
+      let visibleBlankMs = 0;
+      let transparentFrames = 0;
+      for (let i = 0; i < frames.length; i += 1) {
+        const dt = i ? frames[i].t - frames[i - 1].t : 0;
+        if (frames[i].op < 0.99) transparentFrames += 1;
+        if (frames[i].op < 0.99 || frames[i].blank > 1) visibleBlankMs += dt;
+      }
+      const vis = { state: document.visibilityState, focused: document.hasFocus(),
+        headed: !!window.__sw.headed };
+      return {
+        frames: frames.length,
+        vis,
+        visibleBlankMs: Math.round(visibleBlankMs),
+        transparentFrames,
+        hiddenFrames: frames.filter((f) => f.hidden).length,
+        skeletonFrames: frames.filter((f) => f.skel > 0).length,
+        blankFramesAll: frames.filter((f) => f.blank > 1).length,
+        firstReveal: revealAt,
+        firstCovered: frames.findIndex((f) => f.blank <= 1 && f.rows >= 3),
+        // 内容身份：揭示那一帧的第一行是不是**目标会话**的
+        revealHasTarget: revealAt >= 0
+          && frames[revealAt].firstKey.indexOf('m-' + toConv + '-') === 0,
+        firstTargetFrame: frames.findIndex((f) => f.firstKey.indexOf('m-' + toConv + '-') === 0),
+        // ① 的机制量：目标会话内容出现之后，滚动位置还跨帧跳了多少（用户看到的就是这个）。
+        topJumpAfterTarget: (() => {
+          const at = frames.findIndex((f) => f.firstKey.indexOf('m-' + toConv + '-') === 0);
+          if (at < 0) return null;
+          let maxJump = 0;
+          for (let i = at + 1; i < frames.length; i += 1) {
+            maxJump = Math.max(maxJump, Math.abs(frames[i].top - frames[i - 1].top));
+          }
+          return Math.round(maxJump);
+        })(),
+        visibleBlank: frames.filter((f) => !f.hidden && f.blank > 1).length,
+        pureBlankHidden: frames.filter((f) => f.hidden && f.blank > 1 && f.skel === 0).length,
+        hiddenNoSkel: frames.filter((f) => f.hidden && f.skel === 0 && f.list === 1).length,
+        maxBlank: frames.length ? Math.round(Math.max(...frames.map((f) => f.blank))) : 0,
+        head: frames.slice(0, 14).map(pick),
+        apiCalls: window.__sw.apiCalls.slice(-3),
+      };
+    };
+    return { ok: true, base: sample() };
+  })()`);
+  check("切换段起手：已缓存会话有内容、列表已铺满",
+    !!ready && ready.ok === true && ready.base && ready.base.rows >= 3 && ready.base.blank <= 1,
+    "rows≥3 且 blank≤1", JSON.stringify(ready));
+
+  const cached = await cdp.eval("window.__sw.run('group:swb', 1600)");
+  console.log("  · 已缓存会话切换逐帧（h=隐藏 r=行数 s=骨架 b=空白px）：" + JSON.stringify(cached));
+  check("切到已缓存会话：揭示之后列表已覆盖视口（可见空白帧 = 0）",
+    !!cached && cached.visibleBlank === 0, "visibleBlank=0",
+    JSON.stringify({ visibleBlank: cached && cached.visibleBlank,
+      firstReveal: cached && cached.firstReveal, firstCovered: cached && cached.firstCovered,
+      maxBlank: cached && cached.maxBlank }));
+  check("切到已缓存会话：隐藏期间不是纯色背景（要么有行、要么有骨架）",
+    !!cached && cached.pureBlankHidden === 0, "pureBlankHidden=0",
+    JSON.stringify({ pureBlankHidden: cached && cached.pureBlankHidden,
+      hiddenFrames: cached && cached.hiddenFrames, hiddenNoSkel: cached && cached.hiddenNoSkel }));
+  // 这两格是 ① 的判据核心：遮罩到底在遮"追赶"还是"已经就绪的内容"。
+  check("切到已缓存会话：揭示那一帧的内容已经是目标会话（不是还在追赶）",
+    !!cached && cached.revealHasTarget === true, "revealHasTarget=true",
+    JSON.stringify({ revealHasTarget: cached && cached.revealHasTarget,
+      firstReveal: cached && cached.firstReveal, firstTarget: cached && cached.firstTargetFrame }));
+  check("切到已缓存会话：内容就位不晚于揭示（遮罩没有遮\"已就绪\"的屏）",
+    !!cached && cached.firstTargetFrame >= 0 && cached.firstReveal >= 0
+      && cached.firstTargetFrame <= cached.firstReveal,
+    "firstTargetFrame ≤ firstReveal",
+    JSON.stringify({ firstTarget: cached && cached.firstTargetFrame,
+      firstReveal: cached && cached.firstReveal }));
+
+  // ① 的机制判据（2026-10-27 实测定性）：切到**已缓存**会话时，内容在帧 0 就已经是目标会话，
+  // 真正被用户看到的是一次**跨帧的滚动跳变**（实测 398px）。所以这里量"目标内容出现之后
+  // 滚动位置还跨帧跳多少" —— 它比"有没有白"更接近用户描述的那一下。
+  check("切到已缓存会话：目标会话出现后滚动位置不再跨帧跳（≤2px/帧）",
+    !!cached && cached.topJumpAfterTarget != null && cached.topJumpAfterTarget <= 2,
+    "topJumpAfterTarget ≤2",
+    JSON.stringify({ topJumpAfterTarget: cached && cached.topJumpAfterTarget,
+      firstTargetFrame: cached && cached.firstTargetFrame,
+      head: cached && cached.head && cached.head.slice(0, 4) }));
+
+  const cold = await cdp.eval("window.__sw.run('group:swc', 2200, true)");
+  console.log("  · 未缓存会话切换逐帧：" + JSON.stringify(cold));
+  // ① 的验收量（α 的唯一完成判据）：**用户看得见的空白总时长**。
+  // 阈值 34ms = 60Hz 下 2 帧，低于它就是察觉不到。headless 读不到 transition（动画时钟不推帧），
+  // 所以只有"页面 visible"的那一趟（headed）进判据，headless 只记读数并标 UNSUPPORTED。
+  const headed = !!(cached && cached.vis && cached.vis.headed === true);
+  if (headed) {
+    check("切到已缓存会话：看得见的空白总时长 ≤34ms（60Hz 2 帧）",
+      cached.visibleBlankMs <= 34, "visibleBlankMs ≤34",
+      JSON.stringify({ visibleBlankMs: cached.visibleBlankMs,
+        transparentFrames: cached.transparentFrames, vis: cached.vis }));
+  } else {
+    checkState("切到已缓存会话：可见空白总时长这一格需要 headed（headless 不推动画时钟）",
+      "UNSUPPORTED", "visibleBlankMs ≤34",
+      JSON.stringify({ visibleBlankMs: cached && cached.visibleBlankMs,
+        transparentFrames: cached && cached.transparentFrames, vis: cached && cached.vis }));
+  }
+  // 未缓存路径**允许**在"骨架撤掉、列表还没画上"的那一帧出现隐藏期空白 ——
+  // 那正是这个遮罩存在的理由。要判的是"揭示之后不许还空白"，以及骨架确实出现过。
+  check("正控：切到未缓存会话走骨架路径 —— 有骨架帧，且揭示后没有空白",
+    !!cold && cold.skeletonFrames > 0 && cold.visibleBlank === 0,
+    "skeletonFrames>0 且 visibleBlank=0",
+    JSON.stringify({ skeletonFrames: cold && cold.skeletonFrames,
+      visibleBlank: cold && cold.visibleBlank,
+      pureBlankHidden: cold && cold.pureBlankHidden,
+      maxBlank: cold && cold.maxBlank, firstCovered: cold && cold.firstCovered,
+      revealHasTarget: cold && cold.revealHasTarget }));
+}
+
+/**
+ * 真输入 vs 合成位移（--only=scrollinput，2026-10-27）。
+ *
+ * 覆盖面审计的结论是：本仓**所有**滚动判据都用 `el.scrollTop = …` 驱动（25 处）、
+ * 其中 15 处还手动补发 `new Event('scroll')`，而**真 wheel / 真手势一次都没有**
+ * （`mouseWheel` 命中 0 处、`@wheel → onUserInput` 零覆盖）。于是"快滚/惯性下产品是什么样"
+ * 一直是拿合成位移外推的。
+ *
+ * 本段把同一段位移用四种输入各跑一遍，量同一组指标（空白带、锚点 jumpPx、帧间隔、是否真动），
+ * 目的不是现在就判产品红绿，而是给出一张**同轨迹对照表**：合成与真输入差多少、差在哪。
+ * 每个模式都自带前提自证（页面真收到 wheel / 手势真产生动量），拿不到就标 UNSUPPORTED，
+ * 不许把"没发生"读成"没问题"。
+ */
+async function runScrollInput(cdp, url) {
+  await cdp.send("Emulation.setDeviceMetricsOverride", {
+    width: 1200, height: 800, deviceScaleFactor: 1, mobile: false,
+  });
+  await cdp.send("Page.navigate", { url });
+  await sleep(3_000);
+  await cdp.eval(PAGE_FIXTURE);
+  await cdp.eval(`(() => {
+    window.__TAURI_INTERNALS__ = {
+      metadata: { currentWindow: { label: 'main' }, currentWebview: { label: 'main', windowLabel: 'main' } },
+      invoke: async () => null, transformCallback: (cb) => cb, convertFileSrc: (p) => p,
+    };
+    if (!window.__TAURI_EVENT_PLUGIN_INTERNALS__) {
+      window.__TAURI_EVENT_PLUGIN_INTERNALS__ = { unregisterListener: () => {} };
+    }
+  })()`);
+  const mounted = await cdp.eval(
+    "window.__probe.install('/src/components/ChatWindow.vue', '', '{\"hostHeight\":\"800px\"}')",
+  );
+  check("ChatWindow 挂得起来（输入段的入口）",
+    !!mounted && mounted.ok === true, "install ok", JSON.stringify(mounted));
+  await cdp.eval("window.__probe.seedDevice('dev-me')");
+
+  const armed = await cdp.eval(`(async () => {
+    const { useChatStore } = await import('/src/stores/useChatStore.ts');
+    const chat = useChatStore();
+    const conv = 'group:inp';
+    const rows = [];
+    for (let i = 0; i < 120; i += 1) {
+      const seq = i + 1;
+      const kind = seq % 6 === 0 ? 'file' : seq % 7 === 0 ? 'code' : 'text';
+      let content;
+      if (kind === 'file') content = JSON.stringify({ name: 'i' + seq + '.bin', path: '/tmp/i' + seq + '.bin', size: 1000 });
+      else if (kind === 'code') content = 'const i' + seq + ' = ' + seq + ';';
+      else content = ('第' + seq + '条，输入对照用。').repeat(4);
+      rows.push({ id: seq, msg_id: 'm-inp-' + seq, local_id: 'm-inp-' + seq, conv_id: conv,
+        sender_id: 'dev-me', sender_name: '我', receiver_id: 'inp', kind, content,
+        status: 'sent', seq, ts: 1700000000000 + seq * 1000 });
+    }
+    chat.activeConv = conv;
+    chat.messages[conv] = rows;
+    await new Promise((r) => setTimeout(r, 1200));
+    const el = document.querySelector('.vlist-no-anchor');
+    if (!el) return { ok: false, why: 'no scroller' };
+    const pad = parseFloat(getComputedStyle(el).paddingBottom) || 0;
+    window.__sw2 = { frames: [], wheels: 0, running: false };
+    addEventListener('wheel', () => { window.__sw2.wheels += 1; }, { passive: true, capture: true });
+    const covered = (iv) => {
+      let total = 0;
+      let cur = 0;
+      for (const [a, b] of iv) {
+        if (b <= cur) continue;
+        total += Math.max(0, b - Math.max(a, cur));
+        cur = Math.max(cur, b);
+      }
+      return total;
+    };
+    const sample = () => {
+      const cur = document.querySelector('.vlist-no-anchor');
+      if (!cur) return null;
+      const cr = cur.getBoundingClientRect();
+      const h = cur.clientHeight;
+      const rs = [...cur.querySelectorAll('[data-vlist-key]')].map((n) => {
+        const r = n.getBoundingClientRect();
+        return { key: n.getAttribute('data-vlist-key') || '',
+          top: Math.max(0, r.top - cr.top), bottom: Math.min(h, r.bottom - cr.top) };
+      }).filter((r) => r.bottom > r.top).sort((a, b) => a.top - b.top);
+      const anchor = rs.find((r) => r.bottom > 1) || rs[0] || null;
+      return { top: cur.scrollTop,
+        blank: Math.max(0, h - pad - covered(rs.map((r) => [r.top, r.bottom]))),
+        aKey: anchor ? anchor.key : '', aTop: anchor ? anchor.top : 0 };
+    };
+    window.__sw2.summarise = () => {
+      const f = window.__sw2.frames;
+      if (!f.length) return { frames: 0 };
+      let blankFrames = 0, maxBlank = 0, jumpFrames = 0, maxJump = 0;
+      for (let i = 0; i < f.length; i += 1) {
+        if (f[i].blank > 1) { blankFrames += 1; maxBlank = Math.max(maxBlank, f[i].blank); }
+        if (i === 0) continue;
+        if (f[i].aKey && f[i].aKey === f[i - 1].aKey) {
+          const jump = (f[i].aTop - f[i - 1].aTop) + (f[i].top - f[i - 1].top);
+          if (Math.abs(jump) > 2) { jumpFrames += 1; maxJump = Math.max(maxJump, Math.abs(jump)); }
+        }
+      }
+      const gaps = [];
+      for (let i = 1; i < f.length; i += 1) gaps.push(f[i].t - f[i - 1].t);
+      gaps.sort((a, b) => a - b);
+      return { frames: f.length, blankFrames, maxBlank: Math.round(maxBlank),
+        jumpFrames, maxJump: Math.round(maxJump),
+        moved: Math.round(f[f.length - 1].top - f[0].top),
+        frameP50: gaps.length ? +gaps[Math.floor(gaps.length / 2)].toFixed(1) : null,
+        frameMax: gaps.length ? +gaps[gaps.length - 1].toFixed(1) : null,
+        longFrames: gaps.filter((g) => g > 50).length,
+        wheels: window.__sw2.wheels };
+    };
+    window.__sw2.start = () => {
+      window.__sw2.frames = [];
+      window.__sw2.wheels = 0;
+      window.__sw2.running = true;
+      const loop = (t) => {
+        if (!window.__sw2.running) return;
+        const s = sample();
+        if (s) { s.t = t; window.__sw2.frames.push(s); }
+        requestAnimationFrame(loop);
+      };
+      requestAnimationFrame(loop);
+    };
+    window.__sw2.stop = () => { window.__sw2.running = false; return window.__sw2.summarise(); };
+    window.__sw2.reset = async (ms) => {
+      const cur = document.querySelector('.vlist-no-anchor');
+      cur.scrollTop = cur.scrollHeight;
+      await new Promise((r) => setTimeout(r, ms || 400));
+      return +cur.scrollTop.toFixed(1);
+    };
+    window.__sw2.top = () => {
+      const cur = document.querySelector('.vlist-no-anchor');
+      return +cur.scrollTop.toFixed(1);
+    };
+    // 合成位移基线（旧口径）：30 帧 × 40px
+    window.__sw2.synthetic = async (frames, step) => {
+      const cur = document.querySelector('.vlist-no-anchor');
+      cur.scrollTop = cur.scrollHeight;
+      await new Promise((r) => setTimeout(r, 400));
+      window.__sw2.start();
+      for (let i = 0; i < frames; i += 1) {
+        cur.scrollTop = Math.max(0, cur.scrollTop - step);
+        await new Promise((r) => requestAnimationFrame(r));
+      }
+      await new Promise((r) => setTimeout(r, 200));
+      return window.__sw2.stop();
+    };
+    return { ok: true, base: sample() };
+  })()`);
+  check("输入段起手：120 条混合消息、可滚且已铺满",
+    !!armed && armed.ok === true && armed.base && armed.base.blank <= 1,
+    "blank ≤1", JSON.stringify(armed));
+
+  const rect = await cdp.eval(`(() => { const el = document.querySelector('.vlist-no-anchor');
+    const r = el.getBoundingClientRect();
+    return { x: Math.round(r.left + r.width / 2), y: Math.round(r.top + r.height / 2) }; })()`);
+
+  const table = {};
+  // ① 合成位移（旧口径）
+  table.synthetic = await cdp.eval("window.__sw2.synthetic(30, 40)");
+
+  // ② 真滚轮：CDP 的 wheel 只有像素增量（没有 deltaMode ⇒ line 模式只能真硬件）
+  await cdp.eval("window.__sw2.reset(500)");
+  await cdp.eval("window.__sw2.start()");
+  for (let i = 0; i < 20; i += 1) {
+    await cdp.send("Input.dispatchMouseEvent", {
+      type: "mouseWheel", x: rect.x, y: rect.y, deltaX: 0, deltaY: -120, modifiers: 0,
+    });
+    await sleep(16);
+  }
+  await sleep(300);
+  table.wheel = await cdp.eval("window.__sw2.stop()");
+  check("输入自证①：页面真的收到了 wheel 事件（否则模式②没有判据）",
+    (table.wheel.wheels || 0) > 0, "wheels > 0", JSON.stringify(table.wheel));
+
+  // ③ 键盘 PageDown（唯一"原生滚动、我们一次都不写"的输入）。
+  //    CDP 的键盘事件发给**当前焦点元素** ⇒ 必须先把焦点放到滚动容器上，
+  //    否则 PageDown 落在 body 上（第一版 moved=0 就是这个原因，不是产品不响应）。
+  await cdp.eval(`(() => {
+    const el = document.querySelector('.vlist-no-anchor');
+    window.__sw2.reset(500);
+    el.tabIndex = -1;
+    el.focus();
+    return document.activeElement === el;
+  })()`);
+  const focusOk = await cdp.eval(`(() => {
+    const el = document.querySelector('.vlist-no-anchor');
+    return { focused: document.activeElement === el, tabIndex: el.tabIndex,
+      scrollable: el.scrollHeight - el.clientHeight };
+  })()`);
+  await cdp.eval("window.__sw2.start()");
+  for (let i = 0; i < 6; i += 1) {
+    await cdp.send("Input.dispatchKeyEvent", {
+      type: "rawKeyDown", windowsVirtualKeyCode: 34, nativeVirtualKeyCode: 34, key: "PageDown", code: "PageDown",
+    });
+    await cdp.send("Input.dispatchKeyEvent", {
+      type: "keyUp", windowsVirtualKeyCode: 34, nativeVirtualKeyCode: 34, key: "PageDown", code: "PageDown",
+    });
+    await sleep(120);
+  }
+  await sleep(250);
+  table.pageDown = await cdp.eval("window.__sw2.stop()");
+
+  // ④ 手势 + 惯性（yDistance 正值 = 向上滚）。**必须用 touch**：mouse 手势不 produce fling。
+  //    这一趟放在**最后**并单独 try/catch：本机实测 touch 手势会让探针页导航/关掉 CDP target
+  //    （"Inspected target navigated or closed"）⇒ 前面的几格不能被它连坐。
+  try {
+    await cdp.eval("window.__sw2.reset(500)");
+    await cdp.eval("window.__sw2.start()");
+    const beforeSwipe = await cdp.eval("window.__sw2.top()");
+    await cdp.send("Input.synthesizeScrollGesture", {
+      x: rect.x, y: rect.y, xDistance: 0, yDistance: 600, speed: 1200,
+      gestureSourceType: "touch", preventFling: false,
+    });
+    const afterGesture = await cdp.eval("window.__sw2.top()");
+    await sleep(400);
+    const afterMomentum = await cdp.eval("window.__sw2.top()");
+    table.swipe = await cdp.eval("window.__sw2.stop()");
+    table.swipe.momentum = +(afterMomentum - afterGesture).toFixed(1);
+    table.swipe.beforeSwipe = beforeSwipe;
+    console.log("  · 手势趟：gesture 结束 " + afterGesture + " → +400ms " + afterMomentum
+      + "（动量位移 " + table.swipe.momentum + "px）");
+  } catch (e) {
+    table.swipe = { error: String(e && e.message || e).slice(0, 160), momentum: 0 };
+    console.log("  · 手势趟不可用（本引擎/本页）：" + table.swipe.error);
+  }
+
+  const moved = (m) => !!m && Math.abs(m.moved || 0) >= 100;
+  check("合成 / 滚轮 / 手势三种输入都真的滚动了（对照表才有可比性）",
+    moved(table.synthetic) && moved(table.wheel) && moved(table.swipe),
+    "每种 ≥100px",
+    JSON.stringify({ synthetic: table.synthetic && table.synthetic.moved,
+      wheel: table.wheel && table.wheel.moved, swipe: table.swipe && table.swipe.moved }));
+  // 键盘那一格：先证"焦点在容器上"，再说它动没动。不动就是本引擎/本页没有这条判据（红），
+  // 不许把 moved=0 读成"键盘滚动也没问题"。
+  if (moved(table.pageDown)) {
+    check("键盘 PageDown 驱动了容器（唯一「我们一次都不写」的原生滚动）",
+      true, "moved ≥100", JSON.stringify({ moved: table.pageDown.moved, focusOk }));
+  } else {
+    checkState("键盘 PageDown 未驱动容器 —— 键盘原生滚动这一格无判据",
+      "UNSUPPORTED", "moved ≥100",
+      JSON.stringify({ moved: table.pageDown && table.pageDown.moved, focusOk }));
+  }
+
+  console.log("  · 输入对照表（同夹具、同位移方向；空白/跳动/帧时间）：" + JSON.stringify(table));
+  // 惯性尾巴必须自证：动量是"**沿手势方向继续走**"，所以符号跟着方向（向上滚 ⇒ 负）。
+  // 只看绝对值；没有动量才是"本引擎无判据"（标 UNSUPPORTED），不许读成"产品在惯性下没问题"。
+  const momentum = Math.abs(table.swipe.momentum || 0);
+  if (momentum >= 8) {
+    check("输入自证②：合成手势确实产生了惯性尾巴（动量位移 ≥8px）",
+      true, "|momentum| ≥8", JSON.stringify({ momentum: table.swipe.momentum }));
+  } else {
+    checkState("输入自证②：本引擎的合成手势没产生惯性尾巴 —— 惯性那一格无判据",
+      "UNSUPPORTED", "|momentum| ≥8", JSON.stringify({ momentum: table.swipe.momentum }));
+  }
 }
 
 /**
@@ -8304,6 +9463,36 @@ async function runVirtualList(cdp, url) {
     "同一 firstVisible、|Δtop|<=2、scrollTop 增大",
     JSON.stringify({ before: { k: before.firstVisible, top: before.firstTop, st: before.scrollTop },
       after: { k: s.firstVisible, top: s.firstTop, st: s.scrollTop } }));
+
+  // 三份数对照（只读）：库自己算的行起点 / 该行 DOM 的 translateY / scrollTop+行顶。
+  // 用来回答"拿库的 getOffsetForIndex 当校正目标"是否成立 —— 若三者不自洽，那就不成立。
+  const diag = await cdp.eval(`(() => {
+    const el = document.querySelector('#vlist-host .vlist-no-anchor');
+    if (!el) return { ok: false, why: 'no scroller' };
+    const comp = el.__vueParentComponent;
+    const raw = comp && comp.setupState ? comp.setupState.virtualizer : null;
+    const v = raw && typeof raw.getTotalSize !== 'function' && raw.value ? raw.value : raw;
+    if (!v || typeof v.getOffsetForIndex !== 'function') return { ok: false, why: 'no virtualizer' };
+    const rows = [...el.querySelectorAll('[data-vlist-key]')];
+    if (!rows.length) return { ok: false, why: 'no rows' };
+    const cr = el.getBoundingClientRect();
+    const target = rows.find((n) => (n.getBoundingClientRect().bottom - cr.top) > 1) || rows[0];
+    const key = target.getAttribute('data-vlist-key');
+    let idx = -1;
+    for (let i = 0; i < v.options.count; i += 1) {
+      if (v.options.getItemKey(i) === key) { idx = i; break; }
+    }
+    const off = idx >= 0 ? v.getOffsetForIndex(idx, 'start') : null;
+    const nr = target.getBoundingClientRect();
+    return { ok: true, key, idx,
+      libStart: off ? Math.round(off[0]) : null,
+      domTop: Math.round(nr.top - cr.top),
+      top: Math.round(el.scrollTop),
+      impliedStart: Math.round(el.scrollTop + (nr.top - cr.top)),
+      translate: target.style.transform,
+      fix: (window.__prependFix || []).slice(-6) };
+  })()`);
+  console.log("  · prepend 后的库内/DOM 对照：" + JSON.stringify(diag));
   check("VirtualList：prepend 后仍只渲染视口附近（没有退化成整表）",
     s.rows > 0 && s.rows < 60, "0 < rows < 60", "rows=" + s.rows);
 

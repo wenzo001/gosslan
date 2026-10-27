@@ -13,6 +13,35 @@
 
 ## [Unreleased]
 
+## [5.14.6] - 2026-10-27
+
+### 停稳在底部附近不再被"夹"到底（2026-10-27）
+
+- **现象**：停在离底 60px 处不动，等图片/回应落地后，视口自己滑到底部。
+- **实测**：静置 1.5s 期间**一次 JS 写入都没有**，`scrollTop` 却从 3254 变 3230、gap 从 60 变 0 ——
+  原因是内容**收缩**了（估算被实测下修），浏览器把 `scrollTop` 夹到新的最大值。
+- **根因**：`shouldAdjustScrollPositionOnItemSizeChange` 里写着 `if (pinned) return false;`，
+  于是"整行完全在视口上方"的行收缩时，库的补偿与应用的同步跟写**两条路都不走**。
+- **修法**：该判据只在**收敛窗口内**（切会话的测量风暴）返回 false；窗口外，整行在视口上方的行一律补。
+- **读数**：`gapAtSet 60 → gapPre 60`（修前 60 → 0）；`vlist`/`scrollreact`/`scrollshake` 回归全绿。
+
+### 切会话不再"闪一下"：首帧就落在新会话的位置（2026-10-27）
+
+- **实测**：切到已缓存会话时，内容在**帧 0** 就已经是新会话（首帧无空白、目标 key 已就位），
+  但滚动位置还停在上一条会话的值，随后**一帧跳 356px（另一次 291px）**。
+- **根因**：`onItemsChanged` 只 `armSettleHold()`，把落位交给 ~120ms 后的收口 ⇒ 用户看到的第一帧是
+  "新内容 + 旧位置"。
+- **修法**：切会话分支先 `scrollToBottom()`（post-flush 时 DOM 已换、尚未绘制，这一次写落在第一帧上），
+  再照旧 arm 收敛窗口负责后续细修。
+- **读数**：`topJumpAfterTarget` 356 / 291px → **0**。
+
+### 长列表诊断能力（scripts，不进产品包）
+
+- `scripts/check-ui-runtime.mjs`：`--only=` 段名现解析校验（打错退 2，不再"0 条判据却报绿"）；
+  写入归因台账（拦 `scrollTo`/`scrollBy`/`scrollIntoView` + 实例 `scrollTop`，owner/mark 两层）；
+  新增 `scrollhist`/`scrollswitch`/`scrollinput` 三段（前插耗时与锚点、切会话逐帧可见性、真输入对照）。
+- `perf/wk-scroll-sampler.js`：WKWebView 真机采样器（粘进 Safari 控制台，读数走前端日志出口，带 selfCheck）。
+
 ## [5.14.5] - 2026-10-27
 
 ### Windows 崩溃第一次能归因：现场里补上了内存 / 提交量 / GDI·USER / 帧读聚合（2026-10-27）
