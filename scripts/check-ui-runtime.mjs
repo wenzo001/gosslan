@@ -5059,6 +5059,81 @@ async function runScrollHist(cdp, url) {
     && measured.steps.every((s) => s.len1 - s.len0 === 100);
   check("前插三段真的各加载了一页（+100 条）—— 否则下面的耗时没有对象",
     pagesOk, "每段 +100 条", JSON.stringify(measured && measured.steps));
+  // 归因：前插那一帧的 400ms 花在 merge/fold 上，还是在测量/渲染上？只测纯函数（同数据、同形状）。
+  const cost = await cdp.eval(`(async () => {
+    const { mergeMessages } = await import('/src/utils/messages.ts');
+    const { foldReactions } = await import('/src/utils/reactions.ts');
+    const { foldTodos } = await import('/src/utils/todos.ts');
+    const { useChatStore } = await import('/src/stores/useChatStore.ts');
+    const chat = useChatStore();
+    const conv = 'group:hist';
+    const cur = (chat.messages[conv] || []).slice();
+    if (!cur.length) return { ok: false };
+    const older = cur.slice(0, Math.min(100, cur.length)).map((m, i) => Object.assign({}, m, {
+      id: 900000 + i, msg_id: 'cost-m-' + i, local_id: 'cost-l-' + i,
+    }));
+    const t0 = performance.now();
+    const merged = mergeMessages(cur, older);
+    const mergeMs = +(performance.now() - t0).toFixed(2);
+    const t1 = performance.now();
+    foldReactions(merged, 'dev-me');
+    const rxMs = +(performance.now() - t1).toFixed(2);
+    const t2 = performance.now();
+    foldTodos(merged);
+    const todoMs = +(performance.now() - t2).toFixed(2);
+    return { ok: true, len: merged.length, mergeMs, rxMs, todoMs };
+  })()`);
+  console.log("  · 前插链纯函数耗时（同数据同形状）：" + JSON.stringify(cost));
+
+  // A4 的一半：**纯文本**前插的帧成本，与混合种类对照 —— 判"400ms 是不是花在复杂行的挂载上"。
+  const textOnly = await cdp.eval(`(async () => {
+    const el0 = document.querySelector('.vlist-no-anchor');
+    const { useChatStore } = await import('/src/stores/useChatStore.ts');
+    const chat = useChatStore();
+    const conv = 'group:hist';
+    const api = (await import('/src/api/index.ts')).api;
+    const rows = [];
+    for (let i = 1; i <= 200; i += 1) {
+      rows.push({ id: 7000 + i, msg_id: 't-m-' + i, local_id: 't-l-' + i, conv_id: conv,
+        sender_id: 'dev-me', sender_name: '我', receiver_id: 'hist', kind: 'text',
+        content: ('纯文本第' + i + '条，把列表撑长。').repeat(4),
+        status: 'sent', seq: i, ts: 1700000000000 + i * 1000 });
+    }
+    chat.activeConv = conv;
+    chat.messages[conv] = rows.slice(100);
+    api.getMessageCount = async () => 400;
+    let page = 0;
+    api.getMessages = async (convId, limit, offset) => {
+      page += 1;
+      return rows.slice(Math.max(0, 100 - page * 100), 100 - (page - 1) * 100);
+    };
+    await new Promise((r) => setTimeout(r, 900));
+    const el = document.querySelector('.vlist-no-anchor');
+    if (!el) return { ok: false };
+    el.scrollTop = Math.max(0, el.scrollHeight - el.clientHeight - 1200);
+    await new Promise((r) => setTimeout(r, 1400));
+    const gaps = [];
+    let last = 0;
+    let run = true;
+    const tick = (t) => { if (!run) return; if (last) gaps.push(t - last); last = t; requestAnimationFrame(tick); };
+    requestAnimationFrame(tick);
+    const marks = [];
+    for (let k = 0; k < 2; k += 1) {
+      const t0 = performance.now();
+      await chat.loadMoreMessages(conv);
+      const msAsync = +(performance.now() - t0).toFixed(1);
+      await new Promise((r) => setTimeout(r, 400));
+      marks.push(msAsync);
+    }
+    run = false;
+    gaps.sort((a, b) => a - b);
+    return { ok: true, frames: gaps.length, marks,
+      frameP50: gaps.length ? +gaps[Math.floor(gaps.length * 0.5)].toFixed(1) : null,
+      frameMax: gaps.length ? +gaps[gaps.length - 1].toFixed(1) : null,
+      longFrames: gaps.filter((g) => g > 50).length };
+  })()`);
+  console.log("  · A4 对照（纯文本前插 2 页）：" + JSON.stringify(textOnly));
+
   const steps = (measured && measured.steps) || [];
   const anchorOk = steps.length === 3
     && steps.every((s) => s.keptKey === true && s.drift != null && Math.abs(s.drift) <= 2);
@@ -5316,6 +5391,32 @@ async function runScrollSwitch(cdp, url) {
     JSON.stringify({ topJumpAfterTarget: cached && cached.topJumpAfterTarget,
       firstTargetFrame: cached && cached.firstTargetFrame,
       head: cached && cached.head && cached.head.slice(0, 4) }));
+
+  // E 类：`itemSizeCache` 按消息 id 存、切会话**不清**；上限 6000 时 `measure()` 会整表清空。
+  // 这里量"来回切会话时缓存怎么长"，判它是否是一条会突然全量重测的悬崖。
+  const cacheGrow = await cdp.eval(`(async () => {
+    const el = () => document.querySelector('.vlist-no-anchor');
+    const readSize = () => {
+      const cur = el();
+      const comp = cur && cur.__vueParentComponent;
+      const raw = comp && comp.setupState ? comp.setupState.virtualizer : null;
+      const v = raw && typeof raw.getTotalSize !== 'function' && raw.value ? raw.value : raw;
+      return v && v.itemSizeCache ? v.itemSizeCache.size : null;
+    };
+    const { useChatStore } = await import('/src/stores/useChatStore.ts');
+    const chat = useChatStore();
+    const seen = [];
+    for (let i = 0; i < 6; i += 1) {
+      chat.activeConv = i % 2 === 0 ? 'group:swa' : 'group:swb';
+      await new Promise((r) => setTimeout(r, 260));
+      seen.push(readSize());
+    }
+    return { seen, last: seen[seen.length - 1] };
+  })()`);
+  console.log("  · E 类缓存曲线（来回切 6 次，itemSizeCache.size）：" + JSON.stringify(cacheGrow));
+  check("E 类：来回切会话时测量缓存不随次数线性增长（≤ 两个会话的消息数）",
+    !!cacheGrow && typeof cacheGrow.last === "number" && cacheGrow.last <= 200,
+    "缓存条数 ≤200", JSON.stringify(cacheGrow));
 
   const cold = await cdp.eval("window.__sw.run('group:swc', 2200, true)");
   console.log("  · 未缓存会话切换逐帧：" + JSON.stringify(cold));
