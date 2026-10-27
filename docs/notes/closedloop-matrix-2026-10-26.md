@@ -65,6 +65,7 @@ HEAD `6ca07ca5`。取值：`PASS` / `PARTIAL` / `FAIL` / `UNVERIFIED` / `BLOCKED
 | F-OBS-010 | 前端健康：心跳 / 慢操作 / 前端异常 | PASS 心跳是**唯一**允许每秒一次的 IPC，且**不进前端的 invoke 追踪表**（否则自我递归）；`current_op` 截到 120 字符 | 不适用(理由)：都是即时上报 | PASS 看门狗靠心跳时戳 + `active` 判渲染层是否卡死；慢操作**只写一行日志、不回传事件**（避免形成回环） | PASS `log_frontend_error` 的理由写得很实：「界面『点了没反应』最常见的原因就是**一次 JS 异常**，而前端异常此前**不留任何痕迹**」——所以它是一条**现成的落点**（B1-F4 / B1-F5 的修法可以直接用它，不必新造通道）；文本截到 2000 字符 | PASS 有心跳/看门狗断言（`lib_window_tests.rs:994`「渲染层完全卡死时必须发系统通知」） | PARTIAL **同一族里码不一致**：`report_frontend_slow_op` 有 `code=SLOW_OP`，而 `log_frontend_error` 只有 `[前端 kind]` 前缀、没有 code | **PARTIAL** |
 | F-PRE-016 | 界面语言切换 / 聊天样式广播 | PASS `set_ui_language` 先记 hint（macOS 菜单与后端文案的依据），非 macOS 下菜单模块整体不编译但**命令保留**（前端不必按平台分支）；`broadcast_chat_style` 广播给所有已连节点 | 不适用(理由)：单次状态广播 | PASS `set_ui_language` **刻意不发 `settings-changed`**——注释记着一个被修掉的**事件乒乓**：另一窗口收到 → 重拉设置 → `applySettingsSnapshot` 结尾无条件 `pushUiLanguage()` → 又调回这条命令 → 再发一次；`broadcast_chat_style` 同 `update_profile` 的纪律：**锁内只克隆发送端、发送在锁外**（否则一条拥塞链路就能握着全局 links 锁把整个网络层含看门狗拖死） | PASS 大载荷的风格帧按**唯一分类表**降级为 `Low`、不占聊天道；语言切换即时反映到菜单 | PARTIAL 有「设置变更事件两端都在」等回归（我实跑 17/17 那批里）；语言/样式的跨进程行为无轮次 | PARTIAL 无具名 `code=`（并入 B1-F1 族） | **PARTIAL** |
 | F-OBS-011 | 一键重启 / 上一轮退出原因 / 测试通知 | PASS `restart_app` 立即返回（"前端等不到——进程会重启"），真正收尾在独立线程；`get_previous_exit` **不做文件 IO**、直接返回启动时缓存的报告（"启动路径不该再等一次磁盘"）；`send_test_notification` 显式忽略总开关（用户显式要试）并**如实返回失败原因 + 平台提示** | 不适用(理由)：重启是进程级动作、其余是读取 | PASS 重启复用托盘同一个入口 `restart::request_restart`（有界收尾 → 销毁单实例锁 → 重启），与「重启与单实例」那条既有纪律一致；上一轮退出原因在启动时已落定，读取零成本 | PASS 测试通知的注释点明它的存在意义：「Windows 上通知失败可能完全静默（未注册 AUMID / 专注助手 / 系统里关掉），没有这个入口用户只能描述『收不到』」——但**系统静默丢弃时 `show()` 仍返回 `Ok`**，于是最需要它说话的那一格会说"已发送"（**B4-F3** 的精确缺口） | PARTIAL 有 `lib_window_tests` 的托盘/看门狗断言；重启链路属既有实现 | PARTIAL 重启与测试通知都无具名 `code=`（测试通知失败有 warn 文案） | **PARTIAL** |
+| F-MSG-002 | 发群消息（text / code / merge / 群强提醒） | PASS kind 白名单 + merge 载荷预校验；`mentions` 是**三态**：缺省=不发这个键（接收端按昵称兜底）/ 空数组=明确回答「谁都没 @」/ 有值=点名，上限 64 | 不适用(理由)：单次提交；未送出前取消归 F-MSG-014 | PASS 群强提醒**只提醒 actors 点名的成员、绝不默认全群**：群帧共享群密钥 + gossip 广播，物理上人人收到同一帧，但**只有 actors 设备允许触发提醒与回执**；而且**出帧前的受众校验是承重件**——目标消息必须是本群真实一行、`actors` 按**现读成员**劈分、**没有有效受众一律拒发**（注释原文） | PASS 拒发有具体原因；`mentions` 不落库的理由指到 `state::MessageRecord.mention_targets` 字段文档（单处说明，不重复） | PARTIAL 有 group 37 轮与消息族测试；**群强提醒的受众劈分没有跨实例轮次** | PARTIAL 无具名 `code=`（并入 B1-F1 族） | **PARTIAL** |
 | F-OBS-002 | 前后端契约双向对账（161 命令 / 事件面） | PASS 门面唯一：`IPC 只能从 src/api 门面走`（含「6 条命令在 api 上根本没有包装」的回归） | 不适用(理由)：这是判据不是用户操作 | 不适用(理由)：同上 | 不适用(理由)：同上 | **PASS（我实跑）** `node --test src/api/events.test.ts src/utils/mapContract.test.ts` ⇒ **EXIT=0，17/17**；另独立 `comm` 复算：注册 161 / 去重调用名 160，孤儿仅 `get_topology`（`events.test.ts:375` 自declare 无 UI 入口） | PASS 命令名与注册表逐条对账、「门面之下不许留没人引用的包装」都是现成判据 | **PASS** |
 | F-OBS-003 | 诊断面：错误分类 / 上限 / 脱敏 / 访问控制 | 不适用(理由)：非用户动作 | 不适用(理由)：同上 | PASS 单文件 512 KB 轮转（`logging.rs:140/1070`），有真文件读写测试 `logger_persists_to_file_and_rotates:1715` | 部分：日志窗口有独立 entry（`logs.html` + `src/entries/logs.ts`），用户可查 | **已证**（上两行测试名 + 我跑通的对账族） | **PARTIAL** 具名 `code=` 共 **87** 个、日志调用 363 处（error 81 / warn 129 / info 153），覆盖面广；但**关键操作结局缺码**（B1-F1）；脱敏是形状级（`diagnostics.rs:19-22`，作者自述并保留文件名/大小以便查传输故障）⇒ 隐私与可查性是**登记过的取舍** | **PARTIAL** |
 
@@ -156,6 +157,7 @@ HEAD `6ca07ca5`。取值：`PASS` / `PARTIAL` / `FAIL` / `UNVERIFIED` / `BLOCKED
 下面这份清单是"我读过函数体或关键分支"的命令，**由脚本与 161 条注册表求交并报出拼错的名字**（不是手抄计数）：
 
 ```text
+send_group_message
 cancel_message
 recall_message
 mark_read
@@ -244,7 +246,7 @@ EOF
 
 `get_device_info` · `update_profile` · `list_interfaces` · `get_peers` · `search_nearby_peers` · `focus_window` · `shake_window` · `request_attention` · `set_unread_badge` · 好友四件套（`get_friends`/`send_friend_request`/`respond_friend_request`/`get_pending_requests`/`remove_friend`/`default_nickname`）· `send_message` · `get_messages`/`get_latest_messages`/`get_conversations`/`ensure_conversation`/`set_conversation_pinned`/`get_conv_link`/`get_message_count`/`get_pending_message_operations`/`get_group_todo_messages` · `send_group_message`/`send_group_reaction`/`pin_group_message`/`set_message_render`/`get_group_delivery_summaries`/`resend_group_delivery` · 群公告与群待办六条 · `send_todo_image`/`save_todo_image_bytes`/`todo_image_meta` · `request_content`/`request_content_by_cid`/`cancel_content_fetch`/`get_content_transfers`/`get_transfers` · `delete_file`/`save_outgoing_image`/`open_file_native`/`read_file_preview`/`read_content_preview`/`copy_file_to_clipboard`/`read_clipboard_file_paths`/`media_present` · `export_chat_text` · `get_discovery_diag`/`get_runtime_diag`/`set_app_active` · `window_minimize`/`window_toggle_maximize`/`window_is_maximized`/`window_close`/`set_native_titlebar_buttons_hidden`/`apply_macos_window_shape` · `search_chat_history` · `import_picked_file`/`request_ble_permissions`/`set_ui_language` · `broadcast_chat_style` · `list_favorites`/`add_favorite`/`remove_favorite`/`read_favorite_preview` · `get_cache_info`/`clean_cache_now`/`set_cache_policy` · `create_group`/`leave_group`/`distribute_group_key`/`get_groups` · `get_settings`/`reset_settings` · `get_previous_exit` · `notify_desktop`/`send_test_notification` · `login`/`updater_status` 之外的更新命令 · `ui_heartbeat`/`report_frontend_slow_op`/`log_frontend_error` · `take_group_todo_focus`/`request_group_todo_focus`/`get_group_todos_context`/`get_image_preview_gallery`/`close_settings_window`/`restart_app`。
 
-**所以真实进度是**：**61 条 / 161 条 ≈ 38% 的命令有六格结论**（清单与校验脚本见本节）；33 行矩阵里剩下的行讲的是**行为族**（例如"群成员级投递"这一族横跨收发两侧、多张表与清扫器），它们比单条命令大，但不能拿来充命令数。现算命令：
+**所以真实进度是**：**62 条 / 161 条 ≈ 39% 的命令有六格结论**（清单与校验脚本见本节）；33 行矩阵里剩下的行讲的是**行为族**（例如"群成员级投递"这一族横跨收发两侧、多张表与清扫器），它们比单条命令大，但不能拿来充命令数。现算命令：
 
 ```bash
 python3 - <<'EOF'
@@ -261,7 +263,7 @@ EOF
 
 ## 五、读数
 
-现算（**只数判级列**，命令：`grep -cE '^\| F-.*\| \*\*(PASS|PARTIAL)\*\* \|$' docs/notes/closedloop-matrix-2026-10-26.md` ⇒ **58**）：已走完六格 **58** 行，其中 **PASS 9**、**PARTIAL 49**；另有若干行含「不适用(理由)」的格（不适用≠通过，也不计入这两档）。⚠️ **不要用 `grep -c '^| F-'`**——本文件第六节的「FID → 命令映射」表同样以 `| F-` 开头，那个命令会把两表相加（实测报 45）。立案 **14** 条（P2 九 / P3 五），保留 **6** 条，撤回 **6** 条。
+现算（**只数判级列**，命令：`grep -cE '^\| F-.*\| \*\*(PASS|PARTIAL)\*\* \|$' docs/notes/closedloop-matrix-2026-10-26.md` ⇒ **59**）：已走完六格 **59** 行，其中 **PASS 9**、**PARTIAL 50**；另有若干行含「不适用(理由)」的格（不适用≠通过，也不计入这两档）。⚠️ **不要用 `grep -c '^| F-'`**——本文件第六节的「FID → 命令映射」表同样以 `| F-` 开头，那个命令会把两表相加（实测报 45）。立案 **14** 条（P2 九 / P3 五），保留 **6** 条，撤回 **6** 条。
 
 **本文件的引用不受任何守卫保护**（实况见主报告「我自己的两处错」第 2 条：`check-doc-citations.mjs` 管 `file:line` 的那条只吃 `LIVE_DOCS` 那 8 份，`docs/notes/**` 不在内）。所以行号会随改动静默腐烂。二选一，**本审计不新建脚本**（按仓里「新判据先找现成的家」与自己编的规矩要撤）：
 
