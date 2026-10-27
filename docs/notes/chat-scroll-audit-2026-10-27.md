@@ -423,6 +423,10 @@ cd /tmp/wt-power && GOSSLAN_PROBE_PORT=5296 GOSSLAN_PROBE_CDP=9252 \
 | 其余 51 格 | —— | ✅ | ✅ | 与本轮三症状无关（或本来就对） |
 
 修前那轮统计：**PASS 51 / FAIL 3 / UNSUPPORTED 1**（UNSUPPORTED 与现在同一格：headed-only 的可见空白时长）。
+
+headed 补跑（`GOSSLAN_PROBE_HEADLESS=0 --only=scrollswitch`，同一份修前代码）：**PASS 9 / FAIL 1 / UNSUPPORTED 0** ——
+红的仍是"跨帧跳"那一格；**"可见空白总时长"那格在修前也是绿的** ⇒ 它对 ① 没有功率，
+① 的举证只由"跨帧跳 ≤2px/帧"承担。（这条同样是"先证能红"的产出：不补这一跑，就会把两格都当成 ① 的证据。）
 ⇒ 这三格不是"恰好现在绿"，而是**被修前代码自己证过会红**；反过来说，⑤ 里那条"修前也绿"的段不承担这三格的举证。
 
 **由此定下两条规矩**（写在这里防止以后再犯）：
