@@ -302,7 +302,7 @@ test("未知档位一律红（新加一档忘了声明/声明错，不许默默�
  */
 test("发布门禁：Verify 未绿必须拒绝发布，且不许碰任何 release 调用", () => {
   for (const scenario of ["verify_red", "verify_pending"]) {
-    const r = run(scenario, { env: { GITHUB_ACTIONS: "true", GOSSLAN_SKIP_VERIFY_GATE: "0" } });
+    const r = run(scenario, { env: { GITHUB_ACTIONS: "true", GOSSLAN_SKIP_VERIFY_GATE: "0", GOSSLAN_VERIFY_GATE_ATTEMPTS: "1" } });
     assert.equal(r.code, 1, `${scenario}：门禁没拦住？输出：${r.out}`);
     assert.match(r.out, /Verify/);
     assert.deepEqual(
@@ -315,7 +315,7 @@ test("发布门禁：Verify 未绿必须拒绝发布，且不许碰任何 releas
 
 /** 正面对照：Verify 绿了照常发布（否则门禁会变成"永远不发版"）。 */
 test("发布门禁：Verify 绿了照常发布", () => {
-  const r = run("new", { env: { GITHUB_ACTIONS: "true", GOSSLAN_SKIP_VERIFY_GATE: "0" } });
+  const r = run("new", { env: { GITHUB_ACTIONS: "true", GOSSLAN_SKIP_VERIFY_GATE: "0", GOSSLAN_VERIFY_GATE_ATTEMPTS: "1" } });
   assert.equal(r.code, 0, r.out);
   assert.ok(
     r.calls.some((c) => c.startsWith("release upload")),

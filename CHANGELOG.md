@@ -22,6 +22,9 @@
   三条红：`race` / 「缺 --sha 必须先红」/「已存在时空 sha 不算缺陷」）。
   修法：测试夹具默认 `GOSSLAN_SKIP_VERIFY_GATE=1`（它们不测门禁），门禁自己的两条用例显式设回 `0`。
   在本地用 `GITHUB_ACTIONS=true node --test scripts/publishRelease.test.ts` 复现并验证：18/18。
+- 门禁**等待结论**再判：打 tag 时 Verify 与构建并发起来，刚推完就发版会读到 `queued/in_progress`；
+  旧写法把"还没跑完"当"失败"直接拒发。现在最多等 10 分钟（20×30s，`GOSSLAN_VERIFY_GATE_ATTEMPTS`
+  可调），等不到才拒（fail closed）。
 
 ## [5.14.13] - 2026-10-27
 
