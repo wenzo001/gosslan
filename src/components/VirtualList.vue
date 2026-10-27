@@ -394,6 +394,7 @@ function computeScrollState() {
   if (!el) return;
   const settling = Date.now() < suppressNearBottomUntil;
   const top = el.scrollTop;
+  noteTopAnchor();
   if (!velocityReady) {
     lastVelocityTop = top;
     velocityReady = true;
@@ -548,6 +549,14 @@ function scrollToIndex(index: number, align: "top" | "bottom" = "top") {
 
 // ---------------- 数据变化 ----------------
 let prevEdges: { first: string; last: string } | null = null;
+/**
+ * 「视口上沿那一行」的**持续读数**（库内 `start − scrollTop`）。
+ *
+ * 为什么不在前插的 watcher 里现采：pre-flush 时 `props.items` 已经换了、测量表还没跟上，
+ * 现采会拿到错的 key/offset（实测 offset 采成 −1072、后续页 key 甚至找不到）。
+ * 改为在 `computeScrollState`（每帧滚动/写入后都会跑）里持续更新，前插时直接用**变化前**那一份。
+ */
+let topAnchor: { key: string; offset: number } | null = null;
 
 /** 上一次 items 变化时属于哪个会话（切会话检测，见 `conversationKey`）。 */
 let prevItemsConv: string | null = null;
@@ -611,6 +620,11 @@ function onItemsChanged() {
   // 已在底部的会话由 `watch(totalSize)` → `schedulePin()` 跟随（pinned 仍为真）。
   // 这里只留一条"同会话整替换需要顺延收敛窗口"的防御：测量风暴期间不要逐次贴底。
   if (change.kind === "swap" && Date.now() < pinHoldHardUntil) armSettleHold();
+
+  // 前插：post-flush 此刻 spacer 已是新高度 ⇒ 把库刚才被 clamp 的那一笔按同一目标重发一次。
+  if (change.kind === "prepend" && topAnchor) {
+    reissuePrependAnchor(topAnchor.key, topAnchor.offset);
+  }
 
 }
 
@@ -733,6 +747,40 @@ function scrollToAnchor(key: string, offset: number, fallbackTop: number): boole
   void nextTick(() => applyJump());
   pollJump();
   return true;
+}
+
+/**
+ * 取「视口上沿那一行」的库内身份 + 行内偏移。
+ * 不用 `getAnchor()` 读 DOM：实测 pre-flush 会采成 −1072（应 −32）。
+ */
+/** 更新「视口上沿那一行」的读数（O(log n)，不读 DOM）。 */
+function noteTopAnchor() {
+  const el = container.value;
+  if (!el) return;
+  const item = virtualizer.value.getVirtualItemForOffset(el.scrollTop);
+  if (item) topAnchor = { key: String(item.key), offset: item.start - el.scrollTop };
+}
+
+/**
+ * 前插后的**同帧重发**（2026-10-27，第八版）。
+ *
+ * 为什么前七版都绕不出来：Vue 适配器的 options watcher 是 **pre-flush** ⇒ 库的 `anchorTo:"end"`
+ * 在**spacer 高度还没 patch 上去**时就写了位置，所以那一笔必然被浏览器 clamp（实测目标 25355、
+ * 落在 17010）。这不是"算错"，是**时序**。
+ *
+ * 应用自己的 `onItemsChanged` 是 **post-flush** —— 此刻 spacer 已经是新高度、库的目标也是新测量。
+ * 所以这里只做一件事：在原位置**再发一次**同一个目标（不轮询、不猜残差、不改所有权）。
+ * 库已经摆对时残差 ≤2px ⇒ 零写入。
+ */
+function reissuePrependAnchor(key: string, offset: number) {
+  const el = container.value;
+  if (!el) return;
+  const idx = props.items.findIndex((it) => keyOf(it) === key);
+  if (idx < 0) return;
+  const target = virtualizer.value.getOffsetForIndex(idx, "start")?.[0];
+  if (typeof target !== "number") return;
+  const desired = Math.max(0, target - offset);
+  if (Math.abs(el.scrollTop - desired) > 2) setScrollTop(desired);
 }
 
 function scrollToOffset(offset: number) {
