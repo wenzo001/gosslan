@@ -85,7 +85,7 @@ HEAD `6ca07ca5`。取值：`PASS` / `PARTIAL` / `FAIL` / `UNVERIFIED` / `BLOCKED
 
 **读法**：每张表只写**读到过证据**的转移；没读到的写「待核」，不猜。列的含义：**唯一写入方**指"谁能决定这个状态"（多处都能写就必须写清谁有最终裁定权）；**落库时点**指崩溃后靠什么恢复。
 
-### 6.1 1:1 消息
+### 2.1 1:1 消息
 
 | 转移 | 触发 | 唯一写入方 | 落库时点 | 网络副作用 / ACK 语义 | 并发与重复 | 用户可见 | 证据 |
 |---|---|---|---|---|---|---|---|
@@ -99,7 +99,7 @@ HEAD `6ca07ca5`。取值：`PASS` / `PARTIAL` / `FAIL` / `UNVERIFIED` / `BLOCKED
 
 **终态**：`delivered` / `read` / `recalled` / `cancelled` / `failed`（`messages.rs:731`、`offline_queue.rs:375` 有终态守卫，不回退）。
 
-### 6.2 群消息（成员级）
+### 2.2 群消息（成员级）
 
 | 转移 | 触发 | 唯一写入方 | 落库 | 语义 | 证据 |
 |---|---|---|---|---|---|
@@ -110,7 +110,7 @@ HEAD `6ca07ca5`。取值：`PASS` / `PARTIAL` / `FAIL` / `UNVERIFIED` / `BLOCKED
 | 行 → `failed` | 逐行过期 | `outbox_sweep` | 行标 failed（**不删**） | 删了就再也说不清"谁没收到"；`delivered>0/cancelled>0` 时**不折消息为 failed** | `outbox_sweep.rs:246-311` |
 | 全行放弃且无人收到 | 期限到 | `finalize_expired_message(group=true)` | 单事务 | 写成功才 emit `message-failed` | `:340-359` |
 
-### 6.3 文件传输
+### 2.3 文件传输
 
 | 转移 | 触发 | 唯一写入方 | 落库 | 语义 | 证据 |
 |---|---|---|---|---|---|
@@ -119,7 +119,7 @@ HEAD `6ca07ca5`。取值：`PASS` / `PARTIAL` / `FAIL` / `UNVERIFIED` / `BLOCKED
 | 写盘失败（含盘满） | chunk 写错 | `fail_receive` + 回否定确认 | — | 立即告诉发送端停；但**盘满这一档不分类、且保留 `.part`** | **B2-F1** |
 | 用户取消 | 点取消 / 对端 `FileCancel` | **`apply_local_cancel`（两者共用）** | 单事务 | 点亮所有在途槽位 → 停接收 → 落库 → emit；`by` 只进日志 | `commands/files.rs:776-800` |
 
-### 6.4 其余有生命周期的对象
+### 2.4 其余有生命周期的对象
 
 | 对象 | 状态与出口 | 持久化 | 备注 |
 |---|---|---|---|
@@ -132,11 +132,11 @@ HEAD `6ca07ca5`。取值：`PASS` / `PARTIAL` / `FAIL` / `UNVERIFIED` / `BLOCKED
 
 ## 三、缺失测试与故障注入计划
 
-### 7.1 现有注入能力（实测，不是转述）
+### 3.1 现有注入能力（实测，不是转述）
 
 10 类故障 × `_lie` 反向对照：脏 `.part`、续传前缀复用、**部分写后崩溃（SIGKILL）**、对端冻结（SIGSTOP→超时）、接收目录只读（盘满近似）、改名失败、源缩小竞态、同名多文件、100MB 中途停滞、**发送方中途崩溃**。另有 `groupcrash` / `gossip-late` / `lanoff` / `task` 等轮次。**每一轮都读真二进制、真 TCP、真 SQLite 行、真 sha256**。
 
-### 7.2 **没有**注入能力的类别（这正是缺的测试）
+### 3.2 **没有**注入能力的类别（这正是缺的测试）
 
 | 缺的注入 | 为什么重要 | 最小可行做法 |
 |---|---|---|
@@ -148,7 +148,7 @@ HEAD `6ca07ca5`。取值：`PASS` / `PARTIAL` / `FAIL` / `UNVERIFIED` / `BLOCKED
 | **网络分区 / 丢包 / 限速** | 现在只有"冻结"这一种 | `pfctl`/`tc` 在隔离网段做 10% 丢包 |
 | **时钟漂移** | 消息排序依赖 `seq`，但"时钟钳制"路径没被测 | 把一端系统时间拨快/拨慢 |
 
-### 7.3 前端行为面（这一层原本完全没有）
+### 3.3 前端行为面（这一层原本完全没有）
 
 - 现状：132 册前端测试里 **69 册是读源码文本**；**零组件渲染、零 store 状态转移**。
 - 本轮已跑：`--only=convbadge` ⇒ **9/9 绿**（含反向对照）。
@@ -282,24 +282,26 @@ EOF
 
 `save_settings`（读了前端 `persistSettings` 与它的 catch，没读 Rust 侧）· `open_settings_window`/`open_log_window`/`open_group_todos_window`/`open_image_preview`/`prewarm_aux_windows`/`open_link_window`（读了 `#[tauri::command(async)]` 形状与 `ensure_aux_window` 的纪律，没读各自函数体）· `save_media_as` · `copy_file` · `save_data_file` · `start_network`/`stop_network`/`set_channel_enabled`/`get_runtime_snapshot`（只在快照与事件契约里见过）· `get_relay_config`/`save_relay_config`/`check_relay_server`/`list_routed_endpoints`/`add_routed_endpoint`/`remove_routed_endpoint`（只在设置页调用面见过）· `send_file_auto` · `request_share_tree` · `export_diagnostics_bundle` · `reset_settings` · `delete_messages` · `sync_friend_keys`/`get_friend_key_rotations`。
 
-### C 级（只在名字清单里出现，**明确未审**）
+### C 级（仍未审）——**现算，不是手抄**
 
-`get_device_info` · `update_profile` · `list_interfaces` · `get_peers` · `search_nearby_peers` · `focus_window` · `shake_window` · `request_attention` · `set_unread_badge` · 好友四件套（`get_friends`/`send_friend_request`/`respond_friend_request`/`get_pending_requests`/`remove_friend`/`default_nickname`）· `send_message` · `get_messages`/`get_latest_messages`/`get_conversations`/`ensure_conversation`/`set_conversation_pinned`/`get_conv_link`/`get_message_count`/`get_pending_message_operations`/`get_group_todo_messages` · `send_group_message`/`send_group_reaction`/`pin_group_message`/`set_message_render`/`get_group_delivery_summaries`/`resend_group_delivery` · 群公告与群待办六条 · `send_todo_image`/`save_todo_image_bytes`/`todo_image_meta` · `request_content`/`request_content_by_cid`/`cancel_content_fetch`/`get_content_transfers`/`get_transfers` · `delete_file`/`save_outgoing_image`/`open_file_native`/`read_file_preview`/`read_content_preview`/`copy_file_to_clipboard`/`read_clipboard_file_paths`/`media_present` · `export_chat_text` · `get_discovery_diag`/`get_runtime_diag`/`set_app_active` · `window_minimize`/`window_toggle_maximize`/`window_is_maximized`/`window_close`/`set_native_titlebar_buttons_hidden`/`apply_macos_window_shape` · `search_chat_history` · `import_picked_file`/`request_ble_permissions`/`set_ui_language` · `broadcast_chat_style` · `list_favorites`/`add_favorite`/`remove_favorite`/`read_favorite_preview` · `get_cache_info`/`clean_cache_now`/`set_cache_policy` · `create_group`/`leave_group`/`distribute_group_key`/`get_groups` · `get_settings`/`reset_settings` · `get_previous_exit` · `notify_desktop`/`send_test_notification` · `login`/`updater_status` 之外的更新命令 · `ui_heartbeat`/`report_frontend_slow_op`/`log_frontend_error` · `take_group_todo_focus`/`request_group_todo_focus`/`get_group_todos_context`/`get_image_preview_gallery`/`close_settings_window`/`restart_app`。
-
-**所以真实进度是**：**90 条 / 161 条 ≈ 56% 的命令有六格结论**（清单与校验脚本见本节）；33 行矩阵里剩下的行讲的是**行为族**（例如"群成员级投递"这一族横跨收发两侧、多张表与清扫器），它们比单条命令大，但不能拿来充命令数。现算命令：
+下面这份清单由脚本从 161 条注册表减去 A 级清单得到；**审完一个就往 A 级清单里搬一个**，下次重算自动缩短：
 
 ```bash
 python3 - <<'EOF'
 import re
-s=open("docs/notes/closedloop-matrix-2026-10-26.md").read()
-sec=s.split("### A 级（计入覆盖）",1)[1].split("**A 级合计",1)[0]
-names=set()
-for line in sec.splitlines():
-    if line.startswith("| F-"):
-        for tok in re.findall(r"`([a-z_0-9]+)`", line): names.add(tok)
-print("A 级命令数:", len(names), "/ 161")
+sec=open('docs/notes/closedloop-matrix-2026-10-26.md').read().split('### A 级（计入覆盖）')[1].split('```text')[1].split('```')[0]
+mine={w for w in sec.split() if w}
+lib=open('src-tauri/src/lib.rs').read()
+m=re.search(r'generate_handler!\s*\[(.*?)\]\s*\)', lib, re.S)
+reg=[e.strip().split('::')[-1] for e in m.group(1).split(',') if e.strip()]
+rest=sorted(set(reg)-mine)
+print(len(rest), '条仍未审:'); print(' '.join(rest))
 EOF
 ```
+
+**当前仍未审（71 条）**：
+
+`add_favorite` · `apply_macos_window_shape` · `broadcast_chat_style` · `cancel_group_history` · `check_relay_server` · `close_settings_window` · `default_nickname` · `delete_group_announcement` · `delete_messages` · `export_diagnostics_bundle` · `focus_window` · `get_cache_info` · `get_content_transfers` · `get_device_info` · `get_discovery_diag` · `get_downloads_dir` · `get_friend_key_rotations` · `get_group_delivery_summaries` · `get_group_file_delivery_summary` · `get_group_todo_messages` · `get_group_todos_context` · `get_image_preview_gallery` · `get_relay_config` · `get_runtime_diag` · `get_runtime_snapshot` · `get_share_dir` · `get_topology` · `import_picked_file` · `list_active_group_announcements` · `list_external_links` · `list_favorites` · `list_group_files` · `list_interfaces` · `list_routed_endpoints` · `notify_desktop` · `open_downloads_dir` · `open_group_todos_window` · `open_image_preview` · `open_link_window` · `open_log_window` · `open_settings_window` · `prewarm_aux_windows` · `read_content_preview` · `read_favorite_preview` · `remove_external_link` · `remove_routed_endpoint` · `request_ble_permissions` · `request_content_by_cid` · `request_group_todo_focus` · `request_share_tree` · `resend_group_delivery` · `save_todo_image_bytes` · `search_nearby_peers` · `send_group_todo` · `send_todo_image` · `set_cache_policy` · `set_downloads_dir` · `set_message_render` · `set_share_dir` · `set_ui_language` · `start_network` · `stop_network` · `sync_friend_keys` · `sync_group_history_now` · `take_group_todo_focus` · `todo_image_meta` · `update_external_link` · `updater_check` · `updater_close` · `updater_install` · `updater_status`
 
 ## 五、读数
 
