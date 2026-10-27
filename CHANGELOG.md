@@ -13,6 +13,15 @@
 
 ## [Unreleased]
 
+### 审计文档收尾：Windows 那一半已由 CI 实跑验过（2026-10-27）
+
+- `docs/notes/stability-audit-orbit-compare-2026-10-27.md` 第 12 节里"Windows 那一半
+  标为待验证"那句已过时：run 40528260997 全部 job success ⇒ `GetDiskFreeSpaceExW` 那一支
+  与 `Win32_Storage_FileSystem` feature 都真实编译并跑过用例（CI 还当场抓到第二处
+  语义分叉：unix 查路径 / Windows 查卷，已按两侧都成立的那条改写）。
+- 同时把该文件开头的"基线已从 `2c55ba34` 前进到 `0fd6652d`"改成现读值（文档里不留
+  会漂的版本号与分支指针）。
+
 ## [5.14.20] - 2026-10-27
 
 ### 修 CI：新用例登记进 Rust 测试基线 + 「定位不到卷 ⇒ 放行」改成跨平台一致的契约（2026-10-27）
