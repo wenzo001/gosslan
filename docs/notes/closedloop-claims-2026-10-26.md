@@ -22,6 +22,7 @@ HEAD 基线 `6ca07ca5`，每条出处都在该 HEAD 重开文件复核过。
 | 13 | 「迟到 Ack 只更新行（`LateApplied`），消息停在 cancelled/partial_cancelled（INV-P26）」 | `src-tauri/src/db/group_offline_queue.rs:48` | `cascade_tests.rs:1188-1203` 真的调 `ack_group_delivered` 并断言返回 `LateApplied` 且 `messages.status` 仍是 `cancelled`（「取消是硬终态」）；`:1336-1339` 断言 failed 行上的迟到 Ack 也只记账 | **已证** |
 | 14 | 「Ack 的语义是『已成功接收并持久化』；打不开就既不落库也不 Ack ⇒ 补发时用最新公钥重新密封」 | `src-tauri/src/network/transport/handle_messaging.rs:91-98` | 前半句与实现一致（`:99-106` 解密失败直接 `return`，无 Ack、无落库）；后半句的「重新密封」在 `e2ee_payload.rs` 的 `reseal_for_send` 族，本轮**未逐行读到**「拿不到公钥就按原样补发」与「msg_id 不变」这两点 | **半证**（前半已证，后半待读） |
 | 15 | 「重复投递也要回 Ack，否则一次丢 ACK = 发送方永远『发送中』」 | `handle_messaging.rs:64-69` | 实现在位并带 `[ACK] 重复消息仍回执` 日志；有 `dispatch_tests` 覆盖去重三态 | **已证**（行为实现 + 测试家族在，具体断言未逐条读） |
+| 16 | 「本地删除是**标记 `deleted_at` 而非硬删**」 | `src-tauri/src/db/message_delete.rs:2` | 实现是 `DELETE FROM messages WHERE msg_id IN (…) AND kind IN (bubble)`（`:41-44`）；全仓 `grep -rn deleted_at src-tauri/src src` **只命中这条注释本身**，无列、无读点、无撤销入口 | **证伪**（注释描述的是软删，代码是硬删；用户语义仍是"本地删除、不可撤销"，行为对，注释错） |
 
 ## 读数（对账进度，现算）
 
