@@ -13,6 +13,39 @@
 
 ## [Unreleased]
 
+## [5.14.12] - 2026-10-27
+
+### 可靠性：补发不再被去重吃掉、共享文件走有界队列、启动不再自锁、中继配额不再泄漏、掉电语义可诊断（2026-10-27）
+
+- **补发能重入**（`network/transport/gossip.rs::allow_message_retry`）：去重登记发生在解密/落库**之前**
+  （这是防伪造 id 污染 Bloom 的必要顺序），而发送方 `outbox` 补发的是**同一个信封**（同一 `message_id`）。
+  于是"第一次没消费成功"（缺群密钥、`SQLITE_IOERR`）之后，每一份补发都被判 `Duplicate` 丢掉 ——
+  那条消息在这个成员上永远缺失，直到进程重启。现在失败时给 `MeshRouter` 与 `GossipEngine` 各放一张
+  **一次性放行**名单（有界 256），下一份同 id 的补发能重入，第三份仍是重复。
+  判据：`allow_retry_lets_exactly_one_redelivery_through`、`allow_retry_reopens_a_frame_id_exactly_once`
+  （两条都做过"改坏必红"）。
+- **共享文件请求走有界串行队列**（`handle_share.rs`）：`ShareFileRequest` 以前每帧 `tokio::spawn`，
+  没有信号量也没有去重 ⇒ 一个好友连发 N 帧就能让本机并发做 N 次整文件哈希 + N 份发送，顺带把聊天刷满。
+  现在与 `ContentRequest` 共用**每对端有界串行**的 `FileServeJob` 队列（`cid = share:{tid}` 去重），
+  系统提示只在**受理之后**插一条。判据：`share_file_requests_go_through_the_bounded_queue`。
+- **首次启动崩溃不再导致永久拒启**（`state.rs::looks_like_existing_install`）：`existing_install` 以前是
+  `库文件非空 || 业务行数 > 0`。若首次启动在"建表提交"与"写身份"之间被杀/磁盘满，下一轮会看到
+  "文件非空、一条业务数据也没有"，被当成老库 ⇒ `IdentityIncomplete` 永久拒启，只能手工删库（=换身份）。
+  现在只看真实业务行数，`db_preexisting` 只用于日志。判据：`schema_only_database_is_still_a_fresh_install`、
+  `install_probe_does_not_use_file_size`。
+- **掉电语义读回校验**（`db.rs`）：`journal_mode=WAL` 与 `synchronous=NORMAL` 以前都是 `.ok()` 吞错。
+  WAL 没生效（SMB/NFS/同步盘、第二个连接）时停在 DELETE 日志 + NORMAL，是 SQLite 明确警告**可能损坏**
+  的组合。现在启动时读回实际值：WAL 没生效就把 `synchronous` 提到 `FULL`，并落一条
+  `code=DB_DURABILITY_DEGRADED` 启动告警。判据：`fresh_database_lands_in_wal_without_a_degraded_notice`。
+- **中继配额不再被失败 Offer 泄漏**（`transport/relay_file.rs`）：`relay_file_keys` 的登记以前排在
+  `begin_reassemble` **之前**，而这张表的条数与字节都计入 `inbound_usage`（全局入站配额）。
+  `begin_reassemble` 有两条稳定失败路径（老端 `chunk_size=0`、非法 tid），失败后登记不清 ⇒
+  两条 8 GiB 的失败 Offer 就能让此后一小时**所有**入站文件被拒。现在登记排在开单成功之后。
+  判据：`relay_key_is_registered_only_after_the_reassembly_begins`（挪回旧顺序会红）。
+
+- 验证：`cargo test --lib --features bluetooth` **1246/0/1**；`cargo clippy --all-targets -D warnings`、
+  `cargo fmt --check` 退 0；新用例逐条做过「改坏必红 → 还原复绿」。
+
 ## [5.14.11] - 2026-10-27
 
 ### 数据安全：收藏不再被当缓存删、群文件 id 消毒、删消息即停发、发布加 tag 门禁（2026-10-27）

@@ -1160,8 +1160,7 @@ fn attach_image_size_keeps_json_shape_when_dimensions_are_unknown() {
     let _ = std::fs::remove_file(&path);
 }
 
-/// 群文件的两个入口都必须先过 `safe_transfer_id`，且**在第一次写台账/删文件之前**。
-///
+/// 群文件的两个入口都必须先过 `safe_transfer_id`，且**在第一次写台账/删文件之前**。///
 /// 为什么是源码形状而不是行为用例：`transfer_id` 有两个下游汇点（`cancel_group_receive`
 /// 的 fallback 路径、续传 `Restart` 分支的 `remove_file`），两处都直接
 /// `downloads.join(format!("{tid}.part"))`。行为用例要造 AppState + 真群 + 群密钥；
@@ -1188,4 +1187,59 @@ fn both_group_file_entries_validate_the_transfer_id_before_any_side_effect() {
             "{anchor} 里校验排在了 {first_side_effect} 之后 ⇒ 脏 id 已经落库/落了盘"
         );
     }
+}
+
+/// 中继接收的配额登记必须排在 `begin_reassemble` **成功之后**。
+///
+/// 失败路径（老端 `chunk_size=0`、非法 tid）若已占一条 `relay_file_keys`，那条记录没人释放，
+/// 而 `inbound_usage` 把这张表的**条数与字节**都算进全局入站配额 ⇒ 两条 8 GiB 的失败
+/// Offer 就能让此后一小时所有入站文件被拒。
+#[test]
+fn relay_key_is_registered_only_after_the_reassembly_begins() {
+    let src = include_str!("network/transport/relay_file.rs");
+    let body = code_flat(&rust_fn_body(
+        src,
+        "async fn handle_relay_file_offer(",
+    ));
+    let begin = body
+        .find("begin_reassemble(")
+        .expect("找不到 begin_reassemble ⇒ 锚点要跟着改");
+    // 只认**插入**（`.entry(...).or_insert_with(...)`）：函数开头那句 `replacing` 查询
+    // 本来就在 `begin_reassemble` 之前，拿第一次出现判会误报。
+    let keyed = body
+        .find("or_insert_with(")
+        .expect("找不到 relay_file_keys 的插入点 ⇒ 登记点搬家了");
+    assert!(
+        begin < keyed,
+        "先把 key 记进 relay_file_keys 再开单 ⇒ 失败时白占一条入站配额直到 1h 清扫"
+    );
+}
+
+/// 共享文件请求必须走**每对端有界串行队列**，不许再回到裸 `tokio::spawn`。
+///
+/// 旧写法每帧起一个任务、没有信号量、没有 transfer_id 去重 ⇒ 一个好友连发 N 个
+/// `ShareFileRequest` 就能让本机并发做 N 次整文件哈希 + N 份发送（还把聊天刷满）。
+#[test]
+fn share_file_requests_go_through_the_bounded_queue() {
+    let src = include_str!("network/transport/handle_share.rs");
+    let body = code_flat(&rust_fn_body(
+        src,
+        "async fn handle_share_and_relay_messages(",
+    ));
+    let start = body
+        .find("Message::ShareFileRequest{")
+        .expect("ShareFileRequest 臂的锚点失效");
+    let arm = &body[start..];
+    let end = arm
+        .find("Message::RelayFileOffer{")
+        .unwrap_or(arm.len());
+    let arm = &arm[..end];
+    assert!(
+        arm.contains("submit(FileServeJob{"),
+        "共享文件请求没入有界队列 ⇒ 并发无上限"
+    );
+    assert!(
+        !arm.contains("tokio::spawn("),
+        "又回到裸 spawn ⇒ 一个好友就能让本机并发发 N 份整文件"
+    );
 }

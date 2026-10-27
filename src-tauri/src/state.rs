@@ -1594,6 +1594,52 @@ impl StartupError {
     }
 }
 
+/// 「这台机器以前装过东西吗」—— 只看**真实业务行数**。
+///
+/// 库文件非空 ≠ 装过东西：首次启动若在"建表提交"与"写身份"之间被杀（或磁盘满），
+/// 下一轮会看到"文件非空、一条业务数据也没有"。把它当已有安装 ⇒ `IdentityIncomplete`
+/// 永久拒启，用户只能手工删库（等于换身份）。
+fn looks_like_existing_install(
+    messages: i64,
+    friends: i64,
+    conversations: i64,
+    groups: i64,
+) -> bool {
+    messages + friends + conversations + groups > 0
+}
+
+#[cfg(test)]
+mod install_probe_tests {
+    use super::looks_like_existing_install;
+
+    /// 只有 schema、没有任何业务行 ⇒ **首次安装**（可以生成新身份）。
+    #[test]
+    fn schema_only_database_is_still_a_fresh_install() {
+        assert!(!looks_like_existing_install(0, 0, 0, 0));
+        assert!(
+            looks_like_existing_install(1, 0, 0, 0),
+            "有一条消息就是老库"
+        );
+        assert!(looks_like_existing_install(0, 1, 0, 0), "有好友就是老库");
+    }
+
+    /// 判据里**不许**再把"库文件非空"算进去：那条正是"崩溃后永久拒启"的来源。
+    ///
+    /// 注意别在断言里写出被判的字面量（否则护栏会匹配到自己）—— 用 `concat!` 拆开。
+    #[test]
+    fn install_probe_does_not_use_file_size() {
+        let src = include_str!("state.rs");
+        assert!(
+            src.contains("looks_like_existing_install(messages, friends, conversations, groups)"),
+            "existing_install 必须只看业务行数（签名变了就同步这条护栏）"
+        );
+        assert!(
+            !src.contains(concat!("db_preexisting", " ||")),
+            "又把「库文件非空」算回来了 ⇒ 建表后崩溃会让应用永久拒启"
+        );
+    }
+}
+
 /// 加载持久化身份；**只在空库首次安装时**生成一次。
 ///
 /// 返回 `(identity, generated)`：`generated=false` 表示来自已存密钥。
@@ -1748,7 +1794,12 @@ impl AppState {
                 return Err(Box::new(StartupError::BusinessDataProbe { source }));
             }
         };
-        let existing_install = db_preexisting || messages + friends + conversations + groups > 0;
+        // 判据只看**真实业务行数**：库文件非空不代表装过东西 —— 首次启动若在建表提交与
+        // 写身份之间被杀（或磁盘满），下一轮会看到"文件非空、一条业务数据也没有"，
+        // 旧判据把它当"已有安装" ⇒ `IdentityIncomplete` 永久拒启，用户只能手工删库。
+        // `db_preexisting` 只用来留日志（下面那行 BOOT_DB_STATE）。
+        let existing_install =
+            looks_like_existing_install(messages, friends, conversations, groups);
         let db_bytes = std::fs::metadata(&db_path).map(|m| m.len()).unwrap_or(0);
         logger.info(
             "boot",

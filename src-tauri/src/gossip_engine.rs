@@ -107,12 +107,26 @@ impl LruSet {
             }
         }
     }
+
+    /// 移除一个元素（补发重入用）。返回它此前是否存在。
+    pub fn remove(&mut self, k: &str) -> bool {
+        if self.map.remove(k).is_none() {
+            return false;
+        }
+        if let Some(pos) = self.order.iter().position(|v| v == k) {
+            self.order.remove(pos);
+        }
+        true
+    }
 }
 
 /// Gossip 引擎：去重 + 扇出 + 信封构造。
 pub struct GossipEngine {
     bloom: BloomFilter,
     seen: LruSet,
+    /// 「上一次没消费成功」的放行名单。发送方补发的是**同一个信封**（同一 message_id），
+    /// 不撤销去重就永远进不来。有界；它不是真相源，丢了只会退化成"补发被当重复"。
+    allow_retry: LruSet,
     pub fanout: usize,
     pub ttl: u8,
 }
@@ -122,13 +136,24 @@ impl GossipEngine {
         Self {
             bloom: BloomFilter::new(bloom_capacity, 0.01),
             seen: LruSet::new(seen_capacity),
+            allow_retry: LruSet::new(256),
             fanout,
             ttl,
         }
     }
 
+    /// 撤销一次「已登记但没消费成功」的去重：放下一份同 id 的信封进来，只放一次。
+    pub fn allow_retry(&mut self, message_id: &str) {
+        self.allow_retry.insert(message_id.to_string());
+    }
+
     /// 返回该 message_id 是否为“首次见到”（并完成去重登记）。
     pub fn is_new(&mut self, message_id: &str) -> bool {
+        // 补发重入：上一次同一 id 因为本机还没准备好（缺群密钥 / 落库失败）而没有消费成功，
+        // 那时它已经进了 seen/bloom。这里取走放行标记并放行一次。
+        if self.allow_retry.remove(message_id) {
+            return true;
+        }
         if self.seen.contains(message_id) || self.bloom.contains(message_id) {
             return false;
         }
@@ -207,6 +232,20 @@ impl GossipEngine {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// 补发重入：没消费成功的 message_id 必须能再进来**一次**（第三份仍是重复）。
+    ///
+    /// 反面对照：没有 `allow_retry` 时第二次调用就是 false —— 而发送方补发的是同一个信封
+    /// （outbox 存的是签名后的原始 payload），那条消息会永久进不来。
+    #[test]
+    fn allow_retry_lets_exactly_one_redelivery_through() {
+        let mut engine = GossipEngine::new(1000, 100, 3, 5);
+        assert!(engine.is_new("m1"));
+        assert!(!engine.is_new("m1"), "正常重复必须挡掉");
+        engine.allow_retry("m1");
+        assert!(engine.is_new("m1"), "撤销去重后补发要能重入");
+        assert!(!engine.is_new("m1"), "只放一次：第三份仍是重复");
+    }
 
     #[test]
     fn bloom_and_lru_dedup() {

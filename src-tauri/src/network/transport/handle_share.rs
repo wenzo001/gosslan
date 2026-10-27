@@ -71,8 +71,103 @@ mod content_serve_gate_tests {
     }
 }
 
-async fn handle_share_and_relay_messages(state: &Arc<AppState>, peer_id: &str, msg: Message) {
-    // 这层 match 与原函数里的同一层（臂仍是 8 格缩进 ⇒ 逐字未改）。
+/// 「共享目录按路径发」在同一个服务队列里的 cid 前缀。
+///
+/// `ContentRequest` 与 `ShareFileRequest` 都是"替对端发文件"，共用同一条**每对端有界
+/// 串行**队列：并发上限、去重、关停都只有一份实现。裸 `tokio::spawn` 那条旧写法没有任何
+/// 闸门 —— 一个好友连发 N 个 `ShareFileRequest` 就能让本机并发做 N 次整文件哈希 + N 份发送。
+const SHARE_CID_PREFIX: &str = "share:";
+
+/// 启动（或复用）该对端的文件服务 worker。两条入口都先调它再 `submit`。
+///
+/// 为什么必须串行而不是并发：`pending_file_accept` 只按 `transfer_id` 单键登记，同一对端
+/// 并发多单会互相挤掉登记（2026-10-13 真机第 7 条）。
+fn ensure_serve_worker(state: &Arc<AppState>, peer_id: &str) {
+    let fs = state.file_service.clone();
+    if fs.has_worker(peer_id) {
+        return;
+    }
+    let exec_state = state.clone();
+    fs.start_worker(peer_id, move |job| {
+        let st = exec_state.clone();
+        async move {
+            if job.cid.starts_with(SHARE_CID_PREFIX) {
+                // 共享目录：有直连走直传，没有则借一跳中继（与旧臂逐字同一条判据）。
+                let result = if st.has_link(&job.peer_id).await {
+                    crate::network::file::send_file_from_path(
+                        &st,
+                        &job.peer_id,
+                        &job.transfer_id,
+                        job.path.clone(),
+                    )
+                    .await
+                    .map_err(|e| e.message)
+                } else {
+                    crate::network::file::send_file_via_relay(
+                        &st,
+                        &job.peer_id,
+                        &job.transfer_id,
+                        job.path.clone(),
+                    )
+                    .await
+                };
+                match result {
+                    Ok(()) => st.logger.info(
+                        "share",
+                        format!(
+                            "共享文件已发出 transfer={} peer={}",
+                            job.transfer_id, job.peer_id
+                        ),
+                    ),
+                    Err(reason) => {
+                        st.logger.warn(
+                            "share",
+                            format!(
+                                "共享文件发送失败 transfer={} peer={}: {reason}",
+                                job.transfer_id, job.peer_id
+                            ),
+                        );
+                        let _ = st.app.emit(
+                            "file-failed",
+                            &FileFailedInfo {
+                                transfer_id: job.transfer_id.clone(),
+                                reason,
+                            },
+                        );
+                    }
+                }
+            } else {
+                match crate::network::file::send_file_from_path_at(
+                    &st,
+                    &job.peer_id,
+                    &job.transfer_id,
+                    job.path.clone(),
+                    job.from_seq,
+                    job.from_bytes,
+                )
+                .await
+                {
+                    Ok(()) => st.logger.info(
+                        "content",
+                        format!(
+                            "已按 ContentRequest 回发内容 cid={} -> {}",
+                            job.cid, job.peer_id
+                        ),
+                    ),
+                    Err(e) => st.logger.warn(
+                        "content",
+                        format!(
+                            "ContentRequest 服务失败 cid={} from={}: {e:?}",
+                            job.cid, job.peer_id
+                        ),
+                    ),
+                }
+            }
+        }
+    });
+}
+
+async fn handle_share_and_relay_messages(state: &Arc<AppState>, peer_id: &str, msg: Message) {    // 这层 match 与原函数里的同一层（臂仍是 8 格缩进 ⇒ 逐字未改）。
     // `_ => {}` 不是吞消息：调用方只在命中本族变体时才把 msg 交进来。
     match msg {
         Message::ContentRequest {
@@ -133,40 +228,8 @@ async fn handle_share_and_relay_messages(state: &Arc<AppState>, peer_id: &str, m
             // 期间同链路群聊/单聊/心跳全部进不来。改成投给"每对端一个有界串行队列"：
             // 同一对端仍一次一单 ⇒ `pending_file_accept` 那个只按 transfer_id 登记的单键
             // 不会被并发踩到，但应答读得到 ⇒ 这条路径第一次能真正成功。
+            ensure_serve_worker(state, &from);
             let fs = state.file_service.clone();
-            if !fs.has_worker(&from) {
-                let exec_state = state.clone();
-                fs.start_worker(&from, move |job| {
-                    let exec_state = exec_state.clone();
-                    async move {
-                        match crate::network::file::send_file_from_path_at(
-                            &exec_state,
-                            &job.peer_id,
-                            &job.transfer_id,
-                            job.path.clone(),
-                            job.from_seq,
-                            job.from_bytes,
-                        )
-                        .await
-                        {
-                            Ok(()) => exec_state.logger.info(
-                                "content",
-                                format!(
-                                    "已按 ContentRequest 回发内容 cid={} -> {}",
-                                    job.cid, job.peer_id
-                                ),
-                            ),
-                            Err(e) => exec_state.logger.warn(
-                                "content",
-                                format!(
-                                    "ContentRequest 服务失败 cid={} from={}: {e:?}",
-                                    job.cid, job.peer_id
-                                ),
-                            ),
-                        }
-                    }
-                });
-            }
             match fs.submit(FileServeJob {
                 cid: cid.clone(),
                 peer_id: from.clone(),
@@ -323,8 +386,6 @@ async fn handle_share_and_relay_messages(state: &Arc<AppState>, peer_id: &str, m
             if !canon_full.starts_with(&canon_root) || !canon_full.is_file() {
                 return;
             }
-            let st = state.clone();
-            let from = from.clone();
             // 本地提示：对端请求下载你的共享文件（聊天信息内简约系统消息）。
             // ⚠️ 措辞必须是「请求下载」而不是「下载了」：这条插入发生在**推第一个分片之前**，
             // 而中继发送此刻起还没任何成功证据（审计 A1）。写成完成时态就是一句可能被证伪的
@@ -335,30 +396,36 @@ async fn handle_share_and_relay_messages(state: &Arc<AppState>, peer_id: &str, m
                 .map(|s| s.to_string())
                 .unwrap_or_else(|| path.clone());
             let from_name = resolve_nickname(state, &from);
-            crate::commands::insert_system_message(
-                state,
-                &from,
-                &format!("「{from_name}」请求下载你的文件「{file_name}」"),
-            );
-            tokio::spawn(async move {
-                // 有直连走原有可靠直传；没有直连则借一跳中继（RelayFileOffer/RelayChunk）。
-                let result = if st.has_link(&from).await {
-                    file::send_file_from_path(&st, &from, &transfer_id, canon_full)
-                        .await
-                        .map_err(|e| e.message)
-                } else {
-                    file::send_file_via_relay(&st, &from, &transfer_id, canon_full).await
-                };
-                if let Err(reason) = result {
-                    let _ = st.app.emit(
-                        "file-failed",
-                        &FileFailedInfo {
-                            transfer_id,
-                            reason,
-                        },
+            // 入队（每对端有界串行）：同一 transfer_id 重复投递会被合并，队列满则留痕不服务。
+            // 系统提示只在**受理之后**插一条 —— 否则连发 N 帧被拒的请求也能把聊天刷满。
+            ensure_serve_worker(state, &from);
+            match state.file_service.clone().submit(FileServeJob {
+                cid: format!("{SHARE_CID_PREFIX}{transfer_id}"),
+                peer_id: from.clone(),
+                transfer_id: transfer_id.clone(),
+                path: canon_full,
+                from_seq: 0,
+                from_bytes: 0,
+            }) {
+                ServeTicket::Accepted | ServeTicket::Merged => {
+                    crate::commands::insert_system_message(
+                        state,
+                        &from,
+                        &format!("「{from_name}」请求下载你的文件「{file_name}」"),
                     );
                 }
-            });
+                ServeTicket::RejectedFull => {
+                    if log_throttled("share_serve_full", 5_000) {
+                        state.logger.warn(
+                            "share",
+                            format!(
+                                "ShareFileRequest 服务队列已满（当前深度 {}），本轮不服务 transfer={transfer_id} from={from}",
+                                state.file_service.queued_len(&from)
+                            ),
+                        );
+                    }
+                }
+            }
         }
         // ---- Gossip 广播 ----
         Message::RelayFileOffer {
