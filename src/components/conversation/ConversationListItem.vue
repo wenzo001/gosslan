@@ -89,6 +89,9 @@ const rowAriaLabel = computed(() => {
       ? t("conv.unread", { name: displayName.value, n: props.conv.unread })
       : displayName.value,
   ];
+  // 在线/离线：状态点只画在屏幕上，读屏拿不到（审计 P4 的残余那一格）。
+  // `null` = 不知道（不画角标）⇒ 也不念，避免把"未知"读成"离线"。
+  if (props.online !== null) parts.push(t(props.online ? "common.online" : "common.offline"));
   if (mentioned.value) parts.push(t("msg.mentioned"));
   if (openTasks.value > 0) parts.push(t("todo.openForMe", { n: openTasks.value }));
   return parts.join("，");

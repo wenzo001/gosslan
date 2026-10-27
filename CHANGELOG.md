@@ -13,6 +13,26 @@
 
 ## [Unreleased]
 
+## [5.14.16] - 2026-10-27
+
+### 审计回填：失败可归因、状态可朗读、README 不再声称前台服务（2026-10-27）
+
+- **SHA 不符可归因**（`file/receive.rs`）：末段校验失败以前只有一句"文件完整性校验失败"，
+  分不清是"续传前缀属于另一份内容"还是"发送端声明错了哈希"。现在留
+  `code=SHA_MISMATCH transfer=… actual=… expected=… received=… size=…`。
+- **直连解密失败不再静默**（`transport/handle_messaging.rs`）：`open_direct_content` 返回 None 时
+  原来直接 `return`（Gossip 那半有留痕，直连这半没有）⇒ "对方说发了、我这边什么都没有"查不出原因。
+  现在留 `code=DIRECT_OPEN_FAILED peer=… len=…`（节流 5s，不带正文）。
+- **会话行朗读在线/离线**（`ConversationListItem.vue`）：状态点只画在屏幕上，读屏拿不到。
+  现在 `rowAriaLabel` 追加 `common.online` / `common.offline`（`null`=不知道，不念，
+  避免把"未知"读成"离线"）。
+- **README 不再声称 Android 前台服务**：原来写"前台服务，CI 自动注入"，而现树没有 Service
+  （模板里那段是注释、注入函数在 `NEARBY_WIFI_DEVICES` 处恒 no-op）。改成如实描述 +
+  指向 `docs/adr/0020-blind-circuit-relay.md` 的待办。
+
+- 验证：`npm test` 1434/0；`cargo test --lib --features bluetooth` 1247/0/1；
+  `cargo clippy --all-targets -D warnings`、`cargo fmt --check`、`vue-tsc --noEmit` 退 0。
+
 ## [5.14.15] - 2026-10-27
 
 ### 修 CI：Windows 上 vacuum 预算用例的同机对照会抖；护栏条数对账 269（2026-10-27）

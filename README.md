@@ -224,7 +224,9 @@ npm run multi:run          # 同机多开 3 个实例模拟多节点（--instanc
 ```
 
 - **多开原理**：`--instance N` 让每个实例使用独立数据库、独立 TCP 端口、独立设备指纹；UDP 端口共享（`SO_REUSEADDR`，unix 上叠加 `SO_REUSEPORT`），从而在单机模拟多节点 Mesh 与离线补发。
-- **Android 权限**：局域网（`CHANGE_WIFI_MULTICAST_STATE` 等）+ 蓝牙（`BLUETOOTH_SCAN/CONNECT/ADVERTISE` 等）+ 前台服务，模板见 `scripts/android/AndroidManifest.xml`，CI 自动注入。
+- **Android 权限**：局域网（`CHANGE_WIFI_MULTICAST_STATE` 等）+ 蓝牙（`BLUETOOTH_SCAN/CONNECT/ADVERTISE` 等），
+  模板见 `scripts/android/AndroidManifest.xml`。**当前没有前台服务**：应用被系统回收后不会自己醒来
+  （做到这一步要 Service + 通知渠道 + Rust 生命周期接线，待办记在 `docs/adr/0020-blind-circuit-relay.md`）。
 
 ### 生产打包（Windows x64）
 

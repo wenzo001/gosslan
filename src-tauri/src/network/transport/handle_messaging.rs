@@ -102,6 +102,18 @@ async fn handle_messaging_arm(state: &Arc<AppState>, peer_id: &str, msg: Message
                 &content,
                 kind,
             ) else {
+                // 解不开 = 缺对端 X25519 或内容被改。**不落库、不 Ack**（由 outbox 续发）
+                // 是对的，但这臂必须留痕：否则"对方说发了、我这边什么都没有"查不出原因
+                // （2026-10-27 审计 C-5：Gossip 那半有留痕，直连这半是静默 return）。
+                if log_throttled("direct_open_failed", 5_000) {
+                    state.logger.warn(
+                        "chat",
+                        format!(
+                            "code=DIRECT_OPEN_FAILED peer={from} len={}",
+                            content.len()
+                        ),
+                    );
+                }
                 return;
             };
             let name = resolve_nickname(state, &from);
