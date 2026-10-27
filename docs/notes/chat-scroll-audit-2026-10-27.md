@@ -3,10 +3,11 @@
 - 范围：`src/components/VirtualList.vue`、`src/components/ChatWindow.vue`、`src/components/MessageItem.vue` 及其子组件、
   `src/utils/{messageHeight,listBuffer,scrollIntent,previewMetrics,scrollRestore,messages}.ts`、`src/stores/useChatStore.ts`
 - 依赖（现读）：`@tanstack/vue-virtual@3.13.47` → `@tanstack/virtual-core@3.19.6`（`package-lock.json` 精确解析，两包各仅一份）
-- 修复版本：**5.14.6**（`1e06bb58`）、**5.14.7**（`10e67a74`）；探针增强 `4c740144`。
-  **这两笔修复已随 `v5.14.7` 发布**（tag `35efb210`，Release 非 draft/非 pre，17 个资产，2026-10-27T01:37Z），
-  且都在 `origin/main` 上。**本报告与回归复跑这两笔文档提交当前仅在本机**（未 push）。
-- 量具：`scripts/check-ui-runtime.mjs`（Chromium/headed）、`perf/*`、`perf/wk-scroll-sampler.js`（WKWebView 真机）
+- 修复版本：**5.14.6**（`1e06bb58`）、**5.14.7**（`10e67a74`）、**5.14.8**（`85c71980`）；探针增强 `4c740144`。
+  **5.14.6/5.14.7 已随 `v5.14.7` 发布**（tag `35efb210` = 当前 `origin/main`，Release 非 draft/非 pre，17 个资产，2026-10-27T01:37Z）。
+  **5.14.8 与本文档提交只在本机**（`85c71980` 不在 `origin/main` 上，无 tag）——未 push 是既定边界，不是遗漏。
+- 量具：`scripts/check-ui-runtime.mjs`（Chromium/headed）、`perf/*`、`perf/wk-check.html`（Chromium/WebKit 双引擎自驱动）、
+  `perf/wk-scroll-sampler.js`（App 内 WKWebView 真机）
 
 ---
 
@@ -26,8 +27,9 @@
 - 测量缓存悬崖（E）：来回切 6 次会话 `itemSizeCache.size` 恒为 **60** ⇒ 不是可复现缺陷。
 
 **未覆盖的格子（明写，不当成通过）**：Windows（WebView2 + 滚轮）本轮按用户口径排除；
-macOS 真机（WKWebView）**进行中**——工具与手册已备好，只差在机器旁按一次键；其余全部有 Chromium/he。
-aded 读数。
+macOS **引擎**这一层已有读数（`perf/wk-check.html` 在 Safari 27.2/WebKit 下跑真实 `VirtualList`，三格全绿，§12）；
+macOS **App 内真机**（WKWebView + 真实会话切换，A8）**仍未取到**——采样器与手册已备好，只差在机器旁按一次键；
+其余全部有 Chromium/headed 读数。
 
 ---
 
@@ -76,7 +78,7 @@ aded 读数。
 - **改动**：convSwitch 分支先 `scrollToBottom()`（post-flush：DOM 已换、尚未绘制），再 arm 收敛窗口。
 - **读数**：`topJumpAfterTarget` 356/291 → **0**；headed 下 `visibleBlankMs 0`。
 
-### ③ 向上翻历史不再把正在读的那一行推走（5.14.7）
+### ③ 向上翻历史不再把正在读的那一行推走（5.14.7，5.14.8 改写第二半）
 - **实测**：每页前插 100 条，加载瞬间 `scrollTop` **向下掉 267/279px**（本该变大），锚点行随后被推走 **710px**；
   三页里两页失守。期间写入全是库的 `scrollWithAdjustments < _scrollToOffset`（6–8 笔/页）。
 - **根因（时序）**：Vue 适配器的 options watcher 是 **pre-flush** ⇒ 库的 anchor 写发生在 **spacer 高度 patch 之前** ⇒
@@ -85,8 +87,11 @@ aded 读数。
   1. 在 `computeScrollState`（每帧滚动/写入后都会跑）里**持续**记「视口上沿那一行」的库内身份
      （`getVirtualItemForOffset`，`start − scrollTop`，O(log n)、不读 DOM）。**必须在变化之前**取：
      实测前插的 watcher 里现采会采成 `−1072`（应 −32），后续页甚至取不到 key。
-  2. 在 `onItemsChanged`（**post-flush**，spacer 已是新高度）按同一目标**重发一次**；残差 ≤2px 就不写。
-- **读数**：三页漂移 **0 / 0 / 0**；`vlist` 的"prepend 20 条"守卫格保持绿（证明没把已正确的情形改坏）。
+  2. 在 `onItemsChanged` 里按同一目标重发一次；残差 ≤2px 就不写。
+     **5.14.8 修正**：不能再假设"post-flush 时 spacer 已长高"——WebKit 下不成立（实测 `keptKey false`）。
+     现在改成**每帧 `getTotalSize()` 连续两帧不变才发**，12 帧封顶（§12）。
+- **读数**：Chromium 三页漂移 **0 / 0 / 0**；Safari/WebKit 前插锚点 `keptKey true`、drift 0.3px（§12）；
+  `vlist` 的"prepend 20 条"守卫格保持绿（证明没把已正确的情形改坏）。
 
 ## 4. 根因分类（A–I）与最终状态
 
@@ -179,6 +184,35 @@ npm run verify
 
 1. 群文件/中继的 Offer 阶段没有 `w/h`（完成回填才有）⇒ 用户正看着那张图时仍可能有一次高度修正。
 2. 旧消息无 `w/h`：按 288 骨架预留，横图首次解码会收缩一次。
-3. ③ 的修法依赖"post-flush 时 spacer 已长高"这个前提；**WKWebView 的布局时序与 Chromium 未必一致** ⇒ 真机格要专门看这一条。
+3. ③ 的修法已不再假设"post-flush 时 spacer 已长高"，改为**等 `getTotalSize()` 静定再发**（§12）。
+   残余：静定等待有上限（12 帧）；若那一瞬间还有异步内容在持续改高（图解码 / 字体），重发会放弃 ⇒ 回到未修正的漂移。
 4. 键盘原生滚动在本夹具无判据（UNSUPPORTED），不是"没问题"。
 5. 真机像素级 1 帧闪现只能人眼。
+
+## 12. 双引擎对照：③ 的修复被发现只在 Chromium 成立，改为「等 sizer 静定」（v5.14.7 → v5.14.8）
+
+新增自驱动夹具 `perf/wk-check.html`（挂**真实 `VirtualList`**，页面自己跑「前插锚点 / 快速下滚 / 快速上滚」，
+结果用 Image 信标回传本地服务）。同一份页面、同一段代码、同一组数据：
+
+**v5.14.7 的写法（post-flush 直接重发一次）—— 两引擎不一致：**
+
+| 引擎 | 前插锚点 | 下滚 / 上滚空白 |
+|---|---|---|
+| Chromium（headless Brave） | `keptKey true`，drift **0.3px** | 0 帧 / 0 帧，p50 16.7ms |
+| **WebKit（Safari 27.2，AppleWebKit 605.1.15）** | **`keptKey false`**（m-188 → m-207，偏移 -131.5 → -66） | 0 帧 / 0 帧，p50 17ms |
+
+**成因（与预判一致）**：重发那一笔依赖"post-flush 时 spacer 已长高"。WebKit 的布局时序与 Chromium 不同，
+post-flush 那一刻 spacer 仍是旧高度 ⇒ 新目标位置被 clamp 回旧上限，等于没修。
+**而 macOS 出货的就是 WebKit（WKWebView 与 Safari 同引擎）⇒ v5.14.7 那笔对 macOS 用户无效。**
+
+**v5.14.8 的写法（`85c71980`）**：`reissuePrependAnchor` 改为**有界静定门**——每帧读 `getTotalSize()`，
+连续两帧不变才发那一次 `setScrollTop`；12 帧内不静定就放弃（不写，保持原状态）。
+
+| 引擎 | 前插锚点 | 下滚 / 上滚空白 | 帧时间 |
+|---|---|---|---|
+| Chromium | `keptKey true`，drift **−0.5px** | 0 帧 / 0 帧 | p50 16.6ms |
+| WebKit（Safari 27.2） | `keptKey true`，drift **0.3px** | 0 帧 / 0 帧 | p50 17ms |
+
+**这台夹具的边界**（不许越过）：它挂的是真实 `VirtualList` + 等价行模板，**没有** ChatWindow/store；
+所以它只回答"VirtualList 的锚定/空白/帧时间在两个引擎上是否一致"，不替代 App 内会话切换的真机读数。
+真机格（A8，App 内 WKWebView + 真实会话切换）仍未取到读数。
