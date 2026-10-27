@@ -1316,6 +1316,15 @@ fn finish_receiver_into(
             if let Some(note) = note {
                 logger.error("file", note);
             }
+            // 可归因：actual/expected/收到多少 —— 只有"校验失败"四个字时，分不清是
+            // 续传前缀属于另一份内容、还是发送端声明错了哈希（2026-10-27 审计 P3 子问 4）。
+            logger.warn(
+                "file",
+                format!(
+                    "code=SHA_MISMATCH transfer={transfer_id} peer={} actual={actual_hex} expected={} received={} size={}",
+                    r.peer_id, r.expected_sha256, r.received, r.size
+                ),
+            );
             return Err("文件完整性校验失败".to_string());
         }
     }
