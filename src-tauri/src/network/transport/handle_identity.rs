@@ -88,6 +88,10 @@ async fn handle_identity_and_friend_messages(state: &Arc<AppState>, peer_id: &st
             requeue_group_keys_for_peer(state, &device_id);
             flush_pending_group_keys(state, &device_id).await;
             flush_group_outbox(state, &device_id).await;
+            // 重连补拉（用户 2026-10-27）：A 发任务时 C 离线、随后 A 也下线 ⇒ C 再上线时
+            // 没有任何人会主动推给它。这里向刚连上的 peer 问一份**摘要**，真落后才写 pending，
+            // 由 60s 清扫器补拉（全量、幂等）。只在 Hello 上喊，心跳不喊（那是几十秒一次的）。
+            crate::network::group_history::spawn_catch_up_after_hello(state, &device_id);
             flush_pending_reads(state, &device_id).await;
             flush_pending_group_reads(state, &device_id).await;
             crate::commands::flush_pending_files(state, &device_id).await;

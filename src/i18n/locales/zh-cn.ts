@@ -782,6 +782,8 @@ export const zhCN: MessageDict = {
   "todo.save": "保存",
   "todo.draftEnterHint": "⌘/Ctrl + Enter 保存",
   "todo.edit": "编辑任务",
+  "todo.stateDeleted": "已删除",
+  "todo.stateArchived": "已归档",
   "todo.remove": "删除任务",
   "todo.removeConfirm": "删除后群里所有人都看不到了，确定删除「{title}」？",
   "todo.createDone": "任务已创建",

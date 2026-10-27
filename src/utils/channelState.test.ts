@@ -666,12 +666,24 @@ test("通讯录「（我）」标记：两个渲染分支都要挂，判据与�
  */
 test("群任务三处外显同源：卡片实时状态 / 两处计数口径 / 点卡片直达", () => {
   const chatWin = read("components/ChatWindow.vue");
+  // 2026-10-27：卡片与看板**同一份源**。以前卡片折的是有上界的消息缓存（1000 条/会话、
+  // 8 个会话），长会话里更新行被挤掉后卡片停在旧值，而看板（全表读）已经是新值 ——
+  // 用户报的「聊天里看到、列表上没有」正是这种两边各说一套。全表读优先，没读过才退回缓存。
   assert.match(
     chatWin,
-    /const todoLive = computed\(\(\) => \{[\s\S]{0,400}foldTodos\(chat\.messages\[convId/,
+    /const todoLiveRows = computed\(\(\) => \{[\s\S]{0,900}chat\.groupTodoRows\[convId\][\s\S]{0,300}chat\.messages\[convId\]/,
+    "卡片优先折那份全表读（与看板同源），只有还没读过时才退回消息缓存",
+  );
+  assert.match(
+    chatWin,
+    /const todoLive = computed\(\(\) => todoLiveMap\(foldTodos\(todoLiveRows\.value\)\)\)/,
     "会话层折叠一次产出 todo_id → 当前状态与当前编号（不许放进每条气泡）",
   );
   assert.match(chatWin, /:todo-live="todoLive"/, "折叠结果要传给 MessageItem");
+  // 墓碑（已删除）也要传下去：`foldTodos` 把它丢掉，卡片没有这一份就只能退回创建快照。
+  assert.match(chatWin, /const todoDeletedIds = computed\(\(\) => todoTombstoneIds\(todoLiveRows\.value\)\)/);
+  assert.match(chatWin, /:todo-deleted-ids="todoDeletedIds"/);
+  assert.match(read("components/MessageItem.vue"), /:deleted-ids="todoDeletedIds"/);
   assert.match(
     read("components/MessageItem.vue"),
     /:live-todo="todoLive"/,

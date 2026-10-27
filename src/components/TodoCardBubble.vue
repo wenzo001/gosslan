@@ -46,6 +46,12 @@ const props = defineProps<{
    */
   liveTodo?: Map<string, TodoLive>;
   /**
+   * 已删除任务的 `todo_id` 集合（与看板同源的墓碑判定）。
+   * 墓碑在 `foldTodos` 里被丢掉 ⇒ `liveTodo` 查不到它;不传这一份，卡片就会退回
+   * "创建那一刻的快照"，看起来仍是一条活着的任务，而列表里早已没有（用户 2026-10-27）。
+   */
+  deletedIds?: Set<string>;
+  /**
    * @ 渲染的判定输入（由 MessageItem 透传，与聊天正文同一份）。
    * 缺省 = 单测/别的宿主没传 ⇒ 描述里的 @ 不高亮，但文案仍是原文（不会退化成「@你」）。
    */
@@ -79,6 +85,10 @@ const todoId = computed(() => todo.value?.todoId);
  * 展示字段一律优先读这一份，查不到（任务被删 / 这条消息没折叠进来）才退回快照。
  */
 const live = computed(() => (todoId.value ? (props.liveTodo?.get(todoId.value) ?? null) : null));
+/** 这条任务已被删除（墓碑）—— 与看板口径同一份（看板直接不列出它）。 */
+const deleted = computed(() => !!todoId.value && !!props.deletedIds?.has(todoId.value));
+/** 当前处于归档态（显式归档或终态满 7 天）—— 看板的「全部」不列它，卡片要自己说清楚。 */
+const archived = computed(() => !deleted.value && live.value?.archived === true);
 const title = computed(() => live.value?.title ?? todo.value?.title ?? "");
 const description = computed(() => live.value?.description ?? todo.value?.description ?? "");
 const category = computed(() => live.value?.category ?? todo.value?.category ?? "task");
@@ -244,6 +254,21 @@ function statusText(s: TodoStatus): string {
       <!-- 状态胶囊走共享映射（`TODO_STATUS_PILL`）；字号 11px 是设计规范的最小可用档。 -->
       <span class="shrink-0 inline-flex h-[18px] items-center justify-center rounded-full px-1.5 text-caption font-medium leading-none" :class="statusPillClass">
         {{ statusText(status) }}
+      </span>
+      <!-- 「已删除 / 已归档」：让聊天卡片与看板说同一件事。
+           没有这一格时，已删除任务在聊天里仍是一张"活着"的卡（列表里已经没有了），
+           而已归档任务在看板「全部」里也找不到 —— 两处都会被读成"同步坏了"。 -->
+      <span
+        v-if="deleted"
+        class="shrink-0 inline-flex h-[18px] items-center justify-center rounded-full bg-[var(--card-chip)] px-1.5 text-caption font-medium leading-none text-[var(--card-ink-soft)]"
+      >
+        {{ t("todo.stateDeleted") }}
+      </span>
+      <span
+        v-else-if="archived"
+        class="shrink-0 inline-flex h-[18px] items-center justify-center rounded-full bg-[var(--card-chip)] px-1.5 text-caption font-medium leading-none text-[var(--card-ink-soft)]"
+      >
+        {{ t("todo.stateArchived") }}
       </span>
     </div>
 

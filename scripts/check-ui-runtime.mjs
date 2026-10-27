@@ -3091,6 +3091,7 @@ async function main() {
     const scrollswitch = want("scrollswitch");
     const scrollinput = want("scrollinput");
     const todosync = want("todosync");
+    const tododelete = want("tododelete");
     const taskpaste = want("taskpaste");
     const modaltitle = want("modaltitle");
     const inputpanel = want("inputpanel");
@@ -3161,6 +3162,7 @@ async function main() {
     if (scrollswitch) await runScrollSwitch(cdp, url);
     if (scrollinput) await runScrollInput(cdp, url);
     if (todosync) await runTodoSync(cdp, url);
+    if (tododelete) await runTodoDelete(cdp, url);
     if (taskpaste) await runTaskPaste(cdp, url);
     if (modaltitle) await runModalTitle(cdp, url);
     if (inputpanel) await runInputPanels(cdp, url);
@@ -5783,6 +5785,21 @@ async function runTodoSync(cdp, url) {
     !!updated && updated.text.includes('新标题') && !updated.text.includes('旧标题')
       && updated.text.includes('新说明') && updated.thumbs === 2,
     "含新标题+新说明、不含旧标题、2 张缩略图", JSON.stringify(updated));
+  // 用户 2026-10-27 实测「编辑之后聊天里又多出一张任务卡片」：`todo_update` 是 Silent，
+  // 时间线**只能有一张**任务卡（创建那张）。这一格数的是**渲染行**，不是内存里的消息。
+  const cardCount = await cdp.eval(`(async () => {
+    const { useChatStore } = await import('/src/stores/useChatStore.ts');
+    const chat = useChatStore();
+    await new Promise((r) => setTimeout(r, 200));
+    return {
+      cards: document.querySelectorAll('[data-todo-card]').length,
+      inMemory: (chat.messages['group:g1'] ?? []).length,
+      timeline: document.querySelectorAll('[data-index]').length,
+    };
+  })()`);
+  check("编辑一次之后，聊天时间线里仍然**只有一张**任务卡（todo_update 不许变成第二张卡）",
+    !!cardCount && cardCount.cards === 1,
+    "任务卡 1 张", JSON.stringify(cardCount));
 
   const many = await cdp.eval(`(async () => {
     const { useChatStore } = await import('/src/stores/useChatStore.ts');
@@ -5813,6 +5830,199 @@ async function runTodoSync(cdp, url) {
   check("再加图片也实时长出来：只画 4 张 + 出现「查看更多」",
     !!many && many.thumbs === 4 && many.more === true,
     "4 张缩略图 + 查看更多", JSON.stringify(many));
+
+  // 用户 2026-10-27：「聊天框里看到、列表上没有」——归档/删除的任务在看板里各有去处
+  // （已归档 Tab / 直接不列），聊天卡片必须自己说清楚，否则两边各说一套。
+  const archivedCard = await cdp.eval(`(async () => {
+    const { useChatStore } = await import('/src/stores/useChatStore.ts');
+    const { t } = await import('/src/i18n/index.ts');
+    const chat = useChatStore();
+    chat.enqueueMessage({
+      conv_id: 'group:g1', sender_id: 'dev-me', sender_name: '我',
+      msg_id: 'm-todo-sync-arch', kind: 'todo_update', seq: 20, ts: 1700000009000,
+      content: JSON.stringify({
+        todo_id: 'todo-sync-1', number: 1, title: '新标题', assignees: ['dev-me'],
+        status: 'done', creator: 'dev-me', deleted: false, description: '新说明',
+        images: [], archived: true, done_at: 1700000009000,
+      }),
+    });
+    await new Promise((r) => setTimeout(r, 600));
+    const card = document.querySelector('[data-todo-card]');
+    return { text: card ? card.innerText : '', want: t('todo.stateArchived') };
+  })()`);
+  check("归档之后卡片上写「已归档」（看板「全部」不列它，聊天里得说清楚）",
+    !!archivedCard && archivedCard.want && archivedCard.text.includes(archivedCard.want),
+    "含「已归档」", JSON.stringify(archivedCard));
+
+  const deletedCard = await cdp.eval(`(async () => {
+    const { useChatStore } = await import('/src/stores/useChatStore.ts');
+    const { t } = await import('/src/i18n/index.ts');
+    const chat = useChatStore();
+    chat.enqueueMessage({
+      conv_id: 'group:g1', sender_id: 'dev-me', sender_name: '我',
+      msg_id: 'm-todo-sync-del', kind: 'todo_update', seq: 21, ts: 1700000010000,
+      content: JSON.stringify({
+        todo_id: 'todo-sync-1', number: 1, title: '新标题', assignees: ['dev-me'],
+        status: 'done', creator: 'dev-me', deleted: true, description: '新说明',
+        images: [], archived: true, done_at: 1700000009000,
+      }),
+    });
+    await new Promise((r) => setTimeout(r, 600));
+    const card = document.querySelector('[data-todo-card]');
+    return {
+      cards: document.querySelectorAll('[data-todo-card]').length,
+      text: card ? card.innerText : '',
+      want: t('todo.stateDeleted'),
+    };
+  })()`);
+  check("删除之后卡片写「已删除」（不许留一张看起来还活着的任务卡）",
+    !!deletedCard && deletedCard.cards === 1 && deletedCard.want
+      && deletedCard.text.includes(deletedCard.want),
+    "仍只有 1 张卡 + 含「已删除」", JSON.stringify(deletedCard));
+}
+
+/**
+ * 已归档任务的删除入口（--only=tododelete）。
+ *
+ * 用户 2026-10-27：「已归档的可以加一个删除功能」，口径是**全体群成员**都能删
+ * （后端 `delete_archived_change`）。这一段用真看板 + 真二次确认，断言两件事：
+ *   ① 一个**不是创建者**的成员，在归档行上能看到删除入口、详情里也能看到；
+ *   ② 点确认之后真的发出 `deleted: true`（且没有顺手改归档位）。
+ * 夹具里把 `update_group_todo` 换成记录器 —— 其余（折叠、筛选、权限、二次确认）全是生产码。
+ */
+async function runTodoDelete(cdp, url) {
+  await cdp.send("Emulation.setDeviceMetricsOverride", {
+    width: 1200, height: 800, deviceScaleFactor: 1, mobile: false,
+  });
+  await cdp.send("Page.navigate", { url });
+  await sleep(3_000);
+  await cdp.eval(PAGE_FIXTURE);
+  await cdp.eval(`(() => {
+    window.__TAURI_INTERNALS__ = {
+      metadata: {
+        currentWindow: { label: 'main' },
+        currentWebview: { label: 'main', windowLabel: 'main' },
+      },
+      invoke: async () => null,
+      transformCallback: (cb) => cb,
+      convertFileSrc: (p) => p,
+    };
+    if (!window.__TAURI_EVENT_PLUGIN_INTERNALS__) {
+      window.__TAURI_EVENT_PLUGIN_INTERNALS__ = { unregisterListener: () => {} };
+    }
+  })()`);
+  // 先挂一个不依赖群资料的组件，把页面那份 pinia 建出来（同 taskpaste 的理由）。
+  await cdp.eval(`window.__probe.install('/src/components/MessageItem.vue', '', ${
+    JSON.stringify(JSON.stringify({
+      message: { msg_id: 'warm-delete', conv_id: 'warm', sender_id: 'dev-me', kind: 'text', content: 'warm', ts: 1, seq: 1 },
+    }))})`);
+  const setup = await cdp.eval(`(async () => {
+    const { api } = await import('/src/api/index.ts');
+    const { useChatStore } = await import('/src/stores/useChatStore.ts');
+    const chat = useChatStore();
+    // 我不是创建者（creator=other），但我是群成员 ⇒ 已归档任务应当可删。
+    const group = { id: 'group-del', name: '删除探针群', creator: 'other', members: ['dev-me', 'other'] };
+    const rec = (msg_id, seq, p) => ({
+      msg_id, conv_id: 'group:group-del', sender_id: 'other', kind: 'todo',
+      content: JSON.stringify(p), ts: 1700000000000 + seq, seq, status: 'sent',
+    });
+    api.getGroupTodoMessages = async () => [
+      rec('m-arch', 1, { todo_id: 'todo-arch-1', number: 1, title: '已归档的活', assignees: ['dev-me'],
+        status: 'done', creator: 'other', deleted: false, description: '', images: [],
+        archived: true, done_at: 1700000000000, priority: 'normal', category: 'task' }),
+      // 自动归档（完成满 7 天、archived=false）：界面上同样躺在「已归档」里，
+      // 它的删除必须与显式归档同权 —— 只认 archived 位会让这颗按钮点了被拒。
+      rec('m-auto', 3, { todo_id: 'todo-auto-1', number: 3, title: '自动归档的活', assignees: ['dev-me'],
+        status: 'done', creator: 'other', deleted: false, description: '', images: [],
+        archived: false, done_at: Date.now() - 8 * 86400_000, priority: 'normal', category: 'task' }),
+      rec('m-live', 2, { todo_id: 'todo-live-1', number: 2, title: '还在做的活', assignees: ['dev-me'],
+        status: 'todo', creator: 'other', deleted: false, description: '', images: [],
+        archived: false, done_at: null, priority: 'normal', category: 'task' }),
+    ];
+    api.getGroups = async () => [group];
+    api.getGroupReads = async () => [];
+    api.getFriends = async () => [];
+    api.getPeers = async () => [];
+    window.__delCalls = [];
+    api.updateGroupTodo = async (groupId, todoId, patch) => {
+      window.__delCalls.push({ groupId, todoId, patch });
+      return { ...rec('m-del-result', 99, { todo_id: todoId, number: 1, title: '已归档的活', assignees: ['dev-me'],
+        status: 'done', creator: 'other', deleted: true, description: '', images: [],
+        archived: true, done_at: 1700000000000 }), kind: 'todo_update' };
+    };
+    chat.groups = [group];
+    return { ok: true };
+  })()`);
+  // 身份：看板用 `app.device.device_id` 判"我是不是群成员"（成员窄档的镜像）⇒ 必须种。
+  await cdp.eval("window.__probe.seedDevice('dev-me')");
+  check("看板夹具就绪（非创建者 + 一名群成员 + 一条已归档任务）",
+    !!setup && setup.ok === true, "ok", JSON.stringify(setup));
+  const mounted = await cdp.eval(`window.__probe.install('/src/components/GroupTasksBoard.vue', '', ${
+    JSON.stringify(JSON.stringify({ reusePinia: true, groupId: 'group-del', open: true, fill: true }))})`);
+  check("群任务看板挂得起来（删除入口这条判据的入口）",
+    !!mounted && mounted.ok === true, "install ok", JSON.stringify(mounted));
+  await sleep(600);
+
+  // 切到「已归档」Tab
+  const switched = await cdp.eval(`(async () => {
+    const { t } = await import('/src/i18n/index.ts');
+    const want = t('todo.filter.archived');
+    const b = [...document.querySelectorAll('button')].find((x) => (x.textContent || '').includes(want));
+    if (!b) return { ok: false, buttons: [...document.querySelectorAll('button')].map((x) => (x.textContent || '').trim()).filter(Boolean).slice(0, 20) };
+    b.click();
+    return { ok: true };
+  })()`);
+  check("切到「已归档」Tab", !!switched && switched.ok === true, "ok", JSON.stringify(switched));
+  await sleep(400);
+
+  const rowTrash = await cdp.eval(`(async () => {
+    const { t } = await import('/src/i18n/index.ts');
+    const label = t('todo.remove');
+    const btns = [...document.querySelectorAll('button[aria-label="' + label + '"]')];
+    return { count: btns.length, label };
+  })()`);
+  check("归档行上有删除入口（显式归档 + 自动归档各一颗；全体群成员都能删，不要求是创建者）",
+    !!rowTrash && rowTrash.count === 2, "恰好 2 个删除按钮（两种归档各一颗）", JSON.stringify(rowTrash));
+
+  const detailTrash = await cdp.eval(`(async () => {
+    const { t } = await import('/src/i18n/index.ts');
+    const row = [...document.querySelectorAll('button')].find((x) => (x.textContent || '').includes('已归档的活'));
+    if (!row) return { ok: false };
+    row.click();
+    await new Promise((r) => setTimeout(r, 500));
+    const label = t('todo.remove');
+    return { ok: true, dialogTrash: document.querySelectorAll('button[aria-label="' + label + '"]').length };
+  })()`);
+  check("详情弹窗里同一名成员也有删除入口",
+    !!detailTrash && detailTrash.ok === true && detailTrash.dialogTrash >= 1,
+    "详情里有删除按钮", JSON.stringify(detailTrash));
+  // 关掉详情，回到列表（Esc 在弹窗里由 BaseModal 处理；这里直接点关闭按钮不可靠，用 Esc）
+  await cdp.send("Input.dispatchKeyEvent", { type: "keyDown", key: "Escape", code: "Escape", windowsVirtualKeyCode: 27 });
+  await cdp.send("Input.dispatchKeyEvent", { type: "keyUp", key: "Escape", code: "Escape", windowsVirtualKeyCode: 27 });
+  await sleep(400);
+
+  const confirmFlow = await cdp.eval(`(async () => {
+    const { t } = await import('/src/i18n/index.ts');
+    const label = t('todo.remove');
+    const row = [...document.querySelectorAll('button')].find((x) => (x.textContent || '').includes('已归档的活'))?.closest('.relative');
+    const trash = row ? row.querySelector('button[aria-label="' + label + '"]') : null;
+    if (!trash) return { ok: false, why: 'no-trash' };
+    trash.click();
+    await new Promise((r) => setTimeout(r, 400));
+    const del = [...document.querySelectorAll('button')].find((x) => (x.textContent || '').trim() === t('common.delete'));
+    if (!del) return { ok: false, why: 'no-confirm', text: (document.body.innerText || '').slice(-200) };
+    del.click();
+    await new Promise((r) => setTimeout(r, 500));
+    return { ok: true, calls: (window.__delCalls || []) };
+  })()`);
+  check("确认后真的发出 deleted:true（且没有顺手改归档位）",
+    !!confirmFlow && confirmFlow.ok === true && Array.isArray(confirmFlow.calls)
+      && confirmFlow.calls.length === 1
+      && confirmFlow.calls[0].todoId === 'todo-arch-1'
+      && confirmFlow.calls[0].patch.deleted === true
+      && confirmFlow.calls[0].patch.archived === undefined,
+    "1 次 update_group_todo：deleted=true / archived=undefined",
+    JSON.stringify(confirmFlow));
 }
 
 /**

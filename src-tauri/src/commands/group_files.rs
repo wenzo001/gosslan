@@ -594,25 +594,75 @@ fn claim_only_change(def: &crate::protocol::TodoPayload, actor: &str, e: &TodoEd
         && assignees_are_def_plus_actor(&def.assignees, e.assignees, actor)
 }
 
-/// 「成员窄档」：只服务**本群成员**的三条窄动作（归档 / 还原 / 认领一条需求）。
+/// 这条任务**实际上**是否处于归档态：显式归档，或终态（完成/做不了）满
+/// [`crate::protocol::TODO_AUTO_ARCHIVE_DAYS`] 天。
+///
+/// 为什么后端也要这份判定：前端 `isEffectivelyArchived` 是**同一条口径**
+/// （自动归档纯前端计算、不落库），而"已归档任务全体成员可删"的判权在后端。
+/// 只认 `def.archived` 的话，一条"完成满 7 天"的任务在界面上躺在「已归档」里、
+/// 删除按钮也在，点下去却会被后端拒 —— 那正是本仓最忌的"界面给了一个点了没用的按钮"。
+fn effectively_archived(def: &crate::protocol::TodoPayload, now: i64) -> bool {
+    if def.archived {
+        return true;
+    }
+    crate::protocol::todo_status_is_terminal(&def.status)
+        && def.done_at.is_some_and(|done| {
+            now - done >= crate::protocol::TODO_AUTO_ARCHIVE_DAYS * 24 * 60 * 60 * 1000
+        })
+}
+
+/// 本次请求是否**只是"删除一条已归档任务"**：库里已归档（含自动归档）、请求把它落成墓碑，其余字段逐字相同。
+///
+/// 为什么单独开一档（用户 2026-10-27：「已归档的可以加一个删除功能，全体群成员都能删」）：
+/// 归档区是"已经没人要的活"的收容所，清理由全群共同维护才成立；而**未归档任务**的删除仍是
+/// 结构改动（创建者/群主），否则任何人都能删掉别人正在做的事。
+/// 与归档那两档同一形状：宁可写得死板 —— 删的同时夹带改标题/状态/指派人/图片都不算这一档。
+fn delete_archived_change(
+    def: &crate::protocol::TodoPayload,
+    e: &TodoEdit<'_>,
+    now: i64,
+) -> bool {
+    e.deleted
+        && !def.deleted
+        && effectively_archived(def, now)
+        && e.title == def.title
+        && e.status == def.status
+        && e.assignees == def.assignees
+        && e.description == def.description
+        && same_images(e.images, &def.images)
+        // `Some(..)` = 这次请求还想顺手改归档位 ⇒ 不是"只删除"
+        && e.archived.is_none()
+        && e.priority == def.priority
+        && e.category == def.category
+        && e.custom_category == def.custom_category
+        && e.custom_icon == def.custom_icon
+}
+
+/// 「成员窄档」：只服务**本群成员**的四条窄动作（归档 / 还原 / 认领一条需求 / 删除已归档）。
 #[derive(Clone, Copy, Default)]
 struct MemberLane {
     archive_only: bool,
     reopen_only: bool,
     claim_only: bool,
+    delete_archived: bool,
     is_member: bool,
 }
 
 impl MemberLane {
     fn allows(self) -> bool {
-        self.is_member && (self.archive_only || self.reopen_only || self.claim_only)
+        self.is_member
+            && (self.archive_only
+                || self.reopen_only
+                || self.claim_only
+                || self.delete_archived)
     }
 }
 
 /// 命令层的总判权：[`may_update_todo`] 的两档，外加 [`MemberLane`] 那两条放宽档。
 ///
-/// 归档与还原放宽给**全体群成员**（用户 2026-09-24：「群里所有人都可以归档」，
-/// 同日追加：「归档和被归档的数据还原，任何人都可以操作，其他权限不变」）。
+/// 归档、还原与"删除已归档"放宽给**全体群成员**（用户 2026-09-24：「群里所有人都可以归档」，
+/// 同日追加：「归档和被归档的数据还原，任何人都可以操作，其他权限不变」；
+/// 2026-10-27 又追加：「已归档的可以加一个删除功能」，同样全体成员可删）。
 /// 三条前提：① 改动必须真的只落在那一位上（[`archive_only_change`] / [`reopen_only_change`]）；
 /// ② 必须是本群成员（归档/还原是群内协作动作，不给外人）；③ 归档只在「完成」态成立，
 /// 由调用点显式拒绝"归档一条未完成的任务"（见 `update_group_todo`）。
@@ -787,6 +837,7 @@ pub async fn update_group_todo(
         archive_only: archive_only_change(&def, &edit),
         reopen_only: reopen_only_change(&def, &edit),
         claim_only: claim_only_change(&def, &s.device_id, &edit),
+        delete_archived: delete_archived_change(&def, &edit, crate::db::now_ms()),
         is_member: members.iter().any(|m| m == &s.device_id),
     };
     if !may_change_todo(
@@ -800,8 +851,12 @@ pub async fn update_group_todo(
             "只有任务创建者、群主或被指派人可以修改指派人".to_string()
         } else if edits_structure {
             "只有任务创建者或群主可以修改任务".to_string()
-        } else if lane.archive_only || lane.reopen_only || lane.claim_only {
-            "只有群成员可以归档、还原或认领这条任务".to_string()
+        } else if lane.archive_only
+            || lane.reopen_only
+            || lane.claim_only
+            || lane.delete_archived
+        {
+            "只有群成员可以归档、还原、认领或删除已归档任务".to_string()
         } else {
             "只有创建者或被指派人可以修改任务状态".to_string()
         });

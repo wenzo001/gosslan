@@ -34,6 +34,7 @@ import {
   TODO_CODE_DIGITS,
   todoCode,
   todoLiveMap,
+  todoTombstoneIds,
   mergeIncomingTodoRows,
   isTodoRowsLoaded,
   todoRowsLoadState,
@@ -812,16 +813,79 @@ test("改状态之后编号不变：最新定义带的是原号", () => {
   assert.equal(rows[0]?.status, "done");
 });
 
-test("撞号时两端算出同一套号：todo_id 小的保住原号，其余顺延", () => {
+test("撞号时两端算出同一套号：todo_id 小的保住原号，其余让到**最大号之后**（已显示的号一个都不动）", () => {
   const a = resolveTodoNumbers([{ todoId: "t-b", number: 1 }, { todoId: "t-a", number: 1 }, { todoId: "t-c", number: 2 }]);
-  // t-a < t-b ⇒ t-a=1、t-b=2；t-c 原号 2 已被占 ⇒ 顺延到 3（规则只动"撞上的那一条往后"）
-  assert.deepEqual([...a.entries()], [["t-a", 1], ["t-b", 2], ["t-c", 3]]);
+  // t-a < t-b ⇒ t-a=1；撞号的 t-b 让到最大号之后 = 3；**没撞号的 t-c 保持 2**
+  // （旧实现是"顺延"：t-b=2、t-c 被推到 3 —— 那正是用户 2026-10-27 报的「别人一建任务，我的号就变」）
+  assert.equal(a.get("t-a"), 1);
+  assert.equal(a.get("t-c"), 2, "没撞号的号不许被推走");
+  assert.equal(a.get("t-b"), 3, "撞号的那条让到最大号之后");
   // 纯函数 ⇒ 换一个成员拿到同一批定义（顺序不同）结果一致
   const b = resolveTodoNumbers([{ todoId: "t-c", number: 2 }, { todoId: "t-a", number: 1 }, { todoId: "t-b", number: 1 }]);
-  assert.deepEqual([...b.entries()], [["t-a", 1], ["t-b", 2], ["t-c", 3]]);
+  assert.deepEqual([...b.entries()].sort(), [...a.entries()].sort());
+});
+
+test("同一号撞了三个人：只动多的那两条，且让号不互相踩", () => {
+  const m = resolveTodoNumbers([
+    { todoId: "t-3", number: 1 },
+    { todoId: "t-1", number: 1 },
+    { todoId: "t-2", number: 1 },
+    { todoId: "t-9", number: 2 },
+  ]);
+  assert.equal(m.get("t-1"), 1, "组内 todo_id 最小的保住原号");
+  assert.equal(m.get("t-9"), 2, "另一个原号不动");
+  const losers = [m.get("t-2"), m.get("t-3")].sort();
+  assert.deepEqual(losers, [3, 4], "两条让号必须是最大号之后的两个不同号");
+});
+
+test("别人的新任务到达后，已经显示过的号一个都不漂移（用户 2026-10-27 实测）", () => {
+  const before = foldTodos([
+    numRec("m1", 1, '{"todo_id":"t1","title":"甲","number":1}'),
+    numRec("m2", 2, '{"todo_id":"t2","title":"乙","number":2}'),
+    numRec("m3", 3, '{"todo_id":"t3","title":"丙","number":3}'),
+  ]);
+  const numOf = (rows: ReturnType<typeof foldTodos>, id: string) => rows.find((x) => x.todoId === id)?.number;
+  // 对端离线时也建了一条 #2（它没见过我们的 #2/#3）⇒ 同步过来之后
+  const after = foldTodos([
+    numRec("m1", 1, '{"todo_id":"t1","title":"甲","number":1}'),
+    numRec("m2", 2, '{"todo_id":"t2","title":"乙","number":2}'),
+    numRec("m3", 3, '{"todo_id":"t3","title":"丙","number":3}'),
+    numRec("m4", 4, '{"todo_id":"t4","title":"丁","number":2}'),
+  ]);
+  for (const id of ["t1", "t2", "t3"]) {
+    assert.equal(numOf(after, id), numOf(before, id), `${id} 的号在别人建任务之后不许变`);
+  }
+  assert.equal(numOf(after, "t4"), 4, "撞号的那条（新来的）让到最大号之后");
 });
 
 // ── 编号的**显示口径**（字母 + 数字；用户 2026-09-30 那八条，全文见 INV-P29）──────
+test("实时表带上「当前是否归档」——看板与聊天卡片用同一份判定", () => {
+  const now = Date.now();
+  const rows = foldTodos([
+    def("live", 1),
+    { ...def("done", 2, { status: "done" as const }), content: JSON.stringify({ todo_id: "done", title: "x", number: 2, status: "done", done_at: now }) },
+    { ...def("old", 3, { status: "done" as const }), content: JSON.stringify({ todo_id: "old", title: "x", number: 3, status: "done", done_at: now - 8 * 24 * 3600_000 }) },
+    { ...def("arch", 4), content: JSON.stringify({ todo_id: "arch", title: "x", number: 4, archived: true, status: "done" }) },
+  ]);
+  const m = todoLiveMap(rows);
+  assert.equal(m.get("live")?.archived, false, "进行中的任务不是归档态");
+  assert.equal(m.get("done")?.archived, false, "刚完成还没满 7 天 ⇒ 不是归档态");
+  assert.equal(m.get("old")?.archived, true, "完成满 7 天 ⇒ 自动归档（看板的「全部」不列它，卡片要能说清楚）");
+  assert.equal(m.get("arch")?.archived, true, "显式归档");
+});
+
+test("墓碑集合按 LWW 取最新定义：删了就是删了，后面又有新定义则不算", () => {
+  const create = numRec("m1", 1, '{"todo_id":"t1","title":"甲","number":1}');
+  const del = numRec("m2", 2, '{"todo_id":"t1","title":"甲","number":1,"deleted":true}', "todo_update");
+  assert.deepEqual([...todoTombstoneIds([create])], [], "没删过就不在集合里");
+  assert.deepEqual([...todoTombstoneIds([create, del])], ["t1"], "墓碑覆盖后进集合");
+  // 乱序到达也要按 (seq, msg_id) 判最新，而不是按数组顺序
+  assert.deepEqual([...todoTombstoneIds([del, create])], ["t1"], "顺序无关");
+  // 更晚的一份非删除定义（理论上不该出现，但 LWW 规则必须自洽）⇒ 不算墓碑
+  const later = numRec("m3", 3, '{"todo_id":"t1","title":"甲","number":1,"deleted":false}', "todo_update");
+  assert.deepEqual([...todoTombstoneIds([create, del, later])], [], "更晚的非删除定义胜出");
+});
+
 test("三档类型各有一个字母，且字母表与取值表一一映射", () => {
   assert.deepEqual(TODO_CATEGORY_LETTER, { requirement: "R", bug: "B", task: "T", custom: "C" });
   // 一一映射（两个方向都不许撞）：加第四种类型时这张表必须补齐，否则两条断言之一会红

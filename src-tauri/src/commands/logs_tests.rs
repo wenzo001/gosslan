@@ -1233,6 +1233,55 @@ mod tests {
             "库里本来就没归档 ⇒ 传相同值 = 什么都没改，空请求不进窄档"
         );
 
+        // ---- 窄档四：删除一条**已归档**任务（用户 2026-10-27：全体群成员都能删）----
+        // 形状与归档那两档同一条规矩：只有"别的什么都没动"的请求才算这一档；
+        // 删的同时夹带任何内容改动都必须落回创建者/群主那一档。
+        let now_ms: i64 = 1_700_000_000_000;
+        let del_ok = |d: &TodoPayload, e: &super::TodoEdit<'_>| {
+            super::delete_archived_change(d, e, now_ms)
+        };
+        let mut r = req_of(&archived_def);
+        r.deleted = true;
+        assert!(
+            del_ok(&archived_def, &edit(&r)),
+            "删除一条已归档任务要走成员窄档"
+        );
+        // 反例一：任务没归档 ⇒ 删除仍是结构改动（不许放宽到全群）。
+        // ⚠️ 夹具必须是"刚完成"的：`def` 的 done_at=1（1970 年）在今天算**自动归档**，
+        // 拿它当"未归档"会把这条判据变成在测另一件事。
+        let fresh_done = TodoPayload {
+            done_at: Some(now_ms - 24 * 60 * 60 * 1000),
+            ..def.clone()
+        };
+        let mut r = req_of(&fresh_done);
+        r.deleted = true;
+        assert!(
+            !del_ok(&fresh_done, &edit(&r)),
+            "未归档任务的删除不许走这条口子（那是创建者/群主的结构改动）"
+        );
+        // 反例二：空请求（没删）不算这一档
+        let mut r = req_of(&archived_def);
+        r.deleted = false;
+        assert!(
+            !del_ok(&archived_def, &edit(&r)),
+            "没置删除位的请求不是这一档"
+        );
+        // 反例三～六：删的同时夹带改内容，一律不许放进这条口子
+        for (label, mutate) in [
+            ("改标题", (|r: &mut Req| r.title = "顺手改的".into()) as fn(&mut Req)),
+            ("改状态", |r: &mut Req| r.status = "todo".into()),
+            ("改指派人", |r: &mut Req| r.assignees = vec!["bob".into()]),
+            ("顺手改归档位", |r: &mut Req| r.archived = Some(false)),
+        ] {
+            let mut r = req_of(&archived_def);
+            r.deleted = true;
+            mutate(&mut r);
+            assert!(
+                !del_ok(&archived_def, &edit(&r)),
+                "删除时夹带{label}不许走这条口子"
+            );
+        }
+
         // ---- 窄档三：认领一条「需求」= 只把自己加进名单 ----
         let req_def = TodoPayload {
             category: "requirement".into(),
@@ -1265,6 +1314,7 @@ mod tests {
                     reopen_only: false,
                     claim_only: true,
                     is_member: true,
+                    delete_archived: false,
                 },
             ),
             "认领档亮起来时，非创建者/非群主的成员必须真的过得去"
@@ -1280,6 +1330,7 @@ mod tests {
                     reopen_only: false,
                     claim_only: true,
                     is_member: false,
+                    delete_archived: false,
                 },
             ),
             "不是本群成员 ⇒ 认领档亮着也不许过（认领是群内协作动作）"
@@ -1423,7 +1474,7 @@ mod tests {
                 "carol",
                 "owner",
                 false,
-                super::MemberLane { archive_only, reopen_only, claim_only: false, is_member },
+                super::MemberLane { archive_only, reopen_only, claim_only: false, is_member, delete_archived: false },
             )
         };
         assert!(may(true, false, true), "群成员只动归档位 ⇒ 可以");
@@ -1440,7 +1491,7 @@ mod tests {
                 "carol",
                 "owner",
                 true,
-                super::MemberLane { archive_only: false, reopen_only: false, claim_only: false, is_member: true }
+                super::MemberLane { archive_only: false, reopen_only: false, claim_only: false, is_member: true, delete_archived: false }
             ),
             "结构改动（改标题 / 删除）不开给普通成员"
         );

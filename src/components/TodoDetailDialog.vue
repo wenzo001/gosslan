@@ -39,6 +39,12 @@ const props = defineProps<{
    */
   canRestore: boolean;
   canEditStructure: boolean;
+  /**
+   * 能否删除这条任务。与 `canEditStructure` 不是同一件事：
+   * **已归档**的任务按用户 2026-10-27 的裁定对全体群成员开放删除（见后端 `delete_archived_change`），
+   * 而未归档任务的删除仍是创建者/群主的结构改动。
+   */
+  canDelete: boolean;
   /** 能否改指派人（创建者/群主/当前被指派人）—— 被指派人也能通过编辑改指派人。 */
   canEditAssignees: boolean;
   /**
@@ -453,7 +459,7 @@ const fullCode = computed(() =>
           <Pencil class="h-4 w-4" />
         </button>
         <button
-          v-if="canEditStructure"
+          v-if="canDelete"
           type="button"
           class="tap-safe flex h-8 w-8 items-center justify-center rounded-[var(--gosslan-radius-md)] text-[var(--gosslan-text-2)] transition hover:bg-[var(--gosslan-danger-soft)] hover:text-[var(--gosslan-danger-ink)]"
           :title="t('todo.remove')"
