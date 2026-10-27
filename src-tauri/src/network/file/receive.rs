@@ -871,7 +871,25 @@ pub fn write_chunk(
         // 文件级完整性：明文增量哈希（与写盘同一份数据，无二次磁盘读取）
         use sha2::Digest;
         r.hasher.update(&plaintext);
-        r.file.write_all(&plaintext).map_err(|e| e.to_string())?;
+        // 写盘失败：**盘满**要归类成稳定码（前端据此给"清出空间后可重试"的可行动文案），
+        // 其余错误保留原文（那是唯一信息量）。原先只有 `e.to_string()`，
+        // 用户看到的是一句英文 "No space left on device" —— 不可行动。
+        r.file.write_all(&plaintext).map_err(|e| {
+            let reason = match crate::logging::classify_write_failure(&e) {
+                Some(code) => {
+                    state.logger.error(
+                        "file",
+                        format!(
+                            "code={code} transfer={transfer_id} peer={peer_id} received={} size={} —— 磁盘空间不足",
+                            r.received, r.size
+                        ),
+                    );
+                    code.to_string()
+                }
+                None => e.to_string(),
+            };
+            reason
+        })?;
         r.received += plaintext.len() as u64;
         // 每片都记一次"还被喂得动"—— 这是 `receive_is_stale` 唯一的证据来源。
         // 代价是一次 epoch 毫秒读取，相对上面的 `write_all` 可以忽略。

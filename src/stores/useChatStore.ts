@@ -35,6 +35,7 @@ import { progressAdvanced, stallFlagAlive } from "@/utils/transferProgressWatch"
 import { createSingleFlight } from "@/utils/singleFlight";
 import { EMPTY_STRING_LIST } from "@/utils/emptyList";
 import { actionableRequests } from "@/utils/friendRequests";
+import { fileFailReasonText } from "@/utils/fileFailReason";
 import { resolveMemberName } from "@/utils/memberName";
 import {
   observeMemberNames,
@@ -2796,7 +2797,7 @@ export const useChatStore = defineStore("chat", () => {
         break;
       }
     }
-    app.toast(`${t("send.fileFail")}：${d.reason}`, "error");
+    app.toast(`${t("send.fileFail")}：${fileFailReasonText(d.reason, t)}`, "error");
   }
 
   /**
