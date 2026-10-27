@@ -166,6 +166,12 @@ headed-only 格），该格 headed 单跑 **10/10** ⇒ 合起来 **718/718**；
 | ↳ `coldJump_code / coldJump_text` | **1 帧空白 61.5px / 111px**，且 `longTasks` 为空时也复现 ⇒ 上批把它写成"负载噪声"**是错的** | A/B（改前 `bc06d55d`）**1 帧 47.5px / 111px** ⇒ **既有特征**，不是本轮引入；带在案，不再改 |
 | `perf/scrollkinds.mjs`（2 次） | code 首帧 **39.8ms / 0 空白 / 0 长任务**；text 61.3ms；long 33.8ms（**1 帧空白 206.5px**）；image 53.0ms | 持平；`long` 那 1 帧 A/B 里同样存在（改前 239px）⇒ 既有 |
 
+**引擎侧计数（本轮新加，`perf/scrollprobe.mjs`）**：围着整套 870 帧场景从 CDP `Performance.getMetrics` 取前后差 ——
+`LayoutCount 4 880–4 890`（**5.61 次/帧**）、`RecalcStyleCount 9 092–9 105`（**10.45 次/帧**）、
+`TaskDuration 10.1–10.4s`、`ScriptDuration 0.6–0.9s`，5 次复跑几乎同值。A/B 到改前：`5.60–5.61 / 10.47` ⇒
+**本轮没有增加重排/重算次数**（`RecalcStyleDuration` 反而从 0.75s 降到 0.47s）。
+不报 `Nodes` Δ：同条件下三次读出 −9 905 / +3 859 / +49 659（含待回收节点），不可复现 —— DOM 增长只看 mem 档。
+
 **A/B 方法（可复跑）**：`git worktree add /tmp/wt-prefix 1e06bb58~1`（不含本轮三处改动）→ 软链 `node_modules` →
 在 worktree 里 `npx vite --port 5399` → 同一个 CDP（`PROBE_CDP`）、同一夹具、`PERF_PORT` 切端口。
 两边都跑 2 次以上，读的是**同一台机、同一时段**；跑完 `git worktree remove --force`。前置：
@@ -267,3 +273,21 @@ V8 的 `self_size` 不含字符串/Blob 的外部内存（边界见 `perf/heapDe
 「冷」（`offsetsRebuilds` 500–4500、长帧 60–784）。**两臂都会进冷模态**（改前 2/5、改后 1/4），
 而且改前的冷模态更差（133 / 784 长帧 vs 改后 60）。⇒ 这是**夹具的缓存态**性质，不是本轮回归；
 判回归只能看同一臂的**分布**，单看一次跑会得出相反结论（本表就是按分布在读）。
+
+## 14. 验收九项 → 读数在哪（自审用；有就是有，缺就写缺）
+
+| # | 要记的东西 | 现状 | 读数/证据位置 |
+|---|---|---|---|
+| 1 | 空白视口次数 / 时长 | **有** | §8 `blankFrames / maxBlankPx`（9 组扫描）；① 的 `visibleBlankMs`（headed） |
+| 2 | 帧时间分布 | **有** | §8 `p50 / p95 / maxFrame` + 逐帧 `frameTops` 曲线（台账里有） |
+| 3 | 长帧 | **有** | §8 `longFrames / longTasks（worst 前 5）`；`scrollkinds` 分类型 |
+| 4 | 主线程阻塞 | **部分** | 只有 Chromium 的 `longtask`（WebKit **没有这个 API**，§12 那台夹具改用帧间隔判） |
+| 5 | 进入可视范围 → 真正可见的延迟 | **部分** | ① 的 `firstTargetFrame / topJumpAfterTarget`；**没有**逐条"进视口→首帧画出来"的分布 |
+| 6 | 测量/重测/挂载卸载次数 | **有（引擎侧 + 数据侧）** | 引擎侧：`Performance.getMetrics` 围着整套场景取前后差 ⇒ **5.61 次 layout / 10.45 次 style recalc 每帧**（5 次复跑同值，见 §8）；数据侧：`add/rem`（挂载/卸载）、`styleMut`（measure 写 transform）、`itemSizeCache.size`、`offsetsRebuilds`。**没有**逐次 `measureElement` 计数——引擎侧那两个数就是它的可观测量，再加计数会改被量对象 |
+| 7 | 锚点偏移 | **有** | §8 `anchorDrift`（up200 152px 既有）/ `prepend drift 25×0`；§12 双引擎 `keptKey + drift` |
+| 8 | DOM / CPU / 内存增长 | **有** | §13（9 次 900 步：堆 Δ、listeners、nodes/dom、逐块曲线） |
+| 9 | 冷热与双平台差异 | **部分** | 冷热：`coldJump_*`、`imageColdThenWarm`、`scrollswitch` 缓存曲线；平台：§12 双引擎（mac 两引擎都有），**Windows NOT RUN**（用户本轮排除） |
+
+两处"部分"都是**能补但本轮没补**，不是"测过没问题"：4 的原因是 WebKit 无 `longtask`；
+5/6 需要在夹具里加两个计数器（逐条可见延迟、`measureElement` 次数），本轮没做是因为
+①②③ 三个症状的判定都不依赖它们（它们只会把"没有可观测缺陷"说得更细）。

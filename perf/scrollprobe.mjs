@@ -76,6 +76,24 @@ for (let i = 0; i < 120; i++) {
   await new Promise((r) => setTimeout(r, 500));
 }
 
+// 引擎侧计数（CDP `Performance.getMetrics`）——「重测 / 重排」的**引擎**那一面：
+// `LayoutCount / RecalcStyleCount` 在页面里拿不到，而往页面里加钩子又会改变被量对象 ⇒ 只放在驱动侧，
+// 围着整段场景取前后两次（不是逐帧，逐帧会把采样本体插进被量的循环里）。
+async function perfMetrics() {
+  const { metrics } = await send("Performance.getMetrics");
+  const g = (k) => metrics.find((x) => x.name === k)?.value ?? null;
+  return {
+    layoutCount: g("LayoutCount"),
+    styleCount: g("RecalcStyleCount"),
+    layoutS: g("LayoutDuration"),
+    styleS: g("RecalcStyleDuration"),
+    taskS: g("TaskDuration"),
+    scriptS: g("ScriptDuration"),
+  };
+}
+await send("Performance.enable");
+const metricsBefore = await perfMetrics();
+
 const result = await evalJs(`(async () => {
   const p = window.__probe;
   if (!p) return { error: "window.__probe 没挂上（页面模块可能抛错）" };
@@ -129,6 +147,26 @@ const result = await evalJs(`(async () => {
   return out;
 })()`);
 
+const metricsAfter = await perfMetrics();
+const frameCount =
+  Object.values(result.scans ?? {}).reduce((s, r) => s + (r.segments?.[0]?.steps ?? 0), 0) +
+  (result.reversal?.segments ?? []).reduce((s, x) => s + (x.steps ?? 0), 0) +
+  (result.slowReadUp?.segments?.[0]?.steps ?? 0);
+const d = (k) => +(metricsAfter[k] - metricsBefore[k]).toFixed(2);
+result.engine = {
+  frames: frameCount,
+  layoutCount: d("layoutCount"),
+  styleCount: d("styleCount"),
+  layoutPerFrame: frameCount ? +(d("layoutCount") / frameCount).toFixed(2) : null,
+  stylePerFrame: frameCount ? +(d("styleCount") / frameCount).toFixed(2) : null,
+  layoutS: d("layoutS"),
+  styleS: d("styleS"),
+  taskS: d("taskS"),
+  scriptS: d("scriptS"),
+  // 不报 `Nodes` Δ：CDP 这个计数器在三次同条件下读出 −9905 / +3859 / +49659（含待回收节点），
+  // 不可复现 ⇒ 留着只会被抄成结论。DOM 增长看 mem 档的 `nodes`/`domElements`（先 GC 再采）。
+};
+
 const lf = (label, r) => {
   if (!r) return;
   const s = r.segments?.[0] ?? r;
@@ -143,6 +181,7 @@ const lf = (label, r) => {
 
 console.log(JSON.stringify(result.selfcheck, null, 2));
 console.log(`n=${result.n} mix=${JSON.stringify(result.mix)} allKindsKnown=${result.allKindsKnown}`);
+if (result.engine) console.log(`engine: ${JSON.stringify(result.engine)}`);
 for (const [k, v] of Object.entries(result.scans ?? {})) lf(k, v);
 if (result.reversal) {
   result.reversal.segments.forEach((s, i) => lf(i === 0 ? "reversal↓" : "reversal↑", { segments: [s] }));
