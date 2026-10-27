@@ -236,3 +236,9 @@ post-flush 那一刻 spacer 仍是旧高度 ⇒ 新目标位置被 clamp 回旧�
 **这台夹具的边界**（不许越过）：它挂的是真实 `VirtualList` + 等价行模板，**没有** ChatWindow/store；
 所以它只回答"VirtualList 的锚定/空白/帧时间在两个引擎上是否一致"，不替代 App 内会话切换的真机读数。
 真机格（A8，App 内 WKWebView + 真实会话切换）仍未取到读数。
+
+**让 WKWebView 这一格可以自动化（2026-10-27 现测）**：`safaridriver -p 4456` 能起来并监听，
+但 `POST /session` 立刻回
+`You must enable 'Allow remote automation' in the Developer section of Safari Settings`。
+⇒ 只要在 **Safari → 设置 → 开发者** 勾一次 "允许远程自动化"，这格就能用 W3C WebDriver 跑，
+不再需要人工点。没勾之前，只能按上面那两手（开发菜单 / 应用内 ⌥⌘I）。
