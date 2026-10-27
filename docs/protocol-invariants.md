@@ -1633,12 +1633,13 @@ mesh 没有服务器也没有强制升级 ⇒ 混合版本是常态，不是边�
 （`volume_root_of`），让 mac 上的单测也能钉住它（2026-10-27 落地时实测抓到过一次真缺陷：
 `C:\` 被截成 `C:`，而 `GetDiskFreeSpaceExW` 只认 `C:\` ⇒ 预检恒放行、形同没有）。
 
-- 钩子：`tests::inbound_space_preflight_tests::inbound_admission_preflights_the_disk_space_with_the_right_folding` `storage::disk_space::tests::space_verdict_folds_headroom_into_the_decision` `storage::disk_space::tests::volume_root_is_parsed_for_drive_and_unc_paths` `storage::disk_space::tests::available_bytes_is_readable_for_a_real_dir_and_none_for_a_missing_one`
+- 钩子：`tests::inbound_space_preflight_tests::inbound_admission_preflights_the_disk_space_with_the_right_folding` `storage::disk_space::tests::space_verdict_folds_headroom_into_the_decision` `storage::disk_space::tests::volume_root_is_parsed_for_drive_and_unc_paths` `storage::disk_space::tests::available_bytes_is_readable_for_a_real_dir`
 - 反向：把预检从 `admit_inbound` 里删掉 ⇒ 钩子第一条红；把「读不到 ⇒ 放行」拆成
   独立分支（`Unknown => return Err(..)`）⇒ 同一条红（**误拒的代价远大于误放**：
   权限受限的目录会永远收不下文件）；把水位从折叠里去掉（`available >= needed`）
   ⇒ `space_verdict_folds_headroom_into_the_decision` 红（写满之后连 `.part` 都删不掉）；
-  把卷根解析改成 `C:`（少尾反斜杠）⇒ `volume_root_is_parsed_for_drive_and_unc_paths` 红。
+  把卷根解析改成 `C:`（少尾反斜杠）⇒ `volume_root_is_parsed_for_drive_and_unc_paths` 红；
+  把「定位不到卷 ⇒ 放行」那条改成「定位不到也拒绝」⇒ `available_bytes_is_none_when_the_volume_cannot_be_located` 红。
 
 ### INV-P34 — 文件生命周期的 GB 级慢活只许在阻塞线程池里跑（不许钉住 tokio worker）
 

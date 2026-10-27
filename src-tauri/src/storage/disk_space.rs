@@ -318,9 +318,14 @@ mod tests {
     /// 真文件系统上的余量查询：**读得到**且量级合理。
     ///
     /// 这条只断言"读得到 + 不是天文数字"（不同卷的余量差异太大，写死数值会脆）。
-    /// 它真正钉住的是"路径写错/不存在 ⇒ 返回 None（⇒ 放行）"这条契约。
+    ///
+    /// ⚠️ **"路径不存在 ⇒ None" 不是跨平台契约**（2026-10-27 Windows CI 实测）：
+    /// unix 的 `statvfs` 收路径、路径不存在就失败 ⇒ `None`；而 Windows 的
+    /// `GetDiskFreeSpaceExW` 查的是**卷**、只要能定位到卷就返回余量 ⇒ 不存在的路径
+    /// **照样读到数**。两者都不是 bug（API 语义不同），但用例必须写**两侧都成立**的那条：
+    /// **定位不到卷 ⇒ None（⇒ 放行）**。
     #[test]
-    fn available_bytes_is_readable_for_a_real_dir_and_none_for_a_missing_one() {
+    fn available_bytes_is_readable_for_a_real_dir() {
         let dir = std::env::temp_dir();
         let avail = available_bytes(&dir);
         assert!(
@@ -331,13 +336,35 @@ mod tests {
             avail.unwrap() < 1 << 60,
             "余量不该是天文数字（块大小取错字段 ⇒ 算出来的量会离谱）"
         );
-        // 不存在的路径 ⇒ None（⇒ 放行，绝不因为"查不到"就拒收）
-        let missing = dir.join("gosslan-no-such-dir-for-space-probe");
+    }
+
+    /// 定位不到卷 ⇒ `None` ⇒ 放行（误拒的代价远大于误放）。
+    ///
+    /// 判法用**两侧都成立**的输入：unix 是"路径不存在"，Windows 是"路径里没有盘符"，
+    /// 两者都定位不到卷 ⇒ `None`。
+    #[test]
+    fn available_bytes_is_none_when_the_volume_cannot_be_located() {
+        // unix：路径不存在 ⇒ `statvfs` 失败。
+        // Windows：路径**存在**但取不到卷根 ⇒ 那半实现直接返回 `None`。
+        // 用一个**相对路径**：unix 的 `statvfs` 收相对路径也能查到（相对于 cwd），
+        // 而 Windows 的卷根解析对相对路径取不到 ⇒ 两侧的行为会分叉，
+        // 所以这里只断言"两边都拿不到卷"的那一类输入。
+        let missing = std::env::temp_dir().join("gosslan-no-such-dir-for-space-probe");
         let _ = std::fs::remove_dir_all(&missing);
-        assert_eq!(
-            available_bytes(&missing),
-            None,
-            "路径不存在 ⇒ 读不到 ⇒ 必须放行（误拒的代价远大于误放）"
-        );
+        if cfg!(windows) {
+            // Windows：卷根取不到 ⇒ None。
+            assert_eq!(
+                available_bytes(std::path::Path::new("relative-no-volume")),
+                None,
+                "定位不到卷 ⇒ 必须放行（误拒的代价远大于误放）"
+            );
+        } else {
+            // unix：路径不存在 ⇒ statvfs 失败 ⇒ None。
+            assert_eq!(
+                available_bytes(&missing),
+                None,
+                "路径不存在 ⇒ 读不到 ⇒ 必须放行（误拒的代价远大于误放）"
+            );
+        }
     }
 }

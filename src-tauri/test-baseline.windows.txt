@@ -2,6 +2,7 @@ commands::attention_tests::macos_bounces_only_when_urgent
 commands::attention_tests::other_desktops_keep_the_previous_behavior
 commands::attention_tests::windows_flashes_regardless_of_urgency
 commands::cache_clean_schedule_tests::an_aborted_vacuum_never_reads_as_a_failure
+commands::cache_clean_schedule_tests::clean_targets_exclude_favorites_but_keep_counting_them
 commands::cache_clean_schedule_tests::first_round_is_scheduled_before_the_loop_not_inside_it
 commands::cache_clean_schedule_tests::vacuum_execution_timer_starts_after_the_lock_is_held
 commands::cache_clean_schedule_tests::vacuum_note_keeps_wait_and_execution_apart
@@ -266,6 +267,7 @@ db::resend_requeue_tests::terminal_and_in_flight_states_are_refused_without_writ
 db::startup_safety_tests::a_failing_ddl_batch_leaves_no_half_schema_behind
 db::startup_safety_tests::backup_detection_picks_the_newest_migration_backup_and_ignores_the_main_db
 db::startup_safety_tests::boot_counts_ignore_default_settings_but_see_real_rows
+db::startup_safety_tests::fresh_database_lands_in_wal_without_a_degraded_notice
 db::startup_safety_tests::fresh_version_is_written_inside_the_ddl_transaction
 db::startup_safety_tests::orphan_sending_is_recovered_but_queued_and_terminal_rows_are_untouched
 db::startup_safety_tests::the_base_schema_and_the_content_schema_land_together
@@ -287,6 +289,8 @@ db::tests::delete_group_cascades_group_files
 db::tests::delete_messages_clears_outbox_and_recomputes_summary
 db::tests::delete_messages_refuses_non_bubble_kinds
 db::tests::delete_messages_with_empty_input_is_noop
+db::tests::deleting_a_file_message_cancels_the_file_queue_and_ledger
+db::tests::deleting_a_group_file_message_cancels_every_recipient_row
 db::tests::deleting_group_conversation_sets_boundary
 db::tests::direct_and_gossip_same_msg_id_persist_single_row
 db::tests::duplicate_recipient_insert_rejected
@@ -312,6 +316,7 @@ db::tests::group_file_keys_not_persisted
 db::tests::group_file_permission_checks
 db::tests::group_file_recipient_states_persist
 db::tests::group_file_recipients_are_creation_snapshot
+db::tests::group_files_page_is_bounded_but_full_list_stays_complete
 db::tests::group_message_creates_conversation
 db::tests::group_msg_id_duplicate_counts_unread_and_event_once
 db::tests::group_name_only_updates_for_the_recorded_creator
@@ -415,6 +420,7 @@ file_relay::tests::offer_without_chunk_size_is_refused_instead_of_buffering
 file_relay::tests::sweep_removes_the_part_files_too
 file_relay::tests::unsafe_transfer_id_cannot_create_a_file_outside_the_dir
 file_relay::tests::zero_byte_file_completes
+gossip_engine::tests::allow_retry_lets_exactly_one_redelivery_through
 gossip_engine::tests::bloom_and_lru_dedup
 gossip_engine::tests::bloom_rotates_when_full
 gossip_engine::tests::envelope_sign_verify_and_tamper_detection
@@ -429,7 +435,9 @@ logging::tests::crash_note_writes_without_a_logger_and_survives_the_reentry_guar
 logging::tests::diag_fold_table_is_bounded_by_restarting_not_growing
 logging::tests::diag_folds_only_on_identical_text_in_the_same_second
 logging::tests::diag_warn_and_error_are_never_folded
+logging::tests::disk_full_is_classified_into_a_stable_code_and_others_are_not
 logging::tests::exit_marker_lets_next_run_read_previous_as_clean_and_absence_as_abnormal
+logging::tests::fail_code_disk_full_is_a_stable_identifier
 logging::tests::first_startup_without_any_history_seeds_nothing
 logging::tests::format_utc_epoch_and_known_dates
 logging::tests::hang_lines_do_not_change_exit_classification
@@ -521,6 +529,7 @@ mesh::relay_policy::tests::parse_roundtrip_and_unknown_defaults_to_all
 mesh::relay_policy::tests::peer_relay_respects_policy_matrix
 mesh::relay_policy::tests::relay_authorization_truth_table
 mesh::relay_policy::tests::target_and_exhausted_ttl_never_forward_regardless_of_policy
+mesh::router::tests::allow_retry_reopens_a_frame_id_exactly_once
 mesh::router::tests::broadcast_frame_is_delivered_and_forwarded
 mesh::router::tests::broadcast_with_ttl_one_delivers_without_forwarding
 mesh::router::tests::directed_frame_for_me_is_delivered_only
@@ -684,6 +693,7 @@ network::file::tests::rejects_path_traversal_file_names
 network::file::tests::rejects_path_traversal_transfer_ids
 network::file::tests::relay_forwarded_ciphertext_still_decryptable
 network::file::tests::relay_receiver_hash_lifecycle_success
+network::file::tests::resume_prefix_identity_distinguishes_same_content_from_another_one
 network::file::tests::retained_parts_are_pruned_oldest_first_within_budget
 network::file::tests::retryable_failure_at_the_budget_limit_gives_up
 network::file::tests::retryable_failure_within_budget_is_rescheduled
@@ -698,6 +708,7 @@ network::file::tests::sha256_file_hex_matches_in_memory_hash
 network::file::tests::sha_mismatch_does_not_complete_the_content_ledger
 network::file::tests::size_mismatch_with_broken_ledger_still_leaves_its_stage_note
 network::file::tests::stale_attempt_frames_are_filtered_but_legacy_frames_never_are
+network::file::tests::stale_part_sweep_only_touches_our_own_uuid_shaped_files
 network::file::tests::stall_verdict_boundaries
 network::file::tests::stalled_receiver_is_reclaimed_only_after_the_idle_window
 network::file::tests::tampered_chunk_fails_to_decrypt
@@ -718,6 +729,8 @@ network::group_history::group_history_engine_tests::a_page_sealed_with_one_key_n
 network::group_history::group_history_engine_tests::an_oversized_page_is_rejected_before_it_reaches_the_db_lock
 network::group_history::group_history_engine_tests::both_membership_entry_points_trigger_the_sync_behind_a_first_membership_guard
 network::group_history::group_history_engine_tests::cancellation_is_checked_between_pages_and_the_flag_never_leaks
+network::group_history::group_history_engine_tests::catch_up_is_wired_on_hello_not_on_heartbeat
+network::group_history::group_history_engine_tests::catch_up_only_when_the_peer_is_strictly_ahead
 network::group_history::group_history_engine_tests::earliest_beats_a_peer_with_more_messages
 network::group_history::group_history_engine_tests::empty_candidate_list_has_no_source
 network::group_history::group_history_engine_tests::leaving_a_group_drops_its_sync_marker_too
@@ -768,6 +781,7 @@ network::transport::group_file_ack_recovery_tests::an_old_database_gains_the_led
 network::transport::group_file_ack_recovery_tests::the_ack_ledger_survives_a_new_connection
 network::transport::group_file_bubble_tests::ack_write_retries_are_bounded_and_stop_on_first_success
 network::transport::group_file_bubble_tests::bubble_is_decided_only_when_every_recipient_is_terminal
+network::transport::group_file_fail_reason_tests::only_stable_fail_codes_reach_the_user
 network::transport::group_offer_retry_tests::active_receiver_ignores_a_network_duplicate
 network::transport::group_offer_retry_tests::completed_offer_only_reacks
 network::transport::group_offer_retry_tests::group_file_key_ttl_expires_at_the_boundary
@@ -981,6 +995,8 @@ protocol::tests::share_tree_response_without_truncated_is_legacy_false
 protocol::tests::unknown_message_kind_still_decodes_as_a_chat_message
 protocol::tests::unknown_message_type_is_a_hard_parse_error
 protocol::tests::wire_kind_matches_the_serde_tag
+state::install_probe_tests::install_probe_does_not_use_file_size
+state::install_probe_tests::schema_only_database_is_still_a_fresh_install
 state::tests::corrupt_keys_abort_without_overwriting_them
 state::tests::existing_install_never_regenerates_missing_or_partial_keys
 state::tests::first_install_generates_identity_once_and_later_loads_the_same_keys
@@ -994,6 +1010,11 @@ state::tests::ui_language_prefers_preference_then_frontend_hint_then_env
 storage::cache_cleaner::tests::no_policy_removes_nothing
 storage::cache_cleaner::tests::quota_removes_oldest_first
 storage::cache_cleaner::tests::retention_removes_expired_only
+storage::disk_space::tests::available_bytes_is_none_when_the_volume_cannot_be_located
+storage::disk_space::tests::available_bytes_is_readable_for_a_real_dir
+storage::disk_space::tests::space_verdict_folds_headroom_into_the_decision
+storage::disk_space::tests::unknown_space_is_not_the_same_as_not_enough
+storage::disk_space::tests::volume_root_is_parsed_for_drive_and_unc_paths
 storage::vacuum::tests::an_abort_lands_close_to_the_budget
 storage::vacuum::tests::budget_zero_aborts_and_leaves_the_database_intact
 storage::vacuum::tests::generous_budget_completes_and_the_table_still_reads
@@ -1023,6 +1044,7 @@ tests::ble_start_does_not_block_on_the_peripheral_state_wait
 tests::ble_write_failure_retries_then_tears_the_link_down
 tests::blocking_commands_run_off_the_main_thread
 tests::boot_downgrade_refusal_is_typed_precedes_writes_and_non_blocking
+tests::both_group_file_entries_validate_the_transfer_id_before_any_side_effect
 tests::broadcast_diag_suppression_covers_both_send_paths
 tests::bt_defaults_on_everywhere
 tests::cache_cleaner_walk_never_follows_symlinks
@@ -1079,6 +1101,7 @@ tests::hello_reply_before_reader_loop_is_bounded
 tests::hourly_sweep_covers_parts_relay_and_stalled_receivers
 tests::image_dimensions_reads_common_headers_without_decoding
 tests::in_flight_media_is_not_reported_as_deleted
+tests::inbound_space_preflight_tests::inbound_admission_preflights_the_disk_space_with_the_right_folding
 tests::incomplete_content_is_auto_retried_behind_capability_gate
 tests::jni_static_matches_kotlin_toplevel
 tests::key_rotation_candidate_requires_friend_and_new_key_self_signature
@@ -1108,6 +1131,7 @@ tests::receiver_abort_notifies_the_sender_inside_the_loop
 tests::relay_circuit_is_tagged_relay_not_routed
 tests::relay_data_plane_respects_policy
 tests::relay_file_lifecycle_slow_work_runs_off_the_async_worker
+tests::relay_key_is_registered_only_after_the_reassembly_begins
 tests::relay_receive_hashes_assembled_plaintext_once
 tests::relay_reclaim_finalizes_in_db_and_emits_outside_the_lock
 tests::relay_send_does_not_claim_unproven_success
@@ -1117,6 +1141,7 @@ tests::remind_audience_follows_group_membership_removal
 tests::removing_a_friend_also_drops_the_in_memory_identity_binding
 tests::restart_destroys_lock_and_marks_exit_before_reexec
 tests::resume_branch_creates_the_receive_bubble
+tests::resume_identity_tests::resume_receive_checks_the_prefix_identity_before_reading_it
 tests::resume_prefix_hash_runs_off_the_async_worker
 tests::runtime_diag_reporter_is_wired_once_and_covers_webviews_and_queues
 tests::runtime_snapshot_reports_real_bluetooth_runtime
@@ -1125,6 +1150,7 @@ tests::scan_results_are_not_filtered_by_unconnected_services
 tests::second_instance_exit_is_only_the_dev_multi_open
 tests::second_launch_focuses_the_running_app_instead_of_duplicating_it
 tests::self_chat_stays_local
+tests::share_file_requests_go_through_the_bounded_queue
 tests::sweeper_whole_file_hash_runs_off_the_async_worker
 tests::sync_friend_keys_replaces_both_trust_legs_under_explicit_confirm
 tests::tasks_window_uses_one_fixed_label_cross_checked_with_frontend
