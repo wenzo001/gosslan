@@ -3,7 +3,8 @@
 - 范围：`src/components/VirtualList.vue`、`src/components/ChatWindow.vue`、`src/components/MessageItem.vue` 及其子组件、
   `src/utils/{messageHeight,listBuffer,scrollIntent,previewMetrics,scrollRestore,messages}.ts`、`src/stores/useChatStore.ts`
 - 依赖（现读）：`@tanstack/vue-virtual@3.13.47` → `@tanstack/virtual-core@3.19.6`（`package-lock.json` 精确解析，两包各仅一份）
-- 修复版本：**5.14.6**（`1e06bb58`）、**5.14.7**（`10e67a74`）、**5.14.8**（`85c71980`）；探针增强 `4c740144`。
+- 修复版本：**5.14.6**（`1e06bb58`）、**5.14.7**（`10e67a74`）；探针/量具 `4c740144`、**5.14.8**（`85c71980`，**当天晚些时候已回退其产品码**，见 §12.1）。
+  ⇒ 现在的产品码 = **5.14.7 的行为**（`reissuePrependAnchor` 函数体与 `10e67a74` 逐字相同），5.14.8 净留下的是量具（§18）。
   **5.14.6/5.14.7 已随 `v5.14.7` 发布**（tag `35efb210` = 当前 `origin/main`，Release 非 draft/非 pre，17 个资产，2026-10-27T01:37Z）。
   **5.14.8 与本文档提交只在本机**（`85c71980` 不在 `origin/main` 上，无 tag）——未 push 是既定边界，不是遗漏。
 - 量具：`scripts/check-ui-runtime.mjs`（Chromium/headed）、`perf/*`、`perf/wk-check.html`（Chromium/WebKit 双引擎自驱动）、
@@ -78,7 +79,7 @@ macOS **App 内真机**（WKWebView + 真实会话切换，A8）**仍未取到**
 - **改动**：convSwitch 分支先 `scrollToBottom()`（post-flush：DOM 已换、尚未绘制），再 arm 收敛窗口。
 - **读数**：`topJumpAfterTarget` 356/291 → **0**；headed 下 `visibleBlankMs 0`。
 
-### ③ 向上翻历史不再把正在读的那一行推走（5.14.7，5.14.8 改写第二半）
+### ③ 向上翻历史不再把正在读的那一行推走（5.14.7；5.14.8 曾改写第二半，当晚已回退）
 - **实测**：每页前插 100 条，加载瞬间 `scrollTop` **向下掉 267/279px**（本该变大），锚点行随后被推走 **710px**；
   三页里两页失守。期间写入全是库的 `scrollWithAdjustments < _scrollToOffset`（6–8 笔/页）。
 - **根因（时序）**：Vue 适配器的 options watcher 是 **pre-flush** ⇒ 库的 anchor 写发生在 **spacer 高度 patch 之前** ⇒
@@ -88,8 +89,8 @@ macOS **App 内真机**（WKWebView + 真实会话切换，A8）**仍未取到**
      （`getVirtualItemForOffset`，`start − scrollTop`，O(log n)、不读 DOM）。**必须在变化之前**取：
      实测前插的 watcher 里现采会采成 `−1072`（应 −32），后续页甚至取不到 key。
   2. 在 `onItemsChanged` 里按同一目标重发一次；残差 ≤2px 就不写。
-     **5.14.8 修正**：不能再假设"post-flush 时 spacer 已长高"——WebKit 下不成立（实测 `keptKey false`）。
-     现在改成**每帧 `getTotalSize()` 连续两帧不变才发**，12 帧封顶（§12）。
+     **5.14.8 曾改成"等 `getTotalSize()` 连续两帧不变再发"**（当时依据一次 Safari 读数），
+     **当天晚些时候已回退**：App 内格（§18）上 5.14.7 写法与它都绿、修前红 ⇒ 多等两帧无判据支撑（§12.1）。
 - **读数**：Chromium 三页漂移 **0 / 0 / 0**；Safari/WebKit 前插锚点 `keptKey true`、drift 0.3px（§12）；
   `vlist` 的"prepend 20 条"守卫格保持绿（证明没把已正确的情形改坏）。
 
@@ -160,7 +161,7 @@ npm run verify
 node perf/wk-a8.mjs
 ```
 
-现读（`85c71980` 5.14.8 上重跑）：10 段 **717 PASS / 0 FAIL / 1 UNSUPPORTED**（唯一 UNSUPPORTED 是 headless 量不到的
+现读（**回退后**的树上重跑）：10 段 **717 PASS / 0 FAIL / 1 UNSUPPORTED**（唯一 UNSUPPORTED 是 headless 量不到的
 headed-only 格），该格 headed 单跑 **10/10** ⇒ 合起来 **718/718**；`npm test` **1427/1427**；`npm run build`（vue-tsc + vite）通过。
 
 `npm run verify` 本地现读 **14 ✅ + 1 ❌ + 4 未跑**：红的是「领域依赖方向守门」——
@@ -169,7 +170,7 @@ headed-only 格），该格 headed 单跑 **10/10** ⇒ 合起来 **718/718**；
 属于并行会话在 `mem_diag` 埋点上的在途改动，不是本轮（本轮只碰 `VirtualList.vue`/探针/文档）。
 按 fail-fast 未跑的四步已用**同一条命令**单跑：Change Budget ✅、CHANGELOG 结构 ✅、`npm test` ✅、`npm run build` ✅。
 
-## 8. 修复后复跑上一批的三台夹具（2026-10-27，**在 5.14.8 树上现跑**）
+## 8. 修复后复跑上一批的三台夹具（2026-10-27，在 5.14.8 树上现跑；`reissuePrependAnchor` 的回退不影响这三台夹具的路径）
 
 | 夹具 | 关键读数 | 与上一批比 |
 |---|---|---|
@@ -220,8 +221,9 @@ worktree 里 `git status` 必须是干净的，否则 A/B 的两臂不只有一�
 
 1. 群文件/中继的 Offer 阶段没有 `w/h`（完成回填才有）⇒ 用户正看着那张图时仍可能有一次高度修正。
 2. 旧消息无 `w/h`：按 288 骨架预留，横图首次解码会收缩一次。
-3. ③ 的修法已不再假设"post-flush 时 spacer 已长高"，改为**等 `getTotalSize()` 静定再发**（§12）。
-   残余：静定等待有上限（12 帧）；若那一瞬间还有异步内容在持续改高（图解码 / 字体），重发会放弃 ⇒ 回到未修正的漂移。
+3. ③ 现在用的是 5.14.7 的"post-flush 立即重发"。曾经的"等 sizer 静定"已回退（§12.1）——
+   **残余风险**：若真机某天真的出现"post-flush 时 spacer 还没长高"的 clamp，现在这一版会失守；
+   届时先用 `perf/wk-a8app.mjs`（App 内格）复现，再考虑把静定门加回来（代码注释里留了那段历史）。
 4. 键盘原生滚动在本夹具无判据（UNSUPPORTED），不是"没问题"。
 5. 真机像素级 1 帧闪现只能人眼。
 6. **冷跳 / 超长消息各有 1 帧空白**（`coldJump_code 61.5px`、`coldJump_text 111px`、`long 206.5px`）。
@@ -312,7 +314,7 @@ WKWebView 的 UA 里没有 `Safari/` 段，所以 `safari` 会是 false、`wkweb
 早期更麻烦的两条路（现已不需要）记在这里备查：`safaridriver` 要人在 Safari 设置里勾一次「允许远程自动化」；
 Safari 开了「仅限 HTTPS」后 `http://127.0.0.1` 会被 `WebKitErrorDomain:305` 拦掉。
 
-## 13. 资源不持续增长（`PERF_ONLY=mem`，2026-10-27 在 5.14.8 上现跑）
+## 13. 资源不持续增长（`PERF_ONLY=mem`，2026-10-27 现跑；`reissuePrependAnchor` 的回退不涉及这条路径）
 
 量具是仓库里已有的那台：`perf/run.mjs` 的 mem 档 —— `HeapProfiler.collectGarbage` + `Performance.getMetrics`，
 **不给页面加任何钩子**（量具一改被量对象，量的就是量具自己）。跑法：
@@ -360,7 +362,7 @@ layout/style 计数与空带持续时间代替）。**只剩第 9 项的 Windows
 
 1. **最值得优先处理的三件**：① **写入归因台账**——它是"静置期零 JS 写入"的唯一证词，④ 能定性全靠它；
    ② **④ 的补偿谓词**（`pinned` 整条豁免 ⇒ 上方行收缩时两条补偿路都不走）；③ **③ 的时序**——
-   "读数取在变化之前、写入发在布局之后"，并且要补上 WebKit 的 sizer 静定门。三件都已落地。
+   "读数取在变化之前、写入发在布局之后"。三件都已落地；其中"WebKit 的 sizer 静定门"试过、**已按证据回退**（§12.1）。
 2. **证据不足、当前不该修的**：`up200 anchorDrift 152px`、`coldJump`/`long` 的单帧空带（两者 A/B 都证明既有）、
    fold/merge 增量化（0.3–0.5 ms）、行挂载成本（纯文本对照同样 16.8 ms）、测量缓存悬崖（`itemSizeCache.size` 恒 60）。
    共同点：机制说得出，**读数表明无可观测代价**。
@@ -393,7 +395,7 @@ layout/style 计数与空带持续时间代替）。**只剩第 9 项的 Windows
 | 1 | 写入归因台账（app/lib/unowned 分开记） | 让"谁写的 `scrollTop`"可判——④ 能定性全靠它 | 极低（只在探针里） | **已完成**（`1e06bb58`） |
 | 2 | ④ 补偿谓词收窄 | 直接消掉"停稳后弹回" | 中（会改写若干"容差内跟高"的格）⇒ 正控格 + 10 段 718/718 | **已完成**（5.14.6） |
 | 3 | ① 切会话同帧落位 | 消掉一帧 356/291px 的跳 | 低（只动 convSwitch 分支） | **已完成**（5.14.6） |
-| 4 | ③ 取值前置 + 布局后重发 | 消掉上翻时锚点被推走 | 中（多写一次 `scrollTop`）⇒ `vlist/scrollhist` 守着 | **已完成**（5.14.7 → 5.14.8 静定门） |
+| 4 | ③ 取值前置 + 布局后重发 | 消掉上翻时锚点被推走 | 中（多写一次 `scrollTop`）⇒ `vlist/scrollhist`/`wk-a8app` 守着 | **已完成**（5.14.7；5.14.8 的静定门已回退） |
 | 5 | 依赖 bump（vue-virtual 3.13.47→3.13.49 / core 3.19.6→3.19.8） | 上游已修项与本轮结论一致 | 低-中（锁文件 + 一次同轨迹对照） | **未做**（用户口径：单独一笔、先 bump 再定要不要自研） |
 | — | A2 白带 T1/T2/T3 分型 | 只在症状②被点名时才有用 | — | **暂缓**（②未点名；真输入三档空带均 0） |
 | — | B′ `measureRowRef` 去 rect、B1/B2 估值预留加码 | 机制可证，但两臂无差 | 低 | **不做**（读数不支持） |
@@ -403,10 +405,11 @@ layout/style 计数与空带持续时间代替）。**只剩第 9 项的 Windows
 **阶段与验收**
 - Phase A 只读审计：A–I 分类 + 量具有效性表 + 不确定性表 ⇒ 报告 §4 / §9。
 - Phase B 量具：关掉 `--only` 假绿通道、写入归因台账、`scrollhist/scrollswitch/scrollinput`、双引擎夹具 ⇒ 报告 §9 / §12。
-- Phase C 修 ④①：**5.14.6**；Phase D 修 ③：**5.14.7**（Chromium 通过）→ **5.14.8**（WebKit 也通过，静定门）。
+- Phase C 修 ④①：**5.14.6**；Phase D 修 ③：**5.14.7**（Chromium 通过）→ 5.14.8 的静定门**当晚按证据回退**（§12.1），
+  产品码停在 5.14.7；5.14.8 净留下量具（真 WKWebView 宿主 + App 内判据，§18）。
 - Phase E（未开始）：A8 一次 App 内读数 / Windows 整列 / 依赖 bump —— 三件都要人拍板或人点一次。
 
-**当前验收读数（5.14.8）**：10 段滚动判据 **718/718**（headed 补齐那格）；`npm test` **1427/1427**；
+**当前验收读数（回退后）**：10 段滚动判据 **718/718**（headed 补齐那格）；`npm test` **1427/1427**；
 `vue-tsc + vite build` 通过；资源 900 步 × 9 次**无增长台阶**；引擎侧 **5.61 layout / 10.45 style recalc 每帧**，A/B 与改前一致。
 
 ## 17. 判据功率表：每个修好的症状，都有一条**修前会红**的判据（2026-10-27 现跑）
@@ -421,7 +424,7 @@ cd /tmp/wt-power && GOSSLAN_PROBE_PORT=5296 GOSSLAN_PROBE_CDP=9252 \
   node scripts/check-ui-runtime.mjs --only=scrollreact,scrollshake,scrollswitch,scrollhist,vlist
 ```
 
-| 症状 | 判据（探针里的原文标题） | 修前 `bc06d55d` | 现在 5.14.8 | 结论 |
+| 症状 | 判据（探针里的原文标题） | 修前 `bc06d55d` | 现在（回退后） | 结论 |
 |---|---|---|---|---|
 | ④ 停稳后弹回 | 「A11 静止期（离底 60px、什么也不做 1.5s）：位置不许自己变（gap 仍 ≥59）」 | **❌** | ✅ | 有功率 |
 | ③ 上翻推走正在读的行 | 「向上翻历史：每页前插后，正在读的那一行仍在原位（同 key 且 \|Δoffset\| ≤2px）」 | **❌** | ✅ | 有功率（**③ 唯一有功率的判据**） |
