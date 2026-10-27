@@ -2651,6 +2651,20 @@ impl AppState {
                 //   采样只在这 5 分钟一格，热路径一律不采；读数拿不到就写 `-`，不折 0。
                 let mem = crate::mem_diag::sample();
                 crate::mem_diag::remember(&mem);
+                // 快线：系统还能提交的量真的低于阈值时，**当场**在现场文件里留一行。
+                // 为什么不等 5 分钟那一格：10-21 那次的签名是"下一个 318 KB 都拿不到"，
+                // 而临界的几分钟里没有任何留痕 ⇒ 回头看只有"崩了"。这条上界 = 每格一条
+                // （跟着快照的 5 分钟周期走，不会自己刷屏），读不到数值的平台永不点亮。
+                // 每格都把同一行**也**写进不轮转的现场文件：`gosslan.log` 超 512 KiB 就转、
+                // 而且只留一代 —— 10-16 那次就是几分钟把现场刷没了。而"崩之前那 20 分钟的走势"
+                // 恰恰只有被外部拿走（没有 panic 钩子、没有分配失败钩子）那种死法还查得到的唯一证据。
+                // 量是有界的：一格一行 ≈ 200 字节，每 5 分钟一条 ⇒ 现场文件 2 MiB 上限约 35 天一整轮重开。
+                crate::logging::crash_note(&format!(">>> code=RUNTIME_MEM {}", mem.line()));
+                if crate::mem_diag::under_commit_pressure(&mem) {
+                    st.logger
+                        .warn("runtime", format!("code=COMMIT_PRESSURE {}", mem.line()));
+                    crate::logging::crash_note(&format!(">>> code=COMMIT_PRESSURE {}", mem.line()));
+                }
                 st.logger.info(
                     "runtime",
                     format!(

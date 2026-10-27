@@ -528,4 +528,214 @@
             gauge > check,
             "必须先校验长度再预约：否则一个非法长度也会被算进聚合值（那是量具自己造假）"
         );
+
+        // ⑤ 子树 CPU 那一列的**基准推进**：`tree_cpu` 是"距上一次采样烧了多少毫秒"，
+        // 全靠读旧值→算增量→再写新值这个顺序。把 store 挪到 load 前面，增量就恒等于 0 ——
+        // 而那正是"渲染进程被挂起"的读数形状：量具会替每一次卡死都指认错的那个方向。
+        let mem = code_only(include_str!("mem_diag.rs"));
+        for name in ["TREE_CPU_LAST", "TREE_CPU_AT"] {
+            assert_eq!(
+                mem.matches(&format!("{name}.load(")).count(),
+                1,
+                "{name} 只该在 sample() 里读一次（多一处 = 两条平行基准，增量算的是哪次说不清）"
+            );
+            assert_eq!(
+                mem.matches(&format!("{name}.store(")).count(),
+                1,
+                "{name} 只该在 sample() 里推进一次"
+            );
+            assert!(
+                mem.find(&format!("{name}.load(")) < mem.find(&format!("{name}.store(")),
+                "{name} 必须先读旧值再推进基准：反了 ⇒ `tree_cpu` 永远是 0ms，每次卡死都被读成挂起"
+            );
+        }
+        assert_eq!(
+            mem.matches("tree_cpu_window_s = ").count(),
+            1,
+            "窗口必须和增量在同一格里成对写出（只写增量的话，`1500ms` 分不清是 30 秒还是 5 分钟）"
+        );
+    }
+
+    /// 崩溃归因的另外两条接线：**大分配记账的出生地**与**现场/压力行**。
+    ///
+    /// 规矩与上一条一样：钉出现次数与位置，不钉存在性。少一个出生地，那一类分配就永远
+    /// 不会出现在现场里 —— 而"日志里没看到"与"它没发生"是两件事（本仓在日志判据上反复强调过）。
+    #[test]
+    fn big_alloc_sites_and_the_crash_block_carry_the_picture() {
+        fn code_only(src: &str) -> String {
+            src.lines()
+                .filter(|l| !l.trim_start().starts_with("//"))
+                .collect::<Vec<_>>()
+                .join("\n")
+        }
+        // ① 四个已知的"一次拿走一大块"的出生地，一个都不许漏。
+        // （`include_str!` 只收字面量 ⇒ 这里逐项写，不用循环拼路径。）
+        let per_file = [
+            (
+                "transport/tcp.rs",
+                code_only(include_str!("transport/tcp.rs")),
+                1, // 64 MiB 级的帧体
+            ),
+            (
+                "transport/relay_seal.rs",
+                code_only(include_str!("transport/relay_seal.rs")),
+                2, // 内层帧 + 密封记录，两处都按对端声明长度增长
+            ),
+            (
+                "export.rs",
+                code_only(include_str!("export.rs")),
+                2, // 全量读进行 + 整篇字符串 with_capacity
+            ),
+            (
+                "commands/updater.rs",
+                code_only(include_str!("commands/updater.rs")),
+                1, // 整包常驻内存
+            ),
+        ];
+        for (file, src, want) in per_file {
+            assert_eq!(
+                    src.matches("mem_diag::note_big_alloc(").count(),
+                    want,
+                    "{file} 的大分配记账必须是 {want} 处（多一处 = 同一件事两处出生，少一处 = 那一类分配在现场里隐形）"
+                );
+        }
+        // ② 崩溃块自带那一刻的画面（内存 + 仪表 + 近期大分配都在 `line()` 里）。
+        let logging = code_only(include_str!("logging.rs"));
+        assert_eq!(
+            logging.matches("crate::mem_diag::sample().line()").count(),
+            1,
+            "现场块里没有这一行 ⇒ panic 那种死法仍然只留得下一句 panic 文本"
+        );
+        let block = logging
+            .find("fn write_crash_block")
+            .expect("崩溃块函数改名 ⇒ 同步改这条判据");
+        assert!(
+            logging[block..].contains("现场内存"),
+            "读数必须写在 `write_crash_block` 里（写在别处 = 现场文件里查不到）"
+        );
+        // ③ 提交压力的快线：接在 5 分钟那一格之后，且必须同时进应用日志与现场。
+        let state = code_only(include_str!("state.rs"));
+        assert_eq!(
+            state
+                .matches("crate::mem_diag::under_commit_pressure(&mem)")
+                .count(),
+            1,
+            "快线必须恰好一处，且读的是这一格刚采的样本（不是缓存）"
+        );
+        // 同一行还要**每格**写进不轮转的现场文件：应用日志 512 KiB 就转、只留一代，
+        // 而被外部拿走那种死法没有钩子可挂 ⇒ 走势是唯一还剩着的证据。
+        // （数的是码名而不是 `crash_note(` 本身：那个函数在本文件里另有 6 处生产调用点，
+        //   拿它当计数分母会先撞上一条假红 —— 与本仓"分母要现算"同一条道理。）
+        assert_eq!(
+            state.matches("\">>> code=RUNTIME_MEM ").count(),
+            1,
+            "每格都要往现场写一行内存走势，且只写一处（两处 = 同一行落两遍，2 MiB 的现场会被自己刷掉）"
+        );
+        assert_eq!(
+            state.matches("\">>> code=COMMIT_PRESSURE ").count(),
+            1,
+            "越界时的压力行必须落进不轮转的现场（应用日志那一侧另有 warn，这里数的是现场那一份）"
+        );
+        let press = state
+            .find("code=COMMIT_PRESSURE")
+            .expect("压力码没了 ⇒ 临界期又变成没有留痕");
+        assert!(
+                state[press..press + 700].contains("crate::logging::crash_note"),
+                "压力行必须同时落现场文件：应用日志会轮转（512 KiB / 只留一代），临界的几分钟可能正好被转掉"
+            );
+    }
+
+    /// 更新器**交棒给安装器之前**必须往不轮转的现场里写一行。
+    ///
+    /// 为什么这条值得钉：Windows 的 NSIS 安装器成功后直接结束本进程，走不到任何 shutdown 钩子
+    /// ⇒ 现场里就只剩"这次运行没有任何收尾标记地结束了"。2026-10-27 那一趟（01:39）正是这样
+    /// 被当成一次不明崩溃来分析的 —— 白找了半小时凶手动机。
+    ///
+    /// 钉的是**顺序**而不是存在性：BEGIN 写在 `update.install(&bytes)` 之后等于没写，
+    /// 安装器一接管，后面那行再也出不来。
+    #[test]
+    fn updater_marks_the_handoff_in_the_crash_file_before_it_leaves() {
+        fn code_only(src: &str) -> String {
+            src.lines()
+                .filter(|l| !l.trim_start().starts_with("//"))
+                .collect::<Vec<_>>()
+                .join("\n")
+        }
+        let up = code_only(include_str!("commands/updater.rs"));
+        assert_eq!(
+            up.matches(">>> code=UPDATER_INSTALL_BEGIN").count(),
+            1,
+            "交棒前的标记必须恰好一处（两处 = 同一个结局落两行，2 MiB 的现场会被自己刷掉）"
+        );
+        let begin = up
+            .find(">>> code=UPDATER_INSTALL_BEGIN")
+            .expect("BEGIN 码没了 ⇒ 装完更新那次退出又变成'不明死法'");
+        let install = up
+            .find("update.install(&bytes)")
+            .expect("安装调用改了名/搬了家 ⇒ 同步改这条判据");
+        assert!(
+            begin < install,
+            "BEGIN 必须写在把字节交给安装器**之前**：之后写的那行永远可能出不来"
+        );
+        let done = up.find(">>> code=UPDATER_INSTALL_DONE");
+        assert!(
+            matches!(done, Some(i) if i > install),
+            "DONE（若有）必须跟在安装调用之后：它的作用是'安装器已交棒'，装之前就写 = 谎报"
+        );
+        // 非 Windows 那一支由本进程自己重启，同样要有标记（`restart` 里会 exit）。
+        let restart = up
+            .find("app.restart()")
+            .expect("重启调用改名 ⇒ mac/linux 那次'没有收尾标记的退出'又会复活");
+        let note = up
+            .find(">>> code=UPDATER_RESTART")
+            .expect("重启前没有现场标记");
+        assert!(
+            note < restart,
+            "重启标记必须紧邻在 restart 之前（写后面读不到）"
+        );
+    }
+
+    /// `mem_diag.rs` 用到的**每一个** windows-sys 命名空间，都必须在 `Cargo.toml` 里点名成 feature。
+    ///
+    /// 这条专门为本机看不见的那一半代码存在：那些 `use windows_sys::…` 全在
+    /// `#[cfg(target_os = "windows")]` 的函数体里 ⇒ mac 上 `cargo check`、clippy、单测三样全绿，
+    /// 只有 Windows 那条腿编不过。而 windows-sys 的 feature **没有传递关系**（现读 0.61.2 的
+    /// Cargo.toml：`Win32_System_ProcessStatus` 只展开到 `["Win32_System"]`，
+    /// `Win32_System_Diagnostics_ToolHelp` 谁也不顺带打开）⇒ 用到哪个就得开哪个。
+    /// 2026-10-27 加"我们家那棵 WebView2 子进程树"的遍历时就是这么漏了 ToolHelp 一次。
+    #[test]
+    fn every_windows_sys_namespace_used_is_declared_as_a_feature() {
+        let cargo = include_str!("../Cargo.toml");
+        // 分母从"用它的地方"现解析，不手抄清单（本仓在判据上反复吃过手抄清单漂移的亏）。
+        let mut need: Vec<String> = Vec::new();
+        for line in include_str!("mem_diag.rs").lines() {
+            let l = line.trim();
+            if l.starts_with("//") || !l.starts_with("use windows_sys::Win32::") {
+                continue;
+            }
+            let tail = l.trim_start_matches("use ").trim_end_matches(';');
+            // `…::{X, Y};` ⇒ 命名空间是 `::{` 之前那一段；
+            // `…::ITEM;`（只引进一个符号）⇒ 最后一段是符号本身，砍掉才是命名空间。
+            let ns = match tail.split_once("::{") {
+                Some((ns, _items)) => ns.to_string(),
+                None => tail[..tail.rfind("::").unwrap_or(0)].to_string(),
+            };
+            let feature = ns.trim_start_matches("windows_sys::").replace("::", "_");
+            if !need.contains(&feature) {
+                need.push(feature);
+            }
+        }
+        assert!(
+            need.len() >= 5,
+            "解析器只数出 {} 个命名空间 ⇒ import 的写法变了而这条判据在空转：{need:?}",
+            need.len()
+        );
+        let missing: Vec<&String> = need
+            .iter()
+            .filter(|f| !cargo.contains(&format!("\"{f}\"")))
+            .collect();
+        assert!(
+            missing.is_empty(),
+            "Cargo.toml 的 windows-sys feature 少了 {missing:?} —— mac 全绿、Windows CI 当场编不过"
+        );
     }

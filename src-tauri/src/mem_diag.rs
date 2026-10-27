@@ -66,6 +66,25 @@ pub struct MemSample {
     /// USER 对象句柄数与峰值（同上；每扇窗、每个控件都算它）。
     pub user_objects: Option<u32>,
     pub peak_user_objects: Option<u32>,
+    /// **我们家那棵 WebView2 树的进程数**（不含自己）—— 真正吃掉几百 MB 的常在这棵树里，
+    /// 只读主进程等于读错对象（本仓 2026-10-15 就定过这条口径，见崩溃取证账本）。
+    pub tree_procs: Option<u32>,
+    /// 那棵树的私有提交量之和（不含自己）。与 `commit` 两列并排看才不会把两边混成一个数。
+    pub tree_private_commit: Option<u64>,
+    /// **上一次采样以来**整棵子树烧掉的 CPU 毫秒（kernel + user 之和的增量），
+    /// 以及那个增量对应的**时间窗**（秒）—— 两者必须一起给，只有一个数算不出占比。
+    ///
+    /// 这一列是 2026-10-27 那次"渲染层 11 分钟不心跳"的分岔口：
+    /// - `tree_cpu=…ms` 跟窗口时长同量级（≈每核 100%）⇒ JS 主线程在空转（卡死循环/死线性的
+    ///   正则或布局），进程活着但在烧 CPU；
+    /// - `tree_cpu=0ms/<窗口>` ⇒ 这一格里整棵树一个指令都没执行（被挂起，或 `ProcessFailed`
+    ///   之后 WebView2 不再驱动它）；
+    /// - 只涨一点点（几十毫秒）⇒ 活着且空闲，问题不在这棵树里。
+    ///
+    /// 三种的修法完全不同，而只看 `tree_procs` 分不开前两种。
+    pub tree_cpu_ms: Option<u64>,
+    /// `tree_cpu_ms` 那块增量的测量窗口（秒）。没有上一次采样时两列一起是 `-`。
+    pub tree_cpu_window_s: Option<u64>,
 }
 
 /// 字节 ⇒ MiB。现场行要给**整数**：小数点在按空白分字段的行里没有任何好处，
@@ -80,6 +99,21 @@ fn column(k: &'static str, v: Option<u64>) -> String {
     match v {
         Some(b) => format!("{k}={}MiB", mib(b)),
         None => format!("{k}=-"),
+    }
+}
+
+/// 子树 CPU 那一列：增量**和它的窗口**一起给，缺一次采样就整列 `-`。
+///
+/// 为什么不拆成两列：`tree_cpu=1500ms` 单独摆在那里，读的人必须去翻上一条同码日志的时间戳
+/// 才知道这是 30 秒里烧的（＝卡死）还是 5 分钟里烧的（＝空闲）。窗口就在同一个字段里，
+/// 现场一眼能算出占比。
+fn column_cpu(ms: Option<u64>, window_s: Option<u64>) -> String {
+    match (ms, window_s) {
+        (Some(m), Some(w)) => format!("tree_cpu={m}ms/{w}s"),
+        // 增量有、窗口没有：正常接线走不到这里（两列同源于上一次采样），但宁可明写未知，
+        // 也不要悄悄把窗口当 0 —— `0s` 会把任何增量都算成无穷大的占比。
+        (Some(m), None) => format!("tree_cpu={m}ms/-s"),
+        (None, _) => "tree_cpu=-".to_string(),
     }
 }
 
@@ -123,6 +157,9 @@ impl MemSample {
             column_count("peak_gdi", self.peak_gdi_objects),
             column_count("user", self.user_objects),
             column_count("peak_user", self.peak_user_objects),
+            column_count("tree_procs", self.tree_procs),
+            column("tree_commit", self.tree_private_commit),
+            column_cpu(self.tree_cpu_ms, self.tree_cpu_window_s),
         ]
         .join(" ")
     }
@@ -131,7 +168,15 @@ impl MemSample {
     ///
     /// 纯函数、不碰进程 ⇒ 它的形状有真值表（见本模块末尾的测试），不需要真把进程搞大。
     pub fn line(&self) -> String {
-        format!("{} {}", self.fields_line(), frame_read_line())
+        // 三样：样本列（进程/系统/句柄/子树）+ 帧读仪表 + 近期大分配。
+        // 大分配环挂在这里，是为了让**每一个**用 `line()` 的出口（快照、HANG、分配钩子、
+        // 崩溃块）都自动带上"崩之前在干什么"，不靠某一处记得多写一行。
+        format!(
+            "{} {} {}",
+            self.fields_line(),
+            frame_read_line(),
+            big_alloc_line()
+        )
     }
 }
 
@@ -146,6 +191,11 @@ static C_GDI: AtomicU64 = AtomicU64::new(NONE);
 static C_USER: AtomicU64 = AtomicU64::new(NONE);
 /// 上一次成功采样的时刻（`crate::logging::now_ms`）；负数 = 从来没成功过。
 static C_AT: AtomicI64 = AtomicI64::new(-1);
+/// 上一次采样的子树 CPU 总时长（100ns）。`NONE` = 还没采过 ⇒ 第一格 `tree_cpu=-`。
+static TREE_CPU_LAST: AtomicU64 = AtomicU64::new(NONE);
+/// 上一次采到子树 CPU 的时刻（ms），和 `tree_cpu` 的窗口一起渲染。与 `TREE_CPU_LAST`
+/// 同生同死（同一格里成对读写），所以不需要额外的同步。
+static TREE_CPU_AT: AtomicI64 = AtomicI64::new(-1);
 
 /// 存下这一格，供不能再采样的场合（分配失败钩子）读。
 ///
@@ -276,10 +326,287 @@ pub fn frame_read_peak() -> u64 {
     FRAME_READ_PEAK.load(Ordering::Relaxed)
 }
 
+// ==================== 大分配记账（"崩之前在干什么"）====================
+
+/// 多高算"大"。8 MiB 这个数不是随手取的：它是本仓里**合法流量**的上量级门槛
+/// （群历史一页 1.5 MB、文件分片 342 KB 都在下面），而真正能把提交内存顶爆的
+/// 一次动作（导出全库、64 MiB 级帧、整包更新）都在上面。低于这条线的不记 ——
+/// 环只有 12 格，被小动作挤满就等于没有现场。
+pub const BIG_ALLOC_BYTES: u64 = 8 * 1024 * 1024;
+
+/// 环的容量。**有界是这条通道存在的前提**：一个"只增"的诊断缓冲会在长跑里
+/// 变成它正要查的那个洞（本仓在 `diag_fold` 表上为这个付过一次学费，见 `logging.rs`）。
+const BIG_ALLOC_RING: usize = 12;
+
+/// `(时刻, 出生地, 字节)`。
+type BigAlloc = (i64, &'static str, u64);
+
+static BIG_ALLOCS: std::sync::Mutex<Vec<BigAlloc>> = std::sync::Mutex::new(Vec::new());
+
+/// 往环里放一笔，并把长度夹回 `BIG_ALLOC_RING`（丢最旧）。
+///
+/// 纯函数、不碰全局 —— "只留最近 12 笔"这条策略要有真值表，而对着进程级全局数它的长度
+/// 会造出一条只在并发顺序不利时才红的用例（同一次 `cargo test` 里别的线程也可能记一笔）。
+fn ring_push(ring: &mut Vec<BigAlloc>, now_ms: i64, at: &'static str, bytes: u64) {
+    ring.push((now_ms, at, bytes));
+    while ring.len() > BIG_ALLOC_RING {
+        ring.remove(0);
+    }
+}
+
+/// 环的渲染（同样是为了可测：`big_alloc_line` 只做"取全局 + 交给这里"）。
+fn ring_render(now_ms: i64, ring: &[BigAlloc]) -> String {
+    if ring.is_empty() {
+        return "big=-".to_string();
+    }
+    let items: Vec<String> = ring
+        .iter()
+        .rev()
+        .map(|(ts, at, bytes)| format!("{at}:{}MiB/{}s", mib(*bytes), (now_ms - *ts).max(0) / 1000))
+        .collect();
+    // 一整格、零空格：现场行按空白分字段，`big[a,b]` 那种带括号的写法会被切成好几列，
+    // 读的人（和任何解析它的脚本）分不清这是一格还是三格。
+    format!("big={}", items.join(","))
+}
+
+/// 记一笔"我正要/刚刚拿走这么大一块"。低于阈值的直接丢掉（理由见 `BIG_ALLOC_BYTES`）。
+///
+/// 只在**已知会很大**的那几处调用（导出、整包更新、大帧读、中继内层帧、群历史一页），
+/// 不给通用分配器记账 —— 给每一次分配记账本身就是新的开销与新的噪声。
+pub fn note_big_alloc(at: &'static str, bytes: u64) {
+    if bytes < BIG_ALLOC_BYTES {
+        return;
+    }
+    let mut ring = BIG_ALLOCS.lock().unwrap_or_else(|e| e.into_inner());
+    ring_push(&mut ring, crate::logging::now_ms(), at, bytes);
+}
+
+/// 环里最近的几笔，渲染成一格字段（没有记录给 `big=-`，给空串会被读成"没分配过"）。
+///
+/// 每笔带**年龄（秒）**：现场里"5 秒前的导出"和"40 分钟前的导出"是两种结论 ——
+/// 前者指着崩溃，后者只是这台机器开过一次导出。
+pub fn big_alloc_line() -> String {
+    let now = crate::logging::now_ms();
+    let ring: Vec<BigAlloc> = BIG_ALLOCS.lock().unwrap_or_else(|e| e.into_inner()).clone();
+    ring_render(now, &ring)
+}
+
+// ==================== WebView2 子进程树（"读主进程＝读错对象"那格）====================
+
+/// 从 `pid → 父 pid` 表里算出**以 `me` 为根的整棵树**（含 `me`）。
+///
+/// 为什么单独做成纯函数：Windows 那边只是把 Toolhelp 的快照喂进来，"谁算我们家的进程"
+/// 才是会错的地方 —— WebView2 的 browser 进程是**我们**的子进程，而 renderer/GPU/工具进程
+/// 是那个 browser 进程的子孙 ⇒ 只按直接父子或只按进程名都会漏。
+/// 纯函数有真值表，跨平台都能测（本仓在 mac 上写、Windows 上跑的那类判据都这个形状）。
+///
+/// 环（A→B→A）必须能终止：`th32ParentProcessID` 来自系统快照，我们不信它一定无环。
+// 只有 Windows 那条分支真的遍历进程快照；macOS/Linux 上这函数只被测试用 ⇒ 不加这句，
+// `cargo clippy -D warnings` 会在 lib 目标上报 dead_code（`--all-targets` 看得见测试，lib 看不见）。
+#[cfg_attr(not(target_os = "windows"), allow(dead_code))]
+pub fn subtree_pids(parent_of: &std::collections::HashMap<u32, u32>, me: u32) -> Vec<u32> {
+    let mut children: std::collections::HashMap<u32, Vec<u32>> = std::collections::HashMap::new();
+    for (pid, parent) in parent_of {
+        children.entry(*parent).or_default().push(*pid);
+    }
+    let mut out = vec![me];
+    let mut seen: std::collections::HashSet<u32> = std::collections::HashSet::new();
+    seen.insert(me);
+    let mut stack = vec![me];
+    while let Some(pid) = stack.pop() {
+        if let Some(kids) = children.get(&pid) {
+            for k in kids {
+                // `seen` 既防重复入栈，也在父链成环时保证这一圈一定收口。
+                if seen.insert(*k) {
+                    out.push(*k);
+                    stack.push(*k);
+                }
+            }
+        }
+    }
+    out
+}
+
+/// 两次采样的 CPU 总时长差（100ns 单位 ⇒ 出毫秒）。
+///
+/// 三种情况都必须分得开：**第一次采样**（没有上一次 ⇒ `None`，不许冒充 0，
+/// 0 会被读成"这 5 分钟它一点 CPU 都没烧"＝指向挂起）；**正常增量**；
+/// 以及**变小了**（子进程死掉重开、或树换了一批新进程 ⇒ 计数器归零，这一格报 0 是诚实的）。
+fn cpu_delta_ms(prev_100ns: Option<u64>, now_100ns: u64) -> Option<u64> {
+    prev_100ns.map(|p| now_100ns.saturating_sub(p) / 10_000)
+}
+
+/// 把每格的 `(kernel_100ns, user_100ns, 这一格拿到了吗)` 折成一个总数。
+///
+/// **任何一个子进程读不到 ⇒ 整格未知（`None`），而不是把缺的那格当 0。**
+/// 这一列唯一要分开的两件事是"挂起（0）"与"卡住（≈窗口时长）"，而一个假的 0 会直接把
+/// 读的人送到"挂起"那一侧 —— 指认错方向比"这一格没证据"贵得多（本仓"折叠方向按代价定"那条规矩）。
+/// 空集合也是 `None`：没有可数的孩子就没有证据。
+// 与 `subtree_pids` 同一格道理：只有 Windows 那条分支真的在遍历进程快照，
+// 其它平台上这个纯函数只被测试用 ⇒ 不加这句，lib 目标的 clippy 会报 dead_code。
+#[cfg_attr(not(target_os = "windows"), allow(dead_code))]
+fn fold_tree_cpu(readings: &[(u64, u64, bool)]) -> Option<u64> {
+    if readings.is_empty() {
+        return None;
+    }
+    let mut total = 0u64;
+    for (kernel, user, ok) in readings {
+        if !ok {
+            return None;
+        }
+        total += kernel + user;
+    }
+    Some(total)
+}
+
+/// 我们家那棵 WebView2 树的（进程数, 私有提交量之和, CPU 总时长 100ns）。拿不到 ⇒ `None`。
+/// 第三个元素自己也是 `Option`：提交量数得出来、CPU 却有一格读不到，是完全可能的两种结局。
+#[cfg(target_os = "windows")]
+pub fn child_webview_tree() -> Option<(u32, u64, Option<u64>)> {
+    use std::collections::HashMap;
+    use windows_sys::Win32::Foundation::FILETIME;
+    use windows_sys::Win32::Foundation::{CloseHandle, INVALID_HANDLE_VALUE};
+    use windows_sys::Win32::System::Diagnostics::ToolHelp::{
+        CreateToolhelp32Snapshot, Process32FirstW, Process32NextW, PROCESSENTRY32W,
+        TH32CS_SNAPPROCESS,
+    };
+    use windows_sys::Win32::System::ProcessStatus::{
+        K32GetProcessMemoryInfo, PROCESS_MEMORY_COUNTERS, PROCESS_MEMORY_COUNTERS_EX,
+    };
+    use windows_sys::Win32::System::Threading::{
+        GetProcessTimes, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION,
+    };
+
+    let me = std::process::id();
+    let mut parent_of: HashMap<u32, u32> = HashMap::new();
+    // SAFETY: 快照句柄用完即关；`PROCESSENTRY32W` 先置 `dwSize` 再交给 First/Next
+    // （不设是 WinAPI 的的经典坑：First 直接返回 FALSE）。
+    unsafe {
+        let snap = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
+        if snap == INVALID_HANDLE_VALUE {
+            return None;
+        }
+        let mut entry: PROCESSENTRY32W = std::mem::zeroed();
+        entry.dwSize = std::mem::size_of::<PROCESSENTRY32W>() as u32;
+        if Process32FirstW(snap, &mut entry) == 1 {
+            loop {
+                parent_of.insert(entry.th32ProcessID, entry.th32ParentProcessID);
+                if Process32NextW(snap, &mut entry) != 1 {
+                    break;
+                }
+            }
+        }
+        CloseHandle(snap);
+
+        let tree = subtree_pids(&parent_of, me);
+        let mut procs = 0u32;
+        let mut bytes = 0u64;
+        // 树里每一个孩子都记一笔，**问不到的那笔也进表**（`ok=false`）：
+        // "少问了一个进程"与"问到了、它确实是 0"在 CPU 这列上是两种结论（见 [`fold_tree_cpu`]）。
+        let mut readings: Vec<(u64, u64, bool)> = Vec::new();
+        for pid in tree.iter().skip(1) {
+            // 只统计**子孙**（我们自己的私有提交量在 `commit` 那一列里，加进来会双计）。
+            let h = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, *pid);
+            if h.is_null() {
+                // 权限不够或进程刚退：提交量那一列跳过它（不虚报），CPU 那一列标成"没证据"。
+                readings.push((0, 0, false));
+                continue;
+            }
+            let mut pmc: PROCESS_MEMORY_COUNTERS_EX = std::mem::zeroed();
+            pmc.cb = std::mem::size_of::<PROCESS_MEMORY_COUNTERS_EX>() as u32;
+            if K32GetProcessMemoryInfo(
+                h,
+                &mut pmc as *mut _ as *mut PROCESS_MEMORY_COUNTERS,
+                pmc.cb,
+            ) == 1
+            {
+                procs += 1;
+                bytes += pmc.PrivateUsage as u64;
+                // CPU 时长要单独问一次：它才是"这个子进程是在算，还是根本没在跑"的读数。
+                let mut ct = FILETIME {
+                    dwLowDateTime: 0,
+                    dwHighDateTime: 0,
+                };
+                let mut et = ct;
+                let mut kt = ct;
+                let mut ut = ct;
+                if GetProcessTimes(h, &mut ct, &mut et, &mut kt, &mut ut) == 1 {
+                    let to_ns =
+                        |f: &FILETIME| ((f.dwHighDateTime as u64) << 32) | f.dwLowDateTime as u64;
+                    readings.push((to_ns(&kt), to_ns(&ut), true));
+                } else {
+                    readings.push((0, 0, false));
+                }
+            } else {
+                // 连内存信息都没问到 ⇒ CPU 更无从问起，同样标"没证据"。
+                readings.push((0, 0, false));
+            }
+            CloseHandle(h);
+        }
+        if procs == 0 {
+            return None;
+        }
+        Some((procs, bytes, fold_tree_cpu(&readings)))
+    }
+}
+
+#[cfg(not(target_os = "windows"))]
+pub fn child_webview_tree() -> Option<(u32, u64, Option<u64>)> {
+    // 非 Windows 上没有"我们家的 WebView2 树"这个东西可数（macOS 是 WKWebView 同进程族，
+    // 计数口径不同）⇒ 明写读不到，不用 0 冒充。
+    None
+}
+
+/// 提交压力阈值：系统还能提交的量低于这一格，就值得在崩之前先留一行而不是等 5 分钟。
+/// 512 MiB 的选择依据：本机最大的那类合法单块（导出、整包更新、大帧）都在这个量级之下，
+/// 低于它就意味着"下一次像样的分配随时会失败"——那正是 10-21 那次 318 KB 失败的前夜。
+pub const COMMIT_PRESSURE_BYTES: u64 = 512 * 1024 * 1024;
+
+/// 这一格要不要报警（纯函数 ⇒ 阈值与"读不到"两种情况都有真值表）。
+pub fn under_commit_pressure(sample: &MemSample) -> bool {
+    match sample.sys_avail_commit {
+        Some(avail) => avail < COMMIT_PRESSURE_BYTES,
+        // 读不到就不报警：宁可漏一次预告，也不要把"这台机器读不到"说成"这台机器快死了"。
+        None => false,
+    }
+}
+
 // ==================== 采样 ====================
 
 /// 采一次。任何平台失败都折成"这一格没有"，绝不 panic、绝不猜。
 pub fn sample() -> MemSample {
+    let mut s = sample_self_and_system();
+    // 子进程树单独一次遍历：它拿不到（非 Windows、权限、进程刚退）时只让那两列变 `-`，
+    // 不把主进程/系统那几列一起弄没 —— 两件事没有依赖关系。
+    if let Some((procs, bytes, cpu)) = child_webview_tree() {
+        s.tree_procs = Some(procs);
+        s.tree_private_commit = Some(bytes);
+        // CPU 这一列只有**整棵树都问到了**才有值（见 `fold_tree_cpu`）：问不到就留 `-`，
+        // 并且**不推进基准** —— 下一格于是报"从上一次有证据的那格起"的增量，窗口同步变长，
+        // 占比仍然算得出来；反过来若在没有读数的这一格偷偷推进基准，就等于把一段未知
+        // 折成了 0，而那正是这列唯一要避开的假信号。
+        if let Some(cpu) = cpu {
+            let now = crate::logging::now_ms();
+            let prev = TREE_CPU_LAST.load(Ordering::Relaxed);
+            let prev_at = TREE_CPU_AT.load(Ordering::Relaxed);
+            s.tree_cpu_ms = cpu_delta_ms(if prev == NONE { None } else { Some(prev) }, cpu);
+            // 窗口用上一次**采到子树**的时刻，不是本进程启动时刻：这样 `tree_cpu=0ms/30s`
+            // 就是一句可以直接照着判读的话（"这 30 秒整棵树没执行过一条指令"）。
+            s.tree_cpu_window_s = if prev == NONE || prev_at < 0 || now < prev_at {
+                None
+            } else {
+                // 判定条件里已排除 `now < prev_at` ⇒ 这里不可能是负数，`as` 只做类型收窄。
+                Some(((now - prev_at) / 1000) as u64)
+            };
+            TREE_CPU_LAST.store(cpu, Ordering::Relaxed);
+            TREE_CPU_AT.store(now, Ordering::Relaxed);
+        }
+    }
+    s
+}
+
+/// 采一次（只含主进程 + 系统 + 句柄，不含子进程树）。拆开的理由见 [`sample`]。
+fn sample_self_and_system() -> MemSample {
     #[cfg(target_os = "windows")]
     {
         windows_sample()
@@ -433,6 +760,9 @@ mod tests {
             "total_commit",
             "gdi",
             "user",
+            "tree_procs",
+            "tree_commit",
+            "tree_cpu",
         ] {
             assert!(
                 line.contains(&format!("{k}=-")),
@@ -457,6 +787,10 @@ mod tests {
             peak_gdi_objects: Some(130),
             user_objects: Some(45),
             peak_user_objects: Some(50),
+            tree_procs: Some(3),
+            tree_private_commit: Some(13 * 1024 * 1024),
+            tree_cpu_ms: Some(4_200),
+            tree_cpu_window_s: Some(30),
         };
         let line = full.fields_line();
         for want in [
@@ -470,12 +804,15 @@ mod tests {
             "peak_gdi=130",
             "user=45",
             "peak_user=50",
+            "tree_procs=3",
+            "tree_commit=13MiB",
+            "tree_cpu=4200ms/30s",
         ] {
             assert!(line.contains(want), "少了 {want}：{line}");
         }
         // 现场行按空白分字段（`logging.rs` 的 `field_str`），所以值里不许出现空白。
         let cols: Vec<&str> = line.split_whitespace().collect();
-        assert_eq!(cols.len(), 10, "每格必须刚好一个空格分隔的字段：{line}");
+        assert_eq!(cols.len(), 13, "每格必须刚好一个空格分隔的字段：{line}");
         assert!(cols.iter().all(|c| c.contains('=')), "全是 k=v：{line}");
         // 空样本与满样本列数一致 —— 解析方（和读日志的人）不会看到"某一列消失了"。
         assert_eq!(
@@ -491,8 +828,9 @@ mod tests {
         assert!(
             whole.starts_with(&line)
                 && whole.contains("frame_read=")
-                && whole.contains("frames_reading="),
-            "完整行 = 样本列 + 帧读仪表：{whole}"
+                && whole.contains("frames_reading=")
+                && whole.contains("big="),
+            "完整行 = 样本列 + 帧读仪表 + 大分配环（少一样，某个出口就再也带不出它）：{whole}"
         );
     }
 
@@ -617,6 +955,161 @@ mod tests {
             s.working_set.is_some() || s.sys_avail_commit.is_some(),
             "/proc 读不到就说明接线错了：{}",
             s.line()
+        );
+    }
+
+    /// ⑥ 大分配环的策略：阈值、只留最近 N 笔、渲染的年龄与"没记过"。
+    ///
+    /// 打的是**纯函数**（`ring_push` / `ring_render`）而不是那个全局环：环是进程级的，
+    /// 同一趟 `cargo test` 里别的线程也可能记一笔，拿"长度正好等于我推的条数"当判据
+    /// 会造出一条只在并发顺序不利时才红的用例。
+    #[test]
+    fn big_alloc_ring_keeps_the_newest_and_renders_age() {
+        const MIB: u64 = 1024 * 1024;
+        let mut ring: Vec<BigAlloc> = Vec::new();
+        let t0 = 1_000_000;
+        for i in 0..(BIG_ALLOC_RING + 3) {
+            ring_push(&mut ring, t0 + i as i64 * 1000, "leak-me", 9 * MIB);
+        }
+        assert_eq!(
+            ring.len(),
+            BIG_ALLOC_RING,
+            "环必须有上界（只增的诊断缓冲就是它要查的那个洞）"
+        );
+        assert_eq!(ring.last().expect("非空").1, "leak-me");
+        // 丢的是最旧那三笔，不是随机一笔。
+        assert_eq!(ring.first().expect("非空").0, t0 + 3000, "必须从最旧那头丢");
+        let line = ring_render(t0 + 99_000, &ring);
+        assert!(
+            line.starts_with("big=leak-me:9MiB/"),
+            "渲染要带 MiB 与年龄：{line}"
+        );
+        // 整列必须是一个无空格的字段（最新那笔排最前，旧的逗号连着跟在后面）。
+        assert!(
+            !line.contains(' '),
+            "整列得是一个字段，不能被空白切开：{line}"
+        );
+        assert!(
+            line.contains(",leak-me:9MiB/"),
+            "环里其它几笔也要都渲染出来：{line}"
+        );
+        // 没记过 ⇒ `big=-`，不是 `big[]` 也不是省略这一列。
+        assert_eq!(ring_render(t0, &[]), "big=-", "空环必须明写\"没记过\"");
+        // 阈值本身（低于它不进环）。
+        note_big_alloc("small", BIG_ALLOC_BYTES - 1);
+        assert!(
+            !big_alloc_line().contains("small"),
+            "低于阈值的不能进环（环只有 12 格）"
+        );
+        note_big_alloc("edge", BIG_ALLOC_BYTES);
+        assert!(
+            big_alloc_line().contains("edge:8MiB"),
+            "阈值是\"≥\"，不是\">\"：{}",
+            big_alloc_line()
+        );
+    }
+
+    /// ⑦ "谁算我们家的子进程"必须是纯逻辑且有真值表 —— 子进程树那一列对不对，全看它。
+    #[test]
+    fn tree_walk_takes_whole_subtree_not_just_children() {
+        use std::collections::HashMap;
+        // me=10；11 是我们的直接子；12 是 11 的子（WebView2 的 renderer 就是这种孙子层）；
+        // 20 是别人的进程；21 的父是 20 ⇒ 整支都不该进来。
+        let mut m: HashMap<u32, u32> = HashMap::new();
+        m.insert(10, 4);
+        m.insert(11, 10);
+        m.insert(12, 11);
+        m.insert(20, 4);
+        m.insert(21, 20);
+        let mut got = subtree_pids(&m, 10);
+        got.sort_unstable();
+        assert_eq!(
+            got,
+            vec![10, 11, 12],
+            "要沿父链把整棵树收全：只收直接子会漏掉 renderer/GPU 那一层"
+        );
+        // 父链成环也必须收口（`th32ParentProcessID` 来自系统快照，不信它无环）。
+        let mut cyc: HashMap<u32, u32> = HashMap::new();
+        cyc.insert(1, 2);
+        cyc.insert(2, 1);
+        let mut g2 = subtree_pids(&cyc, 1);
+        g2.sort_unstable();
+        assert_eq!(g2, vec![1, 2], "成环时要终止而不是死循环，且仍返回可达集合");
+    }
+
+    /// ⑧ 提交压力：只有"确实读到且低于阈值"才报警。
+    #[test]
+    fn commit_pressure_only_fires_on_a_real_reading() {
+        let mib = 1024 * 1024;
+        assert!(
+            !under_commit_pressure(&MemSample::default()),
+            "读不到就不能当成\"快死了\"（宁可漏一次预告）"
+        );
+        assert!(
+            under_commit_pressure(&MemSample {
+                sys_avail_commit: Some(COMMIT_PRESSURE_BYTES - mib),
+                ..Default::default()
+            }),
+            "低于阈值必须点亮"
+        );
+        assert!(
+            !under_commit_pressure(&MemSample {
+                sys_avail_commit: Some(COMMIT_PRESSURE_BYTES),
+                ..Default::default()
+            }),
+            "刚好等于阈值不算越界（严格小于）"
+        );
+    }
+
+    /// ⑨ 子树 CPU 增量的真值表 —— 这一列是"渲染进程挂起"和"JS 主线程卡住"唯一的分岔口，
+    /// 把第一次采样冒充成 0 会把**每一次**崩溃都误判成前者。
+    #[test]
+    fn subtree_cpu_delta_distinguishes_never_sampled_from_idle() {
+        const T100NS_PER_MS: u64 = 10_000;
+        // (a) 第一格：没有"上一次" ⇒ None（渲染成 `tree_cpu=-`），绝不是 0ms。
+        assert_eq!(
+            cpu_delta_ms(None, 500 * T100NS_PER_MS),
+            None,
+            "第一格必须空着：0ms 会被读成\"这一格一点 CPU 都没烧\"＝指向挂起"
+        );
+        // (b) 正常增量：一秒的 CPU ⇒ 1000ms。量纲在这里最容易写反（1ms = 10_000 个 100ns
+        //     刻度），反了的话这一格是唯一能抓住它的断言 —— 我自己第一版就写反了。
+        assert_eq!(
+            cpu_delta_ms(Some(100 * T100NS_PER_MS), 1_100 * T100NS_PER_MS),
+            Some(1000)
+        );
+        // (c) 真·空转：两次采样计数一模一样 ⇒ Some(0)。这才是"挂起/没在跑"的读数。
+        assert_eq!(
+            cpu_delta_ms(Some(100 * T100NS_PER_MS), 100 * T100NS_PER_MS),
+            Some(0),
+            "计数不动时必须是 0（与 None 分得开，这一格才是\"挂起\"的证据）"
+        );
+        // (d) 计数器变小（renderer 被换掉 ⇒ 新进程从 0 开始累计）⇒ 报 0，不许下溢 panic。
+        assert_eq!(
+            cpu_delta_ms(Some(300 * T100NS_PER_MS), 5 * T100NS_PER_MS),
+            Some(0),
+            "换进程时减法下溢会直接 panic 在采样路径上"
+        );
+        // (e) 不足 1ms 的增量诚实地报 0（这列的分辨率就是 1ms，别指望它测毫秒以下）。
+        assert_eq!(cpu_delta_ms(Some(0), T100NS_PER_MS - 1), Some(0));
+
+        // (f) 渲染：增量和窗口必须**一起**给。只有毫秒的话，`tree_cpu=1500ms` 到底是
+        // "30 秒里烧的"（＝卡死）还是"5 分钟里烧的"（＝空闲）得去翻上一条的时间戳 ——
+        // 现场文件是给人一眼判读的，不是一道交叉引用题。
+        assert_eq!(column_cpu(Some(1_500), Some(30)), "tree_cpu=1500ms/30s");
+        assert_eq!(column_cpu(None, None), "tree_cpu=-");
+        // 窗口没跟着算出来时明写未知，不许偷偷当 0（`0s` 会把任何增量算成无穷大占比）。
+        assert_eq!(column_cpu(Some(1_500), None), "tree_cpu=1500ms/-s");
+        assert_eq!(column_cpu(Some(0), Some(0)), "tree_cpu=0ms/0s");
+
+        // (g) 折总数的方向：**有一个进程问不到 ⇒ 整格没证据**，不许把"少问了一个"折成 0。
+        // `0ms` 是这一列里唯一会指认错方向的读数（它的意思就是"挂起"），所以这一格只能空着。
+        assert_eq!(fold_tree_cpu(&[]), None, "没有可数的孩子就没有证据");
+        assert_eq!(fold_tree_cpu(&[(7, 3, true), (0, 10, true)]), Some(20));
+        assert_eq!(
+            fold_tree_cpu(&[(7, 3, true), (0, 0, false)]),
+            None,
+            "一个进程没问到就把整格标成未知：当 0 算会让每次卡死都被读成挂起"
         );
     }
 }

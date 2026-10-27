@@ -1,6 +1,6 @@
 [package]
 name = "gosslan"
-version = "5.14.8"
+version = "5.14.9"
 description = "Gosslan — 无服务器 P2P 局域网即时通讯"
 authors = ["wd.f"]
 edition = "2021"
@@ -104,14 +104,23 @@ clipboard-win = "5"
 # + `GetGuiResources`，三个都是**非分配**的系统调用，所以能在分配失败钩子里安全调用。
 #
 # ⚠️ 这不是"新依赖"：`windows-sys` 0.61.2 已经在 `Cargo.lock` 里被别的依赖用着
-# （`cargo tree -i windows-sys@0.61.2` 现算），这里只是我们自己也要用它 + 开四个 feature。
+# （`cargo tree -i windows-sys@0.61.2` 现算），这里只是我们自己也要用它 + 按用到的命名空间逐个开 feature。
 # 写在上面的 `windows`（WinRT/BLE）不一样 —— 那个是 optional、只在 `--features bluetooth` 下存在，
 # 而诊断读数必须在**每一种构建**里都在。
+#
+# ⚠️ feature **必须逐个点名，没有传递关系**：现读 windows-sys 0.61.2 的 Cargo.toml，
+# `Win32_System_ProcessStatus`/`_Threading`/`_SystemInformation` 各自只展开到 `["Win32_System"]`，
+# 而 `Win32_System_Diagnostics_ToolHelp = ["Win32_System_Diagnostics"]` 没人顺带打开。
+# 2026-10-27 加"我们家那棵 WebView2 子进程树"的遍历时就漏了 ToolHelp ——
+# 那段代码在 `#[cfg(target_os = "windows")]` 里，**mac 上编译与门禁全看不见**，
+# 只有 Windows CI 会红（本仓的跨平台 cfg 盲区老形状，`lib_startup_config_tests.rs`
+# 的 `every_windows_sys_namespace_used_is_declared_as_a_feature` 现在把它钉住了）。
 windows-sys = { version = "0.61", features = [
     "Win32_Foundation",
     "Win32_System_ProcessStatus",
     "Win32_System_SystemInformation",
     "Win32_System_Threading",
+    "Win32_System_Diagnostics_ToolHelp",
 ] }
 # Windows 的 BLE **外设（GATT server）** 角色：btleplug 只做 central（ADR-0015 §3.1），
 # 而 Windows 要能被手机/其它电脑发现与连入，就必须自己广播并提供 GATT 服务。
