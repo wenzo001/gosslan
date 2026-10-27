@@ -422,6 +422,8 @@ EXIT=0
 
 三处都是 `db::get_xxx(...).unwrap_or_default()`。
 
+**B1-F7 后来又扩了两处：群读取面。** `get_groups`（`commands/groups.rs`）与 `get_group_reads` 也都是 `db::…().unwrap_or_default()`。前者读失败会让**整个群列表消失**——与"会话列表消失"同档的假陈述；后者会让"谁已读"变成空名单。两者都在下一次成功读时自愈，但都同样没有日志、没有事件、前端会当成"确实没有"。
+
 **还有一处折叠发生在更下面一层**：`db/messages.rs:90-97` 的 `count_messages` 直接返回 `i64`（内部 `unwrap_or(0)`），而 `get_message_count` 是 `Ok(db::count_messages(...))` ⇒ **命令层就算加 `?` 也救不回来**，因为签名里根本没有错误。表现是"共 N 条"变成 **共 0 条**。修这一处要把 `count_messages` 的返回类型改成 `Result<i64>`——比另三处多一步，但属于同一个决定。
 
 **同类形状的规模（现算）**：`commands/*.rs` 里 **22** 处、`network/` 与 `state.rs` 里 **4** 处，共 **26** 处把 `db::` 读的结果折叠成默认值。**但不是所有 26 处都要改**——`get_setting(...).unwrap_or_default()`（外链那 6 处）之类的"读配置取默认"是**正当**的：没有值就是默认值。要改的只是**用户会把结果当成"我的数据就是这样"**的那三处。
