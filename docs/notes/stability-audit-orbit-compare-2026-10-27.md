@@ -264,7 +264,7 @@ git diff --stat
 
 ## 12. 实施回填（2026-10-27 晚，另一会话）
 
-基线已从 `2c55ba34` 前进到 `0fd6652d`（4 批数据/可靠性/体验修复已落地）。逐条复核本文件：
+基线：数据/可靠性/体验修复（4 批）+ 盘满归类与余量预检与续传身份判据（4 批）已落地。逐条复核本文件：
 
 **已修（复核方式写了，别只信这行字）**
 
@@ -292,12 +292,17 @@ git diff --stat
 | P1 预检（`admit_inbound` 余量） | **已做** | `storage/disk_space.rs`（unix `statvfs` / Windows `GetDiskFreeSpaceExW`）+ `admit_inbound` 第三道闸 `code=RECV_DISK_SPACE_INSUFFICIENT`；三条纪律：读不到⇒放行、不替代写失败兜底、一次系统调用不是慢活（INV-P34a 已登记，含钩子与反向两段） |
 | P3 1:1 续传内容身份 | **已做** | `network/file/receive.rs::prefix_identity_usable`（纯函数三态：无历史⇒放行 / 命中⇒续传 / 不命中⇒整份重收）+ `content::store::cids_for_transfer_id`（查台账里该 transfer_id 登记过哪些 cid）；判据接在 `resume_receive` 里**读前缀之前**；`content_transfers` 主键含 cid ⇒ 同 tid 异 cid 会留多行，**不需要新字段/协议改动/迁移**；判据 `resume_prefix_identity_distinguishes_same_content_from_another_one` + `resume_receive_checks_the_prefix_identity_before_reading_it` |
 
-**预检这一批的诚实边界**：**Windows 那一半没有本地编译验证**（本机无 MSVC/MinGW
-交叉工具链，`cargo check --target x86_64-pc-windows-*` 两次都死在工具链缺失而不是
-本仓代码）⇒ 那一格只有 Windows CI 会验，**标为待验证**。为此把"卷根解析"抽成
-不依赖 Windows API 的纯函数，让 mac 上的单测也能钉住它 —— 落地时当场抓到一处真缺陷
-（`C:\` 被截成 `C:`，而 `GetDiskFreeSpaceExW` 只认 `C:\` ⇒ 预检恒"读不到"、
-形同没有这条闸）。真机盘满注入仍未做。
+**预检这一批的诚实边界**：Windows 那一半**本机编不出来**（无 MSVC/MinGW 交叉工具链，
+`cargo check --target x86_64-pc-windows-*` 两次都死在工具链缺失而不是本仓代码）⇒
+为此把"卷根解析"抽成不依赖 Windows API 的纯函数，让 mac 上的单测也能钉住它 ——
+落地时当场抓到一处真缺陷（`C:\` 被截成 `C:`，而 `GetDiskFreeSpaceExW` 只认 `C:\`
+⇒ 预检恒"读不到"、形同没有这条闸）。
+
+**Windows 那条腿随后由 CI 实跑验过**（run 40528260997 全部 job success）：
+`GetDiskFreeSpaceExW` 那一支与 `Win32_Storage_FileSystem` feature 都真实编译并跑过用例。
+CI 还当场抓到第二处**语义分叉**：unix 的 `statvfs` 收**路径**（不存在 ⇒ `None`），
+而 Windows 查**卷**（路径不存在照样读到数）⇒ 用例只能断言"**定位不到卷 ⇒ 放行**"
+（已按两侧都成立的那条改写）。**真机盘满注入仍未做**（写满卷是破坏性操作）。
 
 **结论**：本文件第 5 节的 1–6 项**全部已落地**（1 归类 + 预检、2 预检、3 日志、
 4 续传身份、5 朗读、6 README + 收藏判据）。仍未做的是需要**产品拍板**或需要**协议改动**
