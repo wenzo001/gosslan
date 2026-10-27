@@ -146,8 +146,14 @@ GOSSLAN_PROBE_HEADLESS=0 … node scripts/check-ui-runtime.mjs --only=scrollswit
 npm run verify
 ```
 
-现读：10 段 **716/717 / 零 FAIL**（唯一 UNSUPPORTED 是 headless 量不到的 headed-only 格；headed 单跑 **9/9**）、
-`npm run verify` **19/19**、`npx vue-tsc --noEmit` **0**。
+现读（`85c71980` 5.14.8 上重跑）：10 段 **717 PASS / 0 FAIL / 1 UNSUPPORTED**（唯一 UNSUPPORTED 是 headless 量不到的
+headed-only 格），该格 headed 单跑 **10/10** ⇒ 合起来 **718/718**；`npm test` **1427/1427**；`npm run build`（vue-tsc + vite）通过。
+
+`npm run verify` 本地现读 **14 ✅ + 1 ❌ + 4 未跑**：红的是「领域依赖方向守门」——
+棘轮报 `persistence→observability` 新长一对，首例 `src-tauri/src/export.rs:152 crate::mem_diag::note_big_alloc`；
+该行**只存在于工作区、不在 HEAD**（`git show HEAD:src-tauri/src/export.rs | grep mem_diag` 为空），
+属于并行会话在 `mem_diag` 埋点上的在途改动，不是本轮（本轮只碰 `VirtualList.vue`/探针/文档）。
+按 fail-fast 未跑的四步已用**同一条命令**单跑：Change Budget ✅、CHANGELOG 结构 ✅、`npm test` ✅、`npm run build` ✅。
 
 ## 8. 修复后复跑上一批的三台夹具（都在 5.14.7 上现跑）
 
