@@ -1,0 +1,169 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <title>WebKit 自驱动滚动检查</title>
+    <style>
+      html, body, #wk-root { height: 100%; margin: 0; background: #fafafa; font-family: -apple-system, "PingFang SC", sans-serif; }
+      #wk-root { display: flex; flex-direction: column; }
+      #wk-head { flex: none; padding: 6px 12px; font: 12px/18px ui-monospace, monospace; background: #e2e8f0; white-space: pre-wrap; }
+      #wk-scroll { flex: 1; min-height: 0; }
+      .wk-row { display: flex; gap: 8px; padding: 6px 16px; }
+      .wk-ava { width: 36px; height: 36px; flex: none; border-radius: 6px; background: #7c6bd6; color: #fff; display: flex; align-items: center; justify-content: center; font-size: 15px; }
+      .wk-col { min-width: 0; max-width: 72%; display: flex; flex-direction: column; align-items: flex-start; }
+      .wk-name { font-size: 11px; line-height: 11px; margin-bottom: 7px; padding: 0 4px; color: #64748b; }
+      .wk-bubble { background: #eeeef0; border-radius: 6px; padding: 8px 12px; font-size: 14px; line-height: 1.625; color: #0f172a; white-space: pre-wrap; word-break: break-word; }
+    </style>
+  </head>
+  <body>
+    <div id="wk-root">
+      <div id="wk-head">WebKit 自驱动检查：准备中…</div>
+      <div id="wk-scroll"></div>
+    </div>
+    <script type="module">
+      // 自驱动夹具：挂**真实的** VirtualList（跑的就是 ③ 的修复代码），在页面里自己跑三段
+      // （前插锚点 / 快速下滚空白 / 快速上滚），结果用 Image 信标回传给 ?report= 指向的本地服务。
+      // 目的：在没有 CDP 的 WebKit（Safari / WKWebView 同一引擎）里也能拿到读数。
+      import { createApp, defineComponent, h, ref, nextTick } from "vue";
+      import VirtualList from "/src/components/VirtualList.vue";
+      import { estimateMessageHeight } from "/src/utils/messageHeight";
+      import "/src/style.css";
+
+      const report = new URLSearchParams(location.search).get("report") || "";
+      const head = document.getElementById("wk-head");
+      const say = (s) => { head.textContent = s; console.log(s); };
+
+      function makeItems(from, n) {
+        const out = [];
+        for (let i = 0; i < n; i += 1) {
+          const k = from + i;
+          const mod = k % 10;
+          let kind = "text";
+          let content = `第 ${k + 1} 条消息：用于检查的普通文本，长度不一。`.repeat((k % 3) + 1);
+          if (mod === 7) { kind = "code"; content = `function f${k}(x) {\n  return x * ${k};\n}`; }
+          else if (mod === 8) { kind = "image"; content = JSON.stringify({ name: `p${k}.png`, path: `/tmp/p${k}.png`, size: 12345, subtype: "image" }); }
+          else if (mod === 9) { kind = "file"; content = JSON.stringify({ name: `文档${k}.pdf`, path: `/tmp/d${k}.pdf`, size: 654321 }); }
+          out.push({ msg_id: `m-${k}`, local_id: `m-${k}`, conv_id: "wk", sender_id: k % 2 === 0 ? "peer" : "me",
+            receiver_id: "peer", kind, content, ts: 1700000000000 + k * 1000, seq: k + 1, status: "sent" });
+        }
+        return out;
+      }
+
+      const ctxOf = (items) => ({ messages: items, isGroup: true, selfId: "me", fontSize: "md" });
+      function estimateHeight(it, index) { return estimateMessageHeight(it, index, ctxOf(currentItems)); }
+      let currentItems = ref(makeItems(100, 200));
+
+      function row(item, index) {
+        return h("div", { class: "wk-row" }, [
+          h("div", { class: "wk-ava" }, item.sender_id === "me" ? "我" : "A"),
+          h("div", { class: "wk-col" }, [
+            h("div", { class: "wk-name" }, `用户${index % 97}`),
+            h("div", { class: "wk-bubble",
+              style: item.kind === "image" ? "height:272px" : item.kind === "file" ? "height:76px" : "" },
+              item.kind === "image" ? "［图片］" : item.kind === "file" ? "［文件］" : item.content.slice(0, 120)),
+          ]),
+        ]);
+      }
+
+      const App = defineComponent({
+        setup() {
+          return () => h(VirtualList, { items: currentItems.value, estimateHeight },
+            { default: ({ item, index }) => row(item, index) });
+        },
+      });
+      createApp(App).mount(document.getElementById("wk-scroll"));
+
+      const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+      const frame = () => new Promise((r) => requestAnimationFrame(() => r(null)));
+      const scroller = () => document.querySelector("#wk-scroll .overflow-y-auto");
+
+      function topRow(el) {
+        const cr = el.getBoundingClientRect();
+        let best = null;
+        for (const n of el.querySelectorAll("[data-vlist-key]")) {
+          const r = n.getBoundingClientRect();
+          if (r.bottom - cr.top <= 1) continue;
+          const top = r.top - cr.top;
+          if (!best || top < best.top) best = { key: n.getAttribute("data-vlist-key"), top };
+        }
+        return best;
+      }
+      function covered(el) {
+        const cr = el.getBoundingClientRect();
+        const hgt = el.clientHeight;
+        const pad = parseFloat(getComputedStyle(el).paddingBottom) || 0;
+        const iv = [...el.querySelectorAll("[data-vlist-key]")].map((n) => n.getBoundingClientRect())
+          .map((r) => [Math.max(0, r.top - cr.top), Math.min(hgt, r.bottom - cr.top)])
+          .filter(([a, b]) => b > a).sort((x, y) => x[0] - y[0]);
+        let total = 0; let cur = 0;
+        for (const [a, b] of iv) { if (b <= cur) continue; total += Math.max(0, b - Math.max(a, cur)); cur = Math.max(cur, b); }
+        return Math.max(0, hgt - pad - total);
+      }
+
+      async function main() {
+        await sleep(500); await nextTick(); await sleep(400);
+        const el = scroller();
+        if (!el) { say("失败：找不到滚动容器"); return; }
+        el.scrollTop = 0; await frame();
+        if (el.scrollTop === 123456) { /* noop */ }
+        const canScroll = el.scrollHeight > el.clientHeight + 200;
+        const rows = el.querySelectorAll("[data-vlist-key]").length;
+        say(`自检：可滚=${canScroll} 渲染行=${rows}`);
+        if (!canScroll || rows < 3) { say("自检不成立 ⇒ 不采数"); return; }
+
+        // A. 前插锚点（③）：停在中间 → 记上沿行 → 前插 100 条 → 等落定 → 再看同一行
+        el.scrollTop = Math.floor((el.scrollHeight - el.clientHeight) * 0.45);
+        await sleep(500); await frame();
+        const before = topRow(el);
+        currentItems.value = makeItems(0, 100).concat(currentItems.value);
+        await nextTick(); await sleep(900); await frame();
+        const after = topRow(el);
+        const a = {
+          key: before && before.key, offset: before && +before.top.toFixed(1),
+          afterKey: after && after.key, afterOffset: after && +after.top.toFixed(1),
+          keptKey: !!(before && after && before.key === after.key),
+          drift: (before && after && before.key === after.key) ? +(after.top - before.top).toFixed(1) : null,
+        };
+
+        // B/C. 快速下滚 / 上滚：每帧 250px，40 帧，数空白带与帧间隔
+        async function sweep(dir) {
+          const s = scroller();
+          s.scrollTop = dir > 0 ? Math.floor((s.scrollHeight - s.clientHeight) * 0.25)
+                                : Math.floor((s.scrollHeight - s.clientHeight) * 0.75);
+          await sleep(400); await frame();
+          const gaps = []; let blank = 0; let maxBlank = 0; let last = performance.now();
+          for (let i = 0; i < 40; i += 1) {
+            s.scrollTop = Math.max(0, s.scrollTop + dir * 250);
+            await frame();
+            const b = covered(s);
+            if (b > 1) { blank += 1; maxBlank = Math.max(maxBlank, b); }
+            const now = performance.now(); gaps.push(now - last); last = now;
+          }
+          gaps.sort((x, y) => x - y);
+          return { blankFrames: blank, maxBlank: Math.round(maxBlank),
+            p50: +gaps[Math.floor(gaps.length / 2)].toFixed(1),
+            max: +gaps[gaps.length - 1].toFixed(1),
+            long50: gaps.filter((g) => g > 50).length };
+        }
+        const down = await sweep(1);
+        const up = await sweep(-1);
+
+        const out = {
+          engine: {
+            ua: navigator.userAgent.slice(0, 120),
+            vendor: navigator.vendor,
+            webkit: typeof window.webkit !== "undefined",
+            safari: /Safari\//.test(navigator.userAgent) && !/Chrome\//.test(navigator.userAgent),
+          },
+          rows: currentItems.value.length, A: a, down, up,
+        };
+        say("结果：" + JSON.stringify(out));
+        if (report) {
+          const img = new Image();
+          img.src = report + (report.includes("?") ? "&" : "?") + "r=" + encodeURIComponent(JSON.stringify(out));
+        }
+      }
+      main().catch((e) => say("异常：" + (e && e.message)));
+    </script>
+  </body>
+</html>
