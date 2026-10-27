@@ -13,7 +13,9 @@
 我试过三个口径，前两个都不成立：① 按"命令的定义文件被文档提过" ⇒ 会得到 **161/161 = 100%**，因为**我把缺口模块名写进了本文**，指标被自己的缺口表污染；② 按"命令名出现在矩阵里" ⇒ 只有 **12%**，但 `cancel_message` 明明审过却没出现名字。
 ⇒ 唯一可辩护的是**逐命令分 A/B/C 三级**（A＝读过函数体或关键分支；B＝只读签名/调用点；C＝只见过名字），完整分级表在 `closedloop-matrix-2026-10-26.md` 的「四、FID → 命令映射」。读数：**A 级 161 条（全部）**，矩阵 92 行里其余讲的是**行为族**（如"群成员级投递"横跨收发两侧、多张表与清扫器）——它们比单条命令大，但不能拿来充命令数。
 
-基线：main、HEAD `6ca07ca5`、开工时 `git status --porcelain | wc -l` = 0（此后本机另一会话在同一棵树里推进 5.14.4，现有 14 个未提交改动 ⇒ **我的数字一律按 HEAD 测、不按工作树测**）、最新 tag v5.14.2。
+基线：main、HEAD `6ca07ca5`、开工时 `git status --porcelain | wc -l` = 0（此后本机另一会话在同一棵树里推进 5.14.x ⇒ **我的数字一律按 HEAD 测、不按工作树测**）、开工当时最新 tag v5.14.2。
+
+> **审计基线 ≠ 当前 tip**：本报告所有分母按 `6ca07ca5` 测。当前 tip 用 `git rev-parse --short HEAD` 现读（2026-10-27 复跑时为 `ea279278`，版本 5.14.9，未 push），最新 tag 用 `git tag --sort=-creatordate | head -1` 现读（`v5.14.7`）。
 
 **进度声明**：矩阵已走完 **92** 行（现算：`grep -cE '^\| F-.*\*\*(PASS|PARTIAL)\*\*' docs/notes/closedloop-matrix-2026-10-26.md` ⇒ 92；同法只换词得 PASS 13 / PARTIAL 79），行级 FAIL 0。**A 级命令 161/161 = 100%**（读过函数体或关键分支；完整清单与求交脚本在矩阵第四节），**未审 0 条**（现算清单同节）。覆盖 B1 消息与呈现、B2 文件与传输、B3 持久化、B4 可观测性与更新链、以及平台外壳与身份/好友/群管理的主要命令。
 
@@ -43,9 +45,9 @@
 
 ## 三、全量分母（按 HEAD 现算）
 
-161 条注册命令（`generate_handler!`）／**207** 处命令属性（54 裸形 + 153 `(async…)`；松 grep 209 行 = 207 + 2 处注释提及）／159 个前端 invoke 名（另有 160 个去重值的复算，差值来自多行 `invoke(` 写法）／**392** 个 UI 触发挂点（click 297 / select 37 / keydown 37 / contextmenu 6 / input 3 / dblclick 2 / change 1）／96 个 `.vue`／20 张表、schema **14** 版／Rust 发 **21** 种事件、前端 listen 31 个去重名／**260** 处 `tokio::spawn`/`spawn_blocking`（含 `async_runtime::spawn` 与 `thread::spawn` 为 307）、5 个受监督常驻 worker、**2 处不受监督**／`AppState` **61** 处锁、SQLite **单连接**／具名 `code=` **87** 个、日志调用 **363** 处（error 81 / warn 129 / info 153）／**54** 个超时·期限·TTL·退避类常量／`log_throttled` **27** 处调用／前端 132 册测试（**69 册是读源码文本**）、Rust **1172** `#[test]` + 58 `#[tokio::test]`（按基线 `6ca07ca5` 计；**当前 HEAD 已 1178**，因为后续提交新增了用例——这类数字随提交单调增长，对账时按「不小于基线」读，不要按相等读）、CDP 探针 67 段、E2E 21 轮、护栏 268 例。
+161 条注册命令（`generate_handler!`）／**207** 处命令属性（54 裸形 + 153 `(async…)`；松 grep 209 行 = 207 + 2 处注释提及）／159 个前端 invoke 名（另有 160 个去重值的复算，差值来自多行 `invoke(` 写法）／**392** 个 UI 触发挂点（click 297 / select 37 / keydown 37 / contextmenu 6 / input 3 / dblclick 2 / change 1）／96 个 `.vue`／20 张表、schema **14** 版／Rust 发 **21** 种事件、前端 listen 31 个去重名／**260** 处 `tokio::spawn`/`spawn_blocking`（含 `async_runtime::spawn` 与 `thread::spawn` 为 307）、5 个受监督常驻 worker、**2 处不受监督**／`AppState` **61** 处锁、SQLite **单连接**／具名 `code=` **87** 个、日志调用 **363** 处（error 81 / warn 129 / info 153）／**54** 个超时·期限·TTL·退避类常量／`log_throttled` **27** 处调用／前端 132 册测试（**69 册是读源码文本**）、Rust **1172** `#[test]` + 58 `#[tokio::test]`（按基线 `6ca07ca5` 计；**当前 tip 现算 1185**，因为后续提交新增了用例——`git grep -c '#\[test\]' HEAD -- 'src-tauri/src' | awk -F: '{s+=$NF} END{print s}'`；这类数字随提交单调增长，对账时按「不小于基线」读，不要按相等读）、CDP 探针 67 段、E2E 21 轮、护栏 268 例。⚠️ **「Rust 1185」是 `#[test]` 属性个数的 grep 读数，不是 `cargo test` 的用例数**——后者见 CHANGELOG 5.14.9 的运行读数（`--features bluetooth --lib` 1232 passed / 1 ignored），两者口径不同，不要互相校验。
 
-**这些数一律按提交内容测，不按工作树测。** 本机多会话共用同一棵树：按工作树量 `#[test]` 会得到 **1178**，按 `HEAD` 量是 **1172**。凡分母都跑 `git grep … HEAD -- <路径>`。
+**这些数一律按提交内容测，不按工作树测。** 这条纪律来自当时的实况：工作树被并行会话改着时，按工作树量 `#[test]` 得 1178、按基线 `HEAD`（`6ca07ca5`）量得 1172；现在工作树干净（与 tip 一致）。凡分母都跑 `git grep … HEAD -- <路径>`。
 
 **我实跑过的凭据**（不是转述）：
 - `node --test src/api/events.test.ts src/utils/mapContract.test.ts` ⇒ **EXIT=0，17/17**。
@@ -252,7 +254,7 @@ GOSSLAN_PROBE_PORT=5321 node scripts/check-ui-runtime.mjs --only=convbadge   # 9
 
 **没跑的层**：`npm run build`（写 `dist/`）、任何 `verify*` 层（写 `target/`，上次冷编回涨 4.7G）、多实例 E2E（要 cargo 产物、起真进程写真实数据目录、几十分钟、与同树冲突）。**CDP 探针本轮跑到了（第一次）**：在 HEAD 的隔离 worktree（`/tmp/gosslan-probe`，`node_modules` 软链，跑完删除）里执行
 `GOSSLAN_PROBE_PORT=5321 node scripts/check-ui-runtime.mjs --only=convbadge` ⇒ **9/9 判据绿**，含反向对照「三态全清时名字恰好等于群名、零枚徽标」。引擎与来源都是探针自己打印的：`Chrome/153.0.8010.12`、`playwright 缓存（Chrome for Testing）`——**不是** WKWebView/WebView2（那一半仍 BLOCKED）。
-两条环境实测：① 首次误用 `--only=ConvBadge` 得到「0/0 条判据绿 + 退 0」⇒ 已立案 **B4-F4**（HEAD 无段名校验，修复在隔壁未提交改动里）；② 端口 5299 被另一个 node 进程占着（`lsof` 读到 PID 35519），**我没动它**，换端口跑完。已知量具自己红的两段（`docs/stability-roadmap.md:512`：accent 2 格 + scroll 段间污染 5 格，整跑 1368/1375）属工具基线，不算被审功能 FAIL。
+两条环境实测：① 首次误用 `--only=ConvBadge` 得到「0/0 条判据绿 + 退 0」⇒ 已立案 **B4-F4**（当时 HEAD 无段名校验；该修复已随并行会话提交落地，复验：错名 `--only=convbadgeX` ⇒ **EXIT=2** 并列出 70 个合法段名）；② 端口 5299 被另一个 node 进程占着（`lsof` 读到 PID 35519），**我没动它**，换端口跑完。已知量具自己红的两段（`docs/stability-roadmap.md:512`：accent 2 格 + scroll 段间污染 5 格，整跑 1368/1375）属工具基线，不算被审功能 FAIL。
 
 **BLOCKED**（补什么才能升级）：WKWebView / WebView2 真渲染、Windows / Android / HarmonyOS 行为、多网卡组合、真磁盘满、三实例链式。
 
