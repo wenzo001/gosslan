@@ -85,6 +85,7 @@ HEAD `6ca07ca5`。取值：`PASS` / `PARTIAL` / `FAIL` / `UNVERIFIED` / `BLOCKED
 | F-FIL-008 | 共享根 / 接收目录设置 | PASS 两者都要求 `is_dir()`（目录存在）；路径来自原生目录选择器 | 不适用(理由)：单次设置 | PASS **macOS 安全作用域书签与路径一起落库**（`user_dirs::store`），注释写明「沙盒里书签是重启后唯一还带权限的来源」；且**书签建不出来不让动作失败**（未沙盒构建会失败，而那时路径本来就能用）；落库成功后才更新内存值 | PASS 目录不存在有明确文案；后续新接收的文件落到新目录 | PARTIAL 有 `user_dirs` 相关测试；书签在沙盒构建下的真实行为属**真机/签名构建**范畴（本轮 BLOCKED） | PARTIAL 无具名 `code=` | **PARTIAL** ★ **一条产品问题**：`set_share_dir` 只校验"是目录"，**指向 `/` 或家目录也会通过** ⇒ 好友即可通过 `ShareTreeRequest` 浏览整盘。这是"用户显式选择"的边界，不是越权；但**界面上没有任何"这个目录范围很大"的提醒**，已列入待拍板 |
 | F-GRP-010 | 群投递摘要 / 群历史手动同步与取消 | PASS `get_group_delivery_summaries` 对非群会话直接返回空；只取**仍有非 delivered 行**的消息 ⇒ 结果天然很小；返回 `{delivered, pending, cancelled, failed}` 四计数 | PASS 历史同步是**协作式取消**：当前页处理完就停、**已拉到的部分保留**；手动同步与取消都返回**裁决短码**（`started`/`already_running`/`no_source`/`no_group` 与 `requested`/`not_running`/`no_group`） | PASS 两条命令**都不等结果**——注释写明「等结果就等于把『点了没反应』变成『点了卡住』（这条需求的最后半句是『别让用户感觉到卡顿』）」；终态由后台那一趟通过 `group-history-progress` 的 `cancelled` 相位发出 | PASS 前端只认短码、不猜语义（与 `cancelFeedback` 同族的做法）；已拉到的部分不会因取消而回滚 | PASS `group` 轮次 + `ghsync` 轮；`historyerr`/`todopick` 等 CDP 段覆盖错误面 | PARTIAL 短码是"结论型返回"的正面样本，但没有具名 `code=` 进日志（并入 B1-F1 族） | **PARTIAL** |
 | F-GRP-011 | 渲染切换 / macOS 窗口圆角 / 群文件投递摘要 | PASS `set_message_render` 的校验与 `send_message` 里那条 render 分支**逐条同构**（归属/会话/kind/已撤回），不是第二套判据 | 不适用(理由)：单次切换/绘制/读取 | PASS `apply_macos_window_shape` **必须在 WebView 加载完成后调**（前端 `onMounted`）：注释写明「setup 阶段设会被 wry 替换 contentView 丢失」，非 macOS 为无操作；`get_group_file_delivery_summary` 返回 Option（没有台账就是 None，不造假数据） | PASS 拒绝理由具体（"只有文本/代码消息可以切换渲染"/"已撤回的消息不能切换"）；圆角与背景色跟随主题 | PASS 有 `rowpair`/`msgovf` 等 CDP 段覆盖渲染呈现；`route_tests` 覆盖群文件摘要 | PARTIAL 三条都无具名 `code=` | **PARTIAL** |
+| F-PLF-018 | 移动端所选文件导入（`content://` → 真实路径） | PASS 非 `content://` 一律原样返回（桌面本来就是真实路径）；Android URI 经 `tauri-plugin-fs`（Android 侧走 ContentResolver）复制到 `cache/imports/.incoming-<uuid>`，再把**真实路径**交回原发送链 | 不适用(理由)：单次导入复制 | PASS **平台差异只在边界处理**：注释写明「后面的图片预览、缩略图、断点重传全都不用改」；整文件复制是 O(体积) 同步 I/O ⇒ 离开 async worker（600MB 复制会占住一个） | PASS 失败文案具体（"打不开所选文件"）；根因记录到用户 2026-09-12 安卓真机实测（"文字能发、代码能发，但发附件/图片总是失败"），并指出插件里 `FilePickerUtils.getPathFromUri` 是**没人调用的死代码** | PARTIAL 有 `mobile_picker` 相关测试；**Android 真机路径本轮 BLOCKED** | PARTIAL 无具名 `code=` | **PARTIAL** |
 | F-OBS-002 | 前后端契约双向对账（161 命令 / 事件面） | PASS 门面唯一：`IPC 只能从 src/api 门面走`（含「6 条命令在 api 上根本没有包装」的回归） | 不适用(理由)：这是判据不是用户操作 | 不适用(理由)：同上 | 不适用(理由)：同上 | **PASS（我实跑）** `node --test src/api/events.test.ts src/utils/mapContract.test.ts` ⇒ **EXIT=0，17/17**；另独立 `comm` 复算：注册 161 / 去重调用名 160，孤儿仅 `get_topology`（`events.test.ts:375` 自declare 无 UI 入口） | PASS 命令名与注册表逐条对账、「门面之下不许留没人引用的包装」都是现成判据 | **PASS** |
 | F-OBS-003 | 诊断面：错误分类 / 上限 / 脱敏 / 访问控制 | 不适用(理由)：非用户动作 | 不适用(理由)：同上 | PASS 单文件 512 KB 轮转（`logging.rs:140/1070`），有真文件读写测试 `logger_persists_to_file_and_rotates:1715` | 部分：日志窗口有独立 entry（`logs.html` + `src/entries/logs.ts`），用户可查 | **已证**（上两行测试名 + 我跑通的对账族） | **PARTIAL** 具名 `code=` 共 **87** 个、日志调用 363 处（error 81 / warn 129 / info 153），覆盖面广；但**关键操作结局缺码**（B1-F1）；脱敏是形状级（`diagnostics.rs:19-22`，作者自述并保留文件名/大小以便查传输故障）⇒ 隐私与可查性是**登记过的取舍** | **PARTIAL** |
 
@@ -176,6 +177,7 @@ HEAD `6ca07ca5`。取值：`PASS` / `PARTIAL` / `FAIL` / `UNVERIFIED` / `BLOCKED
 下面这份清单是"我读过函数体或关键分支"的命令，**由脚本与 161 条注册表求交并报出拼错的名字**（不是手抄计数）：
 
 ```text
+import_picked_file
 get_group_file_delivery_summary
 apply_macos_window_shape
 set_message_render
@@ -329,7 +331,7 @@ EOF
 
 ## 五、读数
 
-现算（**只数判级列**，命令：`grep -cE '^\| F-.*\| \*\*(PASS|PARTIAL)\*\* \|$' docs/notes/closedloop-matrix-2026-10-26.md` ⇒ **78**）：已走完六格 **78** 行，其中 **PASS 11**、**PARTIAL 67**；另有若干行含「不适用(理由)」的格（不适用≠通过，也不计入这两档）。⚠️ **不要用 `grep -c '^| F-'`**——本文件第六节的「FID → 命令映射」表同样以 `| F-` 开头，那个命令会把两表相加（实测报 45）。立案 **14** 条（P2 九 / P3 五），保留 **6** 条，撤回 **6** 条。
+现算（**只数判级列**，命令：`grep -cE '^\| F-.*\| \*\*(PASS|PARTIAL)\*\* \|$' docs/notes/closedloop-matrix-2026-10-26.md` ⇒ **79**）：已走完六格 **79** 行，其中 **PASS 11**、**PARTIAL 68**；另有若干行含「不适用(理由)」的格（不适用≠通过，也不计入这两档）。⚠️ **不要用 `grep -c '^| F-'`**——本文件第六节的「FID → 命令映射」表同样以 `| F-` 开头，那个命令会把两表相加（实测报 45）。立案 **14** 条（P2 九 / P3 五），保留 **6** 条，撤回 **6** 条。
 
 **本文件的引用不受任何守卫保护**（实况见主报告「我自己的两处错」第 2 条：`check-doc-citations.mjs` 管 `file:line` 的那条只吃 `LIVE_DOCS` 那 8 份，`docs/notes/**` 不在内）。所以行号会随改动静默腐烂。二选一，**本审计不新建脚本**（按仓里「新判据先找现成的家」与自己编的规矩要撤）：
 
