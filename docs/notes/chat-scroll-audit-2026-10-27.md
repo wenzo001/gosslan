@@ -472,3 +472,27 @@ IPC 走探针同形桩（`api.getMessages` 换成内存分页，600 条历史、
 
 **边界（不许越过）**：IPC 是桩 ⇒ 证的是渲染/滚动/锚点链，不是数据库或网络；输入是程序化 `scrollTop`，
 不是真触控板惯性；像素级 1 帧闪现仍只能人眼。
+
+## 19. 依赖 bump 的同轨迹对照（计划里的 P2 #5；**只在隔离 worktree 里做，未落库**）
+
+按用户口径"先 bump、后决定要不要自研"，在 `/tmp/wt-bump`（HEAD 的 worktree，**不碰并行会话在改的 lockfile**）里
+把 `@tanstack/vue-virtual` 从 `^3.13.47` 提到 `^3.13.49`，`npm install` 后实际解析成
+**`vue-virtual@3.13.49` → `virtual-core@3.19.8`**（成对，无 overrides），lockfile 只动 **16 行 / 2 个包**。
+
+| 轨迹 | 现在（3.13.47 / core 3.19.6） | bump 后（3.13.49 / core 3.19.8） |
+|---|---|---|
+| 五段滚动（`scrollreact,scrollshake,scrollswitch,scrollhist,vlist`） | 54 PASS / 0 FAIL / 1 UNSUPPORTED | **同** |
+| headed `scrollswitch` | 10 PASS / 0 FAIL | **同** |
+| App 内格（`perf/wk-a8app.mjs`，真 WKWebView + 真 ChatWindow） | drift −0.5 / 0 / 0，上下滚 0 空白，p50 17–19ms | **drift −0.5 / 0 / 0**，0 空白，p50 16–20ms |
+| 引擎格（`perf/wk-a8.mjs`，真 WKWebView + 真 `VirtualList`） | 两格 0 空白，p50 17ms | **同** |
+
+**上游这 7 行改了什么**（`diff` 3.19.6 vs 3.19.8 的 `dist/esm/index.js`，现算）：
+① 观察者回调里在写完之后多调一次 `_retryClampedAdjustment()`；② `_retryClampedAdjustment` 现在也受
+`_canWriteScroll()`（iOS 惯性守卫）约束；③ `getVirtualDistanceFromEnd` 把 `scrollMargin` 算进去；
+④ `_startScroll` 开头清 `pendingScrollAnchor` 与 `_clampedAdjustment`。
+其中 ④ 正好落在我们"前插后重发锚点"这条链上（下一次命令会清掉旧的 clamp 重试状态），
+但**四条轨迹上没有任何可观测差异** ⇒ 对本轮三个症状**既不改善也不破坏**。
+
+**结论（给拍板用）**：bump 是"卫生"级别、不是"修复"级别；要不要落库取决于你想不想跟进上游，
+不取决于本轮读数。落库只需改 `package.json` 一行 + `npm install`（16 行 lockfile），但**现在 `package.json`/`package-lock.json`
+在工作区已被并行会话改过**（5.14.9 那批），所以本报告只给对照，不动文件。
