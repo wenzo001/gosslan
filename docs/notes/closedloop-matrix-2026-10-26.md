@@ -79,6 +79,7 @@ HEAD `6ca07ca5`。取值：`PASS` / `PARTIAL` / `FAIL` / `UNVERIFIED` / `BLOCKED
 | F-RTG-003 | 跨子网端点 / 中继配置 | PASS `add_routed_endpoint` 的 `device_id` **可省略**（身份由 TCP 握手学来：`IP:PORT → TCP → Hello → Node ID → Identity`，注释称之为「少配置」）；地址接受 `ip` 或 `ip:port`（省端口按标准端口补全），**只收 IPv4** 并写明原因（监听侧绑的是 `Ipv4Addr`，IPv6 拨出去也连不上）；中继口令有长度上限（128）与"最长口令仍塞得进服务器行"的用例 | 不适用(理由)：单条配置写入 | PASS 两处都是**读-改-写整段在同一把 db 锁里**（新增/去重判据要看当前列表）；端点**按地址去重**、不看是否带 `device_id`（"一个地址只对应一个端点"） | PASS 越界/规范化失败返回具体原因；配置变更走既有的设置事件广播 | PASS 端点解析与口令校验各有纯函数测试 | PARTIAL 无具名 `code=`；`check_relay_server` 的失败分类本轮未读 | **PARTIAL** |
 | F-PLF-016 | 更新链内部：检查 / 下载 / 状态 / 安装 / 关闭 | PASS `updater_download` 用 **`compare_exchange(false,true)`** 挡并发（第二次直接报「更新已在下载」）；下载前 `update.timeout = DOWNLOAD_TIMEOUT`（有界） | 不适用(理由)：下载的取消归 `updater_cancel`（F-PLF-007） | PASS **取消句柄是闭环的**：download 里登记 `Notify`，`updater_cancel` 取走并 `notify_one`（两者我分别读过）；安装相位的 future 被丢弃由 `InstallingPhase` 的 `Drop` 收尾，避免相位永久停在 `installing`（那会让取消永远被拒、界面永远转圈）；状态机 `idle→checking→downloading→ready→installing` 与 `failed/cancelled/unsupported` 全在内存 | PASS 进度经 `Channel` 推送并节流（`last_emit_ms`）；每次相位变化都 `set_status` 并广播；`downloaded/total` 逐块更新 | PARTIAL `updater_status` 是**唯一真相源**（设置窗与任务中心首帧都靠它补拉），但**没有具名 `code=`**；`updater_check` 的失败分类本轮只读到 `Err → phase=failed + error` 这一层 | **PARTIAL** |
 | F-GRP-008 | 待办图片：元数据 / 落盘 / 投递 | PASS 体积闸放在**元数据命令**里，因为 Android 选图 / 桌面粘贴 / 桌面拖入三条入口最终都要经过它——「唯一能一次覆盖三条路的落点」（注释原文）；`save_todo_image_bytes` 只收 raw body 并按 **magic bytes** 白名单 | 不适用(理由)：单次读元数据/写盘 | PASS 登记的是**用户原路径**且落在 `media_dirs` 之外 ⇒ 缓存清理（只删那三个目录）**动不到用户的原始文件**；同一件事在投递时由 `send_todo_image` 的 `record_local` 按 cid+peer+direction upsert，**不重复记账**（注释点名「同一行」） | PASS 文件名 `image-{uuid}` 不含远端输入；失败文案具体（「不是文件」/「读取文件失败」） | PASS 有条目化理由指到用户 2026-09-21 的真实反馈（「新增群任务时图片无法预览」）——说明这条不是凭空设计；哈希与写盘都在阻塞池 | PARTIAL 有 `todos` 单测；待办图片跨实例投递仍缺轮次 | PARTIAL 无具名 `code=`；但注释明确「同一条法不能『有界就例外』」，即体积闸与线程池纪律不可因"有界"而豁免 | **PARTIAL** |
+| F-GRP-009 | 当前生效的群公告（会话列表 📢 标记的数据源） | PASS 一条 SQL 捞出全部 `announcement` / `announcement_delete` 且 `conv_id LIKE 'group:%'`，按 `(seq, msg_id)` 排序 | 不适用(理由)：纯读 | PASS **为什么不复用前端缓存**写得明白：「前端不能从 `chat.messages` 折叠 —— 那是 ~4 个会话的 LRU 缓存，列表要覆盖**全部**群」（否则"没缓存的群没有标记"就是假状态）；折叠规则与 `ChatWindow.vue` 一致：每群保留最后一条公告、墓碑按 `ann_id == 公告的 msg_id` 命中 | PASS 群聊历史一长就是几百行，且挂在会话打开刷新链上 ⇒ 整段进阻塞池（否则公告扫描会排队别的命令） | PARTIAL 有群轮次；**公告的跨实例投递仍零证据**（同 F-GRP-004） | PARTIAL SQL 错误经 `map_err` 向上（不折叠成空）；但无具名 `code=` | **PARTIAL** |
 | F-OBS-002 | 前后端契约双向对账（161 命令 / 事件面） | PASS 门面唯一：`IPC 只能从 src/api 门面走`（含「6 条命令在 api 上根本没有包装」的回归） | 不适用(理由)：这是判据不是用户操作 | 不适用(理由)：同上 | 不适用(理由)：同上 | **PASS（我实跑）** `node --test src/api/events.test.ts src/utils/mapContract.test.ts` ⇒ **EXIT=0，17/17**；另独立 `comm` 复算：注册 161 / 去重调用名 160，孤儿仅 `get_topology`（`events.test.ts:375` 自declare 无 UI 入口） | PASS 命令名与注册表逐条对账、「门面之下不许留没人引用的包装」都是现成判据 | **PASS** |
 | F-OBS-003 | 诊断面：错误分类 / 上限 / 脱敏 / 访问控制 | 不适用(理由)：非用户动作 | 不适用(理由)：同上 | PASS 单文件 512 KB 轮转（`logging.rs:140/1070`），有真文件读写测试 `logger_persists_to_file_and_rotates:1715` | 部分：日志窗口有独立 entry（`logs.html` + `src/entries/logs.ts`），用户可查 | **已证**（上两行测试名 + 我跑通的对账族） | **PARTIAL** 具名 `code=` 共 **87** 个、日志调用 363 处（error 81 / warn 129 / info 153），覆盖面广；但**关键操作结局缺码**（B1-F1）；脱敏是形状级（`diagnostics.rs:19-22`，作者自述并保留文件名/大小以便查传输故障）⇒ 隐私与可查性是**登记过的取舍** | **PARTIAL** |
 
@@ -170,6 +171,7 @@ HEAD `6ca07ca5`。取值：`PASS` / `PARTIAL` / `FAIL` / `UNVERIFIED` / `BLOCKED
 下面这份清单是"我读过函数体或关键分支"的命令，**由脚本与 161 条注册表求交并报出拼错的名字**（不是手抄计数）：
 
 ```text
+list_active_group_announcements
 save_todo_image_bytes
 todo_image_meta
 updater_download
@@ -308,7 +310,7 @@ EOF
 
 ## 五、读数
 
-现算（**只数判级列**，命令：`grep -cE '^\| F-.*\| \*\*(PASS|PARTIAL)\*\* \|$' docs/notes/closedloop-matrix-2026-10-26.md` ⇒ **72**）：已走完六格 **72** 行，其中 **PASS 10**、**PARTIAL 62**；另有若干行含「不适用(理由)」的格（不适用≠通过，也不计入这两档）。⚠️ **不要用 `grep -c '^| F-'`**——本文件第六节的「FID → 命令映射」表同样以 `| F-` 开头，那个命令会把两表相加（实测报 45）。立案 **14** 条（P2 九 / P3 五），保留 **6** 条，撤回 **6** 条。
+现算（**只数判级列**，命令：`grep -cE '^\| F-.*\| \*\*(PASS|PARTIAL)\*\* \|$' docs/notes/closedloop-matrix-2026-10-26.md` ⇒ **73**）：已走完六格 **73** 行，其中 **PASS 10**、**PARTIAL 63**；另有若干行含「不适用(理由)」的格（不适用≠通过，也不计入这两档）。⚠️ **不要用 `grep -c '^| F-'`**——本文件第六节的「FID → 命令映射」表同样以 `| F-` 开头，那个命令会把两表相加（实测报 45）。立案 **14** 条（P2 九 / P3 五），保留 **6** 条，撤回 **6** 条。
 
 **本文件的引用不受任何守卫保护**（实况见主报告「我自己的两处错」第 2 条：`check-doc-citations.mjs` 管 `file:line` 的那条只吃 `LIVE_DOCS` 那 8 份，`docs/notes/**` 不在内）。所以行号会随改动静默腐烂。二选一，**本审计不新建脚本**（按仓里「新判据先找现成的家」与自己编的规矩要撤）：
 
