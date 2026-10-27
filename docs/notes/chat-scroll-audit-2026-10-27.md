@@ -154,6 +154,9 @@ GOSSLAN_PROBE_HEADLESS=0 … node scripts/check-ui-runtime.mjs --only=scrollswit
 
 # 快速层
 npm run verify
+
+# WebKit（A8）：一条命令跑完三格；没勾「允许远程自动化」时退 2 并打出要勾的那句
+node perf/wk-a8.mjs
 ```
 
 现读（`85c71980` 5.14.8 上重跑）：10 段 **717 PASS / 0 FAIL / 1 UNSUPPORTED**（唯一 UNSUPPORTED 是 headless 量不到的
@@ -253,11 +256,14 @@ post-flush 那一刻 spacer 仍是旧高度 ⇒ 新目标位置被 clamp 回旧�
 所以它只回答"VirtualList 的锚定/空白/帧时间在两个引擎上是否一致"，不替代 App 内会话切换的真机读数。
 真机格（A8，App 内 WKWebView + 真实会话切换）仍未取到读数。
 
-**让 WKWebView 这一格可以自动化（2026-10-27 现测）**：`safaridriver -p 4456` 能起来并监听，
-但 `POST /session` 立刻回
-`You must enable 'Allow remote automation' in the Developer section of Safari Settings`。
-⇒ 只要在 **Safari → 设置 → 开发者** 勾一次 "允许远程自动化"，这格就能用 W3C WebDriver 跑，
-不再需要人工点。没勾之前，只能按上面那两手（开发菜单 / 应用内 ⌥⌘I）。
+**让 WKWebView 这一格可以自动化（2026-10-27 现测 + 已写成一条命令）**：
+`node perf/wk-a8.mjs` —— 起 vite（5398）→ 起 safaridriver（4460）→ 开 W3C 会话 → 打开 `perf/wk-check.html`
+→ 收页面用 Image 回传的读数 → 打印三格判据 → 关会话。唯一前置是
+**Safari → 设置 → 开发者 → 勾「允许远程自动化」**（开发者分区没出现时先勾 设置 → 高级 → 显示网页开发者功能）。
+没勾时脚本按 **exit 2（环境不具备，不是通过）** 退出并原样打出那句提示；端口被占也 exit 2，**不换端口接着跑**。
+自证过两条：① 未勾时确实退 2 且 `5398/5401/4460` 三个端口都收干净；② 端口被占时确实拦下（正控）。
+判据三格：前插锚点 `keptKey===true`、下滚/上滚 `blankFrames===0`；并且**必须** `engine.safari===true`，
+否则 exit 2（跑到 Chromium 上的读数不能当 WKWebView 用）。
 
 ## 13. 资源不持续增长（`PERF_ONLY=mem`，2026-10-27 在 5.14.8 上现跑）
 
