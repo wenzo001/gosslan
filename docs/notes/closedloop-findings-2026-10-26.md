@@ -418,7 +418,7 @@ EOF
 
 ---
 
-## B4-F4 · 探针 `--only=` 打错名字 = 一段不跑、打印「0/0 条判据绿」、退 0（P2，验证层；修复已在隔壁未提交改动里）
+## B4-F4 · 探针 `--only=` 打错名字 = 一段不跑、打印「0/0 条判据绿」、退 0（P2，验证层；**已修复并两向复验**）
 
 **适用的六格**：这条不在产品六格内，它伤的是**「可验证」这一格本身**——所以单独立案。
 
@@ -444,7 +444,12 @@ EXIT=0
 - 端口 5299 被**另一个 node 进程**占着（`lsof` 读到 PID 35519，127.0.0.1:5299）——多半是隔壁会话的 dev server。我**没有动它**，换 5311/5321 跑完。
 - 探针自己的残留实例守卫是有效的：我第一次用 5299 时它直接判红「端口被残留实例占用，判红（不是跳过）」——这一条与本仓"环境起不来必须响亮失败"的立场一致，值得保留。
 
-**爆炸半径**：若由我修，只是脚本里一段校验（现已有人在做）；若只做记录，成本为零。
+**复验（2026-10-27，收敛后）**：并行会话的段名校验已随提交落地（`scripts/check-ui-runtime.mjs` 的 `KNOWN_SEGMENTS` 从源码现解析 + 下限 50 + 不认识就 `exit 2`）。两向都跑了：
+- 错名字：`node scripts/check-ui-runtime.mjs --only=convbadgeX` ⇒ **EXIT=2**，打印「不认识的段名」并列出 **70 个**合法段名；
+- 对名字：10 段滚动 `--only=vlist,scrollreact,scrollrestore,imgskel,rowpair,msgovf,mergeheight,scrollswitch,scrollshake,scrollhist` ⇒ **717 PASS / 0 FAIL / 1 UNSUPPORTED**，headed 单跑 `scrollswitch` **10/10**。
+⇒ 本条的洞已堵上；**不需要我再写一份修复**。
+
+**爆炸半径**：若由我修，只是脚本里一段校验（现已由并行会话落地）；若只做记录，成本为零。
 **验收标准**：见上第 2 条（两个方向 + 一次单点变异）。
 
 ---
@@ -514,7 +519,7 @@ EXIT=0
 | 11 | **B1-F1** | 1:1 取消补 `code=DM_CANCEL`（含 outcome/was_written）；`updater_cancel` 补 `UPDATER_CANCEL` | 2 处 | 一次"已送达竞态"的取消 ⇒ 日志里有 `outcome=already_delivered` | 无 |
 | 12 | **B4-F2** | `worker_supervisor.rs` 头部把第 6 个循环登记为"刻意不碰"（或收编进名单） | 一段注释（可选 1 判据） | 做成判据后：临时加一个裸 `loop` spawn ⇒ 红 | 无 |
 | 13 | **B1-F2** | `utils/taskCenter.ts:22-25` 边界注释改成与六种 kind 一致，去掉"只有四种"这种手抄计数 | 2 行注释 | 无判据（注释）；grep 不应再出现"只有四种" | 无 |
-| 14 | **B4-F4** | **不新增**：等隔壁会话的 `--only` 段名校验落地 | 0 | 不认识的名字 ⇒ 退 2；正确名字 ⇒ 真跑出 N>0 且绿 | 等其落地 |
+| 14 | **B4-F4** | **已落地**（并行会话提交）：本行只留验收记录 | 0 | 不认识的名字 ⇒ 退 2（`--only=convbadgeX` 实测 EXIT=2）；正确名字 ⇒ 真跑出 N>0 且绿（10 段 717+1） | 无需动作 |
 | 15 | **B4-F5** | `commands/network.rs:505` 的 `get_topology`：二选一——接进界面（新功能，要先砍掉 `events.test.ts:375` 那条"无 UI 入口"豁免）或删掉命令 | 接线约 30~60 行 / 删除约 10 行 | 若接线：`grep` 到真实 invoke + 一条渲染读数；若删除：`generate_handler!` 与前端名双向对账里不再出现 | **需你二选一** |
 | 16 | **B3-F3** | 五处 `db::get_setting(...).unwrap_or_default()` → `map_err(..)?.unwrap_or_default()`（`external_links.rs:127/157/183`、`routed.rs:74/106`） | 5 行 | 注入一次读失败 ⇒ 命令返回 Err 且**库里旧列表还在**；把某处换回 `unwrap_or_default` ⇒ 该用例红 | 无 |
 

@@ -3,10 +3,15 @@
 - 范围：`src/components/VirtualList.vue`、`src/components/ChatWindow.vue`、`src/components/MessageItem.vue` 及其子组件、
   `src/utils/{messageHeight,listBuffer,scrollIntent,previewMetrics,scrollRestore,messages}.ts`、`src/stores/useChatStore.ts`
 - 依赖（现读）：`@tanstack/vue-virtual@3.13.47` → `@tanstack/virtual-core@3.19.6`（`package-lock.json` 精确解析，两包各仅一份）
-- 修复版本：**5.14.6**（`1e06bb58`）、**5.14.7**（`10e67a74`）；探针/量具 `4c740144`、**5.14.8**（`85c71980`，**当天晚些时候已回退其产品码**，见 §12.1）。
-  ⇒ 现在的产品码 = **5.14.7 的行为**（`reissuePrependAnchor` 函数体与 `10e67a74` 逐字相同），5.14.8 净留下的是量具（§18）。
-  **5.14.6/5.14.7 已随 `v5.14.7` 发布**（tag `35efb210` = 当前 `origin/main`，Release 非 draft/非 pre，17 个资产，2026-10-27T01:37Z）。
-  **5.14.8 与本文档提交只在本机**（`85c71980` 不在 `origin/main` 上，无 tag）——未 push 是既定边界，不是遗漏。
+- 修复版本：**5.14.6**（`1e06bb58`）、**5.14.7**（`10e67a74`）；探针/量具 `4c740144`。
+- **5.14.8（`85c71980`）不是有效的修复方案**：它的「等 sizer 静定再重发」当晚按证据回退（§12.1）——
+  `perf/wk-a8app.mjs` 上 5.14.7 写法与 5.14.8 写法**都绿**、修前红 ⇒ 起作用的只是「重发」本身。
+  ⇒ **产品码 = 5.14.7 的行为**（`reissuePrependAnchor` 函数体与 `10e67a74` 逐字相同，`diff` 现算）；5.14.8 净留下的是量具（§18）。
+- **版本号与代码 tip（2026-10-27 复跑时现读）**：当前版本 **5.14.9**、代码 tip **`ea279278`**（并行会话的崩溃取证批），
+  本地 `main` 未 push（领先 `origin/main` 数用 `git status -sb` 现读）。⚠️ 上面那句「产品码 = 5.14.7」是**行为归属**，不是当前版本号。
+  本文档自己的最新提交用 `git log -1 --oneline -- docs/notes/chat-scroll-audit-2026-10-27.md` 现读。
+- **5.14.6/5.14.7 已随 `v5.14.7` 发布**（tag `35efb210` = 当前 `origin/main`，Release 非 draft/非 pre，17 个资产，2026-10-27T01:37:17Z——`gh release view v5.14.7` 现读）。
+  **5.14.8（`85c71980`）与 5.14.9（`ea279278`）都不在 `origin/main`、无 tag** —— 未 push 是既定边界，不是遗漏。
 - 量具：`scripts/check-ui-runtime.mjs`（Chromium/headed）、`perf/*`、`perf/wk-check.html`（Chromium/WebKit 双引擎自驱动）、
   `perf/wk-scroll-sampler.js`（App 内 WKWebView 真机）
 
@@ -29,7 +34,7 @@
 
 **未覆盖的格子（明写，不当成通过）**：Windows（WebView2 + 滚轮）本轮按用户口径排除；
 macOS **引擎**这一层已有读数（`perf/wk-check.html` 在 Safari 27.2/WebKit 下跑真实 `VirtualList`，三格全绿，§12）；
-macOS **App 内真机**（WKWebView + 真实会话切换，A8）**仍未取到**——采样器与手册已备好，只差在机器旁按一次键；
+macOS **App 内真机**（WKWebView + 真实会话切换，A8）**已取到**（§18：`perf/wk-a8app.mjs`，修前会红、现在 drift −0.5/0/0；**IPC 是桩**，证的是渲染/滚动/锚点链，不是数据库或网络）；
 其余全部有 Chromium/headed 读数。
 
 ---
@@ -164,11 +169,14 @@ node perf/wk-a8.mjs
 现读（**回退后**的树上重跑）：10 段 **717 PASS / 0 FAIL / 1 UNSUPPORTED**（唯一 UNSUPPORTED 是 headless 量不到的
 headed-only 格），该格 headed 单跑 **10/10** ⇒ 合起来 **718/718**；`npm test` **1427/1427**；`npm run build`（vue-tsc + vite）通过。
 
-`npm run verify` 本地现读 **14 ✅ + 1 ❌ + 4 未跑**：红的是「领域依赖方向守门」——
-棘轮报 `persistence→observability` 新长一对，首例 `src-tauri/src/export.rs:152 crate::mem_diag::note_big_alloc`；
-该行**只存在于工作区、不在 HEAD**（`git show HEAD:src-tauri/src/export.rs | grep mem_diag` 为空），
-属于并行会话在 `mem_diag` 埋点上的在途改动，不是本轮（本轮只碰 `VirtualList.vue`/探针/文档）。
-按 fail-fast 未跑的四步已用**同一条命令**单跑：Change Budget ✅、CHANGELOG 结构 ✅、`npm test` ✅、`npm run build` ✅。
+`npm run verify` 本地现读（2026-10-27 复跑）：**19/19 全绿**（19 步，22.3s），含领域依赖方向守门、Change Budget、CHANGELOG 结构、
+文档硬数字/引用对账、判据脚本可解析、`npm test`、`vue-tsc + vite build`。
+
+> **历史（保留原读数，不改成绿的）**：本节早先那次是 **14 ✅ + 1 ❌ + 4 未跑**，红的是「领域依赖方向守门」——
+> 棘轮报 `persistence→observability` 新长一对，首例 `src-tauri/src/export.rs` 的 `mem_diag::note_big_alloc`。
+> 当时那行只在工作区、`git show HEAD:src-tauri/src/export.rs | grep mem_diag` 为空，属并行会话的在途改动（不是本轮）。
+> 该会话随后把这条依赖登记进 `docs/domains.data.mjs` 并提交（`ea279278`）⇒ 复跑转绿。**这条红既不是本轮引入，也不是本轮修掉的。**
+> 当时按 fail-fast 未跑的四步用同一条命令单跑过：Change Budget ✅、CHANGELOG 结构 ✅、`npm test` ✅、`npm run build` ✅。
 
 ## 8. 修复后复跑上一批的三台夹具（2026-10-27，在 5.14.8 树上现跑；`reissuePrependAnchor` 的回退不影响这三台夹具的路径）
 
@@ -406,7 +414,8 @@ layout/style 计数与空带持续时间代替）。**只剩第 9 项的 Windows
 - Phase A 只读审计：A–I 分类 + 量具有效性表 + 不确定性表 ⇒ 报告 §4 / §9。
 - Phase B 量具：关掉 `--only` 假绿通道、写入归因台账、`scrollhist/scrollswitch/scrollinput`、双引擎夹具 ⇒ 报告 §9 / §12。
 - Phase C 修 ④①：**5.14.6**；Phase D 修 ③：**5.14.7**（Chromium 通过）→ 5.14.8 的静定门**当晚按证据回退**（§12.1），
-  产品码停在 5.14.7；5.14.8 净留下量具（真 WKWebView 宿主 + App 内判据，§18）。
+  **产品码行为**停在 5.14.7；5.14.8 净留下量具（真 WKWebView 宿主 + App 内判据，§18）。
+  ⚠️ 版本号此后由并行会话推进到 **5.14.9**（`ea279278`，未 push）——「行为 = 5.14.7」与「版本号 = 5.14.9」是两件事。
 - Phase E（2026-10-27 深夜收口）：**A8 已补** —— `perf/wk-a8app.mjs` 在真 WKWebView 里挂真 `ChatWindow`，
   修前会红（丢 key + 649px）、现在 drift −0.5/0/0（§18）；**依赖 bump 已做同轨迹对照**，四条轨迹零差异（§19，落不落库等人拍板）；
   **Windows 仍是 NOT RUN**（用户本轮排除，方法见 §6）。

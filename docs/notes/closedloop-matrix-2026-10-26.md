@@ -1,6 +1,6 @@
 # 闭环审计 · 矩阵（B1 进行中）
 
-HEAD `6ca07ca5`。取值：`PASS` / `PARTIAL` / `FAIL` / `UNVERIFIED` / `BLOCKED` / `不适用(理由)` / `待审`。
+审计基线 HEAD `6ca07ca5`（**基线 ≠ 当前 tip**：当前 tip 用 `git rev-parse --short HEAD` 现读）。取值：`PASS` / `PARTIAL` / `FAIL` / `UNVERIFIED` / `BLOCKED` / `不适用(理由)` / `待审`。
 **不适用 ≠ 通过；UNVERIFIED 与 BLOCKED 不计入通过率。** 每格必须有证据指针（`path` + 符号），行号会漂，落笔时已按该 HEAD 复核。
 
 域轴说明：`domains.data.mjs` 的 11 域**不是完整文件分区**——`commands/` 是登记的装配层、`presentation` 覆盖整个 `src/`（见 findings 的 B1-K1）。因此这里的域是**业务语义分类**。
