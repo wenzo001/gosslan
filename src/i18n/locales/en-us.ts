@@ -745,6 +745,8 @@ export const enUS: MessageDict = {
   "todo.save": "Save",
   "todo.draftEnterHint": "⌘/Ctrl + Enter to save",
   "todo.edit": "Edit task",
+  "todo.stateDeleted": "Deleted",
+  "todo.stateArchived": "Archived",
   "todo.remove": "Delete task",
   "todo.removeConfirm": "Everyone in the group will lose this task. Delete “{title}”?",
   "todo.createDone": "Task created",

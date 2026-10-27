@@ -1365,14 +1365,16 @@ mesh 没有服务器也没有强制升级 ⇒ 混合版本是常态，不是边�
 | 5 | 数字超过 4 位时紧凑界面只显后四位 | `TODO_CODE_DIGITS` + `todoCode().label`；卡片与看板两格都只取 `label`，位数规则不在界面里重算（㉖ 那条判据钉"界面里不许出现 TODO_CODE_DIGITS"） |
 | 6 | 缩短时必须让用户知道"这不是全码" | PC 悬停 `title`（`todo.codeShortTip` 那句）；读屏的 `aria-label` **永远给全码**；移动端点卡片进详情 —— **详情标题不是紧凑界面，写的就是全码**（规则 7 那一格） |
 | 7 | 短码只是视觉，库/同步/引用一律用完整编号 + 内部 id | 线上载荷里只有 `pub number: i64`（完整数字），**没有 `letter` 这一格**（判据直接扫 `protocol.rs`）；所有引用键是 `todo_id` |
-| 8 | 多人同时发起不冲突 | 撞号由折叠层确定性收敛：`resolveTodoNumbers` 按 (号, todo_id) 定序、小的保号其余顺延，是纯函数 ⇒ 各端拿到同一批定义必然算出同一套号，**不需要仲裁帧**；判据 `todos.test.ts#多人同时发起撞了号` 含"顺序无关"那一条 |
+| 8 | 多人同时发起不冲突 | 撞号由折叠层确定性收敛：`resolveTodoNumbers` 先按原号分组，组内 `todo_id` 小的保号、其余**让到最大号之后**（`max+1、max+2…`，不级联），是纯函数 ⇒ 各端拿到同一批定义必然算出同一套号，**不需要仲裁帧**；判据 `todos.test.ts#撞号时两端算出同一套号…`（含"顺序无关"）与 `#同一号撞了三个人…` |
 
 **为什么字母坚决不存进库里**（这条如果被"顺手优化"成存字符串，规则 3 就会变成一次数据迁移）：
 存了 `R12` 之后，"需求改成缺陷"要改所有已同步的事件、要和老对端争夺同一格、要在折叠里再判一次谁赢 ——
 那是把同一件事写成两个事实来源。字母能由类型现推，所以它**只能是显示态**。
 
-**这条不管的事**（别把它读成"号永远不会变"）：撞号顺延只动**撞上的那一条**（`t-b` 从 5 变 6），
-已经显示出去的号不会因为"来了新任务"漂移（`没有撞号时恒等` 钉住）。撞号那两条在各自库里的载荷
+**这条不管的事**（别把它读成"号永远不会变"）：只有**撞号的那条**让号，而且让到**最大号之后**——
+没撞号的号一个都不动，也不存在"后面的号被一起推走"。这条以前是**级联顺延**（用户 2026-10-27 实测
+"别人一建任务，我的 #3 变 #4"），现已改成不级联；`todos.test.ts#别人的新任务到达后，已经显示过的号一个都不漂移`
+是这条的反向判据（旧实现下它红）。撞号那两条在各自库里的载荷
 仍写着当初分配的号（不改写已同步的事件），但**每一端的显示与引用都用折叠后的那一套号** ⇒ 界面与
 口头引用一致；要按号查库请先看折叠结果，主键永远是 `todo_id`（规则 7）。
 
@@ -1389,7 +1391,7 @@ mesh 没有服务器也没有强制升级 ⇒ 混合版本是常态，不是边�
 ㉖ + `src/utils/channelState.test.ts` 的"卡片实时状态/编号同源"）·
 `cargo test --lib todo_number_tests`（在 `src-tauri/` 下）· `node scripts/check-invariant-hooks.mjs`。
 
-- 钩子：`db::todo_number_tests::numbers_start_at_one_and_increment_within_the_group` `db::todo_number_tests::numbers_are_not_reused_after_messages_are_deleted` `db::todo_number_tests::peer_allocated_numbers_are_avoided` `db::todo_number_tests::legacy_payload_without_number_still_parses_as_zero` `db::tests::clear_all_data_sql_deletes_and_preserves` `src/utils/todos.test.ts#改类型只换字母、数字一字不动` `src/utils/todos.test.ts#优先级怎么改都不进编号` `src/utils/todos.test.ts#超过 4 位只留后四位并标出被缩短` `src/utils/todos.test.ts#多人同时发起撞了号` `src/utils/todos.test.ts#实时表给的是当前状态` `src/utils/designGuards.test.ts#群任务编号只有一个家` `src/utils/channelState.test.ts#群任务三处外显同源`
+- 钩子：`db::todo_number_tests::numbers_start_at_one_and_increment_within_the_group` `db::todo_number_tests::numbers_are_not_reused_after_messages_are_deleted` `db::todo_number_tests::peer_allocated_numbers_are_avoided` `db::todo_number_tests::legacy_payload_without_number_still_parses_as_zero` `db::tests::clear_all_data_sql_deletes_and_preserves` `src/utils/todos.test.ts#改类型只换字母、数字一字不动` `src/utils/todos.test.ts#优先级怎么改都不进编号` `src/utils/todos.test.ts#超过 4 位只留后四位并标出被缩短` `src/utils/todos.test.ts#撞号时两端算出同一套号` `src/utils/todos.test.ts#同一号撞了三个人` `src/utils/todos.test.ts#别人的新任务到达后，已经显示过的号一个都不漂移` `src/utils/todos.test.ts#实时表给的是当前状态` `src/utils/designGuards.test.ts#群任务编号只有一个家` `src/utils/channelState.test.ts#群任务三处外显同源`
 
 ---
 

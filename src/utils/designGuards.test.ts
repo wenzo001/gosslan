@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import { disabledOpacityFromClasses, disabledOpacityFromRule, parseTokenScopes } from "./tokenContrast.ts";
+import { TODO_AUTO_ARCHIVE_DAYS } from "./todos.ts";
 import {
   checkBubbleMetricsCoupling,
   findTemplateSlotIssues,
@@ -1948,6 +1949,16 @@ test("「与我相关」徽标只许 store 算一次，两处 UI 必须消费同
 // ⚠️ `ChatWindow.vue` 里那处 `foldTodos(chat.messages[...])` 是**合法的**，不许一起禁掉：
 // 它折的是「这一屏时间线上已经渲染出来的卡片」的状态索引，语义本来就是"屏上的这些"，
 // 不是"这个群的全部任务"。⇒ 分母要含合规写法，否则这条判据改完那一刻就空转。
+test("自动归档天数：前端与后端是同一个数（归档在前端算，判权在后端）", () => {
+  // 为什么要有这一格：自动归档是**前端**计算的（不落库），而"已归档任务全体成员可删"的
+  // 判权在 Rust。两个数一旦分叉，界面会给出一颗点了被拒的删除按钮（或反过来没有按钮）。
+  const srcDir = join(import.meta.dirname, "..");
+  const rust = readFileSync(join(srcDir, "..", "src-tauri", "src", "protocol.rs"), "utf8");
+  const m = rust.match(/TODO_AUTO_ARCHIVE_DAYS:\s*i64\s*=\s*(\d+)/);
+  assert.ok(m, "protocol.rs 里找不到 TODO_AUTO_ARCHIVE_DAYS ⇒ 判据自己失去了对象");
+  assert.equal(Number(m[1]), TODO_AUTO_ARCHIVE_DAYS, "前后端自动归档天数必须同值");
+});
+
 test("群任务三处界面的取数口只许是那份全表读，不许再折有上界的消息缓存", () => {
   const srcDir = join(import.meta.dirname, "..");
   const readers = [
@@ -1972,13 +1983,21 @@ test("群任务三处界面的取数口只许是那份全表读，不许再折�
       `${rel} 必须按需补读（冷启动只开任务窗时那份源还没读过），否则界面会空`,
     );
   }
-  // 合规写法必须在分母里：时间线那处折消息缓存是**对的**，这条判据不许把它判红
+  // 2026-10-27 起时间线卡片也并进同一条规矩：卡片与看板必须是**同一份源**。
+  // 上一版这里写的是"时间线折消息缓存是对的"——那条豁免的代价是：长会话里更新行被消息缓存
+  // 挤掉之后，卡片停在旧值/已删除任务仍像活着，而看板早就是新值（用户 2026-10-27 实测
+  // 「聊天里看到、列表上没有」）。现在改成"全表读优先，从没读过时才退回缓存"。
   const timeline = readFileSync(join(srcDir, "components/ChatWindow.vue"), "utf8");
-  assert.ok(timeline.includes("foldTodos(chat.messages["), "夹具前提：时间线确实在折消息缓存（这条豁免要有对象）");
-  assert.ok(!timeline.includes("chat.groupTodoRows["), "时间线不该改成读那份全表源");
-  // 非空转：坏形状必须被同一台解析器抓到
-  const bad = `const todos = computed(() => foldTodos(chat.messages[convId.value] ?? []));`;
-  assert.ok(bad.includes("foldTodos(chat.messages["), "解析器抓不到坏形状 ⇒ 这条判据是空转的");
+  const prefersFullRead = (code: string) =>
+    /const todoLiveRows = computed\(\(\) => \{[\s\S]{0,900}chat\.groupTodoRows\[convId\][\s\S]{0,300}chat\.messages\[convId\]/.test(code);
+  assert.ok(prefersFullRead(timeline), "时间线卡片必须优先折那份全表源（与看板同源）");
+  assert.ok(
+    timeline.includes("todoTombstoneIds(") && timeline.includes(":todo-deleted-ids="),
+    "墓碑也要传进卡片：否则已删除任务在聊天里仍是一张活卡",
+  );
+  // 非空转：坏形状（只读消息缓存）必须被同一台解析器抓到
+  const bad = `const todoLiveRows = computed(() => { const convId = chat.activeConv; return chat.messages[convId] ?? []; });`;
+  assert.ok(!prefersFullRead(bad), "解析器抓不到坏形状 ⇒ 这条判据是空转的");
 });
 
 // ---------------- ⑲ 「有人@我」只许走那一个三态入口（第二阶段 §10／#103） ----------------

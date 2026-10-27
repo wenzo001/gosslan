@@ -322,6 +322,26 @@ async fn probe_candidates(
 }
 
 /// 在线、有直连、且声明了本特性位的那几个群成员（稳定顺序 + 封顶）。
+/// 能力位闸的**唯一**判据（INV-P24「不门控不许发」）。
+///
+/// 「不知道就当不支持」的方向（与 `kind_allowed_by_features` 同一口径）：
+/// 从没交换过 Hello、或老端没带这个字段 ⇒ 位是 0 ⇒ 一个字节都不发。
+/// 收在一处而不是两处各写一遍：候选筛选（`eligible_peers`）与重连补拉
+/// （`catch_up_with_peer`）是同一条规矩的两个调用点，判据只能有一个家。
+fn peer_supports_group_history(state: &AppState, peer: &str) -> bool {
+    let feats = state
+        .peer_content_features
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .get(peer)
+        .copied()
+        .unwrap_or(0);
+    if feats & CONTENT_FEATURE_GROUP_HISTORY == 0 {
+        return false;
+    }
+    true
+}
+
 async fn eligible_peers(state: &Arc<AppState>, members: &[String]) -> Vec<String> {
     let mut out = Vec::new();
     for m in members {
@@ -331,16 +351,7 @@ async fn eligible_peers(state: &Arc<AppState>, members: &[String]) -> Vec<String
         if !state.has_link(m).await {
             continue;
         }
-        // 「不知道就当不支持」的方向（与 `kind_allowed_by_features` 同一口径）：
-        // 从没交换过 Hello、或老端没带这个字段 ⇒ 位是 0 ⇒ 一个字节都不发。
-        let feats = state
-            .peer_content_features
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .get(m)
-            .copied()
-            .unwrap_or(0);
-        if feats & CONTENT_FEATURE_GROUP_HISTORY == 0 {
+        if !peer_supports_group_history(state, m) {
             continue;
         }
         out.push(m.clone());
@@ -1036,6 +1047,108 @@ fn mark_history_pending(state: &Arc<AppState>, group_id: &str) {
 pub fn note_new_membership(state: &Arc<AppState>, group_id: &str) {
     mark_history_pending(state, group_id);
     spawn_sync(state, group_id);
+}
+
+/// 对端是否**明确比我全**（重连补拉的唯一判据，纯函数）。
+///
+/// 两条任一成立就算落后：它对这一群的 `newest_seq` 更大（我错过了尾部），或它的 `total`
+/// 更多（我中间缺了一段 —— 只比 max 会漏掉"我拿到了更晚的 60、却没有 30~59"这种缺口）。
+/// 反过来，我比它多（我清过它的历史没清 / 它清过）时**不动**：不该把别人的缺口补给我。
+pub fn peer_is_ahead(
+    mine: crate::db::GroupHistorySummary,
+    remote: &crate::protocol::GroupHistoryReplyBody,
+) -> bool {
+    remote.ok && (remote.newest_seq > mine.newest_seq || remote.total > mine.total)
+}
+
+/// 重连补拉：**与某个群成员建链成功时**问一次"我们共有的群，我落后了吗"。
+///
+/// 为什么需要这一格（用户 2026-10-27 场景）：A 发任务时 C 离线，随后 A 也下线；
+/// C 再上线时**没有人会主动推**给它（gossip 扇出只发生在发送那一刻，outbox 只补自己发的，
+/// 待同步标记只在"新成员入群"时写）⇒ C 永远看不到那条任务，除非 A 回来或用户手动点同步。
+/// 这一格把"谁在线谁补"接上：向刚连上的 peer 问一份**摘要**（`limit=0`，不含正文），
+/// 真落后才写 pending，交给现成的 60s 清扫器按老路子全量补拉（幂等、按 msg_id 收敛）。
+///
+/// 三条边界（与 `eligible_peers` 同口径，不另立规矩）：
+/// ① 只对声明了 `CONTENT_FEATURE_GROUP_HISTORY` 的对端发 —— 老端不认识这一帧；
+/// ② 已经 pending 或正在跑的群**不再问**（那是重复劳动，也是这一格的天然节流）；
+/// ③ 只在 Hello（链路建立）时喊，不挂在心跳上 —— 心跳是几十秒一次的，问不起。
+pub fn spawn_catch_up_after_hello(state: &Arc<AppState>, peer: &str) {
+    let st = state.clone();
+    let peer_id = peer.to_string();
+    tauri::async_runtime::spawn(async move {
+        catch_up_with_peer(&st, &peer_id).await;
+    });
+}
+
+async fn catch_up_with_peer(state: &Arc<AppState>, peer: &str) {
+    if peer == state.device_id {
+        return;
+    }
+    if !peer_supports_group_history(state, peer) {
+        return; // 老端：一个字节都不发（与候选筛选同一条闸）
+    }
+    // 只问"我们共有、且我已经不再欠历史"的群：pending 的群清扫器本来就会补，
+    // 在飞的那一趟自己正在问同样的事。
+    let candidates: Vec<(String, crate::db::GroupHistorySummary)> = {
+        let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
+        let mut out = Vec::new();
+        let Ok(groups) = db::list_groups(&dbc) else {
+            return;
+        };
+        for g in groups {
+            if !g.members.iter().any(|m| m == peer) {
+                continue;
+            }
+            if !g.members.iter().any(|m| m == &state.device_id) {
+                continue;
+            }
+            let status = db::read_group_history_state(&dbc, &g.id).map(|s| s.status);
+            if should_sync_group(status.as_deref()) {
+                continue;
+            }
+            if state
+                .group_history_active
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .contains(&g.id)
+            {
+                continue;
+            }
+            match db::group_history_summary(&dbc, &g.id) {
+                Ok(s) => out.push((g.id, s)),
+                Err(_) => continue,
+            }
+        }
+        out
+    };
+    for (group_id, mine) in candidates {
+        let Some(reply) = ask(
+            state,
+            peer,
+            &group_id,
+            -1,
+            -1,
+            0,
+            GROUP_HISTORY_PROBE_TIMEOUT_MS,
+        )
+        .await
+        else {
+            continue;
+        };
+        if peer_is_ahead(mine, &reply) {
+            state.logger.info(
+                "group",
+                format!(
+                    "重连补拉：对端比本机全 group={group_id} peer={peer} \
+                     local_total={} local_newest={} peer_total={} peer_newest={}",
+                    mine.total, mine.newest_seq, reply.total, reply.newest_seq
+                ),
+            );
+            mark_history_pending(state, &group_id);
+            spawn_sync(state, &group_id);
+        }
+    }
 }
 
 /// 手动那一格的四种结局（负责人 2026-10-16 追加：老成员也要能自己点一下补历史）。
@@ -1999,5 +2112,79 @@ mod group_history_engine_tests {
         let got = active.lock().unwrap_or_else(|e| e.into_inner());
         assert!(!got.contains("g1"), "目标群必须被摘掉");
         assert!(got.contains("g2"), "别的群不受影响");
+    }
+
+    /// 重连补拉的判据：**只有对端明确比我全**才拉。三条都要分得开。
+    #[test]
+    fn catch_up_only_when_the_peer_is_strictly_ahead() {
+        use crate::db::GroupHistorySummary;
+        use crate::protocol::GroupHistoryReplyBody;
+        let mine = GroupHistorySummary {
+            total: 10,
+            oldest_seq: 1,
+            newest_seq: 20,
+        };
+        let reply = |ok: bool, total: i64, newest_seq: i64| GroupHistoryReplyBody {
+            group_id: "g1".into(),
+            ok,
+            reason: String::new(),
+            oldest_seq: 1,
+            newest_seq,
+            total,
+            next_seq: 0,
+            next_id: 0,
+            has_more: false,
+            todo_high_water: 0,
+            sealed: String::new(),
+        };
+        assert!(
+            super::peer_is_ahead(mine, &reply(true, 10, 21)),
+            "对端尾部更靠后 ⇒ 我落后（用户 2026-10-27 的那个任务就在这一段里）"
+        );
+        assert!(
+            super::peer_is_ahead(mine, &reply(true, 11, 20)),
+            "条数更多但 max 相同 ⇒ 我中间缺了一段，同样算落后（只比 max 会漏掉这种缺口）"
+        );
+        assert!(
+            !super::peer_is_ahead(mine, &reply(true, 10, 20)),
+            "完全一致 ⇒ 不拉（每次重连都全量重扫是纯浪费）"
+        );
+        assert!(
+            !super::peer_is_ahead(mine, &reply(true, 9, 19)),
+            "我比它全 ⇒ 不拉：不该把别人的缺口补给我（那会把用户清掉的历史搬回来）"
+        );
+        assert!(
+            !super::peer_is_ahead(mine, &reply(false, 99, 99)),
+            "对端明说给不了（非成员/没密钥）⇒ 不能拿它当落后依据"
+        );
+    }
+
+    /// 接线判据：只在 **Hello** 臂喊补拉，心跳臂不喊（心跳是几十秒一次的，问不起）；
+    /// 且不能把 `flush_group_outbox` 那两处一起改掉。
+    #[test]
+    fn catch_up_is_wired_on_hello_not_on_heartbeat() {
+        let src = include_str!("transport/handle_identity.rs");
+        assert_eq!(
+            src.matches("spawn_catch_up_after_hello(").count(),
+            1,
+            "补拉必须恰好一个调用点（两处 = 心跳也会问，帧量翻几十倍）"
+        );
+        let hello = src
+            .find("Message::Hello")
+            .expect("Hello 臂改名 ⇒ 同步改这条判据");
+        let beat = src
+            .find("Message::Heartbeat")
+            .expect("Heartbeat 臂改名 ⇒ 同步改这条判据");
+        let call = src.find("spawn_catch_up_after_hello(").expect("没有调用点");
+        assert!(
+            hello < call && call < beat,
+            "补拉必须在 Hello 臂里、Heartbeat 臂之前 —— 心跳那一路不该问摘要"
+        );
+        assert_eq!(
+            src.matches("flush_group_outbox(state, &device_id).await;")
+                .count(),
+            2,
+            "两处补发（Hello / 心跳）都还在：补拉是加了一条，不是替换"
+        );
     }
 }

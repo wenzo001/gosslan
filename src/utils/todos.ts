@@ -547,13 +547,25 @@ export function carryAbsentTodoFields(prev: TodoDef, next: TodoDef): TodoDef {
  * ⚠️ 顺延只发生在撞号那一条上：一条已显示 #5 的任务不会因为"来了新任务"变成 #6。
  */
 export function resolveTodoNumbers(defs: { todoId: string; number: number }[]): Map<string, number> {
-  const numbered = defs.filter((d) => d.number > 0).sort((a, b) => a.number - b.number || (a.todoId < b.todoId ? -1 : 1));
   const out = new Map<string, number>();
-  let prev = 0;
-  for (const d of numbered) {
-    const n = Math.max(d.number, prev + 1);
-    out.set(d.todoId, n);
-    prev = n;
+  // 先按原号分组：**没撞号的那些号一个都不动**。
+  // 旧实现是"排序后逐个 max(原号, 前一个+1)"——那是**级联顺延**：一条撞号会把后面
+  // 所有已显示的号整体推走（用户 2026-10-27 实测："别人一建任务，我的 #3 变成 #4"）。
+  const groups = new Map<number, string[]>();
+  for (const d of defs) {
+    if (d.number <= 0) continue; // 旧版对端建的没有号：不参与编号，也不占号
+    const list = groups.get(d.number);
+    if (list) list.push(d.todoId);
+    else groups.set(d.number, [d.todoId]);
+  }
+  if (groups.size === 0) return out;
+  // 让号从**最大原号之后**开始发：落在这里的号不可能是任何人的原号，
+  // 于是"让号"不会再去撞别人，也就不会出现第二次漂移。
+  let next = Math.max(...groups.keys()) + 1;
+  for (const n of [...groups.keys()].sort((a, b) => a - b)) {
+    const ids = groups.get(n)!.sort();
+    out.set(ids[0], n); // 组内 todo_id 最小的保住原号（各端可复算的同一条规则）
+    for (const id of ids.slice(1)) out.set(id, next++);
   }
   return out;
 }
@@ -648,6 +660,13 @@ export interface TodoLive {
   category: TodoCategory;
   customCategory: string;
   customIcon: TodoCustomIcon;
+  /**
+   * 这条任务**当前**是否处于归档态（显式归档，或完成/做不了满 7 天）。
+   *
+   * 为什么卡片也要这一格：看板的「全部」不含归档（它们在「已归档」Tab），而聊天里那张卡片
+   * 以前只有状态与编号 ⇒ 同一条任务在聊天里"活着"、在列表里找不到，用户读成"同步坏了"。
+   */
+  archived: boolean;
 }
 
 export function todoLiveMap(items: TodoItem[]): Map<string, TodoLive> {
@@ -664,9 +683,34 @@ export function todoLiveMap(items: TodoItem[]): Map<string, TodoLive> {
       category: x.category,
       customCategory: x.customCategory,
       customIcon: x.customIcon,
+      archived: isEffectivelyArchived(x),
     });
   }
   return m;
+}
+
+/**
+ * 被墓碑（`deleted: true`）覆盖的 `todo_id` 集合 —— 只给**聊天卡片**用。
+ *
+ * 为什么需要它：`foldTodos` 会把墓碑整个丢掉（看板不该列出已删除任务），于是聊天卡片
+ * 在实时表里查不到自己 ⇒ 退回"创建那一刻的快照"，看起来还是一条活着的任务，
+ * 而列表里已经没有了（用户 2026-10-27：「聊天框里看到、列表上没有」）。
+ * 这里按与 `foldTodos` **同一条 LWW 规则**（`newer` = (seq, msg_id)）取最新定义，
+ * 只看 deleted 这一位，不改任何展示字段。
+ */
+export function todoTombstoneIds(records: MessageRecord[]): Set<string> {
+  const latest = new Map<string, { seq: number; msgId: string; deleted: boolean }>();
+  for (const rec of records) {
+    const d = parseTodo(rec);
+    if (!d) continue;
+    const cur = latest.get(d.todoId);
+    if (newer(d.seq, d.msgId, cur)) {
+      latest.set(d.todoId, { seq: d.seq, msgId: d.msgId, deleted: d.deleted });
+    }
+  }
+  const out = new Set<string>();
+  for (const [id, v] of latest) if (v.deleted) out.add(id);
+  return out;
 }
 
 /**

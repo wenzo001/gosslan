@@ -41,7 +41,7 @@ import { EMPTY_REACTION_CHIPS, EMPTY_STRING_LIST } from "@/utils/emptyList";
 import { foldReactions, hasMyReaction, type ReactionChip } from "@/utils/reactions";
 import { foldReminders, type ReminderState } from "@/utils/reminders";
 import { foldPinned, isPinned } from "@/utils/pins";
-import { foldTodos, todoLiveMap, type TodoLive } from "@/utils/todos";
+import { foldTodos, todoLiveMap, todoTombstoneIds } from "@/utils/todos";
 import { groupSide, isRenderedInTimeline } from "@/utils/messageKinds";
 import { shouldShowTimeDivider } from "@/utils/previewMetrics";
 import { activePopupKey } from "@/utils/popupRegistry";
@@ -758,11 +758,17 @@ function onShakeAnimEnd(e: AnimationEvent) {
  * 按 `todo_id` 查表的形式（`todoLiveMap`）。与 `reactionMap` 同构：**会话层算一次**，
  * 放进气泡里各自折叠就是 O(n²)。
  */
-const todoLive = computed(() => {
+const todoLiveRows = computed(() => {
   const convId = chat.activeConv;
-  if (!convId) return new Map<string, TodoLive>();
-  return todoLiveMap(foldTodos(chat.messages[convId] ?? []));
+  if (!convId) return [];
+  // **与看板同一份源**：`groupTodoRows` 是后端整表读（不限行数级），而消息缓存有两道上界
+  // （1000 条/会话、8 个会话）⇒ 卡片以前折缓存，长会话里会与看板各说一套。
+  // 还没读到过（新群、首屏前）才退回消息缓存：那时它就是唯一一份。
+  return chat.groupTodoRows[convId] ?? chat.messages[convId] ?? [];
 });
+const todoLive = computed(() => todoLiveMap(foldTodos(todoLiveRows.value)));
+/** 已删除的任务（墓碑）：卡片据此显示「已删除」并停用入口，不再伪装成一条活任务。 */
+const todoDeletedIds = computed(() => todoTombstoneIds(todoLiveRows.value));
 
 /**
  * 当前生效的群公告：按 **(seq, msg_id)** 取最大的那条发布事件。
@@ -1947,6 +1953,7 @@ function retryHistory() {
             @open-tasks="openTasks($event)"
             @open-profile="openSenderProfile"
             :todo-live="todoLive"
+            :todo-deleted-ids="todoDeletedIds"
           />
         </template>
         </VirtualList>

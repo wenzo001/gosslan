@@ -1262,6 +1262,14 @@ pub const TODO_CUSTOM_ICONS: [&str; 10] = [
 /// 默认那枚图标键（自定义类型没挑、或旧对端不认识这一格时，两端画同一个形状）。
 pub const TODO_CUSTOM_ICON_DEFAULT: &str = "tag";
 
+/// 终态（完成 / 做不了）满多少天算"自动归档"。
+///
+/// ⚠️ 与前端 `src/utils/todos.ts::TODO_AUTO_ARCHIVE_DAYS` 是**同一个数**：归档是前端算的
+/// （`isEffectivelyArchived`），但"已归档任务全体成员可删"这条判权在后端也要用它 ——
+/// 两边不一致的表现是「界面有删除按钮、点了被拒」/「能删的却不出按钮」。
+/// 判据：`todos.test.ts#自动归档天数与后端常量同值` 读本文件现比。
+pub const TODO_AUTO_ARCHIVE_DAYS: i64 = 7;
+
 /// 图标键是否合法。空串在这里**不**算合法 —— "没挑"由服务端规范化成默认那枚，
 /// 不接受客户端把空串当成第三种状态传来（与状态/优先级/类型"未知值一律拒收"同口径）。
 pub fn todo_custom_icon_is_valid(s: &str) -> bool {

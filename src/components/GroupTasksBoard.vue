@@ -60,7 +60,7 @@ import { MAX_TODO_IMAGE_BYTES, TODO_IMAGE_LIMIT_MB } from "@/utils/imageBytes";
 import { t } from "@/i18n";
 import DangerBtn from "@/components/ui/DangerBtn.vue";
 import { Archive, Bug, CheckCircle2, ChevronDown, ChevronsDown, Circle, CircleDot, Clock, ImagePlus, Lightbulb, ListTodo, Minus, Plus, Tag, XCircle, Zap } from "lucide-vue-next";
-import { Check, RotateCcw, X } from "@/components/ui/icons";
+import { Check, RotateCcw, Trash2, X } from "@/components/ui/icons";
 import { createInitScope, type InitScope } from "@/utils/initScope";
 
 const props = defineProps<{
@@ -394,6 +394,18 @@ function assigneeNames(x: TodoItem): string {
 // ---------------- 权限（显示用的镜像，后端才是权威） ----------------
 function canChangeStatus(x: TodoItem): boolean {
   return canUpdateTodo(x, myId.value, groupCreator.value, false);
+}
+/** 「我是不是本群成员」—— 删除已归档那一条窄档的判据（后端 `MemberLane.is_member` 的镜像）。 */
+const myMembership = computed(() => !!myId.value && groupMembers.value.includes(myId.value));
+/**
+ * 能否删除这条任务：结构改动仍要创建者/群主；**已归档**的按用户 2026-10-27 的裁定
+ * 对全体群成员开放（与后端 `delete_archived_change` 同一条窄档）。
+ */
+function canDeleteArchived(x: TodoItem): boolean {
+  return isEffectivelyArchived(x) && myMembership.value;
+}
+function canDelete(x: TodoItem): boolean {
+  return canEditStructure(x) || canDeleteArchived(x);
 }
 function canEditStructure(x: TodoItem): boolean {
   return canUpdateTodo(x, myId.value, groupCreator.value, true);
@@ -1213,6 +1225,19 @@ watch(
           >
             <RotateCcw class="h-4 w-4" />
           </button>
+          <!-- 删除已归档（用户 2026-10-27：「已归档的可以加一个删除功能」，全体群成员都能删）。
+               走的是与详情同一条二次确认 + 墓碑广播，不另开路径；未归档任务这一格不出现
+               （那边的删除仍是创建者/群主的结构改动，只留在详情里）。 -->
+          <button
+            v-if="canDeleteArchived(x)"
+            type="button"
+            class="tap-safe flex h-7 w-7 shrink-0 items-center justify-center rounded-full text-[var(--gosslan-text-2)] transition hover:bg-[var(--gosslan-danger-soft)] hover:text-[var(--gosslan-danger-ink)]"
+            :title="t('todo.remove')"
+            :aria-label="t('todo.remove')"
+            @click.stop="pendingDelete = x"
+          >
+            <Trash2 class="h-4 w-4" />
+          </button>
         </div>
       </template>
 
@@ -1378,6 +1403,7 @@ watch(
     :can-archive="detailItem ? canArchive(detailItem) : false"
     :can-restore="detailItem ? canReopen(detailItem) : false"
     :can-edit-structure="detailItem ? canEditStructure(detailItem) : false"
+    :can-delete="detailItem ? canDelete(detailItem) : false"
     :can-edit-assignees="detailItem ? canEditAssigneesOf(detailItem) : false"
     :can-claim="detailItem ? canClaim(detailItem) : false"
     :name-of="(id: string) => memberProfile(id).name"

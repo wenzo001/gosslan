@@ -99,6 +99,8 @@ const props = withDefaults(
      * 类型改成缺陷了也还会写着旧的字母。
      */
     todoLive?: Map<string, TodoLive>;
+    /** 已删除任务的 `todo_id` 集合（与看板同源的墓碑判定，见 `todoTombstoneIds`）。 */
+    todoDeletedIds?: Set<string>;
     /** 本条消息作为强提醒目标时的折叠状态（会话层算好传入；null = 没有强提醒）。 */
     reminder?: ReminderState | null;
   }>(),
@@ -116,6 +118,7 @@ const props = withDefaults(
     selectMode: false,
     selected: false,
     todoLive: () => new Map(),
+    todoDeletedIds: () => new Set(),
     reminder: null,
   },
 );
@@ -1890,6 +1893,7 @@ async function copyFileToClipboard() {
             :message="message"
             :card-style="cardStyle"
             :live-todo="todoLive"
+            :deleted-ids="todoDeletedIds"
             :mention-names="mentionNames"
             :self-mention="selfMention"
             :mention-targets="message.mention_targets"

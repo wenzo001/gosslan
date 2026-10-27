@@ -273,6 +273,66 @@ export async function run() {
       "A 只答不拉（收口行 0）",
       `交出一页=${countLog(INSTANCES[0].log, "群历史交出一页")} / 收口=${countLog(INSTANCES[0].log, "群历史同步收口")}`);
 
+    // ── 第二阶段（2026-10-27）：**重连补拉** ──────────────────────────────────────
+    // 用户场景：A 发任务时 C 离线；随后 A 也下线。C 再上线时，谁把任务给它？
+    // 旧行为：没有任何触发点 —— 待同步标记只在"新成员入群"时写，C 是老成员 ⇒ 永远拉不到。
+    // 这一阶段模拟同一件事：B 先同步过一次（标记 done），随后停机；A 在它离线期间再发一条；
+    // B 重新上线 ⇒ 靠 Hello 时的摘要探测发现"A 比我全"，写 pending 并补拉。
+    await stopAll();
+    const convId = `group:${GROUP_ID}`;
+    const CATCHUP_ID = "ghs-5";
+    const CATCHUP_TASK = "e2e-ghsync-catchup-task";
+    const catchupTs = nowMs();
+    seed(INSTANCES[0].db, (db) => {
+      db.prepare(
+        `INSERT INTO messages(msg_id,conv_id,sender_id,receiver_id,kind,content,ts,seq,status)
+         VALUES(?1,?2,?3,?4,'todo',?5,?6,5,'delivered')`,
+      ).run(CATCHUP_ID, convId, S.idA.runtimeId, GROUP_ID,
+        JSON.stringify({ todo_id: CATCHUP_TASK, title: "离线期间的任务", number: 8, status: "open" }),
+        catchupTs);
+      db.prepare("UPDATE conversation_clocks SET seq=5 WHERE conv_id=?1").run(convId);
+    });
+    // 前置：B 的标记仍是 done ⇒ 旧逻辑（只扫 pending）下它永远不会再看这一群。
+    let bStateBefore = null;
+    try { bStateBefore = JSON.parse(readSettingRow(INSTANCES[1], `ghsync:group:${GROUP_ID}`) || "null"); } catch { /* 交给下面那条判据报红 */ }
+    check("重连补拉前置：B 的标记是 done（老成员不会被清扫任务扫到 —— 这正是缺的那条触发点）",
+      bStateBefore?.status === "done", "status=done", JSON.stringify(bStateBefore));
+    check("重连补拉前置：A 手里确实多了一条 B 没有的（没有它就等于在空集上判绿）",
+      readHistory(INSTANCES[0]).length === SEED_ROWS.length + 1
+        && !readHistory(INSTANCES[1]).some((r) => r.msg_id === CATCHUP_ID),
+      `${SEED_ROWS.length + 1} 行 / B 侧无 ${CATCHUP_ID}`,
+      `A=${readHistory(INSTANCES[0]).length} B=${readHistory(INSTANCES[1]).length}`);
+
+    for (const inst of INSTANCES) launch(inst);
+    for (const inst of INSTANCES) {
+      await waitFor(() => tcpOpen(inst.port), 60_000, `重连补拉：实例 ${inst.label} 的 TCP ${inst.port} 可连`);
+      await waitFor(() => bootReady(inst.log, bootBaseOf.get(inst.n), BOOT_LINE),
+        30_000, `重连补拉：实例 ${inst.label} 打出 boot 完成行`);
+    }
+    let caught = [];
+    {
+      const until = nowMs() + 180_000;
+      for (;;) {
+        caught = readHistory(INSTANCES[1]);
+        if (caught.some((x) => x.msg_id === want(CATCHUP_ID)) || nowMs() >= until) break;
+        await sleep(2000);
+      }
+    }
+    check("★ 重连后 B 自动补上了离线期间那条任务（A 已发完就退出的同形场景）",
+      caught.some((x) => x.msg_id === want(CATCHUP_ID) && x.content.includes(CATCHUP_TASK)),
+      `含 ${want(CATCHUP_ID)}`,
+      `${caught.length} 行：${caught.map((x) => x.msg_id).join(",")}`);
+    check("补拉是幂等的：B 的历史正好多出那一条，没有重复行",
+      caught.length === SEED_ROWS.length + 1,
+      SEED_ROWS.length + 1, caught.length);
+    check("B 侧日志留下了「重连补拉」那条（证明走的是新触发点，不是清扫任务碰巧扫到）",
+      countLog(INSTANCES[1].log, "重连补拉") > 0,
+      ">=1 行", String(countLog(INSTANCES[1].log, "重连补拉")));
+    let bStateAfter = null;
+    try { bStateAfter = JSON.parse(readSettingRow(INSTANCES[1], `ghsync:group:${GROUP_ID}`) || "null"); } catch { /* 同上 */ }
+    check("补拉收口后 B 的标记回到 done（没跑完不写完成标记那条纪律照常成立）",
+      bStateAfter?.status === "done", "status=done", JSON.stringify(bStateAfter));
+
     try {
       fs.copyFileSync(INSTANCES[1].log, path.join(RUN_DIR, `instance-${INSTANCES[1].label}.app.log`));
       fs.mkdirSync(path.join(RUN_DIR, `sqlite-${INSTANCES[1].label}`), { recursive: true });
