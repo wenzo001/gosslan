@@ -26,7 +26,10 @@ use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use super::{ensure_post_schema_shape, init, run_migrations, InitError, DB_VERSION, SCHEMA};
+use super::{
+    ensure_post_schema_shape, get_setting, init, init_with_notices, run_migrations, set_setting,
+    InitError, DB_VERSION, GROUP_ORPHAN_RETRY_KEY, SCHEMA,
+};
 
 /// 每个测试创建一个独立临时 DB 文件，避免跨测试污染。
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -2852,4 +2855,42 @@ fn v13_to_v14_backfills_local_id_and_adds_unique_index() {
         dup.is_err(),
         "local_id 唯一索引必须拒绝重复 key（两行互相覆盖测量/DOM）"
     );
+}
+
+/// P2 #23：v7/v10 的孤儿清理是**尽力而为**（失败不拦启动），代价是 `user_version` 照常
+/// 前进 ⇒ 失败的那几条语句永不重放。现在失败会记一笔欠账，下一次启动补跑；清干净后删账。
+#[test]
+fn pending_group_orphan_cleanup_is_retried_on_next_startup() {
+    let path = temp_db_path();
+    let conn = init(&path).expect("init fresh db");
+    conn.execute(
+        "INSERT INTO messages(msg_id, conv_id, sender_id, receiver_id, kind, content, ts) \
+         VALUES('m-orphan','group:ghost','p1','me','text','x',1)",
+        [],
+    )
+    .unwrap();
+    // 模拟「上一轮迁移里那几条 DELETE 失败」：留下欠账键
+    set_setting(&conn, GROUP_ORPHAN_RETRY_KEY, "1").unwrap();
+    drop(conn);
+
+    let (conn, notices) = init_with_notices(&path).expect("reopen");
+    let left: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM messages WHERE msg_id = 'm-orphan'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(left, 0, "有欠账 ⇒ 下一次启动必须补跑清理");
+    assert_eq!(
+        get_setting(&conn, GROUP_ORPHAN_RETRY_KEY),
+        None,
+        "清干净后欠账要删掉，否则每次启动都白跑一遍"
+    );
+    assert!(
+        notices.iter().any(|n| n.contains("孤儿清理")),
+        "补跑成功要留启动通知（否则用户只看到日志里的 v7/v10 告警就永远不知道后来补上了）：{notices:?}"
+    );
+    drop(conn);
+    cleanup_db_and_backups(&path);
 }

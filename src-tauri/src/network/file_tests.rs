@@ -1105,7 +1105,7 @@ mod tests {
         r.file.write_all(&payload[split..]).unwrap();
         r.hasher.update(&payload[split..]);
         r.received += (payload.len() - split) as u64;
-        let final_path = finish_group_receive_into(r, &dir).unwrap();
+        let final_path = finish_group_receive_into(r).unwrap();
         assert_eq!(
             std::fs::read(&final_path).unwrap(),
             payload,
@@ -1467,7 +1467,7 @@ mod tests {
     /// 而台账却拿它们的名字当"群侧已覆盖"的证据 —— 与本册 `receive_group_chunk` 那处
     /// 已经改掉的假覆盖是同一种病。2026-10-15：慢活整体搬进 `spawn_blocking` 时一并收成生产调用。
     fn finalize_group_receive(r: crate::state::FileReceiver) -> Result<std::path::PathBuf, String> {
-        finish_group_receive_into(r, &std::env::temp_dir())
+        finish_group_receive_into(r)
     }
 
     /// 2+3+4. 正常多 chunk + Done：SHA-256 正确 → rename 成功 → 正式文件内容一致，

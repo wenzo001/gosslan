@@ -551,4 +551,26 @@ pub fn guard_case_fixture_db(
         cwd=TAURI,
         expect_fail_hint="不再调用 clamp_pos_into_rect(",
         tags=["rust", "window", "new-guards"],
+    ),
+    Case(
+        name="孤儿清理欠账必须真的触发补跑（早退条件写反 ⇒ 永不补跑）",
+        why="v7/v10 的群孤儿清理是尽力而为：失败只留痕、`user_version` 照常前进 ⇒ 以前永不重放。\n"
+        "     现在失败会落一个设置键当欠账、每次启动补跑，清干净才删键。\n"
+        "     注入方式：把早退条件从「键不存在就返回」写成「键存在就返回」（编译照过），\n"
+        "     「有欠账 ⇒ 下一次启动必须补跑清理」那一格必须红。",
+        file=TAURI / "src" / "db.rs",
+        injections=[(
+            "    if get_setting(conn, GROUP_ORPHAN_RETRY_KEY).is_none() {",
+            "    if get_setting(conn, GROUP_ORPHAN_RETRY_KEY).is_some() {",
+        )],
+        cmd=cargo(
+            "test",
+            "--lib",
+            "--features",
+            "bluetooth",
+            "pending_group_orphan_cleanup_is_retried_on_next_startup",
+        ),
+        cwd=TAURI,
+        expect_fail_hint="有欠账 ⇒ 下一次启动必须补跑清理",
+        tags=["rust", "db", "startup", "new-guards"],
     ),]

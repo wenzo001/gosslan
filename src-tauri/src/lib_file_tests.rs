@@ -609,9 +609,9 @@ fn group_receive_finalize_slow_work_runs_off_the_async_worker() {
     // ★ 慢活整体交给阻塞线程池（写回成就地调用 = 把 GB 级 fsync 重新钉回 tokio worker）
     assert!(
             flat.contains(
-                "tokio::task::spawn_blocking(move||{file::finish_group_receive_into(r,&downloads)})"
+                "tokio::task::spawn_blocking(move||{file::finish_group_receive_into(r)})"
             ) || flat.contains(
-                "tokio::task::spawn_blocking(move||file::finish_group_receive_into(r,&downloads))"
+                "tokio::task::spawn_blocking(move||file::finish_group_receive_into(r))"
             ),
             "群收尾的校验+fsync+rename 必须整体交给 spawn_blocking（同一个 runtime 上还排着所有 async 开窗命令）"
         );
@@ -647,10 +647,13 @@ fn group_receive_finalize_slow_work_runs_off_the_async_worker() {
     let core_view = &crate::network::file_src_for_guards();
     let core = rust_fn_body(core_view, "pub fn finish_group_receive_into(");
     let core_flat = code_flat(&core);
+    // `place_unique` 是收尾那一步的**新家**（审计 P2 #42：硬链接原子占名，替掉
+    // `exists()`+`rename` 的覆盖窗口）。它仍是同步文件操作，必须留在同一个阻塞闭包里 ——
+    // 所以这里钉的是"落盘这一步在这个函数里"，而不是某个具体系统调用的字面量。
     for slow in [
         ".sync_all()",
         "hasher.clone().finalize()",
-        "std::fs::rename(",
+        "place_unique(",
     ] {
         assert!(
                 core_flat.contains(slow),

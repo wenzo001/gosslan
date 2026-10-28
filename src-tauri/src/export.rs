@@ -104,7 +104,8 @@ fn json_str_field(content: &str, key: &str) -> Option<String> {
         .and_then(|v| v.get(key).and_then(|x| x.as_str()).map(|s| s.to_string()))
 }
 
-/// 人类可读体积。与前端 `utils/format.ts` 的 `formatBytes` 保持同一口径（B/KB/MB/GB）。
+/// 人类可读体积。与前端 `utils/format.ts` 的 `formatBytes` 保持同一口径
+/// （B/KB/MB 一位小数、GB/TB 两位小数 —— 两边的用例引用同一张数值表）。
 fn human_size(bytes: u64) -> String {
     const KB: f64 = 1024.0;
     let b = bytes as f64;
@@ -117,7 +118,10 @@ fn human_size(bytes: u64) -> String {
     if b < KB * KB * KB {
         return format!("{:.1} MB", b / (KB * KB));
     }
-    format!("{:.2} GB", b / (KB * KB * KB))
+    if b < KB * KB * KB * KB {
+        return format!("{:.2} GB", b / (KB * KB * KB));
+    }
+    format!("{:.2} TB", b / (KB * KB * KB * KB))
 }
 
 /// epoch 毫秒 + UTC 偏移（分钟）→ `YYYY-MM-DD HH:MM`。
@@ -309,6 +313,19 @@ mod tests {
 
         let file = r#"{"name":"合同.pdf","path":"/Users/wd/Downloads/合同.pdf","size":1048576}"#;
         assert_eq!(message_body("file", file), "[文件] 合同.pdf (1.0 MB)");
+    }
+
+    /// 与前端 `utils/format.test.ts` 同一张数值表（跨语言同一个口径）。
+    /// 改这里而没改那边 ⇒ 导出的文件大小与界面上的读数是两个数。
+    #[test]
+    fn human_size_matches_frontend_table() {
+        assert_eq!(human_size(0), "0 B");
+        assert_eq!(human_size(1023), "1023 B");
+        assert_eq!(human_size(1024), "1.0 KB");
+        assert_eq!(human_size(1536), "1.5 KB");
+        assert_eq!(human_size(1024 * 1024), "1.0 MB");
+        assert_eq!(human_size(1024 * 1024 * 1024), "1.00 GB");
+        assert_eq!(human_size(1024 * 1024 * 1024 * 1024), "1.00 TB");
     }
 
     #[test]

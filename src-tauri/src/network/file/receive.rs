@@ -1523,36 +1523,34 @@ fn finish_receiver_into(
     }
     drop(r.file);
     // §七「两个 offer 都在任一次 rename 之前到达」：`final_path` 是 begin 时用 `unique_path` 定的，
-    // 而那一刻两份都还没落地 ⇒ 同名两单会拿到**同一个**名字，直接 rename 会在 POSIX 上覆盖掉先落地的
-    // 那一份（两行台账都 done、一个气泡指着已经不存在的字节）。落地前再确认一次：被占走就换名。
-    // （与群聊收尾同形状 —— 那边早就这么做了，其注释声称"单聊在写盘时才定名"与代码不符。）
-    if r.final_path.exists() {
-        if let Some(dir) = r.final_path.parent() {
-            r.final_path = unique_path(dir, &r.name);
+    // 而那一刻两份都还没落地 ⇒ 同名两单会拿到**同一个**名字。`exists()` + `rename` 之间还有窗口，
+    // 而 POSIX 的 rename 在目标已存在时**静默覆盖**（两行台账都 done、一个气泡指向不存在的字节）。
+    // 改用 `place_unique`：硬链接原子占名，占不到就换下一个候选（审计 P2 #42）。
+    match place_unique(&r.tmp_path, &r.final_path, &r.name) {
+        Ok(placed) => r.final_path = placed,
+        Err(e) => {
+            let reason = e.to_string();
+            let note = {
+                let dbc = db_lock.lock().unwrap_or_else(|e| e.into_inner());
+                db::upsert_transfer(
+                    &dbc,
+                    transfer_id,
+                    &r.peer_id,
+                    &r.name,
+                    r.size,
+                    "receive",
+                    "failed",
+                    None,
+                    0.0,
+                )
+                .err()
+                .map(|e| terminal_ledger_failure_note(LEDGER_STAGE_RENAME, transfer_id, &e, None))
+            };
+            if let Some(note) = note {
+                logger.error("file", note);
+            }
+            return Err(reason);
         }
-    }
-    if let Err(e) = std::fs::rename(&r.tmp_path, &r.final_path) {
-        let reason = e.to_string();
-        let note = {
-            let dbc = db_lock.lock().unwrap_or_else(|e| e.into_inner());
-            db::upsert_transfer(
-                &dbc,
-                transfer_id,
-                &r.peer_id,
-                &r.name,
-                r.size,
-                "receive",
-                "failed",
-                None,
-                0.0,
-            )
-            .err()
-            .map(|e| terminal_ledger_failure_note(LEDGER_STAGE_RENAME, transfer_id, &e, None))
-        };
-        if let Some(note) = note {
-            logger.error("file", note);
-        }
-        return Err(reason);
     }
     // 终态要**一次写全**：`file_transfers` 说 done 而 `content_transfers` 还停在 active/incomplete，
     // 就是 2026-10-13 真机第 7 条那个永动重试 —— 拉取队列只看后一张表

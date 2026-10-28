@@ -240,6 +240,7 @@ db::migration_tests::migration_refuses_downgrade
 db::migration_tests::migration_success_preserves_data_and_adds_columns
 db::migration_tests::migration_v1_to_v6_full_chain
 db::migration_tests::migration_zero_version_with_zero_tables_is_fresh
+db::migration_tests::pending_group_orphan_cleanup_is_retried_on_next_startup
 db::migration_tests::pre_migration_backup_is_a_verified_snapshot_with_the_same_rows
 db::migration_tests::real_data_copy_replays_migration_without_losing_rows
 db::migration_tests::repeated_migrations_never_pile_up_backups
@@ -420,6 +421,7 @@ discovery::routed::tests::malformed_endpoints_json_yields_empty
 discovery::routed::tests::socket_addr_accepts_bare_ip_and_explicit_port
 export::tests::format_local_time_handles_leap_day_and_year_rollover
 export::tests::format_local_time_matches_known_instants
+export::tests::human_size_matches_frontend_table
 export::tests::message_body_keeps_text_and_code_verbatim
 export::tests::message_body_summarises_media_without_dumping_paths
 export::tests::message_body_survives_broken_metadata
@@ -638,6 +640,9 @@ network::file::group_resume_tests::prefix_identity_is_checked
 network::file::group_resume_tests::resume_uses_the_smaller_of_memory_and_disk
 network::file::group_resume_tests::resume_wait_scales_with_the_prefix_it_must_hash
 network::file::group_resume_tests::sender_starts_from_the_authoritative_offset
+network::file::place_unique_tests::place_unique_does_not_overwrite_existing_candidate
+network::file::place_unique_tests::place_unique_keeps_the_begin_time_name_when_free
+network::file::place_unique_tests::place_unique_reports_missing_dir_instead_of_creating_it
 network::file::retained_part_path_rejects_unsafe_transfer_ids
 network::file::send_complete_guard_tests::a_share_tree_exactly_at_the_cap_is_not_truncated
 network::file::send_complete_guard_tests::nested_walk_also_obeys_the_cap
