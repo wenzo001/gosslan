@@ -54,6 +54,7 @@ import type { MessageRecord, MsgKind } from "@/types";
 import type { ReminderPhase, ReminderState } from "@/utils/reminders";
 import { StaleGuard } from "@/utils/staleGuard";
 import { api } from "@/api";
+import { loadGroupFileSummary } from "@/utils/groupSummaryCache";
 
 const props = withDefaults(
   defineProps<{
@@ -178,7 +179,8 @@ watch(
       return;
     }
     try {
-      const r = await api.getGroupFileDeliverySummary(msgId.slice(6));
+      // P1 #19：同键单飞 + 10s TTL（滚动回收后重挂不再重复打 IPC）。
+      const r = await loadGroupFileSummary(msgId, String(props.message.status ?? ""));
       if (!summaryGuard.isCurrent("summary", tok)) return;
       deliverySummary.value = r;
     } catch {

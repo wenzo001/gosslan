@@ -154,3 +154,43 @@ export function parseIpcList<T>(
   }
   return parsed.data;
 }
+
+/**
+ * IPC **入参**校验（审计 P1 #10）。
+ *
+ * 为什么单独补这一层：`parseIpcValue` 只校验**返回值**；入参侧此前 0 处校验，
+ * 于是"对端可控的值经前端一路传给后端"只能靠后端各自记得判。这里先覆盖
+ * **携带文件路径**与**消息正文**的命令（文档建议的分批起点），其余命令按同一形状追加。
+ */
+export const MAX_IPC_PATH_CHARS = 4096;
+
+/** 文件路径入参：非空、有上界、不含 NUL（后端 `CString`/`File::open` 都会被 NUL 截断）。 */
+export const ipcPathSchema = z.string().check(
+  z.minLength(1, "路径不能为空"),
+  z.refine((s) => !s.includes("\0"), "路径不能包含 NUL"),
+  z.refine((s) => s.length <= MAX_IPC_PATH_CHARS, `路径过长（上限 ${MAX_IPC_PATH_CHARS} 字符）`),
+);
+
+/** 消息正文上限：**必须等于** Rust `commands::MAX_MESSAGE_LEN`（有跨语言判据）。 */
+export const MAX_MESSAGE_CHARS = 50_000;
+
+export const ipcMessageTextSchema = z.string().check(
+  z.refine(
+    (s) => charCount(s) <= MAX_MESSAGE_CHARS,
+    `消息过长（上限 ${MAX_MESSAGE_CHARS} 字符）`,
+  ),
+);
+
+/** 校验一条 IPC 入参；不合法就在**发出前**抛错，不让非法值进后端。 */
+export function assertIpcInput<T>(
+  schema: z.ZodMiniType<T>,
+  value: unknown,
+  label: string,
+): T {
+  const parsed = schema.safeParse(value);
+  if (!parsed.success) {
+    const issue = parsed.error.issues[0];
+    throw new Error(`${label} 参数非法：${issue?.message ?? "schema mismatch"}`);
+  }
+  return parsed.data;
+}

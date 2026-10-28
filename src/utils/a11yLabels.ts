@@ -25,6 +25,7 @@
  * 变量名、甚至一句普通注释都能把两格检查整文件关掉 —— 而这是全仓唯一守「按钮有可访问名」
  * 的地方。逃生阀必须是**一个自觉的动作**，不是随手一个词。
  */
+import { countNewlines } from "./newlines.ts";
 
 /** 需要跳过的文件标记。 */
 export const A11Y_LABEL_OPT_OUT = "<!-- a11y-label-ok -->";
@@ -41,12 +42,6 @@ const BUTTON_RE = /<button\b((?:"[^"]*"|'[^']*'|[^>"'])*?)(\/?)>([\s\S]*?)<\/but
 
 /** 任一形式的可访问名绑定：aria-label / aria-labelledby，含 `:attr` 与 `v-bind:attr`。 */
 const HAS_LABEL_BINDING = /(?::|v-bind:)?aria-label(?:ledby)?\s*=/i;
-
-function countNewlines(s: string): number {
-  let n = 0;
-  for (let i = 0; i < s.length; i++) if (s.charCodeAt(i) === 10) n++;
-  return n;
-}
 
 /**
  * 取出 .vue 的**顶层** `<template>` 块。
