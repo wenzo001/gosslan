@@ -1353,20 +1353,16 @@ img {
   border-bottom-right-radius: 0 !important;
   border-bottom-width: 0 !important;
 }
-/* 尾巴那一侧的下圆角必须拉平（用户 2026-10-25：尾巴和气泡之间露出一道白缝）。
-   尾巴的根部要贴住一条**直的**边缘：圆角会把气泡底色切掉，尾巴就成了浮在旁边的一片叶子。
-   这一条对"有没有回应条"都成立 —— 没回应条时尾巴直接挂在气泡底角。 */
+/* 尾巴那一侧的下圆角**两侧都拉平**（用户 2026-10-25：圆角会把底色切掉、尾巴根部露白缝）。
+   2026-10-28 补一次实测结论：自己这一侧曾试着收成 tight(6px) 去消"方头小 tab"的观感，
+   8 倍取证帧 A/B（6px vs 0）几乎看不出差别 ⇒ 那个观感来自**尾巴自己的形状**
+   （根部是一段竖直切边），不是气泡角；这一条因此回到两侧同一条规则，不再分叉。
+   要动形状请动 `BubbleTail.vue` 那一份路径，别再把角重新变圆。 */
 .msg-shell[data-tail-side="left"] > [data-msg-bubble] > :first-child {
   border-bottom-left-radius: 0 !important;
 }
 .msg-shell[data-tail-side="right"] > [data-msg-bubble] > :first-child {
-  /* 自己这一侧**不拉平成直角**：这里没有 1px 实边框要对接（bubbleStyle / cardStyle 里
-     mine ⇒ border 透明），拉平后读起来就是"气泡角上贴了一枚方头小 tab"
-     （用户 2026-10-28 的截图与结论）。收成 tight 档，与另外三个角同一套档位；
-     尾巴的填充从边缘内侧 3.5 单位起笔、一直盖到底边 ⇒ 这段弧被盖住，不留白缝。
-     ⚠️ 对方那一侧仍保持 0：那里有实边框，尾巴描边要与竖边框、底边框首尾相接
-     （2026-10-25 两轮调出来的切线），改成圆角就会重新鼓起"小揪揪"。 */
-  border-bottom-right-radius: var(--gosslan-bubble-radius-tight, 6px) !important;
+  border-bottom-right-radius: 0 !important;
 }
 /* 图片气泡：外层裁切容器抹平后，里面的图片元素自己的下圆角还得单独抹，
    否则图片会在底栏上方留下两个圆角缺口。 */

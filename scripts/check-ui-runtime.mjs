@@ -1333,6 +1333,15 @@ window.__probe = (() => {
       chipInsetLeft: Math.round(chipLeft - br.left),
       chipInsetRight: Math.round(br.right - chipRight),
       gapStripToBubble: Math.round(sr.top - br.bottom),
+      // 用户报的"缝隙"其实是**文字下沿 → 胶囊上沿**这一段：它由气泡自己的 padding-bottom
+      // 与底栏的 padding-top 两层相加而成。只量底栏与气泡的接缝（上面那格）看不见它，
+      // 所以这里把两层都读回来：动哪一层、动了几个 px，都要有数。
+      gapTextToChip: (() => {
+        const txt = bubble.querySelector('.gosslan-selectable, .whitespace-pre-wrap');
+        return txt ? Math.round(chipTop - txt.getBoundingClientRect().bottom) : null;
+      })(),
+      bubblePadBottom: Math.round(parseFloat(bcs.paddingBottom || '0')),
+      stripPadTopNow: Math.round(parseFloat(scs.paddingTop || '0')),
       gapChipToBubble: Math.round(chipTop - br.bottom),
       chipLeft: Math.round(chipLeft), chipRight: Math.round(chipRight),
       bubbleLeft: Math.round(br.left), bubbleRight: Math.round(br.right),
@@ -6905,6 +6914,16 @@ async function rosterChecks(cdp, url) {
     "0 <= 底栏上沿 - 气泡下沿 <= 2",
     "间距 " + gm.gapStripToBubble + "px = 底栏 pt " + gm.stripPadTop
       + " + 气泡 mb " + gm.bubbleMarginBottom);
+  // 用户 2026-10-28：「表情回复块和文字中间缝隙」—— 量的就是这一格。
+  // 判据钉的是**上界**（不许再宽回去），不是某个魔法像素：两层内边距各自打印，
+  // 要再收紧时看数决定动哪一层，而不是凭手感再试一轮。
+  check("右列：文字下沿 → 胶囊上沿的间距不超过横向那一档（<= 12px），且两层内边距都读得回",
+    gm.ok === true && typeof gm.gapTextToChip === "number"
+      && gm.gapTextToChip >= 0 && gm.gapTextToChip <= 12
+      && gm.gapTextToChip === gm.bubblePadBottom + gm.stripPadTopNow,
+    "0 <= gapTextToChip <= 12 且 == 气泡 pb + 底栏 pt",
+    "间距 " + gm.gapTextToChip + "px = 气泡 padding-bottom " + gm.bubblePadBottom
+      + " + 底栏 padding-top " + gm.stripPadTopNow);
   check("右列：底栏左/右/下边框与气泡边框同色（自己的气泡是透明边 ⇒ 底栏也透明）",
     gm.ok === true
       && gm.stripBorderLeft === gm.bubbleBorderLeft
@@ -8573,22 +8592,13 @@ async function runRowPair(cdp, url) {
         kindLabel, tailStroke: g && g.tailStroke, wantMineLine,
         bubbleLine: g && g.bubbleLine, cardLineColor: g && g.cardLineColor,
       }));
-    // 尖角那一侧的下圆角：自己这一侧收 **tight 档**（没有实边框要接 ⇒ 拉平成直角会读成
-    // "角上贴了枚方头 tab"，用户 2026-10-28），对方那一侧仍拉平成 0（要与 1px 竖边框首尾相接）。
-    // 档位从样式表现读那个 token，不把 6px 抄进探针。
-    const tightPx = await cdp.eval(`(() => {
-      const el = document.createElement("span");
-      el.style.borderBottomRightRadius = "var(--gosslan-bubble-radius-tight, 6px)";
-      document.body.appendChild(el);
-      const v = parseFloat(getComputedStyle(el).borderBottomRightRadius);
-      el.remove();
-      return Number.isFinite(v) ? v : null;
-    })()`);
-    check("自己·" + kindLabel + "尾巴那一侧的下圆角收在 tight 档（不是直角，也不许回到 18）",
-      !!g && typeof g.tailCorner === "number" && typeof tightPx === "number"
-        && Math.abs(g.tailCorner - tightPx) < 0.5 && g.tailCorner > 0,
-      "borderBottomRightRadius == tight", JSON.stringify({
-        kindLabel, tailCorner: g && g.tailCorner, tightPx, cornerRad: g && g.cornerRad,
+    // 尖角那一侧的下圆角：两侧都必须是 **0（拉平）**。上一轮自己这一侧试过 tight(6px)，
+    // 8 倍取证帧 A/B（6px vs 0）量下来几乎无差别 ⇒ "方头 tab" 那个观感不归圆角管，
+    // 规则回到两侧同一条；这一格守的是"别再把它变圆"（变圆 = 2026-10-25 那道根部白缝回来）。
+    check("自己·" + kindLabel + "尾巴那一侧的下圆角拉平成 0（不许回到 tight 或胶囊档）",
+      !!g && typeof g.tailCorner === "number" && Math.abs(g.tailCorner) < 0.01,
+      "borderBottomRightRadius == 0", JSON.stringify({
+        kindLabel, tailCorner: g && g.tailCorner,
       }));
     check("自己·" + kindLabel + "尾巴填充 == 这条自己的底色（预设色，暗色同理）",
       !!g && typeof g.tailFill === "string" && g.tailFill === g.bubbleBg,
