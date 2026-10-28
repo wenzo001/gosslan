@@ -1078,6 +1078,53 @@ pub async fn cancel_file_transfer(
     Ok(res)
 }
 
+/// 撤回一条**附件**消息时先把它的传输停掉（2026-10-28：附件也支持撤回）。
+///
+/// 为什么必须一起做：撤回只改**消息行**，不 cancel 的话对端还在收字节 —— 这正是 5.6.0
+/// 把附件排除在撤回之外的全部理由。这里复用「取消发送」那整套（本地收尾 + `FileCancel`
+/// 帧），于是「气泡已撤回、字节照样在发」不再可能。
+///
+/// 非附件消息（`msg_id` 没有 `file-` / `gfile-` 前缀）是空操作；已传完的单也是空操作
+/// （取消是幂等的），都**不挡撤回本身**。
+pub(crate) async fn cancel_transfer_for_recalled_message(s: &Arc<AppState>, msg_id: &str) {
+    let Some(tid) = transfer_id_of_owner(msg_id) else {
+        return;
+    };
+    // 已经传完的不碰：撤回只改消息行。对一条 done 的单再发 FileCancel / 落取消
+    // 既无意义，还可能把「已完成」的成员行顶掉（INV-P26 的 `done` 闸门在两端都有，
+    // 但"不发这条通知"比"指望两端闸门都兜住"更干净）。
+    let finished = {
+        let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());
+        db::is_transfer_done(&dbc, tid).unwrap_or(false)
+            || db::list_group_file_recipients(&dbc, tid)
+                .map(|rows| {
+                    !rows.is_empty()
+                        && rows
+                            .iter()
+                            .all(|r| !matches!(r.status.as_str(), "pending" | "sending"))
+                })
+                .unwrap_or(false)
+    };
+    if finished {
+        s.logger.info(
+            "chat",
+            format!("code=RECALL_TRANSFER_ALREADY_DONE msg={msg_id} tid={tid}（只撤消息行）"),
+        );
+        return;
+    }
+    // 通知名单在收尾**之前**读：落成 cancelled 之后就没人可通知了（与上面同一条顺序语义）。
+    let notice = plan_cancel_notice(s, tid);
+    let res = apply_local_cancel(s, tid, "user").await;
+    let notified = send_cancel_notice(s, tid, notice).await;
+    s.logger.info(
+        "chat",
+        format!(
+            "code=RECALL_CANCEL_TRANSFER msg={msg_id} tid={tid} cancelled={} notified={notified}",
+            res.cancelled
+        ),
+    );
+}
+
 /// 取消该通知谁 —— 三种形状，读一次台账就能分清。
 ///
 /// 为什么要有这一层而不是在 `apply_local_cancel` 里顺手发：那条入口是**本机收尾**的家，

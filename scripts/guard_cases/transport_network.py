@@ -781,4 +781,26 @@ CASES: list[Case] = [
         cwd=TAURI,
         expect_fail_hint="inbound_conversation_rejects_missing_or_blank_group_target",
         tags=["rust", "group", "stability", "new-guards", "group-isolation"],
+    ),
+    Case(
+        name="撤回白名单把机器事件放进来必须被抓住",
+        why="2026-10-28 口径：撤回只收**用户内容**（text/code/merge/image/file），机器事件\n"
+        "     （pin/reaction/todo/announcement…）没有撤回语义。注入方式：往白名单塞 `pin`\n"
+        "     （数组长度同步 +1，编译照过）⇒「机器事件不支持撤回」那几条必须红。\n"
+        "     这条守的是产品口径本身，不只是名单长度。",
+        file=TAURI / "src" / "protocol.rs",
+        injections=[(
+            'pub const RECALLABLE_KINDS: [&str; 5] = ["text", "code", "merge", "image", "file"];',
+            'pub const RECALLABLE_KINDS: [&str; 6] = ["text", "code", "merge", "image", "file", "pin"];',
+        )],
+        cmd=cargo(
+            "test",
+            "--lib",
+            "--features",
+            "bluetooth",
+            "recall_accepts_user_content_and_rejects_machine_events",
+        ),
+        cwd=TAURI,
+        expect_fail_hint="机器事件不支持撤回",
+        tags=["rust", "protocol", "new-guards"],
     ),]

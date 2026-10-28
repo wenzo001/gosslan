@@ -1318,16 +1318,20 @@ pub struct RecallPayload {
 /// 撤回窗口：超过它就不再允许撤回（发送端强制；接收端不校验对方时钟）。
 pub const RECALL_WINDOW_MS: i64 = 300_000;
 
-/// **可撤回**的消息类型（负责人 2026-10-23 的规则：文本类走撤回，文件/图片走取消）。
+/// **可撤回**的消息类型 = 用户写/发的全部内容（2026-10-28 负责人改口径：
+/// 「5 分钟内的消息必须能撤回，所有文件格式类型都要支持」）。
 ///
-/// 为什么要有白名单而不是"除了文件都能撤"：撤回只改**消息行**，它不会停掉一条正在跑的
-/// 文件传输 —— 对着一条还在传的文件按撤回，结果是"气泡变成已撤回、字节照样在发"，
-/// 两头都不对。文件那一族的正确动作是取消（`cancel_file_transfer` / `FileCancel` 帧）。
-/// 合并转发（merge）是一段可重放的正文，按文本对待。
+/// 历史：5.6.0 曾把附件排除在外，理由是撤回只改**消息行**、停不掉传输 ——
+/// 对着还在传的文件按撤回会得到"气泡已撤回、字节照样在发"。这条理由现在由
+/// `commands::files::cancel_transfer_for_recalled_message` 消掉：撤回前先走
+/// 「取消发送」那整套（本地收尾 + `FileCancel` 帧），所以附件可以撤回。
+///
+/// 机器事件（system / pin / reaction / remind / recall / todo / announcement…）仍然不在内：
+/// 它们不是用户写的内容，没有「撤回」这个语义。
 ///
 /// ⚠️ 前端 `src/utils/recall.ts::RECALLABLE_KINDS` 是同一份口径（网络两侧都要拦：
-/// 老端可能没拦、直接发来一条对文件消息的撤回），`recall.test.ts` 会现读这里对账。
-pub const RECALLABLE_KINDS: [&str; 3] = ["text", "code", "merge"];
+/// 老端可能没拦、直接发来一条对附件消息的撤回），`recall.test.ts` 会现读这里对账。
+pub const RECALLABLE_KINDS: [&str; 5] = ["text", "code", "merge", "image", "file"];
 
 /// 这种消息能不能撤回（唯一定义处，见 `RECALLABLE_KINDS` 的理由）。
 pub fn is_recallable_kind(kind: &str) -> bool {
@@ -1351,7 +1355,7 @@ pub fn recall_verdict(
         return Err("只能撤回自己发送的消息".to_string());
     }
     if !is_recallable_kind(kind) {
-        return Err("这类消息请用「取消」而不是撤回（撤回只改消息行，停不掉传输）".to_string());
+        return Err("这类消息不支持撤回（只有你自己发送的内容可以撤回）".to_string());
     }
     if target_conv != expected_conv {
         return Err("消息不属于该会话".to_string());
