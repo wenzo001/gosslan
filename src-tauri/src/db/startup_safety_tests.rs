@@ -374,3 +374,22 @@ fn upsert_group_rolls_back_when_member_insert_fails() {
         .unwrap();
     assert_eq!(n, 0, "成员写失败时群行也不许留下");
 }
+
+/// 审计 P2 #24：`foreign_keys` 不能只写 `.ok()` —— 读回实际值并让失败进启动通知。
+#[test]
+fn fresh_database_really_has_foreign_keys_on_and_reports_no_degradation() {
+    // 本册不依赖 `migration_tests` 的私有 helper：自己造一份临时路径（同形）。
+    let path = std::env::temp_dir().join(format!(
+        "gosslan-fk-on-{}-{}.db",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0)
+    ));
+    let (_conn, notices) = init_with_notices(&path).expect("init fresh db");
+    assert!(
+        !notices.iter().any(|n| n.contains("DB_FOREIGN_KEYS_OFF")),
+        "新库上 foreign_keys 必须真的开着：{notices:?}"
+    );
+}

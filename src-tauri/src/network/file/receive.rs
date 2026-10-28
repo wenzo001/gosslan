@@ -20,9 +20,21 @@ pub fn retained_part_len(state: &AppState, transfer_id: &str) -> u64 {
         .lock()
         .unwrap_or_else(|e| e.into_inner())
         .clone();
-    std::fs::metadata(dl.join(format!("{transfer_id}.part")))
+    let Some(p) = retained_part_path(&dl, transfer_id) else {
+        return 0;
+    };
+    std::fs::metadata(p)
         .map(|m| if m.is_file() { m.len() } else { 0 })
         .unwrap_or(0)
+}
+
+/// `transfer_id` → `<downloads>/<tid>.part`（**拼路径前消毒**）。
+///
+/// 审计 P2 #25：`transfer_id` 来自对端的 Offer；`../..` 拼进去就是一个"能探任意文件
+/// 是否存在/多大"的读数口。消毒口径与接收/落盘同一份（`safe_transfer_id`）。
+pub(crate) fn retained_part_path(dl: &std::path::Path, transfer_id: &str) -> Option<std::path::PathBuf> {
+    let tid = safe_transfer_id(transfer_id)?;
+    Some(dl.join(format!("{tid}.part")))
 }
 
 /// 这一条 `.part` 是不是"本应用自己留下的、可以清"的分片。

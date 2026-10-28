@@ -1270,6 +1270,18 @@ pub fn init_with_notices(path: &Path) -> std::result::Result<(Connection, Vec<St
     // NORMAL：牺牲极小崩溃一致性换取更高写入吞吐（500-1000 节点高频落库场景）
     conn.pragma_update(None, "synchronous", "NORMAL").ok();
     conn.pragma_update(None, "foreign_keys", "ON").ok();
+    // 审计 P2 #24：`.ok()` 吞掉的哑雷。当前 schema 没有 FK 约束 ⇒ 影响有限，
+    // 但"写着 ON 实际没开"会在将来加 FK 的那天变成静默不生效（本仓已有读回校验的先例：
+    // 下面是 journal_mode / synchronous）。同样读回实际值，失败进启动通知。
+    let fk_on: i64 = conn
+        .query_row("PRAGMA foreign_keys", [], |r| r.get(0))
+        .unwrap_or(-1);
+    if fk_on != 1 {
+        startup_notices.push(
+            "code=DB_FOREIGN_KEYS_OFF（期望 1）—— 外键约束未生效；当前 schema 未声明外键，暂不影响数据"
+                .to_string(),
+        );
+    }
 
     // 这两个 PRAGMA 决定"掉电会丢多少"，失败**不能静默**：库放在 SMB/NFS/同步盘、或有
     // 第二个连接时 `journal_mode=WAL` 会失败，而 DELETE 日志 + `synchronous=NORMAL`

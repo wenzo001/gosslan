@@ -71,6 +71,20 @@ mod content_serve_gate_tests {
     }
 }
 
+/// 共享目录里"请求的这个相对路径"解析成真实文件；任何一步不可信就返回 `None`。
+///
+/// 审计 P2 #26：`canonicalize` 失败时**不许**退回词法路径再比 `starts_with` ——
+/// 词法比较挡不住 `..` 与符号链接（那条兜底此前只靠下游 `is_file()` 拦住）。
+/// 拿不到真实路径就当作越权（保守方向：最坏是共享目录暂不可用）。
+fn resolve_shared_file(root: &std::path::Path, rel: &str) -> Option<std::path::PathBuf> {
+    let canon_root = root.canonicalize().ok()?;
+    let canon_full = root.join(rel).canonicalize().ok()?;
+    if !canon_full.starts_with(&canon_root) || !canon_full.is_file() {
+        return None;
+    }
+    Some(canon_full)
+}
+
 /// 「共享目录按路径发」在同一个服务队列里的 cid 前缀。
 ///
 /// `ContentRequest` 与 `ShareFileRequest` 都是"替对端发文件"，共用同一条**每对端有界
@@ -380,12 +394,9 @@ async fn handle_share_and_relay_messages(state: &Arc<AppState>, peer_id: &str, m
                 .clone();
             let Some(root) = share else { return };
             let root = PathBuf::from(root);
-            let canon_root = root.canonicalize().unwrap_or_else(|_| root.clone());
-            let full = root.join(&path);
-            let canon_full = full.canonicalize().unwrap_or_else(|_| full.clone());
-            if !canon_full.starts_with(&canon_root) || !canon_full.is_file() {
+            let Some(canon_full) = resolve_shared_file(&root, &path) else {
                 return;
-            }
+            };
             // 本地提示：对端请求下载你的共享文件（聊天信息内简约系统消息）。
             // ⚠️ 措辞必须是「请求下载」而不是「下载了」：这条插入发生在**推第一个分片之前**，
             // 而中继发送此刻起还没任何成功证据（审计 A1）。写成完成时态就是一句可能被证伪的
@@ -466,5 +477,53 @@ async fn handle_share_and_relay_messages(state: &Arc<AppState>, peer_id: &str, m
         }
         // ---- 群密钥分发 ----
         _ => {}
+    }
+}
+
+
+#[cfg(test)]
+mod share_path_tests {
+    use super::resolve_shared_file;
+
+    /// 审计 P2 #26：共享目录 → 真实文件，越界/不存在/符号链接一律拒绝（不回退词法比较）。
+    #[test]
+    fn shared_path_resolution_refuses_escapes_and_falls_back_to_nothing() {
+        let base = std::env::temp_dir().join(format!(
+            "gosslan-share-path-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0)
+        ));
+        let root = base.join("root");
+        std::fs::create_dir_all(&root).unwrap();
+        let inside = root.join("a.txt");
+        std::fs::write(&inside, b"x").unwrap();
+        let outside = base.join("outside.txt");
+        std::fs::write(&outside, b"y").unwrap();
+
+        assert!(resolve_shared_file(&root, "a.txt").is_some(), "目录内文件必须放行");
+        assert!(
+            resolve_shared_file(&root, "../outside.txt").is_none(),
+            "`..` 越界必须拒绝"
+        );
+        assert!(
+            resolve_shared_file(&root, "missing.txt").is_none(),
+            "不存在的文件必须拒绝（canonicalize 失败 ⇒ 不回退词法）"
+        );
+
+        // 符号链接指向目录外：真实路径越界 ⇒ 拒绝。
+        #[cfg(unix)]
+        {
+            let link = root.join("link.txt");
+            std::os::unix::fs::symlink(&outside, &link).unwrap();
+            assert!(
+                resolve_shared_file(&root, "link.txt").is_none(),
+                "指向目录外的符号链接必须拒绝"
+            );
+        }
+
+        let _ = std::fs::remove_dir_all(&base);
     }
 }
