@@ -457,13 +457,19 @@ CASES: list[Case] = [
         "在 object 里生成『实例方法 + 静态桥』两个条目；keep 规则只写 public boolean start(); 时 "
         "R8 把静态桥当死代码删掉 ⇒ `JNI 调用失败：Method not found: start ()Z`（蓝牙外设起不来）",
         # 事实来源与注入副本必须同时改坏（同既有 keep 用例的理由）
+        # ⚠️ 锚点带相邻那一行：这份文件里有两个 keep 块都以 `public static boolean start();` 起头
+        # （BlePeripheral 与后台服务的桥），裸这一行在 2026-10-28 之后出现 2 次 ⇒ 用例退化成
+        # 「锚点出现 2 次」的报错、什么都没验。`isConnected` 只出现在第一块，用它定住。
         file=ROOT / "scripts" / "android" / "proguard-gosslan.pro",
-        injections=[("    public static boolean start();", "    public boolean start();")],
+        injections=[(
+            "    public static boolean start();\n    public static boolean isConnected(java.lang.String);",
+            "    public boolean start();\n    public static boolean isConnected(java.lang.String);",
+        )],
         extra_injections=[
             (
                 TAURI / "gen" / "android" / "app" / "proguard-rules.pro",
-                "    public static boolean start();",
-                "    public boolean start();",
+                "    public static boolean start();\n    public static boolean isConnected(java.lang.String);",
+                "    public boolean start();\n    public static boolean isConnected(java.lang.String);",
             )
         ],
         cmd=cargo("test", "--lib", "release_keeps_every_kotlin_method_called_from_rust"),
