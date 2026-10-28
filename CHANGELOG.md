@@ -13,6 +13,36 @@
 
 ## [Unreleased]
 
+## [5.14.32] - 2026-10-28
+
+### Android 后台服务：review 之后修的是"文档说了一套、代码做了另一套"
+
+自己 review `42547ef5` 抓到的五条，全部属于"下一个读代码的人会按文档去动手"那一族：
+
+- **三处落点声明与实现相反**（严重）：Kotlin 类注释、`android_background.rs` 模块头、ADR-0022 §3
+  的落点图都写着「`network::stop()` ⇒ 停服务」，而代码、`network/mod.rs` 的 ⚠️ 与接线守卫钉的是
+  **刻意不接在那里**（只接两条"用户主动关通道"的出口）。照着文档去"补"那条接线，恰好会把每次
+  换网卡变成"销毁服务→重建"，撞上 Android 12+ 的后台启动拒绝。三处改为与守卫同一口径；
+  论证只留在 ADR §2（唯一出处），Kotlin 侧改成只声明契约 + 指向 ADR —— 原来那段是把 ADR 的
+  论证抄进注释，两处会各自漂。
+- **停服务静默**：原 `let _ = request_stop()`。"通道关了但服务还活着"与"本来就没在跑"是两件事，
+  前者只能靠日志与 `diag().running` 对时间线 ⇒ `stop(logger)`，两种结果各打一条具名码
+  （`BG_SERVICE_STOPPED` / `BG_SERVICE_STOP_NOOP` / `BG_BRIDGE_NOT_READY`）。
+- **注释把读数说反**：Kotlin 那句"全部候选被拒 ⇒ 读数会报 running=false"与代码
+  （`running = true`、`appliedTypes = 0`）相反 —— 而"跑了但没拿到前台地位"正是那一行读数
+  存在的全部理由。
+- **模板与真清单不一致**：`scripts/android/AndroidManifest.xml` 缺 `FOREGROUND_SERVICE_REMOTE_MESSAGING`
+  （真清单与注入片段都有）；照模板补一份新清单就会在 Android 14 上 SecurityException。
+- **架构图与真源漂移**：`docs/ARCHITECTURE-MAP.html` 的 platform 快照没有 `android_background.rs`，
+  notes 还写着"android_open / jni_method 是 Android 专属"；`.mjs` 是真源而图无机器判据 ⇒ 手改，
+  改完把内联 JS 抽出来 `node --check`。另：索引的 ADR 一行补 0022；`NOTIFICATION_ID` 的
+  `4_2_1` 写成 `421`；ADR 里"护栏三条"那处手写计数改成不写死数字（计数会漂）。
+
+验证：`npm run verify:full` 26 步全绿（236.1s，cargo test 1278/0/1、npm test 1462/1462、
+移动端编译门禁 PASS）；`./gradlew :app:compileArmDebugKotlin :app:processArmDebugMainManifest`
+BUILD SUCCESSFUL，合并产物里现读到 `<service … foregroundServiceType="remoteMessaging|connectedDevice">`
+与三个 `FOREGROUND_SERVICE*`。**真机运行时行为仍未验**（本机无安卓设备）。
+
 ## [5.14.31] - 2026-10-28
 
 ### Android：局域网通道开着时跑前台服务，「后台可收消息」第一次有实现支撑
@@ -31,9 +61,7 @@
 - 清单加 `FOREGROUND_SERVICE` 与两个类型权限、`<service android:foregroundServiceType="remoteMessaging|connectedDevice">`；
   开机不自启（`BOOT_COMPLETED` 明确不做），R8 keep 名单同步（`scripts/android/proguard-gosslan.pro`）。
 - 诊断面板新增「后台连接服务」一行：`ready / running / types / lastError` 四个读数分开给，
-  桌面 `background=null` ⇒ 整行不出现，而不是显示一个假的"未运行"。起服务与停服务两条都留
-  具名日志（`BG_SERVICE_START_REQUESTED` / `BG_SERVICE_START_REFUSED <码>` / `BG_SERVICE_STOPPED` /
-  `BG_BRIDGE_NOT_READY`）—— 停服务原先是 `let _ =`，"通道关了但服务还在"这种分叉事后无从对齐时间线。
+  桌面 `background=null` ⇒ 整行不出现，而不是显示一个假的"未运行"。
 - 设置页局域网那一行在安卓多一句**带条件**的承诺（条件与"一条常驻通知"这条代价写在同一句里）；
   README 与 ADR-0020 那两处「当前没有前台服务」按现状改写。
 - 护栏：`android_jni_signatures_match_kotlin` 改成**按册配对**比对 —— `start`/`stop` 在
