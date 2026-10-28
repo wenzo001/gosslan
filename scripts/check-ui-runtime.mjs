@@ -8540,6 +8540,51 @@ async function runRowPair(cdp, url) {
       !!gGroupKind && gGroupKind.tailCount === 0, "tailCount == 0",
       JSON.stringify({ kindLabel, tailCount: gGroupKind && gGroupKind.tailCount }));
   }
+  // ---- 自己这一侧（用户 2026-10-28 截图：右侧气泡右下角出现"空心方块"）----
+  //
+  // 上面那一圈只挂了对方（`mount(FAR, false, kind)` 的 senderId 恒为 peer-a）⇒
+  // **自己那一侧的尾巴零运行时凭据**。而自己的气泡与卡片有两处与对方不同：
+  // ① 边框是透明的（`bubbleStyle` / `cardStyle` 里 mine ⇒ transparent）⇒ 尾巴描边必须跟着透明，
+  //    否则就是"填充看不见、只剩一圈线"的空心方块（截图里红框那一格）；
+  // ② 底色是主题预设的 mineBubble（每套预设不同，还有暗色）⇒ 尾巴填充必须等于它。
+  // 逐种气泡各量一遍，读数一律打印（红不红都要能看见真值）。
+  const MINE_KINDS = [["文本气泡", "text"], ...TAIL_KINDS];
+  for (const [kindLabel, kind] of MINE_KINDS) {
+    check("行配对：挂一条" + kindLabel + "（单聊·自己）",
+      await mount(FAR, false, kind, null, "dev-me"), "install 成功");
+    const g = await geom();
+    check("非空转·" + kindLabel + "（自己）：读到尾巴与气泡", !!g && typeof g.tailStroke === "string",
+      "tailStroke 读得到", JSON.stringify(g && { isMine: g.isMine, tailStroke: g.tailStroke }));
+    console.log("  · " + kindLabel + "尾巴实测（自己）：" + JSON.stringify(g && {
+      isMine: g.isMine, below: g.tailBelowBubble, inside: g.tailInsideBubble, side: g.tailSideReach,
+      tailStroke: g.tailStroke, bubbleLine: g.bubbleLine, tailFill: g.tailFill, bubbleBg: g.bubbleBg,
+    }));
+    check("自己·" + kindLabel + "尾巴几何与对方同读数（同一个 CSS 家）",
+      !!g && Math.abs(g.tailBelowBubble) <= 1 && g.tailSideReach >= 8 && g.tailSideReach <= 12
+        && g.tailInsideBubble >= 12 && g.tailInsideBubble <= 16,
+      "|below|<=1 / 8~12 / 12~16", JSON.stringify({ kindLabel, g }));
+    // ★ 描边必须与**这条气泡自己那一线**同色（与对方那一圈同一条口径）：
+    //   文本/文件/合并/待办的自己的边框透明 ⇒ 尾巴描边也必须透明，读到实色就是
+    //   "气泡角上凭空一圈线"；代码卡片没有四边描边，它唯一的线是卡片线 token ⇒ 比那个。
+    const wantMineLine = kind === "code" ? (g && g.cardLineColor) : (g && g.bubbleLine);
+    check("自己·" + kindLabel + "尾巴描边 == 这条气泡自己的线色（透明边框不许长出实色线）",
+      !!g && g.tailStroke === wantMineLine,
+      "stroke == 该档线色", JSON.stringify({
+        kindLabel, tailStroke: g && g.tailStroke, wantMineLine,
+        bubbleLine: g && g.bubbleLine, cardLineColor: g && g.cardLineColor,
+      }));
+    // 尖角那一侧的下圆角被拉平（0）是刻意的 —— 尾巴根部要一条直边才接缝无痕。
+    // 这一格钉住"拉平"确实发生在**自己**这一侧（对方那一圈量的是左侧）。
+    check("自己·" + kindLabel + "尾巴那一侧的下圆角已拉平（右侧）",
+      !!g && typeof g.tailCorner === "number" && g.tailCorner === 0,
+      "borderBottomRightRadius == 0", JSON.stringify({
+        kindLabel, tailCorner: g && g.tailCorner, cornerRad: g && g.cornerRad,
+      }));
+    check("自己·" + kindLabel + "尾巴填充 == 这条自己的底色（预设色，暗色同理）",
+      !!g && typeof g.tailFill === "string" && g.tailFill === g.bubbleBg,
+      "fill == backgroundColor", JSON.stringify({ kindLabel, tailFill: g && g.tailFill, bubbleBg: g && g.bubbleBg }));
+  }
+
   // 取证帧（--shot）：单聊 + 回应条，用来肉眼复核"尾巴 / 气泡 / 底栏是不是同一块"。
   if (SHOT_PATH) {
     const shotProps = {
