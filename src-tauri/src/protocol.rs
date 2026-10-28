@@ -1342,7 +1342,8 @@ pub const RECALL_WINDOW_MS: i64 = 300_000;
 ///
 /// 机器事件（system / pin / reaction / remind / recall / todo / announcement…）**作者本人**
 /// 撤不了：它们不是用户写的内容，没有「撤回」这个语义。
-/// 群主特权那一档的分母另见 [`CREATOR_RECALLABLE_KINDS`]（多三张卡，同样不含静默行）。
+/// 群主特权那一档**共用这一份分母**（差别只有「不看作者、不看时限」），理由见
+/// `RecallAuthority` 上面那段——卡片没有独立真源，撤卡就是删本体。
 ///
 /// ⚠️ 前端 `src/utils/recall.ts::RECALLABLE_KINDS` 是同一份口径（网络两侧都要拦：
 /// 老端可能没拦、直接发来一条对附件消息的撤回），`recall.test.ts` 会现读这里对账。
@@ -1353,37 +1354,18 @@ pub fn is_recallable_kind(kind: &str) -> bool {
     RECALLABLE_KINDS.contains(&kind)
 }
 
-/// **群主特权**可撤的行 = `RECALLABLE_KINDS` 五种 + 三张卡（2026-10-28 负责人拍板：
-/// 「所有的消息类型都可以撤回……主要是让群聊天列表里消失……任务的话在任务列表里还是可以看到」）。
+/// 两档**共用同一个可撤分母** `RECALLABLE_KINDS` —— 这一度写成了"群主档多三张卡"，
+/// 那是**假事实**（2026-10-28 review 抓到）：群任务卡、群公告、投票卡**没有独立真源**，
+/// 它们的本体就是那一条消息行 ——
+/// 看板取数是 `messages WHERE kind IN ('todo','todo_update')`（`db/messages.rs:145`），
+/// 公告栏是 `kind IN ('announcement','announcement_delete')`（`commands/group_announcements.rs:32`），
+/// 库里没有任何 `group_todos` / 公告 / 投票表（现算：`grep -n "CREATE TABLE.*group_todo" db.rs` 零命中）。
+/// 所以撤掉一张卡 = `kind→recalled` + `content→''` = **本体一起消失且不可恢复**（墓碑是 G-Set），
+/// 与负责人原话「任务的话在任务列表里还是可以看到」正相反。
+/// 要让卡片能"离链但本体留着"，前置条件是把看板与公告栏改成有自己的真源 —— 那是另一个功能，
+/// 见 `docs/adr/0023-group-owner-recall.md` §3.6。
 ///
-/// 加进来的是**卡片**：撤回只让那张卡离开聊天时间线，卡片背后的本体（任务看板、公告栏、
-/// 文件台账）是各自独立的真源，照旧可见 —— 这不是遗漏，撤回的语义边界就是"聊天时间线"。
-///
-/// 仍然不在内的那两类各有硬理由（缺任一条就会做出一个"看着能撤、实则骗人"的入口）：
-/// · 静默事件行（`pin / reaction / remind / todo_update / recall`…）：它们本来就不显示在
-///   时间线上，撤它们不是"离链"而是"回滚那个动作"，而 `todo_update` 是 LWW 状态改动、
-///   撤回既不能让状态倒退也没有东西可看；
-/// · `system` 提示行：`msg_id = sys-<uuid4>` 由**每台设备各自生成、不广播**
-///   （`commands::insert_system_message`），拿它发撤回只有群主自己那台会消失 = 假同步。
-///
-/// ⚠️ 前端 `src/utils/recall.ts::CREATOR_RECALLABLE_KINDS` 是同一份口径，
-/// `recall.test.ts` 现读这里对账。
-pub const CREATOR_RECALLABLE_KINDS: [&str; 8] = [
-    "text",
-    "code",
-    "merge",
-    "image",
-    "file",
-    KIND_ANNOUNCEMENT,
-    "todo",
-    "poll",
-];
-
-/// 群主能不能撤这一行。
-pub fn is_creator_recallable_kind(kind: &str) -> bool {
-    CREATOR_RECALLABLE_KINDS.contains(&kind)
-}
-
+/// 群主档与作者档的差别因此只有两处：**不看作者**、**不看时间窗**。
 /// 撤回的**授权来源**。谁有资格用哪一档由调用方判（发送端读 `groups.creator`，
 /// 接收端比它本地记录的那一份），这个枚举只回答"按哪套规则裁决" ——
 /// 分成两处是为了让越权在两个入口都被**同一份**规则挡住，而不是各写一遍各自的 `if`。
@@ -1391,8 +1373,8 @@ pub fn is_creator_recallable_kind(kind: &str) -> bool {
 pub enum RecallAuthority {
     /// 作者本人：必须 `sender_id == me`、`kind ∈ RECALLABLE_KINDS`、且在 5 分钟窗口内。
     Author,
-    /// 群主替他人撤回：`kind ∈ CREATOR_RECALLABLE_KINDS`、**不看时间窗**、
-    /// 作者可以是任何人（含群主自己）。见 `docs/adr/0023`。
+    /// 群主替他人撤回：kind 同样过 `RECALLABLE_KINDS`，但**不看作者**也**不看时间窗**。
+    /// 见 `docs/adr/0023`。
     GroupCreator,
 }
 
@@ -1438,9 +1420,9 @@ pub fn recall_verdict(
             }
         }
         RecallAuthority::GroupCreator => {
-            if !is_creator_recallable_kind(kind) {
+            if !is_recallable_kind(kind) {
                 return Err(
-                    "这一行不在群主可撤的分母里（静默事件与系统提示不在时间线上，撤它们只会造成假同步）"
+                    "这一行不在可撤的分母里（卡片没有独立真源，撤卡等于删本体；静默行与系统提示不在时间线上）"
                         .to_string(),
                 );
             }
@@ -1524,8 +1506,9 @@ pub fn creator_recall_hint(unsupported_names: &[String], unknown: usize) -> Stri
 /// · `target_conv != conv_id` ⇒ 拒。**跨会话归属闸**，与群主特权同批落地：没有它，
 ///   A 群群主可以拿一条 A 群的合法信封去清 B 群里别人的一条消息（作者那一档这个洞
 ///   只泄露自己的内容，群主这一档会把它变成跨会话删除他人消息）；
-/// · 群主那一档还要 kind 在 [`CREATOR_RECALLABLE_KINDS`] 里 ⇒ 否则这条通道能撤掉任意 kind，
-///   包括我们明确排除的静默行与已撤回行（撤 `recall` 事件行会把墓碑集合本身弄坏）；
+/// · **两档都要** kind 过 `RECALLABLE_KINDS`。接收侧此前对作者那一半完全不判类型（沿用旧形状），
+///   而 `recalled` 是**可见**的提示行：一条对自己 `pin / recall / system` 行的撤回会把静默行
+///   变成屏幕上多出来的一行并改掉会话预览。发送端拦了、接收端不拦 = 老端或改过的前端可绕过。
 /// · **不校验时间窗**（既有口径：接收端无法验证对方墙上时钟，那是产品规则不是安全边界）。
 ///
 /// 目标还没落库时保持今天的行为（群：发送者是成员即可；单聊：放行），因为"先撤后到"正是
@@ -1543,7 +1526,7 @@ pub fn recall_receive_allowed(
             if target_conv != conv_id {
                 return false;
             }
-            author == sender_id || (is_creator_here && is_creator_recallable_kind(kind))
+            is_recallable_kind(kind) && (author == sender_id || is_creator_here)
         }
         None => {
             if is_group {

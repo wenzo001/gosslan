@@ -1793,12 +1793,16 @@ mod tests {
             .is_ok(),
             "群主档既不看作者也不看时间窗"
         );
-        // 三张卡在群主档里可撤：卡片离链，本体（看板 / 公告栏 / 文件台账）照旧可见。
+        // 三张卡**不在分母里**（2026-10-28 review 抓到我把这条写成反的）：
+        // 看板取数是 `messages WHERE kind IN (todo, todo_update)`、公告栏是
+        // `kind IN (announcement, announcement_delete)`，库里没有独立的 todos / 公告表
+        // ⇒ 撤掉那张卡 = 本体一起没了且不可恢复（墓碑是 G-Set），与负责人原话相反。
         for kind in ["announcement", "todo", "poll"] {
+            let err = recall_verdict("peer", "me", kind, "group:g", "group:g", now - 1, now, owner)
+                .expect_err("卡片没有独立真源，群主档也不许撤");
             assert!(
-                recall_verdict("peer", "me", kind, "group:g", "group:g", now - 1, now, owner)
-                    .is_ok(),
-                "{kind} 是时间线上的卡片，群主必须能让它离链"
+                err.contains("不在可撤的分母里"),
+                "{kind} 的拒绝要说清真源，实际：{err}"
             );
         }
         // 静默行与系统提示不在分母里：撤它们要么会造成假同步（sys- id 各设备不同），
@@ -1807,7 +1811,7 @@ mod tests {
             let err = recall_verdict("peer", "me", kind, "group:g", "group:g", now - 1, now, owner)
                 .expect_err("静默行与系统提示不可撤");
             assert!(
-                err.contains("不在群主可撤的分母里"),
+                err.contains("不在可撤的分母里"),
                 "{kind} 的拒绝要说出分母，实际：{err}"
             );
         }
@@ -1832,17 +1836,14 @@ mod tests {
                 .is_err(),
             "跨会话撤回必须拒绝 —— 这条洞只在群主特权出现后才致命"
         );
-        // 分母关系本身也是口径：群主档 = 作者档 + 三张卡，且不得比作者档小。
-        for kind in RECALLABLE_KINDS {
-            assert!(
-                is_creator_recallable_kind(kind),
-                "{kind} 在作者档可撤，群主档不该更小"
-            );
-        }
-        assert_eq!(
-            CREATOR_RECALLABLE_KINDS.len(),
-            RECALLABLE_KINDS.len() + 3,
-            "群主档只比作者档多三张卡（announcement / todo / poll），多别处要同步改这条"
+        // 两档**共用同一份分母**：群主档多的只有「不看作者、不看时限」两件事。
+        // 曾有一份 `CREATOR_RECALLABLE_KINDS = 5 + 3 张卡`，它建立在「卡片有独立真源」这个
+        // 假前提上（看板/公告栏的取数就是那批消息行）⇒ 删掉那份清单，顺带删掉
+        // 「两处清单要互相对账」这一整类漂移。这里现读协议源钉它不再存在。
+        let proto = include_str!("protocol.rs");
+        assert!(
+            !proto.contains("CREATOR_RECALLABLE_KINDS"),
+            "协议里不该再有第二份可撤分母（撤卡 = 删本体，见上面的真源证据）"
         );
     }
 
@@ -1867,6 +1868,16 @@ mod tests {
             !recall_receive_allowed(Some(("x", "group:g", "pin")), "me", "group:g", true, true, true),
             "群主档不得借 recall 通道撤静默行"
         );
+        // ★ 作者那一半同样要过分母（2026-10-28 review 抓到的第二个洞）：接收侧此前只判
+        // "sender == 原作者"，而 `recalled` 是**可见**提示行 ⇒ 对自己发的 pin / recall / system
+        // 行发一条撤回，会把静默行变成屏幕上多出来的一行并改掉会话预览。
+        // 发送端 Author 档拦了、接收端不拦 = 老端或改过的前端可以绕过。
+        for kind in ["pin", "reaction", "remind", "todo_update", "recall", "system", "todo"] {
+            assert!(
+                !recall_receive_allowed(Some(("me", "group:g", kind)), "me", "group:g", true, false, true),
+                "作者本人也不该能撤 {kind}：它在分母之外，撤它的后果是凭空多一行可见提示"
+            );
+        }
         assert!(
             !recall_receive_allowed(Some(("x", "group:g", "recalled")), "me", "group:g", true, true, true),
             "已撤回行不在分母里"

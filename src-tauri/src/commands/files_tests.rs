@@ -240,9 +240,13 @@ mod files_gate_tests {
                 continue;
             }
             with_materialize += 1;
+            // 顺序也要判：只要求"文件里出现过"的话，同一个文件里两处物化只接一处照样绿，
+            // 或者把重算写在物化**之前**（那时末条还没变，算出来还是原文）也照样绿。
+            let m = src.find("materialize_recall(").unwrap();
+            let r = src.find("refresh_conversation_summary(").unwrap_or(usize::MAX);
             assert!(
-                src.contains("refresh_conversation_summary("),
-                "{name}：物化了撤回却没重算会话预览 ⇒ 列表里还挂着原文"
+                r != usize::MAX && r > m,
+                "{name}：撤回物化之后没有重算会话预览（找不到 / 或排在物化之前）⇒ 列表里还挂着原文"
             );
         }
         assert_eq!(

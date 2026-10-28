@@ -3,10 +3,8 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import {
-  CREATOR_RECALLABLE_KINDS,
   RECALLABLE_KINDS,
   RECALL_WINDOW_MS,
-  isCreatorRecallableKind,
   isRecallableKind,
   isWithinRecallWindow,
   recallTargetOf,
@@ -127,38 +125,30 @@ function parseRustStrArray(src: string, name: string): string[] {
   return items;
 }
 
-test("CREATOR_RECALLABLE_KINDS 与 protocol.rs 逐项对上，且恰比作者档多三张卡", () => {
+test("两档共用同一份可撤分母 —— 协议里不许再有第二份清单", () => {
   const protocol = readFileSync(join(root, "src-tauri", "src", "protocol.rs"), "utf8");
-  const rust = parseRustStrArray(protocol, "CREATOR_RECALLABLE_KINDS");
+  const db = readFileSync(join(root, "src-tauri", "src", "db.rs"), "utf8");
+  // 曾经有一份 `CREATOR_RECALLABLE_KINDS = 5 + 三张卡`，建立在「卡片有独立真源」这个假前提上：
+  // 看板取数是 messages WHERE kind IN ('todo','todo_update')、公告栏是
+  // kind IN ('announcement','announcement_delete')（两处 SQL 现读），库里没有独立的 todos / 公告表
+  // ⇒ 撤卡 = 本体一起没，与负责人原话相反。这一格钉的是「那个前提不再被写成第二份清单」。
+  assert.doesNotMatch(
+    protocol,
+    /CREATOR_RECALLABLE_KINDS/,
+    "协议里不该再有第二份可撤分母（两处清单迟早各说各话，且那份的前提已被证伪）",
+  );
+  for (const table of ["group_todos", "group_announcements"]) {
+    assert.ok(
+      !db.includes("CREATE TABLE IF NOT EXISTS " + table),
+      `${table} 出现了 —— 卡片有了独立真源，那时才该把三张卡放回分母（连同这条判据一起改）`,
+    );
+  }
+  const rust = parseRustStrArray(protocol, "RECALLABLE_KINDS");
   assert.deepEqual(
-    [...CREATOR_RECALLABLE_KINDS].sort(),
+    [...RECALLABLE_KINDS].sort(),
     [...rust].sort(),
-    "前端群主档与 Rust 不一致：两侧都要拦，清单必须同一份",
+    "前端可撤回清单与 Rust 不一致：两侧都要拦，清单必须同一份",
   );
-  assert.ok(
-    protocol.includes("pub fn is_creator_recallable_kind("),
-    "Rust 侧必须有唯一的群主档判据（命令层不许各写一份）",
-  );
-  const extra = CREATOR_RECALLABLE_KINDS.filter((k) => !RECALLABLE_KINDS.includes(k));
-  assert.deepEqual(
-    [...extra].sort(),
-    ["announcement", "poll", "todo"],
-    "群主档只比作者档多这三张卡；多别处（含 system / 静默行）要同步改这条判据",
-  );
-  for (const k of RECALLABLE_KINDS) {
-    assert.ok(CREATOR_RECALLABLE_KINDS.includes(k), `${k} 在作者档可撤，群主档不该更小`);
-  }
-});
-
-test("isCreatorRecallableKind：时间线上的行放行，静默行与系统提示不放行", () => {
-  for (const kind of ["text", "code", "merge", "image", "file", "announcement", "todo", "poll"]) {
-    assert.equal(isCreatorRecallableKind(kind), true, `${kind} 在时间线上看得见，群主必须能让它离链`);
-  }
-  // 这两类的实测理由写在 utils/recall.ts：静默行撤它不是离链而是回滚；
-  // system 行的 msg_id 每台各自生成不广播 ⇒ 开了入口就是假同步。
-  for (const kind of ["system", "pin", "reaction", "remind", "todo_update", "recall", "recalled", ""]) {
-    assert.equal(isCreatorRecallableKind(kind), false, `${kind} 不该出现在群主可撤的分母里`);
-  }
 });
 
 test("recallTargetOf：只认载荷里那条 target，解不出来按没有处理", () => {
@@ -178,10 +168,14 @@ test("recalledRowKey：撤的人不是作者才说「群主撤回了」，索引
 
 test("接线：群主档入口、提示行两式文案、跨人确认话术各有一处出口", () => {
   const item = readFileSync(join(root, "src", "components", "MessageItem.vue"), "utf8");
-  assert.match(
-    item,
-    /isCreatorRecallableKind\(props\.message\.kind\)/,
-    "canRecallNow 的群主那一半必须接群主档分母（少了它卡片没有入口）",
+  assert.ok(
+    /return isGroupOwnerHere\.value && isRecallableKind\(props\.message\.kind\)/.test(item),
+    "canRecallNow 的群主那一半必须接**同一份**分母（两档只差「不看作者、不看时限」）",
+  );
+  assert.ok(
+    /previewBody\(props\.message\.kind, props\.message\.content, 40\)/.test(item),
+    "跨人撤回的摘要必须走 utils/messages 的 previewBody —— 直接切 content 会把 image/file 载荷里的"
+      + "**本机绝对路径**贴进确认弹窗",
   );
   assert.match(
     item,

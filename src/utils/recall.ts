@@ -30,30 +30,19 @@ export function isRecallableKind(kind: string | undefined | null): boolean {
 }
 
 /**
- * **群主特权**可撤的行（与 Rust `protocol::CREATOR_RECALLABLE_KINDS` 同一份口径）。
+ * 群主特权撤回**共用上面那份分母**（2026-10-28 review 纠正）。
  *
- * 负责人 2026-10-28：「群里群主可以随意撤回任何人的任何消息，不限制时间……所有的消息类型
- * 都可以撤回，主要是让群聊天列表里消失……任务的话在任务列表里还是可以看到」。
- * 所以在作者档之上**只加三张卡**（`announcement / todo / poll`）：撤回让那张卡离开时间线，
- * 卡片背后的本体（看板 / 公告栏 / 文件台账）是各自独立的真源，照旧可见。
+ * 这里曾经有一份 `CREATOR_RECALLABLE_KINDS = 5 种 + announcement / todo / poll`，
+ * 依据是「卡片背后有独立真源，撤卡只是离链」—— 那句是**假事实**：
+ * 看板取数是 `messages WHERE kind IN ('todo','todo_update')`（Rust `db/messages.rs`），
+ * 公告栏是 `kind IN ('announcement','announcement_delete')`，库里没有独立的 todos / 公告 / 投票表。
+ * 撤掉一张卡 = 那行 `kind→recalled` + `content→''` = **本体一起消失且不可恢复**（墓碑是 G-Set），
+ * 与负责人原话「任务的话在任务列表里还是可以看到」正相反。
+ * 要让卡片能「离链但本体留着」，前置条件是先给看板与公告栏建自己的真源 —— 那是另一个功能，
+ * 见 `docs/adr/0023-group-owner-recall.md` §3.6。
  *
- * 两类**故意不开**，各自有实测理由，不是遗漏：
- * · 静默事件行（`pin / reaction / remind / todo_update / recall`）：它们本来就不显示在时间线上，
- *   撤它们不是"离链"而是"回滚那个动作"，而 `todo_update` 是状态微调、撤不动也不可见；
- * · `system` 提示行：它的 `msg_id` 是 `sys-<uuid4>`、**每台设备各自生成不广播**，
- *   拿它发撤回只有群主自己那台会消失 = 假同步。
+ * 所以群主档与作者档的差别只有两处：**不看作者**、**不看时间窗**。
  */
-export const CREATOR_RECALLABLE_KINDS: readonly string[] = [
-  ...RECALLABLE_KINDS,
-  "announcement",
-  "todo",
-  "poll",
-];
-
-/** 群主能不能撤这一行。 */
-export function isCreatorRecallableKind(kind: string | undefined | null): boolean {
-  return !!kind && CREATOR_RECALLABLE_KINDS.includes(kind);
-}
 
 /**
  * 从一条 `kind === "recall"` 的静默事件行里取出"撤的是哪条"。
