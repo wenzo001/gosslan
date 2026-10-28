@@ -302,7 +302,7 @@ async function confirmAction() {
         </template>
         <p
           v-else-if="currentAnnouncement?.text"
-          class="whitespace-pre-wrap break-words px-3 py-2 text-sm text-[var(--gosslan-text)]"
+          class="gosslan-selectable whitespace-pre-wrap break-words px-3 py-2 text-sm text-[var(--gosslan-text)]"
         >
           {{ currentAnnouncement.text }}
         </p>

@@ -873,7 +873,7 @@ async function confirmDelete() {
               <div class="space-y-1.5">
                 <div v-for="(it, i) in activeMergeItems" :key="i" class="space-y-0.5">
                   <div class="text-caption text-[var(--gosslan-text-2)]">{{ it.sender }}</div>
-                  <div class="break-words whitespace-pre-wrap text-body text-[var(--gosslan-text)]">
+                  <div class="gosslan-selectable break-words whitespace-pre-wrap text-body text-[var(--gosslan-text)]">
                     <template v-if="it.kind === 'text' || it.kind === 'code'">{{ it.content }}</template>
                     <template v-else>{{ mergeItemLine(it) }}</template>
                   </div>
@@ -895,18 +895,18 @@ async function confirmDelete() {
                   aria-hidden="true"
                 />
                 <div class="min-w-0 flex-1">
-                  <div class="break-words whitespace-pre-wrap text-body leading-relaxed text-[var(--gosslan-text)]">
+                  <div class="gosslan-selectable break-words whitespace-pre-wrap text-body leading-relaxed text-[var(--gosslan-text)]">
                     {{ activeCardText }}
                   </div>
                   <!-- 待办的描述（卡片信息补全：之前只渲染了标题） -->
                   <p
                     v-if="activeCardDesc"
-                    class="mt-1 whitespace-pre-wrap break-words text-meta leading-relaxed text-[var(--gosslan-text-2)]"
+                    class="gosslan-selectable mt-1 whitespace-pre-wrap break-words text-meta leading-relaxed text-[var(--gosslan-text-2)]"
                   >
                     {{ activeCardDesc }}
                   </p>
                   <!-- 投票选项（只读） -->
-                  <ul v-if="activePollOptions.length" class="mt-1.5 space-y-0.5">
+                  <ul v-if="activePollOptions.length" class="gosslan-selectable mt-1.5 space-y-0.5">
                     <li
                       v-for="(o, i) in activePollOptions"
                       :key="i"

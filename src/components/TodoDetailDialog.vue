@@ -255,7 +255,13 @@ const fullCode = computed(() =>
 </script>
 
 <template>
-  <BaseModal :open="open" :title="(fullCode ? fullCode + ' ' : '') + (item?.title ?? t('todo.title'))" width="max-w-lg" @close="onDialogClose">
+  <BaseModal
+    :open="open"
+    :title="(fullCode ? fullCode + ' ' : '') + (item?.title ?? t('todo.title'))"
+    width="max-w-lg"
+    title-selectable
+    @close="onDialogClose"
+  >
     <div v-if="item" class="space-y-4">
       <!-- 优先级三档（默认「常规」）。可用的人 = 发起人 / 关联人 / 群主：
            与「改状态」同一档，所以复用同一个 `canChangeStatus` 入参，不另起一套判权。
@@ -345,7 +351,7 @@ const fullCode = computed(() =>
         @update:model-value="(v: string) => emit('status', v as TodoStatus)"
       />
       <!-- 元信息：创建时间 / 创建人 / 指派 / 完成时间（用户 2026-09-17：时间要回显） -->
-      <div class="space-y-1 text-meta text-[var(--gosslan-text-2)]">
+      <div class="gosslan-selectable space-y-1 text-meta text-[var(--gosslan-text-2)]">
         <div v-if="item.createdAt">{{ t("todo.createdAt", { time: fmtConversationTime(item.createdAt, t) }) }}</div>
         <div v-if="creator">{{ t("todo.creator", { name: creator }) }}</div>
         <div v-if="assignees" :title="assignees">{{ t("todo.assigneesInline", { names: assignees }) }}</div>
@@ -359,7 +365,7 @@ const fullCode = computed(() =>
         <div class="mb-1.5 text-xs text-[var(--gosslan-text-2)]">{{ t("todo.description") }}</div>
         <p
           v-if="item.description"
-          class="whitespace-pre-wrap break-words text-meta leading-relaxed text-[var(--gosslan-text)]"
+          class="gosslan-selectable whitespace-pre-wrap break-words text-meta leading-relaxed text-[var(--gosslan-text)]"
         >
           <!-- 与聊天里的同一条 @ 走同一份渲染件（§9）：判定单源在 utils/linkify。 -->
           <MentionText
@@ -392,7 +398,7 @@ const fullCode = computed(() =>
            流水再长也交给外层那一条滚。 -->
       <div v-if="historyEntries.length" class="border-t border-[var(--gosslan-divider)] pt-3">
         <div class="mb-1.5 text-xs text-[var(--gosslan-text-2)]">{{ t("todo.history.sectionTitle") }}</div>
-        <ul class="space-y-1">
+        <ul class="gosslan-selectable space-y-1">
           <li
             v-for="(entry, i) in [...historyEntries].reverse()"
             :key="entry.msgId + ':' + i"

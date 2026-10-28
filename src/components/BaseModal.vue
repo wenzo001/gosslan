@@ -38,8 +38,17 @@ const props = withDefaults(
      * false 时保持旧行为：外层 DialogContent 兜底滚动。
      */
     contained?: boolean;
+    /**
+     * 标题是不是**用户内容**（群任务标题这类），是才允许原生选字。
+     *
+     * 默认 false 而不是全局打开：全局 `html { user-select: none }`（负责人 2026-10-26 的口径）
+     * 靠"chrome 默认不可选、内容区显式开启"成立，而这里的标题现在绝大多数是 chrome 名字
+     * （创建群聊 / 添加好友 / 转发…）。在共用组件里无条件加类 = 把全部弹窗标题一次开出去，
+     * 正好是这套口径不想要的方向。所以由调用方按标题的性质点一下。
+     */
+    titleSelectable?: boolean;
   }>(),
-  { width: "max-w-md", fullscreen: false, backLayer: true, contained: false },
+  { width: "max-w-md", fullscreen: false, backLayer: true, contained: false, titleSelectable: false },
 );
 const emit = defineEmits<{ (e: "close"): void }>();
 
@@ -172,7 +181,7 @@ function onOpenChange(value: boolean) {
               >
                 <BackArrow />
               </button>
-              <DialogTitle v-if="title" as="h2" class="min-w-0 flex-1 truncate text-title font-medium" :title="title">{{ title }}</DialogTitle>
+              <DialogTitle v-if="title" as="h2" class="min-w-0 flex-1 truncate text-title font-medium" :class="titleSelectable ? 'gosslan-selectable' : ''" :title="title">{{ title }}</DialogTitle>
               <!-- Reka 要求每份 DialogContent 都有可访问名称；整页形态允许不传 title，
                    这里补一个只给读屏的兜底，避免 aria-labelledby 指向不存在的节点。 -->
               <DialogTitle v-if="!title" class="sr-only">{{ t("common.dialog") }}</DialogTitle>
@@ -208,6 +217,7 @@ function onOpenChange(value: boolean) {
               <DialogTitle
                 as="h3"
                 class="line-clamp-2 min-w-0 flex-1 break-words text-base font-semibold leading-6"
+                :class="titleSelectable ? 'gosslan-selectable' : ''"
                 :title="title"
               >
                 {{ title }}
