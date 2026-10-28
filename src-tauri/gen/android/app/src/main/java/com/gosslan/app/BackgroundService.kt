@@ -25,9 +25,12 @@ import androidx.core.content.ContextCompat
  * `foreground` 优先级，socket 才有人守。
  *
  * ## 生命周期只有一个开关：局域网通道
- * `network::start()` 成功 ⇒ [start]；`network::stop()` ⇒ [stop]。
- * 服务不做任何"要不要跑"的自主判断，也不在用户按过「停止后台连接」后自己复活 ——
- * 引入第二个状态机就是给自己造"界面显示开着、实际没在跑"那类故障。
+ * `network::start()` 成功 ⇒ [start]；停在**两条"用户主动关通道"的出口**上
+ * （`commands::stop_network` 与 `commands::set_channel_enabled("lan", false)`）⇒ [stop]。
+ * ⚠️ 停**不**接在 `network::stop()` 里 —— 为什么，`docs/adr/0022` §2 那一行与
+ * `network/mod.rs` 的注释是同一句话的唯一出处，这条对应关系由接线守卫
+ * `background_service_wiring_follows_the_lan_channel` 钉住（这里只声明契约，不重述论证）。
+ * 服务自己不做任何"要不要跑"的判断，也不在用户按过「停止后台连接」后自己复活。
  *
  * ## 类型为什么是**两个**
  * API 34 要求声明的 `foregroundServiceType` 与**实际做的事**相符：
@@ -100,7 +103,9 @@ class BackgroundService : Service() {
                 Log.w(TAG, "startForeground 被拒（类型位=$mask）：${e.javaClass.name}: ${e.message}")
             }
         }
-        // 全部候选都被拒：服务还活着但没有前台地位 ⇒ 读数会报 running=false，界面那行能看见
+        // 全部候选都被拒：服务还活着但**没拿到前台地位**。这里刻意仍然报 running=true ——
+        // 读数要区分"没跑"与"跑了但系统没给前台"，合成一句就查不出是类型被拒。
+        // 界面那一行按 appliedTypes=0 显示成「在跑但没拿到前台地位」，故障才看得见。
         running = true
         appliedTypes = 0
     }
@@ -153,7 +158,7 @@ class BackgroundService : Service() {
     companion object {
         private const val TAG = "GosslanBG"
         private const val CHANNEL_ID = "gosslan_background"
-        private const val NOTIFICATION_ID = 4_2_1
+        private const val NOTIFICATION_ID = 421
         private const val ACTION_STOP = "com.gosslan.app.action.STOP_BACKGROUND"
 
         @Volatile

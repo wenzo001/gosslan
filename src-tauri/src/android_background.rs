@@ -8,11 +8,16 @@
 //! MainActivity.onCreate ──► BackgroundService.bootstrap(ctx) ──► nativeAttachBackground()  [本模块]
 //!                                                               └─ 缓存 JavaVM + BackgroundService 类引用
 //! network::start()（局域网起来）──► ensure_running() ──► BackgroundService.start()  [Kotlin，@JvmStatic]
-//! network::stop() （用户关通道）──► stop()             ──► BackgroundService.stop()
+//! stop_network / set_channel_enabled("lan", false)（**用户主动关通道**）──► stop() ──► BackgroundService.stop()
 //! get_runtime_diag()           ──► diag()             ──► isRunning / foregroundTypes / lastStartError
 //! ```
 //!
-//! 三个非显然点，前两条与本仓另一条桥（`android_open.rs`）同源：
+//! ⚠️ 停服务**不**接在 `network::stop()` 里：`start()` 的第一件事就是 `stop()`（换网卡/重开），
+//! 接在那里会让每次重绑都"销毁服务→重建"，而 Android 12+ 从后台重新拉起前台服务会被拒 ⇒
+//! 服务从此没了，而症状只是"锁屏后收不到消息"。这条落点差异由接线守卫
+//! `background_service_wiring_follows_the_lan_channel` 钉住（正反两格都钉）。
+//!
+//! 四个非显然点，前两条与本仓另一条桥（`android_open.rs`）同源：
 //! 1. **JavaVM / 类引用必须由 Kotlin 侧"带过来"**：JNI 的 `FindClass` 依赖调用方的类加载器，
 //!    在 tokio 工作线程上按名字找 App 的类会失败。
 //! 2. **`native_method!` 必须写 `static`**：`nativeAttachBackground()` 是**文件级（顶层）函数**
@@ -188,8 +193,19 @@ mod bridge {
         }
     }
 
-    pub fn stop() {
-        let _ = request_stop();
+    /// 用户关掉局域网通道 ⇒ 停服务（常驻通知随之消失）。
+    ///
+    /// 这条一定要留痕：`stopService` 返回 false（服务本来就没在跑）与"通道已经关了、
+    /// 服务却还活着"是两件不同的事，而后者只有对比这条日志与 [`diag`] 的 `running` 才看得出来。
+    pub fn stop(logger: &crate::logging::Logger) {
+        match request_stop() {
+            Some(true) => logger.info("background", "code=BG_SERVICE_STOPPED"),
+            Some(false) => logger.info("background", "code=BG_SERVICE_STOP_NOOP 本来就没在跑"),
+            None => logger.warn(
+                "background",
+                "code=BG_BRIDGE_NOT_READY 停服务请求没送到（MainActivity 未调用 bootstrap）",
+            ),
+        }
     }
 
     /// 诊断面板那一行：三个读数分别取，取不到的一律给"未知"（-1 / None），不许折成 0。
@@ -216,9 +232,10 @@ pub fn ensure_running(logger: &crate::logging::Logger) {
     bridge::ensure_running(logger);
 }
 
+/// 安卓：停服务并留痕（见 `bridge::stop` 那条注释）。
 #[cfg(target_os = "android")]
-pub fn stop() {
-    bridge::stop();
+pub fn stop(logger: &crate::logging::Logger) {
+    bridge::stop(logger);
 }
 
 /// 安卓：三个读数（桥没接上时 `ready=false` + 后两格"未知"）。
@@ -238,4 +255,4 @@ pub fn diag() -> Option<BackgroundDiag> {
 pub fn ensure_running(_logger: &crate::logging::Logger) {}
 
 #[cfg(not(target_os = "android"))]
-pub fn stop() {}
+pub fn stop(_logger: &crate::logging::Logger) {}

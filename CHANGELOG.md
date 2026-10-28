@@ -31,7 +31,9 @@
 - 清单加 `FOREGROUND_SERVICE` 与两个类型权限、`<service android:foregroundServiceType="remoteMessaging|connectedDevice">`；
   开机不自启（`BOOT_COMPLETED` 明确不做），R8 keep 名单同步（`scripts/android/proguard-gosslan.pro`）。
 - 诊断面板新增「后台连接服务」一行：`ready / running / types / lastError` 四个读数分开给，
-  桌面 `background=null` ⇒ 整行不出现，而不是显示一个假的"未运行"。
+  桌面 `background=null` ⇒ 整行不出现，而不是显示一个假的"未运行"。起服务与停服务两条都留
+  具名日志（`BG_SERVICE_START_REQUESTED` / `BG_SERVICE_START_REFUSED <码>` / `BG_SERVICE_STOPPED` /
+  `BG_BRIDGE_NOT_READY`）—— 停服务原先是 `let _ =`，"通道关了但服务还在"这种分叉事后无从对齐时间线。
 - 设置页局域网那一行在安卓多一句**带条件**的承诺（条件与"一条常驻通知"这条代价写在同一句里）；
   README 与 ADR-0020 那两处「当前没有前台服务」按现状改写。
 - 护栏：`android_jni_signatures_match_kotlin` 改成**按册配对**比对 —— `start`/`stop` 在
