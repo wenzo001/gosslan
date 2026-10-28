@@ -335,3 +335,123 @@ pub(crate) fn safe_transfer_id(id: &str) -> Option<String> {
     Some(id.to_string())
 }
 
+
+/// 把 `src`（收完的 `.part`）落成 `preferred`（开始接收时定的名字）的一份，返回最终路径
+/// （审计 P2 #42）。
+///
+/// 为什么不是 `unique_path` + `rename`：`exists()` 与 `rename` 之间有窗口，而 POSIX 的
+/// `rename` 在目标已存在时**静默覆盖** —— 两条同名传输同时收尾时会选中同一个候选名，
+/// 先落地的字节被后落地的顶掉（两行台账都 done、一个气泡指向已经不存在的字节）。
+///
+/// 这里用 `hard_link` 占名字：目标已存在时它**原子地失败**，没有覆盖窗口；占到了再删
+/// `.part`（同一份字节挂两个名字，删源不影响内容）。崩溃留下的是"成品 + `.part` 副本"，
+/// 由 24h `.part` 清扫收走，不会出现"名字占了但内容为空"。
+///
+/// **首选 `preferred` 本身**，被占走才按 `name` 重新取号 —— begin 时定下的
+/// `final_path` 可能已经是 `a (1).bin`，若直接从 `name` 重新 unique，第一个候选会退回
+/// `a.bin`（一个与用户已看到的名字不同的落点）。
+///
+/// 硬链接不支持的卷（部分 Android FUSE / FAT）退回旧行为（`unique_path` + `rename`）。
+pub(crate) fn place_unique(
+    src: &Path,
+    preferred: &Path,
+    name: &str,
+) -> std::io::Result<PathBuf> {
+    match std::fs::hard_link(src, preferred) {
+        Ok(()) => {
+            let _ = std::fs::remove_file(src);
+            return Ok(preferred.to_path_buf());
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {}
+        // 不是"名字被占"（目录没了 / 跨卷 / 不支持硬链接）⇒ 交给下面的兜底 rename 报同一个错。
+        Err(_) => {
+            let dest = unique_path(preferred.parent().unwrap_or_else(|| Path::new(".")), name);
+            std::fs::rename(src, &dest)?;
+            return Ok(dest);
+        }
+    }
+    let dir = preferred.parent().unwrap_or_else(|| Path::new("."));
+    for _ in 0..8 {
+        let dest = unique_path(dir, name);
+        match std::fs::hard_link(src, &dest) {
+            Ok(()) => {
+                let _ = std::fs::remove_file(src);
+                return Ok(dest);
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(_) => break,
+        }
+    }
+    let dest = unique_path(dir, name);
+    std::fs::rename(src, &dest)?;
+    Ok(dest)
+}
+
+#[cfg(test)]
+mod place_unique_tests {
+    use super::*;
+
+    fn temp_dir(tag: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "gosslan-place-{tag}-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0)
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    #[test]
+    fn place_unique_does_not_overwrite_existing_candidate() {
+        let dir = temp_dir("nooverwrite");
+        let src = dir.join("incoming.part");
+        std::fs::write(&src, b"new bytes").unwrap();
+        // 先占住 `a.bin`：它属于另一份已经落地的内容
+        std::fs::write(dir.join("a.bin"), b"old bytes").unwrap();
+
+        let placed = place_unique(&src, &dir.join("a.bin"), "a.bin").unwrap();
+
+        assert_eq!(
+            std::fs::read(dir.join("a.bin")).unwrap(),
+            b"old bytes",
+            "已存在的同名文件一个字节都不许动"
+        );
+        assert_ne!(placed, dir.join("a.bin"));
+        assert_eq!(std::fs::read(&placed).unwrap(), b"new bytes");
+        assert!(!src.exists(), "成功后源 .part 要被删掉");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn place_unique_keeps_the_begin_time_name_when_free() {
+        let dir = temp_dir("preferred");
+        let src = dir.join("x.part");
+        std::fs::write(&src, b"payload").unwrap();
+        let preferred = dir.join("report (1).bin");
+
+        let placed = place_unique(&src, &preferred, "report.bin").unwrap();
+
+        assert_eq!(
+            placed, preferred,
+            "begin 时定下的名字（可能已经带 (1)）必须原样落地，不能退回裸名"
+        );
+        assert_eq!(std::fs::read(&placed).unwrap(), b"payload");
+        assert!(!src.exists());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn place_unique_reports_missing_dir_instead_of_creating_it() {
+        let dir = temp_dir("missing");
+        let src = dir.join("y.part");
+        std::fs::write(&src, b"payload").unwrap();
+        let preferred = dir.join("no-such-subdir").join("y.bin");
+
+        assert!(place_unique(&src, &preferred, "y.bin").is_err());
+        assert!(src.exists(), "失败时 .part 要留着（调用方决定清理口径）");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+}

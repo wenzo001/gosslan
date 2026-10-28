@@ -1062,4 +1062,26 @@ CASES: list[Case] = [
         expect_fail_hint="不安全的 transfer_id 必须被拒",
         tags=["rust", "file", "path", "new-guards"],
     ),
+    Case(
+        name="落盘占名必须原子：退化成 rename 就会静默覆盖先落地的那份",
+        why="`exists()` 判一下再 `rename` 有覆盖窗口，POSIX 的 rename 会静默盖掉窗口里刚落地的\n"
+        "     同名文件（两条同名传输同时收尾 ⇒ 先落地的字节被顶掉、两行台账都写 done）。\n"
+        "     注入方式：把 `hard_link`（目标已存在时原子失败）换成 `rename`（照常编译、照常返回\n"
+        "     io::Result），「已存在的同名文件一个字节都不许动」那一格必须红。",
+        file=TAURI / "src" / "network" / "file" / "share_walk.rs",
+        injections=[(
+            "    match std::fs::hard_link(src, preferred) {",
+            "    match std::fs::rename(src, preferred) {",
+        )],
+        cmd=cargo(
+            "test",
+            "--lib",
+            "--features",
+            "bluetooth",
+            "place_unique_does_not_overwrite_existing_candidate",
+        ),
+        cwd=TAURI,
+        expect_fail_hint="已存在的同名文件一个字节都不许动",
+        tags=["rust", "file", "path", "new-guards"],
+    ),
 ]

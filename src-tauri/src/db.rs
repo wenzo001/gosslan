@@ -350,6 +350,45 @@ fn sweep_group_orphans(conn: &Connection) -> Vec<String> {
     .collect()
 }
 
+/// v7/v10 的孤儿清理是**尽力而为**（失败不拦启动），代价是 `user_version` 照常前进 ⇒
+/// 失败的那几条语句**永不重放**（审计 P2 #23）。这里落一个设置键当"欠账"：
+/// 每次启动检查并补跑，清干净了才删键。
+///
+/// 语义仍然是"不拦启动"——读键失败/补跑失败都只留通知，绝不把 `init` 变成 Err。
+const GROUP_ORPHAN_RETRY_KEY: &str = "db.migration.group_orphans_pending";
+
+fn mark_group_orphan_cleanup_pending(conn: &Connection) {
+    if let Err(e) = set_setting(conn, GROUP_ORPHAN_RETRY_KEY, "1") {
+        eprintln!("[gosslan-db] 无法记录孤儿清理欠账（下次启动不会自动重试）：{e}");
+    }
+}
+
+/// 上一轮没清干净时，启动阶段补跑一次（幂等：谓词与 v7/v10 同一份）。
+fn retry_pending_group_orphan_sweep(conn: &Connection, notices: &mut Vec<String>) {
+    if get_setting(conn, GROUP_ORPHAN_RETRY_KEY).is_none() {
+        return;
+    }
+    let failures = sweep_group_orphans(conn);
+    if failures.is_empty() {
+        if let Err(e) = conn.execute(
+            "DELETE FROM settings WHERE key = ?1",
+            params![GROUP_ORPHAN_RETRY_KEY],
+        ) {
+            notices.push(format!(
+                "code=DB_ORPHAN_CLEANUP_DONE_BUT_KEPT 孤儿清理已补跑成功，但欠账键没删掉（下次会再跑一遍）：{e}"
+            ));
+        } else {
+            notices.push("孤儿清理：上一轮未完成的存量清理已补跑成功".to_string());
+        }
+    } else {
+        notices.push(format!(
+            "code=DB_ORPHAN_CLEANUP_PENDING {} 条语句仍未成功（下一次启动再试）：{}",
+            failures.len(),
+            failures.join("；")
+        ));
+    }
+}
+
 const MIGRATIONS: &[Migration] = &[
     // v1 → v2：friends 加公钥列
     Migration {
@@ -495,8 +534,14 @@ const MIGRATIONS: &[Migration] = &[
         run: |conn| {
             // 谓词见 `sweep_group_orphans`（双锚、必须锚 group_id，理由写在那里）。
             // 与 v3-v5 同风格：尽力清理、eprintln 容错，绝不 `?` 上抛把 db::init 变成 Err
-            // 让应用起不来（清不干净下次升级还会再来一遍）。
-            for err in sweep_group_orphans(conn) {
+            // 让应用起不来。清不干净的那几条会记一笔欠账，由每次启动的补跑接着清。
+            let failures = sweep_group_orphans(conn);
+            if !failures.is_empty() {
+                // 迁移动不了这几条就记一笔欠账：`user_version` 会照常前进，这条迁移
+                // 不会再重放 —— 只能靠启动时补跑（见 `retry_pending_group_orphan_sweep`）。
+                mark_group_orphan_cleanup_pending(conn);
+            }
+            for err in failures {
                 eprintln!("[gosslan-db] v7 孤儿清理跳过一条语句（不影响启动）：{err}");
             }
             Ok(())
@@ -563,7 +608,13 @@ const MIGRATIONS: &[Migration] = &[
         to: 10,
         description: "重跑群孤儿清理（补上坏版本 v7 漏掉的存量）",
         run: |conn| {
-            for err in sweep_group_orphans(conn) {
+            let failures = sweep_group_orphans(conn);
+            if !failures.is_empty() {
+                // 迁移动不了这几条就记一笔欠账：`user_version` 会照常前进，这条迁移
+                // 不会再重放 —— 只能靠启动时补跑（见 `retry_pending_group_orphan_sweep`）。
+                mark_group_orphan_cleanup_pending(conn);
+            }
+            for err in failures {
                 eprintln!("[gosslan-db] v10 存量清理跳过一条语句（不影响启动）：{err}");
             }
             Ok(())
@@ -1244,6 +1295,8 @@ pub fn init_with_notices(path: &Path) -> std::result::Result<(Connection, Vec<St
     // **两条分支都要经过**这里：有形状是 SCHEMA 表达不了的（见 `ensure_post_schema_shape`），
     // 而 fresh 分支不重放迁移 —— 这个函数就是那笔差额，缺了它新安装会少一条热查询索引。
     ensure_post_schema_shape(&conn)?;
+    // P2 #23：上一轮迁移里没清干净的孤儿（v7/v10 是尽力而为、失败不拦启动）在这里补跑。
+    retry_pending_group_orphan_sweep(&conn, &mut startup_notices);
 
     // `messages.status` 是**迁移补的列**（v1 形状没有它）⇒ 依赖它的索引绝不能放进 SCHEMA 或
     // `ensure_post_schema_shape`：那一层在老库上跑在迁移**之前**，实测会以
