@@ -5,7 +5,7 @@
 [![GitHub release](https://img.shields.io/github/v/release/wenzo001/gosslan?sort=semver)](https://github.com/wenzo001/gosslan/releases/latest)
 [![Verify](https://img.shields.io/github/actions/workflow/status/wenzo001/gosslan/verify.yml?branch=main&label=verify)](https://github.com/wenzo001/gosslan/actions/workflows/verify.yml)
 [![Contributors](https://img.shields.io/github/contributors/wenzo001/gosslan)](https://github.com/wenzo001/gosslan/graphs/contributors)
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](#-license)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
 一个**没有中央服务器**的局域网即时通讯软件，界面高度模仿飞书 / 钉钉。
 数据**只存本机**（SQLite），节点间通过 **UDP 组播/广播发现 + TCP 点对点传输**直接通信，
@@ -498,4 +498,8 @@ cd src-tauri && cargo test --features bluetooth
 
 ## 📄 License
 
-MIT © wd.f
+MIT © wd.f —— 全文见仓库根的 [LICENSE](LICENSE)。
+
+> 这一行以前只有声明、没有文件：徽标和正文都写着 MIT，而仓库里找不到 LICENSE。
+> 2026-10-28 补上正文，署名沿用 README 既有写法（`wd.f`）。要换署名（真名 / GitHub 账号 / 年份）
+> 就改 LICENSE 第二行与本节，别只改一处 —— 那又会变成"文档说了一套、盘上是另一套"。
