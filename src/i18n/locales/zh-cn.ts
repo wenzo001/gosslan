@@ -247,7 +247,7 @@ export const zhCN: MessageDict = {
   "settings.storage.toast.dirFail": "修改存储目录失败",
   "settings.storage.toast.dirOpenFail": "打开目录失败",
   "settings.storage.toast.saved": "缓存策略已保存",
-  "settings.storage.toast.exported": "已导出 {conversations} 个会话、{messages} 条消息",
+  "settings.storage.toast.exported": "已导出 {conversations} 个会话、{messages} 条消息（明文文件，请自行保管）",
   "settings.storage.toast.exportFail": "导出失败",
   "settings.storage.toast.exportDialogFail": "无法打开保存对话框",
   "settings.storage.toast.nothing": "没有需要清理的图片或文件（当前保留时长 / 上限下无需删除）",

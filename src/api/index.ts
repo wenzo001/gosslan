@@ -8,12 +8,19 @@ import {
   chatSearchGroupSchema,
   groupFileEntrySchema,
   parseIpcList,
+  assertIpcInput,
+  ipcMessageTextSchema,
+  ipcPathSchema,
   parseIpcValue,
   shareTreeSchema,
 } from "@/utils/validation";
 import type { PreviewGallery, PreviewImage } from "@/types";
 import type { UpdaterDownloadEvent, UpdaterInfo, UpdaterStatus } from "@/types";
 import { beginOp, endOp } from "@/utils/ipcTracker";
+
+/** 路径入参统一过 `ipcPathSchema`（审计 P1 #10：入参侧此前 0 处校验）。 */
+const pathArg = (v: string, label: string): string =>
+  assertIpcInput(ipcPathSchema, v, label);
 
 /**
  * 统一 IPC 出口：记录每个命令的开始/结束，慢调用（>2 s）上报一行日志。
@@ -167,7 +174,12 @@ export const api = {
     invoke<void>("respond_friend_request", { peerId, accept }),
 
   sendMessage: (friendId: string, content: string, kind: string, localId?: string) =>
-    invoke<MessageRecord>("send_message", { friendId, content, kind, localId }),
+    invoke<MessageRecord>("send_message", {
+      friendId,
+      content: assertIpcInput(ipcMessageTextSchema, content, "send_message.content"),
+      kind,
+      localId,
+    }),
   getMessages: (convId: string, limit?: number, offset?: number) =>
     invoke<MessageRecord[]>("get_messages", { convId, limit, offset }),
   /**
@@ -245,7 +257,7 @@ export const api = {
   ) =>
     invoke<MessageRecord>("send_group_message", {
       groupId,
-      content,
+      content: assertIpcInput(ipcMessageTextSchema, content, "send_group_message.content"),
       kind,
       ...(mentions ? { mentions } : {}),
       localId,
@@ -403,18 +415,27 @@ export const api = {
   /** `msgId`：转发场景传「被转发的那条消息」，后端据此要求路径归属这条消息（SEC-01）；
    *  用户自己挑文件发送时不传。 */
   sendFileAuto: (friendId: string, path: string, msgId?: string) =>
-    invoke<string>("send_file_auto", { friendId, path, msgId }),
+    invoke<string>("send_file_auto", {
+      friendId,
+      path: pathArg(path, "send_file_auto.path"),
+      msgId,
+    }),
   sendGroupFile: (groupId: string, path: string, msgId?: string) =>
-    invoke<string>("send_group_file", { groupId, path, msgId }),
+    invoke<string>("send_group_file", {
+      groupId,
+      path: pathArg(path, "send_group_file.path"),
+      msgId,
+    }),
   saveOutgoingImage: (dataUrl: string) =>
     invoke<{ path: string; name: string; size: number }>("save_outgoing_image", { dataUrl }),
-  deleteFile: (path: string) => invoke<void>("delete_file", { path }),
+  deleteFile: (path: string) =>
+    invoke<void>("delete_file", { path: pathArg(path, "delete_file.path") }),
   /** 用系统默认应用打开本地文件：macOS 走 NSWorkspace（沙盒下 /usr/bin/open 被拦），
    *  Windows/Linux 走 opener。
    *  `owner` = 消息 id（`file-{tid}` / `gfile-{tid}`）：后端据此回绑 `file_transfers.path`，
    *  拒绝打开"不属于这条消息"的路径（SEC-01）。收藏入口传 `null`。 */
   openFileNative: (path: string, owner: string | null) =>
-    invoke<void>("open_file_native", { path, owner }),
+    invoke<void>("open_file_native", { path: pathArg(path, "open_file_native.path"), owner }),
   /** macOS 窗口圆角：WebView 加载完成后调用（setup 阶段设会被 wry 替换 contentView 丢失）。 */
   applyMacosWindowShape: (dark: boolean) =>
     invoke<void>("apply_macos_window_shape", { dark }),
@@ -450,18 +471,26 @@ export const api = {
   /** 复制文件（另存为 / 拖拽保存）。Android 的"用户取消"是 reject，不是返回 null。 */
   /** `msgId`：另存为时传这条消息的 id，后端要求源路径归属它（SEC-01）。 */
   copyFile: (source: string, destination: string, msgId?: string) =>
-    invoke<void>("copy_file", { source, destination, msgId }),
+    invoke<void>("copy_file", {
+      source: pathArg(source, "copy_file.source"),
+      destination: pathArg(destination, "copy_file.destination"),
+      msgId,
+    }),
   /** 文件本体写系统剪贴板（CF_HDROP）：可在资源管理器粘贴，也可粘回聊天框发送。 */
-  copyFileToClipboard: (path: string) => invoke<void>("copy_file_to_clipboard", { path }),
+  copyFileToClipboard: (path: string) =>
+    invoke<void>("copy_file_to_clipboard", { path: pathArg(path, "copy_file_to_clipboard.path") }),
   /** base64 写到目标路径（另存为的落地一步）。 */
   saveDataFile: (base64Data: string, destination: string) =>
-    invoke<void>("save_data_file", { base64Data, destination }),
+    invoke<void>("save_data_file", {
+      base64Data,
+      destination: pathArg(destination, "save_data_file.destination"),
+    }),
   /** 按 msg_id / cid 从后端直接另存（源文件已在后端，不走 base64 IPC）。 */
   saveMediaAs: (source: { msgId?: string; cid?: string }, destination: string) =>
     invoke<void>("save_media_as", {
       msgId: source.msgId,
       cid: source.cid,
-      destination,
+      destination: pathArg(destination, "save_media_as.destination"),
     }),
   /** 剪贴板里的文件路径（粘贴发图那条路）。 */
   readClipboardFilePaths: () => invoke<string[]>("read_clipboard_file_paths"),
@@ -555,7 +584,10 @@ export const api = {
   /** 导出全部聊天文字到指定文件。`utcOffsetMinutes` = -new Date().getTimezoneOffset()：
    *  Rust 侧不引入时区库，本地时间换算需要前端给出偏移。 */
   exportChatText: (destination: string, utcOffsetMinutes: number) =>
-    invoke<ExportSummary>("export_chat_text", { destination, utcOffsetMinutes }),
+    invoke<ExportSummary>("export_chat_text", {
+      destination: pathArg(destination, "export_chat_text.destination"),
+      utcOffsetMinutes,
+    }),
 
   getSettings: () => invoke<AppSettings>("get_settings"),
   /**

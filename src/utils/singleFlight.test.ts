@@ -100,5 +100,11 @@ test("公共层不许再手抄单飞：这六行在 src/utils 下只有一个家
   const total = [...wired.values()].reduce((a, b) => a + b, 0);
   // 2026-10-26 新增第 5 处：代码高亮（Worker 请求同键去重）。预览入口仍是 4 处，
   // 所以这里数的是「所有走 helper 的地方」，新增消费者必须同批改这个分母。
-  assert.equal(total, 5, `走 helper 的地方应有 5 处（4 预览 + 1 高亮），实测 ${total}（${[...wired]}）`);
+  // 2026-10-28 新增第 6 处：群文件投递摘要的 TTL 缓存（审计 P1 #19：滚动回收后重挂
+  // 不再重复打 `get_group_file_delivery_summary`）。
+  assert.equal(
+    total,
+    6,
+    `走 helper 的地方应有 6 处（4 预览 + 1 高亮 + 1 群投递摘要），实测 ${total}（${[...wired]}）`,
+  );
 });

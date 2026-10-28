@@ -253,7 +253,7 @@ export const enUS: MessageDict = {
   "settings.storage.toast.dirFail": "Failed to change storage folder",
   "settings.storage.toast.dirOpenFail": "Couldn't open the folder",
   "settings.storage.toast.saved": "Cache policy saved",
-  "settings.storage.toast.exported": "Exported {conversations} conversations, {messages} messages",
+  "settings.storage.toast.exported": "Exported {conversations} conversations, {messages} messages (plaintext file — keep it safe)",
   "settings.storage.toast.exportFail": "Export failed",
   "settings.storage.toast.exportDialogFail": "Couldn't open the save dialog",
   "settings.storage.toast.nothing": "Nothing to clean up (no deletion needed under the current period/limit)",

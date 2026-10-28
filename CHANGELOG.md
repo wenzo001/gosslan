@@ -13,6 +13,33 @@
 
 ## [Unreleased]
 
+## [5.14.25] - 2026-10-28
+
+### 加固：IPC 入参校验层（审计 P1 #10 第一批）
+
+- `utils/validation.ts` 新增 `ipcPathSchema` / `ipcMessageTextSchema` / `assertIpcInput`：
+  此前 `parseIpcValue` 只校验**返回值**，入参侧 0 处校验。文件路径入参先卡「非空、不含 NUL、
+  ≤4096 字符」，消息正文卡「码点数 ≤ 50 000」——`MAX_MESSAGE_CHARS` 与 Rust
+  `commands::MAX_MESSAGE_LEN` 由测试现读两边对账，改一侧而没改另一侧会红。
+- `api/index.ts` 11 个携带路径或正文的命令、共 12 处入参（`send_message` / `send_group_message` /
+  `send_file_auto` / `send_group_file` / `delete_file` / `open_file_native` / `copy_file` 两参 /
+  `copy_file_to_clipboard` / `save_data_file` / `save_media_as` / `export_chat_text`）在发出前过闸。
+- 判据两道：逐个命令名断言（摘掉任一处就红）+ 前向扫描（`invoke` 对象里再出现裸
+  `path`/`source`/`destination`/`content` 键即红，含 `{ path }` 简写）。
+
+### 可维护性：换行计数与群文件汇总缓存去重（审计 P1 #19 / P2 #36）
+
+- `utils/newlines.ts`：`countNewlines` 收敛为唯一实现，`templateBranches` / `a11yLabels` /
+  `designGuards` 三处改为复用（原先各写一遍同样的正则）。
+- `utils/groupSummaryCache.ts`：群文件投递汇总（「3/5 已收到」）加同键单飞 + 10s TTL。
+  消息列表滚动回收后重挂不再对同一 `msg_id` 重复打 IPC；键里带 `status`，状态一变就直接取新的。
+  纯核心 `groupSummaryCacheCore` 不依赖 `@/`，TTL / 单飞 / 失败不缓存三条都有用例。
+
+### 文案：导出聊天记录时提示文件是明文（审计 P2 #8 的 UI 那半）
+
+- 导出成功 toast 追加「（明文文件，请自行保管）」/「(plaintext file — keep it safe)」。
+  落盘权限那半按审计结论保持现状：目的地是用户显式选的，强制 0600 会改变语义。
+
 ## [5.14.24] - 2026-10-28
 
 ### 可维护性：两套文件名清洗函数改名消歧（审计 P2 #37）

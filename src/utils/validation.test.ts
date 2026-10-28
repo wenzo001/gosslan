@@ -10,10 +10,15 @@ import path from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 import {
+  assertIpcInput,
   charCount,
   chatSearchGroupSchema,
   groupFileEntrySchema,
   groupNameSchema,
+  ipcMessageTextSchema,
+  ipcPathSchema,
+  MAX_IPC_PATH_CHARS,
+  MAX_MESSAGE_CHARS,
   nicknameSchema,
   parseIpcList,
   parseIpcValue,
@@ -220,4 +225,88 @@ test("绑了长度上限的输入框必须给出可见读数，且读数只有 C
     ),
   );
   assert.deepEqual(handRolled, [], "计数器只许住 components/ui/CharCounter.vue");
+});
+
+// —— IPC 入参校验（审计 P1 #10）：返回值早就有 schema，入参侧此前 0 处 ——
+test("路径入参 schema：空串、NUL、超长都拒；正常路径与 Unicode 文件名叫行", () => {
+  const ok = (v: unknown) => ipcPathSchema.safeParse(v);
+  assert.equal(ok("/Users/a/b.bin").success, true);
+  assert.equal(ok("/tmp/截图 2026-10-28.png").success, true);
+  assert.equal(ok("").success, false);
+  // NUL 会被 CString/File::open 截断 ⇒ 前端先拒，别让半截路径进后端
+  assert.equal(ok("/tmp/a\u0000.bin").success, false);
+  assert.equal(ok("a".repeat(MAX_IPC_PATH_CHARS)).success, true);
+  assert.equal(ok("a".repeat(MAX_IPC_PATH_CHARS + 1)).success, false);
+  assert.equal(ok(42).success, false);
+});
+
+test("消息正文 schema：与 Rust 同尺数码点，5 万 emoji 合法、多一个就拒", () => {
+  assert.equal(ipcMessageTextSchema.safeParse("").success, true, "空正文的拒绝是发送侧的事，不归这条");
+  assert.equal(ipcMessageTextSchema.safeParse("字".repeat(MAX_MESSAGE_CHARS)).success, true);
+  assert.equal(ipcMessageTextSchema.safeParse("字".repeat(MAX_MESSAGE_CHARS + 1)).success, false);
+  assert.equal(ipcMessageTextSchema.safeParse("🐱".repeat(MAX_MESSAGE_CHARS)).success, true);
+  assert.equal(ipcMessageTextSchema.safeParse("🐱".repeat(MAX_MESSAGE_CHARS + 1)).success, false);
+});
+
+test("消息正文上限与 Rust `commands::MAX_MESSAGE_LEN` 现读对账（跨语言同一个数）", () => {
+  const rs = fs.readFileSync(
+    path.join(fileURLToPath(new URL("..", import.meta.url)), "../src-tauri/src/commands.rs"),
+    "utf8",
+  );
+  const m = /^\s*(?:pub(?:\([^)]*\))?\s+)?const\s+MAX_MESSAGE_LEN\s*:\s*usize\s*=\s*([\d_]+)\s*;/m.exec(rs);
+  assert.ok(m, "Rust 侧找不到 `const MAX_MESSAGE_LEN: usize`（改名/搬家了？这条对账要同步）");
+  assert.equal(MAX_MESSAGE_CHARS, Number(m[1].replace(/_/g, "")));
+});
+
+test("assertIpcInput：抛错带命令名与原因，不放非法值进后端", () => {
+  assert.equal(assertIpcInput(ipcPathSchema, "/tmp/a", "x.path"), "/tmp/a");
+  assert.throws(() => assertIpcInput(ipcPathSchema, "", "copy_file.source"), /copy_file\.source 参数非法/);
+  assert.throws(() => assertIpcInput(ipcPathSchema, null, "delete_file.path"), /delete_file\.path 参数非法/);
+  assert.throws(
+    () => assertIpcInput(ipcMessageTextSchema, "字".repeat(MAX_MESSAGE_CHARS + 1), "send_message.content"),
+    /send_message\.content 参数非法.*消息过长/,
+  );
+});
+
+test("接线判据：携带路径/正文的命令逐个过闸（缺一个就有一条带名字的断言红）", () => {
+  // 逐个命令名断言，而不是只断言"文件里出现过 assertIpcInput"：后者摘掉任一处仍然绿。
+  const api = fs.readFileSync(path.join(ROOT, "api/index.ts"), "utf8");
+  const labels = [
+    "send_message.content",
+    "send_group_message.content",
+    "send_file_auto.path",
+    "send_group_file.path",
+    "delete_file.path",
+    "open_file_native.path",
+    "copy_file.source",
+    "copy_file.destination",
+    "copy_file_to_clipboard.path",
+    "save_data_file.destination",
+    "save_media_as.destination",
+    "export_chat_text.destination",
+  ];
+  for (const label of labels) {
+    assert.ok(api.includes(`"${label}"`), `api/index.ts 里没有对 ${label} 的入参校验`);
+  }
+  // 前向覆盖：`invoke` 对象里出现 path/source/destination/content 这些键时，
+  // 值必须已经是 pathArg(...)/assertIpcInput(...) 的结果 —— 新加命令绕不过去。
+  // 简写（`{ path }`）也要算：它同样是把变量原样递进后端。
+  const bare: string[] = [];
+  let guarded = 0;
+  const PATHISH = "path|source|destination|content";
+  for (const [, cmd, body] of api.matchAll(/invoke<[^>]*>\(\s*"([a-z_]+)"\s*,\s*\{([\s\S]*?)\}\s*\)/g)) {
+    for (const [, key, value] of body.matchAll(
+      new RegExp(`^\\s*(${PATHISH}):\\s*([^,\\n]+)`, "gm"),
+    )) {
+      if (/^(pathArg\(|assertIpcInput\()/.test(value.trim())) guarded++;
+      else bare.push(`${cmd} -> ${key}: ${value.trim()}`);
+    }
+    for (const [, key] of body.matchAll(
+      new RegExp(`^\\s*(${PATHISH})\\s*,\\s*$`, "gm"),
+    )) {
+      bare.push(`${cmd} -> ${key}: (简写)`);
+    }
+  }
+  assert.deepEqual(bare, [], `这些入参没过闸：\n${bare.join("\n")}`);
+  assert.ok(guarded >= 12, `只扫到 ${guarded} 处过闸（分母变小 ⇒ 先确认是不是被改掉了）`);
 });

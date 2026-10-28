@@ -24,6 +24,7 @@
  * 逃生阀：文件里带 `vue-branch-chain-ok` 注释则整个文件跳过检查（给确有必要的
  * 写法留出口，避免护栏变成阻塞）。
  */
+import { countNewlines } from "./newlines.ts";
 
 /** 需要跳过的文件标记。 */
 export const BRANCH_CHECK_OPT_OUT = "vue-branch-chain-ok";
@@ -49,12 +50,6 @@ const VOID_TAGS = new Set([
 ]);
 
 const TAG_RE = /<(\/?)([A-Za-z][-\w.]*)((?:"[^"]*"|'[^']*'|[^>"'])*?)(\/?)>/gs;
-
-function countNewlines(s: string): number {
-  let n = 0;
-  for (let i = 0; i < s.length; i++) if (s.charCodeAt(i) === 10) n++;
-  return n;
-}
 
 /** 取元素上的条件指令；判定顺序必须是「长缩写优先」，否则 v-else 会抢先匹配 v-else-if。 */
 function directiveOf(attrs: string): string | null {

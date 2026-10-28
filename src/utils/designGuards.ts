@@ -43,17 +43,12 @@
  *
  * 三者都是"写对了但不起作用"，读代码几乎看不出来 —— 正是最该由机器盯住的那类。
  */
+import { countNewlines } from "./newlines.ts";
 
 export interface GuardIssue {
   /** 源文件行号（1 基）；0 表示与具体行无关（整文件级问题） */
   line: number;
   message: string;
-}
-
-function countNewlines(s: string): number {
-  let n = 0;
-  for (let i = 0; i < s.length; i++) if (s.charCodeAt(i) === 10) n++;
-  return n;
 }
 
 /** 一行里 `<template>` 之前的行数，用于把行号换算回源文件。 */
