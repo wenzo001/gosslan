@@ -400,10 +400,12 @@ export const api = {
    */
   cancelContentFetch: (cid: string) =>
     invoke<ContentCancelResult>("cancel_content_fetch", { cid }),
-  sendFileAuto: (friendId: string, path: string) =>
-    invoke<string>("send_file_auto", { friendId, path }),
-  sendGroupFile: (groupId: string, path: string) =>
-    invoke<string>("send_group_file", { groupId, path }),
+  /** `msgId`：转发场景传「被转发的那条消息」，后端据此要求路径归属这条消息（SEC-01）；
+   *  用户自己挑文件发送时不传。 */
+  sendFileAuto: (friendId: string, path: string, msgId?: string) =>
+    invoke<string>("send_file_auto", { friendId, path, msgId }),
+  sendGroupFile: (groupId: string, path: string, msgId?: string) =>
+    invoke<string>("send_group_file", { groupId, path, msgId }),
   saveOutgoingImage: (dataUrl: string) =>
     invoke<{ path: string; name: string; size: number }>("save_outgoing_image", { dataUrl }),
   deleteFile: (path: string) => invoke<void>("delete_file", { path }),
@@ -446,8 +448,9 @@ export const api = {
    * 由 `events.test.ts` 的「IPC 只能从 src/api 门面走」钉住）。
    */
   /** 复制文件（另存为 / 拖拽保存）。Android 的"用户取消"是 reject，不是返回 null。 */
-  copyFile: (source: string, destination: string) =>
-    invoke<void>("copy_file", { source, destination }),
+  /** `msgId`：另存为时传这条消息的 id，后端要求源路径归属它（SEC-01）。 */
+  copyFile: (source: string, destination: string, msgId?: string) =>
+    invoke<void>("copy_file", { source, destination, msgId }),
   /** 文件本体写系统剪贴板（CF_HDROP）：可在资源管理器粘贴，也可粘回聊天框发送。 */
   copyFileToClipboard: (path: string) => invoke<void>("copy_file_to_clipboard", { path }),
   /** base64 写到目标路径（另存为的落地一步）。 */

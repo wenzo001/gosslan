@@ -13,6 +13,36 @@
 
 ## [Unreleased]
 
+## [5.14.21] - 2026-10-28
+
+### 修复：从旧版升级且从未产生业务数据的用户**打不开应用**（P0，线上回归）
+
+- 判据回归到它自己文档写的那句话：只有**主库本轮启动前不可用**（文件不存在 / 0 字节）且
+  旁边有迁移备份时，才拒绝生成新身份。此前条件写成了"四张业务表全 0 行"——
+  而"从旧版升级 + 从没加过好友/发过消息/建过群"是**合法安装形态**，于是迁移刚成功、
+  本轮备份刚生成，下一行就被 `find_recovery_backup` 命中 ⇒ 弹窗退出；下一轮不再生成备份，
+  那份旧备份却还在 ⇒ 每轮重复拒启，只能手工删备份（而错误文案还写着"恢复前不要删除备份"）。
+- 读数只认 `db::init` **之前**的 metadata：init 之后文件必被创建并写入 schema，
+  拿那个数当判据会让这道闸变成死代码。
+- 判据随修：`recovery_gate_ignores_zero_business_rows_on_a_healthy_db` /
+  `recovery_gate_still_fires_when_main_db_is_missing_or_empty` /
+  `recovery_gate_reads_pre_init_bytes_and_not_business_row_count`
+  （主库丢失/0 字节**仍须拒启**，闸门没有被整体拆掉）。
+
+### 安全：对端可控的 `path` 不再能让本机复制/外发任意本地文件（P0）
+
+- 触发路径：好友/同群成员投一条 `kind=file` 的消息，`content.path` 指向本机任意文件
+  （如 `~/.ssh/id_rsa`）；气泡在台账还没到达时会**回退到对端写的 path**，随后用户点
+  「另存为」或「转发」，就由对端决定了本机读哪个文件、发给谁。
+- 前端：路径来源收敛到 `displayPathFor`（`utils/fileMeta.ts`）——台账优先；台账缺失时
+  **只有本机发出的消息**可用载荷 path，对端消息一律置空。
+- 后端：把 `open_file_native` 里已有的台账回绑判据抽成 `owned_payload_rejection`
+  （唯一份），`copy_file`（另存为）、`send_file_auto`（单聊转发）、`send_group_file`
+  （群转发）全部接上；转发时前端随行 `msg_id`，用户自己挑文件发送的入口不受影响。
+- 判据：`save_as_and_forward_share_the_same_ownership_gate` 按**调用点出现次数**钉
+  三条出口，另加 `displayPathFor` 的四组用例（含"台账缺失 + 对端消息 ⇒ 空串"）。
+
+
 ### 审计文档收尾：Windows 那一半已由 CI 实跑验过（2026-10-27）
 
 - `docs/notes/stability-audit-orbit-compare-2026-10-27.md` 第 12 节里"Windows 那一半

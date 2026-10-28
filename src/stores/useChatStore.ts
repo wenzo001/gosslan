@@ -2578,11 +2578,11 @@ export const useChatStore = defineStore("chat", () => {
   }
 
   /** 统一文件发送：后端自动路由（有直连走直连，无直连自动中继）。 */
-  async function sendFileTo(convId: string, path: string) {
+  async function sendFileTo(convId: string, path: string, msgId?: string) {
     if (convId.startsWith("group:")) return null;
     const name = path.split(/[\\/]/).pop() ?? t("common.file");
     try {
-      const id = await api.sendFileAuto(convId, path);
+      const id = await api.sendFileAuto(convId, path, msgId);
       void refreshTransfers();
       // 后端 send_file 会在返回前同步 emit `message-received`（携带完整的
       // name/size/subtype/path 记录），前端不再手工拼一个只有 name 的乐观气泡，
@@ -2643,9 +2643,9 @@ export const useChatStore = defineStore("chat", () => {
 
   /** 群文件发送：走群文件链路（Offer → Chunk → Done → CompleteAck）。
    *  群文件气泡/进度展示留待后续阶段，本封装只负责触发后端传输。 */
-  async function sendGroupFileTo(groupId: string, path: string) {
+  async function sendGroupFileTo(groupId: string, path: string, msgId?: string) {
     try {
-      const id = await api.sendGroupFile(groupId, path);
+      const id = await api.sendGroupFile(groupId, path, msgId);
       void refreshTransfers();
       return id;
     } catch (e) {
@@ -2660,6 +2660,7 @@ export const useChatStore = defineStore("chat", () => {
     const { path } = await api.saveOutgoingImage(dataUrl);
     try {
       if (convId.startsWith("group:")) {
+        // 本机刚生成、刚落盘的图片：没有"被转发的那条消息"，不带 msgId。
         const id = await api.sendGroupFile(convId.slice(6), path);
         void refreshTransfers();
         return id;

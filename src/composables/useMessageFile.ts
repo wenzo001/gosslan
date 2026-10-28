@@ -9,7 +9,7 @@ import { useAppStore } from "@/stores/useAppStore";
 import { useChatStore } from "@/stores/useChatStore";
 import { api } from "@/api";
 import { loadThumbPreview } from "@/utils/filePreview";
-import { parseFileMeta } from "@/utils/fileMeta";
+import { displayPathFor, parseFileMeta } from "@/utils/fileMeta";
 import { openLocalFile, saveLocalFile } from "@/utils/localFile";
 import { PREVIEW_FAILURE_KEYS, shouldProbePresence } from "@/utils/mediaAvailability";
 import { isAndroid } from "@/utils/platform";
@@ -56,11 +56,15 @@ export function useMessageFile(
     const t = transfer.value;
     return {
       name: raw.name || t?.name || $t("common.file"),
-      // 台账路径优先（SEC-01）：收到的文件真正落盘的位置只在 `file_transfers.path` 里，
-      // 消息载荷里的 `path` 是**对端**写的（发送端自己的源路径）。旧写法让它优先，
-      // 结果"另存为/复制"会去拷一个本机不存在的路径；只有台账还没到达时
-      // （乐观上屏、群文件首帧）才退回载荷做显示兜底。
-      path: t?.path || raw.path || "",
+      // 台账路径优先（SEC-01）：收到文件的真实落盘位置只在 `file_transfers.path` 里，
+      // 载荷里的 `path` 是**对端**写的。台账未到时**只有本机发出的消息**能用载荷路径
+      // （那条是本机用户在对话框里选的），对端消息一律置空 —— 否则「另存为 / 转发」
+      // 会拿对端指定的路径去读/发本机任意文件。判定唯一份在 `displayPathFor`。
+      path: displayPathFor(
+        t?.path,
+        raw.path,
+        msg.value.sender_id === app.device?.device_id,
+      ),
       size: raw.size || t?.size || 0,
       subtype: raw.subtype || (msg.value.kind === "image" ? "image" : "file"),
       sha256: raw.sha256,
@@ -299,7 +303,7 @@ export function useMessageFile(
       return;
     }
     try {
-      const r = await saveLocalFile(source, filename);
+      const r = await saveLocalFile(source, filename, msg.value.msg_id);
       if (r === "done") app.toast($t("msg.fileSaved"), "success");
     } catch (e) {
       app.toastError(e, $t("msg.saveFileFail"));

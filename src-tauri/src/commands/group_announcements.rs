@@ -186,8 +186,21 @@ pub async fn send_group_file(
     path: String,
     scope: Option<String>,
     todo_id: Option<String>,
+    msg_id: Option<String>,
 ) -> Result<String, String> {
     let s = state.inner();
+    // `msg_id` 给了 ⇒ 这是"转发一条已有群文件消息"：路径必须归那条消息（SEC-01 同一判据）。
+    // 不给 ⇒ 用户自己挑的文件（对话框授权）或待办图片（本机生成的落盘文件）。
+    if let Some(msg_id) = msg_id.as_deref() {
+        let requested = std::fs::canonicalize(&path).map_err(|e| e.to_string())?;
+        if let Some(code) = owned_payload_rejection(s, msg_id, &requested) {
+            s.logger.warn(
+                "file",
+                format!("code={code} 拒绝群转发 file={path} msg={msg_id} group={group_id}"),
+            );
+            return Err("这个文件不属于这条消息，已拒绝转发".to_string());
+        }
+    }
     // `scope == "todo"` 表示这是待办描述图片：复用群文件传输管线把字节投递给全员，
     // 但不进聊天时间线、不弹气泡（见下方气泡块的条件跳过）。缺省为普通群文件。
     let scope = scope.unwrap_or_else(|| "chat".to_string());
@@ -480,6 +493,8 @@ pub async fn send_todo_image(
         path,
         Some("todo".to_string()),
         Some(todo_id),
+        // 待办图片是本机生成的落盘文件，不是转发 —— 无消息可认领。
+        None,
     )
     .await
 }

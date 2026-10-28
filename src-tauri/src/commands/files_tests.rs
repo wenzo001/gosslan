@@ -119,4 +119,34 @@ mod files_gate_tests {
             Err("OPEN_PATH_UNBOUND")
         );
     }
+
+    /// P0 #2 回归：三条「对端可控路径」出口必须**共用同一份**判据。
+    ///
+    /// 2026-10-27 复核暴露的形状正是"判据存在、但只在一条链上"：`open_file_native` 有
+    /// 台账回绑，`copy_file`（另存为）与 `send_file_auto` / `send_group_file`（转发）
+    /// 却只有 `is_file()`。这里按**调用点**钉出现次数，钉存在性挡不住"只接上一条"。
+    #[test]
+    fn save_as_and_forward_share_the_same_ownership_gate() {
+        assert_eq!(
+            include_str!("files.rs")
+                .matches("owned_payload_rejection(s, msg_id, &requested)")
+                .count(),
+            2,
+            "files.rs：打开 + 单聊转发各一处"
+        );
+        assert_eq!(
+            include_str!("helpers.rs")
+                .matches("owned_payload_rejection(s, msg_id, &requested)")
+                .count(),
+            1,
+            "helpers.rs：另存为（copy_file）"
+        );
+        assert_eq!(
+            include_str!("group_announcements.rs")
+                .matches("owned_payload_rejection(s, msg_id, &requested)")
+                .count(),
+            1,
+            "group_announcements.rs：群转发"
+        );
+    }
 }

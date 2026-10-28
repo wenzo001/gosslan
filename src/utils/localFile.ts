@@ -50,13 +50,17 @@ export async function openLocalFile(
  * 用户取消返回 `"cancelled"`（不是错误）。
  * @throws 复制/对话框的真实错误
  */
-export async function saveLocalFile(path: string, name: string): Promise<LocalFileResult> {
+export async function saveLocalFile(
+  path: string,
+  name: string,
+  msgId?: string,
+): Promise<LocalFileResult> {
   try {
     // 桌面返回路径字符串；Android 的 SAF 返回 { file: content:// } 对象，先归一化。
     const picked: unknown = await save({ defaultPath: name });
     const destination = saveDestinationOf(picked);
     if (!destination) return "cancelled";
-    await api.copyFile(path, destination);
+    await api.copyFile(path, destination, msgId);
     return "done";
   } catch (e) {
     // Android 取消是 reject 而不是返回 null

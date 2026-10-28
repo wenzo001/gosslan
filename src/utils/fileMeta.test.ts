@@ -7,7 +7,7 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { parseFileMeta } from "./fileMeta.ts";
+import { displayPathFor, parseFileMeta } from "./fileMeta.ts";
 
 test("完整载荷：字段原样取出（含 sha256）", () => {
   assert.deepEqual(
@@ -66,4 +66,16 @@ test("图片像素尺寸：正整数才收，坏值当没有（回退 288）", (
     name: "a.png",
     h: 180,
   });
+});
+
+test("路径来源：台账优先；台账缺失时只有本机消息能用载荷 path（对端可控，SEC-01）", () => {
+  // 台账到了 ⇒ 一律用台账（收到文件的真实落盘位置只在那里）
+  assert.equal(displayPathFor("/dl/recv.pdf", "/peer/whatever.pdf", false), "/dl/recv.pdf");
+  assert.equal(displayPathFor("/dl/recv.pdf", "/mine/a.pdf", true), "/dl/recv.pdf");
+  // 台账未到 + 对端消息 ⇒ 空串（绝不回退对端写的 path）
+  assert.equal(displayPathFor(undefined, "/victim/.ssh/id_rsa", false), "");
+  assert.equal(displayPathFor("", "/victim/.ssh/id_rsa", false), "");
+  // 台账未到 + 本机消息 ⇒ 载荷路径（用户在文件对话框里选的）
+  assert.equal(displayPathFor(undefined, "/Users/me/Documents/a.pdf", true), "/Users/me/Documents/a.pdf");
+  assert.equal(displayPathFor(null, undefined, true), "");
 });

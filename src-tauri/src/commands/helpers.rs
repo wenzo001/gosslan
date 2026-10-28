@@ -3,8 +3,29 @@
 // ---------------- 辅助 ----------------
 
 /// 将文件从 source 复制到 destination（用于"另存为"下载功能）。
+///
+/// `msg_id`：这条文件消息的 id。给了就必须满足「路径归这条消息」（SEC-01 的同一份判据，
+/// 见 `commands/files.rs::owned_payload_rejection`）—— 消息内容里的 `path` 由**对端**写，
+/// 不判就会变成"对端指定、本机复制任意文件"。不给只出现在用户自己挑文件的入口
+/// （文件对话框里的选择是用户本人的授权）。
 #[tauri::command(async)]
-pub async fn copy_file(source: String, destination: String) -> Result<(), String> {
+pub async fn copy_file(
+    state: State<'_, Arc<AppState>>,
+    source: String,
+    destination: String,
+    msg_id: Option<String>,
+) -> Result<(), String> {
+    let s = state.inner();
+    if let Some(msg_id) = msg_id.as_deref() {
+        let requested = std::fs::canonicalize(&source).map_err(|e| e.to_string())?;
+        if let Some(code) = owned_payload_rejection(s, msg_id, &requested) {
+            s.logger.warn(
+                "file",
+                format!("code={code} 拒绝另存为 source={source} msg={msg_id}"),
+            );
+            return Err("这个文件不属于这条消息，已拒绝保存".to_string());
+        }
+    }
     // Android 的「另存为」对话框返回的是 content:// URI，std::fs::copy 写不了，
     // 必须经 ContentResolver（见 android_open::save_path / OpenWith.saveWith）。
     #[cfg(target_os = "android")]
