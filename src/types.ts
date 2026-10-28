@@ -564,6 +564,28 @@ export interface RuntimeDiag {
   /** 在飞的「等点击」通知线程数与上限（审计 R-08）。上限由后端给，前端不许抄常数。 */
   notifyWaiters: number;
   notifyWaitersMax: number;
+  /**
+   * 安卓后台连接的前台服务读数（ADR-0022）。
+   *
+   * `null` = **这个平台没有这个东西**（桌面），界面那一行整行不出现 ——
+   * 不许把它渲染成"没在跑"，那是两种完全不同的事实。
+   */
+  background: BackgroundDiag | null;
+}
+
+/** 与 Rust `android_background::BackgroundDiag` 逐字对应（serde camelCase）。 */
+export interface BackgroundDiag {
+  /** JNI 桥是否已就绪。false ⇒ 后面三格一律显示"未知"，不许显示成"服务没在跑"。 */
+  ready: boolean;
+  running: boolean;
+  /**
+   * 实际生效的前台服务类型位。
+   * -1 = 读不到（显示成未知）；0 = 服务活着但**没拿到前台地位**（类型被系统拒那一类）；
+   * 非 0 = 系统接受的那一档类型组合。
+   */
+  types: number;
+  /** 最近一次失败的机器码（`FG_<类型位>_*` / `START_*` / `NO_CONTEXT`）。 */
+  lastError: string | null;
 }
 
 export interface ChannelStatus {

@@ -9,6 +9,10 @@
 // 膨胀守卫放在**已经物理拆分的模块**里（commands.rs / db.rs / 子模块），
 // 那些文件已控制在 700 行以内，不会误伤。
 
+/// Android 后台连接的前台服务桥（局域网通道开着时守住 UDP/TCP/Gossip 的 socket，见 ADR-0022）。
+/// 非 Android 目标编译的是三个空实现（这样调用点一处 `#[cfg]` 都不用写），
+/// 所以这里**不加** cfg —— 与下面的 `android_open` 有意不同。
+mod android_background;
 /// Android 的「打开文件」JNI 桥（FileProvider：私有目录文件必须以 content:// 交出去）。
 #[cfg(target_os = "android")]
 mod android_open;

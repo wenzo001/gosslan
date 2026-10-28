@@ -293,6 +293,9 @@ pub async fn set_channel_enabled(
                 network::start_from_prefs(s.clone()).await?;
             } else {
                 network::stop(s).await;
+                // 用户关掉通道 ⇒ 后台连接的前台服务一起收掉（与 `stop_network` 同一条口径；
+                // 为什么不在 `network::stop` 里做，见 `network/mod.rs` 那段 ⚠️）
+                crate::android_background::stop();
             }
             let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());
             db::set_lan_enabled(&dbc, enabled).ok();
@@ -446,6 +449,13 @@ pub struct RuntimeDiag {
     /// 前端抄一份常数就等于给这条约束判了死刑（改一侧另一侧不会红）。
     pub notify_waiters: usize,
     pub notify_waiters_max: usize,
+    /// 安卓后台连接的前台服务读数（ADR-0022）。
+    ///
+    /// `None` = 这个平台**没有**这个东西（桌面），界面那一行整行不出现；
+    /// 不是"服务没在跑"。安卓上永远是 `Some`，即使桥没接上（那时三个读数是"未知"）。
+    /// 加它的原因与通知/前台服务这一族故障的性质一致：**失效全是静默的**，
+    /// 用户说"锁屏后收不到"时，界面上必须有一个能区分"没跑/跑了但没前台地位/桥没接上"的出口。
+    pub background: Option<crate::android_background::BackgroundDiag>,
 }
 
 #[tauri::command(async)]
@@ -493,6 +503,7 @@ pub async fn get_runtime_diag(state: State<'_, Arc<AppState>>) -> Result<Runtime
         db_hold_note,
         notify_waiters: crate::notifications::click_waiters_used(),
         notify_waiters_max: crate::notifications::click_waiters_max(),
+        background: crate::android_background::diag(),
     })
 }
 

@@ -74,6 +74,27 @@
 -keep class com.gosslan.app.OpenWithKt {
     native <methods>;
 }
+# 后台连接的前台服务（见 gen/android/.../BackgroundService.kt 与 docs/adr/0022）。
+# 这 5 个都是 Kotlin `companion object` 里 `@JvmStatic` 的方法 ⇒ 静态桥生成在
+# `BackgroundService` **这个类**上（Rust 侧就是按 `com/gosslan/app/BackgroundService` 调的，
+# 见 src-tauri/src/android_background.rs）。R8 在 release 下会把这些名字改掉，于是
+# `start()` 直接 NoSuchMethodError —— 症状不是崩溃而是"锁屏后悄悄收不到消息"，
+# 而这正是本 ADR 承诺要消灭的那一类静默故障。
+# `lastStartError` 的返回类型写成 `java.lang.String`：Kotlin 侧是 `String?`，
+# 但 JVM 描述符里没有可空这一档（`@JvmStatic fun lastStartError(): String?` 编译成
+# `()Ljava/lang/String;`），Rust 侧登记的必须是同一个形状。
+-keep class com.gosslan.app.BackgroundService {
+    public static boolean start();
+    public static boolean stop();
+    public static boolean isRunning();
+    public static int foregroundTypes();
+    public static java.lang.String lastStartError();
+}
+# Kotlin 调进 Rust 的那一头：JVM 按**当前方法名**拼符号
+# （`Java_com_gosslan_app_BackgroundServiceKt_nativeAttachBackground`），改名即 UnsatisfiedLinkError。
+-keep class com.gosslan.app.BackgroundServiceKt {
+    native <methods>;
+}
 # btleplug 的 Android 后端（droidplug）用**类名**找自己的 Kotlin 实现
 # （`find_class("com/nonpolynomial/btleplug/android/impl/Adapter")`）。
 # R8 在 release 下会把这些类改名/删掉 —— 实测（dexdump 反查 4.1.9 的 release APK）：

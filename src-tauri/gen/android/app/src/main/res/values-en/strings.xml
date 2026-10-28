@@ -1,0 +1,9 @@
+<resources>
+    <!-- 英文系统语言下的前台服务通知（默认那份见 ../values/strings.xml）。
+         条件口径与 ADR-0022 §5 一致：不承诺"永不掉线"，同时给出「停止」这条出口。 -->
+    <string name="bg_notif_title">"Gosslan is receiving messages in the background"</string>
+    <string name="bg_notif_text">"Works while the LAN channel is on. Tap to open Gosslan."</string>
+    <string name="bg_notif_stop">"Stop background connection"</string>
+    <string name="bg_channel_name">"Background receiving"</string>
+    <string name="bg_channel_desc">"Ongoing notification while the LAN channel is on; it disappears once you turn the channel off."</string>
+</resources>

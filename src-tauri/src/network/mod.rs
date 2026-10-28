@@ -91,10 +91,22 @@ pub async fn start(state: Arc<AppState>, bind_ip: String) -> Result<(), String> 
     // 绑在网络生命周期上会让"局域网没起来 / 用户关了局域网"变成无终态出口，
     // 且停网清理 links/peers 时把唯一的兜底一起带走。
 
+    // 安卓后台连接的前台服务（见 ADR-0022）：**通道起来了才起**，与它守的东西同生同死。
+    // 放在最后一格 ⇒ 前面任何一步失败（TCP bind 不上、discovery 起不来）都不会把一个
+    // 什么都没守住的前台服务挂上通知栏。失败只留日志与诊断读数，不影响网络启动。
+    crate::android_background::ensure_running(&state.logger);
+
     Ok(())
 }
 
 /// 停止网络：发送关闭信号，**等待后台任务真正退出**，再清理连接与在线表。
+///
+/// ⚠️ 这里**不调** `android_background::stop()`：`start()` 的第一件事就是 `stop(&state)`
+/// （重新绑定网卡），在这里停服务会让每次换网卡/重开通道都经历"销毁服务 → 重建"，
+/// 而 Android 12+ **从后台重新拉起前台服务会被拒**（`network::start_from_prefs` 的
+/// 5s→30s 自动重试正好可能在后台跑）。停服务因此接在两条**用户主动关闭**的出口上
+/// （`commands::stop_network` 与 `commands::set_channel_enabled("lan", false)`），
+/// 由护栏 `background_service_wiring_follows_the_lan_channel` 钉住这三处的对应关系。
 pub async fn stop(state: &AppState) {
     // 先进入新世代：让"握手还没完成的上一个世代的任务"在登记前就自我否决
     // （见 `AppState::network_generation` 的注释）。

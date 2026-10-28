@@ -277,6 +277,10 @@ export const enUS: MessageDict = {
   "settings.network.lan": "LAN Channel",
   "network.refreshFail": "Failed to read network interfaces",
   "settings.network.lan.desc": "Discover and connect to other devices on the same LAN",
+  // Android only (composed in NetworkSection behind isAndroid). ADR-0022: the promise is
+  // conditional, and the price (a persistent notification) has to be in the same sentence.
+  "settings.network.lan.bgNote":
+    "While it's on, a persistent notification lets messages keep arriving after the screen locks — on the condition that you stay on the same LAN and the system doesn't force-stop the app. Tap “Stop background connection” in that notification, or turn this channel off.",
   "settings.network.lan.peers": "{n} peers online",
   "settings.network.lan.off": "Off",
   "settings.network.lan.connecting": "Connecting…",
@@ -1165,6 +1169,16 @@ export const enUS: MessageDict = {
   "diag.rtLinks": "Active links",
   "diag.rtPeers": "Peers online",
   "diag.rtNotifyWaiters": "Notification click waiters (in flight / cap)",
+  // Android foreground service for background messaging (ADR-0022). Its failures are all
+  // silent, and "not running" / "alive without foreground status" / "bridge not attached"
+  // must stay three different readings — collapsing them turns a diagnosable fault into a symptom.
+  "diag.rtBackground": "Background service",
+  "diag.rtBgRunning": "Running (type bits {types})",
+  "diag.rtBgNoType": "Alive without foreground status",
+  "diag.rtBgStopped": "Not running",
+  "diag.rtBgUnknown": "Reading unknown",
+  "diag.rtBgBridgeOff": "Bridge not attached (unreadable)",
+  "diag.rtBgError": "Last failure code",
   "diag.rtWindows": "Windows (hidden / total)",
   "diag.rtHidden": "hidden {n}",
   "diag.rtNoSlowHold": "No slow lock hold this run (≥ threshold)",

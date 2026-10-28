@@ -46,6 +46,19 @@
          声明 required=false，避免 Play 商店把无蓝牙设备过滤掉。 -->
     <uses-feature android:name="android.hardware.bluetooth_le" android:required="false" />
 
+    <!-- ============ 前台服务（局域网通道开着时守住 UDP/TCP/Gossip 的 socket）============
+         承诺口径与全部取舍见 docs/adr/0022-android-background-messaging-commitment.md。
+         · `FOREGROUND_SERVICE` 是所有版本都要的安装期权限（不弹框）。
+         · 两个**类型**权限是 Android 14（API 34）新增的：类型必须与实际做的事相符，
+           缺对应权限时 `startForeground` 直接抛 SecurityException —— 而症状是"锁屏后
+           悄悄收不到消息"，所以 `BackgroundService.kt` 把失败归一成机器码交给诊断那一行。
+           remoteMessaging = 收对端消息；connectedDevice = 同一条通道上还挂着蓝牙链路（ADR-0015）。
+         · 通知权限（POST_NOTIFICATIONS）由 tauri-plugin-notification 的清单合并带进来，
+           这里不重复声明；被用户拒掉时服务仍在跑，只是常驻通知不可见（见 ADR §5.3）。 -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_REMOTE_MESSAGING" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_CONNECTED_DEVICE" />
+
     <!-- AndroidTV support -->
     <uses-feature android:name="android.software.leanback" android:required="false" />
 
@@ -73,6 +86,17 @@
                 <category android:name="android.intent.category.LEANBACK_LAUNCHER" />
             </intent-filter>
         </activity>
+
+        <!-- 后台连接的前台服务（见 BackgroundService.kt 与 docs/adr/0022）：
+             · `exported="false"` —— 只由本应用（Rust 经 JNI / 通知里的停止动作）启动，
+               外部应用不许直接把它拉起来占住后台。
+             · 双类型必须**同时声明**：Android 14 会在运行时校验"启动时给的类型"是声明过的
+               子集，只声明一个会让另一档直接抛 IllegalArgumentException。
+             · 没有 BOOT_COMPLETED 接收器：开机不自启（ADR §4 的取舍）。 -->
+        <service
+            android:name=".BackgroundService"
+            android:exported="false"
+            android:foregroundServiceType="remoteMessaging|connectedDevice" />
 
         <provider
           android:name="androidx.core.content.FileProvider"

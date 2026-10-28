@@ -52,16 +52,14 @@
             </intent-filter>
         </activity>
 
-        <!--
-          前台服务（后台保活 UDP/Gossip 监听）模板：
-          需在 src-tauri/gen/android/app/src/main/java/ 下新增一个 Kotlin 服务类
-          （继承 android.app.Service，onStartCommand 里 startForeground），
-          再由 Rust 侧或通知插件在应用进入后台时启动该服务。示例：
-
-          <service
-              android:name=".GosslanService"
-              android:exported="false"
-              android:foregroundServiceType="connectedDevice" />
-        -->
+        <!-- 前台服务（后台保活 UDP/Gossip 监听）**已实装**：
+             实现 = src-tauri/gen/android/app/src/main/java/com/gosslan/app/BackgroundService.kt，
+             启停接线 = src-tauri/src/android_background.rs（network::start / network::stop），
+             承诺口径与不做什么 = docs/adr/0022-android-background-messaging-commitment.md。
+             生命周期只跟"局域网通道开不开"这一个开关走；开机不自启。 -->
+        <service
+            android:name=".BackgroundService"
+            android:exported="false"
+            android:foregroundServiceType="remoteMessaging|connectedDevice" />
     </application>
 </manifest>

@@ -13,6 +13,37 @@
 
 ## [Unreleased]
 
+## [5.14.31] - 2026-10-28
+
+### Android：局域网通道开着时跑前台服务，「后台可收消息」第一次有实现支撑
+
+用户 2026-10-28 拍板「要承诺 ⇒ 实装前台服务」。此前 README 与 ADR-0020 写着「当前没有前台服务」，
+而设置页/README 另一处却在承诺后台能收消息 —— 两者不可能同时为真。取舍、条件与明确不做的事
+记在新 ADR：`docs/adr/0022-android-background-messaging-commitment.md`。
+
+- 新增 `BackgroundService.kt`：`START_STICKY` + 低优先级常驻通知 + 通知里的「停止后台连接」动作。
+  `startForeground` 按系统版本给候选类型位（API 34+：`remoteMessaging|connectedDevice` → `remoteMessaging`；
+  API 29–33：`connectedDevice` → 无类型），每一格被拒都归一成机器码 —— 前台服务的失效**全是静默的**。
+- 新增 Rust 侧 `android_background.rs`（本仓第三条 JNI 桥）：`network::start()` 的成功路径尾部起服务，
+  两条**用户主动关闭**的出口（`stop_network` / `set_channel_enabled("lan", false)`）停服务。
+  停服务刻意**不**接进 `network::stop()`：`start()` 第一件事就是 `stop()`（换网卡/重开通道），
+  接进去会让每次重绑都"销毁服务→重建"，而 Android 12+ 从后台重新拉起前台服务会被拒。
+- 清单加 `FOREGROUND_SERVICE` 与两个类型权限、`<service android:foregroundServiceType="remoteMessaging|connectedDevice">`；
+  开机不自启（`BOOT_COMPLETED` 明确不做），R8 keep 名单同步（`scripts/android/proguard-gosslan.pro`）。
+- 诊断面板新增「后台连接服务」一行：`ready / running / types / lastError` 四个读数分开给，
+  桌面 `background=null` ⇒ 整行不出现，而不是显示一个假的"未运行"。
+- 设置页局域网那一行在安卓多一句**带条件**的承诺（条件与"一条常驻通知"这条代价写在同一句里）；
+  README 与 ADR-0020 那两处「当前没有前台服务」按现状改写。
+- 护栏：`android_jni_signatures_match_kotlin` 改成**按册配对**比对 —— `start`/`stop` 在
+  BlePeripheral 与 BackgroundService 里同名同描述符，链在一起查会让后台服务那两格被蓝牙那册的
+  答案判过（同文另一元素命中那一族假绿）；keep 名单新增按**类块**复查；另加接线守卫
+  `background_service_wiring_follows_the_lan_channel`（起/停落点、清单三样声明、停止出口数现算）。
+  六条变异逐格证过非空转（删起服务、把停服务塞进 network::stop、描述符写错、少 `@JvmStatic`、
+  keep 块漏项、清单改单类型）。
+- ⚠️ **真机验收未做**：本机没有安卓设备。Rust 侧过 `bash scripts/check-mobile.sh --bluetooth`
+  （0 warning），Kotlin 侧过 `./gradlew :app:compileArmDebugKotlin`；运行时行为（通知是否显示、
+  类型是否被系统接受、「停止」是否生效）待真机读数。
+
 ## [5.14.30] - 2026-10-28
 
 ### 按钮统一：三个共享按钮同一套盒模型；修撤回弹窗「取消」文字不居中

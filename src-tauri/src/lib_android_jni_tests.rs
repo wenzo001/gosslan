@@ -31,8 +31,15 @@
             include_str!("../gen/android/app/src/main/java/com/gosslan/app/OpenWith.kt");
         let rust_open = include_str!("android_open.rs");
 
+        // 第三条 JNI 桥：「后台连接的前台服务」（ADR-0022）。同一个坑（描述符写错只在真机
+        // 运行期抛 NoSuchMethodError）⇒ 必须同一条护栏盯着；给新桥单独立一份检查只会漂移。
+        let kotlin_bg =
+            include_str!("../gen/android/app/src/main/java/com/gosslan/app/BackgroundService.kt");
+        let rust_bg = include_str!("android_background.rs");
+
         let kotlin_fns = parse_kotlin_funs(kotlin);
         let open_fns = parse_kotlin_funs(kotlin_open);
+        let bg_fns = parse_kotlin_funs(kotlin_bg);
         for expected in [
             "start",
             "stop",
@@ -66,6 +73,22 @@
                 "没在 {file} 里解析到 `{expected}` —— Kotlin 写法变了就要同步更新本护栏"
             );
         }
+        // 后台服务桥：Rust 调 start / stop / isRunning / foregroundTypes / lastStartError，
+        // Kotlin 调 nativeAttachBackground。这五个名字钉住的是"解析器真的吃到了这一册"——
+        // 解析器一失效，下面的逐字比对会整批空转（本仓反复踩过的假绿形状）。
+        for expected in [
+            "start",
+            "stop",
+            "isRunning",
+            "foregroundTypes",
+            "lastStartError",
+            "nativeAttachBackground",
+        ] {
+            assert!(
+                bg_fns.iter().any(|(n, _, _)| n == expected),
+                "没在 BackgroundService.kt 里解析到 `{expected}` —— Kotlin 写法变了就要同步更新本护栏"
+            );
+        }
 
         // ① Rust 登记的每个 Kotlin 方法，描述符必须与 Kotlin 源码推出的**逐字相同**
         let registered = parse_kotlin_method_registrations(rust);
@@ -82,60 +105,85 @@
              解析器失效或有人漏登记",
             open_registered.len()
         );
+        // 后台服务桥：应恰好 5 个登记（start + stop + isRunning + foregroundTypes + lastStartError）。
+        let bg_registered = parse_kotlin_method_registrations(rust_bg);
+        assert_eq!(
+            bg_registered.len(),
+            5,
+            "android_background.rs 应恰好登记 5 个 Kotlin 方法（start + stop + isRunning + foregroundTypes + lastStartError），实际 {} —— \
+             解析器失效或有人漏登记",
+            bg_registered.len()
+        );
         let mut static_checked = 0usize;
-        for (name, desc) in registered.iter().chain(open_registered.iter()) {
-            let (_, kotlin_desc, _) = kotlin_fns
-                .iter()
-                .chain(open_fns.iter())
-                .find(|(n, _, _)| n == name)
-                .unwrap_or_else(|| panic!("Rust 登记了 Kotlin 里不存在的 `{name}`"));
-            assert_eq!(
-                kotlin_desc, desc,
-                "`{name}` 的 JNI 描述符不一致：Kotlin 是 `{kotlin_desc}`，Rust 却按 `{desc}` 调用 \
-                 —— JNI 不做任何编译期检查，这只会在真机上抛 NoSuchMethodError"
-            );
-
-            // ③ Rust 用 `call_static_method` 调它 ⇒ Kotlin 侧必须有**静态桥**。
-            //    顶层函数天然是 static；`object`/`class` 的成员**必须带 `@JvmStatic`** ——
-            //    少了它真机日志是 `JNI 调用失败：Method not found: start ()Z`
-            //    （蓝牙外设整条路径失效，而 central 扫描不受影响 ⇒ 症状极其隐蔽）。
-            let (file, kt) = if kotlin_fns.iter().any(|(n, _, _)| n == name) {
-                ("BlePeripheral.kt", kotlin)
-            } else {
-                ("OpenWith.kt", kotlin_open)
-            };
-            let (idx, decl) = kt
-                .lines()
-                .enumerate()
-                .find(|(_, l)| l.contains(&format!("fun {name}(")))
-                .unwrap_or_else(|| panic!("在 {file} 里找不到 `fun {name}(` 的声明行"));
-            let indented = decl.starts_with(' ') || decl.starts_with('\t');
-            if indented {
-                let lines: Vec<&str> = kt.lines().collect();
-                let from = idx.saturating_sub(12);
-                let annotated = lines[from..idx].iter().any(|l| l.trim() == "@JvmStatic");
-                assert!(
-                    annotated,
-                    "`{name}` 是 {file} 里 object/class 的成员，而 Rust 用 call_static_method 调它 \
-                     ⇒ 必须在它上面加 `@JvmStatic`（否则没有静态桥：真机 `Method not found: {name}`）"
+        // ⚠️ **按册配对**比对，不把三条桥的方法名混进一张表再 chain 着查：
+        // `start` / `stop` 在 BlePeripheral.kt 与 BackgroundService.kt 里**都存在**，描述符也恰好
+        // 一样（都是 `()Z`）。链在一起查时后台服务那两个名字会被蓝牙那册的答案判过 ⇒
+        // 真写错的描述符照样绿（"锚点命中同文另一元素"那一族，本仓踩过多次）。
+        for (regs, fns, file, kt) in [
+            (&registered, &kotlin_fns, "BlePeripheral.kt", kotlin),
+            (&open_registered, &open_fns, "OpenWith.kt", kotlin_open),
+            (&bg_registered, &bg_fns, "BackgroundService.kt", kotlin_bg),
+        ] {
+            for (name, desc) in regs {
+                let (_, kotlin_desc, _) = fns
+                    .iter()
+                    .find(|(n, _, _)| n == name)
+                    .unwrap_or_else(|| panic!("Rust 登记了 {file} 里不存在的 `{name}`"));
+                assert_eq!(
+                    kotlin_desc, desc,
+                    "`{name}` 的 JNI 描述符不一致：Kotlin 是 `{kotlin_desc}`，Rust 却按 `{desc}` 调用 \
+                     —— JNI 不做任何编译期检查，这只会在真机上抛 NoSuchMethodError"
                 );
+
+                // ③ Rust 用 `call_static_method` 调它 ⇒ Kotlin 侧必须有**静态桥**。
+                //    顶层函数天然是 static；`object`/`class`/companion 的成员**必须带 `@JvmStatic`** ——
+                //    少了它真机日志是 `JNI 调用失败：Method not found: start ()Z`
+                //    （蓝牙外设整条路径失效，而 central 扫描不受影响 ⇒ 症状极其隐蔽）。
+                // ⚠️ 找声明行要**跳过注释行**：KDoc/注释里转述的 `` `fun lastStartError()` `` 不是声明，
+                // 命中它之后"往上 12 行找 @JvmStatic"必然找不到 ⇒ 报一条与事实相反的假红
+                // （实测就是被 BackgroundService.kt 里那句说明触发的）。口径同本册另一条守卫：
+                // 判形状之前先剥注释，否则判据咬到自己的说明文字。
+                let (idx, decl) = kt
+                    .lines()
+                    .enumerate()
+                    .filter(|(_, l)| {
+                        let t = l.trim_start();
+                        !(t.starts_with("//") || t.starts_with("/*") || t.starts_with('*'))
+                    })
+                    .find(|(_, l)| l.contains(&format!("fun {name}(")))
+                    .unwrap_or_else(|| panic!("在 {file} 里找不到 `fun {name}(` 的声明行"));
+                let indented = decl.starts_with(' ') || decl.starts_with('\t');
+                if indented {
+                    let lines: Vec<&str> = kt.lines().collect();
+                    let from = idx.saturating_sub(12);
+                    let annotated = lines[from..idx].iter().any(|l| l.trim() == "@JvmStatic");
+                    assert!(
+                        annotated,
+                        "`{name}` 是 {file} 里 object/class 的成员，而 Rust 用 call_static_method 调它 \
+                         ⇒ 必须在它上面加 `@JvmStatic`（否则没有静态桥：真机 `Method not found: {name}`）"
+                    );
+                }
+                static_checked += 1;
             }
-            static_checked += 1;
         }
         assert!(
-            static_checked >= 9,
-            "应检查 ≥9 个 Kotlin 方法（OpenWith 3 个 + BlePeripheral 6 个），实际 {static_checked} —— 护栏失效了"
+            static_checked >= 14,
+            "应检查 ≥14 个 Kotlin 方法：OpenWith 那批先钉死为 6、BlePeripheral 至少 5，\
+             再加后台服务桥的 5 个 ⇒ 14 是「三条桥都走进来了」的最小分母（实际 {static_checked}，\
+             少一个就说明某条桥的登记没被解析到）"
         );
 
         // ② Rust 导出的 native 回调（snake_case → lowerCamelCase）必须在 Kotlin 里是 external fun
         for snake in parse_extern_fn_names(rust)
             .into_iter()
             .chain(parse_extern_fn_names(rust_open))
+            .chain(parse_extern_fn_names(rust_bg))
         {
             let camel = snake_to_lower_camel(&snake);
             let found = kotlin_fns
                 .iter()
                 .chain(open_fns.iter())
+                .chain(bg_fns.iter())
                 .find(|(n, _, _)| n == &camel)
                 .unwrap_or_else(|| {
                     panic!(
@@ -216,9 +264,11 @@
         let ble_kt =
             include_str!("../gen/android/app/src/main/java/com/gosslan/app/BlePeripheral.kt");
         let open_kt = include_str!("../gen/android/app/src/main/java/com/gosslan/app/OpenWith.kt");
+        let bg_kt = include_str!("../gen/android/app/src/main/java/com/gosslan/app/BackgroundService.kt");
         let cases = [
             (include_str!("transport/ble_android.rs"), ble_kt),
             (include_str!("android_open.rs"), open_kt),
+            (include_str!("android_background.rs"), bg_kt),
         ];
         let mut checked = 0usize;
         for (rust, kotlin) in cases {
@@ -237,8 +287,8 @@
             }
         }
         assert!(
-            checked >= 5,
-            "应至少检查 5 个 native 方法（BlePeripheral 5 个 + OpenWith 1 个），实际 {checked} —— 解析器失效了"
+            checked >= 6,
+            "应至少检查 6 个 native 方法（BlePeripheral 5 个 + OpenWith 1 个 + BackgroundService 1 个），实际 {checked} —— 解析器失效了"
         );
     }
 
@@ -315,6 +365,9 @@
             .chain(parse_kotlin_method_registrations(include_str!(
                 "android_open.rs"
             )))
+            .chain(parse_kotlin_method_registrations(include_str!(
+                "android_background.rs"
+            )))
             .collect();
         assert!(
             registered.iter().any(|(n, _)| n == "openWith"),
@@ -359,6 +412,173 @@
                 line.trim()
             );
         }
+
+        // ⚠️ 上面那一圈是按**名字**在整块文本里 `find` 规则行，而 `start` / `stop` 在两个
+        // `-keep class` 块里各有一份（蓝牙外设与后台服务）—— `find` 只会命中先出现的那一块，
+        // 于是后台服务块里的这两行**根本没被检查过**（同文另一元素命中那一族假绿）。
+        // 这一圈按**类块**复查后台服务，把盲区关掉：五个名字都必须在它自己的块里、且是 static。
+        let bg_block = proguard_class_block(&source_block, "com.gosslan.app.BackgroundService")
+            .expect(
+                "keep 块里没有 `-keep class com.gosslan.app.BackgroundService` —— \
+                 R8 会改掉这些名字，release 真机上后台服务起不来（而症状只是锁屏后收不到消息）",
+            );
+        for name in [
+            "start",
+            "stop",
+            "isRunning",
+            "foregroundTypes",
+            "lastStartError",
+        ] {
+            assert!(
+                bg_block.lines().any(|l| {
+                    let l = l.trim();
+                    l.starts_with("public static") && l.ends_with(';') && l.contains(&format!(" {name}("))
+                }),
+                "BackgroundService 的 keep 块里缺 `{name}` 的 public static 规则行；块内实测：\n{}",
+                bg_block.trim()
+            );
+        }
+        // 反向那格：块里不许留已经没人调用的名字（陈旧 keep 规则会让下一个人以为还有第六个方法）
+        let bg_kept = proguard_kept_method_names(&bg_block);
+        for name in &bg_kept {
+            assert!(
+                registered.iter().any(|(n, _)| n == name),
+                "BackgroundService 块里的 `{name}` 在 Rust 侧已经没有登记了（陈旧规则），删掉它"
+            );
+        }
+        assert_eq!(
+            bg_kept.len(),
+            5,
+            "BackgroundService 块应恰好 keep 5 个方法，实际 {} —— 解析器失效或有人漏加",
+            bg_kept.len()
+        );
+    }
+
+    /// 取出 `-keep class <类名> { … }` 那一块的正文。
+    ///
+    /// 为什么需要它：`release_keeps_every_kotlin_method_called_from_rust` 原来的规则行查找是
+    /// 在**整块**文本里按名字 `find`，两个类块里有同名方法时只会命中先出现的那一块 ⇒
+    /// 后一块里的漏项/非 static 都查不出来。按类取块才是逐类可查的口径。
+    fn proguard_class_block(block: &str, class_name: &str) -> Option<String> {
+        let header = format!("-keep class {class_name} {{");
+        let start = block.find(&header)? + header.len();
+        let end = start + block[start..].find('}')?;
+        Some(block[start..end].trim().to_string())
+    }
+
+    /// **后台服务的接线必须跟着「局域网通道」这一个开关走**（ADR-0022 的决策表第 1 行）。
+    ///
+    /// 为什么钉源码形状而不是端到端：前台服务只在真机上活着，本机没有安卓设备 ——
+    /// `verify:full` 的 Android 那档只 `cargo check --target aarch64-linux-android`，
+    /// 既不装 APK 也不跑 Kotlin。而这一格真正会错的正是**接线**三件事：
+    /// ① 服务必须在通道**启动成功之后**才起（通道没起来就挂一条"正在后台接收"的常驻通知，
+    ///    等于让通知替代码说谎）；
+    /// ② 停服务**不许**放进 `network::stop()`：`start()` 的第一件事就是 `stop()`
+    ///    （换网卡 / 重开通道），放里面会让每次重绑都经历"销毁服务→重建"，而 Android 12+
+    ///    **从后台重新拉起前台服务会被拒**（`network::start_from_prefs` 的 5s→30s 自动重试
+    ///    正好可能在后台跑）⇒ 服务从此没了，而症状只是"锁屏后收不到消息"；
+    /// ③ 清单那三样声明（服务 + 双类型 + 两个类型权限）缺任何一样都是**静默**失效。
+    /// 每条都配反向那格：只钉"应该有"的判据，删掉一处就会红，加回错误的落点不会红。
+    #[test]
+    fn background_service_wiring_follows_the_lan_channel() {
+        let net = include_str!("network/mod.rs");
+        let cmds_network = include_str!("commands/network.rs");
+        let cmds_channel = include_str!("commands/channel.rs");
+        let manifest = include_str!("../gen/android/app/src/main/AndroidManifest.xml");
+        let activity =
+            include_str!("../gen/android/app/src/main/java/com/gosslan/app/MainActivity.kt");
+
+        // ① 起：必须在成功路径的尾部
+        let start_body = rust_fn_body(
+            net,
+            "pub async fn start(state: Arc<AppState>, bind_ip: String) -> Result<(), String>",
+        );
+        assert!(
+            start_body.contains("android_background::ensure_running("),
+            "network::start 里没接前台服务 ⇒ ADR-0022 的承诺没有实现支撑"
+        );
+        // 顺序判据：`bump_network_generation()` 只在 TCP+UDP 都起来之后执行（见那两行注释），
+        // 起服务排在它后面 ⇒ 失败路径不会挂上常驻通知。挪到前面就是把通知变成谎话。
+        let wired_at = start_body
+            .find("android_background::ensure_running(")
+            .expect("上一条已确认存在");
+        let bumped_at = start_body
+            .find("bump_network_generation()")
+            .expect("network::start 里找不到 bump_network_generation —— 成功路径的锚点变了，本判据要跟着改");
+        assert!(
+            wired_at > bumped_at,
+            "前台服务必须在通道**启动成功之后**才起（实测起服务的偏移 {wired_at} 早于成功锚点 {bumped_at}）"
+        );
+
+        // ② 停：两条用户出口上各一处，且 network::stop 里必须**没有**
+        let stop_body = rust_fn_body(net, "pub async fn stop(state: &AppState)");
+        assert!(
+            !stop_body.contains("android_background::stop("),
+            "停服务不许放进 network::stop()：start() 第一件事就是 stop()，\
+             放这里等于每次换网卡都把服务销毁重建 —— 而 Android 12+ 从后台重拉会被拒（见 ADR-0022 §5.2）"
+        );
+        assert!(
+            cmds_network.contains("android_background::stop("),
+            "commands::stop_network（用户点「停止网络」）必须停掉前台服务"
+        );
+        assert!(
+            cmds_channel.contains("android_background::stop("),
+            "commands::set_channel_enabled(\"lan\", false) 必须停掉前台服务"
+        );
+        // 分母现算：全仓生产码里 `android_background::stop(` 只许有 2 处（上面那两条出口）。
+        // 多出来一处 = 有人又接到一个不该停的位置；少一处 = 出口漏接，通知会常驻不退。
+        // ⚠️ 先剥整行注释再数：`network/mod.rs` 里那句"这里**不调** android_background::stop()"
+        // 是**说明**，不是出口 —— 带着注释一起数会把它数成第 3 处（口径同 lib_file_tests.rs 那批
+        // 按形状扫的守卫：先剥注释再判形状，否则判据会咬到自己的说明文字）。
+        let code_only = |src: &str| -> String {
+            src.lines()
+                .filter(|l| {
+                    let t = l.trim_start();
+                    !(t.starts_with("//") || t.starts_with("/*") || t.starts_with('*'))
+                })
+                .collect::<Vec<_>>()
+                .join("\n")
+        };
+        let stop_sites = [net, cmds_network, cmds_channel]
+            .iter()
+            .map(|src| code_only(src).matches("android_background::stop(").count())
+            .sum::<usize>();
+        assert_eq!(
+            stop_sites, 2,
+            "前台服务的停止出口应恰好 2 处（stop_network / set_channel_enabled），实测 {stop_sites} —— \
+             改了接线就得同步这里，并回写 ADR-0022 的落点小节"
+        );
+
+        // ③ 清单三样声明 + 诊断读数接线 + Kotlin 侧的 bootstrap
+        assert!(
+            manifest.contains("android:name=\".BackgroundService\""),
+            "清单里没有 <service> 声明 ⇒ 系统在 Android 14 上直接抛 MissingForegroundServiceTypeException"
+        );
+        assert!(
+            manifest.contains("android:foregroundServiceType=\"remoteMessaging|connectedDevice\""),
+            "清单里必须是**双类型**（remoteMessaging|connectedDevice）：只声明一个，\
+             另一个在启动时按位传过去会被 IllegalArgumentException 拒掉"
+        );
+        for perm in [
+            "android.permission.FOREGROUND_SERVICE\"",
+            "android.permission.FOREGROUND_SERVICE_REMOTE_MESSAGING",
+            "android.permission.FOREGROUND_SERVICE_CONNECTED_DEVICE",
+        ] {
+            assert!(
+                manifest.contains(perm),
+                "清单里缺 `{perm}` —— 缺类型权限时 startForeground 抛 SecurityException，\
+                 而症状只是锁屏后收不到消息"
+            );
+        }
+        assert!(
+            activity.contains("BackgroundService.bootstrap("),
+            "MainActivity 没调 BackgroundService.bootstrap ⇒ JavaVM/类引用交不过来，桥永远没就绪\
+             （而界面只会显示\"桥未接上\"，用户看不出为什么）"
+        );
+        assert!(
+            cmds_channel.contains("android_background::diag()"),
+            "get_runtime_diag 没带前台服务读数 ⇒ 这一族静默失效在界面上零入口（ADR-0022 §2 最后一行）"
+        );
     }
 
     /// 取出 `# GOSSLAN_JNI_BEGIN … # GOSSLAN_JNI_END` 之间的正文（不含两端的标记行）。

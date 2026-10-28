@@ -27,6 +27,10 @@ class MainActivity : TauriActivity() {
     OpenWith.bootstrap(applicationContext)
     // 局域网发现依赖组播/广播，Android 必须由应用持有组播锁才收得到（见 LanMulticast 注释）。
     LanMulticast.acquire(applicationContext)
+    // 后台连接的前台服务（见 BackgroundService.kt 与 docs/adr/0022）：这里只把
+    // applicationContext 与 JavaVM/类引用交给 Rust，**不启动服务**。
+    // 启动由 Rust 侧在局域网通道起来时调（network::start），服务生命周期与它守的通道完全重合。
+    BackgroundService.bootstrap(applicationContext)
   }
 
   /**
