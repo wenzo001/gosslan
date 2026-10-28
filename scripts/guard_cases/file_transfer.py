@@ -1046,4 +1046,20 @@ CASES: list[Case] = [
         expect_fail_hint="删掉的那台设备不许留样式",
         tags=["rust", "db", "friends", "new-guards"],
     ),
+    Case(
+        name="transfer_id 消毒不许放行路径分隔符（对端可控 ⇒ 拼 .part 路径越界）",
+        why="`retained_part_len` / 接收落盘都用 `<downloads>/<transfer_id>.part` 拼路径，"
+        "而 transfer_id 来自**对端的 Offer**。白名单 `[A-Za-z0-9_-]` 是唯一的闸；"
+        "\n     注入方式：把白名单放宽到接受 `.` 与 `/`（编译照过），"
+        "「不安全的 transfer_id 必须被拒」那一格必须红。",
+        file=TAURI / "src" / "network" / "file" / "share_walk.rs",
+        injections=[(
+            "        .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')",
+            "        .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_' || b == b'.' || b == b'/')",
+        )],
+        cmd=cargo("test", "--lib", "retained_part_path_rejects_unsafe_transfer_ids"),
+        cwd=TAURI,
+        expect_fail_hint="不安全的 transfer_id 必须被拒",
+        tags=["rust", "file", "path", "new-guards"],
+    ),
 ]
