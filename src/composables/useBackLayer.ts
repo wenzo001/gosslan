@@ -58,6 +58,9 @@ const browserPort: HistoryPort = {
       return null; // 两个都不行：不压条目，返回键行为退化为"直接退出"（不比现状差）
     }
   },
+  forget(layerId: number): void {
+    pushedHref.delete(layerId);
+  },
   back(layerId: number): boolean {
     const href = pushedHref.get(layerId);
     pushedHref.delete(layerId);

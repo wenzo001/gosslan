@@ -49,6 +49,7 @@ export const enUS: MessageDict = {
   "logs.copied": "Copied",
   "logs.clear": "Clear",
   "logs.clearConfirm": "Click again to confirm",
+  "logs.clearFail": "Failed to clear logs",
   "logs.refresh": "Refresh",
   "logs.autoRefresh": "Auto refresh",
   "logs.copyPath": "Copy log path",

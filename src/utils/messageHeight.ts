@@ -16,6 +16,24 @@ import type { FontSizeKey } from "@/utils/chatStyle";
 // 昵称行的判定与渲染端共用（提示行没有昵称行这条规则写在那个函数里）
 import { groupSide, isKnownKind, messageTopGap, shouldShowNickname } from "@/utils/messageKinds";
 import type { MessageRecord } from "@/types";
+import { createPayloadParseCache } from "./payloadParseCache.ts";
+
+/** `todo` 载荷里的 `todo_id`（审计 P2 #28）：`msg_id` 绑定 payload ⇒ 解析一次即可复用。 */
+const todoIdCache = createPayloadParseCache<string | null>();
+
+function todoIdOf(m: MessageRecord): string | null {
+  const hit = todoIdCache.get(m.msg_id, m.content);
+  if (hit !== undefined) return hit;
+  let id: string | null = null;
+  try {
+    const o = JSON.parse(m.content) as { todo_id?: unknown };
+    if (typeof o?.todo_id === "string") id = o.todo_id;
+  } catch {
+    /* 坏载荷 ⇒ 没有实时尺寸，按卡片基础高度估 */
+  }
+  todoIdCache.set(m.msg_id, m.content, id);
+  return id;
+}
 
 /**
  * 行距（2026-10-23 改成按「消息组」给，不再是一个常数）：
@@ -211,12 +229,8 @@ function liveTodoMetrics(
   ctx: EstimateContext,
 ): TodoCardLiveMetrics | undefined {
   if (!ctx.todoLive || m.kind !== "todo") return undefined;
-  try {
-    const o = JSON.parse(m.content) as { todo_id?: unknown };
-    return typeof o?.todo_id === "string" ? ctx.todoLive(o.todo_id) : undefined;
-  } catch {
-    return undefined;
-  }
+  const todoId = todoIdOf(m);
+  return todoId === null ? undefined : ctx.todoLive(todoId);
 }
 
 /** 单条消息的占位高度（气泡 + 时间/昵称/分割线，头像与气泡同行不计入）。 */

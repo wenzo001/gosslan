@@ -14,6 +14,18 @@
  * 传输层 Ack ≠ 用户确认；已读 ≠ 用户确认。状态只进不退，旧事件不覆盖新状态。
  */
 import type { MessageRecord, RemindPayload, RemindAckPayload, RemindAckStage } from "@/types";
+import { createPayloadParseCache } from "./payloadParseCache.ts";
+
+/** 原始 JSON 的缓存（见 `payloadParseCache.ts`）；派生对象每次新建。 */
+const rawCache = createPayloadParseCache<unknown>();
+
+function rawOf(rec: MessageRecord): unknown {
+  const hit = rawCache.get(rec.msg_id, rec.content);
+  if (hit !== undefined) return hit;
+  const raw: unknown = JSON.parse(rec.content);
+  rawCache.set(rec.msg_id, rec.content, raw);
+  return raw;
+}
 
 export type ReminderPhase = "failed" | "pending" | "delivered" | "reminded" | "confirmed";
 
@@ -34,7 +46,7 @@ function maxPhase(a: ReminderPhase, b: ReminderPhase): ReminderPhase {
 export function parseRemind(rec: MessageRecord): RemindPayload | null {
   if (rec.kind !== "remind") return null;
   try {
-    const p = JSON.parse(rec.content) as Partial<RemindPayload>;
+    const p = rawOf(rec) as Partial<RemindPayload>;
     const nudge = p.nudge === true;
     const target = typeof p.target === "string" ? p.target : "";
     // 独立抖动不锚定消息，允许空 target；普通强提醒仍必须指向一条真实消息。
@@ -54,7 +66,7 @@ export function parseRemind(rec: MessageRecord): RemindPayload | null {
 export function parseRemindAck(rec: MessageRecord): RemindAckPayload | null {
   if (rec.kind !== "remind_ack") return null;
   try {
-    const p = JSON.parse(rec.content) as Partial<RemindAckPayload>;
+    const p = rawOf(rec) as Partial<RemindAckPayload>;
     if (typeof p?.target !== "string" || !p.target.trim()) return null;
     if (p.stage !== "alerted" && p.stage !== "confirmed") return null;
     return { target: p.target, stage: p.stage };

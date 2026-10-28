@@ -770,6 +770,29 @@ export const useChatStore = defineStore("chat", () => {
   const pendingAcks = new Set<string>();
   const PENDING_ACKS_MAX = 512;
 
+  /**
+   * `msg_id → conv_id` 反查表（审计 P2 #30）：`msg_id` 全局唯一且消息不会换会话，
+   * 所以这张表**不需要失效**。Ack 到达时先查它，命中就只在那一个会话里找，
+   * 不再遍历所有缓存会话（批量文件回执时原来是 O(会话×消息)）。
+   *
+   * 表里查不到时退回全量扫描，并在扫描过程中顺手把见到的 id 都记进来 ——
+   * 第一条 Ack 之后的平均成本就降到 O(该会话消息数)。条目随消息量增长，与 `messages` 同阶。
+   */
+  const convIdByMsgId = new Map<string, string>();
+
+  function convIdOfMessage(msgId: string): string | null {
+    const known = convIdByMsgId.get(msgId);
+    if (known) {
+      const list = messages.value[known];
+      if (list && list.some((m) => m.msg_id === msgId)) return known;
+    }
+    for (const [convId, list] of Object.entries(messages.value)) {
+      for (const m of list) convIdByMsgId.set(m.msg_id, convId);
+      if (list.some((m) => m.msg_id === msgId)) return convId;
+    }
+    return null;
+  }
+
   function scheduleFlush() {
     if (flushScheduled) return;
     flushScheduled = true;
@@ -3040,17 +3063,16 @@ export const useChatStore = defineStore("chat", () => {
         // 对方收到（Ack）：sending → delivered（空圆框）。经 outbox 补发的重试 Ack
         // 可能晚于 peer-read 到达，只允许前进不允许把绿勾退回空圆框。
         let found = false;
-        for (const [convId, list] of Object.entries(messages.value)) {
-          const i = list.findIndex((m) => m.msg_id === msgId);
-          if (i >= 0) {
-            messages.value[convId] = [
-              ...list.slice(0, i),
-              { ...list[i], status: furthestStatus(list[i].status, "delivered") },
-              ...list.slice(i + 1),
-            ];
-            found = true;
-            break;
-          }
+        const convId = convIdOfMessage(msgId);
+        const list = convId ? messages.value[convId] : undefined;
+        const i = list ? list.findIndex((m) => m.msg_id === msgId) : -1;
+        if (convId && list && i >= 0) {
+          messages.value[convId] = [
+            ...list.slice(0, i),
+            { ...list[i], status: furthestStatus(list[i].status, "delivered") },
+            ...list.slice(i + 1),
+          ];
+          found = true;
         }
         // Ack 先于乐观→真实替换到达（store 里找不到 real msg_id）：
         // 暂存 Ack，send() 拿到真实记录后立即消费。

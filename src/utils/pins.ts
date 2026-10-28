@@ -10,12 +10,27 @@
  * 两端离线后各发一条都可能拿到同一个 seq，只看它会让不同副本算出不同结果。
  */
 import type { MessageRecord } from "@/types";
+import { createPayloadParseCache } from "./payloadParseCache.ts";
+
+/**
+ * 原始 JSON 的缓存（审计 P2 #27）：`msg_id` 绑定 payload ⇒ 解析结果是它的纯函数。
+ * 缓存的是**原始对象**、返回的仍是每次新建的派生对象 —— 调用方改不到别人的读数。
+ */
+const rawCache = createPayloadParseCache<unknown>();
+
+function rawOf(rec: MessageRecord): unknown {
+  const hit = rawCache.get(rec.msg_id, rec.content);
+  if (hit !== undefined) return hit;
+  const raw: unknown = JSON.parse(rec.content);
+  rawCache.set(rec.msg_id, rec.content, raw);
+  return raw;
+}
 
 /** 解析置顶载荷；畸形或非置顶消息返回 null（坏数据不打断渲染）。 */
 export function parsePin(rec: MessageRecord): { target: string; pinned: boolean } | null {
   if (rec.kind !== "pin") return null;
   try {
-    const p = JSON.parse(rec.content) as { target?: unknown; pinned?: unknown };
+    const p = rawOf(rec) as { target?: unknown; pinned?: unknown };
     if (typeof p?.target !== "string" || !p.target) return null;
     if (typeof p?.pinned !== "boolean") return null;
     return { target: p.target, pinned: p.pinned };

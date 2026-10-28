@@ -43,6 +43,13 @@ export interface HistoryPort {
    * 没反应、还停在通讯录」是同一处的另一面 —— 那次 `back()` 把刚推进的聊天页退掉了。
    */
   back(layerId: number): boolean;
+  /**
+   * 忘掉这一层压入时记下的 URL（层被**非栈顶**释放时调用）。
+   *
+   * 那种情况不 `back()`（不能退掉别人的条目），于是端口的 `layerId → href` 表里会留下
+   * 一条再也不会被查的记录 —— 弹窗套弹窗来回开关就慢慢涨。这里只清记忆，不碰历史。
+   */
+  forget(layerId: number): void;
 }
 
 interface Layer {
@@ -90,6 +97,9 @@ export function createBackStack(port: HistoryPort): BackStack {
             pushed--;
             ignoreNextPop = true;
           }
+        } else {
+          // 非栈顶：条目留着（后续由真返回键静默消费），但那一层的 URL 记忆没人要了。
+          port.forget(id);
         }
       };
     },

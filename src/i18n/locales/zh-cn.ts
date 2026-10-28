@@ -48,6 +48,7 @@ export const zhCN: MessageDict = {
   "logs.copied": "已复制",
   "logs.clear": "清空",
   "logs.clearConfirm": "再点一次确认清空",
+  "logs.clearFail": "清空日志失败",
   "logs.refresh": "刷新",
   "logs.autoRefresh": "自动刷新",
   "logs.copyPath": "复制日志路径",
