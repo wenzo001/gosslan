@@ -1284,12 +1284,20 @@ img {
 
 .emoji-img {
   display: inline-block;
+  /* 用户 2026-10-28：「表情在文本里渲染再大一点点」。
+     ⚠️ 尺寸**不能**写成 width/height: 1.45em —— 探针实测那样会把行盒顶高 1.4px
+     （同一条文字加三枚表情：35px → 36.39px），而估高端按行数算 ⇒ 虚拟列表里就是
+     "条目自己跳"。所以布局盒留在 1.3em（与行盒匹配），视觉尺寸用 transform 放大：
+     1.3 × 1.115 ≈ 1.45em，且 margin 让出放大那 0.15em 的横向余量，相邻表情不叠字。
+     判据读的是 getBoundingClientRect（真渲染尺寸），不是 computed width ——
+     后者看不见 transform，写在那儿量到的永远是 1.3em。 */
   width: 1.3em;
   height: 1.3em;
+  transform: scale(1.115);
+  transform-origin: center;
   object-fit: contain;
   vertical-align: -0.25em;
-  margin: 0 1px;
-  /* 防止行高被撑大：图片盒不再参与行内盒的额外高度计算 */
+  margin: 0 1.5px;
   line-height: 0;
   /* 表情是图片，浏览器默认允许"拖图" —— 在气泡里拖选文字时划过表情会改成拖图片，
     选区随之中断（用户 2026-09-13：「鼠标一划，刚选中立马就取消选中了」）。
@@ -1318,7 +1326,13 @@ img {
   border-bottom-left-radius: 0 !important;
 }
 .msg-shell[data-tail-side="right"] > [data-msg-bubble] > :first-child {
-  border-bottom-right-radius: 0 !important;
+  /* 自己这一侧**不拉平成直角**：这里没有 1px 实边框要对接（bubbleStyle / cardStyle 里
+     mine ⇒ border 透明），拉平后读起来就是"气泡角上贴了一枚方头小 tab"
+     （用户 2026-10-28 的截图与结论）。收成 tight 档，与另外三个角同一套档位；
+     尾巴的填充从边缘内侧 3.5 单位起笔、一直盖到底边 ⇒ 这段弧被盖住，不留白缝。
+     ⚠️ 对方那一侧仍保持 0：那里有实边框，尾巴描边要与竖边框、底边框首尾相接
+     （2026-10-25 两轮调出来的切线），改成圆角就会重新鼓起"小揪揪"。 */
+  border-bottom-right-radius: var(--gosslan-bubble-radius-tight, 6px) !important;
 }
 /* 图片气泡：外层裁切容器抹平后，里面的图片元素自己的下圆角还得单独抹，
    否则图片会在底栏上方留下两个圆角缺口。 */

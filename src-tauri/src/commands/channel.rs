@@ -723,6 +723,49 @@ mod cache_clean_schedule_tests {
         assert!(!clean.contains(&fav), "收藏被塞进清理目标 ⇒ 超期即删用户唯一副本");
     }
 
+    /// 接线判据：两个清理出口都必须**经过** `cleanable_dirs`，占用统计那一格故意不过。
+    ///
+    /// 为什么纯函数用例不够：上面那条只证明"这个函数会把收藏摘掉"，不证明"生产路径调了它"。
+    /// 把 `clean_files(&dirs, …)` 改回直接喂 `media_dirs(&s)`，纯函数用例照样全绿，
+    /// 而用户的收藏副本会被按保留期删掉、且不可恢复（那是他唯一的一份）。
+    #[test]
+    fn every_cleanup_path_is_wrapped_by_cleanable_dirs() {
+        let src = include_str!("channel.rs");
+        // 两道"别把自己数进去"的闸，缺一不可：
+        // ① 切到第一个 `#[cfg(test)]` 之前 —— 本判据自己的代码里就写着
+        //    `"cache_cleaner::clean_files("` 与 `"cleanable_dirs(media_dirs("` 这两个字面量，
+        //    连着测试体一起数会得出 3 / 3（实测过），于是断言"两个出口都包了"变成自证。
+        // ② 剥整行注释 —— 说明文字里也出现这些形状。
+        let code: String = src
+            .split("#[cfg(test)]")
+            .next()
+            .unwrap_or("")
+            .lines()
+            .filter(|l| {
+                let t = l.trim_start();
+                !(t.starts_with("//") || t.starts_with("/*") || t.starts_with('*'))
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        let deletes = code.matches("cache_cleaner::clean_files(").count();
+        let wrapped = code.matches("cleanable_dirs(media_dirs(").count();
+        assert_eq!(deletes, 2, "清理出口应是两条（自动清理 loop + 手动立即清理），实测 {deletes}");
+        assert_eq!(
+            wrapped, deletes,
+            "有 {deletes} 个删除出口、只有 {wrapped} 个包了 cleanable_dirs ⇒ \
+             某条路径会把收藏一起删掉（纯函数用例看不见这个，它只判函数本身）"
+        );
+        // `media_dirs(` 在本册的用量 = 1 处定义 + 2 处被包住的删除出口 + 1 处占用统计。
+        // 数字对不上就是"新增了第三个消费者"：要么它该包，要么这里是漏网。
+        let consumers = code.matches("media_dirs(").count() - 1;
+        assert_eq!(
+            consumers,
+            deletes + 1,
+            "media_dirs 的消费者应是 {expected}（两个删除出口 + 一个统计），实测 {consumers}",
+            expected = deletes + 1
+        );
+    }
+
     /// 阈值两侧：差一字节都不许 VACUUM（这条锁的代价是界面卡几秒，放宽的门槛必须钉住）。
     #[test]
     fn vacuum_only_when_the_freed_bytes_are_worth_rewriting_the_db() {
