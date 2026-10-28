@@ -29,6 +29,7 @@ import { api } from "@/api";
 import { previewFailureResult, type PreviewResult } from "@/utils/mediaAvailability";
 import { createBlobLru } from "@/utils/blobLru";
 import { createSingleFlight } from "@/utils/singleFlight";
+import { createGate } from "@/utils/concurrencyGate";
 import { bubbleImageBytes } from "@/utils/imageThumbnail";
 import { imageMime } from "@/utils/imageMime";
 
@@ -98,6 +99,13 @@ const cache = createBlobLru<PreviewResult & { bytes?: number }>({
 });
 
 const inflight = createSingleFlight<PreviewResult>();
+/**
+ * 并发闸（审计 P1 #18）：`singleFlight` 只保证"同一 msgId 不重复在飞"，**不限制同时在飞
+ * 的数量**；聊天首屏一次挂 10–30 个附件气泡 ⇒ 几十条 IPC 同时进来，每条最多 15 MiB。
+ * 收藏页早就有 3 的闸 —— 现在下沉到唯一出口，两侧共用同一份。
+ */
+export const PREVIEW_CONCURRENCY = 3;
+const previewGate = createGate(PREVIEW_CONCURRENCY);
 
 /**
  * 短暂的“负缓存”：同一张图/同一个 cid 在一次可恢复失败后，10 秒内不再打 IPC。
@@ -213,7 +221,7 @@ export function loadFilePreview(
   const max = subtype === "code" ? CODE_MAX_BYTES : IMAGE_PREVIEW_MAX_BYTES;
   return inflight.run(msgId, async (): Promise<PreviewResult> => {
     try {
-      const raw = await api.readFilePreview(msgId, max);
+      const raw = await previewGate(() => api.readFilePreview(msgId, max));
       // 后端 raw bytes 在 macOS(WKWebView) 上经 JSON 序列化回传为 number[]，
       // 其余平台是 ArrayBuffer。必须统一归一成字节再消费：
       //  - new Blob([number[]]) 会被强转成 "137,80,78,…" 字符串 → 图片损坏、无法预览；

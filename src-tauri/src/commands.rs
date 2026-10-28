@@ -23,12 +23,19 @@ const MAX_SEARCH_LEN: usize = 100;
 /// 以为整段发出去了，实际对方只收到前半段，且本机不留任何痕迹（违反
 /// AI_RULES INV-005「不允许静默丢失」）。与 `MAX_OUTGOING_IMAGE_BYTES`
 /// 「超限一律报错拒发，绝不静默截断」的既有约定一致。
-const MAX_MESSAGE_LEN: usize = 50_000;
+pub(crate) const MAX_MESSAGE_LEN: usize = 50_000;
 
 /// 校验单条消息内容长度，超限返回面向用户的明确错误（不修改内容）。
+/// 入站/出站共用的长度判定（**唯一阈值**，不要再抄 50_000）。
+///
+/// 按字符数而不是字节数：与发送侧同一口径，UTF-8 下中文 3 倍字节不会误伤。
+pub(crate) fn content_within_limit(content: &str) -> bool {
+    content.chars().count() <= MAX_MESSAGE_LEN
+}
+
 fn check_message_content(content: String) -> Result<String, String> {
     let len = content.chars().count();
-    if len > MAX_MESSAGE_LEN {
+    if !content_within_limit(&content) {
         return Err(format!(
             "消息过长（{len} 字符，上限 {MAX_MESSAGE_LEN} 字符）。请分段发送，或改用文件发送。"
         ));

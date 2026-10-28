@@ -243,3 +243,134 @@ fn fresh_database_lands_in_wal_without_a_degraded_notice() {
     drop(conn);
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+// ───────────────────────── 状态机 / 事务边界（审计 P1 #4 #5 #6）─────────────────────────
+
+/// #5：迟到写不许撤销用户的取消，也不许把已判失败的行推回 `sent`。
+#[test]
+fn late_status_writes_cannot_undo_hard_terminal_states() {
+    let conn = db();
+    for (i, terminal) in ["cancelled", "partial_cancelled", "failed"]
+        .iter()
+        .enumerate()
+    {
+        let id = format!("m-{i}");
+        insert_msg(&conn, &id, terminal);
+        let rows = set_message_status(&conn, &id, "sent").unwrap();
+        assert_eq!(rows, 0, "{terminal} 必须挡住迟到写");
+        assert_eq!(status(&conn, &id), *terminal, "{terminal} 不得被改写");
+    }
+    // 合法路径：sending 仍可推进（重发链先 requeue 到 sending）。
+    insert_msg(&conn, "m2", "sending");
+    assert_eq!(set_message_status(&conn, "m2", "sent").unwrap(), 1);
+}
+
+/// #5 的配套（群补发）：取消过的群消息被合法复活时，队列行与 messages 必须一起回到
+/// 可推进状态 —— 否则 `set_message_status("sent")` 会被新的守卫挡成 0 行。
+#[test]
+fn group_resend_flips_cancelled_message_back_to_sending_in_the_same_tx() {
+    let conn = db();
+    insert_msg(&conn, "g1", "cancelled");
+    conn.execute(
+        "INSERT INTO group_outbox(msg_id, group_id, peer_id, payload, created_at, status)
+         VALUES('g1', 'G', 'peer-b', '{}', 1, 'cancelled')",
+        [],
+    )
+    .unwrap();
+    let flipped = resend_cancelled_group_rows(&conn, "g1", 2).unwrap();
+    assert_eq!(flipped, 1);
+    assert_eq!(status(&conn, "g1"), "sending", "复活后必须可被 sent 推进");
+    let row_status: String = conn
+        .query_row(
+            "SELECT status FROM group_outbox WHERE msg_id = 'g1'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(row_status, "pending");
+    assert_eq!(set_message_status(&conn, "g1", "sent").unwrap(), 1);
+}
+
+/// #6：置 failed 与删队列行同一事务 —— 删行失败必须整体回滚，不能留下
+/// 「界面已判失败、队列行还在（还会被补发）」。
+#[test]
+fn expired_finalize_is_atomic_when_outbox_delete_fails() {
+    let conn = db();
+    insert_msg(&conn, "m1", "sending");
+    conn.execute(
+        "INSERT INTO outbox(msg_id, peer_id, payload, created_at) VALUES('m1', 'peer', '{}', 1)",
+        [],
+    )
+    .unwrap();
+    conn.execute_batch(
+        "CREATE TRIGGER block_outbox_delete BEFORE DELETE ON outbox
+         BEGIN SELECT RAISE(ABORT, 'x'); END;",
+    )
+    .unwrap();
+    assert!(
+        finalize_expired_message(&conn, "m1", false).is_err(),
+        "删行失败必须报错"
+    );
+    assert_eq!(status(&conn, "m1"), "sending", "状态必须随事务回滚");
+    assert_eq!(
+        conn.query_row("SELECT COUNT(*) FROM outbox", [], |r| r.get::<_, i64>(0))
+            .unwrap(),
+        1,
+        "队列行必须还在（下一 tick 重试）"
+    );
+
+    conn.execute_batch("DROP TRIGGER block_outbox_delete;")
+        .unwrap();
+    finalize_expired_message(&conn, "m1", false).unwrap();
+    assert_eq!(status(&conn, "m1"), "failed");
+    assert_eq!(
+        conn.query_row("SELECT COUNT(*) FROM outbox", [], |r| r.get::<_, i64>(0))
+            .unwrap(),
+        0
+    );
+}
+
+/// #4：`rename_group` 两笔写同一事务 —— 第二笔失败时群表也不许改。
+#[test]
+fn rename_group_rolls_back_when_conversation_update_fails() {
+    let conn = db();
+    conn.execute(
+        "INSERT INTO groups(id, name, creator, created_at) VALUES('g1', '旧名', 'me', 1)",
+        [],
+    )
+    .unwrap();
+    conn.execute(
+        "INSERT INTO conversations(id, kind, name, unread, updated_at) VALUES('group:g1', 'group', '旧名', 0, 1)",
+        [],
+    )
+    .unwrap();
+    conn.execute_batch(
+        "CREATE TRIGGER block_conv_rename BEFORE UPDATE ON conversations
+         BEGIN SELECT RAISE(ABORT, 'x'); END;",
+    )
+    .unwrap();
+    assert!(rename_group(&conn, "g1", "新名").is_err());
+    let name: String = conn
+        .query_row("SELECT name FROM groups WHERE id = 'g1'", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(name, "旧名", "会话行写失败时群表必须回滚");
+}
+
+/// #4：`upsert_group` 成员表半写必须整体回滚。
+#[test]
+fn upsert_group_rolls_back_when_member_insert_fails() {
+    let conn = db();
+    conn.execute_batch(
+        "CREATE TRIGGER block_member BEFORE INSERT ON group_members
+         BEGIN SELECT RAISE(ABORT, 'x'); END;",
+    )
+    .unwrap();
+    let members = vec!["me".to_string(), "peer".to_string()];
+    assert!(upsert_group(&conn, "g1", "群", "me", &members).is_err());
+    let n: i64 = conn
+        .query_row("SELECT COUNT(*) FROM groups WHERE id = 'g1'", [], |r| {
+            r.get(0)
+        })
+        .unwrap();
+    assert_eq!(n, 0, "成员写失败时群行也不许留下");
+}

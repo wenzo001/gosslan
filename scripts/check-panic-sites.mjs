@@ -126,13 +126,37 @@ function matchBrace(text, open) {
   return text.length;
 }
 
-/** 抹掉所有 `#[cfg(test)]` 标注的条目（mod / fn / impl / use…），保持长度。 */
+/**
+ * `cfg` 属性里是否含**裸标识符** `test`。
+ *
+ * ⚠️ 不能只认 `#[cfg(test)]`（审计 P1 #15）：本仓已有 `#[cfg(all(test, desktop))]`
+ * （`commands/updater.rs`），旧正则认不出它 ⇒ 那个模块里的 1 个 panic! + 2 个 unwrap
+ * 一直被算成"生产站点"，基线把它们写进期望值之后**棘轮反向失效**：再往生产段加
+ * 一处 panic! + 两处 unwrap，读数仍不超过基线 ⇒ 门禁不红。
+ * 用词边界而不是子串：`test_mode` 这类标识符不算 `test` 门。
+ */
+function cfgInnerHasTest(inner) {
+  return /(^|[^A-Za-z0-9_])test([^A-Za-z0-9_]|$)/.test(inner);
+}
+
+/** 抹掉所有 `cfg(...test...)` 标注的条目（mod / fn / impl / use…），保持长度。 */
 export function stripCfgTest(text) {
   const ranges = [];
-  const re = /#\[cfg\(test\)\]/g;
+  // 只用到 `#[cfg(` 起点，括号配对在循环内自己扫（cfg 里可以嵌套 `all(...)` / `any(...)`）。
+  const re = /#\[cfg\(/g;
   let m;
   while ((m = re.exec(text))) {
-    let i = m.index + m[0].length;
+    // 找配对的右括号，再要求紧跟 `]`（即整条是 `#[cfg(...)]`）。
+    let depth = 1;
+    let k = m.index + m[0].length;
+    for (; k < text.length && depth > 0; k++) {
+      if (text[k] === "(") depth++;
+      else if (text[k] === ")") depth--;
+    }
+    if (depth !== 0 || text[k] !== "]") continue;
+    const inner = text.slice(m.index + m[0].length, k - 1);
+    if (!cfgInnerHasTest(inner)) continue;
+    let i = k + 1;
     // 跳过紧随其后的其它属性（`#[allow(…)]` 等）
     for (;;) {
       while (i < text.length && /\s/.test(text[i])) i++;
@@ -225,6 +249,11 @@ function runSelfTest() {
     ["注释里的 panic 不计", `// panic!("x")\nfn f() {}\n`, { panic: 0, expect: 0, unwrap: 0 }],
     ["字符串里的 unwrap 不计", `fn f() { let s = "x.unwrap()"; }`, { panic: 0, expect: 0, unwrap: 0 }],
     ["expect 计入", `fn f() { let x = y.expect("x"); }`, { panic: 0, expect: 1, unwrap: 0 }],
+    // 审计 P1 #15：`all(test, desktop)` 与 `any(test, feature=…)` 都必须被剥离 ——
+    // 旧正则只认字面 `#[cfg(test)]`，这两个形状会把测试段算成生产站点。
+    ["all(test, desktop) 也要剥离", `#[cfg(all(test, desktop))]\nmod t {\n  fn x() { panic!("x"); }\n}\n`, { panic: 0, expect: 0, unwrap: 0 }],
+    ["any(test, feature) 也要剥离", `#[cfg(any(test, feature = "x"))]\nmod t {\n  fn y() { z.unwrap(); }\n}\n`, { panic: 0, expect: 0, unwrap: 0 }],
+    ["cfg(feature=test_util) 不算 test 门", `#[cfg(feature = "test_util")]\nfn f() { panic!("x"); }`, { panic: 1, expect: 0, unwrap: 0 }],
   ];
   for (const [name, src, want] of cases) {
     const got = analyze(src).counts;

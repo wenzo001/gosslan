@@ -138,6 +138,8 @@ pub async fn save_todo_image_bytes(
         std::fs::create_dir_all(&dir).map_err(|e| format!("创建目录失败：{e}"))?;
         let path = dir.join(format!("{sha256}.{ext}"));
         std::fs::write(&path, &bytes).map_err(|e| format!("写入图片失败：{e}"))?;
+        // 待办描述图片同样落在托管目录：只许属主读（审计 P1 #8）。
+        crate::private_fs::restrict_to_owner(&path);
         Ok(path.to_string_lossy().to_string())
     })
     .await

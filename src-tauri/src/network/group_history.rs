@@ -966,7 +966,9 @@ pub fn spawn_sync(state: &Arc<AppState>, group_id: &str) -> bool {
 /// 只靠入群钩子跑一次，"自动同步"就变成"看运气"；这一格把它变成"有人在线就补上"。
 /// 形态与 `commands::spawn_cache_auto_clean` 一致：`to_infinity` 的周期任务，
 /// 随进程退出自然结束，不进 `NetworkHandle::tasks`（否则重开网络会把它一起 kill 掉）。
-pub fn spawn_group_history_sweeper(state: &Arc<AppState>) {
+///
+/// 返回 `JoinHandle`：由 `worker_supervisor::RESIDENT_WORKERS` 登记并判活（审计 P1 #12）。
+pub fn spawn_group_history_sweeper(state: &Arc<AppState>) -> tauri::async_runtime::JoinHandle<()> {
     let st = state.clone();
     tauri::async_runtime::spawn(async move {
         loop {
@@ -1008,7 +1010,7 @@ pub fn spawn_group_history_sweeper(state: &Arc<AppState>) {
                 ),
             }
         }
-    });
+    })
 }
 
 /// 记下"这一群欠一份历史"的**唯一**出口。
@@ -1847,12 +1849,20 @@ mod group_history_engine_tests {
     /// 所以钉三件事：只接一次、不在本册里自己喊自己（那是第二个家）、不许手抄那个 settings 键。
     #[test]
     fn the_group_history_sweeper_is_wired_exactly_once_at_startup() {
+        // 审计 P1 #12：接线换了家 —— 清扫器登记进 `worker_supervisor::RESIDENT_WORKERS`
+        // （有判活/重启），lib.rs 里不许再直接拉（两处都留 = 两个循环）。
         let lib = code_flat(include_str!("../lib.rs"));
         assert_eq!(
-            lib.matches("spawn_group_history_sweeper(&state)").count(),
+            lib.matches("spawn_group_history_sweeper").count(),
+            0,
+            "lib.rs 里又出现了直接引用：它只能由 RESIDENT_WORKERS 统一拉起"
+        );
+        let sup = code_flat(include_str!("../worker_supervisor.rs"));
+        assert_eq!(
+            sup.matches("crate::network::group_history::spawn_group_history_sweeper")
+                .count(),
             1,
-            "清扫任务在 lib.rs 里现数到 {} 个调用点（登记 1 处）：0 = 没人接（永远不扫），2 = 两把周期任务",
-            lib.matches("spawn_group_history_sweeper(&state)").count()
+            "监督名单里必须恰好登记一次（0 = 永远不扫；2 = 两把周期任务）"
         );
         // 本册里只许有**定义**那一处，不许有调用（否则一个进程里排两个循环）
         assert_eq!(

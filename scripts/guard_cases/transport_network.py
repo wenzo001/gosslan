@@ -593,13 +593,21 @@ CASES: list[Case] = [
         "     注入方式：把单聊那处的门控 `if finalized {` 改成 `if true {`（emit 变回无条件，仍可编译），\n"
         "     守卫必须红 —— 它数 `if finalized {` 的处数，少一处即判 emit 脱离了写库门控。",
         file=TAURI / "src" / "network" / "transport.rs",
+        # ⚠️ 2026-10-28：`finalize_expired_message` 的两步写已收进 `db::` 同一事务，
+        # 调用点后面多了一段失败留痕 ⇒ 旧锚点（紧接 `};` 的 `if finalized {`）已失配。
+        # 改为锚 **emit 门控本身** + 紧随其后的唯一上下文（`OUTBOX_EXPIRED kind=single`），
+        # 这样以后再在调用点附近加日志也不会把锚点碰掉。
         injections=[(
-            "                    finalize_expired_message(&dbc, &msg_id, false)\n"
-            "                };\n"
-            "                if finalized {",
-            "                    finalize_expired_message(&dbc, &msg_id, false)\n"
-            "                };\n"
-            "                if true {",
+            "                if finalized {\n"
+            "                    state.logger.warn(\n"
+            "                        \"outbox\",\n"
+            "                        format!(\n"
+            "                            \"code=OUTBOX_EXPIRED kind=single",
+            "                if true {\n"
+            "                    state.logger.warn(\n"
+            "                        \"outbox\",\n"
+            "                        format!(\n"
+            "                            \"code=OUTBOX_EXPIRED kind=single",
         )],
         cmd=cargo("test", "--lib", "outbox_sweeper_emits_only_after_db_write_succeeds"),
         cwd=TAURI,

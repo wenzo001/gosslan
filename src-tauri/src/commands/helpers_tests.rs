@@ -118,3 +118,18 @@ mod helpers_gate_tests {
         }
     }
 }
+
+/// 审计 P1 #10：`save_data_file` 的字节通道必须有上限（前端解多大就写多大 = OOM 面）。
+#[test]
+fn save_data_file_rejects_oversized_payload_after_decode() {
+    use base64::Engine as _;
+    // 上限 +1 字节（解码后），用真 base64 编码。
+    let too_big = vec![0u8; crate::commands::MAX_OUTGOING_IMAGE_BYTES as usize + 1];
+    let b64 = base64::engine::general_purpose::STANDARD.encode(&too_big);
+    let dest = std::env::temp_dir().join("gosslan-save-data-file-oversize.bin");
+    let err = crate::commands::save_data_file_blocking(b64, dest.to_string_lossy().to_string())
+        .expect_err("超过上限必须拒绝");
+    assert!(err.contains("图片过大"), "错误必须说明原因：{err}");
+    assert!(!dest.exists(), "拒绝时不许留下半截文件");
+    let _ = std::fs::remove_file(&dest);
+}

@@ -14,17 +14,10 @@ pub const OUTBOX_SWEEPER_INTERVAL_MS: u64 = 30_000;
 /// 又把它发出去 = 重复投递（"我以为失败了的消息又发出去了"）。返回 `false` 时调用方**保留行、
 /// 不 emit、留一条 warn**，下一 tick 重试。`group` 决定删哪张 outbox 表（单聊 / 群是两张表）。
 fn finalize_expired_message(dbc: &rusqlite::Connection, msg_id: &str, group: bool) -> bool {
-    // 顺序是语义：状态写失败时**不许**删行。旧写法两条写都执行再取 &&，
-    // 一旦状态写失败、删行成功，就留下「行没了、状态还是 sending」的孤儿 ——
-    // 清扫器与补发都再也看不见它（2026-10-20 永久发送中 P0 的第二个入口）。
-    if db::set_message_status(dbc, msg_id, "failed").is_err() {
-        return false;
-    }
-    if group {
-        db::delete_group_outbox_by_msg_id(dbc, msg_id).is_ok()
-    } else {
-        db::delete_outbox_by_msg_id(dbc, msg_id).is_ok()
-    }
+    // 两步写由 `db::finalize_expired_message` 收进**同一事务**（顺序仍是语义：
+    // 状态写失败就不删行，否则行没了、状态还是 sending，两个清扫器都看不见）。
+    // 失败只返回 false，由调用方保留队列行并在日志里留 code=OUTBOX_FINALIZE_FAILED。
+    db::finalize_expired_message(dbc, msg_id, group).is_ok()
 }
 
 /// 把一条过期的**文件** outbox 落终态（审计 A3 同型）：两个消息前缀（`file-` / `gfile-`）
@@ -187,6 +180,13 @@ pub fn spawn_outbox_sweeper(state: &Arc<AppState>) -> tauri::async_runtime::Join
                     let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
                     finalize_expired_message(&dbc, &msg_id, false)
                 };
+                if !finalized {
+                    // 队列行会保留、下一 tick 重试；失败必须留痕（带码可检索）。
+                    state.logger.warn(
+                        "outbox",
+                        format!("code=OUTBOX_FINALIZE_FAILED kind=single msg_id={msg_id}"),
+                    );
+                }
                 if finalized {
                     state.logger.warn(
                         "outbox",
@@ -341,6 +341,12 @@ pub fn spawn_outbox_sweeper(state: &Arc<AppState>) -> tauri::async_runtime::Join
                     let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
                     finalize_expired_message(&dbc, &msg_id, true)
                 };
+                if !finalized {
+                    state.logger.warn(
+                        "outbox",
+                        format!("code=OUTBOX_FINALIZE_FAILED kind=group msg_id={msg_id}"),
+                    );
+                }
                 if finalized {
                     state.logger.warn(
                         "outbox",

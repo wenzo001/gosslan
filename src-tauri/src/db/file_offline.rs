@@ -119,11 +119,15 @@ pub fn list_expired_file_outbox(
 ) -> Result<Vec<ExpiredFileRow>> {
     // (transfer_id, peer_id, group_id, created_at)：sweeper 按接收方可达性分类，
     // 离线接收方的文件保留到统一离线窗口（与单聊/群 outbox 同一判据）。
+    // 上界 + 稳定排序（审计 P1 #3，与 `list_expired_outbox` 同理由）：候选集是全库的，
+    // 这条读在唯一那把 DB 锁里跑；`file_outbox.transfer_id` 是 UNIQUE ⇒ 一行即一单，
+    // 按行截断不会切开任何"需要一起裁决"的组。
     let mut stmt = conn.prepare(
         "SELECT transfer_id, peer_id, group_id, created_at FROM file_outbox
-         WHERE status IN ('pending', 'sending') AND created_at < ?1",
+         WHERE status IN ('pending', 'sending') AND created_at < ?1
+         ORDER BY created_at, transfer_id LIMIT ?2",
     )?;
-    let rows = stmt.query_map(params![deadline_ms], |r| {
+    let rows = stmt.query_map(params![deadline_ms, OUTBOX_SWEEP_BATCH], |r| {
         Ok((
             r.get::<_, String>(0)?,
             r.get::<_, String>(1)?,

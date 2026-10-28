@@ -575,33 +575,12 @@ fn move_received_file(state: &AppState, name: &str, part: &Path) -> Result<PathB
         .clone();
     std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
     let safe_name = file::safe_file_name(name).ok_or("文件名非法")?;
-    let base = dir.join(safe_name);
-    if !base.exists() {
-        std::fs::rename(part, &base)
-            .or_else(|_| std::fs::copy(part, &base).and_then(|_| std::fs::remove_file(part)))
-            .map_err(|e| e.to_string())?;
-        return Ok(base);
-    }
-    let stem = base
-        .file_stem()
-        .map(|s| s.to_string_lossy().to_string())
-        .unwrap_or_default();
-    let ext = base
-        .extension()
-        .map(|s| s.to_string_lossy().to_string())
-        .unwrap_or_default();
-    for i in 1..1000 {
-        let cand = if ext.is_empty() {
-            dir.join(format!("{stem} ({i})"))
-        } else {
-            dir.join(format!("{stem} ({i}).{ext}"))
-        };
-        if !cand.exists() {
-            std::fs::rename(part, &cand)
-                .or_else(|_| std::fs::copy(part, &cand).and_then(|_| std::fs::remove_file(part)))
-                .map_err(|e| e.to_string())?;
-            return Ok(cand);
-        }
-    }
-    Err("下载目录重名文件过多".to_string())
+    // 去重口径只有一份：`file::unique_path`（含 32 次随机后缀 + 完整随机串兜底）。
+    // 这里原先手写了一份 1..1000 的循环，到 999 就报「下载目录重名文件过多」，
+    // 与单聊路径行为不同且必然继续漂移（审计 P1 #14）。
+    let dest = file::unique_path(&dir, &safe_name);
+    std::fs::rename(part, &dest)
+        .or_else(|_| std::fs::copy(part, &dest).and_then(|_| std::fs::remove_file(part)))
+        .map_err(|e| e.to_string())?;
+    Ok(dest)
 }

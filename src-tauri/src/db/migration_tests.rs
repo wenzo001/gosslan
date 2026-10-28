@@ -872,9 +872,13 @@ fn hot_tables_carry_exactly_the_intended_indexes() {
         ("content_transfers", 2),
         ("file_outbox", 2),
         ("outbox", 2),
-        // `messages` 的四条：conv_seq / conv_kind / conv（历史）+ local_id 唯一索引
-        // （DB v13→v14：列表 key 的持久本地身份；重复 key 会让两行互相覆盖测量/DOM）。
-        ("messages", 4),
+        // `messages` 的五条：conv_seq / conv_kind / conv（历史）+ local_id 唯一索引
+        // （DB v13→v14：列表 key 的持久本地身份；重复 key 会让两行互相覆盖测量/DOM）
+        // + `idx_messages_sending(ts) WHERE status='sending'`（2026-10-28 审计 P2 #21）。
+        // 第五条的写放大回答：**部分索引**只收 sending 那一小撮（正常态个位数到几十行），
+        // 终态行根本不进这棵 B 树 ⇒ 与"同时在途条数"成正比、不随历史增长；
+        // 换来 `runtime_counts` 从"持锁全表扫 10 万行"变成索引范围扫。
+        ("messages", 5),
         // `group_outbox` 的四个：`peer_id` / `group_id` / `created_at` 三条老索引 +
         // `idx_group_outbox_pending(created_at) WHERE status='pending'`（2026-10-25 台账索引）。
         // 后者是**部分索引**：墓碑（delivered/cancelled/failed）根本不进这棵 B 树 ⇒

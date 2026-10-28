@@ -686,14 +686,46 @@ pub fn get_favorite_source(
 /// "查无此处/已被硬终态挡住"。旧签名只给 `Result<()>`，无匹配行也是 `Ok`，
 /// 于是取消路径会把"没有气泡可写"误读成"写成功了"，进而在 `upsert_transfer` 里
 /// 凭空插出一条幽灵台账行。
+///
+/// ⚠️ `cancelled` / `partial_cancelled` / `failed` 也是**不可被迟到写撤销**的终态：
+/// 发送路径在 `has_link` 与 `try_send` 之间可插入取消命令，取消先落地（状态 + 队列行同事务）
+/// 之后，那一臂的 `set_message_status("sent")` 若不排掉 `cancelled`，就会把「用户已取消」
+/// 静默改回「已发送」——而队列行已被取消路径删掉，消息**永远不会再发**（outbox_flush 只扫
+/// 队列表），界面却显示已发出。`failed` 同理：它已由清扫器收口，迟到写不许把它推回 `sent`。
+/// 重发链走 `requeue_message_for_resend`（同一事务把状态推到 `sending`）⇒ 不受这条影响。
 pub fn set_message_status(conn: &Connection, msg_id: &str, status: &str) -> Result<usize> {
     let rows = conn.execute(
         "UPDATE messages SET status = ?2
          WHERE msg_id = ?1
-           AND status NOT IN ('read', 'delivered', 'recalled')",
+           AND status NOT IN ('read', 'delivered', 'recalled',
+                              'cancelled', 'partial_cancelled', 'failed')",
         params![msg_id, status],
     )?;
     Ok(rows)
+}
+
+/// 过期消息 outbox 落终态：置 `failed` + 删队列行，**同一事务**。
+///
+/// 为什么必须原子（审计 P1 #6）：两步分开写时，"状态写成 failed、删行失败"会留下
+/// 「界面已判失败、队列行还在」—— 而 `outbox_flush` 只看队列表、不看 messages.status ⇒
+/// 这条"已失败"的消息**继续被补发**，对方确实收到了，界面却显示失败，且不可自愈。
+/// 顺序也保留原语义：状态写失败就不删行（否则行没了、状态还是 sending，两个清扫器都看不见）。
+pub fn finalize_expired_message(
+    conn: &Connection,
+    msg_id: &str,
+    group: bool,
+) -> Result<()> {
+    let tx = conn.unchecked_transaction()?;
+    set_message_status(&tx, msg_id, "failed")?;
+    // 复用既有的删行实现（不要在这里写第二份 SQL）：`Transaction` 解引用到 `Connection`。
+    // 队列行本来就不在时它们同样是成功（幂等）。
+    if group {
+        delete_group_outbox_by_msg_id(&tx, msg_id)?;
+    } else {
+        delete_outbox_by_msg_id(&tx, msg_id)?;
+    }
+    tx.commit()?;
+    Ok(())
 }
 
 /// 取消一条**还在补发队列里**的消息（用户按「取消发送」）。

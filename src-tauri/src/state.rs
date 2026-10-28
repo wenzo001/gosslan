@@ -1748,16 +1748,26 @@ impl AppState {
     /// 初始化应用状态：解析目录、打开数据库、加载/生成设备指纹与身份密钥。
     pub fn init(app: AppHandle) -> Result<Arc<AppState>, Box<dyn std::error::Error>> {
         let app_data = app.path().app_data_dir()?;
-        std::fs::create_dir_all(&app_data).ok();
-        // 专用数据目录也只允许属主进入/列出：文件 0600 挡得住读，挡不住 ls 出文件名。
-        crate::private_fs::restrict_dir_to_owner(&app_data);
+        // 四个专用目录一律 0700（审计 P1 #9）：`create_private_dir` 只在**新建**时带 mode，
+        // 已存在目录由 `restrict_dir_to_owner` 收紧 —— 两件都在启动路径各做一次。
+        // 失败不再 `.ok()` 吞掉：拿不到可写的数据目录时，后面每一步都会以
+        // 「文件不存在」的形态在离因很远的地方炸。
+        let make_private_dir = |p: &std::path::Path| -> Result<(), Box<dyn std::error::Error>> {
+            crate::private_fs::create_private_dir(p).map_err(|e| {
+                std::io::Error::other(format!("初始化目录失败 {}: {e}", p.display()))
+            })?;
+            // 文件 0600 挡得住读，挡不住 `ls` 出文件名 ⇒ 目录本身也要收紧。
+            crate::private_fs::restrict_dir_to_owner(p);
+            Ok(())
+        };
+        make_private_dir(&app_data)?;
         let default_downloads = app_data.join("downloads");
-        std::fs::create_dir_all(&default_downloads).ok();
+        make_private_dir(&default_downloads)?;
         let cache_dir = app_data.join("cache");
-        std::fs::create_dir_all(&cache_dir).ok();
+        make_private_dir(&cache_dir)?;
         // 收藏副本目录：独立于 cache/downloads，存储清理不碰（见字段注释）。
         let favorites_dir = app_data.join("favorites").join("media");
-        std::fs::create_dir_all(&favorites_dir).ok();
+        make_private_dir(&favorites_dir)?;
 
         // 多开支持：`--instance N`（或环境变量 GOSSLAN_INSTANCE）→ 独立数据库 / 端口 / 设备指纹
         let instance = instance_id();
@@ -1851,7 +1861,9 @@ impl AppState {
                  friends={friends} conversations={conversations} groups={groups}",
                 app_data.display(),
                 db_path.display(),
-                pre_init_bytes.map(|n| n.to_string()).unwrap_or_else(|| "missing".into())
+                pre_init_bytes
+                    .map(|n| n.to_string())
+                    .unwrap_or_else(|| "missing".into())
             ),
         );
         // 主库**本身**不可用（本轮启动前文件不存在 / 0 字节）且旁边有迁移备份

@@ -781,6 +781,23 @@ async fn handle_gossip(state: &Arc<AppState>, peer_id: &str, env: GossipEnvelope
                     mentions,
                     mention_targets,
                 } = crate::protocol::parse_gossip_plaintext(&pt);
+                // 入站内容长度（审计 P1 #7）：发送侧的 5 万字符闸只约束本机用户，对端可以
+                // 绕过它投一条超大 content ⇒ 明文整份进 SQLite。口径与发送侧同一份
+                // （`commands::content_within_limit`），超限**不落库、不通知**。
+                // 泛洪转发在解密之前（盲中继，看不到明文）⇒ 这里只负责本机落库边界。
+                if !crate::commands::content_within_limit(&content) {
+                    state.logger.warn(
+                        "chat",
+                        format!(
+                            "code=INBOUND_CONTENT_TOO_LONG msg={} kind={} chars={} from={}",
+                            env.message_id,
+                            kind,
+                            content.chars().count(),
+                            env.sender_id
+                        ),
+                    );
+                    return;
+                }
                 // §29 可观测性：这一行是「有人@我 为什么亮 / 为什么不亮」唯一能事后归因的留痕。
                 // 修之前判不到根的机制就在这儿 —— 链路里只有昵称、没有「@ 了谁」，日志也就
                 // 永远分不开「对端没带名单（旧版本，按昵称兜底）」和「对端明确说谁都没 @」。
@@ -914,14 +931,24 @@ async fn handle_gossip(state: &Arc<AppState>, peer_id: &str, env: GossipEnvelope
                         // 群名长度与建群/改名一致封顶，避免这条路径塞进超长字符串
                         let display_name: String =
                             display_name.chars().take(MAX_GROUP_NAME_LEN).collect();
-                        db::upsert_group(&dbc, &gid, &display_name, &creator, &all).ok();
+                        if let Err(e) = db::upsert_group(&dbc, &gid, &display_name, &creator, &all) {
+                            state.logger.warn(
+                                "group",
+                                format!("code=GROUP_SYNC_WRITE_FAILED op=upsert group={gid} err={e}"),
+                            );
+                        }
                         // 只有「发送者自称群主且与本地已知群主一致（首次接触按 TOFU）」的成员表
                         // 才当权威表整体替换；普通成员的成员表仍只增不减，避免一条伪造的
                         // group_members 把别人从本地成员视图里抹掉。
                         let authoritative_members = is_self_declared_creator
                             && known.as_ref().map_or(true, |g| g.creator == creator);
                         if authoritative_members {
-                            db::replace_group_members(&dbc, &gid, &all).ok();
+                            if let Err(e) = db::replace_group_members(&dbc, &gid, &all) {
+                                state.logger.warn(
+                                    "group",
+                                    format!("code=GROUP_SYNC_WRITE_FAILED op=members group={gid} err={e}"),
+                                );
+                            }
                         }
                         drop(dbc);
                         let _ = state.app.emit("groups-updated", &gid);

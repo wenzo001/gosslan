@@ -71,13 +71,17 @@ pub fn upsert_group(
     creator: &str,
     members: &[String],
 ) -> Result<()> {
+    // UPSERT + 逐成员写入必须原子（审计 P1 #4）：半写会留下「群在、成员表缺一半」，
+    // 而成员视图没有对账机制。`unchecked_transaction` 与同册其它多笔写同一写法
+    // （调用方已持有 db 锁，这里只需要 savepoint 语义而不是再拿锁）。
+    let tx = conn.unchecked_transaction()?;
     if name.is_empty() {
-        conn.execute(
+        tx.execute(
             "INSERT OR IGNORE INTO groups(id, name, creator, created_at) VALUES(?1, ?2, ?3, ?4)",
             params![id, name, creator, now_ms()],
         )?;
     } else {
-        conn.execute(
+        tx.execute(
             "INSERT INTO groups(id, name, creator, created_at) VALUES(?1, ?2, ?3, ?4)
              ON CONFLICT(id) DO UPDATE SET name = CASE
                  WHEN groups.creator = excluded.creator THEN excluded.name
@@ -87,26 +91,32 @@ pub fn upsert_group(
         )?;
     }
     for m in members {
-        conn.execute(
+        tx.execute(
             "INSERT OR IGNORE INTO group_members(group_id, device_id) VALUES(?1, ?2)",
             params![id, m],
         )?;
     }
+    tx.commit()?;
     Ok(())
 }
 
 /// 重命名群：同步群表与对应会话行（会话标题随群名一起变）。
+///
+/// **两笔写必须同一事务**（审计 P1 #4）：分开写时第二笔失败会留下「群详情显示新名、
+/// 聊天列表标题还是旧名」，而没有任何代码对账这两张表 ⇒ 永不自愈。
 pub fn rename_group(conn: &Connection, id: &str, name: &str) -> Result<()> {
-    let changed = conn.execute(
+    let tx = conn.unchecked_transaction()?;
+    let changed = tx.execute(
         "UPDATE groups SET name = ?1 WHERE id = ?2",
         params![name, id],
     )?;
     if changed > 0 {
-        conn.execute(
+        tx.execute(
             "UPDATE conversations SET name = ?1 WHERE id = ?2",
             params![name, format!("group:{id}")],
         )?;
     }
+    tx.commit()?;
     Ok(())
 }
 
@@ -418,6 +428,13 @@ pub fn todo_number_high_water(conn: &Connection, group_id: &str) -> i64 {
     let stored: i64 = crate::db::get_setting(conn, &todo_number_key(group_id))
         .and_then(|v| v.parse::<i64>().ok())
         .unwrap_or(0);
+    // stored 是**本机权威高水位**（每次分配都推上去、且永不复用）⇒ 有值就不必再全群扫
+    // 消息 + 逐行 JSON 解析（审计 P2 #22：这条在唯一那把 DB 锁里跑，大群会明显变慢）。
+    // 只在**从未分配过**（stored == 0，例如刚被拉进群/刚重装）时回扫历史，
+    // 目的是看见"对端自己分配的号"（Lamport 式躲避）。
+    if stored > 0 {
+        return stored;
+    }
     let mut seen = 0i64;
     if let Ok(mut stmt) = conn.prepare(
         "SELECT content FROM messages WHERE conv_id = ?1 AND kind IN ('todo', 'todo_update')",

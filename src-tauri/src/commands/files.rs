@@ -70,6 +70,9 @@ pub fn save_outgoing_image(
     let path = dl.join(&name);
     std::fs::create_dir_all(&dl).map_err(|e| e.to_string())?;
     std::fs::write(&path, &bytes).map_err(|e| format!("图片保存失败：{e}"))?;
+    // 落进**托管目录**的图片含聊天图片本体：只许属主读（审计 P1 #8）。
+    // 用户显式选的导出目的地不在此列（他可能就是要放到共享目录）。
+    crate::private_fs::restrict_to_owner(&path);
     Ok(serde_json::json!({
         "path": path.to_string_lossy().to_string(),
         "name": name,
@@ -1475,13 +1478,27 @@ pub async fn send_file_auto(
     let s = state.inner();
     // `msg_id` 给了 ⇒ 这是"转发一条已有消息"：路径必须归那条消息（SEC-01 同一判据）。
     // 不给 ⇒ 用户自己挑的文件（对话框里的选择就是授权），不拦。
-    if let Some(msg_id) = msg_id.as_deref() {
-        let requested = std::fs::canonicalize(&path).map_err(|e| e.to_string())?;
-        if let Some(code) = owned_payload_rejection(s, msg_id, &requested) {
-            s.logger.warn(
-                "file",
-                format!("code={code} 拒绝转发 file={path} msg={msg_id} peer={friend_id}"),
-            );
+    //
+    // ⚠️ INV-P34：canonicalize 与 `owned_payload_rejection`（要拿 DB 锁）都是重活，
+    // 整段进阻塞池 —— 留在 async 命令体里会占住 tokio worker（worker 棘轮实测 31→32）。
+    if let Some(msg_id) = msg_id {
+        let s2 = s.clone();
+        let path2 = path.clone();
+        let peer2 = friend_id.clone();
+        let rejected = tokio::task::spawn_blocking(move || -> Result<Option<&'static str>, String> {
+            let requested = std::fs::canonicalize(&path2).map_err(|e| e.to_string())?;
+            let code = owned_payload_rejection(&s2, &msg_id, &requested);
+            if let Some(code) = code {
+                s2.logger.warn(
+                    "file",
+                    format!("code={code} 拒绝转发 file={path2} msg={msg_id} peer={peer2}"),
+                );
+            }
+            Ok(code)
+        })
+        .await
+        .map_err(|e| format!("转发路径校验被线程池中断: {e}"))??;
+        if rejected.is_some() {
             return Err("这个文件不属于这条消息，已拒绝转发".to_string());
         }
     }

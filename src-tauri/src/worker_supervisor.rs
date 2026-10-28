@@ -68,6 +68,12 @@ pub static RESIDENT_WORKERS: &[WorkerSpec] = &[
         name: "outbox_sweeper",
         spawn: crate::network::transport::spawn_outbox_sweeper,
     },
+    // 审计 P1 #12：群历史「待同步」清扫器原先直接 `spawn` 且句柄丢弃 —— 它一死，
+    // "入群时没人在线"的那批群就永远等不到自动同步，而且没有任何人知道。
+    WorkerSpec {
+        name: "group_history_sweeper",
+        spawn: crate::network::group_history::spawn_group_history_sweeper,
+    },
 ];
 
 /// 对一个 worker 这一拍该做什么。单独拎出来是因为这是**整条监督逻辑的全部判据**，
@@ -156,14 +162,20 @@ fn spawn_supervisor(state: Arc<AppState>, running: SharedRunning) -> JoinHandle<
                         true
                     }
                     WorkerVerdict::GiveUp => {
+                        // 审计 P1 #11：原先这里**永久移除**该 worker —— `outbox_sweeper` 一死，
+                        // 三条队列的终态出口就没人再跑，界面永久「发送中」直到重启应用。
+                        // 改为"清零计数、保留监督"：下一拍按 Restart 重新拉起。
+                        // 防 CPU 打满靠监督拍（10s）：真实崩溃循环最多每 10s 一次，且每次留一行
+                        // WORKER_GIVEUP（可见、可查）。永久失守的代价远大于一条慢循环。
                         state.logger.error(
                             "worker",
                             format!(
                                 "code=WORKER_GIVEUP worker={name} restarts={MAX_RESTARTS} —— \
-                                 反复结束，不再自动拉起；它守的那条链现在没有兜底，重启应用才能恢复"
+                                 反复结束；已清零计数并保留监督，下一拍会再拉起（不再永久放弃）"
                             ),
                         );
-                        false
+                        *restarts = 0;
+                        true
                     }
                 }
             });
@@ -296,7 +308,7 @@ mod tests {
     fn resident_worker_list_is_complete_and_unique() {
         assert_eq!(
             RESIDENT_WORKERS.len(),
-            5,
+            6,
             "被监督的常驻 worker 数量变了：要么是新增了一个（把它写进 RESIDENT_WORKERS 并更新这里），\
              要么是漏了一个（漏掉的那个死了没人知道）"
         );
@@ -327,6 +339,7 @@ mod tests {
             "state::AppState::spawn_runtime_diag_reporter(&state);",
             "state::AppState::spawn_db_hold_reporter(&state);",
             "spawn_outbox_sweeper(state.clone());",
+            "group_history::spawn_group_history_sweeper(&state);",
         ] {
             assert!(
                 !lib.contains(legacy),
