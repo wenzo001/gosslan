@@ -32,7 +32,13 @@ pub fn is_recalled(conn: &Connection, msg_id: &str) -> bool {
 }
 
 /// 把撤回**物化**到消息行：清空正文、改 kind。
-/// `content` 清空后，搜索 / 导出 / 会话预览 / 已读水位**一行都不用改就自动正确**。
+///
+/// `content` 清空后，搜索 / 导出 / 已读水位**一行都不用改就自动正确**（没有正文可命中）。
+///
+/// ⚠️ 但**会话预览不在这一列里**：会话列表读的是 `conversations.last_msg`（存储列，
+/// 见 `db.rs` 的 SCHEMA），它只在发送与删除时被改写。这里曾经写着"会话预览…自动正确"，
+/// 那句话与实现相反（2026-10-28 实测），害处是"撤回后会话列表那行还挂着原文"。
+/// 所以每个调用点在物化之后必须再跑一次 `db::refresh_conversation_summary`（同一条事务里）。
 /// 返回 true 表示确实改到了行（消息已在本机）。
 pub fn materialize_recall(conn: &Connection, msg_id: &str) -> Result<bool> {
     let n = conn.execute(

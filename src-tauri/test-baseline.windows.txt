@@ -10,7 +10,9 @@ commands::cache_clean_schedule_tests::vacuum_note_keeps_wait_and_execution_apart
 commands::cache_clean_schedule_tests::vacuum_only_when_the_freed_bytes_are_worth_rewriting_the_db
 commands::files_gate_tests::allows_files_inside_a_managed_dir
 commands::files_gate_tests::any_of_several_managed_dirs_matches
+commands::files_gate_tests::creator_recall_authority_is_wired_on_both_ends
 commands::files_gate_tests::empty_root_list_denies_everything
+commands::files_gate_tests::every_recall_materialize_site_refreshes_the_conversation_preview
 commands::files_gate_tests::forged_payload_path_is_rejected_when_ledger_points_elsewhere
 commands::files_gate_tests::ledger_owned_path_is_allowed
 commands::files_gate_tests::missing_ledger_row_is_unbound_not_allowed
@@ -955,6 +957,7 @@ protocol::tests::blocked_hint_distinguishes_unknown_from_declared_unsupported
 protocol::tests::build_mention_targets_numbers_repeated_names_in_text_order
 protocol::tests::build_mention_targets_skips_unknown_ids_and_absent_names
 protocol::tests::chat_ack_and_read_receipt_plaintext_directed_envelope_integrity
+protocol::tests::creator_recall_bit_is_advertised_and_audience_keeps_two_states_apart
 protocol::tests::display_kind_maps_legacy_media_to_file
 protocol::tests::dm_gate_does_not_reach_the_group_audience
 protocol::tests::dm_gate_for_remind_kinds
@@ -1001,7 +1004,9 @@ protocol::tests::preview_text_hides_payload_for_unknown_kind
 protocol::tests::reaction_payload_is_validated_before_sending
 protocol::tests::reaction_payload_roundtrips
 protocol::tests::recall_accepts_user_content_and_rejects_machine_events
+protocol::tests::recall_receive_allowed_matrix
 protocol::tests::recall_verdict_covers_author_conversation_and_window
+protocol::tests::recall_verdict_creator_branch_drops_author_and_window_only
 protocol::tests::remind_ack_payload_stage_is_validated
 protocol::tests::remind_actor_partition_against_membership
 protocol::tests::remind_kinds_are_silent

@@ -23,7 +23,12 @@ import { saveImageAs } from "@/utils/saveImageAs";
 import { haptic } from "@/utils/haptics";
 import { shouldStartLongPress, shouldSwallowLongPressRelease } from "@/utils/longPress";
 import { shouldPreventContextMenu } from "@/utils/contextMenu";
-import { isRecallableKind, isWithinRecallWindow } from "@/utils/recall";
+import {
+  isCreatorRecallableKind,
+  isRecallableKind,
+  isWithinRecallWindow,
+  recalledRowKey,
+} from "@/utils/recall";
 import type { MessageGroupSide } from "@/utils/messageKinds";
 import { cancelSendChannelFor } from "@/utils/cancelSend";
 import { cancelOutcome, groupResendNotice, messageCancelNotice } from "@/utils/cancelFeedback";
@@ -104,6 +109,12 @@ const props = withDefaults(
     todoDeletedIds?: Set<string>;
     /** 本条消息作为强提醒目标时的折叠状态（会话层算好传入；null = 没有强提醒）。 */
     reminder?: ReminderState | null;
+    /**
+     * 这条是已撤回行时：**撤回者**的 device_id（会话层从 `kind==="recall"` 的静默事件行
+     * 现推，见 ChatWindow 的 `recallSources`）。undefined = 索引里没有（老数据 / 事件行
+     * 不在已加载窗口）⇒ 提示行退回通用文案，宁可少说一句也不骗人。
+     */
+    recallerId?: string;
   }>(),
   {
     prev: null,
@@ -864,17 +875,44 @@ const emit = defineEmits<{
  * `mine` 是 ComputedRef，script 内必须写 `.value`（裸写恒真值，曾导致群里任何人的消息
  * 都出现撤回入口）。
  */
-function canRecallNow(): boolean {
+/**
+ * 本机是不是**这个群**的群主。口径与 `ChatWindow.canPublishAnnouncement` 同一份
+ * （读本地 `groups.creator`）；它只决定入口要不要显示 —— 真正的裁决在后端命令层，
+ * 而**每台接收设备还各自判一次**（`protocol::recall_receive_allowed`），
+ * 前端这一份改不动别人的库。
+ */
+const isGroupOwnerHere = computed(() => {
+  if (!props.isGroup) return false;
+  const conv = props.message.conv_id || "";
+  if (!conv.startsWith("group:")) return false;
   return (
-    !isSelfMsg.value &&
-    mine.value &&
-    props.message.kind !== "recalled" &&
-    // 2026-10-28 起附件（image/file）也能撤回：后端会在物化前先把传输停掉，
-    // 所以这里只排除**机器事件**（pin/reaction/todo…），见 utils/recall.ts。
-    isRecallableKind(props.message.kind) &&
-    isWithinRecallWindow(props.message.ts)
+    chat.groups.find((g) => g.id === conv.slice("group:".length))?.creator
+    === app.device?.device_id
   );
+});
+
+/**
+ * 能否撤回。两档（负责人 2026-10-28 拍板，见 `docs/adr/0023`）：
+ * · 作者档 —— 自己的、未被撤回、在 `RECALLABLE_KINDS` 里、5 分钟窗口内（今天的行为）；
+ * · 群主档 —— 群里**任何人**的**任意一条可撤行**（多三张卡），**不看时限**。
+ *
+ * 用函数而不是 computed：`Date.now()` 不会进入 Vue 的依赖，computed 一旦算过就不会
+ * 随真实时间推进；右键菜单 / 移动 ActionSheet 打开时会触发一次渲染，这里在那一刻现算。
+ * `mine` 是 ComputedRef，script 内必须写 `.value`（裸写恒真值，曾导致群里任何人的消息
+ * 都出现撤回入口）。
+ */
+function canRecallNow(): boolean {
+  if (isSelfMsg.value || props.message.kind === "recalled") return false;
+  // 自己发的、还在窗口内 ⇒ 走作者档（附件也能撤：后端在物化前先停传输）。
+  if (mine.value && isWithinRecallWindow(props.message.ts) && isRecallableKind(props.message.kind)) {
+    return true;
+  }
+  // 群主档：替别人撤、或撤自己早就过窗的那条，分母多三张卡。
+  return isGroupOwnerHere.value && isCreatorRecallableKind(props.message.kind);
 }
+
+/** 已撤回那一行显示哪句话：撤的人不是作者 ⇒ 说清是群主干的（索引缺失退回通用文案）。 */
+const recalledTextKey = computed(() => recalledRowKey(props.recallerId, props.message.sender_id));
 
 /** 仅原作者可切：code→text 总是可切；text→code 只在内容像代码时给入口。 */
 const renderTo = computed<"code" | "text" | null>(() => {
@@ -1102,6 +1140,23 @@ function doRecall() {
   closeActionSheet();
   confirmingRecall.value = true;
 }
+
+/**
+ * 跨人撤回的确认话术（负责人 2026-10-28 拍板：「区分确认：显示作者 + 原文摘要」）。
+ *
+ * 为什么值得多这一个分支：这是**替别人做一个不可逆决定** —— 墓碑是 G-Set
+ * （`db/recalls.rs` 的 INSERT OR IGNORE，只增不减），撤错了一条没有"搜回"这条路。
+ * 卡片那一支不塞摘要：它的 `content` 是载荷 JSON，贴出来只会糊一屏花括号。
+ */
+const recallConfirmBody = computed(() => {
+  if (!(isGroupOwnerHere.value && !mine.value)) return t("msg.recallConfirm");
+  const name = props.senderName || chat.nicknameOf(props.message.sender_id);
+  if (!isRecallableKind(props.message.kind)) {
+    return t("msg.recallConfirmOwnerCard", { name });
+  }
+  const snip = (props.message.content || "").replace(/\s+/g, " ").trim().slice(0, 40);
+  return t("msg.recallConfirmOwner", { name, snip });
+});
 
 async function confirmRecall() {
   confirmingRecall.value = false;
@@ -1533,7 +1588,7 @@ async function copyFileToClipboard() {
       class="px-4 text-center text-xs text-[var(--gosslan-text-2)]"
       :class="needsTopPad && atGroupStart ? 'pt-1.5' : ''"
     >
-      {{ message.kind === "recalled" ? t("msg.recalled") : message.content }}
+      {{ message.kind === "recalled" ? t(recalledTextKey) : message.content }}
     </div>
 
     <!-- 多选态给左侧勾选圈让出边槽：**只有"别人的"那一行**需要整排右移。
@@ -1997,7 +2052,7 @@ async function copyFileToClipboard() {
     :open="confirmingRecall"
     :title="t('msg.recall')"
     :confirm-label="t('common.confirm')"
-    :body="t('msg.recallConfirm')"
+    :body="recallConfirmBody"
     @cancel="confirmingRecall = false"
     @confirm="confirmRecall"
   />

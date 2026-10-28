@@ -167,6 +167,16 @@ pub const CONTENT_FEATURE_RENDER: u32 = 1 << 7;
 /// 不复用 `CONTENT_FEATURE_PULL`：那位管"按 cid 再取一份字节"，与"别再发了"是两件事。
 pub const CONTENT_FEATURE_FILE_CANCEL: u32 = 1 << 8;
 
+/// 能力位：**接收侧认「群主撤回他人消息」这一档授权**。
+///
+/// 注意它的用途与其余各位不同：其余位回答"能不能对这个对端发某种帧"（门控方向），
+/// 这一位**不门控任何帧** —— 群主撤回发的还是那条 `recall` 帧，老端收到只是按旧规则
+/// （只认原作者）裁决因而丢弃，不报错、不断链。这一位存在的唯一理由是让群主的发送端
+/// 能**如实提示**"有 N 人的版本还不认这次撤回"，而不假装全群生效（负责人 2026-10-28：
+/// 「协议零改动 + 如实提示」）。所以它不进 `kind_required_feature`，
+/// 消费点是 [`creator_recall_audience`]。
+pub const CONTENT_FEATURE_CREATOR_RECALL: u32 = 1 << 9;
+
 /// 群历史一页的**条数**上限（服务端一页最多交几条消息）。
 /// 与下面那个字节上限同住 `protocol.rs`：一条页的预算只有一个家（INV-P23），
 /// 收发两侧都从这里取，不许在调用点各写一遍字面量。
@@ -181,6 +191,9 @@ pub const GROUP_HISTORY_PAGE_MAX_BYTES: usize = 1_500_000;
 
 /// 本机支持的内容能力位图。**不参与 Hello 签名**（见 hello_signing_bytes）：
 /// 老端忽略该字段、新端据此决定能不能对它发拉取帧。
+///
+/// 末尾那位 `CONTENT_FEATURE_CREATOR_RECALL` 与其余各位不同：它不门控任何帧，
+/// 只让群主的发送端算得出"谁还不认这次撤回"那句提示（见 `creator_recall_audience`）。
 pub fn content_features() -> u32 {
     CONTENT_FEATURE_PULL
         | CONTENT_FEATURE_MERGE
@@ -191,6 +204,7 @@ pub fn content_features() -> u32 {
         | CONTENT_FEATURE_NUDGE
         | CONTENT_FEATURE_RENDER
         | CONTENT_FEATURE_FILE_CANCEL
+        | CONTENT_FEATURE_CREATOR_RECALL
 }
 
 /// 「哪个 kind 需要对端具备哪一点能力」的**唯一**答案。`None` = V1 词表内、对所有对端安全。
@@ -1326,8 +1340,9 @@ pub const RECALL_WINDOW_MS: i64 = 300_000;
 /// `commands::files::cancel_transfer_for_recalled_message` 消掉：撤回前先走
 /// 「取消发送」那整套（本地收尾 + `FileCancel` 帧），所以附件可以撤回。
 ///
-/// 机器事件（system / pin / reaction / remind / recall / todo / announcement…）仍然不在内：
-/// 它们不是用户写的内容，没有「撤回」这个语义。
+/// 机器事件（system / pin / reaction / remind / recall / todo / announcement…）**作者本人**
+/// 撤不了：它们不是用户写的内容，没有「撤回」这个语义。
+/// 群主特权那一档的分母另见 [`CREATOR_RECALLABLE_KINDS`]（多三张卡，同样不含静默行）。
 ///
 /// ⚠️ 前端 `src/utils/recall.ts::RECALLABLE_KINDS` 是同一份口径（网络两侧都要拦：
 /// 老端可能没拦、直接发来一条对附件消息的撤回），`recall.test.ts` 会现读这里对账。
@@ -1338,10 +1353,60 @@ pub fn is_recallable_kind(kind: &str) -> bool {
     RECALLABLE_KINDS.contains(&kind)
 }
 
-/// 撤回的发送端裁决：仅原作者、**文本族**、目标必须属于该会话、且在窗口内。
+/// **群主特权**可撤的行 = `RECALLABLE_KINDS` 五种 + 三张卡（2026-10-28 负责人拍板：
+/// 「所有的消息类型都可以撤回……主要是让群聊天列表里消失……任务的话在任务列表里还是可以看到」）。
+///
+/// 加进来的是**卡片**：撤回只让那张卡离开聊天时间线，卡片背后的本体（任务看板、公告栏、
+/// 文件台账）是各自独立的真源，照旧可见 —— 这不是遗漏，撤回的语义边界就是"聊天时间线"。
+///
+/// 仍然不在内的那两类各有硬理由（缺任一条就会做出一个"看着能撤、实则骗人"的入口）：
+/// · 静默事件行（`pin / reaction / remind / todo_update / recall`…）：它们本来就不显示在
+///   时间线上，撤它们不是"离链"而是"回滚那个动作"，而 `todo_update` 是 LWW 状态改动、
+///   撤回既不能让状态倒退也没有东西可看；
+/// · `system` 提示行：`msg_id = sys-<uuid4>` 由**每台设备各自生成、不广播**
+///   （`commands::insert_system_message`），拿它发撤回只有群主自己那台会消失 = 假同步。
+///
+/// ⚠️ 前端 `src/utils/recall.ts::CREATOR_RECALLABLE_KINDS` 是同一份口径，
+/// `recall.test.ts` 现读这里对账。
+pub const CREATOR_RECALLABLE_KINDS: [&str; 8] = [
+    "text",
+    "code",
+    "merge",
+    "image",
+    "file",
+    KIND_ANNOUNCEMENT,
+    "todo",
+    "poll",
+];
+
+/// 群主能不能撤这一行。
+pub fn is_creator_recallable_kind(kind: &str) -> bool {
+    CREATOR_RECALLABLE_KINDS.contains(&kind)
+}
+
+/// 撤回的**授权来源**。谁有资格用哪一档由调用方判（发送端读 `groups.creator`，
+/// 接收端比它本地记录的那一份），这个枚举只回答"按哪套规则裁决" ——
+/// 分成两处是为了让越权在两个入口都被**同一份**规则挡住，而不是各写一遍各自的 `if`。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RecallAuthority {
+    /// 作者本人：必须 `sender_id == me`、`kind ∈ RECALLABLE_KINDS`、且在 5 分钟窗口内。
+    Author,
+    /// 群主替他人撤回：`kind ∈ CREATOR_RECALLABLE_KINDS`、**不看时间窗**、
+    /// 作者可以是任何人（含群主自己）。见 `docs/adr/0023`。
+    GroupCreator,
+}
+
+/// 撤回的发送端裁决：会话归属与"不是已撤回行"两档共用，其余按 `authority` 分岔。
 ///
 /// 群与 1:1 共用这一份；`target_conv` 来自库里的消息行，`expected_conv` 是命令参数
 /// 指定的会话。把"作者/类型/归属/时限"四件事收在一个纯函数里，命令层不再各写一遍。
+///
+/// ⚠️ 会话归属那条**排在最前**，不是排版偏好：它挡的是"拿 A 会话的合法信封去清 B 会话的
+/// 一条消息"。作者那一档这个洞只泄露自己的内容，群主那一档会变成跨会话删除他人消息，
+/// 所以这条必须与特权同批落地（见 `gossip.rs` 接收侧的同一条闸）。
+// 入参就是"这一条消息的事实 + 这一档授权"，包一层结构体只会让纯函数多一个搬运工；
+// 同形先例见 `network/transport/dial.rs`、`group_file.rs`。
+#[allow(clippy::too_many_arguments)]
 pub fn recall_verdict(
     sender_id: &str,
     me: &str,
@@ -1350,22 +1415,144 @@ pub fn recall_verdict(
     expected_conv: &str,
     ts: i64,
     now: i64,
+    authority: RecallAuthority,
 ) -> Result<(), String> {
-    if sender_id != me {
-        return Err("只能撤回自己发送的消息".to_string());
-    }
-    if !is_recallable_kind(kind) {
-        return Err("这类消息不支持撤回（只有你自己发送的内容可以撤回）".to_string());
-    }
     if target_conv != expected_conv {
         return Err("消息不属于该会话".to_string());
     }
-    // 旧库/异常行 ts=0 时无法证明窗口，沿用群侧历史行为放行时间判据；
-    // 作者与归属仍然是硬门槛。
-    if ts > 0 && now.saturating_sub(ts) > RECALL_WINDOW_MS {
-        return Err("超过可撤回时间（5 分钟）".to_string());
+    if kind == KIND_RECALLED {
+        return Err("这一行已经是撤回提示，再撤等于改动墓碑集合".to_string());
+    }
+    match authority {
+        RecallAuthority::Author => {
+            if sender_id != me {
+                return Err("只能撤回自己发送的消息".to_string());
+            }
+            if !is_recallable_kind(kind) {
+                return Err("这类消息不支持撤回（只有你自己发送的内容可以撤回）".to_string());
+            }
+            // 旧库/异常行 ts=0 时无法证明窗口，沿用群侧历史行为放行时间判据；
+            // 作者与归属仍然是硬门槛。
+            if ts > 0 && now.saturating_sub(ts) > RECALL_WINDOW_MS {
+                return Err("超过可撤回时间（5 分钟）".to_string());
+            }
+        }
+        RecallAuthority::GroupCreator => {
+            if !is_creator_recallable_kind(kind) {
+                return Err(
+                    "这一行不在群主可撤的分母里（静默事件与系统提示不在时间线上，撤它们只会造成假同步）"
+                        .to_string(),
+                );
+            }
+            // 刻意不看时间窗，也不看 sender：负责人口径「不限时间、任何人的任意一条」。
+            // 接收端本来就不校验对方时钟，所以"无时限"这一条在老版本对端上也已经成立。
+        }
     }
     Ok(())
+}
+
+/// 「群主撤回」这件事在各成员那台设备上**认不认**（2026-10-28 拍板：协议零改动 + 如实提示）。
+///
+/// 判据形状与 [`kind_audience`] 同一份，但问的不是同一件事，所以不复用那个函数、
+/// 也不把这一位塞进 `kind_required_feature`：
+/// · `kind_audience` 回答"老端**渲染**这个 kind 会不会退化成原始文本"，且明确承诺"消息不丢"；
+/// · 这里回答"老端的**接收侧授权**认不认识群主这一档"，后果是**那条消息在他屏幕上不消失**，
+///   比渲染退化严重，措辞绝不能借那句"不会丢消息"。
+///
+/// 三态与既有口径一致：`None`（没交换过 Hello / 已离线）算 unknown，**不许**并进 unsupported
+/// —— 群成员离线是常态，把"不知道"算成"不支持"会让提示永远在响。
+/// 这一位**只用来算提示，不用来按住入口**（硬门会被 unknown 常年锁死，负责人已否过一次）。
+pub fn creator_recall_audience(
+    features_of: impl Fn(&str) -> Option<u32>,
+    member_ids: &[String],
+    self_id: &str,
+) -> (Vec<String>, usize) {
+    let mut unsupported = Vec::new();
+    let mut unknown = 0usize;
+    for id in member_ids {
+        if id == self_id {
+            continue;
+        }
+        match features_of(id) {
+            None => unknown += 1,
+            Some(features) if features & CONTENT_FEATURE_CREATOR_RECALL == 0 => {
+                unsupported.push(id.clone())
+            }
+            Some(_) => {}
+        }
+    }
+    (unsupported, unknown)
+}
+
+/// 上面那句统计的**文案**（与 `kind_audience_hint` 同一家、不同措辞：这里不能说"消息不会丢"）。
+pub fn creator_recall_hint(unsupported_names: &[String], unknown: usize) -> String {
+    if unsupported_names.is_empty() && unknown == 0 {
+        return String::new();
+    }
+    const SHOW_MAX: usize = 5;
+    let mut parts: Vec<String> = Vec::new();
+    if !unsupported_names.is_empty() {
+        let who = if unsupported_names.len() > SHOW_MAX {
+            format!(
+                "{} 等 {} 名成员",
+                unsupported_names[..SHOW_MAX].join("、"),
+                unsupported_names.len()
+            )
+        } else {
+            unsupported_names.join("、")
+        };
+        parts.push(format!(
+            "{who}的 Gosslan 版本还不认「群主撤回」，这条在那些人那里**不会消失**"
+        ));
+    }
+    if unknown > 0 {
+        parts.push(format!(
+            "另有 {unknown} 位成员当前不在线或版本未知，撤回会不会在他们那台生效要等他们上线后才看得出"
+        ));
+    }
+    parts.join("；")
+}
+
+/// 接收侧：这条 `recall` 帧能不能物化到目标消息上（群主那一档是 2026-10-28 新加的）。
+///
+/// 它与发送端 [`recall_verdict`] 是**两份**判据，问的不是同一件事：发帧人自报"我是群主"
+/// 在这里不作数，比的是**本机自己库里**那份 `groups.creator`；信封是 Ed25519 签的，
+/// `sender_id` 不可伪造，而转让那侧也有闸（`g.creator == from` 才接受）⇒ 一个普通成员
+/// 既不能自封群主，也不能把自己的撤回伪装成群主撤回。
+///
+/// 三条闸各自的必要性：
+/// · `target_conv != conv_id` ⇒ 拒。**跨会话归属闸**，与群主特权同批落地：没有它，
+///   A 群群主可以拿一条 A 群的合法信封去清 B 群里别人的一条消息（作者那一档这个洞
+///   只泄露自己的内容，群主这一档会把它变成跨会话删除他人消息）；
+/// · 群主那一档还要 kind 在 [`CREATOR_RECALLABLE_KINDS`] 里 ⇒ 否则这条通道能撤掉任意 kind，
+///   包括我们明确排除的静默行与已撤回行（撤 `recall` 事件行会把墓碑集合本身弄坏）；
+/// · **不校验时间窗**（既有口径：接收端无法验证对方墙上时钟，那是产品规则不是安全边界）。
+///
+/// 目标还没落库时保持今天的行为（群：发送者是成员即可；单聊：放行），因为"先撤后到"正是
+/// 墓碑集合存在的理由，收紧它会把这条兜底封死。
+pub fn recall_receive_allowed(
+    target: Option<(&str, &str, &str)>,
+    sender_id: &str,
+    conv_id: &str,
+    is_group: bool,
+    is_creator_here: bool,
+    is_member_here: bool,
+) -> bool {
+    match target {
+        Some((author, target_conv, kind)) => {
+            if target_conv != conv_id {
+                return false;
+            }
+            author == sender_id || (is_creator_here && is_creator_recallable_kind(kind))
+        }
+        None => {
+            if is_group {
+                is_member_here
+            } else {
+                true
+            }
+        }
+    }
 }
 
 /// 校验撤回载荷：target 非空。
@@ -1380,6 +1567,11 @@ pub fn parse_recall_payload(content: &str) -> Result<RecallPayload, String> {
 
 /// 撤回后消息本体的 `kind`。`content` 被清空、`sender_id`/`ts`/`seq`/`msg_id` 保留 ——
 /// 这样搜索、导出、已读水位**一行都不用改就自动正确**（没有正文可命中、可导出）。
+///
+/// ⚠️ 这句只对**消息表**成立。会话列表那一行读的是 `conversations.last_msg`（存储列，
+/// 见 `db.rs` 的 SCHEMA），撤回**必须**另跑一次 `db::refresh_conversation_summary` ——
+/// 不跑就是"正文已清空、列表预览还挂着原文"（2026-10-28 实测到这条曾经被写成"不用改"，
+/// 那句话与实现相反，已在 `db/recalls.rs` 改正）。
 pub const KIND_RECALLED: &str = "recalled";
 
 /// 群公告发布 / 删除的 `kind`（接收侧授权判定要用）。

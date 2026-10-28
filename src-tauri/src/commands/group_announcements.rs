@@ -104,10 +104,14 @@ pub async fn pin_group_message(
     send_group_payload(state.inner(), &group_id, "pin", content, None, None).await
 }
 
-/// 撤回一条自己发的群消息。
+/// 撤回一条群消息。两档授权（2026-10-28 负责人拍板，见 `docs/adr/0023`）：
 ///
-/// 权限：**仅原作者**。不做"群主撤他人" —— 那需要引入管理员角色，
-/// 而没有中心权威就没有中心授权（本项目无服务器）。
+/// · **作者**：自己的消息，5 分钟窗口内，kind 在 `RECALLABLE_KINDS` 里 —— 今天的行为，没变；
+/// · **群主**：群里**任何人**的**任意一条可撤行**（多三张卡），**不看时间窗**。
+///
+/// 群主身份只认**本机库里**那份 `groups.creator` —— 发帧人自报不作数（接收侧同理，
+/// 见 `protocol::recall_receive_allowed`）。没有中心权威就没有中心授权：这条特权之所以
+/// 成立，是因为每台设备都用自己的那份记录独立裁决，改不动别人的。
 #[tauri::command(async)]
 pub async fn recall_group_message(
     state: State<'_, Arc<AppState>>,
@@ -116,12 +120,20 @@ pub async fn recall_group_message(
 ) -> Result<(), String> {
     let s = state.inner();
     let conv_id = format!("group:{group_id}");
-    {
+    let (authority, author) = {
         let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());
         let Some(msg) = db::get_message_record(&dbc, &target) else {
             return Err("消息不存在".to_string());
         };
-        // 作者 / 群归属 / 5 分钟窗口三件事由 protocol 的唯一裁决函数给出；
+        let is_creator = db::get_group(&dbc, &group_id)
+            .map(|g| g.creator == s.device_id)
+            .unwrap_or(false);
+        let authority = if is_creator {
+            crate::protocol::RecallAuthority::GroupCreator
+        } else {
+            crate::protocol::RecallAuthority::Author
+        };
+        // 作者 / 群归属 / 类型分母 / 时限四件事由 protocol 的唯一裁决函数给出；
         // 时间窗**只在发送端强制**（接收端无法验证对方的时钟）。
         crate::protocol::recall_verdict(
             &msg.sender_id,
@@ -131,13 +143,24 @@ pub async fn recall_group_message(
             &conv_id,
             msg.ts,
             db::now_ms(),
+            authority,
         )?;
         if db::is_recalled(&dbc, &target) {
             return Ok(()); // 幂等：已撤回过就直接成功
         }
+        (authority, msg.sender_id.clone())
+    };
+    // 群主替别人撤回 ⇒ 先如实提示"哪些人那侧可能不会消失"（协议零改动，老端按旧规则丢弃）。
+    if authority == crate::protocol::RecallAuthority::GroupCreator && author != s.device_id {
+        emit_creator_recall_audience(s, &group_id, &conv_id);
     }
     // 附件：撤回前先把传输停掉（与单聊同一份实现；文本族是空操作）。
-    crate::commands::cancel_transfer_for_recalled_message(s, &target).await;
+    crate::commands::cancel_transfer_for_recalled_message(
+        s,
+        &target,
+        crate::commands::CancelNotify::Peers,
+    )
+    .await;
     let payload = crate::protocol::RecallPayload {
         target: target.clone(),
     };
@@ -150,9 +173,52 @@ pub async fn recall_group_message(
         let seq = db::get_clock(&dbc, &conv_id);
         db::insert_recall(&dbc, &conv_id, &target, &s.device_id, seq).ok();
         db::materialize_recall(&dbc, &target).ok();
+        // 会话列表读的是 `conversations.last_msg`（存储列），不重算就是"正文已清空、
+        // 预览还挂着原文"。失败留痕：静默漏掉等于这条修复没落地。
+        if let Err(e) = db::refresh_conversation_summary(&dbc, &conv_id) {
+            s.logger.warn(
+                "chat",
+                format!("code=RECALL_PREVIEW_REFRESH_FAIL conv={conv_id}：{e}"),
+            );
+        }
     }
     let _ = s.app.emit("message-recalled", &target);
     Ok(())
+}
+
+/// 群主撤回的**受众提示**（只解释、不门控）。
+///
+/// 锁序照 `commands/window.rs` 里那份现成写法：**先在位图锁里算完并释放**，再解析昵称 ——
+/// `resolve_nickname` 自己去锁 peers 表，锁里问它迟早撞死锁。
+fn emit_creator_recall_audience(s: &Arc<AppState>, group_id: &str, conv_id: &str) {
+    let members = {
+        let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());
+        db::get_group(&dbc, group_id).map(|g| g.members).unwrap_or_default()
+    };
+    let (missing_ids, unknown) = {
+        let features = s
+            .peer_content_features
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        crate::protocol::creator_recall_audience(
+            |id| features.get(id).copied(),
+            &members,
+            &s.device_id,
+        )
+    };
+    let names: Vec<String> = missing_ids
+        .iter()
+        .map(|id| crate::network::transport::resolve_nickname(s, id))
+        .collect();
+    let hint = crate::protocol::creator_recall_hint(&names, unknown);
+    if hint.is_empty() {
+        return;
+    }
+    // `let _ =`：提示送不出去不该影响已经发出去的撤回（它只是解释，不是结果）。
+    let _ = s.app.emit(
+        "content-audience",
+        serde_json::json!({ "conv_id": conv_id, "msg_id": "", "hint": hint }),
+    );
 }
 
 /// 表情回应：对某条群消息添加/取消一个表情。

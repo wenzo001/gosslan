@@ -963,7 +963,9 @@ async fn handle_gossip(state: &Arc<AppState>, peer_id: &str, env: GossipEnvelope
                 }
                 let preview = preview_content(&kind, &content);
                 // 撤回事件：把「已撤回」物化到被撤回的那条消息上（幂等）。
-                // 只认**作者本人**的撤回 —— 信封被 Ed25519 签名，sender_id 不可伪造；
+                // 授权两档（作者 / 群主，2026-10-28），判定收在 `protocol::recall_receive_allowed`
+                // 那一份纯函数里 —— 信封被 Ed25519 签名，`sender_id` 不可伪造，而"是不是群主"
+                // 比的是**本机库里**那份 `groups.creator`，所以发帧人自报不作数、也改不动别人。
                 // 接收端不校验时间窗（无法验证发送方的墙上时钟，那是产品规则不是安全边界）。
                 let group_id_for_check = conv_id
                     .strip_prefix("group:")
@@ -972,35 +974,72 @@ async fn handle_gossip(state: &Arc<AppState>, peer_id: &str, env: GossipEnvelope
                 if kind == crate::protocol::KIND_RECALL {
                     if let Ok(p) = serde_json::from_str::<crate::protocol::RecallPayload>(&content)
                     {
-                        let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
-                        // ⚠️ **目标消息可能还没落库**（撤回事件先到）。此时不能因为
-                        // "查不到作者"就把整条撤回丢掉 —— 那恰好把权威集合存在的意义
-                        // （解决先撤后到）封死了：随后消息带着完整正文落库，撤回永久失效。
-                        let target_exists =
-                            db::get_message_preview_source(&dbc, &p.target).is_some();
-                        let allowed = if target_exists {
-                            // 目标已落库：只认作者本人撤回
-                            db::get_message_preview_source(&dbc, &p.target)
-                                .map(|(sid, _)| sid == env.sender_id)
-                                .unwrap_or(false)
-                        } else if conv_id.starts_with("group:") {
-                            // 群消息 + 目标未落库：以「发送者是本群成员」为准 ——
-                            // 他能解开群消息就说明持有群密钥、是成员
-                            db::get_group(&dbc, &group_id_for_check)
-                                .map(|g| g.members.contains(&env.sender_id))
-                                .unwrap_or(false)
-                        } else {
-                            // 单聊 + 目标未落库：允许 ——
-                            // env 被 Ed25519 签名，sender_id 不可伪造；
-                            // 单聊撤回是定向发给目标个人的，不存在群成员那类授权问题
-                            true
-                        };
-                        if allowed {
-                            db::insert_recall(&dbc, &conv_id, &p.target, &env.sender_id, env.seq)
+                        // DB 那半单独成一个块，**块里没有 await**：`MutexGuard` 不是 `Send`，
+                        // 只要它的活期跨过任何一个 await，整条 gossip future 就不能被 tokio
+                        // 搬线程（这台库里那把锁跨 await 是本仓反复付账的形状）。
+                        let applied = {
+                            let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
+                            // ⚠️ **目标消息可能还没落库**（撤回事件先到）。此时不能因为
+                            // "查不到作者"就把整条撤回丢掉 —— 那恰好把权威集合存在的意义
+                            // （解决先撤后到）封死了：随后消息带着完整正文落库，撤回永久失效。
+                            // 已落库时要把作者的**会话**一起读出来：跨会话归属闸（拿 A 群的合法
+                            // 信封去清 B 群的一条消息）只有拿到目标自己的 conv_id 才判得了。
+                            let target_row = db::get_message_record(&dbc, &p.target);
+                            let is_group = conv_id.starts_with("group:");
+                            let (is_creator_here, is_member_here) = if is_group {
+                                db::get_group(&dbc, &group_id_for_check)
+                                    .map(|g| {
+                                        (
+                                            g.creator == env.sender_id,
+                                            g.members.contains(&env.sender_id),
+                                        )
+                                    })
+                                    .unwrap_or((false, false))
+                            } else {
+                                (false, false)
+                            };
+                            let allowed = crate::protocol::recall_receive_allowed(
+                                target_row.as_ref().map(|m| {
+                                    (m.sender_id.as_str(), m.conv_id.as_str(), m.kind.as_str())
+                                }),
+                                &env.sender_id,
+                                &conv_id,
+                                is_group,
+                                is_creator_here,
+                                is_member_here,
+                            );
+                            if allowed {
+                                db::insert_recall(
+                                    &dbc,
+                                    &conv_id,
+                                    &p.target,
+                                    &env.sender_id,
+                                    env.seq,
+                                )
                                 .ok();
-                            db::materialize_recall(&dbc, &p.target).ok();
-                            drop(dbc);
+                                db::materialize_recall(&dbc, &p.target).ok();
+                                // 会话列表那一行读的是 `conversations.last_msg`（存储列），
+                                // 不重算就是"对端撤了、我这台预览还挂着原文"。
+                                if let Err(e) = db::refresh_conversation_summary(&dbc, &conv_id) {
+                                    state.logger.warn(
+                                        "chat",
+                                        format!("code=RECALL_PREVIEW_REFRESH_FAIL conv={conv_id}：{e}"),
+                                    );
+                                }
+                            }
+                            allowed
+                        };
+                        if applied {
                             let _ = state.app.emit("message-recalled", &p.target);
+                            // 在途附件：本机这一侧也停掉自己那笔。通知**不再外发** ——
+                            // 这条 recall 帧本来就全群广播过，每台都发 FileCancel 会变成
+                            // N 份取消通知（回声），而真正的发送方自己也会走到这一格。
+                            crate::commands::cancel_transfer_for_recalled_message(
+                                state,
+                                &p.target,
+                                crate::commands::CancelNotify::LocalOnly,
+                            )
+                            .await;
                         }
                     }
                 }

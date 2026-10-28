@@ -192,5 +192,101 @@ mod files_gate_tests {
                 "{name}：取消必须排在撤回物化之前（否则对端会先看到已撤回、字节还在流）"
             );
         }
+
+        // 群主撤回是**收到帧那一侧**也要停传输：否则"群主把这条撤了、甲还在往全群发字节"。
+        // 而那一侧必须**不再外发通知** —— 这条 recall 帧本来就全群广播过，
+        // 每台都再发一份 FileCancel 就成一个撤回引发 N 份取消通知（回声）。
+        let gossip = include_str!("../network/transport/gossip.rs");
+        assert_eq!(
+            gossip.matches("cancel_transfer_for_recalled_message(").count(),
+            1,
+            "接收侧停传输只许这一处出口（多处各写一份迟早漂）"
+        );
+        assert!(
+            gossip.contains("CancelNotify::LocalOnly"),
+            "接收侧必须用 LocalOnly；换成 Peers 就是每台都对外广播取消"
+        );
+        assert!(
+            !gossip.contains("CancelNotify::Peers"),
+            "接收侧出现 Peers ⇒ 一个撤回帧被 N 台各广播一份 FileCancel（回声）"
+        );
+        for (name, src) in [("chat.rs", chat), ("group_announcements.rs", group)] {
+            assert!(
+                src.contains("CancelNotify::Peers"),
+                "{name}：发起侧要照常通知对端，常量名不写进去判据就抓不到换掉的另一半"
+            );
+        }
+    }
+
+    /// 三个撤回物化点**每一处**都要重算会话预览。
+    ///
+    /// 为什么单独立一条：`materialize_recall` 只改 `messages`，而会话列表读的是
+    /// `conversations.last_msg`（存储列）。少接一处就是"正文已撤回、列表那行还挂着原文"，
+    /// 而这条链在界面上要**切回会话列表**才看得见，单测里点不出来。
+    #[test]
+    fn every_recall_materialize_site_refreshes_the_conversation_preview() {
+        let sites = [
+            ("commands/chat.rs", include_str!("chat.rs")),
+            ("commands/group_announcements.rs", include_str!("group_announcements.rs")),
+            (
+                "network/transport/gossip.rs",
+                include_str!("../network/transport/gossip.rs"),
+            ),
+        ];
+        let mut with_materialize = 0usize;
+        for (name, src) in sites {
+            let hit = src.contains("materialize_recall(");
+            if !hit {
+                continue;
+            }
+            with_materialize += 1;
+            assert!(
+                src.contains("refresh_conversation_summary("),
+                "{name}：物化了撤回却没重算会话预览 ⇒ 列表里还挂着原文"
+            );
+        }
+        assert_eq!(
+            with_materialize, 3,
+            "撤回物化点应该是三处（单聊发起 / 群发起 / 接收侧）；对不上就说明有人搬家或漏接"
+        );
+    }
+
+    /// 群主那一档**被接上了**的判据（纯函数测得再全，命令层永远传 Author 就是零功能）。
+    ///
+    /// 三条各自点名一处会被悄悄退回的形状：① 群命令退回 Author（功能整体消失，而所有
+    /// 纯函数用例照绿）；② 单聊那边"顺手也给了群主档"（单聊没有群主，等于任何人可撤）；
+    /// ③ 接收侧不再走那份统一判据（改回只认作者 ⇒ 群主撤了、别人那台不消失，
+    /// 或反过来放宽成"谁都能撤"）。
+    #[test]
+    fn creator_recall_authority_is_wired_on_both_ends() {
+        let group = include_str!("group_announcements.rs");
+        let chat = include_str!("chat.rs");
+        let gossip = include_str!("../network/transport/gossip.rs");
+
+        // 钉的是**选档那两行**，不是那个标识符在文件里出现过 —— 受众提示那半个分支
+        // 也写着同一个标识符，只断言"出现过"会把它当成已接上（本仓在存在性断言上反复付账）。
+        assert!(
+            group.contains(
+                "let authority = if is_creator {\n            crate::protocol::RecallAuthority::GroupCreator"
+            ),
+            "群撤回命令必须按本地 creator 现选档位；只留纯函数 = 功能根本没接上"
+        );
+        assert!(
+            !group.contains("CancelNotify::LocalOnly"),
+            "发起侧不该用 LocalOnly（那等于发起撤回的人自己不再通知对端）"
+        );
+        assert!(
+            group.contains("g.creator == s.device_id"),
+            "群主身份必须现读本地库里那份 creator；换成别的来源就是把授权交给发帧人自报"
+        );
+        assert!(
+            !chat.contains("RecallAuthority::GroupCreator"),
+            "单聊没有群主这一档：那边出现 GroupCreator 等于让任何人撤任何消息"
+        );
+        assert_eq!(
+            gossip.matches("recall_receive_allowed(").count(),
+            1,
+            "接收侧的授权判据只许这一处出口（两处各写一份迟早漂，也最容易漏掉跨会话那条）"
+        );
     }
 }

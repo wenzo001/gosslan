@@ -958,8 +958,8 @@ CASES: list[Case] = [
         "     注入方式：从 `content_features()` 的并集里摘掉那一项。",
         file=TAURI / "src" / "protocol.rs",
         injections=[(
-            "        | CONTENT_FEATURE_RENDER\n        | CONTENT_FEATURE_FILE_CANCEL\n}",
-            "        | CONTENT_FEATURE_RENDER\n}",
+            "        | CONTENT_FEATURE_RENDER\n        | CONTENT_FEATURE_FILE_CANCEL\n        | CONTENT_FEATURE_CREATOR_RECALL\n}",
+            "        | CONTENT_FEATURE_RENDER\n        | CONTENT_FEATURE_CREATOR_RECALL\n}",
         )],
         cmd=cargo("test", "--lib", "file_cancel_frame_is_advertised_distinct_and_round_trips"),
         cwd=TAURI,
@@ -991,7 +991,14 @@ CASES: list[Case] = [
         "撤回照走）⇒「两个撤回命令各调一次取消」那条形状判据必须红。",
         file=TAURI / "src" / "commands" / "chat.rs",
         injections=[(
-            "    crate::commands::cancel_transfer_for_recalled_message(&s, &target).await;",
+            (
+                "    crate::commands::cancel_transfer_for_recalled_message(\n"
+                "        &s,\n"
+                "        &target,\n"
+                "        crate::commands::CancelNotify::Peers,\n"
+                "    )\n"
+                "    .await;"
+            ),
             "    let _ = 0;",
         )],
         cmd=cargo(
@@ -1090,5 +1097,42 @@ CASES: list[Case] = [
         cwd=TAURI,
         expect_fail_hint="已存在的同名文件一个字节都不许动",
         tags=["rust", "file", "path", "new-guards"],
+    ),
+
+    Case(
+        name="接收侧不校验会话归属 ⇒ 群主特权变成跨会话删除别人消息的通道",
+        why="`recall_receive_allowed` 里那条 `target_conv != conv_id` 是 2026-10-28 与群主特权"
+        "     **同批**补的闸：作者档时代它只泄露自己的内容，有了群主档之后，A 群群主可以拿"
+        "     一条 A 群的合法信封去清 B 群里别人的消息（`materialize_recall` 按 msg_id 全表清）。\n"
+        "     注入方式：把那条归属判据摘掉（其余原样，编译照过）⇒ 接收侧授权矩阵必须红在"
+        "     「作者本人也不许跨会话撤回」那一格。",
+        file=TAURI / "src" / "protocol.rs",
+        injections=[(
+            "            if target_conv != conv_id {\n                return false;\n            }\n",
+            "",
+        )],
+        cmd=cargo("test", "--lib", "--features", "bluetooth", "recall_receive_allowed_matrix"),
+        cwd=TAURI,
+        expect_fail_hint="作者本人也不许跨会话撤回",
+        tags=["rust", "protocol", "privacy", "new-guards", "group-owner-recall"],
+    ),
+    Case(
+        name="群撤回命令把选档退回「永远 Author」 ⇒ 特权整体消失而纯函数用例照绿",
+        why="授权分两半：`recall_verdict` 那套规则（纯函数，单测全覆盖）与**命令层按本地"
+        "     creator 现选档**（接线）。只测前一半时，后一句被改掉会得到"
+        "     「全部用例绿、功能为零」——本仓在后台作业上吃过同形账。\n"
+        "     注入方式：把选档的群主那一支换成 `Author`（编译照过、撤回照走）⇒ 接线判据必须"
+        "     红在「必须按本地 creator 现选档位」。",
+        file=TAURI / "src" / "commands" / "group_announcements.rs",
+        injections=[(
+            "let authority = if is_creator {\n            crate::protocol::RecallAuthority::GroupCreator",
+            "let authority = if is_creator {\n            crate::protocol::RecallAuthority::Author // 注入",
+        )],
+        cmd=cargo(
+            "test", "--lib", "--features", "bluetooth", "creator_recall_authority_is_wired_on_both_ends"
+        ),
+        cwd=TAURI,
+        expect_fail_hint="群撤回命令必须按本地 creator 现选档位",
+        tags=["rust", "protocol", "privacy", "new-guards", "group-owner-recall"],
     ),
 ]
