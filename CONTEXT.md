@@ -20,13 +20,19 @@
   照常在它自己的列表里可见。这是口径，不是遗漏：撤回的语义边界就是"聊天时间线"。
 - **静默事件行** —— `system / pin / reaction / remind / recall` 一类不进气泡时间线、
   不计未读、不改预览的机器事件。它们**没有"撤回"这个语义**（本来就看不见）。
-- **可撤行（Recallable）** —— 撤回能作用的种类，2026-10-28 拍板的分母 =
-  **跨设备同源**的那些行：`text / code / image / file / merge` 五种气泡
-  加 `announcement / todo / poll` 三张卡。两类明确**不在内**：
-  · 静默事件行（撤它们不是离链而是回滚那个动作，且 `todo_update` 是 LWW 状态改动，撤不动）；
-  · `system` 提示行（`msg_id = sys-<uuid4>` 由每台设备各自生成、不广播 ⇒ 群主撤它只在自己那台消失，
-    开了入口就是"以为全群撤了"的假同步）。
-  群主特权**不扩大这个分母**，只取消"必须是作者"和"5 分钟窗口"两条限制。
+- **可撤行（Recallable）** —— 撤回能作用的种类，**两档共用同一份**：
+  `text / code / image / file / merge`。三类明确**不在内**，各有实测理由：
+  · 静默事件行（`pin / reaction / remind / todo_update / recall`…）：本来就不显示在时间线上，
+    「撤」它们不是离链而是回滚那个动作；`todo_update` 是 LWW 状态改动，撤不动也没东西可看；
+  · `system` 提示行：`msg_id = sys-<uuid4>` 由**每台设备各自生成、不广播**
+    （`commands::insert_system_message`）⇒ 拿它发撤回只有群主自己那台消失 = 假同步；
+  · **卡片**（`announcement / todo / poll`）：它们**没有独立真源** —— 看板取数是
+    `messages WHERE kind IN ('todo','todo_update')`、公告栏是
+    `kind IN ('announcement','announcement_delete')`，库里没有 `group_todos` / 公告表
+    ⇒ 撤掉那张卡 = 本体一起消失且不可恢复。这一条曾被写成「群主档多三张卡、卡片离链本体照旧」，
+    那是**假事实**（2026-10-28 review 抓到）；要让卡片「离链但本体留着」，前置条件是先给
+    看板与公告栏建自己的真源（见 ADR-0023 §3.6）。
+  群主特权**不扩大这个分母**，只取消「必须是作者」和「5 分钟窗口」两条限制。
 
 ## 群与权限
 

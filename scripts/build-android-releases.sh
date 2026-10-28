@@ -196,9 +196,35 @@ LOG="/tmp/gosslan-android-$ABI.log"
   : >"$MARKER"   # 早于本次构建的产物一律不算
 
   echo "==> 构建 ${ABI}（${MODE}）…"
-  if ! "${CMD[@]}" --features bluetooth --target "$ABI" >"$LOG" 2>&1; then
+  # 依赖仓库**限流**是这一层的瞬时故障，不是工程问题：2026-10-28 CI 实测
+  # `buildSrc` 配置阶段解析 `kotlin-gradle-plugin:2.0.21` 被 repo.maven.apache.org 回
+  # `Received status code 429`，而同一个仓库 10:17 那趟全绿 ⇒ 红的是网络对面，不是这份代码。
+  # 所以只对"依赖取不到"这一类退避重试；编译/签名/校验错误**不重试** ——
+  # 那些重试只会把 CI 拖长并掩盖真因（本仓最反感的是"重试到绿"而不是"修到绿"）。
+  attempt=1
+  built=0   # **本轮**是否构建成功：FAIL 是跨 ABI 的全局量，拿它当控制流会把第二个 ABI
+            # 已经成功的构建误 continue 掉（aarch64 失败过就再也不会打包 armv7）。
+  while :; do
+    if "${CMD[@]}" --features bluetooth --target "$ABI" >"$LOG" 2>&1; then
+      built=1
+      break
+    fi
+    if [ "$attempt" -lt 3 ] \
+      && grep -qE "status code 429|status code 5[0-9][0-9]|Could not resolve all artifacts|Could not resolve org\.|Could not GET" "$LOG"; then
+      echo "    ⚠️ 依赖仓库限流/抖动（第 $attempt 次尝试失败），退避后重试…"
+      grep -E "Could not (resolve|GET)|status code" "$LOG" | head -3 | cut -c1-200 | sed 's/^/    · /'
+      attempt=$((attempt + 1))
+      sleep $((30 * attempt))
+      continue
+    fi
     print_gradle_failure "$LOG"
+    if [ "$attempt" -gt 1 ]; then
+      echo "    ❌ 已重试 $attempt 次仍失败（不是单次限流，是真问题）"
+    fi
     FAIL=1
+    break
+  done
+  if [ "$built" != 1 ]; then
     continue
   fi
 

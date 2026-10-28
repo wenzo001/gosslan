@@ -657,7 +657,6 @@ export const enUS: MessageDict = {
   "msg.recall": "Recall",
   "msg.recallConfirm": "Recall this message? Others will see \"Message recalled\"; it cannot be undone.",
   "msg.recallConfirmOwner": "Recall “{name}”’s message? Content: “{snip}”. Everyone in the group will see “Message recalled”, and it cannot be undone.",
-  "msg.recallConfirmOwnerCard": "Recall this card from \"{name}\"? It only leaves the chat timeline (tasks and announcements stay in their own lists); it cannot be undone.",
   "msg.recallDone": "Recalled",
   "msg.recallFail": "Failed to recall",
   "msg.renderAsText": "Show as plain text",

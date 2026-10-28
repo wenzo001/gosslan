@@ -24,11 +24,11 @@ import { haptic } from "@/utils/haptics";
 import { shouldStartLongPress, shouldSwallowLongPressRelease } from "@/utils/longPress";
 import { shouldPreventContextMenu } from "@/utils/contextMenu";
 import {
-  isCreatorRecallableKind,
   isRecallableKind,
   isWithinRecallWindow,
   recalledRowKey,
 } from "@/utils/recall";
+import { previewBody } from "@/utils/messages";
 import type { MessageGroupSide } from "@/utils/messageKinds";
 import { cancelSendChannelFor } from "@/utils/cancelSend";
 import { cancelOutcome, groupResendNotice, messageCancelNotice } from "@/utils/cancelFeedback";
@@ -907,8 +907,9 @@ function canRecallNow(): boolean {
   if (mine.value && isWithinRecallWindow(props.message.ts) && isRecallableKind(props.message.kind)) {
     return true;
   }
-  // 群主档：替别人撤、或撤自己早就过窗的那条，分母多三张卡。
-  return isGroupOwnerHere.value && isCreatorRecallableKind(props.message.kind);
+  // 群主档：替别人撤、或撤自己早就过窗的那条。分母与作者档**同一份**（卡片没有独立真源，
+  // 撤卡等于删本体，见 utils/recall.ts 与 ADR-0023 §3.6）。
+  return isGroupOwnerHere.value && isRecallableKind(props.message.kind);
 }
 
 /** 已撤回那一行显示哪句话：撤的人不是作者 ⇒ 说清是群主干的（索引缺失退回通用文案）。 */
@@ -1151,10 +1152,10 @@ function doRecall() {
 const recallConfirmBody = computed(() => {
   if (!(isGroupOwnerHere.value && !mine.value)) return t("msg.recallConfirm");
   const name = props.senderName || chat.nicknameOf(props.message.sender_id);
-  if (!isRecallableKind(props.message.kind)) {
-    return t("msg.recallConfirmOwnerCard", { name });
-  }
-  const snip = (props.message.content || "").replace(/\s+/g, " ").trim().slice(0, 40);
+  // 摘要必须走 `previewBody` 那一份同源实现：直接切 `content` 的话，`image` / `file`
+  // 的载荷是 JSON，会把**本机绝对路径**贴进弹窗（载荷形状见 commands/files.rs 的 name/path/size），
+  // 而 merge / todo 那类会得到 '{"title":"群聊的聊天记录"' 这种东西。
+  const snip = previewBody(props.message.kind, props.message.content, 40);
   return t("msg.recallConfirmOwner", { name, snip });
 });
 
