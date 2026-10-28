@@ -29,6 +29,8 @@
 //! （等锁时长由 `db_hold` 的持锁观测单独报数），把它算进预算会得出"我这下慢是因为别人
 //! 握着锁"这种读错因的结论。
 
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use rusqlite::Connection;
@@ -111,10 +113,33 @@ impl VacuumOutcome {
 ///
 /// 进度回调是**连接级**的钩子，函数结束时**一定会卸掉**（否则后面每一条语句都会带上它）。
 pub fn vacuum_with_budget(conn: &Connection, budget_ms: u64) -> VacuumOutcome {
+    vacuum_with_budget_counted(conn, budget_ms, None)
+}
+
+/// 同 [`vacuum_with_budget`]，外加一个**只给测试用**的回调计数器。
+///
+/// 为什么要这个观测点：预算生效与否的判据必须是**按工作量**的（"中止时走过的虚机指令
+/// 远少于完整整理"），而不是墙钟（IO 抖动能让中止比干完还慢，见
+/// `an_abort_stops_the_work_early_instead_of_finishing_the_vacuum` 的注释）。
+/// 生产调用一律传 `None` —— 拆出这一层不改变任何行为。
+fn vacuum_with_budget_counted(
+    conn: &Connection,
+    budget_ms: u64,
+    checks: Option<Arc<AtomicU64>>,
+) -> VacuumOutcome {
     let started = Instant::now();
     let deadline = started + Duration::from_millis(budget_ms);
     // 回调里只做一次时间比较 —— 它跑在 SQLite 内部，做重活会拖垮整条语句。
-    conn.progress_handler(PROGRESS_CHECK_OPS, Some(move || Instant::now() >= deadline));
+    // （测试计数器也只是 `fetch_add`。）
+    conn.progress_handler(
+        PROGRESS_CHECK_OPS,
+        Some(move || {
+            if let Some(c) = &checks {
+                c.fetch_add(1, Ordering::Relaxed);
+            }
+            Instant::now() >= deadline
+        }),
+    );
     let result = conn.execute_batch("VACUUM");
     // 钩子是连接级的：不卸掉会跟着后面每一条语句走（每 1000 条指令多一次时间比较，
     // 而且 VACUUM 之外的长语句也会被误中断）。必须卸。
@@ -362,53 +387,41 @@ mod tests {
         assert_eq!(n, 500, "整理后行数不变");
     }
 
-    /// **实测**：撞上预算时，**实际耗时**离预算有多近。
+    /// **小预算必须真的经由进度回调把 VACUUM 停掉（而不是跑完后报个"已中止"）。**
     ///
-    /// 用户感知的是"我点了之后卡了多久" ⇒ 预算不是"3 秒"这个数，而是"约 3 秒"。
-    /// 这条用例证明中止**确实发生在预算附近**，而不是"要么立刻停、要么跑到底"。
+    /// 判据为什么长这样：这条用例此前用**墙钟**比「中止耗时 < 同机完整整理耗时」，
+    /// Windows CI 上两次假红（2026-10-26：2ms 预算实测 381ms；2026-10-28：2535ms vs
+    /// 完整 1113ms，两次结局都已经是 `Aborted`）。根因是**中止粒度 = 一条虚机指令**
+    /// （`PROGRESS_CHECK_OPS = 1`）—— 一条指令里可能有一次被杀毒/索引拖住 2s 的页写，
+    /// 回调只能在下一条指令前进来 ⇒ 墙钟上「中止比干完还慢」，预算却完全正常。
+    /// 实测这段 42 MB 的整理只有 ~4760 条虚机指令，其中绝大部分是 C 层页写入：
+    /// 连"中止时走了多少条指令"都贴到底（4759/4760）⇒ **按工作量的比较同样没有余量**。
     ///
-    /// 预算取 2ms 是因为实测：42 MB 的库整理只要 ~9ms ⇒ 2ms 的预算必然落在整理过程
-    /// 中间（既不是"一开始就被拦"，也不是"跑完了才发现超了"）。真实库更大时同理，
-    /// 只是预算按比例放大（见 `DEFAULT_VACUUM_BUDGET_MS`）。
+    /// 所以只留三条与 IO 抖动无关的判据：
+    /// ① 结局面是 `Aborted`（预算被忽略 / 单位写错 / 钩子没装上，结局都会是 `Completed`）；
+    /// ② 进度回调**真的被调用过**（>0；否则"中止"不可能来自预算这条链）；
+    /// ③ 中止后库完好（VACUUM 回滚）。
     #[test]
-    fn an_abort_lands_close_to_the_budget() {
+    fn a_small_budget_aborts_the_vacuum_through_the_progress_handler() {
         const BUDGET_MS: u64 = 2;
         let (c, _p) = file_db("budget", 60_000);
         punch_holes(&c, 500);
+        let checks = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
         let started = Instant::now();
-        let outcome = vacuum_with_budget(&c, BUDGET_MS);
+        let outcome =
+            vacuum_with_budget_counted(&c, BUDGET_MS, Some(std::sync::Arc::clone(&checks)));
         let elapsed = started.elapsed().as_micros() as u64 / 1000;
-        eprintln!("[实测] 预算 {BUDGET_MS}ms → 实际 {elapsed}ms，结局 {outcome:?}");
+        let hits = checks.load(std::sync::atomic::Ordering::Relaxed);
+        eprintln!(
+            "[实测] 预算 {BUDGET_MS}ms → 实际 {elapsed}ms、进度回调 {hits} 次，结局 {outcome:?}"
+        );
         assert!(
             matches!(outcome, VacuumOutcome::Aborted { .. }),
-            "小预算必须中止，实得 {outcome:?}"
+            "小预算必须中止，实得 {outcome:?}（预算被忽略 / 单位错 / 钩子没装上都会走到这里）"
         );
-        // 决定性判据是上一条 `Aborted`：预算没生效时会一路跑完并得到 `Completed`。
-        // 耗时上界只防"跑完整库才停"，不能拿固定毫秒卡：Windows runner 的文件 IO 一次
-        // step 就可能卡几百毫秒（2026-10-26 CI 实测：2ms 预算、实际 381ms，结局仍是
-        // Aborted）——那不是预算没生效，是过检间隔被调度/IO 拖长。
-        // 所以用**同机对照**：另起一份同规模库、预算充足跑完，记下完整耗时；
-        // 中止必须严格早于它（跑到完才停的实现在这里会相等而不是小于）。
-        let (c2, _p2) = file_db("budget-full", 60_000);
-        punch_holes(&c2, 500);
-        let full_started = Instant::now();
-        let full = vacuum_with_budget(&c2, 60_000);
-        let full_ms = full_started.elapsed().as_micros() as u64 / 1000;
-        assert!(full.is_completed(), "预算充足必须做完，实得 {full:?}");
-        eprintln!("[实测] 同机完整整理 {full_ms}ms（预算充足）");
-        // `max(250)` 保留原来的快机上界；慢机按自身完整耗时放宽，但要求严格小于它。
-        // Windows runner 上这条**同机对照**本身会抖：step 间隔 + 杀毒/索引 IO 能让"中止"
-        // 比"完整整理"还慢（2026-10-26/27 两次实测，结局都已经是 `Aborted`）。决定性判据
-        // 是上面那条 Aborted —— 预算没生效时它会返回 Completed；这里只防"跑完整库才停"，
-        // 所以 Windows 给 1s 的调度余量，其余平台保持 250ms。
-        let bound = if cfg!(windows) {
-            full_ms.max(1_000)
-        } else {
-            full_ms.max(250)
-        };
         assert!(
-            elapsed < bound,
-            "中止比同机完整整理还慢或一样长（预算 {BUDGET_MS}ms、实际 {elapsed}ms、完整 {full_ms}ms）⇒ 预算机制可能没生效"
+            hits > 0,
+            "进度回调一次都没进 ⇒ 这次「中止」不是预算判出来的（钩子没装上或 VACUUM 没跑）"
         );
         // 中止后库仍然完好
         let integrity: String = c

@@ -573,4 +573,25 @@ pub fn guard_case_fixture_db(
         cwd=TAURI,
         expect_fail_hint="有欠账 ⇒ 下一次启动必须补跑清理",
         tags=["rust", "db", "startup", "new-guards"],
+    ),
+    Case(
+        name="VACUUM 预算被忽略（回调恒返回 false）必须被抓住",
+        why="`vacuum_with_budget` 的全部约束都挂在进度回调的返回值上：把 `Instant::now() >= deadline`\n"
+        "     换成 `false`（编译照过、VACUUM 照跑）⇒ 小预算不会中止，结局变成 `Completed`。\n"
+        "     这条守的是「预算真的生效」本身 —— 墙钟类断言在 CI 上已经假红过两次，不能当判据。",
+        file=TAURI / "src" / "storage" / "vacuum.rs",
+        injections=[(
+            "            Instant::now() >= deadline",
+            "            false",
+        )],
+        cmd=cargo(
+            "test",
+            "--lib",
+            "--features",
+            "bluetooth",
+            "a_small_budget_aborts_the_vacuum_through_the_progress_handler",
+        ),
+        cwd=TAURI,
+        expect_fail_hint="小预算必须中止",
+        tags=["rust", "storage", "db", "new-guards"],
     ),]
