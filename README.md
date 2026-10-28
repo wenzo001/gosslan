@@ -2,9 +2,10 @@
 
 > **小院儿**（中文名，zh 环境显示）/ **Gosslan**（英文名，en 环境显示）——同一个应用，安装后按系统语言自动显示对应名称；安装器界面同样跟随系统语言（中文系统中文界面、英文系统英文界面）。
 
-[![GitHub release](https://img.shields.io/github/v/release/fwd001/gosslan?sort=semver)](https://github.com/fwd001/gosslan/releases)
-[![Contributors](https://img.shields.io/github/contributors/fwd001/gosslan)](https://github.com/fwd001/gosslan/graphs/contributors)
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+[![GitHub release](https://img.shields.io/github/v/release/wenzo001/gosslan?sort=semver)](https://github.com/wenzo001/gosslan/releases/latest)
+[![Verify](https://img.shields.io/github/actions/workflow/status/wenzo001/gosslan/verify.yml?branch=main&label=verify)](https://github.com/wenzo001/gosslan/actions/workflows/verify.yml)
+[![Contributors](https://img.shields.io/github/contributors/wenzo001/gosslan)](https://github.com/wenzo001/gosslan/graphs/contributors)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](#-license)
 
 一个**没有中央服务器**的局域网即时通讯软件，界面高度模仿飞书 / 钉钉。
 数据**只存本机**（SQLite），节点间通过 **UDP 组播/广播发现 + TCP 点对点传输**直接通信，
@@ -12,6 +13,35 @@
 支持 **Windows / macOS / Android** 三端。
 
 > 技术栈：Tauri v2 · Rust · Vue 3 (Composition API) · TypeScript · Vite · **Tailwind CSS · Reka UI · Lucide 图标** · SQLite
+
+---
+
+## 📥 下载
+
+三个平台共用同一条 Release 渠道：**没有官网、没有应用商店、也不需要注册账号**。
+每次发版由 CI 出包并挂到 [Releases](https://github.com/wenzo001/gosslan/releases/latest)，
+按你的系统挑对应那一份即可（文件名里带平台与架构，不用看版本号也能认）：
+
+| 平台 | 首装下这一份 | 备注 |
+| --- | --- | --- |
+| **Windows x64** | `..._x64-setup.exe` | 常规版，用系统已装的 WebView2 |
+| **Windows x64（老机器 / 离线环境）** | `..._x64-setup-webview2-bundled.exe` | 把 WebView2 固定版本一起打包，体积更大但装得上；**只作首装兜底，不进更新渠道** |
+| **Windows ARM64** | `..._arm64-setup.exe`（同样有 bundled 那一档） | 骁龙本 / ARM 主机 |
+| **macOS Apple 芯片** | `..._aarch64.dmg` | Intel 机器取 `..._x64.dmg` |
+| **Android** | `...-arm64-v8a-release.apk` | 近十年手机基本都取这份；老机型另有 `armeabi-v7a` 那份 |
+
+校验件按平台的实际形状是三种，别以为"所有包都有一份 sha256"：
+
+- **Android**：两份 APK 各配一个 `.sha256`。
+- **Windows**：两份常规安装包（x64 / arm64）各配一个 `.sig`，供应用内更新验签；
+  `webview2-bundled` 那一档不带任何附件 —— 它不在更新渠道里。
+- **macOS**：首装用的 `.dmg` 没有附件；应用内更新取的其实是同一次发布里的
+  `Gosslan-arm64.app.tar.gz` / `Gosslan-x86_64.app.tar.gz`，这两份各配一个 `.sig`。
+
+**应用内自动更新**读的是同一次发布里的更新清单 `latest.json`（CI 每次发版重算，里面按平台
+列出包与签名）⇒ "有没有新版本"不依赖任何官方服务器。Android 不在这条更新渠道里（清单里没有 android 那一档）：发新版后重新安装 APK 即可。
+
+> 版本号一律不抄进这份文档：抄一次就会漂一次。现读用 `npm run version:show`，或直接看上面那颗徽标。
 
 ---
 
@@ -60,10 +90,44 @@
 
 ---
 
+## 🎯 为什么是它
+
+同类工具大多默认"要有个服务器"。小院儿把这条反过来了，几条原则与它们**实际意味着什么**：
+
+| 原则 | 实际意味着 |
+| --- | --- |
+| **没有中心服务器** | 官方不运营任何服务器，也没有账号体系。发现靠 UDP 组播/广播，传输是设备之间的 TCP；要跨 CGNAT 才需要**自己**架一台哑管道中继（ADR-0020），它只搬密文字节、不解析也不存储 |
+| **数据只在产生它的那台机器上** | 聊天库与文件都落本机（SQLite + Cache 目录），没有云备份 ⇒ 换设备要自己导出聊天记录（导出是产品能力：纯文字单文件） |
+| **加密不是开关** | X25519 + Ed25519 + ChaCha20-Poly1305 **恒开且不可关闭**；聊天窗顶部那把绿锁徽标就是它。想"临时关掉加密"在这款产品里做不到 |
+| **可靠性优先于新功能** | 消息一律先写离线队列、Ack 到达才删行；直发 / Gossip / 离线补发三条路径共用同一个 `msg_id` 幂等去重 ⇒ 同一句话不会因为你多按了一次就变成两条 |
+| **静默失败按缺陷处理** | 这个仓库最常见的修复形状是"给它补一个具名错误码 + 一行诊断读数"。判断依据是：能看见的故障可以修，看不见的故障只能传染 |
+| **一切声称都要能重跑** | 门禁步数、不变量条数、护栏条数这类数字不在文档里手写，由 `scripts/check-doc-numbers.mjs` 现算对账；不变量条目必须解析成真实存在的用例（`scripts/check-invariant-hooks.mjs`） |
+| **取舍有顺序** | 稳定 > 流畅 > 正确 > 原生体验 > 安全 > 可维护 > 扩展 > 新功能 —— 冲突时按这条排，不靠临时感觉（口径见 `docs/notes/memory-liveness-audit-2026-10-21.md`，`AI_RULES.md` 里写的是同一句话的短句版：「稳定性优先于新功能」） |
+
+---
+
+## 🚧 它不做什么（已知边界）
+
+写在这里是为了**别把这份 README 当成"什么都能干"的承诺**——每条都能指回代码或 ADR：
+
+- **不承诺跨网段默认可达**：默认范围是同一个局域网（外加蓝牙近距离）。两侧都在 CGNAT 后面时，
+  要么靠节点互相中继/手动端点（ADR-0014 / ADR-0016），要么自托管中继（ADR-0020，**可选**且官方不运营）。
+- **不承诺 Android 锁屏后无条件收到**：局域网通道开着期间才有前台服务守住监听，代价是一条常驻通知
+  （通知里可以直接停掉）。开机不自启、不申请电池优化白名单，Doze 与厂商省电仍会限制网络 ——
+  所以这句承诺是**带条件**的，条件写在设置页与这条边界里（ADR-0022）。
+- **没有语音/视频通话**，也没有"已读之外的送达回执时间线"这类运营向功能。
+- **不做云同步与多设备历史合并**：没有账号就没有服务端可存的地方，这是设计选择不是进度问题。
+- **群历史不是无底洞**：新成员入群会自动补拉群里的聊天与群任务（`network/group_history.rs`），
+  但补拉有边界与失败留痕，不承诺"整个群从第一条消息开始都在"。
+- **BLE 只用来发现本应用的对端**：清单里的蓝牙权限全部带 `neverForLocation`，
+  不做任何位置推断，因此也不会向用户索取定位权限（Android 12+ 的口径见 ADR-0015）。
+
+---
+
 ## 📁 项目结构
 
 > **不在本仓库里的配套项目**：公网中转服务器 **`gosslan-relay-server`** →
-> <https://github.com/fwd001/gosslan-relay-server>。零依赖 Node，只把两条连接拼成字节管道：不解析载荷、不落盘，
+> <https://github.com/wenzo001/gosslan-relay-server>。零依赖 Node，只把两条连接拼成字节管道：不解析载荷、不落盘，
 > 部署与运维文档（PM2 / systemd / Docker / 故障排查）都在那个仓库的 README 里。
 > ⚠️ 改到中继发往的**线格式**时必须**同一轮改两个仓库**：协议规格写在那边 README
 > 「协议规格」一节，客户端侧的记录层封装与拨号在这边（`src-tauri/src/transport/`）。
@@ -396,7 +460,7 @@ cd src-tauri && cargo test --features bluetooth
   三端已发布），留在路线图会误导 AI 以为还要"补分片协议"
 - **QUIC 切换**：`transport.rs` 的"分帧读写 + 建链"两原语可替换为 `quinn`，消息分发逻辑无需改动
 - **服务端中转** —— **已采用为"可选自托管"**（ADR-0020，2026-09-21）：
-  <https://github.com/fwd001/gosslan-relay-server>。它是**只管组网**的哑管道 —— 按口令准入、把两条连接拼成字节管道，
+  <https://github.com/wenzo001/gosslan-relay-server>。它是**只管组网**的哑管道 —— 按口令准入、把两条连接拼成字节管道，
   不解析帧、不落盘；跨 CGNAT（两侧都没有公网地址）时补一条链路，局域网能连时自然闲置。
   无账号、无注册、官方不运营，所以不构成"产品有个后台"。
   跨网段仍优先靠节点互相中继与手动端点（ADR-0016 / ADR-0014）
@@ -419,8 +483,8 @@ cd src-tauri && cargo test --features bluetooth
 
 感谢所有为本项目提交代码或参与贡献的人。按提交量排序，展示贡献最多的前 10 位：
 
-<a href="https://github.com/fwd001/gosslan/graphs/contributors">
-  <img src="https://contrib.rocks/image?repo=fwd001/gosslan&max=10" alt="贡献者头像" />
+<a href="https://github.com/wenzo001/gosslan/graphs/contributors">
+  <img src="https://contrib.rocks/image?repo=wenzo001/gosslan&max=10" alt="贡献者头像" />
 </a>
 
 特别感谢以下外部 PR 贡献者：
@@ -428,7 +492,7 @@ cd src-tauri && cargo test --features bluetooth
 - [**Ha1fice**](https://github.com/Ha1fice) — PR #17 · **收藏功能**（微信式独立存储）
 - [**yann9**](https://github.com/yann9) — PR #15 · **UI 优化**
 
-想参与贡献？欢迎提交 [Issue](https://github.com/fwd001/gosslan/issues) 或 [Pull Request](https://github.com/fwd001/gosslan/pulls)。
+想参与贡献？欢迎提交 [Issue](https://github.com/wenzo001/gosslan/issues) 或 [Pull Request](https://github.com/wenzo001/gosslan/pulls)。
 
 ---
 
