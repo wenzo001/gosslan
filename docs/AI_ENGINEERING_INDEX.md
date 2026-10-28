@@ -20,7 +20,7 @@
 | `docs/large-file-split-plan.md` | 大文件拆分计划（护栏锚点风险、下刀顺序） |
 | `docs/acceptance/stability-smoke-matrix.md` | 验证覆盖矩阵（判"有没有被测过"） |
 | `docs/acceptance/1.0-release.md` | 门禁步数对账的**活文档**（受 `check-doc-numbers.mjs` 管） |
-| `docs/adr/` | 架构决策记录（0007 版本化 / 0014 选路 / 0015 BLE / 0020 中继…） |
+| `docs/adr/` | 架构决策记录（0007 版本化 / 0014 选路 / 0015 BLE / 0020 中继 / 0022 安卓后台承诺…） |
 | `docs/aoci-usage.md` | AOCI 认知层工具手册（约束本体在 `AGENTS.md`） |
 | `docs/architecture/rc-5.0-report.md` | 5.0 发布候选验收报告（问题清单 / 矩阵 / 结论） |
 | `docs/notes/audit-fix-report-2026-10-24.md` | 2026-10-24 审计 18 条缺陷的处置、影响与验证读数（B1–B19） |

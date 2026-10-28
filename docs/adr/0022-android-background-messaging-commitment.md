@@ -24,6 +24,7 @@
 | 决策点 | 取定的形状 | 为什么是它 |
 |---|---|---|
 | 服务什么时候跑 | **局域网通道开着就跑，直到用户关掉通道** | 服务的唯一职责是保住 UDP/TCP/Gossip 的监听 socket。以"通道"为开关，服务的生命周期与它守的东西完全重合，不引入第二个状态机 |
+| 停服务接在哪 | **只接在两条"用户主动关通道"的命令出口**（`commands::stop_network`、`commands::set_channel_enabled("lan", false)`），**不接**在 `network::stop()` 里 | `network::start()` 的第一件事就是 `stop()`（换网卡 / 重开通道）。接在那里，每次重绑都会"销毁服务→重建"，而 Android 12+ **从后台重新拉起前台服务会被拒** —— 5s→30s 那条自动重试正好可能在后台跑 ⇒ 服务从此没了，而症状只是"锁屏后收不到消息"。落点差异由 `background_service_wiring_follows_the_lan_channel` 正反两格钉住 |
 | 前台服务类型 | `remoteMessaging` **＋** `connectedDevice`（双类型） | API 34 要求声明的类型**与实际做的事**相符：收消息＝remoteMessaging，同时持有蓝牙链路＝connectedDevice。只报一个会在真实用途上被判不符 |
 | 通知档位 | **低优先级**常驻通知 ＋ 通知里一条「停止后台连接」动作 | Android 8+ 强制：前台服务必须有常驻通知，那就把它做成**用户可见的开关出口**，而不是偷偷挂一条。用户能在不打开 App 的情况下停掉它 |
 | 用户主动停止后 | 不自动复活（本次进程内认用户的决定） | 「停止」是用户意图，自动重启等于把用户的决定当噪声 |
@@ -36,9 +37,13 @@ MainActivity.onCreate ─► BackgroundService.bootstrap(ctx) ─► nativeAttac
                                                               └ 缓存 JavaVM + 类引用
 
 network::start()（局域网通道起来）─► android_background::ensure_running() ─► BackgroundService.start()
-network::stop()（用户关通道）      ─► android_background::stop()          ─► BackgroundService.stop()
+stop_network / set_channel_enabled("lan", false)（用户关通道）─► android_background::stop(logger)
+                                                              ─► BackgroundService.stop()
 commands::get_runtime_diag()       ─► android_background::diag()          ─► running / types / lastStartError
 ```
+
+⚠️ 停服务这一格**不写在 `network::stop()` 上**（理由见 §2 那一行，代码里也有同一条 ⚠️）：
+两处声明一旦分叉，读文档的人会按文档去"补"那个根本不存在的接线。
 
 - Kotlin：`src-tauri/gen/android/app/src/main/java/com/gosslan/app/BackgroundService.kt`
 - Rust 桥：`src-tauri/src/android_background.rs`（非 Android 目标是三个空实现，
@@ -46,8 +51,9 @@ commands::get_runtime_diag()       ─► android_background::diag()          �
 - 清单：`src-tauri/gen/android/app/src/main/AndroidManifest.xml`
   （`FOREGROUND_SERVICE` + 两个类型权限 + `<service android:foregroundServiceType>`）
 - R8 keep：`scripts/android/proguard-gosslan.pro`（`gen/android` 那份只是注入副本）
-- 护栏：`lib_android_jni_tests.rs` 的三条（签名逐字对齐 / static 形态 / keep 名单双向）
-  都把这条新桥纳入了分母 —— **新桥不单独写一份检查，否则一定漂移**
+- 护栏（`lib_android_jni_tests.rs`）：JNI 签名逐字对齐 / static 形态 / keep 名单双向 这三条
+  都把新桥纳入分母，另加一条接线守卫 `background_service_wiring_follows_the_lan_channel`。
+  **新桥不单独写一份检查，否则一定漂移**
 
 ## 4. 明确不做（以及为什么）
 
@@ -82,6 +88,15 @@ commands::get_runtime_diag()       ─► android_background::diag()          �
 - 本 ADR 落地的这一批只做**骨架 + 接线 + 自检读数**：服务的启停路径、通知、停止动作、
   诊断那一行。
 - **真机验收由用户执行**（本机没有安卓设备，`verify:full` 的 Android 那档只
-  `cargo check --target aarch64-linux-android`，不编译 Kotlin）。Kotlin 侧本轮只跑到
-  本地 gradle 的 `compileDebugKotlin`，运行时行为（通知是否显示、类型是否被系统接受、
-  停止动作是否生效）**尚未在真机验证**。
+  `cargo check --target aarch64-linux-android`，不编译 Kotlin）。本机实际跑到的证据是
+  **编译级**的：`bash scripts/check-mobile.sh --bluetooth`（0 warning）、
+  `./gradlew :app:compileArmDebugKotlin`、`:app:compileArmReleaseKotlin`、
+  `:app:processArmDebugMainManifest` —— 最后那条的**合并产物**里现读到
+  `<service … foregroundServiceType="remoteMessaging|connectedDevice">` 与三个
+  `FOREGROUND_SERVICE*` 权限（`POST_NOTIFICATIONS` 由通知插件带进来，同样是现读不是推断）。
+  **运行时行为仍然没有证据**：通知是否显示、系统接受哪一档类型位、「停止」是否生效。
+- 真机那四格读什么：① 通知栏出现「Gosslan 正在后台接收消息」；② 锁屏后对端发消息能收到；
+  ③ 通知里点「停止后台连接」后通知消失且设置页诊断行变成「未运行」；
+  ④ 设置 → 诊断面板那一行的 `types` 不是 0（0 = 服务活着但系统没给前台地位，
+  就是 §5 那类被拒的形状，`lastError` 会带出机器码）。
+  对应手动冒烟行：`docs/acceptance/stability-smoke-matrix.md` 的 Smoke-3。

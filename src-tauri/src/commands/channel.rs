@@ -295,7 +295,7 @@ pub async fn set_channel_enabled(
                 network::stop(s).await;
                 // 用户关掉通道 ⇒ 后台连接的前台服务一起收掉（与 `stop_network` 同一条口径；
                 // 为什么不在 `network::stop` 里做，见 `network/mod.rs` 那段 ⚠️）
-                crate::android_background::stop();
+                crate::android_background::stop(&s.logger);
             }
             let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());
             db::set_lan_enabled(&dbc, enabled).ok();
