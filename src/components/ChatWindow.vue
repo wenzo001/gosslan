@@ -862,11 +862,16 @@ const pinnedItems = computed(() => {
   const convId = chat.activeConv;
   if (!convId) return [];
   const list = chat.messages[convId] ?? [];
+  // 先建 Map 再逐个取：原来对每个置顶 id 都 `find` 一遍，是 O(置顶数 × 消息数)。
+  const byId = new Map(list.map((m) => [m.msg_id, m] as const));
   return pinnedIds.value
-    .map((id) => list.find((m) => m.msg_id === id))
+    .map((id) => byId.get(id))
     .filter((m): m is NonNullable<typeof m> => !!m)
     .map((m) => ({ id: m.msg_id, text: previewText(m) }));
 });
+
+/** 模板里逐行判「这条置顶了吗」：数组 `includes` 是 O(置顶数)，Set 是 O(1)。 */
+const pinnedIdSet = computed(() => new Set(pinnedIds.value));
 
 /**
  * 一行里能显示几条置顶。**移动端只给 1 条** —— 一行放三个的话每个都被压成
@@ -1936,7 +1941,7 @@ function retryHistory() {
             :self-mention="selfMention"
             :reactions="reactionMap.get(item.msg_id) ?? EMPTY_REACTION_CHIPS"
             :reminder="reminderMap.get(item.msg_id) ?? null"
-            :pinned="pinnedIds.includes(item.msg_id)"
+            :pinned="pinnedIdSet.has(item.msg_id)"
             :can-react="canReact"
             :select-mode="multiSelect"
             :selected="selectedIds.has(item.msg_id)"

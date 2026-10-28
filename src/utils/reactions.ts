@@ -9,6 +9,18 @@
  * 每人只写自己那一格 ⇒ 不存在丢更新；版本号用 `(seq, msg_id)` ⇒ 任意到达顺序收敛。
  */
 import type { MessageRecord, ReactionPayload } from "@/types";
+import { createPayloadParseCache } from "./payloadParseCache.ts";
+
+/** 原始 JSON 的缓存（见 `payloadParseCache.ts`）；派生对象每次新建。 */
+const rawCache = createPayloadParseCache<unknown>();
+
+function rawOf(rec: MessageRecord): unknown {
+  const hit = rawCache.get(rec.msg_id, rec.content);
+  if (hit !== undefined) return hit;
+  const raw: unknown = JSON.parse(rec.content);
+  rawCache.set(rec.msg_id, rec.content, raw);
+  return raw;
+}
 
 export interface ReactionChip {
   /** 表情 token，如 "[赞]" */
@@ -31,7 +43,7 @@ export interface ReactionChip {
 export function parseReaction(rec: MessageRecord): ReactionPayload | null {
   if (rec.kind !== "reaction") return null;
   try {
-    const p = JSON.parse(rec.content) as Partial<ReactionPayload>;
+    const p = rawOf(rec) as Partial<ReactionPayload>;
     if (typeof p?.target !== "string" || !p.target) return null;
     if (typeof p?.emoji !== "string" || !p.emoji) return null;
     if (typeof p?.add !== "boolean") return null;

@@ -274,7 +274,10 @@ function onClear() {
     return;
   }
   confirmClear.value = false;
-  void api.clearLogs().then(load).catch(() => {});
+  void api
+    .clearLogs()
+    .then(load)
+    .catch((e) => app.toast(errorText(e, t("logs.clearFail")), "error"));
 }
 
 /**

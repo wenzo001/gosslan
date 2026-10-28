@@ -13,6 +13,29 @@
 
 ## [Unreleased]
 
+## [5.14.26] - 2026-10-28
+
+### 性能：折叠解析缓存与 O(1) 成员判定（审计 P2 #27 #28 #29 #30）
+
+- `utils/payloadParseCache.ts`：`msg_id` 绑定 payload ⇒ 解析结果是纯函数。reaction / pin /
+  remind / todo 四个折叠函数改为复用它，每批消息到达时的全量重扫不再对每条 `JSON.parse`
+  一遍；缓存同时记 content，同一 id 配不同 content（夹具常见）仍会重新解析。
+- `utils/messageHeight.ts`：任务卡片的 `todo_id` 解析走同一份缓存（它原先在 `bubbleCache`
+  的保护范围之外，每次估高都要重解析）。
+- `ChatWindow`：模板里逐行判置顶从数组 `includes`（O(置顶数)）改为 `Set`；置顶条从
+  `find`（O(置顶数×消息数)）改为先建 Map。
+- `useChatStore`：Ack 到达先查 `msg_id → conv_id` 反查表（消息不换会话，表不需失效），
+  命中就只扫一个会话；批量 50 个文件回执从 O(会话×消息) 降到 O(该会话消息数)。
+
+### 修复：三处静默与一处残留（审计 P2 #32 #33 #35）
+
+- `LogViewer` 清空日志失败不再完全静默（与同文件的复制/导出一样走 toast，新增
+  `logs.clearFail` 词条）。
+- `useBackLayer`：层被**非栈顶**释放时通知端口忘掉它记的 URL（此前 `Map` 里会留下
+  永不复查的条目）。`HistoryPort` 新增 `forget(layerId)`，真值表用例同步。
+- `UpdatePanel` 的体积格式化改为 import `utils/format` 的 `formatBytes`（此前自建一份
+  口径不同：KB 取整、没有 GB 档）；新增判据：`src` 下出现第二份 `formatBytes` 即红。
+
 ## [5.14.25] - 2026-10-28
 
 ### 加固：IPC 入参校验层（审计 P1 #10 第一批）

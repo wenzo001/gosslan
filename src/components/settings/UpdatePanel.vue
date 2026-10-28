@@ -3,6 +3,8 @@ import { computed, ref, watch } from "vue";
 import Spinner from "@/components/ui/Spinner.vue";
 import { t } from "@/i18n";
 import type { UpdaterErrorCode, UpdaterState } from "@/updater/service";
+// 字节格式化的唯一家（审计 P2 #35）：这里曾有一份口径不同的私有实现（KB 取整、没有 GB 档）。
+import { formatBytes } from "@/utils/format";
 
 const props = defineProps<{ state: UpdaterState; supported: boolean }>();
 const emit = defineEmits<{
@@ -69,12 +71,6 @@ const statusText = computed(() => {
       return t("settings.updates.idle");
   }
 });
-
-function formatBytes(n: number): string {
-  if (n >= 1024 * 1024) return `${(n / (1024 * 1024)).toFixed(1)} MB`;
-  if (n >= 1024) return `${Math.round(n / 1024)} KB`;
-  return `${n} B`;
-}
 
 const progressLabel = computed(() => {
   const { downloaded, total } = props.state;

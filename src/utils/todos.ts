@@ -15,6 +15,18 @@
  * **只动归档位** = 任何群成员（用户 2026-09-24）。两边都有各自的用例表。
  */
 import type { MessageRecord } from "@/types";
+import { createPayloadParseCache } from "./payloadParseCache.ts";
+
+/** 原始 JSON 的缓存（见 `payloadParseCache.ts`）；派生对象每次新建。 */
+const rawCache = createPayloadParseCache<Record<string, unknown>>();
+
+function rawOf(rec: MessageRecord): Record<string, unknown> {
+  const hit = rawCache.get(rec.msg_id, rec.content);
+  if (hit !== undefined) return hit;
+  const raw = JSON.parse(rec.content) as Record<string, unknown>;
+  rawCache.set(rec.msg_id, rec.content, raw);
+  return raw;
+}
 
 /**
  * 任务状态取值 —— **与 Rust `protocol::TODO_STATUSES` 必须一致**，
@@ -447,7 +459,7 @@ export function parseTodo(rec: MessageRecord): TodoDef | null {
   // （Silent，不打扰全群）。它们同属一条 LWW 序列，所以折叠时一视同仁。
   if (rec.kind !== "todo" && rec.kind !== "todo_update") return null;
   try {
-    const p = JSON.parse(rec.content) as Record<string, unknown>;
+    const p = rawOf(rec);
     if (typeof p.todo_id !== "string" || !p.todo_id) return null;
     // 「这一格没说」= 键不存在 **或** 值本端读不出合法值（后者含未来新增的档位：
     // 本端表达不了就等于没说，宁可沿用自己的已知值，也不要每来一份新载荷就回落默认值抖一次）。

@@ -20,6 +20,8 @@ function makePort(landing: "pushState" | "hash" | null = "pushState", refuseBack
   const entries: unknown[] = [];
   /** 端口被要求退的是**哪一层**的条目（多层同时开着时必须按层判）。 */
   const popped: number[] = [];
+  /** 被通知「忘掉 URL」的层（非栈顶释放时）。 */
+  const forgotten: number[] = [];
   const port: HistoryPort = {
     push(state) {
       if (landing === null) return null;
@@ -32,8 +34,11 @@ function makePort(landing: "pushState" | "hash" | null = "pushState", refuseBack
       entries.pop();
       return true;
     },
+    forget(layerId) {
+      forgotten.push(layerId);
+    },
   };
-  return { port, entries, popped };
+  return { port, entries, popped, forgotten };
 }
 
 test("压一层 / 返回一次：只关最上面那层", () => {
@@ -135,6 +140,7 @@ test("端口压条目失败时：层照常能关，只是没有历史条目（�
       entries.pop();
       return true;
     },
+    forget() {},
   };
   const back = createBackStack(port);
   const closed: string[] = [];
@@ -184,6 +190,21 @@ test("释放时把「退的是哪一层」报给端口", () => {
   const topId = (entries[entries.length - 1] as { gosslanBackLayer: number }).gosslanBackLayer;
   releaseTop();
   assert.deepEqual(popped, [topId], "关栈顶层：端口收到的必须是那一层的 id");
+});
+
+test("关闭非栈顶层：必须让端口忘掉那一层的 URL（否则 Map 里留下永不复查的记录）", () => {
+  const { port, entries, forgotten } = makePort();
+  const back = createBackStack(port);
+  const releaseBottom = back.push(() => {});
+  const releaseTop = back.push(() => {});
+  const bottomId = (entries[0] as { gosslanBackLayer: number }).gosslanBackLayer;
+  const topId = (entries[1] as { gosslanBackLayer: number }).gosslanBackLayer;
+
+  releaseBottom();
+  assert.deepEqual(forgotten, [bottomId], "非栈顶释放 ⇒ 报的是被摘掉那一层的 id");
+  releaseTop();
+  assert.deepEqual(forgotten, [bottomId], "栈顶释放走 back()，不该再报 forget（那条记忆由 back 自己清）");
+  assert.notEqual(bottomId, topId);
 });
 
 test("正常落点（pushState）不会多吃一次 pop", () => {
