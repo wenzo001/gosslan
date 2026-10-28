@@ -63,7 +63,7 @@ commands::get_runtime_diag()       ─► android_background::diag()          �
 | 电池优化白名单（`REQUEST_IGNORE_BATTERY_OPTIMIZATIONS`） | 这是要用户去系统弹窗里点"允许"的强索取，且各家 ROM 行为不一致；等真机读数证明常驻通知不够用再谈 |
 | 厂商保活（小米/华为后台限制引导） | 那是按 ROM 的运营工作，不是代码能兑现的承诺 |
 | Doze 例外 / `WAKE_LOCK` 常驻 | 前台服务在 Doze 下网络仍会被限制 —— **这是 §5 那句"条件"的来源**，靠代码绕不开 |
-| 断点续传的协议级前缀指纹 | 同轮审计 #24：现有 size＋`.part` 头部校验已覆盖实际故障形状，加协议字段要全端同步 ⇒ 代价大于收益，**已否证**（见 `docs/notes/stability-audit-orbit-compare-2026-10-27.md` §12） |
+| 断点续传的协议级前缀指纹 | 同轮审计 #24：现有 size＋`.part` 头部校验已覆盖实际故障形状，加协议字段要全端同步 ⇒ 代价大于收益，**已否证**（见 `docs/archive/notes/stability-audit-orbit-compare-2026-10-27.md` §12） |
 | 盘满真机注入 | 用户 2026-10-28 明确"真机不需要盘满注入"；归类判据走单元用例与纯函数 |
 
 ## 5. 诚实边界（文案必须带上，不许写成"永不掉线"）
