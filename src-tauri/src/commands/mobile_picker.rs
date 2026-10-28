@@ -89,8 +89,13 @@ pub fn sniff_media_ext(head: &[u8]) -> &'static str {
 #[cfg_attr(not(target_os = "android"), allow(dead_code))]
 pub const UNSAFE_IMAGE_EXTS: &[&str] = &["heic", "heif"];
 
-/// 文件名消毒：去掉目录分隔符与控制字符，避免写到缓存目录之外（路径穿越）。
-pub fn sanitize_file_name(name: &str) -> String {
+/// 文件名消毒（**改写式**）：把目录分隔符与控制字符换成 `_`，再剥掉前导 `.`。
+///
+/// ⚠️ 与 `network::file::safe_file_name`（**拒绝式**：越界直接 `None`）是**两套语义**，
+/// 不要合并（审计 P2 #37）：这条服务于"从系统选择器拿到的建议文件名"——用户选的文件
+/// 不该因为名字里有 `/` 就整个失败，改写后落进缓存目录最符合直觉；而协议来路的文件名
+/// 必须拒绝，因为对端可以借此探测/覆盖路径。
+pub fn rewrite_file_name_chars(name: &str) -> String {
     let cleaned: String = name
         .chars()
         .map(|c| match c {
@@ -162,13 +167,13 @@ pub async fn import_picked_file(
     };
     let ext = sniff_media_ext(&head);
     let name = name_from_content_uri(&path)
-        .or_else(|| suggested_name.map(|n| sanitize_file_name(&n)))
+        .or_else(|| suggested_name.map(|n| rewrite_file_name_chars(&n)))
         .unwrap_or_else(|| format!("gosslan-{}.{ext}", db::now_ms()));
     // 目标名必须**保证不存在**：前端多选是并发的（CONCURRENCY=2），两个 URI 解不出名字的
     // 文件会在同一毫秒落到同一个 `gosslan-<ms>.jpg`，而 `rename` 到已存在的路径是
     // **静默覆盖** —— 第一份字节被换掉时它可能正在被哈希/分片发送。真机形状：
     // 一次发 9-10 张总有 1-2 张预览不出或内容错位，单独发同一张必成功。
-    let dest = crate::network::file::unique_path(&dir, &sanitize_file_name(&name));
+    let dest = crate::network::file::unique_path(&dir, &rewrite_file_name_chars(&name));
     std::fs::rename(&tmp, &dest).map_err(|e| format!("落地所选文件失败：{e}"))?;
 
     // 🟦 HEIC/HEIF → JPEG 自动转码（Android 跨平台兼容）

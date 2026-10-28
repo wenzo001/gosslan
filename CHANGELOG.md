@@ -13,6 +13,17 @@
 
 ## [Unreleased]
 
+## [5.14.24] - 2026-10-28
+
+### 可维护性：两套文件名清洗函数改名消歧（审计 P2 #37）
+
+- `commands::sanitize_file_name` → `rewrite_file_name_chars`：它是**改写式**（把 `/`、`\`、
+  控制字符换成 `_`、剥前导 `.`），服务于"从系统选择器拿到的建议文件名"；而
+  `network::file::safe_file_name` 是**拒绝式**（越界直接 `None`），服务于协议来路。
+  两者语义确实不同、**不要合并**，所以只改名 + 在注释里写清各自的适用面；测试名同步
+  （`rewrite_file_name_chars_replaces_separators_instead_of_failing`）。
+
+
 ## [5.14.23] - 2026-10-28
 
 ### 加固：三条「对端可控输入 / 静默降级」（审计 P2 #24 #25 #26）
