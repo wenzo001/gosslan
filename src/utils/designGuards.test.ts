@@ -1280,6 +1280,79 @@ test("文本选择默认方向：在真实 style.css 上做减法 → 两半各�
   );
 });
 
+/**
+ * `@media <条件> { … }` 的**全部**段落正文（同一条件在样式表里可能有多段，只取第一段＝漏检）。
+ *
+ * ⚠️ 先剥注释：style.css 里那些说明文字**反复点到**这些类名，不剥就会读到判据自己那段注释
+ *   里的字面量（本仓在"提取器会读注释"上翻过车），也会读到隔壁那条规则的说明。
+ */
+function mediaBlocksOf(css: string, cond: string): string[] {
+  const stripped = css.replace(/\/\*[\s\S]*?\*\//g, " ");
+  const out: string[] = [];
+  let from = 0;
+  for (;;) {
+    const at = stripped.indexOf(`@media ${cond}`, from);
+    if (at < 0) return out;
+    const open = stripped.indexOf("{", at);
+    if (open < 0) return out;
+    let depth = 0;
+    let i = open;
+    for (; i < stripped.length; i += 1) {
+      const ch = stripped[i];
+      if (ch === "{") depth += 1;
+      else if (ch === "}") {
+        depth -= 1;
+        if (depth === 0) break;
+      }
+    }
+    out.push(stripped.slice(open + 1, i));
+    from = i + 1;
+  }
+}
+
+test("卡片文字的选字只开桌面档：fine 开、coarse 一处不开、两个组件挂对、click 认得划选", () => {
+  const css = readFileSync(new URL("../style.css", import.meta.url), "utf8");
+  const FINE_RULE = /\.gosslan-card-text\s*\{[^}]*user-select:\s*text/;
+  const fine = mediaBlocksOf(css, "(pointer: fine)");
+  assert.ok(fine.length >= 1, "锚点没命中：style.css 里没有 `@media (pointer: fine)` 那一段（形状变了？）");
+  assert.ok(fine.some((b) => FINE_RULE.test(b)),
+    "`.gosslan-card-text` 没在 fine 那一段里开回 user-select:text ⇒ 桌面划不中卡片文字");
+  // 穷举：coarse 的段落**每一段**都不许出现它 —— 那个类走的是 `.gosslan-selectable`，
+  // 而它是触屏长按让路给原生选字的落点标记（shouldStartLongPress 的 hitSelectable），
+  // 一旦在 coarse 里开着，长按任务卡/文件卡就弹不出操作面板。
+  for (const block of mediaBlocksOf(css, "(pointer: coarse)")) {
+    assert.doesNotMatch(block, /gosslan-card-text/,
+      "触屏那档不许开 `.gosslan-card-text` —— 开了等于把长按面板的落点让给系统选区");
+  }
+  // 减法：把 fine 挪成 coarse ⇒ 两半各自必须翻脸（证明两格都承重，不是各写一句漂亮话）。
+  const moved = css.replace("@media (pointer: fine)", "@media (pointer: coarse)");
+  assert.notEqual(moved, css, "锚点没命中：那条 fine 规则改了形状");
+  assert.ok(mediaBlocksOf(moved, "(pointer: coarse)").some((b) => /gosslan-card-text/.test(b)),
+    "减法没生效：改成 coarse 之后应当被上面那条 doesNotMatch 抓到");
+  assert.ok(!mediaBlocksOf(moved, "(pointer: fine)").some((b) => FINE_RULE.test(b)),
+    "减法没生效：fine 那一段挪走之后不该再算开启");
+
+  const card = readFileSync(join(import.meta.dirname, "..", "components", "TodoCardBubble.vue"), "utf8");
+  const file = readFileSync(
+    join(import.meta.dirname, "..", "components", "message", "MessageFileBubble.vue"), "utf8",
+  );
+  for (const [name, src] of [["TodoCardBubble.vue", card], ["MessageFileBubble.vue", file]] as const) {
+    assert.ok(/class="gosslan-card-text/.test(src), `${name}：卡片文字没挂 .gosslan-card-text`);
+    assert.ok(!src.includes("gosslan-selectable"),
+      `${name}：不该改用 .gosslan-selectable —— 那个类在触屏下把长按让给原生选字，操作面板就没了`);
+  }
+  // 划选结束那一下浏览器照样发 click，而两张卡的**根部整块可点**（打开面板 / 打开文件）⇒
+  // 必须认"这次是划选不是打开"。判据用 selectionTextWithin（选区与该元素相交才算），
+  // 不是 hasTextSelection()：后者会把"别处还留着选区、这次真想点开"一起吞掉。
+  assert.ok(/@click="openPanel"/.test(card)
+    && /function openPanel\(e: MouseEvent\) \{[\s\S]{0,600}?selectionTextWithin\(card\)/.test(card),
+    "TodoCardBubble：openPanel 没认划选 ⇒ 划一下描述就把群任务面板弹了出来");
+  assert.ok(/@click="onCardClick"/.test(file)
+    && /function onCardClick\(e: MouseEvent\) \{[\s\S]{0,400}?selectionTextWithin\(card\)/.test(file),
+    "MessageFileBubble：根部没走 onCardClick（或它没认划选）⇒ 划一下文件名就把文件打开了");
+  console.log("· 卡片文字选字：fine 段 1 条开启 + coarse 段全部不含 + 两组件挂对 + 两处 click 认划选");
+});
+
 // ---------------- ⑨ 文本输入类的焦点提示：不许画外圈方框 ----------------
 //
 // 真实反馈（用户 2026-09-16）：「整个应用的输入框在焦点态会默认有个主题色的方框，很难看」。
