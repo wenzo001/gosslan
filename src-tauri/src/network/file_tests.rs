@@ -3593,3 +3593,19 @@ mod send_complete_guard_tests {
 
 
 }
+
+/// 审计 P2 #25：`transfer_id` 来自对端，拼 `.part` 路径前必须消毒。
+#[test]
+fn retained_part_path_rejects_unsafe_transfer_ids() {
+    use crate::network::file::retained_part_path;
+    let dl = std::path::Path::new("/tmp/dl");
+    let ok = retained_part_path(dl, "5f0c2a7e-1b2c-4d5e-8f90-123456789abc")
+        .expect("合法 UUID 应给出路径");
+    assert!(ok.ends_with("5f0c2a7e-1b2c-4d5e-8f90-123456789abc.part"));
+    for bad in ["../secret", "a/b", "", "..", "x".repeat(65).as_str()] {
+        assert!(
+            retained_part_path(dl, bad).is_none(),
+            "不安全的 transfer_id 必须被拒：{bad:?}"
+        );
+    }
+}
