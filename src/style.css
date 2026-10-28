@@ -515,8 +515,9 @@ body {
  *
  * ⚠️ 往**消息内容列（`[data-msg-col]`）里**补这个类之前，先看上面第 ② 条用途：触屏下它同时是
  *   "长按让路给原生选字"的落点标记（`MessageItem.hitSelectable`），手指落在这块文字上的长按
- *   就不再弹自定义操作面板。所以**消息列里的卡片描述与文件气泡的文件名故意不开**：
- *   任务卡另有结构化的「复制」（`copyableText` → `cardCopyText`），开原生选字是拿确定的能力换一半便利。
+ *   就不再弹自定义操作面板。所以卡片文字（任务卡描述、文件气泡的文件名）**不用这个类**，
+ *   走下面 `.gosslan-card-text` 那条**只开桌面档**的规则：触屏保持长按归面板
+ *   （任务卡另有结构化的「复制」，`copyableText` → `cardCopyText`）。
  *
  * ⚠️ 写在根元素上而不是 `*`：`user-select` 会继承，一条根规则就覆盖整棵树。换成 `*` 是给
  *   每个元素都下一份**显式** none —— 那会把继承切断：正文里的链接、表情、行内 span 这些
@@ -566,6 +567,31 @@ select,
     -webkit-user-select: text;
     user-select: text;
     -webkit-touch-callout: default;
+  }
+}
+
+/* ── 桌面档：卡片里的文字也允许拖选（负责人 2026-10-28 拍板「只开桌面档」）──
+ *
+ * 落点是任务卡的描述与文件气泡的文件名 —— 这两处此前**只有**界面 chrome 那一份默认（不可选），
+ * 文件卡片连结构化的「复制」都没有（`copyableText` 只覆盖 text / code / card），
+ * 于是"把文件名抄下来"在桌面上只能手打。
+ *
+ * 刻意**不复用** `.gosslan-selectable`：那个类同时是触屏长按让路给原生选字的落点标记
+ * （`utils/textSelection.isSelectableTextTarget` → `shouldStartLongPress` 的 `hitSelectable`），
+ * 挂上去之后手机上长按任务卡/文件卡就再也弹不出操作面板 —— 那正是上一段成对收放要防的事。
+ * 这里只按指针档打开绘制层的可选性，触屏那一档一个字都没动。
+ *
+ * 为什么这一档与长按面板**机制上不可能**撞车：`shouldStartLongPress` 第一句
+ * `if (!c.isMobile) return false`（桌面走右键菜单，没有长按菜单），而右键菜单在有选区时
+ * 由 `utils/contextMenu` 放行走系统那条 ⇒ 混合设备（有触屏的桌面）上两个手势也是各走各的。
+ *
+ * ⚠️ 划选结束那一下浏览器照样发 `click`，卡片根部是整块可点的（`role="button"` ⇒ 打开面板/打开文件）。
+ * 认"这次是划选不是打开"的判据在组件的 click 出口里（`selectionTextWithin(e.currentTarget)`），
+ * **不靠这条 CSS 规则**；改了那两处记得一起改。 */
+@media (pointer: fine) {
+  .gosslan-card-text {
+    -webkit-user-select: text;
+    user-select: text;
   }
 }
 

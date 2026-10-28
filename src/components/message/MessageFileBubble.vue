@@ -6,6 +6,7 @@ import { computed, type CSSProperties } from "vue";
 import type { FileMeta } from "@/types";
 import { rgba } from "@/utils/color";
 import { formatBytes } from "@/utils/format";
+import { selectionTextWithin } from "@/utils/textSelection";
 import { FILE_KIND_COLORS, FILE_KIND_ICONS, extBadgeLabel, fileKindOf } from "@/utils/fileKind";
 import { useAppStore } from "@/stores/useAppStore";
 import { Download, RotateCw } from "lucide-vue-next";
@@ -88,6 +89,21 @@ const extLabel = computed(() => extBadgeLabel(props.meta.name, t("common.file"))
 const pct = computed(() => Math.round((props.progress ?? 0) * 100));
 /** 整卡是否可点：就绪 + 允许点。Android 自己发的文件 tappable=false ⇒ 鼠标手型/title/键盘都不给。 */
 const canOpen = computed(() => props.ready && props.tappable !== false);
+
+/**
+ * 点整卡打开文件（`canOpen` 时才成立）。
+ *
+ * 划选文件名（桌面档 `.gosslan-card-text`，负责人 2026-10-28 拍板"只开桌面档"）结束那一下
+ * 浏览器照样发 `click` ⇒ 选区就在这张卡里时不算"打开"。判据用 `selectionTextWithin`
+ * （选区与该元素相交才算），不用 `hasTextSelection()`：后者会把"别处还留着一次选区、
+ * 这次真的想打开文件"一起吞掉。触屏那一档文件名本来不可选，走不到这个 return。
+ */
+function onCardClick(e: MouseEvent) {
+  if (!canOpen.value) return;
+  const card = e.currentTarget;
+  if (card instanceof Element && selectionTextWithin(card)) return;
+  emit("open");
+}
 </script>
 
 <template>
@@ -98,7 +114,7 @@ const canOpen = computed(() => props.ready && props.tappable !== false);
     :title="canOpen ? t('msg.clickToOpen') : undefined"
     :role="canOpen ? 'button' : undefined"
     :tabindex="canOpen ? 0 : undefined"
-    @click="canOpen && emit('open')"
+    @click="onCardClick"
     @keydown.enter.prevent="canOpen && emit('open')"
     @keydown.space.prevent="canOpen && emit('open')"
   >
@@ -111,7 +127,7 @@ const canOpen = computed(() => props.ready && props.tappable !== false);
         <X v-else class="h-5 w-5" />
       </div>
       <div class="min-w-0 flex-1">
-        <div class="line-clamp-2 break-all text-body font-medium leading-snug">{{ meta.name }}</div>
+        <div class="gosslan-card-text line-clamp-2 break-all text-body font-medium leading-snug">{{ meta.name }}</div>
         <div v-if="failed" class="mt-0.5 text-caption text-[var(--card-danger)]">{{ t("msg.sendFailed") }}</div>
         <div v-else class="mt-0.5 flex items-center gap-1 text-caption text-[var(--card-ink-soft)]">
           <span>{{ extLabel }}</span>

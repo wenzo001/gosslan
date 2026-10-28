@@ -17,6 +17,7 @@ import { useMemberProfile } from "@/composables/useMemberProfile";
 import { useImagePreviewStore } from "@/stores/useImagePreview";
 import MentionText from "@/components/message/MentionText.vue";
 import TodoImageThumb from "@/components/TodoImageThumb.vue";
+import { selectionTextWithin } from "@/utils/textSelection";
 import {
   TODO_CATEGORY_LABEL_KEY,
   TODO_CATEGORY_TEXT_CLASS,
@@ -133,6 +134,12 @@ function openCardImage(i: number) {
  */
 function openPanel(e: MouseEvent) {
   if ((e.target as HTMLElement | null)?.closest("a")) return;
+  // 划选卡片描述（桌面档 `.gosslan-card-text`）结束那一下浏览器照样发 `click` ——
+  // 选区就在这张卡里 ⇒ 这一次手势是"选中"，不是"打开面板"。负责人 2026-10-28 拍板只开桌面档，
+  // 代价就是这里必须自己认出来；判据用现成的 `selectionTextWithin`（选区与该元素相交才算），
+  // 不用 `hasTextSelection()`：那会把"别处还留着一次选区、这次真的想点开卡片"也吞掉。
+  const card = e.currentTarget;
+  if (card instanceof Element && selectionTextWithin(card)) return;
   emit("open-panel");
 }
 function openPanelKey(e: KeyboardEvent) {
@@ -279,7 +286,7 @@ function statusText(s: TodoStatus): string {
          否则虚拟列表按旧值排布 ⇒ 相邻消息互相遮挡，那是本仓另一条已记的契约）。 -->
     <p
       v-if="description"
-      class="mt-1 max-h-[calc(3*1.625em)] overflow-hidden whitespace-pre-wrap break-words px-3 text-meta leading-relaxed text-[var(--card-ink-soft)]"
+      class="gosslan-card-text mt-1 max-h-[calc(3*1.625em)] overflow-hidden whitespace-pre-wrap break-words px-3 text-meta leading-relaxed text-[var(--card-ink-soft)]"
     >
       <!-- 描述里的 @ 走与聊天正文**同一份**渲染件（§9）：段怎么切、@到算不算我、
            显示成什么，全部在 utils/linkify 那一处，这里只负责画出来。 -->

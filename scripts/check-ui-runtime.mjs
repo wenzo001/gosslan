@@ -8595,6 +8595,42 @@ async function runRowPair(cdp, url) {
       "fill == backgroundColor", JSON.stringify({ kindLabel, tailFill: g && g.tailFill, bubbleBg: g && g.bubbleBg }));
   }
 
+  // ---- 卡片文字的**桌面档**选字（负责人 2026-10-28 拍板「只开桌面档」）----
+  //
+  // 静态判据只能证明那条规则写在 `@media (pointer: fine)` 里；这一格证明级联**算出来的值**
+  // 真的是 text（同族坑：规则存在但被更高优先级的声明压过 ⇒ 整条是死的，静态全绿而用户选不中）。
+  // 指针档一起打印：探针这台机器读到的是 fine ⇒ "触屏那一档保持不可选"只有静态判据，
+  // 这一格不许被读成两档都实测过。
+  const CARD_TEXT_KINDS = [
+    ["文件气泡", "file", null],
+    ["群任务卡", "todo", JSON.stringify({
+      todo_id: "t-cardtext", title: "卡片文字选字", status: "pending",
+      creator: "peer-a", assignees: ["peer-a"], priority: "normal",
+      category: "normal", number: 2, description: "把网关那一格的验收补完",
+    })],
+  ];
+  for (const [kindLabel, kind, content] of CARD_TEXT_KINDS) {
+    check("卡片选字：挂一条" + kindLabel, await mount(FAR, false, kind, content), "install 成功");
+    const cs = await cdp.eval(`(() => {
+      const el = document.querySelector('.gosslan-card-text');
+      const par = el ? el.parentElement : null;
+      return {
+        coarse: matchMedia('(pointer: coarse)').matches,
+        found: !!el,
+        text: el ? (el.textContent || '').trim().slice(0, 8) : "",
+        us: el ? getComputedStyle(el).userSelect : "missing",
+        parentUs: par ? getComputedStyle(par).userSelect : "no-parent",
+      };
+    })()`);
+    check("卡片选字·" + kindLabel + "：桌面档里这块文字算出来是 user-select:text",
+      cs.found === true && cs.coarse === false && cs.us === "text" && cs.text.length > 0,
+      "coarse=false + 这块 = text", JSON.stringify(cs));
+    // 开的是这一块，不是整张卡：父层必须仍然是 none（卡片根部挂着 `role="button"`，
+    // style.css 给它的就是 none；整卡可点 ⇒ 选中一片卡片文字再把指针抬起来会误触"打开"）。
+    check("卡片选字·" + kindLabel + "：父层仍是 none（开启范围只到这一块文字）",
+      cs.parentUs === "none", "parent = none", JSON.stringify(cs));
+  }
+
   // ---- 正文表情的尺寸：放大不许把行盒撑高（用户 2026-10-28 要 1.45em）----
   //
   // 估高按"几行文字"算，真画出若因为表情把行高顶上去，两者就对不上 ⇒
