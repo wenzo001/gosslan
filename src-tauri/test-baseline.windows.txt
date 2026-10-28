@@ -1033,7 +1033,7 @@ storage::disk_space::tests::available_bytes_is_readable_for_a_real_dir
 storage::disk_space::tests::space_verdict_folds_headroom_into_the_decision
 storage::disk_space::tests::unknown_space_is_not_the_same_as_not_enough
 storage::disk_space::tests::volume_root_is_parsed_for_drive_and_unc_paths
-storage::vacuum::tests::an_abort_lands_close_to_the_budget
+storage::vacuum::tests::a_small_budget_aborts_the_vacuum_through_the_progress_handler
 storage::vacuum::tests::budget_zero_aborts_and_leaves_the_database_intact
 storage::vacuum::tests::generous_budget_completes_and_the_table_still_reads
 storage::vacuum::tests::note_wording_separates_abort_from_failure
