@@ -762,16 +762,16 @@ mod tests {
 
     /// 文件名消毒：不允许写出缓存目录之外，也不允许空名字。
     #[test]
-    fn sanitize_file_name_blocks_path_traversal() {
-        let escaped = super::sanitize_file_name("../../etc/passwd");
+    fn rewrite_file_name_chars_replaces_separators_instead_of_failing() {
+        let escaped = super::rewrite_file_name_chars("../../etc/passwd");
         assert!(
             !escaped.contains('/') && !escaped.contains('\\'),
             "消毒后不能含路径分隔符：{escaped}"
         );
-        assert_eq!(super::sanitize_file_name("a/b\\c.txt"), "a_b_c.txt");
-        assert_eq!(super::sanitize_file_name("   "), "file.bin");
-        assert_eq!(super::sanitize_file_name("...hidden"), "hidden");
-        assert_eq!(super::sanitize_file_name("正常名字.pdf"), "正常名字.pdf");
+        assert_eq!(super::rewrite_file_name_chars("a/b\\c.txt"), "a_b_c.txt");
+        assert_eq!(super::rewrite_file_name_chars("   "), "file.bin");
+        assert_eq!(super::rewrite_file_name_chars("...hidden"), "hidden");
+        assert_eq!(super::rewrite_file_name_chars("正常名字.pdf"), "正常名字.pdf");
     }
 
     /// **已经是好友的人，其好友申请不该再出现在「新朋友」里**（用户 2026-09-12 真机实测要求）。
