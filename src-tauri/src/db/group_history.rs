@@ -325,7 +325,12 @@ pub fn apply_group_history_page(
         }
         // 「先撤后到」的同一道闸（口径逐字照抄实时接收那一臂）：本机已经记着这条被撤回，
         // 就以已撤回形态入库，否则同步会把正文原样搬回来。
-        let (kind, content) = if is_recalled(conn, &item.msg_id) {
+        // 墓碑命中要**同会话**才算：这张表按 msg_id 建索引（收件热路径），
+        // 而历史同步是按会话跑的 ⇒ 这里显式比一次 conv，堵住"A 群的墓碑抹 B 群的行"。
+        let (kind, content) = if recall_source(conn, &item.msg_id)
+            .map(|(tconv, _)| tconv == conv_id)
+            .unwrap_or(false)
+        {
             (
                 crate::protocol::KIND_RECALLED.to_string(),
                 String::new(),

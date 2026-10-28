@@ -219,7 +219,7 @@ LOG="/tmp/gosslan-android-$ABI.log"
     fi
     print_gradle_failure "$LOG"
     if [ "$attempt" -gt 1 ]; then
-      echo "    ❌ 已重试 $attempt 次仍失败（不是单次限流，是真问题）"
+      echo "    ❌ 第 $attempt 次尝试仍失败（含首次，共重试 $((attempt - 1)) 次）⇒ 不是单次限流，是真问题"
     fi
     FAIL=1
     break

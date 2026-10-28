@@ -242,12 +242,29 @@ mod files_gate_tests {
             with_materialize += 1;
             // 顺序也要判：只要求"文件里出现过"的话，同一个文件里两处物化只接一处照样绿，
             // 或者把重算写在物化**之前**（那时末条还没变，算出来还是原文）也照样绿。
-            let m = src.find("materialize_recall(").unwrap();
-            let r = src.find("refresh_conversation_summary(").unwrap_or(usize::MAX);
-            assert!(
-                r != usize::MAX && r > m,
-                "{name}：撤回物化之后没有重算会话预览（找不到 / 或排在物化之前）⇒ 列表里还挂着原文"
-            );
+            // 逐次配对，不取首次下标：`m1 < r1 < m2` 这种形状（第一处物化后面接了重算、
+            // 第二处漏掉）用"首次 vs 首次"是看不见的 —— 上一版就是这么自称修好了却没修到位。
+            let mut from = 0usize;
+            let mut seen = 0usize;
+            while let Some(m) = src[from..].find("materialize_recall(") {
+                seen += 1;
+                let abs = from + m;
+                let r = src[abs..]
+                    .find("refresh_conversation_summary(")
+                    .map(|k| abs + k)
+                    .unwrap_or(usize::MAX);
+                let next_m = src[abs + 1..]
+                    .find("materialize_recall(")
+                    .map(|k| abs + 1 + k)
+                    .unwrap_or(usize::MAX);
+                assert!(
+                    r < next_m,
+                    "{name}：第 {seen} 处撤回物化后面没有紧跟重算（下一处物化在 {next_m}、重算在 {r}）\
+                     ⇒ 那一处漏接就是「列表里还挂着原文」"
+                );
+                from = abs + 1;
+            }
+            assert!(seen >= 1, "{name}：读到物化却一次都没扫到（提取器空转）");
         }
         assert_eq!(
             with_materialize, 3,
@@ -287,10 +304,18 @@ mod files_gate_tests {
             !chat.contains("RecallAuthority::GroupCreator"),
             "单聊没有群主这一档：那边出现 GroupCreator 等于让任何人撤任何消息"
         );
+        // 接收侧有**两个时刻**要判同一件事：撤回帧先到（目标已落库）、被撤的消息后到
+        // （先撤后到，那一刻才知道作者/类型/会话）。两处必须走**同一份**判据，
+        // 且后到那一处只复核、不再写墓碑 —— 钉的是这两个语义，不是"调用次数等于几"。
+        let judge_calls = gossip.matches("recall_receive_allowed(").count();
+        assert!(
+            judge_calls >= 2,
+            "接收侧两个时刻都该走那份判据，现数到 {judge_calls} 处 ⇒ 少一处就是有一条通道不复核"
+        );
         assert_eq!(
-            gossip.matches("recall_receive_allowed(").count(),
+            gossip.matches("db::insert_recall(").count(),
             1,
-            "接收侧的授权判据只许这一处出口（两处各写一份迟早漂，也最容易漏掉跨会话那条）"
+            "墓碑只许实时那一条写入口（到货那一臂只复核，多一个写点就是第二条状态来源）"
         );
     }
 }

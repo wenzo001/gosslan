@@ -107,7 +107,7 @@ pub async fn pin_group_message(
 /// 撤回一条群消息。两档授权（2026-10-28 负责人拍板，见 `docs/adr/0023`）：
 ///
 /// · **作者**：自己的消息，5 分钟窗口内，kind 在 `RECALLABLE_KINDS` 里 —— 今天的行为，没变；
-/// · **群主**：群里**任何人**的**任意一条可撤行**（多三张卡），**不看时间窗**。
+/// · **群主**：群里**任何人**的**任意一条可撤行**（分母与作者档同一份），**不看时间窗**。
 ///
 /// 群主身份只认**本机库里**那份 `groups.creator` —— 发帧人自报不作数（接收侧同理，
 /// 见 `protocol::recall_receive_allowed`）。没有中心权威就没有中心授权：这条特权之所以
@@ -150,10 +150,8 @@ pub async fn recall_group_message(
         }
         (authority, msg.sender_id.clone())
     };
-    // 群主替别人撤回 ⇒ 先如实提示"哪些人那侧可能不会消失"（协议零改动，老端按旧规则丢弃）。
-    if authority == crate::protocol::RecallAuthority::GroupCreator && author != s.device_id {
-        emit_creator_recall_audience(s, &group_id, &conv_id);
-    }
+    // 受众提示**排在发帧成功之后**（见下面那次 `?` 之后）：先弹"哪些人那侧可能不会消失"
+    // 而帧其实没发出去，是拿一句真话去盖一个假前提。
     // 附件：撤回前先把传输停掉（与单聊同一份实现；文本族是空操作）。
     crate::commands::cancel_transfer_for_recalled_message(
         s,
@@ -168,6 +166,10 @@ pub async fn recall_group_message(
     // 先发事件（走与普通消息同一条可靠管道），成功后再物化本地 ——
     // 顺序反了会出现「本地显示已撤回、但对端根本没收到」。
     send_group_payload(s, &group_id, crate::protocol::KIND_RECALL, content, None, None).await?;
+    // 群主替别人撤回 ⇒ 帧已经出去了，这时才说"哪些人那侧可能不会消失"（协议零改动，老端按旧规则丢弃）。
+    if authority == crate::protocol::RecallAuthority::GroupCreator && author != s.device_id {
+        emit_creator_recall_audience(s, &group_id, &conv_id);
+    }
     {
         let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());
         let seq = db::get_clock(&dbc, &conv_id);
