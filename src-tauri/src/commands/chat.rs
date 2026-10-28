@@ -350,6 +350,8 @@ pub async fn recall_message(
             &friend_db,
             msg.ts,
             db::now_ms(),
+            // 单聊没有"群主"这一档：永远按作者裁决。
+            crate::protocol::RecallAuthority::Author,
         )?;
         Ok(db::is_recalled(&dbc, &target_db))
     })
@@ -360,7 +362,12 @@ pub async fn recall_message(
     }
     // 附件：撤回前先把传输停掉（否则「气泡已撤回、字节照样在发」——这正是 5.6.0
     // 曾把附件排除在撤回之外的理由）。文本族没有台账行 ⇒ 这一步是空操作。
-    crate::commands::cancel_transfer_for_recalled_message(&s, &target).await;
+    crate::commands::cancel_transfer_for_recalled_message(
+        &s,
+        &target,
+        crate::commands::CancelNotify::Peers,
+    )
+    .await;
     let payload = crate::protocol::RecallPayload {
         target: target.clone(),
     };
@@ -375,6 +382,11 @@ pub async fn recall_message(
         let seq = db::get_clock(&dbc, &friend_db);
         db::insert_recall(&dbc, &friend_db, &target_db, &s_db.device_id, seq).ok();
         db::materialize_recall(&dbc, &target_db).ok();
+        // 会话预览那一行读的是 `conversations.last_msg`（存储列），不重算就是
+        // "正文已清空、列表上还挂着原文"。失败要留痕：静默漏掉等于这条修复没落地。
+        if let Err(e) = db::refresh_conversation_summary(&dbc, &friend_db) {
+            s_db.logger.warn("chat", format!("code=RECALL_PREVIEW_REFRESH_FAIL conv={friend_db}：{e}"));
+        }
     })
     .await
     .map_err(|e| format!("撤回物化被线程池中断: {e}"))?;
@@ -616,6 +628,8 @@ pub async fn send_message(
                 let Some(msg) = db::get_message_record(&dbc, &p.target) else {
                     return Err("要撤回的消息不存在".to_string());
                 };
+                // 这一层是 1:1 内核的第二道闸，永远按**作者**裁决：单聊没有群主那一档
+                // （群主特权只在群里，见 `commands::recall_group_message`）。
                 crate::protocol::recall_verdict(
                     &msg.sender_id,
                     &s.device_id,
@@ -624,6 +638,7 @@ pub async fn send_message(
                     &friend_id,
                     msg.ts,
                     db::now_ms(),
+                    crate::protocol::RecallAuthority::Author,
                 )?;
             }
             "render" => {

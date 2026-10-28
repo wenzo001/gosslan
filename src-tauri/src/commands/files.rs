@@ -1078,6 +1078,19 @@ pub async fn cancel_file_transfer(
     Ok(res)
 }
 
+/// 撤回停传输时的**通知范围**。
+///
+/// 群主撤回别人的消息那一档必须是 `LocalOnly`：那条 `recall` 帧本来就全群广播，收到它的
+/// 每台设备各自停本机那一笔就够；若每台都再发一份 `FileCancel`，一个撤回会变成 N 份取消
+/// 通知（回声），而真正的发送方自己也会收到那条帧、由它停自己的发。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum CancelNotify {
+    /// 发起撤回那一侧：停本机 + 通知对端（今天的行为）。
+    Peers,
+    /// 收到撤回帧那一侧：只停本机，不再对外广播。
+    LocalOnly,
+}
+
 /// 撤回一条**附件**消息时先把它的传输停掉（2026-10-28：附件也支持撤回）。
 ///
 /// 为什么必须一起做：撤回只改**消息行**，不 cancel 的话对端还在收字节 —— 这正是 5.6.0
@@ -1086,7 +1099,11 @@ pub async fn cancel_file_transfer(
 ///
 /// 非附件消息（`msg_id` 没有 `file-` / `gfile-` 前缀）是空操作；已传完的单也是空操作
 /// （取消是幂等的），都**不挡撤回本身**。
-pub(crate) async fn cancel_transfer_for_recalled_message(s: &Arc<AppState>, msg_id: &str) {
+pub(crate) async fn cancel_transfer_for_recalled_message(
+    s: &Arc<AppState>,
+    msg_id: &str,
+    notify: CancelNotify,
+) {
     let Some(tid) = transfer_id_of_owner(msg_id) else {
         return;
     };
@@ -1115,11 +1132,16 @@ pub(crate) async fn cancel_transfer_for_recalled_message(s: &Arc<AppState>, msg_
     // 通知名单在收尾**之前**读：落成 cancelled 之后就没人可通知了（与上面同一条顺序语义）。
     let notice = plan_cancel_notice(s, tid);
     let res = apply_local_cancel(s, tid, "user").await;
-    let notified = send_cancel_notice(s, tid, notice).await;
+    let notified = match notify {
+        CancelNotify::Peers => send_cancel_notice(s, tid, notice).await,
+        // 收到撤回帧的那一侧：只停自己。名单照读但不发 —— 广播交给发起方。
+        CancelNotify::LocalOnly => false,
+    };
     s.logger.info(
         "chat",
         format!(
-            "code=RECALL_CANCEL_TRANSFER msg={msg_id} tid={tid} cancelled={} notified={notified}",
+            "code=RECALL_CANCEL_TRANSFER msg={msg_id} tid={tid} cancelled={} notify={notify:?} \
+             notified={notified}",
             res.cancelled
         ),
     );

@@ -1992,9 +1992,18 @@ mod group_history_engine_tests {
                 .count()
         );
         let proto = code_flat(include_str!("../protocol.rs"));
+        // 清单**现取**而不是手抄：原来这里逐字抄了一遍 `content_features()` 的并集，
+        // 2026-10-28 加 `CONTENT_FEATURE_CREATOR_RECALL` 时它当场报"没声明群历史位"——
+        // 说的是假话（那位在），但没人会去核对。抄来的分母只会制造这种红。
+        let head = "pubfncontent_features()->u32{";
+        let at = proto
+            .find(head)
+            .unwrap_or_else(|| panic!("找不到 {head}：函数形状变了，这条判据要同步"));
+        let rest = &proto[at + head.len()..];
+        let advertised = &rest[..rest.find('}').unwrap_or(rest.len())];
         assert!(
-            proto.contains("pubfncontent_features()->u32{CONTENT_FEATURE_PULL|CONTENT_FEATURE_MERGE|CONTENT_FEATURE_FILE_EPOCH|CONTENT_FEATURE_FLEX_DM_KIND|CONTENT_FEATURE_GROUP_HISTORY|CONTENT_FEATURE_GROUP_FILE_RESUME|CONTENT_FEATURE_NUDGE|CONTENT_FEATURE_RENDER|CONTENT_FEATURE_FILE_CANCEL}"),
-            "本机没把群历史这一位声明出去 ⇒ 别人选源时永远问不到这台（能力位必须与门控同批改）"
+            advertised.contains("|CONTENT_FEATURE_GROUP_HISTORY"),
+            "本机没把群历史这一位声明出去 ⇒ 别人选源时永远问不到这台（能力位必须与门控同批改）。现读到：{advertised}"
         );
     }
 

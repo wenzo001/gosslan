@@ -1684,13 +1684,14 @@ mod tests {
     #[test]
     fn recall_verdict_covers_author_conversation_and_window() {
         let now = 1_000_000;
-        assert!(recall_verdict("me", "me", "text", "peer", "peer", now - 1, now).is_ok());
+        let author = RecallAuthority::Author;
+        assert!(recall_verdict("me", "me", "text", "peer", "peer", now - 1, now, author).is_ok());
         assert!(
-            recall_verdict("peer", "me", "text", "peer", "peer", now - 1, now).is_err(),
+            recall_verdict("peer", "me", "text", "peer", "peer", now - 1, now, author).is_err(),
             "非作者必须拒绝"
         );
         assert!(
-            recall_verdict("me", "me", "text", "other", "peer", now - 1, now).is_err(),
+            recall_verdict("me", "me", "text", "other", "peer", now - 1, now, author).is_err(),
             "目标不属于该会话必须拒绝"
         );
         assert!(
@@ -1701,7 +1702,8 @@ mod tests {
                 "peer",
                 "peer",
                 now - RECALL_WINDOW_MS,
-                now
+                now,
+                author
             )
             .is_ok(),
             "正好 5 分钟仍在窗口内"
@@ -1714,13 +1716,14 @@ mod tests {
                 "peer",
                 "peer",
                 now - RECALL_WINDOW_MS - 1,
-                now
+                now,
+                author
             )
             .is_err(),
             "超过 5 分钟必须拒绝"
         );
         assert!(
-            recall_verdict("me", "me", "text", "peer", "peer", 0, now).is_ok(),
+            recall_verdict("me", "me", "text", "peer", "peer", 0, now, author).is_ok(),
             "ts=0 的历史行只跳过时间判据，作者/会话仍是硬门槛"
         );
     }
@@ -1734,9 +1737,10 @@ mod tests {
     #[test]
     fn recall_accepts_user_content_and_rejects_machine_events() {
         let now = 1_000_000;
+        let author = RecallAuthority::Author;
         for kind in RECALLABLE_KINDS {
             assert!(
-                recall_verdict("me", "me", kind, "peer", "peer", now - 1, now).is_ok(),
+                recall_verdict("me", "me", kind, "peer", "peer", now - 1, now, author).is_ok(),
                 "{kind} 是用户内容，必须能撤回"
             );
         }
@@ -1751,10 +1755,9 @@ mod tests {
             "announcement",
             "announcement_delete",
             "recall",
-            "recalled",
             "render",
         ] {
-            let err = recall_verdict("me", "me", kind, "peer", "peer", now - 1, now)
+            let err = recall_verdict("me", "me", kind, "peer", "peer", now - 1, now, author)
                 .expect_err("机器事件不支持撤回");
             assert!(
                 err.contains("不支持撤回"),
@@ -1767,6 +1770,159 @@ mod tests {
             RECALLABLE_KINDS.as_slice(),
             ["text", "code", "merge", "image", "file"].as_slice(),
             "白名单本身也是口径：改名/加一种都要同时改前端 src/utils/recall.ts"
+        );
+    }
+    /// 群主特权那一档（负责人 2026-10-28：「群里群主可以随意撤回任何人的任何消息，不限制时间」）。
+    /// 四条闸各自必须单独承重：作者、时限、类型分母、会话归属 —— 混在一起测就分不清
+    /// 哪一条被拆掉了。
+    #[test]
+    fn recall_verdict_creator_branch_drops_author_and_window_only() {
+        let now = 1_000_000;
+        let owner = RecallAuthority::GroupCreator;
+        assert!(
+            recall_verdict(
+                "peer",
+                "me",
+                "text",
+                "group:g",
+                "group:g",
+                now - 10 * RECALL_WINDOW_MS,
+                now,
+                owner
+            )
+            .is_ok(),
+            "群主档既不看作者也不看时间窗"
+        );
+        // 三张卡在群主档里可撤：卡片离链，本体（看板 / 公告栏 / 文件台账）照旧可见。
+        for kind in ["announcement", "todo", "poll"] {
+            assert!(
+                recall_verdict("peer", "me", kind, "group:g", "group:g", now - 1, now, owner)
+                    .is_ok(),
+                "{kind} 是时间线上的卡片，群主必须能让它离链"
+            );
+        }
+        // 静默行与系统提示不在分母里：撤它们要么会造成假同步（sys- id 各设备不同），
+        // 要么会破坏墓碑集合。
+        for kind in ["system", "pin", "reaction", "remind", "todo_update", "recall"] {
+            let err = recall_verdict("peer", "me", kind, "group:g", "group:g", now - 1, now, owner)
+                .expect_err("静默行与系统提示不可撤");
+            assert!(
+                err.contains("不在群主可撤的分母里"),
+                "{kind} 的拒绝要说出分母，实际：{err}"
+            );
+        }
+        // 已撤回行：两档都拒，文案点名"墓碑"。
+        for auth in [RecallAuthority::Author, RecallAuthority::GroupCreator] {
+            let err = recall_verdict(
+                "me",
+                "me",
+                "recalled",
+                "group:g",
+                "group:g",
+                now - 1,
+                now,
+                auth,
+            )
+            .expect_err("已撤回行不能再次撤回");
+            assert!(err.contains("墓碑"), "实际：{err}");
+        }
+        // 会话归属是两档共同的硬门槛。
+        assert!(
+            recall_verdict("peer", "me", "text", "group:other", "group:g", now - 1, now, owner)
+                .is_err(),
+            "跨会话撤回必须拒绝 —— 这条洞只在群主特权出现后才致命"
+        );
+        // 分母关系本身也是口径：群主档 = 作者档 + 三张卡，且不得比作者档小。
+        for kind in RECALLABLE_KINDS {
+            assert!(
+                is_creator_recallable_kind(kind),
+                "{kind} 在作者档可撤，群主档不该更小"
+            );
+        }
+        assert_eq!(
+            CREATOR_RECALLABLE_KINDS.len(),
+            RECALLABLE_KINDS.len() + 3,
+            "群主档只比作者档多三张卡（announcement / todo / poll），多别处要同步改这条"
+        );
+    }
+
+    /// 接收侧授权矩阵（`gossip.rs` 用的就是这一份纯函数）。
+    /// 它与发送端分开，是因为这里比的是**本机库里**那份 `groups.creator`：
+    /// 发帧人自报"我是群主"不作数，而信封是 Ed25519 签的，`sender_id` 不可伪造。
+    #[test]
+    fn recall_receive_allowed_matrix() {
+        assert!(
+            recall_receive_allowed(Some(("me", "group:g", "text")), "me", "group:g", true, false, true),
+            "作者本人放行（今天的行为，不许因新判据而收窄）"
+        );
+        assert!(
+            !recall_receive_allowed(Some(("x", "group:g", "text")), "me", "group:g", true, false, true),
+            "普通成员替别人撤回必须拒"
+        );
+        assert!(
+            recall_receive_allowed(Some(("x", "group:g", "text")), "me", "group:g", true, true, true),
+            "本机记录里他是群主 ⇒ 放行"
+        );
+        assert!(
+            !recall_receive_allowed(Some(("x", "group:g", "pin")), "me", "group:g", true, true, true),
+            "群主档不得借 recall 通道撤静默行"
+        );
+        assert!(
+            !recall_receive_allowed(Some(("x", "group:g", "recalled")), "me", "group:g", true, true, true),
+            "已撤回行不在分母里"
+        );
+        assert!(
+            !recall_receive_allowed(Some(("me", "group:h", "text")), "me", "group:g", true, true, true),
+            "作者本人也不许跨会话撤回：conv_id 不同就是另一条会话的事"
+        );
+        assert!(
+            !recall_receive_allowed(Some(("x", "group:h", "text")), "me", "group:g", true, true, true),
+            "跨会话对群主档同样必须拒（这条闸少了它，A 群群主能清 B 群别人的消息）"
+        );
+        // 目标还没落库：群按"发送者是成员"，单聊放行 —— 这是"先撤后到"的兜底，不能收紧。
+        assert!(recall_receive_allowed(None, "me", "group:g", true, false, true));
+        assert!(!recall_receive_allowed(None, "me", "group:g", true, false, false));
+        assert!(recall_receive_allowed(None, "me", "peer-a", false, false, false));
+    }
+
+    /// 群主撤回的能力位：声明它**只为了算那句提示**，不门控任何帧。
+    #[test]
+    fn creator_recall_bit_is_advertised_and_audience_keeps_two_states_apart() {
+        assert_ne!(
+            content_features() & CONTENT_FEATURE_CREATOR_RECALL,
+            0,
+            "本机必须声明认得群主撤回，否则别人算出来的提示会把我们算成旧版"
+        );
+        assert_eq!(
+            kind_required_feature("recall"),
+            None,
+            "recall 不该进 kind 门控：帧本身所有版本都能解析，差别只在接收侧授权；\
+             塞进门控会让每次撤回都弹一句『渲染退化』的错话"
+        );
+
+        let members: Vec<String> = ["a", "b", "c"].iter().map(|s| (*s).to_string()).collect();
+        let (unsupported, unknown) = creator_recall_audience(
+            |id| match id {
+                "a" => Some(content_features()),
+                "b" => Some(content_features() & !CONTENT_FEATURE_CREATOR_RECALL),
+                _ => None,
+            },
+            &members,
+            "me",
+        );
+        assert_eq!(unsupported, vec!["b".to_string()], "只有确知缺位的那位算 unsupported");
+        assert_eq!(unknown, 1, "离线 / 没交换过 Hello 的算 unknown，不许并进 unsupported");
+
+        let hint = creator_recall_hint(&["小李".to_string()], 3);
+        assert!(
+            hint.contains("不会消失") && hint.contains("另有 3 位"),
+            "提示必须说清后果，实际：{hint}"
+        );
+        assert!(creator_recall_hint(&[], 0).is_empty(), "全员都认 ⇒ 一句都不该说");
+        let hint2 = creator_recall_hint(&[], 2);
+        assert!(
+            hint2.contains("版本未知") && !hint2.contains("版本较旧"),
+            "只有 unknown 时不许编出『版本较旧』这句，实际：{hint2}"
         );
     }
 }

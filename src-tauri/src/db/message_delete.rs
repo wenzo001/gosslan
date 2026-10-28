@@ -79,11 +79,15 @@ pub fn delete_messages(conn: &Connection, msg_ids: &[String]) -> Result<usize> {
     Ok(deleted)
 }
 
-/// 重算会话的末条摘要与未读（删消息后调用）。
+/// 重算会话的末条摘要与未读（删消息、撤回之后都要调用）。
 ///
 /// 预览文案走 `protocol::preview_text` —— 与发送时的口径**同一份实现**，
 /// 否则会出现"删掉末条后列表里显示的摘要格式与平时不一样"这种漂移。
-fn refresh_conversation_summary(conn: &Connection, conv_id: &str) -> Result<()> {
+///
+/// ⚠️ **撤回也必须调它**：`messages.content` 清空了，但会话列表那一行读的是
+/// `conversations.last_msg`（存储列），不重算就是"正文已撤回、预览还挂着原文"。
+/// 未读收敛（`MIN(unread, remaining)`）顺带在这同一条 SQL 里。
+pub fn refresh_conversation_summary(conn: &Connection, conv_id: &str) -> Result<()> {
     let bubble = crate::protocol::sql_kind_list(&[], |c| c == crate::protocol::KindClass::Bubble);
     let last: Option<(String, String, i64)> = conn
         .query_row(

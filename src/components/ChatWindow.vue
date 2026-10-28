@@ -44,6 +44,7 @@ import { foldReminders, type ReminderState } from "@/utils/reminders";
 import { foldPinned, isPinned } from "@/utils/pins";
 import { foldTodos, todoLiveMap, todoTombstoneIds } from "@/utils/todos";
 import { groupSide, isRenderedInTimeline } from "@/utils/messageKinds";
+import { recallTargetOf } from "@/utils/recall";
 import { shouldShowTimeDivider } from "@/utils/previewMetrics";
 import { activePopupKey } from "@/utils/popupRegistry";
 import { previewText } from "@/utils/messages";
@@ -210,6 +211,23 @@ const isSelfChat = computed(() => chat.activeConv === app.device?.device_id);
 const messages = computed(() =>
   (chat.messages[chat.activeConv ?? ""] ?? []).filter((m) => isRenderedInTimeline(m.kind)),
 );
+
+/**
+ * 「谁撤的」索引：撤回者身份本来就写在 `kind === "recall"` 那条静默事件行的 `sender_id` 上，
+ * 而上面那份 `messages` 把静默行滤掉了 ⇒ 这里读**原始**那份，按当前会话现推一次。
+ * 不新增消息字段、不加查询：索引的全部来源就是库里已有的那一行。
+ * 已知边界：撤回事件行落在已加载窗口之外时索引缺项 ⇒ 提示行退回通用文案
+ * （少说一句，也不骗人说"没人撤过"）。
+ */
+const recallSources = computed(() => {
+  const out: Record<string, string> = {};
+  for (const m of chat.messages[chat.activeConv ?? ""] ?? []) {
+    if (m.kind !== "recall") continue;
+    const target = recallTargetOf(m.content);
+    if (target) out[target] = m.sender_id;
+  }
+  return out;
+});
 
 /**
  * 消息是否还没加载完：`loadMessages` 完成前 `messages[convId]` 是 undefined。
@@ -1936,6 +1954,7 @@ function retryHistory() {
             :is-group="isGroup"
             :group-side="groupSideAt(index)"
             :sender-name="isGroup ? chat.nicknameOf(item.sender_id) : ''"
+            :recaller-id="recallSources[item.msg_id]"
             :group-reader-ids="isGroup && activeGroupId ? chat.groupReaderIds(activeGroupId, item.ts) : EMPTY_STRING_LIST"
             :show-unread-divider="index === unreadIndex"
             :highlight-id="highlightId"
