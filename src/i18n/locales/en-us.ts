@@ -17,6 +17,7 @@ export const enUS: MessageDict = {
   "common.dialog": "Dialog",
   "common.cancel": "Cancel",
   "common.retry": "Retry",
+  "errorBoundary.title": "Something went wrong here",
   "common.confirm": "Confirm",
   "common.clear": "Clear",
   "common.notSet": "Not Set",

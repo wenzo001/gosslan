@@ -20,6 +20,7 @@ import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import MessageItem from "@/components/MessageItem.vue";
 import VirtualList from "@/components/VirtualList.vue";
+import ErrorBoundary from "@/components/ui/ErrorBoundary.vue";
 import GroupMemberPanel from "@/components/GroupMemberPanel.vue";
 import GroupFilesPanel from "@/components/GroupFilesPanel.vue";
 import GroupTasksPanel from "@/components/GroupTasksPanel.vue";
@@ -1912,7 +1913,7 @@ function retryHistory() {
       >
         {{ t("chat.empty") }}
       </div>
-      <div v-else class="relative h-full min-h-0">
+      <ErrorBoundary v-else>
         <VirtualList
           ref="listRef"
           class="h-full transition-opacity duration-150 ease-out"
@@ -1989,7 +1990,7 @@ function retryHistory() {
         >
           {{ t("chat.history.loading") }}
         </div>
-      </div>
+      </ErrorBoundary>
 
       <!-- 窗口抖动：会话内临时灰字（不落库、不进虚拟列表，5s 后由 store 清掉） -->
       <div

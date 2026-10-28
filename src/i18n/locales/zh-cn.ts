@@ -18,6 +18,7 @@ export const zhCN: MessageDict = {
   "common.cancel": "取消",
   "common.confirm": "确定",
   "common.retry": "重试",
+  "errorBoundary.title": "这块内容出了点问题",
   "common.clear": "清除",
   "common.notSet": "未设置",
   "common.chooseFolder": "选择文件夹",
