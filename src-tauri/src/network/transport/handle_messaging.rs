@@ -116,6 +116,19 @@ async fn handle_messaging_arm(state: &Arc<AppState>, peer_id: &str, msg: Message
                 }
                 return;
             };
+            // 入站内容长度（审计 P1 #7）：发送侧的 5 万字符闸只约束本机用户。
+            // 超限**不落库、不 Ack**（不 Ack ⇒ 对端按链路策略重试/最终失败，
+            // 而不是"收下了但内容缺一半"）。阈值与判定共用发送侧那一份。
+            if !crate::commands::content_within_limit(&content) {
+                state.logger.warn(
+                    "chat",
+                    format!(
+                        "code=INBOUND_CONTENT_TOO_LONG msg={msg_id} kind={kind_str} chars={} from={from}",
+                        content.chars().count()
+                    ),
+                );
+                return;
+            }
             let name = resolve_nickname(state, &from);
             let preview = preview_content(&kind_str, &content);
             // 持锁块只做落库，返回带钳制 ts 的记录 + SQLite 的三态裁决；await 全部在锁外

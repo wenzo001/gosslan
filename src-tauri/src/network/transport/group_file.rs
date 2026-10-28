@@ -669,6 +669,17 @@ async fn handle_group_file_offer(
         return;
     };
 
+    // 落库前最后一道消毒（审计 P1 #13）：Offer 入口已消毒，但这一层是**写进表**之前
+    // 的最后位置 —— 坏 id 一旦进 `group_files`，后续所有按 id 拼 `<tid>.part` 的路径都跟着它走。
+    let Some(transfer_id) = file::safe_transfer_id(&transfer_id) else {
+        state.logger.warn(
+            "file",
+            format!(
+                "code=GROUP_FILE_BAD_TRANSFER_ID group={group_id} from={sender_id} —— 拒绝落库"
+            ),
+        );
+        return;
+    };
     // 幂等建立/重建接收会话（重启后内存 file_key 丢失，这里回填 key + 复位 recipient）
     {
         let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());

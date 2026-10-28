@@ -103,3 +103,15 @@ test("非取消错误原样抛出，且不取字节", async () => {
   await assert.rejects(() => saveImageWith("blob:x", d), /permission denied/);
   assert.ok(!d.calls.some((c) => c.startsWith("bytes:")));
 });
+
+test("另存图片：超过上限时在 toBase64 之后立刻拒绝，不再走 IPC", async () => {
+  let saved = false;
+  const d = deps({
+    toBase64: async () => "A".repeat(Math.ceil((8 * 1024 * 1024 + 8) * 4 / 3)),
+    saveDataFile: async () => {
+      saved = true;
+    },
+  });
+  await assert.rejects(() => saveImageWith("/x.png", d), /IMAGE_TOO_LARGE/);
+  assert.equal(saved, false, "超限不许调用 save_data_file");
+});

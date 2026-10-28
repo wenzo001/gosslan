@@ -288,6 +288,14 @@ const steps = [
   },
   {
     group: "frontend",
+    name: "CI 护栏覆盖对账",
+    why: "挡住「注释里写着跑、底下没跑」这一族：谁能覆盖哪个通道、分片是否凑满、子集腿不算证据，全部按 CI 配置现算。它此前只靠一条护栏用例自证 ⇒ push/PR 上从不执行（审计 P2 #39）",
+    cwd: ROOT,
+    cmd: NODE_EXE,
+    args: ["scripts/check-ci-guard-coverage.mjs"],
+  },
+  {
+    group: "frontend",
     name: "db 锁作用域守卫",
     why: "挡住「锁还活着时 emit」与「锁还活着时调用内部又取同一把锁的 helper」（std Mutex 不可重入 ⇒ 同线程二次取锁永久 park）——只有一条 SQLite 连接；全部取锁点逐处判（条数由该步自己打印，别处不抄），判据自带夹具自证",
     cwd: ROOT,

@@ -210,6 +210,18 @@ console.log(`· CI 里的扫描调用（共 ${calls.length} 条）：`);
 for (const c of calls)
   console.log(`   - ${c.job}: ${c.cmd}（触发：${c.ifExpr || "无 if ⇒ always"}｜自动=${c.auto}）`);
 if (subsetLegs.length) console.log(`· 子集腿（不算全覆盖证据）：${subsetLegs.join("、")}`);
+// PR 覆盖缺口（审计 P1 #16）：某条扫描腿只在 schedule/workflow_dispatch 上跑时，
+// 它在 push/PR 上等于不存在。这里**只报告不判红** —— cargo 通道 145 条全量 > 60min，
+// 成本真实，硬把它挪进 PR 层是拿覆盖换 CI 时长。差距必须看得见，但不该假装为零。
+const nightOnly = calls.filter(
+  (c) => c.ifExpr && /schedule/.test(c.ifExpr) && !/pull_request|push/.test(c.ifExpr),
+);
+if (nightOnly.length) {
+  console.log(
+    `· ⚠️ 仅夜间/手动触发的扫描腿：${nightOnly.map((c) => c.job).join("、")}` +
+      `（这批调用在 push/PR 上不跑；护栏总分母 ${sum} 条里有一部分只被夜间证明）`,
+  );
+}
 for (const lane of needed) {
   const info = cover[lane];
   console.log(

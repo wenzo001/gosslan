@@ -234,11 +234,25 @@ pub fn group_outbox_has_rows(conn: &Connection, msg_id: &str) -> Result<bool> {
 /// 只动 cancelled：delivered/failed 是证据或已放弃，不得复活。
 /// `created_at` 必须刷新为 now —— 否则清扫器会把刚补发的旧行当成年迈行立即判死。
 pub fn resend_cancelled_group_rows(conn: &Connection, msg_id: &str, now: i64) -> Result<usize> {
-    conn.execute(
+    // 队列行与消息状态**同一事务**：`set_message_status` 现在把 `cancelled` 当硬终态
+    // （迟到写不许把用户的取消撤销），所以这条合法复活路径必须先把 messages 推回
+    // `sending` —— 否则调用方随后的 `set_message_status("sent")` 会被守卫挡成 0 行，
+    // 队列已在补发、气泡却永远停在「已取消」。
+    let tx = conn.unchecked_transaction()?;
+    let flipped = tx.execute(
         "UPDATE group_outbox SET status = 'pending', created_at = ?2
           WHERE msg_id = ?1 AND status = 'cancelled'",
         params![msg_id, now],
-    )
+    )?;
+    if flipped > 0 {
+        tx.execute(
+            "UPDATE messages SET status = 'sending'
+              WHERE msg_id = ?1 AND status IN ('cancelled', 'partial_cancelled')",
+            params![msg_id],
+        )?;
+    }
+    tx.commit()?;
+    Ok(flipped)
 }
 
 /// 补发时要知道哪些成员当前还有 pending 行（用于在线立即发/离线等上线）。
@@ -364,11 +378,24 @@ pub fn list_expired_group_outbox(
     // 行级返回（msg_id, group_id, peer_id, created_at）： sweeper 要按**每个成员**的
     // 可达性分类（2026-09-19 自审建议#5）——某成员离线时他的行必须保留，
     // 只有整条消息的**所有行**都该放弃时，msg 粒度才置 failed。
+    // 上界 + 稳定排序（审计 P1 #3）：候选集是"全库所有过期且没 Ack 的行"，
+    // 离线一周后可能是几千条，而这条读在**唯一那把 DB 锁**里跑。
+    // 不能按**行**截断：一条群消息有 N 个成员行，只拿到一部分会让清扫器误判
+    // "所有行都该放弃" ⇒ 提前判死本该给离线成员保留的消息。所以按 msg_id 分组限批
+    // —— 取最老的 N 条消息，但每条消息的**全部行**一起返回。
     let mut stmt = conn.prepare(
         "SELECT msg_id, group_id, peer_id, created_at FROM group_outbox
-          WHERE created_at < ?1 AND status = 'pending'",
+          WHERE status = 'pending'
+            AND msg_id IN (
+                SELECT msg_id FROM group_outbox
+                 WHERE created_at < ?1 AND status = 'pending'
+                 GROUP BY msg_id
+                 ORDER BY MIN(created_at), msg_id
+                 LIMIT ?2
+            )
+          ORDER BY created_at, id",
     )?;
-    let rows = stmt.query_map(params![deadline_ms], |r| {
+    let rows = stmt.query_map(params![deadline_ms, OUTBOX_SWEEP_BATCH], |r| {
         Ok((
             r.get::<_, String>(0)?,
             r.get::<_, String>(1)?,

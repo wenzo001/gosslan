@@ -280,7 +280,7 @@ npm run verify:full   # 完整重门禁：cargo fmt/clippy/test、Rust 清单、
 起跑与汇总都会点名）；完整 `verify:full` 留到发版/推送前或交给 CI。
 
 ⚠️ **`verify:full` 里那一步护栏扫描只覆盖打了 `frontend` 标签的子集**（全是 `node --test`/脚本；
-2026-10-26 同日两次实测：那一步 152.2s / 171.7s，整条 `verify:full` 25 步 288.8s / 383.1s）
+2026-10-26 同日两次实测：那一步 152.2s / 171.7s，整条 `verify:full` 26 步 288.8s / 383.1s）
 —— **cargo 护栏一条都不跑**。
 全量（含 Rust 用例，每条要整库重编译一次，单条实测 25~30s ⇒ 整跑 60 分钟以上）要显式加：
 

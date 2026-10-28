@@ -127,9 +127,9 @@
       "unwrap": 0
     },
     "commands/updater.rs": {
-      "panic": 1,
+      "panic": 0,
       "expect": 0,
-      "unwrap": 2
+      "unwrap": 0
     },
     "commands/window.rs": {
       "panic": 0,
@@ -317,6 +317,11 @@
       "unwrap": 0
     },
     "main.rs": {
+      "panic": 0,
+      "expect": 0,
+      "unwrap": 0
+    },
+    "mem_diag.rs": {
       "panic": 0,
       "expect": 0,
       "unwrap": 0
@@ -622,6 +627,11 @@
       "unwrap": 0
     },
     "storage/cache_cleaner.rs": {
+      "panic": 0,
+      "expect": 0,
+      "unwrap": 0
+    },
+    "storage/disk_space.rs": {
       "panic": 0,
       "expect": 0,
       "unwrap": 0

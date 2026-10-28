@@ -1244,6 +1244,17 @@ pub fn init_with_notices(path: &Path) -> std::result::Result<(Connection, Vec<St
     // **两条分支都要经过**这里：有形状是 SCHEMA 表达不了的（见 `ensure_post_schema_shape`），
     // 而 fresh 分支不重放迁移 —— 这个函数就是那笔差额，缺了它新安装会少一条热查询索引。
     ensure_post_schema_shape(&conn)?;
+
+    // `messages.status` 是**迁移补的列**（v1 形状没有它）⇒ 依赖它的索引绝不能放进 SCHEMA 或
+    // `ensure_post_schema_shape`：那一层在老库上跑在迁移**之前**，实测会以
+    // 「no such column: status ⇒ 老库打不开」的形态炸掉启动
+    // （`index_on_a_migration_added_column_must_not_live_in_schema`）。
+    // 迁移跑完之后按列存在性建一次（幂等）。
+    if column_exists(&conn, "messages", "status").unwrap_or(false) {
+        conn.execute_batch(
+            "CREATE INDEX IF NOT EXISTS idx_messages_sending ON messages(ts) WHERE status = 'sending';",
+        )?;
+    }
     // 每次启动都把会话时钟同步到「该会话已有最大逻辑序号」
     conn.execute(
         "INSERT INTO conversation_clocks(conv_id, seq)

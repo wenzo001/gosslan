@@ -118,6 +118,16 @@ fn save_data_file_blocking(base64_data: String, destination: String) -> Result<(
     let bytes = base64::engine::general_purpose::STANDARD
         .decode(base64_data.as_bytes())
         .map_err(|e| e.to_string())?;
+    // 体积闸（审计 P1 #10）：这条是**图像另存**的字节通道（base64 经 IPC，1.33× 放大，
+    // 解码后又是一份）⇒ 不设上限时单次 IPC 可申请数百 MB，`panic = "abort"` 下 OOM 直接杀进程。
+    // 与粘贴图片同一上限、同一常量（它本来就只服务图片另存）。
+    if bytes.len() as u64 > MAX_OUTGOING_IMAGE_BYTES {
+        return Err(format!(
+            "图片过大（{} 字节，上限 {} 字节），未保存",
+            bytes.len(),
+            MAX_OUTGOING_IMAGE_BYTES
+        ));
+    }
     // Android：目标可能是 content:// URI，std::fs::write 写不了，走 ContentResolver。
     #[cfg(target_os = "android")]
     {

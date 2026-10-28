@@ -258,13 +258,19 @@ export const useChatStore = defineStore("chat", () => {
     writeMemberNames(safeStorageBackend, next);
   }
 
+  // 按 device_id 的合并索引（审计 P1 #17）：`nicknameOf` 在虚拟列表的**每一行**被调用，
+  // 原先每行跑两次 `Array.prototype.find`（好友 + 在线节点）⇒ 30 行就是 120 次线性扫。
+  // 与 `ConversationList.vue` 的 `friendById` 同形，只是这里是全仓唯一的数据源。
+  const friendById = computed(() => new Map(friends.value.map((f) => [f.device_id, f])));
+  const peerById = computed(() => new Map(peers.value.map((p) => [p.device_id, p])));
+
   function nicknameOf(id: string): string {
     // 顺序与兜底的**判据**在 `utils/memberName.ts`（纯函数、可在 Node 单测）——
     // 这里只负责"从哪张表取"。以前这两处各写一遍（聊天走本函数、任务面板走 `useMemberProfile`），
     // 连兜底都不一致：这里返回裸 `device_id`（= 用户 2026-10-14 说的"有时候显示设备名"），
     // 那里对自己返回「我」。同一个人同一屏可以两个写法，所以把判据收成一个家。
-    const f = friends.value.find((x) => x.device_id === id);
-    const p = peers.value.find((x) => x.device_id === id);
+    const f = friendById.value.get(id);
+    const p = peerById.value.get(id);
     return resolveMemberName(
       id,
       {
@@ -1277,6 +1283,10 @@ export const useChatStore = defineStore("chat", () => {
     ]);
   }
 
+  // 已读名单的**稳定引用缓存**（审计 P1 #17）：原先非空分支每次都新建数组 ⇒ Vue 判 prop 变了
+  // ⇒ 每行 `MessageItem` 子树重新 patch。键 = 会话 + 消息时间 + 读者集合（内容相同即同一个数组）。
+  const readerIdsCache = new Map<string, string[]>();
+
   function groupReaderIds(groupId: string, messageTs: number): string[] {
     const myId = app.device?.device_id;
     const members = new Set(groups.value.find((group) => group.id === groupId)?.members ?? []);
@@ -1285,7 +1295,14 @@ export const useChatStore = defineStore("chat", () => {
       .map(([readerId]) => readerId);
     // 没有已读者时返回**同一个空数组**：调用点在虚拟列表的每行模板里，`[] !== []` 会让
     // Vue 每次都判「这条 prop 变了」⇒ 整棵子树重新 patch（读数见 utils/emptyList.ts）。
-    return ids.length > 0 ? ids : EMPTY_STRING_LIST;
+    if (ids.length === 0) return EMPTY_STRING_LIST;
+    const key = `${groupId}\u0000${messageTs}\u0000${ids.join(",")}`;
+    const hit = readerIdsCache.get(key);
+    if (hit) return hit;
+    // 上限 200：虚拟列表来回滚动的可见窗口远小于它，满了直接清（这是缓存不是事实源）。
+    if (readerIdsCache.size >= 200) readerIdsCache.clear();
+    readerIdsCache.set(key, ids);
+    return ids;
   }
   /** 并发触发时只让**最新那次**写回结果（迁入 `refreshGuard`，与上面几个共用同一份实现）。 */
   /**

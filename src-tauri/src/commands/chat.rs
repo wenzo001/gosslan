@@ -829,7 +829,19 @@ pub async fn send_message(
         // poison-tolerant（全仓纪律）：锁中毒时静默跳过 = 状态停在 sending，
         // 与 resend 的卡死同形（审计 2.3m）；中毒也要前进到 sent。
         let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());
-        let _ = db::set_message_status(&dbc, &msg_id, "sent");
+        match db::set_message_status(&dbc, &msg_id, "sent") {
+            // 0 行 = 这一行已被硬终态挡住（用户刚取消/已被清扫判失败）。**禁止静默**：
+            // 这条消息不会再被任何队列补发，界面若还显示"发送中"就永远卡在那里。
+            Ok(0) => s.logger.warn(
+                "chat",
+                format!("code=MESSAGE_STATUS_BLOCKED msg_id={msg_id} target=sent reason=hard-terminal"),
+            ),
+            Ok(_) => {}
+            Err(e) => s.logger.warn(
+                "chat",
+                format!("code=MESSAGE_STATUS_WRITE_FAILED msg_id={msg_id} err={e}"),
+            ),
+        }
     }
     // 更新会话「当前链路」（发送方视角）：有直连则 hop=0 + 出站路径；无直连
     // （经中继广播）则乐观记 hop=1（实际跳数发送方不可知，等对端回执侧视角校正）。
@@ -958,7 +970,17 @@ pub async fn resend_message(
     };
     if try_ok {
         let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());
-        let _ = db::set_message_status(&dbc, &msg_id, "sent");
+        match db::set_message_status(&dbc, &msg_id, "sent") {
+            Ok(0) => s.logger.warn(
+                "chat",
+                format!("code=MESSAGE_STATUS_BLOCKED msg_id={msg_id} target=sent reason=hard-terminal"),
+            ),
+            Ok(_) => {}
+            Err(e) => s.logger.warn(
+                "chat",
+                format!("code=MESSAGE_STATUS_WRITE_FAILED msg_id={msg_id} err={e}"),
+            ),
+        }
     }
     s.logger.info(
         "dispatch",

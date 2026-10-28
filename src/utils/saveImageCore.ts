@@ -1,4 +1,5 @@
 import { isDialogCancelled, saveDestinationOf } from "./saveDestination.ts";
+import { MAX_PASTED_IMAGE_BYTES } from "./imageBytes.ts";
 
 /** 另存图片的两种终态；取消不是错误，不抛。 */
 export type SaveImageOutcome = "saved" | "cancelled";
@@ -52,6 +53,13 @@ export async function saveImageWith(
     }
   }
   const base64Data = await deps.toBase64(url);
+  // 前置体积判断（审计 P1 #10）：省掉一次几百 MB 的 base64 IPC。上限与后端同一常量
+  // （`imageBytes.ts` 的注释钉着"必须等于 Rust MAX_OUTGOING_IMAGE_BYTES"）。
+  // base64 字符数 × 3/4 ≈ 解码字节数（含 padding 只会略高估，不会漏拦）。
+  const approxBytes = Math.floor((base64Data.length * 3) / 4);
+  if (approxBytes > MAX_PASTED_IMAGE_BYTES) {
+    throw new Error(`IMAGE_TOO_LARGE:${approxBytes}`);
+  }
   await deps.saveDataFile(base64Data, destination);
   return "saved";
 }

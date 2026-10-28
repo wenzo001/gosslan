@@ -1404,11 +1404,23 @@ async fn handle_group_key(
     };
     {
         let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
-        db::upsert_group(&dbc, &group_id, &display_name, &from, &all).ok();
+        // 写失败必须留痕（审计 P1 #4）：`.ok()` 吞掉后，「群资料没同步上」与
+        // 「网络没收到」在日志里不可区分，而界面上的不一致（群名/成员表半写）不会自愈。
+        if let Err(e) = db::upsert_group(&dbc, &group_id, &display_name, &from, &all) {
+            state.logger.warn(
+                "group",
+                format!("code=GROUP_SYNC_WRITE_FAILED op=upsert group={group_id} err={e}"),
+            );
+        }
         // 本函数上方已拒绝 `from != known_group.creator`；首次接触也只有发送方能提供成员表。
         // 因此这里是群主的权威成员表：整体替换，清掉离线期间漏收退群帧留下的旧成员。
         // （`upsert_group` 的 INSERT OR IGNORE 只增不减，不能单独用来收敛。）
-        db::replace_group_members(&dbc, &group_id, &all).ok();
+        if let Err(e) = db::replace_group_members(&dbc, &group_id, &all) {
+            state.logger.warn(
+                "group",
+                format!("code=GROUP_SYNC_WRITE_FAILED op=members group={group_id} err={e}"),
+            );
+        }
         // ★ 会话标题跟着群资料走（负责人 2026-10-10 拍板的 #22）：群主改名时**离线**的成员
         // 此前要等群主下次在群里说话才看得到新名 —— 而新名其实**早就到了他机器上**
         // （`pending_keys` 重递带的是当前名，本函数也已把它写进 `groups`），缺的只有这一格。
@@ -1417,7 +1429,12 @@ async fn handle_group_key(
         // 改名帧到达、这里的关系同步三条路共用一份），而它更新会话行用的是 `UPDATE` ——
         // **没有会话行时一个字都不写**，所以下面那条"关系同步不得创建会话"的不变量原样成立。
         if got_group_name {
-            db::rename_group(&dbc, &group_id, &display_name).ok();
+            if let Err(e) = db::rename_group(&dbc, &group_id, &display_name) {
+                state.logger.warn(
+                    "group",
+                    format!("code=GROUP_SYNC_WRITE_FAILED op=rename group={group_id} err={e}"),
+                );
+            }
         }
         // 群关系同步（GroupKey / 群成员 / 群密钥 / 群名）只更新 groups / group_members（+ 上面
         // 已存在会话行的标题），**不得创建 conversation**：conversation 是「聊天会话索引」，只能由聊天活动驱动

@@ -103,8 +103,6 @@ fn outbox_sweeper_emits_only_after_db_write_succeeds() {
 /// 判据用位置而不是数量：把破坏性写挪回前面时数量不变，只有顺序变。
 #[test]
 fn terminal_finalize_defers_the_destructive_write() {
-    let src = crate::network::transport_src_for_guards();
-
     // P7 之后实现并进了唯一出口 `db::finalize_file_failure`（`finalize_expired_file`
     // 只剩一层 bool 包装）⇒ 这条逐函数守卫跟着挪到新家；迁移本身由
     // `every_finalize_path_defers_the_destructive_write`（自动扫）与
@@ -125,7 +123,10 @@ fn terminal_finalize_defers_the_destructive_write() {
         );
     }
 
-    let msg_body = rust_fn_body(&src, "fn finalize_expired_message(");
+    // 消息终态的两步写已收进 `db::finalize_expired_message`（同一事务）⇒ 顺序守卫跟着
+    // 迁到新家（与上面文件那趟同一个理由：实现搬走，守卫留在旧地址就会静默空转）。
+    let db_src = all_db_src();
+    let msg_body = rust_fn_body(db_src, "pub fn finalize_expired_message(");
     let deleted = msg_body
         .find("delete_outbox_by_msg_id(")
         .expect("单聊终态必须仍删 outbox 行");

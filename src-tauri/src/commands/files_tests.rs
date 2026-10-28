@@ -129,21 +129,21 @@ mod files_gate_tests {
     fn save_as_and_forward_share_the_same_ownership_gate() {
         assert_eq!(
             include_str!("files.rs")
-                .matches("owned_payload_rejection(s, msg_id, &requested)")
+                .matches("owned_payload_rejection(")
                 .count(),
-            2,
-            "files.rs：打开 + 单聊转发各一处"
+            3,
+            "files.rs：定义 1 + 打开 1 + 单聊转发 1"
         );
         assert_eq!(
             include_str!("helpers.rs")
-                .matches("owned_payload_rejection(s, msg_id, &requested)")
+                .matches("owned_payload_rejection(")
                 .count(),
             1,
             "helpers.rs：另存为（copy_file）"
         );
         assert_eq!(
             include_str!("group_announcements.rs")
-                .matches("owned_payload_rejection(s, msg_id, &requested)")
+                .matches("owned_payload_rejection(")
                 .count(),
             1,
             "group_announcements.rs：群转发"
