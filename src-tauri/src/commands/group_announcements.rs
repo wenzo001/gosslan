@@ -136,6 +136,8 @@ pub async fn recall_group_message(
             return Ok(()); // 幂等：已撤回过就直接成功
         }
     }
+    // 附件：撤回前先把传输停掉（与单聊同一份实现；文本族是空操作）。
+    crate::commands::cancel_transfer_for_recalled_message(s, &target).await;
     let payload = crate::protocol::RecallPayload {
         target: target.clone(),
     };

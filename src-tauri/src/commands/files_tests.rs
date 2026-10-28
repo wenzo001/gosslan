@@ -149,4 +149,48 @@ mod files_gate_tests {
             "group_announcements.rs：群转发"
         );
     }
+
+    /// 撤回附件能成立的前提：**撤回命令里真的先把传输停了**（2026-10-28 口径变更）。
+    ///
+    /// 只断言"函数存在"是半个守卫：这条链的价值全在"撤回命令调了它、且排在物化之前"。
+    /// 所以钉两个命令各自的调用次数（1+1=2）与相对顺序。
+    #[test]
+    fn recall_commands_cancel_the_transfer_before_they_materialize() {
+        fn body<'a>(src: &'a str, start: &str) -> &'a str {
+            let i = src.find(start).unwrap_or_else(|| panic!("找不到 {start}"));
+            let rest = &src[i + start.len()..];
+            let end = rest.find("\npub async fn ").unwrap_or(rest.len());
+            &rest[..end]
+        }
+
+        let chat = include_str!("chat.rs");
+        let group = include_str!("group_announcements.rs");
+        let calls = chat.matches("cancel_transfer_for_recalled_message(").count()
+            + group.matches("cancel_transfer_for_recalled_message(").count();
+        assert_eq!(
+            calls, 2,
+            "单聊 / 群 两个撤回命令各要调一次取消（改名/搬家时这里必须同步）"
+        );
+
+        for (name, src, start) in [
+            ("chat.rs", chat, "pub async fn recall_message("),
+            (
+                "group_announcements.rs",
+                group,
+                "pub async fn recall_group_message(",
+            ),
+        ] {
+            let fn_body = body(src, start);
+            let cancel = fn_body
+                .find("cancel_transfer_for_recalled_message(")
+                .unwrap_or_else(|| panic!("{name} 的撤回命令没有先停传输"));
+            let payload = fn_body
+                .find("RecallPayload {")
+                .unwrap_or_else(|| panic!("{name} 的撤回命令找不到载荷构造"));
+            assert!(
+                cancel < payload,
+                "{name}：取消必须排在撤回物化之前（否则对端会先看到已撤回、字节还在流）"
+            );
+        }
+    }
 }

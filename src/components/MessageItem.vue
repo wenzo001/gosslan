@@ -869,7 +869,8 @@ function canRecallNow(): boolean {
     !isSelfMsg.value &&
     mine.value &&
     props.message.kind !== "recalled" &&
-    // 文本族以外的消息不给撤回入口：那个动作停不掉传输（文件/图片的正路是「取消」）。
+    // 2026-10-28 起附件（image/file）也能撤回：后端会在物化前先把传输停掉，
+    // 所以这里只排除**机器事件**（pin/reaction/todo…），见 utils/recall.ts。
     isRecallableKind(props.message.kind) &&
     isWithinRecallWindow(props.message.ts)
   );

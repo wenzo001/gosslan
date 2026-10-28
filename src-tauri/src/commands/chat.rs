@@ -358,6 +358,9 @@ pub async fn recall_message(
     if already_recalled {
         return Ok(()); // 幂等：已撤回过就直接成功
     }
+    // 附件：撤回前先把传输停掉（否则「气泡已撤回、字节照样在发」——这正是 5.6.0
+    // 曾把附件排除在撤回之外的理由）。文本族没有台账行 ⇒ 这一步是空操作。
+    crate::commands::cancel_transfer_for_recalled_message(&s, &target).await;
     let payload = crate::protocol::RecallPayload {
         target: target.clone(),
     };

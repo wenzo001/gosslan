@@ -15,14 +15,14 @@ export function isWithinRecallWindow(ts: number, now = Date.now()): boolean {
 /**
  * **可撤回**的消息类型（与 Rust `protocol::RECALLABLE_KINDS` 同一份口径）。
  *
- * 为什么不写"除了 file 都能撤"：撤回只改消息行，它不会停掉正在跑的文件传输 ——
- * 对着一条还在传的文件按撤回，会得到"气泡变已撤回、字节照样在发"。文件/图片那一族的
- * 正确动作是取消（`cancel_file_transfer` / `FileCancel` 帧），所以这里用白名单。
- * 合并转发（merge）是一段可重放的正文，按文本对待。
+ * 2026-10-28 负责人改口径：「5 分钟内的消息必须能撤回，所有文件格式类型都要支持」。
+ * 附件（`image` / `file`，覆盖视频/音频/文档等全部格式）也在内 —— 当初排除它们的理由
+ * （撤回停不掉传输）已由后端 `cancel_transfer_for_recalled_message` 消掉：撤回前先取消传输。
+ * 机器事件（pin / reaction / todo / announcement…）不是用户写的内容，仍然不在内。
  *
- * 两侧都要拦：老端可能没拦、直接发来一条对文件消息的撤回 ⇒ Rust 那侧还要再判一次。
+ * 两侧都要拦：老端可能没拦、直接发来一条对附件消息的撤回 ⇒ Rust 那侧还要再判一次。
  */
-export const RECALLABLE_KINDS: readonly string[] = ["text", "code", "merge"];
+export const RECALLABLE_KINDS: readonly string[] = ["text", "code", "merge", "image", "file"];
 
 /** 这种消息能不能撤回（唯一定义处，见上面的理由）。 */
 export function isRecallableKind(kind: string | undefined | null): boolean {

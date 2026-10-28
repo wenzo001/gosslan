@@ -983,20 +983,27 @@ CASES: list[Case] = [
         tags=["rust", "network", "file", "stability", "new-guards", "file-cancel"],
     ),
     Case(
-        name="撤回白名单漏了 file ⇒ 对着还在传的文件也能撤",
-        why="撤回只改**消息行**，停不掉一条正在跑的文件传输 ⇒ 对着文件按撤回会得到"
-        "「气泡已撤回、字节照样在发」。\n"
-        "     注入方式：把 `file` 加进 `RECALLABLE_KINDS` —— 编译器照过、"
-        "撤回链路照走，只有这一格判据会红。",
-        file=TAURI / "src" / "protocol.rs",
+        name="撤回附件前不先停传输 ⇒ 字节照样在发",
+        why="2026-10-28 起附件也能撤回（口径：5 分钟内所有文件格式都要能撤）。\n"
+        "     前提是撤回命令**先取消传输**再物化撤回 —— 5.6.0 把附件排除在撤回之外，"
+        "防的正是「气泡已撤回、字节照样在发」。\n"
+        "     注入方式：把单聊撤回命令里那次取消换成 no-op（`let _ = 0;`，编译照过、"
+        "撤回照走）⇒「两个撤回命令各调一次取消」那条形状判据必须红。",
+        file=TAURI / "src" / "commands" / "chat.rs",
         injections=[(
-            'pub const RECALLABLE_KINDS: [&str; 3] = ["text", "code", "merge"];',
-            'pub const RECALLABLE_KINDS: [&str; 4] = ["text", "code", "merge", "file"];',
+            "    crate::commands::cancel_transfer_for_recalled_message(&s, &target).await;",
+            "    let _ = 0;",
         )],
-        cmd=cargo("test", "--lib", "recall_only_accepts_textual_kinds"),
+        cmd=cargo(
+            "test",
+            "--lib",
+            "--features",
+            "bluetooth",
+            "recall_commands_cancel_the_transfer_before_they_materialize",
+        ),
         cwd=TAURI,
-        expect_fail_hint="非文本族必须拒绝撤回",
-        tags=["rust", "protocol", "recall", "new-guards"],
+        expect_fail_hint="单聊 / 群 两个撤回命令各要调一次取消",
+        tags=["rust", "recall", "file", "new-guards"],
     ),
     Case(
         name="Ack 收尾不看「队列行还在不在」⇒ 已取消的消息被提成已送达",

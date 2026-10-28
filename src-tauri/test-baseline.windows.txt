@@ -14,6 +14,7 @@ commands::files_gate_tests::forged_payload_path_is_rejected_when_ledger_points_e
 commands::files_gate_tests::ledger_owned_path_is_allowed
 commands::files_gate_tests::missing_ledger_row_is_unbound_not_allowed
 commands::files_gate_tests::owner_prefix_maps_to_transfer_id
+commands::files_gate_tests::recall_commands_cancel_the_transfer_before_they_materialize
 commands::files_gate_tests::rejects_paths_outside_every_managed_dir
 commands::files_gate_tests::save_as_and_forward_share_the_same_ownership_gate
 commands::files_gate_tests::sibling_dir_with_the_same_prefix_is_not_allowed
@@ -998,7 +999,7 @@ protocol::tests::peer_protocol_newer_only_when_declared_higher
 protocol::tests::preview_text_hides_payload_for_unknown_kind
 protocol::tests::reaction_payload_is_validated_before_sending
 protocol::tests::reaction_payload_roundtrips
-protocol::tests::recall_only_accepts_textual_kinds
+protocol::tests::recall_accepts_user_content_and_rejects_machine_events
 protocol::tests::recall_verdict_covers_author_conversation_and_window
 protocol::tests::remind_ack_payload_stage_is_validated
 protocol::tests::remind_actor_partition_against_membership

@@ -1725,33 +1725,47 @@ mod tests {
         );
     }
 
-    /// 撤回只收**文本族**（负责人 2026-10-23：文件/图片走取消，不撤回）。
+    /// 撤回收**用户内容**：文本族 + 全部附件格式（2026-10-28 负责人口径：
+    /// 「5 分钟内的消息必须能撤回，所有文件格式类型都要支持」）。
     ///
-    /// 这一格的意义不在"多拦一种"，而在**拦对了方向**：撤回只改消息行、停不掉传输，
-    /// 对着还在传的文件按撤回会得到"气泡已撤回、字节照样在发"。三种文本族必须都放行 ——
-    /// 判据两边都查，只钉 file 会造成"顺手把 code/merge 也拦掉"没人发现。
+    /// 附件能撤回的**前提**是撤回前先把传输停掉（`cancel_transfer_for_recalled_message`）；
+    /// 那条链若被拆掉，「气泡已撤回、字节照样在发」就回来了 —— 这是这条用例背后的真约束。
+    /// 机器事件（pin / reaction / todo / announcement…）不是用户写的内容，仍然拒绝。
     #[test]
-    fn recall_only_accepts_textual_kinds() {
+    fn recall_accepts_user_content_and_rejects_machine_events() {
         let now = 1_000_000;
         for kind in RECALLABLE_KINDS {
             assert!(
                 recall_verdict("me", "me", kind, "peer", "peer", now - 1, now).is_ok(),
-                "{kind} 属于文本族，必须能撤回"
+                "{kind} 是用户内容，必须能撤回"
             );
         }
-        for kind in ["file", "image", "todo", "poll", "announcement", "recall", "pin"] {
+        for kind in [
+            "system",
+            "pin",
+            "reaction",
+            "remind",
+            "remind_ack",
+            "todo",
+            "todo_update",
+            "announcement",
+            "announcement_delete",
+            "recall",
+            "recalled",
+            "render",
+        ] {
             let err = recall_verdict("me", "me", kind, "peer", "peer", now - 1, now)
-                .expect_err("非文本族必须拒绝撤回");
+                .expect_err("机器事件不支持撤回");
             assert!(
-                err.contains("取消"),
-                "拒绝文案要把人引到「取消」那条正路，实际：{err}"
+                err.contains("不支持撤回"),
+                "拒绝文案要说明「不是用户内容」，实际：{err}"
             );
         }
         // 用切片比较而不是数组比较：数组比较在"加了一种"时是**编译错误**，
         // 于是变异注入得到的是编译红而不是断言红 —— 那种 Case 证明不了判据会失败。
         assert_eq!(
             RECALLABLE_KINDS.as_slice(),
-            ["text", "code", "merge"].as_slice(),
+            ["text", "code", "merge", "image", "file"].as_slice(),
             "白名单本身也是口径：改名/加一种都要同时改前端 src/utils/recall.ts"
         );
     }

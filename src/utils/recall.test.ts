@@ -42,7 +42,7 @@ test("MessageItem 接上窗口判据，且单聊不再被 isGroup 挡掉", () =>
   );
 });
 
-// ---------------- 撤回只收文本族（2026-10-23 负责人：文件/图片走取消，不撤回） ----------------
+// ---------------- 撤回收用户内容（2026-10-28 负责人：5 分钟内所有文件格式都要能撤） ----------------
 
 /**
  * 白名单两侧逐字对账（分母从 Rust 那一份**现解析**，不在这里手抄一遍）。
@@ -75,22 +75,23 @@ test("RECALLABLE_KINDS 与 protocol.rs 的白名单逐项对上", () => {
   );
 });
 
-test("isRecallableKind：文本族三种放行，附件与机器事件一律不放行", () => {
-  for (const kind of ["text", "code", "merge"]) {
-    assert.equal(isRecallableKind(kind), true, `${kind} 属于文本族`);
+test("isRecallableKind：用户内容（文本族 + 全部附件格式）放行，机器事件一律不放行", () => {
+  // 2026-10-28：附件也进白名单（覆盖 image/file 两个 kind，视频/音频/文档同属 file）
+  for (const kind of ["text", "code", "merge", "image", "file"]) {
+    assert.equal(isRecallableKind(kind), true, `${kind} 是用户内容，必须能撤回`);
   }
-  for (const kind of ["file", "image", "todo", "poll", "announcement", "pin", "recall", ""]) {
-    assert.equal(isRecallableKind(kind), false, `${kind} 不该有撤回入口`);
+  for (const kind of ["todo", "poll", "announcement", "pin", "recall", "system", ""]) {
+    assert.equal(isRecallableKind(kind), false, `${kind} 不是用户写的内容，不该有撤回入口`);
   }
   assert.equal(isRecallableKind(undefined), false);
   assert.equal(isRecallableKind(null), false);
 });
 
-test("MessageItem 的撤回入口接了类型判据（不然文件/图片仍会显示「撤回」）", () => {
+test("MessageItem 的撤回入口接了类型判据（否则机器事件也会出现「撤回」）", () => {
   const item = readFileSync(join(root, "src", "components", "MessageItem.vue"), "utf8");
   assert.match(
     item,
     /isRecallableKind\(props\.message\.kind\)/,
-    "canRecallNow 必须接类型白名单：撤回只改消息行、停不掉传输",
+    "canRecallNow 必须接类型白名单：机器事件不该出现撤回入口",
   );
 });
