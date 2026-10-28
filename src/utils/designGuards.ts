@@ -2130,6 +2130,63 @@ export function findDirectSemanticIconImports(src: string, names: string[]): Gua
   return out.sort((a, b) => a.line - b.line);
 }
 
+// ---------------- 取消键只走 SecondaryBtn（2026-10-28 动作按钮收口） ----------------
+
+/**
+ * 检查模板里手写的「取消」按钮。
+ *
+ * 设计规范（用户 2026-10-28 报「撤回弹窗按钮文字上下没居中」后定的）：
+ * 确认框里的「取消」只有 `components/ui/SecondaryBtn.vue` 一份实现。手写副本与同排的
+ * Primary/Danger 并排时高度、字重、垂直居中各自漂移，而且一处一处看很难发现。
+ *
+ * 判据：`<button>` 的**文本内容**里出现 `common.cancel` ⇒ 报。两个例外：
+ *   · `components/ui/` 下的组件自身（SecondaryBtn 就是这个家）；
+ *   · 整宽行按钮（class 含 `w-full`）—— 那是 ActionSheet 的底部行，不是对话框动作键。
+ * HTML 注释先抹成空格；按钮不嵌套，配对按最近的 `</button>`。
+ */
+export function findHandWrittenCancelButtons(src: string): GuardIssue[] {
+  const cleaned = src.replace(/<!--[\s\S]*?-->/g, (m) => m.replace(/[^\n]/g, " "));
+  const out: GuardIssue[] = [];
+  for (const m of cleaned.matchAll(/<button\b([\s\S]*?)>/g)) {
+    const start = m.index ?? 0;
+    const end = cleaned.indexOf("</button>", start + m[0].length);
+    if (end < 0) continue;
+    const inner = cleaned.slice(start + m[0].length, end);
+    if (!inner.includes(`t("common.cancel")`)) continue;
+    const classMatch = m[1].match(/\bclass="([^"]*)"/);
+    const classes = classMatch ? classMatch[1].split(/\s+/).filter(Boolean) : [];
+    if (classes.includes("w-full")) continue; // ActionSheet 的整宽行
+    out.push({
+      line: lineAt(cleaned, start),
+      message:
+        "对话框的「取消」必须用 `components/ui/SecondaryBtn.vue`（与 Primary/Danger 同一套盒模型与三档尺寸）。" +
+        "手写副本与并排的主键高度/居中会漂移（2026-10-28 撤回弹窗就这么歪的）；整宽行按钮（w-full）除外。",
+    });
+  }
+  return out.sort((a, b) => a.line - b.line);
+}
+
+/**
+ * 三个共享按钮必须用 flex 居中，且三档尺寸逐字相同。
+ *
+ * 为什么钉源码而不是只钉「用了组件」：垂直居中靠 `items-center`/`justify-center` 实现，
+ * 退回 line-box 写法在 slot 包一层 `inline-flex` 时就会把文字顶高一两像素 —— 构建与截图
+ * 都看不出来，只有并排比较才发现。三档尺寸钉死是为了让三者在同一排里**同高**。
+ */
+export function sharedButtonChromeIssues(name: string, src: string): GuardIssue[] {
+  const out: GuardIssue[] = [];
+  const tpl = src.replace(/<script[\s\S]*?<\/script>/, "");
+  if (!/class="[^"]*inline-flex/.test(tpl) || !/class="[^"]*items-center/.test(tpl) || !/class="[^"]*justify-center/.test(tpl)) {
+    out.push({ line: 1, message: `${name} 的根元素必须是 inline-flex + items-center + justify-center（垂直居中不许靠 line-box）` });
+  }
+  for (const tier of ["xs", "dense", "default", "large"]) {
+    const re = new RegExp(`size === '${tier}' \\? '([^']*)'`);
+    const m = tpl.match(re);
+    if (!m) out.push({ line: 1, message: `${name} 缺少尺寸档 ${tier}` });
+  }
+  return out;
+}
+
 // ---------------- ㊶ 实底危险按钮只走 DangerBtn ----------------
 
 /**

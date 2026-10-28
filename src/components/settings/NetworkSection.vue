@@ -8,6 +8,7 @@ import SettingsGroup from "@/components/settings/SettingsGroup.vue";
 import SettingsRow from "@/components/settings/SettingsRow.vue";
 import SettingsToggle from "@/components/settings/SettingsToggle.vue";
 import SettingsSelect from "@/components/ui/SettingsSelect.vue";
+import PrimaryBtn from "@/components/ui/PrimaryBtn.vue";
 import { useImeEnterGuard } from "@/composables/useImeEnterGuard";
 import { t } from "@/i18n";
 import type {RelayConfig, RelayPolicy, RelayProbe, RoutedEndpoint} from "@/types";
@@ -543,12 +544,9 @@ async function removeEndpoint(address: string) {
         @compositionstart="ime.onStart"
         @compositionend="ime.onEnd"
       />
-      <button
-        class="shrink-0 rounded-[var(--gosslan-radius-md)] bg-[var(--gosslan-primary-active)] px-3.5 py-1.5 text-body font-medium text-[var(--gosslan-on-primary)] transition hover:bg-[var(--gosslan-primary-hover)]"
-        @click="addEndpoint"
-      >
+      <PrimaryBtn shrink @click="addEndpoint">
         {{ t("settings.network.routed.add") }}
-      </button>
+      </PrimaryBtn>
     </div>
   </SettingsGroup>
 

@@ -13,6 +13,8 @@ import { computed, ref, watch } from "vue";
 import { Palette, Shuffle } from "lucide-vue-next";
 import { Check } from "@/components/ui/icons";
 import BaseModal from "@/components/BaseModal.vue";
+import SecondaryBtn from "@/components/ui/SecondaryBtn.vue";
+import PrimaryBtn from "@/components/ui/PrimaryBtn.vue";
 import { t } from "@/i18n";
 import {
   AVATAR_BACKGROUNDS,
@@ -184,22 +186,12 @@ function onCustomColor(e: Event) {
 
     <template #footer>
       <div class="flex justify-end gap-2">
-        <button
-          type="button"
-          class="tap-safe rounded-[var(--gosslan-radius-md)] border border-[var(--gosslan-border)] px-3 py-1.5 text-sm transition hover:bg-[var(--gosslan-hover)]"
-          @click="emit('close')"
-        >
+        <SecondaryBtn outline @click="emit('close')">
           {{ t("common.cancel") }}
-        </button>
-        <button
-          type="button"
-          data-avatar-apply
-          class="tap-safe rounded-[var(--gosslan-radius-md)] bg-[var(--gosslan-primary-active)] px-3 py-1.5 text-sm text-[var(--gosslan-on-primary)] transition hover:opacity-90 disabled:opacity-40"
-          :disabled="saving"
-          @click="emit('apply', selection)"
-        >
+        </SecondaryBtn>
+        <PrimaryBtn type="button" data-avatar-apply :disabled="saving" @click="emit('apply', selection)">
           {{ t("settings.profile.avatar.apply") }}
-        </button>
+        </PrimaryBtn>
       </div>
     </template>
   </BaseModal>

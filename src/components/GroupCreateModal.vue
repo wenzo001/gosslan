@@ -11,6 +11,7 @@ import { useSubmitGuard } from "@/composables/useSubmitGuard";
 import { useImeEnterGuard } from "@/composables/useImeEnterGuard";
 import { groupNameSchema, MAX_GROUP_NAME_CHARS } from "@/utils/validation";
 import CharCounter from "@/components/ui/CharCounter.vue";
+import PrimaryBtn from "@/components/ui/PrimaryBtn.vue";
 
 const props = defineProps<{ open: boolean }>();
 const emit = defineEmits<{ (e: "close"): void }>();
@@ -128,12 +129,8 @@ async function create() {
       </div>
     </div>
 
-    <button
-      class="mt-4 w-full rounded-[var(--gosslan-radius-lg)] bg-[var(--gosslan-primary-active)] py-2.5 text-sm font-medium text-[var(--gosslan-on-primary)] transition hover:bg-[var(--gosslan-primary-hover)] disabled:opacity-40"
-      :disabled="selected.length === 0 || !name.trim() || creating"
-      @click="create"
-    >
+    <PrimaryBtn size="dense" class="mt-4 w-full" :disabled="selected.length === 0 || !name.trim() || creating" @click="create">
       {{ t("common.createGroup") }}
-    </button>
+    </PrimaryBtn>
   </BaseModal>
 </template>

@@ -35,6 +35,7 @@ import ContextMenu from "@/components/ContextMenu.vue";
 import ForwardModal from "@/components/message/ForwardModal.vue";
 import BackArrow from "@/components/ui/BackArrow.vue";
 import DangerBtn from "@/components/ui/DangerBtn.vue";
+import SecondaryBtn from "@/components/ui/SecondaryBtn.vue";
 import StateBlock from "@/components/ui/StateBlock.vue";
 import { errorText } from "@/composables/useErrorText";
 import { useClipboard } from "@/composables/useClipboard";
@@ -1021,12 +1022,9 @@ async function confirmDelete() {
           {{ t("favorite.deleteConfirm") }}
         </p>
         <div class="mt-3 flex justify-end gap-2">
-          <button
-            class="tap-safe rounded-[var(--gosslan-radius-md)] px-4 py-2 text-sm text-[var(--gosslan-text-2)] transition hover:bg-[var(--gosslan-hover)]"
-            @click="pendingDelete = null"
-          >
-            <X class="mr-1 inline h-3.5 w-3.5" />{{ t("common.cancel") }}
-          </button>
+          <SecondaryBtn size="large" @click="pendingDelete = null">
+            <X class="h-3.5 w-3.5" />{{ t("common.cancel") }}
+          </SecondaryBtn>
           <DangerBtn size="large" @click="confirmDelete">
             {{ t("common.delete") }}
           </DangerBtn>

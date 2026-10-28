@@ -14,6 +14,7 @@ import TodoImageThumb from "@/components/TodoImageThumb.vue";
 import TodoPickField from "@/components/TodoPickField.vue";
 import TodoIconPicker from "@/components/TodoIconPicker.vue";
 import CharCounter from "@/components/ui/CharCounter.vue";
+import PrimaryBtn from "@/components/ui/PrimaryBtn.vue";
 import {
   TODO_CATEGORIES, TODO_CATEGORY_LABEL_KEY, TODO_CATEGORY_PILL, TODO_CUSTOM_CATEGORY_MAX_LEN, TODO_PRIORITIES, TODO_PRIORITY_LABEL_KEY, TODO_PRIORITY_PILL, TODO_STATUSES, TODO_STATUS_LABEL_KEY, TODO_STATUS_PILL, isTodoTerminalStatus, todoCode, type TodoHistoryChange, type TodoHistoryEntry, type TodoCategory, type TodoItem, type TodoPriority, type TodoStatus, TODO_CUSTOM_ICON_DEFAULT, type TodoCustomIcon, } from "@/utils/todos";
 import { fmtConversationTime } from "@/utils/time";
@@ -416,14 +417,13 @@ const fullCode = computed(() =>
            （它搬到了 footer 插槽，就是为了不随内容滚走）⇒ 少了这个判断，
            item 为 null 时按钮会去读 `item.status` 而崩。 -->
       <div v-if="item" class="flex flex-wrap items-center gap-2 border-t border-[var(--gosslan-divider)] pt-3">
-        <button
+        <PrimaryBtn
           v-if="canChangeStatus && !isTodoTerminalStatus(item.status)"
           type="button"
-          class="tap-safe rounded-[var(--gosslan-radius-md)] bg-[var(--gosslan-primary-active)] px-3 py-1.5 text-body text-[var(--gosslan-on-primary)] transition hover:bg-[var(--gosslan-primary-hover)]"
           @click="emit('complete')"
-        >
-          <Check class="mr-1 inline h-3.5 w-3.5" />{{ t("todo.complete") }}
-        </button>
+          >
+          <Check class="h-3.5 w-3.5" />{{ t("todo.complete") }}
+        </PrimaryBtn>
         <!-- 进入终态（完成/做不了）之后**手动**归档。
              归档那一档由 `canArchive` 决定 —— 它对**全体群成员**开放（用户 2026-09-24 #37），
              比"改状态"宽；但只在终态给按钮（后端拒绝归档非终态任务）。

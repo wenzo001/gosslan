@@ -13,6 +13,31 @@
 
 ## [Unreleased]
 
+## [5.14.30] - 2026-10-28
+
+### 按钮统一：三个共享按钮同一套盒模型；修撤回弹窗「取消」文字不居中
+
+用户 2026-10-28 报「撤回弹窗按钮文字上下没有居中」。根因两条，叠在一起：
+① 确认框的「取消」是手写 `<button>`（`py-1.5`），与同排 `PrimaryBtn` 的 `py-2` 不等高，
+flex 默认 `items-stretch` 把矮的那颗拉高，文字贴在内容盒顶部；
+② `PrimaryBtn`/`DangerBtn` 的 slot 外面包了一层 `inline-flex` span，行盒基线让文字
+比中心高一两像素 —— 有没有 `value` 都一样偏。
+
+- 三个共享按钮（`PrimaryBtn` / `DangerBtn` / 新增 `SecondaryBtn`）根元素改成
+  `inline-flex items-center justify-center`：垂直居中不再依赖行盒。
+- 三档尺寸（`xs`/`dense`/`default`/`large`）在三个组件里**逐字相同**；此前
+  `DangerBtn.large` 是 `py-1.5`、`PrimaryBtn.large` 是 `py-2`，并排必歪。
+- `ConfirmDialog` 的取消键改用 `SecondaryBtn`；另把 13 个文件里的 13 个手写取消键与
+  8 个手写主色动作键一并迁到共享组件（LinksList / RemindAudienceDialog / FriendProfile /
+  GroupTasksBoard / UpdatePanel / FavoritePanel / AvatarPresetDialog / GroupMemberPanel /
+  ChatWindow / GroupCreateModal / TodoDetailDialog / NetworkSection / ForwardModal）。
+- 判据：新增「取消键只走 SecondaryBtn」（扫 98 份 .vue，手写 0 处）+ 「共享按钮必须
+  flex 居中且四档齐全」；判据 56 的分母下限随收口从 30 调到 24（手写副本被组件取代，
+  那是这条判据想要的形状）。
+- 边界（不在本次收口内）：图标按钮、整宽菜单行（ActionSheet）、分段控件、
+  输入框旁的紧凑芯片 —— 它们是各自的原语，不是"主/次/危险"动作键。
+
+
 ## [5.14.29] - 2026-10-28
 
 ### 撤回：附件（图片/文件/视频等全部格式）也能撤回，且撤回前先停传输

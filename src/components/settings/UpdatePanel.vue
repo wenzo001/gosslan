@@ -1,6 +1,8 @@
 <script setup lang="ts">
 import { computed, ref, watch } from "vue";
 import Spinner from "@/components/ui/Spinner.vue";
+import SecondaryBtn from "@/components/ui/SecondaryBtn.vue";
+import PrimaryBtn from "@/components/ui/PrimaryBtn.vue";
 import { t } from "@/i18n";
 import type { UpdaterErrorCode, UpdaterState } from "@/updater/service";
 // 字节格式化的唯一家（审计 P2 #35）：这里曾有一份口径不同的私有实现（KB 取整、没有 GB 档）。
@@ -169,20 +171,12 @@ function formatDate(seconds: number | null | undefined): string {
           {{ t("settings.updates.confirmInstall") }}
         </p>
         <div class="mt-2 flex justify-end gap-2">
-          <button
-            type="button"
-            class="tap-safe rounded-[var(--gosslan-radius-md)] border border-[var(--gosslan-border)] px-2.5 py-1 text-meta transition hover:bg-[var(--gosslan-panel)]"
-            @click="confirming = false"
-          >
+          <SecondaryBtn size="xs" outline class="hover:bg-[var(--gosslan-panel)]" @click="confirming = false">
             {{ t("common.cancel") }}
-          </button>
-          <button
-            type="button"
-            class="tap-safe rounded-[var(--gosslan-radius-md)] bg-[var(--gosslan-primary-active)] px-2.5 py-1 text-meta text-[var(--gosslan-on-primary)] transition hover:opacity-90"
-            @click="emit('install')"
-          >
+          </SecondaryBtn>
+          <PrimaryBtn type="button" size="xs" @click="emit('install')">
             {{ t("settings.updates.confirm") }}
-          </button>
+          </PrimaryBtn>
         </div>
       </div>
 
