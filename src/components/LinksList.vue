@@ -19,6 +19,7 @@ import PrimaryBtn from "@/components/ui/PrimaryBtn.vue";
 import Spinner from "@/components/ui/Spinner.vue";
 import StateBlock from "@/components/ui/StateBlock.vue";
 import CharCounter from "@/components/ui/CharCounter.vue";
+import SecondaryBtn from "@/components/ui/SecondaryBtn.vue";
 import { errorText } from "@/composables/useErrorText";
 import { useImeEnterGuard } from "@/composables/useImeEnterGuard";
 import { api } from "@/api";
@@ -313,12 +314,9 @@ async function importFromUrl() {
             @compositionend="ime.onEnd"
           />
           <div class="flex justify-end gap-2 pt-1">
-            <button
-              class="tap-safe rounded-[var(--gosslan-radius-md)] px-3 py-1.5 text-body text-[var(--gosslan-text-2)] transition hover:bg-[var(--gosslan-hover)]"
-              @click="closeDialog"
-            >
+            <SecondaryBtn @click="closeDialog">
               {{ t("common.cancel") }}
-            </button>
+            </SecondaryBtn>
             <PrimaryBtn :disabled="saving" @click="saveDraft">
               {{ t("common.save") }}
             </PrimaryBtn>
@@ -365,8 +363,8 @@ async function importFromUrl() {
               />
               <PrimaryBtn :disabled="!!transferBusy || !urlImport.trim()" @click="importFromUrl">
                 <span class="inline-flex items-center gap-1">
-                  <Spinner v-if="transferBusy === 'url'" size-class="h-3.5 w-3.5" decorative />
-                  {{ t("links.importUrlAction") }}
+                <Spinner v-if="transferBusy === 'url'" size-class="h-3.5 w-3.5" decorative />
+                {{ t("links.importUrlAction") }}
                 </span>
               </PrimaryBtn>
             </div>
@@ -379,12 +377,9 @@ async function importFromUrl() {
             {{ t("links.importMergeHint") }}
           </p>
           <div class="flex justify-end">
-            <button
-              class="tap-safe rounded-[var(--gosslan-radius-md)] px-3 py-1.5 text-body text-[var(--gosslan-text-2)] transition hover:bg-[var(--gosslan-hover)]"
-              @click="closeImport"
-            >
+            <SecondaryBtn @click="closeImport">
               {{ t("common.cancel") }}
-            </button>
+            </SecondaryBtn>
           </div>
         </div>
       </BaseModal>

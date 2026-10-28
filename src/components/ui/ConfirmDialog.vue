@@ -8,6 +8,7 @@
  */
 import BaseModal from "@/components/BaseModal.vue";
 import DangerBtn from "@/components/ui/DangerBtn.vue";
+import SecondaryBtn from "@/components/ui/SecondaryBtn.vue";
 import PrimaryBtn from "@/components/ui/PrimaryBtn.vue";
 import { t } from "@/i18n";
 import Spinner from "@/components/ui/Spinner.vue";
@@ -46,14 +47,9 @@ function onCancel() {
         <p v-if="note" class="text-xs text-[var(--gosslan-text-2)]">{{ note }}</p>
       </slot>
       <div class="flex justify-end gap-2 pt-2">
-        <button
-          type="button"
-          class="tap-safe rounded-[var(--gosslan-radius-md)] px-4 py-1.5 text-sm transition hover:bg-[var(--gosslan-hover)] disabled:opacity-50"
-          :disabled="busy"
-          @click="onCancel"
-        >
+        <SecondaryBtn size="large" :disabled="busy" @click="onCancel">
           {{ t("common.cancel") }}
-        </button>
+        </SecondaryBtn>
         <DangerBtn v-if="danger" size="large" :disabled="busy" @click="emit('confirm')">
           <span class="inline-flex items-center gap-1.5">
             <Spinner v-if="busy" size-class="h-4 w-4" decorative />
@@ -62,8 +58,8 @@ function onCancel() {
         </DangerBtn>
         <PrimaryBtn v-else size="large" :disabled="busy" @click="emit('confirm')">
           <span class="inline-flex items-center gap-1.5">
-            <Spinner v-if="busy" size-class="h-4 w-4" decorative />
-            {{ busy && busyLabel ? busyLabel : confirmLabel }}
+          <Spinner v-if="busy" size-class="h-4 w-4" decorative />
+          {{ busy && busyLabel ? busyLabel : confirmLabel }}
           </span>
         </PrimaryBtn>
       </div>

@@ -7,6 +7,8 @@ import { useChatStore } from "@/stores/useChatStore";
 import { avatarSeedFor } from "@/utils/avatarSeed";
 import { MAX_LIST_FILTER_KEYWORD_CHARS } from "@/utils/validation";
 import BaseModal from "@/components/BaseModal.vue";
+import SecondaryBtn from "@/components/ui/SecondaryBtn.vue";
+import PrimaryBtn from "@/components/ui/PrimaryBtn.vue";
 import type { MsgKind } from "@/types";
 
 const props = defineProps<{
@@ -158,20 +160,12 @@ const kindLabel = computed(() => KIND_LABELS[props.kind] ?? t("msg.message"));
            正常入口（多选操作条）已经在条上把方式选好了 ⇒ 这里不出现，点会话直接转发。
            单条消息同理不出现 —— 点会话就直接转发，少一步。 -->
       <div v-if="needsModeChoice" class="flex justify-end gap-2">
-        <button
-          class="tap-safe rounded-[var(--gosslan-radius-md)] px-4 py-2 text-sm text-[var(--gosslan-text)] transition hover:bg-[var(--gosslan-hover)] disabled:opacity-40"
-          :disabled="!picked"
-          @click="picked && emit('pick', picked, 'per-message')"
-        >
+        <SecondaryBtn size="large" :disabled="!picked" @click="picked && emit('pick', picked, 'per-message')">
           {{ t("multi.forwardPerMessage") }}
-        </button>
-        <button
-          class="tap-safe rounded-[var(--gosslan-radius-md)] bg-[var(--gosslan-primary-active)] px-4 py-2 text-sm text-[var(--gosslan-on-primary)] transition hover:bg-[var(--gosslan-primary-hover)] disabled:opacity-40"
-          :disabled="!picked"
-          @click="picked && emit('pick', picked, 'merged')"
-        >
+        </SecondaryBtn>
+        <PrimaryBtn size="large" :disabled="!picked" @click="picked && emit('pick', picked, 'merged')">
           {{ t("multi.forwardMerged") }}
-        </button>
+        </PrimaryBtn>
       </div>
     </div>
   </BaseModal>

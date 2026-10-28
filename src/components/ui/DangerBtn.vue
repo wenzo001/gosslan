@@ -6,8 +6,8 @@
  *   ConversationList / ChatWindow / GroupTasksBoard / GroupMemberPanel /
  *   FriendProfile / MessageItem / StorageSection / ResetSection / FavoritePanel。
  *
- * 三种尺寸同 PrimaryBtn；`large` 按真实确认弹窗的写法校准为 `px-4 py-1.5 text-sm`
- * （此前写成 `py-2 font-medium`，与实际 14 处手写按钮没有一个对得上）。
+ * 三种尺寸与 PrimaryBtn/SecondaryBtn **逐字相同**（2026-10-28 统一：此前 `large` 是
+ * `py-1.5`，与 PrimaryBtn 的 `py-2` 并排时被 flex 拉伸，短键文字看起来偏上）。
  * hover 统一为 `hover:bg-[var(--gosslan-danger-hover)]`（color-mix 派生），
  * 消除了之前的自引用 `hover:bg-[var(--gosslan-danger)]`（无效）+ `opacity-90`（暗化）两种错误。
  *
@@ -17,7 +17,7 @@
 
 withDefaults(
   defineProps<{
-    size?: "dense" | "default" | "large";
+    size?: "xs" | "dense" | "default" | "large";
     shrink?: boolean;
     disabled?: boolean;
     ariaLabel?: string;
@@ -32,12 +32,13 @@ withDefaults(
     :type="type"
     :disabled="disabled"
     :aria-label="ariaLabel"
-    class="tap-safe rounded-[var(--gosslan-radius-md)] bg-[var(--gosslan-danger)] text-white transition hover:bg-[var(--gosslan-danger-hover)] disabled:opacity-50"
+    class="tap-safe inline-flex items-center justify-center gap-1.5 whitespace-nowrap rounded-[var(--gosslan-radius-md)] bg-[var(--gosslan-danger)] text-white transition hover:bg-[var(--gosslan-danger-hover)] disabled:opacity-50"
     :class="[
       shrink ? 'shrink-0' : '',
+      size === 'xs' ? 'px-2.5 py-1 text-meta' : '',
       size === 'dense' ? 'px-3 py-2 text-body' : '',
       size === 'default' ? 'px-3 py-1.5 text-body' : '',
-      size === 'large' ? 'px-4 py-1.5 text-sm' : '',
+      size === 'large' ? 'px-4 py-2 text-sm font-medium' : '',
     ]"
   >
     <slot />

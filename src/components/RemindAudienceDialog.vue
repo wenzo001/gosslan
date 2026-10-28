@@ -10,6 +10,8 @@ import { computed, ref, watch } from "vue";
 import { Check } from "@/components/ui/icons";
 import BaseModal from "@/components/BaseModal.vue";
 import SelfAvatar from "@/components/SelfAvatar.vue";
+import SecondaryBtn from "@/components/ui/SecondaryBtn.vue";
+import PrimaryBtn from "@/components/ui/PrimaryBtn.vue";
 import { useChatStore } from "@/stores/useChatStore";
 import { useMemberProfile } from "@/composables/useMemberProfile";
 import { t } from "@/i18n";
@@ -90,19 +92,12 @@ function confirm() {
         {{ t("remind.audienceCount", { n: selected.size }) }}
       </span>
       <div class="flex gap-2">
-        <button
-          class="tap-safe rounded-[var(--gosslan-radius-md)] px-4 py-2 text-sm text-[var(--gosslan-text-2)] transition hover:bg-[var(--gosslan-hover)]"
-          @click="emit('close')"
-        >
+        <SecondaryBtn size="large" @click="emit('close')">
           {{ t("common.cancel") }}
-        </button>
-        <button
-          class="tap-safe rounded-[var(--gosslan-radius-md)] bg-[var(--gosslan-primary-active)] px-4 py-2 text-sm text-[var(--gosslan-on-primary)] transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-40"
-          :disabled="selected.size === 0"
-          @click="confirm"
-        >
+        </SecondaryBtn>
+        <PrimaryBtn size="large" :disabled="selected.size === 0" @click="confirm">
           {{ t("remind.audienceConfirm") }}
-        </button>
+        </PrimaryBtn>
       </div>
     </div>
   </BaseModal>

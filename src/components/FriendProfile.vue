@@ -26,6 +26,7 @@ import { Copy, MessageCircle, UserMinus } from "lucide-vue-next";
 import BaseModal from "@/components/BaseModal.vue";
 import BackArrow from "@/components/ui/BackArrow.vue";
 import DangerBtn from "@/components/ui/DangerBtn.vue";
+import SecondaryBtn from "@/components/ui/SecondaryBtn.vue";
 import { avatarSeedFor } from "@/utils/avatarSeed";
 import type { Friend } from "@/types";
 
@@ -292,10 +293,9 @@ const confirmRemove = ref(false);
           <li>· {{ t("friend.remove.item2") }}</li>
         </ul>
         <div class="flex justify-end gap-2 pt-2">
-          <button
-            class="rounded-[var(--gosslan-radius-md)] px-4 py-1.5 text-sm transition hover:bg-[var(--gosslan-hover)]"
-            @click="confirmRemove = false"
-          >{{ t("common.cancel") }}</button>
+          <SecondaryBtn size="large" @click="confirmRemove = false">
+            {{ t("common.cancel") }}
+          </SecondaryBtn>
           <DangerBtn size="large" @click="confirmRemove = false; emit('remove', friend)">
             {{ t("common.delete") }}
           </DangerBtn>

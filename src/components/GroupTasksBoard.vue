@@ -59,6 +59,8 @@ import { useExclusivePopup } from "@/composables/useExclusivePopup";
 import { MAX_TODO_IMAGE_BYTES, TODO_IMAGE_LIMIT_MB } from "@/utils/imageBytes";
 import { t } from "@/i18n";
 import DangerBtn from "@/components/ui/DangerBtn.vue";
+import SecondaryBtn from "@/components/ui/SecondaryBtn.vue";
+import PrimaryBtn from "@/components/ui/PrimaryBtn.vue";
 import { Archive, Bug, CheckCircle2, ChevronDown, ChevronsDown, Circle, CircleDot, Clock, ImagePlus, Lightbulb, ListTodo, Minus, Plus, Tag, XCircle, Zap } from "lucide-vue-next";
 import { Check, RotateCcw, Trash2, X } from "@/components/ui/icons";
 import { createInitScope, type InitScope } from "@/utils/initScope";
@@ -1615,19 +1617,12 @@ watch(
       <div class="flex items-center justify-between gap-2 border-t border-[var(--gosslan-divider)] pt-3">
         <span class="text-caption text-[var(--gosslan-text-2)]">{{ t("todo.draftEnterHint") }}</span>
         <div class="flex items-center gap-2">
-          <button
-            class="tap-safe rounded-[var(--gosslan-radius-md)] px-3 py-1.5 text-body text-[var(--gosslan-text-2)] transition hover:bg-[var(--gosslan-hover)]"
-            @click="closeDraft()"
-          >
+          <SecondaryBtn @click="closeDraft()">
             {{ t("common.cancel") }}
-          </button>
-          <button
-            class="tap-safe rounded-[var(--gosslan-radius-md)] bg-[var(--gosslan-primary-active)] px-3 py-1.5 text-body text-[var(--gosslan-on-primary)] transition hover:opacity-90 disabled:opacity-50"
-            :disabled="saving"
-            @click="saveDraft"
-          >
+          </SecondaryBtn>
+          <PrimaryBtn size="default" class="disabled:opacity-50" :disabled="saving" @click="saveDraft">
             {{ t("todo.save") }}
-          </button>
+          </PrimaryBtn>
         </div>
       </div>
     </div>
@@ -1643,12 +1638,9 @@ watch(
       {{ t("todo.removeConfirm", { title: pendingDelete.title }) }}
     </p>
     <div class="mt-5 flex justify-end gap-2">
-      <button
-        class="tap-safe rounded-[var(--gosslan-radius-md)] px-3 py-1.5 text-body text-[var(--gosslan-text-2)] transition hover:bg-[var(--gosslan-hover)]"
-        @click="pendingDelete = null"
-      >
+      <SecondaryBtn @click="pendingDelete = null">
         {{ t("common.cancel") }}
-      </button>
+      </SecondaryBtn>
       <DangerBtn @click="confirmDelete">
         {{ t("common.delete") }}
       </DangerBtn>

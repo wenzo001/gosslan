@@ -7,6 +7,7 @@ import { useChatStore } from "@/stores/useChatStore";
 import BaseModal from "@/components/BaseModal.vue";
 import PrimaryBtn from "@/components/ui/PrimaryBtn.vue";
 import DangerBtn from "@/components/ui/DangerBtn.vue";
+import SecondaryBtn from "@/components/ui/SecondaryBtn.vue";
 import { useMemberProfile } from "@/composables/useMemberProfile";
 import { avatarSeedFor } from "@/utils/avatarSeed";
 import {
@@ -260,7 +261,7 @@ async function confirmAction() {
             shrink
             :disabled="renaming || !nameDraft.trim() || nameDraft.trim() === group.name"
             @click="saveName"
-          >
+            >
             {{ t("common.save") }}
           </PrimaryBtn>
         </div>
@@ -294,7 +295,7 @@ async function confirmAction() {
             <PrimaryBtn
               :disabled="publishing || !announceDraft.trim()"
               @click="publishAnnouncement"
-            >
+              >
               {{ currentAnnouncement ? t("group.announceEdit") : t("group.announcePublish") }}
             </PrimaryBtn>
           </div>
@@ -500,12 +501,9 @@ async function confirmAction() {
         </template>
       </p>
       <div class="mt-5 flex justify-end gap-2">
-        <button
-          class="rounded-[var(--gosslan-radius-md)] border border-[var(--gosslan-border)] px-3 py-1.5 text-sm text-[var(--gosslan-text)] transition hover:bg-[var(--gosslan-hover)]"
-          @click="pendingConfirm = null"
-        >
+        <SecondaryBtn outline size="large" @click="pendingConfirm = null">
           {{ t("common.cancel") }}
-        </button>
+        </SecondaryBtn>
         <DangerBtn size="large" @click="confirmAction">
           {{ t("common.confirm") }}
         </DangerBtn>

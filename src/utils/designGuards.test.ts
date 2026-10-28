@@ -41,6 +41,8 @@ import {
   findLiteralRadiusClasses,
   findDirectSemanticIconImports,
   findHandWrittenSolidDangerButtons,
+  findHandWrittenCancelButtons,
+  sharedButtonChromeIssues,
   findPrimaryFillWithoutOnPrimary,
   findNativeSelect,
   findVHtmlSinks,
@@ -3269,6 +3271,49 @@ test("㊵ 真实树：5 个高频语义图标只从 ui/icons.ts 引（分母现�
   console.log(`· ㊵ 分母：扫 ${files.length} 份源码，高频语义图标直连 lucide 0 处`);
 });
 
+// ---------------- 取消键只走 SecondaryBtn（2026-10-28 动作按钮收口） ----------------
+
+test("取消键：手写 → 报；SecondaryBtn / 整宽行 → 放行（夹具）", () => {
+  const buggy = `<template><button class="rounded-[var(--gosslan-radius-md)] px-4 py-1.5 text-sm">{{ t("common.cancel") }}</button></template>`;
+  assert.equal(findHandWrittenCancelButtons(buggy).length, 1, "手写取消键必须被抓到");
+
+  const ok = `<template><SecondaryBtn>{{ t("common.cancel") }}</SecondaryBtn></template>`;
+  assert.deepEqual(findHandWrittenCancelButtons(ok), [], "组件用法不该被当成手写");
+
+  const sheet = `<template><button class="w-full px-4 py-3">{{ t("common.cancel") }}</button></template>`;
+  assert.deepEqual(findHandWrittenCancelButtons(sheet), [], "ActionSheet 的整宽行不是对话框动作键");
+
+  const other = `<template><button class="px-3">别的文案</button></template>`;
+  assert.deepEqual(findHandWrittenCancelButtons(other), [], "不含取消文案的按钮不归这条管");
+});
+
+test("取消键：真实树只剩 SecondaryBtn（分母现算）", () => {
+  const srcDir = join(import.meta.dirname, "..");
+  const files = collectVueFiles(srcDir);
+  assert.ok(files.length > 50, `只扫到 ${files.length} 份 .vue ⇒ 遍历路径大概错了，这条绿不算数`);
+
+  const bad: string[] = [];
+  for (const f of files) {
+    const rel = f.replace(srcDir + "/", "");
+    if (rel.startsWith("components/ui/")) continue; // 组件自身与 ActionSheet 的 slot 文案
+    for (const issue of findHandWrittenCancelButtons(readFileSync(f, "utf8"))) {
+      bad.push(`${rel}:${issue.line}  ${issue.message}`);
+    }
+  }
+  assert.deepEqual(bad, [], `以下位置仍在手写取消按钮：\n${bad.join("\n")}`);
+  console.log(`· 取消键分母：扫 ${files.length} 份 .vue（排除 components/ui/），手写取消按钮 0 处`);
+});
+
+test("共享按钮：flex 居中 + 四档尺寸齐全", () => {
+  for (const name of ["PrimaryBtn", "DangerBtn", "SecondaryBtn"]) {
+    const src = readFileSync(join(import.meta.dirname, "..", "components", "ui", `${name}.vue`), "utf8");
+    assert.deepEqual(sharedButtonChromeIssues(name, src), [], `${name} 的盒模型/尺寸档不齐`);
+  }
+  // 共享按钮的消费方：ConfirmDialog 的取消键必须是 SecondaryBtn（这条链就是用户报的那一格）
+  const dialog = readFileSync(join(import.meta.dirname, "..", "components", "ui", "ConfirmDialog.vue"), "utf8");
+  assert.ok(dialog.includes("<SecondaryBtn"), "ConfirmDialog 的取消键必须用 SecondaryBtn");
+});
+
 // ---------------- ㊶ 实底危险按钮只走 DangerBtn ----------------
 
 test("㊶ 手写实底危险按钮 → 报；DangerBtn / 圆形徽标 / hover-only → 放行（夹具）", () => {
@@ -5594,7 +5639,10 @@ test("56: 禁用态透明度只许现有 4 档，第 5 档就是又各自定义�
   const sorted = [...tiers].sort((a, b) => a - b);
   console.log(`· 56 禁用态 α：扫 ${vueFiles.length} 份 .vue + style.css，${sites} 处声明，档位 ${sorted.join(" / ")}`);
   // 分母下限：提取器瞎了会把棘轮变成永真的绿（必须能证明它看见了真实写法）。
-  assert.ok(sites >= 30, `只扫到 ${sites} 处禁用态透明度声明 ⇒ 提取器没吃到真实写法，这条不算证据`);
+  // 2026-10-28：动作按钮收口到 Primary/Danger/Secondary 三个组件后，手写副本上的
+  // `disabled:opacity-40/90` 被删掉一批（实测 30+ → 27），下限随之下调 —— 它守的是
+  // "提取器还看得见真实写法"，不是"副本越多越好"。
+  assert.ok(sites >= 24, `只扫到 ${sites} 处禁用态透明度声明 ⇒ 提取器没吃到真实写法，这条不算证据`);
   assert.ok(sorted.length <= 4, `禁用态透明度有 ${sorted.length} 档（${sorted.join(", ")}），超过现有 4 档`);
 });
 

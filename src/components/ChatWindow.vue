@@ -48,6 +48,7 @@ import { shouldShowTimeDivider } from "@/utils/previewMetrics";
 import { activePopupKey } from "@/utils/popupRegistry";
 import { previewText } from "@/utils/messages";
 import DangerBtn from "@/components/ui/DangerBtn.vue";
+import SecondaryBtn from "@/components/ui/SecondaryBtn.vue";
 import { ArrowDown, Bluetooth, Layers, Pin, Megaphone, Share2, Star, ShieldAlert, KeyRound } from "lucide-vue-next";
 import { Trash2, X } from "@/components/ui/icons";
 import {
@@ -2025,12 +2026,9 @@ function retryHistory() {
         v-if="multiSelect"
         class="flex h-16 items-center justify-between gap-2 rounded-[var(--gosslan-bubble-radius)] bg-[var(--gosslan-panel)] px-3"
       >
-        <button
-          class="tap-safe rounded-[var(--gosslan-radius-md)] px-3 py-1.5 text-body text-[var(--gosslan-text-2)] transition hover:bg-[var(--gosslan-hover)]"
-          @click="exitMultiSelect"
-        >
+        <SecondaryBtn @click="exitMultiSelect">
           {{ t("common.cancel") }}
-        </button>
+        </SecondaryBtn>
         <span class="text-body text-[var(--gosslan-text-2)]">
           {{ t("multi.selected", { n: selectedCount }) }}
         </span>
@@ -2129,12 +2127,9 @@ function retryHistory() {
           </button>
           <template v-else>
             <span class="mr-auto text-meta text-[var(--gosslan-danger-ink)]">{{ t("group.announceDeleteBody") }}</span>
-            <button
-              class="tap-safe rounded-[var(--gosslan-radius-md)] px-3 py-1.5 text-body text-[var(--gosslan-text-2)] transition hover:bg-[var(--gosslan-hover)]"
-              @click="announceDeleteArmed = false"
-            >
+            <SecondaryBtn @click="announceDeleteArmed = false">
               {{ t("common.cancel") }}
-            </button>
+            </SecondaryBtn>
             <DangerBtn @click="deleteAnnouncement">
               {{ t("common.delete") }}
             </DangerBtn>
