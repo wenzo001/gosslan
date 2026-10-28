@@ -2112,7 +2112,7 @@ function retryHistory() {
       @close="announceViewOpen = false"
     >
       <template v-if="announcement">
-        <p class="whitespace-pre-wrap break-words text-sm leading-relaxed text-[var(--gosslan-text)]">
+        <p class="gosslan-selectable whitespace-pre-wrap break-words text-sm leading-relaxed text-[var(--gosslan-text)]">
           {{ announcement.text }}
         </p>
         <!-- 群主：删除（两段式确认，渲染在弹窗内 ⇒ 不会被遮罩挡住） -->

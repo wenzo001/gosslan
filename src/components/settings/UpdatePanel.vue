@@ -133,7 +133,7 @@ function formatDate(seconds: number | null | undefined): string {
       </p>
       <div
         v-if="state.info?.notes"
-        class="mt-1 max-h-32 overflow-y-auto whitespace-pre-wrap break-words text-caption leading-relaxed text-[var(--gosslan-text-2)]"
+        class="gosslan-selectable mt-1 max-h-32 overflow-y-auto whitespace-pre-wrap break-words text-caption leading-relaxed text-[var(--gosslan-text-2)]"
       >
         {{ state.info.notes }}
       </div>

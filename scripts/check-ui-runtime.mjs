@@ -14417,6 +14417,48 @@ async function runTasksMobile(cdp, url) {
       clicked === true && dlg.ok === true && dlg.inViewport === true,
       "dialog 在视口内", JSON.stringify(dlg));
 
+    /* 详情弹窗的**文本选择**（负责人 2026-10-28：「群任务详情页 标题描述…现在不能复制不能选择」）。
+     *
+     * 为什么必须在真窗口里读 computed style：`html { user-select: none }` 与 `.gosslan-selectable`
+     * 谁赢，静态 grep 两边都能查出"有这条声明"，只有级联算出来的那一个值才是用户手上的事实
+     * （同一族的坑见"样式规则可能被内联压过＝整条是死的"）。
+     *
+     * 两档都取一遍：`@media (pointer: coarse)` 会把 `[data-msg-col]` 里的正文重新关掉，弹窗不在
+     * 那一列里 ⇒ 结构上两档都该是 text；但"该"不算证据，桌面档和触屏档各读一次（同一份探针字符串，
+     * 不复制第二份比色逻辑）。`coarse` 读数一起打印：不打印就没法说清这一格验的是哪一档。 */
+    const SEL_PROBE = `(() => {
+      const d = document.querySelector('[role="dialog"]');
+      if (!d) return { ok: false };
+      const us = (el) => (el ? getComputedStyle(el).userSelect : "missing");
+      const open = [...d.querySelectorAll('.gosslan-selectable')];
+      const chrome = [...d.querySelectorAll('.text-xs')];
+      return {
+        ok: true,
+        coarse: matchMedia('(pointer: coarse)').matches,
+        title: us(d.querySelector('h3')),
+        titleText: (d.querySelector('h3')?.textContent || '').trim().slice(0, 12),
+        descCount: open.filter((el) => el.tagName === 'P').length,
+        openBad: open.filter((el) => us(el) !== 'text').length,
+        openTotal: open.length,
+        chromeTotal: chrome.length,
+        chromeBad: chrome.filter((el) => us(el) !== 'none').length,
+      };
+    })()`;
+    const selFine = await cdp.eval(SEL_PROBE);
+    check("移动端群任务：详情弹窗标题与描述在真渲染里可选（桌面档 user-select:text）",
+      selFine.ok === true && selFine.coarse === false && selFine.title === "text"
+        && selFine.titleText.length > 0 && selFine.descCount >= 1
+        && selFine.openBad === 0 && selFine.openTotal >= 2 && selFine.chromeBad === 0,
+      "coarse=false + h3=title + 描述 p 在开启清单内 + chrome 标签仍 none", JSON.stringify(selFine));
+    // 只开这一次，读完立刻关：这条监听是全局的，留着会把后面几格（还有别段）的指针档改掉。
+    await cdp.send("Emulation.setTouchEmulationEnabled", { enabled: true, maxTouchPoints: 1 });
+    const selTouch = await cdp.eval(SEL_PROBE);
+    await cdp.send("Emulation.setTouchEmulationEnabled", { enabled: false }).catch(() => {});
+    check("移动端群任务：同一份开启在触屏档（pointer: coarse）照旧生效",
+      selTouch.ok === true && selTouch.coarse === true && selTouch.title === "text"
+        && selTouch.descCount >= 1 && selTouch.openBad === 0 && selTouch.chromeBad === 0,
+      "coarse=true + 弹窗不吃 [data-msg-col] 那条重新关闭", JSON.stringify(selTouch));
+
     // §6.76 台账那两条交给库的 window 监听，运行时**各咬一面**。
     // `scroll` 挂在 window 上但必须带 capture —— 列表那层 `overflow-y-auto` 的 scroll **不冒泡**，
     // 只有捕获相的 window 监听收得到；`resize` 不需要旗标。摘掉 `true` ⇒ 第二条红而第三条照绿；

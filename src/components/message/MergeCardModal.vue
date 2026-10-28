@@ -270,10 +270,10 @@ onBeforeUnmount(() => {
 
           <!-- 文本/代码给**全文**（详情页再截断就没有意义了）；媒体走占位行 -->
           <template v-else-if="it.kind === 'text' || it.kind === 'code'">
-            <div class="break-words whitespace-pre-wrap text-body text-[var(--gosslan-text)]">{{ it.content }}</div>
+            <div class="gosslan-selectable break-words whitespace-pre-wrap text-body text-[var(--gosslan-text)]">{{ it.content }}</div>
           </template>
           <template v-else>
-            <div class="break-words whitespace-pre-wrap text-body text-[var(--gosslan-text)]">{{ mergeItemLine(it) }}</div>
+            <div class="gosslan-selectable break-words whitespace-pre-wrap text-body text-[var(--gosslan-text)]">{{ mergeItemLine(it) }}</div>
           </template>
         </div>
       </div>
