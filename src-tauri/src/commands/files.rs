@@ -158,7 +158,6 @@ fn ledger_path_owns(
 /// （那条路径是本机用户在文件对话框里选的，对端写不了 `sender_id`）。
 /// 无 `owner` 的只剩收藏入口，只允许 `favorites_dir`。
 ///
-/// 拒绝时**必须留痕**（不许静默）：真机有没有合法用例被这条挡住，只有那条日志知道。
 #[tauri::command(async)]
 pub fn open_file_native(
     state: State<'_, Arc<AppState>>,
@@ -169,36 +168,12 @@ pub fn open_file_native(
     let requested = std::fs::canonicalize(&path).map_err(|e| e.to_string())?;
 
     let allowed = match owner.as_deref() {
-        Some(msg_id) => {
-            let (ledger, mine) = {
-                let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());
-                let ledger = transfer_id_of_owner(msg_id)
-                    .and_then(|tid| db::get_transfer_path(&dbc, tid));
-                // 群文件的气泡在第一条进度上报之前还没有台账行（`file_transfers` 那一行
-                // 是进度节流时写的）；本机发出的那条路径是用户自己选的，可以直接放行。
-                let mine = ledger.is_none()
-                    && db::get_message_record(&dbc, msg_id)
-                        .map(|m| m.sender_id == s.device_id)
-                        .unwrap_or(false);
-                (ledger, mine)
-            };
-            if mine {
-                // 台账还没建立时只放行**本机发出**的消息：那条路径是本机用户在文件对话框里
-                // 选的（发送端可以从任意目录选文件），对端写不了 `sender_id`
-                // —— `transport/gossip.rs` 的入站校验拒绝 `sender_id == 本机`，
-                // 否则这里就会退化成"任意文件打开"。
-                //
-                // 为什么不在这里加"托管目录地板"（复审提过）：那会把"发一个桌面上的文件，
-                // 在群文件台账建立前点开"这个合法路径一并拒掉；目录地板仍在
-                // `delete_file` / `resolve_media_path` 那两条链上保留。
-                Ok(())
-            } else {
-                let ledger_canon = ledger
-                    .as_deref()
-                    .and_then(|p| std::fs::canonicalize(p).ok());
-                ledger_path_owns(&requested, ledger_canon.as_deref())
-            }
-        }
+        // 判据唯一份在 `owned_payload_rejection`（另存为 / 转发共用同一份，
+        // 否则三条链必然漂移 —— 这正是 SEC-01 修好「打开」、另两条仍然裸奔的原因）。
+        Some(msg_id) => match owned_payload_rejection(s, msg_id, &requested) {
+            None => Ok(()),
+            Some(code) => Err(code),
+        },
         None => {
             let fav = std::fs::canonicalize(&s.favorites_dir).ok();
             if fav
@@ -233,6 +208,39 @@ pub fn open_file_native(
     // 边界判定照旧用 canonical（能解掉 `..` 与符号链接），打开用原路径 —— 顺序不能反，
     // 反了就是"安全了，但你最常按的那个按钮在 Windows 上死了"。
     crate::open_path::open_path_native(std::path::Path::new(&path))
+}
+
+/// 「这条消息能否认领这个路径」的**唯一判据**（打开 / 另存为 / 转发三处共用）。
+///
+/// `Some(code)` = 拒绝（可直接进日志与前端错误码），`None` = 放行。
+/// 请求路径（调用方已 canonicalize）必须与 `msg_id` 的台账路径一致；台账行尚未建立时，
+/// 只放行**本机发出**的消息 —— 那条路径是本机用户在文件对话框里选的，对端写不了
+/// `sender_id`（入站校验拒绝 `sender_id == 本机`）。
+///
+/// 为什么不退化成"落在 downloads 内即可"：那挡不住"对端诱导你去读**另一个**接收文件"
+/// （同目录内越权）；台账回绑能挡住，而 `file_transfers` 早就有这一列。
+pub(crate) fn owned_payload_rejection(
+    s: &AppState,
+    msg_id: &str,
+    requested: &std::path::Path,
+) -> Option<&'static str> {
+    let (ledger, mine) = {
+        let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());
+        let ledger = transfer_id_of_owner(msg_id).and_then(|tid| db::get_transfer_path(&dbc, tid));
+        // 群文件气泡在第一条进度上报之前还没有台账行；本机发出的那条路径是用户自己选的。
+        let mine = ledger.is_none()
+            && db::get_message_record(&dbc, msg_id)
+                .map(|m| m.sender_id == s.device_id)
+                .unwrap_or(false);
+        (ledger, mine)
+    };
+    if mine {
+        return None;
+    }
+    let ledger_canon = ledger
+        .as_deref()
+        .and_then(|p| std::fs::canonicalize(p).ok());
+    ledger_path_owns(requested, ledger_canon.as_deref()).err()
 }
 
 /// macOS 窗口圆角：WebView 加载完成后（前端 onMounted 触发）设背景色跟随主题 +
@@ -1462,7 +1470,21 @@ pub async fn send_file_auto(
     state: State<'_, Arc<AppState>>,
     friend_id: String,
     path: String,
+    msg_id: Option<String>,
 ) -> Result<String, String> {
+    let s = state.inner();
+    // `msg_id` 给了 ⇒ 这是"转发一条已有消息"：路径必须归那条消息（SEC-01 同一判据）。
+    // 不给 ⇒ 用户自己挑的文件（对话框里的选择就是授权），不拦。
+    if let Some(msg_id) = msg_id.as_deref() {
+        let requested = std::fs::canonicalize(&path).map_err(|e| e.to_string())?;
+        if let Some(code) = owned_payload_rejection(s, msg_id, &requested) {
+            s.logger.warn(
+                "file",
+                format!("code={code} 拒绝转发 file={path} msg={msg_id} peer={friend_id}"),
+            );
+            return Err("这个文件不属于这条消息，已拒绝转发".to_string());
+        }
+    }
     send_file(state, friend_id, path).await
 }
 

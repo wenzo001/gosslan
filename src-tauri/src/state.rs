@@ -1607,9 +1607,17 @@ fn looks_like_existing_install(
     messages + friends + conversations + groups > 0
 }
 
+/// 「主库在本轮启动前不可用」= 文件不存在，或存在但 0 字节。
+///
+/// 只接受 **`db::init` 之前** 的 metadata 读数：init 会把文件建出来并写入 schema，
+/// 之后再 stat 永远 > 0 —— 拿那个数当判据会让「可恢复备份」这道闸变成死代码。
+fn main_db_unusable_before_init(pre_init_bytes: Option<u64>) -> bool {
+    !matches!(pre_init_bytes, Some(n) if n > 0)
+}
+
 #[cfg(test)]
 mod install_probe_tests {
-    use super::looks_like_existing_install;
+    use super::{looks_like_existing_install, main_db_unusable_before_init};
 
     /// 只有 schema、没有任何业务行 ⇒ **首次安装**（可以生成新身份）。
     #[test]
@@ -1635,6 +1643,41 @@ mod install_probe_tests {
         assert!(
             !src.contains(concat!("db_preexisting", " ||")),
             "又把「库文件非空」算回来了 ⇒ 建表后崩溃会让应用永久拒启"
+        );
+    }
+
+    /// v5.14.12 线上回归：老库升级 + 四张业务表全 0 行 ⇒ `existing_install=false`，
+    /// 但主库**在本轮启动前是好的** ⇒ 「可恢复备份」闸门不许触发。
+    ///
+    /// 触发后果不是功能降级而是**打不开应用**：`find_recovery_backup` 必然命中本轮
+    /// 迁移刚生成的备份，且下一轮不再生成新备份、那份旧备份却仍在 ⇒ 每轮都拒启。
+    #[test]
+    fn recovery_gate_ignores_zero_business_rows_on_a_healthy_db() {
+        assert!(!looks_like_existing_install(0, 0, 0, 0), "四张业务表全空");
+        assert!(
+            !main_db_unusable_before_init(Some(4096)),
+            "init 前主库非空 ⇒ 合法安装形态，不得拒启"
+        );
+    }
+
+    /// 反面：主库丢失 / 0 字节仍须拦（别为了修回归把闸门整体拆掉）。
+    #[test]
+    fn recovery_gate_still_fires_when_main_db_is_missing_or_empty() {
+        assert!(main_db_unusable_before_init(None), "文件不存在");
+        assert!(main_db_unusable_before_init(Some(0)), "0 字节");
+    }
+
+    /// 判据只许读 **init 之前** 的读数，且不许退回「业务表全空」。
+    #[test]
+    fn recovery_gate_reads_pre_init_bytes_and_not_business_row_count() {
+        let src = include_str!("state.rs");
+        assert!(
+            src.contains("if main_db_unusable_before_init(pre_init_bytes)"),
+            "闸门必须用 init 前的读数（改了这里就同步本护栏）"
+        );
+        assert!(
+            !src.contains(concat!("if !existing", "_install {")),
+            "旧条件（业务表全空 ⇒ 拒启）会永久锁死合法安装，v5.14.12 回归"
         );
     }
 }
@@ -1724,11 +1767,12 @@ impl AppState {
             "gosslan.db".to_string()
         };
         let db_path = app_data.join(db_name);
-        // 必须在 `db::init` **之前**取：init 会把不存在的文件创建出来，之后再 stat
-        // 就无法区分「已有安装的库」与「刚建的空库」—— 而身份加载的安全性依赖这个判断。
-        let db_preexisting = std::fs::metadata(&db_path)
-            .map(|m| m.len() > 0)
-            .unwrap_or(false);
+        // 必须在 `db::init` **之前**取：init 会把不存在的文件创建出来、写出 schema，
+        // 之后再 stat 永远 > 0 —— 那个读数**不能**用来判「主库是否可用」。
+        // 返回值同时供两处用：`db_preexisting` 只进日志，`pre_init_bytes` 决定
+        // 「主库不可用 + 有备份 ⇒ 拒启」这道闸（见下面的 `main_db_unusable_before_init`）。
+        let pre_init_bytes = std::fs::metadata(&db_path).ok().map(|m| m.len());
+        let db_preexisting = pre_init_bytes.map(|n| n > 0).unwrap_or(false);
         let (conn, startup_notices) = db::init_with_notices(&db_path)?;
 
         // 运行日志：多开实例用独立文件（gosslan-1.log），避免测试实例互相覆盖。
@@ -1799,19 +1843,27 @@ impl AppState {
         // `db_preexisting` 只用来留日志（下面那行 BOOT_DB_STATE）。
         let existing_install =
             looks_like_existing_install(messages, friends, conversations, groups);
-        let db_bytes = std::fs::metadata(&db_path).map(|m| m.len()).unwrap_or(0);
         logger.info(
             "boot",
             format!(
-                "code=BOOT_DB_STATE data_dir={} db={} existed={db_preexisting} bytes={db_bytes} \
-                 install={existing_install} messages={messages} friends={friends} \
-                 conversations={conversations} groups={groups}",
+                "code=BOOT_DB_STATE data_dir={} db={} existed={db_preexisting} \
+                 pre_init_bytes={} install={existing_install} messages={messages} \
+                 friends={friends} conversations={conversations} groups={groups}",
                 app_data.display(),
-                db_path.display()
+                db_path.display(),
+                pre_init_bytes.map(|n| n.to_string()).unwrap_or_else(|| "missing".into())
             ),
         );
-        // 主库看起来是空库、旁边却有迁移备份 ⇒ 绝不按首次安装生成新身份。
-        if !existing_install {
+        // 主库**本身**不可用（本轮启动前文件不存在 / 0 字节）且旁边有迁移备份
+        // ⇒ 绝不按首次安装生成新身份。
+        //
+        // ⚠️ 触发条件只认**init 之前**的读数，且**不认**「业务表全空」：
+        // v5.14.12 用 `!existing_install` 当条件，于是「从旧版升级 + 四张业务表全 0 行」
+        // （装过旧版但从未加好友/发消息/建群）的合法用户在迁移成功之后被
+        // `find_recovery_backup` 命中**本轮刚生成的备份** ⇒ 永久拒启：下一轮不再生成备份，
+        // 那份旧备份却仍在目录里，每轮重复拒启，只能手工删备份（而错误文案还写着
+        // 「恢复前不要删除备份」）。业务表全空是合法安装形态；只有主库丢失/为空才该拦。
+        if main_db_unusable_before_init(pre_init_bytes) {
             if let Some(backup) = db::find_recovery_backup(&db_path) {
                 logger.error(
                     "boot",

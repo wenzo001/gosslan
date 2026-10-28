@@ -1148,7 +1148,7 @@ async function onShake() {
 const quote = ref<{ sender: string; snippet: string; msgId: string | number } | null>(null);
 
 /** 转发弹窗状态（MessageItem 右键"转发"设置）。文件消息带本地路径，转发即重发文件。 */
-const forward = ref<{ kind: MsgKind; content: string; snippet: string; filePath?: string } | null>(null);
+const forward = ref<{ kind: MsgKind; content: string; snippet: string; filePath?: string; msgId?: string } | null>(null);
 
 /** 点击引用块定位原消息：滚动 + 短暂高亮 */
 const highlightId = ref<string | number | null>(null);
@@ -1226,9 +1226,9 @@ async function doForward(convId: string) {
         return;
       }
       if (convId.startsWith("group:")) {
-        await chat.sendGroupFileTo(convId.slice(6), f.filePath);
+        await chat.sendGroupFileTo(convId.slice(6), f.filePath, f.msgId);
       } else {
-        await chat.sendFileTo(convId, f.filePath);
+        await chat.sendFileTo(convId, f.filePath, f.msgId);
       }
     } else {
       await chat.send(convId, f.content, f.kind);

@@ -37,3 +37,20 @@ export function parseFileMeta(content: string): Partial<FileMeta> | null {
   if (typeof p.h === "number" && Number.isFinite(p.h) && p.h > 0) out.h = Math.round(p.h);
   return out;
 }
+
+/**
+ * 气泡「展示 / 另存 / 转发」的路径来源 —— **唯一判定**。
+ *
+ * 台账路径优先：收到的文件真正落盘的位置只在 `file_transfers.path` 里。
+ * 台账还没到（乐观上屏 / 群文件首帧）时，**只有本机发出的消息**可以用载荷里的 `path`
+ * —— 载荷是**对端**写的，回退它等于让对端指定本机要读/发哪个文件（SEC-01 的同一威胁）。
+ * 对端来的消息此时返回空串，调用方按"尚未就绪"处理。
+ */
+export function displayPathFor(
+  transferPath: string | null | undefined,
+  payloadPath: string | null | undefined,
+  isMine: boolean,
+): string {
+  if (transferPath) return transferPath;
+  return isMine ? (payloadPath ?? "") : "";
+}

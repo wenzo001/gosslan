@@ -833,7 +833,7 @@ function quoteSnippet(kind: MsgKind, content: string): string {
 
 const emit = defineEmits<{
   (e: "quote", payload: { sender: string; snippet: string; msgId: string | number }): void;
-  (e: "forward", payload: { kind: MsgKind; content: string; snippet: string; filePath?: string }): void;
+  (e: "forward", payload: { kind: MsgKind; content: string; snippet: string; filePath?: string; msgId?: string }): void;
   (e: "locate", msgId: string): void;
   /** 点了某个表情 chip（已点过则是取消） */
   (e: "react", emoji: string): void;
@@ -1144,8 +1144,10 @@ function doForward() {
     kind: msg.kind as MsgKind,
     content: msg.content,
     snippet: quoteSnippet(msg.kind, msg.content),
-    // 文件转发按本地路径重走传输链路（内容里的 JSON 只是元信息）
+    // 文件转发按本地路径重走传输链路（内容里的 JSON 只是元信息）。
+    // `msgId` 随行：后端用它要求「这条路径归这条消息」，堵住对端写 path 的越权（SEC-01）。
     filePath: msg.kind === "file" ? (fileMeta.value?.path ?? "") : undefined,
+    msgId: msg.kind === "file" ? msg.msg_id : undefined,
   };
   // 同上：转发会打开转发弹窗（跳转到界面内去操作），底部面板必须先收掉
   closeActionSheet();
