@@ -10,6 +10,7 @@ import SettingsToggle from "@/components/settings/SettingsToggle.vue";
 import SettingsSelect from "@/components/ui/SettingsSelect.vue";
 import PrimaryBtn from "@/components/ui/PrimaryBtn.vue";
 import { useImeEnterGuard } from "@/composables/useImeEnterGuard";
+import { isAndroid } from "@/utils/platform";
 import { t } from "@/i18n";
 import type {RelayConfig, RelayPolicy, RelayProbe, RoutedEndpoint} from "@/types";
 
@@ -29,6 +30,19 @@ let ifaceToastShown = false;
 const channels = computed(() => app.channels ?? []);
 const btStatus = computed(() => channels.value.find((c) => c.channel === "bluetooth"));
 const lanStatus = computed(() => channels.value.find((c) => c.channel === "lan"));
+/**
+ * 局域网那一行的说明文案。安卓多一句**带条件的**"后台可收"承诺（ADR-0022）。
+ *
+ * 为什么只在安卓出现：这句话在桌面上是假的 —— 桌面没有前台服务这一档，
+ * 而"锁屏后仍能收到"要用户拿一条常驻通知去换，不该向别的平台顺口承诺。
+ * 条件（同局域网 / 未被系统强制停止）写在文案里而不是省略：Doze 与厂商省电
+ * 会限制网络，任何"永不掉线"的说法都兑现不了（ADR-0022 §5）。
+ */
+const lanDesc = computed(() =>
+  isAndroid
+    ? `${t("settings.network.lan.desc")} ${t("settings.network.lan.bgNote")}`
+    : t("settings.network.lan.desc"),
+);
 /**
  * 局域网那一行的状态文案（10-22 审计 D-10：连接建立缺中间态）。
  *
@@ -398,7 +412,7 @@ async function removeEndpoint(address: string) {
     :title="t('settings.group.network')"
     :footer="t('settings.group.network.footer')"
   >
-    <SettingsRow :label="t('settings.network.lan')" :description="t('settings.network.lan.desc')">
+    <SettingsRow :label="t('settings.network.lan')" :description="lanDesc">
       <div class="flex items-center gap-2">
         <span class="text-xs" :class="app.online ? 'text-[var(--gosslan-success-ink)]' : 'text-[var(--gosslan-text-2)]'">
           {{ lanStateText }}

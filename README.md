@@ -224,9 +224,15 @@ npm run multi:run          # 同机多开 3 个实例模拟多节点（--instanc
 ```
 
 - **多开原理**：`--instance N` 让每个实例使用独立数据库、独立 TCP 端口、独立设备指纹；UDP 端口共享（`SO_REUSEADDR`，unix 上叠加 `SO_REUSEPORT`），从而在单机模拟多节点 Mesh 与离线补发。
-- **Android 权限**：局域网（`CHANGE_WIFI_MULTICAST_STATE` 等）+ 蓝牙（`BLUETOOTH_SCAN/CONNECT/ADVERTISE` 等），
-  模板见 `scripts/android/AndroidManifest.xml`。**当前没有前台服务**：应用被系统回收后不会自己醒来
-  （做到这一步要 Service + 通知渠道 + Rust 生命周期接线，待办记在 `docs/adr/0020-blind-circuit-relay.md`）。
+- **Android 权限**：局域网（`CHANGE_WIFI_MULTICAST_STATE` 等）+ 蓝牙（`BLUETOOTH_SCAN/CONNECT/ADVERTISE` 等）
+  + 前台服务（`FOREGROUND_SERVICE` 与两个类型权限），清单见 `src-tauri/gen/android/app/src/main/AndroidManifest.xml`，
+  模板见 `scripts/android/AndroidManifest.xml`。
+- **Android 后台可收消息（带条件）**：局域网通道开着期间会跑一个前台服务守住 UDP/TCP/Gossip 的监听，
+  代价是一条常驻通知（系统强制），通知里带「停止后台连接」动作。
+  条件与全部取舍见 `docs/adr/0022-android-background-messaging-commitment.md`；
+  开机不自启、不申请电池优化白名单，Doze 与厂商省电仍会限制网络，所以这里不写"永不掉线"。
+  实现在 `src-tauri/gen/android/app/src/main/java/com/gosslan/app/BackgroundService.kt`（服务与通知）
+  与 `src-tauri/src/android_background.rs`（Rust 侧启停接线），失效原因读在设置→诊断面板的「后台连接服务」一行。
 
 ### 生产打包（Windows x64）
 

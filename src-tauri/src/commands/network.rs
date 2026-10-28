@@ -29,6 +29,10 @@ pub async fn stop_network(
 ) -> Result<RuntimeSnapshot, String> {
     let arc = state.inner().clone();
     network::stop(&arc).await;
+    // 用户主动关掉局域网 ⇒ 后台连接的前台服务一起收掉（常驻通知随之消失）。
+    // 这条与 `set_channel_enabled("lan", false)` 是两个用户出口，都不在 `network::stop` 里，
+    // 理由见 `network/mod.rs` 那段 ⚠️（重新绑定网卡的内部 stop 不许把服务抖掉）。
+    crate::android_background::stop();
     {
         let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
         db::set_lan_enabled(&dbc, false).map_err(|e| e.to_string())?;

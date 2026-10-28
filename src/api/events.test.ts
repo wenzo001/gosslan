@@ -458,3 +458,18 @@ test("RuntimeDiag：Rust 字段与 TS interface 必须逐字对应（camelCase �
   assert.ok(rust.length >= 10, `Rust 侧只解析到 ${rust.length} 个字段 ⇒ 解析器没吃到东西`);
   assert.deepEqual(ts, rust, `TS 的 RuntimeDiag 与 Rust 那份不一致（缺 ${rust.filter((f) => !ts.includes(f))} / 多 ${ts.filter((f) => !rust.includes(f))}）`);
 });
+
+/**
+ * `BackgroundDiag`（安卓后台连接的前台服务读数，ADR-0022）同样两头手抄 ⇒ 同一条判据。
+ *
+ * 它不在 `commands.rs` 那份视图里（结构体住在 `android_background.rs`），所以单独一条；
+ * 少一个字段 ⇒ 面板读到 `undefined`，而 `undefined` 在界面上和"服务没在跑"长得一样 ——
+ * 那一行存在的全部意义就是把"没跑 / 没前台地位 / 桥没接上"分开，被一个 undefined 抹平最坏。
+ */
+test("BackgroundDiag：Rust 字段与 TS interface 必须逐字对应", () => {
+  const rustSrc = readFileSync(join(ROOT, "src-tauri", "src", "android_background.rs"), "utf8");
+  const rust = rustPubFields(stripRustComments(rustSrc), "BackgroundDiag").map(toCamelCase).sort();
+  const ts = tsInterfaceKeys(readFileSync(join(ROOT, "src", "types.ts"), "utf8"), "BackgroundDiag").sort();
+  assert.deepEqual(rust, ["lastError", "ready", "running", "types"], `Rust 侧解析异常：${rust}`);
+  assert.deepEqual(ts, rust, `TS 的 BackgroundDiag 与 Rust 那份不一致（缺 ${rust.filter((f) => !ts.includes(f))} / 多 ${ts.filter((f) => !rust.includes(f))}）`);
+});

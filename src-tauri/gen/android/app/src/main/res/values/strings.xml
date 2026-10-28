@@ -1,4 +1,11 @@
 <resources>
     <string name="app_name">"Gosslan"</string>
     <string name="main_activity_title">"Gosslan"</string>
+    <!-- 前台服务的常驻通知（见 BackgroundService.kt 与 docs/adr/0022）。
+         文案按 ADR §5 的"带条件的承诺"写：不写成"永不掉线"，也不省略"在通知里就能停"这条出口。 -->
+    <string name="bg_notif_title">"Gosslan 正在后台接收消息"</string>
+    <string name="bg_notif_text">"局域网通道开着时保持接收；点按可回到 Gosslan"</string>
+    <string name="bg_notif_stop">"停止后台连接"</string>
+    <string name="bg_channel_name">"后台接收"</string>
+    <string name="bg_channel_desc">"局域网通道开启期间的常驻通知；关闭通道后自动消失"</string>
 </resources>

@@ -26,7 +26,7 @@ import { useChatStore } from "@/stores/useChatStore";
 import { errorText } from "@/composables/useErrorText";
 import { panelQueryOptions } from "@/utils/panelQuery";
 import { fmtClock } from "@/utils/time";
-import type { DiscoveryDiag, PeerVersionDiag, RuntimeDiag } from "@/types";
+import type { BackgroundDiag, DiscoveryDiag, PeerVersionDiag, RuntimeDiag } from "@/types";
 
 defineProps<{ open: boolean }>();
 const emit = defineEmits<{ (e: "close"): void }>();
@@ -51,6 +51,21 @@ const runtime = computed(() => runtimeQuery.data.value ?? null);
 /** -1 = 后端没数出来（读失败），界面必须说"未知"而不是"0 条积压"。 */
 function rtCount(n: number): string {
   return n < 0 ? "—" : String(n);
+}
+
+/**
+ * 前台服务读数 → 一句分得清故障的话（ADR-0022 §5）。
+ *
+ * 三种"没有"不许合成一句"未运行"：桥没接上（后面三格根本是读不到）、服务确实没跑、
+ * 服务活着但系统没给前台地位。第三种是最要命的那种 —— 通知栏看着一切正常，
+ * 进程却还在 cached 档里，而它只有靠 `types` 这一格才看得见。
+ */
+function bgServiceText(bg: BackgroundDiag): string {
+  if (!bg.ready) return t("diag.rtBgBridgeOff");
+  if (!bg.running) return t("diag.rtBgStopped");
+  if (bg.types < 0) return t("diag.rtBgUnknown");
+  if (bg.types === 0) return t("diag.rtBgNoType");
+  return t("diag.rtBgRunning", { types: bg.types });
 }
 
 /**
@@ -445,6 +460,17 @@ function ageText(ms: number | null): string {
             <dd class="text-right tabular-nums">
               {{ runtime.notifyWaiters }} / {{ runtime.notifyWaitersMax }}
             </dd>
+            <!-- 安卓后台连接的前台服务（ADR-0022）：这一族的失效**全是静默的**
+                 （类型被系统拒 / 后台启动被拒 / 桥没接上），症状都只是"锁屏后收不到消息"。
+                 桌面 `background` 是 null ⇒ 整行不出现，而不是显示一个假的"未运行"。 -->
+            <template v-if="runtime.background">
+              <dt class="opacity-70">{{ t("diag.rtBackground") }}</dt>
+              <dd class="text-right">{{ bgServiceText(runtime.background) }}</dd>
+              <template v-if="runtime.background.lastError">
+                <dt class="opacity-70">{{ t("diag.rtBgError") }}</dt>
+                <dd class="text-right font-mono">{{ runtime.background.lastError }}</dd>
+              </template>
+            </template>
           </dl>
           <!-- 慢持锁那行由后端锁观测的唯一读者留档；没有 = 本轮确实没出现过 ≥阈值的持锁。 -->
           <p

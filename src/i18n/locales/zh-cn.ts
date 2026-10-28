@@ -273,6 +273,10 @@ export const zhCN: MessageDict = {
   "settings.network.lan": "局域网通道",
   "network.refreshFail": "读取网卡信息失败",
   "settings.network.lan.desc": "发现并连接同一局域网内的其他设备",
+  // 安卓才有的一句（NetworkSection 里按 isAndroid 组合）：ADR-0022 的"带条件的承诺"，
+  // 条件与代价（常驻通知）都必须写在同一句里，不许只留"后台也能收"。
+  "settings.network.lan.bgNote":
+    "开启期间手机会有一条常驻通知，让锁屏后仍能收到消息——条件是连着同一个局域网、且没被系统强制停止；不想常驻就在通知里点「停止后台连接」，或直接关掉本通道",
   "settings.network.lan.peers": "{n} 个节点在线",
   "settings.network.lan.off": "未开启",
   "settings.network.lan.connecting": "正在连接…",
@@ -1211,6 +1215,15 @@ export const zhCN: MessageDict = {
   "diag.rtLinks": "在用的链路",
   "diag.rtPeers": "在线节点",
   "diag.rtNotifyWaiters": "等点击的通知线程（在飞 / 上限）",
+  // 安卓后台连接的前台服务（ADR-0022）：这一族失效全是静默的，"没跑 / 跑了但没前台地位 /
+  // 桥没接上"三种必须分开说，否则读数把一个可诊断的故障压成了一个症状。
+  "diag.rtBackground": "后台连接服务",
+  "diag.rtBgRunning": "运行中（类型位 {types}）",
+  "diag.rtBgNoType": "在跑但没拿到前台地位",
+  "diag.rtBgStopped": "未运行",
+  "diag.rtBgUnknown": "读数未知",
+  "diag.rtBgBridgeOff": "桥未接上（读不到）",
+  "diag.rtBgError": "最近一次失败码",
   "diag.rtWindows": "窗口（隐藏 / 总数）",
   "diag.rtHidden": "隐藏 {n}",
   "diag.rtNoSlowHold": "本轮没有出现过慢持锁（≥阈值）",
