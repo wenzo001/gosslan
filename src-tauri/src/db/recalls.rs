@@ -31,6 +31,23 @@ pub fn is_recalled(conn: &Connection, msg_id: &str) -> bool {
     .is_some()
 }
 
+/// 这条消息被谁、在哪个会话里登记过墓碑。
+///
+/// 为什么返回 conv_id 而不是直接给 bool：墓碑表 PK 是 `(conv_id, msg_id)`，而收件热路径
+/// 手上只有 msg_id ⇒ 索引按 msg_id 建（`db.rs` 那句注释自己写着"PK 的前缀用不上"）。
+/// 于是**命中不等于该生效**：经 A 群信封插入的墓碑会命中 B 群/单聊的同名消息，
+/// 先把 conv 带回去让调用方核对，是这条通道唯一的收口方式（2026-10-28 review 抓到）。
+pub fn recall_source(conn: &Connection, msg_id: &str) -> Option<(String, String)> {
+    conn.query_row(
+        "SELECT conv_id, recaller_id FROM group_recalled_messages WHERE msg_id = ?1 LIMIT 1",
+        params![msg_id],
+        |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)),
+    )
+    .optional()
+    .ok()
+    .flatten()
+}
+
 /// 把撤回**物化**到消息行：清空正文、改 kind。
 ///
 /// `content` 清空后，搜索 / 导出 / 已读水位**一行都不用改就自动正确**（没有正文可命中）。

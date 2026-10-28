@@ -1122,9 +1122,47 @@ async fn handle_gossip(state: &Arc<AppState>, peer_id: &str, env: GossipEnvelope
                     // outbox 直发是两条无顺序保证的路径）。命中权威集合就直接以
                     // 「已撤回」形态入库 —— 否则消息会带着完整正文落地，撤回失效。
                     let mut rec = rec;
-                    if db::is_recalled(&dbc, &rec.msg_id) {
-                        rec.kind = crate::protocol::KIND_RECALLED.to_string();
-                        rec.content = String::new();
+                    // 先撤后到：墓碑可能在**还不知道作者、类型、会话**的时候就被收下
+                    // （那一刻只有"发帧人是本群成员"这一条可判）。所以命中墓碑不等于该生效 ——
+                    // 消息现在到手了，用这些已知事实把它当成一条普通撤回**重判一遍**：
+                    // 会话归属、作者/群主、类型分母三闸一个都不能少。
+                    // 少了会怎样（2026-10-28 review 抓到的严重）：普通成员抢在目标落库前广播一条
+                    // recall，就能把分母之外的行（卡片）或**另一个会话**的同名消息抹掉，
+                    // 而界面上那句「群主撤回了这条消息」也跟着说错话。
+                    if let Some((tconv, recaller)) = db::recall_source(&dbc, &rec.msg_id) {
+                        let is_group = tconv.starts_with("group:");
+                        let (is_creator, is_member) = if is_group {
+                            let gid = tconv.strip_prefix("group:").unwrap_or_default().to_string();
+                            db::get_group(&dbc, &gid)
+                                .map(|g| {
+                                    (g.creator == recaller, g.members.contains(&recaller))
+                                })
+                                .unwrap_or((false, false))
+                        } else {
+                            (false, false)
+                        };
+                        let ok = crate::protocol::recall_receive_allowed(
+                            Some((rec.sender_id.as_str(), rec.conv_id.as_str(), rec.kind.as_str())),
+                            &recaller,
+                            &tconv,
+                            is_group,
+                            is_creator,
+                            is_member,
+                        );
+                        if ok {
+                            rec.kind = crate::protocol::KIND_RECALLED.to_string();
+                            rec.content = String::new();
+                        } else {
+                            // 墓碑留在表里（G-Set 只增不减，删它等于开第二条写路径），
+                            // 但**不作用于这一行**，并且必须留痕：否则这条通道被绕过时无人知道。
+                            state.logger.warn(
+                                "chat",
+                                format!(
+                                    "code=RECALL_TOMBSTONE_NOT_APPLIED msg={} 登记于={} 撤回者={} 目标会话={} 类型={} ⇒ 重判不过，按原文落库",
+                                    rec.msg_id, tconv, recaller, rec.conv_id, rec.kind
+                                ),
+                            );
+                        }
                     }
                     let inserted = db::insert_message_if_new(&dbc, &rec);
                     if announced_on(&inserted) {

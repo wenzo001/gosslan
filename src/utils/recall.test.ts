@@ -137,7 +137,7 @@ test("两档共用同一份可撤分母 —— 协议里不许再有第二份清
     /CREATOR_RECALLABLE_KINDS/,
     "协议里不该再有第二份可撤分母（两处清单迟早各说各话，且那份的前提已被证伪）",
   );
-  for (const table of ["group_todos", "group_announcements"]) {
+  for (const table of ["group_todos", "group_announcements", "group_polls"]) {
     assert.ok(
       !db.includes("CREATE TABLE IF NOT EXISTS " + table),
       `${table} 出现了 —— 卡片有了独立真源，那时才该把三张卡放回分母（连同这条判据一起改）`,

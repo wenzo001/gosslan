@@ -436,6 +436,62 @@ mod tests {
         );
     }
 
+    /// 先撤后到那条通道的**复核**依据（2026-10-28 review 抓到的严重缺陷）。
+    ///
+    /// 墓碑可能在还不知道作者/类型/会话时就被收下（那一刻只有"发帧人是成员"可判），
+    /// 所以"命中墓碑"不等于"该生效"。这一格钉的是：命中之后必须还能拿到
+    /// **它是替谁、在哪个会话登记的**，并且三个维度各自都能把一次错误的生效拦下来。
+    #[test]
+    fn recall_source_carries_the_evidence_needed_to_recheck_a_late_arrival() {
+        let conn = mem();
+        conn.execute("INSERT INTO conversations(id, kind, name) VALUES ('g1','group','G')", [])
+            .unwrap();
+        assert!(recall_source(&conn, "nope").is_none(), "没登记过就是没登记过");
+        insert_recall(&conn, "group:g1", "later2", "owner-a", 9).unwrap();
+        let got = recall_source(&conn, "later2");
+        assert_eq!(
+            got.as_ref().map(|(c, r)| (c.as_str(), r.as_str())),
+            Some(("group:g1", "owner-a")),
+            "必须把会话与撤回者都带回去，否则到货那一臂没法复核"
+        );
+        // ① 跨会话：墓碑登记在 group:g1，消息住在 g2 ⇒ 不生效（只按 msg_id 查会误伤）
+        assert!(
+            !crate::protocol::recall_receive_allowed(
+                Some(("x", "g2", "text")),
+                "owner-a",
+                "group:g1",
+                true,
+                true,
+                true
+            ),
+            "别的会话的同名消息不许被这张墓碑抹掉"
+        );
+        // ② 分母之外：卡片没有独立真源，群主也撤不了 ⇒ 先撤后到同样不许绕过
+        assert!(
+            !crate::protocol::recall_receive_allowed(
+                Some(("x", "group:g1", "todo")),
+                "owner-a",
+                "group:g1",
+                true,
+                true,
+                true
+            ),
+            "借先撤后到绕过类型分母 = 毁掉任务本体"
+        );
+        // ③ 正控：同会话 + 分母内 + 本机记录里他确实是群主 ⇒ 该生效
+        assert!(
+            crate::protocol::recall_receive_allowed(
+                Some(("x", "group:g1", "text")),
+                "owner-a",
+                "group:g1",
+                true,
+                true,
+                true
+            ),
+            "合法的那一条不能被这次收紧误伤"
+        );
+    }
+
     /// 静默类（表情回应）不得进入历史检索，也不得顶起群已读水位。
     ///
     /// 这两条都必须**真正执行 SQL** 才算验证：SQL 里的 kind 清单是从 `WIRE_KINDS`
