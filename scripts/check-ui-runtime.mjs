@@ -8573,19 +8573,85 @@ async function runRowPair(cdp, url) {
         kindLabel, tailStroke: g && g.tailStroke, wantMineLine,
         bubbleLine: g && g.bubbleLine, cardLineColor: g && g.cardLineColor,
       }));
-    // 尖角那一侧的下圆角被拉平（0）是刻意的 —— 尾巴根部要一条直边才接缝无痕。
-    // 这一格钉住"拉平"确实发生在**自己**这一侧（对方那一圈量的是左侧）。
-    check("自己·" + kindLabel + "尾巴那一侧的下圆角已拉平（右侧）",
-      !!g && typeof g.tailCorner === "number" && g.tailCorner === 0,
-      "borderBottomRightRadius == 0", JSON.stringify({
-        kindLabel, tailCorner: g && g.tailCorner, cornerRad: g && g.cornerRad,
+    // 尖角那一侧的下圆角：自己这一侧收 **tight 档**（没有实边框要接 ⇒ 拉平成直角会读成
+    // "角上贴了枚方头 tab"，用户 2026-10-28），对方那一侧仍拉平成 0（要与 1px 竖边框首尾相接）。
+    // 档位从样式表现读那个 token，不把 6px 抄进探针。
+    const tightPx = await cdp.eval(`(() => {
+      const el = document.createElement("span");
+      el.style.borderBottomRightRadius = "var(--gosslan-bubble-radius-tight, 6px)";
+      document.body.appendChild(el);
+      const v = parseFloat(getComputedStyle(el).borderBottomRightRadius);
+      el.remove();
+      return Number.isFinite(v) ? v : null;
+    })()`);
+    check("自己·" + kindLabel + "尾巴那一侧的下圆角收在 tight 档（不是直角，也不许回到 18）",
+      !!g && typeof g.tailCorner === "number" && typeof tightPx === "number"
+        && Math.abs(g.tailCorner - tightPx) < 0.5 && g.tailCorner > 0,
+      "borderBottomRightRadius == tight", JSON.stringify({
+        kindLabel, tailCorner: g && g.tailCorner, tightPx, cornerRad: g && g.cornerRad,
       }));
     check("自己·" + kindLabel + "尾巴填充 == 这条自己的底色（预设色，暗色同理）",
       !!g && typeof g.tailFill === "string" && g.tailFill === g.bubbleBg,
       "fill == backgroundColor", JSON.stringify({ kindLabel, tailFill: g && g.tailFill, bubbleBg: g && g.bubbleBg }));
   }
 
+  // ---- 正文表情的尺寸：放大不许把行盒撑高（用户 2026-10-28 要 1.45em）----
+  //
+  // 估高按"几行文字"算，真画出若因为表情把行高顶上去，两者就对不上 ⇒
+  // 虚拟列表里表现为"滚动时条目自己跳"。这一格不写像素常数，只比"同一条带表情 vs 不带表情"
+  // 的真高度：同一字号下一行文本，加多少表情都不许多占高度。
+  const EMOJI_TEXT = "收到[赞][赞][赞]";
+  check("表情尺寸：挂一条纯文本（单聊）", await mount(FAR, false, "text", "收到"), "install 成功");
+  const hPlain = await cdp.eval(`(() => {
+    const el = document.querySelector('[data-msg-bubble] > :first-child');
+    return el ? +el.getBoundingClientRect().height.toFixed(2) : null;
+  })()`);
+  check("表情尺寸：挂一条同样文字 + 三枚表情（单聊）",
+    await mount(FAR, false, "text", EMOJI_TEXT), "install 成功");
+  const hEmoji = await cdp.eval(`(() => {
+    const el = document.querySelector('[data-msg-bubble] > :first-child');
+    const img = el && el.querySelector('.emoji-img');
+    // ★ 读**渲染盒**（getBoundingClientRect）而不是 computed width：
+    //   表情是 width:1.3em 配 transform:scale(1.115)，computed 看不见 transform ⇒
+    //   拿它当"用户看到的尺寸"会永远量到 1.3em（本仓在别处踩过同一个错：transform 之后读 style.top）。
+    const rect = img && img.getBoundingClientRect();
+    return {
+      h: el ? +el.getBoundingClientRect().height.toFixed(2) : null,
+      w: rect ? +rect.width.toFixed(2) : null, hImg: rect ? +rect.height.toFixed(2) : null,
+      boxW: img ? getComputedStyle(img).width : null,
+      count: el ? el.querySelectorAll('.emoji-img').length : 0,
+      fontSize: el ? getComputedStyle(el).fontSize : null,
+    };
+  })()`);
+  console.log("  · 表情实测：" + JSON.stringify({ hPlain, hEmoji }));
+  check("非空转·表情真的画成图片（三枚），且渲染尺寸读得到",
+    !!hEmoji && hEmoji.count === 3 && typeof hEmoji.w === "number",
+    "count==3 且渲染宽度是数", JSON.stringify(hEmoji));
+  check("表情渲染到 1.45em（读渲染盒，不读 computed width、不读源码字符串）",
+    !!hEmoji && hEmoji.fontSize && Math.abs(
+      hEmoji.w / parseFloat(hEmoji.fontSize) - 1.45) < 0.03,
+    "渲染宽 / font-size ≈ 1.45", JSON.stringify(hEmoji));
+  // 布局盒仍是 1.3em —— 这一格钉住"放大是 transform 做的"，不是把盒子撑大。
+  // 没有这一格，下一条（行盒不撑高）会被"改成 1.45em + 顺手改行高"糊过去。
+  check("表情的布局盒仍是 1.3em（放大只走 transform ⇒ 不许去撑行盒）",
+    !!hEmoji && hEmoji.fontSize && Math.abs(
+      parseFloat(hEmoji.boxW) / parseFloat(hEmoji.fontSize) - 1.3) < 0.02,
+    "computed width / font-size ≈ 1.3", JSON.stringify(hEmoji));
+  check("表情不许把行盒撑高：同一条文字加三枚表情，气泡高度不变（|差| <= 1px）",
+    typeof hPlain === "number" && !!hEmoji && typeof hEmoji.h === "number"
+      && Math.abs(hEmoji.h - hPlain) <= 1,
+    "|h带表情 - h纯文本| <= 1", JSON.stringify({ hPlain, hEmoji: hEmoji && hEmoji.h }));
+
   // 取证帧（--shot）：单聊 + 回应条，用来肉眼复核"尾巴 / 气泡 / 底栏是不是同一块"。
+  if (SHOT_PATH) {
+    for (const [kindLabel, kind] of [["文本", "text"], ["文件", "file"], ["代码", "code"], ["合并", "merge"], ["任务", "todo"]]) {
+      await mount(FAR, false, kind, null, "dev-me");
+      const shot = await cdp.send("Page.captureScreenshot", { format: "png" });
+      const out = SHOT_PATH.replace(/\.png$/, "-mine-" + kind + ".png");
+      fs.writeFileSync(out, Buffer.from(shot.data, "base64"));
+      console.log("  📷 自己·" + kindLabel + "取证帧 → " + out);
+    }
+  }
   if (SHOT_PATH) {
     const shotProps = {
       message: {
