@@ -13,6 +13,33 @@
 
 ## [Unreleased]
 
+## [5.15.14] - 2026-10-29
+
+### 发现缓存与对端样式表有了上限；样式更新绑定链路对端
+
+2026-10-29 审计 SEC-02 / SEC-04。
+
+- **SEC-02 `peers` 表无界**：未签名的 UDP announce 能新建任意 `device_id` 的条目，而这张表既无
+  上限、也不在任何清扫名单里，同时每 300ms 会被全量序列化推给前端 ⇒ 一条持续广播就能让内存与
+  IPC 一起涨。现在上限 **512**，满员时淘汰 `last_seen` 最旧的那条（`peers` 是**发现缓存**不是
+  身份锚：好友的持久锚在 `friends` 表，在线节点 5 秒内会自己补回来）；仍然满就放弃这一条并留
+  `code=PEERS_TABLE_FULL`。
+- **SEC-04 对端样式可以被别人代写**：`Message::ChatStyle` 只判 `from != 自己`，而 `from` 是自报
+  字段 ⇒ 任何人连上来都能替**别人**写样式（按 device_id 持久化）。现在与 `ChatMessage` 同一口径：
+  **必须等于链路对端**。
+- **SEC-04 载荷与表都无界**：单条样式 > 8 KiB 丢弃（`code=CHAT_STYLE_TOO_LARGE`）；表满 256 时
+  陌生 peer 不再登记（已知 peer 仍可更新，样式是会变的），`code=PEER_STYLES_FULL`。
+
+顺带修掉一条**测试自身的脆弱**：`lib_friend_identity_tests.rs` 用 `&tr[warn..warn + 2000]` 按
+**字节**取窗口，我这次往同文件前面加了几行就把切点挪进 `发` 的字节里 ⇒ 测试直接 panic
+（`end byte index 526427 is not a char boundary`）。改成按字符边界收口（窗口短几字节可以接受，
+"内容变长就炸"不行）。
+
+**验证**：`cargo test --features bluetooth --lib` **1303 passed / 0 failed / 1 ignored**；
+新增 `peer_eviction_picks_the_stalest_entry`（含空表不 panic）与 `peer_style_admission_truth_table`
+（四格）；`npm run verify:local` 25 步全绿（75.8s）。
+
+## [5.15.13] - 2026-10-29
 ## [5.15.13] - 2026-10-29
 
 ### 审计 B+C 批：蓝牙不可用的两种原因分开说；入站内存与转发速率有了上限

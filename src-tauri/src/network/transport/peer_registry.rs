@@ -111,6 +111,27 @@ fn new_peer_conflicts_with_friend(
         || matches!((fe, ed25519), (Some(o), Some(n)) if o != n)
 }
 
+/// 发现缓存（`state.peers`）的**条数上限**（2026-10-29 审计 SEC-02）。
+///
+/// 未签名的 UDP announce 能新建任意 `device_id` 的条目，而这张表既无上限、也不在任何
+/// 清扫名单里，同时每 300ms 会被全量序列化推给前端 ⇒ 一条持续广播就能让内存与 IPC 一起涨。
+/// 512 是"远大于真实局域网规模、又足够挡住刷表"的一档（本仓历史上出现过 500 节点的压测）。
+pub(crate) const MAX_PEERS: usize = 512;
+
+/// 表满时该淘汰谁：`last_seen` 最旧的那个（纯函数，可单测）。
+///
+/// 为什么敢淘汰：`peers` 是**发现缓存**，不是身份锚 —— 好友的持久锚在 `friends` 表里
+/// （Gossip 那条读不到 peers 时会回落到它），而在线节点 5 秒内就会用下一次 announce/Hello
+/// 把自己补回来。淘汰不会造成"永久断链"，只是让最久没露面的那条让位。
+pub(crate) fn peer_to_evict(
+    peers: &std::collections::HashMap<String, crate::state::Peer>,
+) -> Option<String> {
+    peers
+        .values()
+        .min_by_key(|p| p.last_seen)
+        .map(|p| p.device_id.clone())
+}
+
 #[allow(clippy::too_many_arguments)]
 pub async fn upsert_peer(
     state: &AppState,
@@ -160,6 +181,24 @@ pub async fn upsert_peer(
                 (false, false, true)
             }
             None => {
+                // 表满时先淘汰最久没露面的那条（见 `MAX_PEERS`）。淘汰后仍然满（极端情况：
+                // 表里全是刚见过的）就**放弃这一条**并留痕 —— 宁可少记一个陌生节点，
+                // 也不许让这张表被广播刷爆。
+                if peers.len() >= MAX_PEERS {
+                    if let Some(victim) = peer_to_evict(&peers) {
+                        peers.remove(&victim);
+                    }
+                }
+                if peers.len() >= MAX_PEERS {
+                    drop(peers);
+                    state.logger.warn(
+                        "peer",
+                        format!(
+                            "code=PEERS_TABLE_FULL device={device_id}（已达上限 {MAX_PEERS}，本条不登记）"
+                        ),
+                    );
+                    return;
+                }
                 peers.insert(
                     device_id.to_string(),
                     Peer {

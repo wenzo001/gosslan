@@ -131,3 +131,47 @@
     }
 
     // ---------------- P0：TCP 监听端口生命周期（生产 1.0 重启掉线） ----------------
+
+    /// peers 表的淘汰选谁（2026-10-29 审计 SEC-02）：`last_seen` 最旧的那个。
+    ///
+    /// 这条钉的是"表被广播刷爆时让谁让位" —— 选错（例如按 device_id 最小）会把刚见过的
+    /// 活跃节点挤掉，而最久没露面的那条反而常驻。边界：空表返回 None（不许 panic）。
+    #[test]
+    fn peer_eviction_picks_the_stalest_entry() {
+        use crate::network::transport::peer_to_evict;
+        let mk = |id: &str, last_seen: i64| crate::state::Peer {
+            device_id: id.to_string(),
+            nickname: String::new(),
+            avatar: None,
+            device_type: String::new(),
+            ip: String::new(),
+            tcp_port: 0,
+            last_seen,
+            rtt_ms: None,
+            x25519_pubkey: None,
+            ed25519_pubkey: None,
+            keys_verified: false,
+            first_seen: None,
+            link: None,
+        };
+        let mut peers = std::collections::HashMap::new();
+        assert_eq!(peer_to_evict(&peers), None, "空表不许 panic");
+
+        peers.insert("fresh".into(), mk("fresh", 900));
+        peers.insert("stale".into(), mk("stale", 100));
+        peers.insert("mid".into(), mk("mid", 500));
+        assert_eq!(peer_to_evict(&peers).as_deref(), Some("stale"), "淘汰最久没露面的那条");
+
+    }
+
+    /// 对端样式表的准入（2026-10-29 审计 SEC-04）：已知 peer 永远可更新，新 peer 满员即拒。
+    /// 边界两侧各一格 —— 把 `||` 写成 `&&` 或把 `<` 写成 `<=` 这里当场红。
+    #[test]
+    fn peer_style_admission_truth_table() {
+        // `handle_messaging.rs` 是 `include!` 进来的 ⇒ 它的项就落在 `transport` 模块里。
+        use crate::network::transport::peer_style_admitted;
+        assert!(peer_style_admitted(true, 0));
+        assert!(peer_style_admitted(true, 9999), "已知 peer 满员也要能更新（样式是会变的）");
+        assert!(peer_style_admitted(false, 0));
+        assert!(!peer_style_admitted(false, 256), "满员时陌生 peer 不登记");
+    }
