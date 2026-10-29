@@ -6,6 +6,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { buildManifest, mapPlatformAssets, notesForVersion, REQUIRED_PLATFORMS } from "./updater-manifest.mjs";
+import { changelogProblems } from "./semver.mjs";
 
 const SIG = "untrusted comment: signature\n" + "A".repeat(64);
 
@@ -116,4 +117,41 @@ test("CHANGELOG 版本小节取到下一个版本标题为止", () => {
   assert.match(notes, /### 更新/);
   assert.match(notes, /- b/);
   assert.ok(!notes.includes("5.4.1"));
+});
+
+/**
+ * 相邻两行是同一个版本号 ⇒ 那一节的「应用内更新说明」读出来是**空串**（上面那条判据的边界）。
+ *
+ * 2026-10-29 现算：5.15.5～5.15.13 九节就是这么重复的，`notesForVersion` 对它们**全部返回空**
+ * （`## [5.15.13]` 紧跟着第二行 ⇒ 切到下一个 `^## [` 为止的那段是零个字符）。
+ * 两个已发过 tag 的那两版当时的清单是非空的（v5.15.7 / v5.15.13 的 `latest.json` 现读
+ * 664 / 1484 字），所以**没有用户可见损害** —— 重复是后来编辑带进来的。
+ * 但这条形状必须被结构判据拦住：格式判据看不出（两行都合规）、降序判据也看不出（相等不算逆序）、
+ * 归属判据只看当前那一版 ⇒ 一旦给老版本重生成清单就会静默发一个无说明的版本。
+ */
+test("相邻重复的版本标题：量具先证明它会变空，判据必须报出来（正控用真文件）", () => {
+  const dup =
+    "## [5.15.13] - 2026-10-29\n## [5.15.13] - 2026-10-29\n\n### 某批\n\n- a\n\n## [5.15.12] - 2026-10-29\n\n- b\n";
+  assert.equal(
+    notesForVersion(dup, "5.15.13"),
+    "",
+    "第一格：重复标题那一节必须被读成空串（否则下面那条判据是在防一个不存在的危害）",
+  );
+
+  // 真实 CHANGELOG：不许有相邻重复的版本标题。
+  const root = path.join(import.meta.dirname, "..");
+  const real = path.join(root, "CHANGELOG.md");
+  assert.deepEqual(changelogProblems(real), [], "CHANGELOG 的结构判据报红了");
+
+  // 正控：把真文件第一个版本标题复制一行，判据必须点名那一个版本号（不是恒绿的清单）。
+  const text = fs.readFileSync(real, "utf8");
+  const m = text.match(/^## \[(\d+\.\d+\.\d+)\] - \d{4}-\d{2}-\d{2}$/m);
+  assert.ok(m, "CHANGELOG 里没找到一个版本标题 ⇒ 变异没落进去");
+  const mutated = text.replace(m[0], `${m[0]}\n${m[0]}`);
+  assert.notEqual(mutated, text, "变异没改到内容，这条正控不作数");
+  const tmp = path.join(fs.mkdtempSync(path.join(os.tmpdir(), "gosslan-changelog-")), "CHANGELOG.md");
+  fs.writeFileSync(tmp, mutated);
+  const found = changelogProblems(tmp).filter((p) => p.includes(m[1]));
+  assert.equal(found.length, 1, `重复标题必须被点名恰好一次，实际：${JSON.stringify(found)}`);
+  assert.match(found[0], /更新说明/);
 });
