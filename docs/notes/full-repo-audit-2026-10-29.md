@@ -297,6 +297,14 @@ export function isForwardableKind(kind: string): boolean {
 | **STB-06** | **不成立** | `spawn_sync` 的 `false` 只在"该群已在飞"时返回（`group_history_active.insert` 失败），没有"本机没这个群"这一支；未知群会在 `run_group_history_sync` 内部报出。返回值语义单一，调用方按"已在飞"处理是对的。 |
 | **SEC-07** | **不成立（设计使然）** | `upsert_peer` 的 IP 取**报文源地址**（`src.ip()`），只有 `tcp_port` 来自载荷；对端能让我们拨的只有"它自己 IP 上的某个端口"。要把它变成打第三方，需要 UDP 源地址伪造 —— 那与"发现协议必须告诉对端端口"是同一件事的两面，改掉就没有发现。速率上已被 5s 广播周期 + `ensure_link` 去重兜住。 |
 
+### 4.0b SEC-10 / SEC-11 / TST-04 的复核（2026-10-29 晚，读码后判"不修"或"改不了"）
+
+| ID | 结论 | 证据 |
+|---|---|---|
+| **SEC-11**（`OpaqueExternal` 的 id 冲刷去重表） | **审计高估，不修** | 去重是 Bloom + LRU 两层，而 `BloomFilter::insert` 在 `count >= capacity` 时**整张位图清零轮换**（`gossip_engine.rs:52-56`）⇒ 不存在"填满后永久判重复"的断电式后果。洪水的最坏效果是"去重窗口被提前轮换 ⇒ 重复帧被重复处理"，而落库按 `msg_id` 幂等（`insert_message_if_new`）⇒ 无用户可见后果。改去重语义的风险大于这点收益。 |
+| **SEC-10**（`RelayChunk` 用自报 `to` 做定向转发目标） | **设计使然，不修** | "中继"这个职责本身就是"把别人的帧送到它指定的目标"，`to` 必然来自帧；已有的闸是①中继授权策略（`relay_denied`，数据面三个转发点都过它，见 `lib_relay_data_tests.rs`）②本轮新加的每秒 100 帧全局限速。再加"目标必须是我们认识的人"会直接改变中继语义。 |
+| **TST-04**（好友 reject 臂零测试） | **改不了（缺 harness），已有等价覆盖** | 该臂只有三行：守卫 + `forget_pending_request` + emit。它的决策逻辑 `friend_request_flush_decision` **已有 7 处测试引用**；"拒绝后 pending 不漏"由 `friend_request_survives_a_dropped_link` 与 `every_friend_accept_path_forgets_the_pending_request` 两处判据盯住。要做端到端行为测试需要一个能构造 `AppState` 的测试 harness —— 本仓目前没有，属于独立基础设施工作。 |
+
 ### 4.1 已核查且未发现问题的稳定性面
 
 - **锁顺序**：全仓无 `peers↔db` 嵌套；`file_receivers→db` 顺序成立。
