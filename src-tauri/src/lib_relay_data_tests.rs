@@ -442,7 +442,7 @@
         // `std::fs::copy(` 是 2026-10-15 补的第八个：收藏 / 另存为拷的都是**没有体积上限**的整份文件。
         // 反过来，`std::fs::read(` 不进来 —— 它和"读一份 8 KB 配置"字面同形，按字面数会把尺子稀释成
         // 噪声；预览那三格的真有界性由同一体内的 `max_bytes.min(15 MiB)` 保证，那是**契约**不是尺子。
-        const PRIMITIVES: [&str; 10] = [
+        const PRIMITIVES: [&str; 11] = [
             "sha256_file_hex(",
             "sync_all()",
             "add_chunk(",
@@ -462,6 +462,11 @@
             // 登记 helper 自己的名字，才拦得住「以后有人把它直接搬回 async 体里就地调」。
             // 复跑：grep -rn "clear_dir_contents(" src-tauri/src/commands/favorites.rs
             "clear_dir_contents(",
+            // 4.40.10（2026-10-29 审计 STB-01）：群文件分片的"校验 + 增量哈希 + write_all + 进度落库"
+            // 收成一个同步 helper 的名字。登记**helper 自己**而不是 `write_all(`：后者与"写 8 KB 缓冲区"
+            // 字面同形，进清单会把尺子稀释成噪声（台账第 13 行盲区①）。
+            // 复跑：grep -rn "write_group_chunk_blocking(" src-tauri/src/network/transport/group_file.rs
+            "write_group_chunk_blocking(",
         ];
         // 登记好的"家"（顺序即排序后的比较顺序）。
         let registered: Vec<&str> = vec![
@@ -597,10 +602,12 @@
             "生产码只现数到 {} 个 .rs —— 目录走错了，这条守卫是在空集上恒绿",
             files.len()
         );
+        // 2026-10-29：18 → 19。新增的一格是群文件分片的写盘 helper（`write_group_chunk_blocking`），
+        // 它本身就跑在 `spawn_blocking` 里 ⇒ 属于「① 合规的一格」，与 homes 清单同步改上来。
         assert_eq!(
             total,
-            18,
-            "整份慢活现数到 {total} 处、登记 18 处。对不上时先分清哪一种：\\n             ① 新增的是**合规**的一格（也在池里跑）⇒ 把这一格数与 `homes` 清单一起改上来，\\n             ② 新增的是**没包的** ⇒ 先搬进 spawn_blocking（同链已有 18 处写法可抄），\\n             ③ 改了 helper 的名字 ⇒ PRIMITIVES 清单要同步，否则这条法就悄悄少了一格。"
+            19,
+            "整份慢活现数到 {total} 处、登记 19 处。对不上时先分清哪一种：\\n             ① 新增的是**合规**的一格（也在池里跑）⇒ 把这一格数与 `homes` 清单一起改上来，\\n             ② 新增的是**没包的** ⇒ 先搬进 spawn_blocking（同链已有 19 处写法可抄），\\n             ③ 改了 helper 的名字 ⇒ PRIMITIVES 清单要同步，否则这条法就悄悄少了一格。"
         );
         assert!(
             offenders.is_empty(),

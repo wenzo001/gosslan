@@ -919,6 +919,7 @@ network::transport::tests::peer_offline_after_tail_truth_table
 network::transport::tests::peer_offline_rule_has_one_home
 network::transport::tests::peer_wide_receiver_cleanup_is_gated_on_total_link_loss
 network::transport::tests::pending_friend_request_reflush_is_spaced_not_per_heartbeat
+network::transport::tests::pending_friend_requests_are_bounded
 network::transport::tests::pending_reads_keeps_max_timestamp
 network::transport::tests::pick_member_x25519_prefers_peers_then_friends
 network::transport::tests::plaintext_payload_is_rejected

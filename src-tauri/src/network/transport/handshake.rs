@@ -426,16 +426,72 @@ pub fn friend_request_arrival_decision(first_sighting: bool) -> FriendRequestArr
 /// 事件每次都发（前端 store 据此重拉「新的朋友」，幂等；漏发会让首次那一份恰好没被界面收到时
 /// 列表永远不刷新），但**通知只在第一次**。已经是好友的情形由
 /// `auto_accept_if_already_friend` 先行收敛（那条路径自己会走完整的同意流程）。
+/// 待处理好友申请表（`AppState::pending_requests`）的**条数上限**（STB-02）。
+///
+/// 这张表的键（`from`）与载荷（昵称/头像）都由**不可信对端**控制，而它原本既无上限、
+/// 无 TTL，也不在任何清扫名单里 ⇒ 谁都能让这张常驻内存表一直长。正常场景里同时待处理的
+/// 申请是个位数，64 是"远大于真实用量、又足够挡住刷表"的一档。
+const MAX_PENDING_FRIEND_REQUESTS: usize = 64;
+/// 入站头像的上限：预设头像是 ~0.5KB 的 data URL，正常用户头像也远小于 256KB。
+/// 超过就**丢掉头像**（而不是整条申请），否则一张 64MiB 上限的帧能带着它进内存常驻。
+const MAX_PENDING_AVATAR_BYTES: usize = 256 * 1024;
+/// 昵称上限（按字符）：与前端输入上限同档，超出截断（它会进通知标题与列表）。
+const MAX_PENDING_NICKNAME_CHARS: usize = 64;
+
+/// 这条申请能不能进表（纯函数）：已在表里的**同一个人**永远可以（幂等重发要能更新载荷），
+/// 新条目在满员时拒掉。
+pub(crate) fn pending_friend_request_admitted(
+    already_pending: bool,
+    current_len: usize,
+) -> bool {
+    already_pending || current_len < MAX_PENDING_FRIEND_REQUESTS
+}
+
+/// 把申请载荷夹到有界范围内（纯函数）。返回 (夹好的申请, 是否丢了头像)。
+pub(crate) fn bounded_pending_request(mut req: PendingRequest) -> (PendingRequest, bool) {
+    if req.from_nickname.chars().count() > MAX_PENDING_NICKNAME_CHARS {
+        req.from_nickname = req.from_nickname.chars().take(MAX_PENDING_NICKNAME_CHARS).collect();
+    }
+    let dropped_avatar = req
+        .from_avatar
+        .as_ref()
+        .is_some_and(|a| a.len() > MAX_PENDING_AVATAR_BYTES);
+    if dropped_avatar {
+        // 丢掉头像而不是整条申请：申请本身是有用的，头像只是装饰。
+        req.from_avatar = None;
+    }
+    (req, dropped_avatar)
+}
+
 pub(crate) async fn apply_friend_request(state: &Arc<AppState>, req: PendingRequest, trace: &str) {
     // 他已经是我的好友 ⇒ 直接同意（别插 pending，见 auto_accept_if_already_friend）
     if auto_accept_if_already_friend(state, &req.from).await {
         return;
+    }
+    // 载荷先夹到有界（昵称截断、超大头像丢弃），再判要不要进表。
+    let (req, avatar_dropped) = bounded_pending_request(req);
+    if avatar_dropped {
+        state.logger.warn(
+            "friend",
+            format!("code=FRIEND_REQUEST_AVATAR_DROPPED peer={}（超过上限，已丢弃头像）", req.from),
+        );
     }
     let prior = {
         let mut pending = state
             .pending_requests
             .lock()
             .unwrap_or_else(|e| e.into_inner());
+        if !pending_friend_request_admitted(pending.contains_key(&req.from), pending.len()) {
+            drop(pending);
+            state.logger.warn(
+                "friend",
+                format!(
+                    "code=PENDING_REQUESTS_FULL peer={}（待处理申请已达上限 {MAX_PENDING_FRIEND_REQUESTS}，本条丢弃）",
+                    req.from
+                ),
+            );
+            return;
+        }
         pending.insert(req.from.clone(), req.clone())
     };
     // 每次都发：前端只是据此重拉列表，重复无害（见上面的「幂等判据」）。

@@ -13,6 +13,32 @@
 
 ## [Unreleased]
 
+## [5.15.10] - 2026-10-29
+
+### 群文件分片的写盘离开 tokio worker；好友申请表有了上限
+
+2026-10-29 审计 STB-01 / STB-03 / STB-02（High / Medium / Medium）。
+
+- **STB-01**：`handle_group_file_chunk` 里「seq/尺寸校验 + 增量哈希 + `write_all` + 进度落库」
+  整段跑在 tokio worker 上，还**持着** `group_file_receivers` 这把进程级锁。单聊那条早就为
+  同一件事付过学费（`handle_file.rs` 的 `spawn_blocking`），群文件当时只搬了"解码 + 解密"。
+  表现是"传群文件时点设置没窗、拖窗口没反应"（同一条 runtime 上还排着所有 async IPC）。
+  现在整段收进同步 helper `write_group_chunk_blocking` 并在 `spawn_blocking` 里跑，
+  锁在池内取（不在 await 里持锁）；这条链路的帧本来就是逐条 await 处理 ⇒ 搬池不等于并发化，
+  「同一传输的分片必须串行」照旧成立。
+- **STB-03** 的全局锁本轮**不动**：改它要动几十个引用点、且只有跨进程 E2E 能证
+  （审计自己也这么写）。本轮只保证"写盘离开 worker + 不跨 await 持锁"。
+- **STB-02**：`pending_requests` 的键与载荷全由不可信对端控制，原本无条数上限、无 TTL、
+  也不在清扫名单里。现在：满员（64）拒**新**条目、同一个人仍可更新（幂等重发要能进来）；
+  昵称按 64 字符截断；头像超过 256 KiB **丢头像保留申请**（一张 64MiB 上限的帧能带着它进常驻内存）。
+
+判据：`whole_file_slow_work_never_runs_on_an_async_worker` 的 `PRIMITIVES` 登记了
+`write_group_chunk_blocking(`（登记 helper 名而不是 `write_all(`：后者与"写 8 KB 缓冲区"
+字面同形，进清单会把尺子稀释成噪声），现数处数 18 → 19。变异自证：把那次调用搬回 async 体内
+⇒ 判据点名 `network/transport/group_file.rs [write_group_chunk_blocking(]` 当场红，还原即绿。
+`pending_friend_requests_are_bounded` 覆盖准入四格 + 截断 + 丢头像 + 正常头像原样。
+
+## [5.15.9] - 2026-10-29
 ## [5.15.9] - 2026-10-29
 
 ### 单条转发图片 100% 失败 —— 「能不能转发」和「走哪条通道」两份判据对不齐

@@ -184,6 +184,47 @@
         }
     }
 
+    /// 待处理申请表的准入与载荷有界（2026-10-29 审计 STB-02）。
+    ///
+    /// 键与载荷都由不可信对端控制 ⇒ 满员拒**新**条目、同一个人仍可更新（幂等重发）、
+    /// 超长昵称截断、超大头像丢掉但保留申请。
+    #[test]
+    fn pending_friend_requests_are_bounded() {
+        // 准入：空表收、满员拒新、已在表里的人永远能更新
+        assert!(pending_friend_request_admitted(false, 0));
+        assert!(pending_friend_request_admitted(false, MAX_PENDING_FRIEND_REQUESTS - 1));
+        assert!(!pending_friend_request_admitted(false, MAX_PENDING_FRIEND_REQUESTS));
+        assert!(
+            pending_friend_request_admitted(true, MAX_PENDING_FRIEND_REQUESTS),
+            "同一申请的重发必须还能更新载荷（否则表满后连合法补发都进不来）"
+        );
+
+        let mk = |nick: &str, avatar: Option<String>| PendingRequest {
+            from: "peer".to_string(),
+            from_nickname: nick.to_string(),
+            from_avatar: avatar,
+            ts: 1,
+        };
+
+        // 昵称截断：超长只留前 64 个字符
+        let (r, dropped) = bounded_pending_request(mk(&"名".repeat(200), None));
+        assert_eq!(r.from_nickname.chars().count(), MAX_PENDING_NICKNAME_CHARS);
+        assert!(!dropped);
+
+        // 超大头像：丢掉头像、保留申请
+        let big = "A".repeat(MAX_PENDING_AVATAR_BYTES + 1);
+        let (r, dropped) = bounded_pending_request(mk("ok", Some(big)));
+        assert!(dropped, "超过上限的头像必须被丢掉（不能让 64MiB 的帧带进常驻内存）");
+        assert_eq!(r.from_avatar, None);
+        assert_eq!(r.from_nickname, "ok", "头像被丢不影响申请本身");
+
+        // 正常头像：原样保留
+        let small = "A".repeat(1024);
+        let (r, dropped) = bounded_pending_request(mk("ok", Some(small.clone())));
+        assert!(!dropped);
+        assert_eq!(r.from_avatar.as_deref(), Some(small.as_str()));
+    }
+
     /// 「这条好友同意该不该落库」的四格真值表（2026-10-29 审计 SEC-01）。
     ///
     /// 网络路径上没有这道闸时，任何对端发一条 `{type:friend_accept, from, to}` 就能进 friends 表
