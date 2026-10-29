@@ -136,6 +136,8 @@ export function createUpdaterService(
     const id = ++attempt;
     state.phase = "checking";
     state.error = null;
+    // 手动/自动检查都是一次"重新看清单" ⇒ 上一轮的"刚发布了更高版本"已经过期，别留着。
+    state.notice = null;
     checkInFlight = (async () => {
       try {
         const info = await withTimeout(adapter.check(), checkTimeoutMs);

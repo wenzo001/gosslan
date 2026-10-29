@@ -183,7 +183,26 @@ jobs:
           mkdir -p "$out"
           rm -f "$dmg"
           # `-srcfolder` 复制的是**该目录的内容**，所以传 stage（里面才是 .app）。
-          hdiutil create -volname "Gosslan" -srcfolder "$stage" -ov -format UDZO "$dmg"
+          #
+          # 有界重试：runner 上偶发 `hdiutil: create failed - Resource busy`（2026-10-29 实测，
+          # 同一份脚本 v5.15.2 那轮是通的 ⇒ 宿主侧残留挂载/diskimages-help 占用，不是产物问题）。
+          # 这类抖动在发版那轮会让整条 macOS 腿红、发布顺延一轮，所以给它一次重试；
+          # 仍然失败就照常红（不掩盖真问题）。
+          ok=0
+          for attempt in 1 2; do
+            if hdiutil create -volname "Gosslan" -srcfolder "$stage" -ov -format UDZO "$dmg"; then
+              ok=1
+              break
+            fi
+            echo "hdiutil create 第 $attempt 次失败（Resource busy 之类的宿主残留），2s 后重试" >&2
+            rm -f "$dmg"
+            sleep 2
+          done
+          if [ "$ok" != 1 ]; then
+            echo "hdiutil create 连续两次失败 ⇒ 按真红处理" >&2
+            rm -rf "$stage"
+            exit 1
+          fi
           rm -rf "$stage"
           ls -lh "$dmg"
 

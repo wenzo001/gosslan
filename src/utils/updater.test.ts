@@ -387,3 +387,16 @@ test("没有复查能力的适配器（老壳）照旧能装", async () => {
   assert.equal(f.calls.install, 1);
   assert.equal(f.calls.recheck, 0);
 });
+
+/** 复查发现更高版本后，下一次"检查"不能继续挂着"已作废"的提示（否则用户以为还得再点一次）。 */
+test("安装前复查：重新检查会清掉 superseded 提示", async () => {
+  const newer: UpdateInfo = { ...INFO, version: "5.6.0" };
+  const f = fake({ check: async () => INFO, recheckReady: async () => newer });
+  const svc = service(f.adapter);
+  await svc.check(true);
+  await svc.download();
+  await svc.install();
+  assert.equal(svc.state.notice, "superseded");
+  await svc.check(true);
+  assert.equal(svc.state.notice, null);
+});

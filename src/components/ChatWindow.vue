@@ -532,6 +532,8 @@ watch(
     filesOpen.value = false;
     tasksOpen.value = false;
     taskFocus.value = null;
+    // 拖进来还没确认的那批也一起作废：切了会话就不该再"发给刚才那个人"。
+    pendingDrop.value = null;
     // 预览是全局那一份（#40），所以按**来源**收：只有"这份相册是上一个会话给的"才关掉。
     // 无条件 close() 会把"从任务详情点开的图"跟着切会话一起弄没。
     if (prev) preview.closeIfFrom(`conv:${prev}`);
@@ -1546,7 +1548,14 @@ const dragDropScope = createInitScope();
  * 拖着文件停在面板上时待确认的那批（负责人 2026-10-29：多文件/单文件都要先弹窗确认）。
  * `files` 是后端 stat 出来的（大小/是否目录），确认框直接照它渲染。
  */
-const pendingDrop = ref<{ paths: string[]; files: DropPathInfo[] } | null>(null);
+const pendingDrop = ref<{
+  /** 发到哪个会话 —— **快照**，不是确认那一刻的 activeConv（拖完切会话不该换收件人）。 */
+  convId: string;
+  /** 确认框正文也一起冻住：切会话时对话框里的"发给谁"不能跟着变。 */
+  body: string;
+  paths: string[];
+  files: DropPathInfo[];
+} | null>(null);
 
 /** 拖拽位置是否落在**整个聊天面板**上（含标题栏；Tauri 给的是物理像素，除以 DPR 才对得上 DOM）。 */
 function isOverChatPanel(pos: { x: number; y: number }) {
@@ -1611,18 +1620,21 @@ async function stageDroppedFiles(paths: string[]) {
   }
   const usable = files.filter((f) => !f.isDir);
   if (usable.length === 0) {
-    app.toastError(new Error(t("chat.dropNoFiles")), t("msg.sendFailed"));
+    app.toast(t("chat.dropNoFiles"), "error");
     return;
   }
-  pendingDrop.value = { paths: usable.map((f) => f.path), files: usable };
+  pendingDrop.value = {
+    convId,
+    body: isGroup.value
+      ? t("chat.dropConfirmGroup", { name: conv.value?.name ?? "", n: memberCount.value })
+      : t("chat.dropConfirmPeer", { name: conv.value?.name ?? "" }),
+    paths: usable.map((f) => f.path),
+    files: usable,
+  };
 }
 
-/** 确认框正文：发到哪个会话；群聊说清楚会有多少人收到。 */
-const dropConfirmBody = computed(() =>
-  isGroup.value
-    ? t("chat.dropConfirmGroup", { name: conv.value?.name ?? "", n: memberCount.value })
-    : t("chat.dropConfirmPeer", { name: conv.value?.name ?? "" }),
-);
+/** 确认框正文：拖进来那一刻就冻住了（见 `pendingDrop.body`）。 */
+const dropConfirmBody = computed(() => pendingDrop.value?.body ?? "");
 /** 确认框条目：一行一个文件（名字 + 大小）。 */
 const dropConfirmItems = computed(() =>
   (pendingDrop.value?.files ?? []).map((f) =>
@@ -1635,12 +1647,14 @@ function confirmDrop() {
   const batch = pendingDrop.value;
   pendingDrop.value = null;
   if (!batch) return;
-  void sendPastedFiles(batch.paths);
+  void sendPastedFiles(batch.paths, batch.convId);
 }
 
 /** 输入框粘贴文件（资源管理器复制后 Ctrl+V，微信式）：按真实路径直接走发送链路。 */
-async function sendPastedFiles(paths: string[]) {
-  const convId = chat.activeConv;
+async function sendPastedFiles(paths: string[], convIdArg?: string) {
+  // 显式传 convId 的调用方（拖拽确认）要的是"拖进来的那个会话"；
+  // 粘贴那条按当时的 activeConv 走。
+  const convId = convIdArg ?? chat.activeConv;
   if (!convId) return;
   for (const p of paths) {
     try {
