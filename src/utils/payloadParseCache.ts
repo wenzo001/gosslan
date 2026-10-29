@@ -14,6 +14,8 @@
  *
  * 只缓存**成功**解析：畸形载荷的失败在数据不变时也不会变好，缓存它只会多一层 `has()`。
  */
+import { clearWhenFull } from "./bounded.ts";
+
 export interface PayloadParseCache<T> {
   get(msgId: string, content: string): T | undefined;
   set(msgId: string, content: string, value: T): void;
@@ -21,6 +23,8 @@ export interface PayloadParseCache<T> {
 
 /**
  * `max` 只是**内存上限**，不是正确性边界：满了整表清空（这是缓存不是事实源）。
+ * 这道闸用 `utils/bounded.ts` 的 `clearWhenFull` —— 选"整张清"而不是 `trimOldest` 的理由
+ * 写在那个文件里（id↔content 一一对应 ⇒ 每条都能重算，谁活着没有独立意义）。
  * 2000 条 ≈ 一屏会话的全部载荷，再大就把内存换成第二条 LRU 实现。
  */
 export function createPayloadParseCache<T>(max = 2000): PayloadParseCache<T> {
@@ -31,7 +35,7 @@ export function createPayloadParseCache<T>(max = 2000): PayloadParseCache<T> {
       return hit && hit.content === content ? hit.value : undefined;
     },
     set: (msgId, content, value) => {
-      if (map.size >= max) map.clear();
+      clearWhenFull(map, max);
       map.set(msgId, { content, value });
     },
   };

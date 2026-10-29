@@ -596,10 +596,68 @@ node --experimental-strip-types -e '
     （`tauri-winres` panic `NotAttempted("llvm-rc")`；本机现在没装 LLVM，`ls /opt/homebrew/opt/llvm/bin` 无 llvm-rc）、
     `cargo check --target x86_64-pc-windows-gnu` 退 101（`cc-rs` 找不到 `x86_64-w64-mingw32-gcc`）。
     两格的改动本身都只是"删本地 `fn now_ms` + 一处限定路径调用"，没有触碰 import。
+  - ✅ **远程那条腿已经跑过并把 Windows 那格补上了**（5.15.26 push，run 40969401717）：
+    `Rust 单测 / 清单（windows-latest）` 走到 `cargo test --features bluetooth --lib` 就说明整个 crate
+    在 Windows 上**编过了**（含 `#[cfg(all(feature="bluetooth", target_os="windows"))]` 的
+    `bluetooth_peripheral_windows.rs`），该腿 1297 通过 / 1 失败 —— 唯一失败的不是产品码，
+    是**本批新加的这条判据自己带了一个平台假设**：`rel_to_src` 用 `Path::display()`，
+    在 Windows 上交出 `db\read_receipts.rs`，而期望值是在 macOS 上手写的 `db/read_receipts.rs`。
+    ⇒ 5.15.27 归一化修掉并加了一条不需要 Windows 就能证的正控
+    （`logging::tests::rel_to_src_is_separator_independent`）。
+    ⚠️ 这条的形状值得记住：**本地整跑全绿可以是真的，而"绿"覆盖不到 CI 那条腿的平台差异** ——
+    凡是"扫全仓再比清单"的判据，清单元素来自路径的一律要在家里归一化分隔符。
+    同一条雷在 5.15.25 的 hex 判据上没炸，只因为它期望的 `crypto.rs` 正好在 `src/` 根下不含分隔符。
 
+
+### 4.0n DUP-13 逐处定性：审计写「TS 侧三份 LRU/容量闸」，现数是**两种策略九处**（已收成两个出口）
+
+先逐处读再动手（沿用 DUP-03 的顺序：分型 → 收 → 判据）。**"三份"这个数既偏少又偏窄**：
+按形状扫全 `src/**` 生产 TS/Vue 后，计数型容量闸一共九处，而且**分属两种不等价的策略**。
+
+| 站点 | 策略 | 处置 | 定性依据 |
+|---|---|---|---|
+| `utils/composerDrafts.ts:16` | 丢最旧 | **收** | 本地函数就叫 `trimOldest()`，与家逐字同形；它靠"写入前 `delete` 再 `set`"自己维护顺序 |
+| `utils/codeHighlight.ts:37` | 丢最旧（真 LRU） | **收** | 见下面那条**唯一需要改行为**的地方 |
+| `utils/highlight.ts:43` | 丢最旧（命中即重插） | **收** | 命中分支提前 return ⇒ 与家等价 |
+| `utils/messageHeight.ts:161` | 丢最旧（纯 FIFO） | **收** | 等价（读命中不重插） |
+| `stores/useChatStore.ts:468` | 丢最旧（Set） | **收** | `while (size > MAX) delete 最旧` ⇒ 等价 |
+| `stores/useChatStore.ts:1326` `readerIdsCache` | 满了整张清 | **收进第二个出口** | 纯缓存、可按 id 重算 |
+| `utils/payloadParseCache.ts:34` | 满了整张清 | 同上 | 同上（id↔content 一一对应） |
+| `utils/groupSummaryCacheCore.ts:50` | 满了整张清 | 同上 | 同上 |
+| `utils/filePreview.ts:133` `negativeUntil` | 满了整张清 | 同上 | 被清掉的后果是"多试一次读"，不是丢事实 |
+
+- **两个策略不许互换，且这条判断本身有凭据**：`trimOldest` 丢最旧、热的留着；`clearWhenFull` 全丢。
+  同一张 5 条的表跑 `max=3` ⇒ 前者活 `{c,d,e}`、后者活 `{}`。用例
+  「两个策略不是同一个函数：同一张表跑出来的活口不同」把这句话钉成断言，
+  所以以后谁想把九处"统一成一个函数"会当场红。稳态边界也**故意差一格**：
+  `trimOldest` 等值不删（`size <= max`），`clearWhenFull` 等值就动手（判在写入**前**，`size >= max`）
+  —— 与这九处原本的写法逐字一致；把后者挪到写入后再判，`clear()` 会连刚写那条一起丢掉 ⇒ 缓存永远命中不了。
+- **收的过程中唯一改到行为的一处**（`codeHighlight.ts` 的 `remember`）：原先"先判满删最旧、再写"，
+  改成"写、再由家丢到不超上限"时必须补一句 `cache.delete(key)` —— 否则**重写同一段代码**时那个键
+  还排在队头，家会先把刚写进去的这条丢掉。这个差别原先被"判在写入前"掩盖着，不是新加的语义：
+  该文件本来就有"命中即移到队尾"的 LRU 意图（`peekHighlight`），补这一句才是同一件事的两半。
+- **判"不是同一个东西"的五格**（不收，而且判据必须证明不冤枉它们）：
+  `utils/blobLru.ts`（谓词是**累计字节数**、`drop` 带 `revoke(objectURL)` 这个唯一回收出口 ⇒ 按条数的闸表达不了）、
+  `components/VirtualList.vue:253`（超上限去 `measure()` 整体重测，不是删条目）、
+  `utils/messages.ts:608` `selectCachedConversations`（只"算出该留哪些"，并不拥有那个数组）、
+  `utils/todos.ts:1029`（给用户看的末尾 N 行业务上限；那一行原本就写着"家只吃 Map/Set"）、
+  `utils/memberName.ts:55` 与 `utils/todos.ts:278`（**我最初把这两处算进 DUP-13 是错的** —— 它们是 ID 尾号 `slice(-4)`，与容量无关）。
+  ⚠️ 后者是"窄正则的命中集 ≠ 分母"这条老坑第 N 次复发：我拿一条 `slice(-|MAX_SIZE|evict` 的正则先报了"三处"，
+  换成两个独立形状（`.size` 与上限比 + 同段 `clear()`/`delete(`）现数才是九处。
+- **顺手修掉一处会漂的行号型引用**：`blobLru.ts` 原先用 `utils/bounded.ts:19` 指那句边界声明，
+  本次给家加第二个出口后那一行下移了 ⇒ `check-doc-citations.mjs` **只看行号在不在文件行数内**，
+  不会报这种腐坏。改成按句子找，并把理由写在旁边。
+- **判据**（`src/utils/bounded.test.ts`，+8 条）：覆盖面下限（≥200 个生产文件、且点名看得见
+  `utils/bounded.ts` / `stores/useChatStore.ts` / `utils/highlight.ts`）→ 家的两个出口各只有一个定义 →
+  生产码里"手写计数闸"的集合必须是空。三条反控（家自己的反向谓词、`measure()` 那格、单条目字节数那格）
+  与两条正控（两种手写形状都要认得出）写在同一条用例里。
+  手工变异自证两次：往 `composerDrafts.ts` 塞回一段 while-delete ⇒ 判据点名该文件并红
+  （`MUTATED_EXIT=1`，hint「又抄了一遍淘汰循环」）；往 `messageHeight.ts` 加一份
+  `export function clearWhenFull` ⇒ 定义那格点名 `{bounded.ts, messageHeight.ts}` 并红；两次都 `cmp` 逐字节还原。
+  护栏 Case 286 → **287**（`verify-guards.py --only="计数型容量闸"` 退 0；条数由判据 E 现算，
+  文档里那一格是它报出来的，不是我抄的）。
 
 ### 4.1 已核查且未发现问题的稳定性面
-
 
 - **锁顺序**：全仓无 `peers↔db` 嵌套；`file_receivers→db` 顺序成立。
 - **锁跨 `.await`**：机器扫描每个 `tokio::sync::Mutex` guard 绑定（4 个候选），3 个是作用域误报，1 个（`BT_SWITCH_LOCK`）是刻意串行门，无重入。
@@ -693,7 +751,7 @@ node --experimental-strip-types -e '
 | DUP-10 | Low | 跨层规则 | 未读计数判据 TS 一份、Rust 一份，今天一致 | 同上 |
 | DUP-11 | **已被既有判据覆盖（§4.0a）** | 未知 kind 的判据与占位文案对 `protocol.rs` 的对账早在册（同文件），不另加第二条 |
 | DUP-12 | **已加对账（§4.0a）** | `previewBody`（TS）与 `preview_text` / `todo_preview` / `poll_preview` / `announcement_preview`（Rust）的固定字面量由同文件的「跨语言契约：会话预览的固定文案两侧一致（DUP-12）」比；变异（Rust 改一个字）⇒ 红 |
-| DUP-13 | Low | 自研基础设施 | TS 侧三份各自实现的 LRU / 容量闸 | `src/utils/*` |
+| DUP-13 | ~~Low~~ **已修（5.15.27，见 §4.0n）** | 自研基础设施 | 审计原写「TS 侧三份各自实现的 LRU/容量闸」——**既偏少也偏窄**：按形状现数是**两种策略九处**（丢最旧 5 处 + 满了整张清 4 处），且这两策略**不等价**（同一张表跑 `max=3`，一个活 3 条、一个活 0 条）。收成 `utils/bounded.ts` 的两个出口 `trimOldest` / `clearWhenFull`，另有五格判「不是同一个东西」不收 | `src/utils/bounded.ts`（唯一的家）；复跑 `node --test src/utils/bounded.test.ts` |
 | DUP-14 | Low | 重复组件 | `MessageItem` 的「复制 / 保存」动作在右键菜单与移动端 ActionSheet 两套模板里各写一遍 | `MessageItem.vue` |
 | DUP-15 | Low | 重复组件 | 「移动端整屏覆盖壳」`MobilePageFrame` 的 `overlay` 形态被手抄 1 份 | `src/components/**` |
 | DUP-16 | — | 负面清单 | 未找到重复的实现（避免误报） | — |
@@ -753,7 +811,7 @@ node --experimental-strip-types -e '
 >
 > 现在把它改成**唯一的状态表**：`§1/§2/§3/§6/§7` 各节记的是**审计当时**的发现，今天的状态以本表为准。
 > ⚠️ 诚实边界：本表是**人工对账 + 每行挂复跑命令**，不是机器判据 —— 没有任何脚本断言"这张表与代码一致"
-> （能做这种断言的只有逐行的复跑命令本身）。表里没写的 ID 见 §4.0a～§4.0k 的复核结论。
+> （能做这种断言的只有逐行的复跑命令本身）。表里没写的 ID 见 §4.0a～§4.0n 的复核结论。
 
 | 序 | ID | 今天的状态 | 凭据 / 复跑 |
 |---|---|---|---|
@@ -771,7 +829,7 @@ node --experimental-strip-types -e '
 | 11 | SEC-02 | 上限已做（5.15.14）+ 淘汰认身份（5.15.19，§4.0h）；**announce 限流判不修** | 负结论留证：无界增长的成因是"条数没上限"而不是速率，`upsert_peer` 每 5s 周期最多一次 |
 | 12 | DUP-02 | 通道判据与越权闸两半**已落地**（5.15.9 / 5.15.15）；剩下那半**复核后判不再统一**（§4.0l） | 原话「剩三套 toast 文案未统一」不准确：那是四件不同的事实。改判据钉住"它们是四件事"：`src/utils/mediaAvailability.test.ts` 三条（特征词 / 收藏那句的「副本」必须由 `std::fs::copy` 兑现 / 引用面不跨界），前两条各做过注入自证 |
 | 13 | DUP-09～DUP-12 | **09 与 12 已加对账、11 已被覆盖、10 判不另加**（§4.0a） | 那两条对账用例就住在一个文件里，标题自带编号：`src/utils/messageKinds.test.ts` 的「跨语言契约：已读推进的排除清单两侧逐项一致（DUP-09）」与「…会话预览的固定文案两侧一致（DUP-12）」；复跑 `node --test src/utils/messageKinds.test.ts`。⚠️ 注：§6.3 那四行仍写着"无机器对账"，以本表为准 |
-| 14 | DUP-06/07/13/14/15 | **未做（5 个编号，现数）**；DUP-03（5.15.26）、DUP-04（5.15.25）、DUP-05（5.15.16）、DUP-08（5.15.20）已收口 | 剩下：表情/链接/提及切段 3 份同形（DUP-06）、@提及底色配方散 2 处 + 一种没被复用的配方（DUP-07）、TS 侧三份各自实现的 LRU/容量闸（DUP-13）、`MessageItem` 的复制/保存动作在右键菜单与 ActionSheet 两套模板（DUP-14）、`MobilePageFrame` 的 overlay 形态手抄 1 份（DUP-15） |
+| 14 | DUP-06/07/15 | **未做（3 个编号，现数）**；DUP-03（5.15.26）、DUP-04（5.15.25）、DUP-05（5.15.16）、DUP-08（5.15.20）、DUP-13（5.15.27，§4.0n）已收口；**DUP-14 本轮判「不做」** | 剩下：表情/链接/提及切段 **3 份同形**（DUP-06，`MentionText.vue:40` / `MessageTextBubble.vue:107` / `MessageContentModal.vue:37`，切段函数本身已是一家、重复的是拼 `segments` 那段循环）、@提及 16% 淡底配方 **2 处各写一遍**（DUP-07，`MessageTextBubble.vue:154` / `MessageContentModal.vue:64`；`style.css:1308` 是被讨论但没复用的第三种）、`MobilePageFrame` 的 overlay 手抄**至少 2 处**（DUP-15，`BaseModal.vue:113` / `FavoritePanel.vue:827` 两处注释都自称"与 MobilePageFrame 一致"，审计原写 1 份）。**DUP-14 判不做的理由**：`MessageItem.vue` 里 `copyTextWithToast` 早就是右键菜单与移动端面板共用的一份，重复的只是菜单 markup ⇒ 收它是把模板搬个家，收益最低 |
 | 15 | SEC-04/05/06/08/12 | **全部已修**（SEC-04 5.15.14 + 5.15.17 留痕；SEC-05/06/08/12 见 5.15.13） | SEC-08 那条是入站帧聚合驻留的**全局限额 1 GiB**（审计原估 8 GiB 上界） |
 | 15b | SEC-07 / SEC-09 / SEC-10 / SEC-11 | **不成立 / 已撤回 / 判不修 / 判不修** | §4.0 与 §4.0b 逐条给了理由，负结论也是一等结论 |
 | 16 | 替换矩阵勘误 | **已做**（5.15.13：新增 §0 勘误 + 一条「每个生产依赖都必须在矩阵里登记过」的新判据，带变异正控） | 文件真路径是 `docs/architecture/open-source-replacement-matrix.md`（⚠️ 本表原来只写裸文件名，害我照着它写了一条指不到文件的复跑命令）；复跑 `grep -n "勘误" docs/architecture/open-source-replacement-matrix.md` |
@@ -785,7 +843,7 @@ node --experimental-strip-types -e '
 1. **TST-02**（唯一还活着的 P1）—— 前置是给 `useChatStore` 做依赖注入，属独立重构，别塞进修复批。
 2. **INV-P18 的 Ed25519 那半** —— 前置是"签名能力"抽象。
 3. **第 19 行：文件气泡失败原因落库** —— 前置是给那一族自由文本配码。
-4. **DUP 剩余的 5 行**（第 14 行：DUP-06/07/13/14/15，现数 5 个编号）—— 纯重复，收益是"少一份会漂的拷贝"。DUP-03/04 已于 5.15.26 / 5.15.25 收口。
+4. **DUP 剩余的 3 行**（第 14 行：DUP-06/07/15，现数 3 个编号）—— 纯重复，收益是"少一份会漂的拷贝"。DUP-03/04 已于 5.15.26 / 5.15.25 收口，DUP-13 已于 5.15.27 收口（§4.0n：现数是两种策略九处，不是审计写的三份），DUP-14 本轮判**不做**。
    （第 12 行 DUP-02 的那半本轮**复核后判不再统一**，理由与三条防复发判据见 §4.0l。）
 5. **`lucide-vue-next` 升级评估**、**`get_topology` 孤儿**（FUN-04）、**TST-06 真 ENOSPC**、**TST-09 Windows 三类行为用例**，以及**需要现场日志才能推进的 Windows 渲染层卡死**（另见 `docs/notes/`）。（第 20 行的历史改号本轮**判为不做**，理由与现算证据在 §4.0k，不再列进待办。）
 

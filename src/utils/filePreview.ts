@@ -26,6 +26,7 @@
 // 而不是更小：按单条 15 MiB 算，最坏情况也放得下 4 张大图，正常截图（百 KB 级）能放几百条。
 
 import { api } from "@/api";
+import { clearWhenFull } from "@/utils/bounded";
 import { previewFailureResult, type PreviewResult } from "@/utils/mediaAvailability";
 import { createBlobLru } from "@/utils/blobLru";
 import { createSingleFlight } from "@/utils/singleFlight";
@@ -130,7 +131,9 @@ function negativeBlocked(key: string): boolean {
 }
 
 function markNegative(key: string) {
-  if (negativeUntil.size >= NEGATIVE_MAX_ENTRIES) negativeUntil.clear();
+  // 整张清而不是丢最旧：这里的每条都只是"最近读失败过、先别重试"的短期判断，
+  // 被清掉的后果是多试一次读，而不是丢事实（策略差别与选法见 `utils/bounded.ts`）。
+  clearWhenFull(negativeUntil, NEGATIVE_MAX_ENTRIES);
   negativeUntil.set(key, Date.now() + NEGATIVE_TTL_MS);
 }
 

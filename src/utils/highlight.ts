@@ -1,3 +1,4 @@
+import { trimOldest } from "./bounded.ts";
 import { escapeRe } from "./escapeRe.ts";
 
 /** 文本 HTML 转义：搜索结果高亮只拼转义后的字符串，不做 HTML 解析。 */
@@ -40,11 +41,8 @@ function highlightRegex(kw: string): RegExp {
     return hit;
   }
   const re = new RegExp(`(${escapeRe(kw)})`, "gi");
-  if (REGEX_CACHE.size >= REGEX_CACHE_MAX) {
-    const oldest = REGEX_CACHE.keys().next().value;
-    if (oldest !== undefined) REGEX_CACHE.delete(oldest);
-  }
   REGEX_CACHE.set(kw, re);
+  trimOldest(REGEX_CACHE, REGEX_CACHE_MAX);
   return re;
 }
 

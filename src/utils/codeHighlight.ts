@@ -7,6 +7,7 @@
  * Worker 不可用（极老 WebView / CSP 拒绝 / 构造抛错）时降到主线程：
  * 用动态 import 只在真需要时把 highlighter 拉进主包，行为与 Worker 一致（只是会占主线程）。
  */
+import { trimOldest } from "@/utils/bounded";
 import type { HighlightResult } from "@/utils/codeHighlightCore";
 import { createSingleFlight } from "./singleFlight.ts";
 
@@ -34,11 +35,11 @@ export function peekHighlight(code: string, language?: string): HighlightResult 
 
 function remember(code: string, language: string | undefined, result: HighlightResult) {
   const key = cacheKey(code, language);
-  if (cache.size >= CACHE_MAX) {
-    const oldest = cache.keys().next().value;
-    if (oldest !== undefined) cache.delete(oldest);
-  }
+  // 先删再插：重写同一段代码时它也排到队尾。少了这一句，`trimOldest` 会把刚写的那条
+  // 当最旧的先丢掉（原先那段"满则删最旧一条"是在写入**前**问的，正好掩盖了这个差别）。
+  cache.delete(key);
   cache.set(key, result);
+  trimOldest(cache, CACHE_MAX);
 }
 
 let worker: Worker | null = null;

@@ -336,4 +336,28 @@ CASES: list[Case] = [
         cwd=ROOT,
         expect_fail_hint="id 名单不含我",
         tags=["frontend", "group", "stability", "new-guards", "mention-identity"],
+    ),
+    Case(
+        name="计数型容量闸又长出一处手写拷贝（不经过 utils/bounded.ts）",
+        why="DUP-13（5.15.27）收完之后的反案。审计原写「TS 侧三份 LRU/容量闸」是**偏少的**："
+        "现数是两种策略九处 —— 删最旧 5 处（composerDrafts / codeHighlight / highlight / "
+        "messageHeight / useChatStore.notifiedTodoDone）与满了整张清 4 处（useChatStore.readerIdsCache / "
+        "payloadParseCache / groupSummaryCacheCore / filePreview.negativeUntil），全部收进 "
+        "`utils/bounded.ts` 的两个出口。判据不看名字清单，看形状：「拿 .size 和上限比」那一句的"
+        "上下 4 行里出现 `clear()`/`delete(` 就算手写闸 ⇒ 生产码里这个集合必须是空的。"
+        "同一条用例里还有三格反控（家自己的反向谓词不算、整体重测不算、单条目字节数不算），"
+        "以及一条扫描集合下限（≥200 个生产文件）—— 缺席型判据最容易假绿的样子就是量具根本没看见东西。"
+        "本注入把 `composerDrafts` 那句换回手写的 while-delete 循环，必须被那条判据点名并红。",
+        file=ROOT / "src" / "utils" / "composerDrafts.ts",
+        injections=[(
+            "  trimOldest(drafts, MAX_DRAFTS);",
+            "  if (drafts.size > MAX_DRAFTS) {\n"
+            "    const oldest = drafts.keys().next().value;\n"
+            "    if (oldest !== undefined) drafts.delete(oldest);\n"
+            "  }",
+        )],
+        cmd=node_test("src/utils/bounded.test.ts"),
+        cwd=ROOT,
+        expect_fail_hint="又抄了一遍淘汰循环",
+        tags=["frontend", "memory", "new-guards"],
     ),]

@@ -7,6 +7,7 @@
  *  - 同键并发只发一次（单飞）；
  *  - **失败不缓存**：下一次挂载应重试（这里没有"落盘后自愈"的事件可用）。
  */
+import { clearWhenFull } from "./bounded.ts";
 import { shouldRunThrottled } from "./defer.ts";
 import { createSingleFlight } from "./singleFlight.ts";
 
@@ -47,7 +48,7 @@ export function createGroupSummaryCache(
       }
       return inflight.run(key, async () => {
         const value = await fetchSummary(msgId.slice(6));
-        if (cache.size >= max) cache.clear();
+        clearWhenFull(cache, max);
         // `at` 用**传入时刻**（生产是 Date.now，测试可控），别混用两次取时钟。
         cache.set(key, { at: now, value });
         return value;
