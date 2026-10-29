@@ -1260,6 +1260,11 @@ pub struct AppState {
     pub links: tokio::sync::Mutex<HashMap<String, Vec<Link>>>,
     /// 待处理好友申请：from_id -> request
     pub pending_requests: Mutex<HashMap<String, PendingRequest>>,
+    /// 替别人转发 Gossip 的**全局**令牌桶（2026-10-29 审计 SEC-05）：
+    /// 中继授权默认仍是 `All`（不动跨跳可达性），但转发速率必须有上限 —— 否则任何对端
+    /// 都能把本机当无上限转发器（带宽/CPU 放大）。存的是 `(窗口起始秒, 本窗口已转发数)`，
+    /// **一个全局桶**而不是每源一张表：不需要淘汰，也不会被"造很多 sender_id"撑爆。
+    pub relay_forward_rate: Mutex<(i64, u32)>,
     /// 网络运行时（None 表示未启动）
     pub network: Mutex<Option<NetworkHandle>>,
     /// 待发已读回执：peer_id -> last_read_ts。链路不可用时暂存，
@@ -2248,6 +2253,7 @@ impl AppState {
             peers: Mutex::new(HashMap::new()),
             links: tokio::sync::Mutex::new(HashMap::new()),
             pending_requests: Mutex::new(HashMap::new()),
+            relay_forward_rate: Mutex::new((0, 0)),
             network: Mutex::new(None),
             pending_reads: Mutex::new(pending_reads_map),
             pending_group_keys: Mutex::new(HashMap::new()),

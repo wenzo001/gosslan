@@ -447,20 +447,31 @@ pub(crate) fn pending_friend_request_admitted(
     already_pending || current_len < MAX_PENDING_FRIEND_REQUESTS
 }
 
-/// 把申请载荷夹到有界范围内（纯函数）。返回 (夹好的申请, 是否丢了头像)。
-pub(crate) fn bounded_pending_request(mut req: PendingRequest) -> (PendingRequest, bool) {
-    if req.from_nickname.chars().count() > MAX_PENDING_NICKNAME_CHARS {
-        req.from_nickname = req.from_nickname.chars().take(MAX_PENDING_NICKNAME_CHARS).collect();
+/// 把入站的「昵称 + 头像」夹到有界范围内（纯函数）。返回 (昵称, 头像, 是否丢了头像)。
+///
+/// 一份判据同时服务**两条**入站路径：好友申请（`apply_friend_request`）与资料同步
+/// （`Message::UserInfo`）—— 两者的载荷都由不可信对端控制，且都会落进
+/// `friends` / `conversations` 并被反复推给前端（2026-10-29 审计 SEC-06）。
+pub(crate) fn bounded_profile(
+    mut nickname: String,
+    avatar: Option<String>,
+) -> (String, Option<String>, bool) {
+    if nickname.chars().count() > MAX_PENDING_NICKNAME_CHARS {
+        nickname = nickname.chars().take(MAX_PENDING_NICKNAME_CHARS).collect();
     }
-    let dropped_avatar = req
-        .from_avatar
+    let dropped_avatar = avatar
         .as_ref()
         .is_some_and(|a| a.len() > MAX_PENDING_AVATAR_BYTES);
-    if dropped_avatar {
-        // 丢掉头像而不是整条申请：申请本身是有用的，头像只是装饰。
-        req.from_avatar = None;
-    }
-    (req, dropped_avatar)
+    // 丢掉头像而不是整条载荷：昵称/关系本身是有用的，头像只是装饰。
+    (nickname, if dropped_avatar { None } else { avatar }, dropped_avatar)
+}
+
+/// 把申请载荷夹到有界范围内（纯函数）。返回 (夹好的申请, 是否丢了头像)。
+pub(crate) fn bounded_pending_request(mut req: PendingRequest) -> (PendingRequest, bool) {
+    let (nickname, avatar, dropped) = bounded_profile(req.from_nickname, req.from_avatar);
+    req.from_nickname = nickname;
+    req.from_avatar = avatar;
+    (req, dropped)
 }
 
 pub(crate) async fn apply_friend_request(state: &Arc<AppState>, req: PendingRequest, trace: &str) {

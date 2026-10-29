@@ -13,6 +13,40 @@
 
 ## [Unreleased]
 
+## [5.15.13] - 2026-10-29
+
+### 审计 B+C 批：蓝牙不可用的两种原因分开说；入站内存与转发速率有了上限
+
+2026-10-29 审计的 FUN-03 / SEC-05 / SEC-06 / SEC-08 / SEC-12（SEC-06 与 12 是同族：对端可控的
+入站载荷没有长度闸）。
+
+- **FUN-03**：`available()` 恒 false 有两种原因，界面原先只显示「蓝牙后端尚未编译（当前版本暂
+  不支持）」—— 发布包**一定**带着蓝牙，遇到不可用几乎都是硬件/权限；反过来对自编译者说"设备
+  不支持"也是错的。现在按 `featureCompiled` 分开说（判据在 `utils/bleAvailability`，三格用例）。
+- **SEC-08**：入站帧聚合驻留**加了全局限额 1 GiB**（在途帧字节 + 本帧声明长度；超限就拒这一帧
+  并留 `code=INBOUND_FRAME_BUDGET_EXCEEDED`）。原来 128 连接 × 64 MiB ≈ 8 GiB 的理论峰值遇上
+  `panic="abort"` 就是"应用无声消失"。**这一条取代了 2026-10-26「先补读数、不拒绝」的拍板。**
+  边界两侧各一格用例（刚好到顶放行 / 多一字节拒 / 饱和加法不绕回）。
+- **SEC-05**：中继授权**默认仍是 `All`**（不动跨跳可达性），但替别人转发加了**全局每秒 100 帧**
+  的令牌桶；超了只丢"转发"这一半，本机自己的消费不受影响，并留 `code=RELAY_FORWARD_RATE_LIMITED`。
+  用一个全局桶而不是每源一张表：每源表要淘汰、还能被"造很多 sender_id"绕过。
+- **SEC-06**：入站「昵称 + 头像」有了**一份**有界判据 `bounded_profile`，好友申请与 `UserInfo`
+  两条路径共用（昵称按 64 字符截断、头像 > 256 KiB 丢弃并留具名码）。此前只有"超过上限走 bulk
+  通道"的路由判据，**没有拒收** ⇒ 一张 64 MiB 上限的帧能带着头像常驻 `friends`/`conversations`
+  并被反复推给前端。
+- **SEC-12**：群文件 Offer 的 `name` 现在过 `file::safe_file_name`（与分享/单聊那份唯一判据同源）：
+  空名、`.`/`..`、含 NUL 或路径分隔符的一律拒收。
+
+**没做（记账）**：DUP-08（头像 13 份副本、圆角漂成 3 种）—— 纯视觉一致性，涉及 13 个组件，
+单独一轮做更稳；SEC-04（`ChatStyle` 来源绑定 + 尺寸闸）、SEC-10（`RelayChunk` 定向目标）、
+SEC-11（`OpaqueExternal` 冲刷去重表）留到下一批。
+
+**验证**
+- `cargo test --features bluetooth --lib` **1301 passed / 0 failed / 1 ignored**；fmt/clippy 绿。
+- 新增用例：`inbound_frame_budget_boundaries`（六格）、`relay_forward_rate_window`（五格）、
+  `bounded_profile_caps_nickname_and_avatar`、`bleAvailability.test.ts`（三格）。
+
+## [5.15.12] - 2026-10-29
 ## [5.15.12] - 2026-10-29
 
 ### 复核审计里三条「可能悄悄丢消息」的：一条成立并修掉，两条不成立

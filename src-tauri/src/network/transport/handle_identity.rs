@@ -149,6 +149,16 @@ async fn handle_identity_and_friend_messages(state: &Arc<AppState>, peer_id: &st
             if device_id != peer_id {
                 return;
             }
+            // 载荷夹到有界（2026-10-29 审计 SEC-06）：昵称截断、超大头像丢弃。这条臂的
+            // 载荷会进 `peers` / `friends` / `conversations` 并被反复推给前端，
+            // 而它完全由对端控制 —— 无上限时一张 64 MiB 上限的帧就能让它们常驻内存。
+            let (nickname, avatar, avatar_dropped) = bounded_profile(nickname, avatar);
+            if avatar_dropped {
+                state.logger.warn(
+                    "friend",
+                    format!("code=USER_INFO_AVATAR_DROPPED peer={device_id}（超过上限，已丢弃头像）"),
+                );
+            }
             let ip = state
                 .peers
                 .lock()

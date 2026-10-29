@@ -292,6 +292,7 @@ export const enUS: MessageDict = {
   "settings.network.interface.auto": "Auto (all interfaces)",
   "settings.network.bluetooth": "Bluetooth Channel",
   "settings.network.bluetooth.unavailable": "Bluetooth backend not compiled yet (unavailable in this version), coming in a later release",
+  "settings.network.bluetooth.noAdapter": "No usable Bluetooth on this device (no adapter, or blocked by the system/permissions).",
   "settings.network.bluetooth.on": "On",
   "settings.network.bluetooth.off": "Off",
   "settings.network.bluetooth.na": "Unavailable",

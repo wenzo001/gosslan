@@ -318,6 +318,23 @@ pub fn frame_read_line() -> String {
     )
 }
 
+/// 全仓入站帧**聚合**驻留上限（2026-10-29 负责人拍板：「加全局限额」）。
+///
+/// 口径 = 当前在途帧字节（`frame_read_bytes()`，按**声明长度**预约）+ 本帧声明长度。
+/// 为什么必须有：`MAX_INBOUND_CONNECTIONS(128) × MAX_FRAME(64 MiB)` 的乘积 ≈ 8 GiB，
+/// 而 release 是 `panic = "abort"` ⇒ 真撞上就是"整个应用无声消失"，日志里连 panic 都没有
+/// （10-21 那次 `重分配失败：请求 326350 字节` 就是这一族）。
+///
+/// 1 GiB 的选择：正常收发（256 KiB 分片、单帧远小于 64 MiB）离它有两三个数量级；
+/// 只有"十几条连接同时声明 64 MiB 大帧"这种极端并发才会碰到。碰到时**拒掉那一帧**
+/// （对端按协议错误重试），而不是让进程被分配器打死。
+pub const INBOUND_FRAME_BUDGET_BYTES: u64 = 1024 * 1024 * 1024;
+
+/// 这一帧还能不能进来（纯函数，可单测）：在途 + 本帧不得超过全局预算。
+pub fn frame_budget_allows(current_in_flight: u64, declared: u64, budget: u64) -> bool {
+    current_in_flight.saturating_add(declared) <= budget
+}
+
 pub fn frame_read_bytes() -> u64 {
     FRAME_READ_BYTES.load(Ordering::Relaxed)
 }
@@ -747,6 +764,29 @@ fn procfs_sample() -> MemSample {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// 全局限额的三格边界（2026-10-29 拍板加的那道闸）：刚好到预算允许、超一字节拒绝、
+    /// 已经在途的也要算进去。边界两侧各一格，避免"改成 < 或 >"这种一位之差静默失效。
+    #[test]
+    fn inbound_frame_budget_boundaries() {
+        let budget = 1024;
+        assert!(frame_budget_allows(0, budget, budget), "刚好等于预算要放行");
+        assert!(!frame_budget_allows(0, budget + 1, budget), "超一字节就拒");
+        assert!(
+            frame_budget_allows(budget / 2, budget / 2, budget),
+            "在途 + 本帧 恰好到顶 ⇒ 放行"
+        );
+        assert!(
+            !frame_budget_allows(budget / 2, budget / 2 + 1, budget),
+            "再多一字节就拒"
+        );
+        // 已在途就已超预算（正常不会发生，但不许溢出成"放行"）
+        assert!(!frame_budget_allows(budget + 1, 1, budget));
+        assert!(
+            !frame_budget_allows(u64::MAX, u64::MAX, budget),
+            "saturating_add 不许绕回 0"
+        );
+    }
 
     /// ① 缺字段必须渲染成 `-`，**不许**折成 0 —— 这是这个模块最容易改坏的一处。
     #[test]
