@@ -305,6 +305,19 @@ export function isForwardableKind(kind: string): boolean {
 | **SEC-10**（`RelayChunk` 用自报 `to` 做定向转发目标） | **设计使然，不修** | "中继"这个职责本身就是"把别人的帧送到它指定的目标"，`to` 必然来自帧；已有的闸是①中继授权策略（`relay_denied`，数据面三个转发点都过它，见 `lib_relay_data_tests.rs`）②本轮新加的每秒 100 帧全局限速。再加"目标必须是我们认识的人"会直接改变中继语义。 |
 | **TST-04**（好友 reject 臂零测试） | **改不了（缺 harness），已有等价覆盖** | 该臂只有三行：守卫 + `forget_pending_request` + emit。它的决策逻辑 `friend_request_flush_decision` **已有 7 处测试引用**；"拒绝后 pending 不漏"由 `friend_request_survives_a_dropped_link` 与 `every_friend_accept_path_forgets_the_pending_request` 两处判据盯住。要做端到端行为测试需要一个能构造 `AppState` 的测试 harness —— 本仓目前没有，属于独立基础设施工作。 |
 
+### 4.0c INV-P27（通知口径）的复核：审计判 "partial" 的依据不足
+
+审计 §5 说「已读与红点共用 `chatViewerLooking()`，但系统通知那一族用
+`!document.hidden && document.hasFocus() && activeConv===conv_id` —— 第三个条件是子集，
+守卫只数 `!document.hidden && app.chatVisible` 这个组合所以看不见」。
+
+逐条读 `docs/protocol-invariants.md` 的 INV-P27 后判：**spec 已经把这三种写法都列在表里**
+（系统通知标"严"、标记已读标"严"、@红点标"★ 最弱 = 缺陷"），规则原文只禁止"重写成
+`!document.hidden && app.chatVisible` 这个**组合**"，而通知那一族写的是**更严**的一档
+（多了焦点与会话判定），不算"各取一个条件子集"。⇒ 这是 spec 与实现**已经对齐**的一条，
+不需要改代码；要在文档里补的只有一句"通知那族为什么更严"（焦点不同：窗口可见但被别的应用
+盖住时，已读可以推进、通知仍该弹）。
+
 ### 4.1 已核查且未发现问题的稳定性面
 
 - **锁顺序**：全仓无 `peers↔db` 嵌套；`file_receivers→db` 顺序成立。
