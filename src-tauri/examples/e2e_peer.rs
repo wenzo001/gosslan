@@ -87,8 +87,7 @@ fn now_ms() -> i64 {
 }
 
 fn seal_direct(identity: &Identity, receiver_x25519: &str, content: &str) -> String {
-    let shared = crypto::shared_secret(&identity.x25519_secret, receiver_x25519)
-        .expect("valid receiver key");
+    let shared = identity.dh(receiver_x25519).expect("valid receiver key");
     let sealed = crypto::seal(&shared, content.as_bytes()).expect("direct encryption succeeds");
     format!("enc1:{}", STANDARD.encode(sealed))
 }
@@ -579,7 +578,7 @@ async fn main() {
 
     // ---- 4. Gossip E2EE ----
     let gossip_msg_id;
-    match crypto::shared_secret(&identity.x25519_secret, &app_x25519) {
+    match identity.dh(&app_x25519) {
         Some(shared) => {
             let plaintext =
                 serde_json::json!({ "kind": "text", "content": GOSSIP_TEXT }).to_string();
@@ -643,8 +642,7 @@ async fn main() {
     let content: Vec<u8> = (0..700_000usize).map(|i| b'a' + (i % 26) as u8).collect();
     let file_key = crypto::random_key();
     let file_sha256 = sha256_hex(&content);
-    let file_shared = crypto::shared_secret(&identity.x25519_secret, &app_x25519)
-        .expect("app receiver key valid");
+    let file_shared = identity.dh(&app_x25519).expect("app receiver key valid");
     let sealed_file_key =
         STANDARD.encode(crypto::seal(&file_shared, &file_key).expect("file key seal succeeds"));
     let _ = send_frame(
@@ -781,8 +779,7 @@ async fn main() {
         // d. 图片消息：改为走真实文件传输，验证接收端仍生成 kind="image"
         let image_key = crypto::random_key();
         let image_sha256 = sha256_hex(IMAGE_BYTES);
-        let image_shared = crypto::shared_secret(&identity.x25519_secret, &app_x25519)
-            .expect("app receiver key valid");
+        let image_shared = identity.dh(&app_x25519).expect("app receiver key valid");
         let sealed_image_key = STANDARD
             .encode(crypto::seal(&image_shared, &image_key).expect("image key seal succeeds"));
         let _ = send_frame(
@@ -1063,7 +1060,7 @@ async fn main() {
             // 我方须先解封 file_key，再对每个 FileChunk 的 data 做 AEAD 解密——
             // data = base64(nonce||ct||tag)，不解密拿到的是 49B 密文而非原文。
             let sealed_key = STANDARD.decode(&sealed_key_b64).map_err(|e| e.to_string())?;
-            let shared = crypto::shared_secret(&identity.x25519_secret, &app_x25519)
+            let shared = identity.dh(&app_x25519)
                 .ok_or("下载方向：无法派生 shared_secret")?;
             let file_key: [u8; 32] = crypto::open(&shared, &sealed_key)
                 .ok_or("下载方向：解封 file_key 失败")?

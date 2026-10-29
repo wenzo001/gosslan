@@ -18,7 +18,15 @@ const NONCE_LEN: usize = 12;
 
 /// 节点身份：X25519 私钥（ECDH）+ Ed25519 私钥（签名）。
 pub struct Identity {
-    pub x25519_secret: StaticSecret,
+    /// X25519 私钥**字段私有**（INV-P18 B-1a，2026-10-29）：跨 FFI 交出私钥的唯一现实路径
+    /// 是"顺手把字段读出来"，把字段改成私有就让这类写法**编译不过**，而不是靠人记得。
+    /// ECDH 只经 [`Identity::dh`]；持久化只经两个 base64 导出器，两者的**落点边界**由
+    /// `scripts/check-key-boundary.mjs` 的判据 C 守着（字段只许本文件内被读、导出器只许 `state.rs` 调）。
+    /// ⚠️ `ed25519_signing` 本轮**仍公开**：中继拨号要把 owned `SigningKey` 跨 `spawn` 边界
+    /// 传进 `relay_negotiate`/`build_wrap_offer`（含 10 处用裸 SigningKey 的协议测试），
+    /// 私有化它需要给那一层引入"签名能力"抽象 —— 那是 Frozen Core 线格式那一侧的设计改动，
+    /// 已登记为 INV-P18 的边界，不在本批顺手做。
+    x25519_secret: StaticSecret,
     pub ed25519_signing: SigningKey,
 }
 
@@ -63,6 +71,14 @@ impl Identity {
 
     pub fn x25519_public(&self) -> PublicKey {
         PublicKey::from(&self.x25519_secret)
+    }
+
+    /// **ECDH 的唯一出口**（INV-P18 B-1a）：交共享密钥，不交私钥本身。
+    ///
+    /// 语义与 `crypto::shared_secret` 逐字相同（就是它的转发），所以线格式与既有实现零差异；
+    /// 对端公钥形状不对（非 32 字节 / 非法 base64）返回 `None`，与旧函数同一口径。
+    pub fn dh(&self, their_public_b64: &str) -> Option<[u8; 32]> {
+        shared_secret(&self.x25519_secret, their_public_b64)
     }
 
     /// 用 Ed25519 私钥签名，返回 base64。
@@ -324,8 +340,8 @@ mod tests {
     fn ecdh_symmetry() {
         let a = Identity::generate();
         let b = Identity::generate();
-        let sa = shared_secret(&a.x25519_secret, &b.x25519_public_b64()).unwrap();
-        let sb = shared_secret(&b.x25519_secret, &a.x25519_public_b64()).unwrap();
+        let sa = a.dh(&b.x25519_public_b64()).unwrap();
+        let sb = b.dh(&a.x25519_public_b64()).unwrap();
         assert_eq!(sa, sb);
     }
 

@@ -375,7 +375,7 @@ async fn handle_gossip(state: &Arc<AppState>, peer_id: &str, env: GossipEnvelope
         match &env.kind {
             GossipKind::Chat => {
                 let shared =
-                    crypto::shared_secret(&state.identity.x25519_secret, &env.sender_pubkey);
+                    state.identity.dh(&env.sender_pubkey);
                 shared.and_then(|s| {
                     STANDARD
                         .decode(&env.payload)
@@ -405,7 +405,7 @@ async fn handle_gossip(state: &Arc<AppState>, peer_id: &str, env: GossipEnvelope
                 // 定向好友控制消息：发送方用 target 的 X25519 公钥加密，只有 target
                 // 能用自己的私钥解开；中间节点解不开（plaintext=None），无害。
                 let shared =
-                    crypto::shared_secret(&state.identity.x25519_secret, &env.sender_pubkey);
+                    state.identity.dh(&env.sender_pubkey);
                 shared.and_then(|s| {
                     STANDARD
                         .decode(&env.payload)

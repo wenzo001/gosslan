@@ -23,7 +23,6 @@ use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::{mpsc, watch};
 use tokio::time::Duration;
-use x25519_dalek::StaticSecret;
 
 use crate::commands::{is_virtual_ip, MAX_GROUP_NAME_LEN};
 use crate::crypto;
@@ -1364,7 +1363,7 @@ async fn handle_group_key(
         peers.get(&from).and_then(|p| p.x25519_pubkey.clone())
     };
     let Some(pubkey) = pubkey else { return };
-    let Some(shared) = crypto::shared_secret(&state.identity.x25519_secret, &pubkey) else {
+    let Some(shared) = state.identity.dh(&pubkey) else {
         return;
     };
     let Ok(sealed) = STANDARD.decode(&key) else {

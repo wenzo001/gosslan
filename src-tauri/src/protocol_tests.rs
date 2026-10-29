@@ -484,7 +484,7 @@ mod tests {
         // A 构造 FriendRequest（target=C，用 C 的 X25519 公钥加密内容）
         let payload = r#"{"from_nickname":"Alice","from_avatar":null}"#;
         let shared =
-            crate::crypto::shared_secret(&a.x25519_secret, &c.x25519_public_b64()).unwrap();
+            a.dh(&c.x25519_public_b64()).unwrap();
         let sealed = crate::crypto::seal(&shared, payload.as_bytes()).unwrap();
         let payload_b64 = B64.encode(&sealed);
         let mut env = engine.build_envelope(
@@ -504,7 +504,7 @@ mod tests {
         assert!(engine.verify_envelope(&env));
 
         // C 用自己的私钥解开内容
-        let shared2 = crate::crypto::shared_secret(&c.x25519_secret, &env.sender_pubkey).unwrap();
+        let shared2 = c.dh(&env.sender_pubkey).unwrap();
         let pt = crate::crypto::open(&shared2, &B64.decode(&env.payload).unwrap()).unwrap();
         assert_eq!(String::from_utf8(pt).unwrap(), payload);
 

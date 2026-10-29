@@ -13,6 +13,38 @@
 
 ## [Unreleased]
 
+## [5.15.18] - 2026-10-29
+
+### 私钥边界补第三条判据：X25519 私钥字段改成私有（INV-P18 B-1a 的一半落地，另一半如实留账）
+
+负责人 2026-10-29 选的下一项。范围只收**不需要动线格式**的那一半。
+
+- **`Identity.x25519_secret` 现在是私有字段**，ECDH 只有一个出口 `Identity::dh()`（逐字转发
+  `crypto::shared_secret` ⇒ 线格式与密文形状零差异）。生产码 16 处、测试 24 处调用点全部改过去，
+  影响面**按编译器数**（字段私有后任何漏改都编不过，不是我猜的清单）。
+- **`scripts/check-key-boundary.mjs` 加判据 C（落点边界）**：字段只许在 `crypto.rs` 内被读；
+  两个 base64 导出器（`x25519_secret_b64` / `ed25519_secret_b64`）只许持久化那一家 `state.rs` 调用。
+  自证夹具 9 条（4 条是"不许误伤"的反例，其中原来那条「命令内部做 ECDH」的反例**跟着改成 `dh()` 形状** ——
+  否则反例钉的是一个已经不存在的老写法）。
+- ⚠️ **没做的那一半（写在法条里，不装作封死）**：`ed25519_signing` 仍是公开字段。中继拨号要把 owned
+  `SigningKey` 跨 `spawn` 传进 `relay_negotiate` / `build_wrap_offer`，那两层还有 10 处用裸
+  `SigningKey` 的协议测试；私有化它要给那一层引入"签名能力"抽象 —— 那是 Frozen Core 线格式侧的
+  设计改动，不进攒批修复。判据 A/B 对这一半仍然有效（不许序列化、不许出现在交出值的位置）。
+
+**过程里两条被抓的记录**（都写进文档，免得下次重新踩）：
+- 我把判据 C 的 `problems.push` 插进了 `if (reg === null) { … }` **块内部** ⇒ C 平时一行都不判，
+  而真实扫描照样打绿。抓到它的正是护栏非空转本身（注入后测试仍通过 ⇒ 判成空转）。
+- `crypto.rs` 的注释里我写了"调用点判据在 `lib_key_boundary_tests`"，那个册**根本不存在** ——
+  落点声明必须是真存在的家；现已指向 `check-key-boundary.mjs` 判据 C。
+
+**验证**：`cargo test --features bluetooth --lib` **1303 passed / 0 failed / 1 ignored**（E2EE、
+AEAD 篡改、中继协商那几册全在同一份密文形状上过）；`cargo clippy -D warnings` 绿；
+护栏册 279 → **280**（新那条 Case 跑过"改坏必须 FAIL、红由 `[C]` 那句报出、恢复逐字节一致"）；
+`node scripts/check-key-boundary.mjs --self-test` 9 条夹具全合预期；
+`npm run verify:local` **25 步全绿**（75.4s，含 `cargo fmt --check --all`、`clippy -D warnings --all-targets`、
+Rust 单测与 Android 编译门禁）。
+
+
 ## [5.15.17] - 2026-10-29
 
 这一版是**第一个包含 5.15.16 / 5.15.15 / 5.15.14 内容的发布**（这三版只提过版本号、没打成 tag ——

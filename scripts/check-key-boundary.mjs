@@ -26,6 +26,18 @@
  *
  *   判据 B（出口行为）：任何 `#[tauri::command]` 的函数体里，不许出现密钥材料标识符。
  *
+ * A 与 B 都只拦"交出去"那一步，拦不住**在 crate 内部随手读字段**。2026-10-29 把 X25519 私钥
+ * 字段改成私有（INV-P18 B-1a）之后，"读字段"这件事第一次有了机器凭据：
+ *
+ *   判据 C（字段边界）：`Identity.x25519_secret` 只许在 `crypto.rs` 内部被访问；
+ *   两个 base64 导出器（`x25519_secret_b64` / `ed25519_secret_b64`）只许被**持久化那一家**
+ *   （`state.rs`）调用。ECDH 的唯一出口是 `Identity::dh()`，签名是 `sign_b64()`。
+ *
+ * ⚠️ 这一条今天只覆盖 X25519 那一半：`ed25519_signing` **仍是公开字段** —— 中继拨号要把 owned
+ * `SigningKey` 跨 `spawn` 传进 `relay_negotiate`/`build_wrap_offer`（含 10 处用裸 SigningKey 的
+ * 协议测试），私有化它需要给那一层引入"签名能力"抽象，属 Frozen Core 线格式侧的设计改动。
+ * 残余写在这里、也写在 `docs/protocol-invariants.md` 的 INV-P18，不装作已经封死。
+ *
  * ## 为什么 B 不会"漏扫还判成通过"
  *
  * B 的覆盖面**与权威事实源对账**：`lib.rs` 的 `generate_handler!` 注册表里每一条命令，
@@ -44,7 +56,7 @@
  * ## 用法
  *
  *     node scripts/check-key-boundary.mjs              # 扫真实源码
- *     node scripts/check-key-boundary.mjs --self-test  # 跑夹具：证明两条判据都抓得住
+ *     node scripts/check-key-boundary.mjs --self-test  # 跑夹具：证明三条判据都抓得住
  *
  * 退出码：0 = 通过；1 = 有违规或覆盖面不自证。
  */
@@ -196,7 +208,27 @@ function scanCommands(files) {
   return { bad, found };
 }
 
-/** 夹具：故意做坏的两段源码，两条判据必须各抓得住。 */
+/// 判据 C：私有字段与两个导出器的**落点边界**（按文件判，纯文本扫描）。
+///
+/// `rel` 是相对 `src-tauri/src` 的正斜杠路径；`src` 是该文件内容。
+/// 抽成纯函数是为了让夹具能在内存里喂它 —— 与 A/B 同一套自证形状。
+function scanFieldBoundary(rel, src) {
+  const bad = [];
+  if (rel !== "crypto.rs") {
+    for (const m of src.matchAll(/\b[A-Za-z_][\w.]*\.x25519_secret\b(?!_)/g)) {
+      bad.push(`${rel} 直接读私钥字段 ${m[0]}`);
+    }
+  }
+  // 导出器只有持久化那一家能用（crypto.rs 内部的定义行不算调用）
+  if (rel !== "crypto.rs" && rel !== "state.rs") {
+    for (const m of src.matchAll(/\b(x25519_secret_b64|ed25519_secret_b64)\s*\(/g)) {
+      bad.push(`${rel} 调用密钥导出器 ${m[1]}()（只许 state.rs 持久化用）`);
+    }
+  }
+  return bad;
+}
+
+/** 夹具：故意做坏的几段源码，三条判据必须各抓得住。 */
 const FIXTURES = [
   { name: "A：给 DTO 加一个私钥字段", probe: "A",
     src: `#[derive(Serialize)]
@@ -233,18 +265,46 @@ pub fn get_peer_peers() -> Vec<PeerDto> {
 ` },
   // 这条就是真实码里 `send_message` / `distribute_group_key` 的形状：**局部**读私钥去做
   // ECDH/签名是这条不变量允许的用法。少了这条反例，"收窄判据"就只是我的一次猜测。
-  { name: "反例：命令内部用私钥做 ECDH，只返回密文", probe: "none",
+  // 这条是真实码里 `send_message` / `distribute_group_key` 的形状：**局部**做 ECDH 是这条不变量
+  // 允许的用法。2026-10-29 起它走 `identity.dh(…)`（判据 C 的正形）—— 夹具跟着改，
+  // 否则"允许的形状"会和今天的代码不一致，反例就变成在钉一个已经不存在的老写法。
+  { name: "反例：命令内部用 dh() 做 ECDH，只返回密文", probe: "none",
+    rel: "commands/chat.rs",
     src: `#[tauri::command]
 pub async fn send_message(state: tauri::State<'_, AppState>) -> Result<String, String> {
-    let shared = crypto::shared_secret(&state.identity.x25519_secret, &peer_pub)?;
+    let shared = state.identity.dh(&peer_pub)?;
     let ct = crypto::seal(&shared, body.as_bytes());
     Ok(STANDARD.encode(ct))
+}
+` },
+  { name: "C：生产码直接读私钥字段（字段私有化被绕过）", probe: "C", rel: "commands/chat.rs",
+    src: `pub async fn send_message(s: &AppState) -> Result<String, String> {
+    let raw = s.identity.x25519_secret.to_bytes();
+    Ok(hex::encode(raw))
+}
+` },
+  { name: "C′：命令调密钥导出器（持久化之外的第二家）", probe: "C", rel: "commands/export.rs",
+    src: `#[tauri::command]
+pub fn dump_identity(state: tauri::State<'_, AppState>) -> String {
+    state.identity.x25519_secret_b64()
+}
+` },
+  // 持久化那一家（state.rs）调两个导出器是**必要的** —— 不写这条反例，判据 C 就只是"我猜的一刀切"。
+  { name: "反例：state.rs 持久化调两个 base64 导出器", probe: "none",
+    rel: "state.rs",
+    src: `let a = id.x25519_secret_b64();
+let b = id.ed25519_secret_b64();
+` },
+  { name: "反例：crypto.rs 内部访问自己的私有字段", probe: "none",
+    rel: "crypto.rs",
+    src: `pub fn dh(&self, their_public_b64: &str) -> Option<[u8; 32]> {
+    shared_secret(&self.x25519_secret, their_public_b64)
 }
 ` },
 ];
 
 /** 在内存里跑一条判据（夹具用）。 */
-function runProbeOn(probe, src) {
+function runProbeOn(probe, src, rel = "scratch.rs") {
   if (probe === "A") {
     const dir = null;
     const lines = src.split(/\n/);
@@ -267,6 +327,7 @@ function runProbeOn(probe, src) {
     }
     return bad;
   }
+  if (probe === "C") return scanFieldBoundary(rel, src);
   if (probe === "B") {
     const lines = src.split(/\n/);
     const bad = [];
@@ -287,8 +348,8 @@ if (selfTest) {
   let failed = 0;
   for (const fx of FIXTURES) {
     const got = fx.probe === "none"
-      ? [...runProbeOn("A", fx.src), ...runProbeOn("B", fx.src)]
-      : runProbeOn(fx.probe, fx.src);
+      ? [...runProbeOn("A", fx.src), ...runProbeOn("B", fx.src), ...runProbeOn("C", fx.src, fx.rel)]
+      : runProbeOn(fx.probe, fx.src, fx.rel);
     const want = fx.probe === "none" ? 0 : 1;
     const ok = want === 0 ? got.length === 0 : got.length > 0;
     console.log(`${ok ? "✓" : "✗"} [${fx.probe === "none" ? "反例" : fx.probe}] ${fx.name} → ${got.length} 处`);
@@ -306,6 +367,11 @@ if (selfTest) {
 const files = walk(SRC);
 const a = scanSerializable(files);
 const b = scanCommands(files);
+const c = [];
+for (const f of files) {
+  const rel = path.relative(SRC, f).split(path.sep).join("/");
+  c.push(...scanFieldBoundary(rel, readFileSync(f, "utf8")));
+}
 const reg = registeredCommands();
 
 const problems = [];
@@ -320,6 +386,7 @@ if (reg === null) {
     console.log(`  · 命令体扫描 ${b.found.size} 个函数（注册表 ${new Set(reg).size} 条，差额为未注册的 #[tauri::command]）`);
   }
 }
+problems.push(...c.map((x) => `[C] ${x}`));
 problems.push(...a.bad.map((x) => `[A] ${x.where} ${x.msg}`));
 problems.push(...b.bad.map((x) => `[B] ${x.where} ${x.msg}`));
 
@@ -333,4 +400,5 @@ if (problems.length) {
 }
 
 console.log(`✓ 私钥边界：${a.seenTypes} 个可序列化类型无密钥字段（判据 A）`
-  + ` · ${b.found.size} 条命令体无密钥触碰且与注册表逐条对上（判据 B）`);
+  + ` · ${b.found.size} 条命令体无密钥触碰且与注册表逐条对上（判据 B）`
+  + ` · X25519 私钥字段与两个导出器的落点在 ${["crypto.rs", "state.rs"].join("/")}（判据 C）`);

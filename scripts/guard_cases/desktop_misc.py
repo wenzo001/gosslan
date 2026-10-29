@@ -489,6 +489,25 @@ pub fn guard_case_fixture_db(
         tags=["rust", "security", "new-guards"],
     ),
     Case(
+        name="私钥边界：生产码绕过 dh()、直接读 Identity 的私有字段必须报出来（判据 C）",
+        why="2026-10-29 把 `x25519_secret` 改成私有字段（INV-P18 B-1a 的 X25519 那一半）之后，"
+        "     「在 crate 内部随手读字段」第一次有了机器凭据。注入 = 把 `commands/chat.rs` 里"
+        "     那处 `identity.dh(&pubkey)` 改回 `crypto::shared_secret(&identity.x25519_secret, …)` —— "
+        "     今天这行**编译都过不了**（字段私有），但判据 C 还要挡住另一种绕法：把字段重新改成 pub。"
+        "     红必须由判据 C 那句报出，不是由判据 B 的出口扫描代判。",
+        file=TAURI / "src" / "commands" / "chat.rs",
+        injections=[(
+            """    let plaintext = crate::protocol::gossip_plaintext(&kind, &content, None);
+    let shared = s.identity.dh(&pubkey).ok_or("密钥交换失败")?;""",
+            """    let plaintext = crate::protocol::gossip_plaintext(&kind, &content, None);
+    let shared = crypto::shared_secret(&s.identity.x25519_secret, &pubkey).ok_or("密钥交换失败")?;""",
+        )],
+        cmd=["node", "scripts/check-key-boundary.mjs"],
+        cwd=ROOT,
+        expect_fail_hint="直接读私钥字段",
+        tags=["rust", "security", "new-guards"],
+    ),
+    Case(
         name="数表必须早于 execute_batch(SCHEMA)（否则 is_fresh 恒假 ⇒ 全新库重放整条迁移链）",
         why="`is_fresh = current == 0 && pre_table_count == 0` 里只有前半个条件是真话：SCHEMA 会建出\n"
         "     全部 19 张表，所以数表一旦跑到 SCHEMA 之后，`is_fresh` 就恒为假 —— 全新库于是把 v1→v9\n"
