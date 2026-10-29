@@ -5,6 +5,32 @@
 > 证据来源：`package.json` / `package-lock.json`、真实 `src/**` 调用点、`npm test`、`npm run build`、`node scripts/check-ui-runtime.mjs`。
 > 最近更新：2026-10-22（引入 `vue-router@5.4.0`；Pinia 3 / Vite 7 / plugin-vue 6 升级；`@pinia/colada` 只装不接线；按用户裁决引入 `motion-v@2.8.0`，只用于共享布局指示器/FLIP/手势三类）。
 
+## 0. 勘误（2026-10-29 全仓审计逐行核验后补的）
+
+> 来源：`docs/notes/full-repo-audit-2026-10-29.md` + `audit-context/dup/FINDINGS.md` Part A
+> （43 行逐行回代码核对：26 行仍准确、11 行过期、6 行结论已反转）。
+> **下面不改原表**（原表是 2026-10-22 那天的实况，留着才有对照价值），只把"今天读到的"钉在这里。
+
+**结论已反转（3 行）**
+
+| 行 | 矩阵原判 | 今天的事实 |
+|---|---|---|
+| A31 消息列表虚拟化 | C 保留自研（"525 行 / 前缀和 + 二分 + 自建 ResizeObserver"） | **已迁 `@tanstack/vue-virtual`**（`VirtualList.vue` 909 行，`useVirtualizer` + 自定 `measureElement`），commit `142cd3b5` |
+| A38 Markdown | C 保留（"无 Markdown 渲染"） | **`marked@18.1.2` 已在生产依赖并在用**：`utils/markdown.ts` + `ui/MarkdownText.vue`（更新说明渲染），commit `beb4152f` |
+| A39 DOMPurify | C 不引入 | **`dompurify@3.4.17` 已在用**（同一个落点，白名单在 `designGuards.ts` 的 `V_HTML_ALLOWED`，现 4 项） |
+
+**过期但方向不变（11 处）**：A5 / A11 / A17 / A27（`title=` 现算 320 处，不是 274）/ A33 / A37 /
+A38 / A39 / §3 依赖清单（漏 `mitt` `vue-i18n` `vue-router` `zod` `motion-v` `marked` `dompurify` 七项）/
+§4 测试读数 / §5 移动端壳行号。
+
+**§4 的读数**：`npm test` 早就不是 1053（本文写于 2026-10-19）；以命令自己打印的条数为准，
+别抄这里的数字。
+
+**本轮顺带**：`@pinia/colada` 是**死依赖**（`src/`、`scripts/` 0 处引用）⇒ 已从 `package.json` 删除。
+
+**防复发**：新增 `src/utils/replacementMatrix.test.ts` —— `package.json` 的每个生产依赖都必须在
+本文件里出现至少一次（新引入依赖要登记，否则这一步红）。
+
 ## 1. 已落地的迁移
 
 | 能力 | 原实现 / 调用点 | 替代 | 判定 | 实际迁移点 | 证据 / 备注 |

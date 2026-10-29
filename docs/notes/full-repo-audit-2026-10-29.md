@@ -278,6 +278,17 @@ export function isForwardableKind(kind: string): boolean {
 | STB-07 | Low | 确认 | `gossip_relay` 补递缓存的 TTL 与 `gossip_replay` 的窗口语义耦合，但两处 TTL 常量不同源 | `mesh/gossip_replay.rs`、`network/transport/gossip.rs` |
 | STB-08 | Info | 确认 | `outbox_sweep` 的 `reachable` 快照在 peers 锁内 clone 全表，每 30s 一次 | `network/transport/outbox_sweep.rs` |
 
+### 4.0a D/E 批复核（2026-10-29 晚）
+
+| ID | 结论 | 证据 |
+|---|---|---|
+| **DUP-09** | 已加对账护栏 | 新用例「已读推进的排除清单两侧逐项一致」读 TS 的 `READ_PROMOTE_BLOCKED` 与 `db/read_receipts.rs` 的 `status NOT IN (…)` 逐项比；变异（TS 去掉 `partial_cancelled`）⇒ 红。 |
+| **DUP-10** | 不另加 | `countsTowardUnread` 与 `is_non_notifying_kind` 互为补集且同源于 kind 表，已被既有 kind 分类对账间接覆盖（审计自己也判 leave alone）。 |
+| **DUP-11** | 已被覆盖 | `messageKinds.test.ts` 的「未知 kind 判据与占位文案与 protocol.rs 一致」早在册。 |
+| **DUP-12** | 已加对账护栏 | 新用例比 `previewBody`（TS）与 `preview_text` + `todo_preview`/`poll_preview`/`announcement_preview`（Rust）的独立字面量；变异（Rust 改一个字）⇒ 红。 |
+| **TST-08 的 UI 半边** | **审计说错**：弹窗早就写了 | `ResetSection.vue` 的确认框有「以下内容不受影响：好友列表 / 设备身份与加密密钥 / 昵称头像与设置 / 其他设备上的聊天记录」（`settings.clear.item.identity`）。"保留身份但不说"这件事**不存在**，无需改。 |
+| **DUP Part A 的矩阵反转** | 已补勘误 + 防复发 | `open-source-replacement-matrix.md` 新增 §0 勘误（3 条反转逐条给今天的实况、11 处过期、§3/§4 数字）；新用例「每个生产依赖都必须在矩阵里登记过」（变异：往 package.json 塞一个未登记依赖 ⇒ 红）。删 `@pinia/colada` 死依赖。 |
+
 ### 4.0 复核结论（2026-10-29 修复批，逐条读码后）
 
 | ID | 结论 | 证据 |

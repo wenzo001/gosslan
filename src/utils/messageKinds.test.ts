@@ -582,3 +582,63 @@ test("转发落点：单条 / 批量 / 收藏 三处都按 isTransferKind 选通
     );
   }
 });
+
+/**
+ * **跨层对账：已读推进的排除清单**（2026-10-29 审计 DUP-09）。
+ *
+ * 同一份判据在 FFI 两侧各写一份是**必要的**（TS 决定乐观列表怎么推、Rust 决定 SQL 怎么更新），
+ * 但"必要"不等于"不需要护栏"：这两份一旦漂移，表现是**列表显示已读、库里还是未读**（或反过来），
+ * 而且只在本机重读时才看出来。这条把两侧的字面清单逐项比。
+ */
+test("跨语言契约：已读推进的排除清单两侧逐项一致（DUP-09）", () => {
+  const here = dirname(fileURLToPath(import.meta.url));
+  const ts = readFileSync(join(here, "messages.ts"), "utf8");
+  const tsList = /const READ_PROMOTE_BLOCKED = \[([^\]]*)\]/.exec(ts);
+  assert.ok(tsList, "找不到 READ_PROMOTE_BLOCKED（判据会空转）");
+  const tsItems = [...tsList[1].matchAll(/"([a-z_]+)"/g)].map((m) => m[1]).sort();
+
+  const rs = readFileSync(join(here, "../../src-tauri/src/db/read_receipts.rs"), "utf8");
+  const rsList = /status NOT IN \(([^)]*)\)/.exec(rs);
+  assert.ok(rsList, "找不到 SQL 里的 NOT IN 清单（判据会空转）");
+  const rsItems = [...rsList[1].matchAll(/'([a-z_]+)'/g)].map((m) => m[1]).sort();
+
+  assert.ok(tsItems.length >= 4 && rsItems.length >= 4, "分母太小 ⇒ 解析器坏了");
+  assert.deepEqual(tsItems, rsItems, "两侧的已读排除清单必须逐项一致");
+});
+
+/**
+ * **跨层对账：会话预览的固定文案**（2026-10-29 审计 DUP-12）。
+ *
+ * `previewBody`（TS，列表显示）与 `preview_text`（Rust，通知与库侧摘要）手抄了同一组
+ * `[文件]`/`[图片]`/… 字面量。两侧漂移的代价是"同一句话在列表和通知里不一样"。
+ *
+ * 只比**独立字符串字面量**（`return "[X]";` 与 `=> "[X]"`），不比模板串与注释：
+ * TS 那边的 `[任务] ${title}` 是带正文的模板，Rust 那边对应逻辑在 `todo_preview` 等
+ * 三个小函数里 —— 所以把它们的函数体也算进 Rust 一侧。
+ */
+test("跨语言契约：会话预览的固定文案两侧一致（DUP-12）", () => {
+  const here = dirname(fileURLToPath(import.meta.url));
+  const ts = readFileSync(join(here, "messages.ts"), "utf8");
+  const tsBody = ts.slice(ts.indexOf("export function previewBody"), ts.indexOf("export function previewText"));
+
+  /** 取一个 Rust 函数的函数体（按行首 `}` 收尾；本项目这几处没有嵌套到列 0 的花括号）。 */
+  const rustFn = (src: string, name: string): string => {
+    const at = src.indexOf(`fn ${name}(`);
+    assert.ok(at > 0, `protocol.rs 里找不到 ${name}（判据要跟着改）`);
+    const endAt = src.indexOf("\n}", at);
+    return src.slice(at, endAt < 0 ? src.length : endAt);
+  };
+  const rsBody = [
+    rustFn(protocolRs, "preview_text"),
+    rustFn(protocolRs, "todo_preview"),
+    rustFn(protocolRs, "poll_preview"),
+    rustFn(protocolRs, "announcement_preview"),
+  ].join("\n");
+
+  const tsLabels = [...new Set([...tsBody.matchAll(/return "(\[[^\]]{1,8}\])";/g)].map((m) => m[1]))].sort();
+  const rsLabels = [
+    ...new Set([...rsBody.matchAll(/=> "(\[[^\]]{1,8}\])"(?:\.to_string\(\))?/g)].map((m) => m[1])),
+  ].sort();
+  assert.ok(tsLabels.length >= 8, `TS 只解析出 ${tsLabels.length} 个预览标签 ⇒ 解析器坏了`);
+  assert.deepEqual(tsLabels, rsLabels, "预览文案两侧必须逐项一致");
+});

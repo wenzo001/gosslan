@@ -102,7 +102,6 @@
     "coverage:features": "node scripts/feature-coverage.mjs"
   },
   "dependencies": {
-    "@pinia/colada": "^1.4.8",
     "@tanstack/vue-query": "^5.104.4",
     "@tanstack/vue-virtual": "^3.13.47",
     "@tauri-apps/api": "^2.1.1",
