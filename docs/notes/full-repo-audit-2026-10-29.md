@@ -619,7 +619,7 @@ node --experimental-strip-types -e '
 | DUP-01 | High | 跨层规则漂移 | 消息 kind 白名单 TS 与 Rust 各写一份，**`image` 已漂移**（见 §1.5） | `messageKinds.ts:166` vs `commands/chat.rs:559-592` |
 | DUP-02 | ~~High~~ **复核后判「不再统一」**（四套文案讲的是四件事，见 §4.0l） | **通道判据已收一处（5.15.9）；越权闸两条入口已一致（5.15.15，见 §4.0f）**；本报告原话「剩下未统一的是缺失路径的提示文案三套（各落点各写一句 toast）」**不准确** —— 逐条读实现后是四件不同的事实（会话媒体被清理 / 收藏自己那份副本 / 本机尚未同步 / 原消息已不在），合并会让其中两三格对用户撒谎。防复发：`src/utils/mediaAvailability.test.ts` 三条新判据（特征词、收藏那句的「副本」必须由代码兑现、引用面不跨界），前两条各做过注入自证 | `src/utils/mediaAvailability.test.ts`、`src-tauri/src/commands/favorites.rs` |
 | DUP-03 | Medium | 重复工具 | Rust `now_ms()` 9 份逐字相同的 4 行实现（已有 3 种写法） | `src-tauri/src/**/*.rs` |
-| DUP-04 | Medium | 重复工具 | Rust SHA-256 hex 编码 8 份逐字相同的 `.map(\|b\| format!("{b:02x}")).collect()` | 同上 |
+| DUP-04 | ~~Medium~~ **已修（5.15.25）** | 重复工具 | 字节→小写 hex 的表达式散在生产码与测试里：**现数 20 行、11 个文件（其中 9 个是生产码文件）**，另有三个整份助手（`device::hex`、`relay_seal::channel_hex`、`commands/relay` 的探测串）—— 审计原写「8 份」偏少。收成 `crypto::hex_lower` / `sha256_hex` 一个家。 | `src-tauri/src/crypto.rs`（唯一的家）；复跑 `grep -rn ":02x" src-tauri/src` 改后只剩 `crypto.rs` 两处 |
 | DUP-05 | Medium | 重复组件 | **已修（5.15.16，见 §4.0g）**：`LogViewer` 两个外壳各抄一份逐字相同的虚拟行模板（8 个 `v-html` 落点）；矩阵误以为"两条外壳"是迁移前的问题 —— 虚拟化迁了，两份拷贝还在 | `src/components/LogRows.vue`（唯一行模板） |
 | DUP-06 | Medium | 重复组件 | 「表情切段 + 链接/提及切段 + 逐段渲染」3 份同形实现 | `src/components/message/*` |
 | DUP-07 | Low | 重复逻辑 | @提及的「16% 透明底」配方散在 2 处 + 一个未被复用的第三种配方 | `src/style.css` 等 |
@@ -706,7 +706,7 @@ node --experimental-strip-types -e '
 | 11 | SEC-02 | 上限已做（5.15.14）+ 淘汰认身份（5.15.19，§4.0h）；**announce 限流判不修** | 负结论留证：无界增长的成因是"条数没上限"而不是速率，`upsert_peer` 每 5s 周期最多一次 |
 | 12 | DUP-02 | 通道判据与越权闸两半**已落地**（5.15.9 / 5.15.15）；剩下那半**复核后判不再统一**（§4.0l） | 原话「剩三套 toast 文案未统一」不准确：那是四件不同的事实。改判据钉住"它们是四件事"：`src/utils/mediaAvailability.test.ts` 三条（特征词 / 收藏那句的「副本」必须由 `std::fs::copy` 兑现 / 引用面不跨界），前两条各做过注入自证 |
 | 13 | DUP-09～DUP-12 | **09 与 12 已加对账、11 已被覆盖、10 判不另加**（§4.0a） | 那两条对账用例就住在一个文件里，标题自带编号：`src/utils/messageKinds.test.ts` 的「跨语言契约：已读推进的排除清单两侧逐项一致（DUP-09）」与「…会话预览的固定文案两侧一致（DUP-12）」；复跑 `node --test src/utils/messageKinds.test.ts`。⚠️ 注：§6.3 那四行仍写着"无机器对账"，以本表为准 |
-| 14 | DUP-03/04/06/07/13/14/15 | **未做**（DUP-05 已修 5.15.16、DUP-08 已修 5.15.20） | `now_ms()` 多份、SHA-256 hex 编码多份、表情/链接切段 3 份、@提及底色配方散 2 处、TS 侧三份 LRU、`MessageItem` 动作两套模板、`MobilePageFrame` 手抄 1 份 |
+| 14 | DUP-03/06/07/13/14/15 | **未做（6 个编号，现数）**；DUP-04 已修（5.15.25）、DUP-05 已修（5.15.16）、DUP-08 已修（5.15.20） | `now_ms()` 多份（9 处定义，但 BLE/Windows 那几份可能刻意用单调钟 ⇒ 先逐处定性再收）、SHA hex 已收、表情/链接切段 3 份、@提及底色散 2 处、TS 侧三份 LRU、`MessageItem` 动作两套模板、`MobilePageFrame` 手抄 1 份 |
 | 15 | SEC-04/05/06/08/12 | **全部已修**（SEC-04 5.15.14 + 5.15.17 留痕；SEC-05/06/08/12 见 5.15.13） | SEC-08 那条是入站帧聚合驻留的**全局限额 1 GiB**（审计原估 8 GiB 上界） |
 | 15b | SEC-07 / SEC-09 / SEC-10 / SEC-11 | **不成立 / 已撤回 / 判不修 / 判不修** | §4.0 与 §4.0b 逐条给了理由，负结论也是一等结论 |
 | 16 | 替换矩阵勘误 | **已做**（5.15.13：新增 §0 勘误 + 一条「每个生产依赖都必须在矩阵里登记过」的新判据，带变异正控） | 文件真路径是 `docs/architecture/open-source-replacement-matrix.md`（⚠️ 本表原来只写裸文件名，害我照着它写了一条指不到文件的复跑命令）；复跑 `grep -n "勘误" docs/architecture/open-source-replacement-matrix.md` |
@@ -720,7 +720,7 @@ node --experimental-strip-types -e '
 1. **TST-02**（唯一还活着的 P1）—— 前置是给 `useChatStore` 做依赖注入，属独立重构，别塞进修复批。
 2. **INV-P18 的 Ed25519 那半** —— 前置是"签名能力"抽象。
 3. **第 19 行：文件气泡失败原因落库** —— 前置是给那一族自由文本配码。
-4. **DUP 剩余的 7 行**（第 14 行：DUP-03/04/06/07/13/14/15，现数恰好 7 个编号）—— 纯重复，收益是"少一份会漂的拷贝"。
+4. **DUP 剩余的 6 行**（第 14 行：DUP-03/06/07/13/14/15，现数恰好 6 个编号）—— 纯重复，收益是"少一份会漂的拷贝"。DUP-04 已于 5.15.25 收口；DUP-03 动手前要先逐处定性（见第 14 行）。
    （第 12 行 DUP-02 的那半本轮**复核后判不再统一**，理由与三条防复发判据见 §4.0l。）
 5. **`lucide-vue-next` 升级评估**、**`get_topology` 孤儿**（FUN-04）、**TST-06 真 ENOSPC**、**TST-09 Windows 三类行为用例**，以及**需要现场日志才能推进的 Windows 渲染层卡死**（另见 `docs/notes/`）。（第 20 行的历史改号本轮**判为不做**，理由与现算证据在 §4.0k，不再列进待办。）
    **TST-09 Windows 三类行为用例**、以及**需要现场日志才能推进的 Windows 渲染层卡死**（另见 `docs/notes/`）。

@@ -48,7 +48,7 @@ pub const DEVICE_ID_HEX_LEN: usize = 13;
 pub(crate) const DEVICE_ID_LEN: usize = DEVICE_ID_PREFIX.len() + DEVICE_ID_HEX_LEN;
 
 fn hex(bytes: &[u8]) -> String {
-    bytes.iter().map(|b| format!("{:02x}", b)).collect()
+    crate::crypto::hex_lower(bytes)
 }
 
 /// 参与派生的设备属性快照。

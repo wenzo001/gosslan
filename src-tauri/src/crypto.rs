@@ -134,6 +134,36 @@ pub fn random_key() -> [u8; 32] {
     k
 }
 
+/// 字节 → **小写**十六进制。全仓唯一的一份（审计 DUP-04）。
+///
+/// ## 为什么住在这里
+/// 这个域是叶子（`docs/domains.data.mjs` 里 `identity` 的 `consumes: []`）：协议层、传输层、
+/// 文件层、命令层全都在它下面，所以"给摘要/密钥写成可读串"这件事放在这里**不会新增任何向上依赖**。
+/// 放 `network/file.rs` 会让 `protocol.rs` 反过来依赖网络层 —— 那是方向错误，不是风格问题。
+///
+/// ## 为什么值得收成一家
+/// 原先生产码与测试里各有 14 处逐字相同的 `.iter().map(|b| format!("{b:02x}")).collect()`。
+/// 重复不报错，坏起来是一格一格地坏：谁写成 `{b:02X}`（大写）或与某处 `eq_ignore_ascii_case`
+/// 的宽松比较一错开，校验就会在**特定那条内容**上失败，而现场只看到"完整性校验失败"。
+/// 现在形状只有一处，判据 `crypto::tests::hex_encoding_has_exactly_one_home` 守着它。
+pub fn hex_lower(bytes: &[u8]) -> String {
+    let mut s = String::with_capacity(bytes.len() * 2);
+    for b in bytes {
+        use std::fmt::Write;
+        // 常量格式串不会真的失败；`let _` 是为了不引入 unwrap 这条 panic 站点。
+        let _ = write!(s, "{b:02x}");
+    }
+    s
+}
+
+/// 字节的 SHA-256（小写 hex）。哈希与表示**必须一起定**，否则两侧会漂。
+pub fn sha256_hex(bytes: &[u8]) -> String {
+    use sha2::{Digest, Sha256};
+    let mut h = Sha256::new();
+    h.update(bytes);
+    hex_lower(&h.finalize())
+}
+
 /// 用 Ed25519 公钥校验签名。
 /// 一方的身份三元组（设备 ID + 两把公钥），用于派生安全码。
 pub struct SafetyParty<'a> {
@@ -364,5 +394,96 @@ mod tests {
             b"tampered",
             &sig
         ));
+    }
+
+    // ---------------- 字节 → hex 只有一个家（审计 DUP-04） ----------------
+
+    #[test]
+    fn hex_lower_prints_two_digit_lowercase_groups() {
+        assert_eq!(hex_lower(&[]), "");
+        assert_eq!(hex_lower(&[0x00, 0x0f, 0xa1, 0xff]), "000fa1ff");
+    }
+
+    #[test]
+    fn sha256_hex_matches_a_known_vector() {
+        // 已知向量（空串的 SHA-256）。哈希与**表示**必须一起定：有人改大写或换编码，
+        // 这条与 `hex_encoding_has_exactly_one_home` 会一起红。
+        assert_eq!(
+            sha256_hex(b""),
+            "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        );
+    }
+
+    /// 递归收集 `src/**/*.rs`。`include!` 的分册是磁盘上的独立文件，会被一起扫到 ——
+    /// 判据比的是字面形状，与模块路径无关，这正是我们要的。
+    fn collect_rs(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
+        for e in std::fs::read_dir(dir).expect("读 src 目录") {
+            let p = e.expect("dir entry").path();
+            if p.is_dir() {
+                collect_rs(&p, out);
+            } else if p.extension().and_then(|s| s.to_str()) == Some("rs") {
+                out.push(p);
+            }
+        }
+    }
+
+    /// **形状判据**：`:02x` 这种逐字节 hex 表达式只许住在 `crypto.rs`。
+    ///
+    /// 为什么按形状而不是按清单：本仓的重复实现从来不是"抄了一份没登记"，而是
+    /// "第 N+1 处又写了一遍" —— 清单看不见新增那一处，形状可以。
+    /// `{b:02x}` 与 `{:02x}` 两种写法都算（历史上就是这样分叉出两种的）。
+    #[test]
+    fn hex_encoding_has_exactly_one_home() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+        let mut files = Vec::new();
+        collect_rs(&root, &mut files);
+        assert!(
+            files.len() > 100,
+            "只扫到 {} 个 .rs ⇒ 目录走错了，这条判据是在空集上恒绿",
+            files.len()
+        );
+        let offenders: Vec<String> = files
+            .iter()
+            .filter_map(|p| {
+                let text = std::fs::read_to_string(p).ok()?;
+                text.contains(":02x").then(|| {
+                    p.strip_prefix(&root)
+                        .unwrap_or(p.as_path())
+                        .display()
+                        .to_string()
+                })
+            })
+            .collect();
+        assert_eq!(
+            offenders,
+            vec!["crypto.rs".to_string()],
+            "字节→hex 的形状出现在家之外（每多一处就多一份会漂的实现）：{offenders:?}"
+        );
+        // 家必须真在跑数据：调用点太少 = 加了家没人接（本仓判过的形状）。
+        let callers: usize = files
+            .iter()
+            .filter_map(|p| std::fs::read_to_string(p).ok())
+            .filter(|t| !t.contains("pub fn hex_lower"))
+            .map(|t| {
+                t.matches("crypto::hex_lower(").count() + t.matches("crypto::sha256_hex(").count()
+            })
+            .sum();
+        assert!(
+            callers >= 10,
+            "那个家只有 {callers} 处调用 ⇒ 大概是加了家没接线"
+        );
+    }
+
+    /// 正控：同一把尺子必须认得出"外面又长了一份"，也不许把"调用家"误判成第二份。
+    #[test]
+    fn the_shape_matcher_actually_catches_a_second_copy() {
+        let copy =
+            "fn other(b: &[u8]) -> String { b.iter().map(|x| format!(\"{x:02x}\")).collect() }";
+        assert!(
+            copy.contains(":02x"),
+            "matcher 认不出新的拷贝 ⇒ 上面那条判据不作数"
+        );
+        let call_home = "fn ok(b: &[u8]) -> String { crate::crypto::hex_lower(b) }";
+        assert!(!call_home.contains(":02x"), "调用家的写法不该被判成第二份");
     }
 }

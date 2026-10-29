@@ -1679,7 +1679,7 @@ impl GossipEnvelope {
         h.update(self.sender_id.as_bytes());
         h.update(self.nonce.as_bytes());
         h.update(self.payload.as_bytes());
-        self.message_id = h.finalize().iter().map(|b| format!("{b:02x}")).collect();
+        self.message_id = crate::crypto::hex_lower(&h.finalize());
     }
 
     /// 生成签名材料。TTL 是唯一允许中继节点修改的字段；其余路由、身份、

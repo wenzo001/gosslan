@@ -146,7 +146,7 @@ fn probe_channel_hex() -> String {
     use rand_core::RngCore;
     let mut b = [0u8; 32];
     rand_core::OsRng.fill_bytes(&mut b);
-    b.iter().map(|x| format!("{x:02x}")).collect()
+    crate::crypto::hex_lower(&b)
 }
 
 /// 单个地址的一次探测。

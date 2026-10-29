@@ -21,7 +21,7 @@ mod gfile_ledger_backfill_tests {
         use sha2::Digest;
         let mut h = sha2::Sha256::new();
         h.update(bytes);
-        h.finalize().iter().map(|b| format!("{b:02x}")).collect()
+        crate::crypto::hex_lower(&h.finalize())
     }
 
     /// 盘上一份真文件（每个用例自己的目录，跑完删掉）。

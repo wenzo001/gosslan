@@ -50,11 +50,7 @@ pub fn sha256_file_hex(path: &Path) -> Result<String, String> {
         }
         hasher.update(&buf[..n]);
     }
-    Ok(hasher
-        .finalize()
-        .iter()
-        .map(|b| format!("{b:02x}"))
-        .collect())
+    Ok(crate::crypto::hex_lower(&hasher.finalize()))
 }
 
 /// BLE 上每个文件分块的大小（见 `chunk_size_for_path` 的完整推导）。

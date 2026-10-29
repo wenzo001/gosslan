@@ -734,7 +734,7 @@ pub(crate) fn content_file_matches(cid: &str, path: &str, size: u64) -> bool {
             Err(_) => return false,
         }
     }
-    let hex: String = h.finalize().iter().map(|b| format!("{b:02x}")).collect();
+    let hex = crate::crypto::hex_lower(&h.finalize());
     hex.eq_ignore_ascii_case(cid)
 }
 
@@ -825,13 +825,8 @@ mod content_reconcile_tests {
         CONTENT_RECONCILE_PER_TICK, CONTENT_RECONCILE_TICK_BYTE_BUDGET, RECONCILE_PART_ACTIVE_MS,
     };
     use crate::content::model::{Direction, TransferRecord, TransferStatus};
-    use sha2::Digest as _;
 
-    fn sha_hex(b: &[u8]) -> String {
-        let mut h = sha2::Sha256::new();
-        h.update(b);
-        h.finalize().iter().map(|x| format!("{x:02x}")).collect()
-    }
+    use crate::crypto::sha256_hex as sha_hex;
 
     fn db_both() -> rusqlite::Connection {
         let c = rusqlite::Connection::open_in_memory().unwrap();
