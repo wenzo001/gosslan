@@ -118,18 +118,46 @@ fn new_peer_conflicts_with_friend(
 /// 512 是"远大于真实局域网规模、又足够挡住刷表"的一档（本仓历史上出现过 500 节点的压测）。
 pub(crate) const MAX_PEERS: usize = 512;
 
-/// 表满时该淘汰谁：`last_seen` 最旧的那个（纯函数，可单测）。
+/// 表满时该淘汰谁：`last_seen` 最旧、且**不在保护集里**的那条（纯函数，可单测）。
 ///
 /// 为什么敢淘汰：`peers` 是**发现缓存**，不是身份锚 —— 好友的持久锚在 `friends` 表里
 /// （Gossip 那条读不到 peers 时会回落到它），而在线节点 5 秒内就会用下一次 announce/Hello
 /// 把自己补回来。淘汰不会造成"永久断链"，只是让最久没露面的那条让位。
+///
+/// 为什么必须有保护集（2026-10-29 发版前 review §4.0h）：这张表**同时是公钥的读取源**
+/// （`transport.rs` / `gossip.rs` / `peer_state.rs` / `pending_keys.rs` 都读 `x25519_pubkey`）。
+/// 好友有 `friends` 那份回落，**不是好友的群成员没有** —— 把这种条目挤掉的后果不是"少一个缓存"，
+/// 而是给这个人密封拿不到公钥。所以保护集 = 好友 ∪ 本机各群成员。
 pub(crate) fn peer_to_evict(
     peers: &std::collections::HashMap<String, crate::state::Peer>,
+    protected: &std::collections::HashSet<String>,
 ) -> Option<String> {
     peers
         .values()
+        .filter(|p| !protected.contains(&p.device_id))
         .min_by_key(|p| p.last_seen)
         .map(|p| p.device_id.clone())
+}
+
+/// 保护集：`friends` 表里的人 ∪ 本机每个群的成员（含本机自己）。
+///
+/// 返回 `None` = 这两张表**读不动**。调用方在这种情况下**一个都不许淘汰**
+/// （读失败折叠成空集 = 把"查不到谁该保护"当成"谁都不需要保护"，那正好会淘汰到好友头上）。
+///
+/// ⚠️ 必须在**取 `peers` 锁之前**调用：全仓的锁顺序是"`peers` 与 `db` 不嵌套"（审计 §4.1
+/// 机器扫过的那条），在持 `peers` 守卫时去问库就是 J2 那一族自死锁的形状。
+/// 只在表已经满时才打这两次读（常态零成本 —— `upsert_peer` 上面那段 `needs_anchor` 同一条理由）。
+fn protected_peer_ids(state: &AppState) -> Option<std::collections::HashSet<String>> {
+    let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
+    let friends = db::list_friends(&dbc).ok()?;
+    let groups = db::list_groups(&dbc).ok()?;
+    let mut set: std::collections::HashSet<String> =
+        friends.into_iter().map(|f| f.device_id).collect();
+    for g in groups {
+        set.extend(g.members);
+    }
+    set.insert(state.device_id.clone());
+    Some(set)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -156,6 +184,17 @@ pub async fn upsert_peer(
     let needs_anchor = {
         let peers = state.peers.lock().unwrap_or_else(|e| e.into_inner());
         !peers.contains_key(device_id)
+    };
+    // 表满预检（与 `needs_anchor` 同一形状：量完长度**先放锁**，再问库拿保护集）。
+    // `Some(空集)` = 没满，不需要保护任何人；`None` = 满了但身份表读不动 ⇒ 一个都不许淘汰。
+    let table_full = {
+        let peers = state.peers.lock().unwrap_or_else(|e| e.into_inner());
+        peers.len() >= MAX_PEERS
+    };
+    let protected: Option<std::collections::HashSet<String>> = if table_full {
+        protected_peer_ids(state)
+    } else {
+        Some(std::collections::HashSet::new())
     };
     let friend_anchor = if needs_anchor && (x25519.is_some() || ed25519.is_some()) {
         let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
@@ -185,19 +224,27 @@ pub async fn upsert_peer(
                 // 表里全是刚见过的）就**放弃这一条**并留痕 —— 宁可少记一个陌生节点，
                 // 也不许让这张表被广播刷爆。
                 if peers.len() >= MAX_PEERS {
-                    if let Some(victim) = peer_to_evict(&peers) {
-                        peers.remove(&victim);
+                    let victim = protected.as_ref().and_then(|p| peer_to_evict(&peers, p));
+                    match victim {
+                        Some(victim) => {
+                            peers.remove(&victim);
+                        }
+                        None => {
+                            let reason = if protected.is_none() {
+                                "身份表读不动（宁可少记一个陌生节点，也不许把好友/群成员挤掉）"
+                            } else {
+                                "表里每一条都是好友或群成员（一个都不许淘汰）"
+                            };
+                            drop(peers);
+                            state.logger.warn(
+                                "peer",
+                                format!(
+                                    "code=PEERS_TABLE_FULL device={device_id}（已达上限 {MAX_PEERS}，本条不登记：{reason}）"
+                                ),
+                            );
+                            return;
+                        }
                     }
-                }
-                if peers.len() >= MAX_PEERS {
-                    drop(peers);
-                    state.logger.warn(
-                        "peer",
-                        format!(
-                            "code=PEERS_TABLE_FULL device={device_id}（已达上限 {MAX_PEERS}，本条不登记）"
-                        ),
-                    );
-                    return;
                 }
                 peers.insert(
                     device_id.to_string(),

@@ -154,14 +154,34 @@
             first_seen: None,
             link: None,
         };
+        let none = std::collections::HashSet::new();
         let mut peers = std::collections::HashMap::new();
-        assert_eq!(peer_to_evict(&peers), None, "空表不许 panic");
+        assert_eq!(peer_to_evict(&peers, &none), None, "空表不许 panic");
 
         peers.insert("fresh".into(), mk("fresh", 900));
         peers.insert("stale".into(), mk("stale", 100));
         peers.insert("mid".into(), mk("mid", 500));
-        assert_eq!(peer_to_evict(&peers).as_deref(), Some("stale"), "淘汰最久没露面的那条");
+        assert_eq!(peer_to_evict(&peers, &none).as_deref(), Some("stale"), "淘汰最久没露面的那条");
 
+        // 最旧的那条是好友/群成员 ⇒ 让位给次旧的**陌生**节点，而不是把受保护的身份挤掉。
+        // （2026-10-29 发版前 review §4.0h：这张表同时是公钥读取源，非好友群成员没有回落。）
+        let mut protected = std::collections::HashSet::new();
+        protected.insert("stale".to_string());
+        assert_eq!(
+            peer_to_evict(&peers, &protected).as_deref(),
+            Some("mid"),
+            "受保护的条目必须跳过，即使它是全场最旧的"
+        );
+
+        // 全都受保护 ⇒ None：调用方据此**放弃新条目**，而不是随便挑一个人淘汰。
+        for id in ["fresh", "mid"] {
+            protected.insert(id.to_string());
+        }
+        assert_eq!(
+            peer_to_evict(&peers, &protected),
+            None,
+            "没有可淘汰的对象时必须返回 None（宁可少记一个陌生节点）"
+        );
     }
 
     /// 对端样式表的准入（2026-10-29 审计 SEC-04）：已知 peer 永远可更新，新 peer 满员即拒。
