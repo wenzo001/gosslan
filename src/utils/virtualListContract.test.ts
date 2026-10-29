@@ -39,7 +39,9 @@ test("LogViewer 仍是 TanStack 且保留最佳实践选项", () => {
   assert.match(src, /useVirtualizer\(/);
   assert.match(src, /getItemKey/);
   assert.match(src, /measureElement/);
-  assert.match(src, /data-index/);
+  // `data-index` 在 2026-10-29 跟着行模板搬进唯一的家 `LogRows.vue`（审计 DUP-05：
+  // 原先两个外壳各抄一份逐字相同的行）。断言的是"这个属性还在行元素上"，与它住哪个文件无关。
+  assert.match(read("src/components/LogRows.vue"), /data-index/);
 });
 
 test("乐观消息把持久本地 id 传给后端（真实记录返回同一个值）", () => {

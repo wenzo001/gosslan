@@ -11,6 +11,7 @@ import { api } from "@/api";
 import { t } from "@/i18n";
 import Spinner from "@/components/ui/Spinner.vue";
 import StateBlock from "@/components/ui/StateBlock.vue";
+import LogRows from "@/components/LogRows.vue";
 import { errorText } from "@/composables/useErrorText";
 import { useAppStore } from "@/stores/useAppStore";
 import { isDialogCancelled, saveDestinationOf } from "@/utils/saveDestination";
@@ -288,21 +289,6 @@ function close() {
   emit("back");
 }
 
-/** 级别 → 文字色（仅 level 列彩色，message 不继承） */
-const levelTextClass = (lv: string) =>
-  lv === "error"
-    ? "text-[var(--gosslan-danger-ink)]"
-    : lv === "warn"
-      ? "text-[var(--gosslan-warning-ink)]"
-      : "text-[var(--gosslan-text-2)]";
-
-/** 级别 → 整行浅底色（hover 时叠加，error=浅红、warn=浅黄、其他=透明） */
-const rowLevelBg = (lv: string) =>
-  lv === "error"
-    ? "bg-[var(--gosslan-danger-soft)]/60"
-    : lv === "warn"
-      ? "bg-[var(--gosslan-warning-soft)]/60"
-      : "";
 </script>
 
 <template>
@@ -483,40 +469,9 @@ const rowLevelBg = (lv: string) =>
       <div v-else-if="mergedRows.length === 0" class="mt-16 text-center text-sm text-[var(--gosslan-text-2)]">
         {{ t("logs.filterEmpty") }}
       </div>
-      <div v-else :style="{ height: totalSize + 'px', position: 'relative' }">
-        <!-- `v-memo`：行内容全部来自这几个字符串（v-html 的 4 段 + 级别色），
-             所以只要它们没变就跳过 patch。两个收益：
-             ① 打字/粘贴时（过滤值走延迟镜像，这些字符串没变）每行零 patch；
-             ② 日志每 2 秒轮询刷新时，未变动的行也不重新写 innerHTML。
-             改这一行时注意：**新增任何渲染字段都要加进依赖数组**，否则该字段不刷新。 -->
-        <div
-          v-for="v in virtualRows"
-          :key="v.key"
-          :data-index="v.index"
-          :ref="measureRow"
-          :style="{ position: 'absolute', top: 0, left: 0, width: '100%', transform: `translateY(${v.start}px)` }"
-        >
-          <div
-            v-memo="[v.row.time, v.row.levelText, v.row.target, v.row.message, v.row.level, v.row.count]"
-            class="flex gap-2 rounded px-1 py-0.5 transition"
-            :class="[rowLevelBg(v.row.level), 'hover:bg-[var(--gosslan-hover)]']"
-          >
-            <span class="shrink-0 select-none text-[var(--gosslan-text-2)]" v-html="v.row.time"></span>
-            <span class="w-12 shrink-0 select-none font-semibold" :class="levelTextClass(v.row.level)" v-html="v.row.levelText"></span>
-            <span class="min-w-0 flex-1 break-all">
-              <span class="text-[var(--gosslan-text-2)]" v-html="v.row.target"></span>
-              <span v-html="v.row.message"></span>
-            </span>
-            <span
-              v-if="v.row.count > 1"
-              class="ml-1 shrink-0 text-caption font-medium text-[var(--gosslan-text-2)]"
-              :title="t('logs.mergedCount', { n: v.row.count })"
-            >
-              ×{{ v.row.count }}
-            </span>
-          </div>
-        </div>
-      </div>
+      <!-- 虚拟行模板只有一份（`LogRows.vue`）：桌面与移动两种外壳在同一时刻只挂一个，
+           行内容、级别配色与 `v-memo` 判据必须完全一致（2026-10-29 审计 DUP-05）。 -->
+      <LogRows v-else :items="virtualRows" :total-size="totalSize" :measure="measureRow" />
     </div>
   </div>
 
@@ -650,35 +605,7 @@ const rowLevelBg = (lv: string) =>
         <div v-else-if="mergedRows.length === 0" class="mt-16 text-center text-sm text-[var(--gosslan-text-2)]">
           {{ t("logs.filterEmpty") }}
         </div>
-        <div v-else :style="{ height: totalSize + 'px', position: 'relative' }">
-          <div
-            v-for="v in virtualRows"
-            :key="v.key"
-            :data-index="v.index"
-            :ref="measureRow"
-            :style="{ position: 'absolute', top: 0, left: 0, width: '100%', transform: `translateY(${v.start}px)` }"
-          >
-            <div
-              v-memo="[v.row.time, v.row.levelText, v.row.target, v.row.message, v.row.level, v.row.count]"
-              class="flex gap-2 rounded px-1 py-0.5 transition"
-              :class="[rowLevelBg(v.row.level), 'hover:bg-[var(--gosslan-hover)]']"
-            >
-              <span class="shrink-0 select-none text-[var(--gosslan-text-2)]" v-html="v.row.time"></span>
-              <span class="w-12 shrink-0 select-none font-semibold" :class="levelTextClass(v.row.level)" v-html="v.row.levelText"></span>
-              <span class="min-w-0 flex-1 break-all">
-                <span class="text-[var(--gosslan-text-2)]" v-html="v.row.target"></span>
-                <span v-html="v.row.message"></span>
-              </span>
-              <span
-                v-if="v.row.count > 1"
-                class="ml-1 shrink-0 text-caption font-medium text-[var(--gosslan-text-2)]"
-                :title="t('logs.mergedCount', { n: v.row.count })"
-              >
-                ×{{ v.row.count }}
-              </span>
-            </div>
-          </div>
-        </div>
+        <LogRows v-else :items="virtualRows" :total-size="totalSize" :measure="measureRow" />
       </div>
     </MobilePageFrame>
   </Transition>
