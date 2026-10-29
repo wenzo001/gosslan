@@ -452,7 +452,7 @@ export function isForwardableKind(kind: string): boolean {
 
 | ID | 偏差 | 证据 |
 |---|---|---|
-| **P16** | 文档点名的五档错误语义里 `recoverable`/`user_action_required`/`security_related` **全仓 0 命中**；只有文件/内容传输族有真分类（`FailReason` 九档 + `retryable()`），协议族（`verify_hello` 验签失败）与通用路径是自由文本 | `src-tauri/src/commands/files.rs`、`network/transport/handshake.rs:56` |
+| **P16** | 原状：五档里 `recoverable`/`user_action_required`/`security_related` **全仓 0 命中**，只有文件/内容传输族有真分类。**2026-10-29 已把口径写实**（负责人选"窄口挂码"而不是全面铺开）：内部收尾判断本来就是结构化的（`send_retry_verdict` 吃 `SendFileError{retryable,cancelled}`、台账走 `FailReason` 九档），需要修的只有"**界面按中文文案分支**"那两处 ⇒ 新增 `error_codes.rs`（`E2EE_PUBKEY_MISSING` / `PORT_IN_USE`）+ 前端 `CODE_RULES` 先按码分类 + 双向对账判据。OS/第三方串仍走签名兜底（那不是分类器） | `src-tauri/src/error_codes.rs`、`src/utils/errors.ts` |
 | **P18** | 判据 A/B 真实存在且已接门禁（96 类型 + 169 命令体，0 违规），但 `Identity` 私钥字段仍是 `pub`，`x25519_secret_b64()`/`ed25519_secret_b64()` 是两条现成的导出器；文档点名的 B-1a 补救（改私有 + 只暴露 `sign()`/`dh()`）未发生 | `src-tauri/src/crypto.rs` |
 | **P27** | 已读与红点共用 `chatViewerLooking()`，但**系统通知那一族四处**（`useChatStore.ts:326/481/500/661`）用 `!document.hidden && document.hasFocus() && activeConv===conv_id` —— 第三个条件是子集，守卫只数 `!document.hidden && app.chatVisible` 这个组合所以看不见 | `src/stores/useChatStore.ts` |
 | **P34** | 原状：十二处慢活逐格在池内、位置断言在、`Err` 不伪装成 `Ok`；但文档规则 6 写死的"现算处数 17"与判据实际钉的 **18** 不同步。**2026-10-29 晚已改文档（17 → 19，与判据同句说明"法条上的数要跟着判据走"）**；STB-01 那处 `write_all(` 已随 5.15.10 收进 `PRIMITIVES` | `docs/protocol-invariants.md` vs `lib_relay_data_tests.rs` |

@@ -206,8 +206,11 @@ pub async fn spawn(
     let listener = match bind_with_retry(&bind).await {
         Ok(l) => l,
         Err(e) if e.kind() == std::io::ErrorKind::AddrInUse => {
-            return Err(format!(
-                "TCP 绑定 {bind} 失败：端口被占用。通常是有另一个 Gosslan 实例还在后台运行，请先通过托盘图标选择「退出」后再启动"
+            return Err(crate::error_codes::coded(
+                crate::error_codes::PORT_IN_USE,
+                format!(
+                    "TCP 绑定 {bind} 失败：端口被占用。通常是有另一个 Gosslan 实例还在后台运行，请先通过托盘图标选择「退出」后再启动"
+                ),
             ));
         }
         Err(e) => return Err(format!("TCP 绑定 {bind} 失败: {e}")),

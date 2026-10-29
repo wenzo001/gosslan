@@ -301,7 +301,10 @@ pub(crate) async fn send_friend_request_via_link(
         peers.get(peer_id).and_then(|p| p.x25519_pubkey.clone())
     };
     let Some(target_pubkey) = target_pubkey else {
-        return Err("未找到该节点或缺少其公钥，请先重新扫描".to_string());
+        return Err(crate::error_codes::coded(
+            crate::error_codes::E2EE_PUBKEY_MISSING,
+            "未找到该节点或缺少其公钥，请先重新扫描",
+        ));
     };
     let nickname = s.nickname.lock().unwrap_or_else(|e| e.into_inner()).clone();
     let raw_avatar = s.avatar.lock().unwrap_or_else(|e| e.into_inner()).clone();
@@ -402,7 +405,10 @@ pub(crate) async fn send_friend_accept_via_link(
             "friend",
             format!("同意好友但缺对端公钥，FriendAccept 未发送 peer={peer_id}"),
         );
-        return Err("缺对端公钥".to_string());
+        return Err(crate::error_codes::coded(
+            crate::error_codes::E2EE_PUBKEY_MISSING,
+            "缺对端公钥",
+        ));
     };
     let shared =
         s.identity.dh(&target_pubkey).ok_or("密钥交换失败")?;

@@ -27,6 +27,8 @@ mod device;
 /// 用户可导出的脱敏诊断包（`logs/` 里那三份文件 → 纯文本），见该文件模块注释。
 mod diagnostics;
 pub mod discovery;
+/// 跨 FFI 的错误码（INV-P16 窄口）：与前端 `utils/errors.ts` 的 CODE_RULES 双向对账。
+pub mod error_codes;
 /// 聊天记录导出（纯文字单文件）：磁盘满 / 换机时的自救手段。
 pub mod export;
 mod file_relay;

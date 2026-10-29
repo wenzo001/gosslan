@@ -451,6 +451,13 @@ export default {
       tier: "L2",
       // 只认领后端：它的 UI（LogViewer / DevDiagPanel）物理上住在 presentation 的地盘（src/components）
       paths: [
+        // 2026-10-29 INV-P16 窄口挂码。这份文件挂在"给人看的那句话"上的机器可读标签，
+        // 两个读者：日志按 `code=` 检索（与 logging/diagnostics 同一族），前端 `src/utils/errors.ts`
+        // 按它分档（不再按中文文案分档）。**领域归属刻意选 observability 而不是 presentation**：
+        // `transport` 与 `files` 都已声明 consumes observability ⇒ 不新增一条跨域耦合；
+        // 挂到呈现层会当场把「判据看不见的内联跨域引用」棘轮顶上一档（实测 6 → 8）。
+        // 内部收尾判断的结构化家（`send_retry_verdict` / `FailReason` 九档）仍归 files 域。
+        "src-tauri/src/error_codes.rs",
         "src-tauri/src/logging.rs",
         "src-tauri/src/db_hold.rs",
         // 5.0.37 的诊断包出口：它只做一件事 —— 把 logging.rs 落在磁盘上的那三份文件

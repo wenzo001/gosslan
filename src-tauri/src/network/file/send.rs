@@ -124,7 +124,10 @@ pub async fn send_file_from_path_at(
         Some(STANDARD.encode(crypto::seal(&shared, &file_key)?))
     })();
     let Some(sealed_key_b64) = sealed_key_b64 else {
-        return Err(SendFileError::permanent("无法获取对方公钥，无法加密文件"));
+        return Err(SendFileError::permanent(crate::error_codes::coded(
+            crate::error_codes::E2EE_PUBKEY_MISSING,
+            "无法获取对方公钥，无法加密文件",
+        )));
     };
 
     let path_str = path.to_string_lossy().to_string();
