@@ -612,3 +612,22 @@ fn forwarded_ttl_is_clamped_by_the_mesh_router() {
         "本机消费、不再扩散时不得再转发"
     );
 }
+
+/// 「登记了但没消费成功」要不要撤销去重的四格（2026-10-29 审计 STB-04）。
+///
+/// 关键一格是 `解开了 + 该消费 + 成员表说不该消费`：那正是"本机这次不消费、但消息该回来"
+/// 的形状 —— 原先不撤销 ⇒ 补发全被判 Duplicate，消息永久进不来（直到重启）。
+#[test]
+fn retry_is_allowed_only_for_frames_this_device_should_consume() {
+    // 解不开 ⇒ 放行（等群密钥/X25519 到了再消费）
+    assert!(retry_allowed_for_this_frame(true, true, true, true));
+    // 解开了、成员表也说该消费 ⇒ 不撤销（真的消费失败了才由下游处理）
+    assert!(!retry_allowed_for_this_frame(false, true, true, true));
+    // 解开了、但成员表说本机这次不该消费 ⇒ **必须撤销**（STB-04 修的就是这一格）
+    assert!(retry_allowed_for_this_frame(false, true, true, false));
+    // 不是本机该消费的（替别人转发）⇒ 一律不撤销，撤销只会放大噪声
+    assert!(!retry_allowed_for_this_frame(true, false, true, true));
+    assert!(!retry_allowed_for_this_frame(false, false, true, false));
+    // 非 Chat/Group 的控制帧不进这条链
+    assert!(!retry_allowed_for_this_frame(true, true, false, true));
+}

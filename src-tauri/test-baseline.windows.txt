@@ -920,6 +920,7 @@ network::transport::tests::rebind_after_accepted_connection_matches_platform_sem
 network::transport::tests::redistribute_failure_registers_pending
 network::transport::tests::repeated_flush_failure_keeps_max_timestamp
 network::transport::tests::reseal_with_current_receiver_key_recovers_where_retry_cannot
+network::transport::tests::retry_is_allowed_only_for_frames_this_device_should_consume
 network::transport::tests::route_order_empty_when_no_links
 network::transport::tests::route_order_keeps_all_links_when_none_healthy
 network::transport::tests::route_order_plus_send_delivers_on_healthy_link_after_lan_degraded

@@ -278,6 +278,14 @@ export function isForwardableKind(kind: string): boolean {
 | STB-07 | Low | 确认 | `gossip_relay` 补递缓存的 TTL 与 `gossip_replay` 的窗口语义耦合，但两处 TTL 常量不同源 | `mesh/gossip_replay.rs`、`network/transport/gossip.rs` |
 | STB-08 | Info | 确认 | `outbox_sweep` 的 `reachable` 快照在 peers 锁内 clone 全表，每 30s 一次 | `network/transport/outbox_sweep.rs` |
 
+### 4.0 复核结论（2026-10-29 修复批，逐条读码后）
+
+| ID | 结论 | 证据 |
+|---|---|---|
+| **STB-04** | **成立（窄口）**，已修 | 去重登记发生在消费之前；`group_envelope_consumable` 说"本机这次不该消费"（信封自报成员表缺我或缺发送者，典型是本机成员表与发送方新旧不一）时**原先不撤销去重** ⇒ 之后每份补发被判 `Duplicate`，消息永久进不来（直到重启）。修法：抽纯函数 `retry_allowed_for_this_frame`，把这一格也放行补发并留 `code=GROUP_ENVELOPE_NOT_CONSUMABLE`。⚠️ 审计原文说的"`!group_consumable` 的提前 return"不存在（那里只记判据、不 return），真实形状是"登记了但不消费"。 |
+| **STB-06** | **不成立** | `spawn_sync` 的 `false` 只在"该群已在飞"时返回（`group_history_active.insert` 失败），没有"本机没这个群"这一支；未知群会在 `run_group_history_sync` 内部报出。返回值语义单一，调用方按"已在飞"处理是对的。 |
+| **SEC-07** | **不成立（设计使然）** | `upsert_peer` 的 IP 取**报文源地址**（`src.ip()`），只有 `tcp_port` 来自载荷；对端能让我们拨的只有"它自己 IP 上的某个端口"。要把它变成打第三方，需要 UDP 源地址伪造 —— 那与"发现协议必须告诉对端端口"是同一件事的两面，改掉就没有发现。速率上已被 5s 广播周期 + `ensure_link` 去重兜住。 |
+
 ### 4.1 已核查且未发现问题的稳定性面
 
 - **锁顺序**：全仓无 `peers↔db` 嵌套；`file_receivers→db` 顺序成立。
