@@ -239,7 +239,17 @@ const PATHREF = /`((?:src|src-tauri|docs|scripts|perf|examples)\/[A-Za-z0-9_./-]
 const pathDocs = execFileSync("git", ["ls-files", "*.md"], { cwd: ROOT, encoding: "utf8" })
   .split("\n")
   .filter(Boolean)
-  .filter((f) => !PATH_SCOPE_SKIP.has(f) && !f.startsWith("docs/archive/"));
+  .filter(
+    (f) =>
+      !PATH_SCOPE_SKIP.has(f) &&
+      !f.startsWith("docs/archive/") &&
+      // `audit-context/**` 是 2026-10-29 那次全仓审计的**证据快照**（ORIENTATION + 5 域
+      // FINDINGS + 36 份逐条规范核查）：它的职责与 `docs/archive/` 同类 —— 记的是"当时按那份
+      // 基线读到什么"，里面点名的不存在文件本身就是发现（例如"这里缺一个 receive.rs"），
+      // 拿今天的事实源去判它必然误报。**主报告**（docs/notes/full-repo-audit-2026-10-29.md）
+      // 不在豁免内，仍受两条判据约束。
+      !f.startsWith("audit-context/"),
+  );
 
 let pathTotal = 0;
 for (const doc of pathDocs) {
