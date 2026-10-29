@@ -354,6 +354,25 @@ export function isForwardableKind(kind: string): boolean {
 顺带把取函数本体的 `tsFnBody` 从 `longPress.test.ts` 里提取出来（`utils/tsSource.ts`），
 两处守卫共用一份，不再各抄一份。
 
+### 4.0g DUP-05（日志行模板两份拷贝）：已收成一个家，且两个既有登记跟着搬家
+
+`LogRows.vue` 现在是日志行模板唯一的家；两个外壳各挂一处同一份组件，`v-html` 落点 8 → 4、
+`v-memo` 依赖数组 2 → 1。跟着改的是**本来就该改的两处登记**：
+
+| 登记 | 改动 | 为什么不是绕过 |
+|---|---|---|
+| `designGuards.ts::V_HTML_ALLOWED` | `components/LogViewer.vue` → `components/LogRows.vue` | 转义链一个字没变：`highlightText` 仍在 `LogViewer` 里生产那四段 `row.*`，清单里那条"必须是 `v.row.*`"的断言照钉，且 1067 行那句生产者断言仍然读 `LogViewer.vue` |
+| `virtualListContract.test.ts`「行元素必须带 `data-index`」 | 改读 `LogRows.vue` | 它断言的是属性挂在行上，与住在哪个文件无关 |
+
+⚠️ **本轮我自己犯的一次检索面过窄**（记在这里省一次重复踩）：动手前我只 grep 了含 "LogViewer"
+字样的判据，得出"没有守卫读这个文件"的结论；实际有两处读的是**路径**（`components/LogViewer.vue`）
+而不是文件名。抓到它的是 `verify-guards.py` 起跑前的**前端基线整套**（直接判红），不是我的检索。
+⇒ 改完 `npm test` 1492/1492 全绿；真渲染凭据是 `check-ui-runtime.mjs --only=logs`
+（独立窗 + 移动页两种外壳都真出行、滚动换页、无横向溢出）。
+
+护栏册随之 276 → 279：行模板被抄回第二份 / 新增渲染字段没进 `v-memo` / 批量转发少传 `msg_id`
+三发变异各注册成一条 Case，三条都跑过"改坏必须 FAIL、红由自己那句 hint 报出、恢复后逐字节一致"。
+
 ### 4.1 已核查且未发现问题的稳定性面
 
 - **锁顺序**：全仓无 `peers↔db` 嵌套；`file_receivers→db` 顺序成立。
@@ -436,7 +455,7 @@ export function isForwardableKind(kind: string): boolean {
 | DUP-02 | High | 重复业务逻辑 | 转发判据 4 处各写一份，已漂两处（image 处理、缺失路径提示三套文案）；批量/收藏两条路径**漏传 `msgId`**（少一道越权闸） | `ChatWindow.vue:1255` / `ChatWindow.vue:1408` / `FavoritePanel.vue:593` / `MessageItem.vue:1205` |
 | DUP-03 | Medium | 重复工具 | Rust `now_ms()` 9 份逐字相同的 4 行实现（已有 3 种写法） | `src-tauri/src/**/*.rs` |
 | DUP-04 | Medium | 重复工具 | Rust SHA-256 hex 编码 8 份逐字相同的 `.map(\|b\| format!("{b:02x}")).collect()` | 同上 |
-| DUP-05 | Medium | 重复组件 | `LogViewer` 两个外壳各抄一份**逐字相同**的虚拟行模板（8 个 `v-html` 落点）；矩阵误以为"两条外壳"是迁移前的问题 —— 虚拟化迁了，两份拷贝还在 | `src/components/LogViewer.vue` |
+| DUP-05 | Medium | 重复组件 | **已修（5.15.16，见 §4.0g）**：`LogViewer` 两个外壳各抄一份逐字相同的虚拟行模板（8 个 `v-html` 落点）；矩阵误以为"两条外壳"是迁移前的问题 —— 虚拟化迁了，两份拷贝还在 | `src/components/LogRows.vue`（唯一行模板） |
 | DUP-06 | Medium | 重复组件 | 「表情切段 + 链接/提及切段 + 逐段渲染」3 份同形实现 | `src/components/message/*` |
 | DUP-07 | Low | 重复逻辑 | @提及的「16% 透明底」配方散在 2 处 + 一个未被复用的第三种配方 | `src/style.css` 等 |
 | DUP-08 | Low | 重复组件 | 头像渲染 13 个副本各自手写 `gosslan-avatar-box` + `gosslan-avatar-emoji`，圆角已漂成 3 种 | `src/components/**` |

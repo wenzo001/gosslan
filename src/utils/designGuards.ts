@@ -2373,10 +2373,13 @@ export function findNativeSelect(src: string): GuardIssue[] {
 }
 
 /**
- * `v-html` 的允许清单：三处都是**构造即转义**，没有"把对端原文直接塞进 HTML"的路径。
+ * `v-html` 的允许清单：下面每一处都是**构造即转义**，没有"把对端原文直接塞进 HTML"的路径。
+ * （条数不手写在这里 —— 清单本身就是分母，判据拿扫描结果与它逐项比。）
  *
  * - `ChatSearchDialog`：`highlightText`（先在原文上匹配、再逐段 `escHtml`，只注入 `<mark>`）；
- * - `LogViewer`：同一份 `highlightText` 生成的四段 `row.*`；
+ * - `LogRows`：同一份 `highlightText` 生成的四段 `row.*`（2026-10-29 审计 DUP-05 后，
+ *   日志行模板从两个外壳收成这一个家 ⇒ 落点跟着搬家，转义链没变：`LogViewer` 里那三行
+ *   `highlightText(...)` 仍是唯一生产者）；
  * - `CodeBlock`：highlight.js 的转义输出，plaintext 走 `escapeHtml(props.code)`。
  *
  * 新增 `v-html` 必须先证明输入已转义（或接 DOMPurify），再把文件登记到这里；
@@ -2384,7 +2387,7 @@ export function findNativeSelect(src: string): GuardIssue[] {
  */
 export const V_HTML_ALLOWED = [
   "components/search/ChatSearchDialog.vue",
-  "components/LogViewer.vue",
+  "components/LogRows.vue",
   "components/CodeBlock.vue",
   // 2026-10-29 更新说明改成 Markdown 渲染：输入来自网络清单，但先过 `marked` 再经
   // `DOMPurify` 白名单消毒（`utils/markdown.ts`）；这里是它唯一的 `v-html` 落点。

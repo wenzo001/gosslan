@@ -1088,4 +1088,55 @@ CASES: list[Case] = [
         expect_fail_hint="定义 1 处 + onKeydown 里接住",
         tags=["frontend", "new-guards", "chat", "paste"],
     ),
+    Case(
+        name="批量逐条转发少传 msg_id（越权闸只装在一半入口上）必须被抓住",
+        why="后端 owned_payload_rejection 只在**给了 msg_id** 时才要求「这条路径归这条消息」，"
+        "     不给就按「用户自己挑的文件」放行 —— 所以漏传不会报错，只会让两条入口一宽一严"
+        "     （2026-10-29 审计 DUP-02 的残留：单条一直传、批量那条没传）。"
+        "     注入 = 把 group 那一支的第三个实参摘掉（函数与判据都还在，看代码看不出问题）。",
+        file=ROOT / "src" / "components" / "ChatWindow.vue",
+        injections=[(
+            """    if (convId.startsWith("group:")) await chat.sendGroupFileTo(convId.slice(6), path, m.msg_id);""",
+            """    if (convId.startsWith("group:")) await chat.sendGroupFileTo(convId.slice(6), path);""",
+        )],
+        cmd=["node", "--test", "--experimental-strip-types", "--disable-warning=ExperimentalWarning",
+             "src/utils/messageKinds.test.ts"],
+        cwd=ROOT,
+        expect_fail_hint="漏了 msg_id",
+        tags=["frontend", "new-guards", "chat", "forward"],
+    ),
+    Case(
+        name="日志行模板被抄回第二份（外壳自己再写 v-html）必须被拦下",
+        why="两个外壳原先各抄一份逐字相同的虚拟行模板（4 个 v-html 落点 × 2，2026-10-29 审计 DUP-05）。"
+        "     漂了不报错，只表现成「同一个日志页在两种窗口里长得不一样」，而漏掉一处转义正是这种"
+        "     「只有一份出事」的形状。判据钉的是「行渲染只许住在 LogRows.vue」，不是文案。",
+        file=ROOT / "src" / "components" / "LogViewer.vue",
+        injections=[(
+            """      <LogRows v-else :items="virtualRows" :total-size="totalSize" :measure="measureRow" />
+    </div>""",
+            """      <LogRows v-else :items="virtualRows" :total-size="totalSize" :measure="measureRow" v-html="raw" />
+    </div>""",
+        )],
+        cmd=["node", "--test", "--experimental-strip-types", "--disable-warning=ExperimentalWarning",
+             "src/utils/logViewerVirtual.test.ts"],
+        cwd=ROOT,
+        expect_fail_hint="外壳里又长出 v-html=",
+        tags=["frontend", "new-guards", "logs"],
+    ),
+    Case(
+        name="日志行新增渲染字段却没进 v-memo 判据（那一格永远不刷新）必须被抓住",
+        why="v-memo 少一个字段不报错、不崩，只让那一格在 2 秒轮询后仍画旧值 —— 用户看到的是"
+        "     「日志没更新」。这条判据把模板里出现的每个 row 字段与 memoDeps 里列的逐项比，"
+        "     注入 = 从依赖数组里摘掉 level（底色那一半）。",
+        file=ROOT / "src" / "components" / "LogRows.vue",
+        injections=[(
+            """  return [r.time, r.levelText, r.target, r.message, r.level, r.count];""",
+            """  return [r.time, r.levelText, r.target, r.message, r.count];""",
+        )],
+        cmd=["node", "--test", "--experimental-strip-types", "--disable-warning=ExperimentalWarning",
+             "src/utils/logViewerVirtual.test.ts"],
+        cwd=ROOT,
+        expect_fail_hint="没进 v-memo",
+        tags=["frontend", "new-guards", "logs"],
+    ),
 ]
