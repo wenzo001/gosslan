@@ -31,7 +31,13 @@ async fn handle_messaging_arm(state: &Arc<AppState>, peer_id: &str, msg: Message
             // **必须绑定链路对端**（2026-10-29 审计 SEC-04）：只判 `from != 自己` 的话，
             // 任何人连上来都能替**别人**写样式（`from` 是自报字段）⇒ 冒充好友的配色，
             // 而 `chat_peer_styles` 是按 device_id 存的持久表。与 `ChatMessage` 同一口径。
+            // 留痕（2026-10-29 发版前 review：这一族里只有这一格是静默 return，而同批的
+            // `CHAT_STYLE_TOO_LARGE` / `PEERS_TABLE_FULL` 都有具名码 —— 冒充尝试恰好是最该看得见的那类）。
             if from != peer_id {
+                state.logger.warn(
+                    "style",
+                    format!("code=CHAT_STYLE_FROM_MISMATCH from={from} link={peer_id}（自报字段不等于链路对端，已丢弃）"),
+                );
                 return;
             }
             if let Some(t) = &to {
