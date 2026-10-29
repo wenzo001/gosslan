@@ -13,6 +13,8 @@ import {
 import { useRouter } from "vue-router";
 import { useEventListener } from "@vueuse/core";
 import { api } from "@/api";
+import { isMac } from "@/utils/platform";
+import { dropPointToCss } from "@/utils/dropPoint";
 import { useAppStore } from "@/stores/useAppStore";
 import StateBlock from "@/components/ui/StateBlock.vue";
 import { useChatStore } from "@/stores/useChatStore";
@@ -1558,14 +1560,15 @@ const dropPending = drop.pending;
 const dropBody = drop.body;
 const dropItems = drop.items;
 
-/** 拖拽位置是否落在**整个聊天面板**上（含标题栏；Tauri 给的是物理像素，除以 DPR 才对得上 DOM）。 */
+/**
+ * 拖拽位置是否落在**整个聊天面板**上（含标题栏）。
+ * 量纲换算只在 `utils/dropPoint` 一处 —— macOS 给的是点（不除 DPR），Windows 是物理像素（除）。
+ */
 function isOverChatPanel(pos: { x: number; y: number }) {
   const el = chatPanelRef.value;
   if (!el) return false;
   const r = el.getBoundingClientRect();
-  const dpr = window.devicePixelRatio || 1;
-  const x = pos.x / dpr;
-  const y = pos.y / dpr;
+  const { x, y } = dropPointToCss(pos, { mac: isMac, dpr: window.devicePixelRatio || 1 });
   return x >= r.left && x <= r.right && y >= r.top && y <= r.bottom;
 }
 

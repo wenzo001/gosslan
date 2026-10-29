@@ -13,6 +13,26 @@
 
 ## [Unreleased]
 
+## [5.15.7] - 2026-10-29
+
+### 拖拽的命中位置在 Mac 上偏了一半 —— 两个平台的坐标量纲本来就不一样
+
+负责人 2026-10-29（Mac 真机）：「正经拖到那个位置其实没反应，要拖到偏离的位置才高亮」。
+
+读锁定版本的源码确认（wry 0.57 / tauri 2.12.5），拖拽事件里的 `position` **两个平台量纲不同**：
+
+- macOS：`wkwebview/drag_drop.rs` 取 `draggingLocation()`（NSView 坐标 = **点**）再算
+  `frame.size.height - y` ⇒ 已经是相对 webview 左上角的**点**，与 CSS px 1:1；
+- Windows：`webview2/drag_drop.rs` 用 `ScreenToClient` 之后的**物理像素** ⇒ 要除 DPR。
+
+原来三处（聊天面板、左栏会话列表、群任务图片区）都写着"Tauri 给的是物理像素"，一律除 DPR
+⇒ **Mac 上把命中区缩到了左上四分之一**：点在正确位置算出来只有一半坐标，于是不高亮；
+拖到看起来偏左上的位置反而命中。Windows 那边这条换算是对的，一直没暴露。
+
+现在换算收成一处 `utils/dropPoint::dropPointToCss`（mac → 不除，windows → 除，DPR 读不到按 1），
+三个落点全部改用它，并配了三条纯函数用例（mac 原样 / windows 除 / DPR 异常不除出 Infinity）。
+
+## [5.15.6] - 2026-10-29
 ## [5.15.6] - 2026-10-29
 
 这一版是**第一个包含下面这一条的发布**（`5.15.5`/`5.15.4` 只提过版本号、没打成 tag，
