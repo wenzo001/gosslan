@@ -112,12 +112,16 @@ content::store::tests::unanswered_retries_reach_cap_and_stop
 content::store::tests::upsert_never_walks_attempts_backwards
 content::store::tests::upsert_round_trips_and_keeps_max_received
 crypto::tests::ecdh_symmetry
+crypto::tests::hex_encoding_has_exactly_one_home
+crypto::tests::hex_lower_prints_two_digit_lowercase_groups
 crypto::tests::safety_number_changes_on_any_field_replacement
 crypto::tests::safety_number_is_deterministic_and_well_formed
 crypto::tests::safety_number_is_symmetric
 crypto::tests::safety_number_separates_concatenated_fields
 crypto::tests::seal_open_roundtrip
+crypto::tests::sha256_hex_matches_a_known_vector
 crypto::tests::signature_verifies
+crypto::tests::the_shape_matcher_actually_catches_a_second_copy
 db::ack_delivery_tests::ack_marks_delivered_and_clears_only_the_expected_peer_row
 db::ack_delivery_tests::ack_rolls_back_the_status_when_outbox_delete_fails
 db::ack_delivery_tests::duplicate_and_late_acks_are_idempotent_and_never_change_the_verdict

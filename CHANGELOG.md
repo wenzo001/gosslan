@@ -13,6 +13,43 @@
 
 ## [Unreleased]
 
+## [5.15.25] - 2026-10-30
+
+### 字节→hex 收成一个家：`crypto::hex_lower` / `sha256_hex`（DUP-04，按形状钉住）
+
+§8 对账后剩下的 DUP 格里，这一格数最大也最机械 —— 但**审计原写「8 份」是偏少的**：
+改动前现数 `:02x` 出现在 **20 行、11 个文件**，其中 **9 个是生产码文件**（`protocol.rs` 的消息 id、
+`network/file.rs` 的流式文件哈希、`network/file/receive.rs` 与 `group_receive.rs` 的完整性校验、
+`network/transport/outbox_sweep.rs` 的内容回绑、`commands/group_todo_media.rs` 的贴图命名、
+`commands/relay.rs` 的探测串、`device.rs::hex`、`transport/relay_seal.rs::channel_hex`），
+外加两个测试册里的 `sha_hex` 私助手。复跑（改前）：`git grep -c ":02x" HEAD~1 -- "src-tauri/src/*.rs"`。
+
+- **家选在 `crypto.rs` 是因为它是叶子域**：`docs/domains.data.mjs` 里 `identity` 的 `consumes: []`，
+  协议层 / 传输层 / 文件层 / 命令层全在它下面 ⇒ 谁调用都不产生向上依赖。
+  放 `network/file.rs` 会让 `protocol.rs` 反过来依赖网络层 —— 那是**方向错误**，不是风格问题。
+- 输出逐字不变（小写、每字节两位），并用空串哈希的已知向量钉住"哈希与表示一起定"：
+  `sha256_hex(b"") == e3b0c442…b855`。两个测试册的 `sha_hex` 助手改成
+  `use crate::crypto::sha256_hex as sha_hex;` —— 15 处调用点一个字没动。
+- **判据按形状、不按清单**：`crypto::tests::hex_encoding_has_exactly_one_home` 递归扫
+  `src/**/*.rs`（`include!` 的分册是磁盘上的独立文件，一起扫得到），要求 `:02x` **只出现在 `crypto.rs`**；
+  并带两条自证：① 扫描集合下限（只扫到 ≤100 个文件 ⇒ 目录走错，这条是在空集上恒绿）；
+  ② 那个家必须真有人接（调用点 ≥10，防"家有了没接线"）；同册另有正控
+  （`the_shape_matcher_actually_catches_a_second_copy`：认得出新拷贝，也不把"调用家"误判成拷贝）。
+- ⚠️ 为什么不按清单登记：本仓的重复从来不是"抄了一份没登记"，而是"第 N+1 处又写了一遍"——
+  清单看不见新增那一处，形状可以。
+- **注入自证两条**：手工往 `commands/relay.rs` 塞一份 map-hex ⇒ 判据点名
+  `["commands/relay.rs", "crypto.rs"]` 并红，还原后 `cmp` 逐字节一致；同一形状再登记成护栏 Case
+  （`verify-guards.py`，注入 + 恢复 + hint 核对都由它做），护栏条数 284 → **285**。
+
+**真跑过的验证**：`verify:local` **25 步全绿**；Rust 单测（`--features bluetooth`）**1313 通过 / 0 失败**
+（本批 +4：两个纯函数用例、形状判据、正控），清单基线走 `--update`→`--sync-baselines`→再 check：
+**macos 1314 条全部在跑、windows 1292 条**（差额由 `cfg` 门控背书，现读
+`node scripts/check-test-manifest.mjs`）；`cargo fmt --check --all`、`cargo clippy -D warnings --all-targets`
+零红（顺手清掉三处因此变冗余的 `use sha2::Digest`）；`check-domain-deps` 的**判据看不见的内联跨域引用
+仍是 6 对 / 16 处**（新家住在叶子域，所以一个字都没加）；`verify-guards.py --only="字节→hex"` 退 0。
+**未跑**：护栏全量注入扫描、UI 探针、跨进程 E2E、真机 —— 本批改的是字节串的生成方式，
+唯一"行为变了"的可能性已由空串向量与两侧 `eq_ignore_ascii_case` 的既有宽松比较兜住，但那仍只是静态推断。
+
 ## [5.15.24] - 2026-10-30
 
 ### 「已被清理」那几套文案复核：它们是**四件不同的事实** ⇒ 本轮不改文案，改的是"不许合并"这条判据（DUP-02 收尾）

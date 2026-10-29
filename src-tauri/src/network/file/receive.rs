@@ -1463,7 +1463,7 @@ fn finish_receiver_into(
     {
         use sha2::Digest;
         let actual = r.hasher.clone().finalize();
-        let actual_hex: String = actual.iter().map(|b| format!("{b:02x}")).collect();
+        let actual_hex = crate::crypto::hex_lower(&actual);
         if !actual_hex.eq_ignore_ascii_case(&r.expected_sha256) {
             let _ = std::fs::remove_file(&r.tmp_path);
             let note = {

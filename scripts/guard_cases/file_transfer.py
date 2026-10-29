@@ -1027,6 +1027,25 @@ CASES: list[Case] = [
         tags=["rust", "db", "messages", "terminal-state", "new-guards"],
     ),
     Case(
+        name="字节→hex 又长出第二份实现 ⇒ 形状判据点名那个文件",
+        why="SHA-256 的小写 hex 是全仓的公共形状（内容 id、完整性校验、中继通道字段都读它）。\n"
+        "     审计 DUP-04 现数 14 处逐字相同的 `.map(|b| format!(\"{b:02x}\")).collect()`，"
+        "外加三个整份助手（device::hex、relay_seal::channel_hex、commands/relay 的探测串）。\n"
+        "     收成 `crypto::hex_lower` / `sha256_hex` 一个家之后，判据按**形状**守：`crypto.rs` 之外出现任何 "
+        "`:02x` 即红。按形状而不按清单，是因为重复的形状从来都是\"第 N+1 处又写了一遍\"——清单看不见新增那一处。\n"
+        "     注入方式：在 `probe_channel_hex` 里再写一份 map-hex（编译得过、行为也对，只有形状会红）。",
+        file=TAURI / "src" / "commands" / "relay.rs",
+        injections=[(
+            "fn probe_channel_hex() -> String {",
+            'fn probe_channel_hex() -> String {\n'
+            '    let _dup: String = [1u8, 2].iter().map(|z| format!("{z:02x}")).collect();',
+        )],
+        cmd=cargo("test", "--lib", "hex_encoding_has_exactly_one_home"),
+        cwd=TAURI,
+        expect_fail_hint="出现在家之外",
+        tags=["rust", "crypto", "hex", "dedup", "new-guards"],
+    ),
+    Case(
         name="按成员取消不看状态 ⇒ 已收完的成员被改成已取消",
         why="群文件是「一单对多成员」，每一格各说各的：`completed` 是他真的收到了，"
         "`failed` 已经说清它死于什么。\n"

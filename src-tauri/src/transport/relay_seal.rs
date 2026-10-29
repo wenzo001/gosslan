@@ -112,11 +112,7 @@ pub fn channel_hash(
 
 /// 通道哈希的十六进制表示（中继协议里的通道字段）。
 pub fn channel_hex(ch: &[u8; 32]) -> String {
-    let mut s = String::with_capacity(64);
-    for b in ch {
-        s.push_str(&format!("{:02x}", b));
-    }
-    s
+    crate::crypto::hex_lower(ch)
 }
 
 /// 解析十六进制通道字段；长度或字符非法返回 `None`。

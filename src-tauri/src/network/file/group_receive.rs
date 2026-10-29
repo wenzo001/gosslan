@@ -301,13 +301,7 @@ pub fn finish_group_receive_into(mut r: FileReceiver) -> Result<PathBuf, String>
     }
     {
         use sha2::Digest;
-        let actual_hex: String = r
-            .hasher
-            .clone()
-            .finalize()
-            .iter()
-            .map(|b| format!("{b:02x}"))
-            .collect();
+        let actual_hex = crate::crypto::hex_lower(&r.hasher.clone().finalize());
         if !actual_hex.eq_ignore_ascii_case(&r.expected_sha256) {
             let _ = std::fs::remove_file(&r.tmp_path);
             return Err("文件完整性校验失败".to_string());

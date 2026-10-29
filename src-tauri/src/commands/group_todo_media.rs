@@ -134,7 +134,7 @@ pub async fn save_todo_image_bytes(
         use sha2::{Digest, Sha256};
         let mut h = Sha256::new();
         h.update(&bytes);
-        let sha256: String = h.finalize().iter().map(|b| format!("{b:02x}")).collect();
+        let sha256 = crate::crypto::hex_lower(&h.finalize());
         std::fs::create_dir_all(&dir).map_err(|e| format!("创建目录失败：{e}"))?;
         let path = dir.join(format!("{sha256}.{ext}"));
         std::fs::write(&path, &bytes).map_err(|e| format!("写入图片失败：{e}"))?;

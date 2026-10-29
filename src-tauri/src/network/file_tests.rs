@@ -426,13 +426,7 @@ mod tests {
         if r.received != r.size {
             return Err("文件传输未完成".to_string());
         }
-        let actual_hex: String = r
-            .hasher
-            .clone()
-            .finalize()
-            .iter()
-            .map(|b| format!("{b:02x}"))
-            .collect();
+        let actual_hex = crate::crypto::hex_lower(&r.hasher.clone().finalize());
         if !actual_hex.eq_ignore_ascii_case(&r.expected_sha256) {
             return Err("文件完整性校验失败".to_string());
         }
@@ -440,10 +434,7 @@ mod tests {
     }
 
     fn hex_of(bytes: &[u8]) -> String {
-        use sha2::Digest;
-        let mut h = sha2::Sha256::new();
-        h.update(bytes);
-        h.finalize().iter().map(|b| format!("{b:02x}")).collect()
+        crate::crypto::sha256_hex(bytes)
     }
 
     /// 1. FileOffer.sealed_file_key：发送方以接收方公钥封装、接收方解封，
@@ -1052,18 +1043,9 @@ mod tests {
         .unwrap();
         assert_eq!(r.received, prefix.len() as u64, "接收进度必须等于磁盘前缀");
         assert_eq!(r.next_seq, 0, "新段序号从 0 重编");
-        let got: String = r
-            .hasher
-            .clone()
-            .finalize()
-            .iter()
-            .map(|b| format!("{b:02x}"))
-            .collect();
+        let got = crate::crypto::hex_lower(&r.hasher.clone().finalize());
         // 直接写 file 不会喂哈希器（真实分片路径由 write_chunk 负责）；这里只证前缀被哈希进去。
-        let want: String = sha2::Sha256::digest(prefix.as_slice())
-            .iter()
-            .map(|b| format!("{b:02x}"))
-            .collect();
+        let want = crate::crypto::hex_lower(&sha2::Sha256::digest(prefix.as_slice()));
         assert_eq!(got, want, "哈希器必须包含磁盘前缀，否则最终 SHA 校验必失败");
         r.file.write_all(b"-suffix").unwrap();
         r.file.sync_all().unwrap();
@@ -1085,10 +1067,7 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         let payload: Vec<u8> = (0..10_000).map(|i| (i % 251) as u8).collect();
         let split = 3_700; // 故意不是分片边界：覆盖“部分写入”的磁盘长度
-        let sha: String = sha2::Sha256::digest(&payload)
-            .iter()
-            .map(|b| format!("{b:02x}"))
-            .collect();
+        let sha = crate::crypto::hex_lower(&sha2::Sha256::digest(&payload));
         std::fs::write(dir.join("t1.part"), &payload[..split]).unwrap();
         let mut r = build_group_resume_receiver(
             &dir,
@@ -1800,12 +1779,7 @@ mod tests {
         .unwrap();
     }
 
-    fn sha_hex(b: &[u8]) -> String {
-        use sha2::Digest as _;
-        let mut h = sha2::Sha256::new();
-        h.update(b);
-        h.finalize().iter().map(|x| format!("{x:02x}")).collect()
-    }
+    use crate::crypto::sha256_hex as sha_hex;
 
     /// **B1**：单聊**收完**一个文件之后，内容台账必须跟着收口成 `complete` + 真实 `path`。
     ///
@@ -1979,15 +1953,7 @@ mod tests {
     #[test]
     fn two_same_named_transfers_do_not_overwrite_each_other() {
         use super::finish_receiver_into;
-        use sha2::Digest as _;
-        let sha = |b: &[u8]| {
-            let mut h = sha2::Sha256::new();
-            h.update(b);
-            h.finalize()
-                .iter()
-                .map(|x| format!("{x:02x}"))
-                .collect::<String>()
-        };
+        let sha = |b: &[u8]| crate::crypto::sha256_hex(b);
         let first: Vec<u8> = vec![0xA1u8; 4096];
         let second: Vec<u8> = vec![0xB2u8; 4096];
         let db = crate::db_hold::DbLock::new(rusqlite::Connection::open_in_memory().unwrap());
@@ -2052,13 +2018,8 @@ mod tests {
     #[test]
     fn receive_is_done_only_when_size_and_sha_both_prove_it() {
         use super::finish_receiver_into;
-        use sha2::Digest as _;
         let payload: Vec<u8> = (0..300u32).map(|i| (i % 251) as u8).collect();
-        let real_sha: String = {
-            let mut h = sha2::Sha256::new();
-            h.update(&payload);
-            h.finalize().iter().map(|b| format!("{b:02x}")).collect()
-        };
+        let real_sha = crate::crypto::sha256_hex(&payload);
         let db = crate::db_hold::DbLock::new(rusqlite::Connection::open_in_memory().unwrap());
         db.lock().unwrap().execute_batch(crate::db::SCHEMA).unwrap();
         let row = |id: &str| -> (String, Option<String>) {
@@ -2162,11 +2123,7 @@ mod tests {
         use std::io::Write as _;
 
         let payload: Vec<u8> = (0..257u32).map(|i| (i % 251) as u8).collect();
-        let real_sha: String = {
-            let mut h = sha2::Sha256::new();
-            h.update(&payload);
-            h.finalize().iter().map(|b| format!("{b:02x}")).collect()
-        };
+        let real_sha = crate::crypto::sha256_hex(&payload);
 
         // 不复用 temp_part：它把 .part 直接放在 temp_dir() 根上，要模拟"整个下载目录消失"
         // 就得连别人的临时文件一起删 —— 不碰。
