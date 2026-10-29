@@ -213,7 +213,7 @@ export function isForwardableKind(kind: string): boolean {
 | ID | 严重度 | 状态 | 一句话 | 位置 |
 |---|---|---|---|---|
 | SEC-02 | High | 确认 | 未认证 UDP announce 让 `peers` 表无界增长，并被每 300ms 全量序列化推前端 | `network/discovery.rs:585-674`、`peer_registry.rs:115-274`、`state.rs:2588-2609` |
-| SEC-04 | Medium | 确认 | `ChatStyle` 的 `from` 未绑定链路对端 + `style` 无长度上限 ⇒ 持久化库无界增长 + O(N²) 写放大 | `network/transport/handle_messaging.rs:15-39` |
+| SEC-04 | Medium | **已修**（5.15.14 上限与来源绑定；5.15.17 补 `code=CHAT_STYLE_FROM_MISMATCH` 留痕） | `ChatStyle` 的 `from` 未绑定链路对端 + `style` 无长度上限 ⇒ 持久化库无界增长 + O(N²) 写放大 | `network/transport/handle_messaging.rs:15-39` |
 | SEC-05 | Medium | 确认 | 中继授权默认 `All`：任何对端都可把本机当转发器，且无速率限制 | `mesh/relay_policy.rs`、`network/transport.rs:1090-1107` |
 | SEC-06 | Low | 确认 | 入站 `UserInfo` 的 `avatar`/`nickname` 无长度上限 ⇒ 落 `friends`/`conversations` 表并反复推前端 | `handle_messaging.rs` |
 | SEC-07 | Low | **需验证** | announce 分支把对端自报的 `tcp_port` 用作回拨目标（源地址伪造在目标网络是否可用依赖部署环境） | `network/discovery.rs:625-637` |
@@ -373,6 +373,26 @@ export function isForwardableKind(kind: string): boolean {
 护栏册随之 276 → 279：行模板被抄回第二份 / 新增渲染字段没进 `v-memo` / 批量转发少传 `msg_id`
 三发变异各注册成一条 Case，三条都跑过"改坏必须 FAIL、红由自己那句 hint 报出、恢复后逐字节一致"。
 
+### 4.0h SEC-02 修完之后**新长出来的一格**（发版前 review 抓到，未修，等拍板）
+
+`peer_to_evict` 按 `last_seen` 最旧淘汰，**不区分这条是谁**。而 `peers` 不只是地址缓存，它同时是
+公钥锚点的读取源（本轮实读数到的消费者）：
+
+| 读它的地方 | 拿的是什么 |
+|---|---|
+| `transport.rs:1364`、`gossip.rs:842`、`peer_state.rs:45`、`pending_keys.rs:57` | `x25519_pubkey`（密封/解密给这个人） |
+| `handshake.rs:81/180` | `ed25519` 绑定与冲突判定 |
+| `dial.rs:332` | `first_seen` |
+
+⇒ 满员时把一条**仍持有链路、但 UDP 侧很久没露面**（只经中继活着）的成员条目挤掉，后果不是"少一个缓存"，
+而是**给这个人密封拿不到公钥** ⇒ 群消息对他发不出去，直到他自己再 announce 或被 Hello 重新登记。
+好友那一族有 `friends` 回落（SEC-03 那次就为它建的），**不是好友的群成员没有回落**。
+
+为什么本轮不修：修法要在淘汰前知道"谁是好友 / 谁是本机群的成员"，那份名单必须**在取 `peers` 锁之前**
+从库里读好再传进来（锁内问 DB 就是 J2 那一族自死锁的形状），动的是一条热路径。
+建议的落点：`peer_to_evict(peers, protected: &HashSet<String>)`，保护集 = `friends` ∪ 本机各群成员。
+风险边界：只在**条目数达到 512** 时才可能发生（真实规模远小于它），所以不挡这次发布。
+
 ### 4.1 已核查且未发现问题的稳定性面
 
 - **锁顺序**：全仓无 `peers↔db` 嵌套；`file_receivers→db` 顺序成立。
@@ -452,7 +472,7 @@ export function isForwardableKind(kind: string): boolean {
 | ID | 严重度 | 类型 | 问题 | 位置 |
 |---|---|---|---|---|
 | DUP-01 | High | 跨层规则漂移 | 消息 kind 白名单 TS 与 Rust 各写一份，**`image` 已漂移**（见 §1.5） | `messageKinds.ts:166` vs `commands/chat.rs:559-592` |
-| DUP-02 | High | 重复业务逻辑 | 转发判据 4 处各写一份，已漂两处（image 处理、缺失路径提示三套文案）；批量/收藏两条路径**漏传 `msgId`**（少一道越权闸） | `ChatWindow.vue:1255` / `ChatWindow.vue:1408` / `FavoritePanel.vue:593` / `MessageItem.vue:1205` |
+| DUP-02 | High | 重复业务逻辑 | **通道判据已收一处（5.15.9）；越权闸两条入口已一致（5.15.15，见 §4.0f）**；剩下未统一的是**缺失路径的提示文案三套**（各落点各写一句 toast） | `ChatWindow.vue` / `FavoritePanel.vue` / `MessageItem.vue` |
 | DUP-03 | Medium | 重复工具 | Rust `now_ms()` 9 份逐字相同的 4 行实现（已有 3 种写法） | `src-tauri/src/**/*.rs` |
 | DUP-04 | Medium | 重复工具 | Rust SHA-256 hex 编码 8 份逐字相同的 `.map(\|b\| format!("{b:02x}")).collect()` | 同上 |
 | DUP-05 | Medium | 重复组件 | **已修（5.15.16，见 §4.0g）**：`LogViewer` 两个外壳各抄一份逐字相同的虚拟行模板（8 个 `v-html` 落点）；矩阵误以为"两条外壳"是迁移前的问题 —— 虚拟化迁了，两份拷贝还在 | `src/components/LogRows.vue`（唯一行模板） |
@@ -538,7 +558,7 @@ export function isForwardableKind(kind: string): boolean {
 | 序 | 项 | 类型 |
 |---|---|---|
 | 10 | INV-P16 错误语义五档 / INV-P18 私钥字段私有化（**P27 已判与 spec 对齐、P34 已改文档同步**，见 §4.0c/§4.0e） | 规范偏差（剩 2 条） |
-| 11 | SEC-02 `peers` 表条数上限 + announce 限流 | 安全 |
+| 11 | SEC-02 的**上限那一半已做**（5.15.14：512 条 + 淘汰最旧 + `PEERS_TABLE_FULL`）；**announce 限流没做**——理由：无界增长的成因是"条数没有上限"而不是速率，`upsert_peer` 每 5s 广播周期最多一次，且发现缓存已封顶；这条留在册子里等真实读数（CPU 侧证据）再决定 | 安全（半做，负结论留证） |
 | 12 | DUP-02 转发判据收成一家（4 处 → 1 处） | 重复实现 |
 | 13 | DUP-09～DUP-12 加跨层字面值对账守卫 | 重复实现 |
 | 14 | DUP-03/04/05/06 逐条收口 | 重复实现 |
