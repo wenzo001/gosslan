@@ -404,6 +404,28 @@ export function isForwardableKind(kind: string): boolean {
   全都受保护 ⇒ `None`）。变异（摘掉 `peer_to_evict` 里那条 `filter`）当场红并点名
   「受保护的条目必须跳过，即使它是全场最旧的」，还原即绿；护栏册 **280 → 281**（这条注册成 Case）。
 
+### 4.0i DUP-08（头像 13 份副本、圆角 3 种）：收成一个家，顺带挖出一个真缺陷
+
+`ui/AvatarBox.vue` 现在是头像框唯一的家：盒子形状、"有图显示图 / 没图显示默认脸"、底色与 emoji 同源、
+圆角档位（`token` / `full` / `none` 三档，默认 = 全站那一档）。尺寸仍由调用点用 class 给（层级关系，
+写死会逼调用点再套一层壳）；`MessageAvatar` 那种必须说话算数的尺寸走内联 `size`（理由沿用它原来那段：
+两个尺寸 class 同时挂上时生效的是 Tailwind 里排后面的那个）。
+
+- **搬家凭据**：`class="gosslan-avatar-box"` 在 `src/**` 里现数只剩 `ui/AvatarBox.vue` 一处（新判据
+  带正控：往真组件模板里塞一份盒子必须被读出来）；调用点数组（`<AvatarBox`）≥12 才不算"家有没人接"。
+- **两条既有判据跟着搬家改了口径，不是放宽**（这是它们该做的事）：
+  ① 「src 下所有默认头像都对读屏隐藏」原先靠"字母头像有十几处"防空转 ⇒ 改成钉"那个家自己带
+     `aria-hidden`" + "≥12 个调用点真在用它"（比原来更强：既守 a11y 又守接线）；
+  ② 「`components/message` 下每条 `<img>` 都带两个 hint」的扫描集**显式收进** `ui/AvatarBox.vue` ——
+     那条 `<img>` 原先就住在这条尺子扫过的目录里，不收进来就是搬家把覆盖面悄悄削掉一圈。
+- ⚠️ **统一带 `text-white`**：原先 `MessageAvatar` 那一处没有它。emoji 是彩色字形，文字色对它不生效；
+  这一条如实写下，不当成零扰动。
+
+**顺手挖出来的真缺陷（不是美观问题）**：`RemindAudienceDialog.vue` 写的是
+`<SelfAvatar :src="…" :size="36" />` —— `SelfAvatar` 只有 `previewSrc` 一个 prop（它的数据源固定是
+**本机自己**）。于是 ① 没有尺寸类 ⇒ 盒子塌成零尺寸，那一列候选人**根本没有头像**；② 就算有尺寸，
+每个人的脸都会画成本机自己。现改成 `<AvatarBox class="h-9 w-9 shrink-0" :id="id" :src="…" />`。
+
 ### 4.1 已核查且未发现问题的稳定性面
 
 - **锁顺序**：全仓无 `peers↔db` 嵌套；`file_receivers→db` 顺序成立。
@@ -489,7 +511,7 @@ export function isForwardableKind(kind: string): boolean {
 | DUP-05 | Medium | 重复组件 | **已修（5.15.16，见 §4.0g）**：`LogViewer` 两个外壳各抄一份逐字相同的虚拟行模板（8 个 `v-html` 落点）；矩阵误以为"两条外壳"是迁移前的问题 —— 虚拟化迁了，两份拷贝还在 | `src/components/LogRows.vue`（唯一行模板） |
 | DUP-06 | Medium | 重复组件 | 「表情切段 + 链接/提及切段 + 逐段渲染」3 份同形实现 | `src/components/message/*` |
 | DUP-07 | Low | 重复逻辑 | @提及的「16% 透明底」配方散在 2 处 + 一个未被复用的第三种配方 | `src/style.css` 等 |
-| DUP-08 | Low | 重复组件 | 头像渲染 13 个副本各自手写 `gosslan-avatar-box` + `gosslan-avatar-emoji`，圆角已漂成 3 种 | `src/components/**` |
+| DUP-08 | Low | 重复组件 | **已修（5.15.20，见 §4.0i）**：头像渲染 13 个副本各自手写 `gosslan-avatar-box` + `gosslan-avatar-emoji`，圆角漂成 3 种；顺带修掉 `RemindAudienceDialog` 那一处（喂了 `SelfAvatar` 没有的 prop ⇒ 那一列没有头像） | `src/components/ui/AvatarBox.vue`（唯一行像） |
 | DUP-09 | Low | 跨层规则 | 已读推进的排除清单 TS 一份、Rust 一份，今天字面值一致（**尚未漂移，但无机器对账**） | `src/utils/*` vs `src-tauri/src/db/*` |
 | DUP-10 | Low | 跨层规则 | 未读计数判据 TS 一份、Rust 一份，今天一致 | 同上 |
 | DUP-11 | Low | 跨层规则 | 未知 kind 的占位文案 TS 一份、Rust 一份，今天一致 | 同上 |

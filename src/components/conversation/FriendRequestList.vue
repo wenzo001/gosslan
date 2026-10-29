@@ -2,8 +2,8 @@
 import { t } from "@/i18n";
 import { Check } from "@/components/ui/icons";
 import { X } from "@/components/ui/icons";
-import { avatarSeedFor } from "@/utils/avatarSeed";
 import type { PendingRequest } from "@/types";
+import AvatarBox from "@/components/ui/AvatarBox.vue";
 
 defineProps<{
   requests: PendingRequest[];
@@ -34,13 +34,7 @@ const emit = defineEmits<{
         </button>
       </div>
       <div v-for="r in requests" :key="r.from" class="flex h-16 items-center gap-2.5 px-3">
-        <div
-          class="gosslan-avatar-box flex h-10 w-10 shrink-0 items-center justify-center overflow-hidden rounded-[var(--gosslan-avatar-radius)] text-white"
-          :style="{ backgroundColor: avatarSeedFor(r.from)?.bg }"
-        >
-          <img alt="" v-if="r.from_avatar" :src="r.from_avatar" class="h-full w-full object-cover" />
-          <span v-else class="gosslan-avatar-emoji" aria-hidden="true">{{ avatarSeedFor(r.from)?.emoji }}</span>
-        </div>
+        <AvatarBox class="h-10 w-10 shrink-0" :id="r.from" :src="r.from_avatar" />
         <div class="min-w-0 flex-1">
           <div class="truncate text-sm font-medium" :title="r.from_nickname">{{ r.from_nickname }}</div>
           <div class="text-xs text-[var(--gosslan-text-2)]">{{ t("friend.request.wantsToAdd") }}</div>

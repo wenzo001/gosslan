@@ -1,11 +1,11 @@
 <script setup lang="ts">
 import { t } from "@/i18n";
 import { computed } from "vue";
-import { avatarSeedFor } from "@/utils/avatarSeed";
 import { usePressMenu } from "@/composables/usePressMenu";
 import LinkIcon from "@/components/ui/LinkIcon.vue";
 import { linkIconName, linkLabelKey } from "@/utils/peerConnectionInfo";
 import type { Friend } from "@/types";
+import AvatarBox from "@/components/ui/AvatarBox.vue";
 
 const props = defineProps<{
   friend: Friend;
@@ -107,14 +107,11 @@ function openFriend(friend: Friend) {
       :class="compact ? 'left-[56px]' : 'left-[64px]'"
     ></div>
     <div class="relative shrink-0">
-      <div
-        class="gosslan-avatar-box flex items-center justify-center overflow-hidden rounded-[var(--gosslan-avatar-radius)] text-white"
+      <AvatarBox
         :class="[compact ? 'h-8 w-8' : 'h-10 w-10', !friend.online ? 'grayscale opacity-70' : '']"
-        :style="{ backgroundColor: avatarSeedFor(friend.device_id)?.bg }"
-      >
-        <img alt="" loading="lazy" decoding="async" v-if="friend.avatar" :src="friend.avatar" class="h-full w-full object-cover" />
-        <span v-else class="gosslan-avatar-emoji" aria-hidden="true">{{ avatarSeedFor(friend.device_id)?.emoji }}</span>
-      </div>
+        :id="friend.device_id"
+        :src="friend.avatar"
+      />
       <span
         class="absolute -bottom-0.5 -right-0.5 h-2.5 w-2.5 rounded-full border-2 border-[var(--gosslan-list)]"
         :class="friend.online ? 'bg-[var(--gosslan-success)]' : 'bg-[var(--gosslan-status-offline)]'"

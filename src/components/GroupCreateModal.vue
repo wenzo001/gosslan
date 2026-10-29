@@ -5,13 +5,13 @@ import { useRouter } from "vue-router";
 import { useAppStore } from "@/stores/useAppStore";
 import { useChatStore } from "@/stores/useChatStore";
 import BaseModal from "@/components/BaseModal.vue";
-import { avatarSeedFor } from "@/utils/avatarSeed";
 import { Check } from "@/components/ui/icons";
 import { useSubmitGuard } from "@/composables/useSubmitGuard";
 import { useImeEnterGuard } from "@/composables/useImeEnterGuard";
 import { groupNameSchema, MAX_GROUP_NAME_CHARS } from "@/utils/validation";
 import CharCounter from "@/components/ui/CharCounter.vue";
 import PrimaryBtn from "@/components/ui/PrimaryBtn.vue";
+import AvatarBox from "@/components/ui/AvatarBox.vue";
 
 const props = defineProps<{ open: boolean }>();
 const emit = defineEmits<{ (e: "close"): void }>();
@@ -114,13 +114,7 @@ async function create() {
         >
           <Check v-if="selected.includes(f.device_id)" class="h-3 w-3 text-[var(--gosslan-on-primary)]" />
         </div>
-        <div
-          class="gosslan-avatar-box flex h-8 w-8 items-center justify-center overflow-hidden rounded-[var(--gosslan-avatar-radius)] text-white"
-          :style="{ backgroundColor: avatarSeedFor(f.device_id)?.bg }"
-        >
-          <img alt="" v-if="f.avatar" :src="f.avatar" class="h-full w-full object-cover" />
-          <span v-else class="gosslan-avatar-emoji" aria-hidden="true">{{ avatarSeedFor(f.device_id)?.emoji }}</span>
-        </div>
+        <AvatarBox class="h-8 w-8" :id="f.device_id" :src="f.avatar" />
         <span class="flex-1 text-sm">{{ f.nickname }}</span>
         <span class="text-xs text-[var(--gosslan-text-2)]">{{ f.online ? t("common.online") : t("common.offline") }}</span>
       </button>

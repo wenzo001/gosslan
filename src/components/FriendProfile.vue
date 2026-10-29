@@ -27,8 +27,8 @@ import BaseModal from "@/components/BaseModal.vue";
 import BackArrow from "@/components/ui/BackArrow.vue";
 import DangerBtn from "@/components/ui/DangerBtn.vue";
 import SecondaryBtn from "@/components/ui/SecondaryBtn.vue";
-import { avatarSeedFor } from "@/utils/avatarSeed";
 import type { Friend } from "@/types";
+import AvatarBox from "@/components/ui/AvatarBox.vue";
 
 const props = defineProps<{ friend: Friend }>();
 const emit = defineEmits<{
@@ -51,7 +51,6 @@ const chat = useChatStore();
 const peer = computed(() => chat.peers.find((p) => p.device_id === props.friend.device_id));
 /** 这条资料是「我自己」（通讯录里的「自己」走同一渲染路径）：安全码/连接地址/删除好友都不适用。 */
 const isSelf = computed(() => props.friend.device_id === app.device?.device_id);
-const seed = computed(() => avatarSeedFor(props.friend.device_id));
 /**
  * **安全码**：本机与这位好友之间那串双方一致的数字，供带外核对。
  *
@@ -146,14 +145,12 @@ const confirmRemove = ref(false);
              信息密度翻倍：原来 mt-7 才到分组卡，现在 mt-3 就到了。
              发消息按钮放到头像右侧，一进来就能点，不用滑。 -->
         <div class="flex items-start gap-4">
-          <div
-            class="gosslan-avatar-box flex h-14 w-14 shrink-0 items-center justify-center overflow-hidden rounded-[var(--gosslan-avatar-radius)] text-xl font-medium text-white"
+          <AvatarBox
+            class="h-14 w-14 shrink-0 text-xl font-medium"
             :class="!friend.online ? 'grayscale opacity-70' : ''"
-            :style="{ backgroundColor: seed?.bg }"
-          >
-            <img alt="" v-if="friend.avatar" :src="friend.avatar" class="h-full w-full object-cover" />
-            <span v-else class="gosslan-avatar-emoji" aria-hidden="true">{{ seed?.emoji }}</span>
-          </div>
+            :id="friend.device_id"
+            :src="friend.avatar"
+          />
           <div class="min-w-0 flex-1">
             <div class="flex items-center gap-2">
               <span class="truncate text-lg font-semibold" :title="friend.nickname">{{ friend.nickname }}</span>

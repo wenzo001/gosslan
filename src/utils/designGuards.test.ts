@@ -795,8 +795,15 @@ test("src 下所有默认头像都对读屏隐藏", () => {
       bad.push(`${f.replace(srcDir + "/", "")}:${issue.line}  ${issue.message}`);
     }
   }
-  // 判据不能空转：字母头像本来就有十几处，扫到 0 处说明扫描本身坏了
-  assert.ok(seen >= 10, `只扫到 ${seen} 处默认头像，扫描口径疑似失效`);
+  // 判据不能空转。2026-10-29 审计 DUP-08 之后"十几处"这件事搬家了：画法只剩一个家，
+  // 所以空转控制改成钉两件事 —— ① 那个家自己带 `aria-hidden`（它一丢，整站默认头像都会被念出来），
+  // ② 真有 ≥12 个组件在用它（"家存在但没人接"是另一类静默失效）。
+  const home = readFileSync(join(srcDir, "components", "ui", "AvatarBox.vue"), "utf8");
+  assert.match(home, /class="gosslan-avatar-emoji" aria-hidden="true"/,
+    "头像框那个家必须自己带 aria-hidden（丢了它，全站默认头像都会被读屏念出来）");
+  const callSites = files.filter((x) => /<AvatarBox\b/.test(readFileSync(x, "utf8"))).length;
+  assert.ok(callSites >= 12, `头像框的调用点只数到 ${callSites} 个 ⇒ 那个家没被接上，或扫描失效`);
+  assert.ok(seen >= 1, `只扫到 ${seen} 处默认头像，扫描口径疑似失效`);
   assert.deepEqual(bad, [], `以下默认头像会被读屏念出来：\n${bad.join("\n")}`);
 });
 
@@ -2444,16 +2451,68 @@ test("本人头像三处都走 SelfAvatar", () => {
   }
 });
 
+/**
+ * **头像框只有一个家**（2026-10-29 审计 DUP-08）。
+ *
+ * 原先 13 个组件各写一遍 `gosslan-avatar-box` + `gosslan-avatar-emoji`，圆角漂成 3 种
+ * （token / rounded-full / 完全没圆角）。这类重复不会报错，只会表现成
+ * "同一个 app 里同一个人为了三张脸 / 某一处头像没裁圆"。
+ */
+test("头像框只许住在 ui/AvatarBox.vue：别处再写一份盒子必须报（正控）", () => {
+  const srcDir = join(import.meta.dirname, "..");
+  const files = collectVueFiles(srcDir);
+  const boxes = files.filter((f) => /class="gosslan-avatar-box/.test(readFileSync(f, "utf8")));
+  const rels = boxes.map((f) => f.replace(srcDir + "/", "")).sort();
+  assert.deepEqual(rels, ["components/ui/AvatarBox.vue"],
+    `gosslan-avatar-box 又长出第二份：${rels.join(", ")}`);
+  // 正控：往真组件里塞一份盒子，扫描器必须读得出来（不是"扫到 0 处所以恒真"）
+  const real = readFileSync(join(srcDir, "components", "AddFriendModal.vue"), "utf8");
+  const mutated = real.replace("<template>", '<template>\n  <div class="gosslan-avatar-box" />');
+  assert.equal(/class="gosslan-avatar-box/.test(mutated), true, "盒子写回模板里必须被这条判据看见");
+});
+
+/**
+ * 调用点不许再自己写圆角档位，也不许给"本人头像"喂它没有的 prop。
+ * 后一条是真缺陷的形状：`<SelfAvatar :src :size>` 里那两个 prop 都不存在 ⇒ Vue 把它们当
+ * 普通属性落到根元素 ⇒ 尺寸类没人给 ⇒ 那一列头像塌成零尺寸，而且画的是**本机自己**的脸。
+ */
+test("AvatarBox 的档位只能三选一；SelfAvatar 不许被喂不存在的 prop", () => {
+  const srcDir = join(import.meta.dirname, "..");
+  const bad: string[] = [];
+  for (const f of collectVueFiles(srcDir)) {
+    const rel = f.replace(srcDir + "/", "");
+    if (rel.endsWith("ui/AvatarBox.vue")) continue;
+    const src = readFileSync(f, "utf8");
+    for (const m of src.matchAll(/<AvatarBox\b[\s\S]*?\/>/g)) {
+      if (/rounded-/.test(m[0])) bad.push(`${rel} 调用点自己写 rounded-*（档位归 round prop）`);
+      const round = /round="([^"]+)"/.exec(m[0]);
+      if (round && !["token", "full", "none"].includes(round[1])) {
+        bad.push(`${rel} round="${round[1]}" 不是三个档之一`);
+      }
+    }
+    for (const m of src.matchAll(/<SelfAvatar\b[^>]*\/(?:>|>)/g)) {
+      if (/:src=|:size=/.test(m[0])) {
+        bad.push(`${rel} 给 SelfAvatar 喂了它没有的 prop（${m[0].trim().slice(0, 60)}…）`);
+      }
+    }
+  }
+  assert.deepEqual(bad, [], bad.join("\n"));
+});
+
 test("SelfAvatar 的那个「唯一数据源」确实是 store，不是各自传进来的 prop", () => {
   const src = readFileSync(join(import.meta.dirname, "..", "components", "SelfAvatar.vue"), "utf8");
   // 图片与默认脸都从 useAppStore 的 device 现读 —— 这是"三处同一个数据源"这句话的落点。
   assert.match(src, /const src = computed\(\(\) =>/, "图片要有唯一的取值口");
   assert.match(src, /app\.device\?\.avatar/, "图片必须来自 app.device.avatar");
-  assert.match(src, /avatarSeedFor\(app\.device\?\.device_id \|\| app\.device\?\.nickname \|\| null\)/,
-    "默认脸的种子必须来自 store 的 device_id（不许用调用点手里那份未保存的昵称）");
-  // 反空转：这条判据读的是真文件；若 SelfAvatar 被改名/删掉，上面三条会一起红，
+  assert.match(src, /const seedKey = computed\(\(\) => app\.device\?\.device_id \|\| app\.device\?\.nickname \|\| null\)/,
+    "默认脸的种子键必须来自 store 的 device_id（不许用调用点手里那份未保存的昵称）");
+  // 反空转：这条判据读的是真文件；若 SelfAvatar 被改名/删掉，上面几条会一起红，
   // 而不是"扫到 0 处所以恒真"。
-  assert.match(src, /class="gosslan-avatar-box/, "根节点要带 gosslan-avatar-box（emoji 字号靠它的容器查询）");
+  // 2026-10-29 审计 DUP-08：盒子与 emoji 的画法搬进唯一的家 `ui/AvatarBox.vue`，
+  // 所以这里钉的是"SelfAvatar 必须走那个家"，而不是它自己带 gosslan-avatar-box。
+  assert.match(src, /import AvatarBox from "@\/components\/ui\/AvatarBox\.vue";/, "必须 import 那个唯一的家");
+  assert.match(src, /<AvatarBox\b[^>]*:id="seedKey"/, "本人头像必须把 seedKey 交给那个家");
+  assert.doesNotMatch(src, /class="gosslan-avatar-box/, "SelfAvatar 自己不许再画盒子（那是第二份形状）");
 });
 
 /**
@@ -2719,7 +2778,11 @@ test("N22 属性值里的 > 不许截断标签（截断会把合规的报成缺�
 
 test("真实树：src/components/message 下每条 <img> 都带两个 hint（分母现算并打印）", () => {
   const dir = join(import.meta.dirname, "..", "components", "message");
-  const files = collectVueFiles(dir);
+  // 头像框在 2026-10-29 从各组件搬进唯一的家 `ui/AvatarBox.vue`，它那份 `<img>` 原本就住在这条
+  // 尺子扫过的目录里（MessageAvatar / ForwardModal）⇒ 扫描集必须跟着把它收进来，
+  // 否则"搬家"会把这条不变量的覆盖面悄悄削掉一圈。
+  const homeFile = join(import.meta.dirname, "..", "components", "ui", "AvatarBox.vue");
+  const files = [...collectVueFiles(dir), homeFile];
   const sites: string[] = [];
   const bad: string[] = [];
   const exemptNames: string[] = [];
@@ -2727,7 +2790,7 @@ test("真实树：src/components/message 下每条 <img> 都带两个 hint（分
     const src = readFileSync(f, "utf8");
     const n = findImgTags(src).length;
     if (n === 0) continue;
-    const rel = f.replace(dir + "/", "");
+    const rel = f.startsWith(dir) ? f.replace(dir + "/", "") : "ui/AvatarBox.vue";
     sites.push(`${rel}=${n}`);
     if (src.includes("img-eager-ok")) { exemptNames.push(rel); continue; }
     for (const issue of findMessageImageWithoutFetchHint(src)) {
@@ -2737,14 +2800,14 @@ test("真实树：src/components/message 下每条 <img> 都带两个 hint（分
   sites.sort();
   bad.sort();
   exemptNames.sort();
-  assert.ok(sites.length >= 9, `message/ 下的 <img> 只数到 ${sites.length} 份，尺子大概失效了：\n${sites.join("\n")}`);
+  assert.ok(sites.length >= 7, `message/（含头像框那个家）的 <img> 只数到 ${sites.length} 份，尺子大概失效了：\n${sites.join("\n")}`);
   assert.deepEqual(bad, [], `有消息图缺 fetch hint：\n${bad.join("\n")}`);
   // 豁免只有两支且理由都必须写在组件里：
   // - ImageLightbox：用户主动点开的整屏大图，懒加载只会让它更晚出现；
   // - MessageImageBubble：图在自身 @load 之前 display:none，lazy 会让它永不发请求（死锁，v4.35.2 真根因）。
   assert.deepEqual(exemptNames, ["ImageLightbox.vue", "MessageImageBubble.vue"],
     `显式豁免的两份必须是 ImageLightbox 与 MessageImageBubble，现数 ${JSON.stringify(exemptNames)}`);
-  console.log(`· 真实树 <img> 分母：${sites.length} 份文件 / 共 ${sites.reduce((a, s) => a + Number(s.split("=")[1]), 0)} 条标签，豁免 ${exemptNames.length} 份（${exemptNames.join("、")}）`);
+  console.log(`· 真实树 <img> 分母（含 ui/AvatarBox.vue）：${sites.length} 份文件 / 共 ${sites.reduce((a, s) => a + Number(s.split("=")[1]), 0)} 条标签，豁免 ${exemptNames.length} 份（${exemptNames.join("、")}）`);
 });
 
 test("N21 判据：列表型 prop 的绑定里出现空数组字面量必须报（正向）", () => {

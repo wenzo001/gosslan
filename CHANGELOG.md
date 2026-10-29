@@ -13,6 +13,41 @@
 
 ## [Unreleased]
 
+## [5.15.20] - 2026-10-29
+
+### 头像框收成一个家 `ui/AvatarBox.vue`；顺手修掉「强提醒选人那一列根本没有头像」
+
+2026-10-29 审计 DUP-08。
+
+- 原先 13 个组件各写一遍 `gosslan-avatar-box` + `gosslan-avatar-emoji`，**圆角漂成 3 种**
+  （token / `rounded-full` / 完全没圆角）。重复不报错，只表现成「同一个人在不同页面长得不一样」，
+  而读屏隐藏、底色与 emoji 同源这些约束会一份一份地漏。现在盒子形状、有图/没图的回落、
+  底色与 emoji 同源、圆角档位（`token`｜`full`｜`none`，默认全站那一档）都在一个家里；
+  尺寸仍由调用点给 class（层级关系），必须说话算数的走内联 `size`（沿用 `MessageAvatar` 那条理由）。
+- ⚠️ **一处统一：所有头像框现在都带 `text-white`**（原先 `MessageAvatar` 没有）。emoji 是彩色字形，
+  文字色对它不生效 —— 这一条不当成零扰动，如实写下。
+- **真缺陷（顺手挖出来的，不是美观问题）**：`RemindAudienceDialog` 写的是
+  `<SelfAvatar :src="…" :size="36" />`，而 `SelfAvatar` 只有 `previewSrc` 一个 prop、数据源固定是**本机自己**。
+  于是 ① 没有尺寸类 ⇒ 盒子塌成零尺寸，那一列候选人**一个头像都没有**；② 就算有尺寸，
+  每个人的脸都画成自己。现在走 `<AvatarBox :id="成员id" :src="…">`。
+- **两条既有判据跟着搬家改口径（不是放宽）**：「所有默认头像都对读屏隐藏」的空转控制从
+  「字母头像有十几处」改成「那个家自己带 `aria-hidden` + ≥12 个调用点真在用它」（多守了一件：接线）；
+  「`components/message` 下每条 `<img>` 都带两个 hint」的扫描集**显式收进** `ui/AvatarBox.vue` ——
+  不收进来，搬家就把这条不变量的覆盖面悄悄削掉一圈。
+- 新判据两条：`class="gosslan-avatar-box"` 在 `src/**` 里只许出现一次（带真组件注入正控）；
+  调用点不许自己写 `rounded-*`、`round` 只许三个档、不许给 `SelfAvatar` 喂它没有的 prop。
+  护栏册 281 → **283**（两条各注册成 Case，都跑过"改坏必须 FAIL、恢复逐字节一致"）。
+- 还有一条**既有 Case 的注入锚点跟着搬家**：钉"消息图必须带 `loading`/`decoding`"那条原先注入
+  `MessageAvatar.vue` 里那行 `<img>` —— 那份 img 现在住在 `ui/AvatarBox.vue`，锚点改成新形状。
+  抓到它的正是门禁自己：第 13 步「护栏注入锚点静态核对」在**一条测试都没跑之前**就报"锚点找不到"
+  （这条核对 #22 那次为"只扫前端子集所以看不见 rust 锚点失效"而加，今天第一次在本地生效）。
+
+**验证**：`npm run build`（vue-tsc + vite）绿；`npm test` 全绿；真渲染凭据
+`check-ui-runtime.mjs` 跑了六段 —— `avatar` + `composermobile` **18 格**、
+`msgovf` + `reaction` + `vlist` + `convbadge` **122 格**，合计 140 格全绿（头像选择器、资料页、
+消息气泡、会话列表、@候选这些真渲染出来的框都在）。
+
+
 ## [5.15.19] - 2026-10-29
 
 ### 表满淘汰好友那格修掉了：peers 的淘汰现在认身份（§4.0h）

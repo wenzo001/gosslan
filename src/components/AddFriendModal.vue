@@ -10,12 +10,12 @@ import type { ChannelStatus, Peer } from "@/types";
 import { api } from "@/api";
 import SettingsToggle from "@/components/settings/SettingsToggle.vue";
 import BaseModal from "@/components/BaseModal.vue";
-import { avatarSeedFor } from "@/utils/avatarSeed";
 import { MAX_SEARCH_KEYWORD_CHARS } from "@/utils/validation";
 import { UserPlus } from "lucide-vue-next";
 import { MessageCircle } from "lucide-vue-next";
 import { Check } from "@/components/ui/icons";
 import { X } from "@/components/ui/icons";
+import AvatarBox from "@/components/ui/AvatarBox.vue";
 
 const props = defineProps<{ open: boolean }>();
 const emit = defineEmits<{
@@ -368,13 +368,7 @@ async function add(peerId: string) {
           :key="p.device_id"
           class="flex items-center gap-3 border-b border-[var(--gosslan-border)] px-1 py-2 last:border-0 [contain-intrinsic-size:auto_53px] [content-visibility:auto]"
         >
-          <div
-            class="gosslan-avatar-box flex h-9 w-9 items-center justify-center overflow-hidden rounded-[var(--gosslan-avatar-radius)] text-white"
-            :style="{ backgroundColor: avatarSeedFor(p.device_id)?.bg }"
-          >
-            <img alt="" v-if="p.avatar" :src="p.avatar" class="h-full w-full object-cover" />
-            <span v-else class="gosslan-avatar-emoji" aria-hidden="true">{{ avatarSeedFor(p.device_id)?.emoji }}</span>
-          </div>
+          <AvatarBox class="h-9 w-9" :id="p.device_id" :src="p.avatar" />
           <div class="min-w-0 flex-1">
             <div class="truncate text-sm" :title="p.nickname">{{ p.nickname }}</div>
             <!-- 链路类型**必须由后端给**（`peer.link`）：以前用 `p.ip || 蓝牙直连` 反推，

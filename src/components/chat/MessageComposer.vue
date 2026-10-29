@@ -12,7 +12,6 @@ import { PopoverContent, PopoverPortal, PopoverRoot, PopoverTrigger } from "reka
 import { haptic } from "@/utils/haptics";
 import { shouldRunThrottled } from "@/utils/defer";
 import { mentionHighlightColor, resolveChatColors } from "@/utils/chatStyle";
-import { avatarSeedFor } from "@/utils/avatarSeed";
 import { classifyPaste } from "@/utils/clipboard";
 import { isImeKey } from "@/utils/ime";
 import { Folder, Smile, SquareCode, Users, Zap } from "lucide-vue-next";
@@ -23,6 +22,7 @@ import { isMentionLead } from "@/utils/linkify";
 import { isSelfConversation } from "@/utils/selfChat";
 import { detectCode, stripCodeFence } from "@/utils/codeDetect";
 import { api } from "@/api";
+import AvatarBox from "@/components/ui/AvatarBox.vue";
 
 const props = defineProps<{
   /** 会话切换时聚焦输入框（切换会话 = 新会话，重置草稿由父组件卸载/挂载决定）。 */
@@ -866,13 +866,7 @@ async function onPaste(e: ClipboardEvent) {
           >
             <Users class="h-3.5 w-3.5" aria-hidden="true" />
           </span>
-          <span
-            v-else
-            class="gosslan-avatar-box flex h-6 w-6 shrink-0 items-center justify-center overflow-hidden rounded-full text-white"
-            :style="{ backgroundColor: avatarSeedFor(m.id)?.bg }"
-          ><span
-            class="gosslan-avatar-emoji" aria-hidden="true"
-          >{{ avatarSeedFor(m.id)?.emoji }}</span></span>
+          <AvatarBox v-else class="h-6 w-6 shrink-0" round="full" :id="m.id" />
           <span class="min-w-0 flex-1 truncate" :title="m.name">{{ m.name }}</span>
         </button>
       </div>
