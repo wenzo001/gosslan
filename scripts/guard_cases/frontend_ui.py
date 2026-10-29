@@ -1175,4 +1175,22 @@ CASES: list[Case] = [
         expect_fail_hint="喂了它没有的 prop",
         tags=["frontend", "new-guards", "avatar"],
     ),
+    Case(
+        name="前端读了一个后端不产出的错误码（契约单方面改了）必须报",
+        why="INV-P16 窄口挂码（2026-10-29）之后，界面提示的档位来自**码**而不是中文文案。"
+        "     码是两侧各写一份的：后端 `error_codes.rs` 定义、前端 `errors.ts` 读。"
+        "     漂了的形状是「前端先加了个键、后端忘了产」（或反过来把码改名）——"
+        "     那时那一档会静默退回『请稍后重试』，用户看不到该做的动作。"
+        "     注入 = 在前端表里塞一个后端没有的码。",
+        file=ROOT / "src" / "utils" / "errors.ts",
+        injections=[(
+            '  PORT_IN_USE: "errors.rule.port",\n};',
+            '  PORT_IN_USE: "errors.rule.port",\n  THIS_CODE_IS_NOT_DEFINED_BY_RUST: "errors.rule.system",\n};',
+        )],
+        cmd=["node", "--test", "--experimental-strip-types", "--disable-warning=ExperimentalWarning",
+             "src/utils/errors.test.ts"],
+        cwd=ROOT,
+        expect_fail_hint="前端读了后端不产出的码",
+        tags=["frontend", "new-guards", "errors"],
+    ),
 ]

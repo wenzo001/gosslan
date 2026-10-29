@@ -11,7 +11,7 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { classifyError, isTechnicalError, MessageKeyError, rawErrorMessage } from "./errors.ts";
+import { classifyError, errorCode, ERROR_CODE_RULES, isTechnicalError, MessageKeyError, rawErrorMessage, stripErrorCode } from "./errors.ts";
 import { enUS, zhCN } from "../i18n/locales.ts";
 
 const SRC = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
@@ -108,4 +108,70 @@ test("生产码里抛出的 errors.* 键都在中英词典里", () => {
   for (const k of ["errors.joined", "errors.retry"]) {
     assert.ok(k in zhCN && k in enUS, `拼装模板 ${k} 不在词典里`);
   }
+});
+
+
+/**
+ * **码优先**（INV-P16 窄口，2026-10-29）。
+ *
+ * 这一族原来只有一条判据能表达"这话说什么档"：后端那句中文里有没有"公钥"两个字。
+ * 于是把"公钥"改成"身份密钥"这种**纯文案改动**会把用户提示从"不用重发，先让对方上线"
+ * 悄悄换成"请稍后重试" —— 不报错、不进日志、桌面跑一遍看不出来。
+ */
+test("码优先：后端换了那句人话的说法，档位不许跟着换（带反向对照）", () => {
+  const coded = classifyError("code=E2EE_PUBKEY_MISSING 对端身份密钥暂时拿不到，请先让对方上线");
+  assert.deepEqual(coded, { kind: "copy", key: "errors.rule.pubkey" }, "认到码就走那一档，与措辞无关");
+  // 反向对照：同样的措辞、**没有码** ⇒ 落到"透传给人看"那一档。
+  // 少了这一格，上一条可能只是"任何中文串都返回 pubkey 那一档"的假绿。
+  const noCode = classifyError("对端身份密钥暂时拿不到，请先让对方上线");
+  assert.equal(noCode.kind, "human", "没码时不该凭空认出 pubkey 那一档（否则码优先那条是空转）");
+  const portCoded = classifyError("code=PORT_IN_USE 59992 这个监听口已被别的过程占着");
+  assert.deepEqual(portCoded, { kind: "copy", key: "errors.rule.port" }, "端口那一档同样按码认");
+});
+
+test("码只给我们看：任何一档都不许把 code=… 带上屏", () => {
+  const v = classifyError("code=NOT_IMPLEMENTED_YET 磁盘已满，请清理后再试");
+  assert.equal(v.kind, "human", "不认识的码仍然要能给人看那句话");
+  assert.equal(v.kind === "human" && v.detail.includes("code="), false, `码泄漏到界面上了：${JSON.stringify(v)}`);
+  assert.equal(stripErrorCode("code=PORT_IN_USE 端口被占用"), "端口被占用");
+  assert.equal(errorCode("端口被占用"), null, "没有码时必须返回 null，不能把整串当码");
+});
+
+/**
+ * **跨语言对账**：前端读的码必须都由后端产出，后端产出的码必须都有人用。
+ *
+ * 分母从 `error_codes.rs` 现读（不手抄清单 —— 手抄的那份一定会漂），
+ * 并用"一个不存在的码必须数到 0 次引用"当阳性对照，证明引用计数器真的会说"没有"。
+ */
+test("跨语言契约：错误码两侧同源（前端读的码 ⊆ 后端产出的码，且后端每个码都被用到）", () => {
+  const rustDir = path.join(SRC, "..", "src-tauri", "src");
+  const defs = path.join(rustDir, "error_codes.rs");
+  const src = fs.readFileSync(defs, "utf8");
+  const defined = [...src.matchAll(/^pub const ([A-Z0-9_]+): &str = /gm)].map((m) => m[1]);
+  assert.ok(defined.length >= 2, `后端错误码只解析到 ${defined.length} 个 ⇒ 提取器坏了（形状变了？）`);
+
+  const files: string[] = [];
+  const walk = (d: string) => {
+    for (const name of fs.readdirSync(d)) {
+      const p = path.join(d, name);
+      const st = fs.statSync(p);
+      if (st.isDirectory()) walk(p);
+      else if (name.endsWith(".rs")) files.push(p);
+    }
+  };
+  walk(rustDir);
+  const usesOf = (code: string) =>
+    files.reduce(
+      (n, f) => n + (f.endsWith("error_codes.rs") ? 0
+        : (fs.readFileSync(f, "utf8").match(new RegExp(`error_codes::${code}\\b`, "g")) ?? []).length),
+      0,
+    );
+  assert.equal(usesOf("E2EE_PUBKEY_MISSING") > 0, true, "阳性对照：真有引用的码要数得到");
+  assert.equal(usesOf("THIS_CODE_IS_NOT_USED_ANYWHERE"), 0, "计数器必须会说『0 处』（否则下面那条恒绿）");
+
+  const dead = defined.filter((c) => usesOf(c) === 0);
+  assert.deepEqual(dead, [], `后端定义了但没人用的码（那是一条已经失效的契约）：${dead.join(", ")}`);
+
+  const orphans = Object.keys(ERROR_CODE_RULES).filter((c) => !defined.includes(c));
+  assert.deepEqual(orphans, [], `前端读了后端不产出的码：${orphans.join(", ")}`);
 });

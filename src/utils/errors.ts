@@ -24,6 +24,36 @@
  */
 
 /** 需要换成更具体提示的错误特征。命中即给**词典键**，文案由调用侧解析。 */
+/**
+ * **按码**的那一档（优先于下面那份按文案的正则）。
+ *
+ * 码的清单与后端 `src-tauri/src/error_codes.rs` 双向对账（见 `errors.test.ts`）：
+ * 前端读了一个后端不产出的码 ⇒ 红；后端定了码却没人用 ⇒ 也红。
+ * 这两条是必要的：改一句话就把用户提示换档，正是本仓最忌讳的**静默换档**。
+ */
+const CODE_RULES: Record<string, string> = {
+  E2EE_PUBKEY_MISSING: "errors.rule.pubkey",
+  PORT_IN_USE: "errors.rule.port",
+};
+
+/** 后端 `error_codes::coded()` 的形状：`code=<大写蛇形> 给人看的那句话`。 */
+const CODE_RE = /code=([A-Z0-9_]+)/;
+
+/** 取出错误串里的码（没有则 null）。导出是为了让对账判据能直接用它解析。 */
+export function errorCode(raw: string): string | null {
+  return CODE_RE.exec(raw)?.[1] ?? null;
+}
+
+/** 把码摘掉，只留给人看的那半句（否则 toast 上会写着 `code=…`）。 */
+export function stripErrorCode(raw: string): string {
+  return raw.replace(CODE_RE, "").trim();
+}
+
+/** 码 → 词典键。导出给判据读（不导出的话，那份对账就只能正则扫字面量）。 */
+export const ERROR_CODE_RULES = CODE_RULES;
+
+// 兜底那一族：OS / 第三方库的串我们**不产码**，只能按签名认。
+// 自家产出的语义分支不再依赖这里的正则（那正是本文件上面那个家要替掉的东西）。
 const RULES: { re: RegExp; key: string }[] = [
   {
     // E2EE 恒开的固有代价：对方从未上线过/处于不同子网时拿不到公钥。
@@ -87,10 +117,15 @@ export function classifyError(e: unknown): ErrorVerdict {
   if (e instanceof MessageKeyError) return { kind: "copy", key: e.message, params: e.params };
   const raw = rawErrorMessage(e);
   if (!raw) return { kind: "retry" };
+  // 先认码：自家产出的错误靠它，改文案不会换档。
+  const code = errorCode(raw);
+  if (code && CODE_RULES[code]) return { kind: "copy", key: CODE_RULES[code] };
+  // 码只是给我们看的，不上屏（不认识的那个也一样要摘掉，否则用户会读到 `code=…`）。
+  const body = code ? stripErrorCode(raw) : raw;
   for (const r of RULES) {
-    if (r.re.test(raw)) return { kind: "copy", key: r.key };
+    if (r.re.test(body)) return { kind: "copy", key: r.key };
   }
-  if (looksUserFacing(raw)) return { kind: "human", detail: raw };
+  if (looksUserFacing(body)) return { kind: "human", detail: body };
   return { kind: "retry" };
 }
 
