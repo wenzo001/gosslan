@@ -11,6 +11,7 @@ import {
   UNSUPPORTED_KIND_LABEL,
   isKnownKind,
   isForwardableKind,
+  isTransferKind,
   isFavoritableKind,
   isMultiSelectable,
   isRemindableKind,
@@ -524,5 +525,60 @@ test("转发 / 收藏白名单：卡片可收藏、但不得获得转发能力",
   for (const kind of ["system", "recalled"]) {
     assert.equal(isForwardableKind(kind), false, `${kind} 不可转发`);
     assert.equal(isFavoritableKind(kind), false, `${kind} 不可收藏`);
+  }
+});
+
+/**
+ * **跨层对账**：前端说"这条能转发"时，后端必须有一条真的接得住的通道
+ * （2026-10-29 审计 FUN-01 / DUP-01：`isForwardableKind` 含 `image`，而两条发送命令的
+ * 白名单都不收 `"image"` ⇒ 单条转发图片 100% 失败，只有批量那条（走了文件通道）是对的）。
+ *
+ * 对账口径：可转发的 kind 要么被 `send_message` 的白名单接受，要么属于**文件通道**
+ * （`file` / `image`，必须由 `send_file*` 造出来 —— 后端不收 `"image"` 是刻意的）。
+ */
+test("可转发的每个 kind 都必须有后端通道（发送白名单 ∪ 文件通道）", () => {
+  const here = dirname(fileURLToPath(import.meta.url));
+  const chatRs = readFileSync(join(here, "..", "..", "src-tauri", "src", "commands", "chat.rs"), "utf8");
+  // 取 `send_message` 里那段 kind 匹配的左臂字面量。
+  const at = chatRs.indexOf("pub async fn send_message(");
+  assert.ok(at > 0, "找不到 send_message（对账会空转）");
+  const body = chatRs.slice(at, chatRs.indexOf("_ => return Err(", at));
+  const whitelist = new Set([...body.matchAll(/^\s*"([a-z_]+)" =>/gm)].map((m) => m[1]));
+  assert.ok(whitelist.size >= 5, `只解析出 ${whitelist.size} 个 kind ⇒ 解析器坏了`);
+
+  // 全量 kind = 四张分组的并集（本模块自己就是这么分组的，别再手抄第五份清单）
+  const allKinds = [...BUBBLE_KINDS, ...CARD_KINDS, ...SILENT_KINDS, ...TIP_KINDS];
+  const forwardable = allKinds.filter((k) => isForwardableKind(k));
+  assert.ok(forwardable.length >= 3, "分母太小 ⇒ 判据可能已失效");
+  const uncovered = forwardable.filter((k) => !whitelist.has(k) && !isTransferKind(k));
+  assert.deepEqual(
+    uncovered,
+    [],
+    `这些 kind 前端说能转发、后端没有任何通道接得住：${uncovered.join(", ")}`,
+  );
+  // 反控：确认后端确实**不收** image —— 这正是"图必须走文件通道"的原因，
+  // 也是本判据存在的理由（两边都收的话这条对账就没有约束力了）。
+  assert.equal(whitelist.has("image"), false, "send_message 不该收 image（图片由 send_file* 造）");
+});
+
+/**
+ * 三个转发落点必须共用 `isTransferKind`（同一份判据），不许再各自写 `kind === "file"`。
+ * 这条钉的是 FUN-01 的真实形状：**通道选择的分支**与"能不能转发"的清单对不齐。
+ */
+test("转发落点：单条 / 批量 / 收藏 三处都按 isTransferKind 选通道", () => {
+  const here = dirname(fileURLToPath(import.meta.url));
+  const read = (rel: string) => readFileSync(join(here, "..", rel), "utf8");
+  for (const [rel, label] of [
+    ["components/ChatWindow.vue", "聊天窗（单条）"],
+    ["components/FavoritePanel.vue", "收藏页"],
+    ["components/MessageItem.vue", "消息气泡（发起转发）"],
+  ] as const) {
+    const src = read(rel);
+    assert.match(src, /isTransferKind\(/, `${label} 必须用共享判据选通道`);
+    assert.doesNotMatch(
+      src,
+      /(?:f|msg|m)\.kind === "file" \?/,
+      `${label} 还留着"只判 file"的三元式 —— 图片会漏进 send()`,
+    );
   }
 });

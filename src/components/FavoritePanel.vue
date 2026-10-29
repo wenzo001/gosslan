@@ -47,7 +47,7 @@ import { FILE_KIND_ICONS, extBadgeLabel, fileKindOf, fileKindStyle } from "@/uti
 import { openLocalFile, saveLocalFile } from "@/utils/localFile";
 import { dropFavoritePreview, favoritePreviewUrl, loadFavoritePreview, clearFavoritePreviews } from "@/utils/favoritePreview";
 import { mergeItemLine, mergeSummary, parseMergePayload } from "@/utils/mergeCard";
-import { isForwardableKind, isKnownKind, kindClass, UNSUPPORTED_KIND_LABEL } from "@/utils/messageKinds";
+import { isForwardableKind, isKnownKind, isTransferKind, kindClass, UNSUPPORTED_KIND_LABEL } from "@/utils/messageKinds";
 import { cardCopyText } from "@/utils/cardText";
 import {
   TODO_STATUS_LABEL_KEY, TODO_STATUS_PILL, isTodoStatus, type TodoImage, type TodoStatus, } from "@/utils/todos";
@@ -595,7 +595,10 @@ async function doForward(convId: string) {
   forward.value = null;
   if (!f) return;
   try {
-    if (f.kind === "file") {
+    // 媒体（文件 + 图片）都按收藏夹里的独立副本重发；判据只在 `isTransferKind` 一处。
+    // ⚠️ 这里**不传 msgId**：收藏的 media_path 是收藏夹自己的副本，不是原消息那条路径，
+    // 后端「路径必须归这条消息」的闸会把它当成越权拒掉（那条闸只适用于"转发原消息"）。
+    if (isTransferKind(f.kind)) {
       if (!f.media_path) {
         app.toast(t("favorite.mediaGone"), "error");
         return;

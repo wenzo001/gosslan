@@ -10,7 +10,7 @@ import { useMessageFile } from "@/composables/useMessageFile";
 import { useMemberProfile } from "@/composables/useMemberProfile";
 import { CODE_SURFACE, IMAGE_PLACEHOLDER_HEIGHT, textNeedsClamp } from "@/utils/previewMetrics";
 import {
-  isFavoritableKind, isForwardableKind, isKnownKind, isMultiSelectable, isRemindableKind, isTipKind, kindClass, UNSUPPORTED_KIND_LABEL, } from "@/utils/messageKinds";
+  isFavoritableKind, isForwardableKind, isKnownKind, isMultiSelectable, isRemindableKind, isTipKind, isTransferKind, kindClass, UNSUPPORTED_KIND_LABEL, } from "@/utils/messageKinds";
 import { cardCopyText } from "@/utils/cardText";
 import { isSelfMessage } from "@/utils/selfChat";
 import { resendChannelFor } from "@/utils/resendChannel";
@@ -1204,14 +1204,17 @@ function doQuote() {
 
 function doForward() {
   const msg = props.message;
+  // 媒体（文件 + 图片）都走文件通道：content 只是元信息，原样重发会指向本机路径。
+  // 判据只在 `isTransferKind` 一处（2026-10-29 审计 FUN-01：只判 file ⇒ 图片 100% 失败）。
+  const transfer = isTransferKind(msg.kind);
   const payload = {
     kind: msg.kind as MsgKind,
     content: msg.content,
     snippet: quoteSnippet(msg.kind, msg.content),
     // 文件转发按本地路径重走传输链路（内容里的 JSON 只是元信息）。
     // `msgId` 随行：后端用它要求「这条路径归这条消息」，堵住对端写 path 的越权（SEC-01）。
-    filePath: msg.kind === "file" ? (fileMeta.value?.path ?? "") : undefined,
-    msgId: msg.kind === "file" ? msg.msg_id : undefined,
+    filePath: transfer ? (fileMeta.value?.path ?? "") : undefined,
+    msgId: transfer ? msg.msg_id : undefined,
   };
   // 同上：转发会打开转发弹窗（跳转到界面内去操作），底部面板必须先收掉
   closeActionSheet();

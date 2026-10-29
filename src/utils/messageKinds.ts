@@ -162,6 +162,21 @@ export function isMultiSelectable(kind: string): boolean {
  *
  * 合并转发卡片（merge）本身可以再转（微信允许"转发聊天记录"），它是自包含内容。
  */
+/**
+ * 「这条消息的内容是靠文件传输搬过来的」—— 转发时**必须**按本地路径重走传输链路
+ * （`send_file*`），不能把 `content` 原样重发：media 的 content 只是元信息，里面那个
+ * `path` 是**本机**落盘路径，发给对端就指向别人的磁盘。
+ *
+ * 唯一判据：`MessageItem`（单条转发）、`ChatWindow.forwardOne`（批量转发）、
+ * `FavoritePanel`（收藏页转发）三处都必须用它，不许再各自写 `kind === "file"` ——
+ * 2026-10-29 审计 FUN-01/DUP-01 抓到就是对不齐：前端 `isForwardableKind` 含 `image`、
+ * 后端两条发送命令的白名单都不含 `"image"`（图片必须由 `send_file*` 造出来，这是刻意的），
+ * 于是**单条转发图片 100% 失败**，而批量转发那条一直是对的。
+ */
+export function isTransferKind(kind: string): boolean {
+  return kind === "file" || kind === "image";
+}
+
 export function isForwardableKind(kind: string): boolean {
   return kind === "text" || kind === "code" || kind === "image" || kind === "file" || kind === "merge";
 }

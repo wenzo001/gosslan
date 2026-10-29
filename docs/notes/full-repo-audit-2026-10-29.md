@@ -399,11 +399,11 @@ export function isForwardableKind(kind: string): boolean {
 | TST-03 | High | 护栏非空转只在 nightly 跑，`verify.yml` 两个 guard job 的 `if` 只认 `schedule`/`workflow_dispatch` ⇒ 新增/改坏的守卫最长 24 小时无人验证 | `.github/workflows/verify.yml` |
 | TST-04 | Medium | 好友 **reject** 路径零测试 —— `handle_identity.rs:216-229` 整个臂无 `#[test]`，而它修的正是"已拒绝申请被反复重发"的缺陷 | `src-tauri/src/network/transport/handle_identity.rs` |
 | TST-05 | Medium | 群任务的 **CRUD 写路径**（改状态/归档/重开/认领）无独立单测，编号不变性只在跨进程轮 | `src-tauri/src/commands/group_todo_media.rs` |
-| TST-06 | Medium | 真 ENOSPC（写到一半磁盘满）无自动化；预检只是纯函数 + 形状守卫，`recv-readonly` 轮造的是 `EACCES` 不是 `ENOSPC` | `src-tauri/src/network/transport/receive.rs` |
+| TST-06 | Medium | 真 ENOSPC（写到一半磁盘满）无自动化；预检只是纯函数 + 形状守卫，`recv-readonly` 轮造的是 `EACCES` 不是 `ENOSPC` | `src-tauri/src/network/file/receive.rs` |
 | TST-07 | Medium | 「群主撤回特权」与「key-change conflict」的接线只有**形状守卫**（74/152 cargo 守卫属这一族） | `src-tauri/src/lib_delivery_shape_tests.rs` |
 | TST-08 | Medium | 身份持久化跨重启：无「重启后不再派生」分支的用例，且**代码与需求恰好相反**（`clear_all_data` 不删身份行） | `src-tauri/src/state.rs` |
 | TST-09 | Low | Windows 侧缺三类生产行为用例（缓存软链清扫 / 磁盘写失败 / 托盘角标） | `src-tauri/test-baseline.windows.txt` |
-| TST-10 | Low | 2 条新 Rust 用例不在基线里；唯一 `#[ignore]` 的真实库迁移演练永不执行 | `src-tauri/src/commands/files_gate_tests.rs` |
+| TST-10 | Low | 2 条新 Rust 用例不在基线里；唯一 `#[ignore]` 的真实库迁移演练永不执行 | `src-tauri/src/commands/files_tests.rs` |
 
 **最大未测模块**：`src/stores/useChatStore.ts`（3471 行）。三个 store **全部零运行时 import**；16 个 composables 里仅 `useSubmitGuard` 有真行为测试，12 个只有形状断言，3 个（`useMentionContext`/`useShortcuts`/`useWindowLauncher`）完全无引用 —— 而 `useMentionContext` 正是矩阵 `:200` 点名的"同名两人高亮"那一格的核心。
 

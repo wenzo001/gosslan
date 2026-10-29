@@ -13,6 +13,32 @@
 
 ## [Unreleased]
 
+## [5.15.9] - 2026-10-29
+
+### 单条转发图片 100% 失败 —— 「能不能转发」和「走哪条通道」两份判据对不齐
+
+2026-10-29 审计 FUN-01 / DUP-01（High）：前端 `isForwardableKind` 允许 `image`，而后端两条发送
+命令的白名单**都不收 `"image"`**（图片必须由 `send_file*` 造出来，这是刻意的）⇒ 单条转发图片
+必然撞「不支持的消息类型」。**同一张图：单条转发失败、多选转发成功** —— 因为批量那条判的是
+`file || image` 都走文件通道。
+
+- 判据收成一处 `utils/messageKinds::isTransferKind`（`file` / `image`），三个转发落点全部改用它：
+  `MessageItem.doForward`（单条 + `filePath`/`msgId` 取值）、`ChatWindow.forwardOne`（批量）、
+  `ChatWindow.doForward`（弹窗落地）、`FavoritePanel.doForward`（收藏页 —— 同源同因，单独修
+  聊天窗不会顺手修好它）。
+- 收藏页那条**不传 `msgId`**：`media_path` 是收藏夹自己的副本，不是原消息那条路径，后端
+  「路径必须归这条消息」的闸会把它判成越权（那条闸只适用于"转发原消息"）。
+- 新增两条跨层对账：① 可转发的每个 kind 都必须有后端通道（发送白名单 ∪ 文件通道），
+  并反控「`send_message` 确实不收 `image`」；② 三个落点都必须用 `isTransferKind`，
+  不许再出现"只判 file"的三元式。变异自证：把 `image` 从判据里去掉 / 把 `MessageItem` 改回
+  `kind === "file"` ⇒ 两条当场红。
+
+顺带修了一条判据自身的脆弱：`longPress.test.ts` 用 `slice(at, at + 600)` 切函数体，给
+`doForward` 加三行注释就把调用点挤到 608 字符处 ⇒ **假红**（反过来，调用写在函数外但落在
+窗口里会假绿）。改成按花括号配对切函数体，并用"删掉 `doForward` 里那个 `closeActionSheet()`
+⇒ 红"自证。
+
+## [5.15.8] - 2026-10-29
 ## [5.15.8] - 2026-10-29
 
 ### 信任链两处判据不一致：谁能变成好友、谁的公钥能当锚点
