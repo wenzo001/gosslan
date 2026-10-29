@@ -1413,8 +1413,10 @@ async function forwardOne(convId: string, m: MessageRecord) {
       app.toast(t(m.kind === "image" ? "chat.toast.imageNotForward" : "chat.toast.fileNotForward"), "info");
       return;
     }
-    if (convId.startsWith("group:")) await chat.sendGroupFileTo(convId.slice(6), path);
-    else await chat.sendFileTo(convId, path);
+    // `msg_id` 随行：后端用它要求「这条路径归这条消息」（与单条转发、右键菜单同一个闸）。
+    // 此前只在这条批量路径上漏传 ⇒ 同一份越权判据在两条入口上宽严不一（2026-10-29 审计 DUP-02）。
+    if (convId.startsWith("group:")) await chat.sendGroupFileTo(convId.slice(6), path, m.msg_id);
+    else await chat.sendFileTo(convId, path, m.msg_id);
     return;
   }
   await chat.send(convId, m.content, m.kind);

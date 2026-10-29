@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { shouldStartLongPress, shouldSwallowLongPressRelease } from "./longPress.ts";
+import { tsFnBody } from "./tsSource.ts";
 
 /**
  * 移动端长按的两个真机事故（用户 2026-09-13 Android 实测）：
@@ -69,23 +70,6 @@ test("抬手吞掉规则：只有「面板是这次按压弹出的 + 面板还�
   assert.equal(shouldSwallowLongPressRelease({ openedByHeldPress: false, sheetOpen: true }), false);
   assert.equal(shouldSwallowLongPressRelease({ openedByHeldPress: false, sheetOpen: false }), false);
 });
-
-/** 按花括号配对取一个函数的本体（够用即可，不解析语法；字符串里的花括号本项目里不会出现在这两处）。 */
-function tsFnBody(src: string, signature: string): string {
-  const at = src.indexOf(signature);
-  if (at < 0) return "";
-  const open = src.indexOf("{", at);
-  if (open < 0) return "";
-  let depth = 0;
-  for (let i = open; i < src.length; i += 1) {
-    if (src[i] === "{") depth += 1;
-    else if (src[i] === "}") {
-      depth -= 1;
-      if (depth === 0) return src.slice(at, i + 1);
-    }
-  }
-  return src.slice(at);
-}
 
 test("操作面板：点任何一项都必须收起（引用/转发会跳到别处，更必须先收）", () => {
   // ① 面板层统一收起：成熟产品（iOS ActionSheet / 微信 / Telegram 底部菜单）都是"点一项即消失"。
