@@ -288,6 +288,7 @@ export const zhCN: MessageDict = {
   "settings.network.interface.auto": "自动（所有网卡）",
   "settings.network.bluetooth": "蓝牙通道",
   "settings.network.bluetooth.unavailable": "蓝牙后端尚未编译（当前版本暂不支持），将在后续版本提供",
+  "settings.network.bluetooth.noAdapter": "这台设备上没有可用的蓝牙（没有适配器，或被系统/权限挡住了）",
   "settings.network.bluetooth.on": "已开启",
   "settings.network.bluetooth.off": "已关闭",
   "settings.network.bluetooth.alwaysOn":

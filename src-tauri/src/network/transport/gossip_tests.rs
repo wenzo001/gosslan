@@ -631,3 +631,15 @@ fn retry_is_allowed_only_for_frames_this_device_should_consume() {
     // 非 Chat/Group 的控制帧不进这条链
     assert!(!retry_allowed_for_this_frame(true, true, false, true));
 }
+
+/// 转发限速的窗口语义（2026-10-29 审计 SEC-05）：同秒内到上限就拒、跨秒自动归零。
+/// 边界两侧各一格 —— 把 `<` 写成 `<=` 或把窗口比较改反，这里当场红。
+#[test]
+fn relay_forward_rate_window() {
+    assert!(relay_forward_allowed(100, 0, 100), "同一秒第一帧放行");
+    assert!(relay_forward_allowed(100, RELAY_FORWARD_PER_SEC - 1, 100), "上限前一帧放行");
+    assert!(!relay_forward_allowed(100, RELAY_FORWARD_PER_SEC, 100), "到上限即拒");
+    assert!(relay_forward_allowed(100, RELAY_FORWARD_PER_SEC, 101), "下一秒自动归零");
+    // 时钟回拨（now < window）也按"新窗口"处理：宁可多放几帧，也不要把转发永久卡死
+    assert!(relay_forward_allowed(100, RELAY_FORWARD_PER_SEC, 99));
+}

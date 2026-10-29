@@ -11,6 +11,7 @@ import SettingsSelect from "@/components/ui/SettingsSelect.vue";
 import PrimaryBtn from "@/components/ui/PrimaryBtn.vue";
 import { useImeEnterGuard } from "@/composables/useImeEnterGuard";
 import { isAndroid } from "@/utils/platform";
+import { bleUnavailableReason } from "@/utils/bleAvailability";
 import { t } from "@/i18n";
 import type {RelayConfig, RelayPolicy, RelayProbe, RoutedEndpoint} from "@/types";
 
@@ -29,6 +30,12 @@ let ifaceToastShown = false;
 // 再也 patch 不动（用户实测的"点设置卡死/过一会儿弹出好几个设置"）。
 const channels = computed(() => app.channels ?? []);
 const btStatus = computed(() => channels.value.find((c) => c.channel === "bluetooth"));
+/**
+ * 蓝牙为什么不可用：`compiled-out`（这一版没编进去，自编译者才会遇到）与
+ * `no-adapter`（编进去了但硬件/系统不让用，发布包里遇到的都是这一类）。
+ * 判据在 `utils/bleAvailability` 一处 —— 两类用户的下一步动作不一样，文案必须分开。
+ */
+const btUnavailable = computed(() => bleUnavailableReason(btStatus.value));
 const lanStatus = computed(() => channels.value.find((c) => c.channel === "lan"));
 /**
  * 局域网那一行的说明文案。安卓多一句**带条件的**"后台可收"承诺（ADR-0022）。
@@ -479,7 +486,9 @@ async function removeEndpoint(address: string) {
       :label="t('settings.network.bluetooth')"
       :description="app.isMobile
         ? t('settings.network.bluetooth.alwaysOn')
-        : (btStatus?.available ? undefined : t('settings.network.bluetooth.unavailable'))"
+        : (btUnavailable ? t(btUnavailable === 'compiled-out'
+            ? 'settings.network.bluetooth.unavailable'
+            : 'settings.network.bluetooth.noAdapter') : undefined)"
       :last="!app.bleAutostartHeld"
     >
       <div class="flex items-center gap-2">

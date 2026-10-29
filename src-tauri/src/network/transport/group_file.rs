@@ -283,6 +283,16 @@ async fn handle_group_file_offer(
     if sender_id != peer_id || sender_id == state.device_id {
         return;
     }
+    // 文件名同理（2026-10-29 审计 SEC-12）：它会被显示在气泡/任务卡片上，也会参与落盘目录
+    // 之外的展示逻辑 —— 带 `/`、`\\`、NUL 或 `..` 的名字一律拒收，规则与分享/单聊那条共用
+    // `file::safe_file_name`（唯一一份）。空名也在这里挡掉（`None` 就是"这个名字不能用"）。
+    let Some(name) = file::safe_file_name(&name) else {
+        state.logger.warn(
+            "group_file",
+            format!("GroupFileOffer 的 name 非法，丢弃 transfer={transfer_id} peer={peer_id}"),
+        );
+        return;
+    };
     // 这个 id 会落进台账，并在取消/续传分支拼成 `<tid>.part` 的**删除路径**
     // （`cancel_group_receive` 与下面 Restart 分支）⇒ 在第一次落库之前就过白名单。
     let Some(transfer_id) = file::safe_transfer_id(&transfer_id) else {

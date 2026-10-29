@@ -97,7 +97,25 @@ pub async fn read_bytes_capped<R: AsyncRead + Unpin>(
             "非法帧长度",
         ));
     }
-    // ★ 只计量，不拒绝（负责人 2026-10-26 拍板"先补读数，再动手"）：按**声明长度**预约这个数，
+    // ★ 2026-10-29 起：**既计量也拒绝**（负责人当天拍板"加全局限额"，取代 10-26 的"先补读数"）。
+    //   聚合口径 = 在途帧字节 + 本帧声明长度，超预算就拒这一帧（对端按协议错误重试），
+    //   而不是让进程被分配器打死 —— release 是 panic="abort"，OOM 会让应用无声消失。
+    if !crate::mem_diag::frame_budget_allows(
+        crate::mem_diag::frame_read_bytes(),
+        len as u64,
+        crate::mem_diag::INBOUND_FRAME_BUDGET_BYTES,
+    ) {
+        crate::logging::crash_note(&format!(
+            ">>> code=INBOUND_FRAME_BUDGET_EXCEEDED declared={len} in_flight={} budget={}",
+            crate::mem_diag::frame_read_bytes(),
+            crate::mem_diag::INBOUND_FRAME_BUDGET_BYTES
+        ));
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "入站帧聚合超过全局预算",
+        ));
+    }
+    // 以下按**声明长度**预约这个数，
     //   因为这里要看的就是"对端一句话让我们最多可能同时握着多少字节"——那正是
     //   `MAX_INBOUND_CONNECTIONS(128) × MAX_FRAME(64MiB)` 那个没人管过的聚合值。
     //   口径要说准，别当全貌：这一支是**经 `read_bytes_capped` 的帧读**唯一入口

@@ -99,7 +99,22 @@ pub(crate) fn group_envelope_consumable(
     members.iter().any(|m| m == me) && members.iter().any(|m| m == sender)
 }
 
-/// 「这一帧登记了但没消费成功，要不要撤销去重」的**唯一**判据（纯函数，可单测）。
+/// 替别人转发的**每秒**上限（2026-10-29 审计 SEC-05）。
+///
+/// 为什么是一个数而不是"每源一张表"：每源表要淘汰、且能被"造很多 sender_id"绕过；
+/// 本机总转发量才是我要保护的资源。100/s 远高于正常用量（三节点群里个位数/秒），
+/// 只有"被当转发器狂灌"才会撞到。
+pub(crate) const RELAY_FORWARD_PER_SEC: u32 = 100;
+
+/// 这一帧还能不能代为转发（纯函数，可单测）：同一秒内计数未到上限即可。
+pub(crate) fn relay_forward_allowed(window_start_s: i64, count_in_window: u32, now_s: i64) -> bool {
+    if now_s != window_start_s {
+        return true; // 新的一秒 ⇒ 计数归零
+    }
+    count_in_window < RELAY_FORWARD_PER_SEC
+}
+
+/// 「这一帧登记了但没消费成功，要不要撤销去重」的**唯一**判据（纯函数，可单测）。/// 「这一帧登记了但没消费成功，要不要撤销去重」的**唯一**判据（纯函数，可单测）。
 ///
 /// 两个放行条件：
 /// - `decrypt_failed`：解不开（缺群密钥 / 缺对端 X25519）⇒ 补发重入，等密钥到了再消费；
@@ -479,6 +494,38 @@ async fn handle_gossip(state: &Arc<AppState>, peer_id: &str, env: GossipEnvelope
         }
         _ => None,
     };
+    // 转发速率上限（2026-10-29 审计 SEC-05）：授权默认仍是 `All`，但**替别人转发**必须有闸。
+    // 一个全局令牌桶（每秒 REFER_FORWARD_PER_SEC 帧）：正常三节点群聊是个位数/秒，
+    // 只有"把本机当转发器狂灌"才会撞到；撞到就只丢**转发**这一半，本机自己的消费不受影响。
+    let mut forward_ttl = forward_ttl;
+    if forward_ttl.is_some() && !sender_is_me {
+        let now_s = crate::logging::now_ms() / 1000;
+        let allowed = {
+            let mut bucket = state
+                .relay_forward_rate
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
+            let verdict = relay_forward_allowed(bucket.0, bucket.1, now_s);
+            if verdict {
+                if bucket.0 == now_s {
+                    bucket.1 = bucket.1.saturating_add(1);
+                } else {
+                    *bucket = (now_s, 1);
+                }
+            }
+            verdict
+        };
+        if !allowed {
+            state.logger.warn(
+                "gossip",
+                format!(
+                    "code=RELAY_FORWARD_RATE_LIMITED sender={}（超出每秒转发上限，本帧不再代为转发）",
+                    env.sender_id
+                ),
+            );
+            forward_ttl = None;
+        }
+    }
     if let Some(fwd_ttl) = forward_ttl {
         // 定向帧（FriendRequest/FriendAccept/ChatAck/ChatReadReceipt）优先精确定向：
         // target 是本机直连就只发它；无直连路径时洪泛兜底（第一版无路由表）。广播帧保持 fan-out。

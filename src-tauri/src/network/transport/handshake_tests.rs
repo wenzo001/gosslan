@@ -225,6 +225,22 @@
         assert_eq!(r.from_avatar.as_deref(), Some(small.as_str()));
     }
 
+    /// 同一条有界判据也服务 `Message::UserInfo`（2026-10-29 审计 SEC-06）：
+    /// 昵称截断、超大头像丢弃、正常值原样。
+    #[test]
+    fn bounded_profile_caps_nickname_and_avatar() {
+        let (n, a, dropped) = bounded_profile("名".repeat(200), Some("A".repeat(MAX_PENDING_AVATAR_BYTES + 1)));
+        assert_eq!(n.chars().count(), MAX_PENDING_NICKNAME_CHARS, "超长昵称按字符截断");
+        assert_eq!(a, None);
+        assert!(dropped, "超过上限的头像要丢（它会进 friends/conversations 并被反复推前端）");
+
+        let ok = "A".repeat(1024);
+        let (n, a, dropped) = bounded_profile("ok".to_string(), Some(ok.clone()));
+        assert_eq!(n, "ok");
+        assert_eq!(a.as_deref(), Some(ok.as_str()));
+        assert!(!dropped);
+    }
+
     /// 「这条好友同意该不该落库」的四格真值表（2026-10-29 审计 SEC-01）。
     ///
     /// 网络路径上没有这道闸时，任何对端发一条 `{type:friend_accept, from, to}` 就能进 friends 表
