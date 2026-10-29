@@ -137,11 +137,9 @@ fn run<R: tauri::Runtime>(app: tauri::AppHandle<R>, state: Arc<crate::state::App
     }
 }
 
-fn now_ms() -> i64 {
-    // 用日志模块的时钟而不是 `db::now_ms`：命令体扫描器会把 `db::` 当成"访问 SQLite"，
-    // 而心跳只写两个原子量，不该被算成重活命令（lib_window_tests 的棘轮）。
-    crate::logging::now_ms()
-}
+// 时钟的家在 `logging`（不是 `db::now_ms`）：命令体扫描器会把 `db::` 当成"访问 SQLite"，
+// 而心跳只写两个原子量，不该被算成重活命令（`lib_window_tests` 的棘轮）。
+use crate::logging::now_ms;
 
 /// 取**最后一次已知**的在途命令与它距今的秒数。
 ///

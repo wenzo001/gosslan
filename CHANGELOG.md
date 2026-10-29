@@ -13,6 +13,65 @@
 
 ## [Unreleased]
 
+## [5.15.26] - 2026-10-30
+
+### 墙上时钟收成一个家：`logging::now_ms`（DUP-03，先逐处定性再动手）
+
+负责人点名的下一项，要求"先逐处读、再决定收哪几处"——因为 §8 里这一格挂着一个怀疑：
+"BLE 那几份 `now_ms()` 可能**本该不同**（用单调钟），全局统一会把 TTL 弄错"。
+
+- **定性的结论是否证**：九处定义全部读同一个 `SystemTime − UNIX_EPOCH → 毫秒`，彼此唯一的差别是
+  兜底写法（`unwrap_or(0)` vs `unwrap_or_default()`）；`ble_android.rs` 与 Windows 侧的注释还写着
+  "与 macOS 侧同一套回收语义"。**没有一份是设计如此**。对照表（九行、逐行给时钟源/兜底/调用点数）
+  在审计册 §4.0m。今天这九个名字里只有一个真的读钟，其余都是它的别名或委托。
+- **家定在 `logging.rs`，不是 `db.rs`**：`lib_window_tests` 那条棘轮把命令体里出现 `db::` 算成
+  "访问 SQLite"（INV-P34 的分母口径），家设在 `db::` 会把蓝牙、发现层、看门狗全算成重活命令。
+  `db::now_ms` 仍留着，但函数体改成转调 —— 它是"落库那一列的时间戳"这个说法的具名别名
+  （现数 **120 处调用 / 43 个生产码文件**经它；复跑
+  `grep -rn "db::now_ms(" src-tauri/src | grep -v _tests.rs | wc -l`），不是第二份实现。
+- **判据按形状**：`logging::tests::the_wall_clock_has_two_names_max` 扫全仓 `.rs`，要求定义
+  `fn now_ms(` 的文件只有 `{logging.rs, db/read_receipts.rs}`，且**读 `UNIX_EPOCH` 的只有 `logging.rs`**
+  （⇒ 别名偷偷变回自己读钟也红）。带扫描集合下限（>100 个文件，防空集恒绿）与一条正控
+  （新拷贝要认得出、"调用家"不许误判）。源码遍历器与 5.15.25 的 hex 判据**共用同一个**
+  （`logging::production_rs_files`），不再抄第四份。
+- 顺手记下一处**差点误判**：`storage/cache_cleaner.rs:239` 也读 `UNIX_EPOCH`，但那是给临时目录名取
+  `subsec_nanos()` 当唯一种子，与"现在几点"无关 —— 判据因此用"定义 `fn now_ms(` **且** 读 `UNIX_EPOCH`"
+  的合取，而不是只看后者，否则会把这格误报成第二份实现。
+- 护栏 Case 285 → **286**（往 `network/discovery.rs` 注入一个 `fn now_ms()` ⇒ 判据点名三个文件并红）。
+- **本批把自己的一条护栏锚点撞掉了，第 13 步当场抓住**：`panic 站点棘轮` 的注入用例原先注在
+  `watchdog.rs` 的 `now_ms` 开头 —— 正是这一批删掉的那个转发包装 ⇒ 起跑前核对报
+  「注入锚点在 watchdog.rs 及其 0 个 include! 子模块里都找不到」并 fail-fast（当时只跑了 8.1s，
+  后面 12 步含全部编译与测试都没跑）。锚点换到 `logging.rs` 的 `pub(crate) fn now_ms() -> i64 {`，
+  选它是为了**让锚点自己的存在也被这条判据钉住**（全仓唯一读 `UNIX_EPOCH` 的 `now_ms` 定义就是这一行），
+  而不是再挑一处会随下一次搬家漂掉的。自证：`python3 scripts/verify-guards.py --only="panic 站点棘轮"`
+  退 0（改坏即 FAIL、红由"棘轮只许降"报出、恢复逐字节一致）。
+- **同批还长出第 7 对内联跨域引用，第 16 步按棘轮判红**：`discovery.rs` 内联写 `crate::logging::now_ms()`
+  ⇒ `presence` 域出现"指向 observability 但本域没有对应 use"的写法。按脚本自己给的两条修法取了①
+  （改成顶层 `use` + 把 `observability` 写进 `presence.consumes`），没动上限；复跑回到 16 处 / 6 对。
+  `docs/ARCHITECTURE-MAP.html` 里那份 `cons` 手抄快照也同改了 —— 那条**没有机器对账**（守门脚本只读 `.mjs`）。
+
+**真跑过的验证**（都是改完之后的整跑，不是"改完直接绿"）：`verify:local` **25 步全绿** ——
+本批在绿之前被自己的护栏抓住两次（第 13 步的锚点、第 16 步的跨域对数，见上面两条），
+上面那段文字落定后又按最终树整跑一遍收口：**25 步全绿、共 70.9s**（`VERIFY_EXIT=0` 现读自日志，不是管道退码）。Rust 单测（`--features bluetooth`）**1315 通过 / 0 失败 / 1 ignored**（本批 +2）；
+前端 `npm test` **1504 通过**；测试清单基线 **macos 1316 / windows 1294** 全部在跑
+（跨平台差额有源码门控背书：`macos:1316+3，windows:1294+25`）；`cargo fmt --check --all` 与
+`cargo clippy -D warnings --all-targets --features bluetooth` 零红（顺手删掉两处因此变冗余的
+`use std::time::{SystemTime, UNIX_EPOCH}` —— `discovery.rs` 整行删、`cache_cleaner.rs` 只留 `UNIX_EPOCH`）；
+手工注入自证：往 `discovery.rs` 加一个本地 `fn now_ms()` ⇒ 判据报
+`["db/read_receipts.rs", "logging.rs", "network/discovery.rs"]` 并红，还原 `cmp` 逐字节一致；
+`verify-guards.py --only="墙上时钟"` 与 `--only="panic 站点棘轮"` 各退 0。
+✅ **`ble_android.rs` 这一格现在有本机编译凭据**：门禁第 25 步跑的是 `cargo check --target aarch64-linux-android`
+两档（默认 feature 与 `--features bluetooth`），各 **0 warning、PASS**。上一版这里写"本机编不了"是错的 ——
+那是我手敲的那条命令的形状在环境里过不去，门禁自己的命令形是过得去的。
+⚠️ **仍只有远程凭据的一格**：`bluetooth_peripheral_windows.rs`。本机两条路都真跑过，且都**在类型检查之前**
+就死在缺件上，因此对该文件零证据：`cargo xwin check --target x86_64-pc-windows-msvc` 退 101
+（`tauri-winres` panic：`NotAttempted("llvm-rc")`，本机现在没有 LLVM）；
+`cargo check --target x86_64-pc-windows-gnu` 退 101（`cc-rs`：找不到 `x86_64-w64-mingw32-gcc`）。
+⇒ 真凭据等 CI 的 Windows 腿；改动本身只是"删本地 `fn now_ms` + 一处限定路径调用"，没碰 import。
+**未跑**：护栏全量注入扫描、UI 探针、跨进程 E2E、真机；`Change Budget` 本地这次是**零覆盖**
+（工作树尚未提交 ⇒ `origin/main..HEAD` 为空，门禁把它印成 ⚠️ 而不是放过）⇒ 提交后按
+`node scripts/check-change-budget.mjs --range origin/main..HEAD` 现跑再报。
+
 ## [5.15.25] - 2026-10-30
 
 ### 字节→hex 收成一个家：`crypto::hex_lower` / `sha256_hex`（DUP-04，按形状钉住）

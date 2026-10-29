@@ -62,12 +62,14 @@ pub fn delete_pending_group_read(conn: &Connection, group_id: &str, peer_id: &st
     Ok(())
 }
 
-/// 当前毫秒时间戳
+/// 当前毫秒时间戳 —— **是 `crate::logging::now_ms` 的具名别名，不是第二份实现**。
+///
+/// 留着这个名字有两个理由：① 它是"落库那一列的时间戳"在存储层的说法（68 处在用）；
+/// ② `lib_window_tests` 那条棘轮把命令体里出现 `db::` 算成"访问 SQLite"，所以读钟的家
+///    不能设在 `db::` —— 否则蓝牙、发现层、看门狗都会被算成重活命令。
+/// 真正读系统时钟的地方只有一处，由 `logging::tests::the_wall_clock_has_two_names_max` 钉住。
 pub fn now_ms() -> i64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_millis() as i64)
-        .unwrap_or(0)
+    crate::logging::now_ms()
 }
 
 /// 收到对方的已读回执后，把「**我发给** `conv_id`、且 `ts <= upto_ts`」的消息一次推到 `read`。

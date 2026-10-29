@@ -533,6 +533,71 @@ node --experimental-strip-types -e '
   「内容已被清理」⇒ 第 ① 条红；往 `MessageItem.vue` 里塞一个 `t("favorite.mediaGone")` ⇒ 第 ③ 条红。
   第 ② 条带内联反控（拿一段没有 `fs::copy` 的文本走同一把尺子必须认不出）。
 
+### 4.0m DUP-03 逐处定性：九份墙上时钟里**没有一份是"本该不同"**（已收成一家）
+
+先做定性再动手（负责人点名"先逐处读"）。九处定义、三件事各不同：
+
+> **表里的行号是改动前那一版（提交 `13d77e36`，即 5.15.25）的位置** —— 这七行点的就是"被删掉的那份拷贝"，
+> 所以在今天的工作树里已经不存在了，别照着去找。复跑：
+> `git show 13d77e36:src-tauri/src/network/discovery.rs | grep -n "fn now_ms"`。
+> 本批之后仍在的只有两处：`logging.rs` 的家（当前 1396 行）和 `db/read_receipts.rs` 的别名（当前 71 行）。
+
+| 定义处 | 时钟源 | 兜底写法 | 调用点 | 定性 |
+|---|---|---|---|---|
+| `logging.rs:1385` | SystemTime − UNIX_EPOCH 毫秒 | `unwrap_or(0)` | 日志内部 + 看门狗 | **定为家** |
+| `db/read_receipts.rs:66` | 同上 | `unwrap_or(0)` | **现数 120 处 / 43 个生产码文件**经 `db::now_ms`（复跑 `grep -rn "db::now_ms(" src-tauri/src \| grep -v _tests.rs \| wc -l`） | **留作具名别名**：它承载"落库那一列的时间戳"的说法 |
+| `watchdog.rs:140` | 已是转调 | — | 6 | **本来就委托家**，带注释理由 |
+| `mesh/gossip_replay.rs:26` | 同上 | **`unwrap_or_default()`** | `gossip.rs` 2 处（限定路径调用） | 真拷贝 |
+| `transport/bluetooth_peripheral.rs:136` | 同上 | `unwrap_or(0)` | 1 | 真拷贝 |
+| `transport/bluetooth_peripheral_windows.rs:376` | 同上 | 同上 | 1 | 真拷贝（Windows 腿才能编） |
+| `transport/ble_android.rs:128` | 同上 | 同上 | 1 | 真拷贝（Android 腿才能编） |
+| `network/discovery.rs:176` | 同上 | 同上 | 1 | 真拷贝 |
+| `storage/cache_cleaner.rs:94` | 同上 | 同上 | 1 | 真拷贝 |
+
+- **否证的一条**：我原先（以及 §8 第 14 行原话）怀疑"BLE 那几份可能刻意用单调钟"。逐处读完：三处
+  全是墙上钟，`ble_android.rs` 与 windows 侧的注释还写着"与 macOS 侧同一套回收语义"⇒ **没有一份是设计如此**。
+  `cache_cleaner.rs:239` 那处 `UNIX_EPOCH` 是给临时目录名取 `subsec_nanos()` 当唯一种子，与"现在几点"无关，
+  不算拷贝（这也是判据为什么按"定义 `fn now_ms(` + 读 `UNIX_EPOCH`"两条件合取，而不是只看 `UNIX_EPOCH`）。
+- **家为什么在 `logging` 而不是 `db`**：`lib_window_tests` 的棘轮把命令体里出现 `db::` 算成"访问 SQLite"
+  （INV-P34 那一族的分母口径），家设在 `db::` 会把蓝牙、发现层、看门狗全算成重活命令。
+- **判据**：`logging::tests::the_wall_clock_has_two_names_max` 扫全仓 `.rs` —— 定义 `fn now_ms(` 的文件
+  只许 `{logging.rs, db/read_receipts.rs}` 两个，且**读 `UNIX_EPOCH` 的只许 `logging.rs`**（别名必须转调）。
+  扫描集合有下限断言（>100 个文件），同册 `the_wall_clock_matcher_catches_a_new_copy` 是正控
+  （新拷贝、"别名自己读钟"都要认得出，"调用家"不许误判）。遍历器与 §4.0k 的 hex 判据**共用同一个**
+  （`logging::production_rs_files`），不另抄第四份。
+- **护栏 Case** 285 → **286**（往 `discovery.rs` 注入一个 `fn now_ms()` ⇒ 判据点名三个文件并红，恢复逐字节一致）。
+- **本批自己撞掉过一条护栏的锚点 —— 第 13 步当场抓住**：`panic 站点棘轮` 那条注入用例原先把 `panic!`
+  注进 `watchdog.rs` 的 `now_ms` 开头，而这一批删的正是那个只做转发的包装 ⇒ `verify:local` 第 13 步报
+  「注入锚点在 `watchdog.rs` 及其 0 个 include! 子模块里**都找不到**」并 fail-fast（后面 12 步、含全部编译与
+  测试都没跑）。锚点已换到 `logging.rs` 的 `pub(crate) fn now_ms() -> i64 {`（现数该字面串在该文件里恰好 1 次，
+  注入器要求"唯一"才动手）。换到这里不是随手挑的：**这条线本身被上面那条判据钉着**（全仓唯一读 `UNIX_EPOCH`
+  的 `now_ms` 定义），锚点不会第三次悄悄漂掉。复跑自证 `python3 scripts/verify-guards.py --only="panic 站点棘轮"`
+  退 0（改坏即 FAIL、红由"棘轮只许降"报出、恢复逐字节一致）。
+  ⚠️ 这是"改源码 = 改坏注入锚点"一族的第 N 次复发，但**这一回是响亮失败**（8.1s 就停），不是静默空转 ——
+  正是第 13 步存在的理由。
+- **同一批还长出第 7 对内联跨域引用 —— 第 16 步按棘轮把它判红了**：`network/discovery.rs` 的
+  `sweep_peers` 改成内联 `crate::logging::now_ms()` 之后，`presence` 域第一次出现"指向 observability、
+  但本域没有任何对应 `use`"的写法 ⇒ `check-domain-deps.mjs` 报「内联跨域引用对数 7 超过棘轮上限 6」
+  （改前现数 16 处 / 6 对）。按它自己给的两条修法取了①：改成顶层 `use crate::logging::now_ms;`
+  并把 `observability` 写进 `presence.consumes` —— 让这条依赖从"判据看不见"搬回"判据管得到"，
+  而不是把上限调大（脚本原文："那等于把洞又变成沉默的"）。复跑 `node scripts/check-domain-deps.mjs`
+  ⇒ **回到 16 处 / 6 对、退 0**。
+  ⚠️ 同一个改动还牵出一份**没有机器凭据的手抄快照**：`docs/ARCHITECTURE-MAP.html` 里 presence 那一行也有
+  `cons` 字段，而 `check-domain-map.mjs` **只读 `docs/domains.data.mjs`、根本不看这份 HTML**（2026-10-29 现读：
+  脚本里没有 `cons`/`consumes` 字样）⇒ 两边只靠人同步，这里已同改并在 `notes` 里写明"改那边必须改这里"。
+- **分格取证（一条被我自己写错后又改回来）**：
+  - ✅ `ble_android.rs` **有本机编译凭据** —— 门禁第 25 步 `cargo check --target aarch64-linux-android`
+    两档（默认 feature / `--features bluetooth`）各 0 warning、PASS。本轮早先写"本机编不了、缺
+    `aarch64-linux-android-clang`"是**错的**：那次是我自己手敲的命令形状在环境里过不去（而且那趟还拿管道退码
+    当成 `ANDROID_EXIT=0`），门禁现成的命令形是过得去的 ⇒ 教训与既有那条"clippy 自造形状会造出 49 个红"同形：
+    **要用门禁那条命令的形状去证，别用手敲的**。
+  - ⚠️ `bluetooth_peripheral_windows.rs` **仍只有远程凭据**。本机两条路都真跑过，且都在**类型检查之前**
+    因缺件失败 ⇒ 对该文件零证据：`cargo xwin check --target x86_64-pc-windows-msvc` 退 101
+    （`tauri-winres` panic `NotAttempted("llvm-rc")`；本机现在没装 LLVM，`ls /opt/homebrew/opt/llvm/bin` 无 llvm-rc）、
+    `cargo check --target x86_64-pc-windows-gnu` 退 101（`cc-rs` 找不到 `x86_64-w64-mingw32-gcc`）。
+    两格的改动本身都只是"删本地 `fn now_ms` + 一处限定路径调用"，没有触碰 import。
+
+
 ### 4.1 已核查且未发现问题的稳定性面
 
 
@@ -618,7 +683,7 @@ node --experimental-strip-types -e '
 |---|---|---|---|---|
 | DUP-01 | High | 跨层规则漂移 | 消息 kind 白名单 TS 与 Rust 各写一份，**`image` 已漂移**（见 §1.5） | `messageKinds.ts:166` vs `commands/chat.rs:559-592` |
 | DUP-02 | ~~High~~ **复核后判「不再统一」**（四套文案讲的是四件事，见 §4.0l） | **通道判据已收一处（5.15.9）；越权闸两条入口已一致（5.15.15，见 §4.0f）**；本报告原话「剩下未统一的是缺失路径的提示文案三套（各落点各写一句 toast）」**不准确** —— 逐条读实现后是四件不同的事实（会话媒体被清理 / 收藏自己那份副本 / 本机尚未同步 / 原消息已不在），合并会让其中两三格对用户撒谎。防复发：`src/utils/mediaAvailability.test.ts` 三条新判据（特征词、收藏那句的「副本」必须由代码兑现、引用面不跨界），前两条各做过注入自证 | `src/utils/mediaAvailability.test.ts`、`src-tauri/src/commands/favorites.rs` |
-| DUP-03 | Medium | 重复工具 | Rust `now_ms()` 9 份逐字相同的 4 行实现（已有 3 种写法） | `src-tauri/src/**/*.rs` |
+| DUP-03 | ~~Medium~~ **已修（5.15.26）** | 墙上时钟 `fn now_ms()` 现数 **9 处定义**，全部读同一个 `SystemTime − UNIX_EPOCH`，彼此唯一差别是兜底写法（`unwrap_or(0)` vs `unwrap_or_default()`）—— 审计与我自己都怀疑过"BLE 那几份可能刻意用单调钟"，**逐处读完否证**：三处 BLE 全是墙上钟，注释还写着"与 macOS 侧同一套回收语义"。收成 `logging::now_ms` 一个家，`db::now_ms` 留作具名别名（理由见 §4.0m）。对照表在 §4.0m |
 | DUP-04 | ~~Medium~~ **已修（5.15.25）** | 重复工具 | 字节→小写 hex 的表达式散在生产码与测试里：**现数 20 行、11 个文件（其中 9 个是生产码文件）**，另有三个整份助手（`device::hex`、`relay_seal::channel_hex`、`commands/relay` 的探测串）—— 审计原写「8 份」偏少。收成 `crypto::hex_lower` / `sha256_hex` 一个家。 | `src-tauri/src/crypto.rs`（唯一的家）；复跑 `grep -rn ":02x" src-tauri/src` 改后只剩 `crypto.rs` 两处 |
 | DUP-05 | Medium | 重复组件 | **已修（5.15.16，见 §4.0g）**：`LogViewer` 两个外壳各抄一份逐字相同的虚拟行模板（8 个 `v-html` 落点）；矩阵误以为"两条外壳"是迁移前的问题 —— 虚拟化迁了，两份拷贝还在 | `src/components/LogRows.vue`（唯一行模板） |
 | DUP-06 | Medium | 重复组件 | 「表情切段 + 链接/提及切段 + 逐段渲染」3 份同形实现 | `src/components/message/*` |
@@ -706,7 +771,7 @@ node --experimental-strip-types -e '
 | 11 | SEC-02 | 上限已做（5.15.14）+ 淘汰认身份（5.15.19，§4.0h）；**announce 限流判不修** | 负结论留证：无界增长的成因是"条数没上限"而不是速率，`upsert_peer` 每 5s 周期最多一次 |
 | 12 | DUP-02 | 通道判据与越权闸两半**已落地**（5.15.9 / 5.15.15）；剩下那半**复核后判不再统一**（§4.0l） | 原话「剩三套 toast 文案未统一」不准确：那是四件不同的事实。改判据钉住"它们是四件事"：`src/utils/mediaAvailability.test.ts` 三条（特征词 / 收藏那句的「副本」必须由 `std::fs::copy` 兑现 / 引用面不跨界），前两条各做过注入自证 |
 | 13 | DUP-09～DUP-12 | **09 与 12 已加对账、11 已被覆盖、10 判不另加**（§4.0a） | 那两条对账用例就住在一个文件里，标题自带编号：`src/utils/messageKinds.test.ts` 的「跨语言契约：已读推进的排除清单两侧逐项一致（DUP-09）」与「…会话预览的固定文案两侧一致（DUP-12）」；复跑 `node --test src/utils/messageKinds.test.ts`。⚠️ 注：§6.3 那四行仍写着"无机器对账"，以本表为准 |
-| 14 | DUP-03/06/07/13/14/15 | **未做（6 个编号，现数）**；DUP-04 已修（5.15.25）、DUP-05 已修（5.15.16）、DUP-08 已修（5.15.20） | `now_ms()` 多份（9 处定义，但 BLE/Windows 那几份可能刻意用单调钟 ⇒ 先逐处定性再收）、SHA hex 已收、表情/链接切段 3 份、@提及底色散 2 处、TS 侧三份 LRU、`MessageItem` 动作两套模板、`MobilePageFrame` 手抄 1 份 |
+| 14 | DUP-06/07/13/14/15 | **未做（5 个编号，现数）**；DUP-03（5.15.26）、DUP-04（5.15.25）、DUP-05（5.15.16）、DUP-08（5.15.20）已收口 | 剩下：表情/链接/提及切段 3 份同形（DUP-06）、@提及底色配方散 2 处 + 一种没被复用的配方（DUP-07）、TS 侧三份各自实现的 LRU/容量闸（DUP-13）、`MessageItem` 的复制/保存动作在右键菜单与 ActionSheet 两套模板（DUP-14）、`MobilePageFrame` 的 overlay 形态手抄 1 份（DUP-15） |
 | 15 | SEC-04/05/06/08/12 | **全部已修**（SEC-04 5.15.14 + 5.15.17 留痕；SEC-05/06/08/12 见 5.15.13） | SEC-08 那条是入站帧聚合驻留的**全局限额 1 GiB**（审计原估 8 GiB 上界） |
 | 15b | SEC-07 / SEC-09 / SEC-10 / SEC-11 | **不成立 / 已撤回 / 判不修 / 判不修** | §4.0 与 §4.0b 逐条给了理由，负结论也是一等结论 |
 | 16 | 替换矩阵勘误 | **已做**（5.15.13：新增 §0 勘误 + 一条「每个生产依赖都必须在矩阵里登记过」的新判据，带变异正控） | 文件真路径是 `docs/architecture/open-source-replacement-matrix.md`（⚠️ 本表原来只写裸文件名，害我照着它写了一条指不到文件的复跑命令）；复跑 `grep -n "勘误" docs/architecture/open-source-replacement-matrix.md` |
@@ -720,10 +785,9 @@ node --experimental-strip-types -e '
 1. **TST-02**（唯一还活着的 P1）—— 前置是给 `useChatStore` 做依赖注入，属独立重构，别塞进修复批。
 2. **INV-P18 的 Ed25519 那半** —— 前置是"签名能力"抽象。
 3. **第 19 行：文件气泡失败原因落库** —— 前置是给那一族自由文本配码。
-4. **DUP 剩余的 6 行**（第 14 行：DUP-03/06/07/13/14/15，现数恰好 6 个编号）—— 纯重复，收益是"少一份会漂的拷贝"。DUP-04 已于 5.15.25 收口；DUP-03 动手前要先逐处定性（见第 14 行）。
+4. **DUP 剩余的 5 行**（第 14 行：DUP-06/07/13/14/15，现数 5 个编号）—— 纯重复，收益是"少一份会漂的拷贝"。DUP-03/04 已于 5.15.26 / 5.15.25 收口。
    （第 12 行 DUP-02 的那半本轮**复核后判不再统一**，理由与三条防复发判据见 §4.0l。）
 5. **`lucide-vue-next` 升级评估**、**`get_topology` 孤儿**（FUN-04）、**TST-06 真 ENOSPC**、**TST-09 Windows 三类行为用例**，以及**需要现场日志才能推进的 Windows 渲染层卡死**（另见 `docs/notes/`）。（第 20 行的历史改号本轮**判为不做**，理由与现算证据在 §4.0k，不再列进待办。）
-   **TST-09 Windows 三类行为用例**、以及**需要现场日志才能推进的 Windows 渲染层卡死**（另见 `docs/notes/`）。
 
 ---
 

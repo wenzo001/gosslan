@@ -8,7 +8,6 @@
 
 use std::net::Ipv4Addr;
 use std::sync::Arc;
-use std::time::{SystemTime, UNIX_EPOCH};
 
 use tokio::net::UdpSocket;
 use tokio::sync::watch;
@@ -19,6 +18,7 @@ use rand_core::{OsRng, RngCore};
 use base64::{engine::general_purpose::STANDARD, Engine as _};
 
 use crate::commands::is_virtual_ip;
+use crate::logging::now_ms;
 use crate::network::transport::{ensure_link, upsert_peer};
 use crate::protocol::{UdpPacket, ANNOUNCE_INTERVAL_SECS, RELAY_PEER_TIMEOUT_SECS, UDP_PORT};
 use crate::state::AppState;
@@ -171,13 +171,6 @@ fn broadcast_for_ip(ip: Ipv4Addr) -> Option<Ipv4Addr> {
         }
     }
     None
-}
-
-fn now_ms() -> i64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_millis() as i64)
-        .unwrap_or(0)
 }
 
 /// 绑定一个允许地址复用的 UDP 套接字（SO_REUSEADDR + SO_BROADCAST + unix 下 SO_REUSEPORT），

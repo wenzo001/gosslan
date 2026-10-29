@@ -9,7 +9,7 @@
 //! 但仍一并纳入统计与清理，避免早期版本残留在里面既看不见也清不掉。
 
 use std::path::{Path, PathBuf};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::UNIX_EPOCH;
 
 use serde::Serialize;
 
@@ -91,13 +91,6 @@ pub fn plan_removal(
     to_remove
 }
 
-fn now_ms() -> i64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_millis() as i64)
-        .unwrap_or(0)
-}
-
 /// 递归列出目录下的所有文件（walkdir 深度遍历，不跟随符号链接）。
 ///
 /// 为什么必须递归（2026-09-19 审计）：媒体按 `todo-paste/`、按日子目录等分层落盘，
@@ -133,7 +126,7 @@ pub fn clean_files(dirs: &[PathBuf], policy: CachePolicy) -> CleanupReport {
 }
 
 fn clean_inner(dirs: &[PathBuf], policy: CachePolicy) -> CleanupReport {
-    let now = now_ms();
+    let now = crate::logging::now_ms();
     let mut entries: Vec<(String, CacheEntry)> = Vec::new();
     for dir in dirs {
         for path in walk_files(dir) {

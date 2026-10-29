@@ -40,7 +40,7 @@ async fn replay_group_frames_once(state: &std::sync::Arc<crate::state::AppState>
             .unwrap_or_else(|e| e.into_inner());
         // take_due 而不是 eligible：同一个 peer 两次补递之间要有最小间隔 ——
         // 链路会在几十秒里反复登记，每次都重发一遍既没用也费电。
-        cache.take_due(peer, &state.device_id, crate::mesh::gossip_replay::now_ms())
+        cache.take_due(peer, &state.device_id, crate::logging::now_ms())
     };
     if frames.is_empty() {
         return 0;
@@ -567,7 +567,7 @@ async fn handle_gossip(state: &Arc<AppState>, peer_id: &str, env: GossipEnvelope
                 .gossip_relay
                 .lock()
                 .unwrap_or_else(|e| e.into_inner());
-            cache.remember(&fwd, crate::mesh::gossip_replay::now_ms());
+            cache.remember(&fwd, crate::logging::now_ms());
         }
         let fwd_msg = Message::Gossip { envelope: fwd };
         // ⚠️ 转发**不阻塞本连接的读循环**：`try_send` 在信道满时有界补试 500ms，

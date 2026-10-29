@@ -1382,11 +1382,51 @@ impl Logger {
     }
 }
 
+/// 本机现在的毫秒时间 —— **全仓唯一一处读系统时钟**（审计 DUP-03：这里原有 9 处定义）。
+///
+/// ## 为什么家在 `logging` 而不是 `db`
+/// `db::now_ms` 还留着（它是"落库那一列的时间戳"的说法，68 处在用），但那只是一层**具名别名**，
+/// 函数体就是转调这里。理由：`lib_window_tests` 的棘轮把命令体里出现 `db::` 算成"访问 SQLite"，
+/// 家若设在 `db::`，蓝牙、发现层、看门狗都会被算成重活命令 —— 那是把判据弄脏，不是省事。
+///
+/// ## 为什么必须只有一处
+/// 九份拷贝今天唯一的差别就是兜底写法（`unwrap_or(0)` 与 `unwrap_or_default()`）——
+/// 这正是会漂的那一步：漂成大写、漂成秒、漂成单调钟，症状都是"某些 TTL 早于预期到期"。
+/// 形状判据见本文件末尾的 `the_wall_clock_has_two_names_max`。
 pub(crate) fn now_ms() -> i64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_millis() as i64)
         .unwrap_or(0)
+}
+
+/// 递归收集 `src/**/*.rs`（**测试用**：形状类判据要扫全仓，`include!` 的分册是磁盘上的
+/// 独立文件，一起扫得到 —— 判据比的是字面形状，与模块路径无关）。
+/// 放在这里是为了让 `crypto.rs` 的 hex 判据与本文件共用**同一个遍历器**（不再多抄一份）。
+#[cfg(test)]
+pub(crate) fn production_rs_files() -> Vec<std::path::PathBuf> {
+    fn walk(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
+        for e in std::fs::read_dir(dir).expect("读 src 目录") {
+            let p = e.expect("dir entry").path();
+            if p.is_dir() {
+                walk(&p, out);
+            } else if p.extension().and_then(|s| s.to_str()) == Some("rs") {
+                out.push(p);
+            }
+        }
+    }
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+    let mut out = Vec::new();
+    walk(&root, &mut out);
+    out.sort();
+    out
+}
+
+/// 相对 `src/` 的路径（判据要报出"哪个文件"，绝对路径没法读）。
+#[cfg(test)]
+pub(crate) fn rel_to_src(p: &std::path::Path) -> String {
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+    p.strip_prefix(&root).unwrap_or(p).display().to_string()
 }
 
 /// 把 Unix 毫秒时间戳格式化为 UTC `YYYY-MM-DD HH:MM:SS`（落盘文件用，可读）。
@@ -2769,5 +2809,67 @@ mod tests {
         .expect("logger 崩溃块里的上下文行也要认");
         assert_eq!(p.location, "file_relay.rs:230:9");
         assert_eq!(p.message, "刚拿_mut过");
+    }
+
+    // ---------------- 墙上时钟只有一个家（审计 DUP-03） ----------------
+
+    /// 判据按**形状**而不是清单：重复的由来从来不是"抄了一份没登记"，而是"第 N+1 处又写了一遍"。
+    ///
+    /// 允许两个名字：家（这里）与 `db::now_ms` 那层**具名别名**（别名必须转调家，不许自己读钟）。
+    /// 第三、第四个名字一旦出现，或者别名偷偷变回读钟，就红。
+    #[test]
+    fn the_wall_clock_has_two_names_max() {
+        let files = production_rs_files();
+        assert!(
+            files.len() > 100,
+            "只扫到 {} 个 .rs ⇒ 目录走错了，这条判据是在空集上恒绿",
+            files.len()
+        );
+        let mut definers: Vec<String> = Vec::new();
+        let mut reads_epoch: Vec<String> = Vec::new();
+        for p in &files {
+            let Ok(text) = std::fs::read_to_string(p) else {
+                continue;
+            };
+            let rel = rel_to_src(p);
+            if text.contains("fn now_ms(") {
+                definers.push(rel.clone());
+            }
+            // "定义 + 真的读系统时钟"才算第二份实现；转调别家的不算。
+            if text.contains("fn now_ms(") && text.contains("UNIX_EPOCH") {
+                reads_epoch.push(rel.clone());
+            }
+        }
+        assert_eq!(
+            definers,
+            vec!["db/read_receipts.rs".to_string(), "logging.rs".to_string()],
+            "墙上时钟的名字多了一个（每多一个名字就多一份会漂的实现）：{definers:?}"
+        );
+        assert_eq!(
+            reads_epoch,
+            vec!["logging.rs".to_string()],
+            "读系统时钟的地方必须只有家：{reads_epoch:?}"
+        );
+    }
+
+    /// 正控：同一把尺子必须认得出"又长了一个名字"和"别名偷偷自己读钟"。
+    #[test]
+    fn the_wall_clock_matcher_catches_a_new_copy() {
+        let copy = "fn now_ms() -> i64 {\n    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis() as i64).unwrap_or(0)\n}";
+        assert!(
+            copy.contains("fn now_ms("),
+            "认不出新定义 ⇒ 上面那条判据不作数"
+        );
+        assert!(
+            copy.contains("UNIX_EPOCH"),
+            "认不出『别名自己读钟』 ⇒ 第二格断言是空的"
+        );
+        let alias = "pub fn now_ms() -> i64 {\n    crate::logging::now_ms()\n}";
+        assert!(alias.contains("fn now_ms(") && !alias.contains("UNIX_EPOCH"));
+        let call_only = "let now = crate::logging::now_ms();";
+        assert!(
+            !call_only.contains("fn now_ms("),
+            "调用家的写法不该被判成多了一个名字"
+        );
     }
 }
