@@ -21,8 +21,26 @@ const RENDERER_STALE_MS: i64 = 3_000;
 const NOTIFY_AT_MS: i64 = 10_000;
 /// 同一 episode 内两次 HANG 记录的最小间隔。
 const MIN_NOTE_INTERVAL_MS: i64 = 30_000;
-/// 整个进程最多写多少条 HANG（现场文件有 2 MiB 上界，这里再加一层）。
+/// 密集阶段写满 [`MAX_NOTES`] 条之后，降到这个间隔一条 —— **不许彻底停**：
+/// 2026-10-27 那次渲染层卡死正好写满 20 条就哑了（574 s 处），之后到用户手动退出
+/// 的 78 秒里一条都没有，而"它到底恢复没恢复"正是排查最需要的那一格。
+/// 5 分钟 × 一天 = 288 行，现场文件的 2 MiB 上界照旧兜底。
+const SLOW_NOTE_INTERVAL_MS: i64 = 300_000;
+/// 密集阶段（每 [`MIN_NOTE_INTERVAL_MS`] 一条）最多写这么多条，之后转慢速。
 const MAX_NOTES: u32 = 20;
+
+/// 这一条该按哪个间隔判重：先密后疏。
+fn note_interval(notes: u32) -> i64 {
+    if notes < MAX_NOTES {
+        MIN_NOTE_INTERVAL_MS
+    } else {
+        SLOW_NOTE_INTERVAL_MS
+    }
+}
+
+/// 慢速间隔必须真的比密集间隔长 —— 写反了"转慢速"就变成"越卡写得越勤"。
+/// 放在编译期断言（clippy 也不许在测试里写常量断言）。
+const _: () = assert!(SLOW_NOTE_INTERVAL_MS > MIN_NOTE_INTERVAL_MS);
 
 pub fn start<R: tauri::Runtime>(app: tauri::AppHandle<R>, state: Arc<crate::state::AppState>) {
     let _ = std::thread::Builder::new()
@@ -62,11 +80,11 @@ fn run<R: tauri::Runtime>(app: tauri::AppHandle<R>, state: Arc<crate::state::App
             match &mut main_episode {
                 None => {
                     main_episode = Some((now - main_stall, now));
-                    note_hang("main_thread", main_stall, op.as_deref(), &mut notes);
+                    note_hang("main_thread", main_stall, op.as_ref(), &mut notes);
                 }
-                Some((_, last_note)) if now - *last_note >= MIN_NOTE_INTERVAL_MS => {
+                Some((_, last_note)) if now - *last_note >= note_interval(notes) => {
                     *last_note = now;
-                    note_hang("main_thread", main_stall, op.as_deref(), &mut notes);
+                    note_hang("main_thread", main_stall, op.as_ref(), &mut notes);
                 }
                 _ => {}
             }
@@ -84,12 +102,12 @@ fn run<R: tauri::Runtime>(app: tauri::AppHandle<R>, state: Arc<crate::state::App
                 match &mut renderer_episode {
                     None => {
                         renderer_episode = Some((now - stale, now, false));
-                        note_hang("ui_renderer", stale, op.as_deref(), &mut notes);
+                        note_hang("ui_renderer", stale, op.as_ref(), &mut notes);
                     }
                     Some((_, last_note, notified)) => {
-                        if now - *last_note >= MIN_NOTE_INTERVAL_MS {
+                        if now - *last_note >= note_interval(notes) {
                             *last_note = now;
-                            note_hang("ui_renderer", stale, op.as_deref(), &mut notes);
+                            note_hang("ui_renderer", stale, op.as_ref(), &mut notes);
                         }
                         if !*notified && stale >= NOTIFY_AT_MS {
                             *notified = true;
@@ -125,31 +143,44 @@ fn now_ms() -> i64 {
     crate::logging::now_ms()
 }
 
-fn current_op(state: &crate::state::AppState) -> Option<String> {
-    state
+/// 取**最后一次已知**的在途命令与它距今的秒数。
+///
+/// 为什么不能只看"此刻"：卡死现场里 `ui_current_op` 常常已经空了（那一刻没有 IPC 在飞），
+/// 旧写法于是只写得出 `last_op=unknown` —— 5.14.7 那次 574 秒的渲染层卡死因此不可归因。
+/// 现在心跳只在拿到命令时覆盖该字段（不清空），这句就能说出"最后一步是 X、距今 N 秒"。
+fn current_op(state: &crate::state::AppState) -> Option<(String, i64)> {
+    let op = state
         .ui_current_op
         .lock()
         .unwrap_or_else(|e| e.into_inner())
-        .clone()
+        .clone()?;
+    let at = state.ui_current_op_at.load(Ordering::SeqCst);
+    let age_s = if at > 0 {
+        (now_ms() - at).max(0) / 1000
+    } else {
+        -1
+    };
+    Some((op, age_s))
 }
 
-fn note_hang(scope: &str, ms: i64, op: Option<&str>, notes: &mut u32) {
-    if *notes >= MAX_NOTES {
-        return;
-    }
-    *notes += 1;
+fn note_hang(scope: &str, ms: i64, op: Option<&(String, i64)>, notes: &mut u32) {
+    *notes = notes.saturating_add(1);
     let seconds = (ms.max(0) / 1000).max(1);
     // op 名里不许出现空白：现场行按空白分字段（`field_str` 取第一个词）。
-    let op: String = op
-        .unwrap_or("unknown")
-        .split_whitespace()
-        .next()
-        .unwrap_or("unknown")
-        .chars()
-        .take(80)
-        .collect();
+    let (op_name, op_age) = match op {
+        Some((name, age)) => (
+            name.split_whitespace()
+                .next()
+                .unwrap_or("unknown")
+                .chars()
+                .take(80)
+                .collect::<String>(),
+            *age,
+        ),
+        None => ("unknown".to_string(), -1),
+    };
     crate::logging::crash_note(&format!(
-        ">>> code=HANG scope={scope} seconds={seconds} last_op={op} {}",
+        ">>> code=HANG scope={scope} seconds={seconds} last_op={op_name} last_op_age_s={op_age} {}",
         // 冻住的那一刻我们占了多少内存 / 正在读多少帧字节 —— 没有这一格，
         // "主线程 + 渲染层同一秒双双停滞"只能猜，有了它才分得开"代码死循环"与"提交内存耗尽"。
         // 按 key 取字段的老解析（`logging.rs::field_str`）不受追加影响。
@@ -162,4 +193,20 @@ fn note_end(scope: &str, ms: i64) {
     crate::logging::crash_note(&format!(
         ">>> code=HANG_END scope={scope} seconds={seconds}"
     ));
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// 2026-10-27 真机：574 s 的渲染层卡死正好写满 20 条（`MAX_NOTES`）就哑了，
+    /// 之后到用户手动退出那 78 秒一条都没有 —— 而"它恢复没恢复"正是最需要的那格。
+    /// 这条钉住：密集阶段之后**转慢速**，不是停。
+    #[test]
+    fn hang_notes_throttle_after_the_dense_phase_but_never_stop() {
+        assert_eq!(note_interval(0), MIN_NOTE_INTERVAL_MS);
+        assert_eq!(note_interval(MAX_NOTES - 1), MIN_NOTE_INTERVAL_MS);
+        assert_eq!(note_interval(MAX_NOTES), SLOW_NOTE_INTERVAL_MS);
+        assert_eq!(note_interval(MAX_NOTES + 10_000), SLOW_NOTE_INTERVAL_MS);
+    }
 }

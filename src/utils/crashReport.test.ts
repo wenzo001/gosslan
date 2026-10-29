@@ -32,6 +32,8 @@ test("只有异常/启动中止才提示；正常退出不打扰", () => {
   assert.equal(shouldShowCrashNotice("panic"), true);
   assert.equal(shouldShowCrashNotice("silent_kill"), true);
   assert.equal(shouldShowCrashNotice("startup_failed"), true);
+  // 分配器 abort：有现场（请求字节数）但没有崩溃块，是"真死"的一类 ⇒ 必须提示
+  assert.equal(shouldShowCrashNotice("abort"), true);
   assert.equal(shouldShowCrashNotice("clean"), false);
   assert.equal(shouldShowCrashNotice("no_history"), false);
 });

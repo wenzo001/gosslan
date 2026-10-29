@@ -217,6 +217,7 @@ const {
   fullTime,
   timeDividerText,
   sendState,
+  sendWaiting,
   receiptTitle,
 } = display;
 
@@ -1796,6 +1797,7 @@ async function copyFileToClipboard() {
           <MessageReceipt
             v-if="mine && !isSelfMsg && sendState !== 'hidden'"
             :state="sendState"
+            :waiting="sendWaiting"
             :title="receiptTitle"
             :is-group="isGroup"
             :reader-ids="groupReaderIds"

@@ -309,6 +309,8 @@ export const enUS: MessageDict = {
     "The last run did not end normally (force quit, power loss, or out of memory), so no specific location was recorded.",
   "crash.startupFailed":
     "The last startup was safely aborted (database/identity check failed). The database was not modified.",
+  "crash.abort":
+    "The last run died in the memory allocator (the system could not hand it the block it asked for), so the process was aborted before it could record a location. The requested size is in the reallocation-failure line of the log.",
   "crash.hang": "The UI was unresponsive for {seconds}s last time; the last step was {op}.",
   "crash.copy": "Copy details",
   "crash.openLogs": "View logs",
@@ -671,6 +673,8 @@ export const enUS: MessageDict = {
   "msg.noMessage": "No messages",
   "msg.mentioned": "[Mentioned you]",
   "msg.sending": "Sending…",
+  "msg.waitingForPeer":
+    "Waiting for the recipient to come online. It will be sent automatically once they do; the message is kept for up to 7 days.",
   "msg.delivered": "Delivered, unread",
   "msg.read": "Read",
   "msg.partialCanceled": "Some members received it; the rest were cancelled",
