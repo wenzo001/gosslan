@@ -8,7 +8,7 @@ import { PopoverContent, PopoverPortal, PopoverRoot, PopoverTrigger } from "reka
 import { avatarSeedFor } from "@/utils/avatarSeed";
 import type { SendState } from "@/composables/useMessageDisplay";
 import type { GroupDeliverySummary } from "@/types";
-import { CheckCheck, HelpCircle } from "lucide-vue-next";
+import { CheckCheck, Clock3, HelpCircle } from "lucide-vue-next";
 import { X } from "@/components/ui/icons";
 import { AlertCircle, Check } from "@/components/ui/icons";
 
@@ -46,6 +46,12 @@ const props = defineProps<{
    * 理由与 `retryable` 同一条：一颗点了什么都不会发生的按钮，比不给按钮更糟。
    */
   canCancelSend?: boolean;
+  /**
+   * `sending` 已经停了足够久 ⇒ 它其实在**等对端上线**（离线队列最长留 7 天）。
+   * 判据在 `utils/sendWaiting`，由 `MessageItem` 算好传进来；这里只负责换视觉：
+   * 不再转圈（转圈＝"正在发"，而它并没有在发）。
+   */
+  waiting?: boolean;
 }>();
 const emit = defineEmits<{ (e: "retry"): void; (e: "cancel"): void }>();
 
@@ -323,7 +329,14 @@ function readerAvatar(id: string): string | null {
           <!-- sending：单勾右下角叠一个小 spinner —— 表达"已经在发但还没到位"。
                TG 用的是纯 spinner，但纯 spinner 在气泡上很不显眼（小 + 灰）；
                加一个勾让用户一眼就知道这不是空状态。 -->
-          <template v-if="state === 'sending'">
+          <!-- 等对端上线：**静态**时钟，不转圈。转圈是"正在发"的语言，而这条此刻
+               谁也没在发 —— 它在离线队列里等（日志里的 peer_offline(hold_7d)）。
+               仍然保留勾：内容本身是完整的，只是还没送出去。 -->
+          <template v-if="state === 'sending' && waiting">
+            <Check class="h-3.5 w-3.5 text-[var(--gosslan-text-2)]" />
+            <Clock3 class="absolute -right-1 -bottom-0.5 h-2.5 w-2.5 text-[var(--gosslan-text-2)]" />
+          </template>
+          <template v-else-if="state === 'sending'">
             <Check class="h-3.5 w-3.5 text-[var(--gosslan-text-2)]" />
             <Spinner class="absolute -right-1 -bottom-0.5 text-[var(--gosslan-text-2)]" size-class="h-2.5 w-2.5" decorative />
           </template>

@@ -409,6 +409,10 @@ pub enum PreviousExit {
     /// 只有"启动"、没有退出、也没有崩溃块 ⇒ **按异常终止处理**
     /// （强杀 / OOM / 原生代码 abort / 掉电 —— 这一类无法再细分，也不许假装能细分）
     SilentKill,
+    /// 分配器自己的 abort：`>>> 重分配失败：… 分配器即将 abort`。
+    /// 与 `SilentKill` 分开：这一条**有现场**（请求字节数写在行里），只是
+    /// panic 钩子跑不到（abort 不走 unwind）⇒ 没有 `===== 崩溃现场` 块。
+    Abort,
 }
 
 /// 上一次运行留给本次启动的结构化报告（启动时算一次，命令只 clone）。
@@ -577,6 +581,7 @@ pub fn build_previous_run_report(
         PreviousExit::Panic => ("panic", "BOOT_PREV_PANIC"),
         PreviousExit::StartupFailed => ("startup_failed", "BOOT_PREV_STARTUP_FAILED"),
         PreviousExit::SilentKill => ("silent_kill", "BOOT_PREV_SILENT_KILL"),
+        PreviousExit::Abort => ("abort", "BOOT_PREV_ABORT"),
         PreviousExit::Clean => ("clean", "BOOT_PREV_CLEAN"),
         PreviousExit::NoHistory => ("no_history", "BOOT_PREV_NO_HISTORY"),
     };
@@ -628,12 +633,30 @@ pub fn classify_previous_exit(native_lines: &[String]) -> PreviousExit {
         .iter()
         .filter(|l| !is_hang_native_line(l))
         .collect();
-    let native_lines = &lines[..];
-    if native_lines.is_empty() {
+    if lines.is_empty() {
         return PreviousExit::NoHistory;
+    }
+    // ★ 末尾的 `>>> 启动尝试` 属于**下一轮**：它由 bootstrap 插件在 `Logger::new` 之前写，
+    //   所以落在上一轮切片的尾部。它不是收尾路标 —— 2026-10-29 拿真机现场文件复算，
+    //   48 段里有 23 段的判定被它顶成 `NoHistory`（15 段本该 Clean、8 段本该 SilentKill），
+    //   连带 `silent_kill` 变成不可达分支、静默死亡不弹横幅。先剔掉再判。
+    let mut end = lines.len();
+    while end > 0 && lines[end - 1].starts_with(">>> 启动尝试") {
+        end -= 1;
+    }
+    let native_lines = &lines[..end];
+    if native_lines.is_empty() {
+        // 只剩启动尝试 ⇒ 进程起来过、连 logger 都没走到就没了（被单实例守卫顶掉 / 崩在初始化前）。
+        return PreviousExit::SilentKill;
     }
     if native_lines.iter().any(|l| l.starts_with("===== 崩溃现场")) {
         return PreviousExit::Panic;
+    }
+    // 分配器 abort：`>>> 重分配失败：请求 N 字节 ⇒ 分配器即将 abort（不是 panic，钩子不会跑）`。
+    // 它是独立通道写的、没有崩溃块 ⇒ 旧分类落到 NoHistory、横幅不弹（10-21 真机现场里
+    // 那次 326350 字节的重分配失败就是这一形）。
+    if native_lines.iter().any(|l| l.starts_with(">>> 重分配失败")) {
+        return PreviousExit::Abort;
     }
     // **没有 logger 的 panic** 走的是独立通道，形状是 `>>> panic @ file:line:col：…`，
     // 而不是 `===== 崩溃现场`（那条要 logger 的"崩之前 300 条"上下文）。
@@ -824,6 +847,28 @@ impl Logger {
     }
     pub fn error(&self, target: &str, message: impl Into<String>) {
         self.log(Level::Error, target, message.into());
+    }
+
+    /// 只进内存环、**不落盘**的诊断行。
+    ///
+    /// 为什么不是简单降成 `Debug`：`debug()` 走的是同一条 `log()` 落盘路径 ⇒ 文件上一点
+    /// 没少。而诊断面板读的是内存环（`snapshot`）⇒ 把"进环"和"落盘"拆开，两件事同时成立：
+    /// 面板照样看得见全量诊断，`gosslan.log` 不再被 1.16 行/秒的成功心跳冲掉
+    /// （2026-10-29 现算：announce_verified 3006 条 + bc_directed 432 条 = 一段 43 分钟
+    /// 会话的 97.5%，主日志因此 ~50 分钟就翻一代）。
+    ///
+    /// 失败类**不走这里**：它们要继续落盘（见 [`DiagDelivery::Warn`]）。
+    pub fn ring_only(&self, target: &str, message: String) {
+        let mut q = self.entries.lock().unwrap_or_else(|e| e.into_inner());
+        q.push_back(LogEntry {
+            ts: now_ms(),
+            level: Level::Info.as_str().to_string(),
+            target: target.to_string(),
+            message,
+        });
+        while q.len() > MAX_MEM_LOGS {
+            q.pop_front();
+        }
     }
 
     /// 记录一条日志：diag 同秒折叠 → 进内存 buffer → debug 下打 stderr → 落盘。
@@ -1279,6 +1324,9 @@ impl Logger {
                     "可能是强杀（kill -9 / 看门狗 / 拔电）或 OOM；这几类死法在进程内部留不下任何东西，",
                     "只能这样按缺席归类"
                 ),
+                PreviousExit::Abort => {
+                    "上次收尾判定：分配器 abort（见上面的「重分配失败」行；请求字节数就写在里面）"
+                }
                 PreviousExit::NoHistory => "上次收尾判定：现场文件里没有可判定的路标",
             };
             let verdict_code = match verdict_kind {
@@ -1286,6 +1334,7 @@ impl Logger {
                 PreviousExit::Panic => "BOOT_PREV_PANIC",
                 PreviousExit::StartupFailed => "BOOT_PREV_STARTUP_FAILED",
                 PreviousExit::SilentKill => "BOOT_PREV_SILENT_KILL",
+                PreviousExit::Abort => "BOOT_PREV_ABORT",
                 PreviousExit::NoHistory => "BOOT_PREV_NO_HISTORY",
             };
             let verdict_line = format!("{verdict} code={verdict_code}");
@@ -1296,9 +1345,10 @@ impl Logger {
             // 永远拿不到这句结论 —— 2026-10-20 用 release 二进制实测就是这样：文件里有
             // 三条原始路标，判定只在界面上。补这一行让离线读文件的人也能直接看到。
             let v_level = match verdict_kind {
-                PreviousExit::Panic | PreviousExit::SilentKill | PreviousExit::StartupFailed => {
-                    Level::Warn
-                }
+                PreviousExit::Panic
+                | PreviousExit::SilentKill
+                | PreviousExit::Abort
+                | PreviousExit::StartupFailed => Level::Warn,
                 _ => Level::Info,
             };
             if let Err(r) = self.append_file(now_ms(), v_level, "boot", &verdict_line) {
@@ -1398,6 +1448,53 @@ fn crash_native_exists(path: &std::path::Path) -> bool {
     read_tail_lines(path, PREV_CRASH_TAIL_BYTES)
         .iter()
         .any(|l| is_crash_native_line(l))
+}
+
+// ==================== 诊断事件的投递口径 ====================
+
+/// 一条 `push_diag_event` 该往哪儿投（纯函数：口径只在这一处，判据也钉这一处）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DiagDelivery {
+    /// 高频且没有排查价值（或调用点旁边已有更完整的行）⇒ 丢掉
+    Dropped,
+    /// 成功类诊断：只进内存环（诊断面板可见），不落盘
+    RingOnly,
+    /// 失败类 ⇒ warn，必须落盘
+    Warn,
+    /// 其余状态跃迁 ⇒ info，落盘
+    Info,
+}
+
+/// 决定一条诊断事件的投递方式。
+///
+/// 顺序是有意的：**失败类先判**，任何清单都不许把错误折掉
+/// （2026-10-16 那轮审计的主题就是"失败必须看得见"）。
+pub fn diag_delivery(kind: &str) -> DiagDelivery {
+    const DROPPED: &[&str] = &[
+        // 纯心跳（高频，且没有排查价值）
+        "announce_recv",
+        "broadcast_sent",
+        "multicast_sent",
+        "who_has_sent",
+        // 已在各自的调用点旁边用更完整的上下文记过（重复打只会刷屏）
+        "hello_rejected",
+        "hello_mismatch",
+        "identity_key_conflict",
+    ];
+    // 成功类的"每个对端一行"心跳：面板上要看得到，但**不值得落盘**
+    // （实测一段 43 分钟会话：announce_verified 3006 行、bc_directed 432 行 = 97.5%）。
+    const RING_ONLY: &[&str] = &["announce_verified", "bc_directed"];
+
+    if kind.ends_with("_error") {
+        return DiagDelivery::Warn;
+    }
+    if RING_ONLY.contains(&kind) {
+        return DiagDelivery::RingOnly;
+    }
+    if kind != "bc_directed_sent" && DROPPED.contains(&kind) {
+        return DiagDelivery::Dropped;
+    }
+    DiagDelivery::Info
 }
 
 /// 读文件尾部至多 `max_bytes` 字节并按行返回。从中间起读会让首行成为半条，直接丢掉；
@@ -1553,6 +1650,72 @@ mod tests {
             classify_previous_exit(&mk(&[">>> code=BOOT_FAILED old", "----- 正常退出 b",])),
             PreviousExit::Clean
         );
+    }
+
+    /// 2026-10-29 拿真机现场文件复算出来的：末尾那条 `>>> 启动尝试` 属于**下一轮**
+    /// （bootstrap 在 logger 之前写），旧实现把它当成上一轮的最后一条路标 ⇒ 48 段里
+    /// 23 段判成 `NoHistory`，`silent_kill` 成了不可达分支、静默死亡不弹横幅。
+    #[test]
+    fn next_runs_bootstrap_line_does_not_swallow_the_previous_exit() {
+        let mk = |s: &[&str]| -> Vec<String> { s.iter().map(|x| x.to_string()).collect() };
+        // 上一轮正常退出 + 下一轮 bootstrap 行 ⇒ 仍必须是 Clean（真机就是这么被读成 NoHistory 的）
+        assert_eq!(
+            classify_previous_exit(&mk(&[
+                "----- 启动 a",
+                "----- 正常退出 a",
+                ">>> 启动尝试：进程已起，logger 尚未建立（bootstrap 已绑定现场路径）  @2026-10-28 11:27:07",
+            ])),
+            PreviousExit::Clean
+        );
+        // 上一轮被强杀 + 下一轮 bootstrap 行 ⇒ SilentKill（这一格此前结构上不可达）
+        assert_eq!(
+            classify_previous_exit(&mk(&["----- 启动 a", ">>> 启动尝试：进程已起"])),
+            PreviousExit::SilentKill
+        );
+        // 只有 bootstrap 行 ⇒ 起来过但没走到 logger ⇒ 异常终止，而不是"没有历史"
+        assert_eq!(
+            classify_previous_exit(&mk(&[">>> 启动尝试：进程已起"])),
+            PreviousExit::SilentKill
+        );
+        // 反向：空输入仍是"首次运行/被清档"，不许被上面那条改写成异常终止
+        assert_eq!(classify_previous_exit(&mk(&[])), PreviousExit::NoHistory);
+    }
+
+    /// 10-21 真机现场：`>>> 重分配失败：请求 326350 字节 … ⇒ 分配器即将 abort`。
+    /// 它有现场（字节数就在行里）但没有崩溃块（abort 不走 unwind）⇒ 必须独立成类。
+    #[test]
+    fn allocator_abort_is_its_own_kind_not_no_history() {
+        let mk = |s: &[&str]| -> Vec<String> { s.iter().map(|x| x.to_string()).collect() };
+        assert_eq!(
+            classify_previous_exit(&mk(&[
+                "----- 启动 a",
+                ">>> 重分配失败：请求 326350 字节（对齐 1）⇒ 分配器即将 abort（不是 panic，钩子不会跑）  @2026-10-21 10:42:49",
+            ])),
+            PreviousExit::Abort
+        );
+        // 有崩溃块时仍优先 panic（两种死法不会同时出现，这里钉住优先级不被后来的分支改掉）
+        assert_eq!(
+            classify_previous_exit(&mk(&[
+                "----- 启动 a",
+                "===== 崩溃现场 b",
+                ">>> 重分配失败：请求 1 字节",
+            ])),
+            PreviousExit::Panic
+        );
+        // 落盘那一侧也要能说出这一格：kind / code 两条映射都不能回落到 no_history
+        let dir = std::env::temp_dir().join(format!("gosslan-abort-kind-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let crash = dir.join("c-crash.log");
+        std::fs::write(
+            &crash,
+            "----- 启动 a 版本 1.0.0\n>>> 重分配失败：请求 326350 字节（对齐 1）⇒ 分配器即将 abort\n----- 启动 b 版本 1.0.0\n",
+        )
+        .unwrap();
+        let raw = read_tail_lines(&crash, PREV_CRASH_TAIL_BYTES);
+        let r = build_previous_run_report(&raw, &crash, &dir);
+        assert_eq!(r.kind, "abort");
+        assert_eq!(r.code, "BOOT_PREV_ABORT");
     }
 
     #[test]
@@ -2011,6 +2174,51 @@ mod tests {
             snap.iter().filter(|e| e.level == "warn").count(),
             4,
             "warn 一条都不能少"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// 投递口径：失败先于任何清单；两条高频成功心跳只进面板、其余照旧。
+    /// 这四条一起钉住"降级 ≠ 消失"。
+    #[test]
+    fn diag_delivery_puts_failures_first_and_keeps_high_freq_success_in_the_panel() {
+        // 失败类：即使名字同时命中别的清单也必须是 Warn，绝不被折掉
+        assert_eq!(diag_delivery("announce_error"), DiagDelivery::Warn);
+        assert_eq!(diag_delivery("bc_directed_error"), DiagDelivery::Warn);
+        assert_eq!(diag_delivery("relay_error"), DiagDelivery::Warn);
+        // 两条实测占 97.5% 的成功心跳：只进面板
+        assert_eq!(diag_delivery("announce_verified"), DiagDelivery::RingOnly);
+        assert_eq!(diag_delivery("bc_directed"), DiagDelivery::RingOnly);
+        // 其余高频心跳照旧丢弃；子网广播的 `_sent` 单独豁免（真机排查"只通一半"要用）
+        assert_eq!(diag_delivery("announce_recv"), DiagDelivery::Dropped);
+        assert_eq!(diag_delivery("bc_directed_sent"), DiagDelivery::Info);
+        // 状态跃迁类仍以 info 落盘
+        assert_eq!(diag_delivery("discovery_started"), DiagDelivery::Info);
+    }
+
+    /// `ring_only` 是"面板可见 + 盘上没有"的实现手段：两头都必须验到，
+    /// 只验一头就会得到"降级成了消失"或"根本没降".
+    #[test]
+    fn ring_only_reaches_the_panel_but_never_the_file() {
+        let dir = std::env::temp_dir().join(format!("gosslan-ring-only-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let logger = Logger::new(dir.clone(), "t", "[dev:test]".to_string());
+        logger.ring_only(
+            "discovery",
+            "diag/announce_verified: from=peer-a".to_string(),
+        );
+        logger.ring_only("discovery", "diag/bc_directed: bytes=374".to_string());
+        let panel = logger.snapshot(None);
+        assert!(
+            panel
+                .iter()
+                .any(|e| e.message.contains("diag/announce_verified")),
+            "诊断面板（内存环）必须还能看到成功心跳"
+        );
+        let on_disk = std::fs::read_to_string(dir.join("t.log")).unwrap_or_default();
+        assert!(
+            !on_disk.contains("announce_verified") && !on_disk.contains("bc_directed"),
+            "这两个高频成功心跳不许再落盘：{on_disk}"
         );
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -2539,13 +2747,16 @@ mod tests {
     fn previous_run_report_marks_open_hang() {
         let raw = lines(&[
             "----- 启动 2026-10-25 10:30:00 版本 5.11.1 · macos-aarch64 · debug · 设备 [dev:test] · 运行 aa -----",
-            ">>> code=HANG scope=ui_renderer seconds=12 last_op=set_channel_enabled(bluetooth)",
+            // 新形状带 `last_op_age_s=`（2026-10-29 起）：`last_op=` 仍是它自己那个 token，
+            // 老解析按 `strip_prefix("last_op=")` 取 ⇒ 不能被这个后缀带歪。
+            ">>> code=HANG scope=ui_renderer seconds=12 last_op=set_channel_enabled(bluetooth) last_op_age_s=37 ws=52MiB",
             "----- 启动 2026-10-25 10:40:00 版本 5.11.1 · macos-aarch64 · debug · 设备 [dev:test] · 运行 bb -----",
         ]);
         let r =
             build_previous_run_report(&raw, std::path::Path::new("c"), std::path::Path::new("d"));
         let h = r.hang.expect("必须解析出卡死记录");
         assert_eq!(h.seconds, 12);
+        assert_eq!(h.last_op.as_deref(), Some("set_channel_enabled(bluetooth)"));
         assert!(!h.ended);
         assert!(r.ble_suspect, "last_op 带 bluetooth ⇒ 疑似蓝牙");
     }

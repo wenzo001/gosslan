@@ -32,7 +32,7 @@ export function formatCrashReport(r: PreviousRunReport): string {
 
 /** 这份报告该不该在界面上提示（clean / no_history 不打扰）。 */
 export function shouldShowCrashNotice(kind: string): boolean {
-  return kind === "panic" || kind === "silent_kill" || kind === "startup_failed";
+  return kind === "panic" || kind === "silent_kill" || kind === "startup_failed" || kind === "abort";
 }
 
 /** 复制到剪贴板：优先异步 API，失败回退到隐藏 textarea（WKWebView 下也可靠）。 */

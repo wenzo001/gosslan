@@ -306,6 +306,8 @@ export const zhCN: MessageDict = {
   "crash.silentKill":
     "上次运行没有正常结束（可能是强制退出、断电或系统内存不足），没能留下具体位置。",
   "crash.startupFailed": "上次启动被安全中止（数据库/身份校验失败），数据库未被修改。",
+  "crash.abort":
+    "上次运行在内存分配上倒下了（系统没能给出它要的那块内存），进程被分配器直接中止，来不及写崩溃位置。详情在日志的「重分配失败」那一行。",
   "crash.hang": "上次界面卡住了 {seconds} 秒，最后一步是 {op}。",
   "crash.copy": "复制详情",
   "crash.openLogs": "查看日志",
@@ -723,6 +725,7 @@ export const zhCN: MessageDict = {
   "msg.noMessage": "暂无消息",
   "msg.mentioned": "[有人{'@'}我]",
   "msg.sending": "发送中…",
+  "msg.waitingForPeer": "等待对方上线：对方上线后会自动补发，这条消息最多保留 7 天",
   "msg.delivered": "对方已收到，未读",
   "msg.read": "对方已读",
   // 群消息的「部分送达后被取消」：一部分成员已经收到，剩下的人在用户取消时还没收到。

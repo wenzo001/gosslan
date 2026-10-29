@@ -22,6 +22,7 @@ const body = computed(() => {
   const r = props.report;
   if (r.kind === "silent_kill") return t("crash.silentKill");
   if (r.kind === "startup_failed") return t("crash.startupFailed");
+  if (r.kind === "abort") return t("crash.abort");
   const base = t("crash.body", {
     time: r.at ?? "—",
     version: r.version ?? "—",

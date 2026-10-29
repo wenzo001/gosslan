@@ -22,7 +22,7 @@ pub fn restart_app(app: tauri::AppHandle) -> Result<(), String> {
     Ok(())
 }
 
-/// 前端主窗口心跳：当前在途操作 + 窗口是否可见。看门狗据此判断渲染层是否卡死。
+/// 前端主窗口心跳：在途操作 + 窗口是否可见。看门狗据此判断渲染层是否卡死。
 ///
 /// 这是**唯一**允许每秒发一次的 IPC；它不进前端的 invoke 追踪表（否则自我递归）。
 #[tauri::command(async)]
@@ -37,8 +37,16 @@ pub fn ui_heartbeat(
     state
         .ui_heartbeat_active
         .store(active, std::sync::atomic::Ordering::SeqCst);
-    *state.ui_current_op.lock().unwrap_or_else(|e| e.into_inner()) =
-        current_op.map(|s| s.chars().take(120).collect());
+    // 只在**拿到命令**时覆盖：`None` 表示"此刻没有 IPC 在飞"，不是"把上一步忘掉"。
+    // 卡死那一刻通常正好没有 IPC 在飞，旧写法于是只写得出 `last_op=unknown`。
+    if let Some(op) = current_op {
+        let op: String = op.chars().take(120).collect();
+        *state.ui_current_op.lock().unwrap_or_else(|e| e.into_inner()) = Some(op);
+        state.ui_current_op_at.store(
+            crate::logging::now_ms(),
+            std::sync::atomic::Ordering::SeqCst,
+        );
+    }
 }
 
 /// 前端慢调用上报（>2 s）：只写一行日志，不回传事件（避免形成回环）。

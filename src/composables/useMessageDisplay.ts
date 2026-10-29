@@ -6,6 +6,8 @@ import { fmtDateTime, fmtTimeDivider } from "@/utils/time";
 import { shouldShowTimeDivider } from "@/utils/previewMetrics";
 import { shouldShowNickname, type MessageGroupSide } from "@/utils/messageKinds";
 import { normalizeSendState } from "@/utils/messages";
+import { isWaitingForPeer } from "@/utils/sendWaiting";
+import { useNowMs } from "@/utils/nowTick";
 import type { MessageRecord } from "@/types";
 
 /**
@@ -165,9 +167,25 @@ export function useMessageDisplay(opts: {
   const timeDividerText = computed(() => fmtTimeDivider(message.value.ts, t, currentLocale()));
 
   const sendState = computed(() => normalizeSendState(message.value.status));
+  /**
+   * 停在这一格太久 ⇒ 它其实是在等对端上线（离线队列最长留 7 天），不是在发。
+   * 判据在 `utils/sendWaiting`（纯函数、有边界用例）；这里只把"现在几点"喂给它。
+   */
+  const nowMs = useNowMs();
+  const sendWaiting = computed(() =>
+    isWaitingForPeer(
+      {
+        status: message.value.status,
+        ts: message.value.ts,
+        msgId: message.value.msg_id,
+      },
+      nowMs.value,
+    ),
+  );
   const receiptTitle = computed(() => {
     switch (sendState.value) {
       case "sending":
+        return sendWaiting.value ? t("msg.waitingForPeer") : t("msg.sending");
       case "sent":
         return t("msg.sending");
       case "delivered":
@@ -193,6 +211,7 @@ export function useMessageDisplay(opts: {
 
   return {
     mine,
+    sendWaiting,
     bubbleStyle,
     cardStyle,
     showTimeDivider,

@@ -1381,8 +1381,12 @@ pub struct AppState {
     pub cache_clean_started: AtomicBool,
     /// 主窗口前端心跳（Unix 毫秒；0 = 还没发过）。
     pub ui_heartbeat_ms: std::sync::atomic::AtomicI64,
-    /// 前端当前在途的 IPC 操作名（看门狗写卡死现场用）。
+    /// 前端**最后一次已知**在途的 IPC 操作名（看门狗写卡死现场用）。
+    /// 心跳带 `None` 时不清空：那一刻没有命令在飞，不代表我们不想知道上一步是什么。
     pub ui_current_op: Mutex<Option<String>>,
+    /// 上面那条操作名被记下的时刻（Unix 毫秒；0 = 从没记过）。
+    /// 卡死现场里靠它把"最后一步是 X"说成"最后一步是 X、距今 N 秒"。
+    pub ui_current_op_at: std::sync::atomic::AtomicI64,
     /// 主窗口当前是否前台可见（心跳里带上来；隐藏时前端暂停心跳）。
     pub ui_heartbeat_active: AtomicBool,
     pub group_file_receivers: Mutex<HashMap<String, FileReceiver>>,
@@ -2252,6 +2256,7 @@ impl AppState {
             cache_clean_started: AtomicBool::new(false),
             ui_heartbeat_ms: std::sync::atomic::AtomicI64::new(0),
             ui_current_op: Mutex::new(None),
+            ui_current_op_at: std::sync::atomic::AtomicI64::new(0),
             ui_heartbeat_active: AtomicBool::new(false),
             group_file_receivers: Mutex::new(HashMap::new()),
             inbound_gate: Mutex::new(()),
@@ -2630,28 +2635,16 @@ impl AppState {
     /// 以及 `warn_key_conflict_once`）。在这里再打一遍只会让日志出现成对的近似重复行 ——
     /// 用户的诉求是「别单开一块，进日志里」，而这些本来就在日志里。
     pub fn push_diag_event(&self, kind: &str, detail: &str) {
-        const DROPPED: &[&str] = &[
-            // 纯心跳（高频，且没有排查价值）
-            "announce_recv",
-            "broadcast_sent",
-            "multicast_sent",
-            "who_has_sent",
-            // 已在各自的调用点旁边用更完整的上下文记过（重复打只会刷屏）
-            "hello_rejected",
-            "hello_mismatch",
-            "identity_key_conflict",
-        ];
-        // 子网广播的**成功**必须留痕：真机排查「局域网只通一半」时，
-        // 「这条到底发出去没有」是区分"发不出去"与"发出去了但对方没收到"的唯一证据。
-        // 其余 `*_sent` 仍按高频丢弃（见 DROPPED）。
-        if kind != "bc_directed_sent" && DROPPED.contains(&kind) {
-            return;
-        }
+        // 口径（丢弃 / 只进面板 / warn / info）全在 `logging::diag_delivery`：
+        // 这里只负责按结论投递，别在这一层另写一份清单。
         let message = format!("diag/{kind}: {detail}");
-        if kind.ends_with("_error") {
-            self.logger.warn("discovery", message);
-        } else {
-            self.logger.info("discovery", message);
+        match crate::logging::diag_delivery(kind) {
+            crate::logging::DiagDelivery::Dropped => {}
+            // 成功心跳（`announce_verified` / `bc_directed`）：**面板仍可见，但不落盘** ——
+            // 实测它们占一段 43 分钟会话日志的 97.5%，把 512 KiB 的留存压到 ~50 分钟。
+            crate::logging::DiagDelivery::RingOnly => self.logger.ring_only("discovery", message),
+            crate::logging::DiagDelivery::Warn => self.logger.warn("discovery", message),
+            crate::logging::DiagDelivery::Info => self.logger.info("discovery", message),
         }
     }
 

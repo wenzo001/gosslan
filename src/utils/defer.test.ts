@@ -277,6 +277,10 @@ const NOT_A_GATE = new Map<string, string>([
   ["utils/todos.ts", "完成后满 N 天归档（年龄判定）"],
   ["utils/scrollRestore.ts", "阅读位置有效期：超过 N 分钟就别恢复、直接贴底（年龄判定，不是限流放行）"],
   ["components/AddFriendModal.vue", "冷却只决定按钮置灰与文案，解除由定时器负责，不认领额度"],
+  [
+    "utils/sendWaiting.ts",
+    "「这条消息停在 sending 超过 N 分钟」的年龄判定：只决定显示「等待对方上线」还是转圈，不放行任何动作",
+  ],
 ]);
 
 test("手写时间差闸门不许长回第二份：间隔规则只有 defer 那一个家", () => {
@@ -302,7 +306,7 @@ test("手写时间差闸门不许长回第二份：间隔规则只有 defer 那�
       .replace(/\/\/[^\n]*/g, "");
     if ([...text.matchAll(new RegExp(GATE.source, "g"))].length > 0) found.push(rel);
   }
-  // 分母下限：现存白名单有 6 处，认出来的比这还少 ⇒ 扫描面或 matcher 自己坏了
+  // 分母下限：认出来的不能比白名单还少 ⇒ 扫描面或 matcher 自己坏了
   assert.ok(found.length >= NOT_A_GATE.size, `只认出 ${found.length} 处时间差比较，低于白名单 ${NOT_A_GATE.size} 处 ⇒ 判据本身可能已失效`);
   const outside = found.filter((r) => !NOT_A_GATE.has(r));
   assert.deepEqual(
