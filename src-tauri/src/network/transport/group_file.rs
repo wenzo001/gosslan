@@ -2034,82 +2034,114 @@ async fn handle_group_file_chunk(
         return;
     };
 
-    // seq / size 校验与写盘（复用一对一 FileReceiver 的严格语义）
-    {
-        use std::io::Write;
-        let mut recv = state
-            .group_file_receivers
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
-        let Some(r) = recv.get_mut(&transfer_id) else {
-            return;
-        };
-        // ⚠️ 群侧以前这里是 `if seq != r.next_seq { 整单失败 }`，注释写的理由是"TCP 有序"。
-        // 那个前提在群里不成立：群文件经**中继扇出**，同一片可以被两条链路各送一次，
-        // 而单聊那一族早就为同一件事付过学费（`file.rs` 里 `chunk_seq_decision` 的注释：
-        // 把重复/迟到当致命 ⇒ 整单永远拼不齐）。规则只许有一份 ⇒ 这里直接调那个纯函数。
-        let seq_call = file::chunk_seq_decision(seq, r.next_seq);
-        if seq_call == file::ChunkSeq::Duplicate {
-            // 重复/迟到片：与单聊同一处置（不写盘、不打死、不回错误），下一片照常进来。
-            drop(recv);
-            return;
-        }
-        if seq_call == file::ChunkSeq::Gap {
-            // 真跳号：中间确实缺片，只能靠重传 ⇒ 终止这一单。
-            drop(recv);
-            fail_group_file_chunk(state, &transfer_id, REASON_CHUNK_SEQ_GAP);
-            return;
-        }
-        if plaintext.len() as u64 > r.size.saturating_sub(r.received) {
-            // 超出声明大小：防恶意 sender
-            drop(recv);
-            fail_group_file_chunk(state, &transfer_id, REASON_CHUNK_EXCEEDS_SIZE);
-            return;
-        }
-        // 增量哈希（为下一阶段 FileDone 校验准备；本阶段不比对）
-        use sha2::Digest;
-        r.hasher.update(&plaintext);
-        // 写盘失败：**盘满**归类成稳定码（前端据此给"清出空间后可重试"的可行动文案），
-        // 其余错误保留原文。与单聊 `write_chunk` 同一份判定（`logging::classify_write_failure`）。
-        let write_err = r.file.write_all(&plaintext).err();
-        if let Some(e) = write_err {
-            let reason = match crate::logging::classify_write_failure(&e) {
-                Some(code) => {
-                    state.logger.error(
-                        "group_file",
-                        format!(
-                            "code={code} transfer={transfer_id} peer={} received={} size={} —— 磁盘空间不足",
-                            r.peer_id, r.received, r.size
-                        ),
-                    );
-                    code.to_string()
-                }
-                None => e.to_string(),
-            };
-            drop(recv);
-            fail_group_file_chunk(state, &transfer_id, &reason);
-            return;
-        }
-        r.received += plaintext.len() as u64;
-        // 群接收器与单聊共用 `FileReceiver` ⇒ 同一个 idle 时钟，回收判据也只有一份
-        r.fed_at_ms = db::now_ms();
-        r.next_seq = r.next_seq.wrapping_add(1);
-        let progress = if r.size == 0 {
-            1.0
-        } else {
-            (r.received as f64 / r.size as f64).min(1.0)
-        };
-        drop(recv);
-        // 进度落库：本阶段最高 sending，不标 completed
-        let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
-        let _ = db::update_group_file_recipient(
-            &dbc,
-            &transfer_id,
-            &state.device_id,
-            "sending",
-            progress,
-        );
+    // seq / size 校验 + 增量哈希 + 写盘 + 进度落库：这一整段是**同步重活**（慢盘上一个
+    // 256KB 分块的 `write_all` 轻易几十毫秒），跑在 tokio worker 上会把同一条 runtime 上的
+    // 其它入站帧与开窗类 IPC 一起按住 —— 单聊那条（`handle_file.rs` 的 `spawn_blocking`）早就
+    // 为同一件事付过学费，群文件这一支当时只搬了"解码 + 解密"。
+    //
+    // 与单聊同形：锁在**池内**取（不在 await 里持锁），且这条链路的帧本来就是逐条 await 处理，
+    // 搬进阻塞池不等于并发化 —— "同一传输的分片必须串行"照旧成立。
+    // `group_file_receivers` 那把进程级锁本轮**不动**（改它要动几十个引用点，只有跨进程 E2E
+    // 能证；见审计 STB-03）。
+    let st = state.clone();
+    let tid = transfer_id.clone();
+    let outcome = tokio::task::spawn_blocking(move || {
+        write_group_chunk_blocking(&st, &tid, seq, &plaintext)
+    })
+    .await
+    // 阻塞池把任务丢掉不能当"没发生"：交回失败码走既有判死分支，发送端立刻知道。
+    .unwrap_or_else(|e| {
+        GroupChunkWrite::Failed(format!("code=GROUP_CHUNK_POOL_ABORT 文件分片处理任务被线程池中断: {e}"))
+    });
+    if let GroupChunkWrite::Failed(reason) = outcome {
+        fail_group_file_chunk(state, &transfer_id, &reason);
     }
+}
+
+/// 群文件分片的"落到盘上那一段"（阻塞池内执行）。
+///
+/// 结构与搬进来之前**逐字对应**：seq 判定 → 超尺寸判定 → 增量哈希 → `write_all` →
+/// 进度落库；差别只在"谁来跑"。返回值只表达怎么收尾，失败收尾（`fail_group_file_chunk`）
+/// 留在 async 侧调用 —— 那里要动文件 key、气泡状态与台账，都是跨锁的顺序动作。
+enum GroupChunkWrite {
+    /// 重复/迟到片：不写盘、不打死、不回错误（群文件经中继扇出时同一片会来两次）
+    Duplicate,
+    /// 这一单已经不在接收表里（被并发收尾摘掉）⇒ 什么都不做
+    Gone,
+    /// 失败：给 `fail_group_file_chunk` 的原因（稳定码或原始错误串）
+    Failed(String),
+    /// 已写盘并落了进度
+    Written,
+}
+
+fn write_group_chunk_blocking(
+    state: &Arc<AppState>,
+    transfer_id: &str,
+    seq: u32,
+    plaintext: &[u8],
+) -> GroupChunkWrite {
+    use std::io::Write;
+    let mut recv = state
+        .group_file_receivers
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
+    let Some(r) = recv.get_mut(transfer_id) else {
+        return GroupChunkWrite::Gone;
+    };
+    // ⚠️ 群侧以前这里是 `if seq != r.next_seq { 整单失败 }`，注释写的理由是"TCP 有序"。
+    // 那个前提在群里不成立：群文件经**中继扇出**，同一片可以被两条链路各送一次，
+    // 而单聊那一族早就为同一件事付过学费（`file.rs` 里 `chunk_seq_decision` 的注释：
+    // 把重复/迟到当致命 ⇒ 整单永远拼不齐）。规则只许有一份 ⇒ 这里直接调那个纯函数。
+    match file::chunk_seq_decision(seq, r.next_seq) {
+        // 重复/迟到片：与单聊同一处置（不写盘、不打死、不回错误），下一片照常进来。
+        file::ChunkSeq::Duplicate => return GroupChunkWrite::Duplicate,
+        // 正好是下一片 ⇒ 往下写。
+        file::ChunkSeq::Accept => {}
+        // 真跳号：中间确实缺片，只能靠重传 ⇒ 终止这一单。
+        file::ChunkSeq::Gap => {
+            return GroupChunkWrite::Failed(REASON_CHUNK_SEQ_GAP.to_string())
+        }
+    }
+    if plaintext.len() as u64 > r.size.saturating_sub(r.received) {
+        // 超出声明大小：防恶意 sender
+        return GroupChunkWrite::Failed(REASON_CHUNK_EXCEEDS_SIZE.to_string());
+    }
+    // 增量哈希（为下一阶段 FileDone 校验准备；本阶段不比对）
+    use sha2::Digest;
+    r.hasher.update(plaintext);
+    // 写盘失败：**盘满**归类成稳定码（前端据此给"清出空间后可重试"的可行动文案），
+    // 其余错误保留原文。与单聊 `write_chunk` 同一份判定（`logging::classify_write_failure`）。
+    if let Some(e) = r.file.write_all(plaintext).err() {
+        let reason = match crate::logging::classify_write_failure(&e) {
+            Some(code) => {
+                state.logger.error(
+                    "group_file",
+                    format!(
+                        "code={code} transfer={transfer_id} peer={} received={} size={} —— 磁盘空间不足",
+                        r.peer_id, r.received, r.size
+                    ),
+                );
+                code.to_string()
+            }
+            None => e.to_string(),
+        };
+        return GroupChunkWrite::Failed(reason);
+    }
+    r.received += plaintext.len() as u64;
+    // 群接收器与单聊共用 `FileReceiver` ⇒ 同一个 idle 时钟，回收判据也只有一份
+    r.fed_at_ms = db::now_ms();
+    r.next_seq = r.next_seq.wrapping_add(1);
+    let progress = if r.size == 0 {
+        1.0
+    } else {
+        (r.received as f64 / r.size as f64).min(1.0)
+    };
+    // 进度落库：本阶段最高 sending，不标 completed。
+    // 锁序 receivers→db（与本文件其它地方一致）：先放掉 receivers 再取 db。
+    drop(recv);
+    let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
+    let _ = db::update_group_file_recipient(&dbc, transfer_id, &state.device_id, "sending", progress);
+    GroupChunkWrite::Written
 }
 
 #[cfg(test)]
