@@ -120,7 +120,7 @@ pub async fn send_file_from_path_at(
     let receiver_pubkey = resolve_member_x25519(state, peer_id);
     let sealed_key_b64 = (|| {
         let pubkey = receiver_pubkey.as_deref()?;
-        let shared = crypto::shared_secret(&state.identity.x25519_secret, pubkey)?;
+        let shared = state.identity.dh(pubkey)?;
         Some(STANDARD.encode(crypto::seal(&shared, &file_key)?))
     })();
     let Some(sealed_key_b64) = sealed_key_b64 else {

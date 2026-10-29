@@ -491,7 +491,7 @@ async fn e2e_gossip_encrypt_sign_decrypt() {
     let b = crate::crypto::Identity::generate();
 
     // A 用 B 的公钥 ECDH 派生共享密钥并加密
-    let shared = crate::crypto::shared_secret(&a.x25519_secret, &b.x25519_public_b64()).unwrap();
+    let shared = a.dh(&b.x25519_public_b64()).unwrap();
     let plaintext = b"{\"kind\":\"text\",\"content\":\"hello\"}";
     let sealed = crate::crypto::seal(&shared, plaintext).unwrap();
     let payload_b64 = STANDARD.encode(&sealed);
@@ -511,7 +511,7 @@ async fn e2e_gossip_encrypt_sign_decrypt() {
 
     // B 验签 + 解密
     assert!(engine.verify_envelope(&env));
-    let shared_b = crate::crypto::shared_secret(&b.x25519_secret, &env.sender_pubkey).unwrap();
+    let shared_b = b.dh(&env.sender_pubkey).unwrap();
     let decrypted = STANDARD.decode(&env.payload).unwrap();
     let opened = crate::crypto::open(&shared_b, &decrypted).unwrap();
     assert_eq!(opened, plaintext);

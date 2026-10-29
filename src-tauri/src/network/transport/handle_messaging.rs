@@ -143,7 +143,7 @@ async fn handle_messaging_arm(state: &Arc<AppState>, peer_id: &str, msg: Message
             // 双方公钥刷进 peers 与 friends 表，补发前还会用最新公钥重新密封
             // （见 flush_outbox / reseal_for_send），消息随自动恢复且不改变 msg_id。
             let Some((content, kind_str)) = open_direct_content(
-                &state.identity.x25519_secret,
+                &state.identity,
                 sender_x25519_pubkey(state, &from).as_deref(),
                 &content,
                 kind,

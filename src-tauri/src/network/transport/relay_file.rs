@@ -43,7 +43,7 @@ async fn handle_relay_file_offer(
     // 解封失败直接放弃——密文分片绝不落盘。
     let file_key = (|| {
         let sender_pub = resolve_member_x25519(state, &from)?;
-        let shared = crypto::shared_secret(&state.identity.x25519_secret, &sender_pub)?;
+        let shared = state.identity.dh(&sender_pub)?;
         let sealed = STANDARD.decode(&sealed_file_key).ok()?;
         crypto::open(&shared, &sealed).and_then(|k| k.try_into().ok())
     })();

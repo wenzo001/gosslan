@@ -37,14 +37,14 @@ fn sender_x25519_pubkey(state: &AppState, from: &str) -> Option<String> {
 /// 调用方据此不落库、不 Ack——绝不返回占位文本，占位文本一旦占用真实 msg_id，
 /// 同一 msg_id 的正确副本就永远进不来（`insert_message` 是 INSERT OR IGNORE）。
 fn open_direct_content(
-    my_x25519_secret: &StaticSecret,
+    me: &crate::crypto::Identity,
     sender_pubkey: Option<&str>,
     wire: &str,
     kind: String,
 ) -> Option<(String, String)> {
     let b64 = wire.strip_prefix("enc1:")?;
     let pubkey = sender_pubkey?;
-    let shared = crypto::shared_secret(my_x25519_secret, pubkey)?;
+    let shared = me.dh(pubkey)?;
     let bytes = STANDARD.decode(b64).ok()?;
     let plain = crypto::open(&shared, &bytes)?;
     // kind **原样透传**（不做 `from_wire_str` 那样的回落）：本机不认识的 kind 也要带着真值
@@ -55,11 +55,11 @@ fn open_direct_content(
 /// 用接收方当前公钥重新密封待发内容（`msg_id` 由调用方保持不变）。
 /// 返回 `None` = 无法重封（本地无明文 / 拿不到当前公钥 / 加密失败），调用方按原样补发。
 fn reseal_chat_content(
-    my_x25519_secret: &StaticSecret,
+    me: &crate::crypto::Identity,
     plaintext: Option<&str>,
     receiver_pubkey: Option<&str>,
 ) -> Option<String> {
-    let shared = crypto::shared_secret(my_x25519_secret, receiver_pubkey?)?;
+    let shared = me.dh(receiver_pubkey?)?;
     let sealed = crypto::seal(&shared, plaintext?.as_bytes())?;
     Some(format!("enc1:{}", STANDARD.encode(sealed)))
 }
@@ -113,7 +113,7 @@ fn reseal_for_send(state: &AppState, msg: Message) -> Message {
             .and_then(|p| p.x25519_pubkey.clone())
     });
     let resealed = reseal_chat_content(
-        &state.identity.x25519_secret,
+        &state.identity,
         plaintext.as_deref(),
         pubkey.as_deref(),
     );

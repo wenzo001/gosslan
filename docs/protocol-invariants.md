@@ -639,9 +639,15 @@ Rust private key
 - 钩子：`scripts/check-key-boundary.mjs` `guards:私钥边界：给 Identity 补一行 derive`
   —— 判据 A 钉住"任何可序列化类型都不许带密钥字段"（命令返回值与 emit 载荷都要求 `Serialize`，
   所以一条判据同时盖住两个出口）；判据 B 钉住"命令不许把密钥放在交出值的位置"，并要求
-  `generate_handler!` 里每条命令都能被扫到。⚠️ 残余：**两步搬运**（先 `let k = …to_bytes()`
-  再 `Ok(encode(k))`）文本判据抓不住，彻底封死要把 `Identity` 的私钥字段改成私有、
-  只暴露 `sign()` / `dh()`（登记为 B-1a 的后续项）。
+  `generate_handler!` 里每条命令都能被扫到；
+  **判据 C（2026-10-29 补，B-1a 的 X25519 那一半已落地）**钉住"落点边界"：`Identity.x25519_secret`
+  字段是**私有的**，只许在 `crypto.rs` 内部被读；两个 base64 导出器只许被持久化那一家（`state.rs`）调用；
+  ECDH 的唯一出口是 `Identity::dh()`（它逐字转发 `shared_secret`，线格式零差异）。
+  这条把"两步搬运"里 X25519 那一半从"文本判据抓不住"变成"**编译不过**"。
+  ⚠️ 残余（如实写下）：`ed25519_signing` **仍是公开字段** —— 中继拨号要把 owned `SigningKey` 跨 `spawn`
+  传进 `relay_negotiate` / `build_wrap_offer`（那里还有 10 处用裸 `SigningKey` 的协议测试），
+  私有化它要给那一层引入"签名能力"抽象，属 Frozen Core 线格式侧的设计改动，不在攒批修复里顺手做。
+  判据 A/B 对这一半仍然有效（不许序列化、不许出现在交出值的位置）。
 
 
 ---

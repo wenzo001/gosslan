@@ -87,7 +87,7 @@ async fn relay_push_file(
     }
     let receiver_pubkey = resolve_member_x25519(state, peer_id)
         .ok_or_else(|| "无法获取对方公钥，无法加密文件".to_string())?;
-    let shared = crypto::shared_secret(&state.identity.x25519_secret, &receiver_pubkey)
+    let shared = state.identity.dh(&receiver_pubkey)
         .ok_or_else(|| "密钥交换失败".to_string())?;
     let sealed_key_b64 =
         STANDARD.encode(crypto::seal(&shared, &file_key).ok_or_else(|| "加密失败".to_string())?);

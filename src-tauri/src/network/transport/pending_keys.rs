@@ -75,7 +75,7 @@ async fn try_send_group_key(
     let Some(key) = get_group_key(state, group_id).await else {
         return Err(GroupKeySendErr::Fatal);
     };
-    let Some(shared) = crypto::shared_secret(&state.identity.x25519_secret, &pubkey) else {
+    let Some(shared) = state.identity.dh(&pubkey) else {
         return Err(GroupKeySendErr::Fatal);
     };
     let Some(sealed) = crypto::seal(&shared, &key) else {

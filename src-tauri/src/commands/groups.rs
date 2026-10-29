@@ -109,7 +109,7 @@ pub async fn distribute_group_key(
         let Some(pubkey) = resolve_member_x25519(s, m) else {
             continue;
         };
-        let Some(shared) = crypto::shared_secret(&s.identity.x25519_secret, &pubkey) else {
+        let Some(shared) = s.identity.dh(&pubkey) else {
             continue;
         };
         let Some(sealed) = crypto::seal(&shared, &key) else {
@@ -229,7 +229,7 @@ async fn resend_group_key_to(s: &AppState, group_id: &str, members: &[String], k
         let Some(pubkey) = resolve_member_x25519(s, m) else {
             continue;
         };
-        let Some(shared) = crypto::shared_secret(&s.identity.x25519_secret, &pubkey) else {
+        let Some(shared) = s.identity.dh(&pubkey) else {
             continue;
         };
         let Some(sealed) = crypto::seal(&shared, &key) else {

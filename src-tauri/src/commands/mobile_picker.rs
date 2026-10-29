@@ -313,7 +313,7 @@ pub(crate) async fn send_friend_request_via_link(
     let payload =
         serde_json::json!({ "from_nickname": nickname, "from_avatar": avatar }).to_string();
     let shared =
-        crypto::shared_secret(&s.identity.x25519_secret, &target_pubkey).ok_or("密钥交换失败")?;
+        s.identity.dh(&target_pubkey).ok_or("密钥交换失败")?;
     let sealed = crypto::seal(&shared, payload.as_bytes()).ok_or("加密失败")?;
     let payload_b64 = STANDARD.encode(&sealed);
     let mut env = {
@@ -405,7 +405,7 @@ pub(crate) async fn send_friend_accept_via_link(
         return Err("缺对端公钥".to_string());
     };
     let shared =
-        crypto::shared_secret(&s.identity.x25519_secret, &target_pubkey).ok_or("密钥交换失败")?;
+        s.identity.dh(&target_pubkey).ok_or("密钥交换失败")?;
     let sealed = crypto::seal(&shared, b"{}").ok_or("加密失败")?;
     let payload_b64 = STANDARD.encode(&sealed);
     let mut env = {

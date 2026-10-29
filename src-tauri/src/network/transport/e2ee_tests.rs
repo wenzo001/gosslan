@@ -8,7 +8,7 @@
 // 按窗口取段的守卫飘到测试文本上（2026-10-06 实测 4 条假红）。`lib_tests.rs` 里那条登记对账守卫
 // 按 `_tests.rs` 结尾豁免本册 —— 别为了消红把测试文本并进去（那正是假绿的形状）。
     fn seal_direct(from: &crate::crypto::Identity, to_pubkey: &str, text: &str) -> String {
-        let shared = crate::crypto::shared_secret(&from.x25519_secret, to_pubkey).unwrap();
+        let shared = from.dh(to_pubkey).unwrap();
         format!(
             "enc1:{}",
             STANDARD.encode(crate::crypto::seal(&shared, text.as_bytes()).unwrap())
@@ -23,7 +23,7 @@
         let wire = seal_direct(&a, &b.x25519_public_b64(), "你好 e2ee");
         assert_eq!(
             open_direct_content(
-                &b.x25519_secret,
+                &b,
                 Some(&a.x25519_public_b64()),
                 &wire,
                 "code".to_string()
@@ -40,12 +40,12 @@
         let b = crate::crypto::Identity::generate();
         let wire = seal_direct(&a, &b.x25519_public_b64(), "pending key");
         assert_eq!(
-            open_direct_content(&b.x25519_secret, None, &wire, "text".to_string()),
+            open_direct_content(&b, None, &wire, "text".to_string()),
             None
         );
         assert_eq!(
             open_direct_content(
-                &b.x25519_secret,
+                &b,
                 Some(&a.x25519_public_b64()),
                 &wire,
                 "text".to_string()
@@ -64,7 +64,7 @@
         let wire = seal_direct(&a_new, &b.x25519_public_b64(), "rotated sender");
         assert_eq!(
             open_direct_content(
-                &b.x25519_secret,
+                &b,
                 Some(&a_old.x25519_public_b64()),
                 &wire,
                 "text".to_string()
@@ -73,7 +73,7 @@
         );
         assert_eq!(
             open_direct_content(
-                &b.x25519_secret,
+                &b,
                 Some(&a_new.x25519_public_b64()),
                 &wire,
                 "text".to_string()
@@ -95,7 +95,7 @@
         // 旧密文对新的接收方身份永久无效（重发不解决问题）
         assert_eq!(
             open_direct_content(
-                &b_new.x25519_secret,
+                &b_new,
                 Some(&a.x25519_public_b64()),
                 &stale,
                 "text".to_string()
@@ -104,7 +104,7 @@
         );
         // 重封：同一明文 + 当前公钥 → 可解，且仍是 enc1: 形态
         let resealed = reseal_chat_content(
-            &a.x25519_secret,
+            &a,
             Some("stale seal"),
             Some(&b_new.x25519_public_b64()),
         )
@@ -112,7 +112,7 @@
         assert_ne!(resealed, stale);
         assert_eq!(
             open_direct_content(
-                &b_new.x25519_secret,
+                &b_new,
                 Some(&a.x25519_public_b64()),
                 &resealed,
                 "text".to_string()
@@ -121,9 +121,9 @@
         );
         // 前置条件缺失 → 不重封（调用方保留原 payload）
         let no_plaintext =
-            reseal_chat_content(&a.x25519_secret, None, Some(&b_new.x25519_public_b64()));
+            reseal_chat_content(&a, None, Some(&b_new.x25519_public_b64()));
         assert_eq!(no_plaintext, None);
-        let no_pubkey = reseal_chat_content(&a.x25519_secret, Some("stale seal"), None);
+        let no_pubkey = reseal_chat_content(&a, Some("stale seal"), None);
         assert_eq!(no_pubkey, None);
     }
 
@@ -136,7 +136,7 @@
         let spk = a.x25519_public_b64();
         assert_eq!(
             open_direct_content(
-                &b.x25519_secret,
+                &b,
                 Some(&spk),
                 "enc1:!!not base64!!",
                 "text".to_string()
@@ -144,7 +144,7 @@
             None
         );
         assert_eq!(
-            open_direct_content(&b.x25519_secret, Some(&spk), "enc1:", "text".to_string()),
+            open_direct_content(&b, Some(&spk), "enc1:", "text".to_string()),
             None
         );
         let wire = seal_direct(&a, &b.x25519_public_b64(), "intact");
@@ -155,11 +155,11 @@
         raw[last] ^= 0xFF; // 破坏 AEAD tag
         let tampered = format!("enc1:{}", STANDARD.encode(&raw));
         assert_eq!(
-            open_direct_content(&b.x25519_secret, Some(&spk), &tampered, "text".to_string()),
+            open_direct_content(&b, Some(&spk), &tampered, "text".to_string()),
             None
         );
         assert!(
-            open_direct_content(&b.x25519_secret, Some(&spk), &wire, "text".to_string()).is_some()
+            open_direct_content(&b, Some(&spk), &wire, "text".to_string()).is_some()
         );
     }
 
@@ -168,7 +168,7 @@
         let me = crate::crypto::Identity::generate();
         assert_eq!(
             open_direct_content(
-                &me.x25519_secret,
+                &me,
                 None,
                 "plain old text",
                 "text".to_string()

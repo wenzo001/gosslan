@@ -455,13 +455,13 @@ mod tests {
         let file_key = crypto::random_key();
 
         // 发送端（send_file_from_path 同逻辑）：receiver 公钥封装
-        let shared = crypto::shared_secret(&sender.x25519_secret, &receiver.x25519_public_b64())
+        let shared = sender.dh(&receiver.x25519_public_b64())
             .expect("ECDH 失败");
         let sealed_key_b64 = base64::engine::general_purpose::STANDARD
             .encode(crypto::seal(&shared, &file_key).expect("封装失败"));
 
         // 接收端（handle_message FileOffer 同逻辑）：sender 公钥解封
-        let shared_rx = crypto::shared_secret(&receiver.x25519_secret, &sender.x25519_public_b64())
+        let shared_rx = receiver.dh(&sender.x25519_public_b64())
             .expect("ECDH 失败");
         let sealed = base64::engine::general_purpose::STANDARD
             .decode(&sealed_key_b64)
@@ -517,7 +517,7 @@ mod tests {
 
         // 发送端：封装会话密钥 + 加密 chunk
         let shared =
-            crypto::shared_secret(&sender.x25519_secret, &receiver.x25519_public_b64()).unwrap();
+            sender.dh(&receiver.x25519_public_b64()).unwrap();
         let sealed_key_b64 = base64::engine::general_purpose::STANDARD
             .encode(crypto::seal(&shared, &file_key).unwrap());
         let plaintext = b"chunk travels through relay nodes";
@@ -529,7 +529,7 @@ mod tests {
 
         // 接收端：解封密钥 → 解密转发的密文
         let shared_rx =
-            crypto::shared_secret(&receiver.x25519_secret, &sender.x25519_public_b64()).unwrap();
+            receiver.dh(&sender.x25519_public_b64()).unwrap();
         let opened_key: [u8; 32] = crypto::open(
             &shared_rx,
             &base64::engine::general_purpose::STANDARD
@@ -566,7 +566,7 @@ mod tests {
         // 发送端生命周期：random_key → 封装 → 逐片加密
         let file_key = crypto::random_key();
         let shared =
-            crypto::shared_secret(&sender.x25519_secret, &receiver.x25519_public_b64()).unwrap();
+            sender.dh(&receiver.x25519_public_b64()).unwrap();
         let sealed_key_b64 = base64::engine::general_purpose::STANDARD
             .encode(crypto::seal(&shared, &file_key).unwrap());
         let wire_chunks: Vec<Vec<u8>> = chunks
@@ -576,7 +576,7 @@ mod tests {
 
         // 接收端生命周期：解封密钥 → 逐片解密重组 → 大小校验
         let shared_rx =
-            crypto::shared_secret(&receiver.x25519_secret, &sender.x25519_public_b64()).unwrap();
+            receiver.dh(&sender.x25519_public_b64()).unwrap();
         let restored_key: [u8; 32] = crypto::open(
             &shared_rx,
             &base64::engine::general_purpose::STANDARD

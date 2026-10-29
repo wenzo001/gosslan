@@ -727,7 +727,7 @@ pub async fn send_message(
     // 1:1 没有 @，恒传 None —— 但走**同一个**编码器：明文形状两处各写一份，
     // 迟早只改对一边（接收端是同一只函数解的）。
     let plaintext = crate::protocol::gossip_plaintext(&kind, &content, None);
-    let shared = crypto::shared_secret(&s.identity.x25519_secret, &pubkey).ok_or("密钥交换失败")?;
+    let shared = s.identity.dh(&pubkey).ok_or("密钥交换失败")?;
     // Gossip 载荷与直发内容都走 ChaCha20-Poly1305（直发内容加 "enc1:" 前缀标识）
     let sealed = crypto::seal(&shared, plaintext.as_bytes()).ok_or("加密失败")?;
     let sealed_content = crypto::seal(&shared, content.as_bytes()).ok_or("加密失败")?;
@@ -932,7 +932,7 @@ pub async fn resend_message(
     let ts = msg.ts;
     let seq = msg.seq;
     let plaintext = crate::protocol::gossip_plaintext(&msg.kind, &msg.content, None);
-    let shared = crypto::shared_secret(&s.identity.x25519_secret, &pubkey).ok_or("密钥交换失败")?;
+    let shared = s.identity.dh(&pubkey).ok_or("密钥交换失败")?;
     let sealed = crypto::seal(&shared, plaintext.as_bytes()).ok_or("加密失败")?;
     let sealed_content = crypto::seal(&shared, msg.content.as_bytes()).ok_or("加密失败")?;
     let payload_b64 = STANDARD.encode(&sealed);
