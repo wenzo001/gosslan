@@ -133,13 +133,6 @@ pub fn detach_targets(state: CBManagerState, subscribed: &HashSet<String>) -> Ve
     out
 }
 
-fn now_ms() -> i64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_millis() as i64)
-        .unwrap_or(0)
-}
-
 // ---------------------------------------------------------------------------
 // 跨线程句柄
 // ---------------------------------------------------------------------------
@@ -670,7 +663,7 @@ impl Delegate {
     /// 坏片（重复 / 越界 / 超限）只会**丢这一片**，不会断链路 —— 与 central 侧同口径：
     /// 宁可丢一条消息，也不要因为一个畸形分片把整条链路拆掉。
     fn push_chunk(&self, central: &str, chunk: &[u8]) {
-        let now = now_ms();
+        let now = crate::logging::now_ms();
         // 一次性拿锁：push + 顺手 gc（gc 只扫本表，量级是"同时在途的消息数"，很便宜）
         let outcome = {
             let mut map = self

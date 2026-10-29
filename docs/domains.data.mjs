@@ -155,7 +155,14 @@ export default {
       secondHome: "src-tauri/src/discovery",
       secondHomeStatus: "未接线",
       enforce: false,
-      consumes: ["routing", "messaging", "transport"], // 实测:discovery/* 用 mesh(→routing) + protocol(→messaging)；旧家 network/discovery.rs 还用 network::transport(→transport)
+      consumes: ["routing", "messaging", "transport", "observability"], // 实测:discovery/* 用 mesh(→routing) + protocol(→messaging)；旧家 network/discovery.rs 还用 network::transport(→transport)
+      // ↑ 第 4 项是 5.15.26（DUP-03 墙上时钟收一家）加的：`sweep_peers` 要的"现在几点"改从
+      // `logging::now_ms` 这一个家取。当时棘轮当场报「内联跨域引用对数 7 超过上限 6」——
+      // 它盯的是**判据看不见的写法**（内联 `crate::logging::…` 且本域没有任何对应的 use），
+      // 修法是按判据自己给的两条里选①：改成顶层 `use` 并写进 consumes，让这条依赖回到看得见的地方。
+      // ⚠️ 上限调大是被明令禁止的（"那等于把洞又变成沉默的"）。
+      // ⚠️ 本字段在 docs/ARCHITECTURE-MAP.html 有一份手抄快照，`check-domain-map.mjs` **不对账它**
+      //（2026-10-29 现读：那个脚本里没有 cons/consumes 字样）⇒ 改这里必须同改那一行，没有东西会替你红。
       notes:
         "用户可见症状（2026-09-14）：「局域网直连上了，好友在线状态却不实时」——已有非空转护栏（「在线状态必须包含有活跃链路的节点」）。迁移详见 docs/migration-ledger.md 的「局域网发现」条。",
     },

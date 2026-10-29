@@ -372,14 +372,6 @@ fn subscribers() -> &'static Mutex<HashMap<String, GattSubscribedClient>> {
     SUBSCRIBERS.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
-/// 当前时间（毫秒）—— 重组器的分片 TTL 要用（与 macOS/Android 侧同一套回收语义）。
-fn now_ms() -> i64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_millis() as i64)
-        .unwrap_or(0)
-}
-
 /// 读一次订阅列表，把它同步成本地表；对**消失的人**发 `Unlinked`。
 ///
 /// WinRT 没有"订阅者断开"事件，只有 `SubscribedClientsChanged`（取消订阅、断开都会触发），
@@ -477,7 +469,7 @@ fn handle_write_request(req: GattWriteRequest, central: &str, shared: &Arc<Share
 
     let Some(data) = data else { return };
 
-    let now = now_ms();
+    let now = crate::logging::now_ms();
     let outcome = {
         let mut rs = match shared.reassemblers.lock() {
             Ok(g) => g,

@@ -125,13 +125,6 @@ static JAVA_VM: OnceLock<JavaVM> = OnceLock::new();
 /// 每个对端的分片重组器（带 30s TTL，与 macOS 侧同一个实现）。
 static REASSEMBLERS: Mutex<Option<HashMap<String, BleReassembler>>> = Mutex::new(None);
 
-fn now_ms() -> i64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_millis() as i64)
-        .unwrap_or(0)
-}
-
 fn send_event(ev: PeripheralEvent) {
     if let Some(tx) = EVENTS.lock().unwrap_or_else(|e| e.into_inner()).as_ref() {
         // JNI 回调线程不能阻塞。队满时 try_push 带外发溢出信号，由消费侧受控断链。
@@ -435,7 +428,7 @@ fn on_frame<'local>(
 ) -> jni::errors::Result<()> {
     let central = address.try_to_string(env)?;
     let chunk = env.convert_byte_array(&value)?;
-    let now = now_ms();
+    let now = crate::logging::now_ms();
     let outcome = {
         let mut guard = REASSEMBLERS.lock().unwrap_or_else(|e| e.into_inner());
         let map = guard.get_or_insert_with(HashMap::new);

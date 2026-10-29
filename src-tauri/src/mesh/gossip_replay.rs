@@ -21,15 +21,6 @@ use std::collections::HashMap;
 
 use crate::protocol::{GossipEnvelope, GossipKind};
 
-/// 本机现在的毫秒时间（窗口用它量，不用 `env.ts` —— 见文件头注释）。
-/// 放在这里而不是拉 `chrono`：这个模块的判据全部是纯函数 + 显式传时刻。
-pub fn now_ms() -> i64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_millis() as i64)
-        .unwrap_or_default()
-}
-
 /// 同一个 peer 两次补递之间的最小间隔（毫秒）。
 /// 为什么要有：对端**刚上线那几秒还不认识发送方**（`peers` 是内存态、群消息不在
 /// TOFU 白名单里 —— 见 `transport/gossip.rs` 的 `sender_trusted` 与 2026-09-19 审计 P0#3），

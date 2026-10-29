@@ -578,13 +578,18 @@ CASES: list[Case] = [
         name="panic 站点棘轮：生产码新增一处 panic! 必须当场红",
         why="release 是 panic = \"abort\" ⇒ 任意一处 panic!/unwrap/expect 都会让整个应用消失"
         "（2026-10-25 macOS 连续 SIGABRT 就是 vendored CoreBluetooth 的一条迟到回调 panic 放大的）。"
-        "本用例把一条生产 panic! 注入 `watchdog.rs` 的 now_ms 开头：棘轮按文件计数，"
+        "本用例把一条生产 panic! 注入 `logging.rs` 的 now_ms 开头：棘轮按文件计数，"
         "基线 0 涨到 1 必须失败；恢复后必须通过。注释/字符串/`#[cfg(test)]` 的剔除由脚本自己的 "
-        "8 条 self-test 守（每次跑都先执行）。",
-        file=TAURI / "src" / "watchdog.rs",
+        "8 条 self-test 守（每次跑都先执行）。\n"
+        "锚点原先在 `watchdog.rs` 的同名函数上，5.15.26（DUP-03 墙上时钟收一家）删掉那个只做转发的"
+        "包装后锚点就不存在了 —— 第 13 步的起跑前核对当场报「锚点找不到」并 fail-fast（本轮实测），"
+        "这正是它存在的意义。换到 `logging.rs` 不是随手挑的：那一家由 "
+        "`logging::tests::the_wall_clock_has_two_names_max` 钉成\"全仓唯一读 UNIX_EPOCH 的 now_ms 定义\"，"
+        "所以锚点自己的存在有另一条判据托着，不会第三次悄悄漂掉。",
+        file=TAURI / "src" / "logging.rs",
         injections=[(
-            "fn now_ms() -> i64 {",
-            "fn now_ms() -> i64 {\n    panic!(\"guard mutation: injected panic site\");",
+            "pub(crate) fn now_ms() -> i64 {",
+            "pub(crate) fn now_ms() -> i64 {\n    panic!(\"guard mutation: injected panic site\");",
         )],
         cmd=["node", "scripts/check-panic-sites.mjs"],
         cwd=ROOT,

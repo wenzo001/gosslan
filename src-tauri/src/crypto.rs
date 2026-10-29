@@ -414,19 +414,6 @@ mod tests {
         );
     }
 
-    /// 递归收集 `src/**/*.rs`。`include!` 的分册是磁盘上的独立文件，会被一起扫到 ——
-    /// 判据比的是字面形状，与模块路径无关，这正是我们要的。
-    fn collect_rs(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
-        for e in std::fs::read_dir(dir).expect("读 src 目录") {
-            let p = e.expect("dir entry").path();
-            if p.is_dir() {
-                collect_rs(&p, out);
-            } else if p.extension().and_then(|s| s.to_str()) == Some("rs") {
-                out.push(p);
-            }
-        }
-    }
-
     /// **形状判据**：`:02x` 这种逐字节 hex 表达式只许住在 `crypto.rs`。
     ///
     /// 为什么按形状而不是按清单：本仓的重复实现从来不是"抄了一份没登记"，而是
@@ -434,9 +421,7 @@ mod tests {
     /// `{b:02x}` 与 `{:02x}` 两种写法都算（历史上就是这样分叉出两种的）。
     #[test]
     fn hex_encoding_has_exactly_one_home() {
-        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
-        let mut files = Vec::new();
-        collect_rs(&root, &mut files);
+        let files = crate::logging::production_rs_files();
         assert!(
             files.len() > 100,
             "只扫到 {} 个 .rs ⇒ 目录走错了，这条判据是在空集上恒绿",
@@ -446,12 +431,7 @@ mod tests {
             .iter()
             .filter_map(|p| {
                 let text = std::fs::read_to_string(p).ok()?;
-                text.contains(":02x").then(|| {
-                    p.strip_prefix(&root)
-                        .unwrap_or(p.as_path())
-                        .display()
-                        .to_string()
-                })
+                text.contains(":02x").then(|| crate::logging::rel_to_src(p))
             })
             .collect();
         assert_eq!(

@@ -23,6 +23,27 @@ from .base import ROOT, TAURI, Case, cargo, node_test, npm
 CASES: list[Case] = [
     # ---------------- Rust：主线程阻塞 ----------------
     Case(
+        name="墙上时钟又长出一个名字 ⇒ 形状判据点名那个文件",
+        why="`now_ms()` 在审计时现数 9 处定义，全部读 SystemTime−UNIX_EPOCH，唯一差别是兜底写法"
+        "（`unwrap_or(0)` 与 `unwrap_or_default()`）—— 这就是会漂的那一步：漂成秒、漂成大写、"
+        "漂成单调钟，症状都是某些 TTL 提前或延后到期，而没有任何测试会红。\n"
+        "     收成 `logging::now_ms` 一个家（`db::now_ms` 留作具名别名，因为它承载\u201c落库时间戳\u201d"
+        "的说法且 `db::` 在命令体棘轮里有特殊含义）。判据按**形状**扫全仓：定义 `fn now_ms(` 的文件"
+        "只许有两个，读 `UNIX_EPOCH` 的只许有一个。\n"
+        "     注入方式：在 `discovery.rs` 里再写一个 `fn now_ms()`（能编译、行为也对，只有形状会红）。",
+        file=TAURI / "src" / "network" / "discovery.rs",
+        injections=[(
+            "fn is_rfc1918(ip: &Ipv4Addr) -> bool {",
+            "fn now_ms() -> i64 {\n"
+            '    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis() as i64).unwrap_or(0)\n'
+            "}\n\nfn is_rfc1918(ip: &Ipv4Addr) -> bool {",
+        )],
+        cmd=cargo("test", "--lib", "the_wall_clock_has_two_names_max"),
+        cwd=TAURI,
+        expect_fail_hint="墙上时钟的名字多了一个",
+        tags=["rust", "logging", "time", "dedup", "new-guards"],
+    ),
+    Case(
         name="主线程守卫（同步命令碰数据库必须报出）",
         why="用户反馈的三个卡死现象就来自这条：同步命令在 macOS 主线程执行，长事务持锁时全部窗口冻住",
         file=TAURI / "src" / "commands.rs",
