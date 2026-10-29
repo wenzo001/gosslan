@@ -63,6 +63,7 @@ mod clock_contention_tests {
 
     fn rec(msg_id: &str, conv: &str, seq: i64) -> MessageRecord {
         MessageRecord {
+            fail_code: None,
             id: 0,
             msg_id: msg_id.into(),
             conv_id: conv.into(),

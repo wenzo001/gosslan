@@ -1181,6 +1181,7 @@ async fn handle_gossip(state: &Arc<AppState>, peer_id: &str, env: GossipEnvelope
                     let ts = db::now_ms();
                     let seq = env.seq.max(1);
                     let rec = MessageRecord {
+                        fail_code: None,
                         id: 0,
                         msg_id: env.message_id.clone(),
                         conv_id: conv_id.clone(),

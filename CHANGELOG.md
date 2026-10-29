@@ -13,6 +13,64 @@
 
 ## [Unreleased]
 
+## [5.15.22] - 2026-10-29
+
+### 失败的红色气泡现在说得出"为什么"：`messages` 加 `fail_code` 列（DB v14→v15，INV-P16 的第二条通道）
+
+负责人 2026-10-29 晚的裁定：法条那句「禁止 `Err → failed`」**不当字面执行**（不新建
+`failed_pubkey` 这种状态档），改成**状态说结局、原因另有码**。
+
+- **为什么不是加档位**（现量的影响面）：`messages.status` 今天有 9 档，而"谁能盖谁"这条规则
+  **不止一个消费者** —— 后端 `set_message_status` 的硬终态名单、`requeue_message_for_resend`
+  的可复活名单、群侧那份**不一样**的名单、两个清扫器的谓词、前端 `furthestStatus` /
+  `promoteOnPeerRead` / 气泡着色，还有 `designGuards` 里那条形状判据。加一档要这几处逐个表态，
+  漏一处就是一个静默的档位漏洞。加一列只需要编译器把构造点数完（**35 处 / 22 个文件**，
+  全是 `fail_code: None`）+ 4 个 SELECT 列表各读一列。
+- **词表只有一个家**：`error_codes::MESSAGE_FAIL_CODES` 四格 —— `SEND_RETRY_EXPIRED`（重试窗口耗尽）、
+  `SEND_ORPHAN_AT_START`（本机启动时发现"发送中且没有队列行"）、`SEND_PEER_DELETED`（好友被删）、
+  `SEND_GROUP_MEMBER_GONE`（群成员退群/被移出）。这四格都是**写这一行的时候就知道原因**的位置。
+- **写只有两扇门，守卫只有一份**：带原因的失败只走 `db::set_message_failed(msg_id, code)`
+  （`status` 与 `fail_code` 同一次写落地）；通用的 `set_message_status` 推进任何状态时**把码归零**。
+    归零这一半不是洁癖：一条失败过的消息可以经重发回到 `sent`，旧码留在行上，之后任何一次
+    "没带码的失败"都会被界面念成**上一次**的原因。
+- **`NULL` 是一个要说出口的状态**：v15 之前的老行、以及原因只是自由文本的那一族失败
+  （文件气泡：它今天的码只有 `DISK_FULL` 一个，且走 `file-failed` 事件与 `logging.rs::FAIL_CODE_*`
+  那份对账），都读回 `NULL` ⇒ 界面回落到通用文案「发送失败」。
+  **迁移不回填**：猜出来的码会被当成事实念给用户，那比"说不清原因"更坏。
+- 界面那一侧：`src/utils/fileFailReason.ts` 那张"稳定失败码 → 文案"的表**扩成两个通道共用**
+  （原先只有事件那一条），消息级四格各配中英两条文案；`useMessageDisplay` 的失败 tooltip
+  从「发送失败」变成「发送失败：多次重试仍未送达…」。**只在 `status='failed'` 时读这一列** ——
+  迟到的 Ack 能把一条判过失败的消息推进成 `delivered`，那一行上留着的旧码届时不许上屏。
+- **顺带修掉一处"接上了也看不见"**：失败气泡上那颗「重新发送」键原先把 `title` 写死成
+  `msg.resend` —— 而"能重发的失败"恰恰是最常见的那一档，库里的原因没地方说。
+  现在分工是 **`aria-label` = 动作（读屏用户按到它听到的是"这会干什么"）、`title` = 原因 + 动作**
+  （`发送失败：… · 重新发送`）。改的是三处绑定（群那一颗由 failed/cancelled/partial_cancelled
+  三档共用、单聊失败那颗、单聊取消与部分取消那颗），三处同口径。
+- **两处既有写序守卫跟着搬家**（不是放宽）：`lib_outbox_tests` 原先在 `finalize_expired_message`
+  函数体里找 `set_message_status(` —— 那一格现在走 `set_message_failed(`，锚点不改就是
+  **在旧地址上守一个已经搬走的实现**；同册自动扫的 `USER_FACING` 名单也补进新门。
+- **既有判据自己抓出了这次改动**：手抄 v10 表形状那条当场报"SCHEMA 改过了，这里要一起改"；
+  另一册手写的极简 `messages` DDL 报 `no such column: fail_code` ⇒ 顺手把"码真的落库"升级成断言
+  （原先只断言状态），并带上"没被改写的行不许凭空长出原因"的反向对照。
+
+**真跑过的验证**（本批只报这些）：
+
+- `npm run verify:local` **25 步全绿**（72.1s）。
+- Rust 单测（`--features bluetooth`）**1309 通过 / 0 失败**（本批 +6：`db::fail_code_tests` 五条 +
+  v14→v15 那条迁移用例）。测试清单基线按流程走完 `--update` → `--sync-baselines` → 再 check，
+  两份平台基线各 **1310 条全部在跑**（第一次 check 只是 WARN 型退 0，不算纳管）。
+- 前端 `npm test` **1500 / 1500**（本批 +3：后端数组↔前端表双向对账、无码时的通用回落、
+  "tooltip 真的读了 `fail_code`"那条源码锚点带正控）。
+- `cargo fmt --check --all`、`cargo clippy -D warnings --all-targets`（含 examples）零红。
+- **真渲染那一层补了三格**：`check-ui-runtime.mjs --only=resend` **15/15 绿**。三格是同一份挂载的
+  A/B —— 有码 ⇒ 悬浮文案含原因且绝不含 `SEND_`；无码 ⇒ 通用「发送失败」；再加"名字不许跟着变长"
+  （`aria-label` 仍是「重新发送」）。⚠️ 引擎是 playwright 缓存里的 **Chrome for Testing**（本机没钉
+  `GOSSLAN_CHROME`），所以这三格证的是浏览器真渲染的 DOM 属性，**不等于**真机 WebView/安卓读数。
+- 护栏条数 **284 未变**（本批没新增 Case）。因为改动动到了两条既有 Case 读的锚点，各单独复跑自证
+  非空转：写序自动扫那条 17.3s、Ack 收尾那条 14.2s，**两条都退 0 且恢复逐字节一致**。
+- **未跑**：护栏全量注入扫描（`verify:local` 按 `--skip-guard-sweep` 跳过，发版链/CI 那条腿负责）、
+  跨进程 E2E、真机；老库升级只跑了内存里的 v14→v15 与逐版本重放那条既有判据，没有拿真实数据副本演练。
+
 ## [5.15.21] - 2026-10-29
 
 ### 界面提示不再按中文文案分支：错误码跨 FFI 挂上（INV-P16 的窄口落地）

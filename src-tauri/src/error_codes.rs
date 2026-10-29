@@ -30,3 +30,31 @@ pub const PORT_IN_USE: &str = "PORT_IN_USE";
 pub fn coded(code: &'static str, msg: impl std::fmt::Display) -> String {
     format!("code={code} {msg}")
 }
+
+// ── 消息气泡的失败原因（`messages.fail_code`，DB v14→v15）──────────────────────
+//
+// 上面那两个码走的是**命令返回值**那条通道（一次性、当场弹给用户）；这一族走的是**落库**
+// 那条通道：一条被判失败的气泡要能在重启之后仍然说得出"为什么"。此前所有失败都只写成
+// `status='failed'`，于是"对方一直不在线所以放弃"与"你把对方删了"在界面上是同一句话。
+//
+// 只有这四条：它们都是**写这一行时就知道原因**的位置。文件气泡不在此列 —— 它的原因
+// 是自由文本（`file-failed` 事件的 `reason`），那份另有对账表（`src/utils/fileFailReason.ts`），
+// 没接进这一列之前读回来就是 NULL，含义是"这一格没记原因"，不是"没有原因"。
+
+/// 重试窗口耗尽（清扫器把仍在队列里的行落终态）。
+pub const SEND_RETRY_EXPIRED: &str = "SEND_RETRY_EXPIRED";
+/// 本机启动时发现"发送中但没有任何队列行"的孤儿（崩溃窗口 / 旧版本收尾顺序）。
+pub const SEND_ORPHAN_AT_START: &str = "SEND_ORPHAN_AT_START";
+/// 好友被删除时，仍在队列里发给这个人的消息随之落败（不是用户取消这一条）。
+pub const SEND_PEER_DELETED: &str = "SEND_PEER_DELETED";
+/// 群成员退群/被移出，这条群消息对该成员已无处可投、且没有别的成员还在等。
+pub const SEND_GROUP_MEMBER_GONE: &str = "SEND_GROUP_MEMBER_GONE";
+
+/// 落进 `messages.fail_code` 的全部档位 —— **与前端那张文案表双向对账的分母**
+/// （`src/utils/fileFailReason.test.ts` 现读这里，两侧任何一侧多加一条都会红）。
+pub const MESSAGE_FAIL_CODES: [&str; 4] = [
+    SEND_RETRY_EXPIRED,
+    SEND_ORPHAN_AT_START,
+    SEND_PEER_DELETED,
+    SEND_GROUP_MEMBER_GONE,
+];

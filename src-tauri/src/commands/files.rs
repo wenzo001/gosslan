@@ -411,6 +411,7 @@ fn build_file_message(
         db::next_clock(&dbc, friend_id).unwrap_or(1)
     };
     MessageRecord {
+        fail_code: None,
         id: 0,
         msg_id: format!("file-{transfer_id}"),
         conv_id: friend_id.to_string(),

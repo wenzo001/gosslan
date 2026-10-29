@@ -224,6 +224,7 @@ pub async fn download_shared_file(
 pub fn insert_system_message(state: &AppState, conv_id: &str, text: &str) {
     let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
     let rec = crate::state::MessageRecord {
+        fail_code: None,
         id: 0,
         msg_id: format!("sys-{}", Uuid::new_v4()),
         conv_id: conv_id.to_string(),

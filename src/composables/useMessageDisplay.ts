@@ -6,6 +6,7 @@ import { fmtDateTime, fmtTimeDivider } from "@/utils/time";
 import { shouldShowTimeDivider } from "@/utils/previewMetrics";
 import { shouldShowNickname, type MessageGroupSide } from "@/utils/messageKinds";
 import { normalizeSendState } from "@/utils/messages";
+import { fileFailReasonText } from "@/utils/fileFailReason";
 import { isWaitingForPeer } from "@/utils/sendWaiting";
 import { useNowMs } from "@/utils/nowTick";
 import type { MessageRecord } from "@/types";
@@ -192,8 +193,14 @@ export function useMessageDisplay(opts: {
         return t("msg.delivered");
       case "read":
         return t("msg.read");
-      case "failed":
-        return t("msg.sendFailed");
+      case "failed": {
+        // 有码就说得出为什么（DB v14→v15 的 `fail_code`）。没码是**一个要说出口的状态**：
+        // v15 之前的老行、以及原因只是自由文本的那一族失败（文件传输），都没有码 ⇒
+        // 这里回落到通用文案，绝不把裸码念给用户（`fileFailReasonText` 的回落也是同一口径）。
+        const code = message.value.fail_code;
+        if (!code) return t("msg.sendFailed");
+        return t("msg.sendFailedWith", { reason: fileFailReasonText(code, t) });
+      }
       // 用户主动取消。`messages.status='cancelled'` 已经写了好几个版本，而这份映射里
       // 一直没有它 ⇒ 取消掉的发送回执走 default 返回**空串**：图标位是空的、读屏也什么都
       // 读不到，用户只能靠"内容没发出去"反推自己按过取消。与 INV-P26 的口径一起补上：

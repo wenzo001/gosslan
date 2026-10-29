@@ -480,6 +480,7 @@ mod todo_number_tests {
     /// 往群里写一条"某成员建的任务"（只关心载荷里的 `number`，其余字段走缺省）。
     fn seed_todo(conn: &Connection, msg_id: &str, todo_id: &str, number: i64) {
         let rec = MessageRecord {
+            fail_code: None,
             id: 0,
             msg_id: msg_id.into(),
             conv_id: "group:g1".into(),
@@ -549,6 +550,7 @@ mod todo_number_tests {
         // 0 不参与高水位：不能因为见过一条无号任务就把号推到 1 之后
         let conn = mem();
         let rec = MessageRecord {
+            fail_code: None,
             id: 0,
             msg_id: "m0".into(),
             conv_id: "group:g1".into(),

@@ -14223,6 +14223,38 @@ async function runResend(cdp, url) {
     check("★ 确认框里点「取消」⇒ 不发命令，且框自己收起来", false,
       "先要那颗按钮存在", JSON.stringify(f));
   }
+
+  // ── ⑦ 失败的那一颗必须说得出**为什么**（DB v14→v15 的 messages.fail_code）───
+  // 静态判据只能证明"源码里读了那一列"；"库里的码真变成悬浮文案"只有 computed/DOM 读数能证明。
+  // 两格是同一份挂载的 A/B：只差 `fail_code` 这一列 —— 另一侧（没码）就是通用回落，
+  // 它也必须被量到，否则"永远走带原因那一支"的 bug 在这一段是看不见的。
+  const readTitle = async () => cdp.eval(`(async () => {
+    const { t } = await import('/src/i18n/index.ts');
+    const btn = [...document.querySelectorAll('button')]
+      .find((x) => (x.getAttribute('aria-label') || '') === t('msg.resend') && x.getClientRects().length > 0);
+    if (!btn) return null;
+    return { title: btn.getAttribute('title') || '', aria: btn.getAttribute('aria-label') || '' };
+  })()`);
+  await stubAll();
+  const withCode = await mountAndLocate({
+    msg_id: "m-rs-7", kind: "text", content: "在吗", fail_code: "SEND_PEER_DELETED",
+  });
+  const tWith = withCode.ok && withCode.btn && withCode.btn.found ? await readTitle() : null;
+  check("★ 有 fail_code ⇒ 失败那颗的悬浮文案带上原因（且码本身绝不上屏）",
+    !!tWith && tWith.title.includes("好友") && !tWith.title.includes("SEND_")
+      && tWith.title.includes("重新发送"),
+    "含『好友』+ 含『重新发送』+ 不含 SEND_", JSON.stringify({ tWith, at: withCode }));
+
+  await stubAll();
+  const noCode = await mountAndLocate({ msg_id: "m-rs-8", kind: "text", content: "在吗" });
+  const tWithout = noCode.ok && noCode.btn && noCode.btn.found ? await readTitle() : null;
+  check("★ 没有 fail_code（v15 之前的老行 / 文件那一族）⇒ 回落到通用『发送失败』，不许空白或裸码",
+    !!tWithout && tWithout.title.startsWith("发送失败 · ") && !tWithout.title.includes("SEND_"),
+    "『发送失败 · 重新发送』", JSON.stringify({ tWithout, at: noCode }));
+  // 名字不跟着变长：读屏用户按到它时听到的是动作，不是一句越来越长的解释。
+  check("★ 加了原因之后 aria-label 仍然只有动作『重新发送』（label=动作、title=说明这条分工不许漂）",
+    !!tWith && !!tWithout && tWith.aria === "重新发送" && tWithout.aria === "重新发送",
+    "aria-label 两处都 = 重新发送", JSON.stringify({ a: tWith?.aria, b: tWithout?.aria }));
 }
 
 /**

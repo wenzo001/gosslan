@@ -560,6 +560,7 @@ async fn handle_file_messages(state: &Arc<AppState>, peer_id: &str, msg: Message
                         let content = content.to_string();
                         let seq = db::next_clock(&dbc, &sender_id).unwrap_or(1);
                         let rec = MessageRecord {
+                            fail_code: None,
                             id: 0,
                             msg_id: format!("file-{transfer_id}"),
                             conv_id: sender_id.clone(),

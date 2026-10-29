@@ -581,11 +581,33 @@ Err → failed
      今天在册的码：`E2EE_PUBKEY_MISSING`、`PORT_IN_USE`。
      为什么不铺开：OS / 第三方库的串我们不产码，那一族**只能**按签名认（`RULES` 与 `TECHNICAL` 是兜底，
      不是分类器）；把 356 个 `return Err(` 逐点判成五档，会造出一份"为了凑档位而写的第二份自由文本"。
+ ③ **落库那一侧：状态不拆档，原因必须有码**（2026-10-29 负责人选定，同日落地 DB v14→v15）。
+     「禁止 `Err → failed`」不当字面执行 —— 不新建 `failed_pubkey` / `failed_timeout` 这种状态档，
+     因为 `messages.status` 那套终态门（硬终态不可逆 + 软终态不被迟到写撤销 + 清扫器的谓词 +
+     前端 `furthestStatus` / `promoteOnPeerRead` 那六七个比较）是一个**档位集合**，加一档要改的
+     地方比加一列多得多，且每加一档都是把这些守卫重走一遍的风险。
+     做法是给同一行加一列 `fail_code TEXT`（可空）：**`status` 说结局，`fail_code` 说原因**。
+     - 词表只有一个家：`error_codes::MESSAGE_FAIL_CODES`（当前四格
+       `SEND_RETRY_EXPIRED` / `SEND_ORPHAN_AT_START` / `SEND_PEER_DELETED` / `SEND_GROUP_MEMBER_GONE`），
+       文案在 `src/utils/fileFailReason.ts`，两侧**双向**对账。
+     - 写只有两扇门：带原因的失败走 `db::set_message_failed(msg_id, code)`（`status` 与 `fail_code`
+       同一次写落地）；通用的 `set_message_status` 推进任何状态时**把码归零** —— 守卫只有一份，
+       否则一条重发后又失败的气泡会被界面念出**上一次**的原因。
+     - `NULL` 是一个要说出口的状态：v15 之前的老行、以及原因只是自由文本的那一族（文件传输，
+       它的码走 `file-failed` 事件与 `logging.rs::FAIL_CODE_*`），都读回 `NULL` ⇒ 界面回落通用文案。
+       **不回填**：猜出来的码会被当成事实念给用户，比"说不清"更坏。
+     - 只在 `status = 'failed'` 时读：迟到的 Ack 能把一条判过失败的消息推进成 `delivered`
+       （`ack_delivered` 的谓词不排 `failed`），那一行上留着的旧码届时不许上屏。
 - 钩子：`src/utils/errors.test.ts` `guards:用户取消不得记成失败`
   （同册另有三条与本条相关：「码优先：后端换了那句人话的说法，档位不许跟着换（带反向对照）」、
   「码只给我们看：任何一档都不许把 `code=…` 带上屏」、
   「跨语言契约：错误码两侧同源」—— 后者双向对账，前端读了后端不产出的码 ⇒ 红，
   后端定了码却没人用 ⇒ 也红，并带"一个不存在的码必须数到 0 次引用"的阳性对照）
+  落库那一侧的钩子：`db::fail_code_tests` 五条（两扇门的分工、迟到写改不动已判失败的行、
+  清扫器自带原因、**四个读取口都带上这一列**、码的形状是契约）+
+  `migration_tests::v14_to_v15_adds_nullable_fail_code_without_backfilling` +
+  `src/utils/fileFailReason.test.ts` 三条（后端数组↔前端表双向对账、无码时的通用回落、
+  以及"tooltip 真的读了 `fail_code`"那条源码锚点带正控）
 
 ---
 

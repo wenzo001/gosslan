@@ -426,6 +426,39 @@ export function isForwardableKind(kind: string): boolean {
 **本机自己**）。于是 ① 没有尺寸类 ⇒ 盒子塌成零尺寸，那一列候选人**根本没有头像**；② 就算有尺寸，
 每个人的脸都会画成本机自己。现改成 `<AvatarBox class="h-9 w-9 shrink-0" :id="id" :src="…" />`。
 
+### 4.0j P16 的第二半：**落库那一侧**的「failed 太粗」——`messages.fail_code`（**已修**，DB v14→v15）
+
+§4.0i 之后同一格的延伸：负责人问「法条那句 `禁止 Err → failed` 要不要当真」，先量影响面再定档，
+最后选定**加一列而不是加档位**。量的东西（现算，不凭印象）：
+
+- **档位方案要动的地方**：`messages.status` 今天的取值集合有 9 档（`sent`/`sending`/`delivered`/`read`/
+  `recalled`/`failed`/`cancelled`/`partial_cancelled`/`unknown`），而"哪一档能盖哪一档"这条规则
+  **不止一个消费者** —— 后端 `set_message_status` 的 `NOT IN` 硬终态名单、`requeue_message_for_resend`
+  的可复活名单、群侧 `status NOT IN ('recalled','read')` 那份**不同**的名单、清扫器与孤儿恢复的谓词、
+  前端 `furthestStatus` / `promoteOnPeerRead` / `MessageItem` 的着色与 `designGuards` 里那条
+  「read/failed/recalled 三档」的形状判据。加一档 ⇒ 这几处逐个表态，漏一处就是一个静默的档位漏洞。
+- **加列方案要动的地方**：`MIGRATIONS` 末尾一格 + `SCHEMA` 一行 + `MessageRecord` 一个字段
+  （编译器现数 **35 处构造点、22 个文件**，全是 `fail_code: None`）+ 4 个 SELECT 列表（每个都带一份
+  独立的行映射，漏一个就是那条路径读不回原因）+ 4 处写 `failed` 的 SQL 各带自己的码。
+  ⇒ 影响面**由编译器与判据数**，不由印象数（这一条也是选它的决定性理由）。
+
+落地口径（细节与理由都在 `docs/protocol-invariants.md` 的 INV-P16 第 ③ 条）：`status` 说结局、
+`fail_code` 说原因；词表一个家（`error_codes::MESSAGE_FAIL_CODES`）、写只有两扇门
+（带原因只走 `set_message_failed`，通用门推进状态时**归零**旧码）、`NULL` 是一个要说出口的状态
+（不回填、文件那一族的码仍走 `file-failed` 事件）、只在 `status='failed'` 时读。
+
+- **两处既有写序守卫跟着搬家，不是放宽**：`lib_outbox_tests::terminal_finalize_defers_the_destructive_write`
+  原先在 `finalize_expired_message` 函数体里找 `set_message_status(` —— 那一格现在走
+  `set_message_failed(`，锚点不改就是**在旧地址上守一个已经搬走的实现**（会静默空转）；
+  同册自动扫的 `USER_FACING` 名单也补进新门，否则"带原因的终态写"成了一条不受写序守卫的通道。
+- **三条既有判据自己抓出了改动**（这正是它们该做的事，不是意外）：`v10_to_v11…` 那条手抄形状当场
+  报"SCHEMA 改过了，这里要一起改"；`offline_queue_tests` 那份手写最小 DDL 报 `no such column: fail_code`
+  ⇒ 补列后**顺手把"码真的落库"升级成断言**（原先只断言状态），并带上"没被改写的行不许凭空长出原因"
+  的反向对照。
+- ⚠️ **本轮明确不做的**：文件气泡（`file-{id}` / `gfile-{id}`）的失败仍不写这一列 —— 它的原因今天是
+  自由文本（`REASON_*` 那几条中文串），只有 `DISK_FULL` 这一族有稳定码，而那份码已经有自己的通道
+  （`file-failed` 事件 + `fileFailReason.ts` + `logging.rs::FAIL_CODE_*` 对账）。要让它在**重启之后**
+  也说得出原因，得先给那一族失败配齐码 —— 另开一格，已登记在 §8 的 P2 表里（不在这里半接）。
 ### 4.1 已核查且未发现问题的稳定性面
 
 - **锁顺序**：全仓无 `peers↔db` 嵌套；`file_receivers→db` 顺序成立。
@@ -452,7 +485,7 @@ export function isForwardableKind(kind: string): boolean {
 
 | ID | 偏差 | 证据 |
 |---|---|---|
-| **P16** | 原状：五档里 `recoverable`/`user_action_required`/`security_related` **全仓 0 命中**，只有文件/内容传输族有真分类。**2026-10-29 已把口径写实**（负责人选"窄口挂码"而不是全面铺开）：内部收尾判断本来就是结构化的（`send_retry_verdict` 吃 `SendFileError{retryable,cancelled}`、台账走 `FailReason` 九档），需要修的只有"**界面按中文文案分支**"那两处 ⇒ 新增 `error_codes.rs`（`E2EE_PUBKEY_MISSING` / `PORT_IN_USE`）+ 前端 `CODE_RULES` 先按码分类 + 双向对账判据。OS/第三方串仍走签名兜底（那不是分类器） | `src-tauri/src/error_codes.rs`、`src/utils/errors.ts` |
+| **P16** | 原状：五档里 `recoverable`/`user_action_required`/`security_related` **全仓 0 命中**，只有文件/内容传输族有真分类。**2026-10-29 已把口径写实**（负责人选"窄口挂码"而不是全面铺开）：内部收尾判断本来就是结构化的（`send_retry_verdict` 吃 `SendFileError{retryable,cancelled}`、台账走 `FailReason` 九档），需要修的只有"**界面按中文文案分支**"那两处 ⇒ 新增 `error_codes.rs`（`E2EE_PUBKEY_MISSING` / `PORT_IN_USE`）+ 前端 `CODE_RULES` 先按码分类 + 双向对账判据。OS/第三方串仍走签名兜底（那不是分类器）。**同日晚补上第二条通道**（§4.0j）：`禁止 Err → failed` 按"状态不拆档、原因必须有码"执行 ⇒ DB v14→v15 给 `messages` 加可空 `fail_code`，四格消息级终态各带自己的码，界面 tooltip 从「发送失败」变成「发送失败：<为什么>」 | `src-tauri/src/error_codes.rs`、`src/utils/errors.ts`、`src/utils/fileFailReason.ts` |
 | **P18** | 判据 A/B 真实存在且已接门禁（96 类型 + 169 命令体，0 违规），但 `Identity` 私钥字段仍是 `pub`，`x25519_secret_b64()`/`ed25519_secret_b64()` 是两条现成的导出器；文档点名的 B-1a 补救（改私有 + 只暴露 `sign()`/`dh()`）未发生 | `src-tauri/src/crypto.rs` |
 | **P27** | 已读与红点共用 `chatViewerLooking()`，但**系统通知那一族四处**（`useChatStore.ts:326/481/500/661`）用 `!document.hidden && document.hasFocus() && activeConv===conv_id` —— 第三个条件是子集，守卫只数 `!document.hidden && app.chatVisible` 这个组合所以看不见 | `src/stores/useChatStore.ts` |
 | **P34** | 原状：十二处慢活逐格在池内、位置断言在、`Err` 不伪装成 `Ok`；但文档规则 6 写死的"现算处数 17"与判据实际钉的 **18** 不同步。**2026-10-29 晚已改文档（17 → 19，与判据同句说明"法条上的数要跟着判据走"）**；STB-01 那处 `write_all(` 已随 5.15.10 收进 `PRIMITIVES` | `docs/protocol-invariants.md` vs `lib_relay_data_tests.rs` |
@@ -590,7 +623,7 @@ export function isForwardableKind(kind: string): boolean {
 
 | 序 | 项 | 类型 |
 |---|---|---|
-| 10 | INV-P16 错误语义五档 / INV-P18 私钥字段私有化（**P27 已判与 spec 对齐、P34 已改文档同步**，见 §4.0c/§4.0e） | 规范偏差（剩 2 条） |
+| 10 | INV-P18 的**另一半**：Ed25519 私钥字段仍是 `pub`（X25519 那半已私有化 + 判据 C，见 §5 的 P18 行）；要收它得先给"签名能力"抽象，否则每个调用点都得拿到能签的东西。**INV-P16 两条通道都已落地**（`error_codes.rs` 的命令返回侧 + `messages.fail_code` 的落库侧，见 §4.0j）；**P27 已判与 spec 对齐、P34 已改文档同步**，见 §4.0c/§4.0e | 规范偏差（本条只剩 P18 的 Ed25519 那半） |
 | 11 | SEC-02 的**上限那一半已做**（5.15.14：512 条 + 淘汰最旧 + `PEERS_TABLE_FULL`）；**announce 限流没做**——理由：无界增长的成因是"条数没有上限"而不是速率，`upsert_peer` 每 5s 广播周期最多一次，且发现缓存已封顶；这条留在册子里等真实读数（CPU 侧证据）再决定 | 安全（半做，负结论留证） |
 | 12 | DUP-02 转发判据收成一家（4 处 → 1 处） | 重复实现 |
 | 13 | DUP-09～DUP-12 加跨层字面值对账守卫 | 重复实现 |
@@ -599,6 +632,7 @@ export function isForwardableKind(kind: string): boolean {
 | 16 | 修 `open-source-replacement-matrix.md` 的 6 条反转 + 11 条过期 | 文档漂移 |
 | 17 | 删 `@pinia/colada` 死依赖；评估 `lucide-vue-next` 升级 | 依赖卫生 |
 | 18 | SEC-08 的 8 GiB 聚合上限（项目自己已记录） | 已知缺口 |
+| 19 | **文件气泡的失败原因在重启后失忆**：`file-{id}` / `gfile-{id}` 落 `failed` 时不写 `fail_code`（原因今天是自由文本，只有 `DISK_FULL` 一族有码，且那份码走 `file-failed` 事件不落库）。做这一格的前置是给 `REASON_*` 那几条自由文本先配稳定码 —— 见 §4.0j 的"本轮明确不做的" | UX 可归因（半条，前置未清） |
 
 ---
 

@@ -15,6 +15,7 @@
         db::insert_message(
             &conn,
             &MessageRecord {
+                fail_code: None,
                 id: 0,
                 msg_id: "m1".into(),
                 conv_id: "peer-a".into(),
@@ -57,6 +58,7 @@
         db::insert_message(
             &conn,
             &MessageRecord {
+                fail_code: None,
                 id: 0,
                 msg_id: "m1".into(),
                 conv_id: "peer-a".into(),
@@ -185,6 +187,7 @@
         db::insert_message(
             &conn,
             &MessageRecord {
+                fail_code: None,
                 id: 0,
                 msg_id: "m1".into(),
                 conv_id: "f1".into(),

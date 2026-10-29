@@ -103,7 +103,7 @@ pub fn get_messages(
     offset: i64,
 ) -> Result<Vec<MessageRecord>> {
     let mut stmt = conn.prepare(
-        "SELECT id, msg_id, conv_id, sender_id, receiver_id, kind, content, ts, seq, status, mention_targets, local_id
+        "SELECT id, msg_id, conv_id, sender_id, receiver_id, kind, content, ts, seq, status, mention_targets, local_id, fail_code
          FROM messages WHERE conv_id = ?1 ORDER BY seq ASC, id ASC LIMIT ?2 OFFSET ?3",
     )?;
     let rows = stmt.query_map(params![conv_id, limit, offset], |r| {
@@ -120,6 +120,7 @@ pub fn get_messages(
             status: r.get(9)?,
             mention_targets: decode_mention_targets(r.get(10)?),
                 local_id: r.get(11)?,
+                fail_code: r.get(12)?,
         })
     })?;
     Ok(rows.filter_map(|r| r.ok()).collect())
@@ -141,7 +142,7 @@ pub fn get_todo_messages_for_conns(
     let mut out = Vec::new();
     for conv_id in conv_ids {
         let mut stmt = conn.prepare(
-            "SELECT id, msg_id, conv_id, sender_id, receiver_id, kind, content, ts, seq, status, mention_targets, local_id
+            "SELECT id, msg_id, conv_id, sender_id, receiver_id, kind, content, ts, seq, status, mention_targets, local_id, fail_code
              FROM messages WHERE conv_id = ?1 AND kind IN ('todo', 'todo_update')
              ORDER BY seq ASC, id ASC",
         )?;
@@ -159,6 +160,7 @@ pub fn get_todo_messages_for_conns(
                 status: r.get(9)?,
             mention_targets: decode_mention_targets(r.get(10)?),
                 local_id: r.get(11)?,
+                fail_code: r.get(12)?,
             })
         })?;
         out.extend(rows.filter_map(|r| r.ok()));
@@ -186,7 +188,7 @@ pub fn get_latest_messages(
     limit: i64,
 ) -> Result<Vec<MessageRecord>> {
     let mut stmt = conn.prepare(
-        "SELECT id, msg_id, conv_id, sender_id, receiver_id, kind, content, ts, seq, status, mention_targets, local_id
+        "SELECT id, msg_id, conv_id, sender_id, receiver_id, kind, content, ts, seq, status, mention_targets, local_id, fail_code
          FROM messages WHERE conv_id = ?1 ORDER BY seq DESC, id DESC LIMIT ?2",
     )?;
     let rows = stmt.query_map(params![conv_id, limit], |r| {
@@ -203,6 +205,7 @@ pub fn get_latest_messages(
             status: r.get(9)?,
             mention_targets: decode_mention_targets(r.get(10)?),
                 local_id: r.get(11)?,
+                fail_code: r.get(12)?,
         })
     })?;
     let mut out: Vec<MessageRecord> = rows.filter_map(|r| r.ok()).collect();
@@ -630,7 +633,7 @@ mod message_ops_tests {
 /// 按 msg_id 取完整消息记录（需要跨字段判断时用；今天只有 `network/file/receive.rs::resume_receive` 认领续传用它）。
 pub fn get_message_record(conn: &Connection, msg_id: &str) -> Option<MessageRecord> {
     conn.query_row(
-        "SELECT id, msg_id, conv_id, sender_id, receiver_id, kind, content, ts, seq, status, mention_targets, local_id
+        "SELECT id, msg_id, conv_id, sender_id, receiver_id, kind, content, ts, seq, status, mention_targets, local_id, fail_code
          FROM messages WHERE msg_id = ?1",
         params![msg_id],
         |r| {
@@ -647,6 +650,7 @@ pub fn get_message_record(conn: &Connection, msg_id: &str) -> Option<MessageReco
                 status: r.get(9)?,
             mention_targets: decode_mention_targets(r.get(10)?),
                 local_id: r.get(11)?,
+                fail_code: r.get(12)?,
             })
         },
     )
@@ -693,18 +697,42 @@ pub fn get_favorite_source(
 /// 静默改回「已发送」——而队列行已被取消路径删掉，消息**永远不会再发**（outbox_flush 只扫
 /// 队列表），界面却显示已发出。`failed` 同理：它已由清扫器收口，迟到写不许把它推回 `sent`。
 /// 重发链走 `requeue_message_for_resend`（同一事务把状态推到 `sending`）⇒ 不受这条影响。
+///
+/// 守卫只有一份（`status NOT IN (...)`），两扇门共用：
+///  · [`set_message_status`] —— 只推进状态，**把原因码归零**（新的状态没有"上次为什么失败"要说）；
+///  · [`set_message_failed`] —— 落 `failed` 并**同时写下原因**。
+///
+/// 为什么归零放在通用那扇门里：一条曾经失败过的行可以经重发回到 `sent`，
+/// 如果旧码留在行上，之后任何一次"没有码的失败"都会把**上一次的**原因念给用户。
 pub fn set_message_status(conn: &Connection, msg_id: &str, status: &str) -> Result<usize> {
+    set_message_status_with_code(conn, msg_id, status, None)
+}
+
+/// 落 `failed` **并带上原因码**（DB v14→v15）。词表 = `error_codes::MESSAGE_FAIL_CODES`。
+///
+/// 带原因的失败只有这一个出口：`status = 'failed'` 与 `fail_code` 必须同一行同一次写落地，
+/// 分开写就会造出"显示着原因、其实那次失败没记原因"的行（界面读的是这一对，不是各自单独）。
+pub fn set_message_failed(conn: &Connection, msg_id: &str, code: &str) -> Result<usize> {
+    set_message_status_with_code(conn, msg_id, "failed", Some(code))
+}
+
+fn set_message_status_with_code(
+    conn: &Connection,
+    msg_id: &str,
+    status: &str,
+    fail_code: Option<&str>,
+) -> Result<usize> {
     let rows = conn.execute(
-        "UPDATE messages SET status = ?2
+        "UPDATE messages SET status = ?2, fail_code = ?3
          WHERE msg_id = ?1
            AND status NOT IN ('read', 'delivered', 'recalled',
                               'cancelled', 'partial_cancelled', 'failed')",
-        params![msg_id, status],
+        params![msg_id, status, fail_code],
     )?;
     Ok(rows)
 }
 
-/// 过期消息 outbox 落终态：置 `failed` + 删队列行，**同一事务**。
+/// 过期消息 outbox 落终态：置 `failed`（原因 = 重试窗口耗尽）+ 删队列行，**同一事务**。
 ///
 /// 为什么必须原子（审计 P1 #6）：两步分开写时，"状态写成 failed、删行失败"会留下
 /// 「界面已判失败、队列行还在」—— 而 `outbox_flush` 只看队列表、不看 messages.status ⇒
@@ -716,7 +744,7 @@ pub fn finalize_expired_message(
     group: bool,
 ) -> Result<()> {
     let tx = conn.unchecked_transaction()?;
-    set_message_status(&tx, msg_id, "failed")?;
+    set_message_failed(&tx, msg_id, crate::error_codes::SEND_RETRY_EXPIRED)?;
     // 复用既有的删行实现（不要在这里写第二份 SQL）：`Transaction` 解引用到 `Connection`。
     // 队列行本来就不在时它们同样是成功（幂等）。
     if group {
@@ -1449,6 +1477,7 @@ mod local_id_tests {
 
     fn rec(msg_id: &str, local_id: Option<&str>) -> MessageRecord {
         MessageRecord {
+            fail_code: None,
             id: 0,
             msg_id: msg_id.to_string(),
             conv_id: "c1".to_string(),
@@ -1487,5 +1516,170 @@ mod local_id_tests {
             insert_message(&conn, &rec("m2", Some("dup"))).is_err(),
             "重复 local_id 会让列表两行互相覆盖测量/DOM ⇒ 唯一索引必须拒绝"
         );
+    }
+}
+
+#[cfg(test)]
+mod fail_code_tests {
+    // 本文件经 include! 拼进 db 模块，模块名在 db 作用域里必须全局唯一。
+    use super::*;
+    use crate::error_codes;
+
+    fn mem() -> Connection {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(crate::db::SCHEMA).unwrap();
+        conn
+    }
+
+    fn seed(conn: &Connection, msg_id: &str, kind: &str, status: &str) {
+        conn.execute(
+            "INSERT INTO messages(msg_id, conv_id, sender_id, receiver_id, kind, content, ts, seq, status)
+             VALUES(?1, 'c1', 'me', 'peer', ?2, 'hi', 1, 1, ?3)",
+            params![msg_id, kind, status],
+        )
+        .unwrap();
+    }
+
+    /// 一次读回 `(status, fail_code)` —— 这两个字段是一个契约的两半，分开读就看不出错位。
+    fn pair(conn: &Connection, msg_id: &str) -> (String, Option<String>) {
+        conn.query_row(
+            "SELECT status, fail_code FROM messages WHERE msg_id = ?1",
+            params![msg_id],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .unwrap()
+    }
+
+    /// 两扇门的分工（写顺序就是语义）：带原因的失败只走 `set_message_failed`，
+    /// 通用那扇门推进状态时**必须把旧码归零** —— 否则一条重发后又失败的消息会
+    /// 被界面念出**上一次**的原因。
+    #[test]
+    fn set_message_failed_writes_both_and_the_generic_door_clears_the_code() {
+        let conn = mem();
+        seed(&conn, "m1", "text", "sending");
+
+        assert_eq!(
+            set_message_failed(&conn, "m1", error_codes::SEND_RETRY_EXPIRED).unwrap(),
+            1
+        );
+        assert_eq!(
+            pair(&conn, "m1"),
+            ("failed".to_string(), Some(error_codes::SEND_RETRY_EXPIRED.to_string())),
+            "failed 与原因必须同一次写落地，缺一个界面就只能猜"
+        );
+
+        // 通用门写非 failed 的状态 ⇒ 码归零。这里先把状态放开（重发链走的是另一条 SQL，
+        // 本条只验证"这一扇门会清码"这一半契约），所以直接从 failed 造回可写状态。
+        conn.execute(
+            "UPDATE messages SET status = 'sending' WHERE msg_id = 'm1'",
+            [],
+        )
+        .unwrap();
+        assert_eq!(set_message_status(&conn, "m1", "sent").unwrap(), 1);
+        assert_eq!(
+            pair(&conn, "m1"),
+            ("sent".to_string(), None),
+            "推进状态却留着旧原因 ⇒ 下一次没有码的失败会把这一次的原因念给用户"
+        );
+    }
+
+    /// 硬终态守卫不许因为新列而变松：迟到的 `sent` 仍然改不动已判失败的行，
+    /// 连带地也不许把那一格的原因码洗掉（它是那次失败的证据）。
+    #[test]
+    fn a_late_write_still_cannot_rewrite_a_failed_row_or_its_code() {
+        let conn = mem();
+        seed(&conn, "m2", "text", "sending");
+        set_message_failed(&conn, "m2", error_codes::SEND_PEER_DELETED).unwrap();
+
+        assert_eq!(
+            set_message_status(&conn, "m2", "sent").unwrap(),
+            0,
+            "failed 是软终态但对迟到写不可撤销（INV：队列行已关，不许被推回已发送）"
+        );
+        assert_eq!(
+            pair(&conn, "m2"),
+            ("failed".to_string(), Some(error_codes::SEND_PEER_DELETED.to_string())),
+            "0 行的写不许顺手动过那一格"
+        );
+    }
+
+    /// 清扫器的过期终态必须**自带原因**：它是"重试窗口耗尽"这一格唯一的书写点。
+    #[test]
+    fn expired_settlement_records_the_reason_and_closes_the_queue_row() {
+        let conn = mem();
+        seed(&conn, "m3", "text", "sending");
+        conn.execute(
+            "INSERT INTO outbox(msg_id, peer_id, payload, created_at) VALUES('m3','peer','{}',1)",
+            [],
+        )
+        .unwrap();
+
+        finalize_expired_message(&conn, "m3", false).unwrap();
+        assert_eq!(
+            pair(&conn, "m3"),
+            ("failed".to_string(), Some(error_codes::SEND_RETRY_EXPIRED.to_string())),
+        );
+        let rows: i64 = conn
+            .query_row("SELECT COUNT(*) FROM outbox WHERE msg_id = 'm3'", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(rows, 0, "同一事务里删行这一步不许因为加列而漏掉");
+    }
+
+    /// **四个读取口都要带上新列**（发送端与接收端是同一份规则的两半）：
+    /// 漏任何一个，那条路径读回来的气泡就只能显示通用文案，而库里明明有原因。
+    #[test]
+    fn every_message_reader_carries_the_fail_code() {
+        let conn = mem();
+        seed(&conn, "m4", "text", "sending");
+        seed(&conn, "t1", "todo", "sending");
+        set_message_failed(&conn, "m4", error_codes::SEND_GROUP_MEMBER_GONE).unwrap();
+        set_message_failed(&conn, "t1", error_codes::SEND_ORPHAN_AT_START).unwrap();
+
+        let by_page = get_messages(&conn, "c1", 50, 0).unwrap();
+        let by_tail = get_latest_messages(&conn, "c1", 50).unwrap();
+        let by_kind = get_todo_messages_for_conns(&conn, &["c1".to_string()]).unwrap();
+        let by_id = get_message_record(&conn, "m4").expect("m4");
+
+        for (name, rec) in [
+            ("get_messages", by_page.iter().find(|r| r.msg_id == "m4").unwrap()),
+            ("get_latest_messages", by_tail.iter().find(|r| r.msg_id == "m4").unwrap()),
+            ("get_message_record", &by_id),
+        ] {
+            assert_eq!(
+                rec.fail_code.as_deref(),
+                Some(error_codes::SEND_GROUP_MEMBER_GONE),
+                "{name} 没把 fail_code 读回来"
+            );
+        }
+        assert_eq!(
+            by_kind
+                .iter()
+                .find(|r| r.msg_id == "t1")
+                .and_then(|r| r.fail_code.clone())
+                .as_deref(),
+            Some(error_codes::SEND_ORPHAN_AT_START),
+            "get_todo_messages_for_conns 走的是自己那份 SELECT，最容易漏"
+        );
+    }
+
+    /// 码的形状是契约（前端按字面量查表）：必须是**只有大写字母/数字/下划线**的串。
+    /// 这条不是形式主义 —— 小写或带空格的码在前端那张表里匹配不上，会静默回落到通用文案。
+    #[test]
+    fn message_fail_codes_are_stable_identifiers() {
+        assert_eq!(error_codes::MESSAGE_FAIL_CODES.len(), 4, "档位变了要同步前端表与词典");
+        for code in error_codes::MESSAGE_FAIL_CODES {
+            assert!(
+                !code.is_empty()
+                    && code
+                        .chars()
+                        .all(|c| c.is_ascii_uppercase() || c == '_' || c.is_ascii_digit()),
+                "失败码必须是大写字母/数字/下划线：{code}"
+            );
+            // 常量名与常量值逐字相同（对账判据按名字解析，两者不一致就会读错）。
+            assert!(
+                code.len() > 5,
+                "过短的码会撞上别的字面量，读回来分不清是谁：{code}"
+            );
+        }
     }
 }

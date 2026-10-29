@@ -1337,12 +1337,12 @@ fn v10_to_v11_adds_mention_targets_column_without_touching_existing_rows() {
     // ★ 这份手抄的 v10 形状会不会漂？——由这条断言管：它必须**正好**等于新 SCHEMA 去掉那一列。
     //   以后谁给 `messages` 加/删列而忘了回来改这里，这条当场红（不是等到迁移在真机上炸）。
     let mut want = column_names(&fresh);
-    // v10 早于这两列：mention_targets 是 v11 加的，local_id 是 v14 加的。
-    want.retain(|c| c != "mention_targets" && c != "local_id");
+    // v10 早于这三列：mention_targets 是 v11 加的、local_id 是 v14 加的、fail_code 是 v15 加的。
+    want.retain(|c| c != "mention_targets" && c != "local_id" && c != "fail_code");
     assert_eq!(
         column_names(&conn),
         want,
-        "本用例手抄的 v10 形状 ≠ 新 SCHEMA 去掉 v11/v14 两列 ⇒ SCHEMA 改过了，这里要一起改"
+        "本用例手抄的 v10 形状 ≠ 新 SCHEMA 去掉 v11/v14/v15 三列 ⇒ SCHEMA 改过了，这里要一起改"
     );
 
     conn.execute_batch(
@@ -1616,6 +1616,7 @@ fn mention_targets_keep_all_three_states_through_write_then_read() {
     ensure_post_schema_shape(&conn).unwrap();
 
     let mk = |msg_id: &str, mention_targets: Option<Vec<MentionTarget>>| MessageRecord {
+        fail_code: None,
         id: 0,
         msg_id: msg_id.to_string(),
         conv_id: "c1".to_string(),
@@ -2855,6 +2856,105 @@ fn v13_to_v14_backfills_local_id_and_adds_unique_index() {
         dup.is_err(),
         "local_id 唯一索引必须拒绝重复 key（两行互相覆盖测量/DOM）"
     );
+}
+
+/// v14 → v15：`messages.fail_code`（失败原因码）。
+///
+/// 这一条的重点在**不回填**：v15 之前没有任何地方记过原因，回填只能靠猜
+/// （"那条 failed 大概是重试耗尽"），而猜出来的码会被界面当成事实念给用户 ——
+/// 那是比"说不清原因"更坏的结果。所以老行必须保持 NULL，NULL 的含义写进契约：
+/// **这一格没记过原因**，不是"原因未知所以随便给一个"。
+#[test]
+fn v14_to_v15_adds_nullable_fail_code_without_backfilling() {
+    // ① 新装用户：只走 SCHEMA 就该有这一列（且没有索引 —— 它只随行读回，从不按码查）。
+    let fresh = Connection::open_in_memory().unwrap();
+    fresh.execute_batch(SCHEMA).unwrap();
+    super::ensure_post_schema_shape(&fresh).unwrap();
+    assert!(
+        super::column_exists(&fresh, "messages", "fail_code").unwrap(),
+        "新库没有这一列 ⇒ 全新安装的用户永远说不清失败原因"
+    );
+    let idx: i64 = fresh
+        .query_row(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type='index' AND sql LIKE '%fail_code%'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(
+        idx, 0,
+        "fail_code 不该有索引（与 mention_targets 同一待遇：加索引就是加写放大）"
+    );
+
+    // ② 造 v14 形状（有 local_id、没有 fail_code），三行老数据里**包含一行已经是 failed 的**。
+    let conn = Connection::open_in_memory().unwrap();
+    conn.execute_batch(SCHEMA).unwrap();
+    conn.execute_batch(
+        "DROP TABLE messages;
+         CREATE TABLE messages (
+             id               INTEGER PRIMARY KEY AUTOINCREMENT,
+             msg_id           TEXT UNIQUE NOT NULL,
+             conv_id          TEXT NOT NULL,
+             sender_id        TEXT NOT NULL,
+             receiver_id      TEXT NOT NULL,
+             kind             TEXT NOT NULL,
+             content          TEXT NOT NULL,
+             ts               INTEGER NOT NULL,
+             seq              INTEGER NOT NULL DEFAULT 0,
+             status           TEXT NOT NULL DEFAULT 'sent',
+             mention_targets  TEXT,
+             local_id         TEXT
+         );
+         INSERT INTO messages(msg_id, conv_id, sender_id, receiver_id, kind, content, ts, seq, status, local_id)
+         VALUES ('m1','c1','u1','u2','text','a',1,1,'failed','m1'),
+                ('m2','c1','u1','u2','text','b',2,2,'sent','m2');",
+    )
+    .unwrap();
+    conn.execute_batch("PRAGMA user_version = 14;").unwrap();
+    run_migrations(&conn, 14).expect("v14→v15 迁移本身不许报错");
+    assert_eq!(read_user_version(&conn), DB_VERSION, "版本号要推进到当前");
+
+    let rows: Vec<(String, String, Option<String>)> = conn
+        .prepare("SELECT msg_id, status, fail_code FROM messages ORDER BY id")
+        .unwrap()
+        .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
+        .unwrap()
+        .map(|r| r.unwrap())
+        .collect();
+    assert_eq!(
+        rows,
+        vec![
+            ("m1".to_string(), "failed".to_string(), None),
+            ("m2".to_string(), "sent".to_string(), None),
+        ],
+        "老行必须原样保留：状态不许被动，原因码也不许被猜出来填上"
+    );
+
+    // ③ 迁移之后新写的失败要能落码（列可用，不是只建了个空壳）。
+    //    码用常量，不在这里手抄字面量 —— 手抄的那份与词表漂了没人发现。
+    conn.execute(
+        "UPDATE messages SET status = 'failed', fail_code = ?1 WHERE msg_id = 'm2'",
+        rusqlite::params![crate::error_codes::SEND_RETRY_EXPIRED],
+    )
+    .unwrap();
+    let after: Option<String> = conn
+        .query_row(
+            "SELECT fail_code FROM messages WHERE msg_id = 'm2'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(
+        after.as_deref(),
+        Some(crate::error_codes::SEND_RETRY_EXPIRED),
+        "列建了但写不进去 = 空壳字段"
+    );
+
+    // ④ 幂等：列已存在时再跑一次不许报错（重放同版本的库、或 SCHEMA 先建过）。
+    let again = Connection::open_in_memory().unwrap();
+    again.execute_batch(SCHEMA).unwrap();
+    again.execute_batch("PRAGMA user_version = 14;").unwrap();
+    run_migrations(&again, 14).expect("列已经在 SCHEMA 里时，v14→v15 必须静默通过");
 }
 
 /// P2 #23：v7/v10 的孤儿清理是**尽力而为**（失败不拦启动），代价是 `user_version` 照常

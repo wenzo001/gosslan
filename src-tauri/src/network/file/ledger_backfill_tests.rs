@@ -55,6 +55,7 @@ mod gfile_ledger_backfill_tests {
         };
         db::upsert_group_file_receive(conn, &gf, DEVICE).unwrap();
         let rec = crate::state::MessageRecord {
+            fail_code: None,
             id: 0,
             msg_id: format!("gfile-{transfer_id}"),
             conv_id: format!("group:{GROUP}"),
@@ -308,6 +309,7 @@ mod gfile_ledger_backfill_tests {
             };
             db::upsert_group_file_receive(&conn, &gf, DEVICE).unwrap();
             let rec = crate::state::MessageRecord {
+                fail_code: None,
                 id: 0,
                 msg_id: "gfile-t2".to_string(),
                 conv_id: format!("group:{GROUP}"),
@@ -350,6 +352,7 @@ mod gfile_ledger_backfill_tests {
             };
             db::upsert_group_file_receive(&conn, &gf, DEVICE).unwrap();
             let rec = crate::state::MessageRecord {
+                fail_code: None,
                 id: 0,
                 msg_id: "gfile-t3".to_string(),
                 conv_id: format!("group:{GROUP}"),
@@ -377,6 +380,7 @@ mod gfile_ledger_backfill_tests {
         {
             let conn = mem();
             let rec = crate::state::MessageRecord {
+                fail_code: None,
                 id: 0,
                 msg_id: "gfile-t4".to_string(),
                 conv_id: format!("group:{GROUP}"),

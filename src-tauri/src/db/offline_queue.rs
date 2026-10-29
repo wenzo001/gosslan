@@ -139,10 +139,10 @@ pub fn fail_pending_messages_for_peer(conn: &Connection, peer_id: &str) -> Resul
     let mut changed = Vec::new();
     for msg_id in msg_ids {
         let n = tx.execute(
-            "UPDATE messages SET status = 'failed'
+            "UPDATE messages SET status = 'failed', fail_code = ?2
               WHERE msg_id = ?1
                 AND status NOT IN ('delivered', 'read', 'recalled', 'cancelled', 'partial_cancelled', 'failed')",
-            params![msg_id],
+            params![msg_id, crate::error_codes::SEND_PEER_DELETED],
         )?;
         if n > 0 {
             changed.push(msg_id);
@@ -330,7 +330,8 @@ mod offline_queue_tests {
         conn.execute_batch(
             "CREATE TABLE messages (
                 msg_id TEXT UNIQUE NOT NULL,
-                status TEXT NOT NULL
+                status TEXT NOT NULL,
+                fail_code TEXT
             );
             CREATE TABLE outbox (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -375,5 +376,24 @@ mod offline_queue_tests {
         assert_eq!(status("m-delivered"), "delivered", "已送达是既成事实，不许改写");
         assert_eq!(status("m-no-row"), "sending", "没有队列行的消息不归这次清理管");
         assert_eq!(status("m-other"), "sent");
+
+        // ★ 原因必须跟着落库（DB v14→v15）：这一族的失败只有本机知道原因，对方从没收到过。
+        //   反面那三行是正控 —— 码不许撒到没被这次清理碰过的行上。
+        let code = |msg: &str| -> Option<String> {
+            conn.query_row(
+                "SELECT fail_code FROM messages WHERE msg_id = ?1",
+                params![msg],
+                |r| r.get(0),
+            )
+            .unwrap()
+        };
+        assert_eq!(
+            code("m-pending").as_deref(),
+            Some(crate::error_codes::SEND_PEER_DELETED),
+            "删好友导致的失败必须能被界面说出为什么"
+        );
+        for untouched in ["m-delivered", "m-no-row", "m-other"] {
+            assert_eq!(code(untouched), None, "{untouched} 没被改写，就不该凭空长出原因码");
+        }
     }
 }

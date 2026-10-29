@@ -339,6 +339,7 @@ pub fn apply_group_history_page(
             (item.kind.clone(), item.content.clone())
         };
         let rec = MessageRecord {
+            fail_code: None,
             id: 0,
             msg_id: item.msg_id.clone(),
             conv_id: conv_id.clone(),
@@ -475,6 +476,7 @@ mod group_history_db_tests {
 
     fn rec(msg_id: &str, seq: i64, ts: i64, kind: &str, content: &str) -> MessageRecord {
         MessageRecord {
+            fail_code: None,
             id: 0,
             msg_id: msg_id.into(),
             conv_id: "group:g1".into(),

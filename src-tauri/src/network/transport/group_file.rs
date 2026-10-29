@@ -758,6 +758,7 @@ fn create_group_file_receive_bubble(
         db::next_clock(&dbc, &conv_id).unwrap_or(1)
     };
     let rec = crate::state::MessageRecord {
+        fail_code: None,
         id: 0,
         msg_id: format!("gfile-{transfer_id}"),
         conv_id: conv_id.clone(),
@@ -1182,6 +1183,7 @@ async fn handle_group_file_done(
         // 同口径收敛（完成回填路径的气泡重发也不能再把 kind 打回 video/audio）
         let kind = if subtype == "image" { "image" } else { "file" };
         let done_rec = crate::state::MessageRecord {
+            fail_code: None,
             id: 0,
             msg_id,
             conv_id: format!("group:{group_id}"),

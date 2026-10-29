@@ -132,7 +132,7 @@ fn terminal_finalize_defers_the_destructive_write() {
         .expect("单聊终态必须仍删 outbox 行");
     assert!(
         msg_body
-            .find("set_message_status(")
+            .find("set_message_failed(")
             .expect("少了置 failed 那一步")
             < deleted,
         "删行是消息终态里唯一不可重放的写，必须排在置 failed 之后"
@@ -184,6 +184,9 @@ fn every_finalize_path_defers_the_destructive_write() {
     /// 于是它会被当成"没有面向用户的写"直接跳过，新加的两笔群台账关行写**没人排序**。
     const USER_FACING: &[&str] = &[
         "set_message_status(",
+        // v15 起"带原因的失败"走这一扇门（`set_message_failed`）：它同样是面向用户的写，
+        // 不列进来就等于给新的终态出口开了一条不受写序守卫的通道。
+        "set_message_failed(",
         "upsert_transfer(",
         "mark_transfer_failed_if_active(",
         "finalize_file_failure(",

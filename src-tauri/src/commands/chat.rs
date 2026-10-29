@@ -761,6 +761,7 @@ pub async fn send_message(
     // Ack 到达 → "delivered"；ReadReceipt → "read"。
     // 超时 / 主动取消 → "failed" / "cancelled"（见 P2/P3）。
     let rec = MessageRecord {
+        fail_code: None,
         id: 0,
         msg_id: msg_id.clone(),
         conv_id: friend_id.clone(),
@@ -1055,6 +1056,7 @@ fn insert_self_message(
     // 前缀 `self-` 让它一眼可辨（日志/排障时不会与网络消息的哈希 id 混淆）
     let msg_id = format!("self-{}", Uuid::new_v4());
     let rec = MessageRecord {
+        fail_code: None,
         id: 0,
         msg_id: msg_id.clone(),
         conv_id: me.clone(),
