@@ -112,6 +112,19 @@ pub async fn pin_group_message(
 /// 群主身份只认**本机库里**那份 `groups.creator` —— 发帧人自报不作数（接收侧同理，
 /// 见 `protocol::recall_receive_allowed`）。没有中心权威就没有中心授权：这条特权之所以
 /// 成立，是因为每台设备都用自己的那份记录独立裁决，改不动别人的。
+/// 「这次撤回用哪一档授权」的**唯一**判据（纯函数，可单测）。
+///
+/// 抽出来是因为这一格此前只有源码文本断言（"文件里写着 `if is_creator {`"）：那是形状，
+/// 不是行为。读 `groups.creator` 再选档这条链上，真正会出事的只有这一步 ——
+/// 选错一档就是"群主特权失效"或"人人可撤"（2026-10-29 审计 TST-07 点名的那两格之一）。
+pub(crate) fn recall_authority_for(is_local_creator: bool) -> crate::protocol::RecallAuthority {
+    if is_local_creator {
+        crate::protocol::RecallAuthority::GroupCreator
+    } else {
+        crate::protocol::RecallAuthority::Author
+    }
+}
+
 #[tauri::command(async)]
 pub async fn recall_group_message(
     state: State<'_, Arc<AppState>>,
@@ -128,11 +141,7 @@ pub async fn recall_group_message(
         let is_creator = db::get_group(&dbc, &group_id)
             .map(|g| g.creator == s.device_id)
             .unwrap_or(false);
-        let authority = if is_creator {
-            crate::protocol::RecallAuthority::GroupCreator
-        } else {
-            crate::protocol::RecallAuthority::Author
-        };
+        let authority = recall_authority_for(is_creator);
         // 作者 / 群归属 / 类型分母 / 时限四件事由 protocol 的唯一裁决函数给出；
         // 时间窗**只在发送端强制**（接收端无法验证对方的时钟）。
         crate::protocol::recall_verdict(

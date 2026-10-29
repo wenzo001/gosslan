@@ -1121,12 +1121,12 @@ CASES: list[Case] = [
         why="授权分两半：`recall_verdict` 那套规则（纯函数，单测全覆盖）与**命令层按本地"
         "     creator 现选档**（接线）。只测前一半时，后一句被改掉会得到"
         "     「全部用例绿、功能为零」——本仓在后台作业上吃过同形账。\n"
-        "     注入方式：把选档的群主那一支换成 `Author`（编译照过、撤回照走）⇒ 接线判据必须"
-        "     红在「必须按本地 creator 现选档位」。",
+        "     注入方式：把调用里的 `is_creator` 换成 `false`（编译照过、撤回照走，等价于"
+        "     「永远 Author」）⇒ 接线判据必须红在「必须按本地 creator 现选档位」。",
         file=TAURI / "src" / "commands" / "group_announcements.rs",
         injections=[(
-            "let authority = if is_creator {\n            crate::protocol::RecallAuthority::GroupCreator",
-            "let authority = if is_creator {\n            crate::protocol::RecallAuthority::Author // 注入",
+            "let authority = recall_authority_for(is_creator);",
+            "let authority = recall_authority_for(false); // 注入",
         )],
         cmd=cargo(
             "test", "--lib", "--features", "bluetooth", "creator_recall_authority_is_wired_on_both_ends"

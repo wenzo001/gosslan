@@ -277,6 +277,17 @@ mod files_gate_tests {
     /// 三条各自点名一处会被悄悄退回的形状：① 群命令退回 Author（功能整体消失，而所有
     /// 纯函数用例照绿）；② 单聊那边"顺手也给了群主档"（单聊没有群主，等于任何人可撤）；
     /// ③ 接收侧不再走那份统一判据（改回只认作者 ⇒ 群主撤了、别人那台不消失，
+    /// 选档的**行为**（审计 TST-07）：真/假两格各选哪一档。
+    #[test]
+    fn recall_authority_follows_local_creator() {
+        // `group_announcements.rs` 是被 `group_files.rs` 里 `include!` 进来的 ⇒ 它的项
+        // 落在 `commands` 模块里（`include!` 是文本粘贴，模块路径 ≠ 文件路径）。
+        use crate::commands::recall_authority_for;
+        use crate::protocol::RecallAuthority;
+        assert_eq!(recall_authority_for(true), RecallAuthority::GroupCreator, "本机是群主 ⇒ 特权档");
+        assert_eq!(recall_authority_for(false), RecallAuthority::Author, "不是群主 ⇒ 只有作者档");
+    }
+
     /// 或反过来放宽成"谁都能撤"）。
     #[test]
     fn creator_recall_authority_is_wired_on_both_ends() {
@@ -284,12 +295,12 @@ mod files_gate_tests {
         let chat = include_str!("chat.rs");
         let gossip = include_str!("../network/transport/gossip.rs");
 
-        // 钉的是**选档那两行**，不是那个标识符在文件里出现过 —— 受众提示那半个分支
+        // 钉的是**选档那一处调用**，不是那个标识符在文件里出现过 —— 受众提示那半个分支
         // 也写着同一个标识符，只断言"出现过"会把它当成已接上（本仓在存在性断言上反复付账）。
+        // 2026-10-29 把 `if is_creator {…} else {…}` 抽成纯函数后，这里钉"命令确实调它"，
+        // "真/假各选哪档"由下面的行为用例判（审计 TST-07：形状断言不算行为）。
         assert!(
-            group.contains(
-                "let authority = if is_creator {\n            crate::protocol::RecallAuthority::GroupCreator"
-            ),
+            group.contains("let authority = recall_authority_for(is_creator);"),
             "群撤回命令必须按本地 creator 现选档位；只留纯函数 = 功能根本没接上"
         );
         assert!(
