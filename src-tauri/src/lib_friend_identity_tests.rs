@@ -409,13 +409,23 @@
         //   直接在全集视图里 find("Message::FriendRemove {") 会先撞上 handle_message 的那条分发臂
         //   （`m @ (… | Message::FriendRemove { .. })`），往后 1,500 字符里没有 forget_peer_identity
         //   ⇒ 判据会红得像是"分支被删了"。注意**不覆盖 tr**：本测试后面还要用全集视图找别的锚点。
+        // 按**字符边界**取窗口：`&s[i..i + 1500]` 在含中文的源码里会被切进多字节字符
+        // （2026-10-29 实测：往同文件前面加几行就把切点挪进 `发` 的字节里，测试直接 panic）。
+        fn char_window(s: &str, start: usize, len: usize) -> &str {
+            let end = (start + len).min(s.len());
+            let end = (start..=end)
+                .rev()
+                .find(|i| s.is_char_boundary(*i))
+                .unwrap_or(start);
+            &s[start..end]
+        }
         let fam_body = rust_fn_body(&tr, "async fn handle_identity_and_friend_messages(");
         let start = fam_body
             .find("Message::FriendRemove {")
             .expect("必须还有 FriendRemove 分支（本护栏锚点）");
         let tail = &fam_body[start..];
         // 取一个足够覆盖该分支的窗口（分支实现变了也不会假绿：下面断言的锚点就在分支里）
-        let branch = &tail[..tail.len().min(1500)];
+        let branch = char_window(tail, 0, 1500);
         assert!(
             branch.contains("forget_peer_identity"),
             "收到 FriendRemove（对方删了我）时也要解除身份绑定，与 `remove_friend` 对称"
@@ -424,7 +434,7 @@
         let warn = tr
             .find("fn warn_key_conflict_once")
             .expect("必须还有密钥冲突提示（本护栏锚点）");
-        let warn_body = &tr[warn..warn + 2000];
+        let warn_body = char_window(&tr, warn, 2000);
         assert!(
             warn_body.contains("重新添加") && warn_body.contains("不用重启"),
             "密钥变化的安全提示必须写清可行动的下一步（重新添加 + 不用重启）—— \

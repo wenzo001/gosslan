@@ -903,8 +903,10 @@ network::transport::tests::non_frame_bytes_still_error
 network::transport::tests::non_friend_chat_message_rejected
 network::transport::tests::only_routed_connection_still_dials_lan_path
 network::transport::tests::oversize_frame_is_a_local_failure_and_writes_nothing
+network::transport::tests::peer_eviction_picks_the_stalest_entry
 network::transport::tests::peer_offline_after_tail_truth_table
 network::transport::tests::peer_offline_rule_has_one_home
+network::transport::tests::peer_style_admission_truth_table
 network::transport::tests::peer_wide_receiver_cleanup_is_gated_on_total_link_loss
 network::transport::tests::pending_friend_request_reflush_is_spaced_not_per_heartbeat
 network::transport::tests::pending_friend_requests_are_bounded

@@ -8,6 +8,18 @@
 //   气泡样式（ChatStyle）。它们在 handle_message 里隔着两百多行，而 INV-006/007 的钉法要求
 //   「落库 → 回执 → 乐观清零」三段一起读才看得出谁点谁。
 
+/// 这条样式更新能不能进表（纯函数）：已知 peer 永远可更新，新 peer 在满员时拒。
+pub(crate) fn peer_style_admitted(already_known: bool, current_len: usize) -> bool {
+    already_known || current_len < MAX_PEER_STYLES
+}
+
+/// 对端样式的单条上限（2026-10-29 审计 SEC-04）：正常样式 JSON 只有几百字节，
+/// 8 KiB 足够放下配色/字体/圆角那一套，而它由对端可控。
+const MAX_PEER_STYLE_BYTES: usize = 8 * 1024;
+/// `chat_peer_styles` 最多记多少个对端（同一份审计）：这张表是"整表重写"的，
+/// 无上限时既涨库也涨写放大。256 远大于真实联系人规模，又足够挡住刷表。
+const MAX_PEER_STYLES: usize = 256;
+
 async fn handle_messaging_arm(state: &Arc<AppState>, peer_id: &str, msg: Message) {
     // 这层 match 与原函数里的同一层（臂仍是 8 格缩进 ⇒ 逐字未改）。
     // `_ => {}` 不是吞消息：调用方只在命中本族变体时才把 msg 交进来。
@@ -16,10 +28,29 @@ async fn handle_messaging_arm(state: &Arc<AppState>, peer_id: &str, msg: Message
             if from == state.device_id {
                 return;
             }
+            // **必须绑定链路对端**（2026-10-29 审计 SEC-04）：只判 `from != 自己` 的话，
+            // 任何人连上来都能替**别人**写样式（`from` 是自报字段）⇒ 冒充好友的配色，
+            // 而 `chat_peer_styles` 是按 device_id 存的持久表。与 `ChatMessage` 同一口径。
+            if from != peer_id {
+                return;
+            }
             if let Some(t) = &to {
                 if t != &state.device_id {
                     return; // 定向给别人，忽略
                 }
+            }
+            // 载荷有界（同一轮的 SEC-04 另一半）：样式是一小段 JSON（配色/字体/尺寸），
+            // 正常几百字节；无上限时每次 announce 都能把它撑大，而写回是**整表重写** ⇒
+            // 库与写放大一起涨。
+            if style.len() > MAX_PEER_STYLE_BYTES {
+                state.logger.warn(
+                    "style",
+                    format!(
+                        "code=CHAT_STYLE_TOO_LARGE peer={from} bytes={}（上限 {MAX_PEER_STYLE_BYTES}，已丢弃）",
+                        style.len()
+                    ),
+                );
+                return;
             }
             // 持久化对端样式表（device_id -> style JSON），前端按发送者渲染其消息气泡
             {
@@ -28,6 +59,15 @@ async fn handle_messaging_arm(state: &Arc<AppState>, peer_id: &str, msg: Message
                     db::get_setting(&dbc, "chat_peer_styles")
                         .and_then(|s| serde_json::from_str(&s).ok())
                         .unwrap_or_default();
+                // 表本身也要有界：不认识的新 peer 在满员时不再登记（已知 peer 仍可更新）。
+                if !peer_style_admitted(map.contains_key(&from), map.len()) {
+                    drop(dbc);
+                    state.logger.warn(
+                        "style",
+                        format!("code=PEER_STYLES_FULL peer={from}（已达上限 {MAX_PEER_STYLES}，本条不登记）"),
+                    );
+                    return;
+                }
                 map.insert(from.clone(), serde_json::Value::String(style.clone()));
                 if let Ok(json) = serde_json::to_string(&map) {
                     db::set_setting(&dbc, "chat_peer_styles", &json).ok();
