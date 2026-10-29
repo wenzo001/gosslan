@@ -18,7 +18,11 @@ const props = defineProps<{
   active: boolean;
   /** 单聊查好友表；群聊无在线概念，传 null 表示不显示状态点。 */
   online: boolean | null;
-  /** 搜索命中摘要（null 时显示最后一条消息）。 */
+  /**
+   * 拖着文件停在本行上（左栏也接拖拽发送，负责人 2026-10-29）：高亮表示"松手就发给这个会话"。
+   * 能不能接收由父组件判（好友单聊 / 群聊），本组件只负责画。
+   */
+  dropActive?: boolean;
 }>();
 const emit = defineEmits<{
   (e: "open", conv: Conversation): void;
@@ -150,10 +154,12 @@ const gridTiles = computed(() => {
   <div
     role="button"
     tabindex="0"
+    :data-conv-row="conv.id"
     class="group/conv relative flex h-[64px] cursor-pointer items-center gap-3 px-3 transition-colors"
-    :class="active
+    :class="[active
       ? 'bg-[var(--gosslan-list-active)] text-[var(--gosslan-list-active-text)]'
-      : 'hover:bg-[var(--gosslan-list-hover)]'"
+      : 'hover:bg-[var(--gosslan-list-hover)]',
+      dropActive ? 'conv-row-drop' : '']"
     :aria-label="rowAriaLabel"
     @click="openConv(conv)"
     @keydown.enter.prevent="openConv(conv)"

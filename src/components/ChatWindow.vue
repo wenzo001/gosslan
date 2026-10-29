@@ -26,8 +26,8 @@ import GroupFilesPanel from "@/components/GroupFilesPanel.vue";
 import GroupTasksPanel from "@/components/GroupTasksPanel.vue";
 import BaseModal from "@/components/BaseModal.vue";
 import ConfirmDialog from "@/components/ui/ConfirmDialog.vue";
-import { formatBytes } from "@/utils/format";
-import type { DropPathInfo } from "@/types";
+import DropSendConfirm from "@/components/chat/DropSendConfirm.vue";
+import { useDropSend } from "@/composables/useDropSend";
 import ChatHeader from "@/components/chat/ChatHeader.vue";
 import MessageComposer from "@/components/chat/MessageComposer.vue";
 import ForwardModal from "@/components/message/ForwardModal.vue";
@@ -533,7 +533,7 @@ watch(
     tasksOpen.value = false;
     taskFocus.value = null;
     // 拖进来还没确认的那批也一起作废：切了会话就不该再"发给刚才那个人"。
-    pendingDrop.value = null;
+    drop.cancel();
     // 预览是全局那一份（#40），所以按**来源**收：只有"这份相册是上一个会话给的"才关掉。
     // 无条件 close() 会把"从任务详情点开的图"跟着切会话一起弄没。
     if (prev) preview.closeIfFrom(`conv:${prev}`);
@@ -1548,14 +1548,15 @@ const dragDropScope = createInitScope();
  * 拖着文件停在面板上时待确认的那批（负责人 2026-10-29：多文件/单文件都要先弹窗确认）。
  * `files` 是后端 stat 出来的（大小/是否目录），确认框直接照它渲染。
  */
-const pendingDrop = ref<{
-  /** 发到哪个会话 —— **快照**，不是确认那一刻的 activeConv（拖完切会话不该换收件人）。 */
-  convId: string;
-  /** 确认框正文也一起冻住：切会话时对话框里的"发给谁"不能跟着变。 */
-  body: string;
-  paths: string[];
-  files: DropPathInfo[];
-} | null>(null);
+/**
+ * 拖拽发送的整条链路（读元数据 → 冻住发给谁 → 确认 → 逐条发）住在 `useDropSend`：
+ * 左栏的会话列表用的是同一份，两处各写一遍迟早会长出两套行为。
+ */
+const drop = useDropSend();
+/** 模板只解包**顶层** ref ⇒ 这三个必须解构出来（直接写 `drop.body` 会拿到 ComputedRef）。 */
+const dropPending = drop.pending;
+const dropBody = drop.body;
+const dropItems = drop.items;
 
 /** 拖拽位置是否落在**整个聊天面板**上（含标题栏；Tauri 给的是物理像素，除以 DPR 才对得上 DOM）。 */
 function isOverChatPanel(pos: { x: number; y: number }) {
@@ -1603,65 +1604,24 @@ onBeforeUnmount(() => dragDropScope.dispose());
 
 /**
  * 拖进来的文件先**停在确认框**上（负责人 2026-10-29：拖拽发送必须有弹窗提醒 + 二次确认）。
- *
- * 目录直接剔掉并说明：Tauri 的 drag-drop 会把文件夹路径一起给过来，而发送链路只收普通文件
- * （后端 `send_file` 对目录会报「只能发送普通文件」）。与其让用户点了确认后再逐条报错，
- * 不如在确认框里就把哪些发不了说清楚。
+ * 落点与文案在这里定（"发给当前会话"），其余在全仓唯一的 `useDropSend` 里。
  */
-async function stageDroppedFiles(paths: string[]) {
+function stageDroppedFiles(paths: string[]) {
   const convId = chat.activeConv;
   if (!convId) return;
-  let files: DropPathInfo[] = [];
-  try {
-    files = await api.inspectDropPaths(paths);
-  } catch {
-    // stat 失败也要能发：退回"只有名字"的那种确认（发送链路自己会再校验一次）。
-    files = paths.map((p) => ({ path: p, name: p.split(/[\\/]/).pop() || p, size: 0, isDir: false }));
-  }
-  const usable = files.filter((f) => !f.isDir);
-  if (usable.length === 0) {
-    app.toast(t("chat.dropNoFiles"), "error");
-    return;
-  }
-  pendingDrop.value = {
+  void drop.stage(paths, {
     convId,
     body: isGroup.value
       ? t("chat.dropConfirmGroup", { name: conv.value?.name ?? "", n: memberCount.value })
       : t("chat.dropConfirmPeer", { name: conv.value?.name ?? "" }),
-    paths: usable.map((f) => f.path),
-    files: usable,
-  };
-}
-
-/** 确认框正文：拖进来那一刻就冻住了（见 `pendingDrop.body`）。 */
-const dropConfirmBody = computed(() => pendingDrop.value?.body ?? "");
-/** 确认框条目：一行一个文件（名字 + 大小）。 */
-const dropConfirmItems = computed(() =>
-  (pendingDrop.value?.files ?? []).map((f) =>
-    f.size > 0 ? `${f.name} · ${formatBytes(f.size)}` : f.name,
-  ),
-);
-
-/** 确认框里点「发送」：走与粘贴文件同一条链路（真正的校验/落库/传输都在那里）。 */
-function confirmDrop() {
-  const batch = pendingDrop.value;
-  pendingDrop.value = null;
-  if (!batch) return;
-  void sendPastedFiles(batch.paths, batch.convId);
+  });
 }
 
 /** 输入框粘贴文件（资源管理器复制后 Ctrl+V，微信式）：按真实路径直接走发送链路。 */
-async function sendPastedFiles(paths: string[], convIdArg?: string) {
-  // 显式传 convId 的调用方（拖拽确认）要的是"拖进来的那个会话"；
-  // 粘贴那条按当时的 activeConv 走。
-  const convId = convIdArg ?? chat.activeConv;
+function sendPastedFiles(paths: string[]) {
+  const convId = chat.activeConv;
   if (!convId) return;
-  for (const p of paths) {
-    try {
-      await sendOneFile(convId, p);
-    } catch (e) {
-      app.toastError(e, t("msg.sendFailed"));    }
-  }
+  void drop.sendFiles(convId, paths);
 }
 
 /**
@@ -2311,17 +2271,13 @@ function retryHistory() {
       </span>
     </div>
 
-    <!-- 拖拽发送的二次确认：列出将要发送的文件与去向，取消即丢弃这次拖拽 -->
-    <ConfirmDialog
-      :open="!!pendingDrop"
-      :title="t('chat.dropConfirmTitle')"
-      :confirm-label="t('chat.dropConfirmSend')"
-      :body="dropConfirmBody"
-      :items="dropConfirmItems"
-      :note="t('chat.dropConfirmNote')"
-      :danger="false"
-      @cancel="pendingDrop = null"
-      @confirm="confirmDrop"
+    <!-- 拖拽发送的二次确认（与左栏会话列表共用同一个组件与同一份状态机） -->
+    <DropSendConfirm
+      :open="!!dropPending"
+      :body="dropBody"
+      :items="dropItems"
+      @cancel="drop.cancel"
+      @confirm="drop.confirm"
     />
 
     <!-- 图片相册预览（会话内全部图片，左右箭头 / 键盘 ←→ 切换） -->

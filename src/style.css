@@ -961,6 +961,14 @@ progress {
   animation: gosslan-popover-fade-out var(--gosslan-duration-fast) var(--gosslan-ease) forwards;
 }
 
+/* 拖着文件停在这一行会话上（左栏落点）：整行描边 + 淡底，表示"松手就发给这个会话"。
+   用 outline 而不是 border：行高固定 64px，加 border 会挤掉 1px 导致文字抖一下。 */
+.conv-row-drop {
+  outline: 2px solid var(--gosslan-primary);
+  outline-offset: -2px;
+  background-color: var(--gosslan-primary-light);
+}
+
 /* 任务卡上半区点进来：滚到那一行后闪一下，表示"就是这一条"（负责人 2026-10-29）。
    闪背景不闪描边：那个 `<motion.div>` 本来就有 layout 动画，改描边会和它抢同一个属性。 */
 @keyframes gosslan-todo-flash {

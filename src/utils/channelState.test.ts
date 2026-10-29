@@ -892,44 +892,32 @@ test("蓝牙熔断：自动路径读 hold，手动入口显式放行", () => {
 });
 
 /**
- * 拖拽发送必须先**弹窗确认**（负责人 2026-10-29）。这条钉两个接线点，缺一个都等于没做：
- * 1. `drop` 分支不能直接调 `sendPastedFiles`（那是"松手即发"的旧行为）；
- * 2. 确认框必须挂在 `pendingDrop` 上、确认后走同一条 `sendPastedFiles` 链路。
+ * 拖拽发送必须先**弹窗确认**（负责人 2026-10-29），两个落点（聊天面板 / 左侧会话列表）
+ * 共用同一份状态机。这一族钉四件事，缺一件都等于某个落点退化成"松手即发"：
+ * 1. `useDropSend.stage` 先 stat、剔目录，再把"发给谁"冻进快照；
+ * 2. `confirm()` 用**快照里的** convId 发送；
+ * 3. 两个落点的 drop 分支都只调 `stage`，不直接发；
+ * 4. 列表那一行带 `data-conv-row`（命中靠它），且高亮依赖进了 `v-memo`（否则高亮不刷新）。
  */
-test("拖拽发送：drop 先进确认，确认后才走发送链路", () => {
-  const src = readFileSync(new URL("../components/ChatWindow.vue", import.meta.url), "utf8");
-  const dropArm = /if \(p\.type === "drop"\)([\s\S]{0,400}?)\n      \}/.exec(src);
-  assert.ok(dropArm, "找不到 drop 分支（判据会空转）");
-  assert.ok(
-    dropArm![1].includes("stageDroppedFiles("),
-    "drop 必须先进 stageDroppedFiles（那里才弹确认）",
-  );
-  assert.ok(
-    !dropArm![1].includes("sendPastedFiles("),
-    "drop 分支不许直接发 —— 那就绕过了确认框",
-  );
-  // 确认框挂在 pendingDrop 上，确认后调 confirmDrop（里面才是 sendPastedFiles）
-  assert.match(
-    src,
-    /:open="!!pendingDrop"[\s\S]{0,600}?@confirm="confirmDrop"/,
-    "确认框必须由 pendingDrop 驱动、确认后调 confirmDrop",
-  );
-  const confirmFn = /function confirmDrop\(\)([\s\S]{0,400}?)\n\}/.exec(src);
-  assert.ok(confirmFn && confirmFn[1].includes("sendPastedFiles("), "confirmDrop 里才是真正的发送");
-});
+test("拖拽发送：落点只 stage，确认后才按快照的会话发", () => {
+  const home = readFileSync(new URL("../composables/useDropSend.ts", import.meta.url), "utf8");
+  assert.match(home, /api\.inspectDropPaths\(paths\)/, "必须先读元数据（名字/大小/是否目录）");
+  assert.match(home, /files\.filter\(\(f\) => !f\.isDir\)/, "目录要在确认前剔掉");
+  assert.match(home, /pending\.value = \{ target, paths:/, "落点（发给谁）必须冻进快照");
+  assert.match(home, /sendFiles\(batch\.target\.convId, batch\.paths\)/, "确认后按快照的 convId 发，不许现取 activeConv");
 
-/**
- * 拖拽确认必须发给**拖进来那一刻**的会话（负责人 2026-10-29）。
- * 快照不是可选项：确认框开着时切会话，按 `chat.activeConv` 现取就会发给新会话。
- */
-test("拖拽发送：确认时用的是快照的 convId，且切会话会作废那一批", () => {
-  const src = readFileSync(new URL("../components/ChatWindow.vue", import.meta.url), "utf8");
-  assert.match(src, /void sendPastedFiles\(batch\.paths, batch\.convId\)/, "确认后必须按快照的会话发");
-  assert.match(
-    src,
-    /async function sendPastedFiles\(paths: string\[\], convIdArg\?: string\)/,
-    "sendPastedFiles 必须能收显式 convId",
+  const chatWin = readFileSync(new URL("../components/ChatWindow.vue", import.meta.url), "utf8");
+  const dropArm = /if \(p\.type === "drop"\)([\s\S]{0,400}?)\n      \}/.exec(chatWin);
+  assert.ok(dropArm, "找不到聊天面板的 drop 分支（判据会空转）");
+  assert.ok(dropArm![1].includes("stageDroppedFiles("), "面板 drop 必须先进确认");
+  assert.ok(!dropArm![1].includes("drop.sendFiles("), "面板 drop 分支不许直接发");
+
+  const list = readFileSync(new URL("../components/ConversationList.vue", import.meta.url), "utf8");
+  assert.match(list, /onDragDropEvent\(/, "左栏必须订阅原生拖拽事件");
+  assert.match(list, /row\.dataset\.convRow/, "命中靠 data-conv-row（按行判，不是整栏一把抓）");
+  assert.match(list, /drop\.stage\(p\.paths, dropTargetFor\(id\)\)/, "左栏 drop 也要先 stage（同一份确认）");
+  assert.ok(
+    /v-memo="\[[^\]]*dropRowId === c\.id[^\]]*\]"/.test(list),
+    "高亮依赖必须进 v-memo，否则拖过一行界面不动",
   );
-  assert.match(src, /const convId = convIdArg \?\? chat\.activeConv;/, "缺省才回落到 activeConv");
-  assert.match(src, /pendingDrop\.value = null;/, "切会话/cancel 都要能作废那一批");
 });
