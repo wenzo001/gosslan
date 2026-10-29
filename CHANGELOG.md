@@ -13,6 +13,36 @@
 
 ## [Unreleased]
 
+## [5.15.8] - 2026-10-29
+
+### 信任链两处判据不一致：谁能变成好友、谁的公钥能当锚点
+
+2026-10-29 全仓审计（52 条发现）里最严重的两条，改判据即止，未改协议、未改库表。
+
+- **SEC-01**：网络路径收到 `FriendAccept` 只校验「from 是链路对端、to 是本机」，**不校验我方
+  是否真的发过申请** —— 而 `to` 的值在 Hello 里就回给了对端 ⇒ 任何能连上来的节点发一条
+  `{type:friend_accept, from, to}` 就能把自己写进 `friends` 表（文件接收、共享目录、内容寻址、
+  中继电路全部以 `friends` 为输入）。用户点"同意"那条命令路径本来就查了 pending，漏的是网络
+  这条。现在落库前先问 `friend_accept_is_expected(was_friend, has_pending_out)`：
+  **已是好友**（重复投递/幂等重放）或**我方发出过申请、正等回执**（`pending_out_requests`）
+  才落库，否则只留 `code=FRIEND_ACCEPT_UNSOLICITED` 一行痕迹。
+  ⚠️ 方向别搞反：`pending_requests` 是**入站**那张表，拿它判会把合法同意全拒掉。
+  已知边界：`pending_out_requests` 是内存态，重启后才到的"首次同意"会被拒（对方会重发申请，
+  用户重按同意即恢复）。
+- **SEC-03**：Gossip 锚点不过滤 `keys_verified`，而 Hello 那条一直在过滤 ⇒ 一份**未签名**的
+  UDP announce 就能把攻击者的公钥塞进 `peers`，随后签一条 `sender_id = 某好友` 的信封即可
+  往聊天库里注入"好友发的"伪造消息，并把真实好友的 Hello 判成"密钥不符"（此后跨跳聊天静默中断）。
+  两条路径现在共用 `verified_peer_anchor`：未验签视为**不认识**，回落到 `friends` 表那份持久
+  锚点 ⇒ 只靠中继、从未直连的好友照旧能收消息。
+
+判据（都带阴性/阳性对照）：`network::transport::tests::friend_accept_only_lands_when_we_asked_or_already_friends`、
+`network::transport::tests::gossip_anchor_ignores_unverified_announced_keys`、
+`tests::network_friend_accept_must_prove_we_asked_first`（这条钉接线与顺序：闸必须在
+`db::add_friend` 之前、必须查出站表；并钉"读两把钥匙的写法只许留在 `verified_peer_anchor` 一处"）。
+变异自证：把判据改成恒 true / 摘掉验签过滤 ⇒ 前两条当场红，还原即绿。
+`docs/protocol-invariants.md` 的 INV-P11 补了这两条（读侧同一把尺子 + 写入侧"同意"必须先有申请）。
+
+## [5.15.7] - 2026-10-29
 ## [5.15.7] - 2026-10-29
 
 ### 拖拽的命中位置在 Mac 上偏了一半 —— 两个平台的坐标量纲本来就不一样

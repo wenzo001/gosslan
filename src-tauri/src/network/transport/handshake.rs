@@ -130,6 +130,22 @@ fn bound_ed25519_from_peer(peer: Option<&Peer>) -> Option<String> {
         .and_then(|p| p.ed25519_pubkey.clone())
 }
 
+/// Gossip 锚点：与 [`bound_ed25519_from_peer`] **同一把尺子** —— 只认验签过的条目。
+///
+/// 为什么必须有它（2026-10-29 全仓审计 SEC-03）：同一条身份（某 `device_id` 的公钥）有两条
+/// 取用路径，Hello 那条过滤 `keys_verified`、Gossip 锚点那条**不过滤** ⇒ 未签名 UDP announce
+/// 灌进来的公钥能当锚点用。攻击者只要用某个**好友**的 `device_id` 广播自己的公钥（announce
+/// 是明文、`device_id` 谁都能看到），随后用自己私钥签一条 `sender_id = 该好友` 的信封，
+/// 锚点比对就通过 ⇒ 聊天库里出现一条"好友发的"伪造消息；更糟的是真实好友的 Hello 之后会
+/// 判「公钥与已绑定身份不符」⇒ 与那位好友的跨跳聊天静默中断。
+///
+/// 返回 `None` 的语义是**"不认识"**（不是"认识但没公钥"）：调用方会回落到 `friends` 表那份
+/// 持久化锚点（`gossip.rs` 的 `None` 分支），所以只靠中继、从未直连的好友照旧能收消息。
+fn verified_peer_anchor(peer: Option<&Peer>) -> Option<(Option<String>, Option<String>)> {
+    peer.filter(|p| p.keys_verified)
+        .map(|p| (p.ed25519_pubkey.clone(), p.x25519_pubkey.clone()))
+}
+
 /// 成为好友那一刻要绑的公钥快照（两把钥匙 + `peers` 里“是否验签过”的读数）。
 ///
 /// 只有验签通过的 Hello 能打上 `keys_verified`（见 `mark_peer_keys_verified`），
@@ -303,13 +319,49 @@ async fn auto_accept_if_already_friend(state: &Arc<AppState>, peer_id: &str) -> 
 /// ## 幂等判据
 /// `FriendAccept` 没有 ACK 机制，发送方会持续补发（见 `flush_pending_friend_accept`）⇒
 /// 只按"这一次是否真的从不是好友变成好友"决定要不要通知；`add_friend` 本身是幂等的。
+/// 「这条好友同意该不该落库」的**唯一**判据（纯函数，可单测）。
+///
+/// 为什么需要它（2026-10-29 全仓审计 SEC-01）：网络路径收到 `FriendAccept` 时只校验了
+/// 「帧里的 from 是链路对端」「to 是本机」两件事，**完全不校验我方是否真的发过申请** ⇒
+/// 任何能连上来的对端发一条 `{type:friend_accept, from, to}` 就能把自己写进 `friends` 表
+/// （`to` 的值在 Hello 里就会回给它），等价于"对端自助获得本机信任"——而 `friends` 表是
+/// 文件接收、共享目录、内容寻址、中继电路的共同输入。
+///
+/// 两个放行条件：
+/// - `was_friend`：重复投递 / 幂等重放（`FriendAccept` 没有 ACK，对方会补发）；
+/// - `has_pending_out`：**我方**发过申请、正等回执（`pending_out_requests`）。
+///
+/// ⚠️ 注意方向：`pending_requests` 是**入站**（别人求我）那张表，拿它判这条会把合法同意
+/// 全拒掉 —— 两张表在 `forget_pending_request` 里一起清，但语义相反。
+pub(crate) fn friend_accept_is_expected(was_friend: bool, has_pending_out: bool) -> bool {
+    was_friend || has_pending_out
+}
+
 pub(crate) fn apply_friend_accept(state: &Arc<AppState>, from: &str, trace: &str) {
     let name = resolve_nickname(state, from);
     // 公钥快照在 db 锁**之外**取好：db 锁内再求 peers 会与 gossip 的 peers→db 构成 ABBA。
     let key_snapshot = FriendKeySnapshot::capture(state, from);
+    // ① 先判「这是不是我们要的那条同意」——必须在任何写库之前（判据是纯函数，见上）。
     let was_friend = {
         let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
-        let seen = db::get_friend(&dbc, from).is_some();
+        db::get_friend(&dbc, from).is_some()
+    };
+    let has_pending_out = state
+        .pending_out_requests
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .contains_key(from);
+    if !friend_accept_is_expected(was_friend, has_pending_out) {
+        // 不写库、不 emit、不通知：只留一行便于排查的痕迹（这条本身就是"有人在硬塞"）。
+        state.logger.warn(
+            "friend",
+            format!("code=FRIEND_ACCEPT_UNSOLICITED peer={from}（我方没有发出中的申请，已忽略）"),
+        );
+        return;
+    }
+    let was_friend = {
+        let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
+        let seen = was_friend;
         db::add_friend(&dbc, from, &name, None).ok();
         // 同步公钥：x25519 照旧早绑，ed25519 只认 verified 来源
         // （跨跳到达的那一份尤其要紧 —— 它允许 TOFU，`peers` 里那对钥匙

@@ -204,9 +204,10 @@ async fn handle_gossip(state: &Arc<AppState>, peer_id: &str, env: GossipEnvelope
     // 重启后 `peers` 为空，第一封 Gossip 必走 None 分支，正是最容易撞上的时刻。
     let peer_anchor = {
         let peers = state.peers.lock().unwrap_or_else(|e| e.into_inner());
-        peers
-            .get(&env.sender_id)
-            .map(|p| (p.ed25519_pubkey.clone(), p.x25519_pubkey.clone()))
+        // ⚠️ 必须走 `verified_peer_anchor`（只认验签过的条目）：这里原先直接读 peers 的公钥，
+        // 而 peers 那条记录可以被**未签名**的 UDP announce 写入 ⇒ 锚点比对用的是攻击者的键。
+        // 未验签 ⇒ `None` ⇒ 走下面的 friends 表锚点（持久），跨跳好友不受影响。
+        verified_peer_anchor(peers.get(&env.sender_id))
     };
     let sender_trusted = {
         if env.sender_id == state.device_id {

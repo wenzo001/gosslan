@@ -24,6 +24,7 @@
 | `docs/aoci-usage.md` | AOCI 认知层工具手册（约束本体在 `AGENTS.md`） |
 | `docs/architecture/rc-5.0-report.md` | 5.0 发布候选验收报告（问题清单 / 矩阵 / 结论） |
 | `docs/notes/audit-fix-report-2026-10-24.md` | 2026-10-24 审计 18 条缺陷的处置、影响与验证读数（B1–B19） |
+| `docs/notes/full-repo-audit-2026-10-29.md` | 2026-10-29 全仓库深度审计：52 条发现（安全 12 / 功能 6 / 稳定性 8 / 重复 16 / 测试 10）、36 条 INV-P 逐条规范对账、修复顺序建议；证据在 `audit-context/` |
 | `docs/templates/` | `BUG_FIX.md` / `ADR.md` |
 
 ## 历史档案（不要通读）
