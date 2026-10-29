@@ -318,6 +318,15 @@ export function isForwardableKind(kind: string): boolean {
 不需要改代码；要在文档里补的只有一句"通知那族为什么更严"（焦点不同：窗口可见但被别的应用
 盖住时，已读可以推进、通知仍该弹）。
 
+### 4.0d TST-10（`#[ignore]` 的真实库迁移演练）的复核：设计使然
+
+那个用例（`db/migration_tests.rs::real_data_copy_replays_migration_without_losing_rows`）
+要求 `GOSSLAN_DRILL_DB` 指向**一份真实安装库的只读副本** —— CI 里没有用户数据，永远跑不了，
+所以 `#[ignore]` + 环境变量是**刻意的设计**，不是漏跑。它证明的是"真实体量/形状在当前迁移链下
+不丢行"，而"迁移链本身对不对"已由同册里不 ignore 的那批用例覆盖（本轮实跑 1303 passed）。
+边界：它的 `--ignored` 跑法写在用例注释里，**升级前需要人工跑一次**；要自动化得先造一份
+"旧 schema + 代表性数据"的夹具，属于独立工作。
+
 ### 4.1 已核查且未发现问题的稳定性面
 
 - **锁顺序**：全仓无 `peers↔db` 嵌套；`file_receivers→db` 顺序成立。
