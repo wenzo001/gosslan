@@ -99,7 +99,28 @@ pub(crate) fn group_envelope_consumable(
     members.iter().any(|m| m == me) && members.iter().any(|m| m == sender)
 }
 
-/// 撤销一次「已登记但没消费成功」的去重（补发重入）。
+/// 「这一帧登记了但没消费成功，要不要撤销去重」的**唯一**判据（纯函数，可单测）。
+///
+/// 两个放行条件：
+/// - `decrypt_failed`：解不开（缺群密钥 / 缺对端 X25519）⇒ 补发重入，等密钥到了再消费；
+/// - 三者同时成立（`addressed_to_me && kind_consumable && !group_consumable`）：
+///   解开了、但信封自报的成员表说「本机这次不该消费」—— 这一格 2026-10-29 审计 STB-04 抓到
+///   原先**不撤销**去重 ⇒ 之后每一份补发都被判 Duplicate，消息永久进不来。
+///
+/// 替别人转发的密文本来就不该撤销（撤销只会放大噪声）：`addressed_to_me=false` 一律不放行。
+pub(crate) fn retry_allowed_for_this_frame(
+    decrypt_failed: bool,
+    addressed_to_me: bool,
+    kind_consumable: bool,
+    group_consumable: bool,
+) -> bool {
+    if !addressed_to_me || !kind_consumable {
+        return false;
+    }
+    decrypt_failed || !group_consumable
+}
+
+/// 撤销一次「已登记但没消费成功」的去重（补发重入）。/// 撤销一次「已登记但没消费成功」的去重（补发重入）。
 ///
 /// 去重登记发生在解密/落库**之前**（防止伪造 id 污染 Bloom），而发送方补发的是**同一个
 /// 信封**（outbox 存的就是签名后的原始 payload）⇒ 不撤销的话，第一次没消费成功就等于
@@ -396,19 +417,29 @@ async fn handle_gossip(state: &Arc<AppState>, peer_id: &str, env: GossipEnvelope
         &env.sender_id,
     );
 
-    // 解不开 = 这次**没有消费成功**（缺群密钥 / 缺对端 X25519）。放行补发重入，
-    // 否则发送方每一次重试都会被上面的去重判成 Duplicate。只对本机该消费的信封放行：
-    // 替别人转发的密文本来就解不开，撤销只会放大噪声。
+    // 解不开 / 本机这次不该消费 = **没有消费成功** ⇒ 放行补发重入，否则发送方每一次重试
+    // 都会被上面的去重判成 Duplicate（`allow_message_retry` 的注释记着这条）。
     let addressed_to_me = env
         .target
         .as_deref()
         .map_or(true, |t| t == state.device_id.as_str());
-    if plaintext.is_none()
-        && addressed_to_me
-        && matches!(env.kind, GossipKind::Chat | GossipKind::Group)
-        && group_consumable
+    let kind_consumable = matches!(env.kind, GossipKind::Chat | GossipKind::Group);
+    if retry_allowed_for_this_frame(plaintext.is_none(), addressed_to_me, kind_consumable, group_consumable)
     {
         allow_message_retry(state, &env.message_id, "no_plaintext");
+    } else if addressed_to_me && kind_consumable && !group_consumable {
+        // 2026-10-29 审计 STB-04：**解开了但本机不该消费**（信封自报的成员表里缺我或缺发送者，
+        // 典型是我们本地的成员表比发送方新/旧）这一格原先不撤销去重 ⇒ 之后每一份补发都被判
+        // Duplicate，**这条消息永久进不来（直到进程重启）**。这里也放行补发，并留一条具名痕迹：
+        // 撤销掉的那一份下次会重新解密、重新判成员，成员表同步上以后就能消费。
+        allow_message_retry(state, &env.message_id, "not_consumable");
+        state.logger.info(
+            "gossip",
+            format!(
+                "code=GROUP_ENVELOPE_NOT_CONSUMABLE msg={} sender={}（本机这次不消费，已放行补发重入）",
+                env.message_id, env.sender_id
+            ),
+        );
     }
 
     // 4. 转发（fan-out，TTL 衰减）— 先过**中继授权**（P2 / M4），再选人转发。
