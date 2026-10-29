@@ -184,6 +184,44 @@
         }
     }
 
+    /// 「这条好友同意该不该落库」的四格真值表（2026-10-29 审计 SEC-01）。
+    ///
+    /// 网络路径上没有这道闸时，任何对端发一条 `{type:friend_accept, from, to}` 就能进 friends 表
+    /// —— 而 `to` 是它在 Hello 里就拿到手的本机 id。阳性两格必须放行（合法接受与幂等重放），
+    /// 阴性两格必须拒（从没发过申请）。
+    #[test]
+    fn friend_accept_only_lands_when_we_asked_or_already_friends() {
+        assert!(friend_accept_is_expected(true, false), "重复投递（已是好友）必须幂等放行");
+        assert!(friend_accept_is_expected(true, true), "既是好友又有出站登记，照样放行");
+        assert!(friend_accept_is_expected(false, true), "我方发过申请、正等回执 ⇒ 合法同意");
+        assert!(
+            !friend_accept_is_expected(false, false),
+            "没发过申请、也不是好友 ⇒ 这条同意是硬塞的，不许落库"
+        );
+    }
+
+    /// Gossip 锚点与 Hello 绑定必须**同一把尺子**：只认验签过的 peers 条目（SEC-03）。
+    ///
+    /// 未验签的条目等同「不认识」⇒ 调用方回落到 friends 表的持久化锚点，
+    /// 所以这里返回 `None` 不会伤害"只靠中继、从未直连"的好友。
+    #[test]
+    fn gossip_anchor_ignores_unverified_announced_keys() {
+        let attacker = crypto::Identity::generate();
+        let ek = attacker.ed25519_public_b64();
+
+        assert_eq!(
+            verified_peer_anchor(Some(&peer_with(&ek, false))),
+            None,
+            "announce 广播来的公钥不能当 Gossip 锚点（否则可冒充好友注入聊天）"
+        );
+        assert_eq!(
+            verified_peer_anchor(Some(&peer_with(&ek, true))),
+            Some((Some(ek.clone()), Some("xk".to_string()))),
+            "验签过的条目要原样给出两把钥匙（阳性对照）"
+        );
+        assert_eq!(verified_peer_anchor(None), None, "不在 peers 里 ⇒ 不认识");
+    }
+
     /// 未验签（只来自 UDP announce）的公钥**不得**作为身份绑定。
     /// 这条是「一个伪造广播就能冒充好友」的闸门。
     #[test]

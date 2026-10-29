@@ -369,7 +369,7 @@ warn
 
 当前实现若尚未具备完整 key rotation，应记录为已知限制，而不是让 AI 自行决定。
 
-- 钩子：`tests::friend_identity_anchor_has_one_binding_rule` `db::tests::update_friend_pubkeys_never_overwrites_a_bound_key` `guards:身份锚点的打标点必须留在 handle_message 的 Hello 分支` `guards:打标必须排在`
+- 钩子：`tests::friend_identity_anchor_has_one_binding_rule` `db::tests::update_friend_pubkeys_never_overwrites_a_bound_key` `guards:身份锚点的打标点必须留在 handle_message 的 Hello 分支` `guards:打标必须排在` `network::transport::tests::gossip_anchor_ignores_unverified_announced_keys` `network::transport::tests::friend_accept_only_lands_when_we_asked_or_already_friends` `tests::network_friend_accept_must_prove_we_asked_first`
 
 ### 现在的决定（2026-09-13 实装，用户真机反馈后）
 
@@ -380,6 +380,29 @@ warn
 
 **用户可行动路径**（提示里必须写出来，否则等于把用户扔在原地）：
 `删掉该好友 → 重新添加`（聊天记录保留、**不需要重启**）。
+
+### 读侧同一把尺子 + 网络路径的「同意」必须先有我们的申请（2026-10-29 全仓审计）
+
+上面那条管"绑下去那一刻可不可信"，但**读**锚点时还有两个洞，2026-10-29 审计逐条实读过：
+
+1. **Gossip 锚点不过滤 `keys_verified`**（SEC-03）：Hello 那条早就在过滤
+   （`bound_ed25519_from_peer`），而 `gossip.rs` 的 `peer_anchor` 直接读 `peers` 的两把钥匙。
+   同一条身份、两条路径、两套标准 ⇒ 一份**未签名**的 UDP announce 就能把攻击者的公钥
+   塞进 `peers`，随后用自己私钥签一条 `sender_id = 某好友` 的信封，锚点比对即通过：
+   聊天库里出现"好友发的"伪造消息，且真实好友的 Hello 之后会被判「密钥不符」而再也连不上。
+   现在两条路径共用 `verified_peer_anchor`：未验签条目等同**不认识**，回落到 `friends`
+   表那份持久锚点 ⇒ 只靠中继、从未直连的好友照旧能收消息。
+2. **网络路径的 `FriendAccept` 只校验"from 是链路对端、to 是本机"**（SEC-01）：`to` 的值
+   在 Hello 里就回给了对端 ⇒ 任何能连上来的节点发一条 `{type:friend_accept, from, to}`
+   就能把自己写进 `friends` 表，等价于**对端自助获得本机信任**（文件接收、共享目录、
+   内容寻址、中继电路都以 `friends` 为输入）。用户点"同意"那条命令路径本来就查了 pending，
+   漏的是网络这条 —— 两条路径共用一个落库入口，其中一个不查。
+   现在 `apply_friend_accept` 先问 `friend_accept_is_expected(was_friend, has_pending_out)`：
+   **已是好友**（重复投递/幂等重放）或**我方发出过申请、正等回执**（`pending_out_requests`）
+   才落库；否则只留 `code=FRIEND_ACCEPT_UNSOLICITED` 痕迹。
+   ⚠️ 方向别搞反：`pending_requests` 是**入站**（别人求我）那张表，拿它判这条会把合法同意全拒掉。
+   ⚠️ 已知边界：`pending_out_requests` 是**内存态**，进程重启后空的 ⇒ 重启后才到达的"首次同意"
+   会被拒。自愈路径是对方会重发申请、用户重按同意（走命令路径），不会永久卡死。
 
 ### 反过来的一面：这把锚点**是被谁写进去的**（2026-09-22 实装）
 

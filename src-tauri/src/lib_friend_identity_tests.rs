@@ -117,6 +117,46 @@
         );
     }
 
+    /// **网络路径的「好友同意」必须先证明"我方求过"**（2026-10-29 全仓审计 SEC-01）。
+    ///
+    /// 纯函数真值表在 `handshake_tests.rs` 里；这一条钉的是**接线与顺序**——闸必须在写库之前、
+    /// 必须查出站那张表。少任一半，`FriendAccept` 又会变成"对端自助获得本机信任"。
+    #[test]
+    fn network_friend_accept_must_prove_we_asked_first() {
+        let transport = crate::network::transport_src_for_guards();
+        let home = rust_fn_body(&transport, "pub(crate) fn apply_friend_accept(");
+        let home_f = code_flat(&home);
+        let gate = home_f
+            .find("friend_accept_is_expected(was_friend,has_pending_out)")
+            .expect("这个家必须先问那道闸（判据是纯函数 `friend_accept_is_expected`）");
+        let write = home_f
+            .find("db::add_friend(")
+            .expect("找不到落库点 ⇒ 守卫会空转");
+        assert!(gate < write, "闸必须在 `db::add_friend` **之前**（写在后面等于没闸）");
+        assert!(
+            home_f.contains("pending_out_requests"),
+            "查的必须是**出站**那张表；`pending_requests` 是入站（别人求我），拿它判会把合法同意全拒掉"
+        );
+        assert!(
+            home_f.contains("FRIEND_ACCEPT_UNSOLICITED"),
+            "拒绝时要留具名痕迹（否则'合法同意被拒'无从排查）"
+        );
+        // Gossip 锚点与 Hello 绑定必须同一把尺子：旧的写法是就地读 peers 的两把钥匙。
+        assert_eq!(
+            transport.matches("verified_peer_anchor(peers.get(&env.sender_id))").count(),
+            1,
+            "Gossip 锚点必须走 `verified_peer_anchor`（只认验签过的条目）"
+        );
+        assert_eq!(
+            transport
+                .matches(".map(|p| (p.ed25519_pubkey.clone(), p.x25519_pubkey.clone()))")
+                .count(),
+            1,
+            "读两把钥匙的写法只允许留在 `verified_peer_anchor` 这一处（它带着验签过滤）；\
+             长回第二处 = 又有了一条不过滤的锚点（那正是 announce 公钥能当锚点的形状）"
+        );
+    }
+
     /// **同一条好友申请重复到达，不许刷屏似地弹系统通知**（用户 2026-10-14 真机：
     /// 「正常聊天时群内加好友会弹出很多个，连续多条加好友的弹窗也有问题」）。
     ///
