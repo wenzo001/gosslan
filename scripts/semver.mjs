@@ -311,6 +311,33 @@ export function changelogProblems(path = "CHANGELOG.md") {
       );
     }
   }
+  // **相邻两行是同一个版本号 ⇒ 红**（2026-10-29 现算：5.15.5～5.15.13 这九节就是这么重复的）。
+  // 为什么值得单独一条：应用内「更新说明」是 `updater-manifest.mjs::notesForVersion` 现取
+  // 「第一个 `## [x.y.z]` 行 → 下一个 `^## [` 行」之间的那段。标题挨着写两遍时那段是**空的**，
+  // 于是清单里的 `notes` 变成空串 —— 上面的格式与降序判据都看不出（两行都合规、相等也不算逆序），
+  // 而归属判据只看当前那一版 ⇒ 一旦给老版本重生成清单就会静默发出无说明的版本。
+  for (let i = 1; i < versions.length; i += 1) {
+    if (versions[i].v === versions[i - 1].v && versions[i].no === versions[i - 1].no + 1) {
+      problems.push(
+        `${path}:${versions[i].no} \`## [${versions[i].v}]\` 与上一行是同一个版本号的重复标题：` +
+          `应用内更新说明会把这一节读成空（notesForVersion 取到下一个 ## [ 行为止）。删掉多余的那一行。`,
+      );
+    }
+  }
+  // 同名版本号出现多次但**不相邻**：不判红，只显式打印。今天这一格是 4.39.2（两节内容不同，
+  // 上面那把尺子读到的第一份是「治理补齐」，而真正发过 tag 的 4.39.2 是「加好友连弹」那一节；
+  // 现算 `a28e37e2` 首次进入的是 v4.39.4 ⇒ 前一份的真实归属是 4.39.4）。那是**历史改号**，
+  // 要连同归档段一起核，不在这一批顺手做 —— 但也不能让它静默通过，所以打印出来。
+  const seen = new Map();
+  for (const { v, no } of versions) seen.set(v, [...(seen.get(v) ?? []), no]);
+  for (const [v, nos] of seen) {
+    if (nos.length > 1 && nos[1] !== nos[0] + 1) {
+      console.log(
+        `· 提示：${path} 里 \`## [${v}]\` 出现 ${nos.length} 次（行 ${nos.join("、")}，不相邻 ⇒ 不会把更新说明读成空，` +
+          `但"这一版改了什么"已没有唯一答案，需要考古定号）`,
+      );
+    }
+  }
   return problems;
 }
 

@@ -209,6 +209,8 @@ export function isForwardableKind(kind: string): boolean {
 ---
 
 ## 2. 其余安全发现（SEC）
+> ⚠️ **本节记的是审计当时的发现。今天哪些已经落地、哪些判了不修，一律以 [§8 落地状态总表](#8-落地状态总表2026-10-29-深夜按现算对账) 为准** —— 「确认」「无机器对账」「零用例」这类字样不代表今天还没做（本轮对账实测：§8 的 19 行里有 9 行在写这张表时其实已完成）。
+
 
 | ID | 严重度 | 状态 | 一句话 | 位置 |
 |---|---|---|---|---|
@@ -235,6 +237,8 @@ export function isForwardableKind(kind: string): boolean {
 ---
 
 ## 3. 功能完整度（FUN）
+> ⚠️ **本节记的是审计当时的发现。今天哪些已经落地、哪些判了不修，一律以 [§8 落地状态总表](#8-落地状态总表2026-10-29-深夜按现算对账) 为准** —— 「确认」「无机器对账」「零用例」这类字样不代表今天还没做（本轮对账实测：§8 的 19 行里有 9 行在写这张表时其实已完成）。
+
 
 ### 3.1 命令层与事件层双向差集：基本为零
 
@@ -459,7 +463,43 @@ export function isForwardableKind(kind: string): boolean {
   自由文本（`REASON_*` 那几条中文串），只有 `DISK_FULL` 这一族有稳定码，而那份码已经有自己的通道
   （`file-failed` 事件 + `fileFailReason.ts` + `logging.rs::FAIL_CODE_*` 对账）。要让它在**重启之后**
   也说得出原因，得先给那一族失败配齐码 —— 另开一格，已登记在 §8 的 P2 表里（不在这里半接）。
+### 4.0k §8 对账过程中挖出来的新的一格：CHANGELOG 里九处相邻重复的版本标题 ⇒ 那一版的更新说明会被读成空串（**已修 + 已补判据**）
+
+做「把 §8 那张表按现算证据对账」这件事时，为了确认"每一版的应用内更新说明到底有没有内容"，
+把 `notesForVersion` 拿来对**今天的 CHANGELOG** 逐版现跑：
+
+```bash
+node --experimental-strip-types -e '
+  import("./scripts/updater-manifest.mjs").then(m=>{const c=require("fs").readFileSync("CHANGELOG.md","utf8");
+  for(const v of ["5.15.5","5.15.6","5.15.7","5.15.8","5.15.9","5.15.10","5.15.11","5.15.12","5.15.13","5.15.20"])
+    console.log(v, m.notesForVersion(c,v).length)})'
+```
+
+- **读数**：5.15.5 ～ 5.15.13 **全是 0**，5.15.20 是 1634。根因是相邻两行写着同一个
+  `## [x.y.z] - 日期`：`notesForVersion` 取「第一个匹配行 → 下一个 `^## [` 行」之间的那一段，
+  于是那一段长度为零 ⇒ 应用内「更新说明」为空。
+- **为什么没有造成用户可见损害**（这条必须一起写，不然就是把量具缺陷说成线上事故）：
+  这九节里只有 v5.15.7 与 v5.15.13 真发过 tag，两份**当时**的清单现读非空 ——
+  `curl -sL https://github.com/wenzo001/gosslan/releases/download/v5.15.13/latest.json`
+  → notes **1484** 字；v5.15.7 → **664** 字。所以重复是**后来**编辑 CHANGELOG 时带进来的，
+  不是发布当时就错。
+- **为什么既有三道判据都看不见它**（这才是值得补一条的理由）：
+  ① 格式判据 —— 两行都符合 `## [x.y.z] - YYYY-MM-DD`；
+  ② 降序判据 —— 相等不算逆序；
+  ③ 归属判据 —— 只查**当前那一版**那一节空不空。
+  ⇒ 一旦哪天给老版本重生成清单（`updater-manifest.yml` 是可重跑的），就会**静默**发一个无说明的版本。
+- **修法**：删掉那九行重复的（现算剩余相邻重复 = 0），并在 `semver.mjs::changelogProblems`
+  补一条「相邻两行同名版本号 ⇒ 红」。判据自己带正控（`scripts/updaterManifest.test.ts`）：
+  先用一份双标题的文本证明 `notesForVersion` 真返回空串（否则这条判据是在防一个不存在的危害），
+  再往**真实** CHANGELOG 里复制第一份版本标题，断言恰好被点名一次。
+- ⚠️ **剩下的一格没动**：`4.39.2` 有两节、内容不同且**不相邻**（现读行 6361 与 6398 的旧位置）。
+  不相邻不会把更新说明读成空，但"4.39.2 改了什么"已没有唯一答案：取到的第一份是「治理补齐」，
+  而真发过 tag 的 4.39.2 是「加好友连弹」那一节 —— 现算 `git tag --contains a28e37e2` 显示
+  前者首次进入的是 **v4.39.4**（且 v4.39.3 从未成 tag）。这是**历史改号**，要连同归档段一起核，
+  不在这一批顺手做；判据现在会把这种形状**显式打印**出来，不当成通过。
+
 ### 4.1 已核查且未发现问题的稳定性面
+
 
 - **锁顺序**：全仓无 `peers↔db` 嵌套；`file_receivers→db` 顺序成立。
 - **锁跨 `.await`**：机器扫描每个 `tokio::sync::Mutex` guard 绑定（4 个候选），3 个是作用域误报，1 个（`BT_SWITCH_LOCK`）是刻意串行门，无重入。
@@ -472,6 +512,8 @@ export function isForwardableKind(kind: string): boolean {
 ---
 
 ## 5. 需求与实现偏差（spec-to-code-compliance）
+> ⚠️ **本节记的是审计当时的发现。今天哪些已经落地、哪些判了不修，一律以 [§8 落地状态总表](#8-落地状态总表2026-10-29-深夜按现算对账) 为准** —— 「确认」「无机器对账」「零用例」这类字样不代表今天还没做（本轮对账实测：§8 的 19 行里有 9 行在写这张表时其实已完成）。
+
 
 对 `docs/protocol-invariants.md` 的 **36 条 INV-P** 逐条做规范-代码对账（每条一个独立分析文件，在 `audit-context/spec-compliance/`）。结果：
 
@@ -486,7 +528,7 @@ export function isForwardableKind(kind: string): boolean {
 | ID | 偏差 | 证据 |
 |---|---|---|
 | **P16** | 原状：五档里 `recoverable`/`user_action_required`/`security_related` **全仓 0 命中**，只有文件/内容传输族有真分类。**2026-10-29 已把口径写实**（负责人选"窄口挂码"而不是全面铺开）：内部收尾判断本来就是结构化的（`send_retry_verdict` 吃 `SendFileError{retryable,cancelled}`、台账走 `FailReason` 九档），需要修的只有"**界面按中文文案分支**"那两处 ⇒ 新增 `error_codes.rs`（`E2EE_PUBKEY_MISSING` / `PORT_IN_USE`）+ 前端 `CODE_RULES` 先按码分类 + 双向对账判据。OS/第三方串仍走签名兜底（那不是分类器）。**同日晚补上第二条通道**（§4.0j）：`禁止 Err → failed` 按"状态不拆档、原因必须有码"执行 ⇒ DB v14→v15 给 `messages` 加可空 `fail_code`，四格消息级终态各带自己的码，界面 tooltip 从「发送失败」变成「发送失败：<为什么>」 | `src-tauri/src/error_codes.rs`、`src/utils/errors.ts`、`src/utils/fileFailReason.ts` |
-| **P18** | 判据 A/B 真实存在且已接门禁（96 类型 + 169 命令体，0 违规），但 `Identity` 私钥字段仍是 `pub`，`x25519_secret_b64()`/`ed25519_secret_b64()` 是两条现成的导出器；文档点名的 B-1a 补救（改私有 + 只暴露 `sign()`/`dh()`）未发生 | `src-tauri/src/crypto.rs` |
+| **P18** | **只剩半条**（2026-10-29 分两批落地）：判据 A/B 真实存在且已接门禁（96 类型 + 169 命令体，0 违规），判据 C（落点边界）已加（5.15.18），`x25519_secret` **已私有化**、ECDH 只从 `Identity::dh()` 出去。仍开的只有 **Ed25519 私钥字段是 `pub`** —— 前置是「签名能力」抽象，否则每个调用点都得拿到能签的东西（复跑 `grep -n "pub ed25519_signing" src-tauri/src/crypto.rs`） | `src-tauri/src/crypto.rs`、`scripts/check-key-boundary.mjs` |
 | **P27** | 已读与红点共用 `chatViewerLooking()`，但**系统通知那一族四处**（`useChatStore.ts:326/481/500/661`）用 `!document.hidden && document.hasFocus() && activeConv===conv_id` —— 第三个条件是子集，守卫只数 `!document.hidden && app.chatVisible` 这个组合所以看不见 | `src/stores/useChatStore.ts` |
 | **P34** | 原状：十二处慢活逐格在池内、位置断言在、`Err` 不伪装成 `Ok`；但文档规则 6 写死的"现算处数 17"与判据实际钉的 **18** 不同步。**2026-10-29 晚已改文档（17 → 19，与判据同句说明"法条上的数要跟着判据走"）**；STB-01 那处 `write_all(` 已随 5.15.10 收进 `PRIMITIVES` | `docs/protocol-invariants.md` vs `lib_relay_data_tests.rs` |
 
@@ -506,6 +548,8 @@ export function isForwardableKind(kind: string): boolean {
 ---
 
 ## 6. 重复造轮子（DUP）
+> ⚠️ **本节记的是审计当时的发现。今天哪些已经落地、哪些判了不修，一律以 [§8 落地状态总表](#8-落地状态总表2026-10-29-深夜按现算对账) 为准** —— 「确认」「无机器对账」「零用例」这类字样不代表今天还没做（本轮对账实测：§8 的 19 行里有 9 行在写这张表时其实已完成）。
+
 
 ### 6.1 既有 `open-source-replacement-matrix.md` 的核验判决
 
@@ -545,10 +589,10 @@ export function isForwardableKind(kind: string): boolean {
 | DUP-06 | Medium | 重复组件 | 「表情切段 + 链接/提及切段 + 逐段渲染」3 份同形实现 | `src/components/message/*` |
 | DUP-07 | Low | 重复逻辑 | @提及的「16% 透明底」配方散在 2 处 + 一个未被复用的第三种配方 | `src/style.css` 等 |
 | DUP-08 | Low | 重复组件 | **已修（5.15.20，见 §4.0i）**：头像渲染 13 个副本各自手写 `gosslan-avatar-box` + `gosslan-avatar-emoji`，圆角漂成 3 种；顺带修掉 `RemindAudienceDialog` 那一处（喂了 `SelfAvatar` 没有的 prop ⇒ 那一列没有头像） | `src/components/ui/AvatarBox.vue`（唯一行像） |
-| DUP-09 | Low | 跨层规则 | 已读推进的排除清单 TS 一份、Rust 一份，今天字面值一致（**尚未漂移，但无机器对账**） | `src/utils/*` vs `src-tauri/src/db/*` |
+| DUP-09 | **已加对账（§4.0a）** | 已读推进的排除清单 TS 一份、Rust 一份 —— 今天由 `src/utils/messageKinds.test.ts` 的「跨语言契约：已读推进的排除清单两侧逐项一致（DUP-09）」逐项比；变异（TS 去掉 `partial_cancelled`）⇒ 红 |
 | DUP-10 | Low | 跨层规则 | 未读计数判据 TS 一份、Rust 一份，今天一致 | 同上 |
-| DUP-11 | Low | 跨层规则 | 未知 kind 的占位文案 TS 一份、Rust 一份，今天一致 | 同上 |
-| DUP-12 | Low | 跨层规则 | 预览文本（会话列表摘要）TS 一份、Rust 一份，今天一致 | 同上 |
+| DUP-11 | **已被既有判据覆盖（§4.0a）** | 未知 kind 的判据与占位文案对 `protocol.rs` 的对账早在册（同文件），不另加第二条 |
+| DUP-12 | **已加对账（§4.0a）** | `previewBody`（TS）与 `preview_text` / `todo_preview` / `poll_preview` / `announcement_preview`（Rust）的固定字面量由同文件的「跨语言契约：会话预览的固定文案两侧一致（DUP-12）」比；变异（Rust 改一个字）⇒ 红 |
 | DUP-13 | Low | 自研基础设施 | TS 侧三份各自实现的 LRU / 容量闸 | `src/utils/*` |
 | DUP-14 | Low | 重复组件 | `MessageItem` 的「复制 / 保存」动作在右键菜单与移动端 ActionSheet 两套模板里各写一遍 | `MessageItem.vue` |
 | DUP-15 | Low | 重复组件 | 「移动端整屏覆盖壳」`MobilePageFrame` 的 `overlay` 形态被手抄 1 份 | `src/components/**` |
@@ -559,6 +603,8 @@ export function isForwardableKind(kind: string): boolean {
 ---
 
 ## 7. 测试盲区（TST）
+> ⚠️ **本节记的是审计当时的发现。今天哪些已经落地、哪些判了不修，一律以 [§8 落地状态总表](#8-落地状态总表2026-10-29-深夜按现算对账) 为准** —— 「确认」「无机器对账」「零用例」这类字样不代表今天还没做（本轮对账实测：§8 的 19 行里有 9 行在写这张表时其实已完成）。
+
 
 ### 7.1 覆盖现状
 
@@ -575,13 +621,13 @@ export function isForwardableKind(kind: string): boolean {
 
 | ID | 严重度 | 问题 | 位置 |
 |---|---|---|---|
-| TST-01 | High | `saveDestination.test.ts` 是生产源码的**逐字节副本**（`diff` 无输出，两文件都是 1439 字节），**零用例**，却计入"138 个测试文件"⇒ 清单守卫被骗过，`saveDestinationOf` 真实覆盖率为 0 | `src/utils/saveDestination.test.ts` |
+| TST-01 | **已修（5.15.11）** | 审计当时：`saveDestination.test.ts` 是生产源码的**逐字节副本**（`diff` 无输出、0 条用例），却计入「测试文件」总数 ⇒ 清单守卫被骗过。今天：换成 3 条真用例（桌面字符串 / Android SAF 的 `{ file }` / 取消与畸形一律 `null`）+ 一条反控。复跑 `grep -c "^test(" src/utils/saveDestination.test.ts` ⇒ 3 |
 | TST-02 | High | `useChatStore.ts`（**3471 行，全仓最大未测模块**）零单元测试 —— 只被 `readFileSync` 形状断言引用；含矩阵 `:204` 记的**已出过真机事故**的乐观占位替换 | `src/stores/useChatStore.ts` |
-| TST-03 | High | 护栏非空转只在 nightly 跑，`verify.yml` 两个 guard job 的 `if` 只认 `schedule`/`workflow_dispatch` ⇒ 新增/改坏的守卫最长 24 小时无人验证 | `.github/workflows/verify.yml` |
+| TST-03 | **已修（5.15.11，按拆腿口径）** | 审计当时两条腿都只在 schedule/dispatch。今天 `guards-web`（node+script，护栏本体实测 13.8s）**每次 push/PR 都跑**，`guards-cargo` 整跑 2h39m 留夜间。复跑 `grep -n "^  guards-\|if: github.event_name" .github/workflows/verify.yml` —— ⚠️ 只看 `guards-cargo` 那条 `if` 会误判成「没做」（本轮就误判过一次） |
 | TST-04 | Medium | 好友 **reject** 路径零测试 —— `handle_identity.rs:216-229` 整个臂无 `#[test]`，而它修的正是"已拒绝申请被反复重发"的缺陷 | `src-tauri/src/network/transport/handle_identity.rs` |
 | TST-05 | Medium | 群任务的 **CRUD 写路径**（改状态/归档/重开/认领）无独立单测，编号不变性只在跨进程轮 | `src-tauri/src/commands/group_todo_media.rs` |
 | TST-06 | Medium | 真 ENOSPC（写到一半磁盘满）无自动化；预检只是纯函数 + 形状守卫，`recv-readonly` 轮造的是 `EACCES` 不是 `ENOSPC` | `src-tauri/src/network/file/receive.rs` |
-| TST-07 | Medium | 「群主撤回特权」与「key-change conflict」的接线只有**形状守卫**（74/152 cargo 守卫属这一族） | `src-tauri/src/lib_delivery_shape_tests.rs` |
+| TST-07 | **已修一半 + 另一半否证（5.15.11）** | 撤回**选档**抽成纯函数 `recall_authority_for` 并补行为用例，形状断言同时钉「命令真调它」两半。审计说的另一处（key-change conflict 只有形状守卫）**不准确**：`new_peer_conflicts_with_friend` 本来就有 6 条行为断言，只有「是否被调用」是形状 |
 | TST-08 | Medium | 身份持久化跨重启：无「重启后不再派生」分支的用例，且**代码与需求恰好相反**（`clear_all_data` 不删身份行） | `src-tauri/src/state.rs` |
 | TST-09 | Low | Windows 侧缺三类生产行为用例（缓存软链清扫 / 磁盘写失败 / 托盘角标） | `src-tauri/test-baseline.windows.txt` |
 | TST-10 | Low | 2 条新 Rust 用例不在基线里；唯一 `#[ignore]` 的真实库迁移演练永不执行 | `src-tauri/src/commands/files_tests.rs` |
@@ -596,45 +642,55 @@ export function isForwardableKind(kind: string): boolean {
 
 ---
 
-## 8. 建议修复顺序
+## 8. 落地状态总表（2026-10-29 深夜按现算对账）
 
-### P0 —— 先做（安全边界）
+> **这一节原来是"建议修复顺序"，只写该做什么、不写做完没有。** 而每一批的复核结论都另记在
+> §4.0a～§4.0k，于是读这份报告的人看到的是 19 行待办，其中**大半早就落地了**：对账前实测
+> **9 行整行已完成** —— P0 的 1/2/3（SEC-01、SEC-03、FUN-01）、P1 的 4/5/6/8（STB-01、STB-02、
+> TST-03、TST-01）、P2 的 16（矩阵勘误）与 18（SEC-08，其实就是第 15 行的一项，重复计数）；
+> 另有 5 行做了一半（第 9/10/11/12/15 行）。这就是"下一轮重新发现已完成的工作"的形状
+> （本轮之前就真复发过一次：Android 后台承诺被重新发现成"没做"）。
+>
+> 现在把它改成**唯一的状态表**：`§1/§2/§3/§6/§7` 各节记的是**审计当时**的发现，今天的状态以本表为准。
+> ⚠️ 诚实边界：本表是**人工对账 + 每行挂复跑命令**，不是机器判据 —— 没有任何脚本断言"这张表与代码一致"
+> （能做这种断言的只有逐行的复跑命令本身）。表里没写的 ID 见 §4.0a～§4.0k 的复核结论。
 
-| 序 | 项 | 类型 | 为什么排这里 |
+| 序 | ID | 今天的状态 | 凭据 / 复跑 |
 |---|---|---|---|
-| 1 | **SEC-01** 网络路径 `FriendAccept` 必须查 `pending_requests` | 安全 | 唯一一条"未授权即可获得本机信任"的路径；改动面小（一个判据） |
-| 2 | **SEC-03** Gossip 锚点只信 `keys_verified` | 安全 | 与 SEC-01 是同一族信任标准不一致；改判据即止。**注意 Frozen Core（E2EE）⇒ L3 流程** |
-| 3 | **FUN-01/DUP-01** 转发 kind 跨层对账 | 功能 | 100% 失败的用户可见缺陷；**修前端那侧**；顺带加一条跨层守卫防止再漂 |
+| 1 | SEC-01 | **已落地**（5.15.8） | `FriendAccept` 查 `pending_requests` + 拒绝留痕；`grep -rn "FRIEND_ACCEPT_UNSOLICITED" src-tauri/src` 现数 2 处 |
+| 2 | SEC-03 | **已落地**（5.15.8） | Gossip 锚点与 Hello 同口径只认已验证身份；`grep -rn "keys_verified" src-tauri/src/network/transport/peer_registry.rs` |
+| 3 | FUN-01 / DUP-01 | **已落地**（5.15.9） | 转发 kind 白名单收成一家 + 跨层对账；`node --test src/utils/messageKinds.test.ts` |
+| 4 | STB-01 | **已落地**（5.15.10）；**同行的 STB-03 没做** | `grep -rn "write_group_chunk_blocking" src-tauri/src` 现数 5 处，且已进 INV-P34 的登记格。全局 `file_receivers` 锁那半在 5.15.10 明确记账：要动几十个引用点、只有跨进程 E2E 能证 |
+| 5 | STB-02 | **已落地**（5.15.10） | 条数上限 + TTL + 载荷尺寸闸：`grep -rn "MAX_PENDING_FRIEND_REQUESTS\|PENDING_REQUESTS_FULL" src-tauri/src/network/transport/handshake.rs` |
+| 6 | TST-03 | **已落地**（5.15.11，按拆腿口径） | node+script 那条腿每次 push/PR 都跑；cargo 整跑实测 2h39m 留夜间。复跑：`grep -n "^  guards-\|if: github.event_name" .github/workflows/verify.yml`（`guards-web` 那job **没有** `if`）⚠️ 只看 `guards-cargo` 的 `if` 会误判成"没做"——本轮我自己就误判过一次 |
+| 7 | TST-02 | **未做**（前置 = store 依赖注入） | `useChatStore` 里难的纯逻辑（`replaceOptimistic`）已有真用例，缺的是接线；做成真测试要先给 store 做注入或搬状态机，属独立重构 |
+| 8 | TST-01 | **已落地**（5.15.11） | 假测试换成 3 条真用例：`grep -c "^test(" src/utils/saveDestination.test.ts` 现数 3 |
+| 9 | TST-07 | **已落地一半**（5.15.11）+ 另一半被否证 | 撤回**选档**抽成 `recall_authority_for` 并补行为用例（形状断言同时钉"命令真调它"）；key-change 那半审计不准确 —— 那条判据本来就有 6 条行为断言 |
+| 10 | INV-P16 | **两条通道都已落地**（5.15.21 命令返回侧 / 5.15.22 落库侧） | §4.0j。状态不拆档、原因另有码；`grep -n "MESSAGE_FAIL_CODES" src-tauri/src/error_codes.rs` |
+| 10b | INV-P18 | **半条**：X25519 已私有化（5.15.18 + 判据 C），Ed25519 仍是 `pub` | `grep -n "pub ed25519_signing" src-tauri/src/crypto.rs`。收它的前置是"签名能力"抽象，否则每个调用点都能拿到能签的东西 |
+| 11 | SEC-02 | 上限已做（5.15.14）+ 淘汰认身份（5.15.19，§4.0h）；**announce 限流判不修** | 负结论留证：无界增长的成因是"条数没上限"而不是速率，`upsert_peer` 每 5s 周期最多一次 |
+| 12 | DUP-02 | 通道判据收一家（5.15.9）、越权闸两条入口一致（5.15.15，§4.0f）；**剩"缺路径提示文案三套"未统一** | `ChatWindow` / `FavoritePanel` / `MessageItem` 各写一句 toast |
+| 13 | DUP-09～DUP-12 | **09 与 12 已加对账、11 已被覆盖、10 判不另加**（§4.0a） | 那两条对账用例就住在一个文件里，标题自带编号：`src/utils/messageKinds.test.ts` 的「跨语言契约：已读推进的排除清单两侧逐项一致（DUP-09）」与「…会话预览的固定文案两侧一致（DUP-12）」；复跑 `node --test src/utils/messageKinds.test.ts`。⚠️ 注：§6.3 那四行仍写着"无机器对账"，以本表为准 |
+| 14 | DUP-03/04/06/07/13/14/15 | **未做**（DUP-05 已修 5.15.16、DUP-08 已修 5.15.20） | `now_ms()` 多份、SHA-256 hex 编码多份、表情/链接切段 3 份、@提及底色配方散 2 处、TS 侧三份 LRU、`MessageItem` 动作两套模板、`MobilePageFrame` 手抄 1 份 |
+| 15 | SEC-04/05/06/08/12 | **全部已修**（SEC-04 5.15.14 + 5.15.17 留痕；SEC-05/06/08/12 见 5.15.13） | SEC-08 那条是入站帧聚合驻留的**全局限额 1 GiB**（审计原估 8 GiB 上界） |
+| 15b | SEC-07 / SEC-09 / SEC-10 / SEC-11 | **不成立 / 已撤回 / 判不修 / 判不修** | §4.0 与 §4.0b 逐条给了理由，负结论也是一等结论 |
+| 16 | 替换矩阵勘误 | **已做**（5.15.13：新增 §0 勘误 + 一条「每个生产依赖都必须在矩阵里登记过」的新判据，带变异正控） | 文件真路径是 `docs/architecture/open-source-replacement-matrix.md`（⚠️ 本表原来只写裸文件名，害我照着它写了一条指不到文件的复跑命令）；复跑 `grep -n "勘误" docs/architecture/open-source-replacement-matrix.md` |
+| 17 | 依赖卫生 | `@pinia/colada` 死依赖**已删**；**`lucide-vue-next` 升级评估未做** | `grep -n "colada" package.json` 应为 0 命中（复跑时带一个阳性对照：`grep -n "vue-i18n" package.json` 必须有命中） |
+| 18 | SEC-08 | **已修**（见第 15 行） | —— 原表把它单独列一行是重复计数 |
+| 19 | 文件气泡的失败原因重启后失忆 | **未做**（前置 = 给 `REASON_*` 自由文本配稳定码） | §4.0j 的"本轮明确不做的" |
+| 20 | `## [4.39.2]` 两节内容不同（历史改号） | **未做**（判据现在会显式打印这一格） | §4.0k：现算 `git tag --contains a28e37e2` ⇒ 前一份的真实归属是 v4.39.4，要连同归档段一起核 |
 
-> 建议 1、2、3 合成**一个提交**：三者同属"同一份规则各写一份"的形状，一次修完并补上跨层对账守卫。（受 Change Budget 判据约束：`src-tauri/src/` 改动需要 `[impact]` 标记，同领域连续 3 次修补即红 ⇒ 这三处合并成一次更划算。）
+### 还没做的，按建议顺序
 
-### P1 —— 紧随（稳定性 + 测试层）
-
-| 序 | 项 | 类型 |
-|---|---|---|
-| 4 | **STB-01** 群文件写盘搬进 `spawn_blocking` + 拆掉全局锁 | 稳定性（同时解 STB-03） |
-| 5 | **STB-02** `pending_requests` 加上限 + TTL + 载荷尺寸闸 | 稳定性 |
-| 6 | **TST-03** 护栏非空转的一条分片移到 push/PR | 测试基础设施 |
-| 7 | **TST-02** `useChatStore.ts` 至少覆盖乐观占位替换路径 | 测试盲区 |
-| 8 | **TST-01** 删掉 `saveDestination.test.ts` 那份副本，补真用例 | 测试盲区 |
-| 9 | **TST-07** 群主撤回权限 / key-change conflict 升级为行为断言 | 测试盲区 |
-
-### P2 —— 之后（合规、重复、其余）
-
-| 序 | 项 | 类型 |
-|---|---|---|
-| 10 | INV-P18 的**另一半**：Ed25519 私钥字段仍是 `pub`（X25519 那半已私有化 + 判据 C，见 §5 的 P18 行）；要收它得先给"签名能力"抽象，否则每个调用点都得拿到能签的东西。**INV-P16 两条通道都已落地**（`error_codes.rs` 的命令返回侧 + `messages.fail_code` 的落库侧，见 §4.0j）；**P27 已判与 spec 对齐、P34 已改文档同步**，见 §4.0c/§4.0e | 规范偏差（本条只剩 P18 的 Ed25519 那半） |
-| 11 | SEC-02 的**上限那一半已做**（5.15.14：512 条 + 淘汰最旧 + `PEERS_TABLE_FULL`）；**announce 限流没做**——理由：无界增长的成因是"条数没有上限"而不是速率，`upsert_peer` 每 5s 广播周期最多一次，且发现缓存已封顶；这条留在册子里等真实读数（CPU 侧证据）再决定 | 安全（半做，负结论留证） |
-| 12 | DUP-02 转发判据收成一家（4 处 → 1 处） | 重复实现 |
-| 13 | DUP-09～DUP-12 加跨层字面值对账守卫 | 重复实现 |
-| 14 | DUP-03/04/05/06 逐条收口 | 重复实现 |
-| 15 | SEC-04/05/06/10/11/12 逐条加固 | 安全 |
-| 16 | 修 `open-source-replacement-matrix.md` 的 6 条反转 + 11 条过期 | 文档漂移 |
-| 17 | 删 `@pinia/colada` 死依赖；评估 `lucide-vue-next` 升级 | 依赖卫生 |
-| 18 | SEC-08 的 8 GiB 聚合上限（项目自己已记录） | 已知缺口 |
-| 19 | **文件气泡的失败原因在重启后失忆**：`file-{id}` / `gfile-{id}` 落 `failed` 时不写 `fail_code`（原因今天是自由文本，只有 `DISK_FULL` 一族有码，且那份码走 `file-failed` 事件不落库）。做这一格的前置是给 `REASON_*` 那几条自由文本先配稳定码 —— 见 §4.0j 的"本轮明确不做的" | UX 可归因（半条，前置未清） |
+1. **TST-02**（唯一还活着的 P1）—— 前置是给 `useChatStore` 做依赖注入，属独立重构，别塞进修复批。
+2. **INV-P18 的 Ed25519 那半** —— 前置是"签名能力"抽象。
+3. **第 19 行：文件气泡失败原因落库** —— 前置是给那一族自由文本配码。
+4. **DUP 剩余的 7 行**（第 14 行）与 **DUP-02 的三套文案**（第 12 行）—— 纯重复，收益是"少一份会漂的拷贝"。
+5. **第 20 行的历史改号**、**`lucide-vue-next` 评估**、**`get_topology` 孤儿**（FUN-04）、**TST-06 真 ENOSPC**、
+   **TST-09 Windows 三类行为用例**、以及**需要现场日志才能推进的 Windows 渲染层卡死**（另见 `docs/notes/`）。
 
 ---
+
 
 ## 9. 审计覆盖范围与未覆盖模块
 
