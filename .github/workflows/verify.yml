@@ -440,7 +440,8 @@ jobs:
   #
   #  为什么不用 `needs`：`needs` 会让定时事件下被跳过的上游把这些也拖成 skipped；
   #  cargo 通道本来就是最慢的一腿，和各片并行跑不会互相抢 Cargo lock（各自独立 runner）。
-  #  定时只在夜间跑这两条腿，见文件顶部 `on.schedule` 与其余三个 job 的 `if`。
+  #  2026-10-29 起：node+script 这条腿**每次 push/PR 也跑**（13.8s 的护栏本体，整套约 5 分钟）；
+  #  cargo 那条整跑 2h39m，仍只在夜间/dispatch 上跑（见文件顶部 `on.schedule` 与它的 `if`）。
   # ---------------------------------------------------------------------------
   #  cargo 通道拆 3 片并行 —— 2026-10-26 按现读耗时定的，不是拍脑袋：
   #  这一条整跑（265 条）实测 **2h39m**（run 515 / id 40237651238：`护栏非空转（全量）`
@@ -512,7 +513,10 @@ jobs:
   guards-web:
     name: 护栏非空转 · node + script 通道
     runs-on: macos-latest
-    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    # 2026-10-29（审计 TST-03）：这一腿**每次 push/PR 都跑**。原先两条腿都只在
+    # schedule/dispatch 上跑 ⇒ 新增或改坏的守卫最长 24 小时无人验证。
+    # 这里只挪**便宜的这条**：护栏本体实测 13.8s（`verify-guards.py --lane node --lane script`），
+    # 整腿含 npm ci/build 约 5 分钟；cargo 那条整跑 2h39m，留在夜间。
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4

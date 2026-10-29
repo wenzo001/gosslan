@@ -13,6 +13,35 @@
 
 ## [Unreleased]
 
+## [5.15.11] - 2026-10-29
+
+### 测试层：删掉一份假测试、把两处"形状断言"升级成行为、护栏非空转进 push/PR
+
+2026-10-29 审计 TST-01 / TST-03 / TST-07（外加一条审计自己也写错的结论）。
+
+- **TST-01**：`saveDestination.test.ts` 是 `saveDestination.ts` 的**逐字节副本**（`diff` 无输出、
+  0 条用例），却计入"测试文件"总数 ⇒ 清单守卫以为那个模块有覆盖，实际是 0。换成三条真用例：
+  桌面字符串 / Android SAF 的 `{ file }` 对象 / 取消与畸形形状一律 `null`，外加反控
+  「真错误不能被当成用户取消悄悄吞掉」。
+- **TST-07**：群主撤回的**选档**原先只有源码文本断言。抽出纯函数
+  `recall_authority_for(is_local_creator)` 并补行为用例（真 ⇒ `GroupCreator` / 假 ⇒ `Author`），
+  形状断言改成钉"命令确实调它"（两条一起才挡住"纯函数有了但没接上"）。
+  ⚠️ 审计说的另一处「key-change conflict 只有形状守卫」**不准确**：那条判据
+  （`new_peer_conflicts_with_friend`）本来就有 6 条行为断言（`handshake_tests.rs`），
+  只有"`upsert_peer` 是否调它"是形状 —— 本轮不动。
+- **TST-03**：两条护栏非空转腿原先都只在 schedule/dispatch 上跑 ⇒ 新增或改坏的守卫最长
+  24 小时无人验证。现在 **node+script 那条腿每次 push/PR 都跑**（护栏本体实测 **13.8s**，
+  整腿含 npm ci/build 约 5 分钟）；cargo 那条整跑 **2h39m**，留在夜间。
+- 审计证据入库：`audit-context/`（ORIENTATION + 5 域 FINDINGS + 36 份规范核查），证据快照
+  对文档引用守卫豁免（与 `docs/archive/**` 同类），**主报告不豁免**。
+
+**没做（诚实记账）**：TST-02「`useChatStore` 零运行时测试」。审计说对了一半：难的纯逻辑
+（`replaceOptimistic` 按 `msg_id`/`local_id` 认并合并状态）**已经有**真用例，缺的是 store 的
+接线；而 `messages.test.ts` 里那组「Ack 竞态」是**模型测试**（内联等价实现，测的是副本）。
+把它变成真测试要么给 store 做依赖注入、要么搬走那套状态机 —— 都属于独立重构，
+放进这批安全修复里风险大于收益。已记入待办。
+
+## [5.15.10] - 2026-10-29
 ## [5.15.10] - 2026-10-29
 
 ### 群文件分片的写盘离开 tokio worker；好友申请表有了上限
