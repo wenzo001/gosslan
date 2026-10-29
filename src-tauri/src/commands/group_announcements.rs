@@ -417,6 +417,7 @@ pub async fn send_group_file(
             db::next_clock(&dbc, &conv_id).unwrap_or(1)
         };
         let rec = MessageRecord {
+            fail_code: None,
             id: 0,
             msg_id: format!("gfile-{transfer_id}"),
             conv_id,

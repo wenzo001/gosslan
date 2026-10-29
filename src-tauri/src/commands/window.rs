@@ -283,6 +283,7 @@ pub(crate) async fn send_group_payload(
     // 本地落库：msg_id 统一用 envelope.message_id（与单聊发送路径一致），
     // 保证同一条群消息在本地记录 / Gossip 投递 / 接收端落库三处身份一致。
     let rec = MessageRecord {
+        fail_code: None,
         id: 0,
         msg_id: env.message_id.clone(),
         conv_id: conv_id.clone(),

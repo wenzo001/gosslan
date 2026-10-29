@@ -605,6 +605,13 @@ export const enUS: MessageDict = {
   "msg.resendFail": "This message can't be resent right now",
   "msg.resendConfirm": "Resend this message? The other side will receive it again. You can watch and cancel it in the task center.",
   "msg.sendFailed": "Send failed",
+  // Shown with `messages.fail_code` (DB v14→v15). "Send failed" alone leaves nothing to act on:
+  // these four each point at a different next step.
+  "msg.sendFailedWith": "Send failed: {reason}",
+  "msg.fail.retryExpired": "Still undelivered after repeated retries; sending stopped (the other side may be offline for a long time)",
+  "msg.fail.orphanAtStart": "This was still sending when the app restarted with no pending queue, so it is treated as undelivered",
+  "msg.fail.peerDeleted": "This contact is no longer in your friends list, so the message was not delivered",
+  "msg.fail.groupMemberGone": "That member is no longer in the group, so retries to them stopped",
   "msg.clickToOpen": "Click to open file",
   "msg.receiving": "Receiving",
   "msg.downloadFile": "Download file",

@@ -616,6 +616,13 @@ export const zhCN: MessageDict = {
   "msg.resendFail": "这条消息现在无法重发",
   "msg.resendConfirm": "重新发送这条消息？对方会再收到一次，任务中心可以看到进度并取消。",
   "msg.sendFailed": "发送失败",
+  // 有 `messages.fail_code`（DB v14→v15）时把原因接在后面。只说"发送失败"用户无从下手：
+  // 这四格各自对应一件不同的事（等对方上线 / 重发 / 加回好友 / 别再发给那个人）。
+  "msg.sendFailedWith": "发送失败：{reason}",
+  "msg.fail.retryExpired": "多次重试仍未送达，已停止发送（对方可能长时间离线）",
+  "msg.fail.orphanAtStart": "本机重启时这条还卡在发送中，且已没有待发队列，按未送达处理",
+  "msg.fail.peerDeleted": "对方已不在好友列表，这条没有送达",
+  "msg.fail.groupMemberGone": "对方已不在群里，这条对他的补发已停止",
   "msg.clickToOpen": "点击打开文件",
   "msg.receiving": "接收中",
   "msg.downloadFile": "下载文件",

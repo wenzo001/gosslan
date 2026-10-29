@@ -186,6 +186,7 @@ async fn handle_messaging_arm(state: &Arc<AppState>, peer_id: &str, msg: Message
                 let ts = db::now_ms();
                 let seq = seq.max(1);
                 let rec = MessageRecord {
+                    fail_code: None,
                     id: 0,
                     msg_id: msg_id.clone(),
                     conv_id: from.clone(),

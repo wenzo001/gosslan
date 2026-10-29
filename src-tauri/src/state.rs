@@ -391,6 +391,16 @@ pub struct MessageRecord {
     /// 老行由迁移回填 `msg_id`；新行由插入 SQL 的 `COALESCE(?local_id, msg_id)` 保证非空。
     #[serde(default)]
     pub local_id: Option<String>,
+    /// 这一行**上一次被判失败的原因码**（DB v14→v15，词表 = `error_codes::MESSAGE_FAIL_CODES`）。
+    ///
+    /// `None` 不是 bug，是一个要说出口的状态：v15 之前的老行、以及原因只是自由文本
+    /// （文件传输那一族）的失败，都没有码。界面必须在 `None` 时回落到通用文案，
+    /// 不许把裸码或空白念给用户。
+    ///
+    /// ⚠️ **只在 `status == "failed"` 时有意义**：`ack_delivered` 允许一条已判失败的消息
+    /// 被迟到的 Ack 推进成 `delivered`，那一行上的旧码届时不能上屏。
+    #[serde(default)]
+    pub fail_code: Option<String>,
 }
 
 /// `message-received` 实际投递出去的形状 = 消息记录 + **只随本次投递、不落库**的 @ 名单。
@@ -2954,6 +2964,7 @@ mod tests {
     fn incoming_message_flattens_the_record_and_carries_three_state_mentions() {
         use super::{IncomingMessage, MessageRecord};
         let rec = MessageRecord {
+            fail_code: None,
             id: 7,
             msg_id: "m1".to_string(),
             conv_id: "group:g1".to_string(),

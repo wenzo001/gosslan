@@ -485,6 +485,7 @@ async fn handle_relay_chunk(
                 let content = content.to_string();
                 let seq = db::next_clock(&dbc, &from).unwrap_or(1);
                 let rec = MessageRecord {
+                    fail_code: None,
                     id: 0,
                     msg_id: format!("file-{transfer_id}"),
                     conv_id: from.clone(),

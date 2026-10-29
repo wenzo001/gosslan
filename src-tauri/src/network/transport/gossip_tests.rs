@@ -100,6 +100,7 @@ fn real_db_keeps_group_and_dm_conversations_isolated() {
 
     fn rec(id: &str, conv: &str, kind: &str, content: &str, seq: i64) -> MessageRecord {
         MessageRecord {
+            fail_code: None,
             id: 0,
             msg_id: id.to_string(),
             conv_id: conv.to_string(),
@@ -545,6 +546,7 @@ fn business_duplicate_still_enters_the_propagation_layer() {
     let conn = rusqlite::Connection::open_in_memory().unwrap();
     conn.execute_batch(db::SCHEMA).unwrap();
     let rec = MessageRecord {
+        fail_code: None,
         id: 0,
         msg_id: "m1".into(),
         conv_id: "dev-a".into(),

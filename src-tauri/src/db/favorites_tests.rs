@@ -16,6 +16,7 @@ mod tests {
 
     fn rec_as(msg_id: &str, conv_id: &str, kind: &str, content: &str) -> MessageRecord {
         MessageRecord {
+            fail_code: None,
             id: 0,
             msg_id: msg_id.into(),
             conv_id: conv_id.into(),
@@ -1288,6 +1289,7 @@ mod tests {
         insert_message(
             conn,
             &MessageRecord {
+                fail_code: None,
                 id: 0,
                 msg_id: msg_id.into(),
                 conv_id: conv_id.into(),

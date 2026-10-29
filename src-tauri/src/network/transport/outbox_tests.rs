@@ -15,6 +15,7 @@
         let conn = rusqlite::Connection::open_in_memory().unwrap();
         conn.execute_batch(db::SCHEMA).unwrap();
         let rec = MessageRecord {
+            fail_code: None,
             id: 0,
             msg_id: "m1".into(),
             conv_id: "peer".into(),
@@ -240,6 +241,7 @@
         db::insert_message(
             &conn,
             &MessageRecord {
+                fail_code: None,
                 id: 0,
                 msg_id: "m1".into(),
                 conv_id: "d1".into(),

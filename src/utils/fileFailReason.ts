@@ -29,6 +29,14 @@
 /** 后端稳定失败码 → 中英词典的 key。键名与后端码**逐字相同**。 */
 const FILE_FAIL_REASON_KEYS: Record<string, string> = {
   DISK_FULL: "file.diskFull",
+  // ── 消息气泡的失败原因（`messages.fail_code`，DB v14→v15）───────────────────
+  // 词表另一侧：`src-tauri/src/error_codes.rs::MESSAGE_FAIL_CODES`（双向对账见
+  // `fileFailReason.test.ts`）。这四条是**写这一行时就知道原因**的位置；文件那一族的
+  // 失败原因仍是自由文本，读回来是 null ⇒ 界面走通用文案，不是这里漏了档位。
+  SEND_RETRY_EXPIRED: "msg.fail.retryExpired",
+  SEND_ORPHAN_AT_START: "msg.fail.orphanAtStart",
+  SEND_PEER_DELETED: "msg.fail.peerDeleted",
+  SEND_GROUP_MEMBER_GONE: "msg.fail.groupMemberGone",
 };
 
 /**

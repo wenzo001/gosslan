@@ -352,14 +352,14 @@ pub fn delete_group_outbox_for_peer_in_group(
     let mut settled = 0usize;
     for msg_id in ids {
         settled += tx.execute(
-            "UPDATE messages SET status = 'failed'
+            "UPDATE messages SET status = 'failed', fail_code = ?2
               WHERE msg_id = ?1
                 AND status = 'sending'
                 AND NOT EXISTS (
                     SELECT 1 FROM group_outbox g
                      WHERE g.msg_id = messages.msg_id AND g.status = 'pending'
                 )",
-            params![msg_id],
+            params![msg_id, crate::error_codes::SEND_GROUP_MEMBER_GONE],
         )?;
     }
     tx.commit()?;
@@ -507,6 +507,22 @@ mod group_outbox_removal_tests {
         assert_eq!(rows_of(&conn, "m2"), 0);
         assert_eq!(status(&conn, "m3"), "delivered", "已送达不许被删行改回失败");
         assert_eq!(rows_of(&conn, "m3"), 0);
+        // ④ 原因要跟着落库（DB v14→v15）：只有本机知道这条为什么红 —— 对方已经不在群里，
+        //   永远不会有 Ack 回来。没被改写的 m1/m3 必须仍然没有码（正控：码不许撒野）。
+        let code = |msg: &str| -> Option<String> {
+            conn.query_row(
+                "SELECT fail_code FROM messages WHERE msg_id = ?1",
+                params![msg],
+                |r| r.get(0),
+            )
+            .unwrap()
+        };
+        assert_eq!(
+            code("m2").as_deref(),
+            Some(crate::error_codes::SEND_GROUP_MEMBER_GONE)
+        );
+        assert_eq!(code("m1"), None, "还在等别的成员上线，这一条没资格带原因");
+        assert_eq!(code("m3"), None);
 
         // ②：再删 peer-b 的行 ⇒ m1 失去最后一行，必须落终态。
         assert_eq!(
@@ -519,7 +535,11 @@ mod group_outbox_removal_tests {
             "最后一个收件人被移出 ⇒ 队列行 0 行，继续 sending 就是永久发送中"
         );
         assert_eq!(rows_of(&conn, "m1"), 0);
-
+        assert_eq!(
+            code("m1").as_deref(),
+            Some(crate::error_codes::SEND_GROUP_MEMBER_GONE),
+            "第二次落终态同样要说得出原因"
+        );
         // 幂等：没有行可删、没有消息可判 ⇒ 0，且不报错。
         assert_eq!(
             delete_group_outbox_for_peer_in_group(&conn, "g", "peer-b").unwrap(),

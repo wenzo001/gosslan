@@ -158,6 +158,26 @@ fn orphan_sending_is_recovered_but_queued_and_terminal_rows_are_untouched() {
     );
     // 幂等：第二次没有可改的行
     assert_eq!(recover_orphan_sending_messages(&conn).unwrap(), 0);
+    // ★ 原因必须落库（DB v14→v15）：这类失败**只有本机知道**，对方从没收到过任何东西。
+    //   不写码就等于"重启之后连本机也不记得这条为什么红了"。
+    let code = |msg: &str| -> Option<String> {
+        conn.query_row(
+            "SELECT fail_code FROM messages WHERE msg_id = ?1",
+            rusqlite::params![msg],
+            |r| r.get(0),
+        )
+        .unwrap()
+    };
+    assert_eq!(
+        code("orphan").as_deref(),
+        Some(crate::error_codes::SEND_ORPHAN_AT_START),
+        "孤儿恢复要把原因一起写进去，界面才说得出为什么"
+    );
+    assert_eq!(
+        code("failed"),
+        None,
+        "这一次没碰的那条（本来就是 failed）不许凭空长出一个它没有的原因"
+    );
 }
 
 #[test]

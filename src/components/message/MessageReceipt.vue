@@ -134,6 +134,18 @@ function onReadersOpenChange(open: boolean) {
 function readerName(id: string) {
   return chat.nicknameOf(id);
 }
+/**
+ * 那颗"重发"键的悬浮文案 = **原因 + 动作**（`title` 传进来的是结局与原因，见
+ * `useMessageDisplay` 的 `receiptTitle` 与 DB 的 `messages.fail_code`）。
+ *
+ * 为什么两样分开写：`aria-label` 是这颗粒的**名字**（读屏用户按到它时要知道"这会干什么"，
+ * 而"对方已不在好友列表"不是动作，把它放进名字里等于让读屏用户在一堆不同长句里找按钮）；
+ * `title` 是**补充说明**，正好放原因。此前失败那一格的 tooltip 只有「重新发送」，
+ * 库里明明记着为什么失败却没处说 —— 而"能重发的失败"恰恰是最常见的那一档。
+ */
+const retryTitle = computed(() =>
+  props.title ? `${props.title} · ${t("msg.resend")}` : t("msg.resend"),
+);
 function readerAvatar(id: string): string | null {
   const friend = chat.friends.find((item) => item.device_id === id);
   if (friend?.avatar) return friend.avatar;
@@ -160,7 +172,7 @@ function readerAvatar(id: string): string | null {
       v-if="(state === 'failed' || state === 'cancelled' || state === 'partial_cancelled') && canRetry"
       class="tap-safe flex h-5 w-5 items-center justify-center rounded-[var(--gosslan-radius-xs)] transition hover:bg-[var(--gosslan-hover)]"
       :class="state === 'partial_cancelled' ? 'text-[var(--gosslan-warning-ink)]' : 'text-[var(--gosslan-danger-ink)]'"
-      :title="t('msg.resend')" :aria-label="t('msg.resend')"
+      :title="retryTitle" :aria-label="t('msg.resend')"
       @click="emit('retry')"
     >
       <AlertCircle class="h-4 w-4" stroke-width="2.5" />
@@ -264,7 +276,7 @@ function readerAvatar(id: string): string | null {
     <button
       v-if="state === 'failed' && canRetry"
       class="tap-safe flex h-5 w-5 items-center justify-center rounded-[var(--gosslan-radius-xs)] text-[var(--gosslan-danger-ink)] transition hover:bg-[var(--gosslan-danger-soft)]"
-      :title="t('msg.resend')" :aria-label="t('msg.resend')"
+      :title="retryTitle" :aria-label="t('msg.resend')"
       @click="emit('retry')"
     >
       <AlertCircle class="h-4 w-4" stroke-width="2.5" />
@@ -285,7 +297,7 @@ function readerAvatar(id: string): string | null {
       v-else-if="canRetry"
       class="tap-safe flex h-5 w-5 items-center justify-center rounded-[var(--gosslan-radius-xs)] transition hover:bg-[var(--gosslan-hover)]"
       :class="state === 'partial_cancelled' ? 'text-[var(--gosslan-warning-ink)]' : 'text-[var(--gosslan-danger-ink)]'"
-      :title="t('msg.resend')" :aria-label="t('msg.resend')"
+      :title="retryTitle" :aria-label="t('msg.resend')"
       @click="emit('retry')"
     >
       <AlertCircle class="h-4 w-4" stroke-width="2.5" />

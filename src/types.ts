@@ -138,6 +138,18 @@ export interface MessageRecord {
    * 到达之前就有一个稳定值；替换真实记录时 key 不变（不会整行重挂）。
    */
   local_id?: string | null;
+  /**
+   * 这一条**上一次被判失败的原因码**（DB v14→v15，词表见后端 `error_codes::MESSAGE_FAIL_CODES`，
+   * 文案表见 `src/utils/fileFailReason.ts`）。
+   *
+   * `null` / `undefined` 是一个要说出口的状态，不是缺数据：v15 之前的老行，以及原因只是
+   * 自由文本的那一族失败（文件传输），都没有码 —— 界面此时必须回落到通用文案「发送失败」，
+   * 不许把裸码或空白念给用户。
+   *
+   * ⚠️ 只在 `status === "failed"` 时有意义：迟到的 Ack 能把一条判过失败的消息推进成
+   * `delivered`（`ack_delivered` 的谓词不排 failed），那一行上留着的旧码届时不能上屏。
+   */
+  fail_code?: string | null;
   conv_id: string;
   sender_id: string;
   receiver_id: string;

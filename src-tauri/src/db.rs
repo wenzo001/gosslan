@@ -19,7 +19,7 @@ use crate::state::{
 /// 建表 / 建索引不需要 step：`init()` 在版本分支**之前**跑 `execute_batch(SCHEMA)`，
 /// 而 SCHEMA 全是 `IF NOT EXISTS` ⇒ 新老库每次启动都会被补齐。
 /// 同一条索引同时写在 SCHEMA 与 MIGRATIONS 里 = 两个家（历史上有过，v8→v9 起收敛）。
-pub const DB_VERSION: u32 = 14;
+pub const DB_VERSION: u32 = 15;
 
 /// 迁移 step：(from_version, to_version, 迁移闭包)。
 struct Migration {
@@ -245,9 +245,12 @@ fn migration_backups_newest_first(db_path: &Path) -> std::io::Result<Vec<std::pa
 ///
 /// 置 `failed` 而不是 `sent`：没有 Ack/队列行就没有送达证据，诚实地说"这次没成"。
 /// 接收端按 `msg_id` 幂等，用户重发也不会重复入库。
+///
+/// `fail_code` 一起写：这一族的失败**只有本机知道原因**（对端从没收到过，不可能回什么），
+/// 不落在行上就等于"重启之后连本机也不记得了"（DB v14→v15，界面据此说人话）。
 pub fn recover_orphan_sending_messages(conn: &Connection) -> Result<usize> {
     let changed = conn.execute(
-        "UPDATE messages SET status = 'failed'
+        "UPDATE messages SET status = 'failed', fail_code = ?1
           WHERE status = 'sending'
             AND msg_id NOT LIKE 'file-%'
             AND msg_id NOT LIKE 'gfile-%'
@@ -256,7 +259,7 @@ pub fn recover_orphan_sending_messages(conn: &Connection) -> Result<usize> {
                 SELECT 1 FROM group_outbox g
                  WHERE g.msg_id = messages.msg_id AND g.status = 'pending'
             )",
-        [],
+        params![crate::error_codes::SEND_ORPHAN_AT_START],
     )?;
     Ok(changed)
 }
@@ -732,6 +735,28 @@ const MIGRATIONS: &[Migration] = &[
             Ok(())
         },
     },
+    // v14 → v15：messages 加 fail_code（这一行上一次被判失败的原因码）。
+    //
+    // **不回填**：v14 之前没有任何地方记过原因，回填只能靠猜（"大概是重试耗尽"），
+    // 而猜出来的码会被界面当成事实念给用户。所以老行保持 NULL，含义写进契约：
+    // **NULL = 这一格没记过原因**（老数据，或原因本身是自由文本）。
+    // 也**不加索引**：它只随行读回，从不按码查（与 `mention_targets` 同一待遇）。
+    Migration {
+        from: 14,
+        to: 15,
+        description: "messages 加可空 fail_code（失败原因码，不回填）",
+        run: |conn| {
+            let table: bool = conn.query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'messages'",
+                [],
+                |r| r.get::<_, i64>(0),
+            )? > 0;
+            if table && !column_exists(conn, "messages", "fail_code")? {
+                conn.execute("ALTER TABLE messages ADD COLUMN fail_code TEXT", [])?;
+            }
+            Ok(())
+        },
+    },
 ];
 
 /// 建表脚本 —— 表结构的**唯一真源**（另有一张 `content` 表由
@@ -784,7 +809,13 @@ CREATE TABLE IF NOT EXISTS messages (
     -- **持久本地身份**（v13→v14）：乐观气泡在服务端 msg_id 到达之前就要有一个稳定 key；
     -- 列表（VirtualList）按它做 Vue key，服务端 id 到达后只更新字段、不换 key。
     -- 老行由迁移回填 msg_id；新行由插入 SQL 的 COALESCE(?local_id, msg_id) 保证非空。
-    local_id TEXT
+    local_id TEXT,
+    -- **上一次判失败的原因码**（v14→v15，稳定大写蛇形，词表见 `error_codes::MESSAGE_FAIL_CODES`）。
+    -- 可空，且 **NULL 是有含义的**：这一格没记过原因（v15 之前的老行，或原因只是自由文本）。
+    -- 只在 `status = 'failed'` 时被读：Ack 迟到可以把 failed 推进成 delivered（`ack_delivered`
+    -- 的谓词不含 failed），那一行上留着的旧码此时不该上屏。
+    -- 不加索引：只随行读回，从不按码查（与 `mention_targets` 同一待遇）。
+    fail_code TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_messages_conv ON messages(conv_id, ts);
 -- ⚠️ `idx_messages_conv_seq` **不在这里**，而且不能放进来：`seq` 是迁移 v2→v3 才加到
