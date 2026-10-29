@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { t } from "@/i18n";
-import { computed, onUnmounted, ref, watch } from "vue";
+import { computed, onMounted, onUnmounted, ref, watch } from "vue";
 import { useRouter } from "vue-router";
 import { useEventListener } from "@vueuse/core";
 import {
@@ -28,6 +28,9 @@ import { isSelfConversation, selfFriendOf } from "@/utils/selfChat";
 import { MAX_SEARCH_KEYWORD_CHARS } from "@/utils/validation";
 import { createInitScope } from "@/utils/initScope";
 import { Plus, ListChecks, Search, UserPlus, UsersRound } from "lucide-vue-next";
+import { getCurrentWebview } from "@tauri-apps/api/webview";
+import { useDropSend, type DropTarget } from "@/composables/useDropSend";
+import DropSendConfirm from "@/components/chat/DropSendConfirm.vue";
 import type { Conversation, Friend } from "@/types";
 
 const props = defineProps<{
@@ -50,6 +53,78 @@ const emit = defineEmits<{
 const app = useAppStore();
 const router = useRouter();
 const chat = useChatStore();
+
+/**
+ * 左栏也接拖拽发送（负责人 2026-10-29）：拖着文件停在**某一行**上就高亮那一行，
+ * 松手弹同一个确认框，确认后发给**那一行**的会话（不是当前打开的会话）。
+ *
+ * 用 Tauri 的原生拖拽事件：HTML5 drag 在 WebView 里拿不到真实路径。
+ * 与 ChatWindow 各订阅一份互不干扰 —— 两处命中区几何上不相交（左栏 / 右侧面板），
+ * 每处只判自己的矩形（群任务表单那套 `boardDropActive` 的让位逻辑也不用改）。
+ */
+const listRoot = ref<HTMLElement | null>(null);
+const dropRowId = ref<string | null>(null);
+const drop = useDropSend();
+/** 模板只解包**顶层** ref ⇒ 解构出来（`drop.body` 在模板里会拿到 ComputedRef）。 */
+const dropPending = drop.pending;
+const dropBody = drop.body;
+const dropItems = drop.items;
+const dropScope = createInitScope();
+
+/** 这一行能不能接文件：好友单聊 / 群聊（与聊天面板同一口径；自聊不收附件）。 */
+function canDropOnConv(convId: string): boolean {
+  return convId.startsWith("group:") || friendById.value.has(convId);
+}
+
+/** 物理像素位置 → 命中的会话行（不认识就返回 null）。 */
+function convRowAt(pos: { x: number; y: number }): string | null {
+  const el = listRoot.value;
+  if (!el) return null;
+  const dpr = window.devicePixelRatio || 1;
+  const x = pos.x / dpr;
+  const y = pos.y / dpr;
+  for (const row of el.querySelectorAll<HTMLElement>("[data-conv-row]")) {
+    const r = row.getBoundingClientRect();
+    if (x >= r.left && x <= r.right && y >= r.top && y <= r.bottom) {
+      const id = row.dataset.convRow ?? "";
+      return id && canDropOnConv(id) ? id : null;
+    }
+  }
+  return null;
+}
+
+/** 确认框正文：发到这一行；群聊说清楚有多少成员。 */
+function dropTargetFor(convId: string): DropTarget {
+  if (convId.startsWith("group:")) {
+    const gid = convId.slice("group:".length);
+    const n = chat.groups.find((g) => g.id === gid)?.members.length ?? 0;
+    const name = chat.conversations.find((c) => c.id === convId)?.name ?? "";
+    return { convId, body: t("chat.dropConfirmGroup", { name, n }) };
+  }
+  const name = chat.conversations.find((c) => c.id === convId)?.name ?? "";
+  return { convId, body: t("chat.dropConfirmPeer", { name }) };
+}
+
+onMounted(() => {
+  if (app.isMobile) return; // 拖拽是桌面端行为
+  void getCurrentWebview()
+    .onDragDropEvent((event) => {
+      const p = event.payload;
+      if (p.type === "enter" || p.type === "over") {
+        dropRowId.value = convRowAt(p.position);
+        return;
+      }
+      if (p.type === "drop") {
+        const id = dropRowId.value;
+        dropRowId.value = null;
+        if (!id || p.paths.length === 0) return;
+        void drop.stage(p.paths, dropTargetFor(id));
+        return;
+      }
+      dropRowId.value = null; // leave
+    })
+    .then((un) => dropScope.onDispose(un));
+});
 /** 页脚任务入口上的未完成数：与面板同一份读模型（`chat.operations`），不另算。 */
 const taskCount = computed(() => chat.operations.length);
 /** 回车打开搜索页之前的输入法守卫（见 composable 注释） */
@@ -169,7 +244,10 @@ function onSearchEnter(e: KeyboardEvent) {
 // 本组件在桌面端切到「链接」视图时会被 `v-else` 拆掉重挂 ⇒ 订阅必须成对，交给 initScope
 const actionScope = createInitScope();
 actionScope.onDispose(onAction(APP_ACTION.focusSearch, focusSearch));
-onUnmounted(() => actionScope.dispose());
+onUnmounted(() => {
+  actionScope.dispose();
+  dropScope.dispose();
+});
 
 /** 对端在线状态：群聊返回 null（无在线概念）；单聊查好友表。 */
 function isOnline(id: string): boolean | null {
@@ -335,7 +413,7 @@ useEventListener(document, "click", closeFriendMenu);
 </script>
 
 <template>
-  <div class="flex h-full flex-col bg-[var(--gosslan-list)]">
+  <div ref="listRoot" class="flex h-full flex-col bg-[var(--gosslan-list)]">
     <!-- 列表头：搜索框（白底+细边，在浅灰栏上清晰）+ 操作按钮。
          高度必须与右栏 ChatHeader 同源（--gosslan-header-h）并同样画下边框：
          两栏从同一个 y 起算，只有高度与底边线都一致，那条分隔线才是**一条连续的线**。
@@ -422,10 +500,11 @@ useEventListener(document, "click", closeFriendMenu);
         <ConversationListItem
           v-for="c in listConversations"
           :key="c.id"
-          v-memo="[c.last_ts, c.last_msg, c.unread, c.avatar, c.name, chat.activeConv === c.id, isOnline(c.id), chat.friends.length, chat.groups.length]"
+          v-memo="[c.last_ts, c.last_msg, c.unread, c.avatar, c.name, chat.activeConv === c.id, isOnline(c.id), chat.friends.length, chat.groups.length, dropRowId === c.id]"
           :conv="c"
           :active="chat.activeConv === c.id"
           :online="isOnline(c.id)"
+          :drop-active="dropRowId === c.id"
           @open="openConv"
           @context="onConvContext"
         />
@@ -624,5 +703,15 @@ useEventListener(document, "click", closeFriendMenu);
         <li>· {{ t("conv.delete.item3") }}</li>
       </ul>
     </ConfirmDialog>
+  
+
+    <!-- 拖拽发送的二次确认（左栏落点；与聊天面板共用同一个组件与状态机） -->
+    <DropSendConfirm
+      :open="!!dropPending"
+      :body="dropBody"
+      :items="dropItems"
+      @cancel="drop.cancel"
+      @confirm="drop.confirm"
+    />
   </div>
 </template>
