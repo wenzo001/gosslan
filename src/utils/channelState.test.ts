@@ -917,3 +917,19 @@ test("拖拽发送：drop 先进确认，确认后才走发送链路", () => {
   const confirmFn = /function confirmDrop\(\)([\s\S]{0,400}?)\n\}/.exec(src);
   assert.ok(confirmFn && confirmFn[1].includes("sendPastedFiles("), "confirmDrop 里才是真正的发送");
 });
+
+/**
+ * 拖拽确认必须发给**拖进来那一刻**的会话（负责人 2026-10-29）。
+ * 快照不是可选项：确认框开着时切会话，按 `chat.activeConv` 现取就会发给新会话。
+ */
+test("拖拽发送：确认时用的是快照的 convId，且切会话会作废那一批", () => {
+  const src = readFileSync(new URL("../components/ChatWindow.vue", import.meta.url), "utf8");
+  assert.match(src, /void sendPastedFiles\(batch\.paths, batch\.convId\)/, "确认后必须按快照的会话发");
+  assert.match(
+    src,
+    /async function sendPastedFiles\(paths: string\[\], convIdArg\?: string\)/,
+    "sendPastedFiles 必须能收显式 convId",
+  );
+  assert.match(src, /const convId = convIdArg \?\? chat\.activeConv;/, "缺省才回落到 activeConv");
+  assert.match(src, /pendingDrop\.value = null;/, "切会话/cancel 都要能作废那一批");
+});
