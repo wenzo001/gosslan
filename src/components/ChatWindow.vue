@@ -530,6 +530,7 @@ watch(
     filesOpen.value = false;
     tasksOpen.value = false;
     taskFocusId.value = null;
+    taskHighlight.value = null;
     // 预览是全局那一份（#40），所以按**来源**收：只有"这份相册是上一个会话给的"才关掉。
     // 无条件 close() 会把"从任务详情点开的图"跟着切会话一起弄没。
     if (prev) preview.closeIfFrom(`conv:${prev}`);
@@ -652,6 +653,15 @@ const openTasksForActive = computed(() => {
 /** 从任务卡片点进来时要直达详情的那条任务（null = 只是打开看板）。 */
 const taskFocusId = ref<string | null>(null);
 /**
+ * 卡片**上半区**要定位到的那条任务：打开看板后滚过去闪一下，**不**展开详情（负责人 2026-10-29）。
+ *
+ * 为什么单独一格而不是给 `taskFocusId` 加个 mode：应用内弹窗那条 watch 的判据是
+ * `[open, focusTodoId]` 一起看（防"关掉再点同一条不触发"），改它的依赖会动到既有行为；
+ * 高亮这边用**递增序号**，同一张卡片连点两次也一定会触发，两者互不干扰。
+ */
+const taskHighlight = ref<{ id: string; seq: number } | null>(null);
+let taskHighlightSeq = 0;
+/**
  * 打开群任务：桌面端开**独立窗口**（每群一个），移动端/窗口创建失败回退到应用内弹窗。
  * 与设置/日志同一套单飞 + 防抖（`launchAuxWindow`），窗口实例唯一性由后端 `ensure_aux_window` 保证。
  *
@@ -689,10 +699,17 @@ function openSenderProfile(senderId: string) {
   void router.push({ name: "friend", params: { friendId: senderId } });
 }
 
-function openTasks(todoId?: string) {
+function openTasks(todoId?: string, mode: "detail" | "highlight" = "detail") {
   const gid = activeGroupId.value;
   if (!gid) return;
-  taskFocusId.value = todoId ?? null;
+  if (mode === "highlight") {
+    // 上一次的"直达详情"不能残留：关掉再点上半区不该顺手把旧那条展开。
+    taskFocusId.value = null;
+    if (todoId) taskHighlight.value = { id: todoId, seq: ++taskHighlightSeq };
+  } else {
+    taskFocusId.value = todoId ?? null;
+    taskHighlight.value = null;
+  }
   if (app.isMobile) {
     tasksOpen.value = true;
     return;
@@ -701,11 +718,11 @@ function openTasks(todoId?: string) {
   // 判定"这次不算新打开"时根本不会调用 `open_group_todos_window` ⇒ 第二张卡片带的
   // todoId 就地消失，表现还是"点了没反应"。命令本身是幂等的（覆盖同一个暂存位）。
   if (todoId) {
-    void api.requestGroupTodoFocus(gid, todoId).catch(() => {
-      /* 只丢"自动展开"这一点便利：窗口照开，用户点进去就行，不为它弹窗 */
+    void api.requestGroupTodoFocus(gid, todoId, mode).catch(() => {
+      /* 只丢"自动定位"这一点便利：窗口照开，用户点进去就行，不为它弹窗 */
     });
   }
-  void launchAuxWindow("tasks", () => api.openGroupTodosWindow(gid, todoId)).catch(
+  void launchAuxWindow("tasks", () => api.openGroupTodosWindow(gid, todoId, mode)).catch(
     (e) => {
       app.toastError(e, t("common.operationFail"));
       tasksOpen.value = true; // 独立窗口开不出来 → 回退到应用内弹窗
@@ -2200,7 +2217,9 @@ function retryHistory() {
       :open="tasksOpen"
       :group-id="activeGroupId"
       :focus-todo-id="taskFocusId"
-      @close="tasksOpen = false; taskFocusId = null"
+      :highlight-todo-id="taskHighlight?.id ?? null"
+      :highlight-seq="taskHighlight?.seq ?? 0"
+      @close="tasksOpen = false; taskFocusId = null; taskHighlight = null"
     />
 
     <!-- 转发弹窗 -->

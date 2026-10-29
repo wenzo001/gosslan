@@ -77,6 +77,13 @@ const props = defineProps<{
    * 所以只在应用内弹窗/移动端生效。
    */
   focusTodoId?: string | null;
+  /**
+   * 卡片**上半区**要定位的那一条：滚到它并闪一下，**不**展开详情（负责人 2026-10-29）。
+   * `highlightSeq` 每次点击都递增 ⇒ 同一张卡片连点两次也一定重新闪（详情那条 watch 靠
+   * `open` 翻转去重，这里不依赖任何别的状态）。
+   */
+  highlightTodoId?: string | null;
+  highlightSeq?: number;
 }>();
 
 const app = useAppStore();
@@ -470,13 +477,45 @@ function closeDetail() {
  * 不弹"找不到"也不空指针。归档态要先切到「已归档」那一档，否则详情背后的列表
  * 根本不是它所在的那一屏。
  */
-function focusTodo(id: string) {
+function focusTodo(id: string, mode: "detail" | "highlight" = "detail") {
   const x = todos.value.find((t) => t.todoId === id);
   if (!x) return;
   filter.value = isEffectivelyArchived(x) ? "archived" : "all";
+  if (mode === "highlight") {
+    void flashTodoRow(id);
+    return;
+  }
   openDetail(x);
 }
 defineExpose({ focusTodo });
+
+/** 正在闪的那一行（1200ms 后清掉；同一行连点会重置计时）。 */
+const flashRowId = ref<string | null>(null);
+let flashTimer: ReturnType<typeof setTimeout> | undefined;
+const boardRoot = ref<HTMLElement | null>(null);
+
+/**
+ * 滚到这一行并闪一下 —— 卡片上半区点进来的落点。
+ *
+ * 行本身按 `data-todo-row` 找，不拼选择器（todoId 虽然被后端夹成字母数字-下划线，
+ * 但拼串进 querySelector 是没必要的那种"以后再出一次事故"）。找不到就什么都不做：
+ * 任务可能在别台设备被删了，静默比弹错好。
+ */
+async function flashTodoRow(id: string) {
+  await nextTick(); // 先让 filter 切换后的行挂上
+  const rows = boardRoot.value?.querySelectorAll<HTMLElement>("[data-todo-row]");
+  const row = rows ? Array.from(rows).find((r) => r.dataset.todoRow === id) : undefined;
+  if (!row) return;
+  row.scrollIntoView({ block: "center", behavior: reducedMotion.value ? "auto" : "smooth" });
+  if (flashTimer) clearTimeout(flashTimer);
+  flashRowId.value = null;
+  await nextTick(); // 先摘掉再加回，连点同一条才会重新播动画
+  flashRowId.value = id;
+  flashTimer = setTimeout(() => {
+    flashRowId.value = null;
+    flashTimer = undefined;
+  }, 1_600);
+}
 
 /**
  * 应用内弹窗那条路：带着 `focusTodoId` 打开 ⇒ 直接落到那条任务（用户 #23）。
@@ -489,6 +528,21 @@ watch(
   ([open, id]) => {
     if (!open || !id) return;
     focusTodo(id);
+  },
+  { immediate: true },
+);
+
+/**
+ * 卡片**上半区**那条路：序号变就重新定位（同一张卡片连点两次也一定重新闪）。
+ * `open === false` 时先不动 —— 点卡片会先把它打开，`open` 变 true 那一次再补上。
+ */
+watch(
+  [() => props.open, () => props.highlightSeq],
+  ([open, seq]) => {
+    if (open === false || !seq) return;
+    const id = props.highlightTodoId;
+    if (!id) return;
+    focusTodo(id, "highlight");
   },
   { immediate: true },
 );
@@ -1090,7 +1144,7 @@ watch(
 </script>
 
 <template>
-  <div class="flex flex-col" :class="standalone || fill ? 'h-full min-h-0' : ''">
+  <div ref="boardRoot" class="flex flex-col" :class="standalone || fill ? 'h-full min-h-0' : ''">
     <!-- 头部：统计 + 新建 -->
     <div class="flex items-center justify-between gap-2 pb-2">
       <div class="min-w-0 flex-1 truncate text-xs text-[var(--gosslan-text-2)]" :title="t('todo.title')">
@@ -1164,6 +1218,8 @@ watch(
         <div
           v-for="x in archivedTodos"
           :key="x.todoId"
+          :data-todo-row="x.todoId"
+          :class="{ 'todo-row-flash': flashRowId === x.todoId }"
           class="relative flex items-center gap-2.5 border-b border-[var(--gosslan-divider)] px-3 py-2.5 transition last:border-b-0 hover:bg-[var(--gosslan-hover)]"
         >
           <!-- 状态色条（用户 2026-09-24 #37）：与活动列表同一套语言，色值走 `TODO_STATUS_BAR` 唯一映射 -->
@@ -1271,6 +1327,8 @@ watch(
             :layout="!reducedMotion"
             :layout-id="`todo:${x.todoId}`"
             :transition="reducedMotion ? { duration: 0 } : { type: 'spring', stiffness: 500, damping: 40 }"
+            :data-todo-row="x.todoId"
+            :class="{ 'todo-row-flash': flashRowId === x.todoId }"
             class="relative flex items-center gap-2.5 border-b border-[var(--gosslan-divider)] px-3 py-2.5 transition last:border-b-0 hover:bg-[var(--gosslan-hover)]"
           >
             <!-- 状态色条：整行左缘一道 2px（判据与颜色都在 `TODO_STATUS_BAR` 一处，

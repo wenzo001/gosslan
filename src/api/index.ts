@@ -2,7 +2,7 @@
 
 import { Channel, invoke as rawInvoke, type InvokeArgs } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
-import type { AppSettings, CacheInfo, CleanupReport, ContentAudience, ContentCancelResult, ContentTransfer, Conversation, DeviceInfo, DiscoveryDiag, ExportSummary, ExternalLink, ExternalLinkImportResult, FavoriteEntry, FileDoneInfo, FileFailedInfo, FileProgress, FileStalledInfo, Friend, FriendKeyRotation, Group, GroupDeliverySummary, GroupHistoryProgress, GroupReadInfo, GroupResendResult, InterfaceInfo, LinkState, LogEntry, MessageCancelResult, MessageRecord, Peer, PeerReadInfo, PendingMessageOp, PendingRequest, PreviousRunReport, RelayConfig, RelayProbe, RoutedEndpoint, RuntimeDiag, RuntimeSnapshot, TransferInfo } from "@/types";
+import type { AppSettings, CacheInfo, CleanupReport, ContentAudience, ContentCancelResult, ContentTransfer, Conversation, DeviceInfo, DiscoveryDiag, ExportSummary, ExternalLink, ExternalLinkImportResult, FavoriteEntry, FileDoneInfo, FileFailedInfo, FileProgress, FileStalledInfo, Friend, FriendKeyRotation, Group, GroupDeliverySummary, GroupHistoryProgress, GroupReadInfo, GroupResendResult, InterfaceInfo, LinkState, LogEntry, MessageCancelResult, MessageRecord, Peer, PeerReadInfo, PendingMessageOp, PendingRequest, PreviousRunReport, RelayConfig, RelayProbe, RoutedEndpoint, RuntimeDiag, RuntimeSnapshot, TransferInfo, TodoFocus, TodoFocusMode } from "@/types";
 import type { TodoImage } from "@/utils/todos";
 import {
   chatSearchGroupSchema,
@@ -681,17 +681,22 @@ export const api = {
 
     /**
    * 让那扇**全局唯一**的群任务窗口去显示这个群（桌面端；固定 label `tasks`，切群 = 换内容）。
-   * `focusTodoId` = 打开后要直接展开的那条任务（#39）；不传 = 清掉上次的待展开。
+   * `focusTodoId` = 打开后要落到的那条任务（#39）；不传 = 清掉上次的待展开。
+   * `focusMode`：`detail` 展开详情（「查看任务」那条老路）、`highlight` 只滚过去闪一下。
    */
-  openGroupTodosWindow: (groupId: string, focusTodoId?: string) =>
-    invoke<void>("open_group_todos_window", { groupId, focusTodoId: focusTodoId ?? null }),
+  openGroupTodosWindow: (groupId: string, focusTodoId?: string, focusMode?: TodoFocusMode) =>
+    invoke<void>("open_group_todos_window", {
+      groupId,
+      focusTodoId: focusTodoId ?? null,
+      focusMode: focusMode ?? null,
+    }),
 
   /**
-   * 取走本窗口"该展开哪条任务"（一次性，取完即清）。
+   * 取走本窗口"该落到哪条任务、怎么落"（一次性，取完即清）。
    * 新建的窗口拿不到那条定向事件（发的时候监听者还不存在），只能靠自己挂载时取一次。
    */
   takeGroupTodoFocus: (groupId: string) =>
-    invoke<string | null>("take_group_todo_focus", { groupId }),
+    invoke<TodoFocus | null>("take_group_todo_focus", { groupId }),
 
   /**
    * 群任务窗口已经存在时（不管是开着还是预热后藏着），后端定向推来的"换到这个群"提醒。
@@ -708,8 +713,8 @@ export const api = {
    * 必须独立于 `launchAuxWindow`：那条启动器有单飞 + 防抖，被它合并掉的那一次
    * 根本不会调 `open_group_todos_window` ⇒ 目标就地消失。
    */
-  requestGroupTodoFocus: (groupId: string, todoId: string) =>
-    invoke<void>("request_group_todo_focus", { groupId, todoId }),
+  requestGroupTodoFocus: (groupId: string, todoId: string, mode?: TodoFocusMode) =>
+    invoke<void>("request_group_todo_focus", { groupId, todoId, mode: mode ?? null }),
 
   // ---------------- 全局图片预览（用户 2026-09-24 #40） ----------------
   /**

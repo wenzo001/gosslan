@@ -33,6 +33,7 @@ import GroupTasksBoard from "@/components/GroupTasksBoard.vue";
 import { errorText } from "@/composables/useErrorText";
 import { currentLocale, t } from "@/i18n";
 import { createInitScope } from "@/utils/initScope";
+import type { TodoFocus } from "@/types";
 
 const chat = useChatStore();
 
@@ -69,13 +70,13 @@ const boardRef = ref<InstanceType<typeof GroupTasksBoard> | null>(null);
  * （任务被删 / 折叠结果里没有它 ⇒ 不弹"找不到"也不空指针）。少这一步的表现就是
  * "点了卡片，窗口开了却没展开那条"（#39 的原始诉求）。
  */
-const pendingFocusId = ref<string | null>(null);
+const pendingFocus = ref<TodoFocus | null>(null);
 /** 首屏（或换群）读失败时的可见出口；重试成功即清空。 */
 const loadError = ref("");
 
-async function deliverFocus(id: string) {
+async function deliverFocus(focus: TodoFocus) {
   await nextTick(); // 看板可能刚刚因换群整块重挂，等它挂上再投
-  boardRef.value?.focusTodo(id);
+  boardRef.value?.focusTodo(focus.todoId, focus.mode);
 }
 
 /**
@@ -103,23 +104,23 @@ async function applyTarget(next: string | null) {
     // 读失败必须留下可见出口：替换成错误态 + 重试，而不是让看板停在“暂无任务”。
     loadError.value = errorText(e, t("todo.loadFail"));
   }
-  const id = await api.takeGroupTodoFocus(next).catch(() => null);
-  if (!id) return;
+  const focus = await api.takeGroupTodoFocus(next).catch(() => null);
+  if (!focus) return;
   if (chat.todosLoadedOnce(next)) {
-    void deliverFocus(id);
+    void deliverFocus(focus);
     return;
   }
-  pendingFocusId.value = id; // 连点多次以最后一次为准
+  pendingFocus.value = focus; // 连点多次以最后一次为准
 }
 
 // 首屏落地时补投等着的那条
 watch(
   () => (groupId.value ? chat.todosLoadedOnce(groupId.value) : true),
   (ready) => {
-    const id = pendingFocusId.value;
-    if (!ready || !id) return;
-    pendingFocusId.value = null;
-    void deliverFocus(id);
+    const focus = pendingFocus.value;
+    if (!ready || !focus) return;
+    pendingFocus.value = null;
+    void deliverFocus(focus);
   },
 );
 
