@@ -529,12 +529,11 @@ window.__probe = (() => {
     }
     if (extra.liveModel) state.liveModel = true;
     delete extra.liveModel;
-    // 任务看板的"滚过去闪一下"（--only=tasksrt）：要能在挂载后改这两个 prop，
-    // 所以它们也必须读 reactive 状态（与 open 同理，写死在 extra 里就改不动）。
-    if (extra.highlight) {
-      state.highlightTodoId = null;
-      state.highlightSeq = 0;
-      delete extra.highlight;
+    // 任务看板的"落到哪条、怎么落"（--only=tasksrt）：要能在挂载后改，
+    // 所以这个 prop 也必须读 reactive 状态（与 open 同理，写死在 extra 里就改不动）。
+    if (extra.focusProp) {
+      state.focus = null;
+      delete extra.focusProp;
     }
     // 通用夹具会给每个组件塞 open/initialKeyword/groupId。根节点恰好是 SelectRoot 时，
     // open=false 会经 fallthrough 变成"受控且永不打开"——测出来像库坏了，其实是夹具串味。
@@ -599,10 +598,7 @@ window.__probe = (() => {
       if (state.liveModel) props.modelValue = state.selectValue;
       // 只在调用方显式开了 highlight 时才透传：否则这两个 prop 会以属性形式落到
       // 所有组件的根节点上（其它段的 DOM 判据不该看到无关属性）。
-      if (state.highlightSeq !== undefined) {
-        props.highlightTodoId = state.highlightTodoId;
-        props.highlightSeq = state.highlightSeq;
-      }
+      if (state.focus !== undefined) props.focus = state.focus;
       return props;
     };
     const app = Vue.createApp({
@@ -11722,13 +11718,45 @@ async function runUpdater(cdp, url) {
       confirmTop: confirm ? Math.round(confirm.getBoundingClientRect().top) : null,
     };
   })()`);
-  check("二次确认替换了「安装」按钮（不再同时出现两个安装入口）",
-    confirmGeom.installCount === 0 && confirmGeom.confirm === true,
-    "install=0 / confirm=1", JSON.stringify(confirmGeom));
-  check("二次确认出现在原「安装」按钮的位置（不在卡片底部另起一块）",
-    installRect && confirmGeom.boxTop !== null && confirmGeom.boxTop <= installRect.top + 2,
-    "确认块 top ≤ 原安装按钮 top + 2",
-    JSON.stringify({ installRect, confirmGeom }));
+  // 2026-10-29 产品决定：确认改成**弹窗**（原先是内联块，两格判据随这次决定改写）。
+  const dlg = await cdp.eval(`(() => {
+    const d = document.querySelector('[role="dialog"]');
+    if (!d) return { open: false };
+    const txt = d.innerText || '';
+    return { open: true, txt, hasConfirm: /确认安装/.test(txt), hasCancel: /取消/.test(txt) };
+  })()`);
+  check("应用更新：点安装弹出确认框（有确认/取消两键，不点确认不安装）",
+    dlg.open === true && dlg.hasConfirm === true && dlg.hasCancel === true,
+    "dialog + 确认安装 + 取消", JSON.stringify(dlg));
+  await cdp.eval(`(() => {
+    const d = document.querySelector('[role="dialog"]');
+    const b = d ? [...d.querySelectorAll('button')].find((x) => (x.innerText || '').trim() === '取消') : null;
+    if (b) b.click();
+    return !!b;
+  })()`);
+  await sleep(200);
+  const dlgAfter = await cdp.eval("!!document.querySelector('[role=\"dialog\"]')");
+  check("应用更新：取消确认后框关闭（什么都没装）", dlgAfter === false, "dialog 已关闭", JSON.stringify({ dlgAfter }));
+
+  // 下载一半失败：要说清楚已下多少、重试从头
+  await mount({ ...base, phase: "error", error: "network", downloaded: 40, total: 100 });
+  const tHalf = await text();
+  check("应用更新：下载中途失败时说明已下载量与重试代价",
+    tHalf.includes("上次已下载") && tHalf.includes("重试会从头开始"),
+    "含「上次已下载 … 重试会从头开始」", JSON.stringify({ tail: String(tHalf).slice(-160) }));
+
+  // 说明是 Markdown：标题/粗体渲染出来，脚本必须被消毒掉
+  await mount({ ...base, info: { ...base.info, notes: "### 修了什么\n\n- **重要**：修复 A\n- 修复 B\n<script>window.__xss = 1</script>" } });
+  const md = await cdp.eval(`(() => ({
+    h3: (document.querySelector('h3') || {}).textContent || '',
+    strong: (document.querySelector('strong') || {}).textContent || '',
+    li: document.querySelectorAll('li').length,
+    script: document.querySelectorAll('#probe-host script').length,
+    xss: !!window.__xss,
+  }))()`);
+  check("应用更新：更新说明按 Markdown 渲染（标题/粗体/列表），且脚本被消毒",
+    md.h3.includes("修了什么") && md.strong.includes("重要") && md.li >= 2 && md.script === 0 && md.xss === false,
+    "h3/strong/li 都在，script=0", JSON.stringify(md));
 
   await mount({ ...base, info: null, phase: "idle" }, false);
   const t4 = await text();
@@ -17051,13 +17079,13 @@ async function runTasksRealtime(cdp, url) {
   await cdp.eval(`(async () => {
     const now = Date.now();
     window.__probe.todoRows(Array.from({ length: 6 }, (_, i) => window.__mk('H' + i, 10 + i, 'todo', {
-      title: 'u5b9au4f4du884c' + i, number: 10 + i,
+      title: 'row-h' + i, number: 10 + i,
     }, now - i * 1000)));
     return window.__probe.todoRows.length;
   })()`);
-  await cdp.eval(`window.__probe.install('/src/components/GroupTasksBoard.vue', '', ${JSON.stringify(JSON.stringify({ groupId: "g1", open: true, hostHeight: 220, highlight: true }))})`);
+  await cdp.eval(`window.__probe.install('/src/components/GroupTasksBoard.vue', '', ${JSON.stringify(JSON.stringify({ groupId: "g1", open: true, hostHeight: 220, focusProp: true }))})`);
   await waitFor(async () => (await view()).rowTitles.length >= 6, 4_000);
-  await cdp.eval("(async () => { window.__st.highlightTodoId = 'H5'; window.__st.highlightSeq = 1; return true; })()");
+  await cdp.eval("(async () => { window.__st.focus = { id: 'H5', seq: 1, mode: 'highlight' }; return true; })()");
   const hl = await waitFor(async () => {
     const r = await cdp.eval(`(() => {
       const row = document.querySelector('[data-todo-row="H5"]');
@@ -17076,7 +17104,7 @@ async function runTasksRealtime(cdp, url) {
     JSON.stringify(hl), JSON.stringify(hl));
   // 反向：同一张卡片再来一次（序号 +1）必须重新闪 —— 详情那条 watch 靠 open 翻转去重，
   // 高亮这条不许跟着它一起"第二次就不灵"。
-  await cdp.eval("(async () => { window.__st.highlightSeq = 2; return true; })()");
+  await cdp.eval("(async () => { window.__st.focus = { id: 'H5', seq: 2, mode: 'highlight' }; return true; })()");
   const again = await waitFor(async () => {
     const r = await cdp.eval(`(() => {
       const row = document.querySelector('[data-todo-row="H5"]');
@@ -17085,6 +17113,18 @@ async function runTasksRealtime(cdp, url) {
     return r ? { flashingAgain: true } : null;
   }, 2_000);
   check("卡片上半区：同一条连点第二次仍然重新闪", !!again && again.flashingAgain, JSON.stringify(again), JSON.stringify(again));
+  // 反向那条也要在：两条路合并成同一个入参之后，`detail` 必须仍然**展开详情**
+  // （合成一个 watch 最容易的退化就是"顺手把 detail 也变成只闪一下"）。
+  await cdp.eval("(async () => { window.__st.focus = { id: 'H3', seq: 3, mode: 'detail' }; return true; })()");
+  const det = await waitFor(async () => {
+    const r = await cdp.eval(`(() => {
+      const d = document.querySelector('[role="dialog"]');
+      return d ? { open: true, hasTitle: (d.textContent || '').includes('row-h3') } : null;
+    })()`);
+    return r;
+  }, 3_000);
+  check("详情路径：focus(mode=detail) 仍然直接展开那条任务（合并 watch 后没退化成只闪）",
+    !!det && det.open && det.hasTitle, JSON.stringify(det), JSON.stringify(det));
 }
 
 /**

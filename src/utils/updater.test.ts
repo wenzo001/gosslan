@@ -28,7 +28,7 @@ function deferred<T>() {
 }
 
 function fake(overrides: Partial<UpdaterAdapter> = {}) {
-  const calls = { check: 0, download: 0, cancel: 0, install: 0, close: 0 };
+  const calls = { check: 0, download: 0, cancel: 0, install: 0, close: 0, recheck: 0 };
   const adapter: UpdaterAdapter = {
     check: async () => {
       calls.check += 1;
@@ -42,6 +42,16 @@ function fake(overrides: Partial<UpdaterAdapter> = {}) {
       calls.cancel += 1;
       if (overrides.cancel) await overrides.cancel();
     },
+    // 只有调用方给了实现时才挂：`install()` 里是 `if (adapter.recheckReady)` 判断的，
+    // 而"没有这个能力的老适配器"正是要覆盖的一格。
+    ...(overrides.recheckReady
+      ? {
+          recheckReady: async () => {
+            calls.recheck += 1;
+            return overrides.recheckReady!();
+          },
+        }
+      : {}),
     install: async () => {
       calls.install += 1;
       if (overrides.install) await overrides.install();
@@ -295,9 +305,85 @@ test("恢复：本窗口已经在跑（非 idle）时**不许**被粗快照覆�
 });
 
 test("恢复：终态/未知相位不把本窗口拖出 idle", () => {
-  for (const phase of ["idle", "checking", "failed", "cancelled", "unsupported"]) {
+  // `failed` 只在**有已下载字节**时才恢复（见下面那格）；这里用 downloaded=0 的检查失败。
+  for (const phase of ["idle", "checking", "cancelled", "unsupported"]) {
     const svc = service(fake().adapter);
     svc.restore({ phase, downloaded: 10, total: 20, version: "5.5.0" });
     assert.equal(svc.state.phase, "idle", `${phase} 不该被恢复成一个可交互的中间态`);
   }
+  const svc = service(fake().adapter);
+  svc.restore({ phase: "failed", downloaded: 0, total: null, version: null, error: "network" });
+  assert.equal(svc.state.phase, "idle", "检查失败（没有已下载字节）不恢复，离线是常态");
+});
+
+/**
+ * 下载**中途**失败要能恢复（负责人 2026-10-29：「下载到一半也要处理」）：
+ * 用户关掉设置窗再打开，得看见"上次下到哪、重试要重来"，而不是一片空白。
+ */
+test("恢复：下载中途失败（有已下载字节）⇒ error 态并带上进度与原因", () => {
+  const svc = service(fake().adapter);
+  svc.restore({ phase: "failed", downloaded: 40, total: 100, version: "5.5.0", error: "连接被重置" });
+  assert.equal(svc.state.phase, "error");
+  assert.equal(svc.state.downloaded, 40);
+  assert.equal(svc.state.total, 100);
+  assert.equal(svc.state.error, "network", "后端原始错误要折成可展示的错误码");
+  assert.equal(svc.state.info?.version, "5.5.0");
+});
+
+/**
+ * 装之前复查（负责人 2026-10-29）：下载可能花几十分钟，期间可能又发了新版。
+ * 三格必须同时成立：清单更高 ⇒ 不装、回 available、带 notice；清单不高 ⇒ 照装；
+ * 复查本身失败 ⇒ 也照装（网络抖一下不能让人永远装不上）。
+ */
+test("安装前复查：清单出现更高版本 ⇒ 不装，回 available 并提示那份已作废", async () => {
+  const newer: UpdateInfo = { ...INFO, version: "5.6.0" };
+  const f = fake({
+    check: async () => INFO,
+    download: async () => {},
+    recheckReady: async () => newer,
+  });
+  const svc = service(f.adapter);
+  await svc.check(true);
+  await svc.download();
+  assert.equal(svc.state.phase, "ready");
+  await svc.install();
+  assert.equal(f.calls.install, 0, "发现更高版本时**不许**安装手里那份");
+  assert.equal(svc.state.phase, "available");
+  assert.equal(svc.state.info?.version, "5.6.0");
+  assert.equal(svc.state.notice, "superseded");
+  assert.equal(svc.state.downloaded, 0, "旧字节已丢弃 ⇒ 进度归零");
+});
+
+test("安装前复查：清单没有更高版本 ⇒ 正常安装，notice 清空", async () => {
+  const f = fake({ check: async () => INFO, recheckReady: async () => null });
+  const svc = service(f.adapter);
+  await svc.check(true);
+  await svc.download();
+  await svc.install();
+  assert.equal(f.calls.install, 1, "复查没发现更高版本时必须继续安装");
+  assert.equal(svc.state.notice, null);
+});
+
+test("安装前复查：复查本身失败 ⇒ 不拦安装（网络抖动不能让人永远装不上）", async () => {
+  const f = fake({
+    check: async () => INFO,
+    recheckReady: async () => {
+      throw new Error("network down");
+    },
+  });
+  const svc = service(f.adapter);
+  await svc.check(true);
+  await svc.download();
+  await svc.install();
+  assert.equal(f.calls.install, 1);
+});
+
+test("没有复查能力的适配器（老壳）照旧能装", async () => {
+  const f = fake({ check: async () => INFO });
+  const svc = service(f.adapter);
+  await svc.check(true);
+  await svc.download();
+  await svc.install();
+  assert.equal(f.calls.install, 1);
+  assert.equal(f.calls.recheck, 0);
 });

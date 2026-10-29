@@ -411,10 +411,28 @@ export interface MessageCancelResult {
  * 这四个计数就是气泡上「X 人已收到 / Y 人未收到」与「补发」按钮的唯一依据 ——
  * 不允许前端自己从别处推算（那会是第二套真源）。
  */
+/** 拖进来的一个路径（与 Rust `commands::files::DropPathInfo` 逐字对应）。 */
+export interface DropPathInfo {
+  path: string;
+  name: string;
+  /** 目录的大小没有意义 ⇒ 后端给 0，界面按 isDir 显示「文件夹」。 */
+  size: number;
+  isDir: boolean;
+}
+
 /** 任务卡点开看板后"落到哪条、怎么落"（与 Rust `state::TodoFocus` 逐字对应）。 */
 export type TodoFocusMode = "detail" | "highlight";
 export interface TodoFocus {
   todoId: string;
+  mode: TodoFocusMode;
+}
+/**
+ * 前端传给看板的那一次定位请求：`seq` 每次点击都递增 ⇒ 同一张卡片连点两次也一定重新触发
+ * （只带 id 的话，第二次点击和第一次的 id 一样，watch 不响，用户以为按钮坏了）。
+ */
+export interface TodoFocusRequest {
+  id: string;
+  seq: number;
   mode: TodoFocusMode;
 }
 

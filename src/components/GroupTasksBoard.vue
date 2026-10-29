@@ -42,6 +42,7 @@ import TodoImageThumb from "@/components/TodoImageThumb.vue";
 import TodoPickField from "@/components/TodoPickField.vue";
 import TodoIconPicker from "@/components/TodoIconPicker.vue";
 import CharCounter from "@/components/ui/CharCounter.vue";
+import type { TodoFocusRequest } from "@/types";
 import {
   TODO_CATEGORIES, TODO_CATEGORY_LABEL_KEY, TODO_CATEGORY_ICON_CLASS, TODO_CATEGORY_PILL, TODO_CUSTOM_CATEGORY_MAX_LEN, TODO_PRIORITIES, TODO_PRIORITY_LABEL_KEY, TODO_PRIORITY_ICON_CLASS, TODO_PRIORITY_PILL, TODO_STATUSES, TODO_STATUS_BAR, TODO_STATUS_CLASS, TODO_STATUS_DEFAULT, TODO_STATUS_LABEL_KEY, TODO_STATUS_PILL, assigneesInGroup, buildTodoHistory, canArchiveOrReopenTodo, canEditAssignees, canUpdateTodo, foldTodos, isEffectivelyArchived, isTodoTerminalStatus, parseTodo, todoCategoryName, todoCode, type TodoHistoryEntry, type TodoImage, type TodoItem, type TodoCategory, type TodoPriority, type TodoStatus, TODO_CUSTOM_ICON_DEFAULT, type TodoCustomIcon, } from "@/utils/todos";
 import {
@@ -76,14 +77,12 @@ const props = defineProps<{
    * 独立窗口形态没有这个入参（跨文档传参要新造通道，见 `ChatWindow.openTasks` 的注释），
    * 所以只在应用内弹窗/移动端生效。
    */
-  focusTodoId?: string | null;
   /**
-   * 卡片**上半区**要定位的那一条：滚到它并闪一下，**不**展开详情（负责人 2026-10-29）。
-   * `highlightSeq` 每次点击都递增 ⇒ 同一张卡片连点两次也一定重新闪（详情那条 watch 靠
-   * `open` 翻转去重，这里不依赖任何别的状态）。
+   * 打开看板时要落到哪一条、怎么落（用户 #23 / 负责人 2026-10-29）：
+   * `detail` 展开详情（底部「查看任务」）、`highlight` 只滚过去闪一下（卡片上半区）。
+   * 独立窗口形态不走这个 prop（它通过 `focusTodo()` 这个暴露方法投递）。
    */
-  highlightTodoId?: string | null;
-  highlightSeq?: number;
+  focus?: TodoFocusRequest | null;
 }>();
 
 const app = useAppStore();
@@ -518,31 +517,21 @@ async function flashTodoRow(id: string) {
 }
 
 /**
- * 应用内弹窗那条路：带着 `focusTodoId` 打开 ⇒ 直接落到那条任务（用户 #23）。
+ * 应用内弹窗那条路：`focus` 一变就落到那条任务（用户 #23 / 2026-10-29 的上半区）。
  *
- * 判据是 `[open, focusTodoId]` **一起看**：只看后者会漏掉"点同一条卡片第二次"
- * （面板关掉再开，`focusTodoId` 没变，watch 不触发 ⇒ 用户以为按钮坏了）。
+ * 判据是 `[open, seq]` **一起看**：
+ * - `seq` 而不是只看 id ⇒ 同一张卡片连点两次也一定重新触发（id 不变时 watch 不响，
+ *   用户以为按钮坏了 —— 这是 2026-09-24 那条老洞，当时靠 `open` 翻转兜的底）；
+ * - `open` 也必须在依赖里 ⇒ 面板关着的时候把它打开，是"开的那一帧"再触发一次，
+ *   否则点卡片后要再点一次才生效。
  */
 watch(
-  [() => props.open, () => props.focusTodoId],
-  ([open, id]) => {
-    if (!open || !id) return;
-    focusTodo(id);
-  },
-  { immediate: true },
-);
-
-/**
- * 卡片**上半区**那条路：序号变就重新定位（同一张卡片连点两次也一定重新闪）。
- * `open === false` 时先不动 —— 点卡片会先把它打开，`open` 变 true 那一次再补上。
- */
-watch(
-  [() => props.open, () => props.highlightSeq],
+  [() => props.open, () => props.focus?.seq],
   ([open, seq]) => {
     if (open === false || !seq) return;
-    const id = props.highlightTodoId;
-    if (!id) return;
-    focusTodo(id, "highlight");
+    const f = props.focus;
+    if (!f) return;
+    focusTodo(f.id, f.mode);
   },
   { immediate: true },
 );

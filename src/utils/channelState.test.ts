@@ -728,10 +728,13 @@ test("群任务三处外显同源：卡片实时状态 / 两处计数口径 / �
   }
 
   const board = read("components/GroupTasksBoard.vue");
+  // 2026-10-29 起 detail / highlight 两条路合成一个入参 `focus = { id, seq, mode }`：
+  // 依赖是 `[open, focus.seq]` —— `seq` 每次点击都变（第二次点同一条才生效），
+  // `open` 也在里面（面板关着时点卡片，靠"开的那一帧"触发）。
   assert.match(
     board,
-    /watch\(\s*\[\(\) => props\.open, \(\) => props\.focusTodoId\]/,
-    "直达详情的 watch 必须把 open 一起看，否则第二次点同一条卡片不生效",
+    /watch\(\s*\[\(\) => props\.open, \(\) => props\.focus\?\.seq\]/,
+    "落点 watch 必须同时看 open 与每次点击都变的 seq，否则第二次点同一条卡片不生效",
   );
 });
 
@@ -886,4 +889,31 @@ test("蓝牙熔断：自动路径读 hold，手动入口显式放行", () => {
     add.includes("ensureBluetoothOn({ manual: true })"),
     "添加好友页的手动入口必须显式 manual",
   );
+});
+
+/**
+ * 拖拽发送必须先**弹窗确认**（负责人 2026-10-29）。这条钉两个接线点，缺一个都等于没做：
+ * 1. `drop` 分支不能直接调 `sendPastedFiles`（那是"松手即发"的旧行为）；
+ * 2. 确认框必须挂在 `pendingDrop` 上、确认后走同一条 `sendPastedFiles` 链路。
+ */
+test("拖拽发送：drop 先进确认，确认后才走发送链路", () => {
+  const src = readFileSync(new URL("../components/ChatWindow.vue", import.meta.url), "utf8");
+  const dropArm = /if \(p\.type === "drop"\)([\s\S]{0,400}?)\n      \}/.exec(src);
+  assert.ok(dropArm, "找不到 drop 分支（判据会空转）");
+  assert.ok(
+    dropArm![1].includes("stageDroppedFiles("),
+    "drop 必须先进 stageDroppedFiles（那里才弹确认）",
+  );
+  assert.ok(
+    !dropArm![1].includes("sendPastedFiles("),
+    "drop 分支不许直接发 —— 那就绕过了确认框",
+  );
+  // 确认框挂在 pendingDrop 上，确认后调 confirmDrop（里面才是 sendPastedFiles）
+  assert.match(
+    src,
+    /:open="!!pendingDrop"[\s\S]{0,600}?@confirm="confirmDrop"/,
+    "确认框必须由 pendingDrop 驱动、确认后调 confirmDrop",
+  );
+  const confirmFn = /function confirmDrop\(\)([\s\S]{0,400}?)\n\}/.exec(src);
+  assert.ok(confirmFn && confirmFn[1].includes("sendPastedFiles("), "confirmDrop 里才是真正的发送");
 });

@@ -1,7 +1,7 @@
 {
   "name": "gosslan",
   "private": true,
-  "version": "5.15.3",
+  "version": "5.15.4",
   "type": "module",
   "description": "Gosslan — 无服务器 P2P 局域网即时通讯（Tauri v2 + Vue 3 + TypeScript）",
   "scripts": {
@@ -111,8 +111,10 @@
     "@tauri-apps/plugin-opener": "^2.2.5",
     "@vueuse/core": "^14.4.0",
     "dayjs": "^1.11.13",
+    "dompurify": "^3.4.17",
     "highlight.js": "^11.10.0",
     "lucide-vue-next": "^0.469.0",
+    "marked": "^18.1.2",
     "mitt": "3.0.1",
     "motion-v": "2.8.0",
     "pinia": "^3.0.4",

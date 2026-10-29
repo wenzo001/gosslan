@@ -15,15 +15,16 @@ import BaseModal from "@/components/BaseModal.vue";
 import GroupTasksBoard from "@/components/GroupTasksBoard.vue";
 import { foldTodos, isEffectivelyArchived } from "@/utils/todos";
 import { t } from "@/i18n";
+import type { TodoFocusRequest } from "@/types";
 
 const props = defineProps<{
   open: boolean;
   groupId: string | null;
-  /** 从时间线的任务卡片点进来时要直达详情的那条任务（null = 只打开看板）。 */
-  focusTodoId?: string | null;
-  /** 卡片**上半区**要定位的那条：滚过去闪一下，不展开详情。`highlightSeq` 每次点击都变 ⇒ 同一条连点也触发。 */
-  highlightTodoId?: string | null;
-  highlightSeq?: number;
+  /**
+   * 从时间线的任务卡片点进来时要落到哪条、怎么落（null = 只打开看板）：
+   * `detail` 展开详情、`highlight` 滚过去闪一下。两条路同一个入参、同一份触发条件。
+   */
+  focus?: TodoFocusRequest | null;
 }>();
 const emit = defineEmits<{ (e: "close"): void }>();
 
@@ -66,9 +67,7 @@ const count = computed(
       :group-id="groupId"
       :open="open"
       :fill="fullscreen"
-      :focus-todo-id="focusTodoId"
-      :highlight-todo-id="highlightTodoId ?? null"
-      :highlight-seq="highlightSeq ?? 0"
+      :focus="focus ?? null"
     />
   </BaseModal>
 </template>

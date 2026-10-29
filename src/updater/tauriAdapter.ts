@@ -6,6 +6,7 @@ export const tauriUpdaterAdapter: UpdaterAdapter = {
   check: () => api.updaterCheck(),
   download: (onEvent) => api.updaterDownload(onEvent),
   cancel: () => api.updaterCancel(),
+  recheckReady: () => api.updaterRecheckReady(),
   install: () => api.updaterInstall(),
   close: () => api.updaterClose(),
 };
