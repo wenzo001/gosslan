@@ -28,7 +28,8 @@ import {
 } from "reka-ui";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
-import { isAndroid } from "@/utils/platform";
+import { isAndroid, isMac } from "@/utils/platform";
+import { dropPointToCss } from "@/utils/dropPoint";
 import { useAppStore } from "@/stores/useAppStore";
 import { useChatStore } from "@/stores/useChatStore";
 import { motion, useReducedMotion } from "@/utils/motion";
@@ -773,14 +774,16 @@ const imageHintText = computed(() => {
     : t("todo.imageHint", { mb, n: MAX_TODO_IMAGES });
 });
 
-/** 拖拽位置是否落在图片区上（Tauri 给的是物理像素，除以 DPR 才能跟 DOM 坐标比）。 */
+/**
+ * 拖拽位置是否落在图片区上。
+ * 量纲换算只在 `utils/dropPoint` 一处（macOS 的点不除 DPR，Windows 的物理像素要除）——
+ * 这里原先也写着"Tauri 给的是物理像素"，在 Mac 上等于把命中区缩小一半。
+ */
 function hitDropZone(pos: { x: number; y: number }): boolean {
   const el = dropZoneRef.value;
   if (!el) return false;
   const r = el.getBoundingClientRect();
-  const dpr = window.devicePixelRatio || 1;
-  const x = pos.x / dpr;
-  const y = pos.y / dpr;
+  const { x, y } = dropPointToCss(pos, { mac: isMac, dpr: window.devicePixelRatio || 1 });
   return x >= r.left && x <= r.right && y >= r.top && y <= r.bottom;
 }
 

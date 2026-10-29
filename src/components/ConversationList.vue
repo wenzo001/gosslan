@@ -29,6 +29,8 @@ import { MAX_SEARCH_KEYWORD_CHARS } from "@/utils/validation";
 import { createInitScope } from "@/utils/initScope";
 import { Plus, ListChecks, Search, UserPlus, UsersRound } from "lucide-vue-next";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
+import { isMac } from "@/utils/platform";
+import { dropPointToCss } from "@/utils/dropPoint";
 import { useDropSend, type DropTarget } from "@/composables/useDropSend";
 import DropSendConfirm from "@/components/chat/DropSendConfirm.vue";
 import type { Conversation, Friend } from "@/types";
@@ -76,13 +78,14 @@ function canDropOnConv(convId: string): boolean {
   return convId.startsWith("group:") || friendById.value.has(convId);
 }
 
-/** 物理像素位置 → 命中的会话行（不认识就返回 null）。 */
+/**
+ * 事件里的位置 → 命中的会话行（不认识就返回 null）。
+ * 量纲换算只在 `utils/dropPoint` 一处（macOS 的点不除 DPR，Windows 的物理像素要除）。
+ */
 function convRowAt(pos: { x: number; y: number }): string | null {
   const el = listRoot.value;
   if (!el) return null;
-  const dpr = window.devicePixelRatio || 1;
-  const x = pos.x / dpr;
-  const y = pos.y / dpr;
+  const { x, y } = dropPointToCss(pos, { mac: isMac, dpr: window.devicePixelRatio || 1 });
   for (const row of el.querySelectorAll<HTMLElement>("[data-conv-row]")) {
     const r = row.getBoundingClientRect();
     if (x >= r.left && x <= r.right && y >= r.top && y <= r.bottom) {
