@@ -9,16 +9,10 @@
  * 原子 token，innerText 会丢掉 token 的 `data-mention-id`，恢复后变成普通文字。
  * 内容唯一的写入方是编辑器自己（粘贴已 preventDefault，不落外部 HTML）。
  */
+import { trimOldest } from "./bounded";
+
 const drafts = new Map<string, string>();
 const MAX_DRAFTS = 100;
-
-function trimOldest() {
-  while (drafts.size > MAX_DRAFTS) {
-    const oldest = drafts.keys().next().value;
-    if (oldest === undefined) return;
-    drafts.delete(oldest);
-  }
-}
 
 export function saveComposerDraft(convId: string | null | undefined, html: string): void {
   if (!convId) return;
@@ -29,7 +23,7 @@ export function saveComposerDraft(convId: string | null | undefined, html: strin
   // 重新插入到末尾，让"最近写过"的会话排在后面（淘汰顺序更合理）。
   drafts.delete(convId);
   drafts.set(convId, html);
-  trimOldest();
+  trimOldest(drafts, MAX_DRAFTS);
 }
 
 export function getComposerDraft(convId: string | null | undefined): string {

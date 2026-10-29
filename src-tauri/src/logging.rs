@@ -1426,7 +1426,14 @@ pub(crate) fn production_rs_files() -> Vec<std::path::PathBuf> {
 #[cfg(test)]
 pub(crate) fn rel_to_src(p: &std::path::Path) -> String {
     let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
-    p.strip_prefix(&root).unwrap_or(p).display().to_string()
+    p.strip_prefix(&root)
+        .unwrap_or(p)
+        .display()
+        .to_string()
+        // Windows 的 `display()` 打的是 `\`，而用这个函数的判据比的是**跨平台手写的清单**
+        // ⇒ 不归一化就会"macOS 绿、CI 的 Windows 腿红"（实测 5.15.26：run 40969401717）。
+        // 归一化只有这一个家：墙上时钟与字节→hex 两条形状判据共用它。
+        .replace('\\', "/")
 }
 
 /// 把 Unix 毫秒时间戳格式化为 UTC `YYYY-MM-DD HH:MM:SS`（落盘文件用，可读）。
@@ -2850,6 +2857,23 @@ mod tests {
             vec!["logging.rs".to_string()],
             "读系统时钟的地方必须只有家：{reads_epoch:?}"
         );
+    }
+
+    /// 上面那条判据比的是**清单**，所以分隔符必须与平台无关。
+    ///
+    /// 这条用例存在的理由是一次真实的假绿：5.15.26 在 macOS 上整跑全绿，CI 的 Windows 腿却红 ——
+    /// `Path::display()` 在 Windows 上打 `\`，`rel_to_src` 交出 `db\read_receipts.rs`，
+    /// 而判据手写的期望是 `db/read_receipts.rs`（run 40969401717）。归一化收在 `rel_to_src`
+    /// 这一个家里，两条形状判据（墙上时钟、字节→hex）一起受益，所以正控也必须钉在这个函数上：
+    /// 它不需要一台 Windows 机器就能证"带 `\` 的输入一定会被换成 `/`"。
+    #[test]
+    fn rel_to_src_is_separator_independent() {
+        assert_eq!(
+            rel_to_src(std::path::Path::new(r"db\read_receipts.rs")),
+            "db/read_receipts.rs",
+            "分隔符没归一化 ⇒ 这两条判据在 Windows 腿上会假红"
+        );
+        assert_eq!(rel_to_src(std::path::Path::new("logging.rs")), "logging.rs");
     }
 
     /// 正控：同一把尺子必须认得出"又长了一个名字"和"别名偷偷自己读钟"。

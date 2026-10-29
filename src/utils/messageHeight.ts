@@ -1,6 +1,7 @@
 // 消息行高度估算：VirtualList 按它排布，MessageItem 按 previewMetrics 渲染，
 // 两边必须共用同一套常量（见 previewMetrics.ts 顶部说明），否则相邻消息会互相遮挡。
 
+import { trimOldest } from "@/utils/bounded";
 import {
   CLAMPED_CODE_BLOCK_HEIGHT,
   IMAGE_BUBBLE_HEIGHT,
@@ -158,11 +159,8 @@ function bubbleHeightCached(
   const hit = bubbleCache.get(key);
   if (hit !== undefined) return hit;
   const v = computeBubbleHeight(m, fontSize, live);
-  if (bubbleCache.size >= BUBBLE_CACHE_MAX) {
-    const oldest = bubbleCache.keys().next().value;
-    if (oldest !== undefined) bubbleCache.delete(oldest);
-  }
   bubbleCache.set(key, v);
+  trimOldest(bubbleCache, BUBBLE_CACHE_MAX);
   return v;
 }
 

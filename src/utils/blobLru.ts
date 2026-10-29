@@ -1,8 +1,9 @@
 // 按**累计字节数**封顶的 LRU —— 专给"值里握着 objectURL 的预览缓存"用。
 //
-// ## 为什么不是 `bounded.trimOldest`
-// `utils/bounded.ts` 是**按条数**的 FIFO 闸，它文件头自己写明了这个边界（`:19`）：
-// "将来若有人拿它保护会被反复覆盖的缓存，需要换成 LRU（get 时重插）"。
+// ## 为什么不是 `bounded.trimOldest` / `bounded.clearWhenFull`
+// `utils/bounded.ts` 的两个出口都是**按条数**的闸（丢最旧 / 整张清），它文件头写明了适用边界
+// （按句子找，别写行号 —— 行号型引用在这两个文件之间一定会漂）："`map.set(k, v)` 命中已有键
+// **不会**把它移到队尾" ⇒ 拿它守一个会被反复命中的缓存，热的先被淘汰。
 // 预览缓存恰好正是那一类，而且条数这个维度**管不住内存**：`IMAGE_PREVIEW_MAX_BYTES = 15 MiB`
 // 是**单条**上限，取 K 条的最坏情况就是 K × 15 MiB（K=30 ⇒ 450 MiB）。
 // 2026-10-10 的实测（docs/stability-roadmap.md N23）又补了另一半：缓存条目的 V8 侧成本

@@ -13,6 +13,78 @@
 
 ## [Unreleased]
 
+## [5.15.27] - 2026-10-30
+
+### 修 5.15.26 留下的**本地假绿**：形状判据比的是路径清单，而 Windows 的 `Path::display()` 打 `\`
+
+5.15.26 在 macOS 上 `verify:local` 25 步全绿、`cargo test` 1315/0，**CI 的 Windows 腿却红了**
+（run 40969401717：`Rust 单测 / 清单（windows-latest）` 一条失败，其余腿绿）：
+
+```
+assertion `left == right` failed: 墙上时钟的名字多了一个…
+  left:  ["db\\read_receipts.rs", "logging.rs"]
+ right: ["db/read_receipts.rs",  "logging.rs"]
+```
+
+- **根因**：`the_wall_clock_has_two_names_max` 是**按形状扫全仓再比清单**的判据，清单来自
+  `logging::rel_to_src`，而它用的是 `Path::display()` —— 在 Windows 上分隔符是 `\`，
+  期望值是我在 macOS 上手写的 `db/read_receipts.rs` ⇒ 同一份代码、同一个真实现况，
+  两个平台一个绿一个红。**这不是新缺陷被抓住，是守卫自己带了一个平台假设**，
+  而且它的形状与它要防的东西（"多一个名字"）毫不相关。
+- **修法收在遍历器这一个家**：`rel_to_src` 出口处归一化分隔符 ⇒ 用它的两条判据（墙上时钟、
+  字节→hex）一起变平台无关。hex 那条 5.15.25 能在 Windows 上侥幸绿，只是因为它期望的
+  `crypto.rs` 正好在 `src/` 根下、不含分隔符 —— **同一个雷，没拆而已**。
+- **正控不需要一台 Windows 机器**：新增 `rel_to_src_is_separator_independent` 直接喂一个带
+  `\` 的路径进去断言出口是 `/`。跨平台的假红最容易"本地永远证不了"，这条把可证的部分搬回本机。
+- 测试清单基线随之 **macos 1316 → 1317 / windows 1294 → 1295**（`--update`→`--sync-baselines`→再 check）。
+- **本批整跑收口（最终树）**：`verify:local` **25 步全绿、共 70.0s**（`VERIFY_EXIT=0` 现读自日志）；
+  Rust 单测 **1316 通过 / 0 失败 / 1 忽略**（那条 `#[ignore]` 是 5.15.26 已记的迁移演练，设计使然），
+  清单守卫报 **基线 1317 条全部在跑**；前端 `npm test` **1512 通过 / 0 失败**（本批 +8 条）；
+  Android 两档 `cargo check --target aarch64-linux-android` 各 0 warning PASS；
+  `cargo fmt --check --all` 与 `cargo clippy -D warnings --all-targets --features bluetooth` 零红。
+  ⚠️ `Change Budget` 本地这次仍是**零覆盖**（工作树未提交）⇒ 提交后按
+  `node scripts/check-change-budget.mjs --range origin/main..HEAD` 现跑再报。
+
+### 容量闸收成一个家：`utils/bounded.ts` 的两个出口（DUP-13，先逐处定性）
+
+负责人点名的下一项。审计 §6.3 那一格写的是「TS 侧三份各自实现的 LRU / 容量闸」——
+**这个数既偏少也偏窄**：换成按形状扫全 `src/**` 生产码（判据 = 拿 `.size` 与上限比的那一句，
+上下 4 行里出现 `clear()`/`delete(`），现数是**两种策略共九处**，而这两种策略**不等价**。
+
+- **家族 A · 丢最旧（5 处，收进 `trimOldest`）**：`composerDrafts.ts`（本地函数同名就叫 `trimOldest`）、
+  `codeHighlight.ts`、`highlight.ts`、`messageHeight.ts`、`useChatStore.notifiedTodoDone`。
+- **家族 B · 满了整张清（4 处，收进新增的第二个出口 `clearWhenFull`）**：`useChatStore.readerIdsCache`、
+  `payloadParseCache.ts`、`groupSummaryCacheCore.ts`、`filePreview.negativeUntil`。
+- **为什么是"两个出口"而不是"一个统一函数"**：同一张 5 条的表跑 `max=3`，`trimOldest` 活 `{c,d,e}`、
+  `clearWhenFull` 活 `{}` —— 统一就会改变九处里若干处"谁活着"。这条差别由用例
+  「两个策略不是同一个函数：同一张表跑出来的活口不同」钉成断言。稳态边界也**故意差一格**
+  （`trimOldest` 等值不删，`clearWhenFull` 判在写入**前**、等值就动手）：与这九处原本的写法逐字一致，
+  挪到写后再判会让 `clear()` 连刚写那条一起丢掉 ⇒ 缓存永远命中不了。
+- **九处里唯一改到行为的一处**（`codeHighlight.remember`）：改成"由家丢到不超上限"时必须补
+  `cache.delete(key)` —— 否则重写同一段代码时那个键还排在队头，家会把刚写进去的这条先丢掉。
+  原先"判在写入前"掩盖着这个差别；补这一句不是新语义，该文件本来就有"命中即移到队尾"的 LRU 意图。
+- **判"不是同一个东西"的五格（不收，判据必须不冤枉它们）**：`blobLru.ts` 谓词是**累计字节数**且
+  `drop` 带 `revoke(objectURL)` 这个唯一回收出口、`VirtualList.vue:253` 超上限是去 `measure()` 整体重测、
+  `messages.ts:608` 只"算出该留哪些"并不拥有那个数组、`todos.ts:1029` 是给用户看的业务行数上限、
+  `memberName.ts:55` 与 `todos.ts:278` 是 ID 尾号 `slice(-4)`（**我最初正是用一条窄正则把后两处算进 DUP-13 的，
+  那是错的**：窄正则的命中集不等于分母）。
+- **顺手修掉一处会悄悄腐坏的引用**：`blobLru.ts` 原先用 `utils/bounded.ts:19` 指那句边界声明，
+  本次给家加第二个出口后那一行下移了。`check-doc-citations.mjs` **只校验行号是否落在文件行数内**，
+  这类"行号还在、指的东西已经不是那句话"的腐坏它看不见 ⇒ 改成按句子找。
+- **判据 +8 条**（`src/utils/bounded.test.ts`）：覆盖面下限（≥200 个生产文件，且必须看得见
+  `utils/bounded.ts`/`stores/useChatStore.ts`/`utils/highlight.ts`——缺席型判据最先坏的地方就是量具没看见东西）
+  → 家的两个出口各只有一个定义 → 生产码"手写计数闸"的集合必须为空；外加两条正控（两种手写形状都要认得出）
+  与三条反控（家自己的反向谓词、`measure()` 那格、单条目字节数那格都不许被判）。
+  护栏 Case 286 → **287**（条数由判据 E 现算，文档里那一格是它报出来的数）。
+
+**真跑过的验证**：`node --test src/utils/bounded.test.ts` **14 通过 / 0 失败**；整套前端
+`npm test` **1512 通过 / 0 失败**（本批 +8）；两次手工变异都证过会红并且 `cmp` 逐字节还原
+（① 往 `composerDrafts.ts` 塞回一段 while-delete 手写闸 ⇒ 判据点名该文件并红，hint
+「又抄了一遍淘汰循环」；② 往 `messageHeight.ts` 加一份 `export function clearWhenFull` ⇒
+定义那格点名 `{utils/bounded.ts, utils/messageHeight.ts}` 并红）；
+`verify-guards.py --only="计数型容量闸"` 退 0（改坏即 FAIL、恢复逐字节一致）。
+
+
 ## [5.15.26] - 2026-10-30
 
 ### 墙上时钟收成一个家：`logging::now_ms`（DUP-03，先逐处定性再动手）

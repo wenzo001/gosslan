@@ -25,7 +25,7 @@ import {
 } from "@/utils/messages";
 import { safeStorageBackend, storageGet, storageSet } from "../utils/safeStorage.ts";
 import { useAppStore } from "@/stores/useAppStore";
-import { trimOldest } from "@/utils/bounded";
+import { clearWhenFull, trimOldest } from "@/utils/bounded";
 import { isStaleNudge } from "@/utils/nudge";
 import { prefersReducedMotion } from "@/utils/platform";
 import { shouldRunThrottled } from "@/utils/defer";
@@ -465,11 +465,7 @@ export const useChatStore = defineStore("chat", () => {
     const terminal = todoTerminalForCreator(rec, myId);
     if (terminal !== null && !notifiedTodoDone.has(rec.msg_id)) {
       notifiedTodoDone.add(rec.msg_id);
-      while (notifiedTodoDone.size > NOTIFIED_TODO_DONE_MAX) {
-        const oldest = notifiedTodoDone.values().next().value;
-        if (oldest === undefined) break;
-        notifiedTodoDone.delete(oldest);
-      }
+      trimOldest(notifiedTodoDone, NOTIFIED_TODO_DONE_MAX);
       const terminalText = terminal.status === "impossible"
         ? (terminal.title
           ? t("todo.impossibleNotice", { title: terminal.title })
@@ -1323,7 +1319,7 @@ export const useChatStore = defineStore("chat", () => {
     const hit = readerIdsCache.get(key);
     if (hit) return hit;
     // 上限 200：虚拟列表来回滚动的可见窗口远小于它，满了直接清（这是缓存不是事实源）。
-    if (readerIdsCache.size >= 200) readerIdsCache.clear();
+    clearWhenFull(readerIdsCache, 200);
     readerIdsCache.set(key, ids);
     return ids;
   }
