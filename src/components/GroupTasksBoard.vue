@@ -489,7 +489,7 @@ function focusTodo(id: string, mode: "detail" | "highlight" = "detail") {
 }
 defineExpose({ focusTodo });
 
-/** 正在闪的那一行（1200ms 后清掉；同一行连点会重置计时）。 */
+/** 正在闪的那一行（1600ms 后清掉，比 2×0.8s 的动画略长；同一行连点会重置计时）。 */
 const flashRowId = ref<string | null>(null);
 let flashTimer: ReturnType<typeof setTimeout> | undefined;
 const boardRoot = ref<HTMLElement | null>(null);
