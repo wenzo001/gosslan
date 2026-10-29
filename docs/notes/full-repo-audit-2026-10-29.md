@@ -373,7 +373,7 @@ export function isForwardableKind(kind: string): boolean {
 护栏册随之 276 → 279：行模板被抄回第二份 / 新增渲染字段没进 `v-memo` / 批量转发少传 `msg_id`
 三发变异各注册成一条 Case，三条都跑过"改坏必须 FAIL、红由自己那句 hint 报出、恢复后逐字节一致"。
 
-### 4.0h SEC-02 修完之后**新长出来的一格**（发版前 review 抓到，未修，等拍板）
+### 4.0h SEC-02 修完之后**新长出来的一格**（发版前 review 抓到，**已修**）
 
 `peer_to_evict` 按 `last_seen` 最旧淘汰，**不区分这条是谁**。而 `peers` 不只是地址缓存，它同时是
 公钥锚点的读取源（本轮实读数到的消费者）：
@@ -388,10 +388,21 @@ export function isForwardableKind(kind: string): boolean {
 而是**给这个人密封拿不到公钥** ⇒ 群消息对他发不出去，直到他自己再 announce 或被 Hello 重新登记。
 好友那一族有 `friends` 回落（SEC-03 那次就为它建的），**不是好友的群成员没有回落**。
 
-为什么本轮不修：修法要在淘汰前知道"谁是好友 / 谁是本机群的成员"，那份名单必须**在取 `peers` 锁之前**
-从库里读好再传进来（锁内问 DB 就是 J2 那一族自死锁的形状），动的是一条热路径。
-建议的落点：`peer_to_evict(peers, protected: &HashSet<String>)`，保护集 = `friends` ∪ 本机各群成员。
-风险边界：只在**条目数达到 512** 时才可能发生（真实规模远小于它），所以不挡这次发布。
+**已修（负责人 2026-10-29 晚点名做这条）**，落点与当初的建议一致：
+
+- `peer_to_evict(peers, protected)` 跳过保护集里的条目；保护集 = `friends` ∪ 本机各群成员 ∪ 本机自己。
+- 名单由 `protected_peer_ids(state)` 现取，而它**只在表已经满时**才被调用 —— announce 是 5s×N 的
+  热路径，每条都问一次库会在 500 节点下放大成明显热点（与同函数里 `needs_anchor` 同一条理由）。
+- ⚠️ **取锁顺序**：`table_full` 预检量完长度就**放掉 `peers` 锁**，然后才去问 `db`，最后回到插入。
+  持着 `peers` 守卫去问库，违反的本仓那条"peers 与 db 不嵌套"正是 §4.1 里机器扫过的锁序，
+  也是 J2 那一族自死锁的形状。
+- **读失败的方向**（按代价定，不是随手 `unwrap_or_default`）：`protected_peer_ids` 返回 `Option`，
+  两张身份表读不动时**一个都不许淘汰** —— 折叠成空集等于把"查不到谁该保护"当成"谁都不需要保护"，
+  那正好把好友挤掉。这种情况与"表里全是受保护条目"共用一个出口：放弃这一条 +
+  `code=PEERS_TABLE_FULL`，日志里 `reason=` 把两种成因分开说。
+- 判据：`peer_eviction_picks_the_stalest_entry` 加两格（最旧那条是受保护身份 ⇒ 让位给次旧的陌生人；
+  全都受保护 ⇒ `None`）。变异（摘掉 `peer_to_evict` 里那条 `filter`）当场红并点名
+  「受保护的条目必须跳过，即使它是全场最旧的」，还原即绿；护栏册 **280 → 281**（这条注册成 Case）。
 
 ### 4.1 已核查且未发现问题的稳定性面
 

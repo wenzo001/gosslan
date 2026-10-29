@@ -803,4 +803,21 @@ CASES: list[Case] = [
         cwd=TAURI,
         expect_fail_hint="机器事件不支持撤回",
         tags=["rust", "protocol", "new-guards"],
+    ),
+    Case(
+        name="peers 表满时把好友或群成员挤掉（淘汰不看身份）必须被抓住",
+        why="2026-10-29 发版前 review §4.0h：`peers` 不只是地址缓存，它同时是公钥读取源\n"
+        "     （transport.rs / gossip.rs / peer_state.rs / pending_keys.rs 都读 x25519_pubkey）。\n"
+        "     好友有 friends 那份回落，**不是好友的群成员没有** —— 淘汰不看身份的后果不是\n"
+        "     『少一个缓存』，而是给这个人密封拿不到公钥。注入 = 摘掉那条 filter（编译照过，\n"
+        "     行为退化成『挑全场最旧的』），红必须由新增那两格保护集判据说出。",
+        file=TAURI / "src" / "network" / "transport" / "peer_registry.rs",
+        injections=[(
+            """        .filter(|p| !protected.contains(&p.device_id))\n""",
+            "",
+        )],
+        cmd=cargo("test", "--features", "bluetooth", "--lib", "peer_eviction_picks_the_stalest_entry"),
+        cwd=TAURI,
+        expect_fail_hint="受保护的条目必须跳过",
+        tags=["rust", "network", "new-guards"],
     ),]
