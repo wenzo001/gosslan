@@ -5,12 +5,12 @@ import { computed } from "vue";
 import { useChatStore } from "@/stores/useChatStore";
 import { useExclusivePopup } from "@/composables/useExclusivePopup";
 import { PopoverContent, PopoverPortal, PopoverRoot, PopoverTrigger } from "reka-ui";
-import { avatarSeedFor } from "@/utils/avatarSeed";
 import type { SendState } from "@/composables/useMessageDisplay";
 import type { GroupDeliverySummary } from "@/types";
 import { CheckCheck, Clock3, HelpCircle } from "lucide-vue-next";
 import { X } from "@/components/ui/icons";
 import { AlertCircle, Check } from "@/components/ui/icons";
+import AvatarBox from "@/components/ui/AvatarBox.vue";
 
 const props = defineProps<{
   state: SendState;
@@ -200,15 +200,14 @@ function readerAvatar(id: string): string | null {
           :title="t('msg.readBy', { n: readerIds.length })"
           :aria-label="t('msg.readByView', { n: readerIds.length })"
         >
-          <span
+          <AvatarBox
             v-for="id in visibleReaders"
             :key="id"
-            class="gosslan-avatar-box flex h-4 w-4 items-center justify-center overflow-hidden rounded-full border border-[var(--gosslan-panel)] text-caption text-white"
-            :style="{ backgroundColor: avatarSeedFor(id)?.bg }"
-          >
-            <img loading="lazy" decoding="async" alt="" v-if="readerAvatar(id)" :src="readerAvatar(id) ?? undefined" class="h-full w-full object-cover" />
-            <span v-else class="gosslan-avatar-emoji" aria-hidden="true">{{ avatarSeedFor(id)?.emoji }}</span>
-          </span>
+            class="h-4 w-4 border border-[var(--gosslan-panel)] text-caption"
+            round="full"
+            :id="id"
+            :src="readerAvatar(id)"
+          />
           <span
             v-if="extraReaders.length > 0"
             class="ml-1 rounded-full bg-[var(--gosslan-hover)] px-1 text-caption text-[var(--gosslan-text-2)]"
@@ -236,13 +235,12 @@ function readerAvatar(id: string): string | null {
               :key="id"
               class="flex items-center gap-2 rounded-[var(--gosslan-radius-xs)] px-2 py-1 hover:bg-[var(--gosslan-hover)]"
             >
-              <span
-                class="gosslan-avatar-box flex h-5 w-5 items-center justify-center overflow-hidden rounded-full text-caption text-white"
-                :style="{ backgroundColor: avatarSeedFor(id)?.bg }"
-              >
-                <img loading="lazy" decoding="async" alt="" v-if="readerAvatar(id)" :src="readerAvatar(id) ?? undefined" class="h-full w-full object-cover" />
-                <span v-else class="gosslan-avatar-emoji" aria-hidden="true">{{ avatarSeedFor(id)?.emoji }}</span>
-              </span>
+              <AvatarBox
+                class="h-5 w-5 text-caption"
+                round="full"
+                :id="id"
+                :src="readerAvatar(id)"
+              />
               <span class="max-w-28 truncate" :title="readerName(id)">{{ readerName(id) }}</span>
             </div>
           </div>

@@ -9,7 +9,6 @@ import PrimaryBtn from "@/components/ui/PrimaryBtn.vue";
 import DangerBtn from "@/components/ui/DangerBtn.vue";
 import SecondaryBtn from "@/components/ui/SecondaryBtn.vue";
 import { useMemberProfile } from "@/composables/useMemberProfile";
-import { avatarSeedFor } from "@/utils/avatarSeed";
 import {
   TODO_STATUSES, TODO_STATUS_CLASS, TODO_STATUS_LABEL_KEY, foldTodos, isEffectivelyArchived, todoRowsLoadState, } from "@/utils/todos";
 import { errorText } from "@/composables/useErrorText";
@@ -19,6 +18,7 @@ import CharCounter from "@/components/ui/CharCounter.vue";
 import { ArrowRightLeft, Crown, ListChecks, LogOut, Plus, UserMinus } from "lucide-vue-next";
 import { X } from "@/components/ui/icons";
 import type { Friend } from "@/types";
+import AvatarBox from "@/components/ui/AvatarBox.vue";
 
 const props = defineProps<{
   open: boolean;
@@ -317,14 +317,12 @@ async function confirmAction() {
           class="flex items-center gap-2.5 rounded-[var(--gosslan-radius-md)] px-2 py-2"
         >
           <div class="relative shrink-0">
-            <div
-              class="gosslan-avatar-box flex h-9 w-9 items-center justify-center overflow-hidden rounded-[var(--gosslan-avatar-radius)] text-white"
+            <AvatarBox
+              class="h-9 w-9"
               :class="!row.online ? 'grayscale opacity-70' : ''"
-              :style="{ backgroundColor: avatarSeedFor(row.id)?.bg }"
-            >
-              <img alt="" loading="lazy" decoding="async" v-if="row.avatar" :src="row.avatar ?? undefined" class="h-full w-full object-cover" />
-              <span v-else class="gosslan-avatar-emoji" aria-hidden="true">{{ avatarSeedFor(row.id)?.emoji }}</span>
-            </div>
+              :id="row.id"
+              :src="row.avatar ?? null"
+            />
             <span
               class="absolute bottom-0 right-0 h-2.5 w-2.5 rounded-full border-2 border-[var(--gosslan-panel)]"
               :class="row.online ? 'bg-[var(--gosslan-success)]' : 'bg-[var(--gosslan-status-offline)]'"
@@ -443,13 +441,7 @@ async function confirmAction() {
               class="flex w-full cursor-pointer items-center gap-2 rounded-[var(--gosslan-radius-md)] px-2 py-1.5 text-left transition hover:bg-[var(--gosslan-hover)]"
               @click="addMember(f)"
             >
-              <div
-                class="gosslan-avatar-box flex h-7 w-7 shrink-0 items-center justify-center overflow-hidden rounded-[var(--gosslan-avatar-radius)] text-white"
-                :style="{ backgroundColor: avatarSeedFor(f.device_id)?.bg }"
-              >
-                <img alt="" loading="lazy" decoding="async" v-if="f.avatar" :src="f.avatar" class="h-full w-full object-cover" />
-                <span v-else class="gosslan-avatar-emoji" aria-hidden="true">{{ avatarSeedFor(f.device_id)?.emoji }}</span>
-              </div>
+              <AvatarBox class="h-7 w-7 shrink-0" :id="f.device_id" :src="f.avatar" />
               <span class="min-w-0 flex-1 truncate text-sm" :title="f.nickname">{{ f.nickname }}</span>
               <Plus class="h-3.5 w-3.5 shrink-0 text-[var(--gosslan-text-2)]" />
             </button>

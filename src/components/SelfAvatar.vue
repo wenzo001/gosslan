@@ -16,7 +16,7 @@
  *
  * 尺寸与圆角留给调用点（class 透传到根节点）：这几处本来就是一大一小的层级关系，
  * 写死只会逼调用点再套一层壳。emoji 字号是 `58cqw`（容器查询），
- * 所以只要 `gosslan-avatar-box` 与尺寸类落在同一个元素上，16px 与 64px 共用一份定义。
+ * 所以盒子根节点（现在是 `ui/AvatarBox.vue`）与尺寸类落在同一个元素上时，16px 与 64px 共用一份定义。
  *
  * ⚠️ 这里**不留插槽**给"压在头像上的那一层"（在线点、相机角标）：根节点带
  * `overflow-hidden`（圆角裁切用），往里塞负偏移的角标会被裁掉。那一层一律做成
@@ -29,8 +29,8 @@
  * 传 `null` 是编辑器在说"当前没有头像"，那也得听它的。
  */
 import { computed } from "vue";
+import AvatarBox from "@/components/ui/AvatarBox.vue";
 import { useAppStore } from "@/stores/useAppStore";
-import { avatarSeedFor } from "@/utils/avatarSeed";
 
 const props = defineProps<{
   /** 乐观预览用的图片地址；不传则读 `app.device.avatar`。 */
@@ -41,17 +41,11 @@ const app = useAppStore();
 const src = computed(() =>
   props.previewSrc !== undefined ? props.previewSrc : (app.device?.avatar ?? null),
 );
-const seed = computed(() =>
-  avatarSeedFor(app.device?.device_id || app.device?.nickname || null),
-);
+// 种子键 = store 里那份，不是调用点手里未保存的昵称（文件头那条纪律）。
+// 盒子与 emoji 的画法在 `ui/AvatarBox.vue`（审计 DUP-08：13 个组件各写一遍）。
+const seedKey = computed(() => app.device?.device_id || app.device?.nickname || null);
 </script>
 
 <template>
-  <div
-    class="gosslan-avatar-box relative flex items-center justify-center overflow-hidden text-white"
-    :style="{ backgroundColor: seed?.bg }"
-  >
-    <img alt="" draggable="false" v-if="src" :src="src" class="h-full w-full object-cover" />
-    <span v-else class="gosslan-avatar-emoji" aria-hidden="true">{{ seed?.emoji }}</span>
-  </div>
+  <AvatarBox class="relative" :id="seedKey" :src="src" />
 </template>

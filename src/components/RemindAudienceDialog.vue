@@ -9,12 +9,12 @@
 import { computed, ref, watch } from "vue";
 import { Check } from "@/components/ui/icons";
 import BaseModal from "@/components/BaseModal.vue";
-import SelfAvatar from "@/components/SelfAvatar.vue";
 import SecondaryBtn from "@/components/ui/SecondaryBtn.vue";
 import PrimaryBtn from "@/components/ui/PrimaryBtn.vue";
 import { useChatStore } from "@/stores/useChatStore";
 import { useMemberProfile } from "@/composables/useMemberProfile";
 import { t } from "@/i18n";
+import AvatarBox from "@/components/ui/AvatarBox.vue";
 
 const props = defineProps<{
   open: boolean;
@@ -71,7 +71,12 @@ function confirm() {
         class="flex w-full items-center gap-3 rounded-[var(--gosslan-radius-md)] px-3 py-2 text-left transition hover:bg-[var(--gosslan-hover)] active:bg-[var(--gosslan-hover)]"
         @click="toggle(id)"
       >
-        <SelfAvatar :src="memberProfile(id).avatar" :size="36" />
+        <!-- 每一位**候选人**自己的脸：`SelfAvatar` 是"本机本人"那一个（种子固定取 store 里的
+             device_id），喂它的 prop 只有 `previewSrc` —— 原先这里传的是 `:src` 与 `:size`，
+             两个都不是它的 prop：Vue 把它们当普通属性落到根元素上，于是 ① 没有尺寸类 ⇒ 盒子塌成
+             零尺寸（这一列根本没有头像），② 即便有尺寸也是**每个人的脸都画成本机自己**
+             （2026-10-29 审计 DUP-08 顺手抓到的真缺陷）。正确出口是那个通用的盒子。 -->
+        <AvatarBox class="h-9 w-9 shrink-0" :id="id" :src="memberProfile(id).avatar" />
         <span
           class="min-w-0 flex-1 truncate text-sm text-[var(--gosslan-text)]"
           :title="memberProfile(id).name"

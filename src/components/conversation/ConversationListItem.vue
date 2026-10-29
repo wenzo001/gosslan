@@ -12,6 +12,7 @@ import { haptic } from "@/utils/haptics";
 import UnreadBadge from "@/components/UnreadBadge.vue";
 import { ListChecks, Megaphone, Pin } from "lucide-vue-next";
 import type { Conversation } from "@/types";
+import AvatarBox from "@/components/ui/AvatarBox.vue";
 
 const props = defineProps<{
   conv: Conversation;
@@ -176,25 +177,22 @@ const gridTiles = computed(() => {
         v-if="conv.kind === 'group' && gridTiles.length"
         class="grid h-10 w-10 grid-cols-2 grid-rows-2 gap-px overflow-hidden rounded-[var(--gosslan-avatar-radius)] bg-[var(--gosslan-divider)]"
       >
-        <div
+        <AvatarBox
           v-for="(t, i) in gridTiles"
           :key="i"
-          class="gosslan-avatar-box flex items-center justify-center overflow-hidden text-white"
-          :style="{ backgroundColor: t.seed?.bg }"
-        >
-          <img alt="" loading="lazy" decoding="async" v-if="t.avatar" :src="t.avatar" class="h-full w-full object-cover" />
-          <span v-else class="gosslan-avatar-emoji" aria-hidden="true">{{ t.seed?.emoji }}</span>
-        </div>
+          round="none"
+          :bg="t.seed?.bg ?? null"
+          :emoji="t.seed?.emoji ?? null"
+          :src="t.avatar"
+        />
       </div>
-      <div
+      <AvatarBox
         v-else
-        class="gosslan-avatar-box flex h-10 w-10 items-center justify-center overflow-hidden rounded-[var(--gosslan-avatar-radius)] text-white"
+        class="h-10 w-10"
         :class="online === false ? 'grayscale opacity-70' : ''"
-        :style="{ backgroundColor: avatarSeedFor(conv.id)?.bg }"
-      >
-        <img alt="" loading="lazy" decoding="async" v-if="conv.avatar" :src="conv.avatar" class="h-full w-full object-cover" />
-        <span v-else class="gosslan-avatar-emoji" aria-hidden="true">{{ avatarSeedFor(conv.id)?.emoji }}</span>
-      </div>
+        :id="conv.id"
+        :src="conv.avatar"
+      />
       <!-- 在线标识：群聊不显示；离线标灰半透 -->
       <span
         v-if="online !== null"

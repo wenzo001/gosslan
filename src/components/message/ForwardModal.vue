@@ -4,12 +4,12 @@ import { computed, ref, watch } from "vue";
 import { INPUT_DEFER_MS } from "@/utils/defer";
 import { refDebounced } from "@vueuse/core";
 import { useChatStore } from "@/stores/useChatStore";
-import { avatarSeedFor } from "@/utils/avatarSeed";
 import { MAX_LIST_FILTER_KEYWORD_CHARS } from "@/utils/validation";
 import BaseModal from "@/components/BaseModal.vue";
 import SecondaryBtn from "@/components/ui/SecondaryBtn.vue";
 import PrimaryBtn from "@/components/ui/PrimaryBtn.vue";
 import type { MsgKind } from "@/types";
+import AvatarBox from "@/components/ui/AvatarBox.vue";
 
 const props = defineProps<{
   open: boolean;
@@ -143,14 +143,7 @@ const kindLabel = computed(() => KIND_LABELS[props.kind] ?? t("msg.message"));
           >
             {{ t("common.group") }}
           </span>
-          <span
-            v-else
-            class="gosslan-avatar-box flex h-9 w-9 shrink-0 items-center justify-center overflow-hidden rounded-[var(--gosslan-avatar-radius)] text-sm text-white"
-            :style="{ backgroundColor: avatarSeedFor(c.id)?.bg }"
-          >
-            <img loading="lazy" decoding="async" alt="" v-if="c.avatar" :src="c.avatar" class="h-full w-full object-cover" />
-            <span v-else class="gosslan-avatar-emoji" aria-hidden="true">{{ avatarSeedFor(c.id)?.emoji }}</span>
-          </span>
+          <AvatarBox v-else class="h-9 w-9 shrink-0 text-sm" :id="c.id" :src="c.avatar" />
           <span class="min-w-0 flex-1 truncate text-body text-[var(--gosslan-text)]" :title="c.name">{{ c.name }}</span>
         </button>
         <div v-if="filtered.length === 0" class="py-8 text-center text-sm text-[var(--gosslan-text-2)]">{{ t("msg.noMatch") }}</div>

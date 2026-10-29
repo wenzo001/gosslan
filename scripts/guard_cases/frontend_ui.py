@@ -274,8 +274,10 @@ CASES: list[Case] = [
         name="消息图漏了 loading/decoding（同步解码压进滚动那一帧）必须被抓住",
         why="roadmap N22：`<img>` 不带 fetch hint 时浏览器同步解码，而消息行是被虚拟列表反复挂载的那一层。"
             "这类退化不报错、不影响构建、桌面跑一遍看不出来，只有扫标签的 findMessageImageWithoutFetchHint 拦得住",
-        file=ROOT / "src" / "components" / "message" / "MessageAvatar.vue",
-        injections=[('loading="lazy" decoding="async" alt="" draggable="false"', 'alt="" draggable="false"')],
+        # 2026-10-29 审计 DUP-08：这份 <img> 从各组件搬进唯一的家 `ui/AvatarBox.vue`，
+        # 锚点跟着搬家（判据那条 Case 钉的语义没变：头像图漏了 fetch hint 必须被扫出来）。
+        file=ROOT / "src" / "components" / "ui" / "AvatarBox.vue",
+        injections=[('      alt=""\n      loading="lazy"\n      decoding="async"\n', '      alt=""\n')],
         cmd=node_test("src/utils/designGuards.test.ts"),
         cwd=ROOT,
         expect_fail_hint="都带两个",
@@ -1138,5 +1140,39 @@ CASES: list[Case] = [
         cwd=ROOT,
         expect_fail_hint="没进 v-memo",
         tags=["frontend", "new-guards", "logs"],
+    ),
+    Case(
+        name="头像框又长出第二份（13 个组件各写一遍盒子）必须被拦下",
+        why="2026-10-29 审计 DUP-08 把 13 份盒子收成一个家。重复不会报错，只表现成"
+        "     「同一个人在不同页面圆角不一样 / 某一处没裁圆」，而读屏隐藏、底色与 emoji 同源"
+        "     这些约束一旦只写在老家，第二份就会一份一份地漏掉。注入 = 往真组件里再写一份盒子。",
+        file=ROOT / "src" / "components" / "FriendProfile.vue",
+        injections=[(
+            '      <div class="mx-auto w-full max-w-[560px]">',
+            '      <div class="mx-auto w-full max-w-[560px]">\n'
+            '        <div class="gosslan-avatar-box h-9 w-9 rounded-full" />',
+        )],
+        cmd=["node", "--test", "--experimental-strip-types", "--disable-warning=ExperimentalWarning",
+             "src/utils/designGuards.test.ts"],
+        cwd=ROOT,
+        expect_fail_hint="gosslan-avatar-box 又长出第二份",
+        tags=["frontend", "new-guards", "avatar"],
+    ),
+    Case(
+        name="给 SelfAvatar 喂它没有的 prop（那一列头像会静默消失）必须被抓住",
+        why="SelfAvatar 只有 previewSrc 一个 prop，数据源固定是本机自己。强提醒选人对话框原先写"
+        "     `<SelfAvatar :src :size=36>`：两个都不是它的 prop ⇒ Vue 当成普通属性落到根元素上，"
+        "     没有尺寸类就是**零尺寸**（那一列根本没有头像），有尺寸也是每个人的脸都画成本机自己。"
+        "     注入 = 把这个老形状放回去，红必须点名那个 prop。",
+        file=ROOT / "src" / "components" / "RemindAudienceDialog.vue",
+        injections=[(
+            """        <AvatarBox class="h-9 w-9 shrink-0" :id="id" :src="memberProfile(id).avatar" />""",
+            """        <SelfAvatar :src="memberProfile(id).avatar" :size="36" />""",
+        )],
+        cmd=["node", "--test", "--experimental-strip-types", "--disable-warning=ExperimentalWarning",
+             "src/utils/designGuards.test.ts"],
+        cwd=ROOT,
+        expect_fail_hint="喂了它没有的 prop",
+        tags=["frontend", "new-guards", "avatar"],
     ),
 ]

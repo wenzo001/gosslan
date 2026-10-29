@@ -16,6 +16,7 @@ import BaseModal from "@/components/BaseModal.vue";
 import SecondaryBtn from "@/components/ui/SecondaryBtn.vue";
 import PrimaryBtn from "@/components/ui/PrimaryBtn.vue";
 import { t } from "@/i18n";
+import AvatarBox from "@/components/ui/AvatarBox.vue";
 import {
   AVATAR_BACKGROUNDS,
   AVATAR_EMOJIS,
@@ -76,13 +77,12 @@ function onCustomColor(e: Event) {
     <!-- 预览固定：放在 BaseModal 的 header 插槽里，不跟下面的选项一起滚。 -->
     <template #header>
       <div class="flex items-center gap-4 rounded-[var(--gosslan-radius-lg)] bg-[var(--gosslan-bg)] p-3">
-        <div
-          class="gosslan-avatar-box flex h-20 w-20 shrink-0 items-center justify-center overflow-hidden rounded-[var(--gosslan-avatar-radius)] text-white transition-colors duration-200"
-          :style="{ backgroundColor: bg }"
+        <AvatarBox
+          class="h-20 w-20 shrink-0 transition-colors duration-200"
+          :bg="bg"
+          :emoji="emoji"
           aria-hidden="true"
-        >
-          <span class="gosslan-avatar-emoji" aria-hidden="true">{{ emoji }}</span>
-        </div>
+        />
         <div class="min-w-0 flex-1">
           <p class="text-meta leading-snug text-[var(--gosslan-text-2)]">
             {{ t("settings.profile.avatar.hint") }}

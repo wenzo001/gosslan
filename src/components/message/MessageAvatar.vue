@@ -1,9 +1,8 @@
 <script setup lang="ts">
-import { computed } from "vue";
-import { avatarSeedFor } from "@/utils/avatarSeed";
+import AvatarBox from "@/components/ui/AvatarBox.vue";
 
 /** 消息头像：连续消息合并时由父组件渲染等宽占位，组件本身不感知合并规则。 */
-const props = defineProps<{
+defineProps<{
   /**
    * 种子用**设备 id / 群 id**，不是昵称：昵称可改（改一次换一张脸）、也能撞名
    * （两个人同昵称就同一张脸），而这张脸的要求是"稳定 + 不撞脸"。
@@ -24,18 +23,8 @@ const props = defineProps<{
   size?: string;
 }>();
 
-const seed = computed(() => avatarSeedFor(props.id || props.name));
-const boxStyle = computed(() => (props.size
-  ? { width: props.size, height: props.size, backgroundColor: seed.value?.bg }
-  : { backgroundColor: seed.value?.bg }));
 </script>
 
 <template>
-  <div
-    class="gosslan-avatar-box flex h-9 w-9 shrink-0 items-center justify-center overflow-hidden rounded-[var(--gosslan-avatar-radius)]"
-    :style="boxStyle"
-  >
-    <img loading="lazy" decoding="async" alt="" draggable="false" v-if="avatar" :src="avatar" class="h-full w-full object-cover" />
-    <span v-else class="gosslan-avatar-emoji" aria-hidden="true">{{ seed?.emoji }}</span>
-  </div>
+  <AvatarBox class="h-9 w-9 shrink-0" :id="id || name" :src="avatar" :size="size ?? null" />
 </template>
