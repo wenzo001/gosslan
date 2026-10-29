@@ -1,8 +1,8 @@
 <script setup lang="ts">
 import { computed, ref, watch } from "vue";
 import Spinner from "@/components/ui/Spinner.vue";
-import SecondaryBtn from "@/components/ui/SecondaryBtn.vue";
-import PrimaryBtn from "@/components/ui/PrimaryBtn.vue";
+import ConfirmDialog from "@/components/ui/ConfirmDialog.vue";
+import MarkdownText from "@/components/ui/MarkdownText.vue";
 import { t } from "@/i18n";
 import type { UpdaterErrorCode, UpdaterState } from "@/updater/service";
 // 字节格式化的唯一家（审计 P2 #35）：这里曾有一份口径不同的私有实现（KB 取整、没有 GB 档）。
@@ -131,12 +131,13 @@ function formatDate(seconds: number | null | undefined): string {
       <p v-if="state.info?.notes" class="mt-2 text-caption font-medium text-[var(--gosslan-text-2)]">
         {{ t("settings.updates.notes") }}
       </p>
-      <div
+      <!-- 说明是 Markdown（我们自己的 CHANGELOG 片段）⇒ 渲染成标题/列表/粗体，
+           不再原样显示 `###` 与 `**`。内容来自网络 ⇒ `MarkdownText` 里过白名单消毒。 -->
+      <MarkdownText
         v-if="state.info?.notes"
-        class="gosslan-selectable mt-1 max-h-32 overflow-y-auto whitespace-pre-wrap break-words text-caption leading-relaxed text-[var(--gosslan-text-2)]"
-      >
-        {{ state.info.notes }}
-      </div>
+        :source="state.info.notes"
+        class="mt-1 max-h-36 overflow-y-auto text-caption leading-relaxed text-[var(--gosslan-text-2)]"
+      />
 
       <div v-if="state.phase === 'downloading'" class="mt-3">
         <div
@@ -161,26 +162,23 @@ function formatDate(seconds: number | null | undefined): string {
         </p>
       </div>
 
-      <!-- 二次确认必须出现在「安装」原来的位置（用户 2026-10-25：点确认时底下又弹出一块，
-           看起来像另一个动作）。确认态下动作行整行让位：只剩取消/确认，不再同时出现两个安装入口。 -->
-      <div
-        v-if="confirming"
-        class="mt-3 rounded-[var(--gosslan-radius-md)] border border-[var(--gosslan-border)] bg-[var(--gosslan-hover)] p-2.5"
+      <!-- 下载中途失败：说清已下多少、重试会从头开始（负责人 2026-10-29「下载到一半也要处理」）。 -->
+      <p
+        v-if="state.phase === 'error' && state.downloaded > 0"
+        class="mt-2 text-caption leading-relaxed text-[var(--gosslan-text-2)]"
       >
-        <p class="text-caption leading-relaxed text-[var(--gosslan-text)]">
-          {{ t("settings.updates.confirmInstall") }}
-        </p>
-        <div class="mt-2 flex justify-end gap-2">
-          <SecondaryBtn size="xs" outline class="hover:bg-[var(--gosslan-panel)]" @click="confirming = false">
-            {{ t("common.cancel") }}
-          </SecondaryBtn>
-          <PrimaryBtn type="button" size="xs" @click="emit('install')">
-            {{ t("settings.updates.confirm") }}
-          </PrimaryBtn>
-        </div>
-      </div>
+        {{ t("settings.updates.halfDownloaded", { done: formatBytes(state.downloaded) }) }}
+      </p>
+      <!-- 装之前复查发现更高版本：手里那份已被丢弃，说清楚为什么又要重下。 -->
+      <p
+        v-if="state.notice === 'superseded'"
+        class="mt-2 rounded-[var(--gosslan-radius-xs)] bg-[var(--gosslan-hover)] px-2 py-1.5 text-caption leading-relaxed text-[var(--gosslan-text)]"
+      >
+        {{ t("settings.updates.superseded", { version: state.info?.version ?? "" }) }}
+      </p>
 
-      <div v-else class="mt-3 flex flex-wrap items-center gap-2">
+      <!-- 装之前先说清"会退出并重启"；点确认才真的安装（负责人 2026-10-29：改成弹窗提醒）。 -->
+      <div v-if="state.phase !== 'installing'" class="mt-3 flex flex-wrap items-center gap-2">
         <button
           v-if="state.phase === 'available' || (state.phase === 'error' && state.info)"
           type="button"
@@ -206,7 +204,7 @@ function formatDate(seconds: number | null | undefined): string {
           {{ t("settings.updates.install") }}
         </button>
         <button
-          v-if="state.phase !== 'downloading' && state.phase !== 'installing' && state.phase !== 'ready'"
+          v-if="state.phase !== 'downloading' && state.phase !== 'ready'"
           type="button"
           class="tap-safe rounded-[var(--gosslan-radius-md)] border border-[var(--gosslan-border)] px-3 py-1.5 text-xs transition hover:bg-[var(--gosslan-hover)]"
           @click="emit('dismiss')"
@@ -220,5 +218,16 @@ function formatDate(seconds: number | null | undefined): string {
       <Spinner size-class="h-3.5 w-3.5" decorative />
       {{ t("settings.updates.installing") }}
     </p>
+
+    <ConfirmDialog
+      :open="confirming"
+      :title="t('settings.updates.install')"
+      :confirm-label="t('settings.updates.confirm')"
+      :body="t('settings.updates.confirmInstall')"
+      :note="t('settings.updates.confirmNote')"
+      :danger="false"
+      @cancel="confirming = false"
+      @confirm="confirming = false; emit('install')"
+    />
   </div>
 </template>

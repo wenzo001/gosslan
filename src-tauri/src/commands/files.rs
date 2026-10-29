@@ -1535,6 +1535,55 @@ async fn send_file(
     });
     Ok(transfer_id)
 }
+/// 拖进来的路径先看一眼：给"确认后再发送"的弹窗用（名字、大小、是不是目录）。
+///
+/// 只读元数据，**不碰发送链路**：发送时后端仍会自己再校验一次（目录/不存在/不可读）。
+/// 有界：一次最多 200 条、单条路径 4096 字节 —— 这条命令由前端按拖拽事件的载荷调用。
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DropPathInfo {
+    pub path: String,
+    pub name: String,
+    pub size: u64,
+    pub is_dir: bool,
+}
+
+/// `(async)` + `spawn_blocking`：函数体里是 `std::fs::metadata`（文件系统 IO）。
+/// 同步命令会在 wry 的 IPC 回调里内联跑 ⇒ 读盘期间所有窗口一起卡死；
+/// 而直接写成 `async fn` 又会把重活留在 tokio worker 上（两条判据各自钉着一半）。
+#[tauri::command(async)]
+pub async fn inspect_drop_paths(paths: Vec<String>) -> Vec<DropPathInfo> {
+    tokio::task::spawn_blocking(move || inspect_drop_paths_blocking(paths))
+        .await
+        .unwrap_or_default()
+}
+
+fn inspect_drop_paths_blocking(paths: Vec<String>) -> Vec<DropPathInfo> {
+    const MAX_PATHS: usize = 200;
+    const MAX_PATH_LEN: usize = 4096;
+    paths
+        .into_iter()
+        .take(MAX_PATHS)
+        .filter(|p| !p.is_empty() && p.len() <= MAX_PATH_LEN)
+        .map(|path| {
+            let meta = std::fs::metadata(&path);
+            let is_dir = meta.as_ref().map(|m| m.is_dir()).unwrap_or(false);
+            DropPathInfo {
+                name: file::derive_file_name(&path),
+                // 目录的 `len()` 是文件系统自己的记账（macOS 上实测 96），不是"这个文件夹多大"
+                // ⇒ 明确给 0，别让界面把一个无意义的数显示成体积。
+                size: if is_dir {
+                    0
+                } else {
+                    meta.as_ref().map(|m| m.len()).unwrap_or(0)
+                },
+                is_dir,
+                path,
+            }
+        })
+        .collect()
+}
+
 /// 统一文件发送入口：当前稳定版统一走「直连 + 离线队列」。
 /// 只要好友最终上线，文件就会在连接事件触发时自动补发，不再依赖不可达的中继路径。
 #[tauri::command]

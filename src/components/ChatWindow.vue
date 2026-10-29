@@ -26,6 +26,8 @@ import GroupFilesPanel from "@/components/GroupFilesPanel.vue";
 import GroupTasksPanel from "@/components/GroupTasksPanel.vue";
 import BaseModal from "@/components/BaseModal.vue";
 import ConfirmDialog from "@/components/ui/ConfirmDialog.vue";
+import { formatBytes } from "@/utils/format";
+import type { DropPathInfo } from "@/types";
 import ChatHeader from "@/components/chat/ChatHeader.vue";
 import MessageComposer from "@/components/chat/MessageComposer.vue";
 import ForwardModal from "@/components/message/ForwardModal.vue";
@@ -59,7 +61,7 @@ import {
   writeAnnounceSeen,
   type AnnounceSeenMap,
 } from "@/utils/announcementDismiss";
-import type { LinkState, MessageRecord, MsgKind } from "@/types";
+import type { LinkState, MessageRecord, MsgKind, TodoFocusRequest } from "@/types";
 import { createInitScope } from "@/utils/initScope";
 
 const emit = defineEmits<{ (e: "open-share"): void }>();
@@ -529,8 +531,7 @@ watch(
     membersOpen.value = false;
     filesOpen.value = false;
     tasksOpen.value = false;
-    taskFocusId.value = null;
-    taskHighlight.value = null;
+    taskFocus.value = null;
     // 预览是全局那一份（#40），所以按**来源**收：只有"这份相册是上一个会话给的"才关掉。
     // 无条件 close() 会把"从任务详情点开的图"跟着切会话一起弄没。
     if (prev) preview.closeIfFrom(`conv:${prev}`);
@@ -650,23 +651,21 @@ const openTasksForActive = computed(() => {
   return id ? (chat.openTodoByConv[id] ?? 0) : 0;
 });
 
-/** 从任务卡片点进来时要直达详情的那条任务（null = 只是打开看板）。 */
-const taskFocusId = ref<string | null>(null);
 /**
- * 卡片**上半区**要定位到的那条任务：打开看板后滚过去闪一下，**不**展开详情（负责人 2026-10-29）。
+ * 从任务卡片点进来时要落到哪条、怎么落（null = 只是打开看板）。
  *
- * 为什么单独一格而不是给 `taskFocusId` 加个 mode：应用内弹窗那条 watch 的判据是
- * `[open, focusTodoId]` 一起看（防"关掉再点同一条不触发"），改它的依赖会动到既有行为；
- * 高亮这边用**递增序号**，同一张卡片连点两次也一定会触发，两者互不干扰。
+ * `seq` 每次点击都递增：同一张卡片连点两次也一定重新触发（只传 id 的话第二次 watch 不响，
+ * 用户以为按钮坏了 —— 2026-09-24 的老洞）。`mode` 只决定到了之后干什么：
+ * `detail` 展开详情（底部「查看任务」）、`highlight` 滚过去闪一下（卡片上半区）。
  */
-const taskHighlight = ref<{ id: string; seq: number } | null>(null);
-let taskHighlightSeq = 0;
+const taskFocus = ref<TodoFocusRequest | null>(null);
+let taskFocusSeq = 0;
 /**
  * 打开群任务：桌面端开**独立窗口**（每群一个），移动端/窗口创建失败回退到应用内弹窗。
  * 与设置/日志同一套单飞 + 防抖（`launchAuxWindow`），窗口实例唯一性由后端 `ensure_aux_window` 保证。
  *
  * `todoId`（用户 #23 与 #39）两条呈现路径都覆盖：
- * 应用内弹窗走 prop（`taskFocusId`）；桌面端独立窗口走后端那条「暂存 + 定向事件」——
+ * 应用内弹窗走 prop（`taskFocus`）；桌面端独立窗口走后端那条「暂存 + 定向事件」——
  * 新建的窗口在挂载时 `take_group_todo_focus` 取走（事件那时没有监听者，只发事件就是
  * "第一次点没反应"），本来就开着的窗口靠事件被叫醒后再取同一个暂存。
  * 窗口本身是**固定 label 的一扇**（`tasks`）：群由后端那份当前上下文决定，切群 = 换内容。
@@ -702,14 +701,7 @@ function openSenderProfile(senderId: string) {
 function openTasks(todoId?: string, mode: "detail" | "highlight" = "detail") {
   const gid = activeGroupId.value;
   if (!gid) return;
-  if (mode === "highlight") {
-    // 上一次的"直达详情"不能残留：关掉再点上半区不该顺手把旧那条展开。
-    taskFocusId.value = null;
-    if (todoId) taskHighlight.value = { id: todoId, seq: ++taskHighlightSeq };
-  } else {
-    taskFocusId.value = todoId ?? null;
-    taskHighlight.value = null;
-  }
+  taskFocus.value = todoId ? { id: todoId, seq: ++taskFocusSeq, mode } : null;
   if (app.isMobile) {
     tasksOpen.value = true;
     return;
@@ -1547,13 +1539,18 @@ async function attachFile() {
 // ---------------- 拖拽文件发送 ----------------
 // 用 Tauri 的**原生**拖拽事件，而不是 HTML5 drag：WebView 里的 HTML5 drag 拿不到真实文件路径
 // （File 对象没有 path），而 Tauri 的 drag-drop 直接给绝对路径，正好接上 sendPastedFiles。
-const chatAreaRef = ref<HTMLElement | null>(null);
+const chatPanelRef = ref<HTMLElement | null>(null);
 const fileDragOver = ref(false);
 const dragDropScope = createInitScope();
+/**
+ * 拖着文件停在面板上时待确认的那批（负责人 2026-10-29：多文件/单文件都要先弹窗确认）。
+ * `files` 是后端 stat 出来的（大小/是否目录），确认框直接照它渲染。
+ */
+const pendingDrop = ref<{ paths: string[]; files: DropPathInfo[] } | null>(null);
 
-/** 拖拽位置是否落在消息区上（Tauri 给的是物理像素，除以 DPR 才能跟 DOM 坐标比）。 */
-function isOverChatArea(pos: { x: number; y: number }) {
-  const el = chatAreaRef.value;
+/** 拖拽位置是否落在**整个聊天面板**上（含标题栏；Tauri 给的是物理像素，除以 DPR 才对得上 DOM）。 */
+function isOverChatPanel(pos: { x: number; y: number }) {
+  const el = chatPanelRef.value;
   if (!el) return false;
   const r = el.getBoundingClientRect();
   const dpr = window.devicePixelRatio || 1;
@@ -1578,14 +1575,14 @@ onMounted(() => {
     .onDragDropEvent((event) => {
       const p = event.payload;
       if (p.type === "enter" || p.type === "over") {
-        fileDragOver.value = canDropInto() && isOverChatArea(p.position);
+        fileDragOver.value = canDropInto() && isOverChatPanel(p.position);
         return;
       }
       if (p.type === "drop") {
         const droppedHere = fileDragOver.value;
         fileDragOver.value = false;
         if (!droppedHere || p.paths.length === 0) return;
-        void sendPastedFiles(p.paths);
+        void stageDroppedFiles(p.paths);
         return;
       }
       fileDragOver.value = false; // leave
@@ -1594,6 +1591,52 @@ onMounted(() => {
 });
 
 onBeforeUnmount(() => dragDropScope.dispose());
+
+/**
+ * 拖进来的文件先**停在确认框**上（负责人 2026-10-29：拖拽发送必须有弹窗提醒 + 二次确认）。
+ *
+ * 目录直接剔掉并说明：Tauri 的 drag-drop 会把文件夹路径一起给过来，而发送链路只收普通文件
+ * （后端 `send_file` 对目录会报「只能发送普通文件」）。与其让用户点了确认后再逐条报错，
+ * 不如在确认框里就把哪些发不了说清楚。
+ */
+async function stageDroppedFiles(paths: string[]) {
+  const convId = chat.activeConv;
+  if (!convId) return;
+  let files: DropPathInfo[] = [];
+  try {
+    files = await api.inspectDropPaths(paths);
+  } catch {
+    // stat 失败也要能发：退回"只有名字"的那种确认（发送链路自己会再校验一次）。
+    files = paths.map((p) => ({ path: p, name: p.split(/[\\/]/).pop() || p, size: 0, isDir: false }));
+  }
+  const usable = files.filter((f) => !f.isDir);
+  if (usable.length === 0) {
+    app.toastError(new Error(t("chat.dropNoFiles")), t("msg.sendFailed"));
+    return;
+  }
+  pendingDrop.value = { paths: usable.map((f) => f.path), files: usable };
+}
+
+/** 确认框正文：发到哪个会话；群聊说清楚会有多少人收到。 */
+const dropConfirmBody = computed(() =>
+  isGroup.value
+    ? t("chat.dropConfirmGroup", { name: conv.value?.name ?? "", n: memberCount.value })
+    : t("chat.dropConfirmPeer", { name: conv.value?.name ?? "" }),
+);
+/** 确认框条目：一行一个文件（名字 + 大小）。 */
+const dropConfirmItems = computed(() =>
+  (pendingDrop.value?.files ?? []).map((f) =>
+    f.size > 0 ? `${f.name} · ${formatBytes(f.size)}` : f.name,
+  ),
+);
+
+/** 确认框里点「发送」：走与粘贴文件同一条链路（真正的校验/落库/传输都在那里）。 */
+function confirmDrop() {
+  const batch = pendingDrop.value;
+  pendingDrop.value = null;
+  if (!batch) return;
+  void sendPastedFiles(batch.paths);
+}
 
 /** 输入框粘贴文件（资源管理器复制后 Ctrl+V，微信式）：按真实路径直接走发送链路。 */
 async function sendPastedFiles(paths: string[]) {
@@ -1666,7 +1709,8 @@ function retryHistory() {
 
 <template>
   <div
-    class="flex h-full flex-col bg-[var(--gosslan-chat)]"
+    ref="chatPanelRef"
+    class="relative flex h-full flex-col bg-[var(--gosslan-chat)]"
     :class="{ 'gosslan-shake': shaking }"
     @animationend="onShakeAnimEnd"
   >
@@ -1890,20 +1934,7 @@ function retryHistory() {
     </div>
 
     <!-- 消息区（虚拟滚动，仅纵向）：与头部同底色，无缝衔接 -->
-    <div ref="chatAreaRef" class="relative min-h-0 flex-1 overflow-hidden bg-[var(--gosslan-chat)]">
-      <!-- 拖拽文件到聊天区：松手即发送。
-           用 Tauri 的原生拖拽事件（HTML5 drag 拿不到真实路径），发送复用「粘贴文件」那条链路。
-           pointer-events-none：提示层不能吃掉拖拽/点击事件。 -->
-      <div
-        v-if="fileDragOver"
-        class="pointer-events-none absolute inset-2 z-30 flex items-center justify-center rounded-[var(--gosslan-radius-lg)] border-2 border-dashed border-[var(--gosslan-primary)] bg-[var(--gosslan-primary-light)]"
-      >
-        <span
-          class="rounded-[var(--gosslan-radius-md)] bg-[var(--gosslan-panel)] px-3 py-2 text-body text-[var(--gosslan-text)] shadow-lg"
-        >
-          {{ isGroup ? t("chat.dropToGroup") : t("chat.dropToSend") }}
-        </span>
-      </div>
+    <div class="relative min-h-0 flex-1 overflow-hidden bg-[var(--gosslan-chat)]">
       <!-- 加载骨架：切会话时**立即**渲染（store 的 loadMessages 完成前 messages[convId] 是 undefined）。
            没有它就会先闪一句"暂无消息，打个招呼吧"再跳出内容——既不准又显得卡。
            规则：UI 先出、数据后到（详见 docs/design-guidelines.md §9）。
@@ -2216,10 +2247,8 @@ function retryHistory() {
     <GroupTasksPanel
       :open="tasksOpen"
       :group-id="activeGroupId"
-      :focus-todo-id="taskFocusId"
-      :highlight-todo-id="taskHighlight?.id ?? null"
-      :highlight-seq="taskHighlight?.seq ?? 0"
-      @close="tasksOpen = false; taskFocusId = null; taskHighlight = null"
+      :focus="taskFocus"
+      @close="tasksOpen = false; taskFocus = null"
     />
 
     <!-- 转发弹窗 -->
@@ -2252,6 +2281,34 @@ function retryHistory() {
       @confirm="doBatchDelete"
     />
 
+
+    <!-- 拖拽文件到面板：**松手先弹确认**（负责人 2026-10-29），确认后才走发送链路。
+         覆盖整个面板（含标题栏），所以挂在根节点上、`inset` 铺满；
+         用 Tauri 的原生拖拽事件（HTML5 drag 拿不到真实路径）。
+         pointer-events-none：提示层不能吃掉拖拽/点击事件。 -->
+    <div
+      v-if="fileDragOver"
+      class="pointer-events-none absolute inset-2 z-30 flex items-center justify-center rounded-[var(--gosslan-radius-lg)] border-2 border-dashed border-[var(--gosslan-primary)] bg-[var(--gosslan-primary-light)]"
+    >
+      <span
+        class="rounded-[var(--gosslan-radius-md)] bg-[var(--gosslan-panel)] px-3 py-2 text-body text-[var(--gosslan-text)] shadow-lg"
+      >
+        {{ isGroup ? t("chat.dropToGroup") : t("chat.dropToSend") }}
+      </span>
+    </div>
+
+    <!-- 拖拽发送的二次确认：列出将要发送的文件与去向，取消即丢弃这次拖拽 -->
+    <ConfirmDialog
+      :open="!!pendingDrop"
+      :title="t('chat.dropConfirmTitle')"
+      :confirm-label="t('chat.dropConfirmSend')"
+      :body="dropConfirmBody"
+      :items="dropConfirmItems"
+      :note="t('chat.dropConfirmNote')"
+      :danger="false"
+      @cancel="pendingDrop = null"
+      @confirm="confirmDrop"
+    />
 
     <!-- 图片相册预览（会话内全部图片，左右箭头 / 键盘 ←→ 切换） -->
   </div>

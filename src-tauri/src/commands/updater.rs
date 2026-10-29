@@ -401,6 +401,62 @@ mod desktop {
         }
     }
 
+    /// 安装**之前**的复查：手里这份下载可能花了几十分钟，期间可能已经发布了更新的版本。
+    ///
+    /// 返回 `Some(info)` = 清单上出现了**严格更高**的版本 ⇒ 手里这份已经过期，字节已丢弃，
+    /// 调用方应改为显示"有新版本，需要重新下载"；返回 `None` = 手里这份仍是最新（或清单读不到）。
+    ///
+    /// 为什么不复用 `updater_check`：那条命令会 `clear()` 掉已下载的字节 —— 在 ready 态调用
+    /// 它等于"点一下检查就把几十 MB 扔了"。这里只在**确实更高**时才丢。
+    #[cfg(desktop)]
+    #[tauri::command]
+    pub async fn updater_recheck_ready(
+        app: AppHandle,
+        state: State<'_, UpdaterSession>,
+    ) -> Result<Option<UpdateInfo>, String> {
+        let held = state.snapshot();
+        if held.phase != "ready" {
+            return Ok(None);
+        }
+        let Some(held_version) = held.version.clone() else {
+            return Ok(None);
+        };
+        let updater = app
+            .updater_builder()
+            .timeout(CHECK_TIMEOUT)
+            .build()
+            .map_err(|e| e.to_string())?;
+        let Some(update) = updater.check().await.map_err(|e| e.to_string())? else {
+            return Ok(None);
+        };
+        // 清单版本不高于手里这份 ⇒ 仍是最新，**保留**已下载的字节。
+        if is_not_an_upgrade(&held_version, &update.version) {
+            return Ok(None);
+        }
+        let info = UpdateInfo {
+            current_version: update.current_version.clone(),
+            version: update.version.clone(),
+            notes: update.body.clone(),
+            published_at: update.date.map(|d| d.unix_timestamp()),
+        };
+        // 过期了：丢掉旧字节，并把清单换成新的那份，用户点"下载"就能直接开始。
+        state.clear();
+        *state.update.lock().unwrap_or_else(|e| e.into_inner()) = Some(update);
+        let v = info.version.clone();
+        state.set_status(&app, move |st| {
+            st.phase = "idle".to_string();
+            st.version = Some(v);
+            st.downloaded = 0;
+            st.total = None;
+            st.error = None;
+        });
+        log_updater_error(
+            &app,
+            &format!("code=UPDATER_SUPERSEDED：已下载的 {held_version} 已被更高版本超越，字节已丢弃"),
+        );
+        Ok(Some(info))
+    }
+
     #[tauri::command]
     pub async fn updater_install(
         // Windows 由官方 install 内部退出进程，不经过下面的 restart 分支。
@@ -594,6 +650,12 @@ pub async fn updater_download(
 #[cfg(not(desktop))]
 #[tauri::command]
 pub fn updater_cancel() -> Result<(), String> {
+    Err("应用内更新仅支持桌面端".to_string())
+}
+
+#[cfg(not(desktop))]
+#[tauri::command]
+pub async fn updater_recheck_ready() -> Result<Option<UpdateInfo>, String> {
     Err("应用内更新仅支持桌面端".to_string())
 }
 

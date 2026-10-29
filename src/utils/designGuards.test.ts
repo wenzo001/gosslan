@@ -1049,6 +1049,8 @@ test("v-html 只出现在构造即转义的三处；新增位置必须登记（�
       assert.match(h.expr, /^highlightText\(/, `搜索结果必须经 highlightText：${h.expr}`);
     } else if (h.file.endsWith("LogViewer.vue")) {
       assert.match(h.expr, /^v\.row\./, `日志行必须是 highlightText 生成的 row.*：${h.expr}`);
+    } else if (h.file.endsWith("MarkdownText.vue")) {
+      assert.equal(h.expr, "html", "更新说明只允许渲染 renderNotesMarkdown（marked + DOMPurify）的产物");
     } else if (h.file.endsWith("CodeBlock.vue")) {
       assert.equal(h.expr, "html", "代码块只允许渲染 hljs/escapeHtml 生成的 html");
     }

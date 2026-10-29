@@ -43,6 +43,11 @@ export interface UpdaterAdapter {
   check(): Promise<UpdateInfo | null>;
   download(onEvent: (event: DownloadEvent) => void): Promise<void>;
   cancel(): Promise<void>;
+  /**
+   * 安装**之前**的复查（可选）：下载可能花几十分钟，期间可能又发布了新版本。
+   * 返回非空 = 清单上有更高版本（后端已丢弃手里那份字节），调用方应改为提示重新下载。
+   */
+  recheckReady?(): Promise<UpdateInfo | null>;
   install(): Promise<void>;
   close(): Promise<void>;
 }
@@ -56,6 +61,11 @@ export interface UpdaterState {
   error: UpdaterErrorCode | null;
   checkedAt: number | null;
   dismissedVersion: string | null;
+  /**
+   * 一条"刚才发生了什么"的说明（不承载动作，只解释状态为什么变成现在这样）。
+   * 目前只有 `superseded`：装之前复查发现更高版本，手里那份已被丢弃。
+   */
+  notice: "superseded" | null;
 }
 
 export const UPDATER_CANCELLED = "UPDATER_CANCELLED";
@@ -88,6 +98,7 @@ export function createUpdaterService(
     error: null,
     checkedAt: null,
     dismissedVersion: null,
+    notice: null,
   });
 
   const checkTimeoutMs = options.checkTimeoutMs ?? DEFAULT_CHECK_TIMEOUT_MS;
@@ -165,6 +176,7 @@ export function createUpdaterService(
     state.downloaded = 0;
     state.total = null;
     state.error = null;
+    state.notice = null;
     cancelRequested = false;
     downloadInFlight = (async () => {
       try {
@@ -208,6 +220,26 @@ export function createUpdaterService(
 
   async function install(): Promise<void> {
     if (state.phase !== "ready" || !state.info) return;
+    state.notice = null;
+    // 装之前先复查：下载可能花了几十分钟，期间可能已经发了新版本。
+    // 复查失败（断网/清单损坏）**不拦安装** —— 手里这份是签名校验过的，网络抖一下
+    // 不能让人永远装不上；只有"清单明确更高"才把用户挡下来。
+    if (adapter.recheckReady) {
+      try {
+        const newer = await adapter.recheckReady();
+        if (newer) {
+          state.info = newer;
+          state.phase = "available";
+          state.downloaded = 0;
+          state.total = null;
+          state.error = null;
+          state.notice = "superseded";
+          return;
+        }
+      } catch {
+        // 见上：不拦。
+      }
+    }
     state.phase = "installing";
     state.error = null;
     try {
@@ -229,6 +261,7 @@ export function createUpdaterService(
     state.info = null;
     state.phase = "idle";
     state.error = null;
+    state.notice = null;
     ++attempt;
     void adapter.close().catch(() => {});
   }
@@ -254,6 +287,7 @@ export function createUpdaterService(
     downloaded: number;
     total: number | null;
     version: string | null;
+    error?: string | null;
   }) {
     if (state.phase !== "idle") return;
     const info = snapshot.version
@@ -276,9 +310,21 @@ export function createUpdaterService(
         state.phase = "installing";
         state.info = info;
         break;
+      case "failed":
+        // 只有"**下载**中途失败"（已经有字节了）才恢复：那正是用户会困惑的一刻
+        // （"刚才下了一半，现在窗口上什么都没有"）。检查失败（downloaded=0）不恢复 ——
+        // 离线是常态，没必要每次开设置都挂一条红。
+        if (snapshot.downloaded > 0) {
+          state.phase = "error";
+          state.info = info;
+          state.downloaded = snapshot.downloaded;
+          state.total = snapshot.total;
+          state.error = errorCode(new Error(snapshot.error ?? ""));
+        }
+        break;
       default:
-        // idle / checking / failed / cancelled / unsupported：这几种在本窗口不值得"恢复"，
-        // 保持 idle（用户点一下检查就知道了；失败也没有可展示的上下文）。
+        // idle / checking / cancelled / unsupported：不值得"恢复"，保持 idle
+        // （用户点一下检查就知道了）。
         break;
     }
   }

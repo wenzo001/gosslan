@@ -7,7 +7,7 @@
 // 恶意 path"，所以这条只能靠纯函数判 —— 判的是分量比对，不是字符串前缀。
 #[cfg(test)]
 mod files_gate_tests {
-    use super::{ledger_path_owns, path_under_any, transfer_id_of_owner};
+    use super::{inspect_drop_paths_blocking, ledger_path_owns, path_under_any, transfer_id_of_owner};
     use std::path::Path;
 
     /// 自家目录之内必须放行。
@@ -317,5 +317,37 @@ mod files_gate_tests {
             1,
             "墓碑只许实时那一条写入口（到货那一臂只复核，多一个写点就是第二条状态来源）"
         );
+    }
+
+    /// 拖进来的路径先读元数据（确认弹窗要显示"名字 + 大小 + 是不是文件夹"）。
+    /// 这条命令只读、不发送：目录必须能被认出来（前端据此在确认框里剔掉并说明）。
+    #[test]
+    fn inspect_drop_paths_reports_name_size_and_directory() {
+        let dir = std::env::temp_dir().join(format!("gosslan-drop-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("a.txt");
+        std::fs::write(&file, b"hello").unwrap();
+
+        let out = inspect_drop_paths_blocking(vec![
+            file.to_string_lossy().to_string(),
+            dir.to_string_lossy().to_string(),
+            String::new(),
+        ]);
+        assert_eq!(out.len(), 2, "空路径要剔掉，文件和目录都要留着给前端判断");
+        assert_eq!(out[0].name, "a.txt");
+        assert_eq!(out[0].size, 5);
+        assert!(!out[0].is_dir);
+        assert!(out[1].is_dir, "目录必须被认出来 —— 发送链路只收普通文件");
+        assert_eq!(out[1].size, 0, "目录的大小没有意义");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// 有界：一次最多 200 条（拖 500 个文件进来不许把 IPC 撑爆）。
+    #[test]
+    fn inspect_drop_paths_is_capped() {
+        let paths: Vec<String> = (0..500).map(|i| format!("/nonexistent/{i}.bin")).collect();
+        assert_eq!(inspect_drop_paths_blocking(paths).len(), 200);
     }
 }

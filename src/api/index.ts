@@ -2,7 +2,7 @@
 
 import { Channel, invoke as rawInvoke, type InvokeArgs } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
-import type { AppSettings, CacheInfo, CleanupReport, ContentAudience, ContentCancelResult, ContentTransfer, Conversation, DeviceInfo, DiscoveryDiag, ExportSummary, ExternalLink, ExternalLinkImportResult, FavoriteEntry, FileDoneInfo, FileFailedInfo, FileProgress, FileStalledInfo, Friend, FriendKeyRotation, Group, GroupDeliverySummary, GroupHistoryProgress, GroupReadInfo, GroupResendResult, InterfaceInfo, LinkState, LogEntry, MessageCancelResult, MessageRecord, Peer, PeerReadInfo, PendingMessageOp, PendingRequest, PreviousRunReport, RelayConfig, RelayProbe, RoutedEndpoint, RuntimeDiag, RuntimeSnapshot, TransferInfo, TodoFocus, TodoFocusMode } from "@/types";
+import type { AppSettings, CacheInfo, CleanupReport, ContentAudience, ContentCancelResult, ContentTransfer, Conversation, DeviceInfo, DiscoveryDiag, ExportSummary, ExternalLink, ExternalLinkImportResult, FavoriteEntry, FileDoneInfo, FileFailedInfo, FileProgress, FileStalledInfo, Friend, FriendKeyRotation, Group, GroupDeliverySummary, GroupHistoryProgress, GroupReadInfo, GroupResendResult, InterfaceInfo, LinkState, LogEntry, MessageCancelResult, MessageRecord, Peer, PeerReadInfo, PendingMessageOp, PendingRequest, PreviousRunReport, RelayConfig, RelayProbe, RoutedEndpoint, RuntimeDiag, RuntimeSnapshot, TransferInfo, TodoFocus, TodoFocusMode, DropPathInfo } from "@/types";
 import type { TodoImage } from "@/utils/todos";
 import {
   chatSearchGroupSchema,
@@ -745,6 +745,9 @@ export const api = {
   updateExternalLink: (id: string, name: string, url: string) =>
     invoke<ExternalLink[]>("update_external_link", { id, name, url }),
   removeExternalLink: (id: string) => invoke<ExternalLink[]>("remove_external_link", { id }),
+  /** 拖进来的路径先读元数据（名字/大小/是否目录），给"确认后再发送"的弹窗用。 */
+  inspectDropPaths: (paths: string[]) => invoke<DropPathInfo[]>("inspect_drop_paths", { paths }),
+
   updaterCheck: () => invoke<UpdaterInfo | null>("updater_check"),
   updaterDownload: (onEvent: (event: UpdaterDownloadEvent) => void) => {
     const channel = new Channel<UpdaterDownloadEvent>();
@@ -755,6 +758,8 @@ export const api = {
   /** 当前更新状态（B5）：跨窗口共用一份，设置窗重开/任务中心首帧都用它补拉。 */
   updaterStatus: () => invoke<UpdaterStatus>("updater_status"),
   updaterInstall: () => invoke<void>("updater_install"),
+  /** 安装前的复查：清单上出现更高版本时返回它（此时已丢弃手里那份），否则 null。 */
+  updaterRecheckReady: () => invoke<UpdaterInfo | null>("updater_recheck_ready"),
   updaterClose: () => invoke<void>("updater_close"),
   exportExternalLinks: () => invoke<string>("export_external_links"),
   cleanupExternalLinksExport: (path: string) =>
