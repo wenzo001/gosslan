@@ -862,8 +862,12 @@ const emit = defineEmits<{
   (e: "multi-select"): void;
   /** 多选模式下切换本行的勾选态（由覆盖层点击触发） */
   (e: "toggle-select"): void;
-  /** 点了任务卡片里的「查看任务」：打开群任务面板（由 ChatWindow 接住）。 */
-  (e: "open-tasks", todoId?: string): void;
+  /**
+   * 点了任务卡片：打开群任务面板（由 ChatWindow 接住）。
+   * `mode` 区分两个命中区：`detail` = 底部「查看任务」（展开详情）、
+   * `highlight` = 卡片上半区（只滚到这条并闪一下）。
+   */
+  (e: "open-tasks", todoId?: string, mode?: "detail" | "highlight"): void;
   /** 点对方头像：进入好友资料（与通讯录同一个页面）。 */
   (e: "open-profile", senderId: string): void;
 }>();
@@ -1961,8 +1965,8 @@ async function copyFileToClipboard() {
             :self-mention="selfMention"
             :mention-targets="message.mention_targets"
             :mine="mine"
-            @open="emit('open-tasks', $event)"
-            @open-panel="emit('open-tasks')"
+            @open="emit('open-tasks', $event, 'detail')"
+            @open-panel="emit('open-tasks', $event, 'highlight')"
           />
 
           <!-- 本机不认识的 kind（= 对端 Gosslan 比本机新）：给可解释的占位，

@@ -21,6 +21,9 @@ const props = defineProps<{
   groupId: string | null;
   /** 从时间线的任务卡片点进来时要直达详情的那条任务（null = 只打开看板）。 */
   focusTodoId?: string | null;
+  /** 卡片**上半区**要定位的那条：滚过去闪一下，不展开详情。`highlightSeq` 每次点击都变 ⇒ 同一条连点也触发。 */
+  highlightTodoId?: string | null;
+  highlightSeq?: number;
 }>();
 const emit = defineEmits<{ (e: "close"): void }>();
 
@@ -59,6 +62,13 @@ const count = computed(
     width="max-w-lg"
     @close="emit('close')"
   >
-    <GroupTasksBoard :group-id="groupId" :open="open" :fill="fullscreen" :focus-todo-id="focusTodoId" />
+    <GroupTasksBoard
+      :group-id="groupId"
+      :open="open"
+      :fill="fullscreen"
+      :focus-todo-id="focusTodoId"
+      :highlight-todo-id="highlightTodoId ?? null"
+      :highlight-seq="highlightSeq ?? 0"
+    />
   </BaseModal>
 </template>

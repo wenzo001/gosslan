@@ -961,6 +961,28 @@ progress {
   animation: gosslan-popover-fade-out var(--gosslan-duration-fast) var(--gosslan-ease) forwards;
 }
 
+/* 任务卡上半区点进来：滚到那一行后闪一下，表示"就是这一条"（负责人 2026-10-29）。
+   闪背景不闪描边：那个 `<motion.div>` 本来就有 layout 动画，改描边会和它抢同一个属性。 */
+@keyframes gosslan-todo-flash {
+  from {
+    background-color: color-mix(in srgb, var(--gosslan-primary) 22%, transparent);
+  }
+  to {
+    background-color: transparent;
+  }
+}
+.todo-row-flash {
+  animation: gosslan-todo-flash 0.8s var(--gosslan-ease) 2;
+}
+/* 减弱动态效果：换成静态描边（"是哪一条"这件事不能因为关了动画就丢掉） */
+@media (prefers-reduced-motion: reduce) {
+  .todo-row-flash {
+    animation: none;
+    outline: 2px solid var(--gosslan-primary);
+    outline-offset: -2px;
+  }
+}
+
 @keyframes gosslan-shake {
   0%,
   100% {

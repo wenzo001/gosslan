@@ -368,6 +368,7 @@ db::tests::pinned_conversations_sort_before_recency
 db::tests::placeholder_on_real_msg_id_swallows_the_good_copy
 db::tests::recall_is_idempotent_and_materializes_content
 db::tests::recall_recorded_before_the_message_arrives_still_applies
+db::tests::recall_source_carries_the_evidence_needed_to_recheck_a_late_arrival
 db::tests::repeated_ack_is_idempotent
 db::tests::repeated_delivery_of_same_msg_id_yields_single_side_effect
 db::tests::schema_and_settings
@@ -442,10 +443,12 @@ gossip_engine::tests::envelope_ttl_is_preserved
 gossip_engine::tests::fanout_excludes_sender
 gossip_engine::tests::group_envelope_message_id_stable_after_resign
 gossip_engine::tests::group_envelope_resign_covers_creator_and_members
+logging::tests::allocator_abort_is_its_own_kind_not_no_history
 logging::tests::bootstrap_and_logger_point_at_the_same_crash_file
 logging::tests::crash_block_survives_rotation_and_carries_version_and_context
 logging::tests::crash_file_is_capped_by_reopening_not_growing_forever
 logging::tests::crash_note_writes_without_a_logger_and_survives_the_reentry_guard
+logging::tests::diag_delivery_puts_failures_first_and_keeps_high_freq_success_in_the_panel
 logging::tests::diag_fold_table_is_bounded_by_restarting_not_growing
 logging::tests::diag_folds_only_on_identical_text_in_the_same_second
 logging::tests::diag_warn_and_error_are_never_folded
@@ -459,6 +462,7 @@ logging::tests::log_wire_actually_folds_the_diag_flood
 logging::tests::logger_clear_empties_memory
 logging::tests::logger_memory_ring_buffer_is_bounded
 logging::tests::logger_persists_to_file_and_rotates
+logging::tests::next_runs_bootstrap_line_does_not_swallow_the_previous_exit
 logging::tests::non_diag_info_is_not_folded
 logging::tests::only_the_panic_target_writes_a_crash_block
 logging::tests::panic_note_from_the_independent_channel_is_classified_as_panic
@@ -472,6 +476,7 @@ logging::tests::previous_run_report_marks_open_hang
 logging::tests::previous_run_seed_is_bounded_and_keeps_the_newest_lines
 logging::tests::previous_run_seed_is_wired_at_startup
 logging::tests::previous_run_seed_writes_nothing_to_disk_however_many_times_it_is_called
+logging::tests::ring_only_reaches_the_panel_but_never_the_file
 logging::tests::startup_marker_carries_the_run_id
 logging::tests::utc_format_and_parse_roundtrip_across_eras
 mem_diag::tests::big_alloc_ring_keeps_the_newest_and_renders_age
@@ -1254,6 +1259,7 @@ user_dirs::tests::empty_resolved_path_is_not_accepted
 user_dirs::tests::nothing_configured_stays_none
 user_dirs::tests::store_then_load_returns_the_same_directory_in_both_modes
 user_dirs::tests::the_two_user_directories_do_not_interfere
+watchdog::tests::hang_notes_throttle_after_the_dense_phase_but_never_stop
 worker_supervisor::tests::finished_signal_comes_from_the_real_handle
 worker_supervisor::tests::lib_rs_wires_the_supervisor_exactly_once
 worker_supervisor::tests::resident_worker_list_is_complete_and_unique

@@ -411,6 +411,13 @@ export interface MessageCancelResult {
  * 这四个计数就是气泡上「X 人已收到 / Y 人未收到」与「补发」按钮的唯一依据 ——
  * 不允许前端自己从别处推算（那会是第二套真源）。
  */
+/** 任务卡点开看板后"落到哪条、怎么落"（与 Rust `state::TodoFocus` 逐字对应）。 */
+export type TodoFocusMode = "detail" | "highlight";
+export interface TodoFocus {
+  todoId: string;
+  mode: TodoFocusMode;
+}
+
 export interface GroupDeliverySummary {
   msg_id: string;
   delivered: number;

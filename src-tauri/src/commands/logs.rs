@@ -819,6 +819,7 @@ pub fn open_group_todos_window(
     state: tauri::State<'_, Arc<AppState>>,
     group_id: String,
     focus_todo_id: Option<String>,
+    focus_mode: Option<String>,
 ) -> Result<(), String> {
     use tauri::Emitter;
     // groupId 会跨窗口当成指令传回前端（前端拿它去查数据）⇒ 按不透明 ID 的最短规则夹紧。
@@ -837,6 +838,7 @@ pub fn open_group_todos_window(
             return Err("任务 ID 非法".to_string());
         }
     }
+    let mode = norm_focus_mode(focus_mode)?;
     // "该展开哪一条"：带 id 就写入，**不带就清掉** —— 不清的话，用户下一次从标题栏按钮
     // （不带目标）打开时会被上次那条任务莫名展开。
     {
@@ -846,7 +848,13 @@ pub fn open_group_todos_window(
             .unwrap_or_else(|e| e.into_inner());
         match &focus_todo_id {
             Some(id) => {
-                pending.insert(group_id.clone(), id.clone());
+                pending.insert(
+                    group_id.clone(),
+                    crate::state::TodoFocus {
+                        todo_id: id.clone(),
+                        mode,
+                    },
+                );
             }
             None => {
                 pending.remove(&group_id);
@@ -970,12 +978,28 @@ pub fn get_group_todos_context(
 pub fn take_group_todo_focus(
     state: tauri::State<'_, Arc<AppState>>,
     group_id: String,
-) -> Option<String> {
+) -> Option<crate::state::TodoFocus> {
     state
         .todo_focus_request
         .lock()
         .unwrap_or_else(|e| e.into_inner())
         .remove(&group_id)
+}
+
+/// 「到了那条任务之后干什么」的唯一口径：`detail` 展开详情、`highlight` 只滚过去闪一下。
+///
+/// 缺省 = `detail`（老调用点不带这个参数，行为一字不变）。任何别的值都拒 —— 这条串会被
+/// 独立窗口当成指令执行，不能让它自由发挥。
+///
+/// `cfg(desktop)`：只有桌面那两条命令用它（移动端是桩、没有独立任务窗口）⇒ 不加这个门
+/// 会在 Android 上变成 dead_code，撞"零 warning"那条铁律。
+#[cfg(desktop)]
+fn norm_focus_mode(mode: Option<String>) -> Result<String, String> {
+    match mode.as_deref() {
+        None | Some("") | Some("detail") => Ok("detail".to_string()),
+        Some("highlight") => Ok("highlight".to_string()),
+        Some(other) => Err(format!("聚焦方式非法：{other}")),
+    }
 }
 
 /// 「只投递展开请求」，不碰窗口本身 —— 因为前端的启动器有**单飞 + 防抖**。
@@ -995,6 +1019,7 @@ pub fn request_group_todo_focus(
     state: tauri::State<'_, Arc<AppState>>,
     group_id: String,
     todo_id: String,
+    mode: Option<String>,
 ) -> Result<(), String> {
     use tauri::Emitter;
     if group_id.is_empty()
@@ -1013,11 +1038,18 @@ pub fn request_group_todo_focus(
     {
         return Err("任务 ID 非法".to_string());
     }
+    let mode = norm_focus_mode(mode)?;
     state
         .todo_focus_request
         .lock()
         .unwrap_or_else(|e| e.into_inner())
-        .insert(group_id.clone(), todo_id);
+        .insert(
+            group_id.clone(),
+            crate::state::TodoFocus {
+                todo_id,
+                mode,
+            },
+        );
     set_task_window_group(&state, &group_id);
     // 窗口已经开着 ⇒ 它不会经历挂载，只能靠这条通知去"换群 + 重读 + 展开"。
     // 窗口不存在（或只是预热过）⇒ 什么都不发：它挂载时会自己取上下文与暂存。
@@ -1039,6 +1071,7 @@ pub fn request_group_todo_focus(
     _state: tauri::State<'_, Arc<AppState>>,
     _group_id: String,
     _todo_id: String,
+    _mode: Option<String>,
 ) -> Result<(), String> {
     Err("移动端没有独立群任务窗口（任务面板是应用内弹窗）".to_string())
 }
@@ -1052,6 +1085,7 @@ pub fn open_group_todos_window(
     _app: tauri::AppHandle,
     _group_id: String,
     _focus_todo_id: Option<String>,
+    _focus_mode: Option<String>,
 ) -> Result<(), String> {
     Err("移动端没有独立群任务窗口（任务面板是应用内弹窗）".to_string())
 }

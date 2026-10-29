@@ -766,7 +766,11 @@ test("桌面端任务窗口的展开投递：两条路 + 独立于启动器 + �
   //  重新挂载、也就不会自己重读数据，不收到的话看到的就是上一次那份旧列表。
   //  条件里再带 `focus_todo_id.is_some()` 就等于"只是打开看板"那次不刷新，所以判据是**恰好**
   //  `if !created {`，多一个条件都要红。）
-  assert.match(openBody, /pending\.insert\(group_id\.clone\(\), id\.clone\(\)\)/, "带目标时必须写暂存");
+  // 带目标时必须写暂存（2026-10-29 起存的是 `TodoFocus { todo_id, mode }`：
+  // 卡片上半区要的是"滚过去闪一下"，底部「查看任务」才是展开详情，两者必须一起交过去）
+  assert.match(openBody, /pending\.insert\(/, "带目标时必须写暂存");
+  assert.match(openBody, /todo_id: id\.clone\(\)/, "暂存必须带上要落到哪一条");
+  assert.match(openBody, /mode,/, "暂存必须带上到了之后干什么（detail / highlight）");
   assert.match(openBody, /pending\.remove\(&group_id\)/, "不带目标时必须清掉上次暂存");
   assert.match(openBody, /if !created \{/, "复用时（没经历挂载）必须无条件定向发事件");
   assert.doesNotMatch(

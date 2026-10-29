@@ -529,6 +529,13 @@ window.__probe = (() => {
     }
     if (extra.liveModel) state.liveModel = true;
     delete extra.liveModel;
+    // 任务看板的"滚过去闪一下"（--only=tasksrt）：要能在挂载后改这两个 prop，
+    // 所以它们也必须读 reactive 状态（与 open 同理，写死在 extra 里就改不动）。
+    if (extra.highlight) {
+      state.highlightTodoId = null;
+      state.highlightSeq = 0;
+      delete extra.highlight;
+    }
     // 通用夹具会给每个组件塞 open/initialKeyword/groupId。根节点恰好是 SelectRoot 时，
     // open=false 会经 fallthrough 变成"受控且永不打开"——测出来像库坏了，其实是夹具串味。
     // isolated=true 时只传调用方显式给的 props（--only=select 用）。
@@ -590,6 +597,12 @@ window.__probe = (() => {
         },
       };
       if (state.liveModel) props.modelValue = state.selectValue;
+      // 只在调用方显式开了 highlight 时才透传：否则这两个 prop 会以属性形式落到
+      // 所有组件的根节点上（其它段的 DOM 判据不该看到无关属性）。
+      if (state.highlightSeq !== undefined) {
+        props.highlightTodoId = state.highlightTodoId;
+        props.highlightSeq = state.highlightSeq;
+      }
       return props;
     };
     const app = Vue.createApp({
@@ -17032,6 +17045,46 @@ async function runTasksRealtime(cdp, url) {
     const row = btn.closest('div.relative');
     const hit = row ? row.querySelector(':scope > span[aria-hidden="true"]') : null;
     if (hit) { hit.style.background = ''; hit.style.transition = ''; } return true; })()`);
+
+  // —— 卡片**上半区**：滚到那条并闪一下，且**不**打开详情（负责人 2026-10-29）——
+  // 重新挂一块带视口高度与 highlight 支持的看板：换一批行，目标是最后一条。
+  await cdp.eval(`(async () => {
+    const now = Date.now();
+    window.__probe.todoRows(Array.from({ length: 6 }, (_, i) => window.__mk('H' + i, 10 + i, 'todo', {
+      title: 'u5b9au4f4du884c' + i, number: 10 + i,
+    }, now - i * 1000)));
+    return window.__probe.todoRows.length;
+  })()`);
+  await cdp.eval(`window.__probe.install('/src/components/GroupTasksBoard.vue', '', ${JSON.stringify(JSON.stringify({ groupId: "g1", open: true, hostHeight: 220, highlight: true }))})`);
+  await waitFor(async () => (await view()).rowTitles.length >= 6, 4_000);
+  await cdp.eval("(async () => { window.__st.highlightTodoId = 'H5'; window.__st.highlightSeq = 1; return true; })()");
+  const hl = await waitFor(async () => {
+    const r = await cdp.eval(`(() => {
+      const row = document.querySelector('[data-todo-row="H5"]');
+      if (!row || !row.classList.contains('todo-row-flash')) return null;
+      const box = row.getBoundingClientRect();
+      return {
+        flashing: true,
+        onScreen: box.top >= -1 && box.bottom <= window.innerHeight + 1,
+        dialogs: document.querySelectorAll('[role="dialog"]').length,
+      };
+    })()`);
+    return r;
+  }, 4_000);
+  check("卡片上半区：目标行拿到闪烁类、落到视口内、且**没有**打开详情弹窗",
+    !!hl && hl.flashing && hl.onScreen && hl.dialogs === 0,
+    JSON.stringify(hl), JSON.stringify(hl));
+  // 反向：同一张卡片再来一次（序号 +1）必须重新闪 —— 详情那条 watch 靠 open 翻转去重，
+  // 高亮这条不许跟着它一起"第二次就不灵"。
+  await cdp.eval("(async () => { window.__st.highlightSeq = 2; return true; })()");
+  const again = await waitFor(async () => {
+    const r = await cdp.eval(`(() => {
+      const row = document.querySelector('[data-todo-row="H5"]');
+      return row ? row.classList.contains('todo-row-flash') : false;
+    })()`);
+    return r ? { flashingAgain: true } : null;
+  }, 2_000);
+  check("卡片上半区：同一条连点第二次仍然重新闪", !!again && again.flashingAgain, JSON.stringify(again), JSON.stringify(again));
 }
 
 /**

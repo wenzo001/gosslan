@@ -69,10 +69,11 @@ const emit = defineEmits<{
    */
   (e: "open", todoId: string | undefined): void;
   /**
-   * 点**卡片主体**（头部 / 描述 / 指派人）：只打开群任务面板，不直达某条详情。
+   * 点**卡片主体**（头部 / 描述 / 指派人）：打开群任务面板并**定位到这条**（滚过去 + 闪一下），
+   * 不展开详情。载荷与「查看任务」同一个 todo_id；两者只差"到了之后干什么"。
    * 与底部按钮是两个互不重叠的命中区，不共用一个处理器。
    */
-  (e: "open-panel"): void;
+  (e: "open-panel", todoId: string | undefined): void;
 }>();
 
 const { memberProfile } = useMemberProfile();
@@ -140,12 +141,14 @@ function openPanel(e: MouseEvent) {
   // 不用 `hasTextSelection()`：那会把"别处还留着一次选区、这次真的想点开卡片"也吞掉。
   const card = e.currentTarget;
   if (card instanceof Element && selectionTextWithin(card)) return;
-  emit("open-panel");
+  // 带上 todoId：面板打开后要**滚到这条并闪一下**（负责人 2026-10-29："点上半区只表示是哪条"）。
+  // 与底部「查看任务」的差别只在 mode，落在哪一条上是同一份数据。
+  emit("open-panel", todoId.value);
 }
 function openPanelKey(e: KeyboardEvent) {
   if (e.key !== "Enter" && e.key !== " ") return;
   e.preventDefault(); // 空格不滚页
-  emit("open-panel");
+  emit("open-panel", todoId.value);
 }
 /**
  * 卡片显示的状态 = **当前**状态（折叠结果），查不到才退回创建时的快照。

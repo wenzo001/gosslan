@@ -1057,6 +1057,18 @@ impl GroupFileKey {
     }
 }
 
+/// 窗口打开后要把那条任务"怎么办"（见 `todo_focus_request`）。
+///
+/// 两个模式对应任务卡上的两个命中区（2026-10-29 负责人）：
+/// - `detail`：底部「查看任务」—— 落到那条任务的**详情**是既有行为；
+/// - `highlight`：卡片**上半区** —— 只滚到这条并闪一下，表示"就是这一条"，不展开详情。
+#[derive(Clone, Debug, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TodoFocus {
+    pub todo_id: String,
+    pub mode: String,
+}
+
 pub struct AppState {
     pub app: AppHandle,
     pub db: DbLock<Connection>,
@@ -1202,7 +1214,7 @@ pub struct AppState {
     /// 所以每次 `open_group_todos_window` 都写这里（不带 todoId 时**清掉**，
     /// 否则下次从标题栏按钮打开会莫名展开上次那条），窗口挂载时取走一次；
     /// 只有"窗口本来就开着"（不会经历挂载）才走定向事件那条路。
-    pub todo_focus_request: Mutex<std::collections::HashMap<String, String>>,
+    pub todo_focus_request: Mutex<std::collections::HashMap<String, TodoFocus>>,
     /// 独立「图片预览」窗口当前该显示哪一份相册（用户 2026-09-24 #40）。
     ///
     /// 这是**当前值**而不是一次性请求：每次投递都整体覆盖，所以窗口不管是挂载后自己来取、
