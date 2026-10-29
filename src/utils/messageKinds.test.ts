@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
+import { tsFnBody } from "./tsSource.ts";
 import {
   BUBBLE_KINDS,
   CARD_KINDS,
@@ -580,6 +581,33 @@ test("转发落点：单条 / 批量 / 收藏 三处都按 isTransferKind 选通
       /(?:f|msg|m)\.kind === "file" \?/,
       `${label} 还留着"只判 file"的三元式 —— 图片会漏进 send()`,
     );
+  }
+});
+
+/**
+ * **批量逐条转发也要过越权闸**（2026-10-29 审计 DUP-02 的残留）。
+ *
+ * 后端 `owned_payload_rejection` 只在**给了 `msg_id`** 时才要求「这条路径归这条消息」
+ * —— 不给就是"用户自己挑的文件"，放行。单条转发（消息气泡 → 弹窗）一直传，
+ * 批量这条漏了 ⇒ 同一份判据在两条入口上一宽一严。
+ * 单条那侧一并钉住，否则删掉两边都没人喊。
+ */
+test("批量逐条转发：两条通道都必须把 msg_id 交给后端（与单条同一道闸）", () => {
+  const here = dirname(fileURLToPath(import.meta.url));
+  const src = readFileSync(join(here, "..", "components", "ChatWindow.vue"), "utf8");
+  const batch = tsFnBody(src, "async function forwardOne(");
+  assert.ok(batch.length > 0, "找不到 forwardOne（判据会空转）");
+  const calls = [...batch.matchAll(/chat\.send(?:Group)?FileTo\(((?:[^()]|\([^()]*\))*)\)/g)];
+  assert.equal(calls.length, 2, `forwardOne 里应有 2 处发送调用，实际 ${calls.length} ⇒ 判据要跟着改`);
+  for (const c of calls) {
+    assert.match(c[1], /\bm\.msg_id\b/, `这条通道漏了 msg_id：${c[0]}`);
+  }
+  const single = tsFnBody(src, "async function doForward(");
+  assert.ok(single.length > 0, "找不到 doForward（判据会空转）");
+  const singleCalls = [...single.matchAll(/chat\.send(?:Group)?FileTo\(((?:[^()]|\([^()]*\))*)\)/g)];
+  assert.equal(singleCalls.length, 2, `doForward 里应有 2 处发送调用，实际 ${singleCalls.length}`);
+  for (const c of singleCalls) {
+    assert.match(c[1], /\bf\.msgId\b/, `单条转发这条通道漏了 msgId：${c[0]}`);
   }
 });
 

@@ -327,6 +327,33 @@ export function isForwardableKind(kind: string): boolean {
 边界：它的 `--ignored` 跑法写在用例注释里，**升级前需要人工跑一次**；要自动化得先造一份
 "旧 schema + 代表性数据"的夹具，属于独立工作。
 
+### 4.0e TST-05 的复核：审计指错了地方（编号不变性与权限窄档都有真用例）
+
+审计说「群任务的 CRUD 写路径（改状态/归档/重开/认领）无独立单测，编号不变性只在跨进程轮」。
+逐处读码后**这条不成立**，缺的只有"命令体本身"，而它需要的是一个本仓还没有的 `AppState` 夹具
+（与 TST-04 同一个阻塞）：
+
+| 审计点 | 实况 | 证据 |
+|---|---|---|
+| 编号不变性"只在跨进程轮" | **有 4 条内存库单测**：从 1 起递增 / 删光消息也不回收 / 对端自报的号也进高水位 / 老载荷没有 `number` 解析成 0 | `src-tauri/src/db/groups.rs` 的 `todo_number_tests`（`numbers_are_not_reused_after_messages_are_deleted` 等） |
+| 归档/重开/认领的判权无单测 | **有**：`archive_only_change` 8 格、`claim_only_change` 十余格、`may_change_todo` 正反各一组、`resolve_done_archive` 7 格（含"非终态不许归档""重复保存不重置完成时间""客户端不能伪造 done_at"） | `src-tauri/src/commands/logs_tests.rs` |
+| 命令体（`update_group_todo` 的参数校验/库回填/发帧） | **确实没有**：要构造 `AppState`（db + logger + 各类注册表），本仓没有这个夹具 | 与 TST-04 同一个前置条件 |
+
+⇒ 结论：**不新增用例**。将来若有人做 `AppState` 夹具，TST-04 与 TST-05 的命令体用例可以一起补。
+
+### 4.0f DUP-02 的残留：批量逐条转发漏了 `msg_id`（越权闸少一道）
+
+审计 DUP-02 说"转发判据 4 处各写一份"。其中**通道选择**已在 5.15.9 收成 `isTransferKind` 一处，
+但**越权闸**还差一条：后端 `owned_payload_rejection` 只在**给了 `msg_id`** 时才要求
+「这条路径归这条消息」，不给就按"用户自己挑的文件"放行。单条转发（消息气泡 → 转发弹窗）一直传，
+**批量逐条那条（`forwardOne`）没传** ⇒ 同一份判据在两条入口上一宽一严。
+
+已修：`forwardOne` 的两条通道（群 / 单聊）都把 `m.msg_id` 交给后端；新用例
+「批量逐条转发：两条通道都必须把 msg_id 交给后端（与单条同一道闸）」同时钉住单条那侧
+（`f.msgId`）与调用数（各 2 处），变异（去掉 `m.msg_id`）⇒ 红，还原 ⇒ 绿。
+顺带把取函数本体的 `tsFnBody` 从 `longPress.test.ts` 里提取出来（`utils/tsSource.ts`），
+两处守卫共用一份，不再各抄一份。
+
 ### 4.1 已核查且未发现问题的稳定性面
 
 - **锁顺序**：全仓无 `peers↔db` 嵌套；`file_receivers→db` 顺序成立。
@@ -356,7 +383,7 @@ export function isForwardableKind(kind: string): boolean {
 | **P16** | 文档点名的五档错误语义里 `recoverable`/`user_action_required`/`security_related` **全仓 0 命中**；只有文件/内容传输族有真分类（`FailReason` 九档 + `retryable()`），协议族（`verify_hello` 验签失败）与通用路径是自由文本 | `src-tauri/src/commands/files.rs`、`network/transport/handshake.rs:56` |
 | **P18** | 判据 A/B 真实存在且已接门禁（96 类型 + 169 命令体，0 违规），但 `Identity` 私钥字段仍是 `pub`，`x25519_secret_b64()`/`ed25519_secret_b64()` 是两条现成的导出器；文档点名的 B-1a 补救（改私有 + 只暴露 `sign()`/`dh()`）未发生 | `src-tauri/src/crypto.rs` |
 | **P27** | 已读与红点共用 `chatViewerLooking()`，但**系统通知那一族四处**（`useChatStore.ts:326/481/500/661`）用 `!document.hidden && document.hasFocus() && activeConv===conv_id` —— 第三个条件是子集，守卫只数 `!document.hidden && app.chatVisible` 这个组合所以看不见 | `src/stores/useChatStore.ts` |
-| **P34** | 十二处慢活逐格在池内、位置断言在、`Err` 不伪装成 `Ok`；但文档规则 6 写死的"现算处数 17"与判据实际钉的 **18** 不同步 | `docs/protocol-invariants.md` vs 判据 |
+| **P34** | 原状：十二处慢活逐格在池内、位置断言在、`Err` 不伪装成 `Ok`；但文档规则 6 写死的"现算处数 17"与判据实际钉的 **18** 不同步。**2026-10-29 晚已改文档（17 → 19，与判据同句说明"法条上的数要跟着判据走"）**；STB-01 那处 `write_all(` 已随 5.15.10 收进 `PRIMITIVES` | `docs/protocol-invariants.md` vs `lib_relay_data_tests.rs` |
 
 ### 5.1 规范与代码的分歧（不绑定到单条要求）
 
@@ -491,7 +518,7 @@ export function isForwardableKind(kind: string): boolean {
 
 | 序 | 项 | 类型 |
 |---|---|---|
-| 10 | INV-P16 错误语义五档 / INV-P18 私钥字段私有化 / INV-P27 通知口径 / INV-P34 数字同步 | 规范偏差（4 条 partial） |
+| 10 | INV-P16 错误语义五档 / INV-P18 私钥字段私有化（**P27 已判与 spec 对齐、P34 已改文档同步**，见 §4.0c/§4.0e） | 规范偏差（剩 2 条） |
 | 11 | SEC-02 `peers` 表条数上限 + announce 限流 | 安全 |
 | 12 | DUP-02 转发判据收成一家（4 处 → 1 处） | 重复实现 |
 | 13 | DUP-09～DUP-12 加跨层字面值对账守卫 | 重复实现 |
