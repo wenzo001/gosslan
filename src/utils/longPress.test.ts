@@ -70,6 +70,23 @@ test("抬手吞掉规则：只有「面板是这次按压弹出的 + 面板还�
   assert.equal(shouldSwallowLongPressRelease({ openedByHeldPress: false, sheetOpen: false }), false);
 });
 
+/** 按花括号配对取一个函数的本体（够用即可，不解析语法；字符串里的花括号本项目里不会出现在这两处）。 */
+function tsFnBody(src: string, signature: string): string {
+  const at = src.indexOf(signature);
+  if (at < 0) return "";
+  const open = src.indexOf("{", at);
+  if (open < 0) return "";
+  let depth = 0;
+  for (let i = open; i < src.length; i += 1) {
+    if (src[i] === "{") depth += 1;
+    else if (src[i] === "}") {
+      depth -= 1;
+      if (depth === 0) return src.slice(at, i + 1);
+    }
+  }
+  return src.slice(at);
+}
+
 test("操作面板：点任何一项都必须收起（引用/转发会跳到别处，更必须先收）", () => {
   // ① 面板层统一收起：成熟产品（iOS ActionSheet / 微信 / Telegram 底部菜单）都是"点一项即消失"。
   //    用户 2026-09-13 安卓实测：「点『引用』这个 sheet 应该自动隐藏；点『转发』也应该自动隐藏，
@@ -99,9 +116,11 @@ test("操作面板：点任何一项都必须收起（引用/转发会跳到别�
   //    即使以后面板的通用规则改了，也不该让 sheet 留在跳转后的界面上面。
   const item = read("components/MessageItem.vue");
   for (const fn of ["function doQuote", "function doForward"]) {
-    const at = item.indexOf(fn);
-    assert.ok(at > 0, `找不到 ${fn}（护栏需要同步更新）`);
-    const body = item.slice(at, at + 600);
+    // ⚠️ 按**花括号配对**切函数体，不用固定窗口：原来是 `slice(at, at + 600)`，
+    //    2026-10-29 只给 doForward 加了 3 行注释就把调用点挤到 608 字符处 ⇒ 判据假红。
+    //    固定窗口还有个更糟的方向：调用写在函数**外面**、但落在窗口里，它照样绿。
+    const body = tsFnBody(item, fn);
+    assert.ok(body.length > 0, `找不到 ${fn} 的函数体（护栏需要同步更新）`);
     assert.match(
       body,
       /closeActionSheet\(\)/,

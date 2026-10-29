@@ -47,7 +47,7 @@ import { foldReactions, hasMyReaction, type ReactionChip } from "@/utils/reactio
 import { foldReminders, type ReminderState } from "@/utils/reminders";
 import { foldPinned, isPinned } from "@/utils/pins";
 import { foldTodos, todoLiveMap, todoTombstoneIds } from "@/utils/todos";
-import { groupSide, isRenderedInTimeline } from "@/utils/messageKinds";
+import { groupSide, isRenderedInTimeline, isTransferKind } from "@/utils/messageKinds";
 import { recallTargetOf } from "@/utils/recall";
 import { shouldShowTimeDivider } from "@/utils/previewMetrics";
 import { activePopupKey } from "@/utils/popupRegistry";
@@ -1257,7 +1257,8 @@ async function doForward(convId: string) {
   forward.value = null;
   if (!f) return;
   try {
-    if (f.kind === "file") {
+    // 媒体（文件 + 图片）按本地路径重发一遍；判据只在 `isTransferKind` 一处。
+    if (isTransferKind(f.kind)) {
       // 文件转发＝按本地路径把文件重发一遍（内容 JSON 只是元信息，直接转发会指向本机路径）
       if (!f.filePath) {
         app.toast(t("chat.toast.fileNotForward"), "info");
@@ -1406,7 +1407,7 @@ function filePathOf(rec: MessageRecord): string {
  * `classify_file_subtype(name)` 判回 `kind="image"`，path 换成**接收方自己的**落盘路径。
  */
 async function forwardOne(convId: string, m: MessageRecord) {
-  if (m.kind === "file" || m.kind === "image") {
+  if (isTransferKind(m.kind)) {
     const path = filePathOf(m);
     if (!path) {
       app.toast(t(m.kind === "image" ? "chat.toast.imageNotForward" : "chat.toast.fileNotForward"), "info");
