@@ -13,6 +13,35 @@
 
 ## [Unreleased]
 
+## [5.15.58] - 2026-10-31
+
+### 迁移读不到 schema 就停下，不再「跳过一步、版本号照常前进」（B3-F1）
+
+v1→v2 到 v4→v5 那四步的写法是「先问列在不在，读失败就 `eprintln!("skip")` 继续」，
+而 runner 紧接着无条件写 `user_version` —— 于是「读不到 schema」这一格的效果是：
+**DDL 没执行、步骤报成功、版本号前进** ⇒ 列永久缺失，且此后的启动不会再跑这一步。
+那几行 `eprintln!` 还发生在 logger 就绪之前，打包版里没人读得到。
+
+- 新增 `ensure_column`（先问表在不在 → 再问列在不在 → 再改），四处迁移都走它；
+  读不到 schema 时**返回错误**（= 启动停在半迁移状态之前），只有「表本身不在」才跳过
+  （真机不会走到那一支：`init` 先跑 `SCHEMA`）。
+- 顺手收掉同族三处静默：v4→v5 的 `let _ = tx.execute(...)`（DDL 失败被吞）、
+  `init` 里 `PRAGMA user_version` 读失败折成 0（= 把"读不到"当成"最老的库"，整链重放）、
+  `column_exists(..).unwrap_or(false)`（读失败 ⇒ 静默少建一条热查询索引）。
+- 启动留痕 `BOOT_DB_STATE` 补 `user_version=` 与 `migrated=v{from}→v{to}`
+  （迁移发生在 logger 之前，这是事后唯一读得到的地方）。
+- 判据：① `a_migration_step_aborts_instead_of_advancing_when_the_schema_probe_fails` ——
+  用**真的**读失败（一张同名真实表遮住 `pragma_table_info`，sqlite 报
+  "is not a function"）证明中止且版本号不动；② 正控：同一版本正常库上照常建列且幂等；
+  ③ 形状：四处都走 `ensure_column`、四种吞掉的写法不许回来；④ `BOOT_DB_STATE` 两字段在。
+- 变异两处：把探针的 `?` 改成 `.unwrap_or(true)` ⇒ 版本号前进到 2 当场红；
+  把 `user_version=` 改成 `uv=` ⇒ 留痕判据点名。`cmp` 逐字节还原。
+
+**真跑过的验证**：`cargo test --lib --features bluetooth` **1333 通过 / 0 失败**（3 ignored）；
+`cargo clippy -D warnings --all-targets` / `cargo fmt --check --all` 0 红 / 0 差异；
+静默丢弃棘轮仍 79 处（本批没新增 `.ok();`）；`npm run verify:local` **26 步全绿**。
+**没跑/没做的**：Android 腿的迁移路径（同一份 SQL，但没在真机库上跑过）。
+
 ## [5.15.57] - 2026-10-31
 
 ### 给 `.ok();` 收一道棘轮（B4-F1）：79 处先量清三级，从此只许降

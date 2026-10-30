@@ -41,6 +41,49 @@ fn column_exists(conn: &Connection, table: &str, col: &str) -> Result<bool> {
     Ok(exists)
 }
 
+/// 加一列（幂等）：**先问，再改**；返回"这次真的加了"。
+///
+/// 读不到 schema 时直接报错，**不许**当成"列已存在"跳过（审计 B3-F1）：
+/// 那样 DDL 不执行、步骤却报成功、`user_version` 照样前进 ⇒ 列永久缺失，
+/// 而且此后的启动不会再跑这一步。`pragma_table_info('不存在的表')` 返回 0 行、
+/// 不报错，所以"只判列存在"这条兜不住建表失败。
+fn ensure_column(conn: &Connection, table: &str, col: &str, ddl: &str) -> Result<bool> {
+    // 表本身不在 ⇒ 这一步无事可做。真机不会走到这里（`init` 先 `execute_batch(SCHEMA)`，
+    // 19 张表都在）；这一条是给"在只含部分表的合成老库上重放迁移"的用例准备的
+    // （`migration_tests::a_failing_migration_step_rolls_back_…`，与 v11→v12 同一个理由）。
+    // 注意它判的是**表存不存在**，不是"读不到 schema"：后者仍然在下一句上抛。
+    let table_exists: bool = conn.query_row(
+        "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = ?1",
+        [table],
+        |r| r.get::<_, i64>(0),
+    )? > 0;
+    if !table_exists {
+        return Ok(false);
+    }
+    if column_exists(conn, table, col)? {
+        return Ok(false);
+    }
+    conn.execute(ddl, [])?;
+    Ok(true)
+}
+
+/// 读库的 schema 版本。全仓唯一一处拼这句 SQL 的公开入口（读失败要能被调用方看见）。
+pub fn user_version(conn: &Connection) -> Result<u32> {
+    let v: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0))?;
+    u32::try_from(v).map_err(|_| rusqlite::Error::IntegralValueOutOfRange(0, v))
+}
+
+/// 本次进程里迁移走过的`(from, to)`；`None` = 没迁移。
+///
+/// 只给启动留痕用：迁移发生在 logger 就绪之前，那几行 `eprintln!` 在打包版里没人读得到
+/// （审计 B3-F1 第二半）⇒ 由 `BOOT_DB_STATE` 把它带进日志。
+static LAST_MIGRATION: std::sync::Mutex<Option<(u32, u32)>> = std::sync::Mutex::new(None);
+
+/// 见 [`LAST_MIGRATION`]。
+pub fn last_migration() -> Option<(u32, u32)> {
+    *LAST_MIGRATION.lock().unwrap_or_else(|e| e.into_inner())
+}
+
 /// `init()` 的失败分类 —— **必须是有类型的**，不许让调用方按错误字符串猜。
 ///
 /// 协议层已经在这上面摔过一次：`decode_frame` 用 `unknown variant` 前缀分类，结果把
@@ -269,6 +312,8 @@ fn run_migrations(conn: &Connection, current: u32) -> Result<()> {
     if current == DB_VERSION {
         return Ok(());
     }
+    // 先记下来再跑：中途失败时"走到哪一版"同样要能被 BOOT_DB_STATE 读出来。
+    *LAST_MIGRATION.lock().unwrap_or_else(|e| e.into_inner()) = Some((current, DB_VERSION));
     for step in MIGRATIONS.iter() {
         if step.from >= DB_VERSION {
             break;
@@ -410,15 +455,7 @@ const MIGRATIONS: &[Migration] = &[
                     "ALTER TABLE friends ADD COLUMN ed25519_pubkey TEXT",
                 ),
             ] {
-                match column_exists(&tx, "friends", col) {
-                    Ok(false) => {
-                        tx.execute(sql, [])?;
-                    }
-                    Ok(true) => {}
-                    Err(e) => {
-                        eprintln!("[gosslan-db] v1→v2: skip {col}: {e}");
-                    }
-                }
+                ensure_column(&tx, "friends", col, sql)?;
             }
             tx.commit()?;
             Ok(())
@@ -434,21 +471,18 @@ const MIGRATIONS: &[Migration] = &[
         description: "messages 加 seq 列 + 回填 + idx_messages_conv_seq",
         run: |conn| {
             let tx = conn.unchecked_transaction()?;
-            match column_exists(&tx, "messages", "seq") {
-                Ok(false) => {
-                    tx.execute(
-                        "ALTER TABLE messages ADD COLUMN seq INTEGER NOT NULL DEFAULT 0",
-                        [],
-                    )?;
-                    tx.execute(
-                        "UPDATE messages SET seq = (SELECT COUNT(*) FROM messages m2 WHERE m2.conv_id = messages.conv_id AND (m2.ts < messages.ts OR (m2.ts = messages.ts AND m2.id <= messages.id)))",
-                        [],
-                    )?;
-                }
-                Ok(true) => {}
-                Err(e) => {
-                    eprintln!("[gosslan-db] v2→v3: skip: {e}");
-                }
+            let added = ensure_column(
+                &tx,
+                "messages",
+                "seq",
+                "ALTER TABLE messages ADD COLUMN seq INTEGER NOT NULL DEFAULT 0",
+            )?;
+            // 回填只在**这次真的加了列**时做：列早就存在的话回填会把已有 seq 重算一遍。
+            if added {
+                tx.execute(
+                    "UPDATE messages SET seq = (SELECT COUNT(*) FROM messages m2 WHERE m2.conv_id = messages.conv_id AND (m2.ts < messages.ts OR (m2.ts = messages.ts AND m2.id <= messages.id)))",
+                    [],
+                )?;
             }
             tx.execute(
                 "CREATE INDEX IF NOT EXISTS idx_messages_conv_seq ON messages(conv_id, seq)",
@@ -465,18 +499,12 @@ const MIGRATIONS: &[Migration] = &[
         description: "conversations 加 pinned 列",
         run: |conn| {
             let tx = conn.unchecked_transaction()?;
-            match column_exists(&tx, "conversations", "pinned") {
-                Ok(false) => {
-                    tx.execute(
-                        "ALTER TABLE conversations ADD COLUMN pinned INTEGER NOT NULL DEFAULT 0",
-                        [],
-                    )?;
-                }
-                Ok(true) => {}
-                Err(e) => {
-                    eprintln!("[gosslan-db] v3→v4: skip: {e}");
-                }
-            }
+            ensure_column(
+                &tx,
+                "conversations",
+                "pinned",
+                "ALTER TABLE conversations ADD COLUMN pinned INTEGER NOT NULL DEFAULT 0",
+            )?;
             tx.commit()?;
             Ok(())
         },
@@ -489,18 +517,14 @@ const MIGRATIONS: &[Migration] = &[
         run: |conn| {
             let tx = conn.unchecked_transaction()?;
             for (col, default) in [("scope", "'chat'"), ("todo_id", "''")] {
-                match column_exists(&tx, "group_files", col) {
-                    Ok(false) => {
-                        let _ = tx.execute(
-                            &format!("ALTER TABLE group_files ADD COLUMN {col} TEXT NOT NULL DEFAULT {default}"),
-                            [],
-                        );
-                    }
-                    Ok(true) => {}
-                    Err(e) => {
-                        eprintln!("[gosslan-db] v4→v5: skip {col}: {e}");
-                    }
-                }
+                ensure_column(
+                    &tx,
+                    "group_files",
+                    col,
+                    &format!(
+                        "ALTER TABLE group_files ADD COLUMN {col} TEXT NOT NULL DEFAULT {default}"
+                    ),
+                )?;
             }
             tx.commit()?;
             Ok(())
@@ -1269,9 +1293,9 @@ pub fn init_with_notices(path: &Path) -> std::result::Result<(Connection, Vec<St
     // ★ 位置是**语义的一部分**：必须早于下面任何一句写操作。`execute_batch(SCHEMA)`
     //   看着是 `CREATE TABLE IF NOT EXISTS`（对老表无害），但它确实写文件，而且一旦先跑它，
     //   "你的数据没有被改动"这句提示就成了谎话。全仓只允许这一处降级判定。
-    let current: u32 = conn
-        .query_row("PRAGMA user_version", [], |r| r.get(0))
-        .unwrap_or(0);
+    // ⚠️ 读失败**不许**折叠成 0：那等于把"读不到 schema"当成"最老的库"，整条迁移链会被重放，
+    // 而每一步的"先问再改"在这种状态下同样不可信（审计 B3-F1 的同族）。
+    let current: u32 = user_version(&conn)?;
     if current > DB_VERSION {
         let err = InitError::Downgrade { current };
         eprintln!("[gosslan-db] FATAL: {err}");
@@ -1334,7 +1358,9 @@ pub fn init_with_notices(path: &Path) -> std::result::Result<(Connection, Vec<St
     // 「no such column: status ⇒ 老库打不开」的形态炸掉启动
     // （`index_on_a_migration_added_column_must_not_live_in_schema`）。
     // 迁移跑完之后按列存在性建一次（幂等）。
-    if column_exists(&conn, "messages", "status").unwrap_or(false) {
+    // ⚠️ 这里也不许把读失败折成 false（审计 B3-F1 同族）：那会静默少建一条热查询索引，
+    // 而这个函数跑在迁移**之后** —— 读不到 schema 就说明库已坏，停在启动前更诚实。
+    if column_exists(&conn, "messages", "status")? {
         conn.execute_batch(
             "CREATE INDEX IF NOT EXISTS idx_messages_sending ON messages(ts) WHERE status = 'sending';",
         )?;
