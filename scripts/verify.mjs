@@ -327,6 +327,18 @@ const steps = [
   },
   {
     group: "frontend",
+    name: "静默丢弃棘轮（.ok();）",
+    why:
+      "`.ok();` 把失败变成「没有错误」，语句形式连「收到过什么」都不留 —— 写库失败时界面照常前进、" +
+      "日志一行没有（审计 B4-F1 的 79 处就是这种形状）。硬零：`set_message_status` / " +
+      "`set_message_failed` / `apply_recall` 这三个托着承诺的写不许再这样出现（清过就不许回来）；" +
+      "其余按文件计数只许降，基线只能由脚本自己的 --update 生成，注释/字符串/`#[cfg(test)]` 都剔除，每次先过 14 条正反控。",
+    cwd: ROOT,
+    cmd: NODE_EXE,
+    args: ["scripts/check-silent-drops.mjs"],
+  },
+  {
+    group: "frontend",
     name: "文档硬数字对账",
     why: "挡住「文档抄了一份数字、下次改代码没人回来改它」——门禁步数由 verify --list 现算对账；取锁点条数一律禁止手写（曾在四处共存三种写法）",
     cwd: ROOT,
