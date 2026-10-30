@@ -13,14 +13,45 @@
 
 ## [Unreleased]
 
+## [5.15.30] - 2026-10-30
+
+### 订正我自己 5.15.29 写下的假前置：文件气泡**就是** `messages` 行，批 B 不需要迁移
+
+上一批我在审计册 §4.0p 与更新日志里写了一句：「文件气泡的真源不是 `messages` 行
+（1:1 = `file_transfers` + `file_outbox`，群 = `group_file_recipients`）⇒ `messages.fail_code` 接不上它
+⇒ 批 B 必须给两张传输表加 `fail_code` 列（DB v16）」。**这句是错的**，而且它的代价不是文字问题——
+它会决定下一批人去做一次根本不需要的迁移。
+
+- **现读的三条凭据**（都在源码里，可复跑）：
+  · `src-tauri/src/db/file_transfer.rs:179` —— 1:1 那一半的气泡就是
+    `set_message_status(&tx, &format!("file-{transfer_id}"), status)`；
+  · `src-tauri/src/db/file_transfer.rs:185` —— 群那一半同一形状（`gfile-`，取消路径由这里写）；
+  · `src-tauri/src/db/cascade_tests.rs:809` —— `SELECT status FROM messages WHERE msg_id = 'gfile-t5'`，
+    既有判据本来就按「`gfile-<tid>` 是 `messages` 行」断言。
+  ⇒ `msg_id` 只是长成 `file-<tid>` / `gfile-<tid>` 的样子，行就在 `messages` 表里；
+  5.15.22 的 `fail_code` 列 + `set_message_failed()` 正是它们该走的那扇门。
+- **批 B 的真实形状**（已把工单改成这句）：给 `finalize_file_failure(...)` 带一个 `fail_code` 参数、
+  群路径同写一码；**不加列、不迁移**。台账（`file_transfers` / `group_file_recipients`）继续只管
+  进度与逐收件人状态，那是**同时存在的另一样东西**。
+- **为什么会错**：我把「状态的另一份真相在传输台账里」（对）读成了「气泡不是消息行」（错）。
+  教训写成可执行的一条：**凡声明「X 不是 Y，所以得走 Z 通道」，必须先把 X 的写入语句 grep 出来**——
+  这里 `grep set_message_status` 一条就够，成本远低于一次错误的前置声明。
+- 文档订正**没有静默改写**：§4.0p 保留"这里曾写过错前置"的字样与推翻它的凭据，
+  避免下一个人以为那一句从没存在过。
+
+**真跑过的验证**：本节是文档订正，不动代码；复跑凭据即上面三条 grep，
+`npm run version:changelog` 与 `check-doc-citations` / `check-doc-numbers` 各退 0。
+
+
+
 ## [5.15.29] - 2026-10-30
 
 ### 文件失败的 `file-failed` 载荷改成稳定码（第 19 行·批 A 的前半：英文界面不再看到硬编码中文）
 
 第 19 行（"文件气泡的失败原因重启后失忆"）按负责人定的范围拆成两批，这是批 A 里**有可见收益的那一半**。
-RCA 先把文档原来写的前置否证了一次：**文件气泡的真源不是 `messages` 行**，1:1 走
-`file_transfers`(+`file_outbox`)、群文件走 `group_file_recipients` ⇒ 5.15.22 那条 `messages.fail_code`
-通道接不上它，"落库"要另加表列（批 B）。而这一批做的是**事件的载荷契约**：
+RCA 先把审计那一格写的前置否证了一次（"配码即可"不完整，要先看清码给谁读）。
+⚠️ 而**本批当时补的那条新前置也是错的**（说气泡不在 `messages` 里、批 B 要加表列）——
+已由 5.15.30 用行号证据订正，见下面那一节与审计册 §4.0p。本批做的是**事件的载荷契约**：
 
 - **挖出来的真实缺陷比文档那一格大**：把"后端往用户可见载荷里塞中文"按形状扫一遍，现数 **6 处字面量**
   ——`outbox_sweep.rs` 两处（发送超时 / 重发用尽）、`relay_file.rs` 三处（中继接收态过期 /
