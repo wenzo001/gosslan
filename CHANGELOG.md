@@ -13,6 +13,31 @@
 
 ## [Unreleased]
 
+## [5.15.48] - 2026-10-30
+
+
+### 把「量具」变成门：接收锁只许有一片的活（STB-03），两半余量口径都有非 ignored 判据（TST-06）
+
+两条此前的读数都只能人工跑（`#[ignore]`），等于"要重构时才知道自己越线了"。这一批把它们的**性质**
+做成可失败的门（计时本身还是量具 —— 读数随机器漂，做不成门）：
+
+- **STB-03**：新增 `receiver_lock_holds_only_one_chunk_worth_of_work`（非 ignored）。它按**锁段**取文本：
+  1:1 的 `write_chunk` 里那个锁块、群的 `write_group_chunk_blocking` 整个函数体；断言锁段内
+  **必须有**一片的活（`open_symmetric` / `hasher.update` / `write_all`）、**必须没有**整份文件级的活
+  （`sync_all` / `sha256_file_hex` / `std::fs::read` / `remove_file`）。外部变异（往锁块里塞一句
+  `sync_all`）⇒ 当场点名红。顺带钉住"计时量具还在"（删了它，将来动这把锁就没有读数可用）。
+  ⚠️ 两条路径的差别本身是证据：群侧的**解密在锁外**（`handle_group_file_chunk` 里做），锁内只有哈希与写。
+- **TST-06**：上一批的 `blocks_to_bytes_prefers_frsize` 是**非 ignored** 的（Linux/mac 那一半）；
+  Windows 那一半（`volume_root_of` 的卷根解析）本来就有非 ignored 用例 + 一条 windows-sys feature 判据
+  ⇒ 现在两半的"纯函数层"都被门看着，只有"真写满一块盘"仍是人工量具。
+
+
+**真跑过的验证**：`cargo test --lib --features bluetooth` **1323 通过 / 0 失败**（3 ignored；+1 条非 ignored
+的结构判据）；`npm test` **1528 通过 / 0 失败**（本批无前端改动）；`npm run verify:local` **25 步全绿**。
+外部变异：往 `write_chunk` 的锁块里塞一句 `r.file.sync_all()` ⇒ 判据点名
+「`1:1 write_chunk 锁块` 的锁段里出现了整份文件级的活 `sync_all`」（退 101），`cmp` 逐字节还原。
+**没跑的层**：计时量具（`#[ignore]`）与"真写满一块盘"仍是人工读数；把它们塞进 CI **判不做**（理由见 §4.0af）。
+
 ## [5.15.47] - 2026-10-30
 
 
