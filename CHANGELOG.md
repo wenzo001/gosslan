@@ -13,6 +13,34 @@
 
 ## [Unreleased]
 
+## [5.15.59] - 2026-10-31
+
+### 取消的结局也留一行具名码（B1-F1）：点了取消之后发生了什么，能查了
+
+同一类操作原先只有**失败**有码：群消息取消从 v1 起就有 `code=GROUP_CANCEL`，
+而 1:1 消息 / 文件 / 更新这三条通道连结局都不记。于是用户报「我明明点了取消、对方还是收到了」时，
+诊断包里没有任何东西能区分「竞态（已经送达）」「没点到（找不到这条）」「真取消了」。
+
+- 1:1 消息：`code=DM_CANCEL msg_id=… outcome=… was_written=… delivered=… remaining=…`
+  （`cancelled` / `already_delivered` / `not_found` 三种结局都记 —— 后者恰恰是最该查的那两种）。
+- 文件：`code=FILE_CANCEL transfer=… by=user cancelled=… already_done=… notified_peer=… ledger_committed=…`
+  （`notified_peer=false` 就是"对面可能还在收"的机器证据）。
+- 更新：`code=UPDATER_CANCEL outcome=refused_installing` 与 `… outcome=cancelled signalled=…`
+  （安装中被拒也是结局；`signalled=false` = 点了取消但当时没有在飞的下载）。
+- 判据 `every_cancel_channel_leaves_a_named_outcome`：三条通道各按**函数体**取文本，
+  必须出现各自的码；群侧那一行不许为了"统一命名"被删；更新那条用**计数**（两种结局各一行）。
+  ⚠️ 针头带上码名后面那半（`msg_id=` / `outcome=`）而不是只到码名 —— `matches` 是子串计数，
+  只认前缀的话 `code=UPDATER_CANCEL_X` 也会被算成一行（实测滑过去一次）。
+- **门禁抓到一次真事**：文件取消那行日志是同步 append，一加就把
+  `worker_bound_heavy_commands_do_not_grow` 从 31 顶到 32 ⇒ 已改为进 `spawn_blocking`。
+- 外部变异两处：改名破前缀 ⇒ 点名「1:1 消息取消的结局没有码」；更新侧只改一处 ⇒
+  点名「两种结局各要一行」。`cmp` 逐字节还原。
+
+**真跑过的验证**：`cargo test --lib --features bluetooth` **1334 通过 / 0 失败**（3 ignored）；
+`cargo clippy -D warnings --all-targets` / `cargo fmt --check --all` 0 红 / 0 差异；
+静默丢弃棘轮仍 79 处；`npm run verify:local` **26 步全绿**。
+**没跑/没做的**：真机点一次取消后去诊断包 `grep code=DM_CANCEL` 的端到端（要一次真实竞态）。
+
 ## [5.15.58] - 2026-10-31
 
 ### 迁移读不到 schema 就停下，不再「跳过一步、版本号照常前进」（B3-F1）

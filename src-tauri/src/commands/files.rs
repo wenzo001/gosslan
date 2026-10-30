@@ -266,10 +266,12 @@ pub async fn get_group_file_delivery_summary(
     transfer_id: String,
 ) -> Result<Option<db::GroupFileDeliverySummary>, String> {
     let s = state.inner().clone();
-    tokio::task::spawn_blocking(move || -> Result<Option<db::GroupFileDeliverySummary>, String> {
-        let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());
-        Ok(db::get_group_file_delivery_summary(&dbc, &transfer_id))
-    })
+    tokio::task::spawn_blocking(
+        move || -> Result<Option<db::GroupFileDeliverySummary>, String> {
+            let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());
+            Ok(db::get_group_file_delivery_summary(&dbc, &transfer_id))
+        },
+    )
     .await
     .map_err(|e| format!("投递统计读取被线程池中断: {e}"))?
 }
@@ -432,12 +434,7 @@ fn build_file_message(
 /// `finalize_file_failure` 现在是一个事务：失败即整体回滚。把它折成 `false` 本身是对的
 /// （界面不该收到一条假"已失败"），但旧写法连**失败原因**一起丢了 —— 现场只剩
 /// "这一单没动"，既不知道是磁盘满、锁中毒还是触发器拦的。三处收尾共用这一个入口。
-fn finalize_with_note(
-    state: &AppState,
-    transfer_id: &str,
-    end: db::FileJobEnd,
-    ctx: &str,
-) -> bool {
+fn finalize_with_note(state: &AppState, transfer_id: &str, end: db::FileJobEnd, ctx: &str) -> bool {
     let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
     match db::finalize_file_failure(&dbc, transfer_id, end) {
         Ok(changed) => changed,
@@ -739,16 +736,19 @@ async fn cancel_group_receive_side(
         // 面向用户的写先做（气泡）；随后那一笔才是"踢出补发集合"的。
         // FUNC-02：两笔写都要留痕。旧写法 `let _ =` 把失败吞掉 ⇒ 界面照样弹"已取消"，
         // 而刷新后气泡还停在发送中，且没有任何日志能说明原因。
-        let bubble = match db::set_message_status(&dbc, &format!("gfile-{transfer_id}"), "cancelled") {
-            Ok(_) => true,
-            Err(e) => {
-                s.logger.error(
-                    "group_file",
-                    format!("code=GROUP_CANCEL_BUBBLE_FAILED transfer={transfer_id} by={by}：{e}"),
-                );
-                false
-            }
-        };
+        let bubble =
+            match db::set_message_status(&dbc, &format!("gfile-{transfer_id}"), "cancelled") {
+                Ok(_) => true,
+                Err(e) => {
+                    s.logger.error(
+                        "group_file",
+                        format!(
+                            "code=GROUP_CANCEL_BUBBLE_FAILED transfer={transfer_id} by={by}：{e}"
+                        ),
+                    );
+                    false
+                }
+            };
         let ledger = match db::mark_group_file_cancelled(&dbc, transfer_id) {
             Ok(_) => true,
             Err(e) => {
@@ -905,7 +905,9 @@ pub(crate) async fn apply_local_cancel(
                 Err(e) => {
                     s.logger.error(
                         "group_file",
-                        format!("code=GROUP_CANCEL_COMMIT_FAILED transfer={transfer_id} by={by}：{e}"),
+                        format!(
+                            "code=GROUP_CANCEL_COMMIT_FAILED transfer={transfer_id} by={by}：{e}"
+                        ),
                     );
                     ledger_committed = false;
                     0
@@ -1076,6 +1078,29 @@ pub async fn cancel_file_transfer(
     let mut res = apply_local_cancel(s, &transfer_id, "user").await;
     // 通知那半的结论回填到结果里（界面据此决定要不要说"对方可能仍在继续"）。
     res.notified_peer = send_cancel_notice(s, &transfer_id, notice).await;
+    // 结局也要有码（审计 B1-F1）：失败那半早有 `FILE_CANCEL_LIST_FAILED`，成功/竞态没有行。
+    // 用户报「点了取消、对方还在收」时，`already_done` / `notified_peer=false` 就是答案。
+    //
+    // ⚠️ 日志是**同步文件 append**（见 `worker_bound_heavy_commands_do_not_grow` 的重活标记表）
+    // ⇒ 进阻塞池，别占 tokio worker：worker 数 = CPU 核数，而开设置窗这类命令也排同一个池。
+    let s_log = s.clone();
+    let tid = transfer_id.clone();
+    let (cancelled, already_done, notified, committed) = (
+        res.cancelled,
+        res.already_done,
+        res.notified_peer,
+        res.ledger_committed,
+    );
+    let _ = tokio::task::spawn_blocking(move || {
+        s_log.logger.info(
+            "file",
+            format!(
+                "code=FILE_CANCEL transfer={tid} by=user cancelled={cancelled} \
+                 already_done={already_done} notified_peer={notified} ledger_committed={committed}"
+            ),
+        );
+    })
+    .await;
     Ok(res)
 }
 
@@ -1156,7 +1181,10 @@ enum CancelNotice {
     /// 1:1（发送或接收）。
     Dm { peer_id: String, direction: String },
     /// 群文件、本机是发送方：每个还在传的成员各一条。
-    GroupMembers { group_id: String, members: Vec<String> },
+    GroupMembers {
+        group_id: String,
+        members: Vec<String>,
+    },
     /// 群文件、本机是接收方：告诉发送方"这一格我不收了"。
     GroupSender { group_id: String, sender: String },
 }
@@ -1228,7 +1256,9 @@ async fn send_cancel_notice(
                 Ok(()) => {
                     s.logger.info(
                         "file",
-                        format!("已通知对端取消 transfer={transfer_id} dir={direction} peer={peer_id}"),
+                        format!(
+                            "已通知对端取消 transfer={transfer_id} dir={direction} peer={peer_id}"
+                        ),
                     );
                     true
                 }
@@ -1446,10 +1476,12 @@ pub async fn get_content_transfers(
     state: State<'_, Arc<AppState>>,
 ) -> Result<Vec<crate::content::TransferRecord>, String> {
     let s = state.inner().clone();
-    tokio::task::spawn_blocking(move || -> Result<Vec<crate::content::TransferRecord>, String> {
-        let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());
-        Ok(crate::content::store::list(&dbc, 200).unwrap_or_default())
-    })
+    tokio::task::spawn_blocking(
+        move || -> Result<Vec<crate::content::TransferRecord>, String> {
+            let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());
+            Ok(crate::content::store::list(&dbc, 200).unwrap_or_default())
+        },
+    )
     .await
     .map_err(|e| format!("内容传输表读取被线程池中断: {e}"))?
 }
@@ -1604,19 +1636,20 @@ pub async fn send_file_auto(
         let s2 = s.clone();
         let path2 = path.clone();
         let peer2 = friend_id.clone();
-        let rejected = tokio::task::spawn_blocking(move || -> Result<Option<&'static str>, String> {
-            let requested = std::fs::canonicalize(&path2).map_err(|e| e.to_string())?;
-            let code = owned_payload_rejection(&s2, &msg_id, &requested);
-            if let Some(code) = code {
-                s2.logger.warn(
-                    "file",
-                    format!("code={code} 拒绝转发 file={path2} msg={msg_id} peer={peer2}"),
-                );
-            }
-            Ok(code)
-        })
-        .await
-        .map_err(|e| format!("转发路径校验被线程池中断: {e}"))??;
+        let rejected =
+            tokio::task::spawn_blocking(move || -> Result<Option<&'static str>, String> {
+                let requested = std::fs::canonicalize(&path2).map_err(|e| e.to_string())?;
+                let code = owned_payload_rejection(&s2, &msg_id, &requested);
+                if let Some(code) = code {
+                    s2.logger.warn(
+                        "file",
+                        format!("code={code} 拒绝转发 file={path2} msg={msg_id} peer={peer2}"),
+                    );
+                }
+                Ok(code)
+            })
+            .await
+            .map_err(|e| format!("转发路径校验被线程池中断: {e}"))??;
         if rejected.is_some() {
             return Err("这个文件不属于这条消息，已拒绝转发".to_string());
         }
@@ -1633,9 +1666,7 @@ pub async fn send_file_auto(
 /// DB-03 之后 `list_transfers` 本身是**有界**的（未完成 + 最近 N 条终态），
 /// 所以这里不再随历史行数线性变慢；线程挪对这件事仍然保留。
 #[tauri::command(async)]
-pub async fn get_transfers(
-    state: State<'_, Arc<AppState>>,
-) -> Result<Vec<TransferInfo>, String> {
+pub async fn get_transfers(state: State<'_, Arc<AppState>>) -> Result<Vec<TransferInfo>, String> {
     let s = state.inner().clone();
     let s_db = s.clone();
     let mut list = tokio::task::spawn_blocking(move || -> Result<Vec<TransferInfo>, String> {

@@ -10,6 +10,49 @@
 // 恒等判据当场降级成"我读过觉得没变"。同目录先例：`protocol_tests.rs`。
 // ⚠️ 册名以 `_tests.rs` 结尾也是被判据选定的：`transport_src_for_guards()` 那份"生产码全集"视图
 // 只许装生产码，而登记对账守卫按 `_tests.rs` 后缀豁免测试分册（并进视图是最顺手却假绿的消红办法）。
+/// 取消的**结局**必须有具名码（审计 B1-F1）。
+///
+/// 原状：群消息取消从 v1 起就有 `code=GROUP_CANCEL`，而 1:1 消息 / 文件 / 更新这三条通道
+/// **只有失败码**，取消的正常结局与竞态拒绝一条行都没有。于是用户报「我明明点了取消、
+/// 对方还是收到了」时，诊断包里没有任何东西能区分「竞态（already_delivered）」
+/// 「没点到（not_found）」「真取消了」—— 而这三者的处理方式完全不同。
+///
+/// 判据按通道取**函数体**（`rust_fn_body`），只钉"这一格里必须出现这个码"；
+/// 挂错文件由"找不到函数名"当场红。变异：删掉任一行 ⇒ 对应那格红。
+#[test]
+fn every_cancel_channel_leaves_a_named_outcome() {
+    let dm = rust_fn_body(include_str!("commands/chat.rs"), "pub async fn cancel_message(");
+    assert!(
+        dm.contains("code=DM_CANCEL msg_id="),
+        "1:1 消息取消的结局没有码 ⇒ 「点了取消、对方还是收到了」时查不出是竞态还是没点到"
+    );
+    // 群侧那一行早就有：别为了"统一命名"把它删掉。
+    assert!(
+        dm.contains("code=GROUP_CANCEL"),
+        "群消息取消的 `code=GROUP_CANCEL` 不许丢（它是这条通道最早的那一行）"
+    );
+
+    let file = rust_fn_body(
+        include_str!("commands/files.rs"),
+        "pub async fn cancel_file_transfer(",
+    );
+    assert!(
+        file.contains("code=FILE_CANCEL transfer="),
+        "文件取消的结局没有码 ⇒ 分不清「真取消了」「早就传完了」「通知没发出去」"
+    );
+
+    // `updater_cancel` 在 `mod desktop` 的 `impl` 里（`rust_fn_body` 的收尾锚点只认列 0 的
+    // `}`），所以这一格用**计数**：两种结局各一行（安装中被拒 / 真的取消）。
+    // ⚠️ 针头带上后面那半（`outcome=`）而不是只到码名：`matches` 是子串计数，
+    //    只认前缀的话 `code=UPDATER_CANCEL_X` 也会被算成一行（实测过）。
+    let updater = include_str!("commands/updater.rs");
+    assert_eq!(
+        updater.matches("code=UPDATER_CANCEL outcome=").count(),
+        2,
+        "更新取消的两种结局各要一行（refused_installing / cancelled），少了哪种都查不出来"
+    );
+}
+
 /// **气泡前不得做 O(体积) 的整文件扫描**（真机 Mac 发 600MB：点完"卡一会儿"才出现
 /// 发送中气泡 —— 建发送记录时先整读一遍文件算 sha256，而投递任务待会儿还要再读一遍）。
 ///
