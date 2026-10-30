@@ -143,7 +143,8 @@ pub async fn get_groups(state: State<'_, Arc<AppState>>) -> Result<Vec<Group>, S
     let s = state.inner().clone();
     tokio::task::spawn_blocking(move || -> Result<Vec<Group>, String> {
         let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());
-        Ok(db::list_groups(&dbc).unwrap_or_default())
+        // 同 B1-F7：读失败折叠成空 ⇒ 界面像「群全没了」。
+        db::list_groups(&dbc).map_err(|e| format!("群列表读取失败: {e}"))
     })
     .await
     .map_err(|e| format!("群列表读取被线程池中断: {e}"))?

@@ -13,6 +13,35 @@
 
 ## [Unreleased]
 
+## [5.15.49] - 2026-10-30
+
+
+### 读库失败不再被折叠成「空」：首屏主读与两族配置的读-改-写（B1-F7 / B3-F3）
+
+审计余项里 9 条 P2 有 6 条是同一个形状：**出错结果被折叠**（`unwrap_or_default` / `.ok()` /
+`let _ =` / `catch {}`）。这一批先修其中最会伤到用户的两类：
+
+- **B1-F7（首屏主读）**：`get_messages` / `get_latest_messages` / `list_conversations` / `list_groups`
+  四处 `unwrap_or_default()` ⇒ 读库失败时界面看到的是「这个会话一条记录都没有」「群全没了」。
+  现在把错误上抛，界面能说"读失败"而不是假装"没有数据"。
+- **B3-F3（读-改-写）**：外链与跨子网端点两族的 9 处 `db::get_setting(...).unwrap_or_default()`
+  —— 读失败折叠成空列表之后**紧接着把整份列表写回**，一次读抖动就把用户配置覆盖掉；
+  诊断页那一处（跨网端点计数）同形（会说"没配"而不是"读不到"）。
+  根因是 `db::get_setting` **返回 `Option`**（`.ok().flatten()`）：读失败与"没这条"不可分 ⇒
+  这些路径改用已有的 `get_setting_checked`（返回 `Result`），并在它的文档里写清"读-改-写必须用 checked"。
+- **判据**：「命令层的读库结果不许折叠成空」（`designGuards`）—— 按形状扫 `commands/*.rs`，
+  正控两条 + 反控一条（`checked(..)?.unwrap_or_default()` 是正确写法、不许误伤）。
+  **一处有意折叠已登记并钉住理由**：`relay.rs::load_relay_runtime` 在拨号循环里跑、没有界面能承接错误
+  ⇒ 折叠成"不启用"是刻意的；判据会连同那句理由一起核对（理由被删 ⇒ 红）。
+
+
+**真跑过的验证**：`cargo test --lib --features bluetooth` **1323 通过 / 0 失败**（3 ignored）；
+`npm test` **1529 通过 / 0 失败**（+1 条判据）；`node --test src/utils/designGuards.test.ts` **244/244**；
+`npm run verify:local` **25 步全绿**（含 clippy `-D warnings`）。
+外部变异：把 `get_messages` 那一处改回 `unwrap_or_default()` ⇒ 新判据点名
+「chat.rs: db::get_messages(…)」（退 1），`cmp` 逐字节还原。
+**没跑的门禁层**：这些读路径的"真读失败"没有运行时夹具（要造 db 故障），本轮判据是**形状 + 正反控**。
+
 ## [5.15.48] - 2026-10-30
 
 

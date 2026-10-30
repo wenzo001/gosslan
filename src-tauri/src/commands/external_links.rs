@@ -104,7 +104,7 @@ pub async fn list_external_links(
     tokio::task::spawn_blocking(move || -> Result<Vec<ExternalLink>, String> {
         let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());
         Ok(parse_external_links(
-            &db::get_setting(&dbc, EXTERNAL_LINKS_KEY).unwrap_or_default(),
+            &db::get_setting_checked(&dbc, EXTERNAL_LINKS_KEY).map_err(|e| format!("读取外链列表失败: {e}"))?.unwrap_or_default(),
         ))
     })
     .await
@@ -124,7 +124,7 @@ pub async fn add_external_link(
     tokio::task::spawn_blocking(move || -> Result<Vec<ExternalLink>, String> {
         let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());
         let mut list =
-            parse_external_links(&db::get_setting(&dbc, EXTERNAL_LINKS_KEY).unwrap_or_default());
+            parse_external_links(&db::get_setting_checked(&dbc, EXTERNAL_LINKS_KEY).map_err(|e| format!("读取外链列表失败: {e}"))?.unwrap_or_default());
         if list.len() >= MAX_EXTERNAL_LINKS {
             return Err(format!("最多只能添加 {MAX_EXTERNAL_LINKS} 个链接"));
         }
@@ -154,7 +154,7 @@ pub async fn update_external_link(
     tokio::task::spawn_blocking(move || -> Result<Vec<ExternalLink>, String> {
         let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());
         let mut list =
-            parse_external_links(&db::get_setting(&dbc, EXTERNAL_LINKS_KEY).unwrap_or_default());
+            parse_external_links(&db::get_setting_checked(&dbc, EXTERNAL_LINKS_KEY).map_err(|e| format!("读取外链列表失败: {e}"))?.unwrap_or_default());
         // 先算规范化值（不可变借用），再取可变引用落值 —— 否则 `list` 同时被借两次。
         let (name, url) = normalize_link_input(&list, &name, &url, Some(&id))?;
         let Some(target) = list.iter_mut().find(|l| l.id == id) else {
@@ -180,7 +180,7 @@ pub async fn remove_external_link(
     tokio::task::spawn_blocking(move || -> Result<Vec<ExternalLink>, String> {
         let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());
         let mut list =
-            parse_external_links(&db::get_setting(&dbc, EXTERNAL_LINKS_KEY).unwrap_or_default());
+            parse_external_links(&db::get_setting_checked(&dbc, EXTERNAL_LINKS_KEY).map_err(|e| format!("读取外链列表失败: {e}"))?.unwrap_or_default());
         let before = list.len();
         list.retain(|l| l.id != id);
         if list.len() != before {
@@ -230,7 +230,7 @@ fn import_external_links_raw(
     let inputs = parse_import_payload(raw)?;
     let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());
     let mut list =
-        parse_external_links(&db::get_setting(&dbc, EXTERNAL_LINKS_KEY).unwrap_or_default());
+        parse_external_links(&db::get_setting_checked(&dbc, EXTERNAL_LINKS_KEY).map_err(|e| format!("读取外链列表失败: {e}"))?.unwrap_or_default());
     let mut seen: HashSet<String> = list.iter().map(|l| l.url.clone()).collect();
     let mut added = 0usize;
     let mut skipped = 0usize;
@@ -284,7 +284,7 @@ pub async fn export_external_links(
         let path = dir.join(format!("gosslan-links-{}.json", Uuid::new_v4()));
         let list = {
             let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());
-            parse_external_links(&db::get_setting(&dbc, EXTERNAL_LINKS_KEY).unwrap_or_default())
+            parse_external_links(&db::get_setting_checked(&dbc, EXTERNAL_LINKS_KEY).map_err(|e| format!("读取外链列表失败: {e}"))?.unwrap_or_default())
         };
         let json = serde_json::to_string_pretty(&list).map_err(|e| format!("序列化失败：{e}"))?;
         std::fs::write(&path, json).map_err(|e| format!("写入导出文件失败：{e}"))?;

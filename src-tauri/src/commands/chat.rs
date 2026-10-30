@@ -1120,7 +1120,10 @@ pub async fn get_messages(
         let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());
         let safe_limit = limit.unwrap_or(100).clamp(1, 500);
         let safe_offset = offset.unwrap_or(0).max(0);
-        Ok(db::get_messages(&dbc, &conv_id, safe_limit, safe_offset).unwrap_or_default())
+        // 读失败要**说出来**：折叠成空列表时，界面看到的是「这个会话一条记录都没有」
+        // —— 用户会以为聊天记录全没了（B1-F7）。
+        db::get_messages(&dbc, &conv_id, safe_limit, safe_offset)
+            .map_err(|e| format!("消息页读取失败: {e}"))
     })
     .await
     .map_err(|e| format!("消息页读取被线程池中断: {e}"))?
@@ -1182,7 +1185,8 @@ pub async fn get_latest_messages(
     tokio::task::spawn_blocking(move || -> Result<Vec<MessageRecord>, String> {
         let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());
         let safe_limit = limit.unwrap_or(100).clamp(1, 500);
-        Ok(db::get_latest_messages(&dbc, &conv_id, safe_limit).unwrap_or_default())
+        db::get_latest_messages(&dbc, &conv_id, safe_limit)
+            .map_err(|e| format!("冷加载一页读取失败: {e}"))
     })
     .await
     .map_err(|e| format!("冷加载一页读取被线程池中断: {e}"))?
@@ -1195,7 +1199,7 @@ pub async fn get_conversations(
     let s = state.inner().clone();
     tokio::task::spawn_blocking(move || -> Result<Vec<Conversation>, String> {
         let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());
-        Ok(db::list_conversations(&dbc).unwrap_or_default())
+        db::list_conversations(&dbc).map_err(|e| format!("会话列表读取失败: {e}"))
     })
     .await
     .map_err(|e| format!("会话列表读取被线程池中断: {e}"))?
