@@ -182,16 +182,9 @@ pub async fn recall_group_message(
     {
         let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());
         let seq = db::get_clock(&dbc, &conv_id);
-        db::insert_recall(&dbc, &conv_id, &target, &s.device_id, seq).ok();
-        db::materialize_recall(&dbc, &target).ok();
-        // 会话列表读的是 `conversations.last_msg`（存储列），不重算就是"正文已清空、
-        // 预览还挂着原文"。失败留痕：静默漏掉等于这条修复没落地。
-        if let Err(e) = db::refresh_conversation_summary(&dbc, &conv_id) {
-            s.logger.warn(
-                "chat",
-                format!("code=RECALL_PREVIEW_REFRESH_FAIL conv={conv_id}：{e}"),
-            );
-        }
+        // B1-F6：墓碑 + 物化 + 会话预览一笔事务（原先前两笔各 `.ok()` ⇒ 可永久分裂）。
+        db::apply_recall(&dbc, &conv_id, &target, &s.device_id, seq)
+            .map_err(|e| format!("撤回写入本机数据库失败（未生效，可重试）：{e}"))?;
     }
     let _ = s.app.emit("message-recalled", &target);
     Ok(())

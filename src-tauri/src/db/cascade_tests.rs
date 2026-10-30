@@ -1580,3 +1580,81 @@ fn a_failed_cancel_write_rolls_back_the_whole_finalize() {
         "队列行必须还在重试集合里：它失败的那一笔正是要重试的东西"
     );
 }
+
+/// 撤回的三笔写是**一笔事务**（B1-F6，5.15.50）。
+///
+/// 原先三个调用点各自 `insert_recall(..).ok(); materialize_recall(..).ok()`：
+/// 一笔成一笔败就永久分裂，而幂等短路只看墓碑 ⇒ 重试也补不上。
+/// 这里钉三件事：① 正常路径三笔都落；② 幂等；③ **第三笔失败时前两笔必须回滚**（事务的意义）。
+#[test]
+fn apply_recall_is_one_transaction_and_idempotent() {
+    let conn = fresh_db();
+    ins_msg(&conn, "m-1", "c-1", "text", "原文", 1);
+    conn.execute(
+        "INSERT INTO conversations(id, kind, name, last_msg, last_ts, unread) VALUES ('c-1','single','p','原文',1000,1)",
+        [],
+    )
+    .unwrap();
+    // ① 正常路径：墓碑 + 物化 + 预览三笔都落
+    apply_recall(&conn, "c-1", "m-1", "me", 2).expect("正常撤回不该失败");
+    assert_eq!(
+        count(
+            &conn,
+            "SELECT COUNT(*) FROM group_recalled_messages WHERE msg_id='m-1'"
+        ),
+        1,
+        "墓碑必须落下"
+    );
+    let (kind, content): (String, String) = conn
+        .query_row(
+            "SELECT kind, content FROM messages WHERE msg_id='m-1'",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!(
+        (kind.as_str(), content.as_str()),
+        ("recalled", ""),
+        "物化必须清正文、改 kind"
+    );
+    let last: String = conn
+        .query_row(
+            "SELECT last_msg FROM conversations WHERE id='c-1'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_ne!(last, "原文", "会话预览必须跟着重算（否则列表还挂着原文）");
+
+    // ② 幂等：再来一次不报错、状态不变
+    apply_recall(&conn, "c-1", "m-1", "me", 2).expect("重复撤回必须幂等");
+    assert_eq!(
+        count(
+            &conn,
+            "SELECT COUNT(*) FROM group_recalled_messages WHERE msg_id='m-1'"
+        ),
+        1,
+        "幂等：墓碑不许变两行"
+    );
+
+    // ③ 原子性：把第三笔依赖的表拿掉 ⇒ 前两笔必须回滚
+    let conn2 = fresh_db();
+    ins_msg(&conn2, "m-2", "c-2", "text", "另一条原文", 1);
+    conn2.execute("DROP TABLE conversations", []).unwrap();
+    let err = apply_recall(&conn2, "c-2", "m-2", "me", 3).expect_err("预览重算失败必须整笔失败");
+    assert!(!err.to_string().is_empty());
+    assert_eq!(
+        count(
+            &conn2,
+            "SELECT COUNT(*) FROM group_recalled_messages WHERE msg_id='m-2'"
+        ),
+        0,
+        "第三笔失败 ⇒ 墓碑必须回滚（否则就是那个「说撤过、正文还在」的永久分裂）"
+    );
+    let still: String = conn2
+        .query_row("SELECT content FROM messages WHERE msg_id='m-2'", [], |r| {
+            r.get(0)
+        })
+        .unwrap();
+    assert_eq!(still, "另一条原文", "物化也必须回滚");
+}

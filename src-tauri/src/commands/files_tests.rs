@@ -218,13 +218,18 @@ mod files_gate_tests {
         }
     }
 
-    /// 三个撤回物化点**每一处**都要重算会话预览。
+    /// 撤回的**三笔写**必须一笔事务收口（B1-F6，5.15.50）。
     ///
-    /// 为什么单独立一条：`materialize_recall` 只改 `messages`，而会话列表读的是
-    /// `conversations.last_msg`（存储列）。少接一处就是"正文已撤回、列表那行还挂着原文"，
-    /// 而这条链在界面上要**切回会话列表**才看得见，单测里点不出来。
+    /// 原先三个调用点各自 `insert_recall(..).ok(); materialize_recall(..).ok();
+    /// refresh_conversation_summary(..)`：前两笔一旦一笔成一笔败就**永久分裂**
+    /// （`is_recalled` 说"撤过"、正文还在；幂等短路只看墓碑 ⇒ 重试也补不上），
+    /// 而预览那一笔还各写一遍、漏一处就是"正文清了、列表还挂着原文"。
+    ///
+    /// 现在：所有撤回都走 `db::apply_recall`（墓碑 + 物化 + 预览**同一个事务**）。
+    /// 判据改成两半：① 三个调用点只许调 `apply_recall`，不许再直接碰那两个原语；
+    /// ② `apply_recall` 自己的块体里，物化之后必须紧跟预览重算（顺序错了算出来还是原文）。
     #[test]
-    fn every_recall_materialize_site_refreshes_the_conversation_preview() {
+    fn every_recall_site_goes_through_the_transactional_apply() {
         let sites = [
             ("commands/chat.rs", include_str!("chat.rs")),
             ("commands/group_announcements.rs", include_str!("group_announcements.rs")),
@@ -233,43 +238,31 @@ mod files_gate_tests {
                 include_str!("../network/transport/gossip.rs"),
             ),
         ];
-        let mut with_materialize = 0usize;
         for (name, src) in sites {
-            let hit = src.contains("materialize_recall(");
-            if !hit {
-                continue;
-            }
-            with_materialize += 1;
-            // 顺序也要判：只要求"文件里出现过"的话，同一个文件里两处物化只接一处照样绿，
-            // 或者把重算写在物化**之前**（那时末条还没变，算出来还是原文）也照样绿。
-            // 逐次配对，不取首次下标：`m1 < r1 < m2` 这种形状（第一处物化后面接了重算、
-            // 第二处漏掉）用"首次 vs 首次"是看不见的 —— 上一版就是这么自称修好了却没修到位。
-            let mut from = 0usize;
-            let mut seen = 0usize;
-            while let Some(m) = src[from..].find("materialize_recall(") {
-                seen += 1;
-                let abs = from + m;
-                let r = src[abs..]
-                    .find("refresh_conversation_summary(")
-                    .map(|k| abs + k)
-                    .unwrap_or(usize::MAX);
-                let next_m = src[abs + 1..]
-                    .find("materialize_recall(")
-                    .map(|k| abs + 1 + k)
-                    .unwrap_or(usize::MAX);
+            assert_eq!(
+                src.matches("db::apply_recall(").count(),
+                1,
+                "{name}：撤回必须走一笔事务的 `db::apply_recall`（现数不是 1）"
+            );
+            for raw in ["db::insert_recall(", "db::materialize_recall("] {
                 assert!(
-                    r < next_m,
-                    "{name}：第 {seen} 处撤回物化后面没有紧跟重算（下一处物化在 {next_m}、重算在 {r}）\
-                     ⇒ 那一处漏接就是「列表里还挂着原文」"
+                    !src.contains(raw),
+                    "{name}：又直接调 `{raw}` 了 ⇒ 那一笔落在事务外，分裂的窗口回来了"
                 );
-                from = abs + 1;
             }
-            assert!(seen >= 1, "{name}：读到物化却一次都没扫到（提取器空转）");
         }
-        assert_eq!(
-            with_materialize, 3,
-            "撤回物化点应该是三处（单聊发起 / 群发起 / 接收侧）；对不上就说明有人搬家或漏接"
-        );
+        // ② 事务内部：物化之后必须紧跟预览重算（顺序反了算出来还是原文）
+        let recalls = include_str!("../db/recalls.rs");
+        let body_at = recalls
+            .find("pub fn apply_recall(")
+            .expect("apply_recall 搬家了 ⇒ 同步改这条判据");
+        let body = &recalls[body_at..];
+        let m = body.find("materialize_recall(&tx").expect("apply_recall 里没有物化");
+        let r = body
+            .find("refresh_conversation_summary(&tx")
+            .expect("apply_recall 里没有预览重算");
+        let c = body.find("tx.commit()").expect("apply_recall 没有 commit");
+        assert!(m < r && r < c, "事务内的顺序必须是 物化 → 预览重算 → commit（现 m={m} r={r} c={c}）");
     }
 
     /// 群主那一档**被接上了**的判据（纯函数测得再全，命令层永远传 Author 就是零功能）。
@@ -323,10 +316,18 @@ mod files_gate_tests {
             judge_calls >= 2,
             "接收侧两个时刻都该走那份判据，现数到 {judge_calls} 处 ⇒ 少一处就是有一条通道不复核"
         );
+        // 墓碑的写入口自 5.15.50 起只剩一处：`db::apply_recall` 内部（一笔事务）。
+        // 三个调用点都只许调 apply_recall ⇒ `db::insert_recall(` 在这三份源码里现数 0。
+        for (name, src) in [("chat.rs", chat), ("group_announcements.rs", group), ("gossip.rs", gossip)] {
+            assert!(
+                !src.contains("db::insert_recall("),
+                "{name}：又出现直接写墓碑的调用 ⇒ 那是事务外的第二条状态来源"
+            );
+        }
         assert_eq!(
-            gossip.matches("db::insert_recall(").count(),
+            gossip.matches("db::apply_recall(").count(),
             1,
-            "墓碑只许实时那一条写入口（到货那一臂只复核，多一个写点就是第二条状态来源）"
+            "接收侧那一臂必须走一笔事务的 apply_recall（现数不是 1）"
         );
     }
 
