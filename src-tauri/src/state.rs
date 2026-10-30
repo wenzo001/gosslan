@@ -3014,9 +3014,11 @@ mod tests {
         let (again, generated_again) = load_or_create_identity(&conn, true).unwrap();
         assert!(!generated_again, "已有密钥时必须走持久化加载");
         assert_eq!(id.x25519_secret_b64(), again.x25519_secret_b64());
+        // INV-P18 之后字段私有：用**签名能力交出的公钥**证明"加载回来的是同一把私钥"
+        // （公钥由私钥派生，字节相等 ⇔ 同一把钥；而且这条断言只看对外可见的那一面）。
         assert_eq!(
-            id.ed25519_signing.to_bytes(),
-            again.ed25519_signing.to_bytes()
+            id.signer().verifying_key().to_bytes(),
+            again.signer().verifying_key().to_bytes()
         );
     }
 

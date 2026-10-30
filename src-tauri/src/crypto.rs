@@ -22,12 +22,47 @@ pub struct Identity {
     /// 是"顺手把字段读出来"，把字段改成私有就让这类写法**编译不过**，而不是靠人记得。
     /// ECDH 只经 [`Identity::dh`]；持久化只经两个 base64 导出器，两者的**落点边界**由
     /// `scripts/check-key-boundary.mjs` 的判据 C 守着（字段只许本文件内被读、导出器只许 `state.rs` 调）。
-    /// ⚠️ `ed25519_signing` 本轮**仍公开**：中继拨号要把 owned `SigningKey` 跨 `spawn` 边界
-    /// 传进 `relay_negotiate`/`build_wrap_offer`（含 10 处用裸 SigningKey 的协议测试），
-    /// 私有化它需要给那一层引入"签名能力"抽象 —— 那是 Frozen Core 线格式那一侧的设计改动，
-    /// 已登记为 INV-P18 的边界，不在本批顺手做。
+    /// ⚠️ `ed25519_signing` 自 5.15.45 起**也是私有**（INV-P18 的另一半）：对外只剩
+    /// [`Identity::signer`] 交出的 [`IdentitySigner`] —— 拿到它只能**签**，拿不到私钥本身。
+    /// 中继拨号原先 `identity.ed25519_signing.clone()` 把 owned `SigningKey` 跨 `spawn` 传下去，
+    /// 现在传的是 `Signer`（同样能满足 `Send + 'static`，但"能签"不再等于"私钥到处流"）。
     x25519_secret: StaticSecret,
-    pub ed25519_signing: SigningKey,
+    ed25519_signing: SigningKey,
+}
+
+/// 「签名能力」：持有签名私钥的人只能**签**，拿不到私钥本身。
+///
+/// 为什么要有这一层（INV-P18 的第二半）：字段 `pub` 的年代，任何模块都能 clone 出私钥、
+/// 拿它去做**任意**用途（导字节、换算法、拼另一条协议）。私有化字段之后，其他模块能拿到的
+/// 只有这个类型给出的两个动作：签一段、读公钥。
+///
+/// `Clone` 是刻意的：中继拨号要为**每个对端**各起一个 `spawn`，原先 clone 的是
+/// `SigningKey`，现在 clone 的是它（内含的仍是同一份私钥，但接口只有这两个动作用得上）。
+#[derive(Clone)]
+pub struct IdentitySigner {
+    key: SigningKey,
+}
+
+impl IdentitySigner {
+    /// **测试专用**：从一把裸 `SigningKey` 造出能力对象。
+    ///
+    /// 生产路径没有这个构造——`Identity::signer()` 是唯一入口。它的存在是刻意的：
+    /// 协议测试要造"谁也不是的第三把钥"这类夹具，而它们**必须**能构造，否则只能把
+    /// 字段再公开回去（那正是 INV-P18 要收的口子）。
+    #[cfg(test)]
+    pub(crate) fn from_key_for_tests(key: SigningKey) -> Self {
+        Self { key }
+    }
+
+    /// 对一段字节签名。
+    pub fn sign(&self, msg: impl AsRef<[u8]>) -> Signature {
+        self.key.sign(msg.as_ref())
+    }
+
+    /// 对应的公钥（用于自检、与持久化那侧对账）。
+    pub fn verifying_key(&self) -> VerifyingKey {
+        self.key.verifying_key()
+    }
 }
 
 impl Identity {
@@ -38,6 +73,13 @@ impl Identity {
         Self {
             x25519_secret,
             ed25519_signing,
+        }
+    }
+
+    /// 交出**签名能力**（INV-P18）：只有"签一段"，没有私钥本身。
+    pub fn signer(&self) -> IdentitySigner {
+        IdentitySigner {
+            key: self.ed25519_signing.clone(),
         }
     }
 

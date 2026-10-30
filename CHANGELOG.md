@@ -13,6 +13,37 @@
 
 ## [Unreleased]
 
+## [5.15.45] - 2026-10-30
+
+
+### INV-P18 的另一半：Ed25519 私钥字段也私有化，对外只剩「签名能力」
+
+`Identity.ed25519_signing` 一直是 `pub`：中继拨号直接 `identity.ed25519_signing.clone()`，
+把 owned `SigningKey` 跨 `spawn` 传进协商层 —— "能签的东西"等于私钥本身到处流。本批收掉：
+
+- 新类型 `crypto::IdentitySigner`（`#[derive(Clone)]`，字段私有）：对外只有 `sign(..)` 与
+  `verifying_key()` 两个动作；`Identity::signer()` 是**唯一**入口。
+  `#[cfg(test)] IdentitySigner::from_key_for_tests(..)` 专门给协议测试造"第三把钥"这类夹具
+  （不给它，测试只能把字段再公开回去 —— 那正是要收的口子）。
+- 消费面只有三处：`RelayCtx.signing`、`relay_negotiate(.., my_signing, ..)`、`build_wrap_offer(..)`
+  的类型由 `&SigningKey` 换成 `&IdentitySigner`；拨号处的 `clone()` 换成 `signer()`。
+- **线格式零差异**：签名算法、被签字节、公钥来源都没动 —— 换的只是"谁能拿到私钥"。
+- 落库往返那条判据改用 `signer().verifying_key().to_bytes()` 比较（公钥由私钥派生，
+  字节相等 ⇔ 同一把钥；而且这条断言只看对外可见的那一面）。
+- 判据 C（`scripts/check-key-boundary.mjs`）同步扩到这一半：字段只许在 `crypto.rs` 内被读、
+  且**不许再被写回 `pub`**；补两个夹具（生产码读该字段 / 字段重新 pub）。
+
+
+**真跑过的验证**：`cargo test --lib --features bluetooth` **1321 通过 / 0 失败**（2 ignored，
+含 `relay_wiring_tests` 那几条用 `IdentitySigner` 夹具跑的协商/占空比用例）；
+`npm test` **1528 通过 / 0 失败**（本批无前端改动）；`node scripts/check-key-boundary.mjs` **退出 0**
+（判据 A/B/C 全绿，C 已覆盖两半）；`npm run verify:local` **25 步全绿**（含 clippy `-D warnings`）。
+外部变异：把 `ed25519_signing` 改回 `pub` ⇒ 判据 C 当场点名
+「[C] crypto.rs 把 ed25519_signing 又写成 pub（INV-P18 收的口子）」（退 1），`cmp` 逐字节还原。
+**没跑的层**：中继拨号的跨进程 E2E 本来就不在 `verify:release` 那四轮里（那四轮走 LAN 直连）⇒
+"签名换成能力对象之后对端仍认"这一点，本批的判据是**线格式没动 + 单元/夹具覆盖**，
+真机上的中继协商未跑。
+
 ## [5.15.44] - 2026-10-30
 
 
