@@ -53,6 +53,13 @@ const FILE_FAIL_REASON_KEYS: Record<string, string> = {
   FILE_CHUNK_OVERSIZE: "file.chunkOversize",
   FILE_CHUNK_POOL_ABORT: "file.chunkPoolAbort",
   FILE_CHUNK_SEQ_OVERFLOW: "file.chunkSeqOverflow",
+  // ── 中继**接收侧**（5.15.37）────────────────────────────────────────────
+  // 同样是事件载荷族（接收失败没有消息行可写）。这四格的共同来源：以前发的是**动态文本** ——
+  // 枚举的 Debug（`format!("{breach:?}")`）、内部串（`… 被线程池中断: {e}`）、`io::Error` 原文。
+  RECV_QUOTA_EXCEEDED: "file.quotaExceeded",
+  FILE_RELAY_BAD_CHUNK: "file.relayBadChunk",
+  FILE_RELAY_TASK_ABORTED: "file.relayTaskAborted",
+  FILE_RELAY_HASH_FAILED: "file.relayHashFailed",
   // ── 消息气泡的失败原因（`messages.fail_code`，DB v14→v15）───────────────────
   // 词表另一侧：`src-tauri/src/error_codes.rs::MESSAGE_FAIL_CODES`（双向对账见
   // `fileFailReason.test.ts`，两条一起钉）。这一族自 5.15.31 / 5.15.32 起**含文件气泡**：

@@ -371,3 +371,35 @@ test("1:1 接收上屏的出口与收尾实参都不许是中文散文", () => {
     "实参回潮时必须恰好点名那一句",
   );
 });
+
+/**
+ * 中继**接收侧**的上屏出口只许发在册的码（5.15.37）。
+ *
+ * 这一族的共同缺陷形状是「**动态文本当载荷**」：枚举的 `Debug`、`format!` 拼的内部串、
+ * `io::Error` 原文。它们比散文更糟 —— 散文至少是稳定的中文，而 `Debug` 会随变体改名、
+ * OS 原文连英文界面的用户都读不懂。
+ *
+ * 判据按形状：`relay_file.rs` 里**任何** `FileFailedInfo` 的 `reason` 都不许是 `format!(`；
+ * 反向再钉四个码真被引用（漏一格 ⇒ 那一格还在发动态文本）。内联正控：把一格换回 `format!`
+ * 必须被抓出来。
+ */
+test("中继接收侧的上屏出口只发在册的码，不发 format! 动态文本", () => {
+  const src = readFileSync(join(ROOT, "src-tauri/src/network/transport/relay_file.rs"), "utf8");
+  const dynamic = [...src.matchAll(/reason:\s*format!\(/g)].length;
+  assert.equal(dynamic, 0, `relay_file.rs 里还有 ${dynamic} 处把 format! 当载荷`);
+  for (const code of [
+    "FAIL_CODE_RECV_QUOTA_EXCEEDED",
+    "FAIL_CODE_FILE_RELAY_BAD_CHUNK",
+    "FAIL_CODE_FILE_RELAY_TASK_ABORTED",
+    "FAIL_CODE_FILE_RELAY_HASH_FAILED",
+  ]) {
+    assert.ok(src.includes(code), `relay_file.rs 里没有引用 ${code}`);
+  }
+  // 正控：把一格换回动态文本，上面的尺子必须说"有"。
+  const gutted = src.replace(
+    "reason: crate::logging::FAIL_CODE_FILE_RELAY_BAD_CHUNK.to_string(),",
+    'reason: format!("中继分片形状不合法：{reason}"),',
+  );
+  assert.notEqual(gutted, src, "变异没落进去 ⇒ 正控不作数（锚点写法变了）");
+  assert.equal([...gutted.matchAll(/reason:\s*format!\(/g)].length, 1);
+});

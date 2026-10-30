@@ -66,11 +66,22 @@ async fn handle_relay_file_offer(
             // `admit_inbound` 已按 `code=RECV_QUOTA_EXCEEDED` 留痕；这里补一条**给界面的**
             // 失败（旧写法只 return：请求方界面停在"对方正在发送"，永远等不到结果）。
             Err(breach) => {
+                // 载荷给**码**：以前这里是 `format!("{breach:?}")` —— 枚举的 Debug 是英文标识符
+                // （`TooManyTransfers` 之类），既不是给用户的话，也会因为改个变体名而静默漂走。
+                // `breach` 的本事（哪个上限、当时几个在收）留在日志里，与 `admit_inbound` 自己那句
+                // `code=RECV_QUOTA_EXCEEDED kind=…` 用**同一个 token**。
+                state.logger.warn(
+                    "file",
+                    format!(
+                        "code={} kind={breach:?} transfer={transfer_id} peer={from} size={size} —— 入站配额拒收",
+                        crate::logging::FAIL_CODE_RECV_QUOTA_EXCEEDED
+                    ),
+                );
                 let _ = state.app.emit(
                     "file-failed",
                     &FileFailedInfo {
                         transfer_id: transfer_id.clone(),
-                        reason: format!("{breach:?}"),
+                        reason: crate::logging::FAIL_CODE_RECV_QUOTA_EXCEEDED.to_string(),
                     },
                 );
                 return;
@@ -256,11 +267,18 @@ async fn handle_relay_chunk(
                         .unwrap_or_else(|e| e.into_inner())
                         .remove(&transfer_id);
                 }
+                state.logger.warn(
+                    "file",
+                    format!(
+                        "code={} transfer={transfer_id} peer={from} —— 中继分片形状不合法：{reason}",
+                        crate::logging::FAIL_CODE_FILE_RELAY_BAD_CHUNK
+                    ),
+                );
                 let _ = state.app.emit(
                     "file-failed",
                     &FileFailedInfo {
                         transfer_id: transfer_id.clone(),
-                        reason: format!("中继分片形状不合法：{reason}"),
+                        reason: crate::logging::FAIL_CODE_FILE_RELAY_BAD_CHUNK.to_string(),
                     },
                 );
                 return;
@@ -338,7 +356,8 @@ async fn handle_relay_chunk(
                 let p = part_path.clone();
                 tokio::task::spawn_blocking(move || file::sha256_file_hex(&p))
                     .await
-                    .unwrap_or_else(|e| Err(format!("中继哈希任务被线程池中断: {e}")))
+                    .map_err(|e| relay_hash_task_abort(state, &transfer_id, &from, &e))
+                    .and_then(|r| r.map_err(|e| relay_hash_read_failed(state, &transfer_id, &from, &e)))
             };
             let actual_hex = match hashed {
                 Ok(hex) => hex,
@@ -414,7 +433,16 @@ async fn handle_relay_chunk(
                 let pp = part_path.clone();
                 tokio::task::spawn_blocking(move || move_received_file(&st, &nm, &pp))
                     .await
-                    .unwrap_or_else(|e| Err(format!("中继落盘任务被线程池中断: {e}")))
+                    .unwrap_or_else(|e| {
+                        state.logger.error(
+                            "file",
+                            format!(
+                                "code={} transfer={transfer_id} peer={from} —— 中继落盘任务被线程池中断: {e}",
+                                crate::logging::FAIL_CODE_FILE_RELAY_TASK_ABORTED
+                            ),
+                        );
+                        Err(crate::logging::FAIL_CODE_FILE_RELAY_TASK_ABORTED.to_string())
+                    })
             };
             let path = match moved {
                 Ok(path) => path,
@@ -568,20 +596,84 @@ async fn handle_relay_chunk(
 /// 与旧的 `save_received_bytes` 的区别是要害：旧的那份收 `&[u8]`，等于"先把整份文件
 /// 读回内存再写一遍"—— 那正是 P4 的内存峰值来源。这里只做一次 `rename`，
 /// 峰值与文件大小无关。
+/// 哈希那一格的两种失败要分开，而且都不许把内部串/OS 原文当载荷（5.15.37）：
+/// **阻塞池把任务丢了**（`JoinError`）与**本机读不出 `.part`**（`io::Error`）。
+/// 以前两者拼成同一句 `format!("中继哈希任务被线程池中断: {e}")` 直接 emit 给界面。
+///
+/// 抽成两个函数而不是就地写闭包：那段代码同时是护栏 Case「中继收文件的哈希必须对组装后的明文算」
+/// 的**注入窗口** —— 窗口里一旦多出注释，锚点就跟着漂（10-30 实测：门禁第 13 步当场报红）。
+fn relay_hash_task_abort(
+    state: &AppState,
+    transfer_id: &str,
+    from: &str,
+    e: &tokio::task::JoinError,
+) -> String {
+    state.logger.error(
+        "file",
+        format!(
+            "code={} transfer={transfer_id} peer={from} —— 中继哈希任务被线程池中断: {e}",
+            crate::logging::FAIL_CODE_FILE_RELAY_TASK_ABORTED
+        ),
+    );
+    crate::logging::FAIL_CODE_FILE_RELAY_TASK_ABORTED.to_string()
+}
+
+fn relay_hash_read_failed(state: &AppState, transfer_id: &str, from: &str, e: &str) -> String {
+    state.logger.error(
+        "file",
+        format!(
+            "code={} transfer={transfer_id} peer={from} —— 读 .part 算指纹失败: {e}",
+            crate::logging::FAIL_CODE_FILE_RELAY_HASH_FAILED
+        ),
+    );
+    crate::logging::FAIL_CODE_FILE_RELAY_HASH_FAILED.to_string()
+}
+
 fn move_received_file(state: &AppState, name: &str, part: &Path) -> Result<PathBuf, String> {
     let dir = state
         .downloads_dir
         .lock()
         .unwrap_or_else(|e| e.into_inner())
         .clone();
-    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
-    let safe_name = file::safe_file_name(name).ok_or("文件名非法")?;
+    // 载荷给码、原文进日志（5.15.37）：这个函数的三处 Err 以前都是 `io::Error` 原文或一句中文，
+    // 而调用方会把返回值**原样 emit** 给界面。
+    std::fs::create_dir_all(&dir).map_err(|e| {
+        let code = crate::logging::classify_write_failure(&e)
+            .unwrap_or(crate::error_codes::FILE_RECEIVE_WRITE_FAILED);
+        state.logger.error(
+            "file",
+            format!("code={code} dir={} —— 建下载目录失败: {e}", dir.display()),
+        );
+        code.to_string()
+    })?;
+    let safe_name = file::safe_file_name(name).ok_or_else(|| {
+        state.logger.error(
+            "file",
+            format!(
+                "code={} name={name:?} —— 文件名消毒后为空（上游应当已经拦过）",
+                crate::error_codes::FILE_RECEIVE_PLACE_FAILED
+            ),
+        );
+        crate::error_codes::FILE_RECEIVE_PLACE_FAILED.to_string()
+    })?;
     // 去重口径只有一份：`file::unique_path`（含 32 次随机后缀 + 完整随机串兜底）。
     // 这里原先手写了一份 1..1000 的循环，到 999 就报「下载目录重名文件过多」，
     // 与单聊路径行为不同且必然继续漂移（审计 P1 #14）。
     let dest = file::unique_path(&dir, &safe_name);
     std::fs::rename(part, &dest)
         .or_else(|_| std::fs::copy(part, &dest).and_then(|_| std::fs::remove_file(part)))
-        .map_err(|e| e.to_string())?;
+        .map_err(|e| {
+            let code = crate::logging::classify_write_failure(&e)
+                .unwrap_or(crate::error_codes::FILE_RECEIVE_PLACE_FAILED);
+            state.logger.error(
+                "file",
+                format!(
+                    "code={code} part={} dest={} —— 中继落盘失败: {e}",
+                    part.display(),
+                    dest.display()
+                ),
+            );
+            code.to_string()
+        })?;
     Ok(dest)
 }

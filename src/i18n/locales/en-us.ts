@@ -943,6 +943,14 @@ export const enUS: MessageDict = {
     "This device's chunk-processing task was interrupted, so receiving stopped; ask them to send it again",
   "file.chunkSeqOverflow":
     "This transfer ran out of chunk sequence numbers (a protocol limit); ask them to send it again",
+  "file.quotaExceeded":
+    "This device is already receiving too many files (concurrency / total / per-file limit), so this transfer was rejected; wait for the current ones and ask them to send again",
+  "file.relayBadChunk":
+    "A relay chunk arrived in the wrong shape (length / sequence / round), so receiving stopped; ask them to send it again",
+  "file.relayTaskAborted":
+    "This device's processing task for this transfer was interrupted, so receiving stopped; ask them to send it again",
+  "file.relayHashFailed":
+    "The relayed file arrived but this device couldn't read it for verification, so the transfer was discarded; ask them to send it again",
   "group.files.stateLocal": "On this device",
   "group.files.stateReceiving": "Receiving",
   "group.files.stateRemote": "Not on this device",

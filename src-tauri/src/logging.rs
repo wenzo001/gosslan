@@ -441,6 +441,25 @@ pub(crate) const FAIL_CODE_FILE_CHUNK_POOL_ABORT: &str = "FILE_CHUNK_POOL_ABORT"
 /// 1:1 分片序号已不可表示（`u32` 加一溢出）—— 协议层硬失败，这一单再也接不下去。
 pub(crate) const FAIL_CODE_FILE_CHUNK_SEQ_OVERFLOW: &str = "FILE_CHUNK_SEQ_OVERFLOW";
 
+// ── 中继**接收侧**（`transport/relay_file.rs`，5.15.37）─────────────────────
+//
+// 这一族与上面那一族同一张表、同一类读者（事件载荷；接收失败没有消息行可写）。
+// 共同点：它们原先都是**动态文本当载荷** —— 枚举的 `Debug`、内部串、`io::Error` 原文。
+
+/// 入站配额闸拒了这一单（并发 / 单文件 / 总量上限）。token 与日志里那句
+/// `code=RECV_QUOTA_EXCEEDED kind=…` **同一个名字**：日志与载荷说同一件事时不另起名。
+pub(crate) const FAIL_CODE_RECV_QUOTA_EXCEEDED: &str = "RECV_QUOTA_EXCEEDED";
+
+/// 中继分片形状不合法（长度/序号/轮次对不上）。以前载荷是 `format!("…：{reason}")`。
+pub(crate) const FAIL_CODE_FILE_RELAY_BAD_CHUNK: &str = "FILE_RELAY_BAD_CHUNK";
+
+/// 中继接收的阻塞池任务被丢掉（哈希 / 落盘那两段的 `JoinError`）。
+/// 内部串（`… 被线程池中断: {e}`）以前原样上屏。
+pub(crate) const FAIL_CODE_FILE_RELAY_TASK_ABORTED: &str = "FILE_RELAY_TASK_ABORTED";
+
+/// 中继收完但**算不出**指纹（读 `.part` 失败）。与"内容不匹配"不同：这是本机读不到，不是对不上。
+pub(crate) const FAIL_CODE_FILE_RELAY_HASH_FAILED: &str = "FILE_RELAY_HASH_FAILED";
+
 /// 把一次写盘失败归类成稳定失败码：盘满 ⇒ [`FAIL_CODE_DISK_FULL`]，其余 ⇒ `None`。
 ///
 /// `None` 表示"没有专属码"，调用方应当保留原始错误文本（那是唯一信息量）。

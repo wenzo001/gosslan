@@ -13,6 +13,46 @@
 
 ## [Unreleased]
 
+## [5.15.37] - 2026-10-30
+
+
+### 中继接收侧那四格：枚举 Debug、内部串、OS 原文不再当载荷
+
+第 19 行的最后半条（A2c 的接收侧）。`transport/relay_file.rs` 里有四格把**动态文本**直接放进
+`file-failed` 的 `reason`：
+`format!("{breach:?}")`（配额闸的枚举 Debug —— 英文标识符，而且改个变体名就静默漂）、
+`format!("中继分片形状不合法：{reason}")`、
+`format!("中继哈希任务被线程池中断: {e}")` / `format!("中继落盘任务被线程池中断: {e}")`（内部串），
+以及 `move_received_file` 三个出口的 `io::Error` 原文（`create_dir_all` / 改名 / 跨卷 copy）。
+
+- 四个新码（事件族，`logging.rs::FAIL_CODE_*`）：`RECV_QUOTA_EXCEEDED`、`FILE_RELAY_BAD_CHUNK`、
+  `FILE_RELAY_TASK_ABORTED`、`FILE_RELAY_HASH_FAILED`。其中 `RECV_QUOTA_EXCEEDED` **沿用日志里
+  已有的那个 token**（`admit_inbound` 自己就写 `code=RECV_QUOTA_EXCEEDED kind=…`）——
+  同一件事不另起名；`kind`（哪个上限、当时几个在收）从载荷挪进日志。
+- 哈希那一格顺带把两种失败**分开**：阻塞池把任务丢了（`JoinError`）与本机读不出 `.part`
+  （`io::Error`）是两件事，以前都拼成一句内部串。落盘那一格同规矩；`move_received_file`
+  三处 Err 改成先 `classify_write_failure`（盘满归 `DISK_FULL`，它才有"清出空间后重试"那句），
+  再落 `FILE_RECEIVE_PLACE_FAILED` / `FILE_RECEIVE_WRITE_FAILED`，OS 原文只进日志。
+- 量具：新增「中继接收侧的上屏出口只发在册的码，不发 format! 动态文本」（形状判据 + 内联正控）；
+  另有一条既有判据的锚点跟着改——`lib_relay_data_tests.rs` 那条钉「哈希必须 await，不许丢 JoinHandle」
+  的用例，原来锚在 `.await.unwrap_or_else(`，改码后是 `.await.map_err(`；
+  **意图没动**（仍锚在 `.await` 上），只是形状变了。
+
+
+**真跑过的验证**：`cargo test --lib --features bluetooth` **1321 通过 / 0 失败**；
+`npm test` **1519 通过 / 0 失败**（+1 条判据）；`npm run verify:local` **25 步全绿**；
+`node --test src/utils/fileFailReason.test.ts` 11/11；`verify-guards.py --list` 现读 288 条锚点存在且唯一。
+外部变异：把配额那一格改回 `format!("{breach:?}")` ⇒ 新判据点名「relay_file.rs 里还有 1 处把 format! 当载荷」（退 1），
+跑完 `cmp` 逐字节还原。
+⚠️ **本批第二次撞上「改码 = 断锚点」，而且这次是两条**：
+① `lib_relay_data_tests.rs` 那条「哈希必须 await」的用例锚在 `.await.unwrap_or_else(`，改码后是 `.await.map_err(`；
+② 护栏 Case「中继收文件的哈希必须对组装后的明文算」的注入锚点整段写着旧的兜底写法。
+前者更新沿用了原意图（仍锚在 `.await`），后者顺着「让注入窗口不长注释」把错误映射抽成两个小函数，
+再用 `verify-guards.py --only="中继收文件的哈希"` 复跑退 0（注入→红→恢复逐字节一致，38.9s）。
+**没跑的层**：护栏 cargo 通道整跑（夜间/dispatch 那条腿）；跨进程与真机未证 ——
+这四格的触发要造配额打满 / 坏分片 / 坏 `.part`。
+**还剩的**：`relay_push.rs` 发送侧那十个 Err（含「用户取消发送」被 `handle_share` 当失败发帧这一语义问题，需先判语义）。
+
 ## [5.15.36] - 2026-10-30
 
 
