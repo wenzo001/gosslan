@@ -33,7 +33,8 @@
  *   两个 base64 导出器（`x25519_secret_b64` / `ed25519_secret_b64`）只许被**持久化那一家**
  *   （`state.rs`）调用。ECDH 的唯一出口是 `Identity::dh()`，签名是 `sign_b64()`。
  *
- * ⚠️ 这一条今天只覆盖 X25519 那一半：`ed25519_signing` **仍是公开字段** —— 中继拨号要把 owned
+ * ⚠️ 5.15.45 起这条覆盖两半：`ed25519_signing` 也私有化了（对外只剩 `Identity::signer()` 交出的
+ * `IdentitySigner`）。历史注记：私有化之前它**仍是公开字段** —— 中继拨号要把 owned
  * `SigningKey` 跨 `spawn` 传进 `relay_negotiate`/`build_wrap_offer`（含 10 处用裸 SigningKey 的
  * 协议测试），私有化它需要给那一层引入"签名能力"抽象，属 Frozen Core 线格式侧的设计改动。
  * 残余写在这里、也写在 `docs/protocol-invariants.md` 的 INV-P18，不装作已经封死。
@@ -218,6 +219,15 @@ function scanFieldBoundary(rel, src) {
     for (const m of src.matchAll(/\b[A-Za-z_][\w.]*\.x25519_secret\b(?!_)/g)) {
       bad.push(`${rel} 直接读私钥字段 ${m[0]}`);
     }
+    // 5.15.45：Ed25519 私钥字段也私有化了（INV-P18 的另一半）——
+    // 对外只剩 `Identity::signer()` 交出的 `IdentitySigner`（只能签、能读公钥）。
+    for (const m of src.matchAll(/\b[A-Za-z_][\w.]*\.ed25519_signing\b(?!_)/g)) {
+      bad.push(`${rel} 直接读私钥字段 ${m[0]}（只许经 Identity::signer()）`);
+    }
+  }
+  // 字段本身不许再被写回 `pub`（形状判据：私有化是个会被"顺手"改回去的东西）
+  if (/\bpub\s+ed25519_signing\s*:/.test(src)) {
+    bad.push(`${rel} 把 ed25519_signing 又写成 pub（INV-P18 收的口子）`);
   }
   // 导出器只有持久化那一家能用（crypto.rs 内部的定义行不算调用）
   if (rel !== "crypto.rs" && rel !== "state.rs") {
@@ -281,6 +291,16 @@ pub async fn send_message(state: tauri::State<'_, AppState>) -> Result<String, S
     src: `pub async fn send_message(s: &AppState) -> Result<String, String> {
     let raw = s.identity.x25519_secret.to_bytes();
     Ok(hex::encode(raw))
+}
+` },
+  { name: "C″：生产码直接读 Ed25519 私钥字段", probe: "C", rel: "commands/sign.rs",
+    src: `pub fn sign_it(s: &AppState) -> Vec<u8> {
+    s.identity.ed25519_signing.to_bytes().to_vec()
+}
+` },
+  { name: "C‴：把 Ed25519 私钥字段又写回 pub", probe: "C", rel: "crypto.rs",
+    src: `pub struct Identity {
+    pub ed25519_signing: SigningKey,
 }
 ` },
   { name: "C′：命令调密钥导出器（持久化之外的第二家）", probe: "C", rel: "commands/export.rs",
@@ -401,4 +421,4 @@ if (problems.length) {
 
 console.log(`✓ 私钥边界：${a.seenTypes} 个可序列化类型无密钥字段（判据 A）`
   + ` · ${b.found.size} 条命令体无密钥触碰且与注册表逐条对上（判据 B）`
-  + ` · X25519 私钥字段与两个导出器的落点在 ${["crypto.rs", "state.rs"].join("/")}（判据 C）`);
+  + ` · X25519/Ed25519 私钥字段、两个导出器与「签名能力」的落点在 crypto.rs（判据 C）`);

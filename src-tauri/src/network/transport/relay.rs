@@ -277,7 +277,7 @@ pub async fn relay_rendezvous_task(state: Arc<AppState>, mut shutdown: watch::Re
         let day = relay_epoch_day(db::now_ms());
         let my_pk = state.identity.ed25519_public_b64();
         let my_id = state.device_id.clone();
-        let my_signing = state.identity.ed25519_signing.clone();
+        let my_signing = state.identity.signer();
 
         // 并发拨号：一条卡住不能把同一轮里其他好友一起拖住（同 routed_task 的理由）。
         // `dials` 是外面那份**跨轮持有**的集合，这里只往里加，轮尾不排空（理由见其声明处）。
@@ -352,7 +352,7 @@ pub async fn relay_rendezvous_task(state: Arc<AppState>, mut shutdown: watch::Re
 pub struct RelayCtx<'a> {
     pub dial: &'a RelayDial,
     pub device_id: &'a str,
-    pub signing: &'a ed25519_dalek::SigningKey,
+    pub signing: &'a crate::crypto::IdentitySigner,
 }
 
 /// 中继首行的**唯一**构造点：`GSRL1 <token> <64hex>\n`。
@@ -415,7 +415,7 @@ pub async fn relay_negotiate(
     w: &mut TcpSender,
     r: &mut TcpReceiver,
     my_device_id: &str,
-    my_signing: &ed25519_dalek::SigningKey,
+    my_signing: &crate::crypto::IdentitySigner,
     dial: &RelayDial,
 ) -> Result<(), (RelayProbeKind, String)> {
     // 只写的一侧需要这个 trait；读在 `read_bounded_line` 里，它自己 import。
@@ -591,7 +591,7 @@ mod relay_wiring_tests {
     /// 那是判据本身的另一个假指控）。
     #[test]
     fn pre_pairing_writes_stay_far_below_the_pending_cap() {
-        let sk = SigningKey::from_bytes(&[7u8; 32]);
+        let sk = crate::crypto::IdentitySigner::from_key_for_tests(SigningKey::from_bytes(&[7u8; 32]));
         let kp = relay_seal::generate_eph_keypair();
         let dial = dial_for(&"ab".repeat(32), "gosslan-bbbbbbbbbbbbbbb", &"B".repeat(44));
         let offer = relay_seal::build_wrap_offer(
@@ -622,9 +622,10 @@ mod relay_wiring_tests {
         ids.iter().map(|s| s.to_string()).collect()
     }
 
-    fn ident() -> (SigningKey, String) {
+    fn ident() -> (crate::crypto::IdentitySigner, String) {
         let sk = SigningKey::generate(&mut rand_core::OsRng);
-        (sk.clone(), STANDARD.encode(sk.verifying_key().to_bytes()))
+        let pk = STANDARD.encode(sk.verifying_key().to_bytes());
+        (crate::crypto::IdentitySigner::from_key_for_tests(sk), pk)
     }
 
     // ─────────────────────── 纯判据 ───────────────────────

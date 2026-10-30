@@ -684,10 +684,12 @@ Rust private key
   字段是**私有的**，只许在 `crypto.rs` 内部被读；两个 base64 导出器只许被持久化那一家（`state.rs`）调用；
   ECDH 的唯一出口是 `Identity::dh()`（它逐字转发 `shared_secret`，线格式零差异）。
   这条把"两步搬运"里 X25519 那一半从"文本判据抓不住"变成"**编译不过**"。
-  ⚠️ 残余（如实写下）：`ed25519_signing` **仍是公开字段** —— 中继拨号要把 owned `SigningKey` 跨 `spawn`
-  传进 `relay_negotiate` / `build_wrap_offer`（那里还有 10 处用裸 `SigningKey` 的协议测试），
-  私有化它要给那一层引入"签名能力"抽象，属 Frozen Core 线格式侧的设计改动，不在攒批修复里顺手做。
-  判据 A/B 对这一半仍然有效（不许序列化、不许出现在交出值的位置）。
+  **Ed25519 那一半（5.15.45 已落地）**：`ed25519_signing` 也是**私有字段**了；对外只剩
+  `Identity::signer()` 交出的 `crypto::IdentitySigner` —— 拿到它只能 `sign(..)` 与读公钥，
+  拿不到私钥本身。中继拨号跨 `spawn` 传的由 owned `SigningKey` 换成了它（线格式零差异：
+  签名算法、被签字节、公钥来源都没动）。判据 C 同步扩到这一半（字段只许在 `crypto.rs` 内被读、
+  且不许再被写回 `pub`），外部变异（把字段改回 `pub`）当场点名红。
+  ⇒ 至此 INV-P18 两半（X25519 ECDH / Ed25519 签名）都从"靠人记得"变成"编译不过 + 有判据"。
 
 
 ---

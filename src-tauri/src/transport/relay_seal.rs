@@ -40,7 +40,7 @@
 use base64::{engine::general_purpose::STANDARD, Engine as _};
 use chacha20poly1305::aead::{Aead, KeyInit};
 use chacha20poly1305::{ChaCha20Poly1305, Key, Nonce};
-use ed25519_dalek::{Signer, Verifier, VerifyingKey};
+use ed25519_dalek::{Verifier, VerifyingKey};
 use sha2::{Digest, Sha256};
 use std::collections::VecDeque;
 use std::io;
@@ -233,7 +233,7 @@ pub fn build_wrap_offer(
     my_device_id: &str,
     peer_device_id: &str,
     channel_hex: &str,
-    signing_key: &ed25519_dalek::SigningKey,
+    signing_key: &crate::crypto::IdentitySigner,
     eph: &EphKeypair,
 ) -> WrapOffer {
     let role = wrap_role(my_device_id, peer_device_id).to_string();
@@ -599,9 +599,10 @@ mod tests {
     use crate::transport::tcp::{read_bytes, write_bytes};
     use tokio::io::AsyncWriteExt;
 
-    fn ident() -> (ed25519_dalek::SigningKey, String) {
+    fn ident() -> (crate::crypto::IdentitySigner, String) {
         let sk = ed25519_dalek::SigningKey::generate(&mut rand_core::OsRng);
-        (sk.clone(), STANDARD.encode(sk.verifying_key().to_bytes()))
+        let pk = STANDARD.encode(sk.verifying_key().to_bytes());
+        (crate::crypto::IdentitySigner::from_key_for_tests(sk), pk)
     }
 
     /// 通道哈希必须**两端各自算出同一个值** —— 否则中继永远配不上对，
