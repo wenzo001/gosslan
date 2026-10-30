@@ -591,7 +591,12 @@ mod relay_wiring_tests {
     /// 那是判据本身的另一个假指控）。
     #[test]
     fn pre_pairing_writes_stay_far_below_the_pending_cap() {
-        let sk = crate::crypto::IdentitySigner::from_key_for_tests(SigningKey::from_bytes(&[7u8; 32]));
+        let sk = crate::crypto::Identity::from_secrets(
+            &STANDARD.encode([7u8; 32]),
+            &STANDARD.encode(SigningKey::from_bytes(&[7u8; 32]).to_bytes()),
+        )
+        .expect("测试身份必须能构造")
+        .signer();
         let kp = relay_seal::generate_eph_keypair();
         let dial = dial_for(&"ab".repeat(32), "gosslan-bbbbbbbbbbbbbbb", &"B".repeat(44));
         let offer = relay_seal::build_wrap_offer(
@@ -624,8 +629,12 @@ mod relay_wiring_tests {
 
     fn ident() -> (crate::crypto::IdentitySigner, String) {
         let sk = SigningKey::generate(&mut rand_core::OsRng);
-        let pk = STANDARD.encode(sk.verifying_key().to_bytes());
-        (crate::crypto::IdentitySigner::from_key_for_tests(sk), pk)
+        let id = crate::crypto::Identity::from_secrets(
+            &STANDARD.encode([7u8; 32]),
+            &STANDARD.encode(sk.to_bytes()),
+        )
+        .expect("测试身份必须能构造");
+        (id.signer(), id.ed25519_public_b64())
     }
 
     // ─────────────────────── 纯判据 ───────────────────────

@@ -3111,15 +3111,15 @@ export const useChatStore = defineStore("chat", () => {
         // 「用户主动取消」与「自动判死」分成两个口径），而 `loadMessages` 只对当前在看的
         // 会话重查 ⇒ 以前写 failed 时，没在看的会话会把"已取消"一直显示成"发送失败"，
         // 直到用户下次打开那个会话才被库里的真值纠正过来。
-        for (const [, msgs] of Object.entries(messages.value)) {
-          const msg = msgs.find(m =>
-            m.msg_id === `file-${transferId}` || m.msg_id === `gfile-${transferId}`
-          );
-          if (msg) {
-            msg.status = "cancelled";
-            app.toast(t("msg.canceled"), "info");
-          }
-        }
+        // 5.15.47：这段原先又是手写一遍（跨会话 `Object.entries` + `.find` + 就地改 +
+        // 两个前缀自己拼）。收进 `utils/messages` 的两个家：前缀归 `transferFailureMsgIds`、
+        // 改状态归 `markStatusInCache`（后者本来就存在，只是当时只收单个 id）。
+        const changed = markStatusInCache(
+          messages.value,
+          transferFailureMsgIds(transferId),
+          "cancelled",
+        );
+        if (changed > 0) app.toast(t("msg.canceled"), "info");
         void refreshTransfers();
       },
       onMessageFailed: (msgId) => {

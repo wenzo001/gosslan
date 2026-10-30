@@ -244,7 +244,7 @@ export function isForwardableKind(kind: string): boolean {
 
 | 层 | 总数 | 孤儿 | 结果 |
 |---|---|---|---|
-| Tauri 命令（定义 = 注册） | 163 | 1（`get_topology`） | 定义未注册 0 / 注册未定义 0 |
+| Tauri 命令（定义 = 注册） | 162（5.15.44 删掉 `get_topology` 后现读） | 0 | 定义未注册 0 / 注册未定义 0 |
 | 前端 `invoke` 调用点 | 165（162 个命令名） | 0 | **无一条指向不存在的命令** ⇒ 无崩溃级缺口 |
 | 后端事件 emit | 40（36 业务 + 4 `menu://`） | 0 | 36/36 全部有监听 |
 | 前端 listen | 36（44 个调用点） | 0 | **无一条监听不存在的事件** |
@@ -264,7 +264,7 @@ export function isForwardableKind(kind: string): boolean {
 |---|---|---|---|
 | FUN-02 | Medium | 收藏页转发图片同源同因（`FavoritePanel.vue:598` 第二份实现）—— 修 FUN-01 不会自动修它 | `src/components/FavoritePanel.vue:593` |
 | FUN-03 | Medium | BLE 是非默认 Cargo feature，默认构建 `available()` 恒 false 且**界面不区分"硬件不支持"与"本次构建没编进去"**（判据 `ble.feature_compiled` 已存在但只在 DevDiagPanel 用）。发布包正常（CI 与 dist 脚本都带 `--features bluetooth`） | `src-tauri/Cargo.toml`、`NetworkSection.vue` |
-| FUN-04 | Low | **已关闭（5.15.44）**：负责人拍板**删掉**（不接线）⇒ 命令本体 / 注册行 / `TopologyInfo` / `relay_circuit_count` 全删，`DEAD_COMMANDS` 回到空表、架构图两处快照同步；`link_is_relay_circuit` 保留（`relay.connected` 还在读） | `grep -rn get_topology src src-tauri/src` 现数 0 |
+| FUN-04 | Low | **已关闭（5.15.44）**：负责人拍板**删掉**（不接线）⇒ 命令本体 / 注册行 / `TopologyInfo` / `relay_circuit_count` 全删，`DEAD_COMMANDS` 回到空表、架构图两处快照同步；`link_is_relay_circuit` 保留（`relay.connected` 还在读） | `grep -rn get_topology src src-tauri/src` 现读 4 行、**全是注释**（0 个活引用） |
 | FUN-05 | Info | 移动端 `set_unread_badge` 空实现，设计内边界（前端直接 return，不发 IPC） | `src/stores/useChatStore.ts:404` |
 | FUN-06 | Low | 转发逻辑在 ChatWindow / FavoritePanel / MessageItem 三处各写一份，**已经漂移**（FUN-01/02 的根因）；`resendChannel.ts:54` 已有正确的 kind 集合可复用 | 三处 |
 
@@ -1018,13 +1018,13 @@ node --experimental-strip-types -e '
 判据两条：单测（会话隔离 / 三种 null / 不可变）+ 接线判据（store 里手写 `findIndex(msg_id)` 现数 0、
 `patchMessageInConv` ≥2 处），各带正控，外加一次外部变异（把 findIndex 塞回 `onMessageAcked` ⇒ 点名红）。
 
-**TST-02 到此收口**：五个 handler 全部走家。剩下的 `onPeerRead` 是**按会话批量提升**，
+**TST-02 到此收口**：五个 handler 全部走家（⚠️ 这条当时就漏了 `onFileCancelled`，见 §4.0ae）。剩下的 `onPeerRead` 是**按会话批量提升**，
 它的谓词本来就在 `utils/messages::promoteOnPeerRead`（有单测），不在这一条的范围里。
 
 ### 4.0ab §8 小尾巴复核（5.15.43）：lucide 评估完成；FUN-04 是**待拍板**不是"理由过期"；TST-09 本轮不做
 
 **① `lucide-vue-next` 升级评估（§8 第 17 行）—— 评估完成，暂不升级。**
-现读：装的是 **0.469.0**，最新 **1.0.0**（major）；生产代码里 **50 个文件 / 104 个名字**
+现读：装的是 **0.469.0**，最新 **1.0.0**（major）；生产代码里 **49 个文件 / 104 个名字**
 （103 个运行时图标 + 1 个 `type LucideIcon`）。做法不是抄 changelog，而是在 `/tmp` 里装了 1.0.0
 逐个比名字：**0.469.0 与 1.0.0 对 103 个运行时图标全部都有导出（缺失 0）** ⇒ 升级不会被"名字没了"卡住。
 但 1.0 是 major，**默认描边/尺寸、tree-shaking 形状这些视觉面在本机没有判据**（要一轮
@@ -1073,6 +1073,27 @@ node --experimental-strip-types -e '
 - 修法与环境无关：所有平台优先 `f_frsize`。判据是同一条 `#[ignore]` 量具（要 `hdiutil`），
   A/B 退回去当场红。**Windows 那一半仍无本地判据**（`GetDiskFreeSpaceExW` 的夹具在
   `lib_startup_config_tests.rs`，本轮未动）。
+
+### 4.0ae review 抓到上批的「收口」是假的（5.15.47）：第 6 个手写实现
+
+两个独立 review 都指向 `onFileCancelled`（`useChatStore.ts`）：它用
+`for (const [, msgs] of Object.entries(messages.value))` + `msgs.find(m => m.msg_id === …)` + 就地改
+——与 `onFileFailed` 同一件事，而 5.15.42 的判据只认 `[convId, list]` 与 `.findIndex((m) => m.msg_id`
+两种写法 ⇒ 它从两条正则里同时逃掉，台账却写了"五个 handler 全部走家、现数 0"。
+
+- 修法：改用 `transferFailureMsgIds`（前缀）+ `markStatusInCache`（改状态；它本来就存在，
+  这次扩成 `string | 多个 id`）。
+- 判据：接线判据放宽到**任意解构**、把该 handler 加进必查清单、并新增 `.find(m => m.msg_id` 归零。
+  外部变异（改回手写）⇒ 两条断言同时点名红。
+- 同一批还修了 review 指出的三处：① 量具用了 `ErrorKind::StorageFull`（1.83+，本仓 MSRV 1.77，
+  本文件自己写着不许用）⇒ 改裸码；② `blocks_to_bytes` 抽纯函数 + **非 ignored** 单测（原来修复只有
+  要 `hdiutil` 的量具挡着）；③ `IdentitySigner` 去掉 `from_key_for_tests` 与 `verifying_key()`
+  （前者 `Identity::from_secrets` 已够，后者公钥已有名字），`check-key-boundary` 的"写宽"判据
+  扩到 `pub(crate)`/`pub(super)` 并对 X25519 对称检查。
+- 数字订正：`messages.test` 现读 123、lucide 文件现读 49、`get_topology` 的复跑命令现读 4 行全注释。
+
+**教训（与 §4.0y 同源）**：判据按"我当时想到的两种写法"写，就会漏掉第三种；而"收口/闭环"
+这类断言必须**按形状族逐个清点**，不是按"我改过的那些"。
 
 ### 4.1 已核查且未发现问题的稳定性面
 
@@ -1228,7 +1249,7 @@ node --experimental-strip-types -e '
 >
 > 现在把它改成**唯一的状态表**：`§1/§2/§3/§6/§7` 各节记的是**审计当时**的发现，今天的状态以本表为准。
 > ⚠️ 诚实边界：本表是**人工对账 + 每行挂复跑命令**，不是机器判据 —— 没有任何脚本断言"这张表与代码一致"
-> （能做这种断言的只有逐行的复跑命令本身）。表里没写的 ID 见 §4.0a～§4.0ad 的复核结论。
+> （能做这种断言的只有逐行的复跑命令本身）。表里没写的 ID 见 §4.0a～§4.0ae 的复核结论。
 
 | 序 | ID | 今天的状态 | 凭据 / 复跑 |
 |---|---|---|---|
@@ -1238,7 +1259,7 @@ node --experimental-strip-types -e '
 | 4 | STB-01 / STB-03 | **STB-01 已落地**（5.15.10）；**STB-03 实测后判不修**（§4.0w：release 下单表聚合上限 133.5 MB/s、两条并发 136.9 MB/s ⇒ 高于千兆线；「误判超时」不成立）；量具留在 `stb03_receiver_critical_section_cost`（`#[ignore]`） | `grep -rn "write_group_chunk_blocking" src-tauri/src` 现数 5 处，且已进 INV-P34 的登记格。全局 `file_receivers` 锁那半在 5.15.10 明确记账：要动几十个引用点、只有跨进程 E2E 能证 |
 | 5 | STB-02 | **已落地**（5.15.10） | 条数上限 + TTL + 载荷尺寸闸：`grep -rn "MAX_PENDING_FRIEND_REQUESTS\|PENDING_REQUESTS_FULL" src-tauri/src/network/transport/handshake.rs` |
 | 6 | TST-03 | **已落地**（5.15.11，按拆腿口径） | node+script 那条腿每次 push/PR 都跑；cargo 整跑实测 2h39m 留夜间。复跑：`grep -n "^  guards-\|if: github.event_name" .github/workflows/verify.yml`（`guards-web` 那job **没有** `if`）⚠️ 只看 `guards-cargo` 的 `if` 会误判成"没做"——本轮我自己就误判过一次 |
-| 7 | TST-02 | **已落地**（5.15.41 跨会话三段 + 5.15.42 会话内两处，§4.0z/§4.0aa）：五个 handler 全部走 `utils/messages` 的家，store 里手写 `findIndex(msg_id)` 现数 0；`onPeerRead` 那处例外（谓词本来就在 `promoteOnPeerRead`） | `useChatStore` 里难的纯逻辑（`replaceOptimistic`）已有真用例，缺的是接线；做成真测试要先给 store 做注入或搬状态机，属独立重构 |
+| 7 | TST-02 | **已落地**（5.15.41 跨会话三段 + 5.15.42 会话内两处 + **5.15.47 补第 6 个 `onFileCancelled`**，§4.0z/§4.0aa/§4.0ae）：六个 handler 全部走 `utils/messages` 的家；store 里手写 `findIndex(msg_id)` 与 `.find(m => m.msg_id)` 现读都是 0；`onPeerRead` 那处例外（谓词本来就在 `promoteOnPeerRead`） | `useChatStore` 里难的纯逻辑（`replaceOptimistic`）已有真用例，缺的是接线；做成真测试要先给 store 做注入或搬状态机，属独立重构 |
 | 8 | TST-01 | **已落地**（5.15.11） | 假测试换成 3 条真用例：`grep -c "^test(" src/utils/saveDestination.test.ts` 现数 3 |
 | 9 | TST-07 | **已落地一半**（5.15.11）+ 另一半被否证 | 撤回**选档**抽成 `recall_authority_for` 并补行为用例（形状断言同时钉"命令真调它"）；key-change 那半审计不准确 —— 那条判据本来就有 6 条行为断言 |
 | 10 | INV-P16 | **两条通道都已落地**（5.15.21 命令返回侧 / 5.15.22 落库侧） | §4.0j。状态不拆档、原因另有码；`grep -n "MESSAGE_FAIL_CODES" src-tauri/src/error_codes.rs` |
