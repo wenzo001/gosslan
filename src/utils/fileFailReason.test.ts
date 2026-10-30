@@ -454,9 +454,13 @@ test("中继发送侧发码，且取消不许被当成失败发帧", () => {
   //    ① 真的有「按码认出取消」这一句；② 失败帧**长在** `if !cancelled {` 里面。
   const share = readFileSync(join(ROOT, "src-tauri/src/network/transport/handle_share.rs"), "utf8");
   const CANCEL_CHECK = /let cancelled = reason == crate::logging::FAIL_CODE_FILE_SEND_CANCELLED;/;
-  const GUARDED_EMIT = /if\s*!\s*cancelled\s*\{[\s\S]{0,400}?emit\(\s*"file-failed"/;
+  // 用**花括号配对**取 `if !cancelled { … }` 的块体再判里面有没有 emit：
+  // 原来的 `[\s\S]{0,400}?` 会跨过 `}` 去匹配"块后面"的 emit（review 2026-10-30 指出）。
+  const guardedBlock = tsFnBody(share, "if !cancelled {");
+  assert.ok(guardedBlock.length > 10, "取不到 `if !cancelled {` 的块体 ⇒ 锚点写法变了");
+  const GUARDED_EMIT = /emit\(\s*"file-failed"/;
+  assert.ok(GUARDED_EMIT.test(guardedBlock), "失败帧必须长在 `if !cancelled` 里面 —— 否则取消仍会被当成失败");
   assert.ok(CANCEL_CHECK.test(share), "handle_share 必须按**码**认出取消（不许比对中文文案）");
-  assert.ok(GUARDED_EMIT.test(share), "失败帧必须长在 `if !cancelled` 里面 —— 否则取消仍会被当成失败");
   // 正控：把条件拆回无条件块（就是想退回的写法），两条尺子各自必须说不。
   const noCheck = share.replace(
     "let cancelled = reason == crate::logging::FAIL_CODE_FILE_SEND_CANCELLED;",
@@ -464,7 +468,102 @@ test("中继发送侧发码，且取消不许被当成失败发帧", () => {
   );
   assert.notEqual(noCheck, share, "变异②a 没落进去 ⇒ 锚点写法变了");
   assert.equal(CANCEL_CHECK.test(noCheck), false);
-  const unconditional = share.replace("if !cancelled {", "{");
-  assert.notEqual(unconditional, share, "变异②b 没落进去 ⇒ 锚点写法变了");
-  assert.equal(GUARDED_EMIT.test(unconditional), false, "退回无条件发之后仍匹配 ⇒ 这把尺子恒绿");
+  // 变异②b：把 emit 挪出 `if !cancelled` 块（模拟"退回无条件发"）—— 块体判据必须说"没有"。
+  const movedOut = share.replace(/(if !cancelled \{)[\s\S]*?(\n\s*\})/, "$1$2");
+  assert.notEqual(movedOut, share, "变异②b 没落进去 ⇒ 锚点写法变了");
+  assert.equal(GUARDED_EMIT.test(tsFnBody(movedOut, "if !cancelled {")), false);
+});
+
+/**
+ * 5.15.40 复核补漏：**同一批"闭环"漏掉的五条上屏路径**必须被尺子看见。
+ *
+ * 上一批只认 `Err("…".to_string())` / `Err(format!(…)` 两种形状，而真实泄漏长在
+ * `map_err(|e| format!(…))`、`ok_or(…)`、包装层 `map_err(…)?`、`.map_err(|e| e.message)` 上 ——
+ * 两个独立 review 各点名了其中几条。这条把它们按**文件 + 形状**钉住，并带两个正控。
+ */
+test("上屏载荷的另外四种形状：map_err / ok_or / e.message / 包装层 都不许发散文或丢标记", () => {
+  const CJK = /[\u4e00-\u9fff]/;
+  const read = (rel: string) => readFileSync(join(ROOT, rel), "utf8");
+
+  // ① relay_push.rs 的 Err 全都会上屏 ⇒ 四种"造 Err"的形状都不许拼中文
+  const push = read("src-tauri/src/network/file/relay_push.rs");
+  for (const re of [
+    /Err\("([^"]*)"\s*\.to_string\(\)/g,
+    /Err\(format!\(/g,
+    /ok_or_else\(\|\|\s*"([^"]*)"/g,
+    /ok_or\(\s*"([^"]*)"/g,
+    /map_err\(\|e\|\s*format!\(/g,
+    /map_err\(\|e\|\s*Err\(format!\(/g,
+  ]) {
+    const hits = [...push.matchAll(re)]
+      .map((m) => m[1] ?? "<format!>")
+      .filter((x) => x === "<format!>" || CJK.test(x));
+    assert.deepEqual(hits, [], `relay_push.rs 还有散文/动态串当返回值（${re}）：${hits.join(" / ")}`);
+  }
+  // 正控①：把一格退回 `map_err(|e| format!()`，上面必须报
+  const guttedPush = push.replace(
+    "crate::logging::FAIL_CODE_FILE_SEND_READ_FAILED.to_string()\n    })?;",
+    "format!(\"读取文件失败：{e}\")\n    })?;",
+  );
+  assert.notEqual(guttedPush, push, "正控① 没落进去 ⇒ 锚点写法变了");
+
+  // ② 包装层 `finish_receive` 与 `begin_reassemble` 同样会 emit ⇒ 它们的 Err 也只许是码
+  const wrapper = tsFnBody(read("src-tauri/src/network/file/receive.rs"), "pub async fn finish_receive(");
+  assert.ok(wrapper.length > 300, "finish_receive 函数体没取到 ⇒ 锚点写法变了");
+  assert.deepEqual(
+    [...wrapper.matchAll(/Err\("([^"]*)"/g)].map((m) => m[1]).filter((x) => CJK.test(x)),
+    [],
+    "finish_receive 的包装层还在发中文散文",
+  );
+  assert.ok(!/map_err\(\|e\|\s*format!\(/.test(wrapper), "包装层的 map_err 不许把内部串当返回值");
+
+  const begin = tsFnBody(read("src-tauri/src/file_relay.rs"), "pub fn begin_reassemble(");
+  assert.ok(begin.length > 300, "begin_reassemble 函数体没取到 ⇒ 锚点写法变了");
+  // 判**第一个实参**（码）是不是在册常量：detail 可以是人话（它只进日志）。
+  const perCode = [...begin.matchAll(/RelayReject::coded\(\s*([^,]+),/g)].map((m) => m[1].trim());
+  assert.ok(perCode.length >= 1, "begin_reassemble 里一处 `RelayReject::coded(` 都没扫到 ⇒ 判据在空转");
+  // 码可以是**全路径**，也可以是文件顶部 `use` 进来的**裸常量名** —— 但裸名必须真被 use 过
+  // （否则就是一个拼错的标识符，编译都过不了；这条只防"把中文字面量当码"）。
+  const bare = perCode.filter((c) => /^[A-Z][A-Z0-9_]+$/.test(c));
+  for (const name of bare) {
+    assert.ok(
+      new RegExp(`use crate::(?:logging|error_codes)[^;]*\\b${name}\\b`).test(
+        read("src-tauri/src/file_relay.rs"),
+      ),
+      `拒收用的裸常量 ${name} 没有在 file_relay.rs 顶部 use 进来`,
+    );
+  }
+  assert.deepEqual(
+    perCode.filter(
+      (c) =>
+        !/^(crate::logging::FAIL_CODE_[A-Z_]+|crate::error_codes::[A-Z_]+)$/.test(c) &&
+        !/^[A-Z][A-Z0-9_]+$/.test(c),
+    ),
+    [],
+    "拒收的码必须是常量（全路径或 use 进来的裸名），不许把中文字面量当码",
+  );
+  assert.ok(
+    /RelayReject::coded\(\s*(crate::logging::)?FAIL_CODE_/.test(begin),
+    "begin_reassemble 的拒收必须带在册的码",
+  );
+
+  // ③ 共享目录直发：不许再丢 `SendFileError.cancelled`，也不许把 `message` 当载荷
+  // 先剥注释：本批自己的说明里就写着旧写法 `.map_err(|e| e.message)`，
+  // 不剥会把注释当成代码（这条判据第一次跑就是这么假红的）。
+  const share = read("src-tauri/src/network/transport/handle_share.rs")
+    .replace(/^\s*\/\/.*$/gm, "")
+    .replace(/\/\*[\s\S]*?\*\//g, "");
+  assert.ok(!/\.map_err\(\|e\|\s*e\.message\)/.test(share), "直连分支不许再丢 cancelled 标记");
+  assert.ok(
+    /if e\.cancelled \{[\s\S]{0,120}FAIL_CODE_FILE_SEND_CANCELLED/.test(share),
+    "直连分支必须按 cancelled 标记分流到取消码",
+  );
+  assert.ok(share.includes("FAIL_CODE_FILE_SEND_SHARE_FAILED"), "直连失败必须有在册的码");
+  // 正控②：把分流那一句删掉，必须被抓出来
+  const noFlag = share.replace(/if e\.cancelled \{/, "if false {");
+  assert.notEqual(noFlag, share, "正控② 没落进去");
+  assert.equal(
+    /if e\.cancelled \{[\s\S]{0,120}FAIL_CODE_FILE_SEND_CANCELLED/.test(noFlag),
+    false,
+  );
 });

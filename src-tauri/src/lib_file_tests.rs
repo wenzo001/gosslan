@@ -564,12 +564,14 @@ fn receive_finalize_slow_work_happens_outside_the_receiver_lock() {
         );
     // 来源不符时的"塞回去"必须留在锁内
     assert!(
-        flat.contains("returnErr(\"文件传输来源不匹配\".to_string());}"),
+        // 5.15.40：这一支会 emit ⇒ 载荷改成了码（`FILE_RECEIVE_SOURCE_MISMATCH`）；
+        // 判据的意图不变：**塞回去必须留在锁内**（`recv.insert(..)` 与 return 在同一个块里）。
+        flat.contains("returnErr(crate::logging::FAIL_CODE_FILE_RECEIVE_SOURCE_MISMATCH.to_string());}"),
         "找不到来源不符分支 —— 护栏需要同步更新"
     );
     // 摘出来的那份接收器必须**交给核心**，不是就地收尾（就地收尾 = 慢活回到锁的同一作用域）
     assert!(
-        flat.contains("finish_receiver_into(&st.db,&st.logger,&transfer_id,r)"),
+        flat.contains("finish_receiver_into(&st.db,&st.logger,&tid_for_task,r)"),
         "包装函数必须把摘出的接收器整体交给 finish_receiver_into —— 自己留着用就是持锁慢活"
     );
     // ★ 2026-10-14 新增的那一半（用户真机：3.x GB 收尾期间 Windows 窗口操作全失灵）：
@@ -609,9 +611,9 @@ fn group_receive_finalize_slow_work_runs_off_the_async_worker() {
     // ★ 慢活整体交给阻塞线程池（写回成就地调用 = 把 GB 级 fsync 重新钉回 tokio worker）
     assert!(
             flat.contains(
-                "tokio::task::spawn_blocking(move||{file::finish_group_receive_into(r)})"
+                "tokio::task::spawn_blocking(move||{file::finish_group_receive_into(r,&st_for_finalize.logger)})"
             ) || flat.contains(
-                "tokio::task::spawn_blocking(move||file::finish_group_receive_into(r))"
+                "tokio::task::spawn_blocking(move||file::finish_group_receive_into(r,&st_for_finalize.logger))"
             ),
             "群收尾的校验+fsync+rename 必须整体交给 spawn_blocking（同一个 runtime 上还排着所有 async 开窗命令）"
         );

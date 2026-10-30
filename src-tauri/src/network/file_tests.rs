@@ -1084,7 +1084,7 @@ mod tests {
         r.file.write_all(&payload[split..]).unwrap();
         r.hasher.update(&payload[split..]);
         r.received += (payload.len() - split) as u64;
-        let final_path = finish_group_receive_into(r).unwrap();
+        let final_path = finish_group_receive_into(r, throwaway_logger()).unwrap();
         assert_eq!(
             std::fs::read(&final_path).unwrap(),
             payload,
@@ -1446,7 +1446,7 @@ mod tests {
     /// 而台账却拿它们的名字当"群侧已覆盖"的证据 —— 与本册 `receive_group_chunk` 那处
     /// 已经改掉的假覆盖是同一种病。2026-10-15：慢活整体搬进 `spawn_blocking` 时一并收成生产调用。
     fn finalize_group_receive(r: crate::state::FileReceiver) -> Result<std::path::PathBuf, String> {
-        finish_group_receive_into(r)
+        finish_group_receive_into(r, throwaway_logger())
     }
 
     /// 2+3+4. 正常多 chunk + Done：SHA-256 正确 → rename 成功 → 正式文件内容一致，
@@ -1536,6 +1536,8 @@ mod tests {
                 }
             }
             let dt = t0.elapsed().as_secs_f64();
+            // Windows 上"文件还开着就删"会失败（被 `let _` 吞掉 ⇒ 临时文件残留）⇒ 先关句柄。
+            drop(f);
             let _ = std::fs::remove_file(&path);
             dt
         };

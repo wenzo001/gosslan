@@ -294,7 +294,10 @@ pub fn fail_taken_group_receive(state: &AppState, r: &FileReceiver) {
 /// 四个 `Err` 出口都清 `.part`，且调用方必须把每一格都停在终态：
 /// ① 字节数与声明的 `size` 不等（丢片/截断）；② 实际 SHA-256 与发送方声明不符
 /// （**含**"发送方没声明"—— 空期望值不通过，fail-closed）；③ fsync 失败；④ rename 失败。
-pub fn finish_group_receive_into(mut r: FileReceiver) -> Result<PathBuf, String> {
+pub fn finish_group_receive_into(
+    mut r: FileReceiver,
+    logger: &crate::logging::Logger,
+) -> Result<PathBuf, String> {
     if r.received != r.size {
         let _ = std::fs::remove_file(&r.tmp_path);
         return Err(crate::error_codes::FILE_RECEIVE_INCOMPLETE.to_string());
@@ -309,11 +312,21 @@ pub fn finish_group_receive_into(mut r: FileReceiver) -> Result<PathBuf, String>
     }
     // 改名前写透（这就是那段秒级慢活本体）
     if let Err(e) = r.file.sync_all() {
+        let detail = e.to_string();
         // 载荷必须是**在册的码**：这句返回会被调用方拿去写进气泡行
         // （`group_file.rs::persistable_group_fail_code`），散文在那道闸上就是"没记原因"。
         // 盘满单独归 `DISK_FULL` —— 那是唯一一条用户现在就能动手解决的。
         let code = crate::logging::classify_write_failure(&e)
             .unwrap_or(crate::error_codes::FILE_RECEIVE_WRITE_FAILED);
+        // 5.15.40：OS 原文以前在这里被丢掉（这一族没有 logger 入参）⇒ 与单聊那份
+        // "人话留在日志里" 的口径不一致。现在按兄弟函数的形状收一个 `&Logger`。
+        logger.error(
+            "group_file",
+            format!(
+                "code={code} peer={} name={} —— 群文件落盘(fsync)失败: {detail}",
+                r.peer_id, r.name
+            ),
+        );
         let _ = std::fs::remove_file(&r.tmp_path);
         return Err(code.to_string());
     }
@@ -325,8 +338,16 @@ pub fn finish_group_receive_into(mut r: FileReceiver) -> Result<PathBuf, String>
     r.final_path = match place_unique(&r.tmp_path, &r.final_path, &r.name) {
         Ok(placed) => placed,
         Err(e) => {
+            let detail = e.to_string();
             let code = crate::logging::classify_write_failure(&e)
                 .unwrap_or(crate::error_codes::FILE_RECEIVE_PLACE_FAILED);
+            logger.error(
+                "group_file",
+                format!(
+                    "code={code} peer={} name={} —— 群文件占名落盘失败: {detail}",
+                    r.peer_id, r.name
+                ),
+            );
             let _ = std::fs::remove_file(&r.tmp_path);
             return Err(code.to_string());
         }

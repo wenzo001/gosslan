@@ -371,9 +371,17 @@ async fn handle_file_messages(state: &Arc<AppState>, peer_id: &str, msg: Message
             let tid = transfer_id.clone();
             let peer_owned = peer_id.to_string();
             let written = tokio::task::spawn_blocking(move || {
-                STANDARD
-                    .decode(&data)
-                    .map_err(|e| e.to_string())
+                STANDARD.decode(&data).map_err(|e| {
+                    // 5.15.40：base64 的 `e.to_string()` 会被 `fail_receive` 原样 emit（英文动态串）。
+                    st.logger.error(
+                        "file",
+                        format!(
+                            "code={} transfer={tid} seq={seq} —— 分片帧 base64 解码失败: {e}",
+                            crate::logging::FAIL_CODE_FILE_CHUNK_MALFORMED
+                        ),
+                    );
+                    crate::logging::FAIL_CODE_FILE_CHUNK_MALFORMED.to_string()
+                })
                     .and_then(|bytes| {
                         file::write_chunk(&st, &tid, &peer_owned, seq, &bytes, attempt)
                     })

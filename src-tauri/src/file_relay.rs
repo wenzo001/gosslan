@@ -32,6 +32,12 @@ use std::collections::{HashMap, HashSet};
 use std::io::{Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 
+// 5.15.40：拒收要带"在册的码"，且写盘失败要分诊盘满 —— 这两件事都住在别处。
+// 用 `use` 而不是内联全路径：领域依赖守门（`check-domain-deps.mjs`）只看得见 `use`，
+// 内联写法会让 routing→observability 这条耦合停留在"判据看不见"的那一栏（本批实测从 6 对涨到 7 对）。
+use crate::error_codes::FILE_RECEIVE_WRITE_FAILED;
+use crate::logging::{classify_write_failure, FAIL_CODE_FILE_RELAY_BAD_OFFER};
+
 /// 中继分片的**下限**尺寸（字节）。`network/file.rs` 在按链路挑 chunk 大小时用它兜底，
 /// 所以这个常量必须留在这里与"分片"这个概念同源，不能挪去别处再抄一份。
 pub const MIN_CHUNK_SIZE: usize = 64 * 1024;
@@ -114,6 +120,35 @@ impl Default for RelayManager {
     }
 }
 
+/// 中继 offer 被拒的**两个出口**：码给界面（上屏），人话给日志。
+#[derive(Debug)]
+///
+/// 为什么不是一个字符串：这一族的返回值会被 `transport/relay_file.rs` **原样 emit** 成
+/// `file-failed.reason`（5.15.40 复核确认）。散文上屏 = 英文界面看到中文；只给码又丢掉
+/// 排查要的原文。所以两个都要，但**走两条不同的路**。
+pub struct RelayReject {
+    pub code: &'static str,
+    pub detail: String,
+}
+
+impl RelayReject {
+    pub fn coded(code: &'static str, detail: impl Into<String>) -> Self {
+        Self {
+            code,
+            detail: detail.into(),
+        }
+    }
+
+    /// 写盘类失败：盘满归 `DISK_FULL`（那条才有"清出空间后重试"），其余归通用写盘失败码。
+    pub fn io(e: &std::io::Error, what: &str, path: &std::path::Path) -> Self {
+        let code = classify_write_failure(e).unwrap_or(FILE_RECEIVE_WRITE_FAILED);
+        Self {
+            code,
+            detail: format!("{what}失败：{}（{}）", e, path.display()),
+        }
+    }
+}
+
 impl RelayManager {
     pub fn new() -> Self {
         Self {
@@ -135,32 +170,40 @@ impl RelayManager {
         expected_size: u64,
         chunk_size: u32,
         dir: &Path,
-    ) -> Result<(), String> {
+    ) -> Result<(), RelayReject> {
         // transfer_id 会变成文件名的一部分，必须与直连路径**同一份**消毒口径
         // （见 `network/file/share_walk.rs::safe_transfer_id`）：放行 `../x` 等于让对端一句话
         // 把文件写到下载目录之外。
-        let id = crate::network::file::safe_transfer_id(transfer_id).ok_or("传输标识非法")?;
+        let id = crate::network::file::safe_transfer_id(transfer_id).ok_or_else(|| {
+            RelayReject::coded(
+                FAIL_CODE_FILE_RELAY_BAD_OFFER,
+                "传输标识非法（消毒后为空或含路径分隔）",
+            )
+        })?;
         if chunk_size == 0 {
-            return Err("对端未声明分片尺寸（版本过旧），无法经中继接收该文件".to_string());
+            return Err(RelayReject::coded(
+                FAIL_CODE_FILE_RELAY_BAD_OFFER,
+                "对端未声明分片尺寸（版本过旧）",
+            ));
         }
         // 幂等：中继路径下同一份 RelayFileOffer 可能从多条邻居各来一份（泛洪），
         // 重新开档会把已写好的分片 truncate 掉 ⇒ 文件永远缺片。已存在就原样保留。
         if self.reassemblies.contains_key(&id) {
             return Ok(());
         }
-        std::fs::create_dir_all(dir).map_err(|e| format!("创建下载目录失败：{e}"))?;
+        std::fs::create_dir_all(dir).map_err(|e| RelayReject::io(&e, "创建下载目录", dir))?;
         let path = dir.join(format!("{id}{RELAY_PART_SUFFIX}"));
         let file = std::fs::OpenOptions::new()
             .write(true)
             .create(true)
             .truncate(true)
             .open(&path)
-            .map_err(|e| format!("创建临时文件失败：{e}"))?;
+            .map_err(|e| RelayReject::io(&e, "创建临时文件", &path))?;
         // 预分配到声明的尺寸：一是让"写到 offset 之外"当场可判，二是稀疏文件
         // 不真占空间（只有写过的页才落盘）。
         if let Err(e) = file.set_len(expected_size) {
             let _ = std::fs::remove_file(&path);
-            return Err(format!("预分配文件失败：{e}"));
+            return Err(RelayReject::io(&e, "预分配文件", &path));
         }
         self.reassemblies.insert(
             id.clone(),
