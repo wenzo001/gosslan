@@ -13,6 +13,31 @@
 
 ## [Unreleased]
 
+## [5.15.63] - 2026-10-31
+
+### 1:1 两条线共用同一套 kind 判据，并把「同源」钉住（STB-05）
+
+同一条 1:1 消息有两条到达路径：直连帧 `Message::ChatMessage` 与可多跳转发的 `GossipEnvelope`。
+**线格式不同是刻意的**（统一就得改协议，而老端还在网上），这一批**不动协议**；
+要治的是另一半——两侧各写一套「什么 kind 不该提醒」的话，日后只改一侧，同一条消息
+就会出现「直连来会提醒、多跳来不提醒」的不对称，而这种不对称没有任何行为用例会红。
+
+- 先核实：两侧**已经**都调同一个 `protocol::is_non_notifying_kind`
+  （`handle_messaging.rs` 与 `gossip.rs` 各一处），谓词与它依赖的冻结清单 `DM_LEGACY_KINDS`
+  也各只有一份定义。缺的只是**守卫**。
+- 新判据 `both_dm_paths_share_one_notification_kind_predicate`：两条路各必须恰好调一次共享谓词；
+  谓词只许一个定义；冻结清单在三份源码里**合计只许出现一次**（谁把 `"text", "code", …`
+  再抄一遍——哪怕抄进注释当备忘——就是第二个家）。
+- 外部变异两处：把 gossip 侧那句换成 `if false` ⇒ 点名「必须恰好调一次共享谓词」；
+  往 `handle_messaging.rs` 头部抄一份清单 ⇒ 点名「被抄了 2 份」。`cmp` 逐字节还原。
+
+**真跑过的验证**：`cargo test --lib --features bluetooth` **1336 通过 / 0 失败**（3 ignored）；
+`cargo clippy -D warnings --all-targets` / `cargo fmt --check --all` 0 红 / 0 差异；
+测试清单基线已登记；`npm run verify:local` **26 步全绿**。
+**没做/判不修的**：把两条线合并成一种格式 —— 那是协议变更，收益只是省一份代码，
+代价是所有老端兼容面；按 稳定 > 可维护 排序不做。
+
+
 ## [5.15.62] - 2026-10-31
 
 ### 任务中心文件头不再手抄「kinds 有几种」（B1-F2）

@@ -695,3 +695,48 @@
             "回发 Hello 必须包在 tokio::time::timeout 里：无界 send 会把连接楔死在握手补全这一步"
         );
     }
+
+/// **STB-05：1:1 消息走两条线（直连 `ChatMessage` / 多跳 `GossipEnvelope`），
+/// 但"什么样的 kind 要不要提醒"必须只有一份判据。**
+///
+/// 两条线的**线格式**不同是刻意的（直连帧 vs 可转发的信封，统一就得改协议，
+/// 而老端还在网上）；风险在这条链的另一半：两侧各写一套 kind 判断，日后只改了
+/// 其中一侧 ⇒ 同一条消息"直连来会提醒、多跳来不提醒"（或反过来），
+/// 而这种不对称**没有任何行为用例会红**。
+///
+/// 判据 = 两侧都调同一个 `protocol::is_non_notifying_kind`，且这个谓词与它依赖的
+/// `DM_LEGACY_KINDS` 清单在全仓只有一份定义（没有第二个家可以漂）。
+#[test]
+fn both_dm_paths_share_one_notification_kind_predicate() {
+    for (path, src) in [
+        ("handle_messaging.rs", include_str!("network/transport/handle_messaging.rs")),
+        ("gossip.rs", include_str!("network/transport/gossip.rs")),
+    ] {
+        assert_eq!(
+            src.matches("crate::protocol::is_non_notifying_kind(").count(),
+            1,
+            "{path} 必须恰好调一次共享谓词 —— 少一次说明这一侧改用自己那套（两侧会静默分叉）"
+        );
+    }
+    let protocol = include_str!("protocol.rs");
+    assert_eq!(
+        protocol.matches("pub fn is_non_notifying_kind").count(),
+        1,
+        "共享谓词只能有一个定义"
+    );
+    // 冻结清单也只有一份：三份源码里**合计**只许出现一次这个字面清单 ——
+    // 谁把它再抄一遍（哪怕抄进注释当"备忘"），就是第二个家。
+    let list = "\"text\", \"code\", \"image\", \"file\", \"system\"";
+    let copies: usize = [
+        protocol,
+        include_str!("network/transport/handle_messaging.rs"),
+        include_str!("network/transport/gossip.rs"),
+    ]
+    .iter()
+    .map(|src| src.matches(list).count())
+    .sum();
+    assert_eq!(
+        copies, 1,
+        "`DM_LEGACY_KINDS` 的清单被抄了 {copies} 份 ⇒ 两侧的 kind 口径从此可以各自漂"
+    );
+}
