@@ -13,6 +13,22 @@
 
 ## [Unreleased]
 
+## [5.15.60] - 2026-10-31
+
+### 撤掉上一版对 `include!` 分册的整档重排（无行为改动）
+
+`commands/chat.rs` / `files.rs` / `updater.rs` 是 `include!` 分册 —— `cargo fmt` **不管**它们，
+而上一版对这三个文件跑了 `rustfmt`，把 232 / 117 / 24 行整体重排了（默认行宽 100 与我手动
+整理时的换行不同）。这一版把三份还原成原样、只重贴三处取消结局的日志：
+
+- 净差异 = 55 行新增 / 2 行替换，全部是语义改动（`DM_CANCEL` / `FILE_CANCEL` / `UPDATER_CANCEL`）。
+- 教训记进审计 §4.0ar：**改 `include!` 分册不要跑 `rustfmt <file>`** —— 它按"独立 crate 根"排版，
+  与 `cargo fmt` 对普通模块的口径不同，结果是整档 churn。分册的形状由各自的判据守，不靠 fmt。
+
+**真跑过的验证**：`cargo test --lib --features bluetooth` 1334 / 0；
+`cargo fmt --check --all` 0 差异（分册本来就不参与）；`cargo clippy -D warnings --all-targets` 0 红；
+`npm run verify:local` **26 步全绿**。
+
 ## [5.15.59] - 2026-10-31
 
 ### 取消的结局也留一行具名码（B1-F1）：点了取消之后发生了什么，能查了
