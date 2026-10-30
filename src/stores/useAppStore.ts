@@ -202,8 +202,8 @@ export const useAppStore = defineStore("app", () => {
    * 把解析后的语言推给后端重建 macOS 菜单栏（原生控件的文案不归 WebView 管）。
    * 前端是"跟随系统"规则的唯一真相，所以由这里推，而不是后端自己检测。
    *
-   * 静默吞错的理由与 `persistSettings` 相同：失败只影响菜单栏文案，
-   * 界面本身已经切好了，弹 toast 只会打扰用户。
+   * 这里**继续**静默：失败只影响菜单栏那几行文案，语言偏好本身由 `persistSettings`
+   * 落库（它失败会 toast），所以不必为同一件事弹两次提示。
    */
   function pushUiLanguage() {
     void api.setUiLanguage(currentLocale()).catch(() => {
@@ -547,8 +547,12 @@ export const useAppStore = defineStore("app", () => {
         chatStyle: JSON.stringify(chatStyle.value),
         peerStyles: null, // 对端样式表由后端维护，前端只读
       });
-    } catch {
-      /* 忽略：离线或后端暂不可用时不影响本地使用 */
+    } catch (e) {
+      // 界面已经按用户意图生效了，所以**不**回滚（打断比丢设置更糟）；但也**不能一声不响**：
+      // 这样改完重启就变回旧值，用户此前拿不到任何线索（审计 B1-F4）。
+      // 连写不会叠屏：`pushToast` 按 kind+文案复用同一个 id（见 utils/toastManager）。
+      toast(t("settings.toast.saveFailed"), "error");
+      console.warn("[settings] 设置未能落库：界面已生效，重启后可能回退", e);
     }
   }
 

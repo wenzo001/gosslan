@@ -6058,3 +6058,42 @@ test("命令层的主读不许把读库失败折叠成空（B1-F7 / B3-F3）", (
     "正确写法（checked + ?）被误伤了",
   );
 });
+
+// ---------------- 设置落库失败不许静默（B1-F4，2026-10-30） ----------------
+//
+// `persistSettings` 的 catch 原先只有一句 `/* 忽略：离线或后端暂不可用时不影响本地使用 */`。
+// 「界面已按用户意图生效」这一点没错，但**库里没写**：重启后变回旧值，而用户此前拿不到任何线索
+// （审计 B1-F4）。判据是形状 + 词典两向：
+//  ① 那个 catch 里必须有一次带词典 key 的 toast 与一条 console 线索；
+//  ② 不许退化回空 catch（否则"静默"会以任何理由回来）；
+//  ③ 那个 key 必须两册词典都有（只加中文 ⇒ 英文界面看到的是 key 原样）。
+test("设置落库失败必须上屏（B1-F4）", () => {
+  const src = readFileSync(join(import.meta.dirname, "..", "stores", "useAppStore.ts"), "utf8");
+  const start = src.indexOf("async function persistSettings()");
+  assert.ok(start >= 0, "persistSettings 不见了 ⇒ 本判据要跟着改名");
+  const body = src.slice(start, src.indexOf("\n  }\n", start));
+  assert.ok(body.length > 400, `只截到 ${body.length} 字符的函数体 ⇒ 截取锚点变了`);
+
+  assert.ok(
+    body.includes('toast(t("settings.toast.saveFailed"), "error")'),
+    "设置落库失败没有上屏 ⇒ 用户改完设置、重启后变回旧值，却没有任何提示",
+  );
+  assert.ok(
+    /console\.warn\(\s*"\[settings\]/.test(body),
+    "设置落库失败没有留 console 线索 ⇒ 排障时连「有没有尝试写」都看不到",
+  );
+  // 反控：空 catch（带不带注释都算）不许回来。
+  assert.equal(
+    /catch\s*(\(\s*\w*\s*\))?\s*\{\s*(\/\*[^*]*\*\/)?\s*\}/.test(body),
+    false,
+    "catch 又变回空的了 ⇒ 失败会被彻底吞掉",
+  );
+
+  for (const f of ["zh-cn.ts", "en-us.ts"]) {
+    const dict = readFileSync(join(import.meta.dirname, "..", "i18n", "locales", f), "utf8");
+    assert.ok(
+      dict.includes('"settings.toast.saveFailed"'),
+      `${f} 缺 settings.toast.saveFailed ⇒ 该语言的用户会看到 key 原样`,
+    );
+  }
+});
