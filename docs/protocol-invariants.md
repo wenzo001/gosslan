@@ -587,14 +587,17 @@ Err → failed
      前端 `furthestStatus` / `promoteOnPeerRead` 那六七个比较）是一个**档位集合**，加一档要改的
      地方比加一列多得多，且每加一档都是把这些守卫重走一遍的风险。
      做法是给同一行加一列 `fail_code TEXT`（可空）：**`status` 说结局，`fail_code` 说原因**。
-     - 词表只有一个家：`error_codes::MESSAGE_FAIL_CODES`（当前四格
-       `SEND_RETRY_EXPIRED` / `SEND_ORPHAN_AT_START` / `SEND_PEER_DELETED` / `SEND_GROUP_MEMBER_GONE`），
-       文案在 `src/utils/fileFailReason.ts`，两侧**双向**对账。
+     - 词表只有一个家：`error_codes::MESSAGE_FAIL_CODES`。**档位清单不在这里抄**（抄一份就必然腐烂：
+       这条从前写"当前四格"，而 5.15.31/32/35 三批已经把它加到 16 格，中间没人看得见它说假话）。
+       要看现在的档位就现读：`grep -n "MESSAGE_FAIL_CODES" -A 20 src-tauri/src/error_codes.rs`。
+       文案在 `src/utils/fileFailReason.ts`，两侧**双向**对账（`node --test src/utils/fileFailReason.test.ts`）。
      - 写只有两扇门：带原因的失败走 `db::set_message_failed(msg_id, code)`（`status` 与 `fail_code`
        同一次写落地）；通用的 `set_message_status` 推进任何状态时**把码归零** —— 守卫只有一份，
        否则一条重发后又失败的气泡会被界面念出**上一次**的原因。
-     - `NULL` 是一个要说出口的状态：v15 之前的老行、以及原因只是自由文本的那一族（文件传输，
-       它的码走 `file-failed` 事件与 `logging.rs::FAIL_CODE_*`），都读回 `NULL` ⇒ 界面回落通用文案。
+     - `NULL` 是一个要说出口的状态：v15 之前的老行、以及原因**还没被配成码**的那一些，都读回 `NULL`
+       ⇒ 界面回落通用文案。文件传输那一族的码自 5.15.31（1:1 的过期/放弃）、5.15.32（群文件的六种）、
+       5.15.35（接收收尾的四种）起也进这一列；仍有一部分**只活在 `file-failed` 事件里**
+       （中继那一族，家在同文件的 `logging.rs::FAIL_CODE_*`），它们的形状是"当场说得出、重启就忘"。
        **不回填**：猜出来的码会被当成事实念给用户，比"说不清"更坏。
      - 只在 `status = 'failed'` 时读：迟到的 Ack 能把一条判过失败的消息推进成 `delivered`
        （`ack_delivered` 的谓词不排 `failed`），那一行上留着的旧码届时不许上屏。

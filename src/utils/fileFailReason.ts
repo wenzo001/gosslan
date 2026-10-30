@@ -55,6 +55,17 @@ const FILE_FAIL_REASON_KEYS: Record<string, string> = {
   GROUP_FILE_CHUNK_GAP: "msg.fail.groupFileChunkGap",
   GROUP_FILE_CHUNK_EXCEEDS_SIZE: "msg.fail.groupFileChunkOversize",
   GROUP_FILE_PEER_UNLINKED: "msg.fail.groupFilePeerUnlinked",
+  // ── 文件**接收收尾**那一族（5.15.35）──────────────────────────────────────
+  // 这四格说的是"这一份内容收成了没有"，1:1 与群共用同一份判据（`file/receive.rs` 与
+  // `file/group_receive.rs` 各写一遍同一个决定），所以名字不带 `GROUP_` 前缀。
+  // `FILE_INTEGRITY_FAILED` 早就在这张表里（中继那一格在用），本批只是把它从"只进事件"
+  // 变成"也落库"—— 同一格气泡重启之后仍然说得出"内容与本机不匹配"。
+  // 以前这四格给的是中文散文，其中写盘/占名两格干脆把 `io::Error` 原文当载荷
+  // （"No space left on device (os error 28)"）：前端对未知 reason 是**原样上屏**，
+  // 于是这一格既没法翻译也没法当成动作。盘满仍单独走上面的 `DISK_FULL`（那条才有动作）。
+  FILE_RECEIVE_INCOMPLETE: "file.receiveIncomplete",
+  FILE_RECEIVE_WRITE_FAILED: "file.receiveWriteFailed",
+  FILE_RECEIVE_PLACE_FAILED: "file.receivePlaceFailed",
 };
 
 /**

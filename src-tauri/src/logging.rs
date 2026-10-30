@@ -383,7 +383,7 @@ pub(crate) fn is_disk_full(e: &std::io::Error) -> bool {
 /// 等于一个假字段（编译过、门禁绿、界面上零变化）。
 pub(crate) const FAIL_CODE_DISK_FULL: &str = "DISK_FULL";
 
-// 下面四条同族（另两条 1:1 过期/放弃的码在 `error_codes.rs`，它们既上屏也落库）：
+// 下面三条同族（1:1 过期/放弃、接收收尾那一族在 `error_codes.rs`，它们既上屏也落库）：
 // 以前它们把**中文文案直接写进 `file-failed` 的事件载荷**，
 // 而前端对未知 reason 的处理是"原样上屏"（刻意的回落，宁可显示原文也不显示空白）
 // ⇒ 英文界面这几格看到的是中文。改成码之后措辞归词典，日志里仍写人话。
@@ -398,9 +398,6 @@ pub(crate) const FAIL_CODE_FILE_RELAY_STATE_EXPIRED: &str = "FILE_RELAY_STATE_EX
 
 /// 中继收完的字节数与声明大小不符。
 pub(crate) const FAIL_CODE_FILE_RELAY_SIZE_MISMATCH: &str = "FILE_RELAY_SIZE_MISMATCH";
-
-/// 内容与本机不匹配（哈希/密钥对不上）。
-pub(crate) const FAIL_CODE_FILE_INTEGRITY_FAILED: &str = "FILE_INTEGRITY_FAILED";
 
 /// 中继传输一小时没走完，被回收。
 pub(crate) const FAIL_CODE_FILE_RELAY_STALLED: &str = "FILE_RELAY_STALLED";

@@ -1457,7 +1457,17 @@ fn finish_receiver_into(
         if let Some(note) = note {
             logger.error("file", note);
         }
-        return Err("文件传输未完成".to_string());
+        logger.warn(
+            "file",
+            format!(
+                "code={} transfer={transfer_id} peer={} received={} size={} —— 字节没收完就收到完成帧",
+                crate::error_codes::FILE_RECEIVE_INCOMPLETE,
+                r.peer_id,
+                r.received,
+                r.size
+            ),
+        );
+        return Err(crate::error_codes::FILE_RECEIVE_INCOMPLETE.to_string());
     }
     // 文件级完整性校验：实际 SHA-256 必须与发送方声明一致，否则不落盘
     {
@@ -1487,18 +1497,27 @@ fn finish_receiver_into(
             }
             // 可归因：actual/expected/收到多少 —— 只有"校验失败"四个字时，分不清是
             // 续传前缀属于另一份内容、还是发送端声明错了哈希（2026-10-27 审计 P3 子问 4）。
+            // `code=` 用的是**在册的那个码**（与下面返回给界面的载荷同一个名字）：日志里另起
+            // 一个只对排查人员存在的码，等于同一件事两个名字，grep 一边就找不到另一边。
             logger.warn(
                 "file",
                 format!(
-                    "code=SHA_MISMATCH transfer={transfer_id} peer={} actual={actual_hex} expected={} received={} size={}",
+                    "code={} transfer={transfer_id} peer={} actual={actual_hex} expected={} received={} size={} —— 内容与本机不匹配",
+                    crate::error_codes::FILE_INTEGRITY_FAILED,
                     r.peer_id, r.expected_sha256, r.received, r.size
                 ),
             );
-            return Err("文件完整性校验失败".to_string());
+            return Err(crate::error_codes::FILE_INTEGRITY_FAILED.to_string());
         }
     }
     if let Err(e) = r.file.sync_all() {
-        let reason = e.to_string();
+        // 载荷给**码**，OS 原文只进日志：原先这里 `return Err(e.to_string())`，于是英文界面
+        // 那一格读到的是 "No space left on device (os error 28)" —— 前端对未知 reason 是原样上屏，
+        // 这串既没法翻译也没法当成动作。盘满单独归 `DISK_FULL`（那条才有"清出空间后重试"），
+        // 其余落盘失败给通用码，原始文本留在日志里供排查。
+        let detail = e.to_string();
+        let code = crate::logging::classify_write_failure(&e)
+            .unwrap_or(crate::error_codes::FILE_RECEIVE_WRITE_FAILED);
         let _ = std::fs::remove_file(&r.tmp_path);
         let note = {
             let dbc = db_lock.lock().unwrap_or_else(|e| e.into_inner());
@@ -1519,7 +1538,14 @@ fn finish_receiver_into(
         if let Some(note) = note {
             logger.error("file", note);
         }
-        return Err(reason);
+        logger.error(
+            "file",
+            format!(
+                "code={code} transfer={transfer_id} peer={} received={} size={} —— 落盘(fsync)失败: {detail}",
+                r.peer_id, r.received, r.size
+            ),
+        );
+        return Err(code.to_string());
     }
     drop(r.file);
     // §七「两个 offer 都在任一次 rename 之前到达」：`final_path` 是 begin 时用 `unique_path` 定的，
@@ -1529,7 +1555,11 @@ fn finish_receiver_into(
     match place_unique(&r.tmp_path, &r.final_path, &r.name) {
         Ok(placed) => r.final_path = placed,
         Err(e) => {
-            let reason = e.to_string();
+            // 同 sync_all 那一格：载荷给码，OS 原文进日志。盘满仍单独归 `DISK_FULL`
+            //（占名也可能因为没空间而失败）。
+            let detail = e.to_string();
+            let code = crate::logging::classify_write_failure(&e)
+                .unwrap_or(crate::error_codes::FILE_RECEIVE_PLACE_FAILED);
             let note = {
                 let dbc = db_lock.lock().unwrap_or_else(|e| e.into_inner());
                 db::upsert_transfer(
@@ -1549,7 +1579,14 @@ fn finish_receiver_into(
             if let Some(note) = note {
                 logger.error("file", note);
             }
-            return Err(reason);
+            logger.error(
+                "file",
+                format!(
+                    "code={code} transfer={transfer_id} peer={} name={} —— 占名落盘失败: {detail}",
+                    r.peer_id, r.name
+                ),
+            );
+            return Err(code.to_string());
         }
     }
     // 终态要**一次写全**：`file_transfers` 说 done 而 `content_transfers` 还停在 active/incomplete，

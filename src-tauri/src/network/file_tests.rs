@@ -424,11 +424,11 @@ mod tests {
     fn finish_verdict(r: &mut crate::state::FileReceiver) -> Result<(), String> {
         use sha2::Digest;
         if r.received != r.size {
-            return Err("文件传输未完成".to_string());
+            return Err(crate::error_codes::FILE_RECEIVE_INCOMPLETE.to_string());
         }
         let actual_hex = crate::crypto::hex_lower(&r.hasher.clone().finalize());
         if !actual_hex.eq_ignore_ascii_case(&r.expected_sha256) {
-            return Err("文件完整性校验失败".to_string());
+            return Err(crate::error_codes::FILE_INTEGRITY_FAILED.to_string());
         }
         Ok(())
     }
@@ -887,7 +887,7 @@ mod tests {
             receive_one_chunk(&mut r, seq as u32, &sealed);
         }
         let verdict = finish_verdict(&mut r);
-        assert_eq!(verdict.unwrap_err(), "文件完整性校验失败");
+        assert_eq!(verdict.unwrap_err(), crate::error_codes::FILE_INTEGRITY_FAILED);
         let _ = std::fs::remove_file(&part_path);
     }
 
@@ -1488,7 +1488,7 @@ mod tests {
 
         let part = r.tmp_path.clone();
         let err = finalize_group_receive(r).unwrap_err();
-        assert_eq!(err, "文件传输未完成");
+        assert_eq!(err, crate::error_codes::FILE_RECEIVE_INCOMPLETE);
         assert!(!part.exists(), "失败后 .part 必须被删除");
     }
 
@@ -1502,7 +1502,7 @@ mod tests {
 
         let part = r.tmp_path.clone();
         let err = finalize_group_receive(r).unwrap_err();
-        assert_eq!(err, "文件完整性校验失败");
+        assert_eq!(err, crate::error_codes::FILE_INTEGRITY_FAILED);
         assert!(!part.exists(), "SHA 不匹配后 .part 必须被删除");
     }
 
@@ -1863,7 +1863,7 @@ mod tests {
         let r = receiver_holding("b1-bad", &bytes, bytes.len() as u64, &"f".repeat(64));
         let err = finish_receiver_into(&db, throwaway_logger(), "xfer-b1-bad", r)
             .expect_err("SHA 不符必须判失败，不许落盘");
-        assert!(err.contains("完整性"), "实得：{err}");
+        assert_eq!(err, crate::error_codes::FILE_INTEGRITY_FAILED, "实得：{err}");
 
         let dbc = db.lock().unwrap();
         let rec = crate::content::store::get(&dbc, &cid, "dev-a", Direction::Receive)
@@ -2062,7 +2062,7 @@ mod tests {
         let (tmp, final_path) = (short.tmp_path.clone(), short.final_path.clone());
         assert_eq!(
             finish_receiver_into(&db, throwaway_logger(), "t-short", short).err(),
-            Some("文件传输未完成".to_string())
+            Some(crate::error_codes::FILE_RECEIVE_INCOMPLETE.to_string())
         );
         assert!(
             !tmp.exists(),
@@ -2078,7 +2078,7 @@ mod tests {
         let (tmp, final_path) = (bad.tmp_path.clone(), bad.final_path.clone());
         assert_eq!(
             finish_receiver_into(&db, throwaway_logger(), "t-bad", bad).err(),
-            Some("文件完整性校验失败".to_string())
+            Some(crate::error_codes::FILE_INTEGRITY_FAILED.to_string())
         );
         assert!(
             !tmp.exists() && !final_path.exists(),
@@ -2090,7 +2090,7 @@ mod tests {
         let nodecl = receiver_holding("rcv-nodecl", &payload, payload.len() as u64, "");
         assert_eq!(
             finish_receiver_into(&db, throwaway_logger(), "t-nodecl", nodecl).err(),
-            Some("文件完整性校验失败".to_string()),
+            Some(crate::error_codes::FILE_INTEGRITY_FAILED.to_string()),
             "空 expected_sha256 必须判失败 —— 否则一条不带哈希的 FileDone 就能宣布成功"
         );
         assert_eq!(row("t-nodecl"), ("failed".to_string(), None));
@@ -2513,7 +2513,7 @@ mod tests {
         let r = receiver_holding("note-size", &bytes, 256, &sha_hex(&bytes));
         let err = finish_receiver_into(&db, &logger, "xfer-note-size", r)
             .expect_err("字节数不符必须判失败");
-        assert!(err.contains("未完成"), "实得：{err}");
+        assert_eq!(err, crate::error_codes::FILE_RECEIVE_INCOMPLETE, "实得：{err}");
         let notes = file_error_notes(&logger);
         assert_eq!(notes.len(), 1, "实得 {notes:?}");
         assert!(

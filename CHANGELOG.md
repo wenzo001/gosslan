@@ -13,6 +13,62 @@
 
 ## [Unreleased]
 
+## [5.15.35] - 2026-10-30
+
+### 把接收收尾那四格「为什么失败」从散文换成码——顺带修掉两处被它藏住的**真缺陷**
+
+审计 §8 第 19 行的最后半条（A2）。四格指 `finish_receiver_into`（1:1）与 `finish_group_receive_into`
+（群）那四个终态出口：字节没收完、哈希对不上、`sync_all` 失败、占名失败。它们原先返回**中文散文**，
+后两格更糟——直接把 `io::Error` 的原文当载荷（`No space left on device (os error 28)`）。
+前端对未知 `reason` 的处理是**原样上屏**（那条回落是刻意的：宁可显示原文也不显示空白），
+于是英文界面那一格要么是中文、要么是一串没人能当成动作的 OS 文本。
+
+- **被散文藏住的两处真缺陷**（都是这一族的老症状，这次是被码之后才看得见的）：
+  ① 群收尾失败那一格把气泡的原因**硬写成 `GROUP_FILE_PEER_UNLINKED`**（对端失联）——
+     哈希对不上、本机写盘失败在界面上说的都是**另一件事**，真原因被抹掉；现在走与
+     `finalize_failed_group_receive` 同一道在册闸，不在册的动态串写 NULL（"这一格没记原因"，
+     不是"没有原因"，INV-P16 ③）。
+  ② 同一格**落了库却没 emit** —— 前端只在收到终态事件时才动那一条气泡，于是收件人这边一直显示
+     「发送中」，要重开会话才看得见失败（10-22 审计 R-02 的第二个家：`finalize_failed_group_receive`
+     早就补了这句，收尾这一格漏了）。复用已线的 `message-status-changed` 帧，不新增协议消息类型。
+- **契约**：新增 `FILE_RECEIVE_INCOMPLETE` / `FILE_RECEIVE_WRITE_FAILED` / `FILE_RECEIVE_PLACE_FAILED`
+  进 `error_codes::MESSAGE_FAIL_CODES`（12 → 16 格），并**把 `FILE_INTEGRITY_FAILED` 从 `logging.rs` 搬过来**
+  —— 中继收的与直连收的是同一个事实，一个事实只许一个名字（两处各定一条常量就是等着分叉）。
+  搬完它从"只进事件"变成"也落库"：同一格气泡重启之后仍说得出"内容与本机不匹配"。
+  盘满仍单独归 `DISK_FULL`（`classify_write_failure` 那一份判定），群侧那两格以前是 `is_err()` 丢掉错误值，
+  现在也走这道分诊。中英词典各加三条，`fileFailReason.ts` 的表跟着加三行。
+- **日志里的那句人话留着**（日志读者是排查的人，中文且不该随版本翻改）：`code=<在册码> …… —— 落盘(fsync)失败: <OS 原文>`。
+  原先完整性那一格的日志写的是 `code=SHA_MISMATCH`，与载荷的码**不同名** ⇒ grep 一边找不到另一边，本批统一。
+- **判据**：新增「接收收尾的终态出口发码，不发散文与 OS 原文」（按函数体取形状 + 内联正控：把一格换回散文
+  必须恰好点名那一句）、新增接线判据 `group_finalize_failure_reports_real_reason_and_moves_the_bubble`
+  （钉"走在册闸 / 不许硬写失联 / 必须 emit"，并带摘掉 emit 的反控）；
+  `every_group_file_code_has_a_log_label` 的分母从**手抄的六个 `REASON_*`** 改成从 `MESSAGE_FAIL_CODES` 现读
+  （手抄那份只会跟着"写代码的人当时想到的"走；现在方向反过来：加了码没配日志文案就红），带下限与正控；
+  另有两条测试原先按**散文子串**断言（`err.contains("完整性")`），改成按码相等。
+  ⚠️ 教训：我一开始用整串中文去 grep 分母，漏掉这两条子串式断言，是 `cargo test` 把它们报出来的 ——
+  **找"谁在读这句话"不能只数完整字面量**。
+- **这一族还没做完的（登记，不算本批）**：分片路径与 begin/resume 那几家仍是散文
+  （`文件分片顺序错误` / `文件传输来源不匹配` / `文件过大，无法安全保存` / `续传前缀不存在` 等，
+  经 `handle_file.rs:422` 的 `fail_receive(.., &e)` 上屏），中继 push 那一族（`relay_push.rs`）与
+  `relay_file.rs` 的 `format!("{breach:?}")`（枚举 Debug 当契约，改名就漂）仍在事件载荷里发动态文本。
+  数过：`file-failed` 的构造点共 16 处（`grep -rn '"file-failed"' src-tauri/src` 现数 19 行 = 16 个构造点 + 2 行测试 + 1 行注释），
+  其中 6 处直接写码、8 处转发上游给的变量（接收收尾这一族本批已变成码，分片/begin/resume 那几家仍是散文）、
+  2 处仍当场拼动态文本（`format!("{breach:?}")` 与 `中继分片形状不合法：{reason}`）。
+
+**真跑过的验证**：`cargo test --lib --features bluetooth` **1320 通过 / 0 失败**（+1 条用例；清单两腿各登记同一名字，
+`check-test-manifest.mjs check` 退 0）；`npm test` **1517 通过 / 0 失败**（+1 条判据）；
+`npm run verify:local` **25 步全绿**；`node --test src/utils/fileFailReason.test.ts` 9/9。
+四条**外部变异**各自证明一条判据会咬人（跑完 `cmp` 逐字节核对还原）：
+① 把一格改回 `Err(中文散文)` ⇒ 新判据点名那句（退 1）；
+② 删掉收尾那一格的 emit ⇒ 接线判据报「落了库却没通知界面 ⇒ 群气泡停在发送中」（退 101）；
+③ 把原因改回硬写 `Some(REASON_PEER_UNLINKED)` ⇒ 同一判据报「必须走在册闸」（退 101）；
+④ 摘掉日志文案表里的一行 ⇒ `every_group_file_code_has_a_log_label` 报出那个码（退 101）。
+另外 `verify-guards.py --only="panic 站点棘轮"` 复跑退 0 —— 本批动了 `logging.rs`（搬走一条常量），
+那条 Case 的注入落点就在这个文件里（按本仓口径：改了某个 `.rs` 就重跑落在那个数上的 Case）。
+**没跑的层**：护栏 cargo 通道整跑属夜间/dispatch 那条腿（本地跳过、push 那条也不跑全扫描），
+本批未跑；跨进程 / 真机（群文件收尾失败在两个真进程之间的样子）本轮未证 ——
+`file-failed` 与 `message-status-changed` 这两帧的接线是按源码形状钉的，不是按真进程读数钉的。
+
 ## [5.15.34] - 2026-10-30
 
 ### 规格轴 review 又抓到我两处没核实就写的声明（含一处行号型落点自己打脸）

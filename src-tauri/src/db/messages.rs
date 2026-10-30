@@ -1668,10 +1668,14 @@ mod fail_code_tests {
     fn message_fail_codes_are_stable_identifiers() {
         assert_eq!(
             error_codes::MESSAGE_FAIL_CODES.len(),
-            12,
+            16,
             "档位变了要同步三处：前端表 `src/utils/fileFailReason.ts`、中英词典、以及这条长度钉"
-            // 5.15.31 从 4 → 6：`FILE_SEND_EXPIRED` / `FILE_SEND_GIVEUP` 原先只是事件载荷里的码，
-            // 现在也会落进这一列（`FileJobEnd::fail_code`），所以按本仓口径它们**必须**进这张表。
+            // 5.15.31 加了 `FILE_SEND_EXPIRED` / `FILE_SEND_GIVEUP`（原先只活在事件载荷里，
+            // 现在也会落进这一列，`FileJobEnd::fail_code`）；5.15.32 加了群文件那六格；
+            // 5.15.35 加接收收尾那四格（`FILE_RECEIVE_INCOMPLETE` / `FILE_INTEGRITY_FAILED`
+            // / `FILE_RECEIVE_WRITE_FAILED` / `FILE_RECEIVE_PLACE_FAILED`）—— 其中
+            // `FILE_INTEGRITY_FAILED` 是从 `logging.rs` **搬过来**的：中继与直连收的是同一个事实，
+            // 一个事实只许一个名字。按本仓口径，能落进这一列的码**必须**在这张表里。
         );
         for code in error_codes::MESSAGE_FAIL_CODES {
             assert!(

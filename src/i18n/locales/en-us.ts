@@ -923,6 +923,12 @@ export const enUS: MessageDict = {
   "file.relaySizeMismatch": "Received size does not match what the sender declared; the file was discarded",
   "file.integrityFailed": "File failed the integrity check and does not match this device; it was discarded",
   "file.relayStalled": "Relay transfer stalled for over an hour and was reclaimed; please send it again",
+  "file.receiveIncomplete":
+    "The file did not arrive complete — fewer bytes than the sender declared; ask them to send it again",
+  "file.receiveWriteFailed":
+    "This device could not write the file to disk; check the disk, then ask the sender to send it again",
+  "file.receivePlaceFailed":
+    "The content arrived but could not be placed at its final location (name or folder conflict); clean up the download folder and ask for a resend",
   "group.files.stateLocal": "On this device",
   "group.files.stateReceiving": "Receiving",
   "group.files.stateRemote": "Not on this device",

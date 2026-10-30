@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { fileFailReasonCodes, fileFailReasonText } from "./fileFailReason.ts";
+import { tsFnBody } from "./tsSource.ts";
 import { zhCN, enUS } from "../i18n/locales.ts";
 
 const ROOT = join(import.meta.dirname, "../..");
@@ -219,4 +220,68 @@ test("file-failed 载荷里不许出现硬编码文案（英文界面会原样�
     findProseFailReasons('logger.warn("outbox", "文件发送超时：这条只是日志，中文是对的");'),
     [],
   );
+});
+
+/**
+ * 接收收尾的四个终态出口必须发**码**，不许发散文、也不许发 `io::Error` 原文（5.15.35）。
+ *
+ * 为什么单独钉一条：`file-failed` 的 `reason` 与库里那一列的读者都是界面，而前端对未知
+ * reason 的处理是**原样上屏**（那条回落是刻意的）⇒ 后端塞一句中文，英文界面那格就是中文；
+ * 塞一句 `No space left on device (os error 28)`，用户既读不懂也做不了任何事。
+ * 上一判据（「file-failed 载荷里不许出现硬编码文案」）只看 `FileFailedInfo` 的构造点，
+ * 而这一族的散文住在**返回值**里（`Err("...")`），中间隔着一层 `reason: e` 透传 ⇒ 看不见。
+ *
+ * 判据按形状取函数体（不数行、不开固定窗口）：`finish_receiver_into` 与
+ * `finish_group_receive_into` 是同一个决定的两家，各自都必须是码。
+ */
+test("接收收尾的终态出口发码，不发散文与 OS 原文", () => {
+  const CJK = /[\u4e00-\u9fff]/;
+  const probes = [
+    ["1:1", "src-tauri/src/network/file/receive.rs", "fn finish_receiver_into("],
+    ["群", "src-tauri/src/network/file/group_receive.rs", "fn finish_group_receive_into("],
+  ] as const;
+  const codes = [
+    "FILE_RECEIVE_INCOMPLETE",
+    "FILE_INTEGRITY_FAILED",
+    "FILE_RECEIVE_WRITE_FAILED",
+    "FILE_RECEIVE_PLACE_FAILED",
+  ];
+  for (const [name, file, sig] of probes) {
+    const body = tsFnBody(readFileSync(join(ROOT, file), "utf8"), sig);
+    // 提取自检：拿不到函数体（签名写法变了）时不许变成"零格全过"。
+    assert.ok(body.length > 400, `${name} 那一份没取到函数体 ⇒ 锚点写法变了：${sig}`);
+    assert.ok(
+      body.includes("Ok("),
+      `${name} 那一份的函数体像是被截断了（没读到成功出口）⇒ 花括号配对被字符串里的括号带偏了`,
+    );
+    const prose = [...body.matchAll(/Err\("([^"]*)"\s*\.to_string\(\)/g)]
+      .map((m) => m[1])
+      .filter((x) => CJK.test(x));
+    assert.deepEqual(prose, [], `${name} 接收收尾仍把中文散文当载荷（英文界面会原样上屏）：${prose.join(" / ")}`);
+    assert.equal(
+      body.includes("return Err(reason)"),
+      false,
+      `${name} 不许把 io::Error 原文直接当载荷 —— 盘满要归 DISK_FULL，其余归在册的码`,
+    );
+    assert.ok(
+      body.includes("classify_write_failure"),
+      `${name} 的写盘失败必须先分诊"盘满"这一类（那是唯一一条用户现在就能动手解决的）`,
+    );
+  }
+  const one = tsFnBody(readFileSync(join(ROOT, "src-tauri/src/network/file/receive.rs"), "utf8"), "fn finish_receiver_into(");
+  const grp = tsFnBody(readFileSync(join(ROOT, "src-tauri/src/network/file/group_receive.rs"), "utf8"), "fn finish_group_receive_into(");
+  const both = one + grp;
+  for (const code of codes) {
+    assert.ok(both.includes(code), `四个终态出口里没有一处引用 ${code} ⇒ 那一格还在发散文`);
+  }
+  // 正控：把一格换回散文，同一把尺子必须报出它（否则上面那条 prose 判据是恒绿的）。
+  const gutted = one.replace(
+    "return Err(crate::error_codes::FILE_INTEGRITY_FAILED.to_string());",
+    'return Err("文件完整性校验失败".to_string());',
+  );
+  assert.notEqual(gutted, one, "变异没落进源码 ⇒ 这条正控不作数（锚点写法变了）");
+  const found = [...gutted.matchAll(/Err\("([^"]*)"\s*\.to_string\(\)/g)]
+    .map((m) => m[1])
+    .filter((x) => CJK.test(x));
+  assert.deepEqual(found, ["文件完整性校验失败"], "散文回潮时必须恰好点名那一句");
 });

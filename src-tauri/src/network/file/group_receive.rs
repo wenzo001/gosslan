@@ -297,20 +297,25 @@ pub fn fail_taken_group_receive(state: &AppState, r: &FileReceiver) {
 pub fn finish_group_receive_into(mut r: FileReceiver) -> Result<PathBuf, String> {
     if r.received != r.size {
         let _ = std::fs::remove_file(&r.tmp_path);
-        return Err("文件传输未完成".to_string());
+        return Err(crate::error_codes::FILE_RECEIVE_INCOMPLETE.to_string());
     }
     {
         use sha2::Digest;
         let actual_hex = crate::crypto::hex_lower(&r.hasher.clone().finalize());
         if !actual_hex.eq_ignore_ascii_case(&r.expected_sha256) {
             let _ = std::fs::remove_file(&r.tmp_path);
-            return Err("文件完整性校验失败".to_string());
+            return Err(crate::error_codes::FILE_INTEGRITY_FAILED.to_string());
         }
     }
     // 改名前写透（这就是那段秒级慢活本体）
-    if r.file.sync_all().is_err() {
+    if let Err(e) = r.file.sync_all() {
+        // 载荷必须是**在册的码**：这句返回会被调用方拿去写进气泡行
+        // （`group_file.rs::persistable_group_fail_code`），散文在那道闸上就是"没记原因"。
+        // 盘满单独归 `DISK_FULL` —— 那是唯一一条用户现在就能动手解决的。
+        let code = crate::logging::classify_write_failure(&e)
+            .unwrap_or(crate::error_codes::FILE_RECEIVE_WRITE_FAILED);
         let _ = std::fs::remove_file(&r.tmp_path);
-        return Err("文件落盘失败".to_string());
+        return Err(code.to_string());
     }
     // drop 句柄后才 rename（Windows 不允许 rename 一个还开着的文件）
     drop(r.file);
@@ -319,9 +324,11 @@ pub fn finish_group_receive_into(mut r: FileReceiver) -> Result<PathBuf, String>
     // 占不到就换下一个候选 —— 不存在 exists→rename 的覆盖窗口（审计 P2 #42）。
     r.final_path = match place_unique(&r.tmp_path, &r.final_path, &r.name) {
         Ok(placed) => placed,
-        Err(_) => {
+        Err(e) => {
+            let code = crate::logging::classify_write_failure(&e)
+                .unwrap_or(crate::error_codes::FILE_RECEIVE_PLACE_FAILED);
             let _ = std::fs::remove_file(&r.tmp_path);
-            return Err("文件改名落盘失败".to_string());
+            return Err(code.to_string());
         }
     };
     Ok(r.final_path)
