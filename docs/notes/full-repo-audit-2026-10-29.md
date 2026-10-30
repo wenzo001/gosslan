@@ -909,6 +909,48 @@ node --experimental-strip-types -e '
 剩下的自由文本只有**不上屏**的那两类（begin/resume 的 `FileReject` 只有日志读者、
 `fail_receive` 两条 `return false` 的内部返回值）—— 这两类的"不配码"结论各自有判据背书（§4.0t）。
 
+### 4.0w STB-03 复核（2026-10-30）：锁里压的到底是什么 —— 先量，别先重构
+
+审计原文：「`file_receivers` 是进程级全局锁，每片写盘期间整表阻塞 ⇒ 并发传输互相拖累，
+**可能被误判超时**（`FILE_RECEIVE_IDLE_ABORT_MS = 5 min`）」。按"先数读者/先量危害"复核：
+
+**锁里压着什么（现读源码，两处）**
+- `network/file/receive.rs::write_chunk`：锁住 `file_receivers` 之后做 **一片**（`FILE_CHUNK = 256 KiB`）
+  的 `crypto::open_symmetric`（AEAD 解密）+ `hasher.update`（SHA-256）+ `write_all`。
+- `network/transport/group_file.rs::write_group_chunk_blocking`：群侧同一形状，用的是
+  `group_file_receivers` 那把（**独立的第二把锁**，单聊与群互不阻塞），整段已在 `spawn_blocking` 里。
+
+**不在锁里的（同样是现读，逐个确认过）**
+- 续传前缀的整份哈希（`resume_receive` 里那段 `read` 循环）在**取锁外**先算完；
+- 收尾的 `sync_all` + 改名：接收器先被 `remove` 出表，慢活拿的是**所有权**，不持表锁；
+- 配额/占用那几处只做 `keys()` / 求和（微秒级）。
+
+**代价的算术 —— 已实测，不是估的**（量具 `file_tests.rs::stb03_receiver_critical_section_cost`，
+`#[ignore]` 不进门禁；复跑 `cd src-tauri && cargo test --release --lib --features bluetooth -- --ignored stb03 --nocapture`）：
+
+| 构建 | 一片（256 KiB 解密+哈希+写） | 单条聚合上限 | 两条并发聚合 |
+|---|---|---|---|
+| debug | 24.68 ms | 10.1 MB/s | 10.2 MB/s |
+| **release（发出去的那个）** | **1.872 ms** | **133.5 MB/s** | **136.9 MB/s** |
+
+两条关键读法：① **并发不涨**（10.2 / 136.9 ≈ 单条）—— 串行段的定义使然，锁确实把并发压成一条；
+② release 下这条线是 **~135 MB/s/表**，而 1 GbE 的理论上限是 ~118 MB/s ⇒ **普通千兆局域网根本到不了这条线**，
+它只在 2.5GbE / Wi-Fi 6/7 这类链路上才会成为瓶颈。
+**「5 分钟误判超时」不可达**：临界区是 1.9 ms 量级，攒不出 5 分钟的饿死。⇒ 审计那句「可能被误判超时」**不成立**。
+
+**要做就得动的形状**：把表值改成 `Arc<Mutex<FileReceiver>>`（表锁只管 查/插/删，慢活在条目锁里）。
+现数：`file_receivers` **39 处**、`group_file_receivers` **31 处**（含测试 12 处）/ 12 个文件。
+`take_*` 那几族"判据与摘表同一次持锁"的语义**不受影响**（它们只做表操作）；
+风险在锁序（表 → 条目，绝不能反过来）与清扫循环要逐条取锁。**只有跨进程 E2E 能证吞吐**
+（三实例 harness 已有）。
+
+**结论（2026-10-30 先量再定 → 量完判不修）**：release 下 135 MB/s 这条线高于千兆局域网
+的实际带宽，重构 12 个文件 / 70 处引用换不来**可测**的收益，而风险落在「判据与摘表同一次持锁」那几族上
+⇒ **本轮判不修**。保留两件事：
+- 量具留在树里（`#[ignore]`），将来上 2.5GbE 或有人报「多文件并发慢」时，先跑它读数再谈重构；
+- 若真要动，形状已定：表值改 `Arc<Mutex<FileReceiver>>`（表锁只管查/插/删，慢活进条目锁），
+  `take_*` 那几族语义不受影响，锁序只许「表 → 条目」。
+
 ### 4.1 已核查且未发现问题的稳定性面
 
 - **锁顺序**：全仓无 `peers↔db` 嵌套；`file_receivers→db` 顺序成立。
@@ -1063,14 +1105,14 @@ node --experimental-strip-types -e '
 >
 > 现在把它改成**唯一的状态表**：`§1/§2/§3/§6/§7` 各节记的是**审计当时**的发现，今天的状态以本表为准。
 > ⚠️ 诚实边界：本表是**人工对账 + 每行挂复跑命令**，不是机器判据 —— 没有任何脚本断言"这张表与代码一致"
-> （能做这种断言的只有逐行的复跑命令本身）。表里没写的 ID 见 §4.0a～§4.0v 的复核结论。
+> （能做这种断言的只有逐行的复跑命令本身）。表里没写的 ID 见 §4.0a～§4.0w 的复核结论。
 
 | 序 | ID | 今天的状态 | 凭据 / 复跑 |
 |---|---|---|---|
 | 1 | SEC-01 | **已落地**（5.15.8） | `FriendAccept` 查 `pending_requests` + 拒绝留痕；`grep -rn "FRIEND_ACCEPT_UNSOLICITED" src-tauri/src` 现数 2 处 |
 | 2 | SEC-03 | **已落地**（5.15.8） | Gossip 锚点与 Hello 同口径只认已验证身份；`grep -rn "keys_verified" src-tauri/src/network/transport/peer_registry.rs` |
 | 3 | FUN-01 / DUP-01 | **已落地**（5.15.9） | 转发 kind 白名单收成一家 + 跨层对账；`node --test src/utils/messageKinds.test.ts` |
-| 4 | STB-01 | **已落地**（5.15.10）；**同行的 STB-03 没做** | `grep -rn "write_group_chunk_blocking" src-tauri/src` 现数 5 处，且已进 INV-P34 的登记格。全局 `file_receivers` 锁那半在 5.15.10 明确记账：要动几十个引用点、只有跨进程 E2E 能证 |
+| 4 | STB-01 / STB-03 | **STB-01 已落地**（5.15.10）；**STB-03 实测后判不修**（§4.0w：release 下单表聚合上限 133.5 MB/s、两条并发 136.9 MB/s ⇒ 高于千兆线；「误判超时」不成立）；量具留在 `stb03_receiver_critical_section_cost`（`#[ignore]`） | `grep -rn "write_group_chunk_blocking" src-tauri/src` 现数 5 处，且已进 INV-P34 的登记格。全局 `file_receivers` 锁那半在 5.15.10 明确记账：要动几十个引用点、只有跨进程 E2E 能证 |
 | 5 | STB-02 | **已落地**（5.15.10） | 条数上限 + TTL + 载荷尺寸闸：`grep -rn "MAX_PENDING_FRIEND_REQUESTS\|PENDING_REQUESTS_FULL" src-tauri/src/network/transport/handshake.rs` |
 | 6 | TST-03 | **已落地**（5.15.11，按拆腿口径） | node+script 那条腿每次 push/PR 都跑；cargo 整跑实测 2h39m 留夜间。复跑：`grep -n "^  guards-\|if: github.event_name" .github/workflows/verify.yml`（`guards-web` 那job **没有** `if`）⚠️ 只看 `guards-cargo` 的 `if` 会误判成"没做"——本轮我自己就误判过一次 |
 | 7 | TST-02 | **未做**（前置 = store 依赖注入） | `useChatStore` 里难的纯逻辑（`replaceOptimistic`）已有真用例，缺的是接线；做成真测试要先给 store 做注入或搬状态机，属独立重构 |
