@@ -120,16 +120,20 @@ fn unix_available_bytes(path: &Path) -> Option<u64> {
         }
         // `f_bavail` = 对**当前用户**可用的块数（`f_bfree` 还要扣掉 root 保留块）。
         //
-        // ⚠️ **块大小字段在 unix 内部就不是一个东西**：
-        // · Linux / Android 的 `statfs` 有 `f_frsize`（"文件系统的块大小"）与
-        //   `f_bsize`（"最优 I/O 块大小"，**可以不是**块大小 —— 它是 hint）。
-        // · macOS / BSD 的 `statfs` **只有** `f_bsize`，而那里的 `f_bsize` 才是块大小。
-        // 用错字段的后果是静默的：算出来的余量可能差好几倍 ⇒ 预检要么永远放行
-        // （形同没有），要么永远拒绝（功能不可用）。所以按平台分开取。
-        #[cfg(any(target_os = "linux", target_os = "android"))]
-        let block = st.f_frsize as u64;
-        #[cfg(not(any(target_os = "linux", target_os = "android")))]
-        let block = st.f_bsize as u64;
+        // ⚠️ **块大小字段在 unix 内部就不是一个东西**：`f_frsize` 是 POSIX 定义的
+        // "基本块大小"（分配单位），`f_bsize` 是"最优 I/O 大小"（hint）。
+        //
+        // ★ 2026-10-30 实测纠正了一条**旧的错误口径**：这里原先按平台分开取
+        // （linux/android 用 `f_frsize`，其余用 `f_bsize`，理由是"macOS 的 statfs 只有
+        // f_bsize"）。用一块 8 MiB 的 HFS+ 卷量出来：macOS 上 `f_bsize = 2097152`（2 MiB）、
+        // `f_frsize = 4096` ⇒ 旧写法把余量**高估 512 倍**（报 3.88 GiB，实际 7.8 MiB），
+        // 于是预检在小卷上恒放行、ENOSPC 照样在中途炸 —— 正是这条预检要防的事。
+        // 现在的口径：**所有平台都优先 `f_frsize`**，只有它为 0（理论上不该发生）才退回 `f_bsize`。
+        let block = if st.f_frsize != 0 {
+            st.f_frsize as u64
+        } else {
+            st.f_bsize as u64
+        };
         let avail = st.f_bavail as u64;
         Some(block.saturating_mul(avail))
     }

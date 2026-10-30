@@ -497,6 +497,7 @@ logging::tests::previous_run_report_marks_open_hang
 logging::tests::previous_run_seed_is_bounded_and_keeps_the_newest_lines
 logging::tests::previous_run_seed_is_wired_at_startup
 logging::tests::previous_run_seed_writes_nothing_to_disk_however_many_times_it_is_called
+logging::tests::real_enospc_is_classified_as_disk_full
 logging::tests::rel_to_src_is_separator_independent
 logging::tests::ring_only_reaches_the_panel_but_never_the_file
 logging::tests::rotated_logs_keep_owner_only_permissions

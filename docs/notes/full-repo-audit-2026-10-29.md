@@ -1060,6 +1060,20 @@ node --experimental-strip-types -e '
 - 落库往返断言改看 `signer().verifying_key().to_bytes()`：公钥由私钥派生，相等 ⇔ 同一把钥，
   而且它只读**对外可见的那一面**。
 
+### 4.0ad TST-06（5.15.46）：真 ENOSPC 量出一条活缺陷 —— 预检在 HFS+ 卷上高估余量 512 倍
+
+审计的假设是"缺自动化"。按"造一块真盘"去量之后，量到的是缺陷本身：
+
+- 8 MiB HFS+ 卷上，`available_bytes` 报 **3.88 GiB**（真实 7.8 MiB）⇒ 高估 **512 倍**；
+- 根因：`statvfs` 的 `f_bsize` 是"最优 I/O 大小"（这块卷上是 2 MiB），`f_frsize` 才是分配单位（4 KiB）。
+  旧实现**按平台**取字段（macOS 用 `f_bsize`），理由是"macOS 的 statfs 只有 f_bsize" —— 实测不成立，
+  macOS 一样给 `f_frsize`。
+- 后果：**预检恒放行** ⇒ 满盘时照样写到一半 ENOSPC。系统卷是 APFS（两字段相等）所以日常看不见；
+  HFS+ 外置盘 / 磁盘映像会中。
+- 修法与环境无关：所有平台优先 `f_frsize`。判据是同一条 `#[ignore]` 量具（要 `hdiutil`），
+  A/B 退回去当场红。**Windows 那一半仍无本地判据**（`GetDiskFreeSpaceExW` 的夹具在
+  `lib_startup_config_tests.rs`，本轮未动）。
+
 ### 4.1 已核查且未发现问题的稳定性面
 
 - **锁顺序**：全仓无 `peers↔db` 嵌套；`file_receivers→db` 顺序成立。
@@ -1187,7 +1201,7 @@ node --experimental-strip-types -e '
 | TST-03 | **已修（5.15.11，按拆腿口径）** | 审计当时两条腿都只在 schedule/dispatch。今天 `guards-web`（node+script，护栏本体实测 13.8s）**每次 push/PR 都跑**，`guards-cargo` 整跑 2h39m 留夜间。复跑 `grep -n "^  guards-\|if: github.event_name" .github/workflows/verify.yml` —— ⚠️ 只看 `guards-cargo` 那条 `if` 会误判成「没做」（本轮就误判过一次） |
 | TST-04 | Medium | 好友 **reject** 路径零测试 —— `handle_identity.rs:216-229` 整个臂无 `#[test]`，而它修的正是"已拒绝申请被反复重发"的缺陷 | `src-tauri/src/network/transport/handle_identity.rs` |
 | TST-05 | Medium | 群任务的 **CRUD 写路径**（改状态/归档/重开/认领）无独立单测，编号不变性只在跨进程轮 | `src-tauri/src/commands/group_todo_media.rs` |
-| TST-06 | Medium | 真 ENOSPC（写到一半磁盘满）无自动化；预检只是纯函数 + 形状守卫，`recv-readonly` 轮造的是 `EACCES` 不是 `ENOSPC` | `src-tauri/src/network/file/receive.rs` |
+| TST-06 | Medium | **已量（5.15.46，§4.0ad）并量出真缺陷**：HFS+ 卷上预检高估余量 512 倍（`f_bsize` vs `f_frsize`）⇒ 已修 + A/B 自证；Windows 一半仍无本地判据 | `src-tauri/src/network/file/receive.rs` |
 | TST-07 | **已修一半 + 另一半否证（5.15.11）** | 撤回**选档**抽成纯函数 `recall_authority_for` 并补行为用例，形状断言同时钉「命令真调它」两半。审计说的另一处（key-change conflict 只有形状守卫）**不准确**：`new_peer_conflicts_with_friend` 本来就有 6 条行为断言，只有「是否被调用」是形状 |
 | TST-08 | Medium | 身份持久化跨重启：无「重启后不再派生」分支的用例，且**代码与需求恰好相反**（`clear_all_data` 不删身份行） | `src-tauri/src/state.rs` |
 | TST-09 | Low | Windows 侧缺三类生产行为用例（缓存软链清扫 / 磁盘写失败 / 托盘角标） | `src-tauri/test-baseline.windows.txt` |
@@ -1214,7 +1228,7 @@ node --experimental-strip-types -e '
 >
 > 现在把它改成**唯一的状态表**：`§1/§2/§3/§6/§7` 各节记的是**审计当时**的发现，今天的状态以本表为准。
 > ⚠️ 诚实边界：本表是**人工对账 + 每行挂复跑命令**，不是机器判据 —— 没有任何脚本断言"这张表与代码一致"
-> （能做这种断言的只有逐行的复跑命令本身）。表里没写的 ID 见 §4.0a～§4.0ac 的复核结论。
+> （能做这种断言的只有逐行的复跑命令本身）。表里没写的 ID 见 §4.0a～§4.0ad 的复核结论。
 
 | 序 | ID | 今天的状态 | 凭据 / 复跑 |
 |---|---|---|---|

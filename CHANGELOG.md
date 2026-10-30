@@ -13,6 +13,37 @@
 
 ## [Unreleased]
 
+## [5.15.46] - 2026-10-30
+
+
+### TST-06 量出一个真缺陷：磁盘余量预检在 HFS+ 卷上把余量高估 512 倍
+
+审计说「真 ENOSPC 没有自动化，预检只是纯函数 + 形状守卫」。这次按"造一块真盘"去量，
+量到的不是"没判据"，而是一条**活的缺陷**：
+
+- 做法：`hdiutil` 造一块 **8 MiB** 的 HFS+ 卷挂到临时目录，先问预检、再真写到失败。
+- 第一次量到的读数：卷上真实余量 7.8 MiB，而 `available_bytes` 报 **3.88 GiB**（高估 **512 倍**）。
+- 根因：`statvfs` 的**块大小字段不是一个东西**。旧实现按平台取 —— linux/android 用 `f_frsize`、
+  其余用 `f_bsize`（注释里写的理由是"macOS 的 statfs 只有 f_bsize"）。实测这块 HFS+ 卷上
+  `f_bsize = 2097152`（"最优 I/O 大小"）、`f_frsize = 4096`（真正的分配单位）⇒ 乘错字段就高估 512 倍。
+- 后果：**预检在那类卷上恒放行**（"还装得下"），于是满盘时照样写到一半 ENOSPC ——
+  正是这条预检存在的理由。macOS 的系统卷是 APFS（两个字段相等）所以日常看不出来；
+  HFS+ 的外置盘 / 磁盘映像会中。
+- 修法：**所有平台都优先 `f_frsize`**，只有它为 0 才退回 `f_bsize`。
+- 判据：`logging::tests::real_enospc_is_classified_as_disk_full`（`#[ignore]`，要 `hdiutil`）——
+  同一块 8 MiB 卷上四连问：余量读得到且 < 8 MiB、要 16 MiB ⇒ `NotEnough`、要 256 KiB ⇒ `Enough`、
+  真写到失败 ⇒ `ENOSPC` 且 `classify_write_failure` 给出 `DISK_FULL`。
+  **A/B**：把块大小那条退回旧写法，同一条用例当场红（报出 4171235328 字节）。
+
+
+**真跑过的验证**：`cargo test --lib --features bluetooth` **1321 通过 / 0 失败**（3 ignored：本批的量具 +
+STB-03 量具 + 既有那条；现读计数以 `test result:` 行为准）；`npm test` **1528 通过 / 0 失败**（本批无前端改动）；
+`cargo test -- --ignored real_enospc --nocapture` 实测读数：修前 `available=4171235328`（8 MiB 卷）、
+修后 `available` 落在 8 MiB 以内，且同一用例四连问全绿（预检 `NotEnough`/`Enough` + 真 ENOSPC ⇒ `DISK_FULL`）；
+`npm run verify:local` **25 步全绿**。**A/B**：把块大小退回旧写法，同一条用例当场红（报出 4171235328）。
+**没跑的层**：Windows 的 `GetDiskFreeSpaceExW` 那一半没有本地判据（沿用既有夹具，本轮未动）；
+`hdiutil` 需要 macOS ⇒ 这条量具在 CI 的 windows 腿上是 `#[ignore]`，只参与编译与清单。
+
 ## [5.15.45] - 2026-10-30
 
 

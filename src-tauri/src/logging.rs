@@ -1739,6 +1739,132 @@ mod tests {
     /// 盘满归类：ENOSPC / Windows 的两个码 / 文本兜底 ⇒ 稳定码 `DISK_FULL`；
     /// 其它错误（权限、无权限目录等）⇒ **没有专属码**（保留原文，那是唯一信息量）。
     ///
+    /// **TST-06 的量具**（`#[ignore]`）：真把一块小盘写满，而不是靠 errno 常量。
+    ///
+    /// 审计原话：ENOSPC 这条链"只有纯函数 + 形状守卫"，`recv-readonly` 轮造的是 `EACCES`。
+    /// 这条用例用一个 8 MiB 的 HFS+ 镜像挂到临时目录、**真写到失败**，再问
+    /// `classify_write_failure` 拿到的是什么。它只在 macOS 上有意义（要 `hdiutil`），
+    /// 所以 `#[ignore]`：不是门禁，是"随时可复跑的证据"。
+    ///
+    /// 复跑：`cd src-tauri && cargo test --lib --features bluetooth -- --ignored real_enospc --nocapture`
+    #[test]
+    #[ignore = "量具：要挂一个小 dmg（hdiutil），不进门禁"]
+    fn real_enospc_is_classified_as_disk_full() {
+        use std::io::Write;
+        use std::process::Command;
+
+        let base = std::env::temp_dir().join(format!("gos-enospc-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        std::fs::create_dir_all(&base).unwrap();
+        let dmg = base.join("tiny.dmg");
+        let mnt = base.join("mnt");
+        std::fs::create_dir_all(&mnt).unwrap();
+
+        // 1) 造盘 + 挂载（失败就 panic：这条是量具，环境不具备时要**响**，不许静默跳过）
+        let out = Command::new("hdiutil")
+            .args([
+                "create",
+                "-size",
+                "8m",
+                "-fs",
+                "HFS+",
+                "-volname",
+                "gos-enospc",
+            ])
+            .arg(&dmg)
+            .output()
+            .expect("hdiutil 不在 PATH 上 ⇒ 这条量具只在 macOS 上有意义");
+        assert!(
+            out.status.success(),
+            "hdiutil create 失败：{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        let out = Command::new("hdiutil")
+            .arg("attach")
+            .arg(&dmg)
+            .args(["-nobrowse", "-noverify", "-mountpoint"])
+            .arg(&mnt)
+            .output()
+            .expect("hdiutil attach 起不来");
+        assert!(
+            out.status.success(),
+            "hdiutil attach 失败：{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+
+        // 卸载守卫：无论断言怎么结束都把它摘干净（否则下一次挂载会撞名）。
+        struct Detach<'a>(&'a std::path::Path);
+        impl Drop for Detach<'_> {
+            fn drop(&mut self) {
+                let _ = Command::new("hdiutil")
+                    .arg("detach")
+                    .arg(self.0)
+                    .args(["-force", "-quiet"])
+                    .status();
+            }
+        }
+        let _guard = Detach(&mnt);
+
+        // 1b) **预检**也用这块真卷量一遍（审计说"预检只是纯函数 + 形状守卫"——这一格补上）：
+        //     真卷上的余量必须是"读得到、且小于 8 MiB"，并且按这一单的大小能给出相反的判定。
+        let available = crate::storage::disk_space::available_bytes(&mnt)
+            .expect("真卷上余量必须读得到（读不到 ⇒ 预检恒放行 = 形同没有）");
+        assert!(
+            available < 8 * 1024 * 1024,
+            "8 MiB 的卷报到 {available} 字节 ⇒ 读的不是这块卷"
+        );
+        assert_eq!(
+            crate::storage::disk_space::verdict_for(&mnt, 16 * 1024 * 1024, 0),
+            crate::storage::disk_space::SpaceVerdict::NotEnough {
+                available,
+                needed: 16 * 1024 * 1024
+            },
+            "要 16 MiB 而卷上只有 {available} ⇒ 预检必须拒绝"
+        );
+        assert_eq!(
+            crate::storage::disk_space::verdict_for(&mnt, 256 * 1024, 0),
+            crate::storage::disk_space::SpaceVerdict::Enough,
+            "256 KiB 装得下 ⇒ 预检必须放行（否则预检会拒掉一切）"
+        );
+
+        // 2) 真写到失败
+        let target = mnt.join("fill.bin");
+        let mut f = std::fs::File::create(&target).expect("在小盘上建文件");
+        let chunk = vec![0xA5u8; 64 * 1024];
+        let mut written = 0usize;
+        let err = loop {
+            match f.write_all(&chunk) {
+                Ok(()) => {
+                    written += chunk.len();
+                    assert!(
+                        written < 64 * 1024 * 1024,
+                        "8 MiB 的盘装下了 64 MiB ⇒ 挂载点不对"
+                    );
+                }
+                Err(e) => break e,
+            }
+        };
+        let code = classify_write_failure(&err);
+        eprintln!("TST06 真 ENOSPC：写了 {written} 字节后失败：{err} ⇒ code={code:?}");
+        let _ = f.sync_all();
+
+        // 3) 判据：真 ENOSPC 必须落到 DISK_FULL（那是唯一一条"清出空间后重试"的可行动文案）
+        assert_eq!(
+            err.kind(),
+            std::io::ErrorKind::StorageFull,
+            "err.kind 不是 StorageFull：{err}"
+        );
+        assert_eq!(
+            code,
+            Some(FAIL_CODE_DISK_FULL),
+            "真 ENOSPC 没被判成 DISK_FULL ⇒ 界面上那格给的是原文而不是可行动提示"
+        );
+
+        // 4) 清场（Drop 先卸卷；这里只删镜像目录）
+        drop(_guard);
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
     /// 这条是"可行动文案"那条链的**决定性判据**：把 `classify_write_failure`
     /// 改回恒返回 `None`（旧行为：只把 io 错误原样转成英文），本用例必须红。
     #[test]
