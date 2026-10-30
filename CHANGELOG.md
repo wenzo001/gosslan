@@ -13,6 +13,34 @@
 
 ## [Unreleased]
 
+## [5.15.61] - 2026-10-31
+
+### 每个常驻循环都必须有归属（B4-F2）：每小时清扫那一趟登记进册
+
+`lib.rs` 里那个**每小时**的裸 `tauri::async_runtime::spawn(loop{…})`（过期 `.part` / 中继内存态 /
+静默接收器）既不在监督名单、也不在「刻意不碰」的登记里，句柄随手丢掉 —— 它停了没有任何信号，
+而三件只有它做的事会静静停掉（协议里没有 cancel 帧，被放弃的接收端连表项带文件句柄永久留着）。
+
+- 抽成 `fn spawn_part_sweeper`（**调用点与时机一字未改**，只是从闭包变成有名字的函数）。
+- `worker_supervisor` 新增两张登记表：`UNSUPERVISED_LOOPS`（刻意不监督：看门狗自己、缓存清理、
+  这趟清扫 —— 每条带理由）与 `ONE_SHOT_SPAWNS`（`spawn_sync` / `spawn_catch_up_after_hello`）。
+  启动行 `code=WORKER_WATCHDOG_STARTED` 补 `unsupervised=` / `one_shot=`，两张表因此有生产读者
+  （否则它们是死代码），也让「哪些受监督」在**运行时**一处可读。
+- 头部那句「`spawn_group_history_sweeper` 刻意不碰」**已经过期**（它 P1 #12 就收编了）—— 删掉，
+  改成指向两张登记表。
+- 判据 `every_spawn_fn_has_a_home`：分母从源码现解析所有 `fn spawn_*`，逐个要求恰好属于一处
+  （受监督 / 不监督 / 一次性），登记名必须真有定义、且必须写理由。变异两处：
+  加一个未登记的 `spawn_orphan_demo` ⇒ 点名；把某条理由清空 ⇒ 点名。
+- 连带：这趟清扫搬进函数后，护栏 `每小时那一趟必须…` 的注入锚点跟着失效（缩进 24→12），
+  已重定向并用 `verify-guards.py --only 每小时那一趟` 真跑过（改坏即 FAIL、恢复逐字节一致）。
+
+**真跑过的验证**：`cargo test --lib --features bluetooth` **1335 通过 / 0 失败**（3 ignored）；
+`cargo clippy -D warnings --all-targets` / `cargo fmt --check --all` 0 红 / 0 差异；
+`npm run verify:local` **26 步全绿**；护栏单条实跑通过。
+**没跑/没做的**：Android 腿（同一份源码，但没在真机库上跑）；把 `spawn_cache_auto_clean`
+也收编（它按天跑、无状态，登记为不监督即可，收编要单独确认时序）。
+
+
 ## [5.15.60] - 2026-10-31
 
 ### 撤掉上一版对 `include!` 分册的整档重排（无行为改动）

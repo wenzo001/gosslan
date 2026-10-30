@@ -260,11 +260,13 @@ CASES: list[Case] = [
         "还会因为「还在表里」把它当活跃跳过 —— 不报错、不影响别的功能，只有护栏看得见。",
         file=TAURI / "src" / "lib.rs",
         injections=[(
-            "                        let stalled = crate::network::transport::sweep_stalled_receives(&st);\n",
+            # 锚点跟着代码搬过家（审计 B4-F2）：这一趟从 `lib.rs` 的闭包里提成了
+            # `fn spawn_part_sweeper`，缩进 24 → 12 格。语义不变：仍是「本趟必须调这一句」。
+            "            let stalled = crate::network::transport::sweep_stalled_receives(&st);\n",
             # 变异必须"照样编译、但这趟不再回收"：
             # 直接删整行会让下面的 `if stalled > 0` 引用未定义 ⇒ 红在编译错误上，什么也没证明；
             # 而保留 `sweep_stalled_receives` 字面量又会让护栏的 contains() 假过。
-            "                        let stalled = 0usize;\n",
+            "            let stalled = 0usize;\n",
         )],
         cmd=cargo("test", "--lib", "hourly_sweep_covers_parts_relay_and_stalled_receivers"),
         cwd=TAURI,
