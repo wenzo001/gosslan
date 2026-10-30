@@ -840,6 +840,12 @@ fn gfile_reason_label(code: &str) -> &'static str {
         crate::error_codes::GROUP_FILE_CHUNK_GAP => "文件分片顺序错误：中间缺片",
         crate::error_codes::GROUP_FILE_CHUNK_EXCEEDS_SIZE => "文件分片超出声明大小",
         crate::error_codes::GROUP_FILE_PEER_UNLINKED => "对方连接已断开",
+        // 接收收尾那一族（`file/group_receive.rs` 的四个终态出口）：码既上屏也进日志，
+        // 这里这份只服务日志。漏一行 ⇒ 日志退化成裸码（`every_group_file_code_has_a_log_label` 钉住）。
+        crate::error_codes::FILE_RECEIVE_INCOMPLETE => "字节没收完就收到完成帧",
+        crate::error_codes::FILE_INTEGRITY_FAILED => "内容与本机不匹配（完整性校验失败）",
+        crate::error_codes::FILE_RECEIVE_WRITE_FAILED => "本机写盘失败",
+        crate::error_codes::FILE_RECEIVE_PLACE_FAILED => "本机占名落盘失败",
         _ => "（非群文件族的码：原样进日志）",
     }
 }
@@ -1095,11 +1101,25 @@ async fn handle_group_file_done(
     let final_path = match finalized {
         Ok(p) => p,
         Err(why) => {
+            // ★ `why` 从 5.15.35 起是**在册的码**（`file/group_receive.rs` 的四个终态出口）。
+            // 原先这一格把气泡的失败原因硬写成 `REASON_PEER_UNLINKED` —— 那是把"哈希对不上"
+            // 标成"对端失联"：用户看到的一句是**另一件事**，而真原因（要么对方重发、要么本机盘
+            // 的问题）被抹掉。现在走与 `finalize_failed_group_receive` 同一道闸：在册才写，
+            // 不在册（比如阻塞池被中断那句动态串）写 NULL —— 含义是"这一格没记原因"，
+            // 不是"没有原因"（INV-P16 ③）。
             state.logger.warn(
                 "group_file",
-                format!("群文件收尾失败 transfer={transfer_id} 原因={why}"),
+                format!(
+                    "群文件收尾失败 transfer={transfer_id} 原因={why}（{}）",
+                    gfile_reason_label(&why)
+                ),
             );
-            set_gfile_bubble_status(state, &transfer_id, "failed", Some(REASON_PEER_UNLINKED));
+            set_gfile_bubble_status(
+                state,
+                &transfer_id,
+                "failed",
+                persistable_group_fail_code(&why),
+            );
             state
                 .group_file_keys
                 .lock()
@@ -1128,6 +1148,14 @@ async fn handle_group_file_done(
                 )
                 .ok();
             }
+            // ★ 落了库还必须**通知界面**，否则这一格与 10-22 审计 R-02 是同一个症状：前端只在
+            // 收到终态事件时才动那一条气泡 ⇒ 收尾失败时收件人这边一直显示「发送中」，要重开会话
+            // 才看得见"失败"。`finalize_failed_group_receive` 那一格早就补了这句，这一格漏了。
+            // 复用已线的 `message-status-changed` 帧（载荷就是 msg_id 字符串），不新增协议类型；
+            // emit 在 db 锁**外**（上面那个块已经闭合）。
+            let _ = state
+                .app
+                .emit("message-status-changed", &format!("gfile-{transfer_id}"));
             send_group_file_complete_ack(state, &transfer_id, &group_id, &sender_id, false).await;
             return;
         }
@@ -2636,21 +2664,79 @@ mod group_file_fail_reason_tests {
 
     /// 日志那份中文是一张**表**，不是散在各调用点的字面量：漏一行就是日志退化成裸码，
     /// 而这件事没有编译错误、也不会让上面那条红 —— 所以单独钉。
+    ///
+    /// ★ 5.15.35 把分母换成从 `error_codes::MESSAGE_FAIL_CODES` 现读：原先那份是手抄的六个
+    /// `REASON_*`，它只会跟着"写代码的人当时想到的"走 —— 在册码加了而这份没加，日志就悄悄
+    /// 退化。现在方向反过来：**加了码没配文案就红**，除非显式登记"这一格不归群文件管"。
     #[test]
     fn every_group_file_code_has_a_log_label() {
-        for code in [
-            REASON_STALLED_GROUP_RECEIVE,
-            REASON_NO_CHUNK_RECEIVED,
-            REASON_CHUNK_DECRYPT_FAILED,
-            REASON_CHUNK_SEQ_GAP,
-            REASON_CHUNK_EXCEEDS_SIZE,
-            REASON_PEER_UNLINKED,
-        ] {
+        // 落库词表里**不属于群文件这一族**的档位（它们各自的日志文案在别的文件里）：
+        const NOT_GFILE: &[&str] = &[
+            crate::error_codes::SEND_RETRY_EXPIRED,
+            crate::error_codes::SEND_ORPHAN_AT_START,
+            crate::error_codes::SEND_PEER_DELETED,
+            crate::error_codes::SEND_GROUP_MEMBER_GONE,
+            crate::error_codes::FILE_SEND_EXPIRED,
+            crate::error_codes::FILE_SEND_GIVEUP,
+        ];
+        let mut checked = 0usize;
+        for code in crate::error_codes::MESSAGE_FAIL_CODES {
+            if NOT_GFILE.contains(&code) {
+                continue;
+            }
+            checked += 1;
             assert_ne!(
                 gfile_reason_label(code),
                 "（非群文件族的码：原样进日志）",
-                "{code} 进了码却没配日志文案"
+                "{code} 在册却没配日志文案"
             );
         }
+        // 下限：分母读空（数组形状变了）时这条不能变成"零格全过"。
+        assert!(
+            checked >= 10,
+            "只判了 {checked} 格 ⇒ 落库词表大概没被读全（提取形状变了？）"
+        );
+        // 正控：NOT_GFILE 里那条必须真的**不**在判据里（否则登记一格就等于少判一格而没人看见）。
+        assert_eq!(
+            gfile_reason_label(crate::error_codes::SEND_PEER_DELETED),
+            "（非群文件族的码：原样进日志）"
+        );
+    }
+
+    /// 接线判据（5.15.35）：收尾失败那一格必须**说真原因**并且**通知界面**。
+    ///
+    /// 两处都是这一族反复犯过的形状：
+    /// ① 原因硬写成「对端失联」—— 于是哈希对不上、本机写盘失败在界面上都是另一件事，
+    ///    真原因被抹掉（而它明明就在返回值里）；
+    /// ② 落了库却没 emit —— 前端只在收到终态事件时才动那一条气泡，于是收件人这边
+    ///    一直显示「发送中」，要重开会话才看得见失败（10-22 审计 R-02 的第二个家）。
+    /// 这一格要造 AppState + 真进程才跑得动行为测试（本仓没有那层夹具），所以钉生产码文本。
+    #[test]
+    fn group_finalize_failure_reports_real_reason_and_moves_the_bubble() {
+        let src = crate::network::transport_src_for_guards();
+        let at = src
+            .find("async fn handle_group_file_done(")
+            .expect("群文件 Done handler 改名/搬家了 ⇒ 同步改这条判据");
+        let rest = &src[at..];
+        let end = rest.find("\n}\n").map(|i| i + 3).unwrap_or(rest.len());
+        let flat: String = rest[..end].chars().filter(|c| !c.is_whitespace()).collect();
+        assert!(
+            flat.contains("群文件收尾失败"),
+            "窗口没圈到收尾失败那一格 ⇒ 判据的锚点形状变了（别把这条改成放宽）"
+        );
+        assert!(
+            flat.contains("persistable_group_fail_code(&why)"),
+            "收尾失败的原因必须走在册闸：动态串（阻塞池被中断那种）不许直接落进 messages.fail_code"
+        );
+        assert!(
+            !flat.contains("Some(REASON_PEER_UNLINKED)"),
+            "不许把收尾失败一律标成对端失联 —— 那是把一件事标成另一件事"
+        );
+        let needle = "emit(\"message-status-changed\",&format!(\"gfile-{transfer_id}\"))";
+        assert!(flat.contains(needle), "落了库却没通知界面 ⇒ 群气泡停在发送中");
+        // 反控：摘掉那一句 emit，同一把尺子必须说不（否则上面那条是恒绿的）。
+        let gutted = flat.replace(needle, "");
+        assert_ne!(gutted, flat, "变异没落进去 ⇒ 这条反控不作数（needle 写错了）");
+        assert!(!gutted.contains(needle));
     }
 }

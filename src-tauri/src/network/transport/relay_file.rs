@@ -399,7 +399,7 @@ async fn handle_relay_chunk(
                     "file-failed",
                     &FileFailedInfo {
                         transfer_id: transfer_id.clone(),
-                        reason: crate::logging::FAIL_CODE_FILE_INTEGRITY_FAILED.to_string(),
+                        reason: crate::error_codes::FILE_INTEGRITY_FAILED.to_string(),
                     },
                 );
                 return;

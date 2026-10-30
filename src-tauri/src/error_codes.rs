@@ -80,9 +80,35 @@ pub const GROUP_FILE_CHUNK_EXCEEDS_SIZE: &str = "GROUP_FILE_CHUNK_EXCEEDS_SIZE";
 /// 对端一条链路都不剩 —— 与"对端没上线"不同：这一单要重发才收得到。
 pub const GROUP_FILE_PEER_UNLINKED: &str = "GROUP_FILE_PEER_UNLINKED";
 
+// ── 文件**接收收尾**那一族的四种终态（5.15.35）───────────────────────────────
+//
+// 这一族的形状与上面两族不同：**判定在文件层、上屏有两道**。1:1 与群共用同一份判据
+// （`file/receive.rs::finish_receiver_into` 与 `file/group_receive.rs::finish_group_receive_into`
+// 各写一遍同一个决定），所以这里的码**不带 GROUP_ 前缀** —— 它们说的不是"这个收件人这一单"，
+// 而是"这份内容收没收成"，两家用同一句话。
+//
+// 以前这四格给的是**中文散文**（`Err("文件完整性校验失败")`），其中写盘/占名那两格更糟：
+// 直接把 `io::Error` 的原文当载荷（"No space left on device (os error 28)"）。⇒ 两种后果：
+// 英文界面那格显示中文或显示 OS 原文（前端对未知 reason 是**原样上屏**，那条回落是刻意的）；
+// 而群气泡那边因为拿不到在册的码，只能把原因**标成别的事**（详见 `group_file.rs` 收尾那一格）。
+// 人话留在日志里（日志读者是排查的人，中文且不该随版本翻改）。
+//
+// `FILE_INTEGRITY_FAILED` 原先住在 `logging.rs`（事件载荷族），中继接收那一格在用。
+// 搬过来是因为接收收尾也用同一个事实 —— 一个事实只许有一个名字，两处各定一条常量
+// 就是等着分叉。
+
+/// 收到的字节数与对端声明的大小不符（没收完就收到完成帧）。
+pub const FILE_RECEIVE_INCOMPLETE: &str = "FILE_RECEIVE_INCOMPLETE";
+/// 内容能收齐但哈希/密钥对不上 —— **这份不是那一份**，已丢弃。
+pub const FILE_INTEGRITY_FAILED: &str = "FILE_INTEGRITY_FAILED";
+/// 本机写盘/落盘失败（`sync_all` 没能把内容固定住）。盘满另有条 `DISK_FULL`，那条更 actionable。
+pub const FILE_RECEIVE_WRITE_FAILED: &str = "FILE_RECEIVE_WRITE_FAILED";
+/// 内容已经固定住，但没能把它放到最终名字上（同名占位失败）。
+pub const FILE_RECEIVE_PLACE_FAILED: &str = "FILE_RECEIVE_PLACE_FAILED";
+
 /// 落进 `messages.fail_code` 的全部档位 —— **与前端那张文案表双向对账的分母**
 /// （`src/utils/fileFailReason.test.ts` 现读这里，两侧任何一侧多加一条都会红）。
-pub const MESSAGE_FAIL_CODES: [&str; 12] = [
+pub const MESSAGE_FAIL_CODES: [&str; 16] = [
     SEND_RETRY_EXPIRED,
     SEND_ORPHAN_AT_START,
     SEND_PEER_DELETED,
@@ -95,4 +121,8 @@ pub const MESSAGE_FAIL_CODES: [&str; 12] = [
     GROUP_FILE_CHUNK_GAP,
     GROUP_FILE_CHUNK_EXCEEDS_SIZE,
     GROUP_FILE_PEER_UNLINKED,
+    FILE_RECEIVE_INCOMPLETE,
+    FILE_INTEGRITY_FAILED,
+    FILE_RECEIVE_WRITE_FAILED,
+    FILE_RECEIVE_PLACE_FAILED,
 ];
