@@ -105,6 +105,18 @@ pub fn verdict_of(available: u64, needed: u64, headroom: u64) -> SpaceVerdict {
 //  unix
 // -------------------------------------------------------------------------
 
+/// 把 `statvfs` 的三个字段折成可用字节数（**纯函数**，与卷无关 ⇒ 可以直接单测）。
+///
+/// 口径：优先 `f_frsize`（POSIX 的"基本块大小" = 分配单位），它为 0 才退回 `f_bsize`。
+/// 2026-10-30 实测：一块 8 MiB 的 HFS+ 卷上 `f_bsize = 2097152`（"最优 I/O 大小"）、
+/// `f_frsize = 4096`；按旧写法（macOS 取 `f_bsize`）算出来是 3.88 GiB，**高估 512 倍**，
+/// 于是预检在那类卷上恒放行、满盘时照样写到一半 ENOSPC。
+#[cfg(unix)]
+fn blocks_to_bytes(frsize: u64, bsize: u64, bavail: u64) -> u64 {
+    let block = if frsize != 0 { frsize } else { bsize };
+    block.saturating_mul(bavail)
+}
+
 #[cfg(unix)]
 fn unix_available_bytes(path: &Path) -> Option<u64> {
     // `statvfs` 收的是**路径**，不存在的路径会失败 ⇒ 调用方拿 `None` ⇒ 放行。
@@ -118,24 +130,12 @@ fn unix_available_bytes(path: &Path) -> Option<u64> {
         if libc::statvfs(c.as_ptr(), &mut st as *mut libc::statvfs) != 0 {
             return None;
         }
-        // `f_bavail` = 对**当前用户**可用的块数（`f_bfree` 还要扣掉 root 保留块）。
-        //
-        // ⚠️ **块大小字段在 unix 内部就不是一个东西**：`f_frsize` 是 POSIX 定义的
-        // "基本块大小"（分配单位），`f_bsize` 是"最优 I/O 大小"（hint）。
-        //
-        // ★ 2026-10-30 实测纠正了一条**旧的错误口径**：这里原先按平台分开取
-        // （linux/android 用 `f_frsize`，其余用 `f_bsize`，理由是"macOS 的 statfs 只有
-        // f_bsize"）。用一块 8 MiB 的 HFS+ 卷量出来：macOS 上 `f_bsize = 2097152`（2 MiB）、
-        // `f_frsize = 4096` ⇒ 旧写法把余量**高估 512 倍**（报 3.88 GiB，实际 7.8 MiB），
-        // 于是预检在小卷上恒放行、ENOSPC 照样在中途炸 —— 正是这条预检要防的事。
-        // 现在的口径：**所有平台都优先 `f_frsize`**，只有它为 0（理论上不该发生）才退回 `f_bsize`。
-        let block = if st.f_frsize != 0 {
-            st.f_frsize as u64
-        } else {
-            st.f_bsize as u64
-        };
-        let avail = st.f_bavail as u64;
-        Some(block.saturating_mul(avail))
+        // 口径与那次缺陷的来龙去脉见 `blocks_to_bytes`（纯函数，可单测）。
+        Some(blocks_to_bytes(
+            st.f_frsize as u64,
+            st.f_bsize as u64,
+            st.f_bavail as u64,
+        ))
     }
 }
 
@@ -316,6 +316,38 @@ mod tests {
                 needed: 1
             },
             "水位都盖不住时必须拒绝（saturating_sub 不许下溢成天文数字）"
+        );
+    }
+
+    /// **块大小口径**（5.15.46 的修复）：优先 `f_frsize`，为 0 才用 `f_bsize`。
+    ///
+    /// 这条是那次缺陷的**非 ignored 判据**（`real_enospc_*` 要 hdiutil，只在 macOS 上跑）：
+    /// 拿实测的那组数字做纯函数级的 A/B —— 4320 个可用块 × 4096 = 16.9 MiB，
+    /// 而按 `f_bsize`（2 MiB）算会是 8.6 GiB。
+    #[cfg(unix)]
+    #[test]
+    fn blocks_to_bytes_prefers_frsize() {
+        assert_eq!(
+            super::blocks_to_bytes(4096, 2 * 1024 * 1024, 4320),
+            4096 * 4320
+        );
+        // 退化：frsize 缺失才退回 bsize（理论上不该发生，但实现里留了这条回落）
+        assert_eq!(super::blocks_to_bytes(0, 512, 10), 5120);
+        // 反控：按 bsize 算恰好是 512 倍（实测那块卷：2 MiB / 4 KiB）—— 这正是那次缺陷的形状
+        // 用表达式而不是手抄常数：这两个数第一次就是我自己算错的（4320 × 2 MiB）。
+        assert_eq!(
+            super::blocks_to_bytes(4096, 2 * 1024 * 1024, 4320),
+            4320 * 4096
+        ); // 16.9 MiB
+        assert_eq!(
+            super::blocks_to_bytes(0, 2 * 1024 * 1024, 4320),
+            4320 * 2 * 1024 * 1024
+        ); // 8.44 GiB
+        assert_eq!(
+            super::blocks_to_bytes(0, 2 * 1024 * 1024, 4320)
+                / super::blocks_to_bytes(4096, 2 * 1024 * 1024, 4320),
+            512,
+            "两个字段的比值就是当年的高估倍数"
         );
     }
 

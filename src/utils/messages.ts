@@ -228,6 +228,18 @@ export function appendLocalOnly(
 }
 
 /**
+ * 一次**文件失败事件**对应的气泡 msg_id：1:1 是 `file-<tid>`，群文件是 `gfile-<tid>`
+ * （后端 `transport/group_file.rs` 就这么拼）。
+ *
+ * 这行看着像句废话，但它是一个**回归过的缺陷**的唯一定义处：`onFileFailed` 曾经只拼 `file-`，
+ * 于是群文件失败时内存里那条永远不落状态、界面继续转圈（2026-10-22 审计 R-02 的前端那一半）。
+ * 抽成纯函数是为了让"两个前缀都认"这件事**有判别据**（store 里那段接线跑不了单测）。
+ */
+export function transferFailureMsgIds(transferId: string): string[] {
+  return [`file-${transferId}`, `gfile-${transferId}`];
+}
+
+/**
  * 乐观气泡（`tmp-*`）→ 真实记录的替换 —— `send()` 返回时唯一该走的一步。
  *
  * ## 为什么不能是裸 splice 就地替换
@@ -240,17 +252,6 @@ export function appendLocalOnly(
  * 返回新列表；`list` 里找不到那条乐观行时返回 `null`，由调用方走"挂在批量队列里等落地"
  * 那条路（见 `applyReplacements`，那条路本身经过 upsert，不会产生重复）。
  */
-/**
- * 一次**文件失败事件**对应的气泡 msg_id：1:1 是 `file-<tid>`，群文件是 `gfile-<tid>`
- * （后端 `transport/group_file.rs` 就这么拼）。
- *
- * 这行看着像句废话，但它是一个**回归过的缺陷**的唯一定义处：`onFileFailed` 曾经只拼 `file-`，
- * 于是群文件失败时内存里那条永远不落状态、界面继续转圈（2026-10-22 审计 R-02 的前端那一半）。
- * 抽成纯函数是为了让"两个前缀都认"这件事**有判别据**（store 里那段接线跑不了单测）。
- */
-export function transferFailureMsgIds(transferId: string): string[] {
-  return [`file-${transferId}`, `gfile-${transferId}`];
-}
 
 /** 在「会话 → 消息列表」里按 msg_id 找**第一条**命中（msg_id 全局唯一，跨会话只可能中一条）。 */
 export function findFirstMessageById(
@@ -407,13 +408,18 @@ export function existingIdsFor(
  */
 export function markStatusInCache(
   messages: Record<string, MessageRecord[]>,
-  msgId: string,
+  msgId: string | readonly string[],
   status: string,
 ): number {
+  // 5.15.47：收 `string | 多个 id`。文件那两族的气泡 id 是**两个前缀**
+  // （`file-<tid>` / `gfile-<tid>`，见 `transferFailureMsgIds`），调用方一次传进来，
+  // 免得又在自己那边把前缀拼一遍（那是 R-02 回归过的形状）。
+  const ids = typeof msgId === "string" ? [msgId] : msgId;
+  const wanted = new Set(ids);
   let changed = 0;
   for (const list of Object.values(messages)) {
     for (const m of list) {
-      if (m.msg_id !== msgId || m.status === status) continue;
+      if (!wanted.has(m.msg_id) || m.status === status) continue;
       m.status = status;
       changed++;
     }

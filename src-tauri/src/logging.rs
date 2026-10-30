@@ -1849,10 +1849,12 @@ mod tests {
         let _ = f.sync_all();
 
         // 3) 判据：真 ENOSPC 必须落到 DISK_FULL（那是唯一一条"清出空间后重试"的可行动文案）
-        assert_eq!(
-            err.kind(),
-            std::io::ErrorKind::StorageFull,
-            "err.kind 不是 StorageFull：{err}"
+        // ⚠️ 不许写 `ErrorKind::StorageFull`：那个变体稳定于 1.83，而本仓 rust-version = 1.77
+        //（本文件 `is_disk_full` 的注释里写着同一条）。用裸码，那是各平台事实上的定义。
+        let raw = err.raw_os_error();
+        assert!(
+            matches!(raw, Some(28) | Some(112) | Some(3900)),
+            "真 ENOSPC 的裸码不是 ENOSPC/ERROR_DISK_FULL：raw={raw:?} err={err}"
         );
         assert_eq!(
             code,

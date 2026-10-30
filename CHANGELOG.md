@@ -13,6 +13,46 @@
 
 ## [Unreleased]
 
+## [5.15.47] - 2026-10-30
+
+
+### 发版前 review 抓到上一批的「收口」是假的：`onFileCancelled` 是第 6 个手写实现
+
+两个独立 review（标准轴 + 规格轴）都指向同一处，复核属实：`onFileCancelled` 用的是
+`for (const [, msgs] of Object.entries(messages.value))` + `msgs.find(m => m.msg_id === ...)` +
+就地 `msg.status = "cancelled"` —— 与 `onFileFailed` 是**同一件事**（两个前缀 + 跨会话改一条），
+而上一批的判据只认 `[convId, list]` 解构与 `.findIndex((m) => m.msg_id` 两种写法 ⇒ 它从两条正则里
+**同时逃掉**，台账却写了"五个 handler 全部走家、手写 findIndex 现数 0"。
+
+- 修法：`onFileCancelled` 改用两个已有的家 —— 前缀归 `transferFailureMsgIds`、
+  改状态归 `markStatusInCache`（后者本来就存在，这次把它从"单 id"扩到 `string | 多个 id`）。
+  顺带修正一处注释错位：`transferFailureMsgIds` 的说明块此前插在 `replaceOptimistic` 的 doc
+  与它的函数之间（注释即规范，挂错对象等于把规则挂到了错的函数上）。
+- 判据：接线判据**放宽形状**（任意解构 `for (const [...] of Object.entries(messages.value))`）+
+  把 `onFileCancelled` 加进必查清单 + 新增一条"store 里 `\\.find(m => m.msg_id` 现数 0"。
+  外部变异（把那段改回手写）⇒ 两条断言同时点名红。
+- 另外三件事（review 指出、逐条落实）：
+  ① 上一批那条量具写了 `ErrorKind::StorageFull` —— 那个变体稳定于 **1.83**，本仓 `rust-version = 1.77`，
+     而本文件上面就写着"不许用"。改成裸码（28/112/3900）。
+  ② `blocks_to_bytes` 抽成**纯函数**并补一条**非 ignored** 单测（原来那条修复只有要 `hdiutil` 的量具挡着）。
+  ③ `IdentitySigner` 去掉了 `from_key_for_tests`（`Identity::from_secrets` 本来就够测）与
+     `verifying_key()`（公钥那件事已经有名字 `ed25519_public_b64()`）；`check-key-boundary` 的
+     "字段被写宽"判据从裸 `pub` 扩到 `pub(crate)`/`pub(super)`，并对 X25519 做同样的检查。
+- 数字订正：`messages.test` 现读 **123**（上一批写成 124）、lucide 用到它的文件现读 **49**（写成 50）、
+  审计里 `grep -rn get_topology` 现读 4 行**全是注释**（写成"现数 0"）。
+
+
+**真跑过的验证**：`cargo test --lib --features bluetooth` **1322 通过 / 0 失败**（3 ignored；+1 条
+`blocks_to_bytes_prefers_frsize` 的非 ignored 判据）；`npm test` **1528 通过 / 0 失败**；
+`node --test src/utils/messages.test.ts` **123/123**；`node --test src/utils/designGuards.test.ts` **243/243**；
+`node scripts/check-key-boundary.mjs` **退出 0**；`npm run verify:local` **25 步全绿**（含 clippy `-D warnings`）。
+两次**外部变异**各自点名红、`cmp` 逐字节还原：
+① 把 `onFileCancelled` 改回手写跨会话循环 ⇒ 两条断言同时报（「又手写跨会话循环」「还有 1 处手写 .find(m => m.msg_id)」）；
+② 把 `blocks_to_bytes` 退回只认 `f_bsize` ⇒ **非 ignored** 单测红（`left: 9059696640`），
+要 `hdiutil` 的量具也红（报 4171235328）。
+量具复跑：`--ignored real_enospc` 仍绿（`available` 落在 8 MiB 内、真 ENOSPC ⇒ `DISK_FULL`）。
+**没跑的层**：Windows 的 `GetDiskFreeSpaceExW` 那一半仍未动、无本地判据。
+
 ## [5.15.46] - 2026-10-30
 
 
@@ -108,7 +148,7 @@ STB-03 量具 + 既有那条；现读计数以 `test result:` 行为准）；`np
 ### 清 §8 尾巴：lucide 升级评估完成（判暂不升）、FUN-04 台账订正、TST-09 判不做
 
 - **`lucide-vue-next`（0.469.0 → 1.0.0）评估完成**：不是抄 changelog，而是在临时目录装了 1.0.0
-  逐个比名字 —— 生产代码 **50 个文件 / 104 个名字**（103 个运行时图标 + 1 个类型），
+  逐个比名字 —— 生产代码 **49 个文件 / 104 个名字**（103 个运行时图标 + 1 个类型），
   **1.0.0 里全部都有导出（缺失 0）** ⇒ 升级不会被"名字没了"卡住。但 major 的**视觉面**
   （默认描边/尺寸、tree-shaking 形状）本机没有判据 ⇒ **判暂不升级**，将来按"升级 PR + 真渲染对照"走。
 - **FUN-04（`get_topology` 孤儿）**：本表原来写"`DEAD_COMMANDS` 理由已过期"，**说反了** ——
@@ -143,7 +183,7 @@ lucide 的结论来自实测：`/tmp` 里装 `lucide-vue-next@1.0.0`，用生产
 
 
 **真跑过的验证**：`npm test` **1528 通过 / 0 失败**（+2 条判据）；`node --test src/utils/messages.test.ts`
-**124/124**；`node --test src/utils/designGuards.test.ts` **243/243**；`npm run verify:local` **25 步全绿**
+**123/123**（现读；先前写 124 是我把新增 1 条重复计入）；`node --test src/utils/designGuards.test.ts` **243/243**；`npm run verify:local` **25 步全绿**
 （含 `vue-tsc --noEmit` 与 vite 构建）。
 外部变异：把 `.findIndex((m) => m.msg_id …)` 塞回 `onMessageAcked` ⇒ 接线判据点名
 「store 里还有 1 处手写 findIndex(msg_id)」（退 1），跑完 `cmp` 逐字节还原。
@@ -172,7 +212,7 @@ lucide 的结论来自实测：`/tmp` 里装 `lucide-vue-next@1.0.0`，用生产
 
 
 **真跑过的验证**：`npm test` **1526 通过 / 0 失败**（+4 条判据）；`node --test src/utils/messages.test.ts`
-**122/122**（+3）；`node --test src/utils/designGuards.test.ts` **242/242**（+1）；
+**122/122**（+3；那时全册 122 条）；`node --test src/utils/designGuards.test.ts` **242/242**（+1）；
 `npm run verify:local` **25 步全绿**（含 `vue-tsc --noEmit` 整仓类型检查与 vite 构建）。
 外部变异：把 `for (const [convId, list] of Object.entries(messages.value))` 塞回 `onFileFailed`
 ⇒ 接线判据点名「function onFileFailed( 又手写跨会话循环了」（退 1），跑完 `cmp` 逐字节还原。

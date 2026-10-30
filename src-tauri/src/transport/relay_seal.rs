@@ -601,8 +601,12 @@ mod tests {
 
     fn ident() -> (crate::crypto::IdentitySigner, String) {
         let sk = ed25519_dalek::SigningKey::generate(&mut rand_core::OsRng);
-        let pk = STANDARD.encode(sk.verifying_key().to_bytes());
-        (crate::crypto::IdentitySigner::from_key_for_tests(sk), pk)
+        let id = crate::crypto::Identity::from_secrets(
+            &STANDARD.encode([7u8; 32]),
+            &STANDARD.encode(sk.to_bytes()),
+        )
+        .expect("测试身份必须能构造");
+        (id.signer(), id.ed25519_public_b64())
     }
 
     /// 通道哈希必须**两端各自算出同一个值** —— 否则中继永远配不上对，

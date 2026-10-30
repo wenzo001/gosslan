@@ -37,31 +37,19 @@ pub struct Identity {
 /// 只有这个类型给出的两个动作：签一段、读公钥。
 ///
 /// `Clone` 是刻意的：中继拨号要为**每个对端**各起一个 `spawn`，原先 clone 的是
-/// `SigningKey`，现在 clone 的是它（内含的仍是同一份私钥，但接口只有这两个动作用得上）。
+/// `SigningKey`，现在 clone 的是它（内含的仍是同一份私钥，但对外只有一个动作用得上）。
+///
+/// 不提供"读公钥"的方法：公钥那件事已经有名字了（`Identity::ed25519_public_b64()`），
+/// 同一个事实两个名字就是等着分叉（review 2026-10-30）。
 #[derive(Clone)]
 pub struct IdentitySigner {
     key: SigningKey,
 }
 
 impl IdentitySigner {
-    /// **测试专用**：从一把裸 `SigningKey` 造出能力对象。
-    ///
-    /// 生产路径没有这个构造——`Identity::signer()` 是唯一入口。它的存在是刻意的：
-    /// 协议测试要造"谁也不是的第三把钥"这类夹具，而它们**必须**能构造，否则只能把
-    /// 字段再公开回去（那正是 INV-P18 要收的口子）。
-    #[cfg(test)]
-    pub(crate) fn from_key_for_tests(key: SigningKey) -> Self {
-        Self { key }
-    }
-
     /// 对一段字节签名。
     pub fn sign(&self, msg: impl AsRef<[u8]>) -> Signature {
         self.key.sign(msg.as_ref())
-    }
-
-    /// 对应的公钥（用于自检、与持久化那侧对账）。
-    pub fn verifying_key(&self) -> VerifyingKey {
-        self.key.verifying_key()
     }
 }
 

@@ -31,13 +31,14 @@
  *
  *   判据 C（字段边界）：`Identity.x25519_secret` 只许在 `crypto.rs` 内部被访问；
  *   两个 base64 导出器（`x25519_secret_b64` / `ed25519_secret_b64`）只许被**持久化那一家**
- *   （`state.rs`）调用。ECDH 的唯一出口是 `Identity::dh()`，签名是 `sign_b64()`。
+ *   （`state.rs`）调用。ECDH 的唯一出口是 `Identity::dh()`，签名是 `Identity::signer()`
+ *   交出的 `IdentitySigner::sign()`（5.15.45 起）。
  *
  * ⚠️ 5.15.45 起这条覆盖两半：`ed25519_signing` 也私有化了（对外只剩 `Identity::signer()` 交出的
- * `IdentitySigner`）。历史注记：私有化之前它**仍是公开字段** —— 中继拨号要把 owned
+ * `IdentitySigner`）。历史注记（保留是为了说明当初为什么分两批）：私有化之前它**仍是公开字段** —— 中继拨号要把 owned
  * `SigningKey` 跨 `spawn` 传进 `relay_negotiate`/`build_wrap_offer`（含 10 处用裸 SigningKey 的
  * 协议测试），私有化它需要给那一层引入"签名能力"抽象，属 Frozen Core 线格式侧的设计改动。
- * 残余写在这里、也写在 `docs/protocol-invariants.md` 的 INV-P18，不装作已经封死。
+ * 两半自 5.15.45 起都被这条判据覆盖；这段历史写在这里备查，也写在 `docs/protocol-invariants.md` 的 INV-P18。
  *
  * ## 为什么 B 不会"漏扫还判成通过"
  *
@@ -225,9 +226,13 @@ function scanFieldBoundary(rel, src) {
       bad.push(`${rel} 直接读私钥字段 ${m[0]}（只许经 Identity::signer()）`);
     }
   }
-  // 字段本身不许再被写回 `pub`（形状判据：私有化是个会被"顺手"改回去的东西）
-  if (/\bpub\s+ed25519_signing\s*:/.test(src)) {
-    bad.push(`${rel} 把 ed25519_signing 又写成 pub（INV-P18 收的口子）`);
+  // 字段本身不许再被写"宽"（形状判据：私有化是个会被"顺手"改回去的东西）。
+  // 5.15.47 起 `pub(crate)` / `pub(super)` 也算 —— 只认裸 `pub` 的话，
+  // 把字段改成 `pub(crate)` 就能绕过（review 指出的对称性问题）。
+  for (const field of ["ed25519_signing", "x25519_secret"]) {
+    if (new RegExp(`\\bpub\\s*(\\([^)]*\\))?\\s+${field}\\s*:`).test(src)) {
+      bad.push(`${rel} 把 ${field} 又写宽成 pub（INV-P18 收的口子）`);
+    }
   }
   // 导出器只有持久化那一家能用（crypto.rs 内部的定义行不算调用）
   if (rel !== "crypto.rs" && rel !== "state.rs") {

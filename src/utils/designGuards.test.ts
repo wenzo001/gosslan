@@ -5951,11 +5951,14 @@ test("跨会话按 msg_id 改一条不许手写循环：三个 handler 必须走
     }
     return store.slice(at);
   };
-  const CROSS_CONV = /for\s*\(\s*const\s*\[convId,\s*list\]\s*of\s*Object\.entries\(messages\.value\)/;
+  // 5.15.47：原正则只认 `[convId, list]` 这一种解构 ⇒ `[, msgs]` 的写法整片漏掉
+  //（`onFileCancelled` 就是这么逃过去的，review 抓到的）。
+  const CROSS_CONV = /for\s*\(\s*const\s*\[[^\]]*\]\s*of\s*Object\.entries\(messages\.value\)/;
   for (const [sig, helper] of [
     ["function onFileFailed(", "transferFailureMsgIds("],
     ["function onMessageRenderChanged(", "findFirstMessageById("],
     ["function onMessageRecalled(", "findFirstMessageById("],
+    ["onFileCancelled: (transferId) => {", "markStatusInCache("],
   ] as const) {
     const body = bodyOf(sig);
     assert.ok(!CROSS_CONV.test(body), `${sig} 又手写跨会话循环了 ⇒ 回到"每处一份、没法单测"的形状`);
@@ -5980,6 +5983,11 @@ test("会话内的按 msg_id 改一条也走家：store 里不再有手写的 fi
   const HAND = /\.findIndex\(\(m\)\s*=>\s*m\.msg_id/g;
   const hits = [...store.matchAll(HAND)].length;
   assert.equal(hits, 0, `store 里还有 ${hits} 处手写 findIndex(msg_id) ⇒ 回到"每处一份、没法单测"`);
+  // 同族但写法不同的第二种（`.find(m => m.msg_id …)`）也一并归零：
+  // 5.15.47 之前 `onFileCancelled` 正是用它，而当时只数 findIndex ⇒ 判据量不到。
+  const FIND = /\.find\(\s*\(?\s*m\s*\)?\s*=>\s*m\.msg_id/g;
+  const findHits = [...store.matchAll(FIND)].length;
+  assert.equal(findHits, 0, `store 里还有 ${findHits} 处手写 .find(m => m.msg_id)`);
   const uses = [...store.matchAll(/patchMessageInConv\(/g)].length;
   assert.ok(uses >= 2, `patchMessageInConv 只被用了 ${uses} 处（下限 2：送达提升 + 重发回退）`);
   // 正控：把一处换回手写 findIndex，尺子必须说"有"
