@@ -1091,6 +1091,7 @@ storage::cache_cleaner::tests::retention_removes_expired_only
 storage::cache_cleaner::tests::walk_files_never_follows_symlinks
 storage::disk_space::tests::available_bytes_is_none_when_the_volume_cannot_be_located
 storage::disk_space::tests::available_bytes_is_readable_for_a_real_dir
+storage::disk_space::tests::blocks_to_bytes_prefers_frsize
 storage::disk_space::tests::space_verdict_folds_headroom_into_the_decision
 storage::disk_space::tests::unknown_space_is_not_the_same_as_not_enough
 storage::disk_space::tests::volume_root_is_parsed_for_drive_and_unc_paths
@@ -1209,6 +1210,7 @@ tests::preview_reads_run_off_the_async_worker
 tests::production_transaction_sites_are_all_timed
 tests::receive_finalize_slow_work_happens_outside_the_receiver_lock
 tests::receiver_abort_notifies_the_sender_inside_the_loop
+tests::receiver_lock_holds_only_one_chunk_worth_of_work
 tests::relay_circuit_is_tagged_relay_not_routed
 tests::relay_data_plane_respects_policy
 tests::relay_file_lifecycle_slow_work_runs_off_the_async_worker

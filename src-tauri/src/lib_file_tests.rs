@@ -1248,3 +1248,63 @@ fn share_file_requests_go_through_the_bounded_queue() {
         "又回到裸 spawn ⇒ 一个好友就能让本机并发发 N 份整文件"
     );
 }
+
+/// **STB-03 的可失败判据**（那条计时用例是"量具"，读数随机器漂，做不成门）。
+///
+/// 真正要守的性质只有一句：**接收表锁里只许有"一片"的活**（解密 + 哈希 + 写）。
+/// 一旦有人把整份文件级的慢活（fsync / 整份哈希 / 整份读 / 删文件）挪进锁里，
+/// 单表聚合上限就掉一个数量级（§4.0w 的 133.5 MB/s 就是这么量出来的）——
+/// 而那种退化**不会**让任何行为测试失败。
+///
+/// 两条路径各一个锁：1:1 的 `write_chunk`（锁只圈住那个块）与群的
+/// `write_group_chunk_blocking`（整函数都在锁里）。
+#[test]
+fn receiver_lock_holds_only_one_chunk_worth_of_work() {
+    const WHOLE_FILE: [&str; 4] = ["sync_all", "sha256_file_hex", "std::fs::read", "remove_file"];
+    let check = |what: &str, text: &str, must_have: &[&str]| {
+        for m in must_have {
+            assert!(
+                text.contains(m),
+                "`{what}` 的锁段里没有 `{m}` ⇒ 这段取错了（判据在空集上恒绿）"
+            );
+        }
+        for w in WHOLE_FILE {
+            assert!(
+                !text.contains(w),
+                "`{what}` 的锁段里出现了整份文件级的活 `{w}` ⇒ 锁不再是「一片」的粒度\
+                 （STB-03：单表聚合上限会掉一个数量级）"
+            );
+        }
+    };
+
+    let file = crate::network::file_src_for_guards();
+    let one = rust_fn_body(&file, "pub fn write_chunk(");
+    let block = rust_fn_body(&one, "let (received, cid, owner, report) = {");
+    assert!(block.len() > 200, "没取到 write_chunk 的锁块 ⇒ 锚点写法变了");
+    check(
+        "1:1 write_chunk 锁块",
+        &block,
+        &["file_receivers", "open_symmetric", "hasher.update", "write_all"],
+    );
+
+    let tr = crate::network::transport_src_for_guards();
+    let group = rust_fn_body(&tr, "fn write_group_chunk_blocking(");
+    assert!(group.len() > 200, "没取到 write_group_chunk_blocking ⇒ 锚点写法变了");
+    // 群侧的**解密不在这把锁里**（它在 `handle_group_file_chunk` 里、锁外做）⇒ 锁内只该有
+    // 哈希更新与写一片。这条差别本身就是"只一片活"的正面证据。
+    check(
+        "群 write_group_chunk_blocking",
+        &group,
+        &["group_file_receivers", "hasher.update", "write_all"],
+    );
+
+    // 量具本身不许被顺手删掉（它是"要重构时先跑它读数"的唯一入口）
+    let tests_src = include_str!("network/file_tests.rs");
+    assert!(
+        tests_src.contains("fn stb03_receiver_critical_section_cost("),
+        "STB-03 的计时量具不见了 ⇒ 将来要动这把锁时没有读数可用"
+    );
+    // 反控：把整份活塞进锁块文本，上面那把尺子必须说"有"
+    let gutted = format!("{block}\n    r.file.sync_all().unwrap();");
+    assert!(WHOLE_FILE.iter().any(|w| gutted.contains(w)));
+}
