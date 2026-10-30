@@ -377,9 +377,42 @@ pub(crate) fn is_disk_full(e: &std::io::Error) -> bool {
 /// 原样上屏，于是"磁盘满了"与"目录没有权限"长得一模一样，用户不知道该做什么。
 /// 码把"这一类失败"与"这一次的措辞"分开：码是**契约**（前端查表），措辞是实现。
 ///
-/// 目前只有一类进这张表。**别把它当成错误码大全** —— 每加一条都要同时补前端映射，
-/// 否则前端只能回落到原始 reason（那条回落路径已留好，见前端 `fileFailReasonText`）。
+/// **别把它当成错误码大全** —— 每加一条都要同时补前端映射
+/// （`src/utils/fileFailReason.ts`），否则前端只能回落到原始 reason（那条回落路径已留好，
+/// 见 `fileFailReasonText`）。加进这张表的码**必须真的有界面读者**：只写进日志而没人查表的码
+/// 等于一个假字段（编译过、门禁绿、界面上零变化）。
 pub(crate) const FAIL_CODE_DISK_FULL: &str = "DISK_FULL";
+
+/// 1:1 文件在 outbox 里过期（超过重发期限仍未送达）⇒ 气泡与 toast 该说"超时"，
+/// 而不是"发送失败"——两者的下一步动作不同（等对方上线重投 vs 用户自己重试）。
+///
+/// 这条以前发的是**硬编码中文**（「文件发送超时：超过重发期限仍未送达」）⇒
+/// 英文界面在那一格看到的是中文。码 + 前端查表才是本仓 i18n 的既有形状。
+/// 日志侧早已有 `code=FILE_OUTBOX_EXPIRED` 的同一条判读，不靠这句文案活着。
+pub(crate) const FAIL_CODE_FILE_SEND_EXPIRED: &str = "FILE_SEND_EXPIRED";
+
+// 下面五条同族：以前它们把**中文文案直接写进 `file-failed` 的事件载荷**，
+// 而前端对未知 reason 的处理是"原样上屏"（刻意的回落，宁可显示原文也不显示空白）
+// ⇒ 英文界面这几格看到的是中文。改成码之后措辞归词典，日志里仍写人话。
+// 判据：`src/utils/fileFailReason.test.ts` 的「file-failed 载荷里不许出现硬编码文案」。
+// 群文件那一族（`group_file.rs` 的 `REASON_*`）**不在这张表里**，它们只进日志与台账、
+// 不发 `file-failed`（断链时每个在途传输弹一次 toast 是噪音，见该文件的 `is_stable_fail_code`），
+// 等它们有了真正的读者（传输台账的 `fail_code` 列 + 气泡读路径）才配码。
+
+/// outbox 里这一单再也发不出去了：队列行丢了，或重试次数用尽。
+pub(crate) const FAIL_CODE_FILE_SEND_GIVEUP: &str = "FILE_SEND_GIVEUP";
+
+/// 中继接收侧的状态行过期（文件还没收完）。
+pub(crate) const FAIL_CODE_FILE_RELAY_STATE_EXPIRED: &str = "FILE_RELAY_STATE_EXPIRED";
+
+/// 中继收完的字节数与声明大小不符。
+pub(crate) const FAIL_CODE_FILE_RELAY_SIZE_MISMATCH: &str = "FILE_RELAY_SIZE_MISMATCH";
+
+/// 内容与本机不匹配（哈希/密钥对不上）。
+pub(crate) const FAIL_CODE_FILE_INTEGRITY_FAILED: &str = "FILE_INTEGRITY_FAILED";
+
+/// 中继传输一小时没走完，被回收。
+pub(crate) const FAIL_CODE_FILE_RELAY_STALLED: &str = "FILE_RELAY_STALLED";
 
 /// 把一次写盘失败归类成稳定失败码：盘满 ⇒ [`FAIL_CODE_DISK_FULL`]，其余 ⇒ `None`。
 ///

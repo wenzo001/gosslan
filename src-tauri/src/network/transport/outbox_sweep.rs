@@ -420,11 +420,13 @@ pub fn spawn_outbox_sweeper(state: &Arc<AppState>) -> tauri::async_runtime::Join
                         );
                         // 载荷必须是 `FileFailedInfo`（`{transfer_id, reason}`）：前端按这个形状取值。
                         // 曾经这里发的是裸字符串 ⇒ toast 显示「undefined」、气泡永远停在发送中（N-01）。
+                        // `reason` 现在发**稳定码**（以前是硬编码中文 ⇒ 英文界面这一格看到的是中文）；
+                        // 界面文案由 `src/utils/fileFailReason.ts` 查表，中英各一条。
                         let _ = state.app.emit(
                             "file-failed",
                             &FileFailedInfo {
                                 transfer_id: transfer_id.clone(),
-                                reason: "文件发送超时：超过重发期限仍未送达".to_string(),
+                                reason: crate::logging::FAIL_CODE_FILE_SEND_EXPIRED.to_string(),
                             },
                         );
                     }
@@ -464,7 +466,7 @@ pub fn spawn_outbox_sweeper(state: &Arc<AppState>) -> tauri::async_runtime::Join
                             "file-failed",
                             &FileFailedInfo {
                                 transfer_id,
-                                reason: "发送队列记录已丢失或重试次数已用尽，已停止重试".to_string(),
+                                reason: crate::logging::FAIL_CODE_FILE_SEND_GIVEUP.to_string(),
                             },
                         );
                     }

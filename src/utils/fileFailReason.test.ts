@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { fileFailReasonCodes, fileFailReasonText } from "./fileFailReason.ts";
 import { zhCN, enUS } from "../i18n/locales.ts";
@@ -146,5 +146,65 @@ test("前后端失败码逐条对账（后端加码必须同步前端表）", ()
     missing,
     [],
     `后端有、前端表没有的失败码 ⇒ 界面上会显示裸码：\n${missing.join("\n")}`,
+  );
+});
+
+/**
+ * `file-failed` 的 `reason` **不许是硬编码文案**。
+ *
+ * 为什么单独钉这一条：前端对未知 reason 的处理是**原样上屏**（那是刻意的回落，
+ * 宁可显示后端原文也不显示空白）。所以后端塞一句中文，英文界面那格就直接是中文 ——
+ * 而这个缺陷不会编译错、不会让上面那条对账红（对账只看码），界面上也只是"另一种语言"，
+ * 没有断言。5.15.29 就是把 outbox 过期那一格的硬编码中文换成 `FILE_SEND_EXPIRED` 码，
+ * 这条判据守的是"别换回去、也别往别处加新的"。
+ *
+ * 判据是形状：`FileFailedInfo` 的构造点里 `reason:` 若是**字面量**，必须是稳定码形状
+ * （大写/数字/下划线，与后端 `group_file.rs::is_stable_fail_code` 同一个谓词）；
+ * 变量与 `FAIL_CODE_*` 常量引用不在静态可判范围内，因此不在禁止之列。
+ */
+function findProseFailReasons(rustSrc: string): string[] {
+  const out: string[] = [];
+  // 只看点上 FileFailedInfo 的那个构造，避免把日志里的中文当成载荷（日志是给人读的，那里中文是对的）
+  for (const m of rustSrc.matchAll(/FileFailedInfo\s*\{[\s\S]{0,220}?\}/g)) {
+    const block = m[0];
+    const reason = block.match(/reason:\s*"([^"]*)"/);
+    if (reason && !/^[A-Z0-9_]+$/.test(reason[1])) out.push(reason[1]);
+  }
+  return out;
+}
+
+test("file-failed 载荷里不许出现硬编码文案（英文界面会原样上屏）", () => {
+  const files: string[] = [];
+  const walk = (dir: string): void => {
+    for (const e of readdirSync(dir, { withFileTypes: true })) {
+      const full = join(dir, e.name);
+      if (e.isDirectory()) walk(full);
+      else if (e.name.endsWith(".rs")) files.push(full);
+    }
+  };
+  walk(join(ROOT, "src-tauri/src"));
+  let sites = 0;
+  const offenders: string[] = [];
+  for (const f of files) {
+    const text = readFileSync(f, "utf8");
+    sites += [...text.matchAll(/FileFailedInfo\s*\{/g)].length;
+    for (const bad of findProseFailReasons(text)) {
+      offenders.push(`${f.slice(join(ROOT, "src-tauri/src").length + 1)}: "${bad}"`);
+    }
+  }
+  // 下限：构造点必须真被看见（0 个 ⇒ 提取器失效，这条就变成空集恒绿）
+  assert.ok(sites >= 3, `只扫到 ${sites} 处 FileFailedInfo 构造 ⇒ 提取器或形状变了，这条判据在空转`);
+  assert.deepEqual(offenders, [], "把文案写进了事件载荷：界面按码查表，中文只该活在词典与日志里");
+  // 正控：合成一份"中文塞进 reason"的源码，必须被抓到
+  const buggy =
+    'let _ = app.emit("file-failed", &FileFailedInfo {\n    transfer_id: id,\n    reason: "文件发送超时：超过重发期限仍未送达".to_string(),\n});';
+  assert.deepEqual(findProseFailReasons(buggy), ["文件发送超时：超过重发期限仍未送达"]);
+  // 反控：发码的写法不许被误判；日志里的中文也不在判据范围内
+  const ok =
+    'let _ = app.emit("file-failed", &FileFailedInfo {\n    transfer_id: id,\n    reason: crate::logging::FAIL_CODE_FILE_SEND_EXPIRED.to_string(),\n});';
+  assert.deepEqual(findProseFailReasons(ok), []);
+  assert.deepEqual(
+    findProseFailReasons('logger.warn("outbox", "文件发送超时：这条只是日志，中文是对的");'),
+    [],
   );
 });
