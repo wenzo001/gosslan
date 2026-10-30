@@ -131,6 +131,20 @@ impl FileJobEnd {
             Self::Expired | Self::GiveUp => "failed",
         }
     }
+
+    /// 这一种终态有没有**原因码**。取消没有（那是用户动作，不是故障）；
+    /// 超时与放弃各有一条，与 `file-failed` 事件载荷共用同一个常量（一个码一个出处）。
+    ///
+    /// 从终态推、而不是让每个调用方传参：`FileJobEnd` 已经是"为什么收尾"的唯一表达，
+    /// 再加一个参数就有第三种说法（终态说 Expired、码说 GiveUp）——那正是本仓判过的
+    /// "一个数值当两件事用"的同族。签名不变 ⇒ 六处既有调用点（含三处测试）一行没动。
+    pub(crate) fn fail_code(self) -> Option<&'static str> {
+        match self {
+            Self::Cancelled => None,
+            Self::Expired => Some(crate::error_codes::FILE_SEND_EXPIRED),
+            Self::GiveUp => Some(crate::error_codes::FILE_SEND_GIVEUP),
+        }
+    }
 }
 
 /// **三份收尾合并成一份**（第 4 步 P7）：文件队列任务的终态落库只有这一个出口。
@@ -175,8 +189,13 @@ pub fn finalize_file_failure(
     if !already_done || cancelled {
         // 取消是用户动作：界面必须立刻响应。已 done 的行不会被真降级（闸门在 upsert 里）。
         // 两处气泡分开记：`file-` 是 1:1 那一半，`gfile-` 是群那一半。
-        let file_bubble =
-            set_message_status(&tx, &format!("file-{transfer_id}"), status)? > 0;
+        // 知道为什么失败的那两种终态走带码的门（`messages.fail_code`）：界面当场能说出
+        // "超时/重试用尽"，**重启之后还说得出来**（第 19 行那一格的前半）。
+        // 取消仍走无码的门 —— 它没有原因，而 `set_message_failed` 会把码写成非空。
+        let file_bubble = match end.fail_code() {
+            Some(code) => set_message_failed(&tx, &format!("file-{transfer_id}"), code)? > 0,
+            None => set_message_status(&tx, &format!("file-{transfer_id}"), status)? > 0,
+        };
         // `gfile-` 只在取消时写：取消入口是 1:1 与群文件**共用**的（用户取消整条消息），
         // 而超时/放弃只代表"某一个收件人没收到"，群气泡由 `group_file_recipients` 决定。
         // 两个方向各有判据：`expired_file_does_not_touch_the_group_bubble` /
@@ -496,6 +515,40 @@ mod file_transfer_status_tests {
             params![id, direction, created_at],
         )
         .unwrap();
+    }
+
+    /// 第 19 行那一格：**为什么失败**必须跟着气泡行走 —— 正反两向都钉。
+    ///
+    /// 超时与放弃各写自己的码（界面上当场说得出、重启之后还说得出）；
+    /// 取消必须留 `NULL` —— 取消没有原因，写成非空等于给"用户自己按了取消"编一个故障理由，
+    /// 而 `NULL` 本身是一个状态（INV-P16 第 ③ 条）。
+    #[test]
+    fn a_failed_file_bubble_keeps_why_it_failed_and_a_cancelled_one_keeps_none() {
+        let conn = mem();
+        for (id, end, want) in [
+            ("exp", FileJobEnd::Expired, Some(crate::error_codes::FILE_SEND_EXPIRED)),
+            ("give", FileJobEnd::GiveUp, Some(crate::error_codes::FILE_SEND_GIVEUP)),
+            ("cancel", FileJobEnd::Cancelled, None),
+        ] {
+            let msg_id = format!("file-{id}");
+            conn.execute(
+                "INSERT INTO messages(msg_id,conv_id,sender_id,receiver_id,kind,content,ts,status)
+                 VALUES(?1,'c1','peer-b','peer-a','file','{}',1,'sending')",
+                params![msg_id],
+            )
+            .unwrap();
+            upsert_transfer(&conn, id, "peer-b", "x.bin", 10, "send", "active", None, 0.3).unwrap();
+            assert!(
+                finalize_file_failure(&conn, id, end).unwrap(),
+                "{id}：终态根本没落地 ⇒ 这一格在空跑，下面的断言不算证据"
+            );
+            let got: Option<String> = conn
+                .query_row("SELECT fail_code FROM messages WHERE msg_id = ?1", params![msg_id], |r| {
+                    r.get(0)
+                })
+                .unwrap();
+            assert_eq!(got.as_deref(), want, "{id}：气泡行上的原因码不对");
+        }
     }
 
     fn terminal(conn: &Connection, id: &str, status: &str, created_at: i64) {

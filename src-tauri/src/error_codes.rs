@@ -50,11 +50,22 @@ pub const SEND_PEER_DELETED: &str = "SEND_PEER_DELETED";
 /// 群成员退群/被移出，这条群消息对该成员已无处可投、且没有别的成员还在等。
 pub const SEND_GROUP_MEMBER_GONE: &str = "SEND_GROUP_MEMBER_GONE";
 
+/// 文件单的两种"不是用户取消"的终态。**码只有一个出处**：这里。
+/// 同一对常量既写进 `messages.fail_code`（`FileJobEnd::fail_code`）也发进 `file-failed`
+/// 事件载荷（`outbox_sweep.rs`）⇒ 界面上同一格不会因"事件说 A、重启后读回来是 B"而变两样。
+/// 家原先在 `logging.rs` 的 `FAIL_CODE_*`（那是事件载荷族的对账分母），搬过来是因为
+/// 它们从 5.15.31 起**也要落库**，而落库档位的分母是下面那个数组。
+pub const FILE_SEND_EXPIRED: &str = "FILE_SEND_EXPIRED";
+/// 重试次数用尽（或队列行已不在），这一单再也发不出去。
+pub const FILE_SEND_GIVEUP: &str = "FILE_SEND_GIVEUP";
+
 /// 落进 `messages.fail_code` 的全部档位 —— **与前端那张文案表双向对账的分母**
 /// （`src/utils/fileFailReason.test.ts` 现读这里，两侧任何一侧多加一条都会红）。
-pub const MESSAGE_FAIL_CODES: [&str; 4] = [
+pub const MESSAGE_FAIL_CODES: [&str; 6] = [
     SEND_RETRY_EXPIRED,
     SEND_ORPHAN_AT_START,
     SEND_PEER_DELETED,
     SEND_GROUP_MEMBER_GONE,
+    FILE_SEND_EXPIRED,
+    FILE_SEND_GIVEUP,
 ];
