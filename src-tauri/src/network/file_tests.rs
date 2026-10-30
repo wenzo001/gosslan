@@ -1492,6 +1492,49 @@ mod tests {
         assert!(!part.exists(), "失败后 .part 必须被删除");
     }
 
+    /// 1:1 接收的「不 emit」那两支必须真的是内部控制（5.15.36）。
+    ///
+    /// 为什么值得单独钉：前端那条形状判据（`fileFailReason.test.ts` 的「1:1 接收上屏的出口
+    /// 都不许是中文散文」）给 `未知传输` 与 `文件传输来源不匹配` 开了**豁免**，理由就是
+    /// 「这两支走 `fail_receive` 的 `return false`，根本不 emit」。豁免没有这条凭据，
+    /// 就变成"写判据的人说了算"——那是本仓最忌讳的假绿形状。
+    #[test]
+    fn fail_receive_stays_silent_for_unknown_and_mismatched_transfer() {
+        let src = crate::network::file_src_for_guards();
+        let at = src
+            .find("pub fn fail_receive(")
+            .expect("fail_receive 搬家/改名 ⇒ 同步改这条判据");
+        let rest = &src[at..];
+        let end = rest.find("\n}\n").map(|i| i + 3).unwrap_or(rest.len());
+        let body = &rest[..end];
+        // 两支 return false 的凭据形状：表里没这一单 / 来源不符（后者还要把接收器**放回表里**）
+        assert!(
+            body.contains("let Some(r) = recv.remove(transfer_id) else {"),
+            "缺「表里没有这一单 ⇒ 返回 false」那一支"
+        );
+        assert!(
+            body.contains("if r.peer_id != peer_id {")
+                && body.contains("recv.insert(transfer_id.to_string(), r);"),
+            "来源不符那一支必须把接收器放回表里再返回 false（摘错了别人的单不该被终止）"
+        );
+        // 数量：`return false` 恰好两处 ⇒ 以后新加一支"静默 false"会被这条抓到
+        assert_eq!(
+            body.matches("return false").count(),
+            2,
+            "return false 现在有 {} 处；豁免名单只有两条，加一支就得同时改前端豁免",
+            body.matches("return false").count()
+        );
+        // 本函数自己不许 emit：终态通知的唯一出口是 `fail_taken_receive`
+        // ⚠️ 这条断言**不能**把「点 emit、左括号、引号」三个记号连起来写成一个字符串：
+        // `src/api/events.test.ts` 的事件扫描器正是按那个形状认事件名，会把整条断言读成
+        // 一个名叫「右括号逗号空格」的假事件（10-30 实测 npm test 当场红）。
+        // 改用 `state.app.emit` 这九个字同样钉住「本函数不许自己发事件」，不制造假阳性。
+        assert!(
+            !body.contains("state.app.emit"),
+            "fail_receive 本体不许直接发事件"
+        );
+    }
+
     /// 7. SHA-256 mismatch → failed + .part 删除（绝不 rename）。
     #[test]
     fn group_done_sha_mismatch_fails_and_cleans_part() {

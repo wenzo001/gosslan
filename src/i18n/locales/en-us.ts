@@ -929,6 +929,20 @@ export const enUS: MessageDict = {
     "This device could not write the file to disk; check the disk, then ask the sender to send it again",
   "file.receivePlaceFailed":
     "The content arrived but could not be placed at its final location (name or folder conflict); clean up the download folder and ask for a resend",
+  "file.receiveStalled":
+    "Receiving timed out — the sender hasn't continued for a while; ask them to send it again",
+  "file.peerUnlinked":
+    "The sender's connection dropped before this file was complete; they need to send it again",
+  "file.chunkGap":
+    "File chunks arrived out of order — a piece is missing and can't be filled in; ask them to send it again",
+  "file.chunkDecryptFailed":
+    "A file chunk failed to decrypt, so it doesn't match this transfer; receiving stopped",
+  "file.chunkOversize":
+    "The chunks received exceed the size the sender declared; receiving stopped",
+  "file.chunkPoolAbort":
+    "This device's chunk-processing task was interrupted, so receiving stopped; ask them to send it again",
+  "file.chunkSeqOverflow":
+    "This transfer ran out of chunk sequence numbers (a protocol limit); ask them to send it again",
   "group.files.stateLocal": "On this device",
   "group.files.stateReceiving": "Receiving",
   "group.files.stateRemote": "Not on this device",

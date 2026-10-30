@@ -381,7 +381,18 @@ async fn handle_file_messages(state: &Arc<AppState>, peer_id: &str, msg: Message
             .await
             // 阻塞池把这个任务丢掉（panic/取消）不能当"没发生"：那等于悄悄放弃这一单接收。
             // 交回 Err 走下面既有的失败分支 —— 判死接收器 + 回否定确认，发送端立刻知道。
-            .unwrap_or_else(|e| Err(format!("文件分片处理任务被线程池中断: {e}")));
+            // ★ 载荷给**码**：`{e}` 那句 JoinError 原文是给排查的人读的，而下面那一支会把它
+            //   原封不动 emit 给界面（5.15.36 之前英文界面那格就是一串中文内部文本 + JoinError）。
+            .unwrap_or_else(|e| {
+                state.logger.error(
+                    "file",
+                    format!(
+                        "code={} transfer={transfer_id} peer={peer_id} —— 分片处理任务被线程池中断: {e}",
+                        crate::logging::FAIL_CODE_FILE_CHUNK_POOL_ABORT
+                    ),
+                );
+                Err(crate::logging::FAIL_CODE_FILE_CHUNK_POOL_ABORT.to_string())
+            });
             match written {
                 Ok(received) => {
                     // 节流：每 250ms 至多上报一次进度，避免大文件 IPC 事件风暴

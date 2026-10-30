@@ -280,10 +280,10 @@ CASES: list[Case] = [
         file=TAURI / "src" / "network" / "transport.rs",
         injections=[(
             "pub fn sweep_stalled_receives(state: &Arc<AppState>) -> usize {\n"
-            "    const REASON: &str = \"接收超时：对端久未继续发送\";\n"
+            "    const REASON: &str = crate::logging::FAIL_CODE_FILE_RECEIVE_STALLED;\n"
             "    let now = db::now_ms();",
             "pub fn sweep_stalled_receives(state: &Arc<AppState>) -> usize {\n"
-            "    const REASON: &str = \"接收超时：对端久未继续发送\";\n"
+            "    const REASON: &str = crate::logging::FAIL_CODE_FILE_RECEIVE_STALLED;\n"
             "    let now = db::now_ms();\n"
             "    let _snap: Vec<String> = state\n"
             "        .file_receivers\n"

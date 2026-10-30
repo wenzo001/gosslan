@@ -701,6 +701,7 @@ network::file::tests::empty_file_finishes_done_on_the_one_to_one_path_too
 network::file::tests::empty_file_sha256_matches_known_value
 network::file::tests::every_declared_ledger_stage_has_a_real_call_site
 network::file::tests::every_inbound_entry_goes_through_the_admission_gate
+network::file::tests::fail_receive_stays_silent_for_unknown_and_mismatched_transfer
 network::file::tests::file_cancel_keys_are_scoped_per_recipient
 network::file::tests::file_chunk_encrypt_roundtrip
 network::file::tests::file_offer_sealed_key_roundtrip

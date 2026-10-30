@@ -39,6 +39,20 @@ const FILE_FAIL_REASON_KEYS: Record<string, string> = {
   FILE_RELAY_SIZE_MISMATCH: "file.relaySizeMismatch",
   FILE_INTEGRITY_FAILED: "file.integrityFailed",
   FILE_RELAY_STALLED: "file.relayStalled",
+  // ── 1:1 **接收侧**那七格（5.15.36）──────────────────────────────────────
+  // 这一族的码只走 `file-failed` 事件（家在同文件的 `logging.rs::FAIL_CODE_*`），**不落库**：
+  // 收件方那条 `file-` 气泡行是文件落盘成功之后才插的，收失败的单没有行可写 ⇒
+  // 当场说得出就是它唯一的一次机会。群侧同一件事有 `GROUP_FILE_*` 那六格（能落进气泡行），
+  // 两族各一份不是重复：生命周期不同（当场消失 vs 留在行上）。
+  // ⚠️ 别顺手把"未知传输 / 来源不匹配"也配成码 —— 那两条走 `fail_receive` 的 `return false`
+  //   分支，根本不 emit，是内部控制的返回值，不是给用户读的话。
+  FILE_RECEIVE_STALLED: "file.receiveStalled",
+  FILE_PEER_UNLINKED: "file.peerUnlinked",
+  FILE_CHUNK_GAP: "file.chunkGap",
+  FILE_CHUNK_DECRYPT_FAILED: "file.chunkDecryptFailed",
+  FILE_CHUNK_OVERSIZE: "file.chunkOversize",
+  FILE_CHUNK_POOL_ABORT: "file.chunkPoolAbort",
+  FILE_CHUNK_SEQ_OVERFLOW: "file.chunkSeqOverflow",
   // ── 消息气泡的失败原因（`messages.fail_code`，DB v14→v15）───────────────────
   // 词表另一侧：`src-tauri/src/error_codes.rs::MESSAGE_FAIL_CODES`（双向对账见
   // `fileFailReason.test.ts`，两条一起钉）。这一族自 5.15.31 / 5.15.32 起**含文件气泡**：

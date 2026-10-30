@@ -1011,41 +1011,40 @@ pub fn write_chunk(
         // 整份字节仍由文件级 SHA-256 兜底。
         match chunk_seq_decision(seq, r.next_seq) {
             ChunkSeq::Duplicate => return Ok(r.received),
-            ChunkSeq::Gap => return Err("文件分片顺序错误".to_string()),
+            ChunkSeq::Gap => return Err(crate::logging::FAIL_CODE_FILE_CHUNK_GAP.to_string()),
             ChunkSeq::Accept => {}
         }
         let plaintext = crypto::open_symmetric(&r.file_key, data)
-            .ok_or_else(|| "文件分片解密失败".to_string())?;
+            .ok_or_else(|| crate::logging::FAIL_CODE_FILE_CHUNK_DECRYPT_FAILED.to_string())?;
         if chunk_exceeds_declared(r.size, r.received, plaintext.len() as u64) {
-            return Err("文件分片超出声明大小".to_string());
+            return Err(crate::logging::FAIL_CODE_FILE_CHUNK_OVERSIZE.to_string());
         }
         // 文件级完整性：明文增量哈希（与写盘同一份数据，无二次磁盘读取）
         use sha2::Digest;
         r.hasher.update(&plaintext);
-        // 写盘失败：**盘满**要归类成稳定码（前端据此给"清出空间后可重试"的可行动文案），
-        // 其余错误保留原文（那是唯一信息量）。原先只有 `e.to_string()`，
-        // 用户看到的是一句英文 "No space left on device" —— 不可行动。
+        // 写盘失败：载荷**只给码**。盘满归 `DISK_FULL`（前端据此给"清出空间后可重试"的可行动
+        // 文案），其余归 `FILE_RECEIVE_WRITE_FAILED`；OS 原文留在日志里 —— 那是唯一信息量，
+        // 但它不是给用户读的话（5.15.35 之前这一格把 `e.to_string()` 直接当载荷）。
         r.file.write_all(&plaintext).map_err(|e| {
-            let reason = match crate::logging::classify_write_failure(&e) {
-                Some(code) => {
-                    state.logger.error(
-                        "file",
-                        format!(
-                            "code={code} transfer={transfer_id} peer={peer_id} received={} size={} —— 磁盘空间不足",
-                            r.received, r.size
-                        ),
-                    );
-                    code.to_string()
-                }
-                None => e.to_string(),
-            };
-            reason
+            let detail = e.to_string();
+            let code = crate::logging::classify_write_failure(&e)
+                .unwrap_or(crate::error_codes::FILE_RECEIVE_WRITE_FAILED);
+            state.logger.error(
+                "file",
+                format!(
+                    "code={code} transfer={transfer_id} peer={peer_id} received={} size={} —— 分片写盘失败: {detail}",
+                    r.received, r.size
+                ),
+            );
+            code.to_string()
         })?;
         r.received += plaintext.len() as u64;
         // 每片都记一次"还被喂得动"—— 这是 `receive_is_stale` 唯一的证据来源。
         // 代价是一次 epoch 毫秒读取，相对上面的 `write_all` 可以忽略。
         r.fed_at_ms = crate::db::now_ms();
-        r.next_seq = r.next_seq.checked_add(1).ok_or("文件分片序号溢出")?;
+        r.next_seq = r.next_seq
+            .checked_add(1)
+            .ok_or(crate::logging::FAIL_CODE_FILE_CHUNK_SEQ_OVERFLOW.to_string())?;
         // 节流 500ms 落一次进度：这是断点续传的起点，也让统一状态显示真实进度。
         let now = crate::db::now_ms();
         let report = now - r.last_report_ms >= 500;
@@ -1260,7 +1259,14 @@ pub fn take_receives_for_peer(state: &AppState, peer_id: &str) -> Vec<(String, F
 pub fn fail_receives_for_peer(state: &AppState, peer_id: &str) {
     // 摘与收尾分开：摘在锁内一次做完，收尾（写库 + emit）一律在锁外。
     for (id, r) in take_receives_for_peer(state, peer_id) {
-        fail_taken_receive(state, &id, &r, "对端连接已断开");
+        state.logger.warn(
+            "file",
+            format!(
+                "code={} transfer={} peer={peer_id} received={} size={} —— 对端一条链路都不剩，这一单要对方重发",
+                crate::logging::FAIL_CODE_FILE_PEER_UNLINKED, id, r.received, r.size
+            ),
+        );
+        fail_taken_receive(state, &id, &r, crate::logging::FAIL_CODE_FILE_PEER_UNLINKED);
     }
 }
 
