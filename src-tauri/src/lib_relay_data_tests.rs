@@ -380,7 +380,10 @@
                 "中继接收的整份 .part 哈希",
                 0,
                 "tokio::task::spawn_blocking(move||file::sha256_file_hex(&p))",
-                "file::sha256_file_hex(&p)).await.unwrap_or_else(",
+                // 5.15.37 起哈希那一格把「任务被丢」与「读不出 .part」分开配码 ⇒ 收尾从 unwrap_or_else( 
+                // 换成 map_err(…).and_then(…)。**判据的意图不变**：必须 await（丢了 JoinHandle
+                // 慢活照跑、状态机永不推进），所以锚在 .await 上。
+                "file::sha256_file_hex(&p)).await.map_err(",
                 "letactual_hex=matchfile::sha256_file_hex(&part_path)",
             ),
             (

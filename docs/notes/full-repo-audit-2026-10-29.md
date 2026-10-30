@@ -857,6 +857,33 @@ node --experimental-strip-types -e '
 还剩（A2c）：`relay_push.rs` 那一族（经 `handle_share.rs` 的 `reason` 透传上屏）与
 `relay_file.rs` 的 `format!("{breach:?}")`（**枚举 Debug 当契约**：改变体名就静默漂走）。
 
+### 4.0u 第 19 行·A2c-接收侧（5.15.37）：枚举 Debug / 内部串 / OS 原文不再当载荷
+
+`transport/relay_file.rs` 那四格比"中文散文"更糟的一档：**动态文本**。
+`format!("{breach:?}")` 是枚举的 `Debug`（英文标识符，且改变体名就静默漂）、
+`format!("中继分片形状不合法：{reason}")` 混了散文与变量、哈希/落盘两格是
+`format!("… 被线程池中断: {e}")` 内部串、`move_received_file` 三处出口直接把 `io::Error` 原文
+（`create_dir_all` / 改名 / 跨卷 copy）当返回值，而调用方**原样 emit**。
+
+- 四个新码（事件族）。命名上的两个决定：① `RECV_QUOTA_EXCEEDED` **沿用日志里已有的 token**
+  （`admit_inbound` 自己就写 `code=RECV_QUOTA_EXCEEDED kind=…`）——同一件事不另起名，
+  `kind` 从载荷挪进日志；② 哈希那格的两种失败**分开**（`JoinError` = 阻塞池丢了 vs
+  `io::Error` = 本机读不出 `.part`），以前拼成同一句内部串，归因上根本分不开。
+- `move_received_file` 的三处 Err 改成先 `classify_write_failure`（盘满 ⇒ `DISK_FULL`，
+  它才有"清出空间后重试"那句可行动文案），再落 `FILE_RECEIVE_PLACE_FAILED` /
+  `FILE_RECEIVE_WRITE_FAILED`；OS 原文只进日志。
+- **一条既有判据的锚点跟着改了**：`lib_relay_data_tests.rs` 那条钉「哈希必须 await、
+  不许丢 JoinHandle」的用例原来锚在 `.await.unwrap_or_else(`；改码后形状是 `.await.map_err(`。
+  **意图一字没动**（仍然锚在 `.await` 上 —— 丢 JoinHandle 就等于慢活照跑、状态机永不推进），
+  但它是本轮第二次"改源码 ⇒ 改量具锚点"：这类改动**必须当场重跑那条判据**，
+  否则下一次红会指向一个已经不存在的原因。
+
+还剩（A2c-发送侧）：`relay_push.rs` 那十个 Err（「只能发送普通文件」/「没有可达的中继邻居」/
+「中继链路中断：第 N 片」/「无法获取对方公钥」…）经 `handle_share.rs` 的 `reason` 透传上屏。
+⚠️ 其中**「用户取消发送」不是失败**：`lib_file_tests.rs` 那条守卫一直在防"把取消写成假原因"，
+而 `handle_share` 现在对任何 `Err` 都发 `file-failed` ⇒ 取消在那条路上会显示成"文件失败"。
+这一格要先判语义（取消该不该走失败帧），再谈配码 —— 所以本批刻意只做接收侧。
+
 ### 4.1 已核查且未发现问题的稳定性面
 
 - **锁顺序**：全仓无 `peers↔db` 嵌套；`file_receivers→db` 顺序成立。
@@ -1011,7 +1038,7 @@ node --experimental-strip-types -e '
 >
 > 现在把它改成**唯一的状态表**：`§1/§2/§3/§6/§7` 各节记的是**审计当时**的发现，今天的状态以本表为准。
 > ⚠️ 诚实边界：本表是**人工对账 + 每行挂复跑命令**，不是机器判据 —— 没有任何脚本断言"这张表与代码一致"
-> （能做这种断言的只有逐行的复跑命令本身）。表里没写的 ID 见 §4.0a～§4.0t 的复核结论。
+> （能做这种断言的只有逐行的复跑命令本身）。表里没写的 ID 见 §4.0a～§4.0u 的复核结论。
 
 | 序 | ID | 今天的状态 | 凭据 / 复跑 |
 |---|---|---|---|
@@ -1035,7 +1062,7 @@ node --experimental-strip-types -e '
 | 16 | 替换矩阵勘误 | **已做**（5.15.13：新增 §0 勘误 + 一条「每个生产依赖都必须在矩阵里登记过」的新判据，带变异正控） | 文件真路径是 `docs/architecture/open-source-replacement-matrix.md`（⚠️ 本表原来只写裸文件名，害我照着它写了一条指不到文件的复跑命令）；复跑 `grep -n "勘误" docs/architecture/open-source-replacement-matrix.md` |
 | 17 | 依赖卫生 | `@pinia/colada` 死依赖**已删**；**`lucide-vue-next` 升级评估未做** | `grep -n "colada" package.json` 应为 0 命中（复跑时带一个阳性对照：`grep -n "vue-i18n" package.json` 必须有命中） |
 | 18 | SEC-08 | **已修**（见第 15 行） | —— 原表把它单独列一行是重复计数 |
-| 19 | 文件气泡的失败原因重启后失忆 | **1:1、群文件、接收收尾三族都闭环了**：5.15.29 事件载荷配码 → 5.15.31 码写进 `messages.fail_code`（§4.0q）→ 5.15.32 群文件 6 条转码并拆掉"一句话兼两职"的通知判据（§4.0r）。剩 **A2/A2b 已落地**（5.15.35 §4.0s、5.15.36 §4.0t）：接收收尾四格转码，并修掉两处被散文藏住的**真缺陷**（群收尾失败一律标成「对端失联」＋那一格不落事件 ⇒ 气泡停在发送中）；begin/resume 经复核**不上屏**（只回 `FileReject` + 日志）⇒ 判为不配码（§4.0t）；剩中继 push 那一族与 `format!("{breach:?}")`，登记在 §4.0t 末；⚠️ 群文件那一步的**集成层**（真机/跨进程）本轮未证 | ⚠️ 两处前置都订正过：审计原来写「配码即可」不完整（要先看清码给谁读），而我 5.15.29 写的「必须加表列（DB v16）」**也是错的** —— 现读 `db/file_transfer.rs` 里 `set_message_status(&tx, &format!` 那几行（按符号名找，别抄行号）与 `cascade_tests.rs:809`：`file-<tid>` / `gfile-<tid>` **本来就是 `messages` 行** ⇒ 批 B 的真实形状是给 `finalize_file_failure` 带上 `fail_code`、群路径同写一码，**不加列、不迁移**（凭据与教训见 §4.0p）。复跑：`node --test src/utils/fileFailReason.test.ts` |
+| 19 | 文件气泡的失败原因重启后失忆 | **1:1、群文件、接收收尾三族都闭环了**：5.15.29 事件载荷配码 → 5.15.31 码写进 `messages.fail_code`（§4.0q）→ 5.15.32 群文件 6 条转码并拆掉"一句话兼两职"的通知判据（§4.0r）。剩 **A2/A2b/A2c-接收侧 已落地**（5.15.35 §4.0s、5.15.36 §4.0t、5.15.37 §4.0u）：接收收尾四格转码，并修掉两处被散文藏住的**真缺陷**（群收尾失败一律标成「对端失联」＋那一格不落事件 ⇒ 气泡停在发送中）；begin/resume 经复核**不上屏**（只回 `FileReject` + 日志）⇒ 判为不配码（§4.0t）；剩 relay_push 发送侧那一族（含「用户取消发送 被当失败」这一语义问题待判），登记在 §4.0u 末；⚠️ 群文件那一步的**集成层**（真机/跨进程）本轮未证 | ⚠️ 两处前置都订正过：审计原来写「配码即可」不完整（要先看清码给谁读），而我 5.15.29 写的「必须加表列（DB v16）」**也是错的** —— 现读 `db/file_transfer.rs` 里 `set_message_status(&tx, &format!` 那几行（按符号名找，别抄行号）与 `cascade_tests.rs:809`：`file-<tid>` / `gfile-<tid>` **本来就是 `messages` 行** ⇒ 批 B 的真实形状是给 `finalize_file_failure` 带上 `fail_code`、群路径同写一码，**不加列、不迁移**（凭据与教训见 §4.0p）。复跑：`node --test src/utils/fileFailReason.test.ts` |
 | 20 | `## [4.39.2]` 两节内容不同（历史改号） | **判为不做**（不是来不及：历史那几节没有任何消费者，跨节搬正文的风险大于收益） | §4.0k 给了三节的 `git tag --contains` 现算表；判据对这种形状**显式打印**，不会静默放过 |
 
 ### 还没做的，按建议顺序

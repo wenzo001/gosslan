@@ -662,7 +662,13 @@ CASES: list[Case] = [
         # ⚠️ 上一版注释里「把 r.hasher 塞回去」那个方案**编译不过**（Reassembly 早已没有该字段，
         #    而那字面量正是断言①要抓的）⇒ 守卫变强时不许凭猜写新锚点，先确认新形状可编译。
         injections=[(
-            '                tokio::task::spawn_blocking(move || file::sha256_file_hex(&p))\n                    .await\n                    .unwrap_or_else(|e| Err(format!("中继哈希任务被线程池中断: {e}")))\n',
+            # 锚点第三次死（2026-10-30，5.15.37）：哈希那一格改成「任务被丢」与「读不出 .part」
+            # 分开配码 ⇒ 兜底从 `unwrap_or_else(` 换成 `map_err(…).and_then(…)`，并且错误映射
+            # 抽成了两个小函数（`relay_hash_task_abort` / `relay_hash_read_failed`）—— 抽出去正是
+            # 为了让这个注入窗口**不长注释**：窗口里多一行说明，锚点就跟着漂（本轮实测两次）。
+            # 判据意图未变：坏法仍要**删掉 `sha256_file_hex(`** 并引入 `Sha256::digest(&`
+            # ⇒ 一次踩中两条断言，报的还是「完整性校验必须对…」。
+            '                tokio::task::spawn_blocking(move || file::sha256_file_hex(&p))\n                    .await\n                    .map_err(|e| relay_hash_task_abort(state, &transfer_id, &from, &e))\n                    .and_then(|r| r.map_err(|e| relay_hash_read_failed(state, &transfer_id, &from, &e)))\n',
             '                (|| -> Result<String, String> {\n                    use sha2::{Digest, Sha256};\n                    let __b = std::fs::read(&p).map_err(|e| e.to_string())?;\n                    Ok(Sha256::digest(&__b).iter().map(|b| format!("{b:02x}")).collect())\n                })()\n',
         )],
         cmd=cargo("test", "--lib", "relay_receive_hashes_assembled_plaintext_once"),
