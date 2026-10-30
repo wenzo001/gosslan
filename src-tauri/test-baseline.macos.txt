@@ -839,6 +839,7 @@ network::transport::group_file_bubble_tests::ack_write_retries_are_bounded_and_s
 network::transport::group_file_bubble_tests::bubble_is_decided_only_when_every_recipient_is_terminal
 network::transport::group_file_fail_reason_tests::every_group_file_code_has_a_log_label
 network::transport::group_file_fail_reason_tests::only_actionable_codes_notify_the_user
+network::transport::group_file_fail_reason_tests::only_registered_codes_may_be_persisted
 network::transport::group_offer_retry_tests::active_receiver_ignores_a_network_duplicate
 network::transport::group_offer_retry_tests::completed_offer_only_reacks
 network::transport::group_offer_retry_tests::group_file_key_ttl_expires_at_the_boundary

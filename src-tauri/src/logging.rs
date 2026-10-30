@@ -388,9 +388,10 @@ pub(crate) const FAIL_CODE_DISK_FULL: &str = "DISK_FULL";
 // 而前端对未知 reason 的处理是"原样上屏"（刻意的回落，宁可显示原文也不显示空白）
 // ⇒ 英文界面这几格看到的是中文。改成码之后措辞归词典，日志里仍写人话。
 // 判据：`src/utils/fileFailReason.test.ts` 的「file-failed 载荷里不许出现硬编码文案」。
-// 群文件那一族（`group_file.rs` 的 `REASON_*`）**不在这张表里**，它们只进日志与台账、
-// 不发 `file-failed`（断链时每个在途传输弹一次 toast 是噪音，见该文件的 `is_stable_fail_code`），
-// 等它们有了真正的读者（传输台账的 `fail_code` 列 + 气泡读路径）才配码。
+// 群文件那一族原先在这张表里，5.15.32 已把它们的**码**搬去 `error_codes.rs::MESSAGE_FAIL_CODES`
+// （因为它们既上屏也落库）。它们仍**不弹通知**：断链时每个在途传输弹一次 toast 是噪音，
+// 名单在 `group_file.rs::should_notify_group_failure`（该文件另有 `persistable_group_fail_code`
+// 管"什么才允许落库"）。
 
 /// 中继接收侧的状态行过期（文件还没收完）。
 pub(crate) const FAIL_CODE_FILE_RELAY_STATE_EXPIRED: &str = "FILE_RELAY_STATE_EXPIRED";
