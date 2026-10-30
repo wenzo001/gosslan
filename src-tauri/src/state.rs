@@ -1742,6 +1742,84 @@ fn persist_identity(conn: &Connection, id: &Identity) -> Result<(), StartupError
     Ok(())
 }
 
+/// 设备标识的决议：**只认已持久化的值，没有才生成一次**（派生式身份为什么会撞，见 `device.rs` 头）。
+///
+/// 抽成独立函数是为了让「重启不换身份」这条性质有**自己名字**的用例（审计 TST-08）：
+/// 它原先内联在 `AppState::init` 里，只能靠整条启动链间接覆盖。每个分支都是安全边界 ——
+/// 读失败、以及「已有安装但库里没有」都**不许**重建标识。
+fn resolve_device_id(
+    conn: &Connection,
+    existing_install: bool,
+    logger: &Logger,
+) -> Result<String, StartupError> {
+    // 这条改动对**已装设备是惰性的**，这是刻意的：旧代码每次启动都把派生值写回 settings，
+    // 所以已存的值就等于派生值 ⇒ 换优先级不会改变任何现存设备的 ID，也就不会打断任何已有
+    // 好友绑定。代价是**今天已经撞上号的两台，这段代码救不了它们** —— 救它们需要
+    // "检测到同 ID 不同密钥 ⇒ 提示换新 ID"那一条路，而它**还没实现**（ADR-0021 的切片 2；
+    // 换 ID 的口径用户 2026-09-22 已拍板：好友重加、旧会话只读、聊天记录不迁移）。
+    // 在那之前，已经撞上的两台只能靠下面那个 `dev-` 前缀迁移之外的手工路径（清应用数据）。
+    // 设备标识与身份密钥同一道安全边界：**读失败/已有库缺失都不许重建**。
+    // 换了设备 id，好友会看到一个陌生人（旧 id 的会话与密钥绑定全部对不上）。
+    Ok(match db::get_setting_checked(conn, "device_id") {
+        Ok(Some(stored)) => {
+            // ⚠️ **历史值迁移**（2026-09-13 合并评审补）：那时的兜底路径多套了一层前缀，
+            // 已装的安卓库里存的是 `dev-gosslan-…`。光改生成代码治不了已装设备 —— 它们的
+            // id 还是"三端里恒最小、永远不主动拨号"的那个值，除非清一次应用数据（丢聊天与
+            // 好友）。所以这里把废弃前缀**就地剥掉**再写回。
+            match crate::device::strip_legacy_dev_prefix(&stored) {
+                Some(migrated) => {
+                    if let Err(e) = db::set_setting(conn, "device_id", migrated) {
+                        // 写失败不会导致身份变化：下次启动仍会重试同一段迁移。
+                        logger.warn(
+                            "identity",
+                            format!("code=DEVICE_ID_MIGRATION_WRITE_FAILED err={e} —— 本次仍使用迁移后的 id"),
+                        );
+                    }
+                    migrated.to_string()
+                }
+                None => stored,
+            }
+        }
+        Ok(None) if !existing_install => {
+            // ⚠️ 生成函数自己带 `gosslan-` 前缀，这里**不能再套一层**：真机 2026-09-13 那轮
+            // 多套了个 `dev-`，于是 `'d' < 'g'` ⇒ 安卓在三端里恒为最小 id，而镜像规则是
+            // 「大 id 拨、小 id 只接受」⇒ 那台设备永远不主动拨任何人，只能等别人来连它。
+            let fresh = generate_device_id(&collect_device_attrs());
+            if let Err(source) = db::set_setting(conn, "device_id", &fresh) {
+                logger.error(
+                    "identity",
+                    format!("code=DEVICE_ID_PERSIST_FAILED err={source} —— 停止启动，避免每次启动换身份"),
+                );
+                crate::logging::crash_note(&format!(
+                    "code=DEVICE_ID_PERSIST_FAILED 设备标识写入失败，停止启动：{source}（未生成新身份/标识）"
+                ));
+                return Err(StartupError::DeviceIdPersist { source });
+            }
+            fresh
+        }
+        Ok(None) => {
+            logger.error(
+                "boot",
+                "code=DEVICE_ID_MISSING 已有安装的数据库里没有 device_id —— 拒绝生成新标识",
+            );
+            crate::logging::crash_note(
+                "code=DEVICE_ID_MISSING 已有安装缺少 device_id，停止启动（未生成新身份）",
+            );
+            return Err(StartupError::DeviceIdMissing);
+        }
+        Err(source) => {
+            logger.error(
+                "boot",
+                format!("code=DEVICE_ID_READ_FAILED err={source} —— 停止启动，避免生成新标识"),
+            );
+            crate::logging::crash_note(&format!(
+                "code=DEVICE_ID_READ_FAILED 设备标识读取失败，停止启动：{source}（未生成新标识）"
+            ));
+            return Err(StartupError::DeviceIdRead { source });
+        }
+    })
+}
+
 impl AppState {
     /// 取群文件会话密钥并**刷新 TTL**：有分片/Offer 活动就说明这一单还活着，
     /// 不该被 2h 的清扫器中途收走（大文件经 BLE 或多轮重试可能超过 2h）。
@@ -1991,74 +2069,9 @@ impl AppState {
             .unwrap_or(default_downloads);
         std::fs::create_dir_all(&downloads_dir).ok();
 
-        // 设备 ID：**只认已持久化的值，没有才生成一次**（派生式身份为什么会撞，见 `device.rs` 头）。
-        //
-        // 这条改动对**已装设备是惰性的**，这是刻意的：旧代码每次启动都把派生值写回 settings，
-        // 所以已存的值就等于派生值 ⇒ 换优先级不会改变任何现存设备的 ID，也就不会打断任何已有
-        // 好友绑定。代价是**今天已经撞上号的两台，这段代码救不了它们** —— 救它们需要
-        // "检测到同 ID 不同密钥 ⇒ 提示换新 ID"那一条路，而它**还没实现**（ADR-0021 的切片 2；
-        // 换 ID 的口径用户 2026-09-22 已拍板：好友重加、旧会话只读、聊天记录不迁移）。
-        // 在那之前，已经撞上的两台只能靠下面那个 `dev-` 前缀迁移之外的手工路径（清应用数据）。
-        // 设备标识与身份密钥同一道安全边界：**读失败/已有库缺失都不许重建**。
-        // 换了设备 id，好友会看到一个陌生人（旧 id 的会话与密钥绑定全部对不上）。
-        let base_device = match db::get_setting_checked(&conn, "device_id") {
-            Ok(Some(stored)) => {
-                // ⚠️ **历史值迁移**（2026-09-13 合并评审补）：那时的兜底路径多套了一层前缀，
-                // 已装的安卓库里存的是 `dev-gosslan-…`。光改生成代码治不了已装设备 —— 它们的
-                // id 还是"三端里恒最小、永远不主动拨号"的那个值，除非清一次应用数据（丢聊天与
-                // 好友）。所以这里把废弃前缀**就地剥掉**再写回。
-                match crate::device::strip_legacy_dev_prefix(&stored) {
-                    Some(migrated) => {
-                        if let Err(e) = db::set_setting(&conn, "device_id", migrated) {
-                            // 写失败不会导致身份变化：下次启动仍会重试同一段迁移。
-                            logger.warn(
-                                "identity",
-                                format!("code=DEVICE_ID_MIGRATION_WRITE_FAILED err={e} —— 本次仍使用迁移后的 id"),
-                            );
-                        }
-                        migrated.to_string()
-                    }
-                    None => stored,
-                }
-            }
-            Ok(None) if !existing_install => {
-                // ⚠️ 生成函数自己带 `gosslan-` 前缀，这里**不能再套一层**：真机 2026-09-13 那轮
-                // 多套了个 `dev-`，于是 `'d' < 'g'` ⇒ 安卓在三端里恒为最小 id，而镜像规则是
-                // 「大 id 拨、小 id 只接受」⇒ 那台设备永远不主动拨任何人，只能等别人来连它。
-                let fresh = generate_device_id(&collect_device_attrs());
-                if let Err(source) = db::set_setting(&conn, "device_id", &fresh) {
-                    logger.error(
-                        "identity",
-                        format!("code=DEVICE_ID_PERSIST_FAILED err={source} —— 停止启动，避免每次启动换身份"),
-                    );
-                    crate::logging::crash_note(&format!(
-                        "code=DEVICE_ID_PERSIST_FAILED 设备标识写入失败，停止启动：{source}（未生成新身份/标识）"
-                    ));
-                    return Err(Box::new(StartupError::DeviceIdPersist { source }));
-                }
-                fresh
-            }
-            Ok(None) => {
-                logger.error(
-                    "boot",
-                    "code=DEVICE_ID_MISSING 已有安装的数据库里没有 device_id —— 拒绝生成新标识",
-                );
-                crate::logging::crash_note(
-                    "code=DEVICE_ID_MISSING 已有安装缺少 device_id，停止启动（未生成新身份）",
-                );
-                return Err(Box::new(StartupError::DeviceIdMissing));
-            }
-            Err(source) => {
-                logger.error(
-                    "boot",
-                    format!("code=DEVICE_ID_READ_FAILED err={source} —— 停止启动，避免生成新标识"),
-                );
-                crate::logging::crash_note(&format!(
-                    "code=DEVICE_ID_READ_FAILED 设备标识读取失败，停止启动：{source}（未生成新标识）"
-                ));
-                return Err(Box::new(StartupError::DeviceIdRead { source }));
-            }
-        };
+        // 设备 ID 的决议整段在 `resolve_device_id` 里：**重启不换身份**是它的核心性质，
+        // 因此给它自己名字的用例（审计 TST-08），而不是让它只能被整条启动链间接覆盖。
+        let base_device = resolve_device_id(&conn, existing_install, &logger).map_err(Box::new)?;
         // 多开时给不同实例不同 device_id，使其成为互相可发现的独立节点
         let device_id = if instance > 0 {
             format!("{base_device}-i{instance}")
@@ -2899,10 +2912,21 @@ pub(crate) fn instance_id() -> u32 {
 #[cfg(test)]
 mod tests {
     use super::{
-        load_or_create_identity, resolve_is_zh, StartupError, UI_LANG_EN, UI_LANG_UNKNOWN,
-        UI_LANG_ZH,
+        load_or_create_identity, resolve_device_id, resolve_is_zh, StartupError, UI_LANG_EN,
+        UI_LANG_UNKNOWN, UI_LANG_ZH,
     };
+    use crate::logging::Logger;
     use rusqlite::Connection;
+
+    /// 不读日志内容的用例共用这一份（与 `network/file_tests.rs` 同形，只是目录名不同）。
+    fn throwaway_logger() -> &'static Logger {
+        static L: std::sync::OnceLock<Logger> = std::sync::OnceLock::new();
+        L.get_or_init(|| {
+            let dir = std::env::temp_dir()
+                .join(format!("gosslan-state-throwaway-{}", std::process::id()));
+            Logger::new(dir, "t-state-throwaway", "[dev:test]".to_string())
+        })
+    }
 
     /// 界面语言判定的优先级：**显式偏好 > 前端推来的解析结果 > 环境变量兜底**。
     ///
@@ -3017,6 +3041,86 @@ mod tests {
         // INV-P18 之后字段私有：用**签名能力交出的公钥**证明"加载回来的是同一把私钥"
         // （公钥由私钥派生，字节相等 ⇔ 同一把钥；而且这条断言只看对外可见的那一面）。
         assert_eq!(id.ed25519_public_b64(), again.ed25519_public_b64());
+    }
+
+    /// TST-08：**重启不换身份** —— 设备标识只在首启生成一次，此后只认库里的值。
+    ///
+    /// 审计盘出：设备侧那几条用例全在"生成"这一侧，没有一条以自己名字断言"第二次启动
+    /// 拿到同一个 id"。判据直接调启动时用的决议函数（`resolve_device_id`），五格钉死：
+    ///  ① 空库 ⇒ 生成并入册；**同一个库再决议一次（= 重启）⇒ 原值**；
+    ///  ② 库里的值被改过 ⇒ 返回改后的那个（证明它读库，而不是按机器属性重算）；
+    ///  ③ 已有安装但库里没有 ⇒ 拒启（`DeviceIdMissing`），且不许偷偷写一个新标识；
+    ///  ④ 读库失败 ⇒ 拒启（`DeviceIdRead`）；
+    ///  ⑤ 历史 `dev-` 前缀 ⇒ 就地剥掉**并写回**（"只认持久化值"不等于"只读不写"）。
+    #[test]
+    fn device_id_is_persisted_once_and_never_rederived_on_restart() {
+        let logger = throwaway_logger();
+
+        // ① 首启生成，重启原样拿回
+        let conn = settings_db();
+        let first = resolve_device_id(&conn, false, logger).expect("空库首次必须生成");
+        assert!(
+            first.starts_with(crate::device::DEVICE_ID_PREFIX),
+            "生成的 id 必须带统一前缀：{first}"
+        );
+        assert_eq!(
+            first.len(),
+            crate::device::DEVICE_ID_LEN,
+            "id 形状（前缀 + 13 位 hex）是界面与排序规则的契约：{first}"
+        );
+        assert_eq!(
+            secret(&conn, "device_id").as_deref(),
+            Some(first.as_str()),
+            "生成后必须立刻入库 —— 否则下一次启动会再生成一个"
+        );
+        assert_eq!(
+            resolve_device_id(&conn, false, logger).expect("重启读取不许失败"),
+            first,
+            "重启后换了设备标识 ⇒ 好友会看到一个陌生人（旧 id 的会话与密钥绑定全部对不上）"
+        );
+
+        // ② 读的是库，不是机器属性：把库里的值改掉，返回值必须跟着变
+        crate::db::set_setting(&conn, "device_id", "gosslan-keepme01").unwrap();
+        assert_eq!(
+            resolve_device_id(&conn, true, logger).unwrap(),
+            "gosslan-keepme01",
+            "库里已有的值被无视 ⇒ 这台设备每次启动都会被当成新设备"
+        );
+
+        // ③ 已有安装却没有值 ⇒ 拒启，且不许写进一个新标识
+        let missing = settings_db();
+        match resolve_device_id(&missing, true, logger) {
+            Err(StartupError::DeviceIdMissing) => {}
+            Ok(id) => panic!("已有安装缺少 device_id 时必须拒启，实得 Ok({id})"),
+            Err(e) => panic!("必须报 DeviceIdMissing，实得 {e:?}"),
+        }
+        assert!(
+            secret(&missing, "device_id").is_none(),
+            "拒启路径不许偷偷写入新标识（那等于换了个身份继续跑）"
+        );
+
+        // ④ 读库失败 ⇒ 拒启（把表拿掉制造一次真读错）
+        let unreadable = settings_db();
+        unreadable.execute_batch("DROP TABLE settings").unwrap();
+        match resolve_device_id(&unreadable, false, logger) {
+            Err(StartupError::DeviceIdRead { .. }) => {}
+            Ok(id) => panic!("读库失败时必须拒启，实得 Ok({id})"),
+            Err(e) => panic!("必须报 DeviceIdRead，实得 {e:?}"),
+        }
+
+        // ⑤ 历史 `dev-` 前缀：剥掉并写回（否则每次启动都要再迁一遍）
+        let legacy = settings_db();
+        crate::db::set_setting(&legacy, "device_id", "dev-gosslan-legacy001").unwrap();
+        assert_eq!(
+            resolve_device_id(&legacy, true, logger).unwrap(),
+            "gosslan-legacy001",
+            "废弃的 dev- 前缀必须就地剥掉"
+        );
+        assert_eq!(
+            secret(&legacy, "device_id").as_deref(),
+            Some("gosslan-legacy001"),
+            "迁移必须写回库里"
+        );
     }
 
     /// **核心回归**：已有安装 + 密钥缺失/只有一条 ⇒ 中止，且一个字节都不写。
