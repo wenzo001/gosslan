@@ -13,6 +13,33 @@
 
 ## [Unreleased]
 
+## [5.15.44] - 2026-10-30
+
+
+### 删掉零消费者的只读诊断命令 `get_topology`（FUN-04，负责人拍板：删而非接线）
+
+`get_topology` 是命令面里唯一的孤儿：算节点数 / 中继数 / 在线态，**只读、无写能力**，而前端
+**0 个调用者**（10-26 那轮就在 `DEAD_COMMANDS` 里挂了账，并注明"接线 or 删掉，二选一"）。
+本批按拍板**删掉**，顺带删掉只剩它一个消费者的两样东西：
+
+- `src-tauri/src/commands/network.rs` 的命令本体、`lib.rs` 的 `generate_handler!` 注册行、
+  `state::TopologyInfo`（只被它用）、`state::relay_circuit_count`（只被它用）；
+  `state::link_is_relay_circuit` **保留** —— `relay.connected` 与 `commands/channel.rs` 还在读它。
+- `src/api/events.test.ts` 的 `DEAD_COMMANDS` 回到**空表**（该表的注释本来就写着"必须一直是空的"）；
+  `docs/ARCHITECTURE-MAP.html` 里那条命令的两处快照同步删掉（改完 `node --check` 过内联 JS）。
+- 三处**引用它的注释**跟着改口径（`state.rs` / `commands/channel.rs` / `file_relay.rs` 模块头 /
+  `mapContract.test.ts` 的举例），避免下一个读代码的人去找一个已经不存在的命令。
+
+**没跑的层**：没有"少了一个命令"的运行时判据可跑 —— 命令面双向对账（注册表 ↔ 前端调用面）
+现读两边都不再出现它，这就是这一批的判据。
+
+
+**真跑过的验证**：`cargo test --lib --features bluetooth` **1321 通过 / 0 失败**（2 ignored）；
+`npm test` **1528 通过 / 0 失败**；`node --test src/api/events.test.ts src/utils/mapContract.test.ts`
+**18/18**（命令面双向对账：注册表与前端调用面两边都不再出现它）；`npm run verify:local` **25 步全绿**；
+架构图改完后检查过内联 JS 语法（1 段，`new Function` 通过）。
+**没跑的层**：没有"少了一个命令"的运行时判据可跑 —— 它的存在与否本来就只在静态对账里体现。
+
 ## [5.15.43] - 2026-10-30
 
 

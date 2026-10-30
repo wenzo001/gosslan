@@ -504,32 +504,3 @@ pub async fn send_test_notification(state: State<'_, Arc<AppState>>) -> Result<S
     .map_err(|e| format!("测试通知被线程池中断: {e}"))?
 }
 
-/// 网络拓扑摘要：节点数、中继数、是否在线。
-///
-/// 这里**不再**返回平均时延：`Peer.rtt_ms` 在生产路径上没有写入点（唯一调用方传 `None`，
-/// 见 ADR-0014 的已知缺口），返回一个恒 `None` 的字段只会让读的人以为链路质量在测。
-#[tauri::command(async)]
-pub fn get_topology(state: State<'_, Arc<AppState>>) -> TopologyInfo {
-    let s = state.inner();
-    let peers = s.peers.lock().unwrap_or_else(|e| e.into_inner());
-    let node_count = peers.len();
-    // 「N 中继」= 当前有几条走公网中继的活跃链路。
-    // ⚠️ 这里以前取的是 `RelayManager::active_sends()`，而它的 `senders` 只有
-    // `register_send` 会写、`register_send` 零调用点 ⇒ **这个数永远是 0**（架构复审 0-A2）。
-    // 本命令是**同步**的而 `links` 是 tokio::Mutex ⇒ try_lock + 抢不到报 0（顶栏数字，
-    // 不值得为它阻塞工作线程）。判据与 `relay.connected` 同源。
-    let relay_count = match s.links.try_lock() {
-        Ok(links) => crate::state::relay_circuit_count(&links),
-        Err(_) => 0,
-    };
-    let online = s
-        .network
-        .lock()
-        .unwrap_or_else(|e| e.into_inner())
-        .is_some();
-    TopologyInfo {
-        node_count,
-        relay_count,
-        online,
-    }
-}

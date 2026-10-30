@@ -372,8 +372,7 @@ function registeredCommands(): string[] {
  * 真要留一条隐形接口，就得在这里写清"为什么不能接界面"，并想清楚谁为它负责。
  */
 const DEAD_COMMANDS: Record<string, string> = {
-  get_topology:
-    "保留为应用内只读诊断接口；前端消费者随 TopologyBar 在 5.0.3 删除，暂无 UI 入口。",
+  // 5.15.44：`get_topology` 按负责人拍板删除（接线 or 删掉，选了删掉）⇒ 这张表回到空。
 };
 
 test("IPC 只能从 src/api 门面走（回归：组件里裸 invoke，其中 6 条命令在 api 上根本没有包装）", () => {

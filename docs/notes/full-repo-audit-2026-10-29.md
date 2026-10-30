@@ -264,7 +264,7 @@ export function isForwardableKind(kind: string): boolean {
 |---|---|---|---|
 | FUN-02 | Medium | 收藏页转发图片同源同因（`FavoritePanel.vue:598` 第二份实现）—— 修 FUN-01 不会自动修它 | `src/components/FavoritePanel.vue:593` |
 | FUN-03 | Medium | BLE 是非默认 Cargo feature，默认构建 `available()` 恒 false 且**界面不区分"硬件不支持"与"本次构建没编进去"**（判据 `ble.feature_compiled` 已存在但只在 DevDiagPanel 用）。发布包正常（CI 与 dist 脚本都带 `--features bluetooth`） | `src-tauri/Cargo.toml`、`NetworkSection.vue` |
-| FUN-04 | Low | `get_topology` 是唯一后端孤儿；**挂账原文是准确的**（保留为只读诊断接口），真正未决的是 10-26 那条「接线 or 删掉」⇒ **待负责人二选一**（§4.0ab） | `src/api/events.test.ts` |
+| FUN-04 | Low | **已关闭（5.15.44）**：负责人拍板**删掉**（不接线）⇒ 命令本体 / 注册行 / `TopologyInfo` / `relay_circuit_count` 全删，`DEAD_COMMANDS` 回到空表、架构图两处快照同步；`link_is_relay_circuit` 保留（`relay.connected` 还在读） | `grep -rn get_topology src src-tauri/src` 现数 0 |
 | FUN-05 | Info | 移动端 `set_unread_badge` 空实现，设计内边界（前端直接 return，不发 IPC） | `src/stores/useChatStore.ts:404` |
 | FUN-06 | Low | 转发逻辑在 ChatWindow / FavoritePanel / MessageItem 三处各写一份，**已经漂移**（FUN-01/02 的根因）；`resendChannel.ts:54` 已有正确的 kind 集合可复用 | 三处 |
 
@@ -1232,7 +1232,7 @@ node --experimental-strip-types -e '
 3. **第 19 行·批 B 剩下的半格** —— 1:1 那一半已在 5.15.31 闭环（不加列、不迁移，走的正是 5.15.22 那扇门）。剩 **B2**：群文件那 6 条 `REASON_*` 转码并写进气泡行，且必须先把「是不是稳定码」与「要不要弹 toast」拆成两件事（`group_file.rs::is_stable_fail_code` 现在一句话兼两职；不拆就会在断链时给每个在途群文件弹一次 toast —— 那个文件自己写明了这是"把可归因做成噪音回归"）。同批一并处理 A2：`handle_share.rs` 的 `reason` 是变量，值来自文件层的中文 `Err("文件完整性校验失败")`（`network/file/receive.rs:1497`、`group_receive.rs:307`，且 `file_tests.rs:890` 把它当契约断言着）⇒ 静态形状判据看不见变量里的中文，要连错误串来源与那条断言一起改。
 4. ~~**DUP 剩余的 2 行**~~ —— **本轮清零**（DUP-07 已于 5.15.39 收口；DUP-15 复核后确认早有棘轮判据 ㊼ 与显式登记的保留理由，§4.0x）。原文：纯重复，收益是"少一份会漂的拷贝"。DUP-03/04 已于 5.15.26 / 5.15.25 收口，DUP-13 已于 5.15.27 收口（§4.0n：现数是两种策略九处，不是审计写的三份），DUP-06 已于 5.15.28 收口（§4.0o），DUP-14 判**不做**。
    （第 12 行 DUP-02 的那半本轮**复核后判不再统一**，理由与三条防复发判据见 §4.0l。）
-5. ~~`lucide-vue-next` 升级评估~~（§4.0ab 已完成，判暂不升级）、~~`get_topology` 孤儿~~（§4.0ab：**待拍板**接线 or 删）、~~TST-09 Windows 三类行为用例~~（§4.0ab 判不做：本机无判据）、剩 **TST-06 真 ENOSPC**、**INV-P18 的 Ed25519 半条**，以及**需要现场日志才能推进的 Windows 渲染层卡死**（另见 `docs/notes/`）。（第 20 行的历史改号本轮**判为不做**，理由与现算证据在 §4.0k，不再列进待办。）
+5. ~~`lucide-vue-next` 升级评估~~（§4.0ab 已完成，判暂不升级）、~~`get_topology` 孤儿~~（5.15.44 已按拍板删除）、~~TST-09 Windows 三类行为用例~~（§4.0ab 判不做：本机无判据）、剩 **TST-06 真 ENOSPC**、**INV-P18 的 Ed25519 半条**，以及**需要现场日志才能推进的 Windows 渲染层卡死**（另见 `docs/notes/`）。（第 20 行的历史改号本轮**判为不做**，理由与现算证据在 §4.0k，不再列进待办。）
 
 ---
 

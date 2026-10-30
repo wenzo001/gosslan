@@ -66,8 +66,7 @@ use crate::network::{self, file};
 use crate::protocol::{GossipKind, Message, MsgKind, ShareEntry};
 use crate::state::{
     AppState, BleRuntimeFacts, Conversation, DeviceInfo, Favorite, Friend, Group, GroupFile,
-    InterfaceInfo, MessageRecord, Peer, PendingRequest, RuntimeSnapshot, TopologyInfo,
-    TransferInfo,
+    InterfaceInfo, MessageRecord, Peer, PendingRequest, RuntimeSnapshot, TransferInfo,
 };
 use crate::storage::cache_cleaner::{self, CachePolicy, CleanupReport};
 use crate::transport::TransportManager;
