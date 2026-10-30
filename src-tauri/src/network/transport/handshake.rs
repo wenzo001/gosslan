@@ -442,7 +442,10 @@ const MAX_PENDING_NICKNAME_CHARS: usize = 64;
 
 /// 这条申请能不能进表（纯函数）：已在表里的**同一个人**永远可以（幂等重发要能更新载荷），
 /// 新条目在满员时拒掉。
-pub(crate) fn pending_friend_request_admitted(already_pending: bool, current_len: usize) -> bool {
+pub(crate) fn pending_friend_request_admitted(
+    already_pending: bool,
+    current_len: usize,
+) -> bool {
     already_pending || current_len < MAX_PENDING_FRIEND_REQUESTS
 }
 
@@ -462,11 +465,7 @@ pub(crate) fn bounded_profile(
         .as_ref()
         .is_some_and(|a| a.len() > MAX_PENDING_AVATAR_BYTES);
     // 丢掉头像而不是整条载荷：昵称/关系本身是有用的，头像只是装饰。
-    (
-        nickname,
-        if dropped_avatar { None } else { avatar },
-        dropped_avatar,
-    )
+    (nickname, if dropped_avatar { None } else { avatar }, dropped_avatar)
 }
 
 /// 把申请载荷夹到有界范围内（纯函数）。返回 (夹好的申请, 是否丢了头像)。
@@ -487,10 +486,7 @@ pub(crate) async fn apply_friend_request(state: &Arc<AppState>, req: PendingRequ
     if avatar_dropped {
         state.logger.warn(
             "friend",
-            format!(
-                "code=FRIEND_REQUEST_AVATAR_DROPPED peer={}（超过上限，已丢弃头像）",
-                req.from
-            ),
+            format!("code=FRIEND_REQUEST_AVATAR_DROPPED peer={}（超过上限，已丢弃头像）", req.from),
         );
     }
     let prior = {
@@ -535,20 +531,14 @@ pub(crate) async fn apply_friend_request(state: &Arc<AppState>, req: PendingRequ
             extra,
             false,
             move || {
-                crate::notifications::on_notification_clicked(
-                    &click_app,
-                    "friend_request",
-                    None,
-                    None,
-                )
+                crate::notifications::on_notification_clicked(&click_app, "friend_request", None, None)
             },
         );
     } else {
         // 重复投递（同一申请被补发）：只留一行便于排查的痕迹，**不通知**。
-        state.logger.info(
-            "friend",
-            format!("重复的好友申请（已忽略通知）peer={}", req.from),
-        );
+        state
+            .logger
+            .info("friend", format!("重复的好友申请（已忽略通知）peer={}", req.from));
     }
 }
 

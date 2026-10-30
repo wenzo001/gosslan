@@ -168,10 +168,7 @@ pub async fn set_app_active(state: State<'_, Arc<AppState>>, active: bool) -> Re
 /// 从后台唤起并聚焦主窗口（冷启动首显 / 点击系统通知 / 消息点击唤起）。
 #[cfg(desktop)]
 #[tauri::command(async)]
-pub async fn focus_window(
-    app: tauri::AppHandle,
-    state: State<'_, Arc<AppState>>,
-) -> Result<(), String> {
+pub async fn focus_window(app: tauri::AppHandle, state: State<'_, Arc<AppState>>) -> Result<(), String> {
     let Some(win) = app.get_webview_window("main") else {
         return Err("主窗口不存在".to_string());
     };
@@ -388,9 +385,8 @@ mod attention_tests {
 #[cfg(desktop)]
 #[tauri::command(async)]
 pub async fn set_unread_badge(app: tauri::AppHandle, count: u32) -> Result<(), String> {
-    let _ =
-        tauri::async_runtime::spawn_blocking(move || crate::tray::set_unread_badge(&app, count))
-            .await;
+    let _ = tauri::async_runtime::spawn_blocking(move || crate::tray::set_unread_badge(&app, count))
+        .await;
     Ok(())
 }
 
@@ -457,14 +453,21 @@ pub async fn notify_desktop(
             }
         });
         extra.insert("action_label".to_string(), label);
-        crate::notifications::show_click_if_enabled(&s, &title, &body, extra, sound, move || {
-            crate::notifications::on_notification_clicked(
-                &click_app,
-                "chat",
-                Some(conv_id),
-                click_msg_id,
-            )
-        })
+        crate::notifications::show_click_if_enabled(
+            &s,
+            &title,
+            &body,
+            extra,
+            sound,
+            move || {
+                crate::notifications::on_notification_clicked(
+                    &click_app,
+                    "chat",
+                    Some(conv_id),
+                    click_msg_id,
+                )
+            },
+        )
     })
     .await
     .map_err(|e| format!("系统通知发送被线程池中断: {e}"))?
@@ -509,3 +512,4 @@ pub async fn send_test_notification(state: State<'_, Arc<AppState>>) -> Result<S
     .await
     .map_err(|e| format!("测试通知被线程池中断: {e}"))?
 }
+

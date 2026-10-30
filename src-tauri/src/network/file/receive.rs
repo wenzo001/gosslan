@@ -1188,14 +1188,19 @@ pub fn fail_taken_receive(state: &AppState, transfer_id: &str, r: &FileReceiver,
     // 那半截文件继续占着本就不够的空间，下一次重试写第一片又 ENOSPC ⇒「一直满、一直失败」。
     // 断链/超时那一档仍然保留（见上面那段），**别把这条一起改回去**：两者语义不同。
     if reason == crate::logging::FAIL_CODE_DISK_FULL {
-        let removed = std::fs::remove_file(&r.tmp_path).is_ok();
+        // 三种结局必须分开说（发版前 review 抓到）：原先 `is_ok()` 把**任何** Err 都写成
+        // "文件已不在，视作已删除" —— 权限/占用（Windows 上句柄未关时真的会撞）会被说成成功，
+        // 而用户看到的还是一块没释放的空间。
+        let outcome = match std::fs::remove_file(&r.tmp_path) {
+            Ok(()) => "已删除 .part".to_string(),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => "文件已不在".to_string(),
+            Err(e) => format!("删除 .part 失败：{e}（这一档会继续占着空间）"),
+        };
         state.logger.error(
             "file",
             format!(
-                "code=FILE_DISK_FULL transfer={transfer_id} peer={} size={} —— 盘满，已{}释放空间（这一档不留续传前缀）",
-                r.peer_id,
-                r.size,
-                if removed { "删除 .part 以" } else { "尝试删除 .part（文件已不在，视作已）" }
+                "code=FILE_DISK_FULL transfer={transfer_id} peer={} size={} —— 盘满，{outcome}（这一档不留续传前缀）",
+                r.peer_id, r.size
             ),
         );
     }

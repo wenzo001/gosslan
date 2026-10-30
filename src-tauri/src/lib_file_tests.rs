@@ -1375,10 +1375,27 @@ fn disk_full_deletes_the_part_and_other_failures_keep_it() {
         body.contains("code=FILE_DISK_FULL"),
         "盘满必须有具名码（日志/排障要能看见）"
     );
-    // 反向对照：这一档的删除必须是**条件**的 —— 无条件删会把断链/超时的续传前缀一起改坏
+    // 反向对照：这一档的删除必须是**条件**的 —— 无条件删会把断链/超时的续传前缀一起改坏。
+    // ⚠️ 旧写法只 grep 一个**不存在**的串（"let _ = …\n let fail_notes"）⇒ 恒真、什么都没守
+    // （发版前 review 抓到）。现在的形状断言：删文件那一句必须在 `if reason == …DISK_FULL {`
+    // 的**块内**，而且整个函数里只出现一次。
+    let cond = "if reason == crate::logging::FAIL_CODE_DISK_FULL {";
+    let at = body.find(cond).expect("盘满分支不见了");
+    let tail = &body[at..];
+    let end = tail.find("\n    }\n").unwrap_or(tail.len());
     assert!(
-        !body.contains("let _ = std::fs::remove_file(&r.tmp_path);\n    let fail_notes"),
-        "不许把删除提到条件外（那等于所有失败档都不留续传前缀）"
+        tail[..end].contains("std::fs::remove_file(&r.tmp_path)"),
+        "删除必须在盘满那一支**里面**（提到条件外 = 所有失败档都不留续传前缀）"
+    );
+    assert_eq!(
+        body.matches("std::fs::remove_file(&r.tmp_path)").count(),
+        1,
+        "整个函数只许删这一次：第二处几乎一定是无条件删"
+    );
+    // 三种结局要分开说（review：`is_ok()` 会把权限/占用说成「文件已不在，视作已删除」）
+    assert!(
+        tail[..end].contains("std::io::ErrorKind::NotFound"),
+        "删除失败要与「文件本来就不在」分开说 —— 否则一块没释放的空间会被记成成功"
     );
     // 群侧那一半仍未做（要先把 reason 传进 fail_taken_group_receive）⇒ 显式登记，别当成已完成
     let group = crate::network::file_src_for_guards();
