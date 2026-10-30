@@ -26,6 +26,7 @@ import {
   checkTextFieldFocusRing,
   checkSelectionContract,
   findNestedThemeRuleIssues,
+  findHandRolledSegmentLoops,
   findTopInsetWithoutBottomInset,
   findFixedOverlayWithoutWindowSafeTop,
   findMessageImageWithoutFetchHint,
@@ -2198,7 +2199,11 @@ test("「有人@我」从输入框到对端、再到气泡的接缝必须齐全�
     //   这三段每一段被改动都不会有编译错误 —— 断掉的形状是"同名两个人又一起亮"，跟 #103 当初同族。
     ["src-tauri/src/commands/window.rs", "build_mention_targets(&content, ids,", "⑧ 发送侧不再算 @ 的落点（同名两人又分不开）"],
     ["src-tauri/src/network/transport/gossip.rs", "mention_targets: mention_targets.as_deref(),", "⑨ 解出的落点没回送给界面"],
-    ["src/components/message/MessageTextBubble.vue", "props.mentionTargets ?? null,", "⑩ 气泡没收下落点 ⇒ 只能退回按昵称猜"],
+    // ⑩ 原来是气泡里那句 `props.mentionTargets ?? null,`（DUP-06 之后切段循环搬进了
+    //   `composables/useMessageSegments`，那句话跟着搬家 ⇒ 单钉气泡那份文件就成了假红）。
+    //   现在拆成两格，链子反而更严：气泡必须把输入交给那个家，而**家里**必须真的把落点喂给 linkify。
+    ["src/components/message/MessageTextBubble.vue", "useMessageSegments(", "⑩ 气泡不再走那个家 ⇒ 落点没交给切段"],
+    ["src/composables/useMessageSegments.ts", "mentionTargets ?? null,", "⑩b 家收了输入却没把落点喂给 linkify ⇒ 同名两人又一起亮"],
     // ↓ #122 第二段（落库）加的两条：落点从"只随本次投递"变成"跟着这一行进库"，
     //   断掉的形状是"重启之后同名两个人又一起亮"——编译期什么都不会说。
     ["src-tauri/src/commands/window.rs", "mention_targets: targets.clone(),", "⑪ 发送侧算出的落点没写进自己那一行（自己发的历史重启后失忆）"],
@@ -5807,4 +5812,61 @@ test("56 :: style.css 的禁用规则只许走 token，不许再写字面 opacit
     }
   }
   assert.deepEqual(hits, ["0.45"], "按回字面值必须被抓到");
+});
+
+// ---------------- ㊽ 两级切段循环只有一个家（DUP-06） ----------------
+
+test("手写的两级切段循环要被抓到，并指准行号", () => {
+  const buggy = `<script setup lang="ts">
+const segments = computed(() => {
+  const out = [];
+  for (const s of splitEmoji(props.text)) {
+    out.push(...linkify(s.value, names));
+  }
+  return out;
+});
+</script>`;
+  const issues = findHandRolledSegmentLoops(buggy);
+  assert.equal(issues.length, 1);
+  assert.equal(issues[0].line, 4, "应精确指到 for 那一行");
+  assert.match(issues[0].message, /useMessageSegments/);
+});
+
+test("改用 useMessageSegments 之后通过", () => {
+  const fixed = `<script setup lang="ts">
+const segments = useMessageSegments(
+  () => props.text,
+  () => props,
+);
+</script>`;
+  assert.deepEqual(findHandRolledSegmentLoops(fixed), []);
+});
+
+test("真实仓里切段循环只在家里，且三个渲染件都接上了那个家", () => {
+  const srcDir = join(import.meta.dirname, "..");
+  const files: string[] = [];
+  const walk = (dir: string): void => {
+    for (const e of readdirSync(dir, { withFileTypes: true })) {
+      const full = join(dir, e.name);
+      if (e.isDirectory()) walk(full);
+      else if (/\.(vue|ts)$/.test(e.name) && !/\.test\.ts$/.test(e.name)) files.push(full);
+    }
+  };
+  walk(srcDir);
+  const rel = (f: string): string => f.slice(srcDir.length + 1).replaceAll("\\", "/");
+  assert.ok(files.length >= 200, `只扫到 ${files.length} 个源文件 ⇒ 遍历器坏了，下面两条都是空集恒绿`);
+  const loopers = files
+    .filter((f) => findHandRolledSegmentLoops(readFileSync(f, "utf8")).length > 0)
+    .map(rel);
+  assert.deepEqual(loopers, ["composables/useMessageSegments.ts"], "切段循环又长出第二份（家被绕过）");
+  for (const c of [
+    "components/message/MentionText.vue",
+    "components/message/MessageTextBubble.vue",
+    "components/message/MessageContentModal.vue",
+  ]) {
+    const src = readFileSync(join(srcDir, c), "utf8");
+    assert.ok(src.includes("useMessageSegments("), `${c} 没接上那个家 ⇒ 家有了没人接，判据等于没守`);
+    // 直接 import 切分原语 = 又打算自己拼一遍；家接上之后这两个 import 都该消失。
+    assert.ok(!/from "@\/utils\/(emoji|linkify)"/.test(src), `${c} 还在自己 import 切分原语`);
+  }
 });

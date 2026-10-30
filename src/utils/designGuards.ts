@@ -2403,3 +2403,27 @@ export function findVHtmlSinks(src: string): { line: number; expr: string }[] {
   return out;
 }
 
+
+// ---------------- ㊽ 消息正文的两级切段循环只许有一个家 ----------------
+
+/**
+ * 找出「自己把 `splitEmoji` 的产物再喂给 `linkify`」的手写循环。
+ *
+ * 为什么钉这一句而不是钉 `splitEmoji(`：切段本身早就单源在 `utils/emoji` + `utils/linkify`，
+ * 会漂的是**把两者拼起来那六行**（DUP-06 之前它在三个渲染件里各抄一份，三份里有一份的
+ * 表情段少带一个 `name` 字段 —— 下一次照抄就照着少的那份抄）。
+ * 家：`composables/useMessageSegments.ts`。
+ */
+export function findHandRolledSegmentLoops(src: string): GuardIssue[] {
+  const out: GuardIssue[] = [];
+  for (const m of src.matchAll(/for\s*\(\s*const\s+s\s+of\s+splitEmoji\s*\(/g)) {
+    out.push({
+      line: lineAt(src, m.index ?? 0),
+      message:
+        "手写的两级切段循环 —— 请改用 `@/composables/useMessageSegments`（或纯函数那一半 " +
+        "`buildMessageSegments`）。切段规则单源在 `utils/emoji` + `utils/linkify`，" +
+        "这里钉的是『把两者拼起来』那几行：抄第三份就会带上第三份的字段差（表情段的 `name`）。",
+    });
+  }
+  return out.sort((a, b) => a.line - b.line);
+}

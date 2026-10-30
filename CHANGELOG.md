@@ -13,6 +13,74 @@
 
 ## [Unreleased]
 
+## [5.15.28] - 2026-10-30
+
+### 消息正文的切段循环收成一个家：`composables/useMessageSegments`（DUP-06）
+
+- **形状**：`MentionText.vue` / `MessageTextBubble.vue` / `MessageContentModal.vue` 各有一份逐字相同的
+  "先按表情 token 切、文本段再交给 `linkify` 切链接与 @提及"循环。两个原语早就单源，
+  **会漂的是把它们拼起来那六行** —— 三份里 `MentionText` 那份的表情段少带一个 `name` 字段，
+  下一次照抄就会照着少的那份抄。
+- **家分两半**：`buildMessageSegments`（纯）+ `useMessageSegments`（`computed` 与两个 `toValue` 的薄包装，
+  沿用本仓 `useMessageFile` / `useMessageDisplay` 的 `MaybeRefOrGetter` 写法）。
+  **渲染那一半刻意不统一**：气泡按当前气泡底色现算 @ 的文字色（不算会掉到 2.94 对比度），
+  弹窗面板按面板底色、任务详情用固定底色的两条全局 class —— 三家共用同一个"算色"函数就是把三种
+  场景压成一种。点链接的副作用也留在组件里。
+- **为什么这段语义本轮只能靠渲染探针 + 形状判据证**：`utils/emoji.ts` 用 `import.meta.glob` 取图集，
+  任何经过它的链在 `node --test` 里都装不起来。我先按"是 `@/` 别名挡路"猜了一次，
+  把 `@/data/emojis` 改成相对路径**实测**：报错从 `Cannot find package '@/data'` 变成
+  `(intermediate value).glob is not a function` ⇒ 真凶是 Vite 专有的 glob，那行改动**整轮还原**
+  （不做没有收益的改动）。
+- **判据**：`designGuards.ts` 新增 `findHandRolledSegmentLoops`（钉 `for (const s of splitEmoji(` 这个形状）
+  ＋ 3 条用例（合成手写循环要点名并指准行号 / 改用家后要绿 / 全仓扫要命中集合恰为那个家，
+  带 ≥200 个源文件的覆盖面下限，并要求三个渲染件**都**调用那个家、**都不**再直接 import 两个原语）。
+  护栏 Case 287 → **288**：把 import 与循环一起注回 `MessageContentModal.vue`（坏态本身是合法源码），
+  红由「切段循环又长出第二份」报出，恢复逐字节一致。
+- **被一条既有判据的锚点顶回来（这是本批最有用的一条）**：那条「有人@我」从输入框到气泡的接缝表里，
+  第 ⑩ 格钉的是气泡文件里的字面句 `props.mentionTargets ?? null,` —— 它随循环搬进了家 ⇒ 假红。
+  没有把锚点改指新家（那样就只剩"家里有"，不再钉"气泡把输入交给了家"），而是**拆成两格**：
+  气泡必须含 `useMessageSegments(` ＋ 家必须含 `mentionTargets ?? null,` ⇒ 这条链比以前更严。
+- ⚠️ **一个新记录的失败形态**：我把两行数组元素误写成 `"},`（应为 `"],`），
+  于是 `designGuards.test.ts` **整册装载失败** —— `npm test` 的总数从 1515 掉到 1276（236 条直接消失），
+  而汇总只打 `fail 1`、失败项名字是**文件路径**而不是用例名。⇒ 读账时"文件级失败"与"单条用例失败"
+  要分开看，**总数掉了先当量具坏了**，不能当成"少跑了一条"。
+
+**真跑过的验证**：`npm test` **1515 通过 / 0 失败**（本批 +3 条判据）；
+`node --test src/utils/designGuards.test.ts` **240/240**；
+`npm run build`（含 `vue-tsc --noEmit` 整仓类型检查）零红；
+渲染凭据 `check-ui-runtime.mjs --only=msgovf` **80/80 绿**（真实 Chromium DOM，恶劣载荷那 11 档就在这个段里）；
+手工变异一次：把 `MessageContentModal.vue` 换回手写循环 ⇒ 判据点名
+`['components/message/MessageContentModal.vue', 'composables/useMessageSegments.ts']` 并红（退 1），
+`cmp` 逐字节还原；护栏 Case 自证 `verify-guards.py --only="两级切段循环"` 退 0。
+
+### 修一条**只有夜间整跑看得见**的护栏用例：注入落点被同批另一处改动弄成编译不过
+
+5.15.26 那次 `verify:local` 全绿、push 的六条腿也全绿，但夜间整跑护栏那条通道红了
+（run 40972871145，sha `7564472a`，`护栏非空转 · cargo 通道（分片 1/3）`）：
+「墙上时钟又长出一个名字」这条 Case 注入后确实失败了，可失败的是
+`error[E0255]: the name now_ms is defined multiple times`，输出里**没有**声明的那句判据关键词。
+
+- **根因**：注入落点 `network/discovery.rs` 被**同一批的另一处改动**加了顶层
+  `use crate::logging::now_ms;`（那是为了让跨域依赖回到判据看得见的地方）。于是"再定义一个同名函数"
+  从"能编译、只有形状会红"变成"编译不过"。⇒ 本批把注入落点换到 `storage/cache_cleaner.rs`：
+  它调用家用限定路径内联写法（本文件没有同名 import），且自己已 `use std::time::UNIX_EPOCH`
+  ⇒ 判据两条断言都会命中，先报的是「墙上时钟的名字多了一个」那句。
+  复跑 `python3 scripts/verify-guards.py --only="墙上时钟又长出一个名字"` 退 0
+  （改坏必红、红由那句关键词报出、恢复逐字节一致）。
+- **值得记住的那一层**：老规矩说"注入串自己得能编译"，但**这个性质不是永久的** ——
+  锚点文件被别的改动动过就会失效。快速层结构上看不见它（本地按 `--skip-guard-sweep` 跳过整跑，
+  push 那条腿也不跑全扫描）⇒ 夜间那条通道是这类缺陷目前唯一的防线。
+  本仓的口径因此落成一句可执行的：**改了某个 `.rs` 的顶层 import，就重新跑一次落在那个数上的 Case**。
+  没有新增判据 —— 这条失败是响亮的（夜间红且点名），再加一层只是重复夜间那条通道。
+
+这条自己的凭据：改前复跑同一条 Case 复现出 `E0255`（退 1、且输出里没有那句关键词），
+换落点后复跑退 0（`✅ 改坏即 FAIL 且红由声明的那条判据报出、恢复后逐字节一致`）；
+本批最终树整跑 `verify:local` **25 步全绿、共 71.5s**（`VERIFY_EXIT=0` 现读自日志）——
+但要说清楚：**这条缺陷快速层结构上抓不到**（本地按 `--skip-guard-sweep` 跳过整跑），
+所以"25 步全绿"不是这条的凭据，夜间那条通道才是。
+
+
+
 ## [5.15.27] - 2026-10-30
 
 ### 修 5.15.26 留下的**本地假绿**：形状判据比的是路径清单，而 Windows 的 `Path::display()` 打 `\`

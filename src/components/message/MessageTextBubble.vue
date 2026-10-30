@@ -5,9 +5,8 @@ import { computed, nextTick, ref, watch, type CSSProperties } from "vue";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { useAppStore } from "@/stores/useAppStore";
 import { PREVIEW_LINES } from "@/utils/previewMetrics";
-import { linkify, type LinkSegment } from "@/utils/linkify";
+import { useMessageSegments } from "@/composables/useMessageSegments";
 import MessageLinkText from "@/components/message/MessageLinkText.vue";
-import { splitEmoji } from "@/utils/emoji";
 import { mentionHighlightColor } from "@/utils/chatStyle";
 import { parseQuote } from "@/utils/quote";
 import { Copy } from "lucide-vue-next";
@@ -96,30 +95,14 @@ const parsed = computed(() => {
   return { quote: q.header, body: q.body, msgId: q.msgId };
 });
 
-/** 渲染段：text / link / mention / emoji，按段渲染（不拼 HTML，天然防 XSS）。 */
-type RenderSegment =
-  | LinkSegment
-  | { kind: "emoji"; value: string; name: string; url: string };
-
-/** 正文先按表情 token 切段，文本段再交给 linkify 切链接/提及。 */
-const segments = computed<RenderSegment[]>(() => {
-  const out: RenderSegment[] = [];
-  for (const s of splitEmoji(parsed.value.body)) {
-    if (s.kind === "emoji") {
-      out.push({ kind: "emoji", value: s.value, name: s.name, url: s.url });
-    } else {
-      out.push(
-        ...linkify(
-          s.value,
-          props.mentionNames ?? [],
-          props.selfMention ?? undefined,
-          props.mentionTargets ?? null,
-        ),
-      );
-    }
-  }
-  return out;
-});
+/**
+ * 渲染段：text / link / mention / emoji，按段渲染（不拼 HTML，天然防 XSS）。
+ * 切段循环单源在 `composables/useMessageSegments`（DUP-06：这三份拷贝曾逐字相同）。
+ */
+const segments = useMessageSegments(
+  () => parsed.value.body,
+  () => props,
+);
 
 /**
  * @提及 高亮文字色（微信式蓝字）：按主题色派生，并以当前气泡的实际底色

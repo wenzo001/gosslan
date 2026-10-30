@@ -30,13 +30,22 @@ CASES: list[Case] = [
         "     收成 `logging::now_ms` 一个家（`db::now_ms` 留作具名别名，因为它承载\u201c落库时间戳\u201d"
         "的说法且 `db::` 在命令体棘轮里有特殊含义）。判据按**形状**扫全仓：定义 `fn now_ms(` 的文件"
         "只许有两个，读 `UNIX_EPOCH` 的只许有一个。\n"
-        "     注入方式：在 `discovery.rs` 里再写一个 `fn now_ms()`（能编译、行为也对，只有形状会红）。",
-        file=TAURI / "src" / "network" / "discovery.rs",
+        "     注入方式：在 `storage/cache_cleaner.rs` 里再写一个 `fn now_ms()`（能编译、行为也对，只有形状会红）。\n"
+        "     ⚠️ 这条注入原先落在 `network/discovery.rs`，5.15.26 那次它开始**编译不过**而不是判据红："
+        "同一批把顶层 `use crate::logging::now_ms;` 加进了那个文件（为了让跨域依赖回到判据看得见的地方），"
+        "于是再定义同名函数就是 `error[E0255]: the name now_ms is defined multiple times` —— "
+        "注入串自己必须能编译，否则这条用例证的是\u201crustc 先反对\u201d，不是\u201c判据会红\u201d。"
+        "本地快速层看不见这一条（`--skip-guard-sweep`），是夜间整跑护栏那条通道报出来的"
+        "（run 40972871145，sha 7564472a：\u201c注入后是红了，但失败输出里没有声明的那句判据关键词\u201d）。"
+        "换到 `cache_cleaner.rs` 的理由：它调用家是限定路径内联写法、本文件没有同名 import，"
+        "而且它自己已经 `use std::time::UNIX_EPOCH`（给临时目录名取 nanos 种子）⇒ 注入后两条断言都会命中，"
+        "先报的是\u201c名字多了一个\u201d那一句。",
+        file=TAURI / "src" / "storage" / "cache_cleaner.rs",
         injections=[(
-            "fn is_rfc1918(ip: &Ipv4Addr) -> bool {",
+            "fn clean_inner(dirs: &[PathBuf], policy: CachePolicy) -> CleanupReport {",
             "fn now_ms() -> i64 {\n"
             '    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis() as i64).unwrap_or(0)\n'
-            "}\n\nfn is_rfc1918(ip: &Ipv4Addr) -> bool {",
+            "}\n\nfn clean_inner(dirs: &[PathBuf], policy: CachePolicy) -> CleanupReport {",
         )],
         cmd=cargo("test", "--lib", "the_wall_clock_has_two_names_max"),
         cwd=TAURI,

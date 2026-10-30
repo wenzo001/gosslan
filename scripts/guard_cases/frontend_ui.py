@@ -1193,4 +1193,40 @@ CASES: list[Case] = [
         expect_fail_hint="前端读了后端不产出的码",
         tags=["frontend", "new-guards", "errors"],
     ),
+    Case(
+        name="消息正文的两级切段循环又长出第二份（绕开 useMessageSegments）",
+        why="DUP-06（5.15.28）收的三个渲染件曾经各抄一遍同一段循环：先 `splitEmoji` 切表情 token，"
+        "文本段再交给 `linkify` 切链接与 @提及。会漂的不是这两个原语（它们早就单源），而是**把它们拼起来"
+        "那几行** —— 三份里有一份的表情段少带一个 `name` 字段，下一份照抄就会照着少的那份抄。"
+        "判据钉的是形状：`for (const s of splitEmoji(` 只许出现在家里。"
+        "本条注入把 `MessageContentModal.vue` 换回手写循环（连 import 一起注回去，所以坏态本身是合法源码），"
+        "必须由那条「真实仓里切段循环只在家里」的判据点名并红 —— 这条 Case 的期望红我在树上真跑过一次，"
+        "报的就是那句「切段循环又长出第二份（家被绕过）」。",
+        file=ROOT / "src" / "components" / "message" / "MessageContentModal.vue",
+        injections=[
+            (
+                'import { useMessageSegments } from "@/composables/useMessageSegments";',
+                'import { useMessageSegments } from "@/composables/useMessageSegments";\n'
+                'import { splitEmoji } from "@/utils/emoji";\n'
+                'import { linkify } from "@/utils/linkify";',
+            ),
+            (
+                'const segments = useMessageSegments(\n'
+                '  () => (props.kind === "text" ? props.content : ""),\n'
+                '  () => props,\n'
+                ');',
+                'const segments = computed(() => {\n'
+                '  const out: unknown[] = [];\n'
+                '  for (const s of splitEmoji(props.content)) {\n'
+                '    out.push(...linkify(s.value));\n'
+                '  }\n'
+                '  return out;\n'
+                '});',
+            ),
+        ],
+        cmd=node_test("src/utils/designGuards.test.ts"),
+        cwd=ROOT,
+        expect_fail_hint="切段循环又长出第二份",
+        tags=["frontend", "render", "new-guards"],
+    ),
 ]

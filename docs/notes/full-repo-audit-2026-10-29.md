@@ -566,6 +566,19 @@ node --experimental-strip-types -e '
   （新拷贝、"别名自己读钟"都要认得出，"调用家"不许误判）。遍历器与 §4.0k 的 hex 判据**共用同一个**
   （`logging::production_rs_files`），不另抄第四份。
 - **护栏 Case** 285 → **286**（往 `discovery.rs` 注入一个 `fn now_ms()` ⇒ 判据点名三个文件并红，恢复逐字节一致）。
+  - ⚠️ **这条 Case 在 5.15.26 当场是绿的，夜间整跑却红了**（run 40972871145，sha `7564472a`，
+    `护栏非空转 · cargo 通道（分片 1/3）`）：注入后确实红，但红的是
+    `error[E0255]: the name now_ms is defined multiple times`，输出里**没有**声明的那句判据关键词。
+    根因是**同一批的另一处改动改了注入落点这个文件的编译上下文** —— 为了让跨域依赖回到判据看得见的地方，
+    我把顶层 `use crate::logging::now_ms;` 加进了 `discovery.rs`，于是"再定义一个同名函数"
+    从"能编译、只有形状会红"变成"根本编译不过"。⇒ 5.15.28 把注入落点换到 `storage/cache_cleaner.rs`
+    （它调家用的是限定路径内联写法、本文件没有同名 import，且自己已 `use std::time::UNIX_EPOCH`
+    ⇒ 两条断言都命中，先报「名字多了一个」那句）。复跑 `--only="墙上时钟又长出一个名字"` 退 0。
+  - **这条的教训不是"注入串要能编译"（那条早已在册）**，而是：**"能编译"不是注入串的永久性质** ——
+    锚点文件被别的改动动过（这里是被加了同名 import）就会失效，而快速层结构上看不见它
+    （本地 `verify:local` 按 `--skip-guard-sweep` 跳过整跑、push 那条腿也不跑全扫描）。
+    所以：**动过某个 `.rs` 的顶层 import 时，落在它上面的 Case 必须重新跑一次**，
+    而夜间那条通道是这类"只有整跑才看得见"的缺陷的唯一现存防线。
 - **本批自己撞掉过一条护栏的锚点 —— 第 13 步当场抓住**：`panic 站点棘轮` 那条注入用例原先把 `panic!`
   注进 `watchdog.rs` 的 `now_ms` 开头，而这一批删的正是那个只做转发的包装 ⇒ `verify:local` 第 13 步报
   「注入锚点在 `watchdog.rs` 及其 0 个 include! 子模块里**都找不到**」并 fail-fast（后面 12 步、含全部编译与
@@ -657,6 +670,41 @@ node --experimental-strip-types -e '
   护栏 Case 286 → **287**（`verify-guards.py --only="计数型容量闸"` 退 0；条数由判据 E 现算，
   文档里那一格是它报出来的，不是我抄的）。
 
+### 4.0o DUP-06 三个渲染件的切段循环收成一个家，顺带被一条**既有判据的锚点**顶回来
+
+- **形状**：`MentionText.vue` / `MessageTextBubble.vue` / `MessageContentModal.vue` 各有一份
+  逐字相同的"先 `splitEmoji` 切表情 token、文本段再交给 `linkify`"循环。两个原语早就单源，
+  **会漂的是拼起来那六行** —— 三份里 `MentionText` 那一份的表情段少带 `name` 字段
+  （⇒ 下一次照抄会照着少的那份抄）。
+- **家**：`src/composables/useMessageSegments.ts` —— `buildMessageSegments`（纯的一半）
+  + `useMessageSegments`（`computed` + 两个 `toValue` 的薄包装，写法沿用本仓
+  `useMessageFile` / `useMessageDisplay` 的 `MaybeRefOrGetter` 口径）。
+  颜色/对比度/点链接的副作用**留在渲染件**：气泡按当前底色现算 @ 文字色，任务详情用固定底色
+  那两条全局 class —— 收进家就会把两种做法强行统一成一种（这是本仓判过的"DUP 里不能统一的那类"）。
+- **为什么这段语义只能靠渲染探针证**：`utils/emoji.ts` 用 `import.meta.glob("../assets/emojis/*")`
+  取图集 ⇒ 任何经过它的链在 `node --test` 里都装不起来。我先按"别名不认"猜了一次，
+  把 `@/data/emojis` 改成相对路径**实测过**（`Cannot find package '@/data'` 变成了
+  `(intermediate value).glob is not a function`）—— 真凶是 Vite 专有的 glob，不是别名，
+  于是**那行改动整轮还原**（不改没有收益的东西）。最终：行为由 `msgovf` 渲染段证，
+  结构由 `designGuards` 的形状判据证。
+- **判据**：`designGuards.ts` 新增 `findHandRolledSegmentLoops`（钉 `for (const s of splitEmoji(` 这个形状），
+  配 3 条用例：合成手写循环要点名并指准行号 / 改用家之后要绿 / 全仓扫（≥200 个源文件下限）
+  要求命中集合恰为 `{composables/useMessageSegments.ts}`，且三个渲染件必须
+  ① 调用 `useMessageSegments(`（家有了要有人接）② 不再直接 import 那两个原语。
+  护栏 Case 287 → **288**（两处注入：把 import 与循环一起注回 `MessageContentModal.vue` ⇒
+  坏态本身是合法源码；期望红由「切段循环又长出第二份」报出，恢复逐字节一致）。
+  渲染凭据：`check-ui-runtime.mjs --only=msgovf` **80/80 绿**（真实 Chromium DOM）。
+- ⚠️ **本批改到一条既有判据的锚点，它把我顶回来了**：那条「有人@我」从输入框到气泡的接缝表里，
+  第 ⑩ 格钉的是气泡文件里的字面句 `props.mentionTargets ?? null,` —— 那句话随循环搬进了家 ⇒ 假红。
+  修法**不是**把锚点指到新家（那样只钉住"家里有"，不钉"气泡把输入交给了家"），
+  而是把那一格**拆成两格**：`MessageTextBubble.vue` 必须含 `useMessageSegments(` ＋
+  `useMessageSegments.ts` 必须含 `mentionTargets ?? null,` ⇒ 链子比原来更严。
+- ⚠️ **一个新的失败形态，值得记住**：我把两行数组元素误写成以 `"},` 收尾（该是 `"],`），
+  于是 `designGuards.test.ts` **整册装载失败** —— `npm test` 的总数从 1515 掉到 1276（236 条消失），
+  而汇总只打一句 `fail 1`、失败项名字是文件路径而不是用例名。
+  ⇒ 读数时"文件级失败"与"单条用例失败"必须分开看，**总数掉了就是量具坏了**，
+  不能当成"少跑了一条"。（本次是靠总数对不上才发现的，不是靠那句 fail 1。）
+
 ### 4.1 已核查且未发现问题的稳定性面
 
 - **锁顺序**：全仓无 `peers↔db` 嵌套；`file_receivers→db` 顺序成立。
@@ -744,7 +792,7 @@ node --experimental-strip-types -e '
 | DUP-03 | ~~Medium~~ **已修（5.15.26）** | 墙上时钟 `fn now_ms()` 现数 **9 处定义**，全部读同一个 `SystemTime − UNIX_EPOCH`，彼此唯一差别是兜底写法（`unwrap_or(0)` vs `unwrap_or_default()`）—— 审计与我自己都怀疑过"BLE 那几份可能刻意用单调钟"，**逐处读完否证**：三处 BLE 全是墙上钟，注释还写着"与 macOS 侧同一套回收语义"。收成 `logging::now_ms` 一个家，`db::now_ms` 留作具名别名（理由见 §4.0m）。对照表在 §4.0m |
 | DUP-04 | ~~Medium~~ **已修（5.15.25）** | 重复工具 | 字节→小写 hex 的表达式散在生产码与测试里：**现数 20 行、11 个文件（其中 9 个是生产码文件）**，另有三个整份助手（`device::hex`、`relay_seal::channel_hex`、`commands/relay` 的探测串）—— 审计原写「8 份」偏少。收成 `crypto::hex_lower` / `sha256_hex` 一个家。 | `src-tauri/src/crypto.rs`（唯一的家）；复跑 `grep -rn ":02x" src-tauri/src` 改后只剩 `crypto.rs` 两处 |
 | DUP-05 | Medium | 重复组件 | **已修（5.15.16，见 §4.0g）**：`LogViewer` 两个外壳各抄一份逐字相同的虚拟行模板（8 个 `v-html` 落点）；矩阵误以为"两条外壳"是迁移前的问题 —— 虚拟化迁了，两份拷贝还在 | `src/components/LogRows.vue`（唯一行模板） |
-| DUP-06 | Medium | 重复组件 | 「表情切段 + 链接/提及切段 + 逐段渲染」3 份同形实现 | `src/components/message/*` |
+| DUP-06 | ~~Medium~~ **已修（5.15.28，见 §4.0o）** | 重复组件 | 「表情切段 + 链接/提及切段」的**拼装循环** 3 份同形（两个原语 `utils/emoji` + `utils/linkify` 早就单源，会漂的是拼起来那六行；三份里有一份的表情段少带 `name`）⇒ 收成 `composables/useMessageSegments`；渲染那半（颜色/对比度/副作用）刻意**不**统一 | `src/composables/useMessageSegments.ts`（唯一的家） |
 | DUP-07 | Low | 重复逻辑 | @提及的「16% 透明底」配方散在 2 处 + 一个未被复用的第三种配方 | `src/style.css` 等 |
 | DUP-08 | Low | 重复组件 | **已修（5.15.20，见 §4.0i）**：头像渲染 13 个副本各自手写 `gosslan-avatar-box` + `gosslan-avatar-emoji`，圆角漂成 3 种；顺带修掉 `RemindAudienceDialog` 那一处（喂了 `SelfAvatar` 没有的 prop ⇒ 那一列没有头像） | `src/components/ui/AvatarBox.vue`（唯一行像） |
 | DUP-09 | **已加对账（§4.0a）** | 已读推进的排除清单 TS 一份、Rust 一份 —— 今天由 `src/utils/messageKinds.test.ts` 的「跨语言契约：已读推进的排除清单两侧逐项一致（DUP-09）」逐项比；变异（TS 去掉 `partial_cancelled`）⇒ 红 |
@@ -811,7 +859,7 @@ node --experimental-strip-types -e '
 >
 > 现在把它改成**唯一的状态表**：`§1/§2/§3/§6/§7` 各节记的是**审计当时**的发现，今天的状态以本表为准。
 > ⚠️ 诚实边界：本表是**人工对账 + 每行挂复跑命令**，不是机器判据 —— 没有任何脚本断言"这张表与代码一致"
-> （能做这种断言的只有逐行的复跑命令本身）。表里没写的 ID 见 §4.0a～§4.0n 的复核结论。
+> （能做这种断言的只有逐行的复跑命令本身）。表里没写的 ID 见 §4.0a～§4.0o 的复核结论。
 
 | 序 | ID | 今天的状态 | 凭据 / 复跑 |
 |---|---|---|---|
@@ -829,7 +877,7 @@ node --experimental-strip-types -e '
 | 11 | SEC-02 | 上限已做（5.15.14）+ 淘汰认身份（5.15.19，§4.0h）；**announce 限流判不修** | 负结论留证：无界增长的成因是"条数没上限"而不是速率，`upsert_peer` 每 5s 周期最多一次 |
 | 12 | DUP-02 | 通道判据与越权闸两半**已落地**（5.15.9 / 5.15.15）；剩下那半**复核后判不再统一**（§4.0l） | 原话「剩三套 toast 文案未统一」不准确：那是四件不同的事实。改判据钉住"它们是四件事"：`src/utils/mediaAvailability.test.ts` 三条（特征词 / 收藏那句的「副本」必须由 `std::fs::copy` 兑现 / 引用面不跨界），前两条各做过注入自证 |
 | 13 | DUP-09～DUP-12 | **09 与 12 已加对账、11 已被覆盖、10 判不另加**（§4.0a） | 那两条对账用例就住在一个文件里，标题自带编号：`src/utils/messageKinds.test.ts` 的「跨语言契约：已读推进的排除清单两侧逐项一致（DUP-09）」与「…会话预览的固定文案两侧一致（DUP-12）」；复跑 `node --test src/utils/messageKinds.test.ts`。⚠️ 注：§6.3 那四行仍写着"无机器对账"，以本表为准 |
-| 14 | DUP-06/07/15 | **未做（3 个编号，现数）**；DUP-03（5.15.26）、DUP-04（5.15.25）、DUP-05（5.15.16）、DUP-08（5.15.20）、DUP-13（5.15.27，§4.0n）已收口；**DUP-14 本轮判「不做」** | 剩下：表情/链接/提及切段 **3 份同形**（DUP-06，`MentionText.vue:40` / `MessageTextBubble.vue:107` / `MessageContentModal.vue:37`，切段函数本身已是一家、重复的是拼 `segments` 那段循环）、@提及 16% 淡底配方 **2 处各写一遍**（DUP-07，`MessageTextBubble.vue:154` / `MessageContentModal.vue:64`；`style.css:1308` 是被讨论但没复用的第三种）、`MobilePageFrame` 的 overlay 手抄**至少 2 处**（DUP-15，`BaseModal.vue:113` / `FavoritePanel.vue:827` 两处注释都自称"与 MobilePageFrame 一致"，审计原写 1 份）。**DUP-14 判不做的理由**：`MessageItem.vue` 里 `copyTextWithToast` 早就是右键菜单与移动端面板共用的一份，重复的只是菜单 markup ⇒ 收它是把模板搬个家，收益最低 |
+| 14 | DUP-07/15 | **未做（2 个编号，现数）**；DUP-06（5.15.28，§4.0o）已收口；DUP-03（5.15.26）、DUP-04（5.15.25）、DUP-05（5.15.16）、DUP-08（5.15.20）、DUP-13（5.15.27，§4.0n）已收口；**DUP-14 本轮判「不做」** | @提及 16% 淡底配方 **2 处各写一遍**（DUP-07，`MessageTextBubble.vue:154` / `MessageContentModal.vue:64`；`style.css:1308` 是被讨论但没复用的第三种）、`MobilePageFrame` 的 overlay 手抄**至少 2 处**（DUP-15，`BaseModal.vue:113` / `FavoritePanel.vue:827` 两处注释都自称"与 MobilePageFrame 一致"，审计原写 1 份）。**DUP-14 判不做的理由**：`MessageItem.vue` 里 `copyTextWithToast` 早就是右键菜单与移动端面板共用的一份，重复的只是菜单 markup ⇒ 收它是把模板搬个家，收益最低 |
 | 15 | SEC-04/05/06/08/12 | **全部已修**（SEC-04 5.15.14 + 5.15.17 留痕；SEC-05/06/08/12 见 5.15.13） | SEC-08 那条是入站帧聚合驻留的**全局限额 1 GiB**（审计原估 8 GiB 上界） |
 | 15b | SEC-07 / SEC-09 / SEC-10 / SEC-11 | **不成立 / 已撤回 / 判不修 / 判不修** | §4.0 与 §4.0b 逐条给了理由，负结论也是一等结论 |
 | 16 | 替换矩阵勘误 | **已做**（5.15.13：新增 §0 勘误 + 一条「每个生产依赖都必须在矩阵里登记过」的新判据，带变异正控） | 文件真路径是 `docs/architecture/open-source-replacement-matrix.md`（⚠️ 本表原来只写裸文件名，害我照着它写了一条指不到文件的复跑命令）；复跑 `grep -n "勘误" docs/architecture/open-source-replacement-matrix.md` |
@@ -843,7 +891,7 @@ node --experimental-strip-types -e '
 1. **TST-02**（唯一还活着的 P1）—— 前置是给 `useChatStore` 做依赖注入，属独立重构，别塞进修复批。
 2. **INV-P18 的 Ed25519 那半** —— 前置是"签名能力"抽象。
 3. **第 19 行：文件气泡失败原因落库** —— 前置是给那一族自由文本配码。
-4. **DUP 剩余的 3 行**（第 14 行：DUP-06/07/15，现数 3 个编号）—— 纯重复，收益是"少一份会漂的拷贝"。DUP-03/04 已于 5.15.26 / 5.15.25 收口，DUP-13 已于 5.15.27 收口（§4.0n：现数是两种策略九处，不是审计写的三份），DUP-14 本轮判**不做**。
+4. **DUP 剩余的 2 行**（第 14 行：DUP-07/15，现数 2 个编号）—— 纯重复，收益是"少一份会漂的拷贝"。DUP-03/04 已于 5.15.26 / 5.15.25 收口，DUP-13 已于 5.15.27 收口（§4.0n：现数是两种策略九处，不是审计写的三份），DUP-06 已于 5.15.28 收口（§4.0o），DUP-14 判**不做**。
    （第 12 行 DUP-02 的那半本轮**复核后判不再统一**，理由与三条防复发判据见 §4.0l。）
 5. **`lucide-vue-next` 升级评估**、**`get_topology` 孤儿**（FUN-04）、**TST-06 真 ENOSPC**、**TST-09 Windows 三类行为用例**，以及**需要现场日志才能推进的 Windows 渲染层卡死**（另见 `docs/notes/`）。（第 20 行的历史改号本轮**判为不做**，理由与现算证据在 §4.0k，不再列进待办。）
 
