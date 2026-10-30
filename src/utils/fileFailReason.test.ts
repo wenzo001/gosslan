@@ -171,7 +171,7 @@ test("前后端失败码逐条对账（后端加码必须同步前端表）", ()
  * 这条判据守的是"别换回去、也别往别处加新的"。
  *
  * 判据是形状：`FileFailedInfo` 的构造点里 `reason:` 若是**字面量**，必须是稳定码形状
- * （大写/数字/下划线，与后端 `group_file.rs::is_stable_fail_code` 同一个谓词）；
+ * （大写/数字/下划线 —— 后端那个同名谓词已在 5.15.32 拆成显式名单，这里只借用它的形状口径）；
  * 变量与 `FAIL_CODE_*` 常量引用不在静态可判范围内，因此不在禁止之列。
  */
 function findProseFailReasons(rustSrc: string): string[] {
