@@ -1125,7 +1125,7 @@ node --experimental-strip-types -e '
 | B2-F1 | 盘满只报「失败」，且刻意保留 `.part` ⇒ 盘一直满、一直重试 | **1:1 已修（5.15.51，§4.0aj）**：盘满单独一格删 `.part` + 具名码 + 判据；**群侧未做**（要先把 reason 传进 `fail_taken_group_receive`，已在判据里显式登记） |
 | B3-F3 | 读失败折叠成空 + 紧接着写回整份列表 | **已修（5.15.49，§4.0ah）**：外链 6 + 跨子网 3 处改用 `get_setting_checked`；根因（`get_setting` 返回 Option）写进它的文档 |
 | B4-F1 | 托着承诺的写库结果被 `.ok()` 丢弃，无棘轮 | **已到行**：`.ok();` 现读 96 处（commands/network/db） |
-| B4-F3 | 通知从不查系统权限，且失败被 `let _ =` 丢弃 | **已到行**：`watchdog.rs:115`、`handshake.rs:384/524` |
+| B4-F3 | 通知从不查系统权限，且失败被 `let _ =` 丢弃 | **已修（5.15.52，§4.0ak）**：两个入口在发之前过权限闸、跳过/失败两行都配码、测试按钮也查；桌面恒放行（插件对桌面恒 `Granted`，读源码确认） |
 | B1-F4 | 设置落库失败只 `catch { /* 忽略 */ }`，不上屏不留痕 | **已到行**：`useAppStore.ts:551` |
 | B1-F3 | 「安装相位不可取消」靠 2 处手抄字面量 + 一条只查文本的断言 | **已到行**：`updater.rs:361/507` |
 | TST-08 | 「重启后 device_id 不再派生」这条核心性质没有以自己名字存在的用例 | 子代理盘出（设备侧 4 条用例全在生成侧）；未逐行复核 |
@@ -1175,6 +1175,29 @@ STB-04 半条（非好友分支广播后直接 return，无撤销登记）、STB
   判据里显式登记了这件事（`grep GFILE_DISK_FULL` 应为 0），免得下次被当成已完成。
 - ⚠️ 审计原稿还建议给 `FileJobEnd` 加 `DiskFull` 变体 —— **本批判不需要**：接收侧没有气泡行，
   `FileJobEnd` 是**发送侧**的终态，盘满不是发送侧能发生的事。加了就是给一条不存在的路径造档位。
+
+### 4.0ak B4-F3（5.15.52）：通知发之前先问系统权限，失败行配码
+
+先纠正原稿的一处措辞：三处 `let _ =` **并不是**"失败连日志都没有" —— `show_if_enabled` /
+`show_click_if_enabled` 内部已经 `log_result` 过（成功 info、失败 warn）。真正没有日志的是
+**权限被拒**那一格：Android 13+ 的 `NotificationManager` 与 macOS 的 NSUserNotificationCenter
+都会「成功」地什么都不发 ⇒ 日志里留一条假的 `已发送系统通知`。所以这一批修的是**判据**，不是日志管道。
+
+- `permission_verdict(Result<PermissionState, String>) -> Option<String>`：纯函数，四格全表 ——
+  只有 `Granted` 放行；`Denied`/`Prompt`/`PromptWithRationale` 都挡，且原因里带 OS 原值
+  （`denied` 与 `prompt` 的修法不同）；查询失败（JNI 断）也挡并原样带出错误。
+- `permission_blocked`：移动端问插件 `permission_state()`；**桌面恒 `None`** ——
+  读 `tauri-plugin-notification 2.4.0` 的 `desktop.rs` 确认它对桌面恒返回 `Granted`，
+  加调用只是空壳（这一条由判据钉住桌面分支必须是纯 `None`）。
+- 两个入口都在 `log_result` **之前**过闸；跳过的日志带 `code=NOTIFY_PERMISSION_DENIED`，
+  发送失败的日志补 `code=NOTIFY_SEND_FAILED`。
+- 设置页「发送测试通知」也查权限并回失败：它是唯一能让用户当场看到原因的地方。
+  它仍**绕过总开关**（用户显式要试），这一点没变。
+- **不做**：后台自动弹系统权限对话框。那需要 Activity，而且本仓既有口径是
+  「在用户点开关的上下文里申请」（`useAppStore::ensureNotifyPermission`）——
+  前端那条链本来就在每次通知批次前 request，后端只负责"没许可就别假装发了"。
+- Android 腿实测：`bash scripts/check-mobile.sh --bluetooth` **两档都 PASS（0 warning）** ——
+  这是移动端 cfg 块唯一的编译证据（桌面构建把整块 cfg 掉）。
 
 ### 4.1 已核查且未发现问题的稳定性面
 
@@ -1330,7 +1353,7 @@ STB-04 半条（非好友分支广播后直接 return，无撤销登记）、STB
 >
 > 现在把它改成**唯一的状态表**：`§1/§2/§3/§6/§7` 各节记的是**审计当时**的发现，今天的状态以本表为准。
 > ⚠️ 诚实边界：本表是**人工对账 + 每行挂复跑命令**，不是机器判据 —— 没有任何脚本断言"这张表与代码一致"
-> （能做这种断言的只有逐行的复跑命令本身）。表里没写的 ID 见 §4.0a～§4.0aj 的复核结论。
+> （能做这种断言的只有逐行的复跑命令本身）。表里没写的 ID 见 §4.0a～§4.0ak 的复核结论。
 
 | 序 | ID | 今天的状态 | 凭据 / 复跑 |
 |---|---|---|---|

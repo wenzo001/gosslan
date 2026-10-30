@@ -13,6 +13,32 @@
 
 ## [Unreleased]
 
+## [5.15.52] - 2026-10-30
+
+### 系统通知发之前先问权限（B4-F3）：收不到时日志不再写"已发送"
+
+Android 13+ 的通知权限没授予时，系统 **不报错、就是不发**；macOS 的 NSUserNotificationCenter 同样静默丢。
+于是「用户说收不到通知」时，我们能查到的唯一线索是一条假的 `已发送系统通知`。
+
+- 两条后端入口（`show_if_enabled` / `show_click_if_enabled`，好友申请、好友通过、界面无响应走它们）
+  现在先过一次**权限闸**：没授权就跳过，并写 `code=NOTIFY_PERMISSION_DENIED 跳过系统通知：…（denied / prompt）`——
+  把 OS 原值带出来，因为「问过被拒」和「从没问过」的修法不同。
+- 发送失败那一行补上 `code=NOTIFY_SEND_FAILED`（成功行不动）。
+- 设置页「发送测试通知」**也查权限**：没授权时它直接回失败并给出平台排障说明，
+  而不是回一句「已发送」——它是唯一能让用户当场看到原因的地方。
+- 桌面端**行为不变**：插件对桌面的 `permission_state()` 恒返回 `Granted`（读 `desktop.rs` 源码确认），
+  所以那一支是纯 `None`，不加平台调用。
+- 三个 `let _ =` 调用点补注释：丢的是返回值，不是失败——跳过/失败都在 `notifications` 里带码落日志。
+- 判据：① 真值表 `permission_verdict_only_lets_granted_through`（只有 `Granted` 放行；
+  `Denied`/`Prompt`/`PromptWithRationale` 都被挡且原因里带 OS 原值；查询失败也被挡）；
+  ② 接线判据 `every_notification_entry_point_checks_os_permission_before_sending`
+  （两个入口都必须在 `log_result` **之前**过闸、闸与失败行都带码、桌面分支必须是纯 `None`、
+  测试按钮必须调 `permission_blocked`）。**没做**：后台自动弹系统权限对话框——
+  那需要 Activity，且本仓的既有口径是"在用户点开关的上下文里申请"，由前端 `ensureNotifyPermission` 负责。
+
+**真跑过的验证**：`cargo test --lib --features bluetooth` 见下；两个外部变异各点名红后 `cmp` 逐字节还原。
+**没跑/没做的**：Android 真机上"权限被拒 ⇒ 日志出现该码"的端到端（要真机装包手动拒绝一次）。
+
 ## [5.15.51] - 2026-10-30
 
 
