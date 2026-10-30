@@ -1308,3 +1308,39 @@ fn receiver_lock_holds_only_one_chunk_worth_of_work() {
     let gutted = format!("{block}\n    r.file.sync_all().unwrap();");
     assert!(WHOLE_FILE.iter().any(|w| gutted.contains(w)));
 }
+
+/// **B2-F1 的例外只有一处**：盘满时**删除 `.part`**，其余失败档继续保留（续传前缀）。
+///
+/// 为什么值得单独钉：`fail_receive` 那段注释明写"不要删 `.part`，它是续传前缀"，
+/// 而盘满这一档的后果正好相反 —— 半截文件把本就不够的盘继续占着，重试又 ENOSPC
+/// ⇒「一直满、一直失败」，用户只能手动取消。两者语义不同，**结构上分开写**才不会
+/// 被下一个人当成 bug 改回去（或者把其它档一起改坏）。
+#[test]
+fn disk_full_deletes_the_part_and_other_failures_keep_it() {
+    let file = crate::network::file_src_for_guards();
+    let body = rust_fn_body(&file, "pub fn fail_taken_receive(");
+    assert!(body.len() > 300, "没取到 fail_taken_receive ⇒ 锚点写法变了");
+    assert!(
+        body.contains("reason == crate::logging::FAIL_CODE_DISK_FULL"),
+        "盘满例外不见了 ⇒ 那一档又会保留 .part（盘一直满、一直失败）"
+    );
+    assert!(
+        body.contains("std::fs::remove_file(&r.tmp_path)"),
+        "盘满这一档必须真的删 .part"
+    );
+    assert!(
+        body.contains("code=FILE_DISK_FULL"),
+        "盘满必须有具名码（日志/排障要能看见）"
+    );
+    // 反向对照：这一档的删除必须是**条件**的 —— 无条件删会把断链/超时的续传前缀一起改坏
+    assert!(
+        !body.contains("let _ = std::fs::remove_file(&r.tmp_path);\n    let fail_notes"),
+        "不许把删除提到条件外（那等于所有失败档都不留续传前缀）"
+    );
+    // 群侧那一半仍未做（要先把 reason 传进 fail_taken_group_receive）⇒ 显式登记，别当成已完成
+    let group = crate::network::file_src_for_guards();
+    assert!(
+        !group.contains("code=GFILE_DISK_FULL"),
+        "群侧若已实现盘满例外，请把这条登记删掉并补它自己的判据"
+    );
+}

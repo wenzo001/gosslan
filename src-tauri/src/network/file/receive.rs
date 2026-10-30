@@ -1183,6 +1183,22 @@ pub fn take_stalled_receive(state: &AppState, now: i64) -> Option<(String, FileR
 pub fn fail_taken_receive(state: &AppState, transfer_id: &str, r: &FileReceiver, reason: &str) {
     // **保留 .part**（不删）：这是断点续传的前缀。只有"确定是永久失败"（校验不符）
     // 才删；超时/断链属于可恢复。陈旧 .part 由 resume_receive 的 TTL 与后续清理收割。
+    //
+    // ★ 盘满是唯一的例外（B2-F1，5.15.51）：这一档保留 `.part` 的后果**正好相反** ——
+    // 那半截文件继续占着本就不够的空间，下一次重试写第一片又 ENOSPC ⇒「一直满、一直失败」。
+    // 断链/超时那一档仍然保留（见上面那段），**别把这条一起改回去**：两者语义不同。
+    if reason == crate::logging::FAIL_CODE_DISK_FULL {
+        let removed = std::fs::remove_file(&r.tmp_path).is_ok();
+        state.logger.error(
+            "file",
+            format!(
+                "code=FILE_DISK_FULL transfer={transfer_id} peer={} size={} —— 盘满，已{}释放空间（这一档不留续传前缀）",
+                r.peer_id,
+                r.size,
+                if removed { "删除 .part 以" } else { "尝试删除 .part（文件已不在，视作已）" }
+            ),
+        );
+    }
     let fail_notes = {
         let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
         let mut notes: Vec<String> = Vec::new();
