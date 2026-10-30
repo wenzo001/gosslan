@@ -485,8 +485,24 @@ async fn handle_gossip(state: &Arc<AppState>, peer_id: &str, env: GossipEnvelope
                 sender_is_me,
                 &env.sender_id,
                 || {
+                    // 授权按**失败关闭**（读不到就当作"不是好友"，不替它转发），但必须留痕：
+                    // 一次库抖动在这条路径上表现为"中继莫名其妙不走"，界面上查不出来
+                    // （审计 STB-04 同族：权限判定不许用把读失败折成 None 的读法）。
                     let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
-                    db::get_friend(&dbc, &env.sender_id).is_some()
+                    match db::get_friend_checked(&dbc, &env.sender_id) {
+                        Ok(row) => row.is_some(),
+                        Err(e) => {
+                            state.logger.warn(
+                                "gossip",
+                                format!(
+                                    "code=GOSSIP_RELAY_AUTH_READ_FAILED sender={} err={e} \
+                                     —— 本次不替它转发（授权失败关闭）",
+                                    env.sender_id
+                                ),
+                            );
+                            false
+                        }
+                    }
                 },
             ) =>
         {
@@ -903,9 +919,30 @@ async fn handle_gossip(state: &Arc<AppState>, peer_id: &str, env: GossipEnvelope
                 }
                 // GossipKind::Chat：好友关系检查（非好友不落库、不通知、通知发送方）
                 if env.kind == GossipKind::Chat {
-                    let is_friend = {
+                    // ⚠️ 用 `get_friend_checked` 而不是 `get_friend`（审计 STB-04 半格）：
+                    // 后者把读失败折成 `None`，而这里一次读抖动就会被读成"不是好友" ⇒
+                    // 拒收 + return，可这条消息的 msg_id **已经进过去重表**：之后每一次补发
+                    // 都被判 Duplicate，**永久进不来**（直到进程重启）。
+                    let friend_lookup = {
                         let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
-                        db::get_friend(&dbc, &env.sender_id).is_some()
+                        db::get_friend_checked(&dbc, &env.sender_id)
+                    };
+                    let is_friend = match friend_lookup {
+                        Ok(row) => row.is_some(),
+                        Err(e) => {
+                            // 读到错 ≠ 不是好友：撤销去重让补发能重入（库恢复后就能消费），
+                            // 也**不**给对端发"被拦住"（那会把一次本地读失败说成关系问题）。
+                            allow_message_retry(state, &env.message_id, "friend_read_failed");
+                            state.logger.warn(
+                                "gossip",
+                                format!(
+                                    "code=GOSSIP_FRIEND_READ_FAILED msg={} sender={} err={e} \
+                                     —— 已放行补发重入（不按非好友处理）",
+                                    env.message_id, env.sender_id
+                                ),
+                            );
+                            return;
+                        }
                     };
                     if !is_friend {
                         // 通过 Gossip 广播拒绝通知（多跳场景下也能回到原始发送方）

@@ -740,3 +740,39 @@ fn both_dm_paths_share_one_notification_kind_predicate() {
         "`DM_LEGACY_KINDS` 的清单被抄了 {copies} 份 ⇒ 两侧的 kind 口径从此可以各自漂"
     );
 }
+
+/// **STB-04 半格：1:1 收件路径的身份判定不许用会折叠读失败的读法。**
+///
+/// `db::get_friend` 把 `Err` 折成 `None`（"不是好友"，展示路径上没问题）。可收件路径拿它做
+/// **权限判定**：读失败被读成"不是好友"就拒收 + `return`，而这条消息的 `msg_id` 已经进过
+/// 去重表 ⇒ 之后每一次补发都被判 Duplicate，**永久进不来**（直到进程重启）。
+///
+/// 判据钉三件事：① 用 `get_friend_checked`（末尾没有 `&env.sender_id)` 的折叠读法出现）；
+/// ② 读失败那一臂要 `allow_message_retry` 放行补发重入；③ 要留具名码（否则事后只看到
+/// "消息没到"）。变异：换回 `get_friend`、或删掉撤销那一行，都必须红。
+#[test]
+fn dm_recipient_friend_check_keeps_read_errors_and_undoes_dedupe() {
+    let src = include_str!("network/transport/gossip.rs");
+    let body = rust_fn_body(src, "async fn handle_gossip(");
+    assert!(
+        body.contains("db::get_friend_checked(&dbc, &env.sender_id)"),
+        "1:1 收件路径必须用 checked 读：折叠读会把一次读抖动读成「不是好友」"
+    );
+    // 两条权限判定（收件 / 中继转发授权）都不许用折叠读法：`get_friend` 把 Err 折成 None。
+    assert!(
+        !body.contains("db::get_friend(&dbc"),
+        "`db::get_friend` 把 Err 折成 None —— handle_gossip 里的权限判定一律用 checked 读"
+    );
+    assert!(
+        body.contains("code=GOSSIP_RELAY_AUTH_READ_FAILED"),
+        "中继转发授权的读失败也要留具名码（失败关闭，但别让它表现为「中继莫名其妙不走」）"
+    );
+    assert!(
+        body.contains("allow_message_retry(state, &env.message_id, \"friend_read_failed\")"),
+        "读失败那一臂必须撤销去重：否则对方之后每一次补发都被判 Duplicate"
+    );
+    assert!(
+        body.contains("code=GOSSIP_FRIEND_READ_FAILED"),
+        "读失败要留具名码 —— 否则事后只能看到「消息没到」"
+    );
+}

@@ -13,6 +13,31 @@
 
 ## [Unreleased]
 
+## [5.15.64] - 2026-10-31
+
+### 1:1 收件的「好友判定」不再把读库失败读成「不是好友」（STB-04 半格）
+
+`db::get_friend` 把 `Err` 折成 `None`（展示路径上没问题），而 `handle_gossip` 拿它做**权限判定**：
+一次读抖动就被读成"不是好友" ⇒ 拒收 + `return`，可这条消息的 `msg_id` **已经进过去重表**
+—— 之后对方每一次补发都被判 Duplicate，**永久进不来**（直到进程重启）。
+
+- 新增 `db::get_friend_checked`（同一句 SQL，保留读错误）；`get_friend` 委托它，
+  折叠行为只在那一层、并写清"权限判定别用我"。
+- 收件路径：读失败 ⇒ `allow_message_retry(msg_id, "friend_read_failed")` + `code=GOSSIP_FRIEND_READ_FAILED`
+  + 返回（**不**给对端发"被拦住"：那是本地读失败，不是关系问题）。
+- 同函数里的**中继转发授权**也是折叠读（读失败 ⇒ 静默不转发）：改成 checked +
+  **失败关闭**（不转发）+ `code=GOSSIP_RELAY_AUTH_READ_FAILED`。
+- 判据 `dm_recipient_friend_check_keeps_read_errors_and_undoes_dedupe`：`handle_gossip` 里
+  不许出现折叠读法、读失败那一臂必须撤销去重、两个码必须在。变异两处：
+  换回 `get_friend` ⇒ 点名「一律用 checked 读」；删掉撤销那一行 ⇒ 点名「必须撤销去重」。
+
+**真跑过的验证**：`cargo test --lib --features bluetooth` **1337 通过 / 0 失败**（3 ignored）；
+`cargo clippy -D warnings --all-targets` / `cargo fmt --check --all` 0 红 / 0 差异；
+`npm run verify:local` **26 步全绿**。
+**没做的**：真好友分支的重复补发**仍然**按 Duplicate 丢掉（刻意：陌生人的反复重试不该被
+重新广播成 N 次"被拦住"）—— 只有"读失败"这一格才撤销。
+
+
 ## [5.15.63] - 2026-10-31
 
 ### 1:1 两条线共用同一套 kind 判据，并把「同源」钉住（STB-05）
