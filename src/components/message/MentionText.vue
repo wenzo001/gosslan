@@ -11,11 +11,9 @@
  * ⚠️ 这里**不**按底色现算 @ 的文字色（聊天气泡那样做是因为它的底色逐条消息变，
  * 对比度会掉到 2.94；任务卡与任务详情的底色是固定的），别把两套做法混起来。
  */
-import { computed } from "vue";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { useAppStore } from "@/stores/useAppStore";
-import { linkify } from "@/utils/linkify";
-import { splitEmoji } from "@/utils/emoji";
+import { useMessageSegments } from "@/composables/useMessageSegments";
 import MessageLinkText from "@/components/message/MessageLinkText.vue";
 import { t } from "@/i18n";
 
@@ -31,21 +29,11 @@ const props = defineProps<{
 
 const app = useAppStore();
 
-/** 与聊天气泡同一套两级切分：先按表情 token 切段，文本段再交给 linkify 切链接/提及。 */
-const segments = computed(() => {
-  const out: Array<
-    | { kind: "text" | "link" | "mention" | "mention-self"; value: string; href?: string }
-    | { kind: "emoji"; value: string; url: string }
-  > = [];
-  for (const s of splitEmoji(props.text ?? "")) {
-    if (s.kind === "emoji") out.push({ kind: "emoji", value: s.value, url: s.url });
-    else
-      out.push(
-        ...linkify(s.value, props.mentionNames ?? [], props.selfMention ?? undefined, props.mentionTargets ?? null),
-      );
-  }
-  return out;
-});
+/** 与聊天气泡同一套两级切分，循环单源在 `composables/useMessageSegments`。 */
+const segments = useMessageSegments(
+  () => props.text,
+  () => props,
+);
 
 async function openLink(href: string) {
   try {

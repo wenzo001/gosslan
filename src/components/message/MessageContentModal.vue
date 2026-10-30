@@ -5,9 +5,8 @@ import { openUrl } from "@tauri-apps/plugin-opener";
 import { useAppStore } from "@/stores/useAppStore";
 import BaseModal from "@/components/BaseModal.vue";
 import CodeBlock from "@/components/CodeBlock.vue";
-import { linkify, type LinkSegment } from "@/utils/linkify";
+import { useMessageSegments } from "@/composables/useMessageSegments";
 import MessageLinkText from "@/components/message/MessageLinkText.vue";
-import { splitEmoji } from "@/utils/emoji";
 import { mentionHighlightColor } from "@/utils/chatStyle";
 import { Copy } from "lucide-vue-next";
 import { Check } from "@/components/ui/icons";
@@ -30,24 +29,12 @@ const emit = defineEmits<{
 }>();
 
 const app = useAppStore();
-type RenderSegment = LinkSegment | { kind: "emoji"; value: string; name: string; url: string };
-const segments = computed<RenderSegment[]>(() => {
-  if (props.kind !== "text") return [];
-  const out: RenderSegment[] = [];
-  for (const s of splitEmoji(props.content)) {
-    if (s.kind === "emoji") out.push({ kind: "emoji", value: s.value, name: s.name, url: s.url });
-    else
-      out.push(
-        ...linkify(
-          s.value,
-          props.mentionNames ?? [],
-          props.selfMention ?? undefined,
-          props.mentionTargets ?? null,
-        ),
-      );
-  }
-  return out;
-});
+// 切段循环单源在 `composables/useMessageSegments`（与气泡、任务详情同一份，DUP-06）。
+// `code` 那一档没有段：给它空正文，家自然就返回空数组。
+const segments = useMessageSegments(
+  () => (props.kind === "text" ? props.content : ""),
+  () => props,
+);
 
 /** @提及配色：以弹窗面板底色为对比基准（气泡那套是按气泡底色算的，这里不能复用）。
  *  从 CSS 变量读真实面板色，避免将来改了主题 token 这里忘记同步。 */
