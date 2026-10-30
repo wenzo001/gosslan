@@ -548,6 +548,10 @@ pub async fn clear_all_data(
         "group_reads",
         "group_files",
         "group_file_recipients",
+        // 群文件的逐收件人 Ack 与群撤回账本同属群聊天数据：群都删了，留着只会是无主的残留行
+        // （撤回账本还是**只增不减**的 G-Set，不清就永远跟在这台设备上）。审计 B3-F2。
+        "group_file_acks",
+        "group_recalled_messages",
         "group_members",
         "groups",
         // 收藏也是"聊天数据"：用户点「清除数据」就是要清干净，留下记录只会变成打不开的条目。
@@ -670,3 +674,6 @@ pub async fn clear_all_data(
 
 // ---------------- 聊天历史搜索 ----------------
 include!("chat_search.rs");
+
+// ---------------- 测试 ----------------
+include!("favorites_tests.rs");
