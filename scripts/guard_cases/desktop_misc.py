@@ -554,11 +554,12 @@ pub fn guard_case_fixture_db(
                 "    apply_base_schema_atomically(\n        &conn,\n        SCHEMA,\n        is_fresh.then_some(DB_VERSION),\n    )?;",
             ),
             # 2) 在数表之前插入一次 SCHEMA 应用 ⇒ `pre_table_count` 数到的是建表之后的库
+            # 锚点形状变过（5.15.65：那一行改成 `conn.query_row(` 单行了）—— 语义不变，只跟形状。
             (
-                "    let pre_table_count: i64 = conn\n        .query_row(",
+                "    let pre_table_count: i64 = conn.query_row(",
                 "    let is_fresh = current == 0;\n"
                 "    apply_base_schema_atomically(&conn, SCHEMA, is_fresh.then_some(DB_VERSION))?;\n"
-                "    let pre_table_count: i64 = conn\n        .query_row(",
+                "    let pre_table_count: i64 = conn.query_row(",
             ),
         ],
         cmd=cargo("test", "--lib", "tables_are_counted_before_the_schema_is_applied"),

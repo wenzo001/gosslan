@@ -1305,13 +1305,14 @@ pub fn init_with_notices(path: &Path) -> std::result::Result<(Connection, Vec<St
     //   之后再数就区分不了"全新库"与"老库"—— 那正是本仓曾经的样子（`is_fresh` 恒为假，
     //   于是全新库把整条迁移链重放一遍：9 行假的「running v1→v2…」日志、v7 两条
     //   "孤儿清理跳过一条语句"的告警、以及先建 `idx_outbox_msg_id` 再在 v8→v9 删掉它）。
-    let pre_table_count: i64 = conn
-        .query_row(
-            "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%'",
-            [],
-            |r| r.get(0),
-        )
-        .unwrap_or(0);
+    // ⚠️ 读失败**不许**折成 0（审计 B3-F1 同族第四处，发版前 review 抓到）：折 0 会让
+    // `is_fresh` 在"读不到 schema"时成立 ⇒ **跳过整条迁移链**并直接写 `DB_VERSION`
+    // （老库的列永久缺失，而版本号宣称已是最新）。读不到就中止，与上面那句 user_version 同口径。
+    let pre_table_count: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%'",
+        [],
+        |r| r.get(0),
+    )?;
     // 判据：`user_version` 没写过 **且** 一张业务表都没有。只看前者会把
     // "老库（v1/v2 时代根本不存在 user_version）"误判成新库 ⇒ 那条库的形状就永远补不回来。
     let is_fresh = current == 0 && pre_table_count == 0;

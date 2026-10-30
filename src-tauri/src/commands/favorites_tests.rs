@@ -65,10 +65,19 @@ mod clear_data_gate_tests {
     /// 清除数据必须覆盖 schema 里每一张「聊天数据」表；只有明确保留的才算例外。
     #[test]
     fn clearing_chat_data_covers_every_table_in_the_schema() {
-        let schema = schema_tables(include_str!("../db.rs"));
+        // 分母是**两处建表点**：`db.rs` 的基础 schema + `content/store.rs` 的内容层
+        // （后者与基础 schema 同事务建，但按 `db.rs` 数表时看不见 —— 发版前 review 抓到的
+        // `content_transfers` 就是这么漏出清单的）。
         let cleared = cleared_tables(include_str!("favorites.rs"));
+        let mut schema = schema_tables(include_str!("../db.rs"));
+        let content_tables = schema_tables(include_str!("../content/store.rs"));
         assert!(
-            schema.len() >= 20,
+            !content_tables.is_empty(),
+            "内容层 schema 里一张表都没解析到 ⇒ 提取器或建表形状变了"
+        );
+        schema.extend(content_tables);
+        assert!(
+            schema.len() >= 21,
             "只解析到 {} 张表 ⇒ 量具或 schema 形状变了：{schema:?}",
             schema.len()
         );

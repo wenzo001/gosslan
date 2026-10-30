@@ -556,6 +556,10 @@ pub async fn clear_all_data(
         "groups",
         // 收藏也是"聊天数据"：用户点「清除数据」就是要清干净，留下记录只会变成打不开的条目。
         "favorites",
+        // 内容台账（按 cid 的完整字节）：`find_source` 的判据是"path 非空" ⇒ 残留行会让本机
+        // 在清完之后**继续对外宣称持有那个 cid**（别人来拉、我们还能当种子）。审计 review 抓到：
+        // 这张表建在 `content/store.rs`，清库清单按 `db.rs` 数表时**看不见它**。
+        "content_transfers",
     ] {
         cleared += clear_table_batched(s, table).await?;
     }
