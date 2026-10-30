@@ -285,3 +285,89 @@ test("接收收尾的终态出口发码，不发散文与 OS 原文", () => {
     .filter((x) => CJK.test(x));
   assert.deepEqual(found, ["文件完整性校验失败"], "散文回潮时必须恰好点名那一句");
 });
+
+/**
+ * 1:1 接收**上屏**那一族只许发码（5.15.36）。
+ *
+ * 与上一条的分工：`finish_receiver_into` 那四格是"返回值就是载荷"；这一条管两道闸：
+ *  · `write_chunk` 的五个出口（跳号 / 解密失败 / 超出声明 / 写盘 / 序号溢出）—— 它们的返回值
+ *    经 `handle_file.rs` 的 `fail_receive(state, .., &e)` 直接进 `file-failed` 载荷；
+ *  · **收尾调用的 reason 实参** —— `fail_taken_receive(.., REASON)` 这种字面量实参以前就是中文
+ *    （1:1 清扫器那句「接收超时」与断链那句「对端连接已断开」）。
+ * 判据按形状写，不抄码名清单：新加一格忘了配码 ⇒ 这里红；把码改回散文 ⇒ 这里也红。
+ *
+ * ⚠️ 刻意**不管**的两条：`未知传输` 与 `文件传输来源不匹配` —— 它们走 `fail_receive` 的
+ * `return false` 分支（不 emit），是内部控制的返回值。给它们配码就是造一条没人写的死契约。
+ */
+test("1:1 接收上屏的出口与收尾实参都不许是中文散文", () => {
+  const CJK = /[\u4e00-\u9fff]/;
+  const wc = tsFnBody(
+    readFileSync(join(ROOT, "src-tauri/src/network/file/receive.rs"), "utf8"),
+    "pub fn write_chunk(",
+  );
+  assert.ok(wc.length > 400, "write_chunk 的函数体没取到 ⇒ 锚点写法变了");
+  // 豁免两条，且**有凭据**：它们走 `fail_receive` 的 `return false` 分支（不 emit），
+  // 是内部控制的返回值 ⇒ 那一句永远不会上屏。凭由 Rust 那条
+  // `fail_receive_stays_silent_for_unknown_and_mismatched_transfer` 钉住（含 `return false` 的处数），
+  // 不是这里说了算。给它们配码反而会造出一条没人写的死契约。
+  const INTERNAL_ONLY = ["未知传输", "文件传输来源不匹配"];
+  const prose = [...wc.matchAll(/Err\("([^"]*)"\s*\.to_string\(\)/g)]
+    .map((m) => m[1])
+    .filter((x) => CJK.test(x) && !INTERNAL_ONLY.includes(x));
+  assert.deepEqual(prose, [], `write_chunk 仍把中文散文当载荷：${prose.join(" / ")}`);
+  // 豁免名单不许变胖：每条豁免都要在 Rust 那条判据里有位置（数 `return false` 的处数）。
+  assert.equal(INTERNAL_ONLY.length, 2, "豁免是手写的两条；加了第三条就必须同时改 Rust 凭据");
+  // 五格都必须真被引用（漏一格 = 那一格还在发散文）
+  for (const code of [
+    "FAIL_CODE_FILE_CHUNK_GAP",
+    "FAIL_CODE_FILE_CHUNK_DECRYPT_FAILED",
+    "FAIL_CODE_FILE_CHUNK_OVERSIZE",
+    "FILE_RECEIVE_WRITE_FAILED",
+    "FAIL_CODE_FILE_CHUNK_SEQ_OVERFLOW",
+  ]) {
+    assert.ok(wc.includes(code), `write_chunk 里没有引用 ${code}`);
+  }
+
+  // 收尾调用的 reason 实参：整库视图里扫（三家的生产码都在视图内）
+  const views = [
+    "src-tauri/src/network/file/receive.rs",
+    "src-tauri/src/network/transport/handle_file.rs",
+    "src-tauri/src/network/transport/group_file.rs",
+  ]
+    .map((f) => readFileSync(join(ROOT, f), "utf8"))
+    .join("\n");
+  const ARG = /fail_(?:taken_)?receive\(([^;]*?),\s*"([^"]*)"\s*\)/g;
+  const badArgs = [...views.matchAll(ARG)]
+    .map((m) => m[2])
+    .filter((x) => CJK.test(x));
+  assert.deepEqual(badArgs, [], `收尾的 reason 实参是中文散文（会原样上屏）：${badArgs.join(" / ")}`);
+  // ★ 实参也可能是**中转常量**（`const REASON = "…中文…"; fail_taken_receive(.., REASON)`）。
+  //   只判字面量会漏掉这一整类 —— 10-30 实测：把清扫器那条常量改回中文，本判据仍然全绿。
+  //   所以再对一次账：这些文件里所有**值含中文**的 `const X: &str = "…"`，只要被当 reason 传给
+  //   `fail_receive` / `fail_taken_receive`，就必须红。
+  const CJK_CONST = /const\s+([A-Z][A-Z0-9_]*)\s*:\s*&str\s*=\s*"([^"]*[\u4e00-\u9fff][^"]*)"/g;
+  const cjkConsts = new Map<string, string>();
+  for (const m of views.matchAll(CJK_CONST)) cjkConsts.set(m[1], m[2]);
+  const argNames = [...views.matchAll(/fail_(?:taken_)?receive\([^;]*?,\s*([A-Z][A-Z0-9_]*)\s*\)/g)].map(
+    (m) => m[1],
+  );
+  const leaked = argNames.filter((n) => cjkConsts.has(n));
+  assert.deepEqual(
+    leaked,
+    [],
+    `收尾的 reason 实参是中文常量的名字（值会原样上屏）：${leaked.map((n) => `${n}=${cjkConsts.get(n)}`).join(" / ")}`,
+  );
+  // 下限 + 正控：判据必须看得见这些调用点，且实参回潮时报得出那一句
+  const callSites = [...views.matchAll(/fail_(?:taken_)?receive\(/g)].length;
+  assert.ok(callSites >= 4, `只找到 ${callSites} 处收尾调用 ⇒ 分母大概读空了`);
+  const regressed = views.replace(
+    'fail_taken_receive(state, &id, &r, REASON);',
+    'fail_taken_receive(state, &id, &r, "接收超时：对端久未继续发送");',
+  );
+  assert.notEqual(regressed, views, "变异没落进去 ⇒ 正控不作数（锚点写法变了）");
+  assert.deepEqual(
+    [...regressed.matchAll(ARG)].map((m) => m[2]).filter((x) => CJK.test(x)),
+    ["接收超时：对端久未继续发送"],
+    "实参回潮时必须恰好点名那一句",
+  );
+});

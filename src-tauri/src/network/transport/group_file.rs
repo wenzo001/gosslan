@@ -956,8 +956,16 @@ fn finalize_failed_group_receive(state: &Arc<AppState>, transfer_id: &str, reaso
 /// 这里只摘**内存态**；摘掉之后那条 `.part` 就重新落回 `sweep_stale_parts` 的 24h 管辖，
 /// 磁盘侧不另立第二份清理 policy。判据只有一份：`file::receive_is_stale`，
 /// 且**与摘表同一次持锁**（`take_stalled_receive`）。落终态与 emit 一律在锁外，同 `sweep_stale_relay`。
+    ///
+    /// ★ 载荷给码（5.15.36）：这一格是 **1:1** 的清扫器，摘完走 `fail_taken_receive` ⇒ 直接 emit
+    /// 给界面，原先那句中文在英文界面就是原样上屏。群侧同一件事用 `GROUP_FILE_STALLED`
+    ///（那条有 `gfile-` 行 ⇒ 既上屏也落库）。
+    ///
+    /// ⚠️ 函数体**头两行的相邻形状是护栏的注入锚点**（`const REASON` + `let now = db::now_ms();`）：
+    /// 往这两行之间插注释会让 `verify-guards.py --list` 直接报「注入锚点找不到」
+    ///（10-30 实测：门禁第 13 步拦下的，锚点断掉是响亮的，但白跑一轮）。说明请写在上面的 doc 块里。
 pub fn sweep_stalled_receives(state: &Arc<AppState>) -> usize {
-    const REASON: &str = "接收超时：对端久未继续发送";
+    const REASON: &str = crate::logging::FAIL_CODE_FILE_RECEIVE_STALLED;
     let now = db::now_ms();
     let mut reclaimed = 0usize;
     // 每轮只摘一条：判据与摘表在**同一次持锁**里完成（见 `file::take_stalled_receive`）。
@@ -965,6 +973,13 @@ pub fn sweep_stalled_receives(state: &Arc<AppState>) -> usize {
     // （同一 transfer_id 重建接收器、`fed_at_ms` 就是现在），按 id 收尾会把**正在收**的
     // 那一单判死。循环必然终止：`take_*` 每次真的 remove 一条。
     while let Some((id, r)) = file::take_stalled_receive(state, now) {
+        state.logger.warn(
+            "file",
+            format!(
+                "code={REASON} transfer={id} peer={} received={} size={} —— 接收超时：对方久未继续发送",
+                r.peer_id, r.received, r.size
+            ),
+        );
         file::fail_taken_receive(state, &id, &r, REASON);
         reclaimed += 1;
     }

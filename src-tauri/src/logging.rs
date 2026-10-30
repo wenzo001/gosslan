@@ -402,6 +402,45 @@ pub(crate) const FAIL_CODE_FILE_RELAY_SIZE_MISMATCH: &str = "FILE_RELAY_SIZE_MIS
 /// 中继传输一小时没走完，被回收。
 pub(crate) const FAIL_CODE_FILE_RELAY_STALLED: &str = "FILE_RELAY_STALLED";
 
+// ── 1:1 **接收侧**那六格（5.15.36）───────────────────────────────────────────
+//
+// 为什么这一族住在**事件载荷**这张表而不是 `error_codes::MESSAGE_FAIL_CODES`：
+// 收件方那条 `file-<transfer_id>` 气泡行是**文件落盘成功之后**才插的
+// （`transport/handle_file.rs` 里那句 `msg_id: format!("file-{transfer_id}")` 在成功分支），
+// 收失败的单**没有行可写** ⇒ 原因只能当场说（toast），重启后本就无从记起。
+// 这跟群侧不一样：群收件人有一行独立气泡（`gfile-`），所以群那六格既上屏也落库。
+//
+// 为什么名字与群侧的 `GROUP_FILE_CHUNK_*` 各一份而不是共用：见上面那段——
+// 它们的**生命周期不同**（当场消失 vs 留在行上），共用一个码会让 `MESSAGE_FAIL_CODES`
+// 那张"能落库"的表声称一件 1:1 路径根本做不到的事，而 `persistable_group_fail_code`
+// 那道闸也就会顺手把 1:1 的原因写进一个不存在的行。
+//
+// 不在这里出现的两条：`未知传输` 与 `文件传输来源不匹配` —— 它们走
+// `fail_receive` 的 `return false` 分支（**不 emit**），是内部控制的返回值，不是给用户读的话。
+
+/// 1:1 接收超时：本机在收，而对方久未继续发（清扫器摘表那一格）。
+pub(crate) const FAIL_CODE_FILE_RECEIVE_STALLED: &str = "FILE_RECEIVE_STALLED";
+
+/// 1:1 接收期间对端一条链路都不剩 —— 这一单要对方重发才收得到。
+pub(crate) const FAIL_CODE_FILE_PEER_UNLINKED: &str = "FILE_PEER_UNLINKED";
+
+/// 1:1 分片跳号（中间缺片），这一单已经补不齐。
+pub(crate) const FAIL_CODE_FILE_CHUNK_GAP: &str = "FILE_CHUNK_GAP";
+
+/// 1:1 分片解密失败（内容与本单的密钥对不上）。
+pub(crate) const FAIL_CODE_FILE_CHUNK_DECRYPT_FAILED: &str = "FILE_CHUNK_DECRYPT_FAILED";
+
+/// 1:1 分片累计超出对方声明的大小（协议层硬失败）。
+pub(crate) const FAIL_CODE_FILE_CHUNK_OVERSIZE: &str = "FILE_CHUNK_OVERSIZE";
+
+/// 1:1 分片处理任务被线程池丢掉（panic / 取消）。**内部串不许上屏**：
+/// 这一格原先把 `format!("文件分片处理任务被线程池中断: {e}")` 直接当载荷，
+/// 与 5.15.33 在群侧抓到的"内部文本写进给用户的那一列"是同一件事，只是这条走事件。
+pub(crate) const FAIL_CODE_FILE_CHUNK_POOL_ABORT: &str = "FILE_CHUNK_POOL_ABORT";
+
+/// 1:1 分片序号已不可表示（`u32` 加一溢出）—— 协议层硬失败，这一单再也接不下去。
+pub(crate) const FAIL_CODE_FILE_CHUNK_SEQ_OVERFLOW: &str = "FILE_CHUNK_SEQ_OVERFLOW";
+
 /// 把一次写盘失败归类成稳定失败码：盘满 ⇒ [`FAIL_CODE_DISK_FULL`]，其余 ⇒ `None`。
 ///
 /// `None` 表示"没有专属码"，调用方应当保留原始错误文本（那是唯一信息量）。
