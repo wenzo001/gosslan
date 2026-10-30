@@ -50,19 +50,44 @@ async fn relay_push_file(
     transfer_id: &str,
     path: PathBuf,
 ) -> Result<(), String> {
-    let meta = std::fs::metadata(&path).map_err(|e| format!("文件不存在或不可读：{e}"))?;
+    // 这一族的返回值会被 `handle_share` **原样当 `file-failed` 的 reason 上屏**
+    // ⇒ 只许发码；OS 原文只进日志（5.15.38）。
+    let meta = std::fs::metadata(&path).map_err(|e| {
+        state.logger.error(
+            "file",
+            format!(
+                "code={} transfer={transfer_id} path={} —— 文件不存在或不可读: {e}",
+                crate::logging::FAIL_CODE_FILE_SEND_UNREADABLE,
+                path.display()
+            ),
+        );
+        crate::logging::FAIL_CODE_FILE_SEND_UNREADABLE.to_string()
+    })?;
     if !meta.is_file() {
-        return Err("只能发送普通文件".to_string());
+        state.logger.error(
+            "file",
+            format!(
+                "code={} transfer={transfer_id} path={} —— 不是普通文件",
+                crate::logging::FAIL_CODE_FILE_SEND_NOT_REGULAR,
+                path.display()
+            ),
+        );
+        return Err(crate::logging::FAIL_CODE_FILE_SEND_NOT_REGULAR.to_string());
     }
     let size = meta.len();
     // 与接收侧同一条上限：中继路径以前只在下游检查，超限时对端 `admit_inbound` 直接
     // return（不 emit），而发送端把分片全推完之后写 'sent' + 100% ⇒ 双方界面都"成功"、
     // 文件永远不存在。出口先拦一次，失败原因能落到界面上。
     if size > crate::network::file::MAX_INCOMING_FILE_BYTES {
-        return Err(format!(
-            "文件超过中继接收上限（{} MiB）",
-            crate::network::file::MAX_INCOMING_FILE_BYTES / (1024 * 1024)
-        ));
+        state.logger.error(
+            "file",
+            format!(
+                "code={} transfer={transfer_id} size={size} limit={} MiB —— 超过中继接收上限",
+                crate::logging::FAIL_CODE_FILE_SEND_TOO_LARGE,
+                crate::network::file::MAX_INCOMING_FILE_BYTES / (1024 * 1024)
+            ),
+        );
+        return Err(crate::logging::FAIL_CODE_FILE_SEND_TOO_LARGE.to_string());
     }
     let name = path
         .file_name()
@@ -81,16 +106,59 @@ async fn relay_push_file(
     let hash_path = path.clone();
     let file_sha256 = tokio::task::spawn_blocking(move || sha256_file_hex(&hash_path))
         .await
-        .unwrap_or_else(|e| Err(format!("中继哈希任务被线程池中断: {e}")))?;
+        .map_err(|e| {
+            state.logger.error(
+                "file",
+                format!(
+                    "code={} transfer={transfer_id} —— 中继哈希任务被线程池中断: {e}",
+                    crate::logging::FAIL_CODE_FILE_SEND_HASH_TASK_ABORTED
+                ),
+            );
+            crate::logging::FAIL_CODE_FILE_SEND_HASH_TASK_ABORTED.to_string()
+        })?
+        .map_err(|e| {
+            state.logger.error(
+                "file",
+                format!(
+                    "code={} transfer={transfer_id} —— 算整份指纹失败: {e}",
+                    crate::logging::FAIL_CODE_FILE_SEND_UNREADABLE
+                ),
+            );
+            crate::logging::FAIL_CODE_FILE_SEND_UNREADABLE.to_string()
+        })?;
     if cancel_requested(&mut cancel_rx) {
-        return Err("用户取消发送".to_string());
+        return Err(crate::logging::FAIL_CODE_FILE_SEND_CANCELLED.to_string());
     }
-    let receiver_pubkey = resolve_member_x25519(state, peer_id)
-        .ok_or_else(|| "无法获取对方公钥，无法加密文件".to_string())?;
-    let shared = state.identity.dh(&receiver_pubkey)
-        .ok_or_else(|| "密钥交换失败".to_string())?;
-    let sealed_key_b64 =
-        STANDARD.encode(crypto::seal(&shared, &file_key).ok_or_else(|| "加密失败".to_string())?);
+    let receiver_pubkey = resolve_member_x25519(state, peer_id).ok_or_else(|| {
+        state.logger.error(
+            "file",
+            format!(
+                "code={} transfer={transfer_id} peer={peer_id} —— 拿不到对方公钥",
+                crate::logging::FAIL_CODE_FILE_SEND_NO_PUBKEY
+            ),
+        );
+        crate::logging::FAIL_CODE_FILE_SEND_NO_PUBKEY.to_string()
+    })?;
+    let shared = state.identity.dh(&receiver_pubkey).ok_or_else(|| {
+        state.logger.error(
+            "file",
+            format!(
+                "code={} transfer={transfer_id} peer={peer_id} —— DH 算不出共享密钥",
+                crate::logging::FAIL_CODE_FILE_SEND_KEY_EXCHANGE_FAILED
+            ),
+        );
+        crate::logging::FAIL_CODE_FILE_SEND_KEY_EXCHANGE_FAILED.to_string()
+    })?;
+    let sealed_key_b64 = STANDARD.encode(crypto::seal(&shared, &file_key).ok_or_else(|| {
+        state.logger.error(
+            "file",
+            format!(
+                "code={} transfer={transfer_id} —— 封文件密钥失败",
+                crate::logging::FAIL_CODE_FILE_SEND_SEAL_FAILED
+            ),
+        );
+        crate::logging::FAIL_CODE_FILE_SEND_SEAL_FAILED.to_string()
+    })?);
     // ⚠️ **逐片读盘，不整读进内存**。这里原先 `std::fs::read(&path)` 把整个文件读进来再切片：
     // 中继发送的是共享目录里的文件（可能很大），整读后逐片 base64（×1.33）会让内存峰值
     // 超过文件大小本身。改成按需 seek + read_exact，峰值只剩一个分片。
@@ -156,14 +224,21 @@ async fn relay_push_file(
         // 方向要说清：这里只用「0 必然没送出」这一侧的下限判据；`≥1` **不等于**送达
         // （邻居未必与对方有直连），真送达要等接收端回执（A1-L2，尚未实施）。
         if crate::network::transport::relay_send_to_neighbors(state, peer_id, &offer).await == 0 {
-            return Err("没有可达的中继邻居：文件未发出".to_string());
+            state.logger.error(
+                "file",
+                format!(
+                    "code={} transfer={transfer_id} peer={peer_id} —— 没有可达的中继邻居：文件未发出",
+                    crate::logging::FAIL_CODE_FILE_SEND_NO_RELAY_NEIGHBOR
+                ),
+            );
+            return Err(crate::logging::FAIL_CODE_FILE_SEND_NO_RELAY_NEIGHBOR.to_string());
         }
 
         let mut last_report = std::time::Instant::now() - Duration::from_secs(1);
         for seq in 0..chunk_count {
             // 每片开始前先查 cancel —— 用户点了就立刻停，不浪费下一片 I/O
             if cancel_requested(&mut cancel_rx) {
-                return Err("用户取消发送".to_string());
+                return Err(crate::logging::FAIL_CODE_FILE_SEND_CANCELLED.to_string());
             }
             let start = (seq as usize * chunk_size).min(total);
             let end = (start + chunk_size).min(total);
@@ -173,7 +248,16 @@ async fn relay_push_file(
             src.read_exact(&mut plain)
                 .map_err(|e| format!("读取文件分片失败：{e}"))?;
             let sealed = crypto::seal_symmetric(&file_key, &plain)
-                .ok_or_else(|| "文件分片加密失败".to_string())?;
+                .ok_or_else(|| {
+                    state.logger.error(
+                        "file",
+                        format!(
+                            "code={} transfer={transfer_id} seq={seq} —— 分片加密失败",
+                            crate::logging::FAIL_CODE_FILE_SEND_SEAL_FAILED
+                        ),
+                    );
+                    crate::logging::FAIL_CODE_FILE_SEND_SEAL_FAILED.to_string()
+                })?;
             let data = STANDARD.encode(&sealed);
             let msg = Message::RelayChunk {
                 transfer_id: transfer_id.to_string(),
@@ -186,7 +270,14 @@ async fn relay_push_file(
             // 同一判据用在每一片上：某片开始没有任何邻居接住，说明链路在这中间断了，
             // 继续推剩余分片只是把日志刷满并让界面停在最后一个报过的百分比上。
             if crate::network::transport::relay_send_to_neighbors(state, peer_id, &msg).await == 0 {
-                return Err(format!("中继链路中断：第 {seq} 片没有任何邻居接住"));
+                state.logger.error(
+                    "file",
+                    format!(
+                        "code={} transfer={transfer_id} seq={seq} —— 没有任何邻居接住这一片",
+                        crate::logging::FAIL_CODE_FILE_SEND_RELAY_LINK_BROKEN
+                    ),
+                );
+                return Err(crate::logging::FAIL_CODE_FILE_SEND_RELAY_LINK_BROKEN.to_string());
             }
             let sent = end as u64;
             if last_report.elapsed() >= Duration::from_millis(250) {
@@ -258,9 +349,16 @@ async fn relay_push_file(
 
     match result {
         Ok(inner) => inner,
-        Err(_) => Err(format!(
-            "中继文件发送超时（超过 {}s）",
-            RELAY_FILE_SEND_DEADLINE.as_secs()
-        )),
+        Err(_) => Err({
+            state.logger.error(
+                "file",
+                format!(
+                    "code={} transfer={transfer_id} deadline={}s —— 中继推送超时",
+                    crate::logging::FAIL_CODE_FILE_SEND_RELAY_TIMEOUT,
+                    RELAY_FILE_SEND_DEADLINE.as_secs()
+                ),
+            );
+            crate::logging::FAIL_CODE_FILE_SEND_RELAY_TIMEOUT.to_string()
+        }),
     }
 }

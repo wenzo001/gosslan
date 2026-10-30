@@ -115,14 +115,30 @@
                     let file = &crate::network::file_src_for_guards();
         let push = rust_fn_body(file, "async fn relay_push_file(");
         let flat_push = code_flat(&push);
+        // 5.15.38 起「0 邻居 ⇒ 失败」两格在 return 之前各加了一句日志（把码与人话分开）
+        // ⇒ 旧探针 `.await==0{{returnErr(` 不再成立。改成两段**同时**钉：
+        //   ① `.await==0{{` 恰好两处（`if size == 0` 那处无害分支没有 `.await`，不会误计）；
+        //   ② 两个「没邻居」的码各被 return 一次 —— 少一处就退回无条件发送或丢掉归因。
         assert_eq!(
-            flat_push.matches(".await==0{returnErr(").count(),
+            flat_push.matches(".await==0{").count(),
             2,
-            "Offer 与每一片各一处「0 个邻居接住 ⇒ 失败」的判据，少一处就是又退回无条件发送。\
-             探针带 `.await` 与 `return Err` 两段形状：本函数里还有一处无害的 `if size == 0`，\
-             只数 `==0{{` 会把它算进来（实测第一次就跑出 3）。刻意不再单列「调用处数」那条断言：\
-             它被这条完全覆盖（少调用必然同时少判据），留着只会让变异用例打在它前面那条上、\
-             得到一句弱确认（2026-09-23 真踩过）。"
+            "Offer 与每一片各一处「0 个邻居接住 ⇒ 失败」的判据，少一处就是又退回无条件发送。"
+        );
+        assert_eq!(
+            flat_push
+                .matches("returnErr(crate::logging::FAIL_CODE_FILE_SEND_NO_RELAY_NEIGHBOR.to_string())")
+                .count(),
+            1,
+            "Offer 那一处 0 邻居必须直接判失败（并带上「没邻居」那个码）"
+        );
+        assert_eq!(
+            flat_push
+                .matches(
+                    "returnErr(crate::logging::FAIL_CODE_FILE_SEND_RELAY_LINK_BROKEN.to_string())"
+                )
+                .count(),
+            1,
+            "每一片那一处 0 邻居必须直接判失败（链路中途断是另一个码）"
         );
 
         // L2 那一半：写出 ≠ 送达。走完分片循环只证明"每一片被至少一个邻居接住"，
@@ -366,7 +382,9 @@
                 "中继发送前的整份哈希",
                 1,
                 "tokio::task::spawn_blocking(move||sha256_file_hex(&hash_path))",
-                "sha256_file_hex(&hash_path)).await.unwrap_or_else(",
+                // 5.15.38 起发送前哈希那一格也把「任务被丢」与「算不出指纹」分开配码 ⇒ 收尾从
+                // unwrap_or_else( 换成 map_err(…)。**判据意图不变**：必须 await。
+                "sha256_file_hex(&hash_path)).await.map_err(",
                 "letfile_sha256=sha256_file_hex(&path)?",
             ),
             (

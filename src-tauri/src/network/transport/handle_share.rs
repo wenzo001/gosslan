@@ -134,20 +134,29 @@ fn ensure_serve_worker(state: &Arc<AppState>, peer_id: &str) {
                         ),
                     ),
                     Err(reason) => {
+                        // ★ 5.15.38：**取消不是失败**。取消自己已经有终态与气泡（`cancel_terminal`
+                        // 那条链），再发一条 `file-failed` 会把用户刚取消的那条翻成"失败"，
+                        // 正是既有守卫 `guards:用户取消不得记成失败` 在防的形状。
+                        // 判据看**码**不看文案（`relay_push.rs` 那一族已经全部发码）。
+                        let cancelled = reason == crate::logging::FAIL_CODE_FILE_SEND_CANCELLED;
                         st.logger.warn(
                             "share",
                             format!(
-                                "共享文件发送失败 transfer={} peer={}: {reason}",
-                                job.transfer_id, job.peer_id
+                                "共享文件发送{} transfer={} peer={}: {reason}",
+                                if cancelled { "已取消" } else { "失败" },
+                                job.transfer_id,
+                                job.peer_id
                             ),
                         );
-                        let _ = st.app.emit(
-                            "file-failed",
-                            &FileFailedInfo {
-                                transfer_id: job.transfer_id.clone(),
-                                reason,
-                            },
-                        );
+                        if !cancelled {
+                            let _ = st.app.emit(
+                                "file-failed",
+                                &FileFailedInfo {
+                                    transfer_id: job.transfer_id.clone(),
+                                    reason,
+                                },
+                            );
+                        }
                     }
                 }
             } else {

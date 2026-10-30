@@ -403,3 +403,68 @@ test("中继接收侧的上屏出口只发在册的码，不发 format! 动态�
   assert.notEqual(gutted, src, "变异没落进去 ⇒ 正控不作数（锚点写法变了）");
   assert.equal([...gutted.matchAll(/reason:\s*format!\(/g)].length, 1);
 });
+
+/**
+ * 中继**发送侧**两个形状（5.15.38）：
+ * ① `relay_push.rs` 的每个 Err 都会经 `handle_share.rs` 原样上屏 ⇒ 不许中文散文、不许 `format!`；
+ * ② `handle_share.rs` 见到 `FILE_SEND_CANCELLED` **不许发失败帧** —— 取消是用户动作，
+ *    它自己已经有终态与气泡，再发一条 `file-failed` 就是「取消被当失败」
+ *    （既有守卫 `guards:用户取消不得记成失败` 防的正是这个）。
+ * 两条都带内联正控。
+ */
+test("中继发送侧发码，且取消不许被当成失败发帧", () => {
+  const CJK = /[\u4e00-\u9fff]/;
+  const push = readFileSync(join(ROOT, "src-tauri/src/network/file/relay_push.rs"), "utf8");
+  const prose = [...push.matchAll(/Err\("([^"]*)"\s*\.to_string\(\)/g)]
+    .map((m) => m[1])
+    .filter((x) => CJK.test(x));
+  assert.deepEqual(prose, [], `relay_push.rs 仍有中文散文当返回值：${prose.join(" / ")}`);
+  const dynamic = [...push.matchAll(/Err\(format!\(/g)].length;
+  assert.equal(dynamic, 0, `relay_push.rs 里还有 ${dynamic} 处把 format! 当返回值`);
+  for (const code of [
+    "FILE_SEND_CANCELLED",
+    "FILE_SEND_UNREADABLE",
+    "FILE_SEND_NOT_REGULAR",
+    "FILE_SEND_TOO_LARGE",
+    "FILE_SEND_HASH_TASK_ABORTED",
+    "FILE_SEND_NO_PUBKEY",
+    "FILE_SEND_KEY_EXCHANGE_FAILED",
+    "FILE_SEND_SEAL_FAILED",
+    "FILE_SEND_NO_RELAY_NEIGHBOR",
+    "FILE_SEND_RELAY_LINK_BROKEN",
+    "FILE_SEND_RELAY_TIMEOUT",
+  ]) {
+    assert.ok(push.includes(code), `relay_push.rs 里没有引用 ${code}`);
+  }
+  // 正控①：把一处改回中文散文，上面那把尺子必须说"有"。
+  const gutted = push.replace(
+    "crate::logging::FAIL_CODE_FILE_SEND_NOT_REGULAR.to_string()",
+    '"只能发送普通文件".to_string()',
+  );
+  assert.notEqual(gutted, push, "变异①没落进去 ⇒ 锚点写法变了");
+  assert.deepEqual(
+    [...gutted.matchAll(/Err\("([^"]*)"\s*\.to_string\(\)/g)]
+      .map((m) => m[1])
+      .filter((x) => CJK.test(x)),
+    ["只能发送普通文件"],
+  );
+
+  // ② 取消不许发失败帧：先认码，再决定发不发。
+  //    判据拆成两条独立的形状，不用一个大窗口跨过 logger 那段（窗口长度会随排版漂）：
+  //    ① 真的有「按码认出取消」这一句；② 失败帧**长在** `if !cancelled {` 里面。
+  const share = readFileSync(join(ROOT, "src-tauri/src/network/transport/handle_share.rs"), "utf8");
+  const CANCEL_CHECK = /let cancelled = reason == crate::logging::FAIL_CODE_FILE_SEND_CANCELLED;/;
+  const GUARDED_EMIT = /if\s*!\s*cancelled\s*\{[\s\S]{0,400}?emit\(\s*"file-failed"/;
+  assert.ok(CANCEL_CHECK.test(share), "handle_share 必须按**码**认出取消（不许比对中文文案）");
+  assert.ok(GUARDED_EMIT.test(share), "失败帧必须长在 `if !cancelled` 里面 —— 否则取消仍会被当成失败");
+  // 正控：把条件拆回无条件块（就是想退回的写法），两条尺子各自必须说不。
+  const noCheck = share.replace(
+    "let cancelled = reason == crate::logging::FAIL_CODE_FILE_SEND_CANCELLED;",
+    "let cancelled = false;",
+  );
+  assert.notEqual(noCheck, share, "变异②a 没落进去 ⇒ 锚点写法变了");
+  assert.equal(CANCEL_CHECK.test(noCheck), false);
+  const unconditional = share.replace("if !cancelled {", "{");
+  assert.notEqual(unconditional, share, "变异②b 没落进去 ⇒ 锚点写法变了");
+  assert.equal(GUARDED_EMIT.test(unconditional), false, "退回无条件发之后仍匹配 ⇒ 这把尺子恒绿");
+});
