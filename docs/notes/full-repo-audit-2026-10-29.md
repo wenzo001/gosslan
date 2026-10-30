@@ -264,7 +264,7 @@ export function isForwardableKind(kind: string): boolean {
 |---|---|---|---|
 | FUN-02 | Medium | 收藏页转发图片同源同因（`FavoritePanel.vue:598` 第二份实现）—— 修 FUN-01 不会自动修它 | `src/components/FavoritePanel.vue:593` |
 | FUN-03 | Medium | BLE 是非默认 Cargo feature，默认构建 `available()` 恒 false 且**界面不区分"硬件不支持"与"本次构建没编进去"**（判据 `ble.feature_compiled` 已存在但只在 DevDiagPanel 用）。发布包正常（CI 与 dist 脚本都带 `--features bluetooth`） | `src-tauri/Cargo.toml`、`NetworkSection.vue` |
-| FUN-04 | Low | `get_topology` 是唯一后端孤儿，已在 `DEAD_COMMANDS` 挂账但理由已过期（"随 TopologyBar 在 5.0.3 删除"） | `src/api/events.test.ts` |
+| FUN-04 | Low | `get_topology` 是唯一后端孤儿；**挂账原文是准确的**（保留为只读诊断接口），真正未决的是 10-26 那条「接线 or 删掉」⇒ **待负责人二选一**（§4.0ab） | `src/api/events.test.ts` |
 | FUN-05 | Info | 移动端 `set_unread_badge` 空实现，设计内边界（前端直接 return，不发 IPC） | `src/stores/useChatStore.ts:404` |
 | FUN-06 | Low | 转发逻辑在 ChatWindow / FavoritePanel / MessageItem 三处各写一份，**已经漂移**（FUN-01/02 的根因）；`resendChannel.ts:54` 已有正确的 kind 集合可复用 | 三处 |
 
@@ -1021,6 +1021,29 @@ node --experimental-strip-types -e '
 **TST-02 到此收口**：五个 handler 全部走家。剩下的 `onPeerRead` 是**按会话批量提升**，
 它的谓词本来就在 `utils/messages::promoteOnPeerRead`（有单测），不在这一条的范围里。
 
+### 4.0ab §8 小尾巴复核（5.15.43）：lucide 评估完成；FUN-04 是**待拍板**不是"理由过期"；TST-09 本轮不做
+
+**① `lucide-vue-next` 升级评估（§8 第 17 行）—— 评估完成，暂不升级。**
+现读：装的是 **0.469.0**，最新 **1.0.0**（major）；生产代码里 **50 个文件 / 104 个名字**
+（103 个运行时图标 + 1 个 `type LucideIcon`）。做法不是抄 changelog，而是在 `/tmp` 里装了 1.0.0
+逐个比名字：**0.469.0 与 1.0.0 对 103 个运行时图标全部都有导出（缺失 0）** ⇒ 升级不会被"名字没了"卡住。
+但 1.0 是 major，**默认描边/尺寸、tree-shaking 形状这些视觉面在本机没有判据**（要一轮
+`msgovf`/`rowpair` 真渲染对照）。⇒ 结论：**评估完成、暂不升级**；将来要升时按"升级 PR + 真渲染对照"走一次。
+
+**② FUN-04（`get_topology` 孤儿）—— 台账说反了，它现在是"待拍板"。**
+本表原写「`DEAD_COMMANDS` 挂账但理由已过期（'随 TopologyBar 在 5.0.3 删除'）」。现读
+`src/api/events.test.ts` 的挂账原文是「保留为应用内只读诊断接口；前端消费者随 TopologyBar 在 5.0.3
+删除，暂无 UI 入口」—— 这句话**是准确的**（TopologyBar 确实在 5.0.3 删了，命令被**保留**下来）。
+真正没过期的是 10-26 那轮的结论：`closedloop-findings` 说「不建议维持现状：**接线**（新功能，约 30–60 行，
+要先砍掉那条"无 UI 入口"豁免）或**删掉**（约 10 行，删完双向对账里不再出现）」⇒ **需负责人二选一**。
+本轮不动代码，只在 §8 把状态改成"待拍板"。
+
+**③ TST-09（Windows 三类行为用例）—— 本轮判不做。**
+三类要写的是 `#[cfg(windows)]` 的生产行为用例（缓存软链清扫 / 磁盘写失败 / 托盘角标）。
+写得出，但**本机跑不了**（没有 Windows；跨编译只到 `cargo check`，见 §10 的 xwin 结论）⇒
+按本仓口径（没跑过的层不许写成绿）它们只能等 windows-latest 那条腿给读数。
+在没有本地判据的前提下一次写三条，风险是把"我以为它会红"当成了判据 —— 与 §4.0y 刚付的学费同源。
+
 ### 4.1 已核查且未发现问题的稳定性面
 
 - **锁顺序**：全仓无 `peers↔db` 嵌套；`file_receivers→db` 顺序成立。
@@ -1175,7 +1198,7 @@ node --experimental-strip-types -e '
 >
 > 现在把它改成**唯一的状态表**：`§1/§2/§3/§6/§7` 各节记的是**审计当时**的发现，今天的状态以本表为准。
 > ⚠️ 诚实边界：本表是**人工对账 + 每行挂复跑命令**，不是机器判据 —— 没有任何脚本断言"这张表与代码一致"
-> （能做这种断言的只有逐行的复跑命令本身）。表里没写的 ID 见 §4.0a～§4.0aa 的复核结论。
+> （能做这种断言的只有逐行的复跑命令本身）。表里没写的 ID 见 §4.0a～§4.0ab 的复核结论。
 
 | 序 | ID | 今天的状态 | 凭据 / 复跑 |
 |---|---|---|---|
@@ -1197,7 +1220,7 @@ node --experimental-strip-types -e '
 | 15 | SEC-04/05/06/08/12 | **全部已修**（SEC-04 5.15.14 + 5.15.17 留痕；SEC-05/06/08/12 见 5.15.13） | SEC-08 那条是入站帧聚合驻留的**全局限额 1 GiB**（审计原估 8 GiB 上界） |
 | 15b | SEC-07 / SEC-09 / SEC-10 / SEC-11 | **不成立 / 已撤回 / 判不修 / 判不修** | §4.0 与 §4.0b 逐条给了理由，负结论也是一等结论 |
 | 16 | 替换矩阵勘误 | **已做**（5.15.13：新增 §0 勘误 + 一条「每个生产依赖都必须在矩阵里登记过」的新判据，带变异正控） | 文件真路径是 `docs/architecture/open-source-replacement-matrix.md`（⚠️ 本表原来只写裸文件名，害我照着它写了一条指不到文件的复跑命令）；复跑 `grep -n "勘误" docs/architecture/open-source-replacement-matrix.md` |
-| 17 | 依赖卫生 | `@pinia/colada` 死依赖**已删**；**`lucide-vue-next` 升级评估未做** | `grep -n "colada" package.json` 应为 0 命中（复跑时带一个阳性对照：`grep -n "vue-i18n" package.json` 必须有命中） |
+| 17 | 依赖卫生 | `@pinia/colada` 死依赖**已删**；**`lucide-vue-next` 升级评估已完成**（§4.0ab：0.469.0 → 1.0.0，103 个运行时图标在 1.0.0 里都有导出、缺失 0；视觉面本机无判据 ⇒ **判暂不升级**） | `grep -n "colada" package.json` 应为 0 命中（复跑时带一个阳性对照：`grep -n "vue-i18n" package.json` 必须有命中） |
 | 18 | SEC-08 | **已修**（见第 15 行） | —— 原表把它单独列一行是重复计数 |
 | 19 | 文件气泡的失败原因重启后失忆 | **1:1、群文件、接收收尾三族都闭环了**：5.15.29 事件载荷配码 → 5.15.31 码写进 `messages.fail_code`（§4.0q）→ 5.15.32 群文件 6 条转码并拆掉"一句话兼两职"的通知判据（§4.0r）。剩 **A2/A2b/A2c 已落地**（5.15.35 §4.0s / 5.15.36 §4.0t / 5.15.37 §4.0u / 5.15.38 §4.0v，含取消被当失败的语义修复）；⚠️ 5.15.40 的 review 推翻了 §4.0v 的「闭环」——上一批只认两种写法，漏了 `map_err(format!)`/`ok_or`/包装层/`begin_reassemble` 四种形状的五条路径，已在 §4.0y 补齐：接收收尾四格转码，并修掉两处被散文藏住的**真缺陷**（群收尾失败一律标成「对端失联」＋那一格不落事件 ⇒ 气泡停在发送中）；begin/resume 经复核**不上屏**（只回 `FileReject` + 日志）⇒ 判为不配码（§4.0t）；§4.0v 已收口发送侧那一族与「取消被当失败」；剩余自由文本只有**不上屏**的两类，结论与凭据见 §4.0t/§4.0v；⚠️ 群文件那一步的**集成层**（真机/跨进程）本轮未证 | ⚠️ 两处前置都订正过：审计原来写「配码即可」不完整（要先看清码给谁读），而我 5.15.29 写的「必须加表列（DB v16）」**也是错的** —— 现读 `db/file_transfer.rs` 里 `set_message_status(&tx, &format!` 那几行（按符号名找，别抄行号）与 `cascade_tests.rs:809`：`file-<tid>` / `gfile-<tid>` **本来就是 `messages` 行** ⇒ 批 B 的真实形状是给 `finalize_file_failure` 带上 `fail_code`、群路径同写一码，**不加列、不迁移**（凭据与教训见 §4.0p）。复跑：`node --test src/utils/fileFailReason.test.ts` |
 | 20 | `## [4.39.2]` 两节内容不同（历史改号） | **判为不做**（不是来不及：历史那几节没有任何消费者，跨节搬正文的风险大于收益） | §4.0k 给了三节的 `git tag --contains` 现算表；判据对这种形状**显式打印**，不会静默放过 |
@@ -1209,7 +1232,7 @@ node --experimental-strip-types -e '
 3. **第 19 行·批 B 剩下的半格** —— 1:1 那一半已在 5.15.31 闭环（不加列、不迁移，走的正是 5.15.22 那扇门）。剩 **B2**：群文件那 6 条 `REASON_*` 转码并写进气泡行，且必须先把「是不是稳定码」与「要不要弹 toast」拆成两件事（`group_file.rs::is_stable_fail_code` 现在一句话兼两职；不拆就会在断链时给每个在途群文件弹一次 toast —— 那个文件自己写明了这是"把可归因做成噪音回归"）。同批一并处理 A2：`handle_share.rs` 的 `reason` 是变量，值来自文件层的中文 `Err("文件完整性校验失败")`（`network/file/receive.rs:1497`、`group_receive.rs:307`，且 `file_tests.rs:890` 把它当契约断言着）⇒ 静态形状判据看不见变量里的中文，要连错误串来源与那条断言一起改。
 4. ~~**DUP 剩余的 2 行**~~ —— **本轮清零**（DUP-07 已于 5.15.39 收口；DUP-15 复核后确认早有棘轮判据 ㊼ 与显式登记的保留理由，§4.0x）。原文：纯重复，收益是"少一份会漂的拷贝"。DUP-03/04 已于 5.15.26 / 5.15.25 收口，DUP-13 已于 5.15.27 收口（§4.0n：现数是两种策略九处，不是审计写的三份），DUP-06 已于 5.15.28 收口（§4.0o），DUP-14 判**不做**。
    （第 12 行 DUP-02 的那半本轮**复核后判不再统一**，理由与三条防复发判据见 §4.0l。）
-5. **`lucide-vue-next` 升级评估**、**`get_topology` 孤儿**（FUN-04）、**TST-06 真 ENOSPC**、**TST-09 Windows 三类行为用例**，以及**需要现场日志才能推进的 Windows 渲染层卡死**（另见 `docs/notes/`）。（第 20 行的历史改号本轮**判为不做**，理由与现算证据在 §4.0k，不再列进待办。）
+5. ~~`lucide-vue-next` 升级评估~~（§4.0ab 已完成，判暂不升级）、~~`get_topology` 孤儿~~（§4.0ab：**待拍板**接线 or 删）、~~TST-09 Windows 三类行为用例~~（§4.0ab 判不做：本机无判据）、剩 **TST-06 真 ENOSPC**、**INV-P18 的 Ed25519 半条**，以及**需要现场日志才能推进的 Windows 渲染层卡死**（另见 `docs/notes/`）。（第 20 行的历史改号本轮**判为不做**，理由与现算证据在 §4.0k，不再列进待办。）
 
 ---
 
