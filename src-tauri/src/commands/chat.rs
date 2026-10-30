@@ -377,19 +377,17 @@ pub async fn recall_message(
     let s_db = s.clone();
     let target_db = target.clone();
     let friend_db = friend_id.clone();
-    tokio::task::spawn_blocking(move || {
+    tokio::task::spawn_blocking(move || -> Result<(), String> {
         let dbc = s_db.db.lock().unwrap_or_else(|e| e.into_inner());
         let seq = db::get_clock(&dbc, &friend_db);
-        db::insert_recall(&dbc, &friend_db, &target_db, &s_db.device_id, seq).ok();
-        db::materialize_recall(&dbc, &target_db).ok();
-        // 会话预览那一行读的是 `conversations.last_msg`（存储列），不重算就是
-        // "正文已清空、列表上还挂着原文"。失败要留痕：静默漏掉等于这条修复没落地。
-        if let Err(e) = db::refresh_conversation_summary(&dbc, &friend_db) {
-            s_db.logger.warn("chat", format!("code=RECALL_PREVIEW_REFRESH_FAIL conv={friend_db}：{e}"));
-        }
+        // B1-F6：墓碑 + 物化 + 会话预览是**一笔事务**。原先前两笔各 `.ok()` ⇒
+        // 墓碑写进去而物化失败就永久分裂，而幂等短路只看墓碑 ⇒ 重试也补不上。
+        db::apply_recall(&dbc, &friend_db, &target_db, &s_db.device_id, seq)
+            .map(|_| ())
+            .map_err(|e| format!("撤回写入本机数据库失败（未生效，可重试）：{e}"))
     })
     .await
-    .map_err(|e| format!("撤回物化被线程池中断: {e}"))?;
+    .map_err(|e| format!("撤回物化被线程池中断: {e}"))??;
     let _ = s.app.emit("message-recalled", &target);
     Ok(())
 }

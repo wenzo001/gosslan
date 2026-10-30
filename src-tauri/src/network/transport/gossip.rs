@@ -1088,15 +1088,23 @@ async fn handle_gossip(state: &Arc<AppState>, peer_id: &str, env: GossipEnvelope
                                 is_member_here,
                             );
                             if allowed {
-                                db::insert_recall(
+                                // B1-F6：三笔（墓碑/物化/预览）合成一笔事务；失败要留痕。
+                                // 这里是**收端**，没有界面能承接错误 ⇒ 只记日志。
+                                if let Err(e) = db::apply_recall(
                                     &dbc,
                                     &conv_id,
                                     &p.target,
                                     &env.sender_id,
                                     env.seq,
-                                )
-                                .ok();
-                                db::materialize_recall(&dbc, &p.target).ok();
+                                ) {
+                                    state.logger.warn(
+                                        "chat",
+                                        format!(
+                                            "code=RECALL_APPLY_FAIL conv={conv_id} msg={}：{e}",
+                                            p.target
+                                        ),
+                                    );
+                                }
                                 // 会话列表那一行读的是 `conversations.last_msg`（存储列），
                                 // 不重算就是"对端撤了、我这台预览还挂着原文"。
                                 if let Err(e) = db::refresh_conversation_summary(&dbc, &conv_id) {

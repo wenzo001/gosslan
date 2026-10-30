@@ -48,6 +48,29 @@ pub fn recall_source(conn: &Connection, msg_id: &str) -> Option<(String, String)
     .flatten()
 }
 
+/// 撤回的**一笔收口**：墓碑 + 物化 + 会话预览，同一个事务（B1-F6）。
+///
+/// 为什么必须合成一个：这三笔原先在三个调用点各写一遍、而且前两笔都是 `.ok()` ——
+/// 墓碑写进去而物化失败（或反过来）就**永久分裂**：`is_recalled` 说"撤过"、正文还在；
+/// 而幂等短路看的正是 `is_recalled` ⇒ 重试再也补不上（用户看到的是"有时撤回不生效"）。
+///
+/// 事务还顺带让"预览重算"落进同一笔：它原先在三个调用点各写一遍、错漏一处就是
+/// "正文清了、列表还挂着原文"。
+pub fn apply_recall(
+    conn: &Connection,
+    conv_id: &str,
+    msg_id: &str,
+    recaller_id: &str,
+    seq: i64,
+) -> Result<bool> {
+    let tx = conn.unchecked_transaction()?;
+    let inserted = insert_recall(&tx, conv_id, msg_id, recaller_id, seq)?;
+    materialize_recall(&tx, msg_id)?;
+    refresh_conversation_summary(&tx, conv_id)?;
+    tx.commit()?;
+    Ok(inserted)
+}
+
 /// 把撤回**物化**到消息行：清空正文、改 kind。
 ///
 /// `content` 清空后，搜索 / 导出 / 已读水位**一行都不用改就自动正确**（没有正文可命中）。
