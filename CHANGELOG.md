@@ -13,6 +13,32 @@
 
 ## [Unreleased]
 
+## [5.15.42] - 2026-10-30
+
+
+### TST-02 第二步：会话内那两处也收进家，"会话边界"仍由调用方给
+
+上一批收的是**跨会话**的三段；这一步收**会话内**的两处：`onMessageAcked` 的送达提升
+与重发时的原地回退。新增 `patchMessageInConv(lists, convId, msgId, patch)` ——
+与 `findFirstMessageById` 的差别是**语义**不是写法：这里"哪个会话"由调用方给
+（`convIdOfMessage` / 已知 convId），只在那一个会话里找；把边界藏进 helper 会让
+"别把另一个会话里同 id 的行也改了"这件事读不出来。
+
+- 判据：`utils/messages.test.ts` 加一组（只在该会话里找 / 另一会话同 id 不许被动 /
+  convId 缺失·会话不存在·消息不存在都给 null / 不可变）；
+  接线判据再加一条 —— **store 里不再有手写的 `findIndex((m) => m.msg_id)`**（现数为 0），
+  且 `patchMessageInConv` 至少被用 2 处；带内联正控 + 一次外部变异（把 findIndex 塞回 `onMessageAcked`）。
+- **TST-02 到此两步做完**：§8 第 7 行可以标「已落地」。剩下与 store 有关但**不是**同一件事的
+  （`onPeerRead` 的按会话批量提升，谓词本来就在 `utils/messages::promoteOnPeerRead`）不属于这条。
+
+
+**真跑过的验证**：`npm test` **1528 通过 / 0 失败**（+2 条判据）；`node --test src/utils/messages.test.ts`
+**124/124**；`node --test src/utils/designGuards.test.ts` **243/243**；`npm run verify:local` **25 步全绿**
+（含 `vue-tsc --noEmit` 与 vite 构建）。
+外部变异：把 `.findIndex((m) => m.msg_id …)` 塞回 `onMessageAcked` ⇒ 接线判据点名
+「store 里还有 1 处手写 findIndex(msg_id)」（退 1），跑完 `cmp` 逐字节还原。
+**没跑的层**：真渲染未跑（改动只换了"怎么找到那一条"，产出的记录逐字段相同）。
+
 ## [5.15.41] - 2026-10-30
 
 

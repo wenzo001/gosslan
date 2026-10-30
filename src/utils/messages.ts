@@ -284,6 +284,29 @@ export function replaceMessageAt(
   return { ...lists, [convId]: next };
 }
 
+/**
+ * **会话内**按 msg_id 找一条并打补丁（不可变）。
+ *
+ * 与 [`findFirstMessageById`] 的区别是**语义**，不是写法：这里"哪个会话"由调用方给
+ * （`convIdOfMessage` 或已知的 convId），所以**只在那一个会话里找**。
+ * 仓库里两处这样的接线（`onMessageAcked` 的送达提升、重发时的原地回退）都靠这条边界保证
+ * "别把另一个会话里同 id 的行也改了"——把边界藏进 helper 会让这一点读不出来。
+ */
+export function patchMessageInConv(
+  lists: Record<string, MessageRecord[]>,
+  convId: string | null | undefined,
+  msgId: string,
+  patch: (rec: MessageRecord) => MessageRecord,
+): { lists: Record<string, MessageRecord[]>; rec: MessageRecord } | null {
+  if (!convId) return null;
+  const list = lists[convId];
+  if (!list) return null;
+  const index = list.findIndex((m) => m.msg_id === msgId);
+  if (index < 0) return null;
+  const rec = patch(list[index]);
+  return { lists: replaceMessageAt(lists, convId, index, rec), rec };
+}
+
 export function replaceOptimistic(
   list: MessageRecord[],
   tmpMsgId: string,

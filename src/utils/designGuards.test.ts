@@ -5969,3 +5969,24 @@ test("跨会话按 msg_id 改一条不许手写循环：三个 handler 必须走
   assert.notEqual(gutted, store, "正控没落进去 ⇒ 锚点写法变了");
   assert.ok(CROSS_CONV.test(gutted));
 });
+
+// ---------------- 会话内那两处也必须走家（TST-02 第二步） ----------------
+//
+// 第一步把**跨会话**的三段收进了 `utils/messages`；这一步收的是**会话内**那两处
+// （`onMessageAcked` 的送达提升、重发时的原地回退）。它们的边界是"哪个会话由调用方给"，
+// 所以用的是 `patchMessageInConv` 而不是 `findFirstMessageById`——判据要把这个区分也钉住。
+test("会话内的按 msg_id 改一条也走家：store 里不再有手写的 findIndex(msg_id)", () => {
+  const store = readFileSync(join(import.meta.dirname, "..", "stores", "useChatStore.ts"), "utf8");
+  const HAND = /\.findIndex\(\(m\)\s*=>\s*m\.msg_id/g;
+  const hits = [...store.matchAll(HAND)].length;
+  assert.equal(hits, 0, `store 里还有 ${hits} 处手写 findIndex(msg_id) ⇒ 回到"每处一份、没法单测"`);
+  const uses = [...store.matchAll(/patchMessageInConv\(/g)].length;
+  assert.ok(uses >= 2, `patchMessageInConv 只被用了 ${uses} 处（下限 2：送达提升 + 重发回退）`);
+  // 正控：把一处换回手写 findIndex，尺子必须说"有"
+  const gutted = store.replace(
+    'const hit = patchMessageInConv(messages.value, convIdOfMessage(msgId), msgId, (m) => ({',
+    'const i = (messages.value[convId] ?? []).findIndex((m) => m.msg_id === msgId); void i;\n        const hit = patchMessageInConv(messages.value, convIdOfMessage(msgId), msgId, (m) => ({',
+  );
+  assert.notEqual(gutted, store, "正控没落进去 ⇒ 锚点写法变了");
+  assert.ok(HAND.test(gutted));
+});

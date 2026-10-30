@@ -2,6 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
   findFirstMessageById,
+  patchMessageInConv,
   replaceMessageAt,
   transferFailureMsgIds,
   promoteOnPeerRead,
@@ -1455,4 +1456,21 @@ test("replaceMessageAt：不可变、只动那一条、其余会话保持同一�
   assert.equal(next.a[0], lists.a[0], "没改的那条保持同一引用（虚拟列表按引用跳过重渲染）");
   assert.equal(next.a[1].status, "failed");
   assert.equal(next.b, lists.b, "别的会话不许被复制");
+});
+
+test("patchMessageInConv：只在该会话里找，另一个会话里同 id 的行不许被动", () => {
+  const lists = { a: [mkRec("m1")], b: [mkRec("m1")] };
+  const hit = patchMessageInConv(lists, "b", "m1", (m) => ({ ...m, status: "delivered" }));
+  assert.ok(hit, "b 里明明有 m1");
+  assert.equal(hit.rec.status, "delivered");
+  assert.equal(hit.lists.b[0].status, "delivered");
+  assert.equal(hit.lists.a[0].status, "sent", "a 里那条同 id 的行不许被顺带改掉（这是与 findFirst 的语义差别）");
+  assert.equal(hit.lists.a, lists.a, "没命中的会话保持同一引用");
+  // 边界：convId 缺失 / 会话不存在 / 消息不存在 ⇒ null（调用方据此走"暂存/新建"分支）
+  assert.equal(patchMessageInConv(lists, null, "m1", (m) => m), null);
+  assert.equal(patchMessageInConv(lists, undefined, "m1", (m) => m), null);
+  assert.equal(patchMessageInConv(lists, "nope", "m1", (m) => m), null);
+  assert.equal(patchMessageInConv(lists, "a", "nope", (m) => m), null);
+  // 不可变：入参列表不许被就地改
+  assert.equal(lists.a[0].status, "sent");
 });
