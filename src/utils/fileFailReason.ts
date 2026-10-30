@@ -29,6 +29,14 @@
 /** 后端稳定失败码 → 中英词典的 key。键名与后端码**逐字相同**。 */
 const FILE_FAIL_REASON_KEYS: Record<string, string> = {
   DISK_FULL: "file.diskFull",
+  // 1:1 文件在 outbox 里过期。后端这一族以前直接发中文串 ⇒ 英文界面看到硬编码中文；
+  // 现在发码，措辞归词典（`logging.rs::FAIL_CODE_FILE_SEND_EXPIRED`）。
+  FILE_SEND_EXPIRED: "file.sendExpired",
+  FILE_SEND_GIVEUP: "file.sendGiveUp",
+  FILE_RELAY_STATE_EXPIRED: "file.relayStateExpired",
+  FILE_RELAY_SIZE_MISMATCH: "file.relaySizeMismatch",
+  FILE_INTEGRITY_FAILED: "file.integrityFailed",
+  FILE_RELAY_STALLED: "file.relayStalled",
   // ── 消息气泡的失败原因（`messages.fail_code`，DB v14→v15）───────────────────
   // 词表另一侧：`src-tauri/src/error_codes.rs::MESSAGE_FAIL_CODES`（双向对账见
   // `fileFailReason.test.ts`）。这四条是**写这一行时就知道原因**的位置；文件那一族的

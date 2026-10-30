@@ -296,7 +296,7 @@ async fn handle_relay_chunk(
                     "file-failed",
                     &FileFailedInfo {
                         transfer_id: transfer_id.clone(),
-                        reason: "中继接收状态已过期，文件未完成".to_string(),
+                        reason: crate::logging::FAIL_CODE_FILE_RELAY_STATE_EXPIRED.to_string(),
                     },
                 );
                 return;
@@ -324,7 +324,7 @@ async fn handle_relay_chunk(
                     "file-failed",
                     &FileFailedInfo {
                         transfer_id: transfer_id.clone(),
-                        reason: "中继文件大小校验失败".to_string(),
+                        reason: crate::logging::FAIL_CODE_FILE_RELAY_SIZE_MISMATCH.to_string(),
                     },
                 );
                 return;
@@ -399,7 +399,7 @@ async fn handle_relay_chunk(
                     "file-failed",
                     &FileFailedInfo {
                         transfer_id: transfer_id.clone(),
-                        reason: "文件完整性校验失败".to_string(),
+                        reason: crate::logging::FAIL_CODE_FILE_INTEGRITY_FAILED.to_string(),
                     },
                 );
                 return;

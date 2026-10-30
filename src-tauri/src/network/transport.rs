@@ -112,7 +112,7 @@ pub fn sweep_stale_relay(state: &AppState) -> usize {
                 "file-failed",
                 &FileFailedInfo {
                     transfer_id: id,
-                    reason: "接收超时：中继传输一小时未完成，已回收".to_string(),
+                    reason: crate::logging::FAIL_CODE_FILE_RELAY_STALLED.to_string(),
                 },
             );
         }
