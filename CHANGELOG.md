@@ -13,6 +13,45 @@
 
 ## [Unreleased]
 
+## [5.15.31] - 2026-10-30
+
+### 文件失败的**原因码写进气泡行**（第 19 行·批 B 的前半：重启之后还说不说得出为什么）
+
+上一批订正完前置就动手了：**不需要迁移、不需要加列**。`file-<tid>` / `gfile-<tid>` 本来就是
+`messages` 行 ⇒ 5.15.22 那扇 `set_message_failed(msg_id, code)` 就是它们该走的门。
+
+- **码从终态推，不让调用方传参**：`FileJobEnd` 已经是"为什么收尾"的唯一表达
+  （`Expired` 超时 / `GiveUp` 重试用尽 / `Cancelled` 用户取消）。再加一个 `fail_code` 参数
+  就等于允许第三种说法存在（终态说 Expired、码说 GiveUp）—— 那是本仓判过的"一个数值当两件事用"的同族。
+  代价为零：**签名没动 ⇒ 六处既有调用点（含三处测试）一行没改**。
+- 取消**故意留 `NULL`**：取消没有原因，写成非空等于给用户自己按下的那一下编一个故障理由；
+  `NULL` 本身是一个状态（INV-P16 第 ③ 条）。
+- **词汇表归一处**：`FILE_SEND_EXPIRED` / `FILE_SEND_GIVEUP` 从 `logging.rs`（事件载荷族的家）
+  搬进 `error_codes.rs::MESSAGE_FAIL_CODES`（落库档位的家），事件载荷与库里那一列引用**同一个常量**
+  ⇒ 不会出现"当场显示 A、重启后读回来是 B"。另外四条（中继过期 / 大小不符 / 完整性 / 中继停滞）
+  暂时只上屏不落库，留在 `logging.rs`，等批 B2 给它们接上写点。
+- **界面那一侧是免费的**：`useMessageDisplay` 的 failed 分支本来就按 `message.fail_code` 查表，
+  与消息种类无关 ⇒ 文件气泡自动开始说人话，且**重启后仍然说得出**。这是把前置搞对之后省掉的整段活。
+
+**真跑过的验证**：新用例 `db::file_transfer_status_tests::a_failed_file_bubble_keeps_why_it_failed_and_a_cancelled_one_keeps_none` ——
+三种终态各断一次（Expired→`FILE_SEND_EXPIRED`、GiveUp→`FILE_SEND_GIVEUP`、Cancelled→`NULL`），
+并先断言"这一格终态真的落地了"（不落地就直接 fail，防"读回来 NULL 是因为压根没写"这种假绿）。
+变异自证：把 `Expired` 的映射改成 `None` ⇒ 该用例报
+`left: None / right: Some("FILE_SEND_EXPIRED")` 并红（`MUT_EXIT=101`），还原 `cmp` 逐字节一致。
+`node --test src/utils/fileFailReason.test.ts` 8/8；Rust 清单基线 **macos 1318 / windows 1296**
+（`--update`→`--sync-baselines`→再 check）。
+⚠️ 过程里我自己又踩了一次"看起来跑了其实没跑"：第一次变异用 `grep` 过滤 cargo 输出，
+grep 零命中被我当成没异常 —— 实际那条 cargo 因 cwd 不对根本没执行（我上一条命令里 `cd src-tauri` 之后
+又用仓库根的相对路径跑 node，两个错叠在一起）。改成"落盘日志 + 裸取退码"才拿到真读数。
+**本批被自己的护栏抓住两次（都不是"改完直接绿"）**：
+① 我把更新说明插成了**第二个行首 `## [Unreleased]`** ⇒ 第 18 步同时报"锚点 2 个"与"`## [5.15.31]` 是空的"
+（正是那条结构检查存在的理由：发布脚本按锚点插小节，锚点被吞不会报错、只会静默错位）；
+② 我 5.15.22 写的那条 `MESSAGE_FAIL_CODES.len() == 4` 长度钉**当场把扩档位这件事拦下来**
+⇒ 改成 6 并把"要同步哪三处"写进断言消息里。
+最终树 `verify:local` **25 步全绿、共 74.1s**（`VERIFY_EXIT=0` 现读自日志）。
+**未跑**：UI 探针（本批改的是写库与码的归属，渲染分支未动）、跨进程 E2E、真机。
+
+
 ## [5.15.30] - 2026-10-30
 
 ### 订正我自己 5.15.29 写下的假前置：文件气泡**就是** `messages` 行，批 B 不需要迁移

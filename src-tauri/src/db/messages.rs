@@ -1666,7 +1666,13 @@ mod fail_code_tests {
     /// 这条不是形式主义 —— 小写或带空格的码在前端那张表里匹配不上，会静默回落到通用文案。
     #[test]
     fn message_fail_codes_are_stable_identifiers() {
-        assert_eq!(error_codes::MESSAGE_FAIL_CODES.len(), 4, "档位变了要同步前端表与词典");
+        assert_eq!(
+            error_codes::MESSAGE_FAIL_CODES.len(),
+            6,
+            "档位变了要同步三处：前端表 `src/utils/fileFailReason.ts`、中英词典、以及这条长度钉"
+            // 5.15.31 从 4 → 6：`FILE_SEND_EXPIRED` / `FILE_SEND_GIVEUP` 原先只是事件载荷里的码，
+            // 现在也会落进这一列（`FileJobEnd::fail_code`），所以按本仓口径它们**必须**进这张表。
+        );
         for code in error_codes::MESSAGE_FAIL_CODES {
             assert!(
                 !code.is_empty()

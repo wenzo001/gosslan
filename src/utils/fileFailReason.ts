@@ -30,7 +30,9 @@
 const FILE_FAIL_REASON_KEYS: Record<string, string> = {
   DISK_FULL: "file.diskFull",
   // 1:1 文件在 outbox 里过期。后端这一族以前直接发中文串 ⇒ 英文界面看到硬编码中文；
-  // 现在发码，措辞归词典（`logging.rs::FAIL_CODE_FILE_SEND_EXPIRED`）。
+  // 现在发码，措辞归词典。这两条从 5.15.31 起**也落库**（`messages.fail_code`），所以家搬到了
+  // `error_codes.rs`（`FILE_SEND_EXPIRED` / `FILE_SEND_GIVEUP`，在 `MESSAGE_FAIL_CODES` 里对账）；
+  // 事件载荷与库里那一列引用的是**同一个常量**，不会出现"当场说 A、重启后说 B"。
   FILE_SEND_EXPIRED: "file.sendExpired",
   FILE_SEND_GIVEUP: "file.sendGiveUp",
   FILE_RELAY_STATE_EXPIRED: "file.relayStateExpired",
