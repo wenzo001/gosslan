@@ -1289,6 +1289,10 @@ STB-04 半条（非好友分支广播后直接 return，无撤销登记）、STB
   `code=UPDATER_CANCEL_X` 仍然算 1 行 ⇒ 变异没红。针头补上 ` outcome=` 才抓住。
 - 门禁连带：文件取消那行是同步 append，加完把 `worker_bound_heavy_commands_do_not_grow`
   顶到 32（上限 31）⇒ 已改成进 `spawn_blocking`。这条正好证明那条棘轮有效。
+- ⚠️ 我自己的错（5.15.60 已还原）：对 `chat.rs` / `files.rs` / `updater.rs` 跑了
+  `rustfmt <file>`，而这三份都是 **`include!` 分册** —— `cargo fmt` 不管它们，独立跑 rustfmt
+  会按"独立 crate 根"整档重排（实测 232 / 117 / 24 行）。**改分册不要跑 rustfmt**，
+  形状由各自判据守；要格式化就先确认它是不是分册（`grep 'include!("commands/x.rs")'`）。
 
 ### 4.1 已核查且未发现问题的稳定性面
 
