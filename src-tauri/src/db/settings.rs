@@ -53,6 +53,12 @@ pub fn get_config_bool(conn: &Connection, key: &str, default: bool) -> bool {
     }
 }
 
+/// 读一条设置。⚠️ **读库失败与"没有这条"都返回 `None`**（`optional().ok().flatten()` 把两者折叠在一起）。
+///
+/// 所以它只适合"缺省即合理"的只读场景（比如取一个可选的显示偏好）。
+/// **读-改-写路径必须用 [`get_setting_checked`]**：把 `None` 当"空列表"再整份写回，
+/// 一次读抖动就会把用户整份配置覆盖掉（B3-F3，2026-10-30 修的那五处就是这个形状）。
+/// 命令层还有一条形状判据盯着这件事（`designGuards.test.ts` 的「读库结果不许静默折叠」）。
 pub fn get_setting(conn: &Connection, key: &str) -> Option<String> {
     conn.query_row(
         "SELECT value FROM settings WHERE key = ?1",

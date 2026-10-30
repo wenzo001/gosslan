@@ -39,7 +39,7 @@ pub async fn list_routed_endpoints(
     tokio::task::spawn_blocking(move || -> Result<Vec<RoutedEndpoint>, String> {
         let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());
         Ok(parse_endpoints(
-            &db::get_setting(&dbc, ROUTED_ENDPOINTS_KEY).unwrap_or_default(),
+            &db::get_setting_checked(&dbc, ROUTED_ENDPOINTS_KEY).map_err(|e| format!("读取跨子网端点失败: {e}"))?.unwrap_or_default(),
         ))
     })
     .await
@@ -71,7 +71,7 @@ pub async fn add_routed_endpoint(
     tokio::task::spawn_blocking(move || -> Result<Vec<RoutedEndpoint>, String> {
         let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());
         let mut list =
-            parse_endpoints(&db::get_setting(&dbc, ROUTED_ENDPOINTS_KEY).unwrap_or_default());
+            parse_endpoints(&db::get_setting_checked(&dbc, ROUTED_ENDPOINTS_KEY).map_err(|e| format!("读取跨子网端点失败: {e}"))?.unwrap_or_default());
         // 同一个**地址**不重复添加，无论是否带 device_id —— 一个地址只对应一个端点。
         if !list.iter().any(|e| e.address == candidate.address) {
             list.push(candidate);
@@ -103,7 +103,7 @@ pub async fn remove_routed_endpoint(
     tokio::task::spawn_blocking(move || -> Result<Vec<RoutedEndpoint>, String> {
         let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());
         let mut list =
-            parse_endpoints(&db::get_setting(&dbc, ROUTED_ENDPOINTS_KEY).unwrap_or_default());
+            parse_endpoints(&db::get_setting_checked(&dbc, ROUTED_ENDPOINTS_KEY).map_err(|e| format!("读取跨子网端点失败: {e}"))?.unwrap_or_default());
         let before = list.len();
         list.retain(|e| {
             // 库里的历史脏数据可能未归一化（裸 IP / 裸 IP 带非标准端口），按当前规则再过一遍

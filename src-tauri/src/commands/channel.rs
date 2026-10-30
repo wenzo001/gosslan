@@ -74,10 +74,20 @@ pub async fn build_runtime_snapshot(s: &Arc<AppState>) -> RuntimeSnapshot {
     let (routed_endpoints, relay_enabled) = {
         let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());
         (
-            crate::discovery::routed::parse_endpoints(
-                &db::get_setting(&dbc, crate::discovery::routed::ROUTED_ENDPOINTS_KEY)
-                    .unwrap_or_default(),
-            )
+            crate::discovery::routed::parse_endpoints(&match db::get_setting_checked(
+                &dbc,
+                crate::discovery::routed::ROUTED_ENDPOINTS_KEY,
+            ) {
+                Ok(v) => v.unwrap_or_default(),
+                Err(e) => {
+                    // 这一格是**同步、非 Result** 的只读诊断（界面没有错误通道可承接）⇒
+                    // 仍然折叠成空，但**必须留痕**：否则"读不到"会被当成"没有配置"
+                    //（B1-F7 的同一形状，只是这一处没法上抛）。
+                    s.logger
+                        .warn("config", format!("code=ROUTED_ENDPOINTS_READ_FAILED {e}"));
+                    String::new()
+                }
+            })
             .len(),
             db::get_config_bool(&dbc, RELAY_ENABLED_KEY, false),
         )

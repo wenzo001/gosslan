@@ -5998,3 +5998,63 @@ test("会话内的按 msg_id 改一条也走家：store 里不再有手写的 fi
   assert.notEqual(gutted, store, "正控没落进去 ⇒ 锚点写法变了");
   assert.ok(HAND.test(gutted));
 });
+
+// ---------------- 读库结果不许静默折叠成「空」（B1-F7 / B3-F3，2026-10-30） ----------------
+//
+// 真实缺陷两个：
+//  · B1-F7：首屏三处主读 `db::get_messages(...).unwrap_or_default()` —— 读库失败时界面看到的是
+//    「这个会话一条记录都没有」，用户会以为聊天记录全没了；
+//  · B3-F3：外链/跨子网端点那两族的**读-改-写**里，读失败折叠成空之后紧接着把整份列表写回 ⇒
+//    一次读抖动就把用户整份配置覆盖掉。
+// 根因还有一层：`db::get_setting` 返回 `Option`（`.ok().flatten()`）⇒ "读失败" 与 "没这条" 不可分。
+// 读-改-写路径必须用 `get_setting_checked`（返回 `Result`）。
+//
+// 判据按形状 + 文件：`commands/` 里这些读**不许**紧跟着 `unwrap_or_default()`。
+test("命令层的主读不许把读库失败折叠成空（B1-F7 / B3-F3）", () => {
+  const dir = join(import.meta.dirname, "..", "..", "src-tauri", "src", "commands");
+  const files = readdirSync(dir).filter((f) => f.endsWith(".rs"));
+  assert.ok(files.length > 20, `只扫到 ${files.length} 个命令文件 ⇒ 目录变了`);
+  // 形状：`db::<这些读>(…)` 之后（同一表达式里）出现 `.unwrap_or_default()`
+  // ⚠️ 间隙里排除 `?`：`get_setting_checked(..)?.unwrap_or_default()` 是**正确**写法
+  // （读失败已经在 `?` 处上抛），没有这一条的话它会被当成本条要抓的折叠。
+  const FOLD = /db::(get_setting|get_setting_checked|get_messages|get_latest_messages|list_conversations|list_groups)\s*\([^;?]{0,200}?\.unwrap_or_default\(\)/g;
+  const probe = (text: string) => [...text.matchAll(FOLD)].map((m) => m[0].slice(0, 60));
+  // 已登记的有意折叠（**带理由，且理由必须在源码里对得上** —— 不是豁免名单，是"读过实现后的判断"）。
+  // relay.rs 的 `load_relay_runtime` 在**拨号循环**里跑，没有界面能承接错误 ⇒ 折叠成"不启用"是刻意的；
+  // 它自己那行注释写着这句理由，下面会把这句话也钉住（理由被删 ⇒ 本条红）。
+  const DOCUMENTED: Record<string, string> = {
+    "relay.rs": "没有用户界面能承接错误",
+    "channel.rs": "同步、非 Result",
+  };
+  const hits: string[] = [];
+  for (const f of files) {
+    const src = readFileSync(join(dir, f), "utf8");
+    const found = probe(src);
+    if (found.length && DOCUMENTED[f]) {
+      assert.ok(
+        src.includes(DOCUMENTED[f]),
+        `${f} 登记成了"有意折叠"，但源码里找不到那句理由（「${DOCUMENTED[f]}」）⇒ 要么它不再是刻意的，要么理由被删了`,
+      );
+      continue;
+    }
+    for (const h of found) hits.push(`${f}: ${h}`);
+  }
+  assert.deepEqual(hits, [], `命令层的读库结果被折叠成空（读失败会被当成"没有数据"）：\n${hits.join("\n")}`);
+  // 正控：合成两段坏码，检测器必须都认（否则这条在空集上恒绿）
+  assert.equal(
+    probe(`let v = db::get_setting(&dbc, "k").unwrap_or_default();`).length,
+    1,
+    "检测器认不出 `get_setting(..).unwrap_or_default()`",
+  );
+  assert.equal(
+    probe(`let v = db::get_messages(&dbc, &c, 10, 0).unwrap_or_default();`).length,
+    1,
+    "检测器认不出 `get_messages(..).unwrap_or_default()`",
+  );
+  // 反控：`get_setting_checked(..)?.unwrap_or_default()` 是**正确**写法（读失败已上抛），不许误伤
+  assert.equal(
+    probe(`db::get_setting_checked(&dbc, "k").map_err(|e| format!("{e}"))?.unwrap_or_default()`).length,
+    0,
+    "正确写法（checked + ?）被误伤了",
+  );
+});
