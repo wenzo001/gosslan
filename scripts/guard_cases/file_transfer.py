@@ -768,8 +768,18 @@ CASES: list[Case] = [
         "     「两处判据都在」，而不是「它保证成功」—— A1-L2 的接收端回执才是真证明。",
         file=TAURI / "src" / "network" / "file.rs",
         injections=[(
+            # 锚点第二次死（2026-10-30，5.15.38）：这一格改发码之后，`return Err` 前多了一句
+            # `logger.error`（把「没邻居」的人话与码分开）⇒ 三行锚点变八行。坏法不变：
+            # 退回「发完就走、不看结果」那一行。
             """        if crate::network::transport::relay_send_to_neighbors(state, peer_id, &offer).await == 0 {
-            return Err("没有可达的中继邻居：文件未发出".to_string());
+            state.logger.error(
+                "file",
+                format!(
+                    "code={} transfer={transfer_id} peer={peer_id} —— 没有可达的中继邻居：文件未发出",
+                    crate::logging::FAIL_CODE_FILE_SEND_NO_RELAY_NEIGHBOR
+                ),
+            );
+            return Err(crate::logging::FAIL_CODE_FILE_SEND_NO_RELAY_NEIGHBOR.to_string());
         }
 """,
             "        let _ = crate::network::transport::relay_send_to_neighbors(state, peer_id, &offer).await;\n",

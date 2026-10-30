@@ -60,6 +60,21 @@ const FILE_FAIL_REASON_KEYS: Record<string, string> = {
   FILE_RELAY_BAD_CHUNK: "file.relayBadChunk",
   FILE_RELAY_TASK_ABORTED: "file.relayTaskAborted",
   FILE_RELAY_HASH_FAILED: "file.relayHashFailed",
+  // ── 中继**发送侧**（5.15.38）────────────────────────────────────────────
+  // `handle_share.rs` 把返回值原样当失败原因 emit。`FILE_SEND_CANCELLED` 与其余十条**不是一类**：
+  // 取消是用户动作，那边见到它就不发失败帧了（取消自己有终态）——它在这里有文案只为
+  // 文档完整（万一将来别处把取消也走这一帧，界面至少说得对）。
+  FILE_SEND_CANCELLED: "file.sendCancelled",
+  FILE_SEND_UNREADABLE: "file.sendUnreadable",
+  FILE_SEND_NOT_REGULAR: "file.sendNotRegular",
+  FILE_SEND_TOO_LARGE: "file.sendTooLargeRelay",
+  FILE_SEND_HASH_TASK_ABORTED: "file.sendHashAborted",
+  FILE_SEND_NO_PUBKEY: "file.sendNoPubkey",
+  FILE_SEND_KEY_EXCHANGE_FAILED: "file.sendKeyExchangeFailed",
+  FILE_SEND_SEAL_FAILED: "file.sendSealFailed",
+  FILE_SEND_NO_RELAY_NEIGHBOR: "file.sendNoRelayNeighbor",
+  FILE_SEND_RELAY_LINK_BROKEN: "file.sendRelayLinkBroken",
+  FILE_SEND_RELAY_TIMEOUT: "file.sendRelayTimeout",
   // ── 消息气泡的失败原因（`messages.fail_code`，DB v14→v15）───────────────────
   // 词表另一侧：`src-tauri/src/error_codes.rs::MESSAGE_FAIL_CODES`（双向对账见
   // `fileFailReason.test.ts`，两条一起钉）。这一族自 5.15.31 / 5.15.32 起**含文件气泡**：

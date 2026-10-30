@@ -460,6 +460,36 @@ pub(crate) const FAIL_CODE_FILE_RELAY_TASK_ABORTED: &str = "FILE_RELAY_TASK_ABOR
 /// 中继收完但**算不出**指纹（读 `.part` 失败）。与"内容不匹配"不同：这是本机读不到，不是对不上。
 pub(crate) const FAIL_CODE_FILE_RELAY_HASH_FAILED: &str = "FILE_RELAY_HASH_FAILED";
 
+// ── 中继**发送侧**（`file/relay_push.rs`，5.15.38）─────────────────────────
+//
+// 这一族同样只走事件载荷（`handle_share.rs` 把返回值原样当 `reason` emit）。
+// `FILE_SEND_CANCELLED` 与其余十条**不是一类**：取消是用户动作，`handle_share` 见到它
+// **不许发失败帧**（取消自己已经有终态与气泡；再发一条 `file-failed` 就是「取消被当失败」，
+// 那正是本仓既有守卫 `guards:用户取消不得记成失败` 在防的东西）。
+
+/// 要发的路径读不到（不存在 / 权限 / IO 错）。原文进日志。
+pub(crate) const FAIL_CODE_FILE_SEND_UNREADABLE: &str = "FILE_SEND_UNREADABLE";
+/// 不是普通文件（目录 / 设备 / 符号链接目标）。
+pub(crate) const FAIL_CODE_FILE_SEND_NOT_REGULAR: &str = "FILE_SEND_NOT_REGULAR";
+/// 超过中继接收侧的单文件上限（出口先拦，别等对端 `admit_inbound` 静默拒收）。
+pub(crate) const FAIL_CODE_FILE_SEND_TOO_LARGE: &str = "FILE_SEND_TOO_LARGE";
+/// 发送前的整份哈希任务被阻塞池丢掉。
+pub(crate) const FAIL_CODE_FILE_SEND_HASH_TASK_ABORTED: &str = "FILE_SEND_HASH_TASK_ABORTED";
+/// **用户取消**（不是失败）。
+pub(crate) const FAIL_CODE_FILE_SEND_CANCELLED: &str = "FILE_SEND_CANCELLED";
+/// 拿不到对端的 X25519 公钥（对方不在群成员表里 / 没交换过密钥）。
+pub(crate) const FAIL_CODE_FILE_SEND_NO_PUBKEY: &str = "FILE_SEND_NO_PUBKEY";
+/// 本机与对端的 DH 算不出共享密钥。
+pub(crate) const FAIL_CODE_FILE_SEND_KEY_EXCHANGE_FAILED: &str = "FILE_SEND_KEY_EXCHANGE_FAILED";
+/// 用共享密钥封文件密钥 / 封分片失败。
+pub(crate) const FAIL_CODE_FILE_SEND_SEAL_FAILED: &str = "FILE_SEND_SEAL_FAILED";
+/// 一跳邻居一个都没接住这一帧（文件未离开本机）。
+pub(crate) const FAIL_CODE_FILE_SEND_NO_RELAY_NEIGHBOR: &str = "FILE_SEND_NO_RELAY_NEIGHBOR";
+/// 某一环没有任何邻居接住（链路中途断）。第几片进日志。
+pub(crate) const FAIL_CODE_FILE_SEND_RELAY_LINK_BROKEN: &str = "FILE_SEND_RELAY_LINK_BROKEN";
+/// 整轮超时（`RELAY_FILE_SEND_DEADLINE`）。秒数进日志。
+pub(crate) const FAIL_CODE_FILE_SEND_RELAY_TIMEOUT: &str = "FILE_SEND_RELAY_TIMEOUT";
+
 /// 把一次写盘失败归类成稳定失败码：盘满 ⇒ [`FAIL_CODE_DISK_FULL`]，其余 ⇒ `None`。
 ///
 /// `None` 表示"没有专属码"，调用方应当保留原始错误文本（那是唯一信息量）。
