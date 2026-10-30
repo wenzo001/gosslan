@@ -360,21 +360,32 @@ mod desktop {
     #[tauri::command]
     pub fn updater_cancel(app: AppHandle, state: State<'_, UpdaterSession>) -> Result<(), String> {
         if state.status.lock().unwrap_or_else(|e| e.into_inner()).phase == PHASE_INSTALLING {
+            // 被拒也要留痕（审计 B1-F1）：这个模块原先只有失败码，取消的两种结局都没有码。
+            log_updater_info(&app, "code=UPDATER_CANCEL outcome=refused_installing");
             return Err("安装已经开始，无法取消".to_string());
         }
-        if let Some(cancel) = state
+        let signalled = if let Some(cancel) = state
             .cancel
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .take()
         {
             cancel.notify_one();
-        }
+            true
+        } else {
+            false
+        };
         *state.bytes.lock().unwrap_or_else(|e| e.into_inner()) = None;
         state.set_status(&app, |st| {
             st.phase = "cancelled".to_string();
             st.downloaded = 0;
         });
+        // `signalled=false` 表示当时没有在飞的下载（点了取消但没东西可停）—— 这一格
+        // 与"真的打断了"在排障时是两件事。
+        log_updater_info(
+            &app,
+            &format!("code=UPDATER_CANCEL outcome=cancelled signalled={signalled}"),
+        );
         Ok(())
     }
 
@@ -578,6 +589,15 @@ mod desktop {
     ///
     /// 一条日志写不出去不该连累返回值：`logger` 拿不到时退回 stderr，
     /// 反正这条错误的**可定位性**由返回给前端的同一个字符串兜底。
+    /// 与 [`log_updater_error`] 同一口径，只是级别是 info（取消的结局不是失败）。
+    fn log_updater_info(app: &AppHandle, msg: &str) {
+        use tauri::Manager;
+        match app.try_state::<std::sync::Arc<crate::state::AppState>>() {
+            Some(s) => s.inner().logger.info("updater", msg.to_string()),
+            None => eprintln!("[gosslan-updater] {msg}"),
+        }
+    }
+
     fn log_updater_error(app: &AppHandle, msg: &str) {
         use tauri::Manager;
         match app.try_state::<std::sync::Arc<crate::state::AppState>>() {
