@@ -853,17 +853,31 @@ fn gfile_reason_label(code: &str) -> &'static str {
 /// 正是那个文件当时写明要避免的"把可归因做成噪音回归"。
 ///
 /// 所以名单是**显式**的：只有"用户现在就能动手解决"的那一类才打扰他。
-/// 落库与气泡文案不受这里影响 —— 六种码全都写进气泡行（`set_gfile_bubble_status`），
-/// 安静 ≠ 不说，说的是"不额外弹窗"。
+/// 落库与气泡文案不受这里影响（六种码都写进气泡行，见 `persistable_group_fail_code`）：
+/// 安静 ≠ 不说，这里取消的只是"弹窗"这一项。
 fn should_notify_group_failure(code: &str) -> bool {
     matches!(code, crate::logging::FAIL_CODE_DISK_FULL)
+}
+
+/// 只有**在册的码**才允许写进 `messages.fail_code`。
+///
+/// 这一列的读者是界面（拿它查词典），所以自由文本进来就等于**把文案写进数据**：
+/// 5.15.32 的发版前 review 抓到的正是这一格 —— 阻塞池被中断那条路给的是
+/// `code=GROUP_CHUNK_POOL_ABORT 文件分片处理任务被线程池中断: …`（`GroupChunkWrite::Failed`
+/// 的动态串），照原样落库会让英文界面在重启后把一串内部文本直接上屏，而且这一列再也对不上词典。
+/// 不在册 ⇒ 写 `NULL`，含义是"这一格没记原因"（INV-P16 ③），不是"没有原因"。
+fn persistable_group_fail_code(reason: &str) -> Option<&'static str> {
+    crate::error_codes::MESSAGE_FAIL_CODES
+        .into_iter()
+        .find(|c| *c == reason)
 }
 
 /// 失败收尾：删除 `.part`、移除接收状态与会话密钥、recipient 置 failed。
 /// 只影响本 transfer，不 panic、不影响其他群文件。
 ///
 /// `reason` 是失败原因（中文自由文本或稳定码）。它**一定进日志**（可归因），
-/// 但只有稳定码才上屏（见 [`is_stable_fail_code`]）。
+/// 但只有**在册的码**才上屏（名单见 [`should_notify_group_failure`]）与才落库
+/// （[`persistable_group_fail_code`]）。
 /// 此前这里压根不往上送原因：群文件失败只发 `message-status-changed`（气泡转 failed），
 /// 于是"磁盘满了"与"对方断线了"在界面上长得一模一样，用户无从下手。
 /// 稳定失败码（如 `DISK_FULL`）由前端查表翻成文案；自由文本原样上屏。
@@ -878,7 +892,13 @@ fn fail_group_file_chunk(state: &Arc<AppState>, transfer_id: &str, reason: &str)
 /// （见 `file::take_group_receives_for_peer`）：摘与收尾合成一个函数的话，
 /// 调用点就只能走"快照 id → 逐个收尾"，而那正是本文件 `:5232` 注释判死过的形状。
 fn finalize_failed_group_receive(state: &Arc<AppState>, transfer_id: &str, reason: &str) {
-    set_gfile_bubble_status(state, transfer_id, "failed", Some(reason));
+    // 只落在册的码：`reason` 也可能是动态内部串（见 `persistable_group_fail_code` 那段）。
+    set_gfile_bubble_status(
+        state,
+        transfer_id,
+        "failed",
+        persistable_group_fail_code(reason),
+    );
     state
         .group_file_keys
         .lock()
@@ -2567,9 +2587,40 @@ mod online_targets_tests {
 #[cfg(test)]
 mod group_file_fail_reason_tests {
     use super::{
-        gfile_reason_label, should_notify_group_failure, REASON_CHUNK_DECRYPT_FAILED, REASON_CHUNK_EXCEEDS_SIZE,
-        REASON_CHUNK_SEQ_GAP, REASON_NO_CHUNK_RECEIVED, REASON_PEER_UNLINKED, REASON_STALLED_GROUP_RECEIVE,
+        gfile_reason_label, persistable_group_fail_code, should_notify_group_failure, REASON_CHUNK_DECRYPT_FAILED,
+        REASON_CHUNK_EXCEEDS_SIZE, REASON_CHUNK_SEQ_GAP, REASON_NO_CHUNK_RECEIVED, REASON_PEER_UNLINKED,
+        REASON_STALLED_GROUP_RECEIVE,
     };
+
+    /// ★ 5.15.32 发版前 review 抓到的那一格的守卫：**没在册的原因不许写进 `messages.fail_code`**。
+    ///
+    /// 那一列的读者是查词典的界面，写进内部串（`code=GROUP_CHUNK_POOL_ABORT …`）就是
+    /// "把文案塞进数据"：英文界面重启后会原样上屏一串内部文本，且这一列再也对不上词典。
+    /// 反面对照（本轮真跑过）：把它改成对任何串都返回同一个在册码 ⇒ 本用例红
+    /// （`left: Some("GROUP_FILE_STALLED") / right: Some("GROUP_FILE_NO_CHUNK")`）。
+    /// ⚠️ 别写成 `Some(reason)` —— 那个形状过不了借用检查（`&str` 不是 `&'static str`），
+    /// 造出的是编译错误而不是断言红，等于没证。
+    #[test]
+    fn only_registered_codes_may_be_persisted() {
+        // 六种群文件原因都在册 ⇒ 都能落库
+        for code in [
+            REASON_STALLED_GROUP_RECEIVE,
+            REASON_NO_CHUNK_RECEIVED,
+            REASON_CHUNK_DECRYPT_FAILED,
+            REASON_CHUNK_SEQ_GAP,
+            REASON_CHUNK_EXCEEDS_SIZE,
+            REASON_PEER_UNLINKED,
+        ] {
+            assert_eq!(persistable_group_fail_code(code), Some(code), "{code} 在册却落不了库");
+        }
+        // 动态内部串与空串都不许落库（读回来 NULL = "这一格没记原因"，不是"没有原因"）
+        assert_eq!(
+            persistable_group_fail_code("code=GROUP_CHUNK_POOL_ABORT 文件分片处理任务被线程池中断: idle"),
+            None
+        );
+        assert_eq!(persistable_group_fail_code("DISK_FULL"), None, "盘满是**写盘**族的码，不在落库词表里");
+        assert_eq!(persistable_group_fail_code(""), None);
+    }
 
     #[test]
     fn only_actionable_codes_notify_the_user() {

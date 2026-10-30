@@ -13,6 +13,33 @@
 
 ## [Unreleased]
 
+## [5.15.33] - 2026-10-30
+
+### 发版前 review 抓到我自己 5.15.32 引入的一个真缺陷：内部串会落进 `messages.fail_code`
+
+对 `v5.15.22..HEAD` 整段跑双轴 review（标准轴 + 规格轴，两个独立审查代理 + 我逐条复读到行）。
+标准轴三条全部成立，其中第一条是**功能缺陷**：
+
+- **缺陷**：B2 把群文件失败原因写进气泡行时，`reason` 并非总是码 —— 阻塞池被中断那一路给的是
+  `code=GROUP_CHUNK_POOL_ABORT 文件分片处理任务被线程池中断: …`（`group_file.rs:2091` 的动态串）。
+  照原样落库 = **把文案写进数据**：这一列再也对不上词典，英文界面重启后还会把那串内部文本原样上屏。
+  **修法**：新增 `persistable_group_fail_code`（只有在册码可落库，其余写 `NULL`），
+  配守卫用例 `only_registered_codes_may_be_persisted`（含"空串/内部串/DISK_FULL 都不许落库"三格）。
+  ⚠️ 顺带说明一个诚实的缺口：`DISK_FULL` 不在落库词表里 ⇒ **群文件写盘满这一格仍不会记住原因**
+  （它照旧上屏、照旧弹通知），要等它进词表才补齐 —— 本用例把这件事写成了断言而不是注释。
+- **判据反腿静默空转**：「前端表里有、后端永不写的码（死文案）」那一格原来写死 `startsWith("SEND_")`
+  —— 那是词表只有四条时的名字约定，扩到 12 档后 10 档不在它视野里 ⇒ 反腿恒绿。改成
+  **两个家的并集**（`MESSAGE_FAIL_CODES` ∪ `logging.rs::FAIL_CODE_*`），并把正控换成"从并集里拿掉一个
+  真存在的码必须被报出"。⚠️ 我自己写的变异对照（`Some(reason)`）过不了借用检查、造的是编译错误，
+  换成类型正确的变异才拿到断言红（这条已写进用例注释）。
+- **四处落点声明腐烂**：`fileFailReason.ts` 引了一个**不存在的用例名**、`logging.rs` 与
+  `group_file.rs` 还指向已删的 `is_stable_fail_code`、`error_codes.rs` 仍写"只有这四条 / 文件气泡不在此列"。
+  全部改成与 HEAD 实况一致，并把"为什么 5.15.32 那批要把族搬到 `error_codes.rs`"写回注释。
+
+**真跑过的验证**：新守卫用例 `only_registered_codes_may_be_persisted` 通过；变异自证（类型正确那一版）
+报 `left: Some("GROUP_FILE_STALLED") / right: Some("GROUP_FILE_NO_CHUNK")` 并红（`MUT_EXIT=101`），
+还原 `cmp` 逐字节一致；Rust 单测 1319 全绿、前端 `fileFailReason.test.ts` 8/8、清单基线两腿同步。
+
 ## [5.15.32] - 2026-10-30
 
 ### 群文件的失败原因也配码，并把「要不要弹 toast」从形状判据里拆出来（第 19 行·批 B2）

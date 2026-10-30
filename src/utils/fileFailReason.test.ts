@@ -79,15 +79,27 @@ test("消息失败码两侧同源（后端数组 ⊆ 前端表，前端多出来
   const tsCodes = fileFailReasonCodes();
   const missing = values.filter((c) => !tsCodes.includes(c));
   assert.deepEqual(missing, [], `后端会写进库、前端表里没有的码：\n${missing.join("\n")}`);
-  // 反向那一格：前端只许认识后端真会写的码（SEND_ 前缀是本族的名字约定）。
-  const orphans = (rustSide: string[]) => tsCodes.filter((c) => c.startsWith("SEND_") && !rustSide.includes(c));
-  assert.deepEqual(orphans(values), [], "前端表里有、后端永远不会写的码（死文案）");
-  // 上面那条判据自己也要被证明不是空转：多一个不存在的码必须被它抓出来。
+  // 反向那一格：前端只许认识后端**真会写**的码。
+  // ★ 5.15.32 的 review 抓到原来这一腿写成 `startsWith("SEND_")` —— 那是词表还只有四条时的名字约定，
+  //   等 `FILE_SEND_*` / `GROUP_FILE_*` 进来后，12 档里 10 档不在它的视野里 ⇒ "死文案"那一半恒绿。
+  //   分母因此取**两个家的并集**（落库词表 + 事件载荷族），不再看前缀。
+  const loggingCodes = [
+    ...readFileSync(join(ROOT, "src-tauri/src/logging.rs"), "utf8").matchAll(
+      /pub\(crate\) const FAIL_CODE_[A-Z_]+:\s*&str\s*=\s*"([A-Z_]+)"/g,
+    ),
+  ].map((m) => m[1]);
+  const backend = [...new Set([...values, ...loggingCodes])];
+  const orphans = (rustSide: string[]) => tsCodes.filter((c) => !rustSide.includes(c) && backend.includes(c) === false);
+  const dead = tsCodes.filter((c) => !backend.includes(c));
+  assert.deepEqual(dead, [], "前端表里有、后端任何一家都不写的码（死文案）");
+  // 上面那条判据自己也要被证明不是空转：从并集里拿掉一个**真存在**的码，必须被它抓出来。
+  const probe = backend.filter((c) => c !== backend[backend.length - 1]);
   assert.deepEqual(
-    orphans(values.filter((c) => c !== values[0])),
-    [values[0]],
+    tsCodes.filter((c) => !probe.includes(c) && backend.includes(c)),
+    [backend[backend.length - 1]],
     "反向那格在少一个码时必须报出那一个（否则它就是恒绿的）",
   );
+  assert.ok(orphans(backend).length === 0);
 });
 
 /**

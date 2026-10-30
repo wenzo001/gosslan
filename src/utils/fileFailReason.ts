@@ -41,8 +41,10 @@ const FILE_FAIL_REASON_KEYS: Record<string, string> = {
   FILE_RELAY_STALLED: "file.relayStalled",
   // ── 消息气泡的失败原因（`messages.fail_code`，DB v14→v15）───────────────────
   // 词表另一侧：`src-tauri/src/error_codes.rs::MESSAGE_FAIL_CODES`（双向对账见
-  // `fileFailReason.test.ts`）。这四条是**写这一行时就知道原因**的位置；文件那一族的
-  // 失败原因仍是自由文本，读回来是 null ⇒ 界面走通用文案，不是这里漏了档位。
+  // `fileFailReason.test.ts`，两条一起钉）。这一族自 5.15.31 / 5.15.32 起**含文件气泡**：
+  // 1:1 的超时/放弃与群文件的六种原因都会写进那一列。
+  // **在册之外**的失败（如线程池中断那种内部串）读回来是 NULL ⇒ 界面走通用文案；
+  // 那是"这一格没记原因"，不是"没有原因"（INV-P16 ③）。
   SEND_RETRY_EXPIRED: "msg.fail.retryExpired",
   SEND_ORPHAN_AT_START: "msg.fail.orphanAtStart",
   SEND_PEER_DELETED: "msg.fail.peerDeleted",
