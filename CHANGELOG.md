@@ -13,6 +13,33 @@
 
 ## [Unreleased]
 
+## [5.15.57] - 2026-10-31
+
+### 给 `.ok();` 收一道棘轮（B4-F1）：79 处先量清三级，从此只许降
+
+`.ok();` 把失败变成「没有错误」；语句形式连「收到过什么」都不留 —— 写库失败时界面照常前进、
+日志一行没有（好友加了但库里没有、群密钥没落库、分片账本没更新，都是这种形状）。
+
+- 新门禁 `scripts/check-silent-drops.mjs`（`verify:local` 第 9 步）：
+  **硬零** = `set_message_status` / `set_message_failed` / `apply_recall` 这三个托着承诺的写
+  不许再以 `.ok();` 出现（它们曾经就是两条独立写、错误全吞，清过就不许回来）；
+  **棘轮** = 其余按文件计数对 `scripts/silent-drops-baseline.json` 只降不升。
+  尺子直接复用 panic 棘轮的 `stripRust` / `stripCfgTest`（注释、字符串、`#[cfg(test)]` 都剔除），
+  脚本自带 14 条正反控。
+- 三级口径（`--report` 可复跑）：**L1 写库承诺 64 处**、L2 尽力而为 8 处（fs 清理 / pragma /
+  canonicalize）、L3 其它 7 处（`query_row(...).ok()` 把 Result 落成 `Option` 等）。
+  这一批只收分母与基线，L1 的逐批下落是后续工作。
+- 变异：往 `db.rs` 加一处 `.ok();` ⇒ 「db.rs 的 `.ok();` 从 5 涨到 6（棘轮只许降）」；
+  加一处 `set_message_status(...).ok();` ⇒ 硬零那条点名。两次都 `cmp` 逐字节还原。
+- 新增门禁步会改变快速层步数 ⇒ 顺手把 README 与 `docs/large-file-split-plan.md` 里手写的
+  「26 步 / 20 步」删掉（现算 27 / 21），交给 `check-doc-numbers` 现算核对。
+
+**真跑过的验证**：`node scripts/check-silent-drops.mjs`（79 处 / 32 文件 / 硬零 0）、
+`--self-test`（14 条）、`--report`（64/8/7）、两次外部变异各点名红；
+`npm run verify:local` **26 步全绿**（新步骤已入列）。
+**没跑/没做的**：L1 那 64 处**没有在这一批改**（每处都要按「这一格失败时谁该知道」定措辞，
+批量改会把 79 行产品码一次性搅动）；真机上"写库失败 ⇒ 用户看到什么"的端到端仍是人工。
+
 ## [5.15.56] - 2026-10-31
 
 ### 「清除数据」补上漏掉的两张表，并让清单跟着 schema 走（B3-F2）
