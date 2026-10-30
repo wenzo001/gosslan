@@ -1492,6 +1492,85 @@ mod tests {
         assert!(!part.exists(), "失败后 .part 必须被删除");
     }
 
+    /// **STB-03 的量具**（`#[ignore]`：它不是判据，是给人拍板用的读数）。
+    ///
+    /// 量的是 `write_chunk` 在 `file_receivers` 锁里做的那一段：一片 `FILE_CHUNK` 的
+    /// AEAD 解密 + SHA-256 + `write_all`。这段在并发时**串行** ⇒ 聚合上限 = 一片 / 单次耗时。
+    /// 第二段起两个线程抢同一把锁再量一次，验证「K 条并发时聚合不涨」（不是猜的）。
+    /// 复跑：`cd src-tauri && cargo test --lib --features bluetooth -- --ignored stb03 --nocapture`
+    #[test]
+    #[ignore = "量具：量 STB-03 的代价，不参与门禁"]
+    fn stb03_receiver_critical_section_cost() {
+        use sha2::Digest;
+        use std::io::Write;
+        const N: usize = 200;
+        let chunk = crate::network::file::FILE_CHUNK;
+        let key = crypto::random_key();
+        let plain: Vec<u8> = (0..chunk).map(|i| (i % 251) as u8).collect();
+        let sealed = crypto::seal_symmetric(&key, &plain).unwrap();
+        let dir = std::env::temp_dir().join(format!("stb03-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+
+        // 一段 = 线上锁内的全部工作（解密 + 哈希 + 写）。
+        let run = |path: std::path::PathBuf, key: [u8; 32], sealed: Vec<u8>, lock: Option<&'static std::sync::Mutex<()>>, warm: bool| {
+            let mut f = std::fs::File::create(&path).unwrap();
+            let mut hasher = sha2::Sha256::new();
+            let one = |f: &mut std::fs::File, hasher: &mut sha2::Sha256| {
+                let p = crypto::open_symmetric(&key, &sealed).unwrap();
+                hasher.update(&p);
+                f.write_all(&p).unwrap();
+            };
+            if warm {
+                for _ in 0..5 {
+                    one(&mut f, &mut hasher);
+                }
+            }
+            let t0 = std::time::Instant::now();
+            for _ in 0..N {
+                match lock {
+                    Some(l) => {
+                        let _g = l.lock().unwrap();
+                        one(&mut f, &mut hasher);
+                    }
+                    None => one(&mut f, &mut hasher),
+                }
+            }
+            let dt = t0.elapsed().as_secs_f64();
+            let _ = std::fs::remove_file(&path);
+            dt
+        };
+
+        let solo = run(dir.join("bench-solo.part"), key, sealed.clone(), None, true) / N as f64;
+        eprintln!(
+            "STB03 solo: chunk={chunk}B per_chunk={:.3}ms ceiling={:.1}MB/s",
+            solo * 1000.0,
+            (chunk as f64 / 1048576.0) / solo
+        );
+
+        let lock: &'static std::sync::Mutex<()> = Box::leak(Box::new(std::sync::Mutex::new(())));
+        let t0 = std::time::Instant::now();
+        let handles: Vec<_> = ["a", "b"]
+            .into_iter()
+            .map(|tag| {
+                let p = dir.join(format!("bench-{tag}.part"));
+                let k = key;
+                let sd = sealed.clone();
+                std::thread::spawn(move || run(p, k, sd, Some(lock), false))
+            })
+            .collect();
+        for h in handles {
+            h.join().unwrap();
+        }
+        let both = t0.elapsed().as_secs_f64();
+        eprintln!(
+            "STB03 2x concurrent: wall={:.3}s for {} chunks => aggregate={:.1}MB/s",
+            both,
+            2 * N,
+            (2 * N) as f64 * (chunk as f64 / 1048576.0) / both
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     /// 1:1 接收的「不 emit」那两支必须真的是内部控制（5.15.36）。
     ///
     /// 为什么值得单独钉：前端那条形状判据（`fileFailReason.test.ts` 的「1:1 接收上屏的出口

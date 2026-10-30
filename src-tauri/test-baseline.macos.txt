@@ -768,6 +768,7 @@ network::file::tests::stale_attempt_frames_are_filtered_but_legacy_frames_never_
 network::file::tests::stale_part_sweep_only_touches_our_own_uuid_shaped_files
 network::file::tests::stall_verdict_boundaries
 network::file::tests::stalled_receiver_is_reclaimed_only_after_the_idle_window
+network::file::tests::stb03_receiver_critical_section_cost
 network::file::tests::tampered_chunk_fails_to_decrypt
 network::file::tests::terminal_ledger_note_shape_has_ids_and_never_content
 network::file::tests::the_ack_writer_egress_is_wired_on_both_outcomes
