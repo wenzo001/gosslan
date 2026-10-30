@@ -11,8 +11,11 @@ import {
   mergeMessages,
   markStatusInCache,
   freshMentionedConvs,
+  findFirstMessageById,
   pickMediaContent,
   preserveDeliveryStatus,
+  replaceMessageAt,
+  transferFailureMsgIds,
   replaceOptimistic,
   promoteOnPeerRead,
   previewText,
@@ -2822,17 +2825,12 @@ export const useChatStore = defineStore("chat", () => {
     // 而这里此前只拼 `file-` ⇒ 群文件失败时内存里那条永远不落状态，界面继续转圈。
     // 同文件的 onFileCancelled 两个前缀都认、onFileDone 也两个都失效缓存 —— 三条里只有这条漏，
     // 是「群文件永远发送中」的前端那一半（另一半在后端：失败分支不发终态事件）。
-    const failedIds = new Set([`file-${d.transfer_id}`, `gfile-${d.transfer_id}`]);
-    for (const [convId, list] of Object.entries(messages.value)) {
-      const i = list.findIndex((m) => failedIds.has(m.msg_id));
-      if (i >= 0) {
-        messages.value[convId] = [
-          ...list.slice(0, i),
-          { ...list[i], status: "failed" },
-          ...list.slice(i + 1),
-        ];
-        break;
-      }
+    const hit = findFirstMessageById(messages.value, transferFailureMsgIds(d.transfer_id));
+    if (hit) {
+      messages.value = replaceMessageAt(messages.value, hit.convId, hit.index, {
+        ...hit.rec,
+        status: "failed",
+      });
     }
     app.toast(`${t("send.fileFail")}：${fileFailReasonText(d.reason, t)}`, "error");
   }
@@ -2845,35 +2843,30 @@ export const useChatStore = defineStore("chat", () => {
    */
   /** 渲染切换：只改目标消息的 kind；虚拟列表由 ResizeObserver 重测高度。 */
   function onMessageRenderChanged(msgId: string, kind: "code" | "text") {
-    for (const [convId, list] of Object.entries(messages.value)) {
-      const idx = list.findIndex((m) => m.msg_id === msgId);
-      if (idx < 0) continue;
-      if (list[idx].kind === kind) return;
-      const next = [...list];
-      next[idx] = { ...next[idx], kind };
-      messages.value = { ...messages.value, [convId]: next };
-      return;
-    }
+    const hit = findFirstMessageById(messages.value, [msgId]);
+    if (!hit || hit.rec.kind === kind) return;
+    messages.value = replaceMessageAt(messages.value, hit.convId, hit.index, { ...hit.rec, kind });
   }
 
-  function onMessageRecalled(msgId: string) {    for (const [convId, list] of Object.entries(messages.value)) {
-      const idx = list.findIndex((m) => m.msg_id === msgId);
-      if (idx < 0) continue;
-      if (list[idx].kind === "recalled") return; // 幂等：重复事件不再改动
-      const next = [...list];
-      next[idx] = { ...next[idx], kind: "recalled", content: "" };
-      messages.value = { ...messages.value, [convId]: next };
-      // 会话列表的预览若正是这条，也要跟着清掉（否则左侧仍显示已被撤回的正文）
-      const conv = conversations.value.find((c) => c.id === convId);
-      if (conv && conv.last_msg && list[idx].content) {
-        const preview = previewText(list[idx]);
-        if (conv.last_msg === preview || conv.last_msg === preview.slice(0, 30)) {
-          conversations.value = conversations.value.map((c) =>
-            c.id === convId ? { ...c, last_msg: t("msg.recalled") } : c,
-          );
-        }
+  function onMessageRecalled(msgId: string) {
+    const hit = findFirstMessageById(messages.value, [msgId]);
+    if (!hit) return;
+    const { convId, rec } = hit;
+    if (rec.kind === "recalled") return; // 幂等：重复事件不再改动
+    messages.value = replaceMessageAt(messages.value, convId, hit.index, {
+      ...rec,
+      kind: "recalled",
+      content: "",
+    });
+    // 会话列表的预览若正是这条，也要跟着清掉（否则左侧仍显示已被撤回的正文）
+    const conv = conversations.value.find((c) => c.id === convId);
+    if (conv && conv.last_msg && rec.content) {
+      const preview = previewText(rec);
+      if (conv.last_msg === preview || conv.last_msg === preview.slice(0, 30)) {
+        conversations.value = conversations.value.map((c) =>
+          c.id === convId ? { ...c, last_msg: t("msg.recalled") } : c,
+        );
       }
-      return;
     }
   }
 

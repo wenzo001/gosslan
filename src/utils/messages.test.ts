@@ -1,6 +1,9 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
+  findFirstMessageById,
+  replaceMessageAt,
+  transferFailureMsgIds,
   promoteOnPeerRead,
   replaceOptimistic,
   applyIncomingToConversations,
@@ -1412,4 +1415,44 @@ test("preserveDeliveryStatus：真实行按 local_id 认领乐观行的更远状
   const fresh = [msg({ msg_id: "real-1", local_id: "L1", status: "sent" })];
   const local = [msg({ msg_id: "tmp-1", local_id: "L1", status: "read" })];
   assert.equal(preserveDeliveryStatus(fresh, local)[0].status, "read");
+});
+
+/** 造一条最小可用的消息记录（只填这些判据要读的字段）。 */
+function mkRec(msg_id: string, extra: Partial<MessageRecord> = {}): MessageRecord {
+  return { msg_id, conv_id: "c1", status: "sent", kind: "text", content: "x", ...extra } as MessageRecord;
+}
+
+test("文件失败的两个气泡前缀都认（`file-` 与 `gfile-`）—— 回归过的那一格", () => {
+  const ids = transferFailureMsgIds("t1");
+  assert.deepEqual(ids, ["file-t1", "gfile-t1"]);
+  // 回归的形状：群文件气泡是 `gfile-<tid>`（后端 group_file.rs 就这么拼）；
+  // 只用 `file-<tid>` 拼的话，群文件失败时内存里那条永远不落状态、界面继续转圈（审计 R-02 的前端一半）。
+  assert.ok(ids.includes("gfile-t1"), "群文件前缀不许再漏");
+  assert.equal(ids.length, 2, "两个前缀就两个；多一个就是有人又添了一种拼法");
+});
+
+test("findFirstMessageById：跨会话找第一条；找不到给 null", () => {
+  const lists = {
+    a: [mkRec("m1"), mkRec("m2")],
+    b: [mkRec("m3"), mkRec("m4")],
+  };
+  const hit = findFirstMessageById(lists, ["file-x", "m3"]);
+  assert.equal(hit?.convId, "b");
+  assert.equal(hit?.index, 0);
+  assert.equal(hit?.rec.msg_id, "m3");
+  assert.equal(findFirstMessageById(lists, ["nope"]), null);
+  // msg_id 是全局契约上的唯一键；真的撞了也只认**第一条**（与旧接线逐字一致）
+  const dup = { a: [mkRec("m1")], b: [mkRec("m1")] };
+  assert.equal(findFirstMessageById(dup, ["m1"])?.convId, "a");
+});
+
+test("replaceMessageAt：不可变、只动那一条、其余会话保持同一引用", () => {
+  const lists = { a: [mkRec("m1"), mkRec("m2")], b: [mkRec("m3")] };
+  const next = replaceMessageAt(lists, "a", 1, { ...lists.a[1], status: "failed" });
+  assert.notEqual(next, lists, "必须返回新对象（直接改入参会让调用方读不出'谁改了'）");
+  assert.equal(lists.a[1].status, "sent", "入参列表不许被就地改");
+  assert.equal(next.a.length, 2, "长度不变");
+  assert.equal(next.a[0], lists.a[0], "没改的那条保持同一引用（虚拟列表按引用跳过重渲染）");
+  assert.equal(next.a[1].status, "failed");
+  assert.equal(next.b, lists.b, "别的会话不许被复制");
 });

@@ -5928,3 +5928,44 @@ test("@提及淡底配方只有一个家：16% 的 color-mix 只许出现在 cha
   assert.equal(mentionHighlightBg(""), undefined, "没有前景色时必须回 undefined（而不是拼出一个非法色）");
   assert.equal(mentionHighlightBg(undefined), undefined);
 });
+
+// ---------------- 跨会话的「按 msg_id 改一条」必须走 utils/messages（TST-02 第一步） ----------------
+//
+// 背景：store 里这类接线此前**每种都手写一遍**（`for (const [convId, list] of Object.entries(messages.value))`
+// + findIndex + 两种不同的赋值写法），而它们是纯逻辑 ⇒ 只能靠"改完手动点一下"验。
+// 抽成 `findFirstMessageById` + `replaceMessageAt` 之后，语义（跨会话/第一条/不可变）由
+// `utils/messages.test.ts` 驱动；这一条守的是**接线**：那三个 handler 不许再手写跨会话循环。
+test("跨会话按 msg_id 改一条不许手写循环：三个 handler 必须走 utils/messages 的家", () => {
+  const store = readFileSync(join(import.meta.dirname, "..", "stores", "useChatStore.ts"), "utf8");
+  const bodyOf = (sig: string) => {
+    const at = store.indexOf(sig);
+    assert.ok(at >= 0, `store 里找不到 ${sig} ⇒ 锚点写法变了`);
+    const open = store.indexOf("{", at);
+    let depth = 0;
+    for (let i = open; i < store.length; i += 1) {
+      if (store[i] === "{") depth += 1;
+      else if (store[i] === "}") {
+        depth -= 1;
+        if (depth === 0) return store.slice(at, i + 1);
+      }
+    }
+    return store.slice(at);
+  };
+  const CROSS_CONV = /for\s*\(\s*const\s*\[convId,\s*list\]\s*of\s*Object\.entries\(messages\.value\)/;
+  for (const [sig, helper] of [
+    ["function onFileFailed(", "transferFailureMsgIds("],
+    ["function onMessageRenderChanged(", "findFirstMessageById("],
+    ["function onMessageRecalled(", "findFirstMessageById("],
+  ] as const) {
+    const body = bodyOf(sig);
+    assert.ok(!CROSS_CONV.test(body), `${sig} 又手写跨会话循环了 ⇒ 回到"每处一份、没法单测"的形状`);
+    assert.ok(body.includes(helper), `${sig} 没走 ${helper} 那个家`);
+  }
+  // 正控：把家换成手写循环，尺子必须说"有"（否则这条在空集上恒绿）
+  const gutted = store.replace(
+    "const hit = findFirstMessageById(messages.value, [msgId]);",
+    "for (const [convId, list] of Object.entries(messages.value)) { void convId; void list; }",
+  );
+  assert.notEqual(gutted, store, "正控没落进去 ⇒ 锚点写法变了");
+  assert.ok(CROSS_CONV.test(gutted));
+});

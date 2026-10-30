@@ -13,6 +13,36 @@
 
 ## [Unreleased]
 
+## [5.15.41] - 2026-10-30
+
+
+### TST-02 第一步：把 store 里「跨会话按 msg_id 改一条」的接线抽成可测的纯函数
+
+审计 §8 第 7 行（TST-02）说 store 里难的纯逻辑已有用例、**缺的是接线**。这一批做第一段：
+把那三个 handler 里手写的同一段循环收进 `utils/messages`（与 `replaceOptimistic` 同一个家）：
+
+- `transferFailureMsgIds(transferId)` —— 1:1 是 `file-<tid>`、群文件是 `gfile-<tid>`。
+  这行看着是废话，但它是一个**回归过**的缺陷的唯一定义处（`onFileFailed` 曾经只拼 `file-` ⇒
+  群文件失败时内存里那条不落状态、界面继续转圈），现在"两个前缀都认"有了判别据。
+- `findFirstMessageById(lists, ids)` / `replaceMessageAt(lists, convId, index, rec)` ——
+  跨会话找第一条 + **不可变**替换（没改的那条保持同一引用，虚拟列表才知道该跳过谁）。
+- 三个 handler（`onFileFailed` / `onMessageRenderChanged` / `onMessageRecalled`）改用它；
+  `onMessageRecalled` 原有的"预览也跟着清掉"与幂等早退留在调用点（那是会话列表的事，不是消息表的事）。
+- 判据：`utils/messages.test.ts` 新增三组（前缀集合、跨会话第一条、不可变与引用保持）；
+  `designGuards` 新增一条**接线判据**（三个 handler 不许再手写跨会话循环），带内联正控；
+  另跑一次外部变异（把循环塞回 `onFileFailed`）证明它会红。
+- **没做的**：`onMessageAcked` 与重发回退那两处是**按会话内**查找（`convIdOfMessage` / 已知 convId），
+  形状不同、语义也不同，这一批刻意不动。
+
+
+**真跑过的验证**：`npm test` **1526 通过 / 0 失败**（+4 条判据）；`node --test src/utils/messages.test.ts`
+**122/122**（+3）；`node --test src/utils/designGuards.test.ts` **242/242**（+1）；
+`npm run verify:local` **25 步全绿**（含 `vue-tsc --noEmit` 整仓类型检查与 vite 构建）。
+外部变异：把 `for (const [convId, list] of Object.entries(messages.value))` 塞回 `onFileFailed`
+⇒ 接线判据点名「function onFileFailed( 又手写跨会话循环了」（退 1），跑完 `cmp` 逐字节还原。
+**没跑的层**：这三个 handler 的真渲染效果没另跑 UI 段 —— 改动只换了"怎么改那一条"，
+`replaceMessageAt` 产出的记录与旧写法逐字段相同（单测断言"没改的那条保持同一引用"）。
+
 ## [5.15.40] - 2026-10-30
 
 

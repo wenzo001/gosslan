@@ -992,6 +992,21 @@ node --experimental-strip-types -e '
 认出它就不发帧）—— 保留文案是为了"万一别处把取消也走这帧时界面说得对"，属于登记的已知冗余；
 `FILE_RECEIVE_INCOMPLETE` 与 `FILE_RELAY_SIZE_MISMATCH` 语义相近但**已各自落过库**，改名会让旧行查不到文案 ⇒ 不并。
 
+### 4.0z TST-02 第一步（5.15.41）：把「跨会话按 msg_id 改一条」抽成可测的纯函数
+
+审计原文把 TST-02 的前置写成「store 依赖注入」。复核后的判断：**不必上整店 DI** ——
+真正没判据的是那三段**纯逻辑接线**（跨会话找一条、替换、保持顺序），它们完全可以抽到
+`utils/messages`（与 `replaceOptimistic` 同一个家），store 只留一行调用。
+
+- `transferFailureMsgIds` 把「1:1 用 `file-<tid>`、群文件用 `gfile-<tid>`」变成**有判别据的一句**——
+  这正是 10-22 审计 R-02 前端那一半回归过的地方（当时只拼 `file-`）。
+- `findFirstMessageById` / `replaceMessageAt`：跨会话找第一条 + **不可变**替换，且**没改的那条保持同一引用**
+  （虚拟列表按引用跳过重渲染，直接 `[...list]` 里重建所有对象会让长列表全量重测）。
+- 判据：`utils/messages.test.ts` 三组（前缀集合 / 跨会话第一条 / 不可变与引用保持）+
+  `designGuards` 的接线判据（三个 handler 不许再手写跨会话循环）+ 外部变异一次（塞回循环 ⇒ 点名红）。
+- **刻意没动**：`onMessageAcked`（`convIdOfMessage` 定域）与重发回退（已知 convId）是**会话内**查找，
+  形状与语义都不同 —— 一起收会把"哪个会话"这件事从调用点藏进 helper，判据反而更弱。
+
 ### 4.1 已核查且未发现问题的稳定性面
 
 - **锁顺序**：全仓无 `peers↔db` 嵌套；`file_receivers→db` 顺序成立。
@@ -1146,7 +1161,7 @@ node --experimental-strip-types -e '
 >
 > 现在把它改成**唯一的状态表**：`§1/§2/§3/§6/§7` 各节记的是**审计当时**的发现，今天的状态以本表为准。
 > ⚠️ 诚实边界：本表是**人工对账 + 每行挂复跑命令**，不是机器判据 —— 没有任何脚本断言"这张表与代码一致"
-> （能做这种断言的只有逐行的复跑命令本身）。表里没写的 ID 见 §4.0a～§4.0y 的复核结论。
+> （能做这种断言的只有逐行的复跑命令本身）。表里没写的 ID 见 §4.0a～§4.0z 的复核结论。
 
 | 序 | ID | 今天的状态 | 凭据 / 复跑 |
 |---|---|---|---|
@@ -1156,7 +1171,7 @@ node --experimental-strip-types -e '
 | 4 | STB-01 / STB-03 | **STB-01 已落地**（5.15.10）；**STB-03 实测后判不修**（§4.0w：release 下单表聚合上限 133.5 MB/s、两条并发 136.9 MB/s ⇒ 高于千兆线；「误判超时」不成立）；量具留在 `stb03_receiver_critical_section_cost`（`#[ignore]`） | `grep -rn "write_group_chunk_blocking" src-tauri/src` 现数 5 处，且已进 INV-P34 的登记格。全局 `file_receivers` 锁那半在 5.15.10 明确记账：要动几十个引用点、只有跨进程 E2E 能证 |
 | 5 | STB-02 | **已落地**（5.15.10） | 条数上限 + TTL + 载荷尺寸闸：`grep -rn "MAX_PENDING_FRIEND_REQUESTS\|PENDING_REQUESTS_FULL" src-tauri/src/network/transport/handshake.rs` |
 | 6 | TST-03 | **已落地**（5.15.11，按拆腿口径） | node+script 那条腿每次 push/PR 都跑；cargo 整跑实测 2h39m 留夜间。复跑：`grep -n "^  guards-\|if: github.event_name" .github/workflows/verify.yml`（`guards-web` 那job **没有** `if`）⚠️ 只看 `guards-cargo` 的 `if` 会误判成"没做"——本轮我自己就误判过一次 |
-| 7 | TST-02 | **未做**（前置 = store 依赖注入） | `useChatStore` 里难的纯逻辑（`replaceOptimistic`）已有真用例，缺的是接线；做成真测试要先给 store 做注入或搬状态机，属独立重构 |
+| 7 | TST-02 | **第一步已落地**（5.15.41，§4.0z）：跨会话按 msg_id 改一条收进 `utils/messages` 并配单测；剩余是**按会话内**的 `onMessageAcked` / 重发回退，形状与语义都不同 | `useChatStore` 里难的纯逻辑（`replaceOptimistic`）已有真用例，缺的是接线；做成真测试要先给 store 做注入或搬状态机，属独立重构 |
 | 8 | TST-01 | **已落地**（5.15.11） | 假测试换成 3 条真用例：`grep -c "^test(" src/utils/saveDestination.test.ts` 现数 3 |
 | 9 | TST-07 | **已落地一半**（5.15.11）+ 另一半被否证 | 撤回**选档**抽成 `recall_authority_for` 并补行为用例（形状断言同时钉"命令真调它"）；key-change 那半审计不准确 —— 那条判据本来就有 6 条行为断言 |
 | 10 | INV-P16 | **两条通道都已落地**（5.15.21 命令返回侧 / 5.15.22 落库侧） | §4.0j。状态不拆档、原因另有码；`grep -n "MESSAGE_FAIL_CODES" src-tauri/src/error_codes.rs` |

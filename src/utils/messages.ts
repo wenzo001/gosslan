@@ -240,6 +240,50 @@ export function appendLocalOnly(
  * 返回新列表；`list` 里找不到那条乐观行时返回 `null`，由调用方走"挂在批量队列里等落地"
  * 那条路（见 `applyReplacements`，那条路本身经过 upsert，不会产生重复）。
  */
+/**
+ * 一次**文件失败事件**对应的气泡 msg_id：1:1 是 `file-<tid>`，群文件是 `gfile-<tid>`
+ * （后端 `transport/group_file.rs` 就这么拼）。
+ *
+ * 这行看着像句废话，但它是一个**回归过的缺陷**的唯一定义处：`onFileFailed` 曾经只拼 `file-`，
+ * 于是群文件失败时内存里那条永远不落状态、界面继续转圈（2026-10-22 审计 R-02 的前端那一半）。
+ * 抽成纯函数是为了让"两个前缀都认"这件事**有判别据**（store 里那段接线跑不了单测）。
+ */
+export function transferFailureMsgIds(transferId: string): string[] {
+  return [`file-${transferId}`, `gfile-${transferId}`];
+}
+
+/** 在「会话 → 消息列表」里按 msg_id 找**第一条**命中（msg_id 全局唯一，跨会话只可能中一条）。 */
+export function findFirstMessageById(
+  lists: Record<string, MessageRecord[]>,
+  ids: Iterable<string>,
+): { convId: string; index: number; rec: MessageRecord } | null {
+  const wanted = new Set(ids);
+  for (const [convId, list] of Object.entries(lists)) {
+    const index = list.findIndex((m) => wanted.has(m.msg_id));
+    if (index >= 0) return { convId, index, rec: list[index] };
+  }
+  return null;
+}
+
+/**
+ * 不可变地把某个会话里第 `index` 条换成 `rec`：原列表与其余会话**都不动**。
+ *
+ * 为什么单独有这一个：store 里同一件事此前有**两种写法**（有的直接 `messages.value[convId] = …`，
+ * 有的 `messages.value = { ...messages.value, [convId]: next }`）。两种都能跑，但"到底改了谁"
+ * 在源码里读不出来；收成一处之后，`findFirstMessageById` + `replaceMessageAt` 这一对可以被单测驱动。
+ */
+export function replaceMessageAt(
+  lists: Record<string, MessageRecord[]>,
+  convId: string,
+  index: number,
+  rec: MessageRecord,
+): Record<string, MessageRecord[]> {
+  const list = lists[convId] ?? [];
+  const next = list.slice();
+  next[index] = rec;
+  return { ...lists, [convId]: next };
+}
+
 export function replaceOptimistic(
   list: MessageRecord[],
   tmpMsgId: string,
