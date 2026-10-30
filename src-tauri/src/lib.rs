@@ -760,7 +760,6 @@ pub fn run() {
             commands::delete_messages,
             commands::notify_desktop,
             commands::send_test_notification,
-            commands::get_topology,
             commands::set_channel_enabled,
             commands::get_cache_info,
             commands::set_cache_policy,

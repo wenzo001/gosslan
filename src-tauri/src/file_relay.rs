@@ -11,7 +11,7 @@
 //! **零生产调用点** ⇒ 2026-09-24 架构复审 0-A2 删除。真正的文件发送是 `network/file.rs`
 //! 的 `stream_file`（单链路固定 seq + 断点续传 + attempt epoch），它才是活路径。
 //!
-//! 删除时唯一被牵连到的活代码是 `get_topology` 的 `relay_count`：它原先取
+//! （历史）曾经被牵连到的活代码是已删除的 `get_topology` 的 `relay_count`：它原先取
 //! `active_sends()`，而 `senders` 只有 `register_send` 会写 ⇒ **那个数永远是 0**。
 //! 现在它改成数"当前有几条 `path_kind == Relay` 的活跃链路"（见 `state::link_is_relay_circuit`），
 //! 与 `RuntimeSnapshot::relay.connected` 用同一个判据，界面里"N 中继"从此是真话。
