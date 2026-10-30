@@ -188,7 +188,18 @@ async fn relay_push_file(
     };
     let total = size as usize;
     let chunk_count = total.div_ceil(chunk_size).max(1) as u32;
-    let mut src = std::fs::File::open(&path).map_err(|e| format!("读取文件失败：{e}"))?;
+    let mut src = std::fs::File::open(&path).map_err(|e| {
+        // 5.15.40：这一族以前发 `format!("读取文件失败：{e}")` —— 散文 + OS 原文原样上屏。
+        state.logger.error(
+            "file",
+            format!(
+                "code={} transfer={transfer_id} path={} —— 打开源文件失败: {e}",
+                crate::logging::FAIL_CODE_FILE_SEND_READ_FAILED,
+                path.display()
+            ),
+        );
+        crate::logging::FAIL_CODE_FILE_SEND_READ_FAILED.to_string()
+    })?;
 
     {
         let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
@@ -244,9 +255,26 @@ async fn relay_push_file(
             let end = (start + chunk_size).min(total);
             let mut plain = vec![0u8; end - start];
             src.seek(std::io::SeekFrom::Start(start as u64))
-                .map_err(|e| format!("定位文件失败：{e}"))?;
-            src.read_exact(&mut plain)
-                .map_err(|e| format!("读取文件分片失败：{e}"))?;
+                .map_err(|e| {
+                    state.logger.error(
+                        "file",
+                        format!(
+                            "code={} transfer={transfer_id} seq={seq} offset={start} —— 定位源文件失败: {e}",
+                            crate::logging::FAIL_CODE_FILE_SEND_READ_FAILED
+                        ),
+                    );
+                    crate::logging::FAIL_CODE_FILE_SEND_READ_FAILED.to_string()
+                })?;
+            src.read_exact(&mut plain).map_err(|e| {
+                state.logger.error(
+                    "file",
+                    format!(
+                        "code={} transfer={transfer_id} seq={seq} —— 读取分片失败: {e}",
+                        crate::logging::FAIL_CODE_FILE_SEND_READ_FAILED
+                    ),
+                );
+                crate::logging::FAIL_CODE_FILE_SEND_READ_FAILED.to_string()
+            })?;
             let sealed = crypto::seal_symmetric(&file_key, &plain)
                 .ok_or_else(|| {
                     state.logger.error(

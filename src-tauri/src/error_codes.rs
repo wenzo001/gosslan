@@ -101,9 +101,10 @@ pub const GROUP_FILE_PEER_UNLINKED: &str = "GROUP_FILE_PEER_UNLINKED";
 pub const FILE_RECEIVE_INCOMPLETE: &str = "FILE_RECEIVE_INCOMPLETE";
 /// 内容能收齐但哈希/密钥对不上 —— **这份不是那一份**，已丢弃。
 pub const FILE_INTEGRITY_FAILED: &str = "FILE_INTEGRITY_FAILED";
-/// 本机写盘/落盘失败（`sync_all` 没能把内容固定住）。盘满另有条 `DISK_FULL`，那条更 actionable。
+/// 本机写盘失败：`sync_all` / `write_all` / 建目录都归这一格（5.15.40 复核后按实际使用面改的口径）。
+/// 盘满另有 `DISK_FULL` —— 那条才有"清出空间后重试"的可行动文案。
 pub const FILE_RECEIVE_WRITE_FAILED: &str = "FILE_RECEIVE_WRITE_FAILED";
-/// 内容已经固定住，但没能把它放到最终名字上（同名占位失败）。
+/// 没能把这一份放到最终落点：同名占位 / 改名 / 消毒后文件名为空（5.15.40 复核后按实际使用面改的口径）。
 pub const FILE_RECEIVE_PLACE_FAILED: &str = "FILE_RECEIVE_PLACE_FAILED";
 
 /// 落进 `messages.fail_code` 的全部档位 —— **与前端那张文案表双向对账的分母**

@@ -1298,7 +1298,16 @@ pub async fn finish_receive(
             Some(r) => {
                 if r.peer_id != peer_id {
                     recv.insert(transfer_id.to_string(), r);
-                    return Err("文件传输来源不匹配".to_string());
+                    // 5.15.40：这一支**会** emit（与 `fail_receive` 里那条只 `return false` 的
+                    // 同名判断不是一条路）⇒ 载荷必须给码；原句进日志。
+                    state.logger.warn(
+                        "file",
+                        format!(
+                            "code={} transfer={transfer_id} —— 接收器不属于这个对端（收尾放弃）",
+                            crate::logging::FAIL_CODE_FILE_RECEIVE_SOURCE_MISMATCH
+                        ),
+                    );
+                    return Err(crate::logging::FAIL_CODE_FILE_RECEIVE_SOURCE_MISMATCH.to_string());
                 }
                 r
             }
@@ -1310,11 +1319,21 @@ pub async fn finish_receive(
     // "慢活整体在 spawn_blocking 里"两件事）。
     let st = state.clone();
     let transfer_id = transfer_id.to_string();
-    tokio::task::spawn_blocking(move || finish_receiver_into(&st.db, &st.logger, &transfer_id, r))
+    let tid_for_task = transfer_id.clone();
+    tokio::task::spawn_blocking(move || finish_receiver_into(&st.db, &st.logger, &tid_for_task, r))
         .await
         // 阻塞任务只会在 panic / 运行时关闭时出错；两种都当"这次没收口"上抛，
         // 由调用方那一条失败分支照原样发 `file-failed` + 回一帧失败确认（不谎报成功）。
-        .map_err(|e| format!("接收收尾任务被中断: {e}"))?
+        .map_err(|e| {
+            state.logger.error(
+                "file",
+                format!(
+                    "code={} transfer={transfer_id} —— 接收收尾任务被中断: {e}",
+                    crate::logging::FAIL_CODE_FILE_RECEIVE_FINALIZE_ABORTED
+                ),
+            );
+            crate::logging::FAIL_CODE_FILE_RECEIVE_FINALIZE_ABORTED.to_string()
+        })?
         .map(Some)
 }
 

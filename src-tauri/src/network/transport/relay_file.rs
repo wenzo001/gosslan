@@ -105,17 +105,23 @@ async fn handle_relay_file_offer(
         let mut relay = state.relay.lock().unwrap_or_else(|e| e.into_inner());
         relay.begin_reassemble(&transfer_id, &name, total_chunks, size, chunk_size, &dl)
     };
-    if let Err(reason) = began {
+    if let Err(reject) = began {
+        // 5.15.40：以前这里把 `Err(String)` 原样 emit —— 散文（"传输标识非法"/"版本过旧"）
+        // 与 OS 原文都会上屏。现在码上屏、人话进日志（`RelayReject` 两个出口）。
         let _ = state.app.emit(
             "file-failed",
             &FileFailedInfo {
                 transfer_id: transfer_id.clone(),
-                reason: reason.clone(),
+                reason: reject.code.to_string(),
             },
         );
-        state
-            .logger
-            .warn("file", format!("拒收中继文件 offer：{reason}"));
+        state.logger.warn(
+            "file",
+            format!(
+                "code={} transfer={transfer_id} —— 拒收中继文件 offer：{}",
+                reject.code, reject.detail
+            ),
+        );
         return;
     }
 

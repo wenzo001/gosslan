@@ -402,7 +402,7 @@ pub(crate) const FAIL_CODE_FILE_RELAY_SIZE_MISMATCH: &str = "FILE_RELAY_SIZE_MIS
 /// 中继传输一小时没走完，被回收。
 pub(crate) const FAIL_CODE_FILE_RELAY_STALLED: &str = "FILE_RELAY_STALLED";
 
-// ── 1:1 **接收侧**那六格（5.15.36）───────────────────────────────────────────
+// ── 1:1 **接收侧**那七格（5.15.36；5.15.38 复核时确认下面实有 7 条 const）───────────────────────────────────────────
 //
 // 为什么这一族住在**事件载荷**这张表而不是 `error_codes::MESSAGE_FAIL_CODES`：
 // 收件方那条 `file-<transfer_id>` 气泡行是**文件落盘成功之后**才插的
@@ -489,6 +489,31 @@ pub(crate) const FAIL_CODE_FILE_SEND_NO_RELAY_NEIGHBOR: &str = "FILE_SEND_NO_REL
 pub(crate) const FAIL_CODE_FILE_SEND_RELAY_LINK_BROKEN: &str = "FILE_SEND_RELAY_LINK_BROKEN";
 /// 整轮超时（`RELAY_FILE_SEND_DEADLINE`）。秒数进日志。
 pub(crate) const FAIL_CODE_FILE_SEND_RELAY_TIMEOUT: &str = "FILE_SEND_RELAY_TIMEOUT";
+
+// ── 5.15.40 复核补漏：上一批"闭环"漏掉的五条上屏路径 ──────────────────────
+//
+// 前一批把 "Err(散文)/Err(format!)" 那两种形状配了码，但**同一条链上还有别的写法**
+// 也把文本送进 `file-failed`：`map_err(|e| format!(…))`、`ok_or(散文)`、
+// 以及包装层的 `map_err(|e| format!(…))?`。复核（两个独立 review）逐条点名之后补齐。
+
+/// 共享目录**直发**失败（`send_file_from_path` 的 `SendFileError.message` 是散文，
+/// 这里只给一个码、原文进日志）。取消另有 `FILE_SEND_CANCELLED`，不走这一格。
+pub(crate) const FAIL_CODE_FILE_SEND_SHARE_FAILED: &str = "FILE_SEND_SHARE_FAILED";
+
+/// 推分片时本机读不出源文件（open / seek / read_exact 三处）。
+pub(crate) const FAIL_CODE_FILE_SEND_READ_FAILED: &str = "FILE_SEND_READ_FAILED";
+
+/// 收尾时发现接收器不属于这个对端（内部竞态，但这一支**会** emit）。
+pub(crate) const FAIL_CODE_FILE_RECEIVE_SOURCE_MISMATCH: &str = "FILE_RECEIVE_SOURCE_MISMATCH";
+
+/// 收尾那一段被阻塞池丢掉（`finish_receive` 包装层的 `JoinError`）。
+pub(crate) const FAIL_CODE_FILE_RECEIVE_FINALIZE_ABORTED: &str = "FILE_RECEIVE_FINALIZE_ABORTED";
+
+/// 收到的分片帧连 base64 都解不开（对端或链路把帧弄坏了）。
+pub(crate) const FAIL_CODE_FILE_CHUNK_MALFORMED: &str = "FILE_CHUNK_MALFORMED";
+
+/// 中继 offer 本身不可用（标识非法 / 对端没声明分片尺寸）。
+pub(crate) const FAIL_CODE_FILE_RELAY_BAD_OFFER: &str = "FILE_RELAY_BAD_OFFER";
 
 /// 把一次写盘失败归类成稳定失败码：盘满 ⇒ [`FAIL_CODE_DISK_FULL`]，其余 ⇒ `None`。
 ///

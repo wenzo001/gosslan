@@ -242,7 +242,7 @@ export default {
       invariants: ["INV-P20"],
       activeHome: "src-tauri/src/mesh",
       enforce: false,
-      consumes: ["messaging"], // mesh/router.rs 生产代码用 gossip_engine::{BloomFilter, LruSet}（测试内引用 transport 的 HEARTBEAT_INTERVAL_SECS 已被 check-domain-deps.mjs 排除，不需写入）
+      consumes: ["messaging", "observability"], // messaging: mesh/router.rs 用 gossip_engine::{BloomFilter, LruSet}（测试内引用 transport 的 HEARTBEAT_INTERVAL_SECS 已被 check-domain-deps.mjs 排除）；observability: 5.15.40 起 file_relay.rs 的拒收要发在册的码（`logging::FAIL_CODE_*`）并按 `classify_write_failure` 分诊盘满
       notes:
         "`mesh/` 是**本仓库最成型的领域模块**（candidate / connection / endpoint / manager / path / peer / relay_policy / router / selection 各自独立文件，有 ADR-0013/0014 背书）。⚠️ relay_manager.rs 属于**文件切片中继**（BitTorrent 式分发），不是路由 —— 命名撞车，lib.rs:19 那句注释就是为它写的。",
     },

@@ -75,6 +75,15 @@ const FILE_FAIL_REASON_KEYS: Record<string, string> = {
   FILE_SEND_NO_RELAY_NEIGHBOR: "file.sendNoRelayNeighbor",
   FILE_SEND_RELAY_LINK_BROKEN: "file.sendRelayLinkBroken",
   FILE_SEND_RELAY_TIMEOUT: "file.sendRelayTimeout",
+  // ── 5.15.40 复核补漏：上一批"闭环"漏掉的五条上屏路径 ─────────────────────
+  // 它们的共同点：**不是** `Err("散文")` 那种形状，而是 `map_err(|e| format!(…))`、
+  // `ok_or(散文)`、包装层 `map_err(…)?` —— 上一批的形状判据看不见，于是假绿。
+  FILE_SEND_SHARE_FAILED: "file.sendShareFailed",
+  FILE_SEND_READ_FAILED: "file.sendReadFailed",
+  FILE_RECEIVE_SOURCE_MISMATCH: "file.receiveSourceMismatch",
+  FILE_RECEIVE_FINALIZE_ABORTED: "file.receiveFinalizeAborted",
+  FILE_CHUNK_MALFORMED: "file.chunkMalformed",
+  FILE_RELAY_BAD_OFFER: "file.relayBadOffer",
   // ── 消息气泡的失败原因（`messages.fail_code`，DB v14→v15）───────────────────
   // 词表另一侧：`src-tauri/src/error_codes.rs::MESSAGE_FAIL_CODES`（双向对账见
   // `fileFailReason.test.ts`，两条一起钉）。这一族自 5.15.31 / 5.15.32 起**含文件气泡**：

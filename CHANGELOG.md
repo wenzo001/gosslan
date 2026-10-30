@@ -13,6 +13,49 @@
 
 ## [Unreleased]
 
+## [5.15.40] - 2026-10-30
+
+
+### 发版前双轴 review 抓到我上一批的「闭环」是假的：五条上屏路径没配码
+
+5.15.38/§4.0v 写的是「第 19 行闭环」。两个独立 review 各点名了几条漏网，逐条复核后**全部属实**——
+漏的共同原因是：上一批的形状判据只认 `Err("散文")` / `Err(format!)` 两种写法，而真实泄漏长在
+**另外四种形状**上。
+
+- **① `map_err(|e| format!(…))`**：`relay_push.rs` 的 `读取文件失败` / `定位文件失败` / `读取文件分片失败`
+  三处；**② `ok_or(散文)`+包装层**：`receive.rs::finish_receive` 的 `文件传输来源不匹配` 与
+  `接收收尾任务被中断: {e}`（我上一批只改了内层 `finish_receiver_into`，包装层漏了，而**那一层会 emit**）；
+  **③ `e.to_string()`**：`handle_file.rs` 的 base64 解码错误（英文动态串）；
+  **④ `Err(String)` 换了个来源**：中继 offer 的 `begin_reassemble`（`传输标识非法` / `版本过旧` / `创建目录失败：{e}`）。
+- 新增 6 个码：`FILE_SEND_READ_FAILED` / `FILE_SEND_SHARE_FAILED` / `FILE_RECEIVE_SOURCE_MISMATCH` /
+  `FILE_RECEIVE_FINALIZE_ABORTED` / `FILE_CHUNK_MALFORMED` / `FILE_RELAY_BAD_OFFER`；
+  `begin_reassemble` 的返回从 `String` 改成 `RelayReject { code, detail }`（**码上屏、人话进日志**两个出口）。
+- **「取消不是失败」也补全了另一半**：`handle_share` 的**直连**分支以前 `.map_err(|e| e.message)`，
+  把 `SendFileError.cancelled` 标记整个丢掉 ⇒ 取消在直连路线上照样发失败帧。现在按标记分流
+  （取消 → `FILE_SEND_CANCELLED` 且不发帧；其余 → `FILE_SEND_SHARE_FAILED` + 原文进日志）。
+- 顺带三处 review 指出的口径不一致：群收尾失败那一格**盘满也不弹通知**（现与
+  `finalize_group_fail_code` 同一份显式名单）；`finish_group_receive_into` 补 `&Logger` 入参
+  （以前 OS 原文被 `is_err()` 丢掉，与单聊那份"人话留在日志里"不一致）；
+  `error_codes` 两条注释按**实际使用面**改写（`WRITE_FAILED` 也覆盖 `write_all`/建目录、
+  `PLACE_FAILED` 也覆盖"消毒后文件名为空"）。
+- **量具**：新增一条覆盖这四种形状的判据（relay_push 四条正则 + 包装层 + `begin_reassemble` 的码 +
+  直连分流），带两个正控；并把上一批那条 `if !cancelled { [\s\S]{0,400}? emit` 的**滑动窗口换成花括号配对**
+  —— review 指出 `[\s\S]` 会跨过 `}` 去匹配块外的 emit，等于没证明"失败帧长在里面"。
+- **不再宣称"闭环"**：能验的是"这四条形状在这几个文件里为零 + 有正控"。审计册同时订正了 §4.0v/§8 的说法。
+
+
+**真跑过的验证**：`cargo test --lib --features bluetooth` **1321 通过 / 0 失败**（2 ignored：STB-03 量具 + 既有那条）；
+`npm test` **1522 通过 / 0 失败**；`node --test src/utils/fileFailReason.test.ts` **13/13**；
+`npm run verify:local` **25 步全绿**。外部变异：把 `relay_push` 的分片读取改回 `map_err(|e| format!(…))`
+⇒ 新判据点名「relay_push.rs 还有散文/动态串当返回值（/map_err(|e|\s*format!\(/g）」（退 1），
+跑完 `cmp` 逐字节还原。
+这一轮门禁自己抓到两处我的错：① 领域依赖棘轮从 **16 处 / 6 对** 涨到 20 处 / 7 对（我在 `file_relay.rs`
+里用了内联 `crate::logging::…`）⇒ 改成 `use` + 给 routing 域补 `observability` 声明后回到 16/6；
+② `cargo fmt --check` 抓到我的全局替换把 `use crate::error_codes::FILE_RECEIVE_WRITE_FAILED;`
+也写成了裸名（编译真错），③ `clippy -D warnings` 抓到两处 `&throwaway_logger()` 的多余借用。
+**没跑的层**：护栏 cargo 通道整跑（夜间/dispatch）；跨进程与真机未证；`msgovf` 等真渲染段本批未跑
+（只改了失败路径的载荷，不动渲染）。
+
 ## [5.15.39] - 2026-10-30
 
 

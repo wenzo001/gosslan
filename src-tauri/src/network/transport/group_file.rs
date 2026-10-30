@@ -1107,8 +1107,11 @@ async fn handle_group_file_done(
     //
     // 四个失败出口原本各写一遍收尾，其中 **SHA-256 那一格漏了 `upsert_transfer`** ⇒ 校验失败时
     // `file_transfers` 永远停在 `active`（另三格写 failed）。收成一份之后那一格不再可能单独漏。
-    let finalized = match tokio::task::spawn_blocking(move || file::finish_group_receive_into(r))
-        .await
+    let st_for_finalize = state.clone();
+    let finalized = match tokio::task::spawn_blocking(move || {
+        file::finish_group_receive_into(r, &st_for_finalize.logger)
+    })
+    .await
     {
             Ok(res) => res,
             Err(e) => Err(format!("群文件收尾任务被中断: {e}")),
@@ -1171,6 +1174,17 @@ async fn handle_group_file_done(
             let _ = state
                 .app
                 .emit("message-status-changed", &format!("gfile-{transfer_id}"));
+            // 5.15.40：这一格以前**从不弹通知**，连盘满（唯一"用户现在就能动手"的那一类）
+            // 也只在气泡里留个码。与 `finalize_failed_group_receive` 用同一份显式名单。
+            if should_notify_group_failure(&why) {
+                let _ = state.app.emit(
+                    "file-failed",
+                    &crate::state::FileFailedInfo {
+                        transfer_id: transfer_id.clone(),
+                        reason: why.clone(),
+                    },
+                );
+            }
             send_group_file_complete_ack(state, &transfer_id, &group_id, &sender_id, false).await;
             return;
         }

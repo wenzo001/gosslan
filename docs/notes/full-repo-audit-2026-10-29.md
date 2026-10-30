@@ -904,7 +904,7 @@ node --experimental-strip-types -e '
 `.map_err(`）；`0 个邻居接住 ⇒ 失败`（return 前多了一句日志，旧探针 `.await==0{returnErr(` 不再成立，
 改成 `.await==0{` 恰好两处 + 两个「没邻居」的码各被 return 一次 —— 比原来更严，还钉住归因不被合并）。
 
-**第 19 行到此闭环**：事件载荷一族（`logging.rs::FAIL_CODE_*`，19 条）、落库一族
+**⚠️ 上一批在这里写了「第 19 行到此闭环」——5.15.40 的发版前双轴 review 推翻了它（见 §4.0y），以下那段是当时的说法，保留作记录**：事件载荷一族（`logging.rs::FAIL_CODE_*`，19 条）、落库一族
 （`error_codes::MESSAGE_FAIL_CODES`，16 格）与两侧词典/表全部同源；
 剩下的自由文本只有**不上屏**的那两类（begin/resume 的 `FileReject` 只有日志读者、
 `fail_receive` 两条 `return false` 的内部返回值）—— 这两类的"不配码"结论各自有判据背书（§4.0t）。
@@ -966,6 +966,31 @@ node --experimental-strip-types -e '
 `FavoritePanel.vue` 一处，而它早已被**显式登记**为保留自研（`designGuards.test.ts` 的 `OVERLAY_SHELL_COPIES`，
 连同「同一元素 serve 移动 overlay / 桌面内嵌两支布局」「底部留白量不同」与**别再排成下一批就迁**的理由），
 另有棘轮判据 ㊼ 现算全仓（新增同形抄本立即红，登记表只许变小）。⇒ 不改代码，只订正台账。
+
+### 4.0y 第 19 行的「闭环」被 review 推翻，补齐四种形状（5.15.40）
+
+发版前双轴 review（标准轴 + 规格轴，两个独立 subagent）各自点名了同一类漏网，**逐条复核全部属实**。
+根因是上一批的形状判据只认两种写法（`Err("散文")` / `Err(format!)`），而真实泄漏长在另外四种上：
+
+| 形状 | 位置 | 现在的处理 |
+|---|---|---|
+| `map_err(|e| format!(…))` | `relay_push.rs` 打开/定位/读分片三处 | `FILE_SEND_READ_FAILED` + 原文进日志 |
+| 包装层 `map_err(…)?` 与 `ok_or` | `receive.rs::finish_receive` 的「来源不匹配」「收尾任务被中断」 | `FILE_RECEIVE_SOURCE_MISMATCH` / `FILE_RECEIVE_FINALIZE_ABORTED` |
+| `e.to_string()` | `handle_file.rs` 的 base64 解码 | `FILE_CHUNK_MALFORMED` |
+| 换来源的 `Err(String)` | `begin_reassemble`（`传输标识非法` / `版本过旧` / 建目录失败） | 返回 `RelayReject { code, detail }`：码上屏、人话进日志 |
+
+两条方法论上的账：
+- **「闭环」这种断言本身需要被量**。上一批我按"两种写法为零"就宣布闭环，而同一个通道有六种写法
+  ⇒ 正解不是再补一句声明，而是把**每一种**造载荷的写法都写进判据（本批的判据按文件列四条正则 + 包装层 + 直连分流，各带正控），
+  并且**只宣称"这几种形状为零"**，不再宣称"闭环"。
+- **包装层最容易漏**：`finish_receiver_into`（内层）改了、`finish_receive`（包装层）没改，
+  而**emit 的是包装层的返回值**。教训与 5.15.32 那条同源：**一条规则有发送端 + 接收端（或内层 + 包装层）时，只补一侧＝没补**。
+
+另外三处 review 指出的问题也一并修了：群收尾失败那一格盘满不弹通知（现与
+`finalize_failed_group_receive` 同一份名单）；`finish_group_receive_into` 补 `&Logger`（OS 原文不再被丢）；
+`error_codes` 两条注释按实际使用面改。**没有改**的：`FILE_SEND_CANCELLED` 目前没有界面读者（`handle_share`
+认出它就不发帧）—— 保留文案是为了"万一别处把取消也走这帧时界面说得对"，属于登记的已知冗余；
+`FILE_RECEIVE_INCOMPLETE` 与 `FILE_RELAY_SIZE_MISMATCH` 语义相近但**已各自落过库**，改名会让旧行查不到文案 ⇒ 不并。
 
 ### 4.1 已核查且未发现问题的稳定性面
 
@@ -1121,7 +1146,7 @@ node --experimental-strip-types -e '
 >
 > 现在把它改成**唯一的状态表**：`§1/§2/§3/§6/§7` 各节记的是**审计当时**的发现，今天的状态以本表为准。
 > ⚠️ 诚实边界：本表是**人工对账 + 每行挂复跑命令**，不是机器判据 —— 没有任何脚本断言"这张表与代码一致"
-> （能做这种断言的只有逐行的复跑命令本身）。表里没写的 ID 见 §4.0a～§4.0x 的复核结论。
+> （能做这种断言的只有逐行的复跑命令本身）。表里没写的 ID 见 §4.0a～§4.0y 的复核结论。
 
 | 序 | ID | 今天的状态 | 凭据 / 复跑 |
 |---|---|---|---|
@@ -1145,7 +1170,7 @@ node --experimental-strip-types -e '
 | 16 | 替换矩阵勘误 | **已做**（5.15.13：新增 §0 勘误 + 一条「每个生产依赖都必须在矩阵里登记过」的新判据，带变异正控） | 文件真路径是 `docs/architecture/open-source-replacement-matrix.md`（⚠️ 本表原来只写裸文件名，害我照着它写了一条指不到文件的复跑命令）；复跑 `grep -n "勘误" docs/architecture/open-source-replacement-matrix.md` |
 | 17 | 依赖卫生 | `@pinia/colada` 死依赖**已删**；**`lucide-vue-next` 升级评估未做** | `grep -n "colada" package.json` 应为 0 命中（复跑时带一个阳性对照：`grep -n "vue-i18n" package.json` 必须有命中） |
 | 18 | SEC-08 | **已修**（见第 15 行） | —— 原表把它单独列一行是重复计数 |
-| 19 | 文件气泡的失败原因重启后失忆 | **1:1、群文件、接收收尾三族都闭环了**：5.15.29 事件载荷配码 → 5.15.31 码写进 `messages.fail_code`（§4.0q）→ 5.15.32 群文件 6 条转码并拆掉"一句话兼两职"的通知判据（§4.0r）。剩 **全部闭环**（A2 5.15.35 §4.0s / A2b 5.15.36 §4.0t / A2c 5.15.37 §4.0u 接收侧 + 5.15.38 §4.0v 发送侧，含取消被当失败的语义修复）：接收收尾四格转码，并修掉两处被散文藏住的**真缺陷**（群收尾失败一律标成「对端失联」＋那一格不落事件 ⇒ 气泡停在发送中）；begin/resume 经复核**不上屏**（只回 `FileReject` + 日志）⇒ 判为不配码（§4.0t）；§4.0v 已收口发送侧那一族与「取消被当失败」；剩余自由文本只有**不上屏**的两类，结论与凭据见 §4.0t/§4.0v；⚠️ 群文件那一步的**集成层**（真机/跨进程）本轮未证 | ⚠️ 两处前置都订正过：审计原来写「配码即可」不完整（要先看清码给谁读），而我 5.15.29 写的「必须加表列（DB v16）」**也是错的** —— 现读 `db/file_transfer.rs` 里 `set_message_status(&tx, &format!` 那几行（按符号名找，别抄行号）与 `cascade_tests.rs:809`：`file-<tid>` / `gfile-<tid>` **本来就是 `messages` 行** ⇒ 批 B 的真实形状是给 `finalize_file_failure` 带上 `fail_code`、群路径同写一码，**不加列、不迁移**（凭据与教训见 §4.0p）。复跑：`node --test src/utils/fileFailReason.test.ts` |
+| 19 | 文件气泡的失败原因重启后失忆 | **1:1、群文件、接收收尾三族都闭环了**：5.15.29 事件载荷配码 → 5.15.31 码写进 `messages.fail_code`（§4.0q）→ 5.15.32 群文件 6 条转码并拆掉"一句话兼两职"的通知判据（§4.0r）。剩 **A2/A2b/A2c 已落地**（5.15.35 §4.0s / 5.15.36 §4.0t / 5.15.37 §4.0u / 5.15.38 §4.0v，含取消被当失败的语义修复）；⚠️ 5.15.40 的 review 推翻了 §4.0v 的「闭环」——上一批只认两种写法，漏了 `map_err(format!)`/`ok_or`/包装层/`begin_reassemble` 四种形状的五条路径，已在 §4.0y 补齐：接收收尾四格转码，并修掉两处被散文藏住的**真缺陷**（群收尾失败一律标成「对端失联」＋那一格不落事件 ⇒ 气泡停在发送中）；begin/resume 经复核**不上屏**（只回 `FileReject` + 日志）⇒ 判为不配码（§4.0t）；§4.0v 已收口发送侧那一族与「取消被当失败」；剩余自由文本只有**不上屏**的两类，结论与凭据见 §4.0t/§4.0v；⚠️ 群文件那一步的**集成层**（真机/跨进程）本轮未证 | ⚠️ 两处前置都订正过：审计原来写「配码即可」不完整（要先看清码给谁读），而我 5.15.29 写的「必须加表列（DB v16）」**也是错的** —— 现读 `db/file_transfer.rs` 里 `set_message_status(&tx, &format!` 那几行（按符号名找，别抄行号）与 `cascade_tests.rs:809`：`file-<tid>` / `gfile-<tid>` **本来就是 `messages` 行** ⇒ 批 B 的真实形状是给 `finalize_file_failure` 带上 `fail_code`、群路径同写一码，**不加列、不迁移**（凭据与教训见 §4.0p）。复跑：`node --test src/utils/fileFailReason.test.ts` |
 | 20 | `## [4.39.2]` 两节内容不同（历史改号） | **判为不做**（不是来不及：历史那几节没有任何消费者，跨节搬正文的风险大于收益） | §4.0k 给了三节的 `git tag --contains` 现算表；判据对这种形状**显式打印**，不会静默放过 |
 
 ### 还没做的，按建议顺序

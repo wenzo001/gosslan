@@ -107,7 +107,7 @@ fn ensure_serve_worker(state: &Arc<AppState>, peer_id: &str) {
         async move {
             if job.cid.starts_with(SHARE_CID_PREFIX) {
                 // 共享目录：有直连走直传，没有则借一跳中继（与旧臂逐字同一条判据）。
-                let result = if st.has_link(&job.peer_id).await {
+                let result: Result<(), String> = if st.has_link(&job.peer_id).await {
                     crate::network::file::send_file_from_path(
                         &st,
                         &job.peer_id,
@@ -115,7 +115,24 @@ fn ensure_serve_worker(state: &Arc<AppState>, peer_id: &str) {
                         job.path.clone(),
                     )
                     .await
-                    .map_err(|e| e.message)
+                    .map_err(|e| {
+                        // 5.15.40：直连这一支以前 `.map_err(|e| e.message)` —— `SendFileError`
+                        // 自己的**取消标记**（`cancelled`）被丢掉了，于是"用户取消"走到同一个
+                        // 失败分支里发 `file-failed`（界面把"我取消的"显示成"失败了"）。
+                        // 现在按标记分流：取消发码、其余发码 + 原文进日志（`message` 是散文，
+                        // 直连发送链自己的文案表是另一件事，不在这条共享 worker 里改）。
+                        if e.cancelled {
+                            return crate::logging::FAIL_CODE_FILE_SEND_CANCELLED.to_string();
+                        }
+                        st.logger.error(
+                            "share",
+                            format!(
+                                "code={} transfer={} peer={} —— 直发失败: {}",
+                                crate::logging::FAIL_CODE_FILE_SEND_SHARE_FAILED, job.transfer_id, job.peer_id, e.message
+                            ),
+                        );
+                        crate::logging::FAIL_CODE_FILE_SEND_SHARE_FAILED.to_string()
+                    })
                 } else {
                     crate::network::file::send_file_via_relay(
                         &st,
