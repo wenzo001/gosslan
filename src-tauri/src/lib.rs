@@ -623,49 +623,7 @@ pub fn run() {
             // 唯一生产读者是 `state::AppState::spawn_db_hold_reporter`（下面第 426 行那一处启动点，
             // warn 级、带阈值、空窗口不产行）；跨文件数总量的那条判据在 `db_hold.rs`。
             // 定期清扫过期的 .part 断点前缀（审计 §7 风险 2）：启动后立即一次，之后每小时一次。
-            {
-                let st = state.clone();
-                tauri::async_runtime::spawn(async move {
-                    loop {
-                        // spawn_blocking（对照缓存自动清理的用法，审计 2.3o）：sweep_stale_parts
-                        // 是同步 read_dir/删除 + 抢 3 把锁，直接在 async 任务里跑会占住一个
-                        // tokio worker（慢盘上整套消息收发一起挨饿），且启动时立刻跑一轮。
-                        let removed = match tauri::async_runtime::spawn_blocking({
-                            let st = st.clone();
-                            move || crate::network::file::sweep_stale_parts(&st)
-                        })
-                        .await
-                        {
-                            Ok(n) => n,
-                            Err(e) => {
-                                st.logger.error("file", format!(".part 清扫任务失败: {e}"));
-                                0
-                            }
-                        };
-                        if removed > 0 {
-                            st.logger
-                                .info("file", format!("清理过期 .part：{removed} 个"));
-                        }
-                        // 同一趟里清扫内存态的中继表（见 sweep_stale_relay 的说明）。
-                        let swept = crate::network::transport::sweep_stale_relay(&st);
-                        if swept > 0 {
-                            st.logger
-                                .info("relay", format!("清理过期中继态：{swept} 项"));
-                        }
-                        // 同一趟里回收"再也没被喂片"的接收器（第 1 步 · 故障隔离 P1）。
-                        // 存在的理由：断链清理现在只在 peer 真的没链路时才动手，而协议里没有
-                        // cancel 帧 ⇒ 发送侧放弃的那一单在接收端没人管（表项 + 文件句柄 +
-                        // `.part` 一起永久留着，且 `sweep_stale_parts` 会因为"还在表里"而跳过它）。
-                        // 延迟 ≤ 本趟的节奏是有意的：它治的是**永久**泄漏，不是界面 spinner。
-                        let stalled = crate::network::transport::sweep_stalled_receives(&st);
-                        if stalled > 0 {
-                            st.logger
-                                .info("file", format!("回收静默接收器：{stalled} 个"));
-                        }
-                        tokio::time::sleep(std::time::Duration::from_secs(3600)).await;
-                    }
-                });
-            }
+            spawn_part_sweeper(&state);
             // 群文件台账一次性补账（2026-10-16 方案 A，见
             // `docs/notes/group-file-ledger-backfill-2026-10-16.md`）：治的是"文件在盘上、消息行也写着
             // 路径，但收尾那三张台账一张都没落库"的那一格 —— 那一格让这台**不算种子**，别人再也拉不到
@@ -948,6 +906,58 @@ pub fn run() {
         }
         #[cfg(not(all(desktop, target_os = "macos")))]
         let _ = (app_handle, event);
+    });
+}
+
+/// 过期 `.part` / 中继内存态 / 静默接收器的**每小时**清扫（审计 §7 风险 2、故障隔离 P1）。
+///
+/// 为什么抽成函数（审计 B4-F2）：它原先是一段裸 `tauri::async_runtime::spawn(loop{…})`，
+/// 句柄随手丢掉、也不在 `worker_supervisor` 的名单里 —— 这一趟停了没有任何信号，
+/// 而三件只有它做的事会静静停掉（`.part` 只涨不降；被对方放弃的接收端连表项带文件句柄
+/// 永久留着，因为协议里没有 cancel 帧）。抽出来之后它有了名字，也就进得了
+/// 「每个常驻循环都必须登记」那条判据；**仍然不进监督名单**：一小时一趟、无状态，
+/// 拉起一个已经跑完一轮的它没有意义（登记在 `worker_supervisor::UNSUPERVISED_LOOPS`）。
+fn spawn_part_sweeper(state: &std::sync::Arc<crate::state::AppState>) {
+    let st = state.clone();
+    tauri::async_runtime::spawn(async move {
+        loop {
+            // spawn_blocking（对照缓存自动清理的用法，审计 2.3o）：sweep_stale_parts
+            // 是同步 read_dir/删除 + 抢 3 把锁，直接在 async 任务里跑会占住一个
+            // tokio worker（慢盘上整套消息收发一起挨饿），且启动时立刻跑一轮。
+            let removed = match tauri::async_runtime::spawn_blocking({
+                let st = st.clone();
+                move || crate::network::file::sweep_stale_parts(&st)
+            })
+            .await
+            {
+                Ok(n) => n,
+                Err(e) => {
+                    st.logger.error("file", format!(".part 清扫任务失败: {e}"));
+                    0
+                }
+            };
+            if removed > 0 {
+                st.logger
+                    .info("file", format!("清理过期 .part：{removed} 个"));
+            }
+            // 同一趟里清扫内存态的中继表（见 sweep_stale_relay 的说明）。
+            let swept = crate::network::transport::sweep_stale_relay(&st);
+            if swept > 0 {
+                st.logger
+                    .info("relay", format!("清理过期中继态：{swept} 项"));
+            }
+            // 同一趟里回收"再也没被喂片"的接收器（第 1 步 · 故障隔离 P1）。
+            // 存在的理由：断链清理现在只在 peer 真的没链路时才动手，而协议里没有
+            // cancel 帧 ⇒ 发送侧放弃的那一单在接收端没人管（表项 + 文件句柄 +
+            // `.part` 一起永久留着，且 `sweep_stale_parts` 会因为"还在表里"而跳过它）。
+            // 延迟 ≤ 本趟的节奏是有意的：它治的是**永久**泄漏，不是界面 spinner。
+            let stalled = crate::network::transport::sweep_stalled_receives(&st);
+            if stalled > 0 {
+                st.logger
+                    .info("file", format!("回收静默接收器：{stalled} 个"));
+            }
+            tokio::time::sleep(std::time::Duration::from_secs(3600)).await;
+        }
     });
 }
 

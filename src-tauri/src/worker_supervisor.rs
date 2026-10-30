@@ -9,11 +9,12 @@
 //! 后果不对称，所以必须有人盯着：outbox 清扫器一死，`sending` 行就**再也没有终态出口**，
 //! 用户看到的是"消息永远发送中直到重启"——而界面一切正常，没有任何信号。
 //!
-//! **刻意不去碰的两类**：
-//! - `network::start` 管的那批连接/监听任务：它们有显式的 `stop()` + `await_tasks()` 生命周期，
-//!   重启一个已被 stop 的任务会把"用户关了局域网"变成"局域网又自己起来了"。
-//! - `spawn_group_history_sweeper`：它挂在"群文件台账一次性补账"那个延迟 20s 的启动作业里，
-//!   搬出来会改变启动时序；要收编它得先单独确认时序，不在这条改动的半径内。
+//! **不受监督的常驻循环**一律登记在 [`UNSUPERVISED_LOOPS`]（每条带理由）；一次性 spawn 在
+//! [`ONE_SHOT_SPAWNS`]。判据 `every_spawn_fn_has_a_home` 要求：仓里每个 `fn spawn_*`、
+//! 以及每处 `spawn(async move {` 都必须有归属且只属于一处 —— 新增常驻循环忘了登记会直接红。
+//!
+//! ⚠️ 这段以前写着"`spawn_group_history_sweeper` 刻意不碰"，而它（P1 #12）**早已被收编**
+//! 进 [`RESIDENT_WORKERS`] —— 过期的是文档，不是代码（审计 B4-F2 的"文档漂"那一半）。
 //!
 //! **重启有上限**：每 10s 判一次活，同一个 worker 最多被拉起 [`MAX_RESTARTS`] 次
 //! （含首次之外的次数）。反复秒退说明是代码坏了，再拉也是白拉，这时只留 error 一行。
@@ -74,6 +75,35 @@ pub static RESIDENT_WORKERS: &[WorkerSpec] = &[
         name: "group_history_sweeper",
         spawn: crate::network::group_history::spawn_group_history_sweeper,
     },
+];
+
+/// **刻意不监督**的常驻循环：`(函数名, 为什么)`。每一条都在源码里真实存在，且都不在
+/// [`RESIDENT_WORKERS`] 里。
+///
+/// 为什么用元组而不是带字段名的结构体：`why` 只给**判据与人**读，生产代码永远不碰它 ⇒
+/// 结构体字段在 lib 构建里是 dead_code（`-D warnings` 直接红）。元组没有字段级分析。
+pub static UNSUPERVISED_LOOPS: &[(&str, &str)] = &[
+    (
+        "spawn_supervisor",
+        "它自己就是看门狗：第二层守护每 tick 判它是否结束，结束后带 code=WORKER_DEAD 重启",
+    ),
+    (
+        "spawn_cache_auto_clean",
+        "缓存自动清理按 retention 一天一趟，停了只影响「盘不缩」，不影响消息链路；重启一个已经跑完的它没有意义",
+    ),
+    (
+        "spawn_part_sweeper",
+        "每小时一趟的 .part / 中继内存态 / 静默接收器清扫；无状态（治的是永久泄漏，不是界面等待），重启无意义",
+    ),
+];
+
+/// 一次性 spawn（不是常驻循环）。登记它只为让"每个 spawn 都有归属"这张清单完整。
+pub static ONE_SHOT_SPAWNS: &[(&str, &str)] = &[
+    ("spawn_sync", "按需替某个群拉历史，跑完即结束"),
+    (
+        "spawn_catch_up_after_hello",
+        "Hello 之后补拉一轮，跑完即结束",
+    ),
 ];
 
 /// 对一个 worker 这一拍该做什么。单独拎出来是因为这是**整条监督逻辑的全部判据**，
@@ -203,9 +233,14 @@ pub fn start(state: &Arc<AppState>, specs: &'static [WorkerSpec]) {
     // （只在重启/放弃时说话，等于"安静可能是一切正常，也可能是它已经死了"）。
     state.logger.info(
         "worker",
+        // `unsupervised` / `one_shot` 的规模进日志：两张登记表因此有生产读者
+        // （否则它们只是测试夹具，`-D warnings` 会把它们当死代码），
+        // 也让「哪些常驻循环受监督」在**运行时**一处可读（审计 B4-F2）。
         format!(
-            "code=WORKER_WATCHDOG_STARTED workers={} tick_s={}",
+            "code=WORKER_WATCHDOG_STARTED workers={} unsupervised={} one_shot={} tick_s={}",
             specs.len(),
+            UNSUPERVISED_LOOPS.len(),
+            ONE_SHOT_SPAWNS.len(),
             SUPERVISOR_TICK.as_secs()
         ),
     );
@@ -381,6 +416,181 @@ mod tests {
                 && prod.contains("code=WORKER_WATCHDOG_ALIVE"),
             "二层守护不能让原有活性证据消失"
         );
+    }
+
+    /// 每个 `fn spawn_*` 都必须有归属，且只属于一处（审计 B4-F2 的根治项）。
+    ///
+    /// 要治的那一格：新增一个常驻循环、裸 `spawn` 出去、句柄丢掉 —— 之后它停了没有任何信号
+    /// （`.part` 只涨不降、被放弃的接收端永久留着）。所以分母不手抄：**从源码现解析**所有
+    /// `fn spawn_*`，逐个要求出现在 `RESIDENT_WORKERS` / `UNSUPERVISED_LOOPS` /
+    /// `ONE_SHOT_SPAWNS` 之一，且三处不能重复；反过来，登记表里的每个名字也必须真有定义
+    /// （防"名字改过、表没改"的假绿）。
+    #[test]
+    fn every_spawn_fn_has_a_home() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+        // 生产源码 = 每个 .rs 里 `#[cfg(test)]` 之前的那一段（测试分册直接跳过）。
+        let mut prod: Vec<(String, String)> = Vec::new();
+        collect_rs(&root, &root, &mut prod);
+        assert!(
+            prod.len() > 50,
+            "只读到 {} 个生产文件 ⇒ 走错了目录",
+            prod.len()
+        );
+
+        let mut defined: Vec<String> = Vec::new();
+        for (_, text) in &prod {
+            for name in scan_spawn_names(text) {
+                defined.push(name);
+            }
+        }
+        defined.sort();
+        defined.dedup();
+        assert!(
+            defined.len() >= 10,
+            "只解析到 {} 个 `fn spawn_*` ⇒ 提取器失效",
+            defined.len()
+        );
+
+        // 受监督的：从 RESIDENT_WORKERS 的 `spawn:` 字段现解析（函数指针拿不到名字）。
+        let me = include_str!("worker_supervisor.rs");
+        let me_prod = &me[..me.find("#[cfg(test)]").unwrap_or(me.len())];
+        let mut resident: Vec<String> = me_prod
+            .match_indices("spawn: ")
+            .map(|(i, _)| {
+                let rest = &me_prod[i + "spawn: ".len()..];
+                let tail = rest.split([',', '\n']).next().unwrap_or("").trim();
+                tail.rsplit("::").next().unwrap_or(tail).to_string()
+            })
+            .filter(|n| n.starts_with("spawn_"))
+            .collect();
+        resident.sort();
+        assert!(
+            resident.len() == RESIDENT_WORKERS.len(),
+            "从源码解析到 {} 个受监督 spawn，而清单 {} 条 —— 解析口径或清单形状变了",
+            resident.len(),
+            RESIDENT_WORKERS.len()
+        );
+
+        let mut unsupervised: Vec<String> =
+            UNSUPERVISED_LOOPS.iter().map(|d| d.0.to_string()).collect();
+        let mut one_shot: Vec<String> = ONE_SHOT_SPAWNS.iter().map(|d| d.0.to_string()).collect();
+        unsupervised.sort();
+        one_shot.sort();
+
+        // 每条登记都必须写得清「为什么」——不带理由的登记等于没登记。
+        for (name, why) in UNSUPERVISED_LOOPS.iter().chain(ONE_SHOT_SPAWNS.iter()) {
+            assert!(
+                !why.trim().is_empty(),
+                "`{name}` 登记成不监督/一次性，但没写理由 ⇒ 下一个人还是不知道该不该动它"
+            );
+        }
+
+        // ① 每个定义都有归属。
+        let orphan: Vec<&String> = defined
+            .iter()
+            .filter(|n| !resident.contains(n) && !unsupervised.contains(n) && !one_shot.contains(n))
+            .collect();
+        assert_eq!(
+            orphan,
+            Vec::<&String>::new(),
+            "这些 `spawn_*` 既不受监督、也没登记为「刻意不监督 / 一次性」：{orphan:?}\n\
+             ⇒ 它们停了没有任何信号（`.part` 只涨不降、被放弃的接收端永久留着）。\
+             要么收编进 RESIDENT_WORKERS，要么在 UNSUPERVISED_LOOPS / ONE_SHOT_SPAWNS 里写清理由"
+        );
+
+        // ② 三张表互斥：同一名字出现在两处，说明登记本身已经不自洽。
+        let mut all = resident.clone();
+        all.extend(unsupervised.iter().cloned());
+        all.extend(one_shot.iter().cloned());
+        all.sort();
+        let dup: Vec<&String> = all
+            .windows(2)
+            .filter(|w| w[0] == w[1])
+            .map(|w| &w[0])
+            .collect();
+        assert_eq!(dup, Vec::<&String>::new(), "登记表里重复的名字：{dup:?}");
+
+        // ③ 反向：登记表里的名字必须真有定义（改名/删除而表没改 = 假绿）。
+        let stale: Vec<&String> = all.iter().filter(|n| !defined.contains(n)).collect();
+        assert_eq!(
+            stale,
+            Vec::<&String>::new(),
+            "登记表里有源码中不存在的名字：{stale:?}"
+        );
+
+        // 正控：提取器必须认得一个合成的新函数，且归属检查必须把它报成孤儿。
+        let synthetic = "pub fn spawn_brand_new_loop(state: &Arc<AppState>) -> JoinHandle<()> {\n    todo!()\n}\n";
+        let found = scan_spawn_names(synthetic);
+        assert_eq!(
+            found,
+            vec!["spawn_brand_new_loop".to_string()],
+            "提取器认不出新函数"
+        );
+        assert!(
+            !resident.contains(&found[0])
+                && !unsupervised.contains(&found[0])
+                && !one_shot.contains(&found[0]),
+            "合成的未登记函数竟然被认为有归属 ⇒ 上面那条在空集上恒绿"
+        );
+    }
+
+    /// 递归读 `.rs`，跳过测试分册；每份只留 `#[cfg(test)]` 之前的生产段。
+    fn collect_rs(root: &std::path::Path, dir: &std::path::Path, out: &mut Vec<(String, String)>) {
+        let entries = std::fs::read_dir(dir).expect("读目录");
+        for e in entries {
+            let p = e.expect("目录项").path();
+            if p.is_dir() {
+                collect_rs(root, &p, out);
+                continue;
+            }
+            let name = p
+                .file_name()
+                .unwrap_or_default()
+                .to_string_lossy()
+                .to_string();
+            if !name.ends_with(".rs") || name.ends_with("_tests.rs") || name == "tests.rs" {
+                continue;
+            }
+            // ⚠️ **不许**用「截到第一个 `#[cfg(test)]`」来切生产段：本仓有文件在**中段**
+            // 就有 `#[cfg(test)]` 项（`state.rs` 的 `spawn_*` 全在它之后），截断会把半个
+            // 生产文件当成测试代码（实测只解析到 7 个 `fn spawn_*`）。这里整份读，
+            // 靠 `scan_spawn_names` 的逐行过滤挡掉测试里的字符串提及。
+            let text = std::fs::read_to_string(&p).expect("读文件");
+            out.push((
+                p.strip_prefix(root).unwrap_or(&p).display().to_string(),
+                text,
+            ));
+        }
+    }
+
+    /// 源码里所有 `fn spawn_<name>(` 的名字（按定义形状取，不手抄清单）。
+    ///
+    /// 逐行扫，跳过含引号的行与注释行：判据自己在别处用**字符串**找过某个 `spawn_*`
+    /// 的完整签名（`group_file.rs` 的用例就是这么找的），不挡的话会把字符串里的提及当成定义。
+    /// ⚠️ 连这段注释也不能写出完整签名串 —— `lib_outbox_tests` 的接线判据数的是
+    /// 全文件出现次数，注释里多一处就会把它数成"接了两次"。
+    fn scan_spawn_names(text: &str) -> Vec<String> {
+        let mut out = Vec::new();
+        for line in text.lines() {
+            if line.contains('"') || line.trim_start().starts_with("//") {
+                continue;
+            }
+            let mut from = 0usize;
+            while let Some(i) = line[from..].find("fn spawn_") {
+                let at = from + i + "fn ".len();
+                let name: String = line[at..]
+                    .chars()
+                    .take_while(|c| c.is_ascii_alphanumeric() || *c == '_')
+                    .collect();
+                // 只认定义（名字后面紧跟 `(`）。
+                let len = name.len();
+                if line[at + len..].starts_with('(') {
+                    out.push(name);
+                }
+                from = at + len.max(1);
+            }
+        }
+        out
     }
 
     /// 重启监督循环时**接管**旧 worker，而不是再 spawn 一份。
