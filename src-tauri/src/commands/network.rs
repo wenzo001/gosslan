@@ -168,7 +168,10 @@ pub async fn set_app_active(state: State<'_, Arc<AppState>>, active: bool) -> Re
 /// 从后台唤起并聚焦主窗口（冷启动首显 / 点击系统通知 / 消息点击唤起）。
 #[cfg(desktop)]
 #[tauri::command(async)]
-pub async fn focus_window(app: tauri::AppHandle, state: State<'_, Arc<AppState>>) -> Result<(), String> {
+pub async fn focus_window(
+    app: tauri::AppHandle,
+    state: State<'_, Arc<AppState>>,
+) -> Result<(), String> {
     let Some(win) = app.get_webview_window("main") else {
         return Err("主窗口不存在".to_string());
     };
@@ -385,8 +388,9 @@ mod attention_tests {
 #[cfg(desktop)]
 #[tauri::command(async)]
 pub async fn set_unread_badge(app: tauri::AppHandle, count: u32) -> Result<(), String> {
-    let _ = tauri::async_runtime::spawn_blocking(move || crate::tray::set_unread_badge(&app, count))
-        .await;
+    let _ =
+        tauri::async_runtime::spawn_blocking(move || crate::tray::set_unread_badge(&app, count))
+            .await;
     Ok(())
 }
 
@@ -453,21 +457,14 @@ pub async fn notify_desktop(
             }
         });
         extra.insert("action_label".to_string(), label);
-        crate::notifications::show_click_if_enabled(
-            &s,
-            &title,
-            &body,
-            extra,
-            sound,
-            move || {
-                crate::notifications::on_notification_clicked(
-                    &click_app,
-                    "chat",
-                    Some(conv_id),
-                    click_msg_id,
-                )
-            },
-        )
+        crate::notifications::show_click_if_enabled(&s, &title, &body, extra, sound, move || {
+            crate::notifications::on_notification_clicked(
+                &click_app,
+                "chat",
+                Some(conv_id),
+                click_msg_id,
+            )
+        })
     })
     .await
     .map_err(|e| format!("系统通知发送被线程池中断: {e}"))?
@@ -485,6 +482,15 @@ pub async fn send_test_notification(state: State<'_, Arc<AppState>>) -> Result<S
     // 原来返回的是 `Result<String,String>`，搬池子后"被线程池中断"与"发送失败"两种错
     // 都仍然以 reject 回到前端，JS 侧形状不变。
     tokio::task::spawn_blocking(move || -> Result<String, String> {
+        // 这一格**也要**先问权限：没授权时系统会「成功」地什么都不发，这个入口若不查，
+        // 用户点完只看到「已发送」，更没法判断是应用链路还是系统设置的问题。
+        if let Some(why) = crate::notifications::permission_blocked(&s) {
+            s.logger.warn(
+                "notify",
+                format!("code=NOTIFY_PERMISSION_DENIED 测试通知未能发出：{why}"),
+            );
+            return Err(format!("{why}。{}", crate::notifications::platform_hint()));
+        }
         match crate::notifications::show(
             &s.app,
             "Gosslan 测试通知",
@@ -503,4 +509,3 @@ pub async fn send_test_notification(state: State<'_, Arc<AppState>>) -> Result<S
     .await
     .map_err(|e| format!("测试通知被线程池中断: {e}"))?
 }
-

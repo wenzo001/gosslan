@@ -440,6 +440,81 @@ fn enabled(state: &Arc<AppState>) -> bool {
     state.notify_enabled_cached()
 }
 
+/// **系统通知权限**的判定（纯函数，好写真值表）。
+///
+/// 与 `enabled()` 判的不是一件事：那是本应用的偏好开关，这是操作系统的许可。
+/// 为什么必须查：没许可时平台 API **返回成功**（Android 13+ 的 `NotificationManager`
+/// 直接不发、macOS 的 NSUserNotificationCenter 静默丢），日志里就只剩一条假的
+/// 「已发送系统通知」——这正是"用户报收不到、我们什么都说不出来"的那一格（审计 B4-F3）。
+///
+/// `Prompt` / `PromptWithRationale` 也算"没许可"：那时不但发不出去，**还得先问用户**，
+/// 而弹系统对话框只能由持有 Activity 的前端做（`useAppStore::ensureNotifyPermission`）。
+fn permission_verdict(
+    r: Result<tauri_plugin_notification::PermissionState, String>,
+) -> Option<String> {
+    use tauri_plugin_notification::PermissionState as S;
+    match r {
+        Ok(S::Granted) => None,
+        // 带上 OS 原值：`denied`（问过被拒）与 `prompt`（从没问过）的修法不同。
+        Ok(other) => Some(format!("系统通知权限未授予（{other}）")),
+        Err(e) => Some(format!("查询系统通知权限失败：{e}")),
+    }
+}
+
+/// 询问系统：现在允许发通知吗。桌面端是**存根**，见下面那一支。
+#[cfg(any(target_os = "android", target_os = "ios"))]
+fn permission_state_of(
+    state: &Arc<AppState>,
+) -> Result<tauri_plugin_notification::PermissionState, String> {
+    use tauri_plugin_notification::NotificationExt;
+    state
+        .app
+        .notification()
+        .permission_state()
+        .map_err(|e| e.to_string())
+}
+
+/// 桌面端不真去问：插件对桌面的 `permission_state()` 恒返回 `Granted`
+/// （tauri-plugin-notification 2.4.0 的 `desktop.rs`，读源码确认）⇒ 多打一次平台调用只是空壳。
+/// 这里把同一个结论**显式写出来**，而不是靠 cfg 让上层返回一个 `None` —— 那样纯函数
+/// 在桌面构建里就没有活调用者了（clippy `-D dead-code` 当场红）。
+/// 桌面收不到通知的真实原因是 AUMID 未注册 / 勿扰，那些由 `platform_hint()` 覆盖。
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
+fn permission_state_of(
+    _state: &Arc<AppState>,
+) -> Result<tauri_plugin_notification::PermissionState, String> {
+    Ok(tauri_plugin_notification::PermissionState::Granted)
+}
+
+/// 没权限时返回原因（桌面恒为 `None`，因为存根恒给 `Granted`）。
+pub(crate) fn permission_blocked(state: &Arc<AppState>) -> Option<String> {
+    permission_verdict(permission_state_of(state))
+}
+
+/// 日志里的稳定码（只进日志：用户报「收不到通知」时要能 grep 到原因）。
+///
+/// 为什么不放进 `logging.rs` 那张 `FAIL_CODE_*` 表：那张表是**上屏载荷**的码表，
+/// 跨层判据（`src/utils/fileFailReason.test.ts`）要求表里每个码都有界面读者；
+/// 这一对从来没进过任何载荷 —— 放进那张表等于造两个假字段。
+const CODE_PERMISSION_DENIED: &str = "NOTIFY_PERMISSION_DENIED";
+const CODE_SEND_FAILED: &str = "NOTIFY_SEND_FAILED";
+
+/// 权限闸：没权限就不发，并留一条**带码**的日志（发了也是白发，还会把日志写假）。
+/// 返回 `true` 表示可以继续发。
+fn permission_gate(state: &Arc<AppState>) -> bool {
+    let Some(why) = permission_blocked(state) else {
+        return true;
+    };
+    state.logger.warn(
+        "notify",
+        format!(
+            "code={CODE_PERMISSION_DENIED} 跳过系统通知：{why}（{}）",
+            platform_hint()
+        ),
+    );
+    false
+}
+
 fn log_result(state: &Arc<AppState>, title: &str, r: Result<(), String>) -> Result<bool, String> {
     match r {
         Ok(()) => {
@@ -451,7 +526,10 @@ fn log_result(state: &Arc<AppState>, title: &str, r: Result<(), String>) -> Resu
         Err(e) => {
             state.logger.warn(
                 "notify",
-                format!("系统通知发送失败：{e}（{}）", platform_hint()),
+                format!(
+                    "code={CODE_SEND_FAILED} 系统通知发送失败：{e}（{}）",
+                    platform_hint()
+                ),
             );
             Err(e)
         }
@@ -460,9 +538,13 @@ fn log_result(state: &Arc<AppState>, title: &str, r: Result<(), String>) -> Resu
 
 /// 尊重总开关的通知（前端消息通知走这里）。
 ///
-/// 返回 Ok(false) 表示“用户关了通知，跳过”；Ok(true) 表示已提交给系统。
+/// 返回 Ok(false) 表示“跳过”（用户关了通知 / 系统没给权限，后者带码落日志）；
+/// Ok(true) 表示已提交给系统。
 pub fn show_if_enabled(state: &Arc<AppState>, title: &str, body: &str) -> Result<bool, String> {
     if !enabled(state) {
+        return Ok(false);
+    }
+    if !permission_gate(state) {
         return Ok(false);
     }
     log_result(state, title, show(&state.app, title, body))
@@ -475,7 +557,8 @@ pub fn show_if_enabled(state: &Arc<AppState>, title: &str, body: &str) -> Result
 /// [`show_click_impl`]）；Windows/Linux 不读它。
 /// `sound` 仅强提醒传 true（系统通知声音），普通消息与好友申请传 false。
 ///
-/// 返回 Ok(false) 表示“用户关了通知，跳过”；Ok(true) 表示已提交给系统。
+/// 返回 Ok(false) 表示“跳过”（用户关了通知 / 系统没给权限，后者带码落日志）；
+/// Ok(true) 表示已提交给系统。
 pub fn show_click_if_enabled(
     state: &Arc<AppState>,
     title: &str,
@@ -485,6 +568,9 @@ pub fn show_click_if_enabled(
     on_click: impl FnOnce() + Send + 'static,
 ) -> Result<bool, String> {
     if !enabled(state) {
+        return Ok(false);
+    }
+    if !permission_gate(state) {
         return Ok(false);
     }
     log_result(
@@ -665,6 +751,114 @@ mod tests {
         assert!(
             platform_hint().contains("已安装"),
             "Windows 的排障说明必须点出“只对已安装应用生效”"
+        );
+    }
+
+    /// 权限判定的真值表（审计 B4-F3）。四格全钉：**只有** `Granted` 放行。
+    /// `Prompt` 也算没许可 —— 那时系统根本不投递，还得先去问用户。
+    #[test]
+    fn permission_verdict_only_lets_granted_through() {
+        use tauri_plugin_notification::PermissionState as S;
+        assert!(
+            permission_verdict(Ok(S::Granted)).is_none(),
+            "已授权不该被挡（挡住了等于通知永久失效）"
+        );
+        for state in [S::Denied, S::Prompt, S::PromptWithRationale] {
+            let why = permission_verdict(Ok(state))
+                .unwrap_or_else(|| panic!("{state} 必须被挡：这时平台会「成功」地什么都不发"));
+            assert!(why.contains("未授予"), "原因要能直接进日志：{why}");
+            assert!(
+                why.contains(&state.to_string()),
+                "原因里要带 OS 原值 —— `denied`（问过被拒）与 `prompt`（没问过）修法不同：{why}"
+            );
+        }
+        let why = permission_verdict(Err("jni 断了".into())).expect("查询失败也必须被挡");
+        assert!(
+            why.contains("jni 断了") && why.contains("查询"),
+            "查询失败要原样带出原因，否则又变成「不知道为什么」：{why}"
+        );
+    }
+
+    /// 接线判据：两个入口在**发之前**都得过权限闸，闸自己的日志必须有稳定码。
+    /// 只钉纯函数的真值表还不够 —— 把入口里那两行闸删掉，真值表照样全绿而功能退回原样。
+    #[test]
+    fn every_notification_entry_point_checks_os_permission_before_sending() {
+        let src = include_str!("notifications.rs");
+        // 只读测试册之前的生产码：这批 needle 在下面的断言里也各出现一次。
+        let prod = src
+            .split_once("\n#[cfg(test)]")
+            .map(|(head, _)| head)
+            .unwrap_or(src);
+        let flat: String = prod.split_whitespace().collect();
+
+        fn body_of<'a>(flat: &'a str, name: &str) -> &'a str {
+            let start = flat
+                .find(name)
+                .unwrap_or_else(|| panic!("`{name}` 不见了 ⇒ 本判据要跟着改名"));
+            let open = start + flat[start..].find('{').expect("函数没有函数体");
+            let mut depth = 0usize;
+            for (i, c) in flat[open..].char_indices() {
+                match c {
+                    '{' => depth += 1,
+                    '}' => {
+                        depth -= 1;
+                        if depth == 0 {
+                            return &flat[open..open + i + 1];
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            panic!("`{name}` 的花括号没闭合")
+        }
+
+        let mut checked = 0usize;
+        for name in ["pubfnshow_if_enabled(", "pubfnshow_click_if_enabled("] {
+            let body = body_of(&flat, name);
+            let gate = body.find("permission_gate(state)").unwrap_or_else(|| {
+                panic!("`{name}` 没过权限闸 ⇒ 没授权时日志仍会写「已发送系统通知」（审计 B4-F3）")
+            });
+            let send = body
+                .find("log_result(")
+                .unwrap_or_else(|| panic!("`{name}` 里找不到发送那一句"));
+            assert!(gate < send, "`{name}` 必须先判权限，再发");
+            checked += 1;
+        }
+        assert_eq!(checked, 2, "两个入口都要钉到（少一个就是漏一整条路径）");
+
+        assert!(
+            body_of(&flat, "fnpermission_gate(").contains("CODE_PERMISSION_DENIED"),
+            "权限闸的日志没带码 ⇒ 「用户报收不到」时日志里仍然查不出原因"
+        );
+        assert!(
+            body_of(&flat, "fnlog_result(").contains("CODE_SEND_FAILED"),
+            "发送失败的日志没带码 ⇒ 这一格又只剩一句散文"
+        );
+        // 权限判定必须是「问状态 → 出判决」这一条：两个平台各写一套就会长成两套语义。
+        assert!(
+            body_of(&flat, "pub(crate)fnpermission_blocked(")
+                .contains("permission_verdict(permission_state_of(state))"),
+            "permission_blocked 必须由 permission_state_of + permission_verdict 组成"
+        );
+        // 桌面存根：恒 `Granted`，且**不许真去打平台调用**（那只是一次恒真的空壳）。
+        let mobile = flat
+            .find("fnpermission_state_of(")
+            .expect("移动端的权限查询不见了");
+        let desktop = body_of(&flat[mobile + 1..], "fnpermission_state_of(");
+        assert!(
+            desktop.contains("Ok(tauri_plugin_notification::PermissionState::Granted)"),
+            "桌面存根必须给出 Granted（插件对桌面恒 Granted，读 desktop.rs 确认的事实）：{desktop}"
+        );
+        assert!(
+            !desktop.contains(".notification()"),
+            "桌面存根不许真去问系统（那只是一次恒真的平台调用）"
+        );
+
+        // 设置页的「发送测试通知」也要自己查：它是唯一能让用户**当场**看到原因的地方。
+        let cmd = include_str!("commands/network.rs");
+        assert!(
+            cmd.contains("permission_blocked(&s)"),
+            "send_test_notification 没查权限 ⇒ 没授权时它仍会回「已发送」"
         );
     }
 }

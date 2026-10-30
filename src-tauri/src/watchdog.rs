@@ -112,6 +112,8 @@ fn run<R: tauri::Runtime>(app: tauri::AppHandle<R>, state: Arc<crate::state::App
                         if !*notified && stale >= NOTIFY_AT_MS {
                             *notified = true;
                             // 尊重「勿扰 / 通知总开关」：被关掉时仍有现场与下一轮横幅。
+                            // 丢弃的是返回值，不是失败：跳过/失败都在 notifications 里带码落日志
+                            // （code=NOTIFY_PERMISSION_DENIED / NOTIFY_SEND_FAILED），这里只发起。
                             let _ = crate::notifications::show_if_enabled(
                                 &state,
                                 "Gosslan 界面无响应",
