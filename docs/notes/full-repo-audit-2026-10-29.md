@@ -707,10 +707,22 @@ node --experimental-strip-types -e '
 
 ### 4.0p 第 19 行的真实前置与批 A 的前半（5.15.29）：6 处中文被写进了用户可见的事件载荷
 
-- **审计那一格写错了前置**：它写"前置 = 给 `REASON_*` 自由文本配稳定码"。逐处读码后：
-  文件气泡的状态来自**传输台账**（1:1 = `file_transfers` + `file_outbox`；群 = `group_file_recipients`，
-  `db.rs:908/934/972`），不是 `messages` 行 ⇒ 5.15.22 那条 `messages.fail_code` 通道**接不上**。
-  落库那一半必须加表列（DB v16），这是批 B。
+- ⚠️ **本节曾给出一条错的前置，现由证据推翻并订正**（写错的那一版随 5.15.29 提交过；
+  本节留下订正，不静默改写）。我当时说「文件气泡的状态来自传输台账、不是 `messages` 行 ⇒
+  `messages.fail_code` 接不上 ⇒ 批 B 必须加表列（DB v16）」。**这句是错的。**现读三条凭据：
+  · `src-tauri/src/db/file_transfer.rs:179` —— 1:1 那一半就是 `set_message_status(&tx, &format!("file-{transfer_id}"), status)`；
+  · `src-tauri/src/db/file_transfer.rs:185` —— 群那一半同一形状（`gfile-`，取消时由这里写）；
+  · `src-tauri/src/db/cascade_tests.rs:809` —— `SELECT status FROM messages WHERE msg_id = 'gfile-t5'`，
+    既有判据本来就按「`gfile-<tid>` 是 `messages` 行」断言。
+  ⇒ 两族文件气泡**都是 `messages` 行**，`msg_id` 只是长成 `file-<tid>` / `gfile-<tid>` 的样子；
+  5.15.22 的 `fail_code` 列与 `set_message_failed()` 正是它们该走的那扇门。
+  **批 B 的真实形状**：给 `finalize_file_failure(...)` 带一个 `fail_code` 参数、群路径同写一码，
+  **不需要迁移、不需要新列**。
+  ⚠️ 为什么会写错：我把「状态的另一份真相在 `file_transfers` / `group_file_recipients` 里」
+  （这句是对的：进度与逐收件人状态确实在那）误读成「气泡不是消息行」—— 台账行与气泡行是
+  **同时存在的两样东西**，我只看到了前者。教训：凡声明「X 不是 Y，所以要走 Z 通道」，
+  必须先把 X 的**写入语句**读出来；`grep set_message_status` 一条就够，
+  成本远低于一次错的前置声明（而错的前置会直接决定下一批人做什么）。
 - **配码这一半里挖出的真实缺陷比原描述更具体**：按形状扫 `FileFailedInfo` 的构造点，
   **6 处把中文写进了事件载荷**（`outbox_sweep.rs` ×2、`relay_file.rs` ×3、`network/transport.rs` ×1）。
   前端对未知 reason 是**原样上屏**（刻意回落）⇒ 英文界面这六格是中文。5.15.29 全部换成码 + 中英词典各一条。
@@ -903,14 +915,14 @@ node --experimental-strip-types -e '
 | 16 | 替换矩阵勘误 | **已做**（5.15.13：新增 §0 勘误 + 一条「每个生产依赖都必须在矩阵里登记过」的新判据，带变异正控） | 文件真路径是 `docs/architecture/open-source-replacement-matrix.md`（⚠️ 本表原来只写裸文件名，害我照着它写了一条指不到文件的复跑命令）；复跑 `grep -n "勘误" docs/architecture/open-source-replacement-matrix.md` |
 | 17 | 依赖卫生 | `@pinia/colada` 死依赖**已删**；**`lucide-vue-next` 升级评估未做** | `grep -n "colada" package.json` 应为 0 命中（复跑时带一个阳性对照：`grep -n "vue-i18n" package.json` 必须有命中） |
 | 18 | SEC-08 | **已修**（见第 15 行） | —— 原表把它单独列一行是重复计数 |
-| 19 | 文件气泡的失败原因重启后失忆 | **拆成两批**：批 A 前半已做（5.15.29，见 §4.0p）；批 B（落库）与 A2（动态原因那一族）**未做** | ⚠️ 文档原来写的前置**是错的**：文件气泡的真源不是 `messages` 行（1:1 = `file_transfers` + `file_outbox`，群 = `group_file_recipients`），所以 5.15.22 的 `messages.fail_code` 通道接不上它 ⇒ 批 B 的前置是**给两张传输表加 `fail_code` 列（DB v16）+ 气泡读路径**。复跑：`node --test src/utils/fileFailReason.test.ts` |
+| 19 | 文件气泡的失败原因重启后失忆 | **拆成两批**：批 A 前半已做（5.15.29，见 §4.0p）；批 B（落库）与 A2（动态原因那一族）**未做** | ⚠️ 两处前置都订正过：审计原来写「配码即可」不完整（要先看清码给谁读），而我 5.15.29 写的「必须加表列（DB v16）」**也是错的** —— 现读 `db/file_transfer.rs:179/185` 与 `cascade_tests.rs:809`：`file-<tid>` / `gfile-<tid>` **本来就是 `messages` 行** ⇒ 批 B 的真实形状是给 `finalize_file_failure` 带上 `fail_code`、群路径同写一码，**不加列、不迁移**（凭据与教训见 §4.0p）。复跑：`node --test src/utils/fileFailReason.test.ts` |
 | 20 | `## [4.39.2]` 两节内容不同（历史改号） | **判为不做**（不是来不及：历史那几节没有任何消费者，跨节搬正文的风险大于收益） | §4.0k 给了三节的 `git tag --contains` 现算表；判据对这种形状**显式打印**，不会静默放过 |
 
 ### 还没做的，按建议顺序
 
 1. **TST-02**（唯一还活着的 P1）—— 前置是给 `useChatStore` 做依赖注入，属独立重构，别塞进修复批。
 2. **INV-P18 的 Ed25519 那半** —— 前置是"签名能力"抽象。
-3. **第 19 行·批 B：文件失败原因落库** —— 前置不是"配码"（那半已在 5.15.29 做完前半），而是**给 `file_transfers` / `group_file_recipients` 加 `fail_code` 列（DB v16）+ 让气泡读它**。同批一并处理 A2：`handle_share.rs` 的 `reason` 是变量，值来自文件层的中文 `Err("文件完整性校验失败")`（`network/file/receive.rs:1497`、`group_receive.rs:307`，且 `file_tests.rs:890` 把它当契约断言着）⇒ 静态形状判据看不见变量里的中文，要连错误串来源与那条断言一起改。
+3. **第 19 行·批 B：文件失败原因落库** —— 前置也不是「加表列」（我 5.15.29 那句已订正）：`file-<tid>` / `gfile-<tid>` 就是 `messages` 行 ⇒ 批 B = 给 `finalize_file_failure(...)` 带 `fail_code` 参数 + 群路径同写一码，复用 5.15.22 那扇门，**不加列、不迁移**。同批一并处理 A2：`handle_share.rs` 的 `reason` 是变量，值来自文件层的中文 `Err("文件完整性校验失败")`（`network/file/receive.rs:1497`、`group_receive.rs:307`，且 `file_tests.rs:890` 把它当契约断言着）⇒ 静态形状判据看不见变量里的中文，要连错误串来源与那条断言一起改。
 4. **DUP 剩余的 2 行**（第 14 行：DUP-07/15，现数 2 个编号）—— 纯重复，收益是"少一份会漂的拷贝"。DUP-03/04 已于 5.15.26 / 5.15.25 收口，DUP-13 已于 5.15.27 收口（§4.0n：现数是两种策略九处，不是审计写的三份），DUP-06 已于 5.15.28 收口（§4.0o），DUP-14 判**不做**。
    （第 12 行 DUP-02 的那半本轮**复核后判不再统一**，理由与三条防复发判据见 §4.0l。）
 5. **`lucide-vue-next` 升级评估**、**`get_topology` 孤儿**（FUN-04）、**TST-06 真 ENOSPC**、**TST-09 Windows 三类行为用例**，以及**需要现场日志才能推进的 Windows 渲染层卡死**（另见 `docs/notes/`）。（第 20 行的历史改号本轮**判为不做**，理由与现算证据在 §4.0k，不再列进待办。）
