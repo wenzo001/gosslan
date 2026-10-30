@@ -12,7 +12,11 @@
  * 的行为真值表；组件那一层（拖角、焦点、触摸目标）归 CDP 探针与人工，不在这里假称验过。
  */
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import { test } from "node:test";
+
+const ROOT = join(import.meta.dirname, "../..");
 
 import {
   countOperations,
@@ -325,6 +329,31 @@ test("countOperations 就是药丸上的数（与列表同源，不另算一份�
   });
   assert.equal(countOperations(rows), rows.length);
   assert.equal(countOperations(rows), 1);
+});
+
+// ---------------- 注释不与代码对账（B1-F2） ----------------
+
+/**
+ * 文件头那段"三种边界"是**手抄的规格**，与 `OperationKind` 是两个真源 —— 它已经漂过一次：
+ * 写着"kinds 只有四种"，而类型里早有六种（`update_download` 在 B5 接好且有行为用例）。
+ * 危险不是当时行为错，而是下一个人拿注释当规格，把已经接好的行当"不该存在"删掉。
+ *
+ * 判据只钉**计数写法**：允许点名（"今天进来的六种：…"这种跟着枚举走的不算），但不许再出现
+ * "kinds 只有 N 种"——计数该由类型自己说话。
+ */
+test("文件头不许再手抄「kinds 有几种」（B1-F2）", () => {
+  const src = readFileSync(join(ROOT, "src/utils/taskCenter.ts"), "utf8");
+  const claim = src.match(/kinds?\s*只有[^。\n]{0,8}[一二三四五六七八九十\d]+\s*种/);
+  assert.equal(
+    claim,
+    null,
+    `注释里又出现了手抄的 kinds 计数：${claim?.[0]} —— 它一定会漂，改成点名并让 OperationKind 说话`,
+  );
+  // 正控：检测器对本条文档里那句原话必须能报出来（否则上面在空集上恒绿）。
+  assert.ok(
+    /kinds?\s*只有[^。\n]{0,8}[一二三四五六七八九十\d]+\s*种/.test("kinds 只有四种：文件、按 cid 取内容"),
+    "检测器认不出那条过期注释的原话",
+  );
 });
 
 // ---------------- 更新下载（B5：任务中心从这一批起列它） ----------------
