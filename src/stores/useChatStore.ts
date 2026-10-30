@@ -12,6 +12,7 @@ import {
   markStatusInCache,
   freshMentionedConvs,
   findFirstMessageById,
+  patchMessageInConv,
   pickMediaContent,
   preserveDeliveryStatus,
   replaceMessageAt,
@@ -1953,11 +1954,13 @@ export const useChatStore = defineStore("chat", () => {
     // ---- 重发：把那条 failed 气泡原地转回 sending，不再新建乐观记录 ----
     // 找不到（切了会话 / 已被快照吞掉）就退回新建 —— 宁可多一条也不静默丢消息。
     if (retryOfMsgId) {
-      const list = messages.value[convId];
-      const i = list?.findIndex((m) => m.msg_id === retryOfMsgId) ?? -1;
-      if (list && i >= 0) {
-        const reverted = { ...list[i], status: "sending" as const };
-        messages.value[convId] = [...list.slice(0, i), reverted, ...list.slice(i + 1)];
+      const revertedHit = patchMessageInConv(messages.value, convId, retryOfMsgId, (m) => ({
+        ...m,
+        status: "sending" as const,
+      }));
+      if (revertedHit) {
+        messages.value = revertedHit.lists;
+        const reverted = revertedHit.rec;
         try {
           const rec = await sendToBackend(convId, content, kind, mentionIds);
           // Ack 可能已在 await 期间到达 ⇒ 直接提升到 delivered（与下面新建路径同一处理）
@@ -3051,18 +3054,12 @@ export const useChatStore = defineStore("chat", () => {
       onMessageAcked: (msgId) => {
         // 对方收到（Ack）：sending → delivered（空圆框）。经 outbox 补发的重试 Ack
         // 可能晚于 peer-read 到达，只允许前进不允许把绿勾退回空圆框。
-        let found = false;
-        const convId = convIdOfMessage(msgId);
-        const list = convId ? messages.value[convId] : undefined;
-        const i = list ? list.findIndex((m) => m.msg_id === msgId) : -1;
-        if (convId && list && i >= 0) {
-          messages.value[convId] = [
-            ...list.slice(0, i),
-            { ...list[i], status: furthestStatus(list[i].status, "delivered") },
-            ...list.slice(i + 1),
-          ];
-          found = true;
-        }
+        const hit = patchMessageInConv(messages.value, convIdOfMessage(msgId), msgId, (m) => ({
+          ...m,
+          status: furthestStatus(m.status, "delivered"),
+        }));
+        const found = hit !== null;
+        if (hit) messages.value = hit.lists;
         // Ack 先于乐观→真实替换到达（store 里找不到 real msg_id）：
         // 暂存 Ack，send() 拿到真实记录后立即消费。
         if (!found) {
