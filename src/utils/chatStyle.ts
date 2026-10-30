@@ -218,6 +218,23 @@ export function mentionHighlightColor(
 }
 
 
+/**
+ * @提及的**淡底色**：与 [`mentionHighlightColor`] 同一族的另一半。
+ *
+ * 以前这行配方在两处各写一遍（气泡 `MessageTextBubble.vue` / 全文弹窗 `MessageContentModal.vue`）
+ * —— 那是同一个配方，改一处漏一处就是"同一句话在两个地方色块深浅不一样"。
+ * 两处的前景色来源**不同且必须不同**（气泡按气泡底色算对比度、弹窗按面板底色算），
+ * 所以这里只收"已知前景色之后怎么调出底色"这一段。
+ *
+ * ⚠️ 与 `style.css` 里 `mark.gosslan-mention` 那条 12% **不是同一件事**：那条是"没拿到内联
+ * 样式时"的静态兜底，要在明暗两套主题下都站得住；这里是按当前底色算过对比度之后的派生值。
+ */
+export const MENTION_BG_PERCENT = 16;
+
+export function mentionHighlightBg(fg: string | null | undefined): string | undefined {
+  return fg ? `color-mix(in srgb, ${fg} ${MENTION_BG_PERCENT}%, transparent)` : undefined;
+}
+
 /** 解析对端广播来的样式 JSON（坏数据回退默认）。 */
 export function parsePeerStyle(raw: string): ChatStyleConfig {
   try {

@@ -951,6 +951,22 @@ node --experimental-strip-types -e '
 - 若真要动，形状已定：表值改 `Arc<Mutex<FileReceiver>>`（表锁只管查/插/删，慢活进条目锁），
   `take_*` 那几族语义不受影响，锁序只许「表 → 条目」。
 
+### 4.0x DUP-07 收口 + DUP-15 台账订正（5.15.39）
+
+**DUP-07 真收口**：16% 淡底配方两处各写一遍（气泡 / 全文弹窗）。两处的前景色来源**必须不同**
+（按各自底色算对比度），所以合的不是 `mentionFg`，是「已知前景色之后怎么调底色」这一段 ⇒
+`chatStyle::mentionHighlightBg`。产出串逐字不变（单测断言 `mentionHighlightBg("#123456")` 等于旧内联串）。
+判据两条坑都是实测踩出来的：① 只认 **16%**，不认任意百分比 —— `useMessageDisplay.ts` 的 **18%** 是
+卡片描边、`style.css` 的 **12%** 是静态兜底，都是别的事实（按任意百分比扫会把它们卷进来，第一版实得
+`useMessageDisplay.ts: 18%`）；② 扫描前要把家里的具名常量 `MENTION_BG_PERCENT` 归一成 16，
+否则「只有一个家」会被家自己的写法漏掉（第二版实得空集）。外部变异（把弹窗改回自拼配方）点名报红后还原。
+
+**DUP-15 是台账漂，不是待办**：本表 §8 原写「overlay 手抄至少 2 处（`BaseModal.vue:113` / `FavoritePanel.vue:827`）」，
+现读两处都不是那个形状——`BaseModal.vue:113` 只是**注释**里引用 z-[60]（不抄壳），真正的抄本只有
+`FavoritePanel.vue` 一处，而它早已被**显式登记**为保留自研（`designGuards.test.ts` 的 `OVERLAY_SHELL_COPIES`，
+连同「同一元素 serve 移动 overlay / 桌面内嵌两支布局」「底部留白量不同」与**别再排成下一批就迁**的理由），
+另有棘轮判据 ㊼ 现算全仓（新增同形抄本立即红，登记表只许变小）。⇒ 不改代码，只订正台账。
+
 ### 4.1 已核查且未发现问题的稳定性面
 
 - **锁顺序**：全仓无 `peers↔db` 嵌套；`file_receivers→db` 顺序成立。
@@ -1039,7 +1055,7 @@ node --experimental-strip-types -e '
 | DUP-04 | ~~Medium~~ **已修（5.15.25）** | 重复工具 | 字节→小写 hex 的表达式散在生产码与测试里：**现数 20 行、11 个文件（其中 9 个是生产码文件）**，另有三个整份助手（`device::hex`、`relay_seal::channel_hex`、`commands/relay` 的探测串）—— 审计原写「8 份」偏少。收成 `crypto::hex_lower` / `sha256_hex` 一个家。 | `src-tauri/src/crypto.rs`（唯一的家）；复跑 `grep -rn ":02x" src-tauri/src` 改后只剩 `crypto.rs` 两处 |
 | DUP-05 | Medium | 重复组件 | **已修（5.15.16，见 §4.0g）**：`LogViewer` 两个外壳各抄一份逐字相同的虚拟行模板（8 个 `v-html` 落点）；矩阵误以为"两条外壳"是迁移前的问题 —— 虚拟化迁了，两份拷贝还在 | `src/components/LogRows.vue`（唯一行模板） |
 | DUP-06 | ~~Medium~~ **已修（5.15.28，见 §4.0o）** | 重复组件 | 「表情切段 + 链接/提及切段」的**拼装循环** 3 份同形（两个原语 `utils/emoji` + `utils/linkify` 早就单源，会漂的是拼起来那六行；三份里有一份的表情段少带 `name`）⇒ 收成 `composables/useMessageSegments`；渲染那半（颜色/对比度/副作用）刻意**不**统一 | `src/composables/useMessageSegments.ts`（唯一的家） |
-| DUP-07 | Low | 重复逻辑 | @提及的「16% 透明底」配方散在 2 处 + 一个未被复用的第三种配方 | `src/style.css` 等 |
+| DUP-07 | Low | 重复逻辑 | ~~@提及的「16% 透明底」配方散在 2 处~~ ⇒ **已收口（5.15.39，§4.0x）**：收成一个家 `chatStyle::mentionHighlightBg`，判据钉「16% 只许出现在 chatStyle」 | `src/utils/chatStyle.ts` |
 | DUP-08 | Low | 重复组件 | **已修（5.15.20，见 §4.0i）**：头像渲染 13 个副本各自手写 `gosslan-avatar-box` + `gosslan-avatar-emoji`，圆角漂成 3 种；顺带修掉 `RemindAudienceDialog` 那一处（喂了 `SelfAvatar` 没有的 prop ⇒ 那一列没有头像） | `src/components/ui/AvatarBox.vue`（唯一行像） |
 | DUP-09 | **已加对账（§4.0a）** | 已读推进的排除清单 TS 一份、Rust 一份 —— 今天由 `src/utils/messageKinds.test.ts` 的「跨语言契约：已读推进的排除清单两侧逐项一致（DUP-09）」逐项比；变异（TS 去掉 `partial_cancelled`）⇒ 红 |
 | DUP-10 | Low | 跨层规则 | 未读计数判据 TS 一份、Rust 一份，今天一致 | 同上 |
@@ -1047,7 +1063,7 @@ node --experimental-strip-types -e '
 | DUP-12 | **已加对账（§4.0a）** | `previewBody`（TS）与 `preview_text` / `todo_preview` / `poll_preview` / `announcement_preview`（Rust）的固定字面量由同文件的「跨语言契约：会话预览的固定文案两侧一致（DUP-12）」比；变异（Rust 改一个字）⇒ 红 |
 | DUP-13 | ~~Low~~ **已修（5.15.27，见 §4.0n）** | 自研基础设施 | 审计原写「TS 侧三份各自实现的 LRU/容量闸」——**既偏少也偏窄**：按形状现数是**两种策略九处**（丢最旧 5 处 + 满了整张清 4 处），且这两策略**不等价**（同一张表跑 `max=3`，一个活 3 条、一个活 0 条）。收成 `utils/bounded.ts` 的两个出口 `trimOldest` / `clearWhenFull`，另有六格判「不是同一个东西」不收 | `src/utils/bounded.ts`（唯一的家）；复跑 `node --test src/utils/bounded.test.ts` |
 | DUP-14 | Low | 重复组件 | `MessageItem` 的「复制 / 保存」动作在右键菜单与移动端 ActionSheet 两套模板里各写一遍 | `MessageItem.vue` |
-| DUP-15 | Low | 重复组件 | 「移动端整屏覆盖壳」`MobilePageFrame` 的 `overlay` 形态被手抄 1 份 | `src/components/**` |
+| DUP-15 | Low | 重复组件 | ~~手抄 1 份~~ ⇒ **复核后判保留**：`FavoritePanel.vue` 是**显式登记**的自研（同一元素 serve 两支布局，理由写在 `designGuards.test.ts` 的 `OVERLAY_SHELL_COPIES` 上方），棘轮判据 ㊼ 钉住「新增同形照旧红」 | `designGuards.test.ts` ㊼ |
 | DUP-16 | — | 负面清单 | 未找到重复的实现（避免误报） | — |
 
 **DUP-09～DUP-12 是「今天一致但无机器对账」** —— 这类才是 DUP-01 的真正成因：没有一条守卫断言两侧字面值相同，于是漂移可以悄无声息地发生。
@@ -1105,7 +1121,7 @@ node --experimental-strip-types -e '
 >
 > 现在把它改成**唯一的状态表**：`§1/§2/§3/§6/§7` 各节记的是**审计当时**的发现，今天的状态以本表为准。
 > ⚠️ 诚实边界：本表是**人工对账 + 每行挂复跑命令**，不是机器判据 —— 没有任何脚本断言"这张表与代码一致"
-> （能做这种断言的只有逐行的复跑命令本身）。表里没写的 ID 见 §4.0a～§4.0w 的复核结论。
+> （能做这种断言的只有逐行的复跑命令本身）。表里没写的 ID 见 §4.0a～§4.0x 的复核结论。
 
 | 序 | ID | 今天的状态 | 凭据 / 复跑 |
 |---|---|---|---|
@@ -1123,7 +1139,7 @@ node --experimental-strip-types -e '
 | 11 | SEC-02 | 上限已做（5.15.14）+ 淘汰认身份（5.15.19，§4.0h）；**announce 限流判不修** | 负结论留证：无界增长的成因是"条数没上限"而不是速率，`upsert_peer` 每 5s 周期最多一次 |
 | 12 | DUP-02 | 通道判据与越权闸两半**已落地**（5.15.9 / 5.15.15）；剩下那半**复核后判不再统一**（§4.0l） | 原话「剩三套 toast 文案未统一」不准确：那是四件不同的事实。改判据钉住"它们是四件事"：`src/utils/mediaAvailability.test.ts` 三条（特征词 / 收藏那句的「副本」必须由 `std::fs::copy` 兑现 / 引用面不跨界），①③ 做过注入自证、② 只有内联反控（未对 `favorites.rs` 变异） |
 | 13 | DUP-09～DUP-12 | **09 与 12 已加对账、11 已被覆盖、10 判不另加**（§4.0a） | 那两条对账用例就住在一个文件里，标题自带编号：`src/utils/messageKinds.test.ts` 的「跨语言契约：已读推进的排除清单两侧逐项一致（DUP-09）」与「…会话预览的固定文案两侧一致（DUP-12）」；复跑 `node --test src/utils/messageKinds.test.ts`。⚠️ 注：§6.3 那四行仍写着"无机器对账"，以本表为准 |
-| 14 | DUP-07/15 | **未做（2 个编号，现数）**；DUP-06（5.15.28，§4.0o）已收口；DUP-03（5.15.26）、DUP-04（5.15.25）、DUP-05（5.15.16）、DUP-08（5.15.20）、DUP-13（5.15.27，§4.0n）已收口；**DUP-14 本轮判「不做」** | @提及 16% 淡底配方 **2 处各写一遍**（DUP-07，`MessageTextBubble.vue:154` / `MessageContentModal.vue:64`；`style.css:1308` 是被讨论但没复用的第三种）、`MobilePageFrame` 的 overlay 手抄**至少 2 处**（DUP-15，`BaseModal.vue:113` / `FavoritePanel.vue:827` 两处注释都自称"与 MobilePageFrame 一致"，审计原写 1 份）。**DUP-14 判不做的理由**：`MessageItem.vue` 里 `copyTextWithToast` 早就是右键菜单与移动端面板共用的一份，重复的只是菜单 markup ⇒ 收它是把模板搬个家，收益最低 |
+| 14 | DUP-07/15 | **DUP-07 已收口（5.15.39，§4.0x）；DUP-15 复核后判保留（§4.0x：早有棘轮判据 ㊼ + 显式登记的自研理由，本表把它列成「未做」是台账漂）**；DUP-06（5.15.28，§4.0o）已收口；DUP-03（5.15.26）、DUP-04（5.15.25）、DUP-05（5.15.16）、DUP-08（5.15.20）、DUP-13（5.15.27，§4.0n）已收口；**DUP-14 本轮判「不做」** | @提及 16% 淡底配方 **2 处各写一遍**（DUP-07，`MessageTextBubble.vue:154` / `MessageContentModal.vue:64`；`style.css:1308` 是被讨论但没复用的第三种）、`MobilePageFrame` 的 overlay 手抄**至少 2 处**（DUP-15，`BaseModal.vue:113` / `FavoritePanel.vue:827` 两处注释都自称"与 MobilePageFrame 一致"，审计原写 1 份）。**DUP-14 判不做的理由**：`MessageItem.vue` 里 `copyTextWithToast` 早就是右键菜单与移动端面板共用的一份，重复的只是菜单 markup ⇒ 收它是把模板搬个家，收益最低 |
 | 15 | SEC-04/05/06/08/12 | **全部已修**（SEC-04 5.15.14 + 5.15.17 留痕；SEC-05/06/08/12 见 5.15.13） | SEC-08 那条是入站帧聚合驻留的**全局限额 1 GiB**（审计原估 8 GiB 上界） |
 | 15b | SEC-07 / SEC-09 / SEC-10 / SEC-11 | **不成立 / 已撤回 / 判不修 / 判不修** | §4.0 与 §4.0b 逐条给了理由，负结论也是一等结论 |
 | 16 | 替换矩阵勘误 | **已做**（5.15.13：新增 §0 勘误 + 一条「每个生产依赖都必须在矩阵里登记过」的新判据，带变异正控） | 文件真路径是 `docs/architecture/open-source-replacement-matrix.md`（⚠️ 本表原来只写裸文件名，害我照着它写了一条指不到文件的复跑命令）；复跑 `grep -n "勘误" docs/architecture/open-source-replacement-matrix.md` |
@@ -1137,7 +1153,7 @@ node --experimental-strip-types -e '
 1. **TST-02**（唯一还活着的 P1）—— 前置是给 `useChatStore` 做依赖注入，属独立重构，别塞进修复批。
 2. **INV-P18 的 Ed25519 那半** —— 前置是"签名能力"抽象。
 3. **第 19 行·批 B 剩下的半格** —— 1:1 那一半已在 5.15.31 闭环（不加列、不迁移，走的正是 5.15.22 那扇门）。剩 **B2**：群文件那 6 条 `REASON_*` 转码并写进气泡行，且必须先把「是不是稳定码」与「要不要弹 toast」拆成两件事（`group_file.rs::is_stable_fail_code` 现在一句话兼两职；不拆就会在断链时给每个在途群文件弹一次 toast —— 那个文件自己写明了这是"把可归因做成噪音回归"）。同批一并处理 A2：`handle_share.rs` 的 `reason` 是变量，值来自文件层的中文 `Err("文件完整性校验失败")`（`network/file/receive.rs:1497`、`group_receive.rs:307`，且 `file_tests.rs:890` 把它当契约断言着）⇒ 静态形状判据看不见变量里的中文，要连错误串来源与那条断言一起改。
-4. **DUP 剩余的 2 行**（第 14 行：DUP-07/15，现数 2 个编号）—— 纯重复，收益是"少一份会漂的拷贝"。DUP-03/04 已于 5.15.26 / 5.15.25 收口，DUP-13 已于 5.15.27 收口（§4.0n：现数是两种策略九处，不是审计写的三份），DUP-06 已于 5.15.28 收口（§4.0o），DUP-14 判**不做**。
+4. ~~**DUP 剩余的 2 行**~~ —— **本轮清零**（DUP-07 已于 5.15.39 收口；DUP-15 复核后确认早有棘轮判据 ㊼ 与显式登记的保留理由，§4.0x）。原文：纯重复，收益是"少一份会漂的拷贝"。DUP-03/04 已于 5.15.26 / 5.15.25 收口，DUP-13 已于 5.15.27 收口（§4.0n：现数是两种策略九处，不是审计写的三份），DUP-06 已于 5.15.28 收口（§4.0o），DUP-14 判**不做**。
    （第 12 行 DUP-02 的那半本轮**复核后判不再统一**，理由与三条防复发判据见 §4.0l。）
 5. **`lucide-vue-next` 升级评估**、**`get_topology` 孤儿**（FUN-04）、**TST-06 真 ENOSPC**、**TST-09 Windows 三类行为用例**，以及**需要现场日志才能推进的 Windows 渲染层卡死**（另见 `docs/notes/`）。（第 20 行的历史改号本轮**判为不做**，理由与现算证据在 §4.0k，不再列进待办。）
 

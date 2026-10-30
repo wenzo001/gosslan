@@ -7,7 +7,7 @@ import BaseModal from "@/components/BaseModal.vue";
 import CodeBlock from "@/components/CodeBlock.vue";
 import { useMessageSegments } from "@/composables/useMessageSegments";
 import MessageLinkText from "@/components/message/MessageLinkText.vue";
-import { mentionHighlightColor } from "@/utils/chatStyle";
+import { mentionHighlightBg, mentionHighlightColor } from "@/utils/chatStyle";
 import { Copy } from "lucide-vue-next";
 import { Check } from "@/components/ui/icons";
 
@@ -43,13 +43,11 @@ const mentionFg = computed(() => {
   return mentionHighlightColor(app.themeColor, app.dark, panel);
 });
 
-/** @提及 淡背景：与气泡同款取法（mentionFg 的 16%）。
+/** @提及 淡背景：与气泡**同一个家**（`utils/chatStyle.ts::mentionHighlightBg`）。
  *  ⚠️ 必须显式给：不给就落到 style.css 里 12% 的兜底值，同一句话在气泡与全文里
- *  色块深浅会不一致（这正是本次要消除的"两处样式不一样"）。 */
-const mentionBg = computed(() => {
-  const fg = mentionFg.value;
-  return fg ? `color-mix(in srgb, ${fg} 16%, transparent)` : undefined;
-});
+ *  色块深浅会不一致。两处前景色的来源不同（气泡按气泡底色、这里按面板底色算对比度），
+ *  但"已知前景色之后怎么调出底色"只有这一份。 */
+const mentionBg = computed(() => mentionHighlightBg(mentionFg.value));
 
 async function openLink(href: string) {
   try {

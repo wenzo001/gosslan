@@ -4,6 +4,7 @@ import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import { disabledOpacityFromClasses, disabledOpacityFromRule, parseTokenScopes } from "./tokenContrast.ts";
 import { TODO_AUTO_ARCHIVE_DAYS } from "./todos.ts";
+import { mentionHighlightBg } from "./chatStyle.ts";
 import {
   checkBubbleMetricsCoupling,
   findTemplateSlotIssues,
@@ -5869,4 +5870,61 @@ test("真实仓里切段循环只在家里，且三个渲染件都接上了那�
     // 直接 import 切分原语 = 又打算自己拼一遍；家接上之后这两个 import 都该消失。
     assert.ok(!/from "@\/utils\/(emoji|linkify)"/.test(src), `${c} 还在自己 import 切分原语`);
   }
+});
+
+// ---------------- @提及淡底配方只有一个家（DUP-07） ----------------
+//
+// 真实重复（审计 §6 DUP-07）：气泡与全文弹窗各写一遍 `color-mix(in srgb, ${fg} 16%, transparent)`。
+// 这两处的**前景色来源必须不同**（气泡按气泡底色算对比度、弹窗按面板底色算），所以不能把整个
+// `mentionFg` 合并 —— 能合并、也应该合并的是"已知前景色之后怎么调出底色"这一段。
+//
+// 判据按**形状 + 数量**：那个配方的字面量在 `src` 里只许出现一次（家在 `utils/chatStyle.ts`）；
+// 两处消费点必须真的引用那个家（"家有了没人接"是本仓反复付钱的形状）。
+test("@提及淡底配方只有一个家：16% 的 color-mix 只许出现在 chatStyle，两处消费点必须引用它", () => {
+  const srcDir = join(import.meta.dirname, "..");
+  const files: string[] = [];
+  const walk = (dir: string) => {
+    for (const e of readdirSync(dir, { withFileTypes: true })) {
+      const full = join(dir, e.name);
+      if (e.isDirectory()) walk(full);
+      else if (/\.(ts|vue)$/.test(e.name) && !/\.test\.ts$/.test(e.name)) files.push(full);
+    }
+  };
+  walk(srcDir);
+
+  // ⚠️ 只认 **16%** 这一个数，不认"任意百分比"：`useMessageDisplay.vue` 里那条 18% 是
+  // **卡片描边**（`--card-line`），`style.css` 里那条 12% 是没内联样式时的**静态兜底** ——
+  // 两者都是别的事实，按"任意百分比"扫会把它们一起卷进这次收口（审计 §6 记的第二种正是这么来的）。
+  const RECIPE = /color-mix\(in srgb, \$\{[^}]+\} 16%, transparent\)/;
+  // 家里的百分比是个**具名常量**（`MENTION_BG_PERCENT`）：扫描前把它归一成 16，
+  // 否则"只有一个家"这条会被家里自己的写法漏掉（第一次跑就是这样空集的）。
+  const normalize = (t: string) => t.replace(/\$\{MENTION_BG_PERCENT\}/g, "16");
+  const hits: string[] = [];
+  for (const f of files) {
+    const text = normalize(
+      readFileSync(f, "utf8").replace(/\/\*[\s\S]*?\*\//g, "").replace(/<!--[\s\S]*?-->/g, ""),
+    );
+    if (RECIPE.test(text)) hits.push(f.replace(srcDir + "/", ""));
+  }
+  assert.deepEqual(
+    hits,
+    ["utils/chatStyle.ts"],
+    `@提及淡底的 16% 配方只许有一个家（utils/chatStyle.ts），实得：\n${hits.join("\n")}`,
+  );
+
+  // 两处消费点必须引用那个家，且不许再自己拼一遍
+  for (const rel of ["components/message/MessageTextBubble.vue", "components/message/MessageContentModal.vue"]) {
+    const src = readFileSync(join(srcDir, rel), "utf8");
+    assert.ok(src.includes("mentionHighlightBg("), `${rel} 没接上那个家 ⇒ 家有了没人接，判据等于没守`);
+    assert.ok(!RECIPE.test(src), `${rel} 还在自己拼淡底配方`);
+  }
+
+  // 正控：量具本身能认出配方（否则上面那条在空集上恒绿）
+  assert.ok(RECIPE.test("`color-mix(in srgb, ${fg} 16%, transparent)`"));
+  assert.ok(!RECIPE.test("`color-mix(in srgb, ${ink} 18%, transparent)`"), "18%（卡片描边）不许被算进来");
+
+  // 等价性：家必须产出与旧内联写法**逐字相同**的串（改了它就是改了观感，不该由这次重构顺手改掉）
+  assert.equal(mentionHighlightBg("#123456"), "color-mix(in srgb, #123456 16%, transparent)");
+  assert.equal(mentionHighlightBg(""), undefined, "没有前景色时必须回 undefined（而不是拼出一个非法色）");
+  assert.equal(mentionHighlightBg(undefined), undefined);
 });
