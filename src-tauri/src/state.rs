@@ -1947,12 +1947,21 @@ impl AppState {
             format!(
                 "code=BOOT_DB_STATE data_dir={} db={} existed={db_preexisting} \
                  pre_init_bytes={} install={existing_install} messages={messages} \
-                 friends={friends} conversations={conversations} groups={groups}",
+                 friends={friends} conversations={conversations} groups={groups} \
+                 user_version={} migrated={}",
                 app_data.display(),
                 db_path.display(),
                 pre_init_bytes
                     .map(|n| n.to_string())
-                    .unwrap_or_else(|| "missing".into())
+                    .unwrap_or_else(|| "missing".into()),
+                // 迁移发生在 logger 就绪之前，那几行 `eprintln!` 在打包版里没人读得到
+                // ⇒ 把「这一轮从哪版迁到哪版、现在停在哪个版本」带进日志（审计 B3-F1 第二半）。
+                db::user_version(&conn)
+                    .map(|v| v.to_string())
+                    .unwrap_or_else(|e| format!("err({e})")),
+                db::last_migration()
+                    .map(|(from, to)| format!("v{from}→v{to}"))
+                    .unwrap_or_else(|| "none".to_string()),
             ),
         );
         // 主库**本身**不可用（本轮启动前文件不存在 / 0 字节）且旁边有迁移备份

@@ -27,8 +27,8 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use super::{
-    ensure_post_schema_shape, get_setting, init, init_with_notices, run_migrations, set_setting,
-    InitError, DB_VERSION, GROUP_ORPHAN_RETRY_KEY, SCHEMA,
+    ensure_post_schema_shape, get_setting, init, init_with_notices, last_migration, run_migrations,
+    set_setting, user_version, InitError, DB_VERSION, GROUP_ORPHAN_RETRY_KEY, MIGRATIONS, SCHEMA,
 };
 
 /// 每个测试创建一个独立临时 DB 文件，避免跨测试污染。
@@ -1156,6 +1156,97 @@ fn v7_orphan_cleanup_keeps_live_group_rows_and_drops_true_orphans() {
 // 就会失败（这正是 `index_on_a_migration_added_column_must_not_live_in_schema` 的成因），
 // 于是判据会红在错误的原因上。这里照生产状态直接摆一张"没有 seq 的 messages"。
 // ---------------------------------------------------------------------------
+
+/// B3-F1：迁移步骤**读不到 schema 时必须中止**，不许当成「跳过」让版本号照常前进。
+///
+/// 制造的是**真的**读失败，不是注入桩：`pragma_table_info` 是省略 schema 的虚拟表，
+/// 一张同名真实表会把它遮住 ⇒ `SELECT … FROM pragma_table_info('friends')` 直接
+/// "is not a function"（2026-10-30 用 sqlite3 实测）。被测的 `column_exists` 走的
+/// 就是它平时那条 SQL —— 于是这条用例覆盖的是真路径，而不是一个测试专用开关。
+#[test]
+fn a_migration_step_aborts_instead_of_advancing_when_the_schema_probe_fails() {
+    let conn = Connection::open_in_memory().unwrap();
+    conn.execute_batch(
+        "CREATE TABLE friends (device_id TEXT PRIMARY KEY, nickname TEXT NOT NULL, added_at INTEGER NOT NULL);
+         PRAGMA user_version = 1;
+         CREATE TABLE pragma_table_info(bogus TEXT);",
+    )
+    .unwrap();
+    let err = run_migrations(&conn, 1)
+        .expect_err("读不到 schema 必须中止，而不是 skip 之后照样推进版本号");
+    assert!(
+        !last_migration().is_none(),
+        "迁到一半的事实要留痕（BOOT_DB_STATE 会读它）：{err}"
+    );
+    assert_eq!(
+        user_version(&conn).unwrap(),
+        1,
+        "版本号不许前进 —— 前进就等于这一步永远不会再重跑，列永久缺失"
+    );
+    assert!(
+        conn.prepare("SELECT x25519_pubkey FROM friends").is_err(),
+        "列没加上却说成功 = 半迁移状态"
+    );
+}
+
+/// 上一条的**正控**：没有遮蔽时 v1→v2 照常建列、且重复执行幂等
+/// （证明上面那条不是"这一步永远报错"）。
+#[test]
+fn the_first_migration_adds_its_columns_when_the_probe_works() {
+    let conn = Connection::open_in_memory().unwrap();
+    conn.execute_batch(
+        "CREATE TABLE friends (device_id TEXT PRIMARY KEY, nickname TEXT NOT NULL, added_at INTEGER NOT NULL);
+         PRAGMA user_version = 1;",
+    )
+    .unwrap();
+    (MIGRATIONS[0].run)(&conn).expect("正常库上 v1→v2 必须成功");
+    conn.prepare("SELECT x25519_pubkey, ed25519_pubkey FROM friends")
+        .expect("两列都该在");
+    assert_eq!(
+        user_version(&conn).unwrap(),
+        1,
+        "步骤自己不写版本号（runner 写）—— 它是事务的一部分"
+    );
+    (MIGRATIONS[0].run)(&conn).expect("重复执行必须幂等（不然第二步启动就报 duplicate column）");
+}
+
+/// 形状：四处「先问再改」都必须走 `ensure_column`，两种吞失败的写法不许回来。
+#[test]
+fn every_early_migration_column_check_goes_through_ensure_column() {
+    let src = include_str!("../db.rs");
+    let prod = &src[..src.find("#[cfg(test)]").unwrap_or(src.len())];
+    assert_eq!(
+        prod.matches("ensure_column(").count(),
+        5,
+        "一处定义 + 四处调用（v1→v2 / v2→v3 / v3→v4 / v4→v5）"
+    );
+    for bad in [
+        "skip {col}",
+        "skip: {e}",
+        "let _ = tx.execute(",
+        r#"column_exists(&conn, "messages", "status").unwrap_or(false)"#,
+    ] {
+        assert!(
+            !prod.contains(bad),
+            "把「读不到 schema」吞掉的老写法又回来了：{bad}"
+        );
+    }
+}
+
+/// B3-F1 第二半：迁移的**事实**要进启动留痕（迁移发生在 logger 就绪之前，
+/// 那几行 `eprintln!` 在打包版里没人读得到）。
+#[test]
+fn boot_state_line_carries_user_version_and_the_migration_range() {
+    let state = include_str!("../state.rs");
+    assert!(
+        state.contains("user_version={} migrated={}"),
+        "BOOT_DB_STATE 必须带上「现在停在哪一版」与「这一轮从哪版迁到哪版」"
+    );
+    assert!(
+        state.contains("db::user_version(&conn)") && state.contains("db::last_migration()"),
+        "那两个读数必须真的来自 db 的唯一入口"
+    );
+}
 
 #[test]
 fn a_failing_migration_step_rolls_back_completely_and_never_advances_the_version() {
