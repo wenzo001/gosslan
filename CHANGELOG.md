@@ -13,6 +13,29 @@
 
 ## [Unreleased]
 
+## [5.15.56] - 2026-10-31
+
+### 「清除数据」补上漏掉的两张表，并让清单跟着 schema 走（B3-F2）
+
+schema 里 20 张表，清除清单只写了 15 张。漏掉的是 `group_file_acks`（群文件逐收件人 Ack）
+与 `group_recalled_messages`（群撤回账本）—— 后者在 `db.rs` 的建表注释里就写着是**只增不减**的
+G-Set：不清掉，这两个群的账本就永远跟着这台设备走。
+
+- 两张表进清单（位置贴着各自的群族，注释写清为什么它们属于「群聊天数据」）。
+- 新判据 `clearing_chat_data_covers_every_table_in_the_schema`：分母从 `db.rs` 现解析
+  `CREATE TABLE IF NOT EXISTS …`，清单从 `clear_all_data` 的 `for table in [ … ]` 现解析，
+  两边相减 → 除了**有产品口径的保留名单**（`friends` / `settings`，对话框里明说这两类不受影响）
+  与**按行清除**的 `conversation_clocks`（只删 `group:%` 那些行，SQL 也被钉住）之外，一张都不许漏。
+  正向、反向对照都在用例里：合成一张新表必须被报出来；把保留名单缩一格，`settings` 必须变成缺口。
+- 变异：从清单里删掉 `group_file_acks` ⇒ 点名「schema 里这些表既没被清除、也没登记为保留…：["group_file_acks"]」。
+  第一次变异先被"清单只解析到 16 张"那条**计数下限**接住了 —— 归因指错，于是把下限从实测值
+  放宽到 15（它只该证明量具没坏），再跑一次才由语义断言说话。
+
+**真跑过的验证**：`cargo test --lib --features bluetooth` **1329 通过 / 0 失败**（3 ignored）；
+`cargo clippy -D warnings --all-targets` 0 红；`cargo fmt --check --all` 0 差异；
+测试清单基线 1332 条全部在跑；`npm run verify:local` **25 步全绿**。
+**没跑/没做的**：真机点一次「清除数据」核对两张表的行数（要一份有群文件/群撤回的真库）。
+
 ## [5.15.55] - 2026-10-30
 
 ### 「重启不换身份」有了自己名字的用例（TST-08）
