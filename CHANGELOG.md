@@ -13,6 +13,35 @@
 
 ## [Unreleased]
 
+## [5.15.39] - 2026-10-30
+
+
+### @提及淡底配方收成一个家（DUP-07）；DUP-15 复核后确认**早就判过保留**
+
+- **DUP-07 收口**：`color-mix(in srgb, ${fg} 16%, transparent)` 原先在气泡（`MessageTextBubble.vue`）
+  与全文弹窗（`MessageContentModal.vue`）各写一遍。两处的**前景色来源必须不同**（气泡按气泡底色算
+  对比度、弹窗按面板底色算），所以合的不是 `mentionFg`，而是「已知前景色之后怎么调出底色」这一段 ⇒
+  新增 `utils/chatStyle.ts::mentionHighlightBg`（与既有的 `mentionHighlightColor` 同一个家）。
+  产出串**逐字不变**（单测钉住 `mentionHighlightBg("#123456") === "color-mix(in srgb, #123456 16%, transparent)"`）。
+  判据：「16% 的 color-mix 只许出现在 chatStyle，两处消费点必须引用它」；
+  ⚠️ 只认 **16%** 这一个数 —— `useMessageDisplay.ts` 里那条 **18%** 是**卡片描边**、`style.css` 里那条
+  **12%** 是没内联样式时的静态兜底，都是别的事实（按"任意百分比"扫会把它们一起卷进来，第一版就是这么空集的）。
+  ⚠️ 扫描前要把家里的具名常量 `MENTION_BG_PERCENT` 归一成 16，否则"只有一个家"会被家自己的写法漏掉。
+- **DUP-15 复核：审计 §8 把它列成「未做」是台账漂了。** 代码里早有一条棘轮判据 ㊼
+  （`designGuards.test.ts` 的 `OVERLAY_SHELL_SHAPES` / `OVERLAY_SHELL_COPIES`）：
+  整屏覆盖壳只许出自 `MobilePageFrame`，`FavoritePanel.vue` 是**显式登记**的保留自研，
+  理由（同一元素同时 serve 移动 overlay / 桌面内嵌两支布局、底部留白量不同）与"别再把它排成下一批就迁"
+  都写在那个常量上面。⇒ 本批不改代码，只把审计那行订正成「已判保留 + 判据 ㊼ 钉住」。
+
+
+**真跑过的验证**：`npm test` **1521 通过 / 0 失败**（+1 条判据）；`node --test src/utils/designGuards.test.ts`
+**241/241**；`npm run verify:local` **25 步全绿**；
+**真渲染**：`npm run build` 后跑 `check-ui-runtime.mjs --only=msgovf` **80/80 绿**（换用空闲端口 9665/9666 ——
+9444 被上一次残留实例占着，按本仓口径不杀别人，另开一台）。
+外部变异：把弹窗改回自拼 16% 配方 ⇒ 新判据点名「16% 配方只许有一个家」（退 1），跑完 `cmp` 逐字节还原。
+产出串等价性由单测钉住（`mentionHighlightBg("#123456")` 必须等于旧的内联串），所以这次重构**不改观感**。
+**没跑的层**：DUP-15 本轮**只订正台账、不动代码**（理由见 §4.0x：显式登记的自研 + 棘轮判据 ㊼）。
+
 ## [5.15.38] - 2026-10-30
 
 
