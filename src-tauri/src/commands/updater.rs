@@ -585,11 +585,7 @@ mod desktop {
         }
     }
 
-    /// 更新器错误留痕（`code=UPDATER_INSTALL_FAILED` / `code=UPDATER_DOWNGRADE_BLOCKED`）。
-    ///
-    /// 一条日志写不出去不该连累返回值：`logger` 拿不到时退回 stderr，
-    /// 反正这条错误的**可定位性**由返回给前端的同一个字符串兜底。
-    /// 与 [`log_updater_error`] 同一口径，只是级别是 info（取消的结局不是失败）。
+    /// 更新器**结局**留痕（不是错误：取消被打断不该按 error 记）。
     fn log_updater_info(app: &AppHandle, msg: &str) {
         use tauri::Manager;
         match app.try_state::<std::sync::Arc<crate::state::AppState>>() {
@@ -598,6 +594,10 @@ mod desktop {
         }
     }
 
+    /// 更新器错误留痕（`code=UPDATER_INSTALL_FAILED` / `code=UPDATER_DOWNGRADE_BLOCKED`）。
+    ///
+    /// 一条日志写不出去不该连累返回值：`logger` 拿不到时退回 stderr，
+    /// 反正这条错误的**可定位性**由返回给前端的同一个字符串兜底。
     fn log_updater_error(app: &AppHandle, msg: &str) {
         use tauri::Manager;
         match app.try_state::<std::sync::Arc<crate::state::AppState>>() {

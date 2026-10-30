@@ -42,33 +42,28 @@ pub struct MessageCancelResult {
 /// 映射是**唯一**决定界面说哪句话的地方，抽出来后可以单独读、也便于将来加结论。
 fn group_cancel_result(out: db::GroupMessageCancelOutcome) -> MessageCancelResult {
     match out {
-        db::GroupMessageCancelOutcome::Cancelled {
-            delivered,
-            cancelled,
-        } => MessageCancelResult {
+        db::GroupMessageCancelOutcome::Cancelled { delivered, cancelled } => MessageCancelResult {
             outcome: "cancelled".to_string(),
             delivered,
             remaining: cancelled,
             was_written: true,
         },
-        db::GroupMessageCancelOutcome::PartiallyCancelled {
-            delivered,
-            cancelled,
-        } => MessageCancelResult {
-            outcome: "partial_cancelled".to_string(),
-            delivered,
-            remaining: cancelled,
-            was_written: true,
-        },
-        db::GroupMessageCancelOutcome::AlreadyCancelled {
-            delivered,
-            cancelled,
-        } => MessageCancelResult {
-            outcome: "already_cancelled".to_string(),
-            delivered,
-            remaining: cancelled,
-            was_written: true,
-        },
+        db::GroupMessageCancelOutcome::PartiallyCancelled { delivered, cancelled } => {
+            MessageCancelResult {
+                outcome: "partial_cancelled".to_string(),
+                delivered,
+                remaining: cancelled,
+                was_written: true,
+            }
+        }
+        db::GroupMessageCancelOutcome::AlreadyCancelled { delivered, cancelled } => {
+            MessageCancelResult {
+                outcome: "already_cancelled".to_string(),
+                delivered,
+                remaining: cancelled,
+                was_written: true,
+            }
+        }
         db::GroupMessageCancelOutcome::AlreadyDelivered {
             delivered,
             remaining,
@@ -133,8 +128,7 @@ pub async fn cancel_message(
             return Err("文件/图片请用「取消发送」的传输通道".to_string());
         }
         if msg.conv_id.starts_with("group:") {
-            let out =
-                db::cancel_queued_group_message(&dbc, &msg_id_db).map_err(|e| e.to_string())?;
+            let out = db::cancel_queued_group_message(&dbc, &msg_id_db).map_err(|e| e.to_string())?;
             return Ok(group_cancel_result(out));
         }
         let was_written = msg.status != "sending";
@@ -270,43 +264,42 @@ pub async fn resend_group_delivery(
     let s_db = s.clone();
     let conv = conv_id.clone();
     let mid = msg_id.clone();
-    let prepared =
-        tokio::task::spawn_blocking(move || -> Result<(String, Vec<String>, i64), String> {
-            let dbc = s_db.db.lock().unwrap_or_else(|e| e.into_inner());
-            let Some(msg) = db::get_message_record(&dbc, &mid) else {
-                return Ok(("not_found".to_string(), Vec::new(), 0));
-            };
-            if msg.sender_id != s_db.device_id || msg.conv_id != conv {
-                return Err("只能补发自己在该群发送的消息".to_string());
-            }
-            if msg.kind == "file" || msg.kind == "image" || msg.kind == "recall" {
-                return Ok(("unsupported".to_string(), Vec::new(), 0));
-            }
-            let changed = db::resend_cancelled_group_rows(&dbc, &mid, crate::db::now_ms())
+    let prepared = tokio::task::spawn_blocking(move || -> Result<(String, Vec<String>, i64), String> {
+        let dbc = s_db.db.lock().unwrap_or_else(|e| e.into_inner());
+        let Some(msg) = db::get_message_record(&dbc, &mid) else {
+            return Ok(("not_found".to_string(), Vec::new(), 0));
+        };
+        if msg.sender_id != s_db.device_id || msg.conv_id != conv {
+            return Err("只能补发自己在该群发送的消息".to_string());
+        }
+        if msg.kind == "file" || msg.kind == "image" || msg.kind == "recall" {
+            return Ok(("unsupported".to_string(), Vec::new(), 0));
+        }
+        let changed = db::resend_cancelled_group_rows(&dbc, &mid, crate::db::now_ms())
+            .map_err(|e| e.to_string())?;
+        let pending = db::list_group_pending_peers(&dbc, &mid).map_err(|e| e.to_string())?;
+        if changed == 0 {
+            let (delivered, _) = db::group_outbox_progress_counts(&dbc, &mid)
                 .map_err(|e| e.to_string())?;
-            let pending = db::list_group_pending_peers(&dbc, &mid).map_err(|e| e.to_string())?;
-            if changed == 0 {
-                let (delivered, _) =
-                    db::group_outbox_progress_counts(&dbc, &mid).map_err(|e| e.to_string())?;
-                let any_rows = db::group_outbox_has_rows(&dbc, &mid).map_err(|e| e.to_string())?;
-                let outcome = if !pending.is_empty() {
-                    "already_pending"
-                } else if delivered > 0 {
-                    "already_delivered"
-                } else if any_rows {
-                    // 只剩 failed 行：本端已经放弃这批成员。退回"整条重发"会让对端多收一条
-                    // 重复内容，还会把"放弃"说成"重发了"——如实回答，交给界面解释。
-                    "already_failed"
-                } else {
-                    "no_ledger"
-                };
-                return Ok((outcome.to_string(), pending, delivered));
-            }
-            db::set_message_status(&dbc, &mid, "sent").map_err(|e| e.to_string())?;
-            Ok(("resent".to_string(), pending, 0))
-        })
-        .await
-        .map_err(|e| format!("补发群消息被线程池中断: {e}"))??;
+            let any_rows = db::group_outbox_has_rows(&dbc, &mid).map_err(|e| e.to_string())?;
+            let outcome = if !pending.is_empty() {
+                "already_pending"
+            } else if delivered > 0 {
+                "already_delivered"
+            } else if any_rows {
+                // 只剩 failed 行：本端已经放弃这批成员。退回"整条重发"会让对端多收一条
+                // 重复内容，还会把"放弃"说成"重发了"——如实回答，交给界面解释。
+                "already_failed"
+            } else {
+                "no_ledger"
+            };
+            return Ok((outcome.to_string(), pending, delivered));
+        }
+        db::set_message_status(&dbc, &mid, "sent").map_err(|e| e.to_string())?;
+        Ok(("resent".to_string(), pending, 0))
+    })
+    .await
+    .map_err(|e| format!("补发群消息被线程池中断: {e}"))??;
 
     let (outcome, pending, _delivered) = prepared;
     let mut online = 0i64;
@@ -394,14 +387,7 @@ pub async fn recall_message(
     };
     let content = serde_json::to_string(&payload).map_err(|e| e.to_string())?;
     // 先发可靠事件（send_message 内部会做好友/目标/能力位校验并写 outbox）。
-    send_message(
-        state,
-        friend_id.clone(),
-        content,
-        "recall".to_string(),
-        None,
-    )
-    .await?;
+    send_message(state, friend_id.clone(), content, "recall".to_string(), None).await?;
     let s_db = s.clone();
     let target_db = target.clone();
     let friend_db = friend_id.clone();
@@ -435,33 +421,32 @@ pub async fn set_message_render(
     let s_db = s.clone();
     let conv_db = conv_id.clone();
     let target_db = target.clone();
-    let (is_group, peer) =
-        tokio::task::spawn_blocking(move || -> Result<(bool, String), String> {
-            let dbc = s_db.db.lock().unwrap_or_else(|e| e.into_inner());
-            let Some(msg) = db::get_message_record(&dbc, &target_db) else {
-                return Err("消息不存在".to_string());
-            };
-            if msg.sender_id != s_db.device_id {
-                return Err("只能切换自己发送的消息".to_string());
-            }
-            if msg.conv_id != conv_db {
-                return Err("消息不属于该会话".to_string());
-            }
-            if msg.kind != "code" && msg.kind != "text" {
-                return Err("只有文本/代码消息可以切换渲染".to_string());
-            }
-            if db::is_recalled(&dbc, &target_db) {
-                return Err("已撤回的消息不能切换".to_string());
-            }
-            let is_group = conv_db.starts_with("group:");
-            let peer = conv_db
-                .strip_prefix("group:")
-                .unwrap_or(&conv_db)
-                .to_string();
-            Ok((is_group, peer))
-        })
-        .await
-        .map_err(|e| format!("渲染切换校验被线程池中断: {e}"))??;
+    let (is_group, peer) = tokio::task::spawn_blocking(move || -> Result<(bool, String), String> {
+        let dbc = s_db.db.lock().unwrap_or_else(|e| e.into_inner());
+        let Some(msg) = db::get_message_record(&dbc, &target_db) else {
+            return Err("消息不存在".to_string());
+        };
+        if msg.sender_id != s_db.device_id {
+            return Err("只能切换自己发送的消息".to_string());
+        }
+        if msg.conv_id != conv_db {
+            return Err("消息不属于该会话".to_string());
+        }
+        if msg.kind != "code" && msg.kind != "text" {
+            return Err("只有文本/代码消息可以切换渲染".to_string());
+        }
+        if db::is_recalled(&dbc, &target_db) {
+            return Err("已撤回的消息不能切换".to_string());
+        }
+        let is_group = conv_db.starts_with("group:");
+        let peer = conv_db
+            .strip_prefix("group:")
+            .unwrap_or(&conv_db)
+            .to_string();
+        Ok((is_group, peer))
+    })
+    .await
+    .map_err(|e| format!("渲染切换校验被线程池中断: {e}"))??;
 
     let payload = crate::protocol::RenderPayload {
         target: target.clone(),
@@ -853,15 +838,9 @@ pub async fn send_message(
         ),
     );
     let try_ok = if has {
-        let r = try_send(
-            s,
-            &friend_id,
-            &Message::Gossip {
-                envelope: env.clone(),
-            },
-        )
-        .await
-        .is_ok();
+        let r = try_send(s, &friend_id, &Message::Gossip { envelope: env.clone() })
+            .await
+            .is_ok();
         s.logger.info(
             "dispatch",
             format!("[SEND-MSG] try_send result={r} peer={friend_id}"),
@@ -870,7 +849,9 @@ pub async fn send_message(
     } else {
         s.logger.warn(
             "dispatch",
-            format!("[SEND-MSG] NO-LINK → broadcast_gossip peer={friend_id} (links table empty!)"),
+            format!(
+                "[SEND-MSG] NO-LINK → broadcast_gossip peer={friend_id} (links table empty!)"
+            ),
         );
         broadcast_gossip(s, env).await;
         true // 广播视为乐观已发出
@@ -884,9 +865,7 @@ pub async fn send_message(
             // 这条消息不会再被任何队列补发，界面若还显示"发送中"就永远卡在那里。
             Ok(0) => s.logger.warn(
                 "chat",
-                format!(
-                    "code=MESSAGE_STATUS_BLOCKED msg_id={msg_id} target=sent reason=hard-terminal"
-                ),
+                format!("code=MESSAGE_STATUS_BLOCKED msg_id={msg_id} target=sent reason=hard-terminal"),
             ),
             Ok(_) => {}
             Err(e) => s.logger.warn(
@@ -1015,9 +994,7 @@ pub async fn resend_message(
     // ⑤ 投递（与 `send_message` 同一条链路；失败不报错 —— outbox 兜底，flush 会补）。
     let has = s.has_link(&peer).await;
     let try_ok = if has {
-        try_send(s, &peer, &Message::Gossip { envelope: env })
-            .await
-            .is_ok()
+        try_send(s, &peer, &Message::Gossip { envelope: env }).await.is_ok()
     } else {
         broadcast_gossip(s, env).await;
         true
@@ -1027,9 +1004,7 @@ pub async fn resend_message(
         match db::set_message_status(&dbc, &msg_id, "sent") {
             Ok(0) => s.logger.warn(
                 "chat",
-                format!(
-                    "code=MESSAGE_STATUS_BLOCKED msg_id={msg_id} target=sent reason=hard-terminal"
-                ),
+                format!("code=MESSAGE_STATUS_BLOCKED msg_id={msg_id} target=sent reason=hard-terminal"),
             ),
             Ok(_) => {}
             Err(e) => s.logger.warn(
@@ -1500,14 +1475,12 @@ pub async fn get_pending_message_operations(
 ) -> Result<Vec<db::PendingMessageOp>, String> {
     let s = state.inner().clone();
     let s_db = s.clone();
-    let mut ops =
-        tokio::task::spawn_blocking(move || -> Result<Vec<db::PendingMessageOp>, String> {
-            let dbc = s_db.db.lock().unwrap_or_else(|e| e.into_inner());
-            db::list_pending_message_operations(&dbc, db::MESSAGE_OPS_LIMIT)
-                .map_err(|e| e.to_string())
-        })
-        .await
-        .map_err(|e| format!("消息补发队列读取被线程池中断: {e}"))??;
+    let mut ops = tokio::task::spawn_blocking(move || -> Result<Vec<db::PendingMessageOp>, String> {
+        let dbc = s_db.db.lock().unwrap_or_else(|e| e.into_inner());
+        db::list_pending_message_operations(&dbc, db::MESSAGE_OPS_LIMIT).map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| format!("消息补发队列读取被线程池中断: {e}"))??;
     for row in &mut ops {
         if let Some(peer) = row.peer_id.as_deref() {
             row.peer_offline = !s.has_link(peer).await;
@@ -1515,3 +1488,4 @@ pub async fn get_pending_message_operations(
     }
     Ok(ops)
 }
+
