@@ -47,6 +47,12 @@ const FILE_FAIL_REASON_KEYS: Record<string, string> = {
   SEND_ORPHAN_AT_START: "msg.fail.orphanAtStart",
   SEND_PEER_DELETED: "msg.fail.peerDeleted",
   SEND_GROUP_MEMBER_GONE: "msg.fail.groupMemberGone",
+  GROUP_FILE_STALLED: "msg.fail.groupFileStalled",
+  GROUP_FILE_NO_CHUNK: "msg.fail.groupFileNoChunk",
+  GROUP_FILE_DECRYPT_FAILED: "msg.fail.groupFileDecryptFailed",
+  GROUP_FILE_CHUNK_GAP: "msg.fail.groupFileChunkGap",
+  GROUP_FILE_CHUNK_EXCEEDS_SIZE: "msg.fail.groupFileChunkOversize",
+  GROUP_FILE_PEER_UNLINKED: "msg.fail.groupFilePeerUnlinked",
 };
 
 /**

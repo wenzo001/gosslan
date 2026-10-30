@@ -819,28 +819,44 @@ fn create_group_file_receive_bubble(
 ///
 /// 为什么集中在这里而不是散在各调用点：同一句原因在两个地方写就会出现两种措辞，
 /// 而"失败原因"是用户据以决定下一步的唯一依据。
-const REASON_STALLED_GROUP_RECEIVE: &str = "接收超时：对方久未继续发送";
-const REASON_NO_CHUNK_RECEIVED: &str = "文件传输未完成：没有收到任何分片";
-const REASON_CHUNK_DECRYPT_FAILED: &str = "文件分片解密失败：内容与本机不匹配";
-const REASON_CHUNK_SEQ_GAP: &str = "文件分片顺序错误：中间缺片";
-const REASON_CHUNK_EXCEEDS_SIZE: &str = "文件分片超出声明大小";
+const REASON_STALLED_GROUP_RECEIVE: &str = crate::error_codes::GROUP_FILE_STALLED;
+const REASON_NO_CHUNK_RECEIVED: &str = crate::error_codes::GROUP_FILE_NO_CHUNK;
+const REASON_CHUNK_DECRYPT_FAILED: &str = crate::error_codes::GROUP_FILE_DECRYPT_FAILED;
+const REASON_CHUNK_SEQ_GAP: &str = crate::error_codes::GROUP_FILE_CHUNK_GAP;
+const REASON_CHUNK_EXCEEDS_SIZE: &str = crate::error_codes::GROUP_FILE_CHUNK_EXCEEDS_SIZE;
 /// 对端一条链路都不剩（断链）⇒ 这一单收不下去了。
-pub(crate) const REASON_PEER_UNLINKED: &str = "对方连接已断开";
+pub(crate) const REASON_PEER_UNLINKED: &str = crate::error_codes::GROUP_FILE_PEER_UNLINKED;
 
-/// 这个失败原因是不是**稳定失败码**（⇒ 要上屏给用户）。
+/// 码 → 日志里的那句人话。
 ///
-/// 判据是形状：大写字母 / 数字 / 下划线。中文自由文本一律**不上屏** ——
-/// 群文件失败此前只发 `message-status-changed`（气泡转 failed），界面安静；
-/// 若把每一条原因都发成 `file-failed`，断链时**每个在途群文件都会弹一次 toast**
-/// （peer 断链常常同时挂着一堆传输）⇒ 那是把"可归因"做成"噪音回归"。
+/// 为什么留着这份中文而界面却走词典：日志读者是排查问题的人（中文、且要稳定不随版本翻改），
+/// 界面读者是用户（要跟系统语言）。两者混成一份必然一头不舒服，所以**同一个码两处出口**，
+/// 这里这份只服务于日志。新增码忘了配这份，日志会退化成裸码 —— 下面的用例把这张表钉住。
+fn gfile_reason_label(code: &str) -> &'static str {
+    match code {
+        crate::error_codes::GROUP_FILE_STALLED => "接收超时：对方久未继续发送",
+        crate::error_codes::GROUP_FILE_NO_CHUNK => "文件传输未完成：没有收到任何分片",
+        crate::error_codes::GROUP_FILE_DECRYPT_FAILED => "文件分片解密失败：内容与本机不匹配",
+        crate::error_codes::GROUP_FILE_CHUNK_GAP => "文件分片顺序错误：中间缺片",
+        crate::error_codes::GROUP_FILE_CHUNK_EXCEEDS_SIZE => "文件分片超出声明大小",
+        crate::error_codes::GROUP_FILE_PEER_UNLINKED => "对方连接已断开",
+        _ => "（非群文件族的码：原样进日志）",
+    }
+}
+
+/// 要不要为这一条群文件失败**弹通知**。
 ///
-/// 稳定码则相反：它一定对应一件**用户能动手**的事（清出磁盘空间后重试），
-/// 弹一次 toast 正是想要的。前端按码翻成文案（`src/utils/fileFailReason.ts`）。
-fn is_stable_fail_code(reason: &str) -> bool {
-    !reason.is_empty()
-        && reason
-            .chars()
-            .all(|c| c.is_ascii_uppercase() || c == '_' || c.is_ascii_digit())
+/// ★ 5.15.32 把原来那一句话兼两职的 `is_stable_fail_code` 拆开了：那一版靠"是不是稳定码"
+/// 同时表达「这是不是一条真失败」与「这条要不要弹 toast」——那时码只有 `DISK_FULL` 一类，
+/// 两个含义恰好重合。等群文件那六种原因也变成码（本批），重合就破了：
+/// 按老写法它们全都会弹，而 peer 断链常常同时挂着一堆在途传输 ⇒ 断一次链弹一串 toast，
+/// 正是那个文件当时写明要避免的"把可归因做成噪音回归"。
+///
+/// 所以名单是**显式**的：只有"用户现在就能动手解决"的那一类才打扰他。
+/// 落库与气泡文案不受这里影响 —— 六种码全都写进气泡行（`set_gfile_bubble_status`），
+/// 安静 ≠ 不说，说的是"不额外弹窗"。
+fn should_notify_group_failure(code: &str) -> bool {
+    matches!(code, crate::logging::FAIL_CODE_DISK_FULL)
 }
 
 /// 失败收尾：删除 `.part`、移除接收状态与会话密钥、recipient 置 failed。
@@ -862,7 +878,7 @@ fn fail_group_file_chunk(state: &Arc<AppState>, transfer_id: &str, reason: &str)
 /// （见 `file::take_group_receives_for_peer`）：摘与收尾合成一个函数的话，
 /// 调用点就只能走"快照 id → 逐个收尾"，而那正是本文件 `:5232` 注释判死过的形状。
 fn finalize_failed_group_receive(state: &Arc<AppState>, transfer_id: &str, reason: &str) {
-    set_gfile_bubble_status(state, transfer_id, "failed");
+    set_gfile_bubble_status(state, transfer_id, "failed", Some(reason));
     state
         .group_file_keys
         .lock()
@@ -884,7 +900,7 @@ fn finalize_failed_group_receive(state: &Arc<AppState>, transfer_id: &str, reaso
     // `{transfer_id, reason}`；前端 `onFileFailed` 本来就认 `gfile-` 前缀，
     // 那一族是群文件气泡的 msg_id 形状 ⇒ 复用同一帧，不新增协议消息类型）。
     // 自由文本的原因只进日志（下面那条 warn）—— 上屏会造成断链时的 toast 风暴。
-    if is_stable_fail_code(reason) {
+    if should_notify_group_failure(reason) {
         let _ = state.app.emit(
             "file-failed",
             &crate::state::FileFailedInfo {
@@ -895,7 +911,10 @@ fn finalize_failed_group_receive(state: &Arc<AppState>, transfer_id: &str, reaso
     }
     state.logger.warn(
         "group_file",
-        format!("code=GROUP_FILE_RECEIVE_FAILED transfer={transfer_id} reason={reason}"),
+        format!(
+            "code=GROUP_FILE_RECEIVE_FAILED transfer={transfer_id} reason={reason} ({})",
+            gfile_reason_label(reason)
+        ),
     );
 }
 
@@ -938,9 +957,15 @@ pub fn sweep_stalled_receives(state: &Arc<AppState>) -> usize {
 /// FUNC-02：写失败必须留痕。旧写法用 `.ok()` 吞掉 —— 气泡停在发送中而没有任何日志，
 /// 排查时只能靠猜。这里只记日志、不改控制流：气泡是**投影**，它的失败不该打断传输本身
 /// （真正的台账写在 `group_files` / `group_file_recipients` 里）。
-fn set_gfile_bubble_status(state: &AppState, transfer_id: &str, status: &str) {
+/// `fail_code` 只有 `status == "failed"` 时才写；其余状态走无码的门，
+/// 于是"取消"这类没有原因的终态不会被打上一个编出来的原因（`NULL` 是一个状态，INV-P16 ③）。
+fn set_gfile_bubble_status(state: &AppState, transfer_id: &str, status: &str, fail_code: Option<&str>) {
     let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
-    if let Err(e) = db::set_message_status(&dbc, &format!("gfile-{transfer_id}"), status) {
+    let wrote = match fail_code {
+        Some(code) if status == "failed" => db::set_message_failed(&dbc, &format!("gfile-{transfer_id}"), code),
+        _ => db::set_message_status(&dbc, &format!("gfile-{transfer_id}"), status),
+    };
+    if let Err(e) = wrote {
         state.logger.error(
             "group_file",
             format!("code=GFILE_BUBBLE_STATUS_FAILED transfer={transfer_id} status={status}：{e}"),
@@ -1054,7 +1079,7 @@ async fn handle_group_file_done(
                 "group_file",
                 format!("群文件收尾失败 transfer={transfer_id} 原因={why}"),
             );
-            set_gfile_bubble_status(state, &transfer_id, "failed");
+            set_gfile_bubble_status(state, &transfer_id, "failed", Some(REASON_PEER_UNLINKED));
             state
                 .group_file_keys
                 .lock()
@@ -2530,28 +2555,51 @@ mod online_targets_tests {
     }
 }
 
-/// 群文件失败原因的**上屏判据**：只有稳定码才发 `file-failed`。
+/// 群文件失败的**通知判据**：哪些码允许打扰用户。
 ///
-/// 为什么要钉住（2026-10-27 审计 §5 第 1 项）：
-/// · 稳定码（如 `DISK_FULL`）⇒ 对应一件用户能动手的事 ⇒ 弹一次 toast 是对的；
-/// · 自由文本（超时 / 断链 / 解密失败）⇒ 上屏会造成**toast 风暴**：
-///   peer 断链时常常同时挂着一堆在途群文件（`queue_policy.rs` 那一路逐个收尾），
-///   每条都弹一次 ⇒ 用户被十几条一模一样的 toast 淹没。
+/// 5.15.32 之前这一格是形状判据 `is_stable_fail_code`（"是不是稳定码"）。那时
+/// "是码"与"该弹通知"恰好重合 —— 只有 `DISK_FULL` 一类是码。等群文件那六种原因也变成码，
+/// 重合就破了：照形状判据它们全会弹，而 peer 断链时 `queue_policy.rs` 那一路会**逐个**收尾
+/// ⇒ 一次断链弹一串一模一样的 toast，正是那条注释当时写明要避免的"把可归因做成噪音回归"。
+/// 所以判据换成显式名单，本用例钉的就是这次拆分本身。
 ///
-/// 反面对照：把 `is_stable_fail_code` 改成恒 `true` ⇒ 本用例必须红。
+/// 反面对照：把 `should_notify_group_failure` 改成恒 `true` ⇒ 本用例必须红。
 #[cfg(test)]
 mod group_file_fail_reason_tests {
-    use super::{is_stable_fail_code, REASON_PEER_UNLINKED, REASON_STALLED_GROUP_RECEIVE};
+    use super::{
+        gfile_reason_label, should_notify_group_failure, REASON_CHUNK_DECRYPT_FAILED, REASON_CHUNK_EXCEEDS_SIZE,
+        REASON_CHUNK_SEQ_GAP, REASON_NO_CHUNK_RECEIVED, REASON_PEER_UNLINKED, REASON_STALLED_GROUP_RECEIVE,
+    };
 
     #[test]
-    fn only_stable_fail_codes_reach_the_user() {
-        // 稳定码：上屏（前端按码翻成"清出磁盘空间后重试"）
-        assert!(is_stable_fail_code("DISK_FULL"));
-        assert!(is_stable_fail_code("PERMISSION_DENIED"));
-        // 自由文本：只进日志，不上屏
-        assert!(!is_stable_fail_code(REASON_PEER_UNLINKED));
-        assert!(!is_stable_fail_code(REASON_STALLED_GROUP_RECEIVE));
-        // 边界：空串不是码（否则会发一条空 reason 的 file-failed）
-        assert!(!is_stable_fail_code(""));
+    fn only_actionable_codes_notify_the_user() {
+        // 用户当场就能动手解决的那一类 ⇒ 弹一次是对的（前端按码翻成"清出磁盘空间后重试"）
+        assert!(should_notify_group_failure(crate::logging::FAIL_CODE_DISK_FULL));
+        // 群文件这六种是真失败、也写进气泡行，但**不弹**：断链时它们成批出现
+        assert!(!should_notify_group_failure(REASON_PEER_UNLINKED));
+        assert!(!should_notify_group_failure(REASON_STALLED_GROUP_RECEIVE));
+        // 边界：空串与"形状像码但没进名单"的串都不弹
+        assert!(!should_notify_group_failure(""));
+        assert!(!should_notify_group_failure("PERMISSION_DENIED"));
+    }
+
+    /// 日志那份中文是一张**表**，不是散在各调用点的字面量：漏一行就是日志退化成裸码，
+    /// 而这件事没有编译错误、也不会让上面那条红 —— 所以单独钉。
+    #[test]
+    fn every_group_file_code_has_a_log_label() {
+        for code in [
+            REASON_STALLED_GROUP_RECEIVE,
+            REASON_NO_CHUNK_RECEIVED,
+            REASON_CHUNK_DECRYPT_FAILED,
+            REASON_CHUNK_SEQ_GAP,
+            REASON_CHUNK_EXCEEDS_SIZE,
+            REASON_PEER_UNLINKED,
+        ] {
+            assert_ne!(
+                gfile_reason_label(code),
+                "（非群文件族的码：原样进日志）",
+                "{code} 进了码却没配日志文案"
+            );
+        }
     }
 }

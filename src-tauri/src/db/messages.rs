@@ -1668,7 +1668,7 @@ mod fail_code_tests {
     fn message_fail_codes_are_stable_identifiers() {
         assert_eq!(
             error_codes::MESSAGE_FAIL_CODES.len(),
-            6,
+            12,
             "档位变了要同步三处：前端表 `src/utils/fileFailReason.ts`、中英词典、以及这条长度钉"
             // 5.15.31 从 4 → 6：`FILE_SEND_EXPIRED` / `FILE_SEND_GIVEUP` 原先只是事件载荷里的码，
             // 现在也会落进这一列（`FileJobEnd::fail_code`），所以按本仓口径它们**必须**进这张表。
