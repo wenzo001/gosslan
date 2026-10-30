@@ -710,8 +710,11 @@ node --experimental-strip-types -e '
 - ⚠️ **本节曾给出一条错的前置，现由证据推翻并订正**（写错的那一版随 5.15.29 提交过；
   本节留下订正，不静默改写）。我当时说「文件气泡的状态来自传输台账、不是 `messages` 行 ⇒
   `messages.fail_code` 接不上 ⇒ 批 B 必须加表列（DB v16）」。**这句是错的。**现读三条凭据：
-  · `src-tauri/src/db/file_transfer.rs:179` —— 1:1 那一半就是 `set_message_status(&tx, &format!("file-{transfer_id}"), status)`；
-  · `src-tauri/src/db/file_transfer.rs:185` —— 群那一半同一形状（`gfile-`，取消时由这里写）；
+  · `src-tauri/src/db/file_transfer.rs`（当前 `:197`）—— 1:1 那一半就是 `set_message_status(&tx, &format!(file-…), status)`；
+  · 同文件（当前 `:204`）—— 群那一半同一形状（`gfile-`，取消时由这里写）；
+  ⚠️ 这一小节早先写的是 `:179` / `:185`：**同一批里我给那个文件加了 `fail_code()` 就把行号顶下去了**，
+  而我自己在 §4.0m 刚写下「行号型引用在两个文件之间一定会漂」。⇒ 现在改成**按符号名找、行号只作当前读数**，
+  复跑口径：`grep -n "set_message_status(&tx, &format!" src-tauri/src/db/file_transfer.rs`
   · `src-tauri/src/db/cascade_tests.rs:809` —— `SELECT status FROM messages WHERE msg_id = 'gfile-t5'`，
     既有判据本来就按「`gfile-<tid>` 是 `messages` 行」断言。
   ⇒ 两族文件气泡**都是 `messages` 行**，`msg_id` 只是长成 `file-<tid>` / `gfile-<tid>` 的样子；
@@ -855,7 +858,7 @@ node --experimental-strip-types -e '
 | ID | 严重度 | 类型 | 问题 | 位置 |
 |---|---|---|---|---|
 | DUP-01 | High | 跨层规则漂移 | 消息 kind 白名单 TS 与 Rust 各写一份，**`image` 已漂移**（见 §1.5） | `messageKinds.ts:166` vs `commands/chat.rs:559-592` |
-| DUP-02 | ~~High~~ **复核后判「不再统一」**（四套文案讲的是四件事，见 §4.0l） | **通道判据已收一处（5.15.9）；越权闸两条入口已一致（5.15.15，见 §4.0f）**；本报告原话「剩下未统一的是缺失路径的提示文案三套（各落点各写一句 toast）」**不准确** —— 逐条读实现后是四件不同的事实（会话媒体被清理 / 收藏自己那份副本 / 本机尚未同步 / 原消息已不在），合并会让其中两三格对用户撒谎。防复发：`src/utils/mediaAvailability.test.ts` 三条新判据（特征词、收藏那句的「副本」必须由代码兑现、引用面不跨界），前两条各做过注入自证 | `src/utils/mediaAvailability.test.ts`、`src-tauri/src/commands/favorites.rs` |
+| DUP-02 | ~~High~~ **复核后判「不再统一」**（四套文案讲的是四件事，见 §4.0l） | **通道判据已收一处（5.15.9）；越权闸两条入口已一致（5.15.15，见 §4.0f）**；本报告原话「剩下未统一的是缺失路径的提示文案三套（各落点各写一句 toast）」**不准确** —— 逐条读实现后是四件不同的事实（会话媒体被清理 / 收藏自己那份副本 / 本机尚未同步 / 原消息已不在），合并会让其中两三格对用户撒谎。防复发：`src/utils/mediaAvailability.test.ts` 三条新判据（特征词、收藏那句的「副本」必须由代码兑现、引用面不跨界），①③ 做过注入自证、② 只有内联反控（未对 `favorites.rs` 变异） | `src/utils/mediaAvailability.test.ts`、`src-tauri/src/commands/favorites.rs` |
 | DUP-03 | ~~Medium~~ **已修（5.15.26）** | 墙上时钟 `fn now_ms()` 现数 **9 处定义**，全部读同一个 `SystemTime − UNIX_EPOCH`，彼此唯一差别是兜底写法（`unwrap_or(0)` vs `unwrap_or_default()`）—— 审计与我自己都怀疑过"BLE 那几份可能刻意用单调钟"，**逐处读完否证**：三处 BLE 全是墙上钟，注释还写着"与 macOS 侧同一套回收语义"。收成 `logging::now_ms` 一个家，`db::now_ms` 留作具名别名（理由见 §4.0m）。对照表在 §4.0m |
 | DUP-04 | ~~Medium~~ **已修（5.15.25）** | 重复工具 | 字节→小写 hex 的表达式散在生产码与测试里：**现数 20 行、11 个文件（其中 9 个是生产码文件）**，另有三个整份助手（`device::hex`、`relay_seal::channel_hex`、`commands/relay` 的探测串）—— 审计原写「8 份」偏少。收成 `crypto::hex_lower` / `sha256_hex` 一个家。 | `src-tauri/src/crypto.rs`（唯一的家）；复跑 `grep -rn ":02x" src-tauri/src` 改后只剩 `crypto.rs` 两处 |
 | DUP-05 | Medium | 重复组件 | **已修（5.15.16，见 §4.0g）**：`LogViewer` 两个外壳各抄一份逐字相同的虚拟行模板（8 个 `v-html` 落点）；矩阵误以为"两条外壳"是迁移前的问题 —— 虚拟化迁了，两份拷贝还在 | `src/components/LogRows.vue`（唯一行模板） |
@@ -866,7 +869,7 @@ node --experimental-strip-types -e '
 | DUP-10 | Low | 跨层规则 | 未读计数判据 TS 一份、Rust 一份，今天一致 | 同上 |
 | DUP-11 | **已被既有判据覆盖（§4.0a）** | 未知 kind 的判据与占位文案对 `protocol.rs` 的对账早在册（同文件），不另加第二条 |
 | DUP-12 | **已加对账（§4.0a）** | `previewBody`（TS）与 `preview_text` / `todo_preview` / `poll_preview` / `announcement_preview`（Rust）的固定字面量由同文件的「跨语言契约：会话预览的固定文案两侧一致（DUP-12）」比；变异（Rust 改一个字）⇒ 红 |
-| DUP-13 | ~~Low~~ **已修（5.15.27，见 §4.0n）** | 自研基础设施 | 审计原写「TS 侧三份各自实现的 LRU/容量闸」——**既偏少也偏窄**：按形状现数是**两种策略九处**（丢最旧 5 处 + 满了整张清 4 处），且这两策略**不等价**（同一张表跑 `max=3`，一个活 3 条、一个活 0 条）。收成 `utils/bounded.ts` 的两个出口 `trimOldest` / `clearWhenFull`，另有五格判「不是同一个东西」不收 | `src/utils/bounded.ts`（唯一的家）；复跑 `node --test src/utils/bounded.test.ts` |
+| DUP-13 | ~~Low~~ **已修（5.15.27，见 §4.0n）** | 自研基础设施 | 审计原写「TS 侧三份各自实现的 LRU/容量闸」——**既偏少也偏窄**：按形状现数是**两种策略九处**（丢最旧 5 处 + 满了整张清 4 处），且这两策略**不等价**（同一张表跑 `max=3`，一个活 3 条、一个活 0 条）。收成 `utils/bounded.ts` 的两个出口 `trimOldest` / `clearWhenFull`，另有六格判「不是同一个东西」不收 | `src/utils/bounded.ts`（唯一的家）；复跑 `node --test src/utils/bounded.test.ts` |
 | DUP-14 | Low | 重复组件 | `MessageItem` 的「复制 / 保存」动作在右键菜单与移动端 ActionSheet 两套模板里各写一遍 | `MessageItem.vue` |
 | DUP-15 | Low | 重复组件 | 「移动端整屏覆盖壳」`MobilePageFrame` 的 `overlay` 形态被手抄 1 份 | `src/components/**` |
 | DUP-16 | — | 负面清单 | 未找到重复的实现（避免误报） | — |
@@ -942,7 +945,7 @@ node --experimental-strip-types -e '
 | 10 | INV-P16 | **两条通道都已落地**（5.15.21 命令返回侧 / 5.15.22 落库侧） | §4.0j。状态不拆档、原因另有码；`grep -n "MESSAGE_FAIL_CODES" src-tauri/src/error_codes.rs` |
 | 10b | INV-P18 | **半条**：X25519 已私有化（5.15.18 + 判据 C），Ed25519 仍是 `pub` | `grep -n "pub ed25519_signing" src-tauri/src/crypto.rs`。收它的前置是"签名能力"抽象，否则每个调用点都能拿到能签的东西 |
 | 11 | SEC-02 | 上限已做（5.15.14）+ 淘汰认身份（5.15.19，§4.0h）；**announce 限流判不修** | 负结论留证：无界增长的成因是"条数没上限"而不是速率，`upsert_peer` 每 5s 周期最多一次 |
-| 12 | DUP-02 | 通道判据与越权闸两半**已落地**（5.15.9 / 5.15.15）；剩下那半**复核后判不再统一**（§4.0l） | 原话「剩三套 toast 文案未统一」不准确：那是四件不同的事实。改判据钉住"它们是四件事"：`src/utils/mediaAvailability.test.ts` 三条（特征词 / 收藏那句的「副本」必须由 `std::fs::copy` 兑现 / 引用面不跨界），前两条各做过注入自证 |
+| 12 | DUP-02 | 通道判据与越权闸两半**已落地**（5.15.9 / 5.15.15）；剩下那半**复核后判不再统一**（§4.0l） | 原话「剩三套 toast 文案未统一」不准确：那是四件不同的事实。改判据钉住"它们是四件事"：`src/utils/mediaAvailability.test.ts` 三条（特征词 / 收藏那句的「副本」必须由 `std::fs::copy` 兑现 / 引用面不跨界），①③ 做过注入自证、② 只有内联反控（未对 `favorites.rs` 变异） |
 | 13 | DUP-09～DUP-12 | **09 与 12 已加对账、11 已被覆盖、10 判不另加**（§4.0a） | 那两条对账用例就住在一个文件里，标题自带编号：`src/utils/messageKinds.test.ts` 的「跨语言契约：已读推进的排除清单两侧逐项一致（DUP-09）」与「…会话预览的固定文案两侧一致（DUP-12）」；复跑 `node --test src/utils/messageKinds.test.ts`。⚠️ 注：§6.3 那四行仍写着"无机器对账"，以本表为准 |
 | 14 | DUP-07/15 | **未做（2 个编号，现数）**；DUP-06（5.15.28，§4.0o）已收口；DUP-03（5.15.26）、DUP-04（5.15.25）、DUP-05（5.15.16）、DUP-08（5.15.20）、DUP-13（5.15.27，§4.0n）已收口；**DUP-14 本轮判「不做」** | @提及 16% 淡底配方 **2 处各写一遍**（DUP-07，`MessageTextBubble.vue:154` / `MessageContentModal.vue:64`；`style.css:1308` 是被讨论但没复用的第三种）、`MobilePageFrame` 的 overlay 手抄**至少 2 处**（DUP-15，`BaseModal.vue:113` / `FavoritePanel.vue:827` 两处注释都自称"与 MobilePageFrame 一致"，审计原写 1 份）。**DUP-14 判不做的理由**：`MessageItem.vue` 里 `copyTextWithToast` 早就是右键菜单与移动端面板共用的一份，重复的只是菜单 markup ⇒ 收它是把模板搬个家，收益最低 |
 | 15 | SEC-04/05/06/08/12 | **全部已修**（SEC-04 5.15.14 + 5.15.17 留痕；SEC-05/06/08/12 见 5.15.13） | SEC-08 那条是入站帧聚合驻留的**全局限额 1 GiB**（审计原估 8 GiB 上界） |
