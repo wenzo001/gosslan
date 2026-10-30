@@ -25,14 +25,24 @@ pub fn remove_friend(conn: &Connection, device_id: &str) -> Result<()> {
 }
 
 pub fn get_friend(conn: &Connection, device_id: &str) -> Option<(String, Option<String>)> {
+    // ⚠️ 读失败在这里被折成 `None`（"不是好友"）。这只适合"没有就能继续"的展示路径；
+    // **权限/身份判定**必须用 [`get_friend_checked`]：把一次读抖动读成"不是好友"会做出
+    // 不可逆的决定（审计 STB-04 半格：非好友分支直接拒收并 return，而那条消息的 msg_id
+    // 已经进过去重表 ⇒ 之后每一次补发都被判 Duplicate，永久进不来）。
+    get_friend_checked(conn, device_id).ok().flatten()
+}
+
+/// 与 [`get_friend`] 同一句 SQL，但**保留读错误**（身份判定路径用它）。
+pub fn get_friend_checked(
+    conn: &Connection,
+    device_id: &str,
+) -> rusqlite::Result<Option<(String, Option<String>)>> {
     conn.query_row(
         "SELECT nickname, avatar FROM friends WHERE device_id = ?1",
         params![device_id],
         |r| Ok((r.get(0)?, r.get(1)?)),
     )
     .optional()
-    .ok()
-    .flatten()
 }
 
 /// 补齐好友**尚缺**的 X25519 / Ed25519 公钥（首次学到时持久化）。
