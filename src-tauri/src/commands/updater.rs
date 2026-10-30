@@ -65,16 +65,22 @@ pub enum DownloadEvent {
 #[cfg(desktop)]
 mod desktop {
     use super::{DownloadEvent, UpdateInfo, UpdaterStatus};
+    use semver::Version;
     use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::{Arc, Mutex};
     use std::time::Duration;
-    use semver::Version;
     use tauri::ipc::Channel;
     use tauri::{AppHandle, Emitter, State};
     use tauri_plugin_updater::{Update, UpdaterExt};
     use tokio::sync::Notify;
 
     pub const CANCELLED: &str = "UPDATER_CANCELLED";
+    /// 安装相位的**名字**（`UpdaterStatus.phase` 的取值）。
+    ///
+    /// 它是一个**跨层契约**：Rust 写这一格、TS（`src/updater/service.ts`）按它判"能不能取消"。
+    /// 以前两个 Rust 调用点各手抄一份字面量 —— 任一侧打错都不会编译失败，只会让
+    /// 「安装中不可取消」静默失效（审计 B1-F3）。现在只许引用这个常量。
+    pub const PHASE_INSTALLING: &str = "installing";
     /// 清单请求的硬上限：离线/DNS 失败必须在十几秒内结束，不能把启动拖住。
     const CHECK_TIMEOUT: Duration = Duration::from_secs(12);
     /// 下载请求的总超时。
@@ -353,13 +359,7 @@ mod desktop {
     /// 这一条由前端不显示取消按钮 + 这里直接返回错误两道保证）。
     #[tauri::command]
     pub fn updater_cancel(app: AppHandle, state: State<'_, UpdaterSession>) -> Result<(), String> {
-        if state
-            .status
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .phase
-            == "installing"
-        {
+        if state.status.lock().unwrap_or_else(|e| e.into_inner()).phase == PHASE_INSTALLING {
             return Err("安装已经开始，无法取消".to_string());
         }
         if let Some(cancel) = state
@@ -452,7 +452,9 @@ mod desktop {
         });
         log_updater_error(
             &app,
-            &format!("code=UPDATER_SUPERSEDED：已下载的 {held_version} 已被更高版本超越，字节已丢弃"),
+            &format!(
+                "code=UPDATER_SUPERSEDED：已下载的 {held_version} 已被更高版本超越，字节已丢弃"
+            ),
         );
         Ok(Some(info))
     }
@@ -463,10 +465,7 @@ mod desktop {
         app: AppHandle,
         state: State<'_, UpdaterSession>,
     ) -> Result<(), String> {
-        if state
-            .downloading
-            .load(Ordering::SeqCst)
-        {
+        if state.downloading.load(Ordering::SeqCst) {
             return Err("更新仍在下载".to_string());
         }
         // PERF-01：整包**移动**而不是 clone —— 峰值从 2× 包体降到 1×。
@@ -480,11 +479,7 @@ mod desktop {
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .take();
-        let taken_bytes = state
-            .bytes
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .take();
+        let taken_bytes = state.bytes.lock().unwrap_or_else(|e| e.into_inner()).take();
         let missing = if taken_update.is_none() {
             "没有可安装的更新"
         } else {
@@ -504,7 +499,7 @@ mod desktop {
             }
         };
         state.set_status(&app, |st| {
-            st.phase = "installing".to_string();
+            st.phase = PHASE_INSTALLING.to_string();
             st.error = None;
         });
         // **更新装完那次"没有关停标记的运行结尾"不是崩溃**（2026-10-27 现场里 01:39 那一趟
@@ -641,9 +636,7 @@ pub async fn updater_check() -> Result<Option<UpdateInfo>, String> {
 
 #[cfg(not(desktop))]
 #[tauri::command]
-pub async fn updater_download(
-    _on_event: tauri::ipc::Channel<DownloadEvent>,
-) -> Result<(), String> {
+pub async fn updater_download(_on_event: tauri::ipc::Channel<DownloadEvent>) -> Result<(), String> {
     Err("应用内更新仅支持桌面端".to_string())
 }
 
@@ -674,7 +667,7 @@ pub fn updater_close() -> Result<(), String> {
 // ---------------- 形状判据（B5：状态可查询、广播一个家、安装不可取消） ----------------
 #[cfg(all(test, desktop))]
 mod status_tests {
-    use super::desktop::is_not_an_upgrade;
+    use super::desktop::{is_not_an_upgrade, PHASE_INSTALLING};
 
     /// 取一个顶层函数的函数体（到下一个顶层 `}` 为止，足够覆盖这几条断言）。
     fn body_of<'a>(src: &'a str, needle: &str) -> &'a str {
@@ -714,8 +707,8 @@ mod status_tests {
         );
         let install = body_of(src, "pub async fn updater_install(");
         assert!(
-            install.contains("\"installing\""),
-            "安装阶段必须写 installing：否则取消按钮判断不出「已经不能取消了」"
+            install.contains("st.phase = PHASE_INSTALLING.to_string()"),
+            "安装阶段必须写 installing（常量）：否则取消按钮判断不出「已经不能取消了」"
         );
         let status_cmd = body_of(src, "pub fn updater_status(");
         assert!(
@@ -725,13 +718,49 @@ mod status_tests {
     }
 
     /// 安装阶段不可取消：**字节已经交给安装器**，取消只会留下半装现场。
+    ///
+    /// 这一条原来只 grep「两处都有 `"installing"`」—— 写与判各手抄一份，**任一侧打错都不会
+    /// 编译失败**，只会让「安装中不可取消」静默失效（审计 B1-F3）。现在把形状改强：
+    ///  ① 相位名在代码里只许出现**一次**（常量定义；注释行里的说明不算）；
+    ///  ② 写相位与判相位都必须引用常量（手抄的字面量会同时打破 ① 与 ②）；
+    ///  ③ 值必须原样出现在 `src/updater/service.ts`（TS 状态机是另一个家，跨层不许漂）。
     #[test]
     fn install_phase_is_not_cancellable() {
         let src = include_str!("updater.rs");
+        let prod = &src[..src.find("#[cfg(all(test, desktop))]").unwrap_or(src.len())];
+        let literals = prod
+            .lines()
+            .filter(|l| !l.trim_start().starts_with("//"))
+            .filter(|l| l.contains("\"installing\""))
+            .count();
+        assert_eq!(
+            literals, 1,
+            "相位名在代码里只许出现一次（常量定义）—— 两处手抄正是这条缺陷的形状"
+        );
+        assert!(
+            prod.contains("pub const PHASE_INSTALLING: &str = \"installing\";"),
+            "常量的名字与值都要逐字钉住（TS 侧按这个值判）"
+        );
+
         let cancel = body_of(src, "pub fn updater_cancel(");
         assert!(
-            cancel.contains("\"installing\"") && cancel.contains("无法取消"),
+            cancel.contains("== PHASE_INSTALLING") && cancel.contains("无法取消"),
             "取消必须在 installing 相位直接拒绝（前端不显示按钮是第二道，不是唯一一道）"
+        );
+        let install = body_of(src, "pub async fn updater_install(");
+        assert!(
+            install.contains("st.phase = PHASE_INSTALLING.to_string()"),
+            "写相位也必须用同一个常量 ⇒ 写与判不可能再各漂一份"
+        );
+
+        // 跨层：前端那一侧没有共享常量，值只能靠对账。这里读的是 TS 状态机的唯一家，
+        // 且比对的是**常量当前的值**（不是手抄的 "installing"）—— 后端改名而前端没跟上，
+        // 这条就红。
+        let ts = include_str!("../../../src/updater/service.ts");
+        let literal = format!("\"{PHASE_INSTALLING}\"");
+        assert!(
+            ts.contains(&literal),
+            "src/updater/service.ts 里没有 {literal} ⇒ 前端判不出安装相位，取消按钮会在安装中又冒出来"
         );
     }
 
@@ -798,9 +827,18 @@ mod status_tests {
             is_not_an_upgrade("5.8.0", "5.8.0-beta.1"),
             "5.8.0-beta.1 低于 5.8.0（预发布按 semver 比较）"
         );
-        assert!(!is_not_an_upgrade("5.8.0-beta.1", "5.8.0"), "正式版高于同号预发布");
-        assert!(is_not_an_upgrade("5.7.28", "banana"), "非法候选版本必须拒绝");
-        assert!(is_not_an_upgrade("banana", "5.8.0"), "非法当前版本也必须失败关闭");
+        assert!(
+            !is_not_an_upgrade("5.8.0-beta.1", "5.8.0"),
+            "正式版高于同号预发布"
+        );
+        assert!(
+            is_not_an_upgrade("5.7.28", "banana"),
+            "非法候选版本必须拒绝"
+        );
+        assert!(
+            is_not_an_upgrade("banana", "5.8.0"),
+            "非法当前版本也必须失败关闭"
+        );
     }
 
     /// 判据必须**接在检查路径上**：只写一个纯函数、`updater_check` 不调用它，等于没做。
@@ -820,9 +858,6 @@ mod status_tests {
         // 被拒的那份 `Update` 不许留在会话里（否则用户还能点「下载」把它装回去）。
         let gate = check.find("is_not_an_upgrade(").unwrap();
         let insert = check.find("= Some(update)").unwrap();
-        assert!(
-            gate < insert,
-            "降级判定必须发生在把 update 放进会话之前"
-        );
+        assert!(gate < insert, "降级判定必须发生在把 update 放进会话之前");
     }
 }
