@@ -59,13 +59,38 @@ pub const FILE_SEND_EXPIRED: &str = "FILE_SEND_EXPIRED";
 /// 重试次数用尽（或队列行已不在），这一单再也发不出去。
 pub const FILE_SEND_GIVEUP: &str = "FILE_SEND_GIVEUP";
 
+/// 群文件**接收**侧的六种"收不下去"。名字前缀 `GROUP_` 是因为它们只代表**这一格收件人**的
+/// 这一单收完了没（逐收件人台账），与 1:1 的失败不是一回事。
+/// 以前它们是 `group_file.rs` 里的中文常量，只进日志、永不上屏；
+/// 5.15.32 起它们是码 ⇒ 气泡行能带上"为什么"，界面按词典说话，重启之后还在。
+///
+/// ⚠️ **有码不等于要弹 toast**：断链时每个在途群文件都会失败一次，逐条弹通知就是噪音回归
+///（`group_file.rs::should_notify_group_failure` 那份显式名单管这件事）。
+pub const GROUP_FILE_STALLED: &str = "GROUP_FILE_STALLED";
+/// 一个分片都没收到过（对端根本没开始发）。
+pub const GROUP_FILE_NO_CHUNK: &str = "GROUP_FILE_NO_CHUNK";
+/// 分片解密后与本机不匹配（内容与密钥/身份对不上）。
+pub const GROUP_FILE_DECRYPT_FAILED: &str = "GROUP_FILE_DECRYPT_FAILED";
+/// 分片顺序有洞（中间缺片），这一单已经补不齐。
+pub const GROUP_FILE_CHUNK_GAP: &str = "GROUP_FILE_CHUNK_GAP";
+/// 分片累计超出声明大小（协议层硬失败）。
+pub const GROUP_FILE_CHUNK_EXCEEDS_SIZE: &str = "GROUP_FILE_CHUNK_EXCEEDS_SIZE";
+/// 对端一条链路都不剩 —— 与"对端没上线"不同：这一单要重发才收得到。
+pub const GROUP_FILE_PEER_UNLINKED: &str = "GROUP_FILE_PEER_UNLINKED";
+
 /// 落进 `messages.fail_code` 的全部档位 —— **与前端那张文案表双向对账的分母**
 /// （`src/utils/fileFailReason.test.ts` 现读这里，两侧任何一侧多加一条都会红）。
-pub const MESSAGE_FAIL_CODES: [&str; 6] = [
+pub const MESSAGE_FAIL_CODES: [&str; 12] = [
     SEND_RETRY_EXPIRED,
     SEND_ORPHAN_AT_START,
     SEND_PEER_DELETED,
     SEND_GROUP_MEMBER_GONE,
     FILE_SEND_EXPIRED,
     FILE_SEND_GIVEUP,
+    GROUP_FILE_STALLED,
+    GROUP_FILE_NO_CHUNK,
+    GROUP_FILE_DECRYPT_FAILED,
+    GROUP_FILE_CHUNK_GAP,
+    GROUP_FILE_CHUNK_EXCEEDS_SIZE,
+    GROUP_FILE_PEER_UNLINKED,
 ];
