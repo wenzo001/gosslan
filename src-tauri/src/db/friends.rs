@@ -174,3 +174,188 @@ pub fn list_friends(conn: &Connection) -> Result<Vec<Friend>> {
     })?;
     Ok(rows.filter_map(|r| r.ok()).collect())
 }
+
+// ---------------- 待处理的好友申请（入站，审计 A4 的持久化） ----------------
+
+use crate::state::PendingRequest;
+
+/// 一条**入站**待处理申请在 `settings` 里的那一行（键前缀）。
+///
+/// 为什么不另建一张表：`settings` 已经是本仓"每 X 一份本地状态"的那个家（群密钥 `gk:`、
+/// 群任务水位 `todo_num:`、群历史同步状态 `ghsync:` 都在那儿 —— 口径见
+/// `db/group_history.rs::group_history_state_key` 那段说明）。这一份状态只有一个需求：
+/// **重启后还要在**。没有查询、没有索引、没有外键 ⇒ 为它开一张表就是给同一个需求开第二个家。
+///
+/// ⚠️ 前缀里带 `_`，SQL 的 `LIKE` 把它当单字符通配符 —— 因此**读**这一侧必须再用
+/// `strip_prefix` 严格认一次键名（下面的 `list_friend_requests`），只有删除按前缀批量走。
+pub const FRIEND_REQUEST_KEY_PREFIX: &str = "friend_req:";
+
+pub fn friend_request_key(peer_id: &str) -> String {
+    format!("{FRIEND_REQUEST_KEY_PREFIX}{peer_id}")
+}
+
+/// 落一行申请（upsert）。同一个人补发时后到的那份覆盖前一份 ⇒ 昵称/头像跟着更新，
+/// 而"这条我已经握着了"的判定仍然只看键在不在（`pending_friend_request_admitted`）。
+pub fn put_friend_request(conn: &Connection, req: &PendingRequest) -> Result<()> {
+    let json = serde_json::to_string(req)
+        .map_err(|e| rusqlite::Error::InvalidParameterName(format!("好友申请序列化失败：{e}")))?;
+    set_setting(conn, &friend_request_key(&req.from), &json)
+}
+
+/// 清掉一行（同意 / 拒绝 / 被"已是好友"过滤掉时）。行本来不在 = 成功（幂等）。
+pub fn forget_friend_request(conn: &Connection, peer_id: &str) -> Result<()> {
+    delete_setting(conn, &friend_request_key(peer_id))
+}
+
+/// 「清除数据」那一趟把这批申请一起抹掉（前缀批量删，与 `gk:` 那一行同写法）。
+/// 内存那一张在同一处 `clear()` —— 两边不同步的话，下一次开机会把刚清掉的申请原样端回来。
+pub fn clear_friend_requests(conn: &Connection) -> Result<()> {
+    conn.execute(
+        "DELETE FROM settings WHERE key LIKE ?",
+        params![format!("{FRIEND_REQUEST_KEY_PREFIX}%")],
+    )?;
+    Ok(())
+}
+
+/// 启动时把库里的申请读回来（按写入顺序）。
+///
+/// 认不出来的行**跳过而不删**：删掉它就是把"一次解析失败"升级成"用户的申请没了"。
+/// 跳过之后对端下一次补发会把那一行覆盖成合法形状，不需要这里替它做决定。
+pub fn list_friend_requests(conn: &Connection) -> Result<Vec<PendingRequest>> {
+    let mut stmt = conn.prepare(
+        "SELECT key, value FROM settings WHERE key LIKE ?1 ORDER BY rowid",
+    )?;
+    let rows = stmt.query_map(params![format!("{FRIEND_REQUEST_KEY_PREFIX}%")], |r| {
+        Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
+    })?;
+    let mut out = Vec::new();
+    for row in rows {
+        let (key, value) = row?;
+        let Some(peer) = key.strip_prefix(FRIEND_REQUEST_KEY_PREFIX) else {
+            continue;
+        };
+        let Ok(req) = serde_json::from_str::<PendingRequest>(&value) else {
+            continue;
+        };
+        // 键与载荷必须是同一个人：手写/半写坏的行（键是 A、载荷 from 是 B）不许进列表，
+        // 否则同意的时候删掉的是 B 那一行，A 这条永远留在「新朋友」里。
+        if req.from == peer {
+            out.push(req);
+        }
+    }
+    Ok(out)
+}
+
+#[cfg(test)]
+mod friend_request_store_tests {
+    use super::*;
+    use crate::db::SCHEMA;
+    use rusqlite::Connection;
+
+    fn mem() -> Connection {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(SCHEMA).unwrap();
+        conn
+    }
+
+    fn req(from: &str, nickname: &str, avatar: Option<&str>, ts: i64) -> PendingRequest {
+        PendingRequest {
+            from: from.into(),
+            from_nickname: nickname.into(),
+            from_avatar: avatar.map(|a| a.to_string()),
+            ts,
+        }
+    }
+
+    /// 落库 → 读回是同一份载荷；同一个人再落一次是**覆盖**（昵称跟着更新），不是多出一行。
+    /// 这就是"重启恢复必须有真实数据库持久化证据"那一格（审计 A4）—— 内存里那份不算。
+    #[test]
+    fn a_pending_request_survives_a_write_then_read_and_a_repeat_updates_it() {
+        let conn = mem();
+        put_friend_request(&conn, &req("dev-a", "小李", Some("data:image/svg+xml;base64,AA"), 100))
+            .unwrap();
+        let back = list_friend_requests(&conn).unwrap();
+        assert_eq!(back.len(), 1);
+        assert_eq!(back[0].from_nickname, "小李");
+        assert_eq!(back[0].ts, 100);
+        assert_eq!(back[0].from_avatar.as_deref(), Some("data:image/svg+xml;base64,AA"));
+
+        put_friend_request(&conn, &req("dev-a", "小李（改名）", None, 100)).unwrap();
+        let again = list_friend_requests(&conn).unwrap();
+        assert_eq!(again.len(), 1, "同一个人补发不许变成两条申请");
+        assert_eq!(again[0].from_nickname, "小李（改名）");
+
+        // 库里的真身：前缀就是那一行的键名（不是"某处内存"）
+        let keys: Vec<String> = conn
+            .prepare("SELECT key FROM settings")
+            .unwrap()
+            .query_map([], |r| r.get(0))
+            .unwrap()
+            .filter_map(|v| v.ok())
+            .collect();
+        assert_eq!(keys, vec!["friend_req:dev-a".to_string()]);
+
+        // 处理掉了 ⇒ 库里那行也要没了（下一次开机会把它端回来）
+        forget_friend_request(&conn, "dev-a").unwrap();
+        assert!(list_friend_requests(&conn).unwrap().is_empty());
+        // 幂等：行已经不在，再删一次不报错
+        forget_friend_request(&conn, "dev-a").unwrap();
+    }
+
+    /// ⚠️ 键名里的 `_` 在 SQL `LIKE` 里是**单字符通配符** ⇒ 只靠 LIKE 会把别人的键读进来。
+    /// 读侧的 `strip_prefix` 必须真的咬住这一格（删侧仍按前缀批量走，见 `clear_friend_requests`）。
+    #[test]
+    fn a_lookalike_key_is_not_mistaken_for_a_friend_request() {
+        let conn = mem();
+        set_setting(&conn, "friendXreq:dev-z", "{\"from\":\"dev-z\"}").unwrap();
+        // 正控：LIKE 本身确实会命中它（否则下面那条断言是在判空写）
+        let like_hits: i64 = conn
+            .query_row("SELECT COUNT(*) FROM settings WHERE key LIKE 'friend_req:%'", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        assert_eq!(like_hits, 1, "夹具没造出同形键，下面的严格判据就是在空集上恒绿");
+        assert!(list_friend_requests(&conn).unwrap().is_empty());
+    }
+
+    /// 坏行**跳过而不删**：认不出来的载荷不许被升级成"用户的申请没了"；
+    /// 键与载荷不是同一个人的半写行也不许进列表（否则同意时删错那一行，原行永远留在「新朋友」里）。
+    #[test]
+    fn corrupt_and_mismatched_rows_are_skipped_but_left_in_place() {
+        let conn = mem();
+        put_friend_request(&conn, &req("dev-good", "好人", None, 1)).unwrap();
+        set_setting(&conn, "friend_req:dev-junk", "这不是 JSON").unwrap();
+        set_setting(&conn, "friend_req:dev-mismatch", "{\"from\":\"dev-other\",\"from_nickname\":\"串了\",\"ts\":2}").unwrap();
+
+        let back = list_friend_requests(&conn).unwrap();
+        assert_eq!(
+            back.iter().map(|r| r.from.as_str()).collect::<Vec<_>>(),
+            vec!["dev-good"],
+            "只有键与载荷一致、且能认出来的那一行该进列表"
+        );
+        // 两行坏数据都还在：跳过 ≠ 删除（对端下一次补发会把它们覆盖成合法形状）
+        let left: i64 = conn
+            .query_row("SELECT COUNT(*) FROM settings WHERE key LIKE 'friend_req:%'", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        assert_eq!(left, 3, "解析失败/串了键的行不许被这条路径删掉");
+    }
+
+    /// 「清除数据」那一趟：这批键整批改删，而**别的** settings 键（群密钥那一族）不受牵连。
+    #[test]
+    fn clearing_the_batch_leaves_other_setting_keys_alone() {
+        let conn = mem();
+        put_friend_request(&conn, &req("dev-a", "甲", None, 1)).unwrap();
+        put_friend_request(&conn, &req("dev-b", "乙", None, 2)).unwrap();
+        set_setting(&conn, "gk:group-1", "{\"k\":1}").unwrap();
+        clear_friend_requests(&conn).unwrap();
+        assert!(list_friend_requests(&conn).unwrap().is_empty());
+        assert_eq!(
+            get_setting(&conn, "gk:group-1").as_deref(),
+            Some("{\"k\":1}"),
+            "清申请不许顺手把群密钥那一族的键一起抹掉"
+        );
+    }
+
+}

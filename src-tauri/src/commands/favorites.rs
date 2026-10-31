@@ -572,6 +572,10 @@ pub async fn clear_all_data(
         let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());
         dbc.execute("DELETE FROM settings WHERE key LIKE 'gk:%'", [])
             .map_err(|e| e.to_string())?;
+        // 待处理的好友申请那一批键也跟着抹（审计 A4 的另一半）：下面第 2 步会 `clear()`
+        // 内存那一张，库里那些行若留着，下一次启动就被 `restore_pending_requests` 原样端回来
+        // —— 用户刚点完「清除数据」，「新朋友」里却又冒出一排申请。
+        db::clear_friend_requests(&dbc).map_err(|e| e.to_string())?;
         dbc.execute(
             "DELETE FROM conversation_clocks WHERE conv_id LIKE 'group:%'",
             [],

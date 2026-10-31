@@ -472,6 +472,11 @@ pub fn run() {
             // 不要在这里再直接 `spawn_*`，否则同一个 worker 会跑两份。
             worker_supervisor::start(&state, worker_supervisor::RESIDENT_WORKERS);
             app.manage(state.clone());
+            // 待处理的好友申请从库里回到内存（审计 A4）。放在 `manage` 之后、联网那一块之前：
+            // 库已经打开、而补发还没开始 ⇒ 对端每 30s 的那一份重发会被
+            // `pending_requests` 认成"这条我早就握着了"⇒ 只刷新列表、不再弹通知。
+            // 这一句刻意只填表（不 emit、不通知）；界面启动时自己会拉一次 `get_pending_requests`。
+            crate::network::transport::restore_pending_requests(&state);
             // 卡死看门狗：主线程探针 + 渲染心跳。**接线点只有这一处**（判据钉调用点计数）。
             watchdog::start(app.handle().clone(), state.clone());
             // 系统托盘：关闭主窗口仅隐藏到托盘，退出需走托盘菜单

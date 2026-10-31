@@ -13,6 +13,35 @@
 
 ## [Unreleased]
 
+## [5.15.77] - 2026-10-31
+
+### 第三轮审计·第二批 A4：未处理的好友申请落库、重启后恢复且不再重复通知
+
+**根因**：入站好友申请只有 `AppState::pending_requests` 这一份内存表（`HashMap`），
+落库那一格从来不存在。重启 ⇒ 表空，而申请人那边每 30s 才补发一次、还要链路在 ⇒
+用户在「新朋友」里看到的未处理数量与徽标在重启后直接归零。
+
+**修法**（不加表、不做迁移）：`settings` 里键 `friend_req:<device_id>`，值是这条申请的 JSON
+（upsert，同一人补发时昵称/头像跟着更新）。`settings` 是本仓"每 X 一份本地状态"既有的家
+（`gk:` / `todo_num:` / `ghsync:` 同形状）⇒ 数据库结构一格没变，旧版本升级零风险。
+四个写入点全部收在既有的家里：到达 `apply_friend_request` 写、`forget_pending_request` 删
+（同意/拒绝三条路径都走它）、`get_pending_requests` 把"人已是好友"那批过滤掉时连行一起删、
+`clear_all_data` 按前缀整批抹（否则内存清了、库里留着，下次开机又冒出来）。
+启动时在 `app.manage` 之后、联网之前跑一次 `restore_pending_requests`：**只填内存表**，
+既不 `emit` 也不弹通知 —— 而"只填表"正是"重启不重复弹窗"的机制本身：
+补发到达时 `insert` 返回 `Some` ⇒ 幂等判据走 `SilentRefresh`。
+读侧刻意用 `strip_prefix` 严格认一次键名（`LIKE` 把键里的 `_` 当通配符），
+认不出来的行**跳过而不删**（解析失败不许升级成"用户的申请没了"），键与载荷不同人的半写行不进列表。
+
+**测试**：`db/friends.rs` 新增 `friend_request_store_tests` 四条（落库→读回→重复落库是覆盖并打印真实
+键名 / 同形键 `friendXreq:` 不许被当成申请（含 LIKE 命中的正控）/ 坏行跳过且不删 / 批量清不误伤 `gk:`）；
+`lib_friend_identity_tests` 一条接线判据（写、删、恢复各只有 1 个调用点、恢复体里不许出现 `emit(` 与
+两个通知入口、setup 里那一格必须排在 `manage` 之后、`clear_all_data` 与 `get_pending_requests` 各自
+的连带删除）—— 逻辑判据全绿不等于它被接上，删掉调用点这条就红。
+
+**验证读数**：`cargo test --lib --features bluetooth` 1348 passed / 0 failed / 3 ignored；
+`cargo clippy --features bluetooth --all-targets -- -D warnings` 退码 0；`cargo fmt --check --all` 0 差异。
+
 ## [5.15.76] - 2026-10-31
 
 ### 第三轮审计·第二批 A1：群历史补齐后补齐会话的末条与排序时间

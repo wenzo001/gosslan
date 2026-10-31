@@ -268,8 +268,31 @@ pub async fn get_pending_requests(
             .pending_requests
             .lock()
             .unwrap_or_else(|e| e.into_inner());
+        // 库里那一行跟着这批一起删（审计 A4）：申请人后来已经是好友了 ⇒ 这条申请永远不该
+        // 再出现，而"重启后 `restore_pending_requests` 把它端回来 → 这里再过滤掉"不是清理，
+        // 那一行只会一直占着内存表的格位（上限 64，见 STB-02）。
+        let stale: Vec<String> = map
+            .iter()
+            .filter(|(_, req)| !is_actionable_request(req, &friend_ids))
+            .map(|(id, _)| id.clone())
+            .collect();
         map.retain(|_, req| is_actionable_request(req, &friend_ids));
-        Ok(map.values().cloned().collect())
+        drop(map);
+        if !stale.is_empty() {
+            let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());
+            for id in &stale {
+                if let Err(e) = db::forget_friend_request(&dbc, id) {
+                    crate::logging::log_write_failure(&s.logger, "forget_friend_request", e);
+                }
+            }
+        }
+        Ok(s
+            .pending_requests
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .values()
+            .cloned()
+            .collect())
     })
     .await
     .map_err(|e| format!("待处理好友申请读取被线程池中断: {e}"))?
