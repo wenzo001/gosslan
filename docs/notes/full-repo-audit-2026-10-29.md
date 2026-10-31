@@ -1858,6 +1858,24 @@ Select-String -Path "$d\gosslan-crash.log" -Pattern '>>> code=(HANG|RUNTIME_MEM)
 | **`@pinia/colada` 死依赖** | 确认 `src/`/`scripts/` 0 引用，但未跑构建证明删除后产物不变 |
 | **Windows 编译** | 本机无 MSVC/MinGW 交叉工具链，Windows 专属代码本地编不出来 |
 
+> **2026-10-31 补注**（这张表讲的是**审计当时**；下面几行后来已被关掉，别再当成今天的待办）：
+>
+> - 「12 个含 `Date.now` 的前端测试文件」「33 个含 `readFileSync`/`tmpdir` 的文件」→ **已逐条核过**
+>   （§4.0bg 的 TST-14 / TST-15）：现读时间依赖只剩 9 个文件，真实时钟三处都有余量；写盘只发生在
+>   2 个脚本测试（`scripts/updaterManifest.test.ts`、`scripts/publishRelease.test.ts`），路径全来自 `mkdtempSync(tmpdir())`。
+> - 「`@pinia/colada` 死依赖」→ **已删**（§8 第 17 行，5.15.13，含"每个生产依赖都必须在替换矩阵里登记"的判据）。
+> - 「跨进程 E2E 本轮未跑」→ 只描述审计当时。此后发版检查单每次都要跑 `verify:release` 4 轮；
+>   本会话三次发版（v5.15.65 / .71 / .74）实测都是 25 / 23 / 38 / 49 条断言全绿（§4.0bb、§4.0bf）。
+> - 「前端运行时行为」→ 功能域有 `check-ui-runtime` 探针，消息列表/溢出/替换矩阵等另有真渲染格（`msgovf` / `rowpair` 等，
+>   见 §4.0x 与 memory 里的探针账）；启动失败那扇窗的真窗口十格由 `scripts/verify-startup-error.mjs` 另行验收（A2）。
+> - 「Windows 编译」→ **CI 每次 push 都在真 MSVC 上编**（`Rust 单测 / 清单（windows-latest）` 与 `build-windows` 两条腿）；
+>   仍成立的是"**本机**编不出来"，属"本机不可验"，不是"从没验过"。
+>
+> **仍然开着的六行**（对着上表逐行数：10 行里本轮关掉 4 行、降级 2 行）：
+> 真机硬件路径（BLE / 多机局域网 / Windows 卡死）、中继公网链路、≥24h 长跑、`GITHUB_ACTIONS=true` 本机模拟
+> —— 这四行要外部环境；**前端运行时行为**只关掉了"有探针覆盖的那部分"（真窗口交互仍有空白）；
+> **Windows 编译**降级为"本机不可验"（CI 每 push 都在真 MSVC 上编）。
+
 ---
 
 ## 10. 测试结果汇总
