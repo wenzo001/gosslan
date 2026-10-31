@@ -1654,6 +1654,9 @@ Select-String -Path "$d\gosslan-crash.log" -Pattern '>>> code=(HANG|RUNTIME_MEM)
    调的全是应用命令（`startup_error_info` / `retry` / `open_data_dir` / `quit`）；
    Tauri v2 的 ACL 只管插件与 `core:` 命令，应用命令不受 capability 约束。**若将来有人在这页加
    `dialog` / `window` 之类插件调用，会被 ACL 直接拒** —— 那时必须先把这扇窗登记进 capability。
+   四条命令名在**三处逐字对上**（2026-10-31 现读）：`src/api/index.ts:651/656/658/660` →
+   `startup_error.rs:141/162/177/197`（桌面）与 `:272/279/286`（移动桩）→ `lib.rs:749-752` 的
+   `generate_handler!` 四条。名字漂一处就是"按钮点了没反应"，而这条链上没有任何运行时报错可看。
 
 **两条留到真窗口验收去确认（不属于静态可判）**
 
