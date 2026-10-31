@@ -13,6 +13,38 @@
 
 ## [Unreleased]
 
+## [5.15.76] - 2026-10-31
+
+### 第三轮审计·第二批 A1：群历史补齐后补齐会话的末条与排序时间
+
+**根因**：`apply_group_history_page` 里那一支是 `if stats.inserted > 0 { if !exists { touch_conversation(…) } }`
+—— 会话行**已经存在**就一格都不写，而新建那一支走的是 `touch_conversation`，它把 `last_ts` 写成
+`now_ms()`。于是两个症状同时成立：① 新成员补回 800 条历史后，列表里那一行还挂着旧摘要（甚至没有摘要），
+排序时间却是"刚刚"；② 老成员补回更早的历史时末条不动，但任何一次真的写它就是把会话凭空顶到最前。
+
+**修法**（`db/conversations.rs` 新增一个家、`db/group_history.rs` 只改调用）：末条摘要**从库里现算**，
+不取"这一页的最大 seq" —— 本机可能已经握着比这一页更晚的消息，照页内最大值写会把摘要写成一条
+早就被盖住的历史。取法与聊天时间线用**同一个全序**（`get_messages` 是 `seq ASC, id ASC`，这里取反），
+可当选的种类沿用实时接收那一臂的门槛（`Silent` 类与 `system` 不写摘要，清单从 `WIRE_KINDS` 现派生），
+预览文案仍走 `protocol::preview_text` 那一份唯一事实源（文字 / 图片 / 文件 / 群任务 / 公告同一口径）。
+`last_ts` 用**那条消息自己的 ts**，`unread` 一格不动，行不存在时由 `ensure_conversation` 建出来
+⇒ 重复补齐幂等、补更早的历史不动末条、也不会把一次历史搬运伪装成新到的活动。
+函数头第 ② 条原来的口径（"已有会话行时不碰 last_ts"）按用户 2026-10-31 的决策改写。
+
+**测试**：`group_history.rs` 原 `first_sync_creates_conversation_with_zero_unread_and_second_touch_is_untouched`
+拆成两条具名用例 —— `history_sync_recomputes_the_head_but_never_the_unread`（新建行 / 已有行照样更新 /
+`last_ts` 必须是消息自己的 ts / `unread` 保持 3）与
+`the_head_follows_the_logical_clock_and_ignores_silent_rows`（补更早的历史不动末条、重复页幂等、
+群任务卡片显示成 `[任务] 买牛奶`、只有 `reaction` 的一页不改摘要且不加未读）。
+
+**顺带**：上一批 A3 从 `clear_all_data` 拿掉 `favorites` 后，两处 Rust 侧登记必须跟着改
+（`favorites_tests` 的保留名单与它的反控、`lib_relay_data_tests` 的 INV-P34 整份慢活分母 19→18）。
+这两处只有 `verify:full` 能看到，快速层是绿的 —— 已按门禁原形状补跑。
+
+**验证读数**：`cargo test --lib --features bluetooth` 1341 passed / 0 failed / 3 ignored（退码 0）；
+`cargo fmt --check --all` 0 差异；`cargo clippy --features bluetooth --all-targets -- -D warnings` 退码 0；
+两条新用例具名跑出 2 passed / 0 failed。
+
 ## [5.15.75] - 2026-10-31
 
 ### 第三轮审计·第一批：首启误报 / 清库误删收藏 / 退群文案 / 安全口径（A5 A3 A6 A8）

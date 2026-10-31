@@ -41,7 +41,10 @@ pub const GROUP_HISTORY_STATUS_STOPPED: &str = "stopped";
 
 /// 读本机这一群的历史同步状态。坏 JSON 按"没有状态"处理（返回 `None`），
 /// 因为一次写坏的偏好不该把这个群永久钉成"不同步"。
-pub fn read_group_history_state(conn: &Connection, group_id: &str) -> Option<GroupHistorySyncState> {
+pub fn read_group_history_state(
+    conn: &Connection,
+    group_id: &str,
+) -> Option<GroupHistorySyncState> {
     let raw = get_setting(conn, &group_history_state_key(group_id))?;
     serde_json::from_str(&raw).ok()
 }
@@ -85,7 +88,13 @@ pub fn group_history_summary(conn: &Connection, group_id: &str) -> Result<GroupH
         "SELECT COUNT(*), COALESCE(MIN(seq), 0), COALESCE(MAX(seq), 0)
          FROM messages WHERE conv_id = ?1",
         params![conv_id],
-        |r| Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?, r.get::<_, i64>(2)?)),
+        |r| {
+            Ok((
+                r.get::<_, i64>(0)?,
+                r.get::<_, i64>(1)?,
+                r.get::<_, i64>(2)?,
+            ))
+        },
     )?;
     Ok(GroupHistorySummary {
         total,
@@ -287,10 +296,11 @@ pub struct GroupHistoryApplyStats {
 ///   ① `observe_clock` —— 与"这条要不要计未读"无关。漏了它，本机后续自己发的消息会拿到
 ///      比刚同步进来的历史**更小**的 seq，于是新消息排在旧消息前面（时钟推进是
 ///      `gossip.rs` 那句"时钟推进与静默无关，必须照常"的同一个道理）。
-///   ② 会话行只在**本机还没有这一行**时才建（新成员入群后群聊应当出现在聊天列表，
-///      这是聊天活动驱动的，不是群关系同步 —— 见 `db/groups.rs` 那条既有不变量的边界）。
-///      已有会话行时**不碰** `last_ts`：那会把一个用户早就在处理到一半的会话顶到列表最前，
-///      而这件事对他毫无理由。
+///   ② 会话行的末条摘要**每一趟都按库里真实的末条重算**（审计 A1，用户 2026-10-31 拍板：
+///      不得因为会话行已经存在而跳过更新）。两个仍然保住的边界：`last_ts` 用的是那条消息
+///      自己的 `ts` 而不是同步时刻 ⇒ 补一份早于现状的历史不会把用户处理到一半的会话顶到
+///      列表最前；`unread` 一格不动（第 ③ 条）。会话行本身仍然只由**聊天活动**建出来，
+///      不靠群关系同步 —— 见 `db/groups.rs` 那条既有不变量的边界。
 ///   ③ 未读**恒为 0**：同步进来的 800 条不该变成 800 条未读红点。用户看到的提示是
 ///      "已同步 N 条群消息"，不是 badges 爆炸。
 ///
@@ -305,7 +315,6 @@ pub fn apply_group_history_page(
 ) -> Result<GroupHistoryApplyStats> {
     let mut stats = GroupHistoryApplyStats::default();
     let conv_id = format!("group:{group_id}");
-    let mut newest: Option<(i64, &GroupHistoryItem)> = None;
 
     // 前置条件先查、再动任何一行（不是靠 `insert_group_file` 那道闸顺带挡下来的）：
     // 群行不在 = 本机已经不是这个群的成员（退群/被移出的收口把 groups 删了）。
@@ -331,10 +340,7 @@ pub fn apply_group_history_page(
             .map(|(tconv, _)| tconv == conv_id)
             .unwrap_or(false)
         {
-            (
-                crate::protocol::KIND_RECALLED.to_string(),
-                String::new(),
-            )
+            (crate::protocol::KIND_RECALLED.to_string(), String::new())
         } else {
             (item.kind.clone(), item.content.clone())
         };
@@ -359,9 +365,6 @@ pub fn apply_group_history_page(
         }
         if inserted {
             stats.inserted += 1;
-            if newest.map_or(true, |(_, n)| item.seq >= n.seq) {
-                newest = Some((item.seq, item));
-            }
         } else {
             stats.duplicate += 1;
         }
@@ -407,22 +410,10 @@ pub fn apply_group_history_page(
     }
 
     if stats.inserted > 0 {
-        let exists = get_conversation(conn, &conv_id).is_some();
-        if !exists {
-            let Some((_, newest_item)) = newest else {
-                return Ok(stats);
-            };
-            touch_conversation(
-                conn,
-                &conv_id,
-                "group",
-                group_name,
-                None,
-                &crate::protocol::preview_text(&newest_item.kind, &newest_item.content),
-                // 未读恒 0：见函数头第 ③ 条
-                0,
-            )?;
-        }
+        // 末条摘要**从库里现算**，不取"这一页的最大 seq"：本机可能已经握着比这一页更晚的
+        // 消息（补齐是往回拉历史），照页内最大值写就会把列表摘要写成一条早就被盖住的历史。
+        // 同一趟重复跑也收敛到同一个值（判据在库里，不在页里）。
+        refresh_conversation_head_from_history(conn, &conv_id, "group", group_name)?;
     }
     Ok(stats)
 }
@@ -551,7 +542,11 @@ mod group_history_db_tests {
         let second =
             serve_group_history_page(&conn, "g1", first.next_seq, first.next_id, 2).unwrap();
         let ids: Vec<String> = second.page.items.iter().map(|i| i.msg_id.clone()).collect();
-        assert_eq!(ids, vec!["m3".to_string(), "late".to_string()], "第一页取过的两条不许重现或消失");
+        assert_eq!(
+            ids,
+            vec!["m3".to_string(), "late".to_string()],
+            "第一页取过的两条不许重现或消失"
+        );
         assert!(!second.has_more);
     }
 
@@ -588,8 +583,14 @@ mod group_history_db_tests {
             "本机路径不许出现在线上：{}",
             out.page.items[0].content
         );
-        assert!(out.page.items[0].content.contains("a.bin"), "名字/哈希要留着");
-        assert_eq!(out.page.items[1].content, "就是一段文字", "非 JSON 正文原样");
+        assert!(
+            out.page.items[0].content.contains("a.bin"),
+            "名字/哈希要留着"
+        );
+        assert_eq!(
+            out.page.items[1].content, "就是一段文字",
+            "非 JSON 正文原样"
+        );
     }
 
     /// `kind` 原样搬：库里是 `image` 就交 `image`，不许被折成 `file`（那会让同步来的
@@ -633,9 +634,17 @@ mod group_history_db_tests {
         let first = apply_group_history_page(&conn, "g1", "me", "群", &page).unwrap();
         assert_eq!((first.inserted, first.duplicate), (2, 0));
         let second = apply_group_history_page(&conn, "g1", "me", "群", &page).unwrap();
-        assert_eq!((second.inserted, second.duplicate), (0, 2), "第二遍只认重复");
+        assert_eq!(
+            (second.inserted, second.duplicate),
+            (0, 2),
+            "第二遍只认重复"
+        );
         let n: i64 = conn
-            .query_row("SELECT COUNT(*) FROM messages WHERE conv_id='group:g1'", [], |r| r.get(0))
+            .query_row(
+                "SELECT COUNT(*) FROM messages WHERE conv_id='group:g1'",
+                [],
+                |r| r.get(0),
+            )
             .unwrap();
         assert_eq!(n, 2);
     }
@@ -705,7 +714,11 @@ mod group_history_db_tests {
             "本机已经推到 9 ⇒ 补两条旧历史不许把时钟压回去（否则我下一条排到它们前面）"
         );
         let rows: i64 = conn
-            .query_row("SELECT COUNT(*) FROM messages WHERE conv_id='group:g1'", [], |r| r.get(0))
+            .query_row(
+                "SELECT COUNT(*) FROM messages WHERE conv_id='group:g1'",
+                [],
+                |r| r.get(0),
+            )
             .unwrap();
         assert_eq!(rows, 2);
     }
@@ -729,12 +742,21 @@ mod group_history_db_tests {
         };
         apply_group_history_page(&conn, "g1", "me", "群", &page).unwrap();
         let ts: i64 = conn
-            .query_row("SELECT ts FROM messages WHERE msg_id='s1'", [], |r| r.get(0))
+            .query_row("SELECT ts FROM messages WHERE msg_id='s1'", [], |r| {
+                r.get(0)
+            })
             .unwrap();
         assert_eq!(ts, 1_600_000_000_000, "显示时间必须是源机那一条的时间");
-        assert_eq!(get_clock(&conn, "group:g1"), 400, "本机时钟必须抬到历史之后");
+        assert_eq!(
+            get_clock(&conn, "group:g1"),
+            400,
+            "本机时钟必须抬到历史之后"
+        );
         let next = crate::db::next_clock(&conn, "group:g1").unwrap();
-        assert!(next > 400, "本机之后发的消息要排在同步历史后面，实测 {next}");
+        assert!(
+            next > 400,
+            "本机之后发的消息要排在同步历史后面，实测 {next}"
+        );
     }
 
     /// 本机清空过这个群 ⇒ 水位之前的历史**不得复活**，但仍算"这一页处理过了"。
@@ -768,58 +790,204 @@ mod group_history_db_tests {
         let st = apply_group_history_page(&conn, "g1", "me", "群", &page).unwrap();
         assert_eq!(st.blocked_by_boundary, 1);
         assert_eq!(st.inserted, 1);
-        assert!(!crate::db::message_exists(&conn, "old"), "水位下的那条不许回来");
+        assert!(
+            !crate::db::message_exists(&conn, "old"),
+            "水位下的那条不许回来"
+        );
         assert!(crate::db::message_exists(&conn, "new"));
     }
 
-    /// 新成员（本机没有会话行）⇒ 建会话行且**未读为 0**；
-    /// 已有会话行 ⇒ `last_ts` 一个字都不动（不许把用户正在处理的会话顶到最前）。
+    /// 会话行不存在 ⇒ 由聊天活动建出来、**未读为 0**，末条时间用的是**那条消息自己的 ts**
+    /// （不是同步时刻 —— 补的是历史，把它写成"刚刚"会凭空插到列表最前）。
+    /// 会话行**已经存在** ⇒ 末条摘要照样按补齐后的真实末条重算（审计 A1：不许因为行已存在
+    /// 而跳过更新），但 `unread` 一格不动。
     #[test]
-    fn first_sync_creates_conversation_with_zero_unread_and_second_touch_is_untouched() {
+    fn history_sync_recomputes_the_head_but_never_the_unread() {
         let conn = mem();
-        let page = GroupHistoryPage {
-            items: vec![GroupHistoryItem {
-                msg_id: "s1".into(),
-                sender_id: "a".into(),
-                kind: "text".into(),
-                content: "你好".into(),
-                ts: 1,
-                seq: 1,
-                mention_targets: None,
-            }],
-            files: vec![],
+        let item = |msg_id: &str, kind: &str, content: &str, ts: i64, seq: i64| GroupHistoryItem {
+            msg_id: msg_id.into(),
+            sender_id: "a".into(),
+            kind: kind.into(),
+            content: content.into(),
+            ts,
+            seq,
+            mention_targets: None,
         };
-        apply_group_history_page(&conn, "g1", "me", "群", &page).unwrap();
+        apply_group_history_page(
+            &conn,
+            "g1",
+            "me",
+            "群",
+            &GroupHistoryPage {
+                items: vec![item("s1", "text", "你好", 1, 1)],
+                files: vec![],
+            },
+        )
+        .unwrap();
         let conv = get_conversation(&conn, "group:g1").expect("会话行要由聊天活动建出来");
         assert_eq!(conv.unread, 0, "同步来的历史不该变成一排未读红点");
         assert_eq!(conv.last_msg.as_deref(), Some("你好"));
+        assert_eq!(
+            conv.last_ts,
+            Some(1),
+            "末条时间必须是那条消息自己的 ts：写 now 就是把一趟历史同步伪装成刚发生的活动"
+        );
 
-        // 现场二：会话已存在且排在更靠前（把它的时间戳压到 5，比"现在"早得多），
-        // 再同步一条历史不许挪动它
+        // 现场二：会话行已经存在，且手里挂着一格陈旧摘要 + 一条真未读。
         let set = conn
-            .execute("UPDATE conversations SET last_ts = 5, updated_at = 5 WHERE id='group:g1'", [])
+            .execute(
+                "UPDATE conversations SET last_msg='陈年旧事', last_ts=9, unread=3 WHERE id='group:g1'",
+                [],
+            )
             .unwrap();
-        assert_eq!(set, 1, "夹具必须真的改到那一行，否则下面的断言是在判一次空写");
-        let page2 = GroupHistoryPage {
-            items: vec![GroupHistoryItem {
-                msg_id: "s2".into(),
-                sender_id: "b".into(),
-                kind: "text".into(),
-                content: "第二条".into(),
-                ts: 2,
-                seq: 2,
-                mention_targets: None,
-            }],
+        assert_eq!(
+            set, 1,
+            "夹具必须真的改到那一行，否则下面的断言是在判一次空写"
+        );
+        let st = apply_group_history_page(
+            &conn,
+            "g1",
+            "me",
+            "群",
+            &GroupHistoryPage {
+                items: vec![item("s2", "text", "第二条", 2, 2)],
+                files: vec![],
+            },
+        )
+        .unwrap();
+        assert_eq!(st.inserted, 1);
+        let after = get_conversation(&conn, "group:g1").unwrap();
+        assert_eq!(
+            after.last_msg.as_deref(),
+            Some("第二条"),
+            "已有会话行也要把末条摘要挪到补齐后的真实末条（审计 A1）"
+        );
+        assert_eq!(
+            after.last_ts,
+            Some(2),
+            "排序键跟着真实末条走，同样不许写成同步时刻"
+        );
+        assert_eq!(
+            after.unread, 3,
+            "补齐一格未读都不许加：新未读只能由实时投递那一条路径产生"
+        );
+    }
+
+    /// 补齐**更早**的历史不动末条 / 重复补齐幂等 / 群任务卡片按 `[任务] …` 进摘要 /
+    /// 静默事件（回应）不当末条 —— 审计 A1 余下四条要求一次判完。
+    ///
+    /// 夹具把 `seq` 与 `ts` 刻意拧着种（时间线按 `seq` 排 ⇒ 摘要必须跟着 `seq` 那份顺序）：
+    /// 写反成"按 ts 取末条"，第一条断言就红。
+    #[test]
+    fn the_head_follows_the_logical_clock_and_ignores_silent_rows() {
+        let conn = mem();
+        ensure_conversation(&conn, "group:g1", "group", "群", None).unwrap();
+        // 本机实时路径已经握着 seq=9 这条（它的 ts 比后面要补的页里所有行都晚）。
+        insert_message(&conn, &rec("live", 9, 90_000, "text", "本机最新")).unwrap();
+        let head = |conn: &Connection| {
+            let c = get_conversation(conn, "group:g1").unwrap();
+            (c.last_msg, c.last_ts, c.unread)
+        };
+        let page = |rows: Vec<(&str, &str, &str, i64, i64)>| GroupHistoryPage {
+            items: rows
+                .into_iter()
+                .map(|(msg_id, kind, content, ts, seq)| GroupHistoryItem {
+                    msg_id: msg_id.into(),
+                    sender_id: "a".into(),
+                    kind: kind.into(),
+                    content: content.into(),
+                    ts,
+                    seq,
+                    mention_targets: None,
+                })
+                .collect(),
             files: vec![],
         };
-        let st = apply_group_history_page(&conn, "g1", "me", "群", &page2).unwrap();
-        assert_eq!(st.inserted, 1);
-        let after = conn
-            .query_row("SELECT last_ts, updated_at FROM conversations WHERE id='group:g1'", [], |r| {
-                Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?))
-            })
-            .unwrap();
-        assert_eq!(after, (5, 5), "已有会话行的时间戳不许被历史同步挪动");
+
+        // ① 补一页全都比 seq=9 早的历史：末条与时间都不许动（真实末条还是"本机最新"）。
+        apply_group_history_page(
+            &conn,
+            "g1",
+            "me",
+            "群",
+            &page(vec![
+                ("b1", "text", "更早的一条", 10, 3),
+                ("b2", "file", "{\"name\":\"a.pdf\"}", 20, 4),
+            ]),
+        )
+        .unwrap();
+        assert_eq!(
+            head(&conn),
+            (Some("本机最新".into()), Some(90_000), 0),
+            "补进来的历史比现状更早 ⇒ 列表那一行一个字都不该变"
+        );
+
+        // ② 同一页再跑一遍（重复补齐）：一条不新增，那一行照样不动。
+        let again = apply_group_history_page(
+            &conn,
+            "g1",
+            "me",
+            "群",
+            &page(vec![
+                ("b1", "text", "更早的一条", 10, 3),
+                ("b2", "file", "{\"name\":\"a.pdf\"}", 20, 4),
+            ]),
+        )
+        .unwrap();
+        assert_eq!(
+            (again.inserted, again.duplicate),
+            (0, 2),
+            "重复页要全判成 duplicate"
+        );
+        assert_eq!(
+            head(&conn),
+            (Some("本机最新".into()), Some(90_000), 0),
+            "重复补齐必须幂等：错预览/错排序就是这么造出来的"
+        );
+
+        // ③ 群任务卡片当末条：预览用 `preview_text` 那一份口径（`[任务] 标题`），
+        //    时间用卡片自己的 ts。
+        apply_group_history_page(
+            &conn,
+            "g1",
+            "me",
+            "群",
+            &page(vec![(
+                "t1",
+                "todo",
+                "{\"todo_id\":\"t1\",\"title\":\"买牛奶\",\"number\":7,\"status\":\"open\"}",
+                5_000,
+                10,
+            )]),
+        )
+        .unwrap();
+        assert_eq!(
+            head(&conn),
+            (Some("[任务] 买牛奶".into()), Some(5_000), 0),
+            "群任务也是真实末条：摘要要按卡片口径显示，排序按它自己的时间"
+        );
+
+        // ④ 只有静默事件的一页（表情回应）：行要落库，但那一条**不能**当末条。
+        let silent = apply_group_history_page(
+            &conn,
+            "g1",
+            "me",
+            "群",
+            &page(vec![(
+                "r1",
+                "reaction",
+                "{\"target\":\"t1\",\"emoji\":\"[赞]\",\"add\":true}",
+                6_000,
+                11,
+            )]),
+        )
+        .unwrap();
+        assert_eq!(silent.inserted, 1, "夹具没落库的话下面那条断言就是在判空写");
+        assert_eq!(
+            head(&conn),
+            (Some("[任务] 买牛奶".into()), Some(5_000), 0),
+            "静默事件不改会话摘要（与实时接收那一臂同判据），未读也一格不动"
+        );
     }
 
     /// 群文件台账：缺的行补上（status 是本机的 pending，不照抄源机），
@@ -879,7 +1047,10 @@ mod group_history_db_tests {
         };
         let st = apply_group_history_page(&conn, "g1", "me", "群", &page).unwrap();
         assert_eq!(st.files, 1, "只补缺的那一条（t2）");
-        assert_eq!(st.files_skipped, 1, "认不上身份的那一条要数得出来，不许静默吞掉");
+        assert_eq!(
+            st.files_skipped, 1,
+            "认不上身份的那一条要数得出来，不许静默吞掉"
+        );
         assert!(
             crate::db::get_group_file(&conn, "t3").is_none(),
             "退群那一台的身份不许被我们替他造出来"
@@ -888,11 +1059,16 @@ mod group_history_db_tests {
         assert_eq!(kept.size, 1, "本机那一行不许被源机的覆盖");
         assert_eq!(kept.status, "sending");
         let seeded = crate::db::get_group_file(&conn, "t2").unwrap();
-        assert_eq!(seeded.status, "pending", "补的行是本机自己的起点，不照抄源机终态");
+        assert_eq!(
+            seeded.status, "pending",
+            "补的行是本机自己的起点，不照抄源机终态"
+        );
         assert_eq!(seeded.created_at, 4, "创建时间用源机那一条，文件列表按它排");
         // 不造 recipient 名册：那是"这台算不算种子/还欠谁"，替别人写就是伪造投递记录
         let n: i64 = conn
-            .query_row("SELECT COUNT(*) FROM group_file_recipients", [], |r| r.get(0))
+            .query_row("SELECT COUNT(*) FROM group_file_recipients", [], |r| {
+                r.get(0)
+            })
             .unwrap();
         assert_eq!(n, 0);
     }
@@ -916,7 +1092,9 @@ mod group_history_db_tests {
         };
         apply_group_history_page(&conn, "g1", "me", "群", &page).unwrap();
         let kind: String = conn
-            .query_row("SELECT kind FROM messages WHERE msg_id='s1'", [], |r| r.get(0))
+            .query_row("SELECT kind FROM messages WHERE msg_id='s1'", [], |r| {
+                r.get(0)
+            })
             .unwrap();
         assert_eq!(kind, crate::protocol::KIND_RECALLED);
     }
@@ -961,7 +1139,11 @@ mod group_history_db_tests {
             mention_targets: None,
         };
         let page = GroupHistoryPage {
-            items: vec![mk("bubble", 50, "text"), mk("task", 60, "todo"), mk("ann", 70, "announcement")],
+            items: vec![
+                mk("bubble", 50, "text"),
+                mk("task", 60, "todo"),
+                mk("ann", 70, "announcement"),
+            ],
             files: vec![],
         };
         let st = apply_group_history_page(&conn, "g1", "me", "群", &page).unwrap();
