@@ -53,9 +53,20 @@ function collectRustFiles(dir: string, out: string[] = []): string[] {
   for (const entry of readdirSync(dir, { withFileTypes: true })) {
     const full = join(dir, entry.name);
     if (entry.isDirectory()) collectRustFiles(full, out);
-    else if (entry.name.endsWith(".rs")) out.push(full);
+    else if (entry.name.endsWith(".rs") && !isTestSourceFile(entry.name)) out.push(full);
   }
   return out;
+}
+
+/**
+ * 测试分册不算「后端在发」。
+ *
+ * 判据是「每个 Rust 事件都有前端消费者」——只有生产码会发事件。而测试里常有
+ * `assert!(!body.contains("emit("))` 这类**字符串断言**，正则从字符串里会截出假事件名
+ * （2026-10-31 A10 加的那条就截出过 `'), '`，把整步前端测试判红）。
+ */
+function isTestSourceFile(name: string): boolean {
+  return name === "lib_tests.rs" || name === "tests.rs" || name.endsWith("_tests.rs");
 }
 
 /** Rust 侧 `const NAME: &str = "value";` 的映射（事件名常用常量）。 */
@@ -142,6 +153,24 @@ test("事件扫描器不被注释骗，也不误伤代码（含串内 // 与生�
   assert.ok(
     raw.some((x) => x !== undefined && x.startsWith("phantom-")),
     "夹具失效：不剥注释时扫不到任何 phantom-* ⇒ 样例里的假形态该补回来了",
+  );
+});
+
+test("事件扫描的扫描面只含生产码：测试分册里的 `contains(\"emit(\")` 不许被当成发送", () => {
+  // 正向：这三类分册名必须被认成测试
+  for (const n of ["lib_tests.rs", "tests.rs", "lib_friend_identity_tests.rs"]) {
+    assert.equal(isTestSourceFile(n), true, `${n} 是测试分册，应当排除`);
+  }
+  // 反向：生产码不许被误排除（否则扫描面缩水、真正没人听的 emit 就漏了）
+  for (const n of ["lib.rs", "transport.rs", "gossip.rs"]) {
+    assert.equal(isTestSourceFile(n), false, `${n} 是生产码，不许排除`);
+  }
+  // 真实树：当前扫描面一个测试分册都不许有（2026-10-31 就是 `'), '` 从测试串里冒出来的）
+  const scanned = collectRustFiles(RUST_SRC).map((f) => f.split("/").pop() ?? "");
+  assert.deepEqual(
+    scanned.filter((n) => isTestSourceFile(n)),
+    [],
+    "扫描面混进了测试分册：里面的 `contains(\"emit(\")` 会被正则截成假事件名",
   );
 });
 
