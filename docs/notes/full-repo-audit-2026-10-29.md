@@ -1497,6 +1497,37 @@ STB-04 半条（非好友分支广播后直接 return，无撤销登记 —— *
 - **掉电通知三档**：读回失败（-1）≠「没提上去」⇒ `DB_DURABILITY_UNKNOWN`；`>=2`（含 EXTRA）才算提上去。
 - **文档边界**：不剥离内联 `#[cfg(test)]`（当前 0 命中），红时先看归属。
 
+### 4.0bf v5.15.74 发布事实与三条「本机不可验证」的具名遗留
+
+**A. 版本身份**
+
+| 项 | 值 |
+|---|---|
+| 提交 | `c82e96f1`（fix(guards)：发版前 review 四处 `[plan]`） |
+| 附注 tag | `v5.15.74` → `ee84d409` |
+| 资产 | **17** 个（APK 2 + sha256 2 + app.tar.gz 2 + sig 2 + dmg 2 + setup 4 + sig 2 + latest.json） |
+| `latest.json` | version 5.15.74；darwin-aarch64 / darwin-x86_64 / windows-x86_64 / windows-aarch64 四平台签名长度 404 / 404 / 420 / 424 |
+| draft / prerelease | false / false；更新说明已手写覆盖；Latest 指针现指向本版 |
+
+**B. 门禁账（本轮实测）**
+
+- `verify:full`：**27 步通过，1227.5s**。比 v5.15.71 那轮（168.4s）长，原因不是卡死：第 26 步
+  「护栏非空转（前端子集）」在本机把一份 LTO 依赖编成了 release 二进制（`/tmp/gs-at-74`，首跑无缓存）。
+- `verify:release`：**4 轮 25 / 23 / 38 / 49 条断言全绿**，226.3s，退出码 0（裸取，不过管道）。
+- release 二进制：`cargo build --release --features bluetooth` 4m48s，退出码 0。
+- 推送后 `c82e96f1` 的 7 条 check-run 全 success；`挂到 GitHub Release` 按既有条件 skipped（非 tag 推送）。
+- tag 拉起的 6 条 workflow（Verify / Build macOS / Build Windows / Build Windows+WebView2 / Build Android APK / Publish updater manifest）全 success。
+
+**C. 三条遗留：都写明「本机不可验证」而不是「已修」**
+
+| # | 事项 | 为什么本机不可验证 | 要什么才能收口 |
+|---|---|---|---|
+| 1 | Windows 渲染层 11 分钟零心跳（任务 #23） | 需 Windows 真机复现；本机无 WebView2 | 那台机器上 `tree_cpu=<ms>/<窗口s>` 那一行（`<窗口s>` 与 `<ms>` 同量级 ⇒ 卡死；差几个数量级 ⇒ 挂起） |
+| 2 | 群侧盘满端到端 | 判据只钉到形状层（条件按码判/支内删/三态日志/值判据），真写满盘 + 群多跳链路没跑过 | 一块能写满的卷 + 三个实例；macOS 可用 `hdiutil` 造小卷近似，但盘满错误码路径与 Windows 不同 |
+| 3 | 盘满删除时接收器句柄仍开着（Windows） | 依赖 Win32 共享语义（std 打开含 `FILE_SHARE_DELETE`），本机文件系统不这样判 | Windows 上「删 `.part` 返回共享冲突」的真日志 |
+
+前两条已在 §4.0bb-E 登记；本节把措辞从「等日志」改成**可执行的判读规则**，避免下次又被当成待办重开。
+
 ### 4.1 已核查且未发现问题的稳定性面
 
 - **锁顺序**：全仓无 `peers↔db` 嵌套；`file_receivers→db` 顺序成立。
