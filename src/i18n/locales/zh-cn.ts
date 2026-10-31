@@ -170,6 +170,7 @@ export const zhCN: MessageDict = {
   "settings.clear.item.identity": "设备身份与加密密钥",
   "settings.clear.item.profile": "昵称、头像与所有设置",
   "settings.clear.item.otherDevices": "其他设备上的聊天记录",
+  "settings.clear.item.favorites": "收藏（含收藏里的文件副本）",
   "settings.clear.note": "清除后收到的新消息仍会正常接收。",
 
   // ---- 设置页操作 toast ----
@@ -415,7 +416,7 @@ export const zhCN: MessageDict = {
   // ---- 安全 ----
   "settings.security.e2ee": "端到端加密（E2EE）",
   "settings.security.e2ee.desc":
-    "所有单聊与群聊消息在发送前经 X25519 密钥交换 + ChaCha20-Poly1305 加密，中继节点只透传密文、无法查看内容；聊天窗口顶部的锁形标识实时显示该状态。发送前需获取对方公钥（对方上线后自动同步）。",
+    "所有单聊与群聊消息在发送前经 X25519 密钥交换 + ChaCha20-Poly1305 加密，中继节点只透传密文、无法查看内容。聊天窗口顶部**没有**常驻的加密徽标；可核对的入口是好友资料页的「安全码」——两边读出同一串即证明双方握着同一对密钥。解密失败时会在会话里以系统消息提示（消息不会静默丢失）。发送前需获取对方公钥（对方上线后自动同步）。",
   "settings.security.enabled": "已启用",
 
   // ---- 关于 ----
@@ -1032,7 +1033,7 @@ export const zhCN: MessageDict = {
   "group.confirmTransfer.title": "转让群主",
   "group.confirmLeave.title": "退出群聊",
   "group.confirmTransfer.body": "确定把群主转让给「{name}」吗？转让后你将失去改名、添加与移除成员的权限。",
-  "group.confirmLeave.body": "确定退出「{name}」吗？本机将删除该群的聊天记录，需要重新被拉入才能恢复。",
+  "group.confirmLeave.body": "确定退出「{name}」吗？本机会删除这个群的：群消息（含群任务、公告、置顶、表情回应与撤回记录）、群文件与收发记录、已读与回执统计、历史同步进度，以及这个群本身和它的会话。需要重新被拉入才能恢复。",
   "group.toast.added": "已将 {name} 加入群聊",
   "group.toast.addFail": "加入群聊失败",
   "group.toast.removed": "已将 {name} 移出群聊",

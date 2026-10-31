@@ -301,6 +301,33 @@ test("清空数据必须广播（回归：设置里清了聊天记录，主界�
   );
 });
 
+test("普通清理不得删收藏，且确认界面必须把收藏列在『不受影响』里（审计 A3）", () => {
+  const src = readCommandsSrc();
+  const at = src.indexOf("pub async fn clear_all_data");
+  assert.ok(at > 0, "找不到 clear_all_data");
+  // 函数体只取到下一条命令为止 —— 同一个文件里 `add_favorite` / `remove_favorite`
+  // 合法地写着 favorites，切到文件末尾会让这条判据永远红或永远绿（取决于谁先命中）。
+  const next = src.indexOf("#[tauri::command", at + 1);
+  const body = stripRustComments(src.slice(at, next > at ? next : undefined));
+  // 阳性对照：先证明这段切片里真的看得见清库清单，再谈"里面没有 favorites"。
+  // 少了这一格，切片写错（空串）会让下面两条 doesNotMatch 全部白过。
+  assert.match(body, /"messages"/, "切片没拿到 clear_all_data 的删表清单，判据在空转");
+  assert.match(body, /"content_transfers"/, "切片在 content_transfers 之前就被截断了");
+  assert.doesNotMatch(body, /"favorites"/, "普通清理的删表清单里不许出现 favorites 表");
+  assert.doesNotMatch(body, /favorites_dir/, "普通清理不许再整份清掉收藏副本目录");
+  // 界面口径必须一起改：确认框的"不受影响"那一栏要真的列出收藏（两种语言都要）
+  const zh = readFileSync(join(ROOT, "src", "i18n", "locales", "zh-cn.ts"), "utf8");
+  const en = readFileSync(join(ROOT, "src", "i18n", "locales", "en-us.ts"), "utf8");
+  const panel = readFileSync(join(ROOT, "src", "components", "settings", "ResetSection.vue"), "utf8");
+  assert.match(zh, /"settings\.clear\.item\.favorites"/, "zh-cn 少了收藏那条『不受影响』");
+  assert.match(en, /"settings\.clear\.item\.favorites"/, "en-us 少了收藏那条『不受影响』");
+  assert.match(
+    panel,
+    /settings\.clear\.item\.otherDevices[\s\S]{0,160}settings\.clear\.item\.favorites/,
+    "收藏没有渲染在确认框的『不受影响』那一栏里（用户看不到，就等于没告知）",
+  );
+});
+
 test("settingsDirty 那套回灌守卫不得复活（发起窗口已收不到自己的事件）", () => {
   const store = readFileSync(join(ROOT, "src", "stores", "useAppStore.ts"), "utf8");
   // 只认"真的用了"（赋值/调用），注释里提到名字不算 —— 说明为什么删掉的那段注释本身也有价值

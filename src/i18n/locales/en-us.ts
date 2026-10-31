@@ -176,6 +176,7 @@ export const enUS: MessageDict = {
   "settings.clear.item.identity": "Device identity and encryption keys",
   "settings.clear.item.profile": "Nickname, avatar, and all settings",
   "settings.clear.item.otherDevices": "Chat history on other devices",
+  "settings.clear.item.favorites": "Favorites (including their file copies)",
   "settings.clear.note": "New messages received after clearing will still arrive normally.",
 
   // ---- Settings toasts ----
@@ -416,7 +417,7 @@ export const enUS: MessageDict = {
   // ---- Security ----
   "settings.security.e2ee": "End-to-End Encryption (E2EE)",
   "settings.security.e2ee.desc":
-    "All one-on-one and group messages are encrypted with X25519 key exchange + ChaCha20-Poly1305 before sending; relay peers only pass ciphertext and cannot read the content. The lock indicator at the top of the chat window shows this state in real time. The recipient's public key is fetched before sending (synced automatically when they come online).",
+    "All one-on-one and group messages are encrypted with X25519 key exchange + ChaCha20-Poly1305 before sending; relay peers only pass ciphertext and cannot read the content. There is no persistent lock badge in the chat header; the verifiable surface is the **safety code** on the friend profile page — when both sides read the same code, they hold the same key pair. The recipient's public key is fetched before sending (synced automatically when they come online).",
   "settings.security.enabled": "Enabled",
 
   // ---- About ----
@@ -1007,7 +1008,7 @@ export const enUS: MessageDict = {
   "group.confirmTransfer.title": "Transfer Ownership",
   "group.confirmLeave.title": "Leave Group",
   "group.confirmTransfer.body": "Transfer ownership to \"{name}\"? You'll lose the ability to rename and manage members.",
-  "group.confirmLeave.body": "Leave \"{name}\"? This device will delete the group chat history; you'll need to be re-added to restore it.",
+  "group.confirmLeave.body": "Leave \"{name}\"? This device will delete this group's messages (including group tasks, announcements, pins, reactions and recall records), group files and transfer records, read/receipt stats, history-sync progress, and the group itself with its conversation. You'll need to be re-added to restore it.",
   "group.toast.added": "Added {name} to the group",
   "group.toast.addFail": "Failed to add to group",
   "group.toast.removed": "Removed {name} from group",

@@ -554,8 +554,12 @@ pub async fn clear_all_data(
         "group_recalled_messages",
         "group_members",
         "groups",
-        // 收藏也是"聊天数据"：用户点「清除数据」就是要清干净，留下记录只会变成打不开的条目。
-        "favorites",
+        // 收藏**不在**这份清单里（用户 2026-10-31 决策：普通清理不得删收藏）。
+        // 旧注释写的是"收藏也是聊天数据，点清除就是要清干净"——那条口径已被明确推翻：
+        // 收藏是用户主动挑出来要留的东西，而「清除聊天数据」的确认界面里从来没有它，
+        // 于是"删了但没说"（审计 A3/F-CLR-01）。要删收藏必须走独立、明确、有告知的操作。
+        // 收藏条目自带 `content` 快照与 `media_path` 副本（见 `db.rs` 的 favorites 表），
+        // 不依赖 `messages` 行存活 ⇒ 删消息不影响收藏可读；副本目录也照旧保留。
         // 内容台账（按 cid 的完整字节）：`find_source` 的判据是"path 非空" ⇒ 残留行会让本机
         // 在清完之后**继续对外宣称持有那个 cid**（别人来拉、我们还能当种子）。审计 review 抓到：
         // 这张表建在 `content/store.rs`，清库清单按 `db.rs` 数表时**看不见它**。
@@ -636,10 +640,10 @@ pub async fn clear_all_data(
     // 3. 文件系统清理（DB commit 成功后执行）
     //    收集错误而非立即返回，避免文件清理失败伪装成"整个操作失败"。
     //    ⚠️ INV-P34：整棵树删除是**按数据量**的慢活 —— `downloads_dir` 正是 GB 级接收文件
-    //    落地的地方，收藏目录里装着复制出来的副本。上面那一半库删除**刻意**分批 + 让出调度
+    //    落地的地方。上面那一半库删除**刻意**分批 + 让出调度
     //    （注释里写着用户实测"点「清除数据」→ 设置窗口卡死、点不动"），这一半原先却就地做，
     //    形状与 4.39.3~4.40.5 修掉的那一族相同：本应用只有一个 tokio runtime，所有开窗命令
-    //    与它同池。这里交出的只有**执行上下文**：删的还是那三个目录（同一顺序）、
+    //    与它同池。这里交出的只有**执行上下文**：删的还是那两个目录（同一顺序）、
     //    `read_dir` 失败仍按原口径立即向上报 Err、错误仍在末尾收成同一条 Err。
     let cache_dir = s.cache_dir.clone();
     let downloads_dir = {
@@ -648,13 +652,12 @@ pub async fn clear_all_data(
             .unwrap_or_else(|e| e.into_inner())
             .clone()
     };
-    let favorites_dir = s.favorites_dir.clone();
     let fs_errors: Vec<String> = tokio::task::spawn_blocking(move || {
         let mut v = clear_dir_contents(&cache_dir, "cache_dir")?;
         v.extend(clear_dir_contents(&downloads_dir, "downloads_dir")?);
-        // 收藏目录不在 media_dirs 里、也不受存储清理影响（那正是它存在的意义），
-        // 所以必须在这里**显式**清 —— 否则收藏记录删了、副本文件会永远留在磁盘上。
-        v.extend(clear_dir_contents(&favorites_dir, "favorites_dir")?);
+        // 收藏目录**不再**在这里清（用户 2026-10-31 决策，审计 A3）：上面已经不动 `favorites`
+        // 表了，再删目录就会留下"有记录、副本没了"的收藏——比原来"整族被删"更难解释。
+        // 收藏目录只由收藏自己的删除路径（`remove_favorite` 等）负责。
         Ok::<Vec<String>, String>(v)
     })
     .await

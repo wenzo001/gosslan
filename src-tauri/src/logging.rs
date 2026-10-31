@@ -710,7 +710,28 @@ fn last_run_slice(lines: &[String]) -> &[String] {
         .iter()
         .rposition(|l| l.starts_with("----- 启动 "));
     // 从**上一轮的启动行本身**开始切：版本/时刻就写在那一条上。
-    let start = prev.unwrap_or(0);
+    let start = match prev {
+        Some(i) => i,
+        None => {
+            // 前面没有任何启动行 ⇒ 两种形状在"标记数量"上同形，只能靠 bootstrap 行里的
+            // `pid=` 分开（写它的地方见 `lib.rs` 的 crash-bootstrap）：
+            //  · 只有**本进程**的启动尝试 ⇒ 那是本轮自己的早期痕迹（全新安装 / 现场文件被清）
+            //    ⇒ 空切片 ⇒ `NoHistory` ⇒ 不弹横幅。审计 A5 的实测现场：全新 HOME 首启
+            //    曾被判成 `BOOT_PREV_SILENT_KILL`，新用户第一眼就看到"上次运行异常退出"。
+            //  · 有**别的 pid**（或旧版本没带 pid 的）启动尝试 ⇒ 上一轮真的死在 `Logger::new`
+            //    之前（被单实例守卫顶掉 / 崩在初始化前）⇒ 照旧交给分类器判 `SilentKill`，
+            //    这条检测能力不许被上一条一起抹掉（用户 2026-10-31 明确要求"不得简单屏蔽"）。
+            let own = format!("pid={}", std::process::id());
+            let foreign_bootstrap = lines[..current]
+                .iter()
+                .any(|l| l.starts_with(">>> 启动尝试") && !l.contains(&own));
+            if foreign_bootstrap {
+                0
+            } else {
+                return &[];
+            }
+        }
+    };
     &lines[start..current]
 }
 
@@ -2004,6 +2025,61 @@ mod tests {
         );
         // 反向：空输入仍是"首次运行/被清档"，不许被上面那条改写成异常终止
         assert_eq!(classify_previous_exit(&mk(&[])), PreviousExit::NoHistory);
+    }
+
+    /// 审计 A5（2026-10-31 隔离 HOME 实跑复现）：全新安装首启曾被判成 `silent_kill`，
+    /// 于是新用户第一眼就看到「上次运行异常退出」——而那次安装之前根本没有任何运行。
+    /// 修法是给 bootstrap 那行带上 `pid=`，用归属把"本轮自己的早期痕迹"和
+    /// "上一轮死在 `Logger::new` 之前"分开（写入点见 `lib.rs` 的 crash-bootstrap）。
+    /// **三格一起钉**：只钉第一格等于允许后人"顺手把横幅整个关掉"。
+    #[test]
+    fn first_run_is_no_history_while_a_foreign_bootstrap_still_reads_silent_kill() {
+        let own = format!("pid={}", std::process::id());
+        let crash = std::path::Path::new("crash.log");
+        let dir = std::path::Path::new(".");
+        let marker = "----- 启动 2026-10-31 06:00:00 版本 5.15.75".to_string();
+
+        // ① 全新安装：文件里只有本轮的启动尝试 + 本轮的启动标记 ⇒ 根本不存在"上一轮"
+        let fresh = vec![
+            format!(">>> 启动尝试：进程已起，logger 尚未建立 {own}"),
+            marker.clone(),
+        ];
+        assert!(
+            last_run_slice(&fresh).is_empty(),
+            "首启不许切出任何『上一轮』内容，实得 {:?}",
+            last_run_slice(&fresh)
+        );
+        assert_eq!(
+            build_previous_run_report(&fresh, crash, dir).kind,
+            "no_history",
+            "首启必须是 no_history（`shouldShowCrashNotice` 对它返回 false）"
+        );
+
+        // ② 上一轮真的死在 logger 之前（启动尝试行是**别的 pid**）⇒ 检测能力必须留着
+        let dead = vec![
+            ">>> 启动尝试：进程已起，logger 尚未建立 pid=999999".to_string(),
+            marker.clone(),
+        ];
+        assert!(
+            !last_run_slice(&dead).is_empty(),
+            "外来的启动尝试必须仍被切成『上一轮』，否则静默死亡再也读不到"
+        );
+        assert_eq!(
+            build_previous_run_report(&dead, crash, dir).kind,
+            "silent_kill",
+            "真·早期死亡不许被降级成 no_history"
+        );
+
+        // ③ 旧版本留下的现场文件（那一行没有 pid）⇒ 按"外来"处理，与改动前逐字同形
+        let legacy = vec![
+            ">>> 启动尝试：进程已起，logger 尚未建立".to_string(),
+            marker,
+        ];
+        assert_eq!(
+            build_previous_run_report(&legacy, crash, dir).kind,
+            "silent_kill",
+            "读不到 pid 时不许猜成『本轮自己』"
+        );
     }
 
     /// 10-21 真机现场：`>>> 重分配失败：请求 326350 字节 … ⇒ 分配器即将 abort`。
