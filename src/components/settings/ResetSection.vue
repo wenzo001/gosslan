@@ -123,6 +123,7 @@ async function doClearAllData() {
         <li>· {{ t("settings.clear.item.identity") }}</li>
         <li>· {{ t("settings.clear.item.profile") }}</li>
         <li>· {{ t("settings.clear.item.otherDevices") }}</li>
+        <li>· {{ t("settings.clear.item.favorites") }}</li>
       </ul>
       <p class="text-xs text-[var(--gosslan-text-2)]">{{ t("settings.clear.note") }}</p>
     </ConfirmDialog>

@@ -13,6 +13,39 @@
 
 ## [Unreleased]
 
+## [5.15.75] - 2026-10-31
+
+### 第三轮审计·第一批：首启误报 / 清库误删收藏 / 退群文案 / 安全口径（A5 A3 A6 A8）
+
+1. **A5 全新安装首启不再谎报「上次运行异常退出」**：`logging::last_run_slice` 在"前面没有任何
+   启动标记"时把**本轮自己的** bootstrap 行切成"上一轮"，于是 `classify_previous_exit` 落到
+   `SilentKill`，新用户装机第一眼就是"你上次崩了"。修法不是放宽判定，而是给 bootstrap 那行
+   带上 `pid=`（`lib.rs` crash-bootstrap），切片时按归属分开两种同形形状：只有本进程的痕迹 ⇒
+   `NoHistory`（`shouldShowCrashNotice` 对它返回 false，不弹横幅）；有别的 pid（或旧版本没带
+   pid 的）痕迹 ⇒ 照旧 `SilentKill`，**静默死亡的检测能力一格没丢**。
+2. **A3 普通清理不再删收藏**：`clear_all_data` 的删表清单去掉 `favorites`，同时**不再整份清掉
+   `favorites_dir`**（只删表不删副本会造出"有记录、文件没了"的更坏形态）。前端两条路径同口径：
+   `clearAllData` 与 `resetAfterDataCleared` 都不再清 `favorites` 列表与收藏预览缓存 —— 否则表现是
+   "面板空了、重启又全回来"。确认框的"不受影响"那一栏新增收藏一条（zh/en 双语 + 渲染）。
+   旧注释写的是"收藏也是聊天数据，点清除就是要清干净"，该口径按用户 2026-10-31 决策作废。
+3. **A6 退群确认逐条列出真实删除范围**：原文案只说"删除该群的聊天记录"，而 `db::delete_group`
+   实际删 `messages`（含群任务/公告/置顶/回应/撤回）、`group_files`、`group_file_recipients`、
+   `group_reads`、`pending_group_reads`、`group_recalled_messages`、`file_outbox`、`group_members`、
+   两个 settings 键（清边界 + 历史同步状态）、`groups`、`conversations`。文案按这份清单重写（zh/en），
+   **删除逻辑一字未动**。
+4. **A8 不再宣称界面有"绿锁/锁形标识"**：README 两处与 `settings.security.e2ee.desc`（zh/en）
+   都写着聊天窗口顶部有锁形徽标，而 `ChatHeader.vue` 里没有任何锁/盾元素。改成真实存在的核对入口
+   ——好友资料页的「安全码」（两边一致即同一对密钥）与解密失败的会话内系统提示。**没有新增徽标**
+   （用户本次明确不做），也没有改动任何加密实现。
+
+**新增判据**：`src/api/events.test.ts` 一条 A3 守卫 —— 正向对照（切片里必须看得见 `"messages"`
+与 `"content_transfers"`，防读空了自己绿）+ 两条 doesNotMatch（清单里不许出现 `favorites` 表、
+不许出现 `favorites_dir`）+ 界面口径三条（zh/en 键与渲染位置）。
+**真跑过的验证**：`cargo test --lib -- logging::tests::first_run_is_no_history…` 1 passed / 0 failed；
+`cargo test --lib -- logging::` 44 passed / 0 failed；`cargo fmt --check` 0 差异；
+A3 守卫的变异自证：把 `"favorites"` 塞回清单 ⇒ `node --test src/api/events.test.ts` 退码 1 并点名该条，
+还原后逐字节一致、退码 0（pass 16 / fail 0）。
+
 ## [5.15.74] - 2026-10-31
 
 ### 发版前 review 修掉四处（都在上一版自己新加的两条判据里）

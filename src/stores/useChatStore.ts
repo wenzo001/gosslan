@@ -69,7 +69,6 @@ import {
   type TodoImage,
 } from "@/utils/todos";
 import { invalidateFilePreview, dropFilePreview, clearFilePreviews } from "@/utils/filePreview";
-import { clearFavoritePreviews } from "@/utils/favoritePreview";
 import { t } from "@/i18n";
 import { mergePeerList } from "@/utils/peerMerge";
 import { markFriendsOnlineFrom } from "@/utils/friendOnline";
@@ -1282,9 +1281,8 @@ export const useChatStore = defineStore("chat", () => {
     groupHistorySync.value = {};
     rawPendingRequests.value = [];
     transfers.value = [];
-    // 收藏也随「清除数据」一并清空（后端删了行与副本）：不清的话，面板开着时仍显示
-    // 已删条目，点开只会报"副本已不在本机"。
-    favorites.value = [];
+    // 收藏**不清**（用户 2026-10-31 决策，审计 A3）：后端已经不删 `favorites` 行、
+    // 也不删副本目录，这里清掉内存态就会造出"面板空了、重启又全回来"的假象。
     activeConv.value = null;
     pending = [];  // 后台滞留待冲刷的消息批次（`let pending`，见上）
     // 这三张表存的都是"内存里的过渡态"：库已经清了，留着它们会让后续 flush 给已经不存在的
@@ -1292,10 +1290,9 @@ export const useChatStore = defineStore("chat", () => {
     pendingReplace.clear();
     pendingAcks.clear();
     notifMap.clear();
-    // 预览缓存与 `clearAllData` 同口径整份放掉（含**收藏**那份独立缓存 ——
-    // 上面刚把 `favorites` 清了，它的 objectURL 留着就是纯粹的死字节）。
+    // 预览缓存与 `clearAllData` 同口径：只放掉文件那份。收藏那份随收藏一起保留 ——
+    // 后端既不删 `favorites` 行也不删副本目录，objectURL 指向的文件仍然真实存在。
     clearFilePreviews();
-    clearFavoritePreviews();
     await Promise.all([
       refreshConversations(),
       refreshGroups(),
@@ -2676,9 +2673,9 @@ export const useChatStore = defineStore("chat", () => {
     notifMap.clear();
     // 图片预览缓存整份放掉：库都清了，那些 objectURL 指向的文件已经不存在，
     // 留着就是几 MB～几十 MB 的死字节 + 一堆点了必然裂图的缓存条目。
-    // 收藏那份同理 —— `clear_all_data` 也删收藏行与副本。
+    // 收藏那份**不动**：`clear_all_data` 已经不删收藏行、也不删副本目录（审计 A3），
+    // 这里清掉只会让收藏面板白刷一遍缩略图。
     clearFilePreviews();
-    clearFavoritePreviews();
     void refreshTransfers();
   }
 

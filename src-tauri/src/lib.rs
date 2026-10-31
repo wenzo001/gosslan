@@ -257,9 +257,13 @@ fn crash_bootstrap_plugin<R: tauri::Runtime>() -> tauri::plugin::TauriPlugin<R> 
                     crate::logging::bind_early_crash_file(&crate::logging::crash_file_in(
                         &dir, &stem,
                     ));
-                    crate::logging::crash_note(
-                        "启动尝试：进程已起，logger 尚未建立（bootstrap 已绑定现场路径）",
-                    );
+                    // ★ 带上 pid：这一行是"本轮"还是"上一轮死在 logger 之前"的唯一归属凭据。
+                    // `logging::last_run_slice` 靠它把全新安装从"上次异常退出"里分出来（审计 A5），
+                    // 所以格式里那个 `pid=` 是判据的一部分，不许改名字、也不许只写在这里不写别处。
+                    crate::logging::crash_note(&format!(
+                        "启动尝试：进程已起，logger 尚未建立（bootstrap 已绑定现场路径） pid={}",
+                        std::process::id()
+                    ));
                 }
                 Err(e) => {
                     eprintln!("[gosslan] bootstrap 拿不到 app_data_dir，崩溃现场无法落盘：{e}")
