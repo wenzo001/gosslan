@@ -282,7 +282,7 @@ fn crash_bootstrap_plugin<R: tauri::Runtime>() -> tauri::plugin::TauriPlugin<R> 
 /// 单实例用户（绝大多数）旧版本落盘的那一份照原样读，改名这件事不可能悄悄发生；
 /// 带序号的名字只对新开的实例档出现。
 #[cfg(desktop)] // 插件 crate 在 android/ios 上是空 crate（`#![cfg(not(any(android, ios)))]`）⇒
-// 引用它的 `DEFAULT_FILENAME` 只在桌面成立；调用点本来也在 `#[cfg(desktop)]` 块里。
+                // 引用它的 `DEFAULT_FILENAME` 只在桌面成立；调用点本来也在 `#[cfg(desktop)]` 块里。
 fn window_state_filename(instance: u32) -> String {
     if instance == 0 {
         tauri_plugin_window_state::DEFAULT_FILENAME.to_string()
