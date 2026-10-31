@@ -1396,6 +1396,25 @@ STB-04 半条（非好友分支广播后直接 return，无撤销登记 —— *
 - 顺带修一条脆弱判据：`pending_key_rotation_…` 按**字节**切 1500 窗口，中文注释会让边界落在
   多字节字符中间直接 panic；改成按**字符**取窗（这次改注释当场撞到）。
 
+### 4.0az `.ok();` 剩下那 15 处的定论（L2 8 / L3 7，逐行读过）
+
+复跑命令：`node scripts/check-silent-drops.mjs --report`（现读 L1 0 / L2 8 / L3 7）。
+
+| 位置 | 是什么 | 定论 |
+|---|---|---|
+| `commands/files.rs:181` | `canonicalize(favorites_dir).ok()` | **可接受**：折成 None 后走 `Err(OPEN_PATH_UNBOUND)` ⇒ **失败关闭**，不会放行越界路径 |
+| `db.rs:1282` | `create_dir_all(parent)`（开库前） | **可接受**：目录建不出来时紧接着的 `Connection::open` 会以真实错误上抛（`?`） |
+| `db.rs` ×4（1377/1382/1383/1409） | `pragma_update(journal_mode / synchronous / foreign_keys)` | **可接受但记一条可选改进**：失败时用的是 SQLite 默认值（仍安全，只是慢/兼容差异）。想留痕的话塞进 `startup_notices`（现成通道，`state.rs` 会用 logger 落盘）——本轮不做 |
+| `network/file/receive.rs:841`、`state.rs:2079` | `create_dir_all(downloads)` | **可接受**：写文件时会以真实错误失败，且已走 `FILE_RECEIVE_WRITE_FAILED` / `DISK_FULL` 分类 |
+| `db/group_delete_boundary.rs:52/78` | `set_lan_enabled/set_bt_enabled(默认值).ok()` | **可接受**：这是"把默认值持久化"，失败后下次启动重做（幂等），本次返回值不受影响。⚠️ 分类器把它算 L3 是因为它没写 `db::` 前缀（模块内调用），它**本质是写** —— 记录在案，别被 L3 这个名字骗了 |
+| `db/group_history.rs:369` | `observe_clock(conn, …).ok()` | **可接受**：同上（模块内调用被算 L3）；db 层没有 logger 可写，而同一事务里若真写失败，前面的 insert 会先上抛 |
+| `db/messages.rs:1226/1257` | `query_row(..).ok()` 折成 Option | **可接受**：读失败 = "这条没有可补的 sha" ⇒ `fill_message_sha256` 返回 `Ok(false)`（不写坏数据）。是假阴性不是假阳性，代价是补不上而不是补错 |
+| `network/transport/e2ee_payload.rs:104` | 同上（取本机发出的明文） | **可接受**：取不到时走"没有明文"的分支，绝不会把密文当明文用 |
+| `logging.rs:78` | logcat 线程 `spawn(…).ok()` | **可接受**：丢的是 ADB `logcat` 那份副本，主日志另有落盘通道；且此刻没有 logger 可写，`eprintln` 在打包版也没人看 |
+
+**结论**：`.ok();` 这一族到此结案 —— **"托着承诺的写库结果被丢掉"是 0 处**；剩下 15 处各有上表的理由，
+且从今往后由 `scripts/check-silent-drops.mjs` 的棘轮（只降不升）与三条硬零守着，新增一处即红。
+
 ### 4.1 已核查且未发现问题的稳定性面
 
 - **锁顺序**：全仓无 `peers↔db` 嵌套；`file_receivers→db` 顺序成立。
@@ -1550,7 +1569,7 @@ STB-04 半条（非好友分支广播后直接 return，无撤销登记 —— *
 >
 > 现在把它改成**唯一的状态表**：`§1/§2/§3/§6/§7` 各节记的是**审计当时**的发现，今天的状态以本表为准。
 > ⚠️ 诚实边界：本表是**人工对账 + 每行挂复跑命令**，不是机器判据 —— 没有任何脚本断言"这张表与代码一致"
-> （能做这种断言的只有逐行的复跑命令本身）。表里没写的 ID 见 §4.0a～§4.0ay 的复核结论。
+> （能做这种断言的只有逐行的复跑命令本身）。表里没写的 ID 见 §4.0a～§4.0az 的复核结论。
 
 | 序 | ID | 今天的状态 | 凭据 / 复跑 |
 |---|---|---|---|
