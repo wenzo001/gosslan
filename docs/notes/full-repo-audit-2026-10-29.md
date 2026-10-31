@@ -1593,6 +1593,45 @@ STB-04 半条（非好友分支广播后直接 return，无撤销登记 —— *
 - **扫描器的"只扫生产码"要写成判据**：`emit` 扫描器此前把 `_tests.rs` 也算进"后端在发"，而测试里天然会有 `contains("emit(")` 这种**字符串断言**。这次是加一条真实树断言的直接理由。
 - **`git commit -- <path>` 提交的是工作树内容，不是暂存内容**：共享工作树里隔壁有 315 行未提交改动时，用它会把别人的 WIP 一起卷进来（实测发生过一次，已 `reset --soft` 撤回）。正确姿势：先 `git show HEAD:<path>` 造底本、只改自己那几行、`diff` 出单块补丁、`git apply --cached`，再**不带路径** `git commit`。
 
+### 4.0bi #23 现场取证单（Windows 渲染层卡死）：抓哪几行、怎么判
+
+**这一步不需要改代码，只需要把那台机器上的三行日志取回来。** 取证通道现成：
+
+| 取什么 | 在哪 | 为什么是它 |
+|---|---|---|
+| `gosslan-crash.log`（多开是 `gosslan-<n>-crash.log`） | `%APPDATA%\com.gosslan.app\logs\`（`log_dir_in` = `<app_data>/logs`，`crash_file_in` = `<app_data>/logs/<stem>-crash.log`） | 这是**不轮转**的现场文件；`gosslan.log` 超 512 KiB 就转且只留一代，卡死那 20 分钟的走势只有在现场文件里 |
+| `gosslan.log` / `gosslan.old.log` | 同一目录 | 轮转档，补 `.old` 里更早的部分 |
+
+**抓三行**（在 PowerShell 里）：
+
+```powershell
+$d = "$env:APPDATA\com.gosslan.app\logs"
+Select-String -Path "$d\gosslan-crash.log" -Pattern '>>> code=(HANG|RUNTIME_MEM)' |
+  Select-Object -Last 40 | ForEach-Object { $_.Line }
+```
+
+- `>>> code=HANG scope=ui_renderer seconds=… last_op=… last_op_age_s=…` —— 渲染层心跳断了的判定行
+  （阈值 `RENDERER_STALE_MS = 3000`；10 秒时还会弹一次系统通知，`NOTIFY_AT_MS = 10_000`）。
+  `last_op` 是**最后一次执行到的操作名**，`last_op_age_s` 是它距判定时过了多久。
+- `>>> code=HANG scope=main_thread …` —— 主线程卡死（与渲染层是两条独立腿）。
+- `>>> code=RUNTIME_MEM …` —— 每 5 分钟一行，同一行里带 `tree_procs` / `tree_private_commit` /
+  `gdi_objects` / `user_objects` 与 **`tree_cpu=<ms>ms/<窗口s>`**。
+
+**判读（只看 `tree_cpu` 那个比值）**：`tree_cpu_ms ÷ (window_s × 1000)`
+
+| 读数 | 含义 | 下一步 |
+|---|---|---|
+| ≈ 100%（ms ≈ 窗口秒数 × 1000） | JS 主线程在**空转**（死循环 / 线性回溯正则 / 布局环形依赖） | 按 HANG 行里的 `last_op` 定位代码；这片是「卡死」 |
+| 0ms | 整棵树**一个指令都没执行**（进程被挂起，或 WebView2 `ProcessFailed` 后不再驱动它） | 看同一行 `tree_procs` 是否还在、`tree_private_commit` 是否冻住；这片是「挂起」 |
+| 几十 ms | 活着且空闲 —— 问题**不在这棵树** | 去查 `HANG scope=main_thread` 那条腿 |
+
+**顺带看两项泄漏指标**：`tree_procs` 逐格上涨＝渲染进程在增殖；`gdi_objects` / `user_objects`
+只涨不回落＝窗口站/用户对象泄漏（Windows 每进程默认 10 000 上限，到顶就创建不了窗口，
+表现同样是「界面不动」）。
+
+**打包**：整个 `logs\` 目录 + 卡死发生的本地时间 + 当时是否在传大文件（这三件事齐了才能把
+`tree_cpu` 的窗口对齐到具体操作）。把这三样取回来，本条就能一次定型；在那之前**不猜修法**。
+
 ### 4.1 已核查且未发现问题的稳定性面
 
 - **锁顺序**：全仓无 `peers↔db` 嵌套；`file_receivers→db` 顺序成立。
