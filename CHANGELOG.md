@@ -15,8 +15,6 @@
 
 ## [5.15.78] - 2026-10-31
 
-## [Unreleased]
-
 ### 第三轮审计·第二批 A10：好友同意后发起方也建会话
 
 **根因**：同意方在自己的 `accept_friend_request` 里 `ensure_conversation`，而**发起方**那条
