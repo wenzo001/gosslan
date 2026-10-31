@@ -13,6 +13,68 @@
 
 ## [Unreleased]
 
+## [5.15.90] - 2026-10-31
+
+### 第三轮审计·第四批 A9：局域网开关那族读数改到磁盘上真存在的那一行
+
+**根因**（是量具，不是产品）：`scripts/e2e/rounds/lanoff.mjs` 三条腿全在数磁盘日志里的
+`announce_verified: from=<id>`，而这一族心跳在当前构建里**根本不落盘** ——
+`logging::diag_delivery` 把 `announce_verified` / `bc_directed` 判成 `RingOnly`（只进内存环，
+实测 43 分钟会话占 97.5%），`announce_recv` 判成 `Dropped`，而 `logging.rs` 里
+`ring_only_reaches_the_panel_but_never_the_file` 恰恰钉着"这两个不许再落盘"。
+于是 `countLog(磁盘, needle)` 恒为 0：第 ① 格「B 开着时 A 学到过 B」**永远红**，
+症状却长得像"局域网发现坏了"。量具读不到 ≠ 产品失效。
+
+**修法**：只改读数，一行产品码没动。needle 换成同一因果链上**真落盘**的那一行 ——
+`transport::link_state::register_connection` 以 `info("link", "建链 peer=<id> path=… ep=…")`
+写盘，而它只能由 announce → `upsert_peer` → `ensure_link` 拨号成功带到，
+即"学到了并且连上了"的后果。判据形状三条腿一字未动（开着要涨 → 关着一字不涨 → 翻回来又涨），
+反向模式 `--round=lanoff-lie` 照旧只翻期望值。刻意**不钉** `path=lan`：本机双实例可能拿到
+127.0.0.1（分类器会判 routed），钉死路径会红在地址分类上而不是红在开关上；改由第 ③ 格
+把匹配到的原始行一起打出来，红了当场看得见是哪条路径、哪个 peer。
+
+**实测**（release 二进制，两实例真进程）：
+`node scripts/e2e-multi-instance.mjs --round=lanoff` → **26 条断言全绿**（本族 8 条：
+前置绿 / `discovery_started`=0 / 监听口连不上 / 计数一字不涨 / 翻回开又涨 /
+`discovery_started` 又出现 / 开着时连得上 / `tcpOpen` 对空闲口连不上）。
+反向那一趟 `--round=lanoff-lie` → **恰好这一格红，退出码 1**，且红消息里带着真实磁盘行
+`info [link] 建链 peer=gosslan-…-i2 path=lan ep=Tcp(127.0.0.1:56328)`
+⇒ 这条判据读的是真日志行（0==0 那种空转拿不出这行），也证明它能为"该涨没涨/不该涨却涨"报红。
+
+### 同批补上第三批欠下的真实窗口验收（A2 十格 + A7 并发两格）
+
+新增手动验收入口 `scripts/verify-startup-error.mjs`（`launch` / `status` / `stop` / `list` /
+`press` / `clean`）。安全边界按 §七 逐条钉死：每格一个 **`--home` 指向系统临时目录**的独立 HOME
+（数据目录 = `$HOME/Library/Application Support/com.gosslan.app`，实测应用确实按 `$HOME` 解析 ⇒
+真实用户库碰不到）；pid 与 stderr 落在 `APP_DATA` **之外**（perms 那格里日志目录本身建不出来）；
+只 `kill` 自己 spawn 的那个 PID，且动手前用 `ps -o comm=` 核对它就是本仓那份 release 二进制，
+对不上就拒动 ⇒ 全程没有 pkill / 按名字杀进程。三个按钮由既有的无障碍一次性按下
+（`ax-tree.mjs` 的 `pressElement`，匹配不到就 `hitCount:0` 拒猜）。
+
+真机读数（v5.15.89 那份二进制）：
+
+| 格 | 实际看到的行为 |
+|---|---|
+| 正常启动 | `AppState::init 完成` 1 条、零失败行、库被建出来（299008 B） |
+| 库不存在 | 同上（首次启动即新建，不误报：界面上没有「上次运行异常退出」字样） |
+| 数据库权限不足 | 库设成只读+不可变 ⇒ 错误窗出现，文案带 `错误码：DB_OPEN_FAILED` / `SCHEMA_MIGRATE_FAILED`，磁盘写进「启动失败：」1 条 |
+| 暂时不可用（被占） | 另一进程持 `EXCLUSIVE` 锁 ⇒ `database is locked`，同一格错误窗出现；**库文件保持 0 B 没被改** |
+| 库是坏字节 | `file is not a database` 走同一出口；那 1920 B 垃圾字节**原样留着** |
+| 重试成功 | 解掉只读后按「重试」⇒ 同一个 pid 上 `AppState::init 完成` 从 0→1、库补出 schema、错误窗销毁、标题回到 `Gosslan` 且**只有一扇** |
+| 重试失败 | 故障还在时按「重试」⇒「重试仍然失败：」0→1、崩溃便签 1→2 条、窗口与三个按钮原样留着可再点、库仍 0 B |
+| 主动退出 | 按「退出」⇒ 同一 pid 消失（不是"窗口没了进程还在"） |
+| 关后再开 | 权限改回后重启 ⇒ 正常进去，且**没有**把上一轮的启动失败读成"上次运行异常退出"（A5×A2 交叉那一格） |
+| 单实例限制 | `--plain`（真实用户路径）连起两次 ⇒ 第二个进程自行退出、第一个仍在 |
+| 多实例启动 | 同 HOME 下 97/98 两进程同时活着，各写自己的 `gosslan-97.db` / `gosslan-98.db` |
+
+**仍未验证**：A7 那句"分别调整窗口后重启恢复各自状态"里**真拖拽改尺寸**那一格。
+原因写在明处：测试跑的是 `target/release/gosslan` 这个裸二进制，不属于任何 `.app` 包，
+macOS 的自动化只能按 bundle 附着 —— 用 `getApp("Gosslan")` 会去把用户**已装那份**启动起来
+（就是 §七 禁的写操作）；而窗口控件（最小化/最大化）是无障碍名空缺的自绘 div，
+`pressElement` 拿不到 ⇒ 没有任何不碰用户环境就能改几何的手段。文件层面的隔离
+（`.window-state-i{n}.json` 各存各的、实例 0 走插件 `DEFAULT_FILENAME`）由
+`lib_window_tests.rs` 与 `window_state_filename` 那两格判据钉着，已在 A7 提交里。
+
 ## [5.15.89] - 2026-10-31
 
 ### 第三轮审计·第三批 A2：数据库打不开时给一扇能重试的错误窗口
@@ -61,9 +123,10 @@ URL 数下限 4→5（并把新文档/新入口成对钉住）、`docs/domains.d
 （`check-key-boundary.mjs`：注册表 166 条 / 命令体 174 个函数），`mapContract.test.ts` 的
 注册表解析器补认 `startup_error::` 前缀（它原先只认 `commands::`，于是四条已注册的命令被报成缺件）。
 
-**尚未验证**：真实窗口的十格（正常启动 / 库不存在 / 权限不足 / 暂时不可用 / 重试成功 /
-重试失败 / 主动退出 / 单实例 / 多实例 / 关后再开）需要 release 产物 + 桌面 GUI 会话，
-与 A7 共用一趟跑（隔离 HOME、精确 PID）。
+**尚未验证**（写在这里，本批已被真机验收补掉）：真实窗口的十格（正常启动 / 库不存在 / 权限不足 /
+暂时不可用 / 重试成功 / 重试失败 / 主动退出 / 单实例 / 多实例 / 关后再开）需要 release 产物 +
+桌面 GUI 会话，与 A7 共用一趟跑（隔离 HOME、精确 PID）。
+→ 这十格的实测读数在下一节「同批补上第三批欠下的真实窗口验收」里逐格列出来了（第四批 A9 那一趟）。
 
 ## [5.15.79] - 2026-10-31
 
