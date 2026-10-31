@@ -4330,6 +4330,10 @@ const DOM_ONE_SHOT_FILES: { file: string; who: string }[] = [
   { file: "boot/boot.ts", who: "启动期全局错误上报与 boot 卸载：早于任何组件，活到窗口关闭" },
   { file: "i18n/index.ts", who: "系统语言变化监听：模块单例，一份窗口一个" },
   { file: "composables/useBackLayer.ts", who: "popstate 由 installed 旗标保证全窗只挂一次" },
+  {
+    file: "entries/startup-error.ts",
+    who: "启动失败窗的三个按钮：这扇文档只活到用户点「重试成功」或「退出」，没有第二次挂载，也没有长跑（审计 A2）",
+  },
 ];
 
 function auditDomListeners(code: string): {

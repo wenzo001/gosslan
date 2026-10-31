@@ -1,0 +1,59 @@
+<!doctype html>
+<!-- 启动失败时的那扇独立错误窗口（桌面端，label="startup-error"，审计 A2）。
+     刻意**不**加载主界面那套（index.html + 全部 store/事件监听）：这扇窗出现的时刻
+     数据库根本没打开，任何依赖 state 的代码都只会再失败一次。这里只有静态文档 +
+     一个只调四个命令的入口脚本。 -->
+<html
+  lang="zh-CN"
+  class="boot-startup-error"
+  data-title-zh="小院儿 · 启动失败"
+  data-title-en="Gosslan · Startup Failed"
+>
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Startup Failed</title>
+    <!-- 主题首帧 / 骨架样式：与其余窗口共用同一份（见 windowEntries 守卫）。
+         这扇窗是"报错用的"，所以骨架必须在文案到位后被撤掉 —— 入口自己调 dismissBoot，
+         撤不掉的话就是一张 fixed 遮罩永远盖着错误原因（预览窗口踩过同一形）。 -->
+    <!-- GOSSLAN_THEME_BOOT -->
+    <!-- GOSSLAN_BOOT_GUARD -->
+    <!-- GOSSLAN_SKELETON_CSS -->
+  </head>
+  <body>
+    <div id="boot-startup-error" class="boot-skeleton" aria-hidden="true">
+      <div class="boot-se-card">
+        <span class="boot-se-title"></span>
+        <span class="boot-se-line"></span>
+        <span class="boot-se-line short"></span>
+        <span class="boot-se-btns"><i></i><i></i><i></i></span>
+      </div>
+    </div>
+    <main id="root" class="se-root" aria-live="polite">
+      <h1 class="se-title">数据打不开，应用无法启动</h1>
+      <p class="se-desc" id="se-desc">正在读取失败原因…</p>
+      <pre class="se-detail" id="se-detail"></pre>
+      <dl class="se-dirs" id="se-dirs" hidden>
+        <div class="se-dir">
+          <dt>数据目录</dt>
+          <dd id="se-data-dir"></dd>
+        </div>
+        <div class="se-dir">
+          <dt>日志目录</dt>
+          <dd id="se-log-dir"></dd>
+        </div>
+      </dl>
+      <p class="se-safety">
+        「重试」只会重新尝试打开现有的数据：<b>不会删除、覆盖或重建任何文件</b>。
+        如果这台机器上原本的数据又可用了（磁盘挂载回来、占用释放、权限改对），重试就能直接进去。
+      </p>
+      <div class="se-actions">
+        <button type="button" class="se-btn primary" id="se-retry">重试</button>
+        <button type="button" class="se-btn" id="se-open-dir">打开数据目录</button>
+        <button type="button" class="se-btn" id="se-quit">退出</button>
+      </div>
+      <p class="se-status" id="se-status" role="status"></p>
+    </main>
+    <script type="module" src="/src/entries/startup-error.ts"></script>
+  </body>
+</html>

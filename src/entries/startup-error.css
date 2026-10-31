@@ -1,0 +1,167 @@
+/* 启动失败那扇独立窗口的样式（`startup-error.html`）。
+   刻意**不**引主界面的 style.css：那一份里有整套布局与令牌，而这扇窗出现的时刻
+   数据库根本没开，页面要越小越稳。深浅色只靠系统偏好，与应用底色同源
+   （#edf1f6 / #0b1220，见 `commands/network.rs::focus_window`）。 */
+
+:root {
+  color-scheme: light dark;
+  --se-bg: #edf1f6;
+  --se-fg: #16202e;
+  --se-muted: #5a6b81;
+  --se-card: #ffffff;
+  --se-border: #d3dbe6;
+  --se-accent: #2563eb;
+  --se-accent-fg: #ffffff;
+  --se-danger: #b42318;
+  --se-mono: ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --se-bg: #0b1220;
+    --se-fg: #e6ecf5;
+    --se-muted: #9aabc5;
+    --se-card: #131c2c;
+    --se-border: #26334a;
+  }
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  background: var(--se-bg);
+  color: var(--se-fg);
+  font:
+    14px/1.6 -apple-system,
+    BlinkMacSystemFont,
+    "Segoe UI",
+    "PingFang SC",
+    "Microsoft YaHei",
+    sans-serif;
+  /* 这扇窗没有自绘标题栏，整块内容要能选中复制（用户要把错误码发给反馈）。 */
+  user-select: text;
+  -webkit-user-select: text;
+}
+
+.se-root {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  padding: 22px 24px 20px;
+  min-height: 100vh;
+}
+
+.se-title {
+  margin: 0;
+  font-size: 17px;
+  font-weight: 650;
+}
+
+.se-desc {
+  margin: 0;
+  color: var(--se-muted);
+}
+
+.se-detail {
+  margin: 0;
+  padding: 12px 14px;
+  border: 1px solid var(--se-border);
+  border-radius: 10px;
+  background: var(--se-card);
+  font-family: var(--se-mono);
+  font-size: 12.5px;
+  line-height: 1.55;
+  /* 长路径要能换行，又不能把窗口撑高到看不见按钮。 */
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  max-height: 30vh;
+  overflow: auto;
+}
+
+.se-dirs {
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  font-size: 12.5px;
+}
+
+.se-dir {
+  display: flex;
+  gap: 8px;
+  align-items: baseline;
+}
+
+.se-dir dt {
+  color: var(--se-muted);
+  flex: none;
+}
+
+.se-dir dd {
+  margin: 0;
+  font-family: var(--se-mono);
+  overflow-wrap: anywhere;
+}
+
+.se-safety {
+  margin: 0;
+  padding: 10px 12px;
+  border-left: 3px solid var(--se-border);
+  border-radius: 6px;
+  background: var(--se-card);
+  color: var(--se-muted);
+  font-size: 12.5px;
+}
+
+.se-actions {
+  margin-top: auto;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.se-btn {
+  appearance: none;
+  border: 1px solid var(--se-border);
+  border-radius: 9px;
+  background: var(--se-card);
+  color: var(--se-fg);
+  padding: 9px 16px;
+  font-size: 13.5px;
+  cursor: pointer;
+}
+
+.se-btn:hover:not(:disabled) {
+  border-color: var(--se-accent);
+}
+
+.se-btn:focus-visible {
+  outline: 2px solid var(--se-accent);
+  outline-offset: 2px;
+}
+
+.se-btn:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
+
+.se-btn.primary {
+  background: var(--se-accent);
+  border-color: var(--se-accent);
+  color: var(--se-accent-fg);
+  font-weight: 600;
+}
+
+.se-status {
+  margin: 0;
+  min-height: 20px;
+  font-size: 12.5px;
+  color: var(--se-muted);
+}
+
+.se-status.error {
+  color: var(--se-danger);
+}

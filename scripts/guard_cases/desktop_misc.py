@@ -121,35 +121,28 @@ pub fn guard_case_fixture_db(
         tags=["rust", "boot"],
     ),
     Case(
-        name="开机降级弹窗必须非阻塞（blocking_show 在主线程自锁）",
-        why="插件桌面实现是 app_handle.run_on_main_thread(...)（desktop.rs:222），而 setup "
-        "就跑在主线程上 ⇒ blocking_show 的 rx.recv() 钉住主线程、弹窗任务永远排不到 = "
-        "开机白屏死锁，与 v4.22.30 的 Windows 开窗卡死同一个形状。写错不会编译失败，"
-        "只会永远看不见那句提示，所以只能机器拦",
+        name="启动失败必须真的开出独立错误窗（不许无窗口地活着，也不许在主线程自锁）",
+        why="两件事原本是同一条守卫：① 那条提示必须**非阻塞**排队 —— 插件桌面实现是 "
+        "app_handle.run_on_main_thread(...)（desktop.rs:222），而 setup 就跑在主线程上 ⇒ "
+        "blocking_show 的 rx.recv() 钉住主线程、开窗任务永远排不到 = 开机白屏死锁"
+        "（与 v4.22.30 的 Windows 开窗卡死同一个形状）；② 2026-10-31 审计 A2 之后，那格"
+        "提示从"
+        "单按钮弹窗换成一扇独立错误窗口（重试 / 打开数据目录 / 退出），于是**"
+        "「窗口有没有真的建出来」本身成了被钉的语义**：摘掉 open() 就退回"
+        "「进程活着、屏幕上什么都没有」那一格 —— 写错不会编译失败，只能机器拦。"
+        "锚点因此跟着搬家（旧锚点是那段 .dialog() 链，已经不存在了）。",
         file=TAURI / "src" / "lib.rs",
         injections=[(
-            "                        handle\n"
-            "                            .dialog()\n"
-            "                            .message(msg)\n"
-            "                            .title(\"Gosslan — 启动失败\")\n"
-            "                            .show(move |_| {\n"
-            "                                // 用户点掉提示之后才退出（exit 走事件循环代理，跨线程安全）\n"
-            "                                handle.exit(1);\n"
-            "                            });",
-            "                        if handle\n"
-            "                            .dialog()\n"
-            "                            .message(msg)\n"
-            "                            .title(\"Gosslan — 启动失败\")\n"
-            "                            .blocking_show()\n"
-            "                        {\n"
-            "                            std::process::exit(1);\n"
-            "                        }",
+            "                        startup_error::open(app.handle());\n",
+            # 变异必须**可编译**且真的改掉语义：这里把建窗那一行换成一个对 `app` 的无害引用
+            # （窗口不再出现，其余路径一字未动）⇒ 只有"必须真的开窗"那格会红。
+            "                        let _ = app.handle();\n",
         )],
         cmd=cargo(
             "test", "--lib", "boot_downgrade_refusal_is_typed_precedes_writes_and_non_blocking"
         ),
         cwd=TAURI,
-        expect_fail_hint="blocking_show",
+        expect_fail_hint="那扇独立错误窗口开起来",
         tags=["rust", "boot", "deadlock"],
     ),
     Case(

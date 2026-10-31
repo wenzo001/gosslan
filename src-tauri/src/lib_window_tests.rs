@@ -531,7 +531,14 @@
     #[cfg(desktop)]
     #[test]
     fn aux_windows_open_their_own_document() {
-        let commands = all_commands_src();
+        // 启动错误窗口不在 `commands/*` 里（它不是"某条命令开出来的窗"，而是 setup 失败时
+        // 由 `startup_error::open` 建的），所以要把那份源码也并进来数一遍 URL ——
+        // 否则这扇新窗的"文档 ↔ 入口"对应关系就落在所有护栏之外。
+        let commands = format!(
+            "{}\n{}",
+            all_commands_src(),
+            include_str!("startup_error.rs")
+        );
 
         let mut urls: Vec<String> = Vec::new();
         for part in commands.split("WebviewUrl::App(").skip(1) {
@@ -542,8 +549,8 @@
             urls.push(rest[..end].to_string());
         }
         assert!(
-            urls.len() >= 4,
-            "应当能找到设置 / 日志 / 群任务 / 图片预览四个窗口的 URL，实际 {}",
+            urls.len() >= 5,
+            "应当能找到设置 / 日志 / 群任务 / 图片预览 / 启动错误五个窗口的 URL，实际 {}",
             urls.len()
         );
         assert!(
@@ -563,6 +570,7 @@
             ("logs.html", "src/entries/logs.ts"),
             ("todos.html", "src/entries/todos.ts"),
             ("preview.html", "src/entries/preview.ts"),
+            ("startup-error.html", "src/entries/startup-error.ts"),
         ] {
             assert!(
                 urls.iter().any(|u| u == url),
@@ -575,6 +583,9 @@
                 "logs.html" => include_str!("../../logs.html").to_string(),
                 "todos.html" => include_str!("../../todos.html").to_string(),
                 "preview.html" => include_str!("../../preview.html").to_string(),
+                "startup-error.html" => {
+                    include_str!("../../startup-error.html").to_string()
+                }
                 _ => unreachable!("新增 url 必须在这里补自己的 include_str!"),
             };
             assert!(
@@ -594,6 +605,9 @@
                 }
                 "src/entries/preview.ts" => {
                     let _ = include_str!("../../src/entries/preview.ts");
+                }
+                "src/entries/startup-error.ts" => {
+                    let _ = include_str!("../../src/entries/startup-error.ts");
                 }
                 _ => unreachable!("新增 entry 必须在这里补自己的 include_str!"),
             }

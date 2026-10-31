@@ -53,6 +53,13 @@ const WINDOWS = [
     skeleton: "boot-preview",
     htmlClass: "boot-preview",
   },
+  {
+    // 审计 A2：数据库打不开时那扇独立错误窗（label="startup-error"，桌面端）。
+    html: "startup-error.html",
+    entry: "src/entries/startup-error.ts",
+    skeleton: "boot-startup-error",
+    htmlClass: "boot-startup-error",
+  },
 ] as const;
 
 test("每个窗口都有自己的 HTML 与入口（不再共用一个 index.html）", () => {
