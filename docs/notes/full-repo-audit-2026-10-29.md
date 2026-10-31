@@ -1613,7 +1613,7 @@ STB-04 半条（非好友分支广播后直接 return，无撤销登记 —— *
 
 > **2026-10-31 订正状态**（本轮只动文档）：① 行号与 `[dev-dependencies]` 断言已改对——`AppState` 现址 `state.rs:1062-1063`、`init` 现址 `state.rs:1838`，且 `src-tauri/Cargo.toml:194-196` **有** `[dev-dependencies]`（`tempfile`）；
 > ② `peer_keys_trusted` 已改成 `FriendKeySnapshot::capture` + `acceptable_friend_keys` 并注明旧名；③ INV-P03 已加一段写明那三条 Ack 钩子判的是**群文件**回执、1:1 唯一真调 `ack_delivered` 的用例是 `db::cascade_tests::a_late_ack_cannot_promote_a_cancelled_message`、「非收件人 / 发送者校验」没有专属用例；
-> ④ INV-P12 的钩子行已补 `state::tests::device_id_is_persisted_once_and_never_rederived_on_restart`（TST-08）并写明「后者三条各证什么」；⑤⑦ 复核**仍成立**、但原路径/行号已漂——BLE 直接解析现为 `network/ble/central.rs:372`／`:686` 与 `network/ble/peripheral.rs:278`，TTL 生产构造在 `state.rs:2229`；⑥ 本轮未复核。
+> ④ INV-P12 的钩子行已补 `state::tests::device_id_is_persisted_once_and_never_rederived_on_restart`（TST-08）并写明「后者三条各证什么」；⑤⑦ 复核**仍成立**、但原路径/行号已漂——BLE 直接解析现为 `network/ble/central.rs:372`／`:686` 与 `network/ble/peripheral.rs:278`，TTL 生产构造在 `state.rs:2229`；⑥⑧ 复核**仍然成立**——⑥ 的机理注释仍在 `lib_delivery_shape_tests.rs:417-430`（结论不变：逻辑序号不保证跨离线时间序），⑧ 的两帧分别发在 `handle_messaging.rs:118` / `:256`（`Message::Ack`）与 `gossip.rs:1386`（`GossipKind::ChatAck`），发送方状态只按「已读优先、不回退」的过渡算一次。
 
 1. **spec 的 ⚠️ 引用的行号与理由已过期**（INV-P03）：`state.rs:873-874` → 实为 `:1060-1061`；`state.rs:1173` → 实为 `:1753`；「`Cargo.toml` 里没有 `[dev-dependencies]`」→ 实为 `src-tauri/Cargo.toml:194-196` **已有** `[dev-dependencies] tempfile = "3"`。结论不变（`AppHandle<Wry>` 类型不兼容才是真因），但理由陈述需更新。
 2. **spec 点名了不存在的判据名**（INV-P11）：`peer_keys_trusted` 已被 `FriendKeySnapshot::capture(...).verified` 取代。
