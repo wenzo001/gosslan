@@ -485,6 +485,7 @@ logging::tests::fail_code_disk_full_is_a_stable_identifier
 logging::tests::first_run_is_no_history_while_a_foreign_bootstrap_still_reads_silent_kill
 logging::tests::first_startup_without_any_history_seeds_nothing
 logging::tests::format_utc_epoch_and_known_dates
+logging::tests::fresh_install_writes_no_silent_kill_verdict_while_a_foreign_bootstrap_still_does
 logging::tests::hang_lines_do_not_change_exit_classification
 logging::tests::log_wire_actually_folds_the_diag_flood
 logging::tests::logger_clear_empties_memory

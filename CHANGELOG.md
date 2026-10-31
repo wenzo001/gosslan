@@ -13,6 +13,22 @@
 
 ## [Unreleased]
 
+## [5.15.92] - 2026-10-31
+
+### 全新安装不再在日志里被写成「上次异常终止」（A5 的另一侧）
+
+A5（5.15.75）只修了**结构化报告**那一侧：全新安装的报告是 `no_history`，横幅不弹。但
+`seed_previous_run` 里那段"把结论写进日志文件"的判定走的是另一条路——它按原始尾部行过滤，
+于是把**本进程自己的**启动尝试当成上一轮 ⇒ 日志文件照样落一条 Warn
+`上次收尾判定：异常终止 code=BOOT_PREV_SILENT_KILL`。同一个事实两处说反话。
+
+修法只加一个前置条件：当"上一轮候选内容"**全是本进程自己的启动尝试**时整块跳过；其余形状
+（含"只有崩溃块、没有上一轮路标"的早期崩溃）一律照旧——那是真证据，不许一起丢。
+现跑：`cargo test --lib --features bluetooth -- logging` **44 passed / 0 failed**；新增用例
+`fresh_install_writes_no_silent_kill_verdict_while_a_foreign_bootstrap_still_does`
+（正控：本进程 pid ⇒ 不写判定；反控：外来 pid ⇒ 仍判异常终止）；全量 `cargo test --lib` 1356 passed。
+
+
 ## [5.15.91] - 2026-10-31
 
 ### 第三轮审计·第五批（验证收口）A1：群历史那轮的会话行两个字段第一次有了跨进程断言

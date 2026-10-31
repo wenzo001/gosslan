@@ -1464,7 +1464,16 @@ impl Logger {
         {
             native.pop();
         }
-        if !native.is_empty() {
+        // ⚠️ 全新安装那一种形状要整块跳过：剩下的行**全是**本进程自己的「启动尝试」时，
+        // 它们不是上一轮的任何证据（A5 已在结构化报告那侧判成 `no_history`，5.15.75）。
+        // 不跳过的后果是"横幅不弹、日志文件却写一条 Warn「异常终止 code=BOOT_PREV_SILENT_KILL」"
+        // —— 两处说反话比一处不说话更难查（2026-10-31 复核发现，只修了报告那一侧）。
+        // 其余形状（含"只有崩溃块、没有上一轮路标"的早期崩溃）一律照旧：那是真证据。
+        let own_try = format!("pid={}", std::process::id());
+        let only_this_runs_bootstrap = native
+            .iter()
+            .all(|l| l.starts_with(">>> 启动尝试") && l.contains(&own_try));
+        if !native.is_empty() && !only_this_runs_bootstrap {
             if native.len() > PREV_CRASH_MAX_LINES {
                 let cut = native.len() - PREV_CRASH_MAX_LINES;
                 native.drain(0..cut);
@@ -2166,6 +2175,59 @@ mod tests {
         );
         let _ = std::fs::remove_dir_all(&clean);
         let _ = std::fs::remove_dir_all(&kill);
+    }
+
+    /// 全新安装的**真实**形状：现场文件里只有本进程自己的「启动尝试 pid=<本进程>」。
+    /// 这一轮既不该弹横幅（A5 已保证报告是 `no_history`），也不该往日志文件落「异常终止」——
+    /// 2026-10-31 复核发现只修了报告那一侧，这块判定仍按 raw 过滤 ⇒ 两处说反话。
+    ///
+    /// 反控：把 pid 换成别的值（上一轮真的死在 logger 之前）⇒ 判定必须照旧是异常终止，
+    /// 否则这条修复就是"把静默死亡检测顺手关掉"。
+    #[test]
+    fn fresh_install_writes_no_silent_kill_verdict_while_a_foreign_bootstrap_still_does() {
+        let verdict_text = |dir: &std::path::Path, crash: &str| -> (String, String) {
+            let _ = std::fs::remove_dir_all(dir);
+            std::fs::create_dir_all(dir).unwrap();
+            std::fs::write(crash_file_for(dir, "t"), crash).unwrap();
+            let lg = Logger::new(dir.to_path_buf(), "t", "[dev:t]".to_string());
+            lg.seed_previous_run();
+            let mem: String = lg
+                .snapshot(None)
+                .iter()
+                .map(|e| e.message.clone())
+                .collect::<Vec<_>>()
+                .join("\n");
+            let disk = std::fs::read_to_string(lg.current_path()).unwrap_or_default();
+            (mem, disk)
+        };
+
+        let own = std::process::id();
+        let dir_fresh = std::env::temp_dir().join(format!("gosslan-ownboot-{own}"));
+        let (mem, disk) = verdict_text(
+            &dir_fresh,
+            &format!(">>> 启动尝试：进程已起，logger 尚未建立 pid={own}\n"),
+        );
+        assert!(
+            !mem.contains("异常终止"),
+            "全新安装不该出现异常终止判定：{mem}"
+        );
+        assert!(
+            !disk.contains("BOOT_PREV_SILENT_KILL"),
+            "日志文件也不许落这条：{disk}"
+        );
+
+        let dir_foreign = std::env::temp_dir().join(format!("gosslan-foreignboot-{own}"));
+        let (mem2, disk2) = verdict_text(
+            &dir_foreign,
+            ">>> 启动尝试：进程已起，logger 尚未建立 pid=999999\n",
+        );
+        assert!(
+            mem2.contains("异常终止") && disk2.contains("BOOT_PREV_SILENT_KILL"),
+            "外来 pid 的启动尝试必须仍判异常终止（检测能力不许被顺手关掉）：mem={mem2} disk={disk2}"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir_fresh);
+        let _ = std::fs::remove_dir_all(&dir_foreign);
     }
 
     #[cfg(unix)]
