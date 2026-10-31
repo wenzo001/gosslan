@@ -274,6 +274,22 @@ fn crash_bootstrap_plugin<R: tauri::Runtime>() -> tauri::plugin::TauriPlugin<R> 
         .build()
 }
 
+/// 窗口状态文件名（`tauri-plugin-window-state` 落在同一份 app data 目录里）。
+///
+/// 默认名 `.window-state.json` 在多开时是**共享**的：第二个实例一保存就把第一个实例的
+/// 几何盖掉（审计 A7 立案的那格 —— 同目录被 `--instance` 用来错开 DB/日志，窗口状态
+/// 却从来没错开）。`instance == 0` 取的是**插件自己那个常量**，不是手抄的字面量 ⇒
+/// 单实例用户（绝大多数）旧版本落盘的那一份照原样读，改名这件事不可能悄悄发生；
+/// 带序号的名字只对新开的实例档出现。
+#[cfg_attr(mobile, allow(dead_code))] // 只有下面 `#[cfg(desktop)]` 那段插件注册会用到它
+fn window_state_filename(instance: u32) -> String {
+    if instance == 0 {
+        tauri_plugin_window_state::DEFAULT_FILENAME.to_string()
+    } else {
+        format!(".window-state-i{instance}.json")
+    }
+}
+
 fn install_panic_hook(app: Option<tauri::AppHandle>) {
     std::panic::set_hook(Box::new(move |info| {
         let location = info
@@ -365,6 +381,9 @@ pub fn run() {
         builder = builder.plugin(
             tauri_plugin_window_state::Builder::default()
                 .with_state_flags(window_state_flags)
+                // 多开时各写各的那一份（审计 A7）：这一格之前从来没错开 ⇒ 第二个实例
+                // 一保存就把第一个实例的几何盖掉，两个窗口拖来拖去只剩一份记忆。
+                .with_filename(window_state_filename(crate::state::instance_id()))
                 // 设置/日志窗口是**关闭即销毁**（每次开窗由 `aux_window_geometry` 重新摆位），
                 // 不让插件按 label 恢复旧几何/最大化 —— 否则会与重新居中打架
                 // （用户 2026-09-17：这两个窗口改为"关闭即销毁"，见 commands.rs 的
