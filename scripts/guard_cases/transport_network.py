@@ -95,7 +95,9 @@ CASES: list[Case] = [
         "     注入方式：删掉那一行调用 ⇒ 形状判据必须红（这是 INV-P28 后半句的非空转证明）",
         file=TAURI / "src" / "network" / "transport.rs",
         injections=[(
-            "            file::fail_taken_group_receive(&state, &r);\n",
+            # 锚点跟随签名变化（5.15.66：加了 tid 与 reason 两个参数）；注入语义不变 ——
+            # 仍是"删掉这一行调用"，判据钉的是"摘出来的那份有没有被用完"。
+            "            file::fail_taken_group_receive(&state, &tid, &r, REASON_PEER_UNLINKED);\n",
             "",
         )],
         cmd=cargo("test", "--lib", "peer_offline_group_cleanup_takes_before_finalizing"),

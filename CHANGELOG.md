@@ -13,6 +13,28 @@
 
 ## [Unreleased]
 
+## [5.15.66] - 2026-10-31
+
+### 群文件那一半补齐：盘满同样不留续传前缀（B2-F1 群侧）
+
+单聊在 5.15.51 就单独处理了盘满（删 `.part`），群侧当时**没做** —— 收尾函数 `fail_taken_group_receive`
+连 `reason` 都没有，只能一律"保留续传前缀"。后果与单聊同形：半截文件继续占着本就不够的空间，
+下一次重试写第一片又 ENOSPC ⇒「一直满、一直失败」。
+
+- `reason` 一路传到收尾：`fail_group_file_chunk` → `fail_group_receive` →`fail_taken_group_receive`；
+  超时清扫与对端下线两处也各自传自己的码（`REASON_STALLED_GROUP_RECEIVE` / `REASON_PEER_UNLINKED`）。
+- 盘满那一支删 `.part` 并写 `code=GFILE_DISK_FULL`，**三种结局分开说**（已删除 / 本就不在 / 删除失败 + 原因，
+  与 5.15.65 单聊那条同一口径）；其余档（断链/超时/取消/跳号）**仍保留**续传前缀。
+- 判据从"群侧未做（`code=GFILE_DISK_FULL` 计数必须为 0）"翻成**正向**：条件按码判、删除在那一支里面、
+  整个函数只删一次、失败分支存在、具名码在。变异：把条件换成 `if false` ⇒ 点名
+  「群侧盘满例外不见了 ⇒ 那一档又会保留 .part」。
+
+**真跑过的验证**：`cargo test --lib --features bluetooth` **1337 通过 / 0 失败**（3 ignored）；
+`cargo clippy -D warnings --all-targets` / `cargo fmt --check --all` 0 红 / 0 差异；
+`npm run verify:local` **26 步全绿**。
+**没做的**：群侧"盘满后重新拉到同一 `.part` 前缀"的端到端（要真写满盘 + 群文件多跳链路）。
+
+
 ## [5.15.65] - 2026-10-31
 
 ### 发版前 review 抓到的四处（含一处"闭环是假的"）

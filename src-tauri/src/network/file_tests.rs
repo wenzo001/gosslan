@@ -3480,8 +3480,10 @@ mod group_receive_atomicity_tests {
         // `record_failure ⇒ Incomplete` 只有 `fail_taken_group_receive` 这一个写点，
         // 只调 finalize 那一半 ⇒ 台账停在 Active，重取走的是另一条兜底口径。
         // 这是 `5a0cfcc` 自己引入过的漏（`for (tid, _r)` 把那份丢了，四层门禁全绿）。
+        // ⚠️ 签名 5.15.66 起是 (state, tid, &r, reason)（B2-F1 群侧要按 reason 判盘满）；
+        // 钉的仍是"摘出来的那份必须被吃掉"这件事，不钉参数个数。
         assert!(
-            body.contains("fail_taken_group_receive(&state, &r)"),
+            body.contains("fail_taken_group_receive(&state, &tid, &r,"),
             "摘出来的 FileReceiver 没被收尾吃掉 ⇒ 群内容台账这次没人写 Incomplete"
         );
         assert!(

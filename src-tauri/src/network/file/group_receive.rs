@@ -146,15 +146,16 @@ pub fn build_group_resume_receiver(
     })
 }
 
-/// 群文件接收失败：删除 `.part` 并移除接收状态（不 rename、不标 done）。
-pub fn fail_group_receive(state: &AppState, transfer_id: &str) {
+/// 群文件接收失败：移除接收状态（不 rename、不标 done）。
+/// `.part` 的去留由 [`fail_taken_group_receive`] 按 `reason` 决定。
+pub fn fail_group_receive(state: &AppState, transfer_id: &str, reason: &str) {
     if let Some(r) = state
         .group_file_receivers
         .lock()
         .unwrap_or_else(|e| e.into_inner())
         .remove(transfer_id)
     {
-        fail_taken_group_receive(state, &r);
+        fail_taken_group_receive(state, transfer_id, &r, reason);
     }
 }
 
@@ -263,9 +264,31 @@ pub fn cancel_group_receive(state: &AppState, transfer_id: &str) -> bool {
 }
 
 /// 摘表之后的群接收收尾（与单聊同一份口径：`.part` 保留、状态记 Incomplete 可重取）。
-pub fn fail_taken_group_receive(state: &AppState, r: &FileReceiver) {
-    // **保留 .part**（不删）：断点续传的前缀（群友从种子拉取时也走 resume_receive）。
-    let _ = &r.tmp_path;
+///
+/// `reason` 只用来判**盘满**这一格（B2-F1 群侧）：那一档留 `.part` 的后果与其它档正好相反 ——
+/// 半截文件继续占着本就不够的空间，下一次重试写第一片又 ENOSPC ⇒「一直满、一直失败」。
+/// 其余档（断链/超时/取消/跳号）**仍然保留**续传前缀，别把这条一起改回去。
+pub fn fail_taken_group_receive(
+    state: &AppState,
+    transfer_id: &str,
+    r: &FileReceiver,
+    reason: &str,
+) {
+    if reason == crate::logging::FAIL_CODE_DISK_FULL {
+        // 三种结局分开说（与单聊 5.15.65 同一口径：不能把权限/占用说成"文件已不在"）。
+        let outcome = match std::fs::remove_file(&r.tmp_path) {
+            Ok(()) => "已删除 .part".to_string(),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => "文件已不在".to_string(),
+            Err(e) => format!("删除 .part 失败：{e}（这一档会继续占着空间）"),
+        };
+        state.logger.error(
+            "group_file",
+            format!(
+                "code=GFILE_DISK_FULL transfer={transfer_id} peer={} size={} —— 盘满，{outcome}（这一档不留续传前缀）",
+                r.peer_id, r.size
+            ),
+        );
+    }
     // 统一状态：群文件中途失败/断链 ⇒ Incomplete（可恢复）⇒ 建链时按退避自动重取。
     let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
     let _ = crate::content::store::record_failure(
