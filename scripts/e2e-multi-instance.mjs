@@ -230,6 +230,11 @@ const TASK = ROUND === "task" || ROUND === "task-lie";
 /// 预置只写"入群欠一份历史"那一枚 settings 标记（`note_new_membership` 在真入群时写的同一份形状）——
 /// 入群那一帧本身是群主的 IPC 命令，进程外造不出（这条边界与 roadmap 里"跨实例建群那一半仍缺"是同一条）。
 const GHSYNC = ROUND === "ghsync" || ROUND === "ghsync-lie";
+/// 审计 A4 的「可自动那一半」（`--round=friendreq`）：库里那一行待处理好友申请跨**两次真实启动**
+/// 仍在、恢复臂真跑了、而通知那一条始终 0 次。预置只写 `settings` 那一行 —— 发送侧那本
+/// 「待发申请」是进程内 HashMap（`pending_out_requests`）⇒ 停机写库造不出真申请，
+/// 真链路那一半归真机双实例验收（为什么不能在这里判，动机写在那一册的头上）。
+const FRIENDREQ = ROUND === "friendreq" || ROUND === "friendreq-lie";
 /// #121（`--round=groupcrash`）：**正在建群时被 SIGKILL** —— §28「链路失效」那一族里
 /// 唯一今天做得成的格子。钉的是"群名册才是事实源、重递不许依赖内存登记"，
 /// 完整动机与为什么不预置队列行写在那一步的注释里。
@@ -288,6 +293,7 @@ import * as rot from "./e2e/rounds/rot.mjs";
 import * as shrink from "./e2e/rounds/shrink.mjs";
 import * as multi from "./e2e/rounds/multi.mjs";
 import * as ghsync from "./e2e/rounds/ghsync.mjs";
+import * as friendreq from "./e2e/rounds/friendreq.mjs";
 
 
 
@@ -657,6 +663,9 @@ if (CONTENTPULL) await contentpull.run();
 // 群历史轮排在最末：它自己 `stopAll → 预置 → 再起两端`，且**等的是 60 秒一轮的清扫任务**，
 // 放在任何一轮之前都会把那一轮的日志锚点（`建链 peer=` / boot 行）搅进自己的读数里。
 if (GHSYNC) await ghsync.run();
+// A4 那一轮排在它之后：只起 B 一台，自己 `stopAll → 预置 → 起 → 停 → 再起`，
+// 读的是自己那一份 `settings` 行与 B 的磁盘日志 ⇒ 不吃链路、也不给别的轮子留锚点。
+if (FRIENDREQ) await friendreq.run();
 const REPORT_GAPS = [];
 function writeReport(failed) {
   fs.mkdirSync(RUN_DIR, { recursive: true });
