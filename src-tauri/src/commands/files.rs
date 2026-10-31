@@ -589,7 +589,9 @@ pub async fn flush_pending_files(state: &Arc<AppState>, peer_id: &str) {
                         }
                         file::RetryVerdict::Retry { backoff_ms } => {
                             let dbc = st.db.lock().unwrap_or_else(|e| e.into_inner());
-                            db::mark_file_outbox_pending(&dbc, &transfer_id, backoff_ms).ok();
+                            if let Err(e) = db::mark_file_outbox_pending(&dbc, &transfer_id, backoff_ms) {
+                                crate::logging::log_write_failure(&st.logger, "mark_file_outbox_pending", e);
+                            }
                         }
                         // 用户取消：退出投递任务时**必须**继续按 cancelled 收尾，不能顺着
                         // `GiveUp` 那一格落 `failed`。取消信号是异步的 —— `cancel_file_transfer`

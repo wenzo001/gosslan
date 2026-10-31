@@ -143,7 +143,7 @@ async fn handle_relay_file_offer(
         });
     {
         let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
-        db::upsert_transfer(
+        if let Err(e) = db::upsert_transfer(
             &dbc,
             &transfer_id,
             &from,
@@ -153,8 +153,9 @@ async fn handle_relay_file_offer(
             "active",
             None,
             0.0,
-        )
-        .ok();
+        ) {
+            crate::logging::log_write_failure(&state.logger, "upsert_transfer", e);
+        }
     }
     let _ = state.app.emit(
         "file-progress",
@@ -266,7 +267,9 @@ async fn handle_relay_chunk(
                 // 这里要的是"把仍 active 的行推进到 failed"，正是 `mark_transfer_failed_if_active`。
                 {
                     let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
-                    db::mark_transfer_failed_if_active(&dbc, &transfer_id).ok();
+                    if let Err(e) = db::mark_transfer_failed_if_active(&dbc, &transfer_id) {
+                        crate::logging::log_write_failure(&state.logger, "mark_transfer_failed_if_active", e);
+                    }
                     state
                         .relay_file_keys
                         .lock()
@@ -303,7 +306,7 @@ async fn handle_relay_chunk(
                 let _ = std::fs::remove_file(&part_path);
                 {
                     let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
-                    db::upsert_transfer(
+                    if let Err(e) = db::upsert_transfer(
                         &dbc,
                         &transfer_id,
                         &from,
@@ -313,8 +316,9 @@ async fn handle_relay_chunk(
                         "failed",
                         None,
                         0.0,
-                    )
-                    .ok();
+                    ) {
+                        crate::logging::log_write_failure(&state.logger, "upsert_transfer", e);
+                    }
                 }
                 let _ = state.app.emit(
                     "file-failed",
@@ -331,7 +335,7 @@ async fn handle_relay_chunk(
                 let _ = std::fs::remove_file(&part_path);
                 {
                     let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
-                    db::upsert_transfer(
+                    if let Err(e) = db::upsert_transfer(
                         &dbc,
                         &transfer_id,
                         &from,
@@ -341,8 +345,9 @@ async fn handle_relay_chunk(
                         "failed",
                         None,
                         0.0,
-                    )
-                    .ok();
+                    ) {
+                        crate::logging::log_write_failure(&state.logger, "upsert_transfer", e);
+                    }
                 }
                 let _ = state.app.emit(
                     "file-failed",
@@ -371,7 +376,7 @@ async fn handle_relay_chunk(
                     let _ = std::fs::remove_file(&part_path);
                     {
                         let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
-                        db::upsert_transfer(
+                        if let Err(e) = db::upsert_transfer(
                             &dbc,
                             &transfer_id,
                             &from,
@@ -381,8 +386,9 @@ async fn handle_relay_chunk(
                             "failed",
                             None,
                             0.0,
-                        )
-                        .ok();
+                        ) {
+                            crate::logging::log_write_failure(&state.logger, "upsert_transfer", e);
+                        }
                     }
                     let _ = state.app.emit(
                         "file-failed",
@@ -398,7 +404,7 @@ async fn handle_relay_chunk(
                 let _ = std::fs::remove_file(&part_path);
                 {
                     let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
-                    db::upsert_transfer(
+                    if let Err(e) = db::upsert_transfer(
                         &dbc,
                         &transfer_id,
                         &from,
@@ -408,8 +414,9 @@ async fn handle_relay_chunk(
                         "failed",
                         None,
                         0.0,
-                    )
-                    .ok();
+                    ) {
+                        crate::logging::log_write_failure(&state.logger, "upsert_transfer", e);
+                    }
                     // 统一状态：校验失败 ⇒ Rejected（换源重取是唯一出路）。
                     let _ = crate::content::store::record_failure(
                         &dbc,
@@ -455,7 +462,7 @@ async fn handle_relay_chunk(
                 Err(reason) => {
                     {
                         let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
-                        db::upsert_transfer(
+                        if let Err(e) = db::upsert_transfer(
                             &dbc,
                             &transfer_id,
                             &from,
@@ -465,8 +472,9 @@ async fn handle_relay_chunk(
                             "failed",
                             None,
                             0.0,
-                        )
-                        .ok();
+                        ) {
+                            crate::logging::log_write_failure(&state.logger, "upsert_transfer", e);
+                        }
                     }
                     let _ = state.app.emit(
                         "file-failed",
@@ -481,7 +489,7 @@ async fn handle_relay_chunk(
             let path_str = path.to_string_lossy().to_string();
             let rec = {
                 let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
-                db::upsert_transfer(
+                if let Err(e) = db::upsert_transfer(
                     &dbc,
                     &transfer_id,
                     &from,
@@ -491,9 +499,10 @@ async fn handle_relay_chunk(
                     "done",
                     Some(path_str.as_str()),
                     1.0,
-                )
-                .ok();
-                crate::content::store::record_local(
+                ) {
+                    crate::logging::log_write_failure(&state.logger, "upsert_transfer", e);
+                }
+                if let Err(e) = crate::content::store::record_local(
                     &dbc,
                     &cid,
                     &from,
@@ -503,8 +512,9 @@ async fn handle_relay_chunk(
                     crate::content::model::Direction::Receive,
                     &path_str,
                     db::now_ms(),
-                )
-                .ok();
+                ) {
+                    crate::logging::log_write_failure(&state.logger, "record_local", e);
+                }
                 let subtype = file::classify_file_subtype(&name);
                 let mut content = serde_json::json!({
                     "name": name.clone(),
@@ -543,7 +553,7 @@ async fn handle_relay_chunk(
                 drop(dbc);
                 let nm = resolve_nickname(state, &from);
                 let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
-                db::touch_conversation(
+                if let Err(e) = db::touch_conversation(
                     &dbc,
                     &from,
                     "single",
@@ -551,8 +561,9 @@ async fn handle_relay_chunk(
                     None,
                     &format!("[文件] {name}"),
                     1,
-                )
-                .ok();
+                ) {
+                    crate::logging::log_write_failure(&state.logger, "touch_conversation", e);
+                }
                 rec
             };
             let _ = state.app.emit("message-received", &rec);

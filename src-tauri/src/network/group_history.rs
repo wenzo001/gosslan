@@ -411,7 +411,9 @@ pub async fn run_group_history_sync(state: &Arc<AppState>, group_id: &str) -> Sy
             None => {
                 // 标记还在、群已经没了（退群/删群赶上了）⇒ 把标记**删掉**而不是写成 done：
                 // "done" 是一个事实声明（这台拿到过历史），对不存在的群它两样都不是。
-                db::delete_setting(&dbc, &db::group_history_state_key(group_id)).ok();
+                if let Err(e) = db::delete_setting(&dbc, &db::group_history_state_key(group_id)) {
+                    crate::logging::log_write_failure(&state.logger, "delete_setting", e);
+                }
                 return SyncOutcome::NoGroup;
             }
         }

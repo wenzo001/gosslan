@@ -799,7 +799,7 @@ fn create_group_file_receive_bubble(
         // `attempt=None` pre-Offer 与 dispatch 的带轮次 Offer），无条件 touch 会让
         // 同一个群文件把群未读 +2，重试每轮再 +1（标准轴审查 2026-10-21 的回归）。
         if inserted {
-            db::touch_conversation(
+            if let Err(e) = db::touch_conversation(
                 &dbc,
                 &format!("group:{group_id}"),
                 "group",
@@ -807,8 +807,9 @@ fn create_group_file_receive_bubble(
                 None,
                 &format!("[群文件] {name}"),
                 1,
-            )
-            .ok();
+            ) {
+                crate::logging::log_write_failure(&state.logger, "touch_conversation", e);
+            }
         }
     }
     // 重复 Offer 也重发一次（幂等 upsert）：重试时让前端把气泡从 failed 刷回 sending。
@@ -1153,7 +1154,7 @@ async fn handle_group_file_done(
                     0.0,
                 );
                 // 接收 transfer 同步 failed（四种失败都要走到这一格，不许停在 active）
-                db::upsert_transfer(
+                if let Err(e) = db::upsert_transfer(
                     &dbc,
                     &transfer_id,
                     &sender_id,
@@ -1163,8 +1164,9 @@ async fn handle_group_file_done(
                     "failed",
                     None,
                     0.0,
-                )
-                .ok();
+                ) {
+                    crate::logging::log_write_failure(&state.logger, "upsert_transfer", e);
+                }
             }
             // ★ 落了库还必须**通知界面**，否则这一格与 10-22 审计 R-02 是同一个症状：前端只在
             // 收到终态事件时才动那一条气泡 ⇒ 收尾失败时收件人这边一直显示「发送中」，要重开会话

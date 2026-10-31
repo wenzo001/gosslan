@@ -441,8 +441,12 @@ pub(crate) async fn accept_friend_request(s: &Arc<AppState>, peer_id: &str) -> R
     let name = resolve_nickname(s, peer_id);
     {
         let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());
-        db::add_friend(&dbc, peer_id, &name, None).ok();
-        db::ensure_conversation(&dbc, peer_id, "single", &name, None).ok();
+        if let Err(e) = db::add_friend(&dbc, peer_id, &name, None) {
+            crate::logging::log_write_failure(&s.logger, "add_friend", e);
+        }
+        if let Err(e) = db::ensure_conversation(&dbc, peer_id, "single", &name, None) {
+            crate::logging::log_write_failure(&s.logger, "ensure_conversation", e);
+        }
     }
     // 补写 peers 表已有的公钥到 friends 表：accept 路径此前不写公钥，
     // 而建链（Hello）早于加好友、公钥不变时 key_changed 不触发补写，

@@ -342,13 +342,17 @@ pub async fn group_remove_member(
         let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());
         db::remove_group_member(&dbc, &group_id, &device_id).map_err(|e| e.to_string())?;
         // 被移除者不再属于该群：清掉仍指向它的待补发群消息，避免重连时向群外成员投递。
-        db::delete_group_outbox_for_peer_in_group(&dbc, &group_id, &device_id).ok();
+        if let Err(e) = db::delete_group_outbox_for_peer_in_group(&dbc, &group_id, &device_id) {
+            crate::logging::log_write_failure(&s.logger, "delete_group_outbox_for_peer_in_group", e);
+        }
     }
     // 轮换群密钥：被移除者失去解密能力
     let key = crypto::random_key();
     {
         let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());
-        db::set_setting(&dbc, &format!("gk:{group_id}"), &STANDARD.encode(key)).ok();
+        if let Err(e) = db::set_setting(&dbc, &format!("gk:{group_id}"), &STANDARD.encode(key)) {
+            crate::logging::log_write_failure(&s.logger, "set_setting", e);
+        }
     }
     s.group_keys
         .lock()

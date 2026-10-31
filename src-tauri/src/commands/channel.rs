@@ -308,7 +308,9 @@ pub async fn set_channel_enabled(
                 crate::android_background::stop(&s.logger);
             }
             let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());
-            db::set_lan_enabled(&dbc, enabled).ok();
+            if let Err(e) = db::set_lan_enabled(&dbc, enabled) {
+                crate::logging::log_write_failure(&s.logger, "set_lan_enabled", e);
+            }
         }
         "bluetooth" => {
             // 开了 feature 才真正启动 BLE 运行时；没开 feature 时与今天一致：
@@ -333,7 +335,9 @@ pub async fn set_channel_enabled(
                 }
             }
             let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());
-            db::set_bt_enabled(&dbc, enabled).ok();
+            if let Err(e) = db::set_bt_enabled(&dbc, enabled) {
+                crate::logging::log_write_failure(&s.logger, "set_bt_enabled", e);
+            }
         }
         _ => return Err(format!("未知通道: {channel}")),
     }
