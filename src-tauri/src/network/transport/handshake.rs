@@ -512,6 +512,18 @@ pub(crate) async fn apply_friend_request(state: &Arc<AppState>, req: PendingRequ
         }
         pending.insert(req.from.clone(), req.clone())
     };
+    // ★ 同一趟也落库（审计 A4）：内存那一格只活在本次进程里，重启就没了 —— 申请人那边
+    // 每 30s 才补发一次、还要链路在，所以"重启后申请还在"只能靠库里那一行。
+    // 写失败只留痕、不撤回已经发出去的事件：本机这一趟仍然看得见，比"整条申请当场消失"
+    // 更接近用户期待（而下一次启动读不回来时会在 restore 那一条日志里留码）。
+    // ⚠️ 必须在上面那个块**外面**取 db 锁：`pending` 的守卫还活着时再拿 db 就是 J2 那一族
+    // （持库守卫又调自锁 helper / 反过来持别的守卫又拿库锁 ⇒ 同线程二次取锁永久 park）。
+    {
+        let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
+        if let Err(e) = db::put_friend_request(&dbc, &req) {
+            crate::logging::log_write_failure(&state.logger, "put_friend_request", e);
+        }
+    }
     // 每次都发：前端只是据此重拉列表，重复无害（见上面的「幂等判据」）。
     let _ = state.app.emit("friend-request", &req);
     let was_pending =
@@ -553,6 +565,16 @@ pub fn forget_pending_request(state: &AppState, peer_id: &str) {
         .lock()
         .unwrap_or_else(|e| e.into_inner())
         .remove(peer_id);
+    // 库里那一行跟着删（审计 A4）：只删内存的话，下一次启动 `restore_pending_requests`
+    // 会把这条已经处理掉的申请原样端回来 —— 而这个人多半已经是好友了，
+    // 表现就是"同意后重启，新朋友里又冒出一条永远处理不掉的申请"。
+    // 三个调用点（直连同意 / 直连拒绝 / 命令侧同意）都在 db 守卫**已经放开**之后才调这里。
+    {
+        let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
+        if let Err(e) = db::forget_friend_request(&dbc, peer_id) {
+            crate::logging::log_write_failure(&state.logger, "forget_friend_request", e);
+        }
+    }
     // 同一条路径也清掉"我方已发出、等对方确认"的登记：对方既然回执了（同意/拒绝），
     // 就不该再补发（`flush_pending_friend_request` 只对仍未处理的申请生效）。
     state
@@ -560,6 +582,61 @@ pub fn forget_pending_request(state: &AppState, peer_id: &str) {
         .lock()
         .unwrap_or_else(|e| e.into_inner())
         .remove(peer_id);
+}
+
+/// 启动时把库里还没处理的入站申请填回内存（审计 A4）。返回填回去的条数。
+///
+/// 这一条路径刻意**只填表**：既不 `emit` 也不弹系统通知 —— 用户拍板的是"重启恢复时不重复
+/// 弹出好友申请通知或弹窗"。界面那一侧不需要这里推：它启动时自己会拉一次
+/// `get_pending_requests`（`useChatStore` 的首屏 `refreshPending`），徽标就是那一份列表的长度。
+///
+/// 填回内存还有第二个作用，而且是**唯一**能挡住重复弹窗的那一格：申请人没有回执、
+/// 每 30s 补发一份新 `message_id` 的信封，接收侧两层帧去重结构上看不见"重复"，
+/// 只能靠"本机是否已经握着这条申请"判（见 `friend_request_arrival_decision`）。
+/// 内存不预填 ⇒ 每次重启后的第一份补发都会被当成首次见到 ⇒ 又弹一次。
+///
+/// 读失败只留码、不阻断启动：列表暂时是空的，等对端下一次补发就回来了。
+pub(crate) fn restore_pending_requests(state: &AppState) -> usize {
+    let rows = {
+        let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
+        db::list_friend_requests(&dbc)
+    };
+    let rows = match rows {
+        Ok(rows) => rows,
+        Err(e) => {
+            state.logger.warn(
+                "friend",
+                format!("code=FRIEND_REQUEST_RESTORE_FAILED 待处理申请读不回内存：{e}"),
+            );
+            return 0;
+        }
+    };
+    let mut pending = state
+        .pending_requests
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
+    let mut restored = 0usize;
+    for req in rows {
+        if !pending_friend_request_admitted(pending.contains_key(&req.from), pending.len()) {
+            // 满员时剩下的就不硬塞（这张表的载荷由不可信对端控制，上限是 STB-02 定的）。
+            state.logger.warn(
+                "friend",
+                format!(
+                    "code=PENDING_REQUESTS_FULL 恢复时达到上限 {MAX_PENDING_FRIEND_REQUESTS}，其余跳过"
+                ),
+            );
+            break;
+        }
+        pending.insert(req.from.clone(), req);
+        restored += 1;
+    }
+    if restored > 0 {
+        state.logger.info(
+            "friend",
+            format!("重启恢复 {restored} 条待处理好友申请（只填表，不重复通知）"),
+        );
+    }
+    restored
 }
 
 /// 待发好友申请的补发判定结果。

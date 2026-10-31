@@ -577,3 +577,85 @@
             "收到对方解除关系也要清候选，与 remove_friend 命令对称"
         );
     }
+
+    /// 待处理好友申请的**持久化接线**（审计 A4）。
+    ///
+    /// 这一族失败的形状是"逻辑全绿、功能为零"：`db::put_friend_request` 写对了，但没人调它 ⇒
+    /// 申请照样只活在内存里，重启就没了，而整套单测一条都不红（同仓先例：新后台作业缺接线判据）。
+    /// 所以这里钉的是**接线**：落库那一格只有 1 个调用点、清掉那一格只有 1 个调用点、
+    /// 恢复那一格在 setup 里恰好被调 1 次，而**恢复不许带通知**。
+    #[test]
+    fn pending_friend_requests_are_written_forgotten_and_restored_exactly_once() {
+        let transport = crate::network::transport_src_for_guards();
+        // ① 入站那一臂：落库紧跟在内存登记之后（写库失败留痕，不许 `.ok()` 吞掉）。
+        let home = rust_fn_body(&transport, "pub(crate) async fn apply_friend_request(");
+        let home_f = code_flat(&home);
+        assert_eq!(
+            home_f.matches("db::put_friend_request(&dbc,&req)").count(),
+            1,
+            "申请必须落库，且调用点只有一处"
+        );
+        assert!(
+            home_f.contains("log_write_failure(&state.logger,\"put_friend_request\",e)"),
+            "落库失败必须留痕（这条路径原先只在内存里，重启即失）"
+        );
+        // ② 清掉那一格：内存与库必须在同一个家里一起清，否则重启把它端回来。
+        let forget = rust_fn_body(&transport, "pub fn forget_pending_request(");
+        let forget_f = code_flat(&forget);
+        assert_eq!(
+            forget_f.matches("db::forget_friend_request(&dbc,peer_id)").count(),
+            1,
+            "`forget_pending_request` 必须连带删库里那一行（三个调用点都走这个家）"
+        );
+        // ③ 恢复那一格：只填表 —— 带 emit 或带通知就是"重启又弹一遍"（用户明确禁止的那格）。
+        let restore = rust_fn_body(&transport, "pub(crate) fn restore_pending_requests(");
+        let restore_f = code_flat(&restore);
+        assert!(
+            restore_f.contains("db::list_friend_requests(&dbc)"),
+            "恢复必须从库里读，不许只靠内存（A4 要的是真实持久化证据）"
+        );
+        assert!(!restore_f.contains("emit("), "恢复不许发事件：界面自己会拉一次列表");
+        assert!(
+            !restore_f.contains("show_if_enabled(") && !restore_f.contains("show_click_if_enabled("),
+            "恢复不许弹系统通知（同一条申请重启一次弹一次是这次立案的症状）"
+        );
+        assert!(
+            restore_f.contains("pending_friend_request_admitted("),
+            "恢复也要过那张表的条数上限（载荷由不可信对端控制，STB-02）"
+        );
+        // ④ 接线：setup 里恰好调一次，且在 `app.manage` 之后（库已开、联网补发未开始）。
+        let lib = include_str!("lib.rs");
+        let lib_f = code_flat(lib);
+        assert_eq!(
+            lib_f
+                .matches("crate::network::transport::restore_pending_requests(&state)")
+                .count(),
+            1,
+            "恢复只允许一个调用点，而且必须真的被接上（少这一格整套功能就是零）"
+        );
+        let at_restore = lib_f
+            .find("crate::network::transport::restore_pending_requests(&state)")
+            .unwrap();
+        let at_manage = lib_f.find("app.manage(state.clone())").unwrap();
+        assert!(
+            at_restore > at_manage,
+            "恢复必须排在 `manage` 之后（`at_restore={at_restore} at_manage={at_manage}）"
+        );
+        // ⑤ 清除数据那一趟必须把这批键一起抹掉：内存 `clear()` 在同一处，两边不同步就是
+        //   "刚清完，重启又冒出一排申请"。
+        let cmd = all_commands_src();
+        let cmd_f = code_flat(cmd);
+        assert_eq!(
+            cmd_f.matches("db::clear_friend_requests(&dbc)").count(),
+            1,
+            "`clear_all_data` 必须连带清掉待处理申请那一批 settings 键"
+        );
+        // ⑥ 正控：`is_actionable_request` 那条过滤也要把库里那一行删掉（否则那一行一直占格位）。
+        let pending_fn = rust_fn_body(cmd, "fn get_pending_requests(");
+        let pending_f = code_flat(&pending_fn);
+        assert!(
+            pending_f.contains("db::forget_friend_request(&dbc,id)"),
+            "被好友关系过滤掉的申请必须连库里那一行一起删"
+        );
+    }
+
