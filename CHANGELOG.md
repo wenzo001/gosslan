@@ -13,6 +13,21 @@
 
 ## [Unreleased]
 
+## [5.15.69] - 2026-10-31
+
+### B4-F1 存量第三批：群关系 / 群文件 / 发送台账 14 处留痕
+
+- 群关系同步（改名/删群/踢人清队列/转群主）5 处、群公告附件（台账 upsert、会话预览、文件密钥）3 处、
+  单聊发送台账 `upsert_transfer` 9 处里的 6 处 —— 共 **14 处** `db::…ok();` 改成
+  `if let Err(e) = … { log_write_failure(…) }`。多行调用的写法照旧包一层 if-let，控制流不变。
+- 棘轮基线 **56 → 42**（L1 27 / L2 8 / L3 7）。
+- **没动**：relay_file 那 10 处（最大的最后一块）与其余 17 处零散点。
+
+**真跑过的验证**：`cargo test --lib --features bluetooth` **1337 通过 / 0 失败**（3 ignored）；
+`cargo clippy -D warnings --all-targets` / `cargo fmt --all -- --check` 0 红 / 0 差异；
+`node scripts/check-silent-drops.mjs` → 42 处 / 基线 42 / 硬零 0；`npm run verify:local` 见下。
+
+
 ## [5.15.68] - 2026-10-31
 
 ### B4-F1 存量第二批：消息 / 回执链 11 处写库承诺留痕
