@@ -90,7 +90,11 @@ message delivered
 
 - 钩子：`db::tests::message_and_outbox_are_written_atomically` `db::tests::ack_from_non_recipient_is_rejected` `db::tests::ack_sender_check_uses_group_file_owner` `db::tests::repeated_ack_is_idempotent` `network::transport::tests::direct_open_rejects_corrupt_and_tampered_payloads` `network::transport::tests::plaintext_payload_is_rejected` `db::tests::failed_decrypt_leaves_msg_id_free_for_the_later_good_copy`
 - ⚠️ **这些钩子各管一半，别读成"整条已被证明"**：上列后三条证明的是**接收侧前件** —— 密文损坏 / 被篡改 / 明文载荷都必须被 `open_direct_content` 拒收，且拒收后 `msg_id` 仍然空闲（⇒ 没落库）。而"于是也不发 Ack"这后半句今天**只由控制流保证**：`transport.rs` 的 `Message::ChatMessage` 臂里解密失败就是 `else { return; }`，Ack 那句在同一个臂的更后面，中间没有可注入的判定函数。
-  为什么没有行为用例（写清楚，免得下一个人重复调查）：本仓的 state **接不进测试夹具，而且原因不是"没装 MockRuntime"** —— `state.rs:873-874` 的 `AppState { pub app: AppHandle, … }` 里那个**裸 `AppHandle` 是具体 Wry 运行时**：结构体自身声明的是 `AppHandle<R: Runtime>`（`tauri-2.11.5/src/app.rs:386`），默认运行时由它上面那行 `#[default_runtime(crate::Wry, wry)]`（同文件 `:384`）展开成 `AppHandle<Wry>`，**不是** `pub type AppHandle` 那种可直接替换的别名；而 `AppState` 只有 `AppState::init(app: AppHandle)` 这一个构造器（`state.rs:1173`），`Cargo.toml` 里**没有 `[dev-dependencies]`**。⇒ **单开 `tauri` 的 `test` feature / 换用 `MockRuntime` 也接不进来**（`AppHandle<MockRuntime>` 与 `AppHandle<Wry>` 是两个不同类型），所以既实例化不了 state，也拿不到 `try_send` 需要的链接；全仓没有任何测试调用过 `handle_message`。要补这条，先补的是"能在测试里造出 AppState 并发出可捕获的出站帧"这件基础设施，不是再加一条断言。
+- ⚠️ **前四条里的三条判的是群文件回执，不是 1:1**（2026-10-31 对账）：`ack_from_non_recipient_is_rejected` / `repeated_ack_is_idempotent` / `ack_sender_check_uses_group_file_owner` 三个用例的效果全落在
+  `update_group_file_recipient`（`group_files` 那一族，见用例体里的 fixture）⇒ 它们证明的是「群文件回执不许外人伪造 / 幂等 / 只认群文件所有者」，**不能**拿来当 1:1 `ack_delivered` 的接收方校验证据。
+  1:1 这边今天唯一真调 `ack_delivered` 的行为用例是 `db::cascade_tests::a_late_ack_cannot_promote_a_cancelled_message`（迟到回执不许把已取消的改回已读）；**"1:1 的非收件人 / 发送者校验"没有专属行为用例**，只有 `ack_delivered` 的 SQL 条件与
+  `message_and_outbox_are_written_atomically` 的落库原子性。读这条 INV 时别把四条钩子摊平读成"发送侧与接收侧都已被行为证明"。
+  为什么没有行为用例（写清楚，免得下一个人重复调查）：本仓的 state **接不进测试夹具，而且原因不是"没装 MockRuntime"** —— `state.rs:1062-1063` 的 `AppState { pub app: AppHandle, … }` 里那个**裸 `AppHandle` 是具体 Wry 运行时**：结构体自身声明的是 `AppHandle<R: Runtime>`（`tauri-2.11.5/src/app.rs:386`），默认运行时由它上面那行 `#[default_runtime(crate::Wry, wry)]`（同文件 `:384`）展开成 `AppHandle<Wry>`，**不是** `pub type AppHandle` 那种可直接替换的别名；而 `AppState` 只有 `AppState::init(app: AppHandle)` 这一个构造器（`state.rs:1838`），`Cargo.toml` 里**有** `[dev-dependencies]`（`src-tauri/Cargo.toml:194-196` 的 `tempfile`），但那只解决临时目录，改变不了上面那个类型事实。⇒ **单开 `tauri` 的 `test` feature / 换用 `MockRuntime` 也接不进来**（`AppHandle<MockRuntime>` 与 `AppHandle<Wry>` 是两个不同类型），所以既实例化不了 state，也拿不到 `try_send` 需要的链接；全仓没有任何测试调用过 `handle_message`。要补这条，先补的是"能在测试里造出 AppState 并发出可捕获的出站帧"这件基础设施，不是再加一条断言。
 
 ### 发送方
 
@@ -412,7 +416,7 @@ warn
 的路径（直连 `FriendAccept` / 跨跳 Gossip `FriendAccept` / 本机点同意）读**同一张 `peers` 表**
 却不过这道闸 ⇒ 一次伪造的 UDP announce 抢先把 `friends.ed25519_pubkey` 填上，就是永久的。
 
-- 现在的规则（判据只有一份：`peer_keys_trusted` + `acceptable_friend_keys`）：
+- 现在的规则（判据只有一份：`FriendKeySnapshot::capture` + `acceptable_friend_keys`；前者在 2026-10-21 P0-01 之前的旧名是 `peer_keys_trusted`，早改名了）：
   **`x25519`（加密钥匙）照旧早绑** —— 晚了就是"首次加密发送失败"，而 Gossip 那处补齐以
   "这一封能解密"为持有证明；**`ed25519`（身份锚点）只认被证明过的来源**。
 - 为什么要收紧写入侧：锚点此后有三个消费者 —— Hello 验签（INV-P21）、安全码、
@@ -467,7 +471,10 @@ identity public key
 
 必须保持一致，除非用户显式重置身份。
 
-- 钩子：`db::migration_tests::migration_preserves_identity_data` `mesh::manager::tests::forget_identity_clears_keys_but_keeps_the_connection` `db::tests::friend_add_and_pubkey_persistence`
+- 钩子：`state::tests::device_id_is_persisted_once_and_never_rederived_on_restart` `db::migration_tests::migration_preserves_identity_data` `mesh::manager::tests::forget_identity_clears_keys_but_keeps_the_connection` `db::tests::friend_add_and_pubkey_persistence`
+- ⚠️ **分工写清楚**（2026-10-31 补）：后三条分别证明「库迁移不换身份」「忘记对端身份不动本机连接」「好友公钥持久化」——
+  它们都**不是**本机 `device_id` 在重启后不变的直接证据；那一条由第一条（TST-08，5.15.55）证：同一份库第二次启动拿到同一个 id，
+  且改库里的值会原样读回（区分「读库」与「重算」）。
 
 ---
 
