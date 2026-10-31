@@ -1693,7 +1693,7 @@ Select-String -Path "$d\gosslan-crash.log" -Pattern '>>> code=(HANG|RUNTIME_MEM)
 |---|---|---|---|
 | **A4**（`cb002e3c`） | 入站好友申请从"只存内存"改成 `settings['friend_req:<id>']` 落库；启动时 `restore_pending_requests` 只填表 | 写/删/恢复各只有一个调用点（`put_friend_request` / `forget_friend_request` / `restore_pending_requests`）；恢复体里**没有** emit 与两个通知入口（`lib_friend_identity_tests.rs` 那条接线判据逐字钉）；恢复位次在 `manage` 之后、联网之前；`clear_all_data` 按前缀整批抹 | 设计自洽；"重启不重复弹窗"靠的是"恢复只填表、补发到达时 insert 返回 Some ⇒ 走 SilentRefresh"，这条与代码一致 |
 | **A10**（`437d7667`） | 发起方收到 `FriendAccept` 回执后也 `ensure_conversation` | `INSERT OR IGNORE`（用例钉住：连 ensure 三次只有一行；已有摘要/未读/名字一个字不动）；调用在 `apply_friend_accept` 的库事务块内，**早于** 同函数末尾的 `emit("friend-accepted")`；前端 `onFriendAccepted` 同时 `refreshFriends()` + `refreshConversations()`（`useChatStore.ts:3013-3016`） | 用户能立刻看见新会话，不需要重启；空会话按既有空态显示 |
-| **A5**（`1a55241b` 同批） | 全新安装首启不再误报「上次运行异常退出」 | ① 写入侧：`lib.rs:265` 的 bootstrap 行确实带 `pid={}`；② 切片侧：`prev` 为空时按「有没有别的 pid 的启动尝试」二分——只有自己的 ⇒ 空切片 ⇒ `NoHistory`，有别人的/旧版无 pid ⇒ 整段交给分类器 ⇒ 仍判 `silent_kill`；三格用例逐格钉（`first_run_is_no_history_while_a_foreign_bootstrap_still_reads_silent_kill`）；③ 前端：`shouldShowCrashNotice("no_history") === false`（`crashReport.test.ts:38`） | 静默死亡检测**没有被顺手关掉**；三段静态链闭合。仍未做的是一次**真隔离 HOME 首启**实跑读数 |
+| **A5**（`1a55241b` 同批） | 全新安装首启不再误报「上次运行异常退出」 | ① 写入侧：`lib.rs:265` 的 bootstrap 行确实带 `pid={}`；② 切片侧：`prev` 为空时按「有没有别的 pid 的启动尝试」二分——只有自己的 ⇒ 空切片 ⇒ `NoHistory`，有别人的/旧版无 pid ⇒ 整段交给分类器 ⇒ 仍判 `silent_kill`；三格用例逐格钉（`first_run_is_no_history_while_a_foreign_bootstrap_still_reads_silent_kill`）；③ 前端：`shouldShowCrashNotice("no_history") === false`（`crashReport.test.ts:38`） | 静默死亡检测**没有被顺手关掉**；三段静态链闭合；**第二侧已于 5.15.92（`46f41213`）补齐**：`seed_previous_run` 写日志文件的那条判定此前仍按 raw 过滤，全新安装会落一条假的 Warn「异常终止 code=BOOT_PREV_SILENT_KILL」——现改为「候选内容全是本进程启动尝试时整块跳过」，并用例正反控钉住（本进程 pid ⇒ 不写；外来 pid ⇒ 仍判异常终止）。仍未做的是一次**真隔离 HOME 首启**实跑读数（两侧已由用例对齐，价值低） |
 
 **共同缺口（不是缺陷，是未验）**：A4/A10 的提交正文都写明"双实例真机流程（加好友→同意→重启）本机未验，留到第 3 批 release 产物一起补"；
 A5 缺的是"真隔离 HOME 首启不弹横幅"的一次实跑读数。⇒ A4/A10 进 §13 第 7 项、A5 进第 8 项。
@@ -2023,7 +2023,7 @@ audit-context/
 | 5 | **A2 真窗口十格 + A7 双实例几何** | 隔壁会话进行中 | 真窗口验收脚本**尚未入库**（17:51 仍在改） | §4.0bj 的两条观察点必须进这十格：`resolved` 置真早于主线程调度的假话风险；「重试成功」是否真显示主窗 |
 | 6 | ~~A2 的 `resolved` 置真顺序~~ | **已修（5.15.91 / `16e00f5e`）** | 在调度失败的 `Err` 分支复位 `resolved`/`retrying`（2 行）；成功路一字未改 | 现跑：`startup_error` 6 passed、`cargo test --lib` 1355 passed / 0 failed、clippy 0、fmt 0；§4.0bj 第 2 条已改为结论 |
 | 7 | **A4 / A10 的双实例真流程**（加好友→同意→重启） | A4 恢复臂**已实测**、A10 仍待真机 | 隔壁新写的 `friendreq` 轮尚未入库（只覆盖 A4 恢复臂；A10 要真实 `FriendAccept` 回执） | 2026-10-31 用当前 WIP（仅补了缺的 `tcpOpen` 导入）实跑：正向 **9/9 通过（总 27 条，退出 0）**；反向 `friendreq-lie` **恰好 2 条设计内断言红、退出 1**。脚本入库后需按提交版本复核这两个读数 |
-| 8 | **A5 的首启不误报**（真隔离 HOME 首启） | 只需一次实跑 | 三段静态链已闭合（§4.0bk 的 A5 行），缺"屏幕上没有横幅"的读数 | 隔离 HOME 起一次 release 产物，读 `build_previous_run_report` 的 kind 应为 `no_history` |
+| 8 | **A5 的首启不误报** | **两侧已一致（5.15.92 / `46f41213`）**；只剩可选的真机读数 | 报告侧 5.15.75 已修；日志判定侧 5.15.92 补齐并用例正反控钉住 | 若仍要端到端读数：隔离 HOME 起一次 release，`kind` 应为 `no_history`、日志里**不得**出现 `BOOT_PREV_SILENT_KILL` |
 
 **已收口的**（不再列进待办）：58 个审计 ID 全部有裁决（§4.0bg）、§5.1 八条分歧已逐条订正或复核（§5.1 状态块）、
 §9.2 未覆盖清单已对账（4 关 / 2 降 / 4 留）、发布事实与门禁账（§4.0bb / §4.0bf）、主线转绿三笔与方法教训（§4.0bh）、
