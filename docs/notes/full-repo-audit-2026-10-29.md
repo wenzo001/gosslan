@@ -1677,8 +1677,9 @@ Select-String -Path "$d\gosslan-crash.log" -Pattern '>>> code=(HANG|RUNTIME_MEM)
 
   `failure` 在闭包里没有被捕获（闭包只拿 `host/inner/state`）⇒ 这两行直接编译，不改任何接线；
   接线判据那句 `retry.contains("failure.resolved.store(true")` 也不受影响（置真那行原样保留）。
-  没在本轮直接改的原因：本仓规则「动应用码 ⇒ 同提交带 `Version-Bump` + 五处版本清单」，
-  而版本号在隔壁那条线上推进，我不单方面跳号。
+  **已于 2026-10-31 落地**（5.15.91 / `16e00f5e`）：按本仓规则同提交做了补丁级 `Version-Bump`
+  与五处版本清单；现跑 `startup_error` 6 passed、`cargo test --lib` 1355 passed / 0 failed、
+  `cargo clippy --all-targets -- -D warnings` 0、`cargo fmt --check --all` 0。
 - 成功路径靠「主窗口 `reload()` → 前端自己 `focus_window` 显示」：`tauri.conf.json` 里主窗是
   `visible:false`，所以"重试成功后屏幕上真有一扇主窗"完全落在前端那条路上；若它不显示，就退回
   「零窗口而进程活着」—— 正是 A2 要修的形态 ⇒ 必须进十格验收的「重试成功」那一格。
@@ -2020,7 +2021,7 @@ audit-context/
 | 3 | **Windows 句柄未关时删 `.part`** | 外部取证 | 需要 Windows 上「删 `.part` 报共享冲突」的真日志 | 若永不冲突，说明 `FILE_SHARE_DELETE` 已覆盖，可结案 |
 | 4 | **INV-P18：Ed25519 私钥字段仍是 `pub`** | 需设计 | 前置是"签名能力"抽象，未获授权开工 | §5 的 P18 行、`protocol-invariants.md` INV-P18 |
 | 5 | **A2 真窗口十格 + A7 双实例几何** | 隔壁会话进行中 | 真窗口验收脚本**尚未入库**（17:51 仍在改） | §4.0bj 的两条观察点必须进这十格：`resolved` 置真早于主线程调度的假话风险；「重试成功」是否真显示主窗 |
-| 6 | **A2 的 `resolved` 置真顺序**（`startup_error.rs`） | 已备好补丁、等下一个 `Version-Bump` | 修法：在调度失败的 `Err` 分支复位 `resolved`/`retrying`（2 行，确切 diff 在 §4.0bj） | 未直接改的原因：动应用码必须同提交带 `Version-Bump` + 五处版本清单，而版本号在隔壁那条线上 |
+| 6 | ~~A2 的 `resolved` 置真顺序~~ | **已修（5.15.91 / `16e00f5e`）** | 在调度失败的 `Err` 分支复位 `resolved`/`retrying`（2 行）；成功路一字未改 | 现跑：`startup_error` 6 passed、`cargo test --lib` 1355 passed / 0 failed、clippy 0、fmt 0；§4.0bj 第 2 条已改为结论 |
 | 7 | **A4 / A10 的双实例真流程**（加好友→同意→重启） | 隔壁计划第 3 批补 | 两批提交正文都写明本机未验 | §4.0bk 三件事：重启后申请仍在且不重复弹通知；同意后两侧都出现空会话；拒绝/同意后 `friend_req:` 行消失 |
 | 8 | **A5 的首启不误报**（真隔离 HOME 首启） | 只需一次实跑 | 三段静态链已闭合（§4.0bk 的 A5 行），缺"屏幕上没有横幅"的读数 | 隔离 HOME 起一次 release 产物，读 `build_previous_run_report` 的 kind 应为 `no_history` |
 
