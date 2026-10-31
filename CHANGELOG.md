@@ -13,6 +13,23 @@
 
 ## [Unreleased]
 
+## [5.15.68] - 2026-10-31
+
+### B4-F1 存量第二批：消息 / 回执链 11 处写库承诺留痕
+
+这一批清的是"消息到了、账没记上"那一族：回执删行（`delete_pending_read` /
+`delete_pending_group_read`）、单聊入站的时钟推进与会话行、群密钥落库、群成员同步的时钟。
+
+- 11 处 `db::…ok();` 改成 `if let Err(e) = … { log_write_failure(…) }`，控制流不变（跟第一批同一口径）。
+- 棘轮基线 **67 → 56**（L1 41 / L2 8 / L3 7）。
+- **没动**：其余 41 处 L1（relay_file 10、group_membership 5、file/send 3、file/relay_push 3、
+  commands/group_announcements 3…），按链路继续分。
+
+**真跑过的验证**：`cargo test --lib --features bluetooth` **1337 通过 / 0 失败**（3 ignored）；
+`cargo clippy -D warnings --all-targets` / `cargo fmt --all -- --check` 0 红 / 0 差异；
+`node scripts/check-silent-drops.mjs` → 56 处 / 基线 56 / 硬零 0；`npm run verify:local` 见下。
+
+
 ## [5.15.67] - 2026-10-31
 
 ### B4-F1 存量第一批：12 处写库承诺不再被 `.ok();` 吞掉
