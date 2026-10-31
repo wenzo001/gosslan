@@ -105,6 +105,64 @@ pub fn get_conversation(conn: &Connection, id: &str) -> Option<Conversation> {
     .flatten()
 }
 
+/// 会话列表那一行的「末条」在库里的取法：**与聊天时间线同一个全序**。
+///
+/// ⚠️ 排序键用 `seq` 不用 `ts`：`get_messages` 的时间线是 `ORDER BY seq ASC, id ASC`，
+/// 列表摘要必须指向用户在会话里看到的最后那一条。群历史保留源机的 `ts`
+/// （见 `db/group_history.rs` 函数头第 ① 条），两台时钟不同步时 ts 与 seq 可以反序 ⇒
+/// 按 `ts` 取就会把摘要写成时间线里更早的一条（审计 A1 的原始症状之一）。
+///
+/// 可当选的种类 = 实时接收那一臂会写摘要的那些：`Silent` 类与 `system` 都不写
+/// （`protocol::is_non_notifying_kind`）。清单从 `WIRE_KINDS` 现派生，不手写。
+fn newest_message_for_summary(
+    conn: &Connection,
+    conv_id: &str,
+) -> Result<Option<(String, String, i64)>> {
+    let silent = crate::protocol::sql_kind_list(&[], |c| c == crate::protocol::KindClass::Silent);
+    conn.query_row(
+        &format!(
+            "SELECT kind, content, ts FROM messages
+             WHERE conv_id = ?1 AND kind NOT IN ({silent}, 'system')
+             ORDER BY seq DESC, id DESC LIMIT 1"
+        ),
+        params![conv_id],
+        |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+    )
+    .optional()
+}
+
+/// 把会话行的末条摘要重算到库里那条真实末条**及其自己的时间**（群历史补齐用，审计 A1）。
+///
+/// 与 `touch_conversation` 的两点区别都是刻意的：
+///  - `last_ts` 用消息的 `ts`：补齐的是历史，用 `now_ms()` 会把一个用户处理到一半的会话
+///    无理由顶到列表最前，而"它该排哪儿"只由消息时间决定；
+///  - **不动 `unread`**：同步进来的 800 条历史不该变成一排红点。
+///
+/// 会话行不存在时先由 `ensure_conversation` 建出来（group 那一支自己会从 `groups` 取真实群名）。
+/// 返回 `false` = 这一页只带进静默事件（回应/置顶之类），库里没有可当末条的消息；
+/// 调用方据此决定要不要保留旧摘要（行本身照样已经建出来）。
+pub fn refresh_conversation_head_from_history(
+    conn: &Connection,
+    id: &str,
+    kind: &str,
+    name: &str,
+) -> Result<bool> {
+    let last = newest_message_for_summary(conn, id)?;
+    ensure_conversation(conn, id, kind, name, None)?;
+    let Some((last_kind, last_content, last_ts)) = last else {
+        return Ok(false);
+    };
+    conn.execute(
+        "UPDATE conversations SET last_msg = ?2, last_ts = ?3 WHERE id = ?1",
+        params![
+            id,
+            crate::protocol::preview_text(&last_kind, &last_content),
+            last_ts
+        ],
+    )?;
+    Ok(true)
+}
+
 /// 设置会话置顶（纯本地偏好，不广播、不同步）。会话不存在时静默成功。
 pub fn set_conversation_pinned(conn: &Connection, conv_id: &str, pinned: bool) -> Result<()> {
     conn.execute(
@@ -177,7 +235,10 @@ pub fn delete_conversation(conn: &Connection, conv_id: &str) -> Result<()> {
     // 留着这几行，flush_outbox 会在下次建链/心跳把**已删除的消息**补发回去，
     // 对端落库后还会反向出现在本机（对方再发回执/重同步时）——「删了又冒出来」。
     let doomed = format!("SELECT msg_id FROM messages WHERE conv_id = ?1 AND kind NOT IN ({keep})");
-    tx.execute(&format!("DELETE FROM outbox WHERE msg_id IN ({doomed})"), params![conv_id])?;
+    tx.execute(
+        &format!("DELETE FROM outbox WHERE msg_id IN ({doomed})"),
+        params![conv_id],
+    )?;
     tx.execute(
         &format!("DELETE FROM group_outbox WHERE msg_id IN ({doomed})"),
         params![conv_id],
