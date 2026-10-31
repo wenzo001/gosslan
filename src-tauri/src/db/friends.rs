@@ -358,4 +358,28 @@ mod friend_request_store_tests {
         );
     }
 
+    /// 好友同意后两侧各自建会话用的必须是**幂等**那一把（审计 A10）：
+    /// 重复回执 / 同一台收到两份同意 ⇒ 仍然只有一行；而已存在的那一行一个字都不动
+    /// （不许把已有摘要、未读或名字抹成空）。
+    #[test]
+    fn ensuring_a_conversation_is_idempotent_and_never_rewrites_an_existing_row() {
+        let conn = mem();
+        ensure_conversation(&conn, "dev-b", "single", "小李", None).unwrap();
+        ensure_conversation(&conn, "dev-b", "single", "小李", None).unwrap();
+        ensure_conversation(&conn, "dev-b", "single", "改了名字", None).unwrap();
+        let rows: i64 = conn
+            .query_row("SELECT COUNT(*) FROM conversations WHERE id='dev-b'", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(rows, 1, "重复事件不许造出第二个会话");
+
+        // 已经握着摘要与未读的那一行：再 ensure 一次不许把它擦平
+        touch_conversation(&conn, "dev-c", "single", "小王", None, "最后一条", 2).unwrap();
+        ensure_conversation(&conn, "dev-c", "single", "小王", None).unwrap();
+        let after = get_conversation(&conn, "dev-c").unwrap();
+        assert_eq!(after.last_msg.as_deref(), Some("最后一条"));
+        assert_eq!(after.unread, 2, "ensure 只补行，不许动已有会话的内容");
+        assert_eq!(after.name, "小王");
+    }
+
+
 }
