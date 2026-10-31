@@ -223,10 +223,13 @@ pub(crate) fn bind_friend_keys_on_accept(
     conn: &rusqlite::Connection,
     friend_id: &str,
     keys: FriendKeySnapshot,
+    logger: &crate::logging::Logger,
 ) {
     let (x, e) = acceptable_friend_keys(keys.verified, keys.x25519, keys.ed25519);
     if x.is_some() || e.is_some() {
-        db::update_friend_pubkeys(conn, friend_id, x.as_deref(), e.as_deref()).ok();
+        if let Err(e) = db::update_friend_pubkeys(conn, friend_id, x.as_deref(), e.as_deref()) {
+            crate::logging::log_write_failure(logger, "update_friend_pubkeys", e);
+        }
     }
 }
 
@@ -362,11 +365,13 @@ pub(crate) fn apply_friend_accept(state: &Arc<AppState>, from: &str, trace: &str
     let was_friend = {
         let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
         let seen = was_friend;
-        db::add_friend(&dbc, from, &name, None).ok();
+        if let Err(e) = db::add_friend(&dbc, from, &name, None) {
+            crate::logging::log_write_failure(&state.logger, "add_friend", e);
+        }
         // 同步公钥：x25519 照旧早绑，ed25519 只认 verified 来源
         // （跨跳到达的那一份尤其要紧 —— 它允许 TOFU，`peers` 里那对钥匙
         //  可能来自未签名广播，判据在 `bind_friend_keys_on_accept` 里）。
-        bind_friend_keys_on_accept(&dbc, from, key_snapshot);
+        bind_friend_keys_on_accept(&dbc, from, key_snapshot, &state.logger);
         seen
     };
     // 已经是好友了 ⇒ 这条申请必须消失（否则「新朋友」里会留着一条永远处理不掉的申请）。

@@ -21,10 +21,12 @@ pub(crate) fn maybe_update_friend(
     let key_snapshot = FriendKeySnapshot::capture(state, device_id);
     let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
     if db::get_friend(&dbc, device_id).is_some() {
-        db::add_friend(&dbc, device_id, nickname, avatar.as_deref()).ok();
+        if let Err(e) = db::add_friend(&dbc, device_id, nickname, avatar.as_deref()) {
+            crate::logging::log_write_failure(&state.logger, "add_friend", e);
+        }
         // 好友行常在公钥落库之后才创建（好友申请通过才 add_friend），此处每次补一次绑定：
         // x25519 保证 E2EE 取得到对方公钥，ed25519 只认被证明过的来源（见 helper 的注释）。
-        bind_friend_keys_on_accept(&dbc, device_id, key_snapshot);
+        bind_friend_keys_on_accept(&dbc, device_id, key_snapshot, &state.logger);
     }
 }
 

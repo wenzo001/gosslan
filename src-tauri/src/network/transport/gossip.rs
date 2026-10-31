@@ -364,7 +364,9 @@ async fn handle_gossip(state: &Arc<AppState>, peer_id: &str, env: GossipEnvelope
         };
         if learned {
             let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
-            db::update_friend_pubkeys(&dbc, &env.sender_id, Some(&env.sender_pubkey), None).ok();
+            if let Err(e) = db::update_friend_pubkeys(&dbc, &env.sender_id, Some(&env.sender_pubkey), None) {
+                crate::logging::log_write_failure(&state.logger, "update_friend_pubkeys", e);
+            }
         }
     }
     // 3. 解包：E2EE 关闭时载荷为明文 JSON；开启时按单聊 ECDH / 群密钥解密
@@ -1293,17 +1295,32 @@ async fn handle_gossip(state: &Arc<AppState>, peer_id: &str, env: GossipEnvelope
                     if announced_on(&inserted) {
                         // 时钟推进与静默**无关**，必须照常：漏掉它本机后续 seq 会落后，
                         // 之后自己发的消息会排到历史前面。
-                        db::observe_clock(&dbc, &conv_id, seq).ok();
+                        if let Err(e) = db::observe_clock(&dbc, &conv_id, seq) {
+                            crate::logging::log_write_failure(&state.logger, "observe_clock", e);
+                        }
                         if crate::protocol::is_non_notifying_kind(&kind) {
                             // 静默事件（表情回应/撤回）与系统提示都不计未读、不改会话预览 ——
                             // 否则「回个表情」或「X 加入了群聊」会把会话顶到列表最前并弹通知。
                             // 但会话行必须存在，前端要靠它把事件归属到正确的会话。
-                            db::ensure_conversation(&dbc, &conv_id, conv_kind, &name, None).ok();
+                            if let Err(e) =
+                                db::ensure_conversation(&dbc, &conv_id, conv_kind, &name, None)
+                            {
+                                crate::logging::log_write_failure(
+                                    &state.logger,
+                                    "ensure_conversation",
+                                    e,
+                                );
+                            }
                         } else {
-                            db::touch_conversation(
+                            if let Err(e) = db::touch_conversation(
                                 &dbc, &conv_id, conv_kind, &name, None, &preview, 1,
-                            )
-                            .ok();
+                            ) {
+                                crate::logging::log_write_failure(
+                                    &state.logger,
+                                    "touch_conversation",
+                                    e,
+                                );
+                            }
                         }
                     }
                     (rec, inserted)
