@@ -245,6 +245,38 @@ export async function run() {
     check("B 的会话行由这次聊天活动建出来，且未读为 0（补 4 条历史不该变成 4 条红点）",
       !!conv && conv.unread === 0, "会话行存在且 unread=0", JSON.stringify(conv));
 
+    // ── 审计 A1（用户 2026-10-31 拍板）：补齐后那一行的**两个字段**也要有跨进程读数 ──────
+    // 上面那格只判了 unread。`last_msg`/`last_ts` 一直在读却从没被断言过，而 A1 要的就是这两格。
+    // 单测（`src-tauri/src/db/group_history.rs` 里 `history_sync_recomputes_the_head_but_never_the_unread`
+    // 与 `the_head_follows_the_logical_clock_and_ignores_silent_rows`）在同一进程的一份内存库里判过；
+    // 这里判的是"B 那台把**密封的一页**解开、落库之后，生产码有没有把它自己库里的这一行挪到真实末条"。
+    // 期望从**库里现算**，不在这里点名"哪条该是末条"：口径与产品同一句 —— 取 `seq` 最大
+    // （`db/conversations.rs` 的 `newest_message_for_summary` 用 `ORDER BY seq DESC` 而不是 `ts`；
+    // 两台时钟不同步时按 ts 取会把摘要写成时间线里更早的一条，那正是 A1 的原始症状）。
+    // ⚠️ 这一轮的夹具四条 kind（text/text/todo/image）都可当末条，没有 reaction/pin 那类静默行 ⇒
+    //   这里可以直接取最大 seq；将来夹具若种进静默事件，要跟着 `newest_message_for_summary` 的排除口径改。
+    const newestRow = rows.length ? rows.reduce((a, b) => (b.seq > a.seq ? b : a)) : null;
+    const headRow = newestRow ? byId.get(want(newestRow.msg_id)) : null;
+    check("★ 补齐后 B 那一行的排序键 = 库里真实末条自己的 ts（不是同步时刻：写 now 会把补来的历史顶到列表最前）",
+      !!conv && !!headRow && conv.last_ts === headRow.ts,
+      `last_ts=${headRow?.ts}（末条 ${headRow?.msg_id} seq=${headRow?.seq}）`,
+      `last_ts=${conv?.last_ts} / 而这一趟的同步时刻约 ${nowMs()}`);
+    // 预览文案不在这本手抄 kind→字面量表：从 `protocol::preview_text` 那一个家现解析
+    //（TS 侧与 Rust 侧那两组标签已由 `src/utils/messageKinds.test.ts` 的 DUP-12 逐项钉死 ⇒
+    //  解析出来的就是界面会画的那一句）。解析不到就把期望写成 null ⇒ 这一格红在仪表上，不静默放行。
+    const previewLabel = (kind) => {
+      const src = fs.readFileSync(new URL("../../../src-tauri/src/protocol.rs", import.meta.url), "utf8");
+      const at = src.indexOf("pub fn preview_text");
+      const m = at > 0
+        && new RegExp(`"${kind}" => "(\\[[^\\]]{1,8}\\])"`).exec(src.slice(at, src.indexOf("\n}", at)));
+      return m ? m[1] : null;
+    };
+    const wantLabel = headRow ? previewLabel(headRow.kind) : null;
+    check("★ 补齐后 B 那一行的预览 = 真实末条那种 kind 的人话标签（JSON 载荷不许漏进会话列表）",
+      !!conv && !!wantLabel && conv.last_msg === wantLabel,
+      wantLabel ?? "<从 protocol.rs 解析不到该 kind 的预览标签 ⇒ 仪表坏了>",
+      `last_msg=${JSON.stringify(conv?.last_msg)} / 末条 kind=${headRow?.kind}`);
+
     const clockB = readClock(INSTANCES[1]);
     check("B 的会话逻辑时钟被抬到历史之后（否则 B 之后自己发的消息会排到刚同步来的历史前面）",
       clockB >= SEED_ROWS.length, `>= ${SEED_ROWS.length}`, String(clockB));
@@ -325,6 +357,16 @@ export async function run() {
     check("补拉是幂等的：B 的历史正好多出那一条，没有重复行",
       caught.length === SEED_ROWS.length + 1,
       SEED_ROWS.length + 1, caught.length);
+    // A1 里"重复执行历史补齐不能产生错误预览或错误排序"那一格在跨进程层的读数：
+    // 补来的那条 seq=5 比第一阶段四条都新 ⇒ 那一行的排序键必须跟着挪（第一阶段的末条是
+    // 那张图片卡片）。这里只比排序键的**推进**，不再判预览文案 —— 任务卡片的 `[任务] …` 口径
+    // 有 Rust 单测与 DUP-12 那格跨语言对账兜着，抄第二份字面量只会造出第二个真源。
+    const conv2 = readConvRow(INSTANCES[1]);
+    const newHead = caught.find((x) => x.msg_id === want(CATCHUP_ID));
+    check("★ 重复补齐后 B 那一行的排序键挪到新落库那条真实末条上（没留在第一阶段那张图片卡片）",
+      !!conv2 && !!newHead && conv2.last_ts === newHead.ts && conv2.last_ts > conv.last_ts,
+      `last_ts=${newHead?.ts}（> 第一阶段 ${conv?.last_ts}）`,
+      `last_ts=${conv2?.last_ts} / msg=${JSON.stringify(conv2?.last_msg)}`);
     check("B 侧日志留下了「重连补拉」那条（证明走的是新触发点，不是清扫任务碰巧扫到）",
       countLog(INSTANCES[1].log, "重连补拉") > 0,
       ">=1 行", String(countLog(INSTANCES[1].log, "重连补拉")));

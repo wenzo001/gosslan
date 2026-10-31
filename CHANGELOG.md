@@ -13,6 +13,35 @@
 
 ## [Unreleased]
 
+### 第三轮审计·第五批（验证收口）A1：群历史那轮的会话行两个字段第一次有了跨进程断言
+
+**为什么要补**：`scripts/e2e/rounds/ghsync.mjs` 一直在 `SELECT id,unread,last_msg,last_ts`，
+却只断言 `unread === 0` —— 而 A1 要判的恰恰是补齐后会话那一行的 `last_msg` / `last_ts`。
+产品侧那半边早在第二批修好，并带两条具名 Rust 单测（`db/group_history.rs` 的
+`history_sync_recomputes_the_head_but_never_the_unread` 与
+`the_head_follows_the_logical_clock_and_ignores_silent_rows`），但那些跑的是同一进程的一份内存库 ⇒
+"密封的一页真跨链路搬过去、并且把对面那台库里的这一行挪对了"这件事今天第一次有读数。
+
+**加了什么**（只加判据，一行产品码没动）：① 排序键 = 库里真实末条（按 `seq` 现算，口径同
+`db/conversations.rs` 的 `newest_message_for_summary`）自己的 `ts`；② 预览 = 那一行 kind 的人话标签，
+期望值从 `protocol::preview_text` 现解析（不手抄第二份 kind→文案表；TS/Rust 两侧标签另有 DUP-12 那格对账），
+解析不到就红在仪表上；③ 第二阶段补拉后排序键必须挪到那条新落库的真实末条上（判"重复补齐不产生错误排序"）。
+
+**实测**（release 二进制，两实例真进程，隔离 HOME + 族私有库）：
+`node scripts/e2e-multi-instance.mjs --round=ghsync` → **41 条断言全绿，退出码 0**（本步 23 条 / 61.2s，
+产物 `test-results/run-2026-10-31T10-23-49-017Z`）。三格的实际读数：B 的会话行
+`{"unread":0,"last_msg":"[图片]","last_ts":1792664631290}` —— 那个 ts 是 A 九天前发那条图片卡片的时刻，
+而同那一趟的同步时刻是 `1793442294903`（相差 9.0 天 ⇒ 不是写 now）；第二阶段补来 seq=5 的群任务后
+`last_ts=1793442294985`、`last_msg="[任务] 离线期间的任务"`。
+反向档 `--round=ghsync-lie` → **退出码 1，9 条红**（原有 6 条读 `msg_id` 的格 + 本批这 3 格），
+其余照绿 ⇒ 新格也吃同一套 id 翻转，不是恒真机。
+仪表灵敏度另做一趟单点变异（只改期望：排序键 `+1`、预览标签加后缀）→ **恰好这 2 格红、退出码 1**，
+恢复原文件后 SHA-256 与跑绿那份逐字相等（`f494a9e3…`）⇒ "改坏即红、恢复即绿"两边都有读数。
+文档那一处硬数字同批改到现算值（`docs/acceptance/stability-smoke-matrix.md` 群历史轮 38 → 41，
+`node scripts/check-doc-numbers.mjs` 退出码 0）。
+
+**没跑的部分**：本批是判据与文档，没有产品码变化 ⇒ 没重跑 `verify:full`（快速层 `npm run verify` 照跑）。
+
 ## [5.15.90] - 2026-10-31
 
 ### 第三轮审计·第四批 A9：局域网开关那族读数改到磁盘上真存在的那一行
