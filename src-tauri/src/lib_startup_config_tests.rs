@@ -448,6 +448,82 @@
         );
     }
 
+    /// A7：窗口状态文件必须**按实例分开**，而 0 号实例继续读旧版本那一份。
+    ///
+    /// 真实缺陷：`--instance` 只用来错开 DB/日志，插件的 `.window-state.json` 一直是共享的
+    /// ⇒ 同目录里两个实例互相盖对方的几何（后保存的赢，先那个窗口的记忆当场没了）。
+    ///
+    /// 三格各判一件事：① 0 号 = **插件自己的常量**（不是手抄字面量 —— 旧版本就是按那个名字
+    /// 落盘的，改名字等于让单实例用户"记住的尺寸"凭空消失，而这条只能靠"取同一个源"来保）；
+    /// ② 任意两个不同的实例号不许撞到同一个文件名（这就是这次缺陷的形状本身）；
+    /// ③ 名字必须是**单个路径段**（插件把它拼在 app data 目录下；带 `/`、`\`、`..` 会写到
+    /// 别处或直接被拒 ⇒ 变成"没记住尺寸"，而且是一条静默的路径）。
+    #[test]
+    fn window_state_file_is_per_instance_and_keeps_the_legacy_default_name() {
+        assert_eq!(
+            window_state_filename(0),
+            tauri_plugin_window_state::DEFAULT_FILENAME,
+            "0 号实例没有用插件的默认名 ⇒ 老用户已经记住的窗口几何读不回来（单实例用户不许受影响）"
+        );
+        let nums = [1u32, 2, 3, 7, 10, 99];
+        let names: Vec<String> = nums.iter().map(|n| window_state_filename(*n)).collect();
+        let distinct: std::collections::HashSet<&String> = names.iter().collect();
+        assert_eq!(
+            distinct.len(),
+            names.len(),
+            "不同实例号算出了同一个文件名 ⇒ 多开还是会互相覆盖：{names:?}"
+        );
+        for n in nums {
+            let name = window_state_filename(n);
+            assert_eq!(
+                name,
+                window_state_filename(n),
+                "同一个实例号两次算出不同名字 ⇒ 重启后读不回自己那一份"
+            );
+            assert_ne!(
+                name,
+                window_state_filename(0),
+                "实例 {n} 撞上了 0 号那一份（等于没隔离）：{name}"
+            );
+            for seg in ["/", "\\", ".."] {
+                assert!(
+                    !name.contains(seg),
+                    "文件名里出现了 {seg} ⇒ 不再是一个路径段，插件会写到别处或拒写：{name}"
+                );
+            }
+        }
+    }
+
+    /// A7 的**接线**判据：那份按实例算出来的名字必须真的传给插件（本仓的老规矩 ——
+    /// 纯函数写得再对，没人调就等于还在共享同一份文件）。
+    ///
+    /// 钉的是"实际传进去的表达式"与**出现次数**，不是存在性：同一句话也可能只活在注释里
+    /// （所以先 `code_only`），而 `.with_filename(` 出现两处就意味着有两个真源在打架。
+    #[test]
+    fn window_state_filename_is_wired_into_the_plugin_builder() {
+        fn code_only(src: &str) -> String {
+            src.lines()
+                .filter(|l| !l.trim_start().starts_with("//"))
+                .collect::<Vec<_>>()
+                .join("\n")
+        }
+        let src = code_only(include_str!("lib.rs"));
+        assert_eq!(
+            src.matches(".with_filename(").count(),
+            1,
+            "设置窗口状态文件名的地方必须只有一处（两处 = 两个真源，最后一处赢）"
+        );
+        assert!(
+            src.contains(".with_filename(window_state_filename(crate::state::instance_id()))"),
+            "builder 没有把实例号传进文件名 ⇒ 退回共享的那一份，第二个实例又会盖掉第一个"
+        );
+        assert_eq!(
+            src.matches("fn window_state_filename(").count(),
+            1,
+            "命名规则必须只有一个定义（多处 = 改一处漏一处）"
+        );
+    }
+
     /// 崩溃现场的内存读数**接在哪三个出口**上 —— 采样函数写得再对，没接上就等于零。
     ///
     /// 这是本仓的"接线判据"规矩：钉**出现次数**与**先后顺序**，不钉存在性
