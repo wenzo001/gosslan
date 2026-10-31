@@ -1662,7 +1662,23 @@ Select-String -Path "$d\gosslan-crash.log" -Pattern '>>> code=(HANG|RUNTIME_MEM)
 
 - `resolved = true` 写在 `run_on_main_thread(...)` **之前**：万一主线程调度失败（返回 `Err`），
   二次重试会被拒并说「应用已经恢复正常」，而实际上一次都没恢复 —— 只剩「打开目录 / 退出」可用。
-  影响小（退出仍可用），但**那句话会是假的**。修法若要做，是把置真挪到闭包内（拿一个回执）。
+  **确切补丁（2 行，等下一次 `Version-Bump` 一起落）**：把那段 `if let Err(e) = host.run_on_main_thread(..) {`
+  的错误分支从「只 `return Err`」改成先复位两格再返回：
+
+  ```rust
+  if let Err(e) = host.run_on_main_thread(move || { … }) {
+      // 调度失败＝这一次并没有恢复：不复位的话下一次重试会被 `retry_gate` 拒掉并回
+      // 「应用已经恢复正常，无需再重试」—— 那是假话，用户只剩「退出」一条路。
+      failure.resolved.store(false, Ordering::SeqCst);
+      failure.retrying.store(false, Ordering::SeqCst);
+      return Err(format!("恢复主线程调度失败：{e}"));
+  }
+  ```
+
+  `failure` 在闭包里没有被捕获（闭包只拿 `host/inner/state`）⇒ 这两行直接编译，不改任何接线；
+  接线判据那句 `retry.contains("failure.resolved.store(true")` 也不受影响（置真那行原样保留）。
+  没在本轮直接改的原因：本仓规则「动应用码 ⇒ 同提交带 `Version-Bump` + 五处版本清单」，
+  而版本号在隔壁那条线上推进，我不单方面跳号。
 - 成功路径靠「主窗口 `reload()` → 前端自己 `focus_window` 显示」：`tauri.conf.json` 里主窗是
   `visible:false`，所以"重试成功后屏幕上真有一扇主窗"完全落在前端那条路上；若它不显示，就退回
   「零窗口而进程活着」—— 正是 A2 要修的形态 ⇒ 必须进十格验收的「重试成功」那一格。
@@ -2004,7 +2020,7 @@ audit-context/
 | 3 | **Windows 句柄未关时删 `.part`** | 外部取证 | 需要 Windows 上「删 `.part` 报共享冲突」的真日志 | 若永不冲突，说明 `FILE_SHARE_DELETE` 已覆盖，可结案 |
 | 4 | **INV-P18：Ed25519 私钥字段仍是 `pub`** | 需设计 | 前置是"签名能力"抽象，未获授权开工 | §5 的 P18 行、`protocol-invariants.md` INV-P18 |
 | 5 | **A2 真窗口十格 + A7 双实例几何** | 隔壁会话进行中 | 真窗口验收脚本**尚未入库**（17:51 仍在改） | §4.0bj 的两条观察点必须进这十格：`resolved` 置真早于主线程调度的假话风险；「重试成功」是否真显示主窗 |
-| 6 | **A2 的 `resolved` 置真顺序**（`startup_error.rs`） | 已登记、待决定 | 改法：把置真挪进 `run_on_main_thread` 闭包（3 行），让调度失败时仍可重试 | §4.0bj 第 2 条；不动理由：A2 作者正在同一格验收，改了读数对不上 |
+| 6 | **A2 的 `resolved` 置真顺序**（`startup_error.rs`） | 已备好补丁、等下一个 `Version-Bump` | 修法：在调度失败的 `Err` 分支复位 `resolved`/`retrying`（2 行，确切 diff 在 §4.0bj） | 未直接改的原因：动应用码必须同提交带 `Version-Bump` + 五处版本清单，而版本号在隔壁那条线上 |
 | 7 | **A4 / A10 的双实例真流程**（加好友→同意→重启） | 隔壁计划第 3 批补 | 两批提交正文都写明本机未验 | §4.0bk 三件事：重启后申请仍在且不重复弹通知；同意后两侧都出现空会话；拒绝/同意后 `friend_req:` 行消失 |
 | 8 | **A5 的首启不误报**（真隔离 HOME 首启） | 只需一次实跑 | 三段静态链已闭合（§4.0bk 的 A5 行），缺"屏幕上没有横幅"的读数 | 隔离 HOME 起一次 release 产物，读 `build_previous_run_report` 的 kind 应为 `no_history` |
 
