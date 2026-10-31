@@ -1404,7 +1404,7 @@ STB-04 半条（非好友分支广播后直接 return，无撤销登记 —— *
 |---|---|---|
 | `commands/files.rs:181` | `canonicalize(favorites_dir).ok()` | **可接受**：折成 None 后走 `Err(OPEN_PATH_UNBOUND)` ⇒ **失败关闭**，不会放行越界路径 |
 | `db.rs:1282` | `create_dir_all(parent)`（开库前） | **可接受**：目录建不出来时紧接着的 `Connection::open` 会以真实错误上抛（`?`） |
-| `db.rs` ×4（1377/1382/1383/1409） | `pragma_update(journal_mode / synchronous / foreign_keys)` | **可接受但记一条可选改进**：失败时用的是 SQLite 默认值（仍安全，只是慢/兼容差异）。想留痕的话塞进 `startup_notices`（现成通道，`state.rs` 会用 logger 落盘）——本轮不做 |
+| `db.rs` ×4 | `pragma_update(journal_mode / synchronous / foreign_keys)` | **前三处可接受**（已有读回校验 + `DB_*` 通知）；**第四处已修（5.15.73，§4.0bd）**：WAL 失败后那句 `synchronous=FULL` 原先 `.ok()` 掉却照样声称「已提到」，现改为读回决定措辞 |
 | `network/file/receive.rs:841`、`state.rs:2079` | `create_dir_all(downloads)` | **可接受**：写文件时会以真实错误失败，且已走 `FILE_RECEIVE_WRITE_FAILED` / `DISK_FULL` 分类 |
 | `db/group_delete_boundary.rs:52/78` | `set_lan_enabled/set_bt_enabled(默认值).ok()` | **可接受**：这是"把默认值持久化"，失败后下次启动重做（幂等），本次返回值不受影响。⚠️ 分类器把它算 L3 是因为它没写 `db::` 前缀（模块内调用），它**本质是写** —— 记录在案，别被 L3 这个名字骗了 |
 | `db/group_history.rs:369` | `observe_clock(conn, …).ok()` | **可接受**：同上（模块内调用被算 L3）；db 层没有 logger 可写，而同一事务里若真写失败，前面的 insert 会先上抛 |
@@ -1463,7 +1463,7 @@ STB-04 半条（非好友分支广播后直接 return，无撤销登记 —— *
 2. 群侧盘满的端到端（真盘 + 群多跳）。
 3. ~~64 处转换缺「失败不改控制流」的运行时判据~~ —— **已补（5.15.72，§4.0bc）**：扫块体断言「分支只许留痕、不许 return/break/continue/`?;`」，另加 `log_write_failure` 调用计数 ≥ 64。
 4. 盘满删除时接收器句柄仍开着（Windows 未坐实；std 打开方式含 `FILE_SHARE_DELETE`）。
-5. L2 里 pragma 四条的可选留痕。
+5. ~~L2 里 pragma 四条的可选留痕~~ —— **已核查并修第四条（5.15.73，§4.0bd）**：前三条早有读回校验；WAL 失败后那句 `synchronous=FULL` 原先 `.ok()` 掉却照样声称「已提到」，现改为读回决定措辞。
 
 ### 4.0bc 64 处写库留痕的运行时/结构判据（5.15.72）
 
@@ -1476,6 +1476,17 @@ STB-04 半条（非好友分支广播后直接 return，无撤销登记 —— *
   「失败分支里出现了 return」。
 - 量具两个坑：按字节切块体会被中文注释打断（改 `Vec<char>`）；子串计数把文档注释的示例算进去，
   让「少一处」被抵掉（改成只数行首）。
+
+### 4.0bd pragma 留痕核查（5.15.73）：前三条早已有读回，第四条在说假话
+
+- 核查结论：`journal_mode` / `synchronous` / `foreign_keys` 三条在 `.ok()` 之后**都有读回比对**
+  （不对就 push `DB_DURABILITY_DEGRADED` / `DB_FOREIGN_KEYS_OFF`），所以「吞掉」只是写法，不是缺陷。
+- 真正的缺口在**第四条**：WAL 没开成时把 `synchronous` 提到 `FULL`，结果 `.ok()` 掉，
+  而通知已写「已把 synchronous 提到 FULL」——设不上就是假话，而掉电安全正取决于它。
+- 修法：先设再**读回**，措辞由纯函数 `durability_after_wal_failure(journal, raised)` 决定；
+  读回非 2 时 push `DB_DURABILITY_NOT_RAISED` 并直说「掉电可能损坏、请移回本地盘」。
+- 判据 `durability_notice_follows_the_read_back_value`（真值表 2 / -1 / 0 / 1 / 3）；
+  变异放宽条件 ⇒ 点名。棘轮 15→14。
 
 ### 4.1 已核查且未发现问题的稳定性面
 
@@ -1631,7 +1642,7 @@ STB-04 半条（非好友分支广播后直接 return，无撤销登记 —— *
 >
 > 现在把它改成**唯一的状态表**：`§1/§2/§3/§6/§7` 各节记的是**审计当时**的发现，今天的状态以本表为准。
 > ⚠️ 诚实边界：本表是**人工对账 + 每行挂复跑命令**，不是机器判据 —— 没有任何脚本断言"这张表与代码一致"
-> （能做这种断言的只有逐行的复跑命令本身）。表里没写的 ID 见 §4.0a～§4.0bc 的复核结论。
+> （能做这种断言的只有逐行的复跑命令本身）。表里没写的 ID 见 §4.0a～§4.0bd 的复核结论。
 
 | 序 | ID | 今天的状态 | 凭据 / 复跑 |
 |---|---|---|---|

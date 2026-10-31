@@ -1406,16 +1406,37 @@ pub fn init_with_notices(path: &Path) -> std::result::Result<(Connection, Vec<St
         .query_row("PRAGMA synchronous", [], |r| r.get(0))
         .unwrap_or(-1);
     if !journal.eq_ignore_ascii_case("wal") {
-        conn.pragma_update(None, "synchronous", "FULL").ok();
-        startup_notices.push(format!(
-            "code=DB_DURABILITY_DEGRADED journal_mode={journal}（期望 wal）⇒ 已把 synchronous 提到 FULL：写入变慢，但不会出现「已提交却被回滚/损坏」"
-        ));
+        // ⚠️ 这一句的**结果也要读回**（§4.0bb 缺口⑤）：原先 `.ok()` + 一句「已把 synchronous
+        // 提到 FULL」—— 万一它没设上，那条通知就是**假的**，而掉电损坏风险正好落在这里。
+        let _ = conn.pragma_update(None, "synchronous", "FULL");
+        let raised: i64 = conn
+            .query_row("PRAGMA synchronous", [], |r| r.get(0))
+            .unwrap_or(-1);
+        if let Some(n) = durability_after_wal_failure(&journal, raised) {
+            startup_notices.push(n);
+        }
     } else if sync_level != 1 {
         startup_notices.push(format!(
             "code=DB_DURABILITY_DEGRADED synchronous={sync_level}（期望 1=NORMAL）"
         ));
     }
     Ok((conn, startup_notices))
+}
+
+/// WAL 没开成时的那一句（纯函数，真值表在 `startup_safety_tests`）。
+///
+/// `raised` 是**读回**的实际值（0=OFF / 1=NORMAL / 2=FULL / 3=EXTRA）——
+/// 只有真的到了 FULL 才允许说「已提到 FULL」，否则必须说「没能提上去、掉电可能损坏」。
+fn durability_after_wal_failure(journal: &str, raised: i64) -> Option<String> {
+    if raised == 2 {
+        Some(format!(
+            "code=DB_DURABILITY_DEGRADED journal_mode={journal}（期望 wal）⇒ 已把 synchronous 提到 FULL：写入变慢，但不会出现「已提交却被回滚/损坏」"
+        ))
+    } else {
+        Some(format!(
+            "code=DB_DURABILITY_NOT_RAISED journal_mode={journal} synchronous={raised}（期望 2=FULL）—— 既没开成 WAL、也没能把 synchronous 提上去：掉电可能损坏，请把库移回本地盘"
+        ))
+    }
 }
 
 #[cfg(test)]
