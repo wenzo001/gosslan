@@ -428,14 +428,27 @@ fn durability_notice_follows_the_read_back_value() {
             && raised.contains("已把 synchronous 提到 FULL"),
         "真到了 FULL 才许这么说：{raised}"
     );
-    for now in [-1, 0, 1, 3] {
+    // 3 = EXTRA 比 FULL 更耐久 ⇒ 也该算「已提上去」（review 指出 `== 2` 会把它误报成失败）。
+    let extra = durability_after_wal_failure("delete", 3).expect("降级分支必有通知");
+    assert!(
+        extra.contains("code=DB_DURABILITY_DEGRADED") && extra.contains("EXTRA"),
+        "读回 3=EXTRA 必须算已提上去：{extra}"
+    );
+    // 读回失败（-1）**不等于**「没提上去」：既不能说假话，也不能凭空断言失败。
+    let unknown = durability_after_wal_failure("delete", -1).expect("降级分支必有通知");
+    assert!(
+        unknown.contains("code=DB_DURABILITY_UNKNOWN")
+            && !unknown.contains("没能把 synchronous 提上去"),
+        "读不回时不许断言「没提上去」：{unknown}"
+    );
+    for now in [0, 1] {
         let n = durability_after_wal_failure("delete", now).expect("降级分支必有通知");
         assert!(
             n.contains("code=DB_DURABILITY_NOT_RAISED"),
             "读回 {now} 时必须是 NOT_RAISED：{n}"
         );
         assert!(
-            !n.contains("已把 synchronous 提到 FULL"),
+            !n.contains("已把 synchronous 提到"),
             "读回 {now} 时不许声称已经提上去了（那正是原来的假话）：{n}"
         );
         assert!(

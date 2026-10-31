@@ -1452,6 +1452,10 @@ fn disk_full_deletes_the_part_and_other_failures_keep_it() {
 /// 为什么需要它：那 64 处是脚本批量改的，review 逐处读过等价，但没有任何机器判据；
 /// 以后谁在失败分支里顺手加一句 `return Ok(())`，界面上的表现就是"一次写库抖动 ⇒ 整条链路
 /// 静默少做一半"，而所有现有用例都不会红。
+///
+/// ⚠️ 已知边界：只跳过 `*_tests.rs` / `tests.rs` 分册，**不剥离**生产文件里的内联
+/// `#[cfg(test)]` 块（与 `worker_supervisor.rs` 的同类扫描不同）。当前那些块里没有本判据的靶形状
+/// （实测 0 命中）；真出现时的表现是**多扫到**一块（大概率是假红而不是假绿），红的时候先看归属。
 #[test]
 fn every_db_write_failure_branch_only_logs_and_never_changes_control_flow() {
     let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
@@ -1464,48 +1468,66 @@ fn every_db_write_failure_branch_only_logs_and_never_changes_control_flow() {
     for f in &files {
         let text = std::fs::read_to_string(f).expect("读文件");
         let mut from = 0usize;
-        while let Some(i) = text[from..].find("if let Err(e) = ") {
-            let at = from + i + "if let Err(e) = ".len();
-            let rest = &text[at..];
-            if !(rest.starts_with("db::") || rest.starts_with("crate::content::store::")) {
-                from = at;
+        while let Some(i) = text[from..].find("if let Err(") {
+            let after = from + i + "if let Err(".len();
+            // ① 绑定名任意（`Err(e)` / `Err(source)` / `Err(err)` 都合法）
+            let name: String = text[after..]
+                .chars()
+                .take_while(|c| c.is_alphanumeric() || *c == '_')
+                .collect();
+            let close = after + name.len();
+            let rest_all = &text[close..];
+            // ② `)` 与 `=` 之间**允许任意空白**、`=` 之后也允许换行/缩进 ——
+            //    两处真实写法就是 `if let Err(e) =\n    db::…`，卡死 `) = ` 会静默漏掉它们
+            //    （实测：漏两处时在那两块里加 `return` 判据仍绿）。
+            let Some(cp) = rest_all.find(')') else {
+                from = after;
+                continue;
+            };
+            let after_paren = &rest_all[cp + 1..];
+            let Some(rel_eq) = after_paren.find('=') else {
+                from = after;
+                continue;
+            };
+            if !after_paren[..rel_eq].trim().is_empty() {
+                from = after;
                 continue;
             }
-            // 找到这个 if 的块体（跳过调用里的括号，再取花括号配对）
+            let rest = after_paren[rel_eq + 1..].trim_start();
+            if !(rest.starts_with("db::") || rest.starts_with("crate::content::store::")) {
+                from = after;
+                continue;
+            }
             let Some(body) = balanced_block(rest) else {
-                from = at;
+                from = after;
                 continue;
             };
             checked += 1;
             let flat: String = body.split_whitespace().collect();
-            let rel = f
-                .strip_prefix(&root)
-                .unwrap_or(f)
-                .display()
-                .to_string();
-            // 失败分支必须**留下某种痕迹**：新转换的用 `log_write_failure`；早先就有的是
-            // 各自的具名码 warn / `notes.push(terminal_ledger_failure_note(..))`。
-            // 这里不要求统一用哪个 —— 要的是"不许一声不响地失败"，以及下一条"不许改控制流"。
+            let rel = f.strip_prefix(&root).unwrap_or(f).display().to_string();
             let traced = flat.contains("crate::logging::log_write_failure(")
                 || flat.contains("logger.")
                 || flat.contains("terminal_ledger_failure_note(");
             if !traced {
                 offenders.push(format!("{rel}: 失败分支没有任何痕迹 —— {flat}"));
             }
-            for bad in ["return", "break", "continue", "process::exit", "?;"] {
-                if flat.contains(bad) {
-                    offenders.push(format!("{rel}: 失败分支里出现了 `{bad}` —— {flat}"));
+            // ③ 「不许改控制流」只对**调 log_write_failure 的那一族**成立：
+            //    别处（例如 `state.rs` 的设备标识写入失败）是**刻意上抛**的，`return Err` 是对的。
+            if flat.contains("crate::logging::log_write_failure(") {
+                for bad in ["return", "break", "continue", "process::exit", "?;"] {
+                    if flat.contains(bad) {
+                        offenders.push(format!("{rel}: 失败分支里出现了 `{bad}` —— {flat}"));
+                    }
                 }
             }
-            from = at;
+            from = after;
         }
     }
-    // 下限**卡在当前实测值上**（不是"大约"）：加一处新转换就把这里 +1；
-    // 调小等于承认有处被撤回了。`.ok();` 棘轮只认语句形态，`let _ = db::x(..)` 能绕过它 ⇒
-    // 这里的计数是那条棘轮的另一半。
+    // 下限只防「扫描器退化」（实测 90：88 处单行 + 2 处 `=` 后换行 + 1 处文档示例），
+    // **不卡在实测值上** —— 精确的那一半由下面的 `helper_uses >= 64` 负责。
     assert!(
-        checked >= 64,
-        "只认出 {checked} 处 `if let Err(e) = db::…` ⇒ 提取器失效或有人把转换撤回了（L1 归零这件事要靠它守）"
+        checked >= 80,
+        "只认出 {checked} 处 `if let Err(..) = db::…` ⇒ 提取器失效（L1 归零这件事要靠它守）"
     );
     // 分母的另一半：B4-F1  Conversions 全部走同一个助手 —— 数量掉下来 = 有人把某处撤回了。
     // 只数**调用语句**（行首就是它）：文档注释里的用法示例也会命中子串，

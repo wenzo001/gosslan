@@ -1428,13 +1428,21 @@ pub fn init_with_notices(path: &Path) -> std::result::Result<(Connection, Vec<St
 /// `raised` 是**读回**的实际值（0=OFF / 1=NORMAL / 2=FULL / 3=EXTRA）——
 /// 只有真的到了 FULL 才允许说「已提到 FULL」，否则必须说「没能提上去、掉电可能损坏」。
 fn durability_after_wal_failure(journal: &str, raised: i64) -> Option<String> {
-    if raised == 2 {
+    // ⚠️ 三档而不是两档（发版前 review）：
+    //  · 读回失败（-1）**不等于**"没提上去"——读不到就说读不到，别凭空下结论；
+    //  · 3 = EXTRA 比 FULL 更耐久，判 `>= 2` 而不是 `== 2`。
+    if raised < 0 {
         Some(format!(
-            "code=DB_DURABILITY_DEGRADED journal_mode={journal}（期望 wal）⇒ 已把 synchronous 提到 FULL：写入变慢，但不会出现「已提交却被回滚/损坏」"
+            "code=DB_DURABILITY_UNKNOWN journal_mode={journal}（期望 wal）—— 读不回 synchronous：既没开成 WAL、也没法确认是否提到 FULL；掉电风险未知，请把库移回本地盘"
+        ))
+    } else if raised >= 2 {
+        Some(format!(
+            "code=DB_DURABILITY_DEGRADED journal_mode={journal}（期望 wal）⇒ 已把 synchronous 提到 {}：写入变慢，但不会出现「已提交却被回滚/损坏」",
+            if raised >= 3 { "EXTRA" } else { "FULL" }
         ))
     } else {
         Some(format!(
-            "code=DB_DURABILITY_NOT_RAISED journal_mode={journal} synchronous={raised}（期望 2=FULL）—— 既没开成 WAL、也没能把 synchronous 提上去：掉电可能损坏，请把库移回本地盘"
+            "code=DB_DURABILITY_NOT_RAISED journal_mode={journal} synchronous={raised}（期望 2=FULL 或 3=EXTRA）—— 既没开成 WAL、也没能把 synchronous 提上去：掉电可能损坏，请把库移回本地盘"
         ))
     }
 }
