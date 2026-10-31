@@ -1632,6 +1632,38 @@ Select-String -Path "$d\gosslan-crash.log" -Pattern '>>> code=(HANG|RUNTIME_MEM)
 **打包**：整个 `logs\` 目录 + 卡死发生的本地时间 + 当时是否在传大文件（这三件事齐了才能把
 `tree_cpu` 的窗口对齐到具体操作）。把这三样取回来，本条就能一次定型；在那之前**不猜修法**。
 
+### 4.0bj A2 启动错误窗的只读复核（2026-10-31，`c96fbdbe`）
+
+范围：24 文件、+1369/−331（`startup_error.rs` 新增 338 行；`lib.rs` 把 setup 收尾抽成 `finish_boot`）。
+
+**逐点对账（读代码，不改代码）**
+
+1. **`finish_boot` 有没有漏步骤** —— 与旧 setup 逐项比：`AppState::init 完成` 留痕、panic hook 重装、
+   `worker_supervisor::start`、`app.manage`、`restore_pending_requests`、`watchdog::start`、
+   `tray::setup`、macOS 菜单、macOS `set_closable(true)` —— 九项都在，且顺序与 E2E 的 `BOOT_LINE` 依赖一致。
+   旧路径被删掉的是 `tauri_plugin_dialog().message(...)` 那支与内联文案构造；文案已抽成
+   `boot_failure_message`，内容逐字保留（错误码 `BOOT_FAILED`、数据目录、日志目录、「本次启动没有删除或覆盖你的数据」）。
+2. **重试门控** —— `retry_gate` 先拒「已恢复」再拒「在途」，`claim_retry` 用 `swap(true)` 抢槽；
+   成功分支置 `resolved` 后置 `retrying=false`，两步之间再来一次点击会被 `resolved` 拒掉。正确。
+3. **退出路径** —— `app.exit(0)` 而不是 `process::restart`，保住 A5 的「上次是干净退出」标记。
+4. **错误窗不在 capability 里**（`capabilities/default.json` 只列 `main/settings/logs/preview/tasks`）——
+   **今天安全的前提是**：这页的 import 只有 `@/api`、`@/boot/boot` 的 `dismissBoot` 与它自己的 css，
+   调的全是应用命令（`startup_error_info` / `retry` / `open_data_dir` / `quit`）；
+   Tauri v2 的 ACL 只管插件与 `core:` 命令，应用命令不受 capability 约束。**若将来有人在这页加
+   `dialog` / `window` 之类插件调用，会被 ACL 直接拒** —— 那时必须先把这扇窗登记进 capability。
+
+**两条留到真窗口验收去确认（不属于静态可判）**
+
+- `resolved = true` 写在 `run_on_main_thread(...)` **之前**：万一主线程调度失败（返回 `Err`），
+  二次重试会被拒并说「应用已经恢复正常」，而实际上一次都没恢复 —— 只剩「打开目录 / 退出」可用。
+  影响小（退出仍可用），但**那句话会是假的**。修法若要做，是把置真挪到闭包内（拿一个回执）。
+- 成功路径靠「主窗口 `reload()` → 前端自己 `focus_window` 显示」：`tauri.conf.json` 里主窗是
+  `visible:false`，所以"重试成功后屏幕上真有一扇主窗"完全落在前端那条路上；若它不显示，就退回
+  「零窗口而进程活着」—— 正是 A2 要修的形态 ⇒ 必须进十格验收的「重试成功」那一格。
+
+**结论**：未发现需要立刻改代码的缺陷；第 4 条写成了维护约束，最后两条进 `scripts/verify-startup-error.mjs`
+的观察点。
+
 ### 4.1 已核查且未发现问题的稳定性面
 
 - **锁顺序**：全仓无 `peers↔db` 嵌套；`file_receivers→db` 顺序成立。
