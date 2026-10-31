@@ -1580,6 +1580,19 @@ STB-04 半条（非好友分支广播后直接 return，无撤销登记 —— *
 **D. 仍未被动过的真缺口**：TST-11 的修法（`rust_fn_body` 断言签名唯一）—— 它要动所有 147 个调用点里
 那 3 个歧义点的取法，属独立的判据改造，本轮只登记不实施。
 
+### 4.0bh 主线转绿的三笔（2026-10-31，全部由本地门禁实测）
+
+| 提交 | 红在哪 | 根因 | 修法 | 证据 |
+|---|---|---|---|---|
+| `291370b6` | 前端测试 + 护栏非空转 | 事件扫描器扫**测试分册**，从 `!restore_f.contains("emit(")` 这句断言里截出假事件名 `'), '`（A10 新加的形状） | `collectRustFiles` 排除 `_tests.rs` / `tests.rs` / `lib_tests.rs`；新增一条用例：三类分册名必被排除、三类生产码不许排除、真实扫描面一个测试分册都没有 | `node --test src/api/events.test.ts`：`✔ 每个 Rust 事件都必须有前端消费者` |
+| `04499783` | Android 编译门禁（默认 feature 与 bluetooth 两条腿） | `tauri-plugin-window-state` 整个 crate 是 `#![cfg(not(any(target_os = "android", target_os = "ios")))]`（移动端是空 crate），A7 的 `window_state_filename()` 只挂了 `cfg_attr(mobile, allow(dead_code))` ⇒ 移动端照样引用 `DEFAULT_FILENAME` | 函数改 `#[cfg(desktop)]`（调用点本来就在 `#[cfg(desktop)]` 块里） | `bash scripts/check-mobile.sh`：**PASS（0 warning）** |
+| `d6c606f7` | Rust 单测（fmt --check） | 上一条新加的注释续行没按 rustfmt 对齐 | 按 rustfmt 对齐 | 隔离 worktree 跑 `cargo fmt --check --all` 退出码 0 |
+
+**两条方法教训（都是本项目付过钱的形状）**
+
+- **扫描器的"只扫生产码"要写成判据**：`emit` 扫描器此前把 `_tests.rs` 也算进"后端在发"，而测试里天然会有 `contains("emit(")` 这种**字符串断言**。这次是加一条真实树断言的直接理由。
+- **`git commit -- <path>` 提交的是工作树内容，不是暂存内容**：共享工作树里隔壁有 315 行未提交改动时，用它会把别人的 WIP 一起卷进来（实测发生过一次，已 `reset --soft` 撤回）。正确姿势：先 `git show HEAD:<path>` 造底本、只改自己那几行、`diff` 出单块补丁、`git apply --cached`，再**不带路径** `git commit`。
+
 ### 4.1 已核查且未发现问题的稳定性面
 
 - **锁顺序**：全仓无 `peers↔db` 嵌套；`file_receivers→db` 顺序成立。
