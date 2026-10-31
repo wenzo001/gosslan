@@ -1444,3 +1444,146 @@ fn disk_full_deletes_the_part_and_other_failures_keep_it() {
         "对端下线那一条丢了 reason（同上）"
     );
 }
+
+/// **B4-F1 的运行时/结构判据**：每一处"写库失败要留痕"的分支都只能**记一行日志**，
+/// 不许在失败分支里 `return` / `break` / `continue` / `?` 或退出进程 —— 也就是说
+/// "写库抖动"这条路径**不可能改变控制流**（行为层与 v5.15.65 前逐处等价，这一条把它钉死）。
+///
+/// 为什么需要它：那 64 处是脚本批量改的，review 逐处读过等价，但没有任何机器判据；
+/// 以后谁在失败分支里顺手加一句 `return Ok(())`，界面上的表现就是"一次写库抖动 ⇒ 整条链路
+/// 静默少做一半"，而所有现有用例都不会红。
+#[test]
+fn every_db_write_failure_branch_only_logs_and_never_changes_control_flow() {
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+    let mut files: Vec<std::path::PathBuf> = Vec::new();
+    collect_rs_files(&root, &mut files);
+    assert!(files.len() > 50, "只读到 {} 个生产文件 ⇒ 走错了目录", files.len());
+
+    let mut checked = 0usize;
+    let mut offenders: Vec<String> = Vec::new();
+    for f in &files {
+        let text = std::fs::read_to_string(f).expect("读文件");
+        let mut from = 0usize;
+        while let Some(i) = text[from..].find("if let Err(e) = ") {
+            let at = from + i + "if let Err(e) = ".len();
+            let rest = &text[at..];
+            if !(rest.starts_with("db::") || rest.starts_with("crate::content::store::")) {
+                from = at;
+                continue;
+            }
+            // 找到这个 if 的块体（跳过调用里的括号，再取花括号配对）
+            let Some(body) = balanced_block(rest) else {
+                from = at;
+                continue;
+            };
+            checked += 1;
+            let flat: String = body.split_whitespace().collect();
+            let rel = f
+                .strip_prefix(&root)
+                .unwrap_or(f)
+                .display()
+                .to_string();
+            // 失败分支必须**留下某种痕迹**：新转换的用 `log_write_failure`；早先就有的是
+            // 各自的具名码 warn / `notes.push(terminal_ledger_failure_note(..))`。
+            // 这里不要求统一用哪个 —— 要的是"不许一声不响地失败"，以及下一条"不许改控制流"。
+            let traced = flat.contains("crate::logging::log_write_failure(")
+                || flat.contains("logger.")
+                || flat.contains("terminal_ledger_failure_note(");
+            if !traced {
+                offenders.push(format!("{rel}: 失败分支没有任何痕迹 —— {flat}"));
+            }
+            for bad in ["return", "break", "continue", "process::exit", "?;"] {
+                if flat.contains(bad) {
+                    offenders.push(format!("{rel}: 失败分支里出现了 `{bad}` —— {flat}"));
+                }
+            }
+            from = at;
+        }
+    }
+    // 下限**卡在当前实测值上**（不是"大约"）：加一处新转换就把这里 +1；
+    // 调小等于承认有处被撤回了。`.ok();` 棘轮只认语句形态，`let _ = db::x(..)` 能绕过它 ⇒
+    // 这里的计数是那条棘轮的另一半。
+    assert!(
+        checked >= 64,
+        "只认出 {checked} 处 `if let Err(e) = db::…` ⇒ 提取器失效或有人把转换撤回了（L1 归零这件事要靠它守）"
+    );
+    // 分母的另一半：B4-F1  Conversions 全部走同一个助手 —— 数量掉下来 = 有人把某处撤回了。
+    // 只数**调用语句**（行首就是它）：文档注释里的用法示例也会命中子串，
+    // 按子串数会把"少了一处调用"抵掉（实测：回填一处后仍是 64 ⇒ 判据不红）。
+    let helper_uses: usize = files
+        .iter()
+        .map(|f| {
+            std::fs::read_to_string(f)
+                .expect("读文件")
+                .lines()
+                .filter(|l| l.trim_start().starts_with("crate::logging::log_write_failure("))
+                .count()
+        })
+        .sum();
+    assert!(
+        helper_uses >= 64,
+        "全仓只有 {helper_uses} 处在用 log_write_failure ⇒ 有处转换被撤回了（`.ok();` 棘轮只认语句形态，`let _ =` 绕过它）"
+    );
+    assert_eq!(offenders, Vec::<String>::new(), "\n{}", offenders.join("\n"));
+}
+
+/// 递归收集 `.rs`（跳过 `_tests.rs` / `tests.rs` 分册）。
+fn collect_rs_files(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
+    for e in std::fs::read_dir(dir).expect("读目录") {
+        let p = e.expect("目录项").path();
+        if p.is_dir() {
+            collect_rs_files(&p, out);
+            continue;
+        }
+        let name = p.file_name().unwrap_or_default().to_string_lossy().to_string();
+        if name.ends_with(".rs") && !name.ends_with("_tests.rs") && name != "tests.rs" {
+            out.push(p);
+        }
+    }
+}
+
+/// 从一段以调用开头的文本里取出 `{ … }` 块体（先按括号找到调用的 `)`，再配花括号）。
+///
+/// ⚠️ 全程在 `Vec<char>` 上做，最后重建成 String：按**字节**切会在中文注释里 panic
+/// （"not a char boundary"）—— 本仓已经在这上面栽过两次。
+fn balanced_block(rest: &str) -> Option<String> {
+    let chars: Vec<char> = rest.chars().collect();
+    let mut depth = 0i32;
+    let mut i = 0usize;
+    while i < chars.len() {
+        match chars[i] {
+            '(' => depth += 1,
+            ')' => {
+                depth -= 1;
+                if depth == 0 {
+                    i += 1;
+                    break;
+                }
+            }
+            _ => {}
+        }
+        i += 1;
+    }
+    while i < chars.len() && chars[i].is_whitespace() {
+        i += 1;
+    }
+    if i >= chars.len() || chars[i] != '{' {
+        return None;
+    }
+    let open = i;
+    let mut d = 0i32;
+    while i < chars.len() {
+        match chars[i] {
+            '{' => d += 1,
+            '}' => {
+                d -= 1;
+                if d == 0 {
+                    return Some(chars[open..=i].iter().collect());
+                }
+            }
+            _ => {}
+        }
+        i += 1;
+    }
+    None
+}
