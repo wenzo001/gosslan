@@ -13,6 +13,27 @@
 
 ## [Unreleased]
 
+## [5.15.70] - 2026-10-31
+
+### B4-F1 存量收尾：写库承诺里的 `.ok();` 清零
+
+最后 **27 处**一并清完：relay_file 10、commands 族 9、transport 零散 4、file/group_history 4。
+
+- 全部改成 `if let Err(e) = … { log_write_failure(…) }`，控制流不变。
+- `--report` 三级现在读作 **L1 0 / L2 8 / L3 7**（L2 是刻意尽力而为：`fs::create_dir_all`、
+  `pragma_update`、`canonicalize`；L3 是 `query_row(..).ok()` 把 Result 落成 Option 这类读）。
+- 棘轮基线 **42 → 15**。**"托着承诺的写库结果被 `.ok();` 丢掉"这一类到此为零**——
+  以后任何人再写回一处，`check-silent-drops` 会当场点名（新文件从 0 涨到 1 同样红）。
+- 转换脚本踩到一处必须记下的坑：多行调用里**嵌套的参数行**（`record_local(…, db::now_ms(), …)`）
+  也会以 `db::` 开头 ⇒ 按"往上找最近的 db:: 行"会把 `now_ms()` 当成语句头，
+  生成 `if let Err(e) = db::now_ms(),` 这种语法错。这一处已手工改回（包住 `record_local` 本身），
+  其余 26 处经编译验证无同样问题。
+
+**真跑过的验证**：`cargo test --lib --features bluetooth` **1337 通过 / 0 失败**（3 ignored）；
+`cargo clippy -D warnings --all-targets` / `cargo fmt --all -- --check` 0 红 / 0 差异；
+`node scripts/check-silent-drops.mjs` → 15 处 / 硬零 0；`npm run verify:local` 见下。
+
+
 ## [5.15.69] - 2026-10-31
 
 ### B4-F1 存量第三批：群关系 / 群文件 / 发送台账 14 处留痕

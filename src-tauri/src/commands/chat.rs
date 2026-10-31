@@ -1355,7 +1355,9 @@ pub async fn mark_read(state: State<'_, Arc<AppState>>, conv_id: String) -> Resu
                 let cid = conv_id.clone();
                 tokio::task::spawn_blocking(move || -> Result<(), String> {
                     let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());
-                    db::upsert_pending_read(&dbc, &cid, ts).ok();
+                    if let Err(e) = db::upsert_pending_read(&dbc, &cid, ts) {
+                        crate::logging::log_write_failure(&s.logger, "upsert_pending_read", e);
+                    }
                     Ok(())
                 })
                 .await
@@ -1417,7 +1419,9 @@ pub async fn mark_read(state: State<'_, Arc<AppState>>, conv_id: String) -> Resu
                 tokio::task::spawn_blocking(move || -> Result<(), String> {
                     let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());
                     for (member, ts) in &to_persist {
-                        db::upsert_pending_group_read(&dbc, &gid, member, *ts).ok();
+                        if let Err(e) = db::upsert_pending_group_read(&dbc, &gid, member, *ts) {
+                            crate::logging::log_write_failure(&s.logger, "upsert_pending_group_read", e);
+                        }
                     }
                     Ok(())
                 })

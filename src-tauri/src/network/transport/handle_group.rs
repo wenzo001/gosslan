@@ -46,7 +46,9 @@ async fn handle_group_messages(state: &Arc<AppState>, peer_id: &str, msg: Messag
             };
             {
                 let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
-                db::upsert_group_read(&dbc, &group_id, &from, effective_ts).ok();
+                if let Err(e) = db::upsert_group_read(&dbc, &group_id, &from, effective_ts) {
+                    crate::logging::log_write_failure(&state.logger, "upsert_group_read", e);
+                }
             }
             let _ = state.app.emit(
                 "group-read",

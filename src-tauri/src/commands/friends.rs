@@ -141,10 +141,14 @@ pub async fn remove_friend(state: State<'_, Arc<AppState>>, peer_id: String) -> 
     let cleanup = {
         let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());
         db::remove_friend(&dbc, &peer_id).map_err(|e| e.to_string())?;
-        db::delete_file_outbox_for_peer(&dbc, &peer_id).ok();
+        if let Err(e) = db::delete_file_outbox_for_peer(&dbc, &peer_id) {
+            crate::logging::log_write_failure(&s.logger, "delete_file_outbox_for_peer", e);
+        }
         // 删好友的"不留幽灵"那一族：样式缓存也按 device_id 摘掉（10-23 审计 P2-B）。
         // 它是缓存，失败不阻断删除。
-        db::forget_chat_peer_style(&dbc, &peer_id).ok();
+        if let Err(e) = db::forget_chat_peer_style(&dbc, &peer_id) {
+            crate::logging::log_write_failure(&s.logger, "forget_chat_peer_style", e);
+        }
         // D5-A（2026-10-25 用户拍板）：关系没了，还挂在补发队列里的消息永远不会有人收。
         // 一起清队列并落 `failed`（不是 cancelled：用户取消的是"我不发了"，这里是"发不成了"）。
         // 失败不阻断删好友 —— 清理是顺带，关系解除才是这次调用的事实；但失败必须留痕，

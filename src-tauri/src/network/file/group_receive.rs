@@ -38,7 +38,7 @@ pub fn begin_group_receive(
     // 群文件气泡的打开/另存/历史加载经 transfer_id 关联到该真实本地路径。
     {
         let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
-        db::upsert_transfer(
+        if let Err(e) = db::upsert_transfer(
             &dbc,
             transfer_id,
             peer_id,
@@ -48,8 +48,9 @@ pub fn begin_group_receive(
             "active",
             Some(final_path.to_string_lossy().as_ref()),
             0.0,
-        )
-        .ok();
+        ) {
+            crate::logging::log_write_failure(&state.logger, "upsert_transfer", e);
+        }
         // 统一状态：群文件接收一开始就登记 Active（cid → 暂无 path）。
         // 中途失败由 fail_group_receive 标 Incomplete ⇒ 建链自动重取
         // （群成员也能做种，原发送方不在也能从别人取）。
