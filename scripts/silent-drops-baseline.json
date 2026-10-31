@@ -1,7 +1,7 @@
 {
   "generatedBy": "scripts/check-silent-drops.mjs --update",
   "note": "语句形式 `.ok();` 的每文件计数；棘轮只许降。硬零族见脚本头。",
-  "total": 79,
+  "total": 67,
   "files": {
     "commands/channel.rs": 2,
     "commands/chat.rs": 2,
@@ -22,16 +22,11 @@
     "network/group_history.rs": 1,
     "network/transport.rs": 3,
     "network/transport/e2ee_payload.rs": 1,
-    "network/transport/gossip.rs": 4,
     "network/transport/group_file.rs": 2,
     "network/transport/group_membership.rs": 5,
     "network/transport/handle_file.rs": 1,
     "network/transport/handle_group.rs": 1,
-    "network/transport/handle_identity.rs": 3,
     "network/transport/handle_messaging.rs": 4,
-    "network/transport/handshake.rs": 2,
-    "network/transport/peer_registry.rs": 2,
-    "network/transport/peer_state.rs": 1,
     "network/transport/read_receipt.rs": 4,
     "network/transport/relay_file.rs": 10,
     "state.rs": 1

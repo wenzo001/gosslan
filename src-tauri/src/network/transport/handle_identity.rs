@@ -80,7 +80,9 @@ async fn handle_identity_and_friend_messages(state: &Arc<AppState>, peer_id: &st
             // 对齐单聊逻辑时钟：避免离线期间的时钟落差让后续新消息序号偏小。
             {
                 let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
-                db::observe_clock(&dbc, &device_id, conv_clock).ok();
+                if let Err(e) = db::observe_clock(&dbc, &device_id, conv_clock) {
+                    crate::logging::log_write_failure(&state.logger, "observe_clock", e);
+                }
             }
             maybe_update_friend(state, &device_id, &nickname, avatar);
             flush_outbox(state, &device_id).await;
@@ -182,7 +184,9 @@ async fn handle_identity_and_friend_messages(state: &Arc<AppState>, peer_id: &st
             maybe_update_friend(state, &device_id, &nickname, avatar.clone());
             // 同步更新 single 会话的昵称/头像（conversations DB）
             let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
-            db::update_conversation_profile(&dbc, &device_id, &nickname, avatar.as_deref()).ok();
+            if let Err(e) = db::update_conversation_profile(&dbc, &device_id, &nickname, avatar.as_deref()) {
+                crate::logging::log_write_failure(&state.logger, "update_conversation_profile", e);
+            }
         }
         Message::FriendRequest {
             from,
@@ -254,7 +258,9 @@ async fn handle_identity_and_friend_messages(state: &Arc<AppState>, peer_id: &st
                 .unwrap_or_else(|e| e.into_inner())
                 .remove(&from);
             let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
-            db::remove_friend(&dbc, &from).ok();
+            if let Err(e) = db::remove_friend(&dbc, &from) {
+                crate::logging::log_write_failure(&state.logger, "remove_friend", e);
+            }
             drop(dbc);
             let _ = state.app.emit("friend-removed", &from);
         }

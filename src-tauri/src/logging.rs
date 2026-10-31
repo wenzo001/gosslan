@@ -515,6 +515,18 @@ pub(crate) const FAIL_CODE_FILE_CHUNK_MALFORMED: &str = "FILE_CHUNK_MALFORMED";
 /// 中继 offer 本身不可用（标识非法 / 对端没声明分片尺寸）。
 pub(crate) const FAIL_CODE_FILE_RELAY_BAD_OFFER: &str = "FILE_RELAY_BAD_OFFER";
 
+/// 写库结果**必须留痕**（审计 B4-F1）：生产码里 `.ok();` 把失败吞成"没有错误"，
+/// 而写库失败通常正是"界面说加上了、重启后没了"的那一格。
+///
+/// 用法（与既有的 `.ok();` 逐字同形，只多一段 map_err）：
+/// `db::x(..).map_err(|e| log_write_failure(&st.logger, "x", e)).ok();`
+///
+/// 为什么只有这一句 warn、不上屏、不抛：这些调用点大多在**入站帧处理**里，
+/// 一处写库抖动不该让整条链路失败；要的是"事后能查出这一下没写成"。
+pub(crate) fn log_write_failure(logger: &Logger, at: &str, e: impl std::fmt::Display) {
+    logger.warn("db", format!("code=DB_WRITE_FAILED at={at} err={e}"));
+}
+
 /// 把一次写盘失败归类成稳定失败码：盘满 ⇒ [`FAIL_CODE_DISK_FULL`]，其余 ⇒ `None`。
 ///
 /// `None` 表示"没有专属码"，调用方应当保留原始错误文本（那是唯一信息量）。

@@ -569,9 +569,11 @@
         let start = fam
             .find("Message::FriendRemove {")
             .expect("FriendRemove 分支必须还在（本护栏锚点）");
-        let branch = &fam[start..start + 1500.min(fam.len() - start)];
+        // ⚠️ 按**字符**取窗口，不按字节：这段源码里全是中文注释，`start + 1500` 会落到
+        // 某个多字节字符中间 ⇒ 直接 panic（"not a char boundary"），10-31 改注释时实测撞到。
+        let branch: String = fam[start..].chars().take(1500).collect();
         assert!(
-            code_flat(branch).contains("pending_key_rotations"),
+            code_flat(&branch).contains("pending_key_rotations"),
             "收到对方解除关系也要清候选，与 remove_friend 命令对称"
         );
     }

@@ -13,6 +13,34 @@
 
 ## [Unreleased]
 
+## [5.15.67] - 2026-10-31
+
+### B4-F1 存量第一批：12 处写库承诺不再被 `.ok();` 吞掉
+
+上一版给 `.ok();` 上了棘轮（79 处入基线），这一版开始**往下清**：先清 friend / peer 那两族
+（`gossip.rs` 4 处、`handshake.rs` 2 处、`handle_identity.rs` 3 处、`peer_state.rs` 1 处、
+`peer_registry.rs` 2 处），因为它们的失败后果最像"用户感觉得到又说不清"——
+好友加上了但库里没有、公钥学进来了但没落库、会话没建但消息在推。
+
+- 新增日志助手 `logging::log_write_failure(logger, at, e)`：只写一条 `code=DB_WRITE_FAILED at=… err=…`
+  的 warn。这些调用点大多在入站帧处理里，**一处写库抖动不该让整条链路失败**（控制流一字未改），
+  要的是"事后能查出这一下没写成"。
+- 写法统一成 `if let Err(e) = db::x(..) { log_write_failure(.., e); }` —— 不能再写成
+  `db::x(..).map_err(..).ok();`：那样**仍会被棘轮数进去**（实测），棘轮也就不会下降。
+- `bind_friend_keys_on_accept` 因此多了 `logger` 入参（它只拿 `conn`，原先没有地方可记）。
+- 棘轮基线随之从 **79 → 67**（27 个生产文件），`--report` 三级：L1 52 / L2 8 / L3 7。
+  变异：往 `gossip.rs` 回填一处 `.ok();` ⇒ 点名「从 0 涨到 1（棘轮只许降）」。
+- 顺带修一条**恒久脆弱**的判据：`pending_key_rotation_cleared_on_both_friend_removal_paths`
+  原先按**字节**取 1500 窗口（`&fam[start..start+1500]`），这段源码全是中文注释 ⇒ 边界一落进
+  多字节字符就 panic（这次改注释当场撞到）。改成按**字符**取窗。
+
+**真跑过的验证**：`cargo test --lib --features bluetooth` **1337 通过 / 0 失败**（3 ignored）；
+`cargo clippy -D warnings --all-targets` / `cargo fmt --check --all` 0 红 / 0 差异；
+`node scripts/check-silent-drops.mjs` → 67 处 / 基线 67 / 硬零 0；`npm run verify:local` 见下。
+**没做**：其余 52 处 L1（relay_file 10、group_membership 5、read_receipt 4、handle_messaging 4…）
+留给下一批，按链路分。
+
+
 ## [5.15.66] - 2026-10-31
 
 ### 群文件那一半补齐：盘满同样不留续传前缀（B2-F1 群侧）

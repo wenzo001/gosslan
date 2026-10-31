@@ -81,7 +81,9 @@ fn warn_key_conflict_once(state: &AppState, device_id: &str) {
     }
     {
         let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
-        db::ensure_conversation(&dbc, device_id, "single", &name, None).ok();
+        if let Err(e) = db::ensure_conversation(&dbc, device_id, "single", &name, None) {
+            crate::logging::log_write_failure(&state.logger, "ensure_conversation", e);
+        }
     }
     crate::commands::insert_system_message(
         state,
@@ -334,7 +336,9 @@ pub async fn upsert_peer(
         };
         if x.is_some() || e.is_some() {
             let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
-            db::update_friend_pubkeys(&dbc, device_id, x.as_deref(), e.as_deref()).ok();
+            if let Err(e) = db::update_friend_pubkeys(&dbc, device_id, x.as_deref(), e.as_deref()) {
+                crate::logging::log_write_failure(&state.logger, "update_friend_pubkeys", e);
+            }
         }
         // 公钥变化时同步到 friends 表：Hello 可能在 announce 之前到达，
         // 此时 peers[peer].x25519_pubkey 为 None → friends 表写入 None；
