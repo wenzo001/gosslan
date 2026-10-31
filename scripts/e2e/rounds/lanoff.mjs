@@ -9,7 +9,7 @@
 //    改这行、或把断言挪去别的分册，都会让活文档里那句「N 条断言」当场对不上。
 export const MODE = "LANOFF";
 import { INSTANCES, ROUND, S, bootBaseOf, check, launch, nowMs, procs, seed, sleep, step, stopOne, tcpOpen } from "../core.mjs";
-import { BOOT_LINE, bootReady, countLog } from "../../e2e-logtail.mjs";
+import { BOOT_LINE, bootReady, countLog, readLogTail } from "../../e2e-logtail.mjs";
 import { spawnSync } from "node:child_process";
 
 // ── 族私有的量（只有这一族读；随块一起搬过来）──
@@ -29,8 +29,28 @@ export async function run() {
         await sleep(1000);
       }
     };
+    // ★ A9（第三轮审计）：这一族读数**原来**取的是磁盘日志里的 `announce_verified: from=<id>`，
+    //   而它到不了磁盘 —— `logging::diag_delivery` 把成功心跳（`announce_verified` / `bc_directed`）
+    //   判成 RingOnly、`announce_recv` 判成 Dropped（`logging.rs` 里
+    //   `ring_only_reaches_the_panel_but_never_the_file` 正钉着"磁盘上不许出现 announce_verified"）。
+    //   ⇒ `countLog(磁盘, 那个 needle)` 恒为 0：第 ① 条永远红，而症状长得像"局域网发现坏了"。
+    //   **量具读不到 ≠ 产品失效。**
+    //   改读同一因果链上**真落盘**的那一行：`transport::link_state::register_connection` 以
+    //   info("link", "建链 peer=<id> …") 落盘，而它只可能由 announce → `upsert_peer` →
+    //   `ensure_link` 拨号成功带到 —— 即"学到了、并且连上了"的可观测后果。
+    //   ⚠️ 判据刻意不钉 `path=lan`：本机双实例发现的地址可能是 127.0.0.1，而分类器把它判成
+    //   routed（历史读数 `ep=127.0.0.1:60012 path=Routed`）—— 钉死路径会让这一格红在地址分类上，
+    //   而不是红在开关上。红时靠下面那条"把匹配行原样打出来"读回路径构成来归因。
     const B = INSTANCES[1];
-    const learnedNeedle = (id) => `announce_verified: from=${id}`;
+    const learnedNeedle = `建链 peer=${S.idB.runtimeId}`;
+    const learned = () => countLog(INSTANCES[0].log, learnedNeedle);
+    /** 匹配到的行原样取回（最多 6 行）：红时"是哪条路径建的链"看得见，不必再猜。 */
+    const learnedLines = () =>
+      readLogTail(INSTANCES[0].log, 4000)
+        .split("\n")
+        .filter((l) => l.includes(learnedNeedle))
+        .slice(-6)
+        .join(" ⏎ ") || "(磁盘上没有这一行)";
     const seedLan = (on) => seed(B.db, (db) => {
       db.prepare("INSERT OR REPLACE INTO settings(key,value) VALUES('lan_enabled',?1)")
         .run(on ? "1" : "0");
@@ -44,10 +64,10 @@ export async function run() {
     launch(B);
     await bootOf(INSTANCES[0]);
     await bootOf(B);
-    // ① 前置：两边都开着（L-A 预置显式写了 lan_enabled='true'）时，A 要真学到过 B。
-    const sawFirst = await within(() => countLog(INSTANCES[0].log, learnedNeedle(S.idB.runtimeId)) > 0, 45_000);
-    check("前置：B 开着的时候 A 的日志里出现过它的 announce（否则下面那条「不涨」没有对照物）",
-      sawFirst, ">0 次", countLog(INSTANCES[0].log, learnedNeedle(S.idB.runtimeId)));
+    // ① 前置：两边都开着（L-A 预置显式写了 lan_enabled='true'）时，A 要真为 B 建过链。
+    const sawFirst = await within(() => learned() > 0, 45_000);
+    check("前置：B 开着的时候 A 的磁盘日志里出现过为它建的链（否则下面那条「不涨」没有对照物）",
+      sawFirst, ">0 次", `${learned()} 次；行样：${learnedLines()}`);
 
     // ② 停机把 B 的键显式写成"关"，再带着 GOSSLAN_AUTOSTART=1 起它 —— 这一轮要的就是这一对。
     await stopOne(B);
@@ -78,26 +98,27 @@ export async function run() {
        ⇒ 教训是「归因不清」和「探针读错了对象」长得一模一样，区别只在有没有把读数钉在事件上。`);
 
 
-    // ③ 核心：A 活着且一直在听，两个广播周期内"学到 B"的次数一字不涨。
-    const base = countLog(INSTANCES[0].log, learnedNeedle(S.idB.runtimeId));
+    // ③ 核心：A 活着且一直在听，两个广播周期内"为 B 建链"的次数一字不涨。
+    const base = learned();
     await sleep(26_000);
-    const after = countLog(INSTANCES[0].log, learnedNeedle(S.idB.runtimeId));
+    const after = learned();
     // 反向模式：注入、时序、读的东西全都一样，**只把这一条的期望翻成"该涨"**
     // ⇒ 产品没错时它必须红；报不出红就说明这条读的不是真日志行。
-    check("★ 关掉之后 A 再也学不到 B（announce 计数一字不涨；env 没能把它偷偷打开）",
+    check("★ 关掉之后 A 再也连不上 B（为它建链的计数一字不涨；env 没能把它偷偷打开）",
       LANOFF_LIE ? after > base : after === base,
-      LANOFF_LIE ? "> 基线（这是反向模式的期望，正常应当红）" : base, after);
+      LANOFF_LIE ? "> 基线（这是反向模式的期望，正常应当红）" : base,
+      // 两个读数都打 + 行样：只打一半的话，红了无法区分"没涨"与"根本没读到过"。
+      `涨到 ${after}（基线 ${base}）；行样：${learnedLines()}`);
 
-    // ④ 正向对照：翻回"开"并重启 B ⇒ 同一套读法必须立刻重新数得到 announce。
+    // ④ 正向对照：翻回"开"并重启 B ⇒ 同一套读法必须立刻重新数得到建链。
     //    没有这一条，第 ③ 条可以由"A 瞎了/日志格式变了/needle 拼错"来冒充成功。
     await stopOne(B);
     seedLan(true);
     launch(B);
     await bootOf(B);
-    const grewBack = await within(
-      () => countLog(INSTANCES[0].log, learnedNeedle(S.idB.runtimeId)) > after, 45_000);
-    check("对照：把键翻回「开」并重启 B，A 的 announce 计数重新开始涨（证明第 ③ 条不是空转）",
-      grewBack, "> 上一段读数", countLog(INSTANCES[0].log, learnedNeedle(S.idB.runtimeId)));
+    const grewBack = await within(() => learned() > after, 45_000);
+    check("对照：把键翻回「开」并重启 B，A 为它建链的计数重新开始涨（证明第 ③ 条不是空转）",
+      grewBack, `> ${after}`, `${learned()}；行样：${learnedLines()}`);
     check("对照：翻回「开」之后 B 自己的日志里 discovery_started 又出现（与上面那个 0 成对）",
       countLog(B.log, "discovery_started") > 0, ">0", countLog(B.log, "discovery_started"));
     // #95 的探针与它的两条对照（三条读数全设断言：①开=连得上、②闲口=连不上、③关=连不上）。
