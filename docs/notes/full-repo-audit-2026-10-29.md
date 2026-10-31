@@ -1661,8 +1661,8 @@ Select-String -Path "$d\gosslan-crash.log" -Pattern '>>> code=(HANG|RUNTIME_MEM)
   `visible:false`，所以"重试成功后屏幕上真有一扇主窗"完全落在前端那条路上；若它不显示，就退回
   「零窗口而进程活着」—— 正是 A2 要修的形态 ⇒ 必须进十格验收的「重试成功」那一格。
 
-**结论**：未发现需要立刻改代码的缺陷；第 4 条写成了维护约束，最后两条进 `scripts/verify-startup-error.mjs`
-的观察点。
+**结论**：未发现需要立刻改代码的缺陷；第 4 条写成了维护约束，最后两条进 A2 的真窗口验收观察点
+（验收脚本在 A2 那一批里，**尚未入库** ⇒ 本文不引用它的路径：引用未入库文件会让文档引用对账在干净检出上红）。
 
 ### 4.1 已核查且未发现问题的稳定性面
 
@@ -1899,7 +1899,7 @@ Select-String -Path "$d\gosslan-crash.log" -Pattern '>>> code=(HANG|RUNTIME_MEM)
 > - 「跨进程 E2E 本轮未跑」→ 只描述审计当时。此后发版检查单每次都要跑 `verify:release` 4 轮；
 >   本会话三次发版（v5.15.65 / .71 / .74）实测都是 25 / 23 / 38 / 49 条断言全绿（§4.0bb、§4.0bf）。
 > - 「前端运行时行为」→ 功能域有 `check-ui-runtime` 探针，消息列表/溢出/替换矩阵等另有真渲染格（`msgovf` / `rowpair` 等，
->   见 §4.0x 与 memory 里的探针账）；启动失败那扇窗的真窗口十格由 `scripts/verify-startup-error.mjs` 另行验收（A2）。
+>   见 §4.0x 与 memory 里的探针账）；启动失败那扇窗的真窗口十格由 A2 那一批的真窗口验收另行确认（脚本尚未入库，故不在此引用路径）。
 > - 「Windows 编译」→ **CI 每次 push 都在真 MSVC 上编**（`Rust 单测 / 清单（windows-latest）` 与 `build-windows` 两条腿）；
 >   仍成立的是"**本机**编不出来"，属"本机不可验"，不是"从没验过"。
 >
