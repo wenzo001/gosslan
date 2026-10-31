@@ -413,3 +413,34 @@ fn fresh_database_really_has_foreign_keys_on_and_reports_no_degradation() {
         "新库上 foreign_keys 必须真的开着：{notices:?}"
     );
 }
+
+/// **WAL 没开成之后的措辞真值表**（§4.0bb 缺口⑤）。
+///
+/// 原先那一格是 `pragma_update(..FULL).ok()` + 一句「已把 synchronous 提到 FULL」——
+/// 设不上时那句通知就是假的，而掉电损坏风险正好落在这里。现在措辞由**读回值**决定：
+///   · 读回 2（FULL）⇒ 才允许说"已提到 FULL"；
+///   · 其它任何值 ⇒ 必须说"没能提上去、掉电可能损坏"，且不许出现"已提到 FULL"这几个字。
+#[test]
+fn durability_notice_follows_the_read_back_value() {
+    let raised = durability_after_wal_failure("delete", 2).expect("降级分支必有通知");
+    assert!(
+        raised.contains("code=DB_DURABILITY_DEGRADED")
+            && raised.contains("已把 synchronous 提到 FULL"),
+        "真到了 FULL 才许这么说：{raised}"
+    );
+    for now in [-1, 0, 1, 3] {
+        let n = durability_after_wal_failure("delete", now).expect("降级分支必有通知");
+        assert!(
+            n.contains("code=DB_DURABILITY_NOT_RAISED"),
+            "读回 {now} 时必须是 NOT_RAISED：{n}"
+        );
+        assert!(
+            !n.contains("已把 synchronous 提到 FULL"),
+            "读回 {now} 时不许声称已经提上去了（那正是原来的假话）：{n}"
+        );
+        assert!(
+            n.contains(&format!("synchronous={now}")),
+            "通知里要带读回值，排障才知道当时是多少：{n}"
+        );
+    }
+}

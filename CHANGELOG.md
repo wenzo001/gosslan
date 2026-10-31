@@ -13,6 +13,30 @@
 
 ## [Unreleased]
 
+## [5.15.73] - 2026-10-31
+
+### 掉电降级那句通知不再说假话（§4.0bb 缺口⑤）
+
+`init_with_notices` 里四条 pragma 的结果原先都是 `.ok()`。前三条**早已有读回校验**
+（`journal_mode` / `synchronous` / `foreign_keys` 读回比对，不对就 push `DB_*` 通知）——
+核查后确认那三条没问题。有问题的是第四条：WAL 没开成时它会去把 `synchronous` 提到 `FULL`，
+**结果被 `.ok()` 掉**，而紧接着的通知已经写着「已把 synchronous 提到 FULL」。万一那句没设上，
+通知就是假的，而「掉电会不会损坏」正好取决于它。
+
+- 改成**先设、再读回**：读回 2（FULL）才允许说「已提到 FULL」；其它任何值 push
+  `code=DB_DURABILITY_NOT_RAISED journal_mode=… synchronous=…`，并直接说「掉电可能损坏，
+  请把库移回本地盘」。措辞由一个纯函数 `durability_after_wal_failure(journal, raised)` 决定。
+- 判据 `durability_notice_follows_the_read_back_value`：真值表 —— 读回 2 ⇒ degraded 文案；
+  读回 -1/0/1/3 ⇒ 必须 `NOT_RAISED` 且**不许**出现「已把 synchronous 提到 FULL」，且要带读回值。
+  变异：把 `raised == 2` 放宽成 `raised >= 0` ⇒ 点名「读回 0 时必须是 NOT_RAISED」。
+- 棘轮基线随之 **15 → 14**（L2 8 → 7；剩下 7 处 L2 是 `create_dir_all` / `canonicalize`，
+  逐行定论在审计 §4.0az）。
+
+**真跑过的验证**：`cargo test --lib --features bluetooth` **1339 通过 / 0 失败**（3 ignored）；
+`cargo clippy -D warnings --all-targets` / `cargo fmt --all -- --check` 0 红 / 0 差异；
+`npm run verify:local` 见下。
+
+
 ## [5.15.72] - 2026-10-31
 
 ### 64 处写库留痕补上运行时/结构判据（B4-F1 的缺口③收口）

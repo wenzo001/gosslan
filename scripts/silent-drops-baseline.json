@@ -1,10 +1,10 @@
 {
   "generatedBy": "scripts/check-silent-drops.mjs --update",
   "note": "语句形式 `.ok();` 的每文件计数；棘轮只许降。硬零族见脚本头。",
-  "total": 15,
+  "total": 14,
   "files": {
     "commands/files.rs": 1,
-    "db.rs": 5,
+    "db.rs": 4,
     "db/group_delete_boundary.rs": 2,
     "db/group_history.rs": 1,
     "db/messages.rs": 2,
