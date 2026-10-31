@@ -1641,6 +1641,9 @@ Select-String -Path "$d\gosslan-crash.log" -Pattern '>>> code=(HANG|RUNTIME_MEM)
 1. **`finish_boot` 有没有漏步骤** —— 与旧 setup 逐项比：`AppState::init 完成` 留痕、panic hook 重装、
    `worker_supervisor::start`、`app.manage`、`restore_pending_requests`、`watchdog::start`、
    `tray::setup`、macOS 菜单、macOS `set_closable(true)` —— 九项都在，且顺序与 E2E 的 `BOOT_LINE` 依赖一致。
+   复跑（对 `c96fbdbe^` 与当前 `lib.rs` 各数一遍九个锚点，九个数逐个相等；`tray::setup` 各是 2，
+   因为「开始 tray::setup」那条日志文案也含这个名字）：
+   `git show c96fbdbe^:src-tauri/src/lib.rs > /tmp/lib_pre.rs` 后按上列九个字符串对两个文件 `count` 对账。
    旧路径被删掉的是 `tauri_plugin_dialog().message(...)` 那支与内联文案构造；文案已抽成
    `boot_failure_message`，内容逐字保留（错误码 `BOOT_FAILED`、数据目录、日志目录、「本次启动没有删除或覆盖你的数据」）。
 2. **重试门控** —— `retry_gate` 先拒「已恢复」再拒「在途」，`claim_retry` 用 `swap(true)` 抢槽；
