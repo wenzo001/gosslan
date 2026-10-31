@@ -13,6 +13,27 @@
 
 ## [Unreleased]
 
+## [5.15.71] - 2026-10-31
+
+### 发版前 review 的三处（一条注释自相矛盾、七处缩进、一条判据只钉前缀）
+
+- **注释自相矛盾**：`logging::log_write_failure` 的用法示例写的是
+  `db::x(..).map_err(..).ok();` —— 那个写法**仍以 `.ok();` 结尾**，会被棘轮数进去，
+  于是"清掉一处"反而不会让基线下降（5.15.67 的 CHANGELOG 里自己就记着这条实测）。
+  示例改成 `if let Err(e) = … { log_write_failure(…) }`，并把坑写进注释。
+- **七处缩进错位**：批量转换脚本在 6 个 `include!` 分册里生成的 `if let` 块把函数体写在 4 格、
+  收尾 `}` 写在 0 格（能编译，但读起来像漏了括号）。已按各自缩进对齐；
+  这也是"`cargo fmt --check` 对分册退 0 ⇒ 它看不见这些行"的又一例。
+- **判据只钉签名前缀**：`fail_taken_group_receive(&state, &tid, &r,` 传空串也能过。
+  补三条值判据：分片失败链必须透传 `reason`、超时清扫传 `REASON_STALLED_GROUP_RECEIVE`、
+  对端下线传 `REASON_PEER_UNLINKED`。变异：把分片那链改成传空串 ⇒ 点名
+  「分片失败链没有把 reason 透传给收尾（盘满就永远走不到删 .part 那一支）」。
+
+**真跑过的验证**：`cargo test --lib --features bluetooth` **1337 通过 / 0 失败**（3 ignored）；
+`cargo clippy -D warnings --all-targets` / `cargo fmt --all -- --check` 0 红 / 0 差异；
+`npm run verify:local` 见下。
+
+
 ## [5.15.70] - 2026-10-31
 
 ### B4-F1 存量收尾：写库承诺里的 `.ok();` 清零

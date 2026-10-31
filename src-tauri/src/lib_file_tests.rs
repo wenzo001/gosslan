@@ -1427,4 +1427,20 @@ fn disk_full_deletes_the_part_and_other_failures_keep_it() {
         gtail[..gend].contains("code=GFILE_DISK_FULL"),
         "群侧盘满要有具名码（与单聊 FILE_DISK_FULL 同口径）"
     );
+
+    // 三条调用链必须把**本轮的 reason** 传进收尾函数（发版前 review：只钉签名前缀的话，
+    // 传空串也能过）。分片失败那一链要透传 `reason`，另两链各传自己的码。
+    let tr = crate::network::transport_src_for_guards();
+    assert!(
+        tr.contains("file::fail_group_receive(state, transfer_id, reason)"),
+        "分片失败链没有把 reason 透传给收尾（盘满就永远走不到删 .part 那一支）"
+    );
+    assert!(
+        tr.contains("fail_taken_group_receive(state, &id, &r, REASON_STALLED_GROUP_RECEIVE)"),
+        "超时清扫那一条丢了 reason（盘满被当成超时 ⇒ 保留 .part 的老行为）"
+    );
+    assert!(
+        tr.contains("fail_taken_group_receive(&state, &tid, &r, REASON_PEER_UNLINKED)"),
+        "对端下线那一条丢了 reason（同上）"
+    );
 }
