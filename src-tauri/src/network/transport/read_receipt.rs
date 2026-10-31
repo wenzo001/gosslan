@@ -72,7 +72,9 @@ pub async fn flush_pending_reads(state: &AppState, peer_id: &str) {
     let Some((msg_id, last_read_ts)) = last else {
         // 对方没有可标记已读的消息，直接清掉 pending 即可。
         let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
-        db::delete_pending_read(&dbc, peer_id).ok();
+        if let Err(e) = db::delete_pending_read(&dbc, peer_id) {
+            crate::logging::log_write_failure(&state.logger, "delete_pending_read", e);
+        }
         return;
     };
     if !send_read_receipt_route(state, peer_id, Some(msg_id), last_read_ts).await {
@@ -86,7 +88,9 @@ pub async fn flush_pending_reads(state: &AppState, peer_id: &str) {
     } else {
         // 发送成功：清除 DB 中的 pending 记录
         let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
-        db::delete_pending_read(&dbc, peer_id).ok();
+        if let Err(e) = db::delete_pending_read(&dbc, peer_id) {
+            crate::logging::log_write_failure(&state.logger, "delete_pending_read", e);
+        }
     }
 }
 
@@ -104,7 +108,9 @@ pub async fn flush_pending_group_reads(state: &AppState, peer_id: &str) {
         };
         let Some((msg_id, last_read_ts)) = last else {
             let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
-            db::delete_pending_group_read(&dbc, &group_id, peer_id).ok();
+            if let Err(e) = db::delete_pending_group_read(&dbc, &group_id, peer_id) {
+                crate::logging::log_write_failure(&state.logger, "delete_pending_group_read", e);
+            }
             continue;
         };
         let msg = Message::GroupReadReceipt {
@@ -115,7 +121,9 @@ pub async fn flush_pending_group_reads(state: &AppState, peer_id: &str) {
         };
         if try_send(state, peer_id, &msg).await.is_ok() {
             let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
-            db::delete_pending_group_read(&dbc, &group_id, peer_id).ok();
+            if let Err(e) = db::delete_pending_group_read(&dbc, &group_id, peer_id) {
+                crate::logging::log_write_failure(&state.logger, "delete_pending_group_read", e);
+            }
         }
     }
 }

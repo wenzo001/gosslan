@@ -1353,7 +1353,9 @@ async fn handle_group_key(
             // 任何好友都能给任意 group_id 推时钟。
             if group.members.iter().any(|m| m == &from) {
                 let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
-                db::observe_clock(&dbc, &format!("group:{group_id}"), clock).ok();
+                if let Err(e) = db::observe_clock(&dbc, &format!("group:{group_id}"), clock) {
+                    crate::logging::log_write_failure(&state.logger, "observe_clock", e);
+                }
             }
             return;
         }
@@ -1387,7 +1389,9 @@ async fn handle_group_key(
         .insert(group_id.clone(), k);
     {
         let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
-        db::set_setting(&dbc, &format!("gk:{group_id}"), &STANDARD.encode(k)).ok();
+        if let Err(e) = db::set_setting(&dbc, &format!("gk:{group_id}"), &STANDARD.encode(k)) {
+            crate::logging::log_write_failure(&state.logger, "set_setting", e);
+        }
     }
     // 建本地群记录：没有它，收到群消息时群名只能兜底成「群聊 g-xxxx」，
     // 成员面板也会为空。成员列表补上自己，保证与创建者一致。
@@ -1442,7 +1446,9 @@ async fn handle_group_key(
         // 已存在会话行的标题），**不得创建 conversation**：conversation 是「聊天会话索引」，只能由聊天活动驱动
         // （收到新群消息 → insert_message → touch_conversation）。否则用户清库重装后仅凭
         // 群关系同步，群聊就会凭空重新出现在聊天列表（关系同步 ≠ 聊天同步）。
-        db::observe_clock(&dbc, &conv_id, clock).ok();
+        if let Err(e) = db::observe_clock(&dbc, &conv_id, clock) {
+            crate::logging::log_write_failure(&state.logger, "observe_clock", e);
+        }
     }
     let _ = state.app.emit("groups-updated", &group_id);
     // 第一次成为这个群的成员 ⇒ 记一个"欠一份群历史"的标记并立刻试一趟

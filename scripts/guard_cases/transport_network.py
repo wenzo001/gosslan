@@ -728,9 +728,13 @@ CASES: list[Case] = [
         "     注入 = 把这一支里的观察整块删掉（回到旧形状）；`clock` 变成未用变量只是 warning。",
         file=TAURI / "src" / "network" / "transport.rs",
         injections=[(
+            # 锚点跟随 5.15.68 的形状（那一句由 .ok() 变成 if let）；注入语义不变 ——
+            # 仍是"把这一支里的观察整块删掉，回到旧形状"。
             """            if group.members.iter().any(|m| m == &from) {
                 let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
-                db::observe_clock(&dbc, &format!("group:{group_id}"), clock).ok();
+                if let Err(e) = db::observe_clock(&dbc, &format!("group:{group_id}"), clock) {
+                    crate::logging::log_write_failure(&state.logger, "observe_clock", e);
+                }
             }
             return;""",
             """            return;""",

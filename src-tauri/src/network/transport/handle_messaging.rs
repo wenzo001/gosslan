@@ -76,7 +76,9 @@ async fn handle_messaging_arm(state: &Arc<AppState>, peer_id: &str, msg: Message
                 }
                 map.insert(from.clone(), serde_json::Value::String(style.clone()));
                 if let Ok(json) = serde_json::to_string(&map) {
-                    db::set_setting(&dbc, "chat_peer_styles", &json).ok();
+                    if let Err(e) = db::set_setting(&dbc, "chat_peer_styles", &json) {
+                        crate::logging::log_write_failure(&state.logger, "set_setting", e);
+                    }
                 }
             }
             let _ = state.app.emit(
@@ -203,12 +205,20 @@ async fn handle_messaging_arm(state: &Arc<AppState>, peer_id: &str, msg: Message
                 let inserted = db::insert_message_if_new(&dbc, &rec);
                 if announced_on(&inserted) {
                     // 与群聊分支同一套口径：时钟照常推进，静默类不计未读/不改预览。
-                    db::observe_clock(&dbc, &from, seq).ok();
+                    if let Err(e) = db::observe_clock(&dbc, &from, seq) {
+                        crate::logging::log_write_failure(&state.logger, "observe_clock", e);
+                    }
                     if crate::protocol::is_non_notifying_kind(&kind_str) {
-                        db::ensure_conversation(&dbc, &from, "single", &name, None).ok();
+                        if let Err(e) = db::ensure_conversation(&dbc, &from, "single", &name, None)
+                        {
+                            crate::logging::log_write_failure(&state.logger, "ensure_conversation", e);
+                        }
                     } else {
-                        db::touch_conversation(&dbc, &from, "single", &name, None, &preview, 1)
-                            .ok();
+                        if let Err(e) =
+                            db::touch_conversation(&dbc, &from, "single", &name, None, &preview, 1)
+                        {
+                            crate::logging::log_write_failure(&state.logger, "touch_conversation", e);
+                        }
                     }
                 }
                 (rec, inserted)
