@@ -27,14 +27,19 @@ const MAP_FILE = join(ROOT, "docs", "ARCHITECTURE-MAP.html");
 const LIB_RS = join(ROOT, "src-tauri", "src", "lib.rs");
 const API_FILE = join(ROOT, "src", "api", "index.ts");
 
-/** `generate_handler![ commands::a, commands::b, … ]` 里注册的那一份。 */
+/** `generate_handler![ commands::a, startup_error::b, … ]` 里注册的那一份。 */
 function registeredCommands(): string[] {
   const src = readFileSync(LIB_RS, "utf8");
   const start = src.indexOf("generate_handler![");
   assert.ok(start > 0, "lib.rs 里找不到 generate_handler! —— 注册方式变了要同步这条守卫");
   const seg = src.slice(start, src.indexOf("\n        ]", start));
   assert.ok(seg.length > 500, "generate_handler! 的切片过短，边界没找对");
-  return [...seg.matchAll(/commands::([a-z0-9_]+)/g)].map((m) => m[1]);
+  // 模块前缀清单 = `lib.rs` 里 handler 实际写的那些命名空间。绝大多数命令住在 `commands::`，
+  // 而审计 A2 那四个属于启动生命周期本身（`startup_error::`，它们要在 `AppState::init`
+  // 还没成功时也能被调用，因此不可能塞进依赖 state 的 commands 册）。
+  // ⚠️ 新增命名空间时必须同时加进这里 —— 漏了不会报错，只会让"前端在调但后端没注册"
+  // 那条判据把**已注册**的命令报成缺件（假红），并把图对账那一半变成看不见新边的死角。
+  return [...seg.matchAll(/(?:commands|startup_error)::([a-z0-9_]+)/g)].map((m) => m[1]);
 }
 
 /** 契约图 `const CMDS = [ ["名字", "领域", "入参", "返回"], … ]` 的第一列。 */

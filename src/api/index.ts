@@ -647,6 +647,17 @@ export const api = {
   getPreviousExit: () => invoke<PreviousRunReport>("get_previous_exit"),
   /** 一键重启（与托盘「重启」同一入口）：有界收尾 → 销毁单实例锁 → 重启。 */
   restartApp: () => invoke<void>("restart_app"),
+  /** 启动失败那扇独立窗口（审计 A2）读的三份信息：原因文案 + 数据/日志目录。 */
+  startupErrorInfo: () => invoke<StartupErrorInfo>("startup_error_info"),
+  /**
+   * 在同一次进程内重跑**正确的那条**初始化流程（`AppState::init` → `finish_boot`）。
+   * 成功时 Rust 侧关掉这扇窗并让主窗口按正常启动的路子重走；失败时窗口留着、文案换成本轮原因。
+   */
+  startupErrorRetry: () => invoke<void>("startup_error_retry"),
+  /** 用原生门面打开数据目录（与设置窗口同一条 `open_path` 出口），返回它打开的路径。 */
+  startupErrorOpenDataDir: () => invoke<string>("startup_error_open_data_dir"),
+  /** 正常退出（`app.exit(0)`，留干净退出标记，不让下一轮把这次报成"异常退出"）。 */
+  startupErrorQuit: () => invoke<void>("startup_error_quit"),
   /**
    * 主窗口心跳：当前在途操作 + 窗口是否可见。
    *
@@ -791,6 +802,13 @@ export const api = {
  * ⚠️ 那个结构体**没有 serde rename**，字段本来就是全小写单词 ⇒ JS 侧同名；
  * 后端加新字段时这里要跟着加，否则界面上读不到。
  */
+/** 启动失败窗口（`startup_error::startup_error_info`）的载荷：原因文案 + 两个目录。 */
+export interface StartupErrorInfo {
+  message: string;
+  dataDir: string;
+  logDir: string;
+}
+
 export interface LogLocations {
   /** 日志目录。 */
   dir: string;

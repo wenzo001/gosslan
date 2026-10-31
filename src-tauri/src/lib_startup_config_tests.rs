@@ -18,10 +18,13 @@
     ///    判定在 `run_migrations` 里 = SCHEMA 之后。）
     /// ② **调用方按类型分支**，不许 `to_string().contains("user_version")` —— 协议层已经
     ///    因为按错误字符串分类吞过一整条消息（INV-P24 第 2 条，v4.22.34）。
-    /// ③ **弹窗只能非阻塞**：`blocking_show()` 的桌面实现是 `run_on_main_thread`
-    ///    （tauri-plugin-dialog-2.7.3/src/desktop.rs:222），而 `setup` 正跑在主线程上 ⇒
-    ///    排在队列里的弹窗永远执行不到 = 开机自锁，与 v4.22.30 修掉的 Windows 开窗卡死
-    ///    同一个形状。写错成 blocking 版本不会报错，只会**永远白屏**，所以必须机器拦。
+    /// ③ **失败分支不许在主线程上等任何 UI 回调**：`setup` 正跑在主线程上，而插件的阻塞版
+    ///    对话框实现是 `run_on_main_thread` + `rx.recv()`（tauri-plugin-dialog-2.7.3/src/desktop.rs:222）
+    ///    ⇒ 排在队列里的开窗/弹窗任务永远执行不到 = 开机自锁，与 v4.22.30 修掉的 Windows
+    ///    开窗卡死同一个形状。写错成 blocking 版本不会报错，只会**永远白屏**，必须机器拦。
+    ///    2026-10-31（审计 A2）把"一个确定按钮 + 点掉就退出"换成独立错误窗口之后，这一格
+    ///    判的是**同一件事**：只许建窗 + 提前 `return Ok(())` 让主线程回到事件循环，
+    ///    并且那套单按钮的死路形态（`.dialog()`）不许再回来。
     #[test]
     fn boot_downgrade_refusal_is_typed_precedes_writes_and_non_blocking() {
         /// 只留**代码行**：这条守卫判的是"有没有真的调用"，注释里提到 API 名字是
@@ -71,9 +74,193 @@
             !lib.contains("blocking_show"),
             "主线程上 blocking_show() 会自锁（弹窗任务排在被钉住的主线程队列里）"
         );
+        // 失败分支的唯一出口：建那扇独立错误窗 + 提前 `return Ok(())`。
+        // 少了 open ⇒ 回到"进程活着而屏幕上什么都没有"；少了提前 return ⇒ setup 会带着
+        // "没有 state"继续往下跑完剩下的几百行装配（worker、托盘、联网全在没有库连接的状态下起）。
         assert!(
-            lib.contains(".show(move |_|"),
-            "降级提示必须非阻塞排队 + 提前 return，让主线程回到事件循环"
+            lib.contains("startup_error::open(app.handle());"),
+            "启动失败必须真的把那扇独立错误窗口开起来（审计 A2）"
+        );
+        assert!(
+            lib.contains("return Ok(());"),
+            "失败分支必须提前 return Ok(())，不许继续装配后半段"
+        );
+        // 旧的单按钮死路形态不许回来：它放不下三个动作，而且"点掉提示 = 只能重启"。
+        assert!(
+            !lib.contains(".dialog()"),
+            "启动失败不许再回到 `tauri_plugin_dialog` 的单按钮提示（放不下重试/打开目录/退出）"
+        );
+    }
+
+    /// A2 的**接线**判据：那扇错误窗口上三个动作必须真的接得住。
+    ///
+    /// 为什么单独一条（而不是并进上面那条）：这条判的是"命令注册 + 恢复路径 + 移动端边界"，
+    /// 三格各挡一种真实回归 ——
+    /// ① 少注册一条命令 ⇒ 界面上那个按钮点下去是静默失败（前端只会拿到 "command not found"，
+    ///    而那扇窗本来就是报错用的，没人会去看控制台）；
+    /// ② 重试成功后若不调 `finish_boot` ⇒ 库是开着了，但托盘/菜单/看门狗/常驻 worker/联网
+    ///    一个都没起（半死界面，正是本仓"逻辑全绿 ≠ 被接上"那一族）：lib.rs 这头钉"定义 +
+    ///    首启调用"恰好两处，重试那头由下一条判据按 `crate::finish_boot(&inner, state);` 钉住；
+    /// ③ 移动端不许跟着开窗（无可实测的显示手段），那条 `return Err(e)` 必须在；
+    /// ④ 这扇窗不给 capability（见正文那条注释）；
+    /// ⑤ 搬这段收尾时**不许把启动留痕一起搬丢**（本仓踩过：抽函数的同一笔改动静默删掉了
+    ///    `AppState::init 完成` 那一行，而 E2E 的 `BOOT_LINE`（`scripts/e2e-logtail.mjs`）与
+    ///    A5「上次收尾判定」（`logging.rs` 的 `seed_previous_run`）都读它 —— 判据全绿、
+    ///    单元测试全绿，E2E 却在那一步永远等不到，症状长得像"产品启动不了"）。
+    #[cfg(desktop)]
+    #[test]
+    fn startup_error_window_actions_are_all_wired() {
+        fn code_only(src: &str) -> String {
+            src.lines()
+                .filter(|l| !l.trim_start().starts_with("//"))
+                .collect::<Vec<_>>()
+                .join("\n")
+        }
+        let lib = code_only(
+            include_str!("lib.rs")
+                .split("#[cfg(test)]")
+                .next()
+                .unwrap_or_default(),
+        );
+        // ① 三条动作命令 + 一条读文案的命令，都必须在 handler 清单里
+        for cmd in [
+            "startup_error::startup_error_info,",
+            "startup_error::startup_error_retry,",
+            "startup_error::startup_error_open_data_dir,",
+            "startup_error::startup_error_quit,",
+        ] {
+            assert_eq!(
+                lib.matches(cmd).count(),
+                1,
+                "命令 `{cmd}` 必须注册恰好一次（漏了 = 那个按钮静默无效）"
+            );
+        }
+        // ② 首启与重试共用同一份收尾。两份调用点住在**不同文件**：lib.rs 里是
+        //    "1 处定义 + 1 处 setup 调用"，另一处调用在 `startup_error.rs`（重试成功后
+        //    在主线程里调，由下一条判据按名字钉住）。分文件数而不是合起来数一个总数：
+        //    合并计数会让"把重试那处搬回 lib.rs"这种搬家悄悄变成 3 次命中而看不出少了谁。
+        assert_eq!(
+            lib.matches("finish_boot(").count(),
+            2,
+            "`finish_boot` 在 lib.rs 里必须是 1 处定义 + 1 处调用（setup 成功分支）；\
+             多了 = 有人在 lib.rs 里又装配了一遍启动，少了 = 首启那条路断了收尾"
+        );
+        assert!(
+            lib.contains("finish_boot(app.handle(), state);"),
+            "setup 的成功分支必须调 `finish_boot`（这条是把启动装配搬出闭包后唯一的落点）"
+        );
+        assert!(
+            lib.contains("fn finish_boot(app: &tauri::AppHandle"),
+            "收尾必须抽成以 `&AppHandle` 为参的函数 —— 重试那条是从命令里调的，拿不到 `&mut App`"
+        );
+        // ③ 移动端那条保持原路（Err → 框架 panic），文案仍进 stderr/logcat
+        assert!(
+            lib.contains("#[cfg(not(desktop))]\n                    return Err(e);"),
+            "移动端启动失败必须保持 `Err` 原路：把未验证的开窗行为写进移动端启动路径比崩溃更糟"
+        );
+        // ④ 这扇窗只需要四个自定义命令（本地来源不走 ACL 闸门），因此**不给**它任何 capability；
+        //    哪天有人加进去，必须在这里说明理由并同步改 `capabilities/default.json`。
+        let caps: serde_json::Value =
+            serde_json::from_str(include_str!("../capabilities/default.json")).expect("合法 JSON");
+        let patterns: Vec<&str> = caps
+            .get("windows")
+            .and_then(|v| v.as_array())
+            .map(|a| a.iter().filter_map(|v| v.as_str()).collect())
+            .unwrap_or_default();
+        assert!(
+            !patterns.iter().any(|p| *p == "startup-error" || *p == "*"),
+            "启动错误窗口刻意不进 capability：给它权限等于白送 opener/notification/fs"
+        );
+        // ⑤ 启动留痕这一行必须在 `finish_boot` 里（而不是"在 lib.rs 的某处"）：
+        //    搬收尾那一次就是把它整条删掉了，而 E2E 与 A5 都读它 ⇒ 落点也要钉。
+        let fb = rust_fn_body(&lib, "fn finish_boot(");
+        assert!(
+            fb.contains("\"AppState::init 完成（设置/目录/局域网就绪）\""),
+            "启动成功必须写 `boot / AppState::init 完成` 这一行，而且必须写在 `finish_boot` 里：\
+             「重试成功」和「首启」都要留这一条痕（E2E 的 BOOT_LINE、A5 的上次收尾判定都读它）"
+        );
+    }
+
+    /// A2 的重试内核：必须走同一个 init、必须防并发与重复初始化、退出必须是正常退出。
+    ///
+    /// 四格各挡一种形状：
+    /// ① 重试若自己"建库/重建文件"来绕开故障 ⇒ 直接毁数据（负责人明令：不能因为启动失败
+    ///    而自动删除、替换或重建）。判据是"必须调 `AppState::init`"而不是"没调 delete"——
+    ///    正面判据比负面清单管得住新增的旁路；
+    /// ② `spawn_blocking` 里算文案：`Box<dyn Error>` 不是 `Send`，把错误对象跨线程带回来
+    ///    编不过；而 init 是重 IO，放进 tokio worker（`command(async)` 的默认落点）会饿死
+    ///    别的命令 —— 两个约束合起来只有这一种写法，钉住它；
+    /// ③ 门控三格必须被**读**（`retry_gate` + `claim_retry` + `resolved`）：内核写得对、
+    ///    命令没查，行为就等于没有；
+    /// ④ 退出用 `app.exit(0)` 而**不是** `process::restart`：后者绕开正常退出路径 ⇒
+    ///    下一次启动会被 A5 那套判定读成「上次运行异常退出」，把刚修好的误报又造出来。
+    #[cfg(desktop)]
+    #[test]
+    fn startup_error_retry_reuses_the_real_boot_path_and_quits_cleanly() {
+        fn code_only(src: &str) -> String {
+            src.lines()
+                .filter(|l| !l.trim_start().starts_with("//"))
+                .collect::<Vec<_>>()
+                .join("\n")
+        }
+        let se = code_only(include_str!("startup_error.rs"));
+        let retry = rust_fn_body(&se, "pub async fn startup_error_retry(");
+        assert!(
+            retry.contains("crate::state::AppState::init(init_handle)"),
+            "重试必须复用 `AppState::init`（同一条正确初始化流程，不许另开一份建库逻辑）"
+        );
+        assert!(
+            retry.contains("tokio::task::spawn_blocking"),
+            "init 是重 IO，必须进阻塞池 —— `command(async)` 的同步体跑在 tokio worker 上，不算豁免"
+        );
+        assert!(
+            retry.contains("boot_failure_message(&msg_handle, &*e)"),
+            "失败文案必须在那个阻塞线程里就地换算成 String（`Box<dyn Error>` 不是 Send，跨不回来）"
+        );
+        assert!(
+            retry.contains("host.run_on_main_thread(move ||"),
+            "收尾（托盘/菜单/窗口）必须回主线程，否则就是 macOS 上那条开窗卡死的形状"
+        );
+        assert!(
+            retry.contains("crate::finish_boot(&inner, state);"),
+            "重试成功后必须跑完整收尾，只 manage 一个 state 是半死界面"
+        );
+        assert!(
+            retry.contains("retry_gate(") && retry.contains("claim_retry(&failure.retrying)"),
+            "重试必须先过门控：并发第二次 init = 两份库连接 + 两套常驻 worker"
+        );
+        assert!(
+            retry.contains("failure.resolved.store(true"),
+            "成功要落 resolved —— 否则第二次成功 init 会再装配一遍整个应用"
+        );
+        assert!(
+            retry.contains("failure.set_message(message.clone());"),
+            "重试失败要把这一轮的文案写回去，界面才会跟着变（否则显示的永远是首启那句）"
+        );
+        // 错误窗关闭后主窗要重新加载：那一份前端是在"没有 state"的时刻挂载的
+        assert!(
+            retry.contains("win.reload()"),
+            "恢复成功必须让主窗口重新加载（重跑一遍正常启动路径，不出现第二扇主窗）"
+        );
+
+        let quit = rust_fn_body(&se, "pub fn startup_error_quit(");
+        assert!(
+            quit.contains("app.exit(0)"),
+            "退出必须走 Tauri 的正常退出路径"
+        );
+        assert!(
+            !se.contains("process::restart"),
+            "这里不许用 `process::restart`：它绕开正常退出 ⇒ 下次启动被判成「上次运行异常退出」（A5）"
+        );
+
+        let open = rust_fn_body(&se, "pub fn open(app: &tauri::AppHandle)");
+        assert!(
+            open.contains(".closable(false)") && open.contains(".always_on_top(true)"),
+            "这扇窗不许被红色按钮关掉（关掉 = 窗口没了而进程还活着），并且必须真的可见"
+        );
+        assert!(
+            open.contains("crash_note("),
+            "窗建不出来时必须留下 durable 痕迹：否则又回到「进程活着、屏幕上什么都没有、日志里也看不出来」"
         );
     }
 

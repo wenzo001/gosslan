@@ -13,6 +13,58 @@
 
 ## [Unreleased]
 
+## [5.15.89] - 2026-10-31
+
+### 第三轮审计·第三批 A2：数据库打不开时给一扇能重试的错误窗口
+
+**根因**：启动失败只有一条路 —— `tauri_plugin_dialog().message(...)` 那**一个**确定按钮，
+用户点掉之后代码才 `exit(1)`。于是"数据库暂时不可用"（移动硬盘还没挂载、杀软正占着文件、
+iCloud 还没把目录放下来）这种本来几分钟就能自愈的情形，唯一的出路是**手动重启整个应用**；
+而弹窗本身若因为主线程调度没显示出来，进程就带着"零窗口"一直活着 —— 屏幕上什么都没有，
+日志里也只有那一行 `BOOT_FAILED`。审计 A2 立案的正是这两种"看不见 / 出不去"。
+
+**修法**：失败分支改成建一扇独立错误窗口（新文档 `startup-error.html` + 自己的入口
+`src/entries/startup-error.ts`，桌面 label `startup-error`），三个动作各接一条命令：
+**重试** / **打开数据目录**（走既有的 `open_path::open_dir_native`，macOS 沙盒路径同一条门面）/
+**退出**。重试复用**同一条**正确初始化流程（`AppState::init`），成功才继续装配 ——
+为此把 setup 里"`init` 成功之后那整段"抽成 `finish_boot`（托盘/菜单/看门狗/常驻 worker/
+好友申请恢复/局域网自启/补账作业一字未动，只是搬家），首启与重试共用同一份；`init` 是重 IO
+⇒ 进 `spawn_blocking`，收尾 ⇒ `run_on_main_thread`。仍然失败就**留在原地**：窗口不关、
+文案换成这一轮的真实原因、可以再点。两条数据保护承诺没有变：`db::init` 那条
+"降级判定早于任何写"、"主库不可用 + 有备份 ⇒ 拒启不覆盖"的闸都在重试路径上照样生效，
+而退出走 `app.exit(0)`（正常退出、留干净标记）**不是** `process::restart` —— 后者会绕开标记，
+把刚修好的 A5 误报重新造出来。移动端保持原路（`Err` → 框架 panic → logcat）：那个时点原生窗口
+在 Android 上能不能显示没有实测手段，不写未验证的行为。
+
+**测试**：`startup_error.rs` 三条行为用例（门控"已恢复优先于在途"、`claim_retry` 是抢占不是
+读改写、文案每轮被替换）+ `lib_startup_config_tests.rs` 两条接线判据（三条动作命令各注册一次、
+`finish_boot` 在 lib.rs 里 1 定义 + 1 调用、失败分支必须真的 `startup_error::open` 并提前
+`return Ok(())`、`.dialog()` 不许回来、移动端那条 `Err` 还在、错误窗刻意不进 capability；
+重试内核必须调 `AppState::init`/`spawn_blocking`/`run_on_main_thread`/`finish_boot`、
+用 `exit(0)` 而非 `process::restart`、`closable(false)`+`always_on_top`）。
+`verify-guards.py` 那条"弹窗非阻塞"守卫的注入锚点跟着搬家（旧锚点是那段 `.dialog()` 链），
+改名成"必须真的开出独立错误窗"并按本仓规矩做了注入自证。搬家自己踩过一笔，已补判据：
+把收尾抽成函数的那一次**顺手删掉了** `boot / AppState::init 完成` 那条启动留痕（它现在是
+`finish_boot` 的首行），而 E2E 的 `BOOT_LINE` 与 A5「上次收尾判定」都读这一行 —— 单测与护栏
+当时全绿，只有真实跑会永远等不到 ⇒ 新增一格接线判据钉"这条留痕必须写在 `finish_boot` 里面"。
+另三处同批改到：`vite.config.ts` 增加 `startup-error.html` 入口、`lib_window_tests.rs` 那格的
+URL 数下限 4→5（并把新文档/新入口成对钉住）、`docs/domains.data.mjs` 把 `startup_error.rs`
+列进 `unmapped`（跨领域组装点，与 `lib.rs`/`watchdog.rs` 同一条口径）。
+前端那一侧同样要按"新窗口要登记六件事"补齐，漏一件都是一条判据（本轮四条同时报红，正是它们该报）：
+入口改走 `src/api` 门面（新增四条包装 + `StartupErrorInfo` 类型，不再裸 `invoke`）、
+`windowEntries.test.ts` 的窗口登记表加第 6 格、骨架（`boot-startup-error` +
+`class="boot-skeleton"` + `skeleton.css` 那一段 + `html.boot-startup-error`）补齐且入口自己
+调 `dismissBoot()`（这扇窗不跑 Vue 挂载，`gosslan:app-ready` 永远不派发 —— 不撤就是"错误窗口里一片空白"，
+与当年 preview 只有骨架同一形）、`<html>` 上 `data-title-zh/en` 两支标题、
+`designGuards.test.ts` 的一次性接线名单登记（三个按钮点到底，文档随窗销毁）；
+契约图 `ARCHITECTURE-MAP.html` 上那四条命令 + 窗口/IPC 两个硬数字按现读改写
+（`check-key-boundary.mjs`：注册表 166 条 / 命令体 174 个函数），`mapContract.test.ts` 的
+注册表解析器补认 `startup_error::` 前缀（它原先只认 `commands::`，于是四条已注册的命令被报成缺件）。
+
+**尚未验证**：真实窗口的十格（正常启动 / 库不存在 / 权限不足 / 暂时不可用 / 重试成功 /
+重试失败 / 主动退出 / 单实例 / 多实例 / 关后再开）需要 release 产物 + 桌面 GUI 会话，
+与 A7 共用一趟跑（隔离 HOME、精确 PID）。
+
 ## [5.15.79] - 2026-10-31
 
 ### 第三轮审计·第三批 A7：多开实例各存自己的窗口状态

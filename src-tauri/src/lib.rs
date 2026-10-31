@@ -62,6 +62,7 @@ mod open_path;
 mod private_fs;
 pub mod protocol;
 mod restart;
+mod startup_error;
 mod state;
 mod storage;
 mod transport;
@@ -340,6 +341,296 @@ pub(crate) fn allow_second_instance_launch(
     instance_env.is_some() || autostart_env == Some("1")
 }
 
+/// 启动成功后要做的那一整段（`AppState::init` 拿到 state 之后）。
+///
+/// 为什么从 setup 里抽出来（审计 A2）：错误窗口里的「重试」在**同一次进程内**恢复时，
+/// 必须跑**完全一样**的收尾 —— 托盘、菜单、看门狗、常驻 worker、好友申请恢复、局域网自动
+/// 联网、缺账补作业，一样都不能少。留在 setup 里就只有首启那一条路能跑到；抽成函数后
+/// 两个调用点共用同一份。两份调用点住在**不同文件**：本文件里是"1 处定义 + 1 处 setup 调用"
+/// （判据分文件数，不合并成一个总数），另一处在 `startup_error` 的重试命令里（那头按
+/// `crate::finish_boot(&inner, state);` 单独钉）—— 少任何一头就红。
+///
+/// ⚠️ 参数是 `&AppHandle` 而不是 `&mut App`：重试那一条是在命令里、从别的线程回主线程调的，
+/// 那里没有 `App`。段内所有窗口/托盘/菜单动作都在 `run_on_main_thread` 里跑完之后才发生。
+fn finish_boot(app: &tauri::AppHandle, state: std::sync::Arc<state::AppState>) {
+    // 这条启动留痕是 E2E 的 `BOOT_LINE`（`scripts/e2e-logtail.mjs`）与 A5「上次收尾判定」
+    // （`logging.rs` 的 `seed_previous_run`）共同读的那一行 ⇒ 从 setup 搬进来后，
+    // 「重试成功」那一趟也会照写一条。
+    state
+        .logger
+        .info("boot", "AppState::init 完成（设置/目录/局域网就绪）");
+    // 拿到 AppHandle 之后**重装** panic hook：这次的 hook 会把 panic 同时写进
+    // 「运行日志」页（安卓上这是唯一能拿到的诊断路径，见 `install_panic_hook`）。
+    install_panic_hook(Some(app.clone()));
+    // ---- 测试钩子（默认完全不执行）----
+    // 用来验证"hook 已装、但 `state` 还没 `manage`"这个窗口里的 panic 真的能落进
+    // 现场文件（`app.try_state::<Arc<AppState>>()` 此刻是 None ⇒ 走 crash_note）。
+    // 只有环境变量精确等于 "1" 才触发；这是**唯一**能在真实 release 二进制里
+    // 复现 setup 期 panic 的办法（单测跑不到 setup）。
+    if std::env::var("GOSSLAN_TEST_PANIC_AFTER_HOOK").as_deref() == Ok("1") {
+        panic!("GOSSLAN_TEST_PANIC_AFTER_HOOK 注入：setup 期早期 panic（仅用于验证留痕通道）");
+    }
+    // 常驻 worker 统一交给看门狗拉起并判活（审计 R-05）：
+    // 这五个全是 `loop { … }` 的无限任务，此前句柄在此处被丢弃 —— 一旦某个循环
+    // 提前结束，`outbox` 清扫器死掉意味着 `sending` 行再也没有终态出口（"永远发送中"），
+    // 而界面完全正常。名单只有一份（`worker_supervisor::RESIDENT_WORKERS`），
+    // 不要在这里再直接 `spawn_*`，否则同一个 worker 会跑两份。
+    worker_supervisor::start(&state, worker_supervisor::RESIDENT_WORKERS);
+    app.manage(state.clone());
+    // 待处理的好友申请从库里回到内存（审计 A4）。放在 `manage` 之后、联网那一块之前：
+    // 库已经打开、而补发还没开始 ⇒ 对端每 30s 的那一份重发会被
+    // `pending_requests` 认成"这条我早就握着了"⇒ 只刷新列表、不再弹通知。
+    // 这一句刻意只填表（不 emit、不通知）；界面启动时自己会拉一次 `get_pending_requests`。
+    crate::network::transport::restore_pending_requests(&state);
+    // 卡死看门狗：主线程探针 + 渲染心跳。**接线点只有这一处**（判据钉调用点计数）。
+    watchdog::start(app.clone(), state.clone());
+    // 系统托盘：关闭主窗口仅隐藏到托盘，退出需走托盘菜单
+    // ⚠️ 三条语句必须一起包进 `#[cfg(desktop)]` 块：属性只作用于**紧跟其后的那一条**，
+    //    拆开写会让 `tray::setup(...)` 掉出 cfg ⇒ 移动端编不过（E0433，真踩过）。
+    #[cfg(desktop)]
+    {
+        state.logger.info("boot", "开始 tray::setup");
+        tray::setup(app);
+        state.logger.info("boot", "tray::setup 完成");
+    }
+    // macOS 菜单栏：⌘Q / ⌘, / ⌘W / ⌘M 与标准「编辑」项。
+    // 属"锦上添花"——初始化失败**不阻断启动**（与托盘不同：托盘失败会改行为，
+    // 菜单失败只是没有菜单，快捷键还有前端兜底）。
+    #[cfg(target_os = "macos")]
+    {
+        // 初始语言取持久化的**显式**偏好（"跟随系统"交给前端推到 `set_ui_language`，
+        // 避免后端再实现一份系统语言检测 —— 见 menu.rs 顶部注释）。
+        let persisted = {
+            let conn = state.db.lock().unwrap_or_else(|e| e.into_inner());
+            db::get_setting(&conn, "language")
+        };
+        let lang = menu::initial_lang(persisted.as_deref());
+        if let Err(e) = menu::setup(app, lang) {
+            state
+                .logger
+                .warn("menu", format!("菜单栏初始化失败（不影响启动）：{e}"));
+        }
+    }
+    // macOS：`decorations: false` 使 tao 以 `Borderless`（不含 `Closable` 位）样式
+    // 掩码创建 NSWindow，AppKit 据此把「关闭窗口」菜单项（Cmd+W / performClose:）
+    // 判为不可用，导致 Cmd+W 无效。窗口创建后补回 `Closable` 位，恢复系统原生
+    // Cmd+W（仍无标题栏/关闭按钮，因未加 `Titled` 位）；关闭动作照旧走
+    // CloseRequested → 托盘隐藏路径，与点击自定义标题栏「×」行为一致。
+    #[cfg(all(desktop, target_os = "macos"))]
+    if let Some(win) = app.get_webview_window(tray::MAIN_WINDOW_LABEL) {
+        if let Err(e) = win.set_closable(true) {
+            state
+                .logger
+                .warn("window", format!("恢复 macOS Cmd+W 关闭能力失败: {e}"));
+        }
+        // macOS 原生窗口键 + 系统阴影（用户 2026-10-23）：补 Titled + FullSizeContentView，
+        // 标题栏透明、标题隐藏 ⇒ 三颗红绿灯由 AppKit 画；titled 的阴影是圆角，可以打开
+        // （旧代码因为 borderless 的矩形阴影只能 setHasShadow(false)，于是整窗没有阴影）。
+        // 圆角本身仍在 WebView 加载完成后由前端调 `apply_macos_window_shape` 设置
+        // （wry 在窗口显示时才用 parent_view 替换 contentView，setup 阶段设圆角会丢）。
+        macos_window::use_native_titlebar(&win);
+    }
+    // 窗口以 `visible: false` 创建（见 tauri.conf.json），由前端在挂载完成后调用
+    // `focus_window` 显示——目的是让窗口露出来的第一帧就是 index.html 的内联骨架，
+    // 消除暗色主题下"整屏浅色一闪"（窗口静态 backgroundColor 只能是浅色或深色之一）。
+    //
+    // 兜底：前端若因初始化异常没能调用，必须仍然把窗口显示出来。否则用户面对的是
+    // 「应用启动了、却没有窗口」——比闪一下白严重得多，且无法自行恢复。
+    // 只在"确定处于隐藏态"时才强制显示，避免 4 秒后抢走用户当前焦点。
+    #[cfg(desktop)]
+    {
+        let handle = app.clone();
+        let st_timeout = state.clone();
+        tauri::async_runtime::spawn(async move {
+            tokio::time::sleep(std::time::Duration::from_secs(4)).await;
+            if let Some(win) = handle.get_webview_window(tray::MAIN_WINDOW_LABEL) {
+                if matches!(win.is_visible(), Ok(false)) {
+                    st_timeout
+                        .logger
+                        .warn("window", "前端未在超时内显示窗口，兜底显示");
+                    let _ = win.show();
+                    let _ = win.set_focus();
+                }
+            }
+        });
+    }
+    // 局域网默认开启：首次安装（以及尚未写入该键的旧版本升级）启动即自动联网；
+    // 用户在设置页关闭后持久化为关闭，重启不再联网。「恢复默认」清除该键 ⇒ 回到默认开启。
+    // GOSSLAN_AUTOSTART=1 的职责**只剩绑定地址**（以 0.0.0.0 起，headless 多实例互测用，
+    // examples/e2e_peer.rs 依赖此行为），它**不再**决定"开不开"（2026-09-27 改掉，见下）。
+    // ⚠️ 旧写法是 `if forced || enabled` ⇒ 库里显式写着"关"也会被这个 env 覆盖成"开"。
+    //    2026-09-26 那条"关掉局域网发现还能被别人学到"的产品结论就是这么来的——
+    //    预置明明写的是关，跑起来的却是开（复跑与改口见 roadmap §12.7「#76 的实测证据是脚手架造的」）。
+    //    现在"关"就是关：要联网的轮次由 harness **显式预置 lan_enabled**（e2e-multi-instance.mjs 的
+    //    L-A 预置里那条 `lan_enabled='true'`），而不是由环境变量替用户表态。
+    // ⚠️ 不在 cfg(desktop) 里：移动端同样需要读 lan_enabled 设置并自动启动 ——
+    // 用户在设置里打开后、杀掉 App 再进来，LAN 应该恢复上次的状态。
+    {
+        let st = state.clone();
+        tauri::async_runtime::spawn(async move {
+            let forced = std::env::var("GOSSLAN_AUTOSTART").ok().as_deref() == Some("1");
+            // 键缺失（首次安装 / 旧版本升级）→ 持久化为 true，之后每次启动
+            // 读到明确的 "1" 而非依赖 unwrap_or(true) 的隐式默认。
+            //
+            // ⚠️ 失败后要**继续试**（2026-10-15 全链路审计：旧写法试一次就放弃，
+            // 而"auto 模式这一刻找不到可用网卡"与"发现套接字 bind/组播失败"都会在
+            // 几十秒内自己变好 —— 开机自启跑在 DHCP 之前正是这个形状）。旧形状下
+            // 本进程此后既没监听也没 announce，唯一出路是重启应用。
+            // 间隔与停止条件都是 `network` 里的纯函数（有单测）。
+            let mut attempt = 0u32;
+            loop {
+                // 每一轮都重读这个键：用户在设置里关掉 ⇒ 立刻收手，不得替他联网
+                // （上面 2026-09-27 那段历史讲的是同一条规矩）。
+                let enabled = {
+                    let dbc = st.db.lock().unwrap_or_else(|e| e.into_inner());
+                    crate::db::get_lan_enabled(&dbc)
+                };
+                // 已经起来就不再插手（也包括用户或 harness 在重试窗口里自己打开的那次）。
+                let running = st
+                    .network
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .is_some();
+                if !network::should_keep_retrying_lan_autostart(running, enabled) {
+                    break;
+                }
+                let started = if forced {
+                    network::start(st.clone(), "0.0.0.0".to_string()).await
+                } else {
+                    network::start_from_prefs(st.clone()).await
+                };
+                match started {
+                    Ok(()) => {
+                        if attempt > 0 {
+                            // 恢复要留痕：没有这一行，"重试链后来自己通了"在日志里是看不见的
+                            st.logger.info(
+                                "lan",
+                                format!("局域网通道在第 {} 次重试后开启成功", attempt),
+                            );
+                        }
+                        break;
+                    }
+                    Err(e) => {
+                        attempt += 1;
+                        let delay = network::lan_autostart_delay(attempt);
+                        // 前 3 次与此后每 10 次各记一条：永久没有局域网的机器不该
+                        // 被这条重试链刷成每 30 秒一条 error。
+                        if attempt <= 3 || attempt % 10 == 0 {
+                            st.logger.error(
+                                        "lan",
+                                        format!(
+                                            "自动开启局域网通道失败（第 {attempt} 次）: {e} —— {} 秒后自行重试，无需重启应用",
+                                            delay.as_secs()
+                                        ),
+                                    );
+                        }
+                        tokio::time::sleep(delay).await;
+                    }
+                }
+            }
+        });
+    }
+    // db 持锁观测：**这里不再自己读一份**（10-22 审计 R-06）。
+    // `take_summary()` 是"消费即清零"的读法，而下面 `spawn_db_hold_reporter` 也在读同一份摘要，
+    // 两个读者互相把对方的窗口清空 ⇒ 慢持锁事件被算进"谁先到谁报"的那一行里，
+    // 计数被吞、60s 窗口被切成两段、日志级别随谁先 tick 而变。
+    // 唯一生产读者是 `state::AppState::spawn_db_hold_reporter`（下面第 426 行那一处启动点，
+    // warn 级、带阈值、空窗口不产行）；跨文件数总量的那条判据在 `db_hold.rs`。
+    // 定期清扫过期的 .part 断点前缀（审计 §7 风险 2）：启动后立即一次，之后每小时一次。
+    spawn_part_sweeper(&state);
+    // 群文件台账一次性补账（2026-10-16 方案 A，见
+    // `docs/notes/group-file-ledger-backfill-2026-10-16.md`）：治的是"文件在盘上、消息行也写着
+    // 路径，但收尾那三张台账一张都没落库"的那一格 —— 那一格让这台**不算种子**，别人再也拉不到
+    // 这份内容，而对账扫描器的谓词捞不到"行根本没写成"，所以它没有兜底。
+    //
+    // ⚠️ 刻意**不是** DB 迁移：补账唯一的判据是整文件 SHA-256，而群文件能到 GB 级；迁移跑在
+    // 启动路径上，等于把 INV-P34 那一族已经修过十一家的根因（打开应用就卡）亲手装回起点。
+    // 形态因此是"启动后一次性的后台作业 + settings 一个开关"，整趟跑完才写开关 ⇒ 中途崩下次重启重来，
+    // 而每一条写都幂等。
+    {
+        let st = state.clone();
+        tauri::async_runtime::spawn(async move {
+            // 晚一点再动：首屏、局域网自启、`.part` 清扫都排在同一段，
+            // 一次后台补账不该跟它们抢盘（这条链上没有用户在等的东西）。
+            tokio::time::sleep(std::time::Duration::from_secs(20)).await;
+            let already = {
+                let dbc = st.db.lock().unwrap_or_else(|e| e.into_inner());
+                crate::db::get_config_bool(
+                    &dbc,
+                    crate::network::file::GFILE_LEDGER_BACKFILL_DONE_KEY,
+                    false,
+                )
+            };
+            if already {
+                return;
+            }
+            let stats = crate::network::file::run_group_ledger_backfill(&st).await;
+            st.logger.info(
+                "file",
+                format!(
+                    "群文件台账补账跑完：候选 {}、补上 {}、跳过 {}、对不回身份的卡片 {}、收口 {}",
+                    stats.gaps,
+                    stats.repaired,
+                    stats.skipped,
+                    stats.orphan,
+                    if stats.incomplete { "否" } else { "是" }
+                ),
+            );
+            if stats.incomplete {
+                // **没收口就不写标记**（2026-10-16 评审抓出来的 P1）：作业里两条提前返回
+                // （扫描失败 / 任务被中断）与任一条事务写失败都算没收口。旧形状下标记照写 ⇒
+                // 一次 SQLITE_BUSY 就把这台**永久**钉成"不再补账"，而那本来只是一次临时故障；
+                // 比"不补"更糟的是"把不补变成不可恢复的决定"。
+                st.logger.error(
+                            "file",
+                            "群文件台账补账：这一趟没收口 ⇒ 完成标记**不写**，下次启动会再来一遍（每一条写都是幂等的）",
+                        );
+                return;
+            }
+            let marked = {
+                let dbc = st.db.lock().unwrap_or_else(|e| e.into_inner());
+                crate::db::set_setting(
+                    &dbc,
+                    crate::network::file::GFILE_LEDGER_BACKFILL_DONE_KEY,
+                    "1",
+                )
+            };
+            if let Err(e) = marked {
+                // 开关写不上 ⇒ 下次启动会再跑一遍（写本身幂等）。这不算故障，但必须看得见。
+                st.logger.error(
+                    "file",
+                    format!("群文件台账补账：完成标记写失败，下次启动会重跑一遍 —— {e}"),
+                );
+            }
+        });
+    }
+    // 群历史同步的清扫任务（负责人 2026-10-16 需求）：入群那一刻常常没有人在线，
+    // 只靠那一次喊话，"自动同步"就变成看运气。这一格每 60 秒看一次还挂着
+    // "待同步"标记的群，有人在线就补上。形态与上面那条补账作业同一条纪律：
+    // **没跑完不写完成标记**，所以这一轮没跑成不会被钉成永久不做。
+    // 审计 P1 #12：它已登记进 `worker_supervisor::RESIDENT_WORKERS`（有判活与重启），
+    // 这里**不再**直接 spawn —— 两处都留着会让同一个 worker 跑两份。
+}
+
+/// 启动失败时**给人看的那一句**（按类型取文案，不按错误字符串猜 —— 协议层曾因
+/// 前缀分类吞过整条消息）。首启失败与错误窗口里的重试失败共用这一份，
+/// 所以"重试后仍然失败"显示的必须是这一轮的真实原因。
+fn boot_failure_message(app: &tauri::AppHandle, e: &(dyn std::error::Error + 'static)) -> String {
+    let data_dir = app.path().app_data_dir().unwrap_or_default();
+    if let Some(init) = e.downcast_ref::<db::InitError>() {
+        init.user_message(&data_dir)
+    } else if let Some(startup) = e.downcast_ref::<state::StartupError>() {
+        startup.user_message(&data_dir)
+    } else {
+        format!(
+            "Gosslan 启动失败：{e}\n\n错误码：BOOT_FAILED\n数据目录：{}\n日志目录：{}\n\
+             本次启动没有删除或覆盖你的数据。",
+            data_dir.display(),
+            data_dir.join("logs").display()
+        )
+    }
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     // 先装 hook（此刻还没有 state，先只打 stderr；setup 里拿到 logger 后再装一次带上文件日志）
@@ -420,50 +711,30 @@ pub fn run() {
                     //   这次启动**没有生成新身份、没有覆盖旧库**，用户需要拿到这句话与日志位置。
                     //
                     // 按**类型**取文案而不是按错误字符串猜（协议层曾因前缀分类吞过整条消息）。
-                    let data_dir = app.path().app_data_dir().unwrap_or_default();
-                    let msg = if let Some(init) = e.downcast_ref::<db::InitError>() {
-                        init.user_message(&data_dir)
-                    } else if let Some(startup) = e.downcast_ref::<state::StartupError>() {
-                        startup.user_message(&data_dir)
-                    } else {
-                        format!(
-                            "Gosslan 启动失败：{e}\n\n错误码：BOOT_FAILED\n数据目录：{}\n日志目录：{}\n\
-                             本次启动没有删除或覆盖你的数据。",
-                            data_dir.display(),
-                            data_dir.join("logs").display()
-                        )
-                    };
+                    let msg = boot_failure_message(app.handle(), &*e);
                     state_mark("boot", &format!("启动失败：{e}"));
                     // 即便 logger 还没建好，也要在崩溃现场文件里留一行 durable 证据；
                     // 下一轮 `seed_previous_run` 会把这条带进「上次收尾判定」那块文本。
                     crate::logging::crash_note(&format!("code=BOOT_FAILED 启动失败：{e}"));
                     eprintln!("[gosslan]{msg}");
-                    // 弹窗**只在桌面端**做。移动端不是"顺手也弹一下"：那个时点原生对话框
-                    // 到底能不能显示，我在这里没有任何实测手段，而"弹出来了但没有 state"
-                    // 与"压根没弹"在 Android 上的分别是**崩溃 vs 永久白屏** —— 后者更糟。
-                    // 宁可让移动端保持现状（panic + logcat 一行），也不把未验证的行为写进
-                    // 移动端启动路径。
+                    // 独立错误窗口（审计 A2）：三个动作 —— 重试 / 打开数据目录 / 退出。
+                    // 旧写法是 `tauri_plugin_dialog().message(...)` 那一个确定按钮 + 点掉就
+                    // `exit(1)`，放不下"重试"，也做不到"仍然不可用时窗还在、可以再试"。
+                    //
+                    // ⚠️ 只能建窗、不能在这条路上等任何 UI 回调：setup 正跑在主线程上，
+                    // 阻塞式对话框的 `rx.recv()` 会把排在队列里的开窗任务钉死（v4.22.30
+                    // 那条 Windows 开窗卡死同一个形状）。开窗本身是同步 builder，
+                    // 页面里的四个命令都在别的线程上跑，所以主线程回到事件循环即可。
+                    //
+                    // 移动端**不跟着做**：那个时点原生窗口在 Android 上能不能显示没有实测
+                    // 手段，而"开了窗但没有 state"与"压根没开"分别是半死界面与永久白屏。
                     #[cfg(desktop)]
                     {
-                        use tauri_plugin_dialog::DialogExt as _;
-                        let handle = app.handle().clone();
-                        // ⚠️ **只能非阻塞 `show` + 提前 `return Ok(())`**。
-                        // 插件的桌面实现是 `run_on_main_thread(...)`
-                        // （tauri-plugin-dialog-2.7.3/src/desktop.rs:222），而 setup 正跑在
-                        // 主线程上 ⇒ 阻塞版 API 的 `rx.recv()` 会钉住主线程，排在队列
-                        // 里的弹窗任务永远执行不到 = 开机自锁（与 v4.22.30 修掉的 Windows
-                        // 开窗卡死同一个形状）。让主线程回到事件循环，弹窗才会出现。
-                        handle
-                            .dialog()
-                            .message(msg)
-                            .title("Gosslan — 启动失败")
-                            .show(move |_| {
-                                // 用户点掉提示之后才退出（exit 走事件循环代理，跨线程安全）
-                                handle.exit(1);
-                            });
-                        // 提前返回 ⇒ 不 `manage(state)`、不建托盘：前端所有命令都会拿到
-                        // "state not found" 的 IPC 错误（不 panic），界面停在空白 ——
-                        // 这比"半死的界面"诚实，而且原生弹窗盖在上面。
+                        // 这一份状态只在失败路径出现：错误窗口靠它读文案，重试靠它防并发
+                        // 与"成功后再来一次"。（主窗保持隐藏 —— 它的 reveal 命令此刻会失败，
+                        // 于是不会留下一张永远转骨架的空窗。）
+                        app.manage(std::sync::Arc::new(startup_error::StartupFailure::new(msg)));
+                        startup_error::open(app.handle());
                         return Ok(());
                     }
                     // 移动端：保持原路（Err → 框架 panic → 退出），文案已进 stderr/logcat。
@@ -471,263 +742,14 @@ pub fn run() {
                     return Err(e);
                 }
             };
-            state
-                .logger
-                .info("boot", "AppState::init 完成（设置/目录/局域网就绪）");
-            // 拿到 AppHandle 之后**重装** panic hook：这次的 hook 会把 panic 同时写进
-            // 「运行日志」页（安卓上这是唯一能拿到的诊断路径，见 `install_panic_hook`）。
-            install_panic_hook(Some(app.handle().clone()));
-            // ---- 测试钩子（默认完全不执行）----
-            // 用来验证"hook 已装、但 `state` 还没 `manage`"这个窗口里的 panic 真的能落进
-            // 现场文件（`app.try_state::<Arc<AppState>>()` 此刻是 None ⇒ 走 crash_note）。
-            // 只有环境变量精确等于 "1" 才触发；这是**唯一**能在真实 release 二进制里
-            // 复现 setup 期 panic 的办法（单测跑不到 setup）。
-            if std::env::var("GOSSLAN_TEST_PANIC_AFTER_HOOK").as_deref() == Ok("1") {
-                panic!("GOSSLAN_TEST_PANIC_AFTER_HOOK 注入：setup 期早期 panic（仅用于验证留痕通道）");
-            }
-            // 常驻 worker 统一交给看门狗拉起并判活（审计 R-05）：
-            // 这五个全是 `loop { … }` 的无限任务，此前句柄在此处被丢弃 —— 一旦某个循环
-            // 提前结束，`outbox` 清扫器死掉意味着 `sending` 行再也没有终态出口（"永远发送中"），
-            // 而界面完全正常。名单只有一份（`worker_supervisor::RESIDENT_WORKERS`），
-            // 不要在这里再直接 `spawn_*`，否则同一个 worker 会跑两份。
-            worker_supervisor::start(&state, worker_supervisor::RESIDENT_WORKERS);
-            app.manage(state.clone());
-            // 待处理的好友申请从库里回到内存（审计 A4）。放在 `manage` 之后、联网那一块之前：
-            // 库已经打开、而补发还没开始 ⇒ 对端每 30s 的那一份重发会被
-            // `pending_requests` 认成"这条我早就握着了"⇒ 只刷新列表、不再弹通知。
-            // 这一句刻意只填表（不 emit、不通知）；界面启动时自己会拉一次 `get_pending_requests`。
-            crate::network::transport::restore_pending_requests(&state);
-            // 卡死看门狗：主线程探针 + 渲染心跳。**接线点只有这一处**（判据钉调用点计数）。
-            watchdog::start(app.handle().clone(), state.clone());
-            // 系统托盘：关闭主窗口仅隐藏到托盘，退出需走托盘菜单
-            // ⚠️ 三条语句必须一起包进 `#[cfg(desktop)]` 块：属性只作用于**紧跟其后的那一条**，
-            //    拆开写会让 `tray::setup(...)` 掉出 cfg ⇒ 移动端编不过（E0433，真踩过）。
-            #[cfg(desktop)]
-            {
-                state.logger.info("boot", "开始 tray::setup");
-                tray::setup(app.handle());
-                state.logger.info("boot", "tray::setup 完成");
-            }
-            // macOS 菜单栏：⌘Q / ⌘, / ⌘W / ⌘M 与标准「编辑」项。
-            // 属"锦上添花"——初始化失败**不阻断启动**（与托盘不同：托盘失败会改行为，
-            // 菜单失败只是没有菜单，快捷键还有前端兜底）。
-            #[cfg(target_os = "macos")]
-            {
-                // 初始语言取持久化的**显式**偏好（"跟随系统"交给前端推到 `set_ui_language`，
-                // 避免后端再实现一份系统语言检测 —— 见 menu.rs 顶部注释）。
-                let persisted = {
-                    let conn = state.db.lock().unwrap_or_else(|e| e.into_inner());
-                    db::get_setting(&conn, "language")
-                };
-                let lang = menu::initial_lang(persisted.as_deref());
-                if let Err(e) = menu::setup(app.handle(), lang) {
-                    state
-                        .logger
-                        .warn("menu", format!("菜单栏初始化失败（不影响启动）：{e}"));
-                }
-            }
-            // macOS：`decorations: false` 使 tao 以 `Borderless`（不含 `Closable` 位）样式
-            // 掩码创建 NSWindow，AppKit 据此把「关闭窗口」菜单项（Cmd+W / performClose:）
-            // 判为不可用，导致 Cmd+W 无效。窗口创建后补回 `Closable` 位，恢复系统原生
-            // Cmd+W（仍无标题栏/关闭按钮，因未加 `Titled` 位）；关闭动作照旧走
-            // CloseRequested → 托盘隐藏路径，与点击自定义标题栏「×」行为一致。
-            #[cfg(all(desktop, target_os = "macos"))]
-            if let Some(win) = app.handle().get_webview_window(tray::MAIN_WINDOW_LABEL) {
-                if let Err(e) = win.set_closable(true) {
-                    state
-                        .logger
-                        .warn("window", format!("恢复 macOS Cmd+W 关闭能力失败: {e}"));
-                }
-                // macOS 原生窗口键 + 系统阴影（用户 2026-10-23）：补 Titled + FullSizeContentView，
-                // 标题栏透明、标题隐藏 ⇒ 三颗红绿灯由 AppKit 画；titled 的阴影是圆角，可以打开
-                // （旧代码因为 borderless 的矩形阴影只能 setHasShadow(false)，于是整窗没有阴影）。
-                // 圆角本身仍在 WebView 加载完成后由前端调 `apply_macos_window_shape` 设置
-                // （wry 在窗口显示时才用 parent_view 替换 contentView，setup 阶段设圆角会丢）。
-                macos_window::use_native_titlebar(&win);
-            }
-            // 窗口以 `visible: false` 创建（见 tauri.conf.json），由前端在挂载完成后调用
-            // `focus_window` 显示——目的是让窗口露出来的第一帧就是 index.html 的内联骨架，
-            // 消除暗色主题下"整屏浅色一闪"（窗口静态 backgroundColor 只能是浅色或深色之一）。
-            //
-            // 兜底：前端若因初始化异常没能调用，必须仍然把窗口显示出来。否则用户面对的是
-            // 「应用启动了、却没有窗口」——比闪一下白严重得多，且无法自行恢复。
-            // 只在"确定处于隐藏态"时才强制显示，避免 4 秒后抢走用户当前焦点。
-            #[cfg(desktop)]
-            {
-                let handle = app.handle().clone();
-                let st_timeout = state.clone();
-                tauri::async_runtime::spawn(async move {
-                    tokio::time::sleep(std::time::Duration::from_secs(4)).await;
-                    if let Some(win) = handle.get_webview_window(tray::MAIN_WINDOW_LABEL) {
-                        if matches!(win.is_visible(), Ok(false)) {
-                            st_timeout
-                                .logger
-                                .warn("window", "前端未在超时内显示窗口，兜底显示");
-                            let _ = win.show();
-                            let _ = win.set_focus();
-                        }
-                    }
-                });
-            }
-            // 局域网默认开启：首次安装（以及尚未写入该键的旧版本升级）启动即自动联网；
-            // 用户在设置页关闭后持久化为关闭，重启不再联网。「恢复默认」清除该键 ⇒ 回到默认开启。
-            // GOSSLAN_AUTOSTART=1 的职责**只剩绑定地址**（以 0.0.0.0 起，headless 多实例互测用，
-            // examples/e2e_peer.rs 依赖此行为），它**不再**决定"开不开"（2026-09-27 改掉，见下）。
-            // ⚠️ 旧写法是 `if forced || enabled` ⇒ 库里显式写着"关"也会被这个 env 覆盖成"开"。
-            //    2026-09-26 那条"关掉局域网发现还能被别人学到"的产品结论就是这么来的——
-            //    预置明明写的是关，跑起来的却是开（复跑与改口见 roadmap §12.7「#76 的实测证据是脚手架造的」）。
-            //    现在"关"就是关：要联网的轮次由 harness **显式预置 lan_enabled**（e2e-multi-instance.mjs 的
-            //    L-A 预置里那条 `lan_enabled='true'`），而不是由环境变量替用户表态。
-            // ⚠️ 不在 cfg(desktop) 里：移动端同样需要读 lan_enabled 设置并自动启动 ——
-            // 用户在设置里打开后、杀掉 App 再进来，LAN 应该恢复上次的状态。
-            {
-                let st = state.clone();
-                tauri::async_runtime::spawn(async move {
-                    let forced = std::env::var("GOSSLAN_AUTOSTART").ok().as_deref() == Some("1");
-                    // 键缺失（首次安装 / 旧版本升级）→ 持久化为 true，之后每次启动
-                    // 读到明确的 "1" 而非依赖 unwrap_or(true) 的隐式默认。
-                    //
-                    // ⚠️ 失败后要**继续试**（2026-10-15 全链路审计：旧写法试一次就放弃，
-                    // 而"auto 模式这一刻找不到可用网卡"与"发现套接字 bind/组播失败"都会在
-                    // 几十秒内自己变好 —— 开机自启跑在 DHCP 之前正是这个形状）。旧形状下
-                    // 本进程此后既没监听也没 announce，唯一出路是重启应用。
-                    // 间隔与停止条件都是 `network` 里的纯函数（有单测）。
-                    let mut attempt = 0u32;
-                    loop {
-                        // 每一轮都重读这个键：用户在设置里关掉 ⇒ 立刻收手，不得替他联网
-                        // （上面 2026-09-27 那段历史讲的是同一条规矩）。
-                        let enabled = {
-                            let dbc = st.db.lock().unwrap_or_else(|e| e.into_inner());
-                            crate::db::get_lan_enabled(&dbc)
-                        };
-                        // 已经起来就不再插手（也包括用户或 harness 在重试窗口里自己打开的那次）。
-                        let running = st
-                            .network
-                            .lock()
-                            .unwrap_or_else(|e| e.into_inner())
-                            .is_some();
-                        if !network::should_keep_retrying_lan_autostart(running, enabled) {
-                            break;
-                        }
-                        let started = if forced {
-                            network::start(st.clone(), "0.0.0.0".to_string()).await
-                        } else {
-                            network::start_from_prefs(st.clone()).await
-                        };
-                        match started {
-                            Ok(()) => {
-                                if attempt > 0 {
-                                    // 恢复要留痕：没有这一行，"重试链后来自己通了"在日志里是看不见的
-                                    st.logger.info(
-                                        "lan",
-                                        format!("局域网通道在第 {} 次重试后开启成功", attempt),
-                                    );
-                                }
-                                break;
-                            }
-                            Err(e) => {
-                                attempt += 1;
-                                let delay = network::lan_autostart_delay(attempt);
-                                // 前 3 次与此后每 10 次各记一条：永久没有局域网的机器不该
-                                // 被这条重试链刷成每 30 秒一条 error。
-                                if attempt <= 3 || attempt % 10 == 0 {
-                                    st.logger.error(
-                                        "lan",
-                                        format!(
-                                            "自动开启局域网通道失败（第 {attempt} 次）: {e} —— {} 秒后自行重试，无需重启应用",
-                                            delay.as_secs()
-                                        ),
-                                    );
-                                }
-                                tokio::time::sleep(delay).await;
-                            }
-                        }
-                    }
-                });
-            }
-            // db 持锁观测：**这里不再自己读一份**（10-22 审计 R-06）。
-            // `take_summary()` 是"消费即清零"的读法，而下面 `spawn_db_hold_reporter` 也在读同一份摘要，
-            // 两个读者互相把对方的窗口清空 ⇒ 慢持锁事件被算进"谁先到谁报"的那一行里，
-            // 计数被吞、60s 窗口被切成两段、日志级别随谁先 tick 而变。
-            // 唯一生产读者是 `state::AppState::spawn_db_hold_reporter`（下面第 426 行那一处启动点，
-            // warn 级、带阈值、空窗口不产行）；跨文件数总量的那条判据在 `db_hold.rs`。
-            // 定期清扫过期的 .part 断点前缀（审计 §7 风险 2）：启动后立即一次，之后每小时一次。
-            spawn_part_sweeper(&state);
-            // 群文件台账一次性补账（2026-10-16 方案 A，见
-            // `docs/notes/group-file-ledger-backfill-2026-10-16.md`）：治的是"文件在盘上、消息行也写着
-            // 路径，但收尾那三张台账一张都没落库"的那一格 —— 那一格让这台**不算种子**，别人再也拉不到
-            // 这份内容，而对账扫描器的谓词捞不到"行根本没写成"，所以它没有兜底。
-            //
-            // ⚠️ 刻意**不是** DB 迁移：补账唯一的判据是整文件 SHA-256，而群文件能到 GB 级；迁移跑在
-            // 启动路径上，等于把 INV-P34 那一族已经修过十一家的根因（打开应用就卡）亲手装回起点。
-            // 形态因此是"启动后一次性的后台作业 + settings 一个开关"，整趟跑完才写开关 ⇒ 中途崩下次重启重来，
-            // 而每一条写都幂等。
-            {
-                let st = state.clone();
-                tauri::async_runtime::spawn(async move {
-                    // 晚一点再动：首屏、局域网自启、`.part` 清扫都排在同一段，
-                    // 一次后台补账不该跟它们抢盘（这条链上没有用户在等的东西）。
-                    tokio::time::sleep(std::time::Duration::from_secs(20)).await;
-                    let already = {
-                        let dbc = st.db.lock().unwrap_or_else(|e| e.into_inner());
-                        crate::db::get_config_bool(
-                            &dbc,
-                            crate::network::file::GFILE_LEDGER_BACKFILL_DONE_KEY,
-                            false,
-                        )
-                    };
-                    if already {
-                        return;
-                    }
-                    let stats = crate::network::file::run_group_ledger_backfill(&st).await;
-                    st.logger.info(
-                        "file",
-                        format!(
-                            "群文件台账补账跑完：候选 {}、补上 {}、跳过 {}、对不回身份的卡片 {}、收口 {}",
-                            stats.gaps,
-                            stats.repaired,
-                            stats.skipped,
-                            stats.orphan,
-                            if stats.incomplete { "否" } else { "是" }
-                        ),
-                    );
-                    if stats.incomplete {
-                        // **没收口就不写标记**（2026-10-16 评审抓出来的 P1）：作业里两条提前返回
-                        // （扫描失败 / 任务被中断）与任一条事务写失败都算没收口。旧形状下标记照写 ⇒
-                        // 一次 SQLITE_BUSY 就把这台**永久**钉成"不再补账"，而那本来只是一次临时故障；
-                        // 比"不补"更糟的是"把不补变成不可恢复的决定"。
-                        st.logger.error(
-                            "file",
-                            "群文件台账补账：这一趟没收口 ⇒ 完成标记**不写**，下次启动会再来一遍（每一条写都是幂等的）",
-                        );
-                        return;
-                    }
-                    let marked = {
-                        let dbc = st.db.lock().unwrap_or_else(|e| e.into_inner());
-                        crate::db::set_setting(
-                            &dbc,
-                            crate::network::file::GFILE_LEDGER_BACKFILL_DONE_KEY,
-                            "1",
-                        )
-                    };
-                    if let Err(e) = marked {
-                        // 开关写不上 ⇒ 下次启动会再跑一遍（写本身幂等）。这不算故障，但必须看得见。
-                        st.logger.error(
-                            "file",
-                            format!("群文件台账补账：完成标记写失败，下次启动会重跑一遍 —— {e}"),
-                        );
-                    }
-                });
-            }
-            // 群历史同步的清扫任务（负责人 2026-10-16 需求）：入群那一刻常常没有人在线，
-            // 只靠那一次喊话，"自动同步"就变成看运气。这一格每 60 秒看一次还挂着
-            // "待同步"标记的群，有人在线就补上。形态与上面那条补账作业同一条纪律：
-            // **没跑完不写完成标记**，所以这一轮没跑成不会被钉成永久不做。
-            // 审计 P1 #12：它已登记进 `worker_supervisor::RESIDENT_WORKERS`（有判活与重启），
-            // 这里**不再**直接 spawn —— 两处都留着会让同一个 worker 跑两份。
+            finish_boot(app.handle(), state);
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
+            startup_error::startup_error_info,
+            startup_error::startup_error_retry,
+            startup_error::startup_error_open_data_dir,
+            startup_error::startup_error_quit,
             commands::get_device_info,
             commands::update_profile,
             commands::list_interfaces,
