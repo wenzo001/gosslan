@@ -13,6 +13,29 @@
 
 ## [Unreleased]
 
+## [5.15.74] - 2026-10-31
+
+### 发版前 review 修掉四处（都在上一版自己新加的两条判据里）
+
+1. **扫描器漏两类写法**：上一版那条「失败分支不许改控制流」要求 `if let Err(e) = ` 后**紧接**
+   `db::`，于是**两处换行写的**（`if let Err(e) =` 换行接 `db::…`）整体被跳过——在这两块里加
+   `return` 判据仍绿（假绿）。现在 `)` 与 `=` 之间、`=` 之后都允许任意空白/换行。
+   变异：往换行那处加 `return;` ⇒ 点名（旧写法下实测是绿的）。
+2. **把合法的上抛当成违例**：绑定名不一定是 `e`（`Err(source)` / `Err(err)` 都有），而且
+   `state.rs` 的设备标识写入失败是**刻意 `return Err`**。现在「不许 return/break/continue」只对
+   **调 `log_write_failure` 的那一族**成立；别的族只要求"留了痕迹"。
+3. **掉电通知把「读不回」说成「没提上去」**：`durability_after_wal_failure` 原先只有两档，
+   读回失败（-1）会落入「没能提上去」——读不到 ≠ 没提上去。改成三档：`UNKNOWN`（读不回，
+   掉电风险未知）/ `DEGRADED`（读回 ≥2，FULL 或 EXTRA）/ `NOT_RAISED`（0/1）。
+   另：`== 2` 改成 `>= 2`（3=EXTRA 更耐久）。
+4. **判据的文档边界**：扫描不剥离生产文件里的内联 `#[cfg(test)]`（与 `worker_supervisor` 的同类扫描
+   不同）；当前 0 命中，红的时候先看归属——写进注释，不假装它是"全量普查"。
+
+**真跑过的验证**：`cargo test --lib --features bluetooth` **1339 通过 / 0 失败**（3 ignored）；
+`cargo clippy -D warnings --all-targets` / `cargo fmt --all -- --check` 0 红 / 0 差异；
+`npm run verify:local` 见下。
+
+
 ## [5.15.73] - 2026-10-31
 
 ### 掉电降级那句通知不再说假话（§4.0bb 缺口⑤）
