@@ -249,6 +249,12 @@ pub async fn startup_error_retry(app: tauri::AppHandle) -> Result<(), String> {
                     let _ = win.reload();
                 }
             }) {
+                // ⚠️ 调度失败＝这一次**并没有**恢复：两格必须复位。否则下一次点重试会被
+                // `retry_gate` 按 `resolved` 拒掉并回「应用已经恢复正常，无需再重试」——
+                // 那是一句假话，而用户当时的唯一出路只剩「退出」。
+                // （2026-10-31 复核发现：置真写在调度之前；修法只动这一支，成功路不变。）
+                failure.resolved.store(false, Ordering::SeqCst);
+                failure.retrying.store(false, Ordering::SeqCst);
                 return Err(format!("恢复主线程调度失败：{e}"));
             }
             Ok(())
