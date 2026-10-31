@@ -21,8 +21,8 @@ async fn handle_group_rename(state: &Arc<AppState>, group_id: String, from: Stri
     {
         let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
         if let Err(e) = db::rename_group(&dbc, &group_id, &name) {
-    crate::logging::log_write_failure(&state.logger, "rename_group", e);
-}
+            crate::logging::log_write_failure(&state.logger, "rename_group", e);
+        }
     }
     let _ = state.app.emit("groups-updated", &group_id);
 }
@@ -56,8 +56,8 @@ async fn handle_group_member_removed(
             {
                 let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
                 if let Err(e) = db::delete_group(&dbc, &group_id) {
-    crate::logging::log_write_failure(&state.logger, "delete_group", e);
-}
+                    crate::logging::log_write_failure(&state.logger, "delete_group", e);
+                }
                 let _ = dbc.execute(
                     "DELETE FROM settings WHERE key = ?1",
                     params![format!("gk:{group_id}")],
@@ -82,8 +82,8 @@ async fn handle_group_member_removed(
             Some(g) if g.members.contains(&to) => {
                 // 他已经不是成员了：指向他的待补发群消息也不该再投递
                 if let Err(e) = db::delete_group_outbox_for_peer_in_group(&dbc, &group_id, &to) {
-    crate::logging::log_write_failure(&state.logger, "delete_group_outbox_for_peer_in_group", e);
-}
+                    crate::logging::log_write_failure(&state.logger, "delete_group_outbox_for_peer_in_group", e);
+                }
                 db::remove_group_member(&dbc, &group_id, &to).is_ok()
             }
             _ => false,
@@ -121,8 +121,8 @@ async fn handle_group_creator_changed(
     {
         let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
         if let Err(e) = db::set_group_creator(&dbc, &group_id, &to) {
-    crate::logging::log_write_failure(&state.logger, "set_group_creator", e);
-}
+            crate::logging::log_write_failure(&state.logger, "set_group_creator", e);
+        }
     }
     // 群内提示：转让成功了但群里没人知道，等于"群主静默换人"（见 group_creator_changed_text）。
     // 幂等由上面的 `ok` 判据保证：第二次收到同一条转让时 `g.creator == from` 已不成立。
@@ -143,8 +143,8 @@ async fn handle_group_member_left(state: &Arc<AppState>, group_id: String, from:
             Some(g) if g.creator != from && g.members.contains(&from) => {
                 // 他已经退了：指向他的待补发群消息不该再投递
                 if let Err(e) = db::delete_group_outbox_for_peer_in_group(&dbc, &group_id, &from) {
-    crate::logging::log_write_failure(&state.logger, "delete_group_outbox_for_peer_in_group", e);
-}
+                    crate::logging::log_write_failure(&state.logger, "delete_group_outbox_for_peer_in_group", e);
+                }
                 db::remove_group_member(&dbc, &group_id, &from).is_ok()
             }
             _ => false,

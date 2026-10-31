@@ -609,8 +609,8 @@ async fn handle_file_messages(state: &Arc<AppState>, peer_id: &str, msg: Message
                             format!("[文件] {name}")
                         };
                         if let Err(e) = db::touch_conversation(&dbc, &sender_id, "single", &nm, None, &preview, 1) {
-                                crate::logging::log_write_failure(&state.logger, "touch_conversation", e);
-                            }
+                            crate::logging::log_write_failure(&state.logger, "touch_conversation", e);
+                        }
                         rec
                     };
                     let _ = state.app.emit("message-received", &rec);

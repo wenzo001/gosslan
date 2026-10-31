@@ -388,8 +388,8 @@ pub async fn send_group_file(
     {
         let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());
         if let Err(e) = db::set_setting(&dbc, &format!("gfk:{transfer_id}"), &sealed_file_key) {
-    crate::logging::log_write_failure(&s.logger, "set_setting", e);
-}
+            crate::logging::log_write_failure(&s.logger, "set_setting", e);
+        }
     }
 
     // 发送者本地气泡先落库：无论成员当前是否在线，用户看到的都是「发送中/待投递」，
