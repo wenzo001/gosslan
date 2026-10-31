@@ -335,7 +335,7 @@ async fn reader_loop(
         //   （`record_failure` ⇒ Incomplete，建链时按退避自动重取）的唯一写点，只调 finalize
         //   那一半会把台账留在 Active。超时那一路（`sweep_stalled_receives`）一直是成对调的。
         for (tid, r) in taken {
-            file::fail_taken_group_receive(&state, &r);
+            file::fail_taken_group_receive(&state, &tid, &r, REASON_PEER_UNLINKED);
             finalize_failed_group_receive(&state, &tid, REASON_PEER_UNLINKED);
         }
     }

@@ -888,7 +888,7 @@ fn persistable_group_fail_code(reason: &str) -> Option<&'static str> {
 /// 于是"磁盘满了"与"对方断线了"在界面上长得一模一样，用户无从下手。
 /// 稳定失败码（如 `DISK_FULL`）由前端查表翻成文案；自由文本原样上屏。
 fn fail_group_file_chunk(state: &Arc<AppState>, transfer_id: &str, reason: &str) {
-    file::fail_group_receive(state, transfer_id);
+    file::fail_group_receive(state, transfer_id, reason);
     finalize_failed_group_receive(state, transfer_id, reason);
 }
 
@@ -984,7 +984,7 @@ pub fn sweep_stalled_receives(state: &Arc<AppState>) -> usize {
         reclaimed += 1;
     }
     while let Some((id, r)) = file::take_stalled_group_receive(state, now) {
-        file::fail_taken_group_receive(state, &r);
+        file::fail_taken_group_receive(state, &id, &r, REASON_STALLED_GROUP_RECEIVE);
         // 剩下的收尾（气泡 / 会话密钥 / recipient）按 transfer_id 定位，与表项在不在无关；
         // 其中的 `fail_group_receive` 会因为已摘而跳过 —— 正好复用同一份收尾，不另写一份。
         fail_group_file_chunk(state, &id, REASON_STALLED_GROUP_RECEIVE);

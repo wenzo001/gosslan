@@ -1397,10 +1397,34 @@ fn disk_full_deletes_the_part_and_other_failures_keep_it() {
         tail[..end].contains("std::io::ErrorKind::NotFound"),
         "删除失败要与「文件本来就不在」分开说 —— 否则一块没释放的空间会被记成成功"
     );
-    // 群侧那一半仍未做（要先把 reason 传进 fail_taken_group_receive）⇒ 显式登记，别当成已完成
-    let group = crate::network::file_src_for_guards();
+    // 群侧那一半（B2-F1，5.15.66）：同一份语义，但 `reason` 必须一路传到收尾函数里
+    // （原先它没有这个入参 ⇒ 只能一律保留 .part）。判据与单聊同形：条件按码判、
+    // 删除在那一支里面、整个函数只删一次、三种结局分开说。
+    let group = rust_fn_body(&file, "pub fn fail_taken_group_receive(");
+    assert!(group.len() > 200, "没取到 fail_taken_group_receive ⇒ 锚点写法变了");
     assert!(
-        !group.contains("code=GFILE_DISK_FULL"),
-        "群侧若已实现盘满例外，请把这条登记删掉并补它自己的判据"
+        group.contains("reason == crate::logging::FAIL_CODE_DISK_FULL"),
+        "群侧盘满例外不见了 ⇒ 那一档又会保留 .part（盘一直满、一直失败）"
+    );
+    let gcond = "if reason == crate::logging::FAIL_CODE_DISK_FULL {";
+    let gat = group.find(gcond).expect("群侧盘满分支不见了");
+    let gtail = &group[gat..];
+    let gend = gtail.find("\n    }\n").unwrap_or(gtail.len());
+    assert!(
+        gtail[..gend].contains("std::fs::remove_file(&r.tmp_path)"),
+        "群侧删除必须在盘满那一支里面（提到条件外 = 所有失败档都不留续传前缀）"
+    );
+    assert_eq!(
+        group.matches("std::fs::remove_file(&r.tmp_path)").count(),
+        1,
+        "群侧整个函数只许删这一次：第二处几乎一定是无条件删"
+    );
+    assert!(
+        gtail[..gend].contains("std::io::ErrorKind::NotFound"),
+        "群侧删除失败也要与「本来就不在」分开说"
+    );
+    assert!(
+        gtail[..gend].contains("code=GFILE_DISK_FULL"),
+        "群侧盘满要有具名码（与单聊 FILE_DISK_FULL 同口径）"
     );
 }
