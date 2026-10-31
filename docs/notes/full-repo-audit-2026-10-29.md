@@ -1535,6 +1535,47 @@ STB-04 半条（非好友分支广播后直接 return，无撤销登记 —— *
 
 前两条已在 §4.0bb-E 登记；本节把措辞从「等日志」改成**可执行的判读规则**，避免下次又被当成待办重开。
 
+### 4.0bg 五个 FINDINGS 的 58 条 ID 全量清点：六条从未被裁决，六条只有题没有判
+
+**A. 分母怎么来的**
+
+| 文件 | ID 数 | 已有裁决措辞的 ID | 从未出现的 ID | 提到过但没有裁决的 ID |
+|---|---|---|---|---|
+| functional | 6 | 2 | 0 | FUN-02 / FUN-03 / FUN-05 / FUN-06 |
+| security | 12 | 12 | 0 | 0 |
+| stability | 8 | 6 | 0 | STB-07 / STB-08 |
+| tests | 16 | 10 | **TST-11…TST-16（6 条）** | 0（TST-10 的裁决在 §4.0d：「设计使然」） |
+| dup | 16 | 16 | 0 | 0 |
+| **合计** | **58** | **46** | **6** | **6** |
+
+判法：把每个 ID 在本文里命中的行连同前后各两行取窗口，窗口里出现「已修 / 已收口 /
+不成立 / 判不修 / 不做 / 已撤回 / 已删」这类措辞才算有裁决。B1–B4 那 16 条属另一批，账在 §4.0ag，不在本表。
+
+**B. TST-11…16：六条「Needs verification」的复核结论**
+
+| ID | 原判 | 复核结论 | 证据（现算） |
+|---|---|---|---|
+| TST-11 尺子可能读错函数 | Needs verification | **风险成立、当前无害** | `rust_fn_body` 用 `find(signature)` 取**第一次出现**；`rust_fn_body(` 调用点 **147** 处、去重签名 **97** 个；机械解析到源的 85 处里**有 3 处歧义**：`commands/logs.rs` 的 `open_group_todos_window`（`:817` desktop / `:1084` mobile）与 `prewarm_aux_windows`（`:1201` / `:1296`）是 `#[cfg(desktop)]`／`#[cfg(mobile)]` **同名双胞胎**。三条判据（`lib_window_tests.rs:684/761/851`）断言的全是 desktop 行为，而首次出现恰好就是 desktop ⇒ **今天读对了**。但没有任何机制保证这一点：谁把 mobile 桩挪到前面，三条判据会静默换对象。修法（未做）：`rust_fn_body` 对「签名出现 N>1 次」直接 panic。 |
+| TST-12 `skip/todo/only` | 干净 | **确认干净** | `grep -E '\.(skip\|todo\|only)\(' '**/*.test.ts'` → 0 命中；阳性对照 `test.skip(1)` → true |
+| TST-13 快照机制 | 干净 | **确认干净** | `assert.snapshot(` / `toMatchSnapshot` 在 `src`+`scripts` 的 `.test.ts` → 0 命中；阳性对照 true。`RuntimeSnapshot` 那些命中是业务名，不是测试快照 |
+| TST-14 时间依赖 | 未验证 | **确认安全** | 现读 **9** 个文件（审计当时写 12，已漂）：4 处在**字符串字面量**里（`designGuards:3788`、`defer:292/293/356/357`）、2 处是注释、1 处 `setTimeout(r,0)` 让出调度；真实时钟只有三处且都有余量——`todos.test.ts:863` 用 0 天 / 8 天做相对比较（阈值 7 天）、`time.test.ts:58` 取「正午」避跨日、`updater.test.ts:112` 断言 10 ms 超时在 1 s 内结束；`chatSearchQuery.test.ts:47` 的 `waitFor` 是 1 s 上限轮询。 |
+| TST-15 文件系统依赖 | 未验证 | **确认不写仓库** | 写盘只发生在 **2** 个脚本测试（`scripts/updaterManifest.test.ts`、`scripts/publishRelease.test.ts`），目标全部来自 `mkdtempSync(join(tmpdir(), …))`；`src` 下没有任何测试写文件 |
+| TST-16 网络依赖 | 未验证 | **确认无实连** | `fetch(` / `XMLHttpRequest` / `new WebSocket` / `net.connect` / `http(s).request` 在 `.test.ts` → 0 命中；阳性对照 true |
+
+**C. 六条「提到过但没有判」的补判**
+
+| ID | 现在怎么判 | 证据 |
+|---|---|---|
+| FUN-02 收藏页图片转发同源缺陷 | **已修** | `FavoritePanel.vue` 的 `doForward` 与 `ChatWindow.vue` 共用 `isTransferKind`（唯一出口 `src/utils/messageKinds.ts:176`），媒体按收藏副本重发并在注释里写明「不传 msgId」的理由 |
+| FUN-03 BLE 构建门控看不出差别 | **已修** | `NetworkSection.vue:489-491` 分两档文案：`compiled-out` → 「蓝牙后端尚未编译」、`noAdapter` → 「没有适配器」 |
+| FUN-05 移动端角标空实现 | **维持原判（Info，设计内）** | `useChatStore.ts:407` `if (app.isMobile) return;` 先返回，不发 IPC；命令侧移动端本来就是桩 |
+| FUN-06 转发逻辑三处各写一份、已漂移 | **根因已消除，剩两处刻意不同** | kind 判据收成单一出口 `isTransferKind`；两份 `doForward`（`ChatWindow:1255` / `FavoritePanel:593`）语义本来就不同（前者转发原消息带 `msgId` 走归属闸，后者重发收藏副本不带 `msgId`），两边注释都写明了 |
+| STB-07 补递缓存 TTL 与窗口不同源 | **不成立（复核后撤回）** | `GossipRelayCache` 没有第二个 TTL：`worth_replaying` 用的就是 `RELAY_WINDOW_MS`（`mesh/gossip_replay.rs:34/137`），缓存窗口与补递窗口是同一个常量 |
+| STB-08 每 30 s 在锁内 clone 全表 | **仍存，可接受（Info）** | `outbox_sweep.rs:118-133` 仍是「clone 后立刻 `drop(links)`、再持 `peers` 锁只读 `last_seen`」；集合大小 = 在线 peer 数（peers 有淘汰），每 30 s 一次 ⇒ 无界增长与锁跨 await 都不成立 |
+
+**D. 仍未被动过的真缺口**：TST-11 的修法（`rust_fn_body` 断言签名唯一）—— 它要动所有 147 个调用点里
+那 3 个歧义点的取法，属独立的判据改造，本轮只登记不实施。
+
 ### 4.1 已核查且未发现问题的稳定性面
 
 - **锁顺序**：全仓无 `peers↔db` 嵌套；`file_receivers→db` 顺序成立。
