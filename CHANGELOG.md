@@ -13,6 +13,28 @@
 
 ## [Unreleased]
 
+## [5.15.78] - 2026-10-31
+
+## [Unreleased]
+
+### 第三轮审计·第二批 A10：好友同意后发起方也建会话
+
+**根因**：同意方在自己的 `accept_friend_request` 里 `ensure_conversation`，而**发起方**那条
+回执路径（`apply_friend_accept`，直连 `Message::FriendAccept` 与跨跳 `GossipKind::FriendAccept`
+共用这一个家）只加好友、不建会话 ⇒ 双方点开后一头有会话、另一头必须等对方先发一条消息才冒出来
+—— 同一件事两条路径行为不一致，且"必须先发消息才有会话"不是产品要求。
+
+**修法**：`apply_friend_accept` 在既有的那次 `add_friend` 同一个库里动作里补一句
+`db::ensure_conversation(&dbc, from, "single", &name, None)`。`INSERT OR IGNORE` ⇒ 重复回执/
+重复投递只有一行，已有会话的摘要、未读与历史消息一个字都不动；失败按同链写法带码留痕
+（`log_write_failure`），不 `.ok()` 吞掉。加密身份、好友关系与已有会话零改动。
+
+**测试**：`db/friends.rs` 一条幂等判据（同一 id 连 ensure 三次 ⇒ 只有一行；已握着摘要与未读的
+那一行不许被 ensure 擦平）+ `lib_friend_identity_tests` 一条具名判据（回执这一臂必须调到那把
+幂等的 `ensure_conversation`、失败必须留痕、两条 FriendAccept 路径仍然只有这一个家）。
+**尚未验证**：两端真机各开一次「加好友 → 同意 → 重启」的完整流程（第 3 批之后统一用双实例
+release 产物跑）；单测只证明库这一层。
+
 ## [5.15.77] - 2026-10-31
 
 ### 第三轮审计·第二批 A4：未处理的好友申请落库、重启后恢复且不再重复通知

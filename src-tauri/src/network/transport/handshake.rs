@@ -372,6 +372,14 @@ pub(crate) fn apply_friend_accept(state: &Arc<AppState>, from: &str, trace: &str
         // （跨跳到达的那一份尤其要紧 —— 它允许 TOFU，`peers` 里那对钥匙
         //  可能来自未签名广播，判据在 `bind_friend_keys_on_accept` 里）。
         bind_friend_keys_on_accept(&dbc, from, key_snapshot, &state.logger);
+        // ★ 发起方也建会话（审计 A10）：同意方那条在自己的 `accept_friend_request` 里建，
+        // 而发起方此前只有**真的发出一条消息**才会冒出会话 ⇒ 双方点开后一头有会话、
+        // 另一头要等对方先说话，同一件事两条路径行为不一致。
+        // `ensure_conversation` 是 `INSERT OR IGNORE` ⇒ 重复回执/重复投递都只有一行，
+        // 既不碰已有会话的摘要与未读，也不动历史消息。
+        if let Err(e) = db::ensure_conversation(&dbc, from, "single", &name, None) {
+            crate::logging::log_write_failure(&state.logger, "ensure_conversation", e);
+        }
         seen
     };
     // 已经是好友了 ⇒ 这条申请必须消失（否则「新朋友」里会留着一条永远处理不掉的申请）。

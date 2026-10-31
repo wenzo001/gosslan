@@ -659,3 +659,33 @@
         );
     }
 
+    /// 好友被同意后，**发起方**也必须有自己的会话行（审计 A10）。
+    ///
+    /// 原形状：同意方在自己的 `accept_friend_request` 里建，而发起方这条回执路径只加好友、
+    /// 不建会话 ⇒ 同一件事两条路径行为不一致，发起方要点开聊天只能等对方先发消息。
+    /// 这里钉的是"回执那一臂真的调了幂等的那把 `ensure_conversation`，而且失败留痕"。
+    #[test]
+    fn the_friend_accept_path_creates_the_conversation_on_the_initiating_side_too() {
+        let transport = crate::network::transport_src_for_guards();
+        let home = rust_fn_body(&transport, "pub(crate) fn apply_friend_accept(");
+        let home_f = code_flat(&home);
+        assert_eq!(
+            home_f
+                .matches("db::ensure_conversation(&dbc,from,\"single\",&name,None)")
+                .count(),
+            1,
+            "回执这一臂必须建 1:1 会话行（`INSERT OR IGNORE` ⇒ 重复回执只有一行）"
+        );
+        assert!(
+            home_f.contains("log_write_failure(&state.logger,\"ensure_conversation\",e)"),
+            "建会话失败必须留痕，不许 `.ok()` 吞掉（吞掉就是「界面里根本没这个会话」而日志一字不记）"
+        );
+        // 两条 FriendAccept 路径仍然只有这一个家（判据与上一条测试同一口径，防止旁路又写一份）
+        assert_eq!(
+            code_flat(&transport)
+                .matches("apply_friend_accept(state,&from,")
+                .count(),
+            2,
+            "直连与跨跳两条都必须走这个家"
+        );
+    }
