@@ -13,6 +13,32 @@
 
 ## [Unreleased]
 
+## [5.15.72] - 2026-10-31
+
+### 64 处写库留痕补上运行时/结构判据（B4-F1 的缺口③收口）
+
+上一版把 64 处「写库结果被 `.ok();` 丢掉」改成了 if-let + `log_write_failure`，但只有形状层
+（棘轮 + 编译 + review 逐处读）—— **没有机器判据**钉住「失败分支不许改控制流」。谁在失败分支里顺手
+加一句 `return`，界面上的表现就是「一次写库抖动 ⇒ 这条链静默少做一半」，而所有用例都还是绿的。
+
+- 新判据 `every_db_write_failure_branch_only_logs_and_never_changes_control_flow`：
+  扫全部生产源里每个 `if let Err(e) = db::… / crate::content::store::…` 的**块体**，钉两件事：
+  ① 分支里必须**留痕**（`log_write_failure` / 各自的 `logger.` / `terminal_ledger_failure_note`，
+  早先就有的那些不算例外）；② 分支里**不许出现** `return` / `break` / `continue` / `process::exit` / `?;`。
+  另加一条计数：全仓「调用 `log_write_failure` 的行」必须 ≥ **64** —— `.ok();` 棘轮只认语句形态，
+  改成 `let _ = db::x(..)` 能绕过它，这条计数是那半边的守。
+- 两处变异各点名红：把一处转换回退成 `let _ = db::observe_clock(..)` ⇒
+  「全仓只有 63 处在用 log_write_failure ⇒ 有处转换被撤回了」；
+  在失败分支里加 `return;` ⇒ 「失败分支里出现了 `return`」。
+- 过程中踩到并修掉两个量具坑：① 按**字节**切块体在中文注释里会 panic（not a char boundary）——
+  改成全程在 `Vec<char>` 上做；② 子串计数会把文档注释里的用法示例数进去，
+  于是「少了一处调用」被抵掉（实测回填一处后仍是 64，判据不红）—— 改成只数**行首**是调用的行。
+
+**真跑过的验证**：`cargo test --lib --features bluetooth` **1338 通过 / 0 失败**（3 ignored）；
+`cargo clippy -D warnings --all-targets` / `cargo fmt --all -- --check` 0 红 / 0 差异；
+测试清单基线已登记；`npm run verify:local` 见下。
+
+
 ## [5.15.71] - 2026-10-31
 
 ### 发版前 review 的三处（一条注释自相矛盾、七处缩进、一条判据只钉前缀）
