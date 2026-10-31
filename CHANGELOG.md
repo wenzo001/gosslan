@@ -13,6 +13,8 @@
 
 ## [Unreleased]
 
+## [5.15.91] - 2026-10-31
+
 ### 第三轮审计·第五批（验证收口）A1：群历史那轮的会话行两个字段第一次有了跨进程断言
 
 **为什么要补**：`scripts/e2e/rounds/ghsync.mjs` 一直在 `SELECT id,unread,last_msg,last_ts`，
@@ -41,6 +43,16 @@
 `node scripts/check-doc-numbers.mjs` 退出码 0）。
 
 **没跑的部分**：本批是判据与文档，没有产品码变化 ⇒ 没重跑 `verify:full`（快速层 `npm run verify` 照跑）。
+
+### 启动错误窗：重试的主线程调度失败时不再谎称「已恢复正常」
+
+`startup_error_retry` 原先在 `run_on_main_thread` **之前**就把 `resolved` 置真。若调度返回 `Err`
+（主线程已不可调度），用户再点重试会被 `retry_gate` 按 `resolved` 拒掉，并被告知「应用已经恢复正常，
+无需再重试」——而这一次其实一次都没恢复，屏幕上仍是那扇错误窗。修法只动失败支：在 `Err` 分支把
+`resolved` / `retrying` 复位后再返回原错误，让用户可以再点一次；成功路径一字未改，接线判据里那句
+`failure.resolved.store(true` 仍原样存在。
+现跑：`cargo test --lib --features bluetooth -- startup_error` **6 passed / 0 failed**；
+`cargo fmt --check --all` 0 差异。
 
 ## [5.15.90] - 2026-10-31
 
