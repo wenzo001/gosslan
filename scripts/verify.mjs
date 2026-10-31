@@ -1039,6 +1039,30 @@ if (groupFlag === "local") {
       cmd: NODE_EXE,
       args: ["scripts/e2e-multi-instance.mjs", "--round=contentpull"],
     },
+    {
+      group: "local",
+      name: "好友申请重启恢复 E2E：库里那一行跨两次真实启动仍在、恢复只填表、不走通知那一路（审计 A4）",
+      why:
+        "第三轮审计 A4 里**能被磁盘上的事实表达**的那一半。入站待处理好友申请以前只有 "
+        + "`AppState::pending_requests` 那一份内存 HashMap（库里那一格从来不存在）⇒ 重启即清零，"
+        + "而申请人每 30 秒才补发一次、还要链路在。现在它落在 `settings` 的 "
+        + "`friend_req:<device_id>`（不建表、零迁移），启动时在 `app.manage` 之后、联网之前跑 "
+        + "`restore_pending_requests`。判三件事：那一行跨**两次**真实启动逐字不变（恢复不删不改写）；"
+        + "恢复臂每次都真跑（磁盘日志里「重启恢复 1 条待处理好友申请」各 1 次）；"
+        + "而它**不走**通知那一条（「收到好友申请 peer=」0 次 —— 用户拍板的「重启不重复弹窗」"
+        + "的机器形状，机制就是「填回内存 ⇒ 下一份补发的 first_sighting 为假」）。"
+        + "★ 这一轮**不判真实好友申请链路**：发送侧那本「待发申请」`pending_out_requests` 是进程内 "
+        + "HashMap、不落库 ⇒ 停机写库造不出一份真申请，而进程外拼帧属于本次明令禁止的「新增自动化注入机制」；"
+        + "那一半落在真机双实例验收里（A 点添加 → B 点同意），报告与矩阵按层次分两句写，"
+        + "不许读成「好友申请全证过了」。"
+        + "预置的申请方刻意是本轮自己铸的一个陌生 id：`is_actionable_request` 会把「已是好友」的条目"
+        + "过滤掉并顺手删库里那行，而公共播种步让两台实例互为好友 ⇒ 拿真对手 id 预置会红在过滤器上。"
+        + `反向 --round=friendreq-lie 只把判据去库里读的那个 id 换成不存在的值，预置与时序一字不动。`
+        + `每轮条数由 check-doc-numbers 现算，只登记在验收矩阵顶部「轮次账」一处。${LOCAL_ONLY_WHY}`,
+      cwd: ROOT,
+      cmd: NODE_EXE,
+      args: ["scripts/e2e-multi-instance.mjs", "--round=friendreq"],
+    },
   );
 } else if (!groupFlag) {
   // 不跑也要说出来 —— 一片绿暗示"全跑过了"正是这套门禁最反对的样子。

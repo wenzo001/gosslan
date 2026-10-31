@@ -93,6 +93,8 @@
     "test:e2e:gossip-late-selfproof": "node scripts/e2e-multi-instance.mjs --round=gossip-late-lie",
     "test:e2e:ghsync": "node scripts/e2e-multi-instance.mjs --round=ghsync",
     "test:e2e:ghsync-selfproof": "node scripts/e2e-multi-instance.mjs --round=ghsync-lie",
+    "test:e2e:friendreq": "node scripts/e2e-multi-instance.mjs --round=friendreq",
+    "test:e2e:friendreq-selfproof": "node scripts/e2e-multi-instance.mjs --round=friendreq-lie",
     "test:e2e:lanoff-selfproof": "node scripts/e2e-multi-instance.mjs --round=lanoff-lie",
     "test:e2e:task-selfproof": "node scripts/e2e-multi-instance.mjs --round=task-lie",
     "selfproof:check": "node scripts/check-selfproof-baseline.mjs",
