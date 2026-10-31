@@ -203,7 +203,7 @@ async fn relay_push_file(
 
     {
         let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
-        db::upsert_transfer(
+        if let Err(e) = db::upsert_transfer(
             &dbc,
             transfer_id,
             peer_id,
@@ -213,8 +213,9 @@ async fn relay_push_file(
             "active",
             None,
             0.0,
-        )
-        .ok();
+        ) {
+            crate::logging::log_write_failure(&state.logger, "upsert_transfer", e);
+        }
     }
 
     let offer = Message::RelayFileOffer {
@@ -317,7 +318,7 @@ async fn relay_push_file(
                 };
                 {
                     let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
-                    db::upsert_transfer(
+                    if let Err(e) = db::upsert_transfer(
                         &dbc,
                         transfer_id,
                         peer_id,
@@ -327,8 +328,9 @@ async fn relay_push_file(
                         "active",
                         None,
                         progress,
-                    )
-                    .ok();
+                    ) {
+                        crate::logging::log_write_failure(&state.logger, "upsert_transfer", e);
+                    }
                 }
                 let _ = state.app.emit(
                     "file-progress",
@@ -342,7 +344,7 @@ async fn relay_push_file(
         }
         {
             let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
-            db::upsert_transfer(
+            if let Err(e) = db::upsert_transfer(
                 &dbc,
                 transfer_id,
                 peer_id,
@@ -352,8 +354,9 @@ async fn relay_push_file(
                 "sent",
                 Some(path.to_string_lossy().as_ref()),
                 1.0,
-            )
-            .ok();
+            ) {
+                crate::logging::log_write_failure(&state.logger, "upsert_transfer", e);
+            }
         }
         // 最后一片可能因节流(250ms)跳过了 emit，收尾必须补一次完整进度，
         // 否则前端可能卡在"发送中 63%"（DB 已终态但前端没收到事件推进）。

@@ -387,7 +387,9 @@ pub async fn send_group_file(
     // 群文件的投递仍能恢复 file_key（群密钥 gk:% 本身保留）
     {
         let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());
-        db::set_setting(&dbc, &format!("gfk:{transfer_id}"), &sealed_file_key).ok();
+        if let Err(e) = db::set_setting(&dbc, &format!("gfk:{transfer_id}"), &sealed_file_key) {
+    crate::logging::log_write_failure(&s.logger, "set_setting", e);
+}
     }
 
     // 发送者本地气泡先落库：无论成员当前是否在线，用户看到的都是「发送中/待投递」，
@@ -433,7 +435,7 @@ pub async fn send_group_file(
                     format!("群公告卡片落库失败 msg={}：{e}", rec.msg_id),
                 );
             }
-            db::upsert_transfer(
+            if let Err(e) = db::upsert_transfer(
                 &dbc,
                 &transfer_id,
                 &group_id,
@@ -443,8 +445,9 @@ pub async fn send_group_file(
                 "active",
                 Some(p.to_string_lossy().as_ref()),
                 0.0,
-            )
-            .ok();
+            ) {
+                crate::logging::log_write_failure(&s.logger, "upsert_transfer", e);
+            }
             let group_name = db::get_group(&dbc, &group_id)
                 .map(|g| g.name)
                 .unwrap_or_default();
@@ -453,7 +456,7 @@ pub async fn send_group_file(
             } else {
                 format!("[群文件] {name}")
             };
-            db::touch_conversation(
+            if let Err(e) = db::touch_conversation(
                 &dbc,
                 &format!("group:{group_id}"),
                 "group",
@@ -461,8 +464,9 @@ pub async fn send_group_file(
                 None,
                 &preview,
                 0,
-            )
-            .ok();
+            ) {
+                crate::logging::log_write_failure(&s.logger, "touch_conversation", e);
+            }
         }
         let _ = s.app.emit("message-received", &rec);
     }

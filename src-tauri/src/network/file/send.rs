@@ -133,7 +133,7 @@ pub async fn send_file_from_path_at(
     let path_str = path.to_string_lossy().to_string();
     {
         let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
-        db::upsert_transfer(
+        if let Err(e) = db::upsert_transfer(
             &dbc,
             transfer_id,
             peer_id,
@@ -143,8 +143,9 @@ pub async fn send_file_from_path_at(
             "pending",
             Some(path_str.as_str()),
             0.0,
-        )
-        .ok();
+        ) {
+            crate::logging::log_write_failure(&state.logger, "upsert_transfer", e);
+        }
         // 内容索引（ADR-0019 Phase 3）：按 cid 记录"本机持有这份完整字节"，
         // 之后任何人发 ContentRequest 都能直接回发（拥有即授权，无需确认）。
         let now = db::now_ms();
@@ -478,7 +479,7 @@ async fn stream_file(
 
     {
         let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
-        db::upsert_transfer(
+        if let Err(e) = db::upsert_transfer(
             &dbc,
             transfer_id,
             peer_id,
@@ -488,8 +489,9 @@ async fn stream_file(
             "active",
             None,
             0.0,
-        )
-        .ok();
+        ) {
+            crate::logging::log_write_failure(&state.logger, "upsert_transfer", e);
+        }
     }
 
     loop {
@@ -563,7 +565,7 @@ async fn stream_file(
             };
             {
                 let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
-                db::upsert_transfer(
+                if let Err(e) = db::upsert_transfer(
                     &dbc,
                     transfer_id,
                     peer_id,
@@ -573,8 +575,9 @@ async fn stream_file(
                     "active",
                     None,
                     progress,
-                )
-                .ok();
+                ) {
+                    crate::logging::log_write_failure(&state.logger, "upsert_transfer", e);
+                }
             }
             let _ = state.app.emit(
                 "file-progress",
