@@ -204,7 +204,7 @@
                 .join("\n")
         }
         let se = code_only(include_str!("startup_error.rs"));
-        let retry = rust_fn_body(&se, "pub async fn startup_error_retry(");
+        let retry = rust_fn_body_nth(&se, "pub async fn startup_error_retry(", 0);
         assert!(
             retry.contains("crate::state::AppState::init(init_handle)"),
             "重试必须复用 `AppState::init`（同一条正确初始化流程，不许另开一份建库逻辑）"
