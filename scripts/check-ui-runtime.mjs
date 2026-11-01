@@ -10965,6 +10965,68 @@ async function runGroupFiles(cdp, url) {
     (await cache("g2")).status === "success" && s.files.includes("g2.bin"),
     "status=success", JSON.stringify(await cache("g2")));
 
+  // ── N6-3（2026-11-01 用户拍板）：群文件行右键 →「另存为」「打开所在目录」 ──
+  // 真右键、真按回车，并用一层 invoke 记账证明两个动作走的是既有通道（不是自造动作）。
+  const rightClickRow = () => cdp.eval(`(() => {
+    window.__gf.invokes = window.__gf.invokes || [];
+    if (!window.__gf.invokeWrapped) {
+      window.__gf.invokeWrapped = true;
+      // 这一段没有别的段装过 Tauri 桩 ⇒ 自己补一个最小可用的（两个动作都走 invoke 记账）。
+      if (!window.__TAURI_INTERNALS__) {
+        window.__TAURI_INTERNALS__ = {
+          metadata: { currentWindow: { label: 'main' }, currentWebview: { label: 'main', windowLabel: 'main' } },
+          invoke: async () => null,
+          transformCallback: (cb) => cb,
+          convertFileSrc: (p) => p,
+        };
+        window.__TAURI_EVENT_PLUGIN_INTERNALS__ = window.__TAURI_EVENT_PLUGIN_INTERNALS__ || { unregisterListener: () => {} };
+      }
+      const prev = window.__TAURI_INTERNALS__.invoke;
+      window.__TAURI_INTERNALS__.invoke = async (cmd, args) => {
+        window.__gf.invokes.push([String(cmd), args]);
+        return prev ? prev(cmd, args) : null;
+      };
+    }
+    const row = document.querySelector('[role="dialog"] [title$=".bin"]');
+    if (!row) return { ok: false };
+    const r = row.getBoundingClientRect();
+    row.dispatchEvent(new MouseEvent('contextmenu', {
+      bubbles: true, cancelable: true,
+      clientX: Math.round(r.left + 12), clientY: Math.round(r.top + 12),
+    }));
+    return { ok: true };
+  })()`);
+
+  const rc1 = await rightClickRow();
+  await sleep(250);
+  const gfMenu = await cdp.eval("window.__probe.menu()");
+  check("对照：群文件行右键真的弹出了菜单，且只有两条「另存为」「打开所在目录」",
+    rc1.ok === true && gfMenu.present === true && gfMenu.items.length === 2
+      && /另存为/.test(gfMenu.items[0]) && /打开所在目录/.test(gfMenu.items[1]),
+    "2 条 + 文案", JSON.stringify({ rc1, items: gfMenu.items }));
+
+  await cdp.eval("window.__gf.invokes = []");
+  await cdp.key("ArrowDown", "ArrowDown", "", 40);
+  await cdp.key("Enter", "Enter", "\r", 13);
+  await sleep(300);
+  const invSave = await cdp.eval("window.__gf.invokes");
+  check("「另存为」真的走到保存对话框（plugin:dialog|save），不是自造动作",
+    invSave.some((e) => e[0].includes("dialog|save")),
+    "invoke 里出现 dialog|save", JSON.stringify(invSave.map((e) => e[0])));
+
+  await rightClickRow();
+  await sleep(250);
+  await cdp.eval("window.__gf.invokes = []");
+  await cdp.key("ArrowDown", "ArrowDown", "", 40);
+  await cdp.key("ArrowDown", "ArrowDown", "", 40);
+  await cdp.key("Enter", "Enter", "\r", 13);
+  await sleep(300);
+  const invReveal = await cdp.eval("window.__gf.invokes");
+  check("「打开所在目录」真的走到 opener 的 reveal，且带的是这一行的本地路径",
+    invReveal.some((e) => e[0].includes("opener|reveal_item_in_dir")
+      && JSON.stringify(e[1] || {}).includes(".bin")),
+    "invoke 里出现 opener|reveal_item_in_dir + .bin", JSON.stringify(invReveal.map((e) => e[0])));
+
   await open(false);
   s = await info();
   check("关掉面板：事件订阅成对摘除（subs === unsub）",
