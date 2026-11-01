@@ -1928,6 +1928,29 @@ Rejected）。⚠️ 边界：这条恢复只对**声明了 `CONTENT_FEATURE_PUL
    读数：CLI 端到端（假目录 + 两节夹具）带 `--since` notes 39 字符含两节、不带只有目标节；单测 10/10；
    变异（区间下界 `> 0` → `>= 0`）后「fromVersion 自己那一节不该被算进来」当场红。**下一次发版的 notes 才会是聚合后的**。
 
+### 4.0bo v5.16.9 / v5.16.10 发布账（2026-11-02；更新说明聚合与页面同源）
+
+| 项 | v5.16.9 | v5.16.10 |
+|---|---|---|
+| tag → commit | `v5.16.9` → `5f0b6b95` | `v5.16.10` → `c4642f1e` |
+| 本地 `verify:release` | 4 轮全绿，148.6s（25 / 23 / 41 / 49） | 未重跑 —— `git diff v5.16.9..HEAD -- src src-tauri` 只有三处版本号 |
+| 本地 `npm run verify` | 21/21 退 0 | 21/21 退 0 |
+| tag 拉起 workflow | 6 条 success | 5 条 success（updater/mac/win/win-webview2/android）＋ push 那条 Verify success；tag 的 Verify 里 3 个 cargo 分片仍在跑（历史整跑是小时级，不算卡死） |
+| Release | 非 draft、17 资产、Latest | 非 draft、17 资产、Latest |
+| `latest.json` | `version=5.16.9`，notes **1801 字符 / 三节**（5.16.9 → 5.16.8 → 5.16.7） | `version=5.16.10`，notes **558 字符 / 一节**（上一版一小时前刚发过，范围正确） |
+| 工作流日志 | `上一次发布：v5.16.6` | `上一次发布：v5.16.9` |
+
+**v5.16.9 装的是**：`notesForRelease` 聚合 + CLI `--since` + 工作流走 Releases API 取上一版；同时撤掉 5.16.7 那条
+「点名被跳过的小节」的提示（聚合后它会说反话）。
+
+**v5.16.10 装的是**：Release 正文改为与 `latest.json.notes` 同源（末尾补 Full Changelog 链接；
+`PREV_TAG` 取不到时退回 tag 链接；notes 为空只打 warning 不动正文）。
+
+**5.16.11 在同一处再收紧**：上一版只认**已发布**的 Release（排除草稿/预发布）。本仓 Release 是
+draft-until-complete，上一次失败的发布尝试会留下永不公开的草稿；拿它当"上一次发布"会把聚合范围算错。
+夹具凭据：`[{v9.9.10 draft}, {v9.9.9}, {v9.9.8}]` + `--arg t v9.9.9` ⇒ 旧过滤选 `v9.9.10`、新过滤选 `v9.9.8`。
+正文同源的实读：`gh release view v5.16.10 --json body` = 558 字符 notes + `---` + `compare/v5.16.9...v5.16.10`。
+
 
 ## 5. 需求与实现偏差（spec-to-code-compliance）
 > ⚠️ **本节记的是审计当时的发现。今天哪些已经落地、哪些判了不修，一律以 [§8 落地状态总表](#8-落地状态总表2026-10-29-深夜按现算对账) 为准** —— 「确认」「无机器对账」「零用例」这类字样不代表今天还没做（本轮对账实测：§8 的 19 行里有 9 行在写这张表时其实已完成）。

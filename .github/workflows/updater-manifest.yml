@@ -149,8 +149,10 @@ jobs:
           set -euo pipefail
           # TAG 不拼进 jq 程序：走 --arg 传值（它虽然已在上一步被 ^v[0-9.]+$ 校验过，
           # 但"校验过的变量"也不该变成命令文本的一部分）。
+          # 只认**已发布**的 Release（排除草稿与预发布）：本仓的 Release 是 draft-until-complete，
+          # 上一次失败的发布尝试会留下一个永远不公开的草稿；把它当成"上一次发布"会让聚合范围算错。
           prev=$(gh api "repos/$REPO/releases?per_page=100" \
-            | jq -r --arg t "$TAG" '[.[] | select(.tag_name != $t)] | sort_by(.created_at) | reverse | .[0].tag_name // empty' \
+            | jq -r --arg t "$TAG" '[.[] | select(.tag_name != $t and (.draft|not) and (.prerelease|not))] | sort_by(.created_at) | reverse | .[0].tag_name // empty' \
             | head -1 || true)
           if [ -n "$prev" ]; then
             echo "上一次发布：$prev"
