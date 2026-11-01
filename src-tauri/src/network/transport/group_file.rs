@@ -2684,6 +2684,32 @@ mod group_file_fail_reason_tests {
         REASON_STALLED_GROUP_RECEIVE,
     };
 
+    /// 接线判据：**首个分片建 `.part`** 那条懒创建路径上，盘满必须走"一次判死 + 带 `DISK_FULL`"。
+    ///
+    /// 为什么值得单独钉：5.15.97 把同样的判断加在了**续传重建**那条路上，而实测路径根本不走它 ——
+    /// 端到端探针照样 24 条告警、终态照样 `NO_CHUNK`。形状判据在这里当场就能看出"绑错了地方"。
+    #[test]
+    fn disk_full_is_wired_into_the_lazy_receiver_creation() {
+        let body = crate::tests::rust_fn_body(
+            include_str!("group_file.rs"),
+            "async fn handle_group_file_chunk(",
+        );
+        // ⚠️ needle 必须带上 `if … {` 这个形状：只查 `build_failure_is_disk_full(&why)` 的**存在**时，
+        // 往前面接一个 `false && `（最省事的停用写法）它照样命中 —— 存在性断言只有半个守卫。
+        let pinned = |src: &str| {
+            src.contains("if build_failure_is_disk_full(&why) {")
+                && src.contains("crate::logging::FAIL_CODE_DISK_FULL")
+        };
+        assert!(
+            pinned(&body),
+            "懒创建那条路没有接上盘满判死 ⇒ 盘满会退回「每片试一次 + 终态 NO_CHUNK」"
+        );
+        // 正控：把判断摘掉（就是想退回的写法），同一把尺子必须说"没有"。
+        let gutted = body.replace("if build_failure_is_disk_full(&why) {", "if false {");
+        assert_ne!(gutted.to_string(), body.to_string(), "变异没落进去 ⇒ 锚点写法变了");
+        assert!(!pinned(&gutted), "摘掉盘满判断后仍然判绿 ⇒ 这条尺子在空集上恒绿");
+    }
+
     /// 盘满：① 准入闸的拒绝串必须被认出来（否则会掉进"重建失败再试"的循环，
     /// 最后由「没有收到任何分片」代它背锅 —— 2026-11-01 实测）；② 认出来之后
     /// `DISK_FULL` 必须**在册**，否则气泡仍说不清原因。

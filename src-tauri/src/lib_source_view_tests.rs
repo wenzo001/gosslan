@@ -268,7 +268,7 @@ fn regex_for_item(line: &str) -> Option<String> {
 /// 这正是本项目最该防的那类问题：护栏还在跑，却既盯不住真缺陷、又误报无关代码。
 ///
 /// 返回 `Cow`：LF 检出（macOS/Linux）零拷贝借用原文，CRLF 检出才复制一份。
-fn rust_fn_body<'a>(src: &'a str, signature: &str) -> std::borrow::Cow<'a, str> {
+pub(crate) fn rust_fn_body<'a>(src: &'a str, signature: &str) -> std::borrow::Cow<'a, str> {
     let normalized = if src.contains('\r') {
         std::borrow::Cow::Owned(src.replace("\r\n", "\n"))
     } else {
