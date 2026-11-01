@@ -1837,6 +1837,16 @@ A 侧确实收到跨跳同意并自动建了空会话（`last_msg=NULL`、两侧
 （`handle_share.rs` 与 `commands/files.rs` 的 outbox 循环），都在闸后面 —— 没有漏掉的第三条路径；
 `upsert_transfer` 五档 + `refusal()` 与 WARN/ERROR 不混。
 
+第五处是**这条修复最容易被一句注释糊过去的地方**，2026-11-01 单独复核过：闸门抢不到时
+`handle_share` / `flush_pending_files` 直接 `return`/`continue` 丢掉这一趟，注释承诺"对端自己的
+重试节奏会再来一次"。读过实现确认承诺成立 —— `retry_incomplete_content` 挂在**两处**：
+Hello 臂（`handle_identity.rs:109`）与 **Heartbeat 臂**（`handle_identity.rs:139`，心跳 5s 一次，
+代码里那段注释写明"服务队列有界、满了会显式拒绝 ⇒ 只在建链重投会让被拒的那条永远不再被请求"）；
+它的闸门是 `should_retry_now`（`Incomplete` 且退避到点，2→60s，`MAX_CONTENT_RETRIES` 封顶转
+Rejected）。⚠️ 边界：这条恢复只对**声明了 `CONTENT_FEATURE_PULL` 且方向为接收**的对端生效 ——
+老端没有这个能力位，它被丢掉的那次要靠它自己那套请求逻辑再发（不是新引入的缺口，属兼容面）。
+
+
 发现三处，**已全部在 5.15.96 收掉**（只改注释与一条判据，行为零变化）：
 
 1. `group_receive.rs` 旧注释「Windows 上未关句柄时 `remove_file` 会失败」是假的（唯一有机器读数的是
