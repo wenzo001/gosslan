@@ -37,6 +37,10 @@
 ⚠️ 读数位置也记一笔：本轮摸到的那份 `gosslan-2.db` 在 `run-*/backup-B/` 下，是**用户库的备份**、
 不含这一单；运行中的实例库在**该轮隔离 HOME 的 `Library/Application Support/com.gosslan.app/`** 下，
 下次直接 `find <run> -name 'gosslan-2.db' -not -path '*backup*'` 再读。
+**2026-11-01 晚读 harness 代码后的更正**：`core.mjs::launch()` 只注入 `GOSSLAN_INSTANCE`/`GOSSLAN_AUTOSTART`、
+**不改 HOME** ⇒ 运行中的库就是用户真实 appdata 下的 `gosslan-<n>.db`（B = 实例 2），跑完由 harness 备份/还原，
+`after-*.db` 是**还原后**的快照。实测该主库 mtime 仍是 10-27、只有 `-shm` 是当天 —— 为什么主库/WAL 没落盘
+**没查清**，所以这条仍记作"读数位置未坐实"。
 
 ## [5.15.99] - 2026-11-01
 
