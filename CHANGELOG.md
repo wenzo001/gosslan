@@ -13,6 +13,22 @@
 
 ## [Unreleased]
 
+## [5.16.10] - 2026-11-02
+
+### Release 页面正文改成与应用内更新说明同源
+
+`latest.json` 的 `notes` 与 GitHub Release 正文此前是两条独立的路：前者由生成器按 CHANGELOG 取，
+后者交给 GitHub 自动生成（本仓没有 PR ⇒ 只剩一行 compare 链接）。v5.16.6 那次两边都不对，
+最后靠人手工 `gh release edit` 补。
+
+现在 `Publish Release` 之后加一步：直接把**这次生成的** `latest.json.notes` 写进 Release 正文，
+末尾补 Full Changelog 链接（`PREV_TAG` 取不到时退回 tag 链接）。`notes` 为空时只打 warning、不动正文
+—— 宁可不写，也不要写一份空说明。
+
+本地验证：workflow YAML 解析通过、步骤顺序在 Publish 与 Verify 之间（11 步）；用夹具模拟两条分支
+（正文 = notes + 分隔线 + compare 链接；空 notes ⇒ 走 warning 分支、不调用 gh）；`gh release edit --notes-file` 可用。
+⚠️ 这一步只在打 tag 时执行，真环境读数要等下一次发版。
+
 ## [5.16.9] - 2026-11-02
 
 ### 应用内「更新说明」改成聚合「上一次发布之后」的每一节

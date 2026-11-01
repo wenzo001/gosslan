@@ -201,6 +201,32 @@ jobs:
           gh api --method PATCH "repos/$REPO/releases/$REL_ID" -F draft=false >/dev/null
           echo "Release $TAG 已发布（桌面 updater / WebView2 / APK / dmg / latest.json 全齐）"
 
+      # 页面与应用内同源：Release 正文直接用这次生成好的 `latest.json.notes`（末尾补 Full Changelog 链接）。
+      # 以前正文是 GitHub 自动生成的（只有一行 compare 链接），而应用内说明又只有被发布那一版一节，
+      # 两处都对不上 —— v5.16.6 那次最后靠人手工 `gh release edit` 补。现在两边都由同一份 notes 产出。
+      - name: Set Release body from the same notes（页面与应用内同源）
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          node -e 'const fs=require("fs");const m=JSON.parse(fs.readFileSync("latest.json","utf8"));process.stdout.write((m.notes||"").trim())' > /tmp/notes.md
+          if [ ! -s /tmp/notes.md ]; then
+            echo "::warning title=更新说明为空::latest.json 的 notes 是空的 ⇒ Release 正文保持原样"
+            exit 0
+          fi
+          {
+            cat /tmp/notes.md
+            printf '\n\n---\n\n'
+            if [ -n "${PREV_TAG:-}" ]; then
+              printf '**Full Changelog**: https://github.com/%s/compare/%s...%s\n' "$REPO" "$PREV_TAG" "$TAG"
+            else
+              printf '**Full Changelog**: https://github.com/%s/releases/tag/%s\n' "$REPO" "$TAG"
+            fi
+          } > /tmp/body.md
+          gh release edit "$TAG" --repo "$REPO" --notes-file /tmp/body.md
+          echo "Release 正文已更新（与应用内 notes 同源）"
+
       - name: Verify public manifest
         env:
           REPO: ${{ github.repository }}

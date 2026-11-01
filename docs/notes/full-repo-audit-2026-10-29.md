@@ -1918,7 +1918,7 @@ Rejected）。⚠️ 边界：这条恢复只对**声明了 `CONTENT_FEATURE_PUL
 （`updater-manifest.mjs::notesForVersion`），而版本门禁要求每批未推送提交都提一档 ⇒ 连续小批发布必然把中间节丢掉。
 `v5.16.6` 的 `notes` 只有 568 字符（探针/文档），5.16.0 的三处右键菜单一个字没进去。当天处置：
 
-1. `gh release edit v5.16.6 --notes-file` 把 GitHub 页面正文补全（**应用内仍只有那一节**）；
+1. `gh release edit v5.16.6 --notes-file` 把 GitHub 页面正文补全（**应用内仍只有那一节**；5.16.10 起页面正文改为自动生成、与应用内同源）；
 2. 5.16.7 给 `version:check` 加了「站在 tag 上点名被跳过的小节」的提示（只提示不判红）；
    **5.16.9 聚合落地后把它撤掉了** —— 那些小节现在会被聚合进 notes，留着这句会说反话。
 3. **根修已做（5.16.9）**：`updater-manifest.mjs` 新增 `notesForRelease(changelog, version, fromVersion)`，
@@ -2249,7 +2249,7 @@ audit-context/
 | 8 | ~~A5 的首启不误报~~ | **已收口（A/B 实测）** | 报告侧 5.15.75 已修；日志判定侧 5.15.92（`46f41213`）补齐并用例正反控钉住 | 隔离 HOME 真机 A/B（2026-10-31）：**5.15.91 首启日志里 `BOOT_PREV_` 1 行（假的异常终止）→ 5.15.92 同一形状 0 行**，bootstrap 行 `pid` 与进程一致；两轮都只碰 `/tmp` 隔离 HOME，跑完即清 |
 | 9 | **发送端台账假「已取消」**（E2E 判据⑩ `--fault=sender-kill-mid` 读到的 A=cancelled） | 产品缺陷 · **同日已修（5.15.94）· E2E 判据⑩ 已转绿（RCA 册 §10）** —— 实施记录与四条变异反证在同册 §9 | 根因已证死到行：两个家同时发同一个 `(transfer_id, peer)`（`flush_pending_files` 与 ContentRequest 服务任务），`install_cancel_slot` 撞键静默顶掉在任者 ⇒ 代码口径「oneshot 通道关闭」等于「用户取消」；随后 `finalize_file_failure` 写 `cancelled` + 墓碑 `cancel_terminal=1`，把真正成功那条的 `done` **静默**挡住（`upsert_transfer` 命中 0 行仍返 `Ok`）⇒ 成功传输被永久记成已取消。修法 = 1:1 在途闸门 `FileSendGate`（键复用 `file_peer_key`，形状照群侧 `group_file_dispatching`）+ 撞键返回 `AlreadyInFlight` + 守卫按登记序号只摘自己那格 + `upsert_transfer` 返回五档并对被挡的终态推进落 Warn。墓碑与 `set_message_status` 的终态名单一字未动 | 证据链、六个 `cancelled` 臂的现数、排除清单、最小修复方案与影响面、先红后绿的验证方案都在 `docs/notes/send-cancelled-rca-2026-11-01.md`；七次同形复现（四趟 `verify:e2e` 整链 + 三次单轮）；档位 L2 `[plan]` + patch，DB / 协议 / 前端零改动；判据⑩本身不许动。**修复后转绿**：判据⑩ **26/26 PASS**（`B=done A=done outbox=0`；A 侧日志里 `code=SEND_ALREADY_IN_FLIGHT … 本轮跳过` 真出现过一次，而整轮仍全绿）、撤两道防线后 FAIL 且红形状与基线逐字相同 —— 读数与命令在 RCA 册 §10.3 / §10.4 |
 
-| 10 | **应用内「更新说明」只覆盖被发布的那一版** | **已修（5.16.9，2026-11-02）** —— 5.16.7 曾加提示，5.16.9 做根修并**撤掉那条提示**（聚合后"这些节不会进更新说明"已不成立，留着会说反话） | ~~根修要动 `updater-manifest.mjs` + updater 工作流（后者 `fetch-depth: 1` 拿不到 tag）~~ ⇒ 工作流改走 Releases API 取上一版，生成器新增 `notesForRelease` | 现读：CLI 端到端带 `--since` 时 notes 含两节（39 字符）、不带时只有目标节；`jq` 两条读数排除当前 tag 得 `v5.15.100`；单测 10/10，变异（区间下界 `> 0` → `>= 0`）当场红。`v5.16.6` 的历史 notes（568 字符）已无法追改，GitHub 页面当天用 `gh release edit` 补过。详见 §4.0bn 第 3 条 |
+| 10 | **应用内「更新说明」只覆盖被发布的那一版** | **已修（5.16.9，2026-11-02）** —— 5.16.7 曾加提示，5.16.9 做根修并**撤掉那条提示**（聚合后"这些节不会进更新说明"已不成立，留着会说反话） | ~~根修要动 `updater-manifest.mjs` + updater 工作流（后者 `fetch-depth: 1` 拿不到 tag）~~ ⇒ 工作流改走 Releases API 取上一版，生成器新增 `notesForRelease` | 现读：CLI 端到端带 `--since` 时 notes 含两节（39 字符）、不带时只有目标节；`jq` 两条读数排除当前 tag 得 `v5.15.100`；单测 10/10，变异（区间下界 `> 0` → `>= 0`）当场红。`v5.16.6` 的历史 notes（568 字符）已无法追改，GitHub 页面当天用 `gh release edit` 补过。5.16.10 起 Release 正文也由同一份 notes 生成（不再需要手工补）。详见 §4.0bn 第 3 条 |
 
 ### 13.1 TST-06 收口过程与两次假否证的更正（2026-11-01）
 
