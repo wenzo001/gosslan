@@ -701,7 +701,9 @@ window.__probe = (() => {
       'remind', 'multi-select'];
     for (const name of emitNames) {
       const key = 'on' + name.split('-').map((s) => s[0].toUpperCase() + s.slice(1)).join('');
-      handlers[key] = () => events.push([name]);
+      // 只有 mention 带上载荷（N6-2 要断言 @ 的是哪一个人）：其余 emit 的记录形状不变，
+      // 免得动到别的段已经在数的账本。
+      handlers[key] = (...args) => events.push(name === "mention" && args.length ? [name, String(args[0])] : [name]);
     }
     const app = V.createApp({
       setup() {
@@ -10695,6 +10697,73 @@ async function runCtxMenu(cdp, url) {
     check("选中它发的是既有 copy 事件（不是自造动作），且菜单已关",
       cbEv.some((e) => e[0] === "copy") && cbAfter.present === false,
       "copy + 菜单消失", JSON.stringify(cbEv));
+
+    // ── N6-2（2026-11-01 用户拍板）：群成员行右键 →「@他」「查看资料」 ──
+    // 真挂 GroupMemberPanel（seed 一个带成员的群）、真右键、真按回车，看它发的是不是那两个事件。
+    await cdp.eval("window.__probe.reset()");
+    await cdp.eval(`(() => {
+      if (!window.__TAURI_INTERNALS__) {
+        window.__TAURI_INTERNALS__ = {
+          metadata: { currentWindow: { label: 'main' }, currentWebview: { label: 'main', windowLabel: 'main' } },
+          invoke: async () => null,
+          transformCallback: (cb) => cb,
+          convertFileSrc: (p) => p,
+        };
+        window.__TAURI_EVENT_PLUGIN_INTERNALS__ = { unregisterListener: () => {} };
+      }
+    })()`);
+    // ⚠️ `mount()` 只传 props（第二个参数它不接）⇒ 挂别的组件必须直接调 installMenu 并给 spec，
+    //    否则挂的还是默认的 MessageContextMenu（第一版就是这么错的：菜单读出「引用/多选」）。
+    await cdp.eval(`window.__probe.installMenu(${JSON.stringify(JSON.stringify({ open: true, groupId: "g1" }))}, ${JSON.stringify(JSON.stringify({
+      path: "/src/components/GroupMemberPanel.vue",
+      emits: ["close", "open-tasks", "mention", "open-profile"],
+    }))})`);
+    await sleep(400);
+    // seed 必须在**挂载之后**、并且显式用页面那份 pinia：`useChatStore()` 在别处调会绑到
+    // 另一个 pinia 实例上（面板读的是页面那份，两边看到的不是同一个 store）。
+    const seededGroup = await cdp.eval(`(async () => {
+      const { useChatStore } = await import('/src/stores/useChatStore.ts');
+      const chat = useChatStore(window.__pinia);
+      chat.groups = [{ id: 'g1', name: '探针群', creator: 'dev-me', members: ['dev-me', 'bob'], avatar: null }];
+      window.__probe.vue && await window.__probe.vue.nextTick();
+      return { ok: true, groups: chat.groups.length, members: chat.groups[0].members.length };
+    })()`);
+    await sleep(300);
+    const rowHit = await cdp.eval(`(() => {
+      // ⚠️ BaseModal 走 Teleport ⇒ 面板内容**不在** #probe-host 里，得在全文档找。
+      const nameEl = [...document.querySelectorAll('span')].find((s) => (s.textContent || '').includes('bob'));
+      if (!nameEl) return { ok: false, why: 'no-row', text: (document.body.innerText || '').slice(0, 120) };
+      const r = nameEl.getBoundingClientRect();
+      nameEl.dispatchEvent(new MouseEvent('contextmenu', {
+        bubbles: true, cancelable: true,
+        clientX: Math.round(r.left + 8), clientY: Math.round(r.top + 4),
+      }));
+      return { ok: true, text: (nameEl.textContent || '').trim() };
+    })()`);
+    await sleep(250);
+    const mm = await menu();
+    check("对照：群成员行右键真的弹出菜单，且只有「@他」「查看资料」两条",
+      seededGroup.ok === true && rowHit.ok === true && mm.present === true && mm.items.length === 2
+        && /@他/.test(mm.items[0]) && /查看/.test(mm.items[1]),
+      "2 条 + 文案", JSON.stringify({ seededGroup, rowHit, items: mm.items }));
+    // 用**点条目**而不是数 ↓：Reka 打开时是否已把焦点落在第一条会随版本变，
+    // 按方向键下数会点错（第一版就是这么点到「查看资料」的）。
+    await cdp.eval("window.__probe.reset()");
+    const clickItem = (txt) => cdp.eval(`(() => {
+      const it = [...document.querySelectorAll('[role="menuitem"]')]
+        .find((i) => (i.textContent || '').includes(${JSON.stringify(txt)}));
+      if (!it) return false;
+      it.click();
+      return true;
+    })()`);
+    const hitMention = await clickItem("@他");
+    await sleep(250);
+    const mEv = await events();
+    check("选中「@他」：面板发的是既有 mention 事件（带那个人），并请求关闭",
+      hitMention === true
+        && mEv.some((e) => e[0] === "mention" && String(e[1]) === "bob")
+        && mEv.some((e) => e[0] === "close"),
+      "mention(bob) + close", JSON.stringify(mEv));
 }
 
 /**
