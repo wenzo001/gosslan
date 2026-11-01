@@ -274,6 +274,18 @@ fn rust_fn_body<'a>(src: &'a str, signature: &str) -> std::borrow::Cow<'a, str> 
     } else {
         std::borrow::Cow::Borrowed(src)
     };
+    // TST-11（2026-11-01）：签名在源码里出现多次就是「同名 cfg 双胞胎」
+    // （`#[cfg(desktop)]` / `#[cfg(mobile)]` 各一份）。取「第一次出现」等于在赌顺序：
+    // 谁把两份对调，判据会**静默换对象**却不报错 ⇒ 这里直接点名，逼调用点显式选。
+    // 只数「定义形状」的命中：行前缀全空白才算（列 0 的顶层函数，或模块内缩进的定义）。
+    // 生产文件里内联 `#[cfg(test)]` 常写 `.find("async fn foo(")` 这类**字符串**，
+    // 它的行前缀是 `.find("` ⇒ 不是定义，不能算第二份。
+    let hits = definition_hits(&normalized, signature);
+    assert_eq!(
+        hits, 1,
+        "`{signature}` 的定义在源码里出现 {hits} 次 —— 同名 cfg 双胞胎必须改用 \
+         `rust_fn_body_nth(.., 0|1)` 显式指定读哪一份"
+    );
     let start = normalized
         .find(signature)
         .unwrap_or_else(|| panic!("源码里找不到 `{signature}` —— 护栏需要同步更新"));
@@ -283,6 +295,81 @@ fn rust_fn_body<'a>(src: &'a str, signature: &str) -> std::borrow::Cow<'a, str> 
     let end = rest.find("\n}\n").map(|i| i + 3).unwrap_or(rest.len());
     match normalized {
         // 借用原文时可以直接切原文（偏移一致）
+        std::borrow::Cow::Borrowed(_) => std::borrow::Cow::Borrowed(&src[start..start + end]),
+        std::borrow::Cow::Owned(s) => std::borrow::Cow::Owned(s[start..start + end].to_string()),
+    }
+}
+
+/// 这一处命中是不是「定义」（而不是字符串里出现的同一串文本）。
+///
+/// 判法是**行内引号奇偶**：命中点之前、同一行里的引号数为奇数 ⇒ 它在某个字符串字面量里
+/// （典型形状 `.find("async fn foo(")`，或测试里 `contains("fn x(")`）；
+/// 偶数 ⇒ 在代码里（`pub(crate) fn foo(`、`fn foo(`、缩进的方法定义都算）。
+///
+/// 为什么不看「行前缀是否全空白」：真实签名常带 `pub(crate) ` / `pub ` 前缀，
+/// 那样会把**真定义**也排除掉（本家 2026-11-01 第一版就是这个错，当场被
+/// `friend_identity_anchor_has_one_binding_rule` 抓住）。
+fn is_definition_at(src: &str, at: usize) -> bool {
+    let line_start = src[..at].rfind('\n').map(|p| p + 1).unwrap_or(0);
+    let prefix = &src[line_start..at];
+    let mut quotes = 0usize;
+    let mut escaped = false;
+    for c in prefix.chars() {
+        if escaped {
+            escaped = false;
+            continue;
+        }
+        match c {
+            '\\' => escaped = true,
+            '"' => quotes += 1,
+            _ => {}
+        }
+    }
+    quotes % 2 == 0
+}
+
+/// 只数「定义形状」的命中数（见 [`is_definition_at`]）。
+fn definition_hits(src: &str, signature: &str) -> usize {
+    src.match_indices(signature)
+        .filter(|(i, _)| is_definition_at(src, *i))
+        .count()
+}
+
+/// 取**第 `nth` 次出现**（0 基）的那个顶层函数体 —— 只给「同名 cfg 双胞胎」用。
+///
+/// 两处已知调用点都在 `lib_window_tests.rs`（`prewarm_aux_windows` / `open_group_todos_window`，
+/// desktop 与 mobile 各一份、签名逐字相同）。注意 **不能靠"把签名写长"绕开**：
+/// 双胞胎的差别在 `app` / `_app` 与属性行，写长就绑死在 `cargo fmt` 的换行上。
+fn rust_fn_body_nth<'a>(
+    src: &'a str,
+    signature: &str,
+    nth: usize,
+) -> std::borrow::Cow<'a, str> {
+    let normalized = if src.contains('\r') {
+        std::borrow::Cow::Owned(src.replace("\r\n", "\n"))
+    } else {
+        std::borrow::Cow::Borrowed(src)
+    };
+    let mut seen = 0usize;
+    let mut start = None;
+    // ⚠️ 用 `match_indices` 而不是 `for i in 0..len`：后者按字节递增，中文源码里
+    // 会切在字符中间直接 panic（本仓已踩过同形一次）。
+    for (i, _) in normalized.match_indices(signature) {
+        if !is_definition_at(&normalized, i) {
+            continue;
+        }
+        if seen == nth {
+            start = Some(i);
+            break;
+        }
+        seen += 1;
+    }
+    let start = start.unwrap_or_else(|| {
+        panic!("源码里找不到第 {nth} 次出现的 `{signature}` —— 护栏需要同步更新")
+    });
+    let rest = &normalized[start..];
+    let end = rest.find("\n}\n").map(|i| i + 3).unwrap_or(rest.len());
+    match normalized {
         std::borrow::Cow::Borrowed(_) => std::borrow::Cow::Borrowed(&src[start..start + end]),
         std::borrow::Cow::Owned(s) => std::borrow::Cow::Owned(s[start..start + end].to_string()),
     }

@@ -634,7 +634,7 @@
             "fn ensure_preview_window(",
             "fn ensure_tasks_window(",
         ] {
-            let body = rust_fn_body(commands, signature);
+            let body = rust_fn_body_nth(commands, signature, 0);
             assert!(
                 body.contains("ensure_aux_window("),
                 "{signature}…）必须走 `ensure_aux_window`（单例 + 串行创建）——                  自己写 `if let Some(win) = get_webview_window(..)` 会在并发时开出第二个窗口"
@@ -695,7 +695,7 @@
         );
         // 预热必须是"建好但不显示"：reveal 传 false，且它自己不许出现 show/focus。
         // 少了这条，预热就变成"启动时弹出一扇没内容的预览窗"（比慢更糟）。
-        let prewarm = rust_fn_body(commands, "pub fn prewarm_aux_windows(");
+        let prewarm = rust_fn_body_nth(commands, "pub fn prewarm_aux_windows(", 0);
         assert!(
             code_flat(&prewarm).contains("ensure_preview_window(&app,&state,false)"),
             "预热必须把预览窗备好，且走共用的窗口构造、reveal 传 false"
@@ -740,7 +740,7 @@
             "fn ensure_preview_window(",
             "fn ensure_tasks_window(",
         ] {
-            let body = rust_fn_body(commands, signature);
+            let body = rust_fn_body_nth(commands, signature, 0);
             assert!(
                 body.contains("apply_aux_geometry("),
                 "{signature}…）必须用 `apply_aux_geometry` 在 `build()` 之后按物理像素落地尺寸与位置"
@@ -772,7 +772,7 @@
     #[test]
     fn cosmetic_title_read_cannot_abort_the_window() {
         let commands = all_commands_src();
-        let body = rust_fn_body(commands, "pub fn open_group_todos_window(");
+        let body = rust_fn_body_nth(commands, "pub fn open_group_todos_window(", 0);
         let flat = code_flat(&body);
         assert!(
             flat.contains("matchstate.db.try_lock()"),
@@ -862,7 +862,7 @@
             "窗口 label 必须取自常量，不许在 builder 里另写字面量"
         );
         // groupId 不再是 label 的一部分，但它仍然跨窗口当指令拿去查数据 ⇒ 校验不能省
-        let open = rust_fn_body(commands, "pub fn open_group_todos_window(");
+        let open = rust_fn_body_nth(commands, "pub fn open_group_todos_window(", 0);
         assert!(
             open.contains("is_ascii_alphanumeric()") && open.contains("is_empty()"),
             "groupId 会被别的文档拿去查数据，必须先做非空/字符集校验"
