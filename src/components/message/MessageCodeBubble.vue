@@ -1,10 +1,12 @@
 <script setup lang="ts">
 import { t } from "@/i18n";
 import BubbleTail from "@/components/message/BubbleTail.vue";
-import { computed } from "vue";
+import { computed, ref } from "vue";
 import CodeBlock from "@/components/CodeBlock.vue";
 import { CODE_CLAMP_HEIGHT, CODE_SURFACE } from "@/utils/previewMetrics";
 import { Copy } from "lucide-vue-next";
+import { DropdownMenuItem } from "reka-ui";
+import ContextMenu from "@/components/ContextMenu.vue";
 import { Check } from "@/components/ui/icons";
 
 const props = defineProps<{
@@ -35,6 +37,28 @@ const actionsStyle = computed(() => ({
 }));
 /** 尖角取代码卡片底色（代码气泡不走 bubbleStyle，得自己给 --bubble-bg 赋值）。 */
 const tailBg = computed(() => surface.value);
+
+/** 右键菜单坐标（N6-1：代码块右键 →「复制」，与底栏按钮走同一个 emit）。 */
+const ctx = ref<{ x: number; y: number } | null>(null);
+function onContextMenu(e: MouseEvent) {
+  e.preventDefault();
+  e.stopPropagation();
+  // 键盘唤起（Shift+F10 / 菜单键）时 clientX/Y 会一起是 0 ⇒ 用块自己的矩形定位，
+  // 否则菜单会跑到窗口左上角（与 FriendListItem 同款处理）。
+  if (e.clientX === 0 && e.clientY === 0) {
+    const rect = (e.currentTarget as HTMLElement | null)?.getBoundingClientRect();
+    if (rect) {
+      ctx.value = { x: rect.left + 24, y: rect.top + 24 };
+      return;
+    }
+  }
+  ctx.value = { x: e.clientX, y: e.clientY };
+}
+function copyFromMenu() {
+  const code = props.code;
+  ctx.value = null;
+  emit("copy", code);
+}
 </script>
 
 <template>
@@ -44,7 +68,14 @@ const tailBg = computed(() => surface.value);
   <div
     class="relative min-w-0 flex-1"
     :style="{ '--bubble-bg': tailBg, '--bubble-line': 'var(--gosslan-card-line)' }"
+    @contextmenu="onContextMenu"
   >
+    <ContextMenu v-if="ctx" :x="ctx.x" :y="ctx.y" @close="ctx = null">
+      <DropdownMenuItem class="gosslan-menu-item" @select="copyFromMenu">
+        <Copy class="h-3.5 w-3.5" />
+        {{ t("common.copy") }}
+      </DropdownMenuItem>
+    </ContextMenu>
     <!-- 截断容器固定 CODE_CLAMP_HEIGHT（与 VirtualList 的估算常量同源）。
          若容器透明，CodeBlock 实际渲染高度不足该值时，底部会空出一条画布色亮缝
          （卡片与操作条之间「露出聊天背景」）；故容器自身填卡片底色兜底。

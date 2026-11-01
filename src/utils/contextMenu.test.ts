@@ -75,3 +75,91 @@ test("MessageItem 右键边界 = 消息内容列；桌面带选区快照，触�
   assert.match(app, /isSelectableTextTarget\(e\.target\)/, "App.vue 全局 contextmenu 没有放行可选正文");
   assert.match(app, /app\.isMobile && isSelectableTextTarget/, "App.vue 的放行没有限定触屏");
 });
+
+/**
+ * N6-1（2026-11-01 用户拍板）：**代码块气泡右键 →「复制」**。
+ *
+ * 为什么钉三条：① 右键处理器若挂在卡片外（或只剩底栏按钮），点代码区不会弹；
+ * ② 菜单必须走统一外壳与统一条目样式（`.gosslan-menu-item`），否则又是一个自绘弹层；
+ * ③ 菜单里的复制**必须走与底栏按钮同一个 `emit("copy")`** —— 两处各写一遍，
+ *    "复制的到底是全文还是截断后的" 这类差异迟早出现。
+ */
+test("代码块右键：挂在卡片根上、走统一外壳、复制与底栏按钮同一个 emit", () => {
+  const path = join(import.meta.dirname, "..", "components", "message", "MessageCodeBubble.vue");
+  const src = readFileSync(path, "utf8");
+
+  assert.match(
+    src,
+    /class="relative min-w-0 flex-1"[\s\S]{0,200}?@contextmenu="onContextMenu"/,
+    "右键处理器不在卡片根上 ⇒ 点在代码区不会弹菜单",
+  );
+  assert.match(src, /<ContextMenu v-if="ctx"/, "没有走统一的 ContextMenu 外壳");
+  assert.match(
+    src,
+    /DropdownMenuItem class="gosslan-menu-item" @select="copyFromMenu"/,
+    "菜单条目没有用统一的 .gosslan-menu-item 样式",
+  );
+
+  // 两处引号风格都可能出现（老代码单引号、新菜单双引号）⇒ 一律认。
+  const copies = (src.match(/emit\(["']copy["'],/g) || []).length;
+  assert.equal(copies, 2, `emit("copy") 出现 ${copies} 次 ⇒ 底栏按钮与菜单必须共用同一个出口（应恰好 2 处）`);
+
+  // 正控：把菜单那一处换成一个自造事件，第③条必须当场红。
+  const gutted = src.replace('emit("copy", code);', 'emit("copy-from-menu", code);');
+  assert.notEqual(gutted, src, "变异没落进去 ⇒ 锚点写法变了");
+  assert.equal(
+    (gutted.match(/emit\(["']copy["'],/g) || []).length,
+    1,
+    "换掉菜单那处 emit 之后仍数到 2 处 ⇒ 这条尺子在空集上恒绿",
+  );
+});
+
+/** N6-3（2026-11-01 用户拍板）：群文件行右键 →「另存为」「打开所在目录」。 */
+test("群文件行右键：没有本地文件就不弹菜单；两个动作都复用既有出口", () => {
+  const path = join(import.meta.dirname, "..", "components", "GroupFilesPanel.vue");
+  const src = readFileSync(path, "utf8");
+
+  assert.match(src, /@contextmenu="onContextMenu\(f, \$event\)"/, "行上没挂右键处理器");
+  assert.match(
+    src,
+    /if \(!f\.local_path\) return;/,
+    "本地没有这份文件时也弹菜单 ⇒ 两个动作都点不动，比不弹更糟",
+  );
+  assert.match(
+    src,
+    /await saveLocalFile\(f\.local_path/,
+    "另存为必须复用 utils/localFile（Android 走 SAF 的差异只在那一处）",
+  );
+  assert.match(src, /await revealItemInDir\(f\.local_path\)/, "打开所在目录必须走 opener 插件");
+
+  // 正控：把"没有本地文件就不弹"那行砍掉，第一条断言必须红。
+  const gutted = src.replace("if (!f.local_path) return;\n  e.preventDefault();", "e.preventDefault();");
+  assert.notEqual(gutted, src, "变异没落进去 ⇒ 锚点写法变了");
+  // ⚠️ 这条守卫在文件里出现 3 次（右键/另存为/打开目录各一次）⇒ 正控必须盯**右键那一处**
+  //    （带 `e.preventDefault()` 的上下文），否则砍掉它之后另外两处仍让通用正则命中。
+  assert.equal(
+    gutted.includes("if (!f.local_path) return;\n  e.preventDefault();"),
+    false,
+    "砍掉右键那处守卫后仍然命中 ⇒ 这条判据在空集上恒绿（或盯错了那一处）",
+  );
+});
+
+/** N6-2（2026-11-01 用户拍板）：群成员行右键 →「@他」「查看资料」。 */
+test("群成员行右键：面板只上报意图，插入 @ 与打开资料都在父组件那一个家里", () => {
+  const panel = readFileSync(
+    join(import.meta.dirname, "..", "components", "GroupMemberPanel.vue"),
+    "utf8",
+  );
+  const win = readFileSync(join(import.meta.dirname, "..", "components", "ChatWindow.vue"), "utf8");
+
+  assert.match(panel, /@contextmenu="onContextMenu\(row, \$event\)"/, "成员行没挂右键处理器");
+  assert.match(panel, /emit\("mention", id\)/, "「@他」没有上报");
+  assert.match(panel, /emit\("open-profile", id\)/, "「查看资料」没有上报");
+  // 面板自己不碰编辑器、也不自己跳路由 —— 两个家各写一遍就是下一处漂移。
+  assert.ok(!/insertMention/.test(panel), "面板自己插了 @ ⇒ 编辑器那条路径出现了第二个家");
+  assert.ok(!/router\.push/.test(panel), "面板自己跳了路由 ⇒ 资料页入口出现第二个家");
+
+  assert.match(win, /@mention="onMemberMention"/, "ChatWindow 没接成员面板的「@他」");
+  assert.match(win, /composerRef\.value\?\.insertMention/, "「@他」没有真的插进输入框");
+  assert.match(win, /function onMemberProfile[\s\S]{0,120}openSenderProfile\(id\)/, "「查看资料」没走既有解析");
+});

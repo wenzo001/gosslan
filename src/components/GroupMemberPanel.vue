@@ -9,6 +9,9 @@ import PrimaryBtn from "@/components/ui/PrimaryBtn.vue";
 import DangerBtn from "@/components/ui/DangerBtn.vue";
 import SecondaryBtn from "@/components/ui/SecondaryBtn.vue";
 import { useMemberProfile } from "@/composables/useMemberProfile";
+import { DropdownMenuItem } from "reka-ui";
+import ContextMenu from "@/components/ContextMenu.vue";
+import { AtSign, UserRound } from "lucide-vue-next";
 import {
   TODO_STATUSES, TODO_STATUS_CLASS, TODO_STATUS_LABEL_KEY, foldTodos, isEffectivelyArchived, todoRowsLoadState, } from "@/utils/todos";
 import { errorText } from "@/composables/useErrorText";
@@ -26,7 +29,14 @@ const props = defineProps<{
   /** 群任务窗口正在打开（桌面端）：按钮要给出"这一下点到了"的反馈。 */
   tasksOpening?: boolean;
 }>();
-const emit = defineEmits<{ (e: "close"): void; (e: "open-tasks"): void }>();
+const emit = defineEmits<{
+  (e: "close"): void;
+  (e: "open-tasks"): void;
+  /** N6-2：「@他」—— 由父组件关面板并把 @token 插进输入框（面板自己不碰编辑器）。 */
+  (e: "mention", id: string): void;
+  /** N6-2：「查看资料」—— 复用聊天头那条 `openSenderProfile`（本机/好友/在线节点同一套解析）。 */
+  (e: "open-profile", id: string): void;
+}>();
 
 const app = useAppStore();
 const chat = useChatStore();
@@ -166,6 +176,37 @@ async function publishAnnouncement() {
 const memberRows = computed(() =>
   (group.value?.members ?? []).map((id) => ({ id, ...memberProfile(id) })),
 );
+
+/** N6-2（2026-11-01 用户拍板）：成员行右键 →「@他」「查看资料」。
+ *  面板只把意图交给父组件：@ 需要写输入框、资料需要走既有的 `openSenderProfile`，
+ *  面板自己不该持有编辑器引用（否则面板与输入框会互相耦合）。 */
+const ctx = ref<{ id: string; name: string; x: number; y: number } | null>(null);
+
+function onContextMenu(row: { id: string; name: string }, e: MouseEvent) {
+  e.preventDefault();
+  e.stopPropagation();
+  if (e.clientX === 0 && e.clientY === 0) {
+    const rect = (e.currentTarget as HTMLElement | null)?.getBoundingClientRect();
+    if (rect) {
+      ctx.value = { id: row.id, name: row.name, x: rect.left + 24, y: rect.bottom - 4 };
+      return;
+    }
+  }
+  ctx.value = { id: row.id, name: row.name, x: e.clientX, y: e.clientY };
+}
+
+/** 「@他」：先关面板再上报（父组件在关面板之后再插 token，焦点才落得回输入框）。 */
+function mentionMember(id: string) {
+  ctx.value = null;
+  emit("close");
+  emit("mention", id);
+}
+
+function viewProfile(id: string) {
+  ctx.value = null;
+  emit("close");
+  emit("open-profile", id);
+}
 
 /** 可用于加入该群的好友 = 好友 - 已是成员 - 自己 */
 const addableFriends = computed(() => {
@@ -315,6 +356,7 @@ async function confirmAction() {
           v-for="row in memberRows"
           :key="row.id"
           class="flex items-center gap-2.5 rounded-[var(--gosslan-radius-md)] px-2 py-2"
+          @contextmenu="onContextMenu(row, $event)"
         >
           <div class="relative shrink-0">
             <AvatarBox
@@ -469,6 +511,18 @@ async function confirmAction() {
       </p>
     </div>
   </BaseModal>
+
+  <!-- N6-2 成员行右键菜单：整表一个实例，用 `ctx` 记住是那一行 -->
+  <ContextMenu v-if="ctx" :x="ctx.x" :y="ctx.y" @close="ctx = null">
+    <DropdownMenuItem class="gosslan-menu-item" @select="mentionMember(ctx.id)">
+      <AtSign class="h-3.5 w-3.5" />
+      {{ t("group.mentionMember") }}
+    </DropdownMenuItem>
+    <DropdownMenuItem class="gosslan-menu-item" @select="viewProfile(ctx.id)">
+      <UserRound class="h-3.5 w-3.5" />
+      {{ t("friend.openProfile", { name: ctx.name }) }}
+    </DropdownMenuItem>
+  </ContextMenu>
 
   <!-- 破坏性操作二次确认（替代 window.confirm：应用内弹窗，与整体样式一致） -->
   <BaseModal
