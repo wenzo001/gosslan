@@ -2127,6 +2127,16 @@ audit-context/
 | 8 | ~~A5 的首启不误报~~ | **已收口（A/B 实测）** | 报告侧 5.15.75 已修；日志判定侧 5.15.92（`46f41213`）补齐并用例正反控钉住 | 隔离 HOME 真机 A/B（2026-10-31）：**5.15.91 首启日志里 `BOOT_PREV_` 1 行（假的异常终止）→ 5.15.92 同一形状 0 行**，bootstrap 行 `pid` 与进程一致；两轮都只碰 `/tmp` 隔离 HOME，跑完即清 |
 | 9 | **发送端台账假「已取消」**（E2E 判据⑩ `--fault=sender-kill-mid` 读到的 A=cancelled） | 产品缺陷 · **同日已修（5.15.94）** —— 实施记录与四条变异反证在同册 §9 | 根因已证死到行：两个家同时发同一个 `(transfer_id, peer)`（`flush_pending_files` 与 ContentRequest 服务任务），`install_cancel_slot` 撞键静默顶掉在任者 ⇒ 代码口径「oneshot 通道关闭」等于「用户取消」；随后 `finalize_file_failure` 写 `cancelled` + 墓碑 `cancel_terminal=1`，把真正成功那条的 `done` **静默**挡住（`upsert_transfer` 命中 0 行仍返 `Ok`）⇒ 成功传输被永久记成已取消。修法 = 1:1 在途闸门 `FileSendGate`（键复用 `file_peer_key`，形状照群侧 `group_file_dispatching`）+ 撞键返回 `AlreadyInFlight` + 守卫按登记序号只摘自己那格 + `upsert_transfer` 返回五档并对被挡的终态推进落 Warn。墓碑与 `set_message_status` 的终态名单一字未动 | 证据链、六个 `cancelled` 臂的现数、排除清单、最小修复方案与影响面、先红后绿的验证方案都在 `docs/notes/send-cancelled-rca-2026-11-01.md`；七次同形复现（四趟 `verify:e2e` 整链 + 三次单轮）；档位 L2 `[plan]` + patch，DB / 协议 / 前端零改动；判据⑩本身不许动 |
 
+**2026-11-01 两起过程事故（都不是产品缺陷，但都吃过一次亏）**
+
+1. **`version:ledger` 把 273 行账表覆盖成 8 行**（隔壁工作树，未提交就被发现）：生成器是整文件覆盖、默认范围
+   「上次改版本号之后」，而原闸只挡「一条都没有」。覆盖出来的累计版本还从 5.15.92 编到 5.15.93…5.15.100（假的）。
+   处置：账表按 `git show HEAD:docs/version-ledger.md` 恢复；`scripts/semver.mjs` 加**收缩闸**（新表行数 < 现有行数 ⇒ 拒写，
+   打印两侧读数；确需收缩必须 `--allow-shrink`）。复跑：`node scripts/semver.mjs ledger` 应当 **rc=1** 且文件哈希不变。
+2. **`1fdc8ef6` 声明了 `Version-Bump: patch` 却没动四个版本文件**：它随后被推送，CI 的 Change Budget 判据 4 当场红。
+   该判据按**单个提交**判 ⇒ 后续补 bump（5.15.93，`6fa79463`）不能为它翻案；本笔的全历史复跑仍会报同一句。
+   这是「已推送历史不可改」的代价，处置是**不去改写历史**，用下一笔把版本号提上去，并在 CHANGELOG 里写清归属。
+
 **本节自身的机器对账**（2026-10-31 现跑）：① 全册引用的 25 个提交号全部
 `git cat-file -e <sha>^{commit}` 命中、且都是 `origin/main` 的祖先（无一指向未推/已改写的历史）；
 ② 表内 **9 行**（2026-11-01 加了第 9 行「发送端台账假已取消」；行数现数 `grep -c '^| [0-9]' <本节表格>`）；③ 全册 **57 处 `§4.0xx` 引用**全部能对上真实小节标题（缺失 0）。
