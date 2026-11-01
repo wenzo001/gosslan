@@ -1587,7 +1587,14 @@ STB-04 半条（非好友分支广播后直接 return，无撤销登记 —— *
 | STB-07 补递缓存 TTL 与窗口不同源 | **不成立（复核后撤回）** | `GossipRelayCache` 没有第二个 TTL：`worth_replaying` 用的就是 `RELAY_WINDOW_MS`（`mesh/gossip_replay.rs:34/137`），缓存窗口与补递窗口是同一个常量 |
 | STB-08 每 30 s 在锁内 clone 全表 | **仍存，可接受（Info）** | `outbox_sweep.rs:118-133` 仍是「clone 后立刻 `drop(links)`、再持 `peers` 锁只读 `last_seen`」；集合大小 = 在线 peer 数（peers 有淘汰），每 30 s 一次 ⇒ 无界增长与锁跨 await 都不成立 |
 
-**D. 仍未被动过的真缺口**：TST-11 的修法（`rust_fn_body` 断言签名唯一）。**2026-11-01 补：可执行补丁说明** ——
+**D. ~~仍未被动过的真缺口~~：TST-11 已于 2026-11-01 修复** —— `rust_fn_body` 现在只对「定义形状」的命中要求唯一
+（行内引号奇偶判定：字符串里的 `.find("…")` / `contains("…")` 不计），不唯一时 panic 并点名；
+新增 `rust_fn_body_nth(src, sig, nth)` 给同名 cfg 双胞胎显式选第几份。
+**修的过程中新判据当场抓到 3 处审计没列出的双胞胎**：`open_settings_window`（`lib_window_tests.rs` 两处循环）、
+`startup_error_retry`（A2 的移动桩）、以及「生产文件里内联 `#[cfg(test)]` 的 `.find("…")` 字符串」这一类假命中。
+现跑：全量 `cargo test --lib` **1356 passed / 0 failed / 3 ignored**、`clippy -D warnings` 0、`fmt --check` 0；
+负控：把 `prewarm_aux_windows` 那处改回 `rust_fn_body` ⇒ 恰好那条用例红并点名签名，`cp` 还原后 `cmp` 逐字相等。
+原补丁说明（保留作考古）：
 要改的只有两处，不是 147 处：
 1. **先给三个歧义调用点换尺子**（`lib_window_tests.rs:684/761/851`，签名 `pub fn prewarm_aux_windows(` 与
    `pub fn open_group_todos_window(`）：新增兄弟函数 `rust_fn_body_nth(src, sig, nth)`（语义同现有实现，
