@@ -144,17 +144,27 @@ export async function run() {
     let snap = null;
     // 有界地等 B 自己把台账推到终态；到点把**最后一次读数**交给判据判红（不 throw，
     // 那会把一次真缺陷渲染成"基础设施超时"）
-    await waitFor(() => {
-      const r = recv(INSTANCES[1].db, GROUP_ID, tid);
-      const files = landed();
-      if (r.me.some((x) => x.status === "completed") && files.length >= 1) {
-        snap = { ...r, files, ms: nowMs() - t0 };
-      }
-      return !!snap;
-    }, 180_000, "群文件跨实例判据：B 侧这条 transfer 要落到 completed 并且文件真在盘上");
+    // `waitFor` 到点是 **throw**（上面那句"不 throw"只对下面的判据成立）⇒ 不接住的话
+    // 超时会把"B 侧台账到底停在哪个状态"整段吞掉，只剩一句「超时」（2026-11-01 盘满探针
+    // 连踩三次）。这里接住并把台账读出来，让下面那条 check 用**读数**判红。
+    let waitErr = null;
+    try {
+      await waitFor(() => {
+        const r = recv(INSTANCES[1].db, GROUP_ID, tid);
+        const files = landed();
+        if (r.me.some((x) => x.status === "completed") && files.length >= 1) {
+          snap = { ...r, files, ms: nowMs() - t0 };
+        }
+        return !!snap;
+      }, 180_000, "群文件跨实例判据：B 侧这条 transfer 要落到 completed 并且文件真在盘上");
+    } catch (e) {
+      waitErr = e;
+    }
     if (!snap) {
       const r = recv(INSTANCES[1].db, GROUP_ID, tid);
       snap = { ...r, files: landed(), ms: nowMs() - t0 };
+      console.error(`  [诊断] B 侧收件行=${JSON.stringify(snap.me)} · 群文件行=${JSON.stringify(snap.gf)}`
+        + (waitErr ? ` · 等待终态超时：${waitErr.message}` : ""));
     }
     check("B 上线后这条群文件必须自己投出去：接收侧成员行落到 completed（180s 内）",
       snap.me.some((x) => x.status === "completed"),
