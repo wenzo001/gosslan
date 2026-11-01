@@ -13,6 +13,26 @@
 
 ## [Unreleased]
 
+## [5.15.93] - 2026-11-01
+
+### 清好友申请不再按 LIKE 误删形近键（`1fdc8ef6` 的版本声明补记）
+
+`clear_friend_requests` 原先 `DELETE ... WHERE key LIKE 'friend_req:%'` —— SQL 的 LIKE 把前缀里的
+`_` 当**单字符通配符**，于是 `friendXreq:…` / `friend_req2:…` 这类不属于这一族的键会被顺手删掉。
+现在 LIKE 只用来缩候选，归属判定交给 `strip_prefix`（与读侧同一把尺子），读不出键名整趟报错而非静默跳过。
+新用例 `wildcard_lookalike_keys_are_neither_listed_nor_cleared` 一次钉四格，且判据读 `get_setting`
+而不是复用生产那条 SQL。
+
+同批把 `friendreq` 轮的判据拆细重跑：`restored/arrived` 合成的一条拆成两条（两条修法相反，合着红不可归因）、
+两处 `sleep(3000)` 换成以「磁盘上那条恢复日志」做屏障；正向 **10/10（整轮 28）**、反向 `-lie` **恰 2 红**。
+
+### `version:ledger` 拒绝把历史账表覆盖成更短的表（`200d4f76`）
+
+生成器是整文件覆盖、默认范围是「上次改版本号之后」：2026-11-01 实测把 273 行账表覆盖成 8 行
+（累计版本还编到 5.15.93…5.15.100）。空表闸只挡「一条都没有」。现在默认**拒绝收缩**，
+确实要收缩必须显式 `--allow-shrink`。被覆盖的账表已按 HEAD 恢复（`git show HEAD:…`，273 行）。
+
+
 ### 好友申请恢复臂第一次有跨进程读数（第三轮审计 A4 可自动的那一半）
 
 新增 E2E 轮 `--round=friendreq`（28 条断言 = 默认 18 + 本轮 10），预置只往 B 的 `settings` 写一行
