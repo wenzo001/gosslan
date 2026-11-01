@@ -191,3 +191,35 @@ test("「@他」插入的 chip 必须是接收端认的形状（类名 / data-me
     "chip 后面没有 nbsp 边界 ⇒ @名字 会粘在前一个字尾巴上",
   );
 });
+
+/**
+ * 键盘唤起（Shift+F10 / 菜单键）时 `clientX/Y` 一起是 0 ⇒ 三处右键菜单都必须按**元素矩形**定位，
+ * 否则菜单跑到窗口左上角。运行时那一格由 `--only=ctxmenu` 在代码块上真读过坐标（去掉分支后实测
+ * 菜单落到 `left=0/top=0`）；另外两处是同一段逻辑的复制，这里按形状把三份一起钉住 ——
+ * 任何一处被删掉或改回 `e.clientX/e.clientY`，`npm test` 就红。
+ */
+test("三处右键菜单都保留「键盘唤起按元素矩形定位」的分支", () => {
+  const sites = [
+    {
+      file: "message/MessageCodeBubble.vue",
+      pos: /ctx\.value = \{ x: rect\.left \+ 24, y: rect\.top \+ 24 \};/,
+    },
+    {
+      file: "GroupMemberPanel.vue",
+      pos: /ctx\.value = \{ id: row\.id, name: row\.name, x: rect\.left \+ 24, y: rect\.bottom - 4 \};/,
+    },
+    {
+      file: "GroupFilesPanel.vue",
+      pos: /ctx\.value = \{ f, x: rect\.left \+ 24, y: rect\.bottom - 4 \};/,
+    },
+  ];
+  for (const site of sites) {
+    const src = readFileSync(join(import.meta.dirname, "..", "components", site.file), "utf8");
+    assert.equal(
+      (src.match(/if \(e\.clientX === 0 && e\.clientY === 0\)/g) ?? []).length,
+      1,
+      `${site.file}：键盘唤起分支缺失或重复（缺了菜单会跑到窗口左上角）`,
+    );
+    assert.match(src, site.pos, `${site.file}：键盘唤起的定位坐标不是「元素矩形」那套`);
+  }
+});
