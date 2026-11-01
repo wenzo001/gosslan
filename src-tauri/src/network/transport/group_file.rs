@@ -933,7 +933,12 @@ fn finalize_failed_group_receive(state: &Arc<AppState>, transfer_id: &str, reaso
         .remove(transfer_id);
     {
         let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
-        let _ = db::update_group_file_recipient(&dbc, transfer_id, &state.device_id, "failed", 0.0);
+        // 写失败必须留痕（B4-F1 棘轮）：这里原先 `let _ =` 吞掉错误，而盘满探针当场就撞上
+        // "日志说失败、台账那行还停在 sending" —— 没有这条留痕，两种成因（0 行 / 写入报错）
+        // 在盘上长得一模一样。
+        if let Err(e) = db::update_group_file_recipient(&dbc, transfer_id, &state.device_id, "failed", 0.0) {
+            crate::logging::log_write_failure(&state.logger, "update_group_file_recipient(failed)", e);
+        }
     }
     // 状态落了库，但**不发事件就没人知道**：前端只在收到终态事件时才动那一条气泡，
     // 于是群文件失败永远显示「发送中」，要重开会话才看得见（10-22 审计 R-02；
