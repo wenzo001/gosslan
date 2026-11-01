@@ -1696,7 +1696,7 @@ dependencies = [
 
 [[package]]
 name = "gosslan"
-version = "5.15.95"
+version = "5.15.96"
 dependencies = [
  "async-trait",
  "base64 0.22.1",

@@ -13,14 +13,24 @@
 
 ## [Unreleased]
 
-### 待办：订正 `group_receive.rs` 里那句「未关句柄时 `remove_file` 会失败」的理由
+## [5.15.96] - 2026-11-01
 
-5.15.95 带上的 `windows_remove_open_file_tests` 已在 CI 的真 Windows runner 上跑出 `ok`
-（`Verify` run 41267115508，`...deleting_an_open_part_file_succeeds_and_frees_the_name ... ok`）：
-句柄还开着时删 `.part` **成功**，且名字立刻消失 —— Rust std 在 Windows 上默认共享 delete，
-不报共享冲突。⇒ `network/file/group_receive.rs` 那句注释的**理由**与实际不符（`drop(r)` 那个动作
-本身无害，但把它写成"不这么做就删不掉"会让后来的人据此改动盘满那条路径）。
-订正留给下一个 patch：只改注释理由，不动任何行为。
+### 收掉 5.15.95 review 的三处：两条注释在说假话 + 一条决定没有判据
+
+都不改行为，改的是"以后有人照它改代码会不会改错"：
+
+1. **`group_receive.rs` 那句「Windows 上未关句柄时 `remove_file` 会失败」是假的**（5.15.95 的
+   windows 用例已在 CI 真跑过：删得掉、名字当场消失）。真实理由是 delete-pending ——
+   句柄开着删，空间要等最后一个句柄关闭才归还，而盘满那一路等不起。注释按真实机制重写。
+2. **`send.rs` 那句「撞键退回可重试、attempts 不消耗」过度承诺**：这一格在
+   `mark_file_outbox_sending`（attempts +1）之后，真走到时那一次已经记过了。真正"不消耗"的是
+   入口闸那一道（它排在 mark 之前）。注释与日志文案都改成"不记取消、不记失败，正常到不了这里"。
+3. **「清除数据不许清 `file_send_inflight`」原先只有一行注释**，补判据
+   `clear_all_data_must_not_wipe_the_inflight_gate`：读清库函数体，① 它必须仍在清
+   `file_sending`（证明锚点读到的是那个函数）；② 里面一个字都不许出现 `file_send_inflight`。
+   变异验证：往清库函数里加一行 `file_send_inflight.clear()` ⇒ 当场红在这条消息上；还原后逐字节相同。
+   代价不对称是它值得钉的理由 —— 清掉 `file_sending`/`file_send_cancels` 顶多丢登记，
+   清掉这张表等于允许两个任务同时发同一单（判据⑩ 的假取消成因）。
 
 ## [5.15.95] - 2026-11-01
 

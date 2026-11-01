@@ -227,7 +227,10 @@ pub fn cancel_group_receive(state: &AppState, transfer_id: &str) -> bool {
         tmp_path = r.tmp_path.clone();
         let peer_id = r.peer_id.clone();
         let cid = r.expected_sha256.clone();
-        // 句柄先离开作用域再删文件（Windows 上未关句柄时 remove_file 会失败，同 `cancel_receive`）
+        // 先关句柄再删：Windows 上**删得掉**（std 默认共享 delete，`windows_remove_open_file_tests`
+        // 在 CI 的 windows 腿钉住这个事实），但句柄开着删只会进 delete-pending —— 名字当场消失、
+        // 空间要等最后一个句柄关闭才归还。盘满那一路等不起这个"稍后"，所以句柄先丢。
+        // （旧注释写的是「未关句柄时 remove_file 会失败」，5.15.95 的 windows 用例证伪了它。）
         drop(r);
         stopped = true;
         if !cid.is_empty() {
