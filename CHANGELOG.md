@@ -13,6 +13,24 @@
 
 ## [Unreleased]
 
+## [5.15.100] - 2026-11-01
+
+### 迟到的进度写不再把「已失败」拉回「接收中」
+
+盘满探针连读三轮（run-2026-11-01T09-51 / 10-02 / 10-18）：日志已判 `DISK_FULL`、`.part` 也删了，
+而 `group_files` 与 `group_file_recipients` 两行仍停在 `sending`，收件行的 `updated_at` 与失败**同一秒** ⇒
+收尾写的 `failed` 被一条迟到的进度写盖了回去。根因：`update_group_file_recipient` 的
+`WHERE … AND status <> 'cancelled'` 不挡 `failed`/`done`。
+
+修法不跟既有语义打架（上一版试过收窄通用那条，撞红了聚合用例）：
+
+- 新增 `bump_group_file_recipient_progress`：**只更新 `status = 'sending'` 的那一格** ——
+  进度写天然是"晚到就作废"，终止性由它自己带；
+- 状态机迁移（`failed` / `completed` 等）继续走通用那条，语义一字未改。
+
+判据 `progress_write_only_touches_rows_still_sending`：`failed` 之后再来一次进度写，
+状态与进度都必须原地不动。
+
 ## [5.15.99] - 2026-11-01
 
 ### 群文件失败收尾写台账失败时不再「一声不吭」
