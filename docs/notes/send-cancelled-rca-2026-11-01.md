@@ -405,5 +405,35 @@ node scripts/e2e-multi-instance.mjs --fault=sender-kill-mid
 也能复现 —— 只撤闸门时撞键保护仍会挡住顶替，那条链在第二环就断了。这不影响结论（缺陷的第一环
 就是两个入口并发），但别把它读成"闸门单独就够"。
 
+### 10.5 `verify:e2e` 整层读数（23 步）与那一步环境红的归因
+
+```
+npm run verify:e2e   → 退 1（22/23 步 ✅，共 690.4s；02:28:00Z → 02:39:31Z）
+  第 15/23 步 = 判据⑩ 那条：✅ 38.7s，"多实例 E2E 全绿（26 条断言）"
+  唯一红的一步 = 第 1 步 UI 运行时探针：0.1s 在起跑前自拒
+      ❌ 环境：CDP 端口 9444 起跑前空闲 —— 预期"无人监听"/实际"已被占用"
+```
+
+那一格的红**不是代码**，是环境：占着 9444 的是一台 10-30 08:36 起跑、挂了 2 天的
+headless Chrome for Testing（`lsof` 读到 PID 89833，profile 在 `/tmp/gosslan-probe-*`）。
+探针故意把它判成红而不是接着跑 —— 连上那台读的是**旧构建**，是一条假绿通道。
+本仓规矩是"进程管理只能针对本轮创建的准确 PID" ⇒ 没杀它，改按探针自己给的那条路换端口重跑：
+
+```
+GOSSLAN_PROBE_PORT=5299 GOSSLAN_PROBE_CDP=10444 node scripts/check-ui-runtime.mjs
+  → 退 1；71 段、PASS 545 / FAIL 2 / UNSUPPORTED 3
+  FAIL①「鼠标真点开、真命中条目也能选中」（下拉那一格）
+  FAIL②「探针自己跑完了（没在半路抛错）」——页面里抛 TypeError:
+        Cannot read properties of undefined (reading 'metadata') at getCurrentWindow
+        ← src/components/ConversationList.vue:86
+  UNSUPPORTED×3 是探针自己具名的"这台引擎量不到"（headless 不推动画时钟 /
+        键盘原生滚动 / 惯性尾巴），本来就分开记账
+```
+
+两格 FAIL 都在前端 UI 探针段，与本任务改的 Rust 文件传输链无关，且这文件本轮没动过
+（`git log -- src/components/ConversationList.vue` 最后一次是 10-29 的 `11e452db` 拖拽量纲那一笔）。
+**只报不改**：那两格归前端那条线，本任务的范围里没有一项要求碰它，也不许为凑绿去动它。
+
+
 
 
