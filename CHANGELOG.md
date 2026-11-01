@@ -13,6 +13,29 @@
 
 ## [Unreleased]
 
+## [5.15.97] - 2026-11-01
+
+### 群文件被「盘满」拒掉后，终态不再谎称「没有收到任何分片」
+
+2026-11-01 用 4 MB 小卷实测（run-2026-11-01T07-27-51-379Z）暴露的：
+
+- 接收侧有准入闸（`receive.rs::admit_inbound`，`INBOUND_SPACE_HEADROOM=64 MiB`），盘满时**写之前**就拒，
+  码是 `RECV_DISK_SPACE_INSUFFICIENT`；
+- 但群文件这条链把"建接收器失败"当成**可重试**：发送方一遍遍重发 offer（同一单实测 12 条一模一样的 WARN），
+  最后整单落到 `GROUP_FILE_NO_CHUNK`「文件传输未完成：没有收到任何分片」—— **与真实原因不符**，
+  用户照着这句话无从下手。
+
+修法：建/重建接收器失败时**认得出盘满**（`build_failure_is_disk_full`，认得
+`RECV_DISK_SPACE_INSUFFICIENT` 这个码），当场一次判死并走群文件失败收尾（原因 `DISK_FULL` 进日志与
+`file-failed` 事件族），不再进重试循环 —— 实测那 12 条一模一样的 WARN 就是它。
+
+**没做的（保持既有决定）**：`DISK_FULL` 不进 `MESSAGE_FAIL_CODES`。那条词表上一轮就有一条反向断言
+写着"盘满是**写盘**族的码，不在落库词表里"，本批没有推翻它 —— 所以群文件气泡这一格仍走通用文案，
+盘满的"可行动"提示由 `file-failed` 事件族给。要改的是"判死得太晚、原因落成 NO_CHUNK"，不是词表。
+
+判据：`disk_full_refusal_is_recognised_and_persistable`（真拒绝串必须认出 / 别的建失败不许误判 /
+`DISK_FULL` **不**得进落库词表 —— 与那条既有反向断言同向）。
+
 ### INV-P03「解密失败不 Ack」补了顺序判据（行为测试仍缺）
 
 新增 `decrypt_failure_returns_before_any_ack_can_be_sent`：从解密调用到落库调用之间不许出现
