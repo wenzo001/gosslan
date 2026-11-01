@@ -2170,7 +2170,11 @@ audit-context/
 | # | 事项 | 类型 | 卡在哪 | 证据 / 下一步 |
 |---|---|---|---|---|
 | 1 | **#23 Windows 渲染层卡死**（11 分钟零心跳） | 外部取证 | 需要那台机器的现场文件 | §4.0bi 取证单：取 `%APPDATA%\com.gosslan.app\logs\gosslan-crash.log` 里 `>>> code=HANG` 与 `>>> code=RUNTIME_MEM`；判读 `tree_cpu_ms ÷ (window_s×1000)`：≈1 空转 / 0 挂起 / 几十 ms 空闲 |
-| 2 | **群侧盘满端到端（TST-06）** | 外部环境 | 需要能真写满的卷 + 三实例；10-31 拍板本批不做 | 形状层判据已齐（条件按码判 / 支内删 / 三态日志）；缺的是真 ENOSPC 的下游读数。★ **2026-11-01 实测（本机小卷，run-2026-11-01T07-27-51-379Z）**：`hdiutil create -size 4m` 挂到 `/tmp/tinyvol`，把 B 的 `downloads_dir` 指过去、发 6 MB ⇒ **在写之前就被拒**：B 侧。★ **2026-11-01 晚：写时 ENOSPC 已在本机真造出来（run-2026-11-01T09-51-03-496Z）** —— 400 MB 小卷 + 300 MB 载荷，预检通过后在 `.part` 出现时 dd 300 MB（触发点改成盯文件、不再盯日志）。读数：`error [group_file] code=DISK_FULL … received=135004160 size=314572800` → `code=GFILE_DISK_FULL … 盘满，已删除 .part` → `warn code=GROUP_FILE_RECEIVE_FAILED reason=DISK_FULL`；卷上 `.part` **已消失**（只剩 dd 的 fill.bin）。⚠️ 但同一轮的 `after-B.db` 里 `group_file_recipients.status` 仍是 **`sending`**（progress 0.2675）⇒ 日志与文件都对了、**台账那一行没落 failed**，界面可能一直挂"接收中"。这是**新立案**（未修未证），和 ①② 一样属"把结局说全"那一族
+| 2 | **群侧盘满端到端（TST-06）** | 外部环境 | 需要能真写满的卷 + 三实例；10-31 拍板本批不做 | 形状层判据已齐（条件按码判 / 支内删 / 三态日志）；缺的是真 ENOSPC 的下游读数。★ **2026-11-01 实测（本机小卷，run-2026-11-01T07-27-51-379Z）**：`hdiutil create -size 4m` 挂到 `/tmp/tinyvol`，把 B 的 `downloads_dir` 指过去、发 6 MB ⇒ **在写之前就被拒**：B 侧。★ **2026-11-01 晚：写时 ENOSPC 已在本机真造出来（run-2026-11-01T09-51-03-496Z）** —— 400 MB 小卷 + 300 MB 载荷，预检通过后在 `.part` 出现时 dd 300 MB（触发点改成盯文件、不再盯日志）。读数：`error [group_file] code=DISK_FULL … received=135004160 size=314572800` → `code=GFILE_DISK_FULL … 盘满，已删除 .part` → `warn code=GROUP_FILE_RECEIVE_FAILED reason=DISK_FULL`；卷上 `.part` **已消失**（只剩 dd 的 fill.bin）。⚠️ 但同一轮的 `after-B.db` 里 `group_file_recipients.status` 仍是 **`sending`**（progress 0.2675）⇒ 日志与文件都对了、**台账那一行没落 failed**，界面可能一直挂"接收中"。这是**新立案**，和 ①② 一样属"把结局说全"那一族。**已做的一步 RCA（2026-11-01 晚）**：
+`finalize_failed_group_receive` 里确实有一句 `db::update_group_file_recipient(&dbc, transfer_id, &state.device_id, "failed", 0.0)`，
+SQL 的 `WHERE` 是 `transfer_id = ?1 AND recipient_id = ?2 AND status <> 'cancelled'`（`failed` 不会被 `sending` 挡住）；
+而这一行最后停在 `sending / 0.2675`（84 MB，**早于**发生在 135 MB 的那次失败）⇒ 要么那句 0 行（`recipient_id` 与行里那份对不上），
+要么写入报错被 `let _ =` 吞掉。**下一步就查这两条**；注意 `let _ =` 本身就违反本仓"写库失败必须留痕"那条棘轮
 `code=RECV_DISK_SPACE_INSUFFICIENT size=6291456 available=3780608 headroom=67108864`（余量预检在 `receive.rs::admit_inbound`，`INBOUND_SPACE_HEADROOM=64 MiB`），小卷上**一个字节都没写**。
 ⇒ 两条更正与两条新发现：
 ① 我此前那句"群接收这条路上没有余量预检"是**错的**（从 `group_receive.rs` 里 grep 不到就断言不存在，属于窄 grep 造出的假否证）——预检在 `receive.rs`，群接收也走它；
