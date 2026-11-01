@@ -2183,8 +2183,20 @@ SQL 的 `WHERE` 是 `transfer_id = ?1 AND recipient_id = ?2 AND status <> 'cance
 与上一轮（run-…09-51-03-496Z：`sending / 0.2675`、`updated_at=09:51:11.641Z` **早于** 09:51:12 的失败、
 `group_files` 也停在 `sending`）**两次读数互相矛盾**。⇒ 只能说这两条：① 5.15.99 之后这条路径**能**正确落
 `failed`（有读数）；② 上一轮那种"两行都停在 sending 且 updated_at 早于失败"的形态**没再复现**，但成因
-**没查实** —— "晚到的进度写覆盖 failed"这个假设已被 `updated_at` 否证。下次做探针时把
-`group_files` 与 `group_file_recipients` 两行一起读。**下一步就查这两条**；注意 `let _ =` 本身就违反本仓"写库失败必须留痕"那条棘轮
+**没查实** —— "晚到的进度写覆盖 failed"这个假设已被 `updated_at` 否证。★ **第三轮（run-2026-11-01T10-18-23-973Z，5.15.99）复现了**：`DISK_FULL received=133955584`、
+日志 `GROUP_FILE_RECEIVE_FAILED reason=DISK_FULL`，而两行 **仍停在 `sending`**，收件行
+`updated_at = 10:18:32.479Z` —— **与失败发生在同一秒** ⇒ "晚到的进度写把 `failed` 盖回 `sending`"这条
+假设**重新成立**（上一轮 09-51 那次的 `updated_at` 早于失败，只能证那一次不是它）。
+原因在 SQL：`update_group_file_recipient` 的 `WHERE … AND status <> 'cancelled'` **不挡 failed/done**。
+
+**尝试过的修法（已还原，patch 存在 `/tmp/group_files.attempt.rs`）**：把 `WHERE` 收紧成
+`AND (status NOT IN ('failed','done') OR ?3 IN ('failed','done','cancelled'))`，并加了
+`late_progress_write_cannot_resurrect_a_terminal_recipient` —— 新用例绿，但**撞红**了既有的
+`db::tests::group_file_ack_aggregation_semantics`（那条用例**故意**用 `failed → sending` 造"未确认"状态）。
+⇒ 收窄语义会与一条既有场景冲突，必须先决定"聚合测试该怎么造那个中间态"（改成直接写 SQL？），
+再落这个修法；本轮没在时间窗内做完，**未提交**。
+
+下次做探针时把**下一步就查这两条**；注意 `let _ =` 本身就违反本仓"写库失败必须留痕"那条棘轮
 `code=RECV_DISK_SPACE_INSUFFICIENT size=6291456 available=3780608 headroom=67108864`（余量预检在 `receive.rs::admit_inbound`，`INBOUND_SPACE_HEADROOM=64 MiB`），小卷上**一个字节都没写**。
 ⇒ 两条更正与两条新发现：
 ① 我此前那句"群接收这条路上没有余量预检"是**错的**（从 `group_receive.rs` 里 grep 不到就断言不存在，属于窄 grep 造出的假否证）——预检在 `receive.rs`，群接收也走它；
