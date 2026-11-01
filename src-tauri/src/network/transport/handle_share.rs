@@ -105,6 +105,30 @@ fn ensure_serve_worker(state: &Arc<AppState>, peer_id: &str) {
     fs.start_worker(peer_id, move |job| {
         let st = exec_state.clone();
         async move {
+            // ★ 1:1 在途闸门（判据⑩ 主修的另一半）：这条服务队列自己只按 peer 串行，
+            // 而 outbox 补发（`commands::flush_pending_files`）是另一套按 peer 的闸 —— 两道闸
+            // 彼此看不见 ⇒ 同一个 `(transfer_id, peer)` 可以同时有两个发送任务，
+            // 第二个的取消槽位登记会顶掉第一个的 `Sender` ⇒ 假"用户取消" ⇒ 墓碑挡死真 `done`。
+            // 这一格排在**两个分支之前**：`share:`（直发或借道中继）与 ContentRequest 回发
+            // 共用同一个键 ⇒ 无论走哪条，同一单同一收件人只许一个在途任务。
+            //
+            // 抢不到 = **本轮跳过**，不写台账、不发 `file-failed`、不算取消：
+            // 那一单此刻真的有人在发（不是"发不出去"）。对端那边由它自己的
+            // `ContentRequest` 重试节奏（`content/policy.rs` 的 attempts / `next_attempt_at`）
+            // 再来一次，不会因此永远拿不到内容。
+            let Some(_inflight) = crate::state::FileSendGate::try_acquire(
+                &st.file_send_inflight,
+                crate::network::file::file_peer_key(&job.transfer_id, &job.peer_id),
+            ) else {
+                st.logger.info(
+                    "share",
+                    format!(
+                        "code=SEND_ALREADY_IN_FLIGHT transfer={} peer={} —— 该单已有在途发送任务（outbox 补发那一侧），本轮跳过",
+                        job.transfer_id, job.peer_id
+                    ),
+                );
+                return;
+            };
             if job.cid.starts_with(SHARE_CID_PREFIX) {
                 // 共享目录：有直连走直传，没有则借一跳中继（与旧臂逐字同一条判据）。
                 let result: Result<(), String> = if st.has_link(&job.peer_id).await {
@@ -156,16 +180,28 @@ fn ensure_serve_worker(state: &Arc<AppState>, peer_id: &str) {
                         // 正是既有守卫 `guards:用户取消不得记成失败` 在防的形状。
                         // 判据看**码**不看文案（`relay_push.rs` 那一族已经全部发码）。
                         let cancelled = reason == crate::logging::FAIL_CODE_FILE_SEND_CANCELLED;
+                        // 「已在途」是第三种、也不是失败：这一趟一个字节都没发出去，而同一单的另一个
+                        // 任务正在发（判据⑩ 的跳过出口，走的是 `FileSendGate` 抢不到那条路）。
+                        // 这里要是发 `file-failed`，界面就会把"正在传"翻成"失败"——同一条链上第二次
+                        // 把别人的进展写成结局，正是这次要修的那类毛病。
+                        let in_flight =
+                            reason == crate::logging::FAIL_CODE_FILE_SEND_ALREADY_IN_FLIGHT;
                         st.logger.warn(
                             "share",
                             format!(
                                 "共享文件发送{} transfer={} peer={}: {reason}",
-                                if cancelled { "已取消" } else { "失败" },
+                                if cancelled {
+                                    "已取消"
+                                } else if in_flight {
+                                    "跳过（已在途）"
+                                } else {
+                                    "失败"
+                                },
                                 job.transfer_id,
                                 job.peer_id
                             ),
                         );
-                        if !cancelled {
+                        if !cancelled && !in_flight {
                             let _ = st.app.emit(
                                 "file-failed",
                                 &FileFailedInfo {

@@ -1693,7 +1693,13 @@ fn finish_receiver_into(
                 Some(r.final_path.to_string_lossy().as_ref()),
                 1.0,
             ) {
-                Ok(()) => Some(terminal_ledger_failure_note(
+                // `upsert_transfer` 现在把"写成了 / 幂等 / 被终态契约挡住"分档返回。
+                // 这一格是**接收侧**的事后修复重试：它的原判据是"重试这笔没有报 SQL 错"，
+                // 所以任何 `Ok` 档都维持原语义（只在 primary 失败时留一句）。
+                // 发送侧那条被墓碑静默挡死的路径才是判据⑩ 的现场，它的留痕在
+                // `send.rs::send_finalize_rows`（`code=TERMINAL_WRITE_REFUSED`）—— 接收侧这里
+                // 刻意不顺手改判定，避免把"已在 done"报成故障。
+                Ok(_) => Some(terminal_ledger_failure_note(
                     LEDGER_STAGE_DONE_REPAIRED,
                     transfer_id,
                     &primary,

@@ -29,15 +29,25 @@ pub async fn send_file_via_relay(
     path: PathBuf,
 ) -> Result<(), String> {
     let outcome = relay_push_file(state, peer_id, transfer_id, path).await;
+    // ★ 「已在途」不是这一单的结局（判据⑩）：这一次一个字节都没发出去、也没人拒绝它，
+    // 而同一单真正在途的那个任务会继续跑完并写它自己的终态。把它写成 `failed` 就是
+    // "上一秒还在传、下一秒显示失败"——正是这条链上要修掉的那类自相矛盾。
+    let skipped_in_flight = outcome
+        .as_ref()
+        .err()
+        .map(|r| r.as_str() == crate::logging::FAIL_CODE_FILE_SEND_ALREADY_IN_FLIGHT)
+        .unwrap_or(false);
     if let Err(reason) = &outcome {
-        let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
-        if let Err(e) = db::mark_transfer_failed_if_active(&dbc, transfer_id) {
-            state.logger.warn(
-                "file",
-                format!(
-                    "中继发送失败后落终态也失败 transfer={transfer_id}: {e}（发送失败原因：{reason}）"
-                ),
-            );
+        if !skipped_in_flight {
+            let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
+            if let Err(e) = db::mark_transfer_failed_if_active(&dbc, transfer_id) {
+                state.logger.warn(
+                    "file",
+                    format!(
+                        "中继发送失败后落终态也失败 transfer={transfer_id}: {e}（发送失败原因：{reason}）"
+                    ),
+                );
+            }
         }
     }
     outcome
@@ -98,7 +108,22 @@ async fn relay_push_file(
     // 否则哈希期间的取消点击静默丢掉、跑完照样把整份文件推上链路。
     // 回收由守卫负责（旧写法手写 `cancel_cleanup()` 在整轮 timeout 之后调一次，
     // 那条路只在"走到函数末尾"时生效）。
-    let (mut cancel_rx, _cancel_slot) = install_cancel_slot(state, transfer_id, peer_id);
+    // ★ 撞键**不许**当取消（判据⑩ 的第二道防线）：原先这里无条件 `insert`，同键的下一次登记
+    //   会把在任者的 `Sender` 顶掉 ⇒ 对方 `cancel_rx` 以 `Err(Closed)` 完成 ⇒ 被判"用户取消发送"。
+    //   现在发一个自己的码出去，外层 `send_file_via_relay` 认这个码 ⇒ **不落任何终态**。
+    let (mut cancel_rx, _cancel_slot) = match install_cancel_slot(state, transfer_id, peer_id) {
+        CancelSlotInstall::Installed { rx, _slot } => (rx, _slot),
+        CancelSlotInstall::AlreadyInFlight => {
+            state.logger.warn(
+                "file",
+                format!(
+                    "code={} transfer={transfer_id} peer={peer_id} —— 同一单已有在途发送任务，本轮不推（不记取消、不记失败）",
+                    crate::logging::FAIL_CODE_FILE_SEND_ALREADY_IN_FLIGHT
+                ),
+            );
+            return Err(crate::logging::FAIL_CODE_FILE_SEND_ALREADY_IN_FLIGHT.to_string());
+        }
+    };
     let file_key = crypto::random_key();
     // ⚠️ 整份文件的哈希交给阻塞线程池（INV-P34；与 `file/send.rs` 直发那一格同一条规矩）。
     // 留在 async 路径上就是钉住一个 tokio worker —— 中继推送的正是共享目录里的文件，

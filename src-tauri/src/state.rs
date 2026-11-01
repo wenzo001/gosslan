@@ -1007,6 +1007,64 @@ impl Drop for GroupFileDispatchGuard {
     }
 }
 
+/// **1:1 文件发送的在途闸门**（键 = `file::file_peer_key(transfer_id, recipient)`）。
+///
+/// 为什么必须有它（判据⑩ 的根因，2026-11-01 取证）：1:1 那条投递此前**只有一道按 peer 的闸**
+/// （`AppState::file_sending` + `PeerSendGuard`），而 ContentRequest 的服务队列是另一道按 peer
+/// 的闸（`state.file_service`）—— 两道闸管同一个资源却彼此看不见 ⇒ 同一个
+/// `(transfer_id, peer)` 可以有两个发送任务同时在跑（实测同一秒两条 `offer-sending`）。
+/// 两个任务都会 `install_cancel_slot(同一 key)`，而后一次登记会把前一次的 `Sender` 挤掉 ⇒
+/// 前者的 `cancel_rx` 以 `Err(Closed)` 完成 ⇒ 按现有口径被判成「用户取消发送」（没人点过取消）⇒
+/// 落 `cancelled` + 墓碑 ⇒ 真正成功那一份的 `done` 被静默挡死。
+///
+/// 键与取消槽位**同一个格式**（`file_peer_key`）：这道闸管的正是"同一单同一收件人只许一个发送任务"，
+/// 换一种拼法就是同一件事两处各算一遍（本仓反复付钱的那类缺陷）。
+///
+/// 与 `group_file_dispatching` 的差别只有一条：群那条覆盖 fan-out 与离线补发两个入口，
+/// 这一条覆盖 outbox 补发与 ContentRequest 回发两个入口。
+///
+/// ⚠️ 「清除数据」那趟**故意不清这一份**：集合里的每个键都代表一个**仍在运行的任务**，
+/// 清掉它等于允许第二个任务同时发同一单（正是这里要防的形状），而那个任务自己的守卫仍会在
+/// 结束时 `remove` 一个不属于它的键。`file_sending` / `file_send_cancels` 被清时顶多让在途任务
+/// 丢掉登记，而这一份被清会**造出并发** ⇒ 不清。
+pub struct FileSendGate {
+    set: Arc<Mutex<std::collections::HashSet<String>>>,
+    key: String,
+}
+
+impl FileSendGate {
+    /// 抢占「这一单 × 这一收件人」的发送权。
+    /// `Some` = 抢到（守卫活着期间持有，离开作用域归还）；
+    /// `None` = 已有任务在途（`AlreadyInFlight`）⇒ 调用方**本轮跳过**：不写台账、不发事件、
+    /// 不消耗 outbox 的 attempts（下一次建链/心跳还会捞到它）。
+    pub fn try_acquire(
+        set: &Arc<Mutex<std::collections::HashSet<String>>>,
+        key: String,
+    ) -> Option<Self> {
+        // `HashSet::insert` 返回 false = 键已存在 ⇒ **没有**取得所有权，也就绝不能归还别人的那一格。
+        // 所有权由这次插入的结果决定，不是由"谁最后写"决定。
+        let inserted = set
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(key.clone());
+        inserted.then(|| Self {
+            set: set.clone(),
+            key,
+        })
+    }
+}
+
+impl Drop for FileSendGate {
+    fn drop(&mut self) {
+        // 只可能删到自己那一格：`try_acquire` 失败时根本不会构造出这个守卫，
+        // 而在守卫活着期间同键的第二次 `try_acquire` 必定失败。
+        self.set
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .remove(&self.key);
+    }
+}
+
 /// 预览窗口里的一张图 —— 字段名与前端 `PreviewImage` 一一对应（camelCase 上线）。
 ///
 /// ⚠️ 刻意**只带引用**（`msg_id` / `cid`）或自包含的 `data_src`：
@@ -1368,7 +1426,14 @@ pub struct AppState {
     pub group_file_online_targets: Mutex<HashMap<String, std::collections::HashSet<String>>>,
     /// 一对一文件离线投递进行中标记：同一 peer 同时最多一个投递任务。
     pub file_sending: Mutex<std::collections::HashSet<String>>,
-    /// 文件发送取消信号注册表：transfer_id -> oneshot Sender。
+    /// **1:1 文件发送的在途闸门**（键 = `file::file_peer_key(transfer_id, recipient)`，RAII 守卫
+    /// [`FileSendGate`]）。与上面那道按 peer 的闸**不是一件事**：那根管"同一收件人同时只跑一个投递循环"，
+    /// 这一根管"同一单同一收件人同时只有一个发送任务"，后者才是取消槽位登记的归属单位。
+    /// 覆盖两个入口：outbox 补发（`commands::flush_pending_files`）与 ContentRequest 回发
+    /// （`transport::handle_share` 的服务任务，含它借道中继那一支）。
+    pub file_send_inflight: Arc<Mutex<std::collections::HashSet<String>>>,
+    /// 文件发送取消信号注册表：`file_peer_key(transfer_id, recipient)` → `(oneshot Sender, 登记序号)`。
+    /// 登记序号只给守卫的所有权校验用（见 `network::file::CancelSlotGuard`），不参与任何判定。
     /// 用户点"取消发送"时我们 send(())，三条投递路径（单聊直发 / 中继直发 / 群投递）
     /// 在哈希、排队、Offer 等待、分片循环、ACK 等待每一段都盯这一格。
     /// 取消**不是**"让这次尝试立刻返回然后交给 outbox 判死"：投递任务带着
@@ -1376,7 +1441,7 @@ pub struct AppState {
     /// 终态（INV-P26：取消不许记成 failed），同时 `cancel_file_transfer` 已经先把
     /// `cancel_terminal` 墓碑写好 ⇒ 任何晚到的 attempt 都改不回 active。
     /// 登记与回收只此一个家：`network::file::install_cancel_slot`。
-    pub file_send_cancels: Mutex<HashMap<String, tokio::sync::oneshot::Sender<()>>>,
+    pub file_send_cancels: Mutex<HashMap<String, (tokio::sync::oneshot::Sender<()>, u64)>>,
     /// 群文件接收端 `.part` 状态：transfer_id -> 接收状态。
     /// 与一对一 `file_receivers` 生命周期独立；复用 FileReceiver 结构
     /// （file_key/next_seq/hasher 语义相同），不写 file_transfers 表。
@@ -2299,6 +2364,7 @@ impl AppState {
             group_file_boot_sweep_pending: std::sync::atomic::AtomicBool::new(true),
             group_file_online_targets: Mutex::new(HashMap::new()),
             file_sending: Mutex::new(std::collections::HashSet::new()),
+            file_send_inflight: Arc::new(Mutex::new(std::collections::HashSet::new())),
             file_send_cancels: Mutex::new(HashMap::new()),
             file_receivers: Mutex::new(HashMap::new()),
             file_wire_progress: Mutex::new(HashMap::new()),

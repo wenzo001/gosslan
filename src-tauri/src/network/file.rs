@@ -156,24 +156,86 @@ pub fn file_cancel_prefix(transfer_id: &str) -> String {
     file_peer_prefix(transfer_id)
 }
 
+/// 取消槽位的**登记序号**分配器（只有 `install_cancel_slot` 用它）。
+///
+/// 为什么必须有它（判据⑩ 的第二层，2026-11-01）：守卫原先**按 key 无条件 `remove`** ⇒
+/// 谁先收尾就把那一格摘掉，而那一格此刻可能已经属于**另一个**任务（真取消后 `signal_cancel_slot`
+/// 会先摘走 Sender，同键的下一次登记因此能进来）。被摘走登记的那个任务的 `Receiver` 立刻以
+/// `Err(Closed)` 完成 ⇒ 按现有口径判成「用户取消发送」⇒ 又是一次没人按过的取消。
+/// 序号把"归还"变成**只可能摘到自己那一格**（见下面 `Drop` 里的 ticket 比对）。
+static CANCEL_SLOT_SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+
 /// 取消槽位的回收守卫：登记之后**任何**退出路径（`?`、提前 return、panic 展开、
-/// 外层 deadline 把内层 future 丢掉）都必须摘掉这一格。
+/// 外层 deadline 把内层 future 丢掉）都必须摘掉自己那一格 —— 但**只许摘自己那一格**。
 pub(crate) struct CancelSlotGuard<'a> {
     state: &'a Arc<AppState>,
     key: String,
+    ticket: u64,
 }
 
 impl Drop for CancelSlotGuard<'_> {
     fn drop(&mut self) {
-        self.state
-            .file_send_cancels
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .remove(&self.key);
+        // 比对序号再删：这一格已经不是我的那份（被真取消摘走过、或登记从未成功）就**不动**它。
+        // 原先是无条件 `remove(&key)` ⇒ 先收尾的任务会拆掉别人正在用的取消信道，
+        // 对方下一次 `select!` 就以 `Err(Closed)` 完成 = 又造一次没人按过的取消。
+        let _ = release_slot_core(&self.state.file_send_cancels, &self.key, self.ticket);
     }
 }
 
-/// 登记一格取消槽位，返回（接收端，回收守卫）。
+/// [`install_cancel_slot`] 的结果：**登记成功**，或**同键已有在任登记**（`AlreadyInFlight`）。
+///
+/// 为什么必须是个枚举而不是"照样插进去"：`HashMap::insert` 撞键时会把在任者的 `Sender`
+/// **drop** 掉，对方的 `Receiver` 当场以 `Err(Closed)` 完成，而这条链路把"通道关闭"当取消
+/// （[`cancel_requested`] 明写 `Closed => true`）⇒ 第二个任务一进门就把第一个任务判成
+/// "用户取消发送"。真机与 E2E 判据⑩ 读到的 `A=cancelled`（文件其实传完了）就是这么来的。
+///
+/// ⚠️ 刻意**不**改"Closed 算取消"这条口径本身：它还管着"外层 deadline 丢掉内层 future ⇒
+/// 登记随守卫展开被摘 ⇒ 任务自己也已经不在"那段生命周期。要修的是**不该发生的顶替**，
+/// 不是把取消判没了。
+pub(crate) enum CancelSlotInstall<'a> {
+    Installed {
+        rx: tokio::sync::oneshot::Receiver<()>,
+        _slot: CancelSlotGuard<'a>,
+    },
+    AlreadyInFlight,
+}
+
+/// 登记表本体（键 = [`file_cancel_key`]）。别名只为把下面两个核心函数的签名写清楚。
+type CancelSlots =
+    std::sync::Mutex<std::collections::HashMap<String, (tokio::sync::oneshot::Sender<()>, u64)>>;
+
+/// **登记的核心**：只吃那张表 ⇒ 单测能直接驱动它，不必造整台 `AppState`
+/// （`AppState::init` 要 Tauri 运行时，这条链的行为此前只有真机/双实例才看得见）。
+///
+/// 返回 `Some((rx, ticket))` = 登记成功；`None` = 同键已有在任登记（`AlreadyInFlight`）。
+/// ⚠️ 撞键时**一个字节都不碰在任者**：原先这里是 `HashMap::insert`，它会把旧 `Sender` drop 掉，
+/// 旧任务那条链立刻判成"用户取消发送" —— 判据⑩ 那条假 cancelled 的第一层就在这行。
+pub(crate) fn install_slot_core(
+    cancels: &CancelSlots,
+    key: String,
+) -> Option<(tokio::sync::oneshot::Receiver<()>, u64)> {
+    let ticket = CANCEL_SLOT_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let (tx, rx) = tokio::sync::oneshot::channel::<()>();
+    let mut cancels = cancels.lock().unwrap_or_else(|e| e.into_inner());
+    if cancels.contains_key(&key) {
+        return None;
+    }
+    cancels.insert(key, (tx, ticket));
+    Some((rx, ticket))
+}
+
+/// **归还的核心**：只摘自己那一格（序号对得上才摘）。
+/// 返回是否真的摘掉了。对不上 = 那一格已经不是我的了（被真取消摘走、或从未存在）⇒ **不动它**。
+pub(crate) fn release_slot_core(cancels: &CancelSlots, key: &str, ticket: u64) -> bool {
+    let mut cancels = cancels.lock().unwrap_or_else(|e| e.into_inner());
+    let mine = cancels.get(key).map_or(false, |(_tx, t)| *t == ticket);
+    if mine {
+        cancels.remove(key);
+    }
+    mine
+}
+
+/// 登记一格取消槽位，返回 [`CancelSlotInstall`]（成功带接收端 + 回收守卫）。
 ///
 /// 三条投递路径（单聊直传 / 中继直发 / 群投递每成员一任务）原先各有各的登记与清理：
 /// 群那条已经是 RAII，另两条手写 `cancel_cleanup()` 闭包并在函数末尾调一次 ——
@@ -183,19 +245,23 @@ impl Drop for CancelSlotGuard<'_> {
 ///
 /// ⚠️ 必须在**任何可能慢的步骤之前**调用（整文件哈希、并发闸排队、Offer 等待）：
 /// 槽位还没登记时用户点了取消，信号静默丢掉，排到队后照样把整份文件发出去。
+///
+/// ⚠️ 返回 `AlreadyInFlight` 时调用方**不许**把它写成取消、失败或成功：它的含义是
+/// "同一单同一收件人已经有一个发送任务在跑"，正确动作是本轮跳过（判据⑩ 的修复口径）。
 pub(crate) fn install_cancel_slot<'a>(
     state: &'a Arc<AppState>,
     transfer_id: &str,
     recipient: &str,
-) -> (tokio::sync::oneshot::Receiver<()>, CancelSlotGuard<'a>) {
+) -> CancelSlotInstall<'a> {
     let key = file_cancel_key(transfer_id, recipient);
-    let (tx, rx) = tokio::sync::oneshot::channel::<()>();
-    state
-        .file_send_cancels
-        .lock()
-        .unwrap_or_else(|e| e.into_inner())
-        .insert(key.clone(), tx);
-    (rx, CancelSlotGuard { state, key })
+    // 登记与"撞键不顶替"都住在 [`install_slot_core`]（那张表就是它的唯一输入 ⇒ 单测直接驱动生产码）。
+    let Some((rx, ticket)) = install_slot_core(&state.file_send_cancels, key.clone()) else {
+        return CancelSlotInstall::AlreadyInFlight;
+    };
+    CancelSlotInstall::Installed {
+        rx,
+        _slot: CancelSlotGuard { state, key, ticket },
+    }
 }
 
 /// 这一格是否已经要求取消。
@@ -222,13 +288,13 @@ pub(crate) fn install_cancel_slot<'a>(
 /// 区别只是前缀 vs 精确键 —— 所以都住在这个文件里，映射本身仍然只有一家。
 pub fn signal_cancel_slot(state: &AppState, transfer_id: &str, recipient: &str) -> bool {
     let key = file_cancel_key(transfer_id, recipient);
-    let tx = state
+    let entry = state
         .file_send_cancels
         .lock()
         .unwrap_or_else(|e| e.into_inner())
         .remove(&key);
-    match tx {
-        Some(tx) => {
+    match entry {
+        Some((tx, _ticket)) => {
             let _ = tx.send(());
             true
         }
@@ -248,7 +314,7 @@ pub fn signal_cancel_slots(state: &AppState, transfer_id: &str) -> usize {
         .cloned()
         .collect();
     for k in &keys {
-        if let Some(tx) = cancels.remove(k) {
+        if let Some((tx, _ticket)) = cancels.remove(k) {
             let _ = tx.send(());
         }
     }
@@ -374,6 +440,14 @@ pub struct SendFileError {
     pub retryable: bool,
     pub cancelled: bool,
     pub message: String,
+    /// 取消发生在**哪一段**（六个观测点各自的名字：`hash` / `offer-wait` / `chunk` /
+    /// `backpressure` / `done-send` / `ack-wait`）；非取消的错误是 `None`。
+    ///
+    /// 为什么要有它：那六个臂此前共用同一句"用户取消发送"、**没有一个打印自己是谁**，
+    /// 于是判据⑩ 那条红只能靠"哪条日志没出现"反推落点（见
+    /// `docs/notes/send-cancelled-rca-2026-11-01.md` §3.2 —— 那节写的正是这次考古）。
+    /// 只加诊断，不改任何一个臂的判定。
+    pub cancel_stage: Option<&'static str>,
 }
 
 impl SendFileError {
@@ -382,6 +456,7 @@ impl SendFileError {
             retryable: true,
             cancelled: false,
             message: message.into(),
+            cancel_stage: None,
         }
     }
 
@@ -390,6 +465,7 @@ impl SendFileError {
             retryable: false,
             cancelled: false,
             message: message.into(),
+            cancel_stage: None,
         }
     }
 
@@ -399,6 +475,15 @@ impl SendFileError {
             retryable: false,
             cancelled: true,
             message: message.into(),
+            cancel_stage: None,
+        }
+    }
+
+    /// 同上，但带上"在哪个观测点看到的取消"⇒ `[CANCELLED]` 那行日志能自己说明落点。
+    pub(crate) fn cancelled_at(stage: &'static str, message: impl Into<String>) -> Self {
+        Self {
+            cancel_stage: Some(stage),
+            ..Self::cancelled(message)
         }
     }
 }
