@@ -2030,7 +2030,13 @@ Rejected）。⚠️ 边界：这条恢复只对**声明了 `CONTENT_FEATURE_PUL
 
 - `skip`/`todo`/`only` 全仓 **0 处**。
 - 无快照测试机制（`node:test` 无内置 snapshot）⇒ 无过期快照。
-- 12 个前端测试文件含 `Date.now`/`new Date` —— **未逐条核实**是"喂固定时间戳"还是"读真时钟"，标为未验证。
+- ~~12 个前端测试文件含 `Date.now`/`new Date` —— **未逐条核实**是"喂固定时间戳"还是"读真时钟"~~
+  ⇒ **已逐条核过（TST-14，§4.0bg）**：2026-11-01 现算 `grep -rl 'Date\.now\|new Date' --include='*.test.ts' src | wc -l`
+  得 **9** 个文件（审计当时写 12，已漂）。其中 4 处只出现在**字符串字面量**（`designGuards:3788`、`defer:292/293/356/357`）、
+  2 处是注释、1 处是 `setTimeout(r,0)`；真实时钟三处都有余量（`todos.test.ts` 用 0/8 天对 7 天阈值、
+  `time.test.ts` 取正午避跨日、`updater.test.ts` 断言 10 ms 在 1 s 内结束）。本轮新计入的三个文件也逐个读过：
+  `avatarSeed.test.ts` **替身** `Date.now`（并在 finally 里还原）、`chatSearch.test.ts` 用固定日期常量、
+  `retrySend.test.ts` 只在注释里出现。
 
 ---
 
