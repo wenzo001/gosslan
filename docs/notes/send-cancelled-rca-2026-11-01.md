@@ -305,3 +305,105 @@ $ HOME=/tmp/sk-before node scripts/e2e-multi-instance.mjs --fault=sender-kill-mi
 四处变异全部还原后：`cargo test --lib --features bluetooth -- send_inflight_guard_tests` → **6 passed / 0 failed，退 0**；
 `grep -rn "MUTATION-" src/` → 零命中；`cargo fmt --check --all` → 退 0。
 
+## 10. 收口读数（修复提交之后，全部现跑）
+
+### 10.1 改调用点形状带出来的三处量具订正（同族第二课：改码不只是改码，还会撞坏读形状的东西）
+
+`7a1d868b` 把三个登记点从 `let (a, b) = install_cancel_slot(…)` 改成 `match`、把登记/回收两处
+`.lock()` 改成"把 Mutex 按引用交给 core helper"。语义没动，但**读形状的量具全跟着漂**：
+
+| # | 坏在哪 | 谁先报的 | 订正 | 反证 |
+|---|---|---|---|---|
+| 1 | `群文件取消登记必须按收件人分键` 的注入锚点钉的是整条旧 `let … = file::install_cancel_slot(…);` | 全量层**第 14 步**起跑前核对，fail-fast（一轮测试都没跑） | 锚点改钉 `match file::install_cancel_slot(state, transfer_id, recipient)`，注入仍是 `recipient → transfer_id` | `verify-guards.py --only "群文件取消登记…"` 退 0（改坏 FAIL、还原逐字节一致） |
+| 2 | `中继发送失败必须落 DB 终态` 的锚点前两行不再相邻（外层多了 `skipped_in_flight`） | 同上，第 14 步一起点名 | 锚点扩到整块；替换串从"删成空"改成 `let _ = (reason, skipped_in_flight);` ⇒ **变异串自己必须能编译**，否则 `expect_fail_hint` 不会出现在 stderr，红就落在"量具坏了"那一格 | `verify-guards.py --only "中继发送失败必须落 DB 终态"` 退 0（cargo 腿 62.9s，基线 50.5s） |
+| 3 | 既有用例 `file_cancel_and_user_cancel_share_one_local_home` 数 `.file_send_cancels.lock()` == 4，实际读成 **2** | 护栏 runner 的**干净态基线**先抓到：`1362 passed / 1 failed`，于是它拒绝开始注入 | needle 从"带 `.lock()`"换成"碰字段的位置"（`.file_send_cancels`，四处仍是四处），命令层那一格顺带收紧成"不许碰这个字段" | 家内多一处 ⇒ `lib_file_tests.rs:969 left:5 right:4` 退 101；家外多一处 ⇒ `:976 left:1 right:0` 退 101；还原 ⇒ 退 0 且两份文件 `cmp` 逐字节 same |
+
+⚠️ 第 3 条的形状值得单独记：它**不报"锚点找不到"**，它报的是一条像产品缺陷的测试红。原因是登记/回收
+改成按引用收 Mutex（为了能在没有 `AppState` 的单测里直接驱动撞键），`.lock()` 只剩两个点亮处。
+家还是一个家，needle 却读数减半 ⇒ 这类红的正确处置顺序是**先读断言的意图注释**，再决定换 needle
+还是修代码；换完必须两个方向各注入一次，否则另一半仍是装饰。这条也说明：**"我只跑了新增的 6 条
+用例"从来不是绿**（§9.4 那轮就没覆盖到这条既有用例）。
+
+还有一处是隔壁会话补的（同一条改动撞坏的第三家）：`handle_share` 的失败帧现在包在
+`if !cancelled && !in_flight {` 里，判据原来只钉 `if !cancelled {` ⇒ 取不到块体。订正在 `3590de78`，
+并且加了一条正控：把"已在途"那一半砍掉时块体必须取不到。所以本轮撞坏的锚点**实际是 3 处，不是 2 处**。
+
+### 10.2 门禁与版本（现跑）
+
+```
+npm run verify:full   → 退 0（27 步全 ✅，共 428.6s；02:09:57Z → 02:17:07Z）
+  其中：cargo fmt --check --all ✅ · clippy -D warnings --all-targets ✅ · Rust 单测 ✅ 1363 passed / 0 failed / 3 ignored（12.75s）
+        测试清单守卫（Rust）✅ 基线 1366 条全部在跑
+        护栏注入锚点静态核对 ✅ · 护栏非空转（前端子集）✅ 209.0s · 移动端编译门禁（Android）✅ 37.7s
+        Change Budget ✅ · CHANGELOG 结构 ✅ · 文档硬数字对账 ✅ · 文档引用对账 ✅
+npm run version:check → 退 0；五处版本文件现读全部 5.15.95
+python3 scripts/verify-guards.py --list → 退 0（起跑前核对：锚点存在且唯一）
+```
+
+本修复自己那笔的版本位是 **5.15.94**（`7a1d868b`，`Version-Bump: patch`，五处同步）；之后
+`3590de78` 又把这轮的新失败码接进前端失败原因表并修了 clippy 1.99 的两条新规，顺带推到 5.15.95。
+量具订正那笔是 `a12ba702`（只动护栏脚本与测试册 ⇒ `[plan]` 零影响豁免，不占版本位）。
+
+### 10.3 判据⑩ 修复前后的完整对照（同一条命令、同一台机器、同一个 100 MB 载荷）
+
+命令就是门禁那一步的原形状（`scripts/verify.mjs` 里 `--fault=sender-kill-mid` 那条 `cmd+args`）：
+
+```
+node scripts/e2e-multi-instance.mjs --fault=sender-kill-mid
+```
+
+⚠️ 任务书里点名的 `npm run test:e2e:sendkill` **在本仓不存在**（`npm run` 报 Missing script），
+所以这里照抄的是门禁实际执行的那条命令，不是它的替身。三轮读数：
+
+| 轮 | run id | 二进制 | verdict | 判据⑩ 那一格 | 断言 |
+|---|---|---|---|---|---|
+| 修复前（基线） | `2026-11-01T01-31-52-419Z` | 主仓 release（修复前源码所编） | **FAIL** | 预期 `B=done A=done outbox=0` / 实际 **`B=done A=cancelled outbox=0`** | 26 条里 1 红 |
+| 修复后 | `2026-11-01T02-23-06-047Z` | 主仓 release（`7a1d868b`+订正之后重编，4m22s） | **PASS** | 预期 `B=done A=done outbox=0` / 实际 **`B=done A=done outbox=0`** | **26/26 全绿**（30.4s） |
+| 反向实验 | `2026-11-01T02-24-03-353Z` | `/private/tmp/gosslan-sendkill-reverse/…`（撤掉两道防线后重编） | **FAIL** | 实际 **`B=done A=cancelled outbox=0`** | 26 条里 1 红（29.1s） |
+
+修复后那一轮的 A 侧实例日志里，新加的闸门**在真链路上真的开过**（不是只在单测里）：
+
+```
+02:23:36 info [share] code=SEND_ALREADY_IN_FLIGHT transfer=e2e-k-2026-11-01T02-23-06-047Z-kitgzy
+          peer=gosslan-130774038112e-i2 —— 该单已有在途发送任务（outbox 补发那一侧），本轮跳过
+```
+
+这一条同时钉住两个口径：ContentRequest 那一侧撞上了 outbox 补发已经占住的 `(transfer_id, peer)`，
+**跳过而不是写终态**；而整轮照样 26/26 绿 ⇒ "跳过"没有把这一单变成弃单（重启续传那三条判据仍全过）。
+
+### 10.4 反向实验（隔离工作区，证明判据⑩ 不是被改软的）
+
+工作区 `/tmp/gosslan-sendkill-reverse`（`git worktree` 的 detached HEAD，`CARGO_TARGET_DIR` 也在那儿
+⇒ 主仓的源码、产物、target 一个字节都没动；主仓 `git status` 在这两个文件上恒为 0）。撤的是**两道**防线，
+各一处、按函数作用域定位（不是按全文文本 —— `inserted.then(|| Self {` 这个形状在
+`GroupFileDispatchGuard` 里也有一条，第一版脚本就是被它撞出 `anchor count=2` 而整块没落盘，
+差点拿一份**没变异的二进制**去跑"反向"）：
+
+1. `state.rs::FileSendGate::try_acquire` ⇒ 无条件 `Some`（闸门失效，两个入口可以同时发同一单）；
+2. `file.rs::install_slot_core` ⇒ 删掉撞键早退，回到 `HashMap::insert` 静默覆盖（顶掉前一个任务的 Sender）。
+
+跑之前的两道自检（都是打印出来的机器值，不是"应该没问题"）：
+`MUT_IN_SOURCE state.rs=1 file.rs=1`、`MUTATION_COMMIT_TS=1793499501 BINARY_TS=1793499785 FRESH=yes`
+—— 二进制必须晚于那次撤防线的提交，否则跑的就是旧产物。
+
+结果：判据⑩ 报红，形状与修复前基线**逐字相同**（`B=done A=cancelled outbox=0`），而且这一轮第一次
+把"锁死层"说出了口——两处新诊断都在真链路上亮了：
+
+```
+02:24:32 info [file] [CANCELLED] transfer=e2e-k-2026-11-01T02-24-03-353Z-v4ogxr
+          用户取消，本次投递退出且不再重发 stage=hash
+02:24:33 warn [file] code=TERMINAL_WRITE_REFUSED stage=send-transfer-done
+          transfer=e2e-k-2026-11-01T02-24-03-353Z-v4ogxr want=done current=cancelled
+          reason=INV-P26 墓碑 cancel_terminal=1（用户/对端取消不许被晚到 attempt 改写）
+```
+
+⇒ `stage=hash` 是六格阶段名之一（假取消是在算摘要那一步被点亮的），
+`TERMINAL_WRITE_REFUSED` 是过去**完全无声**的那一格（晚到的 `done` 被墓碑挡掉、0 行更新不留痕迹）。
+判据⑩ 的期望值一个字没改，它现在既能证伪（撤防线 ⇒ 红）也能证真（装回去 ⇒ 绿）。
+
+⚠️ 一条范围声明：反向实验证明了"闸门 + 不顶替"这两道**合起来**能消除缺陷，没有单独证明"只撤闸门"
+也能复现 —— 只撤闸门时撞键保护仍会挡住顶替，那条链在第二环就断了。这不影响结论（缺陷的第一环
+就是两个入口并发），但别把它读成"闸门单独就够"。
+
+
+
