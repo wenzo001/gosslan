@@ -106,6 +106,15 @@ export async function run() {
         db.prepare("INSERT OR REPLACE INTO settings(key,value) VALUES(?1,?2)").run(`gk:${GROUP_ID}`, GROUP_KEY_STR);
         db.prepare("INSERT OR REPLACE INTO conversations(id,kind,name,avatar,unread,updated_at) VALUES(?1,'group',?2,NULL,0,?3)")
           .run(convId, GROUP_NAME, ts);
+        // TST-06 小卷取证（手工用，不设变量时**一行都不执行** ⇒ 常态轮次的判据与读数一字不变）：
+        // 把接收方（INSTANCES[1]）的接收目录指到一块小容量真卷（`hdiutil create -size 4m`）。
+        // ⚠️ 2026-11-01 实测：接收路径**有**余量预检（`receive.rs` 的 `admit_inbound`，
+        // `INBOUND_SPACE_HEADROOM` 64 MiB），小卷会在**写之前**被 `RECV_DISK_SPACE_INSUFFICIENT`
+        // 拒掉 ⇒ 这条钩子只能验预检与拒绝后的收尾；要拿"写时" ENOSPC 得在传输中途把盘填满。
+        if (inst === INSTANCES[1] && process.env.E2E_GFILE_DISK) {
+          db.prepare("INSERT OR REPLACE INTO settings(key,value) VALUES('downloads_dir',?1)")
+            .run(String(process.env.E2E_GFILE_DISK));
+        }
       });
     }
     seed(INSTANCES[0].db, (db) => {

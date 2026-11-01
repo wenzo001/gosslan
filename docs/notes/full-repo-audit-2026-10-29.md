@@ -2170,7 +2170,13 @@ audit-context/
 | # | 事项 | 类型 | 卡在哪 | 证据 / 下一步 |
 |---|---|---|---|---|
 | 1 | **#23 Windows 渲染层卡死**（11 分钟零心跳） | 外部取证 | 需要那台机器的现场文件 | §4.0bi 取证单：取 `%APPDATA%\com.gosslan.app\logs\gosslan-crash.log` 里 `>>> code=HANG` 与 `>>> code=RUNTIME_MEM`；判读 `tree_cpu_ms ÷ (window_s×1000)`：≈1 空转 / 0 挂起 / 几十 ms 空闲 |
-| 2 | **群侧盘满端到端（TST-06）** | 外部环境 | 需要能真写满的卷 + 三实例；10-31 拍板本批不做 | 形状层判据已齐（条件按码判 / 支内删 / 三态日志）；缺的是真 ENOSPC 的下游读数。★ 2026-11-01 补：**"真盘满"不一定非要外接一块盘** —— 群接收这条路上**没有**提前的余量预检（`group_receive.rs` 里 `DISK_FULL` 是从写失败的错误码归的档），所以只要把实例的 `downloads_dir`（`user_dirs::RECEIVE` 那条 setting，`gfile` 轮已经在用 better-sqlite3 直接种 settings）指向一个**小容量真卷**（`hdiutil create -size 4m` 挂到 `/tmp`）再发一份更大的文件，就能拿到真 ENOSPC。开工前要确认的两件：① 预置必须发生在实例启动前（`downloads_dir` 在 `AppState` 初始化时读一次）；② 判据要钉"`.part` 被删 + 三态日志 + 重试不无限满"三件，别只钉一条 |
+| 2 | **群侧盘满端到端（TST-06）** | 外部环境 | 需要能真写满的卷 + 三实例；10-31 拍板本批不做 | 形状层判据已齐（条件按码判 / 支内删 / 三态日志）；缺的是真 ENOSPC 的下游读数。★ **2026-11-01 实测（本机小卷，run-2026-11-01T07-27-51-379Z）**：`hdiutil create -size 4m` 挂到 `/tmp/tinyvol`，把 B 的 `downloads_dir` 指过去、发 6 MB ⇒ **在写之前就被拒**：B 侧
+`code=RECV_DISK_SPACE_INSUFFICIENT size=6291456 available=3780608 headroom=67108864`（余量预检在 `receive.rs::admit_inbound`，`INBOUND_SPACE_HEADROOM=64 MiB`），小卷上**一个字节都没写**。
+⇒ 两条更正与两条新发现：
+① 我此前那句"群接收这条路上没有余量预检"是**错的**（从 `group_receive.rs` 里 grep 不到就断言不存在，属于窄 grep 造出的假否证）——预检在 `receive.rs`，群接收也走它；
+② 因此"写时 ENOSPC"只能靠**传输中途把盘填满**才可达，小卷这条路只能验预检与拒绝后的收尾；
+③ 拒绝是**逐分片重复评估并重复告警**的：同一单 12 条一模一样的 WARN（6 MB / 256 KiB 分片），没有一次性把这一单判死；
+④ 群接收行的终态原因落在 `GROUP_FILE_NO_CHUNK（文件传输未完成：没有收到任何分片）`，**不是**盘满 —— 用户看到的是"没收到分片"，而真正原因是空间不足。③④ 都是新立案的候选缺陷（未改码），TST-06 因此仍算开着
 | 3 | **Windows 句柄未关时删 `.part`** | **已坐实（2026-11-01，CI windows 腿）** | 不需要那台机器了：`windows_remove_open_file_tests` 在真 Windows runner 上跑出 `ok` ⇒ 句柄开着删 `.part` 成功、`path.exists()` 立刻为 false | `Verify` run 41267115508 的 windows 腿日志：`test network::file::windows_remove_open_file_tests::deleting_an_open_part_file_succeeds_and_frees_the_name ... ok`。⇒ `group_receive.rs:230` 那句「未关句柄时 `remove_file` 会失败」与实际不符（std 默认共享 delete）；盘满那条路径的删除**不会**被共享冲突挡住。残留问题只剩「空间何时归还」（delete-pending 到句柄关闭），那属于 TST-06 真盘满那一格 |
 | 4 | ~~INV-P18：Ed25519 私钥字段仍是 `pub`~~ | **已落地（5.15.45 / §4.0ac），2026-11-01 复核** | 早已私有化 + `IdentitySigner` + 判据 C 扩到这一半；`grep -n "pub ed25519_signing"` 零命中、`check-key-boundary` 退码 0 | §5 的 P18 行已同步订正；`protocol-invariants.md` 的 INV-P18 段仍写着 |
 | 5 | ~~A2 十格 + A7 各实例几何~~ | **全部实测通过**：A2 十格（含 busy）、A7 恢复 / 保存 / 各实例分文件 | 读数与量纲坑见 §4.0bj；A7 两次假读数已归因到「同名残留进程」 | A2 用 `cabe545` 的验收轮 + 手跑补 busy/单实例；A7 用隔离 HOME 预置状态文件 + Cmd+Q 实跑 |
