@@ -2134,7 +2134,8 @@ async fn handle_group_file_chunk(
         .lock()
         .unwrap_or_else(|e| e.into_inner())
         .contains_key(&transfer_id)
-        && file::begin_group_receive(
+    {
+        if let Err(why) = file::begin_group_receive(
             state,
             &transfer_id,
             &sender_id,
@@ -2142,10 +2143,21 @@ async fn handle_group_file_chunk(
             gf.size,
             file_key,
             gf.sha256.clone(),
-        )
-        .is_err()
-    {
-        return;
+        ) {
+            // ★ 盘满不是"这一片丢了、下一片再试"：实测同一个 6 MB 单的 **24 片各试一次**、
+            //   各留一条 `RECV_DISK_SPACE_INSUFFICIENT`，而整单最后落成「没有收到任何分片」。
+            //   准入闸的拒绝里带那个码 ⇒ 一次判死并如实带原因（`DISK_FULL` 进日志与
+            //   `file-failed` 事件族）。判死之后 `finalize_failed_group_receive` 会丢掉会话密钥，
+            //   后续分片在 `touch_group_file_key` 那一步就静默返回，不再重复告警。
+            if build_failure_is_disk_full(&why) {
+                state.logger.warn(
+                    "group_file",
+                    format!("群文件接收被准入闸按盘满拒绝 transfer={transfer_id}：{why}"),
+                );
+                fail_group_file_chunk(state, &transfer_id, crate::logging::FAIL_CODE_DISK_FULL);
+            }
+            return;
+        }
     }
 
     // 解码 + AEAD 解密：纯 CPU、不持任何锁、入参都是自有数据 ⇒ 先离开 tokio worker

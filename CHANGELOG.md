@@ -13,6 +13,21 @@
 
 ## [Unreleased]
 
+## [5.15.98] - 2026-11-01
+
+### 盘满的群文件：在**首次建接收器**那一步就判死（5.15.97 改错了地方）
+
+5.15.97 只堵了"续传重建"那条路；同一探针复跑证明实测路径根本不走它。真路径是
+`handle_group_file_chunk` 里"首个合法分片到达时才建 `.part`"那一处：`begin_group_receive` 失败被
+`.is_err()` 吞掉、直接 `return` ⇒ **每一片都再试一次**（6 MB / 256 KiB = 24 片 ⇒ 24 条一模一样的
+`RECV_DISK_SPACE_INSUFFICIENT`），而整单最后落成 `GROUP_FILE_NO_CHUNK`「没有收到任何分片」。
+
+现在：把错误串带出来，认得出盘满就**一次判死**并带 `DISK_FULL` 原因；`finalize_failed_group_receive`
+会丢掉会话密钥，后续分片在 `touch_group_file_key` 那一步静默返回，不再刷屏。
+
+`DISK_FULL` 仍不进 `MESSAGE_FAIL_CODES`（上一轮的反向断言写着它是写盘族的码，本批不推翻）；
+群文件气泡继续走通用文案，可行动提示由 `file-failed` 事件族给。
+
 ## [5.15.97] - 2026-11-01
 
 ### 群文件被「盘满」拒掉后，终态不再谎称「没有收到任何分片」
