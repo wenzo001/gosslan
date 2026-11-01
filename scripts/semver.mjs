@@ -13,7 +13,7 @@
 // 为什么不用 ① 定版本：184 个提交里有 23 个大功能，逐条累加会得到 25.1.2 这种数字，
 // 它既不表达"这次发布有多大"，也和后端/前端/安装包的版本语义脱节。
 import { execFileSync } from "node:child_process";
-import { readFileSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
 
 export const LEVEL_RANK = { patch: 1, minor: 2, major: 3 };
 export const BUMP_TRAILER = "Version-Bump";
@@ -610,6 +610,25 @@ function main() {
       const lvl = { patch: "小（patch）", minor: "中（minor）", major: "大（major）" }[r.level];
       lines.push(`| ${i + 1} | \`${r.short}\` | ${r.date} | ${r.type} | ${lvl} | ${v} | ${r.reason} | ${r.subject.replace(/\|/g, "\\|")} |`);
     });
+    // ★ 收缩闸（2026-11-01）：`ledger` 是**整文件覆盖**的破坏性生成器，默认范围是
+    //   「上次改版本号之后」——在一条短范围上跑一次就会把历史账表覆盖成几行。
+    //   2026-11-01 实测：273 行被覆盖成 8 行，累计版本还从 5.15.92 编到 5.15.93…5.15.100（假的）。
+    //   空表闸只挡"一条都没有"，挡不住"少了很多"。历史账目丢一次就找不回（只能靠 git 考古），
+    //   所以这里默认**拒绝收缩**；确实要收缩必须显式 `--allow-shrink` 承担。
+    const allowShrink = flags.includes("--allow-shrink");
+    if (existsSync(out) && !allowShrink) {
+      const existingRows = readFileSync(out, "utf8")
+        .split(/\r?\n/)
+        .filter((l) => /^\|\s*\d+\s*\|/.test(l)).length;
+      if (existingRows > rows.length) {
+        console.error(
+          `✗ 拒绝写 ${out}：新表 ${rows.length} 行 < 现有 ${existingRows} 行 ⇒ 这会丢掉历史账目。\n` +
+            `  · 要重建完整账表：显式给起点（如 \`--since <更早的 tag>\`），让范围覆盖全历史；\n` +
+            `  · 确实只想留一小段：加 \`--allow-shrink\` 并把原因写进提交说明。`,
+        );
+        process.exit(1);
+      }
+    }
     writeFileSync(out, lines.join("\n") + "\n");
     console.log(`✓ 已写 ${out}：${rows.length} 条（末行累计版本 ${v}，范围 ${since}..HEAD）`);
     return;
