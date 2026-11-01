@@ -2164,7 +2164,6 @@ function retryHistory() {
       @open-profile="onMemberProfile"
       @open-tasks="membersOpen = false; openTasks()"
       :tasks-opening="tasksOpening"
-            :open-tasks="openTasksForActive"
     />
 
     <!-- 发布/修改群公告已并入「成员管理」弹窗（用户 2026-09-17：公告与群名/成员一起管）；
