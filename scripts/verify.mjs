@@ -1045,7 +1045,7 @@ if (groupFlag === "local") {
       why:
         "第三轮审计 A4 里**能被磁盘上的事实表达**的那一半。入站待处理好友申请以前只有 "
         + "`AppState::pending_requests` 那一份内存 HashMap（库里那一格从来不存在）⇒ 重启即清零，"
-        + "而申请人每 30 秒才补发一次、还要链路在。现在它落在 `settings` 的 "
+        + "而申请人那本待发申请也在内存里（`pending_out_requests`，进程内 HashMap）；它的补发由建链与 5s 心跳驱动，但 `friend_request_flush_decision` 里那道 `MIN_INTERVAL_MS = 30_000` 下限**只管第二份起**（首一份的上次补发时刻是 0，直接放行）。现在它落在 `settings` 的 "
         + "`friend_req:<device_id>`（不建表、零迁移），启动时在 `app.manage` 之后、联网之前跑 "
         + "`restore_pending_requests`。判三件事：那一行跨**两次**真实启动逐字不变（恢复不删不改写）；"
         + "恢复臂每次都真跑（磁盘日志里「重启恢复 1 条待处理好友申请」各 1 次）；"
