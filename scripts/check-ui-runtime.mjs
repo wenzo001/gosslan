@@ -10704,6 +10704,33 @@ async function runCtxMenu(cdp, url) {
       cbEv.some((e) => e[0] === "copy") && cbAfter.present === false,
       "copy + 菜单消失", JSON.stringify(cbEv));
 
+    // 键盘唤起（Shift+F10 / 菜单键）时 clientX/Y 一起是 0 ⇒ 必须按块自己的矩形定位。
+    // 上面两条只走了"指针落在块内"那一支；这一支不量的话，回归成 (0,0) 也没人知道。
+    await cdp.eval("window.__probe.reset()");
+    const kbOrigin = await cdp.eval(`(() => {
+      const host = document.getElementById('probe-host');
+      const el = host && host.firstElementChild;
+      if (!el) return { ok: false };
+      const r = el.getBoundingClientRect();
+      el.dispatchEvent(new MouseEvent('contextmenu', {
+        bubbles: true, cancelable: true, clientX: 0, clientY: 0,
+      }));
+      return { ok: true, rect: [Math.round(r.left), Math.round(r.top)] };
+    })()`);
+    await sleep(250);
+    const kbMenu = await menu();
+    check("键盘唤起（clientX/Y 都是 0）时菜单按块自身矩形定位，不跑到窗口左上角",
+      // 夹具正控：块自己的矩形不能落在原点附近 —— 否则"按矩形定位"与"退回 (0,0)"读数一样，判不了。
+      // （实测这块的 left 就是 0，所以按**期望位置**离原点够远来判：24 / rect.top+24。）
+      kbOrigin.ok === true && kbOrigin.rect[0] + 24 > 10 && kbOrigin.rect[1] + 24 > 10
+        && kbMenu.present === true
+        && Math.abs(kbMenu.left - (kbOrigin.rect[0] + 24)) <= 2
+        && Math.abs(kbMenu.top - (kbOrigin.rect[1] + 24)) <= 2,
+      "期望位置离原点 > 10，且 left≈rect.left+24 / top≈rect.top+24",
+      JSON.stringify({ origin: kbOrigin, menu: { left: kbMenu.left, top: kbMenu.top } }));
+    await cdp.key("Escape", "Escape", "", 27);
+    await sleep(150);
+
     // ── N6-2（2026-11-01 用户拍板）：群成员行右键 →「@他」「查看资料」 ──
     // 真挂 GroupMemberPanel（seed 一个带成员的群）、真右键、真按回车，看它发的是不是那两个事件。
     await cdp.eval("window.__probe.reset()");
