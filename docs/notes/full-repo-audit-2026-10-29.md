@@ -2178,7 +2178,13 @@ SQL 的 `WHERE` 是 `transfer_id = ?1 AND recipient_id = ?2 AND status <> 'cance
 `gosslan-9710019e56f45-i2`，而多开时 `state.device_id` 正是 `base + "-i{instance}"`（`state.rs` 里那句
 `format!("{base_device}-i{instance}")`）⇒ 两者对得上，`update_group_file_recipient` 的 WHERE 本该命中 1 行。
 ⇒ 指向**第二条**：写入报错被 `let _ =` 吞掉（最可能是当时库被别的连接占着）。下一步就一条：
-把那句 `let _ =` 换成 `log_write_failure`，下一次盘满探针就能直接看到真错误。**下一步就查这两条**；注意 `let _ =` 本身就违反本仓"写库失败必须留痕"那条棘轮
+把那句 `let _ =` 换成 `log_write_failure`，下一次盘满探针就能直接看到真错误。★ **5.15.99 已按此改并复跑（run-2026-11-01T10-02-04-210Z）**：
+这一次**没有**任何写库失败留痕，而 `after-B.db` 那一行是 **`failed` / progress 0** —— 收尾写落上了。
+与上一轮（run-…09-51-03-496Z：`sending / 0.2675`、`updated_at=09:51:11.641Z` **早于** 09:51:12 的失败、
+`group_files` 也停在 `sending`）**两次读数互相矛盾**。⇒ 只能说这两条：① 5.15.99 之后这条路径**能**正确落
+`failed`（有读数）；② 上一轮那种"两行都停在 sending 且 updated_at 早于失败"的形态**没再复现**，但成因
+**没查实** —— "晚到的进度写覆盖 failed"这个假设已被 `updated_at` 否证。下次做探针时把
+`group_files` 与 `group_file_recipients` 两行一起读。**下一步就查这两条**；注意 `let _ =` 本身就违反本仓"写库失败必须留痕"那条棘轮
 `code=RECV_DISK_SPACE_INSUFFICIENT size=6291456 available=3780608 headroom=67108864`（余量预检在 `receive.rs::admit_inbound`，`INBOUND_SPACE_HEADROOM=64 MiB`），小卷上**一个字节都没写**。
 ⇒ 两条更正与两条新发现：
 ① 我此前那句"群接收这条路上没有余量预检"是**错的**（从 `group_receive.rs` 里 grep 不到就断言不存在，属于窄 grep 造出的假否证）——预检在 `receive.rs`，群接收也走它；
