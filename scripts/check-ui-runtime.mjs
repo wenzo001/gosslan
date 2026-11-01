@@ -11144,6 +11144,60 @@ async function runGroupFiles(cdp, url) {
       && JSON.stringify(e[1] || {}).includes(".bin")),
     "invoke 里出现 opener|reveal_item_in_dir + .bin", JSON.stringify(invReveal.map((e) => e[0])));
 
+  // ── 反面对照：本地**没有**那份文件的行右键不弹菜单 ──
+  // 静态判据只钉了 `if (!f.local_path) return;` 这句在不在；这里量"真右键之后菜单到底出没出现"。
+  // 夹具先临时多返回一行 `local_path: null`（未取到的远端文件），再按同一个入口右键。
+  await cdp.key("Escape", "Escape", "", 27);
+  await sleep(150);
+  await cdp.eval(`(async () => {
+    const m = await import('/src/api/index.ts');
+    const prev = m.api.listGroupFiles;
+    m.api.listGroupFiles = async (gid) => {
+      const rows = await prev(gid);
+      return rows.concat([{
+        transfer_id: gid + '-nopath',
+        name: gid + '-nopath.bin',
+        size: 2048,
+        sender_id: 'peer-1',
+        created_at: 0,
+        local_state: 'remote',
+        local_path: null,
+        delivered: 0,
+        total: 1,
+      }]);
+    };
+    window.__gf.restoreList = () => { m.api.listGroupFiles = prev; };
+  })()`);
+  await fire();
+  await sleep(300);
+  const noPathHit = await cdp.eval(`(() => {
+    const rows = [...document.querySelectorAll('[role="dialog"] [title$=".bin"]')];
+    const row = rows.find((r) => (r.getAttribute('title') || '').includes('nopath'));
+    if (!row) return { ok: false, titles: rows.map((r) => r.getAttribute('title')) };
+    const r = row.getBoundingClientRect();
+    row.dispatchEvent(new MouseEvent('contextmenu', {
+      bubbles: true, cancelable: true,
+      clientX: Math.round(r.left + 12), clientY: Math.round(r.top + 12),
+    }));
+    return { ok: true, titles: rows.map((x) => x.getAttribute('title')) };
+  })()`);
+  await sleep(250);
+  const noPathMenu = await cdp.eval("window.__probe.menu()");
+  check("反面对照：本地没有那份文件的行右键**不弹**菜单（给灰项会让人以为点了没反应）",
+    noPathHit.ok === true && noPathMenu.present === false,
+    "该行在 + 菜单未出现", JSON.stringify({ hit: noPathHit, menu: noPathMenu }));
+
+  // 正控：同一个时刻、同一个面板，带 local_path 的那行照旧弹 ⇒ 上面那格不是"右键整体失灵"。
+  await rightClickRow();
+  await sleep(250);
+  const stillMenu = await cdp.eval("window.__probe.menu()");
+  check("正控：同一时刻带本地路径的行照旧弹两条（证明上一条是守卫在起作用，不是右键坏了）",
+    stillMenu.present === true && stillMenu.items.length === 2,
+    "2 条", JSON.stringify(stillMenu.items));
+  await cdp.key("Escape", "Escape", "", 27);
+  await sleep(150);
+  await cdp.eval("window.__gf.restoreList && window.__gf.restoreList()");
+
   await open(false);
   s = await info();
   check("关掉面板：事件订阅成对摘除（subs === unsub）",
