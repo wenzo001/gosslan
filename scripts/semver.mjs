@@ -238,6 +238,27 @@ export function collectCommits(since) {
     });
 }
 
+/**
+ * `CHANGELOG.md` 里的版本小节（新在前），只取格式合规的标题行。
+ *
+ * 单独抽出来给下面那条 tag 时刻的提示用：`changelogProblems` 内部也会扫同一批行，但它只返回
+ * "结构对不对"，拿不到"有哪些版本节"。
+ */
+export function changelogVersions(path = "CHANGELOG.md") {
+  let text;
+  try {
+    text = readFileSync(path, "utf8");
+  } catch {
+    return [];
+  }
+  const out = [];
+  text.split("\n").forEach((line, i) => {
+    const m = line.match(/^## \[(\d+\.\d+\.\d+)\] - \d{4}-\d{2}-\d{2}$/);
+    if (m) out.push({ v: m[1], no: i + 1 });
+  });
+  return out;
+}
+
 function latestTag() {
   try {
     return git(["describe", "--tags", "--abbrev=0"]).trim();
@@ -682,6 +703,43 @@ function main() {
   }
   // ③ CHANGELOG 结构（锚点存在 + 标题格式 + 新在前的降序）。
   problems.push(...changelogProblems(), ...changelogAttributionProblems());
+  // ④ 站在 tag 上的那一刻：**上一版小节有没有 tag**？
+  // 应用内「更新说明」只取被发布那一版的小节（`updater-manifest.mjs::notesForVersion`）⇒
+  // 中间那些节若从没打过 tag，它们的内容永远不会出现在更新说明里。
+  // 2026-11-01 的 v5.16.6 就是这样：5.16.0（三处右键菜单）～ 5.16.5 各自一节却都没 tag，
+  // 发布出来的 notes 只有 568 字符的探针/文档内容（GitHub Release 正文后来人工补齐）。
+  // 只提示、不判红：更老的无 tag 节属历史（4.30 那种），这里只看紧挨着的上一节。
+  let atHead = [];
+  try {
+    atHead = git(["tag", "--points-at", "HEAD"])
+      .trim()
+      .split("\n")
+      .filter((t) => /^v\d+\.\d+\.\d+$/.test(t));
+  } catch {
+    atHead = [];
+  }
+  if (atHead.length) {
+    const versions = changelogVersions();
+    const tagged = new Set(atHead.map((t) => t.slice(1)));
+    const idx = versions.findIndex((x) => tagged.has(x.v));
+    // 从被发版本往下数，直到遇到一个**有自己的 tag** 的节为止 —— 中间这些节的内容都不会进更新说明。
+    const skipped = [];
+    if (idx >= 0) {
+      for (let i = idx + 1; i < versions.length; i += 1) {
+        if (git(["tag", "--list", `v${versions[i].v}`]).trim()) break;
+        skipped.push(versions[i].v);
+      }
+    }
+    if (skipped.length) {
+      console.log(
+        `· 提示：本次发布的应用内更新说明只覆盖 [${versions[idx].v}]；下面这些小节没有自己的 tag、` +
+          `不会出现在更新说明里：${skipped.join(" / ")}。` +
+          `成因是结构性的：` +
+          `门禁要求每批未推送提交都提一档，而 notes 只取被发布那一版 ⇒ 连续小批发布必然堆积。` +
+          `可选做法：① 把用户可见的改动写进即将发布的那一节；② 发完用 \`gh release edit <tag> --notes-file\` 补正文（页面上看得到，应用内看不到）。`,
+      );
+    }
+  }
   if (problems.length) {
     console.error(`版本号规则检查未通过（自 ${since || "首个提交"}）：\n- ${problems.join("\n- ")}`);
     process.exit(1);
