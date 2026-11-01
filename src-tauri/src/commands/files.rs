@@ -546,6 +546,28 @@ pub async fn flush_pending_files(state: &Arc<AppState>, peer_id: &str) {
                 );
                 continue;
             }
+            // ★ 1:1 在途闸门（判据⑩ 的主修）：outbox 补发与 ContentRequest 回发是**两个家**，
+            // 原先各有一套按 peer 的闸、彼此看不见 ⇒ 同一个 `(transfer_id, peer)` 可以同时跑两个
+            // 发送任务（实测同一秒两条 `offer-sending`），第二个的取消槽位登记把第一个的 Sender
+            // 顶掉 ⇒ 假"用户取消" ⇒ 墓碑把真成功那一份的 `done` 静默挡死。
+            // 键与取消槽位同一个格式（`file_peer_key`）⇒ 同一单同一收件人只许一个发送任务。
+            //
+            // 抢不到 = **本轮跳过**，且必须排在 `mark_file_outbox_sending` **之前**：那一步会
+            // attempts +1，把"别人正在发这一单"计成一次失败重试 ⇒ 五次之后永久 failed，
+            // 而"跳过本轮、下次建链再捞"这条承诺就成了空话（同 `refuse_reason_for_best_link`
+            // 那格的规矩：任何不启动投递的出口都不许动 attempts）。
+            let Some(_inflight) = crate::state::FileSendGate::try_acquire(
+                &st.file_send_inflight,
+                file::file_peer_key(&transfer_id, &peer),
+            ) else {
+                st.logger.info(
+                    "file",
+                    format!(
+                        "code=SEND_ALREADY_IN_FLIGHT transfer={transfer_id} peer={peer} —— 该单已有在途发送任务（另一个入口），本轮跳过、队列行保持 pending"
+                    ),
+                );
+                continue;
+            };
             {
                 let dbc = st.db.lock().unwrap_or_else(|e| e.into_inner());
                 // 取消可能发生在 list_pending_file_outbox 之后、这里之前：只有真的
@@ -599,9 +621,16 @@ pub async fn flush_pending_files(state: &Arc<AppState>, peer_id: &str) {
                         // 才退回来；回来时若按 GiveUp 收尾，就把用户刚按下的"已取消"改成了
                         // "失败"并把进度打回 0%（墓碑只挡住台账那一笔，气泡与 emit 不在其内）。
                         file::RetryVerdict::Cancelled => {
+                            // ★ 带上"在哪个观测点看到的取消"（`hash` / `offer-wait` / `chunk` /
+                            // `backpressure` / `done-send` / `ack-wait`）。这六个臂原先共用同一句文案、
+                            // 没有一个打印自己是谁 ⇒ 判据⑩ 那条红只能靠"哪条日志没出现"反推落点。
+                            // 判定与写库一字未动，这里只是把已经带在错误里的信息说出来。
                             st.logger.info(
                                 "file",
-                                format!("[CANCELLED] transfer={transfer_id} 用户取消，本次投递退出且不再重发"),
+                                format!(
+                                    "[CANCELLED] transfer={transfer_id} 用户取消，本次投递退出且不再重发 stage={}",
+                                    e.cancel_stage.unwrap_or("unknown")
+                                ),
                             );
                             let announce = finalize_with_note(
                                 &st,

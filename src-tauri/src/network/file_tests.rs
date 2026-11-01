@@ -3692,3 +3692,237 @@ fn retained_part_path_rejects_unsafe_transfer_ids() {
         );
     }
 }
+
+/// 判据⑩（发送端台账假「已取消」）那一条链的**行为**判据。
+///
+/// 为什么这些格必须存在：这条链此前的全部证据只有"真机/双实例读数"，而它坏的时候
+/// 恰好是**七个臂都能 producing 同一个字符串、没有一个打印自己是谁**、且**登记被顶替只在
+/// 并发那一瞬间发生** ⇒ 光靠 E2E 红一次说不清修没修。这里把三件可判的事钉住：
+/// ① 撞键不许顶替在任者（`install_slot_core`）；② 在途闸门只认一个持有者（`FileSendGate`）；
+/// ③ 终态契约仍然有效、并且**会说出来**（`upsert_transfer` 的档位）。
+#[cfg(test)]
+mod send_inflight_guard_tests {
+    use super::{file_cancel_key, install_slot_core, release_slot_core};
+    use crate::state::FileSendGate;
+    use std::collections::HashMap;
+    use std::sync::{Arc, Mutex};
+
+    type Slots = Mutex<HashMap<String, (tokio::sync::oneshot::Sender<()>, u64)>>;
+
+    fn key(t: &str, r: &str) -> String {
+        file_cancel_key(t, r)
+    }
+
+    /// ★ 判据⑩ 的第一层：同键第二次登记必须**明确失败**，而第一次那条 `Receiver` 必须仍然是
+    /// `Empty`（既没被取消、也没被关闭）。旧行为是"insert 顶掉旧 Sender ⇒ 对方 `Closed` ⇒ 假取消"。
+    #[test]
+    fn duplicate_slot_install_leaves_the_first_receiver_untouched() {
+        let slots: Slots = Mutex::new(HashMap::new());
+        let k = key("t1", "peer-a");
+        let (mut rx1, ticket1) = install_slot_core(&slots, k.clone()).expect("首次登记必须成功");
+        assert!(
+            matches!(
+                install_slot_core(&slots, k.clone()),
+                None
+            ),
+            "同键第二次登记必须失败（AlreadyInFlight），不许静默顶替"
+        );
+        assert_eq!(
+            rx1.try_recv(),
+            Err(tokio::sync::oneshot::error::TryRecvError::Empty),
+            "★ 在任者的 Receiver 不许因为别人来登记而收到任何东西"
+        );
+        // 归还也认序号：拿错 ticket 不许摘走在任者那一格。
+        assert!(
+            !release_slot_core(&slots, &k, ticket1.wrapping_add(7)),
+            "序号不对 = 那一格不是你的，release 必须不动它"
+        );
+        assert!(
+            release_slot_core(&slots, &k, ticket1),
+            "序号对上才摘得掉（守卫的 Drop 走的就是这条）"
+        );
+        assert!(
+            install_slot_core(&slots, k.clone()).is_some(),
+            "摘掉之后同键可以重新登记（真取消之后不留残留）"
+        );
+    }
+
+    /// 正控：证明"旧实现会把在任者判成取消"不是我说故事 —— 同一份表、`insert` 覆盖，
+    /// 第一次那条 `Receiver` 立刻以 `Err(Closed)` 完成，而生产口径把 Closed 当取消。
+    #[test]
+    fn legacy_overwrite_did_close_the_first_receiver() {
+        let mut slots: HashMap<String, (tokio::sync::oneshot::Sender<()>, u64)> = HashMap::new();
+        let k = key("t-old", "peer-a");
+        let (tx1, mut rx1) = tokio::sync::oneshot::channel::<()>();
+        slots.insert(k.clone(), (tx1, 1));
+        // 旧写法：无条件 insert（不检查、不返回 AlreadyInFlight）
+        let (tx2, _rx2) = tokio::sync::oneshot::channel::<()>();
+        slots.insert(k, (tx2, 2));
+        assert_eq!(
+            rx1.try_recv(),
+            Err(tokio::sync::oneshot::error::TryRecvError::Closed),
+            "旧行为必须读成 Closed（这条是上面那条判据的反面对照，别把它当产品语义）"
+        );
+    }
+
+    /// 在途闸门：同键只许一个持有者；不同 transfer / 不同 recipient 互不阻塞；
+    /// 持有者 Drop 之后必须能再抢到（不许泄漏槽位）。
+    #[test]
+    fn file_send_gate_admits_one_holder_per_key_and_frees_it_on_drop() {
+        let set = Arc::new(Mutex::new(std::collections::HashSet::new()));
+        let k = key("t1", "peer-a");
+        let first = FileSendGate::try_acquire(&set, k.clone());
+        assert!(first.is_some(), "首次必须抢到发送权");
+        assert!(
+            FileSendGate::try_acquire(&set, k.clone()).is_none(),
+            "同一 (transfer, recipient) 只许一个在途任务"
+        );
+        // 不同 recipient / 不同 transfer 各算一格（群侧那台的同一条规矩，别顺手扩大键去重范围）
+        assert!(
+            FileSendGate::try_acquire(&set, key("t1", "peer-b")).is_some(),
+            "换收件人不算同键"
+        );
+        assert!(
+            FileSendGate::try_acquire(&set, key("t2", "peer-a")).is_some(),
+            "换 transfer 不算同键"
+        );
+        drop(first);
+        assert!(
+            FileSendGate::try_acquire(&set, k).is_some(),
+            "持有者结束（含 panic 展开 / future 被 drop）后必须能把槽位让给下一轮"
+        );
+    }
+
+    /// 取消这一路本身没有回归：带 stage 的取消仍然判成 `Cancelled`（不落 failed），
+    /// 而 stage 必须跟着错误一路走到日志（`RetryVerdict` 不吃 stage，所以这里查错误本体）。
+    #[test]
+    fn staged_cancel_still_verdicts_cancelled_and_keeps_its_stage() {
+        use super::{send_retry_verdict, RetryVerdict, SendFileError};
+        let e = SendFileError::cancelled_at("offer-wait", "用户取消发送");
+        assert!(e.cancelled, "取消标记不许因为加了 stage 就丢");
+        assert_eq!(e.cancel_stage, Some("offer-wait"), "stage 必须带在错误里");
+        assert_eq!(
+            send_retry_verdict(&e, Some(99)),
+            RetryVerdict::Cancelled,
+            "取消不许被重试上限改写成失败（INV-P26 原样）"
+        );
+        assert!(
+            !e.retryable,
+            "取消不进重试队列：否则一条真取消会被反复补发"
+        );
+    }
+
+    /// 终态契约没有回归 + 挡住时**必须能说出来**（判据⑩ 的锁死层原先是无声的）。
+    #[test]
+    fn tombstone_blocks_a_late_done_and_reports_why() {
+        use crate::db;
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        conn.execute_batch(db::SCHEMA).unwrap();
+        db::upsert_transfer(&conn, "t1", "peer-a", "t1.bin", 10, "send", "active", None, 0.4)
+            .unwrap();
+        // 真取消：落 cancelled + 墓碑（这一格同时是"用户取消仍写 cancelled"的判据）
+        db::finalize_file_failure(&conn, "t1", db::FileJobEnd::Cancelled).unwrap();
+        let (status, tombstone): (String, i64) = conn
+            .query_row(
+                "SELECT status, cancel_terminal FROM file_transfers WHERE id = 't1'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(status, "cancelled", "真取消必须落成 cancelled（不是 failed）");
+        assert_eq!(tombstone, 1, "取消必须写墓碑");
+        // 晚到的成功 attempt：SQL 照旧挡住（不许放宽），但这次**有档位可读**
+        let late = db::upsert_transfer(&conn, "t1", "peer-a", "t1.bin", 10, "send", "done", None, 1.0)
+            .unwrap();
+        assert_eq!(
+            late,
+            db::TransferUpsert::BlockedByTombstone {
+                current: "cancelled".to_string()
+            },
+            "★ 晚到的 done 必须被挡住，且被挡这件事必须是一个可读的档位（旧实现是无声 Ok）"
+        );
+        let refusal = late.refusal().expect("拒绝必须有原因文本");
+        assert!(refusal.contains("cancel_terminal=1"), "原因里要写清是谁挡的：{refusal}");
+        assert!(refusal.contains("current=cancelled"), "原因里要写当前状态：{refusal}");
+        // 幂等重复写不算拒绝（否则每次进度 tick 都会报一条假警告）
+        assert_eq!(
+            db::upsert_transfer(&conn, "t1", "peer-a", "t1.bin", 10, "send", "cancelled", None, 1.0)
+                .unwrap()
+                .refusal(),
+            None,
+            "同一状态重写 = 幂等，不许留 Warn"
+        );
+    }
+
+    /// 接线判据（本仓教训：逻辑判据全绿不等于它被接上了）：
+    /// 钉"两个 1:1 入口都过同一道闸"和"三个登记点都处理了新返回类型"。
+    #[test]
+    fn both_send_entries_go_through_the_one_gate_and_all_install_sites_handle_collision() {
+        let strip = |src: &str| {
+            src.lines()
+                .filter(|l| !l.trim_start().starts_with("//"))
+                .collect::<Vec<_>>()
+                .join("\n")
+        };
+        let read = |rel: &str| {
+            strip(&std::fs::read_to_string(format!(
+                "{}/src/{rel}",
+                env!("CARGO_MANIFEST_DIR")
+            ))
+            .unwrap_or_else(|e| panic!("读不到 {rel}：{e}（搬家了就要同批改这条判据，别让它空转）")))
+        };
+        let cmds = read("commands/files.rs");
+        let share = read("network/transport/handle_share.rs");
+        let send = read("network/file/send.rs");
+        let relay = read("network/file/relay_push.rs");
+        let group = read("commands/group_file_dispatch.rs");
+
+        for (name, src) in [
+            ("flush_pending_files（outbox 补发）", &cmds),
+            ("ContentRequest 回发（含借道中继）", &share),
+        ] {
+            assert_eq!(
+                src.matches("FileSendGate::try_acquire").count(),
+                1,
+                "★ {name} 必须**恰好一次**经过那道闸：0 次 = 没接上（这条链就是判据⑩），\
+                 >1 次 = 同一个入口各算一遍，两处口径迟早说反话"
+            );
+        }
+        // 登记点只有三家（单聊直发 / 中继直发 / 群投递），三家都必须处理 AlreadyInFlight
+        assert_eq!(
+            [send.as_str(), relay.as_str(), group.as_str()]
+                .iter()
+                .map(|s| s.matches("install_cancel_slot(").count())
+                .sum::<usize>(),
+            3,
+            "生产里的登记点应当只有那三家（多了就是有人绕过闸抄了一份）"
+        );
+        for (name, src) in [("send.rs", &send), ("relay_push.rs", &relay), ("群投递", &group)] {
+            assert_eq!(
+                src.matches("CancelSlotInstall::AlreadyInFlight").count(),
+                1,
+                "{name} 必须显式处理撞键（不许退回\"顶掉别人\"那一族）"
+            );
+        }
+        // 六个取消臂各自的阶段名：一个不多一个不少，且不留下任何匿名取消
+        for stage in [
+            "hash", "offer-wait", "chunk", "backpressure", "done-send", "ack-wait",
+        ] {
+            assert_eq!(
+                send.matches(&format!("cancelled_at(\"{stage}\"")).count(),
+                1,
+                "取消臂的阶段名 {stage} 必须恰好出现一次"
+            );
+        }
+        assert_eq!(
+            send.matches("cancelled_at(").count(),
+            6,
+            "取消臂总数必须是 6（分母现数，别手抄）"
+        );
+        assert_eq!(
+            send.matches("SendFileError::cancelled(\"").count(),
+            0,
+            "不许留下没有阶段名的取消臂"
+        );
+    }
+}

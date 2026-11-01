@@ -13,6 +13,46 @@
 
 ## [Unreleased]
 
+## [5.15.94] - 2026-11-01
+
+### 文件传完了却显示「已取消」——发送端台账假取消修掉了（判据⑩ 那条红转绿）
+
+100 MB 那份在接收端**真的收完并落地**，发送端自己的台账却永久停在 `cancelled`。根因两层，都在盘上有读数
+（`docs/notes/send-cancelled-rca-2026-11-01.md` §3、§9）：
+
+1. **假取消怎么来的**：`flush_pending_files`（outbox 补发）与 ContentRequest 服务任务是两个家，
+   各自只有一道**按 peer** 的闸、彼此看不见 ⇒ 同一个 `(transfer_id, peer)` 同一秒跑起两个发送任务
+   （日志里两条 `offer-sending`，`resume_from=0` 与 `262144`）。第二个任务的 `install_cancel_slot`
+   用 `HashMap::insert` **顶掉**第一个任务登记的 `Sender`，而这条链的口径是"oneshot 通道关闭 = 用户取消"
+   （`cancel_requested` 判 `Err(Closed)` 为真）⇒ **没人点过取消，任务却带着"用户取消发送"退出**。
+   守卫原先还按 key 无条件 `remove` ⇒ 先收尾的那个会拆掉别人正在用的取消信道。
+2. **为什么不可逆**：那次取消走 `finalize_file_failure` ⇒ 同一事务写 `cancelled` **并立墓碑
+   `cancel_terminal=1`**；6 秒后真正成功那份写 `done`，被 `upsert_transfer` 的
+   `WHERE ... cancel_terminal = 0` 挡住 —— 而它丢弃受影响行数、0 行也返 `Ok`，调用侧只对 `Err` 留痕
+   ⇒ **一次成功的传输被永久记成已取消，且盘上一个字都没说**。
+
+修法三处，都不是"把取消判没了"：① 新增 1:1 **在途闸门** `FileSendGate`，键复用
+`file_peer_key(transfer_id, recipient)`、形状照群侧已有的 `group_file_dispatching`；接在
+`flush_pending_files` 每条 transfer 之前（**排在 `mark_file_outbox_sending` 之前** ⇒ 跳过不消耗重试次数）与
+ContentRequest 服务任务两个分支之前（中继那一支的唯一入口就在同一函数里，一并覆盖）。
+抢不到就是**本轮跳过**，不写成功、不写取消、不写失败。② `install_cancel_slot` 撞键**不再顶替**，
+明确返回 `AlreadyInFlight`，三个生产登记点各自显式处理（1:1 = 可重试；中继 = 新码
+`FILE_SEND_ALREADY_IN_FLIGHT` 且外层不落 failed；群投递 = 与它自己那道闸同口径跳过）。
+③ 诊断补齐：六个取消臂各带阶段名（`hash` / `offer-wait` / `chunk` / `backpressure` / `done-send` /
+`ack-wait`）并进 `[CANCELLED]` 那行；`upsert_transfer` 检查受影响行数、返回五档
+（`Applied` / `Idempotent` / `BlockedByDone` / `BlockedByTombstone` / `Refused`），
+期望推进 `done` 却被挡时落一条 `code=TERMINAL_WRITE_REFUSED ... want=done current=cancelled` 的 **Warn**。
+
+**没动的东西**（都是会掩盖问题的路子）：`cancel_terminal = 0` 与 `set_message_status` 的终态名单一字未改
+（INV-P26 / P7 的正面）、判据⑩ 的期望值未改、等待时间未放宽、前端文案未改、`FileCancel` 协议语义未改、
+无新表/新列/迁移、`file_sending` 的按 peer 并发策略未动、群侧那套未重构。
+
+新增判据册 `network::file::send_inflight_guard_tests` 6 条：撞键不顶替 + 旧行为正控 + 守卫只摘自己那格 +
+闸门"同键一次 / 释放后可复用 / 不跨 transfer 跨 recipient 阻塞" + 真取消仍落 `cancelled` 且墓碑仍挡晚到
+`done` + 两个入口都过同一道闸的接线判据。四条变异（顶替回来 / 闸门见键就放行 / 0 行也算成功 /
+删掉一处过闸）各红在该红的那一条，还原后 6/6 绿、`grep -rn "MUTATION-" src/` 零命中。
+
+
 ## [5.15.93] - 2026-11-01
 
 ### 清好友申请不再按 LIKE 误删形近键（`1fdc8ef6` 的版本声明补记）
@@ -89,7 +129,7 @@ SQL 的 `LIKE` 把前缀里的 `_` 当**单字符通配符** ⇒ `clear_friend_r
   `cancelled`；随后墓碑 `cancel_terminal=1` 把真正成功那条写回的 `done` **静默**挡住
   （`upsert_transfer` 命中 0 行仍返 `Ok`）⇒ 成功传输被永久记成已取消。
   ★ 顺带更正我自己上一轮报的分母：`SendFileError::cancelled("用户取消发送")` 在 `send.rs` 里**现数是 6 处，不是 4 处**。
-  本轮**未改任何代码**（指令明令先只做根因分析）；排除清单（链路断开 / 超时 / 线程池中断 / 对端不回 ack /
+  本轮**未改任何代码**（指令明令先只做根因分析）—— 同日已按《正式修复任务》实施，实现与判据见上面那节；排除清单（链路断开 / 超时 / 线程池中断 / 对端不回 ack /
   启动清扫 / 删好友连带取消 / 判据取样太早）逐条附依据，方案主修 = 给 1:1 补一条按 `(transfer_id, recipient)`
   去重的在途闸（照抄群侧已有的 `group_file_dispatching` 形状），DB / 协议 / 前端零改动。
 - **A4 申请方待发申请（`pending_out_requests`）单列成待拍板项**，写在审计册 §4.0bk 末段：

@@ -498,6 +498,11 @@ pub(crate) const FAIL_CODE_FILE_SEND_RELAY_TIMEOUT: &str = "FILE_SEND_RELAY_TIME
 
 /// 共享目录**直发**失败（`send_file_from_path` 的 `SendFileError.message` 是散文，
 /// 这里只给一个码、原文进日志）。取消另有 `FILE_SEND_CANCELLED`，不走这一格。
+/// 「同一单同一收件人已经有一个发送任务在途」—— 判据⑩ 那条假「已取消」的**正面**出口：
+/// 抢闸失败/撞键既不是取消、也不是失败，而是"本轮跳过"。中继那条路径的返回值会被
+/// `handle_share` 原样当 reason 上屏 ⇒ 它必须是一个码（同 5.15.38 的口径），
+/// 而调用侧按这个码决定**不**落任何终态。
+pub(crate) const FAIL_CODE_FILE_SEND_ALREADY_IN_FLIGHT: &str = "FILE_SEND_ALREADY_IN_FLIGHT";
 pub(crate) const FAIL_CODE_FILE_SEND_SHARE_FAILED: &str = "FILE_SEND_SHARE_FAILED";
 
 /// 推分片时本机读不出源文件（open / seek / read_exact 三处）。

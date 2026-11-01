@@ -1,8 +1,8 @@
 # 发送端台账假「已取消」根因分析（判据⑩ A=cancelled，正式修复任务的立案材料）
 
-日期：2026-11-01 ｜ 档位：L2 `[plan]` + `Version-Bump: patch`（真正动手时）
-状态：**本轮只做根因分析，代码一字未改**（用户 2026-11-01 指令第 4 条：不接受现状、先查根因、
-提交根因证据 + 最小修复方案 + 影响范围；**不得通过调整测试、隐藏错误或修改展示来掩盖问题**）。
+日期：2026-11-01（取证）｜ 同日按《发送端台账假「已取消」正式修复任务》实施修复，见 §9
+执行级别：L2 `[plan]` + `Version-Bump: patch`
+状态：**根因已取证，且已实施**（判据⑩ 修复前后的 E2E 读数在 §9 / §10）。
 
 ---
 
@@ -222,6 +222,86 @@
 
 ## 8. 与本轮已批准修复的关系
 
-本轮已批准的接收方恢复修复（`friend_req:` 键的 LIKE 误删）**与本条无关**，两者不共用键、不共用状态表；
-本条只立案、不改码。A4 申请方待发申请（`pending_out_requests` 内存态）也**不是**本条 ——
+本轮已批准的接收方恢复修复（`friend_req:` 键的 LIKE 误删）**与本条无关**，两者不共用键、不共用状态表。
+A4 申请方待发申请（`pending_out_requests` 内存态）也**不是**本条 ——
 那条在 `docs/notes/full-repo-audit-2026-10-29.md` §4.0bk 末段单独列了产品行为与实现影响，等用户拍板。
+
+---
+
+## 9. 实施记录（同日，按正式修复任务指令）
+
+### 9.1 三项实施前核对的结论（都读过实现，不是推断）
+
+**① `install_cancel_slot` 撞键时各调用方怎么处理？** 生产调用点现数 **3 处**，改前**三处都是"无条件登记"**，
+谁都不知道撞了键 —— 撞键的后果由被顶掉那一方在下一次 `select!` / `cancel_requested` 处**以"用户取消"的形态**浮现，
+所以旧代码里 `AlreadyInFlight` 与 `UserCancelled` **不是两个值，而是同一个值**（这正是缺陷本身）。
+三家各自的位置与改后口径：
+
+| 登记点 | 所属投递路径 | 改前 | 改后（`CancelSlotInstall::AlreadyInFlight` 那一支） |
+|---|---|---|---|
+| `network/file/send.rs` 的 `send_file_from_path_at` | 1:1 直发（outbox 补发与 ContentRequest 回发共用这一个家） | 顶替在任者 | `SendFileError::retryable(...)` + `code=SEND_ALREADY_IN_FLIGHT` ⇒ 队列行保持 pending、attempts 不消耗，**不落 cancelled/failed** |
+| `network/file/relay_push.rs` 的 `relay_push_file` | 借一跳中继推共享目录文件 | 顶替在任者 | 发新码 `FAIL_CODE_FILE_SEND_ALREADY_IN_FLIGHT`；外层 `send_file_via_relay` 认这个码 ⇒ **跳过 `mark_transfer_failed_if_active`**；`handle_share` 也认它 ⇒ 不发 `file-failed` |
+| `commands/group_file_dispatch.rs` 的 `dispatch_group_file_to_peer` | 群投递（每成员一任务） | 顶替在任者（就是当年"N 个成员只有最后一个发得完"那条） | 与它上面那道 `GroupFileDispatchGuard` **同一口径**：本轮跳过、`Ok(())` 返回 |
+
+⚠️ 刻意**没有**改 `cancel_requested` 里"`Err(Closed)` 算取消"那条口径 —— 它还管着"外层 deadline 丢掉内层 future ⇒
+登记随守卫展开被摘 ⇒ 那个任务自己也已经不在"这段生命周期。把它整体翻成"非取消"会造出另一种错：**真取消被漏掉**。
+要修的是不该发生的顶替（上面三行），不是取消的判定。
+
+**② `relay_push.rs` 会不会与其它入口对同一 `(transfer, recipient)` 并发？** 会 —— 已接入统一闸门。调用链证据：
+`send_file_via_relay` 全仓**只有一个调用点**（`transport/handle_share.rs` 里 ContentRequest 服务任务那一支，
+`has_link` 为假时走它），而同一支的另一半（`has_link` 为真）与 `from_seq/from_bytes` 那一支都调
+`send_file_from_path*`；outbox 补发那条（`commands::flush_pending_files`）调的也是同一个函数。
+⇒ 中继与直发不会同时跑**同一个 job**（一个 job 只走一个分支），但**同一 `(transfer_id, peer)` 可以被
+两个不同的 job 分别走"中继"与"直发"**（链路状态在两次 `has_link` 之间翻转），也可以与 outbox 补发并发。
+所以闸门接在**任务入口**（`handle_share` 的 `async move` 开头，两个分支之前）而不是接在 `relay_push` 内部 ——
+一处覆盖三条出口，中继那一支不需要自己再抢一次（它已经在闸后面了）。
+
+**③ RAII 守卫释放时有没有所有权校验？** 改前**没有**：`CancelSlotGuard::drop` 是无条件 `remove(&key)` ⇒
+先收尾的那个任务会把**别人**那一格摘掉（真取消之后同键可以重新登记，于是"上一个人的 Drop"拆掉"下一个人的取消信道"）。
+改后登记表值变成 `(Sender, 登记序号)`，守卫带着自己那份序号，Drop 时**序号对不上就不动**
+（核心抽成 `install_slot_core` / `release_slot_core` 两个只吃那张表的函数 ⇒ 这三格都有单测直接驱动生产码，
+不必造整台 `AppState`）。`PeerSendGuard` 与群侧 `GroupFileDispatchGuard` 的所有权是**由抢占结果决定**的
+（`HashSet::insert` 返 `false` 就构造不出守卫），所以它们本来就只可能释放自己取得的资源 —— 新 `FileSendGate` 沿用同一形状。
+
+### 9.2 实际改动清单（文件 → 目的）
+
+| 文件 | 这一批改了什么、为什么 |
+|---|---|
+| `src-tauri/src/state.rs` | 新增 1:1 在途闸门 `file_send_inflight` + `FileSendGate`（RAII，键 `file_peer_key`）；`file_send_cancels` 的值改成 `(Sender, 序号)`。⚠️ 这份集合**故意不进"清除数据"那趟**：集合里每个键都代表一个仍在跑的任务，清了它等于允许并发，而那个任务结束时还会去 `remove` 一个不属于它的键 |
+| `src-tauri/src/network/file.rs` | `install_cancel_slot` 撞键返回 `CancelSlotInstall::AlreadyInFlight`（不顶替）；登记/归还拆成 `install_slot_core` / `release_slot_core`（可单测）；守卫 Drop 加序号校验；`SendFileError` 新增 `cancel_stage` + `cancelled_at`；新失败码 |
+| `src-tauri/src/network/file/send.rs` | 登记点按新返回类型分流（撞键 = 可重试，**不是**取消）；六个取消臂各带阶段名；`send_finalize_rows` 读 `upsert_transfer` 的档位，被终态契约挡住时产 `code=TERMINAL_WRITE_REFUSED`，`finalize_send_accepted` 按这一码走 **Warn**（真 SQL 错仍是 Error） |
+| `src-tauri/src/commands/files.rs` | `flush_pending_files` 每条 transfer 之前抢闸门（**排在 `mark_file_outbox_sending` 之前** ⇒ 跳过不消耗 attempts）；`[CANCELLED]` 那行日志带上 `stage=` |
+| `src-tauri/src/network/transport/handle_share.rs` | 服务任务开头抢同一道闸（两个分支之前）；`已在途` 这一码不发 `file-failed`、不算取消也不算失败 |
+| `src-tauri/src/network/file/relay_push.rs` | 撞键发新码；外层包装认码 ⇒ 不落 failed |
+| `src-tauri/src/commands/group_file_dispatch.rs` | 撞键与它上面那道群闸同口径（跳过 + `Ok(())`） |
+| `src-tauri/src/db/file_transfer.rs` | `upsert_transfer` 检查受影响行数，返回 `TransferUpsert` 五档（`Applied` / `Idempotent` / `BlockedByDone` / `BlockedByTombstone` / `Refused`）+ `refusal()`。SQL 的 `cancel_terminal = 0` **一字未动** |
+| `src-tauri/src/network/file/receive.rs` | 只改一处 `Ok(())` → `Ok(_)`（签名变化的编译后果），接收侧判定一字未动 |
+| `src-tauri/src/logging.rs` | 新失败码 `FILE_SEND_ALREADY_IN_FLIGHT` |
+| `src-tauri/src/network/file_tests.rs` | 新判据册 `send_inflight_guard_tests`（6 条，对应任务书五、1/2/3/4/5/6/7/8/9 格） |
+| `src-tauri/test-baseline.macos.txt` / `.windows.txt` | 各 +6 行（`--update` → `--sync-baselines` → 再 check 退 0） |
+
+### 9.3 判据⑩ 修复前的读数（本机现跑，作为对照基线）
+
+```
+$ HOME=/tmp/sk-before node scripts/e2e-multi-instance.mjs --fault=sender-kill-mid
+  ❌ 重启后的终局只有一个：两侧 done 且队列清零（不许停在中间态，也不许弃单）
+      预期 B=done A=done outbox=0 / 实际 B=done A=cancelled outbox=0
+      30.9s · 8 断言 · FAIL
+退出码 1 ｜ 产物 test-results/run-2026-11-01T01-31-52-419Z
+```
+
+同一份 A 侧日志里那三行指纹（与 §3 那七次逐字同形）：同秒两条 `offer-sending`（`resume_from=0` 与 `262144`）
+→ `[CANCELLED] transfer=… 用户取消，本次投递退出且不再重发` → 6 秒后 `[FILE] COMPLETED ok=true`。
+
+### 9.4 四条变异反证（每条只改一处，红的是**该红的那一条**）
+
+| 变异 | 注入点 | 结果 |
+|---|---|---|
+| A | `install_slot_core` 退回"无条件 insert 顶替在任者" | `duplicate_slot_install_leaves_the_first_receiver_untouched` **FAILED**，其余 5 条 ok，退 101 |
+| B | `FileSendGate::try_acquire` 无视抢占结果、见键也放行 | `file_send_gate_admits_one_holder_per_key_and_frees_it_on_drop` **FAILED**，退 101 |
+| C | `upsert_transfer` 退回"0 行也算 Applied" | `tombstone_blocks_a_late_done_and_reports_why` **FAILED**，退 101 |
+| D | 删掉 `handle_share` 那道闸的调用（模拟"以后有人抄一份没过闸"） | 接线判据 **FAILED**，报错原文点名"ContentRequest 回发…必须恰好一次经过那道闸：0 次 = 没接上"，退 101 |
+
+四处变异全部还原后：`cargo test --lib --features bluetooth -- send_inflight_guard_tests` → **6 passed / 0 failed，退 0**；
+`grep -rn "MUTATION-" src/` → 零命中；`cargo fmt --check --all` → 退 0。
+

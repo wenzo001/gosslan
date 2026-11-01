@@ -13,7 +13,7 @@ pub fn upsert_transfer(
     status: &str,
     path: Option<&str>,
     progress: f64,
-) -> Result<()> {
+) -> Result<TransferUpsert> {
     // ⚠️ path 用 COALESCE：进度节流的 upsert 一律传 path=None，没有 COALESCE 时
     // 第一次进度 tick 就把建行时写入的本地路径擦成 NULL。前端把 `file_transfers.path`
     // 当作 content 缺 path 时的唯一兜底来源（useMessageFile），群图片预览失效的机制
@@ -33,7 +33,7 @@ pub fn upsert_transfer(
     //   `cancel_terminal=1` 是**唯一例外**：只有用户/对端主动取消会置位；它必须挡住
     //   后续 active/done 的晚到写，否则取消只是界面状态。自动 failed（超时/放弃）
     //   不置位，仍可续传。
-    conn.execute(
+    let rows = conn.execute(
         "INSERT INTO file_transfers(id, peer_id, name, size, direction, status, path, progress, created_at)
          VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
          ON CONFLICT(id) DO UPDATE SET status = excluded.status,
@@ -43,7 +43,72 @@ pub fn upsert_transfer(
          WHERE file_transfers.status <> 'done' AND file_transfers.cancel_terminal = 0",
         params![id, peer_id, name, size as i64, direction, status, path, progress, now_ms()],
     )?;
-    Ok(())
+    if rows > 0 {
+        return Ok(TransferUpsert::Applied);
+    }
+    // ★ 0 行 = `WHERE` 挡住了（或这一行根本不存在）。**不能**当成"写成功了"：
+    // 判据⑩ 那次真成功的 `done` 就是撞在 `cancel_terminal = 1` 上、被 `Ok(())` 吞掉，
+    // 于是"文件躺在下载目录里能打开、台账说已取消"这条矛盾在盘上一个字都没留。
+    // 这里只读回那一格把"谁挡的"说清楚 —— 不改写、不放宽上面那条 WHERE。
+    let current: Option<(String, i64)> = conn
+        .query_row(
+            "SELECT status, cancel_terminal FROM file_transfers WHERE id = ?1",
+            params![id],
+            |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?)),
+        )
+        .optional()?;
+    Ok(match current {
+        None => TransferUpsert::Refused {
+            current: "无行".to_string(),
+        },
+        Some((cur, _)) if cur == status => TransferUpsert::Idempotent,
+        Some((cur, _)) if cur == "done" => TransferUpsert::BlockedByDone,
+        Some((cur, tombstone)) if tombstone != 0 => TransferUpsert::BlockedByTombstone {
+            current: cur,
+        },
+        Some((cur, _)) => TransferUpsert::Refused { current: cur },
+    })
+}
+
+/// [`upsert_transfer`] 的落点。
+///
+/// ★ 为什么必须把"没写成"说清楚（判据⑩ 的锁死层）：本函数原先丢弃 `conn.execute` 的
+/// 受影响行数、`Ok(())` 照返，而调用侧只对 `Err` 留痕 ⇒ **被终态契约挡住 = 0 行 = 无声**。
+/// 真机读数就是那次"文件传完了、台账永久停在 `cancelled`"：成功那一份写的 `done` 撞在
+/// `cancel_terminal = 1` 上，盘上没有任何一行说明它被撞过。
+/// 五档各有含义，不许压成两档：**幂等**是正常重复写；**BlockedByDone / BlockedByTombstone**
+/// 是终态契约在起作用（INV-P26 与 P7，刻意**不**放宽）；只有期望推进却被挡才需要调用方留 Warn。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TransferUpsert {
+    /// 写进去了（建行或改行，受影响行数 > 0）。
+    Applied,
+    /// 这一行已经是我们要写的那个状态 ⇒ 幂等，无需留痕。
+    Idempotent,
+    /// 行已 `done`，被 P7 的终态契约挡住（`status <> 'done'`）。
+    BlockedByDone,
+    /// 用户/对端主动取消的墓碑挡住（`cancel_terminal = 1`）—— **该挡**，
+    /// 但期望推进终态时撞上它，就说明"台账与真实结局分歧"，调用方必须留痕。
+    BlockedByTombstone { current: String },
+    /// 0 行且上面几档都对不上（含读不到行）：契约之外的拒绝，必须说出来。
+    Refused { current: String },
+}
+
+impl TransferUpsert {
+    /// 被挡住时的原因描述；正常写入与幂等返回 `None`。给调用方拼 Warn 用。
+    pub fn refusal(&self) -> Option<String> {
+        match self {
+            TransferUpsert::Applied | TransferUpsert::Idempotent => None,
+            TransferUpsert::BlockedByDone => Some(
+                "current=done reason=P7 终态契约（已完成的行不许被晚到写回落）".to_string(),
+            ),
+            TransferUpsert::BlockedByTombstone { current } => Some(format!(
+                "current={current} reason=INV-P26 墓碑 cancel_terminal=1（用户/对端取消不许被晚到 attempt 改写）"
+            )),
+            TransferUpsert::Refused { current } => {
+                Some(format!("current={current} reason=WHERE 挡住但不属于已知两档"))
+            }
+        }
+    }
 }
 
 /// 取单条 transfer 的本地 path（群文件离线投递时校验源文件仍在）。

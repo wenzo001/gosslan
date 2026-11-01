@@ -57,7 +57,25 @@ pub async fn send_file_from_path_at(
     // 整文件 SHA-256 是这条链路上最长的一段静默（600MB 要几十秒到几分钟），槽位若等哈希
     // 结束才登记，这段时间里用户点的"取消"会静默丢掉 —— 界面上的表现就是"按了没反应"，
     // 而哈希跑完照样把整份文件灌上链路。键含收件人：见 `file_cancel_key`。
-    let (mut cancel_rx, _cancel_slot) = install_cancel_slot(state, transfer_id, peer_id);
+    //
+    // ★ 撞键（同键已有一个在途发送任务）**不许**当成取消：原先这里无条件 `insert`，
+    //   会把在任者的 `Sender` 顶掉 ⇒ 对方 `cancel_rx` 以 `Err(Closed)` 完成 ⇒ 被判"用户取消发送"
+    //   ⇒ 落 `cancelled` + 墓碑，而真正成功那一份的 `done` 之后被墓碑静默挡死（判据⑩ 的整条链）。
+    //   现在明确退回**可重试**：outbox 行保持 pending、attempts 不消耗，下一次建链/心跳照旧补发。
+    let (mut cancel_rx, _cancel_slot) = match install_cancel_slot(state, transfer_id, peer_id) {
+        CancelSlotInstall::Installed { rx, _slot } => (rx, _slot),
+        CancelSlotInstall::AlreadyInFlight => {
+            state.logger.warn(
+                "file",
+                format!(
+                    "code=SEND_ALREADY_IN_FLIGHT transfer={transfer_id} peer={peer_id} —— 同一单同一收件人已有在途发送任务，本轮不重发（不记取消、不记失败、不消耗重试）"
+                ),
+            );
+            return Err(SendFileError::retryable(
+                "同一单同一收件人已有在途发送任务，本轮不重发",
+            ));
+        }
+    };
 
     // ---- E2EE：本 transfer 独立的随机文件会话密钥（CSPRNG），仅存内存 ----
     let file_key = crypto::random_key();
@@ -71,7 +89,7 @@ pub async fn send_file_from_path_at(
     // 哈希期间被取消也要当场停：后面每一段（Offer 等待、分片循环、FileDone、ACK 等待）
     // 都各自盯这个槽位，唯独这一段是同步阻塞、盯不到 —— 所以补这一格检查。
     if cancel_requested(&mut cancel_rx) {
-        return Err(SendFileError::cancelled("用户取消发送"));
+        return Err(SendFileError::cancelled_at("hash", "用户取消发送"));
     }
     // 发送行的 sha256 在建记录时是空的（不能让气泡等一次 O(体积) 扫描），这里用真正用于
     // 校验的那份补上 —— 同一值、幂等，重试的后续尝试进来也是 no-op。
@@ -230,7 +248,7 @@ pub async fn send_file_from_path_at(
             let accept = tokio::select! {
                 biased;
                 _ = &mut cancel_rx => {
-                    return Err(SendFileError::cancelled("用户取消发送"));
+                    return Err(SendFileError::cancelled_at("offer-wait", "用户取消发送"));
                 }
                 res = tokio::time::timeout(Duration::from_secs(15), &mut rx) => res,
             };
@@ -499,7 +517,7 @@ async fn stream_file(
         // biased: cancel 优先，避免与文件读公平竞争导致取消延迟。
         let n = tokio::select! {
             biased;
-            _ = &mut *cancel_rx => return Err(SendFileError::cancelled("用户取消发送")),
+            _ = &mut *cancel_rx => return Err(SendFileError::cancelled_at("chunk", "用户取消发送")),
             _ = &mut ack_rx => {
                 // 接收端已对某一片判死并回了否定确认 ⇒ 立刻停手，别再把剩余字节灌进一条
                 // 已经死掉的传输。旧行为：整份发完 → FileDone 无人应答 → 干等一个
@@ -528,7 +546,7 @@ async fn stream_file(
         // 等待期间每 `FILE_STALL_TICK` 醒一次做停滞检查 —— 对端不收时这里就是唯一的观测点。
         tokio::select! {
             biased;
-            _ = &mut *cancel_rx => return Err(SendFileError::cancelled("用户取消发送")),
+            _ = &mut *cancel_rx => return Err(SendFileError::cancelled_at("backpressure", "用户取消发送")),
             r = crate::network::transport::send_on_link_with_tick(
                 &link,
                 &chunk,
@@ -616,7 +634,7 @@ async fn stream_file(
     };
     tokio::select! {
         biased;
-        _ = &mut *cancel_rx => return Err(SendFileError::cancelled("用户取消发送")),
+        _ = &mut *cancel_rx => return Err(SendFileError::cancelled_at("done-send", "用户取消发送")),
         r = send_on_link(&link, &done) => {
             r.map_err(SendFileError::retryable)?;
         }
@@ -624,7 +642,7 @@ async fn stream_file(
     // wait_complete_ack 也支持 cancel —— ack 窗口最长 ~90s，用户不想等就该立刻释放。
     let completed = tokio::select! {
         biased;
-        _ = &mut *cancel_rx => return Err(SendFileError::cancelled("用户取消发送")),
+        _ = &mut *cancel_rx => return Err(SendFileError::cancelled_at("ack-wait", "用户取消发送")),
         done = wait_complete_ack(state, transfer_id, peer_id, ack_rx) => done,
     };
     // 进展记录与完成登记都由各自的守卫在离开作用域时回收（成功与所有失败路径同一处）。
@@ -657,7 +675,11 @@ pub(crate) fn send_finalize_rows(
 ) -> Vec<String> {
     let dbc = db_lock.lock().unwrap_or_else(|e| e.into_inner());
     let mut notes: Vec<String> = Vec::new();
-    if let Err(e) = db::upsert_transfer(
+    // ★ 这里的 match 是判据⑩ 的"可见性"那一半：`upsert_transfer` 原先把 0 行更新也返 `Ok`，
+    // 而调用侧只对 `Err` 留痕 ⇒ 真成功那一份的 `done` 撞在墓碑上时**一个字都没说**，
+    // 现场只剩"文件能打开、台账说已取消"这对自相矛盾。现在拒绝必须点名（Warn，不是 Error：
+    // 契约本身是对的，问题在**不该出现的取消**，那由在途闸与撞键修复负责）。
+    match db::upsert_transfer(
         &dbc,
         transfer_id,
         peer_id,
@@ -668,12 +690,21 @@ pub(crate) fn send_finalize_rows(
         None,
         1.0,
     ) {
-        notes.push(terminal_ledger_failure_note(
-            LEDGER_STAGE_SEND_TRANSFER_DONE,
-            transfer_id,
-            &e,
-            None,
-        ));
+        Ok(up) => {
+            if let Some(reason) = up.refusal() {
+                notes.push(format!(
+                    "code=TERMINAL_WRITE_REFUSED stage={LEDGER_STAGE_SEND_TRANSFER_DONE} transfer={transfer_id} want=done {reason}"
+                ));
+            }
+        }
+        Err(e) => {
+            notes.push(terminal_ledger_failure_note(
+                LEDGER_STAGE_SEND_TRANSFER_DONE,
+                transfer_id,
+                &e,
+                None,
+            ));
+        }
     }
     // 接收方已确认完成，此时推进 delivered 才是真实的。
     if let Err(e) = db::set_message_status(&dbc, msg_id, "delivered") {
@@ -724,7 +755,14 @@ fn finalize_send_accepted(
     );
     // 上面那个函数已经在返回时释放 db 锁 ⇒ 落盘不加长持锁区间。
     for note in notes {
-        state.logger.error("file", note);
+        // ★ 级别不混：`TERMINAL_WRITE_REFUSED` 是"终态契约按设计挡住了一次晚到写"，
+        // 说它是 Error 会把契约写成故障（下一次就有人来放宽它）；说别的故障是 Warn 会把
+        // 真问题降成噪音。两类都必须出声 —— 判据⑩ 那次红就是因为这一族**一个字都没说**。
+        if note.contains("code=TERMINAL_WRITE_REFUSED") {
+            state.logger.warn("file", note);
+        } else {
+            state.logger.error("file", note);
+        }
     }
     // 任何成功收尾都必须清掉队列行：AlreadyHave 快路、重启后续传、内容拉取等路径
     // 都可能绕过 `flush_pending_files` 的 Ok 分支（2026-10-19 sender-kill E2E 实测：

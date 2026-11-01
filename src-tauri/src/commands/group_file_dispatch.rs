@@ -96,7 +96,23 @@ async fn dispatch_group_file_to_peer(
     // （group_announcements.rs 的 fan-out 循环）。只按 transfer_id 登记时，后注册的任务会
     // 把前一个的 Sender 挤掉 ⇒ 前者的 cancel_rx 以 Err(RecvError) 完成 ⇒ 被取消分支当成
     // 「用户取消发送」，N 个成员里只有最后一个发得完（真机三成员群必现）。
-    let (mut cancel_rx, _cancel_slot) = file::install_cancel_slot(state, transfer_id, recipient);
+    // ★ 撞键不许当取消（判据⑩ 的第二道防线）：上面那道 `GroupFileDispatchGuard` 已经按
+    //   `(transfer_id, recipient)` 独占过一轮，走到这里还撞键 = 两个投递入口在同一格上重叠。
+    //   与那道闸**同一口径**处理：本轮跳过、`Ok(())` 返回（既不落 cancelled 也不落 failed），
+    //   而不是沿用旧行为"顶掉在任者的 Sender"—— 那正是群侧当年"N 个成员只有最后一个发得完"的机制。
+    let (mut cancel_rx, _cancel_slot) = match file::install_cancel_slot(state, transfer_id, recipient)
+    {
+        file::CancelSlotInstall::Installed { rx, _slot } => (rx, _slot),
+        file::CancelSlotInstall::AlreadyInFlight => {
+            app_handle_log(
+                state,
+                &format!(
+                    "群文件该成员已有在途登记，本轮跳过投递 transfer={transfer_id} recipient={recipient}（不记取消、不记失败）"
+                ),
+            );
+            return Ok(());
+        }
+    };
     // 取消闸门（B2）：这一单**或这一格**已经被用户取消 ⇒ 当场退出。三层各管一段时间，
     // 少一层就会"界面上取消了、链路上照样发完"：
     //  · 离线补发的查询只捞 `pending` ⇒ 管"取消之后对方才上线"；
