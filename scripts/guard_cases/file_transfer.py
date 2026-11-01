@@ -241,8 +241,10 @@ CASES: list[Case] = [
         "「用户取消发送」⇒ N 个成员里只有最后一个发得完（真机三成员群必现，且报错原因是假的）",
         file=TAURI / "src" / "commands" / "group_file_dispatch.rs",
         injections=[(
-            "let (mut cancel_rx, _cancel_slot) = file::install_cancel_slot(state, transfer_id, recipient);",
-            "let (mut cancel_rx, _cancel_slot) = file::install_cancel_slot(state, transfer_id, transfer_id);",
+            # 5.15.94 起这条调用外面包了 `match`（撞键要分出口）⇒ 锚点跟着搬家，
+            # 但注入的语义一格没变：仍是把成键的 recipient 换成 transfer_id。
+            "match file::install_cancel_slot(state, transfer_id, recipient)",
+            "match file::install_cancel_slot(state, transfer_id, transfer_id)",
         )],
         cmd=cargo(
             "test",
@@ -798,18 +800,26 @@ CASES: list[Case] = [
         file=TAURI / "src" / "network" / "file.rs",
         injections=[(
             """    if let Err(reason) = &outcome {
-        let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
-        if let Err(e) = db::mark_transfer_failed_if_active(&dbc, transfer_id) {
-            state.logger.warn(
-                "file",
-                format!(
-                    "中继发送失败后落终态也失败 transfer={transfer_id}: {e}（发送失败原因：{reason}）"
-                ),
-            );
+        if !skipped_in_flight {
+            let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
+            if let Err(e) = db::mark_transfer_failed_if_active(&dbc, transfer_id) {
+                state.logger.warn(
+                    "file",
+                    format!(
+                        "中继发送失败后落终态也失败 transfer={transfer_id}: {e}（发送失败原因：{reason}）"
+                    ),
+                );
+            }
         }
     }
 """,
-            "",
+            # 5.15.94 起外层多了 `skipped_in_flight`（已在途那一次不许写 failed）。锚点跟着
+            # 包住整块，注入仍是删掉落终态那件事本身 ⇒ 用 `let _ =` 把两个绑定继续吃掉，
+            # 否则变异串自己编不过（cargo test 编译失败时 expect_fail_hint 根本不会出现）。
+            """    if let Err(reason) = &outcome {
+        let _ = (reason, skipped_in_flight);
+    }
+""",
         )],
         cmd=cargo("test", "--lib", "relay_send_does_not_claim_unproven_success"),
         cwd=TAURI,

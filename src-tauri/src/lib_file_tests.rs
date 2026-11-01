@@ -960,17 +960,21 @@ fn file_cancel_and_user_cancel_share_one_local_home() {
         );
     }
     // 取消槽位的直接读写也只有一个家（`signal_cancel_slots` / 登记 / 守卫回收三处都在 file.rs）。
-    // 数的是**读写点**而不是名字：needle 带着 `.lock()`，注释里那句"点亮 `file_send_cancels`"
+    // 数的是**读写点**而不是名字：needle 带着字段前的那个点，注释里那句"点亮 `file_send_cancels`"
     // 不会被误数成一次读写（现成的 `code_flat` 只剥空白，够用）。
+    // ⚠️ 5.15.94 起 needle 从 `.file_send_cancels.lock()` 换成 `.file_send_cancels`：登记与回收
+    // 两条改成了把 Mutex 按引用交给 `install_slot_core` / `release_slot_core`（撞键要能在没有
+    // AppState 的单元测试里复现），`.lock()` 因此只剩两个点亮处 = 2 ⇒ 旧 needle 会把"家还是一个"
+    // 读成"家少了两个"。改数**碰字段的位置**后四处仍是四处，且少一处或多一处照样红。
     assert_eq!(
         code_flat(&crate::network::file_src_for_guards())
-            .matches(".file_send_cancels.lock()")
+            .matches(".file_send_cancels")
             .count(),
         4,
         "槽位的登记 / 整单点亮 / 单格点亮（B3b 按成员取消）/ 回收必须在同一个文件里（现算四处）；多出来的那处就是第二个家"
     );
     assert_eq!(
-        code_flat(cmds).matches(".file_send_cancels.lock()").count(),
+        code_flat(cmds).matches(".file_send_cancels").count(),
         0,
         "命令层不许再自己扫这张表：点亮槽位只走 `file::signal_cancel_slots`"
     );
