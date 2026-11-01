@@ -10653,6 +10653,48 @@ async function runCtxMenu(cdp, url) {
       && corner.right <= vp.w && corner.bottom <= vp.h && corner.right < vp.w - 5,
     `四边都在 0..${vp.w}x${vp.h} 且没有顶到右边`,
     JSON.stringify({ before: corner, vp }));
+
+    // ── N6-1（2026-11-01 用户拍板）：代码块气泡右键 →「复制」 ──
+    // 真挂真组件、真派发 contextmenu、真按回车，验证"菜单里的复制发的是既有那个 copy 事件"。
+    await cdp.eval("window.__probe.reset()");
+    await cdp.eval(`window.__probe.installMenu(${JSON.stringify(JSON.stringify({
+      code: "const a = 1;\nconst b = 2;",
+      clamped: false,
+      copied: false,
+      dark: false,
+      mine: false,
+    }))}, ${JSON.stringify(JSON.stringify({
+      path: "/src/components/message/MessageCodeBubble.vue",
+      emits: ["copy", "expand"],
+    }))})`);
+    await sleep(300);
+    const fired = await cdp.eval(`(() => {
+      const host = document.getElementById('probe-host');
+      const el = host && host.firstElementChild;
+      if (!el) return { ok: false };
+      const r = el.getBoundingClientRect();
+      el.dispatchEvent(new MouseEvent('contextmenu', {
+        bubbles: true, cancelable: true,
+        clientX: Math.round(r.left + 20), clientY: Math.round(r.top + 20),
+      }));
+      return { ok: true };
+    })()`);
+    await sleep(250);
+    const cbm = await menu();
+    check("对照：代码块夹具挂得上且右键真的弹出了菜单（挂不上下面两条就是空跑）",
+      fired.ok === true && cbm.present === true, "present=true", JSON.stringify({ fired, cbm }));
+    check("代码块右键菜单只有一条、文案是「复制」",
+      cbm.present === true && cbm.items.length === 1 && /复制/.test(cbm.items[0]),
+      "1 条 + 复制", JSON.stringify(cbm.items));
+    await cdp.eval("window.__probe.reset()");
+    await cdp.key("ArrowDown", "ArrowDown", "", 40);
+    await cdp.key("Enter", "Enter", "\r", 13);
+    await sleep(250);
+    const cbEv = await events();
+    const cbAfter = await menu();
+    check("选中它发的是既有 copy 事件（不是自造动作），且菜单已关",
+      cbEv.some((e) => e[0] === "copy") && cbAfter.present === false,
+      "copy + 菜单消失", JSON.stringify(cbEv));
 }
 
 /**
@@ -10768,6 +10810,7 @@ async function runMenuFit(cdp, url) {
     check("对照可逆：wrapper 换回原样之后整块又回到视口内（对照自己不留残留）",
       restored.present === true && restored.inside === true,
       "inside=true", JSON.stringify(restored));
+
   } finally {
     await cdp.send("Emulation.clearDeviceMetricsOverride").catch(() => {});
   }
