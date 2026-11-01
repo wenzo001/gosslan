@@ -13,6 +13,34 @@
 
 ## [Unreleased]
 
+## [5.16.3] - 2026-11-01
+
+### `tsFnBody` 会把「参数里带内联对象类型」的签名切成类型本身
+
+`insertMentionAtEnd(member: { id: string; name: string })` 的签名里，参数类型也是花括号；
+旧提取器从签名往后找**第一个** `{` 再做配对 ⇒ 取到的是 `{ id: string; name: string }` 那段类型，
+不是函数体。用它写的判据会在这 40 来个字符上判"通过/失败"，而读数看起来像函数体。
+
+现在先按括号配对跨过**参数表**、再找函数体；只有 `{` 之前真的先出现 `(` 时才跨，
+所以 `if !a && !b {` 这类守卫签名行为不变（`longPress` / `messageKinds` / `fileFailReason`
+三个既有调用方共 54 条用例复跑全绿）。
+
+### 「@他」chip 的形状进 CI 层判据
+
+新增一条 `contextMenu.test.ts` 用例：用修好的提取器读 `insertMentionAtEnd` 的本体，断言
+mention-token 类名、`contenteditable="false"`、`data-mention-id`（接收端 `collectMentionIds`
+读的就是它）与尾随 nbsp 四件都在。运行时那一半仍由 `check-ui-runtime.mjs --only=ctxmenu` 判
+（CDP 层，CI 不跑）。
+
+变异自证（每次单点，跑完 `cp` 还原 + `cmp`）：删 `data-mention-id` ⇒ 该条红在 data-mention-id 上；
+尾随 nbsp 换成普通空格 ⇒ 该条红在 nbsp 上。`npm test` **1536 → 1537**，全绿。
+
+### #23 取证单补一条打包命令
+
+Windows 渲染层卡死那一格仍等现场日志。审计册 §4.0bi 现在给了一条 `Compress-Archive` 命令：
+产物落桌面、文件名带时间戳，并写明回传前先扫一眼（日志含设备 id / 对端昵称 / 路径）；
+同时登记「现场只有 HANG 行、没有同窗口 RUNTIME_MEM 行时不算一次读数」的口径。
+
 ## [5.16.2] - 2026-11-01
 
 ### 「@他」的接收端补上运行时判据
