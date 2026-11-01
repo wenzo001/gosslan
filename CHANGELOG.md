@@ -13,6 +13,17 @@
 
 ## [Unreleased]
 
+## [5.15.99] - 2026-11-01
+
+### 群文件失败收尾写台账失败时不再「一声不吭」
+
+盘满探针读到一个新现象：日志说 `GROUP_FILE_RECEIVE_FAILED reason=DISK_FULL`、`.part` 也删了，
+但 `group_file_recipients.status` 仍停在 `sending`。RCA 排掉了"0 行"（多开时 `state.device_id`
+就是 `base-i{n}`，与行里的 `recipient_id` 对得上），只剩"写入报错被 `let _ =` 吞掉"这一种。
+
+本版只做**让它说实话**：那句 `let _ =` 换成 `log_write_failure`（与 B4-F1 棘轮同一口径）。
+下次跑同一条盘满探针就能直接看到真错误码，再决定是修写入还是修行状态机。
+
 ## [5.15.98] - 2026-11-01
 
 ### 盘满的群文件：在**首次建接收器**那一步就判死（5.15.97 改错了地方）
