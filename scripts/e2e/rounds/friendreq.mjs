@@ -8,16 +8,22 @@
 // 这一轮判的是第三轮审计 **A4** 里**能被磁盘上的事实表达**的那一半：
 // 未处理的好友申请落在库里的这一行，跨一次真实启动之后仍然在，而且恢复那一路**不走通知**。
 //
-// ★ 这一轮的预置是「数据库预置恢复测试」，不是「真实好友申请链路测试」—— 两条不同的事，别混：
-//   · 真链路那一半要有一份**从对端进来的 FriendRequest 帧**。它只能由应用自己发
-//     （命令 `send_friend_request` → `send_friend_request_via_link`），而发送侧那本
-//     「待发申请」`AppState::pending_out_requests` 是**进程内 HashMap、不落库**
-//     （handshake.rs:703 起的 flush 只认内存那一格）⇒ 停机写库造不出一份真申请，
-//     进程外拼帧又属于本次明令禁止的"新增自动化注入机制"。
-//     那一半因此落在**真机双实例验收**里（A 点「添加」→ B 点「同意」，见
-//     docs/acceptance/ 与本轮 CHANGELOG 条目里那份操作记录），不在这里。
-//   · 这里判的是恢复臂：`restore_pending_requests`（lib.rs:384 在 app.manage 之后、network::start 之前）
-//     从库里把那行填回内存，而"填回内存"正是"重启不重复弹窗"的机制本身
+// ★ 这一轮的预置是「数据库预置恢复测试」里的**接收侧**那一半，不是「真实好友申请链路测试」，
+//   也不是「申请方那半」——三件事别混：
+//   · **主语是接收方**：`friend_req:<对端 id>` 这一行写在**收到申请的那一台**库里，本轮证的
+//     是"接收方手里那条未处理申请跨重启仍在、且恢复不弹"。
+//     ⚠️ **申请方**那本「已发出、等对方答应的申请」是 `AppState::pending_out_requests`
+//     （`state.rs` 里声明，进程内 HashMap、不落库）⇒ 申请方重启后没有持久化保障，
+//     本轮**不判它**，它也不是同一件事（是否要一起持久化 = 待用户拍板，见验收矩阵与 CHANGELOG）。
+//   · 真链路那一半要有一份**从对端进来的 FriendRequest 帧**，只能由应用自己发
+//     （命令 `send_friend_request` → `send_friend_request_via_link`，补发节奏见
+//     `friend_request_flush_decision`），停机写库造不出真申请帧，而进程外拼帧属于本次
+//     明令禁止的"新增自动化注入机制"。
+//     2026-10-31 深夜那一半已由**双实例真实操作**补上（A 走界面加好友 → B 同意 → A 收到回执并建会话），
+//     读数记在 `docs/acceptance/stability-smoke-matrix.md` 的「好友申请真链路」那一条与
+//     audit 册 §4.0bk / §13 第 7 项；本轮仍然是预置恢复臂，两者不互相顶替。
+//   · 这里判的是恢复臂：`restore_pending_requests`（在 `lib.rs` 的 setup 里、`app.manage` 之后
+//     且联网之前那一步）从库里把那行填回内存，而"填回内存"正是"重启不重复弹窗"的机制本身
 //     （`friend_request_arrival_decision` 判的是"本机是否已经握着这条申请"，内存不预填 ⇒
 //      下一次补发会被当成首次见到 ⇒ 又弹一次）。
 //
@@ -70,11 +76,11 @@ function isFriend(inst, id) {
 }
 
 /// 磁盘日志里那两条 needle —— 两条**都**由 `state.logger.info("friend", …)` 写出去
-/// （logging.rs:1013 `info` → `log(Level::Info…)` → 落盘），所以第 ② 条能在盘上读到，
+/// （`logging.rs` 的 `Logger::info` → `Logger::log(Level::Info…)` → 落盘），所以第 ② 条能在盘上读到，
 /// 就是第 ① 条"0 次"不是量具瞎的直接凭据（A9 那一族教训：判据钉的串在当前构建里根本不落盘 ⇒
 /// 把"读不到"报成"产品失效"）。两条原文：
 ///   · 首次到达（会弹系统通知那一路）：`收到好友申请 peer=<id> nickname=<昵称>`
-///     —— 直连臂 handle_identity.rs:214，跨跳臂那句是「收到跨跳好友申请」，这里两条都数进来。
+///     —— 直连臂在 `handle_identity.rs` 写这条（按串「收到好友申请」现寻），跨跳臂那句是「收到跨跳好友申请」，这里两条都数进来。
 ///   · 只填表那一路：`重启恢复 N 条待处理好友申请（只填表，不重复通知）`
 const ARRIVED_NEEDLES = ["收到好友申请 peer=", "收到跨跳好友申请 peer="];
 const RESTORED_NEEDLE = "条待处理好友申请（只填表，不重复通知）";
@@ -113,9 +119,13 @@ export async function run() {
     // ── 第一次真实启动 ──
     launch(B);
     await boot(B, "首启");
-    // 恢复之后界面首屏必定自己拉一次 get_pending_requests（useChatStore 的 refreshPending）⇒
-    // 这一等是等"读侧也跑过了"，不是等一个可能永远不会来的帧。
-    await sleep(3_000);
+    // ★ 屏障用磁盘上那一条恢复日志本身，不用墙钟。理由：`restore_pending_requests` 跑在
+    //   `app.manage` 之后、联网之前，它那一行出现 = 恢复这一段确实过去了；而原先那句
+    //   `sleep(3000)` 想等的是"界面首屏自己拉了一次 `get_pending_requests`"——**盘上没有任何
+    //   观测点能证明那一次读取发生过**（它既不落日志也不写库），所以本轮不再声称证明过它。
+    //   下面那条"通知 0 次"判的是**恢复这一路**不弹，不是"整个启动过程没有任何通知"。
+    await waitFor(() => restoredCount() >= 1, 30_000,
+      "首启：磁盘日志里出现「重启恢复 … 条待处理好友申请」那一条（量具正控：这条能读到，下面那条 0 次才不是瞎读）");
 
     check("★ 首启跑完之后库里那一行**一字未变**（恢复不删、不改写、不覆盖成别的载荷）",
       readReqRow(B, want(REQUESTER)) === payload,
@@ -128,22 +138,28 @@ export async function run() {
       countReqRows(B) === 1, 1, countReqRows(B));
 
     // ── 第二次真实重启（同一条申请，再来一遍恢复臂）──
-    // ⚠️ 计数按"这一次启动自己那一段窗口"判，不判累计：`launch()` 里那趟 `stashLogs` 会把上一次的
-    //   `.log` **整份移动**进 run 目录（core.mjs:675），第二次起之后 `countLog` 看见的必然是新文件 ⇒
+    // ⚠️ 计数按"这一次启动自己那一段窗口"判，不判累计：`launch()` 里那趟 `stashLogs`（`scripts/e2e-logtail.mjs`）会把上一次的
+    //   `.log` **整份移动**进 run 目录，第二次起之后 `countLog` 看见的必然是新文件 ⇒
     //   写"累计 2 次"会红在量具的搬运语义上，而不是红在产品上。
     await stopOne(B);
     await sleep(1_500);
     launch(B);
     await boot(B, "二次启动");
-    await sleep(3_000);
+    // 同一把屏障（`stashLogs` 已把上一段整份移走 ⇒ 这个计数天然只覆盖本次启动）。
+    await waitFor(() => restoredCount() >= 1, 30_000, "二次启动：本窗口日志里出现「重启恢复 …」那一条");
 
     check("★ 第二次重启后那一行仍在（用户那句「重启不会丢好友申请」判的是跨多次重启，不只是一次）",
       readReqRow(B, want(REQUESTER)) === payload,
       payload, String(readReqRow(B, want(REQUESTER))));
-    check("★ 第二次启动恢复臂又跑了一次（新窗口里那条「重启恢复」各 1 次），而通知那一条仍然 0 次（不重复弹窗）",
-      restoredCount() === 1 && arrivedCount(REQUESTER) === 0,
-      "本窗口恢复 1 次 / 到达 0 次",
-      `恢复 ${restoredCount()} 次 / 到达 ${arrivedCount(REQUESTER)} 次；行样：${linesWith("好友申请 peer=")}`);
+    // ★ 两条可测量各自一条断言 —— 原先写成 `恢复 1 次 && 到达 0 次` 一条，红的时候分不清
+    //   是"恢复臂没跑"（量具瞎）还是"它偷偷弹了"（产品坏），而这两种的处置完全相反。
+    check("★ 第二次启动恢复臂又真跑了一次（本窗口那条「重启恢复」恰好 1 次 —— 不是 0 次也不是 2 次）",
+      restoredCount() === 1, "本窗口 1 次",
+      `${restoredCount()} 次；行样：${linesWith(RESTORED_NEEDLE)}`);
+    check("★ 第二次启动也不走通知那一条：本窗口「…好友申请 peer=」0 次（判的是**恢复臂**不弹；"
+      + "不判「整个启动过程没有任何通知」，也不证明前端那次读取跑过 —— 那一条盘上没有观测点）",
+      arrivedCount(REQUESTER) === 0, "0 次",
+      `${arrivedCount(REQUESTER)} 次；行样：${linesWith("好友申请 peer=")}`);
     check("二次重启后仍只有一行（既不复制也不被读侧清扫）",
       countReqRows(B) === 1, 1, countReqRows(B));
 

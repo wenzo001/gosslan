@@ -25,6 +25,7 @@
 | `docs/architecture/rc-5.0-report.md` | 5.0 发布候选验收报告（问题清单 / 矩阵 / 结论） |
 | `docs/notes/audit-fix-report-2026-10-24.md` | 2026-10-24 审计 18 条缺陷的处置、影响与验证读数（B1–B19） |
 | `docs/notes/full-repo-audit-2026-10-29.md` | 2026-10-29 全仓库深度审计：52 条发现（安全 12 / 功能 6 / 稳定性 8 / 重复 16 / 测试 10）、36 条 INV-P 逐条规范对账、修复顺序建议；证据在 `audit-context/` |
+| `docs/notes/send-cancelled-rca-2026-11-01.md` | 发送端台账假「已取消」根因分析（E2E 判据⑩ `A=cancelled`）：七次同形复现的日志证据链、两个发送家并发 + 取消槽位被顶替的机制、墓碑把真 `done` 静默挡死的锁死层、排除清单、最小修复方案与影响面 —— **只分析，未改码** |
 | `docs/templates/` | `BUG_FIX.md` / `ADR.md` |
 
 ## 历史档案（不要通读）

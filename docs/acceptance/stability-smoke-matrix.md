@@ -113,7 +113,7 @@
   复跑 `node scripts/check-test-manifest.mjs --only rust` 数这一族的用例名（本轮新增三条，见
   `docs/notes/group-history-sync-2026-10-16.md` §六·补）
 
-- 好友申请轮 27 条断言 —— 反向：`--round=friendreq-lie`（第三轮审计 A4 里**能被磁盘上的事实表达**的那一半，
+- 好友申请轮 28 条断言 —— 反向：`--round=friendreq-lie`（第三轮审计 A4 里**能被磁盘上的事实表达**的那一半，
   2026-10-31 新增）。形状：停机往 B 的 `settings` 写一行 `friend_req:<本轮铸的一个陌生 id>` = 那条申请的 JSON
   （`note` 与 `put_friend_request` 写的同一份形状），**只起 B 一台**，跑两次真实启动
   （`launch → 读 → stopOne → 再 launch → 再读`）。判三件事：那一行跨两次启动**逐字不变**（恢复不删、不改写、
@@ -137,7 +137,7 @@
   A：通讯录空态「添加好友」→ 模态自己扫到 B 那一行 → 按行内「加好友」（AX `hitCount=1 presses=1`）。
   B：`17:47:02 info [friend] 收到跨跳好友申请 peer=gosslan-a4946d607ad3c-i97 nickname=Eager Gecko OYV`，
   并把这一条落进 `settings.friend_req:…-i97` ⇒ **这一行是真帧写的，不是手写的**。徽标 `通讯录，1 条好友申请`（派生量）。
-  A 每 30 s 补发一次，B 打 `重复的好友申请（已忽略通知）` ×2 ⇒ 「重启/重复不重复弹通知」那条闸
+  A 的补发落在 5 s 与 30 s 两档（`friend_request_flush_decision` 那道 `MIN_INTERVAL_MS = 30_000` 下限**只管第二份起**，首一份因为上次补发时刻还是 0 而直接放行），B 打 `重复的好友申请（已忽略通知）` ×2 ⇒ 「重启/重复不重复弹通知」那条闸
   **在真实到达路径上也亮过**，不再只有预置那一臂的读数。
   B 点「同意」（`presses=1`）⇒ B `17:48:07 [FRIEND] 补发好友同意回执 peer=…（第 1 次）`
   ⇒ A `17:48:06 收到跨跳好友同意` + `17:48:08 重复的好友同意（已忽略）`。

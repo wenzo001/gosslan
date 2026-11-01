@@ -186,8 +186,9 @@ use crate::state::PendingRequest;
 /// `db/group_history.rs::group_history_state_key` 那段说明）。这一份状态只有一个需求：
 /// **重启后还要在**。没有查询、没有索引、没有外键 ⇒ 为它开一张表就是给同一个需求开第二个家。
 ///
-/// ⚠️ 前缀里带 `_`，SQL 的 `LIKE` 把它当单字符通配符 —— 因此**读**这一侧必须再用
-/// `strip_prefix` 严格认一次键名（下面的 `list_friend_requests`），只有删除按前缀批量走。
+/// ⚠️ 前缀里带 `_`，SQL 的 `LIKE` 把它当单字符通配符 ⇒ `friend_req:%` **不等于**"这一族的键"。
+/// 所以读侧（`list_friend_requests`）与删侧（`clear_friend_requests`）都必须在 `LIKE` 之后
+/// 再用 `strip_prefix` 严格认一次键名 —— 两边同一把尺子，别各自发明口径。
 pub const FRIEND_REQUEST_KEY_PREFIX: &str = "friend_req:";
 
 pub fn friend_request_key(peer_id: &str) -> String {
@@ -207,13 +208,30 @@ pub fn forget_friend_request(conn: &Connection, peer_id: &str) -> Result<()> {
     delete_setting(conn, &friend_request_key(peer_id))
 }
 
-/// 「清除数据」那一趟把这批申请一起抹掉（前缀批量删，与 `gk:` 那一行同写法）。
-/// 内存那一张在同一处 `clear()` —— 两边不同步的话，下一次开机会把刚清掉的申请原样端回来。
+/// 「清除数据」那一趟把这批申请一起抹掉。内存那一张在同一处 `clear()` ——
+/// 两边不同步的话，下一次开机会把刚清掉的申请原样端回来。
+///
+/// ★ 不拿 `LIKE` 的匹配结果直接删：SQL 的 `LIKE` 把前缀里的 `_` 当**单字符通配符**，
+/// `friend_req:%` 同时命中 `friendXreq:…`（`_` 顶掉下划线）与 `friend_req2:…`
+/// （`_` 顶掉后面的真字符）—— 那些键不属于这一族，一次"清好友申请"不许顺手删掉别人的键。
+/// `LIKE` 在这里只用来缩小候选范围，**真正的归属判定交给 `strip_prefix`**（与
+/// `list_friend_requests` 同一把尺子，读侧与删侧不许各有各的口径）。
 pub fn clear_friend_requests(conn: &Connection) -> Result<()> {
-    conn.execute(
-        "DELETE FROM settings WHERE key LIKE ?",
-        params![format!("{FRIEND_REQUEST_KEY_PREFIX}%")],
-    )?;
+    let keys: Vec<String> = {
+        let mut stmt = conn.prepare("SELECT key FROM settings WHERE key LIKE ?1")?;
+        let rows = stmt.query_map(params![format!("{FRIEND_REQUEST_KEY_PREFIX}%")], |r| {
+            r.get::<_, String>(0)
+        })?;
+        // 读不出键名 = 宁可整趟失败，不许静默跳过：跳过等于"清了但那一行还在"，
+        // 下一次开机会把用户以为删掉的申请原样端回来（假"已清除"比报错贵）。
+        rows.collect::<std::result::Result<Vec<_>, rusqlite::Error>>()?
+    };
+    for key in keys
+        .iter()
+        .filter(|k| k.strip_prefix(FRIEND_REQUEST_KEY_PREFIX).is_some())
+    {
+        delete_setting(conn, key)?;
+    }
     Ok(())
 }
 
@@ -340,6 +358,45 @@ mod friend_request_store_tests {
             })
             .unwrap();
         assert_eq!(left, 3, "解析失败/串了键的行不许被这条路径删掉");
+    }
+
+    /// `_` 在 SQL 的 `LIKE` 里是**单字符通配符** ⇒ `friend_req:%` 会撞上形近但不属于这一族的键。
+    /// 读侧靠 `strip_prefix` 已经挡住了（列表里不许出现它们），但"清除数据"那一趟原先直接按
+    /// `LIKE` 的结果删 ⇒ 一次清申请会顺手把别人的键删掉。这一条同时钉两侧，且**不用 LIKE 计数**
+    /// （测试与生产共用同一个错写法 = 一起瞎）：逐个按键名现读。
+    #[test]
+    fn wildcard_lookalike_keys_are_neither_listed_nor_cleared() {
+        let conn = mem();
+        put_friend_request(&conn, &req("dev-real", "真人", None, 1)).unwrap();
+        // 两种误匹配形状：`_` 顶掉前缀里的下划线 / `_` 顶掉后面的一个真字符
+        set_setting(&conn, "friendXreq:ghost", "不是这一族的键").unwrap();
+        set_setting(&conn, "friend_req2:ghost", "也不是这一族的键").unwrap();
+
+        assert_eq!(
+            list_friend_requests(&conn)
+                .unwrap()
+                .iter()
+                .map(|r| r.from.as_str())
+                .collect::<Vec<_>>(),
+            vec!["dev-real"],
+            "LIKE 通配撞进来的键不许被当成待处理申请列出来"
+        );
+
+        clear_friend_requests(&conn).unwrap();
+        assert!(
+            list_friend_requests(&conn).unwrap().is_empty(),
+            "真属于这一族的必须被清掉（严格化不许把该删的留下）"
+        );
+        assert_eq!(
+            get_setting(&conn, "friendXreq:ghost").as_deref(),
+            Some("不是这一族的键"),
+            "★ 清好友申请不许顺手删掉 LIKE 误匹配的别的键（原先这条是红的）"
+        );
+        assert_eq!(
+            get_setting(&conn, "friend_req2:ghost").as_deref(),
+            Some("也不是这一族的键"),
+            "同理：形近但不带这个前缀的键也不属于这一族"
+        );
     }
 
     /// 「清除数据」那一趟：这批键整批改删，而**别的** settings 键（群密钥那一族）不受牵连。
