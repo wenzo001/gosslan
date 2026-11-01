@@ -3923,3 +3923,40 @@ mod send_inflight_guard_tests {
         );
     }
 }
+
+/// Windows 上「句柄还开着就删」到底会不会失败 —— 这一格此前只有一句注释
+/// （`file/group_receive.rs`：*Windows 上未关句柄时 `remove_file` 会失败*），而**盘满**那条
+/// 路径（`fail_taken_group_receive`）恰恰是拿着 `&FileReceiver`（`file` 字段还是打开的）去删
+/// `.part`，两者说法正好相反，谁对没有机器读数。
+///
+/// Rust std 在 Windows 上默认以 `FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE`
+/// 打开文件（`std::fs::OpenOptions` 的默认 `share_mode`，本机 toolchain 源码里可直接读到）。
+/// 按这个语义 `remove_file` 不该报共享冲突，而是把文件标成 delete-pending：**名字立刻消失**
+/// （重试可以用同一个名字重建），空间等最后一个句柄关闭才归还。
+///
+/// 这条只在 windows 腿上跑（CI 每次 push 都有），钉住两件事：删得掉、名字立刻没了。
+/// 它红了就等于拿到「那句注释是对的」的实测 —— 那时要改的是盘满那条路径，不是这条用例。
+#[cfg(all(test, windows))]
+mod windows_remove_open_file_tests {
+    #[test]
+    fn deleting_an_open_part_file_succeeds_and_frees_the_name() {
+        let dir = std::env::temp_dir().join(format!(
+            "gosslan-open-delete-{}-{}",
+            std::process::id(),
+            crate::db::now_ms()
+        ));
+        std::fs::create_dir_all(&dir).expect("建临时目录");
+        let path = dir.join("x.part");
+        let mut file = std::fs::File::create(&path).expect("建 .part");
+        std::io::Write::write_all(&mut file, b"half").expect("写半截");
+        std::fs::remove_file(&path).expect(
+            "std 默认共享 delete ⇒ 句柄开着也删得掉；这条红了说明注释是对的、盘满那条路径要改",
+        );
+        assert!(
+            !path.exists(),
+            "删完名字必须已经不在 —— 否则下一次重试会用同一个名字再撞上"
+        );
+        drop(file);
+        let _ = std::fs::remove_dir(&dir);
+    }
+}
