@@ -34,6 +34,9 @@
 ⚠️ **端到端读数还没拿到**：本版二进制复跑同一条盘满探针时，`DISK_FULL received=164364288` 正常出现，
 但窗口内没读到收件行终态（`after-B.db` 的群表为空，读数时机/还原去向了不明）⇒
 "台账落在 failed"这一条**只有单元判据**，等下一次探针补读数。
+⚠️ 读数位置也记一笔：本轮摸到的那份 `gosslan-2.db` 在 `run-*/backup-B/` 下，是**用户库的备份**、
+不含这一单；运行中的实例库在**该轮隔离 HOME 的 `Library/Application Support/com.gosslan.app/`** 下，
+下次直接 `find <run> -name 'gosslan-2.db' -not -path '*backup*'` 再读。
 
 ## [5.15.99] - 2026-11-01
 
