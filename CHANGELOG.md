@@ -13,6 +13,28 @@
 
 ## [Unreleased]
 
+## [5.15.95] - 2026-11-01
+
+### 5.15.94 推到 CI 后剩下的三处红：两条 clippy 1.99 新规 + 新码没接前端表
+
+`Verify` 在 `19763b78` 上三腿红（`Rust 单测/清单` mac + win、`前端测试/清单/构建`、`护栏非空转·node+script`），
+逐条取证后是本批改动**自己的**缺口，与上一批无关：
+
+1. **clippy 1.99 的两条新规**（本地 1.98 不报，CI 的 `-D warnings` 当场红；win 那条先卡在
+   `unnecessary_map_or`，`--all-targets` 那条卡在 `redundant_pattern_matching`）：
+   `file.rs` 的 `cancels.get(key).map_or(false, …)` → `is_some_and(…)`；
+   `file_tests.rs` 的 `matches!(install_slot_core(…), None)` → `.is_none()`。语义一字未变。
+2. **新码没接前端表** ⇒ `前后端失败码逐条对账` 红（`FILE_SEND_ALREADY_IN_FLIGHT`）：后端 `logging.rs`
+   已发这个码，`fileFailReason.ts` 的表里却没有它 —— 一旦别处把它当 `file-failed` 的 reason emit，
+   界面会直接把裸码上屏。补表 + 中英词典两格（文案口径：这一条已经有一趟在发，重复那次没发出去）。
+3. **守卫条件搬家，判据没跟**：`handle_share` 的失败帧现在长在 `if !cancelled && !in_flight {` 里
+   （「已在途」也不是这一单的结局），而判据还钉着 `if !cancelled {` ⇒ 取不到块体、整条测试红。锚点换成
+   双条件合取，并补两条正控：**砍掉「已在途」那一半条件时块体必须取不到**（只剩 `!cancelled` 会让
+   在途那一趟被翻成失败）、以及 `let in_flight =` 那句必须真的存在（换行写法也认）。
+
+验证：`npm test` **1533/1533 pass**（含 `fileFailReason` 13/13）；`cargo clippy --all-targets
+--features bluetooth -D warnings` 与 `send_inflight_guard_tests` 6/6 见本轮提交读数。
+
 ## [5.15.94] - 2026-11-01
 
 ### 文件传完了却显示「已取消」——发送端台账假取消修掉了（判据⑩ 那条红转绿）

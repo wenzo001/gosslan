@@ -954,6 +954,7 @@ export const enUS: MessageDict = {
   "file.relayHashFailed":
     "The relayed file arrived but this device couldn't read it for verification, so the transfer was discarded; ask them to send it again",
   "file.sendCancelled": "Cancelled as you asked — this transfer will not be sent",
+  "file.sendAlreadyInFlight": "This file already has a send in progress, so this duplicate attempt was not started (the one already running will finish)",
   "file.sendUnreadable": "This file can no longer be read (it may have been moved or deleted); pick it again and resend",
   "file.sendNotRegular": "Only regular files can be sent (folders and special files can't)",
   "file.sendTooLargeRelay": "The file exceeds the relay's per-file limit; use a direct connection or compress it first",

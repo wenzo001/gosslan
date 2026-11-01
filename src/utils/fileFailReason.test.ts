@@ -423,6 +423,7 @@ test("中继发送侧发码，且取消不许被当成失败发帧", () => {
   assert.equal(dynamic, 0, `relay_push.rs 里还有 ${dynamic} 处把 format! 当返回值`);
   for (const code of [
     "FILE_SEND_CANCELLED",
+    "FILE_SEND_ALREADY_IN_FLIGHT",
     "FILE_SEND_UNREADABLE",
     "FILE_SEND_NOT_REGULAR",
     "FILE_SEND_TOO_LARGE",
@@ -449,18 +450,25 @@ test("中继发送侧发码，且取消不许被当成失败发帧", () => {
     ["只能发送普通文件"],
   );
 
-  // ② 取消不许发失败帧：先认码，再决定发不发。
+  // ② 取消（以及 5.15.94 的「已在途」跳过出口）都不许发失败帧：先认码，再决定发不发。
   //    判据拆成两条独立的形状，不用一个大窗口跨过 logger 那段（窗口长度会随排版漂）：
-  //    ① 真的有「按码认出取消」这一句；② 失败帧**长在** `if !cancelled {` 里面。
+  //    ① 真的有「按码认出取消 / 认出已在途」这两句；② 失败帧**长在**那个双条件块里面。
   const share = readFileSync(join(ROOT, "src-tauri/src/network/transport/handle_share.rs"), "utf8");
   const CANCEL_CHECK = /let cancelled = reason == crate::logging::FAIL_CODE_FILE_SEND_CANCELLED;/;
-  // 用**花括号配对**取 `if !cancelled { … }` 的块体再判里面有没有 emit：
+  // 换行写成两句也算（源码里 `let in_flight =` 与 `reason == …` 就不在同一行）。
+  const IN_FLIGHT_CHECK =
+    /let in_flight =\s*reason == crate::logging::FAIL_CODE_FILE_SEND_ALREADY_IN_FLIGHT;/;
+  // 用**花括号配对**取那个守卫块的块体再判里面有没有 emit：
   // 原来的 `[\s\S]{0,400}?` 会跨过 `}` 去匹配"块后面"的 emit（review 2026-10-30 指出）。
-  const guardedBlock = tsFnBody(share, "if !cancelled {");
-  assert.ok(guardedBlock.length > 10, "取不到 `if !cancelled {` 的块体 ⇒ 锚点写法变了");
+  // ⚠️ 条件本身是判据的一部分：只剩 `!cancelled` 时「已在途」那一趟会被翻成失败（同一条链上
+  //    第二次把别人的进展写成结局），所以锚点必须是这两个条件的合取，缺一个就取不到块体。
+  const GUARD = "if !cancelled && !in_flight {";
+  const guardedBlock = tsFnBody(share, GUARD);
+  assert.ok(guardedBlock.length > 10, `取不到 \`${GUARD}\` 的块体 ⇒ 锚点写法变了（或条件被砍成一条）`);
   const GUARDED_EMIT = /emit\(\s*"file-failed"/;
-  assert.ok(GUARDED_EMIT.test(guardedBlock), "失败帧必须长在 `if !cancelled` 里面 —— 否则取消仍会被当成失败");
+  assert.ok(GUARDED_EMIT.test(guardedBlock), "失败帧必须长在「既没取消、也不在途」的块里面 —— 否则取消仍会被当成失败");
   assert.ok(CANCEL_CHECK.test(share), "handle_share 必须按**码**认出取消（不许比对中文文案）");
+  assert.ok(IN_FLIGHT_CHECK.test(share), "handle_share 必须按**码**认出「已在途」（同一单的另一趟还没跑完，不是失败）");
   // 正控：把条件拆回无条件块（就是想退回的写法），两条尺子各自必须说不。
   const noCheck = share.replace(
     "let cancelled = reason == crate::logging::FAIL_CODE_FILE_SEND_CANCELLED;",
@@ -468,10 +476,14 @@ test("中继发送侧发码，且取消不许被当成失败发帧", () => {
   );
   assert.notEqual(noCheck, share, "变异②a 没落进去 ⇒ 锚点写法变了");
   assert.equal(CANCEL_CHECK.test(noCheck), false);
-  // 变异②b：把 emit 挪出 `if !cancelled` 块（模拟"退回无条件发"）—— 块体判据必须说"没有"。
-  const movedOut = share.replace(/(if !cancelled \{)[\s\S]*?(\n\s*\})/, "$1$2");
+  // 变异②b：把 emit 挪出守卫块（模拟"退回无条件发"）—— 块体判据必须说"没有"。
+  const movedOut = share.replace(/(if !cancelled && !in_flight \{)[\s\S]*?(\n\s*\})/, "$1$2");
   assert.notEqual(movedOut, share, "变异②b 没落进去 ⇒ 锚点写法变了");
-  assert.equal(GUARDED_EMIT.test(tsFnBody(movedOut, "if !cancelled {")), false);
+  assert.equal(GUARDED_EMIT.test(tsFnBody(movedOut, GUARD)), false);
+  // 变异②c：把「已在途」那一半从条件里砍掉 —— 块体判据必须取不到，红在"锚点写法变了"那句。
+  const onlyCancel = share.replace("if !cancelled && !in_flight {", "if !cancelled {");
+  assert.notEqual(onlyCancel, share, "变异②c 没落进去 ⇒ 锚点写法变了");
+  assert.equal(tsFnBody(onlyCancel, GUARD), "");
 });
 
 /**

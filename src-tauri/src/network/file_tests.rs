@@ -3721,10 +3721,7 @@ mod send_inflight_guard_tests {
         let k = key("t1", "peer-a");
         let (mut rx1, ticket1) = install_slot_core(&slots, k.clone()).expect("首次登记必须成功");
         assert!(
-            matches!(
-                install_slot_core(&slots, k.clone()),
-                None
-            ),
+            install_slot_core(&slots, k.clone()).is_none(),
             "同键第二次登记必须失败（AlreadyInFlight），不许静默顶替"
         );
         assert_eq!(
