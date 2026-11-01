@@ -524,6 +524,18 @@ async fn handle_group_file_offer(
                                 "group_file",
                                 format!("群文件重建续传接收器失败 transfer={transfer_id}：{why}"),
                             );
+                            // ★ 盘满不是"重建失败、等下一次 offer 再试"：发送方会一遍遍重发
+                            // （实测同一单 12 条 `RECV_DISK_SPACE_INSUFFICIENT`），而最终终态
+                            // 落到 `GROUP_FILE_NO_CHUNK`「没有收到任何分片」—— 与真实原因不符。
+                            // 准入闸的拒绝里带这个码 ⇒ 一次判死，并把原因如实带进终态。
+                            if build_failure_is_disk_full(&why) {
+                                fail_group_file_chunk(
+                                    state,
+                                    &transfer_id,
+                                    crate::logging::FAIL_CODE_DISK_FULL,
+                                );
+                                return;
+                            }
                             false
                         }
                         Err(e) => {
@@ -873,6 +885,14 @@ fn should_notify_group_failure(code: &str) -> bool {
 /// `code=GROUP_CHUNK_POOL_ABORT 文件分片处理任务被线程池中断: …`（`GroupChunkWrite::Failed`
 /// 的动态串），照原样落库会让英文界面在重启后把一串内部文本直接上屏，而且这一列再也对不上词典。
 /// 不在册 ⇒ 写 `NULL`，含义是"这一格没记原因"（INV-P16 ③），不是"没有原因"。
+/// 建/重建接收器失败的那条字符串，是不是"空间不够"（准入闸的拒绝里带 `code=RECV_DISK_SPACE_INSUFFICIENT`）。
+///
+/// 单独抽成纯函数只为可测：这条判断决定了"盘满"是**一次判死并如实报原因**，还是落进
+/// 重试循环、最后由「没有收到任何分片」代它背锅（2026-11-01 实测的那条）。
+fn build_failure_is_disk_full(why: &str) -> bool {
+    why.contains("RECV_DISK_SPACE_INSUFFICIENT")
+}
+
 fn persistable_group_fail_code(reason: &str) -> Option<&'static str> {
     crate::error_codes::MESSAGE_FAIL_CODES
         .into_iter()
@@ -2646,10 +2666,33 @@ mod online_targets_tests {
 #[cfg(test)]
 mod group_file_fail_reason_tests {
     use super::{
-        gfile_reason_label, persistable_group_fail_code, should_notify_group_failure, REASON_CHUNK_DECRYPT_FAILED,
+        build_failure_is_disk_full, gfile_reason_label, persistable_group_fail_code,
+        should_notify_group_failure, REASON_CHUNK_DECRYPT_FAILED,
         REASON_CHUNK_EXCEEDS_SIZE, REASON_CHUNK_SEQ_GAP, REASON_NO_CHUNK_RECEIVED, REASON_PEER_UNLINKED,
         REASON_STALLED_GROUP_RECEIVE,
     };
+
+    /// 盘满：① 准入闸的拒绝串必须被认出来（否则会掉进"重建失败再试"的循环，
+    /// 最后由「没有收到任何分片」代它背锅 —— 2026-11-01 实测）；② 认出来之后
+    /// `DISK_FULL` 必须**在册**，否则气泡仍说不清原因。
+    #[test]
+    fn disk_full_refusal_is_recognised_and_persistable() {
+        let real = "code=RECV_DISK_SPACE_INSUFFICIENT transfer=t peer=p size=6291456 \
+                    available=3780608 headroom=67108864 —— 磁盘空间不足，请释放空间后重试";
+        assert!(build_failure_is_disk_full(real), "真拒绝串必须被认出");
+        assert!(
+            !build_failure_is_disk_full("群文件传输标识非法"),
+            "别的建失败不许被当成盘满（那会把可恢复的失败判死）"
+        );
+        // 既有决定（`only_registered_codes_may_be_persisted` 里那条反向断言）：盘满是**写盘族**的码，
+        // 不进群文件落库词表 ⇒ 气泡拿不到它（走通用文案），盘满的"可行动"文案由 `file-failed`
+        // 事件族负责。这条用例只钉"别把它误加进册"，与那条判据同向。
+        assert_eq!(
+            persistable_group_fail_code(crate::logging::FAIL_CODE_DISK_FULL),
+            None,
+            "盘满是写盘族的码，不该进群文件落库词表（那条既有反问断言的同一口径）"
+        );
+    }
 
     /// ★ 5.15.32 发版前 review 抓到的那一格的守卫：**没在册的原因不许写进 `messages.fail_code`**。
     ///
