@@ -1817,6 +1817,44 @@ A 侧确实收到跨跳同意并自动建了空会话（`last_msg=NULL`、两侧
 
 ---
 
+### 4.0bl v5.15.95 发布账 + 隔壁那批（`7a1d868b` / `1fdc8ef6`）的 review 与三处收尾（2026-11-01）
+
+**A. 发布事实（逐项现读，不是复述计划）**
+
+| 项 | 读数 |
+|---|---|
+| tag → commit | `v5.15.95` → `af17d317`（tag 之后 `61ea1ed7` 是纯文档提交，不进产物） |
+| CI `Verify`（push 到 main 的那轮） | run 41267115508：8 个 job —— **7 success** + `护栏非空转 · cargo 通道` skipped（既有条件：整跑 2h39m，只在夜间/dispatch） |
+| 本地 `verify:release` | 4 步全绿，150.2s（25 / 23 / 38 / 49 条断言） |
+| tag 触发的 6 条 workflow | 全 success（mac / win / win-webview2 / android / updater / verify） |
+| Release | `draft=false`、`pre=false`、**17 资产**、是当前 Latest；`latest.json` `version=5.15.95`，四平台指向正确 |
+| 资产名对照 | 与 `v5.15.74` 把版本号换成 `V` 后**逐名相同**（`diff` 空） |
+
+**B. review 结论（范围：`7a1d868b` 假取消修复、`1fdc8ef6` LIKE 误删、`a12ba702` 锚点搬家）**
+
+判为扎实的四处（都自己复读过实现，不是读提交说明）：`FileSendGate` 的所有权由 `insert` 返回值决定、
+`Drop` 只删自己那格；取消槽位改成「登记序号 + 只摘自己那格」；**1:1 发送入口只有 2 个生产调用点**
+（`handle_share.rs` 与 `commands/files.rs` 的 outbox 循环），都在闸后面 —— 没有漏掉的第三条路径；
+`upsert_transfer` 五档 + `refusal()` 与 WARN/ERROR 不混。
+
+发现三处，**已全部在 5.15.96 收掉**（只改注释与一条判据，行为零变化）：
+
+1. `group_receive.rs` 旧注释「Windows 上未关句柄时 `remove_file` 会失败」是假的（唯一有机器读数的是
+   5.15.95 加的 windows 用例：删得掉、名字当场消失）。真实机制是 delete-pending，空间要等最后一个
+   句柄关闭 —— 盘满那一路等不起它。注释按真实机制重写。
+2. `send.rs` 的「撞键退回可重试、attempts 不消耗」过度承诺：这一格在 `mark_file_outbox_sending`
+   （attempts +1）之后，真走到时已经记过一次；真正"不消耗"的是入口闸那一道。注释与日志文案同步改。
+3. 「清除数据不许清 `file_send_inflight`」原先只有一行注释 ⇒ 补判据
+   `clear_all_data_must_not_wipe_the_inflight_gate`（读清库函数体：必须仍在清 `file_sending`，
+   且一个字都不许出现 `file_send_inflight`）。变异：加一行 `file_send_inflight.clear()` ⇒ 当场红；
+   还原后 `cmp` 逐字节相同。
+
+**C. 5.15.96 已推不发**（决定：只改注释与判据，不单独发一版）：`Verify` run 41270272620 全绿；
+`cargo test --lib --features bluetooth` **1364 passed / 0 failed / 3 ignored**；测试清单基线两平台各 +1。
+
+**D. #23 仍不开修**：§4.0bi 明确写了「取回 `tree_cpu` 读数之前不猜修法」，本轮没有那台机器的日志 ⇒ 不动代码。
+
+
 ## 5. 需求与实现偏差（spec-to-code-compliance）
 > ⚠️ **本节记的是审计当时的发现。今天哪些已经落地、哪些判了不修，一律以 [§8 落地状态总表](#8-落地状态总表2026-10-29-深夜按现算对账) 为准** —— 「确认」「无机器对账」「零用例」这类字样不代表今天还没做（本轮对账实测：§8 的 19 行里有 9 行在写这张表时其实已完成）。
 
@@ -2143,7 +2181,7 @@ audit-context/
 
 **本节自身的机器对账**（2026-11-01 02:29 现跑，只给能复跑的判据，不抄会腐烂的计数）：
 ① 全册引用的提交号**全部** `git cat-file -e <sha>^{commit}` 命中、且都是 `origin/main` 的祖先
-（无一指向未推/已改写的历史；本轮读数 **28 个**）；
+（无一指向未推/已改写的历史；条数由下面那条命令现算，不手抄）；
 ② 表内 **9 行**（2026-11-01 加了第 9 行「发送端台账假已取消」）；
 ③ 全册 `§4.0xx` 引用**全部**能落到真实小节标题（缺失 **0**；2026-11-01 现跑读数：剥掉代码块后
 **121 处 / 58 个不同小节**）。
