@@ -1587,7 +1587,20 @@ STB-04 半条（非好友分支广播后直接 return，无撤销登记 —— *
 | STB-07 补递缓存 TTL 与窗口不同源 | **不成立（复核后撤回）** | `GossipRelayCache` 没有第二个 TTL：`worth_replaying` 用的就是 `RELAY_WINDOW_MS`（`mesh/gossip_replay.rs:34/137`），缓存窗口与补递窗口是同一个常量 |
 | STB-08 每 30 s 在锁内 clone 全表 | **仍存，可接受（Info）** | `outbox_sweep.rs:118-133` 仍是「clone 后立刻 `drop(links)`、再持 `peers` 锁只读 `last_seen`」；集合大小 = 在线 peer 数（peers 有淘汰），每 30 s 一次 ⇒ 无界增长与锁跨 await 都不成立 |
 
-**D. 仍未被动过的真缺口**：TST-11 的修法（`rust_fn_body` 断言签名唯一）—— 它要动所有 147 个调用点里
+**D. 仍未被动过的真缺口**：TST-11 的修法（`rust_fn_body` 断言签名唯一）。**2026-11-01 补：可执行补丁说明** ——
+要改的只有两处，不是 147 处：
+1. **先给三个歧义调用点换尺子**（`lib_window_tests.rs:684/761/851`，签名 `pub fn prewarm_aux_windows(` 与
+   `pub fn open_group_todos_window(`）：新增兄弟函数 `rust_fn_body_nth(src, sig, nth)`（语义同现有实现，
+   只是取第 n 次出现），把这三处改成 `rust_fn_body_nth(.., 0)`（desktop 那一份）。**不要**用「把签名写长」绕：
+   双胞胎的差别在 `app` / `_app` 与属性行，写长就绑死在 fmt 上。
+2. **再让 `rust_fn_body` 在 `find` 到第二次出现时 panic**，消息里带签名与命中次数（比"静默取第一份"好：
+   至少下一次有人加同名双胞胎时，红会点名）。其余 144 处调用点不用动。
+验证：`cargo test --lib --window` 先绿；随后在 `commands/logs.rs` 把 mobile 桩挪到 desktop 之前做变异，
+**预期 panic 并点名该签名**（这条变异在补丁落地前是"静默换对象"，落地后才可证）。
+不做的理由：当前 3 处首次命中恰好都是 desktop ⇒ 读数无害；而这是 147 个判据共用的尺子，
+临近收尾动它需要一整轮专项验证，收益是"防未来"。
+
+原文：它要动所有 147 个调用点里
 那 3 个歧义点的取法，属独立的判据改造，本轮只登记不实施。
 
 ### 4.0bh 主线转绿的三笔（2026-10-31，全部由本地门禁实测）
