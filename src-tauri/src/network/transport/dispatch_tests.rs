@@ -380,3 +380,58 @@ fn arm_variants(text: &str) -> Vec<String> {
     }
     out
 }
+
+/// INV-P03 的「解密失败不 Ack」这一子句：**形状判据**，不是行为测试
+/// （本仓没有能驱动 `handle_message` 并捕获出站帧的夹具 —— `docs/stability-roadmap.md` B-1a 那条）。
+///
+/// 钉的是**顺序**，不是某句话：从 `open_direct_content(` 到 `db::insert_message_if_new(` 之间
+/// 不许出现任何 `Message::Ack` —— 解不开就 `return`，落库都还没发生，回执自然发不出去；
+/// 反过来，落库之后必须**有**那一次 Ack（Ack 的语义就是"已持久化"）。
+///
+/// 为什么值得钉：这条链两端都能被"顺手提前一行"破坏，而破坏之后界面完全无症状 ——
+/// 发送方一收到 Ack 就删掉 outbox 行 ⇒ 一次解密失败变成永久丢消息（与 P0-2 同源的红线）。
+#[test]
+fn decrypt_failure_returns_before_any_ack_can_be_sent() {
+    let src = include_str!("handle_messaging.rs");
+    // ⚠️ needle 只取类型名：写成 `Message::Ack { msg_id }` 会被 `{ msg_id: msg_id.clone() }`
+    // 这种等价写法绕过去（2026-11-01 实测：变异带 clone 时旧 needle 判绿）。
+    const ACK: &str = "Message::Ack";
+    let decrypt = src
+        .find("open_direct_content(")
+        .expect("解密调用不见了 ⇒ 锚点失效");
+    let persist = src
+        .find("db::insert_message_if_new(")
+        .expect("落库调用不见了 ⇒ 锚点失效");
+    assert!(decrypt < persist, "顺序变了：落库排在解密之前，先落库后解密会让未解开的密文进库");
+    let window = &src[decrypt..persist];
+    assert!(
+        !window.contains(ACK),
+        "解密与落库之间出现了 Ack ⇒ 解不开也回了执（发送方随即删掉 outbox 行，消息永久丢）"
+    );
+    assert!(
+        window.contains("return;"),
+        "解密失败那一支必须当场返回，不许落到落库那一段"
+    );
+    assert!(
+        src[persist..].contains(ACK),
+        "落库之后没有 Ack ⇒ 发送方永远显示「发送中」"
+    );
+    // 正控：把"落库之后那一次 Ack"提前到解密块之后、落库之前，同一把尺子必须说"有"。
+    let early = {
+        let mut s = String::with_capacity(src.len() + 64);
+        s.push_str(&src[..persist]);
+        s.push_str("let _ = try_send(state, peer_id, &");
+        s.push_str(ACK);
+        s.push_str(").await;\n            ");
+        s.push_str(&src[persist..]);
+        s
+    };
+    let (e_dec, e_per) = (
+        early.find("open_direct_content(").expect("变异后锚点消失"),
+        early.find("db::insert_message_if_new(").expect("变异后锚点消失"),
+    );
+    assert!(
+        early[e_dec..e_per].contains(ACK),
+        "把 Ack 提前到落库之前，尺子仍然说「没有」 ⇒ 这条判据在空集上恒绿"
+    );
+}
