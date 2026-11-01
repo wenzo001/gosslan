@@ -540,7 +540,8 @@ node --experimental-strip-types -e '
 > **表里的行号是改动前那一版（提交 `13d77e36`，即 5.15.25）的位置** —— 这七行点的就是"被删掉的那份拷贝"，
 > 所以在今天的工作树里已经不存在了，别照着去找。复跑：
 > `git show 13d77e36:src-tauri/src/network/discovery.rs | grep -n "fn now_ms"`。
-> 本批之后仍在的只有两处：`logging.rs` 的家（当前 1396 行）和 `db/read_receipts.rs` 的别名（当前 71 行）。
+> 本批之后仍在的只有两处：`logging.rs` 的家和 `db/read_receipts.rs` 的别名 —— 行数**不手抄**：
+> `wc -l src-tauri/src/logging.rs src-tauri/src/db/read_receipts.rs`（2026-11-01 读数 3315 / 103；原句写的 1396 / 71 早漂了）。
 
 | 定义处 | 时钟源 | 兜底写法 | 调用点 | 定性 |
 |---|---|---|---|---|
@@ -604,7 +605,9 @@ node --experimental-strip-types -e '
     `aarch64-linux-android-clang`"是**错的**：那次是我自己手敲的命令形状在环境里过不去（而且那趟还拿管道退码
     当成 `ANDROID_EXIT=0`），门禁现成的命令形是过得去的 ⇒ 教训与既有那条"clippy 自造形状会造出 49 个红"同形：
     **要用门禁那条命令的形状去证，别用手敲的**。
-  - ⚠️ `bluetooth_peripheral_windows.rs` **仍只有远程凭据**。本机两条路都真跑过，且都在**类型检查之前**
+  - ⚠️ `bluetooth_peripheral_windows.rs` **本机仍只有远程凭据**（不是「全仓没证据」：CI 的
+    `build-windows (x64 / arm64)` 每次 push 都在真 MSVC 上编这个文件 ⇒ 有 CI 证据，缺的只是**本机**可复跑）。
+    本机两条路都真跑过，且都在**类型检查之前**
     因缺件失败 ⇒ 对该文件零证据：`cargo xwin check --target x86_64-pc-windows-msvc` 退 101
     （`tauri-winres` panic `NotAttempted("llvm-rc")`；本机现在没装 LLVM，`ls /opt/homebrew/opt/llvm/bin` 无 llvm-rc）、
     `cargo check --target x86_64-pc-windows-gnu` 退 101（`cc-rs` 找不到 `x86_64-w64-mingw32-gcc`）。
