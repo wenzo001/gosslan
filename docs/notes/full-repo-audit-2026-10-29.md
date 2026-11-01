@@ -1666,6 +1666,22 @@ Select-String -Path "$d\gosslan-crash.log" -Pattern '>>> code=(HANG|RUNTIME_MEM)
 **打包**：整个 `logs\` 目录 + 卡死发生的本地时间 + 当时是否在传大文件（这三件事齐了才能把
 `tree_cpu` 的窗口对齐到具体操作）。把这三样取回来，本条就能一次定型；在那之前**不猜修法**。
 
+一条命令打包（同机 PowerShell，产物落在桌面，文件名带时间）：
+
+```powershell
+$d = "$env:APPDATA\com.gosslan.app\logs"
+$dst = "$env:USERPROFILE\Desktop\gosslan-hang-$(Get-Date -Format yyyyMMdd-HHmm).zip"
+Compress-Archive -Path "$d\*" -DestinationPath $dst -Force
+"$dst"; Get-ChildItem $d | Select-Object Name, Length, LastWriteTime
+```
+
+⚠️ 日志里会有设备 id、对端昵称与文件路径 —— 回传前先扫一眼；只需要 `*-crash.log` 与
+`gosslan.log` / `gosslan.old.log` 这三类时，把 `Compress-Archive` 的 `-Path` 换成这三条通配即可。
+
+**判读缺口（如实登记）**：如果现场只有 `HANG scope=ui_renderer` 而没有同窗口的 `RUNTIME_MEM`
+行，`tree_cpu` 就无从计算 —— 那种情况按「缺一次读数」记，不据此推断是空转还是挂起；
+要补就在下一次卡死时抓（`RUNTIME_MEM` 是每 5 分钟一行，卡死持续 >5 分钟必然有）。
+
 ### 4.0bj A2 启动错误窗的只读复核（2026-10-31，`c96fbdbe`）
 
 范围：24 文件、+1369/−331（`startup_error.rs` 新增 338 行；`lib.rs` 把 setup 收尾抽成 `finish_boot`）。

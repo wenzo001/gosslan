@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { shouldPreventContextMenu } from "./contextMenu.ts";
+import { tsFnBody } from "./tsSource.ts";
 
 test("shouldPreventContextMenu：桌面一律拦；触屏正文/选字/有选区让位系统", () => {
   const cases = [
@@ -162,4 +163,31 @@ test("群成员行右键：面板只上报意图，插入 @ 与打开资料都�
   assert.match(win, /@mention="onMemberMention"/, "ChatWindow 没接成员面板的「@他」");
   assert.match(win, /composerRef\.value\?\.insertMention/, "「@他」没有真的插进输入框");
   assert.match(win, /function onMemberProfile[\s\S]{0,120}openSenderProfile\(id\)/, "「查看资料」没走既有解析");
+});
+
+/**
+ * N6-2 的**接收端形状**。运行时那一层由 `check-ui-runtime.mjs --only=ctxmenu` 量（CDP 探针，
+ * CI 不跑这一层）；这里管 CI 能跑的那一半 —— 三个决定"接收端认不认"的字段被改掉时 `npm test` 就红。
+ * 提取器用 `tsFnBody`（同 `longPress.test.ts` 那一份），不是定长窗口：加注释不会把它挤出去。
+ */
+test("「@他」插入的 chip 必须是接收端认的形状（类名 / data-mention-id / 不可编辑 + 尾随 nbsp）", () => {
+  const src = readFileSync(
+    join(import.meta.dirname, "..", "components", "chat", "MessageComposer.vue"),
+    "utf8",
+  );
+  const body = tsFnBody(src, "function insertMentionAtEnd(");
+  assert.ok(body.length > 0, "没找到 insertMentionAtEnd —— 后面四条会空转，先修提取器");
+  assert.ok(!body.includes("function applyMention("), "提取器切过了头（窗口跨进了下一个函数），读数不可信");
+  assert.match(body, /span\.className = "mention-token"/, "少了 mention-token 类名（样式与接收侧识别都靠它）");
+  assert.match(body, /span\.contentEditable = "false"/, "chip 必须不可编辑，否则会被光标拆开");
+  assert.match(
+    body,
+    /span\.dataset\.mentionId = member\.id/,
+    "少了 data-mention-id —— 接收端 collectMentionIds 读的就是它",
+  );
+  assert.match(
+    body,
+    /const space = document\.createTextNode\("\\u00A0"\)/,
+    "chip 后面没有 nbsp 边界 ⇒ @名字 会粘在前一个字尾巴上",
+  );
 });
