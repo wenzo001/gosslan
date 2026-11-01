@@ -270,9 +270,16 @@
         // 锚点只到 `fn 名字(`：这条命令现在是 `async fn` + spawn_blocking（审计 R-18），
         // 钉 `pub fn` 会在**换形状而语义没变**时红 —— 要守的是"列表必须按好友关系过滤"。
         let body = rust_fn_body(commands, "fn get_pending_requests(");
+        // 钉**那一句**而不是"函数里出现过这个词"：同一函数里现在有两处调用
+        // （上面清陈行的那条 filter + 这里真正决定返回值的 retain），只钉词根的话
+        // 改坏 retain、filter 那处仍带着词根 ⇒ 判据恒绿（2026-11-02 tag 的护栏分片就是这么红的）。
         assert!(
-            body.contains("is_actionable_request"),
+            body.contains("map.retain(|_, req| is_actionable_request(req, &friend_ids));"),
             "列表必须按好友关系过滤 —— 否则「已经是好友了申请还挂着」只能靠每条路径都记得清"
+        );
+        assert!(
+            body.contains("!is_actionable_request(req, &friend_ids)"),
+            "库里的陈行也要按同一判据清掉（A4），否则它会一直占着内存表的格位"
         );
         let pred = rust_fn_body(commands, "pub(crate) fn is_actionable_request(");
         assert!(

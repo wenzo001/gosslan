@@ -13,6 +13,24 @@
 
 ## [Unreleased]
 
+## [5.16.12] - 2026-11-02
+
+### 一条护栏被判成恒绿：判据钉的是词根，而同函数里同一词根出现两次
+
+tag `v5.16.10` 的「护栏非空转 · cargo 通道（分片 1/3）」红了：把
+`map.retain(|_, req| is_actionable_request(req, &friend_ids));` 改成 `map.retain(|_, _| true);` 之后
+`pending_requests_exclude_existing_friends` **仍然通过**。
+
+根因**不是**锚点漂移（现扫 288 条用例，锚点全部能被 runner 的 `_resolve_anchor_file` 跨 `include!` 解析），
+而是判据太宽：`get_pending_requests` 里 `is_actionable_request` 出现**两处**（清陈行的 `filter` +
+决定返回值的 `retain`），测试断言的却是 `body.contains("is_actionable_request")` ⇒ 改坏 retain、
+另一处仍带着词根 ⇒ 恒绿。
+
+修法：判据改成钉**具体那一句**，并补一条「清陈行的 filter 也在」的断言。证据：
+① 干净源码上 `1 passed`；② 同样的注入 ⇒ `FAILED` 且红在那条具名断言（hint 原文）；
+③ `python3 scripts/verify-guards.py --only "好友申请兜底"` 端到端通过（17.2s，注入→必须红→恢复后逐字节一致）。
+用例的 `file` 顺手点名真文件 `commands/mobile_picker.rs`（少一次跨分册解析）。
+
 ## [5.16.11] - 2026-11-02
 
 ### 「上一次发布」只认已发布的 Release

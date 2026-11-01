@@ -436,7 +436,13 @@ pub fn guard_case_fixture_db(
         name="好友申请兜底（get_pending_requests 必须按好友关系过滤）",
         why="用户明确要求：已在好友列表的人，其申请应当自动清除。主修在各条同意路径，"
         "这里是不依赖「哪条消息到了」的兜底判据",
-        file=TAURI / "src" / "commands.rs",
+        # 2026-11-02：这条用例在 tag 的护栏分片里红过一次。**不是锚点漂移**（runner 的
+        # `_resolve_anchor_file` 会跨 `include!` 解析到 commands/mobile_picker.rs，现扫 288 条
+        # 全部能解析），而是**被测判据太宽**：该函数里 `is_actionable_request` 出现两处
+        # （清陈行的 filter + 决定返回值的 retain），只钉词根的话改坏 retain、另一处仍带着词根 ⇒ 恒绿。
+        # 判据已改成钉具体那一句（见 `lib_friend_identity_tests.rs::pending_requests_exclude_existing_friends`）；
+        # 这里顺手点名真文件，少一次解析。
+        file=TAURI / "src" / "commands" / "mobile_picker.rs",
         injections=[("map.retain(|_, req| is_actionable_request(req, &friend_ids));", "map.retain(|_, _| true);")],
         cmd=cargo("test", "--lib", "pending_requests_exclude_existing_friends"),
         cwd=TAURI,
