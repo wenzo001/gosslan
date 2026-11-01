@@ -136,6 +136,29 @@ jobs:
           done < /tmp/assets.tsv
           printf '下载完成：%s 个文件\n' "$(find assets -type f | wc -l | tr -d ' ')"
 
+      # 应用内「更新说明」要把「上一次发布之后」的每一节都写进去：门禁要求每批未推送提交都提一档，
+      # 而实际发版常隔几批才做 ⇒ CHANGELOG 顶部会堆着好几节（v5.16.6 实测：5.16.0 的三处右键菜单
+      # 没进 notes，只有被发布那一版那 568 字符）。本 workflow 是 shallow clone（fetch-depth: 1）
+      # 拿不到任何 tag ⇒ 走 Releases API 取最近一次「别的」发布；取不到就把 PREV_TAG 留空，
+      # 生成器退回单节行为 —— 宁可少写，不可乱写。
+      - name: Find previous release tag（更新说明从它之后算）
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          # TAG 不拼进 jq 程序：走 --arg 传值（它虽然已在上一步被 ^v[0-9.]+$ 校验过，
+          # 但"校验过的变量"也不该变成命令文本的一部分）。
+          prev=$(gh api "repos/$REPO/releases?per_page=100" \
+            | jq -r --arg t "$TAG" '[.[] | select(.tag_name != $t)] | sort_by(.created_at) | reverse | .[0].tag_name // empty' \
+            | head -1 || true)
+          if [ -n "$prev" ]; then
+            echo "上一次发布：$prev"
+          else
+            echo "取不到上一次发布 ⇒ 更新说明退回单节行为"
+          fi
+          echo "PREV_TAG=$prev" >> "$GITHUB_ENV"
+
       - name: Build latest.json
         env:
           REPO: ${{ github.repository }}
@@ -143,9 +166,11 @@ jobs:
           set -euo pipefail
           # REPO 必须从 env 传进来：脚本默认值只是本地调试的兜底，
           # fork 或改名后会把 url 指到别人的仓库。
+          extra=()
+          if [ -n "${PREV_TAG:-}" ]; then extra=(--since "$PREV_TAG"); fi
           node scripts/updater-manifest.mjs \
             --dir assets --tag "$TAG" --repo "$REPO" \
-            --out latest.json --changelog CHANGELOG.md
+            --out latest.json --changelog CHANGELOG.md "${extra[@]}"
 
       - name: Upload latest.json（按资产 id，草稿也能传）
         env:

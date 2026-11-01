@@ -67,14 +67,66 @@ export function mapPlatformAssets(files) {
   return picked;
 }
 
+/**
+ * 把 CHANGELOG 切成一节一节。只认带日期头的版本节（`## [x.y.z] - YYYY-MM-DD`）；
+ * `[Unreleased]` 之类不收集，但它们会**结束**上一节 —— 否则 Unreleased 的内容会被算进上一版。
+ */
+function parseSections(changelog) {
+  const sections = [];
+  let cur = null;
+  for (const line of String(changelog ?? "").split("\n")) {
+    const m = line.match(/^## \[(\d+\.\d+\.\d+)\] - \d{4}-\d{2}-\d{2}\s*$/);
+    if (m) {
+      if (cur) sections.push(cur);
+      cur = { version: m[1], body: [] };
+      continue;
+    }
+    if (/^## \[/.test(line)) {
+      if (cur) sections.push(cur);
+      cur = null;
+      continue;
+    }
+    if (cur) cur.body.push(line);
+  }
+  if (cur) sections.push(cur);
+  return sections.map((s) => ({ version: s.version, body: s.body.join("\n").trim() }));
+}
+
+function compareSemver(a, b) {
+  const pa = a.split(".").map(Number);
+  const pb = b.split(".").map(Number);
+  for (let i = 0; i < 3; i += 1) if (pa[i] !== pb[i]) return pa[i] - pb[i];
+  return 0;
+}
+
 export function notesForVersion(changelog, version) {
-  const lines = String(changelog ?? "").split("\n");
-  const heading = `## [${version}]`;
-  const start = lines.findIndex((line) => line.startsWith(heading));
-  if (start < 0) return "";
-  const rest = lines.slice(start + 1);
-  const end = rest.findIndex((line) => /^## \[/.test(line));
-  return rest.slice(0, end < 0 ? rest.length : end).join("\n").trim();
+  const hit = parseSections(changelog).find((s) => s.version === version);
+  return hit ? hit.body : "";
+}
+
+/**
+ * 一次发布要写进 `latest.json.notes` 的正文。
+ *
+ * 为什么需要"从哪一版之后"这个入参：门禁要求每批未推送提交都提一档，而实际发版往往隔几批才做一次
+ * ⇒ CHANGELOG 顶部会堆着好几节。只取被发布那一版的话，前面几节的内容**永远不会**出现在应用内
+ * 更新说明里（2026-11-01 的 v5.16.6 就是这样：5.16.0 的三处右键菜单一个字没进去）。
+ *
+ * `fromVersion` 缺失（或工作流拿不到上一版 tag）时退回单节行为 —— 宁可少写，不可乱写。
+ * 顺序按版本从新到旧；重复标题（本仓有历史改号留下的同名节）只取第一份。
+ */
+export function notesForRelease(changelog, version, fromVersion = "") {
+  const sections = parseSections(changelog);
+  const target = sections.find((s) => s.version === version);
+  if (!target) return "";
+  const from = String(fromVersion ?? "").trim().replace(/^v/, "");
+  if (!from) return target.body;
+  const seen = new Set();
+  const picked = sections
+    .filter((s) => compareSemver(s.version, from) > 0 && compareSemver(s.version, version) <= 0)
+    .sort((a, b) => compareSemver(b.version, a.version))
+    .filter((s) => (seen.has(s.version) ? false : (seen.add(s.version), true)));
+  if (!picked.length) return target.body;
+  return picked.map((s) => s.body).filter(Boolean).join("\n\n");
 }
 
 export function buildManifest({
@@ -147,13 +199,18 @@ function main(argv) {
   const out = arg("out", "latest.json");
   const checkOnly = argv.includes("--check-only");
   if (!dir || !tag) {
-    console.error("用法：--dir <发布目录> --tag vX.Y.Z [--repo owner/repo] [--out latest.json] [--check-only]");
+    console.error("用法：--dir <发布目录> --tag vX.Y.Z [--repo owner/repo] [--out latest.json] [--since vA.B.C] [--check-only]");
     process.exit(2);
   }
   const files = fs.readdirSync(dir);
   const pkg = JSON.parse(fs.readFileSync("package.json", "utf8"));
   const changelogPath = arg("changelog", "CHANGELOG.md");
-  const notes = fs.existsSync(changelogPath) ? notesForVersion(fs.readFileSync(changelogPath, "utf8"), tag.replace(/^v/, "")) : "";
+  // `--since vX.Y.Z`：把「上一个已发布版本之后」的每一节都聚合进 notes（见 notesForRelease 的说明）。
+  // 不传就退回单节行为 —— 工作流拿不到上一版 tag 时不会因为少个参数生成空说明。
+  const since = arg("since");
+  const notes = fs.existsSync(changelogPath)
+    ? notesForRelease(fs.readFileSync(changelogPath, "utf8"), tag.replace(/^v/, ""), since)
+    : "";
   try {
     const manifest = buildManifest({
       dir,
