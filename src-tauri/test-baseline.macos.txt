@@ -900,6 +900,7 @@ network::transport::tests::ble_link_is_neither_lan_nor_preferred_over_tcp
 network::transport::tests::bounded_profile_caps_nickname_and_avatar
 network::transport::tests::bulk_messages_are_only_large_chunks
 network::transport::tests::business_duplicate_still_enters_the_propagation_layer
+network::transport::tests::decrypt_failure_returns_before_any_ack_can_be_sent
 network::transport::tests::direct_open_fails_without_sender_key_and_recovers_when_key_arrives
 network::transport::tests::direct_open_recovers_once_sender_pubkey_cache_refreshed
 network::transport::tests::direct_open_rejects_corrupt_and_tampered_payloads

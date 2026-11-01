@@ -13,6 +13,16 @@
 
 ## [Unreleased]
 
+### INV-P03「解密失败不 Ack」补了顺序判据（行为测试仍缺）
+
+新增 `decrypt_failure_returns_before_any_ack_can_be_sent`：从解密调用到落库调用之间不许出现
+`Message::Ack`，落库之后必须有 —— 解不开就 `return`，回执自然发不出去；而 Ack 的语义是"已持久化"。
+变异（把 Ack 提前到落库之前）实测点名红、还原后逐字节相同。
+
+两处诚实边界：① 这是**形状判据**不是行为测试（本仓仍没有能驱动 `handle_message` 并捕获出站帧的夹具，
+`docs/stability-roadmap.md` B-1a 继续挂着）；② 首版 needle 写成 `Message::Ack { msg_id }`，被
+`{ msg_id: msg_id.clone() }` 这种等价写法绕过（变异实测判绿）⇒ 改成只认类型名。
+
 ## [5.15.96] - 2026-11-01
 
 ### 收掉 5.15.95 review 的三处：两条注释在说假话 + 一条决定没有判据
