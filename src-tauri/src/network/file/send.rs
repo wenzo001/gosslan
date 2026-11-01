@@ -61,14 +61,18 @@ pub async fn send_file_from_path_at(
     // ★ 撞键（同键已有一个在途发送任务）**不许**当成取消：原先这里无条件 `insert`，
     //   会把在任者的 `Sender` 顶掉 ⇒ 对方 `cancel_rx` 以 `Err(Closed)` 完成 ⇒ 被判"用户取消发送"
     //   ⇒ 落 `cancelled` + 墓碑，而真正成功那一份的 `done` 之后被墓碑静默挡死（判据⑩ 的整条链）。
-    //   现在明确退回**可重试**：outbox 行保持 pending、attempts 不消耗，下一次建链/心跳照旧补发。
+    //   现在明确退回**可重试**：不记取消、不记失败。
+    //   ⚠️ 正常走不到这里 —— 两个入口（outbox 补发 / 服务任务）都在调本函数**之前**先按同一个键
+    //   抢了 `FileSendGate`，撞键已被那道闸挡在门外。真走到时（例如将来新增了没过闸的入口）
+    //   outbox 那条链**已经**记过一次 attempts（`mark_file_outbox_sending` 排在 send 之前），
+    //   所以这里不承诺"不消耗重试"；承诺"不消耗"的是入口闸那一道。
     let (mut cancel_rx, _cancel_slot) = match install_cancel_slot(state, transfer_id, peer_id) {
         CancelSlotInstall::Installed { rx, _slot } => (rx, _slot),
         CancelSlotInstall::AlreadyInFlight => {
             state.logger.warn(
                 "file",
                 format!(
-                    "code=SEND_ALREADY_IN_FLIGHT transfer={transfer_id} peer={peer_id} —— 同一单同一收件人已有在途发送任务，本轮不重发（不记取消、不记失败、不消耗重试）"
+                    "code=SEND_ALREADY_IN_FLIGHT transfer={transfer_id} peer={peer_id} —— 同一单同一收件人已有在途发送任务，本轮不重发（不记取消、不记失败；正常到不了这里，入口闸同键已挡）"
                 ),
             );
             return Err(SendFileError::retryable(

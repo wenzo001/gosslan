@@ -1613,3 +1613,26 @@ fn balanced_block(rest: &str) -> Option<String> {
     }
     None
 }
+
+/// 「清除数据」**不许**碰 1:1 在途闸门（`AppState::file_send_inflight`）。
+///
+/// 为什么单独钉：这条决定此前只有 `FileSendGate` 文档里的一行注释（"故意不清这一份"），
+/// 而代价不对称 —— 清掉 `file_sending` / `file_send_cancels` 顶多让在途任务丢登记，
+/// 清掉 `file_send_inflight` = 允许第二个任务同时发同一单，正是判据⑩ 那个假「已取消」的成因。
+/// 两个方向都要有断言：① 读到的确实是清库函数（它必须还在清 `file_sending`）；
+/// ② 函数体里一个字都不许出现 `file_send_inflight`（将来顺手加一行 `clear()` 当场红）。
+#[test]
+fn clear_all_data_must_not_wipe_the_inflight_gate() {
+    let body = rust_fn_body(
+        include_str!("commands/favorites.rs"),
+        "pub async fn clear_all_data(",
+    );
+    assert!(
+        body.contains(".file_sending"),
+        "锚点失效：清库函数里应当仍然清 `file_sending`（那一份不需要保）"
+    );
+    assert!(
+        !code_flat(&body).contains("file_send_inflight"),
+        "清除数据清掉了在途闸门 ⇒ 同一单可以同时有两个发送任务（判据⑩ 的假取消会回来）"
+    );
+}
