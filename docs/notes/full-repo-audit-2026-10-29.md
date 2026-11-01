@@ -1899,6 +1899,32 @@ Rejected）。⚠️ 边界：这条恢复只对**声明了 `CONTENT_FEATURE_PUL
 都在 CHANGELOG 里逐条作废，没有留成结论。
 
 
+### 4.0bn v5.16.6 发布账（2026-11-01 深夜；含「更新说明丢节」的发现与止血）
+
+| 项 | 读数 |
+|---|---|
+| tag → commit | `v5.16.6` → `e39cc3c0`（轻量 tag，与本仓以往一致） |
+| 发版前重编 | `npm run build` + `cargo build --release --features bluetooth`（2m07s 退 0；二进制 23:12:53） |
+| 本地 `verify:release` | 4 步全绿，144.2s（25 / 23 / 41 / 49 条断言） |
+| 本地 `npm run verify` | 21/21 退 0 |
+| tag 触发的 6 条 workflow | 全 success（Verify / mac / win / win-webview2 / android / updater） |
+| Release | `draft=false`、`pre=false`、**17 资产**、是当前 Latest；`latest.json` `version=5.16.6`，四平台 URL 正确，签名 404/404/420/420 |
+| 资产名对照 | 与 `v5.15.100` 把版本号换成 `V` 后**逐名相同**（含两份 `*-setup-webview2-bundled.exe`） |
+
+**这一版装的是** 5.15.100 之后 5.16.0–5.16.6 六节的内容：三处右键菜单（代码块 / 群成员行 / 群文件行）、
+一条死绑定删除，以及五批探针与台账订正。
+
+**同批发现（不是这一版的功能缺陷）**：应用内「更新说明」只取**被发布那一版**的小节
+（`updater-manifest.mjs::notesForVersion`），而版本门禁要求每批未推送提交都提一档 ⇒ 连续小批发布必然把中间节丢掉。
+`v5.16.6` 的 `notes` 只有 568 字符（探针/文档），5.16.0 的三处右键菜单一个字没进去。当天处置：
+
+1. `gh release edit v5.16.6 --notes-file` 把 GitHub 页面正文补全（**应用内仍只有那一节**）；
+2. 5.16.7 给 `version:check` 加了「站在 tag 上点名被跳过的小节」的提示（只提示不判红）；
+3. **根修（把「上一个 tag 之后的所有小节」聚合进 notes）没做** —— 它要改发版产物生成器，而 updater 工作流是
+   `fetch-depth: 1` + sparse-checkout（拿不到任何 tag），要么改成全量拉取、要么走 Releases API 取上一版；
+   改错会直接影响自动更新，**等负责人拍板再动**。
+
+
 ## 5. 需求与实现偏差（spec-to-code-compliance）
 > ⚠️ **本节记的是审计当时的发现。今天哪些已经落地、哪些判了不修，一律以 [§8 落地状态总表](#8-落地状态总表2026-10-29-深夜按现算对账) 为准** —— 「确认」「无机器对账」「零用例」这类字样不代表今天还没做（本轮对账实测：§8 的 19 行里有 9 行在写这张表时其实已完成）。
 
@@ -2218,6 +2244,8 @@ audit-context/
 | 7 | **A4 / A10 的双实例真流程**（加好友→同意→重启） | A4 恢复臂**已实测且已入库**（`cabe545`；主语 = **接收方**那条入站待处理申请跨重启仍在，不含申请人那本内存里的待发台账）；**A10 双实例真链路也已实测**（2026-10-31 深夜，两台隔离 HOME：A 走界面加好友 → B 收到并落库 → B 同意 → **A 收到同意并自动建会话** → 两台各自 Cmd+Q 再启动会话仍在、`friend_req` 两侧为 0）——⚠️ **执行者是既有验收助手 + AX + 一次真实键盘，不是人眼**，"界面看起来对"那一层仍归人 | `friendreq` 轮只覆盖 A4 的**数据库预置**恢复臂；A10 那一臂现在由真帧补上，但只跑了 LAN + 跨跳 gossip（BLE / 中继 / 跨网未跑），且界面**没有手填对端地址**这条路 ⇒ 扫不到就没法加，这条本身是产品行为、待拍板 | 正向 **10/10（整轮 28=默认 18+本轮 10，退出 0）**、反向 `friendreq-lie` **恰好那 2 条读库断言红、退出 1**（2026-11-01 拆分判据后用**隔离 HOME** 两轮现跑：`check(` 10 处、等待屏障已从墙钟 `sleep` 换成「磁盘上那条恢复日志」本身）。真链路读数：B `17:47:02 收到跨跳好友申请 peer=gosslan-a4946d607ad3c-i97`、A `17:48:06 收到跨跳好友同意`+`17:48:08 重复的好友同意（已忽略）`、两侧 `friends=1 / conversations=1 / last_msg=NULL`、两侧 `x25519_pubkey is null` 计数 **0**（⇒ 预置那一轮"回执发不出去"是**夹具缺公钥**，不是产品丢公钥，那条怀疑撤销） |
 | 8 | ~~A5 的首启不误报~~ | **已收口（A/B 实测）** | 报告侧 5.15.75 已修；日志判定侧 5.15.92（`46f41213`）补齐并用例正反控钉住 | 隔离 HOME 真机 A/B（2026-10-31）：**5.15.91 首启日志里 `BOOT_PREV_` 1 行（假的异常终止）→ 5.15.92 同一形状 0 行**，bootstrap 行 `pid` 与进程一致；两轮都只碰 `/tmp` 隔离 HOME，跑完即清 |
 | 9 | **发送端台账假「已取消」**（E2E 判据⑩ `--fault=sender-kill-mid` 读到的 A=cancelled） | 产品缺陷 · **同日已修（5.15.94）· E2E 判据⑩ 已转绿（RCA 册 §10）** —— 实施记录与四条变异反证在同册 §9 | 根因已证死到行：两个家同时发同一个 `(transfer_id, peer)`（`flush_pending_files` 与 ContentRequest 服务任务），`install_cancel_slot` 撞键静默顶掉在任者 ⇒ 代码口径「oneshot 通道关闭」等于「用户取消」；随后 `finalize_file_failure` 写 `cancelled` + 墓碑 `cancel_terminal=1`，把真正成功那条的 `done` **静默**挡住（`upsert_transfer` 命中 0 行仍返 `Ok`）⇒ 成功传输被永久记成已取消。修法 = 1:1 在途闸门 `FileSendGate`（键复用 `file_peer_key`，形状照群侧 `group_file_dispatching`）+ 撞键返回 `AlreadyInFlight` + 守卫按登记序号只摘自己那格 + `upsert_transfer` 返回五档并对被挡的终态推进落 Warn。墓碑与 `set_message_status` 的终态名单一字未动 | 证据链、六个 `cancelled` 臂的现数、排除清单、最小修复方案与影响面、先红后绿的验证方案都在 `docs/notes/send-cancelled-rca-2026-11-01.md`；七次同形复现（四趟 `verify:e2e` 整链 + 三次单轮）；档位 L2 `[plan]` + patch，DB / 协议 / 前端零改动；判据⑩本身不许动。**修复后转绿**：判据⑩ **26/26 PASS**（`B=done A=done outbox=0`；A 侧日志里 `code=SEND_ALREADY_IN_FLIGHT … 本轮跳过` 真出现过一次，而整轮仍全绿）、撤两道防线后 FAIL 且红形状与基线逐字相同 —— 读数与命令在 RCA 册 §10.3 / §10.4 |
+
+| 10 | **应用内「更新说明」只覆盖被发布的那一版** | 发版工具 · **已止血、未根治（2026-11-01）** | 根修要动 `updater-manifest.mjs` 与 updater 工作流（后者是 `fetch-depth: 1` + sparse-checkout，拿不到任何 tag） | `v5.16.6` 的 `latest.json.notes` 现读 **568** 字符（只有探针/文档那一节）；GitHub 页面当天已用 `gh release edit` 补全；5.16.7 给 `version:check` 加了「站在 tag 上点名被跳过的小节」的提示。根修（把上一个 tag 之后的小节聚合进 notes）等拍板，详见 §4.0bn 第 3 条 |
 
 ### 13.1 TST-06 收口过程与两次假否证的更正（2026-11-01）
 
