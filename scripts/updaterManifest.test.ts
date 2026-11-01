@@ -5,7 +5,7 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { buildManifest, mapPlatformAssets, notesForVersion, REQUIRED_PLATFORMS } from "./updater-manifest.mjs";
+import { buildManifest, mapPlatformAssets, notesForRelease, notesForVersion, REQUIRED_PLATFORMS } from "./updater-manifest.mjs";
 import { changelogProblems } from "./semver.mjs";
 
 const SIG = "untrusted comment: signature\n" + "A".repeat(64);
@@ -154,4 +154,63 @@ test("相邻重复的版本标题：量具先证明它会变空，判据必须�
   const found = changelogProblems(tmp).filter((p) => p.includes(m[1]));
   assert.equal(found.length, 1, `重复标题必须被点名恰好一次，实际：${JSON.stringify(found)}`);
   assert.match(found[0], /更新说明/);
+});
+
+// ---- notesForRelease：把「上一个已发布版本之后」的每一节聚合进更新说明 ----
+// 背景：门禁要求每批未推送提交都提一档，实际发版往往隔几批才做 ⇒ CHANGELOG 顶部堆着好几节。
+// 只取被发布那一版的话，前面几节永远进不了应用内更新说明（v5.16.6 实测：5.16.0 的右键菜单没进去）。
+const NOTES_FIXTURE = `# Changelog
+
+## [Unreleased]
+
+### 还没发布的
+
+- M_UNRELEASED
+
+## [1.3.0] - 2026-03-03
+
+### 第三个
+
+- M13
+
+## [1.2.0] - 2026-03-02
+
+### 第二个
+
+- M12
+
+## [1.1.0] - 2026-03-01
+
+### 第一个
+
+- M11
+
+## [1.0.0] - 2026-02-01
+
+### 初始
+
+- M10
+`;
+
+test("notesForVersion：只取目标那一节，且不会被 [Unreleased] 的内容污染", () => {
+  const one = notesForVersion(NOTES_FIXTURE, "1.3.0");
+  assert.match(one, /M13/);
+  assert.ok(!one.includes("M12"), "越界读到了上一节");
+  assert.ok(!one.includes("M_UNRELEASED"), "把 [Unreleased] 的内容算进了上一版");
+});
+
+test("notesForRelease：给了 fromVersion 就把区间内每一节按新→旧拼起来", () => {
+  const out = notesForRelease(NOTES_FIXTURE, "1.3.0", "v1.0.0");
+  assert.match(out, /M13/);
+  assert.match(out, /M12/);
+  assert.match(out, /M11/);
+  assert.ok(!out.includes("M10"), "fromVersion 自己那一节不该被算进来（它上一次已经发过）");
+  assert.ok(out.indexOf("M13") < out.indexOf("M12") && out.indexOf("M12") < out.indexOf("M11"), "顺序必须是新在前");
+  assert.ok(!out.includes("M_UNRELEASED"), "[Unreleased] 不能进更新说明");
+});
+
+test("notesForRelease：不给 fromVersion / fromVersion 等于自己 / 目标不存在 三种边界", () => {
+  assert.equal(notesForRelease(NOTES_FIXTURE, "1.3.0"), notesForVersion(NOTES_FIXTURE, "1.3.0"), "没有上一版时必须原样退回单节行为");
+  assert.equal(notesForRelease(NOTES_FIXTURE, "1.3.0", "1.3.0"), notesForVersion(NOTES_FIXTURE, "1.3.0"), "from 等于自己 ⇒ 只剩这一节");
+  assert.equal(notesForRelease(NOTES_FIXTURE, "9.9.9", "1.0.0"), "", "目标版本不存在必须给空串（不能把别节当成它）");
 });
