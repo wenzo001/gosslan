@@ -25,9 +25,14 @@
   最后整单落到 `GROUP_FILE_NO_CHUNK`「文件传输未完成：没有收到任何分片」—— **与真实原因不符**，
   用户照着这句话无从下手。
 
-修法：建/重建接收器失败时**认得出盘满**（`build_failure_is_disk_full`，认得
+修法：**重建/续传**那条路上建接收器失败时认得出盘满（`build_failure_is_disk_full`，认得
 `RECV_DISK_SPACE_INSUFFICIENT` 这个码），当场一次判死并走群文件失败收尾（原因 `DISK_FULL` 进日志与
-`file-failed` 事件族），不再进重试循环 —— 实测那 12 条一模一样的 WARN 就是它。
+`file-failed` 事件族），不再进重试循环。
+
+⚠️ **验收没通过，如实记**：同一探针复跑（run-2026-11-01T09-03-26-225Z）仍是 24 条
+`RECV_DISK_SPACE_INSUFFICIENT`、终态仍是 `GROUP_FILE_NO_CHUNK`，且日志里**没有**
+「重建续传接收器失败」—— 说明实测这条路根本不走 `build_group_resume_receiver`，拒绝发生在**另一处**
+（首次建接收器那条），本批只覆盖了续传重建这一支。缺陷**仍未修好**。
 
 **没做的（保持既有决定）**：`DISK_FULL` 不进 `MESSAGE_FAIL_CODES`。那条词表上一轮就有一条反向断言
 写着"盘满是**写盘**族的码，不在落库词表里"，本批没有推翻它 —— 所以群文件气泡这一格仍走通用文案，
