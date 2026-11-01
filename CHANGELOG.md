@@ -13,6 +13,15 @@
 
 ## [Unreleased]
 
+### 待办：订正 `group_receive.rs` 里那句「未关句柄时 `remove_file` 会失败」的理由
+
+5.15.95 带上的 `windows_remove_open_file_tests` 已在 CI 的真 Windows runner 上跑出 `ok`
+（`Verify` run 41267115508，`...deleting_an_open_part_file_succeeds_and_frees_the_name ... ok`）：
+句柄还开着时删 `.part` **成功**，且名字立刻消失 —— Rust std 在 Windows 上默认共享 delete，
+不报共享冲突。⇒ `network/file/group_receive.rs` 那句注释的**理由**与实际不符（`drop(r)` 那个动作
+本身无害，但把它写成"不这么做就删不掉"会让后来的人据此改动盘满那条路径）。
+订正留给下一个 patch：只改注释理由，不动任何行为。
+
 ## [5.15.95] - 2026-11-01
 
 ### 5.15.94 推到 CI 后剩下的三处红：两条 clippy 1.99 新规 + 新码没接前端表
