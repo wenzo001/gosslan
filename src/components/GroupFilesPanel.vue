@@ -12,7 +12,7 @@
  */
 import { t } from "@/i18n";
 import Spinner from "@/components/ui/Spinner.vue";
-import { computed, onBeforeUnmount, watch } from "vue";
+import { computed, onBeforeUnmount, ref, watch } from "vue";
 import { useQuery, useQueryClient } from "@tanstack/vue-query";
 import { api } from "@/api";
 import { useAppStore } from "@/stores/useAppStore";
@@ -21,8 +21,11 @@ import BaseModal from "@/components/BaseModal.vue";
 import { fmtConversationTime } from "@/utils/time";
 import { formatBytes } from "@/utils/format";
 import { FILE_KIND_ICONS, extBadgeLabel, fileKindOf, fileKindStyle } from "@/utils/fileKind";
-import { openLocalFile } from "@/utils/localFile";
-import { RotateCw } from "lucide-vue-next";
+import { openLocalFile, saveLocalFile } from "@/utils/localFile";
+import { Download, FolderOpen, RotateCw } from "lucide-vue-next";
+import { DropdownMenuItem } from "reka-ui";
+import ContextMenu from "@/components/ContextMenu.vue";
+import { revealItemInDir } from "@tauri-apps/plugin-opener";
 import StateBlock from "@/components/ui/StateBlock.vue";
 import PrimaryBtn from "@/components/ui/PrimaryBtn.vue";
 import { errorText } from "@/composables/useErrorText";
@@ -153,6 +156,46 @@ function deliveryText(f: GroupFileEntry): string | null {
   return t("group.files.delivered", { n: f.delivered, total: f.total });
 }
 
+/** N6-3（2026-11-01 用户拍板）：群文件行右键 →「另存为」「打开所在目录」。
+ *  两个动作都只对**本地已有那份文件**有意义 ⇒ 没有 `local_path` 的行不弹菜单（而不是给灰项：
+ *  灰项会让人以为"点了没反应"，而这是群文件面板里最常见的误报来源）。 */
+const ctx = ref<{ f: GroupFileEntry; x: number; y: number } | null>(null);
+
+function onContextMenu(f: GroupFileEntry, e: MouseEvent) {
+  if (!f.local_path) return;
+  e.preventDefault();
+  e.stopPropagation();
+  // 键盘唤起时 clientX/Y 一起是 0 ⇒ 用行矩形定位（与消息行/好友行同款）。
+  if (e.clientX === 0 && e.clientY === 0) {
+    const rect = (e.currentTarget as HTMLElement | null)?.getBoundingClientRect();
+    if (rect) {
+      ctx.value = { f, x: rect.left + 24, y: rect.bottom - 4 };
+      return;
+    }
+  }
+  ctx.value = { f, x: e.clientX, y: e.clientY };
+}
+
+async function saveAs(f: GroupFileEntry) {
+  ctx.value = null;
+  if (!f.local_path) return;
+  try {
+    await saveLocalFile(f.local_path, f.name, `gfile-${f.transfer_id}`);
+  } catch (e) {
+    app.toastError(e, t("msg.saveFileFail"));
+  }
+}
+
+async function revealInFolder(f: GroupFileEntry) {
+  ctx.value = null;
+  if (!f.local_path) return;
+  try {
+    await revealItemInDir(f.local_path);
+  } catch (e) {
+    app.toastError(e, t("msg.openFileFail"));
+  }
+}
+
 async function openFile(f: GroupFileEntry) {
   if (!f.local_path) return;
   // 平台差异（Android 改走另存为）统一在 utils/localFile 里，与消息气泡同一条路径。
@@ -251,6 +294,7 @@ function stateText(state: GroupFileEntry["local_state"]): string {
           @click="openFile(f)"
           @keydown.enter.prevent="openFile(f)"
           @keydown.space.prevent="openFile(f)"
+          @contextmenu="onContextMenu(f, $event)"
         >
           <div
             class="flex h-9 w-9 shrink-0 items-center justify-center rounded-[var(--gosslan-radius-md)]"
@@ -299,5 +343,17 @@ function stateText(state: GroupFileEntry["local_state"]): string {
         </p>
       </div>
     </div>
+    <!-- 右键菜单：整表一个实例，用 `ctx.f` 记住是那一行（与好友/会话列表同款） -->
+    <ContextMenu v-if="ctx" :x="ctx.x" :y="ctx.y" @close="ctx = null">
+      <DropdownMenuItem class="gosslan-menu-item" @select="saveAs(ctx.f)">
+        <Download class="h-3.5 w-3.5" />
+        {{ t("favorite.saveAs") }}
+      </DropdownMenuItem>
+      <DropdownMenuItem class="gosslan-menu-item" @select="revealInFolder(ctx.f)">
+        <FolderOpen class="h-3.5 w-3.5" />
+        {{ t("common.revealInFolder") }}
+      </DropdownMenuItem>
+    </ContextMenu>
+
   </BaseModal>
 </template>

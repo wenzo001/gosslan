@@ -1021,6 +1021,7 @@ export const enUS: MessageDict = {
 
   // ---- Friends ----
   "friend.openProfile": "View {name}'s profile",
+  "group.mentionMember": "Mention",
   "friend.add.title": "Add Friend",
   "friend.add.scanning": "Scanning LAN peers…",
   "friend.add.scanFail": "Scan failed. Please try again.",
@@ -1394,6 +1395,7 @@ export const enUS: MessageDict = {
   "favorite.viewImage": "View image",
   "favorite.open": "Open",
   "favorite.saveAs": "Save as",
+  "common.revealInFolder": "Show in folder",
   "favorite.saveFail": "Failed to save",
   "favorite.saved": "Saved",
   "favorite.from": "Saved {time}",

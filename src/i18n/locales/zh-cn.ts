@@ -1046,6 +1046,7 @@ export const zhCN: MessageDict = {
 
   // ---- 好友 ----
   "friend.openProfile": "查看 {name} 的资料",
+  "group.mentionMember": "{'@'}他",
   "friend.add.title": "添加好友",
   "friend.add.scanning": "正在扫描局域网节点…",
   "friend.add.scanFail": "扫描失败，请稍后重试",
@@ -1433,6 +1434,7 @@ export const zhCN: MessageDict = {
   "favorite.viewImage": "查看图片",
   "favorite.open": "打开",
   "favorite.saveAs": "另存为",
+  "common.revealInFolder": "打开所在目录",
   "favorite.saveFail": "保存失败",
   "favorite.saved": "已保存",
   "favorite.from": "收藏于 {time}",

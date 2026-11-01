@@ -494,6 +494,45 @@ function charBeforeCaret(node: Text, offset: number): string {
   return r.toString().slice(-1);
 }
 
+/**
+ * 外部入口（N6-2 群成员面板右键「@他」）：在正文**末尾**追加一个 @token。
+ *
+ * 为什么不复用 `applyMention`：那个函数是从"用户刚敲的 @query"替换出来的，依赖选区与被删的查询串；
+ * 从面板触发时编辑器可能没有焦点、也没有 @query。这里直接按同一个 token 形状追加，
+ * `data-mention-id` 仍是权威答案（`collectMentionIds` 读的就是它）。
+ */
+function insertMentionAtEnd(member: { id: string; name: string }) {
+  const el = editorRef.value;
+  if (!el) return;
+  const span = document.createElement("span");
+  span.className = "mention-token";
+  span.contentEditable = "false";
+  span.dataset.mentionId = member.id;
+  span.dataset.mentionName = member.name;
+  if (composerMentionFg.value) span.style.color = composerMentionFg.value;
+  span.textContent = `@${member.name}`;
+  // 边界：接收端要求 @名字 前是行首/空白；末尾已有内容时先补一个 nbsp（同 `applyMention` 的 needLead）。
+  const tail = el.textContent ?? "";
+  if (tail.length > 0 && !/\s$/.test(tail)) el.appendChild(document.createTextNode("\u00A0"));
+  el.appendChild(span);
+  const space = document.createTextNode("\u00A0");
+  el.appendChild(space);
+  const sel = window.getSelection();
+  if (sel) {
+    const r = document.createRange();
+    r.setStart(space, 1);
+    r.collapse(true);
+    sel.removeAllRanges();
+    sel.addRange(r);
+  }
+  if (!app.isMobile) el.focus();
+  autoResize();
+  // 与输入事件同一条落盘路径（草稿存在 store，切会话/重开都靠它）。
+  scheduleDraftSave();
+  syncDraftState();
+}
+defineExpose({ insertMention: insertMentionAtEnd });
+
 /** 选中成员：把「@query」替换为 mention token（原子 span）+ 尾随 nbsp，caret 落到 nbsp 后。 */
 function applyMention(member: { id: string; name: string }) {
   const el = editorRef.value;

@@ -636,6 +636,21 @@ function openImageAt(msgId: string) {
 
 // ---------------- 群：成员面板 + 改名 ----------------
 const membersOpen = ref(false);
+/** 输入框实例：只为了 N6-2「@他」——成员面板关掉后把 @token 插进正文。 */
+const composerRef = ref<{ insertMention?: (m: { id: string; name: string }) => void } | null>(null);
+
+/** 成员面板右键「@他」：先关面板、等一帧再插（面板的退场动画/焦点归还完成后编辑器才拿得到焦点）。 */
+function onMemberMention(id: string) {
+  const name = mentionMembers.value.find((m) => m.id === id)?.name ?? id;
+  membersOpen.value = false;
+  void nextTick(() => composerRef.value?.insertMention?.({ id, name }));
+}
+
+/** 成员面板右键「查看资料」：复用聊天头那条（本机/好友/在线节点同一套解析）。 */
+function onMemberProfile(id: string) {
+  membersOpen.value = false;
+  openSenderProfile(id);
+}
 const filesOpen = ref(false);
 const tasksOpen = ref(false);
 const activeGroupId = computed(() =>
@@ -2120,6 +2135,7 @@ function retryHistory() {
       </div>
       <MessageComposer
         v-else-if="isGroup || isPeerFriend || isSelfChat"
+        ref="composerRef"
         :conv-id="chat.activeConv"
         :quote="quote"
         :mention-members="mentionMembers"
@@ -2144,6 +2160,8 @@ function retryHistory() {
       :open="membersOpen"
       :group-id="activeGroupId"
       @close="membersOpen = false"
+      @mention="onMemberMention"
+      @open-profile="onMemberProfile"
       @open-tasks="membersOpen = false; openTasks()"
       :tasks-opening="tasksOpening"
             :open-tasks="openTasksForActive"
