@@ -65,6 +65,10 @@ const FILE_FAIL_REASON_KEYS: Record<string, string> = {
   // 取消是用户动作，那边见到它就不发失败帧了（取消自己有终态）——它在这里有文案只为
   // 文档完整（万一将来别处把取消也走这一帧，界面至少说得对）。
   FILE_SEND_CANCELLED: "file.sendCancelled",
+  // 5.15.94 起多一格：同一单在同一条链路上已经有一趟在发，本次登记被挡回。
+  // 与取消同一族（`handle_share.rs` 见到它也不发失败帧、`relay_push.rs` 不落失败终态），
+  // 所以正常永远上不了屏 —— 留文案只为"万一别处把它当 reason emit 了"时界面说得对。
+  FILE_SEND_ALREADY_IN_FLIGHT: "file.sendAlreadyInFlight",
   FILE_SEND_UNREADABLE: "file.sendUnreadable",
   FILE_SEND_NOT_REGULAR: "file.sendNotRegular",
   FILE_SEND_TOO_LARGE: "file.sendTooLargeRelay",

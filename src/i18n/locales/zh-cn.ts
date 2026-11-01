@@ -977,6 +977,7 @@ export const zhCN: MessageDict = {
   "file.relayTaskAborted": "本机处理这一单时任务被中断，已停止；请让对方重新发送",
   "file.relayHashFailed": "中继收完了，但本机读不出文件来校验，这一单已作废；请让对方重新发送",
   "file.sendCancelled": "已按你的操作取消，这一单不会再发送",
+  "file.sendAlreadyInFlight": "这一条已经有一趟在发送，重复的那一次没有发出去（等在前面的那次跑完即可）",
   "file.sendUnreadable": "这个文件读不到了（可能被移动或删除）；请重新选择文件再发",
   "file.sendNotRegular": "只能发送普通文件（文件夹或特殊文件发不出去）",
   "file.sendTooLargeRelay": "文件超过中继能接收的单文件上限；请改用直连或压缩后再发",

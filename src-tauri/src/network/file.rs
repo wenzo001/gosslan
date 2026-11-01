@@ -228,7 +228,7 @@ pub(crate) fn install_slot_core(
 /// 返回是否真的摘掉了。对不上 = 那一格已经不是我的了（被真取消摘走、或从未存在）⇒ **不动它**。
 pub(crate) fn release_slot_core(cancels: &CancelSlots, key: &str, ticket: u64) -> bool {
     let mut cancels = cancels.lock().unwrap_or_else(|e| e.into_inner());
-    let mine = cancels.get(key).map_or(false, |(_tx, t)| *t == ticket);
+    let mine = cancels.get(key).is_some_and(|(_tx, t)| *t == ticket);
     if mine {
         cancels.remove(key);
     }
