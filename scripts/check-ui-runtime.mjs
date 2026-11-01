@@ -707,11 +707,17 @@ window.__probe = (() => {
     }
     const app = V.createApp({
       setup() {
-        return () => st.open ? V.h(mod.default, Object.assign({}, base, handlers)) : null;
+        // 子组件的 defineExpose 挂在子实例上，包装层的根代理看不到它 ⇒ 用 ref 单独抓一份。
+        const childRef = V.ref(null);
+        window.__probe.__child = childRef;
+        return () => st.open ? V.h(mod.default, Object.assign({}, base, handlers, { ref: childRef })) : null;
       },
     });
     if (window.__pinia) app.use(window.__pinia);
+    // 把根实例挂到探针上：有些能力是 defineExpose 出来的（如 MessageComposer.insertMention），
+    // 不经 DOM 事件就能调；没有这个句柄就没法量"调完之后编辑器里到底长出了什么"。
     app.mount(host);
+    window.__probe.lastVm = window.__probe.__child && window.__probe.__child.value;
     window.__probe.vue = V;
     await V.nextTick(); await V.nextTick();
     return { ok: true };
@@ -10764,6 +10770,48 @@ async function runCtxMenu(cdp, url) {
         && mEv.some((e) => e[0] === "mention" && String(e[1]) === "bob")
         && mEv.some((e) => e[0] === "close"),
       "mention(bob) + close", JSON.stringify(mEv));
+
+    // —— 「@他」的**接收端**：chip 真长进输入框了吗 ——
+    // 上面那条只证到"面板发出 mention"，而"ChatWindow 会调 insertMention"只有静态判据；
+    // 用户真正看得见的是编辑器里那个 span（接收端 `collectMentionIds` 读的就是 `data-mention-id`），
+    // 以及它后面那个 nbsp（缺了它 `@名字` 会粘在前一个字尾巴上）。
+    await cdp.eval(`window.__probe.installMenu(${JSON.stringify(JSON.stringify({ convId: "probe-conv" }))}, ${JSON.stringify(JSON.stringify({ path: "/src/components/chat/MessageComposer.vue", emits: [] }))})`);
+    await sleep(400);
+    const composerBoot = await cdp.eval(`(() => {
+      const el = document.querySelector('#probe-host [contenteditable="true"]');
+      return {
+        found: !!el,
+        tokens: document.querySelectorAll('#probe-host .mention-token').length,
+        hasApi: !!(window.__probe.lastVm && typeof window.__probe.lastVm.insertMention === 'function'),
+      };
+    })()`);
+    check("对照：输入框挂得上、insertMention 已暴露、插之前一个 token 都没有（否则下面两条是空跑）",
+      composerBoot.found === true && composerBoot.hasApi === true && composerBoot.tokens === 0,
+      "输入框 + insertMention + 0 token", JSON.stringify(composerBoot));
+
+    const inserted = await cdp.eval(`(async () => {
+      window.__probe.lastVm.insertMention({ id: "bob", name: "bob" });
+      const el = document.querySelector('#probe-host [contenteditable="true"]');
+      const tok = el && el.querySelector('.mention-token');
+      const { getComposerDraft } = await import('/src/utils/composerDrafts.ts');
+      await new Promise((r) => setTimeout(r, 700));
+      return {
+        tokens: el ? el.querySelectorAll('.mention-token').length : -1,
+        id: tok ? tok.dataset.mentionId : null,
+        name: tok ? tok.dataset.mentionName : null,
+        text: tok ? tok.textContent : null,
+        editable: tok ? tok.getAttribute('contenteditable') : null,
+        tail: el ? (el.textContent || '').slice(-1) : null,
+        draft: getComposerDraft("probe-conv") || "",
+      };
+    })()`);
+    check("「@他」真插进输入框：1 个 chip、data-mention-id=bob、且不是可编辑文本",
+      inserted.tokens === 1 && inserted.id === "bob" && inserted.name === "bob"
+        && inserted.text === "@bob" && inserted.editable === "false",
+      "1 个 .mention-token + data-mention-id=bob + contenteditable=false", JSON.stringify(inserted));
+    check("chip 后面补了 nbsp（接收端要求 @名字 前是行首/空白），且这条内容真的进了草稿",
+      inserted.tail === "\u00A0" && inserted.draft.includes('data-mention-id="bob"'),
+      "尾部 nbsp + 草稿含 chip", JSON.stringify({ tail: inserted.tail, draft: inserted.draft.slice(0, 120) }));
 }
 
 /**
