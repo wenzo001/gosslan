@@ -339,6 +339,26 @@ pub fn list_group_file_recipients(
 /// 只有"用户主动取消"会写 `cancelled`（自动路径写的是 `failed`/`pending`），
 /// 所以状态本身就是墓碑。判据：`group_files_tests::a_cancelled_recipient_row_is_a_hard_terminal`。
 #[allow(dead_code)]
+/// 进度推进专用：**只更新仍在 `sending` 的那一格**。
+///
+/// 为什么要与 [`update_group_file_recipient`] 分开（2026-11-01 盘满探针连读三轮）：
+/// 那条通用更新只挡 `cancelled`，于是**一条迟到的进度写能把 `failed`/`done` 拉回 `sending`** ——
+/// 现场就是"日志已判 DISK_FULL、`.part` 也删了，台账仍显示接收中"。进度写天然是"晚到就作废"的语义，
+/// 所以它自己带终止性；而状态机迁移（`failed`/`completed` 等）仍走通用那条，语义不变。
+pub fn bump_group_file_recipient_progress(
+    conn: &Connection,
+    transfer_id: &str,
+    recipient_id: &str,
+    progress: f64,
+) -> Result<()> {
+    conn.execute(
+        "UPDATE group_file_recipients SET progress = ?3, updated_at = ?4
+         WHERE transfer_id = ?1 AND recipient_id = ?2 AND status = 'sending'",
+        params![transfer_id, recipient_id, progress, now_ms()],
+    )?;
+    Ok(())
+}
+
 pub fn update_group_file_recipient(
     conn: &Connection,
     transfer_id: &str,
@@ -593,7 +613,7 @@ pub fn upsert_group_file_receive(
 mod group_file_delivery_tests {
     use super::{
         cancel_group_file_recipient, cancel_group_file_recipients,
-        get_group_file_delivery_summary, is_group_file_cancelled,
+        bump_group_file_recipient_progress, get_group_file_delivery_summary, is_group_file_cancelled,
         is_group_file_recipient_cancelled, list_pending_group_files_for_recipient,
         list_stale_group_file_sending, mark_group_file_cancelled, requeue_stale_group_file_sending,
         update_group_file_recipient, upsert_group_file_receive,
@@ -605,6 +625,39 @@ mod group_file_delivery_tests {
         let conn = Connection::open_in_memory().unwrap();
         conn.execute_batch(SCHEMA).unwrap();
         conn
+    }
+
+    /// ★ 迟到的**进度写**不许动终态（2026-11-01 盘满探针连读三轮：日志判 DISK_FULL、`.part` 已删，
+    /// 台账却仍是 `sending` —— 收尾写了 `failed`，同一秒另一条进度写把它盖回去）。
+    #[test]
+    fn progress_write_only_touches_rows_still_sending() {
+        let conn = mem();
+        conn.execute(
+            "INSERT INTO group_files(transfer_id,group_id,sender_id,name,size,sha256,status,created_at,scope,todo_id)
+             VALUES('gf-p','g1','me','x.bin',10,'00','pending',1,'chat','')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO group_file_recipients(transfer_id,recipient_id,status,progress,updated_at)
+             VALUES('gf-p','peer-b','sending',0.0,1)",
+            [],
+        )
+        .unwrap();
+        // 正常：sending 时可以推进度
+        bump_group_file_recipient_progress(&conn, "gf-p", "peer-b", 0.5).unwrap();
+        update_group_file_recipient(&conn, "gf-p", "peer-b", "failed", 0.0).unwrap();
+        // 迟到：终态之后再来一次进度写，必须一个字都不改
+        bump_group_file_recipient_progress(&conn, "gf-p", "peer-b", 0.9).unwrap();
+        let (st, pg): (String, f64) = conn
+            .query_row(
+                "SELECT status, progress FROM group_file_recipients WHERE transfer_id='gf-p' AND recipient_id='peer-b'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(st, "failed", "终态被迟到的进度写改回了 sending ⇒ 界面会一直挂「接收中」");
+        assert_eq!(pg, 0.0, "终态的进度也该被钉住，不许被迟到写推进");
     }
 
     /// 投递台账的读侧聚合：界面那句"几个人收到 / 几个失败"就来自这一份摘要。

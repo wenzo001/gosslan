@@ -2293,7 +2293,10 @@ fn write_group_chunk_blocking(
     // 锁序 receivers→db（与本文件其它地方一致）：先放掉 receivers 再取 db。
     drop(recv);
     let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
-    let _ = db::update_group_file_recipient(&dbc, transfer_id, &state.device_id, "sending", progress);
+    // 进度写走**只更新 sending** 的那条：迟到的进度不许把终态（failed/done）拉回 sending。
+    if let Err(e) = db::bump_group_file_recipient_progress(&dbc, transfer_id, &state.device_id, progress) {
+        crate::logging::log_write_failure(&state.logger, "bump_group_file_recipient_progress", e);
+    }
     GroupChunkWrite::Written
 }
 
