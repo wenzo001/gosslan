@@ -1772,7 +1772,7 @@ A 侧确实收到跨跳同意并自动建了空会话（`last_msg=NULL`、两侧
 | ID | 偏差 | 证据 |
 |---|---|---|
 | **P16** | 原状：五档里 `recoverable`/`user_action_required`/`security_related` **全仓 0 命中**，只有文件/内容传输族有真分类。**2026-10-29 已把口径写实**（负责人选"窄口挂码"而不是全面铺开）：内部收尾判断本来就是结构化的（`send_retry_verdict` 吃 `SendFileError{retryable,cancelled}`、台账走 `FailReason` 九档），需要修的只有"**界面按中文文案分支**"那两处 ⇒ 新增 `error_codes.rs`（`E2EE_PUBKEY_MISSING` / `PORT_IN_USE`）+ 前端 `CODE_RULES` 先按码分类 + 双向对账判据。OS/第三方串仍走签名兜底（那不是分类器）。**同日晚补上第二条通道**（§4.0j）：`禁止 Err → failed` 按"状态不拆档、原因必须有码"执行 ⇒ DB v14→v15 给 `messages` 加可空 `fail_code`，四格消息级终态各带自己的码，界面 tooltip 从「发送失败」变成「发送失败：<为什么>」 | `src-tauri/src/error_codes.rs`、`src/utils/errors.ts`、`src/utils/fileFailReason.ts` |
-| **P18** | **只剩半条**（2026-10-29 分两批落地）：判据 A/B 真实存在且已接门禁（96 类型 + 169 命令体，0 违规），判据 C（落点边界）已加（5.15.18），`x25519_secret` **已私有化**、ECDH 只从 `Identity::dh()` 出去。仍开的只有 **Ed25519 私钥字段是 `pub`** —— 前置是「签名能力」抽象，否则每个调用点都得拿到能签的东西（复跑 `grep -n "pub ed25519_signing" src-tauri/src/crypto.rs`） | `src-tauri/src/crypto.rs`、`scripts/check-key-boundary.mjs` |
+| **P18** | **两半都已落地**（X25519 5.15.18；**Ed25519 5.15.45，§4.0ac**：`ed25519_signing` 也已私有 + 对外只剩 `Identity::signer()` 交出的 `IdentitySigner` + 判据 C 扩到这一半），判据 A/B 已接门禁（现读 98 类型 + 174 命令体，0 违规）。**2026-11-01 复核**：`grep -n "pub ed25519_signing"` 零命中；`node scripts/check-key-boundary.mjs` 退码 0。~~此前这条写"仍开的只有 Ed25519 私钥字段是 pub"~~ 属过期条目 —— 本表当时没跟着 §4.0ac 更新 | `src-tauri/src/crypto.rs`、`scripts/check-key-boundary.mjs` |
 | **P27** | 已读与红点共用 `chatViewerLooking()`，但**系统通知那一族四处**（`useChatStore.ts:326/481/500/661`）用 `!document.hidden && document.hasFocus() && activeConv===conv_id` —— 第三个条件是子集，守卫只数 `!document.hidden && app.chatVisible` 这个组合所以看不见 | `src/stores/useChatStore.ts` |
 | **P34** | 原状：十二处慢活逐格在池内、位置断言在、`Err` 不伪装成 `Ok`；但文档规则 6 写死的"现算处数 17"与判据实际钉的 **18** 不同步。**2026-10-29 晚已改文档（17 → 19，与判据同句说明"法条上的数要跟着判据走"）**；STB-01 那处 `write_all(` 已随 5.15.10 收进 `PRIMITIVES` | `docs/protocol-invariants.md` vs `lib_relay_data_tests.rs` |
 
@@ -1931,7 +1931,7 @@ A 侧确实收到跨跳同意并自动建了空会话（`last_msg=NULL`、两侧
 ### 还没做的，按建议顺序
 
 1. ~~**TST-02**（曾写成「唯一还活着的 P1」）~~ —— **已收口**：5.15.41 / 5.15.42 / 5.15.47 三笔把六个 handler 收进 `utils/messageWrite`（§4.0z / §4.0aa / §4.0ae，§8 第 7 行）；当年写的前置「整店 DI」复核后判不必。
-2. **INV-P18 的 Ed25519 那半** —— 前置是"签名能力"抽象（**仍开着**，见 §5 的 P18 行）。
+2. ~~**INV-P18 的 Ed25519 那半**~~ —— **已于 5.15.45 落地**（§4.0ac：字段私有 + `IdentitySigner` 能力对象 + 判据 C 扩到这一半）；2026-11-01 复核判据退码 0。
 3. ~~**第 19 行·批 B 剩下的半格**~~ —— **已收口**（5.15.32，§4.0r）：群文件 6 条 `REASON_*` 已转码并写进气泡行，且「是不是稳定码」与「要不要弹 toast」已拆成两件；同批 A2 也随 §4.0u / §4.0v 收口。原文：1:1 那一半已在 5.15.31 闭环（不加列、不迁移，走的正是 5.15.22 那扇门）；B2 必须先拆 `group_file.rs::is_stable_fail_code` 那句兼两职的话，否则断链时会给每个在途群文件弹一次 toast。
 4. ~~**DUP 剩余的 2 行**~~ —— **本轮清零**（DUP-07 已于 5.15.39 收口；DUP-15 复核后确认早有棘轮判据 ㊼ 与显式登记的保留理由，§4.0x）。原文：纯重复，收益是"少一份会漂的拷贝"。DUP-03/04 已于 5.15.26 / 5.15.25 收口，DUP-13 已于 5.15.27 收口（§4.0n：现数是两种策略九处，不是审计写的三份），DUP-06 已于 5.15.28 收口（§4.0o），DUP-14 判**不做**。
    （第 12 行 DUP-02 的那半本轮**复核后判不再统一**，理由与三条防复发判据见 §4.0l。）
@@ -2062,7 +2062,7 @@ audit-context/
 | 1 | **#23 Windows 渲染层卡死**（11 分钟零心跳） | 外部取证 | 需要那台机器的现场文件 | §4.0bi 取证单：取 `%APPDATA%\com.gosslan.app\logs\gosslan-crash.log` 里 `>>> code=HANG` 与 `>>> code=RUNTIME_MEM`；判读 `tree_cpu_ms ÷ (window_s×1000)`：≈1 空转 / 0 挂起 / 几十 ms 空闲 |
 | 2 | **群侧盘满端到端（TST-06）** | 外部环境 | 需要能真写满的卷 + 三实例；10-31 拍板本批不做 | 形状层判据已齐（条件按码判 / 支内删 / 三态日志）；缺的是真 ENOSPC 的下游读数 |
 | 3 | **Windows 句柄未关时删 `.part`** | 外部取证 | 需要 Windows 上「删 `.part` 报共享冲突」的真日志 | 若永不冲突，说明 `FILE_SHARE_DELETE` 已覆盖，可结案 |
-| 4 | **INV-P18：Ed25519 私钥字段仍是 `pub`** | 需设计 | 前置是"签名能力"抽象，未获授权开工 | §5 的 P18 行、`protocol-invariants.md` INV-P18 |
+| 4 | ~~INV-P18：Ed25519 私钥字段仍是 `pub`~~ | **已落地（5.15.45 / §4.0ac），2026-11-01 复核** | 早已私有化 + `IdentitySigner` + 判据 C 扩到这一半；`grep -n "pub ed25519_signing"` 零命中、`check-key-boundary` 退码 0 | §5 的 P18 行已同步订正；`protocol-invariants.md` 的 INV-P18 段仍写着 |
 | 5 | ~~A2 十格 + A7 各实例几何~~ | **全部实测通过**：A2 十格（含 busy）、A7 恢复 / 保存 / 各实例分文件 | 读数与量纲坑见 §4.0bj；A7 两次假读数已归因到「同名残留进程」 | A2 用 `cabe545` 的验收轮 + 手跑补 busy/单实例；A7 用隔离 HOME 预置状态文件 + Cmd+Q 实跑 |
 | 6 | ~~A2 的 `resolved` 置真顺序~~ | **已修（5.15.91 / `16e00f5e`）** | 在调度失败的 `Err` 分支复位 `resolved`/`retrying`（2 行）；成功路一字未改 | 现跑：`startup_error` 6 passed、`cargo test --lib` 1355 passed / 0 failed、clippy 0、fmt 0；§4.0bj 第 2 条已改为结论 |
 | 7 | **A4 / A10 的双实例真流程**（加好友→同意→重启） | A4 恢复臂**已实测且已入库**（`cabe545`）；**A10 双实例真链路也已实测**（2026-10-31 深夜，两台隔离 HOME：A 走界面加好友 → B 收到并落库 → B 同意 → **A 收到同意并自动建会话** → 两台各自 Cmd+Q 再启动会话仍在、`friend_req` 两侧为 0）——⚠️ **执行者是既有验收助手 + AX + 一次真实键盘，不是人眼**，"界面看起来对"那一层仍归人 | `friendreq` 轮只覆盖 A4 的**数据库预置**恢复臂；A10 那一臂现在由真帧补上，但只跑了 LAN + 跨跳 gossip（BLE / 中继 / 跨网未跑），且界面**没有手填对端地址**这条路 ⇒ 扫不到就没法加，这条本身是产品行为、待拍板 | 正向 **9/9（整轮 27=默认 18+本轮 9，退出 0）**、反向 `friendreq-lie` **恰 2 条设计内断言红、退出 1**；入库后的提交版本与实跑内容一致（`tcpOpen` 导入在、`check(` 9 处，现场核过）。真链路读数：B `17:47:02 收到跨跳好友申请 peer=gosslan-a4946d607ad3c-i97`、A `17:48:06 收到跨跳好友同意`+`17:48:08 重复的好友同意（已忽略）`、两侧 `friends=1 / conversations=1 / last_msg=NULL`、两侧 `x25519_pubkey is null` 计数 **0**（⇒ 预置那一轮"回执发不出去"是**夹具缺公钥**，不是产品丢公钥，那条怀疑撤销） |
