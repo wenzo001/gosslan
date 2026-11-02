@@ -308,6 +308,12 @@ A 侧 `file_outbox` 行被收尾删除、同一条传输只记一次、接收目
 ★ 这张表**不许读成「CI 覆盖组合面」**：远端只有 unit / lint / clippy / rust 测试 / android 检查与三份出包流水线，**双实例轮一条都不在远端**（复跑：`grep -n "verify.mjs --group" .github/workflows/verify.yml`）。
 凡标 `AUTOMATED-LOCAL` 的行，这层保护只在有人本机跑 `npm run verify:e2e` 时存在——这正是 §七-4 要的那类组合目前唯一断在哪里的地方。
 
+**2026-11-02 P6 本机取证**：release 二进制按当前源码重编后跑
+`node scripts/e2e-multi-instance.mjs` ⇒ **默认轮 18 条断言全绿**、退码 0；报告在
+`test-results/run-2026-11-02T15-59-26-426Z/summary.html`。Windows 渲染层卡死与
+Android 真机仍 **BLOCKED**（本机无对应设备）；采集步骤见
+`docs/notes/device-selfcheck-2026-11-02.md`。
+
 ## 平台 / 硬件 Smoke 清单（这些永远不许出现在"绿"里）
 
 | 编号 | 项目 | 可观测判据（用户本机） | 最近一次人工验收 |
