@@ -2635,7 +2635,7 @@ audit-context/
    → 现读 8 条：`group_command_rejections` / `favorite_failure_paths` / `file_command_rejections` /
    `friend_accept_failures` / `settings_writes_go_through` / `link_and_profile_failures` /
    `mobile_picker_failures` / `share_command_failures`。
-5. **可验证**：36 → **13 格**（本册 `可验证` 列的现算：`grep` 该列 `PARTIAL/待审/FAIL` 计数）。
+5. **可验证**：36 → **12 格**（⚠️ 口径：按「9 段可解析行」现算 —— 本册有 **16 行**的单元格里含**未转义的竖线**，这些行用切列脚本读不到 `可验证` 列，所以 12 只是可解析那一部分的读数；那 16 行同时会让 Markdown 表格渲染错列，**属待修的文档缺陷**（别用脚本盲改：裸竖线正是当年撑破列数的坑）。复跑：`python3` 按 `^\|\s*F-` 切行、仅取 9 段、数第 7 段是否以 `PARTIAL/待审/FAIL` 开头）。
 6. **§13 第 12 / 14 / 15 / 16 行已收口**；第 16 行是「CHANGELOG 重复 `## [4.39.2]`」，
    考古结果是**同一版本两笔提交**（`81a9f12a` 提版、`a28e37e2` 为 `[plan]` 未提版）⇒ 合并、不重编号。
 
