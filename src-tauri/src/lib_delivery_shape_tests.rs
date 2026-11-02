@@ -934,3 +934,32 @@ fn mobile_picker_failures_carry_named_codes() {
         "缺公钥的**日志**没有配码（返回值的码不能替代日志里的码）"
     );
 }
+
+/// F-MSG-060：消息页读失败必须是 `Err`，**不许**折叠成空列表。
+///
+/// 行为那半：库坏了（表都不在）时 `db::get_messages` 必须报错 —— 如果它返回 `Ok(vec![])`，
+/// 界面看到的是「这个会话一条记录都没有」，用户会以为聊天记录全没了（B1-F7 的形状）。
+/// 接线那半：命令层必须把错误包成 `消息页读取失败: …` 而不是 `.ok()` / `unwrap_or_default()`。
+#[test]
+fn broken_db_reading_messages_is_an_error_not_an_empty_page() {
+    let conn = rusqlite::Connection::open_in_memory().expect("内存库");
+    let got = crate::db::get_messages(&conn, "peer:nobody", 10, 0);
+    assert!(
+        got.is_err(),
+        "表都不存在却返回 Ok ⇒ 这一页会被画成「一条记录都没有」：{got:?}"
+    );
+    let src = include_str!("commands/chat.rs");
+    let body = src
+        .split("pub async fn get_messages(")
+        .nth(1)
+        .expect("get_messages 不见了 ⇒ 判据的锚点要跟着改");
+    let head = body.split("\n}\n").next().unwrap_or(body);
+    assert!(
+        head.contains("消息页读取失败"),
+        "命令层没有把读失败包成具名错误 ⇒ 前端只能拿到空列表"
+    );
+    assert!(
+        !head.contains("unwrap_or_default()"),
+        "命令层把读失败折成了空列表（正是 B1-F7 要禁的形状）"
+    );
+}

@@ -1064,3 +1064,34 @@ fn settings_writes_go_through_the_named_code_helper() {
     assert!(src.contains("code=SETTINGS_WRITE_FAILED key={key}"));
     assert!(src.contains("code=SETTINGS_RESET_FAILED key={key}"));
 }
+
+/// F-PRE-015：「恢复默认」必须让**行为立即生效**，不是等重启。
+///
+/// 代码里那份理由（删了 relay_policy/relay_allowlist 之后内存缓存还留着旧策略）此前只靠人记得；
+/// 这里把四步钉成顺序：逐键删 → 中继策略回默认 → 热路径缓存失效 → 再广播 `"*"` 让各窗口重拉。
+/// 任何一步被删或挪到广播之后，用户都会看到「点了恢复默认、行为还是旧的」。
+#[test]
+fn reset_settings_refreshes_memory_before_broadcasting() {
+    let src = include_str!("commands/settings.rs");
+    let body = src
+        .split("pub fn reset_settings(")
+        .nth(1)
+        .expect("reset_settings 不见了 ⇒ 判据锚点要跟着改");
+    let end = body.find("\n}\n").unwrap_or(body.len());
+    let body = &body[..end];
+    let del = body.find("remove_setting(").expect("恢复默认不再逐键删除 ⇒ 判据点名");
+    let policy = body
+        .find("set_relay_policy_config(crate::mesh::relay_policy::RelayConfig::default())")
+        .expect("恢复默认没有把中继策略回默认 ⇒ 行为要等重启");
+    let cache = body
+        .find("invalidate_hot_setting_cache()")
+        .expect("恢复默认没有让热路径缓存失效 ⇒ language/notify 仍读旧值");
+    let bcast = body
+        .find("notify_settings_changed(&[\"*\"],")
+        .expect("恢复默认没有广播 \"*\" ⇒ 其他窗口仍显示旧设置");
+    assert!(
+        del < policy && policy < cache && cache < bcast,
+        "四步顺序变了（删 {del} / 策略 {policy} / 缓存 {cache} / 广播 {bcast}）：\
+         必须在广播**之前**把内存状态改对，否则收到的窗口重拉时拿到的还是旧行为"
+    );
+}
