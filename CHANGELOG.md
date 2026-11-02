@@ -13,6 +13,12 @@
 
 ## [Unreleased]
 
+### 矩阵订正：F-PLF-021 的「四项缺用例」缩到三项
+
+「UI 语言」那项已有判据 `set_ui_language_stays_silent_to_avoid_the_event_ping_pong`（5.16.69，见 F-PRE-016）。
+仍缺的是 `search_nearby_peers` / `focus_window` / `request_ble_permissions` 三条；三者都吃 `AppState` 或平台句柄，
+本仓现无测试用 AppState 构造器 ⇒ 本轮不动码，判级仍 PARTIAL，可验证 17 不变。
+
 ### 矩阵订正：五处「可诊断 FAIL」全部过期（B1-F1/F4/F6/F7 早已收口）
 
 逐行现读后的更正：F-MSG-014（1:1 取消现在落 `code=DM_CANCEL`，`lib_file_tests.rs:26` 钉住）、
