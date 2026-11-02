@@ -1052,3 +1052,57 @@ fn clear_chat_data_covers_every_table_or_says_why_not() {
         .collect();
     assert!(ghosts.is_empty(), "清表清单里有 schema 中不存在的表（改名/删表后没同步）：{ghosts:?}");
 }
+
+/// F-GRP-001：群管理的三条授权闸必须在**写之前**，且三条越权话术都得在。
+///
+/// 存储层的半边已有行为测试（`group_name_only_updates_for_the_recorded_creator`、
+/// `set_group_creator_updates_creator_only`）；这里守的是**命令层**：谁能发起、什么时候拒绝。
+/// 顺序断言不是形式主义 —— 检查挪到写之后，非群主照样能改，而界面只会看到"成功"。
+#[test]
+fn group_management_authorization_is_checked_before_the_write() {
+    fn body<'a>(src: &'a str, sig: &str) -> &'a str {
+        let tail = src
+            .split(sig)
+            .nth(1)
+            .unwrap_or_else(|| panic!("{sig} 不见了 ⇒ 判据锚点要跟着改"));
+        let end = tail.find("\n}\n").unwrap_or(tail.len());
+        &tail[..end]
+    }
+    let src = include_str!("commands/groups.rs");
+    for (sig, denial, write) in [
+        (
+            "pub async fn rename_group(",
+            "只有群创建者可以修改群名称",
+            "db::rename_group(",
+        ),
+        (
+            "pub async fn transfer_group_creator(",
+            "只有群创建者可以转让群主",
+            "db::set_group_creator(",
+        ),
+        (
+            "pub async fn leave_group(",
+            "群主退群前请先转让群主",
+            "db::delete_group(",
+        ),
+    ] {
+        let b = body(src, sig);
+        let d = b
+            .find(denial)
+            .unwrap_or_else(|| panic!("{sig} 的越权拒绝「{denial}」不见了"));
+        let w = b
+            .find(write)
+            .unwrap_or_else(|| panic!("{sig} 的写调用 {write} 不见了"));
+        assert!(
+            d < w,
+            "{sig}: 越权检查在写之后（检查 {d} / 写 {w}）⇒ 非群主也能改，而界面只看到成功"
+        );
+    }
+    // 转让群主另有两道闸：不许转给自己、目标必须是成员
+    let b = body(src, "pub async fn transfer_group_creator(");
+    let w = b.find("db::set_group_creator(").unwrap();
+    for denial in ["不能把群主转让给自己", "只能转让给群成员"] {
+        let d = b.find(denial).unwrap_or_else(|| panic!("转让群主少了「{denial}」这道闸"));
+        assert!(d < w, "「{denial}」必须在写库之前");
+    }
+}
