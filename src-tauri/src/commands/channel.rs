@@ -74,6 +74,8 @@ pub async fn build_runtime_snapshot(s: &Arc<AppState>) -> RuntimeSnapshot {
     let (routed_endpoints, relay_enabled) = {
         let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());
         (
+            // INV-EXCEPTION: INV-P36 — 只读诊断计数（同步、非 Result），读失败折成 0 不改任何行为，
+            // 且下面那臂已经带 `code=ROUTED_ENDPOINTS_READ_FAILED` 留痕 ⇒ 事后查得到（登记见不变量文档）。
             crate::discovery::routed::parse_endpoints(&match db::get_setting_checked(
                 &dbc,
                 crate::discovery::routed::ROUTED_ENDPOINTS_KEY,

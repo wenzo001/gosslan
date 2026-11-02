@@ -844,6 +844,11 @@ AI 读到 INV-P04「发送可靠消息 → insert message + insert outbox」
 | 不变量 | 例外 | 理由 | 引入 |
 |---|---|---|---|
 | INV-P03 | 自聊不经过 `queued → sending → waiting_ack → delivered`，落库即终态 `read` | 本机既是发送方也是接收方，不存在"在途"阶段，没有可等待的 ACK | `7c03341`（2026-09-16） |
+| INV-P36 | `commands/logs.rs` 的群任务窗标题读用宽松 `get_group`（含锁忙分支） | 标题是**装饰性**字段：读不到就留空，绝不能为它牺牲一次用户动作（开窗本身不依赖群名）。判据 `cosmetic_title_read_cannot_abort_the_window` 钉住"不许因为读不到而失败" ⇒ 这里要的是"照开"，不是"报错"。 | 5.16.32 |
+| INV-P36 | `commands/relay.rs::load_relay_runtime` 把 server/token 读失败折成"不启用" | 该函数跑在**拨号循环**里，没有界面能承接错误；口径是 fail-closed（脏数据 ⇒ 不建链路而不是带病建）。理由原样写在函数注释里，并被折叠判据登记为豁免。 | 5.16.32 |
+| INV-P36 | `commands/channel.rs` 的运行态快照把端点列表读失败折成 0 | 这一格是同步、非 `Result` 的**只读诊断**计数（设置页/加好友页那个"还开着几条跨网通道"）；折成 0 不改任何行为，且已带 `code=ROUTED_ENDPOINTS_READ_FAILED` 留痕 ⇒ 事后查得到。 | 5.16.32 |
+| INV-P36 | `commands/group_announcements.rs` 群名读失败折成空串后写会话行 | 下游 `db/conversations.rs` 对 `kind=='group'` 先从 `groups` 表查真名、UPDATE 分支再走 `name = CASE WHEN conversations.kind='group' THEN conversations.name ELSE excluded.name END` ⇒ 这一次折叠**写不坏**会话名（逐行复读确认）。 | 5.16.32 |
+| INV-P36 | `commands/mobile_picker.rs::get_pending_requests` 好友表读失败折成空 ⇒ 不删任何申请 | 折叠方向是**多留不误删**：读不到好友只会让"该消失的申请还留着"，与"该删的被删了"相比是安全侧。 | 5.16.32 |
 | INV-P04 | `insert_self_message` 走 `db::insert_message`，**不**写 outbox | outbox 的唯一出队条件是收到对端 Ack。自聊没有收件人、永远等不到 Ack ⇒ 那一行永远留在库里，被每次心跳/建链的 `flush_outbox` 反复重发，反而把「outbox 必然排空」破掉 | `7c03341`（2026-09-16） |
 
 <!-- END EXCEPTION REGISTRY -->
@@ -1778,3 +1783,56 @@ mesh 没有服务器也没有强制升级 ⇒ 混合版本是常态，不是边�
 - 反向：把群分支改成 `conv_id = sender_id`、或缺目标时回退单聊 ⇒ 前两条真值表红；把 `handle_gossip` 里的
   `let conv_id = target.conv_id;` 换成 `env.sender_id` ⇒ 结构那条红（实测 exit 101，报「会话键必须原样取自 …」）。
   三条一起才管住"函数对、接线错"这种最危险的形状。
+
+---
+
+### INV-P36 — 读库失败不许折成「没有数据」（折叠即假陈述）
+
+`db::get_*` / `db::list_*` 有两类签名：返回 `Option`/`Result` 的**严格读**，和把 SQL 错误
+一起折成 `None` / 空集合的**宽松读**。本条不变量管的是一个语义事实，而不是一份函数名单：
+
+> **「这一行不存在」与「这一次没读出来」是两个不同的值，绝不允许被折叠成同一个。**
+
+宽松读折出来的那个值会被下游当成事实使用 —— 于是界面画成"你好友一个人也没有"（还会把空态文案
+切成「还没有好友」）、任务中心画成"今天没有传输"、群成员面板画成"谁都没读过"、中继配置页画成
+"你还没配服务器"。这些都不是渲染问题：**系统在用一次 IO 失败生成一句关于用户数据的断言**。
+
+为什么它是协议级而不是实现细节（三个理由，都是这半年真踩到的）：
+
+1. **它写得出假的持久状态。** 通道开关偏好那格（`db/group_delete_boundary.rs`）原本是
+   `if get_setting(..).is_none() { set_..(conn, true).ok(); }` —— 读抖动走进了"首次安装"那一格，
+   于是**用户显式关掉的局域网/蓝牙被永久改成开**。这不是显示错，是配置被覆盖。
+   同形状还有一处更隐蔽的：`handle_messaging.rs` 的 `chat_peer_styles` 是**读-改-写整表**，
+   折成空表后写回 ⇒ 所有已知对端的聊天样式被抹掉只剩一条。
+2. **它会把"可重试"判成"永久放弃"。** `db::list_groups` 的错误折成空列表后，群密钥 fan-out
+   找不到群 ⇒ 归进 `GroupKeySendErr::Fatal`（口径＝重试无意义）⇒ 一次 `SQLITE_BUSY`
+   让那个群的密钥**永久**不再补发，成员此后每一条群消息都解不开。
+3. **它让事后无从归因。** 折叠是瞬时的、会自愈的：用户报「重启后设置变回去了」「图片一直不发」时，
+   日志里那一条都没有 ⇒ 只能等新一次抖动碰巧被人看见。
+
+**口径（谁有权解释这两个值）**：
+
+- 需要区分的一律走严格读取：`db::get_setting_checked`（`Ok(None)` = 键真的不存在）与
+  `db::get_group_checked`（同理，且它把 `get_group` 内部**第二层**折叠也分开了 —— 成员查询错误
+  原本折成空 `Vec`，于是"群存在但成员读不出"与"这个群没人"不可分）。
+- 宽松读可以保留（调用点确实不关心区别时），但**必须在本跳留一行痕迹**：走
+  `crate::logging::log_throttled` + 一个具名 `code=`（先例：`code=GROUP_LIST_READ_FAILED`、
+  `code=FRIENDS_LIST_READ_FAILED`、`code=TRANSFER_LEDGER_READ_FAILED`），
+  节流键按调用点分开，否则两处互相把对方的 5 分钟压掉。
+- **读-改-写整表的那一族**：读失败就不写回。折叠值写回＝用一次 IO 失败覆盖用户数据，
+  这一条不给豁免（外链端点、路由端点、`chat_peer_styles` 都按此收口）。
+- 有意折叠的每一处都要在例外登记里写清理由（`mobile_picker.rs` 的折叠方向是"多留不误删"，
+  `load_relay_runtime` 是 fail-closed + 有判据），代码侧同步打 `INV-EXCEPTION: INV-P36` 标记。
+
+- 钩子：`src/utils/designGuards.test.ts#主读不许把读库失败折叠成空` `src/utils/designGuards.test.ts#读库折叠总量是棘轮` `src/utils/designGuards.test.ts#设置落库失败必须上屏` `db::tests::unreadable_channel_pref_never_overwrites_the_explicit_choice` `db::group_read_strictness_tests::missing_group_and_failed_read_are_different_values`
+- 反向（每条都实测过红）：把 `get_lan_enabled` 退回 `get_setting(..).is_none()` ⇒
+  `unreadable_channel_pref_never_overwrites_the_explicit_choice` 红在「读失败时把默认值写回了库」；
+  把 `db::get_group` 的严格版换回 `.ok()?` ⇒ 同一族的 `missing_group_and_failed_read_are_different_values` 红；
+  删掉 `persistSettings` 里的 `logFrontendError` 一句 ⇒ `设置落库失败必须上屏` 红；
+  往任意 `commands/*.rs` 塞一行 `db::list_x(&c).unwrap_or_default()` ⇒ `读库折叠总量是棘轮` 红在
+  「超过棘轮上限」。四条合起来管住"文档说必须、底下没东西在跑"。
+- 边界（诚实算）：本条现在管得住的是**读→用**这条链（有棘轮封数量、有具名码封归因）。
+  仍等拍板的是界面口径：A 档那 6 格今天只补了留痕，用户看到的仍是"空"——
+  要不要改成上抛 + 界面错误态（以及每格文案）由负责人定；C 档 4 处（`commands/groups.rs` 的
+  群密钥 fan-out 跑 0 次而命令返回 `Ok(())`）分岔是"当场失败打断用户"还是"留痕 + 靠
+  `DbUnreadable` 补发档兜住"。这两件都在 `docs/notes/full-repo-audit-2026-10-29.md` §4.0bq。
