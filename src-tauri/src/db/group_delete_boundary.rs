@@ -41,15 +41,30 @@ pub fn delete_setting(conn: &Connection, key: &str) -> Result<()> {
     Ok(())
 }
 
+/// 「这一笔要不要把默认值写真回库」的唯一判据。
+///
+/// 为什么存在（2026-11-02）：`get_setting` 把 SQL 错误也折成 `None`（见 `db/settings.rs` 自己的注释），
+/// 而这两个通道开关原先写的是 `if get_setting(..).is_none() { set_..(conn, true).ok(); }` ——
+/// 「这次没读出来」于是走进了「键不存在」那一格，**把默认值覆盖回库**：
+/// 用户显式关掉的局域网/蓝牙，在一次 `SQLITE_BUSY` 或一行损坏的值之后被永久改成开。
+/// `Ok(None)` 才是"确实没有这个键"；`Err` 什么都不写。
+pub(crate) fn persists_missing_key_default(read: &Result<Option<String>>) -> bool {
+    matches!(read, Ok(None))
+}
+
 /// 局域网通道开关偏好：只有显式写入 "0"（用户在设置页关闭）才为关。
 /// 键不存在 ⇒ 开启 ⇒ 首次安装与「尚无该键」的旧版本升级都会自动联网，
 /// 并立即将此默认值持久化，之后每次启动读到明确的 "1" 而非依赖隐式默认。
+/// ⚠️ 「立即持久化」只适用于**键真的不存在**；读库失败时绝不写（见 `persists_missing_key_default`）。
 /// 读取方仅存在于桌面端启动路径（`lib.rs` 的 `#[cfg(desktop)]` 块），
 /// 移动端仍由设置页手动开启，故在该目标下为死代码。
 #[cfg_attr(not(desktop), allow(dead_code))]
 pub fn get_lan_enabled(conn: &Connection) -> bool {
-    if get_setting(conn, "lan_enabled").is_none() {
+    let read = get_setting_checked(conn, "lan_enabled");
+    if persists_missing_key_default(&read) {
         set_lan_enabled(conn, true).ok();
+    } else if let Err(e) = &read {
+        eprintln!("[gosslan-db] code=CHANNEL_PREF_READ_FAILED key=lan_enabled 不写回默认值：{e}");
     }
     // 口径统一走 `get_config_bool`（#125）：`false/0/off/no` 都是关，非法值留日志并按默认（开）走。
     // 旧写法是 `v != "0"` ⇒ 手工或测试写进库的 "false" 会被静默读成**开**，这颗雷今天已踩到。
@@ -69,14 +84,19 @@ pub fn set_lan_enabled(conn: &Connection, enabled: bool) -> Result<()> {
 /// 蓝牙是可选的低带宽通道，不该在用户没要求时悄悄开射频。
 /// 键不存在时才套用默认值并**立刻持久化**（与 `get_lan_enabled` 同一套语义：
 /// 之后每次启动读到的是明确的 "0"/"1"，而不是依赖隐式默认）。
+/// ⚠️ 读库失败**不算**"键不存在" —— 否则一次读抖动就把用户关掉的蓝牙偏好改成开。
 pub fn get_bt_enabled(conn: &Connection) -> bool {
-    if get_setting(conn, "bt_enabled").is_none() {
+    let read = get_setting_checked(conn, "bt_enabled");
+    if persists_missing_key_default(&read) {
         // 用户 2026-09-12 规则：**有蓝牙就默认开**（三端一致）——
         // 之前桌面默认关、手机默认开，结果"手机上默认有通道、Mac 上还要手动点一次"，
         // 而且（更糟）会让"偏好=关"与"运行时=开"互相回灌，触发启停抖动（见 `set_channel_enabled`）。
         let default_on = true;
         set_bt_enabled(conn, default_on).ok();
         return default_on;
+    }
+    if let Err(e) = &read {
+        eprintln!("[gosslan-db] code=CHANNEL_PREF_READ_FAILED key=bt_enabled 不写回默认值：{e}");
     }
     // 键存在：与 `lan_enabled` 共用同一条口径（#125）——
     // 旧写法 `v == "1"` 把"其它一切写法"都读成关，而 `lan_enabled` 那边把"其它一切写法"读成开，

@@ -2014,6 +2014,56 @@ draft-until-complete，上一次失败的发布尝试会留下永不公开的草
   与"读失败"不是一件事，本批刻意没动；真动它要先把"损坏"与"读失败"分开计码。
 
 
+### 4.0bq 通道开关偏好的"读失败＝键不存在"覆盖（5.16.25），与折叠判据的名字清单洞
+
+**这一处是 §4.0bp 那把"不限函数名"的量具顺出来的**：把判据从 6 个手抄函数名换成不限名字之后，
+全 crate 的真分母从 5 变成 24 —— 判据此前只认 `get_setting|get_messages|list_conversations|list_groups` 那几个名字，
+`list_friends` / `get_group` / `list_transfers` / `list_group_reads` 这些它一个字都看不见。
+（这条正是本仓反复踩的形状：**判据里手抄的名字清单会漂，分母得从真源现解析**。）
+
+- 最坏的一格不在那 24 行里，而在 `db/group_delete_boundary.rs`：`get_lan_enabled` / `get_bt_enabled`
+  用 `if get_setting(..).is_none() { set_..(conn, true).ok(); }` 把"键不存在"与"这次没读出来"合成一格 ⇒
+  **一次读抖动把用户显式关掉的局域网/蓝牙永久改回开**（写回的是默认值，且写失败又被 `.ok()` 咽掉）。
+  与 2026-10-20 为身份键立 `get_setting_checked` 的理由同源，当时只护住了身份键。
+- 修法：新增唯一判据 `persists_missing_key_default`（只认 `Ok(None)`），两个 getter 都走它。
+  用例 `unreadable_channel_pref_never_overwrites_the_explicit_choice` 的夹具是"TEXT 列里放非 UTF-8 字节"
+  ⇒ 取列时 `get::<String>` 报错而写路径照常可用；先 `assert!(read.is_err())` 自证夹具不是假的。
+  变异＝把 getter 退回原来那两行 ⇒ 红在「读失败时把默认值写回了库」；还原 `cmp` 逐字节相同 ⇒ 绿。
+- 流程欠账（同日现读）：`check-test-manifest.mjs --only rust` 报"另有 2 条新用例待纳入"，
+  其中一条是 **5.16.18 的 `add_friend_never_clears_a_known_profile_with_less_information`——昨天就没纳入**，
+  而那条命令当时退 0（"WARN 型退 0"）。本批补 `--update` + `--sync-baselines`，
+  现数 `基线 1373 条全部在跑`，macos/windows 两份各 +2 行。
+
+#### 这 24 处匹配的分档：1 处是尺子的假阳性、6 处判为不修/安全方向、17 处待动
+
+现数（同一把不限函数名的尺子扫 `src-tauri/src/` 全部 `.rs`）＝ **24 处匹配**，
+其中 `commands/relay.rs:305` 是**这把尺子的假阳性**：它的间隙跨过了结构体字面量的逗号，
+把 `get_config_bool(...)`（第 305 行，本身没有 `.unwrap_or_default()`）与下一行
+`server: db::get_setting(...).unwrap_or_default()`（第 306 行）算成了一格
+⇒ **真折叠 23 处**（`relay.rs:306` 与 `:307` 是两格真折叠，但只产出一条匹配）。
+记这一条不是因为数目，而是因为**"我的量具数出来的"本身要过一遍真读**。
+
+**判为不修 / 方向安全的 6 处**：`commands/logs.rs:874`（刻意降级，已有判据
+`cosmetic_title_read_cannot_abort_the_window`）、`commands/relay.rs:91` 与 `:92`
+（`load_relay_runtime` 的 fail-closed，折叠理由就写在函数注释里、并被折叠判据登记着）、
+`commands/channel.rs:77`（已经带 `code=ROUTED_ENDPOINTS_READ_FAILED` 留痕）、
+`commands/group_announcements.rs:451`（我复读 `db/conversations.rs:14-34` 确认：`kind=='group'` 那格
+UPDATE 走 `name = CASE WHEN conversations.kind='group' THEN conversations.name ELSE excluded.name END`，
+INSERT 前还先从 `groups` 表查真名 ⇒ 这一次折叠写不坏会话名）、`commands/mobile_picker.rs:261`
+（折叠方向是"该消失的申请还留着"，多留不误删）。
+
+**待动的 17 处**：
+
+| 档 | 处（数） | 折叠的后果 | 动它要先定什么 |
+|---|---|---|---|
+| A 界面假陈述 | `friends.rs:114`、`chat.rs:1162`、`groups.rs:161`、`files.rs:1693`、`files.rs:330`、`relay.rs:306`+`:307`（6 格） | 好友整张列表消失且空态文案切成"还没有好友"；群任务徽标与看板变空；某群的已读绿勾消失；任务中心传输行消失；群文件"我的状态"变默认；中继配置表单读成空 ⇒ 被当成"还没配" | 走 B1-F7 的先例（命令上抛 + 界面错误态）还是只补留痕？前者要逐格定文案 |
+| B 后端补发静默 | `files.rs:499`、`group_file_keys.rs:53`、`read_receipt.rs:101`、`group_todo_media.rs:168`、`files.rs:1221`、`group_announcements.rs:200`、`network/group_history.rs:618`（7 处） | 本轮不补发 / 取消通知发给 0 人 / 进度退回 fallback / 受众提示不弹；群历史补问那一处更糟——失败原因会被写成"没有更多可用候选"，归因说反话 | 只需加节流留痕（与 §4.0bp 同形状），不需要产品裁决 |
+| C 假成功 | `groups.rs:95`、`:217`、`:300`、`:363`（4 处） | 群密钥 fan-out 循环执行 **0 次**而命令返回 `Ok(())` ⇒ 前端以为分发成功，成员永远解不开该群消息 | 这格最该动，但改法有分岔：上抛让建群/加人当场失败（打断用户），还是留痕 + 依赖 §4.0bp 那条 `DbUnreadable` 补发档？|
+
+另记一条**同族的第二层折叠**：`db/groups.rs` 的 `get_group` 内部把成员查询错误也折成空 `Vec`
+⇒ "群存在但成员空"与"读失败"不可分。C 档那四处全吃这一层，真要修得先看它。
+
+
 ## 5. 需求与实现偏差（spec-to-code-compliance）
 > ⚠️ **本节记的是审计当时的发现。今天哪些已经落地、哪些判了不修，一律以 [§8 落地状态总表](#8-落地状态总表2026-10-29-深夜按现算对账) 为准** —— 「确认」「无机器对账」「零用例」这类字样不代表今天还没做（本轮对账实测：§8 的 19 行里有 9 行在写这张表时其实已完成）。
 
