@@ -13,6 +13,17 @@
 
 ## [Unreleased]
 
+## [5.16.69] - 2026-11-02
+
+### F-PRE-016 的样式那半：样式广播必须在 `links` 锁外发送
+
+新增 `chat_style_broadcast_sends_outside_the_links_lock`：`links` 锁的那个块必须在发送循环
+**之前**结束 —— 否则一条拥塞链路会握着全局 `links` 锁，把整个网络层（含自愈看门狗）拖死；
+单条失败也不许打断其余成员（`let _ = tx.send`，best-effort）。
+变异反证：把锁 guard 提到循环外（可编译）⇒ 红并报「发送期间仍握着 links 锁」，还原 `cmp` 相同。
+
+（语言那半见 5.16.67 的「`set_ui_language` 必须保持静默」；**跨进程**行为仍需两实例轮次。）
+
 ### 复核：`group_file_dispatch.rs` 的「0 个 `code=`」不是缺口（结构化错误类型）
 
 扫"整族无码"时它是最后一个命中（14 个 `Err(`、0 个 `code=`），但读实现后确认**不该补**：
