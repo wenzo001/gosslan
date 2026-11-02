@@ -92,9 +92,24 @@ pub async fn distribute_group_key(
     // 同时取群名与成员：成员端靠它建立/刷新本地群记录（含成员表）
     let (group_name, members) = {
         let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());
-        db::get_group(&dbc, &group_id)
-            .map(|g| (g.name, g.members))
-            .unwrap_or_default()
+        // 「这个群不存在」与「这次没读出来」是两个值（INV-P36）。负责人 2026-11-02 拍板：
+        // 这四处群读**只留痕、不当场失败** —— 调用方是密钥补发臂（没有能承接错误的界面，
+        // 建链/心跳还会再来），当场失败会把一次 `SQLITE_BUSY` 变成用户点一下按钮就报错。
+        // 但"一份都没补发"这件事必须查得到：这一轮没收到密钥的人，此后每条群消息都解不开
+        // （首次分发或换密钥那一轮尤其致命）。
+        match db::get_group_checked(&dbc, &group_id) {
+            Ok(Some(g)) => (g.name, g.members),
+            Ok(None) => Default::default(),
+            Err(e) => {
+                if crate::logging::log_throttled("gk_distribute_group_read_failed", 300_000) {
+                    s.logger.warn(
+                        "group",
+                        format!("code=GROUP_READ_DISTRIBUTE_FAILED group={group_id} 群读不出来 ⇒ 这一次密钥一份都没补发：{e}"),
+                    );
+                }
+                Default::default()
+            }
+        }
     };
     let clock = {
         let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());
@@ -227,9 +242,19 @@ pub async fn rename_group(
 async fn resend_group_key_to(s: &AppState, group_id: &str, members: &[String], key: [u8; 32]) {
     let group_name = {
         let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());
-        db::get_group(&dbc, group_id)
-            .map(|g| g.name)
-            .unwrap_or_default()
+        // 群名是**装饰性**字段（成员表由调用方传进来），折成空不改变任何行为 ⇒ 同一口径只留痕。
+        match db::get_group_checked(&dbc, group_id) {
+            Ok(g) => g.map(|x| x.name).unwrap_or_default(),
+            Err(e) => {
+                if crate::logging::log_throttled("gk_resend_group_name_read_failed", 300_000) {
+                    s.logger.warn(
+                        "group",
+                        format!("code=GROUP_NAME_READ_FAILED group={group_id} 群名读不出来 ⇒ 补发帧里的群名为空：{e}"),
+                    );
+                }
+                String::new()
+            }
+        }
     };
     let clock = {
         let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());
@@ -310,9 +335,21 @@ pub async fn group_add_member(
         .ok_or_else(|| "群密钥缺失".to_string())?;
     let current = {
         let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());
-        db::get_group(&dbc, &group_id)
-            .map(|g| g.members)
-            .unwrap_or_default()
+        // 同 `distribute_group_key` 那一处（只留痕）：折成空 ⇒ 这一次加人只给**新成员**发了密钥，
+        // 现有成员的那一份刷新帧一条都没发出去。
+        match db::get_group_checked(&dbc, &group_id) {
+            Ok(Some(g)) => g.members,
+            Ok(None) => Vec::new(),
+            Err(e) => {
+                if crate::logging::log_throttled("gk_after_add_read_failed", 300_000) {
+                    s.logger.warn(
+                        "group",
+                        format!("code=GROUP_MEMBERS_AFTER_ADD_READ_FAILED group={group_id} 成员表读不出来 ⇒ 只给新成员发了密钥：{e}"),
+                    );
+                }
+                Vec::new()
+            }
+        }
     };
     // 现有成员收到的是同一把密钥（幂等刷新），新成员借此首次拿到密钥
     resend_group_key_to(s, &group_id, &current, key).await;
@@ -373,9 +410,21 @@ pub async fn group_remove_member(
         .insert(group_id.clone(), key);
     let remaining = {
         let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());
-        db::get_group(&dbc, &group_id)
-            .map(|g| g.members)
-            .unwrap_or_default()
+        // 同上加人那一处（只留痕）：折成空 ⇒ 移除之后**留在群里的成员**收不到这一次重发的密钥，
+        // 而被移除的人已经收到 `GroupMemberRemoved` ⇒ 两边都不动，只有日志能说明为什么。
+        match db::get_group_checked(&dbc, &group_id) {
+            Ok(Some(g)) => g.members,
+            Ok(None) => Vec::new(),
+            Err(e) => {
+                if crate::logging::log_throttled("gk_after_remove_read_failed", 300_000) {
+                    s.logger.warn(
+                        "group",
+                        format!("code=GROUP_MEMBERS_AFTER_REMOVE_READ_FAILED group={group_id} 成员表读不出来 ⇒ 剩余成员没收到重发密钥：{e}"),
+                    );
+                }
+                Vec::new()
+            }
+        }
     };
     resend_group_key_to(s, &group_id, &remaining, key).await;
     let removed_msg = Message::GroupMemberRemoved {

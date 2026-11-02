@@ -13,6 +13,46 @@
 
 ## [Unreleased]
 
+## [5.16.36] - 2026-11-02
+
+### 折叠这一族收尾：C 档 4 处按拍板改为「只留痕、不当场失败」，棘轮上限 9 → 5（5.16.36）
+
+今晚三个拍板落地第一条：**C 档那 4 处群读 = 只留痕、不当场失败**；
+**任务中心把解析不出来的枚举值标成「排队中」= 保持宽松（现状）**；**本地这批未推的提交先只本地、不推 origin/main**。
+⚠️ 问他的时候我把未推数说成 **21**，现读是 **15**（`git log --oneline origin/main..HEAD | wc -l` = 15，
+`origin/main` 仍在 `69e04f72`）—— 那个 21 是印象数，本仓"数字要挂复跑命令"这条我自己今天又踩了一次，
+按规矩写在这里而不是悄悄改掉。
+
+四处全在 `commands/groups.rs`，原本都是 `db::get_group(&dbc, ..).map(..).unwrap_or_default()` ——
+把「这个群不存在」与「这次没读出来」折成同一个值。改成 `db::get_group_checked` + `match`：
+`Ok(None)` 与 `Err` 分臂，**行为一字不变**（照旧折成空），只在 `Err` 那一臂打一行节流具名码：
+
+| 落点（函数） | 具名码 | 这一跳折叠的真实后果（那行码要说清的事） |
+|---|---|---|
+| `distribute_group_key` | `GROUP_READ_DISTRIBUTE_FAILED` | 这一次群密钥**一份都没补发** |
+| `resend_group_key_to` | `GROUP_NAME_READ_FAILED` | 补发帧里的群名为空（装饰性字段，成员表由调用方传入） |
+| `add_group_member` | `GROUP_MEMBERS_AFTER_ADD_READ_FAILED` | 只给新成员发了密钥，现有成员的刷新帧一条没发 |
+| `remove_group_member` | `GROUP_MEMBERS_AFTER_REMOVE_READ_FAILED` | 剩余成员没收到这一次重发的密钥 |
+
+节流键按调用点分开（四处共用一个 5 分钟窗口会互相把对方的留痕压掉，本仓既有口径）。
+**没有**登记成 INV-P36 例外：口径里「宽松读保留 + 本跳留痕」不是例外；例外登记那五处是连留痕都不给、
+且各有理由的，由 `check-invariant-exceptions.mjs` 双向判。
+
+棘轮随之 **9 → 5**，而这 5 处正好就是例外登记里有理由的那五处 ⇒ **这一族除了已裁决的豁免一条不剩**。
+⚠️ 别把"两个数相等"当对账（登记里 `channel.rs` 那格本来就不被这把尺子数到）。同批把这条判据注释里
+**手抄的五处行号删掉**：上一版写的 `logs.rs:874` / `relay.rs:91-92` / `mobile_picker.rs:261` /
+`group_announcements.rs:465` 今天现读漂了 1~3 行（875 / 93-94 / 263 / 468），而**没有任何判据看得见这种漂**
+—— 落点要读就读那张有双向对账的表。§4.0bu 里留了一条复跑 grep（并注明它比尺子宽）。
+顺手删掉的另一句谎话：棘轮头顶写着"不限名字"而正则锚在 `db::`（那是 §4.0bt 的由来，本批把注释也改对）。
+
+现跑：`cargo check --features bluetooth --lib` 0、`node --test src/utils/designGuards.test.ts` **247/0**
+（棘轮那条按新上限 5 现算通过；它的三条合成控制——`db::` 折叠必须抓到、吃 `&dbc` 的非 `db::` 必须抓到、
+不吃连接的必须不抓到——全在）、`cargo fmt --check --all` **0**、
+`cargo clippy --features bluetooth --all-targets -- -D warnings` **0**、
+`cargo test --features bluetooth --lib` **1375 passed / 0 failed / 3 ignored**（清单 1378 条全在跑，本批无用例增删）、
+`npm run verify` 快速层 **21 步退 0**（Change Budget 含判据 3 亦绿）。
+动了群密钥分发这条臂 ⇒ 群聊那一轮跨实例真链路重跑一次，读数记在 §4.0bu（同批补记）。
+
 ## [5.16.35] - 2026-11-02
 
 ### 那把"不限名字"的棘轮其实锚在 `db::` 前缀上：扩面现算 9→13，四处同批收口（5.16.35）
