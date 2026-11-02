@@ -1951,6 +1951,15 @@ draft-until-complete，上一次失败的发布尝试会留下永不公开的草
 夹具凭据：`[{v9.9.10 draft}, {v9.9.9}, {v9.9.8}]` + `--arg t v9.9.9` ⇒ 旧过滤选 `v9.9.10`、新过滤选 `v9.9.8`。
 正文同源的实读：`gh release view v5.16.10 --json body` = 558 字符 notes + `---` + `compare/v5.16.9...v5.16.10`。
 
+**护栏修复在 CI 的复验（2026-11-02）**：`gh workflow run verify.yml --ref main` → run **41372076870** 整轮 success，
+三个 cargo 分片全绿；分片 1/3 日志 `[49/52] 好友申请兜底（get_pending_requests 必须按好友关系过滤）` 紧跟
+`✅ 改坏即 FAIL 且红由声明的那条判据报出、恢复后逐字节一致（⏱ 22.1s）`。
+
+**同族静态复核（同一夜）**：按「`contains(词根)` 且该词根在目标函数里出现 **>1** 次」扫 `lib_friend_identity_tests.rs`，
+命中 **10 处**（`pending_out_requests`、`remove(peer_id)`、`accept_friend_request`、`forget_peer_identity`、
+`重新添加`、`不用重启`、`pending_key_rotations`×3）。**它们今天都不空转** —— 上面那轮 288 条护栏全绿，
+每条注入仍能把它们打红；登记出来是为了下次形状变化时先看这几处，**不是现在改**（改判据会动 nightly 的读数）。
+
 
 ## 5. 需求与实现偏差（spec-to-code-compliance）
 > ⚠️ **本节记的是审计当时的发现。今天哪些已经落地、哪些判了不修，一律以 [§8 落地状态总表](#8-落地状态总表2026-10-29-深夜按现算对账) 为准** —— 「确认」「无机器对账」「零用例」这类字样不代表今天还没做（本轮对账实测：§8 的 19 行里有 9 行在写这张表时其实已完成）。
