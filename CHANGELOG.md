@@ -13,6 +13,56 @@
 
 ## [Unreleased]
 
+## [5.16.35] - 2026-11-02
+
+### 那把"不限名字"的棘轮其实锚在 `db::` 前缀上：扩面现算 9→13，四处同批收口（5.16.35）
+
+回去核对闭环矩阵 `F-CNT-001` 那一行时发现的，而且是**我自己的量具**的问题：
+昨天立的「读库折叠总量是棘轮」注释写的是"不限名字"，正则的字面却是 `\bdb::([a-z_]+)\(` ——
+`content::store::*` 同样是库读（吃同一个 `&dbc`、同样返回 `rusqlite::Result`），一处都数不到。
+把锚换成「**第一个实参是连接句柄**」（`&dbc` / `&conn` / `&tx` / `db` / `c`）后同一棵树现算 **9 → 13**，
+多出的四处全在内容补拉这一族：
+
+- `commands/files.rs` 的两处 `store::get` —— 续传偏移读不到 ⇒ 折成"这一单从头取"（会整份重发，无痕）；
+- `commands/files.rs` 的 `store::list(&dbc, 200)` —— 折成空 ⇒ 任务中心显示"没有传输"（矩阵那一格的抱怨原句）；
+- `network/transport.rs` 心跳臂的 `list_resumable_for_peer` —— 折成空 ⇒ 那批"永远转圈"的行这一轮一条都不补发。
+
+**上限没有被放宽**：修完再数是 9。口径照 INV-P36 已有的两条走 —— `get_content_transfers` 本来就返回
+`Result` ⇒ 上抛 + `code=CONTENT_LIST_READ_FAILED`（界面侧 `.catch(() => [])` 一字不动，但这一跳可查）；
+另三处的调用方是补拉命令与心跳臂、没有能承接错误的界面 ⇒ 保持"从头发 / 本轮不补发"的既有行为 + 具名码
+（`CONTENT_RESUME_READ_FAILED` / `CONTENT_RESUMABLE_READ_FAILED`），节流键按调用点分开。
+
+棘轮加两条腿，防止这次"扩面"再被悄悄改回窄面：**不带 `db::` 前缀但吃 `&dbc` 的合成折叠必须被抓到**、
+**不吃连接的（`serde_json::to_string`）必须不被抓**（否则别的家族会顶高上限，真该降的那个数反而看不见）。
+
+**顺带测出来的两半事实，其中一半推翻了我动手前的判断**：新加的 `Err` 臂不是想象中的分支 ——
+`received` 里存进 `'abc'`（SQLite 动态类型，INTEGER affinity 只在能无损转换时才转）三处读都返回 `Err`
+⇒ 用例 `unreadable_column_value_surfaces_as_err_not_empty` 钉住，并且它自己先断言
+`typeof(received)='text'`，避免判一个不存在的形状。而 `direction` / `status` 这两个**枚举文本**走的是
+宽松兜底（折成 `Receive` / `Queued`）：我原担心"怪 status 被当成可恢复档反复重投"——**不成立**，
+`WHERE` 吃的是列里的字面串，怪值那一行既不会被重投也不会被 `get()` 命中，它在过滤路径上是**隐身**、
+只在整表读里被标成兜底档。用例 `unparseable_enum_text_folds_in_records_but_hides_in_filtered_reads`
+把两半一起钉住，目的是**让下一次改动（改成严格、或换兜底档）必须说明为什么**。
+剩下真正待拍板的一条：怪值在任务中心显示成「排队中」是不是可接受的假陈述（另一侧的代价是一条坏行
+让整张列表看不见）。
+
+**法条同步**：INV-P36 开头那句「管的是一个语义事实，而不是一份函数名单」下面补了一段——**判族按签名，
+不按名字前缀**，并把这次被自己咬到的经过写在原地。矩阵两行随之改判：`F-CNT-001` 的理由整条过期、
+`F-CNT-002` 的"无痕"那半过期（两行里那句 `contentpull` 36 断言轮也一起对上现算的 40）。
+
+现跑：新增 2 条 Rust 用例后 `cargo test --features bluetooth --lib content::store` 8 passed / 0 failed，
+全量 `cargo test --features bluetooth --lib` **1375 passed / 0 failed / 3 ignored**（清单 1378 条全部在跑，
+`--update` → `--sync-baselines` → 再 check，macos 1378 / windows 1355 两份基线同步）、
+`cargo clippy --features bluetooth --all-targets -- -D warnings` 退 0、`cargo fmt --check --all` 退 0
+（两跑各退 1，红的都是**我新写那两行**的换行 —— CJK 消息串按宽度 2 算，照 rustfmt 的建议手改到位，
+没有 `cargo fmt` 整棵树）、`node --test src/utils/designGuards.test.ts` **247/0**、
+`npm run verify` 快速层 21 步退 0（Change Budget 含判据 3 亦绿：transport 域在窗口内 2 次）。
+**动了补拉这条热路径 ⇒ 双实例真链路重跑一次**：`--round=contentpull` **40 条全绿**
+（`run-2026-11-02T06-48-54-928Z`，判的是 5.16.35 这份内容）。
+
+**没动的**：`row_to_record` 的宽松兜底今天保持原样（上面那条待拍板）；`store::list` 那把 200 上限、
+以及 §4.0bq A 档 6 格「上抛 + 界面错误态」与 C 档 4 格「当场失败 vs 靠补发档」仍在等拍板。
+
 ## [5.16.34] - 2026-11-02
 
 ### 5.16.28 那半个修复只接了一半：补上自动补拉的登记，并把这一族第一次判进跨实例轮（5.16.34）

@@ -110,6 +110,8 @@ content::store::tests::failure_persists_resumable_or_terminal
 content::store::tests::find_local_path_only_returns_records_with_path
 content::store::tests::record_local_makes_content_servable_with_group_scope
 content::store::tests::unanswered_retries_reach_cap_and_stop
+content::store::tests::unparseable_enum_text_folds_in_records_but_hides_in_filtered_reads
+content::store::tests::unreadable_column_value_surfaces_as_err_not_empty
 content::store::tests::upsert_never_walks_attempts_backwards
 content::store::tests::upsert_round_trips_and_keeps_max_received
 crypto::tests::ecdh_symmetry

@@ -1438,16 +1438,29 @@ pub async fn request_content(
     // 手动重取也尽量续传：读该内容在统一状态里的 transfer_id / 已收字节。
     let (transfer_id, from_bytes) = {
         let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());
-        crate::content::store::get(
+        // 「没有这一单」与「读不到台账」是两件事（INV-P36）：前者按从头取是对的，后者折成 0 会让
+        // 一次续传变成整份重发而日志无痕。这里不改成上抛：界面已经给了明确的"重新获取"动作，
+        // 失败让它照旧从头发、但把这一跳变成可查。
+        let read = crate::content::store::get(
             &dbc,
             &cid,
             &peer_id,
             crate::content::model::Direction::Receive,
-        )
-        .ok()
-        .flatten()
-        .map(|r| (r.transfer_id.unwrap_or_default(), r.received))
-        .unwrap_or_default()
+        );
+        match read {
+            Ok(rec) => rec
+                .map(|r| (r.transfer_id.unwrap_or_default(), r.received))
+                .unwrap_or_default(),
+            Err(e) => {
+                if crate::logging::log_throttled("content_resume_read_failed", 300_000) {
+                    s.logger.warn(
+                        "content",
+                        format!("code=CONTENT_RESUME_READ_FAILED cid={cid} 续传偏移读不到，这一单按从头取：{e}"),
+                    );
+                }
+                (String::new(), 0)
+            }
+        }
     };
     // 登记「这份内容是我自己要的」：应答会走同一条 1:1 文件通道回来，接收端据此**不**在私聊里
     // 另落一张卡片（审计 §4.0br，用户报「群任务的图片从别人的私聊又发我一份」）。
@@ -1504,16 +1517,28 @@ pub async fn request_content_by_cid(
     // 续传：已有 receive 记录就沿用 transfer_id / 已收字节（与 request_content 同口径）。
     let (transfer_id, from_bytes) = {
         let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());
-        crate::content::store::get(
+        // 与 `request_content` 那一处同一口径（INV-P36）：`Ok(None)`=没有这一单，按从头取是对的；
+        // `Err`=读不到台账，折成 0 会让续传整份重发而日志无痕 ⇒ 保持"从头发"但留一行具名码。
+        let read = crate::content::store::get(
             &dbc,
             &cid,
             &peer_id,
             crate::content::model::Direction::Receive,
-        )
-        .ok()
-        .flatten()
-        .map(|r| (r.transfer_id.unwrap_or_default(), r.received))
-        .unwrap_or_default()
+        );
+        match read {
+            Ok(rec) => rec
+                .map(|r| (r.transfer_id.unwrap_or_default(), r.received))
+                .unwrap_or_default(),
+            Err(e) => {
+                if crate::logging::log_throttled("content_resume_read_failed", 300_000) {
+                    s.logger.warn(
+                        "content",
+                        format!("code=CONTENT_RESUME_READ_FAILED cid={cid} 续传偏移读不到，这一单按从头取：{e}"),
+                    );
+                }
+                (String::new(), 0)
+            }
+        }
     };
     // 登记「这份内容是我自己要的」：应答会走同一条 1:1 文件通道回来，接收端据此**不**在私聊里
     // 另落一张卡片（审计 §4.0br，用户报「群任务的图片从别人的私聊又发我一份」）。
@@ -1546,7 +1571,18 @@ pub async fn get_content_transfers(
     let s = state.inner().clone();
     tokio::task::spawn_blocking(move || -> Result<Vec<crate::content::TransferRecord>, String> {
         let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());
-        Ok(crate::content::store::list(&dbc, 200).unwrap_or_default())
+        // 读失败不等于「本机没有传输」（INV-P36；闭环矩阵 F-CNT-001 那一格抱怨的就是这里）：
+        // 折成空列表 ⇒ 任务中心显示"什么都没有"而日志无痕。这条命令**本来就返回 Result**，
+        // 上抛是零成本的实话；界面那一侧 `.catch(() => [])` 的行为一字不变，但这一跳从此可查。
+        crate::content::store::list(&dbc, 200).map_err(|e| {
+            if crate::logging::log_throttled("content_list_read_failed", 300_000) {
+                s.logger.warn(
+                    "content",
+                    format!("code=CONTENT_LIST_READ_FAILED 内容传输台账读不出来：{e}"),
+                );
+            }
+            format!("内容传输台账读不出来：{e}")
+        })
     })
     .await
     .map_err(|e| format!("内容传输表读取被线程池中断: {e}"))?

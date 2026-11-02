@@ -1008,7 +1008,21 @@ async fn retry_incomplete_content(state: &Arc<AppState>, peer_id: &str) {
     }
     let rows = {
         let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
-        crate::content::store::list_resumable_for_peer(&dbc, peer_id).unwrap_or_default()
+        // 读不到台账不等于「这台对端没有要补的内容」（INV-P36）：折成空 ⇒ 那批"永远转圈"的行
+        // 这一轮一条都不补发而日志无痕。这里不上抛：调用方是建链/心跳臂，没有能承接错误的界面，
+        // 保持"本轮不补发、下一次心跳再来"的既有行为，只把这一跳变成可查。
+        match crate::content::store::list_resumable_for_peer(&dbc, peer_id) {
+            Ok(rows) => rows,
+            Err(e) => {
+                if log_throttled("content_resumable_read_failed", 300_000) {
+                    state.logger.warn(
+                        "content",
+                        format!("code=CONTENT_RESUMABLE_READ_FAILED peer={peer_id} 未完成清单读不出来，本轮不补发：{e}"),
+                    );
+                }
+                Vec::new()
+            }
+        }
     };
     let now = db::now_ms();
     for rec in rows {

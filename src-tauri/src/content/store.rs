@@ -525,4 +525,93 @@ mod tests {
         );
         assert_eq!(find_local_path(&conn, "nope"), None);
     }
+
+    /// **可达性凭据**（INV-P36，2026-11-02）：调用点新加的 `Err` 那一臂不是想象中的分支。
+    /// 这一族读失败的入口是**列的值读不回声明的类型**（SQLite 是动态类型：`received INTEGER`
+    /// 里可以存进 `'abc'`，INTEGER affinity 只在能无损转换时才转，转不动就原样存 TEXT）。
+    /// 少了这一条，`list` / `list_resumable_for_peer` / `get` 的 `Err` 臂就没人证明进得去 ——
+    /// "有分支"不等于"分支可达"。
+    #[test]
+    fn unreadable_column_value_surfaces_as_err_not_empty() {
+        let conn = mem();
+        upsert(&conn, &rec("c-bad", TransferStatus::Incomplete, 7)).unwrap();
+        conn.execute(
+            "UPDATE content_transfers SET received='abc' WHERE cid='c-bad'",
+            [],
+        )
+        .unwrap();
+        // 预置自己得先成立：这一行确实被写坏了（否则后面三条是空转）
+        let raw: String = conn
+            .query_row(
+                "SELECT typeof(received) FROM content_transfers WHERE cid='c-bad'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            raw, "text",
+            "注入没落盘（`{raw}`）⇒ 下面三条断言都在判一个不存在的形状"
+        );
+        assert!(
+            list(&conn, 200).is_err(),
+            "list 把读不回的行折成空/跳过 ⇒ 调用方的 Err 臂永远进不去"
+        );
+        assert!(
+            list_resumable_for_peer(&conn, "peer-a").is_err(),
+            "可恢复清单那一处同理（status 仍是 'incomplete' ⇒ 这一行确实被选中）"
+        );
+        assert!(
+            get(&conn, "c-bad", "peer-a", Direction::Receive).is_err(),
+            "续传偏移那一处读的是 get ⇒ 同样得是 Err，不是 Ok(None)"
+        );
+    }
+
+    /// 已知并**刻意保留**的另一半（不是缺口，是待拍板的口径，见审计册 §4.0bt）：
+    /// `row_to_record` 对 `direction` / `status` 这两个枚举文本取的是**宽松兜底**
+    /// （解析不出来 ⇒ `Receive` / `Queued`），与上面那条"类型读不回就 Err"是两种方向。
+    /// 为什么今天不改成严格：一条坏行会让整张任务中心列表**全部看不见**（比标错一档更贵），
+    /// 而展示层读到 `Queued` 至少不撒谎说"没有这一单"。
+    ///
+    /// ⚠️ 这一格今天现读把影响面读**窄**了，两半分开钉：
+    /// ① 记录层确实折（`list` 把怪值读成 Queued/Receive）；
+    /// ② 但所有按 `status` / `direction` 过滤的查询吃的是**列里的字面串**，怪值那一行既不会
+    /// 被 `list_resumable_for_peer` 当成"排队中"重投（原担心的那种后果**不成立**），也不会被
+    /// `get(cid, peer, Receive)` 命中 —— 它在这些路径上是**隐身**，不是被改成另一个合法档。
+    /// 钉住这两半的理由是**让下一次改动必须说明为什么**：改成严格、或改兜底档，这条当场红。
+    #[test]
+    fn unparseable_enum_text_folds_in_records_but_hides_in_filtered_reads() {
+        let conn = mem();
+        upsert(&conn, &rec("c-enum", TransferStatus::Incomplete, 3)).unwrap();
+        conn.execute(
+            "UPDATE content_transfers SET status='bogus', direction='weird' WHERE cid='c-enum'",
+            [],
+        )
+        .unwrap();
+        // ① 无过滤的整表读：怪值折成两个兜底档（不是 Err、也不是整行消失）
+        let rows = list(&conn, 200).expect("怪值不该让整次读失败（宽松兜底是今天的选择）");
+        assert_eq!(rows.len(), 1, "整表读要能看见这一行");
+        assert_eq!(
+            rows[0].status,
+            TransferStatus::Queued,
+            "怪 status 折成 Queued"
+        );
+        assert_eq!(
+            rows[0].direction,
+            Direction::Receive,
+            "怪 direction 折成 Receive"
+        );
+        // ② 过滤读吃字面串 ⇒ 这一行隐身（原以为"折成 Queued 会被重投"是错的）
+        assert!(
+            list_resumable_for_peer(&conn, "peer-a")
+                .expect("同一行在过滤查询里只是不匹配，不是读失败")
+                .is_empty(),
+            "怪 status 不该被当成可恢复档重投"
+        );
+        assert!(
+            get(&conn, "c-enum", "peer-a", Direction::Receive)
+                .expect("同上")
+                .is_none(),
+            "怪 direction 的行不会被 Receive 那一档命中（WHERE 吃的是字面串）"
+        );
+    }
 }
