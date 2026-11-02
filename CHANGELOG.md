@@ -13,6 +13,14 @@
 
 ## [Unreleased]
 
+### F-MSG-070 收口：搜索是**本机读**，「跨实例无证据」用错了尺子
+
+这一格挂 PARTIAL 的理由是「跨实例无证据（搜索是本机读）」——**括号里那句本身就是反证**：
+本机读的操作不需要跨实例轮次。机器凭据本来就齐：DB 三条
+（`search_history_filters_sender_time_and_excludes_system` / `search_history_treats_like_wildcards_as_literals` /
+`search_history_skips_orphan_conversations`）+ 前端 `chatSearch.test.ts` / `chatSearchQuery.test.ts`。改判 PASS。
+（同类提醒：判"缺跨实例证据"前先看这条操作是不是本来就只读本机。）
+
 ### F-PRE-014 收口：收藏三层都有具名凭据
 
 原句「收藏自身的跨层行为未逐条读」。现读：①**DB**（`favorites_tests`：插入/列表/删除/幂等、内容路径改写、
