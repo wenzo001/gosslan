@@ -13,6 +13,11 @@
 
 ## [Unreleased]
 
+### 矩阵订正：F-PLF-010 的「没有独立用例」要分成形状级 / 行为级
+
+现读 `in_flight_media_is_not_reported_as_deleted` 确实读的是 `resolve_media_path` 的函数体，但只断言源码形状；
+行为级仍缺（吃 `&AppState`，本仓无测试用构造器）。原句写成「没有独立用例」会被读成一条都没有。判级仍 PARTIAL。
+
 ### 矩阵订正：F-PLF-021 的「四项缺用例」缩到三项
 
 「UI 语言」那项已有判据 `set_ui_language_stays_silent_to_avoid_the_event_ping_pong`（5.16.69，见 F-PRE-016）。
