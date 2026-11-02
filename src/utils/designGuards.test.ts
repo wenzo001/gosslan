@@ -6095,18 +6095,19 @@ test("主读不许把读库失败折叠成空（B1-F7 / B3-F3；网络侧自 5.1
 // （`list_friends` / `get_group` / `list_transfers` / `list_group_reads` / `get_todo_messages_for_conns`…）。
 // 这正是本仓反复点名的形状：**判据里手抄的名字清单会漂，分母得从真源现算**。
 //
-// A 档与 C 档（界面假陈述 / 群密钥假成功）还在等拍板，所以现在**不能**直接把不限名字的尺子
-// 变成"必须为 0"。这条棘轮做的是把洞**封住不让它长**：
+// A/C 还在等拍板，所以现在**不能**直接把不限名字的尺子变成"必须为 0"。这条棘轮做的是把洞**封住不让它长**：
 //   · 只许降 —— 每落地一批，就把上限改小；调大上限必须说明为什么；
 //   · 新增一处折叠 ⇒ 当场红，而不是等下一次抽矩阵才发现。
 // 已知的量具偏差也写在这里，免得下一个人把它当成真缺陷：
 // `commands/relay.rs:305` 是**假阳性**（间隙跨过了结构体字面量的逗号，命中的是 306 行 server 那一格）
-// ⇒ 真折叠 18 处、匹配 19 条。
+// ⇒ 真折叠 16 处、匹配 17 条。
 test("读库折叠总量是棘轮：不限名字的尺子只许降", () => {
   const SRC = join(import.meta.dirname, "..", "..", "src-tauri", "src");
   const ANY = /\bdb::([a-z_]+)\s*\([^;?]{0,200}?\.unwrap_or_default\(\)/g;
   const WHITE = /db::(get_setting|get_setting_checked|get_messages|get_latest_messages|list_conversations|list_groups)\s*\([^;?]{0,200}?\.unwrap_or_default\(\)/g;
-  const CEILING = 19; // 2026-11-02 现算（含 1 处已知假阳性）：只许往下改
+  // 2026-11-02 现算的轨迹（含 1 处已知假阳性）：24 → 19（B 档 5 处）→ 17（db 层分出 get_group 那一档，
+  // 解掉剩下 2 处 B 档）。只许往下改，不许往上调。
+  const CEILING = 17;
 
   const files: string[] = [];
   const stack = [SRC];

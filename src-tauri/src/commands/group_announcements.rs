@@ -197,7 +197,21 @@ pub async fn recall_group_message(
 fn emit_creator_recall_audience(s: &Arc<AppState>, group_id: &str, conv_id: &str) {
     let members = {
         let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());
-        db::get_group(&dbc, group_id).map(|g| g.members).unwrap_or_default()
+        // §4.0bq B 档最后一处（受众提示）：读失败原先折成"这个群没人"⇒ 提示算不出来且零痕迹。
+        // 可见行为不变（提示只是解释，不是结果），改的是**这一跳从此查得到**。
+        match db::get_group_checked(&dbc, group_id) {
+            Ok(Some(g)) => g.members,
+            Ok(None) => Vec::new(),
+            Err(e) => {
+                if crate::logging::log_throttled("recall_audience_group_read_failed", 300_000) {
+                    s.logger.warn(
+                        "group",
+                        format!("code=GROUP_READ_FAILED 群主代撤回的受众提示算不出来 group={group_id}：{e}"),
+                    );
+                }
+                Vec::new()
+            }
+        }
     };
     let (missing_ids, unknown) = {
         let features = s
