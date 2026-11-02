@@ -239,6 +239,7 @@
 
     /// 链路仍未就绪（NoLink）或非可重试原因（Fatal）的判定：
     /// NoLink 必须保留登记项等待下一次 flush；Fatal / Ok 必须清除。
+    /// `DbUnreadable`（2026-11-02，读库失败不再折成 `Fatal`）与 NoLink 同档：必须保留。
     #[test]
     fn flush_failure_retains_or_clears_pending_correctly() {
         // 仍无链路 → 保留
@@ -250,6 +251,10 @@
             GroupKeySendErr::Fatal
         )));
         assert!(!should_retain_pending_group_key(&Ok(())));
+        // 本机读不到群列表 → 保留（"读不到"不等于"这个群不存在"）
+        assert!(should_retain_pending_group_key(&Err(
+            GroupKeySendErr::DbUnreadable
+        )));
 
         // 验证 flush 逻辑：NoLink 分支不调用 clear，pending 保持
         let mut pending: HashMap<String, HashSet<String>> = HashMap::new();

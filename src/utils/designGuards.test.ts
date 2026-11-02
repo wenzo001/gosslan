@@ -6013,37 +6013,60 @@ test("会话内的按 msg_id 改一条也走家：store 里不再有手写的 fi
 // 根因还有一层：`db::get_setting` 返回 `Option`（`.ok().flatten()`）⇒ "读失败" 与 "没这条" 不可分。
 // 读-改-写路径必须用 `get_setting_checked`（返回 `Result`）。
 //
-// 判据按形状 + 文件：`commands/` 里这些读**不许**紧跟着 `unwrap_or_default()`。
-test("命令层的主读不许把读库失败折叠成空（B1-F7 / B3-F3）", () => {
-  const dir = join(import.meta.dirname, "..", "..", "src-tauri", "src", "commands");
-  const files = readdirSync(dir).filter((f) => f.endsWith(".rs"));
-  assert.ok(files.length > 20, `只扫到 ${files.length} 个命令文件 ⇒ 目录变了`);
+// 判据按形状 + 文件：`commands/` **与** `network/`（含 `network/transport/` 分册）里这些读
+// **不许**紧跟着 `unwrap_or_default()`。
+// ⚠️ 网络侧是 2026-11-02 才并进面的：原先只扫 `commands/`，所以路由端点与群密钥那三处折叠
+// 一直没人看 —— 与"判据存在"不等于"判据覆盖面够"是同一类失误。
+test("主读不许把读库失败折叠成空（B1-F7 / B3-F3；网络侧自 5.16.24 并入面）", () => {
   // 形状：`db::<这些读>(…)` 之后（同一表达式里）出现 `.unwrap_or_default()`
   // ⚠️ 间隙里排除 `?`：`get_setting_checked(..)?.unwrap_or_default()` 是**正确**写法
   // （读失败已经在 `?` 处上抛），没有这一条的话它会被当成本条要抓的折叠。
   const FOLD = /db::(get_setting|get_setting_checked|get_messages|get_latest_messages|list_conversations|list_groups)\s*\([^;?]{0,200}?\.unwrap_or_default\(\)/g;
   const probe = (text: string) => [...text.matchAll(FOLD)].map((m) => m[0].slice(0, 60));
+  const SRC = join(import.meta.dirname, "..", "..", "src-tauri", "src");
+  // 面：命令层 **与** 网络层。原先只扫 `commands/`，于是网络侧三处折叠（路由端点拨号循环那一处 +
+  // 群密钥那两处）谁都没看见 —— 2026-11-02 抽闭环矩阵 `F-PRE-019` 那行时才逐处现读出来。
+  const ROOTS: { label: string; min: number }[] = [
+    { label: "commands", min: 20 },
+    { label: "network", min: 6 },
+    { label: "network/transport", min: 30 },
+  ];
   // 已登记的有意折叠（**带理由，且理由必须在源码里对得上** —— 不是豁免名单，是"读过实现后的判断"）。
-  // relay.rs 的 `load_relay_runtime` 在**拨号循环**里跑，没有界面能承接错误 ⇒ 折叠成"不启用"是刻意的；
-  // 它自己那行注释写着这句理由，下面会把这句话也钉住（理由被删 ⇒ 本条红）。
+  // ⚠️ key 用**相对路径**而不是文件名：`commands/relay.rs` 与 `network/transport/relay.rs` **同名**，
+  // 按文件名豁免的话后者会白拿前者的理由（本判据一扩到网络层就正好踩到）。
   const DOCUMENTED: Record<string, string> = {
-    "relay.rs": "没有用户界面能承接错误",
-    "channel.rs": "同步、非 Result",
+    "commands/relay.rs": "没有用户界面能承接错误",
+    "commands/channel.rs": "同步、非 Result",
   };
   const hits: string[] = [];
-  for (const f of files) {
-    const src = readFileSync(join(dir, f), "utf8");
-    const found = probe(src);
-    if (found.length && DOCUMENTED[f]) {
-      assert.ok(
-        src.includes(DOCUMENTED[f]),
-        `${f} 登记成了"有意折叠"，但源码里找不到那句理由（「${DOCUMENTED[f]}」）⇒ 要么它不再是刻意的，要么理由被删了`,
-      );
-      continue;
+  const scanned: string[] = [];
+  for (const r of ROOTS) {
+    const dir = join(SRC, ...r.label.split("/"));
+    const files = readdirSync(dir).filter((f) => f.endsWith(".rs"));
+    assert.ok(
+      files.length >= r.min,
+      `${r.label} 只扫到 ${files.length} 个 .rs（下限 ${r.min}）⇒ 目录形状变了，本判据的面在缩水`,
+    );
+    for (const f of files) {
+      const key = `${r.label}/${f}`;
+      scanned.push(key);
+      const src = readFileSync(join(dir, f), "utf8");
+      const found = probe(src);
+      if (found.length && DOCUMENTED[key]) {
+        assert.ok(
+          src.includes(DOCUMENTED[key]),
+          `${key} 登记成了"有意折叠"，但源码里找不到那句理由（「${DOCUMENTED[key]}」）⇒ 要么它不再是刻意的，要么理由被删了`,
+        );
+        continue;
+      }
+      for (const h of found) hits.push(`${key}: ${h}`);
     }
-    for (const h of found) hits.push(`${f}: ${h}`);
   }
-  assert.deepEqual(hits, [], `命令层的读库结果被折叠成空（读失败会被当成"没有数据"）：\n${hits.join("\n")}`);
+  // 面自己也要有凭据：这三格必须真出现在扫到的清单里 ⇒ "扩面"不会退化成"少扫几个照样绿"。
+  for (const must of ["commands/relay.rs", "network/transport.rs", "network/transport/pending_keys.rs"]) {
+    assert.ok(scanned.includes(must), `没扫到 ${must} ⇒ 面缩水了，而它恰恰是本批要覆盖的那一格`);
+  }
+  assert.deepEqual(hits, [], `读库结果被折叠成空（读失败会被当成"没有数据"）：\n${hits.join("\n")}`);
   // 正控：合成两段坏码，检测器必须都认（否则这条在空集上恒绿）
   assert.equal(
     probe(`let v = db::get_setting(&dbc, "k").unwrap_or_default();`).length,

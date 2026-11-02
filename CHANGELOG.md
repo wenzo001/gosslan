@@ -13,6 +13,34 @@
 
 ## [Unreleased]
 
+## [5.16.24] - 2026-11-02
+
+### 网络层五处「读库失败折成空」收口，并把折叠判据的面扩到网络层（B3-F3 网络侧）
+
+抽闭环矩阵 `F-PRE-019` 那行时把判据的面从 `commands/` 扩到 `commands/ + network/ + network/transport/`，
+现读数从**我以为的 3 处变成 5 处**（我原先那条单行 `grep` 抓不到跨行写法，漏了 2 处）。五处逐条：
+
+- `network/transport.rs` 路由端点拨号循环：`get_setting(...).unwrap_or_default()` ⇒ 读抖动被读成"没配端点"，
+  跨子网从此不再拨号且零痕迹。改成 `get_setting_checked` 三档（有配置 / 确实没配 / 读失败），
+  读失败 ⇒ 节流留痕 `code=ROUTED_ENDPOINTS_READ_FAILED` 并跳过本轮（**不写回**，10s 后自然重试）。
+- `network/transport/handle_messaging.rs` 的 `chat_peer_styles`：这是**读-改-写整表**——
+  读失败折成空表后插入这一条再整表写回 ⇒ 一次抖动就把所有已知对端的聊天样式抹掉只剩一个。
+  改成读失败就**不写回**（这一条样式不落库，界面事件照发，下一帧还会再带）+ `code=PEER_STYLES_READ_FAILED`。
+- `network/transport/pending_keys.rs` 三处 `list_groups`：其中两处（`redistribute_group_keys` /
+  `requeue_group_keys_for_peer`）折成"一个群都没有" ⇒ 静默不再补发群密钥，现改成留痕
+  `code=GROUP_LIST_READ_FAILED` 并放弃本轮；第三处最坏：折成"找不到这个群"后被归进
+  `GroupKeySendErr::Fatal`（口径＝"重试无意义"）⇒ 一次 `SQLITE_BUSY` 让这个群的密钥**永久**不再补发。
+  新增可重试档 `DbUnreadable`（与 `NoLink` 同档：保留待发登记），判定点与
+  `should_retain_pending_group_key` 一起改，用例 `flush_failure_retains_or_clears_pending_correctly` 补一档断言。
+
+判据 `主读不许把读库失败折叠成空（B1-F7 / B3-F3…）` 现在按三个目录扫，豁免项的 key 改成**相对路径**
+（`commands/relay.rs` 与 `network/transport/relay.rs` 同名，按文件名豁免会让后者白拿前者的理由），
+并钉住"必须真扫到 `network/transport.rs` 与 `pending_keys.rs`"防止面缩水成空转。
+反证：往 `network/transport/relay.rs` 塞一行带该形状的注释 ⇒ 判据当场点名那个文件（红），
+还原后与备份 `cmp` 逐字节相同、判据绿。全 crate 现数 5 处、全在面内且各有裁决；面外 0 处（同一把尺子
+去掉面内排除跑出 5 ⇒ 那个 0 有阳性对照）。
+
+
 ## [5.16.23] - 2026-11-02
 
 ### 设置落库失败补上「事后查得到」那一半：toast 之外再进运行日志（B1-F4 留痕）

@@ -61,23 +61,38 @@ async fn handle_messaging_arm(state: &Arc<AppState>, peer_id: &str, msg: Message
             // 持久化对端样式表（device_id -> style JSON），前端按发送者渲染其消息气泡
             {
                 let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
-                let mut map: serde_json::Map<String, serde_json::Value> =
-                    db::get_setting(&dbc, "chat_peer_styles")
-                        .and_then(|s| serde_json::from_str(&s).ok())
-                        .unwrap_or_default();
-                // 表本身也要有界：不认识的新 peer 在满员时不再登记（已知 peer 仍可更新）。
-                if !peer_style_admitted(map.contains_key(&from), map.len()) {
-                    drop(dbc);
-                    state.logger.warn(
-                        "style",
-                        format!("code=PEER_STYLES_FULL peer={from}（已达上限 {MAX_PEER_STYLES}，本条不登记）"),
-                    );
-                    return;
-                }
-                map.insert(from.clone(), serde_json::Value::String(style.clone()));
-                if let Ok(json) = serde_json::to_string(&map) {
-                    if let Err(e) = db::set_setting(&dbc, "chat_peer_styles", &json) {
-                        crate::logging::log_write_failure(&state.logger, "set_setting", e);
+                // ⚠️ 这是一处**读-改-写整表**（与 10-26 审计 B3-F3 同形状）：原先用 `get_setting`
+                // （SQL 错误折成 `None`）+ `.unwrap_or_default()` ⇒ 一次读抖动就把表读成空、
+                // 插入这一条后**整表写回**，等于把用户所有已知对端的样式抹掉只剩一个。
+                // 现在读失败就不写回（这一条样式不落库，下一条 ChatStyle 帧自然会再带；界面事件照发）。
+                match db::get_setting_checked(&dbc, "chat_peer_styles") {
+                    Ok(current) => {
+                        let mut map: serde_json::Map<String, serde_json::Value> = current
+                            .and_then(|s| serde_json::from_str(&s).ok())
+                            .unwrap_or_default();
+                        // 表本身也要有界：不认识的新 peer 在满员时不再登记（已知 peer 仍可更新）。
+                        if !peer_style_admitted(map.contains_key(&from), map.len()) {
+                            drop(dbc);
+                            state.logger.warn(
+                                "style",
+                                format!("code=PEER_STYLES_FULL peer={from}（已达上限 {MAX_PEER_STYLES}，本条不登记）"),
+                            );
+                            return;
+                        }
+                        map.insert(from.clone(), serde_json::Value::String(style.clone()));
+                        if let Ok(json) = serde_json::to_string(&map) {
+                            if let Err(e) = db::set_setting(&dbc, "chat_peer_styles", &json) {
+                                crate::logging::log_write_failure(&state.logger, "set_setting", e);
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        if log_throttled("peer_styles_read_failed", 300_000) {
+                            state.logger.warn(
+                                "style",
+                                format!("code=PEER_STYLES_READ_FAILED 本条样式不落库（不整表写回）peer={from}：{e}"),
+                            );
+                        }
                     }
                 }
             }

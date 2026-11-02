@@ -39,10 +39,13 @@ fn clear_pending_group_key(
     }
 }
 
-/// 是否保留登记项等待重试：只有「链路不可用」才保留；
+/// 是否保留登记项等待重试：「链路不可用」与「本机读库失败」都保留；
 /// 发送成功或失败原因重试无意义（非成员 / 无密钥 / 缺公钥）都清除。
 fn should_retain_pending_group_key(result: &Result<(), GroupKeySendErr>) -> bool {
-    matches!(result, Err(GroupKeySendErr::NoLink))
+    matches!(
+        result,
+        Err(GroupKeySendErr::NoLink) | Err(GroupKeySendErr::DbUnreadable)
+    )
 }
 
 /// 向指定 peer 发送一次群密钥。GroupKey 消息格式、加密方式与公钥来源
@@ -61,10 +64,12 @@ async fn try_send_group_key(
     };
     let found_group = {
         let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
-        db::list_groups(&dbc)
-            .unwrap_or_default()
-            .into_iter()
-            .find(|g| g.id == group_id)
+        match db::list_groups(&dbc) {
+            Ok(groups) => groups.into_iter().find(|g| g.id == group_id),
+            // 「读不到」不等于「这个群不存在」：折成 `None` 会走到下面那条 `Fatal`，
+            // 而 `Fatal` 的口径是"重试无意义"⇒ 一次读抖动就让这个群的密钥永久不再补发。
+            Err(_) => return Err(GroupKeySendErr::DbUnreadable),
+        }
     };
     let Some(g) = found_group else {
         return Err(GroupKeySendErr::Fatal);
@@ -101,9 +106,22 @@ async fn try_send_group_key(
 }
 
 async fn redistribute_group_keys(state: &AppState, peer_id: &str) {
+    // `db::list_groups` 返回 `Result`：读失败折成「一个群都没有」＝ 静默不再重发群密钥，
+    // 而对端等的是"这个群永远解不开"（下面 requeue 那段的注释就是这个后果）。留痕后再放弃本轮。
     let groups = {
         let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
-        db::list_groups(&dbc).unwrap_or_default()
+        match db::list_groups(&dbc) {
+            Ok(g) => g,
+            Err(e) => {
+                if log_throttled("group_list_read_failed", 300_000) {
+                    state.logger.warn(
+                        "group",
+                        format!("code=GROUP_LIST_READ_FAILED 群密钥重发跳过本轮 peer={peer_id}：{e}"),
+                    );
+                }
+                return;
+            }
+        }
     };
     for g in groups {
         if !g.members.contains(&peer_id.to_string()) {
@@ -123,6 +141,21 @@ async fn redistribute_group_keys(state: &AppState, peer_id: &str) {
             }
             // 缺公钥 / 非成员 / 无密钥：重试无意义，不登记
             Err(GroupKeySendErr::Fatal) => {}
+            // 本机读库失败：与"链路没建好"同档 —— 保留待发，但要**说得出为什么**
+            // （折成 `Fatal` 的话这一格既不再重试也没有痕迹）。
+            Err(GroupKeySendErr::DbUnreadable) => {
+                if log_throttled("group_key_send_db_unreadable", 300_000) {
+                    state.logger.warn(
+                        "group",
+                        format!("code=GROUP_KEY_SEND_DB_UNREADABLE 登记待发 peer={peer_id} group={}", g.id),
+                    );
+                }
+                let mut pending = state
+                    .pending_group_keys
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner());
+                mark_pending_group_key(&mut pending, peer_id, &g.id);
+            }
         }
     }
 }
@@ -155,7 +188,20 @@ pub(crate) fn group_ids_containing(groups: &[crate::state::Group], peer_id: &str
 fn requeue_group_keys_for_peer(state: &AppState, peer_id: &str) {
     let ids = {
         let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
-        let groups = db::list_groups(&dbc).unwrap_or_default();
+        // 同上：读失败≠「他不属于任何群」。这一格静默的代价是"那个群以后再也不会被登记重发"，
+        // 与上面这段注释描述的正是同一个后果 ⇒ 留痕后再放弃本轮。
+        let groups = match db::list_groups(&dbc) {
+            Ok(g) => g,
+            Err(e) => {
+                if log_throttled("group_requeue_read_failed", 300_000) {
+                    state.logger.warn(
+                        "group",
+                        format!("code=GROUP_LIST_READ_FAILED 群密钥补登记跳过本轮 peer={peer_id}：{e}"),
+                    );
+                }
+                return;
+            }
+        };
         group_ids_containing(&groups, peer_id)
     };
     if ids.is_empty() {
