@@ -1,0 +1,11 @@
+<resources>
+    <!-- 中文系统的应用名与前台服务通知。默认那份（values/strings.xml）是英文，
+         因此英文系统不会出现中文；中文这里逐项覆盖。 -->
+    <string name="app_name">"小院儿"</string>
+    <string name="main_activity_title">"小院儿"</string>
+    <string name="bg_notif_title">"小院儿正在后台接收消息"</string>
+    <string name="bg_notif_text">"局域网通道开着时保持接收；点按可回到小院儿"</string>
+    <string name="bg_notif_stop">"停止后台连接"</string>
+    <string name="bg_channel_name">"后台接收"</string>
+    <string name="bg_channel_desc">"局域网通道开启期间的常驻通知；关闭通道后自动消失"</string>
+</resources>

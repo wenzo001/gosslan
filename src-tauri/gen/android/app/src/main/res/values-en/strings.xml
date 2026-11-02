@@ -1,6 +1,8 @@
 <resources>
-    <!-- 英文系统语言下的前台服务通知（默认那份见 ../values/strings.xml）。
+    <!-- 英文系统语言下的应用名与前台服务通知（默认那份见 ../values/strings.xml）。
          条件口径与 ADR-0022 §5 一致：不承诺"永不掉线"，同时给出「停止」这条出口。 -->
+    <string name="app_name">"Gosslan"</string>
+    <string name="main_activity_title">"Gosslan"</string>
     <string name="bg_notif_title">"Gosslan is receiving messages in the background"</string>
     <string name="bg_notif_text">"Works while the LAN channel is on. Tap to open Gosslan."</string>
     <string name="bg_notif_stop">"Stop background connection"</string>

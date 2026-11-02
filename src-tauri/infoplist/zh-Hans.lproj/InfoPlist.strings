@@ -1,4 +1,4 @@
-/* 本地化显示名：中文系统下，Dock / Finder 显示「相闻」。
+/* 本地化显示名：中文系统下，Dock / Finder 显示「小院儿」。
    通过 tauri.conf.json > bundle.macOS.files 复制到
    <App>.app/Contents/Resources/zh-Hans.lproj/InfoPlist.strings。 */
 "CFBundleDisplayName" = "小院儿";

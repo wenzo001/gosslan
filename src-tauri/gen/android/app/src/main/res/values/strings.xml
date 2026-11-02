@@ -1,11 +1,13 @@
 <resources>
+    <!-- 默认语言 = 英文：任何未匹配的 locale 都落到这一份，英文系统因此不会出现中文。
+         中文由 values-zh/strings.xml 覆盖（见 AndroidManifest 的 android:label="@string/app_name"）。 -->
     <string name="app_name">"Gosslan"</string>
     <string name="main_activity_title">"Gosslan"</string>
     <!-- 前台服务的常驻通知（见 BackgroundService.kt 与 docs/adr/0022）。
          文案按 ADR §5 的"带条件的承诺"写：不写成"永不掉线"，也不省略"在通知里就能停"这条出口。 -->
-    <string name="bg_notif_title">"Gosslan 正在后台接收消息"</string>
-    <string name="bg_notif_text">"局域网通道开着时保持接收；点按可回到 Gosslan"</string>
-    <string name="bg_notif_stop">"停止后台连接"</string>
-    <string name="bg_channel_name">"后台接收"</string>
-    <string name="bg_channel_desc">"局域网通道开启期间的常驻通知；关闭通道后自动消失"</string>
+    <string name="bg_notif_title">"Gosslan is receiving messages in the background"</string>
+    <string name="bg_notif_text">"Works while the LAN channel is on. Tap to open Gosslan."</string>
+    <string name="bg_notif_stop">"Stop background connection"</string>
+    <string name="bg_channel_name">"Background receiving"</string>
+    <string name="bg_channel_desc">"Ongoing notification while the LAN channel is on; it disappears once you turn the channel off."</string>
 </resources>

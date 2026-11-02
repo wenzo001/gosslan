@@ -13,6 +13,18 @@
 
 ## [Unreleased]
 
+## [5.16.75] - 2026-11-03
+
+### 应用名本地化（小院儿 / Gosslan）
+
+- Android 默认资源改为英文（`values/strings.xml`），中文由新增
+  `values-zh/strings.xml` 覆盖：中文系统启动器与最近任务显示「小院儿」，
+  英文系统显示 “Gosslan”，英文系统不再出现中文应用名。
+- macOS 本地化注释订正为「小院儿」（此前注释仍写旧名「相闻」），
+  `CFBundleDisplayName` 的 en/zh-Hans 两份取值不变。
+- 已知边界：Windows 开始菜单与快捷方式名仍随 `productName`（Gosslan）；
+  按系统语言改快捷方式名需要自定义 NSIS 模板，本轮不做，见 README 与发版说明。
+
 ## [5.16.74] - 2026-11-03
 
 ### 已知风险与有条件风险接受
