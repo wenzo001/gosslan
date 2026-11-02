@@ -13,6 +13,22 @@
 
 ## [Unreleased]
 
+## [5.16.56] - 2026-11-02
+
+### 「可验证」再收两格：头像上限闸（新判据）、导出聊天文字（复核）
+
+- **F-PLF-011 资料/设备信息**：此前「未读到对应断言（如『超限必须拒』）」。新增
+  `avatar_size_gate_is_fail_closed_and_boundary_exact`，钉住三件事：
+  ① data URL 前缀要剥掉（否则合法头像会因 base64 头被误拒）；
+  ② **非法 base64 必须 fail-closed 到 `usize::MAX`** —— 改成 0 就等于把坏输入当小图写进库、
+  还会撑爆 UDP 广播；
+  ③ 边界是 `>`（正好上限允许、多 1 字节拒绝）。
+  变异反证：把 `unwrap_or(usize::MAX)` 改成 `unwrap_or(0)` ⇒ 红并报「坏输入会当成小图写进库」，
+  还原后 `cmp` 逐字节相同。
+- **F-OBS-009 导出聊天文字**：原句「本轮未读其测试」→ 查了，**已有行为测试**
+  （`rendered_markdown_contains_sections_and_headers`：标题/分节/时间戳/条数统计，且空会话
+  明确写「（本会话没有文字记录）」；`message_body_survives_broken_metadata`：畸形载荷降级）。
+
 ## [5.16.55] - 2026-11-02
 
 ### F-GRP-001 收口：群管理的授权闸「在写之前」有判据了
