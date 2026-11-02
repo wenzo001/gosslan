@@ -1154,3 +1154,30 @@ fn set_ui_language_stays_silent_to_avoid_the_event_ping_pong() {
         "这条命令的核心动作（记下语言 hint）不见了"
     );
 }
+
+/// F-PRE-016 的样式广播那半：**锁内只克隆发送端，发送在锁外**。
+///
+/// 代码注释里写着真实代价：一条拥塞链路就能握着全局 `links` 锁把整个网络层
+/// （含自愈用的看门狗）拖死。这条判据钉住「`links` 锁的那个块在发送循环之前就结束」，
+/// 以及单条失败不得打断其余（`let _ = tx.send`，best-effort）。
+#[test]
+fn chat_style_broadcast_sends_outside_the_links_lock() {
+    let src = include_str!("commands/settings.rs");
+    let tail = src
+        .split("pub async fn broadcast_chat_style(")
+        .nth(1)
+        .expect("broadcast_chat_style 不见了 ⇒ 判据锚点要跟着改");
+    let body = tail.split("\n}\n").next().unwrap_or(tail);
+    assert!(
+        body.contains("links.lock().await"),
+        "样式广播不再取 links 锁（还是改了取法？先确认再改判据）"
+    );
+    assert!(
+        body.contains("};\n    for tx in &targets"),
+        "取锁的那个块没有在发送循环之前结束 ⇒ 发送期间仍握着 links 锁，一条拥塞链路会拖死网络层"
+    );
+    assert!(
+        body.contains("let _ = tx.send("),
+        "发送改成可失败传播了 ⇒ 一个对端拥塞会中断其余成员的样式同步（这里刻意 best-effort）"
+    );
+}
