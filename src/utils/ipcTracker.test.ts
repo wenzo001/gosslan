@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { beginOp, endOp, inflightOps } from "./ipcTracker.ts";
+import { beginOp, endOp, inflightOps, inflightSnapshot } from "./ipcTracker.ts";
 
 test("set_channel_enabled 的标签带上通道名（卡死归因要看得出是不是蓝牙）", () => {
   const id = beginOp("set_channel_enabled", { channel: "bluetooth" });
@@ -20,4 +20,14 @@ test("在途表只留未结束的操作", () => {
   assert.equal(inflightOps().length, before + 1);
   endOp(id);
   assert.equal(inflightOps().length, before);
+});
+
+test("心跳读数带在途数量与最老一条的等待时长", () => {
+  const before = inflightSnapshot();
+  const id = beginOp("get_messages");
+  const snap = inflightSnapshot();
+  assert.equal(snap.count, before.count + 1);
+  assert.ok(snap.oldestMs >= 0, "最老时长必须非负");
+  endOp(id);
+  assert.deepEqual(inflightSnapshot(), before);
 });

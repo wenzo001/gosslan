@@ -1479,6 +1479,15 @@ pub struct AppState {
     pub ui_current_op_at: std::sync::atomic::AtomicI64,
     /// 主窗口当前是否前台可见（心跳里带上来；隐藏时前端暂停心跳）。
     pub ui_heartbeat_active: AtomicBool,
+    /// 心跳时前端的在途 IPC 数与最老一条的年龄（Windows 假死现场用，只记读数）。
+    pub ui_inflight: std::sync::atomic::AtomicU32,
+    pub ui_inflight_oldest_ms: std::sync::atomic::AtomicI64,
+    /// `code=IPC_BACKLOG` 的上次落日志时刻（30s 节流，避免每秒刷屏）。
+    pub ui_backlog_note_at: std::sync::atomic::AtomicI64,
+    /// 主窗口最近一次 focus / resize 事件时刻（Windows 渲染层取证用，只写原子量）。
+    pub ui_last_focus_ms: std::sync::atomic::AtomicI64,
+    pub ui_last_focus_focused: AtomicBool,
+    pub ui_last_resize_ms: std::sync::atomic::AtomicI64,
     pub group_file_receivers: Mutex<HashMap<String, FileReceiver>>,
     /// 正在接收的文件：transfer_id -> FileReceiver
     pub file_receivers: Mutex<HashMap<String, FileReceiver>>,
@@ -2458,6 +2467,12 @@ impl AppState {
             ui_current_op: Mutex::new(None),
             ui_current_op_at: std::sync::atomic::AtomicI64::new(0),
             ui_heartbeat_active: AtomicBool::new(false),
+            ui_inflight: std::sync::atomic::AtomicU32::new(0),
+            ui_inflight_oldest_ms: std::sync::atomic::AtomicI64::new(0),
+            ui_backlog_note_at: std::sync::atomic::AtomicI64::new(0),
+            ui_last_focus_ms: std::sync::atomic::AtomicI64::new(0),
+            ui_last_focus_focused: AtomicBool::new(false),
+            ui_last_resize_ms: std::sync::atomic::AtomicI64::new(0),
             group_file_receivers: Mutex::new(HashMap::new()),
             inbound_gate: Mutex::new(()),
             group_file_sending: Mutex::new(std::collections::HashSet::new()),

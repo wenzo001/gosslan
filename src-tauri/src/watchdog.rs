@@ -11,6 +11,9 @@ use std::sync::atomic::{AtomicI64, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
+#[cfg(desktop)]
+use tauri::Manager;
+
 /// 探针/心跳检查周期。
 const TICK: Duration = Duration::from_secs(1);
 /// 主线程往返超过这么久 ⇒ 记一次 HANG（episode 内只记一次）。
@@ -49,6 +52,7 @@ pub fn start<R: tauri::Runtime>(app: tauri::AppHandle<R>, state: Arc<crate::stat
 }
 
 fn run<R: tauri::Runtime>(app: tauri::AppHandle<R>, state: Arc<crate::state::AppState>) {
+    install_window_event_probe(&app, &state);
     let last_main_tick = Arc::new(AtomicI64::new(now_ms()));
     let posted_at = Arc::new(AtomicI64::new(0));
     let mut notes = 0u32;
@@ -80,11 +84,11 @@ fn run<R: tauri::Runtime>(app: tauri::AppHandle<R>, state: Arc<crate::state::App
             match &mut main_episode {
                 None => {
                     main_episode = Some((now - main_stall, now));
-                    note_hang("main_thread", main_stall, op.as_ref(), &mut notes);
+                    note_hang("main_thread", main_stall, op.as_ref(), &mut notes, &state);
                 }
                 Some((_, last_note)) if now - *last_note >= note_interval(notes) => {
                     *last_note = now;
-                    note_hang("main_thread", main_stall, op.as_ref(), &mut notes);
+                    note_hang("main_thread", main_stall, op.as_ref(), &mut notes, &state);
                 }
                 _ => {}
             }
@@ -102,12 +106,12 @@ fn run<R: tauri::Runtime>(app: tauri::AppHandle<R>, state: Arc<crate::state::App
                 match &mut renderer_episode {
                     None => {
                         renderer_episode = Some((now - stale, now, false));
-                        note_hang("ui_renderer", stale, op.as_ref(), &mut notes);
+                        note_hang("ui_renderer", stale, op.as_ref(), &mut notes, &state);
                     }
                     Some((_, last_note, notified)) => {
                         if now - *last_note >= note_interval(notes) {
                             *last_note = now;
-                            note_hang("ui_renderer", stale, op.as_ref(), &mut notes);
+                            note_hang("ui_renderer", stale, op.as_ref(), &mut notes, &state);
                         }
                         if !*notified && stale >= NOTIFY_AT_MS {
                             *notified = true;
@@ -143,6 +147,39 @@ fn run<R: tauri::Runtime>(app: tauri::AppHandle<R>, state: Arc<crate::state::App
 // 而心跳只写两个原子量，不该被算成重活命令（`lib_window_tests` 的棘轮）。
 use crate::logging::now_ms;
 
+/// 主窗口 focus/resize 的**轻量探针**：只写原子量，不写日志、不取锁。
+///
+/// Windows 假死现场里最缺的两格是「卡死前窗口是不是刚被最小化/切走」与
+/// 「渲染层最后一次 resize 距今多久」。真正落盘由看门狗在 HANG 行里带出去，
+/// 这里绝不直接 IO —— 窗口事件回调可能就在主线程上。
+#[cfg(desktop)]
+fn install_window_event_probe<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+    state: &Arc<crate::state::AppState>,
+) {
+    let Some(win) = app.get_webview_window("main") else {
+        return;
+    };
+    let st = state.clone();
+    win.on_window_event(move |event| match event {
+        tauri::WindowEvent::Focused(focused) => {
+            st.ui_last_focus_ms.store(now_ms(), Ordering::SeqCst);
+            st.ui_last_focus_focused.store(*focused, Ordering::SeqCst);
+        }
+        tauri::WindowEvent::Resized(_) => {
+            st.ui_last_resize_ms.store(now_ms(), Ordering::SeqCst);
+        }
+        _ => {}
+    });
+}
+
+#[cfg(not(desktop))]
+fn install_window_event_probe<R: tauri::Runtime>(
+    _app: &tauri::AppHandle<R>,
+    _state: &Arc<crate::state::AppState>,
+) {
+}
+
 /// 取**最后一次已知**的在途命令与它距今的秒数。
 ///
 /// 为什么不能只看"此刻"：卡死现场里 `ui_current_op` 常常已经空了（那一刻没有 IPC 在飞），
@@ -163,7 +200,13 @@ fn current_op(state: &crate::state::AppState) -> Option<(String, i64)> {
     Some((op, age_s))
 }
 
-fn note_hang(scope: &str, ms: i64, op: Option<&(String, i64)>, notes: &mut u32) {
+fn note_hang(
+    scope: &str,
+    ms: i64,
+    op: Option<&(String, i64)>,
+    notes: &mut u32,
+    state: &crate::state::AppState,
+) {
     *notes = notes.saturating_add(1);
     let seconds = (ms.max(0) / 1000).max(1);
     // op 名里不许出现空白：现场行按空白分字段（`field_str` 取第一个词）。
@@ -179,13 +222,43 @@ fn note_hang(scope: &str, ms: i64, op: Option<&(String, i64)>, notes: &mut u32) 
         ),
         None => ("unknown".to_string(), -1),
     };
+    let hb = state.ui_heartbeat_ms.load(Ordering::SeqCst);
+    let hb_age_ms = if hb > 0 { (now_ms() - hb).max(0) } else { -1 };
+    let active = state.ui_heartbeat_active.load(Ordering::SeqCst);
+    let inflight = state.ui_inflight.load(Ordering::SeqCst);
+    let oldest_ms = state.ui_inflight_oldest_ms.load(Ordering::SeqCst);
+    let focused = state.ui_last_focus_focused.load(Ordering::SeqCst);
+    let focus_age_s = age_s(state.ui_last_focus_ms.load(Ordering::SeqCst));
+    let resize_age_s = age_s(state.ui_last_resize_ms.load(Ordering::SeqCst));
+    let db_hold = state
+        .db_hold_note
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .clone()
+        .unwrap_or_else(|| "none".to_string())
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join("_")
+        .chars()
+        .take(160)
+        .collect::<String>();
     crate::logging::crash_note(&format!(
-        ">>> code=HANG scope={scope} seconds={seconds} last_op={op_name} last_op_age_s={op_age} {}",
+        ">>> code=HANG scope={scope} seconds={seconds} last_op={op_name} last_op_age_s={op_age} \
+         hb_age_ms={hb_age_ms} active={active} inflight={inflight} inflight_oldest_ms={oldest_ms} \
+         focused={focused} focus_age_s={focus_age_s} resize_age_s={resize_age_s} db_hold={db_hold} {}",
         // 冻住的那一刻我们占了多少内存 / 正在读多少帧字节 —— 没有这一格，
         // "主线程 + 渲染层同一秒双双停滞"只能猜，有了它才分得开"代码死循环"与"提交内存耗尽"。
         // 按 key 取字段的老解析（`logging.rs::field_str`）不受追加影响。
         crate::mem_diag::sample().line()
     ));
+}
+
+fn age_s(at: i64) -> i64 {
+    if at > 0 {
+        (now_ms() - at).max(0) / 1000
+    } else {
+        -1
+    }
 }
 
 fn note_end(scope: &str, ms: i64) {

@@ -4,11 +4,21 @@
  * 10 s 提示 / 30 s 升级；`snoozeUntil` 是用户点过「继续等待」之后的静默窗口。
  * 不碰 DOM、不读时钟（时刻由调用方给），所以能被 node:test 直接覆盖。
  */
+import { shouldRunThrottled } from "./defer.ts";
 import type { InflightOp } from "./ipcTracker";
 
 export const UI_STALL_BANNER_MS = 10_000;
 export const UI_STALL_ESCALATE_MS = 30_000;
 export const UI_STALL_SNOOZE_MS = 60_000;
+/** 浏览器 long task 的取证阈值与最小间隔（只影响日志，不影响界面）。 */
+export const LONG_TASK_LOG_MS = 2_000;
+export const LONG_TASK_LOG_COOLDOWN_MS = 5_000;
+
+/** 这条 long task 要不要落一行取证日志。 */
+export function shouldLogLongTask(durationMs: number, now: number, lastLoggedAt: number): boolean {
+  return durationMs >= LONG_TASK_LOG_MS
+    && shouldRunThrottled(now, lastLoggedAt, LONG_TASK_LOG_COOLDOWN_MS);
+}
 
 export interface StallView {
   id: number;

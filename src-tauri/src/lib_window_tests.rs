@@ -1064,11 +1064,27 @@
         assert!(cmd.contains("ui_heartbeat_ms"));
         assert!(cmd.contains("ui_heartbeat_active"));
         assert!(cmd.contains("ui_current_op"));
+        assert!(
+            cmd.contains("ui_inflight") && cmd.contains("ui_inflight_oldest_ms"),
+            "心跳必须把在途 IPC 数与最老等待报到现场字段"
+        );
+        assert!(
+            cmd.contains("code=IPC_BACKLOG"),
+            "IPC 堆积必须有具名取证日志"
+        );
         let state = include_str!("state.rs");
         assert!(
             state.contains("pub ui_heartbeat_ms"),
             "AppState 必须有心跳字段"
         );
+        assert!(
+            state.contains("pub ui_inflight") && state.contains("pub ui_last_focus_ms"),
+            "AppState 必须有 IPC/focus 现场字段"
+        );
         let wd = include_str!("watchdog.rs");
         assert!(wd.contains("ui_heartbeat_ms"), "看门狗必须读心跳字段");
+        assert!(
+            wd.contains("ui_inflight") && wd.contains("db_hold_note"),
+            "HANG 现场必须带 IPC 堆积与慢持锁摘要"
+        );
     }

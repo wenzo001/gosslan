@@ -8,8 +8,13 @@ import { t } from "@/i18n";
 import { isMac } from "@/utils/platform";
 import { isSelectableTextTarget } from "@/utils/textSelection";
 import { copyText, formatCrashReport, shouldShowCrashNotice } from "@/utils/crashReport";
-import { inflightOps, lastOpLabel } from "@/utils/ipcTracker";
-import { decideStall, UI_STALL_SNOOZE_MS, type StallView } from "@/utils/uiStall";
+import { inflightOps, inflightSnapshot, lastOpLabel } from "@/utils/ipcTracker";
+import {
+  decideStall,
+  shouldLogLongTask,
+  UI_STALL_SNOOZE_MS,
+  type StallView,
+} from "@/utils/uiStall";
 import CrashNotice from "@/components/CrashNotice.vue";
 import HangNotice from "@/components/HangNotice.vue";
 import ResponsiveLayout from "@/layouts/ResponsiveLayout.vue";
@@ -53,6 +58,8 @@ let stallTimer: number | undefined;
 let heartbeatTimer: number | undefined;
 let heartbeatTick: (() => void) | null = null;
 let lastHeartbeatActive = true;
+let longTaskObserver: PerformanceObserver | null = null;
+let lastLongTaskLogAt = performance.now();
 
 function startWatchdogTimers() {
   stallTimer = window.setInterval(() => {
@@ -63,20 +70,50 @@ function startWatchdogTimers() {
     const active = !document.hidden;
     if (!active && !lastHeartbeatActive) return;
     lastHeartbeatActive = active;
-    void api.uiHeartbeat(active ? lastOpLabel() : null, active).catch(() => {});
+    const snap = inflightSnapshot();
+    void api
+      .uiHeartbeat(active ? lastOpLabel() : null, active, snap.count, snap.oldestMs)
+      .catch(() => {});
   };
   heartbeatTimer = window.setInterval(heartbeatTick, 1000);
   document.addEventListener("visibilitychange", heartbeatTick);
+  startLongTaskObserver();
   heartbeatTick();
+}
+
+/**
+ * 浏览器 long task（>2s）取证：只报一行 `code=SLOW_OP`，不改变任何交互。
+ * WebView2 不支持 `longtask` 时静默跳过；同一窗口 5s 内最多一条，避免刷屏。
+ */
+function startLongTaskObserver() {
+  if (typeof PerformanceObserver === "undefined") return;
+  try {
+    longTaskObserver = new PerformanceObserver((list) => {
+      const now = performance.now();
+      for (const entry of list.getEntries()) {
+        if (!shouldLogLongTask(entry.duration, now, lastLongTaskLogAt)) continue;
+        lastLongTaskLogAt = now;
+        void api
+          .reportFrontendSlowOp(`longtask:${entry.name || "unknown"}`, Math.round(entry.duration))
+          .catch(() => {});
+        break;
+      }
+    });
+    longTaskObserver.observe({ entryTypes: ["longtask"] });
+  } catch {
+    longTaskObserver = null;
+  }
 }
 
 function stopWatchdogTimers() {
   if (stallTimer) window.clearInterval(stallTimer);
   if (heartbeatTimer) window.clearInterval(heartbeatTimer);
   if (heartbeatTick) document.removeEventListener("visibilitychange", heartbeatTick);
+  longTaskObserver?.disconnect();
   stallTimer = undefined;
   heartbeatTimer = undefined;
   heartbeatTick = null;
+  longTaskObserver = null;
 }
 
 async function copyCrashReport() {

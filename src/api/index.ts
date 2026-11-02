@@ -506,6 +506,12 @@ export const api = {
    */
   logFrontendError: (kind: string, text: string) =>
     invoke<void>("log_frontend_error", { kind, text }),
+  /**
+   * 前端慢调用/long task 取证：只落一行 `code=SLOW_OP` 日志，不回传事件。
+   * 它在 `ipcTracker` 的 EXCLUDED 里，不会形成递归追踪。
+   */
+  reportFrontendSlowOp: (cmd: string, ms: number) =>
+    invoke<void>("report_frontend_slow_op", { cmd, ms }),
 
   /**
    * 收藏（微信式）：**独立本地存储** —— 原消息/会话被删、缓存被清理都不影响。
@@ -664,8 +670,8 @@ export const api = {
    * 它是看门狗判断"渲染层是否卡死"的输入；不进前端追踪表（见 ipcTracker 的 EXCLUDED），
    * 否则每秒一条的自我记录会把真正的卡死原因淹掉。
    */
-  uiHeartbeat: (currentOp: string | null, active: boolean) =>
-    invoke<void>("ui_heartbeat", { currentOp, active }),
+  uiHeartbeat: (currentOp: string | null, active: boolean, inflight: number, oldestMs: number) =>
+    invoke<void>("ui_heartbeat", { currentOp, active, inflight, oldestMs }),
   /**
    * 导出**脱敏**诊断包到用户选好的落点（纯文本）。
    *
