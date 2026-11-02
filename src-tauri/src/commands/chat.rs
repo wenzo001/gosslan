@@ -1158,23 +1158,26 @@ pub async fn get_group_todo_messages(
         // 群数量上限是个护栏而不是功能：调用方是会话列表，正常量级是几十；
         // 截断方向是"少算几个群的徽标"，不会算错已经算出来的那些。
         const MAX_CONVS: usize = 400;
-        // A 档这一格**只补留痕，不改可见结果**：界面仍看到"空"，但日志里有一行说明
-// "这次是没读出来，不是真的没有"。改成上抛 + 界面错误态与否，等用户拍板（§4.0bq）。
-        Ok(match db::get_todo_messages_for_conns(
+        // A 档（INV-P36）：2026-11-02 拍板改成上抛。徽标是个计数，折成空 = 断言"没有未完成任务"，
+        // 那是把一次 IO 失败说成关于用户数据的事实。前端保留上一次徽标值并给一次准确提示。
+        match db::get_todo_messages_for_conns(
             &dbc,
             &conv_ids[..conv_ids.len().min(MAX_CONVS)],
         ) {
-            Ok(rows) => rows,
+            Ok(rows) => Ok(rows),
             Err(e) => {
                 if crate::logging::log_throttled("todo_badge_read_failed", 300_000) {
                     s.logger.warn(
                         "chat",
-                        format!("code=TODO_BADGE_READ_FAILED 群任务徽标按空显示 convs={}：{e}", conv_ids.len()),
+                        format!(
+                            "code=TODO_BADGE_READ_FAILED 群任务徽标读取失败，上抛给界面：convs={} err={e}",
+                            conv_ids.len(),
+                        ),
                     );
                 }
-                Vec::new()
+                Err(format!("群任务徽标读不出来：{e}"))
             }
-        })
+        }
     })
     .await
     .map_err(|e| format!("群任务徽标读取被线程池中断: {e}"))?

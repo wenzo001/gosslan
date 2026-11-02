@@ -1,0 +1,14 @@
+{
+  "_comment": "同一形状，只把一条纯文档换成应用码 / 版本清单 —— 判据必须拒绝这个 none。",
+  "commits": [
+    {
+      "sha": "b000002",
+      "message": "docs(audit): 台账订正\n\nVersion-Bump: none",
+      "files": [
+        { "path": "docs/notes/x.md", "add": 12, "del": 3 },
+        { "path": "src/stores/useChatStore.ts", "add": 30, "del": 5 }
+      ]
+    }
+  ],
+  "recentFixes": []
+}

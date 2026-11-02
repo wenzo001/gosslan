@@ -1,0 +1,14 @@
+{
+  "_comment": "Version-Bump: none 的正反两面（判据 4 的集成层）。由 scripts/changeBudgetNone.test.ts 用 --from-json 跑：legal 必须退 0，illegal 必须退 1 且理由点名 none。刻意独立成一份 fixture：既有 change-budget.json 被一堆护栏用例的退出码期望钉着，往里加提交会把那些用例的期望一起改掉。",
+  "commits": [
+    {
+      "sha": "b000001",
+      "message": "docs(audit): 台账订正\n\nVersion-Bump: none",
+      "files": [
+        { "path": "docs/notes/x.md", "add": 12, "del": 3 },
+        { "path": "CHANGELOG.md", "add": 4, "del": 0 }
+      ]
+    }
+  ],
+  "recentFixes": []
+}

@@ -111,19 +111,20 @@ pub async fn get_friends(state: State<'_, Arc<AppState>>) -> Result<Vec<Friend>,
             .unwrap_or_else(|e| e.into_inner())
             .clone();
         let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());
-        // 这一处最像「好友全没了」：会话列表由它拼出，读失败时空态文案还会切成「还没有好友」。
-        // A 档这一格**只补留痕，不改可见结果**：界面仍看到"空"，但日志里有一行说明
-// "这次是没读出来，不是真的没有"。改成上抛 + 界面错误态与否，等用户拍板（§4.0bq）。
+        // 这一处最像「好友全没了」：会话列表由它拼出，折成空之后空态文案会切成「还没有好友」——
+        // 那是**用一次 IO 失败生成一句关于用户数据的断言**（INV-P36）。
+        // 2026-11-02 负责人拍板 A 档改界面错误态 ⇒ 这里上抛：留痕照打（节流不变，
+        // 上抛之后日志那一行仍是归因入口），但值不再折成空列表。
         let mut friends = match db::list_friends(&dbc) {
             Ok(rows) => rows,
             Err(e) => {
                 if crate::logging::log_throttled("friends_list_read_failed", 300_000) {
                     s.logger.warn(
                         "friend",
-                        format!("code=FRIENDS_LIST_READ_FAILED 好友列表按空显示：{e}"),
+                        format!("code=FRIENDS_LIST_READ_FAILED 好友列表读取失败，上抛给界面：{e}"),
                     );
                 }
-                Vec::new()
+                return Err(format!("好友列表读不出来：{e}"));
             }
         };
         for f in friends.iter_mut() {

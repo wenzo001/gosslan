@@ -134,6 +134,13 @@ export const useChatStore = defineStore("chat", () => {
   const initialized = ref(false);
   /** 各数据源**成功**读过一次：深链校验只能基于已读到的表，不能把 IPC 失败当成“对象不存在”。 */
   const friendsLoaded = ref(false);
+  /**
+   * 好友列表**这一次没读出来**的原因（null = 没有失败记录）。
+   * 为什么单独一格：读库失败折成空列表后，界面会画成「还没有好友」——那是用一次 IO 失败
+   * 生成一句关于用户数据的断言（INV-P36）。有了这个键，列表能区分"真的没有"与"没读到"，
+   * 并且保留上一次读到的名单（成功过就以数据为准，错误不盖内容，同 `todoRowsLoadState` 的口径）。
+   */
+  const friendsError = ref<string | null>(null);
   const conversationsLoaded = ref(false);
   const groupsLoaded = ref(false);
   /**
@@ -182,6 +189,18 @@ export const useChatStore = defineStore("chat", () => {
    * 那四行种类**永远来自同一份快照**，不会一条是新的、一条是旧的。
    */
   const messageOps = ref<PendingMessageOp[]>([]);
+  /**
+   * A 档几格各自的**读取失败原因**（null / 无键 = 没有失败记录）。
+   * 为什么一人一格：这几路失败互相独立 —— 传输台账读挂了不该让内容台账与待发队列一起
+   * 变成"没有任务"（INV-P36：读失败 ≠ 没有数据）。界面据此区分空态与错误态。
+   */
+  const transfersError = ref<string | null>(null);
+  const contentTransfersError = ref<string | null>(null);
+  const messageOpsError = ref<string | null>(null);
+  /** 群任务徽标 / 群已读名单（按群）同一类"读不到"的登记。 */
+  const openTodosError = ref<string | null>(null);
+  const groupReadsErrors = ref<Record<string, string>>({});
+  const asReadError = (e: unknown) => (e instanceof Error ? e.message : String(e));
   /**
    * 更新下载的可查询状态（B5）。后端是全局 managed state，跨窗口共用；
    * 事件 `updater-status` 是唯一推送口径，首帧由 `refreshUpdaterStatus()` 补拉。
@@ -987,10 +1006,18 @@ export const useChatStore = defineStore("chat", () => {
   }
   async function refreshFriends() {
     const tok = refreshGuard.begin("friends");
-    const list = await api.getFriends();
-    if (!refreshGuard.isCurrent("friends", tok)) return;
-    friends.value = list;
-    friendsLoaded.value = true;
+    try {
+      const list = await api.getFriends();
+      if (!refreshGuard.isCurrent("friends", tok)) return;
+      friends.value = list;
+      friendsLoaded.value = true;
+      friendsError.value = null;
+    } catch (e) {
+      if (!refreshGuard.isCurrent("friends", tok)) return;
+      // 失败**不清空**上一次读到的名单：把"读不到"画成"没有了"就是假陈述。
+      friendsError.value = e instanceof Error ? e.message : String(e);
+      void app.toastError(e, t("conv.contactsLoadFailed"));
+    }
   }
   async function refreshPending() {
     const tok = refreshGuard.begin("pending");
@@ -1144,8 +1171,19 @@ export const useChatStore = defineStore("chat", () => {
       return;
     }
     const mine = ++openTodoSeq;
-    const rows = await api.getGroupTodoMessages(ids);
+    let rows;
+    try {
+      rows = await api.getGroupTodoMessages(ids);
+    } catch (e) {
+      // 读不到就**保留上一次徽标**（清成 0 等于断言"任务都完成了"），只登记原因 + 提示一次。
+      if (mine === openTodoSeq) {
+        openTodosError.value = asReadError(e);
+        void app.toastError(e, t("task.badgeLoadFailed"));
+      }
+      return;
+    }
     if (mine !== openTodoSeq) return;
+    openTodosError.value = null;
     // 同一次读同时喂徽标与那三处界面（见 groupTodoRows 的注释）
     groupTodoRows.value = putTodoRows(groupTodoRows.value, ids, rows);
     clearGroupTodoRowsErrors(ids);
@@ -1254,7 +1292,22 @@ export const useChatStore = defineStore("chat", () => {
     groups.value = list;
     groupsLoaded.value = true;
     const entries = await Promise.all(
-      list.map(async (group) => [group.id, await api.getGroupReads(group.id).catch(() => [])] as const),
+      list.map(async (group) => {
+        try {
+          const reads = await api.getGroupReads(group.id);
+          if (groupReadsErrors.value[group.id]) {
+            const next = { ...groupReadsErrors.value };
+            delete next[group.id];
+            groupReadsErrors.value = next;
+          }
+          return [group.id, reads] as const;
+        } catch (e) {
+          // `.catch(() => [])` 会把"读不到名单"画成"没人读过"（绿勾一起消失）。
+          // 现在仍给空表（不牵连别的群），但按群记下原因 ⇒ 这一格从此能分清两种"空"。
+          groupReadsErrors.value = { ...groupReadsErrors.value, [group.id]: asReadError(e) };
+          return [group.id, [] as Awaited<ReturnType<typeof api.getGroupReads>>] as const;
+        }
+      }),
     );
     const next: Record<string, Record<string, number>> = {};
     for (const [groupId, reads] of entries) {
@@ -1364,13 +1417,20 @@ export const useChatStore = defineStore("chat", () => {
 
   async function refreshTransfers() {
     const req = refreshGuard.begin("transfers");
-    const [list, contents, msgOps] = await Promise.all([
+    // 三路各自失败各自登记（原写法只有 `getTransfers` 没 catch ⇒ 后端一上抛，`Promise.all`
+    // 把另两路**已经读到的**结果一起扔掉）。allSettled 让"谁失败谁进错误档、谁成功谁落地"，
+    // 失败那一路保留上一次的值而不是清空。
+    const [t, c, m] = await Promise.allSettled([
       api.getTransfers(),
-      api.getContentTransfers().catch(() => []),
-      // 任务中心的第四类行（还没送到对端的消息）。失败不拖累另两路：
-      // 拿不到就当这一类没有任务，而不是让整个传输面板报错——它读的是同一批事实。
-      api.getPendingMessageOperations().catch(() => []),
+      api.getContentTransfers(),
+      api.getPendingMessageOperations(),
     ]);
+    const list = t.status === "fulfilled" ? t.value : transfers.value;
+    const contents = c.status === "fulfilled" ? c.value : contentTransfers.value;
+    const msgOps = m.status === "fulfilled" ? m.value : messageOps.value;
+    transfersError.value = t.status === "fulfilled" ? null : asReadError(t.reason);
+    contentTransfersError.value = c.status === "fulfilled" ? null : asReadError(c.reason);
+    messageOpsError.value = m.status === "fulfilled" ? null : asReadError(m.reason);
     // 后发先至的旧快照必须丢掉：多选发送时每个文件都会 `void refreshTransfers()`，
     // 旧快照里**没有**刚建的那条 transfer ⇒ 覆盖回来后，后续 file-progress 全部落空
     // （见 updateTransferProgress），进度条永久钉在「发送中 0%」——而对端早就收完已读。
@@ -3345,6 +3405,12 @@ export const useChatStore = defineStore("chat", () => {
     eventBridgeOk,
     groupFileDiag,
     friendsLoaded,
+    friendsError,
+    transfersError,
+    contentTransfersError,
+    messageOpsError,
+    openTodosError,
+    groupReadsErrors,
     conversationsLoaded,
     groupsLoaded,
     pendingRequests,

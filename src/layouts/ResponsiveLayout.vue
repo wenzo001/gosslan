@@ -1040,7 +1040,13 @@ function onResizeEnd() {
               {{ t("common.addFriend") }}
             </PrimaryBtn>
             <div class="text-xs opacity-70">
-              {{ chat.friends.length ? t("conv.emptyHintHasFriends") : t("conv.emptyHintNoFriends") }}
+              {{
+                chat.friends.length
+                  ? t("conv.emptyHintHasFriends")
+                  : chat.friendsError
+                    ? t("conv.contactsLoadFailedHint")
+                    : t("conv.emptyHintNoFriends")
+              }}
             </div>
           </template>
         </div>

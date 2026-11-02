@@ -323,6 +323,33 @@ CASES: list[Case] = [
         tags=["domain", "new-guards"],
     ),
     Case(
+        name="领域图：每条不变量必须有领域认领（无主的不变量 = 谁改都不守它）",
+        why="`docs/protocol-invariants.md` 的 36 条 INV-P 里，2026-11-02 之前有 6 条（P06/P09/P10/P13/P15/P35）"
+        "在 `domains.data.mjs` 的 `invariants` 里一次都没出现 —— 也就是说，改到那几条管的代码时，"
+        "领域图不会告诉你该守谁。本用例把 persistence 认领的 INV-P05 从图里删掉（文档里它仍然定义着），"
+        "守门必须报「没有任何领域认领」。反向那一半（幽灵引用）由同一条判据的 ghosts 分支守："
+        "把 id 改名会同时少一条孤儿、多一条幽灵，而只有后者咬得住这种形状。",
+        file=ROOT / "docs" / "domains.data.mjs",
+        injections=[('        "INV-P05",\n', "")],
+        cmd=["node", "scripts/check-domain-map.mjs"],
+        cwd=ROOT,
+        expect_fail_hint="没有任何领域认领",
+        tags=["domain", "new-guards"],
+    ),
+    Case(
+        name="契约图：inv 快照与 domains.data.mjs 不一致必须红（图里那句 ⚠️ 注释不是判据）",
+        why="`docs/ARCHITECTURE-MAP.html` 内联了一份领域清单（`{\"id\":…, \"inv\":[…]}` 那 11 行），"
+        "它是 `.mjs` 的手抄快照。2026-11-02 加判据 H 之前**没有任何东西对账** —— 当时现跑就抓到 3 处漂移"
+        "（transport 少 INV-P36、files 少 INV-P34a、persistence 多留 INV-P16）。"
+        "本用例给 persistence 的快照塞一个 .mjs 里没有的 id，守门必须报「inv 快照与 .mjs 不一致」。",
+        file=ROOT / "docs" / "ARCHITECTURE-MAP.html",
+        injections=[('"inv": ["INV-P05"', '"inv": ["INV-P05", "INV-P99-TEMP"')],
+        cmd=["node", "scripts/check-domain-map.mjs"],
+        cwd=ROOT,
+        expect_fail_hint="inv 快照与 .mjs 不一致",
+        tags=["domain", "new-guards"],
+    ),
+    Case(
         name="领域依赖方向：consumes 被误删成空 → 已有 use 立刻穿帮",
         why="messaging 域的 gossip_engine.rs 通过 `use crate::crypto::Identity;` 依赖 identity 域。"
         "本用例把 messaging 的 consumes 从 `[\"identity\"]` 改成 `[]`,守门必须报"

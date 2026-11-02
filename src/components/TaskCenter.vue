@@ -38,6 +38,15 @@ import { cancelOutcome, fileCancelKey, messageCancelNotice } from "@/utils/cance
  */
 const app = useAppStore();
 const chat = useChatStore();
+
+/**
+ * 任务中心的错误档取哪一路：三路台账**只要有一路带着失败记录**就说明这张表不完整，
+ * 此时"没有进行中的任务"这句空态文案是假话（INV-P36）。取第一个原因显示，
+ * 三路全好时返回 null ⇒ 空态文案照旧（真正的空不受影响）。
+ */
+const ledgerError = computed(
+  () => chat.transfersError ?? chat.contentTransfersError ?? chat.messageOpsError,
+);
 // 跳转的权威是路由（见下面 openConversation 里那段注释），所以这一份 router 是必需的。
 const router = useRouter();
 
@@ -350,7 +359,19 @@ async function openConversation(row: OperationRow) {
        `data-task-open` 是探针锚点：先证明组件读到的是同一份 store，再判弹窗。 -->
   <div data-task-open :data-open="String(app.taskCenterOpen)">
     <BaseModal :open="app.taskCenterOpen" :title="t('task.title')" width="max-w-md" @close="app.closeTaskCenter()">
-    <p v-if="rows.length === 0" class="py-6 text-center text-sm text-[var(--gosslan-text-2)]">
+    <!-- A 档（INV-P36）：三路台账各自可能读失败。全部为空且**有失败记录**时不许说
+         "没有进行中的任务" —— 那是把 IO 失败断言成用户的数据状态。给一次只重读本面板的重试。 -->
+    <div v-if="rows.length === 0 && ledgerError" class="space-y-2 py-6 text-center" role="alert">
+      <p class="text-sm font-medium text-[var(--gosslan-danger-ink)]">{{ ledgerError }}</p>
+      <p class="text-xs text-[var(--gosslan-text-2)]">{{ t("task.loadFailedHint") }}</p>
+      <button
+        class="tap-safe rounded-[var(--gosslan-radius-md)] border border-[var(--gosslan-border)] px-3 py-1.5 text-xs transition hover:bg-[var(--gosslan-hover)]"
+        @click="chat.refreshTransfers()"
+      >
+        {{ t("common.retry") }}
+      </button>
+    </div>
+    <p v-else-if="rows.length === 0" class="py-6 text-center text-sm text-[var(--gosslan-text-2)]">
       {{ t("task.empty") }}
     </p>
     <ul v-else class="max-h-[55vh] space-y-2 overflow-y-auto pr-0.5">

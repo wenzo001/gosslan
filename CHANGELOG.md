@@ -13,6 +13,89 @@
 
 ## [Unreleased]
 
+## [5.16.41] - 2026-11-02
+
+### 读库失败不再画成「你没有数据」：A 档 6 格接上错误态
+
+`INV-P36` 的后端那一半 5.16.24 已收口（读失败不许折成空），但界面那一半还是把「读失败」和「真没有」画成同一张脸：
+好友列表读不出来时，对话面板直接说「还没有好友。本机与好友处于同一局域网时会被自动发现」——
+**系统在用一次 IO 失败生成一句关于用户数据的断言**。这一批把 A 档 6 格拆成 加载 / 空 / 失败 / 成功 四态：
+
+| 格 | 后端（读失败） | 界面 |
+|---|---|---|
+| 好友列表 | `get_friends` → `Err("好友列表读不出来：{e}")` | 好友栏 `role="alert"` + 「重试」→ `refreshFriends()`；对话面板的提示**三分**：有好友 / 读失败 / 真没有 |
+| 传输台账 / 内容补拉 / 消息操作 | `get_transfers` → `Err("传输台账读不出来：{e}")` | 任务中心在「还没有任务」**之前**先出错误块 + 重试（三个来源各记各的，`Promise.allSettled` 不让一处失败清空别的） |
+| 群文件「我的状态」 | 逐行读失败 → `Err(format!("群文件「我的状态」读不出来（transfer={}）"))` | 面板本来的 loading/error/empty + 重试（已有机制，没新造） |
+| 群任务徽标 | `get_group_todo_messages` → `Err("群任务徽标读不出来")` | 保留上一份徽标数字 + 一次性 toast（它是个数字、不是列表，不做常驻错误块） |
+| 群已读 | `get_group_reads` → `Err(...)`，逐群记 `groupReadsErrors[id]` | 不再 `.catch(() => [])`：失败那格不画「谁都没读过」 |
+| 中继配置 | `get_relay_config` 两臂都 `Err` | 设置页内嵌错误块 + 重试；`relayDirty` 仍要求 `relayLoaded` ⇒ **读失败不可能把空值写回去** |
+
+新文案（zh / en 成对，逐条在 `src/i18n/locales/{zh-cn,en-us}.ts`）：
+
+- `conv.contactsLoadFailed`：「好友列表读不出来」/「Couldn't load contacts」
+- `conv.contactsLoadFailedHint`：「这次没能从本机读到好友列表（不代表没有好友）。请重试，或检查磁盘是否可用。」/
+  「The contact list couldn't be read from this device — that doesn't mean you have no friends. Try again, or check available disk space.」
+- `task.loadFailedHint`：「任务列表这次没读出来（不代表没有进行中的任务），重试即可。」/
+  「The task list couldn't be read this time — that doesn't mean there are no tasks. Retry.」
+- `task.badgeLoadFailed`：「群任务徽标读不出来」/「Couldn't load the group-task badge」
+- `settings.network.relayServer.loadFailed`：「中继配置这次没读出来，先不要保存」/
+  「Relay settings couldn't be read — don't save yet」
+- 重试一律复用已有的 `common.retry`（「重试」/「Retry」）；错误块形状沿用 `StateBlock.vue` 那一套
+  （`role="alert"` + retryLabel），没有新组件。
+
+判据：`src/utils/designGuards.test.ts` 新增一格「A 档读失败的界面错误档必须接上（后端不许折回空 + 前端要有错误档与重试）」——
+逐格切出 Rust 函数体，要求含自己的具名 Err、含「上抛给界面」、**不含「按空显示」**；前端三处断言 `role="alert"` 与重试标签；
+另有一条合成正控证明这些针真的会扎。变异反证：把 `friends.rs` 那句改回「按空显示」⇒ 该格红（**247 过 / 1 失败**），
+还原后 `cmp` 逐字节相同 ⇒ 绿。i18n 三张表（键集相等 / 非空 / 每个字面 `t()` 可解析 / 死文案反向查）一起绿。
+
+⚠️ **运行时没验**：这 6 格要看到错误块，得让读真的失败（盘满 / 库被占用），不是双实例 E2E 的常规路径。
+本批只做到「后端上抛 + 前端接线 + 判据」；真机故障态的观感留给 TST-06 那一族（§13 第 23 行仍开着）。
+
+### `Version-Bump: none`：纯文档提交不再吃 patch 位
+
+`[plan]` 的语义是「零影响、不动应用码」，于是审计/台账/CHANGELOG 那类提交要么被迫提一版号（patch 位通胀），
+要么借 `[plan]` 蒙混（而它只管"不动应用码"，不管"到底动了什么"）。新增第四档 **`none` = 主动声明"这笔纯文档"**：
+
+- 白名单**唯一来源** `scripts/semver.mjs`：`PURE_DOC_FILES`（根级 README / CHANGELOG / LICENSE(.md) / CONTRIBUTING /
+  SECURITY / AGENTS / CLAUDE / QODER / `.gitignore`）+ `PURE_DOC_PREFIXES`（`docs/`、`assets/`、`public/`，各自只认固定扩展名）；
+- **默认拒绝**：不在白名单内就是违规 —— `src/`、`src-tauri/`、`scripts/`、`tests/`、`.github/`、
+  以及 `docs/domains.data.mjs`（`.mjs` 不在 `docs/` 允许的扩展名里）都会让 `none` 不成立；
+  五个版本清单文件另有单独一句「改了版本清单」（同时导出 `VERSION_FILES`，`check-change-budget.mjs`
+  的四个清单文件由它现取，不再手抄第二份）；
+- 两道闸：`version:check` 把违规的 `none` 单独点名（`fakeNone`）；`check-change-budget.mjs` 判据 4
+  对「声明 none 但不成立」直接红，且**合法的 none 不再占用判据 3 的犯案窗口**（5.16.40 §4.0bx 那条稀释的收紧之一）；
+- 用例 `scripts/semverNone.test.ts` **7 条**：正向（纯文档 + none ⇒ 已声明且不欠版本）、trailer 解析（`none-s` / `NONE` 不算）、
+  反向①夹带 `src/`、`src-tauri/src/`、`scripts/`、`tests/`、`.github/`、`docs/domains.data.mjs` ⇒ 1 条违规且仍欠版本、
+  反向②五个清单逐个 ⇒ 理由以「改了版本清单」开头、反向③白名单是具名的默认拒绝、`[plan]` 零影响豁免不回归，
+  外加一条集成档：`check-change-budget.mjs --from-json` 吃两份 fixture，合法退 0、违规退 1。
+- 现跑：`node --test scripts/semverNone.test.ts` 7/7 绿。
+
+⚠️ **引入这套机制的就是本笔，它改了 `scripts/` ⇒ 必须用 `patch`，不能用 `none`**（白名单自己就会把它判违规）。
+
+### 领域图第一次对账「每条不变量有没有人认领」+ 契约图的 inv 快照（判据 G/H）
+
+`docs/domains.data.mjs` 的 `invariants` 一直在说「这条契约归谁守」，而**没有任何东西检查它全不全**；
+`docs/ARCHITECTURE-MAP.html` 里那 11 行 `{"id":…, "inv":[…]}` 是前者的手抄快照，图里只写了一句 ⚠️ 注释
+——而注释不是判据。`check-domain-map.mjs` 加两条：
+
+- **判据 G**：每条不变量必须有领域认领。分母**现读两个真源**（`docs/protocol-invariants.md` 的 `### INV-P…` 标题 +
+  `AI_RULES.md` 的 `INV-0NN`），首次跑就抓出 **6 条无主**：`INV-P06 / P09 / P10 / P13 / P15 / P35` ——
+  改到它们管的代码时，领域图不会告诉你该守谁。已按「本节点名的实现/钩子落在本域 paths」逐条补认领（理由写在行注释上）；
+  反向那一半查**幽灵引用**（认领了但两个真源里都不存在）。
+- **判据 H**：契约图的 `inv` 快照与 `.mjs` 按集合对账，且**领域 id 双向对齐**（否则新增一个域只写进 `.mjs`，
+  这条判据会静默少判一格）。首次跑抓出 **3 处已存在的漂移**：transport 少 `INV-P36`、files 少 `INV-P34a`、
+  persistence 多留 `INV-P16`（它早就搬去 observability 了）。快照已按 `.mjs` 逐项同步。
+- 现读：`node scripts/check-domain-map.mjs` 退 0 —— 分母 **45** 条、11 个领域快照一致（数字由脚本自己打印）。
+- 非空转：`scripts/guard_cases/toolchain.py` 加两条注入用例（删一条认领 ⇒ 判据 G 报「没有任何领域认领」；
+  快照塞一个假 id ⇒ 判据 H 报「inv 快照与 .mjs 不一致」）。逐条 `--only` 跑 **1/1** 通过（改坏即 FAIL、恢复即 PASS）。
+
+### 验收（本笔）
+
+- `npm run verify:full`：**27 步全绿**（含 cargo fmt/clippy/test、护栏非空转、Android 两档编译）。
+- 定向：`cargo check` / `cargo fmt --check --all` / `cargo clippy --all-targets -D warnings` 退 0；
+  `node --test src/utils/designGuards.test.ts` **248** 条；`node --test src/i18n/index.test.ts` 全绿；
+  `node --test scripts/semverNone.test.ts` **7** 条；`node scripts/check-domain-map.mjs` 退 0。
+
 ## [5.16.40] - 2026-11-02
 
 ### 记一条量具边界：只补判据的提交会把「同域反复打补丁」的计数稀释掉（待评估）
@@ -33,7 +116,8 @@
 
 现跑：`npm run verify` 快速层 21 步退 0（判据 3 = `transport 2 次 ✓`、CHANGELOG 结构由红转 0 是在本节补完之后）、
 `node scripts/check-doc-citations.mjs` 0（284 处 file:line 全在真行范围内）、
-§13 表行现数 **13**（复跑：`sed -n '/^## 13\./,/^## 14\./p' docs/notes/full-repo-audit-2026-10-29.md | grep -c '^| [0-9]'`）。
+§13 表行数不抄死（那一笔提交时是 13；本批又加了两行 ⇒ 现读以复跑为准：
+`sed -n '/^## 13\./,/^## 14\./p' docs/notes/full-repo-audit-2026-10-29.md | grep -c '^| [0-9]'`）。
 
 ## [5.16.39] - 2026-11-02
 

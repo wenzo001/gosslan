@@ -173,27 +173,27 @@ pub async fn get_group_reads(
     let s = state.inner().clone();
     tokio::task::spawn_blocking(move || -> Result<Vec<GroupReadInfo>, String> {
         let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());
-        // A 档这一格**只补留痕，不改可见结果**：界面仍看到"空"，但日志里有一行说明
-// "这次是没读出来，不是真的没有"。改成上抛 + 界面错误态与否，等用户拍板（§4.0bq）。
-        // 已读名单变空 ⇒ 所有人的绿勾一起消失（看起来像"没人读过"）。
-        Ok(match db::list_group_reads(&dbc, &group_id) {
+        // A 档（INV-P36）：已读名单变空 ⇒ 所有人的绿勾一起消失，看起来像"没人读过"——
+        // 那是把一次 IO 失败说成关于阅读行为的事实。2026-11-02 拍板上抛（留痕照打）。
+        let rows: Vec<GroupReadInfo> = match db::list_group_reads(&dbc, &group_id) {
             Ok(rows) => rows,
             Err(e) => {
                 if crate::logging::log_throttled("group_reads_list_read_failed", 300_000) {
                     s.logger.warn(
                         "group",
-                        format!("code=GROUP_READS_LIST_READ_FAILED 已读名单按空显示 group={group_id}：{e}"),
+                        format!("code=GROUP_READS_LIST_READ_FAILED 已读名单读取失败，上抛给界面 group={group_id}：{e}"),
                     );
                 }
-                Vec::new()
+                return Err(format!("已读名单读不出来：{e}"));
             }
         }
         .into_iter()
-            .map(|(reader_id, last_read_ts)| GroupReadInfo {
-                reader_id,
-                last_read_ts,
-            })
-            .collect())
+        .map(|(reader_id, last_read_ts)| GroupReadInfo {
+            reader_id,
+            last_read_ts,
+        })
+        .collect();
+        Ok(rows)
     })
     .await
     .map_err(|e| format!("群已读名单读取被线程池中断: {e}"))?

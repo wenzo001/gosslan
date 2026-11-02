@@ -35,6 +35,19 @@ export const TYPE_LEVEL = {
 /** 破坏性变更的正文标记（Conventional Commits：与 subject 的 ! 等价）。 */
 export const BREAKING_FOOTER_RE = /^BREAKING[ -]CHANGE:/m;
 
+/**
+ * 五个版本清单文件的**唯一**名单（`check-change-budget.mjs` 与 `version.mjs` 都读这一份）。
+ * 原来它在两个文件里各抄一遍四行 —— 手抄清单会漂这件事本仓点过名，这里直接断源。
+ */
+export const VERSION_FILES = [
+  'package.json',
+  'package-lock.json',
+  'src-tauri/Cargo.toml',
+  'src-tauri/Cargo.lock',
+  'src-tauri/tauri.conf.json',
+];
+export const VERSION_MANIFEST_SET = new Set(VERSION_FILES);
+
 /** 解析 `type(scope)!: summary`。 */
 export function parseSubject(subject) {
   const m = /^([a-z]+)(\([^)]*\))?(!)?:\s*(.*)$/.exec(subject.trim());
@@ -121,6 +134,53 @@ export function isAppCodePath(p) {
   return /^src\//.test(p) || /^src-tauri\/src\//.test(p);
 }
 
+/**
+ * `Version-Bump: none` 的**白名单**（点名允许，不是"没落进黑名单"）。
+ *
+ * 为什么用白名单：`none` 是一句"这次改动不影响发布物"的声明，最可能被滥用的形状恰好是
+ * "新冒出一个目录 / 顺手带上依赖与 CI" —— 黑名单对这两种都是默认放行。
+ * 特意**不**收：`scripts/**`（判据与被判的对象不许同批免提版）、`.github/**`、依赖与锁文件、
+ * 五个版本清单、以及 `docs/` 下的可执行数据（`domains.data.mjs` 是被 import 的，不是文档）。
+ */
+export const PURE_DOC_PREFIXES = ["docs/", "assets/", "public/"];
+export const PURE_DOC_FILES = new Set([
+  "README.md", "CHANGELOG.md", "LICENSE", "LICENSE.md", "CONTRIBUTING.md",
+  "SECURITY.md", "AGENTS.md", "CLAUDE.md", "QODER.md", ".gitignore",
+]);
+export function isPureDocPath(p) {
+  const q = p.replaceAll("\\\\", "/");
+  if (PURE_DOC_FILES.has(q)) return true;
+  if (q.startsWith("docs/")) return /\.(md|html|txt)$/.test(q);
+  if (PURE_DOC_PREFIXES.some((x) => q.startsWith(x))) return /\.(md|html|txt|png|jpe?g|svg)$/.test(q);
+  return false;
+}
+/** 这条提交声明的是 `Version-Bump: none` 吗。 */
+export function declaresNone(row) {
+  return parseBumpTrailer(row.message ?? "") === "none";
+}
+/**
+ * `none` 声明**是否成立**：改了的路径全在白名单内，且一个版本清单都没碰。
+ * 不成立的 `none` 不当"没声明"混过去 —— 它要带着具体理由变红（"写了 none 却动了代码"正是
+ * 这一档最可能被滥用的形状；装饰性声明比没有声明更糟，判据 4 同一条立场）。
+ */
+export function noneViolations(row) {
+  const paths = row.paths ?? [];
+  const isManifest = (x) => VERSION_MANIFEST_SET.has(x.replaceAll("\\\\", "/"));
+  const manifests = paths.filter(isManifest);
+  const bad = paths.filter((x) => !isManifest(x) && !isPureDocPath(x));
+  const out = [];
+  if (manifests.length) out.push(`改了版本清单却声明 none：${manifests.join(", ")}`);
+  if (bad.length) {
+    out.push(`这些路径不在纯文档白名单内：${bad.slice(0, 8).join(", ")}${bad.length > 8 ? ` …共 ${bad.length} 条` : ""}`);
+  }
+  return out;
+}
+/** 这条提交是否**不该欠版本号**：既有的 `[plan]` 零影响豁免 + 成立的 `none`。 */
+export function noBumpOwed(row) {
+  if (isZeroImpact(row) || isReleaseCommit(row)) return true;
+  return declaresNone(row) && noneViolations(row).length === 0;
+}
+
 /** 这条提交是否**声明零影响**：标题带 `[plan]` 且不动应用代码。两处用同一份口径。 */
 export function isZeroImpact(row) {
   // ★ 豁免只给**不动应用代码**的提交（`src/` 与 `src-tauri/src/` 之外的改动，如文档、门禁脚本）：
@@ -146,6 +206,7 @@ export function isZeroImpact(row) {
 export function declaresBump(row) {
   if (isZeroImpact(row)) return true;
   if (isReleaseCommit(row)) return true;
+  if (declaresNone(row)) return noneViolations(row).length === 0;
   return parseBumpTrailer(row.message ?? "") === row.level;
 }
 
@@ -177,9 +238,7 @@ export function isReleaseCommit(row) {
  * 两边口径不一致，读代码的人会以为其中一边是 bug。
  */
 export function owedBumpLevel(rows) {
-  return requiredLevel(
-    rows.filter((r) => !isZeroImpact(r) && !isReleaseCommit(r)).map((r) => r.level),
-  );
+  return requiredLevel(rows.filter((r) => !noBumpOwed(r)).map((r) => r.level));
 }
 
 export function filterUnpushed(rows, pushedShorts) {
@@ -188,7 +247,9 @@ export function filterUnpushed(rows, pushedShorts) {
 }
 
 export function parseBumpTrailer(message) {
-  const m = new RegExp(`^${BUMP_TRAILER}:\\s*(patch|minor|major)\\s*$`, "m").exec(message);
+  // `none` = 「纯文档，不升版本号」。它和三档走**同一条正则**：下游若只认三档，
+  // 写了 none 的提交会被判成"没声明" —— 那正是"两个计算点说反话"的形状。
+  const m = new RegExp(`^${BUMP_TRAILER}:\\s*(patch|minor|major|none)\\s*$`, "m").exec(message);
   return m ? m[1] : null;
 }
 
@@ -225,16 +286,18 @@ export function collectCommits(since) {
       const [hash, short, date, subject, ...rest] = block.split("\x1f");
       const numstat = git(["show", "--numstat", "--format=", hash]);
       let churn = 0, files = 0, touchesCode = false;
+      const paths = [];
       for (const line of numstat.split("\n")) {
         const parts = line.split("\t");
         if (parts.length < 3) continue;
         files += 1;
+        paths.push(parts[2] ?? "");
         churn += (Number(parts[0]) || 0) + (Number(parts[1]) || 0);
         // 口径：只看**将要发出去的应用码**（前端 src/ 与 Rust src-tauri/src/）；
         // 门禁脚本、文档、workflow 不算 ⇒ 它们仍可走 [plan] 零影响豁免。
         if (isAppCodePath(parts[2] ?? "")) touchesCode = true;
       }
-      return { hash, short, date, subject, message: rest.join("\x1f"), churn, files, touchesCode };
+      return { hash, short, date, subject, message: rest.join("\x1f"), churn, files, touchesCode, paths };
     });
 }
 
@@ -673,7 +736,16 @@ function main() {
   }
   // ★ 声明检查只看**未推送**的提交；`--all-commits` 显式扩回全范围（审计/自查用）。
   const scoped = flags.includes("--all-commits") ? rows : filterUnpushed(rows, pushedShorts);
-  const wrong = scoped.filter((r) => !declaresBump(r));
+  // ②b 写了 `none` 但不成立的：单列一条、理由说全（只报"没声明"会让人去补 patch 而不是改范围）。
+  const fakeNone = scoped.filter((r) => declaresNone(r) && noneViolations(r).length > 0);
+  if (fakeNone.length) {
+    problems.push(
+      fakeNone.slice(0, 6).map((r) => `  ${r.short} ${r.subject} —— ${noneViolations(r).join("；")}`).join("\n") +
+        (fakeNone.length > 6 ? `\n  …另有 ${fakeNone.length - 6} 条` : "") +
+        "\n⇒ `Version-Bump: none` 只给纯文档改动（白名单点名允许；scripts/、src/、src-tauri/、.github/、依赖与锁文件、五个版本清单一律拒绝）。",
+    );
+  }
+  const wrong = scoped.filter((r) => !declaresBump(r) && !declaresNone(r));
   if (wrong.length) {
     problems.push(
       `${wrong.length} 个**未推送**提交缺少/写错了 \`${BUMP_TRAILER}:\` 声明（应为该提交的级别；已推送的历史不算噪音，审计请加「--all-commits」）：\n` +

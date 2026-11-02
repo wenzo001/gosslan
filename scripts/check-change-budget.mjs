@@ -143,7 +143,7 @@ import domainMap from "../docs/domains.data.mjs";
 // #139：领域归属必须认这条既有口径 —— 测试文件不算应用码（semver.mjs 里那条注释就是理由：
 // 「每次补用例都被迫提版本号 ⇒ 版本号会通胀」。Change Budget 的犯案窗口原先没读它，
 // 于是一条只动 `*.test.ts` 的提交也被算成「同一领域反复打补丁」的第 3 票（2026-09-28 实测）。
-import { isAppCodePath } from "./semver.mjs";
+import { isAppCodePath, noneViolations, VERSION_FILES as SEMVER_VERSION_FILES } from "./semver.mjs";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -178,12 +178,9 @@ const OFFENDER_LIMIT = 3;
  * 判据这边仍然只要这四个,但成立的理由换成"那一处已由 version.mjs 断言,不在这里重复数一遍",
  * 不是"它可以不一致"。
  */
-const VERSION_FILES = [
-  "package.json",
-  "package-lock.json",
-  "src-tauri/Cargo.toml",
-  "src-tauri/tauri.conf.json",
-];
+// 名单从 `semver.mjs` 那一份 import（见上面的 import 行）：原来这里是**手抄的第二份**，
+// 而判据 4 与版本工具必须读同一张清单——两处各抄一次就是本仓点过名的漂移形状。
+const VERSION_FILES = SEMVER_VERSION_FILES.filter((p) => p !== "src-tauri/Cargo.lock");
 
 /**
  * 规模判据（判据 1/2）**永远不数**的文件 = 上面那四个 + `Cargo.lock`。
@@ -193,8 +190,8 @@ const VERSION_FILES = [
  */
 const VERSION_MANIFESTS = new Set([...VERSION_FILES, "src-tauri/Cargo.lock"]);
 
-/** `Version-Bump: patch|minor|major` trailer(整行,允许行首尾空白)。 */
-const BUMP_DECL = /^Version-Bump:[ \t]*(patch|minor|major)[ \t]*$/im;
+/** `Version-Bump: patch|minor|major|none` trailer(整行,允许行首尾空白)。 */
+const BUMP_DECL = /^Version-Bump:[ \t]*(patch|minor|major|none)[ \t]*$/im;
 
 /** 取 commit 的完整 message(fixture 里就是 message 本身)。 */
 function fullMessage(commit) {
@@ -226,6 +223,8 @@ function isMerge(commit) {
 function isPatchShaped(commit) {
   if (isMerge(commit)) return false;
   const bump = declaredBump(commit);
+  // `none`（纯文档）明说这次没升版、也不是修补 ⇒ 既不参与犯案窗口，也不许占窗口一格
+  // （§4.0bx 记的稀释边界：合法性能被白名单判，才谈得上把它排除在窗口外）。
   if (bump) return bump === "patch";
   return /^fix/.test(commit.message.split("\n")[0].trim());
 }
@@ -616,11 +615,19 @@ if (!messagesReadable) {
   for (const commit of data.commits) {
     if (isMerge(commit)) continue;
     const bump = declaredBump(commit);
+    // `none` 的合法性只认 semver 那一份谓词（同一判据两处各写一遍 = 迟早说反话）。
+    const noneBad = bump === "none" ? noneViolations({ paths: commit.files.map((f) => f.path) }) : [];
     const missing = missingVersionFiles(commit);
     const allPresent = missing.length === 0;
     const releaseSubject = /^chore\(release\)/.test(commit.message.split("\n")[0].trim());
     checked += 1;
-    if (bump && !allPresent) {
+    if (bump === "none" && noneBad.length) {
+      fail(
+        `  ✗ ${commit.sha} 声明了 \`Version-Bump: none\` 但不成立：\n` +
+          noneBad.map((x) => `      - ${x}`).join("\n") +
+          `\n      ⇒ 免提版只给纯文档改动；动了代码/脚本/CI/依赖/版本清单就改用真档位。`,
+      );
+    } else if (bump && bump !== "none" && !allPresent) {
       fail(
         `  ✗ ${commit.sha} 声明了 \`Version-Bump: ${bump}\`，但 ${missing.length}/${VERSION_FILES.length} ` +
           `个版本清单文件没动：${missing.join(", ")} —— 声明没落地就是没 bump。` +
@@ -634,8 +641,13 @@ if (!messagesReadable) {
       );
     } else {
       console.log(
-        `  ✓ ${commit.sha} ${bump ? `Version-Bump: ${bump}` : "无声明"}${allPresent ? " / 版本文件 4/4" : ""}` +
-          `${!bump && allPresent && releaseSubject ? "（chore(release) 豁免声明）" : ""}`,
+        `  ✓ ${commit.sha} ${bump ? `Version-Bump: ${bump}` : "无声明"}` +
+          (allPresent
+            ? " / 版本文件 4/4"
+            : bump === "none"
+              ? " / 未碰版本清单（none 已按白名单核对）"
+              : "") +
+          (!bump && allPresent && releaseSubject ? "（chore(release) 豁免声明）" : ""),
       );
     }
   }
