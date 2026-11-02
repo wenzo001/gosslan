@@ -2525,8 +2525,9 @@ impl AppState {
 
     /// **本机自己的显示名**（「和自己聊天」里那个会话的名字，也用于把自己当发送者时的文案）。
     ///
-    /// 为什么不能走 `resolve_nickname`：它只查好友表/在线节点表，自己两边都不在，
-    /// 会回落到 `device_id` 原文 —— 会话列表里就会显示一串 `gosslan-xxxxxxxx`。
+    /// 为什么不能走 `resolve_nickname`：它只查好友表/在线节点表/待处理申请，自己三边都不在，
+    /// 会落到 `pick_member_display_name` 的兜底「未知成员 + 后四位」—— 会话列表里就会把自己的名字
+    /// 显示成「未知成员 xxxx」。
     pub fn self_display_name(&self) -> String {
         let n = self
             .nickname

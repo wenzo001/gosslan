@@ -472,3 +472,27 @@ console.log(bad.length?"✗ "+bad.length+" 处失效：\n  "+bad.join("\n  "):"�
 
 采样方法（可复跑）：从本册 79 行 `PARTIAL/FAIL` 里挑与近三版改动重合的行，逐行打开它引用的符号现读，
 不按印象改判。今天这一批四行里：**一行完全收口（F-FIL-002）、一行前半过期（F-MSG-040）、两行仍成立**。
+
+### 2026-11-02 复核：F-PST-001 的 B3-F1（迁移「读 schema 失败当跳过」）两半都已过期
+
+10-26 写的是「4/14 步把『读 schema 失败』当跳过并继续前进版本，且迁移期只有 `eprintln!`（打包后不可见）」。
+现读两半都不成立：
+
+- **失败不会再被吞**：`db::run_migrations` 现在是 `(step.run)(conn)?;` 之后才 `pragma_update(user_version)`
+  —— 任何一步失败都会上抛，版本号**不会**先走；`init()` 里 `let current: u32 = user_version(&conn)?;`
+  同样上抛（注释写明「读不到就中止」）。
+- **迁移进度进得来日志**：`LAST_MIGRATION`（`db.rs:80`）在开跑前记 `(current, DB_VERSION)`，
+  `state.rs:2031` 把它带进 `code=BOOT_DB_STATE …` 那行（`db.rs:79` 的注释直接写着「审计 B3-F1 第二半」）。
+
+⇒ 这一行的 PARTIAL 只该读成「10-26 当时的状态」；按今天现读，B3-F1 已收口。
+
+### 2026-11-02 复核：F-PRE-019 的 B3-F3（配置读失败折叠 + 写回）已过期
+
+10-26 写的是「`add` / `update` 两处的读失败折叠 + 写回 ⇒ B3-F3」。现读 `commands/external_links.rs`
+三处读取都是 `db::get_setting_checked(...).map_err(|e| format!("读取外链列表失败: {e}"))?`
+—— 读失败直接上抛，不会再以空列表为底写回。
+
+**同族里仍成立的一处**（本册没有这一格，登记备查）：`network/transport.rs:455` 的路由端点拨号循环
+仍是 `db::get_setting(...).unwrap_or_default()`。它**不写回**（10s 一轮、下一轮自愈），所以不是 B3-F3
+那种数据丢失；但「配了端点却一直不拨、日志里零痕迹」是诊断缺口（B1-F7 族），候选修法一行
+（换 `get_setting_checked`，失败时 warn「本轮跳过拨号」）。**本批未改码**。
