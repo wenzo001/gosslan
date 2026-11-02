@@ -13,6 +13,12 @@
 
 ## [Unreleased]
 
+### 矩阵订正：F-PLF-007 的「更新取消没有码」已过期
+
+`code=UPDATER_CANCEL` 现在两种结局各一行（refused_installing / cancelled，`commands/updater.rs:364/387`），
+判据 `lib_file_tests.rs:49` 按全串计数为 2 ⇒ 「可诊断」格由 FAIL 改 PASS（B1-F1 在这条通道上已收口）。
+「可验证」格仍是 FAIL：现有三条判据全是源码文本/顺序级，没有一条调用被测命令（B1-F3 不变）。总判级仍 PARTIAL。
+
 ### 审计册 §13.0 订正：可验证总数 13→17（同分母），并把两处「零证据」改判写清
 
 §13.0 末尾原写「可验证剩 13 格 = 9 格 BLOCKED + 4 格缺一条用例」——括号里枚举的其实是 13 格 BLOCKED
