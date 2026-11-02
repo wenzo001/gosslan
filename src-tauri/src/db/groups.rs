@@ -168,8 +168,14 @@ pub fn replace_group_members(conn: &Connection, group_id: &str, members: &[Strin
     tx.commit()
 }
 
-/// 取单个群（含成员）。不存在返回 None。
-pub fn get_group(conn: &Connection, group_id: &str) -> Option<Group> {
+/// 严格取单个群（含成员）：`Ok(None)` ＝ **这个群不存在**，`Err` ＝ **这一次没读出来**。
+///
+/// 为什么需要它（§4.0bq：B 档剩下 2 处与 C 档 4 处的共同前置）：`get_group` 里有**两层**折叠 ——
+/// 主查询 `.ok()?` 把 SQL 错误折成 `None`（于是"读失败"被读成"这个群不存在"），
+/// 成员查询又把错误折成空 `Vec`（于是"群存在但成员读不出"与"这个群没人"不可分）。
+/// 调用点拿到的那个 `None` 是两件事的合成值 ⇒ 再怎么 match 也分不开，
+/// `commands/groups.rs` 那几处 fan-out 就是把读失败判成了 `Fatal`（口径＝重试无意义）。
+pub fn get_group_checked(conn: &Connection, group_id: &str) -> Result<Option<Group>> {
     let row = conn
         .query_row(
             "SELECT id, name, creator FROM groups WHERE id = ?1",
@@ -182,21 +188,29 @@ pub fn get_group(conn: &Connection, group_id: &str) -> Option<Group> {
                 ))
             },
         )
-        .ok()?;
-    let (id, name, creator) = row;
-    let members = match conn.prepare("SELECT device_id FROM group_members WHERE group_id = ?1") {
-        Ok(mut stmt) => stmt
-            .query_map(params![group_id], |r| r.get(0))
-            .map(|iter| iter.filter_map(|r| r.ok()).collect())
-            .unwrap_or_default(),
-        Err(_) => Vec::new(),
+        .optional()?;
+    let Some((id, name, creator)) = row else {
+        return Ok(None);
     };
-    Some(Group {
+    let mut stmt = conn.prepare("SELECT device_id FROM group_members WHERE group_id = ?1")?;
+    let members = stmt
+        .query_map(params![group_id], |r| r.get::<_, String>(0))?
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(Some(Group {
         id,
         name,
         creator,
         members,
-    })
+    }))
+}
+
+/// 取单个群（含成员）。不存在返回 None。
+///
+/// ⚠️ 它把「读失败」也折成 `None`（两层都折，见 [`get_group_checked`] 的说明）——
+/// 保留这个函数只为不让既有调用点一次性改写；**新代码要分档就用 checked 那份**。
+/// SQL 只有一份（这里委托过去），避免出现第二份会漂的查询。
+pub fn get_group(conn: &Connection, group_id: &str) -> Option<Group> {
+    get_group_checked(conn, group_id).ok().flatten()
 }
 
 /// 写入群成员已读位置，时间戳只前进不回退。
@@ -278,10 +292,7 @@ pub fn delete_group(conn: &Connection, group_id: &str) -> Result<()> {
         params![crate::db::group_history_state_key(group_id)],
     )?;
     tx.execute("DELETE FROM groups WHERE id = ?1", params![group_id])?;
-    tx.execute(
-        "DELETE FROM conversations WHERE id = ?1",
-        params![conv_id],
-    )?;
+    tx.execute("DELETE FROM conversations WHERE id = ?1", params![conv_id])?;
     tx.commit()?;
     Ok(())
 }
@@ -311,7 +322,14 @@ mod group_rename_tests {
     #[test]
     fn rename_group_updates_both_group_row_and_its_conversation_title() {
         let conn = mem();
-        upsert_group(&conn, "g1", "旧名", "me", &["me".to_string(), "b".to_string()]).unwrap();
+        upsert_group(
+            &conn,
+            "g1",
+            "旧名",
+            "me",
+            &["me".to_string(), "b".to_string()],
+        )
+        .unwrap();
         ensure_conversation(&conn, "group:g1", "group", "旧名", None).unwrap();
         upsert_group(&conn, "g2", "隔壁群", "me", &["me".to_string()]).unwrap();
         ensure_conversation(&conn, "group:g2", "group", "隔壁群", None).unwrap();
@@ -324,12 +342,22 @@ mod group_rename_tests {
             "groups.name 要跟着改"
         );
         assert_eq!(
-            name_of(&conn, "SELECT name FROM conversations WHERE id=?1", "group:g1").as_deref(),
+            name_of(
+                &conn,
+                "SELECT name FROM conversations WHERE id=?1",
+                "group:g1"
+            )
+            .as_deref(),
             Some("新名"),
             "会话行那份去规范化的名字必须一起改（漏了就是标题漂移）"
         );
         assert_eq!(
-            name_of(&conn, "SELECT name FROM conversations WHERE id=?1", "group:g2").as_deref(),
+            name_of(
+                &conn,
+                "SELECT name FROM conversations WHERE id=?1",
+                "group:g2"
+            )
+            .as_deref(),
             Some("隔壁群"),
             "别的群不许被带动"
         );
@@ -346,7 +374,12 @@ mod group_rename_tests {
         rename_group(&conn, "nope", "不该生效").unwrap();
 
         assert_eq!(
-            name_of(&conn, "SELECT name FROM conversations WHERE id=?1", "group:nope").as_deref(),
+            name_of(
+                &conn,
+                "SELECT name FROM conversations WHERE id=?1",
+                "group:nope"
+            )
+            .as_deref(),
             Some("残留标题"),
             "群不存在时会话标题必须一字不动"
         );
@@ -389,7 +422,10 @@ mod group_rename_tests {
         let rows: i64 = conn
             .query_row("SELECT COUNT(*) FROM conversations", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(rows, 0, "仅凭群关系同步凭空造出一行会话 ⇒ 清库重装后群聊会自己冒回来");
+        assert_eq!(
+            rows, 0,
+            "仅凭群关系同步凭空造出一行会话 ⇒ 清库重装后群聊会自己冒回来"
+        );
 
         // ② 正：真实聊天过（会话行由聊天活动建立），再吃一次群关系同步
         ensure_conversation(&conn, "group:g1", "group", "旧名", None).unwrap();
@@ -406,7 +442,12 @@ mod group_rename_tests {
             "群资料那一份要跟着改"
         );
         assert_eq!(
-            name_of(&conn, "SELECT name FROM conversations WHERE id=?1", "group:g1").as_deref(),
+            name_of(
+                &conn,
+                "SELECT name FROM conversations WHERE id=?1",
+                "group:g1"
+            )
+            .as_deref(),
             Some("第二次改名"),
             "会话标题必须与群资料同一个名 —— 少了这一格就是 #22 本身"
         );
@@ -517,14 +558,19 @@ mod todo_number_tests {
         // 于是"消息行没了"的真实路径是**删会话 / 清空聊天记录**那一条，夹具必须走那条，
         // 否则断言建在一次根本没发生的删除上（本轮第一版就是这么假绿的，被上面那行计数断言抓住）。
         assert_eq!(
-            conn.execute("DELETE FROM messages WHERE conv_id = 'group:g1'", []).unwrap(),
+            conn.execute("DELETE FROM messages WHERE conv_id = 'group:g1'", [])
+                .unwrap(),
             1
         );
         // 只钉"行真的没了"这一件事。`todo_number_high_water` 在这里**不该**归零 ——
         // 高水位正是靠 settings 那份不受消息删除影响的记录活下来的（上一行已经删掉了消息行）。
         assert_eq!(
-            conn.query_row::<i64, _, _>("SELECT COUNT(*) FROM messages WHERE conv_id = 'group:g1'", [], |r| r.get(0))
-                .unwrap(),
+            conn.query_row::<i64, _, _>(
+                "SELECT COUNT(*) FROM messages WHERE conv_id = 'group:g1'",
+                [],
+                |r| r.get(0)
+            )
+            .unwrap(),
             0
         );
         assert_eq!(next_todo_number(&conn, "g1").unwrap(), first + 1);
@@ -567,5 +613,83 @@ mod todo_number_tests {
         insert_message(&conn, &rec).unwrap();
         assert_eq!(todo_number_high_water(&conn, "g1"), 0);
         assert_eq!(next_todo_number(&conn, "g1").unwrap(), 1);
+    }
+}
+
+// 模块名不叫 `tests`：本文件被 `db.rs` 用 `include!` 贴进 `db` 命名空间，模块名要在 db 作用域里全局唯一。
+#[cfg(test)]
+mod group_read_strictness_tests {
+    use super::{get_group, get_group_checked, upsert_group};
+    use crate::db::SCHEMA;
+    use rusqlite::{params, Connection};
+
+    fn mem_with_group() -> Connection {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(SCHEMA).unwrap();
+        upsert_group(
+            &conn,
+            "g1",
+            "组名",
+            "me",
+            &["me".to_string(), "b".to_string()],
+        )
+        .unwrap();
+        conn
+    }
+
+    /// 「这个群不存在」与「这一次没读出来」必须是两个不同的值。
+    ///
+    /// 这是 §4.0bq 里 B 档剩下 2 处与 C 档 4 处的**共同前置**：旧 `get_group` 两层都折
+    /// （主查询 `.ok()?` 折成 `None`、成员查询折成空 `Vec`），调用点拿到的 `None` 是两件事的合成值，
+    /// 于是 `commands/groups.rs` 那几处把读失败判成 `Fatal`（口径＝重试无意义）。
+    ///
+    /// 夹具：往 TEXT 列塞非 UTF-8 字节 ⇒ `get::<String>` 在取列时失败（走 `Err`），
+    /// 而表本身照常可读可写。先断言夹具真造出了失败形状，再断言分档 —— 否则这条会空转。
+    #[test]
+    fn missing_group_and_failed_read_are_different_values() {
+        let conn = mem_with_group();
+        let some = get_group_checked(&conn, "g1").unwrap();
+        assert!(
+            some.as_ref().map(|g| g.members.len()) == Some(2),
+            "成员必须真读出来（旧写法把成员查询错误折成空 Vec，这里要能数到两个人）"
+        );
+        assert!(
+            matches!(get_group_checked(&conn, "g-gone"), Ok(None)),
+            "「这个群不存在」必须是 Ok(None) 而不是 Err"
+        );
+
+        // 主查询读失败 → Err；旧的宽松那份保持折成 None（既有调用点行为不变）
+        conn.execute(
+            "UPDATE groups SET name = ?1 WHERE id = 'g1'",
+            params![vec![0xFF_u8, 0xFE]],
+        )
+        .unwrap();
+        assert!(
+            get_group_checked(&conn, "g1").is_err(),
+            "夹具没造出读失败 ⇒ 本条在空转（读失败必须是 Err，不许是 Ok(None)）"
+        );
+        assert!(
+            get_group(&conn, "g1").is_none(),
+            "宽松那份继续把读失败折成 None（这一格没改行为）"
+        );
+        // 反控：修好那一列后又读得到 ⇒ 上面那条证明的是"读失败"，不是"群没了"
+        conn.execute("UPDATE groups SET name = '组名' WHERE id = 'g1'", [])
+            .unwrap();
+        assert!(
+            matches!(get_group_checked(&conn, "g1"), Ok(Some(_))),
+            "读恢复之后必须还能取到这个群"
+        );
+
+        // 第二层：主查询好、成员列坏 ⇒ Err（旧写法折成"这个群没人"）
+        // 只改**一行**：两行都塞同一个坏字节会撞 `group_members(group_id, device_id)` 的唯一约束
+        conn.execute(
+            "UPDATE group_members SET device_id = ?1 WHERE group_id = 'g1' AND device_id = 'me'",
+            params![vec![0xFF_u8]],
+        )
+        .unwrap();
+        assert!(
+            get_group_checked(&conn, "g1").is_err(),
+            "成员读失败不许折成空名单 —— 那会被读成「这个群一个人也没有」"
+        );
     }
 }

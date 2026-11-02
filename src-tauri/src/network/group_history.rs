@@ -615,9 +615,23 @@ pub async fn run_group_history_sync(state: &Arc<AppState>, group_id: &str) -> Sy
                 // 补问一轮剩下的候选（新上线的那台可能正好是最早最全的）
                 let all = {
                     let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
-                    db::get_group(&dbc, group_id)
-                        .map(|g| g.members)
-                        .unwrap_or_default()
+                    // 这一格原本是**两件事合成一个值**：读失败折成空成员 ⇒ 下一句
+                    // `pick_history_source` 为 None ⇒ 失败原因被写成「没有更多可用候选」，
+                    // 归因说反话（§4.0bq）。真原因先落到日志，界面那句"源用完"保持不动。
+                    match db::get_group_checked(&dbc, group_id) {
+                        Ok(Some(g)) => g.members,
+                        Ok(None) => Vec::new(),
+                        Err(e) => {
+                            if crate::logging::log_throttled("history_members_read_failed", 300_000)
+                            {
+                                state.logger.warn(
+                                    "group",
+                                    format!("code=GROUP_READ_FAILED 补问候选读不到成员 group={group_id}：{e}"),
+                                );
+                            }
+                            Vec::new()
+                        }
+                    }
                 };
                 let probed =
                     probe_candidates(state, &eligible_peers(state, &all).await, group_id).await;

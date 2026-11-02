@@ -13,6 +13,35 @@
 
 ## [Unreleased]
 
+## [5.16.30] - 2026-11-02
+
+### db 层分出「群不存在」与「这次没读出来」：B 档剩下 2 处落地，折叠棘轮 19 → 17
+
+上一批 B 档只做了 5 处，剩下 2 处卡在同一个前置：`db::get_group` **两层都折** —— 主查询 `.ok()?`
+把 SQL 错误折成 `None`（于是"读失败"被读成"这个群不存在"），成员查询又把错误折成空 `Vec`
+（于是"群存在但成员读不出"与"这个群一个人也没有"不可分）。调用点拿到的 `None` 是两件事的合成值，
+再怎么 match 都分不开 ⇒ `commands/groups.rs` 那 4 处 fan-out 正是把读失败判成了 `Fatal`。
+
+- 新增 `db::get_group_checked(...) -> Result<Option<Group>>`：`Ok(None)` ＝ 真不存在，`Err` ＝ 没读出来；
+  旧的 `get_group` **委托给它**再折叠（SQL 只有一份，不出现第二份会漂的查询），既有调用点行为一字未变；
+- B 档最后 2 处接上：`commands/group_announcements.rs` 的群主代撤回受众提示
+  （`code=GROUP_READ_FAILED`，可见行为不变——提示只是解释）、`network/group_history.rs` 的补问候选
+  （这一处原本更糟：读失败折成空成员后，失败原因被写成「没有更多可用候选」，**归因说反话**；
+  现在真原因先落日志，界面那句"源用完"不动）；
+- 用例 `missing_group_and_failed_read_are_different_values`：夹具是往 TEXT 列塞非 UTF-8 字节
+  ⇒ 取列时报错而表照常可写；先断言夹具真造出了 `Err`（否则这条空转），再断三档
+  （`Ok(Some(2 个成员))` / `Ok(None)` / `Err`），外加一条反控"修好那一列后又读得到"
+  —— 证明那条 `Err` 是**读失败**而不是"群没了"。成员那一层单独验（只改一行；两行都塞同一个坏字节
+  会撞 `group_members` 的唯一约束，这是本批第一次跑红时现读到的）。
+- 棘轮上限随之 19 → 17（真折叠 16 处 + 1 处已知假阳性），注释里记下轨迹 `24 → 19 → 17`。
+
+现跑：cargo fmt 0 / clippy `--all-targets -D warnings` 0 / `cargo test --lib` **1373 passed / 0 failed**、
+测试清单 `--update` + `--sync-baselines` 后「基线 1376 条全部在跑」（macos/windows 两份同步）、
+`npm test` 1544/1544、`verify` 快速层 21/21、semver + 文档数字 + 文档引用三门 0、`check-domain-deps` 0。
+未跑：E2E / 真窗口。C 档那 4 处现在**技术上已经能做**（`get_group_checked` 分得开了），
+但改法仍等他拍板：当场报错打断用户，还是留痕 + 靠 `DbUnreadable` 那一档补发。
+
+
 ## [5.16.29] - 2026-11-02
 
 ### 读库折叠 B 档 5 处补留痕 + 一把**不限名字**的总量棘轮
