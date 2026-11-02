@@ -13,6 +13,13 @@
 
 ## [Unreleased]
 
+### F-PRE-014 收口：收藏三层都有具名凭据
+
+原句「收藏自身的跨层行为未逐条读」。现读：①**DB**（`favorites_tests`：插入/列表/删除/幂等、内容路径改写、
+撤回交互两条）；②**前端状态与路由**（`designGuards`：收藏页 active 先于 useBackLayer、预览不缓存裸 objectURL、
+列表是普通一级 tab、详情走真路由）；③**跨模块常数与规则**（`imageBytes.test.ts` 钉三处字节上限同源、
+`mediaAvailability.test.ts` 把同一条存在性规则套在两个预览模块上）。改判 PASS。
+
 ### F-PRS-002 收口：`RuntimeDiag` 的字段面本来就有机器对账
 
 原句「有 `lib_tests` 与探针」过于笼统。现读：`src/api/events.test.ts:506` 那条
