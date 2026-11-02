@@ -13,6 +13,12 @@
 
 ## [Unreleased]
 
+### F-PRS-002 收口：`RuntimeDiag` 的字段面本来就有机器对账
+
+原句「有 `lib_tests` 与探针」过于笼统。现读：`src/api/events.test.ts:506` 那条
+「RuntimeDiag：Rust 字段与 TS interface 必须逐字对应（camelCase 换算现算）」就是这一格的判据
+（`BackgroundDiag` 在 `:524` 另有一条），诊断面板另有探针。属**负结论过期**，台账已改 PASS。
+
 ### 闭环矩阵的表格修完：92/92 行可切 9 段，「可验证」真读数 22
 
 矩阵里有 16 行的单元格含**未转义竖线**，后果有两个：Markdown 渲染错列；切列脚本读不到那几行的
