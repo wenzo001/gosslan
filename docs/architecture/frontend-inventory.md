@@ -23,16 +23,16 @@
 <!-- BEGIN:generated (node scripts/frontend-inventory.mjs) -->
 
 > 复跑：`node scripts/frontend-inventory.mjs`（本段与 `--check` 对账，手改本段数字没有意义）。
-> 现读：`src/` 共 412 份源码 = 生产 274 份 / 56,744 行 + 测试 138 份 / 29,747 行（不含 `src/assets/` 里的 214 个表情图）。
+> 现读：`src/` 共 414 份源码 = 生产 275 份 / 56,831 行 + 测试 139 份 / 29,812 行（不含 `src/assets/` 里的 214 个表情图）。
 
 ### 1.1 按职责分类（生产码，机器现算）
 
 | 类 | 文件 | 行 |
 |---|---:|---:|
-| D-业务组件 | 76 | 24,406 |
-| B-utils | 111 | 14,181 |
+| D-业务组件 | 76 | 24,453 |
+| B-utils | 112 | 14,207 |
 | C-状态层 | 3 | 4,807 |
-| B-国际化 | 5 | 3,124 |
+| B-国际化 | 5 | 3,138 |
 | D-数据表 | 3 | 2,131 |
 | A-公共UI | 26 | 2,129 |
 | A-布局 | 2 | 1,480 |
@@ -41,21 +41,21 @@
 | E-入口/启动 | 10 | 727 |
 | E-平台适配 | 11 | 667 |
 | 其他 | 9 | 622 |
-| **合计** | **274** | **56,744** |
+| **合计** | **275** | **56,831** |
 
 ### 1.2 已装库在生产码里的实际使用面（装了不等于用了）
 
 | 依赖 | 生产文件 | 行 |
 |---|---:|---:|
-| `vue` | 105 | 34,093 |
-| `lucide-vue-next` | 49 | 20,253 |
-| `reka-ui` | 27 | 11,497 |
+| `vue` | 105 | 34,140 |
+| `lucide-vue-next` | 49 | 20,300 |
+| `reka-ui` | 27 | 11,544 |
 | `@vueuse/core` | 19 | 13,528 |
 | `vue-router` | 13 | 7,598 |
-| `@tanstack/vue-query` | 9 | 2,428 |
+| `@tanstack/vue-query` | 9 | 2,475 |
 | `@tauri-apps/api` | 8 | 6,591 |
 | `@tauri-apps/plugin-dialog` | 6 | 4,985 |
-| `@tauri-apps/plugin-opener` | 5 | 880 |
+| `@tauri-apps/plugin-opener` | 5 | 927 |
 | `pinia` | 4 | 5,072 |
 | `@tanstack/vue-virtual` | 2 | 1,521 |
 | `@tauri-apps/plugin-notification` | 2 | 4,677 |
@@ -99,7 +99,7 @@
 | `src/components/FavoritePanel.vue` | D-业务组件 | 1071 | `@vueuse/core` `lucide-vue-next` `reka-ui` `vue` `vue-router` |
 | `src/components/FriendProfile.vue` | D-业务组件 | 303 | `lucide-vue-next` `vue` `vue-router` |
 | `src/components/GroupCreateModal.vue` | D-业务组件 | 130 | `vue` `vue-router` |
-| `src/components/GroupFilesPanel.vue` | D-业务组件 | 359 | `@tanstack/vue-query` `@tauri-apps/plugin-opener` `lucide-vue-next` `reka-ui` `vue` |
+| `src/components/GroupFilesPanel.vue` | D-业务组件 | 406 | `@tanstack/vue-query` `@tauri-apps/plugin-opener` `lucide-vue-next` `reka-ui` `vue` |
 | `src/components/GroupMemberPanel.vue` | D-业务组件 | 559 | `lucide-vue-next` `reka-ui` `vue` |
 | `src/components/GroupTasksBoard.vue` | D-业务组件 | 1737 | `@tauri-apps/api` `@tauri-apps/plugin-dialog` `@vueuse/core` `lucide-vue-next` `reka-ui` `vue` |
 | `src/components/GroupTasksPanel.vue` | D-业务组件 | 73 | `vue` |
@@ -208,8 +208,8 @@
 | `src/i18n/index.ts` | B-国际化 | 176 | `vue` `vue-i18n` |
 | `src/i18n/locales.ts` | B-国际化 | 16 | — |
 | `src/i18n/locales/dict.ts` | B-国际化 | 7 | — |
-| `src/i18n/locales/en-us.ts` | B-国际化 | 1443 | — |
-| `src/i18n/locales/zh-cn.ts` | B-国际化 | 1482 | — |
+| `src/i18n/locales/en-us.ts` | B-国际化 | 1450 | — |
+| `src/i18n/locales/zh-cn.ts` | B-国际化 | 1489 | — |
 | `src/layouts/ResponsiveLayout.vue` | A-布局 | 1204 | `@vueuse/core` `lucide-vue-next` `vue` `vue-router` |
 | `src/router/main.ts` | 其他 | 51 | `vue` `vue-router` |
 | `src/router/mainRoutes.ts` | 其他 | 141 | `vue` `vue-router` |
@@ -266,6 +266,7 @@
 | `src/utils/format.ts` | B-utils | 12 | — |
 | `src/utils/friendOnline.ts` | B-utils | 80 | — |
 | `src/utils/friendRequests.ts` | B-utils | 18 | — |
+| `src/utils/groupFileCancel.ts` | B-utils | 26 | — |
 | `src/utils/groupFilesQuery.ts` | B-utils | 18 | `@tanstack/vue-query` |
 | `src/utils/groupSummaryCache.ts` | B-utils | 21 | — |
 | `src/utils/groupSummaryCacheCore.ts` | B-utils | 58 | — |
@@ -349,7 +350,7 @@
 
 ### 1.4 测试码（分列，不计进业务成果）
 
-共 138 份 / 29,747 行；由 `npm test` 的清单自己打印条数。
+共 139 份 / 29,812 行；由 `npm test` 的清单自己打印条数。
 <!-- END:generated -->
 
 ## 2. 能力域 × 替换结论

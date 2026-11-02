@@ -985,6 +985,8 @@ export const enUS: MessageDict = {
   "group.files.refetching": "Asked the sender to resend",
   "group.files.refetchUnsupported": "The sender's version is too old to resend",
   "group.files.refetchFail": "Failed to request the file again",
+  "group.files.cancelSend": "Cancel sending",
+  "group.files.cancelReceive": "Cancel receiving",
   "group.create.title": "Create Group",
   "group.name": "Group Name",
   "group.namePlaceholder": "Enter a group name",
