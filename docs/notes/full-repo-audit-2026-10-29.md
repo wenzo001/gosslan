@@ -1935,7 +1935,7 @@ Rejected）。⚠️ 边界：这条恢复只对**声明了 `CONTENT_FEATURE_PUL
 | tag → commit | `v5.16.9` → `5f0b6b95` | `v5.16.10` → `c4642f1e` |
 | 本地 `verify:release` | 4 轮全绿，148.6s（25 / 23 / 41 / 49） | 未重跑 —— `git diff v5.16.9..HEAD -- src src-tauri` 只有三处版本号 |
 | 本地 `npm run verify` | 21/21 退 0 | 21/21 退 0 |
-| tag 拉起 workflow | 6 条 success | 5 条 success（updater/mac/win/win-webview2/android）＋ push 那条 Verify success；tag 的 Verify 里 3 个 cargo 分片仍在跑（历史整跑是小时级，不算卡死） |
+| tag 拉起 workflow | 6 条 success | 5 条 success（updater/mac/win/win-webview2/android）＋ tag 的 Verify success（它按设计**跳过** cargo 分片）；cargo 分片属**夜间 schedule**（`event: schedule`，UTC 19:20），那一轮 23:24 红在「好友申请兜底恒绿」，已在 5.16.12 修 |
 | Release | 非 draft、17 资产、Latest | 非 draft、17 资产、Latest |
 | `latest.json` | `version=5.16.9`，notes **1801 字符 / 三节**（5.16.9 → 5.16.8 → 5.16.7） | `version=5.16.10`，notes **558 字符 / 一节**（上一版一小时前刚发过，范围正确） |
 | 工作流日志 | `上一次发布：v5.16.6` | `上一次发布：v5.16.9` |
