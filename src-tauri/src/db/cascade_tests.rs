@@ -1875,3 +1875,266 @@ fn group_message_lifecycle_policy_matches_ledger_sequences() {
     );
     assert_eq!(status_of(&conn, "m-g1"), "sending");
 }
+
+// ---------------- 批次 3A：四账只读投影 + 策略矩阵 ----------------
+//
+// 投影只做 SELECT；写数据是测试准备。它要证明的是「四张账的终态/复活/墓碑语义
+// 本来就不同，门面只能保留 kind 标签，不能统一成一个 cancelled/failed」。
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct LedgerProjection {
+    kind: &'static str,
+    id: String,
+    status: String,
+    hard_terminal: bool,
+    reactivatable: bool,
+}
+
+fn ledger_policy(kind: &str, status: &str, tombstone: bool) -> (bool, bool) {
+    match (kind, status) {
+        // 群 outbox：delivered/failed 是证据或已放弃；cancelled 是唯一可显式补发的行。
+        ("group_outbox", "delivered") => (true, false),
+        ("group_outbox", "failed") => (true, false),
+        ("group_outbox", "cancelled") => (false, true),
+        // 群文件成员行：cancelled 是硬终态；failed 可被下一轮接收重置为 sending。
+        ("group_recipient", "cancelled") => (true, false),
+        ("group_recipient", "completed") => (true, false),
+        ("group_recipient", "failed") => (false, true),
+        // 文件传输：done 是唯一硬终态；failed 可续传；cancel_terminal 才是用户墓碑。
+        ("file_transfer", "done") => (true, false),
+        ("file_transfer", "failed") => (false, true),
+        ("file_transfer", "cancelled") => (tombstone, !tombstone),
+        // ACK 重放队列没有状态机：成功即删，失败重放。
+        ("group_file_ack", "replay") => (false, true),
+        _ => (false, false),
+    }
+}
+
+fn project_ledgers(conn: &Connection) -> Vec<LedgerProjection> {
+    let mut out = Vec::new();
+
+    let mut stmt = conn
+        .prepare("SELECT msg_id, peer_id, status FROM group_outbox")
+        .unwrap();
+    let rows = stmt
+        .query_map([], |r| {
+            Ok((
+                r.get::<_, String>(0)?,
+                r.get::<_, String>(1)?,
+                r.get::<_, String>(2)?,
+            ))
+        })
+        .unwrap();
+    for row in rows.flatten() {
+        let (hard_terminal, reactivatable) = ledger_policy("group_outbox", &row.2, false);
+        out.push(LedgerProjection {
+            kind: "group_outbox",
+            id: format!("{}:{}", row.0, row.1),
+            status: row.2,
+            hard_terminal,
+            reactivatable,
+        });
+    }
+
+    let mut stmt = conn
+        .prepare("SELECT transfer_id, recipient_id, status FROM group_file_recipients")
+        .unwrap();
+    let rows = stmt
+        .query_map([], |r| {
+            Ok((
+                r.get::<_, String>(0)?,
+                r.get::<_, String>(1)?,
+                r.get::<_, String>(2)?,
+            ))
+        })
+        .unwrap();
+    for row in rows.flatten() {
+        let (hard_terminal, reactivatable) = ledger_policy("group_recipient", &row.2, false);
+        out.push(LedgerProjection {
+            kind: "group_recipient",
+            id: format!("{}:{}", row.0, row.1),
+            status: row.2,
+            hard_terminal,
+            reactivatable,
+        });
+    }
+
+    let mut stmt = conn
+        .prepare("SELECT id, status, cancel_terminal FROM file_transfers")
+        .unwrap();
+    let rows = stmt
+        .query_map([], |r| {
+            Ok((
+                r.get::<_, String>(0)?,
+                r.get::<_, String>(1)?,
+                r.get::<_, i64>(2)?,
+            ))
+        })
+        .unwrap();
+    for row in rows.flatten() {
+        let tombstone = row.2 != 0;
+        let (hard_terminal, reactivatable) = ledger_policy("file_transfer", &row.1, tombstone);
+        out.push(LedgerProjection {
+            kind: "file_transfer",
+            id: row.0,
+            status: row.1,
+            hard_terminal,
+            reactivatable,
+        });
+    }
+
+    let mut stmt = conn
+        .prepare("SELECT transfer_id, recipient_id FROM group_file_acks")
+        .unwrap();
+    let rows = stmt
+        .query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))
+        .unwrap();
+    for row in rows.flatten() {
+        let (hard_terminal, reactivatable) = ledger_policy("group_file_ack", "replay", false);
+        out.push(LedgerProjection {
+            kind: "group_file_ack",
+            id: format!("{}:{}", row.0, row.1),
+            status: "replay".to_string(),
+            hard_terminal,
+            reactivatable,
+        });
+    }
+
+    out
+}
+
+#[test]
+fn read_only_ledger_projection_keeps_each_ledgers_terminal_policy() {
+    let conn = fresh_db();
+
+    for (msg, peer, status) in [
+        ("m-o1", "a", "pending"),
+        ("m-o2", "a", "delivered"),
+        ("m-o3", "a", "cancelled"),
+        ("m-o4", "a", "failed"),
+    ] {
+        conn.execute(
+            "INSERT INTO group_outbox(msg_id, group_id, peer_id, payload, created_at, status)
+             VALUES (?1, 'g1', ?2, '{}', 1, ?3)",
+            params![msg, peer, status],
+        )
+        .unwrap();
+    }
+
+    conn.execute(
+        "INSERT INTO group_files(transfer_id, group_id, sender_id, name, size, sha256, status, created_at)
+         VALUES ('gf1','g1','me','a.bin',1,'sha','cancelled',1)",
+        [],
+    )
+    .unwrap();
+    for (recipient, status) in [
+        ("a", "pending"),
+        ("b", "sending"),
+        ("c", "completed"),
+        ("d", "failed"),
+        ("e", "cancelled"),
+    ] {
+        conn.execute(
+            "INSERT INTO group_file_recipients(transfer_id, recipient_id, status, progress, updated_at)
+             VALUES ('gf1', ?1, ?2, 0, 1)",
+            params![recipient, status],
+        )
+        .unwrap();
+    }
+
+    for (id, status, tombstone) in [
+        ("ft1", "active", 0),
+        ("ft2", "done", 0),
+        ("ft3", "failed", 0),
+        ("ft4", "cancelled", 1),
+    ] {
+        conn.execute(
+            "INSERT INTO file_transfers(id, peer_id, name, size, direction, status, path, progress, cancel_terminal, created_at)
+             VALUES (?1,'p1','a.bin',1,'send',?2,NULL,0,?3,1)",
+            params![id, status, tombstone],
+        )
+        .unwrap();
+    }
+
+    conn.execute(
+        "INSERT INTO group_file_acks(transfer_id, recipient_id, group_id, success, received_at, attempts, last_error)
+         VALUES ('gf1','a','g1',1,1,0,'')",
+        [],
+    )
+    .unwrap();
+
+    let first = project_ledgers(&conn);
+    assert_eq!(first, project_ledgers(&conn), "投影必须可重入且纯读");
+
+    let find = |kind: &str, status: &str| {
+        first
+            .iter()
+            .find(|r| r.kind == kind && r.status == status)
+            .unwrap_or_else(|| panic!("缺 {kind}/{status} 投影"))
+    };
+
+    assert_eq!(
+        (
+            find("group_outbox", "cancelled").hard_terminal,
+            find("group_outbox", "cancelled").reactivatable
+        ),
+        (false, true),
+        "群 outbox 的 cancelled 可显式补发"
+    );
+    assert_eq!(
+        (
+            find("group_outbox", "failed").hard_terminal,
+            find("group_outbox", "failed").reactivatable
+        ),
+        (true, false),
+        "群 outbox 的 failed 永不复活"
+    );
+    assert_eq!(
+        (
+            find("group_recipient", "cancelled").hard_terminal,
+            find("group_recipient", "cancelled").reactivatable
+        ),
+        (true, false),
+        "群文件成员 cancelled 是硬终态"
+    );
+    assert_eq!(
+        (
+            find("group_recipient", "failed").hard_terminal,
+            find("group_recipient", "failed").reactivatable
+        ),
+        (false, true),
+        "群文件成员 failed 可被下一轮接收重置"
+    );
+    assert_eq!(
+        (
+            find("file_transfer", "done").hard_terminal,
+            find("file_transfer", "done").reactivatable
+        ),
+        (true, false),
+        "file_transfers 的 done 是唯一硬终态"
+    );
+    assert_eq!(
+        (
+            find("file_transfer", "failed").hard_terminal,
+            find("file_transfer", "failed").reactivatable
+        ),
+        (false, true),
+        "file_transfers 的 failed 可续传"
+    );
+    assert_eq!(
+        (
+            find("file_transfer", "cancelled").hard_terminal,
+            find("file_transfer", "cancelled").reactivatable
+        ),
+        (true, false),
+        "file_transfers 的取消墓碑挡住晚到 attempt"
+    );
+    assert_eq!(
+        (
+            find("group_file_ack", "replay").hard_terminal,
+            find("group_file_ack", "replay").reactivatable
+        ),
+        (false, true),
+        "ACK 账是重放队列，不是成员状态机"
+    );
+}
