@@ -109,10 +109,13 @@ pub async fn update_profile(
         match r {
             Ok(Ok(())) => {}
             Ok(Err(_)) => s.logger
-                .warn("profile", "资料变更推送失败：链路已关闭（下次变更会再推）".to_string()),
+                .warn(
+                    "profile",
+                    "code=PROFILE_PUSH_CLOSED 资料变更推送失败：链路已关闭（下次变更会再推）".to_string(),
+                ),
             Err(_) => s.logger.warn(
                 "profile",
-                "资料变更推送超时（500ms，对端消费不过来），跳过该链路（下次变更会再推）".to_string(),
+                "code=PROFILE_PUSH_TIMEOUT 资料变更推送超时（500ms，对端消费不过来），跳过该链路（下次变更会再推）".to_string(),
             ),
         }
     }

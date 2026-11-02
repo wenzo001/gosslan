@@ -96,6 +96,19 @@ fn normalize_link_input(
 }
 
 /// 列出全部外部链接。
+/// 外链导入/清理的**失败与拒绝**要留痕：`code=LINK_ACTION_REJECTED action=… reason=…`。
+///
+/// 一个码 + action/reason（同族多格共用一个码），与 `GROUP_ACTION_REJECTED` 同口径。
+/// ⚠️ `clean_export/outside_export` 是**安全信号**（有人让本机删导出目录之外的文件）。
+/// 纯输入校验（空网址/名字/上限）不在此列。
+fn reject_link(s: &Arc<AppState>, action: &str, reason: &str, msg: &str) -> String {
+    s.logger.warn(
+        "links",
+        format!("code=LINK_ACTION_REJECTED action={action} reason={reason}"),
+    );
+    msg.to_string()
+}
+
 #[tauri::command(async)]
 pub async fn list_external_links(
     state: tauri::State<'_, Arc<AppState>>,
@@ -319,7 +332,7 @@ pub async fn cleanup_external_links_export(
         let dir = s.cache_dir.join("exports");
         let p = std::path::PathBuf::from(path);
         if !is_export_artifact_path(&dir, &p) {
-            return Err("拒绝清理导出目录之外的路径".to_string());
+            return Err(reject_link(&s, "clean_export", "outside_export", "拒绝清理导出目录之外的路径"));
         }
         match std::fs::remove_file(&p) {
             Ok(()) => Ok(()),
@@ -358,6 +371,8 @@ pub async fn import_external_links_from_url(
     url: String,
 ) -> Result<ExternalLinkImportResult, String> {
     let url = validate_external_url(&url)?;
+    // 下载阶段的失败也要留痕 ⇒ 这里就取一次 state（后面写库那段的同一个 `s` 沿用它）。
+    let s = state.inner().clone();
     let client = reqwest::Client::builder()
         .timeout(Duration::from_secs(10))
         .redirect(reqwest::redirect::Policy::limited(3))
@@ -369,23 +384,32 @@ pub async fn import_external_links_from_url(
         .await
         .map_err(|e| format!("下载失败：{e}"))?;
     if !resp.status().is_success() {
-        return Err(format!("下载失败：HTTP {}", resp.status()));
+        return Err(reject_link(&s, "import", "http_status", &format!("下载失败：HTTP {}", resp.status())));
     }
     if resp.content_length().unwrap_or(0) > MAX_IMPORT_BYTES as u64 {
-        return Err(format!("下载内容超过 {} KiB 上限", MAX_IMPORT_BYTES / 1024));
+        return Err(reject_link(
+            &s,
+            "import",
+            "too_large",
+            &format!("下载内容超过 {} KiB 上限", MAX_IMPORT_BYTES / 1024),
+        ));
     }
     // 逐块收口：不能先 `bytes()` 再量大小 —— 没有 Content-Length 的服务端可以先把
     // 几个 GB 拉进内存，再被这一行拒绝。流式累计到上限立即中止。
     let mut bytes = Vec::new();
     while let Some(chunk) = resp.chunk().await.map_err(|e| format!("读取下载内容失败：{e}"))? {
         if bytes.len() + chunk.len() > MAX_IMPORT_BYTES {
-            return Err(format!("下载内容超过 {} KiB 上限", MAX_IMPORT_BYTES / 1024));
+            return Err(reject_link(
+                &s,
+                "import",
+                "too_large",
+                &format!("下载内容超过 {} KiB 上限", MAX_IMPORT_BYTES / 1024),
+            ));
         }
         bytes.extend_from_slice(&chunk);
     }
     let raw = String::from_utf8(bytes).map_err(|_| "下载内容不是 UTF-8 文本".to_string())?;
     // 下载（await）留在 worker 之外的异步侧；合并写库那一段进阻塞池（审计 R-18）。
-    let s = state.inner().clone();
     tokio::task::spawn_blocking(move || -> Result<ExternalLinkImportResult, String> {
         import_external_links_raw(&s, &raw)
     })

@@ -872,3 +872,34 @@ fn favorite_failure_paths_are_traced_not_silent() {
         );
     }
 }
+
+/// 外链导入/清理与资料推送的失败要留痕（「可诊断可追溯」那两格）。
+///
+/// ① 外链：`code=LINK_ACTION_REJECTED action=… reason=…`，4 个出口
+///    （`clean_export/outside_export` 是**安全信号**；`import` 的 HTTP 非 2xx 与两处超大中止）。
+/// ② 资料推送：`PROFILE_PUSH_CLOSED` / `PROFILE_PUSH_TIMEOUT` —— 以前只有中文 warn、按码筛不到。
+#[test]
+fn link_and_profile_failures_carry_named_codes() {
+    let links = include_str!("commands/external_links.rs");
+    assert_eq!(
+        links.matches("reject_link(").count(),
+        5,
+        "外链留痕调用点数变了（含定义应为 5）⇒ 分母要跟着改"
+    );
+    for (action, reason) in [("clean_export", "outside_export"), ("import", "http_status")] {
+        let paired = links.split("reject_link(").skip(1).any(|tail| {
+            let head = tail.split(';').next().unwrap_or("");
+            head.contains(&format!("\"{action}\"")) && head.contains(&format!("\"{reason}\""))
+        });
+        assert!(paired, "{action}/{reason} 没有并排出现在同一个 reject_link( … ) 里");
+    }
+    assert_eq!(
+        links.matches("\"too_large\"").count(),
+        2,
+        "超大中止应有两处（Content-Length 预检 + 流式累计）"
+    );
+    let sys = include_str!("commands/system.rs");
+    for code in ["code=PROFILE_PUSH_CLOSED", "code=PROFILE_PUSH_TIMEOUT"] {
+        assert_eq!(sys.matches(code).count(), 1, "{code} 的出现次数不是 1（留痕被删或重复）");
+    }
+}

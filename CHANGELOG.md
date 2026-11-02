@@ -13,6 +13,22 @@
 
 ## [Unreleased]
 
+## [5.16.50] - 2026-11-02
+
+### 外链与资料推送的失败配上具名码（6 处，含一个安全信号）
+
+- **外链**（`commands/external_links.rs`）：`code=LINK_ACTION_REJECTED action=… reason=…` ——
+  `clean_export/outside_export`（**安全信号**：让本机删导出目录之外的文件）、
+  `import/http_status`（远端非 2xx）、`import/too_large` ×2（Content-Length 预检 + 流式累计中止）。
+  纯输入校验（空网址 / 名字 / 条数上限）不记日志。
+- **资料推送**（`commands/system.rs`）：`code=PROFILE_PUSH_CLOSED` / `code=PROFILE_PUSH_TIMEOUT`
+  —— 排查「对方怎么还是旧名字」时可直接按码筛（这两条本来就是 best-effort，下次变更会再推）。
+- 判据 `link_and_profile_failures_carry_named_codes`：外链调用点 = 5、两个 action/reason 必须并排、
+  `too_large` 恰好 2 处；资料推送两个码各恰好 1 次。**两个族各做一次变异反证**
+  （改 `outside_export` ⇒ 「没有并排出现」；改 `PROFILE_PUSH_TIMEOUT` ⇒ 「出现次数不是 1」），
+  还原后均 `cmp` 逐字节相同。
+- 台账：F-OBS-008 / F-PLF-011 的可诊断格更新（并写明各自还剩哪些自由文本）。
+
 ## [5.16.49] - 2026-11-02
 
 ### 设置写/删失败：点名是哪一格 + 具名码（13 写 + 1 删走同一条通道）
