@@ -5,9 +5,12 @@ HEAD 基线：`6ca07ca5`（本文件内所有 `path:line` 均按此 HEAD 复核�
 
 ---
 
-## B1-F1 · 取消类操作的结局不留痕（P3，建议修）
+## B1-F1 · 取消类操作的结局不留痕（P3，建议修）—— **已收口（2026-11-02 深夜，5.16.38）**
 
 **适用的六格**：可诊断可追溯 = FAIL；其余五格 PASS（见下）。
+
+**收口读数（2026-11-02 现读；分母按注册表数 = 5 道可取消的命令、6 个码，复跑 `grep -n 'commands::cancel\|commands::updater_cancel' src-tauri/src/lib.rs`）**：`code=DM_CANCEL`（`commands/chat.rs:192`，含 outcome/was_written/delivered/remaining）· `code=GROUP_CANCEL`（同函数群侧）· `code=FILE_CANCEL`（`commands/files.rs:1150`）· `code=UPDATER_CANCEL outcome=`（`commands/updater.rs` 两处：refused_installing / cancelled）· **`code=CONTENT_CANCEL`（本批新补，两条结局：outcome=no_live_rows 与真取消）** · **`code=GROUP_HISTORY_CANCEL`（本批新补；这一格原本有一行留痕但没有码 ⇒ 按码查不到——「有行」与「可按码查」是两件事）**。判据：`lib_file_tests.rs::every_cancel_channel_leaves_a_named_outcome`（6 格；内容拉取那格按计数 = 2 判，两种结局少一行就红），变异＝摘掉 `no_live_rows` 那一行的码 ⇒ 当场红（跑过，还原后 `cmp` 逐字节相同）。
+⚠️ **立案时把通道数成四类是少算的**：「消息 / 文件 / 更新 / 群消息」之外还有**内容拉取取消** —— 它是任务中心八个动作之一，表现与文件取消一模一样（点了取消、进度条还在跑）。分母要按「用户能取消的通道」现数，不按立案那份清单数（同 §4.0br 发送点 2→3、§4.0bt 连接句柄锚 —— 本仓第四次现形）。
 
 **断点**：Rust 命令层，`src-tauri/src/commands/chat.rs` 的 `cancel_message`。
 

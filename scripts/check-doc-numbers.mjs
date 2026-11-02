@@ -35,6 +35,8 @@
  *    不在这里手抄；同时反向钉两条：门禁里出现 `-lie` 模式 = 红（预期红的东西不许进门禁），
  *    门禁里出现 harness 没有的 `--fault=` 值 = 红。
  *
+ * **G. 闭环矩阵的行数 / ID 唯一性 / 总判计数由矩阵自己数**（2026-11-02 立，来历见实现处那段注释）。
+ *
  * **E. 护栏非空转用例数由脚本自己数**：真值只存在于 `scripts/guard_cases/<域>.py` 各分册的 `CASES`
  *    列表里（2026-10-07 之前它们在 `verify-guards.py` 一份 3,747 行的字面量里，搬家后计数范围跟着搬），
  *    跑起来那一步自己打印「[48/202]」这种进度，而契约图给人看的那张统计卡是**手抄的第二份**。
@@ -517,12 +519,68 @@ for (const [mode, name] of lieEntries) {
   }
 }
 
+// ---------- 判据 G：闭环矩阵的行数 / ID 唯一性 / PARTIAL 计数由矩阵自己数 ----------
+// 立这条的经过（2026-11-02）：矩阵被两份活文档引用成「92 行」「仍有 79 行是 PARTIAL」，而**没有任何脚本读过它**。
+// 今晚抽样改行时发现三个 ID 各被两行不同的动作族共用（`F-MSG-060` / `F-PRE-018` / `F-OBS-007`）⇒
+// 「引用 F-MSG-060 那一格」从那一刻起就是**歧义的**，而歧义在两份文档里都读得下去、谁都不会红。
+// 与判据 C/E 同一立场：能被现算的数、能被机器判的名单，不许只活在人脑里；
+// 并且**声明被删掉也算红**（否则删掉那一句就是绕过这条守卫的最短路径）。
+{
+  const MATRIX = "docs/notes/closedloop-matrix-2026-10-26.md";
+  const AUDIT = "docs/notes/closedloop-audit-2026-10-26.md";
+  const matrixText = fs.readFileSync(path.join(ROOT, MATRIX), "utf8");
+  const rows = [];
+  for (const line of matrixText.split("\n")) {
+    const m = /^\|\s*(F-[A-Z]+-\d+)\s*\|/.exec(line);
+    if (!m) continue;
+    const cells = line.split("|");
+    // 总判固定在倒数第二格（每行行尾都有 `|`）；取错格子会把"理由列里的 PARTIAL 字样"数进来
+    rows.push({ id: m[1], verdict: cells[cells.length - 2] ?? "" });
+  }
+  const seen = new Map();
+  for (const r of rows) seen.set(r.id, (seen.get(r.id) ?? 0) + 1);
+  const dups = [...seen].filter(([, n]) => n > 1);
+  if (dups.length) {
+    fails.push(
+      `闭环矩阵有 ${dups.length} 个 ID 被多行共用：${dups.map(([k, n]) => `${k}×${n}`).join("、")} ⇒ ` +
+        `「引用 F-XXX-NNN 那一格」是歧义的。给后出现的那一行换新 ID（本判据只认唯一）`,
+    );
+  }
+  const partial = rows.filter((r) => /PARTIAL|FAIL/.test(r.verdict)).length;
+  console.log(
+    `· 判据 G 现算闭环矩阵：${rows.length} 行 / ${seen.size} 个不同 ID / 判为 PARTIAL 或 FAIL ${partial} 行`,
+  );
+  const declared = [
+    { file: MATRIX, re: /矩阵 (\d+) 行里仍有 (\d+) 行是 PARTIAL/, label: "矩阵 N 行里仍有 M 行是 PARTIAL", vals: [rows.length, partial] },
+    { file: AUDIT, re: /记 \*\*(\d+) 行\*\*/, label: "矩阵按动作族记 N 行", vals: [rows.length] },
+  ];
+  for (const d of declared) {
+    const text = fs.readFileSync(path.join(ROOT, d.file), "utf8");
+    const m = d.re.exec(text);
+    if (!m) {
+      fails.push(
+        `${d.file} 里那句「${d.label}」不见了 —— 删掉声明等于把这一格变成无人对账，` +
+          `现算值是 ${d.vals.join(" / ")}`,
+      );
+      continue;
+    }
+    for (let i = 0; i < d.vals.length; i++) {
+      if (Number(m[i + 1]) !== d.vals[i]) {
+        fails.push(
+          `${d.file}：手写「${d.label}」里的第 ${i + 1} 个数 = ${m[i + 1]}，现算 = ${d.vals[i]} ` +
+            `⇒ 改文档之前先确认现算那侧（矩阵的行与总判列）是不是真的动了`,
+        );
+      }
+    }
+  }
+}
+
 if (fails.length) {
   console.error(`\n✗ 文档硬数字漂移 ${fails.length} 处：`);
   for (const f of fails) console.error(`  · ${f}`);
   console.error(
     `\n  改法分两种：判据 B 那类（真相自己会打印出来的）把数字从文档里删掉；` +
-      `判据 A/C/E/F 那类（文档就是要给人看一个现状数、或对账一张名单）把数字改成现算值、或去补那一档缺的登记，` +
+      `判据 A/C/E/F/G 那类（文档就是要给人看一个现状数、或对账一张名单）把数字改成现算值、或去补那一档缺的登记，` +
       `并记住真正该动的是源头` +
       `（harness 里的注释口径、CASES 里那条用例）—— 只改文档等于把下一次漂移排上队。`,
   );
