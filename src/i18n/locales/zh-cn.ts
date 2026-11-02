@@ -1201,6 +1201,7 @@ export const zhCN: MessageDict = {
   "chat.dropConfirmNote": "文件夹不会发送；发送后可在气泡上取消。",
   "chat.dropNoFiles": "拖入的都是文件夹，没有可发送的文件",
   "chat.empty": "暂无消息，打个招呼吧",
+  "chat.groupReadsLoadFailed": "已读名单这次没读出来 —— 缺席的绿勾是「未知」，不是「没人读过」。",
   "chat.history.loading": "正在加载更早消息…",
   "chat.history.loadFail": "更早的消息加载失败",
   "chat.backToLatest": "回到最新",

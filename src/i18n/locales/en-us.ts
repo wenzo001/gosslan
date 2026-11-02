@@ -1175,6 +1175,7 @@ export const enUS: MessageDict = {
   "chat.dropConfirmNote": "Folders are skipped. You can cancel each message from its bubble afterwards.",
   "chat.dropNoFiles": "Everything dropped was a folder — nothing to send",
   "chat.empty": "No messages yet, say hi",
+  "chat.groupReadsLoadFailed": "Read receipts couldn't be read this time — a missing check mark means unknown, not unread.",
   "chat.history.loading": "Loading earlier messages…",
   "chat.history.loadFail": "Couldn't load earlier messages",
   "chat.backToLatest": "Back to Latest",

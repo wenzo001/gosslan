@@ -13,6 +13,26 @@
 
 ## [Unreleased]
 
+## [5.16.43] - 2026-11-02
+
+### 群已读名单读失败时界面不再「没人读过」；删掉一个只写不读的假字段
+
+自查 5.16.41 的六格接线时发现**两处是假接通**：`groupReadsErrors` 只在 store 里记、没有任何组件读它，
+`openTodosError` 更是只写不读。后果是：群已读名单读失败时 `groupReads` 是空的 ⇒ 气泡上那排绿勾
+全部消失 ⇒ 界面等于在说「群里没人读过」，而原因记在一个没人看的地方。这正是 INV-P36 要禁的形状。
+
+- **群聊**：活跃群那一格读失败时，消息列表上方出一行 `role="alert"` 说明 + 重试
+  （`chat.groupReadsLoadFailed`：「已读名单这次没读出来 —— 缺席的绿勾是「未知」，不是「没人读过」。」/
+  「Read receipts couldn't be read this time — a missing check mark means unknown, not unread.」）。
+  消息本身照常显示，不挡列表、不换整页。
+- **群任务徽标**：删掉 `openTodosError`（没有任何消费者）。失败时的用户可见信号本来就是那条 toast
+  （保留上一份数字 + 提示一次），现在由判据钉住 `toastError(e, t("task.badgeLoadFailed"))` 这一句。
+- **判据补强**（这次的教训直接写进尺子）：原先只断言「store 导出了这 6 个 ref」——导出≠被读，
+  两个假字段就是这么全绿的。现在每个 ref 还要求**至少一个组件真的读 `chat.<ref>`**；
+  另加群已读横幅的 `role="alert"` + 重试，以及徽标 toast 那一句。
+  变异反证：把 `ChatWindow` 里那次读取换成 `null` ⇒ 该格红（**247 过 / 1 失败**，
+  报「groupReadsErrors 只写不读」），还原后 `cmp` 逐字节相同。
+
 ## [5.16.42] - 2026-11-02
 
 ### 空态与错误态必须**互斥可达**（补 5.16.41 的验收缺口）

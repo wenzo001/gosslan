@@ -198,7 +198,6 @@ export const useChatStore = defineStore("chat", () => {
   const contentTransfersError = ref<string | null>(null);
   const messageOpsError = ref<string | null>(null);
   /** 群任务徽标 / 群已读名单（按群）同一类"读不到"的登记。 */
-  const openTodosError = ref<string | null>(null);
   const groupReadsErrors = ref<Record<string, string>>({});
   const asReadError = (e: unknown) => (e instanceof Error ? e.message : String(e));
   /**
@@ -1177,13 +1176,11 @@ export const useChatStore = defineStore("chat", () => {
     } catch (e) {
       // 读不到就**保留上一次徽标**（清成 0 等于断言"任务都完成了"），只登记原因 + 提示一次。
       if (mine === openTodoSeq) {
-        openTodosError.value = asReadError(e);
         void app.toastError(e, t("task.badgeLoadFailed"));
       }
       return;
     }
     if (mine !== openTodoSeq) return;
-    openTodosError.value = null;
     // 同一次读同时喂徽标与那三处界面（见 groupTodoRows 的注释）
     groupTodoRows.value = putTodoRows(groupTodoRows.value, ids, rows);
     clearGroupTodoRowsErrors(ids);
@@ -3409,7 +3406,6 @@ export const useChatStore = defineStore("chat", () => {
     transfersError,
     contentTransfersError,
     messageOpsError,
-    openTodosError,
     groupReadsErrors,
     conversationsLoaded,
     groupsLoaded,
