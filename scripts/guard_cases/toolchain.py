@@ -390,9 +390,15 @@ CASES: list[Case] = [
         "都被迫提版本号 ⇒ 版本号会通胀）。真实后果 2026-09-28 实测到：一条只改 `src/utils/versioning.test.ts`"
         "的提交被算成 presentation 的第 3 票,把「同一领域反复打补丁」这条红推起来了 —— 而写回归正是本仓鼓励的事。"
         "fixture 默认状态是 2 条动应用代码的 transport fix + 1 条只动 `ble_tests.rs` 的 ⇒ 必须仍判 2 次并 PASS；"
-        "本用例摘掉那层过滤 ⇒ 三条一起数,守门必须报「出现了 3 次」。",
+        "2026-11-02 起窗口分母也先过滤 test-only 提交 ⇒ 只摘领域过滤已经不会红，所以本用例同时摘掉"
+        "「窗口 appCodeOnly」与「领域 isAppCodePath」两层，三条一起数,守门必须报「出现了 3 次」。",
         file=ROOT / "scripts" / "check-change-budget.mjs",
         injections=[(
+            "  return candidates.filter(isPatchShaped).filter(appCodeOnly).slice(0, OFFENDER_WINDOW);",
+            "  return candidates.filter(isPatchShaped).slice(0, OFFENDER_WINDOW);",
+        )],
+        extra_injections=[(
+            ROOT / "scripts" / "check-change-budget.mjs",
             "        .filter((f) => !isExempt(f.path) && isAppCodePath(f.path))",
             "        .filter((f) => !isExempt(f.path))",
         )],
