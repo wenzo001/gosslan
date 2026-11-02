@@ -803,3 +803,33 @@ fn group_key_fanout_never_skips_a_member_silently() {
         );
     }
 }
+
+/// 群命令的**拒绝**必须留痕（越权 / 目标没了 / 状态不对）。
+///
+/// 界面只拿到一句中文；事后问「为什么这次点不动」时日志里得有一行能按 `code=` 筛的。
+/// 守的是「配对的形状」：每个调用点都把 action 与 reason 两个**字面量**并排放进
+/// `reject(s, &group_id, "action", "reason", …)` —— 因此这里可以逐对断言，
+/// 而不是只断言"码出现过"。输入格式校验（空标题/超长）刻意不在这个族里。
+#[test]
+fn group_command_rejections_are_traced_not_silent() {
+    let src = include_str!("commands/group_files.rs");
+    let calls = src.matches("reject(s,").count();
+    assert_eq!(calls, 9, "拒绝留痕的调用点数变了（{calls}）⇒ 本判据的分母要跟着改");
+    for (action, reason) in [
+        ("remind", "target_missing"),
+        ("remind", "not_member"),
+        ("remind_ack", "not_member"),
+        ("remind_ack", "target_missing"),
+        ("todo", "not_member"),
+        ("todo_edit", "not_authorized"),
+        ("todo_edit", "state_refused"),
+        ("announcement", "not_owner"),
+        ("announcement_delete", "not_owner"),
+    ] {
+        let needle = format!("\"{action}\", \"{reason}\"");
+        assert!(
+            src.contains(&needle),
+            "少了一格拒绝留痕：{needle}（{action}/{reason} 不再进日志 ⇒ 这一格又变回静默）"
+        );
+    }
+}
