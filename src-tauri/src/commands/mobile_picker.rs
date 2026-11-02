@@ -200,13 +200,13 @@ pub async fn import_picked_file(
                 Ok(None) => {
                     state.logger.warn(
                         "file",
-                        format!("HEIC → JPEG 转码失败（Kotlin 返回 null），保留原文件"),
+                        format!("code=HEIC_TRANSCODE_NULL HEIC → JPEG 转码失败（Kotlin 返回 null），保留原文件"),
                     );
                 }
                 Err(e) => {
                     state.logger.warn(
                         "file",
-                        format!("HEIC → JPEG JNI 调用失败：{e}"),
+                        format!("code=HEIC_TRANSCODE_FAILED HEIC → JPEG JNI 调用失败：{e}"),
                     );
                 }
             }
@@ -428,7 +428,10 @@ pub(crate) async fn send_friend_accept_via_link(
         // 单边成立。打日志留痕（对方 Presence 尚未到达 / 已被 sweep 清理）。
         s.logger.warn(
             "friend",
-            format!("同意好友但缺对端公钥，FriendAccept 未发送 peer={peer_id}"),
+            format!(
+                "code={} 同意好友但缺对端公钥，FriendAccept 未发送 peer={peer_id}",
+                crate::error_codes::E2EE_PUBKEY_MISSING
+            ),
         );
         return Err(crate::error_codes::coded(
             crate::error_codes::E2EE_PUBKEY_MISSING,
@@ -490,7 +493,7 @@ pub(crate) async fn accept_friend_request(s: &Arc<AppState>, peer_id: &str) -> R
     if let Err(e) = send_friend_accept_via_link(s, peer_id).await {
         s.logger.warn(
             "friend",
-            format!("好友同意回执发送失败（已登记待补发）peer={peer_id}: {e}"),
+            format!("code=FRIEND_ACCEPT_RESEND_QUEUED 好友同意回执发送失败（已登记待补发）peer={peer_id}: {e}"),
         );
     }
     crate::network::transport::forget_pending_request(s, peer_id);
@@ -511,6 +514,10 @@ pub async fn respond_friend_request(
         .unwrap_or_else(|e| e.into_inner())
         .contains_key(&peer_id)
     {
+        // ⚠️ 这里**刻意不写日志**：`respond_friend_request` 是 `(async)` 贴同步 fn 的命令，
+        // 重活棘轮（`worker_bound_heavy_commands_do_not_grow`）把「写日志」算作重活之一
+        // （logger 一次 warn 要取整份内存环快照）。要留痕得先把它改成 async + spawn_blocking，
+        // 那是另一笔；在此之前保持上限 31 不动，界面仍能拿到这句中文原因。
         return Err("好友申请不存在或已处理".to_string());
     }
     if accept {

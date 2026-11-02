@@ -13,6 +13,26 @@
 
 ## [Unreleased]
 
+## [5.16.51] - 2026-11-02
+
+### 移动端导入与好友同意链的失败配上具名码（5 处）
+
+- **HEIC 转码降级**：`code=HEIC_TRANSCODE_NULL`（Kotlin 返回 null，保留原文件）与
+  `code=HEIC_TRANSCODE_FAILED`（JNI 调用失败）——两种降级共用一句中文时排查分不开。
+- **同意好友缺对端公钥**：返回值早就带 `E2EE_PUBKEY_MISSING`（走 `coded()`），但**日志**里没有码；
+  这次同一件事的两个通道都点名（常量复用，不新造字符串）。
+- **同意回执发送失败（已登记待补发）**：`code=FRIEND_ACCEPT_RESEND_QUEUED` —— 与 handshake 的
+  `FRIEND_ACCEPT_RETRY_FAILED` / `…_EXHAUSTED` 成对，能看出"这次失败但还有几次机会"。
+- ⚠️ **没有做的一格（照实记）**：「同意/拒绝时申请已不在待处理表」本想配 `FRIEND_REQUEST_GONE`，
+  但 `respond_friend_request` 是 `(async)` 贴同步 fn 的命令，重活棘轮
+  （`worker_bound_heavy_commands_do_not_grow`，上限 31）把「写日志」也算重活
+  ⇒ 加了就让现数 32 红。**没有调大上限**：先把日志撤掉、保留那句中文 Err，等这条命令改成
+  async + spawn_blocking 再补留痕。
+- 判据 `mobile_picker_failures_carry_named_codes`：四个码各恰好一次 + 缺公钥那条**日志**必须是
+  `code={}` 拼出来的（返回值有码不等于日志有码）。变异反证：改坏 `HEIC_TRANSCODE_NULL` ⇒ 红，
+  还原后 `cmp` 逐字节相同。
+- 台账：F-PLF-018 / F-FRN-003 更新。
+
 ## [5.16.50] - 2026-11-02
 
 ### 外链与资料推送的失败配上具名码（6 处，含一个安全信号）
