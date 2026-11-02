@@ -13,6 +13,28 @@
 
 ## [Unreleased]
 
+## [5.16.33] - 2026-11-02
+
+### 把 INV-P36 挂进领域清单的两个域（这处登记没有机器判据）
+
+`docs/domains.data.mjs` 每个域有一份 `invariants:` 名单——**没有任何判据对账它是否完整**
+（`check-invariant-hooks` 判的是"文档 ↔ 真测试"，`check-domain-map` 判的是 `activeHome`）。
+也就是说：新加一条 INV 而忘了挂域，不会有任何东西变红，只会让下一个按域看清单的人/AI 看不见它。
+所以这一步虽小，必须做：
+
+- `persistence`：严格读的两个家在本域（`get_setting_checked` / `get_group_checked`），
+  并指名通道开关那格的用例（读失败曾把用户关掉的局域网永久改成开）；
+- `transport`：fan-out 那族（`list_groups` 折成空 ⇒ 群密钥判成"永久放弃"）、补发台账与群已读的
+  节流留痕、`chat_peer_styles` 的读-改-写整表（读失败不写回）都在本域。
+
+顺带把那条待拍板项的实情查清：`scripts/semver.mjs` 里**没有 `none` 这一档**（grep 零命中）⇒
+"纯 docs 提交免提版本号"不是改个 trailer 就能做，得先给版本工具加一档 + 让声明判据认它。
+本批因此仍按现行规则走 patch。
+
+现跑：`check-domain-map` 0、`check-domain-deps` 0、`map:stats` 0（不变量条数现算 36，由 `arch-map-stats` 直接 import 该清单 ⇒ 语法与可加载性一并被证）。
+
+
+
 ## [5.16.32] - 2026-11-02
 
 ### 新增 INV-P36「读库失败不许折成『没有数据』」，并把 5 处有意折叠登记成例外
