@@ -2,6 +2,21 @@
 // - 群消息发送内核（send_group_payload，文本/代码/合并共用）
 // - 群 Todo/投票/公告 命令入口
 // - ⚠️ 只放 command entry + 通用 helper，投递/密钥在独立子模块
+
+/// 群命令的**拒绝**要留痕：越权 / 目标没了 / 状态不对这三种，界面只拿到一句中文，
+/// 事后问「为什么这次点不动」时日志里得有一行能按码筛的（闭环矩阵「可诊断可追溯」那一列）。
+///
+/// 一个码 + `reason` 字段：多种原因是同一个动作（拒绝），不是三件事 —— 与
+/// `GROUP_KEY_MEMBER_SKIPPED` 同一口径。**输入格式校验（空标题/超长）不在此列**：
+/// 那是用户当场看得懂的反馈，不需要进运行日志。
+fn reject(s: &AppState, group_id: &str, action: &str, reason: &str, msg: &str) -> String {
+    s.logger.warn(
+        "group",
+        format!("code=GROUP_ACTION_REJECTED group={group_id} action={action} reason={reason}"),
+    );
+    msg.to_string()
+}
+
 // ---------------- 群文件（Offer / session-key 阶段） ----------------
 
 // 发起群文件（本阶段只建立 Offer 与 file session key，不含分片传输）。
@@ -52,10 +67,10 @@ pub async fn send_group_message(
                     .map(|m| m.conv_id == format!("group:{group_id}"))
                     .unwrap_or(false);
                 if !exists {
-                    return Err("要提醒的消息不存在".to_string());
+                    return Err(reject(s, &group_id, "remind", "target_missing", "要提醒的消息不存在"));
                 }
                 if !group.members.iter().any(|m| m == &s.device_id) {
-                    return Err("你已不在该群中".to_string());
+                    return Err(reject(s, &group_id, "remind", "not_member", "你已不在该群中"));
                 }
                 group.members
             };
@@ -100,7 +115,7 @@ pub async fn send_group_message(
                 let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());
                 let group = db::get_group(&dbc, &group_id).ok_or("群不存在")?;
                 if !group.members.iter().any(|m| m == &s.device_id) {
-                    return Err("你已不在该群中".to_string());
+                    return Err(reject(s, &group_id, "remind_ack", "not_member", "你已不在该群中"));
                 }
                 // content 里 target 的真实性现读后才出帧。
                 let target = crate::protocol::parse_remind_ack_payload(&content)?.target;
@@ -108,7 +123,7 @@ pub async fn send_group_message(
                     .map(|m| m.conv_id == format!("group:{group_id}") && m.kind == "remind")
                     .unwrap_or(false);
                 if !valid {
-                    return Err("对应的强提醒不存在".to_string());
+                    return Err(reject(s, &group_id, "remind_ack", "target_missing", "对应的强提醒不存在"));
                 }
             }
             return send_group_payload(
@@ -288,7 +303,7 @@ fn check_todo_assignees(s: &AppState, group_id: &str, assignees: &[String]) -> R
     };
     // ⚠️ `resolve_nickname` 内部会再锁一次 db，必须在放锁之后调用（见文件里那条同名注释）
     if let Some(bad) = assignees.iter().find(|a| !members.contains(a)) {
-        return Err(format!("{} 不是群成员", resolve_nickname(s, bad)));
+        return Err(reject(s, group_id, "todo", "not_member", &format!("{} 不是群成员", resolve_nickname(s, bad))));
     }
     Ok(())
 }
@@ -847,7 +862,7 @@ pub async fn update_group_todo(
         edits_structure,
         lane,
     ) {
-        return Err(if edits_assignees {
+        let why = if edits_assignees {
             "只有任务创建者、群主或被指派人可以修改指派人".to_string()
         } else if edits_structure {
             "只有任务创建者或群主可以修改任务".to_string()
@@ -859,14 +874,15 @@ pub async fn update_group_todo(
             "只有群成员可以归档、还原、认领或删除已归档任务".to_string()
         } else {
             "只有创建者或被指派人可以修改任务状态".to_string()
-        });
+        };
+        return Err(reject(s, &group_id, "todo_edit", "not_authorized", &why));
     }
     // 「归档」只在终态（完成 / 做不了）成立（`resolve_done_archive` 对非终态一律写回
     // archived=false）。原来这里是**静默丢弃**：调用方拿到一条成功的记录、任务却没进归档，
     // 正是"显示成功但没真成功"。放宽到全体成员之后更容易撞上（成员没资格改状态、
     // 却可能挑一条没干完的任务点归档），所以改成明确拒绝。
     if archived == Some(true) && !crate::protocol::todo_status_is_terminal(&status) {
-        return Err("只有完成或标记为做不了的任务可以归档".to_string());
+        return Err(reject(s, &group_id, "todo_edit", "state_refused", "只有完成或标记为做不了的任务可以归档"));
     }
     let (archived, done_at) = resolve_done_archive(
         crate::protocol::todo_status_is_terminal(&status),
@@ -936,7 +952,7 @@ pub async fn send_group_announcement(
         let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());
         let g = db::get_group(&dbc, &group_id).ok_or("群不存在")?;
         if g.creator != s.device_id {
-            return Err("只有群主可以发布公告".to_string());
+            return Err(reject(s, &group_id, "announcement", "not_owner", "只有群主可以发布公告"));
         }
     }
     let content = serde_json::to_string(&crate::protocol::AnnouncementPayload { text })
@@ -964,7 +980,7 @@ pub async fn delete_group_announcement(
         let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());
         let g = db::get_group(&dbc, &group_id).ok_or("群不存在")?;
         if g.creator != s.device_id {
-            return Err("只有群主可以删除公告".to_string());
+            return Err(reject(s, &group_id, "announcement_delete", "not_owner", "只有群主可以删除公告"));
         }
     }
     let content = serde_json::to_string(&crate::protocol::AnnouncementDeletePayload { ann_id })

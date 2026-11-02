@@ -13,6 +13,25 @@
 
 ## [Unreleased]
 
+## [5.16.45] - 2026-11-02
+
+### 群命令的「拒绝」不再静默：9 处配上具名码
+
+`commands/group_files.rs` 此前 **28 个 `Err(`、0 个 `code=`** —— 用户点不动时界面只回一句中文，
+事后查「为什么这次没成」在日志里一个字都没有。这批只补**拒绝**这一类（越权 / 目标没了 / 状态不对），
+输入格式校验（空标题、超长、非法枚举）刻意不记：那是用户当场看得懂的反馈，进日志只是噪音。
+
+- 统一走 `reject(s, &group_id, action, reason, msg)` → `code=GROUP_ACTION_REJECTED group=… action=… reason=…`
+  （一个码 + reason 字段，与 `GROUP_KEY_MEMBER_SKIPPED` 同一口径）。
+- 9 个调用点：群强提醒的两类拒绝（`remind|remind_ack` × `target_missing|not_member`）、
+  指派非成员（`todo/not_member`）、改任务的四类越权（`todo_edit/not_authorized`）、
+  非终态归档（`todo_edit/state_refused`）、发布/删除公告的越权（`announcement(_delete)/not_owner`）。
+- 判据 `group_command_rejections_are_traced_not_silent`：逐对断言 action/reason 字面量**并排放进调用**，
+  并钉住调用点数 = 9（分母变了就红）。变异反证：把 `announcement_delete` 的 reason 改一个词 ⇒
+  该格红并点名缺的是哪一格，还原后 `cmp` 逐字节相同。
+- 台账同步：F-GRP-002 / F-GRP-004 / F-MSG-002 的「可诊断」格改成**部分收口**并写明还剩哪半
+  （发送内核自身的失败臂仍无码），总判级如实保留 PARTIAL。
+
 ## [5.16.44] - 2026-11-02
 
 ### 静默失败补码（3 处）+ 闭环矩阵四行订正
