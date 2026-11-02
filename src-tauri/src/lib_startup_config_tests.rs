@@ -1112,3 +1112,45 @@ fn settings_write_failure_is_an_error_not_a_silent_noop() {
     let del = crate::db::delete_setting(&conn, "theme_color");
     assert!(del.is_err(), "删除同理：表不存在必须报错：{del:?}");
 }
+
+/// F-PRE-016 的语言那半：`set_ui_language` **不许**广播设置变更。
+///
+/// 以前它发 `settings-changed`（无载荷、广播），于是形成**事件乒乓**：另一个窗口收到 →
+/// 重拉设置 → `applySettingsSnapshot` 结尾无条件 `pushUiLanguage()` → 又调回这条命令 → 再发
+/// ⇒ 两个窗口互相触发，高频 IPC 环。语言变更的事实来源是 `save_settings`（patch 里带 language）。
+/// 这条判据钉住"这条命令只做两件事"（记 hint + macOS 菜单），谁想"顺手补个广播"就红。
+#[test]
+fn set_ui_language_stays_silent_to_avoid_the_event_ping_pong() {
+    let src = include_str!("commands/settings.rs");
+    let tail = src
+        .split("pub fn set_ui_language(")
+        .nth(1)
+        .expect("set_ui_language 不见了 ⇒ 判据锚点要跟着改");
+    let body = tail.split("\n}\n").next().unwrap_or(tail);
+    // ⚠️ 先剥注释：这段的说明里**就写着** `settings-changed`（解释为什么刻意不发），
+    // 不剥的话这把尺子会把自己的理由当成违规（第一次跑就是这么红的）。
+    let code: String = body
+        .lines()
+        .filter(|l| {
+            let t = l.trim_start();
+            !t.starts_with("//")
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    for forbidden in [
+        "notify_settings_changed",
+        "settings-changed",
+        ".emit(",
+        "app.emit",
+    ] {
+        assert!(
+            !code.contains(forbidden),
+            "`set_ui_language` 里出现了「{forbidden}」⇒ 两个窗口会互相触发（事件乒乓），\
+             语言变更的事实来源应该是 save_settings 的 patch"
+        );
+    }
+    assert!(
+        code.contains("set_ui_language_hint("),
+        "这条命令的核心动作（记下语言 hint）不见了"
+    );
+}

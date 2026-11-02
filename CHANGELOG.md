@@ -13,6 +13,19 @@
 
 ## [Unreleased]
 
+## [5.16.67] - 2026-11-02
+
+### F-PRE-016 部分收口：`set_ui_language` 必须保持「静默」
+
+新增 `set_ui_language_stays_silent_to_avoid_the_event_ping_pong`：这条命令只做两件事
+（记语言 hint + macOS 菜单），命令体里**不许**出现 `notify_settings_changed` / `settings-changed` /
+`.emit(` / `app.emit`。原因写在代码里：以前它广播 `settings-changed`，另一窗口收到 → 重拉设置 →
+又调回这条命令 ⇒ **两个窗口互相触发的高频 IPC 环**；语言变更的事实来源是 `save_settings` 的 patch。
+变异反证：命令体里塞回 `"settings-changed"`（可编译）⇒ 红并报「事件乒乓」，还原 `cmp` 相同。
+⚠️ 判据第一版被自己的注释骗过（注释里就写着 `settings-changed` 解释为什么不发）⇒ 已改为**先剥注释**再判。
+
+**如实留缺口**：语言/样式的**跨进程**行为仍需两实例轮次。
+
 ## [5.16.66] - 2026-11-02
 
 ### F-PLF-021 部分收口：网络启停的三条顺序
