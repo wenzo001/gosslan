@@ -13,6 +13,27 @@
 
 ## [Unreleased]
 
+## [5.16.23] - 2026-11-02
+
+### 设置落库失败补上「事后查得到」那一半：toast 之外再进运行日志（B1-F4 留痕）
+
+`persistSettings` 的 catch 从 5.15.53 起会弹 toast 并 `console.warn`，但**本仓不转发前端 console 到后端日志**
+（现读：`src-tauri/src/` 里 `console` 只剩 `main.rs` 那句注释，`src/` 里没有任何 `console.warn =` 改写）
+⇒ 用户事后报「改了设置、重启又变回去」时，运行日志与诊断包里这一笔仍然是空的。
+补一条现成家：`api.logFrontendError("settings-save-failed", "code=SETTINGS_PERSIST_FAILED err=…")`
+（同文件蓝牙那一格 `code=BLE_AUTOSTART_HELD` 就是这个形状；后端写成 `logger.warn("ui", "[前端 …]")`）。
+判据 `设置落库失败必须上屏（B1-F4）` 跟着钉这一句 —— 摘掉它该判据红（实测 `EXIT=1`），还原后逐字节相同、`EXIT=0`。
+
+### 订正我自己今天写错的抽检结论：闭环矩阵 `F-PRE-011` 那格
+
+11-02 的复核节里我写了「`F-PRE-011` 仍成立：`persistSoon` 的失败回调还是空 catch」——**那是错的**：
+我看到的 659 行那个 `.catch(() => {` 属于 `api.broadcastChatStyle(...)`（无连接节点时刻意静默，
+矩阵 `F-PLF-021` 行早已判为"用户无感，故不立案"），不是设置落库那条路。
+设置那条 catch 在 550 行，5.15.53 起就有 toast + console + 一条判据钉着。
+矩阵册那行改成「上屏半已收口、留痕半本批补」，并留一节带日期的更正说明错法形状
+（同一文件里两个长得很像、行号又挨着的 `catch` 会串行 ⇒ 要打开**那条链自己的函数体**）。
+同批把立案清单（`closedloop-findings` 第 4 行）与审计册 §8/§4.0al 的落地口径一起改准。
+
 ## [5.16.22] - 2026-11-02
 
 ### 闭环矩阵再抽一行：F-PST-001 的 B3-F1（迁移读失败当跳过）已过期

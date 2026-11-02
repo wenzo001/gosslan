@@ -6086,6 +6086,15 @@ test("设置落库失败必须上屏（B1-F4）", () => {
     /console\.warn\(\s*"\[settings\]/.test(body),
     "设置落库失败没有留 console 线索 ⇒ 排障时连「有没有尝试写」都看不到",
   );
+  // ★ 2026-11-02 补上原本缺的那一半。上面两条只解决「用户当场看见」；这条链在 10-26 审计里的 FAIL 项
+  // 是**可诊断可追溯**，而 `console.warn` 到不了日志文件 —— 本仓没有任何把前端 console 转进后端日志的钩子
+  // （现读：`src-tauri/` 里的 `console` 只剩 `main.rs` 那句「别开 Windows 控制台窗口」的注释，
+  // 且 `src/` 里没有任何 `console.warn =` 之类的改写）。打包后用户报「重启设置变回去了」，
+  // 诊断包里这一笔仍然是空的 ⇒ 留痕走已有的 `logFrontendError` 通道（同文件蓝牙那格就是这个形状）。
+  assert.ok(
+    body.includes('api.logFrontendError("settings-save-failed"'),
+    "设置落库失败没进运行日志 ⇒ 只有 toast，事后无从查起（用户没截图就永远对不上）",
+  );
   // 反控：空 catch（带不带注释都算）不许回来。
   assert.equal(
     /catch\s*(\(\s*\w*\s*\))?\s*\{\s*(\/\*[^*]*\*\/)?\s*\}/.test(body),

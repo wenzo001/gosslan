@@ -467,11 +467,31 @@ console.log(bad.length?"✗ "+bad.length+" 处失效：\n  "+bad.join("\n  "):"�
 | 行 | 10-26 写的 | 今天现读 |
 |---|---|---|
 | `F-MSG-040`（撤回） | 「两处 `.ok()` 无任何日志 ⇒ B1-F6」 | **前半已不成立**：`commands/chat.rs:397-407` 现在把「墓碑 + 物化 + 会话预览」交给 `db::apply_recall` **一笔事务**，错误 `map_err` 上抛（注释就写着 B1-F6）。仍成立的是「没有具名 `code=` 日志」——那一族按 10-26 计。 |
-| `F-PRE-011`（改设置） | 「`catch {}` 不记日志 ⇒ B1-F4」 | **仍成立**：`stores/useAppStore.ts` 的 `persistSoon` 失败回调现读仍是 `.catch(() => {`（该行 659 附近），设置落库失败既不提示也不留痕；属于已登记的待拍板项。 |
+| `F-PRE-011`（改设置） | 「`catch {}` 不记日志 ⇒ B1-F4」 | **前半已收口**（5.15.53）：`useAppStore.ts:550` 的 catch 里是 `toast(t("settings.toast.saveFailed"), "error")` + `console.warn("[settings] …")`，判据 `设置落库失败必须上屏（B1-F4）`（`src/utils/designGuards.test.ts:6074`）另钉两向 —— 不许退化回空 catch、那个 key 两册词典都得有。**我第一遍把这一格判成"仍成立"，读串了符号**（见下方「更正」）。真还缺的是「留痕」那一半 ⇒ 本批补 `logFrontendError` 进运行日志。 |
 | `F-FIL-001`（发送文件） | 「有通用错误串与 `ACK_STAGE_*`；无 disk_full 具名码 ⇒ B2-F1」 | **按今天读：发送侧仍用 `ACK_STAGE_*` + 自由串，但接收侧的盘满已归类**（见上一节）。这一格要不要跟着翻，取决于"盘满分类"是指接收侧还是含发送侧 —— 本册口径是**接收**，故与 `F-FIL-002` 同结论。 |
 
 采样方法（可复跑）：从本册 79 行 `PARTIAL/FAIL` 里挑与近三版改动重合的行，逐行打开它引用的符号现读，
-不按印象改判。今天这一批四行里：**一行完全收口（F-FIL-002）、一行前半过期（F-MSG-040）、两行仍成立**。
+不按印象改判。今天这一批四行里：**两行完全收口（F-FIL-002、F-PRE-011 的上屏半）、一行前半过期（F-MSG-040）、
+一行的口径要说清（F-FIL-001 按接收侧）**。
+
+#### 更正：F-PRE-011 第一遍被我判成「仍成立」，那是读串了同一个文件里的两个 catch（2026-11-02 同日）
+
+那一行**最初写的是"仍成立"**，依据是我在 `useAppStore.ts` 里看到 659 行确实有一个 `.catch(() => {`。
+现读那句属于 `api.broadcastChatStyle(...)`（聊天样式广播：无连接节点时刻意静默，理由就写在它下面两行的注释里，
+本册 `F-PLF-021` 行也已经把它判为"用户无感，故不立案"），**不是设置落库那条路**。
+设置落库的 catch 在 550 行，从 5.15.53 起就有 toast + console 线索，并由 `designGuards.test.ts` 钉着。
+
+⇒ 这条错的形状值得留着：**同一个文件里两个 `catch` 长得很像、行号又挨着，就会串行**。
+判"某条链是否还静默"要打开的是**那条链自己的函数体**（这里以 `async function persistSettings()` 为锚），
+不是"这个文件里还有没有空 catch"。复跑凭据：`npm test` 里 `设置落库失败必须上屏（B1-F4）` 这条。
+
+**当时漏掉的真缺口（本批已补）**：toast 只解决"当时看见"，`console.warn` 却到不了日志文件 ——
+本仓没有任何把前端 console 转进后端日志的钩子（现读：`src-tauri/src/` 里 `console` 只剩 `main.rs` 那句
+"别开 Windows 控制台窗口"的注释，`src/` 里也没有 `console.warn =` 这类改写）。
+所以 10-26 审计里这一格的 `可诊断可追溯 = FAIL` **确实还没被 5.15.53 覆盖到**：
+诊断包读的就是后端日志，那里没有这一笔。修法用现成的家 —— `api.logFrontendError`
+（后端 `commands/settings.rs::log_frontend_error` 写成 `logger.warn("ui", "[前端 settings-save-failed] …")`，
+带 `code=SETTINGS_PERSIST_FAILED`），同文件蓝牙那一格就是这个形状。
 
 ### 2026-11-02 复核：F-PST-001 的 B3-F1（迁移「读 schema 失败当跳过」）两半都已过期
 
