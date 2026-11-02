@@ -696,3 +696,24 @@
             "直连与跨跳两条都必须走这个家"
         );
     }
+
+/// 好友同意链路的**失败**要留痕（F-FRN-001 的「有 warn 无码」+ F-FRN-003 的残余）。
+///
+/// 三处此前都是自由文本 warn，按码筛不出来：
+/// ① 收到「已是好友」的申请后自动同意失败；② 同意回执补发次数/窗口用尽；③ 单次补发失败。
+/// ② 正是 F-FRN-003 记的那个结局：本地放弃之后，**对方那条 pending 申请可能仍挂着** ——
+/// 没有这一行，支持侧只能猜"对方为什么一直显示待通过"。
+#[test]
+fn friend_accept_failures_carry_named_codes() {
+    let src = include_str!("network/transport/handshake.rs");
+    for code in [
+        "code=FRIEND_AUTO_ACCEPT_FAILED",
+        "code=FRIEND_ACCEPT_RETRY_EXHAUSTED",
+        "code=FRIEND_ACCEPT_RETRY_FAILED",
+    ] {
+        assert_eq!(src.matches(code).count(), 1, "{code} 的出现次数不是 1（留痕被删或重复）");
+    }
+    // 配对：码必须与它描述的那句在同一个 format!/warn 里（不能只把码写在别处注释里）
+    assert!(src.contains("code=FRIEND_ACCEPT_RETRY_EXHAUSTED peer={peer_id} 好友同意回执补发结束"));
+    assert!(src.contains("code=FRIEND_ACCEPT_RETRY_FAILED peer={peer_id} [FRIEND] 补发好友同意回执失败"));
+}

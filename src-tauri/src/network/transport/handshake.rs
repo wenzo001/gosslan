@@ -306,7 +306,10 @@ async fn auto_accept_if_already_friend(state: &Arc<AppState>, peer_id: &str) -> 
     if let Err(e) = crate::commands::accept_friend_request(state, peer_id).await {
         state
             .logger
-            .warn("friend", format!("自动同意失败 peer={peer_id}：{e}"));
+            .warn(
+                "friend",
+                format!("code=FRIEND_AUTO_ACCEPT_FAILED peer={peer_id}：自动同意（收到已是好友的申请）失败：{e}"),
+            );
     }
     true
 }
@@ -826,7 +829,7 @@ pub async fn flush_pending_friend_accept(state: &Arc<AppState>, peer_id: &str) {
             state.logger.warn(
                 "friend",
                 format!(
-                    "好友同意回执补发结束 peer={peer_id}（窗口/次数用尽：now={now} 登记={removed:?}）"
+                    "code=FRIEND_ACCEPT_RETRY_EXHAUSTED peer={peer_id} 好友同意回执补发结束（窗口/次数用尽：now={now} 登记={removed:?}）—— 对方那条 pending 申请可能仍挂着（F-FRN-003）"
                 ),
             );
             return;
@@ -851,7 +854,7 @@ pub async fn flush_pending_friend_accept(state: &Arc<AppState>, peer_id: &str) {
         ),
         Err(e) => state.logger.warn(
             "friend",
-            format!("[FRIEND] 补发好友同意回执失败 peer={peer_id}（第 {attempt} 次）：{e}"),
+            format!("code=FRIEND_ACCEPT_RETRY_FAILED peer={peer_id} [FRIEND] 补发好友同意回执失败（第 {attempt} 次）：{e}"),
         ),
     }
 }
