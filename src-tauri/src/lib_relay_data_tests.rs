@@ -976,3 +976,31 @@
              顺序反了这条留痕通道永远来不及绑"
         );
     }
+
+    /// relay/mesh 失败族的六个具名码（2026-11-03 补）：这些路径以前的留痕是自由文本
+    /// 或干脆没有（拨号失败一句「建链未成功」、队列满一句自由文本 Err 被 `let _ =` 吞、
+    /// 转发零接受与配置读失败在日志里同形于"没开中继"）⇒ 用户报障时没有一个可 grep 的码。
+    /// 钉形状而不是钉条数：谁删掉任一条 `code=`，这一格当场红。
+    #[test]
+    fn relay_and_mesh_failure_paths_carry_named_codes() {
+        let relay = include_str!("network/transport/relay.rs");
+        let outbound = include_str!("network/transport/outbound.rs");
+        let queue = include_str!("network/transport/queue_policy.rs");
+        let cmds = include_str!("commands/relay.rs");
+        for (code, src, home) in [
+            ("code=RELAY_DIAL_FAILED", relay, "relay.rs 拨号失败臂"),
+            ("code=RELAY_CIRCUIT_DROPPED", relay, "relay.rs 撤电路两处"),
+            ("code=MESH_QUEUE_OVERFLOW", outbound, "outbound.rs try_send"),
+            ("code=MESH_FORWARD_FAILED", outbound, "outbound.rs 邻居转发"),
+            ("code=LINK_WRITE_DEAD", queue, "queue_policy.rs 写失败判死"),
+            ("code=RELAY_CONFIG_READ_FAILED", cmds, "commands/relay.rs 配置读取"),
+        ] {
+            assert!(src.contains(code), "具名码 {code} 不在{home}（删了它这一族失败就回到零痕迹）");
+        }
+        // 队列满文案必须只有一个家：认失败的那一侧靠常量比对，抄第二份字符串就会失配。
+        assert_eq!(
+            outbound.matches("发送队列已满（对端消费不过来）").count(),
+            1,
+            "SEND_QUEUE_FULL_ERR 的文案必须只出现一次（常量定义处），抄第二份字面量就会与认失败的一侧失配"
+        );
+    }

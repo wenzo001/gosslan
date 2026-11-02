@@ -13,6 +13,16 @@
 
 ## [Unreleased]
 
+## [5.16.76] - 2026-11-03
+
+### relay/mesh 失败族补六个具名错误码（只留痕，不改行为）
+
+- `code=RELAY_DIAL_FAILED` / `code=RELAY_CIRCUIT_DROPPED`（relay 拨号失败与撤电路两因）
+- `code=RELAY_CONFIG_READ_FAILED`（中继配置读失败/脏端点，此前 fail-closed 静默）
+- `code=LINK_WRITE_DEAD`（写失败判死拆链）、`code=MESH_QUEUE_OVERFLOW`（链路队列满且补试超时）
+- `code=MESH_FORWARD_FAILED`（转发帧零邻居接住）；新增源码守卫钉六个码与队列满文案单一家
+
+
 ## [5.16.75] - 2026-11-03
 
 ### 应用名本地化（小院儿 / Gosslan）

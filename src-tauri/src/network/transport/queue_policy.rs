@@ -189,7 +189,7 @@ async fn writer_loop(
                     if log_throttled("writer_dead", 5_000) {
                         state.logger.warn(
                             "link",
-                            format!("写失败判死拆链 peer={peer_id} ep={endpoint}（读半可能仍活着，不算本机故障）"),
+                            format!("code=LINK_WRITE_DEAD 写失败判死拆链 peer={peer_id} ep={endpoint}（读半可能仍活着，不算本机故障）"),
                         );
                     }
                     let _ = cancel_tx.send(true);

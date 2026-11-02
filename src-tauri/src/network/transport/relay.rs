@@ -224,14 +224,14 @@ pub async fn relay_rendezvous_task(state: Arc<AppState>, mut shutdown: watch::Re
 
         let cfg = {
             let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
-            crate::commands::load_relay_runtime(&dbc)
+            crate::commands::load_relay_runtime_observed(&dbc, &state.logger)
         };
         let Some(cfg) = cfg else {
             if let Some(old) = prev_server.take() {
                 let n = drop_relay_circuits(&state, old).await;
                 state
                     .logger
-                    .info("relay", format!("公网中转已停用，已撤销 {} 条电路", n));
+                    .info("relay", format!("code=RELAY_CIRCUIT_DROPPED reason=disabled server={old} circuits={n}"));
             }
             continue;
         };
@@ -239,7 +239,7 @@ pub async fn relay_rendezvous_task(state: Arc<AppState>, mut shutdown: watch::Re
             let n = drop_relay_circuits(&state, old).await;
             state.logger.info(
                 "relay",
-                format!("服务器已变更 {} → {}，先撤销 {} 条旧电路", old, cfg.addr, n),
+                format!("code=RELAY_CIRCUIT_DROPPED reason=server_changed {old} → {}，先撤销 {n} 条旧电路", cfg.addr),
             );
         }
         prev_server = Some(cfg.addr);
@@ -331,9 +331,13 @@ pub async fn relay_rendezvous_task(state: Arc<AppState>, mut shutdown: watch::Re
                     DialOutcome::Failed(e) => {
                         // 对端还没上线时这就是常态，所以 warn 不是 error；但必须留痕 ——
                         // "永远连不上"要靠这一行定位（同 routed 那次的教训）。
-                        state
-                            .logger
-                            .warn("relay", format!("建链未成功 peer={}：{}", peer, e));
+                        state.logger.warn(
+                            "relay",
+                            format!(
+                                "code=RELAY_DIAL_FAILED 建链未成功 peer={} server={}：{}",
+                                peer, dial.server, e
+                            ),
+                        );
                     }
                 }
                 // 名额由 `_inflight_guard` 在任务退出时归还（含 panic/abort）。

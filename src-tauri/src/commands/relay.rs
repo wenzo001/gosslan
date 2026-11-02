@@ -83,20 +83,48 @@ pub fn validate_relay_token(input: &str) -> Result<String, String> {
 ///
 /// 返回 `None` = 不该建任何中继电路（未启用 / 未配置 / 历史脏数据解析失败）。
 /// **脏数据退化成"不启用"而不是报错**：这条路径在拨号循环里，没有用户界面能承接错误。
-pub fn load_relay_runtime(db: &rusqlite::Connection) -> Option<RelayRuntime> {
+/// 与 [`load_relay_runtime_inner`] 同一套读取与 fail-closed 判定，只是把「读失败 / 脏端点」这两类
+/// **以前的静默**留成 `code=RELAY_CONFIG_READ_FAILED` 一行：拨号循环里只能看到 None，
+/// 用户「配了中继却连不上」时日志里曾经一个可 grep 的码都没有。只留痕 ——
+/// 判定、返回值与 INV-P36 的 fail-closed 口径一字未动。
+pub fn load_relay_runtime_observed(
+    db: &rusqlite::Connection,
+    logger: &crate::logging::Logger,
+) -> Option<RelayRuntime> {
+    let (rt, note) = load_relay_runtime_inner(db);
+    if let Some(note) = note {
+        if crate::logging::log_throttled("relay_config_read_failed", 60_000) {
+            logger.warn(
+                "relay",
+                format!("code=RELAY_CONFIG_READ_FAILED {note} ⇒ 本轮按未启用处理（fail-closed 口径不变）"),
+            );
+        }
+    }
+    rt
+}
+
+fn load_relay_runtime_inner(db: &rusqlite::Connection) -> (Option<RelayRuntime>, Option<String>) {
     let enabled = db::get_config_bool(db, RELAY_ENABLED_KEY, false);
     if !enabled {
-        return None;
+        return (None, None);
     }
     // INV-EXCEPTION: INV-P36 — 这条路径在拨号循环里、没有界面能承接错误 ⇒ 刻意 fail-closed：
     // 读不到/脏数据都判成"不启用"，而不是带病建链路。理由与本例外的登记见 `docs/protocol-invariants.md`。
-    let server = db::get_setting(db, RELAY_SERVER_KEY).unwrap_or_default();
-    let token = db::get_setting(db, RELAY_TOKEN_KEY).unwrap_or_default();
-    let addr = parse_endpoint_addr_on(&server, RELAY_DEFAULT_PORT)?;
+    let server = match db::get_setting_checked(db, RELAY_SERVER_KEY) {
+        Ok(v) => v.unwrap_or_default(),
+        Err(e) => return (None, Some(format!("reason=read_failed key=server err={e}"))),
+    };
+    let token = match db::get_setting_checked(db, RELAY_TOKEN_KEY) {
+        Ok(v) => v.unwrap_or_default(),
+        Err(e) => return (None, Some(format!("reason=read_failed key=token err={e}"))),
+    };
+    let Some(addr) = parse_endpoint_addr_on(&server, RELAY_DEFAULT_PORT) else {
+        return (None, Some(format!("reason=bad_endpoint server={server}")));
+    };
     if token.is_empty() || token.chars().any(|c| c.is_whitespace()) {
-        return None;
+        return (None, None);
     }
-    Some(RelayRuntime { addr, token })
+    (Some(RelayRuntime { addr, token }), None)
 }
 
 /// 拨号侧要的已解析配置。
@@ -453,37 +481,37 @@ mod relay_config_tests {
         let put = |k: &str, v: &str| db::set_setting(&db, k, v).unwrap();
 
         // 什么都没有 ⇒ None
-        assert!(load_relay_runtime(&db).is_none());
+        assert!(load_relay_runtime_inner(&db).0.is_none());
         // 开了但没地址 ⇒ None
         put(RELAY_ENABLED_KEY, "1");
-        assert!(load_relay_runtime(&db).is_none());
+        assert!(load_relay_runtime_inner(&db).0.is_none());
         // 地址有了、口令空 ⇒ None
         put(RELAY_SERVER_KEY, "203.0.113.9:59993");
-        assert!(load_relay_runtime(&db).is_none());
+        assert!(load_relay_runtime_inner(&db).0.is_none());
         // 齐了 ⇒ Some，且裸 IP 也补默认端口
         put(RELAY_TOKEN_KEY, "s3cret");
-        let rt = load_relay_runtime(&db).expect("齐了就该读到");
+        let rt = load_relay_runtime_inner(&db).0.expect("齐了就该读到");
         assert_eq!(rt.addr.port(), RELAY_DEFAULT_PORT);
         assert_eq!(rt.addr.ip().to_string(), "203.0.113.9");
         assert_eq!(rt.token, "s3cret");
         // 关掉 ⇒ None（配置保留但不建链路）
         put(RELAY_ENABLED_KEY, "0");
-        assert!(load_relay_runtime(&db).is_none());
+        assert!(load_relay_runtime_inner(&db).0.is_none());
         // ★ 口径变更（#125，2026-09-27 用户拍板）：`true/1/on/yes` 都是**合法的"开"**，
         // 所以这一条以前断言的"true 算脏值 ⇒ 未启用"不再成立 —— 改期望的同时，**fail-closed 的实质保留在下一行**：
         // 真非法字面量仍然一律按未启用处理，绝不"看起来像开就当开"。
         put(RELAY_ENABLED_KEY, "true");
-        assert!(load_relay_runtime(&db).is_some(), "合法写法 true 现在应当被认成开启");
+        assert!(load_relay_runtime_inner(&db).0.is_some(), "合法写法 true 现在应当被认成开启");
         put(RELAY_ENABLED_KEY, "开启");
-        assert!(load_relay_runtime(&db).is_none(), "非法字面量必须仍然 fail closed");
+        assert!(load_relay_runtime_inner(&db).0.is_none(), "非法字面量必须仍然 fail closed");
         // 地址被写成脏字符串 ⇒ None（解析失败不 panic、不兜底成某个默认值）
         put(RELAY_ENABLED_KEY, "1");
         put(RELAY_SERVER_KEY, "not-an-ip");
-        assert!(load_relay_runtime(&db).is_none());
+        assert!(load_relay_runtime_inner(&db).0.is_none());
         // 口令里混进空白（历史数据/手工写库）⇒ None
         put(RELAY_SERVER_KEY, "203.0.113.9");
         put(RELAY_TOKEN_KEY, "bad token");
-        assert!(load_relay_runtime(&db).is_none());
+        assert!(load_relay_runtime_inner(&db).0.is_none());
     }
 
     /// 探测必须把服务器的**两种命运**分开的两档：立刻被关 ⇒ `rejected`；
