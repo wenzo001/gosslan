@@ -121,13 +121,36 @@ pub async fn distribute_group_key(
         }
         // peers 优先、friends 回落：peers 由 announce/Hello 实时维护，
         // friends 表公钥可能因 accept 路径未补写而缺失（曾致 GroupKey 静默跳过）
+        // 跳过必须留痕：静默 `continue` 会让「这个成员永远收不到群密钥」表现成
+        // 「群里就他看不到新消息」，而日志里一个字都没有（闭环矩阵 F-GRP-003）。
+        // 一个码 + reason 字段：三种原因是同一个动作（跳过），不是三件事。
+        // 限流按「原因」而不是按成员：`log_throttled` 只吃 `&'static str`，按成员拼 key 会漏内存；
+        // 真正打出来的那一行仍带 group/member，能定位到人。
         let Some(pubkey) = resolve_member_x25519(s, m) else {
+            if crate::logging::log_throttled("gk_skip_no_pubkey", 60_000) {
+                s.logger.warn(
+                    "group",
+                    format!("code=GROUP_KEY_MEMBER_SKIPPED group={group_id} member={m} reason=no_pubkey"),
+                );
+            }
             continue;
         };
         let Some(shared) = s.identity.dh(&pubkey) else {
+            if crate::logging::log_throttled("gk_skip_dh_failed", 60_000) {
+                s.logger.warn(
+                    "group",
+                    format!("code=GROUP_KEY_MEMBER_SKIPPED group={group_id} member={m} reason=dh_failed"),
+                );
+            }
             continue;
         };
         let Some(sealed) = crypto::seal(&shared, &key) else {
+            if crate::logging::log_throttled("gk_skip_seal_failed", 60_000) {
+                s.logger.warn(
+                    "group",
+                    format!("code=GROUP_KEY_MEMBER_SKIPPED group={group_id} member={m} reason=seal_failed"),
+                );
+            }
             continue;
         };
         let msg = Message::GroupKey {
@@ -265,13 +288,36 @@ async fn resend_group_key_to(s: &AppState, group_id: &str, members: &[String], k
             continue;
         }
         // peers 优先、friends 回落（与 distribute_group_key 同一来源策略）
+        // 跳过必须留痕：静默 `continue` 会让「这个成员永远收不到群密钥」表现成
+        // 「群里就他看不到新消息」，而日志里一个字都没有（闭环矩阵 F-GRP-003）。
+        // 一个码 + reason 字段：三种原因是同一个动作（跳过），不是三件事。
+        // 限流按「原因」而不是按成员：`log_throttled` 只吃 `&'static str`，按成员拼 key 会漏内存；
+        // 真正打出来的那一行仍带 group/member，能定位到人。
         let Some(pubkey) = resolve_member_x25519(s, m) else {
+            if crate::logging::log_throttled("gk_skip_no_pubkey", 60_000) {
+                s.logger.warn(
+                    "group",
+                    format!("code=GROUP_KEY_MEMBER_SKIPPED group={group_id} member={m} reason=no_pubkey"),
+                );
+            }
             continue;
         };
         let Some(shared) = s.identity.dh(&pubkey) else {
+            if crate::logging::log_throttled("gk_skip_dh_failed", 60_000) {
+                s.logger.warn(
+                    "group",
+                    format!("code=GROUP_KEY_MEMBER_SKIPPED group={group_id} member={m} reason=dh_failed"),
+                );
+            }
             continue;
         };
         let Some(sealed) = crypto::seal(&shared, &key) else {
+            if crate::logging::log_throttled("gk_skip_seal_failed", 60_000) {
+                s.logger.warn(
+                    "group",
+                    format!("code=GROUP_KEY_MEMBER_SKIPPED group={group_id} member={m} reason=seal_failed"),
+                );
+            }
             continue;
         };
         let msg = Message::GroupKey {

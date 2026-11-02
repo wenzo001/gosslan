@@ -234,13 +234,33 @@ pub fn request_ble_permissions() -> Result<(), String> {
 /// 为什么需要它：界面上"点了没反应"最常见的原因就是**一次 JS 异常**
 /// （在渲染或事件处理里抛出后，整个交互看起来就死了），而前端异常此前**不留任何痕迹** ——
 /// 用户只能描述成"卡住了"，我们无从下手。现在它会出现在「运行日志」里，可以复制给我们。
+///
+/// ⚠️ 这一行必须带 `code=`：同族的 `report_frontend_slow_op` 写的是 `code=SLOW_OP`，
+/// 这里原先只有 `[前端 kind]` 前缀 ⇒ 按码筛日志时前端异常整族都筛不出来
+/// （闭环矩阵 F-OBS-010 记的就是这处不一致）。`kind` 是前端给的来源标签，留在同一行里。
+pub(crate) fn frontend_error_line(kind: &str, text: &str) -> String {
+    format!("code=FRONTEND_ERROR kind={kind} {text}")
+}
+
 #[tauri::command(async)]
 pub fn log_frontend_error(state: State<'_, Arc<AppState>>, kind: String, text: String) {
     let text: String = text.chars().take(2000).collect();
     state
         .inner()
         .logger
-        .warn("ui", format!("[前端 {kind}] {text}"));
+        .warn("ui", frontend_error_line(&kind, &text));
+}
+
+#[cfg(test)]
+mod frontend_error_line_tests {
+    use super::frontend_error_line;
+
+    #[test]
+    fn carries_a_named_code_so_the_whole_family_is_filterable() {
+        let line = frontend_error_line("unhandledrejection", "boom");
+        assert!(line.starts_with("code=FRONTEND_ERROR "), "缺 code= ⇒ 按码筛日志筛不到前端异常：{line}");
+        assert!(line.contains("kind=unhandledrejection"), "kind 丢了就分不清来源：{line}");
+    }
 }
 
 #[tauri::command(async)]

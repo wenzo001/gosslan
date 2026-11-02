@@ -13,6 +13,34 @@
 
 ## [Unreleased]
 
+## [5.16.44] - 2026-11-02
+
+### 静默失败补码（3 处）+ 闭环矩阵四行订正
+
+闭环矩阵里最大的一列缺口是「可诊断可追溯」（63 格）。这批只做**用户/支持侧真会用到的三处**，
+其余按批继续，不做全量：
+
+- **前端异常按码筛不到**：`log_frontend_error` 只写 `[前端 kind]`，而同族的 `report_frontend_slow_op`
+  写的是 `code=SLOW_OP` ⇒ 按 `code=` 筛日志时前端异常整族消失。改为 `code=FRONTEND_ERROR kind=…`
+  （抽成 `frontend_error_line()` 并加判据，不再靠读源码猜）。
+- **清日志不留痕**：`Logger::clear()` 删内存环 + 两份文件却不写任何标记 ⇒ 用户清过日志再报障时，
+  「日志里什么都没有」会被读成「什么都没发生」。现在清完写一行 `code=LOGS_CLEARED`（也落盘）；
+  崩溃现场文件照旧保留。判据从「清空后为空」改成「清空后**恰好剩一行**且落盘含该码」。
+- **群密钥静默跳过成员**：扇出的两个调用点（`distribute_group_key` / `resend_group_key_to`）
+  各 3 个可失败臂（没公钥 / DH 失败 / 密封失败）原先都是裸 `continue` ⇒ 「这个成员永远收不到群密钥」
+  在日志里一个字都没有。现在写 `code=GROUP_KEY_MEMBER_SKIPPED group=… member=… reason=…`
+  （按原因限流 60s；真打出来的那行带成员）。判据是**比例判据**：码数 = 扇出点 × 3，
+  删任一臂的留痕立刻红（变异实测 5 vs 6）。
+- **台账订正**（不是改代码）：`F-OBS-010` / `F-OBS-007` 六格已齐 ⇒ 升 PASS；
+  `F-GRP-003` 的可诊断格如实改为已收口（可感知/可验证仍 PARTIAL）；
+  `F-PLF-009` 原句「通知失败无具名码、无记录」**已过期** —— `NOTIFY_SEND_FAILED` /
+  `NOTIFY_PERMISSION_DENIED` 早就在，且早有判据。连带把两份册子手写的
+  「13 行 PASS / 79 行 PARTIAL」改成现算的 **15 / 77**（`check-doc-numbers.mjs` 判据 G 现算对账）。
+
+现跑：`node scripts/check-doc-numbers.mjs` 退 0（判据 G = 92 行 / 77 PARTIAL）；
+`cargo test --lib` 1380 条（新增 2 条、改名 1 条，清单与两份基线已同步，旧的
+`logger_clear_empties_memory` 已从 windows 基线手工删掉 —— `--sync-baselines` 只增不删）。
+
 ## [5.16.43] - 2026-11-02
 
 ### 群已读名单读失败时界面不再「没人读过」；删掉一个只写不读的假字段
