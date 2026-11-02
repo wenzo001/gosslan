@@ -6110,9 +6110,16 @@ test("主读不许把读库失败折叠成空（B1-F7 / B3-F3；网络侧自 5.1
 // 剩下 4 处就是 C 档（`groups.rs:95/230/313/376`，等"当场失败 vs 靠补发档"拍板）。
 test("读库折叠总量是棘轮：不限名字的尺子只许降", () => {
   const SRC = join(import.meta.dirname, "..", "..", "src-tauri", "src");
-  const ANY = /\bdb::([a-z_]+)\s*\((?:(?!=>)[^;?]){0,200}?\.unwrap_or_default\(\)/g;
+  // ⚠️ 2026-11-02 深夜扩面：这把尺子原先锚在**名字前缀 `db::`** 上，而它头顶写的注释是"不限名字"——
+  // 那是半句话：`crate::content::store::*` 同样吃 `&dbc`、同样返回 `Result`，当时一处都数不到。
+  // 现算把它逼出来的过程本身就是记录：把锚换成「第一个实参是连接句柄」之后，同一棵树从 9 变 13，
+  // 多出的 4 处全在内容补拉这一族（`store::list` 折成"没有传输"、`store::get` 折成"从头取"、
+  // `list_resumable_for_peer` 折成"这台对端没有要补的"）⇒ 四处当场补 `match` + 具名码，上限不动。
+  const ANY =
+    /(?:[a-z_][a-z_0-9]*::)+([a-z_][a-z_0-9]*)\s*\(\s*&?(?:mut )?(?:dbc|conn|tx|db|c)\b(?:(?!=>)[^;?]){0,200}?\.unwrap_or_default\(\)/g;
   const WHITE = /db::(get_setting|get_setting_checked|get_messages|get_latest_messages|list_conversations|list_groups)\s*\((?:(?!=>)[^;?]){0,200}?\.unwrap_or_default\(\)/g;
   // 只许往下改：19（B 档 5 处）→ 17（get_group 分档）→ 12（A 档补留痕）→ 9（尺子收紧，见上）。
+  // 锚点换到"吃连接句柄"那天现算还是 9：多看见的 4 处同批修掉了，所以**上限不是被放宽的**。
   const CEILING = 9;
 
   const files: string[] = [];
@@ -6146,11 +6153,28 @@ test("读库折叠总量是棘轮：不限名字的尺子只许降", () => {
     white < any,
     `白名单已经能数到 ${white}/${any} ⇒ 名字清单不再瞎了，本条棘轮与上面那条判据该合成一条`,
   );
-  // 正控：合成一处（不在白名单里的函数名）必须被这把尺子抓到
+  // 正控①：合成一处不在白名单里的 `db::` 折叠必须被抓到
   assert.equal(
     [..."let x = db::list_something_new(&dbc).unwrap_or_default();".matchAll(ANY)].length,
     1,
     "不限名字的尺子自己失效了 ⇒ 上面那两个数是假的",
+  );
+  // 正控②（2026-11-02 扩面的那条腿）：**不带 `db::` 前缀、但吃同一个连接句柄**的读同样得数到 ——
+  // 少了这一条，"锚换成连接句柄"这件事本身没有凭据，下一次换家族（`content::store::` 之外还有）
+  // 又会退化成看不见的洞。
+  assert.equal(
+    [
+      ..."let rows = crate::content::store::list_something_new(&dbc, 200).unwrap_or_default();".matchAll(ANY),
+    ].length,
+    1,
+    "锚点没落在连接句柄上 ⇒ 换家族就读不见（`store::` 那四处当初就是这么漏的）",
+  );
+  // 反控：不吃连接的折叠不属于"读库"这一族，不许被算进来（否则上限会被别的家族顶高，
+  // 而真正该降的那个数字反而看不见）。
+  assert.equal(
+    [..."let s = serde_json::to_string(&v).unwrap_or_default();".matchAll(ANY)].length,
+    0,
+    "不吃连接句柄的调用被数进来了 ⇒ 这把尺子量的是别的家族，不是读库折叠",
   );
   // 反控：`match` 里"键不存在才折成空"是**正确形状**，不许被数成折叠
   // （少了这条，收紧规则会被悄悄改回宽松 —— 上限就得跟着涨，洞重新变成沉默的）
