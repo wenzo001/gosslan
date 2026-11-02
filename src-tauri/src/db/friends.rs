@@ -8,9 +8,17 @@ pub fn add_friend(
     nickname: &str,
     avatar: Option<&str>,
 ) -> Result<()> {
+    // 冲突分支原来是整行覆盖（`nickname = excluded.nickname, avatar = excluded.avatar`）。
+    // 这条语句在 Hello / announce 热路径上被反复调用，而调用方有**拿不到信息**的情形：
+    // `mobile_picker::accept_friend_request` 两次都传 `avatar: None`、老客户端的 Hello 不带头像、
+    // peers 快照也可能没有头像 ⇒ 一次"信息更少"的帧会把已知头像清成 NULL（好友列表回退到种子头像）。
+    // 口径与 `update_friend_pubkeys` 同一句：**没有信息时保留已有值**；
+    // 有信息时仍然跟随（改名要跟着变，这是既定语义）。
     conn.execute(
         "INSERT INTO friends(device_id, nickname, avatar, added_at) VALUES(?1, ?2, ?3, ?4)
-         ON CONFLICT(device_id) DO UPDATE SET nickname = excluded.nickname, avatar = excluded.avatar",
+         ON CONFLICT(device_id) DO UPDATE SET
+           nickname = CASE WHEN excluded.nickname <> '' THEN excluded.nickname ELSE friends.nickname END,
+           avatar   = COALESCE(excluded.avatar, friends.avatar)",
         params![device_id, nickname, avatar, now_ms()],
     )?;
     Ok(())
@@ -438,5 +446,27 @@ mod friend_request_store_tests {
         assert_eq!(after.name, "小王");
     }
 
-
+    /// 好友资料：**没有信息时保留已有值**，有信息时跟随（与 `update_friend_pubkeys` 同口径）。
+    ///
+    /// 真实触发路径：`mobile_picker::accept_friend_request` 两次都传 `avatar: None`；
+    /// 老客户端的 Hello 也可能不带头像 ⇒ 整行覆盖会把已知头像清成 NULL（好友列表回退到种子头像）。
+    #[test]
+    fn add_friend_never_clears_a_known_profile_with_less_information() {
+        let conn = mem();
+        add_friend(&conn, "dev-x", "老王", Some("data:avatar-1")).unwrap();
+        // 改名 + 不带头像 ⇒ 名字跟随、头像保留
+        add_friend(&conn, "dev-x", "老王改名了", None).unwrap();
+        let (name, avatar) = get_friend_checked(&conn, "dev-x").unwrap().unwrap();
+        assert_eq!(name, "老王改名了");
+        assert_eq!(
+            avatar.as_deref(),
+            Some("data:avatar-1"),
+            "没有头像的帧不许把已知头像清掉"
+        );
+        // 空名 + 新头像 ⇒ 名字保留、头像跟随
+        add_friend(&conn, "dev-x", "", Some("data:avatar-2")).unwrap();
+        let (name, avatar) = get_friend_checked(&conn, "dev-x").unwrap().unwrap();
+        assert_eq!(name, "老王改名了", "空昵称不许覆盖已知名字");
+        assert_eq!(avatar.as_deref(), Some("data:avatar-2"));
+    }
 }

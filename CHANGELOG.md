@@ -13,6 +13,29 @@
 
 ## [Unreleased]
 
+## [5.16.18] - 2026-11-02
+
+### 好友资料不再被「信息更少的帧」清空（`friends.avatar` / `nickname`）
+
+`db::add_friend` 的冲突分支是**整行覆盖**（`nickname = excluded.nickname, avatar = excluded.avatar`），
+而它在 Hello / announce 热路径上被反复调用，调用方确实有**拿不到信息**的情形：
+`commands/mobile_picker.rs::accept_friend_request` 两次都传 `avatar: None`、老客户端的 Hello 不带头像、
+`peer_registry` 的快照也可能没有。于是"信息更少"的一帧会把已知头像清成 NULL（好友列表回退到种子头像），
+空昵称同样会覆盖已有名字。
+
+改成与 `update_friend_pubkeys` 同一口径（**没有信息时保留已有值**）：
+
+```sql
+nickname = CASE WHEN excluded.nickname <> '' THEN excluded.nickname ELSE friends.nickname END,
+avatar   = COALESCE(excluded.avatar, friends.avatar)
+```
+
+「对方改名要跟着变」的既定语义不变（有信息时仍然跟随）。
+
+**判据**：新增 `add_friend_never_clears_a_known_profile_with_less_information`，两条分支各断言一次；
+变异证明（把 SQL 回退成整行覆盖）⇒ 红在「没有头像的帧不许把已知头像清掉」。
+Rust 全量 **1369 passed / 0 failed**、`cargo fmt --check` 0、`clippy -D warnings` 0。
+
 ## [5.16.17] - 2026-11-02
 
 ### 闭环矩阵再抽三行现读：一行前半过期、两行仍成立
