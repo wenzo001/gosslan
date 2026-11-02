@@ -15,12 +15,12 @@
 |---|---|---|---|
 | 数据库 | `rusqlite 0.31`（bundled），单一 `DbLock<Connection>`；`PRAGMA user_version` + `MIGRATIONS` 11 步 | 迁移链、每步事务、降级拒绝、失败回滚、重复启动、热查询索引、孤儿清理均有测试 | **无 `busy_timeout`**；**迁移前无备份/校验**；错误仍以字符串为主 |
 | 并发/阻塞 | Tokio；慢活（哈希/落盘/重组）已用 `spawn_blocking` 并有源码判据 | `db_hold` 持锁观测、`check-lock-scope`、`lib_relay_data_tests` 慢活清单 | DB 长事务/备份/恢复仍会占住唯一连接；需逐路径量化 |
-| 网络 | 自研 `network/transport`（1465 行）、discovery、mesh、gossip、relay、BLE | Tokio、socket2、现有协议与去重/可靠投递不变量 | 分帧评估后保留自研（约 30 行 + 12 条字节判据），小帧已合并写（5.0.24）；`tokio-util`/`bytes` 不引入 |
+| 网络 | 自研 `network/transport`（1,569 行，2026-11-03 `wc -l` 现算；旧戳 1465）、discovery、mesh、gossip、relay、BLE | Tokio、socket2、现有协议与去重/可靠投递不变量 | 分帧评估后保留自研（约 30 行 + 12 条字节判据），小帧已合并写（5.0.24）；`tokio-util`/`bytes` 不引入 |
 | 加密/身份 | x25519-dalek、ed25519-dalek、chacha20poly1305、sha2、rand_core | 成熟 crate；身份/签名/密钥格式已有判据 | 不更换算法/格式；只审计随机源与日志泄露面 |
 | 系统集成 | Tauri 官方 notification/dialog/fs/opener/window-state/single-instance 已在用 | 官方插件优先原则已落实 | Windows 文件剪贴板等平台专用实现需逐项核对；移动端 API 差异 |
-| 日志/诊断 | 自研 `logging.rs`（1439 行）+ 运行日志窗口 | 文件日志、前端异常上报、`db_hold` 观测 | 未用 `tracing`；缺稳定 span/关联 id（C/B 类，迁移成本高） |
+| 日志/诊断 | 自研 `logging.rs`（3,375 行，2026-11-03 `wc -l` 现算；旧戳 1439）+ 运行日志窗口 | 文件日志、前端异常上报、`db_hold` 观测 | 未用 `tracing`；缺稳定 span/关联 id（C/B 类，迁移成本高） |
 | 错误 | 大量 `Result<_, String>` | 启动期 `InitError` 已用 `thiserror` derive（5.0.23） | 领域/基础设施错误未统一；其余边界按批迁移，不一次性扫全仓 |
-| 测试/门禁 | 968 条 Rust 基线 + 前端 1060 + 338→341 UI 探针；`verify:local` 22 步 | 迁移、锁作用域、慢活、Android 编译门禁 | E2E/真机 NOT RUN；迁移的备份/恢复演练缺失 |
+| 测试/门禁 | 2026-11-03 现算：Rust 基线 **1409**（`cargo test --features bluetooth`，macOS 腿）+ 前端 **1563**（`npm test`）+ UI 探针条数由 `check-ui-runtime` 每跑自印（**别抄**：当日全量在第 140 条断言处死于工具层段间竞态，修复中）；门禁快速层 **21** 步 / 全量 **27** 步（`check-doc-numbers` 现算；旧戳 968/1060/338→341/22 步全是 2026-10 的数） | 迁移、锁作用域、慢活、Android 编译门禁 | E2E/真机 NOT RUN；迁移的备份/恢复演练缺失 |
 
 ## 2. 依赖选型（A/B/C/D）
 
