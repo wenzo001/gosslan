@@ -30,22 +30,57 @@ pub fn ui_heartbeat(
     state: tauri::State<'_, Arc<AppState>>,
     current_op: Option<String>,
     active: bool,
+    inflight: Option<u32>,
+    oldest_ms: Option<u64>,
 ) {
+    let now = crate::logging::now_ms();
+    let inflight = inflight.unwrap_or(0);
+    let oldest_ms = oldest_ms.unwrap_or(0).min(i64::MAX as u64) as i64;
+    // 现场读数只写原子量：心跳路径不许碰任何可能阻塞的锁/IO。
     state
         .ui_heartbeat_ms
-        .store(crate::logging::now_ms(), std::sync::atomic::Ordering::SeqCst);
+        .store(now, std::sync::atomic::Ordering::SeqCst);
     state
         .ui_heartbeat_active
         .store(active, std::sync::atomic::Ordering::SeqCst);
+    state
+        .ui_inflight
+        .store(inflight, std::sync::atomic::Ordering::SeqCst);
+    state
+        .ui_inflight_oldest_ms
+        .store(oldest_ms, std::sync::atomic::Ordering::SeqCst);
     // 只在**拿到命令**时覆盖：`None` 表示"此刻没有 IPC 在飞"，不是"把上一步忘掉"。
     // 卡死那一刻通常正好没有 IPC 在飞，旧写法于是只写得出 `last_op=unknown`。
     if let Some(op) = current_op {
         let op: String = op.chars().take(120).collect();
         *state.ui_current_op.lock().unwrap_or_else(|e| e.into_inner()) = Some(op);
         state.ui_current_op_at.store(
-            crate::logging::now_ms(),
+            now,
             std::sync::atomic::Ordering::SeqCst,
         );
+    }
+    // IPC 堆积的取证日志：阈值/节流都只影响日志，不影响心跳语义。
+    if active && (inflight >= 8 || oldest_ms >= 2_000) {
+        let last = state
+            .ui_backlog_note_at
+            .load(std::sync::atomic::Ordering::SeqCst);
+        if now - last >= 30_000 {
+            state
+                .ui_backlog_note_at
+                .store(now, std::sync::atomic::Ordering::SeqCst);
+            let op = state
+                .ui_current_op
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .clone()
+                .unwrap_or_else(|| "unknown".to_string());
+            state.logger.warn(
+                "ui",
+                format!(
+                    "code=IPC_BACKLOG inflight={inflight} oldest_ms={oldest_ms} active={active} last_op={op}"
+                ),
+            );
+        }
     }
 }
 

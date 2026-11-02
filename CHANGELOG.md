@@ -13,6 +13,15 @@
 
 ## [Unreleased]
 
+## [5.16.73] - 2026-11-02
+
+### 观测：Windows 假死现场补齐 IPC / 焦点 / 长任务读数
+
+只加观测，不改行为、超时语义或协议。`code=HANG` 行新增心跳年龄、在途 IPC 数与最老等待、
+主窗口 focus/resize 年龄、慢持锁摘要；新增 `code=IPC_BACKLOG`（30s 节流）与
+`code=SLOW_OP cmd=longtask:*`（5s 节流）。采集位置与字段见
+`docs/notes/windows-freeze-observability-2026-11-02.md`。
+
 ## [5.16.72] - 2026-11-02
 
 ### refactor(settings): 设置清单收成 data-only manifest

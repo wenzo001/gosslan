@@ -2,6 +2,9 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   decideStall,
+  LONG_TASK_LOG_COOLDOWN_MS,
+  LONG_TASK_LOG_MS,
+  shouldLogLongTask,
   UI_STALL_BANNER_MS,
   UI_STALL_ESCALATE_MS,
   UI_STALL_SNOOZE_MS,
@@ -36,4 +39,10 @@ test("「继续等待」的静默窗口内不再提示", () => {
 
 test("空表不提示（没有等待就不该打扰）", () => {
   assert.equal(decideStall([], 99_999, 0), null);
+});
+
+test("long task：低于 2s 不记；达到 2s 且过冷却窗口才记", () => {
+  assert.equal(shouldLogLongTask(LONG_TASK_LOG_MS - 1, 10_000, 0), false);
+  assert.equal(shouldLogLongTask(LONG_TASK_LOG_MS, 10_000, 10_000 - LONG_TASK_LOG_COOLDOWN_MS), true);
+  assert.equal(shouldLogLongTask(LONG_TASK_LOG_MS, 10_000, 10_000 - LONG_TASK_LOG_COOLDOWN_MS + 1), false);
 });

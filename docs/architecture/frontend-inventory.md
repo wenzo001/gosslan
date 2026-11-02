@@ -23,37 +23,37 @@
 <!-- BEGIN:generated (node scripts/frontend-inventory.mjs) -->
 
 > 复跑：`node scripts/frontend-inventory.mjs`（本段与 `--check` 对账，手改本段数字没有意义）。
-> 现读：`src/` 共 411 份源码 = 生产 274 份 / 56,677 行 + 测试 137 份 / 29,603 行（不含 `src/assets/` 里的 214 个表情图）。
+> 现读：`src/` 共 411 份源码 = 生产 274 份 / 56,744 行 + 测试 137 份 / 29,622 行（不含 `src/assets/` 里的 214 个表情图）。
 
 ### 1.1 按职责分类（生产码，机器现算）
 
 | 类 | 文件 | 行 |
 |---|---:|---:|
 | D-业务组件 | 76 | 24,406 |
-| B-utils | 111 | 14,157 |
+| B-utils | 111 | 14,181 |
 | C-状态层 | 3 | 4,807 |
 | B-国际化 | 5 | 3,124 |
 | D-数据表 | 3 | 2,131 |
 | A-公共UI | 26 | 2,129 |
-| A-布局 | 2 | 1,443 |
+| A-布局 | 2 | 1,480 |
 | B-composables | 17 | 1,392 |
-| E-IPC/事件 | 1 | 1,072 |
+| E-IPC/事件 | 1 | 1,078 |
 | E-入口/启动 | 10 | 727 |
 | E-平台适配 | 11 | 667 |
 | 其他 | 9 | 622 |
-| **合计** | **274** | **56,677** |
+| **合计** | **274** | **56,744** |
 
 ### 1.2 已装库在生产码里的实际使用面（装了不等于用了）
 
 | 依赖 | 生产文件 | 行 |
 |---|---:|---:|
-| `vue` | 105 | 34,056 |
+| `vue` | 105 | 34,093 |
 | `lucide-vue-next` | 49 | 20,253 |
 | `reka-ui` | 27 | 11,497 |
-| `@vueuse/core` | 19 | 13,491 |
+| `@vueuse/core` | 19 | 13,528 |
 | `vue-router` | 13 | 7,598 |
 | `@tanstack/vue-query` | 9 | 2,428 |
-| `@tauri-apps/api` | 8 | 6,585 |
+| `@tauri-apps/api` | 8 | 6,591 |
 | `@tauri-apps/plugin-dialog` | 6 | 4,985 |
 | `@tauri-apps/plugin-opener` | 5 | 880 |
 | `pinia` | 4 | 5,072 |
@@ -72,8 +72,8 @@
 
 | 文件 | 类 | 行 | 直接用到的库 |
 |---|---|---:|---|
-| `src/api/index.ts` | E-IPC/事件 | 1072 | `@tauri-apps/api` |
-| `src/App.vue` | A-布局 | 239 | `@vueuse/core` `vue` |
+| `src/api/index.ts` | E-IPC/事件 | 1078 | `@tauri-apps/api` |
+| `src/App.vue` | A-布局 | 276 | `@vueuse/core` `vue` |
 | `src/boot/boot-guard.js` | E-入口/启动 | 78 | — |
 | `src/boot/boot-window.d.ts` | E-入口/启动 | 14 | — |
 | `src/boot/boot.ts` | E-入口/启动 | 265 | `@tanstack/vue-query` `pinia` `vue` |
@@ -277,7 +277,7 @@
 | `src/utils/imageThumbnail.ts` | B-utils | 85 | — |
 | `src/utils/ime.ts` | E-平台适配 | 60 | — |
 | `src/utils/initScope.ts` | B-utils | 43 | — |
-| `src/utils/ipcTracker.ts` | B-utils | 66 | — |
+| `src/utils/ipcTracker.ts` | B-utils | 80 | — |
 | `src/utils/lightboxGestures.ts` | B-utils | 81 | — |
 | `src/utils/linkify.ts` | B-utils | 205 | — |
 | `src/utils/listBuffer.ts` | B-utils | 61 | — |
@@ -341,7 +341,7 @@
 | `src/utils/transferState.ts` | B-utils | 111 | — |
 | `src/utils/transferSummary.ts` | B-utils | 19 | — |
 | `src/utils/tsSource.ts` | B-utils | 44 | — |
-| `src/utils/uiStall.ts` | B-utils | 39 | — |
+| `src/utils/uiStall.ts` | B-utils | 49 | — |
 | `src/utils/validation.ts` | B-utils | 196 | `zod` |
 | `src/utils/windowLaunch.ts` | E-平台适配 | 29 | — |
 | `src/vite-env.d.ts` | 其他 | 7 | `vue` |
@@ -349,7 +349,7 @@
 
 ### 1.4 测试码（分列，不计进业务成果）
 
-共 137 份 / 29,603 行；由 `npm test` 的清单自己打印条数。
+共 137 份 / 29,622 行；由 `npm test` 的清单自己打印条数。
 <!-- END:generated -->
 
 ## 2. 能力域 × 替换结论

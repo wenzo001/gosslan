@@ -57,6 +57,20 @@ export function lastOpLabel(): string | null {
   return ops.length ? ops[ops.length - 1].label : null;
 }
 
+/** 心跳带给后端的在途读数：数量 + 最老一条已等多久。 */
+export function inflightSnapshot(): { count: number; oldestMs: number } {
+  try {
+    const ops = inflightOps();
+    if (!ops.length) return { count: 0, oldestMs: 0 };
+    return {
+      count: ops.length,
+      oldestMs: Math.max(0, Math.round(performance.now() - ops[0].startedAt)),
+    };
+  } catch {
+    return { count: 0, oldestMs: 0 };
+  }
+}
+
 function labelOf(cmd: string, args?: unknown): string {
   if (cmd === "set_channel_enabled") {
     const ch = (args as Record<string, unknown> | undefined)?.channel;
