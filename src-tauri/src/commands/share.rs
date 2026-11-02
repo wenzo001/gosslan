@@ -2,6 +2,18 @@
 // - 共享目录设置（list_shares / set_share）
 // ---------------- 共享目录 ----------------
 
+/// 共享目录的**拒绝与失败**要留痕：`code=SHARE_REJECTED action=… reason=…`。
+///
+/// 一个码 + action/reason（同族多格共用一个码），与前几族同口径。
+/// 这两个命令此前 0 个 `code=` —— 用户点「共享目录」打不开或下载不了时，日志里一个字都没有。
+fn reject_share(s: &AppState, action: &str, reason: &str, msg: &str) -> String {
+    s.logger.warn(
+        "share",
+        format!("code=SHARE_REJECTED action={action} reason={reason}"),
+    );
+    msg.to_string()
+}
+
 #[tauri::command(async)]
 pub async fn set_share_dir(
     state: State<'_, Arc<AppState>>,
@@ -130,7 +142,7 @@ pub async fn request_share_tree(
     {
         let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());
         if db::get_friend(&dbc, &friend_id).is_none() {
-            return Err("对方不是好友".to_string());
+            return Err(reject_share(s, "tree", "not_friend", "对方不是好友"));
         }
     }
     let request_id = Uuid::new_v4().to_string();
@@ -171,7 +183,7 @@ pub async fn request_share_tree(
                 .lock()
                 .unwrap_or_else(|e| e.into_inner())
                 .remove(&request_id);
-            Err("获取共享目录超时".to_string())
+            Err(reject_share(s, "tree", "timeout", "获取共享目录超时"))
         }
     }
 }
@@ -186,7 +198,7 @@ pub async fn download_shared_file(
     {
         let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());
         if db::get_friend(&dbc, &friend_id).is_none() {
-            return Err("对方不是好友".to_string());
+            return Err(reject_share(s, "download", "not_friend", "对方不是好友"));
         }
     }
     let transfer_id = Uuid::new_v4().to_string();
@@ -202,7 +214,12 @@ pub async fn download_shared_file(
         // 下载是**发完就返回**的（真正的完成由对端推流驱动），所以"没有任何邻居接住"
         // 是这条路径唯一的失败证据。旧实现连这个都不看 ⇒ 命令返回 Ok、界面留下
         // 一条"你正在下载"的系统消息，而请求从未离开本机（2026-09-23 审计 A1）。
-        return Err("无法联系对方：没有可达的中继邻居".to_string());
+        return Err(reject_share(
+            s,
+            "download",
+            "no_route",
+            "无法联系对方：没有可达的中继邻居",
+        ));
     }
     // 本地提示：你正在下载好友的文件（聊天信息内简约系统消息）
     let file_name = std::path::Path::new(&remote_path)

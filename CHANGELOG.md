@@ -13,6 +13,23 @@
 
 ## [Unreleased]
 
+## [5.16.68] - 2026-11-02
+
+### 共享目录两条命令补具名码（`share.rs` 此前整族 0 个 `code=`）
+
+`share.rs` 的两条命令（请求目录树 / 下载共享文件）此前**一个具名码都没有**：用户点「共享目录」打不开、
+或下载不了时，日志里按码筛不到任何东西。这批补四个出口，统一走
+`reject_share(&s, action, reason, msg)` → `code=SHARE_REJECTED`：
+
+- `tree/not_friend`、`tree/timeout`（对端没回目录树）；
+- `download/not_friend`、`download/no_route` —— 后者正是 2026-09-23 审计 A1 的旧形状：
+  **请求从未离开本机**（没有任何中继邻居接住）。
+
+判据 `share_command_failures_carry_named_codes`：调用点 = 5（含定义）且四个 action/reason 必须并排出现。
+变异反证：把 `no_route` 改名 ⇒ 红并报「这一格又变回静默」，还原 `cmp` 相同。
+
+**未改**：`F-GRP-031` 原先点名的两处「读失败折成 0 投递」的折叠（非破坏性，同 B1-F7 族）—— 台账如实留着。
+
 ### F-MSG-015 引用订正：`-lie` 六轮与群取消无关
 
 原句「群侧取消有 `-lie` 轮次」是**误引**：`poison-part-lie` / `resume-prefix-lie` / `kill-mid-lie` /

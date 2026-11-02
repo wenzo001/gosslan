@@ -1280,3 +1280,33 @@ fn network_start_and_stop_persist_after_the_action_and_do_not_echo() {
         assert!(snap < echo, "{sig}: 广播必须在快照之后");
     }
 }
+
+/// 共享目录两条命令的拒绝与失败必须留痕（此前 `share.rs` 是 **0 个 `code=`** 的整族）。
+///
+/// 用户点「共享目录」打不开、或下载不了时，界面只拿到一句中文；日志里按码筛不到任何东西。
+/// 这四条各对应一种真实结局：不是好友（两种动作各一）/ 对端没回目录树（超时）/ 没有可达的中继邻居
+/// （下载请求**从未离开本机** —— 那正是 2026-09-23 审计 A1 的旧形状）。
+#[test]
+fn share_command_failures_carry_named_codes() {
+    let src = include_str!("commands/share.rs");
+    assert_eq!(
+        src.matches("reject_share(").count(),
+        5,
+        "共享目录留痕调用点数变了（含定义应为 5）⇒ 分母要跟着改"
+    );
+    for (action, reason) in [
+        ("tree", "not_friend"),
+        ("tree", "timeout"),
+        ("download", "not_friend"),
+        ("download", "no_route"),
+    ] {
+        let paired = src.split("reject_share(").skip(1).any(|tail| {
+            let head = tail.split(';').next().unwrap_or("");
+            head.contains(&format!("\"{action}\"")) && head.contains(&format!("\"{reason}\""))
+        });
+        assert!(
+            paired,
+            "{action}/{reason} 没有并排出现在同一个 reject_share( … ) 里 ⇒ 这一格又变回静默"
+        );
+    }
+}
