@@ -1062,3 +1062,68 @@ test("★ 发送 / 重发 / Ack / 状态变更都会刷新任务中心快照（�
     );
   }
 });
+
+/**
+ * 批次 4A：拆分 store 之前先把**事件注册顺序**钉住。
+ *
+ * `bindEvents` 是并行 listen，顺序本身不保证后端投递顺序；但它是现有行为的可对照
+ * 快照 —— 拆 store 时若有人在注册表里插一条/挪一条，必须显式改这份 golden，
+ * 而不是“看起来只是搬代码”。
+ */
+test("bindEvents 注册顺序不变：32 个事件按现有顺序登记", () => {
+  const api = stripComments(readFileSync(join(ROOT, "api", "index.ts"), "utf8"));
+  const at = api.indexOf("export async function bindEvents(");
+  assert.ok(at >= 0, "找不到 bindEvents");
+  const end = api.indexOf("return unlisteners;", at);
+  assert.ok(end > at, "找不到 bindEvents 的返回");
+  const block = api.slice(at, end);
+  const events = [...block.matchAll(/listen(?:<[^>]*>)?\(\s*["']([^"']+)["']/g)].map((m) => m[1]);
+  assert.deepEqual(events, [
+    "peers-updated",
+    "friend-request",
+    "friend-accepted",
+    "friend-rejected",
+    "friend-removed",
+    "friend-key-changed",
+    "friend-keys-synced",
+    "friend-message-blocked",
+    "message-received",
+    "message-acked",
+    "group-message-acked",
+    "peer-read",
+    "group-read",
+    "message-recalled",
+    "message-render-changed",
+    "file-progress",
+    "file-stalled",
+    "file-done",
+    "file-failed",
+    "file-cancelled",
+    "updater-status",
+    "message-status-changed",
+    "group-delivery-changed",
+    "message-failed",
+    "peer-style-updated",
+    "groups-updated",
+    "group-history-progress",
+    "group-member-removed",
+    "content-audience",
+    "notification-clicked",
+    "data-cleared",
+    "group-file-log",
+  ], "事件注册顺序变了：拆分前先更新这份 golden，并解释为什么顺序变化不影响行为");
+});
+
+test("chat.init() 的 bindEvents 必须早于首轮业务刷新", () => {
+  const st = stripComments(readFileSync(join(ROOT, "stores", "useChatStore.ts"), "utf8"));
+  const start = st.indexOf("async function init()");
+  const end = st.indexOf("\n  return {", start);
+  assert.ok(start >= 0 && end > start, "找不到 init() 函数体");
+  const body = st.slice(start, end);
+  const bindAt = body.indexOf("bindEvents({");
+  assert.ok(bindAt >= 0, "init() 里没有 bindEvents");
+  for (const refresh of ["refreshPeers(", "refreshFriends(", "refreshConversations("]) {
+    const at = body.indexOf(refresh, bindAt);
+    assert.ok(at > bindAt, `${refresh} 必须排在 bindEvents 之后（启动窗口期事件不许丢）`);
+  }
+});
