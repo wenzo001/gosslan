@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { disabledOpacityFromClasses, disabledOpacityFromRule, parseTokenScopes } from "./tokenContrast.ts";
 import { TODO_AUTO_ARCHIVE_DAYS } from "./todos.ts";
 import { mentionHighlightBg } from "./chatStyle.ts";
+import { tsFnBody } from "./tsSource.ts";
 import {
   checkBubbleMetricsCoupling,
   findTemplateSlotIssues,
@@ -6083,6 +6084,31 @@ test("主读不许把读库失败折叠成空（B1-F7 / B3-F3；网络侧自 5.1
     probe(`db::get_setting_checked(&dbc, "k").map_err(|e| format!("{e}"))?.unwrap_or_default()`).length,
     0,
     "正确写法（checked + ?）被误伤了",
+  );
+});
+
+// ---------------- 群任务建卡的通知闸门必须**接在** maybeNotify 上（2026-11-02） ----------------
+//
+// `todoCardConcernsMe` 那条纯函数判据只证明"算得对"，不证明"长在通知这条路上"。
+// 真实风险是判据写完、调用点漏接或被挪到别的分支 ⇒ 全群打扰照旧，而测试全绿
+// （本仓治过的那类：`flush_pending_files` 的在途闸门、`restore_pending_requests` 的启动接线）。
+test("群任务建卡通知闸门必须接在 maybeNotify 上（B：接线判据）", () => {
+  const src = readFileSync(join(import.meta.dirname, "..", "stores", "useChatStore.ts"), "utf8");
+  const body = tsFnBody(src, "function maybeNotify(");
+  assert.ok(body.length > 200, `只截到 ${body.length} 字符的函数体 ⇒ 截取锚点变了，本判据要跟着改名`);
+  const calls = body.split("todoCardConcernsMe(").length - 1;
+  assert.equal(calls, 1, `maybeNotify 里对 todoCardConcernsMe 的调用是 ${calls} 次（必须恰好 1 次：0＝没接上，2＝同一件事两个计算点）`);
+  // 位置也要对：闸门必须在"我自己发的不通知"那一条之后（否则 sender 过滤被绕过，自己建卡也会弹）
+  const self = body.indexOf('rec.sender_id === myId');
+  assert.ok(self >= 0, "「自己发的不通知」那条不在了 ⇒ 本判据的位置断言要跟着改");
+  assert.ok(
+    body.indexOf("todoCardConcernsMe(") > self,
+    "建卡闸门必须排在 sender 过滤「之后」（它只负责少打扰别人，不该影响自己发的那一条）",
+  );
+  // 反控：这一格只拦通知，不许顺手改未读口径
+  assert.ok(
+    body.includes("if (!countsTowardUnread(rec.kind)) return;"),
+    "未读口径那条不在了 ⇒ 卡片可能连未读都不计了（那不在本次拍板范围内）",
   );
 });
 
