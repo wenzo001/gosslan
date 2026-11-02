@@ -1409,6 +1409,10 @@ pub async fn request_content(
         .map(|r| (r.transfer_id.unwrap_or_default(), r.received))
         .unwrap_or_default()
     };
+    // 登记「这份内容是我自己要的」：应答会走同一条 1:1 文件通道回来，接收端据此**不**在私聊里
+    // 另落一张卡片（审计 §4.0br，用户报「群任务的图片从别人的私聊又发我一份」）。
+    // 用 cid 而不是 `refetch-` 前缀判：续传那一档沿用原传输号，只认前缀会漏掉一半。
+    s.note_content_pull_cid(&cid);
     let msg = Message::ContentRequest {
         from: s.device_id.clone(),
         cid,
@@ -1471,6 +1475,10 @@ pub async fn request_content_by_cid(
         .map(|r| (r.transfer_id.unwrap_or_default(), r.received))
         .unwrap_or_default()
     };
+    // 登记「这份内容是我自己要的」：应答会走同一条 1:1 文件通道回来，接收端据此**不**在私聊里
+    // 另落一张卡片（审计 §4.0br，用户报「群任务的图片从别人的私聊又发我一份」）。
+    // 用 cid 而不是 `refetch-` 前缀判：续传那一档沿用原传输号，只认前缀会漏掉一半。
+    s.note_content_pull_cid(&cid);
     let msg = Message::ContentRequest {
         from: s.device_id.clone(),
         cid,

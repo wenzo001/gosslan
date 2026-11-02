@@ -54,6 +54,12 @@ async fn handle_file_messages(state: &Arc<AppState>, peer_id: &str, msg: Message
                 .await;
                 return;
             }
+            // 这是我发起过的补拉吗？cid 只有在这一臂拿得到 —— `FileDone` 帧只带
+            // `transfer_id` + `attempt`（`protocol.rs:2021-2027`），到落库那一步已经问不着了，
+            // 所以此刻把 cid 认下来、把这条传输号登记进补拉回程表（审计 §4.0br）。
+            if state.is_content_pull_cid(&file_sha256) {
+                state.note_content_pull_transfer(&transfer_id);
+            }
             // E2EE：解封文件会话密钥（发送方用我方公钥封装，只有我能解开）。
             // 解封失败必须拒绝传输——密文分片绝不能落盘。
             let file_key = (|| {
@@ -559,6 +565,18 @@ async fn handle_file_messages(state: &Arc<AppState>, peer_id: &str, msg: Message
                     }
                 }
                 Ok(Some((name, size, path, sender_id))) => {
+                    // 这一单是不是**我自己发起的补拉**的回程（cid 在 FileOffer 那一臂已认下）。
+                    // 是的话只跳过"私聊卡片 + 预览 + 未读"三件事：
+                    //   · `file-done` 事件照发 —— 它是前端把任务卡上那张缩略图填上的信号；
+                    //   · `FileCompleteAck{success:true}` 照发 —— 漏了它，服务侧把这单判成未确认，
+                    //     会重发/换轮次（`file_epochs`），比多一张卡严重得多。
+                    let refold = state.is_content_pull_transfer(&transfer_id);
+                    if refold && log_throttled("content_pull_refolded", 60_000) {
+                        state.logger.info(
+                            "file",
+                            format!("code=CONTENT_PULL_REFOLDED transfer={transfer_id}（本机发起的补拉，不另落私聊卡片）"),
+                        );
+                    }
                     let rec = {
                         let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
                         let subtype = file::classify_file_subtype(&name);
@@ -593,12 +611,14 @@ async fn handle_file_messages(state: &Arc<AppState>, peer_id: &str, msg: Message
                             mention_targets: None,
                             local_id: None,
                         };
-                        // 落库失败必须留痕（审计 2026-10-16）：吞掉后界面没这张文件卡、日志无痕。
-                        if let Err(e) = db::insert_message(&dbc, &rec) {
-                            state.logger.error(
-                                "file",
-                                format!("单聊文件卡片落库失败 msg={}：{e}", rec.msg_id),
-                            );
+                        if !refold {
+                            // 落库失败必须留痕（审计 2026-10-16）：吞掉后界面没这张文件卡、日志无痕。
+                            if let Err(e) = db::insert_message(&dbc, &rec) {
+                                state.logger.error(
+                                    "file",
+                                    format!("单聊文件卡片落库失败 msg={}：{e}", rec.msg_id),
+                                );
+                            }
                         }
                         drop(dbc);
                         let nm = resolve_nickname(state, &sender_id);
@@ -608,12 +628,24 @@ async fn handle_file_messages(state: &Arc<AppState>, peer_id: &str, msg: Message
                         } else {
                             format!("[文件] {name}")
                         };
-                        if let Err(e) = db::touch_conversation(&dbc, &sender_id, "single", &nm, None, &preview, 1) {
-                            crate::logging::log_write_failure(&state.logger, "touch_conversation", e);
+                        if !refold {
+                            if let Err(e) = db::touch_conversation(
+                                &dbc,
+                                &sender_id,
+                                "single",
+                                &nm,
+                                None,
+                                &preview,
+                                1,
+                            ) {
+                                crate::logging::log_write_failure(&state.logger, "touch_conversation", e);
+                            }
                         }
                         rec
                     };
-                    let _ = state.app.emit("message-received", &rec);
+                    if !refold {
+                        let _ = state.app.emit("message-received", &rec);
+                    }
                     let _ = state.app.emit(
                         "file-done",
                         &FileDoneInfo {

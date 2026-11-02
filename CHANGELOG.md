@@ -13,6 +13,38 @@
 
 ## [Unreleased]
 
+## [5.16.28] - 2026-11-02
+
+### 群任务图片不再在私聊里多落一张卡（§4.0br 的修法，接收端认「这是我发起的补拉」）
+
+工单来自用户 5.16.27 那批的诊断。修法按已拍板的那条：**不动协议**，接收端自己认出"这份内容是我索要的"。
+
+- `AppState` 加两张带时间戳的有界表（形状照现成的 `pending_reads`）：`content_pull_cids` 与
+  `content_pull_transfers`，加一条 `prune_content_pull`（TTL 30 分钟 + 上限 512，超限时**丢最旧**）；
+- 两个补拉入口（`request_content` 与 `request_content_by_cid`）发送前都登记 cid ——
+  ⚠️ 两个都要：后者给任务卡快照用，前者给"本机已有消息行"重取用，今天**两条都会在私聊多落一张卡**；
+- **cid 必须在 FileOffer 那一臂认**：`FileDone` 帧只带 `transfer_id` + `attempt`（`protocol.rs:2021-2027`），
+  到落库那一步已经拿不到 cid；
+- 落库那一臂用 `refold` 分三道门，只挡**私聊卡片落库 + 会话预览与未读 + 前端 `message-received` 事件**；
+  `file-done` 事件与 `FileCompleteAck{success:true}` **照发** —— 前者是前端把任务卡缩略图填上的信号，
+  漏了后者服务侧会把这单判成未确认并重发/换轮次（比多一张卡严重得多）。
+- 判 `refetch-` 前缀为什么不够：服务端只在请求方没带传输号时现造它，**续传那一档沿用的是原传输号**，
+  只认前缀会漏掉一半。
+
+测试：`content_pull_entries_age_out_and_are_capped`（TTL 边界取 `<=`、超限丢最旧）+
+`content_pull_wiring_is_pinned_at_all_four_sites`（四调用点各恰好一处、`if !refold {` 必须三道、
+`file-done` 只有一处且 ack 文本未被门罩住）。
+变异反证：把 `message-received` 那道门摘掉 ⇒ 接线判据红在「三道门缺一不可：只挡落库的话，
+预览与未读仍会 +1、前端还会画气泡」；还原与备份 `cmp` 逐字节相同 ⇒ 绿。
+`cargo test --lib` **1372 passed / 0 failed**（+2 条，清单已 `--update` + `--sync-baselines`，
+macos/windows 两份基线同步）、fmt 0、clippy `--all-targets -D warnings` 0。
+
+**运行时仍未验**：双实例真链路（A 建带图群任务、B 收不到字节后走补拉、看 B 的私聊里不多卡）
+要两台真机/两个实例跑 `verify:e2e` 那一族才算数，本机这轮只做到编译与判据层。
+唯一的假阴性照旧记在 §4.0br：对端随后**主动重发同一份内容**（同 cid）也会被当成回程而不落卡 ——
+TTL 30 分钟把它限制在"刚拉过"的窗口内，但不为零。
+
+
 ## [5.16.27] - 2026-11-02
 
 ### 工单：群任务图片在私聊里又落一份（诊断完成，未改码）
