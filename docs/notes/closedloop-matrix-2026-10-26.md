@@ -512,7 +512,15 @@ console.log(bad.length?"✗ "+bad.length+" 处失效：\n  "+bad.join("\n  "):"�
 三处读取都是 `db::get_setting_checked(...).map_err(|e| format!("读取外链列表失败: {e}"))?`
 —— 读失败直接上抛，不会再以空列表为底写回。
 
-**同族里仍成立的一处**（本册没有这一格，登记备查）：`network/transport.rs:455` 的路由端点拨号循环
-仍是 `db::get_setting(...).unwrap_or_default()`。它**不写回**（10s 一轮、下一轮自愈），所以不是 B3-F3
-那种数据丢失；但「配了端点却一直不拨、日志里零痕迹」是诊断缺口（B1-F7 族），候选修法一行
-（换 `get_setting_checked`，失败时 warn「本轮跳过拨号」）。**本批未改码**。
+**当时登记成"仍成立的一处"其实是五处，而且其中一处真是数据丢失**（2026-11-02 同日更正，见下节）：
+我那一句写的是「`network/transport.rs:455` 的路由端点拨号循环仍是 `db::get_setting(...).unwrap_or_default()`，
+它不写回、下一轮自愈 ⇒ 只是诊断缺口」。分母是错的 —— 我用一条**单行** `grep` 数的，抓不到跨行的写法，
+漏了 2 处；把判据的面从 `commands/` 扩到网络层之后，现数是 **5 处**。其中
+`network/transport/handle_messaging.rs` 的 `chat_peer_styles` 就是**读-改-写整表**：读失败折成空表后
+插入这一条再整表写回 ⇒ 一次抖动把所有已知对端的聊天样式抹掉只剩一个 —— 与外链那两格同形状，不是我说的"只是诊断缺口"。
+另一处最坏：`pending_keys.rs` 里 `list_groups` 折成"找不到这个群"后被归进 `GroupKeySendErr::Fatal`
+（口径＝"重试无意义"）⇒ 一次 `SQLITE_BUSY` 让那个群的密钥永久不再补发。
+
+**⇒ 五处已在 5.16.24 一并收口**（修法逐处不同：拨号循环＝留痕并跳过本轮、样式表＝读失败就不写回、
+群密钥＝新增可重试档 `DbUnreadable`），判据的面与豁免口径一起改；反证与读数在 CHANGELOG 同一节。
+本册 `F-PRE-019` 那行右侧的 PARTIAL 因此只该读成"10-26 与 11-02 上午的状态"。

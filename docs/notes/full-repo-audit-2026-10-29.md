@@ -1979,6 +1979,41 @@ draft-until-complete，上一次失败的发布尝试会留下永不公开的草
    真正该盯的是"从抓到到修好"的时延。
 
 
+### 4.0bp 网络侧「读库失败折成空」五处 + 判据扩面（5.16.24，2026-11-02）
+
+这一批是**抽闭环矩阵那一步的直接产物**，也是一次"我自己的分母错了"的现形：
+
+- 起因：矩阵 `F-PRE-019` 行右侧写着「`add`/`update` 两处读失败折叠 + 写回 ⇒ B3-F3」。我复核 commands 层
+  时确认那两处已改成 `get_setting_checked(...)?`，并在同一天登记了一句"同族只剩 `transport.rs` 一处、
+  只是诊断缺口、未改码"。**那句登记本身是错的**。
+- 错法：分母来自一条**单行** `grep -E "...unwrap_or_default\(\)"`。同族写法里有跨行的
+  （`db::list_groups(&dbc)` 换行后 `.unwrap_or_default()`），单行正则抓不到 ⇒ 我数到 3、真数 5。
+- 触发更正的动作：把判据 `主读不许把读库失败折叠成空` 的面从 `commands/` 扩到
+  `commands/ + network/ + network/transport/`。**判据跑出来是两条我没改过的红**，那才是真分母。
+- 五处逐条的定性（前两处＝零痕迹，第三处＝数据丢失，后两处＝永久放弃重试）：
+  1. `network/transport.rs` 路由端点拨号循环 —— 读抖动被读成"没配端点"，跨子网不再拨号且日志零痕迹；
+  2. `network/transport/handle_messaging.rs` 的 `chat_peer_styles` —— **读-改-写整表**，
+     折成空表后写回 ⇒ 所有已知对端样式被抹掉只剩一条（我原先说"它不写回，所以不是数据丢失"是错的）；
+  3-5. `network/transport/pending_keys.rs` 三处 `list_groups` —— 两处折成"一个群都没有"（静默不再补发），
+     第三处折成"找不到这个群"后被归进 `GroupKeySendErr::Fatal`（口径＝重试无意义）
+     ⇒ 一次 `SQLITE_BUSY` 让该群密钥**永久**不再补发。
+- 修法按各处语义分开，不是一套模板糊：① 三档读取 + 节流留痕 + 跳过本轮；② 读失败就**不写回**；
+  ③ 两处留痕 + 放弃本轮；④ 新增可重试档 `DbUnreadable`（与 `NoLink` 同档，保留待发登记），
+  判定点与 `should_retain_pending_group_key` 一起改 —— 加变体让那个 `match` 变成非穷尽，
+  编译器直接把第三处影响面点出来（本仓按"谁会编译不过"数影响面的既有口径）。
+- 判据侧一起改的两件：豁免 key 从文件名换成**相对路径**（`commands/relay.rs` 与 `network/transport/relay.rs`
+  同名 ⇒ 按文件名豁免会让后者白拿前者的理由）；并钉"必须真扫到 `network/transport.rs` /
+  `network/transport/pending_keys.rs`"，防止面缩水成空转。
+- 验证（全部现跑，未跑的不报）：判据红→绿；变异（往 `network/transport/relay.rs` 塞一行带该形状的注释）
+  ⇒ 判据点名那个文件；还原 `cmp` 逐字节相同 ⇒ 绿。全 crate 同尺现数 5 处、面外 0 处
+  （去掉面内排除跑出 5，那个 0 有阳性对照）。`cargo fmt --check --all` 0、
+  `cargo clippy --features bluetooth --all-targets -D warnings` 0、`cargo test --lib` **1369 passed / 0 failed**、
+  `npm test` 1541/1541、快速层 21/21。用例数不变（新断言加在既有的
+  `flush_failure_retains_or_clears_pending_correctly` 里）⇒ Rust 清单守卫不受动。
+- 残余（诚实算）：`chat_peer_styles` 里 `Ok(Some(坏 JSON))` 那条**仍**折成空表再写回 —— 那是"自己写的值解析不出"，
+  与"读失败"不是一件事，本批刻意没动；真动它要先把"损坏"与"读失败"分开计码。
+
+
 ## 5. 需求与实现偏差（spec-to-code-compliance）
 > ⚠️ **本节记的是审计当时的发现。今天哪些已经落地、哪些判了不修，一律以 [§8 落地状态总表](#8-落地状态总表2026-10-29-深夜按现算对账) 为准** —— 「确认」「无机器对账」「零用例」这类字样不代表今天还没做（本轮对账实测：§8 的 19 行里有 9 行在写这张表时其实已完成）。
 

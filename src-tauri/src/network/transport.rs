@@ -449,11 +449,25 @@ pub async fn spawn(
                 biased;
                 _ = shutdown.changed() => break,
                 _ = tick.tick() => {
-                    let list = {
+                    // 读取口径（B3-F3 同族的网络侧残留）：`get_setting` 把 SQL 错误折成 `None`，
+                    // 再 `.unwrap_or_default()` 就与「确实没配端点」不可分 ⇒ 跨子网从此**不再拨号而零痕迹**，
+                    // 用户看到的是"配了端点却永远连不上"。这里把三档分开：有配置→解析、确实没配→静默、
+                    // 读失败→节流留痕并跳过本轮（不写回、10s 后自然重试，行为与旧的"折成空"一致）。
+                    let read = {
                         let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
-                        parse_endpoints(
-                            &db::get_setting(&dbc, ROUTED_ENDPOINTS_KEY).unwrap_or_default(),
-                        )
+                        db::get_setting_checked(&dbc, ROUTED_ENDPOINTS_KEY)
+                    };
+                    if let Err(e) = &read {
+                        if log_throttled("routed_endpoints_read_failed", 300_000) {
+                            state.logger.warn(
+                                "routed",
+                                format!("code=ROUTED_ENDPOINTS_READ_FAILED 读取端点配置失败，本轮跳过拨号：{e}"),
+                            );
+                        }
+                    }
+                    let list = match &read {
+                        Ok(value) => parse_endpoints(value.as_deref().unwrap_or("")),
+                        Err(_) => Vec::new(),
                     };
                     // 并发拨号：一个「黑洞」端点不能把同一轮里的其他端点拖住。
                     let mut dials = tokio::task::JoinSet::new();
@@ -1494,12 +1508,16 @@ pub async fn get_group_key(state: &AppState, group_id: &str) -> Option<[u8; 32]>
 // ---------------- 节点表写入、公钥冲突告警、聊天样式补发 ----------------
 include!("transport/peer_registry.rs");
 
-/// 群密钥发送失败的原因。仅 `NoLink` 可重试（登记 pending 等建链后 flush）。
+/// 群密钥发送失败的原因。仅 `NoLink` / `DbUnreadable` 可重试（登记 pending 等建链后 flush）。
 enum GroupKeySendErr {
     /// TCP link 不可用（未建立连接 / 已断开）——可重试
     NoLink,
     /// 缺公钥 / 非群成员 / 无本地密钥 / 加密失败——重试无意义
     Fatal,
+    /// 本机读库失败（2026-11-02，B3-F3 网络侧）：原代码把 `list_groups` 的错误折成
+    /// 「找不到这个群」并归入 `Fatal` ⇒ 一次 `SQLITE_BUSY` 就把该群的密钥**永久**放弃重发。
+    /// 「读不到」不是"这个群不存在"，必须落到可重试那一档。
+    DbUnreadable,
 }
 
 // ---------------- 待发群密钥登记表（纯逻辑，便于单测；不涉及网络与 AppState） ----------------
