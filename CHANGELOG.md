@@ -13,6 +13,13 @@
 
 ## [Unreleased]
 
+### F-MSG-015 引用订正：`-lie` 六轮与群取消无关
+
+原句「群侧取消有 `-lie` 轮次」是**误引**：`poison-part-lie` / `resume-prefix-lie` / `kill-mid-lie` /
+`peer-freeze-lie` / `recv-readonly-lie` / `src-shrunk-lie` 六轮都是**文件传输的故障注入反向轮**。
+群侧取消的机器判据其实是 `db/cascade_tests.rs` 的四条 `GroupMessageCancelOutcome` 用例；
+跨进程那两格 `stability-smoke-matrix.md` 自己就写明只能人工。台账已按实订正，判级仍 PARTIAL。
+
 ## [5.16.67] - 2026-11-02
 
 ### F-PRE-016 部分收口：`set_ui_language` 必须保持「静默」
