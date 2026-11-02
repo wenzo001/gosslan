@@ -192,3 +192,40 @@ fn list_interfaces_blocking() -> Vec<InterfaceInfo> {
     out.sort_by(|a, b| a.ip.cmp(&b.ip));
     out
 }
+
+#[cfg(test)]
+mod avatar_gate_tests {
+    use super::*;
+
+    /// F-PLF-011：「超限必须拒」这条闸守两件事 —— **按解码后**算长度、且**非法输入 fail-closed**。
+    ///
+    /// ① data URL 前缀要剥掉（否则 base64 头会被算成体积，合法头像被误拒）；
+    /// ② 非法 base64 **绝不能**变成 0 字节放过（`unwrap_or(usize::MAX)` 就是这条：
+    ///    解析不了说明"不知道多大"，按最大处理；改成 0 就等于把坏输入当小图写进库、还撑爆广播）；
+    /// ③ 边界是 `>`：正好上限必须允许，多 1 字节必须拒。
+    #[test]
+    fn avatar_size_gate_is_fail_closed_and_boundary_exact() {
+        let raw = STANDARD.encode(vec![0u8; 1024]);
+        assert_eq!(
+            avatar_decoded_len(&format!("data:image/png;base64,{raw}")),
+            1024,
+            "data URL 前缀没被剥掉 ⇒ 合法头像的体积会被算大"
+        );
+        assert_eq!(avatar_decoded_len(&raw), 1024, "裸 base64 路径坏了");
+        assert_eq!(
+            avatar_decoded_len("数据不是 base64"),
+            usize::MAX,
+            "非法 base64 被当成 0 字节 ⇒ 坏输入会当成小图写进库并撑爆 UDP 广播"
+        );
+        let at = STANDARD.encode(vec![0u8; MAX_AVATAR_BYTES]);
+        assert!(
+            avatar_decoded_len(&at) <= MAX_AVATAR_BYTES,
+            "正好等于上限必须允许（判据是 `>`，不是 `>=`）"
+        );
+        let over = STANDARD.encode(vec![0u8; MAX_AVATAR_BYTES + 1]);
+        assert!(
+            avatar_decoded_len(&over) > MAX_AVATAR_BYTES,
+            "多 1 字节必须拒绝"
+        );
+    }
+}
