@@ -78,6 +78,20 @@ fn favorite_copy_name(id: &str, content: &str, src: &std::path::Path) -> String 
 ///
 /// `available` 在这里 stat 一次副本填好：前端据此把"副本不在了"渲染成「已清理」占位，
 /// 而不是让用户点开才发现打不开。纯文本/代码没有副本，按"可用"处理（它没有可丢的东西）。
+/// 收藏 / 预览 / 清数据这几格的**失败与拒绝**要留痕：界面只拿到一句中文（或一个错误对象），
+/// 事后问「这张图为什么打不开 / 这次收藏为什么没成」时，日志里得有一行能按码筛的。
+///
+/// 一个码 + `action` / `reason` 字段（多种原因是同一个动作，不是多件事），与
+/// `GROUP_ACTION_REJECTED` 同一口径。**纯输入校验**（批量超上限、导出路径为空）不在此列：
+/// 那是用户当场看得懂的反馈。
+fn reject_favorite(s: &Arc<AppState>, action: &str, reason: &str, msg: &str) -> String {
+    s.logger.warn(
+        "favorites",
+        format!("code=FAVORITE_REJECTED action={action} reason={reason}"),
+    );
+    msg.to_string()
+}
+
 #[tauri::command(async)]
 pub async fn list_favorites(state: State<'_, Arc<AppState>>) -> Result<Vec<Favorite>, String> {
     let s = state.inner().clone();
@@ -137,7 +151,12 @@ pub async fn add_favorite(
         let src = match resolve_media_path(s, &msg_id) {
             MediaPath::Present(p) => *p,
             MediaPath::Gone => {
-                return Err("文件已不在本机（可能已被「存储清理」删除），无法收藏".to_string())
+                return Err(reject_favorite(
+                    s,
+                    "add",
+                    "source_gone",
+                    "文件已不在本机（可能已被「存储清理」删除），无法收藏",
+                ))
             }
             MediaPath::Unknown(e) => return Err(e),
         };
@@ -158,7 +177,12 @@ pub async fn add_favorite(
             .await
             .unwrap_or_else(|e| Err(format!("收藏复制任务被线程池中断: {e}")))
         };
-        media_size = copied?;
+        media_size = match copied {
+            Ok(n) => n,
+            Err(e) => {
+                return Err(reject_favorite(s, "add", "copy_failed", &e));
+            }
+        };
         let dst_str = dst.to_string_lossy().to_string();
         final_content = db::favorite_content_with_path(&content, &dst_str);
         media_path = Some(dst_str);
@@ -257,11 +281,13 @@ pub async fn read_favorite_preview(
         let file = match resolve_favorite_media_path(&s, &id) {
             MediaPath::Present(p) => *p,
             MediaPath::Unknown(e) => return Err(e),
-            MediaPath::Gone => return Err("文件不存在".to_string()),
+            MediaPath::Gone => {
+                return Err(reject_favorite(&s, "preview", "file_gone", "文件不存在"))
+            }
         };
         let meta = std::fs::metadata(&file).map_err(|e| e.to_string())?;
         if meta.len() > max_bytes {
-            return Err("TOO_LARGE".to_string());
+            return Err(reject_favorite(&s, "preview", "too_large", "TOO_LARGE"));
         }
         let bytes = std::fs::read(&file).map_err(|e| e.to_string())?;
         Ok(tauri::ipc::Response::new(bytes))
@@ -349,8 +375,12 @@ pub async fn read_content_preview(
             Some(p) => Located::Local(std::path::PathBuf::from(p)),
             None => match crate::content::store::find_source(&dbc, &cid) {
                 Ok(Some((peer, _group, p))) => Located::Sourced(std::path::PathBuf::from(p), peer),
-                Ok(None) => return Err("内容不存在".to_string()),
-                Err(e) => return Err(e.to_string()),
+                Ok(None) => {
+                    return Err(reject_favorite(&s, "content_preview", "content_missing", "内容不存在"))
+                }
+                Err(e) => {
+                    return Err(reject_favorite(&s, "content_preview", "store_read_failed", &e.to_string()))
+                }
             },
         }
     };
@@ -369,17 +399,17 @@ pub async fn read_content_preview(
             // 只允许读 downloads 下的文件（接收侧），或本机自己发出的内容（发送侧
             // 待办图片是用户自选的原始路径）—— 与 resolve_media_path 同一口径。
             if !under_downloads && owner != s.device_id {
-                return Err("路径越权".to_string());
+                return Err(reject_favorite(&s, "content_preview", "path_escape", "路径越权"));
             }
             f
         }
     };
     let meta = std::fs::metadata(&file).map_err(|e| e.to_string())?;
     if !meta.is_file() {
-        return Err("文件不存在".to_string());
+        return Err(reject_favorite(&s, "content_preview", "file_gone", "文件不存在"));
     }
     if meta.len() > max_bytes {
-        return Err("TOO_LARGE".to_string());
+        return Err(reject_favorite(&s, "content_preview", "too_large", "TOO_LARGE"));
     }
     let bytes = std::fs::read(&file).map_err(|e| e.to_string())?;
     Ok(tauri::ipc::Response::new(bytes))
@@ -676,9 +706,11 @@ pub async fn clear_all_data(
     if fs_errors.is_empty() {
         Ok(())
     } else {
-        Err(format!(
-            "数据记录已清除，但部分缓存文件未能删除：{}",
-            fs_errors.join("；")
+        Err(reject_favorite(
+            s,
+            "clear_data",
+            "partial_fs_error",
+            &format!("数据记录已清除，但部分缓存文件未能删除：{}", fs_errors.join("；")),
         ))
     }
 }

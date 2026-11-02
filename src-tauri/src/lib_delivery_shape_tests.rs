@@ -833,3 +833,42 @@ fn group_command_rejections_are_traced_not_silent() {
         );
     }
 }
+
+/// 收藏 / 预览 / 清数据的**失败与拒绝**必须留痕（闭环矩阵「可诊断可追溯」）。
+///
+/// 守两层：① 调用点数（分母）＝10；② 每个 `reason` 字面量都必须出现在某个
+/// `reject_favorite(` 调用里（同一句内，跨行也算）—— 只数"码出现过"会被别处的同名串骗过。
+/// 纯输入校验（批量超上限、导出路径为空）刻意不在这个族里。
+#[test]
+fn favorite_failure_paths_are_traced_not_silent() {
+    let src = include_str!("commands/favorites.rs");
+    let calls = src.matches("reject_favorite(").count() - 1; // 扣掉 fn 定义
+    assert_eq!(calls, 10, "留痕调用点数变了（{calls}）⇒ 本判据的分母要跟着改");
+    let reasons = [
+        ("add", "source_gone", 1),
+        ("add", "copy_failed", 1),
+        ("preview", "file_gone", 1),
+        ("preview", "too_large", 1),
+        ("content_preview", "content_missing", 1),
+        ("content_preview", "store_read_failed", 1),
+        ("content_preview", "path_escape", 1),
+        ("content_preview", "file_gone", 1),
+        ("content_preview", "too_large", 1),
+        ("clear_data", "partial_fs_error", 1),
+    ];
+    for (action, reason, want) in reasons {
+        let got = src.matches(&format!("\"{reason}\"")).count();
+        assert!(got >= want, "{action}/{reason} 的留痕不见了（{got} < {want}）");
+        let paired = src
+            .split("reject_favorite(")
+            .skip(1)
+            .any(|tail| {
+                let head = tail.split(';').next().unwrap_or("");
+                head.contains(&format!("\"{action}\"")) && head.contains(&format!("\"{reason}\""))
+            });
+        assert!(
+            paired,
+            "{action}/{reason} 没有并排出现在同一个 reject_favorite( … ) 里 ⇒ 配对断了"
+        );
+    }
+}
