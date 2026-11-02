@@ -207,3 +207,236 @@ test("资料分区：头像上传自己落库、失败回滚、不受昵称空�
     "updateProfile 只能出现在 persistProfile 里一处 —— 两处各调就会有两份错误处理",
   );
 });
+
+// ---------------- 设置清单 golden 与双外壳深链矩阵（批次 1A） ----------------
+//
+// 这里锁的是**现状**，不是理想结构。设置面板有三份不同用途的清单：
+// 移动端二级页、桌面 4 容器、独立设置窗口的路由键。它们本来就不等价，
+// 所以先逐项固化，再允许任何“合并清单”的改动。
+
+const MOBILE_SECTIONS_GOLDEN = [
+  "profile",
+  "general",
+  "appearance",
+  "chatStyle",
+  "notification",
+  "network",
+  "storageFiles",
+  "about",
+  "reset",
+] as const;
+
+const MOBILE_ALIASES_GOLDEN = {
+  storage: "storageFiles",
+  files: "storageFiles",
+  security: "about",
+} as const;
+
+const MOBILE_GROUPS_GOLDEN = [
+  {
+    key: "general",
+    items: ["profile", "general", "appearance", "chatStyle", "notification"],
+  },
+  { key: "network", items: ["network"] },
+  { key: "storageFiles", items: ["storageFiles", "reset"] },
+  { key: "about", items: ["about"] },
+] as const;
+
+const MOBILE_RENDER_GOLDEN = {
+  profile: "ProfileSection",
+  general: "GeneralSection",
+  appearance: "AppearanceSection",
+  chatStyle: "ChatStyleSection",
+  notification: "NotificationSection",
+  network: "NetworkSection",
+  storageFiles: "StorageSection",
+  about: "AboutSection",
+  reset: "ResetSection",
+} as const;
+
+const DESKTOP_NAV_GOLDEN = ["general", "network", "storageFiles", "about"] as const;
+
+const ROUTE_SECTIONS_GOLDEN = [
+  "profile",
+  "general",
+  "notifications",
+  "appearance",
+  "network",
+  "files",
+  "storage",
+  "storageFiles",
+  "security",
+  "about",
+  "reset",
+] as const;
+
+/**
+ * 每个路由键在两个外壳里的落点。
+ *
+ * `desktop` 是 `SettingsWindow` 的 4 容器之一；`routeValid=false` 的两个键
+ * （`chatStyle` / `notification`）是**移动端专属**，桌面路由不认识它们，会归一成
+ * `profile`，容器仍是 `general`。
+ * `mobile=null` 表示移动端不认这个键：`routeSection` 返回 null，界面弹 toast 并退回一级列表。
+ */
+const DEEP_LINK_MATRIX = [
+  { routeKey: "profile", routeValid: true, desktop: "general", mobile: "profile" },
+  { routeKey: "general", routeValid: true, desktop: "general", mobile: "general" },
+  { routeKey: "notifications", routeValid: true, desktop: "general", mobile: null },
+  { routeKey: "appearance", routeValid: true, desktop: "general", mobile: "appearance" },
+  { routeKey: "network", routeValid: true, desktop: "network", mobile: "network" },
+  { routeKey: "files", routeValid: true, desktop: "storageFiles", mobile: "storageFiles" },
+  { routeKey: "storage", routeValid: true, desktop: "storageFiles", mobile: "storageFiles" },
+  { routeKey: "storageFiles", routeValid: true, desktop: "storageFiles", mobile: "storageFiles" },
+  { routeKey: "security", routeValid: true, desktop: "about", mobile: "about" },
+  { routeKey: "about", routeValid: true, desktop: "about", mobile: "about" },
+  { routeKey: "reset", routeValid: true, desktop: "storageFiles", mobile: "reset" },
+  { routeKey: "chatStyle", routeValid: false, desktop: "general", mobile: "chatStyle" },
+  { routeKey: "notification", routeValid: false, desktop: "general", mobile: "notification" },
+] as const;
+
+/** 从源码里切一个以 `};` 或 `] as const;` 收尾的对象/数组块。 */
+function sourceBlock(src: string, marker: string, endMarker: string): string {
+  const at = src.indexOf(marker);
+  assert.ok(at >= 0, `找不到 ${marker}`);
+  const endAt = src.indexOf(endMarker, at);
+  assert.ok(endAt > at, `找不到 ${marker} 的结束标记 ${endMarker}`);
+  return src.slice(at, endAt);
+}
+
+/** 移动端 `SECTIONS` 的键（按源码顺序）。 */
+function mobileSectionKeys(panel: string): string[] {
+  const block = sourceBlock(panel, "const SECTIONS", "\n};");
+  return [...block.matchAll(/\n  ([A-Za-z][A-Za-z0-9]*): \{\n    titleKey:/g)].map((m) => m[1]);
+}
+
+/** 移动端 `SECTIONS` 的键 → 分区组件名。 */
+function mobileRenderMap(panel: string): Record<string, string> {
+  const block = sourceBlock(panel, "const SECTIONS", "\n};");
+  const pairs = [...block.matchAll(/\n  (\w+): \{\n    titleKey: "[^"]+",\n    render: \(\) => (\w+),/g)]
+    .map((m) => [m[1], m[2]] as const);
+  assert.equal(pairs.length, MOBILE_SECTIONS_GOLDEN.length, "SECTIONS 里每个键都必须有 render");
+  return Object.fromEntries(pairs);
+}
+
+/** 移动端旧键别名。 */
+function mobileAliases(panel: string): Record<string, string> {
+  const block = sourceBlock(panel, "const SECTION_ALIASES", "\n};");
+  return Object.fromEntries([...block.matchAll(/\n  (\w+): "(\w+)",/g)].map((m) => [m[1], m[2]]));
+}
+
+/** 移动端一级列表分组（组键 + 组内条目键，按源码顺序）。 */
+function mobileGroups(panel: string): { key: string; items: string[] }[] {
+  const start = panel.indexOf("const GROUPS");
+  assert.ok(start >= 0, "找不到 const GROUPS");
+  const end = panel.indexOf("\n];", start);
+  assert.ok(end > start, "找不到 GROUPS 的结束");
+  const block = panel.slice(start, end);
+  return block.split(/\n  \{\n    key: /).slice(1).map((chunk) => {
+    const key = chunk.match(/^"(\w+)"/)?.[1];
+    assert.ok(key, "GROUPS 分组缺少 key");
+    const itemsEnd = chunk.indexOf("\n    ],");
+    const itemsBlock = itemsEnd > 0 ? chunk.slice(0, itemsEnd) : chunk;
+    return {
+      key,
+      items: [...itemsBlock.matchAll(/\{ key: "(\w+)"/g)].map((m) => m[1]),
+    };
+  });
+}
+
+/** 桌面导航键。 */
+function desktopNavKeys(win: string): string[] {
+  const block = sourceBlock(win, "const navItems", "]);");
+  return [...block.matchAll(/\{ key: "(\w+)", label:/g)].map((m) => m[1]);
+}
+
+/** 独立设置窗口路由键。 */
+function routeSectionKeys(router: string): string[] {
+  const block = sourceBlock(router, "export const SETTINGS_SECTIONS", "] as const;");
+  return [...block.matchAll(/\n  "(\w+)",/g)].map((m) => m[1]);
+}
+
+test("设置清单 golden：移动/桌面/路由三份键集、顺序与别名逐项锁定", () => {
+  const panel = read("components/SettingsPanel.vue");
+  const win = read("components/SettingsWindow.vue");
+  const router = read("router/settings.ts");
+
+  assert.deepEqual(mobileSectionKeys(panel), [...MOBILE_SECTIONS_GOLDEN]);
+  assert.deepEqual(mobileAliases(panel), { ...MOBILE_ALIASES_GOLDEN });
+  assert.deepEqual(mobileGroups(panel), MOBILE_GROUPS_GOLDEN.map((g) => ({ key: g.key, items: [...g.items] })));
+  assert.deepEqual(mobileRenderMap(panel), { ...MOBILE_RENDER_GOLDEN });
+  assert.deepEqual(desktopNavKeys(win), [...DESKTOP_NAV_GOLDEN]);
+  assert.deepEqual(routeSectionKeys(router), [...ROUTE_SECTIONS_GOLDEN]);
+});
+
+test("设置深链矩阵：每个路由键的桌面容器/移动落点/未知键回退与现状一致", () => {
+  const panel = read("components/SettingsPanel.vue");
+  const win = read("components/SettingsWindow.vue");
+  const router = read("router/settings.ts");
+
+  const sections = mobileSectionKeys(panel);
+  const aliases = mobileAliases(panel);
+  const routeKeys = routeSectionKeys(router);
+  const mobilePage = (key: string): string | null => {
+    const normalized = aliases[key] ?? key;
+    return sections.includes(normalized) ? normalized : null;
+  };
+
+  for (const row of DEEP_LINK_MATRIX) {
+    assert.equal(
+      routeKeys.includes(row.routeKey),
+      row.routeValid,
+      `路由键 ${row.routeKey} 的合法性变了（期望 ${row.routeValid}）`,
+    );
+    assert.equal(
+      mobilePage(row.routeKey),
+      row.mobile,
+      `路由键 ${row.routeKey} 在移动端的落点变了（期望 ${row.mobile}）`,
+    );
+
+    if (row.desktop === "network") {
+      assert.match(win, /case "network":\s*return "network";/, "桌面 network 容器分支变了");
+    } else if (row.desktop === "storageFiles") {
+      assert.match(
+        win,
+        /case "files":[\s\S]{0,180}case "storage":[\s\S]{0,180}case "storageFiles":[\s\S]{0,180}case "reset":[\s\S]{0,180}return "storageFiles";/,
+        "桌面 files/storage/storageFiles/reset 到「文件与存储」的映射变了",
+      );
+    } else if (row.desktop === "about") {
+      assert.match(
+        win,
+        /case "security":[\s\S]{0,120}case "about":[\s\S]{0,120}return "about";/,
+        "桌面 security/about 到「关于」的映射变了",
+      );
+    } else {
+      assert.match(win, /default:\s*return "general";/, "桌面默认容器不再是 general");
+    }
+  }
+
+  // 路由未知键：桌面归一 profile；移动端 toast + 退回一级列表。
+  assert.match(win, /: "profile";/, "桌面未知路由键不再归一 profile");
+  assert.ok(
+    win.includes('router.replace("/settings/profile")'),
+    "桌面未知路由键不再 replace 到 profile",
+  );
+  assert.ok(
+    panel.includes("return key && SECTIONS[key] ? key : null;"),
+    "移动端分区合法性判据变了",
+  );
+  assert.ok(
+    panel.includes('router.replace({ name: "settings" })'),
+    "移动端未知分区不再退回设置一级页",
+  );
+});
+
+test("设置 golden 的提取器不是空转：删掉 chatStyle 必须被量出来", () => {
+  const panel = read("components/SettingsPanel.vue");
+  const original = mobileSectionKeys(panel);
+  assert.ok(original.includes("chatStyle"), "原清单应包含 chatStyle");
+
+  const mutated = panel.replace(/  chatStyle: \{[\s\S]*?\n  \},\n/, "");
+  assert.notEqual(mutated, panel, "反控注入没落进去 ⇒ 锚点写法变了");
+  assert.ok(
+    !mobileSectionKeys(mutated).includes("chatStyle"),
+    "删掉 chatStyle 后提取器仍说存在 ⇒ 这条 golden 在空转",
+  );
+});
