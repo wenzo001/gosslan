@@ -1164,3 +1164,34 @@ fn removing_a_friend_cancels_before_deleting_and_forgets_identity() {
         assert!(body.contains(needle), "删好友少了「{needle}」这一步：{why}");
     }
 }
+
+/// F-MSG-004：重发的三步顺序是**先密封 → 再入队并置 sending → 再投递**。
+///
+/// 旧形状反过来（先 `set_message_status("sending")`，再判群聊/取钥/加密）：任一步失败都不回滚
+/// ⇒ 状态永久卡 `sending`，而重发入口的守卫又把它挡死 ⇒ 这条消息**永远发不出去**，
+/// outbox 也从未写入。这条判据钉的就是那个顺序，以及"加密之前不许出现 sending 的写"。
+#[test]
+fn resend_seals_before_it_enqueues_and_marks_sending() {
+    let src = include_str!("commands/chat.rs");
+    let tail = src
+        .split("pub async fn resend_message(")
+        .nth(1)
+        .expect("resend_message 不见了 ⇒ 判据锚点要跟着改");
+    let body = tail.split("\n}\n").next().unwrap_or(tail);
+    let seal = body
+        .find("crypto::seal(")
+        .expect("重发不再密封 ⇒ 线上会是明文（接收端 `open_direct_content` 直接拒收）");
+    let enqueue = body
+        .find("requeue_message_for_resend(")
+        .expect("重发的入队+置 sending 不见了");
+    assert!(
+        seal < enqueue,
+        "顺序反了：必须先密封（{seal}）再入队并置 sending（{enqueue}）—— 反过来任一步失败都会把状态永久卡在 sending"
+    );
+    // 加密之前不许出现任何把状态写成 sending 的调用（旧 bug 的形状）
+    let head = &body[..seal];
+    assert!(
+        !head.contains("\"sending\""),
+        "密封之前就写了 sending ⇒ 又回到「失败后永久卡住、outbox 从未写入」的旧形状"
+    );
+}
