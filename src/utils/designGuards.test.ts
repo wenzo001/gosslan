@@ -6104,10 +6104,11 @@ test("主读不许把读库失败折叠成空（B1-F7 / B3-F3；网络侧自 5.1
 // 键不存在时折成空**是对的**，读失败已经在 `Err` 那一臂分开处理了。
 // 不排 `=>` 就会把这种正确写法数进来，逼着后来人把上限当噪音调大。
 //
-// 收紧后现算 **9 处**（2026-11-02）：5 处是**已裁决的豁免**（`commands/logs.rs:874` 刻意降级有判据、
-// `relay.rs:91/92` fail-closed 有判据、`channel.rs:77` 的等价形状、`group_announcements.rs:465` 下游
-// `conversations.rs` 的 `CASE WHEN` 挡住、`mobile_picker.rs:261` 折叠方向是多留不误删），
-// 剩下 4 处就是 C 档（`groups.rs:95/230/313/376`，等"当场失败 vs 靠补发档"拍板）。
+// 现算 composition 写在下面 CEILING 那几行；这里只说**为什么允许有非零的上限**：
+// 剩下的每一处都是**已裁决的豁免**（在 `docs/protocol-invariants.md` 的例外登记里有理由、
+// 代码侧有 `INV-EXCEPTION: INV-P36` 标记，两侧由 `check-invariant-exceptions.mjs` 双向对账）。
+// ⚠️ 这段说明刻意**不写 file:line** —— 上一版写了五处行号，本仓自己就把它漂掉过两次（改一次漂一次，
+// 而且没有任何判据看得见）。要读落点去读例外登记那张表，它至少有双向对账。
 test("读库折叠总量是棘轮：不限名字的尺子只许降", () => {
   const SRC = join(import.meta.dirname, "..", "..", "src-tauri", "src");
   // ⚠️ 2026-11-02 深夜扩面：这把尺子原先锚在**名字前缀 `db::`** 上，而它头顶写的注释是"不限名字"——
@@ -6118,9 +6119,14 @@ test("读库折叠总量是棘轮：不限名字的尺子只许降", () => {
   const ANY =
     /(?:[a-z_][a-z_0-9]*::)+([a-z_][a-z_0-9]*)\s*\(\s*&?(?:mut )?(?:dbc|conn|tx|db|c)\b(?:(?!=>)[^;?]){0,200}?\.unwrap_or_default\(\)/g;
   const WHITE = /db::(get_setting|get_setting_checked|get_messages|get_latest_messages|list_conversations|list_groups)\s*\((?:(?!=>)[^;?]){0,200}?\.unwrap_or_default\(\)/g;
-  // 只许往下改：19（B 档 5 处）→ 17（get_group 分档）→ 12（A 档补留痕）→ 9（尺子收紧，见上）。
-  // 锚点换到"吃连接句柄"那天现算还是 9：多看见的 4 处同批修掉了，所以**上限不是被放宽的**。
-  const CEILING = 9;
+  // 只许往下改：19（B 档 5 处）→ 17（get_group 分档）→ 12（A 档补留痕）→ 9（尺子收紧，见上）
+  // → 13（锚从 `db::` 前缀换成"吃连接句柄"，多看见 4 处内容补拉的折叠）→ **9**（那 4 处同批修掉）
+  // → **5**（C 档那 4 处群读按负责人 2026-11-02 的拍板改为「保持折叠 + 具名码留痕」）。
+  // 现在这 5 处**全部**是例外登记里有理由的那几处（`logs.rs` 装饰性群名、`relay.rs` server+token、
+  // `group_announcements.rs` 下游 CASE WHEN 挡住、`mobile_picker.rs` 多留不误删）⇒ 这一族除了已裁决的
+  // 豁免一条不剩。⚠️ 但别把"两处数字相等"当对账：登记册里还有 `channel.rs` 那类**不被这把尺子数到**的
+  // 形状（它折的是同步诊断计数），真正的双向对账是 `check-invariant-exceptions.mjs` 那一条。
+  const CEILING = 5;
 
   const files: string[] = [];
   const stack = [SRC];
