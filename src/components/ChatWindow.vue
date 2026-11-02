@@ -656,6 +656,14 @@ const tasksOpen = ref(false);
 const activeGroupId = computed(() =>
   isGroup.value && chat.activeConv ? chat.activeConv.slice(6) : null,
 );
+/**
+ * A 档（INV-P36）：已读名单读失败 ≠ 没人读过。失败时 `groupReads` 是空的 ⇒ 气泡上那一排绿勾
+ * 会全部消失；消息本身照常显示，但**这一格必须说出来**，否则界面在用一次 IO 失败断言
+ * 「群里没人读过」。按群取（同一个群的所有气泡共用一句提示 + 一次重试）。
+ */
+const groupReadsLoadFailed = computed(() =>
+  activeGroupId.value ? (chat.groupReadsErrors[activeGroupId.value] ?? null) : null,
+);
 /** 全局图片预览（#40：实例只有 `ResponsiveLayout` 里那一个，这里只负责给出数组）。 */
 const preview = useImagePreviewStore();
 
@@ -1928,6 +1936,22 @@ function retryHistory() {
       </button>
     </div>
 
+    <!-- A 档（INV-P36）：已读名单读不出来时，气泡上的绿勾是**未知**而不是"没人读"。
+         消息照常显示，只在列表上方补一行说明 + 重试。 -->
+    <div
+      v-if="groupReadsLoadFailed"
+      class="mx-4 mt-2 flex items-center justify-between gap-3 rounded-[var(--gosslan-radius-md)] border border-[var(--gosslan-border)] px-3 py-1.5 text-xs"
+      role="alert"
+    >
+      <span class="min-w-0 flex-1 text-[var(--gosslan-text-2)]">{{ t("chat.groupReadsLoadFailed") }}</span>
+      <button
+        class="tap-safe shrink-0 text-[var(--gosslan-text)] underline"
+        :title="t('common.retry')"
+        @click="chat.refreshGroups()"
+      >
+        {{ t("common.retry") }}
+      </button>
+    </div>
     <!-- 消息区（虚拟滚动，仅纵向）：与头部同底色，无缝衔接 -->
     <div class="relative min-h-0 flex-1 overflow-hidden bg-[var(--gosslan-chat)]">
       <!-- 加载骨架：切会话时**立即**渲染（store 的 loadMessages 完成前 messages[convId] 是 undefined）。

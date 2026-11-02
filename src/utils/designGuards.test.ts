@@ -6233,21 +6233,44 @@ test("A 档读失败的界面错误档必须接上（后端不许折回空 + 前
     );
   }
   const store = readFileSync(join(import.meta.dirname, "..", "stores", "useChatStore.ts"), "utf8");
-  for (const k of [
-    "friendsError",
-    "transfersError",
-    "contentTransfersError",
-    "messageOpsError",
-    "openTodosError",
-    "groupReadsErrors",
-  ]) {
-    assert.ok(store.includes(`    ${k},`), `store 没导出 ${k} ⇒ 组件读不到失败原因，只能画空态`);
-  }
   const list = readFileSync(join(import.meta.dirname, "..", "components", "ConversationList.vue"), "utf8");
   const task = readFileSync(join(import.meta.dirname, "..", "components", "TaskCenter.vue"), "utf8");
   const relay = readFileSync(
     join(import.meta.dirname, "..", "components", "settings", "NetworkSection.vue"),
     "utf8",
+  );
+  const chatWin = readFileSync(join(import.meta.dirname, "..", "components", "ChatWindow.vue"), "utf8");
+  const layout = readFileSync(join(import.meta.dirname, "..", "layouts", "ResponsiveLayout.vue"), "utf8");
+  // ⚠️ 「导出了」只是半个守卫：2026-11-02 本判据第一版就漏了两个**只写不读**的 ref
+  // （`openTodosError` / `groupReadsErrors`）—— 它们编译过、导出过、门禁全绿，而界面一处都没读，
+  // 于是「读失败不画成空态」这句话对它们根本没兑现。现在两头都要：store 导出 + 某个组件真的读它。
+  const uiFiles = [list, task, relay, chatWin, layout];
+  for (const k of [
+    "friendsError",
+    "transfersError",
+    "contentTransfersError",
+    "messageOpsError",
+    "groupReadsErrors",
+  ]) {
+    assert.ok(store.includes(`    ${k},`), `store 没导出 ${k} ⇒ 组件读不到失败原因，只能画空态`);
+    assert.ok(
+      uiFiles.some((src) => src.includes(`chat.${k}`)),
+      `${k} 只写不读：没有任何组件读它 ⇒ 这一格的「读失败」对用户仍然不可见（假字段）`,
+    );
+  }
+  // 群任务徽标不做常驻错误块（它是个数字、不是列表），但**一次失败的提示不能没有**：
+  // 清成 0 等于断言「任务都完成了」，所以保留上一份数字 + toast 一次，这条把 toast 钉住。
+  assert.ok(
+    /catch \(e\)[\s\S]{0,400}toastError\(e, t\("task\.badgeLoadFailed"\)\)/.test(store),
+    "徽标读失败既不更新界面也不提示 ⇒ 用户看到的是「任务都完成了」这种假事实",
+  );
+  assert.ok(
+    /groupReadsLoadFailed[\s\S]{0,600}role="alert"/.test(chatWin),
+    "群已读名单读失败没有界面出口（气泡上的绿勾会静默消失 ⇒ 画成「没人读过」）",
+  );
+  assert.ok(
+    /groupReadsLoadFailed[\s\S]{0,1200}common\.retry/.test(chatWin),
+    "群已读名单的错误提示没有重试入口",
   );
   assert.ok(/friendsLoadFailed[\s\S]{0,400}role="alert"/.test(list), "好友列表没有错误档（空态会说谎）");
   assert.ok(/ledgerError[\s\S]{0,400}role="alert"/.test(task), "任务中心没有错误档");
