@@ -22,7 +22,7 @@
 // `status='incomplete' / next_attempt_at=0 / path IS NULL` 正是真机卡住时那 14 行的形状，
 // **上线后由生产侧自己发出真帧**（不是 harness 伪造的帧）。
 export const MODE = "CONTENTPULL";
-import { INSTANCES, LIE_SHA, ROUND, RUN_DIR, S, bootBaseOf, check, eid, launch, nowMs, openDb, seed, sleep, step, stopAll, stopOne, tailLog, tcpOpen, waitFor } from "../core.mjs";
+import { INSTANCES, LIE_SHA, ROUND, RUN_DIR, S, bootBaseOf, check, eid, launch, nowMs, openDb, seed, sleep, step, stopAll, stopOne, tailLog, tcpOpen, waitFor, waitSendTerminal } from "../core.mjs";
 import fs from "node:fs";
 import path from "node:path";
 import { createHash, randomBytes } from "node:crypto";
@@ -357,6 +357,81 @@ export async function run() {
       ghostRow !== null && ghostRow.attempts >= 1 && doneReal === N && partLeft.length === 0,
       `它的 attempts ≥ 1 且其余 ${N} 份全部 complete`,
       `ghost.attempts=${ghostRow?.attempts} · 真到位 ${doneReal}/${N} · .part ${partLeft.length} 个`);
+    // ── 补拉的回程不许在私聊里再落一张卡（审计 §4.0br；用户 2026-11-01 报「群任务的图片
+    //    会从别人的私聊再发我一份」）────────────────────────────────────────────
+    // 这一格在这一轮**从没被读过**：上面每一条判据读的都是 content_transfers 与盘上字节，
+    // `messages` 只查过那条预置文本 —— 昨夜 37 条全绿**不代表** 5.16.28 那半个改动被验过，
+    // 它压根不在覆盖面里（这句是这三条存在的唯一理由）。
+    // 两个写入点分开读数一起打印 ⇒ 红了分得清是"卡片没拦住"还是"预览/未读没拦住"。
+    const refoldCards = (() => {
+      const d = openDb(INSTANCES[1].db, true);
+      try {
+        return d.prepare(
+          `SELECT msg_id FROM messages WHERE msg_id IN (${pulls.map(() => "?").join(",")})`,
+        ).all(...pulls.map((p) => `file-${p.tid}`));
+      } finally { d.close(); }
+    })();
+    const refoldPreviews = (() => {
+      const d = openDb(INSTANCES[1].db, true);
+      try {
+        return d.prepare("SELECT id,last_msg,unread FROM conversations").all()
+          .filter((r) => pulls.some((p) => (r.last_msg || "").includes(p.tid)));
+      } finally { d.close(); }
+    })();
+    check("补拉的回程不许在私聊里多一张卡：这 N 单的 file-<transfer_id> 一行都不许出现，会话预览也不许被它们改写（自己发起的取回不是别人发来的消息）",
+      refoldCards.length === 0 && refoldPreviews.length === 0,
+      "卡片 0 行 · 预览 0 条",
+      `卡片 ${refoldCards.length}/${N} 行`
+      + `${refoldCards.length ? `（${refoldCards.slice(0, 3).map((r) => r.msg_id.slice(-6)).join(",")}）` : ""}`
+      + ` · 预览被改写 ${refoldPreviews.length} 条${refoldPreviews.length ? ` ${JSON.stringify(refoldPreviews[0])}` : ""}`);
+    // 留痕对照：只判"没有卡"的话，「闸门从没咬过、而这 N 单恰好也没走到落卡那一臂」读不出来。
+    // ⚠️ 判 ≥1 而不是 ≥N：`log_throttled("content_pull_refolded", 60_000)` 同一 key 60 秒只打一行，
+    //    要 N 行就是把量具的节流当成产品要求 ⇒ 假红。
+    const refoldTrace = countLinesWith(INSTANCES[1], "code=CONTENT_PULL_REFOLDED");
+    check("闸门确实咬过：B 侧日志必须数得到 code=CONTENT_PULL_REFOLDED 留痕（有 60s 节流 ⇒ 只判 ≥1，不判 ≥N）",
+      refoldTrace >= 1, "≥ 1 行", `${refoldTrace} 行`);
+    // ── 反照（这三条里最贵的一格）：闸门只能咬"我自己发起的补拉"────────────────
+    // 前两条全绿也可能坏在更贵的方向 —— refold 恒真 ⇒ **所有** 1:1 接收都不落卡，
+    // 用户表现为"别人发的文件一条都看不见"。而这一轮此前没有任何一格判过
+    // 「普通 1:1 文件在接收侧要落卡」（现读 rounds/ 全册：带 file- 前缀的 messages 行
+    // 只在 sendkill/shrink 里查过**发送侧**那台）。补在这里：同一份二进制、同一个臂、
+    // 同一条链路 —— 一单被压、一单照落，两个读数对排才叫证据。
+    const ctrlTid = eid("c");
+    const ctrlName = `${ctrlTid}.bin`;
+    const ctrlSrc = path.join(srcDir, ctrlName);
+    const ctrlBytes = 512 * 1024;
+    fs.writeFileSync(ctrlSrc, Buffer.alloc(ctrlBytes, 0x5c));
+    seed(INSTANCES[0].db, (db) => {
+      db.prepare("DELETE FROM file_outbox WHERE transfer_id=?1").run(ctrlTid);
+      db.prepare(
+        `INSERT INTO file_outbox(transfer_id,peer_id,group_id,local_path,name,size,status,attempts,next_attempt_at,created_at)
+         VALUES(?1,?2,NULL,?3,?4,?5,'pending',0,0,?6)`,
+      ).run(ctrlTid, S.idB.runtimeId, ctrlSrc, ctrlName, ctrlBytes, nowMs());
+    });
+    // 触发点是既有的（建链/Hello/心跳 ⇒ `flush_pending_files`，心跳 5s）：与 multi 轮同一做法，
+    // 应用跑着的时候入队，由生产侧自己发。发送侧的终态先读（`waitSendTerminal` 的注释钉过：
+    // B 落地在 A 的 done 之前 ⇒ 读到 done 时 B 的卡片必然已写完）。
+    const ctrlSend = await waitSendTerminal(ctrlTid, 120_000);
+    const ctrlCard = (() => {
+      const d = openDb(INSTANCES[1].db, true);
+      try {
+        return d.prepare("SELECT conv_id,kind,content,status FROM messages WHERE msg_id=?1")
+          .get(`file-${ctrlTid}`) ?? null;
+      } finally { d.close(); }
+    })();
+    const ctrlPreview = (() => {
+      const d = openDb(INSTANCES[1].db, true);
+      try {
+        return d.prepare("SELECT id,last_msg FROM conversations WHERE last_msg LIKE ?1")
+          .get(`%${ctrlTid}%`) ?? null;
+      } finally { d.close(); }
+    })();
+    check("反照：不是本机发起的普通 1:1 文件，接收侧必须照常落卡并改写会话预览（refold 恒真=所有文件都收不到，这一格是它唯一的负向证据）",
+      ctrlSend.row?.status === "done" && ctrlCard !== null
+      && String(ctrlCard.content).includes(ctrlName) && ctrlPreview !== null,
+      "发送侧 done + B 侧有 file-<tid> 卡片（content 指向这张文件）+ 预览里带着它",
+      `发送侧 ${JSON.stringify(ctrlSend.row?.status ?? null)}（等了 ${ctrlSend.waitedMs}ms）· 卡片 `
+      + `${ctrlCard ? `${ctrlCard.conv_id}/${ctrlCard.kind}/${ctrlCard.status}` : "无"} · 预览 ${ctrlPreview ? "有" : "无"}`);
     // 实际耗时/行数一律现印（报告契约要的「耗时」之外，这一行还是"时间上界是不是被量出来的"的现场证据：
     // 上面那条 30s 界如果哪天需要调，依据就是这里读到的数，不是谁的感觉）。
     console.log(`      实测：从建链到 ${N} 份拉取 ${pullMs}ms · 溢出留痕 ${overflow} 行（每对端上限 ${CAP}）` +
@@ -570,5 +645,18 @@ export async function run() {
     check("A 侧必须真的走出服务分支：有 offer SENT，且没有针对这个 cid 的“无权限”拒绝",
       offered > 0 && denied === 0, "offer ≥1 行 / 拒绝 0 行",
       `offer ${offered} 行 / 拒绝 ${denied} 行`);
+    // 群内容（`content_transfers.group_id` 非空）的补拉应答**同样走 1:1 文件通道**回来 ——
+    // 这正是用户 2026-11-01 报的形状：群任务的图片缺字节，自动补拉成功后在**提供方的私聊**里
+    // 多出一张卡。服务侧只认 cid、不看 group_id ⇒ 落不落卡由接收侧那道 refold 门决定，
+    // 而这一格的预置恰好是唯一带着 group_id 的一单，所以"群内容"这一支在这里有独立读数。
+    const a16Card = (() => {
+      const db = openDb(INSTANCES[1].db, true);
+      const r = db.prepare("SELECT conv_id,kind,content FROM messages WHERE msg_id=?1").get(`file-${tid}`) ?? null;
+      db.close();
+      return r;
+    })();
+    check("群内容的补拉不许折成私聊卡片：B 侧不许出现 file-<这个 tid>（用户报的「群任务的图片从别人的私聊再发我一份」就是这一格）",
+      a16Card === null, "无 file-<tid> 卡片",
+      a16Card ? JSON.stringify({ conv_id: a16Card.conv_id, kind: a16Card.kind }) : "无");
   });
 }

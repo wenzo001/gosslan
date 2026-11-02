@@ -1061,6 +1061,11 @@ async fn retry_incomplete_content(state: &Arc<AppState>, peer_id: &str) {
             );
         }
         if sent {
+            // 第三条补拉入口也要登记 cid（审计 §4.0br）：应答同样走 1:1 的 FileOffer/FileDone 回来，
+            // 少这一句 ⇒ 只有界面手点「重新获取」不折卡，**心跳每 5s 自动重投的那一类照旧往私聊塞卡**
+            // （用户 2026-11-01 报的「群任务的图片从别人的私聊再发我一份」走的正是这一条）。
+            // 放在 `sent` 之内而不是之前：没发出去的请求不该占用"我拉过这份"的登记。
+            state.note_content_pull_cid(&rec.cid);
             state.logger.info(
                 "content",
                 format!("建链自动重试未完成内容 cid={} peer={peer_id}", rec.cid),
