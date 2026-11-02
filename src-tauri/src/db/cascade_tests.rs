@@ -1658,3 +1658,37 @@ fn apply_recall_is_one_transaction_and_idempotent() {
         .unwrap();
     assert_eq!(still, "另一条原文", "物化也必须回滚");
 }
+
+/// F-MSG-040：撤回的三笔写（墓碑 / 物化 / 会话预览）必须是**一笔事务**。
+///
+/// B1-F6 之前前两笔各 `.ok()`：墓碑写进去而物化失败就永久分裂，而幂等短路**只看墓碑**
+/// ⇒ 重试也补不上（用户看到"撤回了"但正文还在，或者反过来永远撤不掉）。
+/// 这里抽掉第三步要写的父表（`DROP TABLE conversations`）造出"最后一步必失败"的结局，
+/// 断言**墓碑没有留下来**、消息行也一字未改 —— 半成品状态一条都不许可见。
+#[test]
+fn a_failed_recall_write_leaves_no_tombstone_behind() {
+    let conn = fresh_db();
+    ins_msg(&conn, "m-r1", "p-r1", "text", "要撤回的话", 1);
+    conn.execute("DROP TABLE conversations", []).unwrap();
+    let got = super::apply_recall(&conn, "p-r1", "m-r1", "me", 7);
+    assert!(
+        got.is_err(),
+        "最后一步写失败却返回 Ok ⇒ 事务没起作用：{got:?}"
+    );
+    assert!(
+        !super::is_recalled(&conn, "m-r1"),
+        "墓碑被提前提交了：幂等短路会把它当成「已撤回」，重试永远补不上物化"
+    );
+    let (kind, content): (String, String) = conn
+        .query_row(
+            "SELECT kind, content FROM messages WHERE msg_id = 'm-r1'",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!(
+        (kind.as_str(), content.as_str()),
+        ("text", "要撤回的话"),
+        "物化被提前提交了：半成品状态在界面上可见"
+    );
+}

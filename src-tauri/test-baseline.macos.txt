@@ -135,6 +135,7 @@ db::cascade_tests::a_completed_transfer_row_is_never_downgraded
 db::cascade_tests::a_delivered_group_message_cannot_be_cancelled
 db::cascade_tests::a_done_transfer_is_not_announced_failed_yet_its_queue_row_closes
 db::cascade_tests::a_failed_cancel_write_rolls_back_the_whole_finalize
+db::cascade_tests::a_failed_recall_write_leaves_no_tombstone_behind
 db::cascade_tests::a_failed_row_can_be_reactivated_by_the_next_attempt
 db::cascade_tests::a_failure_finalize_keeps_the_known_transfer_size
 db::cascade_tests::a_group_only_cancel_writes_no_ghost_transfer_row
