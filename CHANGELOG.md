@@ -13,11 +13,20 @@
 
 ## [Unreleased]
 
+## [5.16.13] - 2026-11-02
+
+### 更正：那条 cargo 护栏红来自夜间 schedule，不是 tag 的 Verify
+
+5.16.12 的正文初稿把它写成「tag `v5.16.10` 的 Verify 红了」。现读 `gh run view 41359498896 --json event`
+是 `schedule`（UTC 19:20 那一轮）；`verify.yml` 的 `guards-cargo` 只在 `schedule` / `workflow_dispatch`
+上跑，tag 拉起的 Verify **按设计跳过** cargo 分片。结论（判据太宽 ⇒ 恒绿）与修法不受影响。
+三处已同步：5.16.12 节内补了带日期的更正块、审计册 §4.0bo 的同一句、v5.16.12 的发布页面正文。
+
 ## [5.16.12] - 2026-11-02
 
 ### 一条护栏被判成恒绿：判据钉的是词根，而同函数里同一词根出现两次
 
-tag `v5.16.10` 的「护栏非空转 · cargo 通道（分片 1/3）」红了：把
+夜间 schedule（2026-11-01 19:20 UTC 那一轮）的「护栏非空转 · cargo 通道（分片 1/3）」红了：把
 `map.retain(|_, req| is_actionable_request(req, &friend_ids));` 改成 `map.retain(|_, _| true);` 之后
 `pending_requests_exclude_existing_friends` **仍然通过**。
 
@@ -30,6 +39,11 @@ tag `v5.16.10` 的「护栏非空转 · cargo 通道（分片 1/3）」红了：
 ① 干净源码上 `1 passed`；② 同样的注入 ⇒ `FAILED` 且红在那条具名断言（hint 原文）；
 ③ `python3 scripts/verify-guards.py --only "好友申请兜底"` 端到端通过（17.2s，注入→必须红→恢复后逐字节一致）。
 用例的 `file` 顺手点名真文件 `commands/mobile_picker.rs`（少一次跨分册解析）。
+
+> **2026-11-02 更正（同批）**：本节初稿写的是「tag `v5.16.10` 的…红了」——**不对**。那条红属于**夜间 schedule**
+> 那一轮（`gh run view 41359498896 --json event` 现读 `schedule`）；tag 拉起的 Verify 按设计**跳过** cargo 分片
+> （`.github/workflows/verify.yml` 的 `guards-cargo` 只在 `schedule` / `workflow_dispatch` 上跑）。
+> 结论（判据太宽 ⇒ 恒绿）与修法不受影响；已发出去的 v5.16.12 页面正文也按这句更正过。
 
 ## [5.16.11] - 2026-11-02
 
