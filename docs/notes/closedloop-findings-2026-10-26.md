@@ -85,7 +85,7 @@ HEAD 基线：`6ca07ca5`（本文件内所有 `path:line` 均按此 HEAD 复核�
 
 ---
 
-## B1-F4 · 设置落库失败既不上屏也不留痕（P2，建议修）
+## B1-F4 · 设置落库失败既不上屏也不留痕（P2，建议修 → **已落地**：上屏 5.15.53、留痕 5.16.23，判据在 `designGuards.test.ts`）
 
 **适用的六格**：用户可感知 = PARTIAL；可诊断可追溯 = **FAIL**；可恢复 = PARTIAL。
 
@@ -509,7 +509,7 @@ EXIT=0
 | 1 | **B1-F3** | `commands/updater.rs`：两处 `"installing"` 提成常量；新增一条真调用的测试 | ~15 行 | 把赋值处改成别的词 ⇒ **编译失败**；把那处判断摘掉 ⇒ 新测试红 | 无 |
 | 2 | **B1-F6** | `db/recalls.rs` 加事务版；`chat.rs:373-374`、`group_announcements.rs:149-150`、`gossip.rs:931-933` 三处改用它；幂等短路改成"看账本**且**看消息行" | ~40 行 / 4 文件 | 注入一次 `UPDATE` 失败 ⇒ 账本与消息行同时回滚；再点撤回能补上；把幂等改回"只看账本" ⇒ 第二条红 | 无 |
 | 3 | **B1-F7** | `commands/chat.rs` 三处 `unwrap_or_default()` → `?`；`db/messages.rs:90` `count_messages` 改返回 `Result<i64>` | 4 处 | 注入读失败 ⇒ 三命令返回 Err 且界面出错误提示（**不是空列表**）；改回 `unwrap_or_default` ⇒ 红 | 无 |
-| 4 | **B1-F4** | `src/stores/useAppStore.ts:550` 的 `catch{}` 里补记录（复用 `logFrontendError`）；可见性按你拍板的结果做 | 3~10 行 | 让 `saveSettings` 失败 ⇒ 日志里有一行可 grep；若做可见：连失 5 次只出 1 条状态行 | 需你定可见性 |
+| 4 | **B1-F4** | **已落地（可见半 = 5.15.53；留痕半 = 5.16.23）**：`useAppStore.ts` 的 catch 里 toast + console，再补 `api.logFrontendError("settings-save-failed", "code=SETTINGS_PERSIST_FAILED …")` ⇒ 这一笔进运行日志（`console.warn` 本身到不了日志，本仓不转发前端 console） | 两半各 1~3 行 | 判据 `设置落库失败必须上屏（B1-F4）`（`src/utils/designGuards.test.ts`）钉三件：toast 带词典 key、console 线索、**logFrontendError 那一句**；反控是"不许退化回空 catch"。摘掉 `logFrontendError` 那行 ⇒ 该判据红（本批实测） | 无 |
 | 5 | **B4-F1** | `chat.rs:1300/1362`、`files.rs:575`（+ 已并入 F6 的撤回两处）改成失败落错误/落 failed；加一条只许降的 `.ok()` 计数棘轮 | 4 处 + 1 判据 | 让 `mark_file_outbox_pending` 失败 ⇒ 传输落 failed 且有条目名码，**不再停在 sending**；棘轮基线用现算值 | 无 |
 | 6 | **B1-F5** | `handle_messaging.rs:99-106` 的 `None` 分支补**节流**记录（`log_throttled`） | 3 行 + 1 个节流键 | 喂一个打不开的密文 ⇒ 能 grep 到；连喂 100 次只出 1 行；**始终不产生 Ack** | 无 |
 | 7 | **B2-F1** | 复用 `logging.rs` 的 ENOSPC 识别；`FileJobEnd` 加 `DiskFull` 档；该档删 `.part` | 1 分类器 + 1 变体 + 分支 | 只读目录/小容量挂载 ⇒ 失败行带 `disk_full` 且 `.part` 不存在；断链档 `.part` **仍存在**（反向对照） | 无 |

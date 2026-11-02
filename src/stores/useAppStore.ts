@@ -553,6 +553,9 @@ export const useAppStore = defineStore("app", () => {
       // 连写不会叠屏：`pushToast` 按 kind+文案复用同一个 id（见 utils/toastManager）。
       toast(t("settings.toast.saveFailed"), "error");
       console.warn("[settings] 设置未能落库：界面已生效，重启后可能回退", e);
+      // toast 只有"当时在场的人"看得见，而 `console.warn` 到不了日志文件（本仓不把前端 console 转进后端日志）
+      // ⇒ 事后用户说「重启后设置变回去了」时，诊断包里这一笔是空的。留痕走后端日志通道（蓝牙那格同形状）。
+      void api.logFrontendError("settings-save-failed", `code=SETTINGS_PERSIST_FAILED err=${String(e)}`).catch(() => {});
     }
   }
 
