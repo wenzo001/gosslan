@@ -3504,21 +3504,33 @@ mod content_pull_tests {
         assert!(full.contains_key(&format!("cid-{}", CONTENT_PULL_MAX + 4)));
     }
 
-    /// **接线判据**：四调用点必须都在，且 `file-done` 与 `FileCompleteAck` 不许被 `refold` 门罩住。
+    /// **接线判据**：三个发送点 + 两个接收点必须都在，且 `file-done` 与 `FileCompleteAck` 不许被 `refold` 门罩住。
     ///
     /// 为什么单独钉这个：`is_content_pull_transfer` 的单元测试只能证明表读写对，
     /// 证明不了"落卡片那一臂真的问了它"。而把 ack 一起跳过会更糟 ——
     /// 服务侧会把这一单判成未确认并重发/换轮次（`file_epochs`），比多一张卡严重得多。
+    ///
+    /// ⚠️ 发送点数成 **3** 而不是 2 是有来历的：第一版只接了界面那两条（`request_content` /
+    /// `request_content_by_cid`），漏了 `retry_incomplete_content` 这条**心跳自动重投**的路 ——
+    /// 而用户实报的那一格走的正是自动那条。分母按"谁会发出 ContentRequest"数，不按手抄清单数。
     #[test]
-    fn content_pull_wiring_is_pinned_at_all_four_sites() {
+    fn content_pull_wiring_is_pinned_at_every_call_site() {
         let send = include_str!("commands/files.rs");
         let recv = include_str!("network/transport/handle_file.rs");
+        let auto = include_str!("network/transport.rs");
 
-        // ①② 两个发送点都登记 cid（`request_content` 与 `request_content_by_cid`，msg 构造逐字相同）
+        // ①② 两个手点入口都登记 cid（`request_content` 与 `request_content_by_cid`，msg 构造逐字相同）
         assert_eq!(
             send.matches("s.note_content_pull_cid(&cid);").count(),
             2,
             "两个补拉入口都要登记；只接一半 ⇒ 另一条路继续往私聊塞卡"
+        );
+        // ③ 自动补拉那条（心跳/建链驱动的 `retry_incomplete_content`）
+        assert_eq!(
+            auto.matches("state.note_content_pull_cid(&rec.cid);")
+                .count(),
+            1,
+            "自动重投同样要登记：它才是用户实报那格的来源"
         );
 
         // ③ FileOffer 臂：cid 只在这一臂拿得到（`FileDone` 帧不带）

@@ -13,6 +13,49 @@
 
 ## [Unreleased]
 
+## [5.16.34] - 2026-11-02
+
+### 5.16.28 那半个修复只接了一半：补上自动补拉的登记，并把这一族第一次判进跨实例轮（5.16.34）
+
+昨夜那句「运行时仍未验」今天真的去补判据，一补就把缺陷补出来了。
+
+**缺陷**：`Message::ContentRequest` 的**构造点有三处**（`transport.rs` 的 `retry_incomplete_content` =
+建链/心跳每 5 秒自动重投，`commands/files.rs` 的两个界面命令），5.16.28 只在后两处登记了
+"这份内容是我自己要的" ⇒ **自动那条照旧把补拉的回程折成私聊卡片** —— 而用户报的
+「群任务的图片从别人的私聊再发我一份」走的正是自动那条（缩略图缺字节 ⇒ 心跳重投 ⇒ 对端当普通
+1:1 发回来 ⇒ 接收端无条件落卡 + 未读 +1）。修法是在 `retry_incomplete_content` 的 `if sent { … }` 里
+补一次 `state.note_content_pull_cid(&rec.cid);`（放在 `sent` 之内：没发出去的请求不该占登记）。
+⚠️ 发送点的分母要按"谁会发出这一帧"现 grep，不按"界面上有几个入口"抄 —— 同族第三次现形。
+
+**判据（`scripts/e2e/rounds/contentpull.mjs` 36 → 40 条）**：
+- 这 N 单的 `file-<transfer_id>` 一行都不许出现，且 `conversations.last_msg` 不许被它们改写；
+- B 侧日志必须数得到 `code=CONTENT_PULL_REFOLDED`（**判 ≥1 不判 ≥N**：那行有 60s 节流）；
+- **反照常落卡**：现入队一单本机从没请求过的普通 1:1 文件，B 侧必须照常落卡与预览 ——
+  这是 §4.0br 第 6 步点名要的那条反控，5.16.28 只做了源码形状的反控，缺它 ⇒ `refold` 恒真时
+  前三格全绿而用户一条文件都收不到；
+- A-16 那一单带 `group_id`，拉回后同样不许有私聊卡（服务侧只认 cid、不看 group_id）。
+
+接线判据的发送点数 2 → 3，并把名字里的硬数去掉（`content_pull_wiring_is_pinned_at_all_four_sites`
+→ `…_at_every_call_site`，两份 `test-baseline.*.txt` 同步改名 —— `--sync-baselines` 只增不删）。
+
+**证据（两次单点变异，跑完 `cp` 还原并 `cmp` 逐字节相同）**：删掉新登记那句 ⇒ 接线判据红 +
+跨实例轮 **3/40 红**（`run-2026-11-02T06-09-46-475Z`：`卡片 12/12 行`、留痕 `0 行`、A-16 那格
+`{"conv_id":"…-i1","kind":"file"}`，而"反照常落卡"照绿）；把 `refold` 写成恒真 ⇒ **恰好 1/40 红**，
+红的正是反照那格（`卡片 无 · 预览 无`，`run-2026-11-02T06-13-37-278Z`）⇒ 四格互不重复。
+修好后的树 **40 条全绿**（变异还原 `cmp` 逐字节相同、重编 release 后现跑 `run-2026-11-02T06-17-30-455Z`；
+变异前那一趟同内容的 `run-2026-11-02T06-05-43-169Z` 也是 40/40）。
+`cargo test --features bluetooth --lib` **1373 passed / 0 failed / 3 ignored**（清单 1376 条全部在跑，
+`check-test-manifest --only rust` 退 0）、`cargo clippy --features bluetooth --all-targets -- -D warnings` 退 0、
+`cargo fmt --check --all` 退 0（第一跑退 1，红在**我新写那一行**的换行；手改到位后归零，
+没有顺手 `cargo fmt` 整棵树 —— `include!` 分册它看不见，会带走不相干的行）。
+
+**同步改的落点声明**：`ARCHITECTURE-MAP.html` 的 `request_content` / `request_content_by_cid` 两格
+（此前只写服务端不许在入站循环里 await，没写"回程不落私聊卡"这条契约）、验收矩阵那一行 36 → 40、
+审计册 §4.0br 加订正 + 新增 §4.0bs、§13 第 11 行由"运行时未验"改为已收口。
+
+**仍未验**：真机两台（用户那句原话的完整形状 = 群任务带图 + 对方离线过），本机只到双实例那一层；
+唯一假阴性照旧 —— 对端随后**主动重发同一份内容**（同 cid）也会被当成回程而不落卡，TTL 30 分钟限制了窗口但不为零。
+
 ## [5.16.33] - 2026-11-02
 
 ### 把 INV-P36 挂进领域清单的两个域（这处登记没有机器判据）
@@ -196,7 +239,7 @@ semver + 文档数字 + 文档引用三门 0、`check-domain-deps` 0、`check-te
   只认前缀会漏掉一半。
 
 测试：`content_pull_entries_age_out_and_are_capped`（TTL 边界取 `<=`、超限丢最旧）+
-`content_pull_wiring_is_pinned_at_all_four_sites`（四调用点各恰好一处、`if !refold {` 必须三道、
+`content_pull_wiring_is_pinned_at_every_call_site`（每个调用点各恰好一处、`if !refold {` 必须三道、
 `file-done` 只有一处且 ack 文本未被门罩住）。
 变异反证：把 `message-received` 那道门摘掉 ⇒ 接线判据红在「三道门缺一不可：只挡落库的话，
 预览与未读仍会 +1、前端还会画气泡」；还原与备份 `cmp` 逐字节相同 ⇒ 绿。
