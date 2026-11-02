@@ -321,6 +321,7 @@ export default {
         "INV-P26", // 终态不可降级：本域有 relay_file.rs / group_file.rs / outbox_sweep.rs 等写入点（闸门实体在 persistence）
         "INV-P33", // 重复好友事件不重复通知：两个到达点 handle_identity.rs + gossip.rs，幂等家 handshake.rs
         "INV-P34", // 慢活的执行位置：本域 relay_file.rs:286/:352 是本条边界里尚未收口的两格之一（判据在 lib_file_tests.rs）
+        "INV-P36", // 读库失败不许折成「没有数据」：本域有 fan-out 那几处（list_groups 折成空 ⇒ 群密钥判成"永久放弃"）、补发台账与群已读的节流留痕，以及 `chat_peer_styles` 的读-改-写整表（读失败就不写回）
       ],
       // ⚠️ 三个家：TCP 数据面在 network/、BLE 数据面在 network/ble.rs + transport/、控制面在 transport/mod.rs
       activeHome: "src-tauri/src/network/transport.rs", // 活路径的具体文件（network/ 整体是活的家）
@@ -404,6 +405,7 @@ export default {
         "INV-P24", // 老对端整份重建载荷时「沿用已知值」那一格：db/messages.rs 的 latest_todo_def
         "INV-P26", // 闸门实体：db/file_transfer.rs 的 upsert_transfer 尾巴那句 `WHERE status <> 'done'`（注入用例打的正是这里）
         "INV-P29", // 编号的分配与不复用：db/groups.rs 里 `mod todo_number_tests` 那四条具名判据（号从 1 起、删了不回收、避让对端分到的号）
+        "INV-P36", // 严格读的家在本域：`db::get_setting_checked` 与 `db::get_group_checked` 才分得开「不存在」与「没读出来」；通道开关那格（读失败曾把用户关掉的局域网永久改成开）由 `db::tests::unreadable_channel_pref_never_overwrites_the_explicit_choice` 钉住
       ],
       activeHome: "src-tauri/src/db", // 16 个子模块（include! 物理拆分）
       enforce: false,
