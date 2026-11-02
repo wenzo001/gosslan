@@ -99,6 +99,24 @@ fn run<R: tauri::Runtime>(app: tauri::AppHandle<R>, state: Arc<crate::state::App
         // ---- 渲染层心跳：只有它发过至少一次才判（启动早期 hb=0）----
         let hb = state.ui_heartbeat_ms.load(Ordering::SeqCst);
         let active = state.ui_heartbeat_active.load(Ordering::SeqCst);
+        // IPC 堆积取证：日志工作留在看门狗线程，心跳路径只写原子量。
+        let inflight = state.ui_inflight.load(Ordering::SeqCst);
+        let oldest_ms = state.ui_inflight_oldest_ms.load(Ordering::SeqCst);
+        if active && (inflight >= 8 || oldest_ms >= 2_000) {
+            let last = state.ui_backlog_note_at.load(Ordering::SeqCst);
+            if now - last >= 30_000 {
+                state.ui_backlog_note_at.store(now, Ordering::SeqCst);
+                let op = current_op(&state)
+                    .map(|(name, _)| name)
+                    .unwrap_or_else(|| "unknown".to_string());
+                state.logger.warn(
+                    "ui",
+                    format!(
+                        "code=IPC_BACKLOG inflight={inflight} oldest_ms={oldest_ms} active={active} last_op={op}"
+                    ),
+                );
+            }
+        }
         if hb > 0 {
             let stale = now - hb;
             if active && stale >= RENDERER_STALE_MS {

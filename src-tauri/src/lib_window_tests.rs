@@ -1068,10 +1068,6 @@
             cmd.contains("ui_inflight") && cmd.contains("ui_inflight_oldest_ms"),
             "心跳必须把在途 IPC 数与最老等待报到现场字段"
         );
-        assert!(
-            cmd.contains("code=IPC_BACKLOG"),
-            "IPC 堆积必须有具名取证日志"
-        );
         let state = include_str!("state.rs");
         assert!(
             state.contains("pub ui_heartbeat_ms"),
@@ -1086,5 +1082,9 @@
         assert!(
             wd.contains("ui_inflight") && wd.contains("db_hold_note"),
             "HANG 现场必须带 IPC 堆积与慢持锁摘要"
+        );
+        assert!(
+            wd.contains("code=IPC_BACKLOG"),
+            "IPC 堆积必须有具名取证日志（由看门狗线程写，心跳只写原子量）"
         );
     }
