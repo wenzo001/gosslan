@@ -66,6 +66,7 @@ import {
   type TodoRowsByConv,
   todoTerminalForCreator,
   todoMentionsMe,
+  todoCardConcernsMe,
   type TodoImage,
 } from "@/utils/todos";
 import { invalidateFilePreview, dropFilePreview, clearFilePreviews } from "@/utils/filePreview";
@@ -461,6 +462,12 @@ export const useChatStore = defineStore("chat", () => {
   function maybeNotify(rec: MessageRecord) {
     const myId = app.device?.device_id;
     if (!myId || rec.sender_id === myId) return;
+
+    // 群任务**建卡**只打扰相关人（创建人 + 被指派人，用户 2026-11-02 拍板）。
+    // 判据本体在 `utils/todos::todoCardConcernsMe`（纯函数，边界由 todos.test.ts 逐条钉）；
+    // 这里只拦通知，**不动**未读与时间线 —— 卡片照旧进列表、照旧计未读，
+    // 别人建的、没派给我的活不该弹一条系统通知把我从别的事里拽出来。
+    if (!todoCardConcernsMe(rec, myId)) return;
 
     // 任务进入终态（完成 / 做不了）→ 给**创建人**提示。`todo_update` 本是静默事件
     //（不打扰全群），但"我派的活有了结论"对创建人是个该知道的变化，单独放行；

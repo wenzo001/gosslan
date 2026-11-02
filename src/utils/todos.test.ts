@@ -22,6 +22,7 @@ import {
   todoCategoryName,
   todoTerminalForCreator,
   todoMentionsMe,
+  todoCardConcernsMe,
   openTodosForMe,
   putTodoRows,
   MAX_TODO_ROWS_PER_CONV,
@@ -533,6 +534,50 @@ test("todoTerminalForCreator：完成与做不了都提示创建人", () => {
   assert.deepEqual(todoTerminalForCreator(done, "me"), { status: "done", title: "写周报" });
   assert.equal(todoTerminalForCreator(done, ""), null, "没有本机 id → 不提示");
   assert.equal(todoTerminalForCreator(def("t3", 1, { status: "done", creator: "me" }), "me"), null, "创建消息不算终态事件");
+});
+
+/**
+ * 群任务**建卡**的通知闸门（用户 2026-11-02 拍板：只打扰「创建人 + 被指派人」）。
+ *
+ * 过去的形状是：`todo` 属 Card 类 ⇒ `countsTowardUnread` 放行 ⇒ 群里任何人建一条任务，
+ * **全群每个人**都弹一条系统通知，唯一过滤只有"这条不是我自己发的"。
+ *
+ * 三条"照旧为真"的兜底是**故意**的：本判据只管建卡，认不出来的东西一律放行 ——
+ * 宁可多打扰一条，也不静默吞掉内容（与 `kindClass` 对未知 kind 回落 bubble 同向）。
+ * 少了这三条反控，"顺手把所有通知都拦掉"这种写法也会绿。
+ */
+test("todoCardConcernsMe：建卡只放行创建人与被指派人；其余情形照旧通知", () => {
+  assert.equal(
+    todoCardConcernsMe(def("t1", 1, { creator: "me", assignees: ["bob"] }), "me"),
+    true,
+    "创建人该被通知",
+  );
+  assert.equal(
+    todoCardConcernsMe(def("t2", 1, { creator: "boss", assignees: ["me"] }), "me"),
+    true,
+    "被指派人该被通知（派活给我就该知道）",
+  );
+  assert.equal(
+    todoCardConcernsMe(def("t3", 1, { creator: "boss", assignees: ["bob"] }), "me"),
+    false,
+    "别人建、也没派给我 ⇒ 不该弹通知（这一条就是过去那个全群打扰的回归）",
+  );
+  // 反控一：非建卡不归本判据管
+  const upd = {
+    ...def("t4", 1, { creator: "boss", assignees: ["bob"] }),
+    kind: "todo_update" as MessageRecord["kind"],
+  };
+  assert.equal(todoCardConcernsMe(upd, "me"), true, "todo_update 仍由「终态提示创建人」那一格决定");
+  // 反控二：普通消息永不被这一格拦掉
+  const text: MessageRecord = { ...def("t5", 1), kind: "text", content: "hi" };
+  assert.equal(todoCardConcernsMe(text, "me"), true, "普通消息不该被任务判据拦");
+  // 反控三：畸形载荷 / 启动早期没有本机 id ⇒ 照旧
+  assert.equal(todoCardConcernsMe({ ...def("t6", 1), content: "{" }, "me"), true, "读不出载荷时不许静默吞掉通知");
+  assert.equal(
+    todoCardConcernsMe(def("t7", 1, { creator: "boss", assignees: ["bob"] }), ""),
+    true,
+    "本机 id 还没就绪时照旧通知（宁可多一条）",
+  );
 });
 
 // ---------------- 与我相关的未完成任务（蓝色徽标的唯一判据，用户 2026-09-26） ----------------

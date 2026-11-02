@@ -880,6 +880,29 @@ export function todoTerminalForCreator(
   return { status: d.status, title: d.title };
 }
 
+/**
+ * 这条记录是否「**跟我有关**」—— 只用于**建卡**（`todo`）的通知闸门（用户 2026-11-02 拍板：
+ * 只通知相关人 = 创建人 + 被指派人）。
+ *
+ * 为什么需要它：`todo` 是 Card 类 ⇒ `countsTowardUnread` 放行 ⇒ 过去群里**任何人**建一条任务，
+ * 全群每个人都弹一条系统通知，而唯一的过滤只有"这条不是我自己发的"。别人建的、也没派给我的活，
+ * 对我只是群里多一张卡片，不是一次"该知道的变化"。
+ *
+ * 返回 `true` 的三种兜底都是**故意**的（宁可多打扰一条，也不静默吞掉内容）：
+ *  · `rec.kind !== "todo"` —— 本判据只管建卡，其它 kind 的行为一字不变；
+ *  · `myId` 还没就绪（启动早期）；
+ *  · 载荷读不出（`parseTodo` 返回 null）—— 与 `kindClass` 对未知 kind 回落到 `bubble` 同向。
+ *
+ * 被指派人那一半**复用** [`todoMentionsMe`]，不在这里另写一份 `assignees.includes(...)`
+ * （「有人@我」徽标、强提醒、这一格三处看的是同一个事实，各写一份迟早漂）。
+ */
+export function todoCardConcernsMe(rec: MessageRecord, myId: string): boolean {
+  if (!myId || rec.kind !== "todo") return true;
+  const d = parseTodo(rec);
+  if (!d) return true;
+  return d.creator === myId || todoMentionsMe(rec, myId);
+}
+
 // ---------------- 操作记录（全员对这条任务的改动流水） ----------------
 //
 // 数据源就是消息库里这条任务的全部 `todo`/`todo_update` 事件：任务定义是 LWW 寄存器，
