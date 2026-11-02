@@ -13,6 +13,42 @@
 
 ## [Unreleased]
 
+## [5.16.31] - 2026-11-02
+
+### A 档 6 处补上「这次是没读出来」的留痕；棘轮尺子收紧，上限 17 → 9
+
+A 档（界面假陈述那一族）里"要不要改成上抛 + 界面错误态"仍等拍板，但**"补一行留痕"不需要**——
+它不改任何可见结果，只让事后查得到。六处：
+
+| 处 | 界面看到的 | 新增的码 |
+|---|---|---|
+| `commands/friends.rs` 好友列表 | 好友整张消失、空态文案还会切成「还没有好友」 | `code=FRIENDS_LIST_READ_FAILED` |
+| `commands/chat.rs` 群任务徽标 | 全群徽标与任务看板按空处理 | `code=TODO_BADGE_READ_FAILED` |
+| `commands/files.rs` 传输台账 | 任务中心整张表凭空没有 | `code=TRANSFER_LEDGER_READ_FAILED` |
+| `commands/files.rs` 群文件我的状态 | 显示成"未接收" | `code=GFILE_MY_STATUS_READ_FAILED` |
+| `commands/groups.rs` 已读名单 | 所有人的绿勾一起消失（像"没人读过"） | `code=GROUP_READS_LIST_READ_FAILED` |
+| `commands/relay.rs` 中继地址与令牌 | 表单空 ⇒ 被读成"还没配"（改用 `get_setting_checked` 才分得开） | `code=RELAY_CONFIG_READ_FAILED` |
+
+节流键按调用点分开；`get_transfers` 那一处最初写成 `s.logger` 被编译器拦下
+（`s` 已在闭包里被 move，闭包外还要用它判链路 ⇒ 改用闭包自带的 `s_db`，`EXIT_CLIPPY` 从 101 回到 0 ——
+这条不是风格问题，是真会把"判链路"那一半编译坏）。
+
+**尺子也收紧了一档**：间隙里排除 `=>`。第一版没排，修好之后的正确形状
+`match db::get_setting_checked(..) { Ok(v) => v.unwrap_or_default(), Err(..) => 单独处理 }`
+会被数成折叠（实测数到 12，其中 3 条假阳性）⇒ 上限会被后来人当噪音调大，洞又变回沉默。
+收紧后现算 **9 处**：5 处是已裁决的豁免（`logs.rs:874` 有判据的刻意降级、`relay.rs:91/92`
+fail-closed、`channel.rs:77` 等价形状、`group_announcements.rs:465` 下游 `CASE WHEN` 挡住、
+`mobile_picker.rs:261` 折叠方向是多留不误删），**剩 4 处 = C 档**（`groups.rs:95/230/313/376`）。
+判据新增一条反控：`match` 里那个正确形状必须数到 0。
+
+轨迹：24 → 19（B 档 5 处）→ 17（`get_group_checked` 分档）→ 9（A 档 6 处留痕 + 尺子收紧）。
+变异反证：往 `commands/friends.rs` 塞一行原始折叠 ⇒ 红在「命中 10 处，超过棘轮上限 9」；
+还原 `cmp` 逐字节相同 ⇒ 绿。
+现跑：cargo fmt 0、clippy `--all-targets -D warnings` 0、`cargo test --lib` 1373 passed / 0 failed、
+`verify` 快速层 21/21、`npm test` 1544/1544、semver + 文档数字 + 文档引用三门 0、`check-domain-deps` 0。
+未跑：E2E / 真窗口（这六处的"界面看到什么"本批刻意没动）。
+
+
 ## [5.16.30] - 2026-11-02
 
 ### db 层分出「群不存在」与「这次没读出来」：B 档剩下 2 处落地，折叠棘轮 19 → 17

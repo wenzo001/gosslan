@@ -6098,16 +6098,22 @@ test("主读不许把读库失败折叠成空（B1-F7 / B3-F3；网络侧自 5.1
 // A/C 还在等拍板，所以现在**不能**直接把不限名字的尺子变成"必须为 0"。这条棘轮做的是把洞**封住不让它长**：
 //   · 只许降 —— 每落地一批，就把上限改小；调大上限必须说明为什么；
 //   · 新增一处折叠 ⇒ 当场红，而不是等下一次抽矩阵才发现。
-// 已知的量具偏差也写在这里，免得下一个人把它当成真缺陷：
-// `commands/relay.rs:305` 是**假阳性**（间隙跨过了结构体字面量的逗号，命中的是 306 行 server 那一格）
-// ⇒ 真折叠 16 处、匹配 17 条。
+//
+// 间隙里排除 `=>` 是必要的（第一版没排，实测数到 12、其中 3 条是假阳性）：
+// 修好之后的形状是 `match db::get_..(..) { Ok(v) => v.unwrap_or_default(), Err(..) => ... }` ——
+// 键不存在时折成空**是对的**，读失败已经在 `Err` 那一臂分开处理了。
+// 不排 `=>` 就会把这种正确写法数进来，逼着后来人把上限当噪音调大。
+//
+// 收紧后现算 **9 处**（2026-11-02）：5 处是**已裁决的豁免**（`commands/logs.rs:874` 刻意降级有判据、
+// `relay.rs:91/92` fail-closed 有判据、`channel.rs:77` 的等价形状、`group_announcements.rs:465` 下游
+// `conversations.rs` 的 `CASE WHEN` 挡住、`mobile_picker.rs:261` 折叠方向是多留不误删），
+// 剩下 4 处就是 C 档（`groups.rs:95/230/313/376`，等"当场失败 vs 靠补发档"拍板）。
 test("读库折叠总量是棘轮：不限名字的尺子只许降", () => {
   const SRC = join(import.meta.dirname, "..", "..", "src-tauri", "src");
-  const ANY = /\bdb::([a-z_]+)\s*\([^;?]{0,200}?\.unwrap_or_default\(\)/g;
-  const WHITE = /db::(get_setting|get_setting_checked|get_messages|get_latest_messages|list_conversations|list_groups)\s*\([^;?]{0,200}?\.unwrap_or_default\(\)/g;
-  // 2026-11-02 现算的轨迹（含 1 处已知假阳性）：24 → 19（B 档 5 处）→ 17（db 层分出 get_group 那一档，
-  // 解掉剩下 2 处 B 档）。只许往下改，不许往上调。
-  const CEILING = 17;
+  const ANY = /\bdb::([a-z_]+)\s*\((?:(?!=>)[^;?]){0,200}?\.unwrap_or_default\(\)/g;
+  const WHITE = /db::(get_setting|get_setting_checked|get_messages|get_latest_messages|list_conversations|list_groups)\s*\((?:(?!=>)[^;?]){0,200}?\.unwrap_or_default\(\)/g;
+  // 只许往下改：19（B 档 5 处）→ 17（get_group 分档）→ 12（A 档补留痕）→ 9（尺子收紧，见上）。
+  const CEILING = 9;
 
   const files: string[] = [];
   const stack = [SRC];
@@ -6145,6 +6151,17 @@ test("读库折叠总量是棘轮：不限名字的尺子只许降", () => {
     [..."let x = db::list_something_new(&dbc).unwrap_or_default();".matchAll(ANY)].length,
     1,
     "不限名字的尺子自己失效了 ⇒ 上面那两个数是假的",
+  );
+  // 反控：`match` 里"键不存在才折成空"是**正确形状**，不许被数成折叠
+  // （少了这条，收紧规则会被悄悄改回宽松 —— 上限就得跟着涨，洞重新变成沉默的）
+  assert.equal(
+    [
+      ..."match db::get_setting_checked(&c, K) { Ok(v) => v.unwrap_or_default(), Err(_) => { note(); } }".matchAll(
+        ANY,
+      ),
+    ].length,
+    0,
+    "正确形状（Err 已单独处理）被数进来了 ⇒ 棘轮会把修好的代码也当债",
   );
 });
 

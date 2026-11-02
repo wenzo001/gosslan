@@ -327,8 +327,20 @@ pub async fn list_group_files(
                         Some(x) => (x.completed, x.total),
                         None => (0, 0),
                     };
-                    let my_status = db::get_group_file_recipient_status(&dbc, &f.transfer_id, &me)
-                        .unwrap_or_default();
+                    // A 档只补留痕：读失败与「我没有状态」在界面上同形（都显示成未接收），
+                    // 只有日志能分清 —— 用户点「重试」却没变化时，这行是唯一线索。
+                    let my_status = match db::get_group_file_recipient_status(&dbc, &f.transfer_id, &me) {
+                        Some(status) => status,
+                        None => {
+                            if crate::logging::log_throttled("gfile_my_status_read_failed", 300_000) {
+                                s.logger.warn(
+                                    "file",
+                                    format!("code=GFILE_MY_STATUS_READ_FAILED 我的状态按空显示 transfer={}", f.transfer_id),
+                                );
+                            }
+                            String::new()
+                        }
+                    };
                     let path = db::get_transfer_path(&dbc, &f.transfer_id);
                     (f, delivered, total, my_status, path)
                 })
@@ -1726,7 +1738,22 @@ pub async fn get_transfers(
     let s_db = s.clone();
     let mut list = tokio::task::spawn_blocking(move || -> Result<Vec<TransferInfo>, String> {
         let dbc = s_db.db.lock().unwrap_or_else(|e| e.into_inner());
-        Ok(db::list_transfers(&dbc).unwrap_or_default())
+        // A 档这一格**只补留痕，不改可见结果**：界面仍看到"空"，但日志里有一行说明
+// "这次是没读出来，不是真的没有"。改成上抛 + 界面错误态与否，等用户拍板（§4.0bq）。
+        // 任务中心整张表会凭空消失 —— 与「今天没有传输」同形。
+        Ok(match db::list_transfers(&dbc) {
+            Ok(rows) => rows,
+            Err(e) => {
+                if crate::logging::log_throttled("transfer_ledger_read_failed", 300_000) {
+                    // 用闭包自带的 `s_db`：`s` 在闭包外还要判链路，不能被 move 进来。
+                    s_db.logger.warn(
+                        "file",
+                        format!("code=TRANSFER_LEDGER_READ_FAILED 传输台账按空显示：{e}"),
+                    );
+                }
+                Vec::new()
+            }
+        })
     })
     .await
     .map_err(|e| format!("传输表读取被线程池中断: {e}"))??;

@@ -303,8 +303,32 @@ pub async fn get_relay_config(state: State<'_, Arc<AppState>>) -> Result<RelayCo
         Ok(RelayConfigView {
             // 缺省 = 关：这个功能必须用户显式开启（不填服务器就没有这条链路，行为与今天一致）。
             enabled: db::get_config_bool(&dbc, RELAY_ENABLED_KEY, false),
-            server: db::get_setting(&dbc, RELAY_SERVER_KEY).unwrap_or_default(),
-            token: db::get_setting(&dbc, RELAY_TOKEN_KEY).unwrap_or_default(),
+            // A 档只补留痕：表单读成空 ⇒ 用户以为"中继还没配"，实际是这一次没读出来。
+            // 严格读取才分得开（`get_setting` 把 SQL 错误也折成 None）。
+            server: match db::get_setting_checked(&dbc, RELAY_SERVER_KEY) {
+                Ok(value) => value.unwrap_or_default(),
+                Err(e) => {
+                    if crate::logging::log_throttled("relay_config_read_failed", 300_000) {
+                        s.logger.warn(
+                            "relay",
+                            format!("code=RELAY_CONFIG_READ_FAILED 中继地址按空显示：{e}"),
+                        );
+                    }
+                    String::new()
+                }
+            },
+            token: match db::get_setting_checked(&dbc, RELAY_TOKEN_KEY) {
+                Ok(value) => value.unwrap_or_default(),
+                Err(e) => {
+                    if crate::logging::log_throttled("relay_token_read_failed", 300_000) {
+                        s.logger.warn(
+                            "relay",
+                            format!("code=RELAY_CONFIG_READ_FAILED 中继令牌按空显示：{e}"),
+                        );
+                    }
+                    String::new()
+                }
+            },
         })
     })
     .await
