@@ -13,6 +13,18 @@
 
 ## [Unreleased]
 
+### 证据新鲜度补记：5.16.71 的运行时改动之后重编并复跑两轮 E2E
+
+5.16.71 改的是运行时代码（`commands/helpers.rs` 的 `media_present_from`），而当时那份 release 二进制是
+5.16.68 的内容构建的 —— **旧绿不覆盖新代码**。已重编 release（`cargo build --release --features bluetooth`，
+退出 0），在新二进制上复跑：
+
+- `node scripts/e2e-multi-instance.mjs --round=contentpull` ⇒ 40 条断言全绿、退出 0；
+- `node scripts/e2e-multi-instance.mjs --round=default` ⇒ 18 条断言全绿、退出 0；
+- 两轮结束都打印「已还原用户原有实例库 3 个」。
+
+驱动自带新鲜度闸（任一 `.rs` 比二进制新就拒跑），所以这两份读数只可能来自当前源码构建的二进制。
+
 ## [5.16.71] - 2026-11-02
 
 ### F-PLF-014 收口：媒体存在性的极性抽成唯一映射并加判据
