@@ -261,11 +261,16 @@ async fn send_over_order(
         return match tokio::time::timeout(SEND_QUEUE_FULL_TIMEOUT, tx.send(msg.clone())).await {
             Ok(Ok(())) => Ok(()),
             Ok(Err(e)) => Err(e.to_string()),
-            Err(_) => Err("发送队列已满（对端消费不过来）".to_string()),
+            Err(_) => Err(SEND_QUEUE_FULL_ERR.to_string()),
         };
     }
     Err(last_err)
 }
+
+/// 「链路队列满、有界补试也超时」的唯一文案：`try_send` 要靠它认出这一族失败并留
+/// `code=MESH_QUEUE_OVERFLOW` 的痕（旧形状是一句自由文本 Err，被调用方 `let _ =` 吞掉后
+/// 全网零痕迹）。常量收在一处 ⇒ 文案改字时认失败的那一侧不会失配。
+pub(crate) const SEND_QUEUE_FULL_ERR: &str = "发送队列已满（对端消费不过来）";
 
 /// 尝试通过已建立连接发送消息；无连接则返回 Err。
 pub async fn try_send(state: &AppState, peer_id: &str, msg: &Message) -> Result<(), String> {
@@ -309,7 +314,20 @@ pub async fn try_send(state: &AppState, peer_id: &str, msg: &Message) -> Result<
         .map(|l| (l.high.clone(), l.normal.clone(), l.low.clone()))
         .collect();
     let priority = crate::network::dispatch::message_priority(msg);
-    send_over_order(&senders, &order, msg, priority).await
+    let res = send_over_order(&senders, &order, msg, priority).await;
+    // 队列满这一族失败以前只有自由文本 Err，而多数调用点 `let _ =` 吞掉 ⇒ 拥塞现场零痕迹。
+    // 只留痕不改判定：Err 原样上抛，节流与既有 `log_throttled` 同口径。
+    if let Err(e) = &res {
+        if e == SEND_QUEUE_FULL_ERR
+            && crate::logging::log_throttled("mesh_queue_overflow", 30_000)
+        {
+            state.logger.warn(
+                "mesh",
+                format!("code=MESH_QUEUE_OVERFLOW peer={peer_id} links={} —— 链路队列满且有界补试超时，本帧未进队", senders.len()),
+            );
+        }
+    }
+    res
 }
 
 /// 为一条**有序字节流**（文件分片）解析它应当钉住的链路：选路结果里那条"实际会走的"连接。
@@ -438,6 +456,10 @@ pub(crate) async fn send_on_link_with_tick(
 /// 0 ⇒ 必然没送出去；≥1 ⇒ 只是"还没资格宣布失败"。
 pub(crate) async fn relay_send_to_neighbors(state: &AppState, to: &str, msg: &Message) -> usize {
     let peers: Vec<String> = { state.links.lock().await.keys().cloned().collect() };
+    // 先数邻居再进循环（循环按值消费 peers）：「一个邻居都没接住」以前与「全接住」在日志里
+    // 同形（返回值只有调用方看得见，而转发路径的调用方只拿它当下限判据）。只补一行痕：
+    // 判定与返回值一字未动。
+    let neighbors = peers.iter().filter(|p| *p != to).count();
     let mut accepted = 0usize;
     for p in peers {
         if p == to {
@@ -446,6 +468,15 @@ pub(crate) async fn relay_send_to_neighbors(state: &AppState, to: &str, msg: &Me
         if try_send(state, &p, msg).await.is_ok() {
             accepted += 1;
         }
+    }
+    if neighbors > 0
+        && accepted == 0
+        && crate::logging::log_throttled("mesh_forward_failed", 30_000)
+    {
+        state.logger.warn(
+            "mesh",
+            format!("code=MESH_FORWARD_FAILED to={to} neighbors={neighbors} accepted=0 —— 没有一个邻居接住这一帧转发"),
+        );
     }
     accepted
 }
