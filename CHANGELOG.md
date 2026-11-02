@@ -13,6 +13,12 @@
 
 ## [Unreleased]
 
+### 审计册 §13.0 续记：可诊断列清零；17 格缺口的共同原因已验实
+
+五处「可诊断 FAIL」按列改 PASS（DM_CANCEL / SETTINGS_PERSIST_FAILED / apply_recall / 三处读取上抛），
+现读可诊断 FAIL = 0。另把 4 格「缺行为级用例」的共同原因写清：它们都要 `Arc<AppState>`，而构造它需要真实
+tauri `AppHandle`（三处测试注释都写「单测造不出来」）⇒ 加测试前得先有 AppState 测试构造器，不是「没找」。
+
 ### 矩阵订正：F-PLF-010 的「没有独立用例」要分成形状级 / 行为级
 
 现读 `in_flight_media_is_not_reported_as_deleted` 确实读的是 `resolve_media_path` 的函数体，但只断言源码形状；
