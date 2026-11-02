@@ -1323,6 +1323,20 @@ pub struct AppState {
     /// 时发送会失败，此前被静默丢弃导致成员永久拿不到群密钥。
     /// 此处登记失败项，由建链 / Hello / 心跳的 flush_pending_group_keys 重试。
     pub pending_group_keys: Mutex<HashMap<String, std::collections::HashSet<String>>>,
+    /// **我发起过的内容补拉**：cid(sha256) -> 登记时刻（ms）。
+    ///
+    /// 为什么需要它（审计 §4.0br，用户 2026-11-02 报「有些群任务的图片会从别人的私聊再发我一份」）：
+    /// 群任务图片缺失时前端按 cid 向某个对端要一份，而**服务端把这次应答当成一次普通的 1:1 文件发送**
+    /// 回来（`ContentRequest` 帧不带会话/范围字段），接收端的单聊文件臂收到就无条件落一张私聊卡
+    /// + 预览「[图片]」+ 未读 +1。这张表让接收端认出"这份是我自己要的"，从而**只落内容、不落卡**。
+    ///
+    /// 老化：一次拉取从请求到完成是秒级~分钟级 ⇒ 读侧顺手丢掉超过
+    /// [`CONTENT_PULL_TTL_MS`] 的条目，别让它无界增长（形状照 `pending_reads`：`HashMap<String, i64>`）。
+    pub content_pull_cids: Mutex<HashMap<String, i64>>,
+    /// 由上面那张表在 **FileOffer** 那一臂认出来的传输号：cid -> 时刻 的同款形状。
+    /// 必须在 Offer 那一臂登记：`FileDone` 帧只带 `transfer_id` + `attempt`（`protocol.rs:2021-2027`），
+    /// 到落库那一步已经拿不到 cid 了。
+    pub content_pull_transfers: Mutex<HashMap<String, i64>>,
 
     /// **已发出、还没被同意/拒绝的好友申请**：peer_id -> (首次登记时刻 ms, 上次补发时刻 ms)。
     ///
@@ -1889,7 +1903,92 @@ fn resolve_device_id(
     })
 }
 
+/// 内容补拉的登记项活多久（`AppState::content_pull_cids` / `_transfers`）。
+///
+/// 一次补拉从请求到完成是秒级~分钟级，30 分钟远大于任何真实链路耗时，
+/// 又足以让"我确实要过这份内容"这个事实不致永久有效 ——
+/// 永久有效会把对端**后来主动重发的同一份内容**也当成回程而吞掉。
+pub(crate) const CONTENT_PULL_TTL_MS: i64 = 30 * 60 * 1000;
+
+/// 同一张补拉表的条目上限：老化之外再上一道闸，防止极端情况（脚本狂发拉取）把内存吃穿。
+const CONTENT_PULL_MAX: usize = 512;
+
+/// 就地老化一张补拉表，并在仍然超限时丢掉最旧的若干条。
+///
+/// 为什么按"最旧"而不是"随便丢"：`HashMap` 没有插入序，这里按登记时刻取最小值剔除，
+/// 保证被丢的永远是**最不可能还在飞行中**的那几条。规模只有几百，一次线性扫描够了。
+fn prune_content_pull(map: &mut HashMap<String, i64>, now: i64) {
+    map.retain(|_, marked_at| now - *marked_at <= CONTENT_PULL_TTL_MS);
+    while map.len() > CONTENT_PULL_MAX {
+        let Some(oldest) = map
+            .iter()
+            .min_by_key(|(_, marked_at)| *marked_at)
+            .map(|(k, _)| k.clone())
+        else {
+            break;
+        };
+        map.remove(&oldest);
+    }
+}
+
 impl AppState {
+    /// 登记「**我**要这个 cid 的字节」—— `request_content` / `request_content_by_cid` 发送前调用。
+    ///
+    /// 为什么在发送侧登记而不是看 `transfer_id` 前缀：服务端在请求方没带传输号时现造
+    /// `refetch-<uuid>`（`network/transport/handle_share.rs:296-300`），**续传那一档沿用的却是原传输号**
+    /// ⇒ 只认前缀会漏掉一半的补拉。cid 才是这条链上两边都认的同一个事实。
+    pub fn note_content_pull_cid(&self, cid: &str) {
+        if cid.is_empty() {
+            return;
+        }
+        let now = crate::db::now_ms();
+        let mut m = self
+            .content_pull_cids
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        prune_content_pull(&mut m, now);
+        m.insert(cid.to_string(), now);
+    }
+
+    /// FileOffer 到达时：这个 cid 是我自己要的 ⇒ 把这条**传输号**也标成补拉回程。
+    pub fn note_content_pull_transfer(&self, transfer_id: &str) {
+        if transfer_id.is_empty() {
+            return;
+        }
+        let now = crate::db::now_ms();
+        let mut m = self
+            .content_pull_transfers
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        prune_content_pull(&mut m, now);
+        m.insert(transfer_id.to_string(), now);
+    }
+
+    /// 这个 Offer 的内容是不是我请求过的（落卡之前的第一道判据）。
+    pub fn is_content_pull_cid(&self, cid: &str) -> bool {
+        let now = crate::db::now_ms();
+        let mut m = self
+            .content_pull_cids
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        prune_content_pull(&mut m, now);
+        m.contains_key(cid)
+    }
+
+    /// 这条传输是不是我自己要来的内容 —— 单聊文件落库那一臂用它。
+    ///
+    /// ⚠️ 命中只该**跳过聊天卡片与未读/预览**，绝不跳过字节落盘与 content store 登记：
+    /// 那两件事正是补拉的目的（图片要能在任务卡上显示出来）。
+    pub fn is_content_pull_transfer(&self, transfer_id: &str) -> bool {
+        let now = crate::db::now_ms();
+        let mut m = self
+            .content_pull_transfers
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        prune_content_pull(&mut m, now);
+        m.contains_key(transfer_id)
+    }
+
     /// 取群文件会话密钥并**刷新 TTL**：有分片/Offer 活动就说明这一单还活着，
     /// 不该被 2h 的清扫器中途收走（大文件经 BLE 或多轮重试可能超过 2h）。
     pub fn touch_group_file_key(&self, transfer_id: &str) -> Option<[u8; 32]> {
@@ -2338,6 +2437,8 @@ impl AppState {
             network: Mutex::new(None),
             pending_reads: Mutex::new(pending_reads_map),
             pending_group_keys: Mutex::new(HashMap::new()),
+            content_pull_cids: Mutex::new(HashMap::new()),
+            content_pull_transfers: Mutex::new(HashMap::new()),
             conv_link: Mutex::new(HashMap::new()),
             share_dir: Mutex::new(share_dir),
             nickname: Mutex::new(nickname),
@@ -3362,6 +3463,99 @@ mod tests {
         assert!(
             msg.contains(&logs_dir.to_string_lossy().to_string()),
             "{msg}"
+        );
+    }
+}
+
+#[cfg(test)]
+mod content_pull_tests {
+    use super::{prune_content_pull, CONTENT_PULL_MAX, CONTENT_PULL_TTL_MS};
+    use std::collections::HashMap;
+
+    /// 补拉表的两道闸都得有凭据：TTL 老化与超限剔除。
+    /// 「我确实要过这份内容」这个事实**不该永久有效** —— 永久有效会把对端后来主动重发的
+    /// 同一份内容也当成回程而吞掉（这是本方案唯一的假阴性，所以它必须有到期）。
+    #[test]
+    fn content_pull_entries_age_out_and_are_capped() {
+        let now = 1_000_000_i64;
+        let mut m: HashMap<String, i64> = HashMap::new();
+        m.insert("fresh".to_string(), now);
+        m.insert("edge".to_string(), now - CONTENT_PULL_TTL_MS);
+        m.insert("stale".to_string(), now - CONTENT_PULL_TTL_MS - 1);
+        prune_content_pull(&mut m, now);
+        assert!(m.contains_key("fresh"), "没到期的条目被丢了");
+        assert!(
+            m.contains_key("edge"),
+            "恰好等于 TTL 的边界该保留（口径是 `<=`）"
+        );
+        assert!(
+            !m.contains_key("stale"),
+            "过期的补拉登记必须被清掉，不然这表只增不减"
+        );
+
+        // 上限：塞满之后按"最旧先丢"，被丢的必须是最不可能还在飞行中的那几条
+        let mut full: HashMap<String, i64> = HashMap::new();
+        for i in 0..(CONTENT_PULL_MAX + 5) {
+            full.insert(format!("cid-{i}"), now + i as i64);
+        }
+        prune_content_pull(&mut full, now + 10_000);
+        assert_eq!(full.len(), CONTENT_PULL_MAX, "超限时必须回到上限");
+        assert!(!full.contains_key("cid-0"), "最先被丢的应当是最旧的那条");
+        assert!(full.contains_key(&format!("cid-{}", CONTENT_PULL_MAX + 4)));
+    }
+
+    /// **接线判据**：四调用点必须都在，且 `file-done` 与 `FileCompleteAck` 不许被 `refold` 门罩住。
+    ///
+    /// 为什么单独钉这个：`is_content_pull_transfer` 的单元测试只能证明表读写对，
+    /// 证明不了"落卡片那一臂真的问了它"。而把 ack 一起跳过会更糟 ——
+    /// 服务侧会把这一单判成未确认并重发/换轮次（`file_epochs`），比多一张卡严重得多。
+    #[test]
+    fn content_pull_wiring_is_pinned_at_all_four_sites() {
+        let send = include_str!("commands/files.rs");
+        let recv = include_str!("network/transport/handle_file.rs");
+
+        // ①② 两个发送点都登记 cid（`request_content` 与 `request_content_by_cid`，msg 构造逐字相同）
+        assert_eq!(
+            send.matches("s.note_content_pull_cid(&cid);").count(),
+            2,
+            "两个补拉入口都要登记；只接一半 ⇒ 另一条路继续往私聊塞卡"
+        );
+
+        // ③ FileOffer 臂：cid 只在这一臂拿得到（`FileDone` 帧不带）
+        assert_eq!(
+            recv.matches("state.is_content_pull_cid(&file_sha256)")
+                .count(),
+            1,
+            "Offer 那一臂必须认一次 cid"
+        );
+        assert_eq!(
+            recv.matches("state.note_content_pull_transfer(&transfer_id)")
+                .count(),
+            1,
+            "认出之后必须把这条传输号登记下来"
+        );
+
+        // ④ 落库臂：先算 refold，再用三道门分别挡掉 卡片落库 / 预览未读 / 前端新消息事件
+        assert_eq!(
+            recv.matches("let refold = state.is_content_pull_transfer(&transfer_id);")
+                .count(),
+            1
+        );
+        assert_eq!(
+            recv.matches("if !refold {").count(),
+            3,
+            "三道门缺一不可：只挡落库的话，预览与未读仍会 +1、前端还会画气泡"
+        );
+
+        // 反控：ack 与 file-done 不在门里 —— 各只有一处，且都紧跟在 `if !refold` 之外
+        assert_eq!(
+            recv.matches("\"file-done\"").count(),
+            1,
+            "`file-done` 事件必须照发（前端靠它填任务卡上的缩略图）"
+        );
+        assert!(
+            recv.contains("Message::FileCompleteAck {\n                            transfer_id: transfer_id.clone(),\n                            success: true,"),
+            "成功 ack 必须照发：漏了它，服务侧把这单判成未确认并重发/换轮次"
         );
     }
 }
