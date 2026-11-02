@@ -9,7 +9,9 @@
 /// 报告在 `AppState::init` 里由 `Logger::seed_previous_run` 算好，这里只 clone，
 /// 不做文件 IO —— 启动路径不该再等一次磁盘。
 #[tauri::command(async)]
-pub fn get_previous_exit(state: tauri::State<'_, Arc<AppState>>) -> crate::logging::PreviousRunReport {
+pub fn get_previous_exit(
+    state: tauri::State<'_, Arc<AppState>>,
+) -> crate::logging::PreviousRunReport {
     state.previous_exit.clone()
 }
 
@@ -53,35 +55,16 @@ pub fn ui_heartbeat(
     // 卡死那一刻通常正好没有 IPC 在飞，旧写法于是只写得出 `last_op=unknown`。
     if let Some(op) = current_op {
         let op: String = op.chars().take(120).collect();
-        *state.ui_current_op.lock().unwrap_or_else(|e| e.into_inner()) = Some(op);
-        state.ui_current_op_at.store(
-            now,
-            std::sync::atomic::Ordering::SeqCst,
-        );
+        *state
+            .ui_current_op
+            .lock()
+            .unwrap_or_else(|e| e.into_inner()) = Some(op);
+        state
+            .ui_current_op_at
+            .store(now, std::sync::atomic::Ordering::SeqCst);
     }
-    // IPC 堆积的取证日志：阈值/节流都只影响日志，不影响心跳语义。
-    if active && (inflight >= 8 || oldest_ms >= 2_000) {
-        let last = state
-            .ui_backlog_note_at
-            .load(std::sync::atomic::Ordering::SeqCst);
-        if now - last >= 30_000 {
-            state
-                .ui_backlog_note_at
-                .store(now, std::sync::atomic::Ordering::SeqCst);
-            let op = state
-                .ui_current_op
-                .lock()
-                .unwrap_or_else(|e| e.into_inner())
-                .clone()
-                .unwrap_or_else(|| "unknown".to_string());
-            state.logger.warn(
-                "ui",
-                format!(
-                    "code=IPC_BACKLOG inflight={inflight} oldest_ms={oldest_ms} active={active} last_op={op}"
-                ),
-            );
-        }
-    }
+    // 取证日志由看门狗线程写（见 `watchdog.rs`）：心跳只写原子量，不在这里碰文件 IO，
+    // 否则它会成为“贴在 async 命令上的同步重活”，把重活命令棘轮顶高。
 }
 
 /// 前端慢调用上报（>2 s）：只写一行日志，不回传事件（避免形成回环）。
@@ -133,7 +116,9 @@ pub async fn clear_logs(state: tauri::State<'_, Arc<AppState>>) -> Result<(), St
 /// 知道文件在哪、怎么复制到剪贴板。三条路径都由本轮解析出的 stem 给（多实例是
 /// `gosslan-1.log`），前端不许自己拼 —— 差一个数字就是别人的日志。
 #[tauri::command(async)]
-pub fn get_log_locations(state: tauri::State<'_, Arc<AppState>>) -> crate::diagnostics::LogLocations {
+pub fn get_log_locations(
+    state: tauri::State<'_, Arc<AppState>>,
+) -> crate::diagnostics::LogLocations {
     crate::diagnostics::locations(&state.logger)
 }
 
@@ -656,7 +641,12 @@ fn aux_anchor_rect(app: &tauri::AppHandle, win: &tauri::WebviewWindow) -> Option
         .or_else(|| win.current_monitor().ok().flatten())
         .or_else(|| win.primary_monitor().ok().flatten());
     let area = *monitor?.work_area();
-    Some((area.position.x, area.position.y, area.size.width, area.size.height))
+    Some((
+        area.position.x,
+        area.position.y,
+        area.size.width,
+        area.size.height,
+    ))
 }
 
 /// 把窗口摆正（**只动位置，不动尺寸**）：预览按显示器工作区居中，其余按主窗口居中，
@@ -868,7 +858,11 @@ pub fn open_group_todos_window(
     }
     // todoId 同理：这条通道没有任何"是不是真任务"的判断，前端查不到就什么都不做。
     if let Some(id) = &focus_todo_id {
-        if id.is_empty() || id.len() > 80 || !id.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+        if id.is_empty()
+            || id.len() > 80
+            || !id
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
         {
             return Err("任务 ID 非法".to_string());
         }
@@ -996,9 +990,7 @@ fn ensure_tasks_window(
 /// 不分桌面/移动：只是读一块内存。预热过、还没被真正打开时返回 `None` ⇒ 窗口显示
 /// "还没选群"那一档，而不是拿一个脏 ID 去查。
 #[tauri::command]
-pub fn get_group_todos_context(
-    state: tauri::State<'_, Arc<AppState>>,
-) -> Option<String> {
+pub fn get_group_todos_context(state: tauri::State<'_, Arc<AppState>>) -> Option<String> {
     state
         .task_window_group
         .lock()
@@ -1079,13 +1071,7 @@ pub fn request_group_todo_focus(
         .todo_focus_request
         .lock()
         .unwrap_or_else(|e| e.into_inner())
-        .insert(
-            group_id.clone(),
-            crate::state::TodoFocus {
-                todo_id,
-                mode,
-            },
-        );
+        .insert(group_id.clone(), crate::state::TodoFocus { todo_id, mode });
     set_task_window_group(&state, &group_id);
     // 窗口已经开着 ⇒ 它不会经历挂载，只能靠这条通知去"换群 + 重读 + 展开"。
     // 窗口不存在（或只是预热过）⇒ 什么都不发：它挂载时会自己取上下文与暂存。
@@ -1164,11 +1150,7 @@ fn validate_preview(g: &crate::state::PreviewGallery) -> Result<(), String> {
         match (&it.msg_id, &it.cid, &it.data_src) {
             (Some(m), _, _) if !m.is_empty() => {}
             (_, Some(c), _) if !c.is_empty() => {}
-            (
-                _,
-                _,
-                Some(d),
-            ) if d.starts_with("data:") => {
+            (_, _, Some(d)) if d.starts_with("data:") => {
                 bytes += d.len();
             }
             _ => return Err("图片数据不可跨窗口预览".to_string()),
