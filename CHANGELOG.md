@@ -13,6 +13,35 @@
 
 ## [Unreleased]
 
+## [5.16.39] - 2026-11-02
+
+### B1-F5 复核：代码 10-27 就收了、判据今晚才补上（5.16.39）
+
+抽检闭环矩阵 `F-MSG-030` 那格时撞出来的第三类洞：**留痕早就落地，但没有任何判据钉住它**。
+1:1 收端解密失败那一臂今天现读已有 `code=DIRECT_OPEN_FAILED` + `log_throttled("direct_open_failed", 5_000)`
+（`handle_messaging.rs:171-178`，10-27 审计 C-5 那批），不 Ack / 不落库的语义一字未动 ——
+所以立案那句「完全静默」是 10-26 的状态、不是现状；**真正欠的是护栏**：今天删掉那行 warn，全部门禁仍然绿。
+这正是本仓「接收侧留痕已落工作树但无护栏 ⇒ 不许单独提交」那一族的**反向版本**（留痕先走了，护栏欠了 12 天）。
+
+处置：把两条断言**并进既有那条形状判据** `dispatch_tests.rs::decrypt_failure_returns_before_any_ack_can_be_sent`
+（同一个 `else` 块里「当场 return / 具名码 / 节流」一起钉），不新开通道 —— 拆开钉就会出现「改一红一、另一静默失效」。
+**变异**＝把 `code=DIRECT_OPEN_FAILED` 换成中文串 ⇒ 红在「解密失败那一臂没有具名码 ⇒ B1-F5 复发」；
+还原后 `cmp` 逐字节相同、`cargo test --lib decrypt_failure_returns` 回绿。
+
+同批复核掉两处过期结论（都是**读代码现算而不是凭台账**）：`F-GRP-001` 的「改名 `.ok()` 吞写失败」与
+「群管理路径无具名码」都已不成立（`group_membership.rs:23` 走 `log_write_failure`、
+`transport.rs:1472` 走 `code=GROUP_SYNC_WRITE_FAILED`）；还成立的只剩「界面不区分改名失败与成功」
+⇒ 并入 A 档那一次拍板。**这个区分要说清**：不能因为还剩一格就把整格判 FAIL，也不能因为大半修了就判 PASS。
+
+现跑：`cargo test --features bluetooth --lib decrypt_failure_returns` **1 passed / 0 failed**（变异那次 FAILED 已在上面记）、
+全量 `cargo test --features bluetooth --lib` **1375 passed / 0 failed / 3 ignored**、`cargo fmt --check --all` 0、
+`cargo clippy --features bluetooth --all-targets -- -D warnings` 0、`node scripts/check-doc-numbers.mjs` 0。
+`npm run verify` 快速层**这一笔退 1**，红的只有 Change Budget **判据 3**（重复犯案窗口）：
+`transport` 域在最近 5 个修补形状提交里占 **3 次**（sha 由那一步自己打印，复跑 `npm run verify` 看第 18 步那三行；分母是 `origin/main..HEAD` 这批未推的堆叠，现数 18 笔：`git log --oneline origin/main..HEAD | wc -l`）。
+它的三条自查里 ①「一次改太多」与 ②「同一处反复补」今晚分别由 **判据 G 的机器化**（矩阵 ID 唯一性不再靠人记）与
+**B1-F5 的护栏补齐**回答；③「拆独立分支」在这里等价于"把这批已完成的推上去让窗口移动"——**那一步要授权**，
+负责人今晚选的是「先只本地、不推」，所以这一格红**按现状如实留着**，不靠拆提交绕开它。
+
 ## [5.16.38] - 2026-11-02
 
 ### 可取消的通道其实有 5 道（6 个码）不是立案说的 4 类；闭环矩阵的 ID 第一次有机器判据（判据 G）（5.16.38）

@@ -412,6 +412,17 @@ fn decrypt_failure_returns_before_any_ack_can_be_sent() {
         window.contains("return;"),
         "解密失败那一支必须当场返回，不许落到落库那一段"
     );
+    // B1-F5（10-26 立案时这一臂**完全静默**，只有形状没有痕迹）：留痕同样是这一格的半边。
+    // 为什么钉在本条判据里而不是另开一条：「不 Ack / 当场 return」是数据安全红线，
+    // 「有没有具名码」是可追溯 —— 两者都长在同一个 `else` 块里，拆开钉就会出现"改一红一、另一个静默失效"。
+    assert!(
+        window.contains("code=DIRECT_OPEN_FAILED"),
+        "解密失败那一臂没有具名码 ⇒ 「对方说发了、我这边什么都没有」又回到查不出原因（B1-F5 复发）"
+    );
+    assert!(
+        window.contains("log_throttled(\"direct_open_failed\""),
+        "留痕必须节流：密钥轮换期一次心跳能回来几十条，不节流的 warn 会把日志刷满"
+    );
     assert!(
         src[persist..].contains(ACK),
         "落库之后没有 Ack ⇒ 发送方永远显示「发送中」"
