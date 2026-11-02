@@ -2486,7 +2486,7 @@ grep -n "db::get_group(&dbc\|db::get_setting(db, RELAY\|db::list_friends(&dbc" \
 | 功能 | 163 个 Tauri 命令 ↔ 165 个前端 invoke 双向差集；40 个后端 emit ↔ 36 个前端 listen 双向差集；18 条核心业务流程端到端追踪到 SQL |
 | 稳定性 | 全部 `tokio::sync::Mutex`/`std::sync::Mutex` guard 绑定、全部 `loop`/`while` 终止条件、~20 个内存注册表的淘汰点、取消/恢复全路径、前端生命周期拆解 |
 | 重复 | 43 行替换矩阵逐行现核 + 16 条新发现（含 TS/Rust 跨层规则对账） |
-| 测试 | 276 条护栏逐条读注入点、1481 前端用例 + 1274 Rust 用例的覆盖分级、18 条关键路径覆盖判定、平台基线差异 |
+| 测试 | **当日读数**：276 条护栏逐条读注入点、1481 前端用例 + 1274 Rust 用例的覆盖分级、18 条关键路径覆盖判定、平台基线差异。⚠️ 这两组数是 10-29 的，**已漂**：现读护栏由 `node scripts/check-doc-numbers.mjs` 判据 E 打印（2026-11-02 为 290），Rust 用例 `wc -l < src-tauri/test-baseline.macos.txt`（2026-11-02 为 1407）；前端用例以 `npm test` 的汇总行为准 |
 
 ### 9.2 未覆盖 / 无法执行（诚实清单）
 
