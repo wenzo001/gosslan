@@ -158,9 +158,22 @@ pub async fn get_group_reads(
     let s = state.inner().clone();
     tokio::task::spawn_blocking(move || -> Result<Vec<GroupReadInfo>, String> {
         let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());
-        Ok(db::list_group_reads(&dbc, &group_id)
-            .unwrap_or_default()
-            .into_iter()
+        // A 档这一格**只补留痕，不改可见结果**：界面仍看到"空"，但日志里有一行说明
+// "这次是没读出来，不是真的没有"。改成上抛 + 界面错误态与否，等用户拍板（§4.0bq）。
+        // 已读名单变空 ⇒ 所有人的绿勾一起消失（看起来像"没人读过"）。
+        Ok(match db::list_group_reads(&dbc, &group_id) {
+            Ok(rows) => rows,
+            Err(e) => {
+                if crate::logging::log_throttled("group_reads_list_read_failed", 300_000) {
+                    s.logger.warn(
+                        "group",
+                        format!("code=GROUP_READS_LIST_READ_FAILED 已读名单按空显示 group={group_id}：{e}"),
+                    );
+                }
+                Vec::new()
+            }
+        }
+        .into_iter()
             .map(|(reader_id, last_read_ts)| GroupReadInfo {
                 reader_id,
                 last_read_ts,
