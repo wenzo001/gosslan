@@ -13,6 +13,18 @@
 
 ## [Unreleased]
 
+## [5.16.59] - 2026-11-02
+
+### 「可验证」再收两格：群待办读取（复核）、收藏与撤回的交互（新用例）
+
+- **F-GRP-030 群待办徽标读取**：原句「未读到 `get_todo_messages_for_conns` 与折叠的具名用例」
+  **已过期** —— DB 侧 `db/todo_reads_tests.rs` 四条（只取 todo 类 / 不是分页读 / ascending seq 且带
+  mention_targets / **按会话分开**），前端折叠在 `utils/todos.test.ts`（畸形载荷不抛错、未知状态
+  回落待办、墓碑不列、LWW、todo 与 todo_update 同一条定义）。只订正台账，无新代码。
+- **F-PRE-020 收藏与撤回**：补了**跨两族的那一格** —— `a_favorite_survives_recall_of_the_original_message`：
+  撤回原消息后收藏仍在（收藏是用户主动挑出来要留的独立副本；顺手删掉是不可逆且没有二次确认的后果）。
+  变异反证：让 `apply_recall` 顺手删 `favorites` ⇒ 红并报「那是独立副本」，还原后 `cmp` 相同。
+
 ## [5.16.58] - 2026-11-02
 
 ### 「可验证」再收两格：设置写失败、删好友的级联范围与顺序

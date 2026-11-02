@@ -2613,5 +2613,26 @@ mod tests {
             "群补发队列还留着这行 ⇒ 下一次 flush 会把成员删掉的那条群消息推给他们"
         );
     }
-}
 
+    /// 撤回了原消息，**收藏里的副本仍可用**（F-PRE-020 的交互面）。
+    ///
+    /// 收藏是用户主动挑出来要留的独立副本（自带 content 快照与 media 副本）；
+    /// 撤回只作用于时间线上的那条消息行，不该顺手把收藏也清掉 —— 否则"我刚收藏就撤回了，
+    /// 收藏也没了"这种不可逆后果没有二次确认。
+    #[test]
+    fn a_favorite_survives_recall_of_the_original_message() {
+        let conn = mem();
+        ensure_conversation(&conn, "f1", "single", "张三", None).unwrap();
+        let mut m = rec_as("m9", "f1", "text", "值得留一句");
+        m.ts = 10;
+        insert_message(&conn, &m).unwrap();
+        insert_favorite(&conn, &fav("fav1", "m9", 20)).unwrap();
+
+        apply_recall(&conn, "f1", "m9", "a", 11).unwrap();
+        assert!(is_recalled(&conn, "m9"), "前提：原消息确实被撤回");
+
+        let list = list_favorites(&conn).unwrap();
+        assert_eq!(list.len(), 1, "撤回原消息不该把收藏一起删掉（那是独立副本）");
+        assert_eq!(list[0].msg_id, "m9");
+    }
+}

@@ -320,6 +320,7 @@ db::startup_safety_tests::orphan_sending_is_recovered_but_queued_and_terminal_ro
 db::startup_safety_tests::rename_group_rolls_back_when_conversation_update_fails
 db::startup_safety_tests::the_base_schema_and_the_content_schema_land_together
 db::startup_safety_tests::upsert_group_rolls_back_when_member_insert_fails
+db::tests::a_favorite_survives_recall_of_the_original_message
 db::tests::ack_from_non_recipient_is_rejected
 db::tests::ack_sender_check_uses_group_file_owner
 db::tests::bt_enabled_defaults_on_and_keeps_explicit_value
