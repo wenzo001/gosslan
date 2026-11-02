@@ -33,12 +33,12 @@ history 选择、导航方向与 router 实例。这样路由契约可以在 Nod
 | 窗口 | 入口 | router | 路由范围 |
 |---|---|---|---|
 | 主窗口 | `index.html` / `src/entries/main.ts` | `src/router/main.ts` | 会话 / 通讯录 / 收藏 / 链接 / 我的 / 覆盖层 |
-| 设置窗口 | `settings.html` / `src/entries/settings.ts` | `src/router/settings.ts` | `#/settings/:key`（10 个分区） |
+| 设置窗口 | `settings.html` / `src/entries/settings.ts` | `src/router/settings.ts` | `#/settings/:key`（11 个路由键，桌面归并成 4 个容器） |
 | 日志 / 群任务 / 预览 | 单页入口 | **不需要** | 无可下钻的页面层级；筛选/任务详情是视图状态或浮层 |
 
 跨窗口跳转继续走 `launchAuxWindow` 的 IPC；router 不跨窗口。
 
-**为什么只有设置窗口需要 router**：它有 10 个可深链、可返回的分区；日志/群任务/预览都是单页工具，筛选与详情弹窗属于视图状态（R4），没有「整体换成一个新界面」的层级，强加路由只会制造空记录。
+**为什么只有设置窗口需要 router**：它有 11 个可深链、可返回的路由键（桌面归并成 4 个容器）；日志/群任务/预览都是单页工具，筛选与详情弹窗属于视图状态（R4），没有「整体换成一个新界面」的层级，强加路由只会制造空记录。
 
 ## 3. 主窗口路由表
 
@@ -60,7 +60,7 @@ history 选择、导航方向与 router 实例。这样路由契约可以在 Nod
 | `logs` | `/me/logs` | — | `LogViewer`（非 standalone） | 仅移动 | `overlay` |
 | `search` | `/search` | `q` | `ChatSearchDialog`（桌面卡片；移动端整页，底栏隐藏） | 双端 | `overlay` |
 
-设置窗口的路由是 `#/settings/:key`，分区清单在 `src/router/settings.ts` 的 `SETTINGS_SECTIONS`。
+设置窗口的路由是 `#/settings/:key`，分区清单的唯一数据源是 `src/utils/settingsManifest.ts` 的 `ROUTE_SECTIONS`；`src/router/settings.ts` 只 re-export `SETTINGS_SECTIONS`，不再维护第二份数组。
 
 **旧路径兼容**（静态重定向，不允许掉进 catch-all）：
 
@@ -104,8 +104,9 @@ history 选择、导航方向与 router 实例。这样路由契约可以在 Nod
 - **已知限制**：独立设置窗口有自己的 hash router；桌面主窗口的 `/me/settings/:key` 能打开设置窗口，
   但不会把那个窗口的当前分区强推到 `:key`（两套 router 之间没有跨窗口导航通道）。`/me/profile`
   落在设置窗口默认的 profile 分区，因此资料深链是准的；日志深链打开日志窗口。
-- 设置分区两端集合不同：移动端 `appearance` 与 `chatStyle` 分开（11 个 key），桌面设置窗口
-  把两者合并在 `appearance`（10 个 key）。这是空间差异，不是配置缺失。
+- 设置分区两端集合不同：移动端有 `chatStyle` 与单数 `notification`（9 个二级页），独立设置窗口
+  路由有复数 `notifications`、没有 `chatStyle` / 单数 `notification`（11 个路由键，桌面归并成
+  `general / network / storageFiles / about` 4 个容器）。这是深链与空间差异，不是配置缺失。
 - 日志/群任务/预览是单页工具：筛选和任务详情是视图状态/浮层，不占页面路由。
 
 **不进路由**：群任务的 `groupId` + `todoId` 仍走后端 `take_group_todo_focus`；图片预览图册走后端 `preview_gallery`；外链窗口加载远端 URL。
