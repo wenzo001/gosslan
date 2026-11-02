@@ -2630,7 +2630,11 @@ audit-context/
 3. **领域图两条对账**（5.16.41；用户口径：不正式立 INV-P37）：判据 G（不变量必须被认领）与
    判据 H（契约图 inv 快照 ↔ `.mjs`），首跑各抓出 6 条无主 / 3 处漂移。
 4. **可诊断（失败与拒绝的具名码）**：**八族共 56 个出口** —— 共享目录 4 / 群命令 9 / 收藏·预览·清数据 10 / 文件命令 7 /
-   好友同意 3 / 设置写删 14 / 外链+资料推送 6 / 移动端转码 3。每批一条「分母 + 配对或唯一通道」判据 + 变异反证。
+   好友同意 3 / 设置写删 14 / 外链+资料推送 6 / 移动端转码 3。每批一条「分母 + 配对或唯一通道」判据 + 变异反证。**这 8 条判据可随时复跑**：
+   `grep -rn "fn .*carry_named_codes\|fn .*are_traced_not_silent\|fn settings_writes_go_through" src-tauri/src/lib_*tests.rs`
+   → 现读 8 条：`group_command_rejections` / `favorite_failure_paths` / `file_command_rejections` /
+   `friend_accept_failures` / `settings_writes_go_through` / `link_and_profile_failures` /
+   `mobile_picker_failures` / `share_command_failures`。
 5. **可验证**：36 → **13 格**（本册 `可验证` 列的现算：`grep` 该列 `PARTIAL/待审/FAIL` 计数）。
 6. **§13 第 12 / 14 / 15 / 16 行已收口**；第 16 行是「CHANGELOG 重复 `## [4.39.2]`」，
    考古结果是**同一版本两笔提交**（`81a9f12a` 提版、`a28e37e2` 为 `[plan]` 未提版）⇒ 合并、不重编号。
