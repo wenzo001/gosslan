@@ -1195,3 +1195,48 @@ fn resend_seals_before_it_enqueues_and_marks_sending() {
         "密封之前就写了 sending ⇒ 又回到「失败后永久卡住、outbox 从未写入」的旧形状"
     );
 }
+
+/// F-GRP-003：建群是**一笔事务**，而"分发密钥"是另一件事 —— 建群成功不依赖分发。
+///
+/// 这条守的是"部分成功"的形状：群行 / 成员行 / 群密钥 / 会话行必须同进同退（少一样就会
+/// 出现"有群没成员"或"有会话没群"），而校验（成员必须是好友）必须在事务**之前**；
+/// 分发（`try_send` / `distribute_group_key`）不许出现在事务里 —— 网络 I/O 持着 db 锁
+/// 会把整台机器的读命令一起卡住。
+#[test]
+fn create_group_commits_its_rows_together_and_keeps_io_out_of_the_transaction() {
+    let src = include_str!("commands/groups.rs");
+    let tail = src
+        .split("pub fn create_group(")
+        .nth(1)
+        .expect("create_group 不见了 ⇒ 判据锚点要跟着改");
+    let body = tail.split("\n}\n").next().unwrap_or(tail);
+    for needle in [
+        "INSERT INTO groups(",
+        "INSERT OR IGNORE INTO group_members(",
+        "INSERT INTO settings(",
+        "INSERT OR IGNORE INTO conversations(",
+    ] {
+        assert!(body.contains(needle), "建群少了「{needle}」这一步：少一样就会留下半建成的群");
+    }
+    assert_eq!(
+        body.matches("unchecked_transaction").count(),
+        1,
+        "建群必须**恰好一笔**事务（多开一笔就会有半可见的中间态）"
+    );
+    let tx = body.find("unchecked_transaction").unwrap();
+    let commit = body.find("tx.commit()").expect("建群没有 commit");
+    let validate = body
+        .find("db::get_friend(")
+        .expect("成员必须是好友这条校验不见了");
+    assert!(
+        validate < tx,
+        "校验必须在事务之前（{validate} / {tx}）—— 进事务再发现不是好友，已经写进去的行要回滚，白白持锁"
+    );
+    let window = &body[tx..commit];
+    for net in ["try_send(", "distribute_group_key(", ".await"] {
+        assert!(
+            !window.contains(net),
+            "事务里出现了「{net}」⇒ 持着 db 锁做网络 I/O，全机的读命令都会被它堵住"
+        );
+    }
+}
