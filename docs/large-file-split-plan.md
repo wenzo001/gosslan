@@ -47,6 +47,11 @@ PY
 `src/stores/useChatStore.ts` 2,351 与 `state.rs`（AppState，他定过「选 B 不拆」）**没动**，
 `protocol.rs` 1,814、`components/MessageItem.vue` 1,536 本来就在阈值内。
 
+> ⚠️ **2026-11-03 复量（HEAD `9a5ddad9`）**：上面这句首量快照的「没动」已过期 ——
+> `wc -l` 现算 `useChatStore.ts` **3,523**、`state.rs` **3,588**、`logging.rs` **3,375**，三本都过了 3,000；
+> 「不拆」结论的复判记录见 §6 末的 2026-11-03 拍板注记。快照保留原文是为了留判决当时的事实，
+> 现状一律以 §1 命令与本注记为准。
+
 ## 2. 「它们在干嘛」——transport.rs 的内部构成（现读）
 
 它的作者已经留了地图：文件里 15 条分节横幅，各节跨度：
@@ -253,11 +258,19 @@ EOF
 （202 条锚点各恰好命中一次）/测试清单守卫（基线 789 条全在跑）/领域图/领域依赖/快速层全退 0。
 复跑：`wc -l src-tauri/src/network/transport.rs src-tauri/src/network/transport/*.rs src-tauri/src/lib_tests.rs src-tauri/src/lib_*_tests.rs`。
 
-**剩余（2026-10-07 收尾）**：**人写的代码文件一个都不超 3,000 行，台账那一本也已按 A 分卷。**
-§1 那条命令（补上 `GENERATED` 之后）现在**只印 1 行**：`docs/archive/notes/changelog-archive.md` 12,888 ——
+**剩余（2026-10-07 收尾）**：当时**人写的代码文件一个都不超 3,000 行，台账那一本也已按 A 分卷。**
+§1 那条命令（补上 `GENERATED` 之后）当时**只印 1 行**：`docs/archive/notes/changelog-archive.md` 12,888 ——
 那正是历史分卷本身，按判定它**不该再被拆**（拆了就把"只搬不改、逐字节可还原"那条恒等判据作废）。
 ⚠️ 这个 12,888 也别抄到别处：往归档里补一节它就变，而 `wc -l` 与这条 `count('\n')+1` 还差一行
 （文件以换行结尾时后者多算一行）⇒ 判现状一律原样跑 §1 那条 python。
+
+**⚠️ 2026-11-03 复量（HEAD `9a5ddad9`）：上面这段收尾已过期。** §1 现印 10 行，其中人写代码超 3,000 的有：
+生产码 `src-tauri/src/state.rs` 3,589、`src/stores/useChatStore.ts` 3,524、`src-tauri/src/logging.rs` 3,376；
+测试册 `src/utils/designGuards.test.ts` 6,385、`src-tauri/src/network/file_tests.rs` 3,963、
+`src-tauri/src/db/migration_tests.rs` 3,088；工具册 `scripts/check-ui-runtime.mjs` 17,787。
+另有 `CHANGELOG.md` 主文件随 ~90 个发布长回 13,957（「主文件只留未发布 + 近期版本」的分卷口径
+事实上已失效，是否二次分卷待拍板）、`docs/architecture/refactor-5.0-report.md` 3,903（历史报告册）、
+归档册 12,888（按判定不拆）。复判与下刀顺序见 §6 末注记。
 ⇒ 本轮范围内的 6 个全部处理完：`transport.rs`、`transport/tests.rs`、`lib_tests.rs`、`verify-guards.py`、
 `e2e-multi-instance.mjs` 已进阈值，`CHANGELOG.md` 13,592 ⇒ 主文件 **743 行**（按 A 分卷，他 2026-10-07 点头后执行）。
 留一句口径出处（护栏 runner 那一刀）：判据 E 原来只在那一个文本里按 Case 构造行现算条数，分册后会得 0，
@@ -499,12 +512,17 @@ grep -c 'if relay_denied(' src-tauri/src/network/transport.rs src-tauri/src/netw
 （主册 745 ⇒ **764** 是本轮复审加的：两条读循环守卫各补一枚"锚点在视图里恰好一次"的 canary，见 §7 第 11 行。）
 
 **判过但不拆的两本**（不是漏了，是拍过）：
-- `src/stores/useChatStore.ts` 2,350 —— 2026-09-25 复审判为"拆了短期只降稳定"，且他的长期口径是**动 AppState 选 B 不拆**；
-- `src-tauri/src/state.rs` 1,961 —— 同一本 AppState（且已过 2,000 那格）。
+- `src/stores/useChatStore.ts` 2,350（2026-11-03 复量 **3,524**）—— 2026-09-25 复审判为"拆了短期只降稳定"，且他的长期口径是**动 AppState 选 B 不拆**；
+- `src-tauri/src/state.rs` 1,961（2026-11-03 复量 **3,589**）—— 同一本 AppState（且已过 2,000 那格）。
 
 拆完的分布（复跑：`git ls-files -z` 逐行数、跳过 NUL 与 `target/`、`vendor/`）：
-**>3,000 行的人写代码 = 0 本**；生产码里最大三本是 useChatStore 2,350、state 1,961、protocol 1,813 ——
+**2026-10-07 当时：>3,000 行的人写代码 = 0 本**；生产码里最大三本是 useChatStore 2,350、state 1,961、protocol 1,813 ——
 全部落在他已拍过"不拆"或本就在阈值内的位置上。
+**2026-11-03 复量：>3,000 行的人写代码 = 7 本**（见 §1 输出）；生产码最大三本变成
+state.rs 3,589、useChatStore.ts 3,524、logging.rs 3,376 —— 前两本落在当年"不拆"的位置上，
+但行数已远超当年判据基线，`logging.rs` 从未被判过。2026-11-03 用户拍板改为：
+**4B 先拆纯组件（`ChatWindow.vue` 2,332 / `MessageItem.vue` 2,283 的展示块），store 拆分等
+`check-ui-runtime` 门禁恢复可信后再评估**；`state.rs` / `logging.rs` 的下刀顺序排在其后。
 
 ## 7. 一次搬家同批必须改口的尺子（2026-10-07 数齐的十四处）
 

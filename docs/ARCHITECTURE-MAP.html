@@ -226,7 +226,7 @@
 <header class="top">
   <div class="brand">
     <h1>Gosslan 架构与接口契约图</h1>
-    <span class="meta">v4.31.5 · 取数 2026-09-28（<code>npm run map:stats</code> 一次算齐）· HEAD 当时是 <code>5e16fa4</code>（⚠️ 这一戳<b>天生是滞后的</b>：改图要提交，提交又推进 HEAD —— 判"图新不新"要看日期与口径，别拿它当 HEAD 判据；当前 HEAD 一律 <code>git log --oneline -1</code>） · 7 扇窗口（<b>1</b> 扇由 <code>tauri.conf.json</code> 的 <code>app.windows</code> 声明＝主窗 <code>main</code> + <b>6</b> 个 <code>WebviewWindowBuilder::new</code> 构造点：logs / settings / todos / preview / <b>startup-error</b>（审计 A2 新增）走 <code>WebviewUrl::App(*.html)</code>，link 走 <code>External</code>。⚠️ 2026-10-31 现算：扫 <code>src-tauri/src</code> 得 <code>WebviewUrl::App(</code> <b>6</b> 次、<code>WebviewWindowBuilder::new</code> <b>7</b> 次 —— 两个都把"字符串出现在守卫里"那一次多算了；只看 <code>src/entries/*.ts</code> 得 <b>6</b>（<code>link</code> 加载远端 URL、没有入口），也不等于窗口数）/ 166 条 IPC 命令（权威口径 = <code>node scripts/check-key-boundary.mjs</code> 自己打印的那行"命令体扫描 174 个函数（注册表 166 条，差额为未注册的 #[tauri::command]）"；⚠️ 别自己数 <code>generate_handler!</code> 块 —— 它跨行且每项带模块前缀，手工正则实测数出 0）/ 27 个后端事件（<code>src-tauri</code> 里 <code>.emit</code> / <code>.emit_to</code> / <code>.emit_filtered</code> 首参的<b>字符串字面量</b>去重。⚠️ <b>必须允许跨行匹配</b>：第一个参数常常是窗口句柄、事件名在下一行 —— 单行 grep 只得 18，那是把多行调用算丢，不是事件变少。以常量名发出的另 5 个不计入 ⇒ 27 是下限口径）/ 19 张表（去**真跑起来那份库**的 <code>sqlite_master</code> 里数，并与源码 <code>CREATE TABLE IF NOT EXISTS</code> 的字面名逐一对上。⚠️ 这里曾写 20：grep 式数法给不出可复现的 20，真库只有 19 张）/ 11 个领域（<code>docs/domains.data.mjs</code>）</span>
+    <span class="meta">v5.16.75 · 取数 2026-11-03（<code>npm run map:stats</code> 一次算齐）· HEAD 当时是 <code>9a5ddad9</code>（⚠️ 这一戳<b>天生是滞后的</b>：改图要提交，提交又推进 HEAD —— 判"图新不新"要看日期与口径，别拿它当 HEAD 判据；当前 HEAD 一律 <code>git log --oneline -1</code>） · 7 扇窗口（<b>1</b> 扇由 <code>tauri.conf.json</code> 的 <code>app.windows</code> 声明＝主窗 <code>main</code> + <b>6</b> 个 <code>WebviewWindowBuilder::new</code> 构造点：logs / settings / todos / preview / <b>startup-error</b>（审计 A2 新增）走 <code>WebviewUrl::App(*.html)</code>，link 走 <code>External</code>。⚠️ 2026-10-31 现算：扫 <code>src-tauri/src</code> 得 <code>WebviewUrl::App(</code> <b>6</b> 次、<code>WebviewWindowBuilder::new</code> <b>7</b> 次 —— 两个都把"字符串出现在守卫里"那一次多算了；只看 <code>src/entries/*.ts</code> 得 <b>6</b>（<code>link</code> 加载远端 URL、没有入口），也不等于窗口数）/ 166 条 IPC 命令（权威口径 = <code>node scripts/check-key-boundary.mjs</code> 自己打印的那行"命令体扫描 174 个函数（注册表 166 条，差额为未注册的 #[tauri::command]）"；⚠️ 别自己数 <code>generate_handler!</code> 块 —— 它跨行且每项带模块前缀，手工正则实测数出 0）/ 31 个后端事件（<code>src-tauri</code> 里 <code>.emit</code> / <code>.emit_sync</code> 首参的<b>字符串字面量</b>去重，2026-11-03 现算口径 = <code>npm run map:stats</code>；旧戳 27 是 2026-09-28 的下限口径）/ 21 张表（2026-11-03 去**真跑起来那份库**的 <code>sqlite_master</code> 现算：db.rs SCHEMA 20 + 内容库 <code>content_transfers</code> 1；旧戳 19 早于内容库入台账）/ 11 个领域（<code>docs/domains.data.mjs</code>）</span>
   </div>
   <nav class="tabs" role="tablist" id="tabs"></nav>
 </header>
@@ -278,7 +278,7 @@
 
   <!-- ⑤ 数据契约 -->
   <section class="tab" id="t-db" role="tabpanel">
-    <p class="lede">SQLite 只存<b>文本、密钥、关系与队列</b>；二进制一律落盘（<code>storage/mod.rs</code> 的硬原则）。全库 19 张表：<b>零 CHECK、零 FOREIGN KEY</b>，状态枚举与级联删除全靠应用层 SQL 自己守 —— 所以下面"状态取值"和"谁写"两列就是真正的契约。</p>
+    <p class="lede">SQLite 只存<b>文本、密钥、关系与队列</b>；二进制一律落盘（<code>storage/mod.rs</code> 的硬原则）。全库 21 张表（2026-11-03 真库 <code>sqlite_master</code> 现算）：<b>零 CHECK、零 FOREIGN KEY</b>，状态枚举与级联删除全靠应用层 SQL 自己守 —— 所以下面"状态取值"和"谁写"两列就是真正的契约。</p>
     <div id="dblist"></div>
   </section>
 
@@ -399,10 +399,10 @@ const MODS = [
     out: ["save_settings/set_ui_language/broadcast_chat_style → IPC", "toast()/toastError() → ToastHud", "set_unread_badge → 平台外壳"],
     data: ["applySettingsSnapshot/applySettingsPatch（跨窗口零额外 IPC 的关键）", "channels[]: {channel,enabled,available,running,peers,preferred}"] },
 
-  { id: "st-chat", l: "ui", n: "useChatStore", s: "消息·关系·群·传输·收藏", cnt: "2271 行",
+  { id: "st-chat", l: "ui", n: "useChatStore", s: "消息·关系·群·传输·收藏", cnt: "3523 行（wc -l 2026-11-03 现算）",
     role: "唯一的数据中枢：init 先绑事件再刷数据；<code>createInitScope()</code> 保证 HMR/重复 init 时回调不翻倍（危害不是泄漏，是回调翻倍）。<b>辅助窗口禁止跑它的 init</b>。",
     files: ["src/stores/useChatStore.ts"],
-    in: ["27 个后端事件 → enqueueMessage/refreshXxx", "MessageRecord[] / Conversation[] / Group[] / Friend[] / Peer[]", "ContentTransfer[] ← get_content_transfers()"],
+    in: ["31 个后端事件 → enqueueMessage/refreshXxx", "MessageRecord[] / Conversation[] / Group[] / Friend[] / Peer[]", "ContentTransfer[] ← get_content_transfers()"],
     out: ["全部 send_*/create_*/update_* invoke → IPC", "notifications（只在真发时调）→ 平台外壳", "groupTodosSettled 落位表"],
     data: ["messages: Record<convId, MessageRecord[]>", "groupReads: Record<groupId, Record<readerId, ts>>", "topology / unreadJump / locateRequest"] },
 
@@ -517,7 +517,7 @@ const MODS = [
     role: "一条全局 <code>Mutex&lt;Connection&gt;</code>；SCHEMA 幂等建表 + <code>user_version</code> 版本化迁移 + 降级守卫；每域一份 SQL 分册共享一个扁平 <code>crate::db::</code> 命名空间。",
     files: ["src-tauri/src/db.rs", "src-tauri/src/db/*.rs", "src-tauri/src/export.rs"],
     in: ["&Connection 已由调用方上锁 → db::insert_message_and_outbox 等", "PRAGMA user_version（>DB_VERSION 直接拒绝启动，且必须早于任何写）"],
-    out: ["19 张表（db.rs 18 + 内容库 1）· 23 个索引", "Lamport next_clock/observe_clock", "级联删除（无外键 ⇒ 手写）"],
+    out: ["21 张表（db.rs 20 + 内容库 1）· 真库 25 个索引（2026-11-03 sqlite_master 现算；源码 33 条 CREATE INDEX 里 8 条被迁移 drop）", "Lamport next_clock/observe_clock", "级联删除（无外键 ⇒ 手写）"],
     data: ["⚠️ 窗口路径必须 try_lock + 安全降级（同步步命令跑在 wry 主线程，持锁等待=整个应用冻）", "命名：get_/list_/insert_/upsert_/mark_/delete_"] },
   { id: "dom-platform", l: "dom", n: "平台外壳", s: "menu · tray · macos_window · bookmark · notifications · user_dirs · open_path · android 桥（打开文件 / 后台前台服务）",
     role: "四端差异全收在这一层：macOS 圆角/菜单/security-scoped bookmark、Android JNI（文件打开 + 局域网通道期间的前台服务，见 ADR-0022）、通知与托盘、目录解析。",
@@ -1069,7 +1069,7 @@ const TABLES = [
   ["content_transfers", "内容生命周期层自己的表（ADR-0019，由 <code>content/store.rs::ensure_schema</code> 建）", "PK <code>(cid,peer_id,direction)</code> · idx <code>status</code>", "<code>received · attempts · next_attempt_at · last_error · path · status ∈ queued|active|verifying|complete|incomplete|rejected</code>", "<code>upsert / record_local / record_failure / touch_received / mark_complete</code>（文件域调用）。<code>transfer_id</code> 列是 ensure_schema 里的<b>防御式 ALTER</b>，不走 MIGRATIONS"],
 ];
 const DISK = [
-  ["<code>app_data/gosslan.db</code> (+ -wal / -shm)", "上面 19 张表", "<code>db::init</code>；多开实例 = <code>gosslan-{N}.db</code>，TCP 端口 +instance×10；WAL + <code>synchronous=NORMAL</code>"],
+  ["<code>app_data/gosslan.db</code> (+ -wal / -shm)", "上面 21 张表", "<code>db::init</code>；多开实例 = <code>gosslan-{N}.db</code>，TCP 端口 +instance×10；WAL + <code>synchronous=NORMAL</code>"],
   ["<code>app_data/downloads</code>", "接收落位 + <code>{transfer_id}.part</code> 续传临时文件", "默认接收目录，可改（<code>user_dirs::RECEIVE</code> + macOS 书签）。<b>.part 的键是 transfer_id，绝不从最终名派生</b>（否则两张同名图会互相打乱）；每小时清 24h 前的残留"],
   ["<code>app_data/downloads/&lt;unique&gt;</code>", "最终文件", "<code>finish_receiver_into</code>：长度对 + sha256 对 → <code>sync_all()</code> → <code>rename</code>。<b>rename 那一刻才是「完成」</b>"],
   ["<code>app_data/cache</code>", "旧版媒体缓存 + <code>todo-paste/</code>（任务贴图，按 sha256 命名）", "6h 一轮按 retention / 配额回收；<b>只删文件，删了才 VACUUM</b>；递归遍历<b>跳过符号链接</b>（该目录是远端输入可达的）"],
@@ -1198,7 +1198,7 @@ const DOMAINS = [
   {"id": "persistence", "name": "持久化", "tier": "L3", "paths": ["src-tauri/src/db.rs", "src-tauri/src/db", "src-tauri/src/export.rs"], "inv": ["INV-P05", "INV-P06", "INV-P09", "INV-P15", "INV-P14", "INV-008", "INV-P24", "INV-P26", "INV-P29", "INV-P36"], "home": "src-tauri/src/db", "cons": [], "notes": "⚠️ **耦合热点**：`db::` 被 13 个文件引用，横跨 network/、transport/、mesh/、content/、file_relay、notifications、export、commands、state —— 即**传输层直接写库**。架构上最值得收口的一处（Phase 7）。"},
   {"id": "platform", "name": "平台外壳", "tier": "L2", "paths": ["src-tauri/src/menu.rs", "src-tauri/src/tray.rs", "src-tauri/src/macos_window.rs", "src-tauri/src/macos_bookmark.rs", "src-tauri/src/open_path.rs", "src-tauri/src/android_open.rs", "src-tauri/src/android_background.rs", "src-tauri/src/jni_method.rs", "src-tauri/src/notifications.rs", "src-tauri/src/user_dirs.rs"], "inv": ["INV-P32", "INV-P33"], "home": "src-tauri/src/menu.rs", "cons": ["persistence"], "notes": "按平台分：menu / macos_bookmark / macos_window 是 macOS 专属（模块级 `#[cfg(target_os = \"macos\")]`）；android_open / jni_method / android_background 是 Android 专属（android_background 的模块本身不加 cfg —— 非 Android 目标是三个空实现，好让调用点不写 cfg）。这些平台差异正是 Phase 2/4 两条腿存在的原因。"},
   {"id": "observability", "name": "可观测性", "tier": "L2", "paths": ["src-tauri/src/logging.rs"], "inv": ["INV-P16"], "home": "src-tauri/src/logging.rs", "cons": [], "notes": "本项目最强项（结构化日志 + 日志窗口 + 诊断面板 + CHANGELOG 里大量「真机日志定位」）。Phase 8 要补的是**按 msg_id 串起一条消息的生命周期**（Trace）。另有 logs.html 作为独立日志窗口入口。"},
-  {"id": "presentation", "name": "呈现层", "tier": "L2", "paths": ["src/App.vue", "src/stores", "src/components", "src/composables", "src/api", "src/utils"], "inv": ["INV-P24", "INV-P27", "INV-P29", "INV-P30", "INV-P31"], "home": "src/stores", "cons": [], "notes": "⚠️ **没有领域边界**：`src/stores` 只有 3 个文件、`src/utils` 是平铺的一堆 —— **行数与个数一律现算，不许抄在图上**：`wc -l src/stores/*.ts`、`ls src/utils | wc -l`（截至 2026-09-28 现算：stores 共 3427 行、useChatStore.ts 2276 行、utils 119 个文件）。前端状态串味最容易产生 UI 回归 —— 拆分优先级高于后端大文件（Phase 7）。前端已有一整套源码扫描护栏（utils/designGuards.ts）。消息列表已迁移到 `@tanstack/vue-virtual`（2026-10-25：`anchorTo: 'end'` + `measureElement`；日志窗同库），列表 key 用 `messages.local_id`。"}
+  {"id": "presentation", "name": "呈现层", "tier": "L2", "paths": ["src/App.vue", "src/stores", "src/components", "src/composables", "src/api", "src/utils"], "inv": ["INV-P24", "INV-P27", "INV-P29", "INV-P30", "INV-P31"], "home": "src/stores", "cons": [], "notes": "⚠️ **没有领域边界**：`src/stores` 只有 3 个文件、`src/utils` 是平铺的一堆 —— **行数与个数一律现算，不许抄在图上**：`wc -l src/stores/*.ts`、`ls src/utils | wc -l`（截至 2026-11-03 现算：stores 共 4807 行、useChatStore.ts 3523 行、utils 255 个文件）。前端状态串味最容易产生 UI 回归 —— 拆分优先级高于后端大文件（Phase 7）。前端已有一整套源码扫描护栏（utils/designGuards.ts）。消息列表已迁移到 `@tanstack/vue-virtual`（2026-10-25：`anchorTo: 'end'` + `measureElement`；日志窗同库），列表 key 用 `messages.local_id`。"}
 
 ];
 const DRIFT = [
@@ -1511,7 +1511,7 @@ function buildEvents() {
 /* ---------- 数据表 ---------- */
 function buildDb() {
   $("#dblist").innerHTML =
-    '<h2 class="sec">SQLite · 19 张表（真源：<code>src-tauri/src/db.rs</code> 的 <code>SCHEMA</code> 常量，迁移靠 <code>PRAGMA user_version</code>；当前 <code>DB_VERSION</code> <b>不抄在这里</b>——<code>grep -n "pub const DB_VERSION" src-tauri/src/db.rs</code>）</h2>' +
+    '<h2 class="sec">SQLite · 21 张表（真源：<code>src-tauri/src/db.rs</code> 的 <code>SCHEMA</code> 常量 + 内容库 <code>content/store.rs</code>；迁移靠 <code>PRAGMA user_version</code>；当前 <code>DB_VERSION</code> <b>不抄在这里</b>——<code>grep -n "pub const DB_VERSION" src-tauri/src/db.rs</code>）</h2>' +
     '<div class="tablewrap"><table><thead><tr><th>表</th><th>用途</th><th>主键 / 索引</th><th>关键列与状态取值</th><th>谁写 · 谁清</th></tr></thead><tbody>' +
     TABLES.map((t) =>
       "<tr><td class='c'>" + t[0] + "</td><td>" + t[1] + "</td><td class='io'>" + t[2] + "</td><td class='io'>" + t[3] + "</td><td>" + t[4] + "</td></tr>").join("") +
