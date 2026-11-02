@@ -51,6 +51,36 @@ fn every_cancel_channel_leaves_a_named_outcome() {
         2,
         "更新取消的两种结局各要一行（refused_installing / cancelled），少了哪种都查不出来"
     );
+
+    // 第 5 条通道：**内容拉取的取消**（`cancel_content_fetch`）。立案 B1-F1 时把通道按
+    // 「消息 / 文件 / 更新 / 群消息」四类数，**漏了它** —— 而它是任务中心那八个动作之一，
+    // 表现与文件取消一模一样（点了取消、进度条还在跑）。分母要按"有几条用户能取消的通道"现数，
+    // 不能按立案时那份清单数（本仓同族第四次：见 §4.0br 的发送点数 2→3）。
+    // 两种结局各一行：`outcome=no_live_rows`（本机根本没有进行中的接收行）/ 真取消（带 stopped 与 ledger_committed）。
+    let content = rust_fn_body(
+        include_str!("commands/files.rs"),
+        "pub async fn cancel_content_fetch(",
+    );
+    assert_eq!(
+        content.matches("code=CONTENT_CANCEL 用户取消内容拉取 cid=").count(),
+        2,
+        "内容拉取取消的两种结局各要一行；少了 no_live_rows 那一支，「点了取消但早就完成了」在日志里就是一片空白"
+    );
+
+    // 第 6 个码：**任务中心「停止同步」**（`cancel_group_history` → `group_history::request_cancel`）。
+    // 分母这次不按"立案那份清单"数，按注册表数：`lib.rs` 里带 cancel 的命令恰是 **5 道**
+    // （cancel_group_history / cancel_message / cancel_file_transfer / cancel_content_fetch / updater_cancel，
+    // 复跑 `grep -n "commands::cancel\|commands::updater_cancel" src-tauri/src/lib.rs`），
+    // 而 `cancel_message` 同时发 DM_CANCEL 与 GROUP_CANCEL 两种码 ⇒ 码是 **6 个**。
+    // 这一格原本**有留痕但没有具名码** ⇒ 事后按码 grep 不到它（"有行"与"可按码查"是两件事）。
+    let hist = rust_fn_body(
+        include_str!("network/group_history.rs"),
+        "pub fn request_cancel(",
+    );
+    assert!(
+        hist.contains("code=GROUP_HISTORY_CANCEL 群历史取消请求 group="),
+        "停止同步的三种裁决（requested / not_running / no_group）必须能按码查到"
+    );
 }
 
 /// **气泡前不得做 O(体积) 的整文件扫描**（真机 Mac 发 600MB：点完"卡一会儿"才出现

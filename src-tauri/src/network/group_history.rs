@@ -914,7 +914,10 @@ pub fn request_cancel(state: &Arc<AppState>, group_id: &str) -> CancelVerdict {
     };
     state.logger.info(
         "group",
-        format!("群历史取消请求 group={group_id}：{}", verdict.as_str()),
+        format!(
+            "code=GROUP_HISTORY_CANCEL 群历史取消请求 group={group_id}：{}",
+            verdict.as_str()
+        ),
     );
     verdict
 }

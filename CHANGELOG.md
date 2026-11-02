@@ -13,6 +13,47 @@
 
 ## [Unreleased]
 
+## [5.16.38] - 2026-11-02
+
+### 可取消的通道其实有 5 道（6 个码）不是立案说的 4 类；闭环矩阵的 ID 第一次有机器判据（判据 G）（5.16.38）
+
+两件事都是抽样核对旧结论时撞出来的，都不需要拍板，都属于**量具/台账自己有洞**而不是产品故障。
+
+**① B1-F1 的通道分母少数了。** 立案按「消息 / 文件 / 更新 / 群消息」四类数通道，而
+`cancel_content_fetch`（内容拉取取消，任务中心八个动作之一）在那四类之外 ⇒ 从没被补码。
+今天补 `code=CONTENT_CANCEL`，**两条结局各一行**：原本 `live.is_empty()` 那一支一声不响，
+而「点了取消但这一单根本没有进行中的接收行」与「压根没点到」在日志里长得一样。
+分母按注册表数：`lib.rs` 里带 cancel 的命令恰是 **5 道**，而 `cancel_message` 同时发两种码 ⇒ 码是 **6 个**，现读齐全：`DM_CANCEL` / `GROUP_CANCEL` / `FILE_CANCEL` / `UPDATER_CANCEL`（两结局）/ `CONTENT_CANCEL`（两结局）/ `GROUP_HISTORY_CANCEL`（三种裁决）。其中「停止同步」那一格原本**有一行中文留痕但没有具名码** ⇒ 按码 grep 不到它：**有行**与**可按码查**是两件事，这一层区分今天才写下来。
+判据 `lib_file_tests.rs::every_cancel_channel_leaves_a_named_outcome` 从 4 格扩到 6 格（内容拉取那格按**计数 = 2** 判，两种结局少一行就红）；
+**变异**＝摘掉 `no_live_rows` 那一行的码 ⇒ 红在「少了 no_live_rows 那一支，点了取消但早就完成时在日志里是一片空白」，
+还原后 `cmp` 逐字节相同、测试回绿。
+
+**② 闭环矩阵被两份活文档引用成「92 行 / 79 行 PARTIAL」，但从没有一个脚本读过它。**
+现算发现三个 ID 各被**两行不同的动作族**共用（`F-MSG-060` 首屏读取 vs 本地批量删除 ·
+`F-PRE-018` 外链/缓存 vs 收藏动作 · `F-OBS-007` 日志面 vs 诊断包导出）⇒ 「引用 F-MSG-060 那一格」
+从写下那天起就是歧义的。后出现的三行换成 `F-MSG-071` / `F-PRE-020` / `F-OBS-012`
+（现读全仓零引用 ⇒ 重编号不打断任何指针），并给 `scripts/check-doc-numbers.mjs` 加**判据 G**：
+行数 / 不同 ID 数 / 总判 PARTIAL+FAIL 三者现算，再回对账那两句手写数，**声明被删掉也算红**（与判据 C/E 同一立场）。
+两面变异各跑一次：改回一个重复 ID ⇒ 红在「1 个 ID 被多行共用」；把「记 **92 行**」改成 91 ⇒ 红在「手写 = 91，现算 = 92」。
+还原后 `cmp` 相同、基线退 0，现算 **92 行 / 92 个不同 ID / 79 行 PARTIAL 或 FAIL**。
+
+**③ 顺带数出的第二个质量问题**：矩阵里有 **15 行**的理由列写着同一句「无具名 `code=`（并入 B1-F1 族）」。
+B1-F1 收口后这 15 格**没有逐行重写**（批量替换 = 造出 15 份新的手抄），改成表上一条总注 + 一条复跑命令。
+⚠️ 那条命令必须先挑表行再数（`grep '^| F-' … | grep -c '…'` = 15）：整文件 grep 会把这条说明自己引用的那句也数进去
+（今天实测 15 → 17）—— 本仓「判据读到判据自己的注释」那一族，我写这条时又踩了一次。
+
+**④ 注释在说反话那一族的又一格（claims 第 16 行，10-26 就证伪过而一直没人改）**：
+`db/message_delete.rs` 文件头写「标记 `deleted_at` 而非硬删」，实现是 `DELETE FROM messages`，
+全仓 `grep deleted_at` 只命中这条注释本身 ⇒ 今天把注释改成实话（硬删 + 只删 Bubble + 写明本仓没有软删列）。
+证伪记下来而不改注释，等于把陷阱留在原地：下一句「照注释改代码」的话会把它当成缺陷。
+
+现跑：`cargo test --features bluetooth --lib every_cancel_channel` **1 passed / 0 failed**（6 格全过），
+两次变异各红一次（摘掉 `no_live_rows` 那行的码 ⇒ 红在第 5 格；摘掉 `GROUP_HISTORY_CANCEL` ⇒ 红在第 6 格），
+还原后 `cmp` 逐字节相同；`node scripts/check-doc-numbers.mjs` 退 0 并打印「判据 G 现算闭环矩阵：
+92 行 / 92 个不同 ID / 79 行 PARTIAL 或 FAIL」；`cargo fmt --check --all` 0、
+`cargo clippy --features bluetooth --all-targets -- -D warnings` 0、
+`cargo test --features bluetooth --lib` **1375 passed / 0 failed / 3 ignored**、`npm run lint:md` **0 error（120 份 .md）**。
+
 ## [5.16.37] - 2026-11-02
 
 ### 台账三处自我订正：§13 的「现数 9」是过期的、小节编号被插入挤乱了、开着的入口补第 12 行（5.16.37）

@@ -1058,6 +1058,14 @@ pub async fn cancel_content_fetch(
             })
             .collect();
         if live.is_empty() {
+            // B1-F1 的另一半：这一支原本一声不响。用户点「取消」之后，「这一单本机根本没有
+            // 进行中的接收行」这件事在日志里没有任何一行 ⇒ 事后查不到是谁把状态收的口。
+            s_db.logger.info(
+                "file",
+                format!(
+                    "code=CONTENT_CANCEL 用户取消内容拉取 cid={cid} outcome=no_live_rows（没有进行中的接收行，台账不动）"
+                ),
+            );
             return Ok(ContentCancelResult {
                 cancelled: false,
                 already_done: true,
@@ -1102,7 +1110,7 @@ pub async fn cancel_content_fetch(
         s_db.logger.info(
             "file",
             format!(
-                "用户取消内容拉取 cid={cid} rows={} stopped={stopped} ledger_committed={ledger_committed}",
+                "code=CONTENT_CANCEL 用户取消内容拉取 cid={cid} rows={} stopped={stopped} ledger_committed={ledger_committed}",
                 live.len()
             ),
         );
