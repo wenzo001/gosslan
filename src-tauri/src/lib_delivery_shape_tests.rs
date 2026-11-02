@@ -1240,3 +1240,43 @@ fn create_group_commits_its_rows_together_and_keeps_io_out_of_the_transaction() 
         );
     }
 }
+
+/// F-PLF-021 的网络启停那半：**先起/停网络，再落开关；最后广播且不回发发起窗口**。
+///
+/// 三条顺序都是真事故换来的：
+/// ① 先落开关再起网络 ⇒ 起失败时库里已经写着"开了"，重启后界面显示开着而实际没起；
+/// ② 广播不带 `Some(window.label())` ⇒ 发起窗口收到自己发的事件（回声）；
+/// ③ 快照必须在起/停**之后**构建 —— 否则回给界面的还是旧状态。
+#[test]
+fn network_start_and_stop_persist_after_the_action_and_do_not_echo() {
+    let src = include_str!("commands/network.rs");
+    for (sig, call, flag) in [
+        ("pub async fn start_network(", "network::start(", "set_lan_enabled(&dbc, true)"),
+        ("pub async fn stop_network(", "network::stop(", "set_lan_enabled(&dbc, false)"),
+    ] {
+        let tail = src
+            .split(sig)
+            .nth(1)
+            .unwrap_or_else(|| panic!("{sig} 不见了 ⇒ 判据锚点要跟着改"));
+        let body = tail.split("\n}\n").next().unwrap_or(tail);
+        let act = body.find(call).unwrap_or_else(|| panic!("{sig} 里没调 {call}"));
+        let persist = body
+            .find(flag)
+            .unwrap_or_else(|| panic!("{sig} 没有落开关（{flag}）"));
+        assert!(
+            act < persist,
+            "{sig}: 先落开关再起/停网络（{persist} < {act}）⇒ 动作失败时库里已经写着新状态"
+        );
+        let snap = body
+            .find("build_runtime_snapshot(")
+            .unwrap_or_else(|| panic!("{sig} 没有重建快照"));
+        assert!(
+            persist < snap,
+            "{sig}: 快照在建/停之前构建 ⇒ 回给界面的还是旧状态"
+        );
+        let echo = body
+            .find("notify_runtime_changed(snap.clone(), Some(window.label()))")
+            .unwrap_or_else(|| panic!("{sig} 的广播没有排除发起窗口（回声）"));
+        assert!(snap < echo, "{sig}: 广播必须在快照之后");
+    }
+}
