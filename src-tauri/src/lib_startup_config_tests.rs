@@ -1028,3 +1028,39 @@
             "Cargo.toml 的 windows-sys feature 少了 {missing:?} —— mac 全绿、Windows CI 当场编不过"
         );
     }
+
+/// 设置写/删必须走**带具名码的通道**（F-PRE-012 的「共用通道无记录」）。
+///
+/// 以前 13 处都是裸 `db::set_setting(..).map_err(|e| e.to_string())?`：用户看到
+/// 「database is locked」，日志里一行没有，也不知道是 11 节里的哪一格没存上。
+/// 守的是比例：唯一允许直接调 `db::set_setting` / `db::delete_setting` 的地方是
+/// 两个 helper 的体内（各 1 处），其余一律必须经过它们。
+#[test]
+fn settings_writes_go_through_the_named_code_helper() {
+    let src = include_str!("commands/settings.rs");
+    assert_eq!(
+        src.matches("persist_setting(").count(),
+        14,
+        "写设置的调用点数变了（含定义应为 14）⇒ 本判据分母要跟着改"
+    );
+    assert_eq!(src.matches("remove_setting(").count(), 2, "删设置的调用点数变了（含定义应为 2）");
+    // ⚠️ 只数**代码**：本文件的文档注释里就写着 `db::set_setting(..)` 那句反例，
+    // 不剥注释的话这把尺子会把自己的说明数进去（第一次跑就是 2 而不是 1）。
+    let code: String = src
+        .lines()
+        .filter(|l| !l.trim_start().starts_with("///"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert_eq!(
+        code.matches("db::set_setting(").count(),
+        1,
+        "有地方绕过 persist_setting 直接写库 ⇒ 那一格失败时不会有码、也不知道是哪个 key"
+    );
+    assert_eq!(
+        code.matches("db::delete_setting(").count(),
+        1,
+        "有地方绕过 remove_setting 直接删库 ⇒ 恢复默认失败时不知道是哪一格没清掉"
+    );
+    assert!(src.contains("code=SETTINGS_WRITE_FAILED key={key}"));
+    assert!(src.contains("code=SETTINGS_RESET_FAILED key={key}"));
+}

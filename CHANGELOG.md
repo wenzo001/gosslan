@@ -13,6 +13,23 @@
 
 ## [Unreleased]
 
+## [5.16.49] - 2026-11-02
+
+### 设置写/删失败：点名是哪一格 + 具名码（13 写 + 1 删走同一条通道）
+
+`save_settings` 里 13 处写设置、`reset_settings` 里 1 处删设置，此前都是
+`db::set_setting(..).map_err(|e| e.to_string())?` —— 用户看到的是「database is locked」，
+**支持侧日志里一行都没有**，也不知道是 11 节设置里的哪一格没存上。
+
+- 统一走 `persist_setting` / `remove_setting`：失败时日志写
+  `code=SETTINGS_WRITE_FAILED key=…` / `code=SETTINGS_RESET_FAILED key=…`，
+  返回给界面的文案也点名 `设置项「theme_color」没存上：…`。
+- 判据 `settings_writes_go_through_the_named_code_helper`：写通道调用点 = 14（含定义）、
+  删通道 = 2，且**唯一允许直调** `db::set_setting` / `db::delete_setting` 的位置是两个 helper 体内。
+  ⚠️ 这把尺子第一版被自己的文档注释骗过（注释里引用了那句反例 ⇒ 数出 2），现在先剥注释再数。
+- 变异反证：把一处改回裸 `db::set_setting(..)` ⇒ 红并报「调用点数变了」，还原后 `cmp` 逐字节相同。
+- 台账：F-PRE-012 / F-PRE-015 的可诊断格按今天读数更新（B1-F4 那一半早已落地，这批是「点名 + 配码」）。
+
 ## [5.16.48] - 2026-11-02
 
 ### 好友同意链路的失败配上具名码（3 处）
