@@ -1129,3 +1129,38 @@ fn broken_db_reading_groups_is_an_error_not_an_empty_list() {
         "命令层把读失败折成了空列表（B1-F7 的形状）"
     );
 }
+
+/// F-FRN-004：删好友的**级联范围与顺序**都有判据。
+///
+/// 只删 `friends` 那一行会留下四种"看得见的错"：在途发送把 transfer 写回 active、
+/// 文件补发队列继续推、内存 `peers` 里的旧公钥让"重新加好友"被硬拒（必须重启）、
+/// 待发消息永远停在「发送中」而日志里没有一行。
+/// 存储层的样式缓存另有行为测试（`removing_a_friend_forgets_its_chat_style`）。
+#[test]
+fn removing_a_friend_cancels_before_deleting_and_forgets_identity() {
+    let src = include_str!("commands/friends.rs");
+    let tail = src
+        .split("pub async fn remove_friend(")
+        .nth(1)
+        .expect("remove_friend 不见了 ⇒ 判据锚点要跟着改");
+    let body = tail.split("\n}\n").next().unwrap_or(tail);
+    let cancel = body
+        .find("cancel_send_transfers_for_peer")
+        .expect("删好友前不取消在途发送 ⇒ 发送任务会把 transfer 写回 active");
+    let del = body
+        .find("db::remove_friend(")
+        .expect("删好友的写调用不见了");
+    assert!(
+        cancel < del,
+        "顺序反了：必须先取消在途发送（{cancel}），再删好友行（{del}）"
+    );
+    for (needle, why) in [
+        ("db::delete_file_outbox_for_peer", "文件补发队列要一起清（否则下次建链把文件推给已删好友）"),
+        ("db::forget_chat_peer_style", "样式缓存要按 device_id 摘掉（不留幽灵）"),
+        ("db::fail_pending_messages_for_peer", "待发消息要落 failed（否则永远停在「发送中」）"),
+        ("code=REMOVE_FRIEND_OUTBOX_FAILED", "队列清理失败必须留痕"),
+        ("forget_peer_identity", "内存身份不解除 ⇒ 对方换过公钥时要重启才能重新加"),
+    ] {
+        assert!(body.contains(needle), "删好友少了「{needle}」这一步：{why}");
+    }
+}

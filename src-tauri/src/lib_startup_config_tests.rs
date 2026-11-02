@@ -1095,3 +1095,20 @@ fn reset_settings_refreshes_memory_before_broadcasting() {
          必须在广播**之前**把内存状态改对，否则收到的窗口重拉时拿到的还是旧行为"
     );
 }
+
+/// F-PRE-011：设置的**失败那一路**不是空白。
+///
+/// 命令层所有写都走 `persist_setting`（5.16.49 的统一通道，另有比例判据守着），
+/// 这里补底层行为：目标表不存在时 `db::set_setting` **必须报错**（返回 `Ok` 就等于
+/// "保存成功但一个字没写进去"，而界面已经弹了「已保存」）。
+#[test]
+fn settings_write_failure_is_an_error_not_a_silent_noop() {
+    let conn = rusqlite::Connection::open_in_memory().expect("内存库");
+    let got = crate::db::set_setting(&conn, "theme_color", "#fff");
+    assert!(
+        got.is_err(),
+        "表都不存在却返回 Ok ⇒ 界面会弹「已保存」而实际一个字没写：{got:?}"
+    );
+    let del = crate::db::delete_setting(&conn, "theme_color");
+    assert!(del.is_err(), "删除同理：表不存在必须报错：{del:?}");
+}
