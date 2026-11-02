@@ -13,6 +13,20 @@
 
 ## [Unreleased]
 
+## [5.16.42] - 2026-11-02
+
+### 空态与错误态必须**互斥可达**（补 5.16.41 的验收缺口）
+
+5.16.41 的判据只断言「错误块存在」，没断言「真·空态还在、而且两者不会同时画出来」——那样把
+`v-if` 写反、或顺手删掉空态那一条，都照样绿。补三条：好友栏 `friendsLoadFailed` 的**三态口径**
+（`friends.length === 0 && !friendsLoaded && Boolean(friendsError)`，与 `todoRowsLoadState` 同一条）、
+两处的互斥形状（好友栏 `v-if="friendsLoadFailed"` → `v-else-if="filteredFriends.length === 0"`；
+任务中心 `rows.length === 0 && ledgerError` → `v-else-if="rows.length === 0"` → `task.empty`）、
+以及中继配置「读成功要清错误」（否则一次失败后错误块永远挂着）。
+
+变异反证：把任务中心那条 `v-else-if` 改成 `v-if` ⇒ 该格红并报出「不互斥」（**247 过 / 1 失败**），
+还原后 `cmp` 逐字节相同 ⇒ 绿。现跑 `node --test src/utils/designGuards.test.ts` **248** 条全过。
+
 ## [5.16.41] - 2026-11-02
 
 ### 读库失败不再画成「你没有数据」：A 档 6 格接上错误态

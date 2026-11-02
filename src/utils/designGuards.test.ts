@@ -6255,6 +6255,29 @@ test("A 档读失败的界面错误档必须接上（后端不许折回空 + 前
   for (const [name, src] of [["好友列表", list], ["任务中心", task], ["中继配置", relay]] as const) {
     assert.ok(src.includes('t("common.retry")') || src.includes("t('common.retry')"), `${name} 的错误档没有重试入口`);
   }
+  // 「空态与错误态都要在」不是同一句话：两个档必须**互斥可达**（v-if / v-else-if）。
+  // 只断言"错误块存在"时，把 v-if 写反（或删掉空态那条）会同时出现「读不出来」与「还没有好友」，
+  // 或把真·空态整个吞掉 —— 两种都不报。
+  assert.ok(
+    /friendsLoadFailed = computed\(\s*\(\) =>[\s\S]{0,160}friends\.length === 0[\s\S]{0,80}!chat\.friendsLoaded[\s\S]{0,80}Boolean\(chat\.friendsError\)/.test(
+      list,
+    ),
+    "friendsLoadFailed 的三态口径被改了（成功过就不该是错误档；`todoRowsLoadState` 同一条口径）",
+  );
+  assert.ok(
+    /v-if="friendsLoadFailed"[\s\S]{0,700}v-else-if="filteredFriends\.length === 0"/.test(list),
+    "好友栏的错误档与空态不互斥：要么空态被吞掉，要么两条一起画",
+  );
+  assert.ok(
+    /rows\.length === 0 && ledgerError"[\s\S]{0,600}v-else-if="rows\.length === 0"[\s\S]{0,160}t\("task\.empty"\)/.test(
+      task,
+    ),
+    "任务中心的错误档与空态不互斥（或「没有进行中的任务」被删）",
+  );
+  assert.ok(
+    /relayLoadError\.value = null/.test(relay),
+    "中继配置：读成功也没有清错误 ⇒ 一次失败之后错误块永远挂着",
+  );
   // 正控：把折叠文案装回去，同一把尺子必须说"违规"（否则上面的 !includes 是空判）。
   const smuggled = rustFnBody(
     'pub async fn get_friends(x: u8) -> Vec<u8> {\n  let _ = "FRIENDS_LIST_READ_FAILED 好友列表按空显示";\n  Vec::new()\n}\npub async fn other() {}',
