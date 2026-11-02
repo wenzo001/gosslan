@@ -98,7 +98,20 @@ pub async fn flush_pending_reads(state: &AppState, peer_id: &str) {
 pub async fn flush_pending_group_reads(state: &AppState, peer_id: &str) {
     let rows = {
         let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
-        db::list_pending_group_reads(&dbc, peer_id).unwrap_or_default()
+        // 读失败 ⇒ 一条回执都不冲刷，pending 行留着等下次（自愈），但这一跳零痕迹。
+        // 补上节流留痕即本档（B 档）要做的全部事情。
+        match db::list_pending_group_reads(&dbc, peer_id) {
+            Ok(rows) => rows,
+            Err(e) => {
+                if log_throttled("group_reads_pending_read_failed", 300_000) {
+                    state.logger.warn(
+                        "group",
+                        format!("code=GROUP_READS_PENDING_READ_FAILED 本轮不冲刷 peer={peer_id}：{e}"),
+                    );
+                }
+                Vec::new()
+            }
+        }
     };
     for (group_id, _last_read_ts) in rows {
         let conv_id = format!("group:{group_id}");

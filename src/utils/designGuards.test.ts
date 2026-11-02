@@ -6087,6 +6087,66 @@ test("主读不许把读库失败折叠成空（B1-F7 / B3-F3；网络侧自 5.1
   );
 });
 
+// ---------------- 读库折叠的**总量棘轮**（不限函数名，只许降，2026-11-02） ----------------
+//
+// 上面那条判据的名字是**手抄的六个**（`get_setting` / `get_messages` / `list_conversations` /
+// `list_groups` …）。2026-11-02 抽闭环矩阵时把尺子换成不限名字，现数是 **19 处命中**，
+// 而这六个名字只看得见 **5 处** ⇒ 14 处折叠从来不在任何判据的视野里
+// （`list_friends` / `get_group` / `list_transfers` / `list_group_reads` / `get_todo_messages_for_conns`…）。
+// 这正是本仓反复点名的形状：**判据里手抄的名字清单会漂，分母得从真源现算**。
+//
+// A 档与 C 档（界面假陈述 / 群密钥假成功）还在等拍板，所以现在**不能**直接把不限名字的尺子
+// 变成"必须为 0"。这条棘轮做的是把洞**封住不让它长**：
+//   · 只许降 —— 每落地一批，就把上限改小；调大上限必须说明为什么；
+//   · 新增一处折叠 ⇒ 当场红，而不是等下一次抽矩阵才发现。
+// 已知的量具偏差也写在这里，免得下一个人把它当成真缺陷：
+// `commands/relay.rs:305` 是**假阳性**（间隙跨过了结构体字面量的逗号，命中的是 306 行 server 那一格）
+// ⇒ 真折叠 18 处、匹配 19 条。
+test("读库折叠总量是棘轮：不限名字的尺子只许降", () => {
+  const SRC = join(import.meta.dirname, "..", "..", "src-tauri", "src");
+  const ANY = /\bdb::([a-z_]+)\s*\([^;?]{0,200}?\.unwrap_or_default\(\)/g;
+  const WHITE = /db::(get_setting|get_setting_checked|get_messages|get_latest_messages|list_conversations|list_groups)\s*\([^;?]{0,200}?\.unwrap_or_default\(\)/g;
+  const CEILING = 19; // 2026-11-02 现算（含 1 处已知假阳性）：只许往下改
+
+  const files: string[] = [];
+  const stack = [SRC];
+  while (stack.length) {
+    const d = stack.pop() as string;
+    for (const e of readdirSync(d, { withFileTypes: true })) {
+      const p = join(d, e.name);
+      if (e.isDirectory()) stack.push(p);
+      else if (e.name.endsWith(".rs")) files.push(p);
+    }
+  }
+  assert.ok(files.length >= 150, `只扫到 ${files.length} 个 .rs ⇒ 目录形状变了，这把尺子的面在缩水`);
+
+  let any = 0;
+  let white = 0;
+  for (const f of files) {
+    const src = readFileSync(f, "utf8");
+    any += [...src.matchAll(ANY)].length;
+    white += [...src.matchAll(WHITE)].length;
+  }
+
+  assert.ok(
+    any <= CEILING,
+    `读库折叠命中 ${any} 处，超过棘轮上限 ${CEILING} ⇒ 新增长了一处"读失败当没有数据"。` +
+      `要落地就往下改上限，不许往上调（调大等于把洞重新变成沉默的）。`,
+  );
+  // 这条棘轮存在的理由就是"白名单看不见" —— 如果哪天两者相等，说明白名单已经扩到全量，
+  // 那时该做的是把上面那条判据改成不限名字，并删掉这条棘轮的豁免说明。
+  assert.ok(
+    white < any,
+    `白名单已经能数到 ${white}/${any} ⇒ 名字清单不再瞎了，本条棘轮与上面那条判据该合成一条`,
+  );
+  // 正控：合成一处（不在白名单里的函数名）必须被这把尺子抓到
+  assert.equal(
+    [..."let x = db::list_something_new(&dbc).unwrap_or_default();".matchAll(ANY)].length,
+    1,
+    "不限名字的尺子自己失效了 ⇒ 上面那两个数是假的",
+  );
+});
+
 // ---------------- 群任务建卡的通知闸门必须**接在** maybeNotify 上（2026-11-02） ----------------
 //
 // `todoCardConcernsMe` 那条纯函数判据只证明"算得对"，不证明"长在通知这条路上"。

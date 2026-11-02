@@ -154,28 +154,6 @@ fn note_direct_link(state: &AppState, peer_id: &str, path_kind: PathKind) {
 /// Phase 2 建立的「任一 Connection 健康 ⇒ Online」才有真实连接数据支撑。
 /// 公钥在此刻可能尚未学到（拨号侧），留空即可 —— 收到 Hello / announce 后由
 /// `PeerIdentity::merge_missing` 补齐（只补空、不覆盖）。
-/// 日志限频：同一个 key 每 `min_interval_ms` 最多放行一次。
-///
-/// 用**模块级静态**而不是 `AppState` 字段：它只服务日志，不值得为一个诊断辅助
-/// 引入新的、需要清理的可增长状态。key 全是编译期字面量 ⇒ 表的规模天然有界。
-fn log_throttled(key: &'static str, min_interval_ms: i64) -> bool {
-    use std::collections::HashMap;
-    use std::sync::{Mutex, OnceLock};
-    static LAST: OnceLock<Mutex<HashMap<&'static str, i64>>> = OnceLock::new();
-    let now = crate::db::now_ms();
-    let mut m = LAST
-        .get_or_init(|| Mutex::new(HashMap::new()))
-        .lock()
-        .unwrap_or_else(|e| e.into_inner());
-    match m.get(key) {
-        Some(&t) if now - t < min_interval_ms => false,
-        _ => {
-            m.insert(key, now);
-            true
-        }
-    }
-}
-
 pub(crate) fn register_connection(
     state: &AppState,
     peer_id: &str,

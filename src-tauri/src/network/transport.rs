@@ -29,6 +29,7 @@ use crate::crypto;
 use crate::db;
 use crate::db_hold::note_tx;
 use crate::discovery::routed::{parse_endpoints, ROUTED_ENDPOINTS_KEY};
+use crate::logging::log_throttled;
 use crate::mesh::router::{ForwardDecision, MeshDestination, MeshFrame, MeshFrameKind};
 use crate::mesh::{
     Endpoint as MeshEndpoint, PathKind, PeerCandidate, PeerIdentity, PeerOnlineState,
