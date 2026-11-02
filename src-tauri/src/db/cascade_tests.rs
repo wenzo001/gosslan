@@ -1692,3 +1692,186 @@ fn a_failed_recall_write_leaves_no_tombstone_behind() {
         "物化被提前提交了：半成品状态在界面上可见"
     );
 }
+
+// ---------------- 批次 2A：消息生命周期的纯策略 oracle + 序列对照 ----------------
+//
+// 这一组**不碰任何写入点**：oracle 只把现有 SQL/台账里已经写死的策略再表达一遍，
+// 然后用真实 DB 调用跑同一串事件，逐条比对状态与行。它的价值是给 2B 的解禁
+// 留一份“决策面”证据，而不是把 SQL 换成一个看似更优雅的纯函数。
+
+fn direct_ack_policy(has_outbox_row: bool) -> bool {
+    has_outbox_row
+}
+
+fn direct_cancel_policy(status: &str) -> bool {
+    !matches!(status, "delivered" | "read" | "recalled")
+}
+
+fn direct_resend_policy(status: &str) -> bool {
+    matches!(status, "failed" | "cancelled")
+}
+
+fn group_cancel_target_policy(pending: i64, delivered: i64) -> Option<&'static str> {
+    if pending == 0 {
+        None
+    } else if delivered > 0 {
+        Some("partial_cancelled")
+    } else {
+        Some("cancelled")
+    }
+}
+
+fn group_ack_advances_message_policy(prior: &str) -> bool {
+    prior == "pending"
+}
+
+fn group_resend_revives_policy(status: &str) -> bool {
+    status == "cancelled"
+}
+
+fn status_of(conn: &Connection, msg_id: &str) -> String {
+    conn.query_row(
+        "SELECT status FROM messages WHERE msg_id = ?1",
+        params![msg_id],
+        |r| r.get(0),
+    )
+    .unwrap()
+}
+
+fn outbox_rows(conn: &Connection, msg_id: &str) -> i64 {
+    conn.query_row(
+        "SELECT COUNT(*) FROM outbox WHERE msg_id = ?1",
+        params![msg_id],
+        |r| r.get(0),
+    )
+    .unwrap()
+}
+
+#[test]
+fn direct_message_lifecycle_policy_matches_sql_guards() {
+    let conn = fresh_db();
+
+    // Ack 只有在补发队列行还在时才成立。
+    ins_msg(&conn, "m-ac1", "p1", "text", "ack", 1);
+    conn.execute(
+        "INSERT INTO outbox(msg_id, peer_id, payload, created_at) VALUES ('m-ac1','p1','{}',1)",
+        [],
+    )
+    .unwrap();
+    assert!(direct_ack_policy(outbox_rows(&conn, "m-ac1") > 0));
+    assert!(super::ack_delivered(&conn, "m-ac1", "p1").unwrap());
+    assert_eq!(status_of(&conn, "m-ac1"), "delivered");
+    assert_eq!(outbox_rows(&conn, "m-ac1"), 0);
+
+    // 取消先删队列行；迟到 Ack 不再成立，消息停在 cancelled。
+    ins_msg(&conn, "m-ac2", "p1", "text", "cancel", 2);
+    conn.execute(
+        "INSERT INTO outbox(msg_id, peer_id, payload, created_at) VALUES ('m-ac2','p1','{}',1)",
+        [],
+    )
+    .unwrap();
+    assert!(direct_cancel_policy(&status_of(&conn, "m-ac2")));
+    assert_eq!(
+        super::cancel_queued_message(&conn, "m-ac2").unwrap(),
+        super::MessageCancelOutcome::Cancelled
+    );
+    assert!(!direct_ack_policy(outbox_rows(&conn, "m-ac2") > 0));
+    assert!(!super::ack_delivered(&conn, "m-ac2", "p1").unwrap());
+    assert_eq!(status_of(&conn, "m-ac2"), "cancelled");
+
+    // 重发只接受 failed/cancelled；delivered 原地不动。
+    ins_msg(&conn, "m-rs1", "p1", "text", "resend", 3);
+    conn.execute(
+        "UPDATE messages SET status='failed' WHERE msg_id='m-rs1'",
+        [],
+    )
+    .unwrap();
+    assert!(direct_resend_policy(&status_of(&conn, "m-rs1")));
+    assert_eq!(
+        super::requeue_message_for_resend(&conn, "m-rs1", "p1", "{}").unwrap(),
+        1
+    );
+    assert_eq!(status_of(&conn, "m-rs1"), "sending");
+    assert_eq!(outbox_rows(&conn, "m-rs1"), 1);
+
+    conn.execute(
+        "UPDATE messages SET status='delivered' WHERE msg_id='m-rs1'",
+        [],
+    )
+    .unwrap();
+    assert!(!direct_resend_policy(&status_of(&conn, "m-rs1")));
+    assert_eq!(
+        super::requeue_message_for_resend(&conn, "m-rs1", "p1", "{}").unwrap(),
+        0
+    );
+    assert!(!direct_cancel_policy(&status_of(&conn, "m-rs1")));
+    assert_eq!(
+        super::cancel_queued_message(&conn, "m-rs1").unwrap(),
+        super::MessageCancelOutcome::AlreadyDelivered
+    );
+    assert_eq!(status_of(&conn, "m-rs1"), "delivered");
+}
+
+#[test]
+fn group_message_lifecycle_policy_matches_ledger_sequences() {
+    let conn = fresh_db();
+    ins_msg(&conn, "m-g1", "group:g1", "text", "群生命周期", 1);
+    for member in ["a", "b", "c"] {
+        conn.execute(
+            "INSERT INTO group_outbox(msg_id, group_id, peer_id, payload, created_at)
+             VALUES ('m-g1', 'g1', ?1, '{}', 1)",
+            params![member],
+        )
+        .unwrap();
+    }
+
+    // 第一个成员 Ack：行 pending → delivered，消息推进成 delivered。
+    assert!(group_ack_advances_message_policy("pending"));
+    assert_eq!(
+        super::ack_group_delivered(&conn, "m-g1", "a").unwrap(),
+        super::GroupAckOutcome::Applied
+    );
+    assert_eq!(status_of(&conn, "m-g1"), "delivered");
+
+    // 取消剩余两个 pending：消息允许从 delivered 覆盖成 partial_cancelled。
+    assert_eq!(group_cancel_target_policy(2, 1), Some("partial_cancelled"));
+    assert_eq!(
+        super::cancel_queued_group_message(&conn, "m-g1").unwrap(),
+        super::GroupMessageCancelOutcome::PartiallyCancelled {
+            delivered: 1,
+            cancelled: 2
+        }
+    );
+    assert_eq!(status_of(&conn, "m-g1"), "partial_cancelled");
+
+    // 迟到 Ack 只改行，不把 partial_cancelled 翻回 delivered。
+    assert!(!group_ack_advances_message_policy("cancelled"));
+    assert_eq!(
+        super::ack_group_delivered(&conn, "m-g1", "b").unwrap(),
+        super::GroupAckOutcome::LateApplied
+    );
+    assert_eq!(status_of(&conn, "m-g1"), "partial_cancelled");
+    assert_eq!(
+        super::ack_group_delivered(&conn, "m-g1", "a").unwrap(),
+        super::GroupAckOutcome::Duplicate
+    );
+
+    // 补发只复活 cancelled；failed 永不复活。
+    assert!(group_resend_revives_policy("cancelled"));
+    assert_eq!(
+        super::resend_cancelled_group_rows(&conn, "m-g1", 99).unwrap(),
+        1,
+        "b 已被迟到 Ack 改回 delivered ⇒ 只剩 c 一行 cancelled"
+    );
+    assert_eq!(status_of(&conn, "m-g1"), "sending");
+    assert_eq!(
+        super::mark_group_outbox_failed(&conn, "m-g1", "c").unwrap(),
+        1
+    );
+    assert!(!group_resend_revives_policy("failed"));
+    assert_eq!(
+        super::resend_cancelled_group_rows(&conn, "m-g1", 100).unwrap(),
+        0
+    );
+    assert_eq!(status_of(&conn, "m-g1"), "sending");
+}
