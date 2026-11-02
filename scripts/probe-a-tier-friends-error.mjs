@@ -1,6 +1,8 @@
 #!/usr/bin/env node
 /**
- * A 档错误态的**真窗口**验收（手动探针，不进门禁）。
+ * A 档错误态的**真窗口**验收（手动探针，不进门禁）。当前两条场景：
+ *   `--scenario=friends`（默认）好友列表；`--scenario=transfers` 任务中心台账。
+ *
  *
  * 为什么需要它：A 档 6 格的判据都是源码/变异级的（后端不许折回空、前端要有 `role="alert"`），
  * 但「读失败时界面到底画的是哪一句话」只有真窗口能证明。这里用**隔离 HOME + 高位实例号**
@@ -22,13 +24,34 @@ import os from "node:os";
 import path from "node:path";
 import process from "node:process";
 
-import { probeTree, ensureHelper, axEnvironmentReady } from "./ax-tree.mjs";
+import { probeTree, ensureHelper, axEnvironmentReady, pressElement } from "./ax-tree.mjs";
 
 const ROOT = path.resolve(import.meta.dirname, "..");
 const BIN = path.join(ROOT, "src-tauri", "target", "release", "gosslan");
 const INSTANCE = "9";
-const EMPTY_HINT = "还没有好友";
-const ERROR_HINT = "这次没能从本机读到好友列表";
+const SCENARIOS = {
+  friends: {
+    table: "friends",
+    column: "nickname",
+    empty: "还没有好友",
+    error: "这次没能从本机读到好友列表",
+    open: null,
+  },
+  transfers: {
+    table: "file_transfers",
+    column: "progress",
+    empty: "没有进行中的任务",
+    error: "任务列表这次没读出来",
+    open: "后台任务", // 任务中心是一扇模态，得先点开
+  },
+};
+const arg = process.argv.find((a) => a.startsWith("--scenario="));
+const key = arg ? arg.split("=")[1] : "friends";
+const scene = SCENARIOS[key];
+if (!scene) {
+  console.error(`✗ 未知场景：${key}（可选：${Object.keys(SCENARIOS).join(" / ")}）`);
+  process.exit(2);
+}
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
@@ -65,12 +88,34 @@ async function bootAndRead(tag) {
         /* 窗口还没挂上 */
       }
     }
-    const labels = (tree?.parsed?.names ?? []).map((n) => n.label ?? "").join("\n");
+    if (scene.open) {
+      pressElement(p.pid, scene.open);
+      await sleep(1500);
+      // ⚠️ 模态刚挂上时无障碍树会**同时留着**上一帧的节点（实测：错误块与空态同现）⇒
+      // 必须等到"连续两次读数完全相同"再取样，否则判据会读到一个混合帧。
+      let prev = null;
+      for (let i = 0; i < 6; i++) {
+        const t2 = probeTree(p.pid, { tries: 1, gapMs: 0 });
+        const cur = (t2?.parsed?.names ?? []).map((n) => n.label ?? "").join("\u0000");
+        if (prev !== null && cur === prev && t2?.parsed?.webArea > 0) {
+          tree = t2;
+          break;
+        }
+        prev = cur;
+        await sleep(400);
+      }
+      if (!tree) throw new Error("模态面板的读数一直在变，取不到稳定帧");
+    }
+    const labels = (tree?.parsed?.names ?? []).map((n) => n.label ?? "");
+    // ⚠️ 用**前缀**而不是子串：`task.loadFailedHint` 的正文里就含着「没有进行中的任务」几个字，
+    // 子串判据会把错误态同时判成「空态在」（本探针第一版就是这么假红的）；
+    // 而两个 needle 互不为前缀，所以前缀判据既能命中真实节点、又保持互斥。
+    const has = (needle) => labels.some((l) => l.startsWith(needle));
     console.log(
       `[${tag}] webArea=${tree?.parsed?.webArea ?? 0} total=${tree?.parsed?.total ?? 0} ` +
-        `空态=${labels.includes(EMPTY_HINT)} 错误提示=${labels.includes(ERROR_HINT)}`,
+        `空态=${has(scene.empty)} 错误提示=${has(scene.error)}`,
     );
-    return labels;
+    return { labels, has };
   } finally {
     p.kill("SIGTERM");
     for (let i = 0; i < 20 && p.exitCode === null; i++) await sleep(250);
@@ -100,16 +145,16 @@ try {
 
   // ⚠️ 不能 DROP TABLE：启动时 `CREATE TABLE IF NOT EXISTS` 会把它重建回来（实测）。
   // 删一列则不会被修 —— 这是"表在、读不出来"的最小真实形状。
-  execFileSync("sqlite3", [db, "ALTER TABLE friends DROP COLUMN nickname;"]);
-  console.log("[注入] 已删 friends.nickname（表还在 ⇒ 读 SELECT 会失败）");
+  execFileSync("sqlite3", [db, `ALTER TABLE ${scene.table} DROP COLUMN ${scene.column};`]);
+  console.log(`[注入] 已删 ${scene.table}.${scene.column}（表还在 ⇒ 读 SELECT 会失败）`);
 
   const experiment = await bootAndRead("实验组·缺列");
 
   const ok =
-    control.includes(EMPTY_HINT) &&
-    !control.includes(ERROR_HINT) &&
-    experiment.includes(ERROR_HINT) &&
-    !experiment.includes(EMPTY_HINT);
+    control.has(scene.empty) &&
+    !control.has(scene.error) &&
+    experiment.has(scene.error) &&
+    !experiment.has(scene.empty);
   if (ok) {
     console.log("\n✓ 空态与错误态在真窗口里**互斥地**分开了");
     code = 0;
