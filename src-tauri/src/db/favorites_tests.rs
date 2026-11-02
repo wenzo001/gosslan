@@ -1183,6 +1183,80 @@ mod tests {
         assert!(get_lan_enabled(&conn), "恢复默认后回到开");
     }
 
+    /// 读库失败**不许**被当成「键不存在」——那一格会把默认值写真回库，
+    /// 于是用户显式关掉的局域网/蓝牙，在一次读抖动之后被**永久**改成开（2026-11-02 修法）。
+    ///
+    /// 夹具：`settings.value` 是 TEXT 列，塞进一段非 UTF-8 字节 ⇒ `get::<String>` 在取列时失败
+    /// （`get_setting` 把它折成 `None`、`get_setting_checked` 返回 `Err`），而写路径照常可用 ——
+    /// 正好是"这一格会不会误写回"要的那两个状态。写不出这个形状的话，本条就只是空转。
+    #[test]
+    fn unreadable_channel_pref_never_overwrites_the_explicit_choice() {
+        let hex_of = |conn: &Connection, key: &str| -> String {
+            conn.query_row(
+                "SELECT lower(hex(value)) FROM settings WHERE key = ?1",
+                params![key],
+                |r| r.get::<_, String>(0),
+            )
+            .unwrap()
+        };
+
+        for key in ["lan_enabled", "bt_enabled"] {
+            let conn = mem();
+            conn.execute(
+                "INSERT INTO settings(key, value) VALUES(?1, ?2)",
+                params![key, vec![0xFF_u8, 0xFE]],
+            )
+            .unwrap();
+            let read = get_setting_checked(&conn, key);
+            assert!(
+                read.is_err(),
+                "{key} 的夹具没造出读失败 ⇒ 本条判据在空转（实际拿到 {read:?}）"
+            );
+            assert!(
+                !persists_missing_key_default(&read),
+                "{key}：读失败不许走「键不存在」那一格"
+            );
+            // 判据自己的三档（缺键要写、有值不写、读失败不写）
+            assert!(
+                persists_missing_key_default(&Ok(None)),
+                "「真的没有这个键」必须仍然走持久化默认值那一格"
+            );
+            assert!(
+                !persists_missing_key_default(&Ok(Some("0".to_string()))),
+                "键已存在时更不该重写默认值"
+            );
+
+            let before = hex_of(&conn, key);
+            // 两个 getter 各自的"值那一档"不属本判据（读失败时按默认走是既有语义），
+            // 这里只钉一件事：**库里那一行没被改**。
+            if key == "lan_enabled" {
+                let _ = get_lan_enabled(&conn);
+            } else {
+                let _ = get_bt_enabled(&conn);
+            }
+            assert_eq!(
+                hex_of(&conn, key),
+                before,
+                "{key}：读失败时把默认值写回了库 ⇒ 用户「我关过这条通道」的选择被永久覆盖"
+            );
+        }
+
+        // 反控：键**真的**不存在时，默认值仍要落库（这条语义是既有产品要求，不许被上面带跑）。
+        let fresh = mem();
+        assert!(get_lan_enabled(&fresh), "缺省局域网必须开启");
+        assert!(get_bt_enabled(&fresh), "缺省蓝牙必须开启（三端一致）");
+        assert_eq!(
+            get_setting(&fresh, "lan_enabled").as_deref(),
+            Some("1"),
+            "缺键那一档必须继续把默认值持久化"
+        );
+        assert_eq!(
+            get_setting(&fresh, "bt_enabled").as_deref(),
+            Some("1"),
+            "缺键那一档必须继续把默认值持久化"
+        );
+    }
+
     /// 蓝牙开关偏好：显式值必须被尊重（默认值只在"键不存在"时生效）。
     ///
     /// ⚠️ 默认值本身依赖目标平台（`cfg!(mobile)` ⇒ 手机默认开、桌面默认关），

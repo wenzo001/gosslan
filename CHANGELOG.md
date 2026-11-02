@@ -13,6 +13,29 @@
 
 ## [Unreleased]
 
+## [5.16.25] - 2026-11-02
+
+### 通道开关偏好：读库失败不再被当成「键不存在」而把默认值写真回库
+
+`db::get_lan_enabled` / `get_bt_enabled` 写的是 `if get_setting(conn, key).is_none() { set_..(conn, true).ok(); }`，
+而 `get_setting` 自己把 SQL 错误也折成 `None`（它上面那段文档就写着「读库失败与"没有这条"都返回 None」）。
+于是**一次读抖动走进的正是"首次安装"那一格**：把 `lan_enabled="1"` / `bt_enabled="1"` 覆盖回库 ⇒
+用户显式关掉的局域网/蓝牙偏好被永久改回开（写失败那侧还有 `.ok()` 把痕迹也咽了）。
+这条与 2026-10-20 为身份密钥立 `get_setting_checked` 的理由是同一件事，只是当时只护住了身份键。
+
+- 新增唯一判据 `persists_missing_key_default(&Result<Option<String>>)`：只有 `Ok(None)` 才写默认值，
+  `Err` 什么都不写（并按 db 层既有口径打一行 `code=CHANNEL_PREF_READ_FAILED`）。
+- 用例 `unreadable_channel_pref_never_overwrites_the_explicit_choice`：夹具是把非 UTF-8 字节塞进 TEXT 列
+  ⇒ `get::<String>` 在取列时报错（读失败）而写路径照常可用。断言的是**库里那一行没被改**，
+  并且先 `assert!(read.is_err())` 自证夹具真造出了失败形状（否则这条会空转）。
+  反证：把 getter 退回原来的 `get_setting(..).is_none()` 两行 ⇒ 该用例红在
+  「lan_enabled：读失败时把默认值写回了库」；还原与备份 `cmp` 逐字节相同 ⇒ 绿。
+
+顺带查出一件流程欠账：跑测试清单守卫时发现 **5.16.18 那条 `add_friend_never_clears_...` 用例当时也没纳入基线**
+（清单检查是"WARN 型退 0"，看着像通过）。本批 `--update` + `--sync-baselines` 一并补上，
+现数 `基线 1373 条全部在跑`，macos/windows 两份各 +2 行。
+
+
 ## [5.16.24] - 2026-11-02
 
 ### 网络层五处「读库失败折成空」收口，并把折叠判据的面扩到网络层（B3-F3 网络侧）
