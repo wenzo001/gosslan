@@ -2585,4 +2585,33 @@ mod tests {
             .unwrap();
         assert_eq!(gs, "cancelled", "聚合行必须跟着落取消（否则气泡显示还在传）");
     }
+    /// 群消息的删除必须清 `group_outbox`（按成员各一行）。
+    ///
+    /// 只测单聊 `outbox` 时这条链路是空的 —— 群补发走的是**另一张表**，
+    /// 漏了它成员会收到"我删掉的那条群消息"（F-MSG-071 点名的两处连带之一）。
+    #[test]
+    fn delete_messages_clears_group_outbox_rows_for_every_member() {
+        let conn = mem();
+        ensure_conversation(&conn, "group:g1", "group", "项目组", None).unwrap();
+        let mut m = rec_as("gm1", "group:g1", "text", "群里的话");
+        m.ts = 10;
+        insert_message(&conn, &m).unwrap();
+        insert_group_outbox(&conn, "gm1", "g1", "p1", "{}").unwrap();
+        insert_group_outbox(&conn, "gm1", "g1", "p2", "{}").unwrap();
+
+        let n = delete_messages(&conn, &["gm1".to_string()]).unwrap();
+        assert_eq!(n, 1);
+        let left: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM group_outbox WHERE msg_id = 'gm1'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            left, 0,
+            "群补发队列还留着这行 ⇒ 下一次 flush 会把成员删掉的那条群消息推给他们"
+        );
+    }
 }
+

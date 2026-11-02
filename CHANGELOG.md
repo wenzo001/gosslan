@@ -13,6 +13,22 @@
 
 ## [Unreleased]
 
+## [5.16.57] - 2026-11-02
+
+### 「可验证」再收两格：群消息删除的第二条队列、群列表读失败
+
+- **F-MSG-071 批量删除**：原句「未读到覆盖 `outbox`/`group_outbox` 连带删除与『Silent/Card 不可删』
+  的具名用例」。查下来单聊侧早有三条，**群侧那条是空的** —— 群补发走的是另一张表
+  （`group_outbox`），只测单聊等于没测这条链路。新增
+  `delete_messages_clears_group_outbox_rows_for_every_member`：两个成员各一行，删完必须为 0。
+  变异反证：把 `DELETE FROM group_outbox` 那一句去掉（可编译）⇒ 红并报
+  「下一次 flush 会把成员删掉的那条群消息推给他们」，还原后 `cmp` 相同。
+- **F-GRP-007 群读取面**：「读失败必须变 Err」与 F-MSG-060 是同一条 B1-F7 口径，此前**没有判据**。
+  新增 `broken_db_reading_groups_is_an_error_not_an_empty_list`：库坏了时 `db::list_groups`
+  必须 `Err`（`Ok(vec![])` 会被画成「你的群都不见了」），命令层必须包成 `群列表读取失败: …`
+  且体内无 `unwrap_or_default()`。变异反证：改掉那句具名错误 ⇒ 红，还原后 `cmp` 相同。
+  群已读名单那半在 5.16.41 已是逐群 `Err`，界面横幅在 5.16.43。
+
 ## [5.16.56] - 2026-11-02
 
 ### 「可验证」再收两格：头像上限闸（新判据）、导出聊天文字（复核）

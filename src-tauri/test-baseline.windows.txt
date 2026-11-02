@@ -335,6 +335,7 @@ db::tests::conversation_unread_and_mark_read
 db::tests::delete_conversation_idempotent_on_missing
 db::tests::delete_conversation_removes_messages_and_row
 db::tests::delete_group_cascades_group_files
+db::tests::delete_messages_clears_group_outbox_rows_for_every_member
 db::tests::delete_messages_clears_outbox_and_recomputes_summary
 db::tests::delete_messages_refuses_non_bubble_kinds
 db::tests::delete_messages_with_empty_input_is_noop
@@ -1152,6 +1153,7 @@ tests::boot_downgrade_refusal_is_typed_precedes_writes_and_non_blocking
 tests::both_dm_paths_share_one_notification_kind_predicate
 tests::both_group_file_entries_validate_the_transfer_id_before_any_side_effect
 tests::broadcast_diag_suppression_covers_both_send_paths
+tests::broken_db_reading_groups_is_an_error_not_an_empty_list
 tests::broken_db_reading_messages_is_an_error_not_an_empty_page
 tests::bt_defaults_on_everywhere
 tests::cache_cleaner_walk_never_follows_symlinks
