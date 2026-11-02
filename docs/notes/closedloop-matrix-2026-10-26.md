@@ -443,3 +443,21 @@ console.log(bad.length?"✗ "+bad.length+" 处失效：\n  "+bad.join("\n  "):"�
 | 崩溃留下 sending/active 行 | ✓ | ✓ 四条启动对账各带具名失败码（`state.rs:1786/1799/1817/1832`，如 `OUTBOX_ORPHAN_RECOVERED` / `TRANSFER_INTERRUPTED_RECOVERED`） | ✓ | 部分（落 failed 后气泡说话） | ✓ | ✓ | ✓ | **PASS**（这是本仓做得最好的一族） |
 | Worker 高亮失败 | ✓ | ✓ `onerror` 全量降级主线程（`codeHighlight.ts:62-69`） | ✓ | 不适用(理由)：降级对用户是无感的正确行为 | 待审 | ✓ | 待审 | 待审 |
 | 读配置失败后写回（外链 / 跨子网端点） | ✓ | **✗ 被折叠成空、无日志** | **✗ 覆盖旧列表**（只剩新加那条） | **✗ 界面显示「已保存」** | ✗ | ✗（只能手动重新填一遍） | 只有一行「保存成功」 | **FAIL（B3-F3）** |
+
+## 2026-11-02 复核：F-FIL-001 / F-FIL-002 的「盘满不分类」已经落地（B2-F1）
+
+本册 10-26 给 `F-FIL-002` 的总判是 PARTIAL，理由只有一条：「缺 disk_full 分类 ⇒ **B2-F1**」。
+**这条理由已过期** —— 现读三条链都在：
+
+- `network/file/receive.rs::write_chunk`（`:1028-1041`）：`write_all` 失败时走
+  `logging::classify_write_failure(&e)` ⇒ 盘满归 `FAIL_CODE_DISK_FULL`、其余归
+  `FILE_RECEIVE_WRITE_FAILED`，**OS 原文只进日志**（5.15.35 的形态）。
+- `network/file/receive.rs::fail_taken_receive`（`:1187-1206`）：`reason == FAIL_CODE_DISK_FULL` 时
+  **删 `.part`** 并留 `FILE_DISK_FULL` 错误行 —— 正是 B2-F1 要求的「该档删续传前缀」（5.15.51）。
+- 前端：`src/utils/fileFailReason.ts` 的 `DISK_FULL → file.diskFull`，中英词典两条都在；
+  `useChatStore::onFileFailed` 用它拼 toast ⇒ 用户当场看到「磁盘空间不足…请释放后重试」。
+
+群侧另有一条**刻意**的反向口径（不是缺口）：`group_file.rs::persistable_group_fail_code` 的用例断言
+盘满**不进**群文件落库词表 —— 可行动文案由 `file-failed` 事件族负责，气泡按通用文案落库。
+
+⇒ 本册这两行的 PARTIAL 只该读成「10-26 当时的状态」；按今天现读，B2-F1 已收口。
