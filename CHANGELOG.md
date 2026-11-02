@@ -13,6 +13,20 @@
 
 ## [Unreleased]
 
+## [5.16.63] - 2026-11-02
+
+### F-PLF-010 部分收口：另存的字节通道补三条行为断言
+
+`save_data_file_blocking` 是「图片另存」唯一的写盘出口，此前只有"超限拒绝"一条。补
+`save_data_file_writes_exact_bytes_and_never_leaves_a_half_file`：
+① 写出的字节与解码后**逐一相同**（含 NUL，防截断/编码错）；
+② 非法 base64 在**写之前**失败、不留空文件；
+③ 目的地目录不存在必须**报错** —— 返回 `Ok` 就是「界面说『已保存』而磁盘上没有这个文件」。
+变异反证：把 `fs::write` 的错误吞掉 ⇒ 红并报「目录不存在却返回 Ok」，还原后 `cmp` 相同。
+
+**如实留缺口**：`resolve_media_path`（save/preview/favorite 共用的那个解析器）仍无独立用例
+—— 它吃 `&AppState`，要造 DB 状态；其安全半边 `path_under_any` 已有反例测试。
+
 ### 「可验证」再收两格（纯台账订正）：诊断包脱敏、会话读取轻写入
 
 - **F-OBS-012 诊断包导出**：原句「未读到脱敏用例」已过期 —— `diagnostics.rs` 有

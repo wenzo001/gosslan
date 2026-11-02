@@ -133,3 +133,46 @@ fn save_data_file_rejects_oversized_payload_after_decode() {
     assert!(!dest.exists(), "拒绝时不许留下半截文件");
     let _ = std::fs::remove_file(&dest);
 }
+
+/// F-PLF-010：另存的**字节通道**本身（不是上传限流那一格）：编码、落盘、失败不留半截。
+///
+/// `save_data_file_blocking` 是「图片另存」唯一的写盘出口；它错一步的后果是用户拿到一张
+/// 截断/错内容的文件，而界面上写着"已保存"。
+#[test]
+fn save_data_file_writes_exact_bytes_and_never_leaves_a_half_file() {
+    use base64::Engine as _;
+    let dir = std::env::temp_dir();
+    let dest = dir.join(format!("gosslan-save-ok-{}.bin", std::process::id()));
+    let payload = b"\x89PNG\r\n\x1a\n-with-nul\x00-inside".to_vec();
+    let b64 = base64::engine::general_purpose::STANDARD.encode(&payload);
+    crate::commands::save_data_file_blocking(b64, dest.to_string_lossy().to_string())
+        .expect("正常载荷必须写成功");
+    assert_eq!(
+        std::fs::read(&dest).expect("读回"),
+        payload,
+        "写出来的字节必须与解码后逐一相同（含 NUL），否则用户拿到的是坏文件"
+    );
+    let _ = std::fs::remove_file(&dest);
+
+    // 非法 base64：必须在**写之前**失败，且不留下任何文件
+    let bad_dest = dir.join(format!("gosslan-save-bad-{}.bin", std::process::id()));
+    let err = crate::commands::save_data_file_blocking(
+        "这不是 base64".to_string(),
+        bad_dest.to_string_lossy().to_string(),
+    )
+    .expect_err("非法 base64 必须拒绝");
+    assert!(!err.is_empty(), "错误必须有内容");
+    assert!(!bad_dest.exists(), "解码失败不许留下空文件");
+    let _ = std::fs::remove_file(&bad_dest);
+
+    // 目的地目录不存在：必须报错，不许静默成功
+    let nowhere = dir
+        .join(format!("gosslan-nonexistent-{}/x.bin", std::process::id()))
+        .to_string_lossy()
+        .to_string();
+    let b64b = base64::engine::general_purpose::STANDARD.encode(b"abc");
+    assert!(
+        crate::commands::save_data_file_blocking(b64b, nowhere).is_err(),
+        "目录不存在却返回 Ok ⇒ 界面会说「已保存」而磁盘上没有这个文件"
+    );
+}
