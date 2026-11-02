@@ -89,6 +89,20 @@ pub fn save_outgoing_image(
 /// （该字段由对端控制），没有它就会变成「对端点一下按钮删掉本机任意文件」。
 ///
 /// 用 canonicalize 比对，避免 `../` 或符号链接绕过前缀匹配。
+/// 文件命令的**拒绝**要留痕：越界删除 / 没有内容指纹 / 关系不成立 / 不是普通文件这几种，
+/// 界面只拿到一句中文，事后问「为什么这次传不了 / 删不掉」时日志里得有一行能按码筛的。
+///
+/// 一个码 + `action` / `reason` 字段（多种原因是同一个动作，不是多件事），与
+/// `GROUP_ACTION_REJECTED` / `FAVORITE_REJECTED` 同一口径。纯输入校验不在此列。
+/// ⚠️ `delete/outside_downloads` 是**安全信号**（有人试图让本机删下载目录外的文件）。
+fn reject_file(s: &Arc<AppState>, action: &str, reason: &str, msg: &str) -> String {
+    s.logger.warn(
+        "files",
+        format!("code=FILE_REJECTED action={action} reason={reason}"),
+    );
+    msg.to_string()
+}
+
 #[tauri::command(async)]
 pub async fn delete_file(state: State<'_, Arc<AppState>>, path: String) -> Result<(), String> {
     let s = state.inner().clone();
@@ -105,7 +119,7 @@ pub async fn delete_file(state: State<'_, Arc<AppState>>, path: String) -> Resul
             .map(|dir| path_under_any(&file, &[dir]))
             .unwrap_or(false);
         if !under_downloads {
-            return Err("只能删除下载目录内的文件".to_string());
+            return Err(reject_file(&s, "delete", "outside_downloads", "只能删除下载目录内的文件"));
         }
         std::fs::remove_file(&file).map_err(|e| e.to_string())
     })
@@ -1035,7 +1049,7 @@ pub async fn cancel_content_fetch(
 ) -> Result<ContentCancelResult, String> {
     let s = state.inner().clone();
     if cid.is_empty() {
-        return Err("这条内容没有内容指纹，无法取消".to_string());
+        return Err(reject_file(&s, "cancel_content", "no_cid", "这条内容没有内容指纹，无法取消"));
     }
     // SQLite 读写与 `.part` 删除都在阻塞池（INV-P34）：持锁做几笔写，占住 tokio worker
     // 会把整屏 IPC 一起拖慢（同 `cancel_message` 的理由）。
@@ -1433,7 +1447,12 @@ pub async fn request_content(
         )
     };
     if cid.is_empty() {
-        return Err("这条内容没有内容指纹（对方版本较旧），无法重新获取".to_string());
+        return Err(reject_file(
+            s,
+            "request_content",
+            "no_cid",
+            "这条内容没有内容指纹（对方版本较旧），无法重新获取",
+        ));
     }
     // 能力协商：对方没声明拉取能力就不发新帧（向后兼容）。
     let supports = s
@@ -1512,7 +1531,7 @@ pub async fn request_content_by_cid(
 ) -> Result<bool, String> {
     let s = state.inner();
     if cid.is_empty() {
-        return Err("这条内容没有内容指纹，无法重新获取".to_string());
+        return Err(reject_file(s, "request_content", "no_cid", "这条内容没有内容指纹，无法重新获取"));
     }
     // 能力协商：与 request_content 同一条规则 —— 对端没声明拉取能力就不发新帧。
     let supports = s
@@ -1615,18 +1634,23 @@ async fn send_file(
     // 「和自己聊天」暂不支持附件（用户 2026-09-16：先只支持文本）。这里给明确原因，
     // 而不是让用户看到下面那句"对方不是好友"——那与自聊场景完全对不上。
     if friend_id == s.device_id {
-        return Err("和自己聊天暂不支持图片或文件".to_string());
+        return Err(reject_file(s, "send", "self_chat_unsupported", "和自己聊天暂不支持图片或文件"));
     }
     // 好友关系检查
     {
         let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());
         if db::get_friend(&dbc, &friend_id).is_none() {
-            return Err("对方不是好友，请先扫描添加好友之后再继续聊天。".to_string());
+            return Err(reject_file(
+                s,
+                "send",
+                "not_friend",
+                "对方不是好友，请先扫描添加好友之后再继续聊天。",
+            ));
         }
     }
     let meta = std::fs::metadata(&path).map_err(|e| e.to_string())?;
     if !meta.is_file() {
-        return Err("只能发送普通文件".to_string());
+        return Err(reject_file(s, "send", "not_regular_file", "只能发送普通文件"));
     }
     let size = meta.len();
     let name = file::derive_file_name(&path);

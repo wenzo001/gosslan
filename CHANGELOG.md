@@ -13,6 +13,21 @@
 
 ## [Unreleased]
 
+## [5.16.47] - 2026-11-02
+
+### 文件命令的拒绝配上具名码（7 处，含两个安全信号）
+
+同一族的口径继续往下收：`commands/files.rs` 的**拒绝**路径此前只回一句中文。
+
+- 统一走 `reject_file(&s, action, reason, msg)` → `code=FILE_REJECTED action=… reason=…`。
+- 7 个调用点：`delete/outside_downloads`（**安全信号**：有人让本机删下载目录外的文件）、
+  `cancel_content/no_cid`、`request_content/no_cid`（两处入口）、
+  `send/self_chat_unsupported`、`send/not_friend`、`send/not_regular_file`。
+- 判据 `file_command_rejections_are_traced_not_silent`：调用点数 = 7，且每个 action/reason 必须
+  并排出现在**同一个** `reject_file( … )` 里。变异反证：把 `outside_downloads` 改名 ⇒ 红并点名
+  缺哪一格，还原后 `cmp` 逐字节相同。
+- 台账：F-FIL-001/005/006、F-CNT-002 的可诊断格补上今天的读数（**disk_full 仍缺码**，B2-F1 不变）。
+
 ## [5.16.46] - 2026-11-02
 
 ### 收藏 / 预览 / 清数据的失败路径配上具名码（10 处）

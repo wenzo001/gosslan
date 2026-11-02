@@ -1666,3 +1666,32 @@ fn clear_all_data_must_not_wipe_the_inflight_gate() {
         "清除数据清掉了在途闸门 ⇒ 同一单可以同时有两个发送任务（判据⑩ 的假取消会回来）"
     );
 }
+
+/// 文件命令的**拒绝**必须留痕（越界删除 / 没有内容指纹 / 关系不成立 / 不是普通文件）。
+///
+/// 与 `group_command_rejections_are_traced_not_silent` 同一种形状守：分母（7 个调用点）
+/// 与"action/reason 并排出现在同一个调用里"两层。`delete/outside_downloads` 是安全信号：
+/// 有人让本机删下载目录外的文件时，此前只回一句中文、日志里没有任何痕迹。
+#[test]
+fn file_command_rejections_are_traced_not_silent() {
+    let src = include_str!("commands/files.rs");
+    let calls = src.matches("reject_file(").count() - 1;
+    assert_eq!(calls, 7, "留痕调用点数变了（{calls}）⇒ 本判据的分母要跟着改");
+    for (action, reason) in [
+        ("delete", "outside_downloads"),
+        ("cancel_content", "no_cid"),
+        ("request_content", "no_cid"),
+        ("send", "self_chat_unsupported"),
+        ("send", "not_friend"),
+        ("send", "not_regular_file"),
+    ] {
+        let paired = src.split("reject_file(").skip(1).any(|tail| {
+            let head = tail.split(';').next().unwrap_or("");
+            head.contains(&format!("\"{action}\"")) && head.contains(&format!("\"{reason}\""))
+        });
+        assert!(
+            paired,
+            "{action}/{reason} 没有并排出现在同一个 reject_file( … ) 里 ⇒ 这一格又变回静默"
+        );
+    }
+}
