@@ -1242,6 +1242,7 @@ tests::link_badge_and_presence_are_live
 tests::link_window_is_not_capability_covered
 tests::main_window_label_matches_tray_constant
 tests::memory_readings_are_wired_into_all_three_crash_surfaces
+tests::mobile_picker_failures_carry_named_codes
 tests::network_friend_accept_must_prove_we_asked_first
 tests::never_awaits_while_holding_the_links_lock
 tests::new_message_kinds_are_gated_at_the_send_path

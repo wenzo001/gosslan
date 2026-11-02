@@ -903,3 +903,34 @@ fn link_and_profile_failures_carry_named_codes() {
         assert_eq!(sys.matches(code).count(), 1, "{code} 的出现次数不是 1（留痕被删或重复）");
     }
 }
+
+/// 手机端选图转码 / 同意好友两条链的失败要留痕（「可诊断可追溯」那几格）。
+///
+/// ① HEIC 转码：Kotlin 返回 null 与 JNI 调用失败是两种不同的降级（前者"转不了但文件还在"，
+///    后者"根本没跑通"），共用一句中文时排查分不开 ⇒ 两个码。
+/// ② 同意好友：缺对端公钥那条**返回值**早有 `E2EE_PUBKEY_MISSING`（走 `coded()`），
+///    但**日志**里没有码；这次把同一件事的两个通道都点名。回执发送失败另有一个
+///    `FRIEND_ACCEPT_RESEND_QUEUED`（已登记待补发），与 handshake 的补发码成对。
+/// ③ 同意/拒绝时申请已不在待处理表：`FRIEND_REQUEST_GONE`。
+#[test]
+fn mobile_picker_failures_carry_named_codes() {
+    let src = include_str!("commands/mobile_picker.rs");
+    for code in [
+        "code=HEIC_TRANSCODE_NULL",
+        "code=HEIC_TRANSCODE_FAILED",
+        "code=FRIEND_ACCEPT_RESEND_QUEUED",
+    ] {
+        assert_eq!(src.matches(code).count(), 1, "{code} 的出现次数不是 1（留痕被删或重复）");
+    }
+    // 缺公钥那条复用已有常量，不新造字符串：本文件有**两个**返回值出口（同意/接收侧），
+    // 这次再补一个**日志**出口 ⇒ 常量共出现 3 次，且日志那句必须是 `code={}` 拼出来的。
+    assert_eq!(
+        src.matches("crate::error_codes::E2EE_PUBKEY_MISSING").count(),
+        3,
+        "缺公钥的常量出现次数变了（两个 coded 出口 + 一个日志出口 = 3）"
+    );
+    assert!(
+        src.contains("code={} 同意好友但缺对端公钥"),
+        "缺公钥的**日志**没有配码（返回值的码不能替代日志里的码）"
+    );
+}
