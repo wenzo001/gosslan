@@ -2064,6 +2064,56 @@ INSERT 前还先从 `groups` 表查真名 ⇒ 这一次折叠写不坏会话名�
 ⇒ "群存在但成员空"与"读失败"不可分。C 档那四处全吃这一层，真要修得先看它。
 
 
+### 4.0br 用户报的两条群任务问题（2026-11-02 深夜）：一条已修，一条停在诊断
+
+用户原话两条：「群任务不是有关联到自己可以不通知」「有些群任务的图片会从别人的私聊再发我一份」。
+
+**① 建卡通知全群都弹 —— 已修（5.16.26）**。机制：`todo` 属 Card 类 ⇒ `countsTowardUnread` 放行 ⇒
+`maybeNotify` 一路走到 `queueNotification`，唯一过滤是"这条不是我自己发的"
+（`src/stores/useChatStore.ts:464`）。而契约图 `send_group_todo` 那格**本来写的就是「通知被指派人」**
+（`docs/ARCHITECTURE-MAP.html:898`）⇒ 是实现跑偏，不是新增口径。修法：纯函数 `todoCardConcernsMe`
+（创建人 + 被指派人；被指派人那一半复用已有的 `todoMentionsMe`，不写第三份 `assignees.includes(...)`），
+三条兜底都取"照旧通知"，**只拦通知、不动未读与时间线**。判据 8 条 + 接线判据 1 条
+（调用必须恰好 1 次、且排在 sender 过滤之后）；变异＝删掉那行调用 ⇒ 红在"0 次（没接上）"。
+
+**② 群任务图片在私聊里又落一份 —— 只到诊断，本批未改码**：改它要动**接收热路径**，
+判错会把*真的*文件卡片吞掉；剩下的回合不足以把"实现 + 反控 + 真窗口验证"做完，硬做就是半成品字段
+（本仓治过的那类：只接通一半的字段编译过、门禁绿、功能为零）。
+
+机制（逐处现读，全是当前树）：
+- 缩略图缺失时前端按 cid 向某个对端要一份：`src/components/TodoImageThumb.vue:99` → `api.requestContentByCid`；
+- 请求帧 `Message::ContentRequest` **不带会话/范围字段**（`src-tauri/src/commands/files.rs:1474`），
+  服务端只按 cid 找源并授权（`src-tauri/src/network/transport/handle_share.rs:249-294`）；
+- 服务端把这次应答当成**一次普通的 1:1 文件发送**：请求里 `transfer_id` 为空就现造 `refetch-<uuid>`
+  （`handle_share.rs:296-300`）；
+- 接收端的单聊文件臂收到就无条件落一条消息：`conv_id = 对方`、`msg_id = file-<transfer_id>`、
+  kind 按扩展名给 `image|file`、预览写「[图片]」、未读 +1，还有 `touch_conversation`
+  （`src-tauri/src/network/transport/handle_file.rs:561-613`）；
+- **全仓没有任何一处认过 `refetch-` 前缀**（现 grep 只命中无关的 `prefetch`）；群文件行用的是
+  `gfile-<transfer_id>`（`network/transport/group_file.rs:775`）⇒ 两个 msg_id 前缀不同、互相挡不住，
+  所以补拉回来的那份**必然**多出一条；
+- 服务侧不写消息行（`handle_share.rs` 那臂里没有 insert/touch，现读）⇒ 多出来的那份只在请求方这边；
+- 为什么是「有些」：只有走过 1:1 补拉的那几张会中；本机原有的、以及对端直接推给我的都不中。
+
+建议修法（用户 2026-11-02 已选「接收端认这是我发起的补拉」，不动协议）：
+1. `AppState` 加两张**带时间戳的有界表**，形状照现成的 `state.rs:1320 pending_reads: Mutex<HashMap<String, i64>>`：
+   `content_pull_cids`（我发起过拉取的 cid）与 `content_pull_transfers`（由前者在 FileOffer 时认出的传输号）；
+2. `request_content`（`commands/files.rs:1358`）与 `request_content_by_cid`（`commands/files.rs:1436`）
+   发送前都登记 cid —— ⚠️ 前者也要：它给"本机已有消息行"重取内容，今天同样会在私聊多落一张卡；
+3. `handle_file.rs` 的 FileOffer 臂（`:14-24` 处已解出 `file_sha256`）里：cid 命中 ⇒ 登记该 `transfer_id`。
+   必须在 Offer 那一臂认：`FileDone` 帧只带 `transfer_id` + `attempt`（`protocol.rs:2021-2027`），
+   到 Done 再判已经拿不到 cid；
+4. `handle_file.rs:561` 的 `Ok(Some(...))` 臂：传输号命中 ⇒ 跳过 `insert_message` 与 `touch_conversation`，
+   其余（字节已在盘、content store 已登记）一律不动，并打一行带具名码的 info，
+   让"这张卡为什么没出现"事后查得到；
+5. 两张表按 TTL 顺手老化（一次拉取从请求到完成是秒级~分钟级），不许无界增长；
+6. **必须有的反控**：造一个"对端主动发一张本机没请求过的图"的用例，断言它照常落卡。
+   没有这条，判据会把真文件一起吞掉而全绿 —— 这正是本仓最禁的空转形状。
+
+唯一假阴性说清楚：判据是"这个 cid 我请求过"，所以**对端随后主动重发同一份内容**也会被当成回程而拦掉。
+接受它才用这个修法；不接受就得让帧里带一个显式标记 —— 那是协议改动，要过跨版本兼容口径。
+
+
 ## 5. 需求与实现偏差（spec-to-code-compliance）
 > ⚠️ **本节记的是审计当时的发现。今天哪些已经落地、哪些判了不修，一律以 [§8 落地状态总表](#8-落地状态总表2026-10-29-深夜按现算对账) 为准** —— 「确认」「无机器对账」「零用例」这类字样不代表今天还没做（本轮对账实测：§8 的 19 行里有 9 行在写这张表时其实已完成）。
 
@@ -2385,6 +2435,7 @@ audit-context/
 | 9 | **发送端台账假「已取消」**（E2E 判据⑩ `--fault=sender-kill-mid` 读到的 A=cancelled） | 产品缺陷 · **同日已修（5.15.94）· E2E 判据⑩ 已转绿（RCA 册 §10）** —— 实施记录与四条变异反证在同册 §9 | 根因已证死到行：两个家同时发同一个 `(transfer_id, peer)`（`flush_pending_files` 与 ContentRequest 服务任务），`install_cancel_slot` 撞键静默顶掉在任者 ⇒ 代码口径「oneshot 通道关闭」等于「用户取消」；随后 `finalize_file_failure` 写 `cancelled` + 墓碑 `cancel_terminal=1`，把真正成功那条的 `done` **静默**挡住（`upsert_transfer` 命中 0 行仍返 `Ok`）⇒ 成功传输被永久记成已取消。修法 = 1:1 在途闸门 `FileSendGate`（键复用 `file_peer_key`，形状照群侧 `group_file_dispatching`）+ 撞键返回 `AlreadyInFlight` + 守卫按登记序号只摘自己那格 + `upsert_transfer` 返回五档并对被挡的终态推进落 Warn。墓碑与 `set_message_status` 的终态名单一字未动 | 证据链、六个 `cancelled` 臂的现数、排除清单、最小修复方案与影响面、先红后绿的验证方案都在 `docs/notes/send-cancelled-rca-2026-11-01.md`；七次同形复现（四趟 `verify:e2e` 整链 + 三次单轮）；档位 L2 `[plan]` + patch，DB / 协议 / 前端零改动；判据⑩本身不许动。**修复后转绿**：判据⑩ **26/26 PASS**（`B=done A=done outbox=0`；A 侧日志里 `code=SEND_ALREADY_IN_FLIGHT … 本轮跳过` 真出现过一次，而整轮仍全绿）、撤两道防线后 FAIL 且红形状与基线逐字相同 —— 读数与命令在 RCA 册 §10.3 / §10.4 |
 
 | 10 | **应用内「更新说明」只覆盖被发布的那一版** | **已修（5.16.9，2026-11-02）** —— 5.16.7 曾加提示，5.16.9 做根修并**撤掉那条提示**（聚合后"这些节不会进更新说明"已不成立，留着会说反话） | ~~根修要动 `updater-manifest.mjs` + updater 工作流（后者 `fetch-depth: 1` 拿不到 tag）~~ ⇒ 工作流改走 Releases API 取上一版，生成器新增 `notesForRelease` | 现读：CLI 端到端带 `--since` 时 notes 含两节（39 字符）、不带时只有目标节；`jq` 两条读数排除当前 tag 得 `v5.15.100`；单测 10/10，变异（区间下界 `> 0` → `>= 0`）当场红。`v5.16.6` 的历史 notes（568 字符）已无法追改，GitHub 页面当天用 `gh release edit` 补过。5.16.10 起 Release 正文也由同一份 notes 生成（不再需要手工补）。详见 §4.0bn 第 3 条 |
+| 11 | **群任务图片在私聊里又落一份**（用户 2026-11-02 报） | 诊断完成 · **未改码** | 改它要动接收热路径，判错会吞掉*真的*文件卡片；剩下的回合不足以做完实现 + 反控 + 真窗口验证 ⇒ 停在工单，不硬做 | §4.0br：机制逐处到行（`TodoImageThumb.vue:99` → `ContentRequest` 无会话字段 → 服务端当普通 1:1 发送、现造 `refetch-` 传输号 → `handle_file.rs:561-613` 无条件落私聊卡 + 未读 +1；`gfile-`/`file-` 两个前缀互不挡），修法 6 步 + 必需的反控 + 唯一假阴性都写在那节 |
 
 ### 13.1 TST-06 收口过程与两次假否证的更正（2026-11-01）
 
