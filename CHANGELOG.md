@@ -13,6 +13,43 @@
 
 ## [Unreleased]
 
+## [5.16.22] - 2026-11-02
+
+### 闭环矩阵再抽一行：F-PST-001 的 B3-F1（迁移读失败当跳过）已过期
+
+10-26 写的是「4/14 步把读 schema 失败当跳过并继续前进版本，且迁移期只有 `eprintln!`」。现读两半都不成立：
+`run_migrations` 是 `(step.run)(conn)?` 之后才 `pragma_update(user_version)`（失败不推进），
+`init()` 的 `user_version(&conn)?` 也上抛；迁移进度由 `LAST_MIGRATION` 带进 `code=BOOT_DB_STATE` 日志行
+（`db.rs:79` 的注释就标着「审计 B3-F1 第二半」）。已在矩阵册补带日期与行号的复核节，原始判级不改。
+
+### 闭环矩阵 F-PRE-019（配置读失败折叠）已过期；同族残留在册
+
+外链端点三处读取已是 `db::get_setting_checked(...).map_err("读取外链列表失败")?`，不再折叠成空再写回。
+同族残留：`network/transport.rs:455` 的路由端点拨号循环仍是 `unwrap_or_default()` —— 不写回、下轮自愈，
+但读失败零痕迹；已登记在矩阵册，**未改码**。
+
+### 迁移台账同步 5.16.18：`friends.nickname` 那格从「整行覆盖」改成「没有信息不清空」
+
+`docs/migration-ledger.md` §1 第 12 行的未收口格里还写着 `add_friend` 是覆盖式、指着 `db/friends.rs:12`。
+5.16.18 之后：空昵称/无头像**不再清空**已有值，但**非空的远端名字仍然覆盖**（"备注该归谁"这个模型问题未动，仍在等拍板）。
+本批把台账那句话连同过期的行号一起改准。
+
+### 注释订正：`self_display_name` 里那句「会回落到 device_id 原文」已过期
+
+`state.rs` 的注释还写着「`resolve_nickname` 会回落到 `device_id` 原文 —— 会话列表里就会显示一串 `gosslan-xxxxxxxx`」。
+现读兜底早就是 `pick_member_display_name` 的「未知成员 + 后四位」（`member_notices.rs`）。**理由不变**
+（自己的名字显示成「未知成员 xxxx」同样不对），只把那句失真的描述改准。
+纯注释改动：`cargo fmt --check` 0、`clippy -D warnings` 0、Rust 全量 1369 passed。
+
+### INV-P33 边界订正：重启后同一条好友申请**不再**二次弹
+
+`docs/protocol-invariants.md` 里那行还写着「今天会再弹一次 —— 申请只活在内存里（库里没有那张表）」。
+现读已不成立：A4（10-31）把待处理申请落库（`put_friend_request` / `list_friend_requests`），
+启动时 `restore_pending_requests`（`lib.rs:384`）端回内存表；去重判据是「本机是否已握着这条」
+⇒ 重启后再收到同一条走 `SilentRefresh`，不弹通知。库里没有那一行时（清过数据/首次到达）仍会弹，那是对的。
+
+本批把这条边界如实改成「2026-10-31 起不再弹」并写明依据。
+
 ## [5.16.18] - 2026-11-02
 
 ### 好友资料不再被「信息更少的帧」清空（`friends.avatar` / `nickname`）

@@ -1597,7 +1597,7 @@ mesh 没有服务器也没有强制升级 ⇒ 混合版本是常态，不是边�
 | 同一条好友申请在同一进程里到达第二次（INV-P33） | 只有第一次弹系统通知；第二次照发 `friend-request` 事件 + 一行「重复的好友申请（已忽略通知）」日志，**不弹通知** |
 | 同一条好友同意在同一进程里到达第二次（INV-P33） | 只有"从不是好友变成好友"那一次弹；第二次 `was_friend=true` ⇒ 不弹，`friend-accepted` 事件照常发 |
 | 把首次判定硬编码（`friend_request_arrival_decision(true)`）或写反成 `is_some`（INV-P33 反向） | `tests::every_friend_request_path_notifies_only_on_first_sighting` 红，且 `guards:好友申请的通知只在第一次到达时弹` 那条注入把同一份判据再红一次；把 `if was_friend` 门控摘掉 ⇒ 同意那一支的形状断言红 |
-| 接收端**重启后**又收到同一条申请（INV-P33 的边界，不是判据） | 今天**会再弹一次** —— 申请只活在内存里（库里没有那张表），所以本条只承诺同一进程生命周期内不重复；这一格留在下面「边界」里待拍板，别把它写成已解决 |
+| 接收端**重启后**又收到同一条申请（INV-P33 的边界，不是判据） | **2026-10-31 起不再弹**：申请已落库（A4，`put_friend_request` / `list_friend_requests`），启动时 `restore_pending_requests`（`lib.rs:384`）把它端回内存表 ⇒ 去重判据「本机是否已握着这条」看得到 prior ⇒ 走 `SilentRefresh`。原文那句「只活在内存里（库里没有那张表）」已过期。**库里没有那一行时仍会弹**（清过数据 / 首次到达），那是对的 |
 | 大文件的 GB 级慢活跑在哪条线程上（INV-P34） | 登记在册的十二处（单聊收尾、群收尾、续传前缀校验、中继发送前整份哈希、中继重组含完成片 fsync、中继接收整份校验、中继落盘、另存为整文件复制、收藏整文件复制、待办图整图哈希、清除数据的整树删除、群台账一次性补账的整文件哈希）必须整体在**阻塞线程池**里跑 ⇒ 传输期间开设置窗 / 拖窗口照常。本条不承诺"传得更快"，只承诺"不钉住 tokio worker"（同一个 runtime 上还排着所有 `#[tauri::command(async)]`） |
 | 把其中任意一处写回成就地调用（INV-P34 反向之一） | 对应那条具名判据红：`tests::receive_finalize_slow_work_happens_outside_the_receiver_lock` / `tests::group_receive_finalize_slow_work_runs_off_the_async_worker` / `tests::resume_prefix_hash_runs_off_the_async_worker` |
 | 把 `spawn_blocking` 交出去但把线程池的 `Err` 伪装成 `Ok`（INV-P34 反向之二） | `tests::resume_prefix_hash_runs_off_the_async_worker` 红在"结果必须在续传臂内被接住"那一格 —— 假装成功会**回 Accept 却没注册接收器**，整单静默死掉 |
