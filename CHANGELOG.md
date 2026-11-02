@@ -13,6 +13,17 @@
 
 ## [Unreleased]
 
+### 「可验证」再收三格（纯台账订正）：重启/退出原因、诊断面板入口、三个 getter
+
+- **F-OBS-011 一键重启 / 上一轮退出原因 / 测试通知**：三段都有具名凭据 ——
+  `restart_destroys_lock_and_marks_exit_before_reexec`（先毁锁再 re-exec）、
+  `previous_run_report_extracts_panic_and_ble_marker`（从两份日志抽出 panic 与 BLE 标记）、
+  托盘/看门狗在 `lib_window_tests` 断言族。
+- **F-PRS-004 网络诊断快照**：改为**「不适用(理由)」**——诊断面板只在开发者入口是**产品取舍**，
+  不是可验证缺口；按本册口径「不适用 ≠ 通过」，不计入通过率。
+- **F-PLF-019 目录/密钥轮换 getter**：三条里没有错误面可验（内存字段直读 / 设置页那条链负责报错）；
+  密钥轮换查询有源码实质断言。
+
 ## [5.16.64] - 2026-11-02
 
 ### F-MSG-004 收口：重发的三步顺序有判据了
