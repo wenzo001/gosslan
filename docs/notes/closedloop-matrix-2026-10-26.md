@@ -451,6 +451,17 @@ console.log(bad.length?"✗ "+bad.length+" 处失效：\n  "+bad.join("\n  "):"�
 | Worker 高亮失败 | ✓ | ✓ `onerror` 全量降级主线程（`codeHighlight.ts:62-69`） | ✓ | 不适用(理由)：降级对用户是无感的正确行为 | 待审 | ✓ | 待审 | 待审 |
 | 读配置失败后写回（外链 / 跨子网端点） | ✓ | **✗ 被折叠成空、无日志** | **✗ 覆盖旧列表**（只剩新加那条） | **✗ 界面显示「已保存」** | ✗ | ✗（只能手动重新填一遍） | 只有一行「保存成功」 | **FAIL（B3-F3）** |
 
+### 同日补注：`commands/group_file_dispatch.rs` 的「0 个 `code=`」**不是缺口**
+
+扫"整族无码"时它是最后一个命中（14 个 `Err(`、0 个 `code=`），读实现后确认**不该补**：
+
+- 它用的是**结构化错误类型** `GroupFileSendErr::{Cancelled, Retryable, Unrecoverable}` ——
+  这正是 INV-P16 的窄口写法（按"能不能重试/是不是用户取消"分类，而不是按中文串猜）；
+- 落库/事件那半由 `persistable_group_fail_code` 映射进 `messages.fail_code` 与 `file-failed` 载荷；
+- 在这里再写一行 `code=` 日志只会**重复分类**，并按分片重试的次数刷屏。
+
+⇒ 下一次"整族 0 个 code="的扫描把它排除掉，别当新缺口重做（这是本行的口径补充，不是改判）。
+
 ## 2026-11-02 复核：F-FIL-001 / F-FIL-002 的「盘满不分类」已经落地（B2-F1）
 
 本册 10-26 给 `F-FIL-002` 的总判是 PARTIAL，理由只有一条：「缺 disk_full 分类 ⇒ **B2-F1**」。
