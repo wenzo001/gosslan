@@ -13,6 +13,20 @@
 
 ## [Unreleased]
 
+## [5.16.60] - 2026-11-02
+
+### 「可验证」再收两格：外链输入闸（新用例）、中继探测（复核）
+
+- **F-PRE-019 外链列表/修改**：输入闸是纯函数，此前**一条用例都没有**。新增两条：
+  `url_validation_rejects_every_shape_the_ui_can_send`（空 / 纯空白 / `ftp:` / `javascript:` /
+  `file:` / `http://` 一律拒 —— **scheme 不设限等于把任意协议丢给 OS 浏览器**；http(s) 允许、
+  两端空白 trim）、`normalize_rejects_bad_names_and_duplicate_urls_but_spares_self_on_edit`
+  （空名、超长名、规范化后重复的 URL、编辑自己那条不算重复、名称 trim）。
+  变异反证：把 `ftp` 放进允许的 scheme ⇒ 红并报「这个形状必须被拒」，还原后 `cmp` 相同。
+- **F-RTG-004 中继探测**：原句「probe 三档未逐条读」**已过期** —— `probe_splits_the_two_server_fates`
+  用**真 loopback 监听**（不是 mock，判据本身就是「对端关没关 socket」）分开 `rejected` /
+  `held` / `unreachable`；端点归一化侧有 `load_relay_runtime` 的用例。只订正台账，无新代码。
+
 ## [5.16.59] - 2026-11-02
 
 ### 「可验证」再收两格：群待办读取（复核）、收藏与撤回的交互（新用例）
