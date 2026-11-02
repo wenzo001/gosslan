@@ -13,6 +13,14 @@
 
 ## [Unreleased]
 
+### 复核：`group_file_dispatch.rs` 的「0 个 `code=`」不是缺口（结构化错误类型）
+
+扫"整族无码"时它是最后一个命中（14 个 `Err(`、0 个 `code=`），但读实现后确认**不该补**：
+它用的是结构化错误类型 `GroupFileSendErr::{Cancelled, Retryable, Unrecoverable}`，
+并经 `persistable_group_fail_code` 落进 `messages.fail_code` 与 `file-failed` 事件（INV-P16 的窄口）。
+再在这里写 `code=` 日志只会**重复分类**、并按分片重试刷屏。台账 F-FIL-001 已补这条注记，
+避免下一次扫描把它当新缺口重做。
+
 ## [5.16.68] - 2026-11-02
 
 ### 共享目录两条命令补具名码（`share.rs` 此前整族 0 个 `code=`）
