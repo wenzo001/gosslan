@@ -1302,6 +1302,7 @@ mesh 没有服务器也没有强制升级 ⇒ 混合版本是常态，不是边�
 
 - 钩子：`db::cascade_tests::direct_message_lifecycle_policy_matches_sql_guards`
   `db::cascade_tests::group_message_lifecycle_policy_matches_ledger_sequences`
+  `db::cascade_tests::read_only_ledger_projection_keeps_each_ledgers_terminal_policy`
   `db::cascade_tests::cancelling_a_group_message_marks_every_member_row_and_survives_a_late_ack`
   `db::cascade_tests::partially_delivered_group_message_can_cancel_the_rest_then_resend`
   `db::cascade_tests::a_late_ack_after_sweeper_failure_only_updates_the_ledger`

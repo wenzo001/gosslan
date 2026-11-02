@@ -167,6 +167,7 @@ db::cascade_tests::group_cancel_writes_recipients_and_summary_atomically
 db::cascade_tests::group_message_lifecycle_policy_matches_ledger_sequences
 db::cascade_tests::migration_v7_purges_legacy_group_orphans_only
 db::cascade_tests::partially_delivered_group_message_can_cancel_the_rest_then_resend
+db::cascade_tests::read_only_ledger_projection_keeps_each_ledgers_terminal_policy
 db::cascade_tests::removing_a_friend_forgets_its_chat_style
 db::cascade_tests::search_history_skips_orphan_conversations
 db::cascade_tests::terminal_status_writes_have_one_home
