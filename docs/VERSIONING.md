@@ -40,7 +40,20 @@
 
 1. 按上表给自己的改动定档；
 2. 提交信息末尾加一行 **`Version-Bump: patch|minor|major`**（这就是"版本号提升约束"的落点：
-   它让每个提交都被记账，而不是靠人记得去改版本）；
+   它让每个提交都被记账，而不是靠人记得去改版本）。
+   - **第四档 `none`（2026-11-02 加）= 「这笔提交纯文档，不提版本」**，用来让审计/台账/CHANGELOG
+     那类提交不再被 patch 位通胀污染（此前它们只能靠 `[plan]` 豁免，而 `[plan]` 的语义是"零影响"、
+     要同时满足"不动应用代码"才成立；`none` 是**主动声明**，白名单之外一律不成立）。
+     口径全部在 `scripts/semver.mjs`：`PURE_DOC_FILES`（根级命名文件清单：README / CHANGELOG /
+     LICENSE(.md) / CONTRIBUTING / SECURITY / AGENTS / CLAUDE / QODER / `.gitignore`）+
+     `PURE_DOC_PREFIXES`（`docs/`、`assets/`、`public/`，各自只认固定扩展名）。
+     ★ **默认拒绝**：不在白名单内的路径就是违规 —— 所以 `src/`、`src-tauri/`、`scripts/`、`tests/`、
+     `.github/` 以及 `docs/domains.data.mjs`（`.mjs` 不在 `docs/` 允许的扩展名里）都会让 `none` 不成立；
+     五个版本清单文件另有单独一句「改了版本清单」。落地的两道闸：`version:check` 把违规的 `none`
+     单独点名（`fakeNone`），`check-change-budget.mjs` 判据 4 对"声明 none 但不成立"直接红
+     （合法的 `none` 不再占用判据 3 的犯案窗口）。
+     现算复跑：`node --test scripts/semverNone.test.ts`（7 条，含正/反两向与 fixture 集成档）。
+     ⚠️ **引入这套机制的那笔提交自己不能用 `none`** —— 它改了 `scripts/`，按白名单就是违规。
 3. **同一个提交里就把版本提上去**：跑 `npm run version:patch|minor|major`。
    ⚠️ 这一条是 2026-09 起的实际口径（也是 Change Budget 判据 4 的判据来源）：**声明与落地
    必须在同一个提交**。旧写法"提交只写 trailer、攒一批再 `version:release`"已经不用了 ——

@@ -6195,6 +6195,75 @@ test("读库折叠总量是棘轮：不限名字的尺子只许降", () => {
   );
 });
 
+/**
+ * A 档六格的「读失败 ⇒ 界面错误档」必须**接上**（2026-11-02 拍板执行，INV-P36 的界面半边）。
+ *
+ * 钉两件事，缺一格都会退化成"代码里有过这件事但没人保证它还在"：
+ * ① 后端五个命令体不许把读失败折回空值（`按空显示` 那一族文案就是折叠的现场证据）；
+ * ② 前端每一格都得有"错误档 + 重试"的接线（store 导出错误键 + 消费组件带 role="alert"）。
+ * 用**文案锚**而不是行号：行号没有机器凭据、改一次漂一次（本仓点过名的老坑）。
+ */
+const A_TIER_SITES: Array<{ file: string; fn: string; code: string }> = [
+  { file: "commands/friends.rs", fn: "pub async fn get_friends(", code: "FRIENDS_LIST_READ_FAILED" },
+  { file: "commands/chat.rs", fn: "pub async fn get_group_todo_messages(", code: "TODO_BADGE_READ_FAILED" },
+  { file: "commands/files.rs", fn: "pub async fn get_transfers(", code: "TRANSFER_LEDGER_READ_FAILED" },
+  { file: "commands/groups.rs", fn: "pub async fn get_group_reads(", code: "GROUP_READS_LIST_READ_FAILED" },
+  { file: "commands/relay.rs", fn: "pub async fn get_relay_config(", code: "RELAY_CONFIG_READ_FAILED" },
+];
+/** 取 `pub async fn NAME(` 到下一个顶层 `pub ` 之间的正文（粗糙但够钉这一对文案锚）。 */
+function rustFnBody(src: string, sig: string): string {
+  const i = src.indexOf(sig);
+  assert.ok(i >= 0, `找不到 ${sig} ⇒ 锚点失效（函数改名/搬家必须同步这条判据）`);
+  const rest = src.slice(i + sig.length);
+  const j = rest.search(/\npub (async )?fn |\n#\[tauri::command/);
+  return j < 0 ? rest : rest.slice(0, j);
+}
+test("A 档读失败的界面错误档必须接上（后端不许折回空 + 前端要有错误档与重试）", () => {
+  const CMD = join(import.meta.dirname, "..", "..", "src-tauri", "src");
+  for (const site of A_TIER_SITES) {
+    const body = rustFnBody(readFileSync(join(CMD, site.file), "utf8"), site.fn);
+    assert.ok(body.includes(site.code), `${site.file} 的 ${site.code} 留痕不见了`);
+    assert.ok(
+      body.includes("上抛给界面"),
+      `${site.file}：读失败必须上抛给界面，不许再折成空值（界面会把它画成"没有数据"）`,
+    );
+    assert.ok(
+      !body.includes("按空显示"),
+      `${site.file}：仍写着"按空显示"⇒ 这一格被改回折叠了（INV-P36 的界面半边回归）`,
+    );
+  }
+  const store = readFileSync(join(import.meta.dirname, "..", "stores", "useChatStore.ts"), "utf8");
+  for (const k of [
+    "friendsError",
+    "transfersError",
+    "contentTransfersError",
+    "messageOpsError",
+    "openTodosError",
+    "groupReadsErrors",
+  ]) {
+    assert.ok(store.includes(`    ${k},`), `store 没导出 ${k} ⇒ 组件读不到失败原因，只能画空态`);
+  }
+  const list = readFileSync(join(import.meta.dirname, "..", "components", "ConversationList.vue"), "utf8");
+  const task = readFileSync(join(import.meta.dirname, "..", "components", "TaskCenter.vue"), "utf8");
+  const relay = readFileSync(
+    join(import.meta.dirname, "..", "components", "settings", "NetworkSection.vue"),
+    "utf8",
+  );
+  assert.ok(/friendsLoadFailed[\s\S]{0,400}role="alert"/.test(list), "好友列表没有错误档（空态会说谎）");
+  assert.ok(/ledgerError[\s\S]{0,400}role="alert"/.test(task), "任务中心没有错误档");
+  assert.ok(/relayLoadError[\s\S]{0,200}role="alert"/.test(relay), "中继配置没有内联错误档");
+  for (const [name, src] of [["好友列表", list], ["任务中心", task], ["中继配置", relay]] as const) {
+    assert.ok(src.includes('t("common.retry")') || src.includes("t('common.retry')"), `${name} 的错误档没有重试入口`);
+  }
+  // 正控：把折叠文案装回去，同一把尺子必须说"违规"（否则上面的 !includes 是空判）。
+  const smuggled = rustFnBody(
+    'pub async fn get_friends(x: u8) -> Vec<u8> {\n  let _ = "FRIENDS_LIST_READ_FAILED 好友列表按空显示";\n  Vec::new()\n}\npub async fn other() {}',
+    "pub async fn get_friends(",
+  );
+  assert.ok(smuggled.includes("按空显示"), "正控失效：合成串没被取进函数体");
+  assert.ok(!smuggled.includes("上抛给界面"), "正控失效：合成串不该带上抛文案");
+});
+
 // ---------------- 群任务建卡的通知闸门必须**接在** maybeNotify 上（2026-11-02） ----------------
 //
 // `todoCardConcernsMe` 那条纯函数判据只证明"算得对"，不证明"长在通知这条路上"。

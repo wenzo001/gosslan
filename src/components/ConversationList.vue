@@ -57,6 +57,15 @@ const router = useRouter();
 const chat = useChatStore();
 
 /**
+ * 「一次都没读到 且 有失败记录」⇒ 错误档（INV-P36：读失败不许画成空态）。
+ * 成功过就不算错误档 —— 与 `utils/todos.ts` 的 `todoRowsLoadState` 同一条口径，
+ * 免得同一类状态在两个组件里各判一遍、日后互相说反话。
+ */
+const friendsLoadFailed = computed(
+  () => chat.friends.length === 0 && !chat.friendsLoaded && Boolean(chat.friendsError),
+);
+
+/**
  * 左栏也接拖拽发送（负责人 2026-10-29）：拖着文件停在**某一行**上就高亮那一行，
  * 松手弹同一个确认框，确认后发给**那一行**的会话（不是当前打开的会话）。
  *
@@ -537,7 +546,13 @@ useEventListener(document, "click", closeFriendMenu);
               {{ t("common.addFriend") }}
             </button>
             <span class="max-w-[220px] text-caption leading-relaxed">
-              {{ chat.friends.length ? t("conv.emptyHintHasFriends") : t("conv.emptyHintNoFriends") }}
+              {{
+                chat.friends.length
+                  ? t("conv.emptyHintHasFriends")
+                  : chat.friendsError
+                    ? t("conv.contactsLoadFailedHint")
+                    : t("conv.emptyHintNoFriends")
+              }}
             </span>
           </template>
         </div>
@@ -607,7 +622,19 @@ useEventListener(document, "click", closeFriendMenu);
             />
           </template>
         </template>
-        <div v-if="filteredFriends.length === 0" class="mt-16 flex flex-col items-center gap-3 text-center text-sm text-[var(--gosslan-text-2)]">
+        <!-- A 档（INV-P36）：读失败与"真的没有好友"是两个值。成功过就以数据为准，
+             只有"一次都没读到 + 有失败记录"才画错误档（同 `todoRowsLoadState` 的三态口径）。 -->
+        <div v-if="friendsLoadFailed" class="mt-16 flex flex-col items-center gap-3 text-center text-sm" role="alert">
+          <span class="font-medium text-[var(--gosslan-danger-ink)]">{{ t("conv.contactsLoadFailed") }}</span>
+          <span class="text-xs text-[var(--gosslan-text-2)]">{{ t("conv.contactsLoadFailedHint") }}</span>
+          <button
+            class="tap-safe rounded-[var(--gosslan-radius-md)] border border-[var(--gosslan-border)] px-3 py-1.5 text-xs text-[var(--gosslan-text)] transition hover:bg-[var(--gosslan-hover)]"
+            @click="chat.refreshFriends()"
+          >
+            {{ t("common.retry") }}
+          </button>
+        </div>
+        <div v-else-if="filteredFriends.length === 0" class="mt-16 flex flex-col items-center gap-3 text-center text-sm text-[var(--gosslan-text-2)]">
           <span>{{ query.trim() ? t("conv.noMatchContact") : t("conv.noFriends") }}</span>
           <button
             v-if="!query.trim()"

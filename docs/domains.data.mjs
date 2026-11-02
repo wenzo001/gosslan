@@ -205,6 +205,8 @@ export default {
       invariants: [
         "INV-001",
         "INV-002",
+        // ↓ 2026-11-02 补登（判据 G 第一次跑就把这 6 条无主的点出来；口径同「本节/其判据点名的实现落在本域 paths 上」）：
+        "INV-P13", // 协议演进必须显式：帧的未知 kind 容忍在 protocol.rs，`tests::unknown_wire_frame_is_tolerated_after_auth` 是本条点名的钩子之一
         "INV-003",
         "INV-004",
         "INV-005",
@@ -314,6 +316,9 @@ export default {
       invariants: [
         "INV-P20",
         "INV-P22",
+        // ↓ 2026-11-02 补登（判据 G 第一次跑就把这 6 条无主的点出来；口径同「本节/其判据点名的实现落在本域 paths 上」）：
+        "INV-P10", // 密文不得静默变明文：`open_direct_content` 在 network/transport/e2ee_payload.rs —— 它是 network/transport.rs 的 include! 分册
+        "INV-P35", // 会话归属只来自目标：唯一定义点 network/transport/gossip.rs::inbound_conversation（本域 paths 里点名的文件）
         "INV-P23",
         // ↓ 2026-10-14 补登，口径同「本节/其判据点名的实现落在本域 paths 上」：
         "INV-P24", // 声明本机版本：network/transport/handshake.rs + network/ble.rs 两处用 PROTOCOL_VERSION
@@ -399,6 +404,10 @@ export default {
       ],
       invariants: [
         "INV-P05",
+        // ↓ 2026-11-02 补登（判据 G 第一次跑就把这 6 条无主的点出来；口径同「本节/其判据点名的实现落在本域 paths 上」）：
+        "INV-P06", // 重试必须幂等：同 id 重投的那一步在 `db::requeue_message_for_resend`（一个事务里 INSERT OR IGNORE + 条件 UPDATE），四条钩子都是 `db::resend_requeue_tests::*`
+        "INV-P09", // 传输顺序不等于应用顺序：本条的三个钩子（会话时钟单调、seq 并列按 id 破、迟到 Ack 不回退已读）全在 `db::tests::*`
+        "INV-P15", // 事件是通知不是持久存储：事件丢了要能重取，取到的那份真值在库里 —— `db::tests::pending_read_survives_restart`
         "INV-P14",
         "INV-008",
         // ↓ 2026-10-14 补登，口径同「本节/其判据点名的实现落在本域 paths 上」：

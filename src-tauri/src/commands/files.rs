@@ -327,24 +327,29 @@ pub async fn list_group_files(
                         Some(x) => (x.completed, x.total),
                         None => (0, 0),
                     };
-                    // A 档只补留痕：读失败与「我没有状态」在界面上同形（都显示成未接收），
-                    // 只有日志能分清 —— 用户点「重试」却没变化时，这行是唯一线索。
+                    // A 档（INV-P36）：这一格折成空串后走 `_` 臂 ⇒ 显示成「未取到」，
+                    // 而"我没有这一行"与"这次读失败"在面板上同形。2026-11-02 拍板上抛：
+                    // 群文件面板本来就有 loading/error/empty 三档与重试按钮（`GroupFilesPanel.vue`），
+                    // 让它进错误档比把某一行的状态编成「未取到」诚实。
                     let my_status = match db::get_group_file_recipient_status(&dbc, &f.transfer_id, &me) {
                         Some(status) => status,
                         None => {
                             if crate::logging::log_throttled("gfile_my_status_read_failed", 300_000) {
                                 s.logger.warn(
                                     "file",
-                                    format!("code=GFILE_MY_STATUS_READ_FAILED 我的状态按空显示 transfer={}", f.transfer_id),
+                                    format!("code=GFILE_MY_STATUS_READ_FAILED 我的状态读不出来，整面板进错误档 transfer={}", f.transfer_id),
                                 );
                             }
-                            String::new()
+                            return Err(format!(
+                                "群文件「我的状态」读不出来（transfer={}）",
+                                f.transfer_id
+                            ));
                         }
                     };
                     let path = db::get_transfer_path(&dbc, &f.transfer_id);
-                    (f, delivered, total, my_status, path)
+                    Ok((f, delivered, total, my_status, path))
                 })
-                .collect()
+                .collect::<Result<Vec<_>, String>>()?
         };
         Ok(rows
             .into_iter()
@@ -1782,22 +1787,21 @@ pub async fn get_transfers(
     let s_db = s.clone();
     let mut list = tokio::task::spawn_blocking(move || -> Result<Vec<TransferInfo>, String> {
         let dbc = s_db.db.lock().unwrap_or_else(|e| e.into_inner());
-        // A 档这一格**只补留痕，不改可见结果**：界面仍看到"空"，但日志里有一行说明
-// "这次是没读出来，不是真的没有"。改成上抛 + 界面错误态与否，等用户拍板（§4.0bq）。
-        // 任务中心整张表会凭空消失 —— 与「今天没有传输」同形。
-        Ok(match db::list_transfers(&dbc) {
-            Ok(rows) => rows,
+        // A 档（INV-P36）：2026-11-02 拍板改成上抛 —— 折成空会让任务中心整张表凭空消失，
+        // 与「今天没有传输」同形。留痕照打（节流不变），值不再假装是空表。
+        match db::list_transfers(&dbc) {
+            Ok(rows) => Ok(rows),
             Err(e) => {
                 if crate::logging::log_throttled("transfer_ledger_read_failed", 300_000) {
                     // 用闭包自带的 `s_db`：`s` 在闭包外还要判链路，不能被 move 进来。
                     s_db.logger.warn(
                         "file",
-                        format!("code=TRANSFER_LEDGER_READ_FAILED 传输台账按空显示：{e}"),
+                        format!("code=TRANSFER_LEDGER_READ_FAILED 传输台账读取失败，上抛给界面：{e}"),
                     );
                 }
-                Vec::new()
+                Err(format!("传输台账读不出来：{e}"))
             }
-        })
+        }
     })
     .await
     .map_err(|e| format!("传输表读取被线程池中断: {e}"))??;

@@ -301,15 +301,23 @@ const relayCfg = reactive<RelayConfig>({ enabled: false, server: "", token: "" }
 /** 已落库的那一份，只用来判"有没有改动"；显示源始终是 `relayCfg`。 */
 const relayLoaded = ref<RelayConfig | null>(null);
 const relayBusy = ref(false);
+/**
+ * A 档（INV-P36）：中继地址/令牌读失败的原因。设置页**不白屏也不静默骗人** ——
+ * 空表单会被读成"还没配"，因此这一格必须有内联错误档 + 只重读本节的重试；
+ * 失败期间 `relayLoaded` 保持 null ⇒ `relayDirty` 不成立 ⇒ 保存不会被误点成"把空值写回去"。
+ */
+const relayLoadError = ref<string | null>(null);
 
 async function loadRelayConfig() {
   try {
     const cfg = await api.getRelayConfig();
     Object.assign(relayCfg, cfg);
     relayLoaded.value = { ...cfg };
+    relayLoadError.value = null;
   } catch (e) {
     // 读不到就留空值 + 明确提示：设置页**不许**因为一个 IPC 失败而白屏或静默骗人
     // （空表单会被读成"还没配"，所以必须说一声它其实是被后端挡了）。
+    relayLoadError.value = e instanceof Error ? e.message : String(e);
     app.toastError(e, t("settings.network.relayServer.toast.loadFailed"));
   }
 }
@@ -587,6 +595,22 @@ async function removeEndpoint(address: string) {
         @update:model-value="(v: boolean) => (relayCfg.enabled = v)"
       />
     </SettingsRow>
+
+    <div
+      v-if="relayLoadError"
+      class="flex flex-wrap items-center justify-between gap-2 rounded-[var(--gosslan-radius-md)] border border-[var(--gosslan-border)] px-3 py-2"
+      role="alert"
+    >
+      <span class="text-xs text-[var(--gosslan-danger-ink)]">
+        {{ t("settings.network.relayServer.loadFailed") }}
+      </span>
+      <button
+        class="tap-safe rounded-[var(--gosslan-radius-sm)] border border-[var(--gosslan-border)] px-2 py-1 text-xs transition hover:bg-[var(--gosslan-hover)]"
+        @click="loadRelayConfig()"
+      >
+        {{ t("common.retry") }}
+      </button>
+    </div>
 
     <SettingsRow :label="t('settings.network.relayServer.server')">
       <input
