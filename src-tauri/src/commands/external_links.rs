@@ -416,3 +416,63 @@ pub async fn import_external_links_from_url(
     .await
     .map_err(|e| format!("外链导入被线程池中断: {e}"))?
 }
+
+#[cfg(test)]
+mod link_input_tests {
+    use super::*;
+
+    /// F-PRE-019：外链的**输入闸**是纯函数，全部形状都在这里钉住。
+    ///
+    /// 尤其 `javascript:` / `ftp:` 这类非 http(s) 一律拒 —— 这是防注入的第一道（界面里点开
+    /// 外链会交给系统浏览器，scheme 不设限等于把任意协议丢给 OS）。
+    #[test]
+    fn url_validation_rejects_every_shape_the_ui_can_send() {
+        for bad in [
+            "",
+            "   ",
+            "ftp://example.com",
+            "javascript:alert(1)",
+            "file:///etc/passwd",
+            "http://",
+        ] {
+            assert!(
+                validate_external_url(bad).is_err(),
+                "这个形状必须被拒：{bad:?}"
+            );
+        }
+        let ok = validate_external_url("  https://example.com/a?b=1  ").unwrap();
+        assert!(ok.starts_with("https://example.com/"), "两端空白要被 trim：{ok}");
+        assert!(
+            validate_external_url("http://10.0.0.2:8080").is_ok(),
+            "http 要允许（用户自己的内网服务）"
+        );
+    }
+
+    #[test]
+    fn normalize_rejects_bad_names_and_duplicate_urls_but_spares_self_on_edit() {
+        let existing = vec![ExternalLink {
+            id: "x1".into(),
+            name: "旧".into(),
+            url: "https://a.example/".into(),
+        }];
+        assert!(normalize_link_input(&existing, "  ", "https://b.example/", None).is_err());
+        let long = "名".repeat(MAX_LINK_NAME_CHARS + 1);
+        assert!(
+            normalize_link_input(&existing, &long, "https://b.example/", None).is_err(),
+            "超长名称必须拒（上限 {MAX_LINK_NAME_CHARS} 字）"
+        );
+        assert_eq!(
+            normalize_link_input(&existing, "新", "https://a.example", None).unwrap_err(),
+            "该网址已存在",
+            "规范化后的同一 URL 要算重复（少写尾斜杠也算）"
+        );
+        assert!(
+            normalize_link_input(&existing, "新", "https://a.example", Some("x1")).is_ok(),
+            "编辑自己那条不算重复"
+        );
+        let (name, url) =
+            normalize_link_input(&existing, "  新名字  ", " https://b.example/x ", None).unwrap();
+        assert_eq!(name, "新名字", "名称两端空白要 trim");
+        assert!(url.starts_with("https://b.example/x"), "URL 也要规范化：{url}");
+    }
+}
