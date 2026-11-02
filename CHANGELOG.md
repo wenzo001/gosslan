@@ -13,6 +13,25 @@
 
 ## [Unreleased]
 
+## [5.16.46] - 2026-11-02
+
+### 收藏 / 预览 / 清数据的失败路径配上具名码（10 处）
+
+`commands/favorites.rs` 此前 **18 个 `Err(`、0 个 `code=`** —— 收藏没成功、图打不开、清数据只删了一半，
+日志里都看不出是哪一格。这批只补**失败与拒绝**（纯输入校验不记）：
+
+- 统一走 `reject_favorite(&s, action, reason, msg)` → `code=FAVORITE_REJECTED action=… reason=…`
+  （与 `GROUP_ACTION_REJECTED` 同口径：一个码 + 两个字段）。
+- 10 个调用点：收藏的 `add/source_gone`、`add/copy_failed`；收藏预览的 `preview/file_gone`、
+  `preview/too_large`；内容预览的 `content_preview/{content_missing,store_read_failed,path_escape,
+  file_gone,too_large}`；清数据的 `clear_data/partial_fs_error`。
+  ⚠️ `path_escape`（路径越权）是**安全信号**，此前只回一句中文、日志里没有 —— 现在按码可筛。
+- 判据 `favorite_failure_paths_are_traced_not_silent`：调用点数 = 10 且每个 `reason` 字面量
+  必须与它的 `action` 落在**同一个** `reject_favorite( … )` 里（只数"码出现过"会被别处同名串骗过）。
+  变异反证：把 `path_escape` 改名 ⇒ 红并点名 `content_preview/path_escape 的留痕不见了`，
+  还原后 `cmp` 逐字节相同。
+- 台账：F-PRE-014 / F-PLF-014 / F-PST-004 的可诊断格改成**部分收口**并写明还剩哪半。
+
 ## [5.16.45] - 2026-11-02
 
 ### 群命令的「拒绝」不再静默：9 处配上具名码
