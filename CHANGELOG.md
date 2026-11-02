@@ -13,6 +13,14 @@
 
 ## [Unreleased]
 
+### 「可验证」再收两格（纯台账订正）：诊断包脱敏、会话读取轻写入
+
+- **F-OBS-012 诊断包导出**：原句「未读到脱敏用例」已过期 —— `diagnostics.rs` 有
+  `redact_masks_the_four_shapes_seen_in_real_logs`（四类真机形状逐类打掉）与
+  `redact_keeps_the_triage_signal`（**不误伤 `bytes=379` 这类排障数字**）。
+- **F-MSG-061 会话读取与轻写入**：四条用例补读到位（未读/已读、会话时钟单调、翻页 seq 并列稳定序、
+  迟到 Ack 不回退已读），`ensure_conversation` 作为夹具被大量调用。
+
 ### §13 第 16 行收口：CHANGELOG 重复的 `## [4.39.2]` 是**同一版本两笔提交**，合并而不是改号
 
 `npm run version:check` 一直在提示「`## [4.39.2]` 出现 2 次」。考古结果（两笔各自的 `package.json`）：
