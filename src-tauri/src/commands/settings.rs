@@ -291,6 +291,33 @@ pub async fn get_settings(state: State<'_, Arc<AppState>>) -> Result<Settings, S
     .map_err(|e| format!("设置读取被线程池中断: {e}"))?
 }
 
+/// 设置写/删失败必须说清楚**是哪一格**，并留一行带码的日志。
+///
+/// 以前每处都是 `db::set_setting(..).map_err(|e| e.to_string())?` —— 用户看到的是
+/// 「database is locked」，支持侧日志里一行都没有，也不知道是 11 节里的哪一格没存上。
+/// 一个码 + `key` 字段（同族多格共用一个码，由 key 定位），与 `GROUP_ACTION_REJECTED` 同口径。
+fn persist_setting(
+    s: &AppState,
+    dbc: &rusqlite::Connection,
+    key: &str,
+    value: &str,
+) -> Result<(), String> {
+    db::set_setting(dbc, key, value).map_err(|e| {
+        s.logger
+            .warn("settings", format!("code=SETTINGS_WRITE_FAILED key={key}：{e}"));
+        format!("设置项「{key}」没存上：{e}")
+    })
+}
+
+/// 恢复默认时逐键删除，同样要说得清是哪一格没清掉。
+fn remove_setting(s: &AppState, dbc: &rusqlite::Connection, key: &str) -> Result<(), String> {
+    db::delete_setting(dbc, key).map_err(|e| {
+        s.logger
+            .warn("settings", format!("code=SETTINGS_RESET_FAILED key={key}：{e}"));
+        format!("恢复默认时设置项「{key}」没清掉：{e}")
+    })
+}
+
 #[tauri::command(async)]
 pub async fn save_settings(
     state: State<'_, Arc<AppState>>,
@@ -305,66 +332,61 @@ pub async fn save_settings(
         // 一边写一边记"哪些键真的被这次调用写了" —— 事件只带这一小块（见 `SettingsPatch`）。
         let mut changed: Vec<&str> = Vec::new();
         if let Some(v) = settings.theme_color {
-            db::set_setting(&dbc, "theme_color", &v).map_err(|e| e.to_string())?;
+            persist_setting(&s, &dbc, "theme_color", &v)?;
             changed.push("themeColor");
         }
         if let Some(v) = settings.font_family {
-            db::set_setting(&dbc, "font_family", &v).map_err(|e| e.to_string())?;
+            persist_setting(&s, &dbc, "font_family", &v)?;
             changed.push("fontFamily");
         }
         if let Some(v) = settings.dark_mode {
-            db::set_setting(&dbc, "dark_mode", if v { "1" } else { "0" })
-                .map_err(|e| e.to_string())?;
+            persist_setting(&s, &dbc, "dark_mode", if v { "1" } else { "0" })?;
             changed.push("darkMode");
         }
         if let Some(v) = settings.appearance_mode {
             if APPEARANCE_MODES.contains(&v.as_str()) {
-                db::set_setting(&dbc, "appearance_mode", &v).map_err(|e| e.to_string())?;
+                persist_setting(&s, &dbc, "appearance_mode", &v)?;
                 changed.push("appearanceMode");
             }
         }
         if let Some(v) = settings.notify_enabled {
-            db::set_setting(&dbc, "notify_enabled", if v { "1" } else { "0" })
-                .map_err(|e| e.to_string())?;
+            persist_setting(&s, &dbc, "notify_enabled", if v { "1" } else { "0" })?;
             // 热路径缓存同步（is_zh/notify 同一套纪律，审计 2.1i）
             s.cache_notify_enabled(v);
             changed.push("notifyEnabled");
         }
         if let Some(v) = settings.notify_show_content {
-            db::set_setting(&dbc, "notify_show_content", if v { "1" } else { "0" })
-                .map_err(|e| e.to_string())?;
+            persist_setting(&s, &dbc, "notify_show_content", if v { "1" } else { "0" })?;
             changed.push("notifyShowContent");
         }
         if let Some(v) = settings.remind_sound {
-            db::set_setting(&dbc, "remind_sound", if v { "1" } else { "0" })
-                .map_err(|e| e.to_string())?;
+            persist_setting(&s, &dbc, "remind_sound", if v { "1" } else { "0" })?;
             changed.push("remindSound");
         }
         if let Some(v) = settings.remind_vibrate {
-            db::set_setting(&dbc, "remind_vibrate", if v { "1" } else { "0" })
-                .map_err(|e| e.to_string())?;
+            persist_setting(&s, &dbc, "remind_vibrate", if v { "1" } else { "0" })?;
             changed.push("remindVibrate");
         }
         if let Some(v) = settings.language {
             if LANGUAGES.contains(&v.as_str()) {
-                db::set_setting(&dbc, "language", &v).map_err(|e| e.to_string())?;
+                persist_setting(&s, &dbc, "language", &v)?;
                 // 热路径缓存同步（is_zh 零锁读，审计 2.1i）
                 s.cache_lang_pref(&v);
                 changed.push("language");
             }
         }
         if let Some(v) = settings.bind_ip {
-            db::set_setting(&dbc, "bind_ip", &v).map_err(|e| e.to_string())?;
+            persist_setting(&s, &dbc, "bind_ip", &v)?;
             changed.push("bindIp");
         }
         if let Some(v) = settings.chat_style {
-            db::set_setting(&dbc, "chat_style", &v).map_err(|e| e.to_string())?;
+            persist_setting(&s, &dbc, "chat_style", &v)?;
             changed.push("chatStyle");
         }
         // 中继授权：脏值一律忽略（宁可维持现状，也不要写进库让传播语义变得不可预期）
         if let Some(v) = settings.relay_policy.as_deref() {
             if RELAY_POLICIES.contains(&v) {
-                db::set_setting(&dbc, "relay_policy", v).map_err(|e| e.to_string())?;
+                persist_setting(&s, &dbc, "relay_policy", v)?;
                 changed.push("relayPolicy");
             }
         }
@@ -372,7 +394,7 @@ pub async fn save_settings(
             // 只接受合法 JSON 数组：写进脏值会让 RelayConfig::parse 静默退化成空表，
             // 用户会看到"白名单明明填了却不生效"。
             if serde_json::from_str::<Vec<String>>(v).is_ok() {
-                db::set_setting(&dbc, "relay_allowlist", v).map_err(|e| e.to_string())?;
+                persist_setting(&s, &dbc, "relay_allowlist", v)?;
                 changed.push("relayAllowlist");
             }
         }
@@ -420,7 +442,7 @@ pub fn reset_settings(
         // 左栏「外部链接」也属于用户配置：恢复默认一并清掉。
         &EXTERNAL_LINKS_KEY,
     ]) {
-        db::delete_setting(&dbc, key).map_err(|e| e.to_string())?;
+        remove_setting(state.inner(), &dbc, key)?;
     }
     // 「恢复默认」也清掉了 relay_policy / relay_allowlist ⇒ 内存缓存必须回到默认（All），
     // 否则用户点了恢复默认、行为却还是旧的限制策略（要重启才生效）。
