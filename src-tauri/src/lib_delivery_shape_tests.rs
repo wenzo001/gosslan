@@ -963,3 +963,92 @@ fn broken_db_reading_messages_is_an_error_not_an_empty_page() {
         "命令层把读失败折成了空列表（正是 B1-F7 要禁的形状）"
     );
 }
+
+/// B3-F2 / F-PST-004：「清除聊天数据」的清表清单**不许再手抄漂移**。
+///
+/// 清单与 schema 是两个事实源，中间原先没有任何判据：加一张表时没人会记得回来加一行
+/// ⇒ 新账本表默认成为「清除数据清不掉的东西」（B3-F2 的原始读数就是 20 张表只清 15 张）。
+/// 这里从两处 `CREATE TABLE` 现解析全部表名（`db.rs` + `content/store.rs` —— 后者建在
+/// `content_transfers` 上，只数 `db.rs` 会看不见它），再与清表清单双向对账：
+///   ① 每张表必须在「整表清 / 局部清 / 显式豁免」三者之一里，豁免必须带理由；
+///   ② 清单里点名的表必须真的存在（反向：改名/删表后清单不许留幽灵）。
+fn create_table_names(src: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    for marker in ["CREATE TABLE IF NOT EXISTS ", "CREATE TABLE "] {
+        let mut rest = src;
+        while let Some(i) = rest.find(marker) {
+            let after = &rest[i + marker.len()..];
+            let name: String = after
+                .chars()
+                .take_while(|c| c.is_ascii_alphanumeric() || *c == '_')
+                .collect();
+            if !name.is_empty() && name != "IF" {
+                out.push(name);
+            }
+            rest = after;
+        }
+    }
+    out.sort();
+    out.dedup();
+    out
+}
+
+#[test]
+fn clear_chat_data_covers_every_table_or_says_why_not() {
+    let mut tables = create_table_names(include_str!("db.rs"));
+    tables.extend(create_table_names(include_str!("content/store.rs")));
+    tables.sort();
+    tables.dedup();
+
+    let fav = include_str!("commands/favorites.rs");
+    let block = fav
+        .split("for table in [")
+        .nth(1)
+        .expect("清表循环不见了 ⇒ 判据锚点要跟着改")
+        .split(']')
+        .next()
+        .unwrap_or("");
+    let mut cleared: Vec<String> = block
+        .split('"')
+        .skip(1)
+        .step_by(2)
+        .map(str::to_string)
+        .filter(|s| s.chars().all(|c| c.is_ascii_lowercase() || c == '_'))
+        .collect();
+    cleared.sort();
+    cleared.dedup();
+
+    // 局部清（`LIKE` 删前缀）与显式豁免（带理由）。豁免是**产品口径**，不是"忘了"。
+    let partial = ["settings", "conversation_clocks"];
+    let exempt = [
+        ("friends", "通讯录不是聊天数据：清聊天记录不该把好友删掉"),
+        (
+            "favorites",
+            "用户 2026-10-31 决策：普通清理保留收藏；要删必须走独立、明确、有告知的操作（A3/F-CLR-01）",
+        ),
+    ];
+    for (t, why) in exempt {
+        assert!(!why.trim().is_empty(), "豁免表 {t} 没写理由");
+        assert!(tables.iter().any(|x| x == t), "豁免表 {t} 在 schema 里不存在（清单漂了）");
+    }
+
+    let uncovered: Vec<&str> = tables
+        .iter()
+        .map(String::as_str)
+        .filter(|t| !cleared.iter().any(|c| c == t))
+        .filter(|t| !partial.contains(t))
+        .filter(|t| !exempt.iter().any(|(e, _)| e == t))
+        .collect();
+    assert!(
+        uncovered.is_empty(),
+        "这些表既不在清表清单里、也没有显式豁免 ⇒ 清除数据之后会留下无主残留：{uncovered:?}\n\
+         （要么加进 `for table in [...]`，要么在 exempt 里写一句为什么不删）"
+    );
+
+    let ghosts: Vec<&str> = cleared
+        .iter()
+        .map(String::as_str)
+        .filter(|t| !tables.iter().any(|x| x == t))
+        .collect();
+    assert!(ghosts.is_empty(), "清表清单里有 schema 中不存在的表（改名/删表后没同步）：{ghosts:?}");
+}

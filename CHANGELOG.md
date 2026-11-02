@@ -13,6 +13,23 @@
 
 ## [Unreleased]
 
+## [5.16.53] - 2026-11-02
+
+### B3-F2 收口：「清除聊天数据」的清表清单不再靠手抄
+
+原读数（10-26）：schema 里 20 张表、清表循环只点名 15 张，`group_file_acks` /
+`group_recalled_messages` 被留下且**没有任何判据**管着"清单与 schema 是否还对得上"——
+加一张表时没人会记得回来加一行，新表默认变成「清除数据清不掉的东西」。
+
+- 行为那半早已落地（两张台账 + `content_transfers` 都在清单里；后者建在 `content/store.rs`，
+  按 `db.rs` 数表会看不见）。这批补的是**判据**：`clear_chat_data_covers_every_table_or_says_why_not`
+  从 `db.rs` + `content/store.rs` 两处 `CREATE TABLE` 现解析表名，再双向对账 ——
+  ① 每张表必须在「整表清 / 局部清（`settings`、`conversation_clocks`）/ 显式豁免」三者之一，
+  豁免（`friends` 通讯录、`favorites` 用户决策）必须带理由；
+  ② 清单里点名而 schema 中不存在的表也算红（改名/删表后清单不许留幽灵）。
+- **双向变异反证**：往 schema 里临时加一张 `zz_probe` ⇒ 红并点名它未覆盖；把 `pending_reads`
+  从清单里删掉 ⇒ 红并点名它。两次都还原到 `cmp` 逐字节相同。
+
 ## [5.16.52] - 2026-11-02
 
 ### 「可验证」列开始收口：两条只有人记得的规矩变成判据

@@ -270,6 +270,10 @@ tx.commit()?; Ok(())
 
 ## B3-F2 · 「清除聊天数据」的清表清单是手抄的 15/20，两张台账表会被留下（P3，建议加守卫）
 
+> **2026-11-02 收口（5.16.53）**：两张台账表与 `content_transfers` 都已在清单里；**手抄漂移已加双向判据**
+> （`clear_chat_data_covers_every_table_or_says_why_not`：表名从两处 `CREATE TABLE` 现解析，未覆盖即红、幽灵名也红）。
+> 本节保留原读数作审计记录，状态以矩阵 F-PST-004 为准。
+
 **适用的六格**：可执行 PASS；可恢复 PASS（失败会 `?` 上报、可见）；**可验证 PARTIAL**；**可诊断 PARTIAL**。
 
 **断点**：`src-tauri/src/commands/favorites.rs:528-559`。
