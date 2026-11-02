@@ -13,6 +13,15 @@
 
 ## [Unreleased]
 
+### 矩阵订正：五处「可诊断 FAIL」全部过期（B1-F1/F4/F6/F7 早已收口）
+
+逐行现读后的更正：F-MSG-014（1:1 取消现在落 `code=DM_CANCEL`，`lib_file_tests.rs:26` 钉住）、
+F-PRE-011（设置写失败弹 toast 并记 `code=SETTINGS_PERSIST_FAILED`，`designGuards.test.ts:6346` 钉住）、
+F-MSG-040（撤回三笔收成一笔事务 `db::apply_recall`，失败经 `?` 上抛，判据钉「只许调 apply_recall」）、
+F-MSG-060（三处读取 `?` 上抛并带中文前缀，行为判据钉「库坏了必须 Err」）、
+F-GRP-007（群列表上抛；已读名单上抛并打 `code=GROUP_READS_LIST_READ_FAILED`）。
+五行的总判级不变（可验证仍按原档），可验证读数 17 不变。
+
 ### 矩阵订正：F-PLF-007 的「更新取消没有码」已过期
 
 `code=UPDATER_CANCEL` 现在两种结局各一行（refused_installing / cancelled，`commands/updater.rs:364/387`），
