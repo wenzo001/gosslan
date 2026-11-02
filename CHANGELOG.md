@@ -13,6 +13,16 @@
 
 ## [Unreleased]
 
+## [5.16.72] - 2026-11-02
+
+### refactor(settings): 设置清单收成 data-only manifest
+
+移动端二级页、桌面 4 容器与独立窗口路由键收进 `src/utils/settingsManifest.ts`：两个外壳和
+`src/router/settings.ts` 只消费这份数据，组件渲染映射仍留在各自外壳。三份键集本来就不同
+（移动端 `chatStyle` / 单数 `notification`，窗口路由复数 `notifications`、无 `chatStyle`），
+所以没有合并成一份；深链落点、未知键回退、4 组顺序与别名由 `settingsStructure.test.ts` 的
+矩阵锁定，移动端设置探针 14/14 绿。
+
 ### 审计册口径统一：#7 的自动化与「手填地址」拆成两句；「其余四项」订正为三项
 
 §13.0 的「仍开着」表与 §13 第 7 行对同一件事有两种说法 —— 现在统一为：A10 **真链路已有 10-31 双实例实测**，

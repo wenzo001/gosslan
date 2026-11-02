@@ -18,6 +18,13 @@ import SecuritySection from "@/components/settings/SecuritySection.vue";
 import AboutSection from "@/components/settings/AboutSection.vue";
 import ResetSection from "@/components/settings/ResetSection.vue";
 import { t } from "@/i18n";
+import {
+  MOBILE_GROUPS,
+  MOBILE_SECTIONS,
+  MOBILE_TITLE_BY_KEY,
+  normalizeMobileSectionKey,
+  type MobileSectionKey,
+} from "@/utils/settingsManifest";
 
 const props = withDefaults(defineProps<{ open: boolean; routeDriven?: boolean }>(), {
   routeDriven: false,
@@ -51,59 +58,34 @@ watch(
  * 三条），用它当二级页标题就会名不副实 —— 用户点进「外观」看到的标题却是「外观与通知」
  * （用户 2026-09-21 报的正是这一类：桌面「外观与通知」里只有外观）。
  */
-const SECTIONS: Record<string, { titleKey: string; render: () => any }> = {
-  profile: {
-    titleKey: "settings.item.profile",
-    render: () => ProfileSection,
-  },
-  general: {
-    titleKey: "settings.item.general",
-    render: () => GeneralSection,
-  },
-  appearance: {
-    titleKey: "settings.item.appearance",
-    render: () => AppearanceSection,
-  },
-  chatStyle: {
-    titleKey: "settings.item.chatStyle",
-    render: () => ChatStyleSection,
-  },
-  notification: {
-    titleKey: "settings.item.notification",
-    render: () => NotificationSection,
-  },
-  network: {
-    titleKey: "settings.item.network",
-    render: () => NetworkSection,
-  },
-  // 2026-10-25（第 4 版）：存储与文件合成「文件与存储」二级页（旧的 storage / files 键走别名归一）；
-  // 重置与恢复是同一分类下的另一页。
-  storageFiles: {
-    titleKey: "settings.item.storageFiles",
-    render: () => StorageSection,
-  },
-  about: {
-    titleKey: "settings.item.about",
-    render: () => AboutSection,
-  },
-  reset: {
-    titleKey: "settings.item.reset",
-    render: () => ResetSection,
-  },
+const SECTION_COMPONENTS: Record<MobileSectionKey, any> = {
+  profile: ProfileSection,
+  general: GeneralSection,
+  appearance: AppearanceSection,
+  chatStyle: ChatStyleSection,
+  notification: NotificationSection,
+  network: NetworkSection,
+  storageFiles: StorageSection,
+  about: AboutSection,
+  reset: ResetSection,
 };
+
+// 2026-10-25（第 4 版）：存储与文件合成「文件与存储」二级页（旧的 storage / files 键走别名归一）；
+// 重置与恢复是同一分类下的另一页。
+const SECTIONS: Record<string, { titleKey: string; render: () => any }> = Object.fromEntries(
+  MOBILE_SECTIONS.map(({ key, titleKey }) => [
+    key,
+    { titleKey, render: () => SECTION_COMPONENTS[key] },
+  ]),
+);
 
 /**
  * 旧深链键 → 新二级页。用户 2026-10-25 把「存储」与「文件」并成「文件与存储」、
  * 把「安全」并进「关于」；已经点过的旧链接（`/me/settings/storage` 等）仍必须落到
  * 同一处 —— URL 说一个分区、界面却停在列表，是最典型的"深链半截状态"。
  */
-const SECTION_ALIASES: Record<string, string> = {
-  storage: "storageFiles",
-  files: "storageFiles",
-  security: "about",
-};
 function normalizeSectionKey(key: string): string {
-  return SECTION_ALIASES[key] ?? key;
+  return normalizeMobileSectionKey(key);
 }
 
 /** 移动端分区 = 路由派生（可深链、可返回）；桌面回退形态仍用本地 ref。 */
@@ -153,37 +135,12 @@ function selectSection(key: string) {
  *    「所有的文件与存储、重置清除列表、重置与恢复都在那个分类里」）；
  *  - 「安全」并入「关于」；桌面端与移动端共用这一套（`SettingsWindow` 同序）。
  */
-const GROUPS: { key: string; titleKey: string; items: { key: string; titleKey: string }[] }[] = [
-  {
-    key: "general",
-    titleKey: "settings.group.general",
-    items: [
-      { key: "profile", titleKey: "settings.item.profile" },
-      { key: "general", titleKey: "settings.item.general" },
-      { key: "appearance", titleKey: "settings.item.appearance" },
-      { key: "chatStyle", titleKey: "settings.item.chatStyle" },
-      { key: "notification", titleKey: "settings.item.notification" },
-    ],
-  },
-  {
-    key: "network",
-    titleKey: "settings.item.network",
-    items: [{ key: "network", titleKey: "settings.item.network" }],
-  },
-  {
-    key: "storageFiles",
-    titleKey: "settings.item.storageFiles",
-    items: [
-      { key: "storageFiles", titleKey: "settings.item.storageFiles" },
-      { key: "reset", titleKey: "settings.item.reset" },
-    ],
-  },
-  {
-    key: "about",
-    titleKey: "settings.item.about",
-    items: [{ key: "about", titleKey: "settings.item.about" }],
-  },
-];
+const GROUPS: { key: string; titleKey: string; items: { key: string; titleKey: string }[] }[] =
+  MOBILE_GROUPS.map((group) => ({
+    key: group.key,
+    titleKey: group.titleKey,
+    items: group.items.map((key) => ({ key, titleKey: MOBILE_TITLE_BY_KEY[key] })),
+  }));
 
 /** 移动端头部标题：一级=设置总标题；二级=该分区标题。 */
 const settingsTitle = computed(() =>

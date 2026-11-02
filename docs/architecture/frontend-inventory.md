@@ -23,14 +23,14 @@
 <!-- BEGIN:generated (node scripts/frontend-inventory.mjs) -->
 
 > 复跑：`node scripts/frontend-inventory.mjs`（本段与 `--check` 对账，手改本段数字没有意义）。
-> 现读：`src/` 共 410 份源码 = 生产 273 份 / 56,607 行 + 测试 137 份 / 29,622 行（不含 `src/assets/` 里的 214 个表情图）。
+> 现读：`src/` 共 411 份源码 = 生产 274 份 / 56,677 行 + 测试 137 份 / 29,603 行（不含 `src/assets/` 里的 214 个表情图）。
 
 ### 1.1 按职责分类（生产码，机器现算）
 
 | 类 | 文件 | 行 |
 |---|---:|---:|
-| D-业务组件 | 76 | 24,462 |
-| B-utils | 110 | 14,020 |
+| D-业务组件 | 76 | 24,406 |
+| B-utils | 111 | 14,157 |
 | C-状态层 | 3 | 4,807 |
 | B-国际化 | 5 | 3,124 |
 | D-数据表 | 3 | 2,131 |
@@ -40,18 +40,18 @@
 | E-IPC/事件 | 1 | 1,072 |
 | E-入口/启动 | 10 | 727 |
 | E-平台适配 | 11 | 667 |
-| 其他 | 9 | 633 |
-| **合计** | **273** | **56,607** |
+| 其他 | 9 | 622 |
+| **合计** | **274** | **56,677** |
 
 ### 1.2 已装库在生产码里的实际使用面（装了不等于用了）
 
 | 依赖 | 生产文件 | 行 |
 |---|---:|---:|
-| `vue` | 105 | 34,123 |
-| `lucide-vue-next` | 49 | 20,309 |
+| `vue` | 105 | 34,056 |
+| `lucide-vue-next` | 49 | 20,253 |
 | `reka-ui` | 27 | 11,497 |
-| `@vueuse/core` | 19 | 13,504 |
-| `vue-router` | 13 | 7,665 |
+| `@vueuse/core` | 19 | 13,491 |
+| `vue-router` | 13 | 7,598 |
 | `@tanstack/vue-query` | 9 | 2,428 |
 | `@tauri-apps/api` | 8 | 6,585 |
 | `@tauri-apps/plugin-dialog` | 6 | 4,985 |
@@ -147,8 +147,8 @@
 | `src/components/settings/SettingsToggle.vue` | D-业务组件 | 63 | `reka-ui` |
 | `src/components/settings/StorageSection.vue` | D-业务组件 | 273 | `@tauri-apps/plugin-dialog` `lucide-vue-next` `vue` |
 | `src/components/settings/UpdatePanel.vue` | D-业务组件 | 233 | `vue` |
-| `src/components/SettingsPanel.vue` | D-业务组件 | 325 | `lucide-vue-next` `vue` `vue-router` |
-| `src/components/SettingsWindow.vue` | D-业务组件 | 256 | `@vueuse/core` `lucide-vue-next` `vue` `vue-router` |
+| `src/components/SettingsPanel.vue` | D-业务组件 | 282 | `lucide-vue-next` `vue` `vue-router` |
+| `src/components/SettingsWindow.vue` | D-业务组件 | 243 | `@vueuse/core` `lucide-vue-next` `vue` `vue-router` |
 | `src/components/ShareDirectory.vue` | D-业务组件 | 146 | `@tanstack/vue-query` `lucide-vue-next` `vue` |
 | `src/components/TaskCenter.vue` | D-业务组件 | 452 | `vue` `vue-router` |
 | `src/components/TitleBar.vue` | A-公共UI | 317 | `@tauri-apps/api` `@vueuse/core` `vue` |
@@ -213,7 +213,7 @@
 | `src/layouts/ResponsiveLayout.vue` | A-布局 | 1204 | `@vueuse/core` `lucide-vue-next` `vue` `vue-router` |
 | `src/router/main.ts` | 其他 | 51 | `vue` `vue-router` |
 | `src/router/mainRoutes.ts` | 其他 | 141 | `vue` `vue-router` |
-| `src/router/settings.ts` | 其他 | 47 | `vue` `vue-router` |
+| `src/router/settings.ts` | 其他 | 36 | `vue` `vue-router` |
 | `src/stores/useAppStore.ts` | C-状态层 | 1154 | `@tauri-apps/plugin-notification` `@vueuse/core` `pinia` `vue` |
 | `src/stores/useChatStore.ts` | C-状态层 | 3523 | `@tauri-apps/plugin-notification` `pinia` `vue` |
 | `src/stores/useImagePreview.ts` | C-状态层 | 130 | `pinia` `vue` |
@@ -324,6 +324,7 @@
 | `src/utils/scrollRestore.ts` | B-utils | 86 | — |
 | `src/utils/selfChat.ts` | B-utils | 48 | — |
 | `src/utils/sendWaiting.ts` | B-utils | 31 | — |
+| `src/utils/settingsManifest.ts` | B-utils | 137 | — |
 | `src/utils/shareTreeQuery.ts` | B-utils | 28 | — |
 | `src/utils/shortcuts.ts` | B-utils | 40 | — |
 | `src/utils/singleFlight.ts` | B-utils | 42 | — |
@@ -348,7 +349,7 @@
 
 ### 1.4 测试码（分列，不计进业务成果）
 
-共 137 份 / 29,622 行；由 `npm test` 的清单自己打印条数。
+共 137 份 / 29,603 行；由 `npm test` 的清单自己打印条数。
 <!-- END:generated -->
 
 ## 2. 能力域 × 替换结论

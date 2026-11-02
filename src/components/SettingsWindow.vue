@@ -12,7 +12,14 @@
 import { computed, onMounted, onUnmounted, ref, watch } from "vue";
 import { useRoute, useRouter } from "vue-router";
 import { useEventListener } from "@vueuse/core";
-import { SETTINGS_SECTIONS } from "@/router/settings";
+import {
+  DESKTOP_NAV,
+  ROUTE_SECTIONS,
+  desktopContainerForRoute,
+  type DesktopContainer,
+  type DesktopIconKey,
+  type RouteSectionKey,
+} from "@/utils/settingsManifest";
 import AuxWindowShell from "@/components/window/AuxWindowShell.vue";
 import DevDiagPanel from "@/components/DevDiagPanel.vue";
 import ProfileSection from "@/components/settings/ProfileSection.vue";
@@ -32,18 +39,14 @@ import { api } from "@/api";
 import { updater } from "@/updater/instance";
 import { storageGet, storageRemove } from "@/utils/safeStorage";
 
-type SectionKey =
-  | "profile"
-  | "general"
-  | "notifications"
-  | "appearance"
-  | "network"
-  | "files"
-  | "storage"
-  | "storageFiles"
-  | "security"
-  | "about"
-  | "reset";
+type SectionKey = RouteSectionKey;
+
+const DESKTOP_ICONS: Record<DesktopIconKey, unknown> = {
+  sliders: SlidersHorizontal,
+  wifi: Wifi,
+  storage: HardDrive,
+  info: Info,
+};
 
 const route = useRoute();
 const router = useRouter();
@@ -51,14 +54,14 @@ const router = useRouter();
 /** 当前分区 = 路由参数（可深链、可返回），不再是组件内 ref。 */
 const section = computed<SectionKey>(() => {
   const key = String(route.params.key ?? "profile");
-  return (SETTINGS_SECTIONS as readonly string[]).includes(key)
+  return (ROUTE_SECTIONS as readonly string[]).includes(key)
     ? (key as SectionKey)
     : "profile";
 });
 watch(
   () => route.params.key,
   (key) => {
-    if (key && !(SETTINGS_SECTIONS as readonly string[]).includes(String(key))) {
+    if (key && !(ROUTE_SECTIONS as readonly string[]).includes(String(key))) {
       void router.replace("/settings/profile");
     }
   },
@@ -115,32 +118,16 @@ const devDiagOpen = ref(false);
  * 通用 / 网络 / 文件与存储 / 关于。「安全」并入「关于」；
  * 「存储」「文件」与「重置与恢复」同属「文件与存储」（重置不再留在通用）。
  */
-const navItems = computed<{ key: SectionKey; label: string; icon: unknown }[]>(() => [
-  { key: "general", label: t("settings.group.general"), icon: SlidersHorizontal },
-  { key: "network", label: t("settings.item.network"), icon: Wifi },
-  { key: "storageFiles", label: t("settings.item.storageFiles"), icon: HardDrive },
-  { key: "about", label: t("settings.item.about"), icon: Info },
-]);
+const navItems = computed<{ key: SectionKey; label: string; icon: unknown }[]>(() =>
+  DESKTOP_NAV.map((item) => ({
+    key: item.key,
+    label: t(item.labelKey),
+    icon: DESKTOP_ICONS[item.iconKey],
+  })),
+);
 
-/** 4 个顶层容器；旧的 10 个深链键仍有效，只是映射到对应容器。 */
-const desktopSection = computed<"general" | "network" | "storageFiles" | "about">(() => {
-  switch (section.value) {
-    case "network":
-      return "network";
-    case "files":
-    // 2026-10-25：「存储」「文件」「重置与恢复」同属「文件与存储」。
-    case "storage":
-    case "storageFiles":
-    case "reset":
-      return "storageFiles";
-    // 安全并进关于：深链 `security` 也落到同一页（不再有单独一组）。
-    case "security":
-    case "about":
-      return "about";
-    default:
-      return "general";
-  }
-});
+/** 4 个顶层容器；旧深链键仍有效，只是映射到对应容器。 */
+const desktopSection = computed<DesktopContainer>(() => desktopContainerForRoute(section.value));
 
 /**
  * 侧边栏升级按钮的一次性导航键：主窗口写入，本窗口 mount/focus 时消费。
@@ -153,7 +140,7 @@ function consumePendingSection() {
   const key = storageGet(SETTINGS_SECTION_KEY);
   if (!key) return;
   storageRemove(SETTINGS_SECTION_KEY);
-  if (!(SETTINGS_SECTIONS as readonly string[]).includes(key)) return;
+  if (!(ROUTE_SECTIONS as readonly string[]).includes(key)) return;
   void router.push({ name: "settings-section", params: { key } });
   if (key === "about" && updater.state.phase === "idle") void updater.check(true);
 }

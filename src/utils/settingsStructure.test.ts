@@ -11,6 +11,16 @@ import { readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import assert from "node:assert/strict";
 import { test } from "node:test";
+import {
+  DESKTOP_CONTAINER_BY_ROUTE,
+  DESKTOP_NAV,
+  MOBILE_ALIASES,
+  MOBILE_GROUPS,
+  MOBILE_SECTIONS,
+  ROUTE_SECTIONS,
+  desktopContainerForRoute,
+  normalizeMobileSectionKey,
+} from "./settingsManifest.ts";
 
 const srcDir = join(import.meta.dirname, "..");
 const read = (rel: string) => readFileSync(join(srcDir, rel), "utf8");
@@ -59,11 +69,9 @@ const EXPECTED = [
 test("每个顶层导航项都渲染了它承诺的分区组件（标签即内容）", () => {
   const win = read("components/SettingsWindow.vue");
   for (const item of EXPECTED) {
-    assert.match(
-      win,
-      new RegExp(`\\{ key: "${item.key}", label: t\\("${item.labelKey.replace(/\./g, "\\.")}"\\)`),
-      `导航项 ${item.key} 应使用标签键 ${item.labelKey}`,
-    );
+    const nav = DESKTOP_NAV.find((n) => n.key === item.key);
+    assert.ok(nav, `SettingsWindow 导航清单缺 ${item.key}`);
+    assert.equal(nav.labelKey, item.labelKey, `导航项 ${item.key} 的标签键变了`);
     // 4 个顶层容器：条件写作 `desktopSection === 'key'`；各容器内渲染多个组件。
     const at = win.indexOf(`desktopSection === '${item.key}'`);
     assert.ok(at >= 0, `SettingsWindow 里没有 ${item.key} 的渲染分支`);
@@ -110,21 +118,16 @@ test("每个设置分区组件都被两个外壳引用（没有孤儿分区）",
 });
 
 test("移动端一级列表与桌面同一套 4 类，且「文件与存储」装着存储/文件/重置", () => {
-  const panel = read("components/SettingsPanel.vue");
-  const groupKeys = [...panel.matchAll(
-    /\{\s*key: "(general|network|storageFiles|about)",\s*titleKey: "[^"]+",\s*items:/g,
-  )].map((m) => m[1]);
   assert.deepEqual(
-    groupKeys,
+    MOBILE_GROUPS.map((g) => g.key),
     ["general", "network", "storageFiles", "about"],
     "移动端分组必须与桌面同序：通用 / 网络 / 文件与存储 / 关于",
   );
   // 「文件与存储」组里必须有两条：文件与存储、重置与恢复（用户 2026-10-25）。
-  const start = panel.indexOf('key: "storageFiles",\n    titleKey');
-  assert.ok(start > 0, "找不到「文件与存储」这一组");
-  const group = panel.slice(start, panel.indexOf("];", start) > start ? panel.indexOf("];", start) : undefined);
-  assert.match(group, /key: "storageFiles"/, "缺「文件与存储」条目");
-  assert.match(group, /key: "reset"/, "「重置与恢复」必须留在文件与存储组里，不许回通用");
+  const group = MOBILE_GROUPS.find((g) => g.key === "storageFiles");
+  assert.ok(group, "缺「文件与存储」组");
+  assert.ok(group.items.includes("storageFiles"), "缺「文件与存储」条目");
+  assert.ok(group.items.includes("reset"), "「重置与恢复」必须留在文件与存储组里，不许回通用");
 });
 
 test("设置卡片最后一行不画分隔线（判点在唯一外壳上，不靠调用方记得传 last）", () => {
@@ -215,15 +218,15 @@ test("资料分区：头像上传自己落库、失败回滚、不受昵称空�
 // 所以先逐项固化，再允许任何“合并清单”的改动。
 
 const MOBILE_SECTIONS_GOLDEN = [
-  "profile",
-  "general",
-  "appearance",
-  "chatStyle",
-  "notification",
-  "network",
-  "storageFiles",
-  "about",
-  "reset",
+  { key: "profile", titleKey: "settings.item.profile", group: "general" },
+  { key: "general", titleKey: "settings.item.general", group: "general" },
+  { key: "appearance", titleKey: "settings.item.appearance", group: "general" },
+  { key: "chatStyle", titleKey: "settings.item.chatStyle", group: "general" },
+  { key: "notification", titleKey: "settings.item.notification", group: "general" },
+  { key: "network", titleKey: "settings.item.network", group: "network" },
+  { key: "storageFiles", titleKey: "settings.item.storageFiles", group: "storageFiles" },
+  { key: "about", titleKey: "settings.item.about", group: "about" },
+  { key: "reset", titleKey: "settings.item.reset", group: "storageFiles" },
 ] as const;
 
 const MOBILE_ALIASES_GOLDEN = {
@@ -235,14 +238,15 @@ const MOBILE_ALIASES_GOLDEN = {
 const MOBILE_GROUPS_GOLDEN = [
   {
     key: "general",
+    titleKey: "settings.group.general",
     items: ["profile", "general", "appearance", "chatStyle", "notification"],
   },
-  { key: "network", items: ["network"] },
-  { key: "storageFiles", items: ["storageFiles", "reset"] },
-  { key: "about", items: ["about"] },
+  { key: "network", titleKey: "settings.item.network", items: ["network"] },
+  { key: "storageFiles", titleKey: "settings.item.storageFiles", items: ["storageFiles", "reset"] },
+  { key: "about", titleKey: "settings.item.about", items: ["about"] },
 ] as const;
 
-const MOBILE_RENDER_GOLDEN = {
+const MOBILE_COMPONENTS_GOLDEN = {
   profile: "ProfileSection",
   general: "GeneralSection",
   appearance: "AppearanceSection",
@@ -254,7 +258,26 @@ const MOBILE_RENDER_GOLDEN = {
   reset: "ResetSection",
 } as const;
 
-const DESKTOP_NAV_GOLDEN = ["general", "network", "storageFiles", "about"] as const;
+const DESKTOP_NAV_GOLDEN = [
+  { key: "general", labelKey: "settings.group.general", iconKey: "sliders" },
+  { key: "network", labelKey: "settings.item.network", iconKey: "wifi" },
+  { key: "storageFiles", labelKey: "settings.item.storageFiles", iconKey: "storage" },
+  { key: "about", labelKey: "settings.item.about", iconKey: "info" },
+] as const;
+
+const DESKTOP_CONTAINER_GOLDEN = {
+  profile: "general",
+  general: "general",
+  notifications: "general",
+  appearance: "general",
+  network: "network",
+  files: "storageFiles",
+  storage: "storageFiles",
+  storageFiles: "storageFiles",
+  security: "about",
+  about: "about",
+  reset: "storageFiles",
+} as const;
 
 const ROUTE_SECTIONS_GOLDEN = [
   "profile",
@@ -294,7 +317,7 @@ const DEEP_LINK_MATRIX = [
   { routeKey: "notification", routeValid: false, desktop: "general", mobile: "notification" },
 ] as const;
 
-/** 从源码里切一个以 `};` 或 `] as const;` 收尾的对象/数组块。 */
+/** 从源码里切一个以 `};` 收尾的对象块。 */
 function sourceBlock(src: string, marker: string, endMarker: string): string {
   const at = src.indexOf(marker);
   assert.ok(at >= 0, `找不到 ${marker}`);
@@ -303,113 +326,71 @@ function sourceBlock(src: string, marker: string, endMarker: string): string {
   return src.slice(at, endAt);
 }
 
-/** 移动端 `SECTIONS` 的键（按源码顺序）。 */
-function mobileSectionKeys(panel: string): string[] {
-  const block = sourceBlock(panel, "const SECTIONS", "\n};");
-  return [...block.matchAll(/\n  ([A-Za-z][A-Za-z0-9]*): \{\n    titleKey:/g)].map((m) => m[1]);
-}
-
-/** 移动端 `SECTIONS` 的键 → 分区组件名。 */
-function mobileRenderMap(panel: string): Record<string, string> {
-  const block = sourceBlock(panel, "const SECTIONS", "\n};");
-  const pairs = [...block.matchAll(/\n  (\w+): \{\n    titleKey: "[^"]+",\n    render: \(\) => (\w+),/g)]
-    .map((m) => [m[1], m[2]] as const);
-  assert.equal(pairs.length, MOBILE_SECTIONS_GOLDEN.length, "SECTIONS 里每个键都必须有 render");
+/** 移动端壳的分区组件映射（数据清单只管 key，渲染映射仍在外壳里）。 */
+function mobileComponentMap(panel: string): Record<string, string> {
+  const block = sourceBlock(panel, "const SECTION_COMPONENTS", "\n};");
+  const pairs = [...block.matchAll(/\n  (\w+): (\w+),/g)].map((m) => [m[1], m[2]] as const);
+  assert.equal(pairs.length, MOBILE_SECTIONS_GOLDEN.length, "SECTION_COMPONENTS 必须覆盖全部移动端分区");
   return Object.fromEntries(pairs);
 }
 
-/** 移动端旧键别名。 */
-function mobileAliases(panel: string): Record<string, string> {
-  const block = sourceBlock(panel, "const SECTION_ALIASES", "\n};");
-  return Object.fromEntries([...block.matchAll(/\n  (\w+): "(\w+)",/g)].map((m) => [m[1], m[2]]));
-}
-
-/** 移动端一级列表分组（组键 + 组内条目键，按源码顺序）。 */
-function mobileGroups(panel: string): { key: string; items: string[] }[] {
-  const start = panel.indexOf("const GROUPS");
-  assert.ok(start >= 0, "找不到 const GROUPS");
-  const end = panel.indexOf("\n];", start);
-  assert.ok(end > start, "找不到 GROUPS 的结束");
-  const block = panel.slice(start, end);
-  return block.split(/\n  \{\n    key: /).slice(1).map((chunk) => {
-    const key = chunk.match(/^"(\w+)"/)?.[1];
-    assert.ok(key, "GROUPS 分组缺少 key");
-    const itemsEnd = chunk.indexOf("\n    ],");
-    const itemsBlock = itemsEnd > 0 ? chunk.slice(0, itemsEnd) : chunk;
-    return {
-      key,
-      items: [...itemsBlock.matchAll(/\{ key: "(\w+)"/g)].map((m) => m[1]),
-    };
-  });
-}
-
-/** 桌面导航键。 */
-function desktopNavKeys(win: string): string[] {
-  const block = sourceBlock(win, "const navItems", "]);");
-  return [...block.matchAll(/\{ key: "(\w+)", label:/g)].map((m) => m[1]);
-}
-
-/** 独立设置窗口路由键。 */
-function routeSectionKeys(router: string): string[] {
-  const block = sourceBlock(router, "export const SETTINGS_SECTIONS", "] as const;");
-  return [...block.matchAll(/\n  "(\w+)",/g)].map((m) => m[1]);
-}
-
-test("设置清单 golden：移动/桌面/路由三份键集、顺序与别名逐项锁定", () => {
+test("设置清单 golden：移动/桌面/路由三份键集、顺序、别名与渲染映射逐项锁定", () => {
   const panel = read("components/SettingsPanel.vue");
   const win = read("components/SettingsWindow.vue");
   const router = read("router/settings.ts");
 
-  assert.deepEqual(mobileSectionKeys(panel), [...MOBILE_SECTIONS_GOLDEN]);
-  assert.deepEqual(mobileAliases(panel), { ...MOBILE_ALIASES_GOLDEN });
-  assert.deepEqual(mobileGroups(panel), MOBILE_GROUPS_GOLDEN.map((g) => ({ key: g.key, items: [...g.items] })));
-  assert.deepEqual(mobileRenderMap(panel), { ...MOBILE_RENDER_GOLDEN });
-  assert.deepEqual(desktopNavKeys(win), [...DESKTOP_NAV_GOLDEN]);
-  assert.deepEqual(routeSectionKeys(router), [...ROUTE_SECTIONS_GOLDEN]);
+  assert.deepEqual(
+    MOBILE_SECTIONS.map(({ key, titleKey, group }) => ({ key, titleKey, group })),
+    MOBILE_SECTIONS_GOLDEN.map((s) => ({ ...s })),
+  );
+  assert.deepEqual({ ...MOBILE_ALIASES }, { ...MOBILE_ALIASES_GOLDEN });
+  assert.deepEqual(
+    MOBILE_GROUPS.map((g) => ({ key: g.key, titleKey: g.titleKey, items: [...g.items] })),
+    MOBILE_GROUPS_GOLDEN.map((g) => ({ key: g.key, titleKey: g.titleKey, items: [...g.items] })),
+  );
+  assert.deepEqual(mobileComponentMap(panel), { ...MOBILE_COMPONENTS_GOLDEN });
+  assert.deepEqual(
+    DESKTOP_NAV.map((n) => ({ key: n.key, labelKey: n.labelKey, iconKey: n.iconKey })),
+    DESKTOP_NAV_GOLDEN.map((n) => ({ ...n })),
+  );
+  assert.deepEqual({ ...DESKTOP_CONTAINER_BY_ROUTE }, { ...DESKTOP_CONTAINER_GOLDEN });
+  assert.deepEqual([...ROUTE_SECTIONS], [...ROUTE_SECTIONS_GOLDEN]);
+
+  // 两个外壳真的在消费清单，而不是各自又留一份数组。
+  assert.ok(panel.includes('from "@/utils/settingsManifest"'), "SettingsPanel 没接清单");
+  assert.ok(panel.includes("MOBILE_SECTIONS"), "SettingsPanel 没消费 MOBILE_SECTIONS");
+  assert.ok(panel.includes("MOBILE_GROUPS"), "SettingsPanel 没消费 MOBILE_GROUPS");
+  assert.ok(panel.includes("normalizeMobileSectionKey"), "SettingsPanel 没消费别名归一");
+  assert.ok(win.includes('from "@/utils/settingsManifest"'), "SettingsWindow 没接清单");
+  assert.ok(win.includes("DESKTOP_NAV"), "SettingsWindow 没消费 DESKTOP_NAV");
+  assert.ok(win.includes("desktopContainerForRoute"), "SettingsWindow 没消费容器映射");
+  assert.ok(router.includes("ROUTE_SECTIONS"), "router/settings.ts 没消费 ROUTE_SECTIONS");
 });
 
 test("设置深链矩阵：每个路由键的桌面容器/移动落点/未知键回退与现状一致", () => {
   const panel = read("components/SettingsPanel.vue");
   const win = read("components/SettingsWindow.vue");
-  const router = read("router/settings.ts");
-
-  const sections = mobileSectionKeys(panel);
-  const aliases = mobileAliases(panel);
-  const routeKeys = routeSectionKeys(router);
-  const mobilePage = (key: string): string | null => {
-    const normalized = aliases[key] ?? key;
-    return sections.includes(normalized) ? normalized : null;
-  };
 
   for (const row of DEEP_LINK_MATRIX) {
     assert.equal(
-      routeKeys.includes(row.routeKey),
+      (ROUTE_SECTIONS as readonly string[]).includes(row.routeKey),
       row.routeValid,
       `路由键 ${row.routeKey} 的合法性变了（期望 ${row.routeValid}）`,
     );
     assert.equal(
-      mobilePage(row.routeKey),
+      desktopContainerForRoute(row.routeKey),
+      row.desktop,
+      `路由键 ${row.routeKey} 的桌面容器变了（期望 ${row.desktop}）`,
+    );
+    const normalized = normalizeMobileSectionKey(row.routeKey);
+    const mobile = (MOBILE_SECTIONS as readonly { key: string }[]).some((s) => s.key === normalized)
+      ? normalized
+      : null;
+    assert.equal(
+      mobile,
       row.mobile,
       `路由键 ${row.routeKey} 在移动端的落点变了（期望 ${row.mobile}）`,
     );
-
-    if (row.desktop === "network") {
-      assert.match(win, /case "network":\s*return "network";/, "桌面 network 容器分支变了");
-    } else if (row.desktop === "storageFiles") {
-      assert.match(
-        win,
-        /case "files":[\s\S]{0,180}case "storage":[\s\S]{0,180}case "storageFiles":[\s\S]{0,180}case "reset":[\s\S]{0,180}return "storageFiles";/,
-        "桌面 files/storage/storageFiles/reset 到「文件与存储」的映射变了",
-      );
-    } else if (row.desktop === "about") {
-      assert.match(
-        win,
-        /case "security":[\s\S]{0,120}case "about":[\s\S]{0,120}return "about";/,
-        "桌面 security/about 到「关于」的映射变了",
-      );
-    } else {
-      assert.match(win, /default:\s*return "general";/, "桌面默认容器不再是 general");
-    }
   }
 
   // 路由未知键：桌面归一 profile；移动端 toast + 退回一级列表。
@@ -428,15 +409,15 @@ test("设置深链矩阵：每个路由键的桌面容器/移动落点/未知键
   );
 });
 
-test("设置 golden 的提取器不是空转：删掉 chatStyle 必须被量出来", () => {
-  const panel = read("components/SettingsPanel.vue");
-  const original = mobileSectionKeys(panel);
-  assert.ok(original.includes("chatStyle"), "原清单应包含 chatStyle");
+test("设置清单完整性反控：每个路由键都有容器映射，漏映射必须被抓住", () => {
+  const missing = ROUTE_SECTIONS.filter((key) => !(key in DESKTOP_CONTAINER_BY_ROUTE));
+  assert.deepEqual(missing, [], "有路由键没有桌面容器映射");
 
-  const mutated = panel.replace(/  chatStyle: \{[\s\S]*?\n  \},\n/, "");
-  assert.notEqual(mutated, panel, "反控注入没落进去 ⇒ 锚点写法变了");
-  assert.ok(
-    !mobileSectionKeys(mutated).includes("chatStyle"),
-    "删掉 chatStyle 后提取器仍说存在 ⇒ 这条 golden 在空转",
-  );
+  // 反控：往合成清单里加一个不存在的 key，同一个检查器必须说 missing。
+  const synthetic = [...ROUTE_SECTIONS, "ghost"];
+  const syntheticMissing = synthetic.filter((key) => !(key in DESKTOP_CONTAINER_BY_ROUTE));
+  assert.deepEqual(syntheticMissing, ["ghost"], "漏映射检查器在空集上恒绿");
+
+  assert.equal(desktopContainerForRoute("ghost"), "general", "未知路由键不再落到 general");
+  assert.equal(normalizeMobileSectionKey("ghost"), "ghost", "未知移动端键被错误归一");
 });

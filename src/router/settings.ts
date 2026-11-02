@@ -3,6 +3,7 @@ import {
   createWebHashHistory,
   type RouteRecordRaw,
 } from "vue-router";
+import { ROUTE_SECTIONS } from "@/utils/settingsManifest";
 
 /**
  * 设置窗口（`settings.html`）的独立路由。
@@ -11,21 +12,9 @@ import {
  * 落到一个不存在的文档路径上。hash 同样有真实历史条目与返回语义，且与主窗口的
  * history 决策互不影响（每个窗口本来就是独立 app）。
  */
-export const SETTINGS_SECTIONS = [
-  "profile",
-  "general",
-  "notifications",
-  "appearance",
-  "network",
-  "files",
-  "storage",
-  // 2026-10-25（第 4 版）：存储、文件、重置与恢复同属「文件与存储」二级页
-  // （旧键保留，深链仍可达）。
-  "storageFiles",
-  "security",
-  "about",
-  "reset",
-] as const;
+// 2026-10-25（第 4 版）：存储、文件、重置与恢复同属「文件与存储」二级页
+// （旧键保留，深链仍可达）。清单的唯一数据源在 `utils/settingsManifest.ts`。
+export const SETTINGS_SECTIONS = ROUTE_SECTIONS;
 
 const RouteView = { name: "SettingsRouteView", render: () => null };
 
