@@ -776,3 +776,30 @@ fn dm_recipient_friend_check_keeps_read_errors_and_undoes_dedupe() {
         "读失败要留具名码 —— 否则事后只能看到「消息没到」"
     );
 }
+
+/// 群密钥扇出：**跳过成员必须留痕**（闭环矩阵 F-GRP-003）。
+///
+/// 形状判据而不是行为判据：真跑一次扇出要 AppState + 真密钥，成本远高于这条守的东西。
+/// 守的是比例 —— 两个扇出点各 3 个可失败臂（没有公钥 / DH 失败 / 密封失败），
+/// 每个臂都必须写一行 `code=GROUP_KEY_MEMBER_SKIPPED` 且带 reason。
+/// 删掉任一臂的留痕、或把 reason 合并成一句，这里立刻红。
+#[test]
+fn group_key_fanout_never_skips_a_member_silently() {
+    let src = include_str!("commands/groups.rs");
+    let sites = src.matches("resolve_member_x25519(s, m)").count();
+    assert_eq!(sites, 2, "扇出点数量变了（{sites}）⇒ 本判据的分母要跟着改");
+    let codes = src.matches("code=GROUP_KEY_MEMBER_SKIPPED").count();
+    assert_eq!(
+        codes,
+        sites * 3,
+        "每个可失败臂都要留痕：实际 {codes} 处，期望 {}（静默 continue 会让成员「永远收不到群密钥」无记录）",
+        sites * 3
+    );
+    for reason in ["reason=no_pubkey", "reason=dh_failed", "reason=seal_failed"] {
+        assert_eq!(
+            src.matches(reason).count(),
+            sites,
+            "{reason} 的臂数不对 ⇒ 跳过原因没法归因"
+        );
+    }
+}

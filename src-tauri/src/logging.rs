@@ -1174,6 +1174,10 @@ impl Logger {
     }
 
     /// 清空内存与落盘文件。
+    ///
+    /// ⚠️ 清完要留一行 `code=LOGS_CLEARED`：用户清过日志再来报障时，支持侧必须看得出
+    /// 「这里本来可能有东西」——否则「日志里什么都没有」会被读成「什么都没发生」。
+    /// 崩溃现场文件（`gosslan-crash.log`）**不清**：它不参与轮转，是上一次崩溃的唯一证据。
     pub fn clear(&self) {
         self.entries
             .lock()
@@ -1181,6 +1185,10 @@ impl Logger {
             .clear();
         let _ = std::fs::remove_file(self.current_path());
         let _ = std::fs::remove_file(self.old_path());
+        self.info(
+            "logs",
+            "code=LOGS_CLEARED 用户清空了运行日志（内存环 + 当前/上一份文件；崩溃现场文件保留）",
+        );
     }
 
     pub(crate) fn current_path(&self) -> PathBuf {
@@ -2440,13 +2448,32 @@ mod tests {
     }
 
     #[test]
-    fn logger_clear_empties_memory() {
+    fn logger_clear_empties_memory_but_leaves_a_marker() {
         let dir = std::env::temp_dir().join(format!("gosslan-log-clr-{}", std::process::id()));
         let logger = Logger::new(dir.clone(), "t", "[dev:test]".to_string());
         logger.error("test", "boom");
         assert_eq!(logger.snapshot(None).len(), 1);
         logger.clear();
-        assert!(logger.snapshot(None).is_empty());
+        // 清空后环里**恰好剩一行**：标记。少了它 ⇒ 支持侧看不出用户清过日志；
+        // 多于一行 ⇒ 清空没生效。
+        let after = logger.snapshot(None);
+        assert_eq!(
+            after.len(),
+            1,
+            "清空后应只剩一行标记，实际 {} 行",
+            after.len()
+        );
+        assert!(
+            after[0].message.contains("code=LOGS_CLEARED"),
+            "标记行没有具名码：{}",
+            after[0].message
+        );
+        assert!(
+            std::fs::read_to_string(logger.current_path())
+                .map(|s| s.contains("code=LOGS_CLEARED"))
+                .unwrap_or(false),
+            "标记没有落盘 ⇒ 重启/导出之后又看不出清过"
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 
