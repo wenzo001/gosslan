@@ -1106,3 +1106,26 @@ fn group_management_authorization_is_checked_before_the_write() {
         assert!(d < w, "「{denial}」必须在写库之前");
     }
 }
+
+/// F-GRP-007：群列表读失败也必须是 `Err`，不许折叠成空列表（与 F-MSG-060 同一条 B1-F7 口径）。
+///
+/// 行为半：库坏了（表都不在）时 `db::list_groups` 必须报错 —— `Ok(vec![])` 会被画成
+/// 「你的群都不见了」。接线半：`get_groups` 必须包成 `群列表读取失败: …` 且体内不得
+/// 出现 `unwrap_or_default()`。
+#[test]
+fn broken_db_reading_groups_is_an_error_not_an_empty_list() {
+    let conn = rusqlite::Connection::open_in_memory().expect("内存库");
+    let got = crate::db::list_groups(&conn);
+    assert!(got.is_err(), "表都不存在却返回 Ok ⇒ 界面会画成「群全没了」：{got:?}");
+    let src = include_str!("commands/groups.rs");
+    let body = src
+        .split("pub async fn get_groups(")
+        .nth(1)
+        .expect("get_groups 不见了 ⇒ 判据锚点要跟着改");
+    let head = body.split("\n}\n").next().unwrap_or(body);
+    assert!(head.contains("群列表读取失败"), "命令层没有把读失败包成具名错误");
+    assert!(
+        !head.contains("unwrap_or_default()"),
+        "命令层把读失败折成了空列表（B1-F7 的形状）"
+    );
+}
