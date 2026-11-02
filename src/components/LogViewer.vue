@@ -394,12 +394,12 @@ function close() {
     <div
       class="flex shrink-0 items-center gap-1 border-b border-[var(--gosslan-divider)] bg-[var(--gosslan-caption)] px-3 py-1"
     >
-      <span class="shrink-0 text-caption text-[var(--gosslan-text-2)]">窗口</span>
+      <span class="shrink-0 text-caption text-[var(--gosslan-text-2)]">{{ t("logs.window") }}</span>
       <button
         class="tap-safe rounded-[var(--gosslan-radius-sm)] px-2 py-0.5 text-caption transition"
         :class="timeWindow === null ? 'border border-[var(--gosslan-primary)] bg-[var(--gosslan-primary-light)] font-medium text-[var(--gosslan-accent-ink)]' : 'text-[var(--gosslan-text-2)] hover:bg-[var(--gosslan-hover)]'"
         @click="timeWindow = null; void load()"
-      >全部</button>
+      >{{ t("logs.windowAll") }}</button>
       <button
         class="tap-safe rounded-[var(--gosslan-radius-sm)] px-2 py-0.5 text-caption transition"
         :class="timeWindow === 30 ? 'border border-[var(--gosslan-primary)] bg-[var(--gosslan-primary-light)] font-medium text-[var(--gosslan-accent-ink)]' : 'text-[var(--gosslan-text-2)] hover:bg-[var(--gosslan-hover)]'"
@@ -409,19 +409,19 @@ function close() {
         class="tap-safe rounded-[var(--gosslan-radius-sm)] px-2 py-0.5 text-caption transition"
         :class="timeWindow === 60 ? 'border border-[var(--gosslan-primary)] bg-[var(--gosslan-primary-light)] font-medium text-[var(--gosslan-accent-ink)]' : 'text-[var(--gosslan-text-2)] hover:bg-[var(--gosslan-hover)]'"
         @click="timeWindow = 60; void load()"
-      >1 分钟</button>
+      >{{ t("logs.window1m") }}</button>
       <button
         class="tap-safe rounded-[var(--gosslan-radius-sm)] px-2 py-0.5 text-caption transition"
         :class="timeWindow === 120 ? 'border border-[var(--gosslan-primary)] bg-[var(--gosslan-primary-light)] font-medium text-[var(--gosslan-accent-ink)]' : 'text-[var(--gosslan-text-2)] hover:bg-[var(--gosslan-hover)]'"
         @click="timeWindow = 120; void load()"
-      >2 分钟</button>
+      >{{ t("logs.window2m") }}</button>
       <span class="mx-1 h-3 w-px shrink-0 bg-[var(--gosslan-divider)]"></span>
       <button
         class="tap-safe rounded-[var(--gosslan-radius-sm)] px-2 py-0.5 text-caption transition"
         :class="mergeDup ? 'border border-[var(--gosslan-primary)] bg-[var(--gosslan-primary-light)] font-medium text-[var(--gosslan-accent-ink)]' : 'text-[var(--gosslan-text-2)] hover:bg-[var(--gosslan-hover)]'"
         :title="mergeDup ? t('logs.mergeDup') : t('logs.merge')"
         @click="mergeDup = !mergeDup"
-      >合并重复</button>
+      >{{ t("logs.mergeButton") }}</button>
     </div>
 
     <!-- 过滤条：字面包含匹配，命中处高亮。 -->
@@ -532,12 +532,12 @@ function close() {
       <div
         class="flex shrink-0 items-center gap-1 border-b border-[var(--gosslan-divider)] bg-[var(--gosslan-caption)] px-3 py-1"
       >
-        <span class="shrink-0 text-caption text-[var(--gosslan-text-2)]">窗口</span>
+        <span class="shrink-0 text-caption text-[var(--gosslan-text-2)]">{{ t("logs.window") }}</span>
         <button
           class="tap-safe rounded-[var(--gosslan-radius-sm)] px-2 py-0.5 text-caption transition"
           :class="timeWindow === null ? 'border border-[var(--gosslan-primary)] bg-[var(--gosslan-primary-light)] font-medium text-[var(--gosslan-accent-ink)]' : 'text-[var(--gosslan-text-2)] hover:bg-[var(--gosslan-hover)]'"
           @click="timeWindow = null; void load()"
-        >全部</button>
+        >{{ t("logs.windowAll") }}</button>
         <button
           class="tap-safe rounded-[var(--gosslan-radius-sm)] px-2 py-0.5 text-caption transition"
           :class="timeWindow === 30 ? 'border border-[var(--gosslan-primary)] bg-[var(--gosslan-primary-light)] font-medium text-[var(--gosslan-accent-ink)]' : 'text-[var(--gosslan-text-2)] hover:bg-[var(--gosslan-hover)]'"
@@ -547,19 +547,19 @@ function close() {
           class="tap-safe rounded-[var(--gosslan-radius-sm)] px-2 py-0.5 text-caption transition"
           :class="timeWindow === 60 ? 'border border-[var(--gosslan-primary)] bg-[var(--gosslan-primary-light)] font-medium text-[var(--gosslan-accent-ink)]' : 'text-[var(--gosslan-text-2)] hover:bg-[var(--gosslan-hover)]'"
           @click="timeWindow = 60; void load()"
-        >1 分钟</button>
+        >{{ t("logs.window1m") }}</button>
         <button
           class="tap-safe rounded-[var(--gosslan-radius-sm)] px-2 py-0.5 text-caption transition"
           :class="timeWindow === 120 ? 'border border-[var(--gosslan-primary)] bg-[var(--gosslan-primary-light)] font-medium text-[var(--gosslan-accent-ink)]' : 'text-[var(--gosslan-text-2)] hover:bg-[var(--gosslan-hover)]'"
           @click="timeWindow = 120; void load()"
-        >2 分钟</button>
+        >{{ t("logs.window2m") }}</button>
         <span class="mx-1 h-3 w-px shrink-0 bg-[var(--gosslan-divider)]"></span>
         <button
           class="tap-safe rounded-[var(--gosslan-radius-sm)] px-2 py-0.5 text-caption transition"
           :class="mergeDup ? 'border border-[var(--gosslan-primary)] bg-[var(--gosslan-primary-light)] font-medium text-[var(--gosslan-accent-ink)]' : 'text-[var(--gosslan-text-2)] hover:bg-[var(--gosslan-hover)]'"
           :title="mergeDup ? t('logs.mergeDup') : t('logs.merge')"
           @click="mergeDup = !mergeDup"
-        >合并重复</button>
+        >{{ t("logs.mergeButton") }}</button>
       </div>
 
       <div class="flex shrink-0 items-center gap-2 border-b border-[var(--gosslan-divider)] px-3 py-1.5">
