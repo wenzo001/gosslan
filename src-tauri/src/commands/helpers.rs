@@ -278,10 +278,19 @@ pub async fn media_present(state: State<'_, Arc<AppState>>, msg_id: String) -> R
     let s = state.inner().clone();
     // 每一条媒体气泡渲染都可能问到它 ⇒ 这次 stat 不该留在 worker 上（审计 R-18）。
     tokio::task::spawn_blocking(move || -> Result<bool, String> {
-        Ok(!matches!(resolve_media_path(&s, &msg_id), MediaPath::Gone))
+        Ok(media_present_from(resolve_media_path(&s, &msg_id)))
     })
     .await
     .map_err(|e| format!("媒体副本检查被线程池中断: {e}"))?
+}
+
+/// 三态 → 布尔的**唯一**映射（F-PLF-014 的极性判据）。
+///
+/// 极性是刻意不对称的：只有**能确定**「文件已被删除」（`Gone`）才返回 `false`；
+/// `Unknown`（查不到消息 / 元数据缺路径 / 路径没过安全校验）必须按「可能还在」处理 ——
+/// 反过来会把"这次没查到"画成"文件没了"，用户看到的是不可逆的假事实。
+fn media_present_from(path: MediaPath) -> bool {
+    !matches!(path, MediaPath::Gone)
 }
 
 /// 读取附件预览内容（原始字节，不走 base64 IPC）。

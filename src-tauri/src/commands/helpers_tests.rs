@@ -176,3 +176,20 @@ fn save_data_file_writes_exact_bytes_and_never_leaves_a_half_file() {
         "目录不存在却返回 Ok ⇒ 界面会说「已保存」而磁盘上没有这个文件"
     );
 }
+
+/// F-PLF-014：`media_present` 的**极性**是刻意不对称的。
+///
+/// 只有能确定「已被删除」才说 `false`；`Unknown` 必须按「可能还在」——反过来会把一次
+/// 查询失败画成「文件没了」，那是不可逆的假事实。这里钉三臂 + 钉命令真的调这个映射。
+#[test]
+fn media_presence_is_false_only_when_gone() {
+    use crate::commands::MediaPath;
+    use crate::commands::media_present_from;
+    assert!(media_present_from(MediaPath::Unknown("x".into())), "Unknown 不许当成「没了」");
+    assert!(!media_present_from(MediaPath::Gone), "Gone 才是 false");
+    let src = include_str!("helpers.rs");
+    assert!(
+        src.contains("Ok(media_present_from(resolve_media_path(&s, &msg_id)))"),
+        "命令没走那条唯一映射（有人把极性又写回内联了？）"
+    );
+}

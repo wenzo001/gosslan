@@ -13,6 +13,19 @@
 
 ## [Unreleased]
 
+## [5.16.71] - 2026-11-02
+
+### F-PLF-014 收口：媒体存在性的极性抽成唯一映射并加判据
+
+`media_present` 的极性是**刻意不对称**的：只有能确定「已被删除」（`Gone`）才返回 `false`，
+`Unknown`（消息查不到 / 元数据缺路径 / 路径没过安全校验）必须按「可能还在」——反过来会把一次查询失败
+画成「文件没了」，那是不可逆的假事实。这批把它抽成 `media_present_from(MediaPath) -> bool` 这个**唯一映射**，
+并加 `media_presence_is_false_only_when_gone`：钉三臂 + 断言命令确实调它（防止极性被写回内联）。
+变异反证：把 `!matches!` 翻成 `matches!` ⇒ 红并报「Unknown 不许当成「没了」」，还原 `cmp` 相同。
+
+同格的另两块本来就有判据：另存上限（`save_data_file_rejects_oversized_payload_after_decode` +
+`…writes_exact_bytes_and_never_leaves_a_half_file`）、剪贴板路径（`src/utils/clipboard.test.ts`）。
+
 ## [5.16.70] - 2026-11-02
 
 ### F-PRE-004 收口：「消息还没送到对端」读失败必须变 Err
