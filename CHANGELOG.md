@@ -13,6 +13,28 @@
 
 ## [Unreleased]
 
+## [5.16.40] - 2026-11-02
+
+### 记一条量具边界：只补判据的提交会把「同域反复打补丁」的计数稀释掉（待评估）
+
+上一笔（5.16.39）提交时 `npm run verify` 第 18 步是红的（`transport` 在窗口里 3 次），**提交后同一格自己变绿**
+（`✓ transport: 2 次`）。原因不是补丁被修好了：那笔**只动测试分册**，而判据 3 的领域**只按应用码归** ⇒
+它不进任何领域的计数，却照样占「最近 5 个修补形状提交」里的一格，把一次真犯案挤出窗口。
+
+这既不是本批偷偷用的口子（那一笔确实只补护栏、不动产品码，是该被鼓励的动作），也不是可以忽略的形状：
+同样连着推 5 笔"只改测试"，就能让某个域的产品码反复补丁永久看不见。
+**没有擅自改判据** —— 机制与两种收紧方案（①测试分册不进窗口分母；②按域数产品码补丁次数而不是数提交）
+记在审计册 §4.0bx 与 §13 第 13 行，等他评估。
+
+同时把 5.16.39 那条提交信息里"这一格按现状如实留着（红）"改成实话：那一行写的是**提交前**的读数，
+提交后窗口移动、读数是 0，已经不能改历史 ⇒ 差异记在本节而不是悄悄改掉。
+顺带这也是他那个「纯文档/纯判据提交要不要免提版」问题的又一个实例：本节除了这段说明与册内两节，
+**产品码零改动**，却仍然吃了一次 `Version-Bump: patch`。
+
+现跑：`npm run verify` 快速层 21 步退 0（判据 3 = `transport 2 次 ✓`、CHANGELOG 结构由红转 0 是在本节补完之后）、
+`node scripts/check-doc-citations.mjs` 0（284 处 file:line 全在真行范围内）、
+§13 表行现数 **13**（复跑：`sed -n '/^## 13\./,/^## 14\./p' docs/notes/full-repo-audit-2026-10-29.md | grep -c '^| [0-9]'`）。
+
 ## [5.16.39] - 2026-11-02
 
 ### B1-F5 复核：代码 10-27 就收了、判据今晚才补上（5.16.39）
@@ -36,11 +58,21 @@
 现跑：`cargo test --features bluetooth --lib decrypt_failure_returns` **1 passed / 0 failed**（变异那次 FAILED 已在上面记）、
 全量 `cargo test --features bluetooth --lib` **1375 passed / 0 failed / 3 ignored**、`cargo fmt --check --all` 0、
 `cargo clippy --features bluetooth --all-targets -- -D warnings` 0、`node scripts/check-doc-numbers.mjs` 0。
-`npm run verify` 快速层**这一笔退 1**，红的只有 Change Budget **判据 3**（重复犯案窗口）：
-`transport` 域在最近 5 个修补形状提交里占 **3 次**（sha 由那一步自己打印，复跑 `npm run verify` 看第 18 步那三行；分母是 `origin/main..HEAD` 这批未推的堆叠，现数 18 笔：`git log --oneline origin/main..HEAD | wc -l`）。
-它的三条自查里 ①「一次改太多」与 ②「同一处反复补」今晚分别由 **判据 G 的机器化**（矩阵 ID 唯一性不再靠人记）与
-**B1-F5 的护栏补齐**回答；③「拆独立分支」在这里等价于"把这批已完成的推上去让窗口移动"——**那一步要授权**，
-负责人今晚选的是「先只本地、不推」，所以这一格红**按现状如实留着**，不靠拆提交绕开它。
+**门禁读数要按提交前后分开说**（这条差异本身就是一条发现）：
+- **提交前** `npm run verify` 退 **1**，红的只有 Change Budget 判据 3 —— `transport` 域在最近 5 个修补形状提交里占 3 次
+  （`531a5d5` / `6e40236` / `2eecc60`，分母是 `origin/main..HEAD` 这批未推的堆叠）；
+- **提交后**再跑退 **0**，同一格打印变成 `✓ transport: 2 次(531a5d5, 6e40236)`。
+
+原因不是"问题被修好了"：本笔只动 `dispatch_tests.rs`（测试分册**不计入任何领域**），但它仍然占窗口里的一格，
+把 `2eecc60` 挤了出去 ⇒ **只补护栏/测试的提交会稀释"同域反复打补丁"的计数**。
+这是判据 3 的一条真实边界（它按领域数补丁次数，而"同一域只加判据不动产品码"恰好是**该被允许**的动作），
+本批**不擅自改判据**，先把这条边界记进审计册 §4.0bx 等他评估要不要收紧（例如把"只动测试分册"的提交
+从窗口分母里显式排除，而不是让它当空格挤掉一次犯案记录）。
+
+其余现跑：`cargo test --lib decrypt_failure_returns` 1 passed / 0 failed（变异那次 FAILED 是设计要的红）、
+全量 `cargo test --features bluetooth --lib` **1375 passed / 0 failed / 3 ignored**、`cargo fmt --check --all` 0、
+`cargo clippy --features bluetooth --all-targets -- -D warnings` 0、`node scripts/check-doc-numbers.mjs` 0、
+`npm run verify` 快速层 21 步退 0（上面那两行就是它第 18 步的读数）。
 
 ## [5.16.38] - 2026-11-02
 
