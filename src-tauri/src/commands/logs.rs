@@ -870,6 +870,7 @@ pub fn open_group_todos_window(
         // 这一步原先在锁被占住时直接把整个开窗判成失败 —— 群名只是系统标题栏那一点装饰，
         // 为它牺牲一次用户动作，表现就是"DB 一忙这扇窗就打不开"。
         // 判据由 `cosmetic_title_read_cannot_abort_the_window` 钉住。
+        // INV-EXCEPTION: INV-P36 — 标题是装饰性字段，读不到就留空，绝不为此牺牲一次用户动作（例外理由见该文档的例外登记表）
         match state.db.try_lock() {
             Ok(dbc) => db::get_group(&dbc, &group_id)
                 .map(|g| g.name)

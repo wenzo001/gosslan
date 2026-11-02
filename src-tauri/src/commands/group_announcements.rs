@@ -462,6 +462,9 @@ pub async fn send_group_file(
             ) {
                 crate::logging::log_write_failure(&s.logger, "upsert_transfer", e);
             }
+            // INV-EXCEPTION: INV-P36 — 这里折成空群名是安全的：下游 `db/conversations.rs` 对
+            // `kind=='group'` 先从 `groups` 表查真名，UPDATE 分支再用 `CASE WHEN` 保住原会话名
+            // ⇒ 这一次折叠写不坏会话行（逐行复读确认，理由登记在 `docs/protocol-invariants.md`）。
             let group_name = db::get_group(&dbc, &group_id)
                 .map(|g| g.name)
                 .unwrap_or_default();

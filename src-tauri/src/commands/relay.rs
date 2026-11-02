@@ -88,6 +88,8 @@ pub fn load_relay_runtime(db: &rusqlite::Connection) -> Option<RelayRuntime> {
     if !enabled {
         return None;
     }
+    // INV-EXCEPTION: INV-P36 — 这条路径在拨号循环里、没有界面能承接错误 ⇒ 刻意 fail-closed：
+    // 读不到/脏数据都判成"不启用"，而不是带病建链路。理由与本例外的登记见 `docs/protocol-invariants.md`。
     let server = db::get_setting(db, RELAY_SERVER_KEY).unwrap_or_default();
     let token = db::get_setting(db, RELAY_TOKEN_KEY).unwrap_or_default();
     let addr = parse_endpoint_addr_on(&server, RELAY_DEFAULT_PORT)?;

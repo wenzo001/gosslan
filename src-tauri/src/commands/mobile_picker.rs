@@ -258,6 +258,8 @@ pub async fn get_pending_requests(
     tokio::task::spawn_blocking(move || -> Result<Vec<PendingRequest>, String> {
         let friend_ids: std::collections::HashSet<String> = {
             let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());
+            // INV-EXCEPTION: INV-P36 — 折叠方向是多留不误删：读不到好友表只会让"该消失的申请还留着"，
+            // 比"该删的被删了"安全（见 `docs/protocol-invariants.md` 的例外登记表）。
             db::list_friends(&dbc)
                 .unwrap_or_default()
                 .into_iter()
