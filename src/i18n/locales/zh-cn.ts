@@ -1010,6 +1010,8 @@ export const zhCN: MessageDict = {
   "group.files.refetching": "已向发送者请求重新传送",
   "group.files.refetchUnsupported": "对方版本较旧，无法重新获取",
   "group.files.refetchFail": "重新获取失败",
+  "group.files.cancelSend": "取消发送",
+  "group.files.cancelReceive": "取消接收",
   "group.create.title": "创建群聊",
   "group.name": "群名称",
   "group.namePlaceholder": "输入群聊名称",

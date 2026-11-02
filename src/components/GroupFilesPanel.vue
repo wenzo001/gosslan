@@ -22,7 +22,7 @@ import { fmtConversationTime } from "@/utils/time";
 import { formatBytes } from "@/utils/format";
 import { FILE_KIND_ICONS, extBadgeLabel, fileKindOf, fileKindStyle } from "@/utils/fileKind";
 import { openLocalFile, saveLocalFile } from "@/utils/localFile";
-import { Download, FolderOpen, RotateCw } from "lucide-vue-next";
+import { Download, FolderOpen, RotateCw, Ban } from "lucide-vue-next";
 import { DropdownMenuItem } from "reka-ui";
 import ContextMenu from "@/components/ContextMenu.vue";
 import { revealItemInDir } from "@tauri-apps/plugin-opener";
@@ -33,6 +33,8 @@ import {
   groupFilesKey,
   invalidateGroupFiles,
 } from "@/utils/groupFilesQuery";
+import { groupFileCancelSide } from "@/utils/groupFileCancel";
+import { cancelOutcome, fileCancelKey } from "@/utils/cancelFeedback";
 import { PANEL_QUERY_POLICY } from "@/utils/panelQuery";
 import { createInitScope, type InitScope } from "@/utils/initScope";
 import type { GroupFileEntry } from "@/types";
@@ -226,6 +228,39 @@ async function refetch(f: GroupFileEntry) {
   }
 }
 
+/**
+ * 独立取消入口（2026-11-03 用户拍板）：传输中的群文件行以前只能去聊天记录里翻那条
+ * `gfile-` 消息右键气泡取消，面板里看着转圈没有任何出口（产品原则 1 的缺口）。
+ * 两侧判据的唯一家在 `utils/groupFileCancel`；后端 `cancel_file_transfer` 本就两侧都接
+ * （发送方整单 / 接收方本机停手），这里只负责下命令与把话说准 ——
+ * 四分支文案与任务中心/气泡共用 `utils/cancelFeedback` 同一份映射。
+ */
+const cancellingId = ref<string | null>(null);
+
+function cancelSide(f: GroupFileEntry) {
+  return groupFileCancelSide(f, myId.value);
+}
+
+async function cancelGroupFile(f: GroupFileEntry) {
+  const side = cancelSide(f);
+  if (!side || cancellingId.value) return;
+  cancellingId.value = f.transfer_id;
+  try {
+    const res = await api.cancelFileTransfer(f.transfer_id);
+    const outcome = cancelOutcome(res);
+    app.toast(
+      t(fileCancelKey(outcome, side === "send")),
+      outcome === "notified" ? "success" : "info",
+    );
+    const gid = props.groupId;
+    if (gid) void invalidateGroupFiles(queryClient, gid);
+  } catch (e) {
+    app.toastError(e, t("msg.cancelSend.fail"));
+  } finally {
+    cancellingId.value = null;
+  }
+}
+
 const totalSize = computed(() => files.value.reduce((s, f) => s + f.size, 0));
 
 /** `t()` 的 key 是静态字面量，才能在字典里被静态检查到；因此用查表而不是拼 key。 */
@@ -336,6 +371,18 @@ function stateText(state: GroupFileEntry["local_state"]): string {
             @click.stop="refetch(f)"
           >
             <RotateCw class="h-3.5 w-3.5" />
+          </button>
+          <!-- 取消入口只在「真有在途字节」的行上出现：判据见 utils/groupFileCancel。
+               不给灰项 —— 已完成/未开始的行显示取消只会制造「点了没反应」的误报。 -->
+          <button
+            v-if="cancelSide(f)"
+            class="tap-safe flex h-7 w-7 shrink-0 items-center justify-center rounded-[var(--gosslan-radius-sm)] text-[var(--gosslan-text-2)] transition hover:bg-[var(--gosslan-hover)]"
+            :title="t(cancelSide(f) === 'send' ? 'group.files.cancelSend' : 'group.files.cancelReceive')"
+            :aria-label="t(cancelSide(f) === 'send' ? 'group.files.cancelSend' : 'group.files.cancelReceive')"
+            :disabled="cancellingId === f.transfer_id"
+            @click.stop="cancelGroupFile(f)"
+          >
+            <Ban class="h-3.5 w-3.5" />
           </button>
         </div>
         <p v-if="truncated" class="px-2 py-2 text-caption text-[var(--gosslan-text-2)]">
