@@ -1310,3 +1310,28 @@ fn share_command_failures_carry_named_codes() {
         );
     }
 }
+
+/// F-PRE-004：任务中心「消息还没送到对端」那一行的读取，**读失败必须是 Err**。
+///
+/// 与 F-MSG-060 同一族：这条读折叠成空时，任务中心会画成「没有等待投递的消息」——
+/// 用户以为都送到了，而真相是一次 IO 失败。行为半钉 DB 层、接线半钉命令体。
+#[test]
+fn broken_db_reading_pending_message_ops_is_an_error() {
+    let conn = rusqlite::Connection::open_in_memory().expect("内存库");
+    let got = crate::db::list_pending_message_operations(&conn, crate::db::MESSAGE_OPS_LIMIT);
+    assert!(got.is_err(), "表都不存在却返回 Ok ⇒ 任务中心会画成「没有等待投递的消息」：{got:?}");
+    let src = include_str!("commands/chat.rs");
+    let body = src
+        .split("pub async fn get_pending_message_operations(")
+        .nth(1)
+        .expect("get_pending_message_operations 不见了 ⇒ 判据锚点要跟着改");
+    let head = body.split("\n}\n").next().unwrap_or(body);
+    assert!(
+        head.contains("list_pending_message_operations(&dbc"),
+        "命令层不再调那条读（改了取数方式？先确认再改判据）"
+    );
+    assert!(
+        !head.contains("unwrap_or_default()"),
+        "命令层把读失败折成了空列表（F-PRE-004 / B1-F7 的形状）"
+    );
+}
