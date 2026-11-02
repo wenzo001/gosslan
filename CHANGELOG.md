@@ -15,6 +15,16 @@
 
 ## [5.16.74] - 2026-11-03
 
+### 已知风险与有条件风险接受
+
+- **Windows 渲染层卡死是已知风险**：本版只补了心跳/IPC/焦点/resize/慢持锁读数与
+  `code=IPC_BACKLOG`、`code=SLOW_OP cmd=longtask:*` 取证日志，**不宣称已修复**；
+  下一次现场按 `docs/notes/device-selfcheck-2026-11-02.md` 抓 `gosslan-crash.log`。
+- **RUSTSEC-2026-0429 为有条件风险接受**：受影响 `zip 4.6.1`，依赖链
+  `tauri-plugin-updater 2.14.0 -> zip ^4`（Windows-only optional）；仅 Windows 自更新解包可达，
+  更新包必须先过 minisign 验签且更新源固定官方 endpoint；上游 stable 支持 `zip >= 9.0.0`
+  时删除该豁免（详见 `src-tauri/deny.toml` 注释与 CI 的 `cargo-audit --ignore`）。
+
 ### 修正：IPC_BACKLOG 日志移出心跳命令
 
 心跳只写原子量，`code=IPC_BACKLOG` 由看门狗线程按 30s 节流落盘；避免心跳成为
