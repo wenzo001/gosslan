@@ -408,8 +408,13 @@ function parseCommits(raw) {
  * 口径会漂移，而"窗口和受检范围不是同一批提交"正是上面那次误伤的成因。
  */
 function buildOffenderWindow(candidates) {
+  // 判据 3 的分母只装**真的动了应用码**的修补形状提交：测试分册/纯测试提交
+  // 不占窗口格。否则一串 test-only 提交会把更早的应用码 fix 挤出窗口，
+  // 「同一领域最近 5 个补丁 ≥3」反而看不见（2026-11-02 用户拍板）。
+  const appCodeOnly = (commit) =>
+    commit.files.some((f) => !isExempt(f.path) && isAppCodePath(f.path));
   // git log 输出新→旧，取前 N 个 = 最近 N 个（与旧的 `-n 5` 语义一致）
-  return candidates.filter(isPatchShaped).slice(0, OFFENDER_WINDOW);
+  return candidates.filter(isPatchShaped).filter(appCodeOnly).slice(0, OFFENDER_WINDOW);
 }
 
 /**

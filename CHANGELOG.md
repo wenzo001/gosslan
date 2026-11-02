@@ -23,77 +23,15 @@
 所以没有合并成一份；深链落点、未知键回退、4 组顺序与别名由 `settingsStructure.test.ts` 的
 矩阵锁定，移动端设置探针 14/14 绿。
 
-### 审计册口径统一：#7 的自动化与「手填地址」拆成两句；「其余四项」订正为三项
+### 内部台账订正（不影响功能）
 
-§13.0 的「仍开着」表与 §13 第 7 行对同一件事有两种说法 —— 现在统一为：A10 **真链路已有 10-31 双实例实测**，
-仍缺的是**自动化**（要待发队列可注入）；「界面没有手填对端地址」是另一条独立的产品待拍板，不许并成一句。
-同节「网络启停其余四项」按矩阵订正为**三项**（UI 语言已有判据），并写明这四格都卡在 `Arc<AppState>`
-需要真实 `AppHandle` 这个地基上。
-
-### 审计册 §13.0 续记：可诊断列清零；17 格缺口的共同原因已验实
-
-五处「可诊断 FAIL」按列改 PASS（DM_CANCEL / SETTINGS_PERSIST_FAILED / apply_recall / 三处读取上抛），
-现读可诊断 FAIL = 0。另把 4 格「缺行为级用例」的共同原因写清：它们都要 `Arc<AppState>`，而构造它需要真实
-tauri `AppHandle`（三处测试注释都写「单测造不出来」）⇒ 加测试前得先有 AppState 测试构造器，不是「没找」。
-
-### 矩阵订正：F-PLF-010 的「没有独立用例」要分成形状级 / 行为级
-
-现读 `in_flight_media_is_not_reported_as_deleted` 确实读的是 `resolve_media_path` 的函数体，但只断言源码形状；
-行为级仍缺（吃 `&AppState`，本仓无测试用构造器）。原句写成「没有独立用例」会被读成一条都没有。判级仍 PARTIAL。
-
-### 矩阵订正：F-PLF-021 的「四项缺用例」缩到三项
-
-「UI 语言」那项已有判据 `set_ui_language_stays_silent_to_avoid_the_event_ping_pong`（5.16.69，见 F-PRE-016）。
-仍缺的是 `search_nearby_peers` / `focus_window` / `request_ble_permissions` 三条；三者都吃 `AppState` 或平台句柄，
-本仓现无测试用 AppState 构造器 ⇒ 本轮不动码，判级仍 PARTIAL，可验证 17 不变。
-
-### 矩阵订正：五处「可诊断 FAIL」全部过期（B1-F1/F4/F6/F7 早已收口）
-
-逐行现读后的更正：F-MSG-014（1:1 取消现在落 `code=DM_CANCEL`，`lib_file_tests.rs:26` 钉住）、
-F-PRE-011（设置写失败弹 toast 并记 `code=SETTINGS_PERSIST_FAILED`，`designGuards.test.ts:6346` 钉住）、
-F-MSG-040（撤回三笔收成一笔事务 `db::apply_recall`，失败经 `?` 上抛，判据钉「只许调 apply_recall」）、
-F-MSG-060（三处读取 `?` 上抛并带中文前缀，行为判据钉「库坏了必须 Err」）、
-F-GRP-007（群列表上抛；已读名单上抛并打 `code=GROUP_READS_LIST_READ_FAILED`）。
-五行的总判级不变（可验证仍按原档），可验证读数 17 不变。
-
-### 矩阵订正：F-PLF-007 的「更新取消没有码」已过期
-
-`code=UPDATER_CANCEL` 现在两种结局各一行（refused_installing / cancelled，`commands/updater.rs:364/387`），
-判据 `lib_file_tests.rs:49` 按全串计数为 2 ⇒ 「可诊断」格由 FAIL 改 PASS（B1-F1 在这条通道上已收口）。
-「可验证」格仍是 FAIL：现有三条判据全是源码文本/顺序级，没有一条调用被测命令（B1-F3 不变）。总判级仍 PARTIAL。
-
-### 审计册 §13.0 订正：可验证总数 13→17（同分母），并把两处「零证据」改判写清
-
-§13.0 末尾原写「可验证剩 13 格 = 9 格 BLOCKED + 4 格缺一条用例」——括号里枚举的其实是 13 格 BLOCKED
-（Android/多网卡/签名构建 + 公告 3 行 + 好友 3 行 + 群取消），加上 4 格才是总数。按 92 行同分母重数为 **17**。
-同时把今天的四处复核写进同一节：F-FRN-001/002/003 改判「手工有、自动化无」，F-GRP-002 改判「历史补拉有、在线广播无」；
-公告 / 退群 / 群取消 / 强提醒受众四类现读轮次表后仍无覆盖。
-
-### 矩阵订正：F-GRP-002 的「群待办跨实例零证据」已过期
-
-现读 ghsync 轮（41 断言）：群任务行跨实例落地（kind=todo、`todo_id` 与编号原样），重连补拉那半另判了
-离线期间新增的任务。但那走的是**历史补拉**、不是在线广播；**公告**仍零证据（群轮与 ghsync 轮都没种公告）。
-判级仍 PARTIAL，可验证读数不变（17）。
-
-### 矩阵订正：好友申请三行的「跨进程始终没有证据」已过期（自动化仍缺）
-
-F-FRN-001/002/003 原句都写着「跨进程好友关系始终没有 E2E 轮次 / no J4 proof」，读起来像连手工读数也没有。
-现读 `docs/acceptance/stability-smoke-matrix.md`：2026-10-31 深夜已有**双实例真机真链路** —— A 走界面加好友 →
-B 收到跨跳申请的**真帧** → B 同意 → A 收到回执，两侧 `friends=1 / conversations=1`，重启后仍在、`friend_req:` 行清空。
-三行改为「手工有、可回归的自动化仍无」，判级仍 PARTIAL（自动化那一半要等 §13 第 7 项拍板是否加注入钩子）。
-可验证读数不变（17）。
-
-### 证据新鲜度补记：5.16.71 的运行时改动之后重编并复跑两轮 E2E
-
-5.16.71 改的是运行时代码（`commands/helpers.rs` 的 `media_present_from`），而当时那份 release 二进制是
-5.16.68 的内容构建的 —— **旧绿不覆盖新代码**。已重编 release（`cargo build --release --features bluetooth`，
-退出 0），在新二进制上复跑：
-
-- `node scripts/e2e-multi-instance.mjs --round=contentpull` ⇒ 40 条断言全绿、退出 0；
-- `node scripts/e2e-multi-instance.mjs --round=default` ⇒ 18 条断言全绿、退出 0；
-- 两轮结束都打印「已还原用户原有实例库 3 个」。
-
-驱动自带新鲜度闸（任一 `.rs` 比二进制新就拒跑），所以这两份读数只可能来自当前源码构建的二进制。
+- §13.0 口径统一：#7 的自动化与「手填地址」拆成两句；网络启停其余四项订正为三项；可验证总数
+  13→17（同分母 92 行）；五处「可诊断 FAIL」按列改 PASS。17 格缺口的共同原因是需要真实
+  `AppHandle` 构造 `AppState`，不是「没找」。
+- 矩阵订正：F-PLF-010 拆形状级/行为级；F-PLF-021 四项→三项；F-PLF-007 可诊断改 PASS（可验证仍
+  FAIL）；F-GRP-002 历史补拉有、在线广播无；F-FRN-001/002/003 手工有、自动化无。总判级均不变。
+- 证据新鲜度：5.16.71 运行时改动后重编 release，在新二进制上复跑 contentpull 40/40、default
+  18/18；驱动新鲜度闸保证读数来自当前源码构建。
 
 ## [5.16.71] - 2026-11-02
 
