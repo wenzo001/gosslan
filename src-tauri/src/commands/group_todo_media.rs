@@ -165,7 +165,20 @@ pub(crate) fn group_file_online_progress(
     fallback: f64,
 ) -> f64 {
     let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
-    let recipients = db::list_group_file_recipients(&dbc, transfer_id).unwrap_or_default();
+    // 读失败 ⇒ 退回 `fallback`（本条连接的字节进度）。方向不坏，但"为什么退回了"必须查得到。
+    let recipients = match db::list_group_file_recipients(&dbc, transfer_id) {
+        Ok(rows) => rows,
+        Err(e) => {
+            drop(dbc);
+            if crate::logging::log_throttled("progress_recipients_read_failed", 300_000) {
+                state.logger.warn(
+                    "group_file",
+                    format!("code=GFILE_RECIPIENTS_READ_FAILED 进度退回单连接口径 transfer={transfer_id}：{e}"),
+                );
+            }
+            return fallback.clamp(0.0, 1.0);
+        }
+    };
     drop(dbc);
     if recipients.is_empty() {
         return fallback.clamp(0.0, 1.0);

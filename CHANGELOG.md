@@ -13,6 +13,48 @@
 
 ## [Unreleased]
 
+## [5.16.29] - 2026-11-02
+
+### 读库折叠 B 档 5 处补留痕 + 一把**不限名字**的总量棘轮
+
+§4.0bq 分档里的 B 档（后端补发静默、会自愈，只差"查得到"）今天落地 5 处，全部**不改行为**，
+只把"这次没读出来"从沉默变成一行带具名码的节流留痕：
+
+| 处 | 折成的假状态 | 新增的码 |
+|---|---|---|
+| `commands/files.rs` 单聊待发台账 | "这台 peer 没有待发文件" ⇒ 本轮一条都不补发 | `code=FILE_OUTBOX_READ_FAILED` |
+| `commands/files.rs` 取消通知的收件名单 | 名单为空 ⇒ 取消通知发给 0 个人，而用户以为通知过了 | `code=GFILE_RECIPIENTS_READ_FAILED` |
+| `commands/group_file_keys.rs` 群文件待发台账 | 同上（群侧） | `code=GFILE_OUTBOX_READ_FAILED` |
+| `commands/group_todo_media.rs` 在线进度聚合 | 退回单连接字节进度（方向不坏，但要能说出为什么退） | `code=GFILE_RECIPIENTS_READ_FAILED` |
+| `network/transport/read_receipt.rs` 待发群已读 | 一条回执都不冲刷，pending 留着等下次 | `code=GROUP_READS_PENDING_READ_FAILED` |
+
+**为什么是 5 处而不是 7 处**：B 档原本列了 7 处，其中 `commands/group_announcements.rs:200` 与
+`network/group_history.rs:618` 吃的是 `db::get_group` 的**第二层折叠** —— 它返回 `Option`，
+"读失败"与"群不存在"在函数内部就合成了同一个值，调用点再怎么 match 也分不开。
+那两处要先动 db 层（`get_group_checked` 一类），属于 C 档共同的前置，本批刻意没碰 ——
+留痕不能靠猜，猜出来的码会说反话。
+
+**判据侧本批真正的交付**是那把新尺子：`读库折叠总量是棘轮：不限名字的尺子只许降`。
+旧判据的名字清单是手抄六个，换成不限名字后现算 **19 条命中里只看得见 5 条**（真折叠 18 处，
+`commands/relay.rs:305` 那条是尺子跨过结构体逗号造成的假阳性，偏差写在判据注释里）。
+A 档与 C 档还在等拍板，所以现在不能要求"必须为 0"，棘轮先把洞封住不让它长：
+新增一处折叠当场红，落地一批就把上限改小；判据还带一条 `white < any` 的自我作废断言
+（等哪天白名单不再瞎，就该把它跟旧判据合成一条），以及一条合成正控防止尺子自己失效。
+
+节流的家也一起搬了：`log_throttled` 从 `network/transport/link_state.rs` 的私有函数搬到
+`logging.rs`（命令层要节流留痕时原本**没有家可叫**，只能再抄一张静态表）。
+上一版把它写成 `crate::db::now_ms()` 被内联耦合棘轮顶了一档 ——
+`observability` 是刻意叶子域、`now_ms` 本来就在同域，改成同域调用后**内联耦合从 17 降到 16 处、
+对数回到上限 6**，不需要动领域登记表。
+
+现跑：`cargo clippy --features bluetooth --all-targets -D warnings` 0、`cargo fmt --check --all` 0、
+`cargo test --lib` **1372 passed / 0 failed**、`npm test` 1544/1544（+1 条棘轮）、`verify` 快速层 21/21、
+semver + 文档数字 + 文档引用三门 0、`check-domain-deps` 0、`check-test-manifest --only rust` 通过。
+变异反证：往 `commands/friends.rs` 塞一行带该形状的注释 ⇒ 棘轮红在「命中 20 处，超过上限 19」；
+还原与备份 `cmp` 逐字节相同 ⇒ 绿。未跑：E2E / 真窗口（这五处都在补发与进度口径上，
+要两台机器才看得到"文件一直不发"那类现场）。
+
+
 ## [5.16.28] - 2026-11-02
 
 ### 群任务图片不再在私聊里多落一张卡（§4.0br 的修法，接收端认「这是我发起的补拉」）

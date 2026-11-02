@@ -50,7 +50,20 @@ pub async fn flush_pending_group_files(state: &Arc<AppState>, peer_id: &str) {
     }
     let pending = {
         let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
-        db::list_pending_group_files_for_recipient(&dbc, peer_id).unwrap_or_default()
+        // 与单聊那一臂同族（§4.0bq B 档）：读失败折成空 ⇒ 这一轮一条群文件都不补发，
+        // 日志零痕迹。行为不变，只让它可查。
+        match db::list_pending_group_files_for_recipient(&dbc, peer_id) {
+            Ok(rows) => rows,
+            Err(e) => {
+                if crate::logging::log_throttled("gfile_outbox_read_failed", 300_000) {
+                    state.logger.warn(
+                        "file",
+                        format!("code=GFILE_OUTBOX_READ_FAILED 本轮不补发 peer={peer_id}：{e}"),
+                    );
+                }
+                Vec::new()
+            }
+        }
     };
     if pending.is_empty() {
         release_peer_send(&state.group_file_sending, peer_id);

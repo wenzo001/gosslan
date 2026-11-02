@@ -496,7 +496,22 @@ pub async fn flush_pending_files(state: &Arc<AppState>, peer_id: &str) {
     }
     let pending = {
         let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
-        db::list_pending_file_outbox(&dbc, peer_id).unwrap_or_default()
+        // 读失败不等于「这台 peer 没有待发文件」（B3-F3 网络/命令侧残留，§4.0bq B 档）：
+        // 折成空列表本轮就一条都不补发，而日志里什么都没有 ⇒ 用户只看到"文件一直不发"。
+        // 这里不改成上抛：调用方是链路事件驱动的补发臂，没有能承接错误的界面，
+        // 保持"本轮不补发"的既有行为，只把**这一跳变成可查**。
+        match db::list_pending_file_outbox(&dbc, peer_id) {
+            Ok(rows) => rows,
+            Err(e) => {
+                if crate::logging::log_throttled("file_outbox_read_failed", 300_000) {
+                    state.logger.warn(
+                        "file",
+                        format!("code=FILE_OUTBOX_READ_FAILED 本轮不补发 peer={peer_id}：{e}"),
+                    );
+                }
+                Vec::new()
+            }
+        }
     };
     if pending.is_empty() {
         release_peer_send(&state.file_sending, peer_id);
@@ -1218,8 +1233,21 @@ fn plan_cancel_notice(s: &AppState, transfer_id: &str) -> Option<CancelNotice> {
     }
     let gf = db::get_group_file(&dbc, transfer_id)?;
     if gf.sender_id == s.device_id {
-        let members = db::list_group_file_recipients(&dbc, transfer_id)
-            .unwrap_or_default()
+        // 读失败 ⇒ 名单为空 ⇒ 取消通知发给 0 个人，而用户以为"已经通知过了"。
+        // 折成空的行为保持（这一格返回的是"该通知谁"的清单，不是可恢复的读），只补留痕。
+        let recipients = match db::list_group_file_recipients(&dbc, transfer_id) {
+            Ok(rows) => rows,
+            Err(e) => {
+                if crate::logging::log_throttled("cancel_notice_recipients_read_failed", 300_000) {
+                    s.logger.warn(
+                        "file",
+                        format!("code=GFILE_RECIPIENTS_READ_FAILED 取消通知发给 0 人 transfer={transfer_id}：{e}"),
+                    );
+                }
+                Vec::new()
+            }
+        };
+        let members = recipients
             .into_iter()
             .filter(|r| r.status == "pending" || r.status == "sending")
             .map(|r| r.recipient_id)

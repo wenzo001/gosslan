@@ -1578,6 +1578,34 @@ impl Logger {
 /// 九份拷贝今天唯一的差别就是兜底写法（`unwrap_or(0)` 与 `unwrap_or_default()`）——
 /// 这正是会漂的那一步：漂成大写、漂成秒、漂成单调钟，症状都是"某些 TTL 早于预期到期"。
 /// 形状判据见本文件末尾的 `the_wall_clock_has_two_names_max`。
+/// 日志限频：同一个 key 每 `min_interval_ms` 最多放行一次 —— **唯一实现**。
+///
+/// 为什么在这里（2026-11-02）：原先是 `network/transport/link_state.rs` 的私有函数，
+/// 本模块 30 多个调用点能用，但 `commands/` 想给"读库失败折成空"补一条**不刷屏**的留痕时
+/// 没有家可叫 ⇒ 只能再抄一份静态表，两张节流表各自漂移正是本仓在治的重复。
+/// 搬进本域后用**同域的 `now_ms()`**（本文件上面那个家）：改成 `crate::db::now_ms` 会让
+/// observability 这个刻意叶子域长出一条 `→ persistence` 的内联耦合（实测被棘轮顶上一档）。
+///
+/// 用**函数内静态**而不是 `AppState` 字段：它只服务日志，不值得为一个诊断辅助引入
+/// 需要清理的可增长状态；key 全是编译期字面量 ⇒ 表的规模天然有界。
+pub(crate) fn log_throttled(key: &'static str, min_interval_ms: i64) -> bool {
+    use std::collections::HashMap;
+    use std::sync::{Mutex, OnceLock};
+    static LAST: OnceLock<Mutex<HashMap<&'static str, i64>>> = OnceLock::new();
+    let now = now_ms();
+    let mut m = LAST
+        .get_or_init(|| Mutex::new(HashMap::new()))
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
+    match m.get(key) {
+        Some(&t) if now - t < min_interval_ms => false,
+        _ => {
+            m.insert(key, now);
+            true
+        }
+    }
+}
+
 pub(crate) fn now_ms() -> i64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
