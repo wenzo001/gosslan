@@ -2665,6 +2665,21 @@ audit-context/
 - 现读轮次表后**仍成立**：公告（群轮与 ghsync 轮均未种）、退群/被移出（无轮次）、
   群取消的离线成员臂（无轮次）、群强提醒的受众劈分（只有载荷跨进程，没有界面劈分读数）。
 
+**同日续查（2026-11-02 深夜）：可诊断列清零，剩余 17 格的「缺什么」逐格验过**
+
+- 五处「可诊断 FAIL」全部过期，按列改 PASS：F-MSG-014（`code=DM_CANCEL` + `lib_file_tests.rs:26`）、
+  F-PRE-011（`code=SETTINGS_PERSIST_FAILED` + `designGuards.test.ts:6346`）、F-MSG-040（撤回三笔收成一笔
+  `db::apply_recall`，失败上抛）、F-MSG-060 / F-GRP-007（三处读取 `?` 上抛；群已读另有
+  `GROUP_READS_LIST_READ_FAILED`）。**现读可诊断 FAIL = 0。**
+- F-PLF-007：可诊断改 PASS（`UPDATER_CANCEL` 两结局 + 计数判据）；可验证仍 FAIL —— 现有三条判据
+  全是源码文本/顺序级，没有一条调用被测命令。
+- 17 格里 4 格「缺一条行为级用例」的共同原因已**验实**：`resolve_media_path` / 网络启停三项命令 /
+  建群分发 / 语言·样式跨进程都要 `Arc<AppState>`，而构造它需要真实 tauri `AppHandle`
+  （`lib_file_tests.rs:852`、`network/transport/queue_tests.rs:110`、`gossip_tests.rs:348` 三处注释都写明
+  「单测造不出来」⇒ 现有做法只能是源码形状判据）。这不是「没找」，加测试前得先有 AppState 测试构造器。
+- 其余 13 格是跨进程/真机（Android、多网卡、签名构建、公告 3 行、好友 3 行已改判「手工有自动化无」、
+  群取消），证据缺口类型见上面两条。
+
 ### 13.1 TST-06 收口过程与两次假否证的更正（2026-11-01）
 > 下面这段原先是 §13 第 2 行单元格里的内容；单元格里塞多行会**把表格截断**（本轮实测），所以搬到表外。
 
