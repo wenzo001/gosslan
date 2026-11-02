@@ -13,6 +13,15 @@
 
 ## [Unreleased]
 
+## [5.16.16] - 2026-11-02
+
+### 闭环矩阵复核：F-FIL-002 的 PARTIAL 理由（缺 disk_full 分类）已过期
+
+10-26 矩阵给「接收一个文件」的 PARTIAL 只挂在 B2-F1 上。现读三条链都在：`write_chunk` 用
+`classify_write_failure` 把 ENOSPC 归 `DISK_FULL`（OS 原文只进日志）、`fail_taken_receive` 对该码删 `.part`、
+前端 `DISK_FULL → file.diskFull` 且 `onFileFailed` 用它拼 toast。群侧「盘满不进落库词表」是刻意口径、不是缺口。
+已在矩阵册末尾补一节带日期与行号的复核，不改 10-26 的原始判级。
+
 ## [5.16.15] - 2026-11-02
 
 ### 护栏空转的"检出时效"复核：两次都是当晚抓到
