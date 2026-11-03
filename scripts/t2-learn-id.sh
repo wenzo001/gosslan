@@ -38,10 +38,28 @@ FAIL=0
 fail() { echo "  ❌ $1"; FAIL=$((FAIL+1)); }
 pass() { echo "  ✅ $1"; PASS=$((PASS+1)); }
 
-cleanup() {
-    pkill -f "target/debug/gosslan" 2>/dev/null
+# 【防误杀】只杀**本脚本起过的**实例，按精确 PID + 可执行路径校验：
+# 旧写法 `pkill -f` 按命令行串匹配，会把用户手开的实例一起杀掉 ——
+# 那本身就会造成"闪退"的错觉（闪退取证第 3 项；口径同 verify-startup-error.mjs）。
+PIDFILE=/tmp/gosslan-t2.pids
+TRACKED_PIDS=""
+kill_tracked() {
+    local pid
+    for pid in $TRACKED_PIDS $(cat "$PIDFILE" 2>/dev/null); do
+        if kill -0 "$pid" 2>/dev/null; then
+            if ps -p "$pid" -o args= 2>/dev/null | grep -qF "$BIN"; then
+                pkill -P "$pid" 2>/dev/null || true
+                kill "$pid" 2>/dev/null || true
+                wait "$pid" 2>/dev/null || true
+            fi
+        fi
+    done
+    rm -f "$PIDFILE"
+    TRACKED_PIDS=""
     sleep 0.5
 }
+track() { TRACKED_PIDS="$TRACKED_PIDS $1"; echo "$1" >> "$PIDFILE"; }
+cleanup() { kill_tracked; }
 trap cleanup EXIT
 
 # ----------------------------------------------------------------------------
@@ -62,6 +80,7 @@ if [ ! -f "$DB2" ]; then
     # macOS 无 GNU `timeout`；后台启动 3s 后 kill
     GOSSLAN_AUTOSTART=1 "$BIN" --instance 2 >"$LOG2" 2>&1 &
     PID=$!
+    track "$PID"
     sleep 3
     kill "$PID" 2>/dev/null
     wait "$PID" 2>/dev/null
@@ -104,6 +123,7 @@ echo "  当前配置: $CONFIG"
 echo "==> 先启实例2（被拨号侧，被动方需先监听）"
 GOSSLAN_AUTOSTART=1 "$BIN" --instance 2 >"$LOG2" 2>&1 &
 INST2_PID=$!
+track "$INST2_PID"
 echo "  实例2 PID=$INST2_PID"
 
 # 等实例2 进入监听（看日志：尝试拨号前的沉默期通常 <2s）
@@ -112,6 +132,7 @@ sleep 2
 echo "==> 启动实例1（拨号侧，配置「无 device_id」走身份未知分支）"
 GOSSLAN_AUTOSTART=1 "$BIN" --instance 1 >"$LOG1" 2>&1 &
 INST1_PID=$!
+track "$INST1_PID"
 echo "  实例1 PID=$INST1_PID"
 
 # 让拨号 10s 周期 + 首轮 5s 超时 + 几轮重试都能跑完

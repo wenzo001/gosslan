@@ -36,10 +36,28 @@ FAIL=0
 pass() { echo "  ✅ $1"; PASS=$((PASS+1)); }
 fail() { echo "  ❌ $1"; FAIL=$((FAIL+1)); }
 
-cleanup() {
-    pkill -f "target/debug/gosslan" 2>/dev/null
+# 【防误杀】只杀**本脚本起过的**实例，按精确 PID + 可执行路径校验：
+# 旧写法 `pkill -f` 按命令行串匹配，会把用户手开的实例一起杀掉 ——
+# 那本身就会造成"闪退"的错觉（闪退取证第 3 项；口径同 verify-startup-error.mjs）。
+PIDFILE=/tmp/gosslan-t3.pids
+TRACKED_PIDS=""
+kill_tracked() {
+    local pid
+    for pid in $TRACKED_PIDS $(cat "$PIDFILE" 2>/dev/null); do
+        if kill -0 "$pid" 2>/dev/null; then
+            if ps -p "$pid" -o args= 2>/dev/null | grep -qF "$BIN"; then
+                pkill -P "$pid" 2>/dev/null || true
+                kill "$pid" 2>/dev/null || true
+                wait "$pid" 2>/dev/null || true
+            fi
+        fi
+    done
+    rm -f "$PIDFILE"
+    TRACKED_PIDS=""
     sleep 0.5
 }
+track() { TRACKED_PIDS="$TRACKED_PIDS $1"; echo "$1" >> "$PIDFILE"; }
+cleanup() { kill_tracked; }
 trap cleanup EXIT
 
 command -v sqlite3 >/dev/null 2>&1 || { echo "[错误] 需要 sqlite3"; exit 2; }
@@ -56,6 +74,7 @@ init_db() {
     if [ ! -f "$db" ]; then
         GOSSLAN_AUTOSTART=1 "$BIN" --instance "$inst" >/dev/null 2>&1 &
         local pid=$!
+        track "$pid"
         sleep 3
         kill "$pid" 2>/dev/null
         wait "$pid" 2>/dev/null
@@ -81,12 +100,15 @@ echo "  ✓ 链式配置完成：A→B，B→A+C，C→B"
 echo "==> 启动 B（中间节点）→ A → C"
 GOSSLAN_AUTOSTART=1 "$BIN" --instance 2 >"$LOG2" 2>&1 &
 PID_B=$!
+track "$PID_B"
 sleep 1
 GOSSLAN_AUTOSTART=1 "$BIN" --instance 1 >"$LOG1" 2>&1 &
 PID_A=$!
+track "$PID_A"
 sleep 1
 GOSSLAN_AUTOSTART=1 "$BIN" --instance 3 >"$LOG3" 2>&1 &
 PID_C=$!
+track "$PID_C"
 
 echo "==> 等待 ${WAIT_SECONDS}s（连接建立 + Presence 周期广播 + fan-out 跨跳）"
 sleep "$WAIT_SECONDS"

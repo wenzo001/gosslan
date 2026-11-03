@@ -32,8 +32,31 @@ command -v sqlite3 >/dev/null 2>&1 || { echo "[错误] 需要 sqlite3"; exit 2; 
 [ -x "$BIN" ] || { echo "[错误] 未找到 ${BIN}，请先: cd src-tauri && cargo build"; exit 2; }
 [ -x "$PEER" ] || { echo "[错误] 未找到 ${PEER}，请先: cd src-tauri && cargo build --example e2e_peer"; exit 2; }
 
-echo "==> [1/5] 清理残留实例"
-pkill -f "target/debug/gosslan" 2>/dev/null
+# 【防误杀】只杀**本脚本起过的**实例，按精确 PID + 可执行路径校验：
+# 旧写法 `pkill -f "target/debug/gosslan"` 按命令行串匹配，会把用户手开的实例
+# 一起杀掉 —— 那本身就会造成"闪退"的错觉（闪退取证第 3 项；
+# 口径同 verify-startup-error.mjs「只 kill 自己 spawn 的 PID，不按名字杀进程」）。
+PIDFILE=/tmp/gosslan-e2e-dev.pids
+TRACKED_PIDS=""
+kill_tracked() {
+  local pid
+  for pid in $TRACKED_PIDS $(cat "$PIDFILE" 2>/dev/null); do
+    if kill -0 "$pid" 2>/dev/null; then
+      # 进程的可执行确实是本仓二进制才杀（防 PID 被复用后杀错人）
+      if ps -p "$pid" -o args= 2>/dev/null | grep -qF "$BIN"; then
+        pkill -P "$pid" 2>/dev/null || true
+        kill "$pid" 2>/dev/null || true
+        wait "$pid" 2>/dev/null || true
+      fi
+    fi
+  done
+  rm -f "$PIDFILE"
+  TRACKED_PIDS=""
+}
+track() { TRACKED_PIDS="$TRACKED_PIDS $1"; echo "$1" >> "$PIDFILE"; }
+
+echo "==> [1/5] 清理残留实例（仅本脚本上一轮起的，按 PID 精确校验）"
+kill_tracked
 sleep 1
 
 echo "==> [2/5] 准备共享目录与测试文件"
@@ -71,15 +94,12 @@ echo "==> [4/5] 清理上一轮 e2e-peer 身份绑定 + 启动实例 1（GOSSLAN
 sqlite3 "$DB" "DELETE FROM friends WHERE device_id='e2e-peer';" >/dev/null 2>&1
 GOSSLAN_AUTOSTART=1 "$BIN" --instance 1 >/tmp/gosslan-dev.log 2>&1 &
 APP_PID=$!
+track "$APP_PID"
 # 失败/中断/任何非正常退出都要带走自己起的实例（含直接子进程），不只是成功路径那一次 kill。
 # --keep 是显式豁免（让人留着现场）。SC-P2-06。
 cleanup_app() {
   [ "${KEEP:-}" = "--keep" ] && return 0
-  if [ -n "${APP_PID:-}" ] && kill -0 "$APP_PID" 2>/dev/null; then
-    pkill -P "$APP_PID" 2>/dev/null || true
-    kill "$APP_PID" 2>/dev/null || true
-    wait "$APP_PID" 2>/dev/null || true
-  fi
+  kill_tracked
 }
 trap cleanup_app EXIT
 READY=0
