@@ -109,6 +109,10 @@ const B6_CASES: &[(&str, &str, &str)] = &[
     ("GROUP_IMAGE_PASTE_ONLY", "commands/group_todo_media.rs", "只支持粘贴图片"),
     // ── B6 第五批：收藏（本笔）─────────────────────────────────────────
     ("FAVORITE_EXPORT_PATH_EMPTY", "commands/favorites.rs", "导出路径为空"),
+    // ── B6 第六批：设置/网络（本笔）───────────────────────────────────
+    ("RELAY_ENDPOINT_FORMAT_INVALID", "commands/relay.rs", "地址格式应为 ip 或 ip:port，收到：{trimmed}"),
+    ("RELAY_TOKEN_TOO_LONG", "commands/relay.rs", "访问口令过长（{} 字符，上限 {} 字符）"),
+    ("ROUTED_IPV6_UNSUPPORTED", "commands/routed.rs", "暂不支持 IPv6 地址（当前 TCP 监听仅 IPv4）。请填写 IPv4，例如 100.64.0.1"),
 ];
 
 /// human 是下层原话、没有字面量的触发点：只守"码真的挂在这里"，
@@ -116,6 +120,13 @@ const B6_CASES: &[(&str, &str, &str)] = &[
 const B6_DYNAMIC_HUMAN: &[(&str, &str)] = &[
     ("FILE_NOT_FOUND", "commands/files.rs"), // canonicalize 的 OS 原话
     ("TRANSPORT_START_FAILED", "commands/channel.rs"),
+    ("CHANNEL_CACHE_CLEAN_FAILED", "commands/channel.rs"), // task join 的原话
+    ("ROUTED_ENDPOINT_FORMAT_INVALID", "commands/routed.rs"),
+    // 中继配置读取：地址/口令两处带的是底层读库原话，且同码两处 ⇒ 只守码挂在这里
+    ("RELAY_CONFIG_READ_FAILED", "commands/relay.rs"),
+    // 系统通知：权限被限制 / 发送失败的原话都来自平台侧，不能改写成固定文案
+    ("NOTIFY_PERMISSION_DENIED", "commands/network.rs"),
+    ("NOTIFY_SEND_FAILED", "commands/network.rs"),
 ];
 
 /// B6 白名单命令的"未带码 return Err"存量基线（只减不增）。
@@ -149,6 +160,15 @@ const B6_COMMAND_UNCODED_BASELINE: &[(&str, &str, usize)] = &[
     ("channel.rs", "set_channel_enabled", 0),
     ("helpers.rs", "copy_file_to_clipboard", 0),
     ("helpers.rs", "save_media_as", 3),
+    // B6 第六批：设置/网络（命令名与 human 同上表；现在都是 0，锁住不回涨）
+    ("network.rs", "focus_window", 0),
+    ("network.rs", "send_test_notification", 0),
+    ("relay.rs", "probe_relay_server", 0),
+    ("relay.rs", "check_relay_server", 0),
+    ("relay.rs", "get_relay_config", 0),
+    ("relay.rs", "save_relay_config", 0),
+    ("routed.rs", "add_routed_endpoint", 0),
+    ("routed.rs", "remove_routed_endpoint", 0),
 ];
 
 fn read_src(rel: &str) -> String {

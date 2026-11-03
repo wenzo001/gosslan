@@ -41,15 +41,24 @@ pub const RELAY_TOKEN_MAX_LEN: usize = 128;
 pub fn normalize_relay_server(input: &str) -> Result<String, String> {
     let trimmed = input.trim();
     if trimmed.is_empty() {
-        return Err("请填写中转服务器地址，例如 203.0.113.10:59993".to_string());
+        return Err(crate::error_codes::coded(
+            crate::error_codes::RELAY_HOST_REQUIRED,
+            "请填写中转服务器地址，例如 203.0.113.10:59993",
+        ));
     }
     let Some(addr) = parse_endpoint_addr_on(trimmed, RELAY_DEFAULT_PORT) else {
-        return Err(format!("地址格式应为 ip 或 ip:port，收到：{trimmed}"));
+        return Err(crate::error_codes::coded(
+            crate::error_codes::RELAY_ENDPOINT_FORMAT_INVALID,
+            format!("地址格式应为 ip 或 ip:port，收到：{trimmed}"),
+        ));
     };
     if addr.is_ipv6() {
         // 与 routed 同一判据：TCP 监听侧只绑 IPv4，IPv6 拨出去也连不上。
         // 当场拒绝好过"存下来了但永远连不上"。
-        return Err("暂不支持 IPv6 地址（当前 TCP 监听仅 IPv4）。请填写 IPv4，例如 203.0.113.10:59993".to_string());
+        return Err(crate::error_codes::coded(
+            crate::error_codes::RELAY_IPV6_UNSUPPORTED,
+            "暂不支持 IPv6 地址（当前 TCP 监听仅 IPv4）。请填写 IPv4，例如 203.0.113.10:59993",
+        ));
     }
     Ok(addr.to_string())
 }
@@ -59,16 +68,25 @@ pub fn normalize_relay_server(input: &str) -> Result<String, String> {
 pub fn validate_relay_token(input: &str) -> Result<String, String> {
     let trimmed = input.trim();
     if trimmed.is_empty() {
-        return Err("请填写服务器上的访问口令（部署时设置的 TOKEN）".to_string());
+        return Err(crate::error_codes::coded(
+            crate::error_codes::RELAY_TOKEN_REQUIRED,
+            "请填写服务器上的访问口令（部署时设置的 TOKEN）",
+        ));
     }
     if trimmed.chars().any(|c| c.is_whitespace()) {
-        return Err("访问口令不能包含空格或换行".to_string());
+        return Err(crate::error_codes::coded(
+            crate::error_codes::RELAY_TOKEN_INVALID,
+            "访问口令不能包含空格或换行",
+        ));
     }
     if trimmed.len() > RELAY_TOKEN_MAX_LEN {
-        return Err(format!(
-            "访问口令过长（{} 字符，上限 {} 字符）",
-            trimmed.len(),
-            RELAY_TOKEN_MAX_LEN
+        return Err(crate::error_codes::coded(
+            crate::error_codes::RELAY_TOKEN_TOO_LONG,
+            format!(
+                "访问口令过长（{} 字符，上限 {} 字符）",
+                trimmed.len(),
+                RELAY_TOKEN_MAX_LEN
+            ),
         ));
     }
     Ok(trimmed.to_string())
@@ -345,7 +363,10 @@ pub async fn get_relay_config(state: State<'_, Arc<AppState>>) -> Result<RelayCo
                             format!("code=RELAY_CONFIG_READ_FAILED 中继地址读取失败，上抛给界面：{e}"),
                         );
                     }
-                    return Err(format!("中继地址读不出来：{e}"));
+                    return Err(crate::error_codes::coded(
+                        crate::error_codes::RELAY_CONFIG_READ_FAILED,
+                        format!("中继地址读不出来：{e}"),
+                    ));
                 }
             },
             token: match db::get_setting_checked(&dbc, RELAY_TOKEN_KEY) {
@@ -357,7 +378,10 @@ pub async fn get_relay_config(state: State<'_, Arc<AppState>>) -> Result<RelayCo
                             format!("code=RELAY_CONFIG_READ_FAILED 中继令牌读取失败，上抛给界面：{e}"),
                         );
                     }
-                    return Err(format!("中继令牌读不出来：{e}"));
+                    return Err(crate::error_codes::coded(
+                        crate::error_codes::RELAY_CONFIG_READ_FAILED,
+                        format!("中继令牌读不出来：{e}"),
+                    ));
                 }
             },
         })

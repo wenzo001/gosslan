@@ -122,6 +122,19 @@ const CODE_RULES: Record<string, string> = {
   GROUP_IMAGE_EMPTY: "errors.rule.groupImageEmpty",
   GROUP_IMAGE_PASTE_ONLY: "errors.rule.groupImagePasteOnly",
   FAVORITE_EXPORT_PATH_EMPTY: "errors.rule.favoriteExportPathEmpty",
+  MAIN_WINDOW_MISSING: "errors.rule.mainWindowMissing",
+  RELAY_HOST_REQUIRED: "errors.rule.relayHostRequired",
+  RELAY_IPV6_UNSUPPORTED: "errors.rule.relayIpv6Unsupported",
+  RELAY_TOKEN_REQUIRED: "errors.rule.relayTokenRequired",
+  RELAY_TOKEN_INVALID: "errors.rule.relayTokenInvalid",
+  RELAY_TOKEN_TOO_LONG: "errors.rule.relayTokenTooLong",
+  RELAY_ENDPOINT_FORMAT_INVALID: "errors.rule.relayEndpointFormatInvalid",
+  RELAY_CONFIG_READ_FAILED: "errors.rule.relayConfigReadFailed",
+  ROUTED_ENDPOINT_FORMAT_INVALID: "errors.rule.routedEndpointFormatInvalid",
+  ROUTED_IPV6_UNSUPPORTED: "errors.rule.routedIpv6Unsupported",
+  NOTIFY_PERMISSION_DENIED: "errors.rule.notifyPermissionDenied",
+  NOTIFY_SEND_FAILED: "errors.rule.notifySendFailed",
+  CHANNEL_CACHE_CLEAN_FAILED: "errors.rule.channelCacheCleanFailed",
 };
 
 /** 后端 `error_codes::coded()` 的形状：`code=<大写蛇形> 给人看的那句话`。 */

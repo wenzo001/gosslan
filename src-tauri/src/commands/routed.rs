@@ -19,12 +19,16 @@ fn normalize_routed_address(input: &str) -> Result<String, String> {
     // 解析（含「裸 IP 补标准端口」）由 `parse_endpoint_addr` 单点负责 ——
     // 拨号侧走的是同一个实现，避免两条路径行为不一致。
     let Some(addr) = parse_endpoint_addr(trimmed) else {
-        return Err(format!("地址格式应为 ip 或 ip:port，收到：{trimmed}"));
+        return Err(crate::error_codes::coded(
+            crate::error_codes::ROUTED_ENDPOINT_FORMAT_INVALID,
+            &format!("地址格式应为 ip 或 ip:port，收到：{trimmed}"),
+        ));
     };
     if addr.is_ipv6() {
-        return Err(
-            "暂不支持 IPv6 地址（当前 TCP 监听仅 IPv4）。请填写 IPv4，例如 100.64.0.1".to_string(),
-        );
+        return Err(crate::error_codes::coded(
+            crate::error_codes::ROUTED_IPV6_UNSUPPORTED,
+            "暂不支持 IPv6 地址（当前 TCP 监听仅 IPv4）。请填写 IPv4，例如 100.64.0.1",
+        ));
     }
     // 规范化后再存储：add / remove 比较的是同一个字符串，避免「加进去了却删不掉」
     Ok(addr.to_string())
