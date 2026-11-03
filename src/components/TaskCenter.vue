@@ -16,6 +16,7 @@ import {
 import { clampProgress } from "@/utils/transferSummary";
 import { blockedReasonKey } from "@/utils/transferState";
 import { cancelOutcome, fileCancelKey, messageCancelNotice } from "@/utils/cancelFeedback";
+import { fileFailReasonText } from "@/utils/fileFailReason";
 
 /**
  * 统一后台任务中心（负责人 2026-10-23 提的那件："所有有进度、有目标、有完成态的任务都能看见，
@@ -143,6 +144,7 @@ const actionLabel: Record<OperationAction, string> = {
   cancel_update: "task.cancel",
   cancel_content: "task.cancel",
   retry_content: "task.retryNow",
+  resend_message: "task.resendMessage",
   sync_history_now: "task.syncNow",
   cancel_history: "task.cancel",
   open_conversation: "task.openChat",
@@ -157,6 +159,7 @@ async function runAction(row: OperationRow, action: OperationAction) {
     else if (action === "cancel_update") await cancelUpdate();
     else if (action === "cancel_content") await cancelContent(row);
     else if (action === "retry_content") await retryContent(row);
+    else if (action === "resend_message") await resendMessage(row);
     else if (action === "sync_history_now") await chat.syncGroupHistoryNow(row.id.slice("group:".length));
     else if (action === "cancel_history") await chat.cancelGroupHistory(row.id.slice("group:".length));
     else if (action === "open_conversation") await openConversation(row);
@@ -212,6 +215,22 @@ async function retryContent(row: OperationRow) {
   }
   const ok = await api.requestContentByCid(src.peerId, src.cid, src.name, src.size);
   app.toast(t(ok ? "msg.refetchRequested" : "msg.refetchUnsupported"), ok ? "info" : "error");
+  await chat.refreshTransfers();
+}
+
+/**
+ * 重发一条**已经判死的静默动作**（表情回应 / 撤回，5.16.92）。
+ *
+ * 这两种 kind 不进时间线，失败后没有气泡可点 ⇒ 任务中心是唯一入口。命令返回的
+ * `status` 由后端说了算（对方仍然不支持时会再次判死），所以这里只刷新快照、
+ * 不猜结论；再次判死时用 `fail_code` 的同一张人话表说原因。
+ */
+async function resendMessage(row: OperationRow) {
+  if (!row.convId) return;
+  const rec = await api.resendMessage(row.convId, row.id);
+  if (rec.status === "failed" && rec.fail_code) {
+    app.toast(fileFailReasonText(rec.fail_code, t), "error");
+  }
   await chat.refreshTransfers();
 }
 

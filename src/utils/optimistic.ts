@@ -23,6 +23,25 @@
 
 export type SettleState = "pending" | "succeeded" | "failed";
 
+/**
+ * 已读回执的每会话序号（5.16.92 从 store 闭包里抽出来）。
+ *
+ * 同一会话可能有好几次并发 `markRead`（打开会话 / 去抖 / 通知动作 / 回前台）。
+ * 只有**最新一次**的失败允许回滚未读：更早那次的失败已被后来的尝试取代，
+ * 回滚它会把后来清掉的红点又点亮 —— 这是上一批实测到的乱序。
+ *
+ * 抽成纯函数有两个原因：store 里那套 Map 无法在 `node --test` 里直接跑；而且
+ * 「谁是最后一次」这个判据不该和 pinia 的状态混在一起。
+ */
+export function nextReadSeq(current: number | undefined): number {
+  return (current ?? 0) + 1;
+}
+
+/** 这次回执是不是该会话的**最新一次**（只有它才有资格清理槽位/回滚）。 */
+export function isLatestReadSeq(current: number | undefined, seq: number): boolean {
+  return current === seq;
+}
+
 /** 真实结果推进。幂等；`succeeded` 是吸收态。 */
 export function settle(state: SettleState, outcome: "succeeded" | "failed"): SettleState {
   if (state === "succeeded") return "succeeded";

@@ -87,6 +87,22 @@ pub fn message_exists(conn: &Connection, msg_id: &str) -> bool {
     .is_some()
 }
 
+/// 一条消息的业务 kind（补发期能力协商要它，5.16.92）。
+///
+/// 行不存在、或测试用的最小库没有 `kind` 列，都返回 `None` —— 调用方按"不需要能力位"
+/// 放行。**读不到 kind 绝不能成为判死或删行的理由**：那会把一条本来能发的消息
+/// 悄悄变成失败。
+pub fn message_kind(conn: &Connection, msg_id: &str) -> Option<String> {
+    conn.query_row(
+        "SELECT kind FROM messages WHERE msg_id = ?1",
+        params![msg_id],
+        |r| r.get(0),
+    )
+    .optional()
+    .ok()
+    .flatten()
+}
+
 pub fn count_messages(conn: &Connection, conv_id: &str) -> i64 {
     conn.query_row(
         "SELECT COUNT(*) FROM messages WHERE conv_id = ?1",
@@ -282,6 +298,12 @@ pub struct PendingMessageOp {
     /// 群消息：已经至少有一个成员确认收到（消息状态 delivered/read），但队列里还有人。
     /// 界面据此把状态写成「部分成员已收到」，而不是泛泛的「排队中」。
     pub some_delivered: bool,
+    /// 这次列出的是一行**已经判死**的静默动作（队列里没有它，所以 `can_cancel` 恒 false）。
+    /// 静默 kind（表情回应 / 撤回）不进时间线，失败后没有气泡可显示 —— 任务中心是它们
+    /// 唯一的可见处。`failed` 与 `fail_code` 就是那条行的"为什么"和"能不能重发"。
+    pub failed: bool,
+    /// `messages.fail_code`；队列里的行恒为 `None`（它们还没判死）。
+    pub fail_code: Option<String>,
 }
 
 /// 一次读取的条数上限：队列行数本身有界（离线保留 7 天），这个数只是防止
@@ -360,6 +382,8 @@ pub fn list_pending_message_operations(
             // 后端取消会回 NotFound，界面不该给一颗注定失败的按钮。
             can_cancel: status.is_some(),
             some_delivered: false,
+            failed: false,
+            fail_code: None,
         });
     }
 
@@ -411,6 +435,55 @@ pub fn list_pending_message_operations(
             // 有 pending 行且消息行存在 ⇒ 后端可以取消剩余成员。
             can_cancel: status.is_some(),
             some_delivered: delivered > 0,
+            failed: false,
+            fail_code: None,
+        });
+    }
+
+    // 第三路：**已经判死、且没有气泡可显示**的静默动作（表情回应 / 撤回）。
+    //
+    // 为什么必须单独列：这两种 kind 不进时间线（`isRenderedInTimeline` 为 false），
+    // 队列行删掉之后界面上一个字符都不剩 —— 用户点下去的东西"消失"了，既看不到失败
+    // 也看不到原因。任务中心是它们唯一的可见处。只收 `fail_code` 非空的行：没有码的失败
+    // 说不出为什么，列出来只会多一行点不动的任务（与上面那两条查询同一口径）。
+    // 保留窗口与离线队列一致（7 天），避免把一个月前的一次失败永远挂在面板上。
+    let mut failed = conn.prepare(
+        "SELECT msg_id, conv_id, kind, substr(content, 1, ?2), ts, fail_code
+         FROM messages
+         WHERE status = 'failed'
+           AND kind IN ('reaction', 'recall')
+           AND fail_code IS NOT NULL
+           AND conv_id NOT LIKE 'group:%'
+           AND ts >= ?3
+         ORDER BY ts DESC LIMIT ?1",
+    )?;
+    let cutoff = now_ms() - OUTBOX_OFFLINE_HOLD_MS;
+    let failed_rows = failed.query_map(params![limit, PREVIEW_CHAR_WINDOW, cutoff], |r| {
+        Ok((
+            r.get::<_, String>(0)?,
+            r.get::<_, String>(1)?,
+            r.get::<_, String>(2)?,
+            r.get::<_, Option<String>>(3)?,
+            r.get::<_, i64>(4)?,
+            r.get::<_, String>(5)?,
+        ))
+    })?;
+    for row in failed_rows.flatten() {
+        let (msg_id, peer_id, kind, content, ts, fail_code) = row;
+        let preview = text_preview(&kind, content.as_deref());
+        ops.push(PendingMessageOp {
+            msg_id,
+            peer_id: Some(peer_id),
+            group_id: None,
+            kind,
+            waiting_for: 0,
+            created_at: ts,
+            preview,
+            peer_offline: false,
+            can_cancel: false,
+            some_delivered: false,
+            failed: true,
+            fail_code: Some(fail_code),
         });
     }
 
@@ -754,6 +827,31 @@ pub fn finalize_expired_message(
     }
     tx.commit()?;
     Ok(())
+}
+
+/// 能力协商判死：对端**已经声明**不支持这个 kind ⇒ 落终态并写原因码（5.16.92）。
+///
+/// 与 `finalize_expired_message` **同一个形状**（同一事务：置失败 + 删队列行），
+/// 只是码由调用方给（`SEND_KIND_UNSUPPORTED`）。之所以必须原子：两步分开写会留下
+/// 「界面已判失败、队列行还在」⇒ `outbox_flush` 继续补发，对方确实收到那条它根本
+/// 解析不了的内容，界面却显示失败 —— 这正是本仓反复付学费的半状态。
+///
+/// 返回 `false` = 这一行已被别的路径推进到终态（取消/送达），本次不改写任何东西。
+pub fn finalize_blocked_message(
+    conn: &Connection,
+    msg_id: &str,
+    fail_code: &str,
+    group: bool,
+) -> Result<bool> {
+    let tx = conn.unchecked_transaction()?;
+    let changed = set_message_failed(&tx, msg_id, fail_code)?;
+    if group {
+        delete_group_outbox_by_msg_id(&tx, msg_id)?;
+    } else {
+        delete_outbox_by_msg_id(&tx, msg_id)?;
+    }
+    tx.commit()?;
+    Ok(changed > 0)
 }
 
 /// 取消一条**还在补发队列里**的消息（用户按「取消发送」）。
@@ -1625,6 +1723,121 @@ mod fail_code_tests {
         assert_eq!(rows, 0, "同一事务里删行这一步不许因为加列而漏掉");
     }
 
+    /// 能力协商判死（5.16.92）：置 failed + 写具名码 + 删队列行，**同一事务**。
+    ///
+    /// 分开写会留下「界面已判失败、队列行还在」⇒ flush 继续补发，对方确实收到那条它
+    /// 解析不了的内容，界面却显示失败 —— 半状态比失败本身更坏。
+    #[test]
+    fn blocked_settlement_writes_the_named_code_and_closes_the_queue_row() {
+        let conn = mem();
+        seed(&conn, "m5", "reaction", "sending");
+        conn.execute(
+            "INSERT INTO outbox(msg_id, peer_id, payload, created_at) VALUES('m5','peer','{}',1)",
+            [],
+        )
+        .unwrap();
+
+        assert!(finalize_blocked_message(
+            &conn,
+            "m5",
+            error_codes::SEND_KIND_UNSUPPORTED,
+            false
+        )
+        .unwrap());
+        assert_eq!(
+            pair(&conn, "m5"),
+            (
+                "failed".to_string(),
+                Some(error_codes::SEND_KIND_UNSUPPORTED.to_string())
+            ),
+        );
+        let rows: i64 = conn
+            .query_row("SELECT COUNT(*) FROM outbox WHERE msg_id = 'm5'", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(rows, 0, "判死后队列行必须同一事务删掉，否则 flush 会继续硬发");
+    }
+
+    /// 对偶：已经送达的行不许被"能力判死"改写（`WHERE status NOT IN (...)` 的硬终态语义
+    /// 不为这一批让步）。返回 false 表示"这条已经由别的路径定了，本路径什么都不写"。
+    #[test]
+    fn blocked_settlement_cannot_rewrite_an_already_terminal_row() {
+        let conn = mem();
+        seed(&conn, "m6", "reaction", "delivered");
+        assert!(!finalize_blocked_message(
+            &conn,
+            "m6",
+            error_codes::SEND_KIND_UNSUPPORTED,
+            false
+        )
+        .unwrap());
+        assert_eq!(
+            pair(&conn, "m6"),
+            ("delivered".to_string(), None),
+            "送达是既成事实，判死不许把它推回 failed 或写上一个假原因"
+        );
+    }
+
+    /// 任务中心第三路（5.16.92）：判死的**静默动作**必须在快照里出现。
+    /// 表情回应 / 撤回不进时间线，队列行删掉后界面上一个字符都不剩 —— 没有这一路，
+    /// "失败可见且可重发"在它们身上就只是一句话。
+    #[test]
+    fn failed_silent_ops_are_listed_for_the_task_center() {
+        let conn = mem();
+        conn.execute(
+            "INSERT INTO messages(msg_id, conv_id, sender_id, receiver_id, kind, content, ts, seq, status)
+             VALUES('r1','peer','me','peer','reaction','{}',?1,1,'sending')",
+            params![now_ms()],
+        )
+        .unwrap();
+        finalize_blocked_message(&conn, "r1", error_codes::SEND_KIND_UNSUPPORTED, false).unwrap();
+
+        let ops = list_pending_message_operations(&conn, 100).unwrap();
+        let row = ops
+            .iter()
+            .find(|o| o.msg_id == "r1")
+            .expect("判死的静默动作必须进任务中心快照");
+        assert!(row.failed, "这一行必须标记为 failed，否则界面会把它说成排队中");
+        assert_eq!(
+            row.fail_code.as_deref(),
+            Some(error_codes::SEND_KIND_UNSUPPORTED),
+            "原因码要一起带出来，界面才能说人话"
+        );
+        assert!(!row.can_cancel, "队列里已经没有它，取消按钮不该出现");
+    }
+
+    /// 重启恢复（5.16.92 要求 5）：待发行必须**落在 SQLite 里**，进程重启后还读得回来。
+    /// 这里用真实文件库前后各开一次连接，模拟两个进程 —— `:memory:` 证明不了这件事。
+    #[test]
+    fn queued_message_survives_a_process_restart() {
+        let dir = std::env::temp_dir().join(format!("gosslan-restart-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("restart.db");
+        let _ = std::fs::remove_file(&path);
+        {
+            let conn = Connection::open(&path).unwrap();
+            conn.execute_batch(crate::db::SCHEMA).unwrap();
+            seed(&conn, "q1", "reaction", "sending");
+            conn.execute(
+                "INSERT INTO outbox(msg_id, peer_id, payload, created_at) VALUES('q1','peer','{}',1)",
+                [],
+            )
+            .unwrap();
+        }
+        {
+            let conn = Connection::open(&path).unwrap();
+            let rows: i64 = conn
+                .query_row("SELECT COUNT(*) FROM outbox WHERE msg_id = 'q1'", [], |r| r.get(0))
+                .unwrap();
+            assert_eq!(rows, 1, "重启后待发行必须还在（否则只能在内存里假装能补发）");
+            let kind: String = conn
+                .query_row("SELECT kind FROM messages WHERE msg_id = 'q1'", [], |r| r.get(0))
+                .unwrap();
+            assert_eq!(kind, "reaction", "kind 也必须跨重启读得回来，flush 协商靠它");
+        }
+        let _ = std::fs::remove_file(&path);
+        let _ = std::fs::remove_dir(&dir);
+    }
+
     /// **四个读取口都要带上新列**（发送端与接收端是同一份规则的两半）：
     /// 漏任何一个，那条路径读回来的气泡就只能显示通用文案，而库里明明有原因。
     #[test]
@@ -1668,7 +1881,7 @@ mod fail_code_tests {
     fn message_fail_codes_are_stable_identifiers() {
         assert_eq!(
             error_codes::MESSAGE_FAIL_CODES.len(),
-            16,
+            18,
             "档位变了要同步三处：前端表 `src/utils/fileFailReason.ts`、中英词典、以及这条长度钉"
             // 5.15.31 加了 `FILE_SEND_EXPIRED` / `FILE_SEND_GIVEUP`（原先只活在事件载荷里，
             // 现在也会落进这一列，`FileJobEnd::fail_code`）；5.15.32 加了群文件那六格；

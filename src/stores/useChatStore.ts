@@ -40,6 +40,8 @@ import { progressAdvanced, stallFlagAlive } from "@/utils/transferProgressWatch"
 import {
   canApplyOptimisticFailure,
   findByMsgId,
+  isLatestReadSeq,
+  nextReadSeq,
   pendingRollbackIndex,
   rollbackUnread,
   summaryOwnedByProjection,
@@ -168,6 +170,8 @@ const LAST_CONV_KEY = "gosslan.lastConv";
 // | 表情回应 | 不可乐观 | 回应是给对方看的，本地先画等于伪造 |
 // | 强提醒 | 不可乐观 | 对方是否收到以服务端/推送为真 |
 // | 窗口抖动 | 不可乐观 | 同上 |
+// | 表情回应（离线） | 先入队待重试 | **5.16.92**：能力未知/离线先落 outbox（`sending`）；对端声明不支持才判死（`SEND_KIND_UNSUPPORTED`），任务中心可见可重发 |
+// | 撤回（离线） | 不可乐观 + 先入队 | **5.16.92**：同上；本地删行不等于对方撤回，只在真正送达后由接收侧回执驱动 |
 // | 群公告 / 群设置 / 成员增删 / 转让 / 退群 | 不可乐观 | 群成员可见的状态，必须远端为真 |
 // | 群历史同步 | 先入队待重试 | 后端后台任务；本地只画"同步中"，进度来自事件 |
 // | 群待办（创建/认领/完成/删除） | 不可乐观 | 群可见任务，落定以服务端行为准 |
@@ -1270,16 +1274,16 @@ export const useChatStore = defineStore("chat", () => {
   const markReadSeq = new Map<string, number>();
   function sendReadReceipt(convId: string, alreadyClearedFrom?: number): Promise<void> {
     const previous = alreadyClearedFrom ?? clearUnreadLocally(convId);
-    const seq = (markReadSeq.get(convId) ?? 0) + 1;
+    const seq = nextReadSeq(markReadSeq.get(convId));
     markReadSeq.set(convId, seq);
     return api.markRead(convId).then(
       () => {
         // 成功：乐观清掉的就是真值。只有最新一次收尾才释放槽位（旧的让位给新的）。
-        if (markReadSeq.get(convId) === seq) markReadSeq.delete(convId);
+        if (isLatestReadSeq(markReadSeq.get(convId), seq)) markReadSeq.delete(convId);
       },
       (e) => {
         // 真实结果（失败）到达：只有最新一次允许回滚；迟到的失败直接丢弃。
-        if (markReadSeq.get(convId) !== seq) return;
+        if (!isLatestReadSeq(markReadSeq.get(convId), seq)) return;
         markReadSeq.delete(convId);
         const conv = conversations.value.find((c) => c.id === convId);
         if (conv && previous > 0) conv.unread = rollbackUnread(conv.unread, previous);
@@ -2713,7 +2717,13 @@ export const useChatStore = defineStore("chat", () => {
    * 消息可靠投递给一个好友"的唯一通路（outbox / E2EE / ack 全在那条上）。再加一条命令就是第二个家，
    * 而它管的那一半（可靠投递）会先腐烂。
    * 后端挡三件事：载荷畸形、对端版本吃不下这个 kind（INV-P24：老端会整帧丢 + 断链），
-   * 以及"静默 kind 不许刷会话预览"。前两者是 Err ⇒ 这里必须让调用点报错，不能吞。
+   * 以及"静默 kind 不许刷会话预览"。
+   *
+   * 5.16.92 起**能力不足不再当场 Err**：先写本地行与补发队列（`status` 仍是 `sending`），
+   * 对端能力未知时留在队列等上线，只有对端**亲口声明**不支持才落 `failed` +
+   * `SEND_KIND_UNSUPPORTED`。所以这里拿到的 `rec` 可能是 `sending`，也可能已经是
+   * `failed` —— 两种都要入账：静默 kind 不进时间线，任务中心才是它的可见处与重发入口。
+   * 只有真正的本地失败（写库失败 / 公钥缺失）才是 Err，交给调用点的 toast。
    */
   async function sendDmReaction(friendId: string, target: string, emoji: string, add: boolean) {
     const rec = await api.sendMessage(

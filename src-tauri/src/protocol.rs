@@ -297,10 +297,38 @@ pub fn kind_blocked_hint(kind: &str, peer_features: Option<u32>) -> String {
     match peer_features {
         Some(_) => kind_unsupported_hint(kind),
         None => format!(
-            "还不知道对方的 Gosslan 支持哪些内容类型，「{kind}」已停止发送。\
-             对方此刻不在线，或本机还没和它握过手 —— 这不代表它版本旧。\
-             等对方上线、消息恢复能收发之后，用那条失败消息上的「重新发送」再发一次就行。"
+            "还不知道对方的 Gosslan 支持哪些内容类型，「{kind}」先存在本机待发队列里。\
+             这不是失败、也不代表它版本旧 —— 对方此刻不在线，或本机还没和它握过手。\
+             等对方上线、交换过能力信息后会自动补发；长时间发不出去时任务中心会写明原因，\
+             你也可以从那里重试。"
         ),
+    }
+}
+
+/// 补发期对"需要能力位的 kind"的**三态裁决**（唯一答案，发送入口与 flush 都问这一处）。
+///
+/// 与 `dm_allowed_by_features` 是同一个事实，但这里要把"等"和"放弃"分开 ——
+/// 1:1 门控从"写库前拒绝"改成"先入队、后协商"（5.16.92）之后，队列里躺着的那一行
+/// 必须由这条裁决决定命运：
+/// - `Hold`：对端从没交换过 Hello / 已离线（`None`）⇒ **保留队列行**，兑现
+///   「离线先入队、建链后补发」（INV-P04）。"不知道"绝不能成为删行的理由。
+/// - `Unsupported`：对端**自己声明过**没有这一位 ⇒ 再等也不会变，落终态并给具名码。
+/// - `Send`：可以直接投递。
+#[derive(Debug, PartialEq, Eq, Clone, Copy)]
+pub enum DeferredSend {
+    Send,
+    Hold,
+    Unsupported,
+}
+
+pub fn deferred_send_decision(kind: &str, peer_features: Option<u32>) -> DeferredSend {
+    if dm_required_features(kind) == 0 {
+        return DeferredSend::Send;
+    }
+    match peer_features {
+        None => DeferredSend::Hold,
+        Some(f) if dm_allowed_by_features(kind, f) => DeferredSend::Send,
+        Some(_) => DeferredSend::Unsupported,
     }
 }
 

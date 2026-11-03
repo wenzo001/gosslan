@@ -67,6 +67,13 @@ pub const SEND_ORPHAN_AT_START: &str = "SEND_ORPHAN_AT_START";
 pub const SEND_PEER_DELETED: &str = "SEND_PEER_DELETED";
 /// 群成员退群/被移出，这条群消息对该成员已无处可投、且没有别的成员还在等。
 pub const SEND_GROUP_MEMBER_GONE: &str = "SEND_GROUP_MEMBER_GONE";
+/// 对端**已经声明**不具备这个 kind 需要的能力位（1:1 能力协商判死，5.16.92）。
+/// 与 `SEND_RETRY_EXPIRED` 的区别：这一格不是"等太久"，是"再等也不会变"。
+/// 界面要给的下一步是"让对方升级客户端后再重发"，不是"等对方上线"。
+pub const SEND_KIND_UNSUPPORTED: &str = "SEND_KIND_UNSUPPORTED";
+/// 本机没有对端的 X25519 公钥（好友表与在线自报都缺）⇒ 连密文都造不出来。
+/// 与"对方离线"不同：离线好友的公钥通常已在好友表里，这一格说明这条关系从没握过手。
+pub const SEND_PEER_KEY_MISSING: &str = "SEND_PEER_KEY_MISSING";
 
 /// 文件单的两种"不是用户取消"的终态。**码只有一个出处**：这里。
 /// 同一对常量既写进 `messages.fail_code`（`FileJobEnd::fail_code`）也发进 `file-failed`
@@ -125,11 +132,13 @@ pub const FILE_RECEIVE_PLACE_FAILED: &str = "FILE_RECEIVE_PLACE_FAILED";
 
 /// 落进 `messages.fail_code` 的全部档位 —— **与前端那张文案表双向对账的分母**
 /// （`src/utils/fileFailReason.test.ts` 现读这里，两侧任何一侧多加一条都会红）。
-pub const MESSAGE_FAIL_CODES: [&str; 16] = [
+pub const MESSAGE_FAIL_CODES: [&str; 18] = [
     SEND_RETRY_EXPIRED,
     SEND_ORPHAN_AT_START,
     SEND_PEER_DELETED,
     SEND_GROUP_MEMBER_GONE,
+    SEND_KIND_UNSUPPORTED,
+    SEND_PEER_KEY_MISSING,
     FILE_SEND_EXPIRED,
     FILE_SEND_GIVEUP,
     GROUP_FILE_STALLED,

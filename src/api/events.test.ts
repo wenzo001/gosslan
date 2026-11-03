@@ -618,7 +618,14 @@ test("message-failed 的载荷必须是 MessageFailedInfo 结构（5.16.91）", 
       if (!p.includes("MessageFailedInfo")) bad.push(f);
     }
   }
-  assert.equal(sites, 2, `message-failed 应恰好两处（单聊 + 群），实际 ${sites} 个 ⇒ 解析器失效了？`);
+  // 5.16.92：从 2 处涨到 5 处 —— 清扫器两处（单聊 + 群）之外，能力协商判死也有三处
+  // （`send_message`、`resend_message`、`flush_outbox`）。这五处都必须带结构体载荷，
+  // 否则前端按 `{msg_id, fail_code}` 解包会静默拿到 undefined。
+  assert.equal(
+    sites,
+    5,
+    `message-failed 应恰好 5 处（清扫器两处 + 能力判死三处），实际 ${sites} 个 ⇒ 解析器失效了？`,
+  );
   assert.deepEqual(bad, [], "有 emit 点退回了非结构体载荷：前端按 {msg_id, fail_code} 解包会静默拿到 undefined");
 
   // 前端一侧：接口形状与载荷逐字对应（少一个字段 ⇒ 气泡原因恒为空）。

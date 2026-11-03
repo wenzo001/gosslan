@@ -98,6 +98,10 @@ const FILE_FAIL_REASON_KEYS: Record<string, string> = {
   SEND_ORPHAN_AT_START: "msg.fail.orphanAtStart",
   SEND_PEER_DELETED: "msg.fail.peerDeleted",
   SEND_GROUP_MEMBER_GONE: "msg.fail.groupMemberGone",
+  // 5.16.92 能力协商判死。与 `SEND_RETRY_EXPIRED` 分开：那一格是"等太久"，
+  // 这两格是"再等也不会变"（对端已声明不支持）与"从没握过手、造不出密文"。
+  SEND_KIND_UNSUPPORTED: "msg.fail.kindUnsupported",
+  SEND_PEER_KEY_MISSING: "msg.fail.peerKeyMissing",
   GROUP_FILE_STALLED: "msg.fail.groupFileStalled",
   GROUP_FILE_NO_CHUNK: "msg.fail.groupFileNoChunk",
   GROUP_FILE_DECRYPT_FAILED: "msg.fail.groupFileDecryptFailed",

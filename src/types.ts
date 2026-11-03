@@ -349,6 +349,13 @@ export interface PendingMessageOp {
   can_cancel: boolean;
   /** 群消息：已有成员确认收到（台账里的 delivered 行），但队列里还有人 ⇒ 说「部分成员已收到」。 */
   some_delivered: boolean;
+  /**
+   * 这一行已经判死（补发队列里已经没有它）。静默 kind（表情回应 / 撤回）不进时间线，
+   * 失败后没有气泡可显示 ⇒ 任务中心是唯一可见处；`fail_code` 就是那句"为什么"。
+   */
+  failed: boolean;
+  /** `messages.fail_code`，只在 `failed` 为真时有值；队列里的行是 `null`。 */
+  fail_code: string | null;
 }
 
 export interface FileProgress {

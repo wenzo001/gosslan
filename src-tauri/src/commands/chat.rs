@@ -697,27 +697,20 @@ pub async fn send_message(
     // 长度保护：text/code 等普通内容超限直接报错（UTF-8 安全，按字符数计）。
     let content = check_message_content(content)?;
 
-    // INV-P24 第 4 条：**不门控不许发**。老对端（v4.20.0 及更早）的 `ChatMessage.kind`
-    // 还是嵌套枚举，收到不认识的 kind 会**整帧丢掉** —— v4.22.34 只修了我们这一侧的容忍，
-    // 那边没有，所以只能由发送侧挡下来，并给用户一句能照着做的话。
-    // 判据只有 `protocol::dm_required_features` / `dm_allowed_by_features` 一处（1:1 侧它还额外
-    // 要求对端具备"能吃任意 wire kind"的声明位，见那两个函数的说明）；对端从没交换过 Hello 或已离线
-    // ⇒ 位图按 0 处理 = "不知道就当不支持"（宁可少发一条，也不要静默丢帧）。
-    // 但"不知道"与"它自己声明过不支持"要分开说：这张表是内存态、离线就被 sweep 回收，
-    // 所以缺条目绝大多数时候只意味着对方此刻不在线，把两种情况混成一句"版本较旧"是假指控
-    // （文案本身仍只住在 `protocol.rs`，这里只做选择）。
-    // 放在公钥探测**之前**：这条本来就不会发出去，不该再触发一次 who_has 探测白等 1.2s。
-    if crate::protocol::dm_required_features(&kind) != 0 {
-        let peer_features = s
-            .peer_content_features
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .get(&friend_id)
-            .copied();
-        if !crate::protocol::dm_allowed_by_features(&kind, peer_features.unwrap_or(0)) {
-            return Err(crate::protocol::kind_blocked_hint(&kind, peer_features));
-        }
-    }
+    // INV-P24 第 4 条（5.16.92 语义变更：**先入队、后协商**）。
+    // 老对端（v4.20.0 及更早）收到不认识的 kind 会整帧丢掉 ⇒ 我们仍然**不硬发**；
+    // 但不再在写库前 `return Err` —— 那会让用户点下去什么都没有：没有本地行、没有失败
+    // 气泡、也没有一个具名码。这里只算裁决：`Send` 照常投递；`Hold`（对端能力未知）
+    // 照常写库入队但**不投递**，等 Hello / flush 再协商；`Unsupported`（对端自己声明过
+    // 不支持）也先落库，落库后立即终态化并给 `SEND_KIND_UNSUPPORTED`。
+    // 判据只有 `protocol::deferred_send_decision` 一处（与 flush 共用）。
+    let peer_features = s
+        .peer_content_features
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .get(&friend_id)
+        .copied();
+    let deferred = crate::protocol::deferred_send_decision(&kind, peer_features);
 
     // 窗口抖动复用 remind 帧，但需要额外一位：老端不认 nudge，会把空 target 当普通强提醒。
     if kind == "remind" {
@@ -741,8 +734,11 @@ pub async fn send_message(
     // announce 落库（约 1.2s）后再查，仍缺失则报错指引。
     let pubkey = peer_x25519(s, &friend_id).await;
     let Some(pubkey) = pubkey else {
-        return Err(format!(
-            "尚未获取 {friend_id} 的公钥：对方可能离线或处于不同子网，请让对方上线后重试"
+        // 与"对方离线"分开：离线好友的公钥通常已在好友表里，这一格是**这条关系从没握过手**。
+        // 具名码让界面说"等对方上线一次再发"，而不是让用户去猜一句自由文本。
+        return Err(crate::error_codes::coded(
+            crate::error_codes::SEND_PEER_KEY_MISSING,
+            format!("尚未获取 {friend_id} 的公钥：对方可能离线或处于不同子网，请让对方上线后重试"),
         ));
     };
 
@@ -862,6 +858,64 @@ pub async fn send_message(
         }
     }
 
+    // 能力协商的两种"不发"结局：都必须发生在**写完队列之后**（先入队是这一版的本体）。
+    match deferred {
+        crate::protocol::DeferredSend::Unsupported => {
+            // 对端自己声明过不支持 ⇒ 再等也不会变：落终态 + 删行（同一事务），
+            // 并把具名码发给界面。react/recall 不进时间线，任务中心是它们唯一的可见处。
+            let finalized = {
+                let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());
+                db::finalize_blocked_message(
+                    &dbc,
+                    &msg_id,
+                    crate::error_codes::SEND_KIND_UNSUPPORTED,
+                    false,
+                )
+                .unwrap_or(false)
+            };
+            if finalized {
+                let _ = s.app.emit(
+                    "message-failed",
+                    &crate::network::transport::MessageFailedInfo {
+                        msg_id: msg_id.clone(),
+                        fail_code: crate::error_codes::SEND_KIND_UNSUPPORTED.to_string(),
+                    },
+                );
+            }
+            s.logger.warn(
+                "dispatch",
+                format!(
+                    "code=SEND_KIND_UNSUPPORTED kind={kind} peer={friend_id} msg_id={msg_id} action=failed"
+                ),
+            );
+            let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());
+            return db::get_message_record(&dbc, &msg_id).ok_or_else(|| {
+                crate::error_codes::coded(
+                    crate::error_codes::SEND_LOCAL_WRITE_FAILED,
+                    "消息写入后读不回来",
+                )
+            });
+        }
+        crate::protocol::DeferredSend::Hold => {
+            // 对端能力未知（离线 / 从没握手）：留在 outbox，等 Hello 或 flush 协商。
+            // **不投递** —— 宁可晚发，也不要让老端整帧丢掉（"先入队后协商"的安全边界）。
+            s.logger.info(
+                "dispatch",
+                format!(
+                    "code=SEND_DEFERRED kind={kind} peer={friend_id} msg_id={msg_id} reason=capability_pending"
+                ),
+            );
+            let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());
+            return db::get_message_record(&dbc, &msg_id).ok_or_else(|| {
+                crate::error_codes::coded(
+                    crate::error_codes::SEND_LOCAL_WRITE_FAILED,
+                    "消息写入后读不回来",
+                )
+            });
+        }
+        crate::protocol::DeferredSend::Send => {}
+    }
+
     // 先入队再投递（INV-003）：此前 broadcast 在插队之前，若心跳的 flush_outbox 正好
     // 落在这个窗口，它看不到 outbox 行 ⇒ 这一轮直发缺席 ⇒ Ack 要等下一个心跳（+5s）。
     // 定向投递：目标直连 → 只发它（精确，不再全网广播）；否则广播，靠中间节点按 target
@@ -968,8 +1022,10 @@ pub async fn resend_message(
         return Err("消息不属于该会话".to_string());
     }
     // 文件/图片的"重发"是**一次新的传输**（字节要重新跑），与文本族的原身份重投是两件事，
-    // 走 `send_file_auto` / `send_group_file`；撤回/渲染是控制事件，没有"重发"语义。
-    if matches!(msg.kind.as_str(), "file" | "image" | "recall" | "render") {
+    // 走 `send_file_auto` / `send_group_file`；渲染是控制事件，没有"重发"语义。
+    // 撤回（5.16.92 起）**可以**重发：它和其他 kind 一样先入队、按原身份补投，
+    // 判死之后用户也要能从任务中心再点一次（这是"失败可见且可重发"的一部分）。
+    if matches!(msg.kind.as_str(), "file" | "image" | "render") {
         return Err("这种消息不支持原地重发".to_string());
     }
     if !matches!(msg.status.as_str(), "failed" | "cancelled") {
@@ -979,8 +1035,9 @@ pub async fn resend_message(
     // ② 取钥（同一套逻辑，含探测与不一致告警）。
     let peer = conv_id.clone();
     let Some(pubkey) = peer_x25519(s, &peer).await else {
-        return Err(format!(
-            "尚未获取 {peer} 的公钥：对方可能离线或处于不同子网，请让对方上线后重试"
+        return Err(crate::error_codes::coded(
+            crate::error_codes::SEND_PEER_KEY_MISSING,
+            format!("尚未获取 {peer} 的公钥：对方可能离线或处于不同子网，请让对方上线后重试"),
         ));
     };
 
@@ -1034,7 +1091,57 @@ pub async fn resend_message(
         return Err("这条消息已经送达或状态已变，不能重发".to_string());
     }
 
-    // ⑤ 投递（与 `send_message` 同一条链路；失败不报错 —— outbox 兜底，flush 会补）。
+    // ⑤ 能力协商后再投递（与 `send_message` 同一条判据、同一份事实）。
+    // 重发**不改**这条消息的身份，所以裁决只影响"这一轮发不发 / 要不要落终态"：
+    // 未声明能力（离线）⇒ 留在队列等下次；已声明不支持 ⇒ 落终态并给具名码。
+    let peer_features = s
+        .peer_content_features
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .get(&peer)
+        .copied();
+    match crate::protocol::deferred_send_decision(&msg.kind, peer_features) {
+        crate::protocol::DeferredSend::Unsupported => {
+            let finalized = {
+                let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());
+                db::finalize_blocked_message(
+                    &dbc,
+                    &msg_id,
+                    crate::error_codes::SEND_KIND_UNSUPPORTED,
+                    false,
+                )
+                .unwrap_or(false)
+            };
+            if finalized {
+                let _ = s.app.emit(
+                    "message-failed",
+                    &crate::network::transport::MessageFailedInfo {
+                        msg_id: msg_id.clone(),
+                        fail_code: crate::error_codes::SEND_KIND_UNSUPPORTED.to_string(),
+                    },
+                );
+            }
+            s.logger.warn(
+                "dispatch",
+                format!("code=SEND_KIND_UNSUPPORTED msg_id={msg_id} peer={peer} action=failed"),
+            );
+            let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());
+            return db::get_message_record(&dbc, &msg_id).ok_or("重发后消息不见了".to_string());
+        }
+        crate::protocol::DeferredSend::Hold => {
+            s.logger.info(
+                "dispatch",
+                format!(
+                    "code=SEND_DEFERRED msg_id={msg_id} peer={peer} reason=capability_pending"
+                ),
+            );
+            let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());
+            return db::get_message_record(&dbc, &msg_id).ok_or("重发后消息不见了".to_string());
+        }
+        crate::protocol::DeferredSend::Send => {}
+    }
+
+    // ⑥ 投递（与 `send_message` 同一条链路；失败不报错 —— outbox 兜底，flush 会补）。
     let has = s.has_link(&peer).await;
     let try_ok = if has {
         try_send(s, &peer, &Message::Gossip { envelope: env }).await.is_ok()

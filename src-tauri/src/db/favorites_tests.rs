@@ -1082,7 +1082,7 @@ mod tests {
         .unwrap();
         let pending = list_outbox(&conn, "f1").unwrap();
         assert_eq!(pending.len(), 1);
-        assert!(pending[0].1.contains("enc1:old")); // 首行原样保留，由 flush 时重封
+        assert!(pending[0].2.contains("enc1:old")); // 首行原样保留，由 flush 时重封
                                                     // Ack 分支的删除路径（transport.rs 同构 SQL）
         conn.execute("DELETE FROM outbox WHERE msg_id = ?1", params!["m1"])
             .unwrap();

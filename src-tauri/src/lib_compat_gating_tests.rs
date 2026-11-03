@@ -54,21 +54,17 @@
         );
     }
 
-    /// INV-P24 第 4 条的**接线**：门控判据存在、唯一，1:1 发送路径真的问它，
-    /// 而且挡下时走的是三态文案入口（判据唯一 + 文案唯一是同一件事的两半）。
+    /// INV-P24 第 4 条（**5.16.92 语义变更：先入队、后协商**）。
     ///
-    /// 为什么不能只测判据函数：判据写得再对，发送点不调用 = 没有门控。这条守卫
-    /// 就是为了让"忘了接"这件事变成编译期之后立刻能看到的红。
-    /// 背景（本轮 RCA 查出来的真实现场，不是假想需求）：`MsgKind::Merge` 是 V1 期间
-    /// （`9b26006`）才加的，v4.8.2 / v4.18.10 / v4.20.0 三个已发布版本里没有这个变体 ——
-    /// 它们的 `ChatMessage.kind` 仍是枚举，收到 `kind:"merge"` 会整帧丢掉。
+    /// 这一条同时是**正控**：把发送口退回旧形状（写库前 `return Err(kind_blocked_hint(…))`）
+    /// 会让它红。旧形状的后果就是用户点下去"什么都没有"——没有本地行、没有失败气泡、
+    /// 没有具名码；这一批的全部意义就是消除那个"什么都没有"。
     ///
     /// 4.31.23 起 1:1 问的是 `dm_allowed_by_features`（那张表额外要求对端声明
-    /// "能吃任意 wire kind"），所以这里的锚点跟着换成那一个 —— **但只换锚点不算数**：
-    /// 下面同时钉住"1:1 不许绕过它去问全局那一位"，否则这条守卫会被"改回旧函数"
-    /// 这一种改法静默通过，而那条路会让 1:1 少掉一半判据。
+    /// "能吃任意 wire kind"）。现在这层判断收进 `deferred_send_decision`，发送口与
+    /// `flush_outbox` 共用同一处；**仍然不许绕过它去问全局那一位**。
     #[test]
-    fn new_message_kinds_are_gated_at_the_send_path() {
+    fn new_message_kinds_are_queued_then_negotiated() {
         let proto = include_str!("protocol.rs");
         for f in [
             "pub fn kind_required_feature(",
@@ -76,6 +72,7 @@
             "pub fn dm_required_features(",
             "pub fn dm_allowed_by_features(",
             "pub fn kind_blocked_hint(",
+            "pub fn deferred_send_decision(",
         ] {
             assert_eq!(
                 proto.matches(f).count(),
@@ -91,46 +88,78 @@
 
         let chat = include_str!("commands/chat.rs");
         let body = rust_fn_body(chat, "pub async fn send_message(");
-        let gate = body
-            .find("dm_allowed_by_features(")
-            .expect("1:1 发送路径必须问门控判据，否则老对端会静默丢帧");
+        let decision = body
+            .find("deferred_send_decision(&kind, peer_features)")
+            .expect("1:1 发送路径必须问能力裁决，否则老对端会静默丢帧");
         assert!(
-            body.contains("dm_required_features(&kind)"),
-            "1:1 的『这个 kind 要不要门控』也必须问那一个家（只问放行、不问要求 = 判据半接）"
+            !body.contains("dm_allowed_by_features("),
+            "1:1 不许绕过 deferred_send_decision 自己问判据：那会让『发送口』与『补发口』\
+             各有一套口径，正是这一批要消灭的第二套状态机"
         );
         assert!(
             !body.contains("kind_allowed_by_features("),
-            "1:1 不许绕过 dm_allowed_by_features 去问全局那一位：它不含『对端能不能吃任意 wire kind』，\
-             绕过去的后果正是这条守卫要挡的那次事故（老端丢帧 + 断链）"
+            "1:1 不许绕过 dm_required_features 去问全局那一位"
         );
-        // 挡下时走的是**三态**文案入口。绕过它直接引用旧那句的后果不是排版，是假指控：
-        // `peer_content_features` 是内存表，对方一离线就被 sweep 掉 ⇒ 缺条目通常只代表
-        // "此刻不知道"，而旧那句说的是"它版本较旧"。
+        // ⚠️ 正控的核心：写库之前**不许再拒绝**。这一行一旦回来，用户点表情/撤回就又是
+        // "什么都没发生"（没有本地行、没有失败气泡、没有码）。
         assert!(
-            body.contains("kind_blocked_hint("),
-            "门控挡下时要按\"对端声明过缺位\"与\"能力未知\"分两句说"
+            !body.contains("return Err(crate::protocol::kind_blocked_hint("),
+            "能力位门控不许在写库前拒绝：必须先把行/队列写进去，再由 flush 协商"
         );
         assert!(
             !body.contains("kind_unsupported_hint("),
             "1:1 发送口不许绕过 kind_blocked_hint 自己去挑文案"
+        );
+        assert!(
+            body.contains("db::finalize_blocked_message("),
+            "对端**已声明**不支持时必须落终态（同一事务置 failed + 删队列行）"
+        );
+        assert!(
+            body.contains("db::insert_message_and_outbox("),
+            "先入队是这一版的本体：消息与队列行必须原子写入"
         );
         // 给自己发的那条分支在前 —— 自聊不经过网络，不该被判"对方版本不支持"。
         let self_branch = body
             .find("insert_self_message(")
             .expect("自发消息分支不见了，顺序判据失去锚点");
         assert!(
-            self_branch < gate,
-            "门控必须排在自发消息分支之后，否则给自己发合并转发也会被挡"
+            self_branch < decision,
+            "裁决必须排在自发消息分支之后，否则给自己发合并转发也会被挡"
         );
-        // 挡在公钥查找之前：这条根本不会发出去，不该再触发 who_has 探测白等 1.2s。
-        // 2026-10-25：公钥那段抽成了 `peer_x25519`（`send_message` 与 `resend_message`
-        // 共用一套取钥与"库里那把 vs 在线自报"不一致告警）。锚点跟着挪到调用处。
         let probe = body
             .find("let pubkey = peer_x25519(s, &friend_id).await;")
             .expect("公钥查找不见了，顺序判据失去锚点");
         assert!(
-            gate < probe,
-            "门控要早于公钥探测，白探测一次会卡用户 1.2 秒"
+            decision < probe,
+            "裁决要早于公钥探测，白探测一次会卡用户 1.2 秒"
+        );
+    }
+
+    /// 补发期裁决的真值表（`deferred_send_decision` 是唯一答案）。
+    ///
+    /// 三态的意义：`Hold` 是"不知道"，绝不能当"不支持"处理 —— 那会违反
+    /// 「离线先入队、建链后补发」；`Unsupported` 只在对方**亲口声明**缺位时成立。
+    #[test]
+    fn deferred_send_decision_truth_table() {
+        use crate::protocol::{deferred_send_decision, DeferredSend, CONTENT_FEATURE_FLEX_DM_KIND};
+        // 传统 kind 不需要任何能力位：能力未知也照发（升级前的行为不变）。
+        assert_eq!(deferred_send_decision("text", None), DeferredSend::Send);
+        // 离线 / 从没握手：保留队列行。
+        assert_eq!(deferred_send_decision("reaction", None), DeferredSend::Hold);
+        assert_eq!(deferred_send_decision("recall", None), DeferredSend::Hold);
+        // 对端声明了 FLEX_DM_KIND：可以发。
+        assert_eq!(
+            deferred_send_decision("reaction", Some(CONTENT_FEATURE_FLEX_DM_KIND)),
+            DeferredSend::Send
+        );
+        // 对端亲口声明"我没有这些位"：再等也不会变，落终态。
+        assert_eq!(
+            deferred_send_decision("reaction", Some(0)),
+            DeferredSend::Unsupported
+        );
+        assert_eq!(
+            deferred_send_decision("recall", Some(0)),
+            DeferredSend::Unsupported
         );
     }
 

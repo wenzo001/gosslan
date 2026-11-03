@@ -1207,7 +1207,12 @@ test("乐观更新判据落在 store 注释块，且回滚只走纯判据（5.16
   // 失败回滚必须是**加回**旧值，而不是赋回：await 期间新到的消息不能被吞掉。
   assert.equal(count(receipt, "rollbackUnread(conv.unread, previous)"), 1);
   // 只有「最新一次尝试」才能回滚（乱序：旧请求的失败不许再点亮红点）。
-  assert.ok(receipt.includes("markReadSeq.get(convId) !== seq"), "缺少「仅最新一次回滚」的序列守卫");
+  // 5.16.92 起判据抽到了 `optimistic.ts` 的 `isLatestReadSeq`（可在 node:test 里直接跑），
+  // store 只负责把「当前槽位」喂进去 —— 这里钉住调用点，防止有人又把比较写回闭包。
+  assert.ok(
+    receipt.includes("isLatestReadSeq(markReadSeq.get(convId), seq)"),
+    "缺少「仅最新一次回滚」的序列守卫（或它又被抄回了 store 闭包）",
+  );
 
   // ③ 本地清零只有一个家。
   assert.equal(count(st, "conv.unread = 0"), 1, "`conv.unread = 0` 只许出现在 clearUnreadLocally");
