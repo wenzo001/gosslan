@@ -18,6 +18,7 @@ use rand_core::{OsRng, RngCore};
 use base64::{engine::general_purpose::STANDARD, Engine as _};
 
 use crate::commands::is_virtual_ip;
+use crate::db::get_setting_checked;
 use crate::discovery::routed::{parse_endpoints, probe_udp_targets, ROUTED_ENDPOINTS_KEY};
 use crate::logging::now_ms;
 use crate::network::transport::{ensure_link, send_presence_probe_to_relays, upsert_peer};
@@ -834,7 +835,7 @@ async fn broadcast_probe(
         // 接收端按既有 announce 逻辑**单播回发起者**，不会广播名册。
         let routed_targets = {
             let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
-            match crate::db::get_setting_checked(&dbc, ROUTED_ENDPOINTS_KEY) {
+            match get_setting_checked(&dbc, ROUTED_ENDPOINTS_KEY) {
                 Ok(Some(raw)) => probe_udp_targets(&parse_endpoints(&raw)),
                 Ok(None) => Vec::new(),
                 // 读配置失败不能静默当成"没有端点"：留一条 warn，搜索仍继续（探测是补充手段）。
