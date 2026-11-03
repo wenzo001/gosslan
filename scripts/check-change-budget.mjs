@@ -82,17 +82,29 @@
  *     node scripts/check-change-budget.mjs --range a1b2c3..HEAD
  *     node scripts/check-change-budget.mjs --from-json scripts/fixtures/change-budget.json
  *     node scripts/check-change-budget.mjs --staged            # 量具:提交**之前**先量一次
+ *     node scripts/check-change-budget.mjs --staged --commit-msg-file .git/COMMIT_EDITMSG
+ *                                                              # commit-msg hook 的门禁模式
  *
- * ### `--staged` 为什么存在（2026-09-28 加，量具、**不是门禁**）
+ * ### `--staged` 为什么存在（2026-09-28 加；2026-11-03 起多一个**门禁**模式）
  *
  * 本判据有一个结构性的时间差：它判的是**已经存在的 commit**（读 message 里的标记），
  * 而标记必须在 commit **之前**就写进标题。等它报红时提交已经落地 —— 本地还能 amend，
  * 但**推送之后就再也改不动了**（不改写历史是硬规矩），于是只能留一条红在 main 上。
- * 真实代价：`c58c425` 就是这样在 CI 上红了三趟。
+ * 真实代价：`c58c425` 就是这样在 CI 上红了三趟；`3051f73` 是第二次（推完才发现 L3 缺
+ * `[impact]`，只能回退重放）。
  *
  * `--staged` 把同一个 `classify()` 用在暂存区上，提交前就能读出"这次该带哪个标记"。
- * ⚠️ 它**永远 exit 0**、也**不接进任何门禁**：它只回答"半径多大、该写什么标记"，
- * 判定权仍在提交后的正式那一跑。不新增第二份口径 —— 分级只认 `classify()` 这一个家。
+ * 单独跑时它**永远 exit 0**：只回答"半径多大、该写什么标记"，判定权仍在提交后那一跑。
+ * 不新增第二份口径 —— 分级只认 `classify()` 这一个家。
+ *
+ * **`--commit-msg-file`（2026-11-03 加）是这条判据唯一的前置硬闸**：由
+ * `scripts/git-hooks/commit-msg` 在提交那一刻调用，用**同一个** `classify()` 判
+ * "标题该带的 `[plan]` / `[impact]` 到底带没带"，缺了直接 exit 1 挡住提交。
+ * 它只读**第一行非注释**（与正式判据只读 subject 的口径一致），避免"正文里写了标记、
+ * hook 放行、正式判据却看不见"的第二套语义。hook 由 `npm run hooks:install` 安装，
+ * `npm install` 也会自动装（见 package.json 的 `prepare`）。
+ * ⚠️ 它挡不住 `--no-verify`、别人机器上的提交、以及直接在远端合并的 patch ——
+ * 所以 CI 那一跑仍是最终判据，这一层只是把"推完才发现"提前到 commit 那一刻。
  *
  * ### 判据 3 的处置口径（2026-10-10 记账，不改算法）
  *
@@ -238,6 +250,7 @@ function argOf(flag) {
 }
 const fromJson = argOf("--from-json");
 const rangeArg = argOf("--range");
+const commitMsgFile = argOf("--commit-msg-file");
 
 let ok = true;
 const fail = (msg) => {
@@ -463,9 +476,21 @@ if (argv.includes("--staged")) {
     console.log("暂存区是空的 —— 没什么可量（先 `git add`，再跑一次）。");
     process.exit(0);
   }
-  // message 传空串：标题此刻还不存在 ⇒ 这里只回答"该带哪个标记"，不判"带没带"。
+  // message：量具模式传空串（标题此刻还不存在 ⇒ 只回答"该带哪个标记"）；
+  // hook 模式读 `.git/COMMIT_EDITMSG` 的第一行非注释 —— **与正式判据只读 subject 同口径**。
   // 分级走的是**同一个** classify()，不另写第二份口径。
-  const r = classify({ sha: "(staged)", message: "", files: staged });
+  let subject = "";
+  if (commitMsgFile) {
+    let raw = "";
+    try {
+      raw = readFileSync(path.resolve(ROOT, commitMsgFile), "utf8");
+    } catch (e) {
+      console.error(`✗ 读不到提交信息文件 ${commitMsgFile}（${e.message}）—— 无法判定标记，拒绝放行。`);
+      process.exit(1);
+    }
+    subject = raw.split("\n").find((l) => l.trim() && !l.startsWith("#")) ?? "";
+  }
+  const r = classify({ sha: "(staged)", message: subject, files: staged });
   const need = r.level === "L3" ? "[impact]" : r.level === "L2" ? "[plan]" : null;
   console.log(
     `暂存区改动半径：${r.level} —— 计入 ${r.counted} 文件 / ${r.loc} 行 / 领域[${r.domains.join(", ") || "无归属"}]` +
@@ -476,6 +501,15 @@ if (argv.includes("--staged")) {
       ? `⇒ 提交标题必须带 ${need}（本判据只读标题行 %s，写在正文里看不见）。`
       : "⇒ 这一档不要求标记（EXEMPT / L1）。",
   );
+  if (commitMsgFile) {
+    // 唯一会让 `--staged` 非零退出的分支：提交那一刻就判，缺标记直接挡住。
+    if (r.problem) {
+      console.error(`✗ 提交被拦下：${r.problem}`);
+      console.error("  补标记后重新提交；确实要绕过只能 `--no-verify`，但 CI 仍会判红。");
+      process.exit(1);
+    }
+    console.log(`✓ 提交标题「${subject}」带齐了本档要求的标记。`);
+  }
   // 判据 4 那一半也提前说：它是"提交之后才判得动"的另一条，同样只能在提交前提醒。
   const appCode = staged.filter((f) => !isExempt(f.path) && isAppCodePath(f.path));
   if (appCode.length > 0) {
@@ -484,7 +518,11 @@ if (argv.includes("--staged")) {
     );
   }
   console.log("  不计入的：docs/ .github/ scripts/ *.md *.txt，以及那五个版本清单文件。");
-  console.log("  ⚠️ 量具：永远退 0、不接进任何门禁；判定权仍在提交后那次正式跑。");
+  console.log(
+    commitMsgFile
+      ? "  ⚠️ 这是 commit-msg hook 的门禁模式：缺标记 exit 1；正式判据仍在提交后那一跑。"
+      : "  ⚠️ 量具：永远退 0；判定权仍在提交后那次正式跑（hook 模式见 --commit-msg-file）。",
+  );
   process.exit(0);
 }
 

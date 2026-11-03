@@ -101,3 +101,20 @@ Entry 的语义必须来自模型对真实证据的理解。不得仅依据路�
 
 不预加载、不猜测，也不自行重建这些专项流程。平台调用方式、请求格式、批次上限、审批规则、索引格式细节和恢复步骤由对应Guide、工具说明、模型Prompt和CLI帮助按需提供。
 <!-- aoci:end -->
+
+## 提交前量具（硬步骤，2026-11-03）
+
+Change Budget 的分级必须在**提交那一刻**过闸，不能等推完再查：
+
+- **已装 hook（默认）**：`npm install` 的 `prepare` 会自动跑 `scripts/install-git-hooks.mjs`；
+  已有工作区可 `npm run hooks:install` 补装。`commit-msg` hook 会调用
+  `node scripts/check-change-budget.mjs --staged --commit-msg-file "$1"`，标题缺本档要求的
+  `[plan]` / `[impact]` 时**直接 exit 1**，提交不会落地。
+- **手工兜底**：`node scripts/check-change-budget.mjs --staged`（量具，永远 exit 0），
+  先看清"这次是 L1/L2/L3、该带哪个标记"再写标题。标记必须写在**标题行**；`Version-Bump:`
+  trailer 写在正文，且声明了就必须真改四个版本清单文件。
+- **失败代价（真实发生两次）**：`c58c425` 推完才发现红、在 CI 上红了三趟；`3051f73` 推完才发现
+  L3 缺 `[impact]`，因为**不改写已推送历史**，只能 `revert` + 重放，多出两笔提交。
+  推完就改不动 —— 所以这一步不是提醒，是闸。
+- **局限**：`--no-verify`、别人机器上提交、远端直接合并的 patch 可以绕过；CI 的正式判定
+  仍是最终事实，这一层只负责把"推完才发现"提前到 commit 那一刻。
