@@ -1876,6 +1876,238 @@ fn group_message_lifecycle_policy_matches_ledger_sequences() {
     assert_eq!(status_of(&conn, "m-g1"), "sending");
 }
 
+// ---------------- 批次 2B 第一笔：取消判据的两处落点必须给同一个答案 ----------------
+//
+// 这一笔**只加测试、不改实现**（特征测试）。同一条「现在能不能取消」被写了两遍：
+//  · 写入口的判定 —— `cancel_queued_message` 的 `matches!`、`cancel_queued_group_message`
+//    的台账计数；
+//  · 读出口给界面的 `PendingMessageOp::can_cancel`。
+//
+// 两处漂移时用户看到的是「明明还在排队，点取消却说已送达」（2026-10-25 实报），
+// 或者反过来 —— 一颗注定点不动的灰按钮。下面逐状态把「有没有列出来 / 按钮给不给」
+// 与「后端真的答什么」对上；后续把判据收成一个纯函数时，这份断言原样保留。
+
+fn pending_can_cancel(conn: &Connection, msg_id: &str) -> Option<bool> {
+    super::list_pending_message_operations(conn, super::MESSAGE_OPS_LIMIT)
+        .unwrap()
+        .into_iter()
+        .find(|op| op.msg_id == msg_id)
+        .map(|op| op.can_cancel)
+}
+
+fn force_status(conn: &Connection, msg_id: &str, status: &str) {
+    conn.execute(
+        "UPDATE messages SET status = ?2 WHERE msg_id = ?1",
+        params![msg_id, status],
+    )
+    .unwrap();
+}
+
+#[test]
+fn direct_cancel_button_matches_the_backend_outcome_for_every_status() {
+    for (status, listed, expected) in [
+        ("sending", true, super::MessageCancelOutcome::Cancelled),
+        ("sent", true, super::MessageCancelOutcome::Cancelled),
+        ("failed", true, super::MessageCancelOutcome::Cancelled),
+        // 取消过的行不再留队列行 ⇒ 列表里没有它（重复点由后端幂等吞掉，不给按钮）。
+        ("cancelled", false, super::MessageCancelOutcome::Cancelled),
+        (
+            "partial_cancelled",
+            false,
+            super::MessageCancelOutcome::Cancelled,
+        ),
+        (
+            "delivered",
+            false,
+            super::MessageCancelOutcome::AlreadyDelivered,
+        ),
+        ("read", false, super::MessageCancelOutcome::AlreadyDelivered),
+        (
+            "recalled",
+            false,
+            super::MessageCancelOutcome::AlreadyDelivered,
+        ),
+    ] {
+        let conn = fresh_db();
+        ins_msg(&conn, "m-1", "p1", "text", "取消判据", 1);
+        force_status(&conn, "m-1", status);
+        conn.execute(
+            "INSERT INTO outbox(msg_id, peer_id, payload, created_at) VALUES ('m-1','p1','{}',1)",
+            [],
+        )
+        .unwrap();
+
+        let button = pending_can_cancel(&conn, "m-1");
+        assert_eq!(
+            button.is_some(),
+            listed,
+            "status={status}：任务中心列不列这条，口径变了"
+        );
+        assert!(
+            !listed || button == Some(true),
+            "status={status}：列出来的行必须给取消按钮"
+        );
+        let outcome = super::cancel_queued_message(&conn, "m-1").unwrap();
+        assert_eq!(outcome, expected, "status={status}：后端取消结论变了");
+        if let Some(btn) = button {
+            assert_eq!(
+                btn,
+                matches!(outcome, super::MessageCancelOutcome::Cancelled),
+                "status={status}：按钮说 {btn}，后端答 {outcome:?} —— 两处判据漂移"
+            );
+        }
+    }
+
+    // 队列行还在、消息行没了：列出来（这是另一类真实故障），但不给按钮 —— 后端回 NotFound。
+    let conn = fresh_db();
+    conn.execute(
+        "INSERT INTO outbox(msg_id, peer_id, payload, created_at) VALUES ('orphan','p1','{}',1)",
+        [],
+    )
+    .unwrap();
+    assert_eq!(
+        pending_can_cancel(&conn, "orphan"),
+        Some(false),
+        "孤儿队列行要看得见，但不能给一颗注定失败的取消按钮"
+    );
+    assert_eq!(
+        super::cancel_queued_message(&conn, "orphan").unwrap(),
+        super::MessageCancelOutcome::NotFound
+    );
+}
+
+#[test]
+fn group_cancel_button_matches_the_backend_outcome_for_every_status() {
+    for (status, listed, expected) in [
+        (
+            "sending",
+            true,
+            super::GroupMessageCancelOutcome::Cancelled {
+                delivered: 0,
+                cancelled: 2,
+            },
+        ),
+        (
+            "sent",
+            true,
+            super::GroupMessageCancelOutcome::Cancelled {
+                delivered: 0,
+                cancelled: 2,
+            },
+        ),
+        (
+            "failed",
+            true,
+            super::GroupMessageCancelOutcome::Cancelled {
+                delivered: 0,
+                cancelled: 2,
+            },
+        ),
+        // 台账两行仍 pending 的「已取消」是合成态（正常取消会把行一起置 cancelled），
+        // 后端会再执行一次（幂等），列表不列 —— 没有按钮就无所谓一致性。
+        (
+            "cancelled",
+            false,
+            super::GroupMessageCancelOutcome::Cancelled {
+                delivered: 0,
+                cancelled: 2,
+            },
+        ),
+        (
+            "partial_cancelled",
+            false,
+            super::GroupMessageCancelOutcome::Cancelled {
+                delivered: 0,
+                cancelled: 2,
+            },
+        ),
+        // 群消息 delivered 只代表「至少一人已收」：仍要列出并可取消剩余成员。
+        (
+            "delivered",
+            true,
+            super::GroupMessageCancelOutcome::Cancelled {
+                delivered: 0,
+                cancelled: 2,
+            },
+        ),
+        ("read", false, super::GroupMessageCancelOutcome::Rejected),
+        (
+            "recalled",
+            false,
+            super::GroupMessageCancelOutcome::Rejected,
+        ),
+    ] {
+        let conn = fresh_db();
+        ins_msg(&conn, "m-g", "group:g1", "text", "群取消判据", 1);
+        force_status(&conn, "m-g", status);
+        for member in ["a", "b"] {
+            conn.execute(
+                "INSERT INTO group_outbox(msg_id, group_id, peer_id, payload, created_at)
+                 VALUES ('m-g','g1',?1,'{}',1)",
+                params![member],
+            )
+            .unwrap();
+        }
+
+        let button = pending_can_cancel(&conn, "m-g");
+        assert_eq!(
+            button.is_some(),
+            listed,
+            "status={status}：任务中心列不列这条，口径变了"
+        );
+        assert!(
+            !listed || button == Some(true),
+            "status={status}：列出来的群消息必须给取消按钮"
+        );
+        let outcome = super::cancel_queued_group_message(&conn, "m-g").unwrap();
+        assert_eq!(outcome, expected, "status={status}：群取消结论变了");
+        if let Some(btn) = button {
+            let backend_allows = matches!(
+                outcome,
+                super::GroupMessageCancelOutcome::Cancelled { .. }
+                    | super::GroupMessageCancelOutcome::PartiallyCancelled { .. }
+            );
+            assert_eq!(
+                btn, backend_allows,
+                "status={status}：按钮说 {btn}，后端答 {outcome:?} —— 两处判据漂移"
+            );
+        }
+    }
+
+    // 2026-10-25 用户实报的那条：一个成员已 Ack（消息被推成 delivered），其余还在排队。
+    // 任务中心必须仍列出、仍给按钮，后端必须真的只取消剩余成员。
+    let conn = fresh_db();
+    ins_msg(&conn, "m-part", "group:g1", "text", "部分送达", 1);
+    for member in ["a", "b"] {
+        conn.execute(
+            "INSERT INTO group_outbox(msg_id, group_id, peer_id, payload, created_at)
+             VALUES ('m-part','g1',?1,'{}',1)",
+            params![member],
+        )
+        .unwrap();
+    }
+    // a 收下 ⇒ 行 delivered、消息被推成 delivered；b 仍是 pending（墓碑因此未被清理）。
+    assert_eq!(
+        super::ack_group_delivered(&conn, "m-part", "a").unwrap(),
+        super::GroupAckOutcome::Applied
+    );
+    assert_eq!(status_of(&conn, "m-part"), "delivered");
+    assert_eq!(
+        pending_can_cancel(&conn, "m-part"),
+        Some(true),
+        "还有成员没收到 ⇒ 必须列出且可取消（这正是实报的死按钮）"
+    );
+    assert_eq!(
+        super::cancel_queued_group_message(&conn, "m-part").unwrap(),
+        super::GroupMessageCancelOutcome::PartiallyCancelled {
+            delivered: 1,
+            cancelled: 1
+        },
+        "已收下的成员保持 delivered，只取消剩余成员"
+    );
+    assert_eq!(status_of(&conn, "m-part"), "partial_cancelled");
+}
+
 // ---------------- 批次 3A：四账只读投影 + 策略矩阵 ----------------
 //
 // 投影只做 SELECT；写数据是测试准备。它要证明的是「四张账的终态/复活/墓碑语义
