@@ -21,7 +21,7 @@ fn normalize_routed_address(input: &str) -> Result<String, String> {
     let Some(addr) = parse_endpoint_addr(trimmed) else {
         return Err(crate::error_codes::coded(
             crate::error_codes::ROUTED_ENDPOINT_FORMAT_INVALID,
-            &format!("地址格式应为 ip 或 ip:port，收到：{trimmed}"),
+            format!("地址格式应为 ip 或 ip:port，收到：{trimmed}"),
         ));
     };
     if addr.is_ipv6() {

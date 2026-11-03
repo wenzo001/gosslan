@@ -706,7 +706,7 @@ pub async fn clean_cache_now(state: State<'_, Arc<AppState>>) -> Result<CleanupR
                 .error("cache", format!("缓存清理任务失败: {e}"));
             return Err(crate::error_codes::coded(
                 crate::error_codes::CHANNEL_CACHE_CLEAN_FAILED,
-                &format!("缓存清理任务失败: {e}"),
+                format!("缓存清理任务失败: {e}"),
             ));
         }
     };

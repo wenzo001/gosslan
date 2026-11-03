@@ -14,6 +14,14 @@
 
 ## [Unreleased]
 
+## [5.17.22] - 2026-11-04
+
+### 修复
+
+- CI 的 clippy（`-D warnings`）红：`channel.rs` / `routed.rs` 给 `coded()` 传的是
+  `&format!(...)`（多余的借用），`lib_file_tests.rs` 的存量判据写成单元素 `for`。
+  三处按提示改成直接传 `String` / 单次 `any`，判据与文案都不变。
+
 ## [5.17.21] - 2026-11-04
 
 ### B6：收藏 reject_favorite 族（第 14 批）
