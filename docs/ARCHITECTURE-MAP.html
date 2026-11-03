@@ -458,7 +458,7 @@ const MODS = [
   { id: "cmd-social", l: "cmd", n: "好友·收藏·外链", s: "friends · favorites · external_links", fm: ["friends", "favorites", "external_links"],
     role: "关系建立/解除（含内存身份绑定同步解除）、收藏的<b>独立副本</b>、外链书签（增删改后同步回列表）。",
     in: ["peerId / (id,name,url) / msgId+convId", "内容从后端库里读，<b>不信客户端传来的正文</b>"],
-    out: ["friends / favorites / settings(外链表) 写库", "media 物理副本 → favorites_dir", "gossip(FriendRequest/FriendAccept/Presence)"],
+    out: ["friends / favorites / settings(外链表) 写库", "media 物理副本 → favorites_dir", "gossip(FriendRequest/FriendAccept/FriendRequestWithdraw/Presence)"],
     data: ["FavoriteEntry{content 快照, media_path, available}（available 是被清理后仍要能解释的字段）"] },
   { id: "cmd-win", l: "cmd", n: "窗口与跨窗口投递", s: "window · logs", fm: ["window", "logs"],
     role: "6 扇窗的建/复用/预热/几何、任务与预览的当前上下文、日志与诊断查询、前端异常上报。<b>建窗命令必须 async</b>（同步命令在主线程内联建 WebView2 = 永久自锁，2026-09-20 真机死锁）。",
@@ -762,6 +762,8 @@ const CMDS = [
   ["import_picked_file", "mobile_picker", "path str; suggested_name str?", "str|err"],
   ["respond_friend_request", "mobile_picker", "peer_id str; accept bool", "()|err"],
   ["send_friend_request", "mobile_picker", "peer_id str", "()|err"],
+  ["get_outgoing_friend_requests", "mobile_picker", "", "OutgoingFriendRequest[]|err"],
+  ["cancel_friend_request", "mobile_picker", "peer_id str", "()|err"],
   ["focus_window", "network", "", "()|err"],
   ["shake_window", "network", "", "()|err"],
   ["get_peers", "network", "", "Peer[]|err"],
@@ -944,6 +946,8 @@ const SEM = {
   get_pending_requests: { d: "待处理好友申请。<b>必须按好友关系过滤</b>（否则已接受的会一直挂着，兜底补发时也看不出来）。" },
   send_friend_request: { d: "发申请（对方不在 peers 里时会走 gossip 兜底；「已发送但对方没收到」有补发路径）。" },
   respond_friend_request: { d: "接受 / 拒绝。接受即<b>绑定双方公钥</b>（后续中继与验签都依赖这次绑定）。" },
+  get_outgoing_friend_requests: { d: "我发出的申请（等待 / 已撤回；<code>withdraw_confirmed</code> 区分对端已确认与仅本机撤回）。" },
+  cancel_friend_request: { d: "撤回自己发出的、对方还没处理的申请。<b>与「同意」同一把 DB 锁 + 单事务仲裁</b>，先提交者赢；对端不支持撤回能力位时停在「已撤回（未确认）」。" },
   import_picked_file: { d: "Android <code>content://</code> → 真实可读路径（其他平台没有这一步）。", n: "仅移动端" },
 
   /* ── commands/network.rs ── */
@@ -1031,6 +1035,7 @@ const EVENTS = [
   ["file-cancelled", "transfer_id str", "用户取消（同 tid 的多个接收人一起取消）", "进度归零、按钮复原", "全体窗口"],
   ["friend-request", "PendingRequest", "收到入向申请（验签不过的会拒）", "bell 角标 + 请求列表", "全体窗口"],
   ["friend-accepted · friend-rejected · friend-removed", "peer_id str", "对端回应或解除；removed 同时解除内存身份绑定（否则重装只能重启）", "刷新好友列表 / 清会话归属", "全体窗口"],
+  ["friend-request-withdrawn", "{peer_id,direction}", "对端撤回申请（inbound，入向列表移除）或我们的撤回被对端确认（outbound，三态里的「已撤回」定稿）", "刷新申请列表 + 一句 toast", "全体窗口"],
   ["friend-message-blocked", "peer_id str", "非好友发来的内容被拒（不落库、不回 Ack）", "提示 + 引导加好友", "全体窗口"],
   ["friend-key-changed · friend-keys-synced", "peer_id str", "好友重装后新私钥 Hello 自验签通过但与绑定不一致（仅好友、同候选去重）/ 用户确认同步完成", "聊天顶部换钥横幅出现或收起 + 重拉候选", "全体窗口"],
   ["groups-updated", "str", "群名册/改名/转让有变化", "chat.refreshGroups", "全体窗口"],
@@ -1190,7 +1195,7 @@ const PIPES = [
 const DOMAINS = [
   {"id": "identity", "name": "身份", "tier": "L3", "paths": ["src-tauri/src/device.rs", "src-tauri/src/crypto.rs", "src-tauri/src/nickname.rs"], "inv": ["INV-P11", "INV-P12", "INV-P18", "INV-007", "INV-P22"], "home": "src-tauri/src/crypto.rs", "cons": [], "notes": "「我是谁」不负责「我怎么找到别人」。E2EE 密钥派生与 Hello 验签都在这。私钥永不过 UI 边界（INV-P18）。"},
   {"id": "presence", "name": "在线状态与发现", "tier": "L3", "paths": ["src-tauri/src/network/discovery.rs", "src-tauri/src/discovery"], "inv": ["INV-P21"], "home": "src-tauri/src/network/discovery.rs", "cons": ["routing", "messaging", "transport", "observability"], "notes": "用户可见症状（2026-09-14）：「局域网直连上了，好友在线状态却不实时」——已有非空转护栏（「在线状态必须包含有活跃链路的节点」）。迁移详见 docs/migration-ledger.md 的「局域网发现」条。｜cons 里的 observability 是 5.15.26（DUP-03）加的：sweep_peers 的墙上时钟改从 logging::now_ms 一个家取。⚠️ 本行是 docs/domains.data.mjs 的**手抄快照**，check-domain-map.mjs 只读那份 .mjs、不看本文件 ⇒ 改那边必须同改这里，没有东西会替你红。"},
-  {"id": "friendship", "name": "好友关系", "tier": "L3", "paths": [], "inv": ["INV-P12", "INV-P33"], "home": null, "cons": [], "notes": "⚠️ **Friend ≠ Peer**：`Peer` 是「发现到了」，`Friend` 是「关系已建立」。混同是 Presence 类 bug 的常见来源。"},
+  {"id": "friendship", "name": "好友关系", "tier": "L3", "paths": [], "inv": ["INV-P12", "INV-P33", "INV-P37"], "home": null, "cons": [], "notes": "⚠️ **Friend ≠ Peer**：`Peer` 是「发现到了」，`Friend` 是「关系已建立」。混同是 Presence 类 bug 的常见来源。"},
   {"id": "messaging", "name": "消息", "tier": "L3", "paths": ["src-tauri/src/protocol.rs", "src-tauri/src/gossip_engine.rs"], "inv": ["INV-001", "INV-002", "INV-P13", "INV-003", "INV-004", "INV-005", "INV-006", "INV-P01", "INV-P02", "INV-P03", "INV-P04", "INV-P07", "INV-P08", "INV-P19", "INV-P22", "INV-P24", "INV-P29"], "home": "src-tauri/src/protocol.rs", "cons": ["identity"], "notes": "直发 + Gossip + 离线补发统一 msg_id 幂等去重；消息先落 outbox，ACK 到达才删。**已知例外**（protocol-invariants §22）：「和自己聊天」不进 outbox、不 gossip、不加密（INV-P03/P04 例外）。消息语义的**实际执行点**仍在 network/transport.rs（现算 7056 行，正按 include! 分册中）—— 那是 Phase 7 的拆分目标。"},
   {"id": "routing", "name": "路由与中继", "tier": "L3", "paths": ["src-tauri/src/mesh", "src-tauri/src/file_relay.rs"], "inv": ["INV-P20"], "home": "src-tauri/src/mesh", "cons": ["messaging"], "notes": "`mesh/` 是**本仓库最成型的领域模块**（candidate / connection / endpoint / manager / path / peer / relay_policy / router / selection 各自独立文件，有 ADR-0013/0014 背书）。⚠️ relay_manager.rs 属于**文件切片中继**（BitTorrent 式分发），不是路由 —— 命名撞车，lib.rs:19 那句注释就是为它写的。"},
   {"id": "transport", "name": "传输", "tier": "L3", "paths": ["src-tauri/src/network/ble.rs", "src-tauri/src/network/ble", "src-tauri/src/network/transport.rs", "src-tauri/src/network/transport/outbound.rs", "src-tauri/src/network/transport/gossip.rs", "src-tauri/src/network/transport/relay.rs", "src-tauri/src/network/dispatch.rs", "src-tauri/src/transport"], "inv": ["INV-P20", "INV-P22", "INV-P10", "INV-P35", "INV-P23", "INV-P24", "INV-P25", "INV-P26", "INV-P33", "INV-P34", "INV-P36"], "home": "src-tauri/src/network/transport.rs", "cons": ["identity", "persistence", "files", "messaging", "routing", "presence", "platform"], "notes": "⚠️ **两个同名 transport.rs**：network/transport.rs（活；主文件 + include! 分册合计约 1 万行）与 transport/{mod,tcp}.rs（新栈）。「传输」这一个关注点今天有**三个家**：TCP 数据面走 network/、BLE 数据面走 transport/bluetooth.rs::driver + 三个外设模块、状态聚合走 transport/mod.rs（2026-09-24 0-A2 起它只剩状态汇总，**分流从来不在那里**：真分流是 dispatch.rs::message_priority + mesh/selection.rs::pick_link）。这是「改完这个 bug 又冒那个」的结构性来源，逐条证据见 docs/migration-ledger.md。BLE 载荷预算已收敛为单一事实来源（INV-P23，Phase 3/4）。"},

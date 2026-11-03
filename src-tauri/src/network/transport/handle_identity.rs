@@ -104,6 +104,8 @@ async fn handle_identity_and_friend_messages(state: &Arc<AppState>, peer_id: &st
             flush_pending_friend_request(state, &device_id).await;
             // 好友同意回执同样没有回执：建链后补发（真机：Mac 端好友状态一直没同步）。
             flush_pending_friend_accept(state, &device_id).await;
+            // 撤回帧：对方重新上线才学得到能力位，这里是最早的补发机会。
+            flush_pending_friend_withdraw(state, &device_id).await;
             // Phase 1：建链即**自动重试**该 peer 名下未完成的可恢复内容
             // （只对声明了拉取能力的对端发 ContentRequest；退避未到点的跳过）。
             retry_incomplete_content(state, &device_id).await;
@@ -141,6 +143,7 @@ async fn handle_identity_and_friend_messages(state: &Arc<AppState>, peer_id: &st
             // 不必等到链路再断一次、重新建链（真机：点了加好友要等几分钟才有反应）。
             flush_pending_friend_request(state, &device_id).await;
             flush_pending_friend_accept(state, &device_id).await;
+            flush_pending_friend_withdraw(state, &device_id).await;
         }
         Message::UserInfo {
             device_id,
@@ -210,6 +213,8 @@ async fn handle_identity_and_friend_messages(state: &Arc<AppState>, peer_id: &st
                     from_nickname,
                     from_avatar,
                     ts,
+                    // 直连老格式没有 request_id：按"同一个人"处理（撤回帧也不会来自老端）。
+                    request_id: 0,
                 },
                 "收到好友申请",
             )

@@ -1844,3 +1844,70 @@ mesh 没有服务器也没有强制升级 ⇒ 混合版本是常态，不是边�
   要不要改成上抛 + 界面错误态（以及每格文案）由负责人定；C 档 4 处（`commands/groups.rs` 的
   群密钥 fan-out 跑 0 次而命令返回 `Ok(())`）分岔是"当场失败打断用户"还是"留痕 + 靠
   `DbUnreadable` 补发档兜住"。这两件都在 `docs/notes/full-repo-audit-2026-10-29.md` §4.0bq。
+
+---
+
+## 37. 好友申请：出站持久化与「撤回 vs 同意」
+
+### INV-P37 — 撤回是协议状态迁移，不是一次本地点击
+
+好友申请有三份状态，缺一份就会出现"用户点了取消，对方还在弹申请"：
+
+```text
+入站  friend_req:<peer>      —— 已存在（本轮之前就有了）
+出站  friend_out:<peer>      —— 新增：等待对方同意 / 已撤回
+同意  friend_acc:<peer>      —— 新增：待补发的同意回执
+墓碑  friend_req_wd:<peer>   —— 新增：撤回后挡住迟到的重复申请
+```
+
+**帧位置**：撤回是**新增 `GossipKind`**（`FriendRequestWithdraw` / `FriendRequestWithdrawAck`），
+不是消息 `WIRE_KINDS` 里的一档。原因：好友申请走 gossip（跨跳），`GossipEnvelope.kind` 才是
+这条链路的帧类型；往消息 kind 表里塞一个伪 kind 既不经过 `Message::Chat` 的校验，也对不上实际线格式。
+
+**仲裁规则（唯一一条）**：
+
+```text
+同意 与 撤回 共用同一把 DB 锁（state.db Mutex）+ 各自一个 SQLite 事务，互斥串行：
+  accept  = db::accept_pending_friend_request    （查申请 → 写好友 → 建会话 → 删申请，一事务）
+  withdraw = db::withdraw_pending_friend_request  （查好友 → 查申请 → 删申请 + 写墓碑，一事务）
+先提交者赢，后到者拿到的必须是三态之一：
+  同意先赢 ⇒ 撤回方收到 FriendRequestWithdrawAck{outcome:already_friends} ⇒ 界面「已同意」
+  撤回先赢 ⇒ 同意方 accept 返回 NotPending + 明确错误 ⇒ 界面「对方已撤回」
+
+好友关系是**单调的既成事实**：只要任一侧已把好友写进库，撤回一律让位（AlreadyFriend），
+绝不再删好友；撤回只能删除"尚未被处理"的申请。否则同一时刻各按一边时会出现
+"我撤回了，但你那边已经加了我"的双边不一致。
+```
+
+不允许按"双方各自以为成功"收口：撤回方只有在收到 `withdrawn` 回执后才把界面切成**已确认的「已撤回」**；
+回执没到（对端老版本 / 离线）必须显示「已撤回（未确认）」并说明对方可能仍看到申请。
+
+**旧客户端安全**（INV-P24 的落地）：
+
+```text
+1. 老端没有这个 GossipKind 变体 ⇒ serde 报 unknown variant ⇒ decode_frame 降级成
+   Message::Unknown ⇒ 丢弃整帧；不断链、不重投（行为用例：
+   an_old_client_drops_an_unknown_gossip_kind_instead_of_breaking_the_link）
+2. 发送侧按 CONTENT_FEATURE_FRIEND_WITHDRAW 门控；对端明确未声明 ⇒ 一条都不发，
+   停在本机并把 `withdraw_confirmed=false` 如实写进库；还没学到能力位 ⇒ 先排队，
+   Hello 学到后再由 flush 决定（不会对老端反复发它不认识的帧）
+3. 撤回帧本身有 7 天窗口 + 30 次上限，只在有链路时按 30s 间隔补发；窗口跨重启
+```
+
+**持久化与重启**：`restore_pending_outbound` 与 `restore_pending_requests` 同一时机调用，
+只填表不 `emit`；`pending_out_accepts` 的 2 分钟窗口用尽的行在恢复时删除，不让过期补发复活。
+"清除数据"必须同时清 `friend_out:` / `friend_acc:` / `friend_req_wd:` 三族。
+
+- 钩子：`db::friend_request_store_tests::an_outgoing_request_survives_a_write_then_read_and_keeps_its_request_id`
+  `db::friend_request_store_tests::outgoing_and_withdrawn_families_do_not_touch_lookalike_or_other_keys`
+  `db::friend_request_store_tests::mismatched_outgoing_rows_are_skipped`
+  `db::friend_request_store_tests::withdrawn_tombstone_survives_a_write_then_read`
+  `db::friend_request_store_tests::withdraw_wins_then_accept_gets_not_pending_and_writes_no_friend`
+  `db::friend_request_store_tests::accept_wins_then_withdraw_yields_already_friend_and_keeps_the_relationship`
+  `db::friend_request_store_tests::a_repeated_accept_reports_already_friend_without_duplicating_the_row`
+  `db::friend_request_store_tests::a_withdraw_with_a_different_request_id_does_not_remove_the_current_request`
+  `protocol_tests::friend_withdraw_kinds_are_new_gossip_variants_and_the_bit_is_advertised`
+  `lib_delivery_shape_tests::an_old_client_drops_an_unknown_gossip_kind_instead_of_breaking_the_link`
+- 反向（每条都应实测变红）：把同意退回"先 add_friend 再删申请"两段 ⇒ 撤回先赢时同意仍能写进好友；
+  去掉墓碑 ⇒ 迟到的重复申请重新弹；删掉能力位门控 ⇒ 老端收到不认识的帧；
+  把出站只留内存 ⇒ 重启后 `pending_out_requests` 与界面同时清空。

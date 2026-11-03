@@ -35,7 +35,7 @@ import LinksList from "@/components/LinksList.vue";
 import MobilePageFrame from "@/components/MobilePageFrame.vue";
 import ProfileSection from "@/components/settings/ProfileSection.vue";
 import { ScrollText, Settings, UserCircle } from "lucide-vue-next";
-import type { ExternalLink, Friend, PendingRequest } from "@/types";
+import type { ExternalLink, Friend, OutgoingFriendRequest, PendingRequest } from "@/types";
 import { selfFriendOf } from "@/utils/selfChat";
 import { storageGet, storageSet } from "../utils/safeStorage.ts";
 const app = useAppStore();
@@ -428,6 +428,16 @@ async function rejectRequest(r: PendingRequest) {
     app.toast(t("layout.toast.rejected"), "info");
   } catch (e) {
     app.toastError(e, t("common.operationFail"));
+  }
+}
+/** 撤回我发出的申请；对方若刚好先同意，后端会明确拒绝并让刷新把终态翻成好友。 */
+async function cancelOutgoingRequest(r: OutgoingFriendRequest) {
+  try {
+    await chat.cancelFriendRequest(r.peer_id);
+    app.toast(t("friend.request.withdrawnToast"), "success");
+  } catch (e) {
+    app.toastError(e, t("common.operationFail"));
+    void chat.refreshOutgoingRequests();
   }
 }
 
@@ -976,12 +986,17 @@ function onResizeEnd() {
           <div class="min-h-0 flex-1 overflow-y-auto bg-[var(--gosslan-chat)] p-2">
             <FriendRequestList
               :requests="chat.pendingRequests"
+              :outgoing="chat.outgoingRequests"
               :open="true"
               @close="closeRequests"
               @accept="acceptRequest"
               @reject="rejectRequest"
+              @cancel="cancelOutgoingRequest"
             />
-            <div v-if="chat.pendingRequests.length === 0" class="mt-20 text-center text-sm text-[var(--gosslan-text-2)]">
+            <div
+              v-if="chat.pendingRequests.length === 0 && chat.outgoingRequests.length === 0"
+              class="mt-20 text-center text-sm text-[var(--gosslan-text-2)]"
+            >
               {{ t("friend.request.empty") }}
             </div>
           </div>

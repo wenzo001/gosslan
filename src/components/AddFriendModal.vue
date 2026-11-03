@@ -57,6 +57,35 @@ const friendIds = computed(() => new Set(chat.friends.map((f) => f.device_id)));
  */
 const pendingFromIds = computed(() => new Set(chat.pendingRequests.map((r) => r.from)));
 
+/**
+ * 我发出、还没被处理或刚撤回的申请（device_id -> 行）。
+ * 三态：`waiting`（等待对方同意，可取消）/ `withdrawn`（已撤回，可分"已确认/未确认"）。
+ * 「已同意」不在这里 —— 它表现为 `friendIds` 命中，本行直接变成「发起聊天」。
+ */
+const outgoingByPeer = computed(
+  () => new Map(chat.outgoingRequests.map((r) => [r.peer_id, r])),
+);
+/** 正在撤回中的 device_id（防连点）。 */
+const cancelling = ref<Record<string, boolean>>({});
+
+async function cancel(peerId: string) {
+  if (cancelling.value[peerId]) return;
+  cancelling.value = { ...cancelling.value, [peerId]: true };
+  try {
+    await chat.cancelFriendRequest(peerId);
+    app.toast(t("friend.add.toast.withdrawn"), "success");
+  } catch (e) {
+    // 对方可能刚好先同意了：后端会明确拒绝"已是好友，无法撤回"，如实提示。
+    app.toastError(e, t("common.operationFail"));
+    // 把真实终态拉回来（可能已经从"等待"变成"好友"）。
+    void chat.refreshOutgoingRequests();
+  } finally {
+    const next = { ...cancelling.value };
+    delete next[peerId];
+    cancelling.value = next;
+  }
+}
+
 /** 正在处理中的 device_id（防连点，避免同一申请被提交两次）。 */
 const responding = ref<Record<string, boolean>>({});
 
@@ -406,6 +435,36 @@ async function add(peerId: string) {
             >
               <X class="h-4 w-4" />
             </button>
+          </span>
+          <!-- 我发出、还没被处理 → 「等待对方同意」+ 可取消；撤回后保留一行终态并可再次添加 -->
+          <span v-else-if="outgoingByPeer.get(p.device_id)" class="flex shrink-0 items-center gap-1.5">
+            <template v-if="outgoingByPeer.get(p.device_id)!.status === 'waiting'">
+              <span class="text-xs text-[var(--gosslan-text-2)]">{{ t("friend.add.waiting") }}</span>
+              <button
+                class="tap-safe rounded-[var(--gosslan-radius-md)] border border-[var(--gosslan-border)] px-2.5 py-1 text-xs text-[var(--gosslan-text-2)] transition hover:bg-[var(--gosslan-hover)] disabled:opacity-50"
+                :disabled="cancelling[p.device_id]"
+                @click="cancel(p.device_id)"
+              >
+                {{ t("friend.add.cancel") }}
+              </button>
+            </template>
+            <template v-else>
+              <span
+                class="text-xs text-[var(--gosslan-text-2)]"
+                :title="outgoingByPeer.get(p.device_id)!.withdraw_confirmed ? undefined : t('friend.add.withdrawnUnconfirmedHint')"
+              >
+                {{ outgoingByPeer.get(p.device_id)!.withdraw_confirmed
+                  ? t("friend.add.withdrawn")
+                  : t("friend.add.withdrawnUnconfirmed") }}
+              </span>
+              <button
+                class="tap-safe flex items-center gap-1 rounded-[var(--gosslan-radius-md)] bg-[var(--gosslan-primary-active)] px-2.5 py-1 text-xs font-medium text-[var(--gosslan-on-primary)] transition hover:bg-[var(--gosslan-primary-hover)]"
+                @click="add(p.device_id)"
+              >
+                <UserPlus class="h-3 w-3" />
+                {{ t("friend.add.addAgain") }}
+              </button>
+            </template>
           </span>
           <button
             v-else-if="inCooldown(p.device_id)"

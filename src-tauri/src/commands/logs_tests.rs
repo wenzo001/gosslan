@@ -781,6 +781,7 @@ mod tests {
             from_nickname: from.to_string(),
             from_avatar: None,
             ts: 1,
+            request_id: 0,
         }
     }
 

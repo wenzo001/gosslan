@@ -2,7 +2,7 @@
 
 import { Channel, invoke as rawInvoke, type InvokeArgs } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
-import type { AppSettings, CacheInfo, CleanupReport, ContentAudience, ContentCancelResult, ContentTransfer, Conversation, DeviceInfo, DiscoveryDiag, ExportSummary, ExternalLink, ExternalLinkImportResult, FavoriteEntry, FileDoneInfo, FileFailedInfo, FileProgress, FileStalledInfo, Friend, FriendKeyRotation, Group, GroupDeliverySummary, GroupHistoryProgress, GroupReadInfo, GroupResendResult, InterfaceInfo, LinkState, LogEntry, MessageCancelResult, MessageFailedInfo, MessageRecord, Peer, PeerReadInfo, PendingMessageOp, PendingRequest, PreviousRunReport, RelayConfig, RelayProbe, RoutedEndpoint, RuntimeDiag, RuntimeSnapshot, TransferInfo, TodoFocus, TodoFocusMode, DropPathInfo } from "@/types";
+import type { AppSettings, CacheInfo, CleanupReport, ContentAudience, ContentCancelResult, ContentTransfer, Conversation, DeviceInfo, DiscoveryDiag, ExportSummary, ExternalLink, ExternalLinkImportResult, FavoriteEntry, FileDoneInfo, FileFailedInfo, FileProgress, FileStalledInfo, Friend, FriendKeyRotation, Group, GroupDeliverySummary, GroupHistoryProgress, GroupReadInfo, GroupResendResult, InterfaceInfo, LinkState, LogEntry, MessageCancelResult, MessageFailedInfo, MessageRecord, Peer, PeerReadInfo, PendingMessageOp, PendingRequest, OutgoingFriendRequest, PreviousRunReport, RelayConfig, RelayProbe, RoutedEndpoint, RuntimeDiag, RuntimeSnapshot, TransferInfo, TodoFocus, TodoFocusMode, DropPathInfo } from "@/types";
 import type { TodoImage } from "@/utils/todos";
 import {
   chatSearchGroupSchema,
@@ -169,7 +169,13 @@ export const api = {
   /** 用户确认是本人后，把好友身份密钥同步成观察到的新值。 */
   syncFriendKeys: (peerId: string) => invoke<void>("sync_friend_keys", { peerId }),
   getPendingRequests: () => invoke<PendingRequest[]>("get_pending_requests"),
+  /** 我发出的申请（等待中 / 已撤回），界面用来显示"待对方同意"和"取消"。 */
+  getOutgoingFriendRequests: () =>
+    invoke<OutgoingFriendRequest[]>("get_outgoing_friend_requests"),
   sendFriendRequest: (peerId: string) => invoke<void>("send_friend_request", { peerId }),
+  /** 撤回还没被对方处理的好友申请；对端已先同意时会返回"已是好友，无法撤回"。 */
+  cancelFriendRequest: (peerId: string) =>
+    invoke<void>("cancel_friend_request", { peerId }),
   respondFriendRequest: (peerId: string, accept: boolean) =>
     invoke<void>("respond_friend_request", { peerId, accept }),
 
@@ -874,6 +880,8 @@ export type EventHandlers = {
   onFriendRequest: (req: PendingRequest) => void;
   onFriendAccepted: (id: string) => void;
   onFriendRejected: (id: string) => void;
+  /** 对方撤回了好友申请（inbound），或我发出的撤回拿到了结果（outbound）。 */
+  onFriendRequestWithdrawn: (e: { peer_id: string; direction: "inbound" | "outbound" }) => void;
   onFriendRemoved: (id: string) => void;
   /** 观察到某位好友的新身份密钥（候选），聊天界面应提示同步。 */
   onFriendKeyChanged: (id: string) => void;
@@ -990,6 +998,10 @@ export async function bindEvents(h: EventHandlers): Promise<UnlistenFn[]> {
     listen<PendingRequest>("friend-request", (e) => h.onFriendRequest(e.payload)),
     listen<string>("friend-accepted", (e) => h.onFriendAccepted(e.payload)),
     listen<string>("friend-rejected", (e) => h.onFriendRejected(e.payload)),
+    listen<{ peer_id: string; direction: "inbound" | "outbound" }>(
+      "friend-request-withdrawn",
+      (e) => h.onFriendRequestWithdrawn(e.payload),
+    ),
     listen<string>("friend-removed", (e) => h.onFriendRemoved(e.payload)),
     listen<string>("friend-key-changed", (e) => h.onFriendKeyChanged(e.payload)),
     listen<string>("friend-keys-synced", (e) => h.onFriendKeysSynced(e.payload)),

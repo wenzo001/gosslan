@@ -319,6 +319,7 @@ pub(crate) fn is_actionable_request(
 pub(crate) async fn send_friend_request_via_link(
     s: &Arc<AppState>,
     peer_id: &str,
+    request_id: i64,
 ) -> Result<(), String> {
     // 目标必须在 peers 表（announce / Presence 学到），且需有 X25519 公钥才能 E2EE 加密。
     let target_pubkey = {
@@ -338,8 +339,13 @@ pub(crate) async fn send_friend_request_via_link(
     // 而界面仍显示"已发送"）。超限就不带头像；建链后由 UserInfo 定向同步大头像。
     let avatar = crate::network::transport::hello_avatar_for_wire(raw_avatar.as_deref());
     // E2EE 加密好友申请内容（昵称/可选头像）；from/to 已在信封 sender_id / target 里。
-    let payload =
-        serde_json::json!({ "from_nickname": nickname, "from_avatar": avatar }).to_string();
+    // `request_id` 是稳定申请标识（首次登记时刻）：补发不变，撤回帧靠它精确命中。
+    let payload = serde_json::json!({
+        "from_nickname": nickname,
+        "from_avatar": avatar,
+        "request_id": request_id,
+    })
+    .to_string();
     let shared =
         s.identity.dh(&target_pubkey).ok_or("密钥交换失败")?;
     let sealed = crypto::seal(&shared, payload.as_bytes()).ok_or("加密失败")?;
@@ -381,16 +387,30 @@ pub async fn send_friend_request(
     // **先登记再发**：好友申请没有回执，链路抖动时它会静默丢失，而界面照样显示"已发送"
     //（用户 2026-09-12 真机：对方什么都没收到）。登记后由建链/Hello 补全时重发，
     // 收到同意/拒绝再清除（见 `forget_pending_request`）。
-    {
+    let request_id = {
         let now = crate::db::now_ms();
         // or_insert：已经挂着这条申请时**不重置上次补发时刻**（否则连点几次就把间隔判没了）
-        s.pending_out_requests
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .entry(peer_id.clone())
-            .or_insert((now, 0));
+        let mut guard = s.pending_out_requests.lock().unwrap_or_else(|e| e.into_inner());
+        let entry = guard.entry(peer_id.clone()).or_insert((now, 0));
+        entry.0
+    };
+    // 落库：重启后 `restore_pending_outbound` 靠这一行恢复补发。
+    {
+        let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());
+        let entry = crate::db::OutgoingFriendRequest {
+            peer: peer_id.clone(),
+            first_at: request_id,
+            last_sent_at: 0,
+            status: "waiting".to_string(),
+            withdraw_confirmed: false,
+            withdraw_attempts: 0,
+            withdraw_last_at: 0,
+        };
+        if let Err(e) = crate::db::put_outgoing_friend_request(&dbc, &entry) {
+            crate::logging::log_write_failure(&s.logger, "put_outgoing_friend_request", e);
+        }
     }
-    send_friend_request_via_link(s, &peer_id).await
+    send_friend_request_via_link(s, &peer_id, request_id).await
 }
 
 /// **同意好友申请**这条路径的**唯一**实现：落库（好友 + 会话 + 公钥）→ 回执（Gossip 定向加密）
@@ -465,15 +485,121 @@ pub(crate) async fn send_friend_accept_via_link(
     Ok(())
 }
 
+/// 对端是否声明过"能处理撤回好友申请帧"。门控只有这一处口径（INV-P24 第 4 条）。
+/// `None` = 还没见过对端声明（别急着判死，等 Hello 学到后再补发）；
+/// `Some(false)` = 明确不支持（老端，停在本机并如实标注）。
+pub(crate) fn peer_friend_withdraw_support(s: &AppState, peer_id: &str) -> Option<bool> {
+    s.peer_content_features
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .get(peer_id)
+        .map(|f| f & crate::protocol::CONTENT_FEATURE_FRIEND_WITHDRAW != 0)
+}
+
+/// 撤回帧（`FriendRequestWithdraw`）的**唯一**发送实现。
+pub(crate) async fn send_friend_withdraw_via_link(
+    s: &Arc<AppState>,
+    peer_id: &str,
+    request_id: i64,
+) -> Result<(), String> {
+    let Some(target_pubkey) = peer_x25519(s, peer_id).await else {
+        return Err(crate::error_codes::coded(
+            crate::error_codes::E2EE_PUBKEY_MISSING,
+            "缺对端公钥",
+        ));
+    };
+    let shared = s.identity.dh(&target_pubkey).ok_or("密钥交换失败")?;
+    let payload = serde_json::json!({ "request_id": request_id }).to_string();
+    let sealed = crypto::seal(&shared, payload.as_bytes()).ok_or("加密失败")?;
+    let payload_b64 = STANDARD.encode(&sealed);
+    let mut env = {
+        let gossip = s.gossip.lock().unwrap_or_else(|e| e.into_inner());
+        gossip.build_envelope(
+            &s.identity,
+            &s.device_id,
+            GossipKind::FriendRequestWithdraw,
+            None,
+            None,
+            &payload_b64,
+            db::now_ms(),
+            0,
+        )
+    };
+    env.target = Some(peer_id.to_string());
+    env.sender_sig = s.identity.sign_b64(&env.signing_bytes());
+    if s.has_link(peer_id).await {
+        try_send(s, peer_id, &Message::Gossip { envelope: env }).await?;
+    } else {
+        broadcast_gossip(s, env).await;
+    }
+    Ok(())
+}
+
+/// 撤回结果回执（`FriendRequestWithdrawAck`）的**唯一**发送实现。
+///
+/// `target_pubkey` 直接取自来帧信封（已签名验证），不依赖 peers/friends 表 ——
+/// 撤回方通常还不是好友，缺表项时也必须能把"明确结果"送回去。
+pub(crate) async fn send_friend_withdraw_ack_via_link(
+    s: &Arc<AppState>,
+    peer_id: &str,
+    target_pubkey: &str,
+    request_id: i64,
+    already_friends: bool,
+) -> Result<(), String> {
+    let shared = s.identity.dh(target_pubkey).ok_or("密钥交换失败")?;
+    let payload = serde_json::json!({
+        "request_id": request_id,
+        "outcome": if already_friends { "already_friends" } else { "withdrawn" },
+    })
+    .to_string();
+    let sealed = crypto::seal(&shared, payload.as_bytes()).ok_or("加密失败")?;
+    let payload_b64 = STANDARD.encode(&sealed);
+    let mut env = {
+        let gossip = s.gossip.lock().unwrap_or_else(|e| e.into_inner());
+        gossip.build_envelope(
+            &s.identity,
+            &s.device_id,
+            GossipKind::FriendRequestWithdrawAck,
+            None,
+            None,
+            &payload_b64,
+            db::now_ms(),
+            0,
+        )
+    };
+    env.target = Some(peer_id.to_string());
+    env.sender_sig = s.identity.sign_b64(&env.signing_bytes());
+    if s.has_link(peer_id).await {
+        try_send(s, peer_id, &Message::Gossip { envelope: env }).await?;
+    } else {
+        broadcast_gossip(s, env).await;
+    }
+    Ok(())
+}
+
 pub(crate) async fn accept_friend_request(s: &Arc<AppState>, peer_id: &str) -> Result<(), String> {
     let name = resolve_nickname(s, peer_id);
-    {
+    // **撤回 vs 同意的仲裁点**：检查申请仍在 + 写好友 + 建会话 + 删申请行在同一个事务里。
+    // 与撤回处理器共用同一把 DB 锁 ⇒ 先提交者赢；后到者拿到明确结果。
+    let outcome = {
         let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());
-        if let Err(e) = db::add_friend(&dbc, peer_id, &name, None) {
-            crate::logging::log_write_failure(&s.logger, "add_friend", e);
+        match db::accept_pending_friend_request(&dbc, peer_id, &name, None) {
+            Ok(outcome) => outcome,
+            Err(e) => {
+                crate::logging::log_write_failure(&s.logger, "accept_pending_friend_request", e);
+                return Err("同意好友申请失败，请重试".to_string());
+            }
         }
-        if let Err(e) = db::ensure_conversation(&dbc, peer_id, "single", &name, None) {
-            crate::logging::log_write_failure(&s.logger, "ensure_conversation", e);
+    };
+    match outcome {
+        db::PendingAcceptOutcome::Accepted | db::PendingAcceptOutcome::AlreadyFriend => {}
+        db::PendingAcceptOutcome::NotPending => {
+            // 申请已经被撤回（或已被另一端处理）：给界面一句能解释的话，别假装同意成功。
+            s.pending_requests
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .remove(peer_id);
+            return Err("好友申请不存在或已被对方撤回".to_string());
         }
     }
     // 补写 peers 表已有的公钥到 friends 表：accept 路径此前不写公钥，
@@ -489,6 +615,16 @@ pub(crate) async fn accept_friend_request(s: &Arc<AppState>, peer_id: &str) -> R
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .insert(peer_id.to_string(), (now, 0, 0));
+        let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());
+        let entry = db::PendingOutAccept {
+            peer: peer_id.to_string(),
+            issued_at: now,
+            attempts: 0,
+            last_at: 0,
+        };
+        if let Err(e) = db::put_pending_out_accept(&dbc, &entry) {
+            crate::logging::log_write_failure(&s.logger, "put_pending_out_accept", e);
+        }
     }
     if let Err(e) = send_friend_accept_via_link(s, peer_id).await {
         s.logger.warn(
@@ -530,11 +666,185 @@ pub async fn respond_friend_request(
             to: peer_id.clone(),
         };
         let _ = try_send(s, &peer_id, &msg).await;
-        s.pending_requests
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .remove(&peer_id);
+        // 拒绝也必须落库：只删内存的话，下次开机会把这条申请原样恢复出来。
+        crate::network::transport::forget_pending_request(s, &peer_id);
         let _ = s.app.emit("friend-rejected", &peer_id);
+    }
+    Ok(())
+}
+
+/// 出站申请列表（界面「我发出的申请」用）。
+#[derive(serde::Serialize)]
+pub struct OutgoingFriendRequestView {
+    pub peer_id: String,
+    pub nickname: String,
+    pub first_at: i64,
+    pub status: String,
+    pub withdraw_confirmed: bool,
+}
+
+#[tauri::command(async)]
+pub async fn get_outgoing_friend_requests(
+    state: State<'_, Arc<AppState>>,
+) -> Result<Vec<OutgoingFriendRequestView>, String> {
+    let s = state.inner().clone();
+    // 读库 + 逐行好友检查是阻塞活，必须离开 tokio worker（INV-P34 棘轮，见
+    // `worker_bound_heavy_commands_do_not_grow`）。
+    tauri::async_runtime::spawn_blocking(
+        move || -> Result<Vec<OutgoingFriendRequestView>, String> {
+            let rows = {
+                let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());
+                db::list_outgoing_friend_requests(&dbc).map_err(|e| e.to_string())?
+            };
+            let mut out = Vec::new();
+            for row in rows {
+                // 已经是好友的残留行（同意后的清理漏网）：删掉并从列表里消失。
+                let already_friend = {
+                    let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());
+                    db::get_friend_checked(&dbc, &row.peer).ok().flatten().is_some()
+                };
+                if already_friend {
+                    let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());
+                    let _ = db::forget_outgoing_friend_request(&dbc, &row.peer);
+                    s.pending_out_requests
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner())
+                        .remove(&row.peer);
+                    s.pending_out_withdrawals
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner())
+                        .remove(&row.peer);
+                    continue;
+                }
+                let nickname = resolve_nickname(&s, &row.peer);
+                out.push(OutgoingFriendRequestView {
+                    peer_id: row.peer,
+                    nickname,
+                    first_at: row.first_at,
+                    status: row.status,
+                    withdraw_confirmed: row.withdraw_confirmed,
+                });
+            }
+            Ok(out)
+        },
+    )
+    .await
+    .map_err(|e| format!("读取好友申请失败：{e}"))?
+}
+
+/// 取消一条还没被处理的好友申请（撤回帧的唯一用户入口）。
+///
+/// 本地立刻进入"已撤回"；发给对端的帧由 `flush_pending_friend_withdraw` 在有链路时补发。
+/// - 对端明确不支持（老版本）⇒ 停在"已撤回（未确认）"，不反复发它不认识的帧；
+/// - 对端还没声明过 ⇒ 先排队，等 Hello 学到能力位后再发；
+/// - 对端已经先同意了（好友关系已落库）⇒ 这里直接拒绝撤回，让对方以"已是好友"为准。
+#[tauri::command(async)]
+pub async fn cancel_friend_request(
+    state: State<'_, Arc<AppState>>,
+    peer_id: String,
+) -> Result<(), String> {
+    let s = state.inner().clone();
+    let peer = peer_id.clone();
+    // 仲裁读 + 写库 + 两张内存表都在阻塞池里做（INV-P34 棘轮）。
+    // 返回 `None` = 本地已经确认撤回，无需再发帧；`Some(id)` = 待发/待补发。
+    let request_id = {
+        let s = s.clone();
+        tauri::async_runtime::spawn_blocking(move || -> Result<Option<i64>, String> {
+            if peer.is_empty() || peer == s.device_id {
+                return Err("无效的联系人".to_string());
+            }
+            let now = db::now_ms();
+            let memo_first_at = s
+                .pending_out_requests
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .get(&peer)
+                .map(|e| e.0);
+            let request_id = {
+                let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());
+                if db::get_friend_checked(&dbc, &peer)
+                    .map_err(|e| e.to_string())?
+                    .is_some()
+                {
+                    return Err("已经是好友，无法撤回好友申请".to_string());
+                }
+                let row =
+                    db::get_outgoing_friend_request(&dbc, &peer).map_err(|e| e.to_string())?;
+                let confirmed = row
+                    .as_ref()
+                    .is_some_and(|r| r.status == "withdrawn" && r.withdraw_confirmed);
+                if confirmed {
+                    return Ok(None);
+                }
+                let first_at = row
+                    .as_ref()
+                    .map(|r| r.first_at)
+                    .or(memo_first_at)
+                    .unwrap_or(now);
+                let entry = db::OutgoingFriendRequest {
+                    peer: peer.clone(),
+                    first_at,
+                    last_sent_at: row.as_ref().map(|r| r.last_sent_at).unwrap_or(0),
+                    status: "withdrawn".to_string(),
+                    withdraw_confirmed: false,
+                    withdraw_attempts: 0,
+                    withdraw_last_at: 0,
+                };
+                db::put_outgoing_friend_request(&dbc, &entry).map_err(|e| e.to_string())?;
+                first_at
+            };
+            {
+                let mut waiting = s
+                    .pending_out_requests
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner());
+                waiting.remove(&peer);
+                drop(waiting);
+                s.pending_out_withdrawals
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .insert(peer.clone(), (request_id, 0, 0));
+            }
+            Ok(Some(request_id))
+        })
+        .await
+        .map_err(|e| format!("撤回好友申请失败：{e}"))??
+    };
+    let Some(request_id) = request_id else {
+        return Ok(());
+    };
+    let now = db::now_ms();
+    match peer_friend_withdraw_support(&s, &peer_id) {
+        Some(true) => {
+            if let Err(e) = send_friend_withdraw_via_link(&s, &peer_id, request_id).await {
+                s.logger.warn(
+                    "friend",
+                    format!(
+                        "code=FRIEND_WITHDRAW_RESEND_QUEUED 撤回帧发送失败（已排队补发）peer={peer_id}: {e}"
+                    ),
+                );
+            }
+        }
+        Some(false) => {
+            s.pending_out_withdrawals
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .remove(&peer_id);
+            let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());
+            if let Ok(Some(mut row)) = db::get_outgoing_friend_request(&dbc, &peer_id) {
+                row.withdraw_attempts = 0;
+                row.withdraw_last_at = now;
+                row.withdraw_confirmed = false;
+                let _ = db::put_outgoing_friend_request(&dbc, &row);
+            }
+            s.logger.warn(
+                "friend",
+                format!("code=FRIEND_WITHDRAW_UNSUPPORTED 对端未声明撤回能力，仅本机撤回 peer={peer_id}"),
+            );
+        }
+        None => {
+            // 还没学到对端能力位：保持排队，Hello 后再由 flush 决定。
+        }
     }
     Ok(())
 }

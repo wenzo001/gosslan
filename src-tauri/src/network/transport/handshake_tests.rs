@@ -204,6 +204,7 @@
             from_nickname: nick.to_string(),
             from_avatar: avatar,
             ts: 1,
+            request_id: 0,
         };
 
         // 昵称截断：超长只留前 64 个字符

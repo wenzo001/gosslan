@@ -2,11 +2,13 @@
 import { t } from "@/i18n";
 import { Check } from "@/components/ui/icons";
 import { X } from "@/components/ui/icons";
-import type { PendingRequest } from "@/types";
+import type { OutgoingFriendRequest, PendingRequest } from "@/types";
 import AvatarBox from "@/components/ui/AvatarBox.vue";
 
 defineProps<{
   requests: PendingRequest[];
+  /** 我发出的申请（等待对方同意 / 已撤回），同一块区域里按"我发出的"分组。 */
+  outgoing: OutgoingFriendRequest[];
   /** 由通讯录头部铃铛控制展开/收起。 */
   open: boolean;
 }>();
@@ -14,13 +16,44 @@ const emit = defineEmits<{
   (e: "close"): void;
   (e: "accept", r: PendingRequest): void;
   (e: "reject", r: PendingRequest): void;
+  (e: "cancel", r: OutgoingFriendRequest): void;
 }>();
 
 </script>
 
 <template>
   <div v-if="open" class="mb-1">
-    <div v-if="requests.length" class="rounded-[var(--gosslan-radius-lg)]">
+    <div v-if="requests.length || outgoing.length" class="rounded-[var(--gosslan-radius-lg)]">
+      <!-- 我发出的：等待对方同意（可取消）/ 已撤回（可分已确认/未确认） -->
+      <div v-if="outgoing.length" class="mb-1">
+        <div class="px-2 pb-1 pt-0.5 text-caption font-medium uppercase tracking-wide text-[var(--gosslan-text-2)]">
+          {{ t("friend.request.outgoingTitle") }}
+        </div>
+        <div
+          v-for="r in outgoing"
+          :key="`out-${r.peer_id}`"
+          class="flex h-14 items-center gap-2.5 px-3"
+        >
+          <AvatarBox class="h-9 w-9 shrink-0" :id="r.peer_id" :src="null" />
+          <div class="min-w-0 flex-1">
+            <div class="truncate text-sm font-medium" :title="r.nickname">{{ r.nickname }}</div>
+            <div class="text-xs text-[var(--gosslan-text-2)]">
+              {{ r.status === "waiting"
+                ? t("friend.request.waiting")
+                : r.withdraw_confirmed
+                  ? t("friend.request.withdrawn")
+                  : t("friend.request.withdrawnUnconfirmed") }}
+            </div>
+          </div>
+          <button
+            v-if="r.status === 'waiting'"
+            class="tap-safe rounded-[var(--gosslan-radius-md)] border border-[var(--gosslan-border)] px-2.5 py-1 text-xs text-[var(--gosslan-text-2)] transition hover:bg-[var(--gosslan-hover)]"
+            @click="emit('cancel', r)"
+          >
+            {{ t("friend.request.cancel") }}
+          </button>
+        </div>
+      </div>
       <div
         class="flex items-center justify-between px-2 pb-1 pt-0.5 text-caption font-medium uppercase tracking-wide text-[var(--gosslan-text-2)]"
       >

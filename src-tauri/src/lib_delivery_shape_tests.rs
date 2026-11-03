@@ -46,6 +46,29 @@
         );
     }
 
+    /// **老端收到撤回好友申请帧的实际行为**：丢弃这一帧，不断链、不重投。
+    ///
+    /// 这是上面那条源码判据的**行为证据**：用一帧"已知 type=gossip、嵌套 kind 不认识"
+    /// 的原始字节跑真正的 `decode_frame`。老端的 `GossipKind` 就是缺这个变体，
+    /// 解析会报 `unknown variant ...` ⇒ 被降级成 `Message::Unknown`，而不是 `Err`。
+    #[test]
+    fn an_old_client_drops_an_unknown_gossip_kind_instead_of_breaking_the_link() {
+        let raw = br#"{"type":"gossip","envelope":{
+            "message_id":"m1","sender_id":"peer-a","nonce":"n1",
+            "sender_pubkey":"x25519-a","sender_ed25519":"ed-a","sender_sig":"sig",
+            "ttl":3,"kind":"future_friend_kind",
+            "payload":"","ts":1,"encrypted":false
+        }}"#;
+        let decoded = crate::network::transport::decode_frame(raw);
+        match decoded {
+            Ok(crate::protocol::Message::Unknown { wire_type }) => {
+                assert_eq!(wire_type, "gossip", "外层 type 认得出，内层变体认不出");
+            }
+            Ok(other) => panic!("老端不该解析出已知变体：{other:?}"),
+            Err(e) => panic!("老端收到未知 kind 不许变成连接错误（会拆链）：{e}"),
+        }
+    }
+
     /// **掉线的节点要留在发现列表里，但不能算"在线"**（两个坑必须同时躲开）。
     ///
     /// 2026-09-12 真机（用户 4.2.11，只开蓝牙）：**手机能看到 Mac（"已发现未建联"），
@@ -922,12 +945,12 @@ fn mobile_picker_failures_carry_named_codes() {
     ] {
         assert_eq!(src.matches(code).count(), 1, "{code} 的出现次数不是 1（留痕被删或重复）");
     }
-    // 缺公钥那条复用已有常量，不新造字符串：本文件有**两个**返回值出口（同意/接收侧），
-    // 这次再补一个**日志**出口 ⇒ 常量共出现 3 次，且日志那句必须是 `code={}` 拼出来的。
+    // 缺公钥那条复用已有常量，不新造字符串：申请/同意两个返回值出口 + 一个日志出口，
+    // 再加撤回帧发送的返回值出口 ⇒ 常量共出现 4 次，且日志那句必须是 `code={}` 拼出来的。
     assert_eq!(
         src.matches("crate::error_codes::E2EE_PUBKEY_MISSING").count(),
-        3,
-        "缺公钥的常量出现次数变了（两个 coded 出口 + 一个日志出口 = 3）"
+        4,
+        "缺公钥的常量出现次数变了（三个 coded 出口 + 一个日志出口 = 4）"
     );
     assert!(
         src.contains("code={} 同意好友但缺对端公钥"),

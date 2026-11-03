@@ -332,6 +332,10 @@ pub struct PendingRequest {
     pub from_nickname: String,
     pub from_avatar: Option<String>,
     pub ts: i64,
+    /// 发出方稳定申请标识（首次登记时间）。撤回帧按它精确命中同一条申请；
+    /// 老发送方不带这个字段时为 0，只能按"同一个人"处理。
+    #[serde(default)]
+    pub request_id: i64,
 }
 
 /// 会话的「当前链路」快照：最近一条消息走的链路 + 中间节点数。
@@ -1385,6 +1389,13 @@ pub struct AppState {
     /// （直连 `try_send` 或广播兜底），而 BLE 链路正好在那一刻抖动/还没建好时，
     /// 这一帧**静默丢失**且永不重发 ⇒ 单边好友关系（我这儿有他、他那儿没我）。
     pub pending_out_accepts: Mutex<std::collections::HashMap<String, (i64, u32, i64)>>,
+
+    /// **待送达的撤回帧**：peer_id -> (原申请的 `request_id`/首次登记时刻, 已补发次数, 上次补发时刻)。
+    ///
+    /// 撤回是"我已经单方面完成了这件事"，但要让对方**不再弹申请**，就必须把帧送到。
+    /// 与 `pending_out_accepts` 同一套窗口机制：只在有链路时按间隔补发，窗口外或对端
+    /// 明确不支持这个帧时停止，并持久化为"已撤回（未确认）"。
+    pub pending_out_withdrawals: Mutex<std::collections::HashMap<String, (i64, u32, i64)>>,
 
     /// 会话的「当前链路」快照：conv_id -> LinkState（最近一条消息的链路 + 跳数）。
     /// 收发单聊消息时更新，前端聊天窗口据此显示连接图标（LAN / 桥接 / 蓝牙）。
@@ -2455,6 +2466,7 @@ impl AppState {
             )),
             pending_out_requests: Mutex::new(std::collections::HashMap::new()),
             pending_out_accepts: Mutex::new(std::collections::HashMap::new()),
+            pending_out_withdrawals: Mutex::new(std::collections::HashMap::new()),
             group_keys: Mutex::new(HashMap::new()),
             peers: Mutex::new(HashMap::new()),
             links: tokio::sync::Mutex::new(HashMap::new()),

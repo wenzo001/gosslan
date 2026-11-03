@@ -383,6 +383,9 @@ fn finish_boot(app: &tauri::AppHandle, state: std::sync::Arc<state::AppState>) {
     // `pending_requests` 认成"这条我早就握着了"⇒ 只刷新列表、不再弹通知。
     // 这一句刻意只填表（不 emit、不通知）；界面启动时自己会拉一次 `get_pending_requests`。
     crate::network::transport::restore_pending_requests(&state);
+    // 出站状态同一时机恢复：等待对方同意的申请、待补发的同意回执、未确认的撤回。
+    // 同样是只填表不弹通知；界面启动后走 `get_outgoing_friend_requests`。
+    crate::network::transport::restore_pending_outbound(&state);
     // 卡死看门狗：主线程探针 + 渲染心跳。**接线点只有这一处**（判据钉调用点计数）。
     watchdog::start(app.clone(), state.clone());
     // 系统托盘：关闭主窗口仅隐藏到托盘，退出需走托盘菜单
@@ -800,7 +803,9 @@ pub fn run() {
             commands::sync_friend_keys,
             commands::remove_friend,
             commands::get_pending_requests,
+            commands::get_outgoing_friend_requests,
             commands::send_friend_request,
+            commands::cancel_friend_request,
             commands::respond_friend_request,
             commands::send_message,
             commands::get_messages,
