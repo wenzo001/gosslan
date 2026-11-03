@@ -417,7 +417,8 @@ pub fn crash_note_to(path: &std::path::Path, text: &str) -> bool {
                 },
             )
             .is_ok();
-            ok && f.flush().is_ok()
+            // 崩溃现场可能发生在任何时刻（含掉电前），flush 不够，要 fsync。
+            ok && f.flush().is_ok() && f.sync_all().is_ok()
         }
         Err(_) => false,
     };
@@ -456,6 +457,17 @@ pub struct Logger {
     degrade_noted: std::sync::atomic::AtomicBool,
     /// 落盘行计数，用于 [`LOG_RETRY_BACKOFF_LINES`] 的退避窗口节流。
     append_lines: std::sync::atomic::AtomicU64,
+    /// **整个进程只保持一个** append 句柄（原来是每行 `open → write → close`：
+    /// 2026-11-03 的 58 s fs_usage 实测跑了 41 轮 `mkdir+chmod+open`、82 次 write、79 次
+    /// 4 KiB 物理写）。保持句柄不改变采样精度（30 s 快照 / 5 min 台账照旧），只把
+    /// "写一行开一次文件"的固定开销压掉。
+    sink: Mutex<Option<std::fs::File>>,
+    /// 当前句柄已写字节数：轮转判据用它，代替"每行 `metadata()` 一次"。
+    sink_bytes: std::sync::atomic::AtomicU64,
+    /// 本进程开过几次日志文件（诊断读数，用于对比"每行一开"与"每轮一开"）。
+    file_opens: std::sync::atomic::AtomicU64,
+    /// 本进程 fsync 过几次（只对错误码 / 退出路标 / 崩溃块做，见 [`needs_durable_sync`]）。
+    file_syncs: std::sync::atomic::AtomicU64,
     /// 上一轮的结构化报告：`seed_previous_run` 算一次，命令只 clone。
     previous_report: OnceLock<PreviousRunReport>,
 }
@@ -483,6 +495,16 @@ pub(crate) fn is_disk_full(e: &std::io::Error) -> bool {
     }
     let t = e.to_string().to_lowercase();
     t.contains("no space") || t.contains("not enough space") || t.contains("quota")
+}
+
+/// 哪些行必须"写完即持久"（fsync）。
+///
+/// 口径（2026-11-03 定）：**错误码、退出路标、崩溃块**。其余行（30 s 快照、5 min 台账、
+/// 普通 info）不 fsync —— `write()` 已经进了内核页缓存，进程 abort 也不会丢，
+/// 只有整机掉电才可能丢最后几行。把每行都 fsync 换来的只是写盘噪音。
+/// 退出路标与崩溃块走的是独立的现场文件通道（各自在写完时 sync），这里只管 `.log`。
+fn needs_durable_sync(level: Level, message: &str) -> bool {
+    level == Level::Error || message.contains("code=SIGTERM_RECEIVED")
 }
 
 /// 接收失败的**稳定失败码**（前端按它挑可行动的文案，而不是显示原始 io 错误）。
@@ -1028,6 +1050,10 @@ impl Logger {
             disk_low: std::sync::atomic::AtomicBool::new(false),
             degrade_noted: std::sync::atomic::AtomicBool::new(false),
             append_lines: std::sync::atomic::AtomicU64::new(0),
+            sink: Mutex::new(None),
+            sink_bytes: std::sync::atomic::AtomicU64::new(0),
+            file_opens: std::sync::atomic::AtomicU64::new(0),
+            file_syncs: std::sync::atomic::AtomicU64::new(0),
             previous_report: OnceLock::new(),
         };
         // 把路径交给独立写入器（若 bootstrap 更早绑过，这条就是 no-op；只认第一次）
@@ -1090,6 +1116,9 @@ impl Logger {
                 self.fingerprint,
                 self.run_id,
             );
+            // 启动路标是"上一次是不是正常退出"的唯一锚点（`classify_previous_exit` 读它），
+            // 必须挺过掉电：进程起来就 fsync 一次，代价可以忽略。
+            let _ = f.sync_all();
         }
     }
 
@@ -1119,6 +1148,8 @@ impl Logger {
                 format_utc(now_ms()),
                 self.run_id,
             );
+            // 退出路标之后进程就没了：这条必须真正落盘（否则掉电/强制终止会把它丢成"没退出"）。
+            let _ = f.sync_all();
         }
     }
 
@@ -1139,6 +1170,22 @@ impl Logger {
     /// 让"日志文件怎么这么短"这件事在对方机器上也能被读出来。
     pub fn write_fails(&self) -> u64 {
         self.write_fails.load(Ordering::Relaxed)
+    }
+
+    /// 本进程开日志文件的次数（诊断读数）。
+    /// 2026-11-03 之前是"每行一开"（58 s 实测 41 轮 open+chmod），现在整轮只开 1 次
+    /// （轮转时各加 1）。这个数用来让"合批写到底生效没有"可被读出来，而不是靠感觉。
+    #[cfg(test)]
+    pub fn file_opens(&self) -> u64 {
+        self.file_opens.load(Ordering::Relaxed)
+    }
+
+    /// 本进程对 `.log` 做过几次 fsync（只算错误码 / `SIGTERM_RECEIVED` 这类行）。
+    /// 普通行（快照、台账）不 fsync：`write()` 已进页缓存，进程 abort 也不会丢，
+    /// 只有整机掉电才可能丢最后几行 —— 这条是那个取舍的**可读数**。
+    #[cfg(test)]
+    pub fn file_syncs(&self) -> u64 {
+        self.file_syncs.load(Ordering::Relaxed)
     }
 
     /// 日志目录（`<app data>/logs`）。路径只从这一处出，不让调用方按 stem 自己拼。
@@ -1319,6 +1366,13 @@ impl Logger {
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .clear();
+        // 先关掉常驻句柄再删文件：Unix 下"删了还开着"的写入会落到已 unlink 的 inode，
+        // 标记行看起来写了、读 `current_path()` 却读不到（Windows 下直接删不掉）。
+        {
+            let mut sink = self.sink.lock().unwrap_or_else(|e| e.into_inner());
+            *sink = None;
+            self.sink_bytes.store(0, Ordering::Relaxed);
+        }
         let _ = std::fs::remove_file(self.current_path());
         let _ = std::fs::remove_file(self.old_path());
         self.info(
@@ -1406,7 +1460,8 @@ impl Logger {
         for line in &context {
             let _ = writeln!(f, "{line}");
         }
-        let _ = f.flush();
+        // 崩溃块是给人的最后一份现场：flush 只到页缓存，掉电会整块不见。
+        let _ = f.sync_all();
     }
 
     /// 同一 epoch 秒内、同一 `target` 且**整行文本完全相同**的 diag 只留第一条。
@@ -1461,19 +1516,53 @@ impl Logger {
         use std::io::Write;
         let wrote = (|| -> std::io::Result<()> {
             create_private_dir(&self.dir)?;
-            // 惰性轮转：当前文件超限时，把旧内容挪到 `.old.log`（覆盖上一份旧文件）。
-            if let Ok(meta) = std::fs::metadata(&path) {
-                if meta.len() > MAX_LOG_FILE_BYTES {
-                    let _ = std::fs::remove_file(self.old_path());
-                    let _ = std::fs::rename(&path, self.old_path());
-                }
+            let mut guard = self.sink.lock().unwrap_or_else(|e| e.into_inner());
+            // 本轮第一次写（或上一次开失败/刚轮转）：开一个 append 句柄并记下起点字节数。
+            // 之后每行只写不开关 —— 41 轮 open/chmod 压成 1 轮，语义不变。
+            if guard.is_none() {
+                let f = std::fs::OpenOptions::new()
+                    .create(true)
+                    .append(true)
+                    .open(&path)?;
+                restrict_to_owner(&path);
+                self.sink_bytes.store(
+                    std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0),
+                    Ordering::Relaxed,
+                );
+                self.file_opens.fetch_add(1, Ordering::Relaxed);
+                *guard = Some(f);
             }
-            let mut f = std::fs::OpenOptions::new()
-                .create(true)
-                .append(true)
-                .open(&path)?;
-            restrict_to_owner(&path);
+            // 惰性轮转：当前文件超限时，把旧内容挪到 `.old.log`（覆盖上一份旧文件）。
+            // ⚠️ 先关句柄再 rename：Windows 下带着打开的文件 rename 会失败。
+            let projected = self
+                .sink_bytes
+                .load(Ordering::Relaxed)
+                .saturating_add(line.len() as u64 + 1);
+            if projected > MAX_LOG_FILE_BYTES {
+                *guard = None;
+                let _ = std::fs::remove_file(self.old_path());
+                let _ = std::fs::rename(&path, self.old_path());
+                let f = std::fs::OpenOptions::new()
+                    .create(true)
+                    .append(true)
+                    .open(&path)?;
+                restrict_to_owner(&path);
+                self.sink_bytes.store(0, Ordering::Relaxed);
+                self.file_opens.fetch_add(1, Ordering::Relaxed);
+                *guard = Some(f);
+            }
+            // 上面刚确保过句柄存在；这里不用 `expect`（本仓 panic 站点棘轮只许降）。
+            let Some(f) = guard.as_mut() else {
+                return Err(std::io::Error::other("日志句柄意外缺失"));
+            };
             writeln!(f, "{line}")?;
+            self.sink_bytes
+                .fetch_add(line.len() as u64 + 1, Ordering::Relaxed);
+            // 只有错误码 / 退出路标 / 崩溃块要求"一写就持久"；普通行交给内核页缓存
+            //（进程 abort 也不丢，只有整机掉电才可能丢最后几行），换掉每行一 fsync。
+            if needs_durable_sync(level, message) && f.sync_all().is_ok() {
+                self.file_syncs.fetch_add(1, Ordering::Relaxed);
+            }
             Ok(())
         })();
 
@@ -2669,6 +2758,61 @@ mod tests {
         let old = dir.join("t.old.log");
         let cur_len = std::fs::metadata(&cur).map(|m| m.len()).unwrap_or(0);
         assert!(old.exists() || cur_len <= MAX_LOG_FILE_BYTES);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// 合批写（2026-11-03）：整轮一个常驻句柄；普通行不 fsync，错误码行才 fsync。
+    ///
+    /// 判据全部用**可读数**（`file_opens` / `file_syncs`），不靠"感觉快了"：
+    /// 原来每行 `open+chmod+write+close`（58 s 实测 41 轮），现在是 1 轮 + 轮转时各加 1。
+    #[test]
+    fn logger_batches_writes_and_syncs_only_key_lines() {
+        let dir = std::env::temp_dir().join(format!(
+            "gosslan-log-batch-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0)
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        let logger = Logger::new(dir.clone(), "t", "[dev:test]".to_string());
+        let cur = logger.current_path();
+
+        for i in 0..50 {
+            logger.info("diag", format!("snap {i}"));
+        }
+        assert_eq!(
+            logger.file_opens(),
+            1,
+            "50 行普通日志只许开 1 次文件（原实现是每行一开），实际 {}",
+            logger.file_opens()
+        );
+        assert_eq!(logger.file_syncs(), 0, "普通行不许 fsync");
+        // 不 fsync 也必须立刻读得到：write() 已进内核页缓存（这是"不丢日志"的依据）。
+        let body = std::fs::read_to_string(&cur).unwrap_or_default();
+        assert!(
+            body.contains("snap 49"),
+            "普通行没有立刻可见 ⇒ 合批写引入了「看不见」的缓冲，必须改回直写"
+        );
+
+        logger.error("diag", "code=TEST_ERR 一条错误");
+        assert_eq!(logger.file_syncs(), 1, "错误行必须 fsync");
+        assert_eq!(logger.file_opens(), 1, "错误行复用同一个句柄");
+
+        // clear 会关句柄再删文件：清空标记必须出现在新文件里（不是 unlink 掉的 inode）。
+        logger.clear();
+        let after = std::fs::read_to_string(&cur).unwrap_or_default();
+        assert!(
+            after.contains("code=LOGS_CLEARED"),
+            "clear 之后标记行读不到 ⇒ 删文件时没关句柄"
+        );
+        assert_eq!(
+            logger.file_opens(),
+            2,
+            "clear 后应重新开一次文件，实际 {}",
+            logger.file_opens()
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 
