@@ -13,6 +13,48 @@
 
 ## [Unreleased]
 
+## [5.17.0] - 2026-11-03
+
+### 好友申请：持久化 + 撤回协议帧（minor）
+
+**持久化与重启恢复**
+
+- 我发出的申请（`friend_out:`）、对方的同意回执（`friend_acc:`）、撤回墓碑
+  （`friend_req_wd:`）三族落 SQLite `settings` 表；`pending_out_requests` /
+  `pending_out_accepts` 不再只活在内存里。启动时 `restore_pending_outbound` 按库恢复
+  等待中、已撤回未确认、待补发的同意回执；过期同意行删除。重启后界面仍能看到
+  「等待对方同意」，不会一夜之间失忆。
+- 入站申请也按稳定 `request_id`（首次登记时间）幂等：同一条申请重复到达只更新一条；
+  撤回后写入的墓碑按 `request_id` 挡住迟到的重复申请（清数据时三族一并清除）。
+
+**撤回帧（新增 `GossipKind`，不是消息 `WIRE_KINDS`）**
+
+- `WIRE_KINDS` 只是消息 payload 的 kind 表；好友申请/同意实际走 `GossipKind`。
+  因此撤回新增两个变体：`FriendRequestWithdraw`（发出方撤回自己尚未被处理的申请）
+  与 `FriendRequestWithdrawAck`（接收方回执，`outcome = withdrawn | already_friends`）。
+- 能力位 `CONTENT_FEATURE_FRIEND_WITHDRAW = 1 << 10` 随 Hello 声明。老端没这一位时
+  不发帧、停在「已撤回（未确认）」并如实提示；不假装双向成功。
+- **撤回 vs 同意的仲裁**：两个入口共用同一把 DB 锁 + 同一个 SQLite 事务，
+  **先提交者赢**。同意先提交 → 撤回方收到 `already_friends` 回执并按「已加为好友」
+  收尾；撤回先提交 → 同意命令拿到 `NotPending` 并返回明确错误「好友申请不存在或
+  已被对方撤回」。两侧都会得到确定的三态之一，不会两边都以为成功或都以为失败。
+- 撤回补发：7 天窗口、30 次上限、30 秒最小间隔；已是好友时立即让位。
+- 旧端安全：未知 `GossipKind` 在 `decode_frame` 降级为 `Message::Unknown`（丢弃、
+  不断链、不重投），并有单测钉住；撤回帧只在能力位声明后发送，老端不会反复重试。
+
+**界面**
+
+- 「加好友」与「我的申请」两处新增三态：`等待对方同意`（可取消）/ `已撤回`
+  （对端已确认）/ `已撤回（未确认，对端版本不支持撤回）`；已同意表现为好友列表命中，
+  申请行消失。取消后对方入站列表同步移除，不再弹申请。
+
+**判据**
+
+- `docs/protocol-invariants.md` 新增 **INV-P37**；`docs/domains.data.mjs` 与架构图
+  登记该不变量；`protocol.rs` 中「离线先入队、建链后协商」的说明补上撤回帧的三态门控。
+- Rust：三族读写/归属、墓碑、能力位与帧变体、老端丢弃未知帧；前端：事件清单与
+  store 契约同步。测试清单基线已同步（macOS 1440 条）。
+
 ## [5.16.95] - 2026-11-03
 
 ### Windows 中文安装包（Level 1：只本地化显示名）

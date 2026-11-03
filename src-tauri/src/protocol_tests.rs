@@ -1936,4 +1936,38 @@ mod tests {
             "只有 unknown 时不许编出『版本较旧』这句，实际：{hint2}"
         );
     }
+
+    /// 撤回好友申请是一个**新增 GossipKind**，不是消息 `WIRE_KINDS` 里的一档：
+    /// 老端在解析嵌套枚举时失败 ⇒ `decode_frame` 把它降级成 `Message::Unknown`（丢弃、不断链）。
+    /// 本机必须声明能力位，发送侧才有依据门控。
+    #[test]
+    fn friend_withdraw_kinds_are_new_gossip_variants_and_the_bit_is_advertised() {
+        assert_ne!(
+            content_features() & CONTENT_FEATURE_FRIEND_WITHDRAW,
+            0,
+            "不声明这一位，发送侧永远学不到『可以发撤回帧』"
+        );
+        for (kind, wire) in [
+            (GossipKind::FriendRequestWithdraw, "friend_request_withdraw"),
+            (GossipKind::FriendRequestWithdrawAck, "friend_request_withdraw_ack"),
+        ] {
+            assert_eq!(
+                serde_json::to_string(&kind).unwrap(),
+                format!("\"{wire}\""),
+                "线格式必须固定，否则跨版本对不上"
+            );
+            assert_ne!(
+                content_features() & CONTENT_FEATURE_FRIEND_WITHDRAW,
+                0,
+                "本机得先认识它，才可能处理"
+            );
+        }
+        // 显式钉住：它**不是**消息 kind，别被塞进 WIRE_KINDS 当伪消息。
+        assert!(
+            !WIRE_KINDS
+                .iter()
+                .any(|(name, _)| *name == "friend_request_withdraw"),
+            "撤回帧属于 GossipKind，不属于消息 WIRE_KINDS"
+        );
+    }
 }

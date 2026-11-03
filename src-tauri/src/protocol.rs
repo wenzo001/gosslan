@@ -177,6 +177,14 @@ pub const CONTENT_FEATURE_FILE_CANCEL: u32 = 1 << 8;
 /// 消费点是 [`creator_recall_audience`]。
 pub const CONTENT_FEATURE_CREATOR_RECALL: u32 = 1 << 9;
 
+/// 能力位：**能处理"撤回好友申请"这一帧**。
+///
+/// 为什么必须有：老端的 `GossipKind` 没有这个变体，整帧会在反序列化时变成
+/// `Message::Unknown` 后丢弃（不断链、不重投，已有判据兜住）。但"我点了取消、
+/// 对方界面却还在弹申请"是不能接受的单边结果 ⇒ 只有对端声明过这一位才发，
+/// 否则如实停在本机（INV-P24 第 4 条）。
+pub const CONTENT_FEATURE_FRIEND_WITHDRAW: u32 = 1 << 10;
+
 /// 群历史一页的**条数**上限（服务端一页最多交几条消息）。
 /// 与下面那个字节上限同住 `protocol.rs`：一条页的预算只有一个家（INV-P23），
 /// 收发两侧都从这里取，不许在调用点各写一遍字面量。
@@ -192,8 +200,11 @@ pub const GROUP_HISTORY_PAGE_MAX_BYTES: usize = 1_500_000;
 /// 本机支持的内容能力位图。**不参与 Hello 签名**（见 hello_signing_bytes）：
 /// 老端忽略该字段、新端据此决定能不能对它发拉取帧。
 ///
-/// 末尾那位 `CONTENT_FEATURE_CREATOR_RECALL` 与其余各位不同：它不门控任何帧，
+/// `CONTENT_FEATURE_CREATOR_RECALL` 与其余各位不同：它不门控任何帧，
 /// 只让群主的发送端算得出"谁还不认这次撤回"那句提示（见 `creator_recall_audience`）。
+/// `CONTENT_FEATURE_FRIEND_WITHDRAW` 同理不进 `kind_required_feature`：撤回帧是
+/// `GossipKind` 而不是消息 kind，门控由 `peer_friend_withdraw_support` 按 Hello 的
+/// 能力位单独回答（`None/Some(false)/Some(true)` 对应 Hold/Unsupported/Send）。
 pub fn content_features() -> u32 {
     CONTENT_FEATURE_PULL
         | CONTENT_FEATURE_MERGE
@@ -205,6 +216,7 @@ pub fn content_features() -> u32 {
         | CONTENT_FEATURE_RENDER
         | CONTENT_FEATURE_FILE_CANCEL
         | CONTENT_FEATURE_CREATOR_RECALL
+        | CONTENT_FEATURE_FRIEND_WITHDRAW
 }
 
 /// 「哪个 kind 需要对端具备哪一点能力」的**唯一**答案。`None` = V1 词表内、对所有对端安全。
@@ -314,6 +326,11 @@ pub fn kind_blocked_hint(kind: &str, peer_features: Option<u32>) -> String {
 ///   「离线先入队、建链后补发」（INV-P04）。"不知道"绝不能成为删行的理由。
 /// - `Unsupported`：对端**自己声明过**没有这一位 ⇒ 再等也不会变，落终态并给具名码。
 /// - `Send`：可以直接投递。
+///
+/// 「撤回好友申请」走的是**同一套三态**（`GossipKind` 不在 `dm_required_features` 的词表里，
+/// 所以由 `peer_friend_withdraw_support` 给出等价答案）：`None` = Hold（等 Hello 后补发）、
+/// `Some(false)` = Unsupported（老端明确没有这一位，停在本机并如实标未确认）、
+/// `Some(true)` = Send。别在新入口再发明第四种默认方向。
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
 pub enum DeferredSend {
     Send,
@@ -1675,6 +1692,18 @@ pub enum GossipKind {
     FriendRequest,
     /// 好友申请同意（定向跨跳）：方向与 FriendRequest 相反，其余同理。
     FriendAccept,
+    /// 撤回尚未被处理的好友申请（定向跨跳）：payload 为 E2EE 密文
+    /// `{"request_id":n}`，`target` = 原申请的接收方。
+    ///
+    /// 只由申请发出方发送；接收方按 `request_id` 精确命中自己那条待处理申请。
+    /// 老端不认识这个变体 ⇒ 整帧退化成 `Message::Unknown`（丢弃，不断链、不重投）。
+    FriendRequestWithdraw,
+    /// 撤回结果回执（定向跨跳）：payload 为 E2EE 密文
+    /// `{"request_id":n,"outcome":"withdrawn"|"already_friends"}`，`target` = 撤回方。
+    ///
+    /// 为什么需要它：撤回方必须拿到**明确结果**。`already_friends` 表示对端先落库了
+    /// 好友关系（同意赢），`withdrawn` 表示申请已被删除（撤回赢）。
+    FriendRequestWithdrawAck,
     /// 单聊送达确认（定向跨跳）：接收方成功持久化某条单聊 Gossip 后回给原始发送方。
     /// 明文（encrypted=false），payload 为 JSON `{"msg_id":"..."}`，`target` = 原始发送方。
     /// 与直连 `Message::Ack` 语义一致，但可跨跳（跨 Tailscale 无直连时 Ack 到不了发送方）。

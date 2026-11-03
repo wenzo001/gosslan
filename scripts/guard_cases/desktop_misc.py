@@ -266,8 +266,8 @@ pub fn guard_case_fixture_db(
         "收到同意/拒绝后清除",
         file=TAURI / "src" / "commands.rs",
         injections=[(
-            "    {\n        let now = crate::db::now_ms();\n        // or_insert\uff1a\u5df2\u7ecf\u6302\u7740\u8fd9\u6761\u7533\u8bf7\u65f6**\u4e0d\u91cd\u7f6e\u4e0a\u6b21\u8865\u53d1\u65f6\u523b**\uff08\u5426\u5219\u8fde\u70b9\u51e0\u6b21\u5c31\u628a\u95f4\u9694\u5224\u6ca1\u4e86\uff09\n        s.pending_out_requests\n            .lock()\n            .unwrap_or_else(|e| e.into_inner())\n            .entry(peer_id.clone())\n            .or_insert((now, 0));\n    }\n",
-            "",
+            "    let request_id = {\n        let now = crate::db::now_ms();\n        // or_insert\uff1a\u5df2\u7ecf\u6302\u7740\u8fd9\u6761\u7533\u8bf7\u65f6**\u4e0d\u91cd\u7f6e\u4e0a\u6b21\u8865\u53d1\u65f6\u523b**\uff08\u5426\u5219\u8fde\u70b9\u51e0\u6b21\u5c31\u628a\u95f4\u9694\u5224\u6ca1\u4e86\uff09\n        let mut guard = s.pending_out_requests.lock().unwrap_or_else(|e| e.into_inner());\n        let entry = guard.entry(peer_id.clone()).or_insert((now, 0));\n        entry.0\n    };\n",
+            "    let request_id = crate::db::now_ms();\n",
         )],
         cmd=cargo("test", "--lib", "friend_request_survives_a_dropped_link"),
         cwd=TAURI,

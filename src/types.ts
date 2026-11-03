@@ -55,6 +55,22 @@ export interface PendingRequest {
 }
 
 /**
+ * 我发出、还没被处理（或刚撤回）的好友申请。
+ *
+ * `status`：
+ * - `waiting`：等对方同意，可取消；
+ * - `withdrawn`：已撤回。`withdraw_confirmed` 为 false 时表示撤回帧还没拿到对端回执
+ *   （老版本对端 / 对方还没上线），文案必须如实提示。
+ */
+export interface OutgoingFriendRequest {
+  peer_id: string;
+  nickname: string;
+  first_at: number;
+  status: "waiting" | "withdrawn";
+  withdraw_confirmed: boolean;
+}
+
+/**
  * 一条「好友身份密钥已更换、等待用户确认」的候选（对方卸载重装等场景）。
  * 候选里的新公钥已经在后端通过新私钥的 Hello 自验签（证明持有新私钥），
  * 但是否是本人仍需用户带外确认，确认后调用 syncFriendKeys 覆盖绑定。

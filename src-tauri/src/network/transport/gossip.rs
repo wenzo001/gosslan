@@ -214,7 +214,11 @@ fn gossip_trust_for_unpeer_sender(
     }
     matches!(
         kind,
-        GossipKind::Presence | GossipKind::FriendRequest | GossipKind::FriendAccept
+        GossipKind::Presence
+            | GossipKind::FriendRequest
+            | GossipKind::FriendAccept
+            | GossipKind::FriendRequestWithdraw
+            | GossipKind::FriendRequestWithdrawAck
     )
 }
 
@@ -403,7 +407,10 @@ async fn handle_gossip(state: &Arc<AppState>, peer_id: &str, env: GossipEnvelope
                 // Presence 必然是明文；收到 encrypted=true 的是异常，丢弃。
                 return;
             }
-            GossipKind::FriendRequest | GossipKind::FriendAccept => {
+            GossipKind::FriendRequest
+            | GossipKind::FriendAccept
+            | GossipKind::FriendRequestWithdraw
+            | GossipKind::FriendRequestWithdrawAck => {
                 // 定向好友控制消息：发送方用 target 的 X25519 公钥加密，只有 target
                 // 能用自己的私钥解开；中间节点解不开（plaintext=None），无害。
                 let shared =
@@ -700,6 +707,11 @@ async fn handle_gossip(state: &Arc<AppState>, peer_id: &str, env: GossipEnvelope
                             .get("from_avatar")
                             .and_then(|a| a.as_str())
                             .map(|s| s.to_string());
+                        // 新发送方带稳定 request_id；老发送方没有 ⇒ 0（只能按人处理）。
+                        let request_id = v
+                            .get("request_id")
+                            .and_then(|r| r.as_i64())
+                            .unwrap_or(0);
                         // 同步记录申请方身份与公钥：这样「同意」时才有对方 X25519 公钥
                         // 可加密回发的 FriendAccept（跨跳场景下 Presense 可能还没到）。
                         upsert_peer(
@@ -725,6 +737,7 @@ async fn handle_gossip(state: &Arc<AppState>, peer_id: &str, env: GossipEnvelope
                                 from_nickname,
                                 from_avatar,
                                 ts: env.ts,
+                                request_id,
                             },
                             "收到跨跳好友申请",
                         )
@@ -741,6 +754,53 @@ async fn handle_gossip(state: &Arc<AppState>, peer_id: &str, env: GossipEnvelope
                 // `include!` 进 transport.rs 的）。"重复投递不许刷屏"这条判据原先**只有这一份有**
                 // ⇒ 直连链路上"被『好友申请已通过』反复刷屏"照旧存在（2026-09-28 复审抓到）。
                 apply_friend_accept(state, &from, "收到跨跳好友同意");
+            }
+        }
+        GossipKind::FriendRequestWithdraw => {
+            // 定向撤回：只有 target == 本机才处理（即「别人撤回发给我的申请」）。
+            if env.target.as_deref() == Some(state.device_id.as_str()) {
+                if let Some(pt) = plaintext {
+                    if let Ok(v) = serde_json::from_slice::<serde_json::Value>(&pt) {
+                        let request_id = v.get("request_id").and_then(|r| r.as_i64()).unwrap_or(0);
+                        let already_friends =
+                            apply_friend_request_withdraw(state, &env.sender_id, request_id).await;
+                        if let Err(e) = crate::commands::send_friend_withdraw_ack_via_link(
+                            state,
+                            &env.sender_id,
+                            &env.sender_pubkey,
+                            request_id,
+                            already_friends,
+                        )
+                        .await
+                        {
+                            state.logger.warn(
+                                "friend",
+                                format!(
+                                    "code=FRIEND_WITHDRAW_ACK_FAILED peer={} request_id={request_id} 回执发不出去：{e}",
+                                    env.sender_id
+                                ),
+                            );
+                        }
+                    }
+                }
+            }
+        }
+        GossipKind::FriendRequestWithdrawAck => {
+            // 定向回执：只有 target == 本机才处理（即「我撤回的申请有结果了」）。
+            if env.target.as_deref() == Some(state.device_id.as_str()) {
+                if let Some(pt) = plaintext {
+                    if let Ok(v) = serde_json::from_slice::<serde_json::Value>(&pt) {
+                        let request_id = v.get("request_id").and_then(|r| r.as_i64()).unwrap_or(0);
+                        let already_friends =
+                            v.get("outcome").and_then(|o| o.as_str()) == Some("already_friends");
+                        apply_friend_request_withdraw_ack(
+                            state,
+                            &env.sender_id,
+                            request_id,
+                            already_friends,
+                        );
+                    }
+                }
             }
         }
         GossipKind::ChatAck => {

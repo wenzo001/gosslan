@@ -185,6 +185,10 @@ export default {
         // handle_identity.rs:188 / :210，gossip.rs:501 / :523）；通知出口 = platform（notifications.rs）；
         // 同意那一支的幂等键 = persistence 的 friends 表（db/friends.rs 的 get_friend）。
         "INV-P33",
+        // ↓ 2026-11-03 补登：撤回好友申请同样是**好友关系这一格**的契约，实现跨三处 ——
+        // 命令入口 commands/mobile_picker.rs（cancel/accept 的仲裁与界面来源）、
+        // 状态家 db/friends.rs 的三份键族与墓碑、补发/入站处理 network/transport/handshake.rs + gossip.rs。
+        "INV-P37",
       ],
       activeHome: null,
       activeHomeNote: "暂无独立文件：逻辑在 commands.rs 的 friend 命令与 db/friends.rs 的表 CRUD",

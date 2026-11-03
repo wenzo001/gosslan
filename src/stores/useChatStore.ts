@@ -113,6 +113,7 @@ import type {
   Peer,
   PendingMessageOp,
   PendingRequest,
+  OutgoingFriendRequest,
   UpdaterStatus,
   ContentTransfer,
   TransferInfo,
@@ -253,6 +254,17 @@ export const useChatStore = defineStore("chat", () => {
       friends.value.map((f) => f.device_id),
     ),
   );
+  /**
+   * 我发出的申请（等待对方同意 / 已撤回）。
+   *
+   * 与 `pendingRequests` 同一纪律：已经出现在好友列表里的一律滤掉 ——
+   * 三态里的「已同意」不是一条独立记录，而是 `friends` 里真的多了这个人。
+   */
+  const rawOutgoingRequests = ref<OutgoingFriendRequest[]>([]);
+  const outgoingRequests = computed(() => {
+    const friendIds = new Set(friends.value.map((f) => f.device_id));
+    return rawOutgoingRequests.value.filter((r) => !friendIds.has(r.peer_id));
+  });
   const conversations = ref<Conversation[]>([]);
   const groups = ref<Group[]>([]);
   const transfers = ref<TransferInfo[]>([]);
@@ -1166,6 +1178,13 @@ export const useChatStore = defineStore("chat", () => {
     if (!refreshGuard.isCurrent("pending", tok)) return;
     rawPendingRequests.value = list;
   }
+  /** 我发出的申请：等待中 / 已撤回（终态由后端落库，不靠事件猜）。 */
+  async function refreshOutgoingRequests() {
+    const tok = refreshGuard.begin("outgoing");
+    const list = await api.getOutgoingFriendRequests();
+    if (!refreshGuard.isCurrent("outgoing", tok)) return;
+    rawOutgoingRequests.value = list;
+  }
   /** 重新拉取待确认的好友密钥轮换（后端只保留好友条目，内存态）。 */
   async function refreshKeyRotations() {
     try {
@@ -1537,6 +1556,7 @@ export const useChatStore = defineStore("chat", () => {
       refreshTransfers(),
       refreshUpdaterStatus(),
       refreshPending(),
+      refreshOutgoingRequests(),
       refreshFriends(),
     ]);
   }
@@ -2430,6 +2450,27 @@ export const useChatStore = defineStore("chat", () => {
 
   async function sendFriendRequest(peerId: string) {
     await api.sendFriendRequest(peerId);
+    await refreshOutgoingRequests();
+  }
+  /**
+   * 取消还没被处理的好友申请。
+   *
+   * 乐观把这一行翻成「已撤回（未确认）」再调后端：用户点完立刻有反馈；
+   * 后端回执到达 / 对方已经同意，都会通过 `refreshOutgoingRequests` 把真实终态拉回来。
+   * 失败（例如对方刚好先同意了）就回滚并让调用方 toast。
+   */
+  async function cancelFriendRequest(peerId: string) {
+    const prev = rawOutgoingRequests.value;
+    rawOutgoingRequests.value = prev.map((r) =>
+      r.peer_id === peerId ? { ...r, status: "withdrawn", withdraw_confirmed: false } : r,
+    );
+    try {
+      await api.cancelFriendRequest(peerId);
+    } catch (e) {
+      rawOutgoingRequests.value = prev;
+      throw e;
+    }
+    await refreshOutgoingRequests();
   }
   /** 乐观交互：立即移出申请列表，失败回滚（调用方负责 toast）。 */
   async function respondRequest(peerId: string, accept: boolean) {
@@ -3466,8 +3507,21 @@ export const useChatStore = defineStore("chat", () => {
       onFriendAccepted: async () => {
         await refreshFriends();
         await refreshConversations();
+        await refreshOutgoingRequests();
       },
-      onFriendRejected: () => {},
+      onFriendRejected: () => {
+        void refreshOutgoingRequests();
+      },
+      onFriendRequestWithdrawn: async (e) => {
+        if (e.direction === "inbound") {
+          rawPendingRequests.value = rawPendingRequests.value.filter(
+            (r) => r.from !== e.peer_id,
+          );
+          app.toast(t("friend.request.withdrawnByPeer"), "info");
+        }
+        // 两个方向都重拉：出站那一行的"已撤回（未确认）"要靠后端回执翻成确认态。
+        await refreshOutgoingRequests();
+      },
       onFriendRemoved: async () => {
         await refreshFriends();
         // 后端在删好友时会一并删掉该好友的密钥轮换候选：本地表跟着清，
@@ -3666,6 +3720,7 @@ export const useChatStore = defineStore("chat", () => {
       "refreshFriends",
       "refreshConversations",
       "refreshPending",
+      "refreshOutgoingRequests",
       "refreshGroups",
       "refreshTransfers",
       "refreshPeers",
@@ -3676,6 +3731,7 @@ export const useChatStore = defineStore("chat", () => {
       refreshFriends(),
       refreshConversations(),
       refreshPending(),
+      refreshOutgoingRequests(),
       refreshGroups(),
       refreshTransfers(),
       refreshPeers(),
@@ -3814,6 +3870,7 @@ export const useChatStore = defineStore("chat", () => {
     conversationsLoaded,
     groupsLoaded,
     pendingRequests,
+    outgoingRequests,
     conversations,
     groups,
     transfers,
@@ -3886,6 +3943,8 @@ export const useChatStore = defineStore("chat", () => {
     nudgeNotice,
     confirmReminder,
     sendFriendRequest,
+    cancelFriendRequest,
+    refreshOutgoingRequests,
     respondRequest,
     removeFriend,
     deleteConversation,

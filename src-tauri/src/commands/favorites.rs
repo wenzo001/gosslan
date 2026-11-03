@@ -606,6 +606,11 @@ pub async fn clear_all_data(
         // 内存那一张，库里那些行若留着，下一次启动就被 `restore_pending_requests` 原样端回来
         // —— 用户刚点完「清除数据」，「新朋友」里却又冒出一排申请。
         db::clear_friend_requests(&dbc).map_err(|e| e.to_string())?;
+        // 出站那一批同样要抹：否则"清除数据"之后重启，等待中的申请、待补发的同意、
+        // 未确认的撤回又会从 `restore_pending_outbound` 回来。
+        db::clear_outgoing_friend_requests(&dbc).map_err(|e| e.to_string())?;
+        db::clear_pending_out_accepts(&dbc).map_err(|e| e.to_string())?;
+        db::clear_withdrawn_request_tombstones(&dbc).map_err(|e| e.to_string())?;
         dbc.execute(
             "DELETE FROM conversation_clocks WHERE conv_id LIKE 'group:%'",
             [],
@@ -619,6 +624,18 @@ pub async fn clear_all_data(
 
     // 2. Runtime state 清理：群密钥内存缓存一并清空（彻底退出群聊）。
     s.pending_requests
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .clear();
+    s.pending_out_requests
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .clear();
+    s.pending_out_accepts
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .clear();
+    s.pending_out_withdrawals
         .lock()
         .unwrap_or_else(|e| e.into_inner())
         .clear();

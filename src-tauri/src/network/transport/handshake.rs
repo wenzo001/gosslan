@@ -352,11 +352,18 @@ pub(crate) fn apply_friend_accept(state: &Arc<AppState>, from: &str, trace: &str
         let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
         db::get_friend(&dbc, from).is_some()
     };
+    // 撤回中的申请仍然算"我方发出过、还没被处理"：对端若先把好友关系落库，
+    // 这条同意是**仲裁的明确结果**（同意赢），必须接受并盖掉"已撤回"。
     let has_pending_out = state
         .pending_out_requests
         .lock()
         .unwrap_or_else(|e| e.into_inner())
-        .contains_key(from);
+        .contains_key(from)
+        || state
+            .pending_out_withdrawals
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .contains_key(from);
     if !friend_accept_is_expected(was_friend, has_pending_out) {
         // 不写库、不 emit、不通知：只留一行便于排查的痕迹（这条本身就是"有人在硬塞"）。
         state.logger.warn(
@@ -493,6 +500,28 @@ pub(crate) fn bounded_pending_request(mut req: PendingRequest) -> (PendingReques
 }
 
 pub(crate) async fn apply_friend_request(state: &Arc<AppState>, req: PendingRequest, trace: &str) {
+    // **撤回之后才迟到的重复申请**：撤回时留了墓碑，同一条 `request_id` 不许再弹出来。
+    // 不同 `request_id` = 对方重新发起了新申请，清墓碑照常处理。
+    let tombstone = {
+        let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
+        db::get_withdrawn_request_tombstone(&dbc, &req.from).ok().flatten()
+    };
+    if let Some(withdrawn_id) = tombstone {
+        if req.request_id != 0 && req.request_id == withdrawn_id {
+            state.logger.info(
+                "friend",
+                format!(
+                    "code=FRIEND_REQUEST_ALREADY_WITHDRAWN peer={} request_id={} 迟到重复申请已丢弃",
+                    req.from, req.request_id
+                ),
+            );
+            return;
+        }
+        let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
+        if let Err(e) = db::forget_withdrawn_request_tombstone(&dbc, &req.from) {
+            crate::logging::log_write_failure(&state.logger, "forget_withdrawn_request_tombstone", e);
+        }
+    }
     // 他已经是我的好友 ⇒ 直接同意（别插 pending，见 auto_accept_if_already_friend）
     if auto_accept_if_already_friend(state, &req.from).await {
         return;
@@ -593,6 +622,17 @@ pub fn forget_pending_request(state: &AppState, peer_id: &str) {
         .lock()
         .unwrap_or_else(|e| e.into_inner())
         .remove(peer_id);
+    // 撤回队列同样收口：对方已经回执了（无论同意还是拒绝），撤回就没有继续补发的意义。
+    state
+        .pending_out_withdrawals
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .remove(peer_id);
+    // 出站登记也落库，别让下一次启动把它端回来。
+    let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
+    if let Err(e) = db::forget_outgoing_friend_request(&dbc, peer_id) {
+        crate::logging::log_write_failure(&state.logger, "forget_outgoing_friend_request", e);
+    }
 }
 
 /// 启动时把库里还没处理的入站申请填回内存（审计 A4）。返回填回去的条数。
@@ -650,6 +690,251 @@ pub(crate) fn restore_pending_requests(state: &AppState) -> usize {
     restored
 }
 
+/// 处理收到的撤回帧（`FriendRequestWithdraw`）。
+///
+/// 返回 `true` = 对端**已经是我的好友**（同意先落库，撤回输），应回执
+/// `already_friends` 让撤回方收敛到"已同意"；`false` = 申请已被删除（撤回赢），
+/// 回执 `withdrawn`。
+///
+/// 仲裁点与同意命令共用同一把 DB 锁：先提交者赢，后到者拿到明确结果。
+pub(crate) async fn apply_friend_request_withdraw(
+    state: &Arc<AppState>,
+    from: &str,
+    request_id: i64,
+) -> bool {
+    let (already_friend, removed) = {
+        let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
+        // 与同意命令共用同一个事务状判定：先提交者赢（见 `db::withdraw_pending_friend_request`）。
+        match db::withdraw_pending_friend_request(&dbc, from, request_id) {
+            Ok(db::WithdrawOutcome::AlreadyFriend) => (true, false),
+            Ok(db::WithdrawOutcome::Withdrawn) => (false, true),
+            Ok(db::WithdrawOutcome::NoMatch) => (false, false),
+            Err(e) => {
+                crate::logging::log_write_failure(&state.logger, "withdraw_pending_friend_request", e);
+                (false, false)
+            }
+        }
+    };
+    if removed {
+        state
+            .pending_requests
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .remove(from);
+        let _ = state.app.emit(
+            "friend-request-withdrawn",
+            serde_json::json!({ "peer_id": from, "direction": "inbound" }),
+        );
+        state.logger.info(
+            "friend",
+            format!("对方撤回了好友申请 peer={from} request_id={request_id}"),
+        );
+    } else if !already_friend {
+        state.logger.info(
+            "friend",
+            format!(
+                "code=FRIEND_WITHDRAW_NO_MATCH peer={from} request_id={request_id}（没有命中的待处理申请，可能已被处理）"
+            ),
+        );
+    }
+    already_friend
+}
+
+/// 处理撤回回执（`FriendRequestWithdrawAck`）：撤回方在这里拿到**明确结果**。
+///
+/// - `already_friends` ⇒ 对端先落库了好友关系（同意赢）⇒ 走同意那条路径，界面翻成「已同意」；
+/// - `withdrawn` ⇒ 申请已在对端删除（撤回赢）⇒ 界面终态「已撤回」。
+pub(crate) fn apply_friend_request_withdraw_ack(
+    state: &Arc<AppState>,
+    from: &str,
+    request_id: i64,
+    already_friends: bool,
+) {
+    let (memo_id, row) = {
+        let memo_id = state
+            .pending_out_withdrawals
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(from)
+            .map(|e| e.0);
+        let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
+        let row = db::get_outgoing_friend_request(&dbc, from).ok().flatten();
+        (memo_id, row)
+    };
+    let current_id = memo_id.or(row.as_ref().map(|r| r.first_at));
+    if current_id != Some(request_id) {
+        state.logger.warn(
+            "friend",
+            format!(
+                "code=FRIEND_WITHDRAW_ACK_STALE peer={from} ack_request_id={request_id} current={current_id:?}（不是当前这条申请的回执，已忽略）"
+            ),
+        );
+        return;
+    }
+    if already_friends {
+        // 同意赢：这条申请本来就是"我方发出、等对方处理"，`apply_friend_accept` 接受它；
+        // 它会一并清掉撤回队列与出站行。
+        apply_friend_accept(state, from, "收到撤回回执：对端已是好友（同意赢）");
+        return;
+    }
+    state
+        .pending_out_withdrawals
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .remove(from);
+    {
+        let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(mut row) = row {
+            row.status = "withdrawn".to_string();
+            row.withdraw_confirmed = true;
+            row.withdraw_last_at = crate::db::now_ms();
+            if let Err(e) = db::put_outgoing_friend_request(&dbc, &row) {
+                crate::logging::log_write_failure(&state.logger, "put_outgoing_friend_request", e);
+            }
+        }
+    }
+    let _ = state.app.emit(
+        "friend-request-withdrawn",
+        serde_json::json!({ "peer_id": from, "direction": "outbound" }),
+    );
+    state.logger.info(
+        "friend",
+        format!("撤回已确认 peer={from} request_id={request_id}（撤回赢）"),
+    );
+}
+
+/// 启动时恢复**出站**状态：等待补发的申请、待补发的同意回执、未确认的撤回。
+///
+/// 与入站恢复同一纪律：只填表、不 `emit`、不弹通知；界面启动后自己拉
+/// `get_outgoing_friend_requests`。读失败只留码，不阻断启动。
+pub(crate) fn restore_pending_outbound(state: &AppState) -> (usize, usize, usize) {
+    let (outgoing, accepts) = {
+        let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
+        (db::list_outgoing_friend_requests(&dbc), db::list_pending_out_accepts(&dbc))
+    };
+    let (outgoing, accepts) = match (outgoing, accepts) {
+        (Ok(o), Ok(a)) => (o, a),
+        (Err(e), _) | (_, Err(e)) => {
+            state.logger.warn(
+                "friend",
+                format!("code=FRIEND_OUTBOUND_RESTORE_FAILED 出站申请读不回内存：{e}"),
+            );
+            return (0, 0, 0);
+        }
+    };
+    let now = crate::db::now_ms();
+    let mut restored_requests = 0usize;
+    let mut restored_accepts = 0usize;
+    let mut restored_withdrawals = 0usize;
+    let mut remove_rows: Vec<String> = Vec::new();
+    let mut waiting_rows: Vec<(String, i64, i64)> = Vec::new();
+    let mut withdrawal_rows: Vec<(String, i64, u32, i64)> = Vec::new();
+    for row in outgoing {
+        // DB 查询放在取内存表锁之前，保持锁序一致（DB → 内存表）。
+        let already_friend = {
+            let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
+            db::get_friend(&dbc, &row.peer).is_some()
+        };
+        if already_friend {
+            remove_rows.push(row.peer);
+            continue;
+        }
+        match row.status.as_str() {
+            "withdrawn" if !row.withdraw_confirmed => {
+                match friend_accept_flush_decision(
+                    Some((row.first_at, row.withdraw_attempts, row.withdraw_last_at)),
+                    now,
+                    WITHDRAW_MAX_ATTEMPTS,
+                    WITHDRAW_MIN_INTERVAL_MS,
+                    WITHDRAW_WINDOW_MS,
+                ) {
+                    FriendAcceptFlush::GiveUp => remove_rows.push(row.peer),
+                    _ => withdrawal_rows.push((
+                        row.peer,
+                        row.first_at,
+                        row.withdraw_attempts,
+                        row.withdraw_last_at,
+                    )),
+                }
+            }
+            "waiting" => waiting_rows.push((row.peer, row.first_at, row.last_sent_at)),
+            _ => {}
+        }
+    }
+    {
+        let mut waiting = state
+            .pending_out_requests
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        for (peer, first_at, last_sent) in waiting_rows {
+            waiting.insert(peer, (first_at, last_sent));
+            restored_requests += 1;
+        }
+    }
+    {
+        let mut withdrawals = state
+            .pending_out_withdrawals
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        for (peer, first_at, attempts, last_at) in withdrawal_rows {
+            withdrawals.insert(peer, (first_at, attempts, last_at));
+            restored_withdrawals += 1;
+        }
+    }
+    for peer in remove_rows {
+        let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
+        let _ = db::forget_outgoing_friend_request(&dbc, &peer);
+    }
+    {
+        let mut accept_rows: Vec<(String, i64, u32, i64)> = Vec::new();
+        let mut expired: Vec<String> = Vec::new();
+        for entry in accepts {
+            match friend_accept_flush_decision(
+                Some((entry.issued_at, entry.attempts, entry.last_at)),
+                now,
+                ACCEPT_MAX_ATTEMPTS,
+                ACCEPT_MIN_INTERVAL_MS,
+                ACCEPT_WINDOW_MS,
+            ) {
+                FriendAcceptFlush::GiveUp => expired.push(entry.peer),
+                _ => accept_rows.push((entry.peer, entry.issued_at, entry.attempts, entry.last_at)),
+            }
+        }
+        for peer in expired {
+            let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
+            let _ = db::forget_pending_out_accept(&dbc, &peer);
+        }
+        let mut accepts_map = state
+            .pending_out_accepts
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        for (peer, issued_at, attempts, last_at) in accept_rows {
+            accepts_map.insert(peer, (issued_at, attempts, last_at));
+            restored_accepts += 1;
+        }
+    }
+    if restored_requests + restored_accepts + restored_withdrawals > 0 {
+        state.logger.info(
+            "friend",
+            format!(
+                "重启恢复出站状态：待补发申请 {restored_requests} 条、待补发同意 {restored_accepts} 条、未确认撤回 {restored_withdrawals} 条"
+            ),
+        );
+    }
+    (restored_requests, restored_accepts, restored_withdrawals)
+}
+
+/// 好友同意回执的补发参数（与 `flush_pending_friend_accept` 同口径，恢复时复用）。
+const ACCEPT_MAX_ATTEMPTS: u32 = 3;
+const ACCEPT_MIN_INTERVAL_MS: i64 = 5_000;
+const ACCEPT_WINDOW_MS: i64 = 120_000;
+
+/// 撤回帧的补发参数：撤回是持久状态，窗口必须跨重启、跨"对方离线"，
+/// 但每次只在有链路时按 30s 间隔试；对端明确不支持时立即停（不等窗口）。
+const WITHDRAW_MAX_ATTEMPTS: u32 = 30;
+const WITHDRAW_MIN_INTERVAL_MS: i64 = 30_000;
+const WITHDRAW_WINDOW_MS: i64 = 7 * 24 * 60 * 60 * 1000;
+
 /// 待发好友申请的补发判定结果。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FriendRequestFlush {
@@ -701,18 +986,19 @@ pub async fn flush_pending_friend_request(state: &Arc<AppState>, peer_id: &str) 
     const MIN_INTERVAL_MS: i64 = 30_000;
     let now = crate::db::now_ms();
     // 锁内只做判定（**绝不跨 await 持锁**）
-    let decision = {
+    let (decision, entry) = {
         let entry = state
             .pending_out_requests
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .get(peer_id)
             .copied();
-        friend_request_flush_decision(entry, now, MIN_INTERVAL_MS)
+        (friend_request_flush_decision(entry, now, MIN_INTERVAL_MS), entry)
     };
     if decision == FriendRequestFlush::Nothing {
         return;
     }
+    let Some((request_id, _)) = entry else { return; };
     // ⚠️ **已经是好友就不再补发**。
     //
     // 这条登记原本只由 `forget_pending_request` 在「收到对方的同意/拒绝」时清除。
@@ -739,7 +1025,7 @@ pub async fn flush_pending_friend_request(state: &Arc<AppState>, peer_id: &str) 
         return;
     }
     // 复用同一条发送路径（含目标定向 + 重签），失败也不清登记 —— 下次机会再试
-    if crate::commands::send_friend_request_via_link(state, peer_id)
+    if crate::commands::send_friend_request_via_link(state, peer_id, request_id)
         .await
         .is_ok()
     {
@@ -749,6 +1035,14 @@ pub async fn flush_pending_friend_request(state: &Arc<AppState>, peer_id: &str) 
             .unwrap_or_else(|e| e.into_inner())
             .entry(peer_id.to_string())
             .and_modify(|e| e.1 = now);
+        // 落库：重启后恢复的补发节奏与进程内一致。
+        let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
+        if let Ok(Some(mut row)) = db::get_outgoing_friend_request(&dbc, peer_id) {
+            row.last_sent_at = now;
+            if let Err(e) = db::put_outgoing_friend_request(&dbc, &row) {
+                crate::logging::log_write_failure(&state.logger, "put_outgoing_friend_request", e);
+            }
+        }
         state.logger.info(
             "friend",
             format!("补发好友申请 peer={peer_id}（此前链路抖动丢过）"),
@@ -801,9 +1095,6 @@ pub fn friend_accept_flush_decision(
 /// 为什么必须做（用户 2026-09-13 真机）：Android 点「接受」后 Android 侧好友列表已经有对方，
 /// 但 **Mac 端状态一直没同步** —— 那一帧在 BLE 链路抖动/尚未建好时静默丢了，且永不重发。
 pub async fn flush_pending_friend_accept(state: &Arc<AppState>, peer_id: &str) {
-    const MAX_ATTEMPTS: u32 = 3;
-    const MIN_INTERVAL_MS: i64 = 5_000;
-    const WINDOW_MS: i64 = 120_000;
     let now = crate::db::now_ms();
 
     // 锁内只做判定（**绝不跨 await 持锁**）；判定本身是纯函数
@@ -816,7 +1107,13 @@ pub async fn flush_pending_friend_accept(state: &Arc<AppState>, peer_id: &str) {
             .unwrap_or_else(|e| e.into_inner())
             .get(peer_id)
             .copied();
-        friend_accept_flush_decision(entry, now, MAX_ATTEMPTS, MIN_INTERVAL_MS, WINDOW_MS)
+        friend_accept_flush_decision(
+            entry,
+            now,
+            ACCEPT_MAX_ATTEMPTS,
+            ACCEPT_MIN_INTERVAL_MS,
+            ACCEPT_WINDOW_MS,
+        )
     };
     let attempt = match decision {
         FriendAcceptFlush::Nothing => return,
@@ -826,6 +1123,8 @@ pub async fn flush_pending_friend_accept(state: &Arc<AppState>, peer_id: &str) {
                 .lock()
                 .unwrap_or_else(|e| e.into_inner())
                 .remove(peer_id);
+            let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
+            let _ = db::forget_pending_out_accept(&dbc, peer_id);
             state.logger.warn(
                 "friend",
                 format!(
@@ -847,6 +1146,18 @@ pub async fn flush_pending_friend_accept(state: &Arc<AppState>, peer_id: &str) {
             entry.2 = now;
         }
     }
+    {
+        let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
+        if let Ok(Some(mut row)) = db::list_pending_out_accepts(&dbc)
+            .map(|rows| rows.into_iter().find(|r| r.peer == peer_id))
+        {
+            row.attempts = attempt;
+            row.last_at = now;
+            if let Err(e) = db::put_pending_out_accept(&dbc, &row) {
+                crate::logging::log_write_failure(&state.logger, "put_pending_out_accept", e);
+            }
+        }
+    }
     match crate::commands::send_friend_accept_via_link(state, peer_id).await {
         Ok(()) => state.logger.info(
             "friend",
@@ -855,6 +1166,138 @@ pub async fn flush_pending_friend_accept(state: &Arc<AppState>, peer_id: &str) {
         Err(e) => state.logger.warn(
             "friend",
             format!("code=FRIEND_ACCEPT_RETRY_FAILED peer={peer_id} [FRIEND] 补发好友同意回执失败（第 {attempt} 次）：{e}"),
+        ),
+    }
+}
+
+/// **补发撤回帧**（`FriendRequestWithdraw`）。
+///
+/// 三件事决定了它的形状：
+/// 1. **只在有链路 / 有补发机会时发**（调用点与申请补发相同），不做"没链路还每秒吼"。
+/// 2. **对端明确没声明能力位就立刻停**：老端收到只会把整帧当 `Message::Unknown` 丢掉，
+///    反复发既不会让对方停止弹申请，也白白占用 BLE（INV-P24 第 4 条）。
+/// 3. **窗口跨重启**：撤回是用户已经做出的决定，不能因为进程重启就当作没发生。
+pub async fn flush_pending_friend_withdraw(state: &Arc<AppState>, peer_id: &str) {
+    let now = crate::db::now_ms();
+    let decision = {
+        let entry = state
+            .pending_out_withdrawals
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(peer_id)
+            .copied();
+        friend_accept_flush_decision(
+            entry,
+            now,
+            WITHDRAW_MAX_ATTEMPTS,
+            WITHDRAW_MIN_INTERVAL_MS,
+            WITHDRAW_WINDOW_MS,
+        )
+    };
+    let attempt = match decision {
+        FriendAcceptFlush::Nothing => return,
+        FriendAcceptFlush::GiveUp => {
+            state
+                .pending_out_withdrawals
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .remove(peer_id);
+            let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
+            if let Ok(Some(mut row)) = db::get_outgoing_friend_request(&dbc, peer_id) {
+                row.withdraw_last_at = now;
+                let _ = db::put_outgoing_friend_request(&dbc, &row);
+            }
+            state.logger.warn(
+                "friend",
+                format!("code=FRIEND_WITHDRAW_RETRY_EXHAUSTED peer={peer_id} 撤回帧补发窗口/次数用尽"),
+            );
+            return;
+        }
+        FriendAcceptFlush::Flush(attempt) => attempt,
+    };
+    // 已经是好友 ⇒ 同意赢了。撤回不再继续，界面以"已同意"为准。
+    let already_friend = {
+        let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
+        db::get_friend(&dbc, peer_id).is_some()
+    };
+    if already_friend {
+        state
+            .pending_out_withdrawals
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .remove(peer_id);
+        let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
+        let _ = db::forget_outgoing_friend_request(&dbc, peer_id);
+        let _ = state.app.emit(
+            "friend-request-withdrawn",
+            serde_json::json!({ "peer_id": peer_id, "direction": "outbound" }),
+        );
+        state.logger.info(
+            "friend",
+            format!("撤回让位于已落库的好友关系 peer={peer_id}（同意赢）"),
+        );
+        return;
+    }
+    match crate::commands::peer_friend_withdraw_support(state, peer_id) {
+        Some(false) => {
+            state
+                .pending_out_withdrawals
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .remove(peer_id);
+            let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
+            if let Ok(Some(mut row)) = db::get_outgoing_friend_request(&dbc, peer_id) {
+                row.withdraw_attempts = 0;
+                row.withdraw_last_at = now;
+                row.withdraw_confirmed = false;
+                let _ = db::put_outgoing_friend_request(&dbc, &row);
+            }
+            state.logger.warn(
+                "friend",
+                format!("code=FRIEND_WITHDRAW_UNSUPPORTED peer={peer_id} 对端未声明撤回能力，停止补发"),
+            );
+            return;
+        }
+        None => return,
+        Some(true) => {}
+    }
+    {
+        let mut map = state
+            .pending_out_withdrawals
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        if let Some(entry) = map.get_mut(peer_id) {
+            entry.1 = attempt;
+            entry.2 = now;
+        }
+    }
+    {
+        let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
+        if let Ok(Some(mut row)) = db::get_outgoing_friend_request(&dbc, peer_id) {
+            row.withdraw_attempts = attempt;
+            row.withdraw_last_at = now;
+            if let Err(e) = db::put_outgoing_friend_request(&dbc, &row) {
+                crate::logging::log_write_failure(&state.logger, "put_outgoing_friend_request", e);
+            }
+        }
+    }
+    let Some(request_id) = state
+        .pending_out_withdrawals
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .get(peer_id)
+        .map(|e| e.0)
+    else {
+        return;
+    };
+    match crate::commands::send_friend_withdraw_via_link(state, peer_id, request_id).await {
+        Ok(()) => state.logger.info(
+            "friend",
+            format!("补发撤回好友申请 peer={peer_id}（第 {attempt} 次）"),
+        ),
+        Err(e) => state.logger.warn(
+            "friend",
+            format!("code=FRIEND_WITHDRAW_RETRY_FAILED peer={peer_id} 补发撤回失败（第 {attempt} 次）：{e}"),
         ),
     }
 }
