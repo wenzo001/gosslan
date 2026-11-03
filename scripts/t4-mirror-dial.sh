@@ -37,8 +37,29 @@ command -v nc >/dev/null 2>&1 || { echo "[错误] 需要 nc"; exit 2; }
 [ -x "$BIN" ] || { echo "[错误] 未找到 ${BIN}，请先: cd src-tauri && cargo build --bin gosslan"; exit 2; }
 [ -x "$PEER" ] || { echo "[错误] 未找到 ${PEER}，请先: cd src-tauri && cargo build --example mirror_dial"; exit 2; }
 
-echo "==> [1/3] 清理残留实例与干扰配置"
-pkill -f "target/debug/gosslan" 2>/dev/null
+# 【防误杀】只杀**本脚本起过的**实例，按精确 PID + 可执行路径校验：
+# 旧写法 `pkill -f` 按命令行串匹配，会把用户手开的实例一起杀掉 ——
+# 那本身就会造成"闪退"的错觉（闪退取证第 3 项；口径同 verify-startup-error.mjs）。
+PIDFILE=/tmp/gosslan-t4.pids
+TRACKED_PIDS=""
+kill_tracked() {
+  local pid
+  for pid in $TRACKED_PIDS $(cat "$PIDFILE" 2>/dev/null); do
+    if kill -0 "$pid" 2>/dev/null; then
+      if ps -p "$pid" -o args= 2>/dev/null | grep -qF "$BIN"; then
+        pkill -P "$pid" 2>/dev/null || true
+        kill "$pid" 2>/dev/null || true
+        wait "$pid" 2>/dev/null || true
+      fi
+    fi
+  done
+  rm -f "$PIDFILE"
+  TRACKED_PIDS=""
+}
+track() { TRACKED_PIDS="$TRACKED_PIDS $1"; echo "$1" >> "$PIDFILE"; }
+
+echo "==> [1/3] 清理残留实例（仅本脚本上一轮起的，按 PID 精确校验）与干扰配置"
+kill_tracked
 sleep 1
 if [ -f "$DB" ]; then
   sqlite3 "$DB" "DELETE FROM settings WHERE key='routed_endpoints';" 2>/dev/null
@@ -48,15 +69,10 @@ rm -f "$LOG"
 echo "==> [2/3] 启动实例（--instance 1，TCP ${TCP_PORT}，GOSSLAN_AUTOSTART=1）"
 GOSSLAN_AUTOSTART=1 "$BIN" --instance 1 > "$LOG" 2>&1 &
 APP_PID=$!
+track "$APP_PID"
 # 任何退出路径（Ctrl-C、peer 命令非零、脚本被杀）都要带走实例；旧写法只在两条显式路径 kill。
 # 先摘直接子进程（WebKit helper 是应用的子进程），再停应用。SC-P2-07。
-cleanup_app() {
-  if [ -n "${APP_PID:-}" ] && kill -0 "$APP_PID" 2>/dev/null; then
-    pkill -P "$APP_PID" 2>/dev/null || true
-    kill "$APP_PID" 2>/dev/null || true
-    wait "$APP_PID" 2>/dev/null || true
-  fi
-}
+cleanup_app() { kill_tracked; }
 trap cleanup_app EXIT
 READY=0
 for _ in $(seq 1 30); do
