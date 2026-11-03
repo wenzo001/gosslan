@@ -1,0 +1,14 @@
+#!/bin/sh
+# Change Budget 的前置硬闸（2026-11-03）。
+#
+# 起因：3051f73 已经推上去了才发现 L3 缺 [impact]。因为不改写已推送历史，
+# 只能 revert + 重放，多出两笔提交 —— 「推完才发现」等于没有闸，只有事后检查。
+# 这里把同一份判据（scripts/check-change-budget.mjs 的 classify()）挪到提交那一刻：
+# 标题缺本档要求的 [plan] / [impact] 时直接 exit 1，提交不会落地。
+#
+# 安装：npm run hooks:install（`npm install` 的 prepare 也会装一次）。
+# 绕过：git commit --no-verify（但 CI 的正式判据仍会判红）。
+
+root=$(git rev-parse --show-toplevel 2>/dev/null) || exit 0
+[ -f "$root/scripts/check-change-budget.mjs" ] || exit 0
+exec node "$root/scripts/check-change-budget.mjs" --staged --commit-msg-file "$1"
