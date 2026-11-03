@@ -42,6 +42,14 @@ pub const SEND_LOCAL_WRITE_FAILED: &str = "SEND_LOCAL_WRITE_FAILED";
 /// 已读回执写库失败（`mark_read`）——以前同样是英文串，前端只能落到"请稍后重试"。
 pub const READ_STATE_WRITE_FAILED: &str = "READ_STATE_WRITE_FAILED";
 
+/// 辅助窗口（设置 / 日志 / 外链 / 看图）创建失败。
+///
+/// 典型现场是升级或强制重启后残留的渲染环境：`build()` 返回
+/// `WebView2 error … HRESULT(0x80010108)`（`RPC_E_DISCONNECTED`）。原始错误**只进日志**
+/// （`code=AUX_WINDOW_CREATE_FAILED … error=…`），上屏的是这个码 —— 前端把它翻成
+/// 「完全退出应用再打开」的人话，并给一个走既有 `restart_app` 的按钮。
+pub const AUX_WINDOW_CREATE_FAILED: &str = "AUX_WINDOW_CREATE_FAILED";
+
 /// 把码拼到人话前面 —— **唯一**的写法（不散着 `format!("code=…")`，否则对账判据读不出来）。
 pub fn coded(code: &'static str, msg: impl std::fmt::Display) -> String {
     format!("code={code} {msg}")

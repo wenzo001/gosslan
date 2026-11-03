@@ -1184,8 +1184,8 @@ CASES: list[Case] = [
         "     注入 = 在前端表里塞一个后端没有的码。",
         file=ROOT / "src" / "utils" / "errors.ts",
         injections=[(
-            '  SEND_PEER_KEY_MISSING: "errors.rule.peerKeyMissing",\n};',
-            '  SEND_PEER_KEY_MISSING: "errors.rule.peerKeyMissing",\n  THIS_CODE_IS_NOT_DEFINED_BY_RUST: "errors.rule.system",\n};',
+            'const CODE_RULES: Record<string, string> = {\n',
+            'const CODE_RULES: Record<string, string> = {\n  THIS_CODE_IS_NOT_DEFINED_BY_RUST: "errors.rule.system",\n',
         )],
         cmd=["node", "--test", "--experimental-strip-types", "--disable-warning=ExperimentalWarning",
              "src/utils/errors.test.ts"],
