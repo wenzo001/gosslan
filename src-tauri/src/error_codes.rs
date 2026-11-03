@@ -226,6 +226,35 @@ pub const GROUP_IMAGE_PASTE_ONLY: &str = "GROUP_IMAGE_PASTE_ONLY";
 /// 导出收藏：没有选择保存位置。
 pub const FAVORITE_EXPORT_PATH_EMPTY: &str = "FAVORITE_EXPORT_PATH_EMPTY";
 
+// ── B6 第六批：设置/网络那一族 ────────────────────────────────────────────
+
+/// 窗口/提醒类命令找不到主窗口（后台化或最小化后接事件）。
+pub const MAIN_WINDOW_MISSING: &str = "MAIN_WINDOW_MISSING";
+/// 中继：没填服务器地址。
+pub const RELAY_HOST_REQUIRED: &str = "RELAY_HOST_REQUIRED";
+/// 中继：填了 IPv6（当前监听只支持 IPv4）。
+pub const RELAY_IPV6_UNSUPPORTED: &str = "RELAY_IPV6_UNSUPPORTED";
+/// 中继：没填访问口令。
+pub const RELAY_TOKEN_REQUIRED: &str = "RELAY_TOKEN_REQUIRED";
+/// 中继：口令里有空格或换行。
+pub const RELAY_TOKEN_INVALID: &str = "RELAY_TOKEN_INVALID";
+/// 中继：口令超过长度上限（human 带实际长度与上限）。
+pub const RELAY_TOKEN_TOO_LONG: &str = "RELAY_TOKEN_TOO_LONG";
+/// 中继：服务器地址既不是 ip 也不是 ip:port（human 带收到的原值）。
+pub const RELAY_ENDPOINT_FORMAT_INVALID: &str = "RELAY_ENDPOINT_FORMAT_INVALID";
+/// 中继：设置页读配置失败（地址/口令两处共用一个码，human 带底层原因）。
+pub const RELAY_CONFIG_READ_FAILED: &str = "RELAY_CONFIG_READ_FAILED";
+/// 跨网段端点：地址格式既不是 ip 也不是 ip:port。
+pub const ROUTED_ENDPOINT_FORMAT_INVALID: &str = "ROUTED_ENDPOINT_FORMAT_INVALID";
+/// 跨网段端点：填了 IPv6（当前监听只支持 IPv4）。
+pub const ROUTED_IPV6_UNSUPPORTED: &str = "ROUTED_IPV6_UNSUPPORTED";
+/// 设置页「发送测试通知」：系统通知权限被限制（human 带平台给的原因）。
+pub const NOTIFY_PERMISSION_DENIED: &str = "NOTIFY_PERMISSION_DENIED";
+/// 设置页「发送测试通知」：系统通知 API 发送失败（human 带底层原因）。
+pub const NOTIFY_SEND_FAILED: &str = "NOTIFY_SEND_FAILED";
+/// 通道设置：清理缓存任务失败（human 带底层原因）。
+pub const CHANNEL_CACHE_CLEAN_FAILED: &str = "CHANNEL_CACHE_CLEAN_FAILED";
+
 /// 给"可能已经带码"的下层错误补码：已带 `code=` 就原样透传，避免叠成两个码。
 ///
 /// 典型场景：通道启动会把 `network::start_from_prefs` 的 `PORT_IN_USE` 透传上来，

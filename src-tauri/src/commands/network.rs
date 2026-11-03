@@ -170,7 +170,10 @@ pub async fn set_app_active(state: State<'_, Arc<AppState>>, active: bool) -> Re
 #[tauri::command(async)]
 pub async fn focus_window(app: tauri::AppHandle, state: State<'_, Arc<AppState>>) -> Result<(), String> {
     let Some(win) = app.get_webview_window("main") else {
-        return Err("主窗口不存在".to_string());
+        return Err(crate::error_codes::coded(
+            crate::error_codes::MAIN_WINDOW_MISSING,
+            "主窗口不存在",
+        ));
     };
     // 冷启动白闪修复：窗口 show 的第一帧会露出 WebView2 的默认背景色（tauri.conf.json
     // 写死浅色 #edf1f6）。暗色主题用户在骨架合成前会看到"闪一下白"。show 之前把窗口
@@ -314,7 +317,10 @@ pub fn request_attention(app: tauri::AppHandle, urgent: bool) -> Result<(), Stri
         return Ok(());
     };
     let Some(win) = app.get_webview_window("main") else {
-        return Err("主窗口不存在".to_string());
+        return Err(crate::error_codes::coded(
+            crate::error_codes::MAIN_WINDOW_MISSING,
+            "主窗口不存在",
+        ));
     };
     // 失败不致命：个别 Linux 桌面环境 / 远程会话不支持，忽略即可（前端也不关心结果）。
     let _ = win.request_user_attention(Some(kind));
@@ -492,7 +498,10 @@ pub async fn send_test_notification(state: State<'_, Arc<AppState>>) -> Result<S
                 "notify",
                 format!("code=NOTIFY_PERMISSION_DENIED 测试通知未能发出：{why}"),
             );
-            return Err(format!("{why}。{}", crate::notifications::platform_hint()));
+            return Err(crate::error_codes::coded(
+                crate::error_codes::NOTIFY_PERMISSION_DENIED,
+                format!("{why}。{}", crate::notifications::platform_hint()),
+            ));
         }
         match crate::notifications::show(
             &s.app,
@@ -505,7 +514,10 @@ pub async fn send_test_notification(state: State<'_, Arc<AppState>>) -> Result<S
             }
             Err(e) => {
                 s.logger.warn("notify", format!("测试通知发送失败：{e}"));
-                Err(format!("{e}。{}", crate::notifications::platform_hint()))
+                Err(crate::error_codes::coded_if_uncoded(
+                    crate::error_codes::NOTIFY_SEND_FAILED,
+                    format!("{e}。{}", crate::notifications::platform_hint()),
+                ))
             }
         }
     })
