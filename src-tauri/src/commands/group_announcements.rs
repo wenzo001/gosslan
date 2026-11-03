@@ -90,7 +90,10 @@ pub async fn pin_group_message(
     pinned: bool,
 ) -> Result<MessageRecord, String> {
     if target.is_empty() {
-        return Err("缺少目标消息".to_string());
+        return Err(crate::error_codes::coded(
+            crate::error_codes::GROUP_REPLY_TARGET_MISSING,
+            "缺少目标消息",
+        ));
     }
     let payload = crate::protocol::PinPayload {
         target: target.clone(),
@@ -256,12 +259,18 @@ pub async fn send_group_reaction(
     add: bool,
 ) -> Result<MessageRecord, String> {
     if target.is_empty() {
-        return Err("回应缺少目标消息".to_string());
+        return Err(crate::error_codes::coded(
+            crate::error_codes::GROUP_REPLY_TARGET_MISSING,
+            "回应缺少目标消息",
+        ));
     }
     // 只接受本应用已知的表情 token 形态（`[名字]`），避免把任意字符串当表情写进库里、
     // 也避免超长内容进入广播。
     if !crate::protocol::is_valid_emoji_token(&emoji) {
-        return Err("不认识的表情".to_string());
+        return Err(crate::error_codes::coded(
+            crate::error_codes::GROUP_REACTION_UNKNOWN,
+            "不认识的表情",
+        ));
     }
     let payload = crate::protocol::ReactionPayload { target, emoji, add };
     let content = serde_json::to_string(&payload).map_err(|e| e.to_string())?;
@@ -287,7 +296,10 @@ pub async fn send_group_file(
                 "file",
                 format!("code={code} 拒绝群转发 file={path} msg={msg_id} group={group_id}"),
             );
-            return Err("这个文件不属于这条消息，已拒绝转发".to_string());
+            return Err(crate::error_codes::coded(
+            crate::error_codes::GROUP_FORWARD_FILE_NOT_OWNED,
+            "这个文件不属于这条消息，已拒绝转发",
+        ));
         }
     }
     // `scope == "todo"` 表示这是待办描述图片：复用群文件传输管线把字节投递给全员，
@@ -304,7 +316,10 @@ pub async fn send_group_file(
         )
     })?;
     if !meta.is_file() {
-        return Err("只能发送普通文件".to_string());
+        return Err(crate::error_codes::coded(
+            crate::error_codes::GROUP_FILE_ONLY_PLAIN,
+            "只能发送普通文件",
+        ));
     }
     let size = meta.len();
     let name = file::derive_file_name(&path);
@@ -352,7 +367,10 @@ pub async fn send_group_file(
             );
             return Ok(Uuid::new_v4().to_string());
         }
-        return Err("群内没有其他成员".to_string());
+        return Err(crate::error_codes::coded(
+            crate::error_codes::GROUP_NO_OTHER_MEMBERS,
+            "群内没有其他成员",
+        ));
     }
 
     let transfer_id = Uuid::new_v4().to_string();

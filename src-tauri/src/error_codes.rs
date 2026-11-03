@@ -152,6 +152,75 @@ pub const RESEND_ALREADY_DELIVERED: &str = "RESEND_ALREADY_DELIVERED";
 /// 发送：自聊会话不支持图片/文件。
 pub const SELF_CHAT_NO_MEDIA: &str = "SELF_CHAT_NO_MEDIA";
 
+// ── B6 第四批：群管理那一族 ────────────────────────────────────────────────
+//
+// 这一族几乎全是"权限/状态不满足"的拒绝：原文准确但语气像系统日志
+// （「只有群创建者可以移除成员」）。码让前端能换成人话并给出下一步，
+// 原文继续原样保留给日志与老前端。
+
+/// 建群/拉人：目标不是好友。
+pub const GROUP_INVITE_FRIENDS_ONLY: &str = "GROUP_INVITE_FRIENDS_ONLY";
+/// 改群名：不是群创建者。
+pub const GROUP_RENAME_OWNER_ONLY: &str = "GROUP_RENAME_OWNER_ONLY";
+/// 加成员：不是群创建者。
+pub const GROUP_ADD_MEMBER_OWNER_ONLY: &str = "GROUP_ADD_MEMBER_OWNER_ONLY";
+/// 加成员：该人已在群里。
+pub const GROUP_MEMBER_ALREADY_IN: &str = "GROUP_MEMBER_ALREADY_IN";
+/// 加成员：只能拉好友进群。
+pub const GROUP_ADD_FRIEND_MEMBER_ONLY: &str = "GROUP_ADD_FRIEND_MEMBER_ONLY";
+/// 移除成员：不是群创建者。
+pub const GROUP_REMOVE_OWNER_ONLY: &str = "GROUP_REMOVE_OWNER_ONLY";
+/// 移除成员：目标是自己。
+pub const GROUP_REMOVE_SELF: &str = "GROUP_REMOVE_SELF";
+/// 移除成员：该人不在群里。
+pub const GROUP_MEMBER_NOT_IN: &str = "GROUP_MEMBER_NOT_IN";
+/// 转让群主：不是群创建者。
+pub const GROUP_TRANSFER_OWNER_ONLY: &str = "GROUP_TRANSFER_OWNER_ONLY";
+/// 转让群主：目标是自己。
+pub const GROUP_TRANSFER_TO_SELF: &str = "GROUP_TRANSFER_TO_SELF";
+/// 转让群主：目标不是群成员。
+pub const GROUP_TRANSFER_MEMBER_ONLY: &str = "GROUP_TRANSFER_MEMBER_ONLY";
+/// 退群：群主必须先转让。
+pub const GROUP_OWNER_LEAVE_TRANSFER_FIRST: &str = "GROUP_OWNER_LEAVE_TRANSFER_FIRST";
+/// 群聊发送：不支持的消息类型。
+pub const GROUP_FILE_KIND_UNSUPPORTED: &str = "GROUP_FILE_KIND_UNSUPPORTED";
+/// 自定义待办类型：名称为空。
+pub const GROUP_TODO_TYPE_NAME_EMPTY: &str = "GROUP_TODO_TYPE_NAME_EMPTY";
+/// 自定义待办类型：图标不合法。
+pub const GROUP_TODO_TYPE_ICON_INVALID: &str = "GROUP_TODO_TYPE_ICON_INVALID";
+/// 待办：类型不合法（发送与更新共用）。
+pub const GROUP_TODO_TYPE_INVALID: &str = "GROUP_TODO_TYPE_INVALID";
+/// 待办：标题为空（发送与更新共用）。
+pub const GROUP_TODO_TITLE_EMPTY: &str = "GROUP_TODO_TITLE_EMPTY";
+/// 待办：没有指派任何人。
+pub const GROUP_TODO_ASSIGNEE_REQUIRED: &str = "GROUP_TODO_ASSIGNEE_REQUIRED";
+/// 待办：状态不合法。
+pub const GROUP_TODO_STATUS_INVALID: &str = "GROUP_TODO_STATUS_INVALID";
+/// 待办：优先级不合法。
+pub const GROUP_TODO_PRIORITY_INVALID: &str = "GROUP_TODO_PRIORITY_INVALID";
+/// 公告：内容为空。
+pub const GROUP_ANNOUNCEMENT_EMPTY: &str = "GROUP_ANNOUNCEMENT_EMPTY";
+/// 公告：标识缺失。
+pub const GROUP_ANNOUNCEMENT_ID_MISSING: &str = "GROUP_ANNOUNCEMENT_ID_MISSING";
+/// 回应/置顶：缺目标消息（两处原文共用一个码）。
+pub const GROUP_REPLY_TARGET_MISSING: &str = "GROUP_REPLY_TARGET_MISSING";
+/// 表情回应：未知表情。
+pub const GROUP_REACTION_UNKNOWN: &str = "GROUP_REACTION_UNKNOWN";
+/// 转发：文件不属于这条消息。
+pub const GROUP_FORWARD_FILE_NOT_OWNED: &str = "GROUP_FORWARD_FILE_NOT_OWNED";
+/// 群文件：只能发普通文件。
+pub const GROUP_FILE_ONLY_PLAIN: &str = "GROUP_FILE_ONLY_PLAIN";
+/// 群发文件：群里没有其他人。
+pub const GROUP_NO_OTHER_MEMBERS: &str = "GROUP_NO_OTHER_MEMBERS";
+/// 待办图片：目标不是文件。
+pub const GROUP_MEDIA_NOT_FILE: &str = "GROUP_MEDIA_NOT_FILE";
+/// 待办图片：字节格式不合法。
+pub const GROUP_IMAGE_BYTES_INVALID: &str = "GROUP_IMAGE_BYTES_INVALID";
+/// 待办图片：字节为空。
+pub const GROUP_IMAGE_EMPTY: &str = "GROUP_IMAGE_EMPTY";
+/// 待办图片：只接受粘贴的图片。
+pub const GROUP_IMAGE_PASTE_ONLY: &str = "GROUP_IMAGE_PASTE_ONLY";
+
 /// 给"可能已经带码"的下层错误补码：已带 `code=` 就原样透传，避免叠成两个码。
 ///
 /// 典型场景：通道启动会把 `network::start_from_prefs` 的 `PORT_IN_USE` 透传上来，
