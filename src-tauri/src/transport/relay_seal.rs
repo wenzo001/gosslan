@@ -914,4 +914,200 @@ mod tests {
         let rec = seal.seal_frame(&frame).unwrap();
         assert_eq!(rec.len(), frame.len() + CTR_LEN + RECORD_OVERHEAD);
     }
+
+    // ─────────────── 共享 fixture：与中继服务仓对照（INTEGRATION.md §10） ───────────────
+    //
+    // `protocol.fixtures.json` 是两个仓库共享的**字节级真值向量**（由主仓同版本 crate
+    // 生成，meta 钉了主仓 commit；中继服务仓 `node protocol_conformance.mjs` 独立复算
+    // 同一份）。本侧用**真实实现**逐段复现 —— 谁改了线格式而没同步另一侧，至少有一边
+    // 的对照测试会红。这就是 ADR-0020 那句"漂移了不会有测试提醒你"的终结。
+    // 改协议的流程见中继服务仓 INTEGRATION.md §10：先改主仓实现 → 重新生成 fixture →
+    // 两边各自跑对照测试。
+
+    fn shared_fixtures() -> serde_json::Value {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/fixtures/protocol.fixtures.json");
+        let raw = std::fs::read_to_string(&path)
+            .unwrap_or_else(|e| panic!("共享 fixture 读不出来 {}：{e}", path.display()));
+        serde_json::from_str(&raw).expect("共享 fixture 必须是合法 JSON")
+    }
+
+    fn fixture_b64_32(s: &str) -> [u8; 32] {
+        let v = STANDARD.decode(s).expect("fixture 的 b64 必须可解");
+        v.try_into().expect("fixture 的 b64 必须是 32 字节")
+    }
+
+    #[test]
+    fn relay_wire_matches_shared_fixtures() {
+        let fx = shared_fixtures();
+        assert_eq!(
+            fx["meta"]["name"].as_str().unwrap(),
+            "gosslan-relay-wire-fixtures",
+            "fixture 文件拿错了（必须是中继线格式那份共享真值）"
+        );
+
+        // ① epoch_day（含负值钳零）—— 换天自愈的判据，两端必须算出同一天。
+        for v in fx["epoch_day"]["vectors"].as_array().unwrap() {
+            let got = crate::network::transport::relay_epoch_day(v["now_ms"].as_i64().unwrap());
+            assert_eq!(got, v["day"].as_u64().unwrap(), "epoch_day 向量漂移：{v}");
+        }
+
+        // ② 通道哈希：域前缀 / 0x00 分隔 / 公钥按 b64 字符串字节入哈希 / day 大端 /
+        //    device_id 字典序 —— 任何一条漂了，两端"都显示已连接但永远配不上"。
+        let inp = &fx["channel_hash"]["inputs"];
+        let id_a = inp["device_id_a"].as_str().unwrap();
+        let id_b = inp["device_id_b"].as_str().unwrap();
+        let pk_a = inp["ed25519_pub_a_b64"].as_str().unwrap();
+        let pk_b = inp["ed25519_pub_b_b64"].as_str().unwrap();
+        let day = inp["epoch_day"].as_u64().unwrap();
+        let ch_hex = fx["channel_hash"]["expected_hex"].as_str().unwrap();
+        assert_eq!(
+            crate::crypto::hex_lower(&channel_hash(pk_a, pk_b, id_a, id_b, day)),
+            ch_hex,
+            "通道哈希漂移（本端视角）"
+        );
+        assert_eq!(
+            crate::crypto::hex_lower(&channel_hash(pk_b, pk_a, id_b, id_a, day)),
+            ch_hex,
+            "通道哈希漂移（对端视角 ⇒ 对称性破了）"
+        );
+
+        // ③ 首行（GSRL1）：唯一构造点必须与 fixture 逐字节一致。
+        //    服务器对首行是三合一拒绝（口令/版本/格式），一个字符的差异就是静默连不上。
+        let hello = &fx["hello_line"];
+        assert_eq!(hello["channel_hex"].as_str().unwrap(), ch_hex);
+        assert_eq!(
+            crate::network::transport::relay_preamble(
+                hello["token"].as_str().unwrap(),
+                hello["channel_hex"].as_str().unwrap(),
+            ),
+            hello["line"].as_str().unwrap(),
+            "首行构造漂移"
+        );
+
+        // ④ 协商线（GSRW1）：签名材料逐字节 + 真实身份路径重签 + 线格式。
+        //    Ed25519 是确定性的：同一把种子密钥重签必须逐字节相等。
+        let ed = &fx["wrap"]["ed25519"];
+        let xh = &fx["wrap"]["x25519_ephemeral"];
+        for side in ["A", "B"] {
+            let (my_id, peer_id) = if side == "A" {
+                (id_a, id_b)
+            } else {
+                (id_b, id_a)
+            };
+            let eph_pub = xh[side]["public_b64"].as_str().unwrap();
+            let sb = wrap_signing_bytes(my_id, peer_id, ch_hex, side, eph_pub);
+            assert_eq!(
+                crate::crypto::hex_lower(&sb),
+                fx["wrap"]["signing_bytes_hex"][side].as_str().unwrap(),
+                "协商签名材料漂移（{side}）"
+            );
+            let identity = crate::crypto::Identity::from_secrets(
+                xh[side]["secret_b64"].as_str().unwrap(),
+                ed[side]["seed_b64"].as_str().unwrap(),
+            )
+            .expect("fixture 身份必须能构造");
+            assert_eq!(
+                identity.ed25519_public_b64(),
+                ed[side]["public_b64"].as_str().unwrap(),
+                "seed → 公钥推导漂移（{side}）"
+            );
+            let sig_b64 = STANDARD.encode(identity.signer().sign(&sb).to_bytes());
+            assert_eq!(
+                sig_b64,
+                fx["wrap"]["offers"][side]["sig_b64"].as_str().unwrap(),
+                "协商签名漂移（{side}）"
+            );
+            let line = WrapOffer {
+                role: side.to_string(),
+                eph_pub_b64: eph_pub.to_string(),
+                sig_b64,
+            }
+            .to_line();
+            assert_eq!(
+                line,
+                fx["wrap"]["offers"][side]["line"].as_str().unwrap(),
+                "协商线格式漂移（{side}）"
+            );
+            // 解析侧必须认回这条线（也顺带钉住"多余字段判非法"那道闸还在）。
+            let back = WrapOffer::parse_line(line.trim_end()).expect("自己造的协商线必须能解析");
+            assert_eq!(
+                (back.role.as_str(), back.eph_pub_b64.as_str()),
+                (side, eph_pub)
+            );
+        }
+
+        // ⑤ X25519 DH（走本仓唯一 ECDH 出口 `Identity::dh`）与双向记录密钥。
+        let dh_expected = fx["wrap"]["dh_shared_secret_hex"].as_str().unwrap();
+        let mut dh_bytes = [0u8; 32];
+        for (me, peer) in [("A", "B"), ("B", "A")] {
+            let identity = crate::crypto::Identity::from_secrets(
+                xh[me]["secret_b64"].as_str().unwrap(),
+                ed[me]["seed_b64"].as_str().unwrap(),
+            )
+            .unwrap();
+            let dh = identity
+                .dh(xh[peer]["public_b64"].as_str().unwrap())
+                .expect("fixture 的 DH 必须成功");
+            assert_eq!(
+                crate::crypto::hex_lower(&dh),
+                dh_expected,
+                "DH 共享密钥漂移（{me} 侧）"
+            );
+            if me == "A" {
+                dh_bytes = dh;
+            }
+        }
+        let (a2b, b2a) = record_keys(&dh_bytes, ch_hex);
+        assert_eq!(
+            crate::crypto::hex_lower(&a2b),
+            fx["wrap"]["record_keys"]["a2b_hex"].as_str().unwrap(),
+            "a2b 记录密钥漂移"
+        );
+        assert_eq!(
+            crate::crypto::hex_lower(&b2a),
+            fx["wrap"]["record_keys"]["b2a_hex"].as_str().unwrap(),
+            "b2a 记录密钥漂移"
+        );
+
+        // ⑥ 记录层：按 fixture 的方向密钥与计数器顺序逐字节加密，往返解密还原内层帧。
+        //    内层帧按生成器同一规则重建（4B 大端长度 ‖ JSON），并同时钉住它的 hex 表示。
+        let key = parse_channel_hex(fx["record"]["key_hex"].as_str().unwrap())
+            .expect("fixture 的记录密钥必须是 64 位小写 hex");
+        assert_eq!(
+            fx["record"]["direction"].as_str().unwrap(),
+            "a2b",
+            "fixture 的记录方向变了 ⇒ 本测试的取键假设要同步改"
+        );
+        assert_eq!(
+            crate::crypto::hex_lower(&a2b),
+            fx["record"]["key_hex"].as_str().unwrap()
+        );
+        let mut seal = RecordSeal::new(key);
+        let mut open = RecordOpen::new(key);
+        for v in fx["record"]["vectors"].as_array().unwrap() {
+            let json = v["inner_json"].as_str().unwrap().as_bytes();
+            let mut inner = (json.len() as u32).to_be_bytes().to_vec();
+            inner.extend_from_slice(json);
+            assert_eq!(
+                crate::crypto::hex_lower(&inner),
+                v["inner_frame_hex"].as_str().unwrap(),
+                "内层帧重建与 fixture 不符（ctr={}）",
+                v["ctr"]
+            );
+            let rec = seal.seal_frame(&inner).expect("fixture 帧封装必须成功");
+            assert_eq!(
+                crate::crypto::hex_lower(&rec),
+                v["record_hex"].as_str().unwrap(),
+                "记录层字节漂移（ctr={}）：nonce/计数器/密文/标签任何一处变了都算",
+                v["ctr"]
+            );
+            assert_eq!(
+                open.open_record(&rec).unwrap(),
+                inner,
+                "往返解密必须还原内层帧（ctr={}）",
+                v["ctr"]
+            );
+        }
+    }
 }

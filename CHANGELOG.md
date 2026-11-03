@@ -13,6 +13,23 @@
 
 ## [Unreleased]
 
+## [5.16.84] - 2026-11-03
+
+### 中继线格式共享 fixture 对照 + ADR-0020 两处订正
+
+- 中继服务仓（`wenzo001/gosslan-relay-server`，1.2.3 已交付）INTEGRATION.md §10 落地：
+  共享字节级真值向量 `protocol.fixtures.json` 复制进 `src-tauri/tests/fixtures/`，
+  新增 `relay_wire_matches_shared_fixtures` 用**真实实现**逐段复现 —— epoch_day 钳零、
+  通道哈希（含对端视角对称）、GSRL1 首行（唯一构造点 `relay_preamble`）、GSRW1 协商
+  签名材料/Ed25519 重签/线格式、X25519 DH（走唯一 ECDH 出口 `Identity::dh`）、双向
+  记录密钥、记录层逐字节封装与往返解密。**谁改线格式不同步另一侧，至少一边会红** ——
+  ADR-0020 自认的"最大维护风险（漂移无测试提醒）"至此有机器判据。
+- ADR-0020 两处订正：仓库地址旧账号 fwd001 → wenzo001（AI_RULES 与两处代码注释同改）；
+  D3 协商线原稿多写了 `<我的 Ed25519>` 一个字段，实现从来不带（连魔数共 4 字段，
+  不带长期公钥是刻意的隐私设计），按实际订正。
+- 不碰线格式、不碰行为：纯文档/测试批。
+
+
 ## [5.16.83] - 2026-11-03
 
 ### `message-status-changed` 带结论 + 全缓存补丁（审计 2026-11-03 第 4 项）

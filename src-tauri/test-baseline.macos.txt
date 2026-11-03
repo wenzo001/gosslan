@@ -1371,6 +1371,7 @@ transport::relay_seal::tests::channel_hex_roundtrip
 transport::relay_seal::tests::gap_in_counter_is_rejected
 transport::relay_seal::tests::record_size_is_predictable
 transport::relay_seal::tests::records_roundtrip_in_both_directions
+transport::relay_seal::tests::relay_wire_matches_shared_fixtures
 transport::relay_seal::tests::replayed_record_is_rejected
 transport::relay_seal::tests::role_is_ordered_and_symmetric
 transport::relay_seal::tests::sealed_halves_carry_frames_byte_identically
