@@ -46,6 +46,13 @@ const B6_CASES: &[(&str, &str, &str)] = &[
     ("FILE_NOT_FOUND", "commands/group_announcements.rs", "文件不存在或不可读：{e}"),
     ("FILE_NOT_FOUND", "open_path.rs", "文件不存在：{}"),
     ("CHANNEL_UNKNOWN", "commands/channel.rs", "未知通道: {channel}"),
+    // ── B6 第二批：好友申请（本笔）──────────────────────────────────────
+    ("FRIEND_SELF_REQUEST", "commands/mobile_picker.rs", "不能向自己发送好友申请"),
+    ("FRIEND_ACCEPT_FAILED", "commands/mobile_picker.rs", "同意好友申请失败，请重试"),
+    ("FRIEND_REQUEST_GONE", "commands/mobile_picker.rs", "好友申请不存在或已被对方撤回"),
+    ("FRIEND_REQUEST_GONE", "commands/mobile_picker.rs", "好友申请不存在或已处理"),
+    ("FRIEND_INVALID_CONTACT", "commands/mobile_picker.rs", "无效的联系人"),
+    ("FRIEND_ALREADY_FRIEND", "commands/mobile_picker.rs", "已经是好友，无法撤回好友申请"),
 ];
 
 /// human 是下层原话、没有字面量的触发点：只守"码真的挂在这里"，
@@ -74,9 +81,9 @@ const B6_COMMAND_UNCODED_BASELINE: &[(&str, &str, usize)] = &[
     ("group_files.rs", "update_group_todo", 8),
     ("group_files.rs", "send_group_announcement", 3),
     ("group_files.rs", "delete_group_announcement", 2),
-    ("mobile_picker.rs", "send_friend_request", 1),
-    ("mobile_picker.rs", "respond_friend_request", 1),
-    ("mobile_picker.rs", "cancel_friend_request", 2),
+    ("mobile_picker.rs", "send_friend_request", 0),
+    ("mobile_picker.rs", "respond_friend_request", 0),
+    ("mobile_picker.rs", "cancel_friend_request", 0),
     ("groups.rs", "rename_group", 1),
     ("groups.rs", "group_add_member", 3),
     ("groups.rs", "group_remove_member", 3),

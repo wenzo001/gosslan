@@ -143,6 +143,11 @@ test("B6 试点批：每个码中英各一条，认不出码必须回落原文",
     FILE_NOT_FOUND: "errors.rule.fileNotFound",
     CHANNEL_UNKNOWN: "errors.rule.channelUnknown",
     TRANSPORT_START_FAILED: "errors.rule.transportStartFailed",
+    FRIEND_SELF_REQUEST: "errors.rule.friendSelfRequest",
+    FRIEND_ACCEPT_FAILED: "errors.rule.friendAcceptFailed",
+    FRIEND_REQUEST_GONE: "errors.rule.friendRequestGone",
+    FRIEND_INVALID_CONTACT: "errors.rule.friendInvalidContact",
+    FRIEND_ALREADY_FRIEND: "errors.rule.friendAlreadyFriend",
   };
   for (const [code, key] of Object.entries(cases)) {
     assert.ok(key in zhCN, `中文词典缺 ${key}`);

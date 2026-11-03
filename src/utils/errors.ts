@@ -62,6 +62,12 @@ const CODE_RULES: Record<string, string> = {
   FILE_NOT_FOUND: "errors.rule.fileNotFound",
   CHANNEL_UNKNOWN: "errors.rule.channelUnknown",
   TRANSPORT_START_FAILED: "errors.rule.transportStartFailed",
+  // B6 第二批：好友申请。
+  FRIEND_SELF_REQUEST: "errors.rule.friendSelfRequest",
+  FRIEND_ACCEPT_FAILED: "errors.rule.friendAcceptFailed",
+  FRIEND_REQUEST_GONE: "errors.rule.friendRequestGone",
+  FRIEND_INVALID_CONTACT: "errors.rule.friendInvalidContact",
+  FRIEND_ALREADY_FRIEND: "errors.rule.friendAlreadyFriend",
 };
 
 /** 后端 `error_codes::coded()` 的形状：`code=<大写蛇形> 给人看的那句话`。 */
