@@ -1175,15 +1175,16 @@ impl Logger {
     /// 本进程开日志文件的次数（诊断读数）。
     /// 2026-11-03 之前是"每行一开"（58 s 实测 41 轮 open+chmod），现在整轮只开 1 次
     /// （轮转时各加 1）。这个数用来让"合批写到底生效没有"可被读出来，而不是靠感觉。
-    #[cfg(test)]
+    /// 现在它是 `RUNTIME_SNAPSHOT` 那行的自测字段（每 5 分钟一格，累计值）——
+    /// 用户用 `fs_usage` 对着同一窗口的 open 次数一减，就能直接判合批是否还生效。
     pub fn file_opens(&self) -> u64 {
         self.file_opens.load(Ordering::Relaxed)
     }
 
     /// 本进程对 `.log` 做过几次 fsync（只算错误码 / `SIGTERM_RECEIVED` 这类行）。
     /// 普通行（快照、台账）不 fsync：`write()` 已进页缓存，进程 abort 也不会丢，
-    /// 只有整机掉电才可能丢最后几行 —— 这条是那个取舍的**可读数**。
-    #[cfg(test)]
+    /// 只有整机掉电才可能丢最后几行 —— 这条是那个取舍的**可读数**（同 `file_opens`，
+    /// 进 `RUNTIME_SNAPSHOT` 自测字段，供 `fs_usage` 直接对照）。
     pub fn file_syncs(&self) -> u64 {
         self.file_syncs.load(Ordering::Relaxed)
     }

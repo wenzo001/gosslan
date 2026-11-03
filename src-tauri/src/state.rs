@@ -3024,8 +3024,12 @@ impl AppState {
                         "code=RUNTIME_SNAPSHOT windows={} hidden={hidden} labels=[{labels}] \
                          peers={peer_count} links={link_count} sending_msgs={sending} \
                          outbox={outbox} group_outbox={group_outbox} file_outbox={file_outbox} \
-                         {}",
+                         file_opens={} file_syncs={} {}",
                         windows.len(),
+                        // 日志自身的 IO 自测读数（进程内累计）：与 `fs_usage` 同一窗口的
+                        // open / fsync 次数直接对照，就能判"合批写"是否还生效。
+                        st.logger.file_opens(),
+                        st.logger.file_syncs(),
                         mem.line()
                     ),
                 );
