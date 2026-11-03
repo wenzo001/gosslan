@@ -340,6 +340,19 @@ export const enUS: MessageDict = {
   "boot.reload": "Reload",
   "boot.copy": "Copy error",
   "boot.restart": "Restart app",
+  // ---- 启动失败窗（`entries/startup-error.ts`）----
+  "startupError.windowError": "This window hit an error: {error}",
+  "startupError.desc": "Below is why this startup failed and the error code it reported.",
+  "startupError.descUnavailable": "Could not read the failure reason (the backend did not respond).",
+  "startupError.readFailed": "Failed to read the failure reason: {error}",
+  "startupError.retrying": "Retrying…",
+  "startupError.recovered": "Recovered. Opening the app…",
+  "startupError.retryFailed":
+    "Still can't open. Fix the cause (remount the disk, release the lock, correct permissions) and retry.",
+  "startupError.openedDataDir": "Opened data folder: {path}",
+  "startupError.openDirFailed": "Failed to open the data folder: {error}",
+  "startupError.quitting": "Quitting…",
+  "startupError.quitFailed": "Quit request failed: {error}. You can end this process manually.",
   "settings.network.bluetooth.alwaysOn":
     "On by default on phones — no setup needed. While the app runs, this device acts as a Bluetooth mesh relay; it stops when the system reclaims the app.",
   "settings.network.toast.btPermissionHint":

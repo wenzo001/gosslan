@@ -52,19 +52,6 @@
     "src/components/TodoDetailDialog.vue": {
       "、": 3
     },
-    "src/entries/startup-error.ts": {
-      "`打开数据目录失败：${String(e)}`": 1,
-      "`读取失败原因时出错：${String(e)}`": 1,
-      "`退出请求失败：${String(e)}。可以手动结束这个进程。`": 1,
-      "`已打开数据目录：${opened}`": 1,
-      "`这个窗口自己出错了：${String(message)}`": 1,
-      "仍然打不开。可以修好之后（挂载回来 / 释放占用 / 改对权限）再点一次重试。": 1,
-      "失败原因读不出来（后端没有应答）。": 1,
-      "下面是这一次启动失败的原因与它给出的错误码。": 1,
-      "已恢复，正在进入应用…": 1,
-      "正在退出…": 1,
-      "正在重试…": 1
-    },
     "src/stores/useChatStore.ts": {
       "`${t(\"send.fileFail\")}：${fileFailReasonText(d.reason, t)}`": 1
     },
