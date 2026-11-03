@@ -11,6 +11,7 @@ import {
   foldReminders,
   buildRemindPayload,
   buildRemindAckPayload,
+  isNudgePayload,
   type ReminderPhase,
 } from "./reminders.ts";
 
@@ -230,6 +231,16 @@ test("抖动标记：shake=true 追加 shake 字段，缺省载荷逐字节不�
   // 脏值不当真：只有布尔 true 才算抖动帧。
   assert.equal(parseRemind(row('{"target":"m1","shake":"yes"}'))?.shake, undefined);
   assert.equal(parseRemind(row('{"target":"m1","shake":1}'))?.shake, undefined);
+});
+
+test("发送侧抖动判据：只认布尔 true，坏载荷按非抖动（不给任务中心贴错标签）", () => {
+  assert.equal(isNudgePayload(buildRemindPayload("", [], true, true)), true);
+  assert.equal(isNudgePayload(buildRemindPayload("", [], true)), false);
+  assert.equal(isNudgePayload(buildRemindPayload("m1", [])), false);
+  assert.equal(isNudgePayload('{"nudge":"yes"}'), false);
+  assert.equal(isNudgePayload('{"nudge":1}'), false);
+  assert.equal(isNudgePayload("not json"), false);
+  assert.equal(isNudgePayload(""), false);
 });
 
 test("phase 排序常量只进不退", () => {

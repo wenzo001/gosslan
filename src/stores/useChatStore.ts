@@ -66,6 +66,7 @@ import {
   buildRemindAckPayload,
   buildRemindPayload,
   foldReminders,
+  isNudgePayload,
   parseRemind,
 } from "@/utils/reminders";
 import { buildReactionPayload } from "@/utils/reactions";
@@ -1635,16 +1636,17 @@ export const useChatStore = defineStore("chat", () => {
    */
   function optimisticOpRow(
     msgId: string,
-    peerId: string,
+    convId: string,
     kind: string,
     nudge = false,
   ): PendingMessageOp {
+    const groupId = convId.startsWith("group:") ? convId.slice(6) : null;
     return {
       msg_id: msgId,
-      peer_id: peerId,
-      group_id: null,
+      peer_id: groupId ? null : convId,
+      group_id: groupId,
       kind,
-      waiting_for: 1,
+      waiting_for: groupId ? 0 : 1,
       created_at: Date.now(),
       preview: null,
       peer_offline: false,
@@ -2280,6 +2282,22 @@ export const useChatStore = defineStore("chat", () => {
       status: "sending",
     };
     enqueueMessage(optimistic);
+    // 静默 / 队列可见的两类动作（强提醒、合并转发）在任务中心先占一行：
+    // `remind`（含抖动）不进时间线，任务中心是它唯一的可见处；`merge` 虽另有气泡投影，
+    // 同样需要"排队中/判死"在任务中心可查。临时行只认 `tmp-<localId>`，真实快照到达后
+    // 由 `refreshTransfers` 整表接管（迟到回滚摘不到真实行，见 `dropByMsgId`）。
+    const optimisticOpId =
+      kind === "remind" || kind === "merge" ? optimistic.msg_id : null;
+    if (optimisticOpId) {
+      showOptimisticOp(
+        optimisticOpRow(
+          optimisticOpId,
+          convId,
+          kind,
+          kind === "remind" && isNudgePayload(content),
+        ),
+      );
+    }
     // 1:1 才捕获摘要：群摘要由群成员台账/后端快照驱动，本批不改群行为。
     const summaryBefore = convId.startsWith("group:") ? null : captureSummary(convId);
     try {
@@ -2291,17 +2309,19 @@ export const useChatStore = defineStore("chat", () => {
         ? { ...rec, status: furthestStatus(rec.status, "delivered") }
         : rec;
       replaceMessage(convId, optimistic.msg_id, next);
+      if (optimisticOpId) dropOptimisticOp(optimisticOpId);
       void refreshTransfers();
       return rec;
     } catch (e) {
       // 发送失败：把投影落成失败态（保留内容，用户可重发）；若它已经把会话摘要顶上去，
       // 一并收回（失败的行不许继续冒充"最新消息"）。真实结果已先到时 `failOptimistic`
       // 返回 false，此时摘要属于真实消息，不能回滚。
+      if (optimisticOpId) dropOptimisticOp(optimisticOpId);
       if (failOptimistic(convId, optimistic.msg_id)) {
         restoreSummaryIfOurs(convId, optimistic.ts, summaryBefore);
       }
-      // 任务中心那一行**不伪造**：它只来自后端补发队列快照。这里补拉一次，
-      // 让"入队成功但稍后失败"的行按快照收掉，"根本没入队"的行本来就不存在。
+      // 任务中心那一行以**后端快照为准**：本地没入队时不存在；入队后判死的那一行由快照补回。
+      // 强提醒 / 合并转发的临时行已在上面摘掉（真实结果先到时它本来就不在，重复摘是幂等的）。
       void refreshTransfers();
       throw e;
     }
@@ -2342,6 +2362,10 @@ export const useChatStore = defineStore("chat", () => {
    * 发起强提醒：对 `targetMsgId` 发一条 kind=remind。
    * 群聊必须带显式 actors 名单（第一版不默认全群）；私聊名单为空（默认对方）。
    * 复用普通 send 链路（乐观气泡/outbox/Ack），不另造传输。
+   *
+   * 5.16.93：`remind` 是静默 kind —— 乐观投影落在任务中心（`send()` 建的临时行），
+   * 气泡不进时间线。后端先入队、建链后协商；对端亲口不支持时返回 `failed`，
+   * 这里按具名码抛出，交给调用点的 `toastError` 翻人话（任务中心同时保留那一行供重发）。
    */
   async function sendReminder(
     convId: string,
@@ -2349,16 +2373,25 @@ export const useChatStore = defineStore("chat", () => {
     actors: string[] = [],
     shake = false,
   ) {
-    await send(convId, buildRemindPayload(targetMsgId, actors, shake), "remind");
+    const rec = await send(convId, buildRemindPayload(targetMsgId, actors, shake), "remind");
+    if (rec.status === "failed") {
+      throw new Error(`code=${rec.fail_code ?? "SEND_KIND_UNSUPPORTED"}`);
+    }
   }
 
   /**
    * 工具栏「抖动」按钮（仿 QQ 窗口抖动）：**独立事件**，不锚定任何消息、不发强提醒。
    * 复用 `remind` 帧的可靠管道（`nudge=true`），接收端只抖 + 灰字；旧端由能力位挡住。
+   *
+   * 5.16.93：**发送成功才出「已向对方发送」灰字**。判死（对端声明不支持）时改为抛具名码 +
+   * 任务中心留一行 —— 否则本机抖了提示、对方窗口毫无反应，用户只会当成功能坏了。
    */
   async function shakeConversation(convId: string): Promise<void> {
     if (!convId || convId.startsWith("group:")) return;
-    await send(convId, buildRemindPayload("", [], true, true), "remind");
+    const rec = await send(convId, buildRemindPayload("", [], true, true), "remind");
+    if (rec.status === "failed") {
+      throw new Error(`code=${rec.fail_code ?? "SEND_KIND_UNSUPPORTED"}`);
+    }
     showNudgeNotice(convId, app.device?.device_id ?? "");
   }
 

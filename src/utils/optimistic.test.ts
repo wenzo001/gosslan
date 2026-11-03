@@ -165,3 +165,32 @@ test("撤回回滚：重复失败幂等，已还原的行不再命中", () => {
   // 行已经不在（整表重读后这一条被删）⇒ 不凭空造行
   assert.equal(recallRollbackTarget(undefined, before, false), null);
 });
+
+/**
+ * 第三批乐观（强提醒 / 合并转发，5.16.94）的对偶用例。
+ * 这两类没有"本地真值"，投影只是任务中心的一行临时占位 ⇒ 判据仍然只有一条：
+ * 只按自己的临时 `msg_id` 摘除，真实行与另一个目标一概不动。
+ */
+test("强提醒 / 合并转发：真实先到不误删、重复失败幂等、换目标不串行", () => {
+  const ops = [
+    { msg_id: "tmp-L1" }, // 本次强提醒的临时行
+    { msg_id: "remind-real" }, // 真实结果先到（快照已把临时行换掉）
+    { msg_id: "tmp-L2" }, // 用户紧接着抖动的第二条（换目标）
+  ];
+
+  // 正常路径：只摘自己的
+  assert.deepEqual(dropByMsgId(ops, "tmp-L1"), [
+    { msg_id: "remind-real" },
+    { msg_id: "tmp-L2" },
+  ]);
+  // 真实先到：临时行已不在表里 ⇒ 迟到失败摘不到任何行
+  assert.deepEqual(dropByMsgId([{ msg_id: "remind-real" }], "tmp-L1"), [
+    { msg_id: "remind-real" },
+  ]);
+  // 重复失败：第二次是空操作（幂等），另一条目标必须原样保留
+  const once = dropByMsgId(ops, "tmp-L1")!;
+  assert.deepEqual(dropByMsgId(once, "tmp-L1"), once);
+  assert.deepEqual(once, [{ msg_id: "remind-real" }, { msg_id: "tmp-L2" }]);
+  // 没有快照（读失败）⇒ 不动，绝不凭空造空表
+  assert.equal(dropByMsgId(undefined, "tmp-L1"), undefined);
+});

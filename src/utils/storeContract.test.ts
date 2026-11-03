@@ -1294,3 +1294,59 @@ test("第二批乐观（表情回应 / 撤回）只动投影，回滚判据只�
   assert.notEqual(mutated, rc, "对照注入没生效 ⇒ 这条对照什么都没测");
   assert.ok(!mutated.includes("recallRollbackTarget("), "对照后必须少一处");
 });
+
+/**
+ * 第三批乐观（强提醒 / 合并转发，5.16.94）的落地守卫。
+ *
+ * 这两类都不靠气泡表达"正在发"：`remind`（含抖动）不进时间线，`merge` 虽有气泡，
+ * 但排队/判死同样要能在任务中心查到。所以临时行必须在 `send()` 里建、
+ * 成功与失败两条路径都要摘 —— 摘晚一步就会在任务中心留一条永不落的幽灵。
+ */
+test("第三批乐观（强提醒 / 合并转发）的临时行只认 tmp id，失败必摘（5.16.94）", () => {
+  const st = stripComments(readFileSync(join(ROOT, "stores", "useChatStore.ts"), "utf8"));
+
+  const send = storeFnBody(st, "async function send(");
+  assert.ok(
+    send.includes('kind === "remind" || kind === "merge" ? optimistic.msg_id : null'),
+    "只有这两类需要额外建任务中心临时行（其余 kind 的气泡已足够）",
+  );
+  assert.ok(send.includes("showOptimisticOp("), "投影必须在 await 之前上屏（否则等后端回来才可见）");
+  assert.ok(
+    send.includes("isNudgePayload(content)"),
+    "抖动位必须从载荷解析（不能按文案猜），坏载荷按 false",
+  );
+  assert.equal(
+    count(send, "dropOptimisticOp(optimisticOpId)"),
+    2,
+    "成功与失败两条路径都必须摘临时行；少一条就留幽灵",
+  );
+  // 只看"新建发送"这一段（重发分支在前面另有一次 refreshTransfers，不能当基准）
+  const fresh = send.slice(send.indexOf("enqueueMessage(optimistic)"));
+  assert.ok(
+    fresh.indexOf("dropOptimisticOp(optimisticOpId)") < fresh.indexOf("void refreshTransfers()"),
+    "必须先摘临时行、再拉快照：反过来的话真实行会被迟到的 temp 摘掉",
+  );
+
+  // 群聊目标也必须能建成行（群提醒/合并转发都是群动作）
+  const row = storeFnBody(st, "function optimisticOpRow(");
+  assert.ok(row.includes('convId.startsWith("group:")'), "群会话必须派生 group_id");
+  assert.ok(row.includes("peer_id: groupId ? null : convId"), "群行不许把 group: 前缀塞进 peer_id");
+
+  // 判死要抛具名码：调用点的 toastError 靠码翻人话，而不是读一串 English/裸码
+  const remind = storeFnBody(st, "async function sendReminder(");
+  assert.ok(remind.includes('rec.status === "failed"'), "返回 failed 必须当成失败处理");
+  assert.ok(remind.includes("code=${rec.fail_code"), "必须把后端码交给 classifyError");
+  const shake = storeFnBody(st, "async function shakeConversation(");
+  const failAt = shake.indexOf('rec.status === "failed"');
+  const noticeAt = shake.indexOf("showNudgeNotice(");
+  assert.ok(failAt >= 0, "抖动必须检查判死");
+  assert.ok(noticeAt > failAt, "「已向对方发送」必须在判死检查之后：否则抖了但对方没反应");
+
+  // 非空转对照：把这两类从临时行条件里删掉 ⇒ 上面第一条必须立刻不成立
+  const mutated = send.replace(
+    'kind === "remind" || kind === "merge" ? optimistic.msg_id : null',
+    "null",
+  );
+  assert.notEqual(mutated, send, "对照注入没生效 ⇒ 这条对照什么都没测");
+  assert.ok(!mutated.includes('kind === "remind" || kind === "merge"'), "对照后必须少一处");
+});
