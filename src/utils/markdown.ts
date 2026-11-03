@@ -33,10 +33,29 @@ const ALLOWED_TAGS = [
 ];
 const ALLOWED_ATTR = ["href", "title", "rel", "target"];
 
+/**
+ * 源文本硬上限（审计第 5 项）：`marked.parse` + `DOMPurify.sanitize` 是**同步主线程**活，
+ * 耗时随长度涨。说明来源是我们自己的 CHANGELOG 片段（一节几 KB 量级），超长只可能是
+ * 病态输入或取数出错 ⇒ 截断并留一个可辨认的省略号。输入有上限，两步同步开销就有
+ * 上限（不必为更新面板单开 worker）。判据见 `markdown.test.ts`。
+ */
+export const NOTES_MAX_CHARS = 32_000;
+
+/**
+ * 超上限截断（纯函数 ⇒ 可在 Node 单测；渲染入口在 DOM 环境里，测试够不着 marked 那步）。
+ * 不超原样返回；超了截到上限并追加一个独立段落的省略号（用户看得见"被截了"，
+ * 不是无声吞掉）。
+ */
+export function capNotesText(text: string): string {
+  if (text.length <= NOTES_MAX_CHARS) return text;
+  return `${text.slice(0, NOTES_MAX_CHARS)}\n\n…`;
+}
+
 /** 渲染成可 `v-html` 的安全片段。空输入返回空串（界面据此不画说明区）。 */
 export function renderNotesMarkdown(src: string | null | undefined): string {
-  const text = (src ?? "").trim();
+  let text = (src ?? "").trim();
   if (!text) return "";
+  text = capNotesText(text);
   // `async: false`：同步返回字符串（该库在有 `async` 选项时才返回 Promise）。
   const html = marked.parse(text, { async: false, gfm: true, breaks: true });
   return DOMPurify.sanitize(html, {
