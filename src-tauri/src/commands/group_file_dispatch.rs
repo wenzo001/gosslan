@@ -314,6 +314,9 @@ async fn dispatch_group_file_to_peer(
                 .map_err(|e| GroupFileSendErr::Retryable(format!("定位续传偏移失败：{e}")))?;
         }
         let mut buf = vec![0u8; chunk_size];
+        // 进度按**已写出链路**的分块算（与单聊同一口径，R 批审计 2026-11-03 第 1 项）：
+        // 入队口径最多能领先一整条链路队列，用户会看到"100% 了还在传"。
+        let wire_key = crate::network::file::file_peer_key(transfer_id, recipient);
         let mut seq: u32 = 0;
         let mut sent: u64 = resume_from;
         // 本次投递的起点 + 停滞提示状态（与单聊共用 `file::stall_tick`）
@@ -374,10 +377,17 @@ async fn dispatch_group_file_to_peer(
             // 真实本地进度节流落库（250ms），并向前端推送进度事件。
             if last_report.elapsed() >= std::time::Duration::from_millis(250) {
                 last_report = std::time::Instant::now();
+                let on_wire = crate::network::file::wire_progress_bytes(
+                    resume_from,
+                    chunk_size,
+                    sent,
+                    crate::network::transport::file_wire_chunks_at(state, &wire_key),
+                    size,
+                );
                 let progress = if size == 0 {
                     1.0
                 } else {
-                    sent as f64 / size as f64
+                    on_wire as f64 / size as f64
                 };
                 // 发送方气泡的进度口径：**只按发送时在线的成员平均**（用户 2026-09-12 反馈）。
                 // 离线成员不计入分母、之后补发也不回退进度条；在线成员全部完成即 100%。

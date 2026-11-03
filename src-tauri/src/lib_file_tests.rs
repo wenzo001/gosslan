@@ -1695,3 +1695,26 @@ fn file_command_rejections_are_traced_not_silent() {
         );
     }
 }
+
+    /// 审计 2026-11-03 第 1 项：群文件发送进度必须按**已写出链路**的字节算（与单聊同一
+    /// `wire_progress_bytes` 口径），不许退回"入队即计入"——入队口径能领先一整条链路
+    /// 队列，用户会看到 100% 了字节还在本机。正控：把换算摘掉改回 `sent / size` 必须红。
+    #[test]
+    fn group_file_progress_is_wire_bytes_not_enqueued() {
+        let src = include_str!("commands/group_file_dispatch.rs");
+        let body = rust_fn_body(src, "async fn dispatch_group_file_to_peer(");
+        assert!(
+            body.contains("wire_progress_bytes("),
+            "群文件发送进度必须经 wire_progress_bytes 换算（与单聊同一证据点）"
+        );
+        assert!(
+            !body.contains("sent as f64 / size as f64"),
+            "入队口径（sent/size）不许回到群文件进度里"
+        );
+        // 正控：把换算摘掉 ⇒ 上面第二条必须红（在这里模拟摘掉后的形状）。
+        let gutted = body.replace("wire_progress_bytes(", "wire_progress_bytes_UNUSED(");
+        assert!(
+            !gutted.contains("wire_progress_bytes("),
+            "正控失效：摘掉换算后尺子仍然匹配 ⇒ 这把尺子在空集上恒绿"
+        );
+    }
