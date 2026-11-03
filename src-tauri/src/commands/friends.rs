@@ -183,8 +183,16 @@ pub async fn remove_friend(state: State<'_, Arc<AppState>>, peer_id: String) -> 
         }
     };
     // 状态变更要在放掉 db 锁之后 emit（INV-P25：持锁 emit 会让监听器回手再抢同一把锁）。
+    // 事件带结论（审计第 4 项）：`fail_pending_messages_for_peer` 刚把这些行写成 failed，
+    // 前端直接盖到所有缓存会话 —— 不然删好友后没在看的会话永远停在「发送中」。
     for msg_id in &failed_messages {
-        let _ = s.app.emit("message-status-changed", msg_id);
+        let _ = s.app.emit(
+            "message-status-changed",
+            &crate::state::MessageStatusChanged {
+                msg_id: msg_id.clone(),
+                status: Some("failed".to_string()),
+            },
+        );
     }
     // ⚠️ **同时解除内存里的身份绑定**（用户 2026-09-13 真机：不这么做就"必须重启"）。
     // `friends` 表那一行删掉只解除了一条腿；`verify_hello` 还会回落到内存 `peers` 表里

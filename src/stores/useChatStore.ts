@@ -3199,13 +3199,8 @@ export const useChatStore = defineStore("chat", () => {
         //（只能等下次打开重查），正在看的会话为了一行状态重拉一整页 + 整列表重建。
         markStatusInCache(messages.value, msgId, "failed");
       },
-      onMessageStatusChanged: (msgId) => {
-        // 后端 emit 的状态变更事件 —— 我们直接从数据库拉最新状态覆盖本地
-        // 目前只在 cancel_file_transfer 里发（取消后库里落 cancelled，前端同步一下）
-        // 只处理**活跃**会话：loadMessages 的结果对非活跃会话必被 activeConv
-        // 守卫丢弃（两次 IPC 纯浪费），而且切换回来时 openConversation 会重查。
-        // （修复前它还会顺带把全局 loadSeq +1，取消活跃会话飞行中的加载 →
-        //   骨架永久转圈，见 2026-09-23 审计 1.4。）
+      onMessageStatusChanged: (msgId, status) => {
+        // 后端 emit 的状态变更事件（取消 / 补发 / 删好友 / 群文件终态）。
         //
         // ⚠️ 文件 / 群文件的状态变更同时是**一条传输行的终态**（群文件接收失败就只走这条）。
         // 只重拉会话不动 `transfers` 的话，全局面板与气泡会继续显示「接收中 X%」——
@@ -3214,6 +3209,23 @@ export const useChatStore = defineStore("chat", () => {
         // 2026-10-25：消息通道的状态变更也会改**任务中心**（取消/失败/送达会让补发行出现或消失），
         // 所以补拉不再只认文件前缀 —— 所有状态变更都走同一条防抖刷新。
         scheduleTransfersRepair();
+        if (status) {
+          // 事件带结论（审计第 4 项）：`status` 就是后端刚写进 `messages.status` 的值
+          //（取消落 cancelled / partial_cancelled、补发落 sending / sent、删好友落 failed、
+          // 群文件收尾落 failed）。直接盖到**所有**缓存了这条消息的会话（含没在看的），
+          // 与 `onMessageFailed` / `onFileCancelled` 同形 —— 不回库查、不整页重建。
+          // 修复前只重查活跃会话：没在看的会话缓存停到下次打开，取消/补发/删好友在
+          // 后台会话里一直不更新（重发入口判据 `status === "failed"` 也跟着失真）。
+          // 直接盖是安全的：载荷就是库里那一份的值，事件按写库顺序到达，后到的事件
+          // 带更新的值；`markStatusInCache` 幂等（相同状态跳过）。
+          markStatusInCache(messages.value, msgId, status);
+          return;
+        }
+        // 不带结论（群文件聚合台账 / done 闸门 / 写库失败那一族）：真相不是单一状态，
+        // 只重查**活跃**会话（loadMessages 的结果对非活跃会话必被 activeConv 守卫丢弃，
+        // 两次 IPC 纯浪费；切换回来时 openConversation 会重查）。
+        // （修复前它还会顺带把全局 loadSeq +1，取消活跃会话飞行中的加载 →
+        //   骨架永久转圈，见 2026-09-23 审计 1.4。）
         const convId = activeConv.value;
         if (convId && messages.value[convId]?.some((m) => m.msg_id === msgId)) {
           void loadMessages(convId);

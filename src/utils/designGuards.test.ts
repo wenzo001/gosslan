@@ -5964,6 +5964,8 @@ test("跨会话按 msg_id 改一条不许手写循环：三个 handler 必须走
     ["function onMessageRenderChanged(", "findFirstMessageById("],
     ["function onMessageRecalled(", "findFirstMessageById("],
     ["onFileCancelled: (transferId) => {", "markStatusInCache("],
+    // 审计第 4 项：带结论的状态变更也走全缓存那个家，不许手写跨会话循环。
+    ["onMessageStatusChanged: (msgId, status) => {", "markStatusInCache("],
   ] as const) {
     const body = bodyOf(sig);
     assert.ok(!CROSS_CONV.test(body), `${sig} 又手写跨会话循环了 ⇒ 回到"每处一份、没法单测"的形状`);

@@ -121,9 +121,15 @@ pub(crate) async fn handle_group_file_cancel(
             db::cancel_group_file_recipient(&dbc, &transfer_id, &recipient).unwrap_or(false)
         };
         if cancelled {
-            let _ = state
-                .app
-                .emit("message-status-changed", &format!("gfile-{transfer_id}"));
+            // 不带结论（审计第 4 项）：这里只取消了**一个成员行**，聚合气泡的状态
+            // 由台账决定（可能还在发），单一状态代表不了真相 ⇒ 前端重查活跃会话。
+            let _ = state.app.emit(
+                "message-status-changed",
+                &crate::state::MessageStatusChanged {
+                    msg_id: format!("gfile-{transfer_id}"),
+                    status: None,
+                },
+            );
         }
         state.logger.info(
             "group_file",
@@ -162,9 +168,15 @@ pub(crate) async fn handle_group_file_cancel(
             }
         }
         let _ = state.app.emit("file-cancelled", &transfer_id);
-        let _ = state
-            .app
-            .emit("message-status-changed", &format!("gfile-{transfer_id}"));
+        // 不带结论（审计第 4 项）：气泡终态已由上面 `file-cancelled` 盖进全缓存；
+        // 这一帧只触发重查/失效（台账写可能失败，不许猜结论）。
+        let _ = state.app.emit(
+            "message-status-changed",
+            &crate::state::MessageStatusChanged {
+                msg_id: format!("gfile-{transfer_id}"),
+                status: None,
+            },
+        );
         state.logger.info(
             "group_file",
             format!("发送方取消了这一格，本机已停手 transfer={transfer_id} stopped={stopped}"),
@@ -920,7 +932,7 @@ fn fail_group_file_chunk(state: &Arc<AppState>, transfer_id: &str, reason: &str)
 /// 调用点就只能走"快照 id → 逐个收尾"，而那正是本文件 `:5232` 注释判死过的形状。
 fn finalize_failed_group_receive(state: &Arc<AppState>, transfer_id: &str, reason: &str) {
     // 只落在册的码：`reason` 也可能是动态内部串（见 `persistable_group_fail_code` 那段）。
-    set_gfile_bubble_status(
+    let bubble_wrote = set_gfile_bubble_status(
         state,
         transfer_id,
         "failed",
@@ -943,11 +955,19 @@ fn finalize_failed_group_receive(state: &Arc<AppState>, transfer_id: &str, reaso
     // 状态落了库，但**不发事件就没人知道**：前端只在收到终态事件时才动那一条气泡，
     // 于是群文件失败永远显示「发送中」，要重开会话才看得见（10-22 审计 R-02；
     // 前端那一半 `gfile-` 前缀漏匹配已同日修掉）。
-    // 复用已线的 `message-status-changed` 帧（载荷就是 msg_id 字符串，与 commands/files.rs
-    // 取消路径同一形状）⇒ 不新增协议消息类型。emit 必须在 db 锁**外**（锁内不许 emit）。
-    let _ = state
-        .app
-        .emit("message-status-changed", &format!("gfile-{transfer_id}"));
+    // 复用已线的 `message-status-changed` 帧 ⇒ 不新增协议消息类型。
+    // emit 必须在 db 锁**外**（锁内不许 emit）。
+    // 事件带结论（审计第 4 项）：气泡的 failed 刚落库成功才带 `Some("failed")`，
+    // 前端据此盖到**所有**缓存会话（含没在看的）；写失败给 None，不许猜结论。
+    // 不在册的失败原因（`should_notify_group_failure` 为 false 那一族）没有
+    // `file-failed` 帧 ⇒ 这一帧是它们唯一的前端信号，跨会话补丁必须走这里。
+    let _ = state.app.emit(
+        "message-status-changed",
+        &crate::state::MessageStatusChanged {
+            msg_id: format!("gfile-{transfer_id}"),
+            status: bubble_wrote.then(|| "failed".to_string()),
+        },
+    );
     // **失败原因**：稳定码才上屏（另发一帧 `file-failed`，载荷与单聊同一形状
     // `{transfer_id, reason}`；前端 `onFileFailed` 本来就认 `gfile-` 前缀，
     // 那一族是群文件气泡的 msg_id 形状 ⇒ 复用同一帧，不新增协议消息类型）。
@@ -1026,17 +1046,28 @@ pub fn sweep_stalled_receives(state: &Arc<AppState>) -> usize {
 /// （真正的台账写在 `group_files` / `group_file_recipients` 里）。
 /// `fail_code` 只有 `status == "failed"` 时才写；其余状态走无码的门，
 /// 于是"取消"这类没有原因的终态不会被打上一个编出来的原因（`NULL` 是一个状态，INV-P16 ③）。
-fn set_gfile_bubble_status(state: &AppState, transfer_id: &str, status: &str, fail_code: Option<&str>) {
+/// 返回这一笔**是否真的落库**（审计第 4 项）：`message-status-changed` 带不带结论
+/// 取决于它 —— 写失败时事件不许声称气泡已是该状态（假结论比没结论更坏）。
+fn set_gfile_bubble_status(
+    state: &AppState,
+    transfer_id: &str,
+    status: &str,
+    fail_code: Option<&str>,
+) -> bool {
     let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
     let wrote = match fail_code {
         Some(code) if status == "failed" => db::set_message_failed(&dbc, &format!("gfile-{transfer_id}"), code),
         _ => db::set_message_status(&dbc, &format!("gfile-{transfer_id}"), status),
     };
-    if let Err(e) = wrote {
-        state.logger.error(
-            "group_file",
-            format!("code=GFILE_BUBBLE_STATUS_FAILED transfer={transfer_id} status={status}：{e}"),
-        );
+    match wrote {
+        Ok(_) => true,
+        Err(e) => {
+            state.logger.error(
+                "group_file",
+                format!("code=GFILE_BUBBLE_STATUS_FAILED transfer={transfer_id} status={status}：{e}"),
+            );
+            false
+        }
     }
 }
 
@@ -1158,7 +1189,7 @@ async fn handle_group_file_done(
                     gfile_reason_label(&why)
                 ),
             );
-            set_gfile_bubble_status(
+            let bubble_wrote = set_gfile_bubble_status(
                 state,
                 &transfer_id,
                 "failed",
@@ -1196,11 +1227,17 @@ async fn handle_group_file_done(
             // ★ 落了库还必须**通知界面**，否则这一格与 10-22 审计 R-02 是同一个症状：前端只在
             // 收到终态事件时才动那一条气泡 ⇒ 收尾失败时收件人这边一直显示「发送中」，要重开会话
             // 才看得见"失败"。`finalize_failed_group_receive` 那一格早就补了这句，这一格漏了。
-            // 复用已线的 `message-status-changed` 帧（载荷就是 msg_id 字符串），不新增协议类型；
+            // 复用已线的 `message-status-changed` 帧，不新增协议类型；
             // emit 在 db 锁**外**（上面那个块已经闭合）。
-            let _ = state
-                .app
-                .emit("message-status-changed", &format!("gfile-{transfer_id}"));
+            // 事件带结论（审计第 4 项）：气泡 failed 刚落库成功才带结论，前端盖到所有缓存会话；
+            // 写失败给 None（不许猜结论），前端退回只重查活跃会话的旧路。
+            let _ = state.app.emit(
+                "message-status-changed",
+                &crate::state::MessageStatusChanged {
+                    msg_id: format!("gfile-{transfer_id}"),
+                    status: bubble_wrote.then(|| "failed".to_string()),
+                },
+            );
             // 5.15.40：这一格以前**从不弹通知**，连盘满（唯一"用户现在就能动手"的那一类）
             // 也只在气泡里留个码。与 `finalize_failed_group_receive` 用同一份显式名单。
             if should_notify_group_failure(&why) {
@@ -2852,8 +2889,14 @@ mod group_file_fail_reason_tests {
             !flat.contains("Some(REASON_PEER_UNLINKED)"),
             "不许把收尾失败一律标成对端失联 —— 那是把一件事标成另一件事"
         );
-        let needle = "emit(\"message-status-changed\",&format!(\"gfile-{transfer_id}\"))";
+        let needle = "emit(\"message-status-changed\",&crate::state::MessageStatusChanged{msg_id:format!(\"gfile-{transfer_id}\")";
         assert!(flat.contains(needle), "落了库却没通知界面 ⇒ 群气泡停在发送中");
+        // 结论必须**来自气泡写库的成败**（审计第 4 项）：写成功才带 failed，
+        // 写失败给 None。猜一个状态填进去 = 界面显示一个库里不存在的状态。
+        assert!(
+            flat.contains("status:bubble_wrote.then(||\"failed\".to_string())"),
+            "事件的结论必须与气泡落库成败绑定，不许无条件声称 failed"
+        );
         // 反控：摘掉那一句 emit，同一把尺子必须说不（否则上面那条是恒绿的）。
         let gutted = flat.replace(needle, "");
         assert_ne!(gutted, flat, "变异没落进去 ⇒ 这条反控不作数（needle 写错了）");

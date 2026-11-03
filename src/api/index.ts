@@ -102,8 +102,8 @@ export const api = {
       listen<{ msg_id: string }>("group-message-acked", (e) => {
         if (e.payload.msg_id.startsWith("gfile-")) cb();
       }),
-      listen<string>("message-status-changed", (e) => {
-        if (e.payload.startsWith("gfile-")) cb();
+      listen<{ msg_id: string; status: string | null }>("message-status-changed", (e) => {
+        if (e.payload.msg_id.startsWith("gfile-")) cb();
       }),
     ]).then((fns) => () => fns.forEach((fn) => fn())),
   getDeviceInfo: () => invoke<DeviceInfo>("get_device_info"),
@@ -893,8 +893,15 @@ export type EventHandlers = {
   onFileCancelled: (transferId: string) => void;
   /** 更新状态跃迁（B5）：两个窗口都会收到同一份快照。 */
   onUpdaterStatus: (s: UpdaterStatus) => void;
-  /** 某条消息状态变更（msg_id: file-{tid} / gfile-{tid} 等）。前端据此刷新气泡状态。 */
-  onMessageStatusChanged: (msgId: string) => void;
+  /**
+   * 某条消息状态变更（msg_id: file-{tid} / gfile-{tid} 等）。
+   *
+   * `status`（审计第 4 项）：后端**刚写进库**的状态。带结论时前端直接把事实盖到所有
+   * 缓存了这条消息的会话（含没在看的），与 `message-failed` / `file-cancelled` 同形；
+   * `null` = 这一格的真相不是单一状态（群文件聚合台账 / done 闸门 / 写库失败）⇒
+   * 前端退回"只重查活跃会话"的旧路。
+   */
+  onMessageStatusChanged: (msgId: string, status: string | null) => void;
   /**
    * 某个群消息的**成员级投递台账**变了（Ack 落地 / 取消剩余成员 / 补发 / 清扫判死）。
    *
@@ -998,18 +1005,21 @@ export async function bindEvents(h: EventHandlers): Promise<UnlistenFn[]> {
     listen<FileFailedInfo>("file-failed", (e) => h.onFileFailed(e.payload)),
     listen<string>("file-cancelled", (e) => h.onFileCancelled(e.payload)),
     listen<UpdaterStatus>("updater-status", (e) => h.onUpdaterStatus(e.payload)),
-    listen<string>("message-status-changed", (e) => h.onMessageStatusChanged(e.payload)),
+    listen<{ msg_id: string; status: string | null }>("message-status-changed", (e) =>
+      h.onMessageStatusChanged(e.payload.msg_id, e.payload.status),
+    ),
     listen<{ group_id: string; msg_id: string }>("group-delivery-changed", (e) =>
       h.onGroupDeliveryChanged(e.payload),
     ),
     // 后端改了这些消息的状态就发对应事件（sweeper 判失败 / Ack 到达 / 文件被取消）。
     // 分两类，按**事件带不带结论**判：
-    // - 只给 id（`message-status-changed`）：结论得回库查 ⇒ 正在看的会话重查，
-    //   没在看的等下次打开重查（`openConversation` 每次都拉 DB，已实测）。
-    // - 事件名就是结论（`message-failed`，outbox 先写库再发）：直接把这个事实盖到缓存上，
-    //   包含没在看的会话。这不是"第二套状态机"——写的就是库里那一份的值（INV-006/P15），
-    //   `file-cancelled` 从来就是这么做的。以前它挂在重查那一类上，代价是一次 IPC + 整列表
-    //   重建，而**后台会话依然什么都不更新**。
+    // - 事件带结论（`message-failed`，outbox 先写库再发；以及审计第 4 项之后的
+    //   `message-status-changed` —— 载荷里的 `status` 就是刚写库的值）：直接把这个事实
+    //   盖到缓存上，**包含没在看的会话**。这不是"第二套状态机"——写的就是库里那一份的
+    //   值（INV-006/P15），`file-cancelled` 从来就是这么做的。以前挂在重查那一类上，
+    //   代价是一次 IPC + 整列表重建，而**后台会话依然什么都不更新**。
+    // - `message-status-changed` 的 `status = null` 是特例：那一格的真相不是单一状态
+    //   （群文件聚合台账 / done 闸门），前端退回"只重查正在看的会话"的旧路。
     listen<string>("message-failed", (e) => h.onMessageFailed(e.payload)),
     listen<PeerStyleUpdate>("peer-style-updated", (e) => h.onPeerStyle(e.payload)),
     listen<string>("groups-updated", (e) => h.onGroupsUpdated(e.payload)),
