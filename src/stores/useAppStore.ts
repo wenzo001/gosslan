@@ -26,7 +26,7 @@ import {
   type LanguagePreference,
 } from "@/i18n";
 import { isMac } from "@/utils/platform";
-import { pushToast, type ToastKind } from "@/utils/toastManager";
+import { pushToast, type ToastAction, type ToastKind } from "@/utils/toastManager";
 import type { AppSettings, ChannelStatus, DeviceInfo, InterfaceInfo, PreviousRunReport, RelayPolicy, RuntimeSnapshot } from "@/types";
 import { decideBleAutostart } from "@/utils/crashLoop";
 import { safeStorageBackend, storageGet, storageRemove, storageSet } from "../utils/safeStorage.ts";
@@ -222,6 +222,14 @@ export const useAppStore = defineStore("app", () => {
   // 轻量 toast：渲染/计时/去重/限流交给 Reka Toast（见 utils/toastManager 与 ToastHud）。
   function toast(text: string, type: ToastKind = "info") {
     pushToast(text, type);
+  }
+
+  /**
+   * 带一个按钮的提示：按钮文案 + 动作都由调用方给（目前只给"辅助窗口创建失败"用）。
+   * 复用 `pushToast` 的去重/限流，不另造一套。
+   */
+  function toastAction(text: string, type: ToastKind, action: ToastAction) {
+    pushToast(text, type, action);
   }
 
   /**
@@ -1140,6 +1148,7 @@ export const useAppStore = defineStore("app", () => {
     resetDefaults,
     toast,
     toastError,
+    toastAction,
   };
 });
 

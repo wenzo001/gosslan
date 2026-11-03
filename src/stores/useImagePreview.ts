@@ -20,6 +20,8 @@
  */
 import { defineStore } from "pinia";
 import { ref } from "vue";
+import { useAuxWindowFailureReport } from "@/composables/useAuxWindowFailureReport";
+import { isAuxWindowCreateFailure } from "@/utils/auxWindowFailure";
 import { useAppStore } from "@/stores/useAppStore";
 import { api } from "@/api";
 import { t } from "@/i18n";
@@ -41,6 +43,8 @@ export function deliverableToWindow(items: PreviewImage[]): boolean {
 
 export const useImagePreviewStore = defineStore("imagePreview", () => {
   const app = useAppStore();
+  /** 独立预览窗口建不出来时的统一上报（人话 + 立即重启）；覆盖层降级照旧。 */
+  const reportAuxFailure = useAuxWindowFailureReport();
   const images = ref<PreviewImage[]>([]);
   const index = ref(0);
   const open = ref(false);
@@ -87,8 +91,15 @@ export const useImagePreviewStore = defineStore("imagePreview", () => {
     inWindow.value = true;
     api
       .openImagePreview(items, at)
-      .catch(() => {
+      .catch((e) => {
         inWindow.value = false;
+        if (isAuxWindowCreateFailure(e)) {
+          // 渲染环境残留：覆盖层照旧接管（用户点了就必须看到图），但要说清为什么
+          // 这次不是独立窗口，并给一个"立即重启"。
+          if (!overlayMounted.value) close();
+          reportAuxFailure(e, t("preview.unavailable"));
+          return;
+        }
         // 本文档没有那份覆盖层可退（独立群任务窗口）⇒ 收起状态 + 说一声，
         // 而不是留着 open=true：那会让任务详情以为"预览开着"，下一次点遮罩只吃掉
         // "关预览"，一个从没显示出来的预览就把弹窗锁住了。
