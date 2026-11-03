@@ -15,18 +15,19 @@ const todoPayload = (extra: Record<string, unknown> = {}) =>
   JSON.stringify({ todo_id: "td_1", title: "修复登录", description: "复现后修", ...extra });
 
 test("待办：标题 + 描述（描述为空时不留尾随空行）", () => {
+  const sep = t("common.sep.colon");
   assert.equal(
     cardCopyText("todo", todoPayload()),
-    `${t("favorite.cardKind.todo")}：修复登录\n复现后修`,
+    `${t("favorite.cardKind.todo")}${sep}修复登录\n复现后修`,
   );
   assert.equal(
     cardCopyText("todo", todoPayload({ description: "" })),
-    `${t("favorite.cardKind.todo")}：修复登录`,
+    `${t("favorite.cardKind.todo")}${sep}修复登录`,
   );
   // 两侧空白不该带进剪贴板
   assert.equal(
     cardCopyText("todo", todoPayload({ title: "  修复登录  ", description: "  复现后修  " })),
-    `${t("favorite.cardKind.todo")}：修复登录\n复现后修`,
+    `${t("favorite.cardKind.todo")}${sep}修复登录\n复现后修`,
   );
 });
 
@@ -38,19 +39,20 @@ test("待办：墓碑 / 缺 todo_id / 标题为空白 ⇒ null（调用方据此
 });
 
 test("投票：问题 + 选项逐行；没有问题的空壳不复制", () => {
+  const sep = t("common.sep.colon");
   assert.equal(
     cardCopyText("poll", JSON.stringify({ question: "几点开会？", options: ["9点", "10点"] })),
-    `${t("favorite.cardKind.poll")}：几点开会？\n9点\n10点`,
+    `${t("favorite.cardKind.poll")}${sep}几点开会？\n9点\n10点`,
   );
   // 没有 options 字段 ⇒ 只复制问题那一行（不抛错）
   assert.equal(
     cardCopyText("poll", JSON.stringify({ question: "几点开会？" })),
-    `${t("favorite.cardKind.poll")}：几点开会？`,
+    `${t("favorite.cardKind.poll")}${sep}几点开会？`,
   );
   // options 里的脏数据（非字符串）被丢掉，不写进剪贴板
   assert.equal(
     cardCopyText("poll", JSON.stringify({ question: "q", options: ["a", 1, null, "b"] })),
-    `${t("favorite.cardKind.poll")}：q\na\nb`,
+    `${t("favorite.cardKind.poll")}${sep}q\na\nb`,
   );
   assert.equal(cardCopyText("poll", JSON.stringify({ question: "   " })), null);
   assert.equal(cardCopyText("poll", "{}"), null);
