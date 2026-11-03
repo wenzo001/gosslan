@@ -87,6 +87,22 @@ pub const CHANNEL_UNKNOWN: &str = "CHANNEL_UNKNOWN";
 /// 局域网/蓝牙通道启动或切换失败（适配器、权限、端口占用等底层原因）。
 pub const TRANSPORT_START_FAILED: &str = "TRANSPORT_START_FAILED";
 
+// ── B6 第二批：好友申请那一族 ──────────────────────────────────────────────
+//
+// 同一条「申请没了」在发送侧与同意侧各出现一次（撤回/已处理），所以**一个码、两条原文**，
+// 不在调用点各造一句。人话仍原样保留，老前端显示原文，新前端按词典说话。
+
+/// 好友申请的目标就是自己（发送侧与撤回侧同一条）。
+pub const FRIEND_SELF_REQUEST: &str = "FRIEND_SELF_REQUEST";
+/// 同意申请时本地事务失败（写好友/建会话/删申请行）。
+pub const FRIEND_ACCEPT_FAILED: &str = "FRIEND_ACCEPT_FAILED";
+/// 这条申请已经不在（对方撤回、已被处理，或旧界面残留）。
+pub const FRIEND_REQUEST_GONE: &str = "FRIEND_REQUEST_GONE";
+/// 撤回时联系人标识为空/非法（前端旧列表残留）。
+pub const FRIEND_INVALID_CONTACT: &str = "FRIEND_INVALID_CONTACT";
+/// 已经是好友了，撤回申请没有意义（多半是旧列表残留）。
+pub const FRIEND_ALREADY_FRIEND: &str = "FRIEND_ALREADY_FRIEND";
+
 /// 给"可能已经带码"的下层错误补码：已带 `code=` 就原样透传，避免叠成两个码。
 ///
 /// 典型场景：通道启动会把 `network::start_from_prefs` 的 `PORT_IN_USE` 透传上来，

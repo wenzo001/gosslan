@@ -386,7 +386,10 @@ pub async fn send_friend_request(
 ) -> Result<(), String> {
     let s = state.inner();
     if peer_id.is_empty() || peer_id == s.device_id {
-        return Err("不能向自己发送好友申请".to_string());
+        return Err(crate::error_codes::coded(
+            crate::error_codes::FRIEND_SELF_REQUEST,
+            "不能向自己发送好友申请",
+        ));
     }
     // **先登记再发**：好友申请没有回执，链路抖动时它会静默丢失，而界面照样显示"已发送"
     //（用户 2026-09-12 真机：对方什么都没收到）。登记后由建链/Hello 补全时重发，
@@ -603,7 +606,10 @@ pub(crate) async fn accept_friend_request(s: &Arc<AppState>, peer_id: &str) -> R
             Ok(outcome) => outcome,
             Err(e) => {
                 crate::logging::log_write_failure(&s.logger, "accept_pending_friend_request", e);
-                return Err("同意好友申请失败，请重试".to_string());
+                return Err(crate::error_codes::coded(
+                    crate::error_codes::FRIEND_ACCEPT_FAILED,
+                    "同意好友申请失败，请重试",
+                ));
             }
         }
     };
@@ -615,7 +621,10 @@ pub(crate) async fn accept_friend_request(s: &Arc<AppState>, peer_id: &str) -> R
                 .lock()
                 .unwrap_or_else(|e| e.into_inner())
                 .remove(peer_id);
-            return Err("好友申请不存在或已被对方撤回".to_string());
+            return Err(crate::error_codes::coded(
+                crate::error_codes::FRIEND_REQUEST_GONE,
+                "好友申请不存在或已被对方撤回",
+            ));
         }
     }
     // 补写 peers 表已有的公钥到 friends 表：accept 路径此前不写公钥，
@@ -670,7 +679,10 @@ pub async fn respond_friend_request(
         // 重活棘轮（`worker_bound_heavy_commands_do_not_grow`）把「写日志」算作重活之一
         // （logger 一次 warn 要取整份内存环快照）。要留痕得先把它改成 async + spawn_blocking，
         // 那是另一笔；在此之前保持上限 31 不动，界面仍能拿到这句中文原因。
-        return Err("好友申请不存在或已处理".to_string());
+        return Err(crate::error_codes::coded(
+            crate::error_codes::FRIEND_REQUEST_GONE,
+            "好友申请不存在或已处理",
+        ));
     }
     if accept {
         return accept_friend_request(s, &peer_id).await;
@@ -767,7 +779,10 @@ pub async fn cancel_friend_request(
         let s = s.clone();
         tauri::async_runtime::spawn_blocking(move || -> Result<Option<i64>, String> {
             if peer.is_empty() || peer == s.device_id {
-                return Err("无效的联系人".to_string());
+                return Err(crate::error_codes::coded(
+                    crate::error_codes::FRIEND_INVALID_CONTACT,
+                    "无效的联系人",
+                ));
             }
             let now = db::now_ms();
             let memo_first_at = s
@@ -782,7 +797,10 @@ pub async fn cancel_friend_request(
                     .map_err(|e| e.to_string())?
                     .is_some()
                 {
-                    return Err("已经是好友，无法撤回好友申请".to_string());
+                    return Err(crate::error_codes::coded(
+                        crate::error_codes::FRIEND_ALREADY_FRIEND,
+                        "已经是好友，无法撤回好友申请",
+                    ));
                 }
                 let row =
                     db::get_outgoing_friend_request(&dbc, &peer).map_err(|e| e.to_string())?;
