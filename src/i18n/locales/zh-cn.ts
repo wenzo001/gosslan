@@ -549,6 +549,12 @@ export const zhCN: MessageDict = {
   "common.download": "下载",
   "common.forward": "转发",
   "common.quote": "引用",
+  // 分隔符（B3）：中英标点不同，界面上的拼接一律走这几个键，不在代码里写死。
+  "common.sep.colon": "：",
+  "common.sep.comma": "，",
+  "common.sep.list": "、",
+  "common.sep.semicolon": "；",
+  "common.sep.parens": "（{value}）",
   "common.expand": "展开显示",
   "common.delete": "删除",
   "common.deleteFriend": "删除好友",
@@ -1555,4 +1561,7 @@ export const zhCN: MessageDict = {
   "multi.deleteFail": "删除失败",
   "multi.deleteConfirm": "将删除本机的 {n} 条消息，删除后无法恢复（对方那边仍能看到）。",
   "multi.tooMany": "合并转发最多 {n} 条，请减少选择",
+
+  // ---- IPC 层（`api/index.ts`）----
+  "api.eventListenFail": "{failed}/{total} 个事件监听注册失败：{errors}",
 };

@@ -919,8 +919,8 @@ async function onPaste(e: ClipboardEvent) {
         <span
           class="min-w-0 flex-1 truncate"
           :style="QUOTE_TEXT_STYLE"
-          :title="`${t('common.quote')} ${quote.sender}：${quote.snippet}`"
-        >{{ t("common.quote") }} {{ quote.sender }}：{{ quote.snippet }}</span>
+          :title="`${t('common.quote')} ${quote.sender}${t('common.sep.colon')}${quote.snippet}`"
+        >{{ t("common.quote") }} {{ quote.sender }}{{ t("common.sep.colon") }}{{ quote.snippet }}</span>
         <button
           class="tap-safe flex h-5 w-5 shrink-0 items-center justify-center rounded-[var(--gosslan-radius-xs)] transition hover:bg-[var(--gosslan-hover)]"
           :title="t('chat.composer.cancelQuote')" :aria-label="t('chat.composer.cancelQuote')"

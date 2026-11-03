@@ -3322,7 +3322,7 @@ export const useChatStore = defineStore("chat", () => {
         status: "failed",
       });
     }
-    app.toast(`${t("send.fileFail")}：${fileFailReasonText(d.reason, t)}`, "error");
+    app.toast(`${t("send.fileFail")}${t("common.sep.colon")}${fileFailReasonText(d.reason, t)}`, "error");
   }
 
   /**

@@ -70,9 +70,9 @@ const rosterIds = (c: ReactionChip) => c.actors.slice(0, Math.max(1, ROSTER_VISI
 /** 胶囊上的原生 tooltip：数量 + 前几人 + 「+N」（PC 悬停的第一层，零成本、不占布局）。 */
 function chipTitle(c: ReactionChip): string {
   const { shown, hidden } = visible(c);
-  const who = shown.join("、");
+  const who = shown.join(t("common.sep.list"));
   const rest = hidden > 0 ? ` ${t("msg.reactionPlus", { n: hidden })}` : "";
-  return `${t("msg.reactionWho", { n: c.count })}：${who}${rest}`;
+  return `${t("msg.reactionWho", { n: c.count })}${t("common.sep.colon")}${who}${rest}`;
 }
 
 /**

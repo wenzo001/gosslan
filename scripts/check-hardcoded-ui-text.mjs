@@ -40,7 +40,12 @@
  *
  * ## 自证（防止闸自己空转）
  * 内置 4 条反例 + 5 条正例，每次运行先跑；任何一条不对 ⇒ exit 1。
- * 另外要求「扫到的文件数 ≥ 150 且 CJK 条数 ≥ 40」，否则说明路径/解析前提变了 ⇒ 红。
+ * 另外要求「扫到的文件数 ≥ 150」，且 **AST 路径的永久锚点**必须仍然扫得到（见 `AST_ANCHORS`），
+ * 否则说明路径/解析前提变了 ⇒ 红。
+ *
+ * ⚠️ 早期版本还有一条「CJK 条数 ≥ 40」。迁移真的把存量清完时，它会把「做完了」判成「尺子坏了」——
+ * 所以锚点换成**不会被迁移掉的契约字面量**（线格式前缀 / @所有人 / 后端错误码匹配串），
+ * 它们消失只可能是 AST 路径坏了。注意别把这条改回"总数下限"。
  *
  * ## 用法
  *   `node scripts/check-hardcoded-ui-text.mjs`           判红/绿（门禁用这个）
@@ -300,18 +305,38 @@ const { byFile, files } = scan();
 let total = 0;
 for (const m of byFile.values()) for (const n of m.values()) total += n;
 
-if (process.argv.includes("--update")) {
-  writeBaseline(byFile);
-  process.exit(0);
-}
+/**
+ * AST 路径的**永久锚点**：这几条是线格式 / 跨语言契约字面量，迁移永远不会动它们
+ * （见 `quote.ts` 的「线上格式」、`messages.ts` 的 `MENTION_ALL_TOKEN`、
+ * `mediaAvailability.ts` 对 Rust `Gone` 文案的匹配）。
+ * 它们扫不到 = AST 解析真的坏了，而不是"存量已经迁完了"。
+ * ⇒ 每次（包括 `--update` 之前）都必须先过这一关，免得把坏扫描写成新基线。
+ */
+const AST_ANCHORS = [
+  ["src/utils/quote.ts", "「引用"],
+  ["src/utils/messages.ts", "所有人"],
+  ["src/utils/mediaAvailability.ts", "文件不存在"],
+];
+const missingAnchors = AST_ANCHORS.filter(([file, needle]) => {
+  const m = byFile.get(file);
+  return !m || ![...m.keys()].some((k) => k.includes(needle));
+});
 
 if (files < 150) {
   console.error(`✗ 只扫到 ${files} 个文件 ⇒ 路径/扩展名前提变了（不许把"什么都没扫"当成通过）`);
   process.exit(1);
 }
-if (total < 40) {
-  console.error(`✗ 只扫到 ${total} 条含中文的界面文案 ⇒ 解析器失效（AST/模板分段坏了？）`);
+if (missingAnchors.length > 0 || total === 0) {
+  console.error(
+    `✗ AST 路径锚点扫不到：${missingAnchors.map(([f, n]) => `${f} 里的「${n}」`).join("、") || "(一条都没扫到)"}`,
+  );
+  console.error("  这几条是契约字面量，正常永远在；扫不到说明解析器/路径坏了，不是「迁移做完了」。");
   process.exit(1);
+}
+
+if (process.argv.includes("--update")) {
+  writeBaseline(byFile);
+  process.exit(0);
 }
 
 const base = readBaseline();

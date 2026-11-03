@@ -60,7 +60,7 @@ const previewLines = computed(() =>
         :key="i"
         class="flex items-center gap-1 text-caption leading-[15px] text-[var(--card-ink-soft)]"
       >
-        <span class="shrink-0 truncate" :title="line.sender">{{ line.sender }}：</span>
+        <span class="shrink-0 truncate" :title="line.sender">{{ line.sender }}{{ t("common.sep.colon") }}</span>
         <span class="truncate" :title="line.text">{{ line.text }}</span>
       </div>
     </div>

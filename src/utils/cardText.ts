@@ -30,7 +30,7 @@ export function cardCopyText(kind: string, content: string): string | null {
     const title = d.title.trim();
     if (!title) return null;
     const desc = d.description.trim();
-    const head = `${t("favorite.cardKind.todo")}：${title}`;
+    const head = `${t("favorite.cardKind.todo")}${t("common.sep.colon")}${title}`;
     return desc ? `${head}\n${desc}` : head;
   }
 
@@ -49,7 +49,7 @@ export function cardCopyText(kind: string, content: string): string | null {
     const options = Array.isArray(payload.options)
       ? payload.options.filter((x): x is string => typeof x === "string")
       : [];
-    return [`${t("favorite.cardKind.poll")}：${question}`, ...options].join("\n");
+    return [`${t("favorite.cardKind.poll")}${t("common.sep.colon")}${question}`, ...options].join("\n");
   }
 
   if (kind === "announcement") {
