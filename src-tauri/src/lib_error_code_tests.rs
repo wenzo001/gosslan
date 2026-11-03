@@ -221,6 +221,38 @@ const B6_CASES: &[(&str, &str, &str)] = &[
         "commands/favorites.rs",
         "一次最多删除 {MAX_DELETE_BATCH} 条，当前 {} 条",
     ),
+    // ── B6 第十三批：群管理 reject 族（本笔）──────────────────────────────
+    ("NUDGE_MISSING", "commands/group_files.rs", "对应的强提醒不存在"),
+    (
+        "GROUP_TODO_ASSIGNEE_NOT_MEMBER",
+        "commands/group_files.rs",
+        "{} 不是群成员",
+    ),
+    (
+        "GROUP_TODO_ARCHIVE_STATE_INVALID",
+        "commands/group_files.rs",
+        "只有完成或标记为做不了的任务可以归档",
+    ),
+    (
+        "GROUP_ANNOUNCEMENT_OWNER_ONLY",
+        "commands/group_files.rs",
+        "只有群主可以发布公告",
+    ),
+    (
+        "GROUP_ANNOUNCEMENT_OWNER_ONLY",
+        "commands/group_files.rs",
+        "只有群主可以删除公告",
+    ),
+    (
+        "GROUP_REMIND_TARGET_REQUIRED",
+        "commands/group_files.rs",
+        "请先选择提醒对象",
+    ),
+    (
+        "GROUP_REMIND_TARGETS_GONE",
+        "commands/group_files.rs",
+        "提醒对象都已不在群中",
+    ),
 ];
 
 /// human 是下层原话、没有字面量的触发点：只守"码真的挂在这里"，
@@ -249,6 +281,8 @@ const B6_DYNAMIC_HUMAN: &[(&str, &str)] = &[
     ("SHARE_SEND_FAILED", "commands/share.rs"),
     // 资料写库：human 是 db 层原话（可能已经带码）
     ("PROFILE_SAVE_FAILED", "commands/system.rs"),
+    // 群待办编辑：human 由 `why` 变量拼出（可能已经带码）
+    ("GROUP_TODO_EDIT_FORBIDDEN", "commands/group_files.rs"),
 ];
 
 /// B6 白名单命令的"未带码 return Err"存量基线（只减不增）。
@@ -266,11 +300,11 @@ const B6_COMMAND_UNCODED_BASELINE: &[(&str, &str, usize)] = &[
     ("files.rs", "open_file_native", 0),
     ("files.rs", "request_content", 0),
     ("files.rs", "send_file_auto", 0),
-    ("group_files.rs", "send_group_message", 2),
+    ("group_files.rs", "send_group_message", 1),
     ("group_files.rs", "send_group_todo", 0),
-    ("group_files.rs", "update_group_todo", 2),
-    ("group_files.rs", "send_group_announcement", 1),
-    ("group_files.rs", "delete_group_announcement", 1),
+    ("group_files.rs", "update_group_todo", 0),
+    ("group_files.rs", "send_group_announcement", 0),
+    ("group_files.rs", "delete_group_announcement", 0),
     ("mobile_picker.rs", "send_friend_request", 0),
     ("mobile_picker.rs", "respond_friend_request", 0),
     ("mobile_picker.rs", "cancel_friend_request", 0),

@@ -212,6 +212,13 @@ const CODE_RULES: Record<string, string> = {
   GROUP_ANNOUNCEMENT_TOO_LONG: "errors.rule.groupAnnouncementTooLong",
   GROUP_TODO_IMAGE_TOO_LARGE: "errors.rule.groupTodoImageTooLarge",
   FAVORITE_DELETE_BATCH_TOO_LARGE: "errors.rule.favoriteDeleteBatchTooLarge",
+  // B6 第十三批：群管理 reject 族。
+  GROUP_TODO_ASSIGNEE_NOT_MEMBER: "errors.rule.groupTodoAssigneeNotMember",
+  GROUP_TODO_EDIT_FORBIDDEN: "errors.rule.groupTodoEditForbidden",
+  GROUP_TODO_ARCHIVE_STATE_INVALID: "errors.rule.groupTodoArchiveStateInvalid",
+  GROUP_ANNOUNCEMENT_OWNER_ONLY: "errors.rule.groupAnnouncementOwnerOnly",
+  GROUP_REMIND_TARGET_REQUIRED: "errors.rule.groupRemindTargetRequired",
+  GROUP_REMIND_TARGETS_GONE: "errors.rule.groupRemindTargetsGone",
 };
 
 /** 后端 `error_codes::coded()` 的形状：`code=<大写蛇形> 给人看的那句话`。 */

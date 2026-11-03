@@ -88,9 +88,15 @@ pub async fn send_group_message(
             let good: Vec<String> = good_refs.iter().map(|a| (*a).to_string()).collect();
             if good.is_empty() {
                 return Err(if p.actors.is_empty() {
-                    "请先选择提醒对象".to_string()
+                    crate::error_codes::coded(
+                        crate::error_codes::GROUP_REMIND_TARGET_REQUIRED,
+                        "请先选择提醒对象",
+                    )
                 } else {
-                    "提醒对象都已不在群中".to_string()
+                    crate::error_codes::coded(
+                        crate::error_codes::GROUP_REMIND_TARGETS_GONE,
+                        "提醒对象都已不在群中",
+                    )
                 });
             }
             let out = crate::protocol::RemindPayload {
@@ -136,7 +142,10 @@ pub async fn send_group_message(
                     .map(|m| m.conv_id == format!("group:{group_id}") && m.kind == "remind")
                     .unwrap_or(false);
                 if !valid {
-                    return Err(reject(s, &group_id, "remind_ack", "target_missing", "对应的强提醒不存在"));
+                    return Err(crate::error_codes::coded(
+                        crate::error_codes::NUDGE_MISSING,
+                        reject(s, &group_id, "remind_ack", "target_missing", "对应的强提醒不存在"),
+                    ));
                 }
             }
             return send_group_payload(
@@ -345,7 +354,16 @@ fn check_todo_assignees(s: &AppState, group_id: &str, assignees: &[String]) -> R
     };
     // ⚠️ `resolve_nickname` 内部会再锁一次 db，必须在放锁之后调用（见文件里那条同名注释）
     if let Some(bad) = assignees.iter().find(|a| !members.contains(a)) {
-        return Err(reject(s, group_id, "todo", "not_member", &format!("{} 不是群成员", resolve_nickname(s, bad))));
+        return Err(crate::error_codes::coded(
+            crate::error_codes::GROUP_TODO_ASSIGNEE_NOT_MEMBER,
+            reject(
+                s,
+                group_id,
+                "todo",
+                "not_member",
+                &format!("{} 不是群成员", resolve_nickname(s, bad)),
+            ),
+        ));
     }
     Ok(())
 }
@@ -935,14 +953,26 @@ pub async fn update_group_todo(
         } else {
             "只有创建者或被指派人可以修改任务状态".to_string()
         };
-        return Err(reject(s, &group_id, "todo_edit", "not_authorized", &why));
+        return Err(crate::error_codes::coded_if_uncoded(
+            crate::error_codes::GROUP_TODO_EDIT_FORBIDDEN,
+            reject(s, &group_id, "todo_edit", "not_authorized", &why),
+        ));
     }
     // 「归档」只在终态（完成 / 做不了）成立（`resolve_done_archive` 对非终态一律写回
     // archived=false）。原来这里是**静默丢弃**：调用方拿到一条成功的记录、任务却没进归档，
     // 正是"显示成功但没真成功"。放宽到全体成员之后更容易撞上（成员没资格改状态、
     // 却可能挑一条没干完的任务点归档），所以改成明确拒绝。
     if archived == Some(true) && !crate::protocol::todo_status_is_terminal(&status) {
-        return Err(reject(s, &group_id, "todo_edit", "state_refused", "只有完成或标记为做不了的任务可以归档"));
+        return Err(crate::error_codes::coded(
+            crate::error_codes::GROUP_TODO_ARCHIVE_STATE_INVALID,
+            reject(
+                s,
+                &group_id,
+                "todo_edit",
+                "state_refused",
+                "只有完成或标记为做不了的任务可以归档",
+            ),
+        ));
     }
     let (archived, done_at) = resolve_done_archive(
         crate::protocol::todo_status_is_terminal(&status),
@@ -1020,7 +1050,10 @@ pub async fn send_group_announcement(
                     crate::error_codes::coded(crate::error_codes::GROUP_NOT_FOUND, "群不存在")
                 })?;
         if g.creator != s.device_id {
-            return Err(reject(s, &group_id, "announcement", "not_owner", "只有群主可以发布公告"));
+            return Err(crate::error_codes::coded(
+                crate::error_codes::GROUP_ANNOUNCEMENT_OWNER_ONLY,
+                reject(s, &group_id, "announcement", "not_owner", "只有群主可以发布公告"),
+            ));
         }
     }
     let content = serde_json::to_string(&crate::protocol::AnnouncementPayload { text })
@@ -1053,7 +1086,16 @@ pub async fn delete_group_announcement(
                     crate::error_codes::coded(crate::error_codes::GROUP_NOT_FOUND, "群不存在")
                 })?;
         if g.creator != s.device_id {
-            return Err(reject(s, &group_id, "announcement_delete", "not_owner", "只有群主可以删除公告"));
+            return Err(crate::error_codes::coded(
+                crate::error_codes::GROUP_ANNOUNCEMENT_OWNER_ONLY,
+                reject(
+                    s,
+                    &group_id,
+                    "announcement_delete",
+                    "not_owner",
+                    "只有群主可以删除公告",
+                ),
+            ));
         }
     }
     let content = serde_json::to_string(&crate::protocol::AnnouncementDeletePayload { ann_id })

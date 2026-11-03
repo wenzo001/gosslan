@@ -14,6 +14,16 @@
 
 ## [Unreleased]
 
+## [5.17.20] - 2026-11-04
+
+### B6：群管理 reject 族（第 13 批）
+
+- 提醒对象为空/都已离群、强提醒已不存在、待办指派对象已离群、待办编辑无权限、
+  归档状态不合法、公告只有群主可发布/删除：7 个码（`NUDGE_MISSING` 复用）。
+  拒绝仍走 `reject()` 留痕，外面只多套一层码，文案与 action/reason 一字不动。
+- 基线继续下降：`send_group_message` 2→1、`update_group_todo` 2→0、
+  `send_group_announcement` 1→0、`delete_group_announcement` 1→0。
+
 ## [5.17.19] - 2026-11-04
 
 ### B6：命令层漏网原话（好友/群管理/收藏）
