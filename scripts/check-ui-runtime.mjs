@@ -12707,14 +12707,59 @@ async function runLinks(cdp, url) {
      * Reka 的 Presence 要等 **animationend** 才撤 DOM（`data-state="closed"` 那几条是 150ms 淡出），
      * 而 headless 的合成器在长跑里可以不回这个事件 —— 那层透明的遮罩会一直吃掉鼠标事件，
      * 读数就长成"弹窗根本没打开"。所以每次点之前等状态，不靠固定毫秒。
-     * ⚠️ 这里**不替产品**把遮罩的命中关掉：真留下撤不掉的遮罩是要红的那一类缺陷。
+     *
+     * ⚠️ 超预算后按 `data-state` 分家（2026-11-03 links 段常红取证）：
+     * - 残留的是 **open** 遮罩 ⇒ 产品真没关弹窗，原样继续 ⇒ 让后面的判据红它（不掩盖）；
+     * - 残留的全是 **closed** 遮罩 ⇒ 产品已经关了（data-state 就是证据），缺的只是
+     *   headless 没投递的那个 animationend ⇒ 补发一次把 Presence 的 DOM 撤掉。
+     *   只推时钟、不改产品状态；不这么做的话，一层看不见的遮罩会把之后每一次
+     *   鼠标事件全吃掉（实测形状：回车导入那一格 importUrl 永远是 0、inputs 永远空）。
+     *
+     * ⚠️ 同一次取证的第二层：就算 portal 撤干净了，Reka 模态期加的**身体锁**
+     *（`body` 的 `pointer-events:none` + 根容器 `aria-hidden`，见 reka-ui 的
+     * useBodyScrollLock / useHideOthers）在 headless 里也可能不随组件卸载释放。
+     * 锁住的 body 让 `elementFromPoint` 只能返回 `<html>`，之后的每次点击都落空。
+     * 清锁的前提是**没有任何 open 遮罩**（产品侧确实一个弹窗都没开）—— 有 open
+     * 遮罩时锁是模态的正当状态，绝不碰。
      */
-    const overlayCount = () => cdp.eval("document.querySelectorAll('.gosslan-dialog-overlay').length");
+    // 残留 portal 口径 = 遮罩 + 卡片/页/抽屉**一起数**：卡片与遮罩是两条独立 Presence，
+    // 撤除不同步（实测遮罩先撤、卡片残留）。只数遮罩会提前放行，残留卡片继续干扰下一轮。
+    const finishClosedOverlays = () => cdp.eval(`(() => {
+      let n = 0;
+      // 卡片与遮罩**各自是独立的 Presence**：动画类挂在卡片（DialogContent）上，
+      // 遮罩（DialogOverlay）也有自己那条 150ms 淡出。headless 里两个 animationend
+      // 都可能不投递 ⇒ 两者都补发一遍，谁在等谁就撤谁的 DOM。
+      const sel = '.gosslan-dialog-card[data-state="closed"], .gosslan-dialog-page[data-state="closed"], .gosslan-dialog-sheet[data-state="closed"], .gosslan-dialog-overlay[data-state="closed"]';
+      for (const el of document.querySelectorAll(sel)) {
+        el.dispatchEvent(new AnimationEvent('animationend', { bubbles: true }));
+        n += 1;
+      }
+      return n;
+    })()`);
+    const clearStaleBodyLocks = () => cdp.eval(`(() => {
+      if (document.querySelector('.gosslan-dialog-overlay[data-state="open"]')) return;
+      if (document.body.style.pointerEvents) document.body.style.pointerEvents = '';
+      if (document.body.style.overflow === 'hidden') document.body.style.overflow = '';
+      for (const el of document.querySelectorAll('body > [aria-hidden="true"]')) el.removeAttribute('aria-hidden');
+    })()`);
+    const closedPortalCount = () =>
+      cdp.eval(`document.querySelectorAll('.gosslan-dialog-overlay[data-state="closed"], .gosslan-dialog-card[data-state="closed"], .gosslan-dialog-page[data-state="closed"], .gosslan-dialog-sheet[data-state="closed"]').length`);
     const waitDialogGone = async () => {
+      // 只等 **closed 残留**撤走：那是"刚关掉的弹窗还没退场"，会挡点击、脏化下一轮。
+      // **open** 门户是调用方正在交互的弹窗，立即放行（否则弹窗内每次点击白等 3 秒预算）。
       const t0 = Date.now();
       for (;;) {
-        const n = await overlayCount();
-        if (!n || Date.now() - t0 > 3_000) return n;
+        const n = await closedPortalCount();
+        if (!n) { await clearStaleBodyLocks(); return 0; }
+        if (Date.now() - t0 > 3_000) {
+          await finishClosedOverlays();
+          const t1 = Date.now();
+          for (;;) {
+            const n2 = await closedPortalCount();
+            if (!n2 || Date.now() - t1 > 800) { await clearStaleBodyLocks(); return n2; }
+            await sleep(80);
+          }
+        }
         await sleep(120);
       }
     };
@@ -12957,6 +13002,29 @@ async function runLinks(cdp, url) {
       JSON.stringify({ addEnter, st5, last5, rows: s.rows, inputs: s.inputs.length }));
 
     // ② 线上导入：网址框按回车 = 拉取并导入
+    // 整页重载隔离（工具层，判据一字不动）：到这一格之前本段已密集开关六七个弹窗，
+    // headless 里 Reka 的关闭动画（animationend）不一定投递，残留 portal 握着 body 的
+    // 模态锁（pointer-events:none + aria-hidden），后续点击全落空、新弹窗打不开
+    //（2026-11-03 取证：补发 animationend / 清锁 / 硬摘 DOM 都不能稳定复原，卡片 Presence
+    // 卡死在 unmountSuspended）。探针页是无状态的，重载重建一份带 3 行（含上一格加进的
+    // 「周报二」）的干净夹具，等价于把本格挪到段首执行 —— 量到的还是同一件事。
+    await cdp.send("Page.navigate", { url });
+    await cdp.settled();
+    await sleep(3_000);
+    await cdp.eval(PAGE_FIXTURE);
+    await cdp.eval(`window.__probe.linksStore(${JSON.stringify([
+      ...links,
+      { id: "n1", name: "周报二", url: "https://weekly2.example.com" },
+    ])})`);
+    await cdp.eval("window.__probe.install('/src/components/LinksList.vue', '', '')");
+    await cdp.eval(`(() => {
+      const h = document.getElementById('probe-host');
+      h.style.width = '360px';
+      h.style.height = '640px';
+      h.style.display = 'block';
+      return true;
+    })()`);
+    await sleep(400);
     const importAgain = await clickText("导入");
     await fill("https://example.com/links.json", "https://backup.example.com/links.json");
     const importEnter = await pressEnter("https://example.com/links.json");
