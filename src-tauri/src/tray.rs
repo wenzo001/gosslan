@@ -22,6 +22,33 @@ pub const TRAY_ID: &str = "gosslan-tray";
 /// 最近一次角标读到的未读数：看门狗恢复 tooltip 时要回到同一份口径。
 static LAST_UNREAD: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
 
+/// 托盘菜单文案（中英各一套）。菜单项 **id 稳定**，只有显示文案随语言变；
+/// 事件分发仍按 `show / dnd / restart / quit`，不受翻译影响。
+struct TrayMenuLabels {
+    show: &'static str,
+    dnd: &'static str,
+    restart: &'static str,
+    quit: &'static str,
+}
+
+fn tray_labels(zh: bool) -> TrayMenuLabels {
+    if zh {
+        TrayMenuLabels {
+            show: "显示主窗口",
+            dnd: "勿扰模式",
+            restart: "重启",
+            quit: "退出",
+        }
+    } else {
+        TrayMenuLabels {
+            show: "Show main window",
+            dnd: "Do not disturb",
+            restart: "Restart",
+            quit: "Quit",
+        }
+    }
+}
+
 /// 托盘 tooltip 文案。`unread > 0` 时带上条数 —— 红点只能表达"有"，条数只有文字能给。
 fn tray_tooltip(zh: bool, unread: u32) -> String {
     let base = if zh {
@@ -404,29 +431,64 @@ pub fn setup<R: tauri::Runtime>(app: &tauri::AppHandle<R>) {
     }
 }
 
+/// 按当前语言建一份托盘菜单；勾选态由调用方给（勿扰 = 通知总开关取反）。
+fn build_menu<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+    labels: &TrayMenuLabels,
+    dnd_on: bool,
+) -> tauri::Result<tauri::menu::Menu<R>> {
+    let show_item = MenuItemBuilder::with_id("show", labels.show).build(app)?;
+    let dnd_item = CheckMenuItemBuilder::with_id("dnd", labels.dnd)
+        .checked(dnd_on)
+        .build(app)?;
+    let restart_item = MenuItemBuilder::with_id("restart", labels.restart).build(app)?;
+    let quit_item = MenuItemBuilder::with_id("quit", labels.quit).build(app)?;
+    MenuBuilder::new(app)
+        .item(&show_item)
+        .item(&dnd_item)
+        .item(&restart_item)
+        .item(&quit_item)
+        .build()
+}
+
+/// 语言切换后重建托盘菜单与 tooltip。
+///
+/// 为什么需要：托盘的文案只在启动时按当时的语言建一次；用户切到英文后，
+/// 菜单会一直停在中文，tooltip 也要等下一次未读数变化才被刷新。
+/// 未读数沿用 [`LAST_UNREAD`]，**不在这里清零**；重建失败只留日志（托盘属锦上添花）。
+pub fn refresh_for_language<R: tauri::Runtime>(app: &tauri::AppHandle<R>) {
+    let state = app.state::<Arc<crate::state::AppState>>();
+    let zh = state.is_zh();
+    let unread = LAST_UNREAD.load(std::sync::atomic::Ordering::Relaxed);
+    let dnd_on = {
+        let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
+        !crate::db::get_config_bool(&dbc, "notify_enabled", true)
+    };
+    let Some(tray) = app.tray_by_id(TRAY_ID) else {
+        return;
+    };
+    let _ = tray.set_tooltip(Some(tray_tooltip(zh, unread)));
+    match build_menu(app, &tray_labels(zh), dnd_on) {
+        Ok(menu) => {
+            let _ = tray.set_menu(Some(menu));
+        }
+        Err(e) => eprintln!("[tray] 语言切换后重建托盘菜单失败：{e}"),
+    }
+}
+
 /// 构建托盘图标与菜单。
 fn build_tray<R: tauri::Runtime>(
     app: &tauri::AppHandle<R>,
     state: &Arc<crate::state::AppState>,
 ) -> tauri::Result<()> {
-    let show_item = MenuItemBuilder::with_id("show", "显示主窗口").build(app)?;
+    let labels = tray_labels(state.is_zh());
     // 勿扰模式：**复用「通知总开关」**（`notify_enabled`，用户 2026-10-12 拍板）。
     // 勾选态 = 勿扰开 = 通知关。勾/取消由 CheckMenuItem 自身翻转，事件里只落库 + 广播。
     let dnd_on = {
         let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
         !crate::db::get_config_bool(&dbc, "notify_enabled", true)
     };
-    let dnd_item = CheckMenuItemBuilder::with_id("dnd", "勿扰模式")
-        .checked(dnd_on)
-        .build(app)?;
-    let restart_item = MenuItemBuilder::with_id("restart", "重启").build(app)?;
-    let quit_item = MenuItemBuilder::with_id("quit", "退出").build(app)?;
-    let menu = MenuBuilder::new(app)
-        .item(&show_item)
-        .item(&dnd_item)
-        .item(&restart_item)
-        .item(&quit_item)
-        .build()?;
+    let menu = build_menu(app, &labels, dnd_on)?;
 
     let mut builder = TrayIconBuilder::with_id(TRAY_ID)
         .menu(&menu)
@@ -554,7 +616,28 @@ fn install_close_to_tray<R: tauri::Runtime>(app: &tauri::AppHandle<R>) {
 
 #[cfg(test)]
 mod tests {
-    use super::tray_tooltip;
+    use super::{tray_labels, tray_tooltip};
+
+    /// 托盘菜单的显示文案必须跟界面语言走，且中英两套不能混用。
+    /// 菜单项 id（show/dnd/restart/quit）不在这里判 —— 它们不在结构体里，改不动。
+    #[test]
+    fn tray_menu_labels_follow_language() {
+        let zh = tray_labels(true);
+        let en = tray_labels(false);
+        assert_eq!(zh.show, "显示主窗口");
+        assert_eq!(zh.dnd, "勿扰模式");
+        assert_eq!(zh.restart, "重启");
+        assert_eq!(zh.quit, "退出");
+        assert_eq!(en.show, "Show main window");
+        assert_eq!(en.dnd, "Do not disturb");
+        assert_eq!(en.restart, "Restart");
+        assert_eq!(en.quit, "Quit");
+        // 非空转正控：若退回「两套共用一份文案」，下列比较必须失败。
+        assert_ne!(zh.show, en.show);
+        assert_ne!(zh.dnd, en.dnd);
+        assert_ne!(zh.restart, en.restart);
+        assert_ne!(zh.quit, en.quit);
+    }
 
     /// tooltip 必须带上条数：红点只表达"有未读"，**有几条**只有文字能给。
     /// 中英两种界面都要有，且 0 条时不能留下"（0 条未读）"这种噪音。
