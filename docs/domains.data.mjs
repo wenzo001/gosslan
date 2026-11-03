@@ -331,6 +331,7 @@ export default {
         "INV-P33", // 重复好友事件不重复通知：两个到达点 handle_identity.rs + gossip.rs，幂等家 handshake.rs
         "INV-P34", // 慢活的执行位置：本域 relay_file.rs:286/:352 是本条边界里尚未收口的两格之一（判据在 lib_file_tests.rs）
         "INV-P36", // 读库失败不许折成「没有数据」：本域有 fan-out 那几处（list_groups 折成空 ⇒ 群密钥判成"永久放弃"）、补发台账与群已读的节流留痕，以及 `chat_peer_styles` 的读-改-写整表（读失败就不写回）
+        "INV-P38", // 中继文件收件回执只做可观测：新 GossipKind 按能力位门控发送，没回执不改任何状态（2026-11-03；`gossip.rs` 分册与本域 relay_file.rs 同模块）
       ],
       // ⚠️ 三个家：TCP 数据面在 network/、BLE 数据面在 network/ble.rs + transport/、控制面在 transport/mod.rs
       activeHome: "src-tauri/src/network/transport.rs", // 活路径的具体文件（network/ 整体是活的家）

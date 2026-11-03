@@ -1912,3 +1912,26 @@ mesh 没有服务器也没有强制升级 ⇒ 混合版本是常态，不是边�
 - 反向（每条都应实测变红）：把同意退回"先 add_friend 再删申请"两段 ⇒ 撤回先赢时同意仍能写进好友；
   去掉墓碑 ⇒ 迟到的重复申请重新弹；删掉能力位门控 ⇒ 老端收到不认识的帧；
   把出站只留内存 ⇒ 重启后 `pending_out_requests` 与界面同时清空。
+
+---
+
+## 38. 中继文件收件回执（**只做可观测**）
+
+### INV-P38 — 回执只增加读数，不改变任何状态
+
+中继文件（A 经 C 推给 B）在 B 落盘成功后，B 回一帧
+`GossipKind::FileRelayReceipt`（定向、明文，payload `{"transfer_id","sha256"}`）。
+发送方 A 收到后只做两件事：记一条 `code=RELAY_FILE_RECEIPT` 日志、广播
+`relay-file-receipt` 前端事件。
+
+```text
+不允许把「没收到回执」写成失败判据（2026-11-03 定）：
+  · 老端没有这个变体 ⇒ 整帧降级 Message::Unknown 丢弃（与 INV-P37 同一形状）；
+  · 发送侧按 CONTENT_FEATURE_FILE_RECEIPT (1 << 11) 门控，老端一条都不发；
+  · 回执丢了不重投、不置失败、不弹提示 —— 状态与今天完全一致。
+```
+
+- 帧位置：新增 `GossipKind` 变体，不进消息 `WIRE_KINDS`（理由与 INV-P37 的「帧位置」同）。
+- 钩子：`protocol::tests::chat_ack_and_read_receipt_plaintext_directed_envelope_integrity`
+  （含本变体的验签/明文往返 + `content_features()` 必须声明该位）。
+- 反向：把发送侧门控删掉 ⇒ 老端开始收到 `Message::Unknown`；把接收侧门控删掉 ⇒ 每次落盘都多一帧。

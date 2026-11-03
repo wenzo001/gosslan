@@ -185,6 +185,17 @@ pub const CONTENT_FEATURE_CREATOR_RECALL: u32 = 1 << 9;
 /// 否则如实停在本机（INV-P24 第 4 条）。
 pub const CONTENT_FEATURE_FRIEND_WITHDRAW: u32 = 1 << 10;
 
+/// 能力位：**能回「中继文件收件回执」**（`GossipKind::FileRelayReceipt`）。
+///
+/// 只做**可观测**，不做判据（2026-11-03 定）：接收方落盘成功且**对端声明过这一位**时才回一帧；
+/// 发送方收到后只记一条 `code=RELAY_FILE_RECEIPT` 日志 + 广播前端事件，
+/// **没有回执不改变任何状态**（不置失败、不重投、不弹提示）。
+///
+/// 老端的 `GossipKind` 没有这个变体 ⇒ 整帧会降级成 `Message::Unknown` 丢弃（不断链），
+/// 所以必须门控发送（INV-P24 第 4 条）。不复用 `CONTENT_FEATURE_FILE_EPOCH`
+/// （那位管"能解析轮次号"，与"能回答收件结果"是两件事）。
+pub const CONTENT_FEATURE_FILE_RECEIPT: u32 = 1 << 11;
+
 /// 群历史一页的**条数**上限（服务端一页最多交几条消息）。
 /// 与下面那个字节上限同住 `protocol.rs`：一条页的预算只有一个家（INV-P23），
 /// 收发两侧都从这里取，不许在调用点各写一遍字面量。
@@ -217,6 +228,7 @@ pub fn content_features() -> u32 {
         | CONTENT_FEATURE_FILE_CANCEL
         | CONTENT_FEATURE_CREATOR_RECALL
         | CONTENT_FEATURE_FRIEND_WITHDRAW
+        | CONTENT_FEATURE_FILE_RECEIPT
 }
 
 /// 「哪个 kind 需要对端具备哪一点能力」的**唯一**答案。`None` = V1 词表内、对所有对端安全。
@@ -1712,6 +1724,13 @@ pub enum GossipKind {
     /// payload 为 JSON `{"last_read_ts":n,"last_read_msg_id":"..."}`，`target` = 原始发送方。
     /// 与直连 `Message::ReadReceipt` 语义一致，但可跨跳。
     ChatReadReceipt,
+    /// 中继文件收件回执（定向跨跳）：接收方把中继文件落盘成功、且**原发送方声明过**
+    /// `CONTENT_FEATURE_FILE_RECEIPT` 时回一帧。明文，payload 为 JSON
+    /// `{"transfer_id":"...","sha256":"..."}`，`target` = 原始发送方。
+    ///
+    /// 只做**可观测**（2026-11-03）：发送方收到后记日志 + 广播 `relay-file-receipt` 事件；
+    /// **没有回执不改变任何状态**，老端也不会发。老端不认识这个变体 ⇒ `Message::Unknown` 丢弃。
+    FileRelayReceipt,
 }
 
 /// Gossip 广播信封（Epidemic 协议消息体）。

@@ -527,7 +527,7 @@ mod tests {
         assert!(json_some.contains("dev-c"), "Some 应写 target: {json_some}");
     }
 
-    /// ChatAck / ChatReadReceipt（定向、明文）信封：签名、验签、target 完整性、明文往返。
+    /// ChatAck / ChatReadReceipt / FileRelayReceipt（定向、明文）信封：签名、验签、target 完整性、明文往返。
     #[test]
     fn chat_ack_and_read_receipt_plaintext_directed_envelope_integrity() {
         use crate::crypto::Identity;
@@ -579,6 +579,30 @@ mod tests {
         rr.sender_sig = c.sign_b64(&rr.signing_bytes());
         assert!(engine.verify_envelope(&rr));
         assert_eq!(B64.decode(&rr.payload).unwrap(), rr_payload.as_bytes());
+
+        // FileRelayReceipt：中继文件收件回执，定向明文 { transfer_id, sha256 }
+        let fr_payload = r#"{"transfer_id":"t-1","sha256":"abc"}"#;
+        let mut fr = engine.build_envelope(
+            &c,
+            "dev-c",
+            GossipKind::FileRelayReceipt,
+            None,
+            None,
+            &B64.encode(fr_payload.as_bytes()),
+            123456,
+            0,
+        );
+        fr.encrypted = false;
+        fr.target = Some("dev-a".into());
+        fr.sender_sig = c.sign_b64(&fr.signing_bytes());
+        assert!(engine.verify_envelope(&fr));
+        assert_eq!(B64.decode(&fr.payload).unwrap(), fr_payload.as_bytes());
+        // 能力位必须由本端声明：否则对端永远看不到门控 ⇒ 回执永不触发（静默空转）。
+        assert_ne!(
+            crate::protocol::content_features() & crate::protocol::CONTENT_FEATURE_FILE_RECEIPT,
+            0,
+            "本端没有声明 CONTENT_FEATURE_FILE_RECEIPT"
+        );
     }
 
     /// 旧端的 `ShareTreeResponse` 没有 `truncated` 字段：必须按 `false` 解出来

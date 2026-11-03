@@ -576,6 +576,44 @@ async fn handle_relay_chunk(
                     path: path_str,
                 },
             );
+            // 收件回执（**只做可观测**，2026-11-03）：对端声明过能力位才回一帧；
+            // 老端 / 没声明 ⇒ 一条都不发，发送侧行为与今天完全一致。
+            // 回执丢了不是失败判据 —— 发送方那边只多一条日志/事件，状态不动。
+            let receipt_supported = state
+                .peer_content_features
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .get(&from)
+                .is_some_and(|f| f & crate::protocol::CONTENT_FEATURE_FILE_RECEIPT != 0);
+            if receipt_supported {
+                let payload = serde_json::json!({
+                    "transfer_id": transfer_id.clone(),
+                    "sha256": cid.clone(),
+                })
+                .to_string();
+                let payload_b64 = STANDARD.encode(payload.as_bytes());
+                let mut env = {
+                    let gossip = state.gossip.lock().unwrap_or_else(|e| e.into_inner());
+                    gossip.build_envelope(
+                        &state.identity,
+                        &state.device_id,
+                        GossipKind::FileRelayReceipt,
+                        None,
+                        None,
+                        &payload_b64,
+                        db::now_ms(),
+                        0,
+                    )
+                };
+                env.encrypted = false;
+                env.target = Some(from.clone());
+                env.sender_sig = state.identity.sign_b64(&env.signing_bytes());
+                if state.has_link(&from).await {
+                    let _ = try_send(state, &from, &Message::Gossip { envelope: env }).await;
+                } else {
+                    broadcast_gossip(state, env).await;
+                }
+            }
         }
     } else if ttl > 1 {
         // 中继转发给最终接收方 —— 授权闸同「定向借道」（2026-09-19 P0#5）：
