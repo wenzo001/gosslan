@@ -506,6 +506,8 @@ gossip_engine::tests::envelope_ttl_is_preserved
 gossip_engine::tests::fanout_excludes_sender
 gossip_engine::tests::group_envelope_message_id_stable_after_resign
 gossip_engine::tests::group_envelope_resign_covers_creator_and_members
+logging::installer_marker_tests::parses_version_and_install_dir
+logging::installer_marker_tests::refuses_partial_or_garbage
 logging::tests::allocator_abort_is_its_own_kind_not_no_history
 logging::tests::bootstrap_and_logger_point_at_the_same_crash_file
 logging::tests::clock_jump_marker_does_not_change_exit_classification

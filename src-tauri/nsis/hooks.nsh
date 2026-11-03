@@ -97,6 +97,30 @@
   ${EndIf}
 !macroend
 
+; 安装器路标（覆盖安装/升级时写一行「目标版本 + 安装目录」）。
+;
+; 为什么要它：`CheckIfAppIsRunning` 是**强制终止**旧进程（`FindProcess` + `KillProcess`，
+; 按 exe 名匹配，见官方模板第 7523 行），旧进程不会留下任何"我要被安装器换掉了"的痕迹。
+; 事后只能靠猜 —— 现在由安装器在杀进程**之前**写一个文件，应用下次启动读进运行日志。
+;
+; 时间戳取文件自己的 mtime（NSIS 没有取本地时间的原语）；应用把 mtime 一并写进日志，
+; 于是「安装器在 T 时刻跑过、版本是多少、装到哪个目录」三件事都能从日志里直接读到。
+;
+; 写失败**一律忽略**：路标是诊断用的锦上添花，绝不能让它把安装变成失败。
+!macro NSIS_HOOK_PREINSTALL
+  ClearErrors
+  CreateDirectory "$APPDATA\com.gosslan.app\logs"
+  ClearErrors
+  FileOpen $R6 "$APPDATA\com.gosslan.app\logs\installer-marker.txt" w
+  ${If} ${Errors}
+    ClearErrors
+  ${Else}
+    FileWrite $R6 "version=${VERSION}$\r$\n"
+    FileWrite $R6 "installdir=$INSTDIR$\r$\n"
+    FileClose $R6
+  ${EndIf}
+!macroend
+
 !macro NSIS_HOOK_PREUNINSTALL
   ; 更新时官方模板不会删快捷方式，这里也跳过；真正卸载才清掉本地化名的那一份。
   ${If} $UpdateMode <> 1

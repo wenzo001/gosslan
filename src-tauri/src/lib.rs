@@ -390,6 +390,12 @@ fn finish_boot(app: &tauri::AppHandle, state: std::sync::Arc<state::AppState>) {
     // 出站状态同一时机恢复：等待对方同意的申请、待补发的同意回执、未确认的撤回。
     // 同样是只填表不弹通知；界面启动后走 `get_outgoing_friend_requests`。
     crate::network::transport::restore_pending_outbound(&state);
+    // 安装器路标：上一轮安装器（PREINSTALL）留下的 version / installdir，配上文件 mtime
+    // 就是「安装器在 T 时刻跑过、目标版本是多少」。文件不存在是正常情况（不是安装器装的），
+    // 只有读失败/内容坏才留 warning —— 三种结果都具名，不静默。
+    if let Ok(app_data) = app.path().app_data_dir() {
+        crate::logging::report_installer_marker(&state.logger, &app_data);
+    }
     // 桌面快捷方式一次性对账（Windows）：只有「旧名 + 新名两份都存在，且目标都等于当前
     // exe」时才删旧名那份。同一版本只尝试一次（先记标记再扫盘），失败不会反复扫。
     #[cfg(target_os = "windows")]

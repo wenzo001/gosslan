@@ -221,6 +221,120 @@ pub fn log_dir_in(app_data: &std::path::Path) -> PathBuf {
     app_data.join("logs")
 }
 
+/// 安装器路标文件名：`<app_data>/logs/installer-marker.txt`。
+///
+/// 写入方是安装器（`src-tauri/nsis/hooks.nsh` 的 `NSIS_HOOK_PREINSTALL`），**在**
+/// `CheckIfAppIsRunning` 强杀旧进程之前；读取方是应用启动时的
+/// [`report_installer_marker`]。两端都用这一个文件名常量 —— 改名意味着两端一起改。
+pub const INSTALLER_MARKER_FILE: &str = "installer-marker.txt";
+
+/// 路标内容（两行：`version=` / `installdir=`）。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct InstallerMarker {
+    pub version: String,
+    pub install_dir: String,
+}
+
+/// 解析路标文本。缺任一行、或值为空 ⇒ `None`（不猜）。
+pub fn parse_installer_marker(text: &str) -> Option<InstallerMarker> {
+    let mut version = None;
+    let mut install_dir = None;
+    for line in text.lines() {
+        let line = line.trim();
+        if let Some(v) = line.strip_prefix("version=") {
+            let v = v.trim();
+            if !v.is_empty() {
+                version = Some(v.to_string());
+            }
+        } else if let Some(v) = line.strip_prefix("installdir=") {
+            let v = v.trim();
+            if !v.is_empty() {
+                install_dir = Some(v.to_string());
+            }
+        }
+    }
+    Some(InstallerMarker {
+        version: version?,
+        install_dir: install_dir?,
+    })
+}
+
+/// 启动时把上一轮安装器留下的路标读进运行日志。
+///
+/// 三种结果都具名，不静默：
+/// - 找到并解析成功 ⇒ `code=INSTALLER_MARKER`（带版本、目录、文件 mtime = 安装时刻）；
+/// - 文件在但读不了 ⇒ `code=INSTALLER_MARKER_UNREADABLE`（warn）；
+/// - 文件在但内容对不上 ⇒ `code=INSTALLER_MARKER_MALFORMED`（warn）。
+///
+/// **文件不存在不算异常**：绝大多数启动都不是安装器装出来的，这里直接返回、不打日志。
+pub fn report_installer_marker(logger: &Logger, app_data: &std::path::Path) -> bool {
+    let path = log_dir_in(app_data).join(INSTALLER_MARKER_FILE);
+    let text = match std::fs::read_to_string(&path) {
+        Ok(text) => text,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return false,
+        Err(e) => {
+            logger.warn(
+                "boot",
+                format!(
+                    "code=INSTALLER_MARKER_UNREADABLE 读取 {} 失败：{e}",
+                    path.display()
+                ),
+            );
+            return false;
+        }
+    };
+    let mtime_unix = std::fs::metadata(&path)
+        .and_then(|m| m.modified())
+        .ok()
+        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    match parse_installer_marker(&text) {
+        Some(marker) => {
+            logger.info(
+                "boot",
+                format!(
+                    "code=INSTALLER_MARKER 上一轮由安装器安装：version={} installdir={} marker_mtime_unix={mtime_unix}（mtime 即安装时刻）",
+                    marker.version, marker.install_dir
+                ),
+            );
+            true
+        }
+        None => {
+            logger.warn(
+                "boot",
+                format!(
+                    "code=INSTALLER_MARKER_MALFORMED 路标记存在但内容无法解析（{}）：{text:?}",
+                    path.display()
+                ),
+            );
+            false
+        }
+    }
+}
+
+#[cfg(test)]
+mod installer_marker_tests {
+    use super::*;
+
+    #[test]
+    fn parses_version_and_install_dir() {
+        let m = parse_installer_marker("version=5.17.4\r\ninstalldir=C:\\Users\\x\\Gosslan\r\n")
+            .expect("两行齐备应当解析成功");
+        assert_eq!(m.version, "5.17.4");
+        assert_eq!(m.install_dir, r"C:\Users\x\Gosslan");
+    }
+
+    #[test]
+    fn refuses_partial_or_garbage() {
+        assert_eq!(parse_installer_marker(""), None);
+        assert_eq!(parse_installer_marker("version=5.17.4\n"), None);
+        assert_eq!(parse_installer_marker("installdir=C:\\x\n"), None);
+        assert_eq!(parse_installer_marker("version=\ninstalldir=\n"), None);
+        assert_eq!(parse_installer_marker("hello\n"), None);
+    }
+}
+
 /// 唯一的**崩溃现场文件**计算点：`<app_data>/logs/<stem>-crash.log`。
 ///
 /// bootstrap（早）与 `Logger::new`（稍后）都必须走这里 —— 见 [`EARLY_CRASH_FILE`] 的说明。
