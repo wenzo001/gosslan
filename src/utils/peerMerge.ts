@@ -41,3 +41,62 @@ export function mergePeerList(prev: readonly Peer[], next: readonly Peer[]): Pee
   if (merged.length === prev.length && merged.every((p, i) => p === prev[i])) return null;
   return merged;
 }
+
+/**
+ * 链路的"具体程度"：越大表示越能解释用户看到的现象。
+ *
+ * 同一台设备可能经多条路径被发现（局域网直连 + 中继转发 + 蓝牙）。后端通常按
+ * `device_id` 去重，但**前端不能依赖这一点**：显示层再按同一台设备只留一条，
+ * 否则同一个人会出现两行、按钮也变成两套（跨网段实测症状）。
+ */
+function linkRank(p: Peer): number {
+  if (p.link === "lan" || p.link === "bluetooth") return 3;
+  if (p.link === "routed" || p.link === "relay") return 2;
+  return 1; // 只有发现、还没建链
+}
+
+/**
+ * 多路径去重：同一 `device_id` 只留一条，优先保留**链路更具体**的那条，
+ * 同档取 `last_seen` 更新的；完全同档保留先出现的那条（稳定，便于对照测试）。
+ *
+ * 只做显示前的整理，不改 store、不改后端数据。
+ */
+export function dedupePeers(list: readonly Peer[]): Peer[] {
+  const byId = new Map<string, Peer>();
+  for (const p of list) {
+    const old = byId.get(p.device_id);
+    if (!old) {
+      byId.set(p.device_id, p);
+      continue;
+    }
+    const nextRank = linkRank(p);
+    const oldRank = linkRank(old);
+    if (nextRank > oldRank || (nextRank === oldRank && p.last_seen > old.last_seen)) {
+      byId.set(p.device_id, p);
+    }
+  }
+  return [...byId.values()];
+}
+
+/**
+ * 「添加好友」列表的排序（纯展示顺序，不改任何数据）。
+ *
+ * 顺序的口径，按用户最可能先找谁：
+ * 1. **已是好友**（可直接发起聊天）优先；
+ * 2. 有直连链路（局域网 / 蓝牙）优先于跨网/中继；
+ * 3. 最近有 Presence 的优先（`last_seen` 大）；
+ * 4. 其余按昵称，保证同一批数据每次渲染顺序一致。
+ */
+export function sortPeersForAdd(
+  list: readonly Peer[],
+  opts: { friendIds: ReadonlySet<string> },
+): Peer[] {
+  const friend = (p: Peer) => (opts.friendIds.has(p.device_id) ? 1 : 0);
+  return [...list].sort(
+    (a, b) =>
+      friend(b) - friend(a) ||
+      linkRank(b) - linkRank(a) ||
+      b.last_seen - a.last_seen ||
+      a.nickname.localeCompare(b.nickname, "zh-CN"),
+  );
+}

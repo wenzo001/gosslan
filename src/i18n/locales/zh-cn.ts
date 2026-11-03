@@ -1096,6 +1096,12 @@ export const zhCN: MessageDict = {
   "friend.add.crossNet.relay.off": "未启用",
   "friend.add.crossNet.hint": "这些通道连通**已是好友**的人；公网首次加好友需经一位共同好友，或打开局域网／蓝牙。",
   "friend.add.rescan": "重新扫描",
+  "friend.add.maybeOffline": "可能离线",
+  "friend.add.copyInvite": "复制邀请",
+  "friend.add.copyInvite.failed": "复制失败：剪贴板不可用",
+  "friend.add.invite.text":
+    "我在 Gosslan 上的设备 ID 是 {id}（{name}）。打开 Gosslan → 添加好友 → 搜索这个设备 ID，就能加我。",
+  "friend.add.toast.inviteCopied": "邀请文案已复制",
   "friend.add.channelFailed": "开启失败：{err}",
   "friend.add.searchPlaceholder": "搜索昵称 / IP / 设备 ID",
   "friend.add.alreadyFriend": "已加好友",

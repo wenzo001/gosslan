@@ -13,7 +13,7 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mergePeerList } from "./peerMerge.ts";
+import { mergePeerList, dedupePeers, sortPeersForAdd } from "./peerMerge.ts";
 import type { Peer } from "../types.ts";
 
 function peer(id: string, over: Partial<Peer> = {}): Peer {
@@ -73,4 +73,41 @@ test("link 从有到无（链路断开）算变化 —— 可选字段不许被�
   const merged = mergePeerList(prev, next);
   assert.ok(merged, "link 由 bluetooth 变 null 是一次真实的状态变化");
   assert.equal(merged![0].link, null);
+});
+
+test("多路径去重：同一 device_id 只留一条，优先保留链路更具体的那条", () => {
+  // 同一台设备：先被中继看到（无直连），随后局域网直连也被发现
+  const viaRelay = peer("a", { link: "relay", last_seen: 100 });
+  const direct = peer("a", { link: "lan", last_seen: 90 });
+  const out = dedupePeers([viaRelay, direct]);
+  assert.equal(out.length, 1, "同一个人不许出现两行");
+  assert.equal(out[0], direct, "直连比中继更具体 ⇒ 保留直连那条（即使它 last_seen 更旧）");
+  // 同档（都无链路）取更新的那条；完全同档保留先出现的（顺序稳定）
+  const oldOne = peer("b", { link: null, last_seen: 10 });
+  assert.deepEqual(dedupePeers([oldOne, peer("b", { link: null, last_seen: 30 })]).map((p) => p.last_seen), [30]);
+  const first = peer("c", { link: null, last_seen: 10 });
+  assert.equal(dedupePeers([first, peer("c", { link: null, last_seen: 10 })])[0], first);
+});
+
+test("添加好友列表排序：好友优先 → 直连优先 → 最近 Presence → 昵称", () => {
+  const friends = new Set(["f"]);
+  const list = [
+    peer("z", { link: "relay", last_seen: 50, nickname: "阿Z" }),
+    peer("a", { link: "lan", last_seen: 10, nickname: "阿A" }),
+    peer("f", { link: null, last_seen: 1, nickname: "阿F" }),
+    peer("b", { link: "lan", last_seen: 40, nickname: "阿B" }),
+  ];
+  const sorted = sortPeersForAdd(list, { friendIds: friends, now: 100 });
+  assert.deepEqual(
+    sorted.map((p) => p.device_id),
+    ["f", "b", "a", "z"],
+    "好友最先；同为直连时 last_seen 大的在前；无链路/中继最后",
+  );
+});
+
+test("添加好友列表排序是纯函数：不修改入参", () => {
+  const list = [peer("b", { link: null }), peer("a", { link: "lan" })];
+  const before = list.map((p) => p.device_id);
+  sortPeersForAdd(list, { friendIds: new Set(), now: 100 });
+  assert.deepEqual(list.map((p) => p.device_id), before, "排序必须返回新数组，store 里的顺序不许被动");
 });
