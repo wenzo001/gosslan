@@ -13,6 +13,25 @@
 
 ## [Unreleased]
 
+## [5.16.89] - 2026-11-03
+
+### 卡住的 outbox 终态化 + 拨号刷屏节流（闪退取证第 4 项）
+
+- 取证库实况：`sending_msgs=3` 是三条群文件气泡 —— 收件成员 10-29 起离线，
+  `group_file_recipients` 的 `pending` 行**没有任何终态视野**（旧清扫只捞
+  `sending`），气泡永久 sending；`file_outbox=9` 是 9 条早已取消的墓碑行被
+  `COUNT(*)` 当成在途报数；`127.0.0.1:60012` 死端点每 10s 拨一轮、失败日志
+  逐条刷屏。
+- 三处各归其位：
+  ① `list_stale_group_file_sending` 增收"过最长年龄（7 天）的 pending 行"并
+  带 expired ⇒ 清扫器按失败收尾；窗口内不捞 —— 离线补发承诺（INV-P04）不破。
+  ② `runtime_counts` 的 file_outbox 只数 `pending/sending`（墓碑不再虚高在途数）。
+  ③ routed 拨号失败与 LAN 侧同口径节流（30s 一条）并具名 `code=ROUTED_DIAL_FAILED`。
+- 消息 outbox 不加新列：既有时间闸已终态化（可达 120s / 离线 7 天，
+  `OUTBOX_EXPIRED` / `OUTBOX_OFFLINE_HELD` 具名码在跑）；取证库 outbox 表实测 0 行。
+- 测试：pending 终态视野用例含正控（旧形状确实看不见 pending 行）。
+
+
 ## [5.16.88] - 2026-11-03
 
 ### SIGTERM 留痕 + 走正常退出流程（闪退取证第 2 项）
