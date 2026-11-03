@@ -406,6 +406,29 @@ pub const STARTUP_MAIN_THREAD_FAILED: &str = "STARTUP_MAIN_THREAD_FAILED";
 /// 读应用数据目录失败（human 带底层原因）。
 pub const STARTUP_DATA_DIR_READ_FAILED: &str = "STARTUP_DATA_DIR_READ_FAILED";
 
+// ── B6 第十二批：好友/群管理里漏网的长文与读表 ─────────────────────────────
+//
+// 这几格此前只有 `format!` 拼出的中文原话：输入超长三条、读表失败两条、
+// 群待办图片体积一格。超长是用户直接可改的（少打几个字），读表是重试一格。
+/// 好友列表读不出来（human 带底层原因）。
+pub const FRIENDS_LIST_READ_FAILED: &str = "FRIENDS_LIST_READ_FAILED";
+/// 群已读名单读不出来（human 带底层原因）。
+pub const GROUP_READS_LIST_READ_FAILED: &str = "GROUP_READS_LIST_READ_FAILED";
+/// 群待办：自定义类型名称超长。
+pub const GROUP_TODO_TYPE_NAME_TOO_LONG: &str = "GROUP_TODO_TYPE_NAME_TOO_LONG";
+/// 群待办：任务标题超长。
+pub const GROUP_TODO_TITLE_TOO_LONG: &str = "GROUP_TODO_TITLE_TOO_LONG";
+/// 群待办：任务描述超长。
+pub const GROUP_TODO_DESC_TOO_LONG: &str = "GROUP_TODO_DESC_TOO_LONG";
+/// 群公告超长。
+pub const GROUP_ANNOUNCEMENT_TOO_LONG: &str = "GROUP_ANNOUNCEMENT_TOO_LONG";
+/// 群待办图片超过单张体积上限。
+pub const GROUP_TODO_IMAGE_TOO_LARGE: &str = "GROUP_TODO_IMAGE_TOO_LARGE";
+
+// ── B6 第十三批：收藏 ──────────────────────────────────────────────────────
+/// 收藏批量删除超过一次上限。
+pub const FAVORITE_DELETE_BATCH_TOO_LARGE: &str = "FAVORITE_DELETE_BATCH_TOO_LARGE";
+
 /// 给"可能已经带码"的下层错误补码：已带 `code=` 就原样透传，避免叠成两个码。
 ///
 /// 典型场景：通道启动会把 `network::start_from_prefs` 的 `PORT_IN_USE` 透传上来，

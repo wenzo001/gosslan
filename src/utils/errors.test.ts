@@ -278,6 +278,14 @@ test("B6 试点批：每个码中英各一条，认不出码必须回落原文",
     STARTUP_RETRY_POOL_FAILED: "errors.rule.startupRetryPoolFailed",
     STARTUP_MAIN_THREAD_FAILED: "errors.rule.startupMainThreadFailed",
     STARTUP_DATA_DIR_READ_FAILED: "errors.rule.startupDataDirReadFailed",
+    FRIENDS_LIST_READ_FAILED: "errors.rule.friendsListReadFailed",
+    GROUP_READS_LIST_READ_FAILED: "errors.rule.groupReadsListReadFailed",
+    GROUP_TODO_TYPE_NAME_TOO_LONG: "errors.rule.groupTodoTypeNameTooLong",
+    GROUP_TODO_TITLE_TOO_LONG: "errors.rule.groupTodoTitleTooLong",
+    GROUP_TODO_DESC_TOO_LONG: "errors.rule.groupTodoDescTooLong",
+    GROUP_ANNOUNCEMENT_TOO_LONG: "errors.rule.groupAnnouncementTooLong",
+    GROUP_TODO_IMAGE_TOO_LARGE: "errors.rule.groupTodoImageTooLarge",
+    FAVORITE_DELETE_BATCH_TOO_LARGE: "errors.rule.favoriteDeleteBatchTooLarge",
   };
   for (const [code, key] of Object.entries(cases)) {
     assert.ok(key in zhCN, `中文词典缺 ${key}`);

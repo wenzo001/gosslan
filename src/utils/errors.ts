@@ -203,6 +203,15 @@ const CODE_RULES: Record<string, string> = {
   STARTUP_RETRY_POOL_FAILED: "errors.rule.startupRetryPoolFailed",
   STARTUP_MAIN_THREAD_FAILED: "errors.rule.startupMainThreadFailed",
   STARTUP_DATA_DIR_READ_FAILED: "errors.rule.startupDataDirReadFailed",
+  // B6 第十二批：好友/群管理/收藏里漏网的原话。
+  FRIENDS_LIST_READ_FAILED: "errors.rule.friendsListReadFailed",
+  GROUP_READS_LIST_READ_FAILED: "errors.rule.groupReadsListReadFailed",
+  GROUP_TODO_TYPE_NAME_TOO_LONG: "errors.rule.groupTodoTypeNameTooLong",
+  GROUP_TODO_TITLE_TOO_LONG: "errors.rule.groupTodoTitleTooLong",
+  GROUP_TODO_DESC_TOO_LONG: "errors.rule.groupTodoDescTooLong",
+  GROUP_ANNOUNCEMENT_TOO_LONG: "errors.rule.groupAnnouncementTooLong",
+  GROUP_TODO_IMAGE_TOO_LARGE: "errors.rule.groupTodoImageTooLarge",
+  FAVORITE_DELETE_BATCH_TOO_LARGE: "errors.rule.favoriteDeleteBatchTooLarge",
 };
 
 /** 后端 `error_codes::coded()` 的形状：`code=<大写蛇形> 给人看的那句话`。 */

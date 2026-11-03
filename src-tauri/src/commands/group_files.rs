@@ -195,9 +195,12 @@ fn normalize_custom_category(category: &str, raw: Option<&str>) -> Result<String
         ));
     }
     if name.chars().count() > crate::protocol::TODO_CUSTOM_CATEGORY_MAX_LEN {
-        return Err(format!(
-            "自定义类型名称不能超过 {} 字",
-            crate::protocol::TODO_CUSTOM_CATEGORY_MAX_LEN
+        return Err(crate::error_codes::coded(
+            crate::error_codes::GROUP_TODO_TYPE_NAME_TOO_LONG,
+            format!(
+                "自定义类型名称不能超过 {} 字",
+                crate::protocol::TODO_CUSTOM_CATEGORY_MAX_LEN
+            ),
         ));
     }
     Ok(name)
@@ -272,11 +275,17 @@ pub async fn send_group_todo(
         ));
     }
     if title.chars().count() > MAX_TODO_TITLE_LEN {
-        return Err(format!("任务标题不能超过 {MAX_TODO_TITLE_LEN} 字"));
+        return Err(crate::error_codes::coded(
+            crate::error_codes::GROUP_TODO_TITLE_TOO_LONG,
+            format!("任务标题不能超过 {MAX_TODO_TITLE_LEN} 字"),
+        ));
     }
     let description = description.unwrap_or_default().trim().to_string();
     if description.chars().count() > MAX_TODO_DESC_LEN {
-        return Err(format!("任务描述不能超过 {MAX_TODO_DESC_LEN} 字"));
+        return Err(crate::error_codes::coded(
+            crate::error_codes::GROUP_TODO_DESC_TOO_LONG,
+            format!("任务描述不能超过 {MAX_TODO_DESC_LEN} 字"),
+        ));
     }
     let images = images.unwrap_or_default();
     check_todo_assignees(s, &group_id, &assignees)?;
@@ -792,7 +801,10 @@ pub async fn update_group_todo(
         ));
         }
         if title.chars().count() > MAX_TODO_TITLE_LEN {
-            return Err(format!("任务标题不能超过 {MAX_TODO_TITLE_LEN} 字"));
+            return Err(crate::error_codes::coded(
+                crate::error_codes::GROUP_TODO_TITLE_TOO_LONG,
+                format!("任务标题不能超过 {MAX_TODO_TITLE_LEN} 字"),
+            ));
         }
         if !crate::protocol::todo_status_is_valid(&status) {
             return Err(crate::error_codes::coded(
@@ -839,7 +851,10 @@ pub async fn update_group_todo(
         None => def.images.clone(),
     };
     if !deleted && description.chars().count() > MAX_TODO_DESC_LEN {
-        return Err(format!("任务描述不能超过 {MAX_TODO_DESC_LEN} 字"));
+        return Err(crate::error_codes::coded(
+            crate::error_codes::GROUP_TODO_DESC_TOO_LONG,
+            format!("任务描述不能超过 {MAX_TODO_DESC_LEN} 字"),
+        ));
     }
     // 判权：`may_update_todo` 的两档，外加"只动归档位 / 只还原"这两条**成员窄档**
     // （用户 2026-09-24 与同日追加）。见 [`may_change_todo`]。
@@ -994,7 +1009,10 @@ pub async fn send_group_announcement(
         ));
     }
     if text.chars().count() > MAX_ANNOUNCEMENT_LEN {
-        return Err(format!("公告不能超过 {MAX_ANNOUNCEMENT_LEN} 字"));
+        return Err(crate::error_codes::coded(
+            crate::error_codes::GROUP_ANNOUNCEMENT_TOO_LONG,
+            format!("公告不能超过 {MAX_ANNOUNCEMENT_LEN} 字"),
+        ));
     }
     {
         let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());

@@ -217,7 +217,10 @@ pub async fn get_group_reads(
                         format!("code=GROUP_READS_LIST_READ_FAILED 已读名单读取失败，上抛给界面 group={group_id}：{e}"),
                     );
                 }
-                return Err(format!("已读名单读不出来：{e}"));
+                return Err(crate::error_codes::coded(
+                    crate::error_codes::GROUP_READS_LIST_READ_FAILED,
+                    format!("已读名单读不出来：{e}"),
+                ));
             }
         }
         .into_iter()
