@@ -1175,6 +1175,7 @@ storage::vacuum::tests::realistic_database_compacts_and_shrinks_and_prints_the_n
 storage::vacuum::tests::state_codes_are_the_three_the_frontend_expects
 storage::vacuum::tests::the_progress_handler_actually_fires_during_vacuum
 storage::vacuum::tests::the_progress_handler_is_uninstalled_afterwards
+tests::a_peer_that_never_advertised_withdraw_gets_no_replays
 tests::ack_commit_uses_the_single_transaction_helper
 tests::active_group_file_transfers_refresh_the_key_ttl
 tests::already_have_shortcut_shares_the_send_finalization

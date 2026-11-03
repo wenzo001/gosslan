@@ -69,6 +69,43 @@
         }
     }
 
+    /// **老端明确没声明撤回能力时，一条撤回帧都不许再补发**。
+    ///
+    /// 行为证据在上一条（老端收到会说 `Message::Unknown` 并丢弃）。这里钉住发送侧：
+    /// `Some(false)` 分支必须先把 peer 移出补发队列再 `return`，不得落到
+    /// `Some(true)` 的发送路径 —— 否则"老端丢帧"只会变成"我们无限重试它"。
+    #[test]
+    fn a_peer_that_never_advertised_withdraw_gets_no_replays() {
+        let body = rust_fn_body(
+            include_str!("network/transport/handshake.rs"),
+            "pub async fn flush_pending_friend_withdraw(",
+        );
+        let flat = code_flat(&body);
+        let unsupported = flat
+            .find("Some(false)")
+            .expect("必须区分『对端明确未声明』与『还没学到』");
+        let supported = flat
+            .find("Some(true)")
+            .expect("必须有『能力位已声明』的发送分支");
+        assert!(
+            unsupported < supported,
+            "不支持的分支必须先于发送分支（否则会先发出去再判）"
+        );
+        let stop = &flat[unsupported..supported];
+        assert!(
+            stop.contains("remove(peer_id)"),
+            "停发时必须从补发队列移除，否则下一次 Hello 还会再来一遍"
+        );
+        assert!(
+            stop.contains("return"),
+            "停发分支必须直接返回，不得落到发送逻辑"
+        );
+        assert!(
+            !stop.contains("send_friend_withdraw_via_link"),
+            "对端没这一位时一条撤回帧都不发"
+        );
+    }
+
     /// **掉线的节点要留在发现列表里，但不能算"在线"**（两个坑必须同时躲开）。
     ///
     /// 2026-09-12 真机（用户 4.2.11，只开蓝牙）：**手机能看到 Mac（"已发现未建联"），
