@@ -62,6 +62,21 @@ export function parseRemind(rec: MessageRecord): RemindPayload | null {
   }
 }
 
+/**
+ * 发送侧的**抖动位**判据（只给乐观投影用）。
+ *
+ * 与 `parseRemind` 分开：那里要求一条完整 `MessageRecord`，而发送时只有载荷字符串。
+ * 读不懂就按 false —— 绝不能让坏载荷在任务中心伪装成「窗口抖动」。
+ */
+export function isNudgePayload(content: string): boolean {
+  try {
+    const p = JSON.parse(content) as { nudge?: unknown } | null;
+    return p?.nudge === true;
+  } catch {
+    return false;
+  }
+}
+
 /** 解析回执载荷；非法/坏行返回 null。 */
 export function parseRemindAck(rec: MessageRecord): RemindAckPayload | null {
   if (rec.kind !== "remind_ack") return null;
