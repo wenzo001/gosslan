@@ -256,6 +256,11 @@ test("B6 试点批：每个码中英各一条，认不出码必须回落原文",
     SHARE_NO_ROUTE: "errors.rule.shareNoRoute",
     SHARE_SEND_FAILED: "errors.rule.shareSendFailed",
     CHANNEL_CACHE_CLEAN_FAILED: "errors.rule.channelCacheCleanFailed",
+    LOG_READ_FAILED: "errors.rule.logReadFailed",
+    LOG_CLEAR_FAILED: "errors.rule.logClearFailed",
+    DIAG_EXPORT_JOIN_FAILED: "errors.rule.diagExportJoinFailed",
+    DIAG_EXPORT_PATH_EMPTY: "errors.rule.diagExportPathEmpty",
+    DIAG_EXPORT_WRITE_FAILED: "errors.rule.diagExportWriteFailed",
   };
   for (const [code, key] of Object.entries(cases)) {
     assert.ok(key in zhCN, `中文词典缺 ${key}`);

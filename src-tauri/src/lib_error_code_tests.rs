@@ -154,6 +154,14 @@ const B6_CASES: &[(&str, &str, &str)] = &[
     ("SHARE_NOT_FRIEND", "commands/share.rs", "对方不是好友"),
     ("SHARE_TIMEOUT", "commands/share.rs", "获取共享目录超时"),
     ("SHARE_NO_ROUTE", "commands/share.rs", "无法联系对方：没有可达的中继邻居"),
+    // ── B6 第九批：日志诊断（本笔）──────────────────────────────────────
+    ("LOG_READ_FAILED", "commands/logs.rs", "运行日志读取被线程池中断: {e}"),
+    ("LOG_CLEAR_FAILED", "commands/logs.rs", "运行日志清空被线程池中断: {e}"),
+    ("DIAG_EXPORT_JOIN_FAILED", "commands/logs.rs", "诊断包导出任务失败：{e}"),
+    ("DIAG_EXPORT_PATH_EMPTY", "diagnostics.rs", "导出路径为空"),
+    ("DIAG_EXPORT_WRITE_FAILED", "diagnostics.rs", "写入诊断包失败：{e}"),
+    // 外链窗口在 `logs.rs` 里还有一处二次解析（同一句原文、同一个码）
+    ("LINK_URL_INVALID", "commands/logs.rs", "网址格式不正确"),
 ];
 
 /// human 是下层原话、没有字面量的触发点：只守"码真的挂在这里"，
@@ -240,6 +248,10 @@ const B6_COMMAND_UNCODED_BASELINE: &[(&str, &str, usize)] = &[
     ("share.rs", "open_downloads_dir", 0),
     ("share.rs", "request_share_tree", 0),
     ("share.rs", "download_shared_file", 0),
+    // B6 第九批：日志诊断（三条 async 命令都已带码，锁住不回涨）
+    ("logs.rs", "get_logs", 0),
+    ("logs.rs", "clear_logs", 0),
+    ("logs.rs", "export_diagnostics_bundle", 0),
 ];
 
 fn read_src(rel: &str) -> String {

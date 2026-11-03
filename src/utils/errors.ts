@@ -178,6 +178,12 @@ const CODE_RULES: Record<string, string> = {
   SHARE_NO_ROUTE: "errors.rule.shareNoRoute",
   SHARE_SEND_FAILED: "errors.rule.shareSendFailed",
   CHANNEL_CACHE_CLEAN_FAILED: "errors.rule.channelCacheCleanFailed",
+  // B6 第九批：日志诊断。
+  LOG_READ_FAILED: "errors.rule.logReadFailed",
+  LOG_CLEAR_FAILED: "errors.rule.logClearFailed",
+  DIAG_EXPORT_JOIN_FAILED: "errors.rule.diagExportJoinFailed",
+  DIAG_EXPORT_PATH_EMPTY: "errors.rule.diagExportPathEmpty",
+  DIAG_EXPORT_WRITE_FAILED: "errors.rule.diagExportWriteFailed",
 };
 
 /** 后端 `error_codes::coded()` 的形状：`code=<大写蛇形> 给人看的那句话`。 */
