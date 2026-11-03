@@ -379,6 +379,14 @@ const steps = [
   },
   {
     group: "frontend",
+    name: "用户可见硬编码中文守卫（存量走基线）",
+    why: "挡住「切到英文后界面仍冒出中文」的新增来源 —— 存量 74 条（消息摘要占位符 `[文件]`/`[任务]`、启动失败窗整页文案、模板里的全角分隔符）已登记在 `scripts/hardcoded-ui-text.baseline.json`，**只允许减少**；新写一条不走 `t()` 的中文即红。用 TS AST + SFC 分段取串，注释/`console.*`/正则不算；带 4 反例 + 5 正例自证，扫到不足 150 个文件或不足 40 条存量也判红",
+    cwd: ROOT,
+    cmd: NODE_EXE,
+    args: ["scripts/check-hardcoded-ui-text.mjs"],
+  },
+  {
+    group: "frontend",
     name: "护栏注入锚点静态核对",
     light: true,
     why: `挡住「护栏的锚点跟着被钉的那段码搬家，从此注入注不上去、那条守卫静默空转」——

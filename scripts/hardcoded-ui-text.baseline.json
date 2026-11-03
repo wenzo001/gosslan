@@ -1,0 +1,134 @@
+{
+  "version": 1,
+  "note": "存量基线：只允许减少。新增一条用户可见硬编码中文必须判红；确属有意（如语言自指名）请改文案或在此登记并说明理由。",
+  "entries": {
+    "src/api/index.ts": {
+      "；": 1,
+      "`${errors.length}/${registrations.length} 个事件监听注册失败：${errors.join(\"；\")}`": 1
+    },
+    "src/boot/boot.ts": {
+      "(位置未知)": 1
+    },
+    "src/components/chat/MessageComposer.vue": {
+      "：": 1,
+      "`「引用 ${props.quote.sender}：${props.quote.snippet}${idSuffix}」\\n${text}`": 1,
+      "`${t('common.quote')} ${quote.sender}：${quote.snippet}`": 1
+    },
+    "src/components/ChatWindow.vue": {
+      "，": 1
+    },
+    "src/components/conversation/ConversationListItem.vue": {
+      "，": 1
+    },
+    "src/components/DevDiagPanel.vue": {
+      "join_multicast：": 1,
+      "multicast_if：": 1
+    },
+    "src/components/FavoritePanel.vue": {
+      "：": 1,
+      "`${i.sender}：${mergeItemLine(i)}`": 1
+    },
+    "src/components/FriendProfile.vue": {
+      "：": 1,
+      "： …": 1
+    },
+    "src/components/GroupTasksBoard.vue": {
+      "、": 1
+    },
+    "src/components/message/MergeCard.vue": {
+      "：": 1
+    },
+    "src/components/message/MessageReactionBar.vue": {
+      "、": 1,
+      "`${t(\"msg.reactionWho\", { n: c.count })}：${who}${rest}`": 1
+    },
+    "src/components/settings/NetworkSection.vue": {
+      "`${head}（${t(\"settings.network.relayServer.probe.triedLabel\")} ${p.tried}·${p.detail}）`": 1,
+      "`${i.name}（${i.ip}）`": 1,
+      "`${t(\"chat.eventBindFail\")}：${e instanceof Error ? e.message : String(e)}`": 1
+    },
+    "src/components/TaskCenter.vue": {
+      "`${t(actionLabel[act])}：${rowTitle(row)}`": 1
+    },
+    "src/components/TodoDetailDialog.vue": {
+      "、": 3
+    },
+    "src/entries/startup-error.ts": {
+      "`打开数据目录失败：${String(e)}`": 1,
+      "`读取失败原因时出错：${String(e)}`": 1,
+      "`退出请求失败：${String(e)}。可以手动结束这个进程。`": 1,
+      "`已打开数据目录：${opened}`": 1,
+      "`这个窗口自己出错了：${String(message)}`": 1,
+      "仍然打不开。可以修好之后（挂载回来 / 释放占用 / 改对权限）再点一次重试。": 1,
+      "失败原因读不出来（后端没有应答）。": 1,
+      "下面是这一次启动失败的原因与它给出的错误码。": 1,
+      "已恢复，正在进入应用…": 1,
+      "正在退出…": 1,
+      "正在重试…": 1
+    },
+    "src/stores/useChatStore.ts": {
+      "`${t(\"send.fileFail\")}：${fileFailReasonText(d.reason, t)}`": 1
+    },
+    "src/utils/cardText.ts": {
+      "`${t(\"favorite.cardKind.poll\")}：${question}`": 1,
+      "`${t(\"favorite.cardKind.todo\")}：${title}`": 1
+    },
+    "src/utils/concurrencyGate.ts": {
+      "`并发上限必须是正整数：${max}`": 1
+    },
+    "src/utils/crashReport.ts": {
+      "Gosslan 上一轮运行报告 / previous run report": 1
+    },
+    "src/utils/filePreview.ts": {
+      "文件过大": 1
+    },
+    "src/utils/linkify.ts": {
+      "，。、；：！？（）【】《》「」『』“”‘’…": 1,
+      "(?=$|[s，。！？；：、,.!?;:)）】》\"'])": 1
+    },
+    "src/utils/mediaAvailability.ts": {
+      "文件不存在": 1
+    },
+    "src/utils/mergeCard.ts": {
+      "[代码]": 1,
+      "[聊天记录]": 2,
+      "[任务]": 1,
+      "[图片]": 1,
+      "[文件]": 1,
+      "`[聊天记录] ${p.items.length} 条`": 1,
+      "`[任务] ${title}`": 1
+    },
+    "src/utils/messageKinds.ts": {
+      "[不支持的消息]": 1
+    },
+    "src/utils/messages.ts": {
+      "[撤回]": 1,
+      "[代码]": 1,
+      "[公告]": 2,
+      "[回应]": 1,
+      "[强提醒]": 1,
+      "[强提醒确认]": 1,
+      "[任务]": 1,
+      "[投票]": 1,
+      "[图片]": 1,
+      "[文件]": 1,
+      "[置顶]": 1,
+      "`[公告] ${p.text}`": 1,
+      "`[任务] ${p.title}`": 1,
+      "`[投票] ${p.question}`": 1,
+      "所有人": 1
+    },
+    "src/utils/quote.ts": {
+      "「引用": 1,
+      "」": 2
+    },
+    "src/utils/validation.ts": {
+      "`${label} 参数非法：${issue?.message ?? \"schema mismatch\"}`": 1,
+      "`${label} 返回了非法数据${where}：${issue?.message ?? \"schema mismatch\"}`": 2,
+      "`路径过长（上限 ${MAX_IPC_PATH_CHARS} 字符）`": 1,
+      "`消息过长（上限 ${MAX_MESSAGE_CHARS} 字符）`": 1,
+      "路径不能包含 NUL": 1,
+      "路径不能为空": 1
+    }
+  }
+}
