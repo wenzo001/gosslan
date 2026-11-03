@@ -1295,7 +1295,6 @@ async function doForward(convId: string) {
     } else {
       await chat.send(convId, f.content, f.kind);
     }
-    app.toast(t("chat.toast.forwarded"), "success");
   } catch (e) {
     app.toastError(e, t("chat.toast.forwardFail"));
   }
@@ -1480,7 +1479,6 @@ async function doBatchForward(convId: string, mode: "per-message" | "merged") {
     } else {
       for (const m of items) await forwardOne(convId, m);
     }
-    app.toast(t("chat.toast.forwarded"), "success");
     exitMultiSelect();
   } catch (e) {
     app.toastError(e, t("chat.toast.forwardFail"));

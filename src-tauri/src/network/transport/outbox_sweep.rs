@@ -13,6 +13,21 @@ pub const OUTBOX_SWEEPER_INTERVAL_MS: u64 = 30_000;
 /// 丢掉写库返回值 ⇒ 锁中毒或写库失败时**界面报失败、而 outbox 行还在** ⇒ 下次 `flush_outbox`
 /// 又把它发出去 = 重复投递（"我以为失败了的消息又发出去了"）。返回 `false` 时调用方**保留行、
 /// 不 emit、留一条 warn**，下一 tick 重试。`group` 决定删哪张 outbox 表（单聊 / 群是两张表）。
+/// `message-failed` 的载荷（5.16.91）：除了 id，必须带上**落库的失败码**。
+///
+/// 只发 id 时前端只知道"它失败了"，说不出为什么 —— 而 `messages.fail_code` 里明明已经
+/// 存着 `SEND_RETRY_EXPIRED`。让事件与库同源，气泡当场就能说"重试超时，点一下再发"，
+/// 不必等重启后读库，也不给前端留下"猜一句话"的空间。
+///
+/// 字段名沿用**事件载荷**这一族的口径（`MessageStatusChanged` / `FileFailedInfo` 都是
+/// snake_case，不做 camelCase 换算）：事件与命令返回值是两条约定，前端按 `msg_id` /
+/// `fail_code` 解包，`events.test.ts` 也用同一形状对账。
+#[derive(Clone, serde::Serialize)]
+pub struct MessageFailedInfo {
+    pub msg_id: String,
+    pub fail_code: String,
+}
+
 fn finalize_expired_message(dbc: &rusqlite::Connection, msg_id: &str, group: bool) -> bool {
     // 两步写由 `db::finalize_expired_message` 收进**同一事务**（顺序仍是语义：
     // 状态写失败就不删行，否则行没了、状态还是 sending，两个清扫器都看不见）。
@@ -196,7 +211,13 @@ pub fn spawn_outbox_sweeper(state: &Arc<AppState>) -> tauri::async_runtime::Join
                             now - created_at
                         ),
                     );
-                    let _ = state.app.emit("message-failed", &msg_id);
+                    let _ = state.app.emit(
+                        "message-failed",
+                        &MessageFailedInfo {
+                            msg_id: msg_id.clone(),
+                            fail_code: crate::error_codes::SEND_RETRY_EXPIRED.to_string(),
+                        },
+                    );
                 } else {
                     // 不 emit、不删行 ⇒ 下一 tick 重试；留痕便于排障（绝不"界面说失败、行还在、又重发"）
                     state.logger.warn(
@@ -356,7 +377,13 @@ pub fn spawn_outbox_sweeper(state: &Arc<AppState>) -> tauri::async_runtime::Join
                             rows.len()
                         ),
                     );
-                    let _ = state.app.emit("message-failed", &msg_id);
+                    let _ = state.app.emit(
+                        "message-failed",
+                        &MessageFailedInfo {
+                            msg_id: msg_id.clone(),
+                            fail_code: crate::error_codes::SEND_RETRY_EXPIRED.to_string(),
+                        },
+                    );
                 } else {
                     state.logger.warn(
                         "outbox",

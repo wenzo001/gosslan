@@ -26,6 +26,22 @@ pub const E2EE_PUBKEY_MISSING: &str = "E2EE_PUBKEY_MISSING";
 /// 监听端口被占用（`AddrInUse` 重试耗尽后）。前端那一档要给"先退掉另一个实例"的动作。
 pub const PORT_IN_USE: &str = "PORT_IN_USE";
 
+// ── 同步命令失败的"当场"那一档（乐观更新第一批，5.16.91）────────────────────
+//
+// 这一族与上面两格同通道（命令返回值，一次性弹给用户），不进 `messages.fail_code`，
+// 因为**失败发生在写库之前**：库里没有行，气泡只是前端的乐观投影。
+// 判据只收"英文/内部串"那几处：已经是人话的分支（如"对方版本不支持"）继续原样透传，
+// 不为凑码把本来能读的句子改成词典键。
+
+/// 1:1 发送/发文件时对方已不是好友（写库前挡回）。
+pub const SEND_PEER_NOT_FRIEND: &str = "SEND_PEER_NOT_FRIEND";
+/// 1:1 文件发送里"和自己聊天"那一格。
+pub const FILE_SEND_SELF_CHAT: &str = "FILE_SEND_SELF_CHAT";
+/// 本机写库/入队失败（`next_clock`、消息行、会话行、outbox 行）——以前是英文 `e.to_string()`。
+pub const SEND_LOCAL_WRITE_FAILED: &str = "SEND_LOCAL_WRITE_FAILED";
+/// 已读回执写库失败（`mark_read`）——以前同样是英文串，前端只能落到"请稍后重试"。
+pub const READ_STATE_WRITE_FAILED: &str = "READ_STATE_WRITE_FAILED";
+
 /// 把码拼到人话前面 —— **唯一**的写法（不散着 `format!("code=…")`，否则对账判据读不出来）。
 pub fn coded(code: &'static str, msg: impl std::fmt::Display) -> String {
     format!("code={code} {msg}")

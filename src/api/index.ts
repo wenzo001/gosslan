@@ -2,7 +2,7 @@
 
 import { Channel, invoke as rawInvoke, type InvokeArgs } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
-import type { AppSettings, CacheInfo, CleanupReport, ContentAudience, ContentCancelResult, ContentTransfer, Conversation, DeviceInfo, DiscoveryDiag, ExportSummary, ExternalLink, ExternalLinkImportResult, FavoriteEntry, FileDoneInfo, FileFailedInfo, FileProgress, FileStalledInfo, Friend, FriendKeyRotation, Group, GroupDeliverySummary, GroupHistoryProgress, GroupReadInfo, GroupResendResult, InterfaceInfo, LinkState, LogEntry, MessageCancelResult, MessageRecord, Peer, PeerReadInfo, PendingMessageOp, PendingRequest, PreviousRunReport, RelayConfig, RelayProbe, RoutedEndpoint, RuntimeDiag, RuntimeSnapshot, TransferInfo, TodoFocus, TodoFocusMode, DropPathInfo } from "@/types";
+import type { AppSettings, CacheInfo, CleanupReport, ContentAudience, ContentCancelResult, ContentTransfer, Conversation, DeviceInfo, DiscoveryDiag, ExportSummary, ExternalLink, ExternalLinkImportResult, FavoriteEntry, FileDoneInfo, FileFailedInfo, FileProgress, FileStalledInfo, Friend, FriendKeyRotation, Group, GroupDeliverySummary, GroupHistoryProgress, GroupReadInfo, GroupResendResult, InterfaceInfo, LinkState, LogEntry, MessageCancelResult, MessageFailedInfo, MessageRecord, Peer, PeerReadInfo, PendingMessageOp, PendingRequest, PreviousRunReport, RelayConfig, RelayProbe, RoutedEndpoint, RuntimeDiag, RuntimeSnapshot, TransferInfo, TodoFocus, TodoFocusMode, DropPathInfo } from "@/types";
 import type { TodoImage } from "@/utils/todos";
 import {
   chatSearchGroupSchema,
@@ -413,12 +413,15 @@ export const api = {
   cancelContentFetch: (cid: string) =>
     invoke<ContentCancelResult>("cancel_content_fetch", { cid }),
   /** `msgId`：转发场景传「被转发的那条消息」，后端据此要求路径归属这条消息（SEC-01）；
-   *  用户自己挑文件发送时不传。 */
-  sendFileAuto: (friendId: string, path: string, msgId?: string) =>
+   *  用户自己挑文件发送时不传。
+   *  `localId`：乐观投影的持久本地身份；后端把它落到真实行的 `local_id`，
+   *  真实记录（`message-received`）到达时前端据此原地替换 `tmp-*`。 */
+  sendFileAuto: (friendId: string, path: string, msgId?: string, localId?: string) =>
     invoke<string>("send_file_auto", {
       friendId,
       path: pathArg(path, "send_file_auto.path"),
       msgId,
+      localId,
     }),
   sendGroupFile: (groupId: string, path: string, msgId?: string) =>
     invoke<string>("send_group_file", {
@@ -910,10 +913,13 @@ export type EventHandlers = {
    */
   onGroupDeliveryChanged: (p: { group_id: string; msg_id: string }) => void;
   /**
-   * 某条消息**判死**（msg_id）。与上面那条的区别是有没有带事实：outbox 清扫已经把库里
-   * 这行写成 failed 才发这个事件，所以事件名就是结论，前端不必回库查（也查不到新东西）。
+   * 某条消息**判死**（outbox 清扫已经把库里这行写成 `failed` 才发这个事件）。
+   *
+   * 载荷从 5.16.91 起是 `MessageFailedInfo`：除了 `msg_id`，还带**刚落库的 `fail_code`**
+   * （`SEND_RETRY_EXPIRED`）。只发 id 时前端只知道"失败了"却说不出为什么 —— 而库里
+   * 明明已经存着码。事件与库同源，气泡当场就能把原因说出口（`fileFailReason` 词典）。
    */
-  onMessageFailed: (msgId: string) => void;
+  onMessageFailed: (p: MessageFailedInfo) => void;
   onPeerStyle: (p: PeerStyleUpdate) => void;
   /** 群信息变更（群密钥建群 / 群改名 / 成员变更） */
   onGroupsUpdated: (groupId: string) => void;
@@ -1020,7 +1026,7 @@ export async function bindEvents(h: EventHandlers): Promise<UnlistenFn[]> {
     //   代价是一次 IPC + 整列表重建，而**后台会话依然什么都不更新**。
     // - `message-status-changed` 的 `status = null` 是特例：那一格的真相不是单一状态
     //   （群文件聚合台账 / done 闸门），前端退回"只重查正在看的会话"的旧路。
-    listen<string>("message-failed", (e) => h.onMessageFailed(e.payload)),
+    listen<MessageFailedInfo>("message-failed", (e) => h.onMessageFailed(e.payload)),
     listen<PeerStyleUpdate>("peer-style-updated", (e) => h.onPeerStyle(e.payload)),
     listen<string>("groups-updated", (e) => h.onGroupsUpdated(e.payload)),
     // 群历史同步进度（新成员入群后后台自动补，见 Rust `network/group_history.rs`）。

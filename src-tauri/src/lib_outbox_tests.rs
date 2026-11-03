@@ -59,14 +59,22 @@ fn outbox_sweeper_emits_only_after_db_write_succeeds() {
         1,
         "file-failed 的 emit 必须在 `Ok(true)` 分支里（写库成功才发）"
     );
-    assert_eq!(
-        body.matches("emit(\"message-failed\"").count(),
-        2,
-        "message-failed 仍恰好两处（单聊 + 群）"
-    );
     // 判据按**去掉空白后的源码**数：rustfmt 会把 `emit(\n "file-failed",\n …)`
     // 拆成多行，逐字匹配会在格式化之后失明（实测：这条断言曾因此报 0）。
     let flat: String = body.split_whitespace().collect();
+    assert_eq!(
+        flat.matches("emit(\"message-failed\"").count(),
+        2,
+        "message-failed 仍恰好两处（单聊 + 群）"
+    );
+    // 5.16.91：载荷必须是 `MessageFailedInfo`（前端 `listen<MessageFailedInfo>` 按
+    // {msg_id, fail_code} 取值）。只发裸 msg_id 时前端知道"它失败了"却说不出为什么。
+    assert_eq!(
+        flat.matches("emit(\"message-failed\",&MessageFailedInfo{")
+            .count(),
+        2,
+        "单聊 + 群两处 message-failed 都必须发 MessageFailedInfo 结构体（带 fail_code）"
+    );
     assert_eq!(
         flat.matches("emit(\"file-failed\"").count(),
         2,

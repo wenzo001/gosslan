@@ -29,6 +29,7 @@ import {
   textMentionsName,
   unreadAnchorIndex,
   existingIdsFor,
+  markFailureInCache,
   markStatusInCache,
   statusSnapshotFor,
 } from "./messages.ts";
@@ -98,6 +99,39 @@ test("不改动输入的 existing 数组（无副作用）", () => {
   const snapshot = [...existing];
   mergeMessages(existing, [msg({ msg_id: "m2", ts: 2 })]);
   assert.deepEqual(existing, snapshot);
+});
+
+// ---------------- 乐观投影与真实记录的先后（5.16.91） ----------------
+
+test("真实记录先到、乐观批次后到：真实 msg_id 不被 tmp 覆盖", () => {
+  const real = msg({ msg_id: "file-1", local_id: "L1", seq: 7, status: "sent" });
+  const tmp = msg({ msg_id: "tmp-L1", local_id: "L1", seq: Number.MAX_SAFE_INTEGER, status: "sending" });
+  const out = mergeMessages([real], [tmp]);
+  assert.deepEqual(out.map((m) => m.msg_id), ["file-1"]);
+  assert.equal(out[0].status, "sent");
+  assert.equal(out[0].local_id, "L1");
+});
+
+test("乐观批次先到、真实记录后到：原地替换成真实 msg_id", () => {
+  const tmp = msg({ msg_id: "tmp-L1", local_id: "L1", seq: Number.MAX_SAFE_INTEGER, status: "sending" });
+  const real = msg({ msg_id: "file-1", local_id: "L1", seq: 7, status: "sent" });
+  const out = mergeMessages([tmp], [real]);
+  assert.deepEqual(out.map((m) => m.msg_id), ["file-1"]);
+  assert.equal(out[0].status, "sent");
+});
+
+test("回滚后的 failed 投影再遇到真实成功：升级成真实记录（不回退）", () => {
+  const failed = msg({ msg_id: "tmp-L1", local_id: "L1", seq: Number.MAX_SAFE_INTEGER, status: "failed" });
+  const real = msg({ msg_id: "file-1", local_id: "L1", seq: 7, status: "sent" });
+  const out = mergeMessages([failed], [real]);
+  assert.deepEqual(out.map((m) => m.msg_id), ["file-1"]);
+  assert.equal(out[0].status, "sent");
+});
+
+test("重复到达同一条真实记录：幂等，不产生第二行", () => {
+  const real = msg({ msg_id: "file-1", local_id: "L1", seq: 7, status: "sent" });
+  const out = mergeMessages([real], [real, real]);
+  assert.equal(out.length, 1);
 });
 
 test("previewText：文件/图片/代码显示特殊标记", () => {
@@ -214,6 +248,18 @@ test("活跃会话收到消息不计未读，非活跃会话累计未读", () =>
   assert.equal(f2.unread, 1); // 非活跃
   assert.equal(f1.last_msg, "hi");
   assert.equal(f2.last_ts, 20);
+});
+
+test("失败态的乐观行不顶会话摘要、不加未读（不留幽灵）", () => {
+  const cs = [conv("f1", 100, 2)];
+  const byConv = new Map([
+    ["f1", [msg({ msg_id: "tmp-L1", local_id: "L1", conv_id: "f1", ts: 200, status: "failed", content: "没发出去" })]],
+  ]);
+  const out = applyIncomingToConversations(cs, null, byConv, "me");
+  const f1 = out.find((c) => c.id === "f1")!;
+  assert.equal(f1.last_msg, null, "失败行不许成为会话摘要");
+  assert.equal(f1.last_ts, 100, "失败行不许顶起排序");
+  assert.equal(f1.unread, 2, "自己发的失败行不加未读，旧未读也不丢");
 });
 
 test("群消息只更新群会话：文本/图片/文件都不碰同发送者的单聊", () => {
@@ -396,6 +442,31 @@ test("整批都是系统消息 ⇒ 该会话完全不动（不置顶、不改预
   assert.equal(g1.last_msg, null);
   assert.equal(g1.last_ts, 10, "时间戳也不能动 —— 动了就等于把它顶到最前");
   assert.deepEqual(out.map((c) => c.id), ["g1", "g2"], "顺序仍按原 last_ts");
+});
+
+test("失败态乐观行不顶会话摘要、不加未读（回滚后不许留一条假未读）", () => {
+  const cs = [conv("f1", 10)];
+  const byConv = new Map([
+    [
+      "f1",
+      [
+        msg({ msg_id: "m1", conv_id: "f1", content: "在吗", ts: 100 }),
+        msg({
+          msg_id: "tmp-x",
+          conv_id: "f1",
+          content: "发不出去",
+          ts: 200,
+          seq: Number.MAX_SAFE_INTEGER,
+          status: "failed",
+        }),
+      ],
+    ],
+  ]);
+  const out = applyIncomingToConversations(cs, null, byConv);
+  const f1 = out.find((c) => c.id === "f1")!;
+  assert.equal(f1.unread, 1, "只有真实那条记账");
+  assert.equal(f1.last_msg, "在吗", "失败投影不许冒充「最新消息」");
+  assert.equal(f1.last_ts, 100);
 });
 
 // ---------------- 会话排序与置顶 ----------------
@@ -1382,6 +1453,36 @@ test("markStatusInCache：本地没缓存这条就返回 0 且什么都不建（
 test("markStatusInCache：已经是那个状态就不算改动（重复事件不反复刷响应式）", () => {
   const messages: Record<string, MessageRecord[]> = { c1: [msg({ msg_id: "m1", status: "failed" })] };
   assert.equal(markStatusInCache(messages, "m1", "failed"), 0);
+});
+
+test("markFailureInCache：状态与 fail_code 一起盖（气泡当场说得出原因）", () => {
+  const messages: Record<string, MessageRecord[]> = {
+    c1: [msg({ msg_id: "m1", conv_id: "c1", status: "sending" }), msg({ msg_id: "m2", conv_id: "c1" })],
+    c2: [msg({ msg_id: "m1", conv_id: "c2", status: "sending" })],
+  };
+  assert.equal(markFailureInCache(messages, "m1", "SEND_RETRY_EXPIRED"), 2);
+  assert.equal(messages.c1[0].status, "failed");
+  assert.equal(messages.c1[0].fail_code, "SEND_RETRY_EXPIRED");
+  assert.equal(messages.c2[0].status, "failed");
+  assert.equal(messages.c2[0].fail_code, "SEND_RETRY_EXPIRED");
+  assert.equal(messages.c1[1].status, "sent", "别条消息不许被顺带动到");
+  assert.equal(messages.c1[1].fail_code, undefined, "更不许给别条塞一个码");
+});
+
+test("markFailureInCache：重复到达幂等；码变了要覆盖成最新那一份", () => {
+  const messages: Record<string, MessageRecord[]> = {
+    c1: [msg({ msg_id: "m1", status: "failed", fail_code: "SEND_RETRY_EXPIRED" })],
+  };
+  assert.equal(markFailureInCache(messages, "m1", "SEND_RETRY_EXPIRED"), 0, "同一份事实重复到达不该再刷");
+  assert.equal(markFailureInCache(messages, "m1", "FILE_SEND_FAILED"), 1, "换了码说明是新结论，必须覆盖");
+  assert.equal(messages.c1[0].fail_code, "FILE_SEND_FAILED");
+});
+
+test("markFailureInCache：本地没缓存这条就返回 0 且什么都不建（不凭空造气泡）", () => {
+  const messages: Record<string, MessageRecord[]> = { c1: [msg({ msg_id: "m1" })] };
+  assert.equal(markFailureInCache(messages, "nope", "SEND_RETRY_EXPIRED"), 0);
+  assert.deepEqual(Object.keys(messages), ["c1"]);
+  assert.equal(messages.c1.length, 1);
 });
 
 

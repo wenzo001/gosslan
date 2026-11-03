@@ -575,3 +575,61 @@ test("message-status-changed 的载荷必须是 MessageStatusChanged 结构（�
   assert.ok(sites >= 10, `应扫到全部 emit 点（取消/补发/删好友/文件/群文件），实际 ${sites} 个 ⇒ 解析器失效了？`);
   assert.deepEqual(bad, [], "有 emit 点退回了非结构体载荷：前端按 {msg_id, status} 解包会静默拿到 undefined");
 });
+
+/**
+ * `message-failed` 的载荷形状（5.16.91）：必须是 `MessageFailedInfo` 结构体
+ * （`{msg_id, fail_code}`），不许退回裸 msg_id 字符串。
+ *
+ * 为什么值得单独钉：前端按 `e.payload.msg_id` / `e.payload.fail_code` 解包。退回裸字符串时
+ * **编译不报、事件名契约也不报** —— `undefined` 静默传进 store，`markFailureInCache`
+ * 变成"什么都没改"（气泡永远停在"发送中"）；`fail_code` 缺失则让原因退回一句没有信息量
+ * 的空话，而库里明明存着码。与 `message-status-changed` 同型（审计第 4 项那一族）。
+ */
+function failedPayloads(src: string): string[] {
+  const out: string[] = [];
+  const stripped = stripRustComments(src);
+  for (const m of stripped.matchAll(/\bemit\w*\(\s*"message-failed"/g)) {
+    const rest = stripped.slice((m.index ?? 0) + m[0].length);
+    const end = rest.indexOf(";");
+    out.push(rest.slice(0, end < 0 ? rest.length : end));
+  }
+  return out;
+}
+
+test("message-failed 的载荷必须是 MessageFailedInfo 结构（5.16.91）", () => {
+  // 夹具：新形状认得；旧形状（裸字符串）必须被报出来。
+  const modern = [
+    "let _ = state.app.emit(",
+    '    "message-failed",',
+    "    &MessageFailedInfo { msg_id: msg_id.clone(), fail_code: code },",
+    ");",
+  ].join("\n");
+  const legacy = 'let _ = state.app.emit("message-failed", &msg_id);';
+  const violations = (s: string) => failedPayloads(s).filter((p) => !p.includes("MessageFailedInfo"));
+  assert.deepEqual(violations(modern), [], "新形状不该被报");
+  assert.equal(violations(legacy).length, 1, "旧形状（裸字符串）必须被报 ⇒ 否则这条判据量不到回归");
+
+  // 真实树：所有 emit 点都走结构体载荷。
+  const bad: string[] = [];
+  let sites = 0;
+  for (const f of collectRustFiles(RUST_SRC)) {
+    for (const p of failedPayloads(readFileSync(f, "utf8"))) {
+      sites += 1;
+      if (!p.includes("MessageFailedInfo")) bad.push(f);
+    }
+  }
+  assert.equal(sites, 2, `message-failed 应恰好两处（单聊 + 群），实际 ${sites} 个 ⇒ 解析器失效了？`);
+  assert.deepEqual(bad, [], "有 emit 点退回了非结构体载荷：前端按 {msg_id, fail_code} 解包会静默拿到 undefined");
+
+  // 前端一侧：接口形状与载荷逐字对应（少一个字段 ⇒ 气泡原因恒为空）。
+  const api = readFileSync(API_FILE, "utf8");
+  assert.ok(
+    api.includes('listen<MessageFailedInfo>("message-failed"'),
+    "前端必须按 MessageFailedInfo 解包（退回 listen<string> 会静默拿到 undefined）",
+  );
+  const types = readFileSync(join(ROOT, "src", "types.ts"), "utf8");
+  assert.ok(
+    /export interface MessageFailedInfo \{\s*msg_id: string;\s*fail_code: string;\s*\}/.test(types),
+    "TS 的 MessageFailedInfo 必须与 Rust 载荷逐字同形（{msg_id, fail_code}）",
+  );
+});

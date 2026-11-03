@@ -608,7 +608,6 @@ async function doForward(convId: string) {
     } else {
       await chat.send(convId, f.content, f.kind);
     }
-    app.toast(t("chat.toast.forwarded"), "success");
   } catch (e) {
     app.toastError(e, t("chat.toast.forwardFail"));
   }

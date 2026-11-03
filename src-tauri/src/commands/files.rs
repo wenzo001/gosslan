@@ -103,6 +103,24 @@ fn reject_file(s: &Arc<AppState>, action: &str, reason: &str, msg: &str) -> Stri
     msg.to_string()
 }
 
+/// 与 `reject_file` 同口径，但把**稳定码**带回前端。
+///
+/// 同步拒绝发生在写库之前：库里没有行、没有 `messages.fail_code` 可落，返回值就是
+/// 用户唯一一次看到原因的机会。码让中英界面说同一件事，也让人话不靠前端猜。
+fn reject_file_coded(
+    s: &Arc<AppState>,
+    action: &str,
+    reason: &str,
+    code: &'static str,
+    msg: &str,
+) -> String {
+    s.logger.warn(
+        "files",
+        format!("code=FILE_REJECTED action={action} reason={reason}"),
+    );
+    crate::error_codes::coded(code, msg)
+}
+
 #[tauri::command(async)]
 pub async fn delete_file(state: State<'_, Arc<AppState>>, path: String) -> Result<(), String> {
     let s = state.inner().clone();
@@ -435,6 +453,7 @@ fn build_file_message(
     size: u64,
     kind: &str,
     subtype: &str,
+    local_id: Option<&str>,
 ) -> MessageRecord {
     // cid = 明文 sha256，接收方据此按 cid 拉取（ADR-0019 Phase 3）。
     // ⚠️ **这里不计算**：整文件哈希是 O(体积) 的，放在建记录这一步就等于把气泡挡在哈希之后
@@ -469,7 +488,7 @@ fn build_file_message(
         seq,
         status: "sent".to_string(),
         mention_targets: None,
-        local_id: None,
+        local_id: local_id.map(str::to_string),
     }
 }
 
@@ -1660,28 +1679,47 @@ async fn send_file(
     state: State<'_, Arc<AppState>>,
     friend_id: String,
     path: String,
+    local_id: Option<String>,
 ) -> Result<String, String> {
     let s = state.inner();
     // 「和自己聊天」暂不支持附件（用户 2026-09-16：先只支持文本）。这里给明确原因，
     // 而不是让用户看到下面那句"对方不是好友"——那与自聊场景完全对不上。
     if friend_id == s.device_id {
-        return Err(reject_file(s, "send", "self_chat_unsupported", "和自己聊天暂不支持图片或文件"));
+        return Err(reject_file_coded(
+            s,
+            "send",
+            "self_chat_unsupported",
+            crate::error_codes::FILE_SEND_SELF_CHAT,
+            "和自己聊天暂不支持图片或文件",
+        ));
     }
     // 好友关系检查
     {
         let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());
         if db::get_friend(&dbc, &friend_id).is_none() {
-            return Err(reject_file(
+            return Err(reject_file_coded(
                 s,
                 "send",
                 "not_friend",
+                crate::error_codes::SEND_PEER_NOT_FRIEND,
                 "对方不是好友，请先扫描添加好友之后再继续聊天。",
             ));
         }
     }
-    let meta = std::fs::metadata(&path).map_err(|e| e.to_string())?;
+    let meta = std::fs::metadata(&path).map_err(|e| {
+        crate::error_codes::coded(
+            crate::logging::FAIL_CODE_FILE_SEND_UNREADABLE,
+            format!("这个文件读不到（可能已被移动、删除或没有权限）：{e}"),
+        )
+    })?;
     if !meta.is_file() {
-        return Err(reject_file(s, "send", "not_regular_file", "只能发送普通文件"));
+        return Err(reject_file_coded(
+            s,
+            "send",
+            "not_regular_file",
+            crate::logging::FAIL_CODE_FILE_SEND_NOT_REGULAR,
+            "只能发送普通文件（文件夹和特殊文件发不了）",
+        ));
     }
     let size = meta.len();
     let name = file::derive_file_name(&path);
@@ -1698,6 +1736,7 @@ async fn send_file(
         size,
         kind,
         subtype,
+        local_id.as_deref(),
     );
     // 注意：不能在持有 db 锁时调用 resolve_nickname（其内部会再次锁 db）。
     let nm = resolve_nickname(s, &friend_id);
@@ -1708,10 +1747,24 @@ async fn send_file(
     };
     {
         let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());
-        let tx = dbc.unchecked_transaction().map_err(|e| e.to_string())?;
-        db::insert_message(&tx, &rec).map_err(|e| e.to_string())?;
-        db::touch_conversation(&tx, &friend_id, "single", &nm, None, &preview, 0)
-            .map_err(|e| e.to_string())?;
+        let tx = dbc.unchecked_transaction().map_err(|e| {
+            crate::error_codes::coded(
+                crate::error_codes::SEND_LOCAL_WRITE_FAILED,
+                format!("本机没能写入文件消息：{e}"),
+            )
+        })?;
+        db::insert_message(&tx, &rec).map_err(|e| {
+            crate::error_codes::coded(
+                crate::error_codes::SEND_LOCAL_WRITE_FAILED,
+                format!("本机没能写入文件消息：{e}"),
+            )
+        })?;
+        db::touch_conversation(&tx, &friend_id, "single", &nm, None, &preview, 0).map_err(|e| {
+            crate::error_codes::coded(
+                crate::error_codes::SEND_LOCAL_WRITE_FAILED,
+                format!("本机没能更新会话摘要：{e}"),
+            )
+        })?;
         // 先建立 file_transfers 记录，前端刷新传输列表后能立刻拿到进度条载体。
         db::upsert_transfer(
             &tx,
@@ -1724,10 +1777,26 @@ async fn send_file(
             Some(path.as_str()),
             0.0,
         )
-        .map_err(|e| e.to_string())?;
-        db::insert_file_outbox(&tx, &transfer_id, &friend_id, None, &path, &name, size)
-            .map_err(|e| e.to_string())?;
-        tx.commit().map_err(|e| e.to_string())?;
+        .map_err(|e| {
+            crate::error_codes::coded(
+                crate::error_codes::SEND_LOCAL_WRITE_FAILED,
+                format!("本机没能登记文件传输：{e}"),
+            )
+        })?;
+        db::insert_file_outbox(&tx, &transfer_id, &friend_id, None, &path, &name, size).map_err(
+            |e| {
+                crate::error_codes::coded(
+                    crate::error_codes::SEND_LOCAL_WRITE_FAILED,
+                    format!("本机没能把文件放进补发队列：{e}"),
+                )
+            },
+        )?;
+        tx.commit().map_err(|e| {
+            crate::error_codes::coded(
+                crate::error_codes::SEND_LOCAL_WRITE_FAILED,
+                format!("本机没能提交文件发送事务：{e}"),
+            )
+        })?;
     }
     let _ = s.app.emit("message-received", &rec);
 
@@ -1795,6 +1864,7 @@ pub async fn send_file_auto(
     friend_id: String,
     path: String,
     msg_id: Option<String>,
+    local_id: Option<String>,
 ) -> Result<String, String> {
     let s = state.inner();
     // `msg_id` 给了 ⇒ 这是"转发一条已有消息"：路径必须归那条消息（SEC-01 同一判据）。
@@ -1823,7 +1893,7 @@ pub async fn send_file_auto(
             return Err("这个文件不属于这条消息，已拒绝转发".to_string());
         }
     }
-    send_file(state, friend_id, path).await
+    send_file(state, friend_id, path, local_id).await
 }
 
 /// 传输表快照（10-22 审计 R-18 的一处）：整读进阻塞池。

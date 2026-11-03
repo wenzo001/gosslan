@@ -1184,8 +1184,8 @@ CASES: list[Case] = [
         "     注入 = 在前端表里塞一个后端没有的码。",
         file=ROOT / "src" / "utils" / "errors.ts",
         injections=[(
-            '  PORT_IN_USE: "errors.rule.port",\n};',
-            '  PORT_IN_USE: "errors.rule.port",\n  THIS_CODE_IS_NOT_DEFINED_BY_RUST: "errors.rule.system",\n};',
+            '  READ_STATE_WRITE_FAILED: "errors.rule.readStateWrite",\n};',
+            '  READ_STATE_WRITE_FAILED: "errors.rule.readStateWrite",\n  THIS_CODE_IS_NOT_DEFINED_BY_RUST: "errors.rule.system",\n};',
         )],
         cmd=["node", "--test", "--experimental-strip-types", "--disable-warning=ExperimentalWarning",
              "src/utils/errors.test.ts"],

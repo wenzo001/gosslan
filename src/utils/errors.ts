@@ -34,6 +34,13 @@
 const CODE_RULES: Record<string, string> = {
   E2EE_PUBKEY_MISSING: "errors.rule.pubkey",
   PORT_IN_USE: "errors.rule.port",
+  // 5.16.91：同步命令（发送/发文件/标记已读）写库前的那几处失败。
+  // 以前它们把 `io::Error` / `rusqlite::Error` 的英文原文直接上屏 ⇒ 用户只能读到
+  // 「请稍后重试」或一段转储。这里是那批唯一的人话出口。
+  SEND_PEER_NOT_FRIEND: "errors.rule.peerNotFriend",
+  FILE_SEND_SELF_CHAT: "errors.rule.fileSelfChat",
+  SEND_LOCAL_WRITE_FAILED: "errors.rule.localWriteFailed",
+  READ_STATE_WRITE_FAILED: "errors.rule.readStateWrite",
 };
 
 /** 后端 `error_codes::coded()` 的形状：`code=<大写蛇形> 给人看的那句话`。 */

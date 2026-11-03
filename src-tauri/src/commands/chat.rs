@@ -624,7 +624,10 @@ pub async fn send_message(
     {
         let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());
         if db::get_friend(&dbc, &friend_id).is_none() {
-            return Err("对方不是好友，请先扫描添加好友之后再继续聊天。".to_string());
+            return Err(crate::error_codes::coded(
+                crate::error_codes::SEND_PEER_NOT_FRIEND,
+                "对方不是好友，请先扫描添加好友之后再继续聊天。",
+            ));
         }
         // 强提醒的目标真实性（与群内核 group_files.rs 同一条例）：
         // remind 指向的原消息、remind_ack 指向的 remind 行都必须真实存在于本会话，
@@ -746,7 +749,12 @@ pub async fn send_message(
     let ts = db::now_ms();
     let seq = {
         let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());
-        db::next_clock(&dbc, &friend_id).map_err(|e| format!("逻辑时钟推进失败：{e}"))?
+        db::next_clock(&dbc, &friend_id).map_err(|e| {
+            crate::error_codes::coded(
+                crate::error_codes::SEND_LOCAL_WRITE_FAILED,
+                format!("逻辑时钟推进失败：{e}"),
+            )
+        })?
     };
     let name = resolve_nickname(s, &friend_id);
     let preview = crate::protocol::preview_text(&kind, &content);
@@ -817,21 +825,40 @@ pub async fn send_message(
         ts,
         seq,
     };
-    let payload = serde_json::to_string(&queued).map_err(|e| e.to_string())?;
+    let payload = serde_json::to_string(&queued).map_err(|e| {
+        crate::error_codes::coded(
+            crate::error_codes::SEND_LOCAL_WRITE_FAILED,
+            format!("本机没能编码这条消息：{e}"),
+        )
+    })?;
     {
         let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());
-        db::insert_message_and_outbox(&dbc, &rec, &friend_id, &payload)
-            .map_err(|e| format!("消息写入失败：{e}"))?;
+        db::insert_message_and_outbox(&dbc, &rec, &friend_id, &payload).map_err(|e| {
+            crate::error_codes::coded(
+                crate::error_codes::SEND_LOCAL_WRITE_FAILED,
+                format!("消息写入失败：{e}"),
+            )
+        })?;
         if crate::protocol::is_non_notifying_kind(&kind) {
             // 静默事件（表情回应…）不改预览、不顶会话 —— 与群内核同一条例
             // （commands/window.rs 里那条）。漏掉它的症状不是报错，是"回个表情把这条会话
             // 顶到列表最前、摘要变成一段 JSON"，所以必须在这里分叉而不是在前端过滤。
             // 会话行仍要确保存在：本机可能从没在这条会话里发过内容（例如先回应对端最后一条）。
-            db::ensure_conversation(&dbc, &friend_id, "single", &name, None)
-                .map_err(|e| format!("会话写入失败：{e}"))?;
+            db::ensure_conversation(&dbc, &friend_id, "single", &name, None).map_err(|e| {
+                crate::error_codes::coded(
+                    crate::error_codes::SEND_LOCAL_WRITE_FAILED,
+                    format!("会话写入失败：{e}"),
+                )
+            })?;
         } else {
-            db::touch_conversation(&dbc, &friend_id, "single", &name, None, &preview, 0)
-                .map_err(|e| format!("会话写入失败：{e}"))?;
+            db::touch_conversation(&dbc, &friend_id, "single", &name, None, &preview, 0).map_err(
+                |e| {
+                    crate::error_codes::coded(
+                        crate::error_codes::SEND_LOCAL_WRITE_FAILED,
+                        format!("会话写入失败：{e}"),
+                    )
+                },
+            )?;
         }
     }
 
@@ -1351,10 +1378,20 @@ pub async fn mark_read(state: State<'_, Arc<AppState>>, conv_id: String) -> Resu
         let cid = conv_id.clone();
         tokio::task::spawn_blocking(move || -> Result<(), String> {
             let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());
-            db::mark_read(&dbc, &cid).map_err(|e| e.to_string())
+            db::mark_read(&dbc, &cid).map_err(|e| {
+                crate::error_codes::coded(
+                    crate::error_codes::READ_STATE_WRITE_FAILED,
+                    format!("已读状态写入本机数据库失败：{e}"),
+                )
+            })
         })
         .await
-        .map_err(|e| format!("已读写入被线程池中断: {e}"))??;
+        .map_err(|e| {
+            crate::error_codes::coded(
+                crate::error_codes::READ_STATE_WRITE_FAILED,
+                format!("已读写入被线程池中断：{e}"),
+            )
+        })??;
     }
     if !conv_id.starts_with("group:") {
         // 自聊（会话 id == 自己）：本机既是发送方也是接收方，没有"对方"可收回执。

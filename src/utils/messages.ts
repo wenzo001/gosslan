@@ -7,6 +7,7 @@ import {
   UNSUPPORTED_KIND_LABEL,
 } from "./messageKinds.ts";
 import { mergeSummary } from "./mergeCard.ts";
+import { isSupersededProjection } from "./optimistic.ts";
 
 /**
  * 合并去重并排序消息列表 —— Gossip 密集广播防重复的核心纯函数。
@@ -30,6 +31,10 @@ export function mergeMessages(
   });
   for (const m of incoming) {
     if (byMsg.has(m.msg_id)) continue;
+    // 真实记录**先于**乐观批次落地（rAF 还没跑）：`tmp-*` 必须作废。
+    // 不挡这一下的后果不是"多一行"——下面按 local_id 合并会把真实行的 msg_id 换成
+    // `tmp-*`（状态被 furthestStatus 保住，但后续 ack 找不到它）。
+    if (isSupersededProjection(m, merged)) continue;
     const li = m.local_id ? byLocal.get(m.local_id) : undefined;
     if (li !== undefined) {
       const prev = merged[li];
@@ -428,6 +433,36 @@ export function markStatusInCache(
 }
 
 /**
+ * 把一条**已由后端落库**的失败事实（`status = failed` + `fail_code`）盖到所有缓存了它的会话。
+ *
+ * 为什么不用 `markStatusInCache`：`message-failed` 的载荷从 5.16.91 起带**刚落库的码**，
+ * 界面要当场说出原因（`useMessageDisplay` 读 `message.fail_code` 查 `fileFailReason`）。
+ * 只改 `status` 的话，气泡退回"发送失败"这句没有信息量的话，直到重启后回库读。
+ *
+ * 与 `markStatusInCache` 同口径：只动这一行状态，不碰会话摘要 / 未读（那一行讲的不是
+ * "来了一条新消息"）。幂等：状态与码都没变就跳过。
+ *
+ * @returns 被改动过的行数（0 = 本地没有这条消息的缓存）
+ */
+export function markFailureInCache(
+  messages: Record<string, MessageRecord[]>,
+  msgId: string,
+  failCode: string,
+): number {
+  let changed = 0;
+  for (const list of Object.values(messages)) {
+    for (const m of list) {
+      if (m.msg_id !== msgId) continue;
+      if (m.status === "failed" && m.fail_code === failCode) continue;
+      m.status = "failed";
+      m.fail_code = failCode;
+      changed++;
+    }
+  }
+  return changed;
+}
+
+/**
  * 从 peers 列表同步好友昵称/头像到 friends 和单聊 conversations。
  * 纯函数，便于测试；调用方为 useChatStore.onPeers。
  */
@@ -767,7 +802,11 @@ export function applyIncomingToConversations(
     // 静默类（表情回应/撤回）不在此记账的理由不变；漏掉它的后果也一样具体：
     // 别人回个表情，你的会话列表未读 +1、预览变成一段 JSON、会话还被顶到最前
     // （后端 DB 里未读是 0，两边从此不一致）。
-    const msgs = rawMsgs.filter((m) => countsTowardUnread(m.kind));
+    // 静默类不参与未读与预览；**失败态**也不参与 —— 一条没送出去的乐观行
+    // 若把会话摘要顶上去，用户会在列表里看到一条"发不出去却已成最新消息"的幽灵。
+    // 真实失败行不会走这条通道（失败只由 `message-status-changed` 改状态），
+    // 所以这里只可能挡住前端自己造的 `failed` 投影。
+    const msgs = rawMsgs.filter((m) => countsTowardUnread(m.kind) && m.status !== "failed");
     if (msgs.length === 0) continue;
     const last = msgs[msgs.length - 1];
     const conv = next.find((c) => c.id === convId);
