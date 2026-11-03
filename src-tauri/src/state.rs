@@ -3036,7 +3036,12 @@ impl AppState {
             sending_msgs: one("SELECT COUNT(*) FROM messages WHERE status = 'sending'"),
             outbox: one("SELECT COUNT(*) FROM outbox"),
             group_outbox: one("SELECT COUNT(*) FROM group_outbox WHERE status = 'pending'"),
-            file_outbox: one("SELECT COUNT(*) FROM file_outbox"),
+            // 只数**还在干活**的行（闪退取证第 4 项）：cancelled / failed 是终态墓碑，
+            // 留在表里只为可追溯；把它们算进"在途"会让读数永久虚高（真机：9 条
+            // 早已取消的行被报成 file_outbox=9，与"卡住"无法区分）。
+            file_outbox: one(
+                "SELECT COUNT(*) FROM file_outbox WHERE status IN ('pending','sending')",
+            ),
         }
     }
 

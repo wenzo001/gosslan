@@ -517,10 +517,20 @@ pub async fn spawn(
                                 DialOutcome::AlreadyConnected
                                 | DialOutcome::AlreadyDialing
                                 | DialOutcome::DialBusy => {}
-                                DialOutcome::Failed(e) => state.logger.warn(
-                                    "routed",
-                                    format!("拨号未成功 peer={} ep={addr}：{e}", ep.display_id()),
-                                ),
+                                // 死端点每 10s 拨一轮 ⇒ 不节流就是刷屏（闪退取证第 4 项：
+                                // 127.0.0.1:60012 失败刷屏）。与 LAN 侧 `lan_dial_fail`
+                                // 同一口径：30s 一条，具名码可检索。
+                                DialOutcome::Failed(e) => {
+                                    if log_throttled("routed_dial_fail", 30_000) {
+                                        state.logger.warn(
+                                            "routed",
+                                            format!(
+                                                "code=ROUTED_DIAL_FAILED 拨号未成功 peer={} ep={addr}：{e}",
+                                                ep.display_id()
+                                            ),
+                                        );
+                                    }
+                                }
                                 // 正常停机：不打日志，否则退出时会多出一批误导性的「失败」
                                 DialOutcome::Stopped => {}
                             }

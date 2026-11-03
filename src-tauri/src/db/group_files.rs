@@ -498,7 +498,12 @@ pub struct StaleGroupSending {
     pub expired: bool,
 }
 
-/// 列出**本机发出的**群文件里 `status='sending'` 且 `updated_at < before_ms` 的投递行。
+/// 列出**本机发出的**群文件里卡住的投递行，两类：
+/// 1. `status='sending'` 且 `updated_at < before_ms`（任务死了/ACK 丢了）；
+/// 2. `status='pending'` 且整单创建时间已过最长年龄（?3）—— 等离线成员的行
+///    （闪退取证第 4 项：成员永不上线时，旧形状里这类行**没有任何终态视野**，
+///    气泡永久 sending）。7 天窗口与离线补发承诺（INV-P04）同源：窗口内成员
+///    上线照常补发，窗口到了按失败收尾。
 ///
 /// 只读候选；真正的改状态用下面的条件 UPDATE，避免“查出来之后发送任务刚好刷新了进度”
 /// 被误重置。`local_sender_id` 过滤掉接收端自己的那一行（接收端也会把 recipient 写成
@@ -513,9 +518,14 @@ pub fn list_stale_group_file_sending(
         "SELECT r.transfer_id, f.group_id, r.recipient_id, r.updated_at, f.created_at
          FROM group_file_recipients r
          JOIN group_files f ON f.transfer_id = r.transfer_id
-         WHERE r.status = 'sending' AND r.updated_at < ?1 AND f.sender_id = ?2",
+         WHERE f.sender_id = ?2 AND (
+           (r.status = 'sending' AND r.updated_at < ?1)
+           OR (r.status = 'pending' AND f.created_at <= ?3)
+         )",
     )?;
-    let rows = stmt.query_map(params![before_ms, local_sender_id], |r| {
+    let rows = stmt.query_map(
+        params![before_ms, local_sender_id, max_age_before_ms],
+        |r| {
         let created_at: i64 = r.get(4)?;
         Ok(StaleGroupSending {
             transfer_id: r.get(0)?,
@@ -979,6 +989,47 @@ mod group_file_delivery_tests {
         );
         let not_expired = list_stale_group_file_sending(&conn, 50, 0, "me").unwrap();
         assert!(!not_expired[0].expired, "max_age_before=0 时同一行没过期");
+    }
+
+    /// 闪退取证第 4 项：等离线成员的 `pending` 行也必须有终态视野。
+    /// 旧形状只捞 `sending` ⇒ 成员永不上线时 pending 行永远没人碰，气泡永久 sending。
+    /// 现在：过最长年龄的 pending 行按 expired 捞出（清扫器按失败收尾）；
+    /// 窗口内的不捞 —— 7 天内上线照常补发（INV-P04 离线承诺不许破）。
+    #[test]
+    fn over_age_pending_rows_are_listed_expired_and_fresh_ones_are_not() {
+        let conn = mem();
+        seed(&conn, "t1", "offline-member", "pending");
+        let rows = list_stale_group_file_sending(&conn, 0, 1, "me").unwrap();
+        assert_eq!(rows.len(), 1, "过最长年龄的 pending 行必须被捞到");
+        assert_eq!(rows[0].recipient_id, "offline-member");
+        assert!(
+            rows[0].expired,
+            "pending 行被捞起时必须带 expired（它是行被失败收尾的唯一通道）"
+        );
+        // 窗口内（max_age_before=0 < created_at=1）：一律不捞。
+        let fresh = list_stale_group_file_sending(&conn, 0, 0, "me").unwrap();
+        assert!(
+            fresh.is_empty(),
+            "窗口内的 pending 行不许被捞 —— 离线补发承诺（INV-P04）"
+        );
+        // 正控：把 pending 臂从查询里摘掉（退回旧形状）⇒ 上面第一条断言立刻红。
+        // 这里用"只捞 sending 的等价查询"模拟旧形状，证明判据量得到这个变异。
+        let mut old_shape = conn
+            .prepare(
+                "SELECT r.transfer_id FROM group_file_recipients r
+                 JOIN group_files f ON f.transfer_id = r.transfer_id
+                 WHERE r.status = 'sending' AND r.updated_at < ?1 AND f.sender_id = ?2",
+            )
+            .unwrap();
+        let old_rows: Vec<String> = old_shape
+            .query_map(params![0i64, "me"], |r| r.get(0))
+            .unwrap()
+            .filter_map(|r| r.ok())
+            .collect();
+        assert!(
+            old_rows.is_empty(),
+            "旧形状确实看不见 pending 行 ⇒ 本条判据不是恒绿"
+        );
     }
 
     /// 按**单个成员**取消（B3b）：只动还在传的那一格，`completed` 与 `failed` 各说各的事。
