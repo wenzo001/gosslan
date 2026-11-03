@@ -184,6 +184,18 @@ const CODE_RULES: Record<string, string> = {
   DIAG_EXPORT_JOIN_FAILED: "errors.rule.diagExportJoinFailed",
   DIAG_EXPORT_PATH_EMPTY: "errors.rule.diagExportPathEmpty",
   DIAG_EXPORT_WRITE_FAILED: "errors.rule.diagExportWriteFailed",
+  // B6 第十批：启动/窗口 / 资料 / 更新。
+  AVATAR_TOO_LARGE: "errors.rule.avatarTooLarge",
+  PROFILE_SAVE_FAILED: "errors.rule.profileSaveFailed",
+  INTERFACE_LIST_FAILED: "errors.rule.interfaceListFailed",
+  UPDATER_CHECK_WHILE_DOWNLOADING: "errors.rule.updaterCheckWhileDownloading",
+  UPDATER_CHECK_IN_PROGRESS: "errors.rule.updaterCheckInProgress",
+  UPDATER_ALREADY_DOWNLOADING: "errors.rule.updaterAlreadyDownloading",
+  UPDATER_NO_PENDING_UPDATE: "errors.rule.updaterNoPendingUpdate",
+  UPDATER_INSTALL_WHILE_DOWNLOADING: "errors.rule.updaterInstallWhileDownloading",
+  UPDATER_NO_UPDATE: "errors.rule.updaterNoUpdate",
+  UPDATER_NOT_DOWNLOADED: "errors.rule.updaterNotDownloaded",
+  UPDATER_CANCEL_AFTER_INSTALL: "errors.rule.updaterCancelAfterInstall",
 };
 
 /** 后端 `error_codes::coded()` 的形状：`code=<大写蛇形> 给人看的那句话`。 */

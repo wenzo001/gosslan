@@ -196,7 +196,12 @@ pub(crate) async fn send_group_payload(
     let conv_id = format!("group:{group_id}");
     let seq = {
         let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());
-        db::next_clock(&dbc, &conv_id).map_err(|e| format!("逻辑时钟推进失败：{e}"))?
+        db::next_clock(&dbc, &conv_id).map_err(|e| {
+            crate::error_codes::coded(
+                crate::error_codes::SEND_LOCAL_WRITE_FAILED,
+                format!("逻辑时钟推进失败：{e}"),
+            )
+        })?
     };
     // 把群名 + 创建者 + 当前成员一并带上：跨端成员即便从未收到 GroupKey、
     // 只凭这条群消息也能在本地正确建群（含成员表），成员面板因此不为空。
@@ -325,24 +330,47 @@ pub(crate) async fn send_group_payload(
     {
         let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());
         let tx = dbc.unchecked_transaction().map_err(|e| e.to_string())?;
-        db::insert_message(&tx, &rec).map_err(|e| format!("消息写入失败：{e}"))?;
+        db::insert_message(&tx, &rec).map_err(|e| {
+            crate::error_codes::coded(
+                crate::error_codes::SEND_LOCAL_WRITE_FAILED,
+                format!("消息写入失败：{e}"),
+            )
+        })?;
         if crate::protocol::is_non_notifying_kind(kind) {
             // 静默事件与系统提示不改会话预览 —— 否则「自己回了个表情」会把会话列表摘要
             // 变成一段 JSON。会话行仍要确保存在。
-            db::ensure_conversation(&tx, &conv_id, "group", &group_name, None)
-                .map_err(|e| format!("会话写入失败：{e}"))?;
+            db::ensure_conversation(&tx, &conv_id, "group", &group_name, None).map_err(|e| {
+                crate::error_codes::coded(
+                    crate::error_codes::SEND_LOCAL_WRITE_FAILED,
+                    format!("会话写入失败：{e}"),
+                )
+            })?;
         } else {
             db::touch_conversation(&tx, &conv_id, "group", &group_name, None, &preview, 0)
-                .map_err(|e| format!("会话写入失败：{e}"))?;
+                .map_err(|e| {
+                    crate::error_codes::coded(
+                        crate::error_codes::SEND_LOCAL_WRITE_FAILED,
+                        format!("会话写入失败：{e}"),
+                    )
+                })?;
         }
         for member in &outbox_members {
             if member == &s.device_id {
                 continue;
             }
-            db::insert_group_outbox(&tx, &rec.msg_id, group_id, member, &payload)
-                .map_err(|e| format!("群消息入队失败：{e}"))?;
+            db::insert_group_outbox(&tx, &rec.msg_id, group_id, member, &payload).map_err(|e| {
+                crate::error_codes::coded(
+                    crate::error_codes::SEND_LOCAL_WRITE_FAILED,
+                    format!("群消息入队失败：{e}"),
+                )
+            })?;
         }
-        tx.commit().map_err(|e| format!("群消息写入失败：{e}"))?;
+        tx.commit().map_err(|e| {
+            crate::error_codes::coded(
+                crate::error_codes::SEND_LOCAL_WRITE_FAILED,
+                format!("群消息写入失败：{e}"),
+            )
+        })?;
     }
 
     // 落库成功后，把这条消息回送给**本机所有窗口**。

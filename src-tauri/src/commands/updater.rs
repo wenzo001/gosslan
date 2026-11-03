@@ -179,14 +179,20 @@ mod desktop {
         state: State<'_, UpdaterSession>,
     ) -> Result<Option<UpdateInfo>, String> {
         if state.downloading.load(Ordering::SeqCst) {
-            return Err("更新正在下载，稍后再检查".to_string());
+            return Err(crate::error_codes::coded(
+                crate::error_codes::UPDATER_CHECK_WHILE_DOWNLOADING,
+                "更新正在下载，稍后再检查",
+            ));
         }
         if state
             .checking
             .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
             .is_err()
         {
-            return Err("更新检查正在进行".to_string());
+            return Err(crate::error_codes::coded(
+                crate::error_codes::UPDATER_CHECK_IN_PROGRESS,
+                "更新检查正在进行",
+            ));
         }
         state.clear();
         state.set_status(&app, |st| {
@@ -262,7 +268,10 @@ mod desktop {
             .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
             .is_err()
         {
-            return Err("更新已在下载".to_string());
+            return Err(crate::error_codes::coded(
+                crate::error_codes::UPDATER_ALREADY_DOWNLOADING,
+                "更新已在下载",
+            ));
         }
         let result = async {
             let update = state
@@ -270,7 +279,12 @@ mod desktop {
                 .lock()
                 .unwrap_or_else(|e| e.into_inner())
                 .clone()
-                .ok_or_else(|| "没有可下载的更新".to_string())?;
+                .ok_or_else(|| {
+                    crate::error_codes::coded(
+                        crate::error_codes::UPDATER_NO_PENDING_UPDATE,
+                        "没有可下载的更新",
+                    )
+                })?;
             let mut update = update;
             update.timeout = Some(DOWNLOAD_TIMEOUT);
             *state.bytes.lock().unwrap_or_else(|e| e.into_inner()) = None;
@@ -362,7 +376,10 @@ mod desktop {
         if state.status.lock().unwrap_or_else(|e| e.into_inner()).phase == PHASE_INSTALLING {
             // 被拒也要留痕（审计 B1-F1）：这个模块原先只有失败码，取消的两种结局都没有码。
             log_updater_info(&app, "code=UPDATER_CANCEL outcome=refused_installing");
-            return Err("安装已经开始，无法取消".to_string());
+            return Err(crate::error_codes::coded(
+                crate::error_codes::UPDATER_CANCEL_AFTER_INSTALL,
+                "安装已经开始，无法取消",
+            ));
         }
         let signalled = if let Some(cancel) = state
             .cancel
@@ -477,7 +494,10 @@ mod desktop {
         state: State<'_, UpdaterSession>,
     ) -> Result<(), String> {
         if state.downloading.load(Ordering::SeqCst) {
-            return Err("更新仍在下载".to_string());
+            return Err(crate::error_codes::coded(
+                crate::error_codes::UPDATER_INSTALL_WHILE_DOWNLOADING,
+                "更新仍在下载",
+            ));
         }
         // PERF-01：整包**移动**而不是 clone —— 峰值从 2× 包体降到 1×。
         //
@@ -492,9 +512,12 @@ mod desktop {
             .take();
         let taken_bytes = state.bytes.lock().unwrap_or_else(|e| e.into_inner()).take();
         let missing = if taken_update.is_none() {
-            "没有可安装的更新"
+            crate::error_codes::coded(crate::error_codes::UPDATER_NO_UPDATE, "没有可安装的更新")
         } else {
-            "更新尚未下载完成"
+            crate::error_codes::coded(
+                crate::error_codes::UPDATER_NOT_DOWNLOADED,
+                "更新尚未下载完成",
+            )
         };
         let (update, bytes) = match (taken_update, taken_bytes) {
             (Some(update), Some(bytes)) => (update, bytes),
