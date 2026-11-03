@@ -17,8 +17,11 @@ import {
 } from "@/utils/uiStall";
 import CrashNotice from "@/components/CrashNotice.vue";
 import HangNotice from "@/components/HangNotice.vue";
+import VersionMismatchNotice from "@/components/VersionMismatchNotice.vue";
 import ResponsiveLayout from "@/layouts/ResponsiveLayout.vue";
 import TaskCenter from "@/components/TaskCenter.vue";
+import { version } from "../package.json";
+import { detectVersionMismatch, type VersionMismatch } from "@/utils/versionGuard";
 
 /**
  * 首屏就绪之后再过这么久才去预热辅助窗口。
@@ -47,6 +50,8 @@ const chat = useChatStore();
 
 // ---------------- 崩溃横幅 / 卡顿提示 / 主窗口心跳 ----------------
 const crashDismissed = ref(false);
+/** 前端构建版本与后端 `APP_VERSION` 不一致（只在正式构建里检查）。 */
+const versionMismatch = ref<VersionMismatch | null>(null);
 /** 只有 panic / 异常终止 / 启动被中止才提示；正常退出与首次运行不打扰。 */
 const crashReport = computed(() => {
   const r = app.previousExit;
@@ -129,6 +134,24 @@ function openCrashLogs() {
 
 function restartApp() {
   void api.restartApp().catch(() => {});
+}
+
+/**
+ * 启动对账：前端打包版本 vs 后端 `APP_VERSION`。
+ *
+ * 只在正式构建里做（开发时 Vite 用磁盘前端、Cargo 用工作区版本，二者短暂不同是正常的，
+ * 不能误报）。拿不到任一侧版本就不提示（判据见 `utils/versionGuard.ts`）。
+ * 真的不一致时给出“完全退出后重新打开 / 立即重启”，重启走既有 `restart_app`。
+ */
+async function checkAppVersion() {
+  if (!import.meta.env.PROD || app.isMobile) return;
+  try {
+    const backend = await api.getAppVersion();
+    versionMismatch.value = detectVersionMismatch(version, backend);
+  } catch (e) {
+    // 对账本身失败不是版本错配：只留控制台，不打扰用户。
+    console.error("[app] 版本对账失败（不提示）", e);
+  }
 }
 
 function reEnableBluetoothFromNotice() {
@@ -238,6 +261,7 @@ onMounted(async () => {
   // init 之后再报一次：此时 `app.isMobile` 才是真实值（移动端不判 focus/blur）
   reportActivity();
   await applyWindowShape();
+  void checkAppVersion();
 });
 
 // 主题切换（浅/深/跟随系统变化）时同步窗口背景色，保持圆角外与内容同色。
@@ -264,6 +288,12 @@ onUnmounted(stopWatchdogTimers);
     :escalated="stall.escalated"
     :mobile="app.isMobile"
     @wait="waitMore"
+    @restart="restartApp"
+  />
+  <VersionMismatchNotice
+    v-if="versionMismatch"
+    :mismatch="versionMismatch"
+    :mobile="app.isMobile"
     @restart="restartApp"
   />
   <ResponsiveLayout />

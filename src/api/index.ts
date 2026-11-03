@@ -107,6 +107,8 @@ export const api = {
       }),
     ]).then((fns) => () => fns.forEach((fn) => fn())),
   getDeviceInfo: () => invoke<DeviceInfo>("get_device_info"),
+  /** 后端构建版本（前端启动时对账；正常情况下与 `package.json` 的 version 一致）。 */
+  getAppVersion: () => invoke<string>("get_app_version"),
   updateProfile: (nickname: string, avatar: string | null) =>
     invoke<DeviceInfo>("update_profile", { nickname, avatar }),
   listInterfaces: () => invoke<InterfaceInfo[]>("list_interfaces"),

@@ -764,6 +764,7 @@ pub fn run() {
             startup_error::startup_error_retry,
             startup_error::startup_error_open_data_dir,
             startup_error::startup_error_quit,
+            commands::get_app_version,
             commands::get_device_info,
             commands::update_profile,
             commands::list_interfaces,

@@ -328,6 +328,9 @@ export const zhCN: MessageDict = {
   "hang.escalated": "已经等了 {seconds} 秒。可以继续等，或重启应用恢复。",
   "hang.wait": "继续等待",
   "hang.restart": "重启应用",
+  "versionMismatch.title": "检测到版本不一致",
+  "versionMismatch.body": "前端 {frontend} / 后端 {backend}。请完全退出后重新打开。",
+  "versionMismatch.restart": "立即重启",
   "boot.title": "界面没有启动起来",
   "boot.body":
     "启动时发生错误（UI_BOOT_FAILED）。可以先重新加载；如果反复出现，请复制错误信息发给我们。",
