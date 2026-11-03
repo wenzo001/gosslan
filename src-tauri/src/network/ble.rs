@@ -13,10 +13,11 @@
 //! BLE 分片再拼回来。也就是说**线格式零改动**（没碰 `protocol.rs`），
 //! 这也是为什么 BLE 不需要 ADR-0017 那套"能力门控"。
 //!
-//! ## 默认关闭
-//! 本模块整体 `#[cfg(feature = "bluetooth")]`，且即使用 feature 构建，
-//! 也要用户在设置里打开「蓝牙」（`bt_enabled`，默认关闭）才会启动 ——
-//! 局域网路径在任何情况下都不受影响。
+//! ## 默认开启（2026-11-03 订正：此处曾写"默认关闭"，与三端实际相反）
+//! 本模块整体 `#[cfg(feature = "bluetooth")]`；官方构建三条桌面 workflow 与
+//! Android 出包脚本都带这一位（现算：`grep -rln 'features bluetooth' .github/workflows scripts/build-android-releases.sh`），
+//! 且启动后由前端 `ensureBluetoothOn()`（`stores/useAppStore.ts`）自动打开蓝牙通道，
+//! 用户仍可在设置里关掉 —— 关掉的只是蓝牙这一档，局域网路径在任何情况下不受影响。
 // `HashMap`/`HashSet` 只有**外设侧**（`peripheral_accept_loop` 的 routes/handshaking）用到，
 // 所以按**外设**的平台集合门控；跟着 central 集合一起加平台会变成 unused import 警告，
 // 而本项目是警告零容忍。三个平台现在都有外设角色，所以集合一致。
