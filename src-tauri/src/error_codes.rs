@@ -389,6 +389,23 @@ pub const UPDATER_NOT_DOWNLOADED: &str = "UPDATER_NOT_DOWNLOADED";
 /// 更新取消：安装已经开始。
 pub const UPDATER_CANCEL_AFTER_INSTALL: &str = "UPDATER_CANCEL_AFTER_INSTALL";
 
+// ── B6 第十一批：启动失败窗口（重试/打开目录）────────────────────────────
+//
+// "启动失败"这扇窗上只有三个动作：重试、打开数据目录、退出。前两个失败时的原话
+// 必须原样保留，但英文界面要能按码说清"现在该等还是该先退出"。
+/// 重试被拒：应用已经恢复，不需要再重试。
+pub const STARTUP_ALREADY_RECOVERED: &str = "STARTUP_ALREADY_RECOVERED";
+/// 重试被拒：上一轮重试还在跑。
+pub const STARTUP_RETRY_IN_PROGRESS: &str = "STARTUP_RETRY_IN_PROGRESS";
+/// 重试/取信息被拒：这次启动没有待处理的失败。
+pub const STARTUP_NO_PENDING_FAILURE: &str = "STARTUP_NO_PENDING_FAILURE";
+/// 重试任务在阻塞池里没跑完（human 带底层原因）。
+pub const STARTUP_RETRY_POOL_FAILED: &str = "STARTUP_RETRY_POOL_FAILED";
+/// 重试成功后回主线程调度失败（human 带底层原因）。
+pub const STARTUP_MAIN_THREAD_FAILED: &str = "STARTUP_MAIN_THREAD_FAILED";
+/// 读应用数据目录失败（human 带底层原因）。
+pub const STARTUP_DATA_DIR_READ_FAILED: &str = "STARTUP_DATA_DIR_READ_FAILED";
+
 /// 给"可能已经带码"的下层错误补码：已带 `code=` 就原样透传，避免叠成两个码。
 ///
 /// 典型场景：通道启动会把 `network::start_from_prefs` 的 `PORT_IN_USE` 透传上来，

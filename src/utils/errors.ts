@@ -196,6 +196,13 @@ const CODE_RULES: Record<string, string> = {
   UPDATER_NO_UPDATE: "errors.rule.updaterNoUpdate",
   UPDATER_NOT_DOWNLOADED: "errors.rule.updaterNotDownloaded",
   UPDATER_CANCEL_AFTER_INSTALL: "errors.rule.updaterCancelAfterInstall",
+  // B6 第十一批：启动失败窗口。
+  STARTUP_ALREADY_RECOVERED: "errors.rule.startupAlreadyRecovered",
+  STARTUP_RETRY_IN_PROGRESS: "errors.rule.startupRetryInProgress",
+  STARTUP_NO_PENDING_FAILURE: "errors.rule.startupNoPendingFailure",
+  STARTUP_RETRY_POOL_FAILED: "errors.rule.startupRetryPoolFailed",
+  STARTUP_MAIN_THREAD_FAILED: "errors.rule.startupMainThreadFailed",
+  STARTUP_DATA_DIR_READ_FAILED: "errors.rule.startupDataDirReadFailed",
 };
 
 /** 后端 `error_codes::coded()` 的形状：`code=<大写蛇形> 给人看的那句话`。 */

@@ -272,6 +272,12 @@ test("B6 试点批：每个码中英各一条，认不出码必须回落原文",
     UPDATER_NO_UPDATE: "errors.rule.updaterNoUpdate",
     UPDATER_NOT_DOWNLOADED: "errors.rule.updaterNotDownloaded",
     UPDATER_CANCEL_AFTER_INSTALL: "errors.rule.updaterCancelAfterInstall",
+    STARTUP_ALREADY_RECOVERED: "errors.rule.startupAlreadyRecovered",
+    STARTUP_RETRY_IN_PROGRESS: "errors.rule.startupRetryInProgress",
+    STARTUP_NO_PENDING_FAILURE: "errors.rule.startupNoPendingFailure",
+    STARTUP_RETRY_POOL_FAILED: "errors.rule.startupRetryPoolFailed",
+    STARTUP_MAIN_THREAD_FAILED: "errors.rule.startupMainThreadFailed",
+    STARTUP_DATA_DIR_READ_FAILED: "errors.rule.startupDataDirReadFailed",
   };
   for (const [code, key] of Object.entries(cases)) {
     assert.ok(key in zhCN, `中文词典缺 ${key}`);

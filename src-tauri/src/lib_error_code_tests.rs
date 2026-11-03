@@ -180,6 +180,18 @@ const B6_CASES: &[(&str, &str, &str)] = &[
     ("UPDATER_NO_UPDATE", "commands/updater.rs", "没有可安装的更新"),
     ("UPDATER_NOT_DOWNLOADED", "commands/updater.rs", "更新尚未下载完成"),
     ("UPDATER_CANCEL_AFTER_INSTALL", "commands/updater.rs", "安装已经开始，无法取消"),
+    // ── B6 第十一批：启动失败窗口（本笔）──────────────────────────────────
+    ("STARTUP_ALREADY_RECOVERED", "startup_error.rs", "应用已经恢复正常，无需再重试。"),
+    ("STARTUP_RETRY_IN_PROGRESS", "startup_error.rs", "上一次重试还没有结束，请等它跑完。"),
+    ("STARTUP_NO_PENDING_FAILURE", "startup_error.rs", "没有待处理的启动失败"),
+    (
+        "STARTUP_NO_PENDING_FAILURE",
+        "startup_error.rs",
+        "没有待处理的启动失败（这次启动不需要重试）",
+    ),
+    ("STARTUP_RETRY_POOL_FAILED", "startup_error.rs", "重试任务被线程池中断：{e}"),
+    ("STARTUP_MAIN_THREAD_FAILED", "startup_error.rs", "恢复主线程调度失败：{e}"),
+    ("STARTUP_DATA_DIR_READ_FAILED", "startup_error.rs", "数据目录读不出来：{e}"),
 ];
 
 /// human 是下层原话、没有字面量的触发点：只守"码真的挂在这里"，
