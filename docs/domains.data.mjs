@@ -487,6 +487,11 @@ export default {
         // `watchdog.rs` 的 HANG 行、`lib.rs` 的分配失败钩子。它自己只 `use crate::logging::now_ms`
         // （同域 self）⇒ 本域的叶子性没变；被别的域单向调用正是叶子域该有的样子。
         "src-tauri/src/mem_diag.rs",
+        // 2026-11-03 闪退取证第 2 项：SIGTERM 留痕。sigwait 线程收到信号先走
+        // `logging::crash_note` 写 code=SIGTERM_RECEIVED（本域现场通道），再触发正常退出
+        // 让下一轮 `classify_previous_exit` 分得开「被外部杀」与「崩溃」。只依赖本域
+        // logging（同域 self）+ 装配层的 AppHandle ⇒ 叶子性不变。
+        "src-tauri/src/signals.rs",
       ],
       invariants: ["INV-P16"],
       activeHome: "src-tauri/src/logging.rs",
