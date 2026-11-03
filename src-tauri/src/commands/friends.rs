@@ -124,7 +124,10 @@ pub async fn get_friends(state: State<'_, Arc<AppState>>) -> Result<Vec<Friend>,
                         format!("code=FRIENDS_LIST_READ_FAILED 好友列表读取失败，上抛给界面：{e}"),
                     );
                 }
-                return Err(format!("好友列表读不出来：{e}"));
+                return Err(crate::error_codes::coded(
+                    crate::error_codes::FRIENDS_LIST_READ_FAILED,
+                    format!("好友列表读不出来：{e}"),
+                ));
             }
         };
         for f in friends.iter_mut() {

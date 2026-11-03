@@ -22,9 +22,9 @@ pub(crate) const TODO_IMAGE_LIMIT_MB: usize = MAX_TODO_IMAGE_BYTES / (1024 * 102
 /// 把 10MB 整张图判成超限是把自己的文案读成了严格不等号。
 pub(crate) fn todo_image_size_guard(len: u64) -> Result<(), String> {
     if len > MAX_TODO_IMAGE_BYTES as u64 {
-        return Err(format!(
-            "单张图片不能超过 {}MB",
-            TODO_IMAGE_LIMIT_MB
+        return Err(crate::error_codes::coded(
+            crate::error_codes::GROUP_TODO_IMAGE_TOO_LARGE,
+            format!("单张图片不能超过 {}MB", TODO_IMAGE_LIMIT_MB),
         ));
     }
     Ok(())

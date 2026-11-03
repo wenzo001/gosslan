@@ -192,6 +192,35 @@ const B6_CASES: &[(&str, &str, &str)] = &[
     ("STARTUP_RETRY_POOL_FAILED", "startup_error.rs", "重试任务被线程池中断：{e}"),
     ("STARTUP_MAIN_THREAD_FAILED", "startup_error.rs", "恢复主线程调度失败：{e}"),
     ("STARTUP_DATA_DIR_READ_FAILED", "startup_error.rs", "数据目录读不出来：{e}"),
+    // ── B6 第十二批：好友/群管理/收藏里漏网的原话（本笔）────────────────────
+    ("FRIENDS_LIST_READ_FAILED", "commands/friends.rs", "好友列表读不出来：{e}"),
+    ("GROUP_READS_LIST_READ_FAILED", "commands/groups.rs", "已读名单读不出来：{e}"),
+    (
+        "GROUP_TODO_TYPE_NAME_TOO_LONG",
+        "commands/group_files.rs",
+        "自定义类型名称不能超过 {} 字",
+    ),
+    (
+        "GROUP_TODO_TITLE_TOO_LONG",
+        "commands/group_files.rs",
+        "任务标题不能超过 {MAX_TODO_TITLE_LEN} 字",
+    ),
+    (
+        "GROUP_TODO_DESC_TOO_LONG",
+        "commands/group_files.rs",
+        "任务描述不能超过 {MAX_TODO_DESC_LEN} 字",
+    ),
+    (
+        "GROUP_ANNOUNCEMENT_TOO_LONG",
+        "commands/group_files.rs",
+        "公告不能超过 {MAX_ANNOUNCEMENT_LEN} 字",
+    ),
+    ("GROUP_TODO_IMAGE_TOO_LARGE", "commands/group_todo_media.rs", "单张图片不能超过 {}MB"),
+    (
+        "FAVORITE_DELETE_BATCH_TOO_LARGE",
+        "commands/favorites.rs",
+        "一次最多删除 {MAX_DELETE_BATCH} 条，当前 {} 条",
+    ),
 ];
 
 /// human 是下层原话、没有字面量的触发点：只守"码真的挂在这里"，
@@ -238,9 +267,9 @@ const B6_COMMAND_UNCODED_BASELINE: &[(&str, &str, usize)] = &[
     ("files.rs", "request_content", 0),
     ("files.rs", "send_file_auto", 0),
     ("group_files.rs", "send_group_message", 2),
-    ("group_files.rs", "send_group_todo", 2),
-    ("group_files.rs", "update_group_todo", 4),
-    ("group_files.rs", "send_group_announcement", 2),
+    ("group_files.rs", "send_group_todo", 0),
+    ("group_files.rs", "update_group_todo", 2),
+    ("group_files.rs", "send_group_announcement", 1),
     ("group_files.rs", "delete_group_announcement", 1),
     ("mobile_picker.rs", "send_friend_request", 0),
     ("mobile_picker.rs", "respond_friend_request", 0),

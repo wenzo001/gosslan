@@ -317,9 +317,12 @@ pub async fn delete_messages(
 ) -> Result<usize, String> {
     let s = state.inner().clone();
     if msg_ids.len() > MAX_DELETE_BATCH {
-        return Err(format!(
-            "一次最多删除 {MAX_DELETE_BATCH} 条，当前 {} 条",
-            msg_ids.len()
+        return Err(crate::error_codes::coded(
+            crate::error_codes::FAVORITE_DELETE_BATCH_TOO_LARGE,
+            format!(
+                "一次最多删除 {MAX_DELETE_BATCH} 条，当前 {} 条",
+                msg_ids.len()
+            ),
         ));
     }
     if msg_ids.is_empty() {
