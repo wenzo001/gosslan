@@ -32,7 +32,10 @@ pub fn create_group(
         let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());
         for member in &all {
             if db::get_friend(&dbc, member).is_none() {
-                return Err("只能把好友加入群聊".to_string());
+                return Err(crate::error_codes::coded(
+            crate::error_codes::GROUP_INVITE_FRIENDS_ONLY,
+            "只能把好友加入群聊",
+        ));
             }
         }
     }
@@ -252,7 +255,10 @@ pub async fn rename_group(
         })?
     };
     if group.creator != s.device_id {
-        return Err("只有群创建者可以修改群名称".to_string());
+        return Err(crate::error_codes::coded(
+            crate::error_codes::GROUP_RENAME_OWNER_ONLY,
+            "只有群创建者可以修改群名称",
+        ));
     }
     {
         let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());
@@ -375,15 +381,24 @@ pub async fn group_add_member(
         })?
     };
     if group.creator != s.device_id {
-        return Err("只有群创建者可以添加成员".to_string());
+        return Err(crate::error_codes::coded(
+            crate::error_codes::GROUP_ADD_MEMBER_OWNER_ONLY,
+            "只有群创建者可以添加成员",
+        ));
     }
     if group.members.contains(&device_id) {
-        return Err("该成员已在群中".to_string());
+        return Err(crate::error_codes::coded(
+            crate::error_codes::GROUP_MEMBER_ALREADY_IN,
+            "该成员已在群中",
+        ));
     }
     {
         let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());
         if db::get_friend(&dbc, &device_id).is_none() {
-            return Err("只能添加好友入群".to_string());
+            return Err(crate::error_codes::coded(
+            crate::error_codes::GROUP_ADD_FRIEND_MEMBER_ONLY,
+            "只能添加好友入群",
+        ));
         }
     }
     {
@@ -444,13 +459,22 @@ pub async fn group_remove_member(
         })?
     };
     if group.creator != s.device_id {
-        return Err("只有群创建者可以移除成员".to_string());
+        return Err(crate::error_codes::coded(
+            crate::error_codes::GROUP_REMOVE_OWNER_ONLY,
+            "只有群创建者可以移除成员",
+        ));
     }
     if device_id == s.device_id {
-        return Err("不能移除自己".to_string());
+        return Err(crate::error_codes::coded(
+            crate::error_codes::GROUP_REMOVE_SELF,
+            "不能移除自己",
+        ));
     }
     if !group.members.contains(&device_id) {
-        return Err("该成员不在群中".to_string());
+        return Err(crate::error_codes::coded(
+            crate::error_codes::GROUP_MEMBER_NOT_IN,
+            "该成员不在群中",
+        ));
     }
     {
         let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());
@@ -535,13 +559,22 @@ pub async fn transfer_group_creator(
         })?
     };
     if group.creator != s.device_id {
-        return Err("只有群创建者可以转让群主".to_string());
+        return Err(crate::error_codes::coded(
+            crate::error_codes::GROUP_TRANSFER_OWNER_ONLY,
+            "只有群创建者可以转让群主",
+        ));
     }
     if new_creator == s.device_id {
-        return Err("不能把群主转让给自己".to_string());
+        return Err(crate::error_codes::coded(
+            crate::error_codes::GROUP_TRANSFER_TO_SELF,
+            "不能把群主转让给自己",
+        ));
     }
     if !group.members.contains(&new_creator) {
-        return Err("只能转让给群成员".to_string());
+        return Err(crate::error_codes::coded(
+            crate::error_codes::GROUP_TRANSFER_MEMBER_ONLY,
+            "只能转让给群成员",
+        ));
     }
     {
         let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());
@@ -584,7 +617,10 @@ pub async fn leave_group(state: State<'_, Arc<AppState>>, group_id: String) -> R
         })?
     };
     if group.creator == s.device_id {
-        return Err("群主退群前请先转让群主".to_string());
+        return Err(crate::error_codes::coded(
+            crate::error_codes::GROUP_OWNER_LEAVE_TRANSFER_FIRST,
+            "群主退群前请先转让群主",
+        ));
     }
     // 先通知其余成员（本地记录删除前取成员表）；对方离线时消息会丢失，
     // 但成员表也会随后续群消息（Gossip group_members / GroupKey）自愈。

@@ -50,7 +50,10 @@ pub async fn todo_image_meta(
     let p = std::path::Path::new(&path);
     let meta = std::fs::metadata(p).map_err(|e| format!("读取文件失败：{e}"))?;
     if !meta.is_file() {
-        return Err("不是文件".to_string());
+        return Err(crate::error_codes::coded(
+            crate::error_codes::GROUP_MEDIA_NOT_FILE,
+            "不是文件",
+        ));
     }
     // 体积闸放在**这里**而不是只放前端：Android 选图 / 桌面粘贴 / 桌面拖入三条入口最终都要经过
     // 这道元数据命令，所以它是唯一能一次覆盖三条路的落点（前端的同名判断只是"别把超限的图读进 JS 堆"的前置省功）。
@@ -117,15 +120,24 @@ pub async fn save_todo_image_bytes(
 ) -> Result<String, String> {
     let bytes: Vec<u8> = match request.body() {
         tauri::ipc::InvokeBody::Raw(b) => b.clone(),
-        _ => return Err("图片数据格式不正确".to_string()),
+        _ => return Err(crate::error_codes::coded(
+            crate::error_codes::GROUP_IMAGE_BYTES_INVALID,
+            "图片数据格式不正确",
+        )),
     };
     if bytes.is_empty() {
-        return Err("图片数据为空".to_string());
+        return Err(crate::error_codes::coded(
+            crate::error_codes::GROUP_IMAGE_EMPTY,
+            "图片数据为空",
+        ));
     }
     todo_image_size_guard(bytes.len() as u64)?;
     let ext = sniff_media_ext(&bytes[..bytes.len().min(16)]);
     if !matches!(ext, "jpg" | "png" | "gif" | "webp" | "bmp") {
-        return Err("只支持粘贴图片".to_string());
+        return Err(crate::error_codes::coded(
+            crate::error_codes::GROUP_IMAGE_PASTE_ONLY,
+            "只支持粘贴图片",
+        ));
     }
     let s = state.inner();
     let dir = s.cache_dir.join("todo-paste");

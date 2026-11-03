@@ -149,7 +149,10 @@ pub async fn send_group_message(
             )
             .await;
         }
-        _ => return Err("群聊不支持该消息类型".to_string()),
+        _ => return Err(crate::error_codes::coded(
+            crate::error_codes::GROUP_FILE_KIND_UNSUPPORTED,
+            "群聊不支持该消息类型",
+        )),
     };
     let content = check_message_content(content)?;
     // 只有文本带 @ 名单：code / merge 里的 `@名字` 不算点名，与前端 `messageMentionsMe`
@@ -186,7 +189,10 @@ fn normalize_custom_category(category: &str, raw: Option<&str>) -> Result<String
     }
     let name = raw.unwrap_or("").trim().to_string();
     if name.is_empty() {
-        return Err("自定义类型名称不能为空".to_string());
+        return Err(crate::error_codes::coded(
+            crate::error_codes::GROUP_TODO_TYPE_NAME_EMPTY,
+            "自定义类型名称不能为空",
+        ));
     }
     if name.chars().count() > crate::protocol::TODO_CUSTOM_CATEGORY_MAX_LEN {
         return Err(format!(
@@ -213,7 +219,10 @@ fn normalize_custom_icon(category: &str, raw: Option<&str>) -> Result<String, St
         return Ok(crate::protocol::TODO_CUSTOM_ICON_DEFAULT.to_string());
     }
     if !crate::protocol::todo_custom_icon_is_valid(&key) {
-        return Err("自定义类型图标不合法".to_string());
+        return Err(crate::error_codes::coded(
+            crate::error_codes::GROUP_TODO_TYPE_ICON_INVALID,
+            "自定义类型图标不合法",
+        ));
     }
     Ok(key)
 }
@@ -242,7 +251,10 @@ pub async fn send_group_todo(
     let category = match category {
         Some(c) => {
             if !crate::protocol::todo_category_is_valid(&c) {
-                return Err("任务类型不合法".to_string());
+                return Err(crate::error_codes::coded(
+            crate::error_codes::GROUP_TODO_TYPE_INVALID,
+            "任务类型不合法",
+        ));
             }
             c
         }
@@ -254,7 +266,10 @@ pub async fn send_group_todo(
     let custom_icon = normalize_custom_icon(&category, custom_icon.as_deref())?;
     let title = title.trim().to_string();
     if title.is_empty() {
-        return Err("任务标题不能为空".to_string());
+        return Err(crate::error_codes::coded(
+            crate::error_codes::GROUP_TODO_TITLE_EMPTY,
+            "任务标题不能为空",
+        ));
     }
     if title.chars().count() > MAX_TODO_TITLE_LEN {
         return Err(format!("任务标题不能超过 {MAX_TODO_TITLE_LEN} 字"));
@@ -306,7 +321,10 @@ pub async fn send_group_todo(
 /// 放进一个非成员会让这条任务对谁都"改不了状态"（谁都不是被指派人），而群里也没人认识它。
 fn check_todo_assignees(s: &AppState, group_id: &str, assignees: &[String]) -> Result<(), String> {
     if assignees.is_empty() {
-        return Err("请至少指派一名成员".to_string());
+        return Err(crate::error_codes::coded(
+            crate::error_codes::GROUP_TODO_ASSIGNEE_REQUIRED,
+            "请至少指派一名成员",
+        ));
     }
     let members = {
         let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());
@@ -768,13 +786,19 @@ pub async fn update_group_todo(
     let title = title.trim().to_string();
     if !deleted {
         if title.is_empty() {
-            return Err("任务标题不能为空".to_string());
+            return Err(crate::error_codes::coded(
+            crate::error_codes::GROUP_TODO_TITLE_EMPTY,
+            "任务标题不能为空",
+        ));
         }
         if title.chars().count() > MAX_TODO_TITLE_LEN {
             return Err(format!("任务标题不能超过 {MAX_TODO_TITLE_LEN} 字"));
         }
         if !crate::protocol::todo_status_is_valid(&status) {
-            return Err("任务状态不合法".to_string());
+            return Err(crate::error_codes::coded(
+            crate::error_codes::GROUP_TODO_STATUS_INVALID,
+            "任务状态不合法",
+        ));
         }
         check_todo_assignees(s, &group_id, &assignees)?;
     }
@@ -782,13 +806,19 @@ pub async fn update_group_todo(
     // 同理编辑状态也不该把优先级重置成"常规"）。非法值明确拒绝，不静默吞。
     if let Some(p) = priority.as_deref() {
         if !crate::protocol::todo_priority_is_valid(p) {
-            return Err("任务优先级不合法".to_string());
+            return Err(crate::error_codes::coded(
+            crate::error_codes::GROUP_TODO_PRIORITY_INVALID,
+            "任务优先级不合法",
+        ));
         }
     }
     // 类型与优先级同口径：只在给值时校验并覆盖，没给就沿用库里那份（改状态不该顺手改类型）。
     if let Some(c) = category.as_deref() {
         if !crate::protocol::todo_category_is_valid(c) {
-            return Err("任务类型不合法".to_string());
+            return Err(crate::error_codes::coded(
+            crate::error_codes::GROUP_TODO_TYPE_INVALID,
+            "任务类型不合法",
+        ));
         }
     }
     let (def, group_creator, members) = {
@@ -958,7 +988,10 @@ pub async fn send_group_announcement(
     let s = state.inner();
     let text = text.trim().to_string();
     if text.is_empty() {
-        return Err("公告内容不能为空".to_string());
+        return Err(crate::error_codes::coded(
+            crate::error_codes::GROUP_ANNOUNCEMENT_EMPTY,
+            "公告内容不能为空",
+        ));
     }
     if text.chars().count() > MAX_ANNOUNCEMENT_LEN {
         return Err(format!("公告不能超过 {MAX_ANNOUNCEMENT_LEN} 字"));
@@ -991,7 +1024,10 @@ pub async fn delete_group_announcement(
     let s = state.inner();
     let ann_id = ann_id.trim().to_string();
     if ann_id.is_empty() {
-        return Err("公告标识缺失".to_string());
+        return Err(crate::error_codes::coded(
+            crate::error_codes::GROUP_ANNOUNCEMENT_ID_MISSING,
+            "公告标识缺失",
+        ));
     }
     {
         let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());
