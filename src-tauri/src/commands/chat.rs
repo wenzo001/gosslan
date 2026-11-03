@@ -122,7 +122,10 @@ pub async fn cancel_message(
             return Err("只能取消自己发送的消息".to_string());
         }
         if msg.conv_id != conv_id_db {
-            return Err("消息不属于该会话".to_string());
+            return Err(crate::error_codes::coded(
+                crate::error_codes::MSG_NOT_IN_CONV,
+                "消息不属于该会话",
+            ));
         }
         if msg.kind == "file" || msg.kind == "image" {
             return Err("文件/图片请用「取消发送」的传输通道".to_string());
@@ -370,7 +373,10 @@ pub async fn recall_message(
     let already_recalled = tokio::task::spawn_blocking(move || -> Result<bool, String> {
         let dbc = s_db.db.lock().unwrap_or_else(|e| e.into_inner());
         let Some(msg) = db::get_message_record(&dbc, &target_db) else {
-            return Err("消息不存在".to_string());
+            return Err(crate::error_codes::coded(
+                crate::error_codes::MSG_NOT_FOUND,
+                "消息不存在",
+            ));
         };
         crate::protocol::recall_verdict(
             &msg.sender_id,
@@ -452,13 +458,19 @@ pub async fn set_message_render(
     let (is_group, peer) = tokio::task::spawn_blocking(move || -> Result<(bool, String), String> {
         let dbc = s_db.db.lock().unwrap_or_else(|e| e.into_inner());
         let Some(msg) = db::get_message_record(&dbc, &target_db) else {
-            return Err("消息不存在".to_string());
+            return Err(crate::error_codes::coded(
+                crate::error_codes::MSG_NOT_FOUND,
+                "消息不存在",
+            ));
         };
         if msg.sender_id != s_db.device_id {
             return Err("只能切换自己发送的消息".to_string());
         }
         if msg.conv_id != conv_db {
-            return Err("消息不属于该会话".to_string());
+            return Err(crate::error_codes::coded(
+                crate::error_codes::MSG_NOT_IN_CONV,
+                "消息不属于该会话",
+            ));
         }
         if msg.kind != "code" && msg.kind != "text" {
             return Err("只有文本/代码消息可以切换渲染".to_string());
@@ -653,7 +665,10 @@ pub async fn send_message(
                         .map(|m| m.conv_id == friend_id)
                         .unwrap_or(false);
                     if !valid {
-                        return Err("要提醒的消息不存在".to_string());
+                        return Err(crate::error_codes::coded(
+                            crate::error_codes::MSG_NOT_FOUND,
+                            "要提醒的消息不存在",
+                        ));
                     }
                 }
             }
@@ -669,7 +684,10 @@ pub async fn send_message(
             "recall" => {
                 let p = crate::protocol::parse_recall_payload(&content)?;
                 let Some(msg) = db::get_message_record(&dbc, &p.target) else {
-                    return Err("要撤回的消息不存在".to_string());
+                    return Err(crate::error_codes::coded(
+                        crate::error_codes::MSG_NOT_FOUND,
+                        "要撤回的消息不存在",
+                    ));
                 };
                 // 这一层是 1:1 内核的第二道闸，永远按**作者**裁决：单聊没有群主那一档
                 // （群主特权只在群里，见 `commands::recall_group_message`）。
@@ -687,13 +705,19 @@ pub async fn send_message(
             "render" => {
                 let p = crate::protocol::parse_render_payload(&content)?;
                 let Some(msg) = db::get_message_record(&dbc, &p.target) else {
-                    return Err("要切换的消息不存在".to_string());
+                    return Err(crate::error_codes::coded(
+                        crate::error_codes::MSG_NOT_FOUND,
+                        "要切换的消息不存在",
+                    ));
                 };
                 if msg.sender_id != s.device_id {
                     return Err("只能切换自己发送的消息".to_string());
                 }
                 if msg.conv_id != friend_id {
-                    return Err("消息不属于该会话".to_string());
+                    return Err(crate::error_codes::coded(
+                        crate::error_codes::MSG_NOT_IN_CONV,
+                        "消息不属于该会话",
+                    ));
                 }
                 if msg.kind != "code" && msg.kind != "text" {
                     return Err("只有文本/代码消息可以切换渲染".to_string());
@@ -762,10 +786,16 @@ pub async fn send_message(
     // 1:1 没有 @，恒传 None —— 但走**同一个**编码器：明文形状两处各写一份，
     // 迟早只改对一边（接收端是同一只函数解的）。
     let plaintext = crate::protocol::gossip_plaintext(&kind, &content, None);
-    let shared = s.identity.dh(&pubkey).ok_or("密钥交换失败")?;
+    let shared = s.identity.dh(&pubkey).ok_or_else(|| {
+        crate::error_codes::coded(crate::error_codes::E2EE_ENCRYPT_FAILED, "密钥交换失败")
+    })?;
     // Gossip 载荷与直发内容都走 ChaCha20-Poly1305（直发内容加 "enc1:" 前缀标识）
-    let sealed = crypto::seal(&shared, plaintext.as_bytes()).ok_or("加密失败")?;
-    let sealed_content = crypto::seal(&shared, content.as_bytes()).ok_or("加密失败")?;
+    let sealed = crypto::seal(&shared, plaintext.as_bytes()).ok_or_else(|| {
+        crate::error_codes::coded(crate::error_codes::E2EE_ENCRYPT_FAILED, "加密失败")
+    })?;
+    let sealed_content = crypto::seal(&shared, content.as_bytes()).ok_or_else(|| {
+        crate::error_codes::coded(crate::error_codes::E2EE_ENCRYPT_FAILED, "加密失败")
+    })?;
     let payload_b64 = STANDARD.encode(&sealed);
     let wire_content = format!("enc1:{}", STANDARD.encode(&sealed_content));
     let mut env = {
@@ -1014,7 +1044,10 @@ pub async fn resend_message(
     let msg = {
         let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());
         let Some(msg) = db::get_message_record(&dbc, &msg_id) else {
-            return Err("消息不存在".to_string());
+            return Err(crate::error_codes::coded(
+                crate::error_codes::MSG_NOT_FOUND,
+                "消息不存在",
+            ));
         };
         msg
     };
@@ -1022,7 +1055,10 @@ pub async fn resend_message(
         return Err("只能重发自己发送的消息".to_string());
     }
     if msg.conv_id != conv_id {
-        return Err("消息不属于该会话".to_string());
+        return Err(crate::error_codes::coded(
+            crate::error_codes::MSG_NOT_IN_CONV,
+            "消息不属于该会话",
+        ));
     }
     // 文件/图片的"重发"是**一次新的传输**（字节要重新跑），与文本族的原身份重投是两件事，
     // 走 `send_file_auto` / `send_group_file`；渲染是控制事件，没有"重发"语义。
@@ -1048,9 +1084,15 @@ pub async fn resend_message(
     let ts = msg.ts;
     let seq = msg.seq;
     let plaintext = crate::protocol::gossip_plaintext(&msg.kind, &msg.content, None);
-    let shared = s.identity.dh(&pubkey).ok_or("密钥交换失败")?;
-    let sealed = crypto::seal(&shared, plaintext.as_bytes()).ok_or("加密失败")?;
-    let sealed_content = crypto::seal(&shared, msg.content.as_bytes()).ok_or("加密失败")?;
+    let shared = s.identity.dh(&pubkey).ok_or_else(|| {
+        crate::error_codes::coded(crate::error_codes::E2EE_ENCRYPT_FAILED, "密钥交换失败")
+    })?;
+    let sealed = crypto::seal(&shared, plaintext.as_bytes()).ok_or_else(|| {
+        crate::error_codes::coded(crate::error_codes::E2EE_ENCRYPT_FAILED, "加密失败")
+    })?;
+    let sealed_content = crypto::seal(&shared, msg.content.as_bytes()).ok_or_else(|| {
+        crate::error_codes::coded(crate::error_codes::E2EE_ENCRYPT_FAILED, "加密失败")
+    })?;
     let payload_b64 = STANDARD.encode(&sealed);
     let wire_content = format!("enc1:{}", STANDARD.encode(&sealed_content));
     let mut env = {

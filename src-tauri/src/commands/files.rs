@@ -1482,7 +1482,9 @@ pub async fn request_content(
         let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());
         let content = db::get_message_preview_source(&dbc, &msg_id)
             .map(|(_sender, c)| c)
-            .ok_or_else(|| "消息不存在".to_string())?;
+            .ok_or_else(|| {
+                crate::error_codes::coded(crate::error_codes::MSG_NOT_FOUND, "消息不存在")
+            })?;
         let v: serde_json::Value = serde_json::from_str(&content).map_err(|e| e.to_string())?;
         (
             v.get("sha256")

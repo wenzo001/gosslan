@@ -98,6 +98,7 @@ export default {
     ["src-tauri/src/lib_compat_gating_tests.rs", "测试分册：跨版本声明、新帧类型在发送口门控、受众三态"],
     ["src-tauri/src/lib_startup_config_tests.rs", "测试分册：降级拒绝早于写、锁内不 await、符号链、通道偏好持久化"],
     ["src-tauri/src/lib_delivery_shape_tests.rs", "测试分册：未知帧容忍、离线仍列出、群密钥先于群消息等接线形状"],
+    ["src-tauri/src/lib_error_code_tests.rs", "测试分册：B6 错误码的「触发点 → 码」绑定与 `coded()` 形状（守门人的守门人）"],
     [
       "src-tauri/src/commands.rs",
       "142 行 + 25 个子模块 / 26 个 tauri command：**前后端边界**，按领域拆是 Phase 7 的事",
@@ -230,7 +231,7 @@ export default {
       ],
       activeHome: "src-tauri/src/protocol.rs",
       enforce: false,
-      consumes: ["identity"], // gossip_engine.rs 用 crypto::Identity（生产代码）
+      consumes: ["identity", "observability"], // identity: gossip_engine.rs 用 crypto::Identity；observability: protocol.rs 的 `recall_verdict` 要产出在册的 MSG_NOT_IN_CONV 码（B6 试点批，显式 `use` 而不是内联全限定）
       notes:
         "直发 + Gossip + 离线补发统一 msg_id 幂等去重；消息先落 outbox，ACK 到达才删。**已知例外**（protocol-invariants §22）：「和自己聊天」不进 outbox、不 gossip、不加密（INV-P03/P04 例外）。消息语义的**实际执行点**仍在 network/transport.rs（约 9600 行，正按 include! 分册中）—— 那是 Phase 7 的拆分目标。",
     },

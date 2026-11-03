@@ -527,9 +527,13 @@ pub fn guard_case_fixture_db(
         file=TAURI / "src" / "commands" / "chat.rs",
         injections=[(
             """    let plaintext = crate::protocol::gossip_plaintext(&kind, &content, None);
-    let shared = s.identity.dh(&pubkey).ok_or("密钥交换失败")?;""",
+    let shared = s.identity.dh(&pubkey).ok_or_else(|| {
+        crate::error_codes::coded(crate::error_codes::E2EE_ENCRYPT_FAILED, "密钥交换失败")
+    })?;""",
             """    let plaintext = crate::protocol::gossip_plaintext(&kind, &content, None);
-    let shared = crypto::shared_secret(&s.identity.x25519_secret, &pubkey).ok_or("密钥交换失败")?;""",
+    let shared = crypto::shared_secret(&s.identity.x25519_secret, &pubkey).ok_or_else(|| {
+        crate::error_codes::coded(crate::error_codes::E2EE_ENCRYPT_FAILED, "密钥交换失败")
+    })?;""",
         )],
         cmd=["node", "scripts/check-key-boundary.mjs"],
         cwd=ROOT,

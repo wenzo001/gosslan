@@ -210,7 +210,10 @@ fn resolve_media_path(s: &AppState, msg_id: &str) -> MediaPath {
     let Some((sender_id, content)) =
         db::get_message_preview_source(&s.db.lock().unwrap_or_else(|e| e.into_inner()), msg_id)
     else {
-        return MediaPath::Unknown("消息不存在".to_string());
+        return MediaPath::Unknown(crate::error_codes::coded(
+            crate::error_codes::MSG_NOT_FOUND,
+            "消息不存在",
+        ));
     };
     let Some(path) = serde_json::from_str::<serde_json::Value>(&content)
         .ok()

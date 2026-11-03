@@ -204,4 +204,5 @@ mod tests {
     include!("lib_compat_gating_tests.rs"); // 9/11 跨版本与能力门：版本只声明不签名、新帧类型在发送口门控、受众三态
     include!("lib_startup_config_tests.rs"); // 10/11 启动与配置：降级拒绝早于写、锁内不 await、符号链不吃、开关读持久值
     include!("lib_delivery_shape_tests.rs"); // 11/11 投递形状：未知帧容忍、离线仍列出、群密钥先于群消息、发送成功后才落身份
+    include!("lib_error_code_tests.rs"); // 12 B6 错误码：码与原 human 绑定、coded() 形状、新 Err 带码的存量基线
 }

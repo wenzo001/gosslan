@@ -669,6 +669,10 @@ export const zhCN: MessageDict = {
   "errors.rule.peerKeyMissing": "还没拿到对方的加密公钥（这条关系从没握过手），等对方上线一次再发",
   "errors.rule.auxWindow": "辅助窗口没能打开：这是升级或重启后残留的渲染环境造成的，完全退出小院儿再打开即可恢复",
   "errors.rule.auxWindowRestart": "立即重启",
+  // B6 试点批：消息类。一个码一条话，共用文案只在这里出现一次。
+  "errors.rule.msgNotFound": "这条消息已经不在本机记录里（可能已被清理），刷新会话后再试",
+  "errors.rule.msgNotInConv": "这条消息不属于当前会话，回到原来的会话再操作",
+  "errors.rule.encryptFailed": "这条内容没能加密成功（本机加密模块异常），重启应用后再试",
   "errors.avatar.notBase64": "编码结果不是 base64 data URL，无法判断体积",
   "errors.avatar.stillTooLarge": "头像压缩后仍超过 1MB，请换一张更小的图",
   "errors.image.readFail": "读取图片失败",

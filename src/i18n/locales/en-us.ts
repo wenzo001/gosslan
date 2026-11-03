@@ -655,6 +655,10 @@ export const enUS: MessageDict = {
   "errors.rule.peerKeyMissing": "We don't have the other side's encryption key yet (this relationship has never exchanged keys). Try again once they have been online.",
   "errors.rule.auxWindow": "Couldn't open the extra window: a stale rendering environment left over from an upgrade or restart. Quit Gosslan completely and open it again to recover.",
   "errors.rule.auxWindowRestart": "Restart now",
+  // B6 pilot: message-related. One code, one sentence, defined only here.
+  "errors.rule.msgNotFound": "That message is no longer stored on this device (it may have been cleaned up). Refresh the conversation and try again.",
+  "errors.rule.msgNotInConv": "That message belongs to a different conversation. Go back to the original conversation and try again.",
+  "errors.rule.encryptFailed": "This content couldn't be encrypted (the local encryption module failed). Restart the app and try again.",
   "errors.avatar.notBase64": "The encoded image is not a base64 data URL, so its size cannot be measured.",
   "errors.avatar.stillTooLarge": "The avatar is still over 1 MB after compression. Please pick a smaller image.",
   "errors.image.readFail": "Failed to read the image",

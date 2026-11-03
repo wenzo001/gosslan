@@ -48,6 +48,10 @@ const CODE_RULES: Record<string, string> = {
   // 5.17.5：辅助窗口（设置/日志/外链/看图）建不出来。原始 HRESULT 只进日志，
   // 上屏这句 + 一个「立即重启」按钮（走既有 restart_app）。
   AUX_WINDOW_CREATE_FAILED: "errors.rule.auxWindow",
+  // B6 试点批：消息类。同一件事只认一个码、只查一条词典（共用文案不在各调用点复制）。
+  MSG_NOT_FOUND: "errors.rule.msgNotFound",
+  MSG_NOT_IN_CONV: "errors.rule.msgNotInConv",
+  E2EE_ENCRYPT_FAILED: "errors.rule.encryptFailed",
 };
 
 /** 后端 `error_codes::coded()` 的形状：`code=<大写蛇形> 给人看的那句话`。 */
@@ -133,9 +137,15 @@ export function classifyError(e: unknown): ErrorVerdict {
   if (!raw) return { kind: "retry" };
   // 先认码：自家产出的错误靠它，改文案不会换档。
   const code = errorCode(raw);
-  if (code && CODE_RULES[code]) return { kind: "copy", key: CODE_RULES[code] };
-  // 码只是给我们看的，不上屏（不认识的那个也一样要摘掉，否则用户会读到 `code=…`）。
-  const body = code ? stripErrorCode(raw) : raw;
+  if (code) {
+    const rule = CODE_RULES[code];
+    if (rule) return { kind: "copy", key: rule };
+    // 认不出的码**必须回落原文**（不许空白、也不许通用「操作失败」）：
+    // 码是我们自己加的前缀，摘掉之后那半句本来就是写给人看的。
+    const fallback = stripErrorCode(raw);
+    return fallback ? { kind: "human", detail: fallback } : { kind: "retry" };
+  }
+  const body = raw;
   for (const r of RULES) {
     if (r.re.test(body)) return { kind: "copy", key: r.key };
   }

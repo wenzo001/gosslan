@@ -8,6 +8,8 @@ use std::collections::HashSet;
 
 use serde::{Deserialize, Serialize};
 
+use crate::error_codes::{coded, MSG_NOT_IN_CONV};
+
 /// UDP 发现端口（局域网广播）
 pub const UDP_PORT: u16 = 59991;
 /// TCP 消息/文件传输端口
@@ -1488,7 +1490,7 @@ pub fn recall_verdict(
     authority: RecallAuthority,
 ) -> Result<(), String> {
     if target_conv != expected_conv {
-        return Err("消息不属于该会话".to_string());
+        return Err(coded(MSG_NOT_IN_CONV, "消息不属于该会话"));
     }
     if kind == KIND_RECALLED {
         return Err("这一行已经是撤回提示，再撤等于改动墓碑集合".to_string());
