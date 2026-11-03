@@ -932,11 +932,6 @@ mod tests {
         serde_json::from_str(&raw).expect("共享 fixture 必须是合法 JSON")
     }
 
-    fn fixture_b64_32(s: &str) -> [u8; 32] {
-        let v = STANDARD.decode(s).expect("fixture 的 b64 必须可解");
-        v.try_into().expect("fixture 的 b64 必须是 32 字节")
-    }
-
     #[test]
     fn relay_wire_matches_shared_fixtures() {
         let fx = shared_fixtures();
