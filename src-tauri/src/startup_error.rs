@@ -66,12 +66,18 @@ impl StartupFailure {
 ///
 /// 顺序是**先拒已恢复、再拒在途**：已恢复时 `retrying` 也已经是 false，两种状态
 /// 若只判后者，"成功后再点一次"会被放行成第二次 init。
-pub fn retry_gate(retrying: bool, resolved: bool) -> Result<(), &'static str> {
+pub fn retry_gate(retrying: bool, resolved: bool) -> Result<(), String> {
     if resolved {
-        return Err("应用已经恢复正常，无需再重试。");
+        return Err(crate::error_codes::coded(
+            crate::error_codes::STARTUP_ALREADY_RECOVERED,
+            "应用已经恢复正常，无需再重试。",
+        ));
     }
     if retrying {
-        return Err("上一次重试还没有结束，请等它跑完。");
+        return Err(crate::error_codes::coded(
+            crate::error_codes::STARTUP_RETRY_IN_PROGRESS,
+            "上一次重试还没有结束，请等它跑完。",
+        ));
     }
     Ok(())
 }
@@ -141,11 +147,18 @@ pub fn open(app: &tauri::AppHandle) {
 pub fn startup_error_info(app: tauri::AppHandle) -> Result<StartupErrorInfo, String> {
     let failure = app
         .try_state::<std::sync::Arc<StartupFailure>>()
-        .ok_or_else(|| "没有待处理的启动失败".to_string())?;
-    let data_dir = app
-        .path()
-        .app_data_dir()
-        .map_err(|e| format!("数据目录读不出来：{e}"))?;
+        .ok_or_else(|| {
+            crate::error_codes::coded(
+                crate::error_codes::STARTUP_NO_PENDING_FAILURE,
+                "没有待处理的启动失败",
+            )
+        })?;
+    let data_dir = app.path().app_data_dir().map_err(|e| {
+        crate::error_codes::coded(
+            crate::error_codes::STARTUP_DATA_DIR_READ_FAILED,
+            format!("数据目录读不出来：{e}"),
+        )
+    })?;
     Ok(StartupErrorInfo {
         message: failure.message(),
         data_dir: data_dir.display().to_string(),
@@ -160,10 +173,12 @@ pub fn startup_error_info(app: tauri::AppHandle) -> Result<StartupErrorInfo, Str
 #[cfg(desktop)]
 #[tauri::command(async)]
 pub fn startup_error_open_data_dir(app: tauri::AppHandle) -> Result<String, String> {
-    let data_dir = app
-        .path()
-        .app_data_dir()
-        .map_err(|e| format!("数据目录读不出来：{e}"))?;
+    let data_dir = app.path().app_data_dir().map_err(|e| {
+        crate::error_codes::coded(
+            crate::error_codes::STARTUP_DATA_DIR_READ_FAILED,
+            format!("数据目录读不出来：{e}"),
+        )
+    })?;
     crate::open_path::open_dir_native(&data_dir)?;
     Ok(data_dir.display().to_string())
 }
@@ -196,16 +211,21 @@ pub fn startup_error_quit(app: tauri::AppHandle) {
 #[tauri::command(async)]
 pub async fn startup_error_retry(app: tauri::AppHandle) -> Result<(), String> {
     let Some(failure) = app.try_state::<std::sync::Arc<StartupFailure>>() else {
-        return Err("没有待处理的启动失败（这次启动不需要重试）".to_string());
+        return Err(crate::error_codes::coded(
+            crate::error_codes::STARTUP_NO_PENDING_FAILURE,
+            "没有待处理的启动失败（这次启动不需要重试）",
+        ));
     };
     let failure = failure.inner().clone();
     retry_gate(
         failure.retrying.load(Ordering::SeqCst),
         failure.resolved.load(Ordering::SeqCst),
-    )
-    .map_err(|e| e.to_string())?;
+    )?;
     if !claim_retry(&failure.retrying) {
-        return Err("上一次重试还没有结束，请等它跑完。".to_string());
+        return Err(crate::error_codes::coded(
+            crate::error_codes::STARTUP_RETRY_IN_PROGRESS,
+            "上一次重试还没有结束，请等它跑完。",
+        ));
     }
 
     // ⚠️ 跨线程的边界上只能过 `Send` 的东西：`AppState::init` 的错误是
@@ -223,7 +243,10 @@ pub async fn startup_error_retry(app: tauri::AppHandle) -> Result<(), String> {
         Ok(r) => r,
         Err(e) => {
             failure.retrying.store(false, Ordering::SeqCst);
-            return Err(format!("重试任务被线程池中断：{e}"));
+            return Err(crate::error_codes::coded(
+                crate::error_codes::STARTUP_RETRY_POOL_FAILED,
+                format!("重试任务被线程池中断：{e}"),
+            ));
         }
     };
     match init_result {
@@ -255,7 +278,10 @@ pub async fn startup_error_retry(app: tauri::AppHandle) -> Result<(), String> {
                 // （2026-10-31 复核发现：置真写在调度之前；修法只动这一支，成功路不变。）
                 failure.resolved.store(false, Ordering::SeqCst);
                 failure.retrying.store(false, Ordering::SeqCst);
-                return Err(format!("恢复主线程调度失败：{e}"));
+                return Err(crate::error_codes::coded(
+                    crate::error_codes::STARTUP_MAIN_THREAD_FAILED,
+                    format!("恢复主线程调度失败：{e}"),
+                ));
             }
             Ok(())
         }
@@ -308,17 +334,26 @@ mod startup_error_window_tests {
         assert_eq!(retry_gate(false, false), Ok(()), "空闲且未恢复时必须放行");
         assert_eq!(
             retry_gate(true, false),
-            Err("上一次重试还没有结束，请等它跑完。"),
+            Err(crate::error_codes::coded(
+                crate::error_codes::STARTUP_RETRY_IN_PROGRESS,
+                "上一次重试还没有结束，请等它跑完。"
+            )),
             "在途要拒"
         );
         assert_eq!(
             retry_gate(false, true),
-            Err("应用已经恢复正常，无需再重试。"),
+            Err(crate::error_codes::coded(
+                crate::error_codes::STARTUP_ALREADY_RECOVERED,
+                "应用已经恢复正常，无需再重试。"
+            )),
             "已恢复要拒（这一格是并发那格挡不住的）"
         );
         assert_eq!(
             retry_gate(true, true),
-            Err("应用已经恢复正常，无需再重试。"),
+            Err(crate::error_codes::coded(
+                crate::error_codes::STARTUP_ALREADY_RECOVERED,
+                "应用已经恢复正常，无需再重试。"
+            )),
             "两格同时亮时按已恢复报，否则用户会去等一次永远不会结束的重试"
         );
     }
