@@ -102,7 +102,10 @@ pub async fn cancel_message(
 ) -> Result<MessageCancelResult, String> {
     let s = state.inner().clone();
     if conv_id == s.device_id {
-        return Err("自聊消息不支持取消".to_string());
+        return Err(crate::error_codes::coded(
+            crate::error_codes::CANCEL_SELF_CHAT_UNSUPPORTED,
+            "自聊消息不支持取消",
+        ));
     }
     // SQLite 读写在阻塞池（INV-P34）：这里持锁做几笔写，占住 tokio worker 会拖慢开窗。
     let s_db = s.clone();
@@ -119,7 +122,10 @@ pub async fn cancel_message(
             });
         };
         if msg.sender_id != s_db.device_id {
-            return Err("只能取消自己发送的消息".to_string());
+            return Err(crate::error_codes::coded(
+            crate::error_codes::CANCEL_NOT_OWN_MESSAGE,
+            "只能取消自己发送的消息",
+        ));
         }
         if msg.conv_id != conv_id_db {
             return Err(crate::error_codes::coded(
@@ -128,7 +134,10 @@ pub async fn cancel_message(
             ));
         }
         if msg.kind == "file" || msg.kind == "image" {
-            return Err("文件/图片请用「取消发送」的传输通道".to_string());
+            return Err(crate::error_codes::coded(
+            crate::error_codes::CANCEL_FILE_USE_TRANSFER,
+            "文件/图片请用「取消发送」的传输通道",
+        ));
         }
         if msg.conv_id.starts_with("group:") {
             let out = db::cancel_queued_group_message(&dbc, &msg_id_db).map_err(|e| e.to_string())?;
@@ -269,7 +278,10 @@ pub async fn resend_group_delivery(
     msg_id: String,
 ) -> Result<GroupResendResult, String> {
     if !conv_id.starts_with("group:") {
-        return Err("只有群消息支持按成员补发".to_string());
+        return Err(crate::error_codes::coded(
+            crate::error_codes::GROUP_RESEND_ONLY_FOR_GROUPS,
+            "只有群消息支持按成员补发",
+        ));
     }
     let s = state.inner().clone();
     let s_db = s.clone();
@@ -281,7 +293,10 @@ pub async fn resend_group_delivery(
             return Ok(("not_found".to_string(), Vec::new(), 0));
         };
         if msg.sender_id != s_db.device_id || msg.conv_id != conv {
-            return Err("只能补发自己在该群发送的消息".to_string());
+            return Err(crate::error_codes::coded(
+            crate::error_codes::GROUP_RESEND_NOT_OWN,
+            "只能补发自己在该群发送的消息",
+        ));
         }
         if msg.kind == "file" || msg.kind == "image" || msg.kind == "recall" {
             return Ok(("unsupported".to_string(), Vec::new(), 0));
@@ -363,7 +378,10 @@ pub async fn recall_message(
 ) -> Result<(), String> {
     let s = state.inner().clone();
     if friend_id == s.device_id {
-        return Err("不能撤回自己会话里的消息".to_string());
+        return Err(crate::error_codes::coded(
+            crate::error_codes::RECALL_OWN_CONV_UNSUPPORTED,
+            "不能撤回自己会话里的消息",
+        ));
     }
     // SQLite 读写交给阻塞池：`#[tauri::command(async)]` 的整段函数体在 tokio worker 上，
     // 直接持锁等 DB 会占住一个 worker（worker 数 = CPU 核数，传文件时会让开窗也白等）。
@@ -450,7 +468,10 @@ pub async fn set_message_render(
 ) -> Result<(), String> {
     let s = state.inner().clone();
     if mode != "code" && mode != "text" {
-        return Err("不支持的渲染方式".to_string());
+        return Err(crate::error_codes::coded(
+            crate::error_codes::RENDER_UNSUPPORTED,
+            "不支持的渲染方式",
+        ));
     }
     let s_db = s.clone();
     let conv_db = conv_id.clone();
@@ -464,7 +485,10 @@ pub async fn set_message_render(
             ));
         };
         if msg.sender_id != s_db.device_id {
-            return Err("只能切换自己发送的消息".to_string());
+            return Err(crate::error_codes::coded(
+            crate::error_codes::RENDER_SELF_ONLY,
+            "只能切换自己发送的消息",
+        ));
         }
         if msg.conv_id != conv_db {
             return Err(crate::error_codes::coded(
@@ -473,10 +497,16 @@ pub async fn set_message_render(
             ));
         }
         if msg.kind != "code" && msg.kind != "text" {
-            return Err("只有文本/代码消息可以切换渲染".to_string());
+            return Err(crate::error_codes::coded(
+            crate::error_codes::RENDER_TEXT_CODE_ONLY,
+            "只有文本/代码消息可以切换渲染",
+        ));
         }
         if db::is_recalled(&dbc, &target_db) {
-            return Err("已撤回的消息不能切换".to_string());
+            return Err(crate::error_codes::coded(
+            crate::error_codes::RENDER_RECALLED,
+            "已撤回的消息不能切换",
+        ));
         }
         let is_group = conv_db.starts_with("group:");
         let peer = conv_db
@@ -600,7 +630,10 @@ pub async fn send_message(
         if kind == "remind" {
             if let Ok(p) = crate::protocol::parse_remind_payload(&content) {
                 if p.nudge {
-                    return Err("不能对自己发起窗口抖动".to_string());
+                    return Err(crate::error_codes::coded(
+            crate::error_codes::NUDGE_SELF_UNSUPPORTED,
+            "不能对自己发起窗口抖动",
+        ));
                 }
             }
         }
@@ -641,7 +674,10 @@ pub async fn send_message(
             crate::protocol::parse_render_payload(&content)?;
             MsgKind::Render
         }
-        _ => return Err("不支持的消息类型".to_string()),
+        _ => return Err(crate::error_codes::coded(
+            crate::error_codes::MESSAGE_KIND_UNSUPPORTED,
+            "不支持的消息类型",
+        )),
     };
 
     // 好友关系检查：必须优先于公钥查找
@@ -678,7 +714,10 @@ pub async fn send_message(
                     .map(|m| m.conv_id == friend_id && m.kind == "remind")
                     .unwrap_or(false);
                 if !valid {
-                    return Err("对应的强提醒不存在".to_string());
+                    return Err(crate::error_codes::coded(
+            crate::error_codes::NUDGE_MISSING,
+            "对应的强提醒不存在",
+        ));
                 }
             }
             "recall" => {
@@ -711,7 +750,10 @@ pub async fn send_message(
                     ));
                 };
                 if msg.sender_id != s.device_id {
-                    return Err("只能切换自己发送的消息".to_string());
+                    return Err(crate::error_codes::coded(
+            crate::error_codes::RENDER_SELF_ONLY,
+            "只能切换自己发送的消息",
+        ));
                 }
                 if msg.conv_id != friend_id {
                     return Err(crate::error_codes::coded(
@@ -720,10 +762,16 @@ pub async fn send_message(
                     ));
                 }
                 if msg.kind != "code" && msg.kind != "text" {
-                    return Err("只有文本/代码消息可以切换渲染".to_string());
+                    return Err(crate::error_codes::coded(
+            crate::error_codes::RENDER_TEXT_CODE_ONLY,
+            "只有文本/代码消息可以切换渲染",
+        ));
                 }
                 if db::is_recalled(&dbc, &p.target) {
-                    return Err("已撤回的消息不能切换".to_string());
+                    return Err(crate::error_codes::coded(
+            crate::error_codes::RENDER_RECALLED,
+            "已撤回的消息不能切换",
+        ));
                 }
             }
             _ => {}
@@ -1035,10 +1083,16 @@ pub async fn resend_message(
 ) -> Result<MessageRecord, String> {
     let s = state.inner();
     if conv_id.starts_with("group:") {
-        return Err("群消息请用「按成员补发」".to_string());
+        return Err(crate::error_codes::coded(
+            crate::error_codes::RESEND_USE_GROUP_DELIVERY,
+            "群消息请用「按成员补发」",
+        ));
     }
     if conv_id == s.device_id {
-        return Err("自聊消息不需要重发".to_string());
+        return Err(crate::error_codes::coded(
+            crate::error_codes::RESEND_SELF_CHAT_UNNEEDED,
+            "自聊消息不需要重发",
+        ));
     }
     // ① 校验归属与 kind（这一步只读，不持锁跨 await）。
     let msg = {
@@ -1052,7 +1106,10 @@ pub async fn resend_message(
         msg
     };
     if msg.sender_id != s.device_id {
-        return Err("只能重发自己发送的消息".to_string());
+        return Err(crate::error_codes::coded(
+            crate::error_codes::RESEND_SELF_ONLY,
+            "只能重发自己发送的消息",
+        ));
     }
     if msg.conv_id != conv_id {
         return Err(crate::error_codes::coded(
@@ -1065,10 +1122,16 @@ pub async fn resend_message(
     // 撤回（5.16.92 起）**可以**重发：它和其他 kind 一样先入队、按原身份补投，
     // 判死之后用户也要能从任务中心再点一次（这是"失败可见且可重发"的一部分）。
     if matches!(msg.kind.as_str(), "file" | "image" | "render") {
-        return Err("这种消息不支持原地重发".to_string());
+        return Err(crate::error_codes::coded(
+            crate::error_codes::RESEND_KIND_UNSUPPORTED,
+            "这种消息不支持原地重发",
+        ));
     }
     if !matches!(msg.status.as_str(), "failed" | "cancelled") {
-        return Err("这条消息不是失败/已取消状态，不需要重发".to_string());
+        return Err(crate::error_codes::coded(
+            crate::error_codes::RESEND_NOT_FAILED,
+            "这条消息不是失败/已取消状态，不需要重发",
+        ));
     }
 
     // ② 取钥（同一套逻辑，含探测与不一致告警）。
@@ -1133,7 +1196,10 @@ pub async fn resend_message(
             .map_err(|e| format!("重发入队失败：{e}"))?
     };
     if changed == 0 {
-        return Err("这条消息已经送达或状态已变，不能重发".to_string());
+        return Err(crate::error_codes::coded(
+            crate::error_codes::RESEND_ALREADY_DELIVERED,
+            "这条消息已经送达或状态已变，不能重发",
+        ));
     }
 
     // ⑤ 能力协商后再投递（与 `send_message` 同一条判据、同一份事实）。
@@ -1258,7 +1324,10 @@ fn insert_self_message(
     // 走的是另一条链路（`send_file`），自聊里前端也不会给附件入口 —— 真调到了就明确报错，
     // 不要静默吞掉。
     if kind != "text" && kind != "code" {
-        return Err("和自己聊天暂不支持图片或文件".to_string());
+        return Err(crate::error_codes::coded(
+            crate::error_codes::SELF_CHAT_NO_MEDIA,
+            "和自己聊天暂不支持图片或文件",
+        ));
     }
     let content = check_message_content(content)?;
     let ts = db::now_ms();

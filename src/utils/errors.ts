@@ -68,6 +68,27 @@ const CODE_RULES: Record<string, string> = {
   FRIEND_REQUEST_GONE: "errors.rule.friendRequestGone",
   FRIEND_INVALID_CONTACT: "errors.rule.friendInvalidContact",
   FRIEND_ALREADY_FRIEND: "errors.rule.friendAlreadyFriend",
+  // B6 第三批：消息/会话。
+  CANCEL_SELF_CHAT_UNSUPPORTED: "errors.rule.cancelSelfChatUnsupported",
+  CANCEL_NOT_OWN_MESSAGE: "errors.rule.cancelNotOwnMessage",
+  CANCEL_FILE_USE_TRANSFER: "errors.rule.cancelFileUseTransfer",
+  GROUP_RESEND_ONLY_FOR_GROUPS: "errors.rule.groupResendOnlyForGroups",
+  GROUP_RESEND_NOT_OWN: "errors.rule.groupResendNotOwn",
+  RECALL_OWN_CONV_UNSUPPORTED: "errors.rule.recallOwnConvUnsupported",
+  RENDER_UNSUPPORTED: "errors.rule.renderUnsupported",
+  RENDER_SELF_ONLY: "errors.rule.renderSelfOnly",
+  RENDER_TEXT_CODE_ONLY: "errors.rule.renderTextCodeOnly",
+  RENDER_RECALLED: "errors.rule.renderRecalled",
+  NUDGE_SELF_UNSUPPORTED: "errors.rule.nudgeSelfUnsupported",
+  MESSAGE_KIND_UNSUPPORTED: "errors.rule.messageKindUnsupported",
+  NUDGE_MISSING: "errors.rule.nudgeMissing",
+  RESEND_USE_GROUP_DELIVERY: "errors.rule.resendUseGroupDelivery",
+  RESEND_SELF_CHAT_UNNEEDED: "errors.rule.resendSelfChatUnneeded",
+  RESEND_SELF_ONLY: "errors.rule.resendSelfOnly",
+  RESEND_KIND_UNSUPPORTED: "errors.rule.resendKindUnsupported",
+  RESEND_NOT_FAILED: "errors.rule.resendNotFailed",
+  RESEND_ALREADY_DELIVERED: "errors.rule.resendAlreadyDelivered",
+  SELF_CHAT_NO_MEDIA: "errors.rule.selfChatNoMedia",
 };
 
 /** 后端 `error_codes::coded()` 的形状：`code=<大写蛇形> 给人看的那句话`。 */

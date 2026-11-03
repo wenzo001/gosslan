@@ -53,6 +53,27 @@ const B6_CASES: &[(&str, &str, &str)] = &[
     ("FRIEND_REQUEST_GONE", "commands/mobile_picker.rs", "好友申请不存在或已处理"),
     ("FRIEND_INVALID_CONTACT", "commands/mobile_picker.rs", "无效的联系人"),
     ("FRIEND_ALREADY_FRIEND", "commands/mobile_picker.rs", "已经是好友，无法撤回好友申请"),
+    // ── B6 第三批：消息/会话（本笔）─────────────────────────────────────
+    ("CANCEL_SELF_CHAT_UNSUPPORTED", "commands/chat.rs", "自聊消息不支持取消"),
+    ("CANCEL_NOT_OWN_MESSAGE", "commands/chat.rs", "只能取消自己发送的消息"),
+    ("CANCEL_FILE_USE_TRANSFER", "commands/chat.rs", "文件/图片请用「取消发送」的传输通道"),
+    ("GROUP_RESEND_ONLY_FOR_GROUPS", "commands/chat.rs", "只有群消息支持按成员补发"),
+    ("GROUP_RESEND_NOT_OWN", "commands/chat.rs", "只能补发自己在该群发送的消息"),
+    ("RECALL_OWN_CONV_UNSUPPORTED", "commands/chat.rs", "不能撤回自己会话里的消息"),
+    ("RENDER_UNSUPPORTED", "commands/chat.rs", "不支持的渲染方式"),
+    ("RENDER_SELF_ONLY", "commands/chat.rs", "只能切换自己发送的消息"),
+    ("RENDER_TEXT_CODE_ONLY", "commands/chat.rs", "只有文本/代码消息可以切换渲染"),
+    ("RENDER_RECALLED", "commands/chat.rs", "已撤回的消息不能切换"),
+    ("NUDGE_SELF_UNSUPPORTED", "commands/chat.rs", "不能对自己发起窗口抖动"),
+    ("MESSAGE_KIND_UNSUPPORTED", "commands/chat.rs", "不支持的消息类型"),
+    ("NUDGE_MISSING", "commands/chat.rs", "对应的强提醒不存在"),
+    ("RESEND_USE_GROUP_DELIVERY", "commands/chat.rs", "群消息请用「按成员补发」"),
+    ("RESEND_SELF_CHAT_UNNEEDED", "commands/chat.rs", "自聊消息不需要重发"),
+    ("RESEND_SELF_ONLY", "commands/chat.rs", "只能重发自己发送的消息"),
+    ("RESEND_KIND_UNSUPPORTED", "commands/chat.rs", "这种消息不支持原地重发"),
+    ("RESEND_NOT_FAILED", "commands/chat.rs", "这条消息不是失败/已取消状态，不需要重发"),
+    ("RESEND_ALREADY_DELIVERED", "commands/chat.rs", "这条消息已经送达或状态已变，不能重发"),
+    ("SELF_CHAT_NO_MEDIA", "commands/chat.rs", "和自己聊天暂不支持图片或文件"),
 ];
 
 /// human 是下层原话、没有字面量的触发点：只守"码真的挂在这里"，
@@ -68,10 +89,11 @@ const B6_DYNAMIC_HUMAN: &[(&str, &str)] = &[
 /// 新增一条裸 `return Err(...)` 会让该命令的数字超过基线 ⇒ 红；
 /// 把存量逐条补码后请**下调**对应数字（不允许上调）。
 const B6_COMMAND_UNCODED_BASELINE: &[(&str, &str, usize)] = &[
-    ("chat.rs", "cancel_message", 3),
-    ("chat.rs", "recall_message", 1),
-    ("chat.rs", "set_message_render", 4),
-    ("chat.rs", "send_message", 6),
+    ("chat.rs", "cancel_message", 0),
+    ("chat.rs", "recall_message", 0),
+    ("chat.rs", "set_message_render", 0),
+    ("chat.rs", "send_message", 0),
+    ("chat.rs", "resend_message", 0),
     ("chat.rs", "mark_read", 0),
     ("files.rs", "open_file_native", 0),
     ("files.rs", "request_content", 1),
