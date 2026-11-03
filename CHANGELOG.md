@@ -19,7 +19,8 @@
 
 - `bundle.windows.nsis.customLanguageFiles` 指向仓库内 `nsis/zh-CN.nsh` / `nsis/en-US.nsh`。
   两份文件完整复制 Tauri 内置的 27 条 `LangString`（替换语义，漏一条就会渲染成英文兜底或空串），
-  并新增 `appDisplayName` / `appShortcutName` 与 `chooseHowToInstall`（补齐上游该页面的空标题）。
+  并新增 `appDisplayName` / `appShortcutName`（共 29 条 = 内置 27 条 + 新增 2 条）；
+  内置已有的 `chooseHowToInstall` 只把 `${PRODUCTNAME}` 换成「小院儿」，不属于新增。
 - `installerHooks: nsis/hooks.nsh`：`POSTINSTALL` 写 `DisplayName`，并在**校验快捷方式目标
   确实指向 `gosslan.exe`** 之后删旧 `.lnk`、按当前语言的 `appShortcutName` 重建（补回 AUMID）；
   `PREUNINSTALL` 只在非更新模式删除本地化 `.lnk`。

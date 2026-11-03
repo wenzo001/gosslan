@@ -2,18 +2,18 @@
 ;
 ; 为什么整份复制而不是只写增量：Tauri 对同一种语言**只 include 一个文件**
 ; （`customLanguageFiles` 命中时替换内置语言文件，见 tauri-bundler `nsis/mod.rs`），
-; 漏一条 `LangString` 就会在界面上渲染成英文兜底或空串。本文件的 30 条 = 内置 27 条
-; + `chooseHowToInstall` + 本文件新增的 `appDisplayName` / `appShortcutName`；
-; 除这三条与「产品显示名」外，逐字与内置 `SimpChinese.nsh` 一致。
+; 漏一条 `LangString` 就会在界面上渲染成英文兜底或空串。本文件的 29 条 = 内置 27 条
+; + 本文件新增的 `appDisplayName` / `appShortcutName`；除这两条与「产品显示名」外，
+; 逐字与内置 `SimpChinese.nsh` 一致（内置本身已含 `chooseHowToInstall`）。
 ;
 ; 为什么 `appRunning*` 里不保留 `{{product_name}}`：那三个占位符是安装器运行时用
 ; `StrReplace "$(appRunning)" "{{product_name}}" "${PRODUCTNAME}"` 替换的，而
 ; `${PRODUCTNAME}` 恒为 "Gosslan"（升级锚点，不能改）。这里直接写死「小院儿」，
 ; 占位符不存在 ⇒ StrReplace 找不到可替换片段 ⇒ 中文界面显示「小院儿」。
 ;
-; 为什么另加 `chooseHowToInstall`：Tauri 模板先读正确拼写的它、再回落到只用于
-; 旧自定义文件的 `choowHowToInstall`；内置文件两者都没写 ⇒ 默认安装器该处是空标题。
-; 这里补上正确拼写，顺便把产品名换成「小院儿」。
+; 为什么`chooseHowToInstall` 只改产品名、不算新增：内置 `SimpChinese.nsh` 本来就有这条
+; （原文是「选择你想要安装 ${PRODUCTNAME} 的方式。」），模板优先读正确拼写的它；此处只是把
+; `${PRODUCTNAME}`（恒为 Gosslan）换成「小院儿」，让该页标题跟着语言走。
 
 LangString addOrReinstall ${LANG_SIMPCHINESE} "添加/重新安装组件"
 LangString alreadyInstalled ${LANG_SIMPCHINESE} "已安装"

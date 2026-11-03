@@ -3,15 +3,10 @@
 ;
 ; Why a full copy: Tauri includes exactly one language file per language
 ; (`customLanguageFiles` replaces the built-in file), so any missing
-; `LangString` would fall back to English/blank. These 30 entries = the 27
-; built-in ones + `chooseHowToInstall` + `appDisplayName` / `appShortcutName`
-; added here; everything except those three and the display name is verbatim
-; from Tauri's built-in `English.nsh`.
-;
-; `chooseHowToInstall` is added here because the Tauri template reads the
-; correctly-spelled key first and only falls back to the legacy misspelled
-; `choowHowToInstall` (empty by default). Defining it fills in the otherwise
-; blank page header.
+; `LangString` would fall back to English/blank. These 29 entries = the 27
+; built-in ones + `appDisplayName` / `appShortcutName` added here; everything
+; except those two is verbatim from Tauri's built-in `English.nsh` (which
+; already defines `chooseHowToInstall`).
 
 LangString addOrReinstall ${LANG_ENGLISH} "Add/Reinstall components"
 LangString alreadyInstalled ${LANG_ENGLISH} "Already Installed"
