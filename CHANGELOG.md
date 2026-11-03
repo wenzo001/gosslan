@@ -14,6 +14,15 @@
 
 ## [Unreleased]
 
+## [5.17.23] - 2026-11-04
+
+### 内部重构（无用户可感知变化）
+
+- 2B 第一笔：把「这条 1:1 消息现在能不能取消」的判据收成 `db/message_lifecycle.rs`
+  的纯函数 `direct_cancel_verdict`，写入口 `cancel_queued_message` 与任务中心的
+  `can_cancel` 共用同一份。行为不变，特征测试
+  `direct_cancel_button_matches_the_backend_outcome_for_every_status` 钉住 8 个状态。
+
 ## [5.17.22] - 2026-11-04
 
 ### 修复

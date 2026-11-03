@@ -1460,6 +1460,8 @@ include!("db/friends.rs");
 
 include!("db/groups.rs");
 
+include!("db/message_lifecycle.rs");
+
 include!("db/messages.rs");
 
 include!("db/conversations.rs");
