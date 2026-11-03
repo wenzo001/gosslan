@@ -1118,7 +1118,9 @@ fn settings_write_failure_is_an_error_not_a_silent_noop() {
 /// 以前它发 `settings-changed`（无载荷、广播），于是形成**事件乒乓**：另一个窗口收到 →
 /// 重拉设置 → `applySettingsSnapshot` 结尾无条件 `pushUiLanguage()` → 又调回这条命令 → 再发
 /// ⇒ 两个窗口互相触发，高频 IPC 环。语言变更的事实来源是 `save_settings`（patch 里带 language）。
-/// 这条判据钉住"这条命令只做两件事"（记 hint + macOS 菜单），谁想"顺手补个广播"就红。
+/// 这条判据钉住"这条命令只做三件事"（记 hint + macOS 菜单 + 重建托盘菜单），谁想"顺手补个广播"就红。
+/// 托盘那条是 2026-11-03 补的：菜单文案只在启动时按当时语言建一次，不重建的话切到英文后
+/// 托盘会一直挂着中文。
 #[test]
 fn set_ui_language_stays_silent_to_avoid_the_event_ping_pong() {
     let src = include_str!("commands/settings.rs");
@@ -1152,6 +1154,10 @@ fn set_ui_language_stays_silent_to_avoid_the_event_ping_pong() {
     assert!(
         code.contains("set_ui_language_hint("),
         "这条命令的核心动作（记下语言 hint）不见了"
+    );
+    assert!(
+        code.contains("crate::tray::refresh_for_language(&app);"),
+        "切换语言后必须重建托盘菜单/tooltip，否则英文界面会一直挂着中文托盘"
     );
 }
 

@@ -189,11 +189,17 @@ pub fn set_ui_language(
     state: State<'_, Arc<AppState>>,
     lang: String,
 ) -> Result<(), String> {
-    // 先记下解析结果：它同时是 macOS 菜单与后端文案的语言依据。
+    // 先记下解析结果：它同时是 macOS 菜单、托盘菜单与后端文案的语言依据。
     state.set_ui_language_hint(&lang);
     #[cfg(target_os = "macos")]
     {
         crate::menu::apply(&app, crate::menu::UiLang::parse(&lang)).map_err(|e| e.to_string())?;
+    }
+    // 托盘菜单/tooltip 只在启动时按当时语言建一次 ⇒ 切换语言后在这里重建，
+    // 否则英文界面会一直挂着中文托盘菜单（Windows / macOS 都有托盘）。
+    #[cfg(desktop)]
+    {
+        crate::tray::refresh_for_language(&app);
     }
     #[cfg(not(target_os = "macos"))]
     {
