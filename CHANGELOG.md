@@ -13,6 +13,16 @@
 
 ## [Unreleased]
 
+## [5.16.82] - 2026-11-03
+
+### `open_file_native` 慢活挪进 spawn_blocking（审计 2026-11-03 第 3 项）
+
+- 旧形状是 `#[tauri::command(async)]` 贴同步 fn：canonicalize + 台账 DB 锁 + 系统打开
+  整段跑在 tokio worker 上（INV-P34 点名的形状）。现在投进 spawn_blocking 并等待，
+  返回值与错误语义不变。
+- 形状守卫 + 正控：摘掉 spawn_blocking 必须红。
+
+
 ## [5.16.81] - 2026-11-03
 
 ### 群消息通知标题改为「群名 · 发送者昵称」（审计 2026-11-03 第 2 项）

@@ -176,15 +176,30 @@ fn ledger_path_owns(
 /// 无 `owner` 的只剩收藏入口，只允许 `favorites_dir`。
 ///
 #[tauri::command(async)]
-pub fn open_file_native(
+pub async fn open_file_native(
     state: State<'_, Arc<AppState>>,
     path: String,
     owner: Option<String>,
 ) -> Result<(), String> {
-    let s = state.inner();
-    let requested = std::fs::canonicalize(&path).map_err(|e| e.to_string())?;
+    // 审计 2026-11-03 第 3 项：canonicalize + 台账 DB 锁 + 系统打开全是慢活，旧形状是
+    // `#[tauri::command(async)]` 贴**同步 fn** ⇒ 整段跑在 tokio worker 上（INV-P34 点名的形状）。
+    // 挪进 spawn_blocking 并**等它**：返回值与错误语义一字未变。
+    let s = state.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        open_file_native_blocking(&s, &path, owner.as_deref())
+    })
+    .await
+    .map_err(|e| format!("打开任务被线程池中断：{e}"))?
+}
 
-    let allowed = match owner.as_deref() {
+fn open_file_native_blocking(
+    s: &Arc<AppState>,
+    path: &str,
+    owner: Option<&str>,
+) -> Result<(), String> {
+    let requested = std::fs::canonicalize(path).map_err(|e| e.to_string())?;
+
+    let allowed = match owner {
         // 判据唯一份在 `owned_payload_rejection`（另存为 / 转发共用同一份，
         // 否则三条链必然漂移 —— 这正是 SEC-01 修好「打开」、另两条仍然裸奔的原因）。
         Some(msg_id) => match owned_payload_rejection(s, msg_id, &requested) {
@@ -210,7 +225,7 @@ pub fn open_file_native(
             "file",
             format!(
                 "code={code} 拒绝用系统默认应用打开 file={path} owner={}",
-                owner.as_deref().unwrap_or("-")
+                owner.unwrap_or("-")
             ),
         );
         return Err(match code {
@@ -224,7 +239,7 @@ pub fn open_file_native(
     // **ShellExecute 不支持 `\\?\` 前缀**（macOS 走 NSWorkspace、Android 走 FileProvider，才与它无关）。
     // 边界判定照旧用 canonical（能解掉 `..` 与符号链接），打开用原路径 —— 顺序不能反，
     // 反了就是"安全了，但你最常按的那个按钮在 Windows 上死了"。
-    crate::open_path::open_path_native(std::path::Path::new(&path))
+    crate::open_path::open_path_native(std::path::Path::new(path))
 }
 
 /// 「这条消息能否认领这个路径」的**唯一判据**（打开 / 另存为 / 转发三处共用）。

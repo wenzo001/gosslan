@@ -120,6 +120,26 @@ mod files_gate_tests {
         );
     }
 
+    /// 审计 2026-11-03 第 3 项：`open_file_native` 的慢活（canonicalize + 台账锁 + 系统打开）
+    /// 必须在 spawn_blocking 里且被等待 —— 旧形状是 async 宏贴同步 fn，整段占 tokio worker。
+    /// 正控：把 spawn_blocking 摘掉（改回同步体）第一条断言必须红。
+    #[test]
+    fn open_file_native_does_not_run_on_the_ipc_thread() {
+        let src = include_str!("files.rs");
+        let i = src
+            .find("pub async fn open_file_native(")
+            .expect("open_file_native 入口改名了，这条守卫要跟着重写");
+        let j = src
+            .find("fn open_file_native_blocking(")
+            .expect("blocking 内瓣不见了（慢活又回到 IPC 线程了）");
+        let head = &src[i..j];
+        assert!(
+            head.contains("spawn_blocking"),
+            "open_file_native 必须把慢活投进 spawn_blocking"
+        );
+        assert!(head.contains(".await"), "必须等 blocking 任务（返回值语义不变）");
+    }
+
     /// P0 #2 回归：三条「对端可控路径」出口必须**共用同一份**判据。
     ///
     /// 2026-10-27 复核暴露的形状正是"判据存在、但只在一条链上"：`open_file_native` 有
