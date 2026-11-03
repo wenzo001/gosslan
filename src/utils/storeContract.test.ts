@@ -924,10 +924,14 @@ test("message-failed 用事件自带的事实盖缓存，不再退化成一次�
   const st = stripComments(readFileSync(join(ROOT, "stores", "useChatStore.ts"), "utf8"));
 
   // 两条事件按"带不带结论"分家：各走各的处理器，出现次数钉死。
-  assert.equal(count(api, 'listen<string>("message-failed", (e) => h.onMessageFailed(e.payload))'), 1);
+  assert.equal(
+    count(api, 'listen<MessageFailedInfo>("message-failed", (e) => h.onMessageFailed(e.payload))'),
+    1,
+  );
   assert.equal(count(api, "h.onMessageStatusChanged(e.payload.msg_id, e.payload.status)"), 1, "message-status-changed 只能有一处监听");
   assert.equal(count(st, "onMessageFailed:"), 1, "store 里这个处理器必须存在且只有一份");
-  assert.equal(count(st, 'markStatusInCache(messages.value, msgId, "failed")'), 1);
+  // 5.16.91：载荷带 `fail_code`，必须连原因一起盖（只盖 status = 气泡说不出为什么）。
+  assert.equal(count(st, "markFailureInCache(messages.value, p.msg_id, p.fail_code)"), 1);
 
   // 非空转对照：把 message-failed 再接回状态变更那个处理器 ⇒ 两条计数必须同时错。
   const mutated = api.replace(
@@ -1159,4 +1163,69 @@ test("chat.init() 的 bindEvents 必须早于首轮业务刷新", () => {
     const at = body.indexOf(refresh, bindAt);
     assert.ok(at > bindAt, `${refresh} 必须排在 bindEvents 之后（启动窗口期事件不许丢）`);
   }
+});
+
+/** 取一个顶层函数体（从签名到「下一个两空格缩进的 `}`」）——只用于结构守卫。 */
+function storeFnBody(st: string, signature: string): string {
+  const start = st.indexOf(signature);
+  assert.ok(start >= 0, `找不到 ${signature} ⇒ 结构守卫失明`);
+  const end = st.indexOf("\n  }", start);
+  assert.ok(end > start, `找不到 ${signature} 的结尾 ⇒ 结构守卫失明`);
+  return st.slice(start, end);
+}
+
+/**
+ * 乐观更新判据的**落地**守卫（5.16.91）。
+ *
+ * 用户要求：判据必须落在一处真源（`useChatStore.ts` 注释块 + `@/utils/optimistic` 纯函数），
+ * 且**乐观层只改前端投影**，不得绕过库里 `WHERE status NOT IN (...)` 的硬终态守卫。
+ *
+ * 为什么这些断言值得钉：它们都不是"代码看起来像不像"，而是三条会静默出错的边界：
+ *  ① 判据只活在 ADR 里 ⇒ 下一个人新增动作时看不见，回到"拍脑袋乐观"；
+ *  ② `api.markRead` 长出第二个调用点 ⇒ 各自清未读、各自回滚，未读数会翻倍；
+ *  ③ 失败落定按 `local_id` 去命中"真实行" ⇒ 真实成功会被迟到失败改掉 msg_id。
+ */
+test("乐观更新判据落在 store 注释块，且回滚只走纯判据（5.16.91）", () => {
+  const raw = readFileSync(join(ROOT, "stores", "useChatStore.ts"), "utf8");
+  const st = stripComments(raw);
+
+  // ① 判据必须真的落在代码旁（`stripComments` 会把注释删掉，所以这里读原文）。
+  for (const needle of [
+    "乐观更新判据（5.16.91，唯一真源）",
+    "本地一次写库/入队成功即成立",
+    "失败能否干净回滚",
+    "状态是否必须以对方/远端为真",
+    "当前所有异步动作 → 归类",
+  ]) {
+    assert.ok(raw.includes(needle), `判据注释块缺「${needle}」⇒ 新增动作时没有一处可查的真源`);
+  }
+
+  // ② 已读回执只有一个发起口：`api.markRead` 只能出现在 `sendReadReceipt` 里。
+  assert.equal(count(st, "api.markRead("), 1, "已读回执只能有一个发起口（多一处 = 未读会被两边各清一次）");
+  const receipt = storeFnBody(st, "function sendReadReceipt(");
+  assert.equal(count(receipt, "api.markRead("), 1, "`api.markRead` 必须在 sendReadReceipt 内");
+  // 失败回滚必须是**加回**旧值，而不是赋回：await 期间新到的消息不能被吞掉。
+  assert.equal(count(receipt, "rollbackUnread(conv.unread, previous)"), 1);
+  // 只有「最新一次尝试」才能回滚（乱序：旧请求的失败不许再点亮红点）。
+  assert.ok(receipt.includes("markReadSeq.get(convId) !== seq"), "缺少「仅最新一次回滚」的序列守卫");
+
+  // ③ 本地清零只有一个家。
+  assert.equal(count(st, "conv.unread = 0"), 1, "`conv.unread = 0` 只许出现在 clearUnreadLocally");
+
+  // ④ 乐观层的失败落定：严格同 `msg_id` + 仍 `sending`；不许按 `local_id` 命中真实行。
+  const fail = storeFnBody(st, "function failOptimistic(");
+  assert.ok(fail.includes("pendingRollbackIndex(pending, msgId)"), "待落地批次必须走 optimistic.ts 的严格索引");
+  assert.ok(fail.includes("findByMsgId(messages.value[convId], msgId)"), "已在列表的行必须走 optimistic.ts 的唯一查找");
+  assert.equal(count(fail, "canApplyOptimisticFailure("), 2, "两条路径都必须过同一道严格判据（同 msg_id + 仍 sending）");
+  assert.equal(count(fail, "replaceOptimistic("), 0, "不许用 replaceOptimistic（它会按 local_id 命中真实行）");
+
+  // ⑤ 文件被拒时整条收回，不许再插 `file-failed-*` 幽灵气泡。
+  const fileFn = storeFnBody(st, "async function sendFileTo(");
+  assert.ok(fileFn.includes("dropOptimistic(convId, optimistic.msg_id)"), "sendFileTo 失败必须整条收回投影");
+  assert.equal(count(fileFn, "file-failed-"), 0, "拒绝发生在写库之前：留一条 file-failed-* 就是幽灵消息");
+
+  // 非空转对照：把严格判据换成按 local_id 找行 ⇒ 上面那条必须立刻不成立。
+  const mutated = fail.replace("canApplyOptimisticFailure(m, msgId)", "!!m.local_id");
+  assert.notEqual(mutated, fail, "对照注入没生效 ⇒ 这条对照什么都没测");
+  assert.equal(count(mutated, "canApplyOptimisticFailure("), 1, "对照后必须少一处（说明被量到的是真的判据）");
 });

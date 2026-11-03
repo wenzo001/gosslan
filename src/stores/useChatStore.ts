@@ -9,6 +9,7 @@ import {
   existingIdsFor,
   furthestStatus,
   mergeMessages,
+  markFailureInCache,
   markStatusInCache,
   freshMentionedConvs,
   findFirstMessageById,
@@ -36,6 +37,13 @@ import { shouldRunThrottled } from "@/utils/defer";
 import { createInitScope, type InitScope } from "@/utils/initScope";
 import { StaleGuard } from "@/utils/staleGuard";
 import { progressAdvanced, stallFlagAlive } from "@/utils/transferProgressWatch";
+import {
+  canApplyOptimisticFailure,
+  findByMsgId,
+  pendingRollbackIndex,
+  rollbackUnread,
+  summaryOwnedByProjection,
+} from "@/utils/optimistic";
 import { notifyTitle } from "@/utils/notifyTitle";
 import { createSingleFlight } from "@/utils/singleFlight";
 import { EMPTY_STRING_LIST } from "@/utils/emptyList";
@@ -113,6 +121,65 @@ import {
 
 /** 上次打开的会话（重启后恢复，纯前端 UI 状态，各端统一）。 */
 const LAST_CONV_KEY = "gosslan.lastConv";
+
+// ════════════════════════════════════════════════════════════════════════════
+// 乐观更新判据（5.16.91，唯一真源）
+//
+// 这里回答三个问题；新增异步动作**先按这张表归类**，再写代码。判据的纯函数在
+// `@/utils/optimistic`（可被 `node --test` 直接 import），本段只负责"什么算哪一类"。
+//
+// ## 三分法
+//
+// ① **可乐观**：本地一次写库/入队成功即成立，且失败能干净回滚。
+//    投影先上屏（气泡 / 未读 / 摘要），真实结果到达后落定；失败时把投影、
+//    未读数、会话摘要、任务中心条目**一起收回**。
+// ② **不可乐观（须远端为真）**：这个动作的意义就是"对方/服务端已经知道"。
+//    本地先画成功等于替对方撒谎（撤回、表情回应、强提醒、群成员变更、通话）。
+// ③ **先入队待重试**：本地先登记"我要做"，但没有本地真值可画；必须等后端 outbox
+//    确认后才能显示"已发出"，失败要能从队列里拿回来（合并转发、离线可发起类动作）。
+//
+// ## 三个判定问题（按顺序问，任一为"否"就降级）
+//
+// 1. **本地一次写库/入队成功即成立？**
+//    否 ⇒ 不可乐观（②）。例如"撤回"：本地删行不等于对方撤回。
+// 2. **失败能否干净回滚？**
+//    否 ⇒ 先入队待重试（③）。例如"合并转发到 N 个会话"：部分成功后无法把已完成的
+//    那几个"撤销"，只能登记成一条待重试任务。
+// 3. **状态是否必须以对方/远端为真？**
+//    是 ⇒ 不可乐观（②）。例如"已读回执"：本地清零可以乐观，但**对方看到的已读**
+//    必须以回执送达为真 —— 本批只做"本地侧"投影，回执失败只回滚红点，不假装对方已读。
+//
+// ## 当前所有异步动作 → 归类（新增动作必须补一行）
+//
+// | 动作 | 归类 | 说明 |
+// |------|------|------|
+// | 1:1 发消息 `send_message` | 可乐观 | **本批**：投影 + 摘要 + 失败回滚（气泡保留为 failed 供重试） |
+// | 1:1 重发（界面复用 `send` 按原内容新发一条） | 可乐观 | 与上行同一条判据，迟到失败同样丢弃 |
+// | 1:1 发文件/图片 `send_file_auto` | 可乐观 | **本批**：新增文件投影（带 local_id），拒绝时整条收回 |
+// | 群发消息 `send_group_message` | 可乐观 | 已有投影；群摘要/未读归群成员台账，本批不改 |
+// | 群发文件 `send_group_file` | 可乐观 | 真实行由后端 `message-received` 驱动，本批不改 |
+// | 逐条转发 / 合并转发（复用上面两条） | 先入队待重试 | 多目标无法整体回滚；合并转发需先解决离线门控（下一批） |
+// | 标记已读（本地侧）`mark_read` | 可乐观 | **本批**：先清零 + 失败把未读加回；"对方已读"仍以回执为真 |
+// | 删除会话 / 置顶会话 | 可乐观 | 本地库一次写；失败回滚列表状态 |
+// | 删除好友 / 同意·拒绝好友申请 | 可乐观 | 本地写 + 失败回滚；对方侧结果不在本地判据内 |
+// | 添加收藏 / 取消收藏 | 可乐观 | 纯本机数据 |
+// | 取消传输 / 任务中心取消 | 可乐观 | 本地先停，后端确认失败会重新出现在任务中心 |
+// | 撤回消息 | 不可乐观 | 本地删行 ≠ 对方撤回；必须等服务端帧 |
+// | 表情回应 | 不可乐观 | 回应是给对方看的，本地先画等于伪造 |
+// | 强提醒 | 不可乐观 | 对方是否收到以服务端/推送为真 |
+// | 窗口抖动 | 不可乐观 | 同上 |
+// | 群公告 / 群设置 / 成员增删 / 转让 / 退群 | 不可乐观 | 群成员可见的状态，必须远端为真 |
+// | 群历史同步 | 先入队待重试 | 后端后台任务；本地只画"同步中"，进度来自事件 |
+// | 群待办（创建/认领/完成/删除） | 不可乐观 | 群可见任务，落定以服务端行为准 |
+// | 发送好友申请 | 不可乐观 | "已发送"以对方收到为准 |
+// | 更新下载 / 安装 | 不可乐观 | 进度与成功必须来自真实下载器 |
+// | 导出 / 导入 / 清空数据 | 不可乐观 | 长事务，只有结束后才知道成败 |
+// | 网络/链路设置保存 | 不可乐观 | 可能触发重连，成功与否由后端运行态决定 |
+// | 外观/通知偏好保存 | 可乐观 | 本机偏好一次写；失败回滚开关 |
+//
+// 本批只落地上表前三行 + 标记已读；其余行只做归类，不改行为。
+// ════════════════════════════════════════════════════════════════════════════
+
 
 /**
  * 上一轮 `init()` 的注册容器。
@@ -978,6 +1045,66 @@ export const useChatStore = defineStore("chat", () => {
     scheduleFlush();
   }
 
+  // ---------------- 乐观投影的落定 / 回滚（5.16.91） ----------------
+
+  /** 会话摘要的投影前值（只在 1:1 发送时用；群摘要归群成员台账）。 */
+  interface SummaryBefore {
+    last_msg: string | null;
+    last_ts: number | null;
+  }
+
+  function captureSummary(convId: string): SummaryBefore | null {
+    const c = conversations.value.find((x) => x.id === convId);
+    return c ? { last_msg: c.last_msg, last_ts: c.last_ts } : null;
+  }
+
+  /**
+   * 回滚会话摘要：**只在当前摘要仍归这次投影**时收回。
+   * 期间若来了更新的消息，摘要已经易主 —— 覆盖它会把新消息挤下去（比不回滚更糟）。
+   */
+  function restoreSummaryIfOurs(convId: string, projectedTs: number, before: SummaryBefore | null) {
+    if (!before) return;
+    const conv = conversations.value.find((x) => x.id === convId);
+    if (!conv || !summaryOwnedByProjection(conv.last_ts ?? undefined, projectedTs)) return;
+    conv.last_msg = before.last_msg;
+    conv.last_ts = before.last_ts;
+    conversations.value = sortConversations(conversations.value);
+  }
+
+  /**
+   * 把乐观消息落成失败态（保留内容供重发）。
+   *
+   * ⚠️ 两道顺序守卫，缺一就是"UI 回退成错误状态"：
+   *  ① 还在待落地批次里 → 只改那一格（`applyIncoming` 已过滤 failed，不会顶摘要）；
+   *  ② 已在列表里 → 必须是**同一条** `msg_id` 且仍是 `sending`；真实结果先到（已 `sent` /
+   *     已被真实行替换）时**丢弃**这次迟到失败——不许按 `local_id` 命中真实行再改掉它的 id。
+   *
+   * @returns 是否真的落了失败态（`false` = 真实结果已先到，调用方不必再回滚摘要）
+   */
+  function failOptimistic(convId: string, msgId: string): boolean {
+    const p = pendingRollbackIndex(pending, msgId);
+    if (p >= 0) {
+      pending[p] = { ...pending[p], status: "failed" };
+      return true;
+    }
+    const row = findByMsgId(messages.value[convId], msgId);
+    if (!canApplyOptimisticFailure(row, msgId)) return false;
+    const hit = patchMessageInConv(messages.value, convId, msgId, (m) =>
+      canApplyOptimisticFailure(m, msgId) ? { ...m, status: "failed" } : m,
+    );
+    if (!hit) return false;
+    messages.value = hit.lists;
+    return true;
+  }
+
+  /** 整条收回一条还没落地的乐观投影（文件被拒时用：库里没有行，留下就是幽灵）。 */
+  function dropOptimistic(convId: string, msgId: string) {
+    pending = pending.filter((m) => m.msg_id !== msgId);
+    pendingReplace.delete(msgId);
+    const list = messages.value[convId];
+    if (list) messages.value = { ...messages.value, [convId]: list.filter((m) => m.msg_id !== msgId) };
+  }
+
   // ---------------- 刷新 ----------------
   /**
    * 后发先至守卫（审计阶段 4 · 4.2）。下面这些 `refresh*` 全是 `x.value = await api.foo()`，
@@ -1117,11 +1244,50 @@ export const useChatStore = defineStore("chat", () => {
    * 所以不许在别处再写一遍 `conv.unread = 0`（判据：`windowEntries` 之外的
    * `storeContract` 结构守卫 —— 见该文件里那条 "只有一个家"）。
    */
-  function clearUnreadLocally(convId: string) {
+  function clearUnreadLocally(convId: string): number {
     const conv = conversations.value.find((c) => c.id === convId);
+    const previous = conv?.unread ?? 0;
     if (conv && conv.unread !== 0) conv.unread = 0;
     // 水位打在**发起前**的这一刻：晚于快照发起 ⇒ 那份快照里的数字是旧的，不许点亮红点
     unreadClearedAt.set(convId, Date.now());
+    return previous;
+  }
+
+  /**
+   * 已读回执的**唯一发起口**（乐观清未读 + 失败回滚）。
+   *
+   * 为什么不再在各调用点写 `api.markRead(id).then(() => clearUnreadLocally(id))`：
+   * 那样"清未读"要等回执成功才发生（乐观更新名不副实），而且失败时没有任何人能把
+   * 红点放回去。这里先清零，失败再把清零前的量**加回**（不是赋回：await 期间新到的
+   * 消息也占着未读，不能一起吞掉）。
+   *
+   * 乱序：同一会话可能有多发（打开会话 / 去抖 / 通知动作 / 回前台）。只有**最新一次**
+   * 的回滚有效 —— 更早那次失败已经被后来的尝试取代，回滚它会把后来清掉的红点又点亮。
+   *
+   * @param alreadyClearedFrom 调用方**已经**清过未读时的原始值（`openConversation` 要在
+   *                           清未读之前先取 `unreadBefore` 做跳转锚点）。传了就不再清第二遍。
+   */
+  const markReadSeq = new Map<string, number>();
+  function sendReadReceipt(convId: string, alreadyClearedFrom?: number): Promise<void> {
+    const previous = alreadyClearedFrom ?? clearUnreadLocally(convId);
+    const seq = (markReadSeq.get(convId) ?? 0) + 1;
+    markReadSeq.set(convId, seq);
+    return api.markRead(convId).then(
+      () => {
+        // 成功：乐观清掉的就是真值。只有最新一次收尾才释放槽位（旧的让位给新的）。
+        if (markReadSeq.get(convId) === seq) markReadSeq.delete(convId);
+      },
+      (e) => {
+        // 真实结果（失败）到达：只有最新一次允许回滚；迟到的失败直接丢弃。
+        if (markReadSeq.get(convId) !== seq) return;
+        markReadSeq.delete(convId);
+        const conv = conversations.value.find((c) => c.id === convId);
+        if (conv && previous > 0) conv.unread = rollbackUnread(conv.unread, previous);
+        // 水位撤掉：库里的未读仍是原值，后续快照应以库为准（否则红点永远点不亮）。
+        unreadClearedAt.delete(convId);
+        app.toastError(e, t("chat.markReadFail"));
+      },
+    );
   }
 
   /**
@@ -1569,9 +1735,8 @@ export const useChatStore = defineStore("chat", () => {
           });
     // ReadReceipt 与消息加载并行：让对方尽早看到绿勾，且不拖慢本端渲染。
     // 原先这里发了两次 markRead（一次 void、末尾再一次 await），属重复 IPC，一并去掉。
-    const readReceipt = api.markRead(id).catch(() => {
-      /* 回执失败不回滚已读：本地确实已经看到了 */
-    });
+    // 失败会把上面乐观清掉的未读按原量加回（见 `sendReadReceipt`）。
+    const readReceipt = sendReadReceipt(id, unreadBefore);
     await Promise.all([loadMessages(id), ensureConv]);
     await readReceipt;
     if (unreadBefore > 0) {
@@ -2029,7 +2194,6 @@ export const useChatStore = defineStore("chat", () => {
       }));
       if (revertedHit) {
         messages.value = revertedHit.lists;
-        const reverted = revertedHit.rec;
         try {
           const rec = await sendToBackend(convId, content, kind, mentionIds);
           // Ack 可能已在 await 期间到达 ⇒ 直接提升到 delivered（与下面新建路径同一处理）
@@ -2044,7 +2208,9 @@ export const useChatStore = defineStore("chat", () => {
           void refreshTransfers();
           return rec;
         } catch (e) {
-          replaceMessage(convId, retryOfMsgId, { ...reverted, status: "failed" });
+          // 只有真实结果还没到（仍 sending）才落失败态；已先到的成功不许被迟到失败盖掉。
+          failOptimistic(convId, retryOfMsgId);
+          void refreshTransfers();
           throw e;
         }
       }
@@ -2067,6 +2233,8 @@ export const useChatStore = defineStore("chat", () => {
       status: "sending",
     };
     enqueueMessage(optimistic);
+    // 1:1 才捕获摘要：群摘要由群成员台账/后端快照驱动，本批不改群行为。
+    const summaryBefore = convId.startsWith("group:") ? null : captureSummary(convId);
     try {
       const rec = await sendToBackend(convId, content, kind, mentionIds, localId);
       // 如果 Ack 已在 await 期间到达：直接把 real record 提升到 delivered，
@@ -2079,8 +2247,15 @@ export const useChatStore = defineStore("chat", () => {
       void refreshTransfers();
       return rec;
     } catch (e) {
-      // 发送失败：乐观消息标记为失败态（保留内容，用户可重发）
-      replaceMessage(convId, optimistic.msg_id, { ...optimistic, status: "failed" });
+      // 发送失败：把投影落成失败态（保留内容，用户可重发）；若它已经把会话摘要顶上去，
+      // 一并收回（失败的行不许继续冒充"最新消息"）。真实结果已先到时 `failOptimistic`
+      // 返回 false，此时摘要属于真实消息，不能回滚。
+      if (failOptimistic(convId, optimistic.msg_id)) {
+        restoreSummaryIfOurs(convId, optimistic.ts, summaryBefore);
+      }
+      // 任务中心那一行**不伪造**：它只来自后端补发队列快照。这里补拉一次，
+      // 让"入队成功但稍后失败"的行按快照收掉，"根本没入队"的行本来就不存在。
+      void refreshTransfers();
       throw e;
     }
   }
@@ -2689,33 +2864,44 @@ export const useChatStore = defineStore("chat", () => {
   }
 
   /** 统一文件发送：后端自动路由（有直连走直连，无直连自动中继）。 */
-  async function sendFileTo(convId: string, path: string, msgId?: string) {
+  async function sendFileTo(
+    convId: string,
+    path: string,
+    msgId?: string,
+    kindHint?: "file" | "image",
+  ) {
     if (convId.startsWith("group:")) return null;
     const name = path.split(/[\\/]/).pop() ?? t("common.file");
+    // 乐观投影：点下即出现在底部。真实记录（后端返回前同步 emit 的 `message-received`）
+    // 带同一个 `local_id`，到达后原地替换；元数据（size/subtype/sha256）以真实记录为准。
+    const localId = crypto.randomUUID();
+    const kind =
+      kindHint ?? (/\.(png|jpe?g|gif|webp|bmp|heic|avif)$/i.test(name) ? "image" : "file");
+    const optimistic: MessageRecord = {
+      id: -1,
+      msg_id: `tmp-${localId}`,
+      local_id: localId,
+      conv_id: convId,
+      sender_id: app.device?.device_id ?? "",
+      receiver_id: convId,
+      kind,
+      content: JSON.stringify({ name, path, size: 0, sha256: "", subtype: kind }),
+      ts: Date.now(),
+      seq: Number.MAX_SAFE_INTEGER,
+      status: "sending",
+    };
+    enqueueMessage(optimistic);
+    const summaryBefore = captureSummary(convId);
     try {
-      const id = await api.sendFileAuto(convId, path, msgId);
+      const id = await api.sendFileAuto(convId, path, msgId, localId);
       void refreshTransfers();
-      // 后端 send_file 会在返回前同步 emit `message-received`（携带完整的
-      // name/size/subtype/path 记录），前端不再手工拼一个只有 name 的乐观气泡，
-      // 避免与真实记录因同 msg_id 去重竞态而丢失元数据。
       return id;
     } catch (e) {
-      // API 失败：插入明确 failed 状态的文件消息，不让消息永久停在 sending。
-      // 同一个值同时当 msg_id / local_id：它是本地独有行，列表 key 必须稳定。
-      const failedId = `file-failed-${Date.now()}`;
-      enqueueMessage({
-        id: -1,
-        msg_id: failedId,
-        local_id: failedId,
-        conv_id: convId,
-        sender_id: app.device?.device_id ?? "",
-        receiver_id: convId,
-        kind: "file",
-        content: JSON.stringify({ name }),
-        ts: Date.now(),
-        seq: Number.MAX_SAFE_INTEGER,
-        status: "failed",
-      });
+      // 拒绝发生在写库之前：库里没有这一行，投影必须**整条收回**（留下就是幽灵消息）。
+      // 若真实记录已经先到（替换掉了 `tmp-*`），`dropOptimistic` 找不到它，不会误删。
+      dropOptimistic(convId, optimistic.msg_id);
+      restoreSummaryIfOurs(convId, optimistic.ts, summaryBefore);
+      void refreshTransfers();
       app.toastError(e, t("send.fileFail"));
       return null;
     }
@@ -2776,8 +2962,10 @@ export const useChatStore = defineStore("chat", () => {
         void refreshTransfers();
         return id;
       }
-      const id = await api.sendFileAuto(convId, path);
-      void refreshTransfers();
+      // 单聊走同一条文件链路 ⇒ 与"发文件"共用乐观投影 / 收回 / 摘要回滚。
+      const id = await sendFileTo(convId, path, undefined, "image");
+      // `sendFileTo` 已在失败时收回投影并给出原因；这里只补"孤儿图片"清理。
+      if (id === null) await api.deleteFile(path).catch(() => {});
       return id;
     } catch (e) {
       // 初始化失败：清理孤儿图片，避免 downloads 目录堆积垃圾
@@ -3038,7 +3226,7 @@ export const useChatStore = defineStore("chat", () => {
         //  判已读等于替用户撒谎、还会把回执发回去。用户 2026-09-12 实测报告）。
         // 这份口径的家是 `chatViewerLooking()` —— 「有人@我」那条也读它，不许在这里再手写一遍。
         if (activeConv.value !== convId || !chatViewerLooking()) return;
-        void api.markRead(convId).then(() => clearUnreadLocally(convId));
+        void sendReadReceipt(convId);
       }, 300);
     };
     // 去抖里还排着一次 markRead：拆掉它，否则一个绑在废弃实例上的已读回执会在
@@ -3191,13 +3379,16 @@ export const useChatStore = defineStore("chat", () => {
         if (changed > 0) app.toast(t("msg.canceled"), "info");
         void refreshTransfers();
       },
-      onMessageFailed: (msgId) => {
-        // 事件本身带终态事实：`outbox_sweep` 先把 `messages.status` 写成 failed 再 emit。
-        // 所以这里**不回库查**，直接把这一事实盖到所有缓存了它的会话（含没在看的会话），
-        // 与 `onFileCancelled` 同一形状。
+      onMessageFailed: (p) => {
+        // 事件本身带终态事实：`outbox_sweep` 先把 `messages.status = failed` 与
+        // `messages.fail_code` 写好才 emit。所以这里**不回库查**，直接把这一事实盖到
+        // 所有缓存了它的会话（含没在看的会话），与 `onFileCancelled` 同一形状。
         // 旧写法把它接到 `onMessageStatusChanged` 上，两头都不对：没在看的会话什么都不做
         //（只能等下次打开重查），正在看的会话为了一行状态重拉一整页 + 整列表重建。
-        markStatusInCache(messages.value, msgId, "failed");
+        //
+        // 5.16.91：载荷多了 `fail_code` ⇒ 连原因一起盖。只盖 status 也能"看起来对"，
+        // 但气泡会退回"发送失败"这句没有信息量的话，直到重启后回库读 —— 而码明明就在事件里。
+        markFailureInCache(messages.value, p.msg_id, p.fail_code);
       },
       onMessageStatusChanged: (msgId, status) => {
         // 后端 emit 的状态变更事件（取消 / 补发 / 删好友 / 群文件终态）。
@@ -3357,7 +3548,7 @@ export const useChatStore = defineStore("chat", () => {
         if (!convId && raw.extra?.conv_id) convId = String(raw.extra.conv_id);
         if (id != null) notifMap.delete(id);
         if (convId) {
-          void api.markRead(convId).then(() => clearUnreadLocally(convId));
+          void sendReadReceipt(convId);
         }
         return;
       }
@@ -3408,7 +3599,7 @@ export const useChatStore = defineStore("chat", () => {
         // 刻意先把 id 取进局部变量：await 期间用户可能已经切走，回调里再读
         // `activeConv.value` 会把**新**会话的红点清掉而根本没给它发已读。
         const convId = activeConv.value;
-        void api.markRead(convId).then(() => clearUnreadLocally(convId));
+        void sendReadReceipt(convId);
       }
     };
     document.addEventListener("visibilitychange", onVisibility);

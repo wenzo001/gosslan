@@ -6384,3 +6384,32 @@ test("设置落库失败必须上屏（B1-F4）", () => {
     );
   }
 });
+
+/**
+ * 「成功无感」：转发成功的反馈来自消息本身（乐观投影已经出现在目标会话底部），
+ * 不再额外弹一条 toast。5.16.91 删掉了三处 `chat.toast.forwarded`。
+ *
+ * 为什么值得钉：这类"成功提示"删掉之后没人会再想起来加回去 —— 但加回去就是
+ * 每次转发都打断用户一次。失败提示**必须留着**（删的只是成功那条），
+ * 所以这条同时有正控（两个文件仍报失败）。
+ */
+test("转发成功不再弹 toast（成功无感；失败提示必须保留）", () => {
+  const read = (p: string) => readFileSync(join(import.meta.dirname, "..", "components", p), "utf8");
+  for (const f of ["ChatWindow.vue", "FavoritePanel.vue"]) {
+    const src = read(f);
+    assert.equal(
+      src.includes('t("chat.toast.forwarded")'),
+      false,
+      `${f} 又在转发成功时弹 toast 了 ⇒ 成功无感被回退`,
+    );
+    assert.ok(
+      src.includes('toastError(e, t("chat.toast.forwardFail"))'),
+      `${f} 连失败提示都没了 ⇒ 转发失败会静默`,
+    );
+  }
+  // 死键不留：两册词典里也不许再有这条（否则 i18n 死键守卫会红，这里给更直白的定位）。
+  for (const f of ["zh-cn.ts", "en-us.ts"]) {
+    const dict = readFileSync(join(import.meta.dirname, "..", "i18n", "locales", f), "utf8");
+    assert.equal(dict.includes('"chat.toast.forwarded"'), false, `${f} 还留着已无引用的 chat.toast.forwarded`);
+  }
+});

@@ -1675,7 +1675,9 @@ fn clear_all_data_must_not_wipe_the_inflight_gate() {
 #[test]
 fn file_command_rejections_are_traced_not_silent() {
     let src = include_str!("commands/files.rs");
-    let calls = src.matches("reject_file(").count() - 1;
+    // 两种留痕出口都算（5.16.91 拆出 `reject_file_coded`：同步拒绝要在返回值里带回稳定码）。
+    // 分母 = 两个函数定义各 1 次，其余全是调用点。
+    let calls = src.matches("reject_file(").count() + src.matches("reject_file_coded(").count() - 2;
     assert_eq!(calls, 7, "留痕调用点数变了（{calls}）⇒ 本判据的分母要跟着改");
     for (action, reason) in [
         ("delete", "outside_downloads"),
@@ -1685,10 +1687,13 @@ fn file_command_rejections_are_traced_not_silent() {
         ("send", "not_friend"),
         ("send", "not_regular_file"),
     ] {
-        let paired = src.split("reject_file(").skip(1).any(|tail| {
-            let head = tail.split(';').next().unwrap_or("");
-            head.contains(&format!("\"{action}\"")) && head.contains(&format!("\"{reason}\""))
-        });
+        let mut paired = false;
+        for needle in ["reject_file(", "reject_file_coded("] {
+            paired |= src.split(needle).skip(1).any(|tail| {
+                let head = tail.split(';').next().unwrap_or("");
+                head.contains(&format!("\"{action}\"")) && head.contains(&format!("\"{reason}\""))
+            });
+        }
         assert!(
             paired,
             "{action}/{reason} 没有并排出现在同一个 reject_file( … ) 里 ⇒ 这一格又变回静默"

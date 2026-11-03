@@ -379,6 +379,17 @@ export interface FileFailedInfo {
   reason: string;
 }
 
+/**
+ * `message-failed` 事件载荷（5.16.91，与 Rust `outbox_sweep::MessageFailedInfo` 同形）。
+ *
+ * `fail_code` 是**刚写进 `messages.fail_code` 的那一个码**（outbox 判死 = `SEND_RETRY_EXPIRED`）。
+ * 事件与库同源：前端据此立刻让气泡说出原因，不必等重启后回库读。
+ */
+export interface MessageFailedInfo {
+  msg_id: string;
+  fail_code: string;
+}
+
 /** 对方已读回执（peer-read 事件载荷） */
 export interface PeerReadInfo {
   peer_id: string;
