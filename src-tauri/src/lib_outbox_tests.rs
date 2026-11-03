@@ -480,10 +480,14 @@ fn runtime_diag_reporter_is_wired_once_and_covers_webviews_and_queues() {
         "FROM outbox",
         "FROM group_outbox",
         "FROM file_outbox",
+        // 日志自身的 IO 自测读数：用户拿 `fs_usage` 复测时靠这两个字段直接对照，
+        // 缺了就只能再靠人肉数进程 —— 这正是 2026-11-03 那次归因要重做的原因。
+        "file_opens={}",
+        "file_syncs={}",
     ] {
         assert!(
             body.contains(needle),
-            "运行态快照缺 {needle} —— 窗口泄漏/队列积压就又没有现场读数了"
+            "运行态快照缺 {needle} —— 窗口泄漏/队列积压/日志 IO 就又没有现场读数了"
         );
     }
 }
