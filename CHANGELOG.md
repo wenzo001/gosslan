@@ -13,6 +13,18 @@
 
 ## [Unreleased]
 
+## [5.16.78] - 2026-11-03
+
+### BLE 失败族具名错误码 + 诊断包错误码聚合（R1，只留痕不改行为）
+
+- `code=BLE_ADAPTER_NOT_READY / BLE_ADAPTER_INIT_FAILED / BLE_ADAPTER_ENUM_FAILED /
+  BLE_ADAPTER_MISSING / BLE_SCAN_FAILED / BLE_SCAN_EMPTY / BLE_ADVERTISE_FAILED /
+  BLE_PERIPHERAL_REGISTER_FAILED / BLE_PERIPHERAL_STATE_CHANNEL_CLOSED`，
+  权限族由 `ble_peripheral_state_code` 归到 `code=BLE_UNAUTHORIZED`，其余 `BLE_PERIPHERAL_UNAVAILABLE`。
+- 诊断包头部新增「错误码聚合 Top 10」：拿到包先看码表归族，不用先翻几百 KB 日志。
+- 行为级测试：注入权限族/非权限族措辞断言分类 + 逐码断言留痕点 + 聚合计数正控。
+
+
 ## [5.16.77] - 2026-11-03
 
 ### 群文件面板补独立取消入口（产品原则 1 缺口）

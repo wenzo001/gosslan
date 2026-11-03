@@ -155,21 +155,21 @@ pub mod driver {
         // `panic = "abort"`（整进程消失，用户实测的闪退）。这里提前返回 Err，UI 顶多显示"蓝牙不可用"。
         #[cfg(target_os = "android")]
         if !crate::transport::ble_android::droidplug_ready() {
-            return Err("Android 蓝牙后端尚未就绪（btleplug droidplug 未初始化）—— \
+            return Err("code=BLE_ADAPTER_NOT_READY Android 蓝牙后端尚未就绪（btleplug droidplug 未初始化）—— \
                  若是 release 包，检查 proguard 是否保留了 com.nonpolynomial.btleplug.**"
                 .to_string());
         }
         let manager = Manager::new()
             .await
-            .map_err(|e| format!("蓝牙管理器初始化失败：{e}"))?;
+            .map_err(|e| format!("code=BLE_ADAPTER_INIT_FAILED 蓝牙管理器初始化失败：{e}"))?;
         let adapters = manager
             .adapters()
             .await
-            .map_err(|e| format!("枚举蓝牙适配器失败：{e}"))?;
+            .map_err(|e| format!("code=BLE_ADAPTER_ENUM_FAILED 枚举蓝牙适配器失败：{e}"))?;
         let adapter = adapters
             .into_iter()
             .next()
-            .ok_or_else(|| "没有可用的蓝牙适配器".to_string())?;
+            .ok_or_else(|| "code=BLE_ADAPTER_MISSING 没有可用的蓝牙适配器".to_string())?;
         // 本机适配器自己的地址（平台不暴露时为 None）—— 由调用方写进日志，
         // 因为 driver 这一层没有 logger（见本函数文档注释里的理由）。
         let local_addr = match adapter.adapter_address().await {

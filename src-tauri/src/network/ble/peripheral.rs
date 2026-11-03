@@ -101,6 +101,23 @@ fn stop_peripheral_and_drain(server: &mut peripheral::PeripheralServer, state: &
     drain_peripheral_events(server, state);
 }
 
+/// 外设角色状态错误的具名码分类（R1）：权限族措辞归 `BLE_UNAUTHORIZED`，其余归
+/// `BLE_PERIPHERAL_UNAVAILABLE`。抽成纯函数是为了"注入各失败态断言码"有注入口 ——
+/// 平台真失败态没法在单测里造，但**分类决策**可以。
+pub(crate) fn ble_peripheral_state_code(e: &str) -> &'static str {
+    let low = e.to_ascii_lowercase();
+    if low.contains("unauthorized")
+        || low.contains("denied")
+        || low.contains("permission")
+        || low.contains("未授权")
+        || low.contains("权限")
+    {
+        "BLE_UNAUTHORIZED"
+    } else {
+        "BLE_PERIPHERAL_UNAVAILABLE"
+    }
+}
+
 /// 启动外设角色。失败只记日志：能扫别人但别人连不上我们，属于**降级**而不是故障，
 /// 不该把整个蓝牙开关判为不可用（LAN 更不受影响）。
 #[cfg(any(target_os = "macos", target_os = "windows", target_os = "android"))]
@@ -110,7 +127,7 @@ async fn start_peripheral(state: Arc<AppState>, shutdown: watch::Receiver<bool>)
         Err(e) => {
             state.logger.warn(
                 "ble",
-                format!("蓝牙外设角色未启动（central 角色不受影响，仍可主动连别人）：{e}"),
+                format!("code=BLE_PERIPHERAL_REGISTER_FAILED 蓝牙外设角色未启动（central 角色不受影响，仍可主动连别人）：{e}"),
             );
             return;
         }
@@ -125,15 +142,16 @@ async fn start_peripheral(state: Arc<AppState>, shutdown: watch::Receiver<bool>)
         Ok(Ok(Err(e))) => {
             state.logger.warn(
                 "ble",
-                format!("蓝牙外设角色不可用（central 角色不受影响）：{e}"),
+                format!("code={} 蓝牙外设角色不可用（central 角色不受影响）：{e}", ble_peripheral_state_code(&e.to_string())),
             );
             stop_peripheral_and_drain(&mut startup.server, &state);
             return;
         }
         Ok(Err(_)) => {
-            state
-                .logger
-                .warn("ble", "蓝牙外设角色的状态回调通道被关闭，放弃启动");
+            state.logger.warn(
+                "ble",
+                "code=BLE_PERIPHERAL_STATE_CHANNEL_CLOSED 蓝牙外设角色的状态回调通道被关闭，放弃启动",
+            );
             stop_peripheral_and_drain(&mut startup.server, &state);
             return;
         }
