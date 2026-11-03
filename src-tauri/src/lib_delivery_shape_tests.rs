@@ -873,7 +873,10 @@ fn group_key_fanout_never_skips_a_member_silently() {
 #[test]
 fn group_command_rejections_are_traced_not_silent() {
     let src = include_str!("commands/group_files.rs");
-    let calls = src.matches("reject(s,").count();
+    // 只把空白折叠掉：外套 `coded(码, reject(...))` 后 rustfmt 会把参数拆成多行，
+    // 但"每个调用点都把 action 与 reason 并排"这条形状判据没变。
+    let flat: String = src.split_whitespace().collect();
+    let calls = flat.matches("reject(s,").count();
     assert_eq!(calls, 9, "拒绝留痕的调用点数变了（{calls}）⇒ 本判据的分母要跟着改");
     for (action, reason) in [
         ("remind", "target_missing"),
@@ -886,9 +889,9 @@ fn group_command_rejections_are_traced_not_silent() {
         ("announcement", "not_owner"),
         ("announcement_delete", "not_owner"),
     ] {
-        let needle = format!("\"{action}\", \"{reason}\"");
+        let needle = format!("\"{action}\",\"{reason}\"");
         assert!(
-            src.contains(&needle),
+            flat.contains(&needle),
             "少了一格拒绝留痕：{needle}（{action}/{reason} 不再进日志 ⇒ 这一格又变回静默）"
         );
     }

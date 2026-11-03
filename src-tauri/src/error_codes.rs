@@ -429,6 +429,23 @@ pub const GROUP_TODO_IMAGE_TOO_LARGE: &str = "GROUP_TODO_IMAGE_TOO_LARGE";
 /// 收藏批量删除超过一次上限。
 pub const FAVORITE_DELETE_BATCH_TOO_LARGE: &str = "FAVORITE_DELETE_BATCH_TOO_LARGE";
 
+// ── B6 第十三批：群管理里 reject 族的原话 ──────────────────────────────────
+//
+// 这些走 `reject()`（已带 action+reason 留痕）但返回给前端的是裸中文。
+// 用 `coded(码, reject(...))` 外套一层：日志留痕与文案一字不丢，前端多一个可认的码。
+/// 群待办：被指派的人已经不在群里。
+pub const GROUP_TODO_ASSIGNEE_NOT_MEMBER: &str = "GROUP_TODO_ASSIGNEE_NOT_MEMBER";
+/// 群待办：当前成员无权编辑该任务（human 带底层原因）。
+pub const GROUP_TODO_EDIT_FORBIDDEN: &str = "GROUP_TODO_EDIT_FORBIDDEN";
+/// 群待办：状态不允许归档。
+pub const GROUP_TODO_ARCHIVE_STATE_INVALID: &str = "GROUP_TODO_ARCHIVE_STATE_INVALID";
+/// 群公告：只有群主可以发布/删除。
+pub const GROUP_ANNOUNCEMENT_OWNER_ONLY: &str = "GROUP_ANNOUNCEMENT_OWNER_ONLY";
+/// 群提醒：一个提醒对象都没选。
+pub const GROUP_REMIND_TARGET_REQUIRED: &str = "GROUP_REMIND_TARGET_REQUIRED";
+/// 群提醒：选中的提醒对象都已不在群里。
+pub const GROUP_REMIND_TARGETS_GONE: &str = "GROUP_REMIND_TARGETS_GONE";
+
 /// 给"可能已经带码"的下层错误补码：已带 `code=` 就原样透传，避免叠成两个码。
 ///
 /// 典型场景：通道启动会把 `network::start_from_prefs` 的 `PORT_IN_USE` 透传上来，
