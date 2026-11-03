@@ -92,6 +92,8 @@ mod tests {
             "\n",
             include_str!("db/groups.rs"),
             "\n",
+            include_str!("db/message_lifecycle.rs"),
+            "\n",
             include_str!("db/messages.rs"),
             "\n",
             include_str!("db/conversations.rs"),

@@ -291,8 +291,8 @@ pub struct PendingMessageOp {
     /// 与 `file_transfers` 那条 `blocked_reason='peer_offline'` 同一口径 ——
     /// "离线"这个判断只此一个出处，不在前端按 `peers` 列表再猜一遍。
     pub peer_offline: bool,
-    /// 这一行**现在点取消会不会成功**（与 `cancel_queued_message` 同一判据：
-    /// 消息状态还没到 `delivered/read/recalled/cancelled`）。
+    /// 这一行**现在点取消会不会成功**（与 `cancel_queued_message` 同一判据，
+    /// 本体就是 `message_lifecycle::direct_cancel_verdict` —— 不要在这一侧再写一遍）。
     /// 为什么不让前端自己猜：群消息只要**任一成员** Ack 过就会把消息状态推成
     /// `delivered`，但其余成员的队列行还在 ⇒ 任务中心仍该列出"还有几个人没收到"，
     /// 而取消已经被后端拒绝。界面给一颗点了一定弹"已送达，不能取消"的按钮，
@@ -389,9 +389,13 @@ pub fn list_pending_message_operations(
             created_at,
             preview,
             peer_offline: false,
-            // 被上面的 WHERE 过滤后，唯一不可取消的只剩"消息行根本没了的孤儿队列行"：
-            // 后端取消会回 NotFound，界面不该给一颗注定失败的按钮。
-            can_cancel: status.is_some(),
+            // 与 `cancel_queued_message` 共用 `direct_cancel_verdict`：被上面的 WHERE
+            // 过滤后，唯一不可取消的只剩"消息行根本没了的孤儿队列行"（后端会回
+            // NotFound，界面不该给一颗注定失败的按钮）。
+            can_cancel: matches!(
+                direct_cancel_verdict(status.as_deref()),
+                DirectCancelVerdict::Allowed
+            ),
             some_delivered: false,
             failed: false,
             fail_code: None,
@@ -908,11 +912,12 @@ pub fn cancel_queued_message(conn: &Connection, msg_id: &str) -> Result<MessageC
             |r| r.get(0),
         )
         .optional()?;
-    let Some(status) = status else {
-        return Ok(MessageCancelOutcome::NotFound);
-    };
-    if matches!(status.as_str(), "delivered" | "read" | "recalled") {
-        return Ok(MessageCancelOutcome::AlreadyDelivered);
+    match direct_cancel_verdict(status.as_deref()) {
+        DirectCancelVerdict::NotFound => return Ok(MessageCancelOutcome::NotFound),
+        DirectCancelVerdict::AlreadyDelivered => {
+            return Ok(MessageCancelOutcome::AlreadyDelivered)
+        }
+        DirectCancelVerdict::Allowed => {}
     }
     // 队列行必须在**状态之前**删：先写 cancelled 再删的话，中间那一刻的 Ack 仍能命中
     // outbox 行并把状态推成 delivered（两把锁之间没有别的事务，但顺序让结论更难读）。
