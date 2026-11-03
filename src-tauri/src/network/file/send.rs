@@ -429,7 +429,7 @@ impl Drop for PendingCompleteGuard<'_> {
 ///   · `min(enqueued)`：计数器按 transfer_id 记，万一残留着上一次尝试的更大值，
 ///     进度也绝不能超过本机已经读出来的字节；
 ///   · `min(size)`：最后一片是短片，按整片折算会越过文件总大小（进度 >100%）。
-fn wire_progress_bytes(
+pub(crate) fn wire_progress_bytes(
     from_bytes: u64,
     chunk_size: usize,
     enqueued: u64,
