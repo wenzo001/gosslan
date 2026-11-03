@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { t } from "@/i18n";
+import { localizeLastMsg } from "@/utils/messages";
 import { fmtConversationTime } from "@/utils/time";
 import { avatarSeedFor, type AvatarSeed } from "@/utils/avatarSeed";
 import { computed } from "vue";
@@ -260,10 +261,10 @@ const gridTiles = computed(() => {
         <span
           class="truncate text-meta leading-5"
           :class="active ? 'text-[var(--gosslan-list-active-text)] opacity-90' : 'text-[var(--gosslan-text-2)]'"
-          :title="conv.last_msg || t('msg.noMessage')"
+          :title="conv.last_msg ? localizeLastMsg(conv.last_msg) : t('msg.noMessage')"
         >
           <span v-if="mentioned" class="font-medium text-[var(--gosslan-danger-ink)]">{{ t("msg.mentioned") }}</span
-          >{{ conv.last_msg || t("msg.noMessage") }}
+          >{{ conv.last_msg ? localizeLastMsg(conv.last_msg) : t("msg.noMessage") }}
         </span>
       </div>
     </div>

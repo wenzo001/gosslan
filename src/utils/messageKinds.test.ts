@@ -9,7 +9,6 @@ import {
   CARD_KINDS,
   SILENT_KINDS,
   TIP_KINDS,
-  UNSUPPORTED_KIND_LABEL,
   isKnownKind,
   isForwardableKind,
   isTransferKind,
@@ -28,6 +27,8 @@ import {
   MSG_GAP_NEW,
   MSG_GAP_TIGHT,
 } from "./messageKinds.ts";
+import { PREVIEW_LABEL_KEYS } from "./messages.ts";
+import { zhCN } from "../i18n/locales.ts";
 import {
   TODO_CATEGORIES,
   TODO_CATEGORY_DEFAULT,
@@ -103,7 +104,9 @@ test("跨语言契约：kind 分类与 protocol.rs 的 WIRE_KINDS 一致", () =>
 test("跨语言契约：未知 kind 判据与占位文案与 protocol.rs 一致", () => {
   const label = protocolRs.match(/pub const UNSUPPORTED_PREVIEW_LABEL: &str = "([^"]+)"/)?.[1];
   assert.ok(label, "应在 protocol.rs 找到 UNSUPPORTED_PREVIEW_LABEL");
-  assert.equal(UNSUPPORTED_KIND_LABEL, label, "两侧占位文案必须一字不差");
+  // 占位文案已走 `t("msg.preview.unsupported")`（界面跟着语言走）；库侧/通知侧由 Rust 写，
+  // 所以对账点是 zh-CN 词典的那一条 —— 它变了英文界面就认不出历史摘要里的旧标记。
+  assert.equal(zhCN["msg.preview.unsupported"], label, "两侧占位文案必须一字不差");
 
   const table = protocolRs.slice(
     protocolRs.indexOf("pub const WIRE_KINDS"),
@@ -637,18 +640,15 @@ test("跨语言契约：已读推进的排除清单两侧逐项一致（DUP-09�
 /**
  * **跨层对账：会话预览的固定文案**（2026-10-29 审计 DUP-12）。
  *
- * `previewBody`（TS，列表显示）与 `preview_text`（Rust，通知与库侧摘要）手抄了同一组
- * `[文件]`/`[图片]`/… 字面量。两侧漂移的代价是"同一句话在列表和通知里不一样"。
+ * 预览文案现在分两侧：**界面**由 TS 按 key 取词（`t("msg.preview.*")`），**库里/通知**由
+ * Rust `preview_text` 写中文常量。两侧漂移的代价是"同一句话在列表和通知里不一样"，而且
+ * 英文界面里的历史摘要再也换不过来（`messages.ts::localizeLastMsg` 按 zh-CN 值认前缀）。
+ * 所以对账点是 **zh-CN 词典的值 vs Rust 字面量**，逐项相等。
  *
- * 只比**独立字符串字面量**（`return "[X]";` 与 `=> "[X]"`），不比模板串与注释：
- * TS 那边的 `[任务] ${title}` 是带正文的模板，Rust 那边对应逻辑在 `todo_preview` 等
- * 三个小函数里 —— 所以把它们的函数体也算进 Rust 一侧。
+ * 只比**独立字符串字面量**（`"[X]"` 与 `=> "[X]"` / `.to_string()`），不比模板串：
+ * `[任务] {title}` 这类带正文的模板在两侧都由格式化拼出来，不在这条契约里。
  */
 test("跨语言契约：会话预览的固定文案两侧一致（DUP-12）", () => {
-  const here = dirname(fileURLToPath(import.meta.url));
-  const ts = readFileSync(join(here, "messages.ts"), "utf8");
-  const tsBody = ts.slice(ts.indexOf("export function previewBody"), ts.indexOf("export function previewText"));
-
   /** 取一个 Rust 函数的函数体（按行首 `}` 收尾；本项目这几处没有嵌套到列 0 的花括号）。 */
   const rustFn = (src: string, name: string): string => {
     const at = src.indexOf(`fn ${name}(`);
@@ -658,15 +658,25 @@ test("跨语言契约：会话预览的固定文案两侧一致（DUP-12）", ()
   };
   const rsBody = [
     rustFn(protocolRs, "preview_text"),
+    rustFn(protocolRs, "merge_summary"),
     rustFn(protocolRs, "todo_preview"),
     rustFn(protocolRs, "poll_preview"),
     rustFn(protocolRs, "announcement_preview"),
   ].join("\n");
 
-  const tsLabels = [...new Set([...tsBody.matchAll(/return "(\[[^\]]{1,8}\])";/g)].map((m) => m[1]))].sort();
-  const rsLabels = [
-    ...new Set([...rsBody.matchAll(/=> "(\[[^\]]{1,8}\])"(?:\.to_string\(\))?/g)].map((m) => m[1])),
+  const tsLabels = [
+    ...new Set(Object.values(PREVIEW_LABEL_KEYS).map((key) => zhCN[key])),
   ].sort();
-  assert.ok(tsLabels.length >= 8, `TS 只解析出 ${tsLabels.length} 个预览标签 ⇒ 解析器坏了`);
+  // 未知 kind 的占位是 Rust 的一个常量（`_ => UNSUPPORTED_PREVIEW_LABEL`），不是行内字面量，
+  // 正则扫不到 —— 单独收进来，否则这一项只在“另一条测试”里被比过，仍可能漂移。
+  const unsupported = protocolRs.match(/pub const UNSUPPORTED_PREVIEW_LABEL: &str = "([^"]+)"/)?.[1];
+  assert.ok(unsupported, "应在 protocol.rs 找到 UNSUPPORTED_PREVIEW_LABEL");
+  const rsLabels = [
+    ...new Set([
+      ...[...rsBody.matchAll(/=> "(\[[^\]]{1,8}\])"(?:\.to_string\(\))?/g)].map((m) => m[1]),
+      unsupported,
+    ]),
+  ].sort();
+  assert.ok(tsLabels.length >= 12, `TS 只解析出 ${tsLabels.length} 个预览标签 ⇒ 解析器坏了`);
   assert.deepEqual(tsLabels, rsLabels, "预览文案两侧必须逐项一致");
 });

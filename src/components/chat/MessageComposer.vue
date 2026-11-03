@@ -6,6 +6,7 @@ import { useAppStore } from "@/stores/useAppStore";
 import { MAX_PASTED_IMAGE_BYTES, PASTED_IMAGE_LIMIT_MB } from "@/utils/imageBytes";
 import EmojiPicker from "@/components/EmojiPicker.vue";
 import { QUOTE_BORDER, QUOTE_BG, QUOTE_TEXT_STYLE } from "@/utils/quoteStyle";
+import { buildQuoteHeader } from "@/utils/quote";
 import { useExclusivePopup } from "@/composables/useExclusivePopup";
 import { clearComposerDraft, getComposerDraft, saveComposerDraft } from "@/utils/composerDrafts";
 import { PopoverContent, PopoverPortal, PopoverRoot, PopoverTrigger } from "reka-ui";
@@ -284,8 +285,8 @@ function send(kind?: MsgKind, content?: string) {
   }
   if (k === "text" && !text.trim()) return;
   if (k === "text" && props.quote && text.trim()) {
-    const idSuffix = props.quote.msgId != null ? `|${props.quote.msgId}` : "";
-    text = `「引用 ${props.quote.sender}：${props.quote.snippet}${idSuffix}」\n${text}`;
+    // 引用头只在 `quote.ts` 构造一次（线上格式，见那里的注释）；这里不再自己拼字面量。
+    text = `${buildQuoteHeader(props.quote.sender, props.quote.snippet, props.quote.msgId)}\n${text}`;
   }
   // 清空 DOM 前先把名单读走；非文本（代码 / 由 content 参数直接发的那些）不带名单
   const mentionIds = content === undefined && k === "text" ? draftMentionIds(text) : undefined;

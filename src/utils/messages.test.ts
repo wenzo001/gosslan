@@ -23,6 +23,7 @@ import {
   preserveDeliveryStatus,
   previewBody,
   previewText,
+  localizeLastMsg,
   selectCachedConversations,
   sortConversations,
   syncProfileFromPeers,
@@ -33,6 +34,7 @@ import {
   markStatusInCache,
   statusSnapshotFor,
 } from "./messages.ts";
+import { applyPreference } from "../i18n/index.ts";
 import type { Conversation, MessageRecord } from "../types";
 
 function msg(partial: Partial<MessageRecord> & { msg_id: string }): MessageRecord {
@@ -134,87 +136,133 @@ test("重复到达同一条真实记录：幂等，不产生第二行", () => {
   assert.equal(out.length, 1);
 });
 
-test("previewText：文件/图片/代码显示特殊标记", () => {
-  assert.equal(previewText(msg({ msg_id: "x", kind: "file", content: "{}" })), "[文件]");
-  // 旧格式 data URL 与新格式 JSON 元数据都应显示 [图片]，不能泄露 JSON 内容
-  assert.equal(previewText(msg({ msg_id: "x", kind: "image", content: "data:" })), "[图片]");
-  assert.equal(
-    previewText(msg({ msg_id: "x", kind: "image", content: '{"name":"a.png","path":"/x/a.png","size":1}' })),
-    "[图片]",
-  );
-  assert.equal(previewText(msg({ msg_id: "x", kind: "code", content: "fn()" })), "[代码]");
-});
+/**
+ * 两种语言的期望值都**写死在测试里**（不从词典读）：词典被改成错词时这一格要红；
+ * 也不许为了让英文分支通过而把断言放宽成 `startsWith("[")` —— 两语言下都必须是逐字相等。
+ */
+const PREVIEW_LOCALES = [
+  {
+    locale: "zh-CN",
+    labels: {
+      file: "[文件]", image: "[图片]", code: "[代码]", todo: "[任务]",
+      poll: "[投票]", merge: "[聊天记录]", announcement: "[公告]",
+      unsupported: "[不支持的消息]", mergeCount3: "[聊天记录] 3 条",
+    },
+  },
+  {
+    locale: "en-US",
+    labels: {
+      file: "[File]", image: "[Image]", code: "[Code]", todo: "[Task]",
+      poll: "[Poll]", merge: "[Chat history]", announcement: "[Announcement]",
+      unsupported: "[Unsupported message]", mergeCount3: "[Chat history] 3 messages",
+    },
+  },
+] as const;
+
+for (const { locale, labels } of PREVIEW_LOCALES) {
+  test(`previewText：文件/图片/代码显示特殊标记（${locale}）`, () => {
+    applyPreference(locale);
+    assert.equal(previewText(msg({ msg_id: "x", kind: "file", content: "{}" })), labels.file);
+    // 旧格式 data URL 与新格式 JSON 元数据都应显示图片标签，不能泄露 JSON 内容
+    assert.equal(previewText(msg({ msg_id: "x", kind: "image", content: "data:" })), labels.image);
+    assert.equal(
+      previewText(msg({ msg_id: "x", kind: "image", content: '{"name":"a.png","path":"/x/a.png","size":1}' })),
+      labels.image,
+    );
+    assert.equal(previewText(msg({ msg_id: "x", kind: "code", content: "fn()" })), labels.code);
+  });
+
+  /**
+   * **本机不认识的 kind 绝不能返回载荷原文**（INV-P24 第 2 条）。
+   *
+   * 会话列表/通知的文案在 Rust 算（`protocol::preview_text`），这里的是前端自己那条路径
+   * （消息列表渲染、置顶列表都用它）。两边同一判据；中文值与 Rust 的字面量比对在
+   * `messageKinds.test.ts`。
+   * 对照分支不可省：`text` 必须照旧透传，否则"不管什么 kind 都塞占位"也能让第一条通过。
+   *
+   * ⚠️ 这里要 `as unknown as` 是因为 `MessageRecord.kind` 的类型只列了已知值，而**运行时**
+   * 它会收到对端新版本带来的任意字符串 —— 类型表达不了这件事（放宽成 string 会牵动所有
+   * 比较点，与 V3a 的 Rust 改动一起做，见任务「未知 kind 不再整帧丢弃」）。
+   */
+  test(`previewText：本机不认识的 kind 给占位而不是载荷（${locale}）`, () => {
+    applyPreference(locale);
+    const payload = '{"question":"周五前交","options":["A","B"]}';
+    const future = msg({ msg_id: "x", content: payload });
+    future.kind = "sticker" as unknown as typeof future.kind;
+    assert.equal(previewText(future), labels.unsupported);
+    assert.ok(!previewText(future).includes("周五"), "未知 kind 不得外泄载荷内容");
+    assert.equal(previewText(msg({ msg_id: "x", kind: "text", content: "hi" })), "hi");
+  });
+
+  /**
+   * 搜索结果页走的是同一份 `previewBody`，只是**不截断**（要在正文里定位关键词）。
+   *
+   * 用户 2026-10-09：「搜索列表显示的都是 json」。根因不是"未知 kind"那一档（887477e 已经堵了），
+   * 而是**本机认识的六种卡片载荷本来就是 JSON**，而检索页当时直接铺 `content`。
+   * 所以这里把六种一律点名：任何一条又回到原文，这一格就会红。
+   */
+  test(`previewBody：认识的卡片 kind 一律给人话，不许铺载荷原文（${locale}）`, () => {
+    applyPreference(locale);
+    const cases: [string, string][] = [
+      ["image", '{"name":"a.png","path":"/x/a.png","size":1,"sha256":"ab"}'],
+      ["file", '{"name":"合同.pdf","size":2048,"subtype":"application/pdf"}'],
+      ["merge", '{"title":"群聊的聊天记录","messages":[{"content":"x"}]}'],
+      ["todo", '{"title":"情报状态","assignees":["d1"],"description":"周五前交"}'],
+      ["todo_update", '{"title":"情报状态","status":"doing"}'],
+      ["poll", '{"question":"周五团建去哪","options":["山","海"]}'],
+      ["announcement", '{"text":"下周三停网半天","pinned":true}'],
+    ];
+    for (const [kind, payload] of cases) {
+      const out = previewBody(kind, payload, 0);
+      assert.ok(!out.includes("{"), `${kind} 的预览里出现了载荷原文：${out}`);
+      assert.ok(!out.includes('"'), `${kind} 的预览里出现了 JSON 引号：${out}`);
+      assert.ok(out.startsWith("["), `${kind} 的预览应当以「[类型]」开头：${out}`);
+    }
+    // 卡片那一句人话确实被取出来了（不是统统退化成光秃秃的标签）
+    assert.equal(previewBody("todo", '{"title":"情报状态"}', 0), `${labels.todo} 情报状态`);
+    assert.equal(previewBody("poll", '{"question":"去哪"}', 0), `${labels.poll} 去哪`);
+  });
+
+  /**
+   * 截断只管"载荷本身就是正文"那一支，而且是**调用方决定**的：
+   * 会话列表截 30，搜索结果页不截。这条钉的是 `textLimit` 的语义边界 ——
+   * 传 0 还截，检索页就再也定位不到关键词；卡片也跟着被截，那是另一处退化。
+   */
+  test(`previewBody：textLimit=0 不截正文，卡片分支不受它影响（${locale}）`, () => {
+    applyPreference(locale);
+    const long = "开".repeat(50);
+    assert.equal(previewBody("text", long, 0).length, 50, "检索页要的完整正文被截了");
+    assert.equal(previewBody("text", long).length, 30, "会话列表默认仍截 30");
+    const payload = `{"title":"${long}"}`;
+    assert.equal(
+      previewBody("todo", payload, 0),
+      `${labels.todo} ${long}`,
+      "卡片那一句话不该因为调用方要了全长就被改形状",
+    );
+    assert.equal(previewBody("todo", payload), `${labels.todo} ${long}`, "卡片在默认档下同样不截");
+  });
+
+  /**
+   * 历史会话的 `last_msg` 是 Rust 按中文写进库的；切语言后它必须能在**渲染时**换词，
+   * 否则英文界面的列表会一直挂着 `[文件]` 这类中文标签。
+   */
+  test(`localizeLastMsg：库里中文摘要按当前语言换词（${locale}）`, () => {
+    applyPreference(locale);
+    assert.equal(localizeLastMsg("[文件]"), labels.file);
+    assert.equal(localizeLastMsg("[聊天记录] 3 条"), labels.mergeCount3);
+    assert.equal(localizeLastMsg("[任务] 交周报"), `${labels.todo} 交周报`);
+    assert.equal(localizeLastMsg("普通消息"), "普通消息");
+    // 正文恰好以标签开头（没有空格分隔）⇒ 不是 Rust 产的摘要，不误换
+    assert.equal(localizeLastMsg("[文件]不是我发的"), "[文件]不是我发的");
+    assert.equal(localizeLastMsg(null), "");
+    // 已经是当前语言的标签：原样返回（幂等）
+    assert.equal(localizeLastMsg(labels.file), labels.file);
+  });
+}
 
 test("previewText：长文本截断 30 字符、短文本原样", () => {
   assert.equal(previewText(msg({ msg_id: "x", content: "a".repeat(100) })).length, 30);
   assert.equal(previewText(msg({ msg_id: "x", content: "hi" })), "hi");
-});
-
-/**
- * **本机不认识的 kind 绝不能返回载荷原文**（INV-P24 第 2 条）。
- *
- * 会话列表/通知的文案在 Rust 算（`protocol::preview_text`），这里的是前端自己那条路径
- * （消息列表渲染、置顶列表都用它）。两边同一判据、同一文案，由
- * `messageKinds.test.ts` 与 Rust 比对字面量。
- * 对照分支不可省：`text` 必须照旧透传，否则"不管什么 kind 都塞占位"也能让第一条通过。
- *
- * ⚠️ 这里要 `as unknown as` 是因为 `MessageRecord.kind` 的类型只列了已知值，而**运行时**
- * 它会收到对端新版本带来的任意字符串 —— 类型表达不了这件事（放宽成 string 会牵动所有
- * 比较点，与 V3a 的 Rust 改动一起做，见任务「未知 kind 不再整帧丢弃」）。
- */
-test("previewText：本机不认识的 kind 给占位而不是载荷", () => {
-  const payload = '{"question":"周五前交","options":["A","B"]}';
-  const future = msg({ msg_id: "x", content: payload });
-  future.kind = "sticker" as unknown as typeof future.kind;
-  assert.equal(previewText(future), "[不支持的消息]");
-  assert.ok(!previewText(future).includes("周五"), "未知 kind 不得外泄载荷内容");
-  assert.equal(previewText(msg({ msg_id: "x", kind: "text", content: "hi" })), "hi");
-});
-
-/**
- * 搜索结果页走的是同一份 `previewBody`，只是**不截断**（要在正文里定位关键词）。
- *
- * 用户 2026-10-09：「搜索列表显示的都是 json」。根因不是"未知 kind"那一档（887477e 已经堵了），
- * 而是**本机认识的六种卡片载荷本来就是 JSON**，而检索页当时直接铺 `content`。
- * 所以这里把六种一律点名：任何一条又回到原文，这一格就会红。
- */
-test("previewBody：认识的卡片 kind 一律给人话，不许铺载荷原文", () => {
-  const cases: [string, string][] = [
-    ["image", '{"name":"a.png","path":"/x/a.png","size":1,"sha256":"ab"}'],
-    ["file", '{"name":"合同.pdf","size":2048,"subtype":"application/pdf"}'],
-    ["merge", '{"title":"群聊的聊天记录","messages":[{"content":"x"}]}'],
-    ["todo", '{"title":"情报状态","assignees":["d1"],"description":"周五前交"}'],
-    ["todo_update", '{"title":"情报状态","status":"doing"}'],
-    ["poll", '{"question":"周五团建去哪","options":["山","海"]}'],
-    ["announcement", '{"text":"下周三停网半天","pinned":true}'],
-  ];
-  for (const [kind, payload] of cases) {
-    const out = previewBody(kind, payload, 0);
-    assert.ok(!out.includes("{"), `${kind} 的预览里出现了载荷原文：${out}`);
-    assert.ok(!out.includes('"'), `${kind} 的预览里出现了 JSON 引号：${out}`);
-    assert.ok(out.startsWith("["), `${kind} 的预览应当以「[类型]」开头：${out}`);
-  }
-  // 卡片那一句人话确实被取出来了（不是统统退化成光秃秃的「[任务]」）
-  assert.equal(previewBody("todo", '{"title":"情报状态"}', 0), "[任务] 情报状态");
-  assert.equal(previewBody("poll", '{"question":"去哪"}', 0), "[投票] 去哪");
-});
-
-/**
- * 截断只管"载荷本身就是正文"那一支，而且是**调用方决定**的：
- * 会话列表截 30，搜索结果页不截。这条钉的是 `textLimit` 的语义边界 ——
- * 传 0 还截，检索页就再也定位不到关键词；卡片也跟着被截，那是另一处退化。
- */
-test("previewBody：textLimit=0 不截正文，卡片分支不受它影响", () => {
-  const long = "开".repeat(50);
-  assert.equal(previewBody("text", long, 0).length, 50, "检索页要的完整正文被截了");
-  assert.equal(previewBody("text", long).length, 30, "会话列表默认仍截 30");
-  const payload = `{"title":"${long}"}`;
-  assert.equal(
-    previewBody("todo", payload, 0),
-    `[任务] ${long}`,
-    "卡片那一句话不该因为调用方要了全长就被改形状",
-  );
-  assert.equal(previewBody("todo", payload), `[任务] ${long}`, "卡片在默认档下同样不截");
 });
 
 /** 摘要与检索行必须同源：`previewText` 只是 `previewBody` 的默认档包装。 */

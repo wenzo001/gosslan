@@ -47,7 +47,7 @@ import { FILE_KIND_ICONS, extBadgeLabel, fileKindOf, fileKindStyle } from "@/uti
 import { openLocalFile, saveLocalFile } from "@/utils/localFile";
 import { dropFavoritePreview, favoritePreviewUrl, loadFavoritePreview, clearFavoritePreviews } from "@/utils/favoritePreview";
 import { mergeItemLine, mergeSummary, parseMergePayload } from "@/utils/mergeCard";
-import { isForwardableKind, isKnownKind, isTransferKind, kindClass, UNSUPPORTED_KIND_LABEL } from "@/utils/messageKinds";
+import { isForwardableKind, isKnownKind, isTransferKind, kindClass } from "@/utils/messageKinds";
 import { cardCopyText } from "@/utils/cardText";
 import {
   TODO_STATUS_LABEL_KEY, TODO_STATUS_PILL, isTodoStatus, type TodoImage, type TodoStatus, } from "@/utils/todos";
@@ -277,7 +277,7 @@ function displayName(f: FavoriteEntry): string {
 function rowTitle(f: FavoriteEntry): string {
   // 未知 kind（对端 Gosslan 比本机新）的载荷是 JSON：既不能原样显示，也不能落到
   // `displayName()` 的兜底 —— 那等于给一条不认识的东西编一个"文件"身份。
-  if (!isKnownKind(f.kind)) return UNSUPPORTED_KIND_LABEL;
+  if (!isKnownKind(f.kind)) return t("msg.preview.unsupported");
   // 卡片类（待办/投票/公告）：用户 2026-09-21 的"无害改法"放进收藏 ⇒ 这里要能正常显示
   const card = cardText(f);
   if (card !== null) return card.slice(0, 40) || t("favorite.untitled");

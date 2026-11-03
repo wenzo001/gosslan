@@ -10,12 +10,12 @@ import { useMessageFile } from "@/composables/useMessageFile";
 import { useMemberProfile } from "@/composables/useMemberProfile";
 import { CODE_SURFACE, IMAGE_PLACEHOLDER_HEIGHT, textNeedsClamp } from "@/utils/previewMetrics";
 import {
-  isFavoritableKind, isForwardableKind, isKnownKind, isMultiSelectable, isRemindableKind, isTipKind, isTransferKind, kindClass, UNSUPPORTED_KIND_LABEL, } from "@/utils/messageKinds";
+  isFavoritableKind, isForwardableKind, isKnownKind, isMultiSelectable, isRemindableKind, isTipKind, isTransferKind, kindClass, } from "@/utils/messageKinds";
 import { cardCopyText } from "@/utils/cardText";
 import { isSelfMessage } from "@/utils/selfChat";
 import { resendChannelFor } from "@/utils/resendChannel";
 import { EMPTY_REACTION_CHIPS, EMPTY_STRING_LIST } from "@/utils/emptyList";
-import { parseQuote, stripQuoteMsgId } from "@/utils/quote";
+import { localizeQuoteHeader, parseQuote, stripQuoteMsgId } from "@/utils/quote";
 import { QUOTE_BG, QUOTE_TEXT_STYLE } from "@/utils/quoteStyle";
 import { parseFileMeta } from "@/utils/fileMeta";
 import { openLocalFile } from "@/utils/localFile";
@@ -685,7 +685,8 @@ const quotedMsgId = computed(() => parseQuote(props.message.content).msgId ?? ""
  */
 const quoteHeader = computed(() => {
   if (props.message.kind !== "text" && props.message.kind !== "code") return "";
-  return parseQuote(props.message.content).header;
+  // 显示层换词：库里的首行永远是 `「引用 …」`，英文界面显示为 `「Quote …」`。
+  return localizeQuoteHeader(parseQuote(props.message.content).header);
 });
 
 /**
@@ -840,7 +841,7 @@ function quoteSnippet(kind: MsgKind, content: string): string {
   // 合并转发：引用它是"引用一张聊天记录卡片"，正文是 JSON，不能截进引用块
   if (kind === "merge") return t("merge.title");
   // 本机不认识的 kind（对端版本更新）：载荷通常是 JSON，截进引用块等于把 JSON 露出来
-  if (!isKnownKind(kind)) return UNSUPPORTED_KIND_LABEL;
+  if (!isKnownKind(kind)) return t("msg.preview.unsupported");
   const oneLine = content.replace(/\s+/g, " ").trim();
   return oneLine.length > 40 ? `${oneLine.slice(0, 40)}…` : oneLine;
 }

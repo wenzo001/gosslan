@@ -4,10 +4,12 @@ import { escapeRe } from "./escapeRe.ts";
 import {
   countsTowardUnread,
   isKnownKind,
-  UNSUPPORTED_KIND_LABEL,
 } from "./messageKinds.ts";
 import { mergeSummary } from "./mergeCard.ts";
 import { isSupersededProjection } from "./optimistic.ts";
+import { localizeQuoteHeader } from "./quote.ts";
+import { t } from "../i18n/index.ts";
+import { zhCN } from "../i18n/locales.ts";
 
 /**
  * 合并去重并排序消息列表 —— Gossip 密集广播防重复的核心纯函数。
@@ -499,79 +501,125 @@ export function syncProfileFromPeers(
  * 会话列表要截 30 字，而搜索结果页要在正文里定位关键词，截了就没得定位 ⇒ 传 0 不截。
  * 卡片类分支不受它影响 —— 它们返回的是载荷里那一句（标题 / 问题 / 正文），本来就不是整段 JSON。
  *
- * ⚠️ 与 Rust `protocol::preview_text` 逐项同源（那份截断在 `truncate_preview` 里）。
+ * ⚠️ 标签是**用户可见文案**，一律走 `t()`；而 Rust `protocol::preview_text` 写进库的
+ * `last_msg` 仍是中文常量 ⇒ zh-CN 词典里对应的值必须与那份字面量一字不差
+ * （`messageKinds.test.ts` 机器比对），否则 `localizeLastMsg` 认不出历史摘要。
  */
+export const PREVIEW_LABEL_KEYS = {
+  file: "msg.file",
+  image: "msg.image",
+  code: "msg.code",
+  merge: "msg.preview.merge",
+  todo: "msg.preview.todo",
+  poll: "msg.preview.poll",
+  announcement: "msg.preview.announcement",
+  reaction: "msg.preview.reaction",
+  recall: "msg.preview.recall",
+  pin: "msg.preview.pin",
+  remind: "msg.preview.remind",
+  remindAck: "msg.preview.remindAck",
+  unsupported: "msg.preview.unsupported",
+} as const;
+
 export function previewBody(kind: string, content: string, textLimit = 30): string {
   switch (kind) {
     case "file":
-      return "[文件]";
+      return t(PREVIEW_LABEL_KEYS.file);
     case "image":
-      return "[图片]";
+      return t(PREVIEW_LABEL_KEYS.image);
     case "code":
-      return "[代码]";
+      return t(PREVIEW_LABEL_KEYS.code);
     // 合并转发：卡片是 JSON，截前 30 字符会得到 '{"title":"群聊的聊天记录"' 这种东西。
     case "merge":
       return mergeSummary(content);
     case "todo":
     case "todo_update": {
       // 待办载荷是 JSON，直接吐出来就是「聊天列表/通知显示了一串 JSON」的毛病（用户 2026-09-17）。
-      // 这里只取标题，回落到「[任务]」，让列表与通知都干净。
+      // 这里只取标题，回落到标签，让列表与通知都干净。
       try {
         const p = JSON.parse(content) as { title?: unknown };
-        if (typeof p.title === "string" && p.title) return `[任务] ${p.title}`;
+        if (typeof p.title === "string" && p.title) return `${t(PREVIEW_LABEL_KEYS.todo)} ${p.title}`;
       } catch {
         /* 落到回落值 */
       }
-      return "[任务]";
+      return t(PREVIEW_LABEL_KEYS.todo);
     }
     case "poll":
     case "poll_vote": {
-      // 投票载荷是 JSON：取问题，回落「[投票]」。
+      // 投票载荷是 JSON：取问题，回落标签。
       try {
         const p = JSON.parse(content) as { question?: unknown };
-        if (typeof p.question === "string" && p.question) return `[投票] ${p.question}`;
+        if (typeof p.question === "string" && p.question) return `${t(PREVIEW_LABEL_KEYS.poll)} ${p.question}`;
       } catch {
         /* 落到回落值 */
       }
-      return "[投票]";
+      return t(PREVIEW_LABEL_KEYS.poll);
     }
     case "announcement": {
-      // 公告正文本身就是给用户看的 ⇒ 取正文；删公告是墓碑事件，只显示「[公告]」。
+      // 公告正文本身就是给用户看的 ⇒ 取正文；删公告是墓碑事件，只显示标签。
       try {
         const p = JSON.parse(content) as { text?: unknown };
-        if (typeof p.text === "string" && p.text) return `[公告] ${p.text}`;
+        if (typeof p.text === "string" && p.text) return `${t(PREVIEW_LABEL_KEYS.announcement)} ${p.text}`;
       } catch {
         /* 落到回落值 */
       }
-      return "[公告]";
+      return t(PREVIEW_LABEL_KEYS.announcement);
     }
     case "announcement_delete":
-      return "[公告]";
+      return t(PREVIEW_LABEL_KEYS.announcement);
     // 以下都是**静默类**，照理到不了预览（两侧都按 non-notifying 过滤）；这里兜一层，
     // 防"某一侧的过滤条件日后变了"再把 JSON 露出去。与 Rust `protocol::preview_text` 一致。
     case "reaction":
-      return "[回应]";
+      return t(PREVIEW_LABEL_KEYS.reaction);
     case "recall":
     case "recalled":
-      return "[撤回]";
+      return t(PREVIEW_LABEL_KEYS.recall);
     case "pin":
-      return "[置顶]";
+      return t(PREVIEW_LABEL_KEYS.pin);
     case "remind":
-      return "[强提醒]";
+      return t(PREVIEW_LABEL_KEYS.remind);
     case "remind_ack":
-      return "[强提醒确认]";
-    default:
+      return t(PREVIEW_LABEL_KEYS.remindAck);
+    default: {
       // ⚠️ 表里**没有**的 kind（对端版本比本机新）绝不能原样截断 —— 那是"界面上出现一串
       // JSON 字符串"的最后一环（INV-P24 第 2 条）。判据与文案都与 Rust `preview_text` 同源，
       // 由 `messageKinds.test.ts` 机器比对。已知但无专门文案的（text / system）按 `textLimit` 截。
-      if (!isKnownKind(kind)) return UNSUPPORTED_KIND_LABEL;
-      return textLimit > 0 ? content.slice(0, textLimit) : content;
+      if (!isKnownKind(kind)) return t(PREVIEW_LABEL_KEYS.unsupported);
+      // 引用消息的正文首行是 `「引用 …」`：历史数据的标记是中文，渲染时换成当前语言。
+      const localized = localizeQuoteHeader(content);
+      return textLimit > 0 ? localized.slice(0, textLimit) : localized;
+    }
   }
 }
 
 /** 消息摘要（会话列表展示）：正文截 30 字，卡片取载荷里那一句人话。 */
 export function previewText(rec: MessageRecord): string {
   return previewBody(rec.kind, rec.content);
+}
+
+/**
+ * 库里 `last_msg` 的**渲染期本地化** —— 历史会话摘要不跟着语言切换的根因在这里。
+ *
+ * `last_msg` 是 Rust 写库时按中文常量生成的（`protocol::preview_text`），前端拿到的
+ * 历史摘要因此永远是中文。这里只在渲染时把**已知的前缀标签**换成当前语言，不改库、
+ * 不回写，也不碰用户正文：
+ *   - 只认「整句等于标签」或「标签 + 空格 + 内容」，正文恰好以 `[文件]` 开头不会被动；
+ *   - `[聊天记录] N 条` 是唯一带计数的整句，单独认（否则“条”会留在英文界面里）；
+ *   - 认不出的（普通文本 / 已是当前语言标签）原样返回。
+ */
+export function localizeLastMsg(text: string | null | undefined): string {
+  if (!text) return "";
+  const [countBefore, countAfter] = zhCN["msg.preview.mergeCount"].split("{n}");
+  const counted = new RegExp(`^${escapeRe(countBefore)}(\\d+)${escapeRe(countAfter)}$`).exec(text);
+  if (counted) return t("msg.preview.mergeCount", { n: Number(counted[1]) });
+  for (const key of Object.values(PREVIEW_LABEL_KEYS)) {
+    const label = zhCN[key];
+    if (!text.startsWith(label)) continue;
+    const rest = text.slice(label.length);
+    if (rest && !rest.startsWith(" ")) continue;
+    return t(key) + rest;
+  }
+  return localizeQuoteHeader(text);
 }
 
 /**

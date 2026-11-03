@@ -3189,6 +3189,7 @@ async function main() {
     const delivery = want("delivery");
     const touchroster = want("touchroster");
     const locale = want("locale");
+    const i18nshots = want("i18nshots");
     const rowpair = want("rowpair");
     const msgovf = want("msgovf");
     const ctxguard = want("ctxguard");
@@ -3386,6 +3387,7 @@ async function main() {
     await runSegment("resend", resend, () => runResend(cdp, url));
     await runSegment("delivery", delivery, () => runDelivery(cdp, url));
     await runSegment("locale", locale, () => runLocale(cdp, url));
+    await runSegment("i18nshots", i18nshots, () => runI18nShots(cdp, url));
     await runSegment("rowpair", rowpair, () => runRowPair(cdp, url));
     await runSegment("msgovf", msgovf, () => runMsgOverflow(cdp, url));
     await runSegment("ctxguard", ctxguard, () => runContextGuard(cdp, url));
@@ -8423,6 +8425,98 @@ async function runLocale(cdp, url) {
   check("切回中文档：星期名又变回「周…」⇒ 两个出口跟的是同一个语言事实源",
     backZh === "zh-CN" && /^周. \d{2}:\d{2}$/.test(String(zhWeek)),
     "currentLocale()==zh-CN 且匹配 ^周? HH:mm", JSON.stringify({ backZh, zhWeek }));
+}
+
+/**
+ * i18n 三面截图 + 可见文本证据（B1：消息摘要 / 卡片前缀 / 引用前缀）。
+ *
+ * 单测钉的是函数的输出，钉不住「组件里真的把 `t()` 接到了渲染上」，也钉不住
+ * 「库里那份 Rust 写死的中文摘要能在渲染时换词」。所以这里在真 Chrome 里各挂一次：
+ *   ① 会话行：`last_msg` 是库里的中文 `[文件]` ⇒ 英文必须显示 `[File]`（走 localizeLastMsg）；
+ *   ② 引用气泡：线上格式永远是 `「引用 …」` ⇒ 英文首行必须显示 `Quote`；
+ *   ③ 合并卡片：每行摘要的 `[图片]` / `[聊天记录]` 跟着语言走。
+ * 图落在 `test-results/i18n-shots/`（已在 .gitignore 里，不进库），供人工看对照。
+ */
+async function runI18nShots(cdp, url) {
+  const shotDir = path.join(ROOT, "test-results", "i18n-shots");
+  fs.mkdirSync(shotDir, { recursive: true });
+  await cdp.send("Page.navigate", { url });
+  await cdp.settled();
+  await sleep(3_000);
+  await cdp.eval(PAGE_FIXTURE);
+
+  const setLang = (p) => cdp.eval("(async () => { var m = await import('/src/i18n/index.ts');"
+    + ` m.applyPreference('${p}'); return m.currentLocale(); })()`);
+  const visibleText = () => cdp.eval(
+    "(() => { var h = document.querySelector('#probe-host'); return h ? h.innerText : ''; })()");
+  const mount = async (cmpPath, props) => {
+    const ok = await cdp.eval("window.__probe.install(" + JSON.stringify(cmpPath) + ", '', "
+      + JSON.stringify(JSON.stringify(props)) + ")");
+    await sleep(900);
+    return ok;
+  };
+  const shot = async (name) => {
+    const s = await cdp.send("Page.captureScreenshot", { format: "png" });
+    const file = path.join(shotDir, name + ".png");
+    fs.writeFileSync(file, Buffer.from(s.data, "base64"));
+    // 文本判据才是证据；这里只挡"截出来一张全白"（纯白空白页 png 约 2KB 上下）。
+    check(`i18n 截图落盘：${name}`, fs.statSync(file).size > 2_000,
+      "png > 2KB", `${fs.statSync(file).size} bytes`);
+    console.log(`  📷 ${file}`);
+  };
+
+  const row = (lastMsg) => ({
+    conv: {
+      id: "c-i18n", kind: "group", name: "设计组", avatar: null,
+      unread: 0, last_msg: lastMsg, last_ts: nowMs(), pinned: false,
+    },
+    active: false, online: null,
+  });
+  const quote = {
+    message: {
+      msg_id: "m-i18n-q", sender_id: "dev-me", kind: "text",
+      content: "「引用 张三：下午三点评审」\n好，我准时到",
+      ts: nowMs(), conv_id: "c-i18n", seq: 1,
+    },
+    canReact: false, isGroup: false, senderName: "我",
+  };
+  const merge = {
+    content: JSON.stringify({
+      title: "群聊的聊天记录",
+      items: [
+        { sender: "张三", kind: "text", content: "第一段", ts: nowMs() },
+        { sender: "李四", kind: "image", content: JSON.stringify({ name: "照片.png" }), ts: nowMs() },
+      ],
+    }),
+    mine: true,
+  };
+
+  const LANGS = [
+    { loc: "zh-CN", row: "[文件]", quote: "引用", card: "[图片]" },
+    { loc: "en-US", row: "[File]", quote: "Quote", card: "[Image]" },
+  ];
+  for (const L of LANGS) {
+    const now = await setLang(L.loc);
+    check(`i18n 截图段：语言已切到 ${L.loc}`, now === L.loc, `currentLocale() == ${L.loc}`, JSON.stringify(now));
+
+    await mount("/src/components/conversation/ConversationListItem.vue", row("[文件]"));
+    const rowText = await visibleText();
+    check(`${L.loc}：库里中文摘要 [文件] 渲染为 ${L.row}`,
+      rowText.includes(L.row), `可见文本含 ${L.row}`, JSON.stringify(rowText.slice(0, 80)));
+    await shot(`${L.loc}-1-conversation-list`);
+
+    await mount("/src/components/MessageItem.vue", quote);
+    const quoteText = await visibleText();
+    check(`${L.loc}：引用首行显示 ${L.quote}`,
+      quoteText.includes(L.quote), `可见文本含 ${L.quote}`, JSON.stringify(quoteText.slice(0, 80)));
+    await shot(`${L.loc}-2-quote`);
+
+    await mount("/src/components/message/MergeCard.vue", merge);
+    const cardText = await visibleText();
+    check(`${L.loc}：合并卡片行摘要显示 ${L.card}`,
+      cardText.includes(L.card), `可见文本含 ${L.card}`, JSON.stringify(cardText.slice(0, 80)));
+    await shot(`${L.loc}-3-merge-card`);
+  }
 }
 
 async function runRowPair(cdp, url) {

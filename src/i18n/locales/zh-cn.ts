@@ -591,6 +591,20 @@ export const zhCN: MessageDict = {
   "msg.image": "[图片]",
   "msg.code": "[代码]",
   "msg.file": "[文件]",
+  // ---- 消息摘要占位（会话列表 / 搜索结果 / 合并卡片共用）----
+  // ⚠️ 这些中文值与 Rust `protocol::preview_text` 写进库的 `last_msg` 一字不差，
+  // `messageKinds.test.ts` 会机器比对；改词要同时改 Rust，否则英文界面里的历史摘要换不过来。
+  "msg.preview.merge": "[聊天记录]",
+  "msg.preview.mergeCount": "[聊天记录] {n} 条",
+  "msg.preview.todo": "[任务]",
+  "msg.preview.poll": "[投票]",
+  "msg.preview.announcement": "[公告]",
+  "msg.preview.reaction": "[回应]",
+  "msg.preview.recall": "[撤回]",
+  "msg.preview.pin": "[置顶]",
+  "msg.preview.remind": "[强提醒]",
+  "msg.preview.remindAck": "[强提醒确认]",
+  "msg.preview.unsupported": "[不支持的消息]",
   "msg.imageCopied": "图片已复制",
   "msg.copyImageFail": "复制图片失败（浏览器剪贴板不可用）",
   "msg.imageSaved": "图片已保存",
