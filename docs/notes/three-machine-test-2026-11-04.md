@@ -1,17 +1,17 @@
-# 三机实测清单 — 5.17.8 可测包（2026-11-04）
+# 三机实测清单 — 5.17.22 可测包（2026-11-04）
 
-包：草稿 release <https://github.com/wenzo001/gosslan/releases/tag/untagged-52e8ace2dd1134814b69>
+包：草稿 release <https://github.com/wenzo001/gosslan/releases/tag/untagged-f5afebe085e171299148>
 （需登录 GitHub；未 publish、未建 tag、未改 `latest.json`）
 
-- Windows x64：`Gosslan_5.17.8_x64-setup.exe`，6,018,221 B，
-  sha256 `5257bda7ac7a15904d15993312e236d2697b6390c87e0cd523b2a7ef4b911c51`
-- macOS arm64：`Gosslan_5.17.8_aarch64.dmg`，9,163,859 B，
-  sha256 `9c4bb2d836f97d7f6ace8c99f7e47c01b87dd2d6b69a1a6f043ad708e2e3ad76`
-- macOS x64：`Gosslan_5.17.8_x64.dmg`，9,743,693 B，
-  sha256 `aa407a7912e517f2244f255032d1c87bf5809aba9415c28574e7e1717d9d6120`
+- Windows x64：`Gosslan_5.17.22_x64-setup.exe`，6,030,438 B，
+  sha256 `fe3196debf81882e8d51c27174cd55aa4936d4eff62ccdb8c0a12b06daaf2d83`
+- macOS arm64：`Gosslan_5.17.22_aarch64.dmg`，9,177,861 B，
+  sha256 `90fdcf6de1091d404d1176a69522b98cdf16f353048c6f1722ab8fcdd2da8fbb`
+- macOS x64：`Gosslan_5.17.22_x64.dmg`，9,755,674 B，
+  sha256 `b57416b622e4aa565c9cf6432a3ee8f53d70c73fb701211de76e757420d9b116`
 
-版本核对：Windows 由产物文件名 `5.17.8` + `tauri.conf.json` 的 `version`；macOS 挂载 dmg 后
-`CFBundleShortVersionString` 实读 `5.17.8`（两份 dmg 都已实读）。
+版本核对：Windows 由产物文件名 `5.17.22` + `tauri.conf.json` 的 `version`；macOS 挂载 dmg 后
+读 `CFBundleShortVersionString`（新包已重新下载并逐个比对 sha256，文件名版本与清单一致）。
 
 > 总时长：必做 ≈ 13 分钟；可选（BLE 多跳）≈ 4 分钟。每条"不对就发我"统一指：
 > 截图（标出位置）+ 两端日志最后 30 行里带 `code=` 的行。Windows 日志在
@@ -23,8 +23,8 @@
 
 1. 设置 → 关于，记下旧版本号。
 2. 托盘右键 → 退出（任务管理器里确认无 `gosslan.exe`）。
-3. 双击 `Gosslan_5.17.8_x64-setup.exe` → 下一步 → 安装（同目录原地升级，不应要求先卸载）。
-4. 打开应用 → 设置 → 关于，应显示 `5.17.8`。
+3. 双击 `Gosslan_5.17.22_x64-setup.exe` → 下一步 → 安装（同目录原地升级，不应要求先卸载）。
+4. 打开应用 → 设置 → 关于，应显示 `5.17.22`。
 5. 打开一个旧会话 + 好友列表，历史消息与好友都还在。
 
 PowerShell 三行（整段粘贴即可）：
@@ -35,7 +35,7 @@ Get-Process gosslan -ErrorAction SilentlyContinue | Select-Object Id,CPU,Working
 Get-Content "$env:APPDATA\com.gosslan.app\logs\gosslan.log" -Tail 20
 ```
 
-看什么：第 1 行输出 `5.17.8`；第 2 行只有 1 个进程；第 3 行末尾没有 `code=E_`。
+看什么：第 1 行输出 `5.17.22`；第 2 行只有 1 个进程；第 3 行末尾没有 `code=E_`。
 不对就发我：三行完整输出 + 关于页截图。
 
 ## 1. Android BLE 外设（必做，2 分钟）
@@ -92,7 +92,7 @@ Get-Content "$env:APPDATA\com.gosslan.app\logs\gosslan.log" -Tail 20
 ## 6. 跨网段凭设备 ID 找人（必做，2 分钟）
 
 前置：A、B 在不同网段、**还不是好友**；两端都已按第 3 节或第 4 节配好
-（同一公网中继并已建立电路，或填了同一个桥接机的「跨网段连接」地址）；两端都是 5.17.8。
+（同一公网中继并已建立电路，或填了同一个桥接机的「跨网段连接」地址）；两端都是 5.17.22。
 
 点击：B → 设置 → 关于 → 复制设备 ID 发给 A；A → 添加好友 → 粘贴到搜索框 → 等 2~3 秒。
 
@@ -105,5 +105,5 @@ Get-Content "$env:APPDATA\com.gosslan.app\logs\gosslan.log" -Tail 20
 
 1. 没有目录服务：只能发现「已配置 routed 端点 / 已建中继电路」可达范围内的设备；
    完全陌生、双方无任何连接路径的设备，凭设备 ID 仍搜不到（这是隐私上的取舍，不是 bug）。
-2. 已修（5.17.8）：复制邀请按钮常驻、文案改为「发给对方，对方添加后即可跨网段互见」；
+2. 已修（5.17.22）：复制邀请按钮常驻、文案改为「发给对方，对方添加后即可跨网段互见」；
    「可能离线」改为整行灰显（只降透明度，仍可点击）。
