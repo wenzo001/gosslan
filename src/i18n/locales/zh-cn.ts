@@ -350,6 +350,20 @@ export const zhCN: MessageDict = {
   "startupError.openDirFailed": "打开数据目录失败：{error}",
   "startupError.quitting": "正在退出…",
   "startupError.quitFailed": "退出请求失败：{error}。可以手动结束这个进程。",
+  // 静态外壳（`startup-error.html` 的 `data-i18n` 标记）：这扇窗不跑 Vue 挂载，
+  // 所以由入口在首帧把 `data-i18n` 逐个填成 `t(key)`。
+  "startupError.title": "数据打不开，应用无法启动",
+  "startupError.descLoading": "正在读取失败原因…",
+  "startupError.dataDir": "数据目录",
+  "startupError.logDir": "日志目录",
+  // 安全说明拆成三段是因为中间那句 `<b>` 要加粗：中文这里不留空格，
+  // 英文的空格放在 safetyPrefix 的末尾与 safetyBold 之前（见 en-us.ts）。
+  "startupError.safetyPrefix": "「重试」只会重新尝试打开现有的数据：",
+  "startupError.safetyBold": "不会删除、覆盖或重建任何文件",
+  "startupError.safetySuffix": "。如果这台机器上原本的数据又可用了（磁盘挂载回来、占用释放、权限改对），重试就能直接进去。",
+  "startupError.retry": "重试",
+  "startupError.openDataDir": "打开数据目录",
+  "startupError.quit": "退出",
   "settings.network.toast.btPermissionHint":
     "若仍无法开启：请到「系统设置 → 应用 → 小院儿 → 权限」里允许「附近的设备」，然后重试。",
   "settings.network.routed": "跨网段连接",

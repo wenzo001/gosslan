@@ -184,6 +184,13 @@ test("词典里不留全仓引不到的死文案（反向：定义了却没人�
   };
   walk(join(root, "src"));
 
+  // 窗口 HTML 的 `data-i18n="…"` 同样是引用面：启动失败窗的静态外壳走这条
+  // （它不是 SFC，也不在 `src/` 下，上面的 walk 只取 `src/**/*.{vue,ts}` ⇒ 会被误判成死文案）。
+  for (const f of readdirSync(root).filter((n) => n.endsWith(".html"))) {
+    const html = readFileSync(join(root, f), "utf8");
+    for (const m of html.matchAll(/data-i18n="([^"]+)"/g)) lits.add(m[1]);
+  }
+
   // 只查 zhCN：中英 key 集合一致由上面那条判据保证，两册不可能一边死一边活。
   const dead = Object.keys(zhCN).filter(
     (k) => !lits.has(k) && !prefixes.some((p) => p.length > 1 && k.startsWith(p)),

@@ -353,6 +353,19 @@ export const enUS: MessageDict = {
   "startupError.openDirFailed": "Failed to open the data folder: {error}",
   "startupError.quitting": "Quitting…",
   "startupError.quitFailed": "Quit request failed: {error}. You can end this process manually.",
+  // Static shell for `startup-error.html` (filled from `data-i18n` by the entry).
+  // The `<b>` in the safety note splits it into three nodes; Chinese needs no space
+  // between them, English does — hence the trailing space on safetyPrefix.
+  "startupError.title": "Data won't open — the app can't start",
+  "startupError.descLoading": "Reading the failure reason…",
+  "startupError.dataDir": "Data folder",
+  "startupError.logDir": "Log folder",
+  "startupError.safetyPrefix": "“Retry” only tries to reopen your existing data: ",
+  "startupError.safetyBold": "it never deletes, overwrites, or recreates any file",
+  "startupError.safetySuffix": ". If the data on this machine becomes available again (disk remounted, lock released, permissions fixed), retry goes straight in.",
+  "startupError.retry": "Retry",
+  "startupError.openDataDir": "Open data folder",
+  "startupError.quit": "Quit",
   "settings.network.bluetooth.alwaysOn":
     "On by default on phones — no setup needed. While the app runs, this device acts as a Bluetooth mesh relay; it stops when the system reclaims the app.",
   "settings.network.toast.btPermissionHint":
