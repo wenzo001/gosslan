@@ -55,7 +55,10 @@ pub async fn update_profile(
     // 头像大小兜底：超限直接拒绝，防止超大 base64 落库 / 撑爆 UDP 广播
     if let Some(a) = &avatar {
         if avatar_decoded_len(a) > MAX_AVATAR_BYTES {
-            return Err("头像过大，请压缩到 2MB 以内".to_string());
+            return Err(crate::error_codes::coded(
+                crate::error_codes::AVATAR_TOO_LARGE,
+                "头像过大，请压缩到 2MB 以内",
+            ));
         }
     }
     {
@@ -66,14 +69,23 @@ pub async fn update_profile(
         let av = avatar.clone();
         tokio::task::spawn_blocking(move || -> Result<(), String> {
             let dbc = s2.db.lock().unwrap_or_else(|e| e.into_inner());
-            db::set_setting(&dbc, "nickname", &nick).map_err(|e| e.to_string())?;
+            db::set_setting(&dbc, "nickname", &nick).map_err(|e| {
+                crate::error_codes::coded_if_uncoded(crate::error_codes::PROFILE_SAVE_FAILED, e)
+            })?;
             if let Some(a) = &av {
-                db::set_setting(&dbc, "avatar", a).map_err(|e| e.to_string())?;
+                db::set_setting(&dbc, "avatar", a).map_err(|e| {
+                    crate::error_codes::coded_if_uncoded(crate::error_codes::PROFILE_SAVE_FAILED, e)
+                })?;
             }
             Ok(())
         })
         .await
-        .map_err(|e| format!("资料写入被线程池中断: {e}"))??;
+        .map_err(|e| {
+            crate::error_codes::coded(
+                crate::error_codes::PROFILE_SAVE_FAILED,
+                format!("资料写入被线程池中断: {e}"),
+            )
+        })??;
     }
     *s.nickname.lock().unwrap_or_else(|e| e.into_inner()) = nickname.clone();
     *s.avatar.lock().unwrap_or_else(|e| e.into_inner()) = avatar.clone();
@@ -172,7 +184,12 @@ pub async fn list_interfaces() -> Result<Vec<InterfaceInfo>, String> {
     // 回 Result 而不是把失败摊成空列表：空列表在界面上读起来就是"这块机器没有网卡"。
     tokio::task::spawn_blocking(list_interfaces_blocking)
         .await
-        .map_err(|e| format!("网卡枚举被线程池中断: {e}"))
+        .map_err(|e| {
+            crate::error_codes::coded(
+                crate::error_codes::INTERFACE_LIST_FAILED,
+                format!("网卡枚举被线程池中断: {e}"),
+            )
+        })
 }
 
 fn list_interfaces_blocking() -> Vec<InterfaceInfo> {

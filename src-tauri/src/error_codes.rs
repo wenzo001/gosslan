@@ -361,6 +361,34 @@ pub const DIAG_EXPORT_PATH_EMPTY: &str = "DIAG_EXPORT_PATH_EMPTY";
 /// 诊断包导出：写盘失败（human 带底层原因，常见是目标目录只读/磁盘满）。
 pub const DIAG_EXPORT_WRITE_FAILED: &str = "DIAG_EXPORT_WRITE_FAILED";
 
+// ── B6 第十批：启动/窗口 / 资料 / 更新 ──────────────────────────────────────
+//
+// 这一族覆盖"保存资料""网卡枚举""更新检查/下载/安装/取消"的互斥与缺件分支。
+// 它们几乎都是用户连点两下或按错顺序时撞上的 ⇒ 前端那一档要说清"现在正在做什么、
+// 接下来该等还是该先检查"，而不是把内部相位名直接上屏。
+/// 头像 base64 解码后超过 2 MB（界面侧还有一道更早的压缩校验）。
+pub const AVATAR_TOO_LARGE: &str = "AVATAR_TOO_LARGE";
+/// 保存资料写库失败（human 带底层原因）。
+pub const PROFILE_SAVE_FAILED: &str = "PROFILE_SAVE_FAILED";
+/// 网卡枚举失败（human 带底层原因）。
+pub const INTERFACE_LIST_FAILED: &str = "INTERFACE_LIST_FAILED";
+/// 更新检查：正在下载时又点检查。
+pub const UPDATER_CHECK_WHILE_DOWNLOADING: &str = "UPDATER_CHECK_WHILE_DOWNLOADING";
+/// 更新检查：上一次检查还没结束。
+pub const UPDATER_CHECK_IN_PROGRESS: &str = "UPDATER_CHECK_IN_PROGRESS";
+/// 更新下载：已经在下载。
+pub const UPDATER_ALREADY_DOWNLOADING: &str = "UPDATER_ALREADY_DOWNLOADING";
+/// 更新下载：会话里还没有可下载的清单（先检查更新）。
+pub const UPDATER_NO_PENDING_UPDATE: &str = "UPDATER_NO_PENDING_UPDATE";
+/// 更新安装：还在下载。
+pub const UPDATER_INSTALL_WHILE_DOWNLOADING: &str = "UPDATER_INSTALL_WHILE_DOWNLOADING";
+/// 更新安装：会话里没有可安装的更新。
+pub const UPDATER_NO_UPDATE: &str = "UPDATER_NO_UPDATE";
+/// 更新安装：更新还没下载完成。
+pub const UPDATER_NOT_DOWNLOADED: &str = "UPDATER_NOT_DOWNLOADED";
+/// 更新取消：安装已经开始。
+pub const UPDATER_CANCEL_AFTER_INSTALL: &str = "UPDATER_CANCEL_AFTER_INSTALL";
+
 /// 给"可能已经带码"的下层错误补码：已带 `code=` 就原样透传，避免叠成两个码。
 ///
 /// 典型场景：通道启动会把 `network::start_from_prefs` 的 `PORT_IN_USE` 透传上来，

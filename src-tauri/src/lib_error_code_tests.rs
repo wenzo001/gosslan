@@ -162,6 +162,24 @@ const B6_CASES: &[(&str, &str, &str)] = &[
     ("DIAG_EXPORT_WRITE_FAILED", "diagnostics.rs", "写入诊断包失败：{e}"),
     // 外链窗口在 `logs.rs` 里还有一处二次解析（同一句原文、同一个码）
     ("LINK_URL_INVALID", "commands/logs.rs", "网址格式不正确"),
+    // ── B6 第十批：启动/窗口 / 资料 / 更新（本笔）──────────────────────────
+    ("AVATAR_TOO_LARGE", "commands/system.rs", "头像过大，请压缩到 2MB 以内"),
+    ("PROFILE_SAVE_FAILED", "commands/system.rs", "资料写入被线程池中断: {e}"),
+    ("INTERFACE_LIST_FAILED", "commands/system.rs", "网卡枚举被线程池中断: {e}"),
+    // 群发送内核：本机写库/入队共用 SEND_LOCAL_WRITE_FAILED（human 各自一句）
+    ("SEND_LOCAL_WRITE_FAILED", "commands/window.rs", "逻辑时钟推进失败：{e}"),
+    ("SEND_LOCAL_WRITE_FAILED", "commands/window.rs", "消息写入失败：{e}"),
+    ("SEND_LOCAL_WRITE_FAILED", "commands/window.rs", "会话写入失败：{e}"),
+    ("SEND_LOCAL_WRITE_FAILED", "commands/window.rs", "群消息入队失败：{e}"),
+    ("SEND_LOCAL_WRITE_FAILED", "commands/window.rs", "群消息写入失败：{e}"),
+    ("UPDATER_CHECK_WHILE_DOWNLOADING", "commands/updater.rs", "更新正在下载，稍后再检查"),
+    ("UPDATER_CHECK_IN_PROGRESS", "commands/updater.rs", "更新检查正在进行"),
+    ("UPDATER_ALREADY_DOWNLOADING", "commands/updater.rs", "更新已在下载"),
+    ("UPDATER_NO_PENDING_UPDATE", "commands/updater.rs", "没有可下载的更新"),
+    ("UPDATER_INSTALL_WHILE_DOWNLOADING", "commands/updater.rs", "更新仍在下载"),
+    ("UPDATER_NO_UPDATE", "commands/updater.rs", "没有可安装的更新"),
+    ("UPDATER_NOT_DOWNLOADED", "commands/updater.rs", "更新尚未下载完成"),
+    ("UPDATER_CANCEL_AFTER_INSTALL", "commands/updater.rs", "安装已经开始，无法取消"),
 ];
 
 /// human 是下层原话、没有字面量的触发点：只守"码真的挂在这里"，
@@ -188,6 +206,8 @@ const B6_DYNAMIC_HUMAN: &[(&str, &str)] = &[
     ("LINK_NETWORK_INIT_FAILED", "commands/external_links.rs"),
     ("SHARE_DIR_READ_FAILED", "commands/share.rs"),
     ("SHARE_SEND_FAILED", "commands/share.rs"),
+    // 资料写库：human 是 db 层原话（可能已经带码）
+    ("PROFILE_SAVE_FAILED", "commands/system.rs"),
 ];
 
 /// B6 白名单命令的"未带码 return Err"存量基线（只减不增）。
@@ -252,6 +272,9 @@ const B6_COMMAND_UNCODED_BASELINE: &[(&str, &str, usize)] = &[
     ("logs.rs", "get_logs", 0),
     ("logs.rs", "clear_logs", 0),
     ("logs.rs", "export_diagnostics_bundle", 0),
+    // B6 第十批：启动/资料（两条 async 命令都已带码，锁住不回涨）
+    ("system.rs", "update_profile", 0),
+    ("system.rs", "list_interfaces", 0),
 ];
 
 fn read_src(rel: &str) -> String {
