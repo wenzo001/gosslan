@@ -62,3 +62,19 @@
   `allowlist` 不查好友表）；
 - `RelayConfig::parse` 对脏 JSON 白名单不 panic、未知策略回落 `all`；
 - 「默认策略与今天一致」——任意组合都必须转发。
+
+## 2026-11-03 复核（R5）：默认 `all` 保留，且这是有意设计
+
+用户复核「所有节点都能互相中继」后确认：默认 `relay_policy=all` **不改**。
+让这个默认值站得住的三道滥用闸都有机器证据：
+
+1. **验签**：转发帧的发送者身份只取自**已验签信封**的 `sender_id`（本 ADR §3），
+   伪造发送者过不了 Ed25519；
+2. **每秒限速闸**：替别人转发走全局令牌桶 `REFER_FORWARD_PER_SEC`
+  （`network/transport/gossip.rs`，超限留 `code=RELAY_FORWARD_RATE_LIMITED`，SEC-05）；
+3. **TTL=6**：生产 `MeshRouter::new(100_000, 10_000, 6, 4, 256)`（`state.rs`）
+   把对端自报 ttl 裁到 6（`mesh/router.rs` 的 max_ttl 裁剪有单测钉着），扩散有界。
+
+配套事实（R 批只读审计 2026-11-03）：数据面三道闸在 `network/transport.rs` 的
+`relay_denied`（定向借道 / 外部帧转投 / RelayChunk 转投），控制面在 gossip 第 4 步；
+三节点链有本地 E2E `--round=gossip3` + lie 自证。
