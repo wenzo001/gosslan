@@ -723,6 +723,7 @@ export const enUS: MessageDict = {
   "errors.rule.groupImageBytesInvalid": "The image data is incomplete. Try another image.",
   "errors.rule.groupImageEmpty": "The image is empty. Try another one.",
   "errors.rule.groupImagePasteOnly": "Only pasted images are supported here.",
+  "errors.rule.favoriteExportPathEmpty": "Choose a location to save the export.",
   "errors.avatar.notBase64": "The encoded image is not a base64 data URL, so its size cannot be measured.",
   "errors.avatar.stillTooLarge": "The avatar is still over 1 MB after compression. Please pick a smaller image.",
   "errors.image.readFail": "Failed to read the image",
