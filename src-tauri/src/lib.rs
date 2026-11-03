@@ -71,6 +71,10 @@ mod transport;
 mod tray;
 mod user_dirs;
 mod watchdog;
+/// Windows 桌面快捷方式一次性对账（5.16.95 回归：`Gosslan.lnk` + `小院儿.lnk` 两份都在）。
+/// 纯解析/判据在 macOS 上也跑单测；真正碰桌面目录的入口只在 Windows 编译。
+#[cfg(any(target_os = "windows", test))]
+mod win_shortcut;
 mod worker_supervisor;
 
 use tauri::Manager;
@@ -386,6 +390,10 @@ fn finish_boot(app: &tauri::AppHandle, state: std::sync::Arc<state::AppState>) {
     // 出站状态同一时机恢复：等待对方同意的申请、待补发的同意回执、未确认的撤回。
     // 同样是只填表不弹通知；界面启动后走 `get_outgoing_friend_requests`。
     crate::network::transport::restore_pending_outbound(&state);
+    // 桌面快捷方式一次性对账（Windows）：只有「旧名 + 新名两份都存在，且目标都等于当前
+    // exe」时才删旧名那份。同一版本只尝试一次（先记标记再扫盘），失败不会反复扫。
+    #[cfg(target_os = "windows")]
+    crate::win_shortcut::reconcile_once(app, &state);
     // 卡死看门狗：主线程探针 + 渲染心跳。**接线点只有这一处**（判据钉调用点计数）。
     watchdog::start(app.clone(), state.clone());
     // 系统托盘：关闭主窗口仅隐藏到托盘，退出需走托盘菜单

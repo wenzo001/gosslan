@@ -446,6 +446,7 @@ export default {
         "src-tauri/src/restart.rs", // 一键重启入口（托盘/横幅共用；销毁单实例锁 + 有界收尾 + re-exec）
         "src-tauri/src/macos_window.rs", // macOS 专属（lib.rs:40）
         "src-tauri/src/macos_bookmark.rs", // macOS 专属（lib.rs:46）
+        "src-tauri/src/win_shortcut.rs", // Windows 专属入口（模块在 test 构建下也编译，跑 .lnk 解析单测）
         "src-tauri/src/open_path.rs",
         "src-tauri/src/android_open.rs", // Android 专属
         "src-tauri/src/android_background.rs", // Android 专属（桥）+ 其它平台的空桩，见 ADR-0022
@@ -462,7 +463,7 @@ export default {
       enforce: false,
       consumes: ["persistence"], // user_dirs.rs 用 db；notifications.rs 仅引用 state(装配)；android_open/jni_method 互引(同域)
       notes:
-        "按平台分：menu / macos_bookmark / macos_window 是 macOS 专属（模块级 `#[cfg(target_os = \"macos\")]`）；android_open / jni_method 是 Android 专属（整个模块 cfg 掉）；android_background 也只做 Android 的桥，但**模块本身不加 cfg** —— 它给非 Android 目标留了三个空实现，好让 network/ 与 commands/ 的调用点一处 cfg 都不写（见该文件头第 3 条与 ADR-0022）。这些平台差异正是 Phase 2/4 两条腿存在的原因。",
+        "按平台分：menu / macos_bookmark / macos_window 是 macOS 专属（模块级 `#[cfg(target_os = \"macos\")]`）；win_shortcut 是 Windows 专属（`reconcile_once` 走 `#[cfg(windows)]`，纯解析/判据在测试构建下跨平台）；android_open / jni_method 是 Android 专属（整个模块 cfg 掉）；android_background 也只做 Android 的桥，但**模块本身不加 cfg** —— 它给非 Android 目标留了三个空实现，好让 network/ 与 commands/ 的调用点一处 cfg 都不写（见该文件头第 3 条与 ADR-0022）。这些平台差异正是 Phase 2/4 两条腿存在的原因。",
     },
 
     // -------------------------------------------------------------------------
