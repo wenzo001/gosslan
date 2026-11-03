@@ -23,7 +23,10 @@ pub async fn copy_file(
                 "file",
                 format!("code={code} 拒绝另存为 source={source} msg={msg_id}"),
             );
-            return Err("这个文件不属于这条消息，已拒绝保存".to_string());
+            return Err(crate::error_codes::coded(
+                crate::error_codes::FILE_NOT_OWNED_BY_MESSAGE,
+                "这个文件不属于这条消息，已拒绝保存",
+            ));
         }
     }
     // Android 的「另存为」对话框返回的是 content:// URI，std::fs::copy 写不了，
@@ -125,10 +128,13 @@ fn save_data_file_blocking(base64_data: String, destination: String) -> Result<(
     // 解码后又是一份）⇒ 不设上限时单次 IPC 可申请数百 MB，`panic = "abort"` 下 OOM 直接杀进程。
     // 与粘贴图片同一上限、同一常量（它本来就只服务图片另存）。
     if bytes.len() as u64 > MAX_OUTGOING_IMAGE_BYTES {
-        return Err(format!(
-            "图片过大（{} 字节，上限 {} 字节），未保存",
-            bytes.len(),
-            MAX_OUTGOING_IMAGE_BYTES
+        return Err(crate::error_codes::coded(
+            crate::error_codes::IMAGE_TOO_LARGE,
+            format!(
+                "图片过大（{} 字节，上限 {} 字节），未保存",
+                bytes.len(),
+                MAX_OUTGOING_IMAGE_BYTES
+            ),
         ));
     }
     // Android：目标可能是 content:// URI，std::fs::write 写不了，走 ContentResolver。
@@ -159,8 +165,18 @@ pub async fn save_media_as(
     let source = if let Some(id) = msg_id.as_deref() {
         match resolve_media_path(s, id) {
             MediaPath::Present(p) => *p,
-            MediaPath::Unknown(e) => return Err(e),
-            MediaPath::Gone => return Err("文件不存在".to_string()),
+            MediaPath::Unknown(e) => {
+                return Err(crate::error_codes::coded_if_uncoded(
+                    crate::error_codes::FILE_PATH_UNRESOLVED,
+                    e,
+                ))
+            }
+            MediaPath::Gone => {
+                return Err(crate::error_codes::coded(
+                    crate::error_codes::FILE_NOT_FOUND,
+                    "文件不存在",
+                ))
+            }
         }
     } else if let Some(cid) = cid.as_deref() {
         let path = {
@@ -179,7 +195,10 @@ pub async fn save_media_as(
         }
         file
     } else {
-        return Err("缺少图片来源".to_string());
+        return Err(crate::error_codes::coded(
+            crate::error_codes::IMAGE_SOURCE_MISSING,
+            "缺少图片来源",
+        ));
     };
 
     #[cfg(target_os = "android")]
@@ -323,8 +342,18 @@ pub async fn read_file_preview(
         let max_bytes = max_bytes.min(15 * 1024 * 1024);
         let file = match resolve_media_path(&s, &msg_id) {
             MediaPath::Present(p) => *p,
-            MediaPath::Unknown(e) => return Err(e),
-            MediaPath::Gone => return Err("文件不存在".to_string()),
+            MediaPath::Unknown(e) => {
+                return Err(crate::error_codes::coded_if_uncoded(
+                    crate::error_codes::FILE_PATH_UNRESOLVED,
+                    e,
+                ))
+            }
+            MediaPath::Gone => {
+                return Err(crate::error_codes::coded(
+                    crate::error_codes::FILE_NOT_FOUND,
+                    "文件不存在",
+                ))
+            }
         };
         let meta = std::fs::metadata(&file).map_err(|e| e.to_string())?;
         if meta.len() > max_bytes {

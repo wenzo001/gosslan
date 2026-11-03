@@ -19,35 +19,61 @@ fn image_extension(mime: &str) -> Option<&'static str> {
 fn decode_outgoing_image(data_url: &str) -> Result<(&'static str, Vec<u8>), String> {
     const PREFIX: &str = "data:";
     if !data_url.starts_with(PREFIX) {
-        return Err("非法的 data URL".to_string());
+        return Err(crate::error_codes::coded(
+            crate::error_codes::IMAGE_DATA_URL_INVALID,
+            "非法的 data URL",
+        ));
     }
     let rest = &data_url[PREFIX.len()..];
     let Some((meta, encoded)) = rest.split_once(',') else {
-        return Err("非法的 data URL".to_string());
+        return Err(crate::error_codes::coded(
+            crate::error_codes::IMAGE_DATA_URL_INVALID,
+            "非法的 data URL",
+        ));
     };
     let meta = meta.to_lowercase();
     if !meta.ends_with(";base64") {
-        return Err("只接受 base64 编码的 data URL".to_string());
+        return Err(crate::error_codes::coded(
+            crate::error_codes::IMAGE_BASE64_REQUIRED,
+            "只接受 base64 编码的 data URL",
+        ));
     }
     let mime = meta.trim_end_matches(";base64").trim();
     if !mime.starts_with("image/") {
-        return Err("只接受图片文件".to_string());
+        return Err(crate::error_codes::coded(
+            crate::error_codes::IMAGE_NOT_IMAGE,
+            "只接受图片文件",
+        ));
     }
     let Some(ext) = image_extension(mime) else {
-        return Err("不支持的图片格式".to_string());
+        return Err(crate::error_codes::coded(
+            crate::error_codes::IMAGE_FORMAT_UNSUPPORTED,
+            "不支持的图片格式",
+        ));
     };
     let bytes = base64::engine::general_purpose::STANDARD
         .decode(encoded.as_bytes())
-        .map_err(|e| format!("图片解码失败：{e}"))?;
+        .map_err(|e| {
+            crate::error_codes::coded(
+                crate::error_codes::IMAGE_DECODE_FAILED,
+                format!("图片解码失败：{e}"),
+            )
+        })?;
     if bytes.len() as u64 > MAX_OUTGOING_IMAGE_BYTES {
-        return Err(format!(
-            "图片过大（{} > {}），请压缩后重试",
-            bytes.len(),
-            MAX_OUTGOING_IMAGE_BYTES
+        return Err(crate::error_codes::coded(
+            crate::error_codes::IMAGE_TOO_LARGE,
+            format!(
+                "图片过大（{} > {}），请压缩后重试",
+                bytes.len(),
+                MAX_OUTGOING_IMAGE_BYTES
+            ),
         ));
     }
     if bytes.is_empty() {
-        return Err("图片内容为空".to_string());
+        return Err(crate::error_codes::coded(
+            crate::error_codes::IMAGE_EMPTY,
+            "图片内容为空",
+        ));
     }
     Ok((ext, bytes))
 }
@@ -69,7 +95,12 @@ pub fn save_outgoing_image(
         .clone();
     let path = dl.join(&name);
     std::fs::create_dir_all(&dl).map_err(|e| e.to_string())?;
-    std::fs::write(&path, &bytes).map_err(|e| format!("图片保存失败：{e}"))?;
+    std::fs::write(&path, &bytes).map_err(|e| {
+        crate::error_codes::coded(
+            crate::error_codes::IMAGE_SAVE_FAILED,
+            format!("图片保存失败：{e}"),
+        )
+    })?;
     // 落进**托管目录**的图片含聊天图片本体：只许属主读（审计 P1 #8）。
     // 用户显式选的导出目的地不在此列（他可能就是要放到共享目录）。
     crate::private_fs::restrict_to_owner(&path);
@@ -95,18 +126,6 @@ pub fn save_outgoing_image(
 /// 一个码 + `action` / `reason` 字段（多种原因是同一个动作，不是多件事），与
 /// `GROUP_ACTION_REJECTED` / `FAVORITE_REJECTED` 同一口径。纯输入校验不在此列。
 /// ⚠️ `delete/outside_downloads` 是**安全信号**（有人试图让本机删下载目录外的文件）。
-fn reject_file(s: &Arc<AppState>, action: &str, reason: &str, msg: &str) -> String {
-    s.logger.warn(
-        "files",
-        format!("code=FILE_REJECTED action={action} reason={reason}"),
-    );
-    msg.to_string()
-}
-
-/// 与 `reject_file` 同口径，但把**稳定码**带回前端。
-///
-/// 同步拒绝发生在写库之前：库里没有行、没有 `messages.fail_code` 可落，返回值就是
-/// 用户唯一一次看到原因的机会。码让中英界面说同一件事，也让人话不靠前端猜。
 fn reject_file_coded(
     s: &Arc<AppState>,
     action: &str,
@@ -137,7 +156,13 @@ pub async fn delete_file(state: State<'_, Arc<AppState>>, path: String) -> Resul
             .map(|dir| path_under_any(&file, &[dir]))
             .unwrap_or(false);
         if !under_downloads {
-            return Err(reject_file(&s, "delete", "outside_downloads", "只能删除下载目录内的文件"));
+            return Err(reject_file_coded(
+                &s,
+                "delete",
+                "outside_downloads",
+                crate::error_codes::FILE_DELETE_OUTSIDE_DOWNLOADS,
+                "只能删除下载目录内的文件",
+            ));
         }
         std::fs::remove_file(&file).map_err(|e| e.to_string())
     })
@@ -248,10 +273,16 @@ fn open_file_native_blocking(
                 owner.unwrap_or("-")
             ),
         );
-        return Err(match code {
-            "OPEN_PATH_NOT_OWNED" => "这个文件不属于这条消息，已拒绝打开".to_string(),
-            _ => "无法确认这个文件属于本应用，已拒绝打开".to_string(),
-        });
+        return match code {
+            "OPEN_PATH_NOT_OWNED" => Err(crate::error_codes::coded(
+                crate::error_codes::OPEN_PATH_NOT_OWNED,
+                "这个文件不属于这条消息，已拒绝打开",
+            )),
+            _ => Err(crate::error_codes::coded(
+                crate::error_codes::OPEN_PATH_UNVERIFIED,
+                "无法确认这个文件属于本应用，已拒绝打开",
+            )),
+        };
     }
 
     // ⚠️ 交给系统的是**原始路径**，不是上面那份 canonical 结果：Windows 的 `canonicalize` 返回
@@ -389,9 +420,12 @@ pub async fn list_group_files(
                                     format!("code=GFILE_MY_STATUS_READ_FAILED 我的状态读不出来，整面板进错误档 transfer={}", f.transfer_id),
                                 );
                             }
-                            return Err(format!(
-                                "群文件「我的状态」读不出来（transfer={}）",
-                                f.transfer_id
+                            return Err(crate::error_codes::coded(
+                                crate::error_codes::GFILE_MY_STATUS_READ_FAILED,
+                                format!(
+                                    "群文件「我的状态」读不出来（transfer={}）",
+                                    f.transfer_id
+                                ),
                             ));
                         }
                     };
@@ -1101,7 +1135,13 @@ pub async fn cancel_content_fetch(
 ) -> Result<ContentCancelResult, String> {
     let s = state.inner().clone();
     if cid.is_empty() {
-        return Err(reject_file(&s, "cancel_content", "no_cid", "这条内容没有内容指纹，无法取消"));
+        return Err(reject_file_coded(
+            &s,
+            "cancel_content",
+            "no_cid",
+            crate::error_codes::FILE_NO_CONTENT_ID,
+            "这条内容没有内容指纹，无法取消",
+        ));
     }
     // SQLite 读写与 `.part` 删除都在阻塞池（INV-P34）：持锁做几笔写，占住 tokio worker
     // 会把整屏 IPC 一起拖慢（同 `cancel_message` 的理由）。
@@ -1501,10 +1541,11 @@ pub async fn request_content(
         )
     };
     if cid.is_empty() {
-        return Err(reject_file(
+        return Err(reject_file_coded(
             s,
             "request_content",
             "no_cid",
+            crate::error_codes::FILE_NO_CONTENT_ID,
             "这条内容没有内容指纹（对方版本较旧），无法重新获取",
         ));
     }
@@ -1585,7 +1626,13 @@ pub async fn request_content_by_cid(
 ) -> Result<bool, String> {
     let s = state.inner();
     if cid.is_empty() {
-        return Err(reject_file(s, "request_content", "no_cid", "这条内容没有内容指纹，无法重新获取"));
+        return Err(reject_file_coded(
+            s,
+            "request_content",
+            "no_cid",
+            crate::error_codes::FILE_NO_CONTENT_ID,
+            "这条内容没有内容指纹，无法重新获取",
+        ));
     }
     // 能力协商：与 request_content 同一条规则 —— 对端没声明拉取能力就不发新帧。
     let supports = s
@@ -1894,7 +1941,10 @@ pub async fn send_file_auto(
         .await
         .map_err(|e| format!("转发路径校验被线程池中断: {e}"))??;
         if rejected.is_some() {
-            return Err("这个文件不属于这条消息，已拒绝转发".to_string());
+            return Err(crate::error_codes::coded(
+                crate::error_codes::FILE_NOT_OWNED_BY_MESSAGE,
+                "这个文件不属于这条消息，已拒绝转发",
+            ));
         }
     }
     send_file(state, friend_id, path, local_id).await

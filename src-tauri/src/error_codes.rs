@@ -252,6 +252,40 @@ pub const ROUTED_IPV6_UNSUPPORTED: &str = "ROUTED_IPV6_UNSUPPORTED";
 pub const NOTIFY_PERMISSION_DENIED: &str = "NOTIFY_PERMISSION_DENIED";
 /// 设置页「发送测试通知」：系统通知 API 发送失败（human 带底层原因）。
 pub const NOTIFY_SEND_FAILED: &str = "NOTIFY_SEND_FAILED";
+
+// ── B6 第七批：文件 / 外链（本笔）──────────────────────────────────────
+/// 粘贴图片：不是 data URL / 缺少逗号分隔。
+pub const IMAGE_DATA_URL_INVALID: &str = "IMAGE_DATA_URL_INVALID";
+/// 粘贴图片：data URL 不是 base64 编码。
+pub const IMAGE_BASE64_REQUIRED: &str = "IMAGE_BASE64_REQUIRED";
+/// 粘贴图片：MIME 不是 image/*。
+pub const IMAGE_NOT_IMAGE: &str = "IMAGE_NOT_IMAGE";
+/// 粘贴图片：image/* 里不认识的子类型。
+pub const IMAGE_FORMAT_UNSUPPORTED: &str = "IMAGE_FORMAT_UNSUPPORTED";
+/// 粘贴图片：base64 解不出来（human 带解码器原话）。
+pub const IMAGE_DECODE_FAILED: &str = "IMAGE_DECODE_FAILED";
+/// 图片体积超过发送上限（human 带实际值与上限）。
+pub const IMAGE_TOO_LARGE: &str = "IMAGE_TOO_LARGE";
+/// 图片解出来是 0 字节。
+pub const IMAGE_EMPTY: &str = "IMAGE_EMPTY";
+/// 图片另存/保存失败（human 带 OS 原话）。
+pub const IMAGE_SAVE_FAILED: &str = "IMAGE_SAVE_FAILED";
+/// 另存为：既没给 msg_id 也没给 cid。
+pub const IMAGE_SOURCE_MISSING: &str = "IMAGE_SOURCE_MISSING";
+/// 删除：路径不在下载目录内（安全信号）。
+pub const FILE_DELETE_OUTSIDE_DOWNLOADS: &str = "FILE_DELETE_OUTSIDE_DOWNLOADS";
+/// 取消 / 重新拉取：消息载荷没有内容指纹。
+pub const FILE_NO_CONTENT_ID: &str = "FILE_NO_CONTENT_ID";
+/// 打开 / 另存 / 转发：路径与这条消息的台账不符。
+pub const FILE_NOT_OWNED_BY_MESSAGE: &str = "FILE_NOT_OWNED_BY_MESSAGE";
+/// 打开：台账指向别的路径。
+pub const OPEN_PATH_NOT_OWNED: &str = "OPEN_PATH_NOT_OWNED";
+/// 打开：台账还没建立、也无法证明是本机发出。
+pub const OPEN_PATH_UNVERIFIED: &str = "OPEN_PATH_UNVERIFIED";
+/// 取本地媒体路径失败（human 带具体原因，可能已带别的码）。
+pub const FILE_PATH_UNRESOLVED: &str = "FILE_PATH_UNRESOLVED";
+/// 群文件「我的状态」读不出来（human 带 transfer id）。
+pub const GFILE_MY_STATUS_READ_FAILED: &str = "GFILE_MY_STATUS_READ_FAILED";
 /// 通道设置：清理缓存任务失败（human 带底层原因）。
 pub const CHANNEL_CACHE_CLEAN_FAILED: &str = "CHANNEL_CACHE_CLEAN_FAILED";
 
