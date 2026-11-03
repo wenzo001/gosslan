@@ -127,6 +127,15 @@ pub fn sweep_stale_relay(state: &AppState) -> usize {
 /// Gossip 广播（ttl 衰减 + fan-out 转发），能穿过中继节点让 A→B→C 里 A 也
 /// 「看到」C。这是「去中心化、节点即服务器」发现层的第一块拼图。
 async fn broadcast_presence(state: &Arc<AppState>) {
+    let payload = presence_payload_b64(state);
+    broadcast_gossip(state, build_presence_envelope(state, &payload, None)).await;
+}
+
+/// Presence 的明文 payload（昵称/可选头像/设备类型），返回 base64。
+///
+/// 抽出来是因为**按需探测**也要复用同一份身份通告：协议帧不变，只是发送时机与
+/// 目标不同（广播 vs 定向到中继电路对端）。
+fn presence_payload_b64(state: &AppState) -> String {
     let nickname = state
         .nickname
         .lock()
@@ -152,9 +161,15 @@ async fn broadcast_presence(state: &Arc<AppState>) {
     if let Some(a) = avatar {
         payload_json["avatar"] = serde_json::Value::String(a.to_string());
     }
-    let payload = payload_json.to_string();
-    let payload_b64 = STANDARD.encode(payload.as_bytes());
+    STANDARD.encode(payload_json.to_string().as_bytes())
+}
 
+/// 构造 Presence 信封；`target=None` 是公开广播，`Some(peer)` 只发给该 peer。
+fn build_presence_envelope(
+    state: &AppState,
+    payload_b64: &str,
+    target: Option<&str>,
+) -> GossipEnvelope {
     let mut env = {
         let gossip = state.gossip.lock().unwrap_or_else(|e| e.into_inner());
         gossip.build_envelope(
@@ -163,16 +178,57 @@ async fn broadcast_presence(state: &Arc<AppState>) {
             GossipKind::Presence,
             None,
             None,
-            &payload_b64,
+            payload_b64,
             db::now_ms(),
             0,
         )
     };
+    env.target = target.map(|t| t.to_string());
     // Presence 是公开的节点身份通告，明文。`signing_bytes()` 覆盖 `encrypted`，
     // 改后必须重签（与 FriendMessageBlocked 同模式）。
     env.encrypted = false;
     env.sender_sig = state.identity.sign_b64(&env.signing_bytes());
-    broadcast_gossip(state, env).await;
+    env
+}
+
+/// 按需探测：给**已建立的公网中转电路**对端各发一条定向 Presence。
+///
+/// 为什么不是 UDP `who_has`：中继电路是 TCP 字节流，`who_has` 只在 UDP 发现层有效。
+/// 复用既有 Presence 帧（不新增协议帧）就能让对方立刻刷新 `last_seen`，效果等价于
+/// 「我在找你」；真正发现陌生节点仍由 UDP 定向探测负责。
+///
+/// 只发给电路对端本人（`target=Some`），不广播、不把结果扩散给第三方。
+pub(crate) async fn send_presence_probe_to_relays(state: &AppState) {
+    use crate::commands::RELAY_SERVER_KEY;
+    use crate::discovery::routed::{parse_endpoint_addr_on, RELAY_DEFAULT_PORT};
+
+    // 读失败 / 没配 / 格式非法都只是「没有中继电路可探」，不在这里留新痕：
+    // 中继命令层与 relay 任务已经有各自的可观测错误路径。
+    let server_raw = {
+        let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
+        db::get_setting_checked(&dbc, RELAY_SERVER_KEY)
+            .ok()
+            .flatten()
+    };
+    let Some(server) = server_raw.and_then(|s| parse_endpoint_addr_on(&s, RELAY_DEFAULT_PORT)) else {
+        return;
+    };
+    let peers: Vec<String> = {
+        let links = state.links.lock().await;
+        links
+            .iter()
+            .filter(|(_, list)| list.iter().any(|l| l.endpoint == MeshEndpoint::Tcp(server)))
+            .map(|(peer, _)| peer.clone())
+            .collect()
+    };
+    if peers.is_empty() {
+        return;
+    }
+    let payload = presence_payload_b64(state);
+    for peer in peers {
+        let env = build_presence_envelope(state, &payload, Some(&peer));
+        let _ = try_send(state, &peer, &Message::Gossip { envelope: env }).await;
+    }
 }
 
 // ---------------- 服务启动 ----------------

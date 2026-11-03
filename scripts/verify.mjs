@@ -458,6 +458,18 @@ const steps = [
   },
   {
     group: "frontend",
+    name: "前端测试（英文 locale 复跑）",
+    why:
+      "挡住「本机 LANG=zh 恰好过、CI 英文环境必红」的 locale 依赖。2026-11-04 真实红过：" +
+      "分隔符已改读词典，测试却把全角冒号写死在期望值里；这一层要求同一套断言在中英两种" +
+      "词典下都成立（语言由 LANG/LC_ALL 决定，不需要额外开关）",
+    cwd: ROOT,
+    cmd: NPM,
+    args: ["test"],
+    env: { LANG: "en_US.UTF-8", LC_ALL: "en_US.UTF-8" },
+  },
+  {
+    group: "frontend",
     name: "前端静态检查 + 构建（npm run build）",
     why:
       "vue-tsc 类型检查 + vite 产物。留在快速层：它**不碰 cargo**，而且是前端唯一的类型门禁" +

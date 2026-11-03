@@ -1395,3 +1395,33 @@ fn broken_db_reading_pending_message_ops_is_an_error() {
         "命令层把读失败折成了空列表（F-PRE-004 / B1-F7 的形状）"
     );
 }
+
+/// 按需探测必须真的打出去（2026-11-04 跨网段 A 项）。
+///
+/// 判的是**调用形状**而不是运行时：routed 单播与中继 Presence 都只能在真链路上
+/// 验证效果，但“搜索时到底发没发”可以在源码层钉死，避免以后改 `broadcast_probe`
+/// 时把这两步顺手删掉。反例锚：周期 `broadcast()` 里不许混进定向探测（那会变成
+/// 每 5/10 秒一次的常态轮询）。
+#[test]
+fn discovery_probe_targets_routed_endpoints_and_relay_circuits() {
+    let discovery = include_str!("network/discovery.rs");
+    let probe = rust_fn_body(discovery, "async fn broadcast_probe(");
+    assert!(
+        probe.contains("probe_udp_targets"),
+        "broadcast_probe 不再向 routed 端点单播 who_has ⇒ 跨网段按需探测被删了"
+    );
+    assert!(
+        probe.contains("ROUTED_ENDPOINTS_KEY"),
+        "探测没读用户配置的 routed 端点（只发了子网广播）"
+    );
+    assert!(
+        probe.contains("send_presence_probe_to_relays"),
+        "探测不再向已建立的中继电路对端发定向 Presence"
+    );
+
+    let periodic = rust_fn_body(discovery, "async fn broadcast(");
+    assert!(
+        !periodic.contains("probe_udp_targets"),
+        "周期广播混进了定向探测 ⇒ 低频按需会退化成常态轮询"
+    );
+}

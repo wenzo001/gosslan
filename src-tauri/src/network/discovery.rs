@@ -18,8 +18,9 @@ use rand_core::{OsRng, RngCore};
 use base64::{engine::general_purpose::STANDARD, Engine as _};
 
 use crate::commands::is_virtual_ip;
+use crate::discovery::routed::{parse_endpoints, probe_udp_targets, ROUTED_ENDPOINTS_KEY};
 use crate::logging::now_ms;
-use crate::network::transport::{ensure_link, upsert_peer};
+use crate::network::transport::{ensure_link, send_presence_probe_to_relays, upsert_peer};
 use crate::protocol::{UdpPacket, ANNOUNCE_INTERVAL_SECS, RELAY_PEER_TIMEOUT_SECS, UDP_PORT};
 use crate::state::AppState;
 
@@ -827,7 +828,41 @@ async fn broadcast_probe(
                 diag_event_from_send_result(&bcast_target, "who_has_sent", &bcast_res);
             state.push_diag_event(kind, &detail);
         }
+        // 跨网段 / VPN：把同一份 `who_has` 单播到用户已配置的 routed 端点。
+        // 子网广播跨不过网段，而这些端点往往是我们唯一能碰到对方 UDP 栈的地址。
+        // 只发用户这条配置里已有的地址（不是扫描），条数封顶在 probe_udp_targets 里；
+        // 接收端按既有 announce 逻辑**单播回发起者**，不会广播名册。
+        let routed_targets = {
+            let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
+            match crate::db::get_setting_checked(&dbc, ROUTED_ENDPOINTS_KEY) {
+                Ok(Some(raw)) => probe_udp_targets(&parse_endpoints(&raw)),
+                Ok(None) => Vec::new(),
+                // 读配置失败不能静默当成"没有端点"：留一条 warn，搜索仍继续（探测是补充手段）。
+                Err(err) => {
+                    state.push_diag_event(
+                        "routed_probe_conf_error",
+                        &format!("read {ROUTED_ENDPOINTS_KEY} failed: {err}"),
+                    );
+                    Vec::new()
+                }
+            }
+        };
+        for target in routed_targets {
+            // 同一 IP 已在子网广播里发过就不再重复；判断失败时保留原广播行为。
+            if let Some(bc) = lan_broadcast {
+                if target.ip() == std::net::IpAddr::V4(bc) {
+                    continue;
+                }
+            }
+            let res = socket.send_to(&data, target).await;
+            let (kind, detail) =
+                diag_event_from_send_result(&target.to_string(), "who_has_sent", &res);
+            state.push_diag_event(kind, &detail);
+        }
     }
+    // 已建立的公网中转电路走的是 TCP：把身份通告定向发一遍（复用 Presence 帧），
+    // 不新增协议帧，也不把回应扩散给第三方。
+    send_presence_probe_to_relays(state).await;
     // 同时广播自身，让周围节点也能立刻发现我们
     broadcast(socket, state, tcp_port, lan_broadcast).await;
 }

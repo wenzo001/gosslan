@@ -59,17 +59,32 @@
     #[test]
     fn presence_caps_inline_avatar() {
         let src = crate::network::transport_src_for_guards();
-        let at = src
+        // 2026-11-04：payload 构造抽到 `presence_payload_b64`（按需探测复用同一份通告），
+        // 闸门跟着 payload 走；同时钉住 broadcast_presence 仍走这个 helper，防止两边漂移。
+        let broadcast_at = src
             .find("async fn broadcast_presence")
             .expect("必须还有 broadcast_presence（本护栏锚点）");
-        let end = src[at..]
+        let broadcast_end = src[broadcast_at..]
             .find("\n}\n")
-            .map(|i| at + i + 3)
+            .map(|i| broadcast_at + i + 3)
             .unwrap_or(src.len());
-        let body = &src[at..end];
+        let broadcast_body = &src[broadcast_at..broadcast_end];
+        assert!(
+            broadcast_body.contains("presence_payload_b64"),
+            "broadcast_presence 不再走统一的 payload 构造 ⇒ 头像闸门可能已被绕过"
+        );
+
+        let near = src
+            .find("fn presence_payload_b64")
+            .expect("必须还有 presence_payload_b64（本护栏锚点）");
+        let end = src[near..]
+            .find("\n}\n")
+            .map(|i| near + i + 3)
+            .unwrap_or(src.len());
+        let body = &src[near..end];
         assert!(
             body.contains("hello_avatar_for_wire"),
-            "broadcast_presence 必须过 hello_avatar_for_wire 闸门：             否则一张大头像会占满优先通道，聊天与好友请求几分钟才到"
+            "Presence payload 必须过 hello_avatar_for_wire 闸门：             否则一张大头像会占满优先通道，聊天与好友请求几分钟才到"
         );
         assert!(
             !body.contains("\"avatar\": avatar"),
