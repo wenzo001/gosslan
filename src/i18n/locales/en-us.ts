@@ -610,8 +610,6 @@ export const enUS: MessageDict = {
   "errors.rule.readStateWrite": "Read state wasn't saved to the local database; the unread badge has been restored to match it.",
   "errors.rule.kindUnsupported": "This version of Gosslan on the other side doesn't support this content type. It is saved in your local queue — tap Resend in the task center after they upgrade.",
   "errors.rule.peerKeyMissing": "We don't have the other side's encryption key yet (this relationship has never exchanged keys). Try again once they have been online.",
-  "errors.rule.auxWindow": "Couldn't open the extra window: a stale rendering environment left over from an upgrade or restart. Quit Gosslan completely and open it again to recover.",
-  "errors.rule.auxWindowRestart": "Restart now",
   "errors.avatar.notBase64": "The encoded image is not a base64 data URL, so its size cannot be measured.",
   "errors.avatar.stillTooLarge": "The avatar is still over 1 MB after compression. Please pick a smaller image.",
   "errors.image.readFail": "Failed to read the image",

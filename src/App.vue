@@ -1,7 +1,6 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref, watch } from "vue";
 import { useEventListener } from "@vueuse/core";
-import { useAuxWindowFailureReport } from "@/composables/useAuxWindowFailureReport";
 import { useAppStore } from "@/stores/useAppStore";
 import { useChatStore } from "@/stores/useChatStore";
 import { api } from "@/api";
@@ -47,7 +46,6 @@ const AUX_PREWARM_DELAY_MS = 1200;
  * 于是每次开设置都要白等一整棵聊天组件树，还会先显示聊天界面。现在这个分支根本不存在了。
  */
 const app = useAppStore();
-const reportAuxFailure = useAuxWindowFailureReport();
 const chat = useChatStore();
 
 // ---------------- 崩溃横幅 / 卡顿提示 / 主窗口心跳 ----------------
@@ -131,8 +129,7 @@ async function copyCrashReport() {
 }
 
 function openCrashLogs() {
-  // 以前是 `.catch(() => {})`：日志窗口建不出来时点了完全没反应。
-  void api.openLogWindow().catch((e) => reportAuxFailure(e, t("common.operationFail")));
+  void api.openLogWindow().catch(() => {});
 }
 
 function restartApp() {
