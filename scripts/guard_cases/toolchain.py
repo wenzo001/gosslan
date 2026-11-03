@@ -371,7 +371,7 @@ CASES: list[Case] = [
         "控制图的形式,consumes 控制图的内容。",
         file=ROOT / "docs" / "domains.data.mjs",
         injections=[(
-            'consumes: ["identity"], // gossip_engine.rs 用 crypto::Identity（生产代码）',
+            'consumes: ["identity", "observability"], // identity: gossip_engine.rs 用 crypto::Identity；observability: protocol.rs 的 `recall_verdict` 要产出在册的 MSG_NOT_IN_CONV 码（B6 试点批，显式 `use` 而不是内联全限定）',
             'consumes: [], // TEMP-NON-VACUUM-TEST(messaging):该声明被误删,守门必须报',
         )],
         cmd=["node", "scripts/check-domain-deps.mjs"],

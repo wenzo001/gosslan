@@ -97,7 +97,8 @@ test("生产码里抛出的 errors.* 键都在中英词典里", () => {
     }
   };
   walk(SRC);
-  const rules = ["errors.rule.pubkey", "errors.rule.port", "errors.rule.system"];
+  // 分母从分类表现取（不手抄清单 —— 手抄的那份一定会漂）。
+  const rules = Object.values(ERROR_CODE_RULES);
   const all = [...thrown, ...rules].sort();
   assert.ok(all.length >= 7, `只扫到 ${all.length} 个键 ⇒ 分母变小，先确认是不是被改掉了`);
   for (const k of all) {
@@ -127,6 +128,29 @@ test("码优先：后端换了那句人话的说法，档位不许跟着换（�
   assert.equal(noCode.kind, "human", "没码时不该凭空认出 pubkey 那一档（否则码优先那条是空转）");
   const portCoded = classifyError("code=PORT_IN_USE 59992 这个监听口已被别的过程占着");
   assert.deepEqual(portCoded, { kind: "copy", key: "errors.rule.port" }, "端口那一档同样按码认");
+});
+
+test("B6 试点批：每个码中英各一条，认不出码必须回落原文", () => {
+  const cases: Record<string, string> = {
+    MSG_NOT_FOUND: "errors.rule.msgNotFound",
+    MSG_NOT_IN_CONV: "errors.rule.msgNotInConv",
+    E2EE_ENCRYPT_FAILED: "errors.rule.encryptFailed",
+  };
+  for (const [code, key] of Object.entries(cases)) {
+    assert.ok(key in zhCN, `中文词典缺 ${key}`);
+    assert.ok(key in enUS, `英文词典缺 ${key}`);
+    assert.notEqual(zhCN[key], enUS[key], `${key} 的中英文案必须是两份，不能同一句`);
+    assert.deepEqual(classifyError(`code=${code} 原来的中文说明`), { kind: "copy", key });
+  }
+  // 反向对照：不认识的码不许吞掉原文（中文、英文各一条）。
+  assert.deepEqual(classifyError("code=NOT_IMPLEMENTED_YET 这条消息不存在"), {
+    kind: "human",
+    detail: "这条消息不存在",
+  });
+  assert.deepEqual(classifyError("code=NOT_IMPLEMENTED_YET that message is gone"), {
+    kind: "human",
+    detail: "that message is gone",
+  });
 });
 
 test("码只给我们看：任何一档都不许把 code=… 带上屏", () => {

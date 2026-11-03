@@ -347,8 +347,12 @@ pub(crate) async fn send_friend_request_via_link(
     })
     .to_string();
     let shared =
-        s.identity.dh(&target_pubkey).ok_or("密钥交换失败")?;
-    let sealed = crypto::seal(&shared, payload.as_bytes()).ok_or("加密失败")?;
+        s.identity.dh(&target_pubkey).ok_or_else(|| {
+        crate::error_codes::coded(crate::error_codes::E2EE_ENCRYPT_FAILED, "密钥交换失败")
+    })?;
+    let sealed = crypto::seal(&shared, payload.as_bytes()).ok_or_else(|| {
+        crate::error_codes::coded(crate::error_codes::E2EE_ENCRYPT_FAILED, "加密失败")
+    })?;
     let payload_b64 = STANDARD.encode(&sealed);
     let mut env = {
         let gossip = s.gossip.lock().unwrap_or_else(|e| e.into_inner());
@@ -459,8 +463,12 @@ pub(crate) async fn send_friend_accept_via_link(
         ));
     };
     let shared =
-        s.identity.dh(&target_pubkey).ok_or("密钥交换失败")?;
-    let sealed = crypto::seal(&shared, b"{}").ok_or("加密失败")?;
+        s.identity.dh(&target_pubkey).ok_or_else(|| {
+        crate::error_codes::coded(crate::error_codes::E2EE_ENCRYPT_FAILED, "密钥交换失败")
+    })?;
+    let sealed = crypto::seal(&shared, b"{}").ok_or_else(|| {
+        crate::error_codes::coded(crate::error_codes::E2EE_ENCRYPT_FAILED, "加密失败")
+    })?;
     let payload_b64 = STANDARD.encode(&sealed);
     let mut env = {
         let gossip = s.gossip.lock().unwrap_or_else(|e| e.into_inner());
@@ -508,9 +516,13 @@ pub(crate) async fn send_friend_withdraw_via_link(
             "缺对端公钥",
         ));
     };
-    let shared = s.identity.dh(&target_pubkey).ok_or("密钥交换失败")?;
+    let shared = s.identity.dh(&target_pubkey).ok_or_else(|| {
+        crate::error_codes::coded(crate::error_codes::E2EE_ENCRYPT_FAILED, "密钥交换失败")
+    })?;
     let payload = serde_json::json!({ "request_id": request_id }).to_string();
-    let sealed = crypto::seal(&shared, payload.as_bytes()).ok_or("加密失败")?;
+    let sealed = crypto::seal(&shared, payload.as_bytes()).ok_or_else(|| {
+        crate::error_codes::coded(crate::error_codes::E2EE_ENCRYPT_FAILED, "加密失败")
+    })?;
     let payload_b64 = STANDARD.encode(&sealed);
     let mut env = {
         let gossip = s.gossip.lock().unwrap_or_else(|e| e.into_inner());
@@ -546,13 +558,17 @@ pub(crate) async fn send_friend_withdraw_ack_via_link(
     request_id: i64,
     already_friends: bool,
 ) -> Result<(), String> {
-    let shared = s.identity.dh(target_pubkey).ok_or("密钥交换失败")?;
+    let shared = s.identity.dh(target_pubkey).ok_or_else(|| {
+        crate::error_codes::coded(crate::error_codes::E2EE_ENCRYPT_FAILED, "密钥交换失败")
+    })?;
     let payload = serde_json::json!({
         "request_id": request_id,
         "outcome": if already_friends { "already_friends" } else { "withdrawn" },
     })
     .to_string();
-    let sealed = crypto::seal(&shared, payload.as_bytes()).ok_or("加密失败")?;
+    let sealed = crypto::seal(&shared, payload.as_bytes()).ok_or_else(|| {
+        crate::error_codes::coded(crate::error_codes::E2EE_ENCRYPT_FAILED, "加密失败")
+    })?;
     let payload_b64 = STANDARD.encode(&sealed);
     let mut env = {
         let gossip = s.gossip.lock().unwrap_or_else(|e| e.into_inner());

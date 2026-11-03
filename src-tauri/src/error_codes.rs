@@ -50,6 +50,18 @@ pub const READ_STATE_WRITE_FAILED: &str = "READ_STATE_WRITE_FAILED";
 /// 「完全退出应用再打开」的人话，并给一个走既有 `restart_app` 的按钮。
 pub const AUX_WINDOW_CREATE_FAILED: &str = "AUX_WINDOW_CREATE_FAILED";
 
+// ── B6 试点批：命令返回值里"本地记录已经没了 / 会话对不上 / 加密失败"─────────────
+//
+// 这一族只加码，**人话一个字不改**：`coded()` 的 `human` 半句仍是原来的中文，
+// 认出码的新前端按词典说话，认不出的老前端照样显示原句。所以它们是纯增量。
+
+/// 要操作的那条消息已经不在本机记录里（撤回/切换渲染/取消/重发时被清理或从未同步）。
+pub const MSG_NOT_FOUND: &str = "MSG_NOT_FOUND";
+/// 消息存在，但不属于调用方指定的那个会话（前端旧列表残留或串了会话）。
+pub const MSG_NOT_IN_CONV: &str = "MSG_NOT_IN_CONV";
+/// 本机 DH / ChaCha20-Poly1305 失败 —— 造不出密文，这条内容发不出去。
+pub const E2EE_ENCRYPT_FAILED: &str = "E2EE_ENCRYPT_FAILED";
+
 /// 把码拼到人话前面 —— **唯一**的写法（不散着 `format!("code=…")`，否则对账判据读不出来）。
 pub fn coded(code: &'static str, msg: impl std::fmt::Display) -> String {
     format!("code={code} {msg}")
