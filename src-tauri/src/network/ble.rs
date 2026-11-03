@@ -499,6 +499,63 @@ mod tests {
         assert_eq!(ble_throughput_estimate(6).0, 0);
     }
 
+    /// **蓝牙台账降噪**（2026-11-04）：稳态不写行，但"变了 / 用户触发 / 首次与恢复"必须写。
+    ///
+    /// 为什么值得单独钉：这条判据一旦退化成"永远 true"（比如有人图省事把
+    /// `should_report_scan` 直接写成 `true`），功能完全正常、所有功能测试全绿，
+    /// 只有用户旧机器的盘在默默多写 ~112 行/小时 —— 没有任何别的判据会红。
+    ///
+    /// 夹具口径：后台节奏 = 2s 扫描窗口 + 30s 等待 ⇒ 10 分钟稳态 = 20 轮。
+    /// **降噪前**：20 行/10min ⇒ **120 行/小时**；**降噪后**：0 行/10min ⇒ **0 行/小时**
+    /// （用户实测 ≈112 行/小时，差异来自前台 7s 一轮的时段；稳态只按后台节奏算）。
+    #[test]
+    fn scan_ledger_is_silent_in_steady_state_but_nothing_important_is_dropped() {
+        const ROUNDS_IN_10_MIN: usize = 20; // 30s 一轮
+        let steady = ScanRound {
+            total: 3,
+            matched: 1,
+        };
+
+        // 稳态：上一轮已报过同样的数字 ⇒ 连跑 10 分钟一行都不写。
+        let mut last = Some(steady);
+        let mut lines = 0;
+        for _ in 0..ROUNDS_IN_10_MIN {
+            if should_report_scan(last, steady, false) {
+                lines += 1;
+                last = Some(steady);
+            }
+        }
+        assert_eq!(
+            lines, 0,
+            "稳态 10 分钟必须 0 行（降噪前是 {ROUNDS_IN_10_MIN} 行 ⇒ 120 行/小时）"
+        );
+
+        // 首次（进程刚起）：必须写。
+        assert!(
+            should_report_scan(None, steady, false),
+            "首轮必须留一行，否则日志里看不出蓝牙到底开没开过"
+        );
+        // 变化：任何方向（含变成 0）都必须写。
+        assert!(
+            should_report_scan(Some(steady), ScanRound { total: 0, matched: 0 }, false),
+            "从有到空扫是异常，必须留痕"
+        );
+        assert!(
+            should_report_scan(Some(ScanRound { total: 0, matched: 0 }), steady, false),
+            "从空扫恢复也必须留痕"
+        );
+        // 用户主动触发（数字没变）：必须写 —— 否则"点了扫描没反应"无从判。
+        assert!(
+            should_report_scan(Some(steady), steady, true),
+            "用户点扫描那一轮必须留痕"
+        );
+        // 失败后恢复：失败分支把 last 清成 None ⇒ 走"首次或恢复"那一格。
+        assert!(
+            should_report_scan(None, steady, false),
+            "扫描失败后第一次成功必须留痕"
+        );
+    }
+
     /// **握手失败必须解除"握手中"标记**（2026-09-13 审计的"加入不了 mesh"缺陷）。
     ///
     /// 旧实现只在 `RouteCtl::Add`（成功）与 `Unlinked`（对端退订）时清理 `handshaking`，

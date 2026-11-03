@@ -3018,13 +3018,33 @@ impl AppState {
                         .warn("runtime", format!("code=COMMIT_PRESSURE {}", mem.line()));
                     crate::logging::crash_note(&format!(">>> code=COMMIT_PRESSURE {}", mem.line()));
                 }
+                // 蓝牙台账降噪后（2026-11-04）稳态不再逐轮写日志 ⇒ "当时在不在扫、扫了多久"
+                // 必须由这一格携带：`ble_scan_age_ms` = 距上一轮扫描完成多少毫秒（明显大于
+                // 扫描间隔 ⇒ 当时已经停了/卡住了），`ble_scan_total/matched` = 最后一轮看到
+                // 多少广播、其中几个是本应用服务。读不到（没开蓝牙/从未扫过）写 `-`，不折 0。
+                #[cfg(feature = "bluetooth")]
+                let ble = {
+                    let scan = st.ble_scan.lock().unwrap_or_else(|e| e.into_inner());
+                    if scan.last_ts == 0 {
+                        "ble_scan_age_ms=- ble_scan_total=- ble_scan_matched=-".to_string()
+                    } else {
+                        format!(
+                            "ble_scan_age_ms={} ble_scan_total={} ble_scan_matched={}",
+                            crate::db::now_ms().saturating_sub(scan.last_ts),
+                            scan.total,
+                            scan.matched
+                        )
+                    }
+                };
+                #[cfg(not(feature = "bluetooth"))]
+                let ble = "ble_scan_age_ms=- ble_scan_total=- ble_scan_matched=-".to_string();
                 st.logger.info(
                     "runtime",
                     format!(
                         "code=RUNTIME_SNAPSHOT windows={} hidden={hidden} labels=[{labels}] \
                          peers={peer_count} links={link_count} sending_msgs={sending} \
                          outbox={outbox} group_outbox={group_outbox} file_outbox={file_outbox} \
-                         file_opens={} file_syncs={} {}",
+                         file_opens={} file_syncs={} {ble} {}",
                         windows.len(),
                         // 日志自身的 IO 自测读数（进程内累计）：与 `fs_usage` 同一窗口的
                         // open / fsync 次数直接对照，就能判"合批写"是否还生效。
