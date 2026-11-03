@@ -142,7 +142,7 @@ fn resolve_bind_ip(
 ) -> Result<(Ipv4Addr, Option<Ipv4Addr>), String> {
     if ip.is_unspecified() {
         let (lan_ip, bc) =
-            find_lan().ok_or("auto mode: no eligible LAN interface found".to_string())?;
+            find_lan().ok_or("code=DISC_NIC_SCORE_ANOMALY auto mode: no eligible LAN interface found（评分把全部网卡判不合格，见 score_candidate）".to_string())?;
         Ok((lan_ip, Some(bc)))
     } else {
         // ⚠️ **手动选网卡时也必须算出子网广播地址**。
@@ -200,7 +200,7 @@ fn bind_udp_reusable(ip: Ipv4Addr, port: u16) -> Result<UdpSocket, String> {
         .map_err(|e| format!("SO_BROADCAST: {e}"))?;
     // 设置组播出口接口：必须与 bind IP 一致，失败直接报错。
     sock.set_multicast_if_v4(&ip)
-        .map_err(|e| format!("set_multicast_if_v4({ip}): {e}"))?;
+        .map_err(|e| format!("code=DISC_MULTICAST_IF_FAILED set_multicast_if_v4({ip}): {e}"))?;
     // tokio 要求注册进 runtime 的 fd 必须非阻塞：socket2 创建的是阻塞 socket，
     // 直接 from_std 在 debug 构建会 panic（tokio blocking check），release 构建虽不 panic
     // 但阻塞 fd 挂在 kqueue/epoll 上会卡死 worker 线程（界面卡顿的帮凶之一）。
@@ -208,7 +208,7 @@ fn bind_udp_reusable(ip: Ipv4Addr, port: u16) -> Result<UdpSocket, String> {
         .map_err(|e| format!("set_nonblocking: {e}"))?;
     let sock_addr: socket2::SockAddr = addr.into();
     sock.bind(&sock_addr)
-        .map_err(|e| format!("UDP bind {ip}:{port} failed: {e}"))?;
+        .map_err(|e| format!("code=DISC_BIND_FAILED UDP bind {ip}:{port} failed: {e}"))?;
 
     let std_sock: std::net::UdpSocket = sock.into();
     UdpSocket::from_std(std_sock).map_err(|e| format!("register UDP socket: {e}"))
@@ -262,7 +262,7 @@ fn bind_udp_recv(port: u16) -> Result<UdpSocket, String> {
         .map_err(|e| format!("set_nonblocking(recv): {e}"))?;
     let sock_addr: socket2::SockAddr = addr.into();
     sock.bind(&sock_addr)
-        .map_err(|e| format!("UDP recv bind {addr} failed: {e}"))?;
+        .map_err(|e| format!("code=DISC_RECV_BIND_FAILED UDP recv bind {addr} failed: {e}"))?;
     let std_sock: std::net::UdpSocket = sock.into();
     UdpSocket::from_std(std_sock).map_err(|e| format!("register UDP recv socket: {e}"))
 }
@@ -412,15 +412,15 @@ pub async fn spawn(
     // 两个都进接收循环读取：SO_REUSEPORT 会把同一份数据报只投给其中**一个** socket，
     // 只读一个就会漏包。
     let send_socket = bind_udp_reusable(udp_bind_ip, UDP_PORT)
-        .map_err(|e| format!("UDP discovery bind failed: {e}"))?;
-    let recv_socket =
-        bind_udp_recv(UDP_PORT).map_err(|e| format!("UDP discovery recv bind failed: {e}"))?;
+        .map_err(|e| format!("code=DISC_BIND_FAILED UDP discovery bind failed: {e}"))?;
+    let recv_socket = bind_udp_recv(UDP_PORT)
+        .map_err(|e| format!("code=DISC_RECV_BIND_FAILED UDP discovery recv bind failed: {e}"))?;
     // 加入组播组：必须与 bind IP 使用同一接口；失败直接让启动失败。
     // 发送侧那个 socket 也要加（Linux 上它一直是真正收组播的那个，别退化）。
     for sock in [&send_socket, &recv_socket] {
         sock.join_multicast_v4(MULTICAST_GROUP, multicast_iface)
             .map_err(|e| {
-                format!("join multicast {MULTICAST_GROUP} on {multicast_iface} failed: {e}")
+                format!("code=DISC_MULTICAST_JOIN_FAILED join multicast {MULTICAST_GROUP} on {multicast_iface} failed: {e}")
             })?;
     }
     // 发送侧进 `SendCell`（可换），收侧保持裸 `Arc`（绑 0.0.0.0，网卡变化不影响它）。
@@ -1482,5 +1482,35 @@ mod tests {
             res.is_err(),
             "在 {invalid_iface} 上加入组播应当失败，但实际成功：{res:?}"
         );
+    }
+
+    /// R2（2026-11-03）：发现层失败族具名码。注入"评分全不合格"的网卡清单断言码，
+    /// 并逐码断言留痕点还在（删任一处 ⇒ 启动失败又回到一句自由文本）。
+    #[test]
+    fn discovery_failure_paths_carry_named_codes() {
+        let err = super::resolve_bind_ip(Ipv4Addr::UNSPECIFIED, || None).unwrap_err();
+        assert!(
+            err.contains("code=DISC_NIC_SCORE_ANOMALY"),
+            "网卡评分全不合格必须带具名码，实际：{err}"
+        );
+        let (ip, bc) = super::resolve_bind_ip(Ipv4Addr::UNSPECIFIED, || {
+            Some((
+                Ipv4Addr::new(192, 168, 31, 7),
+                Ipv4Addr::new(192, 168, 31, 255),
+            ))
+        })
+        .expect("有合格网卡时必须解析成功");
+        assert_eq!(ip, Ipv4Addr::new(192, 168, 31, 7));
+        assert_eq!(bc, Some(Ipv4Addr::new(192, 168, 31, 255)));
+        let src = include_str!("discovery.rs");
+        for code in [
+            "code=DISC_BIND_FAILED",
+            "code=DISC_RECV_BIND_FAILED",
+            "code=DISC_MULTICAST_IF_FAILED",
+            "code=DISC_MULTICAST_JOIN_FAILED",
+            "code=DISC_NIC_SCORE_ANOMALY",
+        ] {
+            assert!(src.contains(code), "缺发现层具名码 {code}");
+        }
     }
 }

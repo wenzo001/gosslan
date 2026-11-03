@@ -13,6 +13,16 @@
 
 ## [Unreleased]
 
+## [5.16.79] - 2026-11-03
+
+### 发现层失败族具名错误码（R2，只留痕不改行为）
+
+- `code=DISC_BIND_FAILED / DISC_RECV_BIND_FAILED / DISC_MULTICAST_IF_FAILED /
+  DISC_MULTICAST_JOIN_FAILED`；网卡评分全不合格（auto 模式选不出真实 LAN）归
+  `code=DISC_NIC_SCORE_ANOMALY`（原来是一句自由文本 Err，启动失败时看不出是哪一族）。
+- 行为级测试：注入「评分全不合格」的网卡清单断言码与合格清单断言解析，逐码断言留痕点。
+
+
 ## [5.16.78] - 2026-11-03
 
 ### BLE 失败族具名错误码 + 诊断包错误码聚合（R1，只留痕不改行为）
