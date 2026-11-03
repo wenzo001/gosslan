@@ -13,6 +13,7 @@ import { api } from "@/api";
 import SettingsToggle from "@/components/settings/SettingsToggle.vue";
 import BaseModal from "@/components/BaseModal.vue";
 import { MAX_SEARCH_KEYWORD_CHARS } from "@/utils/validation";
+import { shouldProbeOnSearchMiss } from "@/utils/addFriendProbe";
 import { UserPlus } from "lucide-vue-next";
 import { MessageCircle } from "lucide-vue-next";
 import { Check } from "@/components/ui/icons";
@@ -141,10 +142,33 @@ function isMaybeOffline(p: Peer): boolean {
 }
 
 /**
+ * 「搜索未命中」补一拍探测：搜索框只过滤已发现节点，跨网段节点要等下一轮才会进来。
+ * 用户敲了 ID 却没结果时，主动推一次 `who_has`（后端会单播到已配置的 routed 端点），
+ * 冷却 10s，避免每次按键都发。只发请求，不改变现有 5s/10s 发现节奏。
+ */
+const lastSearchProbeAt = ref(0);
+watch(query, () => {
+  if (
+    shouldProbeOnSearchMiss({
+      query: query.value,
+      matches: filteredPeers.value.total,
+      lastProbeAt: lastSearchProbeAt.value,
+      now: Date.now(),
+    })
+  ) {
+    lastSearchProbeAt.value = Date.now();
+    void chat.searchNearbyPeers().catch(() => {
+      // 探测是补充手段：失败不打断搜索，也不弹错（主扫描路径已负责提示）。
+    });
+  }
+});
+
+/**
  * 「复制邀请」：把"怎么加我"写成一段可直接粘贴给对方的文字。
  *
- * 跨网段最现实的场景是对方不在同一局域网：那时搜索发现帮不上忙，用户只能口头报设备 ID。
- * 这里把该说的话一次说全（应用名 + 设备 ID + 操作路径），免去用户自己拼。
+ * 跨网段最现实的场景是对方不在同一局域网：发现列表帮不上忙，只能靠设备 ID。
+ * 文案只说**实际能力**（把这段发给对方；对方添加后可跨网段互见），不再承诺
+ * 「搜索 ID 就能加我」——搜索框只过滤已发现节点，做不到凭 ID 定位陌生人。
  */
 const inviteText = computed(() =>
   t("friend.add.invite.text", {
@@ -287,6 +311,7 @@ watch(
   async (v) => {
     if (v) {
       keyword.value = "";
+      lastSearchProbeAt.value = 0;
       void app.refreshRuntime(); // 与扫描并发，别让开关状态拖慢"正在扫描"
       // 手机端：打开本页时才按需拉起蓝牙通道（启动路径不碰 BLE，见 useAppStore.ensureBluetoothOn）
       void app.ensureBluetoothOn({ manual: true });
@@ -416,15 +441,6 @@ async function add(peerId: string) {
       >
         {{ t("friend.add.rescan") }}
       </button>
-      <!-- 跨网段场景：对方不在同一局域网时，发现列表帮不上忙，只能靠设备 ID。
-           这里给一段可直接粘贴的邀请文案，不新增任何布局层级。 -->
-      <button
-        type="button"
-        class="tap-safe mt-2 w-full rounded-[var(--gosslan-radius-md)] bg-[var(--gosslan-bg)] py-2 text-sm text-[var(--gosslan-text-2)] transition hover:bg-[var(--gosslan-hover)]"
-        @click="copyInvite"
-      >
-        {{ t("friend.add.copyInvite") }}
-      </button>
     </div>
 
     <template v-else>
@@ -443,10 +459,11 @@ async function add(peerId: string) {
           v-for="p in filteredPeers.list"
           :key="p.device_id"
           class="flex items-center gap-3 border-b border-[var(--gosslan-border)] px-1 py-2 last:border-0 [contain-intrinsic-size:auto_53px] [content-visibility:auto]"
+          :class="{ 'opacity-60': isMaybeOffline(p) }"
         >
           <AvatarBox class="h-9 w-9" :id="p.device_id" :src="p.avatar" />
           <div class="min-w-0 flex-1">
-            <div class="truncate text-sm" :class="{ 'opacity-60': isMaybeOffline(p) }" :title="p.nickname">{{ p.nickname }}</div>
+            <div class="truncate text-sm" :title="p.nickname">{{ p.nickname }}</div>
             <!-- 链路类型**必须由后端给**（`peer.link`）：以前用 `p.ip || 蓝牙直连` 反推，
                  于是同一 Tailscale 网段（Routed）的设备也被标成"蓝牙直连"（用户 2026-09-12
                  实测反馈）。现在只有后端确认是 BLE 链路（`link === "bluetooth"`）才这么写。 -->
@@ -539,5 +556,14 @@ async function add(peerId: string) {
         {{ t("friend.add.truncated", { shown: MAX_RENDER, total: filteredPeers.total }) }}
       </div>
     </template>
+
+    <!-- 复制邀请：常驻（空态与有节点时都能拿到），跨网段口头交换设备 ID 的唯一入口 -->
+    <button
+      type="button"
+      class="tap-safe mt-2 w-full rounded-[var(--gosslan-radius-md)] bg-[var(--gosslan-bg)] py-2 text-sm text-[var(--gosslan-text-2)] transition hover:bg-[var(--gosslan-hover)]"
+      @click="copyInvite"
+    >
+      {{ t("friend.add.copyInvite") }}
+    </button>
   </BaseModal>
 </template>

@@ -6413,3 +6413,54 @@ test("转发成功不再弹 toast（成功无感；失败提示必须保留）",
     assert.equal(dict.includes('"chat.toast.forwarded"'), false, `${f} 还留着已无引用的 chat.toast.forwarded`);
   }
 });
+
+/**
+ * 添加好友页的三条跨网段 UX 判据（2026-11-04）：
+ * 1. 复制邀请按钮**常驻**：必须落在 `if/else` 分支之后、`</BaseModal>` 之前；
+ * 2. 离线灰显作用于**整行**，昵称行不再单独挂 opacity（否则按钮与地址还是亮色）；
+ * 3. 邀请文案不再承诺"搜索 ID 就能加我"（搜索只过滤已发现节点，做不到）。
+ */
+test("添加好友页：复制邀请常驻 + 整行灰显 + 邀请文案不承诺搜 ID", () => {
+  const src = readFileSync(
+    join(import.meta.dirname, "..", "components", "AddFriendModal.vue"),
+    "utf8",
+  );
+
+  // 1) 常驻：最后的 `</template>`（v-else 分支结束）到 `</BaseModal>` 之间必须还有复制按钮
+  const baseModalEnd = src.indexOf("</BaseModal>");
+  const afterBranch = src.slice(src.lastIndexOf("</template>", baseModalEnd), baseModalEnd);
+  assert.ok(
+    afterBranch.includes('@click="copyInvite"'),
+    "复制邀请按钮又只剩空态分支了 ⇒ 有节点时用户拿不到邀请文案",
+  );
+
+  // 2) 整行灰显：v-for 那一层的 div 必须挂 `opacity-60`；昵称行里不许再单独挂
+  const rowAt = src.indexOf("v-for=\"p in filteredPeers.list\"");
+  const rowOpen = src.indexOf(">", rowAt);
+  const rowTag = src.slice(rowAt, rowOpen + 1);
+  assert.ok(
+    rowTag.includes("'opacity-60': isMaybeOffline(p)"),
+    "opacity 没挂在整行（昵称+地址+按钮一起降透明度）上",
+  );
+  const nickAt = src.indexOf(":title=\"p.nickname\"");
+  const nickTag = src.slice(src.lastIndexOf("<div", nickAt), nickAt);
+  assert.equal(
+    nickTag.includes("opacity-60"),
+    false,
+    "昵称行又单独挂了 opacity ⇒ 整行灰显会变成两层叠加",
+  );
+
+  // 3) 文案：两册词典都不许再出现"搜索…就能加我"这类承诺，且必须保留能力说明
+  const dict = (f: string) =>
+    readFileSync(join(import.meta.dirname, "..", "i18n", "locales", f), "utf8");
+  for (const f of ["zh-cn.ts", "en-us.ts"]) {
+    assert.equal(
+      /搜索这个设备 ID|search this device ID/i.test(dict(f)),
+      false,
+      `${f} 仍承诺凭设备 ID 搜索即可加好友`,
+    );
+  }
+  assert.ok(dict("zh-cn.ts").includes("对方添加后即可跨网段互见"), "中文邀请文案缺少能力说明");
+  assert.ok(dict("en-us.ts").includes("once they add you"), "英文邀请文案缺少能力说明");
+});
+

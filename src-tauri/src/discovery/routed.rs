@@ -19,7 +19,7 @@ use std::net::{IpAddr, SocketAddr};
 
 use serde::{Deserialize, Serialize};
 
-use crate::protocol::TCP_PORT;
+use crate::protocol::{TCP_PORT, UDP_PORT};
 
 /// 手动配置的 Routed 端点在 `settings` 表中的键。
 pub const ROUTED_ENDPOINTS_KEY: &str = "routed_endpoints";
@@ -107,6 +107,39 @@ pub fn parse_endpoints(json: &str) -> Vec<RoutedEndpoint> {
 /// 序列化待存储。
 pub fn encode_endpoints(list: &[RoutedEndpoint]) -> String {
     serde_json::to_string(list).unwrap_or_else(|_| "[]".to_string())
+}
+
+/// 一次 `who_has` 定向探测最多打几个跨网段端点。
+///
+/// 端点数量由用户配置，正常只有个位数；这条上限只防「配置被粘贴成几百条」时
+/// 一次点击把所有 UDP 包和日志同时打满，不是产品限制。
+pub const MAX_PROBE_ENDPOINTS: usize = 32;
+
+/// `who_has` 需要**单播**到的跨网段 UDP 目标：端点 IP + 本机 UDP 监听端口。
+///
+/// 为什么端口固定是 [`UDP_PORT`] 而不是端点里的端口：端点地址描述的是对端的
+/// **TCP** 监听端口（拨号用，默认 [`TCP_PORT`]）；Gosslan 的发现层 UDP 端口是
+/// 协议常量，配置里没有第二份可填的地方。同一个 IP 配了多条端点时去重。
+///
+/// 只接受 IPv4：`who_has`/announce 是 IPv4 广播协议，IPv6 端点交给 TCP 拨号路径。
+pub fn probe_udp_targets(endpoints: &[RoutedEndpoint]) -> Vec<SocketAddr> {
+    let mut out: Vec<SocketAddr> = Vec::new();
+    for ep in endpoints {
+        let Some(addr) = ep.socket_addr() else {
+            continue;
+        };
+        let IpAddr::V4(ip) = addr.ip() else {
+            continue;
+        };
+        let target = SocketAddr::new(IpAddr::V4(ip), UDP_PORT);
+        if !out.contains(&target) {
+            out.push(target);
+        }
+        if out.len() >= MAX_PROBE_ENDPOINTS {
+            break;
+        }
+    }
+    out
 }
 
 #[cfg(test)]
@@ -201,5 +234,34 @@ mod tests {
             "未指定时不应写出该键: {encoded}"
         );
         assert_eq!(parse_endpoints(&encoded), minimal);
+    }
+
+    /// `who_has` 定向探测目标：端口统一为 UDP_PORT（不是配置里的 TCP 端口），
+    /// 同 IP 去重、非法与 IPv6 跳过、条数封顶。
+    #[test]
+    fn probe_udp_targets_uses_udp_port_dedupes_and_skips_invalid() {
+        let list = vec![
+            RoutedEndpoint::new(None, "100.64.0.1:59992"),
+            RoutedEndpoint::new(None, "100.64.0.1:60002"), // 同 IP 不同 TCP 端口 ⇒ 只发一次
+            RoutedEndpoint::new(Some("b".into()), "10.0.0.5"),
+            RoutedEndpoint::new(None, "garbage"),
+            RoutedEndpoint::new(None, "[::1]:59992"),
+        ];
+        assert_eq!(
+            probe_udp_targets(&list),
+            vec![
+                SocketAddr::new("100.64.0.1".parse().unwrap(), UDP_PORT),
+                SocketAddr::new("10.0.0.5".parse().unwrap(), UDP_PORT),
+            ]
+        );
+    }
+
+    /// 上限只影响「配置被粘成几百条」的极端情况，正常配置不受影响。
+    #[test]
+    fn probe_udp_targets_is_capped() {
+        let list: Vec<_> = (1..=60)
+            .map(|i| RoutedEndpoint::new(None, format!("10.0.{}.{}", i / 256, i % 256)))
+            .collect();
+        assert_eq!(probe_udp_targets(&list).len(), MAX_PROBE_ENDPOINTS);
     }
 }

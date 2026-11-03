@@ -1130,7 +1130,7 @@ export const enUS: MessageDict = {
   "friend.add.copyInvite": "Copy invite",
   "friend.add.copyInvite.failed": "Could not copy (clipboard unavailable)",
   "friend.add.invite.text":
-    "My Gosslan device ID is {id} ({name}). Open Gosslan → Add Friend → search this device ID to add me.",
+    "My Gosslan device ID is {id} ({name}). Send this invite to them — once they add you, you can see each other across networks.",
   "friend.add.toast.inviteCopied": "Invite text copied",
   "friend.add.channelFailed": "Could not enable: {err}",
   "friend.add.searchPlaceholder": "Search nickname / IP / device ID",
