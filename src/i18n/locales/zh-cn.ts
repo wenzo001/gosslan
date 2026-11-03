@@ -620,6 +620,8 @@ export const zhCN: MessageDict = {
   "errors.rule.readStateWrite": "已读状态没写进本机数据库，红点已恢复到与库里一致",
   "errors.rule.kindUnsupported": "对方这个版本的 Gosslan 还不认识这种内容，已先存在本机待发队列；等对方升级客户端后在任务中心点「重新发送」",
   "errors.rule.peerKeyMissing": "还没拿到对方的加密公钥（这条关系从没握过手），等对方上线一次再发",
+  "errors.rule.auxWindow": "辅助窗口没能打开：这是升级或重启后残留的渲染环境造成的，完全退出小院儿再打开即可恢复",
+  "errors.rule.auxWindowRestart": "立即重启",
   "errors.avatar.notBase64": "编码结果不是 base64 data URL，无法判断体积",
   "errors.avatar.stillTooLarge": "头像压缩后仍超过 1MB，请换一张更小的图",
   "errors.image.readFail": "读取图片失败",
