@@ -3190,6 +3190,7 @@ async function main() {
     const touchroster = want("touchroster");
     const locale = want("locale");
     const i18nshots = want("i18nshots");
+    const startuperror = want("startuperror");
     const rowpair = want("rowpair");
     const msgovf = want("msgovf");
     const ctxguard = want("ctxguard");
@@ -3388,6 +3389,7 @@ async function main() {
     await runSegment("delivery", delivery, () => runDelivery(cdp, url));
     await runSegment("locale", locale, () => runLocale(cdp, url));
     await runSegment("i18nshots", i18nshots, () => runI18nShots(cdp, url));
+    await runSegment("startuperror", startuperror, () => runStartupError(cdp, url));
     await runSegment("rowpair", rowpair, () => runRowPair(cdp, url));
     await runSegment("msgovf", msgovf, () => runMsgOverflow(cdp, url));
     await runSegment("ctxguard", ctxguard, () => runContextGuard(cdp, url));
@@ -8516,6 +8518,84 @@ async function runI18nShots(cdp, url) {
     check(`${L.loc}：合并卡片行摘要显示 ${L.card}`,
       cardText.includes(L.card), `可见文本含 ${L.card}`, JSON.stringify(cardText.slice(0, 80)));
     await shot(`${L.loc}-3-merge-card`);
+  }
+}
+
+/**
+ * 启动失败窗的**静态外壳**（2026-11-04）：这扇窗出现在"数据库都打不开"的时刻，
+ * 它自己就是最后一道人话出口 —— 静态文案漏翻一门语言，用户看到的就是中英混排。
+ *
+ * 三条口径：
+ * 1. 语言必须在**加载前**写进 localStorage：入口的 `t()` 在模块加载时取一次
+ *    （这扇窗不跑 Vue 挂载，没有响应式），加载后再切不会重填静态外壳。
+ * 2. 同时补一个最小 Tauri 桩，让 `startup_error_info` 返回真实形状的载荷 ——
+ *    否则截图里只有"后端没应答"，看不出目录行（`<dt>`）也都是词典来的。
+ * 3. 后端原因文案（`<pre>`）由 Rust 产出、这一层不翻译（B6 欠账），所以两张图里
+ *    那一段仍是中文；判据只盯**静态外壳**，别把"后端没翻译"误判成这一段红。
+ */
+async function runStartupError(cdp, url) {
+  const shotDir = path.join(ROOT, "test-results", "i18n-shots");
+  fs.mkdirSync(shotDir, { recursive: true });
+  const LANGS = [
+    {
+      loc: "zh-CN", h1: "数据打不开，应用无法启动",
+      retry: "重试", open: "打开数据目录", quit: "退出",
+      safety: "不会删除、覆盖或重建任何文件", dirs: ["数据目录", "日志目录"],
+    },
+    {
+      loc: "en-US", h1: "Data won't open — the app can't start",
+      retry: "Retry", open: "Open data folder", quit: "Quit",
+      safety: "it never deletes, overwrites, or recreates any file", dirs: ["Data folder", "Log folder"],
+    },
+  ];
+  const readShell = () => cdp.eval("(() => {"
+    + "const q = (s) => { const e = document.querySelector(s); return e ? e.textContent : ''; };"
+    + "const dirs = document.querySelector('#se-dirs');"
+    + "return { lang: document.documentElement.lang, h1: q('.se-title'), desc: q('#se-desc'),"
+    + " dirs: [...document.querySelectorAll('.se-dir dt')].map((x) => x.textContent),"
+    + " safety: q('.se-safety'), retry: q('#se-retry'), open: q('#se-open-dir'), quit: q('#se-quit'),"
+    + " dirsHidden: dirs ? dirs.hidden : true }; })()");
+
+  for (const L of LANGS) {
+    const injected = await cdp.send("Page.addScriptToEvaluateOnNewDocument", {
+      source: "localStorage.setItem('gosslan.locale', '" + L.loc + "');"
+        + "window.__TAURI_INTERNALS__ = {"
+        + "metadata: { currentWindow: { label: 'startup-error' },"
+        + " currentWebview: { label: 'startup-error', windowLabel: 'startup-error' } },"
+        + "transformCallback: (cb) => cb, convertFileSrc: (p) => p,"
+        + "invoke: async (cmd) => (cmd === 'startup_error_info'"
+        + " ? { message: 'code=DB_OPEN_FAILED 数据库文件打不开：Permission denied (os error 13)',"
+        + " dataDir: '/Users/probe/Library/Application Support/Gosslan',"
+        + " logDir: '/Users/probe/Library/Logs/Gosslan' } : null) };",
+    });
+    await cdp.send("Page.navigate", { url: url + "startup-error.html" });
+    await cdp.settled();
+    await sleep(1_200);
+    const r = await readShell();
+
+    check(`${L.loc}：失败窗正文标题走词典（${L.h1}）`,
+      r.h1 === L.h1, L.h1, JSON.stringify(r.h1));
+    check(`${L.loc}：三颗按钮走词典（${L.retry} / ${L.open} / ${L.quit}）`,
+      r.retry === L.retry && r.open === L.open && r.quit === L.quit,
+      JSON.stringify([L.retry, L.open, L.quit]), JSON.stringify([r.retry, r.open, r.quit]));
+    check(`${L.loc}：目录名两行走词典（${L.dirs.join(" / ")}）`,
+      r.dirs.join("|") === L.dirs.join("|"), L.dirs.join("|"), r.dirs.join("|"));
+    check(`${L.loc}：安全说明（含加粗那句）走词典——静态壳里最容易漏的一段`,
+      r.safety.includes(L.safety), L.safety, JSON.stringify(r.safety));
+    check(`${L.loc}：<html lang> 跟着语言走`,
+      r.lang === L.loc, L.loc, JSON.stringify(r.lang));
+    // 前提自证：桩生效了，目录行才看得见 —— 否则上面那条判据在"全都没渲染"时也可能绿。
+    check(`${L.loc}：后端应答后目录行确实显示（截图不是空壳）`,
+      r.dirsHidden === false, "dirs 可见", JSON.stringify(r.dirsHidden));
+
+    const s = await cdp.send("Page.captureScreenshot", { format: "png" });
+    const file = path.join(shotDir, `${L.loc}-4-startup-error.png`);
+    fs.writeFileSync(file, Buffer.from(s.data, "base64"));
+    check(`i18n 截图落盘：${L.loc}-4-startup-error`, fs.statSync(file).size > 2_000,
+      "png > 2KB", `${fs.statSync(file).size} bytes`);
+    console.log(`  📷 ${file}`);
+
+    await cdp.send("Page.removeScriptToEvaluateOnNewDocument", { identifier: injected.identifier });
   }
 }
 

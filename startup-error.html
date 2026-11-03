@@ -30,27 +30,24 @@
       </div>
     </div>
     <main id="root" class="se-root" aria-live="polite">
-      <h1 class="se-title">数据打不开，应用无法启动</h1>
-      <p class="se-desc" id="se-desc">正在读取失败原因…</p>
+      <h1 class="se-title" data-i18n="startupError.title">数据打不开，应用无法启动</h1>
+      <p class="se-desc" id="se-desc" data-i18n="startupError.descLoading">正在读取失败原因…</p>
       <pre class="se-detail" id="se-detail"></pre>
       <dl class="se-dirs" id="se-dirs" hidden>
         <div class="se-dir">
-          <dt>数据目录</dt>
+          <dt data-i18n="startupError.dataDir">数据目录</dt>
           <dd id="se-data-dir"></dd>
         </div>
         <div class="se-dir">
-          <dt>日志目录</dt>
+          <dt data-i18n="startupError.logDir">日志目录</dt>
           <dd id="se-log-dir"></dd>
         </div>
       </dl>
-      <p class="se-safety">
-        「重试」只会重新尝试打开现有的数据：<b>不会删除、覆盖或重建任何文件</b>。
-        如果这台机器上原本的数据又可用了（磁盘挂载回来、占用释放、权限改对），重试就能直接进去。
-      </p>
+      <p class="se-safety"><span data-i18n="startupError.safetyPrefix">「重试」只会重新尝试打开现有的数据：</span><b data-i18n="startupError.safetyBold">不会删除、覆盖或重建任何文件</b><span data-i18n="startupError.safetySuffix">。如果这台机器上原本的数据又可用了（磁盘挂载回来、占用释放、权限改对），重试就能直接进去。</span></p>
       <div class="se-actions">
-        <button type="button" class="se-btn primary" id="se-retry">重试</button>
-        <button type="button" class="se-btn" id="se-open-dir">打开数据目录</button>
-        <button type="button" class="se-btn" id="se-quit">退出</button>
+        <button type="button" class="se-btn primary" id="se-retry" data-i18n="startupError.retry">重试</button>
+        <button type="button" class="se-btn" id="se-open-dir" data-i18n="startupError.openDataDir">打开数据目录</button>
+        <button type="button" class="se-btn" id="se-quit" data-i18n="startupError.quit">退出</button>
       </div>
       <p class="se-status" id="se-status" role="status"></p>
     </main>

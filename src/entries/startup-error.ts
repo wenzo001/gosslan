@@ -43,6 +43,25 @@ function setBusy(busy: boolean): void {
   }
 }
 
+/**
+ * 静态外壳：把 HTML 里带 `data-i18n` 的节点填成当前语言的文案。
+ *
+ * 为什么不在 HTML 里写死中英两份再按 class 藏一份：那样两门语言会各自漂，且没法用
+ * 「词典里有没有这条」来判红。`document.title` 与 `<html lang>` **不归这里管** ——
+ * `theme-boot.js` 已按 `data-title-zh` / `data-title-en` 设过，i18n 模块加载时也同步了 lang，
+ * 这里再写一次只会把「小院儿 · 启动失败」覆成正文标题。
+ *
+ * 语言在模块加载时已解析完毕；这扇窗活着的时候语言不会变，所以填一次就够。
+ */
+function fillStaticText(): void {
+  for (const el of document.querySelectorAll<HTMLElement>("[data-i18n]")) {
+    const key = el.dataset.i18n;
+    if (key) el.textContent = t(key);
+  }
+}
+
+fillStaticText();
+
 window.onerror = (message) => {
   setStatus(t("startupError.windowError", { error: String(message) }), "error");
   // 返回 false：仍让原始错误进控制台，方便接 devtools 时看得更全。
