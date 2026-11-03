@@ -371,6 +371,14 @@ const steps = [
   },
   {
     group: "frontend",
+    name: "按进程名杀进程守卫",
+    why: "挡住「脚本按进程名/命令行串收尾，把用户手开的同名实例一起杀掉」——现场看起来就是应用自己闪退，日志里当然什么都没有（2026-11-03 闪退取证第 3 项）。只允许精确 PID 与 `pkill -P`；带 7 反例 + 7 正例自证，扫到 0 个文件也判红",
+    cwd: ROOT,
+    cmd: NODE_EXE,
+    args: ["scripts/check-name-kill.mjs"],
+  },
+  {
+    group: "frontend",
     name: "护栏注入锚点静态核对",
     light: true,
     why: `挡住「护栏的锚点跟着被钉的那段码搬家，从此注入注不上去、那条守卫静默空转」——

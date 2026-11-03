@@ -671,6 +671,11 @@ export function ed25519Priv(inst) {
 // ── 生命周期 ───────────────────────────────────────────────────────
 export const procs = new Map();
 export const bootBaseOf = new Map();
+/// 本 harness **自己 spawn 过的** PID（退出即移除）。
+/// 残留检查只认这份名单，不再 `pgrep -f <BIN>`：那会与用户手开的同名实例混淆 ——
+/// 用户开着一个实例时，每轮 `stopAll()` 都会抛"清理后仍有实例活着"，把真正的泄漏淹掉。
+/// 口径同 e2e-dev.sh / t2 / t3 / t4：只收自己的 PID（闪退取证第 3 项）。
+const spawnedPids = new Set();
 export function launch(inst) {
   stashLogs(inst.log, RUN_DIR, `${inst.label}-${++S.stashSeq}`);
   bootBaseOf.set(inst.n, bootBaseline(inst.log, BOOT_LINE));
@@ -688,6 +693,8 @@ export function launch(inst) {
     fs.closeSync(out);
   }
   procs.set(inst.n, p);
+  spawnedPids.add(p.pid);
+  p.once("exit", () => spawnedPids.delete(p.pid));
   return p;
 }
 export async function stopAll() {
@@ -728,13 +735,16 @@ export async function stopOne(inst) {
   if (!gone) throw new Error(`stopOne(${inst.label})：SIGTERM + SIGKILL 之后 pid ${p.pid} 还在`);
 }
 export function procsLeft() {
-  if (process.platform === "win32") {
-    const exe = path.basename(BIN);
-    const r = spawnSync("tasklist", ["/FI", `IMAGENAME eq ${exe}`, "/FO", "CSV", "/NH"], { encoding: "utf8" });
-    return ((r.stdout || "").includes(exe)) ? [exe] : [];
+  const left = [];
+  for (const pid of spawnedPids) {
+    try {
+      process.kill(pid, 0);
+      left.push(String(pid));
+    } catch {
+      // 已经退了 —— 这是预期
+    }
   }
-  const r = spawnSync("pgrep", ["-f", `${BIN}`], { encoding: "utf8" });
-  return (r.stdout || "").trim().split("\n").filter(Boolean);
+  return left;
 }
 export async function bootAndStop(what) {
   for (const i of INSTANCES) launch(i); // launch 内部会先给该实例清档，基线随之一并重置
