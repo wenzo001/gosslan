@@ -3,11 +3,13 @@ import assert from "node:assert/strict";
 import {
   canApplyOptimisticFailure,
   canRollback,
+  dropByMsgId,
   findByMsgId,
   isLatestReadSeq,
   isSupersededProjection,
   nextReadSeq,
   pendingRollbackIndex,
+  recallRollbackTarget,
   rollbackUnread,
   settle,
   summaryOwnedByProjection,
@@ -111,4 +113,55 @@ test("按 msg_id 只读查找：不存在时返回 undefined，不凭空造行",
   assert.equal(findByMsgId(rows, "m2"), rows[1]);
   assert.equal(findByMsgId(rows, "nope"), undefined);
   assert.equal(findByMsgId(undefined, "m1"), undefined);
+});
+
+/**
+ * 第二批乐观更新（表情回应 / 撤回，5.16.93）的对偶用例。
+ * 判据同样只有两组：临时行只按 `msg_id` 摘除；撤回只在"仍是我投影的 recalled"时还原。
+ */
+
+test("乐观任务中心行只摘临时 msg_id：真实先到不误删", () => {
+  const ops = [
+    { msg_id: "tmp-L1" },
+    { msg_id: "reaction-1" },
+    { msg_id: "tmp-L2" },
+  ];
+  // 正常路径：真实行还没来，摘掉自己的临时行
+  assert.deepEqual(dropByMsgId(ops, "tmp-L1"), [
+    { msg_id: "reaction-1" },
+    { msg_id: "tmp-L2" },
+  ]);
+  // 真实先到：临时行已被替换成真实 msg_id ⇒ 迟到回滚摘不到任何行
+  //（`reaction-1` 与 `tmp-L1` 逐字不同，摘除只认临时 id）
+  assert.deepEqual(dropByMsgId([{ msg_id: "reaction-1" }], "tmp-L1"), [
+    { msg_id: "reaction-1" },
+  ]);
+  // 重复摘除：第二次是空操作（幂等）
+  assert.deepEqual(dropByMsgId([{ msg_id: "reaction-1" }], "reaction-1"), []);
+  assert.deepEqual(dropByMsgId([{ msg_id: "reaction-1" }], "reaction-1"), []);
+  // 没有快照（读失败）⇒ 不动，绝不凭空造空表
+  assert.equal(dropByMsgId(undefined, "tmp-L1"), undefined);
+});
+
+test("撤回回滚：真实事件先到（settled）⇒ 不还原", () => {
+  const before = { msg_id: "m1", kind: "text" };
+  const projected = { msg_id: "m1", kind: "recalled" };
+  assert.equal(recallRollbackTarget(projected, before, true), null);
+  // 事件没到、投影仍在 ⇒ 还原
+  assert.deepEqual(recallRollbackTarget(projected, before, false), before);
+});
+
+test("撤回回滚：重复失败幂等，已还原的行不再命中", () => {
+  const before = { msg_id: "m1", kind: "text" };
+  const projected = { msg_id: "m1", kind: "recalled" };
+  assert.deepEqual(recallRollbackTarget(projected, before, false), before);
+  // 第一次回滚后，这一行已不是 `recalled` ⇒ 第二次失败不许再动
+  assert.equal(recallRollbackTarget(before, before, false), null);
+  // 已被别的路径改掉（消息换了人）⇒ 不碰
+  assert.equal(
+    recallRollbackTarget({ msg_id: "m2", kind: "recalled" }, before, false),
+    null,
+  );
+  // 行已经不在（整表重读后这一条被删）⇒ 不凭空造行
+  assert.equal(recallRollbackTarget(undefined, before, false), null);
 });

@@ -60,8 +60,8 @@ test("1:1 的门控走 deferred_send_decision（先入队后协商），群侧�
   const c = read(CHAT_RS);
   assert.match(
     c,
-    /deferred_send_decision\(&kind, peer_features\)/,
-    "chat.rs 必须问唯一的补发裁决（它与 flush_outbox 共用同一处判据）",
+    /deferred_send_decision_extra\(\s*&kind,\s*peer_features,\s*extra_required,\s*\)/,
+    "chat.rs 必须问唯一的补发裁决（它与 flush_outbox 共用同一处判据；5.16.93 起带 extra_required 位）",
   );
   assert.equal(
     (c.match(/dm_allowed_by_features\(/g) ?? []).length,
@@ -115,7 +115,13 @@ test("前端通路：store 有 1:1 那条发送，且 ChatWindow 不再对非群
   assert.match(fn, /api\.sendMessage\(/, "1:1 回应必须复用 send_message（不要再开一条命令，那是第二个家）");
   assert.match(fn, /"reaction"/, "kind 必须是 reaction");
   assert.match(fn, /buildReactionPayload\(/, "载荷形状要取自唯一那个家");
-  assert.match(fn, /enqueueMessage\(rec\)/, "落库后的记录要回灌时间线，chip 才会立刻变");
+  // 5.16.93：先投影上屏（`enqueueMessage(optimistic)`），真实记录到达后按 msg_id 替换。
+  assert.match(fn, /enqueueMessage\(optimistic\)/, "乐观投影先入时间线，chip 才会立刻变");
+  assert.match(
+    fn,
+    /replaceMessage\(friendId, msgId, rec\)/,
+    "真实结果必须按临时 msg_id 替换，不能直接再入队一条（那样会出现两条）",
+  );
   assert.match(s, /sendDmReaction,\n/, "必须 export，否则界面拿不到");
 
   const cw = read(CW_VUE);

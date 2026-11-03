@@ -403,7 +403,19 @@ pub async fn recall_message(
     };
     let content = serde_json::to_string(&payload).map_err(|e| e.to_string())?;
     // 先发可靠事件（send_message 内部会做好友/目标/能力位校验并写 outbox）。
-    send_message(state, friend_id.clone(), content, "recall".to_string(), None).await?;
+    //
+    // 5.16.93：能力位门控改成「先入队、后协商」之后，`send_message` 不再因为对端声明缺位
+    // 而在写库前报错 —— 它会把那一行判死并返回 `status=failed`。撤回**不能**在这种情况下
+    // 继续改本地形态（那会出现「本机显示已撤回、对端根本没收到」），所以这里当场把具名码
+    // 交回调用方，让乐观投影回滚；任务中心仍留着那行失败记录可供查看/重试。
+    let recall_rec =
+        send_message(state, friend_id.clone(), content, "recall".to_string(), None).await?;
+    if recall_rec.status == "failed" {
+        return Err(crate::error_codes::coded(
+            crate::error_codes::SEND_KIND_UNSUPPORTED,
+            "撤回没能交给对方：对方版本不支持这类事件，消息已恢复原样；可在任务中心查看或重试",
+        ));
+    }
     let s_db = s.clone();
     let target_db = target.clone();
     let friend_db = friend_id.clone();
@@ -703,31 +715,22 @@ pub async fn send_message(
     // 气泡、也没有一个具名码。这里只算裁决：`Send` 照常投递；`Hold`（对端能力未知）
     // 照常写库入队但**不投递**，等 Hello / flush 再协商；`Unsupported`（对端自己声明过
     // 不支持）也先落库，落库后立即终态化并给 `SEND_KIND_UNSUPPORTED`。
-    // 判据只有 `protocol::deferred_send_decision` 一处（与 flush 共用）。
+    // 判据只有 `protocol::deferred_send_decision(_extra)` 一处（与 flush 共用）。
     let peer_features = s
         .peer_content_features
         .lock()
         .unwrap_or_else(|e| e.into_inner())
         .get(&friend_id)
         .copied();
-    let deferred = crate::protocol::deferred_send_decision(&kind, peer_features);
-
-    // 窗口抖动复用 remind 帧，但需要额外一位：老端不认 nudge，会把空 target 当普通强提醒。
-    if kind == "remind" {
-        let p = crate::protocol::parse_remind_payload(&content)?;
-        if p.nudge {
-            let features = s
-                .peer_content_features
-                .lock()
-                .unwrap_or_else(|e| e.into_inner())
-                .get(&friend_id)
-                .copied()
-                .unwrap_or(0);
-            if features & crate::protocol::CONTENT_FEATURE_NUDGE == 0 {
-                return Err("对方版本不支持窗口抖动".to_string());
-            }
-        }
-    }
+    // 窗口抖动复用 remind 帧，光看 kind 不知道它还多要 `CONTENT_FEATURE_NUDGE` ——
+    // 把载荷里解析出的额外位交给同一处裁决，不再在写库前 `return Err`：
+    // 能力未知（离线/重启后缓存空）只 Hold 入队，只有对端亲口声明缺位才终态化。
+    let extra_required = crate::protocol::extra_required_features(&kind, &content);
+    let deferred = crate::protocol::deferred_send_decision_extra(
+        &kind,
+        peer_features,
+        extra_required,
+    );
 
     // E2EE 恒开（v0.11.0 起默认且不可关闭）：发送必须拿到对端 X25519 公钥。
     // 好友表优先，回退在线节点表；都缺失时主动探测一次（who_has）等对方/中继
@@ -1100,7 +1103,8 @@ pub async fn resend_message(
         .unwrap_or_else(|e| e.into_inner())
         .get(&peer)
         .copied();
-    match crate::protocol::deferred_send_decision(&msg.kind, peer_features) {
+    let extra_required = crate::protocol::extra_required_features(&msg.kind, &msg.content);
+    match crate::protocol::deferred_send_decision_extra(&msg.kind, peer_features, extra_required) {
         crate::protocol::DeferredSend::Unsupported => {
             let finalized = {
                 let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());

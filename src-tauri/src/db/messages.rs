@@ -87,20 +87,23 @@ pub fn message_exists(conn: &Connection, msg_id: &str) -> bool {
     .is_some()
 }
 
-/// 一条消息的业务 kind（补发期能力协商要它，5.16.92）。
+/// flush 期问「这条队列消息还要什么能力位」：kind（必看）+ 载荷里的额外位（目前只有抖动）。
 ///
-/// 行不存在、或测试用的最小库没有 `kind` 列，都返回 `None` —— 调用方按"不需要能力位"
-/// 放行。**读不到 kind 绝不能成为判死或删行的理由**：那会把一条本来能发的消息
-/// 悄悄变成失败。
-pub fn message_kind(conn: &Connection, msg_id: &str) -> Option<String> {
-    conn.query_row(
-        "SELECT kind FROM messages WHERE msg_id = ?1",
-        params![msg_id],
-        |r| r.get(0),
-    )
-    .optional()
-    .ok()
-    .flatten()
+/// 行不存在、或测试用的最小库连 `kind`/`content` 列都没有，一律返回 `None` ——
+/// 调用方按「不需要能力位」放行。**读不到元数据绝不能成为判死或删行的理由**：
+/// 那会把一条本来能发的消息悄悄变成失败。
+pub fn message_gating(conn: &Connection, msg_id: &str) -> Option<(String, u32)> {
+    let row: Option<(String, String)> = conn
+        .query_row(
+            "SELECT kind, content FROM messages WHERE msg_id = ?1",
+            params![msg_id],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .optional()
+        .ok()
+        .flatten();
+    let (kind, content) = row?;
+    Some((kind.clone(), crate::protocol::extra_required_features(&kind, &content)))
 }
 
 pub fn count_messages(conn: &Connection, conv_id: &str) -> i64 {
@@ -304,6 +307,10 @@ pub struct PendingMessageOp {
     pub failed: bool,
     /// `messages.fail_code`；队列里的行恒为 `None`（它们还没判死）。
     pub fail_code: Option<String>,
+    /// `remind` 帧里的 `nudge=true`（窗口抖动）。它与普通强提醒共用 kind，
+    /// 光看 kind 分不出来；任务中心要能把它说成「窗口抖动」而不是「强提醒」。
+    /// 非 remind 恒为 `false`。
+    pub nudge: bool,
 }
 
 /// 一次读取的条数上限：队列行数本身有界（离线保留 7 天），这个数只是防止
@@ -350,7 +357,10 @@ pub fn list_pending_message_operations(
                 COALESCE(m.kind, 'text'),
                 substr(m.content, 1, ?2),
                 o.created_at,
-                m.status
+                m.status,
+                CASE WHEN COALESCE(m.kind, '') = 'remind'
+                      AND instr(COALESCE(m.content, ''), '\"nudge\":true') > 0
+                     THEN 1 ELSE 0 END
          FROM outbox o LEFT JOIN messages m ON m.msg_id = o.msg_id
          WHERE COALESCE(m.status, 'sending')
                NOT IN ('delivered', 'read', 'recalled', 'cancelled', 'partial_cancelled')
@@ -364,10 +374,11 @@ pub fn list_pending_message_operations(
             r.get::<_, Option<String>>(3)?,
             r.get::<_, i64>(4)?,
             r.get::<_, Option<String>>(5)?,
+            r.get::<_, i64>(6)?,
         ))
     })?;
     for row in dm_rows.flatten() {
-        let (msg_id, peer_id, kind, content, created_at, status) = row;
+        let (msg_id, peer_id, kind, content, created_at, status, nudge) = row;
         let preview = text_preview(&kind, content.as_deref());
         ops.push(PendingMessageOp {
             msg_id,
@@ -384,6 +395,7 @@ pub fn list_pending_message_operations(
             some_delivered: false,
             failed: false,
             fail_code: None,
+            nudge: nudge != 0,
         });
     }
 
@@ -400,7 +412,10 @@ pub fn list_pending_message_operations(
                 COALESCE(m.kind, 'text'),
                 substr(m.content, 1, ?2),
                 m.status,
-                COALESCE(SUM(CASE WHEN g.status = 'delivered' THEN 1 ELSE 0 END), 0) AS delivered
+                COALESCE(SUM(CASE WHEN g.status = 'delivered' THEN 1 ELSE 0 END), 0) AS delivered,
+                CASE WHEN COALESCE(m.kind, '') = 'remind'
+                      AND instr(COALESCE(m.content, ''), '\"nudge\":true') > 0
+                     THEN 1 ELSE 0 END
          FROM group_outbox g LEFT JOIN messages m ON m.msg_id = g.msg_id
          WHERE COALESCE(m.status, 'sending')
                NOT IN ('cancelled', 'partial_cancelled', 'recalled', 'read')
@@ -418,10 +433,12 @@ pub fn list_pending_message_operations(
             r.get::<_, Option<String>>(5)?,
             r.get::<_, Option<String>>(6)?,
             r.get::<_, i64>(7)?,
+            r.get::<_, i64>(8)?,
         ))
     })?;
     for row in grp_rows.flatten() {
-        let (msg_id, group_id, waiting_for, created_at, kind, content, status, delivered) = row;
+        let (msg_id, group_id, waiting_for, created_at, kind, content, status, delivered, nudge) =
+            row;
         let preview = text_preview(&kind, content.as_deref());
         ops.push(PendingMessageOp {
             msg_id,
@@ -437,21 +454,27 @@ pub fn list_pending_message_operations(
             some_delivered: delivered > 0,
             failed: false,
             fail_code: None,
+            nudge: nudge != 0,
         });
     }
 
-    // 第三路：**已经判死、且没有气泡可显示**的静默动作（表情回应 / 撤回）。
+    // 第三路：**已经判死、且没有气泡可显示**的静默动作（表情回应 / 撤回 / 强提醒 / 合并转发）。
     //
-    // 为什么必须单独列：这两种 kind 不进时间线（`isRenderedInTimeline` 为 false），
+    // 为什么必须单独列：表情回应 / 撤回 / 强提醒不进时间线（`isRenderedInTimeline` 为 false），
     // 队列行删掉之后界面上一个字符都不剩 —— 用户点下去的东西"消失"了，既看不到失败
-    // 也看不到原因。任务中心是它们唯一的可见处。只收 `fail_code` 非空的行：没有码的失败
-    // 说不出为什么，列出来只会多一行点不动的任务（与上面那两条查询同一口径）。
+    // 也看不到原因。任务中心是它们唯一的可见处。合并转发虽有气泡，也在这里列一份，
+    // 让「判死后怎么重发」与静默动作走同一个入口。
+    // 只收 `fail_code` 非空的行：没有码的失败说不出为什么，列出来只会多一行点不动的任务
+    // （与上面那两条查询同一口径）。
     // 保留窗口与离线队列一致（7 天），避免把一个月前的一次失败永远挂在面板上。
     let mut failed = conn.prepare(
-        "SELECT msg_id, conv_id, kind, substr(content, 1, ?2), ts, fail_code
+        "SELECT msg_id, conv_id, kind, substr(content, 1, ?2), ts, fail_code,
+                CASE WHEN kind = 'remind'
+                      AND instr(COALESCE(content, ''), '\"nudge\":true') > 0
+                     THEN 1 ELSE 0 END
          FROM messages
          WHERE status = 'failed'
-           AND kind IN ('reaction', 'recall')
+           AND kind IN ('reaction', 'recall', 'remind', 'merge')
            AND fail_code IS NOT NULL
            AND conv_id NOT LIKE 'group:%'
            AND ts >= ?3
@@ -466,10 +489,11 @@ pub fn list_pending_message_operations(
             r.get::<_, Option<String>>(3)?,
             r.get::<_, i64>(4)?,
             r.get::<_, String>(5)?,
+            r.get::<_, i64>(6)?,
         ))
     })?;
     for row in failed_rows.flatten() {
-        let (msg_id, peer_id, kind, content, ts, fail_code) = row;
+        let (msg_id, peer_id, kind, content, ts, fail_code, nudge) = row;
         let preview = text_preview(&kind, content.as_deref());
         ops.push(PendingMessageOp {
             msg_id,
@@ -484,6 +508,7 @@ pub fn list_pending_message_operations(
             some_delivered: false,
             failed: true,
             fail_code: Some(fail_code),
+            nudge: nudge != 0,
         });
     }
 
@@ -1638,6 +1663,23 @@ mod fail_code_tests {
         .unwrap();
     }
 
+    /// 带自定内容与时间戳的插入（抖动要靠 content 才看得出来，`seed` 的 'hi' 不够）。
+    fn ins_gated(
+        conn: &Connection,
+        msg_id: &str,
+        conv: &str,
+        kind: &str,
+        content: &str,
+        ts: i64,
+    ) {
+        conn.execute(
+            "INSERT INTO messages(msg_id, conv_id, sender_id, receiver_id, kind, content, ts, seq, status)
+             VALUES(?1, ?2, 'me', 'peer', ?3, ?4, ?5, 1, 'sending')",
+            params![msg_id, conv, kind, content, ts],
+        )
+        .unwrap();
+    }
+
     /// 一次读回 `(status, fail_code)` —— 这两个字段是一个契约的两半，分开读就看不出错位。
     fn pair(conn: &Connection, msg_id: &str) -> (String, Option<String>) {
         conn.query_row(
@@ -1803,6 +1845,61 @@ mod fail_code_tests {
             "原因码要一起带出来，界面才能说人话"
         );
         assert!(!row.can_cancel, "队列里已经没有它，取消按钮不该出现");
+    }
+
+    /// 5.16.93：强提醒（含窗口抖动）与合并转发判死后同样要出现在任务中心，
+    /// 且抖动必须能被认出来（它们共用 `remind` 帧，光看 kind 会把抖动说成普通强提醒）。
+    /// 群聊侧（`group:` 前缀）仍走群队列，不从这一路混进来。
+    #[test]
+    fn failed_remind_and_merge_are_visible_and_nudge_is_flagged() {
+        let conn = mem();
+        let ts = now_ms();
+        ins_gated(&conn, "n1", "peer", "remind", r#"{"target":"","nudge":true}"#, ts);
+        ins_gated(&conn, "r1", "peer", "remind", r#"{"target":"m1"}"#, ts);
+        ins_gated(&conn, "g1", "peer", "merge", "{}", ts);
+        ins_gated(&conn, "x1", "group:g", "remind", r#"{"target":"m1"}"#, ts);
+
+        for id in ["n1", "r1", "g1"] {
+            assert!(finalize_blocked_message(
+                &conn,
+                id,
+                error_codes::SEND_KIND_UNSUPPORTED,
+                false
+            )
+            .unwrap());
+        }
+
+        let ops = list_pending_message_operations(&conn, 100).unwrap();
+        let nudge = ops.iter().find(|o| o.msg_id == "n1").expect("抖动必须可见");
+        assert!(nudge.failed);
+        assert_eq!(nudge.kind, "remind");
+        assert!(nudge.nudge, "抖动位必须单独带出来，界面才能说「窗口抖动」");
+
+        let plain = ops.iter().find(|o| o.msg_id == "r1").expect("强提醒必须可见");
+        assert!(plain.failed);
+        assert!(!plain.nudge, "普通强提醒不该被说成抖动");
+
+        let merge = ops.iter().find(|o| o.msg_id == "g1").expect("合并转发必须可见");
+        assert!(merge.failed);
+
+        assert!(
+            ops.iter().all(|o| o.msg_id != "x1"),
+            "群聊行仍归群队列，不许从 1:1 这一路混进来"
+        );
+    }
+
+    /// flush 期读「还要什么能力位」：kind + 抖动位；行不存在时返回 `None`（按不需要放行）。
+    #[test]
+    fn message_gating_reports_the_nudge_bit_and_tolerates_missing_rows() {
+        let conn = mem();
+        ins_gated(&conn, "n2", "peer", "remind", r#"{"target":"","nudge":true}"#, 1);
+        assert_eq!(
+            message_gating(&conn, "n2"),
+            Some(("remind".to_string(), crate::protocol::CONTENT_FEATURE_NUDGE))
+        );
+        ins_gated(&conn, "t2", "peer", "text", "hi", 1);
+        assert_eq!(message_gating(&conn, "t2"), Some(("text".to_string(), 0)));
+        assert_eq!(message_gating(&conn, "gone"), None);
     }
 
     /// 重启恢复（5.16.92 要求 5）：待发行必须**落在 SQLite 里**，进程重启后还读得回来。

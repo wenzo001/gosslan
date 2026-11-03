@@ -98,6 +98,22 @@ test("折叠：非回应消息被忽略；空输入返回空表", () => {
   assert.equal(foldReactions([text], "a").size, 0);
 });
 
+test("折叠：判死/取消/已撤回的回应不冒充「已点」，排队中的仍显示", () => {
+  // 判死那一行从没交给对方：显示成"已点"就是乐观层的谎（5.16.93）。
+  for (const status of ["failed", "cancelled", "recalled"]) {
+    const rec = { ...rx("r1", "a", "m1", "[赞]", true, 1), status };
+    assert.equal(foldReactions([rec], "a").get("m1"), undefined, `${status} 不许计入`);
+    // 但同一格若还有一条更早的真实成功，折叠仍以它为准
+    const older = rx("r0", "b", "m1", "[赞]", true, 0);
+    assert.equal(foldReactions([older, rec], "a").get("m1")![0].count, 1);
+  }
+  // `sending`（含排队等对方上线）正是乐观投影的可见形态 ⇒ 必须显示
+  const queued = { ...rx("r2", "a", "m1", "[赞]", true, 2), status: "sending" };
+  const chips = foldReactions([queued], "a").get("m1")!;
+  assert.equal(chips[0].count, 1);
+  assert.equal(chips[0].mine, true);
+});
+
 test("hasMyReaction：用于决定点击时是 add 还是 remove", () => {
   const recs = [rx("r1", "a", "m1", "[赞]", true, 1)];
   assert.equal(hasMyReaction(recs, "m1", "[赞]", "a"), true);

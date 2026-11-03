@@ -125,3 +125,37 @@ export function findByMsgId<T extends { msg_id: string }>(
 ): T | undefined {
   return rows?.find((m) => m.msg_id === msgId);
 }
+
+/**
+ * 只按 `msg_id` 摘掉**这次乐观投影**那一行，其余原样保留。
+ *
+ * 为什么不用 `local_id`：真实记录也带同一个 `local_id`；按它摘会把真实结果一起删掉。
+ * 「真实先到、迟到回滚」的对偶就靠这一条：临时行 `tmp-*` 与真实行 `msg_id` 不同，
+ * 摘临时行不伤真实行。
+ */
+export function dropByMsgId<T extends { msg_id: string }>(
+  rows: readonly T[] | undefined,
+  msgId: string,
+): T[] | undefined {
+  if (!rows) return undefined;
+  return rows.filter((m) => m.msg_id !== msgId);
+}
+
+/**
+ * 撤回的乐观回滚：只有当**这条仍是我投影出来的 `recalled`**、且真实结果还没到时才还原。
+ *
+ * - 真实 `message-recalled` 先到（`settled=true`）⇒ 不还原：那已经是对方也认账的事实；
+ * - 已经回滚过一次（`current.kind` 已不是 `recalled`）⇒ 再来的失败是重复投递，幂等跳过；
+ * - 目标已被别的路径改掉（`msg_id` 不同）⇒ 不碰。
+ */
+export function recallRollbackTarget<T extends { msg_id: string; kind: string }>(
+  current: T | undefined,
+  before: T,
+  settled: boolean,
+): T | null {
+  if (settled) return null;
+  if (!current) return null;
+  if (current.msg_id !== before.msg_id) return null;
+  if (current.kind !== "recalled") return null;
+  return before;
+}

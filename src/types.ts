@@ -356,6 +356,11 @@ export interface PendingMessageOp {
   failed: boolean;
   /** `messages.fail_code`，只在 `failed` 为真时有值；队列里的行是 `null`。 */
   fail_code: string | null;
+  /**
+   * 强提醒里的「窗口抖动」：它与普通强提醒共用 `remind` 帧，光看 kind 分不出来。
+   * 任务中心据此把标题说成「窗口抖动」而不是「强提醒」；非 remind 恒为 false。
+   */
+  nudge: boolean;
 }
 
 export interface FileProgress {
