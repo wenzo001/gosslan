@@ -1687,13 +1687,13 @@ fn file_command_rejections_are_traced_not_silent() {
         ("send", "not_friend"),
         ("send", "not_regular_file"),
     ] {
-        let mut paired = false;
-        for needle in ["reject_file_coded("] {
-            paired |= src.split(needle).skip(1).any(|tail| {
+        let paired = src
+            .split("reject_file_coded(")
+            .skip(1)
+            .any(|tail| {
                 let head = tail.split(';').next().unwrap_or("");
                 head.contains(&format!("\"{action}\"")) && head.contains(&format!("\"{reason}\""))
             });
-        }
         assert!(
             paired,
             "{action}/{reason} 没有并排出现在同一个 reject_file( … ) 里 ⇒ 这一格又变回静默"
