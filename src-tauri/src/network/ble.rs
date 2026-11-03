@@ -537,11 +537,25 @@ mod tests {
         );
         // 变化：任何方向（含变成 0）都必须写。
         assert!(
-            should_report_scan(Some(steady), ScanRound { total: 0, matched: 0 }, false),
+            should_report_scan(
+                Some(steady),
+                ScanRound {
+                    total: 0,
+                    matched: 0
+                },
+                false
+            ),
             "从有到空扫是异常，必须留痕"
         );
         assert!(
-            should_report_scan(Some(ScanRound { total: 0, matched: 0 }), steady, false),
+            should_report_scan(
+                Some(ScanRound {
+                    total: 0,
+                    matched: 0
+                }),
+                steady,
+                false
+            ),
             "从空扫恢复也必须留痕"
         );
         // 用户主动触发（数字没变）：必须写 —— 否则"点了扫描没反应"无从判。
