@@ -36,6 +36,9 @@ test("只有异常/启动中止才提示；正常退出不打扰", () => {
   assert.equal(shouldShowCrashNotice("abort"), true);
   assert.equal(shouldShowCrashNotice("clean"), false);
   assert.equal(shouldShowCrashNotice("no_history"), false);
+  // 被外部 kill -TERM：信号被捕获、走了正常退出流程 ⇒ 不是事故，不弹横幅
+  //（弹了就是把一次外部终止说成崩溃 —— 假指控）。码仍在报告里，可查可溯。
+  assert.equal(shouldShowCrashNotice("sigterm"), false);
 });
 
 test("卡死记录也进复制文本（未配对时附在报告里）", () => {

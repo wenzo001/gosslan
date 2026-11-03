@@ -13,6 +13,24 @@
 
 ## [Unreleased]
 
+## [5.16.88] - 2026-11-03
+
+### SIGTERM 留痕 + 走正常退出流程（闪退取证第 2 项）
+
+- `kill -TERM` 以前让进程无声消失、不留痕 ⇒ 下一轮只能按缺席推断成
+  `BOOT_PREV_SILENT_KILL`（异常终止横幅照弹，把外部终止说成事故）。
+- 现在：`run()` 最开头屏蔽 SIGTERM（必须早于一切线程派生 —— 未屏蔽线程会按
+  默认处置直接接走信号，实测形状就是"无声消失"），setup 成功后派生专用
+  `sigwait` 线程；收到信号先写 `code=SIGTERM_RECEIVED` 留痕（独立通道，不依赖
+  logger 活着），再 `app.exit(0)` 走正常退出流程（`RunEvent::Exit` 写退出路标）。
+- 下一轮判定新增 `Sigterm` 收尾方式：`kind=sigterm` / `code=BOOT_PREV_SIGTERM`，
+  与崩溃、静默强杀分开；不是事故 ⇒ 不弹崩溃横幅（前端判据同步 + 测试）。
+- 仅 Unix（macOS / Linux / Android）；Windows 没有 SIGTERM。
+- 真机验证（5.16.87 debug，instance 3）：SIGTERM 后现场文件出现
+  `>>> code=SIGTERM_RECEIVED …` + `----- 正常退出 …`；重启后日志出现
+  `上次收尾判定：被外部终止（SIGTERM）… code=BOOT_PREV_SIGTERM`。
+
+
 ## [5.16.87] - 2026-11-03
 
 ### 修默认 feature 下 lib test 编译失败（护栏非空转 cargo 通道红）
