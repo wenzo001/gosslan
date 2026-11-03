@@ -13,6 +13,17 @@
 
 ## [Unreleased]
 
+## [5.16.87] - 2026-11-03
+
+### 修默认 feature 下 lib test 编译失败（护栏非空转 cargo 通道红）
+
+- R1 加的 `ble_failure_states_carry_named_codes` 里 `use crate::network::ble::…`
+  不带 feature 门 ⇒ 默认 feature 构建（CI 护栏非空转 cargo 通道用）直接 E0432。
+- 拆成两条：源码扫描留痕（`include_str!` 不依赖 feature，原名下不变）+
+  分类决策断言（`#[cfg(feature = "bluetooth")]` 新名
+  `ble_state_classification_maps_to_named_codes`）。判据一条没少。
+
+
 ## [5.16.86] - 2026-11-03
 
 ### vacuum 进度回调测试加双硬闸（闪退取证第 1 项）

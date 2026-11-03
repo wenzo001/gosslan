@@ -706,21 +706,11 @@
         );
     }
 
-    /// R1（2026-11-03）：BLE 失败族具名码。平台真失败态造不进单测，但**分类决策**与
-    /// "码在留痕点上"这两件事可以注入：喂权限族/非权限族措辞断言分类，逐码断言源码留痕。
+    /// R1（2026-11-03）：BLE 失败族具名码。"码在留痕点上"不依赖 bluetooth feature
+    ///（`include_str!` 读的是文本，与 `network/mod.rs` 的守卫视图同一条口径）⇒
+    /// 默认 feature 的构建（护栏非空转 cargo 通道）也必须编得过、跑得了。
     #[test]
     fn ble_failure_states_carry_named_codes() {
-        use crate::network::ble::ble_peripheral_state_code;
-        assert_eq!(ble_peripheral_state_code("Unauthorized"), "BLE_UNAUTHORIZED");
-        assert_eq!(
-            ble_peripheral_state_code("permission denied by user"),
-            "BLE_UNAUTHORIZED"
-        );
-        assert_eq!(ble_peripheral_state_code("系统未授权"), "BLE_UNAUTHORIZED");
-        assert_eq!(
-            ble_peripheral_state_code("PoweredOff"),
-            "BLE_PERIPHERAL_UNAVAILABLE"
-        );
         let central = include_str!("network/ble/central.rs");
         let periph = include_str!("network/ble/peripheral.rs");
         let bt = include_str!("transport/bluetooth.rs");
@@ -738,4 +728,23 @@
         ] {
             assert!(src.contains(code), "缺 BLE 具名码 {code}（删了它这一族失败就回到自由文本）");
         }
+    }
+
+    /// 分类决策（权限族 / 非权限族措辞 → 码）住在 `network::ble`，那个模块整体在
+    /// `#[cfg(feature = "bluetooth")]` 之后 ⇒ 本条同样带 feature 门：默认 feature
+    /// 的构建里它不参与编译（否则 `use crate::network::ble::…` 直接 E0432）。
+    #[cfg(feature = "bluetooth")]
+    #[test]
+    fn ble_state_classification_maps_to_named_codes() {
+        use crate::network::ble::ble_peripheral_state_code;
+        assert_eq!(ble_peripheral_state_code("Unauthorized"), "BLE_UNAUTHORIZED");
+        assert_eq!(
+            ble_peripheral_state_code("permission denied by user"),
+            "BLE_UNAUTHORIZED"
+        );
+        assert_eq!(ble_peripheral_state_code("系统未授权"), "BLE_UNAUTHORIZED");
+        assert_eq!(
+            ble_peripheral_state_code("PoweredOff"),
+            "BLE_PERIPHERAL_UNAVAILABLE"
+        );
     }
