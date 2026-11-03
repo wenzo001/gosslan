@@ -422,7 +422,7 @@ async fn handle_gossip(state: &Arc<AppState>, peer_id: &str, env: GossipEnvelope
                         .and_then(|d| crypto::open(&s, &d))
                 })
             }
-            GossipKind::ChatAck | GossipKind::ChatReadReceipt => {
+            GossipKind::ChatAck | GossipKind::ChatReadReceipt | GossipKind::FileRelayReceipt => {
                 // 回执/确认必然是明文；收到 encrypted=true 的是异常，丢弃。
                 return;
             }
@@ -892,6 +892,34 @@ async fn handle_gossip(state: &Arc<AppState>, peer_id: &str, env: GossipEnvelope
                             "peer-read",
                             &serde_json::json!({ "peer_id": from, "last_read_ts": effective_ts }),
                         );
+                    }
+                }
+            }
+        }
+        GossipKind::FileRelayReceipt => {
+            // 中继文件收件回执（**只做可观测**，2026-11-03）：target == 本机才处理。
+            // 收到只记日志 + 广播事件；没有回执不是失败、也不改任何状态（老端根本不发）。
+            if env.target.as_deref() == Some(state.device_id.as_str()) {
+                if let Some(pt) = plaintext {
+                    if let Ok(v) = serde_json::from_slice::<serde_json::Value>(&pt) {
+                        if let Some(tid) = v.get("transfer_id").and_then(|t| t.as_str()) {
+                            let sha = v.get("sha256").and_then(|t| t.as_str()).unwrap_or("");
+                            state.logger.info(
+                                "relay",
+                                format!(
+                                    "code=RELAY_FILE_RECEIPT tid={tid} peer={} sha={sha}",
+                                    env.sender_id
+                                ),
+                            );
+                            let _ = state.app.emit(
+                                "relay-file-receipt",
+                                serde_json::json!({
+                                    "transfer_id": tid,
+                                    "peer_id": env.sender_id,
+                                    "sha256": sha,
+                                }),
+                            );
+                        }
                     }
                 }
             }

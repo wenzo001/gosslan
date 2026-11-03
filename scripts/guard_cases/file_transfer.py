@@ -978,8 +978,8 @@ CASES: list[Case] = [
         "     注入方式：从 `content_features()` 的并集里摘掉那一项。",
         file=TAURI / "src" / "protocol.rs",
         injections=[(
-            "        | CONTENT_FEATURE_RENDER\n        | CONTENT_FEATURE_FILE_CANCEL\n        | CONTENT_FEATURE_CREATOR_RECALL\n        | CONTENT_FEATURE_FRIEND_WITHDRAW\n}",
-            "        | CONTENT_FEATURE_RENDER\n        | CONTENT_FEATURE_CREATOR_RECALL\n        | CONTENT_FEATURE_FRIEND_WITHDRAW\n}",
+            "        | CONTENT_FEATURE_RENDER\n        | CONTENT_FEATURE_FILE_CANCEL\n        | CONTENT_FEATURE_CREATOR_RECALL\n        | CONTENT_FEATURE_FRIEND_WITHDRAW\n        | CONTENT_FEATURE_FILE_RECEIPT\n}",
+            "        | CONTENT_FEATURE_RENDER\n        | CONTENT_FEATURE_CREATOR_RECALL\n        | CONTENT_FEATURE_FRIEND_WITHDRAW\n        | CONTENT_FEATURE_FILE_RECEIPT\n}",
         )],
         cmd=cargo("test", "--lib", "file_cancel_frame_is_advertised_distinct_and_round_trips"),
         cwd=TAURI,
