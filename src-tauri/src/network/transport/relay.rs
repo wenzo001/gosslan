@@ -3,7 +3,7 @@
 // 职责边界：只负责"如何经服务器多拿一条链路"。不碰帧语义、不碰选路优先级、不碰 Gossip
 // 传播 —— 链路一旦建立，上面跑的就是既有的 `connect_to_peer` 全流程。
 // 设计与取舍见 `docs/adr/0020-blind-circuit-relay.md`；服务器代码在独立仓库
-// fwd001/gosslan-relay-server。
+// wenzo001/gosslan-relay-server。
 //
 // ⚠️ 本文件被 `network/transport.rs` 用 `include!` 并进**同一个模块**（与
 // `transport/outbound.rs`、`transport/gossip.rs` 同一先例）：因此这里**不得重复 import

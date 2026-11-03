@@ -1,0 +1,176 @@
+{
+  "channel_hash": {
+    "expected_hex": "28963ddcdb88390cad12894392bd77d11b4f42b2ca6fb374a765a199079d996a",
+    "inputs": {
+      "device_id_a": "gosslan-fixture-aaa",
+      "device_id_b": "gosslan-fixture-bbb",
+      "ed25519_pub_a_b64": "S6DorclC2Zk/hKy5ALDZ0yqKacE0q9BpJ9VOQvpDdKA=",
+      "ed25519_pub_b_b64": "E07U2knCLAG29oXn5KTUMFfJ/+Y7OjlWadPpO1yxpTs=",
+      "epoch_day": 20454
+    },
+    "rule": "SHA-256(\"gosslan-relay-ch-v1\" ‖ id₁ ‖ 0x00 ‖ pk_b64₁ ‖ 0x00 ‖ id₂ ‖ 0x00 ‖ pk_b64₂ ‖ 0x00 ‖ epoch_day 大端 u64)；(id₁,pk₁)/(id₂,pk₂) 按 device_id ASCII 字典序"
+  },
+  "epoch_day": {
+    "rule": "epoch_day = now_ms / 86_400_000（UTC 天序号）；now_ms < 0 时钳到 0",
+    "vectors": [
+      {
+        "day": 0,
+        "now_ms": -5
+      },
+      {
+        "day": 0,
+        "now_ms": 0
+      },
+      {
+        "day": 0,
+        "now_ms": 86399999
+      },
+      {
+        "day": 1,
+        "now_ms": 86400000
+      },
+      {
+        "day": 2,
+        "now_ms": 172812345
+      },
+      {
+        "day": 20454,
+        "now_ms": 1767225600000
+      }
+    ]
+  },
+  "hello_line": {
+    "channel_hex": "28963ddcdb88390cad12894392bd77d11b4f42b2ca6fb374a765a199079d996a",
+    "line": "GSRL1 gosslan-fixture-token 28963ddcdb88390cad12894392bd77d11b4f42b2ca6fb374a765a199079d996a\n",
+    "negatives": [
+      {
+        "expect": "reject",
+        "line": "GSRL1 gosslan-fixture-token 28963DDCDB88390CAD12894392BD77D11B4F42B2CA6FB374A765A199079D996A\n",
+        "name": "uppercase-hex"
+      },
+      {
+        "expect": "reject",
+        "line": "GSRL1 gosslan-fixture-token deadbeef\n",
+        "name": "short-hex"
+      },
+      {
+        "expect": "reject",
+        "line": "GSRL2 gosslan-fixture-token 28963ddcdb88390cad12894392bd77d11b4f42b2ca6fb374a765a199079d996a\n",
+        "name": "wrong-magic"
+      },
+      {
+        "expect": "reject",
+        "line": "GSRL1 not-the-token 28963ddcdb88390cad12894392bd77d11b4f42b2ca6fb374a765a199079d996a\n",
+        "name": "wrong-token"
+      },
+      {
+        "expect": "reject",
+        "line": "GSRL1 gosslan-fixture-token 28963ddcdb88390cad12894392bd77d11b4f42b2ca6fb374a765a199079d996a extra\n",
+        "name": "extra-field"
+      },
+      {
+        "expect": "reject",
+        "line": "GSRL1 gosslan-fixture-token\n",
+        "name": "missing-field"
+      },
+      {
+        "expect": "reject",
+        "line": "GSRL1 gosslan-fixture-token  28963ddcdb88390cad12894392bd77d11b4f42b2ca6fb374a765a199079d996a\n",
+        "name": "double-space"
+      },
+      {
+        "expect": "hold-then-hello-timeout",
+        "line": "GSRL1 gosslan-fixture-token 28963ddcdb88390cad12894392bd77d11b4f42b2ca6fb374a765a199079d996a",
+        "name": "no-newline-within-256"
+      }
+    ],
+    "rule": "GSRL1 <token> <64 位小写十六进制通道哈希>\\n；整行 ≤ 256 字节；恰好 3 个字段",
+    "token": "gosslan-fixture-token"
+  },
+  "meta": {
+    "generated_from": {
+      "commit": "973b4df33428c2725aa27df5f63c23de81d75f7f",
+      "crate_versions": {
+        "base64": "0.22.1",
+        "chacha20poly1305": "0.10.1",
+        "ed25519-dalek": "2.2.0",
+        "serde_json": "1.0.151",
+        "sha2": "0.10.9",
+        "x25519-dalek": "2.0.1"
+      },
+      "repo": "gosslan (主仓)",
+      "source_files": [
+        "src-tauri/src/transport/relay_seal.rs",
+        "src-tauri/src/network/transport/relay.rs"
+      ]
+    },
+    "name": "gosslan-relay-wire-fixtures",
+    "purpose": "中继线格式的共享真值向量：两个仓库的对照测试都必须复现这些字节，漂移即红。",
+    "secrets_are_test_only": "本文件内的所有私钥/口令都是公开的测试值，不属于任何真实部署。"
+  },
+  "record": {
+    "direction": "a2b",
+    "key_hex": "f7d75c3cc948a8531ea3cb01889bb4664c788a177eb608b984f2e6e0d57457a1",
+    "rule": "记录 = nonce(4B 零 ‖ 8B 大端计数器) ‖ ChaCha20Poly1305(计数器 ‖ 内层帧)；内层帧 = 4B 大端长度 ‖ JSON；密钥 = SHA-256(\"gosslan-relay-record-v1\" ‖ DH ‖ 通道哈希hex ‖ 0x00 ‖ \"a2b\"|\"b2a\")",
+    "vectors": [
+      {
+        "ctr": 1,
+        "inner_frame_hex": "000000147b2274797065223a22686561727462656174227d",
+        "inner_json": "{\"type\":\"heartbeat\"}",
+        "record_hex": "000000000000000000000001ea134191c11bf7089efccb8ad3694955d7db538566c34d5ff52e3cb8a2cc561d26c4bc6911b9a17ea3518b91f592883f"
+      },
+      {
+        "ctr": 2,
+        "inner_frame_hex": "0000000f7b2274797065223a2263686174227d",
+        "inner_json": "{\"type\":\"chat\"}",
+        "record_hex": "000000000000000000000002568cd372164d54a39f675335ae8a2137257bb8f08ef062a54a9928322b18aa7abf6089cbf99b3d62670779"
+      }
+    ]
+  },
+  "wrap": {
+    "dh_shared_secret_hex": "948d89859d59465f2349081de96244f5e985d75c8d1b5e27a0a0b3c9dc6e1a42",
+    "ed25519": {
+      "A": {
+        "public_b64": "S6DorclC2Zk/hKy5ALDZ0yqKacE0q9BpJ9VOQvpDdKA=",
+        "seed_b64": "Z29zc2xhbi1maXh0dXJlLWVkMjU1MTktQS1zZWVkLTE="
+      },
+      "B": {
+        "public_b64": "E07U2knCLAG29oXn5KTUMFfJ/+Y7OjlWadPpO1yxpTs=",
+        "seed_b64": "Z29zc2xhbi1maXh0dXJlLWVkMjU1MTktQi1zZWVkLTE="
+      }
+    },
+    "offers": {
+      "A": {
+        "eph_pub_b64": "4zafy5bB2GA1Ai0/Gjhk9DqFgFRjk/Dgi482SErPJkk=",
+        "line": "GSRW1 A 4zafy5bB2GA1Ai0/Gjhk9DqFgFRjk/Dgi482SErPJkk= zZjYo+yu3mInOq4h+UY1v8D4mRXpNpXUAV/phd6+Cu3aWxxnecO7arbQBfSCX87ap/WpSSiDiAuMLy5zxcExAg==\n",
+        "role": "A",
+        "sig_b64": "zZjYo+yu3mInOq4h+UY1v8D4mRXpNpXUAV/phd6+Cu3aWxxnecO7arbQBfSCX87ap/WpSSiDiAuMLy5zxcExAg=="
+      },
+      "B": {
+        "eph_pub_b64": "WDBpRLV2pO7Q9U9Plp1tRUN3zY+cGiBAMNhj+R8cbnc=",
+        "line": "GSRW1 B WDBpRLV2pO7Q9U9Plp1tRUN3zY+cGiBAMNhj+R8cbnc= l98dpNLVjCACGYRV59JN24kd7VRfHx/mwPJj9RZpZY7y3g3DOe+44nEz0tmdVS30wMSx15Si+WF+iRq8jHR0Aw==\n",
+        "role": "B",
+        "sig_b64": "l98dpNLVjCACGYRV59JN24kd7VRfHx/mwPJj9RZpZY7y3g3DOe+44nEz0tmdVS30wMSx15Si+WF+iRq8jHR0Aw=="
+      }
+    },
+    "record_keys": {
+      "a2b_hex": "f7d75c3cc948a8531ea3cb01889bb4664c788a177eb608b984f2e6e0d57457a1",
+      "b2a_hex": "1d320bac4929b40afe7721c5b80180b6336b319796604c684b4b7d6516b6c418"
+    },
+    "rule": "GSRW1 <role A|B> <b64 临时 X25519> <b64 Ed25519 签名>\\n（4 字段，不带长期公钥）；签名材料 = serde_json 元组 (WRAP_PREFIX 字节, 我的 device_id, 期望对端 device_id, 通道哈希, role, 临时公钥 b64)",
+    "signing_bytes_hex": {
+      "A": "5b5b3130332c3131312c3131352c3131352c3130382c39372c3131302c34352c3131342c3130312c3130382c39372c3132312c34352c3131392c3131342c39372c3131322c34352c3131382c34395d2c22676f73736c616e2d666978747572652d616161222c22676f73736c616e2d666978747572652d626262222c2232383936336464636462383833393063616431323839343339326264373764313162346634326232636136666233373461373635613139393037396439393661222c2241222c22347a616679356242324741314169302f476a686b394471466746526a6b2f446769343832534572504a6b6b3d225d",
+      "B": "5b5b3130332c3131312c3131352c3131352c3130382c39372c3131302c34352c3131342c3130312c3130382c39372c3132312c34352c3131392c3131342c39372c3131322c34352c3131382c34395d2c22676f73736c616e2d666978747572652d626262222c22676f73736c616e2d666978747572652d616161222c2232383936336464636462383833393063616431323839343339326264373764313162346634326232636136666233373461373635613139393037396439393661222c2242222c2257444270524c5632704f3751395539506c70317452554e337a592b63476942414d4e686a2b523863626e633d225d"
+    },
+    "x25519_ephemeral": {
+      "A": {
+        "public_b64": "4zafy5bB2GA1Ai0/Gjhk9DqFgFRjk/Dgi482SErPJkk=",
+        "secret_b64": "Z29zc2xhbi1maXh0dXJlLXgyNTUxOS1BLWVwaC0wMDE="
+      },
+      "B": {
+        "public_b64": "WDBpRLV2pO7Q9U9Plp1tRUN3zY+cGiBAMNhj+R8cbnc=",
+        "secret_b64": "Z29zc2xhbi1maXh0dXJlLXgyNTUxOS1CLWVwaC0wMDE="
+      }
+    }
+  }
+}
