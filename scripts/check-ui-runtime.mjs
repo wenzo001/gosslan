@@ -3170,6 +3170,7 @@ async function main() {
     const winsafe = want("winsafe");
     const logs = want("logs");
     const vlist = want("vlist");
+    const perf = want("perf");
     const favorites = want("favorites");
     const links = want("links");
     const diag = want("diag");
@@ -3361,6 +3362,7 @@ async function main() {
     await runSegment("winsafe", winsafe, () => runWindowSafe(cdp, url));
     await runSegment("logs", logs, () => runLogs(cdp, url));
     await runSegment("vlist", vlist, () => runVirtualList(cdp, url));
+    await runSegment("perf", perf, () => runPerf(cdp, url));
     await runSegment("favorites", favorites, () => runFavorites(cdp, url));
     await runSegment("namecap", namecap, () => runNameCap(cdp, url));
     await runSegment("friendfilter", friendfilter, () => runFriendFilter(cdp, url));
@@ -10217,6 +10219,136 @@ async function runVirtualList(cdp, url) {
     "方向反转<=3 且最终贴底",
     JSON.stringify({ reversals, samples: samples.slice(0, 30), final: { top: afterSwap.scrollTop, h: afterSwap.scrollHeight, c: afterSwap.clientHeight } }));
 }
+
+/**
+ * 「丝滑」的可测读数（`--only=perf`，2026-11-03 用户要求「用数据而不是感觉」）。
+ *
+ * 只做**回归护栏**，不做产品 SLA：夹具跑在 vite dev 上，启动耗时里含现编译依赖，
+ * 绝对值不代表用户机器。它能抓住的是「同一套夹具下突然翻倍」这类回归。
+ *
+ * 四个读数：
+ *  ① 启动到可交互：从文档开始到 `#app` 第一次有子节点（MutationObserver 在文档头注入，
+ *     不受探针 eval 时机影响）；同时打印 FCP / DOMContentLoaded 作为对照。
+ *  ② 切会话首屏：`vlistSwap(300)` 到「两个 rAF 之后」的时长（期间包含整表换 key + 重测）。
+ *  ③ 长会话滚动帧间隔：1.2 s 连续滚动，统计帧数、长帧（>50 ms）次数、p50、最大帧。
+ *  ④ 空闲 CPU：3 s 不做任何操作，取渲染进程 `TaskDuration` 增量（毫秒）。
+ *     写盘**不在浏览器探针口径内**（要 root 的 fs_usage），这里只给 CPU；写盘读数见
+ *     日志合批那一项的 fs_usage 表，两边口径分开写，不混着报。
+ */
+async function runPerf(cdp, url) {
+  await cdp.send("Page.bringToFront").catch(() => {});
+  // ① 启动读数：观测器必须在**文档头**注入，否则会漏掉 app 已挂载的那一刻。
+  const bootScript = `
+    window.__perfBoot = {};
+    const __po = new MutationObserver(() => {
+      const app = document.querySelector('#app');
+      if (app && app.children.length > 0 && window.__perfBoot.appMount == null) {
+        window.__perfBoot.appMount = performance.now();
+        __po.disconnect();
+      }
+    });
+    document.addEventListener('DOMContentLoaded', () => {
+      __po.observe(document.documentElement, { subtree: true, childList: true });
+    }, { once: true });
+  `;
+  const injected = await cdp.send("Page.addScriptToEvaluateOnNewDocument", { source: bootScript });
+  let boot;
+  try {
+    await cdp.send("Page.navigate", { url });
+    await cdp.settled();
+    await sleep(1_500);
+    boot = await cdp.eval(`(() => {
+      const fcp = performance.getEntriesByName('first-contentful-paint')[0];
+      const nav = performance.getEntriesByType('navigation')[0];
+      const b = window.__perfBoot || {};
+      return {
+        appMountMs: b.appMount == null ? null : Math.round(b.appMount),
+        fcpMs: fcp ? Math.round(fcp.startTime) : null,
+        dclMs: nav ? Math.round(nav.domContentLoadedEventEnd) : null,
+      };
+    })()`);
+  } finally {
+    await cdp.send("Page.removeScriptToEvaluateOnNewDocument", { identifier: injected.identifier })
+      .catch(() => {});
+  }
+  await cdp.eval(PAGE_FIXTURE);
+  const mounted = await cdp.eval("window.__probe.vlistMount(300)");
+  check("perf：长会话夹具挂载成功（读数先有分母）", mounted && mounted.count === 300,
+    "count=300", JSON.stringify(mounted));
+  await sleep(300);
+
+  // ② 切会话首屏
+  const swapMs = await cdp.eval(`(async () => {
+    const t0 = performance.now();
+    window.__probe.vlistSwap(300);
+    await new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
+    return Math.round(performance.now() - t0);
+  })()`);
+  await sleep(300);
+
+  // ③ 连续滚动帧间隔
+  const scroll = await cdp.eval(`(async () => {
+    const row = document.querySelector('#vlist-host [data-vlist-index]');
+    const sc = row ? row.closest('.overflow-y-auto') : null;
+    if (!sc) return { ok: false };
+    window.__probe.vlistSwap(300);
+    await new Promise((r) => requestAnimationFrame(r));
+    sc.scrollTop = 0;
+    const deltas = [];
+    let last = performance.now();
+    const t0 = last;
+    await new Promise((resolve) => {
+      const tick = (t) => {
+        deltas.push(t - last);
+        last = t;
+        sc.scrollTop = Math.min(sc.scrollHeight - sc.clientHeight, sc.scrollTop + 240);
+        if (t - t0 < 1_200) requestAnimationFrame(tick); else resolve();
+      };
+      requestAnimationFrame(tick);
+    });
+    const sorted = [...deltas].sort((a, b) => a - b);
+    return {
+      ok: true,
+      frames: deltas.length,
+      long: deltas.filter((d) => d > 50).length,
+      p50: Math.round(sorted[Math.floor(sorted.length * 0.5)] || 0),
+      max: Math.round(sorted[sorted.length - 1] || 0),
+    };
+  })()`);
+
+  // ④ 空闲 CPU（渲染进程 TaskDuration 增量；3 s 与 §"30s 快照"分开量，口径不混）
+  await cdp.send("Performance.enable").catch(() => {});
+  const task = async () => {
+    const m = await cdp.send("Performance.getMetrics");
+    const hit = (m.metrics || []).find((x) => x.name === "TaskDuration");
+    return hit ? hit.value * 1_000 : null;
+  };
+  const cpuBefore = await task();
+  await sleep(3_000);
+  const cpuAfter = await task();
+  const idleCpuMs = cpuBefore == null || cpuAfter == null ? null : Math.round(cpuAfter - cpuBefore);
+
+  console.log("  ℹ 性能读数 → " + JSON.stringify({
+    boot, swapFirstScreenMs: swapMs, scroll, idleCpuMs, idleWindowMs: 3_000,
+    note: "写盘不在浏览器探针口径内（需 root fs_usage）",
+  }));
+  check("perf：启动到可交互有读数（#app 挂载被观测到）",
+    boot && typeof boot.appMountMs === "number" && boot.appMountMs > 0,
+    "appMountMs > 0（本机实测见上一行）", JSON.stringify(boot));
+  // 阈值依据（2026-11-03 本机 Brave 156 首次实测）：appMount 258 ms（FCP 44 / DCL 38）。
+  // 取 3 s 是约 11 倍余量的**回归护栏**：只挡「同一个夹具下突然慢一个数量级」，
+  // 不把 vite dev 冷编译的抖动当产品红。CI 若首次冷编译超过它，先看读数再决定调锚，
+  // 不许直接把数改大。
+  check("perf：启动到可交互 ≤ 3000 ms（回归护栏，实测 258 ms）",
+    boot && boot.appMountMs <= 3_000, "≤3000 ms", "appMountMs=" + (boot && boot.appMountMs));
+  check("perf：切会话首屏 ≤ 400 ms（回归护栏，实测 32 ms）", swapMs <= 400, "≤400 ms", "swap=" + swapMs);
+  check("perf：1.2 s 连续滚动里长帧（>50 ms）≤ 10 次（回归护栏，实测 0 次）",
+    scroll && scroll.ok === true && scroll.long <= 10,
+    "long ≤ 10", JSON.stringify(scroll));
+  check("perf：空闲 3 s 渲染进程 CPU ≤ 600 ms（回归护栏，实测 31 ms）",
+    idleCpuMs != null && idleCpuMs <= 600, "≤600 ms / 3 s", "idleCpuMs=" + idleCpuMs);
+}
+
 
 async function runLogs(cdp, url) {
   await cdp.send("Page.bringToFront").catch(() => {});
