@@ -114,6 +114,29 @@ export function addressText(info: PeerInfoInput): string | null {
   return info.tcp_port ? `${ip}:${info.tcp_port}` : ip;
 }
 
+/**
+ * 跨跳节点离线判定阈值（毫秒），**必须与后端 `protocol.rs` 的
+ * `RELAY_PEER_TIMEOUT_SECS = 45` 对齐**。
+ *
+ * 前端只用它把「可能离线」这一档**显示成灰**，不参与任何在线/离线判定：
+ * 真正的移除仍由后端 `sweep_peers` 做。写成 45s 是为了让界面提示与后端口径一致，
+ * 不能比后端更早（否则会对着还在保活的节点刷"离线"）。
+ */
+export const RELAY_PEER_TIMEOUT_MS = 45_000;
+
+/**
+ * 这一行是否该标「可能离线」。
+ *
+ * 只对**没有直连链路**的节点成立：直连节点断了会被后端立即移除（`mark_peer_offline`），
+ * 不需要超时兜底；跨网/中继节点只靠 10s 一轮 Presence 保活，超过 45s（约 4.5 个周期）
+ * 没刷新时，最可能的事实是「对方离线了」，但也可能只是中继抖动 —— 所以文案是
+ * **「可能离线」**，不是「离线」。不猜死。
+ */
+export function maybeOffline(p: { link?: PeerLink; last_seen: number }, now: number): boolean {
+  if (p.link) return false;
+  return now - p.last_seen > RELAY_PEER_TIMEOUT_MS;
+}
+
 /** 设备类型的 i18n key：后端只给 `desktop` / `mobile`，其余一律"未知设备"。 */
 export function deviceTypeKey(deviceType: string | null | undefined): string {
   const v = (deviceType ?? "").trim().toLowerCase();

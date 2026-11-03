@@ -1,7 +1,9 @@
 <script setup lang="ts">
 import { t } from "@/i18n";
-import { addressText, linkLabelKey, linkLabelParams } from "@/utils/peerConnectionInfo";
+import { addressText, linkLabelKey, linkLabelParams, maybeOffline } from "@/utils/peerConnectionInfo";
 import { computed, onUnmounted, ref, watch } from "vue";
+import { dedupePeers, sortPeersForAdd } from "@/utils/peerMerge";
+import { copyText } from "@/utils/crashReport";
 import { INPUT_DEFER_MS } from "@/utils/defer";
 import { refDebounced } from "@vueuse/core";
 import { useAppStore } from "@/stores/useAppStore";
@@ -112,16 +114,52 @@ async function respond(peerId: string, accept: boolean) {
 
 const filteredPeers = computed(() => {
   const k = query.value.trim().toLowerCase();
+  // 先按 `device_id` 去重：同一台设备可能同时经局域网/中继/蓝牙被发现，
+  // 不去重就会出现同一个人两行、两套按钮（跨网段实测症状）。纯显示层整理。
+  const unique = dedupePeers(chat.peers);
   const pool = k
-    ? chat.peers.filter(
+    ? unique.filter(
         (p) =>
           p.nickname.toLowerCase().includes(k) ||
           p.ip.toLowerCase().includes(k) ||
           p.device_id.toLowerCase().includes(k),
       )
-    : chat.peers;
-  return { total: pool.length, list: pool.slice(0, MAX_RENDER) };
+    : unique;
+  // 排序同样是显示层的：好友优先 → 直连优先 → 最近 Presence 优先 → 昵称。
+  const sorted = sortPeersForAdd(pool, { friendIds: friendIds.value });
+  return { total: sorted.length, list: sorted.slice(0, MAX_RENDER) };
 });
+
+/**
+ * 这一行是否标「可能离线」。
+ *
+ * 只对跨网/中继节点成立（口径见 `maybeOffline` 与后端 45s 超时）。`Date.now()` 不进响应式，
+ * 但 `peers-updated` 每次推送都会重算这个 computed ⇒ 提示会在下一拍跟上，不会卡住不动。
+ */
+function isMaybeOffline(p: Peer): boolean {
+  return maybeOffline(p, Date.now());
+}
+
+/**
+ * 「复制邀请」：把"怎么加我"写成一段可直接粘贴给对方的文字。
+ *
+ * 跨网段最现实的场景是对方不在同一局域网：那时搜索发现帮不上忙，用户只能口头报设备 ID。
+ * 这里把该说的话一次说全（应用名 + 设备 ID + 操作路径），免去用户自己拼。
+ */
+const inviteText = computed(() =>
+  t("friend.add.invite.text", {
+    name: app.device?.nickname ?? "",
+    id: app.device?.device_id ?? "",
+  }),
+);
+
+async function copyInvite() {
+  const ok = await copyText(inviteText.value);
+  app.toast(
+    ok ? t("friend.add.toast.inviteCopied") : t("friend.add.copyInvite.failed"),
+    ok ? "success" : "error",
+  );
+}
 
 /**
  * 通道快捷开关（移动端"未发现节点"时最有用）。
@@ -378,6 +416,15 @@ async function add(peerId: string) {
       >
         {{ t("friend.add.rescan") }}
       </button>
+      <!-- 跨网段场景：对方不在同一局域网时，发现列表帮不上忙，只能靠设备 ID。
+           这里给一段可直接粘贴的邀请文案，不新增任何布局层级。 -->
+      <button
+        type="button"
+        class="tap-safe mt-2 w-full rounded-[var(--gosslan-radius-md)] bg-[var(--gosslan-bg)] py-2 text-sm text-[var(--gosslan-text-2)] transition hover:bg-[var(--gosslan-hover)]"
+        @click="copyInvite"
+      >
+        {{ t("friend.add.copyInvite") }}
+      </button>
     </div>
 
     <template v-else>
@@ -399,12 +446,13 @@ async function add(peerId: string) {
         >
           <AvatarBox class="h-9 w-9" :id="p.device_id" :src="p.avatar" />
           <div class="min-w-0 flex-1">
-            <div class="truncate text-sm" :title="p.nickname">{{ p.nickname }}</div>
+            <div class="truncate text-sm" :class="{ 'opacity-60': isMaybeOffline(p) }" :title="p.nickname">{{ p.nickname }}</div>
             <!-- 链路类型**必须由后端给**（`peer.link`）：以前用 `p.ip || 蓝牙直连` 反推，
                  于是同一 Tailscale 网段（Routed）的设备也被标成"蓝牙直连"（用户 2026-09-12
                  实测反馈）。现在只有后端确认是 BLE 链路（`link === "bluetooth"`）才这么写。 -->
             <div class="text-xs text-[var(--gosslan-text-2)]">
               {{ peerAddress(p) }}
+              <span v-if="isMaybeOffline(p)"> · {{ t("friend.add.maybeOffline") }}</span>
             </div>
           </div>
           <button

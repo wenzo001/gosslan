@@ -17,6 +17,8 @@ import {
   deviceTypeKey,
   linkIconName,
   linkLabelKey,
+  maybeOffline,
+  RELAY_PEER_TIMEOUT_MS,
   shouldShowAddress,
 } from "./peerConnectionInfo.ts";
 
@@ -93,4 +95,17 @@ test("连接图标名与文案同源：五种真实链路各一个图标，无�
   // 图标判据必须与文案判据**同序**：同一输入下两者指向同一种链路
   assert.equal(linkLabelKey({ link: "relay" }), "peer.link.relayServer");
   assert.equal(linkLabelKey({ link: "lan", hop: 2 }), "peer.link.relay");
+});
+
+test("「可能离线」只对无直连链路的节点成立，阈值与后端 45s 对齐", () => {
+  assert.equal(RELAY_PEER_TIMEOUT_MS, 45_000, "必须与 protocol.rs 的 RELAY_PEER_TIMEOUT_SECS=45 一致");
+  const old = 100_000;
+  // 直连节点：断了会被后端立即移除，不需要超时提示 ⇒ 即使 last_seen 很旧也不标
+  assert.equal(maybeOffline({ link: "lan", last_seen: old }, 200_000), false, "直连不靠超时判离线");
+  assert.equal(maybeOffline({ link: "bluetooth", last_seen: old }, 200_000), false, "蓝牙同理");
+  // 无链路（只发现/跨跳中继）：30s 新鲜 ⇒ 不标；46s ⇒ 标；45s 边界不算超时（严格大于）
+  assert.equal(maybeOffline({ link: null, last_seen: 70_000 }, 100_000), false, "30s 内仍然新鲜");
+  assert.equal(maybeOffline({ last_seen: 70_000 }, 100_000), false, "缺 link 与 null 同口径");
+  assert.equal(maybeOffline({ last_seen: 55_000 }, 100_000), false, "恰好 45s 不判（给中继留余量）");
+  assert.equal(maybeOffline({ last_seen: 54_000 }, 100_000), true, "超过 45s 才标「可能离线」");
 });

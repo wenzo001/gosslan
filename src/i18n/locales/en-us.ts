@@ -1071,6 +1071,12 @@ export const enUS: MessageDict = {
   "friend.add.crossNet.relay.off": "Off",
   "friend.add.crossNet.hint": "These channels reach people who are **already your friends**; adding someone new over the internet needs a mutual friend, or turn on LAN / Bluetooth.",
   "friend.add.rescan": "Scan again",
+  "friend.add.maybeOffline": "may be offline",
+  "friend.add.copyInvite": "Copy invite",
+  "friend.add.copyInvite.failed": "Could not copy (clipboard unavailable)",
+  "friend.add.invite.text":
+    "My Gosslan device ID is {id} ({name}). Open Gosslan → Add Friend → search this device ID to add me.",
+  "friend.add.toast.inviteCopied": "Invite text copied",
   "friend.add.channelFailed": "Could not enable: {err}",
   "friend.add.searchPlaceholder": "Search nickname / IP / device ID",
   "friend.add.alreadyFriend": "Already added",
