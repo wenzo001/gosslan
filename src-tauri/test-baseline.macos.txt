@@ -1435,6 +1435,13 @@ user_dirs::tests::the_two_user_directories_do_not_interfere
 watchdog::tests::hang_notes_throttle_after_the_dense_phase_but_never_stop
 watchdog::tests::sub_threshold_drift_still_judges
 watchdog::tests::virtual_clock_sleep_and_jump_are_exempt_but_a_real_stall_is_not
+win_shortcut::tests::attempt_marker_is_once_per_version
+win_shortcut::tests::parses_ansi_target
+win_shortcut::tests::prefers_unicode_target
+win_shortcut::tests::rejects_lnk_without_link_info
+win_shortcut::tests::rejects_malformed_lnk
+win_shortcut::tests::removes_only_when_both_targets_match_current_exe
+win_shortcut::tests::windows_path_comparison_is_case_and_separator_insensitive
 worker_supervisor::tests::every_spawn_fn_has_a_home
 worker_supervisor::tests::finished_signal_comes_from_the_real_handle
 worker_supervisor::tests::lib_rs_wires_the_supervisor_exactly_once

@@ -24,8 +24,16 @@
 ; 再按本地化名重建并补回 AUMID；不是本应用的快捷方式一律不动。
 ;
 ; 开始菜单目录未配置（`startMenuFolder` 为空）⇒ 快捷方式直接在 `$SMPROGRAMS` 下。
-; ⚠️ 已知边界：图形安装的**桌面**快捷方式由完成页创建，晚于 POSTINSTALL，
-; 因此这一钩子只能改开始菜单；桌面那枚仍是 `Gosslan.lnk`（静默/被动安装能改到）。
+; ⚠️ 已知边界：图形安装的**桌面**快捷方式由完成页创建，晚于 POSTINSTALL。
+; 因此：
+;   - 完成页新建的那一枚仍是 `Gosslan.lnk`（静默/被动安装同样在建，但能改到）；
+;   - 若桌面原来就有一份自己的快捷方式（本钩子会改名并重建为本地化名），完成页再建
+;     一份 `Gosslan.lnk` 就会出现**两份**（5.16.95 实测回归）。所以下面在“确实改到了
+;     桌面那一份”时把 `$NoShortcutMode` 置 1，让完成页的 `CreateOrUpdateDesktopShortcut`
+;     直接返回，不再新建。没有旧快捷方式的全新安装不受影响（用户仍可在完成页勾选创建）。
+;
+; 已经装出两份的机器由应用首次启动时做一次性对账（`src-tauri/src/win_shortcut.rs`：
+; 仅当两份目标都等于当前 exe 时删旧名那份）。
 ;
 ; 桌面快捷方式只在「原来就有一份且是自己的」时才重建 —— 用户没勾选桌面快捷方式
 ; （或更新模式没建过）时，不允许这里凭空多出一个。
@@ -80,6 +88,13 @@
   WriteRegStr SHCTX "${UNINSTKEY}" "DisplayName" "$R9"
   !insertmacro Gosslan_RelocalizeShortcuts "$SMPROGRAMS"
   !insertmacro Gosslan_RelocalizeShortcuts "$DESKTOP"
+  ; 桌面那一份确实被本钩子改名/重建过（$R7 = 1）⇒ 完成页不要再建 `Gosslan.lnk`，
+  ; 否则桌面上会同时存在旧名与新名两份（5.16.95 实测）。
+  ; `$NoShortcutMode` 是官方 installer.nsi 里的变量，只影响完成页的桌面快捷方式；
+  ; 若上游改名，这里会在编译期报“变量未声明”，不会静默失效。
+  ${If} $R7 == 1
+    StrCpy $NoShortcutMode 1
+  ${EndIf}
 !macroend
 
 !macro NSIS_HOOK_PREUNINSTALL
