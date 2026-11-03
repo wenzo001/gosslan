@@ -335,7 +335,7 @@ class Cdp {
     });
     return new Cdp(ws);
   }
-  send(method, params = {}, awaitReply = true) {
+  send(method, params = {}, awaitReply = true, timeoutMs = CDP_CALL_MS) {
     const id = ++this.seq;
     this.ws.send(JSON.stringify({ id, method, params }));
     if (!awaitReply) return Promise.resolve(null);
@@ -352,14 +352,42 @@ class Cdp {
       //   只能用 `--only=` 逐段复跑去二分（2026-10-20 归因那次跑了四趟才圈到 overlay，
       //   而且四段里还有一段是"单独跑绿、连着跑红"，二分本身给了假结论）。
       //   现在这三样都直接印出来：死在前一格是谁、还挂着几条没到账、事件流最后发生了什么。
-      rejectCall(new Error(`CDP 调用「${method}」在 ${CDP_CALL_MS} ms 内没回包`
+      rejectCall(new Error(`CDP 调用「${method}」在 ${timeoutMs} ms 内没回包`
         + "（renderer 主线程很可能已经不响应）⇒ 响亮失败，这一格记没跑，不是产品红"
         + "；预算见 GOSSLAN_CDP_CALL_MS"
         + `；死在前一格 = ${lastCellMark}`
         + `；仍未到账的调用 ${this.waiters.size} 条`
         + `；事件尾巴 ${JSON.stringify(this.eventTail.slice(-6))}`));
-    }, CDP_CALL_MS);
+    }, timeoutMs);
     return p.finally(() => clearTimeout(guard));
+  }
+  /**
+   * 段间导航后的**活体探针**（2026-11-03 工具层修复）：`Page.navigate` 之后页面要经历
+   * vite 现编译 + 应用 boot + 路由落位，这段窗口里发出去的正式 eval 会跟导航竞态 ——
+   * 全量跑里死的位置每次不同（第 102 / 139 格都出现过）、单段复跑又全绿，正是这个形状。
+   * 修法是把竞态窗口收进**可重试的短预算探针**：先用 5s 预算问 `document.readyState`，
+   * 问到了 complete 才把主线程交给正式判据；探针超时只换下一轮，不记任何格子的红。
+   * ⚠️ 不降低判据：探针 12 轮（≈72s）仍不活 ⇒ 直接返回，让正式调用按原 45s 预算响亮失败 ——
+   * 真 hang 与竞态在这里分家，谁也不替谁背锅。
+   */
+  async settled() {
+    // 把页面从 frozen/hidden 的后台生命周期里拉回 active（headless=new 在 macOS 上
+    // 宿主切走激活后整页会进后台 ⇒ rAF 停发）。只改探针环境，不改判据。
+    await this.send("Page.setWebLifecycleState", { state: "active" }).catch(() => {});
+    for (let i = 0; i < 12; i += 1) {
+      try {
+        const st = await this.send(
+          "Runtime.evaluate",
+          { expression: "document.readyState", returnByValue: true },
+          true,
+          5_000,
+        );
+        if (st && st.result && st.result.value === "complete") return;
+      } catch {
+        // 探针超时/报错 = 还在导航或编译窗口里 ⇒ 换下一轮，不当产品红
+      }
+      await sleep(1_000);
+    }
   }
   async eval(expression) {
     const r = await this.send("Runtime.evaluate", {
@@ -2542,6 +2570,7 @@ async function waitForVite(child, timeoutMs = 90_000) {
 async function runAccent(cdp, url) {
   await cdp.send("Page.bringToFront").catch(() => {});
   await cdp.send("Page.navigate", { url });
+  await cdp.settled(); // 段间导航竞态收进活体探针（工具层，不动判据）
   await sleep(3_000);
   const SEED = "#d43d43";
   const read = await cdp.eval(
@@ -2753,6 +2782,7 @@ async function runAccent(cdp, url) {
 
 async function runConvBadge(cdp, url) {
   await cdp.send("Page.navigate", { url });
+  await cdp.settled(); // 段间导航竞态收进活体探针（工具层，不动判据）
   await sleep(3_000);
   await cdp.eval(PAGE_FIXTURE);
   const GROUP = {
@@ -2876,6 +2906,7 @@ async function runCrashNotice(cdp, url) {
     width: 1200, height: 800, deviceScaleFactor: 1, mobile: false,
   });
   await cdp.send("Page.navigate", { url });
+  await cdp.settled(); // 段间导航竞态收进活体探针（工具层，不动判据）
   await sleep(3_000);
   await cdp.eval(PAGE_FIXTURE);
   const report = {
@@ -2934,6 +2965,7 @@ async function runHangNotice(cdp, url) {
     width: 1200, height: 800, deviceScaleFactor: 1, mobile: false,
   });
   await cdp.send("Page.navigate", { url });
+  await cdp.settled(); // 段间导航竞态收进活体探针（工具层，不动判据）
   await sleep(3_000);
   await cdp.eval(PAGE_FIXTURE);
   const p1 = JSON.stringify(JSON.stringify({ label: "send_message", seconds: 12, escalated: false, mobile: false }));
@@ -2998,7 +3030,7 @@ async function main() {
   const vite = spawn(process.execPath, [viteBin, "dev", "--port", String(VITE_PORT), "--strictPort"],
     { cwd: ROOT, stdio: ["ignore", "pipe", "pipe"] });
   const profile = fs.mkdtempSync(path.join(os.tmpdir(), "gosslan-probe-"));
-  const chromeProc = (() => {
+  const launchChrome = () => {
     /**
      * 宿主环境的 Chromium sandbox 初始化失败（实测本机 2026-10-21）：
      * `Failed to initialize sandbox: Operation not permitted` → GPU 进程 exit_code=6 →
@@ -3026,18 +3058,28 @@ async function main() {
       ...(noSandbox ? ["--no-sandbox"] : []),
       `--remote-debugging-port=${CDP_PORT}`, `--user-data-dir=${profile}`,
       "--no-first-run", "--no-default-browser-check", "--disable-gpu", "about:blank",
+      // 反后台化四件（2026-11-03 工具层修复）：headless=new 在 macOS 上是真窗口，宿主切换
+      // 激活后第 3 次加载起整页 vis=hidden ⇒ rAF 停发 ⇒ 所有 await rAF 的判据 45s 假红
+      // （实测：单段跑全绿、作第二段必红、死点随段内 rAF 位置漂移）。这四个旗标让渲染层
+      // 不因窗口遮挡/失焦进后台，只改探针环境、不改任何判据阈值。
+      "--disable-background-timer-throttling", "--disable-backgrounding-occluded-windows",
+      "--disable-renderer-backgrounding", "--disable-features=CalculateNativeWinOcclusion",
     ], { stdio: "ignore" });
     return p;
-  })();
+  };
+  let chromeProc = launchChrome();
   /** 进程结局要留痕：「并入已存在实例」那种起不来，唯一现场证据就是它当场退掉。 */
-  const procState = { exited: null, pid: chromeProc.pid };
+  let procState = { exited: null, pid: chromeProc.pid };
   chromeProc.on("exit", (code, signal) => { procState.exited = { code, signal }; });
   let exitCode = 0;
+  // 段隔离命中名单（try 内填、finally 内印）⇒ 声明必须在 try 外。
+  const TOOL_RACES = [];
   try {
     const url = await waitForVite(vite);
     console.log(`· dev server：${url}`);
     const cdpBudgetMs = Number(process.env.GOSSLAN_PROBE_CDP_WAIT_MS || 20_000);
     let wsUrl = null;
+    let currentTargetId = null;
     let lastErr = "还没试过";
     const deadline = Date.now() + cdpBudgetMs;
     while (Date.now() < deadline && !wsUrl) {
@@ -3046,7 +3088,9 @@ async function main() {
       try {
         const r = await fetch(`http://127.0.0.1:${CDP_PORT}/json/list`);
         const list = await r.json();
-        wsUrl = (list.find((t) => t.type === "page") || {}).webSocketDebuggerUrl ?? null;
+        const pageEntry = list.find((t) => t.type === "page") || {};
+        wsUrl = pageEntry.webSocketDebuggerUrl ?? null;
+        if (wsUrl) currentTargetId = pageEntry.id ?? null;
         if (!wsUrl) lastErr = "/json/list 有响应，但里面没有 type=page 的 target";
       } catch (e) {
         lastErr = `取 /json/list 失败：${e && e.message || e}`;
@@ -3065,10 +3109,12 @@ async function main() {
       .then((r) => r.json()).catch(() => null);
     console.log(`· 引擎：${ver?.Browser ?? "问不出（/json/version 没答）"}`
       + `｜协议：${ver?.["Protocol-Version"] ?? "?"}｜来源：${BROWSER_SOURCE}`);
-    const cdp = await Cdp.connect(wsUrl);
+    let cdp = await Cdp.connect(wsUrl);
+    cdp.targetId = currentTargetId;
     await cdp.send("Runtime.enable");
     await cdp.send("Page.enable");
     await cdp.send("Page.navigate", { url });
+    await cdp.settled(); // 段间导航竞态收进活体探针（工具层，不动判据）
     // 冷启动要等 vite 现编译依赖，实测 20~30s（等短了会把"还没起来"读成"组件坏了"）
     await sleep(4_000);
     for (let i = 0; i < 40; i += 1) {
@@ -3156,78 +3202,198 @@ async function main() {
     const crashnotice = want("crashnotice");
     const hangnotice = want("hangnotice");
     const historyerr = want("historyerr");
-    if (emoji) await runEmoji(cdp, url);
-    if (search) await runSearch(cdp, url);
-    if (ctxmenu) await runCtxMenu(cdp, url);
-    if (todopick) await runTodoPick(cdp, url);
-    if (sw) await runSwitch(cdp, url);
-    if (seg) await runSegmented(cdp, url);
-    if (slider) await runSlider(cdp, url);
-    if (files) await runGroupFiles(cdp, url);
-    if (share) await runShareDirectory(cdp, url);
-    if (lightbox) await runLightbox(cdp, url);
-    if (toast) await runToast(cdp, url);
-    if (select) await runSelect(cdp, url);
-    if (task) await runTaskCard(cdp, url);
-    if (tasksrt) await runTasksRealtime(cdp, url);
-    if (accent) await runAccent(cdp, url);
-    if (convbadge) await runConvBadge(cdp, url);
-    if (caption) await runCaption(cdp, url);
+    /**
+     * 工具层段隔离 + 整段重试（2026-11-03）：段内一次 CDP 等待竞态抛错时，**不许连坐**后面所有段
+     * （实测形状：第 102/139 格一次竞态 ⇒ 整趟只出半程证据，剩下几十格"没跑"长得像全绿）。
+     * 第一次抛错 ⇒ 回滚本段已记的半程结果（不留半段绿）、重载页面、整段重试一次；
+     * 重试里的每一条红都是**真红**（断言一字未动）；重试仍抛 ⇒ 记一条「产品回归候选」红再继续后续段。
+     * 命中名单收尾打印：首抛 + 重试全绿 = 工具竞态，不计产品红。
+     */
+    /**
+     * 每段开一扇**新 tab**（2026-11-03 工具层修复）：headless=new 在 macOS 上跑超过约一分钟
+     * （或第三次加载）后，非前台的页面会 vis=hidden ⇒ rAF 停发 ⇒ 段内所有
+     * `await requestAnimationFrame` 的判据 45s 假红（实测：单段全绿、作第二段必红、
+     * 反后台化旗标与 setWebLifecycleState 都救不回来）。新创建的 target 天然是前台 tab
+     * ⇒ 每段都从"可见"开始；旧 tab 随即关闭，不累积。只换探针的页面载体，断言与阈值一字未动。
+     */
+    /**
+     * 浏览器进程级卡死的兜底（2026-11-03）：overlay 段实测到过一种比段竞态更深的形状 ——
+     * 连浏览器进程都不回 `Target.createTarget`（整棵 ws 树静默）。这种时候后续段全都
+     * "没跑"，正是旧版整趟abort的同形伤害。重启浏览器+重连，把伤害圈在出事那一段。
+     * 只重启探针载体：vite dev server 不动、已记的格子不动、断言不动。
+     */
+    async function restartBrowser() {
+      console.log("  · 浏览器进程冻死 ⇒ 工具层重启浏览器并重连（已记格子不回滚）");
+      try { chromeProc.kill("SIGKILL"); } catch { /* 已经死了就算了 */ }
+      await sleep(1_000);
+      chromeProc = launchChrome();
+      procState = { exited: null, pid: chromeProc.pid };
+      chromeProc.on("exit", (code, signal) => { procState.exited = { code, signal }; });
+      let wsUrl = null;
+      let tid = null;
+      const deadline = Date.now() + 30_000;
+      while (Date.now() < deadline && !wsUrl) {
+        await sleep(250);
+        try {
+          const list = await (await fetch(`http://127.0.0.1:${CDP_PORT}/json/list`)).json();
+          const e = list.find((t) => t.type === "page") || {};
+          wsUrl = e.webSocketDebuggerUrl ?? null;
+          tid = e.id ?? null;
+        } catch { /* 下一轮 */ }
+      }
+      if (!wsUrl) throw new Error("浏览器重启后 30s 内 CDP 没回 page target");
+      cdp = await Cdp.connect(wsUrl);
+      cdp.targetId = tid;
+      await cdp.send("Runtime.enable");
+      await cdp.send("Page.enable");
+    }
+    async function freshTab() {
+      const created = await cdp.send("Target.createTarget", { url: "about:blank" });
+      const oldId = cdp.targetId;
+      const oldCdp = cdp;
+      let ws2 = null;
+      for (let i = 0; i < 40 && !ws2; i += 1) {
+        await sleep(250);
+        try {
+          const list = await (await fetch(`http://127.0.0.1:${CDP_PORT}/json/list`)).json();
+          const e = list.find((t) => t.id === created.targetId);
+          ws2 = e ? e.webSocketDebuggerUrl : null;
+        } catch { /* 下一轮 */ }
+      }
+      if (!ws2) throw new Error("新 tab 建了但 /json/list 里拿不到它的调试地址");
+      cdp = await Cdp.connect(ws2);
+      cdp.targetId = created.targetId;
+      await cdp.send("Runtime.enable");
+      await cdp.send("Page.enable");
+      try { oldCdp.ws.close(); } catch { /* 旧连接关掉即可，关不掉也不影响新 tab */ }
+      await cdp.send("Target.closeTarget", { targetId: oldId }).catch(() => {});
+    }
+    const runSegment = async (name, on, fn) => {
+      if (!on) return;
+      try {
+        await freshTab();
+      } catch (e0) {
+        try {
+          await restartBrowser();
+          await freshTab();
+        } catch (e1) {
+          check(`段 ${name} 开新 tab（工具层；含一次浏览器重启）`, false, "新 tab 可用",
+            `${String((e0 && e0.message) || e0).slice(0, 120)} | 重启后：${String((e1 && e1.message) || e1).slice(0, 120)}`);
+          return;
+        }
+      }
+      const snapLen = results.length;
+      const snapCounts = { ...STATE_COUNTS };
+      try {
+        await fn();
+        return;
+      } catch (e1) {
+        const m1 = String((e1 && e1.message) || e1).slice(0, 200);
+        results.length = snapLen;
+        for (const k of Object.keys(STATE_COUNTS)) STATE_COUNTS[k] = snapCounts[k];
+        lastCellMark = `段 ${name} 首抛（已回滚到段前）`;
+        console.log(`  · 段 ${name} 第一次抛错（工具竞态候选）：${m1} —— 回滚本段半程结果，重载页面整段重试一次`);
+      }
+      try {
+        await freshTab();
+      } catch {
+        try { await restartBrowser(); } catch { /* 留给重试自己再抛一次记红 */ }
+      }
+      try {
+        await cdp.send("Page.navigate", { url });
+        await cdp.settled();
+        await cdp.eval(PAGE_FIXTURE);
+      } catch { /* 重载失败也由重试自己再抛一次记红，不静默 */ }
+      try {
+        // 一次性诊断（2026-11-03 竞态归因）：重试前先问 rAF 还发不发、页面可见/焦点状态，
+        // 把"工具竞态"与"渲染层真 hang"在现场分家。
+        try {
+          const diag = await cdp.eval("(async () => { const t0 = performance.now();"
+            + " const raf = await new Promise((r) => { requestAnimationFrame(() => r('raf@' + Math.round(performance.now() - t0) + 'ms'));"
+            + " setTimeout(() => r('noraf-in-3s'), 3000); });"
+            + " return JSON.stringify({ raf, vis: document.visibilityState, hidden: document.hidden, focus: document.hasFocus() }); })()");
+          console.log(`  · 段 ${name} 重试前活体诊断：${diag}`);
+        } catch (ed) { console.log(`  · 段 ${name} 重试前活体诊断自身超时：${String(ed && ed.message || ed).slice(0, 120)}`); }
+        await fn();
+        TOOL_RACES.push(name);
+        console.log(`  · 段 ${name} 重试完成 ⇒ 第一次抛错按工具层竞态记账（不计产品红）`);
+      } catch (e2) {
+        check(`段 ${name} 重试后仍抛错（产品回归候选；后续段不被连坐）`, false, "重试后段内无抛错",
+          String((e2 && e2.message) || e2).slice(0, 400));
+      }
+    };
+    await runSegment("emoji", emoji, () => runEmoji(cdp, url));
+    await runSegment("search", search, () => runSearch(cdp, url));
+    await runSegment("ctxmenu", ctxmenu, () => runCtxMenu(cdp, url));
+    await runSegment("todopick", todopick, () => runTodoPick(cdp, url));
+    await runSegment("sw", sw, () => runSwitch(cdp, url));
+    await runSegment("seg", seg, () => runSegmented(cdp, url));
+    await runSegment("slider", slider, () => runSlider(cdp, url));
+    await runSegment("files", files, () => runGroupFiles(cdp, url));
+    await runSegment("share", share, () => runShareDirectory(cdp, url));
+    await runSegment("lightbox", lightbox, () => runLightbox(cdp, url));
+    await runSegment("toast", toast, () => runToast(cdp, url));
+    await runSegment("select", select, () => runSelect(cdp, url));
+    await runSegment("task", task, () => runTaskCard(cdp, url));
+    await runSegment("tasksrt", tasksrt, () => runTasksRealtime(cdp, url));
+    await runSegment("accent", accent, () => runAccent(cdp, url));
+    await runSegment("convbadge", convbadge, () => runConvBadge(cdp, url));
+    await runSegment("caption", caption, () => runCaption(cdp, url));
     if (want("imecommit")) await runImeCommit(cdp, url);
-    if (reaction) await runReaction(cdp, url);
-    if (roster) await runReactionRoster(cdp, url);
-    if (overlay) await runOverlay(cdp, url);
-    if (imgskel) await runImageSkeleton(cdp, url);
-    if (imgload) await runImageLoad(cdp, url);
+    await runSegment("reaction", reaction, () => runReaction(cdp, url));
+    await runSegment("roster", roster, () => runReactionRoster(cdp, url));
+    await runSegment("overlay", overlay, () => runOverlay(cdp, url));
+    await runSegment("imgskel", imgskel, () => runImageSkeleton(cdp, url));
+    await runSegment("imgload", imgload, () => runImageLoad(cdp, url));
     if (want("imgretry")) await runImageRetryPace(cdp, url);
     if (want("mergeheight")) await runMergeCardHeight(cdp, url);
-    if (pinkb) await runPinKeyboard(cdp, url);
-    if (scrollrestore) await runScrollRestore(cdp, url);
-    if (scrollshake) await runScrollShake(cdp, url);
-    if (scrollhist) await runScrollHist(cdp, url);
-    if (scrollswitch) await runScrollSwitch(cdp, url);
-    if (scrollinput) await runScrollInput(cdp, url);
-    if (todosync) await runTodoSync(cdp, url);
-    if (tododelete) await runTodoDelete(cdp, url);
-    if (taskpaste) await runTaskPaste(cdp, url);
-    if (modaltitle) await runModalTitle(cdp, url);
-    if (inputpanel) await runInputPanels(cdp, url);
-    if (winsafe) await runWindowSafe(cdp, url);
-    if (logs) await runLogs(cdp, url);
-    if (vlist) await runVirtualList(cdp, url);
-    if (favorites) await runFavorites(cdp, url);
-    if (namecap) await runNameCap(cdp, url);
-    if (friendfilter) await runFriendFilter(cdp, url);
-    if (forwardfilter) await runForwardFilter(cdp, url);
-    if (contactfilter) await runContactFilter(cdp, url);
-    if (navicon) await runNavIcon(cdp, url);
-    if (menufit) await runMenuFit(cdp, url);
-    if (diag) await runDiag(cdp, url);
-    if (updater) await runUpdater(cdp, url);
-    if (avatar) await runAvatar(cdp, url);
-    if (links) await runLinks(cdp, url);
-    if (fontsel) await runFontSelect(cdp, url);
-    if (layoutstore) await runLayoutStore(cdp, url);
-    if (settingsmobile) await runSettingsMobile(cdp, url);
-    if (netcard) await runNetCard(cdp, url);
-    if (composermobile) await runComposerMobile(cdp, url);
-    if (tasksmobile) await runTasksMobile(cdp, url);
-    if (opscenter) await runOpsCenter(cdp, url);
-    if (chatheader) await runChatHeader(cdp, url);
-    if (scrollreact) await runScrollReact(cdp, url);
-    if (resend) await runResend(cdp, url);
-    if (delivery) await runDelivery(cdp, url);
-    if (locale) await runLocale(cdp, url);
-    if (rowpair) await runRowPair(cdp, url);
-    if (msgovf) await runMsgOverflow(cdp, url);
-    if (ctxguard) await runContextGuard(cdp, url);
-    if (pasteframe) await runPasteFrame(cdp, url);
-    if (errtext) await runErrorText(cdp, url);
-    if (touchroster) await runTouchRoster(cdp, url);
-    if (crashnotice) await runCrashNotice(cdp, url);
-    if (hangnotice) await runHangNotice(cdp, url);
-    if (hangnotice) await runHangNotice(cdp, url);
-    if (historyerr) await runHistoryError(cdp, url);
+    await runSegment("pinkb", pinkb, () => runPinKeyboard(cdp, url));
+    await runSegment("scrollrestore", scrollrestore, () => runScrollRestore(cdp, url));
+    await runSegment("scrollshake", scrollshake, () => runScrollShake(cdp, url));
+    await runSegment("scrollhist", scrollhist, () => runScrollHist(cdp, url));
+    await runSegment("scrollswitch", scrollswitch, () => runScrollSwitch(cdp, url));
+    await runSegment("scrollinput", scrollinput, () => runScrollInput(cdp, url));
+    await runSegment("todosync", todosync, () => runTodoSync(cdp, url));
+    await runSegment("tododelete", tododelete, () => runTodoDelete(cdp, url));
+    await runSegment("taskpaste", taskpaste, () => runTaskPaste(cdp, url));
+    await runSegment("modaltitle", modaltitle, () => runModalTitle(cdp, url));
+    await runSegment("inputpanel", inputpanel, () => runInputPanels(cdp, url));
+    await runSegment("winsafe", winsafe, () => runWindowSafe(cdp, url));
+    await runSegment("logs", logs, () => runLogs(cdp, url));
+    await runSegment("vlist", vlist, () => runVirtualList(cdp, url));
+    await runSegment("favorites", favorites, () => runFavorites(cdp, url));
+    await runSegment("namecap", namecap, () => runNameCap(cdp, url));
+    await runSegment("friendfilter", friendfilter, () => runFriendFilter(cdp, url));
+    await runSegment("forwardfilter", forwardfilter, () => runForwardFilter(cdp, url));
+    await runSegment("contactfilter", contactfilter, () => runContactFilter(cdp, url));
+    await runSegment("navicon", navicon, () => runNavIcon(cdp, url));
+    await runSegment("menufit", menufit, () => runMenuFit(cdp, url));
+    await runSegment("diag", diag, () => runDiag(cdp, url));
+    await runSegment("updater", updater, () => runUpdater(cdp, url));
+    await runSegment("avatar", avatar, () => runAvatar(cdp, url));
+    await runSegment("links", links, () => runLinks(cdp, url));
+    await runSegment("fontsel", fontsel, () => runFontSelect(cdp, url));
+    await runSegment("layoutstore", layoutstore, () => runLayoutStore(cdp, url));
+    await runSegment("settingsmobile", settingsmobile, () => runSettingsMobile(cdp, url));
+    await runSegment("netcard", netcard, () => runNetCard(cdp, url));
+    await runSegment("composermobile", composermobile, () => runComposerMobile(cdp, url));
+    await runSegment("tasksmobile", tasksmobile, () => runTasksMobile(cdp, url));
+    await runSegment("opscenter", opscenter, () => runOpsCenter(cdp, url));
+    await runSegment("chatheader", chatheader, () => runChatHeader(cdp, url));
+    await runSegment("scrollreact", scrollreact, () => runScrollReact(cdp, url));
+    await runSegment("resend", resend, () => runResend(cdp, url));
+    await runSegment("delivery", delivery, () => runDelivery(cdp, url));
+    await runSegment("locale", locale, () => runLocale(cdp, url));
+    await runSegment("rowpair", rowpair, () => runRowPair(cdp, url));
+    await runSegment("msgovf", msgovf, () => runMsgOverflow(cdp, url));
+    await runSegment("ctxguard", ctxguard, () => runContextGuard(cdp, url));
+    await runSegment("pasteframe", pasteframe, () => runPasteFrame(cdp, url));
+    await runSegment("errtext", errtext, () => runErrorText(cdp, url));
+    await runSegment("touchroster", touchroster, () => runTouchRoster(cdp, url));
+    await runSegment("crashnotice", crashnotice, () => runCrashNotice(cdp, url));
+    await runSegment("hangnotice", hangnotice, () => runHangNotice(cdp, url));
+    await runSegment("hangnotice", hangnotice, () => runHangNotice(cdp, url));
+    await runSegment("historyerr", historyerr, () => runHistoryError(cdp, url));
     // 零判据 = 红：`--only` 选空、段内提前返回、段名不匹配都会落在这里。
     // 少了这一条，空数组的 `.every` 为真 ⇒ 屏幕打「✅ 0/0 条判据绿」还退 0（2026-10-27 实测确认）。
     if (results.length === 0) {
@@ -3244,6 +3410,9 @@ async function main() {
     console.log(`  · 状态 PASS ${STATE_COUNTS.PASS} / FAIL ${STATE_COUNTS.FAIL}`
       + ` / UNSUPPORTED ${STATE_COUNTS.UNSUPPORTED} / UNKNOWN ${STATE_COUNTS.UNKNOWN}`
       + "（后两态也算红，只是分开记账）");
+    if (TOOL_RACES.length) {
+      console.log(`  · 工具层竞态隔离命中 ${TOOL_RACES.length} 段：${TOOL_RACES.join(", ")}（首抛、重试全绿 ⇒ 不计产品红）`);
+    }
     console.log(`\n${exitCode === 0 ? "✅" : "✗"} UI 运行时探针：${tally}/${results.length} 条判据绿`
       + (SELF_CHECK ? "（这一段是反面对照：判据**必须**报红）" : ""));
     vite.kill("SIGTERM");
@@ -3293,6 +3462,7 @@ async function main() {
  */
 async function runReaction(cdp, url) {
   await cdp.send("Page.navigate", { url });
+  await cdp.settled(); // 段间导航竞态收进活体探针（工具层，不动判据）
   await sleep(3_000);
   await cdp.eval(PAGE_FIXTURE);
 
@@ -3477,6 +3647,7 @@ async function runPinKeyboard(cdp, url) {
     width: 1200, height: 800, deviceScaleFactor: 1, mobile: false,
   });
   await cdp.send("Page.navigate", { url });
+  await cdp.settled(); // 段间导航竞态收进活体探针（工具层，不动判据）
   await sleep(3_000);
   await cdp.eval(PAGE_FIXTURE);
   // 真 ChatWindow 在 setup 里**无条件**调 `getCurrentWebview().onDragDropEvent(...)`（ChatWindow.vue:1437），
@@ -3764,6 +3935,7 @@ async function runHistoryError(cdp, url) {
     width: 1200, height: 800, deviceScaleFactor: 1, mobile: false,
   });
   await cdp.send("Page.navigate", { url });
+  await cdp.settled(); // 段间导航竞态收进活体探针（工具层，不动判据）
   await sleep(3_000);
   await cdp.eval(PAGE_FIXTURE);
   await cdp.eval(`(() => {
@@ -3886,6 +4058,7 @@ async function runScrollRestore(cdp, url) {
     width: 1200, height: 800, deviceScaleFactor: 1, mobile: false,
   });
   await cdp.send("Page.navigate", { url });
+  await cdp.settled(); // 段间导航竞态收进活体探针（工具层，不动判据）
   await sleep(3_000);
   await cdp.eval(PAGE_FIXTURE);
   // 与 --only=pinb 同一份最小宿主替身：ChatWindow 在 setup 里无条件注册 drag-drop。
@@ -4332,6 +4505,7 @@ async function runScrollShake(cdp, url) {
     width: 1200, height: 800, deviceScaleFactor: 1, mobile: false,
   });
   await cdp.send("Page.navigate", { url });
+  await cdp.settled(); // 段间导航竞态收进活体探针（工具层，不动判据）
   await sleep(3_000);
   await cdp.eval(PAGE_FIXTURE);
   await cdp.eval(`(() => {
@@ -4917,6 +5091,7 @@ async function runScrollHist(cdp, url) {
     width: 1200, height: 800, deviceScaleFactor: 1, mobile: false,
   });
   await cdp.send("Page.navigate", { url });
+  await cdp.settled(); // 段间导航竞态收进活体探针（工具层，不动判据）
   await sleep(3_000);
   await cdp.eval(PAGE_FIXTURE);
   await cdp.eval(`(() => {
@@ -5216,6 +5391,7 @@ async function runScrollSwitch(cdp, url) {
     width: 1200, height: 800, deviceScaleFactor: 1, mobile: false,
   });
   await cdp.send("Page.navigate", { url });
+  await cdp.settled(); // 段间导航竞态收进活体探针（工具层，不动判据）
   await sleep(3_000);
   await cdp.eval(PAGE_FIXTURE);
   await cdp.eval(`(() => {
@@ -5493,6 +5669,7 @@ async function runScrollInput(cdp, url) {
     width: 1200, height: 800, deviceScaleFactor: 1, mobile: false,
   });
   await cdp.send("Page.navigate", { url });
+  await cdp.settled(); // 段间导航竞态收进活体探针（工具层，不动判据）
   await sleep(3_000);
   await cdp.eval(PAGE_FIXTURE);
   await cdp.eval(`(() => {
@@ -5742,6 +5919,7 @@ async function runTodoSync(cdp, url) {
     width: 1200, height: 800, deviceScaleFactor: 1, mobile: false,
   });
   await cdp.send("Page.navigate", { url });
+  await cdp.settled(); // 段间导航竞态收进活体探针（工具层，不动判据）
   await sleep(3_000);
   await cdp.eval(PAGE_FIXTURE);
   await cdp.eval(`(() => {
@@ -5921,6 +6099,7 @@ async function runTodoDelete(cdp, url) {
     width: 1200, height: 800, deviceScaleFactor: 1, mobile: false,
   });
   await cdp.send("Page.navigate", { url });
+  await cdp.settled(); // 段间导航竞态收进活体探针（工具层，不动判据）
   await sleep(3_000);
   await cdp.eval(PAGE_FIXTURE);
   await cdp.eval(`(() => {
@@ -6064,6 +6243,7 @@ async function runTaskPaste(cdp, url) {
     width: 1200, height: 800, deviceScaleFactor: 1, mobile: false,
   });
   await cdp.send("Page.navigate", { url });
+  await cdp.settled(); // 段间导航竞态收进活体探针（工具层，不动判据）
   await sleep(3_000);
   await cdp.eval(PAGE_FIXTURE);
   await cdp.eval(`(() => {
@@ -6224,6 +6404,7 @@ async function runModalTitle(cdp, url) {
     width: 900, height: 700, deviceScaleFactor: 1, mobile: false,
   });
   await cdp.send("Page.navigate", { url });
+  await cdp.settled(); // 段间导航竞态收进活体探针（工具层，不动判据）
   await sleep(3_000);
   await cdp.eval(PAGE_FIXTURE);
   const longTitle = "R1 " + "1".repeat(300);
@@ -6298,6 +6479,7 @@ async function runModalTitle(cdp, url) {
  */
 async function runWindowSafe(cdp, url) {
   await cdp.send("Page.navigate", { url });
+  await cdp.settled(); // 段间导航竞态收进活体探针（工具层，不动判据）
   await sleep(3_000);
   await cdp.eval(PAGE_FIXTURE);
   await cdp.eval("window.__probe.install('/src/components/TitleBar.vue', '', '')");
@@ -6456,6 +6638,7 @@ async function runWindowSafe(cdp, url) {
 
 async function runImageSkeleton(cdp, url) {
   await cdp.send("Page.navigate", { url });
+  await cdp.settled(); // 段间导航竞态收进活体探针（工具层，不动判据）
   await sleep(3_000);
   await cdp.eval(PAGE_FIXTURE);
 
@@ -6531,6 +6714,7 @@ async function runImageSkeleton(cdp, url) {
  */
 async function runImageRetryPace(cdp, url) {
   await cdp.send("Page.navigate", { url });
+  await cdp.settled(); // 段间导航竞态收进活体探针（工具层，不动判据）
   await sleep(3_000);
   // 假时钟必须先于组件模块落地：组件里的 `setTimeout(...)` 是**调用时**查全局的，
   // 所以换掉 window 上那一份就够了，不用动组件一行。
@@ -6647,6 +6831,7 @@ async function runMergeCardHeight(cdp, url) {
   const expect = m ? Number(m[1]) : -1;
 
   await cdp.send("Page.navigate", { url });
+  await cdp.settled(); // 段间导航竞态收进活体探针（工具层，不动判据）
   await sleep(3_000);
   await cdp.eval(PAGE_FIXTURE);
 
@@ -6704,6 +6889,7 @@ async function runMergeCardHeight(cdp, url) {
  */
 async function runImageLoad(cdp, url) {
   await cdp.send("Page.navigate", { url });
+  await cdp.settled(); // 段间导航竞态收进活体探针（工具层，不动判据）
   await sleep(3_000);
   await cdp.eval(PAGE_FIXTURE);
   // 2×2 不透明 PNG，data URL 不依赖任何网络/dev server 路由
@@ -6799,6 +6985,7 @@ async function rosterChecks(cdp, url) {
   }];
   const mount = async (sender, mineSide, chips, group = true) => {
     await cdp.send("Page.navigate", { url });
+    await cdp.settled(); // 段间导航竞态收进活体探针（工具层，不动判据）
     await sleep(3_000);
     await cdp.eval(PAGE_FIXTURE);
     const props = {
@@ -7214,6 +7401,7 @@ async function rosterChecks(cdp, url) {
  */
 async function runCaption(cdp, url) {
   await cdp.send("Page.navigate", { url });
+  await cdp.settled(); // 段间导航竞态收进活体探针（工具层，不动判据）
   await sleep(3_000);
   await cdp.eval(PAGE_FIXTURE);
   // 先借 install 把"页面自己在用的那份 vue/pinia"接进 __probe（composeStack 依赖它们）
@@ -7295,6 +7483,7 @@ async function runCaption(cdp, url) {
  */
 async function runImeCommit(cdp, url) {
   await cdp.send("Page.navigate", { url });
+  await cdp.settled(); // 段间导航竞态收进活体探针（工具层，不动判据）
   await sleep(3_000);
   await cdp.eval(PAGE_FIXTURE);
   await cdp.eval("window.__probe.install('/src/components/ui/PrimaryBtn.vue', '', '')");
@@ -7546,6 +7735,7 @@ async function runOverlay(cdp, url) {
     await cdp.send("Page.bringToFront").catch(() => {});
     await cdp.send("Emulation.setFocusEmulationEnabled", { enabled: true }).catch(() => {});
     await cdp.send("Page.navigate", { url });
+    await cdp.settled(); // 段间导航竞态收进活体探针（工具层，不动判据）
     await sleep(3_000);
     await cdp.eval(PAGE_FIXTURE);
     const mounted = await cdp.eval(
@@ -7795,6 +7985,7 @@ async function runOverlay(cdp, url) {
     return true;
   })()`;
   await cdp.send("Page.navigate", { url });
+  await cdp.settled(); // 段间导航竞态收进活体探针（工具层，不动判据）
   await sleep(3_000);
   await cdp.eval(PAGE_FIXTURE);
   await cdp.eval("window.__probe.install('/src/components/TitleBar.vue', '', '')");
@@ -7974,6 +8165,7 @@ async function runOverlay(cdp, url) {
 /** 表情面板那一段：键盘出口（N1）+ 反向对照（不带 text 的 Enter 必须零次激活）。 */
 async function runEmoji(cdp, url) {
   await cdp.send("Page.navigate", { url });
+  await cdp.settled(); // 段间导航竞态收进活体探针（工具层，不动判据）
   await sleep(3_000);
   await cdp.eval(PAGE_FIXTURE);
   // ★ 先往本机账里种 8 条常用，**再**装组件（`usage` 是在 setup 里读的，装完再写就晚了）。
@@ -8118,6 +8310,7 @@ async function runEmoji(cdp, url) {
   // 装完再清账不会让已经挂起来的那块面板变回去；而在同一页里再装一次会留下第二个面板，
   // `buttons()` 会把两块的格子混着数（探针纪律 3：段与段之间不共享浮层状态）。
   await cdp.send("Page.navigate", { url });
+  await cdp.settled(); // 段间导航竞态收进活体探针（工具层，不动判据）
   await sleep(3_000);
   await cdp.eval(PAGE_FIXTURE);
   await cdp.eval("localStorage.removeItem('gosslan.emojiUsage.v1')");
@@ -8168,6 +8361,7 @@ async function runEmoji(cdp, url) {
  */
 async function runLocale(cdp, url) {
   await cdp.send("Page.navigate", { url });
+  await cdp.settled(); // 段间导航竞态收进活体探针（工具层，不动判据）
   await sleep(3_000);
   await cdp.eval(PAGE_FIXTURE);
 
@@ -8252,6 +8446,7 @@ async function runRowPair(cdp, url) {
    *  `kind` 换气泡种类（text / code / file / merge / todo），`content` 给该种类要的载荷。 */
   const mount = async (gapMs, isGroup, kind = "text", content = null, senderId = "peer-a") => {
     await cdp.send("Page.navigate", { url });
+    await cdp.settled(); // 段间导航竞态收进活体探针（工具层，不动判据）
     await sleep(3_000);
     await cdp.eval(PAGE_FIXTURE);
     const bodyByKind = {
@@ -9216,6 +9411,7 @@ const setAppearance = (cdp, dark) => cdp.eval(`(async () => {
 
 async function runMsgOverflow(cdp, url) {
   await cdp.send("Page.navigate", { url });
+  await cdp.settled(); // 段间导航竞态收进活体探针（工具层，不动判据）
   await sleep(2_500);
   await cdp.eval(PAGE_FIXTURE);
   const LONG = "很长的一段中文用来把气泡撑到上限并且一不留神就溢出出去".repeat(6);
@@ -9690,6 +9886,7 @@ async function runPasteFrame(cdp, url) {
   const LINES = 300;
   const text = Array.from({ length: LINES }, (_, i) => "第" + i + "行 混排文本 English 与标点。").join("\n");
   await cdp.send("Page.navigate", { url });
+  await cdp.settled(); // 段间导航竞态收进活体探针（工具层，不动判据）
   await sleep(3_000);
   await cdp.eval(PAGE_FIXTURE);
   const props = { convId: "c-paste-frame", mentionMembers: [{ id: "dev-42", name: "小明" }] };
@@ -9793,6 +9990,7 @@ async function runTouchRoster(cdp, url) {  // 触摸仿真必须在**页面加�
   try {
     await cdp.send("Page.bringToFront").catch(() => {});
     await cdp.send("Page.navigate", { url });
+    await cdp.settled(); // 段间导航竞态收进活体探针（工具层，不动判据）
     await sleep(3_000);
     await cdp.eval(PAGE_FIXTURE);
     const props = {
@@ -9898,6 +10096,7 @@ async function runTouchRoster(cdp, url) {  // 触摸仿真必须在**页面加�
 async function runVirtualList(cdp, url) {
   await cdp.send("Page.bringToFront").catch(() => {});
   await cdp.send("Page.navigate", { url });
+  await cdp.settled(); // 段间导航竞态收进活体探针（工具层，不动判据）
   await sleep(3_000);
   await cdp.eval(PAGE_FIXTURE);
   const mounted = await cdp.eval("window.__probe.vlistMount(200)");
@@ -10022,6 +10221,7 @@ async function runVirtualList(cdp, url) {
 async function runLogs(cdp, url) {
   await cdp.send("Page.bringToFront").catch(() => {});
   await cdp.send("Page.navigate", { url });
+  await cdp.settled(); // 段间导航竞态收进活体探针（工具层，不动判据）
   await sleep(3_000);
   await cdp.eval(PAGE_FIXTURE);
   const LOGS = Array.from({ length: 200 }, (_, i) => ({
@@ -10164,6 +10364,7 @@ async function runLogs(cdp, url) {
   });
   try {
     await cdp.send("Page.navigate", { url });
+    await cdp.settled(); // 段间导航竞态收进活体探针（工具层，不动判据）
     await sleep(2_000);
     await cdp.eval(PAGE_FIXTURE);
     await cdp.eval(`window.__probe.stubApi('getLogs', ${JSON.stringify(LOGS)})`);
@@ -10238,6 +10439,7 @@ async function runErrorText(cdp, url) {
   const mountFail = async (pref) => {
     await cdp.send("Page.bringToFront").catch(() => {});
     await cdp.send("Page.navigate", { url });
+    await cdp.settled(); // 段间导航竞态收进活体探针（工具层，不动判据）
     await sleep(2_600);
     await cdp.eval(PAGE_FIXTURE);
     const lang = await cdp.eval("(async () => { var m = await import('/src/i18n/index.ts');"
@@ -10289,6 +10491,7 @@ async function runSearch(cdp, url) {
   // 全量顺序跑时实测「emoji 段之后 search 段红、单跑绿」就是这一条。先提到前台。
   await cdp.send("Page.bringToFront").catch(() => {});
   await cdp.send("Page.navigate", { url });
+  await cdp.settled(); // 段间导航竞态收进活体探针（工具层，不动判据）
   await sleep(3_000);
   await cdp.eval(PAGE_FIXTURE);
   const GROUP = {
@@ -10504,6 +10707,7 @@ async function runSearch(cdp, url) {
   });
   try {
     await cdp.send("Page.navigate", { url });
+    await cdp.settled(); // 段间导航竞态收进活体探针（工具层，不动判据）
     await sleep(2_000);
     await cdp.eval(PAGE_FIXTURE);
     await cdp.eval(`window.__probe.stubApi('searchChatHistory', ${JSON.stringify([GROUP])})`);
@@ -10580,6 +10784,7 @@ async function runSearch(cdp, url) {
  */
 async function runCtxMenu(cdp, url) {
   await cdp.send("Page.navigate", { url });
+  await cdp.settled(); // 段间导航竞态收进活体探针（工具层，不动判据）
   await sleep(3_000);
   await cdp.eval(PAGE_FIXTURE);
   // installMenu 复用的是 install 拿到的页面那份 vue/pinia ⇒ 先普通挂一次引导。
@@ -10896,6 +11101,7 @@ async function runMenuFit(cdp, url) {
   });
   try {
     await cdp.send("Page.navigate", { url });
+    await cdp.settled(); // 段间导航竞态收进活体探针（工具层，不动判据）
     await sleep(2_000);
     await cdp.eval(PAGE_FIXTURE);
     // installMenu 复用页面里那份 vue/pinia ⇒ 先普通挂一次把两者带进来（ctxmenu 段同一写法）。
@@ -10975,6 +11181,7 @@ async function runMenuFit(cdp, url) {
  */
 async function runSwitch(cdp, url) {
   await cdp.send("Page.navigate", { url });
+  await cdp.settled(); // 段间导航竞态收进活体探针（工具层，不动判据）
   await sleep(3_000);
   await cdp.eval(PAGE_FIXTURE);
   const mount = async (props) => {
@@ -11018,6 +11225,7 @@ async function runSwitch(cdp, url) {
  */
 async function runGroupFiles(cdp, url) {
   await cdp.send("Page.navigate", { url });
+  await cdp.settled(); // 段间导航竞态收进活体探针（工具层，不动判据）
   await sleep(3_000);
   await cdp.eval(PAGE_FIXTURE);
   await cdp.eval("window.__probe.groupFilesBus()");
@@ -11237,6 +11445,7 @@ async function runGroupFiles(cdp, url) {
   });
   try {
     await cdp.send("Page.navigate", { url });
+    await cdp.settled(); // 段间导航竞态收进活体探针（工具层，不动判据）
     await sleep(2_000);
     await cdp.eval(PAGE_FIXTURE);
     await cdp.eval("window.__probe.groupFilesBus()");
@@ -11295,6 +11504,7 @@ async function runNameCap(cdp, url) {
     width: 900, height: 700, deviceScaleFactor: 1, mobile: false,
   });
   await cdp.send("Page.navigate", { url });
+  await cdp.settled(); // 段间导航竞态收进活体探针（工具层，不动判据）
   await sleep(3_000);
   await cdp.eval(PAGE_FIXTURE);
   const mounted = await cdp.eval(
@@ -11387,6 +11597,7 @@ async function mirrorLadder(cdp, url, cfg) {
   const { label, path, props, seedBody, mode, inputSel, boxSel } = cfg;
   await cdp.send("Page.bringToFront").catch(() => {});
   await cdp.send("Page.navigate", { url });
+  await cdp.settled(); // 段间导航竞态收进活体探针（工具层，不动判据）
   await sleep(3_000);
   await cdp.eval(PAGE_FIXTURE);
   const mounted = await cdp.eval(
@@ -11520,6 +11731,7 @@ async function runContactFilter(cdp, url) {
 async function runAvatar(cdp, url) {
   const INITIAL = { emoji: "🦊", bg: "#4284b3" };
   await cdp.send("Page.navigate", { url });
+  await cdp.settled(); // 段间导航竞态收进活体探针（工具层，不动判据）
   await sleep(3_000);
   // 导航会把 device metrics 复位：页面起来后再钉一次，并 reload 让 store 的 resize 监听翻到窄档。
   await cdp.send("Emulation.setDeviceMetricsOverride", {
@@ -11808,6 +12020,7 @@ async function runAvatar(cdp, url) {
 
   // ── 资料页布局（桌面 1200 宽）：头像框与右侧字段顶/底对齐；入口文案按用户口径。 ──
   await cdp.send("Page.navigate", { url });
+  await cdp.settled(); // 段间导航竞态收进活体探针（工具层，不动判据）
   await sleep(3_000);
   await cdp.send("Emulation.setDeviceMetricsOverride", {
     width: 1200, height: 800, deviceScaleFactor: 1, mobile: false,
@@ -11859,6 +12072,7 @@ async function runAvatar(cdp, url) {
   // ── 资料页入口 → 选择器 → 既有 updateProfile 的整条链（组件级，不是只看弹窗） ──
   // 重新导航一次：上一段留着开着的弹窗，别在同一个页面里叠第二个浮层。
   await cdp.send("Page.navigate", { url });
+  await cdp.settled(); // 段间导航竞态收进活体探针（工具层，不动判据）
   await sleep(3_000);
   await cdp.send("Emulation.setDeviceMetricsOverride", {
     width: 390, height: 844, deviceScaleFactor: 2, mobile: true,
@@ -11964,6 +12178,7 @@ async function runUpdater(cdp, url) {
   const hasDialog = () => cdp.eval("!!document.querySelector('[role=\"dialog\"]')");
 
   await cdp.send("Page.navigate", { url });
+  await cdp.settled(); // 段间导航竞态收进活体探针（工具层，不动判据）
   await sleep(3_000);
   await cdp.eval(PAGE_FIXTURE);
 
@@ -12101,6 +12316,7 @@ async function runFavorites(cdp, url) {
   ];
   const mount = async (width, height) => {
     await cdp.send("Page.navigate", { url });
+    await cdp.settled(); // 段间导航竞态收进活体探针（工具层，不动判据）
     await sleep(3_000);
     // 同一次进程里先桌后窄：导航会把 device metrics 复位，必须在页面起来后再钉一次，
     // 让 store 的 resize 监听把 isMobile 真正翻到窄档。
@@ -12351,6 +12567,7 @@ async function runDiag(cdp, url) {
   };
   const boot = async () => {
     await cdp.send("Page.navigate", { url });
+    await cdp.settled(); // 段间导航竞态收进活体探针（工具层，不动判据）
     await sleep(3_000);
     await cdp.eval(PAGE_FIXTURE);
     await cdp.eval("window.__probe.diagDeferred()");
@@ -12425,6 +12642,7 @@ async function runLinks(cdp, url) {
   });
   try {
     await cdp.send("Page.navigate", { url });
+    await cdp.settled(); // 段间导航竞态收进活体探针（工具层，不动判据）
     await sleep(3_000);
     await cdp.eval(PAGE_FIXTURE);
     await cdp.eval(`window.__probe.linksStore(${JSON.stringify(links)})`);
@@ -12769,6 +12987,7 @@ async function runLinks(cdp, url) {
  */
 async function runFontSelect(cdp, url) {
   await cdp.send("Page.navigate", { url });
+  await cdp.settled(); // 段间导航竞态收进活体探针（工具层，不动判据）
   await sleep(3_000);
   await cdp.eval(PAGE_FIXTURE);
   await cdp.eval("window.__probe.stubApi('saveSettings', null)");
@@ -12848,6 +13067,7 @@ async function runComposerMobile(cdp, url) {
   });
   try {
     await cdp.send("Page.navigate", { url });
+    await cdp.settled(); // 段间导航竞态收进活体探针（工具层，不动判据）
     await sleep(3_000);
     await cdp.eval(PAGE_FIXTURE);
     await cdp.eval("window.__probe.stubApi('saveSettings', null)");
@@ -12909,6 +13129,7 @@ async function runLayoutStore(cdp, url) {
   });
   try {
     await cdp.send("Page.navigate", { url });
+    await cdp.settled(); // 段间导航竞态收进活体探针（工具层，不动判据）
     await sleep(3_000);
     await cdp.eval(PAGE_FIXTURE);
     await cdp.eval("window.__probe.stubApi('saveSettings', null)");
@@ -12969,6 +13190,7 @@ async function runNetCard(cdp, url) {
   await cdp.send("Emulation.setDeviceMetricsOverride", { width: 900, height: 760, deviceScaleFactor: 1, mobile: false });
   try {
     await cdp.send("Page.navigate", { url });
+    await cdp.settled(); // 段间导航竞态收进活体探针（工具层，不动判据）
     await sleep(3_000);
     await cdp.eval(PAGE_FIXTURE);
     // 挂**真实设置面板**（桌面分支是 max-w-xl 的 BaseModal，所有分区竖着排）——
@@ -13033,6 +13255,7 @@ async function runNetCard(cdp, url) {
       width: 390, height: 844, deviceScaleFactor: 2, mobile: true,
     });
     await cdp.send("Page.navigate", { url });
+    await cdp.settled(); // 段间导航竞态收进活体探针（工具层，不动判据）
     await sleep(3_000);
     await cdp.eval(PAGE_FIXTURE);
     const m2 = await cdp.eval("window.__probe.install('/src/components/SettingsPanel.vue', '', "
@@ -13107,6 +13330,7 @@ async function runSettingsMobile(cdp, url) {
   });
   try {
     await cdp.send("Page.navigate", { url });
+    await cdp.settled(); // 段间导航竞态收进活体探针（工具层，不动判据）
     await sleep(3_000);
     await cdp.eval(PAGE_FIXTURE);
     await cdp.eval("window.__probe.stubApi('saveSettings', null)");
@@ -13499,6 +13723,7 @@ async function runSettingsMobile(cdp, url) {
  */
 async function runScrollReact(cdp, url) {
   await cdp.send("Page.navigate", { url });
+  await cdp.settled(); // 段间导航竞态收进活体探针（工具层，不动判据）
   await sleep(3_000);
   await cdp.eval(PAGE_FIXTURE);
 
@@ -13657,6 +13882,7 @@ async function runScrollReact(cdp, url) {
  */
 async function runChatHeader(cdp, url) {
   await cdp.send("Page.navigate", { url });
+  await cdp.settled(); // 段间导航竞态收进活体探针（工具层，不动判据）
   await sleep(3_000);
   await cdp.eval(PAGE_FIXTURE);
 
@@ -13770,7 +13996,27 @@ async function runOpsCenter(cdp, url) {
   });
   try {
     await cdp.send("Page.navigate", { url });
+    await cdp.settled(); // 段间导航竞态收进活体探针（工具层，不动判据）
     await sleep(3_000);
+    // 任务中心的挂载链会走到 ConversationList 的 setup（`void getCurrentWebview()`），
+    // 裸浏览器没有 `__TAURI_INTERNALS__` 就会同步抛（与 runPinKeyboard 同一形状）。
+    // 以前这一段"碰巧"继承前一段留在同一页上的夹具；2026-11-03 每段独立新 tab 之后
+    // 必须自己带夹具 —— 补的是环境fixture，不是判据。
+    await cdp.eval(`(() => {
+      if (window.__TAURI_INTERNALS__) return;
+      window.__TAURI_INTERNALS__ = {
+        metadata: {
+          currentWindow: { label: 'main' },
+          currentWebview: { label: 'main', windowLabel: 'main' },
+        },
+        invoke: async () => null,
+        transformCallback: (cb) => cb,
+        convertFileSrc: (p) => p,
+      };
+      if (!window.__TAURI_EVENT_PLUGIN_INTERNALS__) {
+        window.__TAURI_EVENT_PLUGIN_INTERNALS__ = { unregisterListener: () => {} };
+      }
+    })()`);
     await cdp.eval(PAGE_FIXTURE);
     const mounted = await cdp.eval(
       "window.__probe.install('/src/components/TaskCenter.vue', '', '')",
@@ -14318,6 +14564,7 @@ async function confirmGate(cdp, x, y) {
  */
 async function runResend(cdp, url) {
   await cdp.send("Page.navigate", { url });
+  await cdp.settled(); // 段间导航竞态收进活体探针（工具层，不动判据）
   await sleep(3_000);
   await cdp.eval(PAGE_FIXTURE);
 
@@ -14571,6 +14818,7 @@ async function runResend(cdp, url) {
  */
 async function runDelivery(cdp, url) {
   await cdp.send("Page.navigate", { url });
+  await cdp.settled(); // 段间导航竞态收进活体探针（工具层，不动判据）
   await sleep(3_000);
   await cdp.eval(PAGE_FIXTURE);
 
@@ -14767,6 +15015,7 @@ async function runTasksMobile(cdp, url) {
   });
   try {
     await cdp.send("Page.navigate", { url });
+    await cdp.settled(); // 段间导航竞态收进活体探针（工具层，不动判据）
     await sleep(3_000);
     await cdp.eval(PAGE_FIXTURE);
     await cdp.eval(`(async () => {
@@ -14986,6 +15235,7 @@ async function runTasksMobile(cdp, url) {
  */
 async function runShareDirectory(cdp, url) {
   await cdp.send("Page.navigate", { url });
+  await cdp.settled(); // 段间导航竞态收进活体探针（工具层，不动判据）
   await sleep(3_000);
   await cdp.eval(PAGE_FIXTURE);
   await cdp.eval("window.__probe.shareBus()");
@@ -15098,6 +15348,7 @@ async function runContextGuard(cdp, url) {
       permissions: ["clipboardReadWrite", "clipboardSanitizedWrite"],
     }).catch(() => {});
     await cdp.send("Page.navigate", { url });
+    await cdp.settled(); // 段间导航竞态收进活体探针（工具层，不动判据）
     await sleep(3_000);
     await cdp.eval(PAGE_FIXTURE);
 
@@ -15537,6 +15788,7 @@ async function runContextGuard(cdp, url) {
     });
     await cdp.send("Emulation.setTouchEmulationEnabled", { enabled: true, maxTouchPoints: 1 });
     await cdp.send("Page.navigate", { url });
+    await cdp.settled(); // 段间导航竞态收进活体探针（工具层，不动判据）
     await sleep(3_000);
     await cdp.eval(PAGE_FIXTURE);
     await sleep(200);
@@ -15681,6 +15933,7 @@ async function runLightbox(cdp, url) {
   await cdp.send("Page.bringToFront").catch(() => {});
   await cdp.send("Emulation.setFocusEmulationEnabled", { enabled: true }).catch(() => {});
   await cdp.send("Page.navigate", { url });
+  await cdp.settled(); // 段间导航竞态收进活体探针（工具层，不动判据）
   await sleep(3_000);
   await cdp.eval(PAGE_FIXTURE);
   const mounted = await cdp.eval("window.__probe.lightboxMount()");
@@ -16023,6 +16276,7 @@ async function runToast(cdp, url) {
   await cdp.send("Page.bringToFront").catch(() => {});
   await cdp.send("Emulation.setFocusEmulationEnabled", { enabled: true }).catch(() => {});
   await cdp.send("Page.navigate", { url });
+  await cdp.settled(); // 段间导航竞态收进活体探针（工具层，不动判据）
   await sleep(3_000);
   await cdp.eval(PAGE_FIXTURE);
   const mounted = await cdp.eval("window.__probe.install('/src/components/ToastHud.vue', '', '')");
@@ -16126,6 +16380,7 @@ async function runSelect(cdp, url) {
   await cdp.send("Page.bringToFront").catch(() => {});
   await cdp.send("Emulation.setFocusEmulationEnabled", { enabled: true }).catch(() => {});
   await cdp.send("Page.navigate", { url });
+  await cdp.settled(); // 段间导航竞态收进活体探针（工具层，不动判据）
   await sleep(3_000);
   await cdp.eval(PAGE_FIXTURE);
   const mounted = await cdp.eval("window.__probe.selectMount()");
@@ -16245,6 +16500,7 @@ async function runNavIcon(cdp, url) {
   // 2026-10-22：导航图标已统一到 lucide（navIconPaths.ts 删除）。这里证明**渲染出来的 DOM**
   // 真的是 lucide 图标、选中态只由 stroke-width / data-active 驱动、四枚语义各自映射正确。
   await cdp.send("Page.navigate", { url });
+  await cdp.settled(); // 段间导航竞态收进活体探针（工具层，不动判据）
   await sleep(3_000);
   await cdp.eval(PAGE_FIXTURE);
   const mount = async (props) => {
@@ -16328,6 +16584,7 @@ async function runSegmented(cdp, url) {
   await cdp.send("Emulation.setFocusEmulationEnabled", { enabled: true });
   try {
     await cdp.send("Page.navigate", { url });
+    await cdp.settled(); // 段间导航竞态收进活体探针（工具层，不动判据）
     await sleep(3_000);
     await cdp.eval(PAGE_FIXTURE);
     const mount = async (extra = {}) => {
@@ -16412,6 +16669,7 @@ async function runSlider(cdp, url) {
   await cdp.send("Emulation.setFocusEmulationEnabled", { enabled: true });
   try {
     await cdp.send("Page.navigate", { url });
+    await cdp.settled(); // 段间导航竞态收进活体探针（工具层，不动判据）
     await sleep(3_000);
     await cdp.eval(PAGE_FIXTURE);
     // setChatStyle 会落库并广播；探针只验交互，替掉这两条后端命令。
@@ -16471,6 +16729,7 @@ async function runSlider(cdp, url) {
 
 async function runTodoPick(cdp, url) {
   await cdp.send("Page.navigate", { url });
+  await cdp.settled(); // 段间导航竞态收进活体探针（工具层，不动判据）
   await sleep(3_000);
   await cdp.eval(PAGE_FIXTURE);
   const props = {
@@ -16524,6 +16783,7 @@ async function runTodoPick(cdp, url) {
 
 async function runTaskCard(cdp, url) {
   await cdp.send("Page.navigate", { url });
+  await cdp.settled(); // 段间导航竞态收进活体探针（工具层，不动判据）
   await sleep(3_000);
   await cdp.eval(PAGE_FIXTURE);
 
@@ -17007,6 +17267,7 @@ async function runTaskCard(cdp, url) {
  */
 async function runTasksRealtime(cdp, url) {
   await cdp.send("Page.navigate", { url });
+  await cdp.settled(); // 段间导航竞态收进活体探针（工具层，不动判据）
   await sleep(3_000);
   await cdp.eval(PAGE_FIXTURE);
 
@@ -17477,6 +17738,7 @@ async function runTasksRealtime(cdp, url) {
  */
 async function runInputPanels(cdp, url) {
   await cdp.send("Page.navigate", { url });
+  await cdp.settled(); // 段间导航竞态收进活体探针（工具层，不动判据）
   await sleep(3_000);
   await cdp.eval(PAGE_FIXTURE);
   const props = JSON.stringify({
