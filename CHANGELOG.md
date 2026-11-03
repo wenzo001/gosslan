@@ -13,6 +13,23 @@
 
 ## [Unreleased]
 
+## [5.16.95] - 2026-11-03
+
+### Windows 中文安装包（Level 1：只本地化显示名）
+
+- `bundle.windows.nsis.customLanguageFiles` 指向仓库内 `nsis/zh-CN.nsh` / `nsis/en-US.nsh`。
+  两份文件完整复制 Tauri 内置的 27 条 `LangString`（替换语义，漏一条就会渲染成英文兜底或空串），
+  并新增 `appDisplayName` / `appShortcutName` 与 `chooseHowToInstall`（补齐上游该页面的空标题）。
+- `installerHooks: nsis/hooks.nsh`：`POSTINSTALL` 写 `DisplayName`，并在**校验快捷方式目标
+  确实指向 `gosslan.exe`** 之后删旧 `.lnk`、按当前语言的 `appShortcutName` 重建（补回 AUMID）；
+  `PREUNINSTALL` 只在非更新模式删除本地化 `.lnk`。
+- 中文 `appRunning*` 直接写「小院儿」，不留 `{{product_name}}`：该占位在运行时只会被替换成
+  `${PRODUCTNAME}`（升级锚点，恒为 `Gosslan`）。
+- 升级锚点五项原样未动：`productName` / `identifier` / `bundle.publisher` / `installMode` /
+  `mainBinaryName` —— 旧版安装仍被识别为同一应用，不会装出第二份。
+- 已知边界：图形安装的桌面快捷方式由完成页创建（晚于钩子），仍名 `Gosslan.lnk`；
+  开始菜单快捷方式在中文语言下为 `小院儿.lnk`。
+
 ## [5.16.94] - 2026-11-03
 
 ### 乐观更新第三段：强提醒 / 合并转发
