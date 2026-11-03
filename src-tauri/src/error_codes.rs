@@ -221,6 +221,11 @@ pub const GROUP_IMAGE_EMPTY: &str = "GROUP_IMAGE_EMPTY";
 /// 待办图片：只接受粘贴的图片。
 pub const GROUP_IMAGE_PASTE_ONLY: &str = "GROUP_IMAGE_PASTE_ONLY";
 
+// ── B6 第五批：收藏那一族 ──────────────────────────────────────────────────
+
+/// 导出收藏：没有选择保存位置。
+pub const FAVORITE_EXPORT_PATH_EMPTY: &str = "FAVORITE_EXPORT_PATH_EMPTY";
+
 /// 给"可能已经带码"的下层错误补码：已带 `code=` 就原样透传，避免叠成两个码。
 ///
 /// 典型场景：通道启动会把 `network::start_from_prefs` 的 `PORT_IN_USE` 透传上来，

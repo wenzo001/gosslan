@@ -199,6 +199,7 @@ test("B6 试点批：每个码中英各一条，认不出码必须回落原文",
     GROUP_IMAGE_BYTES_INVALID: "errors.rule.groupImageBytesInvalid",
     GROUP_IMAGE_EMPTY: "errors.rule.groupImageEmpty",
     GROUP_IMAGE_PASTE_ONLY: "errors.rule.groupImagePasteOnly",
+    FAVORITE_EXPORT_PATH_EMPTY: "errors.rule.favoriteExportPathEmpty",
   };
   for (const [code, key] of Object.entries(cases)) {
     assert.ok(key in zhCN, `中文词典缺 ${key}`);

@@ -442,7 +442,10 @@ pub async fn export_chat_text(
 ) -> Result<export::ExportSummary, String> {
     let s = state.inner().clone();
     if destination.trim().is_empty() {
-        return Err("导出路径为空".to_string());
+        return Err(crate::error_codes::coded(
+            crate::error_codes::FAVORITE_EXPORT_PATH_EMPTY,
+            "导出路径为空",
+        ));
     }
 
     // 整个导出（读库 + 渲染 + 写盘）放 spawn_blocking（审计 2.1e）：这是同步长活，

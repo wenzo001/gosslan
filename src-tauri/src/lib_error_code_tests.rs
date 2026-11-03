@@ -107,6 +107,8 @@ const B6_CASES: &[(&str, &str, &str)] = &[
     ("GROUP_IMAGE_BYTES_INVALID", "commands/group_todo_media.rs", "图片数据格式不正确"),
     ("GROUP_IMAGE_EMPTY", "commands/group_todo_media.rs", "图片数据为空"),
     ("GROUP_IMAGE_PASTE_ONLY", "commands/group_todo_media.rs", "只支持粘贴图片"),
+    // ── B6 第五批：收藏（本笔）─────────────────────────────────────────
+    ("FAVORITE_EXPORT_PATH_EMPTY", "commands/favorites.rs", "导出路径为空"),
 ];
 
 /// human 是下层原话、没有字面量的触发点：只守"码真的挂在这里"，

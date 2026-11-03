@@ -737,6 +737,7 @@ export const zhCN: MessageDict = {
   "errors.rule.groupImageBytesInvalid": "图片数据不完整，换一张再试",
   "errors.rule.groupImageEmpty": "图片是空的，换一张再试",
   "errors.rule.groupImagePasteOnly": "只支持直接粘贴图片进来",
+  "errors.rule.favoriteExportPathEmpty": "导出位置不能为空，先选一个保存位置",
   "errors.avatar.notBase64": "编码结果不是 base64 data URL，无法判断体积",
   "errors.avatar.stillTooLarge": "头像压缩后仍超过 1MB，请换一张更小的图",
   "errors.image.readFail": "读取图片失败",

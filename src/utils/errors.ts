@@ -121,6 +121,7 @@ const CODE_RULES: Record<string, string> = {
   GROUP_IMAGE_BYTES_INVALID: "errors.rule.groupImageBytesInvalid",
   GROUP_IMAGE_EMPTY: "errors.rule.groupImageEmpty",
   GROUP_IMAGE_PASTE_ONLY: "errors.rule.groupImagePasteOnly",
+  FAVORITE_EXPORT_PATH_EMPTY: "errors.rule.favoriteExportPathEmpty",
 };
 
 /** 后端 `error_codes::coded()` 的形状：`code=<大写蛇形> 给人看的那句话`。 */
