@@ -62,6 +62,22 @@ pub const MSG_NOT_IN_CONV: &str = "MSG_NOT_IN_CONV";
 /// 本机 DH / ChaCha20-Poly1305 失败 —— 造不出密文，这条内容发不出去。
 pub const E2EE_ENCRYPT_FAILED: &str = "E2EE_ENCRYPT_FAILED";
 
+// ── B6 试点批：群管理 ──────────────────────────────────────────────────────
+//
+// 同一条「群已经不在了 / 你已被移出 / 还没拿到群密钥」在群消息、群文件、公告、
+// 群设置里都会出现 —— 共用码 + 共用一条前端文案，不在各调用点复制。
+
+/// 群记录已经不存在（被解散、被创建者删除，或本地库还没建起来）。
+pub const GROUP_NOT_FOUND: &str = "GROUP_NOT_FOUND";
+/// 本机已不在群成员表里（被移出/退出后旧界面仍在操作）。
+pub const GROUP_SELF_NOT_MEMBER: &str = "GROUP_SELF_NOT_MEMBER";
+/// 群名称为空（创建/重命名时 trim 之后是空串）。
+pub const GROUP_NAME_EMPTY: &str = "GROUP_NAME_EMPTY";
+/// 本机还没拿到该群密钥（新入群、密钥轮换中，或补发臂尚未到达）。
+pub const GROUP_KEY_MISSING: &str = "GROUP_KEY_MISSING";
+/// 群聊里触发了"窗口抖动"—— 产品上只支持单聊。
+pub const NUDGE_GROUP_UNSUPPORTED: &str = "NUDGE_GROUP_UNSUPPORTED";
+
 /// 把码拼到人话前面 —— **唯一**的写法（不散着 `format!("code=…")`，否则对账判据读不出来）。
 pub fn coded(code: &'static str, msg: impl std::fmt::Display) -> String {
     format!("code={code} {msg}")

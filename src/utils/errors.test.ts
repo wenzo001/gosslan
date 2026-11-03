@@ -135,6 +135,11 @@ test("B6 试点批：每个码中英各一条，认不出码必须回落原文",
     MSG_NOT_FOUND: "errors.rule.msgNotFound",
     MSG_NOT_IN_CONV: "errors.rule.msgNotInConv",
     E2EE_ENCRYPT_FAILED: "errors.rule.encryptFailed",
+    GROUP_NOT_FOUND: "errors.rule.groupNotFound",
+    GROUP_SELF_NOT_MEMBER: "errors.rule.groupSelfNotMember",
+    GROUP_NAME_EMPTY: "errors.rule.groupNameEmpty",
+    GROUP_KEY_MISSING: "errors.rule.groupKeyMissing",
+    NUDGE_GROUP_UNSUPPORTED: "errors.rule.nudgeGroupUnsupported",
   };
   for (const [code, key] of Object.entries(cases)) {
     assert.ok(key in zhCN, `中文词典缺 ${key}`);

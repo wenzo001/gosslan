@@ -52,6 +52,12 @@ const CODE_RULES: Record<string, string> = {
   MSG_NOT_FOUND: "errors.rule.msgNotFound",
   MSG_NOT_IN_CONV: "errors.rule.msgNotInConv",
   E2EE_ENCRYPT_FAILED: "errors.rule.encryptFailed",
+  // B6 试点批：群管理。同一条「群没了 / 你被移出 / 没密钥」只在这里有一条文案。
+  GROUP_NOT_FOUND: "errors.rule.groupNotFound",
+  GROUP_SELF_NOT_MEMBER: "errors.rule.groupSelfNotMember",
+  GROUP_NAME_EMPTY: "errors.rule.groupNameEmpty",
+  GROUP_KEY_MISSING: "errors.rule.groupKeyMissing",
+  NUDGE_GROUP_UNSUPPORTED: "errors.rule.nudgeGroupUnsupported",
 };
 
 /** 后端 `error_codes::coded()` 的形状：`code=<大写蛇形> 给人看的那句话`。 */

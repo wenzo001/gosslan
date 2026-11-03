@@ -136,7 +136,10 @@ pub async fn recall_group_message(
     let (authority, author) = {
         let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());
         let Some(msg) = db::get_message_record(&dbc, &target) else {
-            return Err("消息不存在".to_string());
+            return Err(crate::error_codes::coded(
+                crate::error_codes::MSG_NOT_FOUND,
+                "消息不存在",
+            ));
         };
         let is_creator = db::get_group(&dbc, &group_id)
             .map(|g| g.creator == s.device_id)
@@ -309,9 +312,14 @@ pub async fn send_group_file(
     // 发起者必须是群成员（本地群存在）
     let members: Vec<String> = {
         let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());
-        let group = db::get_group(&dbc, &group_id).ok_or("群不存在")?;
+        let group = db::get_group(&dbc, &group_id).ok_or_else(|| {
+            crate::error_codes::coded(crate::error_codes::GROUP_NOT_FOUND, "群不存在")
+        })?;
         if !group.members.contains(&s.device_id) {
-            return Err("你不是该群成员".to_string());
+            return Err(crate::error_codes::coded(
+                crate::error_codes::GROUP_SELF_NOT_MEMBER,
+                "你不是该群成员",
+            ));
         }
         // 成员快照：创建时当前群成员（不含自己），作为 recipient 集合
         group
@@ -384,7 +392,11 @@ pub async fn send_group_file(
     }
 
     // 群密钥获取与 file_key 封装先于运行态写入：任何失败都不残留内存状态
-    let group_key = get_group_key(s, &group_id).await.ok_or("群密钥缺失")?;
+    let group_key = get_group_key(s, &group_id)
+        .await
+        .ok_or_else(|| {
+            crate::error_codes::coded(crate::error_codes::GROUP_KEY_MISSING, "群密钥缺失")
+        })?;
 
     // 随机 file session key：一个 transfer 只生成一次（CSPRNG，仅内存）
     let file_key = crypto::random_key();
