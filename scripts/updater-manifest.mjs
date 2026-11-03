@@ -81,7 +81,10 @@ function parseSections(changelog) {
       cur = { version: m[1], body: [] };
       continue;
     }
-    if (/^## \[/.test(line)) {
+    // 任何二级标题都结束上一节 —— 不只是 `## [`：
+    // `CHANGELOG.md` 尾部现在有 `## 历史版本摘要…`（由 `scripts/compress-changelog.mjs` 生成），
+    // 若只认 `## [`，最后一节的更新说明会把整段摘要也算进去。
+    if (/^## /.test(line)) {
       if (cur) sections.push(cur);
       cur = null;
       continue;

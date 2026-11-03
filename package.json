@@ -14,6 +14,8 @@
     "verify:local": "node scripts/verify.mjs --full-gate --skip-guard-sweep",
     "prepare": "node scripts/install-git-hooks.mjs",
     "hooks:install": "node scripts/install-git-hooks.mjs",
+    "changelog:compress": "node scripts/compress-changelog.mjs",
+    "changelog:check": "node scripts/compress-changelog.mjs --check",
     "lint:py": "uvx ruff@0.17.1 check scripts",
     "lint:sh": "uvx --from shellcheck-py shellcheck -S warning --exclude=SC2034 $(git ls-files '*.sh')",
     "lint:md": "npx --yes markdownlint-cli2@0.18.1",

@@ -16,10 +16,13 @@ const pkg = JSON.parse(readFileSync(path.join(ROOT, "package.json"), "utf8"));
 const scripts = new Set(Object.keys(pkg.scripts ?? {}));
 
 // 扫描范围 = **约束文档**（今天读它的人会照着做的那几份），不含历史台账：
-//   CHANGELOG.md / docs/notes/** / HANDOFF.md / 第三方 vendor 目录 —— 那些写的是"当时发生过什么"，
-//   命令后来被改名并不是它们的错，把它们算进断链只会制造"必须去放宽守卫"的压力。
+//   CHANGELOG.md / docs/notes/** / docs/archive/** / HANDOFF.md / 第三方 vendor 目录 ——
+//   那些写的是"当时发生过什么"，命令后来被改名并不是它们的错，把它们算进断链只会
+//   制造"必须去放宽守卫"的压力。
+//   2026-11-03：`docs/archive/notes/changelog-archive.md` 收进了 CHANGELOG 压缩搬来的
+//   426 个历史小节，路径是 `docs/archive/` 而不是 `docs/notes/` ⇒ 这里必须同时放过两处。
 const SKIP_DIR = new Set(["node_modules", "test-results", "target", "vendor", "dist", ".git"]);
-const SKIP_RE = /(^|\/)(CHANGELOG|README\.test|HANDOFF)\.md$|(^|\/)docs\/notes\//;
+const SKIP_RE = /(^|\/)(CHANGELOG|README\.test|HANDOFF)\.md$|(^|\/)docs\/(notes|archive)\//;
 const FILES = [];
 (function walk(dir) {
   for (const e of readdirSync(path.join(ROOT, dir), { withFileTypes: true })) {
