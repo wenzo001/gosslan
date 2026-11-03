@@ -218,22 +218,38 @@ mod tests {
     /// 这是整个预算机制的命根子：如果 SQLite 在 VACUUM 期间根本不回调进度钩子，
     /// 那"到点中止"就是一句空话（VACUUM 会一口气跑完，预算形同虚设）。
     /// 这条用例用**生产用的那个间隔**直接把回调次数数出来。
+    ///
+    /// ⚠️ 双硬闸（2026-11-03 闪退取证）：本条曾出现**不收敛**真机案例（IDE 里挂跑
+    /// 14.3 小时、写盘 137 GB）。VACUUM 的中断只能经由进度回调（连接级钩子），所以
+    /// 闸门就装在回调里：**墙钟超 60s 或回调次数超上限**任一命中即返回中断 ⇒
+    /// 用例当场红，绝不许无限挂着。正常库全程 ~6.5ms / ~2700 次回调，两条闸都远够不着。
     #[test]
     fn the_progress_handler_actually_fires_during_vacuum() {
+        const HARD_WALL: std::time::Duration = std::time::Duration::from_secs(60);
+        // 次数闸取"正常值 ~2700 的三个数量级以上"：真在做功的 VACUUM 撞不到，
+        // 病态打转（回调风暴）会被它拦住。
+        const HARD_HITS: u32 = 10_000_000;
         let (c, _p) = file_db("fires", 60_000);
         punch_holes(&c, 200);
         let fired = std::sync::Arc::new(std::sync::atomic::AtomicU32::new(0));
         let counter = std::sync::Arc::clone(&fired);
+        let started = std::time::Instant::now();
         c.progress_handler(
             PROGRESS_CHECK_OPS,
             Some(move || {
-                counter.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                false // 永远不中止，只数次数
+                let n = counter.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
+                // 超闸即中止（返回 true ⇒ SQLITE_INTERRUPT，VACUUM 回滚、库完好）。
+                started.elapsed() > HARD_WALL || n > HARD_HITS
             }),
         );
-        c.execute_batch("VACUUM").expect("VACUUM");
+        let res = c.execute_batch("VACUUM");
         c.progress_handler(0, None::<fn() -> bool>);
         let hits = fired.load(std::sync::atomic::Ordering::Relaxed);
+        assert!(
+            res.is_ok(),
+            "VACUUM 在硬闸内没收敛（进度回调已触发 {hits} 次后被中断；墙钟闸 {:?} / 次数闸 {HARD_HITS}）⇒ 本条必须红，不许无限挂",
+            HARD_WALL
+        );
         eprintln!(
             "[实测] 42 MB 库 VACUUM 期间进度回调触发 {hits} 次（间隔 {PROGRESS_CHECK_OPS} 条虚机指令）"
         );
