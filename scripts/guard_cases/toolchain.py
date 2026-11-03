@@ -21,41 +21,41 @@ from __future__ import annotations
 from .base import ROOT, TAURI, Case, cargo, node_test, npm
 
 CASES: list[Case] = [
-    # ---------------- INV-P24 第 4 条：发送侧门控 ----------------
+    # ---------------- INV-P24 第 4 条：发送侧能力协商（5.16.92 起改为"先入队、后协商"） ----------------
     Case(
-        name="1:1 发送路径必须真的问门控判据（不门控不许发）",
-        why="门控判据函数写得再对，发送点不调用它就等于没有门控 —— 而这条不是假想需求：\n"
+        name="1:1 发送路径必须真的问能力协商判据（不协商就硬发/静默丢帧）",
+        why="判据函数写得再对，发送点不调用它就等于没有门控 —— 而这条不是假想需求：\n"
         "     MsgKind::Merge 是 V1 期间（9b26006）才加的，v4.8.2/v4.18.10/v4.20.0 三个已发布版本\n"
         "     的 ChatMessage.kind 仍是枚举，收到 kind:merge 会**整帧丢掉**（v4.22.34 只修了我们\n"
-        "     这一侧），发送方 outbox 反复重投最后显示「发送失败」。这条用例证明「把发送点那行\n"
-        "     门控删掉」一定会被抓 —— 注入方式就是删掉那次调用（不是改成 if false，那仍然算调用）",
+        "     这一侧），发送方 outbox 反复重投最后显示「发送失败」。这条用例证明「把发送点那次\n"
+        "     裁决删掉」一定会被抓 —— 注入方式是把它退成无条件 Send（不是改成 if false）",
         file=TAURI / "src" / "commands" / "chat.rs",
         injections=[(
-            "        if !crate::protocol::dm_allowed_by_features(&kind, peer_features.unwrap_or(0)) {\n"
-            "            return Err(crate::protocol::kind_blocked_hint(&kind, peer_features));\n"
-            "        }",
-            "        let _ = (&kind, peer_features);",
+            "    let deferred = crate::protocol::deferred_send_decision(&kind, peer_features);",
+            "    let deferred = crate::protocol::DeferredSend::Send;",
         )],
-        cmd=cargo("test", "--lib", "new_message_kinds_are_gated_at_the_send_path"),
+        cmd=cargo("test", "--lib", "new_message_kinds_are_queued_then_negotiated"),
         cwd=TAURI,
-        expect_fail_hint="必须问门控判据",
+        expect_fail_hint="必须问能力裁决",
         tags=["rust", "protocol", "gating"],
     ),
     Case(
-        name="1:1 挡下时的文案必须走三态入口（不许把\"不知道\"说成\"版本旧\"）",
-        why="判据把\"从没交换过 Hello\"并进 0 是对的方向（宁可少发一条），但文案沿用\"对方的\n"
-        "     Gosslan 版本较旧\"就成了一次假指控：`peer_content_features` 是内存表，对方一离线\n"
-        "     就被 sweep 掉、本机重启即空 ⇒ 缺条目通常只代表\"此刻不知道\"，用户照着去催对方\n"
-        "     升级，而真正要做的只是等对方上线（#37② 的\"小半\"）。\n"
-        "     注入方式：把三态入口退回旧那句 —— 门控方向没变、编译没坏，只有接线断言会红",
+        name="写库之前不许再按能力位拒绝（否则用户点下去什么都没有）",
+        why="5.16.92 的语义变更本体：表情回应 / 撤回点下去要先落库入队，再在建链后协商。\n"
+        "     把旧的 `return Err(kind_blocked_hint(...))` 注回写库前，用户看到的就是\n"
+        "     「点了一点反应都没有」——没有本地行、没有失败气泡、没有具名码。\n"
+        "     注入方式：在裁决之后补回旧那两行；编译没坏，只有结构断言会红",
         file=TAURI / "src" / "commands" / "chat.rs",
         injections=[(
-            "            return Err(crate::protocol::kind_blocked_hint(&kind, peer_features));",
-            "            return Err(crate::protocol::kind_unsupported_hint(&kind));",
+            "    let deferred = crate::protocol::deferred_send_decision(&kind, peer_features);",
+            "    let deferred = crate::protocol::deferred_send_decision(&kind, peer_features);\n"
+            "    if !crate::protocol::dm_allowed_by_features(&kind, peer_features.unwrap_or(0)) {\n"
+            "        return Err(crate::protocol::kind_blocked_hint(&kind, peer_features));\n"
+            "    }",
         )],
-        cmd=cargo("test", "--lib", "new_message_kinds_are_gated_at_the_send_path"),
+        cmd=cargo("test", "--lib", "new_message_kinds_are_queued_then_negotiated"),
         cwd=TAURI,
-        expect_fail_hint="分两句说",
+        expect_fail_hint="不许在写库前拒绝",
         tags=["rust", "protocol", "gating"],
     ),
     Case(

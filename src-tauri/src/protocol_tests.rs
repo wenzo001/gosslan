@@ -947,8 +947,8 @@ mod tests {
             "能力未知时不许断言对方版本旧：缺条目多半只是它此刻不在线"
         );
         assert!(
-            unknown.contains("不在线") && unknown.contains("重新发送"),
-            "未知那句要说清下一步能做什么（失败气泡上有「重新发送」），而不是只报个失败"
+            unknown.contains("不在线") && unknown.contains("自动补发"),
+            "未知那句要说清下一步：**先入队、等上线自动补发**（5.16.92 起不再让人去点一条不存在的失败气泡）"
         );
         assert_eq!(
             declared,

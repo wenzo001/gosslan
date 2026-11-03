@@ -29,6 +29,7 @@ import {
   type PendingMessageOpView,
   type TransferInfo,
 } from "./taskCenter.ts";
+import { isLatestReadSeq, nextReadSeq } from "./optimistic.ts";
 
 // `TransferInfo` / `ContentTransfer` 的类型来自 @/types（别名解析在 node 下不可用），
 // 这里只按形状造夹具：字段名与那两个 interface 一一对得上，写错就编译不过。
@@ -80,6 +81,8 @@ function msgOp(over: Partial<PendingMessageOpView>): PendingMessageOpView {
     peer_offline: false,
     can_cancel: true,
     some_delivered: false,
+    failed: false,
+    fail_code: null,
     ...over,
   };
 }
@@ -451,8 +454,68 @@ test("100% 未终态按 kind 说清在做什么：不再一律「收尾中」", 
   );
 });
 
+test("判死的静默动作：任务中心给原因并留「重新发送」，裸码不上屏", () => {
+  // 表情回应 / 撤回不进时间线 ⇒ 队列行删掉后没有气泡可看。这一行是它们唯一的可见处。
+  const rows = deriveOperations({
+    transfers: [],
+    contentTransfers: [],
+    messageOps: [
+      msgOp({
+        msg_id: "r1",
+        kind: "reaction",
+        can_cancel: false,
+        failed: true,
+        fail_code: "SEND_KIND_UNSUPPORTED",
+      }),
+    ],
+  });
+  const row = byId(rows, "r1");
+  assert.ok(row, "判死的静默动作必须出现在任务中心");
+  assert.equal(row.state, "blocked", "它不该继续被说成排队中");
+  assert.equal(row.blockedReason, "SEND_KIND_UNSUPPORTED");
+  assert.deepEqual(
+    row.actions,
+    ["resend_message", "open_conversation"],
+    "队列里已经没有它 ⇒ 不能给「取消」；必须给「重新发送」这个能点的出口",
+  );
+  const text = operationStatusText(row, (k) => k);
+  assert.equal(text, "task.state.failed", "状态文案走唯一映射；原因由 fileFailReasonText 翻成人话");
+  assert.ok(
+    !text.includes("SEND_KIND_UNSUPPORTED"),
+    "禁止把码本身显示给用户",
+  );
+});
+
+test("能力未知（离线）的同一 kind 仍是待发，不许被误判成失败", () => {
+  // 对偶：`failed=false` 的 reaction 走"等待对方上线"那一档，不许被误标成失败。
+  const rows = deriveOperations({
+    transfers: [],
+    contentTransfers: [],
+    messageOps: [
+      msgOp({ msg_id: "r2", kind: "reaction", peer_offline: true, fail_code: null }),
+    ],
+  });
+  const row = byId(rows, "r2");
+  assert.ok(row);
+  assert.equal(row.state, "blocked");
+  assert.equal(row.blockedReason, "peer_offline");
+  assert.deepEqual(row.actions, ["cancel_message", "open_conversation"]);
+  assert.equal(operationStatusText(row, (k) => k), "task.state.waiting");
+});
+
+test("已读回执的迟到失败必须丢弃：只有最新一次能回滚", () => {
+  // 5.16.92：`markReadSeq` 从 store 闭包抽到 `optimistic.ts` 之后，判据本身可以被直接钉住。
+  const first = nextReadSeq(undefined); // 1
+  assert.equal(first, 1);
+  const second = nextReadSeq(first); // 2
+  assert.equal(second, 2);
+  // 第一次的失败晚到：槽位已经是第二次 ⇒ 不许回滚（否则把后来清掉的红点又点亮）。
+  assert.equal(isLatestReadSeq(second, first), false);
+  // 第二次的失败才是当前这次：允许回滚。
+  assert.equal(isLatestReadSeq(second, second), true);
+});
+
 test("用户确认过的重发：那一行说「重发中」，但可取消性与排序仍由台账决定", () => {
-  // 2026-10-26 用户口径：「确认了之后，它应该是会在后台任务中加入后台任务重新发送」。
   // 库里区分不出首次发送与重发（同为 sending + 同形 outbox 行），所以这一格是界面给的
   // **内存标记**，只改文案；断言的另一半是"它不许改动作"——重发中一样能取消。
   const rows = deriveOperations({

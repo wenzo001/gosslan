@@ -13,6 +13,33 @@
 
 ## [Unreleased]
 
+## [5.16.92] - 2026-11-03
+
+### 离线门控第一步：表情回应 / 撤回改为「先入队、后协商」
+
+- **语义变更**：1:1 非传统 kind 的能力位门控从「写库前拒绝」改为「先落库入队、建链后协商」。
+  表情回应、撤回（以及复用同一路径的提醒 / 合并转发）点下去先写入 `messages` + `outbox`
+  （`status=sending`），不再出现「点了一点反应都没有」的半状态；`protocol.rs` 里那句让人
+  去点一条**并不存在**的失败消息的文案同步改掉。
+- 协商判据唯一：`protocol::deferred_send_decision(kind, peer_features)` 给出三态 ——
+  `Send`（对端声明支持）/ `Hold`（能力未知，通常是离线）/ `Unsupported`（对端亲口声明缺位）。
+  `send_message`、`resend_message`、`outbox_flush` 共用这一处，不在组件里再分叉。
+- 终态与重试：`Unsupported` 在同一事务里置 `failed` + 写具名码 + 删队列行 + emit
+  `message-failed`；`Hold` 保留队列行，沿用既有 7 天离线保留与 120s（群 30min）的
+  `SEND_RETRY_EXPIRED` 判死 —— 不违反「离线先入队、建链后补发」。队列行在 SQLite 里，
+  重启后仍会继续补发。
+- 可见与可重发：三档唯一换算在 `useMessageDisplay`（气泡）与 `taskCenter`（任务中心）。
+  判死的静默动作（表情回应 / 撤回不进时间线）新增进任务中心快照（`failed` + `fail_code`），
+  带「重新发送」动作，不是一个死字符。
+- 具名码：新增 `SEND_KIND_UNSUPPORTED`、`SEND_PEER_KEY_MISSING`，前后端双侧对账
+  （`errors.ts::CODE_RULES`、`fileFailReason.ts`、中英词典）；文案写清「你现在能做什么」，
+  不再回落「操作失败」，也不把裸码上屏。
+- 对旧客户端安全：reaction / recall 不在 `DM_LEGACY_KINDS`，未声明
+  `CONTENT_FEATURE_FLEX_DM_KIND` 的对端**一帧都不会收到**（`Hold` 不投递），
+  不会触发老端的整帧丢弃与断链。
+- 顺手补上一批缺口：把 `markReadSeq` 的「只有最新一次可回滚」抽成 `optimistic.ts` 的
+  `nextReadSeq` / `isLatestReadSeq`，并补运行级对偶用例。
+
 ## [5.16.91] - 2026-11-03
 
 ### 乐观更新第一段：判据真源 + 1:1 发消息 / 发文件 / 标记已读

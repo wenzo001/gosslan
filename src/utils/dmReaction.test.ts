@@ -56,10 +56,18 @@ test("后端 1:1 白名单收 reaction，且畸形载荷当场拒（不是发出
   );
 });
 
-test("1:1 的门控走 dm_* 那一对判据，群侧仍走 kind_audience（两处问的不是同一件事）", () => {
+test("1:1 的门控走 deferred_send_decision（先入队后协商），群侧仍走 kind_audience", () => {
   const c = read(CHAT_RS);
-  assert.match(c, /dm_required_features\(&kind\)/, "chat.rs 必须问 1:1 那张表");
-  assert.match(c, /dm_allowed_by_features\(&kind/, "chat.rs 的放行判定也必须走 1:1 那一对");
+  assert.match(
+    c,
+    /deferred_send_decision\(&kind, peer_features\)/,
+    "chat.rs 必须问唯一的补发裁决（它与 flush_outbox 共用同一处判据）",
+  );
+  assert.equal(
+    (c.match(/dm_allowed_by_features\(/g) ?? []).length,
+    0,
+    "判据只许住在 protocol.rs；发送口自己再问一遍就是第二套状态机",
+  );
   // 正面：群内核仍然用受众三态（只报不拦），不许被顺手换成硬门控
   const w = read("src-tauri/src/commands/window.rs");
   assert.match(w, /kind_audience\(/, "群侧仍要走受众统计（不拦发送，只提示）");

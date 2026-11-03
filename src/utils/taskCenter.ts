@@ -34,6 +34,7 @@
  *    （消息取消在 B4 落地后，`cancel_message` 已是一条真命令，消息行因此也有取消键。）
  */
 import type { ContentTransfer, GroupHistoryProgress, TransferInfo } from "@/types";
+import { fileFailReasonText } from "./fileFailReason.ts";
 
 /** 任务种类。取值稳定：日志、动作分发、i18n key 都读它，改名要一起改。 */
 export type OperationKind =
@@ -65,6 +66,7 @@ export type OperationAction =
   | "cancel_update"
   | "cancel_content"
   | "retry_content"
+  | "resend_message"
   | "sync_history_now"
   | "cancel_history"
   | "open_conversation";
@@ -138,6 +140,10 @@ export interface PendingMessageOpView {
   can_cancel: boolean;
   /** 群消息：已有成员确认收下，但队列里还有人。 */
   some_delivered: boolean;
+  /** 已经判死（队列里已经没有这一行）；静默 kind 失败后唯一的可见处。 */
+  failed: boolean;
+  /** 判死的原因码（`messages.fail_code`）；队列里的行是 `null`。 */
+  fail_code: string | null;
 }
 
 /**
@@ -248,15 +254,20 @@ function messageRow(m: PendingMessageOpView, resending = false): OperationRow {
   // 旧实现那套"任一成员 Ack ⇒ 拒绝取消"正是用户实报「排队中却说已送达」的根因。
   const convId = m.group_id ? `group:${m.group_id}` : m.peer_id ?? undefined;
   if (convId && m.can_cancel) actions.push("cancel_message");
+  // 判死的静默动作（表情回应 / 撤回）没有气泡可点：重发入口必须留在这里，
+  // 否则用户只看到一个红字，没有任何能做的事（5.16.92）。
+  if (convId && m.failed) actions.push("resend_message");
   if (convId) actions.push("open_conversation");
   return {
     id: m.msg_id,
     kind: "message_send",
     title: m.preview ?? "",
     // 「重发中」只改这一行的**说法**：能不能取消、排在哪一档都仍由台账说了算。
-    state: resending ? "running" : offline ? "blocked" : "queued",
+    // 判死的行也走 `blocked` 这一格，但 `blockedReason` 是它的 `fail_code`（不是
+    // `peer_offline`）⇒ `operationStatusText` 能把它和"在等对方上线"分开说。
+    state: resending ? "running" : offline || m.failed ? "blocked" : "queued",
     progress: null,
-    blockedReason: offline ? "peer_offline" : undefined,
+    blockedReason: m.failed ? m.fail_code ?? undefined : offline ? "peer_offline" : undefined,
     // 群消息只剩 1 个人也要说出来（以前只在 >1 时给，最后一格会变成没有目标的一行）。
     waitingFor: m.group_id && m.waiting_for > 0 ? m.waiting_for : undefined,
     someDelivered: m.some_delivered || undefined,
@@ -410,6 +421,13 @@ export function operationStatusText(
   // 那一条之后，否则这句永远读不到（那一条会先把 null 进度判成泛称「进行中」）。
   if (row.kind === "message_send" && row.state === "running") return tr("task.state.resending");
   if (row.blockedReason === "waiting_ack") return tr("task.state.waitingAck");
+  // 判死的静默动作：`blockedReason` 是后端 `fail_code`（`SEND_KIND_UNSUPPORTED` 等），
+  // 翻译仍只走 `fileFailReasonText` —— 绝不在这一层再写第二张码表，也绝不把裸码上屏。
+  if (row.blockedReason?.startsWith("SEND_")) {
+    return tr("task.state.failed", {
+      reason: fileFailReasonText(row.blockedReason, tr),
+    });
+  }
   if (row.state === "blocked") return tr("task.state.waiting");
   // 读不到 total 时不硬造一个 0%：进度是 null ⇒ 只说"进行中"。
   if (row.progress === null) return tr("task.state.running");

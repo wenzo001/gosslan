@@ -2833,6 +2833,9 @@ mod group_file_fail_reason_tests {
             crate::error_codes::SEND_ORPHAN_AT_START,
             crate::error_codes::SEND_PEER_DELETED,
             crate::error_codes::SEND_GROUP_MEMBER_GONE,
+            // 5.16.92：1:1 能力协商的两格，与群文件完全无关（日志文案在 chat/outbox 那两处）。
+            crate::error_codes::SEND_KIND_UNSUPPORTED,
+            crate::error_codes::SEND_PEER_KEY_MISSING,
             crate::error_codes::FILE_SEND_EXPIRED,
             crate::error_codes::FILE_SEND_GIVEUP,
         ];
