@@ -44,6 +44,36 @@ pub fn wake_scan(state: &AppState) {
     state.ble_wake.notify_one();
 }
 
+/// 一轮扫描的可落盘读数（稳态判定只比这两个数，比的是"看到的世界有没有变"）。
+#[derive(Clone, Copy, PartialEq, Eq)]
+struct ScanRound {
+    /// 收到多少个广播（含非本服务的）
+    total: usize,
+    /// 其中多少个是本应用服务（真正能拨的候选）
+    matched: usize,
+}
+
+/// 这一轮扫描**是否值得落盘** —— 蓝牙台账降噪的唯一判据（2026-11-04）。
+///
+/// 背景：后台节奏 30s 一轮（2s 窗口 + 30s 等待），原来每轮无条件写一行
+/// `BLE 扫描：收到 N 个广播…` ⇒ 空闲盘上实测 ≈1.9 行/分钟、≈112 行/小时，
+/// 而这些行在稳态下**每轮数字都一样**：重复写等于拿旧证据换新证据，白烧旧机器的盘。
+///
+/// 仍然**必然落盘**的四类（这条清单就是可诊断性的下限，缩任何一条都要先想清楚）：
+/// 1. **本轮结果变了**：`total` 或 `matched` 与上一次落盘的不同（含 0↔非 0 的任何方向）；
+/// 2. **用户主动触发**：打开「添加好友」/点「扫描」那一轮必须留痕（否则"点了没反应"无从判）；
+/// 3. **首次或恢复**：`last_reported` 为 `None` —— 进程第一轮，或上一轮扫描失败后第一次成功
+///    （失败分支会把 `last_reported` 清成 `None`，所以"恢复"一定重新落一行）；
+/// 4. **扫描失败 / 空扫**：`code=BLE_SCAN_FAILED` 与 `code=BLE_SCAN_EMPTY` 都是异常，照写。
+///
+/// 稳态心跳**不靠这行**：`RUNTIME_SNAPSHOT`（5 分钟一格）带 `ble_scan_age_ms` /
+/// `ble_scan_total` / `ble_scan_matched` ⇒ 崩溃后最多 5 分钟的窗口里就能看出
+/// "当时在不在扫、上一轮是多久以前、看到了几个广播"。
+fn should_report_scan(last: Option<ScanRound>, cur: ScanRound, user_triggered: bool) -> bool {
+    // `None` 分支同时覆盖"首次"与"失败后的恢复"（恢复时 `last` 被清成 None）。
+    user_triggered || last != Some(cur)
+}
+
 async fn scan_loop(
     state: Arc<AppState>,
     adapter: Adapter,
@@ -52,33 +82,44 @@ async fn scan_loop(
 ) {
     // 第一轮**不要等**：用户打开「添加好友」/刚开蓝牙时，最不想等的就是那 2 秒
     let mut skip_initial_wait = true;
+    // 上一轮**真的落盘**过的读数（None = 首次或刚失败过，下一轮成功必须重新落一行）
+    let mut last_reported: Option<ScanRound> = None;
     // 本轮是不是用户主动触发的（决定拨号退避要不要打折，见下）
     let mut user_triggered = false;
     loop {
         match driver::scan_peers(&adapter, SCAN_WINDOW).await {
             Ok((peers, total)) => {
-                // 每次扫描都要留痕（**包括 0 个**）：真机上这两个数字是排查的关键 ——
-                // "收到 0 个广播"= 扫描/权限/硬件问题；"收到 N 个但 0 个是本服务"= 对端没在广播
-                // 或广播里没有我们的服务 UUID。用户 2026-09-12 的"互相搜不到"当时日志里
-                // 什么都没有，只能靠猜。
-                state.logger.info(
-                    "ble",
-                    format!(
-                        "BLE 扫描：收到 {total} 个广播，其中 {} 个是本应用服务{}",
-                        peers.len(),
-                        if user_triggered {
-                            "（用户主动触发）"
-                        } else {
-                            ""
-                        }
-                    ),
-                );
+                // 只在**变化 / 用户触发 / 首次与恢复**时落盘：判据见 `should_report_scan`
+                // （稳态每轮数字一样，逐轮写等于用旧证据换新证据）。
+                let round = ScanRound {
+                    total,
+                    matched: peers.len(),
+                };
+                let report = should_report_scan(last_reported, round, user_triggered);
+                let first_or_recovered = last_reported.is_none();
+                if report {
+                    state.logger.info(
+                        "ble",
+                        format!(
+                            "BLE 扫描：收到 {total} 个广播，其中 {} 个是本应用服务{}{}",
+                            peers.len(),
+                            if user_triggered {
+                                "（用户主动触发）"
+                            } else {
+                                ""
+                            },
+                            if first_or_recovered { "（首次或恢复）" } else { "" }
+                        ),
+                    );
+                    last_reported = Some(round);
+                }
                 // R1：0 个广播 = 扫描/权限/硬件问题，与"收到但都不是本服务"是两件事 ⇒
-                // 单独一个具名码（节流 60s，避免后台节奏刷屏）；info 那行原文保留。
-                if total == 0 && crate::logging::log_throttled("ble_scan_empty", 60_000) {
+                // 单独一个具名码。只在**这一轮值得落盘**时写（原来是 60s 节流，稳态每小时
+                // 仍会多出 60 行）；持续空扫的证据由快照的 `ble_scan_*` 每格携带。
+                if total == 0 && report {
                     state.logger.warn(
                         "ble",
-                        "code=BLE_SCAN_EMPTY 本轮 BLE 扫描收到 0 个广播（扫描/权限/硬件问题；同轮 info 行保留原始读数）",
+                        "code=BLE_SCAN_EMPTY 本轮 BLE 扫描收到 0 个广播（扫描/权限/硬件问题；持续空扫见快照 ble_scan_age_ms/ble_scan_total）",
                     );
                 }
                 // 记进诊断状态（面板要在不重新扫的情况下知道最近一轮看到了什么）
@@ -238,9 +279,14 @@ async fn scan_loop(
                     });
                 }
             }
-            Err(e) => state
-                .logger
-                .warn("ble", format!("code=BLE_SCAN_FAILED 扫描失败：{e}")),
+            Err(e) => {
+                // 失败后把"上一轮稳态读数"清掉：下一次成功就是**恢复**，必须重新落一行
+                // （否则"扫描停了半小时又好了"在日志里完全看不出来）。
+                last_reported = None;
+                state
+                    .logger
+                    .warn("ble", format!("code=BLE_SCAN_FAILED 扫描失败：{e}"))
+            }
         }
         // 本轮结束：决定等多久再开下一轮。
         // 节奏由**应用是否在前台/聚焦**决定（用户 2026-09-13 的功耗策略）：前台 5s、后台 30s。

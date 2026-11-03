@@ -484,6 +484,10 @@ fn runtime_diag_reporter_is_wired_once_and_covers_webviews_and_queues() {
         // 缺了就只能再靠人肉数进程 —— 这正是 2026-11-03 那次归因要重做的原因。
         "file_opens={}",
         "file_syncs={}",
+        // 扫描台账降噪（2026-11-04）后稳态不再逐轮写日志 ⇒ "当时在不在扫、扫了多久"
+        // 只剩这一格能回答；缺了它，崩溃后就再没有任何蓝牙活动证据（这正是用户
+        // 在旧机器写盘与可诊断性之间要求"两样都留"的那条底线）。
+        "ble_scan_age_ms=",
     ] {
         assert!(
             body.contains(needle),
