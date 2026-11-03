@@ -345,6 +345,22 @@ pub const SHARE_SEND_FAILED: &str = "SHARE_SEND_FAILED";
 /// 通道设置：清理缓存任务失败（human 带底层原因）。
 pub const CHANNEL_CACHE_CLEAN_FAILED: &str = "CHANNEL_CACHE_CLEAN_FAILED";
 
+// ── B6 第九批：日志诊断 ────────────────────────────────────────────────────
+//
+// 这一族是"日志页/诊断包导出"的失败：读日志、清日志、写诊断包各自一格。
+// 它们都发生在用户明确点了按钮之后 ⇒ 前端那一档要说清"下一步"（重试 / 换个保存位置），
+// 而不是把 `spawn_blocking` 的中断串直接上屏。
+/// 运行日志读取失败（阻塞池中断，human 带底层原因）。
+pub const LOG_READ_FAILED: &str = "LOG_READ_FAILED";
+/// 清空运行日志失败（阻塞池中断，human 带底层原因）。
+pub const LOG_CLEAR_FAILED: &str = "LOG_CLEAR_FAILED";
+/// 诊断包导出任务本身没跑完（阻塞池中断，human 带底层原因）。
+pub const DIAG_EXPORT_JOIN_FAILED: &str = "DIAG_EXPORT_JOIN_FAILED";
+/// 诊断包导出：保存路径为空（界面没选落点）。
+pub const DIAG_EXPORT_PATH_EMPTY: &str = "DIAG_EXPORT_PATH_EMPTY";
+/// 诊断包导出：写盘失败（human 带底层原因，常见是目标目录只读/磁盘满）。
+pub const DIAG_EXPORT_WRITE_FAILED: &str = "DIAG_EXPORT_WRITE_FAILED";
+
 /// 给"可能已经带码"的下层错误补码：已带 `code=` 就原样透传，避免叠成两个码。
 ///
 /// 典型场景：通道启动会把 `network::start_from_prefs` 的 `PORT_IN_USE` 透传上来，

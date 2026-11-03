@@ -172,7 +172,10 @@ pub fn write_bundle(
     home: Option<&str>,
 ) -> Result<BundleSummary, String> {
     if destination.trim().is_empty() {
-        return Err("导出路径为空".to_string());
+        return Err(crate::error_codes::coded(
+            crate::error_codes::DIAG_EXPORT_PATH_EMPTY,
+            "导出路径为空",
+        ));
     }
     let sources = [
         ("本轮运行日志", logger.current_path()),
@@ -196,7 +199,12 @@ pub fn write_bundle(
         &crate::logging::format_utc(crate::logging::now_ms()),
         home,
     );
-    std::fs::write(destination, text.as_bytes()).map_err(|e| format!("写入诊断包失败：{e}"))?;
+    std::fs::write(destination, text.as_bytes()).map_err(|e| {
+        crate::error_codes::coded(
+            crate::error_codes::DIAG_EXPORT_WRITE_FAILED,
+            format!("写入诊断包失败：{e}"),
+        )
+    })?;
     Ok(BundleSummary {
         bytes: text.len() as u64,
         files,

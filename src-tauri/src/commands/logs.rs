@@ -94,7 +94,12 @@ pub async fn get_logs(
         Ok(s.logger.snapshot(since_ms))
     })
     .await
-    .map_err(|e| format!("运行日志读取被线程池中断: {e}"))?
+    .map_err(|e| {
+        crate::error_codes::coded(
+            crate::error_codes::LOG_READ_FAILED,
+            format!("运行日志读取被线程池中断: {e}"),
+        )
+    })?
 }
 
 /// 清空运行日志（内存 + 落盘文件）。
@@ -107,7 +112,12 @@ pub async fn clear_logs(state: tauri::State<'_, Arc<AppState>>) -> Result<(), St
         Ok(())
     })
     .await
-    .map_err(|e| format!("运行日志清空被线程池中断: {e}"))?
+    .map_err(|e| {
+        crate::error_codes::coded(
+            crate::error_codes::LOG_CLEAR_FAILED,
+            format!("运行日志清空被线程池中断: {e}"),
+        )
+    })?
 }
 
 /// 日志文件的**真实位置**（目录 / 本轮那份 / 崩溃现场）。
@@ -146,7 +156,12 @@ pub async fn export_diagnostics_bundle(
         crate::diagnostics::write_bundle(&s.logger, &destination, home.as_deref())
     })
     .await
-    .map_err(|e| format!("诊断包导出任务失败：{e}"))?
+    .map_err(|e| {
+        crate::error_codes::coded(
+            crate::error_codes::DIAG_EXPORT_JOIN_FAILED,
+            format!("诊断包导出任务失败：{e}"),
+        )
+    })?
 }
 
 /// **默认策略**：辅助窗口关闭时**销毁**。目前只剩设置与日志走这一条。
@@ -1357,7 +1372,9 @@ pub fn open_link_window(
 ) -> Result<(), String> {
     use tauri::{WebviewUrl, WebviewWindowBuilder};
     let url = validate_external_url(&url)?;
-    let parsed = url::Url::parse(&url).map_err(|_| "网址格式不正确".to_string())?;
+    let parsed = url::Url::parse(&url).map_err(|_| {
+        crate::error_codes::coded(crate::error_codes::LINK_URL_INVALID, "网址格式不正确")
+    })?;
     let bg = aux_window_background(&state);
     let trimmed = name.trim().to_string();
     let title = if trimmed.is_empty() {
