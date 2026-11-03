@@ -1908,6 +1908,7 @@ mesh 没有服务器也没有强制升级 ⇒ 混合版本是常态，不是边�
   `db::friend_request_store_tests::a_withdraw_with_a_different_request_id_does_not_remove_the_current_request`
   `protocol_tests::friend_withdraw_kinds_are_new_gossip_variants_and_the_bit_is_advertised`
   `lib_delivery_shape_tests::an_old_client_drops_an_unknown_gossip_kind_instead_of_breaking_the_link`
+  `lib_delivery_shape_tests::a_peer_that_never_advertised_withdraw_gets_no_replays`
 - 反向（每条都应实测变红）：把同意退回"先 add_friend 再删申请"两段 ⇒ 撤回先赢时同意仍能写进好友；
   去掉墓碑 ⇒ 迟到的重复申请重新弹；删掉能力位门控 ⇒ 老端收到不认识的帧；
   把出站只留内存 ⇒ 重启后 `pending_out_requests` 与界面同时清空。
