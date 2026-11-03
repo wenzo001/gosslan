@@ -14,6 +14,17 @@
 
 ## [Unreleased]
 
+## [5.17.14] - 2026-11-04
+
+### B6：文件命令的错误码（batch）
+
+- 粘贴图片校验（data URL / base64 / 非图片 / 格式 / 解码 / 体积 / 空）、图片另存、
+  越界删除、缺少内容指纹、文件归属不符、打开路径无法验证、群文件状态读取失败：
+  16 个码覆盖 18 处原话；human 原文不动，英文界面按码说话。
+- `reject_file` 并入 `reject_file_coded`：所有同步拒绝现在都同时带回码。
+- 基线：`request_content`、`send_file_auto`、`save_media_as` 归零；新增
+  `copy_file` / `read_file_preview`（`TOO_LARGE` 哨兵保留）与取回命令的 0 基线。
+
 ## [5.17.13] - 2026-11-04
 
 ### B6：设置/网络命令的错误码（batch）

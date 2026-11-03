@@ -113,6 +113,26 @@ const B6_CASES: &[(&str, &str, &str)] = &[
     ("RELAY_ENDPOINT_FORMAT_INVALID", "commands/relay.rs", "地址格式应为 ip 或 ip:port，收到：{trimmed}"),
     ("RELAY_TOKEN_TOO_LONG", "commands/relay.rs", "访问口令过长（{} 字符，上限 {} 字符）"),
     ("ROUTED_IPV6_UNSUPPORTED", "commands/routed.rs", "暂不支持 IPv6 地址（当前 TCP 监听仅 IPv4）。请填写 IPv4，例如 100.64.0.1"),
+    // ── B6 第七批：文件（本笔）─────────────────────────────────────────
+    ("IMAGE_DATA_URL_INVALID", "commands/files.rs", "非法的 data URL"),
+    ("IMAGE_BASE64_REQUIRED", "commands/files.rs", "只接受 base64 编码的 data URL"),
+    ("IMAGE_NOT_IMAGE", "commands/files.rs", "只接受图片文件"),
+    ("IMAGE_FORMAT_UNSUPPORTED", "commands/files.rs", "不支持的图片格式"),
+    ("IMAGE_EMPTY", "commands/files.rs", "图片内容为空"),
+    ("IMAGE_DECODE_FAILED", "commands/files.rs", "图片解码失败：{e}"),
+    ("IMAGE_TOO_LARGE", "commands/files.rs", "图片过大（{} > {}），请压缩后重试"),
+    ("IMAGE_TOO_LARGE", "commands/helpers.rs", "图片过大（{} 字节，上限 {} 字节），未保存"),
+    ("IMAGE_SAVE_FAILED", "commands/files.rs", "图片保存失败：{e}"),
+    ("IMAGE_SOURCE_MISSING", "commands/helpers.rs", "缺少图片来源"),
+    ("FILE_DELETE_OUTSIDE_DOWNLOADS", "commands/files.rs", "只能删除下载目录内的文件"),
+    ("FILE_NO_CONTENT_ID", "commands/files.rs", "这条内容没有内容指纹，无法取消"),
+    ("FILE_NO_CONTENT_ID", "commands/files.rs", "这条内容没有内容指纹（对方版本较旧），无法重新获取"),
+    ("FILE_NO_CONTENT_ID", "commands/files.rs", "这条内容没有内容指纹，无法重新获取"),
+    ("FILE_NOT_OWNED_BY_MESSAGE", "commands/files.rs", "这个文件不属于这条消息，已拒绝转发"),
+    ("FILE_NOT_OWNED_BY_MESSAGE", "commands/helpers.rs", "这个文件不属于这条消息，已拒绝保存"),
+    ("OPEN_PATH_NOT_OWNED", "commands/files.rs", "这个文件不属于这条消息，已拒绝打开"),
+    ("OPEN_PATH_UNVERIFIED", "commands/files.rs", "无法确认这个文件属于本应用，已拒绝打开"),
+    ("GFILE_MY_STATUS_READ_FAILED", "commands/files.rs", "群文件「我的状态」读不出来（transfer={}）"),
 ];
 
 /// human 是下层原话、没有字面量的触发点：只守"码真的挂在这里"，
@@ -127,6 +147,8 @@ const B6_DYNAMIC_HUMAN: &[(&str, &str)] = &[
     // 系统通知：权限被限制 / 发送失败的原话都来自平台侧，不能改写成固定文案
     ("NOTIFY_PERMISSION_DENIED", "commands/network.rs"),
     ("NOTIFY_SEND_FAILED", "commands/network.rs"),
+    // 取本地媒体路径失败：human 是解析链给出的原因（可能已经带码）
+    ("FILE_PATH_UNRESOLVED", "commands/helpers.rs"),
 ];
 
 /// B6 白名单命令的"未带码 return Err"存量基线（只减不增）。
@@ -142,8 +164,8 @@ const B6_COMMAND_UNCODED_BASELINE: &[(&str, &str, usize)] = &[
     ("chat.rs", "resend_message", 0),
     ("chat.rs", "mark_read", 0),
     ("files.rs", "open_file_native", 0),
-    ("files.rs", "request_content", 1),
-    ("files.rs", "send_file_auto", 1),
+    ("files.rs", "request_content", 0),
+    ("files.rs", "send_file_auto", 0),
     ("group_files.rs", "send_group_message", 2),
     ("group_files.rs", "send_group_todo", 2),
     ("group_files.rs", "update_group_todo", 4),
@@ -159,7 +181,11 @@ const B6_COMMAND_UNCODED_BASELINE: &[(&str, &str, usize)] = &[
     ("groups.rs", "leave_group", 0),
     ("channel.rs", "set_channel_enabled", 0),
     ("helpers.rs", "copy_file_to_clipboard", 0),
-    ("helpers.rs", "save_media_as", 3),
+    ("helpers.rs", "copy_file", 0),
+    ("helpers.rs", "read_file_preview", 1), // "TOO_LARGE" 是前端契约哨兵，保留不译
+    ("helpers.rs", "save_media_as", 0),
+    ("files.rs", "cancel_content_fetch", 0),
+    ("files.rs", "request_content_by_cid", 0),
     // B6 第六批：设置/网络（命令名与 human 同上表；现在都是 0，锁住不回涨）
     ("network.rs", "focus_window", 0),
     ("network.rs", "send_test_notification", 0),
@@ -206,7 +232,18 @@ fn b6_codes_are_bound_to_the_original_human_text() {
             .find(&marker_full)
             .or_else(|| src.find(&marker_short))
         else {
-            panic!("{rel} 里找不到 `coded({code}, …)`：这个触发点没带码");
+            // `reject_file_coded(&s, action, reason, 码, "原文")` 把码当参数传，形状里没有
+            // `coded(码,`；这一段按"同一调用内码与原文同现"来守（与 reject 家族其它码同口径）。
+            let wrapped_ok = src.match_indices("reject_file_coded(").any(|(i, _)| {
+                let window: String = src[i..].chars().take(500).collect();
+                window.contains(&format!("error_codes::{code},"))
+                    && window.contains(&format!("\"{human_flat}\""))
+            });
+            assert!(
+                wrapped_ok,
+                "{rel} 里找不到把 {code} 挂到原文上的调用（coded(码, …) 或 reject_file_coded(…, 码, …)）：这个触发点没带码"
+            );
+            continue;
         };
         // 按字符截断，别在中文 UTF-8 字节中间切（切片会 panic）。
         let window: String = src[at..].chars().take(400).collect();
@@ -278,7 +315,12 @@ fn count_uncoded_return_err(body: &str) -> usize {
     let body = flat(body);
     let total = body.matches("returnErr(").count();
     let coded = body.matches("returnErr(crate::error_codes::coded(").count()
-        + body.matches("returnErr(coded(").count();
+        + body.matches("returnErr(coded(").count()
+        + body
+            .matches("returnErr(crate::error_codes::coded_if_uncoded(")
+            .count()
+        // reject 家族里只有 `reject_file_coded` 自带码；其它 `reject_*` 仍返回裸人话。
+        + body.matches("returnErr(reject_file_coded(").count();
     total.saturating_sub(coded)
 }
 
