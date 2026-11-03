@@ -157,11 +157,14 @@ export default {
       secondHome: "src-tauri/src/discovery",
       secondHomeStatus: "未接线",
       enforce: false,
-      consumes: ["routing", "messaging", "transport", "observability"], // 实测:discovery/* 用 mesh(→routing) + protocol(→messaging)；旧家 network/discovery.rs 还用 network::transport(→transport)
+      consumes: ["routing", "messaging", "transport", "observability", "persistence"], // 实测:discovery/* 用 mesh(→routing) + protocol(→messaging)；旧家 network/discovery.rs 还用 network::transport(→transport)
       // ↑ 第 4 项是 5.15.26（DUP-03 墙上时钟收一家）加的：`sweep_peers` 要的"现在几点"改从
       // `logging::now_ms` 这一个家取。当时棘轮当场报「内联跨域引用对数 7 超过上限 6」——
       // 它盯的是**判据看不见的写法**（内联 `crate::logging::…` 且本域没有任何对应的 use），
       // 修法是按判据自己给的两条里选①：改成顶层 `use` 并写进 consumes，让这条依赖回到看得见的地方。
+      // ↑ 第 5 项是 5.17.6（按需跨网段探测）加的：`broadcast_probe` 要读用户配置的 routed
+      // 端点（`db::get_setting_checked`）。原来那条内联写法当场让内联对数 6→7 判红，
+      // 同样按①收口：改成顶层 `use crate::db::get_setting_checked` 并登记在这里。
       // ⚠️ 上限调大是被明令禁止的（"那等于把洞又变成沉默的"）。
       // ⚠️ 本字段在 docs/ARCHITECTURE-MAP.html 有一份手抄快照，`check-domain-map.mjs` **不对账它**
       //（2026-10-29 现读：那个脚本里没有 cons/consumes 字样）⇒ 改这里必须同改那一行，没有东西会替你红。
