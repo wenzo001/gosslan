@@ -2,62 +2,15 @@
   "version": 1,
   "note": "存量基线：只允许减少。新增一条用户可见硬编码中文必须判红；确属有意（如语言自指名）请改文案或在此登记并说明理由。",
   "entries": {
-    "src/api/index.ts": {
-      "；": 1,
-      "`${errors.length}/${registrations.length} 个事件监听注册失败：${errors.join(\"；\")}`": 1
-    },
     "src/boot/boot.ts": {
       "(位置未知)": 1
-    },
-    "src/components/chat/MessageComposer.vue": {
-      "：": 1,
-      "`${t('common.quote')} ${quote.sender}：${quote.snippet}`": 1
-    },
-    "src/components/ChatWindow.vue": {
-      "，": 1
-    },
-    "src/components/conversation/ConversationListItem.vue": {
-      "，": 1
     },
     "src/components/DevDiagPanel.vue": {
       "join_multicast：": 1,
       "multicast_if：": 1
     },
     "src/components/FavoritePanel.vue": {
-      "：": 1,
-      "`${i.sender}：${mergeItemLine(i)}`": 1
-    },
-    "src/components/FriendProfile.vue": {
-      "：": 1,
-      "： …": 1
-    },
-    "src/components/GroupTasksBoard.vue": {
-      "、": 1
-    },
-    "src/components/message/MergeCard.vue": {
       "：": 1
-    },
-    "src/components/message/MessageReactionBar.vue": {
-      "、": 1,
-      "`${t(\"msg.reactionWho\", { n: c.count })}：${who}${rest}`": 1
-    },
-    "src/components/settings/NetworkSection.vue": {
-      "`${head}（${t(\"settings.network.relayServer.probe.triedLabel\")} ${p.tried}·${p.detail}）`": 1,
-      "`${i.name}（${i.ip}）`": 1,
-      "`${t(\"chat.eventBindFail\")}：${e instanceof Error ? e.message : String(e)}`": 1
-    },
-    "src/components/TaskCenter.vue": {
-      "`${t(actionLabel[act])}：${rowTitle(row)}`": 1
-    },
-    "src/components/TodoDetailDialog.vue": {
-      "、": 3
-    },
-    "src/stores/useChatStore.ts": {
-      "`${t(\"send.fileFail\")}：${fileFailReasonText(d.reason, t)}`": 1
-    },
-    "src/utils/cardText.ts": {
-      "`${t(\"favorite.cardKind.poll\")}：${question}`": 1,
-      "`${t(\"favorite.cardKind.todo\")}：${title}`": 1
     },
     "src/utils/concurrencyGate.ts": {
       "`并发上限必须是正整数：${max}`": 1
@@ -83,14 +36,6 @@
       "」": 3,
       "`「${t(\"common.quote\")} ${firstLine.slice(QUOTE_PREFIX.length)}`": 1,
       "`${QUOTE_PREFIX}${sender}：${snippet}${id}${QUOTE_SUFFIX}`": 1
-    },
-    "src/utils/validation.ts": {
-      "`${label} 参数非法：${issue?.message ?? \"schema mismatch\"}`": 1,
-      "`${label} 返回了非法数据${where}：${issue?.message ?? \"schema mismatch\"}`": 2,
-      "`路径过长（上限 ${MAX_IPC_PATH_CHARS} 字符）`": 1,
-      "`消息过长（上限 ${MAX_MESSAGE_CHARS} 字符）`": 1,
-      "路径不能包含 NUL": 1,
-      "路径不能为空": 1
     }
   }
 }

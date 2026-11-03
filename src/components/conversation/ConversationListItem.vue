@@ -100,7 +100,7 @@ const rowAriaLabel = computed(() => {
   if (props.online !== null) parts.push(t(props.online ? "common.online" : "common.offline"));
   if (mentioned.value) parts.push(t("msg.mentioned"));
   if (openTasks.value > 0) parts.push(t("todo.openForMe", { n: openTasks.value }));
-  return parts.join("，");
+  return parts.join(t("common.sep.comma"));
 });
 
 function onContextMenu(conv: Conversation, e: MouseEvent) {

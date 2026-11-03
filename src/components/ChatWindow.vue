@@ -1495,7 +1495,7 @@ async function batchFavorite() {
     const parts = [t("multi.favoriteDone", { n: r.added })];
     if (r.already) parts.push(t("multi.favoriteAlready", { n: r.already }));
     if (r.failed) parts.push(t("multi.favoriteFailed", { n: r.failed }));
-    app.toast(parts.join("，"), r.failed ? "error" : "success");
+    app.toast(parts.join(t("common.sep.comma")), r.failed ? "error" : "success");
     exitMultiSelect();
   } catch (e) {
     app.toastError(e, t("favorite.addFail"));

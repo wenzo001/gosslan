@@ -48,6 +48,12 @@ export function charCount(s: string): number {
  * 而且中文 message 看起来像 UI 文案、实则没人显示它 —— 两处调用点本来就自己 t()。
  * ⇒ 这里只出**键**，上屏的地方 `t(issue.message, { max })`；`max` 由调用方用同一个常量传，
  * 所以输入框的 `:maxlength`、schema 的判据、提示里的数字是同一个数（本仓最怕的"三份规则"）。
+ *
+ * ## 文案分组（B4）
+ * - **上屏组**（本节的表单 schema：群名 / 昵称）：message 是**词典键**，调用点 `t()` 翻译。
+ * - **开发组**（文件下半段的 IPC 边界：返回值 schema、入参 schema、`assertIpcInput` 包装）：
+ *   这些都是"调用方写错了"的信号（schema 不匹配、路径里带 NUL、超长），正常用户操作到不了，
+ *   所以文案**保持英文**、不写词典、也不翻译 —— 它出现在日志和开发面板里，不进界面。
  */
 const trimmedNonEmpty = (max: number, emptyKey: string, tooLongKey: string) =>
   z.string().check(
@@ -132,7 +138,8 @@ export function parseIpcValue<T>(
   if (!parsed.success) {
     const issue = parsed.error.issues[0];
     const where = issue && issue.path.length ? ` @ ${issue.path.join(".")}` : "";
-    throw new Error(`${label} 返回了非法数据${where}：${issue?.message ?? "schema mismatch"}`);
+    // 开发组：文案保持英文（见文件头「文案分组」）。
+    throw new Error(`${label}: returned invalid data${where} (${issue?.message ?? "schema mismatch"})`);
   }
   return parsed.data;
 }
@@ -150,7 +157,8 @@ export function parseIpcList<T>(
   if (!parsed.success) {
     const issue = parsed.error.issues[0];
     const where = issue && issue.path.length ? ` @ ${issue.path.join(".")}` : "";
-    throw new Error(`${label} 返回了非法数据${where}：${issue?.message ?? "schema mismatch"}`);
+    // 开发组：文案保持英文（见文件头「文案分组」）。
+    throw new Error(`${label}: returned invalid data${where} (${issue?.message ?? "schema mismatch"})`);
   }
   return parsed.data;
 }
@@ -166,9 +174,9 @@ export const MAX_IPC_PATH_CHARS = 4096;
 
 /** 文件路径入参：非空、有上界、不含 NUL（后端 `CString`/`File::open` 都会被 NUL 截断）。 */
 export const ipcPathSchema = z.string().check(
-  z.minLength(1, "路径不能为空"),
-  z.refine((s) => !s.includes("\0"), "路径不能包含 NUL"),
-  z.refine((s) => s.length <= MAX_IPC_PATH_CHARS, `路径过长（上限 ${MAX_IPC_PATH_CHARS} 字符）`),
+  z.minLength(1, "path must not be empty"),
+  z.refine((s) => !s.includes("\0"), "path must not contain NUL"),
+  z.refine((s) => s.length <= MAX_IPC_PATH_CHARS, `path too long (max ${MAX_IPC_PATH_CHARS} chars)`),
 );
 
 /** 消息正文上限：**必须等于** Rust `commands::MAX_MESSAGE_LEN`（有跨语言判据）。 */
@@ -177,7 +185,7 @@ export const MAX_MESSAGE_CHARS = 50_000;
 export const ipcMessageTextSchema = z.string().check(
   z.refine(
     (s) => charCount(s) <= MAX_MESSAGE_CHARS,
-    `消息过长（上限 ${MAX_MESSAGE_CHARS} 字符）`,
+    `message too long (max ${MAX_MESSAGE_CHARS} chars)`,
   ),
 );
 
@@ -190,7 +198,7 @@ export function assertIpcInput<T>(
   const parsed = schema.safeParse(value);
   if (!parsed.success) {
     const issue = parsed.error.issues[0];
-    throw new Error(`${label} 参数非法：${issue?.message ?? "schema mismatch"}`);
+    throw new Error(`${label}: invalid argument (${issue?.message ?? "schema mismatch"})`);
   }
   return parsed.data;
 }

@@ -542,6 +542,11 @@ export const enUS: MessageDict = {
   "common.download": "Download",
   "common.forward": "Forward",
   "common.quote": "Quote",
+  "common.sep.colon": ": ",
+  "common.sep.comma": ", ",
+  "common.sep.list": ", ",
+  "common.sep.semicolon": "; ",
+  "common.sep.parens": " ({value})",
   "common.expand": "Expand",
   "common.delete": "Delete",
   "common.deleteFriend": "Remove Friend",
@@ -1513,4 +1518,7 @@ export const enUS: MessageDict = {
   "multi.deleteFail": "Failed to delete",
   "multi.deleteConfirm": "Delete {n} messages from this device? This cannot be undone (others still see them).",
   "multi.tooMany": "Merged forward supports at most {n} messages",
+
+  // ---- IPC 层（`api/index.ts`）----
+  "api.eventListenFail": "{failed}/{total} event listeners failed to register: {errors}",
 };

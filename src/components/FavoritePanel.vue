@@ -475,7 +475,7 @@ async function copyItem(f: FavoriteEntry) {
       // 合并转发的"复制"＝复制展开后的文字记录（复制一段 JSON 对用户没有意义）
       const p = parseMergePayload(f.content);
       const text = p
-        ? [p.title, ...p.items.map((i) => `${i.sender}：${mergeItemLine(i)}`)].join("\n")
+        ? [p.title, ...p.items.map((i) => `${i.sender}${t("common.sep.colon")}${mergeItemLine(i)}`)].join("\n")
         : mergeSummary(f.content);
       await copyContent("favorite", text);
       app.toast(t("common.copied"), "success");

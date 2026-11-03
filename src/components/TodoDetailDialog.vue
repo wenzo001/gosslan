@@ -85,7 +85,9 @@ const emit = defineEmits<{
   (e: "remove"): void;
 }>();
 
-const assignees = computed(() => (props.item?.assignees ?? []).map((id) => props.nameOf(id)).join("、"));
+const assignees = computed(() =>
+  (props.item?.assignees ?? []).map((id) => props.nameOf(id)).join(t("common.sep.list")),
+);
 const creator = computed(() => (props.item?.creator ? props.nameOf(props.item.creator) : ""));
 
 function statusText(s: TodoStatus): string {
@@ -187,9 +189,13 @@ function changeText(c: TodoHistoryChange): string {
         to: categoryName(c.to, c.toCustom),
       });
     case "assignees_add":
-      return t("todo.history.assigneesAdd", { names: (c.ids ?? []).map(nameOf).join("、") });
+      return t("todo.history.assigneesAdd", {
+        names: (c.ids ?? []).map(nameOf).join(t("common.sep.list")),
+      });
     case "assignees_remove":
-      return t("todo.history.assigneesRemove", { names: (c.ids ?? []).map(nameOf).join("、") });
+      return t("todo.history.assigneesRemove", {
+        names: (c.ids ?? []).map(nameOf).join(t("common.sep.list")),
+      });
     case "archived": return t("todo.history.archived");
     case "restored": return t("todo.history.restored");
     case "deleted": return t("todo.history.deleted");

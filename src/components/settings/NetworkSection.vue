@@ -68,7 +68,10 @@ const lanStateText = computed(() => {
 });
 const interfaceOptions = computed(() => [
   { value: "0.0.0.0", label: t("settings.network.interface.auto") },
-  ...app.interfaces.map((i) => ({ value: i.ip, label: `${i.name}（${i.ip}）` })),
+  ...app.interfaces.map((i) => ({
+    value: i.ip,
+    label: `${i.name}${t("common.sep.parens", { value: i.ip })}`,
+  })),
 ]);
 const relayPolicyOptions = computed(() => [
   { value: "all", label: t("settings.relay.policy.all") },
@@ -174,7 +177,7 @@ async function rebindEvents() {
     );
   } catch (e) {
     app.toast(
-      `${t("chat.eventBindFail")}：${e instanceof Error ? e.message : String(e)}`,
+      `${t("chat.eventBindFail")}${t("common.sep.colon")}${e instanceof Error ? e.message : String(e)}`,
       "error",
     );
   } finally {
@@ -365,7 +368,8 @@ const relayProbeLine = computed(() => {
   if (!p) return "";
   const head = t(`settings.network.relayServer.probe.${p.kind}`);
   // 技术细节挂在同一行：抄给"部署服务器的那个人"看时，只有这句有用。
-  return `${head}（${t("settings.network.relayServer.probe.triedLabel")} ${p.tried}·${p.detail}）`;
+  const detail = `${t("settings.network.relayServer.probe.triedLabel")} ${p.tried}·${p.detail}`;
+  return `${head}${t("common.sep.parens", { value: detail })}`;
 });
 
 /**

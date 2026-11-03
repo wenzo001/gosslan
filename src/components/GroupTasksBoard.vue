@@ -397,7 +397,7 @@ function statusText(s: TodoStatus): string {
 
 /** 指派人名（顿号连接；空 = 未指派）。 */
 function assigneeNames(x: TodoItem): string {
-  return x.assignees.map((a) => memberProfile(a).name).join("、");
+  return x.assignees.map((a) => memberProfile(a).name).join(t("common.sep.list"));
 }
 
 // ---------------- 权限（显示用的镜像，后端才是权威） ----------------

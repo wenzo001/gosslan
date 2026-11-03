@@ -454,7 +454,7 @@ async function openConversation(row: OperationRow) {
                 : 'border-[var(--gosslan-border)] text-[var(--gosslan-text-2)] hover:bg-[var(--gosslan-hover)]'
             "
             :disabled="busy === `${row.id}|${act}`"
-            :aria-label="`${t(actionLabel[act])}：${rowTitle(row)}`"
+            :aria-label="`${t(actionLabel[act])}${t('common.sep.colon')}${rowTitle(row)}`"
             @click="runAction(row, act)"
           >
             <span v-if="busy === `${row.id}|${act}`" class="inline-flex items-center gap-1">

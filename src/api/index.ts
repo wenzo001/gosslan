@@ -17,6 +17,8 @@ import {
 import type { PreviewGallery, PreviewImage } from "@/types";
 import type { UpdaterDownloadEvent, UpdaterInfo, UpdaterStatus } from "@/types";
 import { beginOp, endOp } from "@/utils/ipcTracker";
+// 「事件监听注册失败」是用户可见的错误（重连失败时会直接弹在界面上），跟着界面语言走。
+import { t } from "@/i18n";
 
 /** 路径入参统一过 `ipcPathSchema`（审计 P1 #10：入参侧此前 0 处校验）。 */
 const pathArg = (v: string, label: string): string =>
@@ -1070,7 +1072,11 @@ export async function bindEvents(h: EventHandlers): Promise<UnlistenFn[]> {
       }
     }
     throw new Error(
-      `${errors.length}/${registrations.length} 个事件监听注册失败：${errors.join("；")}`,
+      t("api.eventListenFail", {
+        failed: errors.length,
+        total: registrations.length,
+        errors: errors.join(t("common.sep.semicolon")),
+      }),
     );
   }
   return unlisteners;

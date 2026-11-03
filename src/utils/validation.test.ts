@@ -85,7 +85,7 @@ test("搜索命中 IPC 行：嵌套消息也校验；未知 kind 必须放行（
   );
   assert.throws(
     () => parseIpcList(chatSearchGroupSchema, [{ ...group, messages: [{ ...msg, ts: "1" }] }], "search_chat_history"),
-    /search_chat_history 返回了非法数据 @ 0\.messages\.0\.ts/,
+    /search_chat_history: returned invalid data @ 0\.messages\.0\.ts/,
   );
 });
 
@@ -93,11 +93,11 @@ test("parseIpcList：坏行抛错并带命令名与字段路径，不把坏数�
   assert.deepEqual(parseIpcList(shareEntrySchema, [], "request_share_tree"), []);
   assert.throws(
     () => parseIpcList(shareEntrySchema, [{ name: "a", path: "/a", is_dir: 1, size: 0 }], "request_share_tree"),
-    /request_share_tree 返回了非法数据 @ 0\.is_dir/,
+    /request_share_tree: returned invalid data @ 0\.is_dir/,
   );
   assert.throws(
     () => parseIpcList(shareEntrySchema, { not: "an array" }, "request_share_tree"),
-    /request_share_tree 返回了非法数据/,
+    /request_share_tree: returned invalid data/,
   );
 });
 
@@ -109,7 +109,7 @@ test("parseIpcValue：共享目录树必须是 { entries, truncated }，旧形�
   // 旧后端只返回裸数组 ⇒ 必须报错（否则界面读到 `undefined` 的截断位，提示永远不出现）
   assert.throws(
     () => parseIpcValue(shareTreeSchema, [], "request_share_tree"),
-    /request_share_tree 返回了非法数据/,
+    /request_share_tree: returned invalid data/,
   );
   assert.throws(
     () =>
@@ -118,7 +118,7 @@ test("parseIpcValue：共享目录树必须是 { entries, truncated }，旧形�
         { entries: [{ name: "a", path: "/a", is_dir: false, size: 1 }] },
         "request_share_tree",
       ),
-    /request_share_tree 返回了非法数据 @ truncated/,
+    /request_share_tree: returned invalid data @ truncated/,
   );
 });
 
@@ -260,11 +260,11 @@ test("消息正文上限与 Rust `commands::MAX_MESSAGE_LEN` 现读对账（跨�
 
 test("assertIpcInput：抛错带命令名与原因，不放非法值进后端", () => {
   assert.equal(assertIpcInput(ipcPathSchema, "/tmp/a", "x.path"), "/tmp/a");
-  assert.throws(() => assertIpcInput(ipcPathSchema, "", "copy_file.source"), /copy_file\.source 参数非法/);
-  assert.throws(() => assertIpcInput(ipcPathSchema, null, "delete_file.path"), /delete_file\.path 参数非法/);
+  assert.throws(() => assertIpcInput(ipcPathSchema, "", "copy_file.source"), /copy_file\.source: invalid argument/);
+  assert.throws(() => assertIpcInput(ipcPathSchema, null, "delete_file.path"), /delete_file\.path: invalid argument/);
   assert.throws(
     () => assertIpcInput(ipcMessageTextSchema, "字".repeat(MAX_MESSAGE_CHARS + 1), "send_message.content"),
-    /send_message\.content 参数非法.*消息过长/,
+    /send_message\.content: invalid argument.*message too long/,
   );
 });
 
