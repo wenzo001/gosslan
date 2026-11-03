@@ -1,7 +1,18 @@
 // 职责边界：
 // - 本机信息采集（设备 ID、系统版本、网卡）
 // - 虚拟 IP 判断（is_virtual_ip，被 transport/discovery 引用）
+// - 本机后端构建版本（前端启动时对账，见 `src/utils/versionGuard.ts`）
 // ---------------- 本机信息与配置 ----------------
+
+/// 后端构建版本（= `Cargo.toml` 的 `package.version`）。
+///
+/// 只回答“这个进程里跑的后端是哪个版本”。前端启动时拿它与自己打包时的版本比对：
+/// Tauri 正式包的资源内嵌在 exe 里，正常情况下二者必然一致；一旦不一致，说明当前
+/// 进程不是磁盘上那份新构建（例如升级后旧进程仍驻留），提示用户完全退出再打开。
+#[tauri::command(async)]
+pub fn get_app_version() -> &'static str {
+    crate::protocol::current_app_version()
+}
 
 #[tauri::command(async)]
 pub fn get_device_info(state: State<'_, Arc<AppState>>) -> DeviceInfo {

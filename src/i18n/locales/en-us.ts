@@ -331,6 +331,9 @@ export const enUS: MessageDict = {
   "hang.escalated": "It has been {seconds}s. You can keep waiting or restart the app.",
   "hang.wait": "Keep waiting",
   "hang.restart": "Restart app",
+  "versionMismatch.title": "Version mismatch detected",
+  "versionMismatch.body": "Frontend {frontend} / backend {backend}. Quit completely and reopen.",
+  "versionMismatch.restart": "Restart now",
   "boot.title": "The UI did not start",
   "boot.body":
     "An error occurred during startup (UI_BOOT_FAILED). Try reloading; if it keeps happening, copy the error and send it to us.",
