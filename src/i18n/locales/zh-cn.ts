@@ -337,6 +337,19 @@ export const zhCN: MessageDict = {
   "boot.reload": "重新加载",
   "boot.copy": "复制错误",
   "boot.restart": "重启应用",
+  // ---- 启动失败窗（`entries/startup-error.ts`）----
+  // ⚠️ 这扇窗是**独立入口**，不跑 Vue 挂载；界面文案只在这里与 `startup-error.html` 静态壳里。
+  "startupError.windowError": "这个窗口自己出错了：{error}",
+  "startupError.desc": "下面是这一次启动失败的原因与它给出的错误码。",
+  "startupError.descUnavailable": "失败原因读不出来（后端没有应答）。",
+  "startupError.readFailed": "读取失败原因时出错：{error}",
+  "startupError.retrying": "正在重试…",
+  "startupError.recovered": "已恢复，正在进入应用…",
+  "startupError.retryFailed": "仍然打不开。可以修好之后（挂载回来 / 释放占用 / 改对权限）再点一次重试。",
+  "startupError.openedDataDir": "已打开数据目录：{path}",
+  "startupError.openDirFailed": "打开数据目录失败：{error}",
+  "startupError.quitting": "正在退出…",
+  "startupError.quitFailed": "退出请求失败：{error}。可以手动结束这个进程。",
   "settings.network.toast.btPermissionHint":
     "若仍无法开启：请到「系统设置 → 应用 → 小院儿 → 权限」里允许「附近的设备」，然后重试。",
   "settings.network.routed": "跨网段连接",

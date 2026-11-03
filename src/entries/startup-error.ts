@@ -11,6 +11,9 @@
  */
 import { api } from "@/api";
 import { dismissBoot } from "@/boot/boot";
+// 语言偏好由 i18n 模块在加载时从 localStorage 读（`gosslan.locale`），跟随系统时按系统语言解析；
+// 这扇窗不跑 Vue 挂载，但 `t()` 是一次性取「当前时刻」的文案，不依赖响应式。
+import { t } from "@/i18n";
 import "./startup-error.css";
 
 function text(id: string): HTMLElement | null {
@@ -41,7 +44,7 @@ function setBusy(busy: boolean): void {
 }
 
 window.onerror = (message) => {
-  setStatus(`这个窗口自己出错了：${String(message)}`, "error");
+  setStatus(t("startupError.windowError", { error: String(message) }), "error");
   // 返回 false：仍让原始错误进控制台，方便接 devtools 时看得更全。
   return false;
 };
@@ -50,27 +53,27 @@ async function loadInfo(): Promise<void> {
   try {
     const info = await api.startupErrorInfo();
     if (detailEl) detailEl.textContent = info.message;
-    if (descEl) descEl.textContent = "下面是这一次启动失败的原因与它给出的错误码。";
+    if (descEl) descEl.textContent = t("startupError.desc");
     if (dataDirEl) dataDirEl.textContent = info.dataDir;
     if (logDirEl) logDirEl.textContent = info.logDir;
     if (dirsEl) dirsEl.hidden = false;
   } catch (e) {
     // 连文案都取不到时**不许留白**：至少让用户知道发生了什么、能按哪个键走。
-    if (descEl) descEl.textContent = "失败原因读不出来（后端没有应答）。";
-    setStatus(`读取失败原因时出错：${String(e)}`, "error");
+    if (descEl) descEl.textContent = t("startupError.descUnavailable");
+    setStatus(t("startupError.readFailed", { error: String(e) }), "error");
   }
 }
 
 async function onRetry(): Promise<void> {
   setBusy(true);
-  setStatus("正在重试…");
+  setStatus(t("startupError.retrying"));
   try {
     await api.startupErrorRetry();
     // 成功时 Rust 侧会关掉这扇窗并让主窗口按正常启动的路子重新走一遍；
     // 这句只是在那之前给一眼反馈（窗口可能已经先消失了，属正常）。
-    setStatus("已恢复，正在进入应用…");
+    setStatus(t("startupError.recovered"));
   } catch (e) {
-    setStatus("仍然打不开。可以修好之后（挂载回来 / 释放占用 / 改对权限）再点一次重试。", "error");
+    setStatus(t("startupError.retryFailed"), "error");
     // 文案要换成**这一轮**的原因：Rust 侧已经把 message 更新，这里重新取一次，
     // 否则用户看到的还是首启那条，会误判成"重试根本没跑"。
     await loadInfo();
@@ -82,19 +85,19 @@ async function onRetry(): Promise<void> {
 async function onOpenDir(): Promise<void> {
   try {
     const opened = await api.startupErrorOpenDataDir();
-    setStatus(`已打开数据目录：${opened}`);
+    setStatus(t("startupError.openedDataDir", { path: opened }));
   } catch (e) {
-    setStatus(`打开数据目录失败：${String(e)}`, "error");
+    setStatus(t("startupError.openDirFailed", { error: String(e) }), "error");
   }
 }
 
 async function onQuit(): Promise<void> {
   setBusy(true);
-  setStatus("正在退出…");
+  setStatus(t("startupError.quitting"));
   try {
     await api.startupErrorQuit();
   } catch (e) {
-    setStatus(`退出请求失败：${String(e)}。可以手动结束这个进程。`, "error");
+    setStatus(t("startupError.quitFailed", { error: String(e) }), "error");
     setBusy(false);
   }
 }
