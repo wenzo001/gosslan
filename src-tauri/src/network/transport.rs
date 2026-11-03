@@ -210,7 +210,8 @@ pub(crate) async fn send_presence_probe_to_relays(state: &AppState) {
             .ok()
             .flatten()
     };
-    let Some(server) = server_raw.and_then(|s| parse_endpoint_addr_on(&s, RELAY_DEFAULT_PORT)) else {
+    let Some(server) = server_raw.and_then(|s| parse_endpoint_addr_on(&s, RELAY_DEFAULT_PORT))
+    else {
         return;
     };
     let peers: Vec<String> = {
