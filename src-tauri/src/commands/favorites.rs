@@ -282,7 +282,10 @@ pub async fn read_favorite_preview(
             MediaPath::Present(p) => *p,
             MediaPath::Unknown(e) => return Err(e),
             MediaPath::Gone => {
-                return Err(reject_favorite(&s, "preview", "file_gone", "文件不存在"))
+                return Err(crate::error_codes::coded(
+                    crate::error_codes::FILE_NOT_FOUND,
+                    reject_favorite(&s, "preview", "file_gone", "文件不存在"),
+                ))
             }
         };
         let meta = std::fs::metadata(&file).map_err(|e| e.to_string())?;
@@ -387,7 +390,9 @@ pub async fn read_content_preview(
     let file = match located {
         Located::Local(p) => p,
         Located::Sourced(path, owner) => {
-            let f = std::fs::canonicalize(&path).map_err(|_| "文件不存在".to_string())?;
+            let f = std::fs::canonicalize(&path).map_err(|_| {
+                crate::error_codes::coded(crate::error_codes::FILE_NOT_FOUND, "文件不存在")
+            })?;
             let under_downloads = std::fs::canonicalize(
                 s.downloads_dir
                     .lock()
@@ -406,7 +411,10 @@ pub async fn read_content_preview(
     };
     let meta = std::fs::metadata(&file).map_err(|e| e.to_string())?;
     if !meta.is_file() {
-        return Err(reject_favorite(&s, "content_preview", "file_gone", "文件不存在"));
+        return Err(crate::error_codes::coded(
+            crate::error_codes::FILE_NOT_FOUND,
+            reject_favorite(&s, "content_preview", "file_gone", "文件不存在"),
+        ));
     }
     if meta.len() > max_bytes {
         return Err(reject_favorite(&s, "content_preview", "too_large", "TOO_LARGE"));

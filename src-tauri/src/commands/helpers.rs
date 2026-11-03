@@ -60,7 +60,10 @@ pub async fn copy_file_to_clipboard(path: String) -> Result<(), String> {
         {
             use clipboard_win::Setter;
             if !std::path::Path::new(&path).is_file() {
-                return Err(format!("文件不存在或不可访问：{path}"));
+                return Err(crate::error_codes::coded(
+                    crate::error_codes::FILE_NOT_FOUND,
+                    format!("文件不存在或不可访问：{path}"),
+                ));
             }
             let _clip = clipboard_win::Clipboard::new_attempts(10)
                 .map_err(|e| format!("无法访问系统剪贴板：{e}"))?;
@@ -164,10 +167,15 @@ pub async fn save_media_as(
             let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());
             crate::content::store::find_local_path(&dbc, cid)
         }
-        .ok_or_else(|| "文件不存在".to_string())?;
+        .ok_or_else(|| {
+            crate::error_codes::coded(crate::error_codes::FILE_NOT_FOUND, "文件不存在")
+        })?;
         let file = std::fs::canonicalize(&path).map_err(|e| e.to_string())?;
         if !file.is_file() {
-            return Err("文件不存在".to_string());
+            return Err(crate::error_codes::coded(
+                crate::error_codes::FILE_NOT_FOUND,
+                "文件不存在",
+            ));
         }
         file
     } else {

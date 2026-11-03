@@ -297,7 +297,12 @@ pub async fn send_group_file(
 
     // 文件校验：存在 + 普通文件；size/name 取自本地 metadata，不进入协议
     let p = std::path::PathBuf::from(&path);
-    let meta = std::fs::metadata(&p).map_err(|e| format!("文件不存在或不可读：{e}"))?;
+    let meta = std::fs::metadata(&p).map_err(|e| {
+        crate::error_codes::coded(
+            crate::error_codes::FILE_NOT_FOUND,
+            format!("文件不存在或不可读：{e}"),
+        )
+    })?;
     if !meta.is_file() {
         return Err("只能发送普通文件".to_string());
     }

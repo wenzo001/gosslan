@@ -215,7 +215,9 @@ fn open_file_native_blocking(
     path: &str,
     owner: Option<&str>,
 ) -> Result<(), String> {
-    let requested = std::fs::canonicalize(path).map_err(|e| e.to_string())?;
+    let requested = std::fs::canonicalize(path).map_err(|e| {
+        crate::error_codes::coded(crate::error_codes::FILE_NOT_FOUND, e.to_string())
+    })?;
 
     let allowed = match owner {
         // 判据唯一份在 `owned_payload_rejection`（另存为 / 转发共用同一份，

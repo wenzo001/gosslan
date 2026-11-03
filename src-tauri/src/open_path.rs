@@ -15,7 +15,10 @@
 /// 「文件不存在」，而不是一个笼统的「打开失败」。
 pub fn open_path_native(path: &std::path::Path) -> Result<(), String> {
     if !path.exists() {
-        return Err(format!("文件不存在：{}", path.display()));
+        return Err(crate::error_codes::coded(
+            crate::error_codes::FILE_NOT_FOUND,
+            format!("文件不存在：{}", path.display()),
+        ));
     }
     open_existing(path)
 }
