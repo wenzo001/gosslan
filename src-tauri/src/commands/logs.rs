@@ -372,23 +372,7 @@ where
             Some(existing) => (existing, false),
             None => match build() {
                 Ok(w) => (w, true),
-                Err(e) => {
-                    // 原始错误（Windows 上是 `WebView2 error … HRESULT(0x80010108)` 这类
-                    // 英文转储）**只进日志**；上屏给具名码，由前端翻成「完全退出重开」的人话。
-                    // 日志里同时留 label，便于回答"是哪一扇窗建不出来"。
-                    if let Some(state) =
-                        app.try_state::<std::sync::Arc<AppState>>()
-                    {
-                        state.logger.warn(
-                            "window",
-                            format!("code=AUX_WINDOW_CREATE_FAILED label={label} error={e}"),
-                        );
-                    }
-                    return Err(crate::error_codes::coded(
-                        crate::error_codes::AUX_WINDOW_CREATE_FAILED,
-                        format!("创建 {label} 窗口失败"),
-                    ));
-                }
+                Err(e) => return Err(format!("创建 {label} 窗口失败: {e}")),
             },
         }
     };

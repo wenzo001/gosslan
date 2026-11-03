@@ -9,7 +9,6 @@ import { useAppStore } from "@/stores/useAppStore";
 import { useChatStore } from "@/stores/useChatStore";
 import { api, APP_ACTION, bindMenuEvents, NAVIGATE_TO_CONTACTS, onAction } from "@/api";
 import { launchAuxWindow, useWindowOpening } from "@/composables/useWindowLauncher";
-import { useAuxWindowFailureReport } from "@/composables/useAuxWindowFailureReport";
 import { useShortcuts } from "@/composables/useShortcuts";
 import { createInitScope } from "@/utils/initScope";
 import NavRail from "@/components/NavRail.vue";
@@ -178,11 +177,6 @@ function selectMobileTab(nav: NavState, mv: "list" | "chat") {
 const profileFriend = ref<Friend | null>(null);
 /** 桌面端独立设置窗口开不出来时的应用内回退。 */
 const settingsFallbackOpen = ref(false);
-/**
- * 辅助窗口创建失败的统一上报：认码不认字（`utils/auxWindowFailure`），
- * 人话 + 「立即重启」（走既有 `restart_app`）。降级策略本身不变。
- */
-const reportAuxFailure = useAuxWindowFailureReport();
 const settingsOpen = computed(
   () =>
     settingsFallbackOpen.value ||
@@ -254,11 +248,9 @@ function openSettings() {
     return;
   }
   // 独立窗口：单飞 + 连点防抖（`useWindowLauncher`）。窗口实例唯一性由后端保证。
-  void launchAuxWindow("settings", () => api.openSettingsWindow()).catch((e) => {
+  void launchAuxWindow("settings", () => api.openSettingsWindow()).catch(() => {
     // 独立窗口开不出来（能力缺失 / 创建失败）时回退到应用内设置页：
     // 「设置」在任何环境下都必须打得开，宁可退化成弹窗也不能点了没反应。
-    // 但**要说清原因**：原来是静默降级，用户只看到"设置变成面板了"。
-    reportAuxFailure(e, t("common.operationFail"));
     settingsFallbackOpen.value = true;
   });
 }
@@ -278,7 +270,7 @@ function openLogs() {
     return;
   }
   void launchAuxWindow("logs", () => api.openLogWindow()).catch((e) =>
-    reportAuxFailure(e, t("common.operationFail")),
+    app.toastError(e, t("common.operationFail")),
   );
 }
 
@@ -326,7 +318,7 @@ function onLinksBack() {
  */
 function openLink(link: ExternalLink) {
   void launchAuxWindow("link", () => api.openLinkWindow(link.url, link.name)).catch((e) =>
-    reportAuxFailure(e, t("links.openFail")),
+    app.toastError(e, t("links.openFail")),
   );
 }
 

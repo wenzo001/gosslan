@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { injectToastProviderContext, ToastClose, ToastRoot, ToastTitle, ToastViewport } from "reka-ui";
+import { injectToastProviderContext, ToastRoot, ToastTitle, ToastViewport } from "reka-ui";
 import { CheckCircle2, Info, XCircle } from "lucide-vue-next";
 import { t as translate } from "@/i18n";
 
@@ -34,17 +34,6 @@ const toasts = toastStore.toasts;
       <XCircle v-else-if="toast.data?.kind === 'error'" class="h-4 w-4 shrink-0" aria-hidden="true" />
       <Info v-else class="h-4 w-4 shrink-0" aria-hidden="true" />
       <ToastTitle class="min-w-0" />
-      <!--
-        只有"说得出下一步"的失败才带按钮（目前只有辅助窗口创建失败）。
-        用库的 `ToastClose` 当容器：点按钮会顺手关掉这条 toast，不需要自己管计时。
-      -->
-      <ToastClose
-        v-if="toast.data?.action"
-        class="ml-2 shrink-0 rounded-[var(--gosslan-radius-sm)] bg-white/20 px-2 py-0.5 text-xs font-medium hover:bg-white/30"
-        @click="toast.data.action.run()"
-      >
-        {{ toast.data.action.label }}
-      </ToastClose>
     </ToastRoot>
   </ToastViewport>
 </template>

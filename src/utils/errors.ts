@@ -45,9 +45,6 @@ const CODE_RULES: Record<string, string> = {
   // 两格都必须说清**下一步**：前者是"让对方升级客户端"，后者是"让对方先上线一次"。
   SEND_KIND_UNSUPPORTED: "errors.rule.kindUnsupported",
   SEND_PEER_KEY_MISSING: "errors.rule.peerKeyMissing",
-  // 5.17.5：辅助窗口（设置/日志/外链/看图）建不出来。原始 HRESULT 只进日志，
-  // 上屏这句 + 一个「立即重启」按钮（走既有 restart_app）。
-  AUX_WINDOW_CREATE_FAILED: "errors.rule.auxWindow",
 };
 
 /** 后端 `error_codes::coded()` 的形状：`code=<大写蛇形> 给人看的那句话`。 */
