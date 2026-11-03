@@ -494,6 +494,7 @@ gossip_engine::tests::group_envelope_message_id_stable_after_resign
 gossip_engine::tests::group_envelope_resign_covers_creator_and_members
 logging::tests::allocator_abort_is_its_own_kind_not_no_history
 logging::tests::bootstrap_and_logger_point_at_the_same_crash_file
+logging::tests::clock_jump_marker_does_not_change_exit_classification
 logging::tests::crash_block_survives_rotation_and_carries_version_and_context
 logging::tests::crash_file_is_capped_by_reopening_not_growing_forever
 logging::tests::crash_note_writes_without_a_logger_and_survives_the_reentry_guard
@@ -1389,6 +1390,8 @@ user_dirs::tests::nothing_configured_stays_none
 user_dirs::tests::store_then_load_returns_the_same_directory_in_both_modes
 user_dirs::tests::the_two_user_directories_do_not_interfere
 watchdog::tests::hang_notes_throttle_after_the_dense_phase_but_never_stop
+watchdog::tests::sub_threshold_drift_still_judges
+watchdog::tests::virtual_clock_sleep_and_jump_are_exempt_but_a_real_stall_is_not
 worker_supervisor::tests::every_spawn_fn_has_a_home
 worker_supervisor::tests::finished_signal_comes_from_the_real_handle
 worker_supervisor::tests::lib_rs_wires_the_supervisor_exactly_once
