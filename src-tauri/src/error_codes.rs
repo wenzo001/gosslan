@@ -78,6 +78,29 @@ pub const GROUP_KEY_MISSING: &str = "GROUP_KEY_MISSING";
 /// 群聊里触发了"窗口抖动"—— 产品上只支持单聊。
 pub const NUDGE_GROUP_UNSUPPORTED: &str = "NUDGE_GROUP_UNSUPPORTED";
 
+// ── B6 试点批：文件 / 设置 / 窗口 ──────────────────────────────────────────
+
+/// 要打开/保存/复制的那份本地文件已经不在了（被清理、被移动、还没同步下来）。
+pub const FILE_NOT_FOUND: &str = "FILE_NOT_FOUND";
+/// 前端传了后端不认识的通道名（只有 `lan` / `bluetooth`）。
+pub const CHANNEL_UNKNOWN: &str = "CHANNEL_UNKNOWN";
+/// 局域网/蓝牙通道启动或切换失败（适配器、权限、端口占用等底层原因）。
+pub const TRANSPORT_START_FAILED: &str = "TRANSPORT_START_FAILED";
+
+/// 给"可能已经带码"的下层错误补码：已带 `code=` 就原样透传，避免叠成两个码。
+///
+/// 典型场景：通道启动会把 `network::start_from_prefs` 的 `PORT_IN_USE` 透传上来，
+/// 外层若再无条件套 `TRANSPORT_START_FAILED`，前端只会看到第一个码 ⇒ 端口占用
+/// 那条专门文案就永远走不到。判据见 `b6_does_not_stack_codes`。
+pub fn coded_if_uncoded(code: &'static str, msg: impl std::fmt::Display) -> String {
+    let msg = msg.to_string();
+    if msg.contains("code=") {
+        msg
+    } else {
+        coded(code, msg)
+    }
+}
+
 /// 把码拼到人话前面 —— **唯一**的写法（不散着 `format!("code=…")`，否则对账判据读不出来）。
 pub fn coded(code: &'static str, msg: impl std::fmt::Display) -> String {
     format!("code={code} {msg}")

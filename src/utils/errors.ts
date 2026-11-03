@@ -58,6 +58,10 @@ const CODE_RULES: Record<string, string> = {
   GROUP_NAME_EMPTY: "errors.rule.groupNameEmpty",
   GROUP_KEY_MISSING: "errors.rule.groupKeyMissing",
   NUDGE_GROUP_UNSUPPORTED: "errors.rule.nudgeGroupUnsupported",
+  // B6 试点批：文件 / 设置 / 窗口。
+  FILE_NOT_FOUND: "errors.rule.fileNotFound",
+  CHANNEL_UNKNOWN: "errors.rule.channelUnknown",
+  TRANSPORT_START_FAILED: "errors.rule.transportStartFailed",
 };
 
 /** 后端 `error_codes::coded()` 的形状：`code=<大写蛇形> 给人看的那句话`。 */

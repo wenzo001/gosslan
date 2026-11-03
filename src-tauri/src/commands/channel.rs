@@ -302,7 +302,14 @@ pub async fn set_channel_enabled(
         "lan" => {
             if enabled {
                 // 绑定地址沿用用户已选网卡（settings.bind_ip），不再硬编码 0.0.0.0
-                network::start_from_prefs(s.clone()).await?;
+                network::start_from_prefs(s.clone())
+                    .await
+                    .map_err(|e| {
+                        crate::error_codes::coded_if_uncoded(
+                            crate::error_codes::TRANSPORT_START_FAILED,
+                            e,
+                        )
+                    })?;
             } else {
                 network::stop(s).await;
                 // 用户关掉通道 ⇒ 后台连接的前台服务一起收掉（与 `stop_network` 同一条口径；
@@ -319,7 +326,14 @@ pub async fn set_channel_enabled(
             // 只写偏好（并返回"后端未编译"的明确错误）。
             #[cfg(feature = "bluetooth")]
             {
-                apply_bluetooth_switch(s, enabled).await?;
+                apply_bluetooth_switch(s, enabled)
+                    .await
+                    .map_err(|e| {
+                        crate::error_codes::coded_if_uncoded(
+                            crate::error_codes::TRANSPORT_START_FAILED,
+                            e,
+                        )
+                    })?;
                 // 显式开启成功 = 用户已经决定再用蓝牙 ⇒ 清掉"上次崩溃后的自动暂停"。
                 // 自动路径不会走到这条命令（前端闸在 `ensureBluetoothOn`），所以这里
                 // 是**唯一**的清除点。
@@ -333,7 +347,12 @@ pub async fn set_channel_enabled(
             {
                 if enabled {
                     let mut mgr = TransportManager::new(s.clone());
-                    mgr.set_bluetooth_enabled(true).await?;
+                    mgr.set_bluetooth_enabled(true).await.map_err(|e| {
+                        crate::error_codes::coded_if_uncoded(
+                            crate::error_codes::TRANSPORT_START_FAILED,
+                            e,
+                        )
+                    })?;
                 }
             }
             let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());
@@ -341,7 +360,12 @@ pub async fn set_channel_enabled(
                 crate::logging::log_write_failure(&s.logger, "set_bt_enabled", e);
             }
         }
-        _ => return Err(format!("未知通道: {channel}")),
+        _ => {
+            return Err(crate::error_codes::coded(
+                crate::error_codes::CHANNEL_UNKNOWN,
+                format!("未知通道: {channel}"),
+            ))
+        }
     }
     // 运行状态只在这里"变"：采一次快照 —— 发起窗口拿返回值（零额外 IPC），
     // 其余窗口拿事件载荷（`runtime-changed` 带快照）。两边拿到的是**同一份结构**。
