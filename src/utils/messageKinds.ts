@@ -120,13 +120,6 @@ export function countsTowardUnread(kind: string): boolean {
 }
 
 /**
- * 未知 kind 的占位文案。**必须与 Rust 的 `UNSUPPORTED_PREVIEW_LABEL` 一字不差** ——
- * 会话列表（Rust 算）与气泡（前端算）说的必须是同一句话，`messageKinds.test.ts` 直接
- * 读 `protocol.rs` 比对这个字面量。
- */
-export const UNSUPPORTED_KIND_LABEL = "[不支持的消息]";
-
-/**
  * 提示行（微信式居中灰字）：**进时间线**，但**不是一条消息** —— 没有头像、没有气泡，
  * 不可右键/长按/复制/回应。这是它与 bubble 的全部差别。
  *

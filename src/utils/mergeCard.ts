@@ -9,6 +9,7 @@
 
 import type { MessageRecord, MsgKind } from "@/types";
 import { parseTodo } from "./todos.ts";
+import { t } from "../i18n/index.ts";
 
 /** 卡片里的一条（快照，不是 msg_id 引用 —— 原消息删了卡片也要能展开）。 */
 export interface MergedItem {
@@ -55,13 +56,13 @@ export function parseMergePayload(content: string): MergePayload | null {
 /**
  * 会话预览/卡片副标题：`[聊天记录] N 条`（解析失败也要给人话）。
  *
- * ⚠️ 这里刻意**不**走 `t()`：它属于"会话列表摘要"那一类占位文案，本仓库既有约定就是
- * 中文常量（`previewText` 的 `[文件]`/`[图片]`/`[代码]`、Rust 侧 `preview_text` 同理）。
- * 卡片**界面**上的标题才走 i18n（见 `merge.title*` 与 ChatWindow 里的拼装）。
+ * 它是**用户可见文案**，跟着界面语言走（与 `previewBody` 的标签同一套 key）。
+ * ⚠️ 库里的 `last_msg` 由 Rust 按中文写死，历史值靠 `messages.ts::localizeLastMsg`
+ * 在渲染时换词；zh-CN 词典里的值与 Rust `protocol::merge_summary` 必须一致。
  */
 export function mergeSummary(content: string): string {
   const p = parseMergePayload(content);
-  return p ? `[聊天记录] ${p.items.length} 条` : "[聊天记录]";
+  return p ? t("msg.preview.mergeCount", { n: p.items.length }) : t("msg.preview.merge");
 }
 
 /**
@@ -86,19 +87,19 @@ function mediaLine(prefix: string, content: string): string {
 export function mergeItemLine(item: MergedItem): string {
   switch (item.kind) {
     case "image":
-      return mediaLine("[图片]", item.content);
+      return mediaLine(t("msg.image"), item.content);
     case "file":
-      return mediaLine("[文件]", item.content);
+      return mediaLine(t("msg.file"), item.content);
     case "code":
-      return "[代码]";
+      return t("msg.code");
     case "merge":
-      return "[聊天记录]";
+      return t("msg.preview.merge");
     case "todo": {
       // 任务卡片进合并转发时，载荷是 JSON 而非可读文本 —— 直接塞进摘要行会显示成
       // 一坨原始 JSON（用户反馈「转发卡片内容有问题」）。复用 canonical 解析器取标题，
       // 与聊天里 TodoCardBubble 显示同一份标题，避免两处各写一套解析而分叉。
       const title = parseTodo({ kind: "todo", content: item.content } as MessageRecord)?.title.trim();
-      return title ? `[任务] ${title}` : "[任务]";
+      return title ? `${t("msg.preview.todo")} ${title}` : t("msg.preview.todo");
     }
     default: {
       const one = item.content.replace(/\s+/g, " ").trim();

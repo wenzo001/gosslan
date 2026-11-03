@@ -1,10 +1,17 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { parseQuote, quoteBody, stripQuoteMsgId } from "./quote.ts";
+import {
+  buildQuoteHeader,
+  localizeQuoteHeader,
+  parseQuote,
+  quoteBody,
+  stripQuoteMsgId,
+} from "./quote.ts";
+import { applyPreference } from "../i18n/index.ts";
 
-/** 与 MessageComposer.send 的拼法一致：首行 `「引用 发送者：片段[|msg_id]」\n正文`。 */
+/** 与 `MessageComposer.send` 走**同一个构造器**：首行 `「引用 发送者：片段[|msg_id]」\n正文`。 */
 const build = (sender: string, snippet: string, body: string, msgId?: string) =>
-  `「引用 ${sender}：${snippet}${msgId ? `|${msgId}` : ""}」\n${body}`;
+  `${buildQuoteHeader(sender, snippet, msgId)}\n${body}`;
 
 test("parseQuote: 非引用消息原样当正文", () => {
   assert.deepEqual(parseQuote("普通消息"), { header: "", body: "普通消息", msgId: "" });
@@ -66,4 +73,29 @@ test("stripQuoteMsgId: 复制时剥掉内部 msg_id，其余原样", () => {
 test("stripQuoteMsgId: 不碰正文里长得像 id 的内容", () => {
   const content = build("张三", "片段", "正文里也有|竖线", "m_10");
   assert.equal(stripQuoteMsgId(content), build("张三", "片段", "正文里也有|竖线"));
+});
+
+/**
+ * 引用头是**线上格式**（永远是 `「引用 …」`），显示才按当前语言换词、并剥掉内部 msg_id。
+ * 这条同时钉住两件事：中文下只换显示形态；英文下只换首行的词，正文一个字节不动。
+ */
+test("localizeQuoteHeader：显示换词、协议字节不变", () => {
+  const content = build("Alice", "晚上开会", "好的", "m_1");
+
+  applyPreference("zh-CN");
+  assert.equal(localizeQuoteHeader(content), `「引用 Alice：晚上开会」\n好的`, "中文只剥内部 id");
+
+  applyPreference("en-US");
+  assert.equal(localizeQuoteHeader(content), `「Quote Alice：晚上开会」\n好的`);
+
+  // 线上格式本身没被改：解析仍能拿到 msg_id（换词只发生在显示层）
+  assert.equal(parseQuote(content).msgId, "m_1");
+
+  // 正文里的「引用 …」不是引用头，不许被动
+  const body = "第一行\n「引用 李四：别的」";
+  assert.equal(localizeQuoteHeader(build("Alice", "片段", body)), `「Quote Alice：片段」\n${body}`);
+
+  // 非引用 / 半截文本（首行没闭合、没有正文）⇒ 原样，交回原渲染路径
+  assert.equal(localizeQuoteHeader("普通消息"), "普通消息");
+  assert.equal(localizeQuoteHeader("「引用 半截\n正文"), "「引用 半截\n正文");
 });

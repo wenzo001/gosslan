@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { t } from "@/i18n";
+import { currentLocale, t } from "@/i18n";
 import { computed, onMounted, onUnmounted, ref, watch } from "vue";
 import { useRouter } from "vue-router";
 import { useEventListener } from "@vueuse/core";
@@ -512,7 +512,7 @@ useEventListener(document, "click", closeFriendMenu);
         <ConversationListItem
           v-for="c in listConversations"
           :key="c.id"
-          v-memo="[c.last_ts, c.last_msg, c.unread, c.avatar, c.name, chat.activeConv === c.id, isOnline(c.id), chat.friends.length, chat.groups.length, dropRowId === c.id]"
+          v-memo="[c.last_ts, c.last_msg, c.unread, c.avatar, c.name, chat.activeConv === c.id, isOnline(c.id), chat.friends.length, chat.groups.length, dropRowId === c.id, currentLocale()]"
           :conv="c"
           :active="chat.activeConv === c.id"
           :online="isOnline(c.id)"

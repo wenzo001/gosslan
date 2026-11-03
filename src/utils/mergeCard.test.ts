@@ -15,6 +15,22 @@ import {
   mergeSummary,
   parseMergePayload,
 } from "./mergeCard.ts";
+import { applyPreference } from "../i18n/index.ts";
+
+/**
+ * 卡片里的标签也是**用户可见文案**（合并卡片、会话列表摘要都渲染它），必须两种语言都成立。
+ * 期望值写死在测试里，不从词典读 —— 词典被改成错词时这格要红。
+ */
+const MERGE_LOCALES = [
+  {
+    locale: "zh-CN",
+    L: { image: "[图片]", file: "[文件]", merge: "[聊天记录]", todo: "[任务]", summary1: "[聊天记录] 1 条" },
+  },
+  {
+    locale: "en-US",
+    L: { image: "[Image]", file: "[File]", merge: "[Chat history]", todo: "[Task]", summary1: "[Chat history] 1 message" },
+  },
+] as const;
 
 const REC = {
   id: 1,
@@ -47,57 +63,63 @@ test("构建 → 解析往返：标题、条数、每条的内容都保真", () 
   assert.equal(parsed.items[1].ts, 200, "时间要保真（卡片里按时间展示）");
 });
 
-test("畸形载荷一律返回 null（渲染路径不能抛错）", () => {
-  for (const bad of ["", "not json", "{}", '{"items":[]}', '{"items":[{"kind":"text"}]}', "null"]) {
-    assert.equal(parseMergePayload(bad), null, `应判为畸形：${bad}`);
-  }
-  // 解析失败时摘要也要是人话，不能把裸 JSON 顶到会话列表上
-  assert.equal(mergeSummary("not json"), "[聊天记录]");
-  assert.equal(mergeSummary(buildMergePayload([REC], "t", () => "我")), "[聊天记录] 1 条");
-});
-
-test("每行摘要：媒体写类型 + 文件名，文本折叠空白并截断", () => {
-  // 无名字（畸形/老版本载荷）→ 只给类型，不能因为解析不出就报错
-  assert.equal(mergeItemLine({ sender: "a", kind: "image", content: "{}", ts: 1 }), "[图片]");
-  // 旧格式 dataURL 同样退回纯类型
-  assert.equal(mergeItemLine({ sender: "a", kind: "image", content: "data:image/png;base64,AA", ts: 1 }), "[图片]");
-  assert.equal(mergeItemLine({ sender: "a", kind: "file", content: "{}", ts: 1 }), "[文件]");
-  assert.equal(mergeItemLine({ sender: "a", kind: "merge", content: "{}", ts: 1 }), "[聊天记录]");
-  assert.equal(mergeItemLine({ sender: "a", kind: "text", content: "a\n  b", ts: 1 }), "a b");
-  const long = "字".repeat(60);
-  assert.equal(mergeItemLine({ sender: "a", kind: "text", content: long, ts: 1 }).length, 41);
-});
-
-test("媒体行带上文件名（卡片看不到图时，名字是唯一的信息）", () => {
-  // 契约来源：MergeCardModal 的文件头与 f075950 的提交信息都写了「[图片] 名字」，
-  // 但实现只输出了 [图片] —— 这条把承诺钉住。
-  const img = JSON.stringify({ name: "照片.png", size: 10, subtype: "image" });
-  assert.equal(mergeItemLine({ sender: "a", kind: "image", content: img, ts: 1 }), "[图片] 照片.png");
-  assert.equal(
-    mergeItemLine({ sender: "a", kind: "file", content: JSON.stringify({ name: "报表.pdf" }), ts: 1 }),
-    "[文件] 报表.pdf",
-  );
-  // 空名字 / 空白名字不能拼出 "[图片] "这种带尾空格的半成品
-  assert.equal(mergeItemLine({ sender: "a", kind: "image", content: JSON.stringify({ name: "   " }), ts: 1 }), "[图片]");
-  assert.equal(mergeItemLine({ sender: "a", kind: "image", content: JSON.stringify({ name: 42 }), ts: 1 }), "[图片]");
-});
-
-test("每行摘要：任务卡片显示标题而非原始 JSON", () => {
-  // 用户反馈「待办合并转发时转发卡片内容有问题」：todo 进合并转发后，载荷是 JSON，
-  // 摘要行直接塞会显示成一坨原始 JSON。应复用 canonical 解析取标题，与聊天里的
-  // TodoCardBubble 同一份标题，且不泄漏内部字段（todo_id / done_at 等）。
-  const todo = JSON.stringify({
-    todo_id: "t1",
-    title: "买菜",
-    status: "todo",
-    creator: "a",
-    done_at: null,
+for (const { locale, L } of MERGE_LOCALES) {
+  test(`畸形载荷一律返回 null（渲染路径不能抛错）（${locale}）`, () => {
+    applyPreference(locale);
+    for (const bad of ["", "not json", "{}", '{"items":[]}', '{"items":[{"kind":"text"}]}', "null"]) {
+      assert.equal(parseMergePayload(bad), null, `应判为畸形：${bad}`);
+    }
+    // 解析失败时摘要也要是人话，不能把裸 JSON 顶到会话列表上
+    assert.equal(mergeSummary("not json"), L.merge);
+    assert.equal(mergeSummary(buildMergePayload([REC], "t", () => "我")), L.summary1);
   });
-  assert.equal(mergeItemLine({ sender: "a", kind: "todo", content: todo, ts: 1 }), "[任务] 买菜");
-  assert.ok(!mergeItemLine({ sender: "a", kind: "todo", content: todo, ts: 1 }).includes("todo_id"), "不得泄漏内部字段");
-  // 标题缺失时退回中性占位，不能把裸 JSON 顶上来
-  assert.equal(mergeItemLine({ sender: "a", kind: "todo", content: "{}", ts: 1 }), "[任务]");
-});
+
+  test(`每行摘要：媒体写类型 + 文件名，文本折叠空白并截断（${locale}）`, () => {
+    applyPreference(locale);
+    // 无名字（畸形/老版本载荷）→ 只给类型，不能因为解析不出就报错
+    assert.equal(mergeItemLine({ sender: "a", kind: "image", content: "{}", ts: 1 }), L.image);
+    // 旧格式 dataURL 同样退回纯类型
+    assert.equal(mergeItemLine({ sender: "a", kind: "image", content: "data:image/png;base64,AA", ts: 1 }), L.image);
+    assert.equal(mergeItemLine({ sender: "a", kind: "file", content: "{}", ts: 1 }), L.file);
+    assert.equal(mergeItemLine({ sender: "a", kind: "merge", content: "{}", ts: 1 }), L.merge);
+    assert.equal(mergeItemLine({ sender: "a", kind: "text", content: "a\n  b", ts: 1 }), "a b");
+    const long = "字".repeat(60);
+    assert.equal(mergeItemLine({ sender: "a", kind: "text", content: long, ts: 1 }).length, 41);
+  });
+
+  test(`媒体行带上文件名（卡片看不到图时，名字是唯一的信息）（${locale}）`, () => {
+    applyPreference(locale);
+    // 契约来源：MergeCardModal 的文件头与 f075950 的提交信息都写了「[图片] 名字」，
+    // 但实现只输出了 [图片] —— 这条把承诺钉住。
+    const img = JSON.stringify({ name: "照片.png", size: 10, subtype: "image" });
+    assert.equal(mergeItemLine({ sender: "a", kind: "image", content: img, ts: 1 }), `${L.image} 照片.png`);
+    assert.equal(
+      mergeItemLine({ sender: "a", kind: "file", content: JSON.stringify({ name: "报表.pdf" }), ts: 1 }),
+      `${L.file} 报表.pdf`,
+    );
+    // 空名字 / 空白名字不能拼出 "[图片] "这种带尾空格的半成品
+    assert.equal(mergeItemLine({ sender: "a", kind: "image", content: JSON.stringify({ name: "   " }), ts: 1 }), L.image);
+    assert.equal(mergeItemLine({ sender: "a", kind: "image", content: JSON.stringify({ name: 42 }), ts: 1 }), L.image);
+  });
+
+  test(`每行摘要：任务卡片显示标题而非原始 JSON（${locale}）`, () => {
+    applyPreference(locale);
+    // 用户反馈「待办合并转发时转发卡片内容有问题」：todo 进合并转发后，载荷是 JSON，
+    // 摘要行直接塞会显示成一坨原始 JSON。应复用 canonical 解析取标题，与聊天里的
+    // TodoCardBubble 同一份标题，且不泄漏内部字段（todo_id / done_at 等）。
+    const todo = JSON.stringify({
+      todo_id: "t1",
+      title: "买菜",
+      status: "todo",
+      creator: "a",
+      done_at: null,
+    });
+    assert.equal(mergeItemLine({ sender: "a", kind: "todo", content: todo, ts: 1 }), `${L.todo} 买菜`);
+    assert.ok(!mergeItemLine({ sender: "a", kind: "todo", content: todo, ts: 1 }).includes("todo_id"), "不得泄漏内部字段");
+    // 标题缺失时退回中性占位，不能把裸 JSON 顶上来
+    assert.equal(mergeItemLine({ sender: "a", kind: "todo", content: "{}", ts: 1 }), L.todo);
+  });
+}
 
 test("条数上限与 Rust 侧一致（100）", () => {
   assert.equal(MAX_MERGE_ITEMS, 100);

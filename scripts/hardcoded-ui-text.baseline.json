@@ -11,7 +11,6 @@
     },
     "src/components/chat/MessageComposer.vue": {
       "：": 1,
-      "`「引用 ${props.quote.sender}：${props.quote.snippet}${idSuffix}」\\n${text}`": 1,
       "`${t('common.quote')} ${quote.sender}：${quote.snippet}`": 1
     },
     "src/components/ChatWindow.vue": {
@@ -89,38 +88,14 @@
     "src/utils/mediaAvailability.ts": {
       "文件不存在": 1
     },
-    "src/utils/mergeCard.ts": {
-      "[代码]": 1,
-      "[聊天记录]": 2,
-      "[任务]": 1,
-      "[图片]": 1,
-      "[文件]": 1,
-      "`[聊天记录] ${p.items.length} 条`": 1,
-      "`[任务] ${title}`": 1
-    },
-    "src/utils/messageKinds.ts": {
-      "[不支持的消息]": 1
-    },
     "src/utils/messages.ts": {
-      "[撤回]": 1,
-      "[代码]": 1,
-      "[公告]": 2,
-      "[回应]": 1,
-      "[强提醒]": 1,
-      "[强提醒确认]": 1,
-      "[任务]": 1,
-      "[投票]": 1,
-      "[图片]": 1,
-      "[文件]": 1,
-      "[置顶]": 1,
-      "`[公告] ${p.text}`": 1,
-      "`[任务] ${p.title}`": 1,
-      "`[投票] ${p.question}`": 1,
       "所有人": 1
     },
     "src/utils/quote.ts": {
       "「引用": 1,
-      "」": 2
+      "」": 3,
+      "`「${t(\"common.quote\")} ${firstLine.slice(QUOTE_PREFIX.length)}`": 1,
+      "`${QUOTE_PREFIX}${sender}：${snippet}${id}${QUOTE_SUFFIX}`": 1
     },
     "src/utils/validation.ts": {
       "`${label} 参数非法：${issue?.message ?? \"schema mismatch\"}`": 1,

@@ -820,10 +820,11 @@ CASES: list[Case] = [
         name="「kind → 人话」表里 image 那一档被摘掉必须被抓住",
         why="摘掉之后它掉进 default 分支，而 default 对**认识的** kind 是原样截断载荷 ⇒"
         "     会话列表/通知/检索行三处同时把 JSON 露出去（同一句用户反馈的第二条链）。"
-        "     这条钉的是那张表本身，不是接线 —— 上一条钉的是「谁调它」，两条各守一侧。",
+        "     这条钉的是那张表本身，不是接线 —— 上一条钉的是「谁调它」，两条各守一侧。"
+        "     2026-11-04 标签改走 t() 后，锚点跟着新形状走（注入 = 把 image 档改名，使它落进 default）。",
         file=ROOT / "src" / "utils" / "messages.ts",
-        injections=[('    case "image":\n      return "[图片]";',
-                     '    case "image_unused":\n      return "[图片]";')],
+        injections=[('    case "image":\n      return t(PREVIEW_LABEL_KEYS.image);',
+                     '    case "image_unused":\n      return t(PREVIEW_LABEL_KEYS.image);')],
         cmd=node_test("src/utils/messages.test.ts"),
         cwd=ROOT,
         expect_fail_hint="的预览里出现了载荷原文",
