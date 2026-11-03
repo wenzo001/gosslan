@@ -32,11 +32,12 @@ pub async fn flush_outbox(state: &AppState, peer_id: &str) {
         .get(peer_id)
         .copied();
     for (id, msg_id, payload) in pending {
-        // 能力协商要业务 kind，而 GossipEnvelope 加密后看不出它 ⇒ 只能问落库那一行。
-        // 查不到（消息已被清理 / 老队列行）就按"不需要能力位"放行，与升级前一致。
-        let kind = {
+        // 能力协商要业务 kind（外加载荷里的抖动位），而 GossipEnvelope 加密后看不出它 ⇒
+        // 只能问落库那一行。查不到（消息已被清理 / 老队列行）就按"不需要能力位"放行，
+        // 与升级前一致。读不到元数据绝不能成为判死理由。
+        let (kind, extra_required) = {
             let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
-            db::message_kind(&dbc, &msg_id).unwrap_or_default()
+            db::message_gating(&dbc, &msg_id).unwrap_or_default()
         };
         let msg = match serde_json::from_str::<Message>(&payload) {
             Ok(m) => m,
@@ -52,12 +53,17 @@ pub async fn flush_outbox(state: &AppState, peer_id: &str) {
                 continue;
             }
         };
-        // 能力协商（5.16.92「先入队、后协商」）：判据只有 `protocol::deferred_send_decision`。
+        // 能力协商（5.16.92「先入队、后协商」）：判据只有
+        // `protocol::deferred_send_decision(_extra)`。
         // - `Unsupported`：对端**自己声明过**不支持 ⇒ 落终态 + 删行 + emit，绝不硬发；
         // - `Hold`：能力未知（离线 / 从没握手）⇒ 本轮跳过，**行留着**等下次建链/心跳，
         //   兑现「离线先入队、建链后补发」；
         // - `Send`：照常补发。
-        match crate::protocol::deferred_send_decision(&kind, peer_features) {
+        match crate::protocol::deferred_send_decision_extra(
+            &kind,
+            peer_features,
+            extra_required,
+        ) {
             crate::protocol::DeferredSend::Unsupported => {
                 let finalized = {
                     let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());

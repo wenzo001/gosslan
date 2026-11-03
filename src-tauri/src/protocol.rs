@@ -322,14 +322,45 @@ pub enum DeferredSend {
 }
 
 pub fn deferred_send_decision(kind: &str, peer_features: Option<u32>) -> DeferredSend {
-    if dm_required_features(kind) == 0 {
+    deferred_send_decision_extra(kind, peer_features, 0)
+}
+
+/// 同一条裁决，外加**按载荷才决定**的能力位（目前只有「窗口抖动」）。
+///
+/// 抖动复用的是 `remind` 帧，光看 kind 看不出它还要 `CONTENT_FEATURE_NUDGE` ——
+/// 于是调用方把载荷里解析出的额外位传进来，仍由这一处给出 Send / Hold / Unsupported。
+/// 判死口径与表情回应、撤回完全一致：能力未知（离线/重启后缓存空）只 Hold，
+/// 只有对端亲口声明缺位才终态化。
+pub fn deferred_send_decision_extra(
+    kind: &str,
+    peer_features: Option<u32>,
+    extra_required: u32,
+) -> DeferredSend {
+    let required = dm_required_features(kind) | extra_required;
+    if required == 0 {
         return DeferredSend::Send;
     }
     match peer_features {
         None => DeferredSend::Hold,
-        Some(f) if dm_allowed_by_features(kind, f) => DeferredSend::Send,
+        Some(f) if dm_allowed_by_features(kind, f) && f & extra_required == extra_required => {
+            DeferredSend::Send
+        }
         Some(_) => DeferredSend::Unsupported,
     }
+}
+
+/// 从一条已在库里的消息读出「除 kind 之外还需要哪些能力位」。
+///
+/// 只认 `remind` 帧里的 `nudge`；解析失败按 0（发送时校验过，读不出来不该成为扣住队列的理由）。
+pub fn extra_required_features(kind: &str, content: &str) -> u32 {
+    if kind == "remind"
+        && parse_remind_payload(content)
+            .map(|p| p.nudge)
+            .unwrap_or(false)
+    {
+        return CONTENT_FEATURE_NUDGE;
+    }
+    0
 }
 
 /// 群里的受众分布：三态分开数，**不要复用** `kind_allowed_by_features`。

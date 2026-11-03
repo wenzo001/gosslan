@@ -77,6 +77,11 @@ export interface OperationRow {
   kind: OperationKind;
   /** 目标名（文件名 / 消息正文截断）。没有可显示的原文时给空串 ⇒ 界面回落到 `fallbackTitleKey`。 */
   title: string;
+  /**
+   * 消息行没有正文可显示时的类型文案键（比"一条消息"精确：撤回、窗口抖动、合并转发…）。
+   * 有 `title` 时忽略它；`kind` 是传输类别，不能拿来当消息业务类型用。
+   */
+  titleKey?: string;
   state: OperationState;
   /** 0..=1；没有可信进度时是 `null`（界面画"条"而不是画 0%）。 */
   progress: number | null;
@@ -144,7 +149,23 @@ export interface PendingMessageOpView {
   failed: boolean;
   /** 判死的原因码（`messages.fail_code`）；队列里的行是 `null`。 */
   fail_code: string | null;
+  /** `remind` 帧里的窗口抖动位（`nudge=true`）；非 remind 恒为 false。 */
+  nudge: boolean;
 }
+
+/**
+ * 没有正文可显示的消息行该怎么说。
+ *
+ * 静默 kind（表情回应 / 撤回 / 强提醒）不进时间线，任务中心是唯一入口 ——
+ * 标题只写「一条消息」会让用户分不清自己刚才点的是什么，更别说判断要不要重发。
+ * 抖动与强提醒共用 `remind` 帧，所以优先看 `nudge` 位。
+ */
+const MESSAGE_KIND_TITLE_KEYS: Record<string, string> = {
+  reaction: "task.messageKind.reaction",
+  recall: "task.messageKind.recall",
+  remind: "task.messageKind.remind",
+  merge: "task.messageKind.merge",
+};
 
 /**
  * "这条传输还在不在动"的**唯一**判据。
@@ -254,14 +275,20 @@ function messageRow(m: PendingMessageOpView, resending = false): OperationRow {
   // 旧实现那套"任一成员 Ack ⇒ 拒绝取消"正是用户实报「排队中却说已送达」的根因。
   const convId = m.group_id ? `group:${m.group_id}` : m.peer_id ?? undefined;
   if (convId && m.can_cancel) actions.push("cancel_message");
-  // 判死的静默动作（表情回应 / 撤回）没有气泡可点：重发入口必须留在这里，
-  // 否则用户只看到一个红字，没有任何能做的事（5.16.92）。
+  // 判死的静默动作（表情回应 / 撤回 / 强提醒 / 抖动）没有气泡可点：重发入口必须留在这里，
+  // 否则用户只看到一个红字，没有任何能做的事（5.16.92；5.16.93 扩到强提醒与合并转发）。
   if (convId && m.failed) actions.push("resend_message");
   if (convId) actions.push("open_conversation");
   return {
     id: m.msg_id,
     kind: "message_send",
     title: m.preview ?? "",
+    // 正文截断只对 text/code 有值；其余按业务 kind 说类型（抖动优先于强提醒）。
+    titleKey: m.preview
+      ? undefined
+      : m.nudge
+        ? "task.messageKind.nudge"
+        : MESSAGE_KIND_TITLE_KEYS[m.kind],
     // 「重发中」只改这一行的**说法**：能不能取消、排在哪一档都仍由台账说了算。
     // 判死的行也走 `blocked` 这一格，但 `blockedReason` 是它的 `fail_code`（不是
     // `peer_offline`）⇒ `operationStatusText` 能把它和"在等对方上线"分开说。

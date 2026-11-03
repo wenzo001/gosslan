@@ -73,6 +73,8 @@
             "pub fn dm_allowed_by_features(",
             "pub fn kind_blocked_hint(",
             "pub fn deferred_send_decision(",
+            "pub fn deferred_send_decision_extra(",
+            "pub fn extra_required_features(",
         ] {
             assert_eq!(
                 proto.matches(f).count(),
@@ -89,8 +91,8 @@
         let chat = include_str!("commands/chat.rs");
         let body = rust_fn_body(chat, "pub async fn send_message(");
         let decision = body
-            .find("deferred_send_decision(&kind, peer_features)")
-            .expect("1:1 发送路径必须问能力裁决，否则老对端会静默丢帧");
+            .find("deferred_send_decision_extra(")
+            .expect("1:1 发送路径必须问能力裁决（含载荷里才看得出的抖动位），否则老对端会静默丢帧");
         assert!(
             !body.contains("dm_allowed_by_features("),
             "1:1 不许绕过 deferred_send_decision 自己问判据：那会让『发送口』与『补发口』\
@@ -109,6 +111,16 @@
         assert!(
             !body.contains("kind_unsupported_hint("),
             "1:1 发送口不许绕过 kind_blocked_hint 自己去挑文案"
+        );
+        // ⚠️ 5.16.93 正控：抖动位以前在写库前 `return Err("对方版本不支持窗口抖动")`。
+        // 那句一回来，离线点「抖动」就又是"什么都没发生"，与表情/撤回两套口径。
+        assert!(
+            body.contains("extra_required_features(&kind, &content)"),
+            "抖动位必须从载荷算出来并交给同一处裁决"
+        );
+        assert!(
+            !body.contains("对方版本不支持窗口抖动"),
+            "抖动不许再在写库前拒绝：必须与表情回应/撤回同一套 Hold 语义"
         );
         assert!(
             body.contains("db::finalize_blocked_message("),
@@ -161,6 +173,51 @@
             deferred_send_decision("recall", Some(0)),
             DeferredSend::Unsupported
         );
+    }
+
+    /// 抖动位（复用 remind 帧）与表情/撤回同一套三态 —— 不再有"写库前拒"的第四条路。
+    #[test]
+    fn nudge_uses_the_same_deferred_decision() {
+        use crate::protocol::{
+            deferred_send_decision_extra, extra_required_features, DeferredSend,
+            CONTENT_FEATURE_FLEX_DM_KIND, CONTENT_FEATURE_NUDGE,
+        };
+        let nudge_bits = CONTENT_FEATURE_FLEX_DM_KIND | CONTENT_FEATURE_NUDGE;
+        // 离线 / 从没握手：不知道就当不知道 —— 入队保留，不判死。
+        assert_eq!(
+            deferred_send_decision_extra("remind", None, CONTENT_FEATURE_NUDGE),
+            DeferredSend::Hold
+        );
+        // 对端声明了 FLEX 但没有 NUDGE：这是亲口缺位，落终态。
+        assert_eq!(
+            deferred_send_decision_extra(
+                "remind",
+                Some(CONTENT_FEATURE_FLEX_DM_KIND),
+                CONTENT_FEATURE_NUDGE
+            ),
+            DeferredSend::Unsupported
+        );
+        // 两位都声明：可以发。
+        assert_eq!(
+            deferred_send_decision_extra("remind", Some(nudge_bits), CONTENT_FEATURE_NUDGE),
+            DeferredSend::Send
+        );
+        // 普通强提醒不额外要抖动位（只按 FLEX 判）。
+        assert_eq!(
+            deferred_send_decision_extra(
+                "remind",
+                Some(CONTENT_FEATURE_FLEX_DM_KIND),
+                0
+            ),
+            DeferredSend::Send
+        );
+        // 载荷解析：只有 remind + nudge=true 才产生额外位。
+        assert_eq!(
+            extra_required_features("remind", r#"{"target":"","nudge":true}"#),
+            CONTENT_FEATURE_NUDGE
+        );
+        assert_eq!(extra_required_features("remind", r#"{"target":"m1"}"#), 0);
+        assert_eq!(extra_required_features("text", r#"{"nudge":true}"#), 0);
     }
 
     /// 群聊侧的「受众预告」必须接线，而且必须与 1:1 的门控**不共用默认值**。

@@ -83,6 +83,7 @@ function msgOp(over: Partial<PendingMessageOpView>): PendingMessageOpView {
     some_delivered: false,
     failed: false,
     fail_code: null,
+    nudge: false,
     ...over,
   };
 }
@@ -484,6 +485,58 @@ test("判死的静默动作：任务中心给原因并留「重新发送」，�
     !text.includes("SEND_KIND_UNSUPPORTED"),
     "禁止把码本身显示给用户",
   );
+});
+
+test("静默 kind 全覆盖：remind / 抖动 / merge 判死后都能列出、带原因、带重发", () => {
+  // 这三类都不进时间线（merge 是气泡但也有队列失败态）⇒ 任务中心是唯一入口。
+  // 5.16.93：nudge 从写库前拒绝改成先入队，失败时走与 reaction / recall 同一套行。
+  const rows = deriveOperations({
+    transfers: [],
+    contentTransfers: [],
+    messageOps: [
+      msgOp({ msg_id: "m-remind", kind: "remind", preview: null, can_cancel: false, failed: true, fail_code: "SEND_KIND_UNSUPPORTED" }),
+      msgOp({ msg_id: "m-nudge", kind: "remind", preview: null, nudge: true, can_cancel: false, failed: true, fail_code: "SEND_KIND_UNSUPPORTED" }),
+      msgOp({ msg_id: "m-merge", kind: "merge", preview: null, can_cancel: false, failed: true, fail_code: "SEND_KIND_UNSUPPORTED" }),
+    ],
+  });
+  for (const id of ["m-remind", "m-nudge", "m-merge"]) {
+    const row = byId(rows, id);
+    assert.ok(row, `${id} 判死必须在列`);
+    assert.equal(row.state, "blocked");
+    assert.equal(row.blockedReason, "SEND_KIND_UNSUPPORTED");
+    assert.ok(row.actions.includes("resend_message"), `${id} 必须给「重新发送」`);
+    assert.equal(row.actions.includes("cancel_message"), false, "队列里已经没有它 ⇒ 不给取消");
+  }
+  const text = operationStatusText(byId(rows, "m-nudge"), (k) => k);
+  assert.equal(text, "task.state.failed");
+  assert.ok(!text.includes("SEND_KIND_UNSUPPORTED"), "裸码不上屏");
+});
+
+test("静默 kind 的标题回落：按业务 kind 出类型文案，抖动优先于强提醒", () => {
+  const rows = deriveOperations({
+    transfers: [],
+    contentTransfers: [],
+    messageOps: [
+      msgOp({ msg_id: "m-rx", kind: "reaction", preview: null }),
+      msgOp({ msg_id: "m-rc", kind: "recall", preview: null }),
+      msgOp({ msg_id: "m-rm", kind: "remind", preview: null }),
+      msgOp({ msg_id: "m-nd", kind: "remind", preview: null, nudge: true }),
+      msgOp({ msg_id: "m-mg", kind: "merge", preview: null }),
+    ],
+  });
+  assert.equal(byId(rows, "m-rx").titleKey, "task.messageKind.reaction");
+  assert.equal(byId(rows, "m-rc").titleKey, "task.messageKind.recall");
+  assert.equal(byId(rows, "m-rm").titleKey, "task.messageKind.remind");
+  assert.equal(byId(rows, "m-nd").titleKey, "task.messageKind.nudge", "抖动位优先");
+  assert.equal(byId(rows, "m-mg").titleKey, "task.messageKind.merge");
+  // 有正文时类型键让位给正文
+  assert.equal(byId(rows, "m-rx").titleKey, "task.messageKind.reaction");
+  const withText = deriveOperations({
+    transfers: [],
+    contentTransfers: [],
+    messageOps: [msgOp({ msg_id: "m-t", preview: "在吗" })],
+  });
+  assert.equal(byId(withText, "m-t").titleKey, undefined);
 });
 
 test("能力未知（离线）的同一 kind 仍是待发，不许被误判成失败", () => {

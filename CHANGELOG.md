@@ -13,6 +13,33 @@
 
 ## [Unreleased]
 
+## [5.16.93] - 2026-11-03
+
+### 强提醒收尾：抖动位入队 + 静默 kind 在任务中心全覆盖；乐观更新第二段
+
+- **语义变更**：窗口抖动（`remind` 帧里的 `nudge=true`）不再在写库前拒绝，改为与表情回应 /
+  撤回同一套「先落库入队、建链后协商」。判据仍只有 `protocol::deferred_send_decision` 一处，
+  只是多了 `extra_required_features(kind, content)` 从载荷算出的额外能力位：
+  `Send`（对端声明 `FLEX_DM_KIND | NUDGE`）/ `Hold`（能力未知，离线保留队列）/
+  `Unsupported`（对端亲口缺位，同一事务落 `failed` + 具名码 + 删队列行）。
+  `send_message`、`resend_message`、`outbox_flush` 共用 `deferred_send_decision_extra`；
+  补发期无法从加密信封看出抖动，按 `messages.kind + content` 反查（`message_gating`），
+  不新增 schema 列，读不到按 0 放行、绝不误判死。
+- 静默 kind 全覆盖：任务中心的 failed 快照从 `reaction / recall` 扩到
+  `remind / merge`，并带 `nudge` 标志。强提醒、抖动、合并转发都不进时间线，
+  任务中心是唯一入口 —— 现在这一行**能列出、带人话原因、带「重新发送」**，
+  不再出现「失败了但哪里都看不到」。
+- 标题按业务 kind 出文案：`task.messageKind.reaction / recall / remind / nudge / merge`
+  （抖动优先于强提醒），不再一律回落「一条消息」。
+- 撤回的判死口径统一：5.16.92 后 `send_message` 对 `Unsupported` 返回 `failed` 而非 Err，
+  `recall_message` 现在据此回 Err，不再「对端没收到、本地却假装已撤回」。
+- 乐观更新第二段（表情回应 / 撤回）：先投影上屏 → 真实结果按临时 `msg_id` 落定 →
+  失败整条收回（气泡 / 未读数 / 摘要 / 任务中心临时行一起）。表情回应判死行不再计入
+  `foldReactions`（`failed / cancelled / recalled` 跳过，`sending` 仍显示）。
+  撤回用 `recallRollbackTarget` 三条件（已落定 / 同 `msg_id` / 仍是 `recalled`）回滚，
+  真实事件先到、重复失败、目标换人都不动。乐观层只改前端投影，不新增后端写命令，
+  也不绕过 `WHERE status NOT IN (...)` 的终态守卫。
+
 ## [5.16.92] - 2026-11-03
 
 ### 离线门控第一步：表情回应 / 撤回改为「先入队、后协商」

@@ -1234,3 +1234,63 @@ test("乐观更新判据落在 store 注释块，且回滚只走纯判据（5.16
   assert.notEqual(mutated, fail, "对照注入没生效 ⇒ 这条对照什么都没测");
   assert.equal(count(mutated, "canApplyOptimisticFailure("), 1, "对照后必须少一处（说明被量到的是真的判据）");
 });
+
+/**
+ * 第二批乐观（表情回应 / 撤回，5.16.93）的落地守卫。
+ *
+ * 与第一批同一条边界：**乐观层只改前端投影**，后端命令仍是唯一写入口；
+ * 回滚判据只许住在 `@/utils/optimistic`，store 里不再手写"找一行/删一行"。
+ */
+test("第二批乐观（表情回应 / 撤回）只动投影，回滚判据只走 optimistic.ts（5.16.93）", () => {
+  const st = stripComments(readFileSync(join(ROOT, "stores", "useChatStore.ts"), "utf8"));
+
+  // 表情回应：投影先上屏 → 真实结果按临时 msg_id 替换 → 失败整条收回
+  const rx = storeFnBody(st, "async function sendDmReaction(");
+  assert.ok(rx.includes("enqueueMessage(optimistic)"), "乐观投影必须先入时间线");
+  assert.ok(
+    rx.includes("replaceMessage(friendId, msgId, rec)"),
+    "真实结果必须替换临时行（直接再入队一条会出现两条）",
+  );
+  assert.ok(rx.includes("dropOptimistic(friendId, msgId)"), "同步失败必须整条收回投影");
+  assert.ok(rx.includes("dropOptimisticOp(msgId)"), "任务中心的临时行也要一起收回");
+  assert.equal(count(rx, "api.sendMessage("), 1, "乐观层不新增后端写命令：只复用 send_message");
+
+  // 临时行的摘除只认 msg_id（真实先到时摘不到真实行）
+  const drop = storeFnBody(st, "function dropOptimisticOp(");
+  assert.ok(drop.includes("dropByMsgId(messageOps.value, msgId)"), "摘除必须走纯判据");
+  const show = storeFnBody(st, "function showOptimisticOp(");
+  assert.ok(show.includes("o.msg_id !== op.msg_id"), "已存在的同 id 行不许重复插入");
+
+  // 撤回：先投影 → 失败按三条件还原（settled / 同 msg_id / 仍是 recalled）
+  const rc = storeFnBody(st, "async function recallMessage(");
+  assert.ok(
+    rc.includes("recallRollbackTarget(now.rec, projection.before, projection.settled)"),
+    "回滚必须走纯判据（真实事件先到 / 重复失败 / 目标换人都不许还原）",
+  );
+  assert.ok(rc.includes("findFirstMessageById("), "行位置必须走 utils/messages 的家，不许手写 findIndex");
+  assert.equal(count(rc, "api.recallDirectMessage("), 1, "后端仍是唯一写入口");
+  assert.equal(count(rc, "kind: \"recalled\""), 1, "乐观投影只改这一次");
+
+  const recalled = storeFnBody(st, "function onMessageRecalled(");
+  assert.ok(
+    recalled.includes("pendingProjection.settled = true"),
+    "真实事件先到调用方 await 返回时必须标记落定，否则迟到失败会把对方认账的撤回翻回去",
+  );
+
+  // 乐观层不许绕过后端终态守卫（`WHERE status NOT IN (...)` 住在 Rust；TS 侧不直接写库）
+  for (const [name, fn] of [
+    ["sendDmReaction", rx],
+    ["recallMessage", rc],
+  ] as const) {
+    assert.ok(!/UPDATE\s+messages/i.test(fn), `${name} 不许直接改库`);
+    assert.ok(!fn.includes("status = '"), `${name} 不许改写后端状态字段`);
+  }
+
+  // 非空转对照：把纯判据换成一个恒真判断 ⇒ 上面那条必须立刻不成立
+  const mutated = rc.replace(
+    "recallRollbackTarget(now.rec, projection.before, projection.settled)",
+    "projection.before",
+  );
+  assert.notEqual(mutated, rc, "对照注入没生效 ⇒ 这条对照什么都没测");
+  assert.ok(!mutated.includes("recallRollbackTarget("), "对照后必须少一处");
+});

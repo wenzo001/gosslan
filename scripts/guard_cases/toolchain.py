@@ -31,8 +31,13 @@ CASES: list[Case] = [
         "     裁决删掉」一定会被抓 —— 注入方式是把它退成无条件 Send（不是改成 if false）",
         file=TAURI / "src" / "commands" / "chat.rs",
         injections=[(
-            "    let deferred = crate::protocol::deferred_send_decision(&kind, peer_features);",
-            "    let deferred = crate::protocol::DeferredSend::Send;",
+            "    let extra_required = crate::protocol::extra_required_features(&kind, &content);\n"
+            "    let deferred = crate::protocol::deferred_send_decision_extra(\n"
+            "        &kind,\n"
+            "        peer_features,\n"
+            "        extra_required,\n"
+            "    );\n",
+            "    let deferred = crate::protocol::DeferredSend::Send;\n",
         )],
         cmd=cargo("test", "--lib", "new_message_kinds_are_queued_then_negotiated"),
         cwd=TAURI,
@@ -47,11 +52,19 @@ CASES: list[Case] = [
         "     注入方式：在裁决之后补回旧那两行；编译没坏，只有结构断言会红",
         file=TAURI / "src" / "commands" / "chat.rs",
         injections=[(
-            "    let deferred = crate::protocol::deferred_send_decision(&kind, peer_features);",
-            "    let deferred = crate::protocol::deferred_send_decision(&kind, peer_features);\n"
+            "    let deferred = crate::protocol::deferred_send_decision_extra(\n"
+            "        &kind,\n"
+            "        peer_features,\n"
+            "        extra_required,\n"
+            "    );\n",
+            "    let deferred = crate::protocol::deferred_send_decision_extra(\n"
+            "        &kind,\n"
+            "        peer_features,\n"
+            "        extra_required,\n"
+            "    );\n"
             "    if !crate::protocol::dm_allowed_by_features(&kind, peer_features.unwrap_or(0)) {\n"
             "        return Err(crate::protocol::kind_blocked_hint(&kind, peer_features));\n"
-            "    }",
+            "    }\n",
         )],
         cmd=cargo("test", "--lib", "new_message_kinds_are_queued_then_negotiated"),
         cwd=TAURI,

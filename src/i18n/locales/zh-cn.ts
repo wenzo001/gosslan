@@ -1359,6 +1359,12 @@ export const zhCN: MessageDict = {
   "task.contentCancelDone": "这一单已经结束，无需取消",
   "task.retryNow": "立即重试",
   "task.resendMessage": "重新发送",
+  // 静默动作没有正文可显示：任务中心按业务 kind 说类型（抖动优先于强提醒）。
+  "task.messageKind.reaction": "表情回应",
+  "task.messageKind.recall": "撤回",
+  "task.messageKind.remind": "强提醒",
+  "task.messageKind.nudge": "窗口抖动",
+  "task.messageKind.merge": "合并转发",
   "task.syncNow": "立即同步",
   "task.openChat": "去会话",
   "task.actionFail": "操作失败",

@@ -67,7 +67,7 @@ pub fn insert_outbox(conn: &Connection, msg_id: &str, peer_id: &str, payload: &s
 pub fn list_outbox(conn: &Connection, peer_id: &str) -> Result<Vec<(i64, String, String)>> {
     // 队列行自身的身份与载荷。**不 JOIN `messages`**：flush 期要拿业务 kind 做能力协商
     // （5.16.92），但 `outbox` 的本职只到"哪条、发给谁、发了什么"；kind 由
-    // `message_kind()` 单独问（老队列行对应消息已清理时返回 `None`，按"不需要能力位"放行）。
+    // `message_gating()` 单独问（老队列行对应消息已清理时返回 `None`，按"不需要能力位"放行）。
     // 这条查询因此对最小测试库也成立 —— 上一版 JOIN 在只建 `messages(msg_id …)` 的
     // 测试库里会直接报 "no such column: m.kind"。
     let mut stmt = conn.prepare(

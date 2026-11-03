@@ -54,7 +54,9 @@ const router = useRouter();
 const rows = computed(() => chat.operations);
 
 function rowTitle(row: OperationRow): string {
-  return row.title || t(FALLBACK_TITLE_KEYS[row.kind]);
+  // 消息行没有正文时先按业务 kind 说类型（撤回 / 窗口抖动 / 合并转发…），
+  // 再退到传输类别的通用说法。两处都只认 row 上的键，不在这里再推一遍 kind。
+  return row.title || t(row.titleKey ?? FALLBACK_TITLE_KEYS[row.kind]);
 }
 
 /**

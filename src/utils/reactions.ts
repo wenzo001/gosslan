@@ -70,6 +70,11 @@ export function foldReactions(
   const latest = new Map<string, { seq: number; msgId: string; add: boolean; target: string; emoji: string; actor: string }>();
 
   for (const rec of records) {
+    // 判死 / 取消 / 已撤回的回应不参与折叠：它从没交给对方，显示成"已点"就是乐观层的谎。
+    // `sending`（含排队等待对方上线）仍要显示 —— 那正是乐观投影的可见形态。
+    if (rec.status === "failed" || rec.status === "cancelled" || rec.status === "recalled") {
+      continue;
+    }
     const p = parseReaction(rec);
     if (!p) continue;
     const actor = rec.sender_id;

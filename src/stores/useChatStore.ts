@@ -39,10 +39,12 @@ import { StaleGuard } from "@/utils/staleGuard";
 import { progressAdvanced, stallFlagAlive } from "@/utils/transferProgressWatch";
 import {
   canApplyOptimisticFailure,
+  dropByMsgId,
   findByMsgId,
   isLatestReadSeq,
   nextReadSeq,
   pendingRollbackIndex,
+  recallRollbackTarget,
   rollbackUnread,
   summaryOwnedByProjection,
 } from "@/utils/optimistic";
@@ -1620,6 +1622,47 @@ export const useChatStore = defineStore("chat", () => {
       for (const id of [...resendingIds.value]) if (!live.has(id)) resendingIds.value.delete(id);
     }
   }
+  /**
+   * 乐观任务中心行（表情回应 / 撤回，5.16.93）。
+   *
+   * 为什么可以先插一行：这两个动作都已是「先入队、后协商」，点下去**必然**会写进补发队列
+   * （除非同步校验失败）。先插的是同一形状的 `sending` 行，等后端快照到达后由
+   * `refreshTransfers` 整表替换；失败时只摘这一行（`dropByMsgId` 只认临时 `msg_id`，
+   * 「真实先到、迟到回滚」不会把真实行一起删掉）。
+   *
+   * ⚠️ 它**不是**伪造失败态：`failed` / `fail_code` 永远只来自后端；临时行 `can_cancel=false`，
+   * 不给用户一个点了没有意义的取消/重发按钮。
+   */
+  function optimisticOpRow(
+    msgId: string,
+    peerId: string,
+    kind: string,
+    nudge = false,
+  ): PendingMessageOp {
+    return {
+      msg_id: msgId,
+      peer_id: peerId,
+      group_id: null,
+      kind,
+      waiting_for: 1,
+      created_at: Date.now(),
+      preview: null,
+      peer_offline: false,
+      can_cancel: false,
+      some_delivered: false,
+      failed: false,
+      fail_code: null,
+      nudge,
+    };
+  }
+  function showOptimisticOp(op: PendingMessageOp) {
+    messageOps.value = [op, ...messageOps.value.filter((o) => o.msg_id !== op.msg_id)];
+  }
+  function dropOptimisticOp(msgId: string) {
+    const next = dropByMsgId(messageOps.value, msgId);
+    if (next) messageOps.value = next;
+  }
+
   /** 进度/done 事件早于 transfer 行进内存时的一次性补拉（防抖，不放大 IPC）。 */
   let transfersRepairTimer: ReturnType<typeof setTimeout> | null = null;
   function scheduleTransfersRepair() {
@@ -2448,19 +2491,88 @@ export const useChatStore = defineStore("chat", () => {
   }
 
   /**
-   * 撤回自己发的一条消息（群/单聊统一，仅原作者，窗口 5 分钟）。
+   * 撤回一条消息（群聊传 `group:<gid>`，单聊传 peer id；5.16.93 起 1:1 走乐观投影）。
    *
-   * 不做乐观更新：先在服务端成功（事件已发出）才改本地 —— 顺序反了会出现
-   * 「本地显示已撤回、对端根本没收到」。事件回来会走 `onMessageRecalled` 统一改本地形态。
+   * 乐观层只改**前端投影**（内存里的 kind + 会话摘要），后端仍然是唯一写入口；
+   * 失败时按 `recallRollbackTarget` 的判据还原 —— 「真实事件先到 / 已回滚过 / 目标换人」
+   * 三种情况都不动，避免把对方已经认账的撤回又翻回来。
+   * 群聊撤回仍走旧路径（本轮范围是 1:1，群侧台账与可见性另行处理）。
    */
-  /** 撤回自己发的一条消息：群聊传 `group:<gid>`，单聊传 peer id；由这里统一分流。 */
   async function recallMessage(convId: string, msgId: string) {
     if (convId.startsWith("group:")) {
       await api.recallGroupMessage(convId.slice(6), msgId);
       return;
     }
-    await api.recallDirectMessage(convId, msgId);
+    const hit = findFirstMessageById(messages.value, [msgId]);
+    const before = hit && hit.convId === convId ? hit.rec : undefined;
+    const localId = crypto.randomUUID();
+    const tempOpId = `tmp-${localId}`;
+    let projection: RecallProjection | null = null;
+    if (before && hit && before.kind !== "recalled" && before.status !== "failed" && before.status !== "cancelled") {
+      const conv = conversations.value.find((c) => c.id === convId);
+      const preview = previewText(before);
+      const ownsPreview =
+        !!conv?.last_msg &&
+        !!before.content &&
+        (conv.last_msg === preview || conv.last_msg === preview.slice(0, 30));
+      const proj: RecallProjection = {
+        before,
+        convId,
+        previewBefore: ownsPreview ? (conv!.last_msg ?? undefined) : undefined,
+        settled: false,
+      };
+      projection = proj;
+      messages.value = replaceMessageAt(messages.value, convId, hit.index, {
+        ...before,
+        kind: "recalled",
+        content: "",
+      });
+      if (ownsPreview) {
+        conversations.value = conversations.value.map((c) =>
+          c.id === convId ? { ...c, last_msg: t("msg.recalled") } : c,
+        );
+      }
+      optimisticRecalls.set(msgId, proj);
+      showOptimisticOp(optimisticOpRow(tempOpId, convId, "recall"));
+    }
+    try {
+      await api.recallDirectMessage(convId, msgId);
+    } catch (e) {
+      // 同步失败（含后端把队列行判死并交回具名码）：只还原**仍是这次投影**的那一条。
+      // 用最新的位置重找一次：await 期间列表可能已经重排/重读，旧的 index 会改到别人身上。
+      const now = findFirstMessageById(messages.value, [msgId]);
+      const restored =
+        projection && now && now.convId === convId
+          ? recallRollbackTarget(now.rec, projection.before, projection.settled)
+          : null;
+      if (restored && now) {
+        messages.value = replaceMessageAt(messages.value, convId, now.index, restored);
+        if (projection!.previewBefore !== undefined) {
+          conversations.value = conversations.value.map((c) =>
+            c.id === convId ? { ...c, last_msg: projection!.previewBefore! } : c,
+          );
+        }
+      }
+      if (projection) optimisticRecalls.delete(msgId);
+      dropOptimisticOp(tempOpId);
+      void refreshTransfers();
+      throw e;
+    }
+    if (projection) optimisticRecalls.delete(msgId);
+    dropOptimisticOp(tempOpId);
+    void refreshTransfers();
   }
+
+  /** 尚在等待真实结果的撤回投影（key = 被撤回消息的 msg_id）。 */
+  type RecallProjection = {
+    before: MessageRecord;
+    convId: string;
+    /** 乐观投影前该会话的预览文本；没改过摘要时是 undefined（回滚也不碰它）。 */
+    previewBefore: string | undefined;
+    /** 真实 `message-recalled` 事件是否先到；到了就不再回滚。 */
+    settled: boolean;
+  };
+  const optimisticRecalls = new Map<string, RecallProjection>();
 
   /** 切换自己发的代码/文本消息渲染；本地更新统一等后端 LWW 后的 `message-render-changed`。 */
   async function setMessageRender(convId: string, msgId: string, mode: "code" | "text") {
@@ -2711,27 +2823,61 @@ export const useChatStore = defineStore("chat", () => {
   }
 
   /**
-   * 1:1 里的表情回应：走普通 `send_message`，kind = "reaction"。
+   * 1:1 表情回应（5.16.93 起乐观投影）。
    *
-   * 为什么不新开一条后端命令：回应是**状态事件**，而 `send_message` 已经是"把一条带 kind 的
-   * 消息可靠投递给一个好友"的唯一通路（outbox / E2EE / ack 全在那条上）。再加一条命令就是第二个家，
-   * 而它管的那一半（可靠投递）会先腐烂。
-   * 后端挡三件事：载荷畸形、对端版本吃不下这个 kind（INV-P24：老端会整帧丢 + 断链），
-   * 以及"静默 kind 不许刷会话预览"。
+   * 走普通 `send_message`，kind = "reaction"：回应是**状态事件**，而 `send_message` 已经是
+   * "把一条带 kind 的消息可靠投递给一个好友"的唯一通路（outbox / E2EE / ack 全在那条上）。
+   * 再加一条命令就是第二个家，而它管的那一半（可靠投递）会先腐烂。
    *
    * 5.16.92 起**能力不足不再当场 Err**：先写本地行与补发队列（`status` 仍是 `sending`），
    * 对端能力未知时留在队列等上线，只有对端**亲口声明**不支持才落 `failed` +
    * `SEND_KIND_UNSUPPORTED`。所以这里拿到的 `rec` 可能是 `sending`，也可能已经是
    * `failed` —— 两种都要入账：静默 kind 不进时间线，任务中心才是它的可见处与重发入口。
+   *
+   * 5.16.93 起投影先行：门控改成先入队之后，点下去必然会写队列，不必等后端往返才上屏。
+   * `foldReactions` 会跳过 `failed/cancelled/recalled`，所以判死那一行不会继续冒充"已点"；
+   * 任务中心那一行由乐观行 → 后端快照接管，失败时只摘临时行。
    * 只有真正的本地失败（写库失败 / 公钥缺失）才是 Err，交给调用点的 toast。
    */
   async function sendDmReaction(friendId: string, target: string, emoji: string, add: boolean) {
-    const rec = await api.sendMessage(
-      friendId,
-      buildReactionPayload(target, emoji, add),
-      "reaction",
-    );
-    enqueueMessage(rec);
+    const myId = myDeviceId.value;
+    if (!myId) throw new Error("device id missing");
+    const localId = crypto.randomUUID();
+    const msgId = `tmp-${localId}`;
+    const content = buildReactionPayload(target, emoji, add);
+    const optimistic: MessageRecord = {
+      id: -1,
+      msg_id: msgId,
+      local_id: localId,
+      conv_id: friendId,
+      sender_id: myId,
+      receiver_id: friendId,
+      kind: "reaction",
+      content,
+      ts: Date.now(),
+      seq: Number.MAX_SAFE_INTEGER,
+      status: "sending",
+    };
+    enqueueMessage(optimistic);
+    showOptimisticOp(optimisticOpRow(msgId, friendId, "reaction"));
+    try {
+      const rec = await api.sendMessage(friendId, content, "reaction", localId);
+      replaceMessage(friendId, msgId, rec);
+      dropOptimisticOp(msgId);
+      void refreshTransfers();
+      // 判死（对端亲口声明缺位）：投影随之退出折叠，任务中心那行会带着具名码出现。
+      // 抛给调用方是为了让人话原因当场可见，而不是只留在面板里等用户去找。
+      if (rec.status === "failed" && rec.fail_code) {
+        throw new Error(`code=${rec.fail_code}`);
+      }
+      return rec;
+    } catch (e) {
+      // 同步失败：库里没有这一行，投影整条收回；真实结果先到时 `dropOptimistic` 找不到临时行。
+      dropOptimistic(friendId, msgId);
+      dropOptimisticOp(msgId);
+      void refreshTransfers();
+      throw e;
+    }
   }
 
   async function createGroup(name: string, members: string[]) {
@@ -3119,6 +3265,10 @@ export const useChatStore = defineStore("chat", () => {
   }
 
   function onMessageRecalled(msgId: string) {
+    // 真实事件先于调用方 await 回来：标记这次乐观投影已经"落定"，
+    // 之后哪怕调用报错也不再回滚（否则会把对方已经认账的撤回翻回去）。
+    const pendingProjection = optimisticRecalls.get(msgId);
+    if (pendingProjection) pendingProjection.settled = true;
     const hit = findFirstMessageById(messages.value, [msgId]);
     if (!hit) return;
     const { convId, rec } = hit;
