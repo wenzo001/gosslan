@@ -636,9 +636,14 @@ pub struct HangDetail {
     pub ended: bool,
 }
 
-/// 卡死记录的两种原生行（写现场用，不参与"上一轮怎么结束"的判定）。
+/// 看门狗的诊断行（写现场用，不参与"上一轮怎么结束"的判定）。
+///
+/// `WATCHDOG_CLOCK_JUMP` 是 2026-11-03 加的唤醒豁免路标：它证明"这一跳被跳过、不是没跑"。
+/// 与 HANG 族一样是正交事实，若留着会让最后一条原生行变成它 ⇒ `NoHistory`。
 fn is_hang_native_line(line: &str) -> bool {
-    line.starts_with(">>> code=HANG ") || line.starts_with(">>> code=HANG_END ")
+    line.starts_with(">>> code=HANG ")
+        || line.starts_with(">>> code=HANG_END ")
+        || line.starts_with(">>> code=WATCHDOG_CLOCK_JUMP ")
 }
 
 /// 从一行现场文本里取 panic 位置与消息。
@@ -3316,6 +3321,23 @@ mod tests {
             ">>> code=HANG scope=main_thread seconds=42 last_op=send_message",
             ">>> code=HANG_END scope=main_thread seconds=42",
             "----- 正常退出 2026-10-25 10:35:00 运行 aa -----",
+        ]);
+        assert_eq!(classify_previous_exit(&with_exit), PreviousExit::Clean);
+    }
+
+    /// 唤醒豁免路标是诊断事实，不许把"这一轮怎么结束"顶成 `NoHistory`。
+    #[test]
+    fn clock_jump_marker_does_not_change_exit_classification() {
+        let run = lines(&[
+            "----- 启动 2026-11-03 10:30:00 版本 5.16.90 · macos-aarch64 · release · 设备 [dev:test] · 运行 aa -----",
+            ">>> code=WATCHDOG_CLOCK_JUMP wall_delta_ms=28801000 mono_delta_ms=1000",
+        ]);
+        assert_eq!(classify_previous_exit(&run), PreviousExit::SilentKill);
+
+        let with_exit = lines(&[
+            "----- 启动 2026-11-03 10:30:00 版本 5.16.90 · macos-aarch64 · release · 设备 [dev:test] · 运行 aa -----",
+            ">>> code=WATCHDOG_CLOCK_JUMP wall_delta_ms=28801000 mono_delta_ms=1000",
+            "----- 正常退出 2026-11-03 10:35:00 运行 aa -----",
         ]);
         assert_eq!(classify_previous_exit(&with_exit), PreviousExit::Clean);
     }

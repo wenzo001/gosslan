@@ -9,7 +9,7 @@
 //! - 10 s 是**用户可见**的通知阈值（与前端 HangNotice 的 10 s 同一口径）。
 use std::sync::atomic::{AtomicI64, Ordering};
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 #[cfg(desktop)]
 use tauri::Manager;
@@ -45,6 +45,43 @@ fn note_interval(notes: u32) -> i64 {
 /// 放在编译期断言（clippy 也不许在测试里写常量断言）。
 const _: () = assert!(SLOW_NOTE_INTERVAL_MS > MIN_NOTE_INTERVAL_MS);
 
+/// 墙钟与单调时钟差多少毫秒就认定"这一跳不能用进程内的停顿时长解释"。
+///
+/// 为什么是 5 s：看门狗每秒一跳，正常调度抖动是毫秒级；NTP 是缓慢 slew，不会在一个
+/// tick 内跳 5 s。真机上误报的 gap 是 30–71 s（2026-10-31 / 11-01，`last_op=set_app_active`，
+/// 全部落在睡眠/唤醒附近）⇒ 都远大于这个阈值。
+pub(crate) const CLOCK_JUMP_TOLERANCE_MS: i64 = 5_000;
+
+/// 一跳的判定：只看**这一跳**的墙钟增量能不能被单调时钟解释。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum TickVerdict {
+    /// 墙钟与单调时钟同步 ⇒ 主线程/渲染层停住多少就是多少，照旧判 HANG。
+    Judge,
+    /// 墙钟多走（睡眠恢复 / 墙钟被改）或少走（墙钟回拨）
+    /// ⇒ 这一段**无法区分**"系统没在跑"与"进程真死" ⇒ 只重定基线。
+    Skip,
+}
+
+/// 纯判定（虚拟时钟可直接构造，见下方 `virtual_clock_*` 用例）。
+///
+/// 睡 8 小时回来：墙钟 +28 800 000，单调时钟只走了 ~1 s ⇒ Skip。
+/// 墙钟被调快 71 s：墙钟 +72 000，单调时钟 ~1 s ⇒ Skip。
+/// 真卡死 40 s：看门狗自己在跑（墙钟与单调时钟同走 ~1 s）⇒ Judge，
+/// 由调用方按 40 s 的停顿照旧写 HANG。
+///
+/// ⚠️ 边界：**只**看墙钟与单调时钟的分叉。不把"看门狗这一跳自己隔了很久"
+/// （墙钟与单调时钟同走）当成豁免 —— 那正好是"进程整体停住"的形状
+/// （SIGSTOP / 整机冻住），按用户 2026-11-03 的口径必须照旧判 HANG，
+/// 否则豁免会宽到盖住真死。
+pub(crate) fn tick_verdict(wall_delta_ms: i64, mono_delta_ms: i64) -> TickVerdict {
+    let mono = mono_delta_ms.max(0);
+    if (wall_delta_ms - mono).abs() >= CLOCK_JUMP_TOLERANCE_MS {
+        TickVerdict::Skip
+    } else {
+        TickVerdict::Judge
+    }
+}
+
 pub fn start<R: tauri::Runtime>(app: tauri::AppHandle<R>, state: Arc<crate::state::AppState>) {
     let _ = std::thread::Builder::new()
         .name("gosslan-watchdog".to_string())
@@ -60,9 +97,40 @@ fn run<R: tauri::Runtime>(app: tauri::AppHandle<R>, state: Arc<crate::state::App
     let mut main_episode: Option<(i64, i64)> = None;
     // (episode 开始, 上次写 HANG 的时刻, 是否已通知)
     let mut renderer_episode: Option<(i64, i64, bool)> = None;
+    // 墙钟与进程内单调时钟的双基线：睡眠/墙钟被改时两者会分叉（见 [`tick_verdict`]）。
+    let mut wall_prev = now_ms();
+    let mut mono_prev = Instant::now();
+    // 唤醒被检出时把渲染层"停滞起点"抬到此刻：睡眠那几个小时不该算成界面卡死。
+    let mut hb_floor = 0i64;
 
     loop {
         let now = now_ms();
+        let mono = Instant::now();
+        let wall_delta = now - wall_prev;
+        let mono_delta = mono.duration_since(mono_prev).as_millis() as i64;
+        wall_prev = now;
+        mono_prev = mono;
+
+        if tick_verdict(wall_delta, mono_delta) == TickVerdict::Skip {
+            // 睡眠恢复 / 墙钟被改：墙钟相对单调时钟分叉的那一段**无法区分**
+            // "系统没在跑"与"进程真死"。用户 2026-11-03 的验收口径：不判 HANG、
+            // 不写 HANG 族路标、不弹通知。只重定基线，并留一条**非 HANG 族**的
+            // 路标证明豁免确实发生过（下一轮能据此解释"为什么这里没有 HANG"）。
+            crate::logging::crash_note(&format!(
+                ">>> code=WATCHDOG_CLOCK_JUMP wall_delta_ms={wall_delta} mono_delta_ms={mono_delta}"
+            ));
+            last_main_tick.store(now, Ordering::SeqCst);
+            posted_at.store(0, Ordering::SeqCst);
+            // 已在睡前写过 HANG 的 episode 在这里静默丢弃：宁可让那一轮显示"未配对"，
+            // 也不在豁免时刻再写一条 HANG/HANG_END（否则豁免本身又会污染现场）。
+            main_episode = None;
+            renderer_episode = None;
+            hb_floor = now;
+            #[cfg(desktop)]
+            crate::tray::set_watchdog_tooltip(&app, None);
+            std::thread::sleep(TICK);
+            continue;
+        }
 
         // ---- 主线程探针：一次只挂一个，避免主线程恢复时堆满事件队列 ----
         let tick = last_main_tick.load(Ordering::SeqCst);
@@ -118,7 +186,10 @@ fn run<R: tauri::Runtime>(app: tauri::AppHandle<R>, state: Arc<crate::state::App
             }
         }
         if hb > 0 {
-            let stale = now - hb;
+            // 唤醒后心跳时间戳还停在睡前 ⇒ 用 `hb_floor`（唤醒时刻）兜住：
+            // 只豁免睡眠那一段，唤醒之后渲染层若仍不恢复，停滞照常从 0 长起来。
+            let hb_effective = if hb_floor > 0 { hb.max(hb_floor) } else { hb };
+            let stale = now - hb_effective;
             if active && stale >= RENDERER_STALE_MS {
                 let op = current_op(&state);
                 match &mut renderer_episode {
@@ -299,5 +370,48 @@ mod tests {
         assert_eq!(note_interval(MAX_NOTES - 1), MIN_NOTE_INTERVAL_MS);
         assert_eq!(note_interval(MAX_NOTES), SLOW_NOTE_INTERVAL_MS);
         assert_eq!(note_interval(MAX_NOTES + 10_000), SLOW_NOTE_INTERVAL_MS);
+    }
+
+    /// 虚拟时钟三用例（用户 2026-11-03 的验收口径，必须能证伪）：
+    /// 前两种"唤醒/墙钟跳变"必须**静默**，第三种"真卡死"必须**照旧判**。
+    #[test]
+    fn virtual_clock_sleep_and_jump_are_exempt_but_a_real_stall_is_not() {
+        let one_tick_sleep = 8 * 3600 * 1000 + 1_000; // 睡 8h 回来，墙钟 +8h，单调时钟只走 1s
+        assert_eq!(
+            tick_verdict(one_tick_sleep, 1_000),
+            TickVerdict::Skip,
+            "纯睡眠 8h 回来不许判 HANG"
+        );
+        // 墙钟被调快 71s：墙钟增量比单调时钟多 71s。
+        assert_eq!(
+            tick_verdict(72_000, 1_000),
+            TickVerdict::Skip,
+            "墙钟 +71s 不许判 HANG"
+        );
+        // 真卡死 40s：看门狗自己在跑，墙钟与单调时钟同走 1s ⇒ 交给老判据，
+        // 40s 的停顿仍超过 MAIN_STALL_NOTE_MS ⇒ 会写 HANG。
+        assert_eq!(
+            tick_verdict(1_000, 1_000),
+            TickVerdict::Judge,
+            "进程内真卡死不许被豁免"
+        );
+        let real_stall_ms = 40_000i64;
+        assert!(
+            real_stall_ms >= MAIN_STALL_NOTE_MS,
+            "真卡死 40s 仍在写现场阈值以上"
+        );
+        // 反控：墙钟回拨 71s（少走）也要静默并重定基线，否则下一次读数会是负数/乱序。
+        assert_eq!(tick_verdict(-70_000, 1_000), TickVerdict::Skip);
+    }
+
+    /// 阈值边界：正常调度抖动不许被当成唤醒（否则豁免会宽到盖住真死）。
+    #[test]
+    fn sub_threshold_drift_still_judges() {
+        assert_eq!(tick_verdict(1_050, 1_000), TickVerdict::Judge);
+        assert_eq!(tick_verdict(1_000, 4_900), TickVerdict::Judge);
+        assert_eq!(tick_verdict(6_000, 1_000), TickVerdict::Skip);
+        // 反控：看门狗自己隔了 6 s 才跑（墙钟与单调时钟同走）⇒ 这是"进程整体停住"，
+        // 不是睡眠 ⇒ 仍然判（不许用豁免盖住真死）。
+        assert_eq!(tick_verdict(6_000, 6_000), TickVerdict::Judge);
     }
 }
