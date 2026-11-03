@@ -598,7 +598,9 @@ define_class!(
                     .unwrap_or_else(|e| e.into_inner())
                     .take()
                 {
-                    let _ = tx.send(Err(format!("蓝牙广播启动失败：{err}")));
+                    let _ = tx.send(Err(format!(
+                        "code=BLE_ADVERTISE_FAILED 蓝牙广播启动失败：{err}"
+                    )));
                 }
             }
         }

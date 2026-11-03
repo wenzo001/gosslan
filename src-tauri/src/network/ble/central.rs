@@ -73,6 +73,14 @@ async fn scan_loop(
                         }
                     ),
                 );
+                // R1：0 个广播 = 扫描/权限/硬件问题，与"收到但都不是本服务"是两件事 ⇒
+                // 单独一个具名码（节流 60s，避免后台节奏刷屏）；info 那行原文保留。
+                if total == 0 && crate::logging::log_throttled("ble_scan_empty", 60_000) {
+                    state.logger.warn(
+                        "ble",
+                        "code=BLE_SCAN_EMPTY 本轮 BLE 扫描收到 0 个广播（扫描/权限/硬件问题；同轮 info 行保留原始读数）",
+                    );
+                }
                 // 记进诊断状态（面板要在不重新扫的情况下知道最近一轮看到了什么）
                 *state.ble_scan.lock().unwrap_or_else(|e| e.into_inner()) =
                     crate::state::BleScanStats {
@@ -230,7 +238,9 @@ async fn scan_loop(
                     });
                 }
             }
-            Err(e) => state.logger.warn("ble", format!("扫描失败：{e}")),
+            Err(e) => state
+                .logger
+                .warn("ble", format!("code=BLE_SCAN_FAILED 扫描失败：{e}")),
         }
         // 本轮结束：决定等多久再开下一轮。
         // 节奏由**应用是否在前台/聚焦**决定（用户 2026-09-13 的功耗策略）：前台 5s、后台 30s。

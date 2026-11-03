@@ -458,6 +458,7 @@ device::tests::generated_id_keeps_the_one_prefix_and_length
 device::tests::identical_attributes_still_produce_different_ids
 device::tests::legacy_dev_prefix_is_stripped_exactly_once
 diagnostics::tests::bundle_covers_the_three_files_and_says_what_is_missing
+diagnostics::tests::bundle_header_aggregates_error_codes_top_down
 diagnostics::tests::bundle_takes_the_tail_not_the_whole_file
 diagnostics::tests::redact_keeps_the_triage_signal
 diagnostics::tests::redact_masks_the_four_shapes_seen_in_real_logs
@@ -642,6 +643,7 @@ network::ble::tests::throughput_estimate_matches_real_mtu_budgets
 network::discovery::tests::adaptive_interval_thresholds_and_jitter_bounds
 network::discovery::tests::broadcast_diag_event_reflects_send_result
 network::discovery::tests::broadcast_streak_counts_only_full_silence
+network::discovery::tests::discovery_failure_paths_carry_named_codes
 network::discovery::tests::discovery_recv_socket_actually_receives_broadcast
 network::discovery::tests::expired_deadline_is_ready_immediately
 network::discovery::tests::is_rfc1918_covers_private_ranges
@@ -1151,6 +1153,7 @@ tests::background_service_wiring_follows_the_lan_channel
 tests::big_alloc_sites_and_the_crash_block_carry_the_picture
 tests::ble_connect_cheap_path_requires_an_existing_connection
 tests::ble_dial_is_deduplicated_and_disconnects_on_failure
+tests::ble_failure_states_carry_named_codes
 tests::ble_file_transfer_respects_link_limits
 tests::ble_handshake_skips_leading_frames_without_processing_them
 tests::ble_link_has_a_designated_dialer

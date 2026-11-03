@@ -705,3 +705,37 @@
             "补丁要写成\"取不到就安全返回\"，不能换成别的写法继续 panic"
         );
     }
+
+    /// R1（2026-11-03）：BLE 失败族具名码。平台真失败态造不进单测，但**分类决策**与
+    /// "码在留痕点上"这两件事可以注入：喂权限族/非权限族措辞断言分类，逐码断言源码留痕。
+    #[test]
+    fn ble_failure_states_carry_named_codes() {
+        use crate::network::ble::ble_peripheral_state_code;
+        assert_eq!(ble_peripheral_state_code("Unauthorized"), "BLE_UNAUTHORIZED");
+        assert_eq!(
+            ble_peripheral_state_code("permission denied by user"),
+            "BLE_UNAUTHORIZED"
+        );
+        assert_eq!(ble_peripheral_state_code("系统未授权"), "BLE_UNAUTHORIZED");
+        assert_eq!(
+            ble_peripheral_state_code("PoweredOff"),
+            "BLE_PERIPHERAL_UNAVAILABLE"
+        );
+        let central = include_str!("network/ble/central.rs");
+        let periph = include_str!("network/ble/peripheral.rs");
+        let bt = include_str!("transport/bluetooth.rs");
+        let btp = include_str!("transport/bluetooth_peripheral.rs");
+        for (code, src) in [
+            ("code=BLE_SCAN_FAILED", central),
+            ("code=BLE_SCAN_EMPTY", central),
+            ("code=BLE_PERIPHERAL_REGISTER_FAILED", periph),
+            ("code=BLE_PERIPHERAL_STATE_CHANNEL_CLOSED", periph),
+            ("code=BLE_ADAPTER_NOT_READY", bt),
+            ("code=BLE_ADAPTER_INIT_FAILED", bt),
+            ("code=BLE_ADAPTER_ENUM_FAILED", bt),
+            ("code=BLE_ADAPTER_MISSING", bt),
+            ("code=BLE_ADVERTISE_FAILED", btp),
+        ] {
+            assert!(src.contains(code), "缺 BLE 具名码 {code}（删了它这一族失败就回到自由文本）");
+        }
+    }

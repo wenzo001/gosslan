@@ -79,6 +79,35 @@ fn tail_bytes(text: &str, cap: usize) -> String {
 }
 
 /// 组装诊断包正文（纯函数：读文件这一步留给调用方，方便单测）。
+/// 统计正文里 `code=<CODE>` 的出现次数（只认大写蛇形的码形状，不碰内容）。
+/// R1（2026-11-03）配套：诊断包头部给一张 Top-10 码表，开发者拿到包先看这一张
+/// 就能在 30 秒内把故障归到族（BLE_* 蓝牙 / DISC_* 发现 / RELAY_*·MESH_* 传输 /
+/// UPDATER_* 更新 / DB_* 持久化…），不用先翻几百 KB 日志。
+fn top_error_codes(parts: &[(&str, String)]) -> Vec<(String, usize)> {
+    let mut counts: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
+    for (_, body) in parts {
+        let mut at = 0usize;
+        while let Some(hit) = body[at..].find("code=").map(|i| i + at) {
+            let start = hit + 5;
+            let mut end = start;
+            for (off, ch) in body[start..].char_indices() {
+                if ch.is_ascii_uppercase() || ch.is_ascii_digit() || ch == '_' {
+                    end = start + off + ch.len_utf8();
+                } else {
+                    break;
+                }
+            }
+            if end > start {
+                *counts.entry(body[start..end].to_string()).or_insert(0) += 1;
+            }
+            at = end.max(start + 1);
+        }
+    }
+    let mut v: Vec<(String, usize)> = counts.into_iter().collect();
+    v.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+    v
+}
+
 pub fn bundle_text(
     logger: &Logger,
     parts: &[(&str, String)],
@@ -112,6 +141,13 @@ pub fn bundle_text(
     out.push_str(
         "仍保留: 端口、字节数与消息类型（日志规范本来就不写消息正文与文件名，导出前也核过）\n",
     );
+    let counts = top_error_codes(parts);
+    if !counts.is_empty() {
+        out.push_str("错误码聚合 Top 10（包内日志按出现次数降序）:\n");
+        for (code, n) in counts.iter().take(10) {
+            out.push_str(&format!("  {code} x{n}\n"));
+        }
+    }
     out.push('\n');
     for (label, body) in parts {
         let (red, n) = redact(body, logger.fingerprint(), home);
@@ -592,5 +628,23 @@ mod tests {
         let body = std::fs::read_to_string(&dest).unwrap();
         assert!(!body.contains("192.168.31"), "写到磁盘的那份也要是脱敏后的");
         remove_own_tree(logger.log_dir().parent().unwrap());
+    }
+
+    /// R1 配套：诊断包头部的错误码聚合必须真数得出来（注入两份正文、断言 Top 序与计数），
+    /// 且只认码形状 —— 正文里的普通大写词不该被算成码。
+    #[test]
+    fn bundle_header_aggregates_error_codes_top_down() {
+        let parts: &[(&str, String)] = &[
+            (
+                "本轮运行日志",
+                "x code=BLE_SCAN_EMPTY a code=BLE_SCAN_EMPTY b code=DISC_BIND_FAILED c ABCD_normal word code= x\n"
+                    .to_string(),
+            ),
+            ("崩溃现场", "code=BLE_SCAN_EMPTY\n".to_string()),
+        ];
+        let counts = super::top_error_codes(parts);
+        assert_eq!(counts[0], ("BLE_SCAN_EMPTY".to_string(), 3));
+        assert_eq!(counts[1], ("DISC_BIND_FAILED".to_string(), 1));
+        assert_eq!(counts.len(), 2, "裸 code= 与普通大写词不该进表");
     }
 }
