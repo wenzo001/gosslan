@@ -1,19 +1,19 @@
-# 三机实测清单 — 5.17.5 可测包（2026-11-04）
+# 三机实测清单 — 5.17.8 可测包（2026-11-04）
 
-包：草稿 release <https://github.com/wenzo001/gosslan/releases/tag/untagged-04c587aff7e9d1bf27c8>
+包：草稿 release <https://github.com/wenzo001/gosslan/releases/tag/untagged-52e8ace2dd1134814b69>
 （需登录 GitHub；未 publish、未建 tag、未改 `latest.json`）
 
-- Windows x64：`Gosslan_5.17.5_x64-setup.exe`，6,016,912 B，
-  sha256 `5dd5c29dfa52facb3367ea50c330e245de93e34c6563ecdb2c5785b6a2c509a0`
-- macOS arm64：`Gosslan_5.17.5_aarch64.dmg`，9,160,919 B，
-  sha256 `966a9356dea7e17ea2d1ea3179027dc96283ca8cae92297ac0a2b02f633f6e63`
-- macOS x64：`Gosslan_5.17.5_x64.dmg`，9,740,376 B，
-  sha256 `dfc26a3c784ee82491dbea9eb5ed36e0170485fcbde67c9f4236e8df64d5070e`
+- Windows x64：`Gosslan_5.17.8_x64-setup.exe`，6,018,221 B，
+  sha256 `5257bda7ac7a15904d15993312e236d2697b6390c87e0cd523b2a7ef4b911c51`
+- macOS arm64：`Gosslan_5.17.8_aarch64.dmg`，9,163,859 B，
+  sha256 `9c4bb2d836f97d7f6ace8c99f7e47c01b87dd2d6b69a1a6f043ad708e2e3ad76`
+- macOS x64：`Gosslan_5.17.8_x64.dmg`，9,743,693 B，
+  sha256 `aa407a7912e517f2244f255032d1c87bf5809aba9415c28574e7e1717d9d6120`
 
-版本核对：Windows 由产物文件名 `5.17.5` + `tauri.conf.json` 的 `version`；macOS 挂载 dmg 后
-`CFBundleShortVersionString` 实读 `5.17.5`。
+版本核对：Windows 由产物文件名 `5.17.8` + `tauri.conf.json` 的 `version`；macOS 挂载 dmg 后
+`CFBundleShortVersionString` 实读 `5.17.8`（两份 dmg 都已实读）。
 
-> 总时长：必做 ≈ 11 分钟；可选（BLE 多跳）≈ 4 分钟。每条"不对就发我"统一指：
+> 总时长：必做 ≈ 13 分钟；可选（BLE 多跳）≈ 4 分钟。每条"不对就发我"统一指：
 > 截图（标出位置）+ 两端日志最后 30 行里带 `code=` 的行。Windows 日志在
 > `%APPDATA%\com.gosslan.app\logs\gosslan.log`；Android 用 `adb logcat -s gosslan-logcat`。
 
@@ -23,8 +23,8 @@
 
 1. 设置 → 关于，记下旧版本号。
 2. 托盘右键 → 退出（任务管理器里确认无 `gosslan.exe`）。
-3. 双击 `Gosslan_5.17.5_x64-setup.exe` → 下一步 → 安装（同目录原地升级，不应要求先卸载）。
-4. 打开应用 → 设置 → 关于，应显示 `5.17.5`。
+3. 双击 `Gosslan_5.17.8_x64-setup.exe` → 下一步 → 安装（同目录原地升级，不应要求先卸载）。
+4. 打开应用 → 设置 → 关于，应显示 `5.17.8`。
 5. 打开一个旧会话 + 好友列表，历史消息与好友都还在。
 
 PowerShell 三行（整段粘贴即可）：
@@ -35,7 +35,7 @@ Get-Process gosslan -ErrorAction SilentlyContinue | Select-Object Id,CPU,Working
 Get-Content "$env:APPDATA\com.gosslan.app\logs\gosslan.log" -Tail 20
 ```
 
-看什么：第 1 行输出 `5.17.5`；第 2 行只有 1 个进程；第 3 行末尾没有 `code=E_`。
+看什么：第 1 行输出 `5.17.8`；第 2 行只有 1 个进程；第 3 行末尾没有 `code=E_`。
 不对就发我：三行完整输出 + 关于页截图。
 
 ## 1. Android BLE 外设（必做，2 分钟）
@@ -89,10 +89,21 @@ Get-Content "$env:APPDATA\com.gosslan.app\logs\gosslan.log" -Tail 20
 看什么：A、C 聊天页头部「经 2 跳中继」（1 跳则记录实际数字）；消息到达；B 侧不显示该消息。
 不对就发我：A/C 聊天头部截图 + 三端日志 `hop`/`relay`/`code=` 行。
 
+## 6. 跨网段凭设备 ID 找人（必做，2 分钟）
+
+前置：A、B 在不同网段、**还不是好友**；两端都已按第 3 节或第 4 节配好
+（同一公网中继并已建立电路，或填了同一个桥接机的「跨网段连接」地址）；两端都是 5.17.8。
+
+点击：B → 设置 → 关于 → 复制设备 ID 发给 A；A → 添加好友 → 粘贴到搜索框 → 等 2~3 秒。
+
+看什么：列表里出现 B 那一行（链路可能显示「经 N 跳」）；点加好友 → B 同意 → A 发一条能到。
+不对就发我：A 搜索框（含粘贴的 ID）+ 列表截图 + 两端日志 `code=` 行。
+
 ---
 
 ## 已知缺口（测试时不必当 bug 重报）
 
-1. 「复制邀请」文案说"搜索这个设备 ID，就能加我"，但添加好友的搜索框只过滤**本机已发现**的节点；
-   未发现的跨网段设备无法凭设备 ID 搜到（`friend.add.crossNet.hint` 也写明：公网首次加好友需共同好友）。
-2. 「可能离线」只把昵称变灰（`opacity-60`），整行不变灰。
+1. 没有目录服务：只能发现「已配置 routed 端点 / 已建中继电路」可达范围内的设备；
+   完全陌生、双方无任何连接路径的设备，凭设备 ID 仍搜不到（这是隐私上的取舍，不是 bug）。
+2. 已修（5.17.8）：复制邀请按钮常驻、文案改为「发给对方，对方添加后即可跨网段互见」；
+   「可能离线」改为整行灰显（只降透明度，仍可点击）。
