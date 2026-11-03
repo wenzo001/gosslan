@@ -36,6 +36,7 @@ import { shouldRunThrottled } from "@/utils/defer";
 import { createInitScope, type InitScope } from "@/utils/initScope";
 import { StaleGuard } from "@/utils/staleGuard";
 import { progressAdvanced, stallFlagAlive } from "@/utils/transferProgressWatch";
+import { notifyTitle } from "@/utils/notifyTitle";
 import { createSingleFlight } from "@/utils/singleFlight";
 import { EMPTY_STRING_LIST } from "@/utils/emptyList";
 import { actionableRequests } from "@/utils/friendRequests";
@@ -346,7 +347,14 @@ export const useChatStore = defineStore("chat", () => {
       for (const { count, last } of entries) {
         // 窗口期间用户已切到该会话且**可见**前台 → 该会话跳过通知
         if (!document.hidden && document.hasFocus() && activeConv.value === last.conv_id) continue;
-        const title = nicknameOf(last.sender_id);
+        // 群消息标题 = 「群名 · 发送者昵称」（审计 2026-11-03 第 2 项；唯一口径在 utils/notifyTitle）。
+        const title = notifyTitle(
+          last.conv_id,
+          nicknameOf(last.sender_id),
+          last.conv_id.startsWith("group:")
+            ? (groups.value.find((g) => g.id === last.conv_id.slice("group:".length))?.name ?? null)
+            : null,
+        );
         const body = notifyBody(count, last);
         const convId = last.conv_id;
         anyReminded = true;
