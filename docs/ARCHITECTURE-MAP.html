@@ -1019,7 +1019,7 @@ const EVENTS = [
   ["message-received", "MessageRecord", "对端帧解开并落库成功时；也用于自己发出的那一行的首帧", "chat.enqueueMessage（进时间线/计未读/通知）", "全体窗口"],
   ["message-acked", "msg_id str", "发送方收到对端 Ack，<b>且核过 outbox 里确有该行</b>", "onMessageAcked → 气泡转 delivered", "全体窗口"],
   ["group-message-acked", "{msg_id}", "群成员回 GroupAck，删掉<b>那一个成员</b>的 group_outbox 行，<b>并在同一次锁里把这条消息写进真库终态</b> <code>db::set_message_status(…, \"delivered\")</code>（A-15，2026-10-13：过去只删行 + emit ⇒ 内存里 advance 一次，一重启就退回单勾，而「状态唯一真相源是 <code>messages.status</code>」是写着 INV-006 的）", "同上（共用一个处理）", "全体窗口"],
-  ["message-status-changed", "msg_id str", "状态被外部改动（补发、重投、取消）", "onMessageStatusChanged", "全体窗口"],
+  ["message-status-changed", "{msg_id, status?}", "状态被外部改动（补发、重投、取消、删好友、群文件终态）。<code>status</code> = 刚写库的值（审计第 4 项：带结论时前端盖全缓存，含没在看的会话）；群文件聚合台账/done 闸门那一族给 <code>null</code>，前端退回只重查活跃会话", "onMessageStatusChanged", "全体窗口"],
   ["message-failed", "msg_id str", "<b>只有过期清扫器</b>写 failed（可达超 120s / 群与文件 30min）", "气泡转失败 + toast", "全体窗口"],
   ["message-recalled", "msg_id str", "撤回落 <code>group_recalled_messages</code> 并物化之后", "从时间线摘掉那一条", "全体窗口"],
   ["peer-read", "PeerReadInfo", "对端已读回执到达（发不出去先攒 <code>pending_reads</code>，建链/心跳补发）", "已读单勾变双勾", "全体窗口"],

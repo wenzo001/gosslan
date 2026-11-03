@@ -13,6 +13,26 @@
 
 ## [Unreleased]
 
+## [5.16.83] - 2026-11-03
+
+### `message-status-changed` 带结论 + 全缓存补丁（审计 2026-11-03 第 4 项）
+
+- 旧形状只发 msg_id 字符串 ⇒ 前端只能重查**正在看的**会话：取消 / 补发 / 删好友 /
+  群文件终态落库后，没在看的会话缓存停到下次打开才被库里的真值纠正（重发入口判据
+  `status === "failed"` 在后台会话里也跟着失真）。
+- 载荷改为 `{msg_id, status}`（`state::MessageStatusChanged`）：`status` = emit 前
+  刚写进 `messages.status` 的值 —— 取消落 cancelled / partial_cancelled、补发落
+  sending / sent、删好友落 failed、群文件收尾落 failed。前端与 `message-failed` /
+  `file-cancelled` 同形：`markStatusInCache` 把事实盖到**所有**缓存会话，不回库查、
+  不整页重建。
+- 真相不是单一状态的那一族（群文件聚合台账、done 闸门、气泡写库失败）给
+  `status = null`：前端退回"只重查活跃会话"的旧路。**不许猜结论** ——
+  `set_gfile_bubble_status` 改为返回落库成败，结论与写库绑定。
+- 判据：events.test.ts 载荷形状扫描（退回裸字符串必须红，含夹具正反控）；
+  storeContract 两条（监听拆参 + 全缓存分支，正控：退回只重查活跃会话必须红）；
+  designGuards 接线条目；group_file.rs 字面量守卫同步换针。
+
+
 ## [5.16.82] - 2026-11-03
 
 ### `open_file_native` 慢活挪进 spawn_blocking（审计 2026-11-03 第 3 项）

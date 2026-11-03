@@ -925,15 +925,48 @@ test("message-failed 用事件自带的事实盖缓存，不再退化成一次�
 
   // 两条事件按"带不带结论"分家：各走各的处理器，出现次数钉死。
   assert.equal(count(api, 'listen<string>("message-failed", (e) => h.onMessageFailed(e.payload))'), 1);
-  assert.equal(count(api, "h.onMessageStatusChanged(e.payload)"), 1, "重查那条只能剩 message-status-changed 一处");
+  assert.equal(count(api, "h.onMessageStatusChanged(e.payload.msg_id, e.payload.status)"), 1, "message-status-changed 只能有一处监听");
   assert.equal(count(st, "onMessageFailed:"), 1, "store 里这个处理器必须存在且只有一份");
   assert.equal(count(st, 'markStatusInCache(messages.value, msgId, "failed")'), 1);
 
-  // 非空转对照：把 message-failed 再接回重查那个处理器 ⇒ 两条计数必须同时错。
-  const mutated = api.replace("h.onMessageFailed(e.payload)", "h.onMessageStatusChanged(e.payload)");
+  // 非空转对照：把 message-failed 再接回状态变更那个处理器 ⇒ 两条计数必须同时错。
+  const mutated = api.replace(
+    "h.onMessageFailed(e.payload)",
+    "h.onMessageStatusChanged(e.payload.msg_id, e.payload.status)",
+  );
   assert.notEqual(mutated, api, "对照替换没生效 ⇒ 这条对照什么都没测");
   assert.equal(count(mutated, "h.onMessageFailed(e.payload)"), 0);
-  assert.equal(count(mutated, "h.onMessageStatusChanged(e.payload)"), 2, "接回去就是第二处重查");
+  assert.equal(count(mutated, "h.onMessageStatusChanged(e.payload.msg_id, e.payload.status)"), 2, "接回去就是第二处监听");
+});
+
+test("message-status-changed 带结论时必须盖全缓存，不许退化成只重查活跃会话（审计第 4 项）", () => {
+  const api = stripComments(readFileSync(join(ROOT, "api", "index.ts"), "utf8"));
+  const st = stripComments(readFileSync(join(ROOT, "stores", "useChatStore.ts"), "utf8"));
+
+  // 监听把载荷拆成两个实参：msg_id 与 status 都要到场（少一个就退回旧形状）。
+  assert.equal(count(api, "h.onMessageStatusChanged(e.payload.msg_id, e.payload.status)"), 1);
+
+  // 带结论那一支走 failed/cancelled 同一个家：全缓存盖状态。
+  assert.equal(count(st, "markStatusInCache(messages.value, msgId, status)"), 1, "结论必须走全缓存那个家");
+  // 处理器签名必须收 status（退回单参 = 载荷里的结论被丢掉）。
+  assert.equal(count(st, "onMessageStatusChanged: (msgId, status) => {"), 1);
+
+  // 非空转对照 ①：把全缓存盖状态退化成"只重查活跃会话" ⇒ 计数立刻不成立。
+  //（这正是修复前的形状：没在看的会话缓存停到下次打开。）
+  const mutated = st.replace(
+    "markStatusInCache(messages.value, msgId, status);",
+    "void loadMessages(activeConv.value ?? msgId);",
+  );
+  assert.notEqual(mutated, st, "对照注入没生效 ⇒ 锚点写法变了");
+  assert.equal(count(mutated, "markStatusInCache(messages.value, msgId, status)"), 0);
+
+  // 非空转对照 ②：监听把 status 丢掉（恒 null）⇒ 全缓存那一支永远走不到。
+  const mutatedApi = api.replace(
+    "h.onMessageStatusChanged(e.payload.msg_id, e.payload.status)",
+    "h.onMessageStatusChanged(e.payload.msg_id, null)",
+  );
+  assert.notEqual(mutatedApi, api, "对照替换没生效 ⇒ 这条对照什么都没测");
+  assert.equal(count(mutatedApi, "h.onMessageStatusChanged(e.payload.msg_id, e.payload.status)"), 0);
 });
 
 // ---------------- 「网络停滞」标记的回收（10-23 审计 P1-A） ----------------

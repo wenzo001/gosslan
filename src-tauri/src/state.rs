@@ -722,6 +722,23 @@ pub struct FileFailedInfo {
     pub reason: String,
 }
 
+/// `message-status-changed` 事件载荷（审计第 4 项：跨会话状态补丁）。
+///
+/// 旧形状只发 msg_id 字符串 ⇒ 前端只能"重查正在看的会话"，没在看的会话缓存停到
+/// 下次打开才被库里的真值纠正（取消/补发/删好友落库的状态在后台会话里一直不更新）。
+/// 现在按「事件带不带结论」分家（与 `message-failed` / `file-cancelled` 同一条口径）：
+///
+/// - `status = Some(…)`：emit 前刚把这行 `messages.status` 写成该值 ⇒ 前端直接把事实
+///   盖到**所有**缓存了这条消息的会话（含没在看的），不回库查、不整页重建；
+/// - `status = None`：这一格的真相不是单一状态（群文件聚合台账 / `done` 闸门 /
+///   写库没成功）⇒ 前端退回"只重查活跃会话"的旧路。**不许猜一个状态填进来** ——
+///   假结论比没结论更坏（界面会显示一个库里不存在的状态）。
+#[derive(Serialize, Clone, Debug)]
+pub struct MessageStatusChanged {
+    pub msg_id: String,
+    pub status: Option<String>,
+}
+
 /// 代码/文本消息渲染切换后的广播载荷。
 #[derive(Serialize, Clone, Debug)]
 pub struct RenderChangedInfo {

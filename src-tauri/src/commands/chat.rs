@@ -160,8 +160,16 @@ pub async fn cancel_message(
     let is_group = conv_id.starts_with("group:");
     match out.outcome.as_str() {
         "cancelled" | "partial_cancelled" => {
-            // 前端那条对 `message-status-changed` 的处理是"重查该会话" ⇒ 回执会跟着库走。
-            let _ = s.app.emit("message-status-changed", &msg_id);
+            // 事件带结论（审计第 4 项）：这个分支里库里刚被写成 `out.outcome`
+            //（cancelled / partial_cancelled 二选一），前端直接盖到所有缓存会话，
+            // 没在看的会话不再等下次打开才更新。
+            let _ = s.app.emit(
+                "message-status-changed",
+                &crate::state::MessageStatusChanged {
+                    msg_id: msg_id.clone(),
+                    status: Some(out.outcome.clone()),
+                },
+            );
             if is_group {
                 let group_id = conv_id.trim_start_matches("group:");
                 let _ = s.app.emit(
@@ -313,7 +321,15 @@ pub async fn resend_group_delivery(
                 offline += 1;
             }
         }
-        let _ = s.app.emit("message-status-changed", &msg_id);
+        // 事件带结论（审计第 4 项）：上面闭包里 `set_message_status(…, "sent")` 已成功
+        //（失败会以 Err 提前返回），前端据此把所有缓存会话里的这条盖成 sent。
+        let _ = s.app.emit(
+            "message-status-changed",
+            &crate::state::MessageStatusChanged {
+                msg_id: msg_id.clone(),
+                status: Some("sent".to_string()),
+            },
+        );
         let group_id = conv_id.trim_start_matches("group:");
         let _ = s.app.emit(
             "group-delivery-changed",
@@ -999,6 +1015,10 @@ pub async fn resend_message(
         broadcast_gossip(s, env).await;
         true
     };
+    // 事件带结论（审计第 4 项）：`requeue_message_for_resend` 已把状态写成 `sending`，
+    // 投递成功且 `sent` 真的落库才算 sent（Ok(0) = 被终态闸门挡住，状态仍是 sending）。
+    // 结论必须是"库里那一份的值"，不许拿投递结果猜。
+    let mut final_status = "sending";
     if try_ok {
         let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());
         match db::set_message_status(&dbc, &msg_id, "sent") {
@@ -1006,7 +1026,7 @@ pub async fn resend_message(
                 "chat",
                 format!("code=MESSAGE_STATUS_BLOCKED msg_id={msg_id} target=sent reason=hard-terminal"),
             ),
-            Ok(_) => {}
+            Ok(_) => final_status = "sent",
             Err(e) => s.logger.warn(
                 "chat",
                 format!("code=MESSAGE_STATUS_WRITE_FAILED msg_id={msg_id} err={e}"),
@@ -1018,7 +1038,13 @@ pub async fn resend_message(
         format!("code=DM_RESEND msg_id={msg_id} peer={peer} has_link={has} sent={try_ok}"),
     );
     // 复用的身份 ⇒ 前端那条气泡原地换回 sending/sent（不是新气泡）。
-    let _ = s.app.emit("message-status-changed", &msg_id);
+    let _ = s.app.emit(
+        "message-status-changed",
+        &crate::state::MessageStatusChanged {
+            msg_id: msg_id.clone(),
+            status: Some(final_status.to_string()),
+        },
+    );
     let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());
     Ok(db::get_message_record(&dbc, &msg_id).ok_or("重发后消息不见了")?)
 }

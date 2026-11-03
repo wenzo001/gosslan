@@ -528,3 +528,50 @@ test("BackgroundDiag：Rust 字段与 TS interface 必须逐字对应", () => {
   assert.deepEqual(rust, ["lastError", "ready", "running", "types"], `Rust 侧解析异常：${rust}`);
   assert.deepEqual(ts, rust, `TS 的 BackgroundDiag 与 Rust 那份不一致（缺 ${rust.filter((f) => !ts.includes(f))} / 多 ${ts.filter((f) => !rust.includes(f))}）`);
 });
+
+/**
+ * `message-status-changed` 的载荷形状（审计第 4 项）：必须是 `MessageStatusChanged`
+ * 结构体（`{msg_id, status}`），不许退回裸 msg_id 字符串。
+ *
+ * 为什么值得单独钉：前端按 `e.payload.msg_id` 解包。退回裸字符串时**编译不报、
+ * 事件名契约（上面那两条）也不报** —— `undefined` 静默传进 store，全缓存补丁
+ * 变成"什么都没改"，症状正是这一格修前的样子（后台会话状态永不更新）。
+ */
+function statusChangedPayloads(src: string): string[] {
+  const out: string[] = [];
+  const stripped = stripRustComments(src);
+  for (const m of stripped.matchAll(/\bemit\w*\(\s*"message-status-changed"/g)) {
+    // 载荷窗口：事件名之后到语句末尾的分号。结构体字面量里没有分号，
+    // 取到下一个 `;` 足够覆盖本仓全部写法（含跨行的结构体载荷）。
+    const rest = stripped.slice((m.index ?? 0) + m[0].length);
+    const end = rest.indexOf(";");
+    out.push(rest.slice(0, end < 0 ? rest.length : end));
+  }
+  return out;
+}
+
+test("message-status-changed 的载荷必须是 MessageStatusChanged 结构（审计第 4 项）", () => {
+  // 夹具：新形状认得；旧形状（裸字符串）必须被报出来。
+  const modern = [
+    "let _ = app.emit(",
+    '    "message-status-changed",',
+    "    &crate::state::MessageStatusChanged { msg_id: msg_id.clone(), status: None },",
+    ");",
+  ].join("\n");
+  const legacy = 'let _ = app.emit("message-status-changed", &msg_id);';
+  const violations = (s: string) => statusChangedPayloads(s).filter((p) => !p.includes("MessageStatusChanged"));
+  assert.deepEqual(violations(modern), [], "新形状不该被报");
+  assert.equal(violations(legacy).length, 1, "旧形状（裸字符串）必须被报 ⇒ 否则这条判据量不到回归");
+
+  // 真实树：所有 emit 点都走结构体载荷。
+  const bad: string[] = [];
+  let sites = 0;
+  for (const f of collectRustFiles(RUST_SRC)) {
+    for (const p of statusChangedPayloads(readFileSync(f, "utf8"))) {
+      sites += 1;
+      if (!p.includes("MessageStatusChanged")) bad.push(f);
+    }
+  }
+  assert.ok(sites >= 10, `应扫到全部 emit 点（取消/补发/删好友/文件/群文件），实际 ${sites} 个 ⇒ 解析器失效了？`);
+  assert.deepEqual(bad, [], "有 emit 点退回了非结构体载荷：前端按 {msg_id, status} 解包会静默拿到 undefined");
+});

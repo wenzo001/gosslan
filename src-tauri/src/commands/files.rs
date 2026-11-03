@@ -854,9 +854,15 @@ async fn cancel_group_receive_side(
         bubble && ledger
     };
     let _ = s.app.emit("file-cancelled", transfer_id);
-    let _ = s
-        .app
-        .emit("message-status-changed", &format!("gfile-{transfer_id}"));
+    // 不带结论（审计第 4 项）：气泡终态已由上面 `file-cancelled` 盖进全缓存；
+    // 这一帧只触发重查/失效，`status` 给 None（接收侧气泡写可能失败，不许猜结论）。
+    let _ = s.app.emit(
+        "message-status-changed",
+        &crate::state::MessageStatusChanged {
+            msg_id: format!("gfile-{transfer_id}"),
+            status: None,
+        },
+    );
     s.logger.info(
         "group_file",
         format!("群文件接收已按取消收尾 transfer={transfer_id} by={by} stopped={stopped} ledger_committed={ledger_committed}"),
@@ -1010,12 +1016,22 @@ pub(crate) async fn apply_local_cancel(
 
     // 3. 通知前端
     let _ = s.app.emit("file-cancelled", &transfer_id);
-    let _ = s
-        .app
-        .emit("message-status-changed", &format!("file-{transfer_id}"));
-    let _ = s
-        .app
-        .emit("message-status-changed", &format!("gfile-{transfer_id}"));
+    // 不带结论（审计第 4 项）：气泡终态已由上面 `file-cancelled` 盖进全缓存；
+    // 且本路径有 `already_done` 闸门（完成的行不降级），单一状态代表不了真相。
+    let _ = s.app.emit(
+        "message-status-changed",
+        &crate::state::MessageStatusChanged {
+            msg_id: format!("file-{transfer_id}"),
+            status: None,
+        },
+    );
+    let _ = s.app.emit(
+        "message-status-changed",
+        &crate::state::MessageStatusChanged {
+            msg_id: format!("gfile-{transfer_id}"),
+            status: None,
+        },
+    );
 
     s.logger.info(
         "file",
