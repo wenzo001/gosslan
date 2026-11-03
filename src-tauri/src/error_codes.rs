@@ -286,6 +286,62 @@ pub const OPEN_PATH_UNVERIFIED: &str = "OPEN_PATH_UNVERIFIED";
 pub const FILE_PATH_UNRESOLVED: &str = "FILE_PATH_UNRESOLVED";
 /// 群文件「我的状态」读不出来（human 带 transfer id）。
 pub const GFILE_MY_STATUS_READ_FAILED: &str = "GFILE_MY_STATUS_READ_FAILED";
+
+// ── B6 第八批：外链 / 共享目录（本笔）──────────────────────────────────
+/// 外链：网址为空。
+pub const LINK_URL_EMPTY: &str = "LINK_URL_EMPTY";
+/// 外链：URL 解析失败。
+pub const LINK_URL_INVALID: &str = "LINK_URL_INVALID";
+/// 外链：不是 http(s) 协议。
+pub const LINK_URL_SCHEME: &str = "LINK_URL_SCHEME";
+/// 外链：没有主机名。
+pub const LINK_URL_NO_HOST: &str = "LINK_URL_NO_HOST";
+/// 外链：名称为空。
+pub const LINK_NAME_EMPTY: &str = "LINK_NAME_EMPTY";
+/// 外链：名称超长（human 带上限）。
+pub const LINK_NAME_TOO_LONG: &str = "LINK_NAME_TOO_LONG";
+/// 外链：同一网址已在列表里。
+pub const LINK_URL_DUPLICATE: &str = "LINK_URL_DUPLICATE";
+/// 外链：条数达到上限（human 带上限）。
+pub const LINK_LIMIT_REACHED: &str = "LINK_LIMIT_REACHED";
+/// 外链：要改/删的链接不存在。
+pub const LINK_NOT_FOUND: &str = "LINK_NOT_FOUND";
+/// 外链：读取列表失败（human 带底层原因）。
+pub const LINK_LIST_READ_FAILED: &str = "LINK_LIST_READ_FAILED";
+/// 外链导入：内容超过体积上限（human 带上限）。
+pub const LINK_IMPORT_TOO_LARGE: &str = "LINK_IMPORT_TOO_LARGE";
+/// 外链导入：内容不是可解析的 JSON / 结构不对。
+pub const LINK_IMPORT_JSON_INVALID: &str = "LINK_IMPORT_JSON_INVALID";
+/// 外链导入：下载回来的内容不是 UTF-8。
+pub const LINK_IMPORT_NOT_UTF8: &str = "LINK_IMPORT_NOT_UTF8";
+/// 外链导入：读文件 / 下载 / 读流失败（human 带底层原因）。
+pub const LINK_IMPORT_READ_FAILED: &str = "LINK_IMPORT_READ_FAILED";
+/// 外链导入：阻塞池任务中断（human 带底层原因）。
+pub const LINK_IMPORT_POOL_FAILED: &str = "LINK_IMPORT_POOL_FAILED";
+/// 外链：写库失败（human 带底层原因）。
+pub const LINK_SAVE_FAILED: &str = "LINK_SAVE_FAILED";
+/// 外链清理：路径在导出目录之外（安全信号）。
+pub const LINK_CLEAN_OUTSIDE_EXPORT: &str = "LINK_CLEAN_OUTSIDE_EXPORT";
+/// 外链从网址导入：HTTP 状态非成功（human 带状态码）。
+pub const LINK_DOWNLOAD_HTTP_FAILED: &str = "LINK_DOWNLOAD_HTTP_FAILED";
+/// 外链从网址导入：HTTP 客户端初始化失败（human 带底层原因）。
+pub const LINK_NETWORK_INIT_FAILED: &str = "LINK_NETWORK_INIT_FAILED";
+/// 外链导出：建目录 / 写文件失败（human 带底层原因）。
+pub const LINK_EXPORT_FAILED: &str = "LINK_EXPORT_FAILED";
+/// 外链清理：删导出文件失败（human 带底层原因）。
+pub const LINK_CLEAN_FAILED: &str = "LINK_CLEAN_FAILED";
+/// 共享目录：路径不存在 / 不是目录。
+pub const SHARE_DIR_MISSING: &str = "SHARE_DIR_MISSING";
+/// 共享目录：打开接收目录的阻塞任务失败（human 带底层原因）。
+pub const SHARE_DIR_READ_FAILED: &str = "SHARE_DIR_READ_FAILED";
+/// 共享：对方不是好友。
+pub const SHARE_NOT_FRIEND: &str = "SHARE_NOT_FRIEND";
+/// 共享：等目录回包超时。
+pub const SHARE_TIMEOUT: &str = "SHARE_TIMEOUT";
+/// 共享：没有可达的中继邻居。
+pub const SHARE_NO_ROUTE: &str = "SHARE_NO_ROUTE";
+/// 共享请求发送失败（human 带底层原因，可能已带别的码）。
+pub const SHARE_SEND_FAILED: &str = "SHARE_SEND_FAILED";
 /// 通道设置：清理缓存任务失败（human 带底层原因）。
 pub const CHANNEL_CACHE_CLEAN_FAILED: &str = "CHANNEL_CACHE_CLEAN_FAILED";
 

@@ -41,14 +41,25 @@ const MAX_IMPORT_BYTES: usize = 256 * 1024;
 pub fn validate_external_url(raw: &str) -> Result<String, String> {
     let trimmed = raw.trim();
     if trimmed.is_empty() {
-        return Err("网址不能为空".to_string());
+        return Err(crate::error_codes::coded(
+            crate::error_codes::LINK_URL_EMPTY,
+            "网址不能为空",
+        ));
     }
-    let parsed = url::Url::parse(trimmed).map_err(|_| "网址格式不正确".to_string())?;
+    let parsed = url::Url::parse(trimmed).map_err(|_| {
+        crate::error_codes::coded(crate::error_codes::LINK_URL_INVALID, "网址格式不正确")
+    })?;
     if !matches!(parsed.scheme(), "http" | "https") {
-        return Err("网址必须以 http:// 或 https:// 开头".to_string());
+        return Err(crate::error_codes::coded(
+            crate::error_codes::LINK_URL_SCHEME,
+            "网址必须以 http:// 或 https:// 开头",
+        ));
     }
     if parsed.host_str().map(str::is_empty).unwrap_or(true) {
-        return Err("网址缺少主机名".to_string());
+        return Err(crate::error_codes::coded(
+            crate::error_codes::LINK_URL_NO_HOST,
+            "网址缺少主机名",
+        ));
     }
     Ok(parsed.to_string())
 }
@@ -80,17 +91,26 @@ fn normalize_link_input(
 ) -> Result<(String, String), String> {
     let name = name.trim().to_string();
     if name.is_empty() {
-        return Err("请填写名称".to_string());
+        return Err(crate::error_codes::coded(
+            crate::error_codes::LINK_NAME_EMPTY,
+            "请填写名称",
+        ));
     }
     if name.chars().count() > MAX_LINK_NAME_CHARS {
-        return Err(format!("名称最长 {MAX_LINK_NAME_CHARS} 个字符"));
+        return Err(crate::error_codes::coded(
+            crate::error_codes::LINK_NAME_TOO_LONG,
+            format!("名称最长 {MAX_LINK_NAME_CHARS} 个字符"),
+        ));
     }
     let url = validate_external_url(url)?;
     if list
         .iter()
         .any(|l| l.url == url && Some(l.id.as_str()) != except_id)
     {
-        return Err("该网址已存在".to_string());
+        return Err(crate::error_codes::coded(
+            crate::error_codes::LINK_URL_DUPLICATE,
+            "该网址已存在",
+        ));
     }
     Ok((name, url))
 }
@@ -117,11 +137,21 @@ pub async fn list_external_links(
     tokio::task::spawn_blocking(move || -> Result<Vec<ExternalLink>, String> {
         let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());
         Ok(parse_external_links(
-            &db::get_setting_checked(&dbc, EXTERNAL_LINKS_KEY).map_err(|e| format!("读取外链列表失败: {e}"))?.unwrap_or_default(),
+            &db::get_setting_checked(&dbc, EXTERNAL_LINKS_KEY).map_err(|e| {
+                crate::error_codes::coded(
+                    crate::error_codes::LINK_LIST_READ_FAILED,
+                    format!("读取外链列表失败: {e}"),
+                )
+            })?.unwrap_or_default(),
         ))
     })
     .await
-    .map_err(|e| format!("外链列表读取被线程池中断: {e}"))?
+    .map_err(|e| {
+        crate::error_codes::coded(
+            crate::error_codes::LINK_LIST_READ_FAILED,
+            format!("外链列表读取被线程池中断: {e}"),
+        )
+    })?
 }
 
 /// 添加一条外部链接，返回更新后的完整列表。
@@ -137,9 +167,17 @@ pub async fn add_external_link(
     tokio::task::spawn_blocking(move || -> Result<Vec<ExternalLink>, String> {
         let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());
         let mut list =
-            parse_external_links(&db::get_setting_checked(&dbc, EXTERNAL_LINKS_KEY).map_err(|e| format!("读取外链列表失败: {e}"))?.unwrap_or_default());
+            parse_external_links(&db::get_setting_checked(&dbc, EXTERNAL_LINKS_KEY).map_err(|e| {
+                crate::error_codes::coded(
+                    crate::error_codes::LINK_LIST_READ_FAILED,
+                    format!("读取外链列表失败: {e}"),
+                )
+            })?.unwrap_or_default());
         if list.len() >= MAX_EXTERNAL_LINKS {
-            return Err(format!("最多只能添加 {MAX_EXTERNAL_LINKS} 个链接"));
+            return Err(crate::error_codes::coded(
+                crate::error_codes::LINK_LIMIT_REACHED,
+                format!("最多只能添加 {MAX_EXTERNAL_LINKS} 个链接"),
+            ));
         }
         let (name, url) = normalize_link_input(&list, &name, &url, None)?;
         list.push(ExternalLink {
@@ -147,12 +185,21 @@ pub async fn add_external_link(
             name,
             url,
         });
-        db::set_setting(&dbc, EXTERNAL_LINKS_KEY, &encode_external_links(&list))
-            .map_err(|e| format!("保存失败: {e}"))?;
+        db::set_setting(&dbc, EXTERNAL_LINKS_KEY, &encode_external_links(&list)).map_err(|e| {
+            crate::error_codes::coded(
+                crate::error_codes::LINK_SAVE_FAILED,
+                format!("保存失败: {e}"),
+            )
+        })?;
         Ok(list)
     })
     .await
-    .map_err(|e| format!("外链写入被线程池中断: {e}"))?
+    .map_err(|e| {
+        crate::error_codes::coded(
+            crate::error_codes::LINK_SAVE_FAILED,
+            format!("外链写入被线程池中断: {e}"),
+        )
+    })?
 }
 
 /// 修改一条外部链接（按 `id` 匹配），返回更新后的完整列表。
@@ -167,20 +214,37 @@ pub async fn update_external_link(
     tokio::task::spawn_blocking(move || -> Result<Vec<ExternalLink>, String> {
         let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());
         let mut list =
-            parse_external_links(&db::get_setting_checked(&dbc, EXTERNAL_LINKS_KEY).map_err(|e| format!("读取外链列表失败: {e}"))?.unwrap_or_default());
+            parse_external_links(&db::get_setting_checked(&dbc, EXTERNAL_LINKS_KEY).map_err(|e| {
+                crate::error_codes::coded(
+                    crate::error_codes::LINK_LIST_READ_FAILED,
+                    format!("读取外链列表失败: {e}"),
+                )
+            })?.unwrap_or_default());
         // 先算规范化值（不可变借用），再取可变引用落值 —— 否则 `list` 同时被借两次。
         let (name, url) = normalize_link_input(&list, &name, &url, Some(&id))?;
         let Some(target) = list.iter_mut().find(|l| l.id == id) else {
-            return Err("链接不存在".to_string());
+            return Err(crate::error_codes::coded(
+                crate::error_codes::LINK_NOT_FOUND,
+                "链接不存在",
+            ));
         };
         target.name = name;
         target.url = url;
-        db::set_setting(&dbc, EXTERNAL_LINKS_KEY, &encode_external_links(&list))
-            .map_err(|e| format!("保存失败: {e}"))?;
+        db::set_setting(&dbc, EXTERNAL_LINKS_KEY, &encode_external_links(&list)).map_err(|e| {
+            crate::error_codes::coded(
+                crate::error_codes::LINK_SAVE_FAILED,
+                format!("保存失败: {e}"),
+            )
+        })?;
         Ok(list)
     })
     .await
-    .map_err(|e| format!("外链写入被线程池中断: {e}"))?
+    .map_err(|e| {
+        crate::error_codes::coded(
+            crate::error_codes::LINK_SAVE_FAILED,
+            format!("外链写入被线程池中断: {e}"),
+        )
+    })?
 }
 
 /// 删除一条外部链接（按 `id` 匹配），返回更新后的完整列表。
@@ -193,17 +257,32 @@ pub async fn remove_external_link(
     tokio::task::spawn_blocking(move || -> Result<Vec<ExternalLink>, String> {
         let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());
         let mut list =
-            parse_external_links(&db::get_setting_checked(&dbc, EXTERNAL_LINKS_KEY).map_err(|e| format!("读取外链列表失败: {e}"))?.unwrap_or_default());
+            parse_external_links(&db::get_setting_checked(&dbc, EXTERNAL_LINKS_KEY).map_err(|e| {
+                crate::error_codes::coded(
+                    crate::error_codes::LINK_LIST_READ_FAILED,
+                    format!("读取外链列表失败: {e}"),
+                )
+            })?.unwrap_or_default());
         let before = list.len();
         list.retain(|l| l.id != id);
         if list.len() != before {
             db::set_setting(&dbc, EXTERNAL_LINKS_KEY, &encode_external_links(&list))
-                .map_err(|e| format!("保存失败: {e}"))?;
+                .map_err(|e| {
+                    crate::error_codes::coded(
+                        crate::error_codes::LINK_SAVE_FAILED,
+                        format!("保存失败: {e}"),
+                    )
+                })?;
         }
         Ok(list)
     })
     .await
-    .map_err(|e| format!("外链写入被线程池中断: {e}"))?
+    .map_err(|e| {
+        crate::error_codes::coded(
+            crate::error_codes::LINK_SAVE_FAILED,
+            format!("外链写入被线程池中断: {e}"),
+        )
+    })?
 }
 
 #[derive(Deserialize)]
@@ -222,7 +301,12 @@ enum ImportPayload {
 
 fn parse_import_payload(raw: &str) -> Result<Vec<ImportLink>, String> {
     let payload: ImportPayload =
-        serde_json::from_str(raw).map_err(|_| "JSON 格式不正确：需要链接数组或 { links: [...] }".to_string())?;
+        serde_json::from_str(raw).map_err(|_| {
+            crate::error_codes::coded(
+                crate::error_codes::LINK_IMPORT_JSON_INVALID,
+                "JSON 格式不正确：需要链接数组或 { links: [...] }",
+            )
+        })?;
     Ok(match payload {
         ImportPayload::List(v) => v,
         ImportPayload::Wrapped { links } => links,
@@ -238,12 +322,20 @@ fn import_external_links_raw(
     raw: &str,
 ) -> Result<ExternalLinkImportResult, String> {
     if raw.len() > MAX_IMPORT_BYTES {
-        return Err(format!("导入内容超过 {} KiB 上限", MAX_IMPORT_BYTES / 1024));
+        return Err(crate::error_codes::coded(
+            crate::error_codes::LINK_IMPORT_TOO_LARGE,
+            format!("导入内容超过 {} KiB 上限", MAX_IMPORT_BYTES / 1024),
+        ));
     }
     let inputs = parse_import_payload(raw)?;
     let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());
     let mut list =
-        parse_external_links(&db::get_setting_checked(&dbc, EXTERNAL_LINKS_KEY).map_err(|e| format!("读取外链列表失败: {e}"))?.unwrap_or_default());
+        parse_external_links(&db::get_setting_checked(&dbc, EXTERNAL_LINKS_KEY).map_err(|e| {
+            crate::error_codes::coded(
+                crate::error_codes::LINK_LIST_READ_FAILED,
+                format!("读取外链列表失败: {e}"),
+            )
+        })?.unwrap_or_default());
     let mut seen: HashSet<String> = list.iter().map(|l| l.url.clone()).collect();
     let mut added = 0usize;
     let mut skipped = 0usize;
@@ -273,8 +365,12 @@ fn import_external_links_raw(
         added += 1;
     }
     if added > 0 {
-        db::set_setting(&dbc, EXTERNAL_LINKS_KEY, &encode_external_links(&list))
-            .map_err(|e| format!("保存失败: {e}"))?;
+        db::set_setting(&dbc, EXTERNAL_LINKS_KEY, &encode_external_links(&list)).map_err(|e| {
+            crate::error_codes::coded(
+                crate::error_codes::LINK_SAVE_FAILED,
+                format!("保存失败: {e}"),
+            )
+        })?;
     }
     Ok(ExternalLinkImportResult {
         links: list,
@@ -293,18 +389,43 @@ pub async fn export_external_links(
     // 建目录 + 序列化整份列表 + 写文件（还有中间那次 db 读）都在文件系统段里 ⇒ 进阻塞池。
     tokio::task::spawn_blocking(move || -> Result<String, String> {
         let dir = s.cache_dir.join("exports");
-        std::fs::create_dir_all(&dir).map_err(|e| format!("创建导出目录失败：{e}"))?;
+        std::fs::create_dir_all(&dir).map_err(|e| {
+            crate::error_codes::coded(
+                crate::error_codes::LINK_EXPORT_FAILED,
+                format!("创建导出目录失败：{e}"),
+            )
+        })?;
         let path = dir.join(format!("gosslan-links-{}.json", Uuid::new_v4()));
         let list = {
             let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());
-            parse_external_links(&db::get_setting_checked(&dbc, EXTERNAL_LINKS_KEY).map_err(|e| format!("读取外链列表失败: {e}"))?.unwrap_or_default())
+            parse_external_links(&db::get_setting_checked(&dbc, EXTERNAL_LINKS_KEY).map_err(|e| {
+                crate::error_codes::coded(
+                    crate::error_codes::LINK_LIST_READ_FAILED,
+                    format!("读取外链列表失败: {e}"),
+                )
+            })?.unwrap_or_default())
         };
-        let json = serde_json::to_string_pretty(&list).map_err(|e| format!("序列化失败：{e}"))?;
-        std::fs::write(&path, json).map_err(|e| format!("写入导出文件失败：{e}"))?;
+        let json = serde_json::to_string_pretty(&list).map_err(|e| {
+            crate::error_codes::coded(
+                crate::error_codes::LINK_EXPORT_FAILED,
+                format!("序列化失败：{e}"),
+            )
+        })?;
+        std::fs::write(&path, json).map_err(|e| {
+            crate::error_codes::coded(
+                crate::error_codes::LINK_EXPORT_FAILED,
+                format!("写入导出文件失败：{e}"),
+            )
+        })?;
         Ok(path.to_string_lossy().into_owned())
     })
     .await
-    .map_err(|e| format!("外链导出被线程池中断: {e}"))?
+    .map_err(|e| {
+        crate::error_codes::coded(
+            crate::error_codes::LINK_EXPORT_FAILED,
+            format!("外链导出被线程池中断: {e}"),
+        )
+    })?
 }
 
 /// 「这条路径是不是本命令生成的导出产物」——清理命令的安全闸（纯函数，便于判据盯着）。
@@ -332,16 +453,27 @@ pub async fn cleanup_external_links_export(
         let dir = s.cache_dir.join("exports");
         let p = std::path::PathBuf::from(path);
         if !is_export_artifact_path(&dir, &p) {
-            return Err(reject_link(&s, "clean_export", "outside_export", "拒绝清理导出目录之外的路径"));
+            return Err(crate::error_codes::coded(
+                crate::error_codes::LINK_CLEAN_OUTSIDE_EXPORT,
+                reject_link(&s, "clean_export", "outside_export", "拒绝清理导出目录之外的路径"),
+            ));
         }
         match std::fs::remove_file(&p) {
             Ok(()) => Ok(()),
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
-            Err(e) => Err(format!("清理导出文件失败：{e}")),
+            Err(e) => Err(crate::error_codes::coded(
+                crate::error_codes::LINK_CLEAN_FAILED,
+                format!("清理导出文件失败：{e}"),
+            )),
         }
     })
     .await
-    .map_err(|e| format!("导出临时文件清理被线程池中断: {e}"))?
+    .map_err(|e| {
+        crate::error_codes::coded(
+            crate::error_codes::LINK_CLEAN_FAILED,
+            format!("导出临时文件清理被线程池中断: {e}"),
+        )
+    })?
 }
 
 /// 从本地 JSON 文件导入；`path` 由前端选择并已通过 `import_picked_file` 落地。
@@ -353,15 +485,33 @@ pub async fn import_external_links_file(
     let s = state.inner().clone();
     // 上限预检（要 stat）+ 整份读入 + 合并写库都在文件/锁段里 ⇒ 进阻塞池（审计 R-18）。
     tokio::task::spawn_blocking(move || -> Result<ExternalLinkImportResult, String> {
-        let meta = std::fs::metadata(&path).map_err(|e| format!("读取导入文件失败：{e}"))?;
+        let meta = std::fs::metadata(&path).map_err(|e| {
+            crate::error_codes::coded(
+                crate::error_codes::LINK_IMPORT_READ_FAILED,
+                format!("读取导入文件失败：{e}"),
+            )
+        })?;
         if meta.len() > MAX_IMPORT_BYTES as u64 {
-            return Err(format!("导入文件超过 {} KiB 上限", MAX_IMPORT_BYTES / 1024));
+            return Err(crate::error_codes::coded(
+                crate::error_codes::LINK_IMPORT_TOO_LARGE,
+                format!("导入文件超过 {} KiB 上限", MAX_IMPORT_BYTES / 1024),
+            ));
         }
-        let raw = std::fs::read_to_string(&path).map_err(|e| format!("读取导入文件失败：{e}"))?;
+        let raw = std::fs::read_to_string(&path).map_err(|e| {
+            crate::error_codes::coded(
+                crate::error_codes::LINK_IMPORT_READ_FAILED,
+                format!("读取导入文件失败：{e}"),
+            )
+        })?;
         import_external_links_raw(&s, &raw)
     })
     .await
-    .map_err(|e| format!("外链导入被线程池中断: {e}"))?
+    .map_err(|e| {
+        crate::error_codes::coded(
+            crate::error_codes::LINK_IMPORT_POOL_FAILED,
+            format!("外链导入被线程池中断: {e}"),
+        )
+    })?
 }
 
 /// 从 HTTPS/HTTP 链接拉取 JSON 导入（后端拉取，避免 WebView 的 CORS 限制）。
@@ -377,44 +527,78 @@ pub async fn import_external_links_from_url(
         .timeout(Duration::from_secs(10))
         .redirect(reqwest::redirect::Policy::limited(3))
         .build()
-        .map_err(|e| format!("网络初始化失败：{e}"))?;
+        .map_err(|e| {
+            crate::error_codes::coded(
+                crate::error_codes::LINK_NETWORK_INIT_FAILED,
+                format!("网络初始化失败：{e}"),
+            )
+        })?;
     let mut resp = client
         .get(&url)
         .send()
         .await
-        .map_err(|e| format!("下载失败：{e}"))?;
+        .map_err(|e| {
+            crate::error_codes::coded(
+                crate::error_codes::LINK_IMPORT_READ_FAILED,
+                format!("下载失败：{e}"),
+            )
+        })?;
     if !resp.status().is_success() {
-        return Err(reject_link(&s, "import", "http_status", &format!("下载失败：HTTP {}", resp.status())));
+        return Err(crate::error_codes::coded(
+            crate::error_codes::LINK_DOWNLOAD_HTTP_FAILED,
+            reject_link(&s, "import", "http_status", &format!("下载失败：HTTP {}", resp.status())),
+        ));
     }
     if resp.content_length().unwrap_or(0) > MAX_IMPORT_BYTES as u64 {
-        return Err(reject_link(
-            &s,
-            "import",
-            "too_large",
-            &format!("下载内容超过 {} KiB 上限", MAX_IMPORT_BYTES / 1024),
+        return Err(crate::error_codes::coded(
+            crate::error_codes::LINK_IMPORT_TOO_LARGE,
+            reject_link(
+                &s,
+                "import",
+                "too_large",
+                &format!("下载内容超过 {} KiB 上限", MAX_IMPORT_BYTES / 1024),
+            ),
         ));
     }
     // 逐块收口：不能先 `bytes()` 再量大小 —— 没有 Content-Length 的服务端可以先把
     // 几个 GB 拉进内存，再被这一行拒绝。流式累计到上限立即中止。
     let mut bytes = Vec::new();
-    while let Some(chunk) = resp.chunk().await.map_err(|e| format!("读取下载内容失败：{e}"))? {
+    while let Some(chunk) = resp.chunk().await.map_err(|e| {
+        crate::error_codes::coded(
+            crate::error_codes::LINK_IMPORT_READ_FAILED,
+            format!("读取下载内容失败：{e}"),
+        )
+    })? {
         if bytes.len() + chunk.len() > MAX_IMPORT_BYTES {
-            return Err(reject_link(
-                &s,
-                "import",
-                "too_large",
-                &format!("下载内容超过 {} KiB 上限", MAX_IMPORT_BYTES / 1024),
+            return Err(crate::error_codes::coded(
+                crate::error_codes::LINK_IMPORT_TOO_LARGE,
+                reject_link(
+                    &s,
+                    "import",
+                    "too_large",
+                    &format!("下载内容超过 {} KiB 上限", MAX_IMPORT_BYTES / 1024),
+                ),
             ));
         }
         bytes.extend_from_slice(&chunk);
     }
-    let raw = String::from_utf8(bytes).map_err(|_| "下载内容不是 UTF-8 文本".to_string())?;
+    let raw = String::from_utf8(bytes).map_err(|_| {
+        crate::error_codes::coded(
+            crate::error_codes::LINK_IMPORT_NOT_UTF8,
+            "下载内容不是 UTF-8 文本",
+        )
+    })?;
     // 下载（await）留在 worker 之外的异步侧；合并写库那一段进阻塞池（审计 R-18）。
     tokio::task::spawn_blocking(move || -> Result<ExternalLinkImportResult, String> {
         import_external_links_raw(&s, &raw)
     })
     .await
-    .map_err(|e| format!("外链导入被线程池中断: {e}"))?
+    .map_err(|e| {
+        crate::error_codes::coded(
+            crate::error_codes::LINK_IMPORT_POOL_FAILED,
+            format!("外链导入被线程池中断: {e}"),
+        )
+    })?
 }
 
 #[cfg(test)]
@@ -463,7 +647,7 @@ mod link_input_tests {
         );
         assert_eq!(
             normalize_link_input(&existing, "新", "https://a.example", None).unwrap_err(),
-            "该网址已存在",
+            crate::error_codes::coded(crate::error_codes::LINK_URL_DUPLICATE, "该网址已存在"),
             "规范化后的同一 URL 要算重复（少写尾斜杠也算）"
         );
         assert!(

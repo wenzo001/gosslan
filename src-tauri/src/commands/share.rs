@@ -21,7 +21,10 @@ pub async fn set_share_dir(
     path: String,
 ) -> Result<(), String> {
     if !PathBuf::from(&path).is_dir() {
-        return Err("目录不存在".to_string());
+        return Err(crate::error_codes::coded(
+            crate::error_codes::SHARE_DIR_MISSING,
+            "目录不存在",
+        ));
     }
     let s = state.inner().clone();
     // 落库（含 macOS 安全作用域书签）与那份内存值都在持锁/文件段里 ⇒ 进阻塞池（审计 R-18）。
@@ -74,7 +77,10 @@ pub async fn set_downloads_dir(
 ) -> Result<(), String> {
     let p = PathBuf::from(&path);
     if !p.is_dir() {
-        return Err("目录不存在".to_string());
+        return Err(crate::error_codes::coded(
+            crate::error_codes::SHARE_DIR_MISSING,
+            "目录不存在",
+        ));
     }
     let s = state.inner().clone();
     tokio::task::spawn_blocking(move || -> Result<(), String> {
@@ -112,7 +118,12 @@ pub async fn open_downloads_dir(state: State<'_, Arc<AppState>>) -> Result<(), S
         crate::open_path::open_dir_native(&p)
     })
     .await
-    .map_err(|e| format!("打开接收目录被线程池中断: {e}"))?;
+    .map_err(|e| {
+        crate::error_codes::coded(
+            crate::error_codes::SHARE_DIR_READ_FAILED,
+            format!("打开接收目录被线程池中断: {e}"),
+        )
+    })?;
     if let Err(e) = &res {
         state
             .inner()
@@ -142,7 +153,10 @@ pub async fn request_share_tree(
     {
         let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());
         if db::get_friend(&dbc, &friend_id).is_none() {
-            return Err(reject_share(s, "tree", "not_friend", "对方不是好友"));
+            return Err(crate::error_codes::coded(
+                crate::error_codes::SHARE_NOT_FRIEND,
+                reject_share(s, "tree", "not_friend", "对方不是好友"),
+            ));
         }
     }
     let request_id = Uuid::new_v4().to_string();
@@ -165,7 +179,10 @@ pub async fn request_share_tree(
                 .lock()
                 .unwrap_or_else(|e| e.into_inner())
                 .remove(&request_id);
-            return Err(e);
+            return Err(crate::error_codes::coded_if_uncoded(
+                crate::error_codes::SHARE_SEND_FAILED,
+                e,
+            ));
         }
     } else {
         // 邻居接住数在这里**故意不用**：下面自己等 `rx`（10s 超时），
@@ -183,7 +200,10 @@ pub async fn request_share_tree(
                 .lock()
                 .unwrap_or_else(|e| e.into_inner())
                 .remove(&request_id);
-            Err(reject_share(s, "tree", "timeout", "获取共享目录超时"))
+            Err(crate::error_codes::coded(
+                crate::error_codes::SHARE_TIMEOUT,
+                reject_share(s, "tree", "timeout", "获取共享目录超时"),
+            ))
         }
     }
 }
@@ -198,7 +218,10 @@ pub async fn download_shared_file(
     {
         let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());
         if db::get_friend(&dbc, &friend_id).is_none() {
-            return Err(reject_share(s, "download", "not_friend", "对方不是好友"));
+            return Err(crate::error_codes::coded(
+                crate::error_codes::SHARE_NOT_FRIEND,
+                reject_share(s, "download", "not_friend", "对方不是好友"),
+            ));
         }
     }
     let transfer_id = Uuid::new_v4().to_string();
@@ -214,11 +237,14 @@ pub async fn download_shared_file(
         // 下载是**发完就返回**的（真正的完成由对端推流驱动），所以"没有任何邻居接住"
         // 是这条路径唯一的失败证据。旧实现连这个都不看 ⇒ 命令返回 Ok、界面留下
         // 一条"你正在下载"的系统消息，而请求从未离开本机（2026-09-23 审计 A1）。
-        return Err(reject_share(
-            s,
-            "download",
-            "no_route",
-            "无法联系对方：没有可达的中继邻居",
+        return Err(crate::error_codes::coded(
+            crate::error_codes::SHARE_NO_ROUTE,
+            reject_share(
+                s,
+                "download",
+                "no_route",
+                "无法联系对方：没有可达的中继邻居",
+            ),
         ));
     }
     // 本地提示：你正在下载好友的文件（聊天信息内简约系统消息）

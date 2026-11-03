@@ -133,6 +133,27 @@ const B6_CASES: &[(&str, &str, &str)] = &[
     ("OPEN_PATH_NOT_OWNED", "commands/files.rs", "这个文件不属于这条消息，已拒绝打开"),
     ("OPEN_PATH_UNVERIFIED", "commands/files.rs", "无法确认这个文件属于本应用，已拒绝打开"),
     ("GFILE_MY_STATUS_READ_FAILED", "commands/files.rs", "群文件「我的状态」读不出来（transfer={}）"),
+    // ── B6 第八批：外链 / 共享（本笔）───────────────────────────────────
+    ("LINK_URL_EMPTY", "commands/external_links.rs", "网址不能为空"),
+    ("LINK_URL_INVALID", "commands/external_links.rs", "网址格式不正确"),
+    ("LINK_URL_SCHEME", "commands/external_links.rs", "网址必须以 http:// 或 https:// 开头"),
+    ("LINK_URL_NO_HOST", "commands/external_links.rs", "网址缺少主机名"),
+    ("LINK_NAME_EMPTY", "commands/external_links.rs", "请填写名称"),
+    ("LINK_NAME_TOO_LONG", "commands/external_links.rs", "名称最长 {MAX_LINK_NAME_CHARS} 个字符"),
+    ("LINK_URL_DUPLICATE", "commands/external_links.rs", "该网址已存在"),
+    ("LINK_LIMIT_REACHED", "commands/external_links.rs", "最多只能添加 {MAX_EXTERNAL_LINKS} 个链接"),
+    ("LINK_NOT_FOUND", "commands/external_links.rs", "链接不存在"),
+    ("LINK_IMPORT_TOO_LARGE", "commands/external_links.rs", "导入内容超过 {} KiB 上限"),
+    ("LINK_IMPORT_TOO_LARGE", "commands/external_links.rs", "导入文件超过 {} KiB 上限"),
+    ("LINK_IMPORT_TOO_LARGE", "commands/external_links.rs", "下载内容超过 {} KiB 上限"),
+    ("LINK_IMPORT_NOT_UTF8", "commands/external_links.rs", "下载内容不是 UTF-8 文本"),
+    ("LINK_IMPORT_JSON_INVALID", "commands/external_links.rs", "JSON 格式不正确：需要链接数组或 { links: [...] }"),
+    ("LINK_CLEAN_OUTSIDE_EXPORT", "commands/external_links.rs", "拒绝清理导出目录之外的路径"),
+    ("LINK_DOWNLOAD_HTTP_FAILED", "commands/external_links.rs", "下载失败：HTTP {}"),
+    ("SHARE_DIR_MISSING", "commands/share.rs", "目录不存在"),
+    ("SHARE_NOT_FRIEND", "commands/share.rs", "对方不是好友"),
+    ("SHARE_TIMEOUT", "commands/share.rs", "获取共享目录超时"),
+    ("SHARE_NO_ROUTE", "commands/share.rs", "无法联系对方：没有可达的中继邻居"),
 ];
 
 /// human 是下层原话、没有字面量的触发点：只守"码真的挂在这里"，
@@ -149,6 +170,16 @@ const B6_DYNAMIC_HUMAN: &[(&str, &str)] = &[
     ("NOTIFY_SEND_FAILED", "commands/network.rs"),
     // 取本地媒体路径失败：human 是解析链给出的原因（可能已经带码）
     ("FILE_PATH_UNRESOLVED", "commands/helpers.rs"),
+    // 外链 / 共享：human 来自底层 IO / 任务池原话
+    ("LINK_LIST_READ_FAILED", "commands/external_links.rs"),
+    ("LINK_IMPORT_READ_FAILED", "commands/external_links.rs"),
+    ("LINK_IMPORT_POOL_FAILED", "commands/external_links.rs"),
+    ("LINK_SAVE_FAILED", "commands/external_links.rs"),
+    ("LINK_EXPORT_FAILED", "commands/external_links.rs"),
+    ("LINK_CLEAN_FAILED", "commands/external_links.rs"),
+    ("LINK_NETWORK_INIT_FAILED", "commands/external_links.rs"),
+    ("SHARE_DIR_READ_FAILED", "commands/share.rs"),
+    ("SHARE_SEND_FAILED", "commands/share.rs"),
 ];
 
 /// B6 白名单命令的"未带码 return Err"存量基线（只减不增）。
@@ -195,6 +226,20 @@ const B6_COMMAND_UNCODED_BASELINE: &[(&str, &str, usize)] = &[
     ("relay.rs", "save_relay_config", 0),
     ("routed.rs", "add_routed_endpoint", 0),
     ("routed.rs", "remove_routed_endpoint", 0),
+    // B6 第八批：外链 / 共享（同一口径：现在都是 0）
+    ("external_links.rs", "list_external_links", 0),
+    ("external_links.rs", "add_external_link", 0),
+    ("external_links.rs", "update_external_link", 0),
+    ("external_links.rs", "remove_external_link", 0),
+    ("external_links.rs", "export_external_links", 0),
+    ("external_links.rs", "cleanup_external_links_export", 0),
+    ("external_links.rs", "import_external_links_file", 0),
+    ("external_links.rs", "import_external_links_from_url", 0),
+    ("share.rs", "set_share_dir", 0),
+    ("share.rs", "set_downloads_dir", 0),
+    ("share.rs", "open_downloads_dir", 0),
+    ("share.rs", "request_share_tree", 0),
+    ("share.rs", "download_shared_file", 0),
 ];
 
 fn read_src(rel: &str) -> String {
@@ -228,28 +273,29 @@ fn b6_codes_are_bound_to_the_original_human_text() {
         // 一个 reject 调用的全部参数，又短到串不进下一条无关分支。
         let marker_short = format!("coded({code},");
         let marker_full = format!("coded(crate::error_codes::{code},");
-        let Some(at) = src
-            .find(&marker_full)
-            .or_else(|| src.find(&marker_short))
-        else {
-            // `reject_file_coded(&s, action, reason, 码, "原文")` 把码当参数传，形状里没有
-            // `coded(码,`；这一段按"同一调用内码与原文同现"来守（与 reject 家族其它码同口径）。
-            let wrapped_ok = src.match_indices("reject_file_coded(").any(|(i, _)| {
-                let window: String = src[i..].chars().take(500).collect();
-                window.contains(&format!("error_codes::{code},"))
-                    && window.contains(&format!("\"{human_flat}\""))
+        let needle = format!("\"{human_flat}\"");
+        // 同一个码可能有多个产出点（中继地址 / 口令、导入内容 / 文件 / 下载），
+        // 所以要扫**全部**出现位置，不能只看第一处（否则第二条同码判据是假红）。
+        let bound_at_coded = [&marker_full, &marker_short]
+            .iter()
+            .flat_map(|m| src.match_indices(m.as_str()).map(|(i, _)| i))
+            .any(|i| {
+                // 按字符截断，别在中文 UTF-8 字节中间切（切片会 panic）。
+                let window: String = src[i..].chars().take(400).collect();
+                window.contains(&needle)
             });
-            assert!(
-                wrapped_ok,
-                "{rel} 里找不到把 {code} 挂到原文上的调用（coded(码, …) 或 reject_file_coded(…, 码, …)）：这个触发点没带码"
-            );
+        if bound_at_coded {
             continue;
-        };
-        // 按字符截断，别在中文 UTF-8 字节中间切（切片会 panic）。
-        let window: String = src[at..].chars().take(400).collect();
+        }
+        // `reject_file_coded(&s, action, reason, 码, "原文")` 把码当参数传，形状里没有
+        // `coded(码,`；这一段按"同一调用内码与原文同现"来守（与 reject 家族其它码同口径）。
+        let wrapped_ok = src.match_indices("reject_file_coded(").any(|(i, _)| {
+            let window: String = src[i..].chars().take(500).collect();
+            window.contains(&format!("error_codes::{code},")) && window.contains(&needle)
+        });
         assert!(
-            window.contains(&format!("\"{human_flat}\"")),
-            "{rel} 里 `coded({code}, …)` 之后 400 字符内找不到原文 \"{human}\"：码带了，但 human 被改了或换了分支"
+            wrapped_ok,
+            "{rel} 里找不到把 {code} 挂到原文 \"{human}\" 上的调用（coded(码, …) 或 reject_file_coded(…, 码, …)）：这个触发点没带码或 human 被改了"
         );
     }
 }
