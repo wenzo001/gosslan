@@ -219,6 +219,12 @@ const CODE_RULES: Record<string, string> = {
   GROUP_ANNOUNCEMENT_OWNER_ONLY: "errors.rule.groupAnnouncementOwnerOnly",
   GROUP_REMIND_TARGET_REQUIRED: "errors.rule.groupRemindTargetRequired",
   GROUP_REMIND_TARGETS_GONE: "errors.rule.groupRemindTargetsGone",
+  // B6 第十四批：收藏 reject_favorite 族。
+  FAVORITE_SOURCE_GONE: "errors.rule.favoriteSourceGone",
+  FAVORITE_COPY_FAILED: "errors.rule.favoriteCopyFailed",
+  FAVORITE_CONTENT_MISSING: "errors.rule.favoriteContentMissing",
+  FAVORITE_STORE_READ_FAILED: "errors.rule.favoriteStoreReadFailed",
+  FAVORITE_PATH_ESCAPE: "errors.rule.favoritePathEscape",
 };
 
 /** 后端 `error_codes::coded()` 的形状：`code=<大写蛇形> 给人看的那句话`。 */
