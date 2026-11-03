@@ -18,7 +18,10 @@ pub fn create_group(
         .trim()
         .to_string();
     if name.is_empty() {
-        return Err("群名称不能为空".to_string());
+        return Err(crate::error_codes::coded(
+            crate::error_codes::GROUP_NAME_EMPTY,
+            "群名称不能为空",
+        ));
     }
     let id = format!("g-{}", Uuid::new_v4());
     let mut all = members;
@@ -88,7 +91,11 @@ pub async fn distribute_group_key(
     group_id: String,
 ) -> Result<(), String> {
     let s = state.inner();
-    let key = get_group_key(s, &group_id).await.ok_or("群密钥缺失")?;
+    let key = get_group_key(s, &group_id)
+        .await
+        .ok_or_else(|| {
+            crate::error_codes::coded(crate::error_codes::GROUP_KEY_MISSING, "群密钥缺失")
+        })?;
     // 同时取群名与成员：成员端靠它建立/刷新本地群记录（含成员表）
     let (group_name, members) = {
         let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());
@@ -233,11 +240,16 @@ pub async fn rename_group(
     let name: String = name.chars().take(MAX_GROUP_NAME_LEN).collect();
     let name = name.trim().to_string();
     if name.is_empty() {
-        return Err("群名称不能为空".to_string());
+        return Err(crate::error_codes::coded(
+            crate::error_codes::GROUP_NAME_EMPTY,
+            "群名称不能为空",
+        ));
     }
     let group = {
         let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());
-        db::get_group(&dbc, &group_id).ok_or_else(|| "群不存在".to_string())?
+        db::get_group(&dbc, &group_id).ok_or_else(|| {
+            crate::error_codes::coded(crate::error_codes::GROUP_NOT_FOUND, "群不存在")
+        })?
     };
     if group.creator != s.device_id {
         return Err("只有群创建者可以修改群名称".to_string());
@@ -358,7 +370,9 @@ pub async fn group_add_member(
     let s = state.inner();
     let group = {
         let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());
-        db::get_group(&dbc, &group_id).ok_or_else(|| "群不存在".to_string())?
+        db::get_group(&dbc, &group_id).ok_or_else(|| {
+            crate::error_codes::coded(crate::error_codes::GROUP_NOT_FOUND, "群不存在")
+        })?
     };
     if group.creator != s.device_id {
         return Err("只有群创建者可以添加成员".to_string());
@@ -378,7 +392,9 @@ pub async fn group_add_member(
     }
     let key = get_group_key(s, &group_id)
         .await
-        .ok_or_else(|| "群密钥缺失".to_string())?;
+        .ok_or_else(|| {
+            crate::error_codes::coded(crate::error_codes::GROUP_KEY_MISSING, "群密钥缺失")
+        })?;
     let current = {
         let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());
         // 同 `distribute_group_key` 那一处（只留痕）：折成空 ⇒ 这一次加人只给**新成员**发了密钥，
@@ -423,7 +439,9 @@ pub async fn group_remove_member(
     let s = state.inner();
     let group = {
         let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());
-        db::get_group(&dbc, &group_id).ok_or_else(|| "群不存在".to_string())?
+        db::get_group(&dbc, &group_id).ok_or_else(|| {
+            crate::error_codes::coded(crate::error_codes::GROUP_NOT_FOUND, "群不存在")
+        })?
     };
     if group.creator != s.device_id {
         return Err("只有群创建者可以移除成员".to_string());
@@ -512,7 +530,9 @@ pub async fn transfer_group_creator(
     let s = state.inner();
     let group = {
         let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());
-        db::get_group(&dbc, &group_id).ok_or_else(|| "群不存在".to_string())?
+        db::get_group(&dbc, &group_id).ok_or_else(|| {
+            crate::error_codes::coded(crate::error_codes::GROUP_NOT_FOUND, "群不存在")
+        })?
     };
     if group.creator != s.device_id {
         return Err("只有群创建者可以转让群主".to_string());
@@ -559,7 +579,9 @@ pub async fn leave_group(state: State<'_, Arc<AppState>>, group_id: String) -> R
     let s = state.inner();
     let group = {
         let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());
-        db::get_group(&dbc, &group_id).ok_or_else(|| "群不存在".to_string())?
+        db::get_group(&dbc, &group_id).ok_or_else(|| {
+            crate::error_codes::coded(crate::error_codes::GROUP_NOT_FOUND, "群不存在")
+        })?
     };
     if group.creator == s.device_id {
         return Err("群主退群前请先转让群主".to_string());

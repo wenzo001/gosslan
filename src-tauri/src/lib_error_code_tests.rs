@@ -23,6 +23,22 @@ const B6_CASES: &[(&str, &str, &str)] = &[
     ("E2EE_ENCRYPT_FAILED", "commands/chat.rs", "加密失败"),
     ("E2EE_ENCRYPT_FAILED", "commands/mobile_picker.rs", "密钥交换失败"),
     ("E2EE_ENCRYPT_FAILED", "commands/mobile_picker.rs", "加密失败"),
+    // ── 群管理（本笔）──────────────────────────────────────────────────
+    ("GROUP_NOT_FOUND", "commands/groups.rs", "群不存在"),
+    ("GROUP_NOT_FOUND", "commands/group_files.rs", "群不存在"),
+    ("GROUP_NOT_FOUND", "commands/group_announcements.rs", "群不存在"),
+    ("GROUP_NOT_FOUND", "commands/window.rs", "群不存在"),
+    ("GROUP_NOT_FOUND", "commands/chat.rs", "群不存在"),
+    ("GROUP_SELF_NOT_MEMBER", "commands/group_files.rs", "你已不在该群中"),
+    ("GROUP_SELF_NOT_MEMBER", "commands/window.rs", "你已不在该群中"),
+    ("GROUP_SELF_NOT_MEMBER", "commands/group_announcements.rs", "你不是该群成员"),
+    ("GROUP_NAME_EMPTY", "commands/groups.rs", "群名称不能为空"),
+    ("GROUP_KEY_MISSING", "commands/groups.rs", "群密钥缺失"),
+    ("GROUP_KEY_MISSING", "commands/group_announcements.rs", "群密钥缺失"),
+    ("GROUP_KEY_MISSING", "commands/window.rs", "群密钥缺失"),
+    ("NUDGE_GROUP_UNSUPPORTED", "commands/window.rs", "窗口抖动只支持单聊"),
+    ("MSG_NOT_FOUND", "commands/group_files.rs", "要提醒的消息不存在"),
+    ("MSG_NOT_FOUND", "commands/group_announcements.rs", "消息不存在"),
 ];
 
 fn read_src(rel: &str) -> String {
@@ -45,9 +61,25 @@ fn b6_codes_are_bound_to_the_original_human_text() {
         // 但"码与原文绑在同一个调用里"这件事实不变。
         let short = format!("coded({code},\"{human}\"");
         let full = format!("coded(crate::error_codes::{code},\"{human}\"");
+        if src.contains(&short) || src.contains(&full) {
+            continue;
+        }
+        // 包了一层日志助手（`coded(CODE, reject(... , "原文"))`）时，码与原文之间隔着
+        // `reject(`。这时只要求"同一段表达式里两个事实都在" —— 窗口 400 字符足够覆盖
+        // 一个 reject 调用的全部参数，又短到串不进下一条无关分支。
+        let marker_short = format!("coded({code},");
+        let marker_full = format!("coded(crate::error_codes::{code},");
+        let Some(at) = src
+            .find(&marker_full)
+            .or_else(|| src.find(&marker_short))
+        else {
+            panic!("{rel} 里找不到 `coded({code}, …)`：这个触发点没带码");
+        };
+        // 按字符截断，别在中文 UTF-8 字节中间切（切片会 panic）。
+        let window: String = src[at..].chars().take(400).collect();
         assert!(
-            src.contains(&short) || src.contains(&full),
-            "{rel} 里找不到 `coded({code}, \"{human}\")`：这个触发点要么没带码，要么原文被改掉了"
+            window.contains(&format!("\"{human}\"")),
+            "{rel} 里 `coded({code}, …)` 之后 400 字符内找不到原文 \"{human}\"：码带了，但 human 被改了或换了分支"
         );
     }
 }

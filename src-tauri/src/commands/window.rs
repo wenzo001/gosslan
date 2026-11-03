@@ -185,7 +185,10 @@ pub(crate) async fn send_group_payload(
     if kind == "remind" {
         if let Ok(p) = crate::protocol::parse_remind_payload(&content) {
             if p.nudge {
-                return Err("窗口抖动只支持单聊".to_string());
+                return Err(crate::error_codes::coded(
+                    crate::error_codes::NUDGE_GROUP_UNSUPPORTED,
+                    "窗口抖动只支持单聊",
+                ));
             }
         }
     }
@@ -203,10 +206,18 @@ pub(crate) async fn send_group_payload(
     };
     let (group_name, group_creator, group_members) = match group_meta {
         Some((n, c, m)) => (n, Some(c), m),
-        None => return Err("群不存在".to_string()),
+        None => {
+            return Err(crate::error_codes::coded(
+                crate::error_codes::GROUP_NOT_FOUND,
+                "群不存在",
+            ))
+        }
     };
     if !group_members.contains(&s.device_id) {
-        return Err("你已不在该群中".to_string());
+        return Err(crate::error_codes::coded(
+            crate::error_codes::GROUP_SELF_NOT_MEMBER,
+            "你已不在该群中",
+        ));
     }
     // 渲染切换只投给声明了 RENDER 的成员：旧端/离线端保持原渲染，不产生“不支持的消息”占位。
     // 其它 kind 仍按全成员投递（不改既有语义）。
@@ -228,7 +239,11 @@ pub(crate) async fn send_group_payload(
     } else {
         group_members.clone()
     };
-    let key = get_group_key(s, group_id).await.ok_or("群密钥缺失")?;
+    let key = get_group_key(s, group_id)
+        .await
+        .ok_or_else(|| {
+            crate::error_codes::coded(crate::error_codes::GROUP_KEY_MISSING, "群密钥缺失")
+        })?;
     let preview = crate::protocol::preview_text(kind, &content);
 
     // 群密钥加密 + Gossip 信封（E2EE 恒开：载荷用群密钥 ChaCha20-Poly1305 加密）
@@ -252,7 +267,9 @@ pub(crate) async fn send_group_payload(
         mentions,
         targets.as_deref(),
     );
-    let sealed = crypto::seal_symmetric(&key, plaintext.as_bytes()).ok_or("加密失败")?;
+    let sealed = crypto::seal_symmetric(&key, plaintext.as_bytes()).ok_or_else(|| {
+        crate::error_codes::coded(crate::error_codes::E2EE_ENCRYPT_FAILED, "加密失败")
+    })?;
     let payload_b64 = STANDARD.encode(&sealed);
     let env = {
         let gossip = s.gossip.lock().unwrap_or_else(|e| e.into_inner());

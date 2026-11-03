@@ -62,15 +62,23 @@ pub async fn send_group_message(
             let s = state.inner();
             let members = {
                 let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());
-                let group = db::get_group(&dbc, &group_id).ok_or("群不存在")?;
+                let group = db::get_group(&dbc, &group_id).ok_or_else(|| {
+                    crate::error_codes::coded(crate::error_codes::GROUP_NOT_FOUND, "群不存在")
+                })?;
                 let exists = db::get_message_record(&dbc, &p.target)
                     .map(|m| m.conv_id == format!("group:{group_id}"))
                     .unwrap_or(false);
                 if !exists {
-                    return Err(reject(s, &group_id, "remind", "target_missing", "要提醒的消息不存在"));
+                    return Err(crate::error_codes::coded(
+                        crate::error_codes::MSG_NOT_FOUND,
+                        reject(s, &group_id, "remind", "target_missing", "要提醒的消息不存在"),
+                    ));
                 }
                 if !group.members.iter().any(|m| m == &s.device_id) {
-                    return Err(reject(s, &group_id, "remind", "not_member", "你已不在该群中"));
+                    return Err(crate::error_codes::coded(
+                        crate::error_codes::GROUP_SELF_NOT_MEMBER,
+                        reject(s, &group_id, "remind", "not_member", "你已不在该群中"),
+                    ));
                 }
                 group.members
             };
@@ -113,9 +121,14 @@ pub async fn send_group_message(
             let s = state.inner();
             {
                 let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());
-                let group = db::get_group(&dbc, &group_id).ok_or("群不存在")?;
+                let group = db::get_group(&dbc, &group_id).ok_or_else(|| {
+                    crate::error_codes::coded(crate::error_codes::GROUP_NOT_FOUND, "群不存在")
+                })?;
                 if !group.members.iter().any(|m| m == &s.device_id) {
-                    return Err(reject(s, &group_id, "remind_ack", "not_member", "你已不在该群中"));
+                    return Err(crate::error_codes::coded(
+                        crate::error_codes::GROUP_SELF_NOT_MEMBER,
+                        reject(s, &group_id, "remind_ack", "not_member", "你已不在该群中"),
+                    ));
                 }
                 // content 里 target 的真实性现读后才出帧。
                 let target = crate::protocol::parse_remind_ack_payload(&content)?.target;
@@ -299,7 +312,9 @@ fn check_todo_assignees(s: &AppState, group_id: &str, assignees: &[String]) -> R
         let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());
         db::get_group(&dbc, group_id)
             .map(|g| g.members)
-            .ok_or_else(|| "群不存在".to_string())?
+            .ok_or_else(|| {
+                crate::error_codes::coded(crate::error_codes::GROUP_NOT_FOUND, "群不存在")
+            })?
     };
     // ⚠️ `resolve_nickname` 内部会再锁一次 db，必须在放锁之后调用（见文件里那条同名注释）
     if let Some(bad) = assignees.iter().find(|a| !members.contains(a)) {
@@ -950,7 +965,9 @@ pub async fn send_group_announcement(
     }
     {
         let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());
-        let g = db::get_group(&dbc, &group_id).ok_or("群不存在")?;
+        let g = db::get_group(&dbc, &group_id).ok_or_else(|| {
+                    crate::error_codes::coded(crate::error_codes::GROUP_NOT_FOUND, "群不存在")
+                })?;
         if g.creator != s.device_id {
             return Err(reject(s, &group_id, "announcement", "not_owner", "只有群主可以发布公告"));
         }
@@ -978,7 +995,9 @@ pub async fn delete_group_announcement(
     }
     {
         let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());
-        let g = db::get_group(&dbc, &group_id).ok_or("群不存在")?;
+        let g = db::get_group(&dbc, &group_id).ok_or_else(|| {
+                    crate::error_codes::coded(crate::error_codes::GROUP_NOT_FOUND, "群不存在")
+                })?;
         if g.creator != s.device_id {
             return Err(reject(s, &group_id, "announcement_delete", "not_owner", "只有群主可以删除公告"));
         }

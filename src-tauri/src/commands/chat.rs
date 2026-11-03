@@ -1460,7 +1460,9 @@ pub async fn ensure_conversation(
         let (name, avatar) = if is_group {
             let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());
             let gid = friend_id.trim_start_matches("group:");
-            let g = db::get_group(&dbc, gid).ok_or_else(|| "群不存在".to_string())?;
+            let g = db::get_group(&dbc, gid).ok_or_else(|| {
+                crate::error_codes::coded(crate::error_codes::GROUP_NOT_FOUND, "群不存在")
+            })?;
             (g.name, None)
         } else if friend_id == s.device_id {
             (s.self_display_name(), s.self_avatar())
