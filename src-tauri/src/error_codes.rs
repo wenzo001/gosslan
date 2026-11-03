@@ -446,6 +446,19 @@ pub const GROUP_REMIND_TARGET_REQUIRED: &str = "GROUP_REMIND_TARGET_REQUIRED";
 /// 群提醒：选中的提醒对象都已不在群里。
 pub const GROUP_REMIND_TARGETS_GONE: &str = "GROUP_REMIND_TARGETS_GONE";
 
+// ── B6 第十四批：收藏里 reject_favorite 族的原话 ───────────────────────────
+// 与群管理 reject 族同一处理：`coded(码, reject_favorite(...))`，只多一个码，留痕不变。
+/// 收藏：要收藏的原文件已不在本机。
+pub const FAVORITE_SOURCE_GONE: &str = "FAVORITE_SOURCE_GONE";
+/// 收藏：复制文件到收藏目录失败（human 带底层原因）。
+pub const FAVORITE_COPY_FAILED: &str = "FAVORITE_COPY_FAILED";
+/// 收藏预览：内容不存在。
+pub const FAVORITE_CONTENT_MISSING: &str = "FAVORITE_CONTENT_MISSING";
+/// 收藏预览：内容存储读取失败（human 带底层原因）。
+pub const FAVORITE_STORE_READ_FAILED: &str = "FAVORITE_STORE_READ_FAILED";
+/// 收藏预览：文件路径越权。
+pub const FAVORITE_PATH_ESCAPE: &str = "FAVORITE_PATH_ESCAPE";
+
 /// 给"可能已经带码"的下层错误补码：已带 `code=` 就原样透传，避免叠成两个码。
 ///
 /// 典型场景：通道启动会把 `network::start_from_prefs` 的 `PORT_IN_USE` 透传上来，

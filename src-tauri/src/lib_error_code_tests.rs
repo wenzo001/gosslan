@@ -253,6 +253,14 @@ const B6_CASES: &[(&str, &str, &str)] = &[
         "commands/group_files.rs",
         "提醒对象都已不在群中",
     ),
+    // ── B6 第十四批：收藏 reject_favorite 族（本笔）──────────────────────
+    (
+        "FAVORITE_SOURCE_GONE",
+        "commands/favorites.rs",
+        "文件已不在本机（可能已被「存储清理」删除），无法收藏",
+    ),
+    ("FAVORITE_CONTENT_MISSING", "commands/favorites.rs", "内容不存在"),
+    ("FAVORITE_PATH_ESCAPE", "commands/favorites.rs", "路径越权"),
 ];
 
 /// human 是下层原话、没有字面量的触发点：只守"码真的挂在这里"，
@@ -283,6 +291,9 @@ const B6_DYNAMIC_HUMAN: &[(&str, &str)] = &[
     ("PROFILE_SAVE_FAILED", "commands/system.rs"),
     // 群待办编辑：human 由 `why` 变量拼出（可能已经带码）
     ("GROUP_TODO_EDIT_FORBIDDEN", "commands/group_files.rs"),
+    // 收藏复制/存储读取：human 是下层原话
+    ("FAVORITE_COPY_FAILED", "commands/favorites.rs"),
+    ("FAVORITE_STORE_READ_FAILED", "commands/favorites.rs"),
 ];
 
 /// B6 白名单命令的"未带码 return Err"存量基线（只减不增）。

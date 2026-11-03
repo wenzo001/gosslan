@@ -151,11 +151,14 @@ pub async fn add_favorite(
         let src = match resolve_media_path(s, &msg_id) {
             MediaPath::Present(p) => *p,
             MediaPath::Gone => {
-                return Err(reject_favorite(
-                    s,
-                    "add",
-                    "source_gone",
-                    "文件已不在本机（可能已被「存储清理」删除），无法收藏",
+                return Err(crate::error_codes::coded(
+                    crate::error_codes::FAVORITE_SOURCE_GONE,
+                    reject_favorite(
+                        s,
+                        "add",
+                        "source_gone",
+                        "文件已不在本机（可能已被「存储清理」删除），无法收藏",
+                    ),
                 ))
             }
             MediaPath::Unknown(e) => return Err(e),
@@ -180,7 +183,10 @@ pub async fn add_favorite(
         media_size = match copied {
             Ok(n) => n,
             Err(e) => {
-                return Err(reject_favorite(s, "add", "copy_failed", &e));
+                return Err(crate::error_codes::coded(
+                    crate::error_codes::FAVORITE_COPY_FAILED,
+                    reject_favorite(s, "add", "copy_failed", &e),
+                ));
             }
         };
         let dst_str = dst.to_string_lossy().to_string();
@@ -382,10 +388,16 @@ pub async fn read_content_preview(
             None => match crate::content::store::find_source(&dbc, &cid) {
                 Ok(Some((peer, _group, p))) => Located::Sourced(std::path::PathBuf::from(p), peer),
                 Ok(None) => {
-                    return Err(reject_favorite(&s, "content_preview", "content_missing", "内容不存在"))
+                    return Err(crate::error_codes::coded(
+                        crate::error_codes::FAVORITE_CONTENT_MISSING,
+                        reject_favorite(&s, "content_preview", "content_missing", "内容不存在"),
+                    ))
                 }
                 Err(e) => {
-                    return Err(reject_favorite(&s, "content_preview", "store_read_failed", &e.to_string()))
+                    return Err(crate::error_codes::coded(
+                        crate::error_codes::FAVORITE_STORE_READ_FAILED,
+                        reject_favorite(&s, "content_preview", "store_read_failed", &e.to_string()),
+                    ))
                 }
             },
         }
@@ -407,7 +419,10 @@ pub async fn read_content_preview(
             // 只允许读 downloads 下的文件（接收侧），或本机自己发出的内容（发送侧
             // 待办图片是用户自选的原始路径）—— 与 resolve_media_path 同一口径。
             if !under_downloads && owner != s.device_id {
-                return Err(reject_favorite(&s, "content_preview", "path_escape", "路径越权"));
+                return Err(crate::error_codes::coded(
+                    crate::error_codes::FAVORITE_PATH_ESCAPE,
+                    reject_favorite(&s, "content_preview", "path_escape", "路径越权"),
+                ));
             }
             f
         }
