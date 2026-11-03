@@ -567,7 +567,7 @@ export interface HangDetail {
  * 启动时由后端从现场文件算一次；前端只读字段，不解析日志文本。
  */
 export interface PreviousRunReport {
-  /** panic | abort | silent_kill | startup_failed | clean | no_history */
+  /** panic | abort | silent_kill | startup_failed | sigterm | clean | no_history */
   kind: string;
   /** BOOT_PREV_* */
   code: string;

@@ -62,6 +62,7 @@ mod open_path;
 mod private_fs;
 pub mod protocol;
 mod restart;
+mod signals;
 mod startup_error;
 mod state;
 mod storage;
@@ -633,6 +634,11 @@ fn boot_failure_message(app: &tauri::AppHandle, e: &(dyn std::error::Error + 'st
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    // SIGTERM 屏蔽必须**早于一切线程派生**（tokio / WebView 的线程继承调用线程的
+    // 信号掩码）：晚一步，信号就会被某个未屏蔽线程按默认处置直接终止进程，
+    // setup 里的 sigwait 线程永远收不到（闪退取证第 2 项实测形状）。
+    #[cfg(unix)]
+    crate::signals::block_sigterm();
     // 先装 hook（此刻还没有 state，先只打 stderr；setup 里拿到 logger 后再装一次带上文件日志）
     install_panic_hook(None);
     // 移动端没有那段"桌面才加插件"的 `builder = builder.plugin(...)`（见下面的 #[cfg(desktop)]），
@@ -742,6 +748,11 @@ pub fn run() {
                     return Err(e);
                 }
             };
+            // SIGTERM 留痕（2026-11-03 闪退取证第 2 项）：kill -TERM 不再无声消失 ——
+            // 专用线程 sigwait，写 code=SIGTERM_RECEIVED 再走正常退出流程，
+            // 下一轮据此区分「被外部杀」与「崩溃」。仅 Unix（Windows 无 SIGTERM）。
+            #[cfg(unix)]
+            crate::signals::register_sigterm(app.handle().clone());
             finish_boot(app.handle(), state);
             Ok(())
         })

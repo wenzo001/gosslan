@@ -568,6 +568,10 @@ pub enum PreviousExit {
     /// 与 `SilentKill` 分开：这一条**有现场**（请求字节数写在行里），只是
     /// panic 钩子跑不到（abort 不走 unwind）⇒ 没有 `===== 崩溃现场` 块。
     Abort,
+    /// 被外部 `kill -TERM`（2026-11-03 闪退取证）：信号处理线程写了
+    /// `code=SIGTERM_RECEIVED` 再走正常退出流程。与 `SilentKill` 分开 ——
+    /// 那一类在进程内部留不下任何东西，这一类**留得下**（信号是被捕获的）。
+    Sigterm,
 }
 
 /// 上一次运行留给本次启动的结构化报告（启动时算一次，命令只 clone）。
@@ -577,7 +581,7 @@ pub enum PreviousExit {
 #[derive(Clone, Serialize, Debug)]
 #[serde(rename_all = "camelCase")]
 pub struct PreviousRunReport {
-    /// `panic` | `silent_kill` | `startup_failed` | `clean` | `no_history`
+    /// `panic` | `silent_kill` | `startup_failed` | `abort` | `sigterm` | `clean` | `no_history`
     pub kind: String,
     /// 机器码（`BOOT_PREV_*`），用于检索/口述。
     pub code: String,
@@ -758,6 +762,7 @@ pub fn build_previous_run_report(
         PreviousExit::StartupFailed => ("startup_failed", "BOOT_PREV_STARTUP_FAILED"),
         PreviousExit::SilentKill => ("silent_kill", "BOOT_PREV_SILENT_KILL"),
         PreviousExit::Abort => ("abort", "BOOT_PREV_ABORT"),
+        PreviousExit::Sigterm => ("sigterm", "BOOT_PREV_SIGTERM"),
         PreviousExit::Clean => ("clean", "BOOT_PREV_CLEAN"),
         PreviousExit::NoHistory => ("no_history", "BOOT_PREV_NO_HISTORY"),
     };
@@ -846,6 +851,18 @@ pub fn classify_previous_exit(native_lines: &[String]) -> PreviousExit {
         .any(|l| l.starts_with(">>> ") && l.contains("panic @ "))
     {
         return PreviousExit::Panic;
+    }
+    // SIGTERM 路标（2026-11-03 闪退取证）：信号处理线程在走正常退出流程之前写了
+    // `code=SIGTERM_RECEIVED`。只要最后一次启动之后出现过这一行，就判「被外部杀」——
+    // 与"崩溃"分开（没有崩溃块），也与 `SilentKill` 分开（那一类进程内留不下任何东西，
+    // 这一类留得下）。路标在退出路标**之前**写，所以不能只看最后一条。
+    if native_lines
+        .iter()
+        .rev()
+        .take_while(|l| !l.starts_with("----- 启动 "))
+        .any(|l| l.starts_with(">>> ") && l.contains("code=SIGTERM_RECEIVED"))
+    {
+        return PreviousExit::Sigterm;
     }
     // 只看**最后一条**：更早的 BOOT_FAILED 后面若已经有正常退出路标，那是后来恢复过了。
     if native_lines
@@ -1520,6 +1537,10 @@ impl Logger {
                 PreviousExit::Abort => {
                     "上次收尾判定：分配器 abort（见上面的「重分配失败」行；请求字节数就写在里面）"
                 }
+                PreviousExit::Sigterm => concat!(
+                    "上次收尾判定：被外部终止（SIGTERM）—— 信号被捕获并留痕",
+                    "（code=SIGTERM_RECEIVED），随后走了正常退出流程。不是崩溃"
+                ),
                 PreviousExit::NoHistory => "上次收尾判定：现场文件里没有可判定的路标",
             };
             let verdict_code = match verdict_kind {
@@ -1528,6 +1549,7 @@ impl Logger {
                 PreviousExit::StartupFailed => "BOOT_PREV_STARTUP_FAILED",
                 PreviousExit::SilentKill => "BOOT_PREV_SILENT_KILL",
                 PreviousExit::Abort => "BOOT_PREV_ABORT",
+                PreviousExit::Sigterm => "BOOT_PREV_SIGTERM",
                 PreviousExit::NoHistory => "BOOT_PREV_NO_HISTORY",
             };
             let verdict_line = format!("{verdict} code={verdict_code}");
@@ -2045,6 +2067,38 @@ mod tests {
         assert_eq!(
             classify_previous_exit(&mk(&[">>> code=BOOT_FAILED old", "----- 正常退出 b",])),
             PreviousExit::Clean
+        );
+        // SIGTERM 路标（2026-11-03 闪退取证）：被外部 kill -TERM ≠ 崩溃 ≠ 静默强杀。
+        // 路标写在退出路标**之前**（先留痕再走正常退出流程）⇒ 判据不能只看最后一条。
+        assert_eq!(
+            classify_previous_exit(&mk(&[
+                "----- 启动 a",
+                ">>> code=SIGTERM_RECEIVED 收到 SIGTERM ⇒ 走正常退出流程（外部终止，不是崩溃）",
+                "----- 正常退出 a",
+            ])),
+            PreviousExit::Sigterm
+        );
+        // 路标写了但退出路标没赶上（终止流程中途又被杀）⇒ 仍按路标判，不回退成 SilentKill。
+        assert_eq!(
+            classify_previous_exit(&mk(&[
+                "----- 启动 a",
+                ">>> code=SIGTERM_RECEIVED 收到 SIGTERM ⇒ 走正常退出流程（外部终止，不是崩溃）",
+            ])),
+            PreviousExit::Sigterm
+        );
+        // 正控：没有路标时不许误判成 Sigterm（上面那两条 Clean / SilentKill 用例同时守着）。
+        assert_ne!(
+            classify_previous_exit(&mk(&["----- 启动 a", "----- 正常退出 a"])),
+            PreviousExit::Sigterm
+        );
+        // panic 优先：崩溃块在场时，SIGTERM 路标不能把死因抢走（先崩后被杀也是崩）。
+        assert_eq!(
+            classify_previous_exit(&mk(&[
+                "----- 启动 a",
+                ">>> code=SIGTERM_RECEIVED x",
+                "===== 崩溃现场 b",
+            ])),
+            PreviousExit::Panic
         );
     }
 
