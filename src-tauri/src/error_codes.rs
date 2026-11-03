@@ -103,6 +103,55 @@ pub const FRIEND_INVALID_CONTACT: &str = "FRIEND_INVALID_CONTACT";
 /// 已经是好友了，撤回申请没有意义（多半是旧列表残留）。
 pub const FRIEND_ALREADY_FRIEND: &str = "FRIEND_ALREADY_FRIEND";
 
+// ── B6 第三批：消息/会话那一族 ────────────────────────────────────────────
+//
+// 这里大多是"这条消息不该做这个操作"的拒绝分支：原文本身是准确的，但没有主语与去处，
+// 直接上屏像机器在训人。码只负责让前端换成人话，原文继续留在日志里。
+//
+// 重复的几条（切换渲染的三种拒绝）在 `set_message_render` 与 `send_message` 内联分支
+// 各出现一次，共用一个码 —— 同一个原因不该有两个码。
+
+/// 取消发送：目标是自己给自己发的消息。
+pub const CANCEL_SELF_CHAT_UNSUPPORTED: &str = "CANCEL_SELF_CHAT_UNSUPPORTED";
+/// 取消发送：不是自己发的。
+pub const CANCEL_NOT_OWN_MESSAGE: &str = "CANCEL_NOT_OWN_MESSAGE";
+/// 取消发送：文件/图片走传输通道，不走消息取消。
+pub const CANCEL_FILE_USE_TRANSFER: &str = "CANCEL_FILE_USE_TRANSFER";
+/// 按成员补发：目标不是群消息。
+pub const GROUP_RESEND_ONLY_FOR_GROUPS: &str = "GROUP_RESEND_ONLY_FOR_GROUPS";
+/// 按成员补发：不是自己在该群发的消息。
+pub const GROUP_RESEND_NOT_OWN: &str = "GROUP_RESEND_NOT_OWN";
+/// 撤回：自己会话（自聊）里的消息。
+pub const RECALL_OWN_CONV_UNSUPPORTED: &str = "RECALL_OWN_CONV_UNSUPPORTED";
+/// 切换渲染：渲染方式未知。
+pub const RENDER_UNSUPPORTED: &str = "RENDER_UNSUPPORTED";
+/// 切换渲染：不是自己发的。
+pub const RENDER_SELF_ONLY: &str = "RENDER_SELF_ONLY";
+/// 切换渲染：消息类型不是文本/代码。
+pub const RENDER_TEXT_CODE_ONLY: &str = "RENDER_TEXT_CODE_ONLY";
+/// 切换渲染：消息已撤回。
+pub const RENDER_RECALLED: &str = "RENDER_RECALLED";
+/// 窗口抖动：目标是自己的会话。
+pub const NUDGE_SELF_UNSUPPORTED: &str = "NUDGE_SELF_UNSUPPORTED";
+/// 发送：消息类型不在支持范围。
+pub const MESSAGE_KIND_UNSUPPORTED: &str = "MESSAGE_KIND_UNSUPPORTED";
+/// 强提醒：对应的提醒记录已不在。
+pub const NUDGE_MISSING: &str = "NUDGE_MISSING";
+/// 原地重发：群消息要走按成员补发。
+pub const RESEND_USE_GROUP_DELIVERY: &str = "RESEND_USE_GROUP_DELIVERY";
+/// 原地重发：自聊消息不需要重发。
+pub const RESEND_SELF_CHAT_UNNEEDED: &str = "RESEND_SELF_CHAT_UNNEEDED";
+/// 原地重发：不是自己发的。
+pub const RESEND_SELF_ONLY: &str = "RESEND_SELF_ONLY";
+/// 原地重发：该消息类型不支持。
+pub const RESEND_KIND_UNSUPPORTED: &str = "RESEND_KIND_UNSUPPORTED";
+/// 原地重发：消息不是失败/已取消状态。
+pub const RESEND_NOT_FAILED: &str = "RESEND_NOT_FAILED";
+/// 原地重发：消息已送达或状态已变。
+pub const RESEND_ALREADY_DELIVERED: &str = "RESEND_ALREADY_DELIVERED";
+/// 发送：自聊会话不支持图片/文件。
+pub const SELF_CHAT_NO_MEDIA: &str = "SELF_CHAT_NO_MEDIA";
+
 /// 给"可能已经带码"的下层错误补码：已带 `code=` 就原样透传，避免叠成两个码。
 ///
 /// 典型场景：通道启动会把 `network::start_from_prefs` 的 `PORT_IN_USE` 透传上来，
