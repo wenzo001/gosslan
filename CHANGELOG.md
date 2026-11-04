@@ -14,6 +14,24 @@
 
 ## [Unreleased]
 
+## [5.18.1] - 2026-11-04
+
+### 修复：消息状态图标切换时缩放跳动、气泡跟着位移
+
+- 根因：`MessageReceipt.vue` 用 `<Transition name="receipt-swap" mode="out-in"> + :key="state"`
+  换节点 —— 每次「发送中→已送达→已读」都先摘掉旧节点（占位宽度塌成 0，气泡左右跳），
+  再挂新节点并重播 `scale(0.55)` 的进场动画。
+- 修法：四种状态层**常驻**叠在固定 16×16 占位里，切换只做 140ms 透明度交叉淡入
+  （不重建节点、不改 key、不动布局）；`scale` 只留给「第一次出现」——`appear` 在挂载时
+  快照 `state === "sending"`，历史消息随虚拟列表滚入视野时不再弹。
+- `prefers-reduced-motion` 下保留淡入淡出、去掉缩放（`gosslan-receipt-fade`）。
+- 守卫：新增 `src/utils/receiptMotion.test.ts`（形状断言 + 旧写法反例自证）与
+  `src/utils/motionGuards.test.ts`（全仓禁止 `<Transition>` 子节点以 `:key` 绑状态量）；
+  `check-ui-runtime.mjs --only=delivery` 增加活 props 探针，钉住「节点不重建 / 切前切中切后
+  `boundingClientRect` 相同 / 切换后无重播动画」三条读数。
+- 规范：`docs/design-guidelines.md` §11.3.7 落地「出现才播一次 / 状态切换不重播 /
+  占位稳定 / 可降级 / 不叠加」，并附同类动画清点表（§11.3.8）。
+
 ### 重构：chat store 按职责拆分（行为零变化）
 
 - `src/stores/useChatStore.ts` 由 3996 行降到 926 行，按职责抽出 8 个模块到

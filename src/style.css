@@ -797,20 +797,36 @@ progress {
   }
 }
 
-/* 消息回执状态切换（单勾 → 双勾 → 主题色双勾）：短促弹入，不改变行高。 */
-.receipt-swap-enter-active,
-.receipt-swap-leave-active {
-  transition:
-    opacity 120ms var(--gosslan-ease),
-    transform 200ms var(--gosslan-ease-spring);
+/* 消息回执状态（单勾 → 双勾 → 主题色双勾）。
+   ⚠️ 状态之间切换**不许再缩放**：所有状态层常驻叠在固定的 16×16 占位里
+   （`.receipt-slot`，尺寸由组件上的 `h-4 w-4` 钉住），切换只做透明度交叉淡入
+   （`.receipt-layer`）⇒ 节点不重建、宽度不变、气泡不位移。
+   缩放只留给**第一次出现**：`.receipt-slot-appear` 的动画随节点挂载播一次，
+   之后改 state 不会重启它（这是 2026-11-04 那格"切换时缩一下再弹回来"的修法：
+   此前是 `<Transition mode="out-in"> + :key="state"`，每次状态变化摘节点重挂并重播
+   `scale(0.55)`）。 */
+.receipt-slot {
+  position: relative;
+  flex: none;
 }
-.receipt-swap-enter-from {
-  opacity: 0;
-  transform: scale(0.55);
+@keyframes gosslan-receipt-in {
+  from { opacity: 0; transform: scale(0.55); }
+  to { opacity: 1; transform: scale(1); }
 }
-.receipt-swap-leave-to {
+.receipt-slot-appear {
+  animation: gosslan-receipt-in 200ms var(--gosslan-ease-spring);
+}
+.receipt-layer {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
   opacity: 0;
-  transform: scale(0.9);
+  transition: opacity 140ms var(--gosslan-ease);
+}
+.receipt-layer[data-active="true"] {
+  opacity: 1;
 }
 
 /* Toast 进出场：Reka 负责生命周期，这里只补观感。 */
@@ -839,8 +855,16 @@ progress {
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .receipt-swap-enter-active,
-  .receipt-swap-leave-active,
+  /* 回执：减弱动态效果时**保留淡入淡出、去掉缩放**（用户 2026-11-04 的口径）。
+     `.receipt-layer` 的透明度交叉淡入不关（否则状态切换会变成硬切）；只把出现动画
+     换成一条不含 transform 的淡入。 */
+  @keyframes gosslan-receipt-fade {
+    from { opacity: 0; }
+    to { opacity: 1; }
+  }
+  .receipt-slot-appear {
+    animation: gosslan-receipt-fade 120ms var(--gosslan-ease);
+  }
   .gosslan-toast[data-state],
   .unread-badge {
     animation: none !important;

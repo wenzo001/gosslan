@@ -822,7 +822,7 @@ SVG data URL 走既有头像图片通道 —— 同样不新增协议字段或�
 #### 11.3.4 reduced-motion 双通道
 
 CSS 侧：`src/style.css` 末尾的 `@media (prefers-reduced-motion: reduce)` 必须覆盖
-`.page-slide*`、`.settings-swap*`、`.gosslan-dialog-*`、`.receipt-swap*`、`.gosslan-toast`、
+`.page-slide*`、`.settings-swap*`、`.gosslan-dialog-*`、`.receipt-slot-appear`、`.gosslan-toast`、
 `.unread-badge`、`.nav-glyph*`。
 
 JS 侧：任何 WAAPI / `requestAnimationFrame` / 库驱动的动画必须先读媒体查询；
@@ -869,6 +869,73 @@ JS 侧：任何 WAAPI / `requestAnimationFrame` / 库驱动的动画必须先读
   而且核对要读 `dist/assets/*.css`（读 `src/style.css` 不足以证明它生效）。
 - 动画完成 ≠ 业务完成：反馈可以立刻画，状态必须等真实回执（§9.3 乐观更新 + 失败回滚），
   不许用动效掩盖失败（§9.5 错误统一出口）。
+
+#### 11.3.7 出现 vs 状态切换：动画的五条硬约束（2026-11-04 用户全局原则）
+
+适用于**所有**"元素出现/消失、状态在元素内变化"的动效，不限于消息气泡。
+真实事故样本：消息回执图标（发送中 → 已送达 → 已读）此前用
+`<Transition mode="out-in"> + :key="state"`，每次状态变化先摘掉旧节点（占位宽度塌成 0）
+再挂新节点并重播 `scale(0.55)` ⇒ 用户看到"缩一下再弹回来、气泡还跟着抖"。
+
+1. **出现才播一次**：元素从无到有可以有入场动画（可轻微缩放/淡入），但**只随节点第一次
+   挂载播一次**。虚拟列表回收/滚动复用**不算**"从无到有"——行内一次性动画必须由
+   `computeEnteringId()` 这类"资格现算"决定（见 §11.3.1 第 2 条与 `.gosslan-msg-enter`）。
+2. **状态切换不重播**：已存在的元素在状态间变化时，只做平滑互补过渡（透明度交叉淡入 /
+   极短位移），**禁止**整体重播 scale / enter 动画。实现上：状态层**常驻**叠在同一个
+   固定占位里、用 `[data-active]` 改透明度；**不许**用 `:key` 绑定状态重建节点。
+3. **占位稳定**：过渡期间元素占位尺寸与父容器布局不变。判据是**前后
+   `getBoundingClientRect()` 一致**，不是"看起来差不多"。所以状态层必须在固定尺寸的
+   占位里绝对定位叠放；不同状态图标本身的墨迹大小可以不同，**占位不许跟着变**。
+4. **可降级**：`prefers-reduced-motion: reduce` 下只保留淡入淡出，**不做缩放/位移**
+   （见 §11.3.4 / §14.10 的 reduce 清单）。
+5. **不叠加**：同一元素同一时刻只有一个入场动画；状态快速连变要能被后续状态**就地打断并
+   收敛**，不许排队重播。CSS `animation` 只随节点插入触发 ⇒ 天然满足；JS 动画必须先
+   `cancel()` 上一段再起新的一段。
+
+**可执行守卫**：状态切换类动效的形状由
+[`src/utils/receiptMotion.test.ts`](file:///Users/wendongfu/Documents/code/gosslan/src/utils/receiptMotion.test.ts)
+钉住（`data-receipt-state` 常驻层、固定 16×16 占位、`.receipt-layer` 只许 opacity 过渡、
+`.receipt-slot` 自身不许带动画、reduce 档用无 `transform` 的淡入）。它带一条**反例自证**：
+把旧写法（Transition + key + enter scale）喂进同一个判定函数必须逐条报红 ⇒ 删掉修复会红。
+
+实现模板（照抄即可，别自己发明换节点写法）：
+
+```html
+<span class="slot relative flex h-4 w-4 shrink-0 items-center justify-center"
+      :class="{ 'slot-appear': appear }">
+  <span class="layer" :data-active="state === 'a'" aria-hidden="true">…</span>
+  <span class="layer" :data-active="state === 'b'" aria-hidden="true">…</span>
+</span>
+```
+
+```css
+.slot-appear { animation: in 200ms var(--gosslan-ease-spring) }  /* 只在挂载时播一次 */
+.layer { position: absolute; inset: 0; opacity: 0; transition: opacity 140ms var(--gosslan-ease) }
+.layer[data-active="true"] { opacity: 1 }
+@media (prefers-reduced-motion: reduce) { .slot-appear { animation: fade 120ms var(--gosslan-ease) } }
+```
+
+#### 11.3.8 同类动画清点表（2026-11-04 只读排查）
+
+口径：状态切换**是否重播**一次性进场动画、是否引起**布局位移**。只列"元素出现/消失、
+状态变化"这一类；按压反馈、悬浮变色不算。
+
+| 项 | 动画来源（文件:行） | 状态切换重播？ | 布局位移？ | 风险 |
+|---|---|---|---|---|
+| 消息状态图标 | 原 `<Transition mode="out-in"> + :key="state"`；已改为常驻层 + opacity（`MessageReceipt.vue:348-402`、`style.css:803-830`） | 原：每次都重播 `scale(0.55)`；**已修**为不重播 | 原：`out-in` 空档宽度塌成 0 ⇒ 气泡跳；**已修**为固定 16×16 | 已修 |
+| 未读点 / 未读数徽标 | `@keyframes gosslan-badge-pop`（`style.css:848-855`）+ `UnreadBadge.vue:53,60`；使用点 `ConversationListItem.vue:204`、`ChatHeader.vue:100` | 否：计数只改文本、不重建节点；`0→>0` 是挂载（出现，播一次=正确） | 否（`h-4 min-w-4` 固定高） | 低 |
+| 任务中心状态/进度 | `scaleX` + `transition-transform`（`TaskCenter.vue:430-436`），`animate-pulse` 带 `motion-reduce:animate-none`（436） | 否（进度是连续值，不是进场） | 否（`h-1` 占位固定，`scaleX` 不参与布局） | 低 |
+| 连接/在线指示灯 | 类切换底色（`ConversationListItem.vue:199-201`、`FriendListItem.vue:117`、`ChatHeader.vue:141`） | 无动画（瞬时换色，不重播） | 否（固定小圆点） | 低 |
+| 发送按钮 / 录音按钮 | 仅 `transition`（颜色/背景）`MessageComposer.vue:1064-1068`；**录音按钮未找到**（仓库无语音录制入口） | 否 | 否 | 低 |
+| Toast | `ToastRoot :key="toast.id"` + `data-state` 关键帧（`ToastList.vue:26-30`、`style.css:832-846`） | 每条新 toast 都是新节点 ⇒ 播一次（正确） | 否（`fixed` 容器，`scale` 只走 transform） | 低 |
+| 抽屉/面板开合 | `[data-state="open"]` 关键帧（translate/scale，`style.css:1682-1698`） | 开合各播一次（state 只在开合时变） | 否（`transform` / overlay） | 低 |
+| 骨架与加载态 | `boot-breathe` 无限循环（`boot/skeleton.css:220,241-249`）、`boot-hide` 的 opacity 过渡（70-73）、`.spinner-icon` 旋转 | 循环类，非入场；不存在"重播" | 否 | 低 |
+| 列表项增删 | 消息行**禁止**逐项进场（`designGuards.test.ts:5186`）；motion-v 只用于共享布局药丸 `layout-id`（`NavRail.vue:114/137/161/182`、`ResponsiveLayout.vue:1105/1126/1149/1168`、`GroupTasksBoard.vue:1320`） | 否 | 药丸是共享布局 `transform`，不推列表 | 低 |
+| 设置分区切换 | `<Transition name="settings-swap" mode="out-in"> + :key="section"`（`SettingsWindow.vue:238-239`、`style.css:1612-1628`） | **是**：换分区整块重建，每次都播 enter（`out-in` 中间还有空档） | **可能**：`out-in` 空档里容器没有内容 | **中**，观感改动，待确认 |
+| 整页进场（移动端下钻/返回） | `page-slide*`（`ResponsiveLayout.vue:1194/1199/1204`、`SettingsPanel.vue:197`、`LogViewer.vue:480`、`FavoritePanel.vue:819`） | 整页导航语义，播一次（正确） | `transform` 不参与布局 | 低 |
+| 图片灯箱 | `<Transition>` 只做 opacity（`ImageLightbox.vue:348-353`，带 `motion-reduce:transition-none`） | 打开时淡入（正确） | 否 | 低 |
+| 新消息进场 / 抖动 / 任务闪烁 | `.gosslan-msg-enter`（资格由 `computeEnteringId()` 现算，`ChatWindow.vue:2017`）、`.gosslan-shake`（1715）、`.todo-row-flash`（`GroupTasksBoard.vue:1214/1323`） | 否（各自按触发播一次） | 否（只 `opacity`/`transform`） | 低 |
+| 图片骨架 | 定宽 `w-52` + 预留高度（`MessageImageBubble.vue:128-164`） | 否 | 无尺寸的旧消息解码完成仍会收缩一次（**已知残留**，观感） | 低-中，待确认 |
 
 ### 11.4 平台分层：**这一条目前是"待收口"，不是"已生效的规矩"**
 
@@ -1099,7 +1166,7 @@ Tauri WebView 真机仍未测。
 ### 14.10 减弱动态效果
 
 CSS 侧：`src/style.css` 末尾的 `@media (prefers-reduced-motion: reduce)` 必须覆盖
-`.page-slide*`、`.settings-swap*`、`.gosslan-dialog-*`、`.receipt-swap*`、`.gosslan-toast`、
+`.page-slide*`、`.settings-swap*`、`.gosslan-dialog-*`、`.receipt-slot-appear`、`.gosslan-toast`、
 `.unread-badge`、`.nav-glyph*`、`.spinner-icon`、全局按压。
 
 JS 侧：`motion-v` 动画必须用 `useReducedMotion()`；reduce 档把 spring 换成 `duration: 0`

@@ -690,6 +690,44 @@ window.__probe = (() => {
     await V.nextTick(); await V.nextTick();
     return { ok: true };
   };
+  /**
+   * 回执动效探针（--only=delivery，⑤ 那一组）：**同一节点上改 state**，
+   * 量"切前/切中/切后"的几何与节点身份。
+   * 普通 install 的 props 是静态的 ⇒ 改不动状态就量不到切换那一帧；
+   * 这里用 live props 包装，并暴露 window.__probe.receiptState(s)。
+   */
+  H.installReceiptLive = async (propsJson) => {
+    if (!window.__probe.vue) {
+      await H.install('/src/components/MessageItem.vue', '', JSON.stringify({
+        message: { msg_id: 'warm', sender_id: 'peer-a', kind: 'text', content: 'warm', ts: 1, conv_id: 'c', seq: 1 },
+      }));
+    }
+    const V = window.__probe.vue;
+    if (!V) return { ok: false, why: 'no-vue' };
+    const mod = await import('/src/components/message/MessageReceipt.vue');
+    document.body.innerHTML = '';
+    const host = document.createElement('div');
+    host.id = 'probe-host';
+    host.style.cssText = 'display:flex;align-items:flex-end;gap:6px;padding:8px';
+    document.body.appendChild(host);
+    const base = JSON.parse(propsJson || '{}');
+    const st = V.reactive({ state: base.state || 'sent' });
+    window.__receiptNode = undefined;
+    window.__probe.receiptState = (s) => { st.state = s; };
+    const app = V.createApp({
+      setup() {
+        return () => V.h(mod.default, {
+          state: st.state, waiting: false, title: 't', isGroup: false, retryable: false,
+        });
+      },
+    });
+    if (window.__pinia) app.use(window.__pinia);
+    app.mount(host);
+    window.__probe.vue = V;
+    await V.nextTick(); await V.nextTick();
+    const slot = document.querySelector('[data-receipt]');
+    return { ok: true, anims: slot ? slot.getAnimations().map((a) => a.animationName) : [] };
+  };
   /** 受控下拉（--only=select）：选中值写回 state.selectValue，才能读"触发器文案跟着变"。 */
   H.selectMount = async () => H.install(
     '/src/components/ui/SettingsSelect.vue',
@@ -15440,6 +15478,96 @@ async function runDelivery(cdp, url) {
   const rd = d.ok ? await readBadge() : null;
   check("★ 2 人未送达 ⇒ 角标写「2 人未送达」", d.ok === true && rd && rd.text === rd.expectFailed,
     "text=2 人未送达", JSON.stringify({ rd }));
+
+  // ── ⑤ 状态图标动效：切换不重建节点 / 占位不塌 / 不重播缩放（2026-11-04 用户报告）──
+  // 「发送中→已送达→已读」切换时图标会缩一下再弹回来、气泡跟着抖。旧实现是
+  // `<Transition mode="out-in"> + :key="state"`：切一次就摘掉旧节点（占位宽度塌成 0 ⇒ 气泡跳）
+  // 再挂新节点并重播 `scale(0.55)`。这一组判据是**可证伪的读数**（不是截图印象）：
+  // 同一节点上连续改 state，节点身份必须不变（没有 key 重建）、切前/切中/切后的
+  // boundingClientRect 必须完全相同、切换后该占位上不许还挂着重播的进入动画。
+  // 正反验证：换回旧写法时这三格必然红（node=rebuilt / 宽度 0→16 / anims 非空）。
+  const RECEIPT_READ = `(() => {
+    const slot = document.querySelector('[data-receipt]');
+    if (!slot) return { found: false };
+    const r = slot.getBoundingClientRect();
+    const h = slot.parentElement ? slot.parentElement.getBoundingClientRect() : null;
+    const layers = Array.from(slot.querySelectorAll('[data-receipt-state]'));
+    const anims = slot.getAnimations();
+    return {
+      found: true,
+      node: (window.__receiptNode === undefined
+        ? (window.__receiptNode = slot, 'first')
+        : (window.__receiptNode === slot ? 'same' : 'rebuilt')),
+      rect: [+r.left.toFixed(2), +r.top.toFixed(2), +r.width.toFixed(2), +r.height.toFixed(2)],
+      hostW: h ? +h.width.toFixed(2) : null,
+      layers: layers.length,
+      active: layers.filter((l) => l.getAttribute('data-active') === 'true')
+        .map((l) => l.getAttribute('data-receipt-state')).join(','),
+      anims: anims.map((a) => a.animationName || a.transitionProperty).join(','),
+      scaled: anims.some((a) => (a.effect && a.effect.getKeyframes ? a.effect.getKeyframes() : [])
+        .some((k) => k.transform && k.transform !== 'none')),
+    };
+  })()`;
+  const mountReceipt = (state) => cdp.eval(
+    "window.__probe.installReceiptLive(" + JSON.stringify(JSON.stringify({ state })) + ")");
+  const readReceipt = () => cdp.eval(RECEIPT_READ);
+  const sameGeom = (x, y) => !!(x && y && x.found && y.found
+    && x.rect.join() === y.rect.join() && x.hostW === y.hostW);
+
+  try {
+    const m0 = await mountReceipt("sent");
+    await sleep(120);
+    const before = await readReceipt();
+    await cdp.eval("window.__probe.receiptState('delivered')");
+    await sleep(70); // 交叉淡入进行中
+    const mid = await readReceipt();
+    await sleep(320); // 过渡结束
+    const after = await readReceipt();
+    check("★ 回执 sent→delivered：节点不重建（没有 :key 重建 ⇒ 没有 enter 重播）",
+      m0.ok === true && before.found === true && before.node === "first"
+        && mid.node === "same" && after.node === "same",
+      "node=first→same→same", JSON.stringify({ m0, before: before.node, mid: mid.node, after: after.node }));
+    check("★ 回执 sent→delivered：过渡中与过渡后占位尺寸不变（父容器不会位移）",
+      sameGeom(before, mid) && sameGeom(before, after),
+      "rect + hostW 三帧完全相同",
+      JSON.stringify({ before: before.rect, mid: mid.rect, after: after.rect, hostW: [before.hostW, mid.hostW, after.hostW] }));
+    check("★ 回执 sent→delivered：切换后只有透明度变化，占位上没有重播的进入动画/缩放",
+      after.active === "delivered" && after.layers === 5 && after.anims === "" && after.scaled === false,
+      "active=delivered + 5 层常驻 + anims 空 + 无 transform",
+      JSON.stringify({ active: after.active, layers: after.layers, anims: after.anims, scaled: after.scaled }));
+
+    await cdp.eval("window.__probe.receiptState('read')");
+    await sleep(70);
+    const mid2 = await readReceipt();
+    await sleep(320);
+    const after2 = await readReceipt();
+    check("★ 回执 delivered→read：同样不重建、占位不动、只换透明度",
+      after2.node === "same" && sameGeom(after, mid2) && sameGeom(after, after2)
+        && after2.active === "read" && after2.anims === "",
+      "node=same + rect 相同 + active=read + anims 空",
+      JSON.stringify({ node: after2.node, rect: after2.rect, active: after2.active, anims: after2.anims }));
+
+    // 出现动画只在「第一次出现」（挂载）时有一次；reduce 档换成不含 transform 的淡入。
+    const appear = await mountReceipt("sending");
+    check("★ 回执第一次出现（sending 挂载）才播一次进入动画（不是每次状态切换都播）",
+      appear.ok === true && appear.anims.includes("gosslan-receipt-in"),
+      "anims 含 gosslan-receipt-in", JSON.stringify(appear));
+
+    await cdp.send("Emulation.setEmulatedMedia", {
+      features: [{ name: "prefers-reduced-motion", value: "reduce" }],
+    });
+    await sleep(120);
+    const reduceMount = await mountReceipt("sending");
+    const reduceRead = await readReceipt();
+    check("★ reduce 档：出现动画换成只淡入（gosslan-receipt-fade，无 transform/scale）",
+      reduceMount.ok === true && reduceMount.anims.includes("gosslan-receipt-fade")
+        && !reduceMount.anims.includes("gosslan-receipt-in") && reduceRead.scaled === false,
+      "anims 含 gosslan-receipt-fade 且无 gosslan-receipt-in / scaled=false",
+      JSON.stringify({ mount: reduceMount, scaled: reduceRead.scaled }));
+  } finally {
+    await cdp.send("Emulation.setEmulatedMedia", { media: "", features: [] }).catch(() => {});
+    await sleep(120);
+  }
 }
 
 async function runTasksMobile(cdp, url) {
