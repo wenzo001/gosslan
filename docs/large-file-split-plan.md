@@ -512,8 +512,8 @@ grep -c 'if relay_denied(' src-tauri/src/network/transport.rs src-tauri/src/netw
 （主册 745 ⇒ **764** 是本轮复审加的：两条读循环守卫各补一枚"锚点在视图里恰好一次"的 canary，见 §7 第 11 行。）
 
 **判过但不拆的两本**（不是漏了，是拍过）：
-- `src/stores/useChatStore.ts` 2,350（2026-11-03 复量 **3,524**）—— 2026-09-25 复审判为"拆了短期只降稳定"，且他的长期口径是**动 AppState 选 B 不拆**；
-- `src-tauri/src/state.rs` 1,961（2026-11-03 复量 **3,589**）—— 同一本 AppState（且已过 2,000 那格）。
+- `src/stores/useChatStore.ts` 2,350（2026-11-03 复量 3,524；2026-11-04 `wc -l` 复量 **3,993**）—— 2026-09-25 复审判为"拆了短期只降稳定"，且他的长期口径是**动 AppState 选 B 不拆**；
+- `src-tauri/src/state.rs` 1,961（2026-11-03 复量 3,589；2026-11-04 `wc -l` 复量 **3,700**）—— 同一本 AppState（且已过 2,000 那格）。
 
 拆完的分布（复跑：`git ls-files -z` 逐行数、跳过 NUL 与 `target/`、`vendor/`）：
 **2026-10-07 当时：>3,000 行的人写代码 = 0 本**；生产码里最大三本是 useChatStore 2,350、state 1,961、protocol 1,813 ——
@@ -523,6 +523,8 @@ state.rs 3,589、useChatStore.ts 3,524、logging.rs 3,376 —— 前两本落在
 但行数已远超当年判据基线，`logging.rs` 从未被判过。2026-11-03 用户拍板改为：
 **4B 先拆纯组件（`ChatWindow.vue` 2,332 / `MessageItem.vue` 2,283 的展示块），store 拆分等
 `check-ui-runtime` 门禁恢复可信后再评估**；`state.rs` / `logging.rs` 的下刀顺序排在其后。
+**2026-11-04 复量（`wc -l` 现算）**：useChatStore.ts **3,993**、state.rs **3,700**、logging.rs **3,710**，
+三本仍均 >3,000；本日未再新增拆分，结论仍是上面那条 2026-11-03 的拍板。
 
 ## 7. 一次搬家同批必须改口的尺子（2026-10-07 数齐的十四处）
 
