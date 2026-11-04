@@ -328,8 +328,8 @@ pub fn guard_case_fixture_db(
         file=TAURI / "src" / "commands.rs",
         injections=[
             (
-                '    db::insert_message(&dbc, &rec).map_err(|e| format!("消息写入失败：{e}"))?;',
-                '    db::insert_message_and_outbox(&dbc, &rec, &me, "x").map_err(|e| format!("消息写入失败：{e}"))?;',
+                "    db::insert_message(conn, rec)?;",
+                '    db::insert_message_and_outbox(conn, rec, &rec.conv_id, "x")?;',
             )
         ],
         cmd=cargo("test", "--lib", "self_chat_stays_local"),
