@@ -517,6 +517,9 @@ file_relay::tests::offer_without_chunk_size_is_refused_instead_of_buffering
 file_relay::tests::sweep_removes_the_part_files_too
 file_relay::tests::unsafe_transfer_id_cannot_create_a_file_outside_the_dir
 file_relay::tests::zero_byte_file_completes
+focus_rhythm::tests::a_four_second_focus_flap_switches_once_and_wakes_at_most_once
+focus_rhythm::tests::stable_switches_still_cut_the_rhythm_each_time
+focus_rhythm::tests::wake_scan_respects_the_minimum_interval
 gossip_engine::tests::allow_retry_lets_exactly_one_redelivery_through
 gossip_engine::tests::bloom_and_lru_dedup
 gossip_engine::tests::bloom_rotates_when_full
