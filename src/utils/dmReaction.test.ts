@@ -14,12 +14,15 @@ import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 import { buildReactionPayload } from "./reactions.ts";
+import { readChatStoreSrc } from "../../scripts/chatStoreSrc.ts";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const repoRoot = join(here, "..", "..");
 
 function read(rel: string): string {
-  return readFileSync(join(repoRoot, rel), "utf8");
+  return rel === "src/stores/useChatStore.ts"
+    ? readChatStoreSrc(join(repoRoot, rel))
+    : readFileSync(join(repoRoot, rel), "utf8");
 }
 
 const CHAT_RS = "src-tauri/src/commands/chat.rs";

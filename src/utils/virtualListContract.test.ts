@@ -6,9 +6,13 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
+import { readChatStoreSrc } from "../../scripts/chatStoreSrc.ts";
 
 const ROOT = join(import.meta.dirname, "..", "..");
-const read = (p: string) => readFileSync(join(ROOT, p), "utf8");
+const read = (p: string) =>
+  p.endsWith("stores/useChatStore.ts")
+    ? readChatStoreSrc(join(ROOT, p))
+    : readFileSync(join(ROOT, p), "utf8");
 
 test("消息列表已迁移到 TanStack，且 key 不回退数组下标", () => {
   const src = read("src/components/VirtualList.vue");

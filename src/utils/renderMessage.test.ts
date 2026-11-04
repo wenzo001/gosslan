@@ -2,9 +2,13 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
+import { readChatStoreSrc } from "../../scripts/chatStoreSrc.ts";
 
 const root = join(import.meta.dirname, "..", "..");
-const read = (p: string) => readFileSync(join(root, p), "utf8");
+const read = (p: string) =>
+  p.endsWith("stores/useChatStore.ts")
+    ? readChatStoreSrc(join(root, p))
+    : readFileSync(join(root, p), "utf8");
 
 test("渲染切换接线：命令/LWW 事件/原作者菜单/契约图四处齐全", () => {
   const api = read("src/api/index.ts");

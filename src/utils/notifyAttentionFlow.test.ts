@@ -10,10 +10,15 @@
  * 编译期反而不报 —— 正是静态判据最划算的那一类。
  */
 import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 import assert from "node:assert/strict";
 import { test } from "node:test";
+import { readChatStoreSrc } from "../../scripts/chatStoreSrc.ts";
 
-const read = (rel: string) => readFileSync(new URL(rel, import.meta.url), "utf8");
+const read = (rel: string) =>
+  rel === "../stores/useChatStore.ts"
+    ? readChatStoreSrc(fileURLToPath(new URL(rel, import.meta.url)))
+    : readFileSync(new URL(rel, import.meta.url), "utf8");
 const store = read("../stores/useChatStore.ts");
 const api = read("../api/index.ts");
 const networkRs = read("../../src-tauri/src/commands/network.rs");

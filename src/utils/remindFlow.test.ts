@@ -10,9 +10,13 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import assert from "node:assert/strict";
 import { test } from "node:test";
+import { readChatStoreSrc } from "../../scripts/chatStoreSrc.ts";
 
 const srcDir = join(import.meta.dirname, "..");
-const read = (p: string) => readFileSync(join(srcDir, p), "utf8");
+const read = (p: string) =>
+  p === "stores/useChatStore.ts"
+    ? readChatStoreSrc(join(srcDir, p))
+    : readFileSync(join(srcDir, p), "utf8");
 
 test("onMessage：remind 先分流 nudge，其余才走强提醒/普通通知", () => {
   const store = read("stores/useChatStore.ts");

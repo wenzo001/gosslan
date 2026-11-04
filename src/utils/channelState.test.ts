@@ -16,9 +16,13 @@ import { join } from "node:path";
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { readCommandsSrc } from "../../scripts/rustSrc.ts";
+import { readChatStoreSrc } from "../../scripts/chatStoreSrc.ts";
 
 const srcDir = join(import.meta.dirname, "..");
-const read = (p: string) => readFileSync(join(srcDir, p), "utf8");
+const read = (p: string) =>
+  p === "stores/useChatStore.ts"
+    ? readChatStoreSrc(join(srcDir, p))
+    : readFileSync(join(srcDir, p), "utf8");
 
 test("通道开关只走「一个快照 + 一个事件」（不再两份状态各自刷新）", () => {
   const store = read("stores/useAppStore.ts");

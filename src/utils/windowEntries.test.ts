@@ -13,11 +13,15 @@
  */
 import { readFileSync, existsSync, readdirSync } from "node:fs";
 import { join } from "node:path";
+import { readChatStoreSrc } from "../../scripts/chatStoreSrc.ts";
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
 const root = join(import.meta.dirname, "..", "..");
-const read = (p: string) => readFileSync(join(root, p), "utf8");
+const read = (p: string) =>
+  p.endsWith("stores/useChatStore.ts")
+    ? readChatStoreSrc(join(root, p))
+    : readFileSync(join(root, p), "utf8");
 
 /**
  * 剥掉注释后的代码。**禁止性判据（`!includes(坏东西)`）必须用它**：
