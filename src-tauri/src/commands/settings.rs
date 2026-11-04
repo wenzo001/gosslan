@@ -200,6 +200,12 @@ pub fn set_ui_language(
     #[cfg(desktop)]
     {
         crate::tray::refresh_for_language(&app);
+        // 原生窗口标题也跟语言：中文「小院儿」/ 英文 "Gosslan"。
+        // `tauri.conf.json` 里的静态标题是英文默认值；启动与每次切换语言都会推一次，
+        // 所以重启后第一次 `set_ui_language` 就会把中文环境改回「小院儿」。
+        if let Some(win) = app.get_webview_window("main") {
+            let _ = win.set_title(&state.display_name());
+        }
     }
     #[cfg(not(target_os = "macos"))]
     {
