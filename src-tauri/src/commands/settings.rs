@@ -16,6 +16,9 @@ pub struct Settings {
     pub appearance_mode: Option<String>,
     /// 背景动效："off" | "drift"（缺省视为 drift，亮/暗 α 由 CSS 管，不进设置）。
     pub ambient_motion: Option<String>,
+    /// 应用内「减少透明效果」：true = 玻璃退实底 + 动效冻结。
+    /// `None` = 用户从未显式选择（前端按系统偏好解析；WKWebView 读不到系统特性时按关闭）。
+    pub reduced_transparency: Option<bool>,
     /// 桌面通知开关（缺省视为开启——否则用户会漏消息且不知道有开关）。
     pub notify_enabled: Option<bool>,
     /// 通知是否显示消息正文（隐私：关掉后只显示"收到新消息"，锁屏/通知中心不泄内容）。
@@ -46,12 +49,13 @@ pub struct Settings {
 
 /// e2ee_enabled 键保留在 reset 链中仅为清理 v0.10.0 及更早版本的残留值；
 /// v0.11.0 起 E2EE 恒开、不可关闭，该键不再被读写。
-const SETTINGS_KEYS: [&str; 16] = [
+const SETTINGS_KEYS: [&str; 17] = [
     "theme_color",
     "font_family",
     "dark_mode",
     "appearance_mode",
     "ambient_motion",
+    "reduced_transparency",
     "notify_enabled",
     "notify_show_content",
     "remind_sound",
@@ -104,6 +108,13 @@ pub fn settings_patch_values(db: &rusqlite::Connection, changed: &[&str]) -> ser
                 map.insert(
                     key.to_string(),
                     json!(db::get_setting(db, "ambient_motion")),
+                );
+            }
+            // 与 get_settings 同口径：None = 从未显式选择（前端继续跟随系统）。
+            "reducedTransparency" => {
+                map.insert(
+                    key.to_string(),
+                    json!(db::get_config_bool_opt(db, "reduced_transparency")),
                 );
             }
             // 通知两项的缺省是**开**（与 `get_settings` 同口径），否则"没设置过"会被应用成关闭
@@ -299,6 +310,8 @@ pub async fn get_settings(state: State<'_, Arc<AppState>>) -> Result<Settings, S
             dark_mode: db::get_config_bool_opt(&dbc, "dark_mode"),
             appearance_mode: db::get_setting(&dbc, "appearance_mode"),
             ambient_motion: db::get_setting(&dbc, "ambient_motion"),
+            // 缺省 None：用户没选过时由前端按系统偏好解析，不把系统值固化进库。
+            reduced_transparency: db::get_config_bool_opt(&dbc, "reduced_transparency"),
             // 通知默认开启、默认显示正文：缺省时按 `Some(true)`，旧记录与未设置都能有合理行为。
             notify_enabled: db::get_config_bool_opt(&dbc, "notify_enabled").or(Some(true)),
             notify_show_content: db::get_config_bool_opt(&dbc, "notify_show_content").or(Some(true)),
@@ -379,6 +392,11 @@ pub async fn save_settings(
                 persist_setting(&s, &dbc, "ambient_motion", v)?;
                 changed.push("ambientMotion");
             }
+        }
+        // `None` = 用户没选过（前端继续跟随系统）⇒ 不落库，避免把系统值固化成显式选择。
+        if let Some(v) = settings.reduced_transparency {
+            persist_setting(&s, &dbc, "reduced_transparency", if v { "1" } else { "0" })?;
+            changed.push("reducedTransparency");
         }
         if let Some(v) = settings.notify_enabled {
             persist_setting(&s, &dbc, "notify_enabled", if v { "1" } else { "0" })?;

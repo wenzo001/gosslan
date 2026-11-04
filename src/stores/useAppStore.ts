@@ -24,6 +24,12 @@ import {
   saveStoredAmbient,
   type AmbientSetting,
 } from "@/utils/ambient";
+import {
+  applyReducedTransparency,
+  readStoredReducedTransparency,
+  resolveReducedTransparency,
+  saveStoredReducedTransparency,
+} from "@/utils/reducedTransparency";
 import { DEFAULT_CHAT_STYLE, fontPx, parsePeerStyle, type ChatStyleConfig } from "@/utils/chatStyle";
 import {
   t,
@@ -83,7 +89,9 @@ export const useAppStore = defineStore("app", () => {
   /**
    * 背景动效档位：`off` / `drift`（默认 drift，见 docs/design-language/ambient-motion.md）。
    * 启动值先读 localStorage（与主题色/字体同一套"先本地后后端"），后端快照到了再覆盖。
-   * reduce / reduced-transparency 不在这里改档位 —— 由 CSS 冻结或隐藏，避免两份真相。
+   * 系统级 reduce / reduced-transparency 不在这里改档位 —— 由 CSS 冻结或隐藏，避免两份真相。
+   * **应用内**「减少透明效果」例外：WKWebView 读不到系统特性，由 `reducedTransparency` 驱动
+   * ambient 进 `static`（冻结到初始帧，不隐藏）。
    */
   const ambientMotion = ref<AmbientSetting>(readStoredAmbient());
 
@@ -91,6 +99,22 @@ export const useAppStore = defineStore("app", () => {
     ambientMotion.value = v;
     saveStoredAmbient(v);
     applyAmbientSetting(v);
+    void persistSettings();
+  }
+
+  /**
+   * 「减少透明效果」的**显式选择**：`null` = 从未选过（跟随系统）。
+   * 展示值与生效值由 `reducedTransparency`（computed）解析；显式值才落库，
+   * 未选过时保持 `null`，重启后继续跟随系统（不会把系统值"固化"成用户选择）。
+   */
+  const reducedTransparencyExplicit = ref<boolean | null>(readStoredReducedTransparency());
+  const reducedTransparency = computed(() => resolveReducedTransparency(reducedTransparencyExplicit.value));
+
+  /** 设置页的两档切换：写显式值 → 立即应用到 DOM（实底 + 冻结）→ 落库。 */
+  function setReducedTransparency(v: boolean) {
+    reducedTransparencyExplicit.value = v;
+    saveStoredReducedTransparency(v);
+    applyReducedTransparency(v);
     void persistSettings();
   }
   /**
@@ -566,6 +590,8 @@ export const useAppStore = defineStore("app", () => {
         darkMode: dark.value,
         appearanceMode: appearance.value,
         ambientMotion: ambientMotion.value,
+        // 只有用户显式选过才写（null = 跟随系统；后端不落库）。
+        reducedTransparency: reducedTransparencyExplicit.value,
         notifyEnabled: notifyEnabled.value,
         notifyShowContent: notifyShowContent.value,
         remindSound: remindSound.value,
@@ -736,6 +762,14 @@ export const useAppStore = defineStore("app", () => {
         ambientMotion.value = v;
         saveStoredAmbient(v);
         applyAmbientSetting(v);
+      }
+      // 减少透明效果（null = 从未显式选择，继续跟随系统）。与 ambient 一样走同一段应用逻辑，
+      // 否则"设置窗口里打开开关、主窗口玻璃仍是半透明"会是一处长期漂移。
+      if (has("reducedTransparency")) {
+        const explicit = typeof s.reducedTransparency === "boolean" ? s.reducedTransparency : null;
+        reducedTransparencyExplicit.value = explicit;
+        saveStoredReducedTransparency(explicit);
+        applyReducedTransparency(resolveReducedTransparency(explicit));
       }
       // 通知偏好（null = 未设置，按默认 true 处理）
       if (s.notifyEnabled != null) notifyEnabled.value = s.notifyEnabled;
@@ -980,6 +1014,10 @@ export const useAppStore = defineStore("app", () => {
     ambientMotion.value = "drift";
     storageRemove(AMBIENT_STORAGE_KEY);
     applyAmbientSetting("drift");
+    // 「减少透明效果」也回到"从未选择"（继续跟随系统），并把 DOM 上的实底降级撤掉。
+    reducedTransparencyExplicit.value = null;
+    saveStoredReducedTransparency(null);
+    applyReducedTransparency(resolveReducedTransparency(null));
     storageRemove(THEME_KEY);
     storageRemove(FONT_KEY);
     storageRemove(APPEARANCE_STORAGE_KEY);
@@ -1135,6 +1173,9 @@ export const useAppStore = defineStore("app", () => {
     setAppearance,
     ambientMotion,
     setAmbientMotion,
+    /** 减少透明效果（生效值：显式选择优先，否则跟随系统） */
+    reducedTransparency,
+    setReducedTransparency,
     notifyEnabled,
     notifyShowContent,
     remindSound,

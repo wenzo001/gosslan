@@ -27,6 +27,7 @@ import { api } from "@/api";
 import { currentLocale, t } from "@/i18n";
 import { copyText } from "@/utils/crashReport";
 import { installAmbient } from "@/utils/ambient";
+import { installReducedTransparency } from "@/utils/reducedTransparency";
 import { vPressRipple } from "@/directives/pressRipple";
 
 // ---------------- 前端异常上报（必须在挂载之前注册） ----------------
@@ -188,6 +189,9 @@ export function createWindowApp(root: Component): App {
     reportFrontendError("vue", `${e.message} [${info}]\n${e.stack ?? ""}`);
   };
   app.use(createPinia());
+  // 「减少透明效果」先于动效层应用：它决定 ambient 是 drift 还是冻结的 static，
+  // 晚一步会让首帧先动一下再冻住（闪一帧色雾）。两个都必须排在 mount 之前。
+  installReducedTransparency();
   // 环境动态层在每个窗口各装一次（主/设置/日志都走这里）。必须在 mount 之前：
   // 它要排在 #app 前面，晚一帧插进去会让首屏闪一下底色。
   installAmbient();

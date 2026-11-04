@@ -186,7 +186,7 @@ function onCustomColor(e: Event) {
 
     <template #footer>
       <div class="flex justify-end gap-2">
-        <SecondaryBtn outline @click="emit('close')">
+        <SecondaryBtn variant="outline" @click="emit('close')">
           {{ t("common.cancel") }}
         </SecondaryBtn>
         <PrimaryBtn type="button" data-avatar-apply :disabled="saving" @click="emit('apply', selection)">

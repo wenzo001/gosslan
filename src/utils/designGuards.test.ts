@@ -48,6 +48,7 @@ import {
   findDirectSemanticIconImports,
   findHandWrittenSolidDangerButtons,
   findHandWrittenCancelButtons,
+  findHandWrittenOutlineButtons,
   sharedButtonChromeIssues,
   findPrimaryFillWithoutOnPrimary,
   findNativeSelect,
@@ -3535,6 +3536,78 @@ test("共享按钮：flex 居中 + 四档尺寸齐全", () => {
   const dialog = readFileSync(join(import.meta.dirname, "..", "components", "ui", "ConfirmDialog.vue"), "utf8");
   assert.ok(dialog.includes("<SecondaryBtn"), "ConfirmDialog 的取消键必须用 SecondaryBtn");
 });
+
+// ---------------- 次要·最弱档（outline）只走 SecondaryBtn（2026-11-05） ----------------
+
+test("outline：旧布尔属性 / 手写最弱档 → 报；variant 用法 → 放行（夹具）", () => {
+  const legacyProp = `<template><SecondaryBtn outline>取消</SecondaryBtn></template>`;
+  assert.equal(findHandWrittenOutlineButtons(legacyProp).length, 1, "裸 outline 属性必须被抓到");
+
+  const handWritten = `<template><button class="rounded-[var(--gosslan-radius-md)] border border-[var(--gosslan-border)] bg-[var(--gosslan-field)] px-3 py-1.5">取消</button></template>`;
+  assert.equal(findHandWrittenOutlineButtons(handWritten).length, 1, "手写描边+弱底色必须被抓到");
+
+  const ok = `<template><SecondaryBtn variant="outline">取消</SecondaryBtn></template>`;
+  assert.deepEqual(findHandWrittenOutlineButtons(ok), [], "走组件的 variant 不该被当成手写");
+
+  const inputNotButton = `<template><input class="border border-[var(--gosslan-border)] bg-[var(--gosslan-field)]" /></template>`;
+  assert.deepEqual(findHandWrittenOutlineButtons(inputNotButton), [], "输入框的描边+弱底色不归这条管");
+});
+
+test("outline：真实树只剩 SecondaryBtn（分母现算）", () => {
+  const srcDir = join(import.meta.dirname, "..");
+  const files = collectVueFiles(srcDir);
+  assert.ok(files.length > 50, `只扫到 ${files.length} 份 .vue ⇒ 遍历路径大概错了，这条绿不算数`);
+
+  const bad: string[] = [];
+  for (const f of files) {
+    if (f.endsWith("components/ui/SecondaryBtn.vue")) continue;
+    for (const issue of findHandWrittenOutlineButtons(readFileSync(f, "utf8"))) {
+      bad.push(`${f.replace(srcDir + "/", "")}:${issue.line}  ${issue.message}`);
+    }
+  }
+  assert.deepEqual(bad, [], `以下位置仍在手写/旧写法使用 outline 档：\n${bad.join("\n")}`);
+  console.log(`· outline 分母：扫 ${files.length} 份 .vue（排除 SecondaryBtn 自身），手写 0 处`);
+
+  // 语义表恒为三种：outline 只是 secondary 的一个变体档，不许另起第四个按钮组件。
+  const btn = readFileSync(join(srcDir, "components", "ui", "SecondaryBtn.vue"), "utf8");
+  assert.match(btn, /variant\?:\s*"ghost"\s*\|\s*"outline"/, "SecondaryBtn 的 variant 只能是 ghost / outline");
+  assert.doesNotMatch(btn, /outline\?:\s*boolean/, "旧布尔属性 outline 必须已移除");
+  assert.match(btn, /bg-\[var\(--gosslan-field\)\]/, "最弱档必须有弱底色（用户 2026-11-05 批准的外观变化）");
+});
+
+// ---------------- 死代码 .elevated 与「减少透明」复用实底 token ----------------
+
+test(".elevated 不得回归（含反例自证）", () => {
+  const cssPath = join(import.meta.dirname, "..", "style.css");
+  const css = readFileSync(cssPath, "utf8");
+  assert.ok(css.includes(".glass-1 {"), "style.css 读取失败/路径漂了 ⇒ 这条绿不算数");
+  const re = /^\.elevated\s*\{/m;
+  assert.equal(re.test(css), false, ".elevated 已无消费方（全仓零引用），删掉后不要再加回来");
+  // 反例自证：把规则加回来必须判红，避免这条判据空转。
+  assert.equal(re.test(".elevated {\n  box-shadow: var(--gosslan-shadow);\n}"), true);
+});
+
+test("减少透明：应用内开关必须复用系统降级的实底 token（不另造一套）", () => {
+  const css = readFileSync(join(import.meta.dirname, "..", "style.css"), "utf8");
+  const at = css.indexOf('html[data-reduced-transparency="true"] {');
+  assert.ok(at > 0, "缺少应用内开关的样式块 ⇒ WKWebView 上开关不会退实底");
+  const block = css.slice(at, css.indexOf("}", at) + 1);
+  for (const n of [1, 2, 3]) {
+    assert.match(
+      block,
+      new RegExp(`--gosslan-glass-${n}-bg:\\s*var\\(--gosslan-glass-${n}-fallback\\)`),
+      `玻璃 ${n} 档必须复用已有的实底 token（--gosslan-glass-${n}-fallback），不许另写颜色`,
+    );
+    assert.match(
+      block,
+      new RegExp(`--gosslan-glass-${n}-blur:\\s*none`),
+      `玻璃 ${n} 档必须去模糊`,
+    );
+  }
+  // 反例自证：写死 rgba 就等于另造一套，必须判红。
+  assert.equal(/--gosslan-glass-1-bg:\s*rgba/.test(block), false);
+});
+
 
 // ---------------- ㊶ 实底危险按钮只走 DangerBtn ----------------
 

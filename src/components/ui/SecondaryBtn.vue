@@ -1,6 +1,11 @@
 <script setup lang="ts">
 /**
- * 次要操作按钮（Secondary）—— 幽灵底 + 悬停浅填充；`outline` 变体加一圈描边。
+ * 次要操作按钮（Secondary）—— 幽灵底 + 悬停浅填充；`variant="outline"` 是
+ * **次要·最弱档**（弱底色 + 描边），不是第四种语义。
+ *
+ * 语义表恒为三种：primary（PrimaryBtn）/ secondary（本组件）/ danger（DangerBtn）。
+ * `outline` 只是本组件内部的一个变体档，不允许在组件外手写同类样式
+ * （`designGuards` 的「手写 outline 按钮」判据钉住这件事）。
  *
  * 为什么需要它：确认框里的「取消」、转发方式二选一里的次选、成员面板的「取消」……
  * 这些**文本按钮**此前在 12 处各写一遍，尺寸三档（px-3/py-1.5、px-4/py-2、px-4/py-1.5）
@@ -24,10 +29,13 @@ withDefaults(
     disabled?: boolean;
     ariaLabel?: string;
     type?: "button" | "submit";
-    /** 描边变体（成员面板那类"次要但要看得见边界"的场合）。 */
-    outline?: boolean;
+    /**
+     * `ghost`（默认）= 只有悬停浅填充；`outline` = 次要·最弱档（弱底色 + 描边）。
+     * ⚠️ 只有这两个值：不要把次要语义再拆成第四种按钮组件。
+     */
+    variant?: "ghost" | "outline";
   }>(),
-  { size: "default", shrink: false, disabled: false, type: "button", outline: false },
+  { size: "default", shrink: false, disabled: false, type: "button", variant: "ghost" },
 );
 </script>
 
@@ -38,7 +46,7 @@ withDefaults(
     :aria-label="ariaLabel"
     class="tap-safe inline-flex items-center justify-center gap-1.5 whitespace-nowrap rounded-[var(--gosslan-radius-md)] text-[var(--gosslan-text)] transition hover:bg-[var(--gosslan-hover)] disabled:opacity-50"
     :class="[
-      outline ? 'border border-[var(--gosslan-border)]' : '',
+      variant === 'outline' ? 'border border-[var(--gosslan-border)] bg-[var(--gosslan-field)]' : '',
       shrink ? 'shrink-0' : '',
       size === 'xs' ? 'px-2.5 py-1 text-meta' : '',
       size === 'dense' ? 'px-3 py-2 text-body' : '',

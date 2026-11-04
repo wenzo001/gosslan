@@ -778,6 +778,8 @@ export interface AppSettings {
   appearanceMode: string | null;
   /** 背景动效："off" | "drift"（缺省视为 drift）。 */
   ambientMotion: string | null;
+  /** 减少透明效果：true = 玻璃退实底 + 动效冻结；null = 从未显式选择（跟随系统）。 */
+  reducedTransparency?: boolean | null;
   /** 桌面通知开关（null 视为开启）。 */
   notifyEnabled: boolean | null;
   /** 通知是否显示消息正文（null 视为显示；关掉后只提示"收到新消息"，保护锁屏隐私）。 */

@@ -2304,6 +2304,55 @@ export function findHandWrittenCancelButtons(src: string): GuardIssue[] {
 }
 
 /**
+ * 检查「次要·最弱档（outline）」是否被绕开组件手写，以及旧布尔属性是否回流。
+ *
+ * 设计规范（用户 2026-11-05 批准）：`SecondaryBtn` 的 `outline` 正式并入
+ * 「3 语义 × 4 尺寸」表，作为 **secondary 的最弱档**（弱底色 + 描边），
+ * 不再是散落各处的手写样式。语义表恒为 primary / secondary / danger 三种。
+ *
+ * 判据：
+ *   1. `<SecondaryBtn outline>` 这类旧布尔属性 ⇒ 报（组件已改成 `variant="outline"`）；
+ *   2. `<button>` 的静态 class 同时含 `border` 与 `bg-[var(--gosslan-field)]` ⇒ 报
+ *      （这就是最弱档的外观，只能在 SecondaryBtn 里出现）。
+ * HTML 注释先抹成空格；按钮不嵌套，配对按最近的 `</button>`（同取消键那条）。
+ */
+export function findHandWrittenOutlineButtons(src: string): GuardIssue[] {
+  const cleaned = src.replace(/<!--[\s\S]*?-->/g, (m) => m.replace(/[^\n]/g, " "));
+  const out: GuardIssue[] = [];
+
+  for (const m of cleaned.matchAll(/<SecondaryBtn\b([\s\S]*?)>/g)) {
+    const attrs = m[1];
+    if (/\boutline\b/.test(attrs) && !/variant\s*=\s*["']outline["']/.test(attrs)) {
+      out.push({
+        line: lineAt(cleaned, m.index ?? 0),
+        message:
+          "SecondaryBtn 的描边档已改为 `variant=\"outline\"`（次要·最弱档）；" +
+          "裸 `outline` 布尔属性已移除，写了不会生效。",
+      });
+    }
+  }
+
+  for (const m of cleaned.matchAll(/<button\b([\s\S]*?)>/g)) {
+    const start = m.index ?? 0;
+    const end = cleaned.indexOf("</button>", start + m[0].length);
+    if (end < 0) continue;
+    const classMatch = m[1].match(/\bclass="([^"]*)"/);
+    const classes = classMatch ? classMatch[1].split(/\s+/).filter(Boolean) : [];
+    const hasBorder = classes.some((c) => c === "border" || c.startsWith("border-"));
+    const hasFieldBg = classes.includes("bg-[var(--gosslan-field)]");
+    if (hasBorder && hasFieldBg) {
+      out.push({
+        line: lineAt(cleaned, start),
+        message:
+          "「次要·最弱档」的外观（描边 + 弱底色）只能在 `components/ui/SecondaryBtn.vue` 里，" +
+          "请改用 `<SecondaryBtn variant=\"outline\">`；不要在组件外手写。",
+      });
+    }
+  }
+  return out.sort((a, b) => a.line - b.line);
+}
+
+/**
  * 三个共享按钮必须用 flex 居中，且三档尺寸逐字相同。
  *
  * 为什么钉源码而不是只钉「用了组件」：垂直居中靠 `items-center`/`justify-center` 实现，
