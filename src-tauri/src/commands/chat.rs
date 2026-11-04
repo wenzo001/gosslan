@@ -1127,7 +1127,7 @@ pub async fn resend_message(
             "这种消息不支持原地重发",
         ));
     }
-    if !matches!(msg.status.as_str(), "failed" | "cancelled") {
+    if !crate::db::message_can_resend(&msg.status) {
         return Err(crate::error_codes::coded(
             crate::error_codes::RESEND_NOT_FAILED,
             "这条消息不是失败/已取消状态，不需要重发",

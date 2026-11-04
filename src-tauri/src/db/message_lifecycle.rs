@@ -27,6 +27,65 @@ fn direct_cancel_verdict(status: Option<&str>) -> DirectCancelVerdict {
     }
 }
 
+// ---------------- 迟到写被拒的门族 ----------------
+//
+// 四扇门（`set_message_status` / `ack_delivered` / 已读回执 / 重发）各自要排掉一组状态。
+// 集合写在这一个文件里，SQL 片段由 `sql_not_in` / `sql_in` 生成 —— 生成出来的语句与
+// 原先手写的逐字等价（SQLite 只认语义，不认换行缩进）。特征测试
+// `cascade_tests::late_write_door_family_pins_every_status` 逐状态钉住每扇门的结论，
+// 改这里的顺序或成员都会在那里红。
+
+/// `set_message_status` 的守卫：硬终态 + 不可被迟到写撤销的软终态。
+const LATE_WRITE_BLOCKED: [&str; 6] = [
+    "read",
+    "delivered",
+    "recalled",
+    "cancelled",
+    "partial_cancelled",
+    "failed",
+];
+
+/// `cancel_queued_message` 的状态守卫：重复取消是幂等，所以 `cancelled` 不在里面；
+/// `failed` 也不在（用户仍可把一条失败的消息定住）。顺序与原手写一致。
+const CANCEL_BLOCKED: [&str; 4] = ["delivered", "read", "recalled", "cancelled"];
+
+/// `ack_delivered` 的守卫：Ack 只在硬终态面前让位。
+const ACK_BLOCKED: [&str; 3] = ["read", "delivered", "recalled"];
+
+/// 已读回执的守卫：额外排掉本端已收口的行 —— 一条没发出去的消息不可能被对方读过。
+const READ_RECEIPT_BLOCKED: [&str; 5] = [
+    "read",
+    "failed",
+    "recalled",
+    "cancelled",
+    "partial_cancelled",
+];
+
+/// 「整条重发」放行的状态集合：只有本端判失败 / 被用户取消的行能原身份重投。
+const RESEND_ALLOWED: [&str; 2] = ["failed", "cancelled"];
+
+fn sql_not_in(column: &str, statuses: &[&str]) -> String {
+    format!("{column} NOT IN ({})", quote_statuses(statuses))
+}
+
+fn sql_in(column: &str, statuses: &[&str]) -> String {
+    format!("{column} IN ({})", quote_statuses(statuses))
+}
+
+fn quote_statuses(statuses: &[&str]) -> String {
+    statuses
+        .iter()
+        .map(|s| format!("'{s}'"))
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+/// 这条消息能不能整条重发。命令层的「能重发吗」与 `requeue_message_for_resend`
+/// 的写前判定共用同一份（2026-11-04 起）。
+pub(crate) fn message_can_resend(status: &str) -> bool {
+    RESEND_ALLOWED.contains(&status)
+}
+
 // ---------------- 群消息的取消（每成员台账） ----------------
 
 /// 群台账里与「还能不能取消」有关的四类行数。

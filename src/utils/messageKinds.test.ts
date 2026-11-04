@@ -628,10 +628,25 @@ test("跨语言契约：已读推进的排除清单两侧逐项一致（DUP-09�
   assert.ok(tsList, "找不到 READ_PROMOTE_BLOCKED（判据会空转）");
   const tsItems = [...tsList[1].matchAll(/"([a-z_]+)"/g)].map((m) => m[1]).sort();
 
-  const rs = readFileSync(join(here, "../../src-tauri/src/db/read_receipts.rs"), "utf8");
-  const rsList = /status NOT IN \(([^)]*)\)/.exec(rs);
-  assert.ok(rsList, "找不到 SQL 里的 NOT IN 清单（判据会空转）");
-  const rsItems = [...rsList[1].matchAll(/'([a-z_]+)'/g)].map((m) => m[1]).sort();
+  // 清单本体在 `message_lifecycle.rs`（2026-11-04 从 read_receipts.rs 的 SQL 里搬出来，
+  // 两扇门共用一份集合）。锚点必须跟着搬：继续只看 SQL 里有没有字面清单，重构后就空转了。
+  const rs = readFileSync(
+    join(here, "../../src-tauri/src/db/message_lifecycle.rs"),
+    "utf8",
+  );
+  const rsList = /const READ_RECEIPT_BLOCKED: \[&str; \d+\] = \[([^\]]*)\]/.exec(rs);
+  assert.ok(rsList, "找不到 READ_RECEIPT_BLOCKED（判据会空转）");
+  const rsItems = [...rsList[1].matchAll(/"([a-z_]+)"/g)].map((m) => m[1]).sort();
+  // 只声明常数、SQL 却另写一份，同样会让这条对账失去意义 —— 钉住它真的被那扇门用上。
+  const receipts = readFileSync(
+    join(here, "../../src-tauri/src/db/read_receipts.rs"),
+    "utf8",
+  );
+  assert.match(
+    receipts,
+    /sql_not_in\("status", &READ_RECEIPT_BLOCKED\)/,
+    "read_receipts.rs 必须用这份清单（否则常数只是摆设）",
+  );
 
   assert.ok(tsItems.length >= 4 && rsItems.length >= 4, "分母太小 ⇒ 解析器坏了");
   assert.deepEqual(tsItems, rsItems, "两侧的已读排除清单必须逐项一致");

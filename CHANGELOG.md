@@ -14,6 +14,16 @@
 
 ## [Unreleased]
 
+## [5.17.27] - 2026-11-04
+
+### 内部重构（无用户可感知变化）
+
+- 2B 第三笔：四扇「迟到写被拒」的门（`set_message_status` / `ack_delivered` /
+  已读回执 / 重发）的状态集合收进 `db/message_lifecycle.rs`，SQL 由同一份集合生成；
+  命令层的「能重发吗」与 `requeue_message_for_resend` 共用 `message_can_resend`。
+  `NOT IN (...)` 的成员与顺序逐字不变，特征测试
+  `late_write_door_family_pins_every_status` 钉住 8 个状态 × 4 扇门的结论。
+
 ## [5.17.24] - 2026-11-04
 
 ### 内部重构（无用户可感知变化）

@@ -801,7 +801,8 @@ pub fn get_favorite_source(
 /// 队列表），界面却显示已发出。`failed` 同理：它已由清扫器收口，迟到写不许把它推回 `sent`。
 /// 重发链走 `requeue_message_for_resend`（同一事务把状态推到 `sending`）⇒ 不受这条影响。
 ///
-/// 守卫只有一份（`status NOT IN (...)`），两扇门共用：
+/// 守卫只有一份（`status NOT IN (...)`，集合 = `message_lifecycle::LATE_WRITE_BLOCKED`），
+/// 两扇门共用：
 ///  · [`set_message_status`] —— 只推进状态，**把原因码归零**（新的状态没有"上次为什么失败"要说）；
 ///  · [`set_message_failed`] —— 落 `failed` 并**同时写下原因**。
 ///
@@ -825,13 +826,12 @@ fn set_message_status_with_code(
     status: &str,
     fail_code: Option<&str>,
 ) -> Result<usize> {
-    let rows = conn.execute(
+    let sql = format!(
         "UPDATE messages SET status = ?2, fail_code = ?3
-         WHERE msg_id = ?1
-           AND status NOT IN ('read', 'delivered', 'recalled',
-                              'cancelled', 'partial_cancelled', 'failed')",
-        params![msg_id, status, fail_code],
-    )?;
+         WHERE msg_id = ?1 AND {}",
+        sql_not_in("status", &LATE_WRITE_BLOCKED)
+    );
+    let rows = conn.execute(&sql, params![msg_id, status, fail_code])?;
     Ok(rows)
 }
 
@@ -923,12 +923,12 @@ pub fn cancel_queued_message(conn: &Connection, msg_id: &str) -> Result<MessageC
     // 队列行必须在**状态之前**删：先写 cancelled 再删的话，中间那一刻的 Ack 仍能命中
     // outbox 行并把状态推成 delivered（两把锁之间没有别的事务，但顺序让结论更难读）。
     tx.execute("DELETE FROM outbox WHERE msg_id = ?1", params![msg_id])?;
-    let changed = tx.execute(
+    let sql = format!(
         "UPDATE messages SET status = 'cancelled'
-          WHERE msg_id = ?1
-            AND status NOT IN ('delivered', 'read', 'recalled', 'cancelled')",
-        params![msg_id],
-    )?;
+          WHERE msg_id = ?1 AND {}",
+        sql_not_in("status", &CANCEL_BLOCKED)
+    );
+    let changed = tx.execute(&sql, params![msg_id])?;
     tx.commit()?;
     // 已经是 cancelled（重复点）也算成功：幂等，界面上它就是"已取消"。
     let _ = changed;
@@ -965,7 +965,7 @@ pub fn requeue_message_for_resend(
     let Some(status) = status else {
         return Ok(0);
     };
-    if !matches!(status.as_str(), "failed" | "cancelled") {
+    if !message_can_resend(&status) {
         return Ok(0);
     }
     // `INSERT OR IGNORE`：极少数情况下队列行还在（比如心跳 flush 与重发同时到达），
@@ -974,11 +974,12 @@ pub fn requeue_message_for_resend(
         "INSERT OR IGNORE INTO outbox(msg_id, peer_id, payload, created_at) VALUES(?1, ?2, ?3, ?4)",
         params![msg_id, peer_id, payload, now_ms()],
     )?;
-    let changed = tx.execute(
+    let sql = format!(
         "UPDATE messages SET status = 'sending'
-          WHERE msg_id = ?1 AND status IN ('failed', 'cancelled')",
-        params![msg_id],
-    )?;
+          WHERE msg_id = ?1 AND {}",
+        sql_in("status", &RESEND_ALLOWED)
+    );
+    let changed = tx.execute(&sql, params![msg_id])?;
     tx.commit()?;
     Ok(changed)
 }
@@ -1008,12 +1009,12 @@ pub fn ack_delivered(conn: &Connection, msg_id: &str, peer_id: &str) -> Result<b
     if !expected {
         return Ok(false);
     }
-    tx.execute(
+    let sql = format!(
         "UPDATE messages SET status = 'delivered'
-          WHERE msg_id = ?1
-            AND status NOT IN ('read', 'delivered', 'recalled')",
-        params![msg_id],
-    )?;
+          WHERE msg_id = ?1 AND {}",
+        sql_not_in("status", &ACK_BLOCKED)
+    );
+    tx.execute(&sql, params![msg_id])?;
     tx.execute("DELETE FROM outbox WHERE msg_id = ?1", params![msg_id])?;
     tx.commit()?;
     Ok(true)
