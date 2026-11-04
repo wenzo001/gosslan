@@ -658,8 +658,10 @@ CASES: list[Case] = [
         "     两条都钉住才谈得上「断在哪一段就报哪一段」。",
         file=ROOT / "src" / "components" / "chat" / "MessageComposer.vue",
         injections=[(
-            'emit("send", { content: text, kind: k, mentionIds });',
-            'emit("send", { content: text, kind: k });',
+            # 锚点随 5.18.9 的 lang 一起搬（"断"的语义仍是漏掉 mentionIds）；
+            # 搬的时候跑了 --list，确认注入落得上去。
+            'emit("send", { content: text, kind: k, mentionIds, lang: codeLangOut });',
+            'emit("send", { content: text, kind: k, lang: codeLangOut });',
         )],
         cmd=node_test("src/utils/designGuards.test.ts"),
         cwd=ROOT,
