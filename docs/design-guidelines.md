@@ -886,6 +886,9 @@ JS 侧：任何 WAAPI / `requestAnimationFrame` / 库驱动的动画必须先读
 3. **占位稳定**：过渡期间元素占位尺寸与父容器布局不变。判据是**前后
    `getBoundingClientRect()` 一致**，不是"看起来差不多"。所以状态层必须在固定尺寸的
    占位里绝对定位叠放；不同状态图标本身的墨迹大小可以不同，**占位不许跟着变**。
+   消息状态图标的**占位列宽 16px 为固定契约**（`.receipt-slot` 的 `h-4 w-4`，由
+   [`receiptMotion.test.ts`](file:///Users/wendongfu/Documents/code/gosslan/src/utils/receiptMotion.test.ts)
+   钉住）—— 不要为了"看着更松/更紧"来回改这个数，它同时决定气泡宽度是否跳动。
 4. **可降级**：`prefers-reduced-motion: reduce` 下只保留淡入淡出，**不做缩放/位移**
    （见 §11.3.4 / §14.10 的 reduce 清单）。
 5. **不叠加**：同一元素同一时刻只有一个入场动画；状态快速连变要能被后续状态**就地打断并
@@ -937,16 +940,41 @@ JS 侧：任何 WAAPI / `requestAnimationFrame` / 库驱动的动画必须先读
 | 浮层淡入淡出（表情面板 / 消息时间 / 回应明细 / 附件菜单） | `.gosslan-popover-in`（[style.css](file:///Users/wendongfu/Documents/code/gosslan/src/style.css#L978-L986)）+ 使用点 [MessageItem.vue](file:///Users/wendongfu/Documents/code/gosslan/src/components/MessageItem.vue#L1754) | 否：**`opacity` 单属性**过渡，`data-state` 只随开关变，元素由 Presence 生命周期管理、不重建节点 | 否（只动 `opacity`；`transform` 属于 floating-ui 定位层，碰了会错位） | 低 |
 | 右键 / 下拉菜单 | `.gosslan-menu[data-state="open"]`（[style.css](file:///Users/wendongfu/Documents/code/gosslan/src/style.css#L1487-L1491)）+ 使用点 [ContextMenu.vue](file:///Users/wendongfu/Documents/code/gosslan/src/components/ContextMenu.vue#L83)、[FriendContextMenu.vue](file:///Users/wendongfu/Documents/code/gosslan/src/components/conversation/FriendContextMenu.vue#L8)、[GroupTasksBoard.vue](file:///Users/wendongfu/Documents/code/gosslan/src/components/GroupTasksBoard.vue#L1720)、[TodoPickField.vue](file:///Users/wendongfu/Documents/code/gosslan/src/components/TodoPickField.vue#L87) | 否：**`opacity` 单属性**、开合各播一次，不重建节点 | 否（`min-width: 168px` 固定，`opacity` 不参与布局） | 低 |
 | 骨架与加载态 | `boot-breathe` 无限循环（[skeleton.css](file:///Users/wendongfu/Documents/code/gosslan/src/boot/skeleton.css#L220) 及 241-249）、`boot-hide` 的 opacity 过渡（[skeleton.css](file:///Users/wendongfu/Documents/code/gosslan/src/boot/skeleton.css#L70-L73)）、`.spinner-icon` 旋转（[style.css](file:///Users/wendongfu/Documents/code/gosslan/src/style.css#L1473)） | 循环类，非入场；不存在"重播" | 否 | 低 |
-| 列表项增删 | 消息行**禁止**逐项进场（[designGuards.test.ts](file:///Users/wendongfu/Documents/code/gosslan/src/utils/designGuards.test.ts#L5186)）；motion-v 只用于共享布局药丸 `layout-id`（[NavRail.vue](file:///Users/wendongfu/Documents/code/gosslan/src/components/NavRail.vue#L114-L182) 的 114/137/161/182、[ResponsiveLayout.vue](file:///Users/wendongfu/Documents/code/gosslan/src/layouts/ResponsiveLayout.vue#L1105-L1168) 的 1105/1126/1149/1168、[GroupTasksBoard.vue](file:///Users/wendongfu/Documents/code/gosslan/src/components/GroupTasksBoard.vue#L1320)） | 否 | 药丸是共享布局 `transform`，不推列表 | 低 |
-| 设置分区切换 | `<Transition name="settings-swap" mode="out-in"> + :key="section"`（[SettingsWindow.vue](file:///Users/wendongfu/Documents/code/gosslan/src/components/SettingsWindow.vue#L238-L239)、[style.css](file:///Users/wendongfu/Documents/code/gosslan/src/style.css#L1615-L1628)） | **是**：换分区整块重建，每次都播 enter（`out-in` 中间还有空档） | **可能**：`out-in` 空档里容器没有内容 | **中**，观感改动，待确认 |
+| 列表项增删 | 消息行**禁止**逐项进场（[designGuards.test.ts](file:///Users/wendongfu/Documents/code/gosslan/src/utils/designGuards.test.ts#L5186)）；motion-v 只用于**移动端底栏**共享布局药丸（[ResponsiveLayout.vue](file:///Users/wendongfu/Documents/code/gosslan/src/layouts/ResponsiveLayout.vue#L1105-L1168) 的 1105/1126/1149/1168、[GroupTasksBoard.vue](file:///Users/wendongfu/Documents/code/gosslan/src/components/GroupTasksBoard.vue#L1320)）；**桌面 rail 已改为常驻节点 + CSS transform**（[NavRail.vue](file:///Users/wendongfu/Documents/code/gosslan/src/components/NavRail.vue)、§11.3.9） | 否 | 药丸只动 `transform`，不推列表 | 低 |
+| 设置分区切换 | 默认（同时）模式的 `<Transition name="settings-swap">` + 退场层绝对定位（[SettingsWindow.vue](file:///Users/wendongfu/Documents/code/gosslan/src/components/SettingsWindow.vue#L236-L268)、[style.css](file:///Users/wendongfu/Documents/code/gosslan/src/style.css#L1652-L1671)） | 否：不再 `out-in`、不做位移，只做 opacity 交叉淡入 | 否：新面板立即在流里占住最终高度，旧面板绝对定位淡出 | 已修（2026-11-04） |
 | 整页进场（移动端下钻/返回） | `page-slide*`（[ResponsiveLayout.vue](file:///Users/wendongfu/Documents/code/gosslan/src/layouts/ResponsiveLayout.vue#L1194-L1204) 的 1194/1199/1204、[SettingsPanel.vue](file:///Users/wendongfu/Documents/code/gosslan/src/components/SettingsPanel.vue#L197)、[LogViewer.vue](file:///Users/wendongfu/Documents/code/gosslan/src/components/LogViewer.vue#L480)、[FavoritePanel.vue](file:///Users/wendongfu/Documents/code/gosslan/src/components/FavoritePanel.vue#L819)） | 整页导航语义，播一次（正确） | `transform` 不参与布局 | 低 |
 | 图片灯箱 | `<Transition>` 只做 opacity（[ImageLightbox.vue](file:///Users/wendongfu/Documents/code/gosslan/src/components/message/ImageLightbox.vue#L348-L353)，带 `motion-reduce:transition-none`） | 打开时淡入（正确） | 否 | 低 |
 | 新消息进场 / 抖动 / 任务闪烁 | `.gosslan-msg-enter`（资格由 `computeEnteringId()` 现算，[ChatWindow.vue](file:///Users/wendongfu/Documents/code/gosslan/src/components/ChatWindow.vue#L2017)）、`.gosslan-shake`（[ChatWindow.vue](file:///Users/wendongfu/Documents/code/gosslan/src/components/ChatWindow.vue#L1715)）、`.todo-row-flash`（[GroupTasksBoard.vue](file:///Users/wendongfu/Documents/code/gosslan/src/components/GroupTasksBoard.vue#L1214) 与 #L1323） | 否（各自按触发播一次） | 否（只 `opacity`/`transform`） | 低 |
-| 图片骨架 | 定宽 `w-52` + 预留高度（[MessageImageBubble.vue](file:///Users/wendongfu/Documents/code/gosslan/src/components/message/MessageImageBubble.vue#L128-L164)） | 否 | 无尺寸的旧消息解码完成仍会收缩一次（**已知残留**，观感） | 低-中，待确认 |
+| 图片骨架 | 定宽 `w-52` + **稳定外框**（[MessageImageBubble.vue](file:///Users/wendongfu/Documents/code/gosslan/src/components/message/MessageImageBubble.vue#L136-L167)） | 否 | 有 w/h 的消息：预留 == 真实高；**无尺寸的旧消息固定 288 外框**，解码完成不再收缩（代价：横图在框内上下留白）。无法推算比例的类别见 §11.3.9 末尾 | 已修（2026-11-04） |
 
 补录两项的判据（2026-11-04 只读）：`src/**/*.css` 全量 `animation:` 枚举 33 处，除循环/spinner 类之外，
 只有 `.gosslan-popover-in` 与 `.gosslan-menu[data-state]` 这两组"出现/消失"动效未进初版表；两者都只动
 `opacity`、都不重建节点，因此风险低，但**遗漏本身是这张表的缺陷**，已补。
+
+### 11.3.9 桌面一级导航：指示条与内容共用一条时间轴
+
+用户 2026-11-04 反馈：「点消息/通讯录时，内容已经切过去了，左边药丸才滞后滑过去」。根因是
+**指示条用 motion-v 共享布局弹簧（~250ms）**，而左列内容在同一个 tick 里已经硬切换完 ⇒
+两者不在一条时间轴上。约束如下：
+
+- **同一组常量**：药丸位移（`.rail-active-pill` 的 `transition`）与左列内容淡入
+  （`.conv-view-fade-a/-b` 的 `animation`）都只读 `--gosslan-nav-switch-duration` /
+  `--gosslan-nav-switch-ease`（[style.css](file:///Users/wendongfu/Documents/code/gosslan/src/style.css)）。**不许**分别在两处写字面量。
+- **常驻节点**：药丸是 rail 容器里的**一个**节点，位置由 `translateY(index × 52px)` 表达；
+  不用 `v-if` 按选中项重建、不用共享布局弹簧。切到不在 rail 上的状态（`me`）时只把 `opacity` 归零。
+- **快速连点就地收敛**：CSS transition 以**当前计算值**为起点改目标，不排队补播中间项。
+- **reduce 档**：药丸 `transition: none`（直接落位）；内容淡入同样受仓库全局的
+  `animation-duration: 0.01ms !important` 约束，观感等同瞬时 —— 这一档只保证"没有位移/缩放"。
+- 移动端底栏药丸仍是 motion-v `layout-id`（整页 push/pop 语义下不存在"指示条与内容分离"）；
+  若将来移动端也出现同类反馈，用同一组常量改它，而不是另起一套时长。
+
+**图片比例无法推算的类别**（固定 288 外框，不做近似）：
+
+1. **没有 `width`/`height` 元数据的旧消息**：载荷里只有 `src`，比例只能靠解码后的
+   `naturalWidth/naturalHeight` 才知道；解码前任何"估算"都是猜。
+2. **后端读不出文件头的格式**（例如 HEIC 等容器，`content` 里的 w/h 缺失）：与第 1 类同形。
+   这两类在解码完成前**无法**得到比例 ⇒ 保留固定外框（`IMAGE_BUBBLE_HEIGHT`）保证
+   `boundingClientRect` 前后一致；代价是横图在框内上下留白（稳定优先于紧凑，用户 2026-11-04 裁决）。
 
 ### 11.4 平台分层：**这一条目前是"待收口"，不是"已生效的规矩"**
 

@@ -227,6 +227,24 @@ watch(() => props.view, () => {
   plusPopup.release();
 });
 
+/**
+ * 桌面左列内容切换的淡入（2026-11-04 用户：内容已经切过去、左侧药丸才滞后滑过去）。
+ *
+ * 内容本身是 `v-if` 硬换的；这次淡入**只动 opacity**，用的是 rail 药丸同一组
+ * `--gosslan-nav-switch-*` ⇒ 两边同一帧开始、同一时长结束，中途既不会"内容已完全到位、
+ * 药丸还在路上"，也不会重播整块位移。
+ * 移动端不做：那里由整页 push/pop（`page-slide`）负责，叠一层淡入只会多一段不同步的动画。
+ * 两个类名轮流挂：快速连点时 `animation-name` 一变就重起一段（就地收敛，不排队）。
+ */
+const viewFadeStep = ref(-1);
+const viewFadeClass = computed(() =>
+  viewFadeStep.value < 0 ? "" : viewFadeStep.value % 2 === 0 ? "conv-view-fade-a" : "conv-view-fade-b",
+);
+watch(() => props.view, () => {
+  if (app.isMobile) return;
+  viewFadeStep.value += 1;
+});
+
 function onPlusOpen(open: boolean) {
   plusOpen.value = open;
   if (open) plusPopup.claim();
@@ -506,7 +524,10 @@ useEventListener(document, "click", closeFriendMenu);
          那份占位同源 —— 这里再抄一个字面量，改一处就会让另一处的最后一行被压住（判据 ㊻）。 -->
     <div
       class="flex-1 select-none overflow-y-auto"
-      :class="app.isMobile && !app.keyboardOpen ? 'pb-[calc(var(--gosslan-mobile-tabbar-h)+env(safe-area-inset-bottom))]' : ''"
+      :class="[
+        viewFadeClass,
+        app.isMobile && !app.keyboardOpen ? 'pb-[calc(var(--gosslan-mobile-tabbar-h)+env(safe-area-inset-bottom))]' : '',
+      ]"
     >
       <template v-if="view === 'chats'">
         <ConversationListItem

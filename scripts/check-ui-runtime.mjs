@@ -667,9 +667,9 @@ window.__probe = (() => {
    */
   H.installMessages = async (listJson) => {
     if (!window.__probe.vue) {
-      await H.install('/src/components/MessageItem.vue', '', JSON.stringify({
-        message: { msg_id: 'warm', sender_id: 'peer-a', kind: 'text', content: 'warm', ts: 1, conv_id: 'c', seq: 1 },
-      }));
+      // 只为拿"页面在用的那份 Vue"：别再拖 MessageItem（它的依赖图会触发 vite 依赖优化 reload，
+      // 清掉 __probe ⇒ 2026-11-04 在 delivery/railsync 段真实复现过 fetch 失败）。
+      await H.install('/src/components/UnreadBadge.vue', '', JSON.stringify({ count: 3 }));
     }
     const V = window.__probe.vue;
     if (!V) return { ok: false, why: 'no-vue' };
@@ -698,9 +698,9 @@ window.__probe = (() => {
    */
   H.installReceiptLive = async (propsJson) => {
     if (!window.__probe.vue) {
-      await H.install('/src/components/MessageItem.vue', '', JSON.stringify({
-        message: { msg_id: 'warm', sender_id: 'peer-a', kind: 'text', content: 'warm', ts: 1, conv_id: 'c', seq: 1 },
-      }));
+      // 只为拿"页面在用的那份 Vue"：别再拖 MessageItem（它的依赖图会触发 vite 依赖优化 reload，
+      // 清掉 __probe ⇒ 2026-11-04 在 delivery/railsync 段真实复现过 fetch 失败）。
+      await H.install('/src/components/UnreadBadge.vue', '', JSON.stringify({ count: 3 }));
     }
     const V = window.__probe.vue;
     if (!V) return { ok: false, why: 'no-vue' };
@@ -728,7 +728,98 @@ window.__probe = (() => {
     const slot = document.querySelector('[data-receipt]');
     return { ok: true, anims: slot ? slot.getAnimations().map((a) => a.animationName) : [] };
   };
-  /** 受控下拉（--only=select）：选中值写回 state.selectValue，才能读"触发器文案跟着变"。 */
+  /**
+   * 桌面 rail 时间轴探针（--only=railsync）：**同一 tick 改 navState + 内容替身**。
+   * 普通 install 的 props 是静态的 ⇒ 切不动 navState；这里用 live props 包装。
+   * 内容替身用**与 ConversationList 完全相同的两个类名**（a/b 交替重播），
+   * 这样能同时量"药丸位移"与"内容淡入"；真正的清单组件需要 router/store，
+   * 那部分由 motionContinuity.test.ts 钉住"左列真的挂这两个类"。
+   */
+  H.installRailLive = async (propsJson) => {
+    if (!window.__probe.vue) {
+      // 只为拿"页面在用的那份 Vue"，别再拖一个重组件（MessageItem 会触发 vite 依赖优化 reload，
+      // 清掉 __probe ⇒ 已在本段真实发生过一次 fetch 失败）。徽标是最轻的可用锚点。
+      await H.install('/src/components/UnreadBadge.vue', '', JSON.stringify({ count: 3 }));
+    }
+    const V = window.__probe.vue;
+    if (!V) return { ok: false, why: 'no-vue' };
+    const mod = await import('/src/components/NavRail.vue');
+    document.body.innerHTML = '';
+    const host = document.createElement('div');
+    host.id = 'probe-host';
+    host.style.cssText = 'display:flex;align-items:flex-start;gap:16px;padding:24px;background:#fff';
+    document.body.appendChild(host);
+    const content = document.createElement('div');
+    content.setAttribute('data-probe-content', '');
+    content.style.cssText = 'width:200px;height:420px;background:#eee';
+    host.appendChild(content);
+    const railHost = document.createElement('div');
+    host.appendChild(railHost);
+    const base = JSON.parse(propsJson || '{}');
+    const st = V.reactive({ navState: base.navState || 'chats' });
+    window.__probe.railState = (s) => { st.navState = s; };
+    let step = -1;
+    window.__probe.railSwitch = (s) => {
+      st.navState = s;
+      step += 1;
+      content.className = step % 2 === 0 ? 'conv-view-fade-a' : 'conv-view-fade-b';
+      return step;
+    };
+    const app = V.createApp({
+      setup() {
+        return () => V.h(mod.default, {
+          navState: st.navState,
+          'onUpdate:navState': (v) => { st.navState = v; },
+        });
+      },
+    });
+    if (window.__pinia) app.use(window.__pinia);
+    app.mount(railHost);
+    // NavRail 根节点是 hidden desktop:md:flex：夹具没有真实桌面断点环境，
+    // 不强制显示就量到一堆 0×0 的矩形（判据会假绿）。display 不在绑定里，重渲染不会冲掉。
+    const aside = railHost.querySelector('aside');
+    if (aside) aside.style.display = 'flex';
+    window.__probe.vue = V;
+    await V.nextTick(); await V.nextTick();
+    return { ok: true, pill: !!document.querySelector('[data-rail-pill]') };
+  };
+  /** 一次读出：药丸位置/目标位置/动画进度，内容替身的 opacity 与动画时长。 */
+  H.railRead = () => {
+    const pill = document.querySelector('[data-rail-pill]');
+    const content = document.querySelector('[data-probe-content]');
+    const active = document.querySelector('button[data-active="true"]');
+    if (!pill) return { ok: false, why: '缺 data-rail-pill（药丸被改名了？）' };
+    const p = pill.getBoundingClientRect();
+    const t = active ? active.getBoundingClientRect() : null;
+    const cs = getComputedStyle(pill);
+    const ccs = content ? getComputedStyle(content) : null;
+    return {
+      ok: true,
+      pillTop: Math.round(p.top),
+      pillH: Math.round(p.height),
+      pillTransform: cs.transform,
+      pillOpacity: cs.opacity,
+      transitionDurations: cs.transitionDuration,
+      activeIndex: active ? active.getAttribute('data-active-index') : null,
+      targetTop: t ? Math.round(t.top) : null,
+      contentOpacity: ccs ? Number(ccs.opacity) : null,
+      contentAnim: ccs ? ccs.animationDuration : null,
+      running: pill.getAnimations().length,
+    };
+  };
+  /** 按 rAF 采样一段时间（在**页面内**记时，避免 CDP 往返把 140ms 的中间态抖没）。 */
+  H.railSample = (ms) => new Promise((resolve) => {
+    const out = [];
+    const t0 = performance.now();
+    const tick = () => {
+      const r = H.railRead();
+      out.push({ t: Math.round(performance.now() - t0), ...r });
+      if (performance.now() - t0 < ms) requestAnimationFrame(tick);
+      else resolve(out);
+    };
+    requestAnimationFrame(tick);
+  });
+
   H.selectMount = async () => H.install(
     '/src/components/ui/SettingsSelect.vue',
     '<button id="opener">opener</button>',
@@ -1338,24 +1429,43 @@ window.__probe = (() => {
    */
   H.imgBox = async () => {
     const root = document.querySelector('[data-img-state]');
+    const frame = document.querySelector('[data-img-frame]');
     const sk = document.querySelector('[data-img-skeleton]');
     const el = document.querySelector('[data-img-el]');
     if (!root || !el) return { ok: false, why: '缺 data-img-state 或 data-img-el（钩子被改名了？）' };
     const M = await import('/src/utils/previewMetrics.ts');
     const cs = getComputedStyle(el);
     const r = sk ? sk.getBoundingClientRect() : null;
+    const fr = frame ? frame.getBoundingClientRect() : null;
+    const er = el.getBoundingClientRect();
     return {
       ok: true,
       state: root.getAttribute('data-img-state'),
       hasSkeleton: !!sk,
       h: r ? Math.round(r.height) : null,
       w: r ? Math.round(r.width) : null,
+      // 外框稳定判据：加载中/已加载/失败三态下读同一个节点（skeleton 在 loaded 后不存在）
+      frameH: fr ? Math.round(fr.height) : null,
+      frameW: fr ? Math.round(fr.width) : null,
+      imgH: Math.round(er.height),
+      imgW: Math.round(er.width),
       imgDisplay: cs.display,
       // max-height 是内联样式绑上去的常量；<img> 隐藏时矩形量不到，只能读计算值
       imgMax: Math.round(parseFloat(cs.maxHeight) || 0),
       cap: M.IMAGE_BUBBLE_HEIGHT,
       placeholder: M.IMAGE_PLACEHOLDER_HEIGHT,
     };
+  };
+  /** 单点变异：把外框高度按回旧行为（无尺寸图解码后跟着图缩）⇒ "解码前后一致"判据必须当场不成立。 */
+  H.forceUnknownFrameLegacy = async (on) => {
+    const frame = document.querySelector('[data-img-frame]');
+    if (!frame) return false;
+    if (on) frame.style.height = '';
+    else {
+      const M = await import('/src/utils/previewMetrics.ts');
+      frame.style.height = String(M.IMAGE_BUBBLE_HEIGHT) + 'px';
+    }
+    return true;
   };
   /** 单点变异：把骨架高度按回旧的字面量写法（128）⇒ 那条"预留 == 估算"的判据必须当场不成立。 */
   H.forceSkeletonLegacyHeight = async (on) => {
@@ -3200,6 +3310,7 @@ async function main() {
     const roster = want("roster");
     const overlay = want("overlay");
     const imgskel = want("imgskel");
+    const railsync = want("railsync");
     const imgload = want("imgload");
     const pinkb = want("pinkb");
     const scrollrestore = want("scrollrestore");
@@ -3420,6 +3531,7 @@ async function main() {
     await runSegment("roster", roster, () => runReactionRoster(cdp, url));
     await runSegment("overlay", overlay, () => runOverlay(cdp, url));
     await runSegment("imgskel", imgskel, () => runImageSkeleton(cdp, url));
+    await runSegment("railsync", railsync, () => runRailSync(cdp, url));
     await runSegment("imgload", imgload, () => runImageLoad(cdp, url));
     if (want("imgretry")) await runImageRetryPace(cdp, url);
     if (want("mergeheight")) await runMergeCardHeight(cdp, url);
@@ -6773,6 +6885,149 @@ async function runImageSkeleton(cdp, url) {
   check("失败态：退避用完后落到紧凑占位（不为一张永远等不来的图撑 288px 灰块）",
     !!failed && failed.ok === true && failed.h === failed.placeholder,
     "state=failed 且 rect.h == IMAGE_PLACEHOLDER_HEIGHT", JSON.stringify(failed));
+
+  // ── 无尺寸旧图：解码完成**外框尺寸不变**（2026-11-04 用户「解码前预留尺寸」）──
+  // 载荷无 width/height ⇒ 组件无法在解码前推算比例，固定外框是唯一不跳的做法。
+  // 这里用一张 400×400 的 data URI（方图）：若按旧行为，解码后外框会缩到 208。
+  const SQUARE = "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='400' height='400'%3E%3Crect width='400' height='400' fill='%23cc0000'/%3E%3C/svg%3E";
+  const mounted2 = await cdp.eval("window.__probe.install('/src/components/message/MessageImageBubble.vue', '', "
+    + JSON.stringify(JSON.stringify({ src: SQUARE })) + ")");
+  check("无尺寸图挂出来了", !!mounted2 && mounted2.ok === true, "install ok", JSON.stringify(mounted2));
+  let loadedBox = null;
+  for (let i = 0; i < 30; i += 1) {
+    await sleep(100);
+    loadedBox = await cdp.eval("window.__probe.imgBox()");
+    if (loadedBox && loadedBox.ok === true && loadedBox.state === "loaded") break;
+  }
+  check("无尺寸图：解码完成后外框仍是 IMAGE_BUBBLE_HEIGHT（不跟着图缩）",
+    !!loadedBox && loadedBox.ok === true && loadedBox.state === "loaded"
+      && loadedBox.frameH === loadedBox.cap,
+    "state=loaded 且 frameH == cap（解码前后 boundingClientRect 一致）",
+    JSON.stringify(loadedBox));
+  check("无尺寸图：图本身已经换进外框（imgH 明显小于外框，说明内容真的解码了）",
+    !!loadedBox && loadedBox.ok === true && loadedBox.imgH > 100 && loadedBox.imgH < loadedBox.frameH,
+    "imgH > 100 且 < frameH", JSON.stringify({ imgH: loadedBox?.imgH, frameH: loadedBox?.frameH }));
+  const legacyFrame = await cdp.eval("window.__probe.forceUnknownFrameLegacy(true)");
+  const shrunk = await cdp.eval("window.__probe.imgBox()");
+  check("对照：撤掉固定外框（按回旧行为）⇒ 外框当场缩到图高（判据不是恒真）",
+    legacyFrame === true && shrunk.ok === true && shrunk.frameH === shrunk.imgH
+      && shrunk.frameH !== shrunk.cap,
+    "frameH == imgH 且 != cap", JSON.stringify(shrunk));
+  const frameBack = await cdp.eval("window.__probe.forceUnknownFrameLegacy(false)");
+  const stableAgain = await cdp.eval("window.__probe.imgBox()");
+  check("对照可逆：恢复固定外框后又等于常量",
+    frameBack === true && stableAgain.ok === true && stableAgain.frameH === stableAgain.cap,
+    "frameH == cap", JSON.stringify(stableAgain));
+}
+
+/**
+ * 桌面 rail：指示条与内容切换**同一条时间轴**（2026-11-04 用户反馈）。
+ *
+ * 纯只读采样：页面内 rAF 连续记录，避免 CDP 往返把 140ms 的中间态漏掉。
+ * 判定的是"同刻开始、同刻结束"与"快速连点就地收敛"，不是"看起来顺"：
+ *   · 内容替身与药丸都由 `railSwitch` 在**同一 tick** 驱动，替身挂的类名与
+ *     ConversationList 完全相同（`conv-view-fade-a/-b`）；
+ *   · 首次"内容开始淡/药丸开始动"都落在同一帧附近；
+ *   · 内容 opacity 到 1 的时刻与药丸到目标顶边的时刻相差 ≤ 一帧；
+ *   · 连点（消息→通讯录→消息）的采样里，药丸从未完整到达中间项。
+ */
+async function runRailSync(cdp, url) {
+  await cdp.send("Page.navigate", { url });
+  await cdp.settled();
+  await sleep(3_000);
+  await cdp.eval(PAGE_FIXTURE);
+
+  const mounted = await cdp.eval("window.__probe.installRailLive("
+    + JSON.stringify(JSON.stringify({ navState: "chats" })) + ")");
+  check("rail 挂出来且药丸是常驻节点", !!mounted && mounted.ok === true && mounted.pill === true,
+    "installRailLive ok + [data-rail-pill]", JSON.stringify(mounted));
+
+  const base = await cdp.eval("window.__probe.railRead()");
+  check("初始对齐：药丸顶边 == chats 按钮顶边",
+    base.ok === true && base.pillTop === base.targetTop && Number(base.pillOpacity) === 1,
+    "pillTop == targetTop 且 opacity 1", JSON.stringify(base));
+
+  const trace = await cdp.eval(`(async () => {
+    window.__probe.railSwitch('contacts');
+    return await window.__probe.railSample(300);
+  })()`);
+  const last = trace[trace.length - 1];
+  const chatsTop = base.pillTop;
+  const contactsTop = last.targetTop;
+  check("切换结束：药丸顶边 == 通讯录按钮顶边（时间轴终点对齐）",
+    last.pillTop === contactsTop && last.targetTop === contactsTop && Number(last.contentOpacity) >= 0.99,
+    "pillTop == targetTop 且内容 opacity ~1", JSON.stringify(last));
+
+  check("时间轴同常量：药丸 transition 时长 == 内容 animation 时长（都读 --gosslan-nav-switch-*）",
+    last.transitionDurations != null && last.contentAnim != null
+      && parseFloat(last.transitionDurations) === parseFloat(last.contentAnim)
+      && Math.abs(parseFloat(last.contentAnim) - 0.14) < 0.01,
+    "transitionDuration == animationDuration == 0.14s",
+    JSON.stringify({ transition: last.transitionDurations, animation: last.contentAnim }));
+
+  // 同刻开始：第一个"有人动了"的采样点。
+  const startSample = trace.find((s) => s.pillTop !== chatsTop || Number(s.contentOpacity) < 0.99);
+  check("同刻开始：药丸与内容都在开场两帧内开始变化",
+    !!startSample && startSample.t <= 34,
+    "首个变化采样 t <= 34ms", JSON.stringify(startSample));
+
+  // 同刻结束：分别找"内容不透明度到 1"与"药丸到目标"的首次时刻，差 ≤ 一帧（16ms + 取整余量）。
+  // ⚠️ 要从"已经离开起点"之后再找"完成"，否则首帧（动画还没生效、opacity 仍是 1）
+  // 会被误当成"内容已完成"。
+  const contentStartedIdx = trace.findIndex((s) => Number(s.contentOpacity) < 0.99);
+  const contentDoneT = contentStartedIdx < 0
+    ? null
+    : (trace.slice(contentStartedIdx).find((s) => Number(s.contentOpacity) >= 0.99)?.t ?? null);
+  const pillStartedIdx = trace.findIndex((s) => s.pillTop !== chatsTop);
+  const pillDoneT = pillStartedIdx < 0
+    ? null
+    : (trace.slice(pillStartedIdx).find((s) => s.pillTop === contactsTop)?.t ?? null);
+  check("同刻结束：内容淡入完成与药丸到位相差不超过一帧",
+    contentDoneT != null && pillDoneT != null && Math.abs(contentDoneT - pillDoneT) <= 34,
+    "|contentDoneT - pillDoneT| <= 34ms",
+    JSON.stringify({ contentDoneT, pillDoneT }));
+
+  // 中间态：不存在"内容已经 100%、药丸还没到"——由上面同刻结束保证；这里把"都在途中"也留一条读数。
+  const mid = trace.find((s) => s.pillTop > chatsTop + 2 && s.pillTop < contactsTop - 2);
+  check("中途读数：药丸在两点之间时内容也在淡入途中（两辆都在路上）",
+    !!mid && Number(mid.contentOpacity) > 0 && Number(mid.contentOpacity) < 0.99,
+    "0 < contentOpacity < 1 且 pillTop 在两端之间", JSON.stringify(mid));
+
+  // 快速连点：消息→通讯录→消息（30ms 后就改主意）⇒ 就地收敛，不越过中间项。
+  await cdp.eval("window.__probe.railSwitch('chats')");
+  await sleep(400);
+  const rapid = await cdp.eval(`(async () => {
+    window.__probe.railSwitch('contacts');
+    await new Promise((r) => setTimeout(r, 30));
+    window.__probe.railSwitch('chats');
+    return await window.__probe.railSample(260);
+  })()`);
+  const rLast = rapid[rapid.length - 1];
+  const maxTop = Math.max(...rapid.map((s) => s.pillTop));
+  check("连点收敛：结束在最新目标（消息）且从未完整到达中间项（通讯录）",
+    rLast.pillTop === chatsTop && rLast.targetTop === chatsTop && maxTop < contactsTop - 4,
+    "final == chatsTop 且 max < contactsTop - 4",
+    JSON.stringify({ final: rLast.pillTop, target: rLast.targetTop, maxTop, contactsTop, chatsTop }));
+
+  // reduce 档：药丸直接落位（transition none），内容仍只做淡入。
+  await cdp.send("Emulation.setEmulatedMedia", {
+    features: [{ name: "prefers-reduced-motion", value: "reduce" }],
+  });
+  const reduced = await cdp.eval("window.__probe.railRead()");
+  check("reduce 档：药丸 transition 时长≈0（不做位移动画）",
+    parseFloat(reduced.transitionDurations) <= 0.001,
+    "transitionDuration <= 0.001s", JSON.stringify(reduced));
+  const reducedTrace = await cdp.eval(`(async () => {
+    window.__probe.railSwitch('contacts');
+    return await window.__probe.railSample(90);
+  })()`);
+  check("reduce 档：药丸首帧即到位；内容动画也被仓库全局 0.01ms 规则收成瞬时（无位移/缩放）",
+    reducedTrace.every((s) => s.pillTop === reducedTrace[0].targetTop)
+      && Number(reducedTrace[reducedTrace.length - 1].contentOpacity) >= 0.99
+      && reducedTrace.every((s) => Number(s.contentOpacity) === 0 || Number(s.contentOpacity) >= 0.99),
+    "pillTop 全等于 targetTop，contentOpacity 只有 0（首帧未开演）/1 两档",
+    JSON.stringify({ first: reducedTrace[0], last: reducedTrace[reducedTrace.length - 1], len: reducedTrace.length }));
+  await cdp.send("Emulation.setEmulatedMedia", { features: [] });
 }
 
 /**

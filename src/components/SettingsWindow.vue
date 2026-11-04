@@ -235,31 +235,36 @@ useEventListener(window, "keydown", onKeydown);
 
     <!-- 右：内容区（独立滚动，切换导航不改变窗口尺寸） -->
     <div class="scrollbar-both min-w-0 flex-1 overflow-y-auto px-5 py-4">
-      <Transition name="settings-swap" mode="out-in">
-      <div :key="section">
-      <div v-if="desktopSection === 'general'" class="space-y-5">
-        <ProfileSection :active="true" :reload-token="reloadToken" />
-        <GeneralSection />
-        <AppearanceSection />
-        <ChatStyleSection />
-        <NotificationSection />
+      <!-- 面板容器常驻（`relative` 给退场层定位）：切换分区时**不改 mode**（默认同时挂载），
+           新面板立即在流里占住最终高度，旧面板绝对定位叠着淡出 ⇒ 容器高度不塌、
+           不重播 enter、也不做整块位移（§11.3.7）。 -->
+      <div class="relative">
+        <Transition name="settings-swap">
+          <div :key="section">
+            <div v-if="desktopSection === 'general'" class="space-y-5">
+              <ProfileSection :active="true" :reload-token="reloadToken" />
+              <GeneralSection />
+              <AppearanceSection />
+              <ChatStyleSection />
+              <NotificationSection />
+            </div>
+            <div v-else-if="desktopSection === 'network'" class="space-y-5">
+              <NetworkSection :active="true" :reload-token="reloadToken" />
+            </div>
+            <div v-else-if="desktopSection === 'storageFiles'" class="space-y-5">
+              <!-- 2026-10-25（第 4 版）：存储、文件、重置与恢复同属「文件与存储」。 -->
+              <StorageSection :active="true" :reload-token="reloadToken" />
+              <FilesSection :active="true" :reload-token="reloadToken" />
+              <ResetSection @restored="reloadToken++" />
+            </div>
+            <div v-else-if="desktopSection === 'about'" class="space-y-5">
+              <!-- 安全并入关于（用户 2026-10-25：桌面不再单独一组）。 -->
+              <SecuritySection />
+              <AboutSection @dev-open="devDiagOpen = true" />
+            </div>
+          </div>
+        </Transition>
       </div>
-      <div v-else-if="desktopSection === 'network'" class="space-y-5">
-        <NetworkSection :active="true" :reload-token="reloadToken" />
-      </div>
-      <div v-else-if="desktopSection === 'storageFiles'" class="space-y-5">
-        <!-- 2026-10-25（第 4 版）：存储、文件、重置与恢复同属「文件与存储」。 -->
-        <StorageSection :active="true" :reload-token="reloadToken" />
-        <FilesSection :active="true" :reload-token="reloadToken" />
-        <ResetSection @restored="reloadToken++" />
-      </div>
-      <div v-else-if="desktopSection === 'about'" class="space-y-5">
-        <!-- 安全并入关于（用户 2026-10-25：桌面不再单独一组）。 -->
-        <SecuritySection />
-        <AboutSection @dev-open="devDiagOpen = true" />
-      </div>
-      </div>
-      </Transition>
     </div>
   </div>
 

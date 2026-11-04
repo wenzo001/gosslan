@@ -11,7 +11,6 @@ import { useAppStore } from "@/stores/useAppStore";
 import { useChatStore } from "@/stores/useChatStore";
 import { useExclusivePopup } from "@/composables/useExclusivePopup";
 import { MoreHorizontal, Moon, ScrollText, Settings, Sun, Download } from "lucide-vue-next";
-import { motion, useReducedMotion } from "@/utils/motion";
 import UnreadBadge from "@/components/UnreadBadge.vue";
 import NavIcon from "@/components/ui/NavIcon.vue";
 import SelfAvatar from "@/components/SelfAvatar.vue";
@@ -22,7 +21,12 @@ import { storageSet } from "@/utils/safeStorage";
 const NAV_STATES = ["chats", "contacts", "links", "favorites", "me"] as const;
 type NavState = (typeof NAV_STATES)[number];
 
-defineProps<{
+/** 桌面 rail 的四个按钮顺序（模板里也是这个顺序）：药丸下标按它算。 */
+const RAIL_ORDER: NavState[] = ["chats", "contacts", "favorites", "links"];
+/** 相邻两项的步距 = 按钮 `h-11`(44px) + 列 `gap-2`(8px)。两处一致，别只改一边。 */
+const RAIL_ITEM_STRIDE = 52;
+
+const props = defineProps<{
   /** 当前导航状态——**单一数据源**，所有按钮互斥高亮由这一个值决定。
    * 取代之前分散的 `view` + `favoritesOpen` 两个独立 ref（那两者会同时为真导致"多选"）。 */
   navState: NavState;
@@ -38,7 +42,14 @@ const emit = defineEmits<{
 
 const app = useAppStore();
 const chat = useChatStore();
-const reducedMotion = useReducedMotion();
+
+/**
+ * 药丸要落到的行下标（`me` 这类不在 rail 上的状态 = -1 ⇒ 药丸隐藏）。
+ * 用**一个常驻节点 + transform**，而不是 motion-v 共享布局：共享布局 `v-if` 换节点时
+ * 每次位移都跑一整段弹簧（~250ms），而左列内容早就切完了 ⇒ 用户看到"指示条慢半拍"。
+ * CSS transition 在快速连点时会**从当前计算值就地改目标**，不排队补播中间项。
+ */
+const pillIndex = computed(() => RAIL_ORDER.indexOf(props.navState));
 
 // ---------------- 二级菜单（设置 / 运行日志 收进这里，用户 2026-09-17） ----------------
 // 惯用法与 ConversationList 的「+」菜单完全一致（useExclusivePopup 互斥）；键盘/焦点/外点交给 Reka。
@@ -97,8 +108,19 @@ function onMoreOpen(open: boolean) {
 
     <!-- 中部：聊天 / 通讯录 / 收藏 / 链接（用户 2026-10-22 裁决统一图标库）：
          四枚全部来自 `lucide-vue-next`（映射在 `components/ui/navIcons.ts`），不再自绘；
-         选中态 = 描边加粗 + 药丸底 + 主题色，样式唯一出口是 `style.css` 的 `.nav-glyph*`。 -->
-    <div class="mt-5 flex flex-col items-center gap-2">
+         选中态 = 描边加粗 + 药丸底 + 主题色，样式唯一出口是 `style.css` 的 `.nav-glyph*`。
+         药丸是**一个常驻节点**（不随选中项重建），位置用 transform 表达 ⇒ 与左列内容
+         共用同一组时长/缓动（`--gosslan-nav-switch-*`），不会再"内容切完、药丸才滑到"。 -->
+    <div class="relative mt-5 flex flex-col items-center gap-2">
+      <span
+        aria-hidden="true"
+        data-rail-pill
+        class="rail-active-pill pointer-events-none absolute inset-x-0 top-0 h-11 rounded-[var(--gosslan-radius-lg)] bg-[color-mix(in_srgb,var(--gosslan-primary)_13%,transparent)]"
+        :style="{
+          transform: `translateY(${pillIndex * RAIL_ITEM_STRIDE}px)`,
+          opacity: pillIndex >= 0 ? 1 : 0,
+        }"
+      />
       <button
         class="nav-glyph-btn relative flex h-11 w-11 items-center justify-center rounded-[var(--gosslan-radius-lg)] transition"
         :class="navState === 'chats'
@@ -109,12 +131,6 @@ function onMoreOpen(open: boolean) {
         :aria-label="chat.totalUnread > 0 ? t('nav.chats.unread', { n: chat.totalUnread }) : t('nav.chats')"
         @click="emit('update:navState', 'chats')"
       >
-        <motion.span
-          v-if="navState === 'chats'"
-          layout-id="rail-active"
-          class="pointer-events-none absolute inset-0 rounded-[var(--gosslan-radius-lg)] bg-[color-mix(in_srgb,var(--gosslan-primary)_13%,transparent)]"
-          :transition="reducedMotion ? { duration: 0 } : { type: 'spring', stiffness: 480, damping: 36, mass: 0.7 }"
-        />
         <NavIcon name="chats" :active="navState === 'chats'" />
         <UnreadBadge
           v-if="chat.totalUnread > 0"
@@ -132,12 +148,6 @@ function onMoreOpen(open: boolean) {
         :aria-label="chat.pendingRequests.length ? t('nav.contacts.pending', { n: chat.pendingRequests.length }) : t('nav.contacts')"
         @click="emit('update:navState', 'contacts')"
       >
-        <motion.span
-          v-if="navState === 'contacts'"
-          layout-id="rail-active"
-          class="pointer-events-none absolute inset-0 rounded-[var(--gosslan-radius-lg)] bg-[color-mix(in_srgb,var(--gosslan-primary)_13%,transparent)]"
-          :transition="reducedMotion ? { duration: 0 } : { type: 'spring', stiffness: 480, damping: 36, mass: 0.7 }"
-        />
         <NavIcon name="contacts" :active="navState === 'contacts'" />
         <UnreadBadge
           v-if="chat.pendingRequests.length"
@@ -156,12 +166,6 @@ function onMoreOpen(open: boolean) {
         :aria-label="t('nav.favorites')"
         @click="emit('update:navState', navState === 'favorites' ? 'chats' : 'favorites')"
       >
-        <motion.span
-          v-if="navState === 'favorites'"
-          layout-id="rail-active"
-          class="pointer-events-none absolute inset-0 rounded-[var(--gosslan-radius-lg)] bg-[color-mix(in_srgb,var(--gosslan-primary)_13%,transparent)]"
-          :transition="reducedMotion ? { duration: 0 } : { type: 'spring', stiffness: 480, damping: 36, mass: 0.7 }"
-        />
         <NavIcon name="favorites" :active="navState === 'favorites'" />
       </button>
       <!-- 外部链接：点开把左列切成「链接」列表（用户 2026-09-17）。图标用**指南针**造型
@@ -177,12 +181,6 @@ function onMoreOpen(open: boolean) {
         @click="emit('update:navState', 'links')"
       >
         <!-- 指南针：链接入口要"探索/发现"的指向感（用户 2026-09-17 指定）。 -->
-        <motion.span
-          v-if="navState === 'links'"
-          layout-id="rail-active"
-          class="pointer-events-none absolute inset-0 rounded-[var(--gosslan-radius-lg)] bg-[color-mix(in_srgb,var(--gosslan-primary)_13%,transparent)]"
-          :transition="reducedMotion ? { duration: 0 } : { type: 'spring', stiffness: 480, damping: 36, mass: 0.7 }"
-        />
         <NavIcon name="links" :active="navState === 'links'" />
       </button>
     </div>
