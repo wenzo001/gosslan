@@ -350,6 +350,25 @@ export function isTodoStatus(v: unknown): v is TodoStatus {
   return typeof v === "string" && (TODO_STATUSES as readonly string[]).includes(v);
 }
 
+/**
+ * 关联时间是否合法：**严格的** `YYYY-MM-DD` 日历日（只到年月日，不存时分秒）。
+ *
+ * 与 Rust `protocol::todo_related_on_is_valid` 同一口径：拒绝 `2026-02-30` 这类"形状对、日子不存在"的值，
+ * 也拒绝带时分的字符串 —— 存时间戳再按 UTC/本地解释，跨时区会变成前一天/后一天。
+ */
+export function isTodoRelatedOn(v: unknown): v is string {
+  if (typeof v !== "string") return false;
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(v);
+  if (!m) return false;
+  const year = Number(m[1]);
+  const month = Number(m[2]);
+  const day = Number(m[3]);
+  if (year === 0 || month < 1 || month > 12) return false;
+  const leap = (year % 4 === 0 && year % 100 !== 0) || year % 400 === 0;
+  const days = [31, leap ? 29 : 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31][month - 1]!;
+  return day >= 1 && day <= days;
+}
+
 export interface TodoImage {
   /** 跨端唯一 id（= 文件 sha256 / cid），落盘文件名与去重键。 */
   id: string;
@@ -415,6 +434,11 @@ export interface TodoItem {
    * （`resolveTodoNumbers` 是数字的唯一来源），别再在别处按顺序数一遍。
    */
   number: number;
+  /**
+   * 关联时间（可选）：`YYYY-MM-DD` 的**日历日**，只到年月日、不存时分秒、不做时区换算。
+   * `null` = 未填 / 已清空（旧载荷没有这一格时也是 `null`，见 `parseTodo`）。
+   */
+  relatedOn: string | null;
   /** 状态变为「完成」的权威时间戳（ms）；未完成/旧载荷为 null。 */
   doneAt: number | null;
   /** 创建时间（创建那条 `todo` 消息的 ts）；由 `foldTodos` 从创建记录回填，旧数据可能为 null。 */
@@ -442,6 +466,8 @@ interface TodoAbsent {
   number: boolean;
   /** 载荷里没带 `custom_icon` 键（老对端不认识这一格）⇒ 折叠时沿用已知的，别抹成默认。 */
   customIcon: boolean;
+  /** 载荷里没带 `related_on`（或读了脏值）⇒ 折叠时沿用已知的日期，别把已填的抹成空。 */
+  relatedOn: boolean;
 }
 
 /** 完成态超过该天数后自动归档（前端计算，见 `isEffectivelyArchived`）。 */
@@ -454,6 +480,21 @@ function newer(seq: number, msgId: string, cur: { seq: number; msgId: string } |
   return !cur || seq > cur.seq || (seq === cur.seq && msgId > cur.msgId);
 }
 
+/**
+ * 读 `related_on` 一格，并区分三种"没有"：
+ *   键不存在（`undefined`）/ 读到本端不认识的脏值 ⇒ **没说**（`absent=true`，折叠时沿用旧值）；
+ *   `null` 或空串 ⇒ **明确清空**（`absent=false`，折叠时真的清掉）。
+ * 这个区分是"用户能不能删掉日期"的关键：都折成"没说"就永远删不掉。
+ */
+function readTodoRelatedOn(v: unknown): { value: string | null; absent: boolean } {
+  if (v === undefined || v === null) return { value: null, absent: v === undefined };
+  if (typeof v !== "string") return { value: null, absent: true };
+  const s = v.trim();
+  if (s === "") return { value: null, absent: false };
+  if (isTodoRelatedOn(s)) return { value: s, absent: false };
+  return { value: null, absent: true };
+}
+
 export function parseTodo(rec: MessageRecord): TodoDef | null {
   // 两种 kind 同构：`todo` = 创建（Card，会通知），`todo_update` = 改状态/改标题/删除
   // （Silent，不打扰全群）。它们同属一条 LWW 序列，所以折叠时一视同仁。
@@ -463,11 +504,13 @@ export function parseTodo(rec: MessageRecord): TodoDef | null {
     if (typeof p.todo_id !== "string" || !p.todo_id) return null;
     // 「这一格没说」= 键不存在 **或** 值本端读不出合法值（后者含未来新增的档位：
     // 本端表达不了就等于没说，宁可沿用自己的已知值，也不要每来一份新载荷就回落默认值抖一次）。
+    const related = readTodoRelatedOn(p.related_on);
     const absent: TodoAbsent = {
       priority: !isTodoPriority(p.priority),
       category: !isTodoCategory(p.category),
       number: !(typeof p.number === "number" && p.number > 0),
       customIcon: !isTodoCustomIcon(p.custom_icon),
+      relatedOn: related.absent,
     };
     return {
       todoId: p.todo_id,
@@ -498,6 +541,7 @@ export function parseTodo(rec: MessageRecord): TodoDef | null {
         : [],
       archived: p.archived === true,
       number: typeof p.number === "number" && p.number > 0 ? Math.trunc(p.number) : 0,
+      relatedOn: related.value,
       doneAt: typeof p.done_at === "number" ? p.done_at : null,
       createdAt: null,
       seq: rec.seq,
@@ -519,7 +563,9 @@ export function parseTodo(rec: MessageRecord): TodoDef | null {
  */
 export function carryAbsentTodoFields(prev: TodoDef, next: TodoDef): TodoDef {
   const a = next.absent;
-  if (!a || (!a.priority && !a.category && !a.number && !a.customIcon)) return next;
+  if (!a || (!a.priority && !a.category && !a.number && !a.customIcon && !a.relatedOn)) {
+    return next;
+  }
   return {
     ...next,
     priority: a.priority ? prev.priority : next.priority,
@@ -530,6 +576,8 @@ export function carryAbsentTodoFields(prev: TodoDef, next: TodoDef): TodoDef {
     // 图标与名字同一条规矩的另一个面：类别沿用时图标必须一起沿用，否则"老对端改一次状态"
     // 就把用户挑过的图标抹回默认那枚（Rust 侧 `latest_todo_def` 里有同一条，两边一起改）。
     customIcon: a.customIcon ? prev.customIcon : next.customIcon,
+    // 关联时间同理：老对端不认识这一格 ⇒ 不许把用户填过的日期抹成空。
+    relatedOn: a.relatedOn ? prev.relatedOn : next.relatedOn,
     number: a.number ? prev.number : next.number,
   };
 }
@@ -625,7 +673,7 @@ export function foldTodos(records: MessageRecord[]): TodoItem[] {
       if (a.seq !== b.seq) return b.seq - a.seq; // 新的在前
       return a.msgId < b.msgId ? 1 : -1; // 同 seq 按 msg_id 比（与 newer 同规则）
     })
-    .map(({ todoId, title, assignees, status, creator, priority, category, customCategory, customIcon, description, images, archived, doneAt }) => ({
+    .map(({ todoId, title, assignees, status, creator, priority, category, customCategory, customIcon, description, images, archived, relatedOn, doneAt }) => ({
       todoId,
       number: numbers.get(todoId) ?? 0,
       title,
@@ -641,6 +689,7 @@ export function foldTodos(records: MessageRecord[]): TodoItem[] {
       description,
       images,
       archived,
+      relatedOn,
       doneAt,
       createdAt: created.get(todoId) ?? null,
     }));

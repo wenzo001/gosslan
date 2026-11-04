@@ -7,7 +7,7 @@
  * 为什么必须留在库里而不是探针里手写：探针自己造一行 = 判的是"自造路径"，产品哪天改了载荷形状，
  * 读数照样绿，而它已经和真实渲染路径无关了（本仓为这类事翻过车）。
  *
- * 载荷的 13 个键与 `src-tauri/src/protocol.rs` 的 `TodoPayload` 逐字段对齐，
+ * 载荷的键与 `src-tauri/src/protocol.rs` 的 `TodoPayload` 逐字段对齐，
  * 由 `scripts/axTodoFixture.test.ts` 现读源码钉住（生产加字段而这里没跟上 ⇒ 红）。
  */
 export const TODO_FIXTURE = {
@@ -45,6 +45,9 @@ export function todoFixturePayload(deviceId, over = {}) {
     custom_icon: "",
     number: TODO_FIXTURE.number,
     done_at: null,
+    // 关联时间：生产侧没填时写的就是 `null`（`Option<String>`）。这台探针读的是编号角标，
+    // 与日期无关，用最空的形状即可。
+    related_on: null,
     ...over,
   };
 }

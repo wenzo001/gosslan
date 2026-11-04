@@ -59,6 +59,13 @@ import { useImeEnterGuard } from "@/composables/useImeEnterGuard";
 import { api } from "@/api";
 import { useExclusivePopup } from "@/composables/useExclusivePopup";
 import { MAX_TODO_IMAGE_BYTES, TODO_IMAGE_LIMIT_MB } from "@/utils/imageBytes";
+import {
+  canRollback,
+  isLatestReadSeq,
+  nextReadSeq,
+  settle,
+  type SettleState,
+} from "@/utils/optimistic";
 import { t } from "@/i18n";
 import DangerBtn from "@/components/ui/DangerBtn.vue";
 import SecondaryBtn from "@/components/ui/SecondaryBtn.vue";
@@ -109,9 +116,24 @@ const groupMembers = computed<string[]>(() => group.value?.members ?? []);
  */
 const assignableMembers = computed<string[]>(() => groupMembers.value);
 
+/**
+ * 行内状态切换的**乐观覆盖**：`todoId -> 临时状态`。
+ *
+ * 点下拉/详情里的状态后立刻换组，IPC 回来再摘掉；失败时若这次请求仍是"最新一次"，
+ * 就撤回覆盖并弹后端给的具名原因。成功不弹提示（与行内状态菜单的既有口径一致）。
+ */
+const optimisticStatus = ref<Record<string, TodoStatus>>({});
+/** 每条任务自己的状态请求序号：只有最新一次的失败才允许撤回（`utils/optimistic.ts` 的判据）。 */
+const statusSeq = new Map<string, number>();
+
 /** 折叠出全部任务（按创建版本从新到旧），再拆成「活动」与「已归档」。 */
 /** 取数口：那份**全表读**的任务行，不是有上界的消息缓存（`#154-9`；语义见 store 里 groupTodoRows 的注释）。 */
-const todos = computed(() => foldTodos(chat.groupTodoRows[convId.value] ?? []));
+const todos = computed(() =>
+  foldTodos(chat.groupTodoRows[convId.value] ?? []).map((x) => {
+    const pending = optimisticStatus.value[x.todoId];
+    return pending && pending !== x.status ? { ...x, status: pending } : x;
+  }),
+);
 /**
  * 首屏补读 + 它自己的三态。
  *
@@ -552,6 +574,8 @@ const draft = ref<{
   customIcon: TodoCustomIcon;
   /** 草稿内的优先级。 */
   priority: TodoPriority;
+  /** 草稿内的关联时间：`YYYY-MM-DD`；空串 = 没填（原生日期输入返回空串表示清空）。 */
+  relatedOn: string;
   description: string;
   images: TodoImage[];
   /** 本次编辑新选中的图片本地路径，按 sha256 索引（仅需随字节管线投递，不进定义元数据）。
@@ -608,6 +632,7 @@ function startCreate() {
     customCategory: "",
     customIcon: TODO_CUSTOM_ICON_DEFAULT,
     priority: "normal",
+    relatedOn: "",
     description: "",
     images: [],
     imagePaths: {},
@@ -624,6 +649,7 @@ function startEdit(x: TodoItem) {
     customCategory: x.customCategory ?? "",
     customIcon: x.customIcon ?? TODO_CUSTOM_ICON_DEFAULT,
     priority: x.priority,
+    relatedOn: x.relatedOn ?? "",
     description: x.description,
     images: [...x.images],
     imagePaths: {},
@@ -969,10 +995,15 @@ async function saveDraft() {
       const cur = todos.value.find((x) => x.todoId === d.todoId);
       await chat.updateTodo(
         props.groupId,
-        cur ?? { todoId: d.todoId, title, assignees, status: d.status, description: d.description, images: d.images },
+        cur ?? {
+          todoId: d.todoId, title, assignees, status: d.status,
+          description: d.description, images: d.images, relatedOn: d.relatedOn || null,
+        },
         {
           title, assignees, status: d.status, description: d.description, images: d.images,
           priority: d.priority, category: d.category, customCategory, customIcon,
+          // 空串 = 明确清空（不能让 store 的 `??` 把它当成"没传"）
+          relatedOn: d.relatedOn,
         },
       );
       todoId = d.todoId;
@@ -980,6 +1011,8 @@ async function saveDraft() {
     } else {
       const rec = await chat.createTodo(
         props.groupId, title, assignees, d.description, d.images, d.category, customCategory, customIcon,
+        // 新建时空串 = 不填（后端 Option 收到 null/undefined 就是没填）
+        d.relatedOn || undefined,
       );
       const parsed = parseTodo(rec);
       todoId = parsed?.todoId ?? "";
@@ -1010,10 +1043,29 @@ async function saveDraft() {
  */
 async function setStatus(x: TodoItem, status: string) {
   if (!props.groupId) return;
+  if (status === x.status) {
+    closeDetail();
+    return;
+  }
+  const seq = nextReadSeq(statusSeq.get(x.todoId));
+  statusSeq.set(x.todoId, seq);
+  let state: SettleState = "pending";
+  // 先乐观换状态（列表分组立刻动），IPC 回来再按真实结果结算。
+  optimisticStatus.value = { ...optimisticStatus.value, [x.todoId]: status as TodoStatus };
   try {
     await chat.updateTodo(props.groupId, x, { status });
+    state = settle(state, "succeeded");
+    if (!isLatestReadSeq(statusSeq.get(x.todoId), seq)) return;
+    const next = { ...optimisticStatus.value };
+    delete next[x.todoId];
+    optimisticStatus.value = next;
     closeDetail();
   } catch (e) {
+    if (canRollback(state) && isLatestReadSeq(statusSeq.get(x.todoId), seq)) {
+      const next = { ...optimisticStatus.value };
+      delete next[x.todoId];
+      optimisticStatus.value = next;
+    }
     app.toastError(e, t("todo.updateFail"));
   }
 }
@@ -1384,6 +1436,11 @@ watch(
                   {{ t("todo.rowAssignee") }}
                   <span class="font-medium text-[var(--gosslan-text)]">{{ assigneeNames(x) }}</span>
                 </span>
+                <!-- 关联时间：只到年月日，原样显示 `YYYY-MM-DD`（不补时分，避免把"日历日"读成"某天 00:00"） -->
+                <span v-if="x.relatedOn" :title="t('todo.relatedOnLabel')">
+                  {{ t("todo.rowRelatedOn") }}
+                  <span class="font-medium tabular-nums text-[var(--gosslan-text)]">{{ x.relatedOn }}</span>
+                </span>
               </div>
             </button>
             <!-- 状态：有权限时是胶囊按钮（点开小菜单直接在列表上切状态，用户 2026-09-17）；
@@ -1467,7 +1524,6 @@ watch(
     @category="(c: TodoCategory, name?: string) => detailItem && setCategory(detailItem, c, name)"
     @icon="(i: TodoCustomIcon) => detailItem && setIcon(detailItem, i)"
     @claim="detailItem && claim(detailItem)"
-    @complete="detailItem && completeTodo(detailItem)"
     @archive="detailItem && archiveTodo(detailItem)"
     @restore="detailItem && restoreTodo(detailItem)"
     @edit="detailItem && editFromDetail(detailItem)"
@@ -1500,6 +1556,28 @@ watch(
           @compositionstart="ime.onStart"
           @compositionend="ime.onEnd"
         />
+      </div>
+
+      <!-- 关联时间（可选）：只到年月日。用原生 `type="date"`（组件库没有现成的日期拾取器，
+           原生控件由系统 WebView 提供拾取与校验，不引入新依赖、也不自造拾取逻辑）。
+           v-model 拿到的是 `YYYY-MM-DD`，清空时是空串 ⇒ 后端按"明确清空"处理。 -->
+      <div>
+        <div class="mb-1.5 flex items-baseline justify-between gap-2">
+          <span class="text-xs text-[var(--gosslan-text-2)]">{{ t("todo.relatedOnLabel") }}</span>
+          <button
+            v-if="draft.relatedOn"
+            type="button"
+            class="tap-safe rounded-[var(--gosslan-radius-sm)] px-1.5 py-0.5 text-caption text-[var(--gosslan-accent-ink)] transition hover:bg-[var(--gosslan-hover)]"
+            @click="draft.relatedOn = ''"
+          >{{ t("todo.relatedOnClear") }}</button>
+        </div>
+        <input
+          v-model="draft.relatedOn"
+          type="date"
+          class="w-full rounded-[var(--gosslan-radius-md)] border border-transparent bg-[var(--gosslan-bg)] px-3 py-2 text-sm outline-none transition focus:border-transparent"
+          :aria-label="t('todo.relatedOnLabel')"
+        />
+        <div class="mt-1 text-caption text-[var(--gosslan-text-2)]">{{ t("todo.relatedOnHint") }}</div>
       </div>
 
       <!-- 状态：仅**编辑**时出现（新建恒为「待办」，`send_group_todo` 不收状态）。

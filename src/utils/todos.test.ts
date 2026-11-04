@@ -17,6 +17,7 @@ import {
   foldTodos,
   isEffectivelyArchived,
   isTodoTerminalStatus,
+  isTodoRelatedOn,
   buildTodoHistory,
   parseTodo,
   todoCategoryName,
@@ -185,6 +186,82 @@ test("老对端的更新不许把优先级与类型抹回默认（没带 ≠ 就
   assert.equal(t.priority, "high", "没带的这一格不许被抹成「常规」");
   assert.equal(t.category, "requirement", "没带的类型不许被抹成「普通任务」");
   assert.equal(t.number, 7, "编号不许因为一份旧载荷而变成没号");
+});
+
+test("关联时间：旧载荷没带不抹、显式 null/空串才清空、脏值算没说", () => {
+  const created = rec(
+    "todo",
+    "m1",
+    "a",
+    {
+      todo_id: "t1", title: "x", assignees: ["a"], status: "todo", creator: "a", deleted: false,
+      description: "", images: [], archived: false, related_on: "2026-11-04",
+    },
+    1,
+  );
+  // 老对端不认识这一格：键根本不存在 ⇒ 不许把已填的日期抹成空
+  const legacy = rec(
+    "todo_update",
+    "m2",
+    "b",
+    {
+      todo_id: "t1", title: "x", assignees: ["a"], status: "doing", creator: "a", deleted: false,
+      description: "", images: [], archived: false,
+    },
+    2,
+  );
+  const [kept] = foldTodos([created, legacy]);
+  assert.equal(kept.relatedOn, "2026-11-04", "没带 `related_on` ≠ 清空");
+
+  // 显式 null / 空串 = 明确清空
+  const clearedNull = rec(
+    "todo_update",
+    "m3",
+    "a",
+    {
+      todo_id: "t1", title: "x", assignees: ["a"], status: "doing", creator: "a", deleted: false,
+      description: "", images: [], archived: false, related_on: null,
+    },
+    3,
+  );
+  assert.equal(foldTodos([created, clearedNull])[0].relatedOn, null, "null ⇒ 清空");
+  const clearedEmpty = rec(
+    "todo_update",
+    "m4",
+    "a",
+    {
+      todo_id: "t1", title: "x", assignees: ["a"], status: "doing", creator: "a", deleted: false,
+      description: "", images: [], archived: false, related_on: "",
+    },
+    4,
+  );
+  assert.equal(foldTodos([created, clearedEmpty])[0].relatedOn, null, "空串 ⇒ 清空");
+
+  // 读了不出来的脏值算"没说"，继续沿用上一份合法值（与 priority/category 同口径）
+  const dirty = rec(
+    "todo_update",
+    "m5",
+    "b",
+    {
+      todo_id: "t1", title: "x", assignees: ["a"], status: "doing", creator: "a", deleted: false,
+      description: "", images: [], archived: false, related_on: "2026-02-30",
+    },
+    5,
+  );
+  assert.equal(foldTodos([created, dirty])[0].relatedOn, "2026-11-04", "脏值不许抹掉已知日期");
+});
+
+test("isTodoRelatedOn：只认真实存在的 YYYY-MM-DD 日历日", () => {
+  for (const ok of ["2026-11-04", "2024-02-29", "2000-02-29", "2026-12-31", "2026-01-01"]) {
+    assert.equal(isTodoRelatedOn(ok), true, `${ok} 应合法`);
+  }
+  for (const bad of [
+    "", "2026-2-4", "2026/11/04", "2026-11-04 00:00", "2026-11-04T00:00:00Z",
+    "2023-02-29", "2026-02-30", "2026-13-01", "2026-00-10", "2026-11-00", "0000-01-01",
+    "abcd-ef-gh", null, undefined, 20261104,
+  ]) {
+    assert.equal(isTodoRelatedOn(bad), false, `${String(bad)} 应不合法`);
+  }
 });
 
 test("显式带的值仍然覆盖 —— 沿用只针对没带的那几格", () => {
@@ -448,18 +525,20 @@ test("parseTodo：旧载荷缺新字段时回落安全默认值", () => {
   assert.equal(t.description, "");
   assert.deepEqual(t.images, []);
   assert.equal(t.archived, false);
+  assert.equal(t.relatedOn, null, "旧载荷没有 related_on ⇒ 读成 null，不是报错");
   assert.equal(t.doneAt, null);
 });
 
 test("parseTodo：新字段（描述 / 图片 / 归档 / done_at）被读取", () => {
   const img = { id: "sha1", name: "a.png", size: 10, sha256: "sha1", subtype: "png" };
   const recs = [
-    def("t1", 1, { description: "第一行\n第二行", images: [img], archived: true, done_at: 1700000000000 }),
+    def("t1", 1, { description: "第一行\n第二行", images: [img], archived: true, done_at: 1700000000000, related_on: "2026-11-04" }),
   ];
   const [t] = foldTodos(recs);
   assert.equal(t.description, "第一行\n第二行");
   assert.deepEqual(t.images, [img]);
   assert.equal(t.archived, true);
+  assert.equal(t.relatedOn, "2026-11-04");
   assert.equal(t.doneAt, 1700000000000);
 });
 
@@ -598,6 +677,7 @@ const todoFixture = (
   description: "",
   images: [],
   archived: false,
+  relatedOn: null,
   doneAt: null,
   createdAt: null,
   ...over,

@@ -872,6 +872,7 @@ mod tests {
             custom_category: String::new(),
             // 与 `custom_category` 同一格道理：夹具/测试载荷少一个字段，被测的就是自造路径。
             custom_icon: String::new(),
+            related_on: None,
         };
         let insert = |msg_id: &str, seq: i64, p: &TodoPayload| {
             conn.execute(
@@ -926,7 +927,8 @@ mod tests {
             1,
             r#"{"todo_id":"t1","title":"旧","assignees":["alice"],"status":"todo","creator":"alice",
                "deleted":false,"description":"","images":[],"archived":false,
-               "priority":"high","category":"requirement","number":7,"done_at":null}"#,
+               "priority":"high","category":"requirement","number":7,"done_at":null,
+               "related_on":"2026-11-04"}"#,
         );
         // 老对端的一次改状态：这三个键**不存在**（不是 null，也不是默认值）
         insert(
@@ -946,6 +948,11 @@ mod tests {
         assert_eq!(def.priority, "high", "没带的这一格不许被抹回「常规」");
         assert_eq!(def.category, "requirement", "没带的类型不许被抹回「普通任务」");
         assert_eq!(def.number, 7, "创建那条说过的号是绝对坐标");
+        assert_eq!(
+            def.related_on.as_deref(),
+            Some("2026-11-04"),
+            "老对端没带 `related_on` ⇒ 不许把已填的关联时间抹成空"
+        );
 
         // 一份把号写成 0 的更新（老客户端从库里整份重建载荷时就是这个形状）
         insert(
@@ -1011,6 +1018,16 @@ mod tests {
         );
         let def5 = super::latest_todo_def(&conn, conv, "t1").unwrap();
         assert_eq!(def5.custom_icon, "star", "说了就覆盖：这条规矩不许把正常换图标也挡住");
+        // 显式清空必须生效：`null` 是"说了没有"，不是"没说"（否则用户永远删不掉那一天的日期）
+        insert(
+            "m8",
+            "todo_update",
+            8,
+            r#"{"todo_id":"t1","title":"旧","assignees":["alice"],"status":"doing","creator":"alice",
+               "deleted":false,"description":"","images":[],"archived":false,"related_on":null}"#,
+        );
+        let def6 = super::latest_todo_def(&conn, conv, "t1").unwrap();
+        assert!(def6.related_on.is_none(), "显式 null ⇒ 清空关联时间");
     }
 
     /// 任务改动的鉴权判据 —— 两档 + 「只动归档位」的放宽档（口径来自用户 2026-09-17、
@@ -1062,6 +1079,7 @@ mod tests {
             custom_category: String::new(),
             // 与 `custom_category` 同一格道理：夹具/测试载荷少一个字段，被测的就是自造路径。
             custom_icon: String::new(),
+            related_on: None,
         };
         // 参数顺序：(def, actor, group_creator, edits_structure)
         // 档位只有两档（结构 = 改标题/删除；其余 = 描述/图片/指派人/状态/归档），
@@ -1118,6 +1136,7 @@ mod tests {
             category: String,
             custom_category: String,
             custom_icon: String,
+            related_on: String,
         }
         fn req_of(def: &TodoPayload) -> Req {
             Req {
@@ -1132,6 +1151,7 @@ mod tests {
                 category: def.category.clone(),
                 custom_category: def.custom_category.clone(),
                 custom_icon: def.custom_icon.clone(),
+                related_on: def.related_on.clone().unwrap_or_default(),
             }
         }
         fn edit(r: &Req) -> super::TodoEdit<'_> {
@@ -1147,6 +1167,7 @@ mod tests {
                 category: &r.category,
                 custom_category: &r.custom_category,
                 custom_icon: &r.custom_icon,
+                related_on: &r.related_on,
             }
         }
         let def = TodoPayload {
@@ -1166,6 +1187,7 @@ mod tests {
             custom_category: String::new(),
             // 与 `custom_category` 同一格道理：夹具/测试载荷少一个字段，被测的就是自造路径。
             custom_icon: String::new(),
+            related_on: None,
         };
         // 成员窄档只对"什么别的都没动"的请求成立，所以每个否定用例都从**已满足**的那一位
         // 出发再加一处改动 —— 否则测的是另一个判据，不是"夹带"这一条。
@@ -1465,6 +1487,24 @@ mod tests {
         assert!(
             !super::reopen_only_change(&custom_def, &edit(&r)),
             "夹带改自定义类型名不许走还原窄档"
+        );
+        // 关联时间同样是"内容"：成员不能借归档/还原/认领顺手改日期
+        let dated_def = TodoPayload {
+            related_on: Some("2026-11-04".into()),
+            ..def.clone()
+        };
+        let mut r = archive_req(&dated_def);
+        r.related_on = "2026-11-05".into();
+        assert!(
+            !super::archive_only_change(&dated_def, &edit(&r)),
+            "夹带改关联时间不许走归档窄档"
+        );
+        let mut r = req_of(&dated_def);
+        r.status = "todo".into();
+        r.related_on = "2026-11-05".into();
+        assert!(
+            !super::reopen_only_change(&dated_def, &edit(&r)),
+            "夹带改关联时间不许走还原窄档"
         );
 
         // ---- 判权：窄档只对本群成员生效，且不外溢（归档/还原这两档；认领那一档的

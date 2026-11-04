@@ -14,12 +14,11 @@ import TodoImageThumb from "@/components/TodoImageThumb.vue";
 import TodoPickField from "@/components/TodoPickField.vue";
 import TodoIconPicker from "@/components/TodoIconPicker.vue";
 import CharCounter from "@/components/ui/CharCounter.vue";
-import PrimaryBtn from "@/components/ui/PrimaryBtn.vue";
 import {
   TODO_CATEGORIES, TODO_CATEGORY_LABEL_KEY, TODO_CATEGORY_PILL, TODO_CUSTOM_CATEGORY_MAX_LEN, TODO_PRIORITIES, TODO_PRIORITY_LABEL_KEY, TODO_PRIORITY_PILL, TODO_STATUSES, TODO_STATUS_LABEL_KEY, TODO_STATUS_PILL, isTodoTerminalStatus, todoCode, type TodoHistoryChange, type TodoHistoryEntry, type TodoCategory, type TodoItem, type TodoPriority, type TodoStatus, TODO_CUSTOM_ICON_DEFAULT, type TodoCustomIcon, } from "@/utils/todos";
-import { fmtConversationTime } from "@/utils/time";
+import { fmtTodoTime } from "@/utils/time";
 import { Archive, Pencil, Tag, UserPlus } from "lucide-vue-next";
-import { Check, RotateCcw, Trash2 } from "@/components/ui/icons";
+import { RotateCcw, Trash2 } from "@/components/ui/icons";
 import { t } from "@/i18n";
 import { useImeEnterGuard } from "@/composables/useImeEnterGuard";
 
@@ -78,7 +77,6 @@ const emit = defineEmits<{
   (e: "icon", icon: TodoCustomIcon): void;
   /** 认领 = "把自己追加进 assignees"这一步（不新增字段，权限跟着 assignees 走）。 */
   (e: "claim"): void;
-  (e: "complete"): void;
   (e: "archive"): void;
   (e: "restore"): void;
   (e: "edit"): void;
@@ -358,12 +356,14 @@ const fullCode = computed(() =>
       />
       <!-- 元信息：创建时间 / 创建人 / 指派 / 完成时间（用户 2026-09-17：时间要回显） -->
       <div class="gosslan-selectable space-y-1 text-meta text-[var(--gosslan-text-2)]">
-        <div v-if="item.createdAt">{{ t("todo.createdAt", { time: fmtConversationTime(item.createdAt, t) }) }}</div>
+        <div v-if="item.createdAt">{{ t("todo.createdAt", { time: fmtTodoTime(item.createdAt) }) }}</div>
         <div v-if="creator">{{ t("todo.creator", { name: creator }) }}</div>
         <div v-if="assignees" :title="assignees">{{ t("todo.assigneesInline", { names: assignees }) }}</div>
+        <!-- 关联时间：只到年月日，原样显示（不补时分） -->
+        <div v-if="item.relatedOn">{{ t("todo.relatedOnAt", { date: item.relatedOn }) }}</div>
         <!-- 终态时间：完成显示「完成时间」，做不了显示「标记时间」（同一个后端权威时间戳 done_at）。 -->
-        <div v-if="item.doneAt && item.status === 'done'">{{ t("todo.doneAt", { time: fmtConversationTime(item.doneAt, t) }) }}</div>
-        <div v-else-if="item.doneAt && item.status === 'impossible'">{{ t("todo.impossibleAt", { time: fmtConversationTime(item.doneAt, t) }) }}</div>
+        <div v-if="item.doneAt && item.status === 'done'">{{ t("todo.doneAt", { time: fmtTodoTime(item.doneAt) }) }}</div>
+        <div v-else-if="item.doneAt && item.status === 'impossible'">{{ t("todo.impossibleAt", { time: fmtTodoTime(item.doneAt) }) }}</div>
       </div>
 
       <!-- 描述（全文，不截断） -->
@@ -410,7 +410,7 @@ const fullCode = computed(() =>
             :key="entry.msgId + ':' + i"
             class="flex items-baseline gap-2 text-meta leading-relaxed"
           >
-            <span class="shrink-0 tabular-nums text-[var(--gosslan-text-2)]">{{ fmtConversationTime(entry.ts, t) }}</span>
+            <span class="shrink-0 tabular-nums text-[var(--gosslan-text-2)]">{{ fmtTodoTime(entry.ts) }}</span>
             <span class="shrink-0 font-medium text-[var(--gosslan-text)]">{{ nameOf(entry.actor) }}</span>
             <span class="min-w-0 flex-1 text-[var(--gosslan-text-2)]">
               <span v-for="(c, j) in entry.changes" :key="c.kind + j">
@@ -429,19 +429,14 @@ const fullCode = computed(() =>
            （它搬到了 footer 插槽，就是为了不随内容滚走）⇒ 少了这个判断，
            item 为 null 时按钮会去读 `item.status` 而崩。 -->
       <div v-if="item" class="flex flex-wrap items-center gap-2 border-t border-[var(--gosslan-divider)] pt-3">
-        <PrimaryBtn
-          v-if="canChangeStatus && !isTodoTerminalStatus(item.status)"
-          type="button"
-          @click="emit('complete')"
-          >
-          <Check class="h-3.5 w-3.5" />{{ t("todo.complete") }}
-        </PrimaryBtn>
+        <!-- 底部不再放「完成」按钮（用户 2026-11-04：展开任务后那个一键完成太容易误点）：
+             改状态统一由上面的状态胶囊下拉（`TodoPickField`）主动选择，那里已经带权限判断。 -->
         <!-- 进入终态（完成/做不了）之后**手动**归档。
              归档那一档由 `canArchive` 决定 —— 它对**全体群成员**开放（用户 2026-09-24 #37），
              比"改状态"宽；但只在终态给按钮（后端拒绝归档非终态任务）。
              「恢复」仍然要 `canChangeStatus`：它是把状态改回待办，不是"取消归档"。 -->
         <button
-          v-else-if="canArchive && isTodoTerminalStatus(item.status) && !archived"
+          v-if="canArchive && isTodoTerminalStatus(item.status) && !archived"
           type="button"
           class="tap-safe flex items-center gap-1 rounded-[var(--gosslan-radius-md)] bg-[var(--gosslan-hover)] px-3 py-1.5 text-body text-[var(--gosslan-text-2)] transition hover:text-[var(--gosslan-text)]"
           @click="emit('archive')"

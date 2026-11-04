@@ -288,6 +288,7 @@ export function createTodosModule(ctx: ChatContext) {
     category?: string,
     customCategory?: string,
     customIcon?: string,
+    relatedOn?: string,
   ): Promise<MessageRecord> {
     const rec = await api.sendGroupTodo(
       groupId,
@@ -298,6 +299,7 @@ export function createTodosModule(ctx: ChatContext) {
       category,
       customCategory,
       customIcon,
+      relatedOn,
     );
     enqueueMessage(rec);
     return rec;
@@ -312,7 +314,15 @@ export function createTodosModule(ctx: ChatContext) {
    */
   async function updateTodo(
     groupId: string,
-    item: { todoId: string; title: string; assignees: string[]; status: string; description?: string; images?: TodoImage[] },
+    item: {
+      todoId: string;
+      title: string;
+      assignees: string[];
+      status: string;
+      description?: string;
+      images?: TodoImage[];
+      relatedOn?: string | null;
+    },
     patch: Partial<{
       title: string;
       assignees: string[];
@@ -330,6 +340,11 @@ export function createTodosModule(ctx: ChatContext) {
       customCategory: string;
       /** 自定义类型的图标键（仅 custom 有效）。不传 = 保留库里挑过的那枚。 */
       customIcon: string;
+      /**
+       * 关联时间（`YYYY-MM-DD`，只到年月日）。三种取值：
+       * 不传 = 保留库里原值；`""` = 明确清空；`YYYY-MM-DD` = 覆盖。
+       */
+      relatedOn: string;
     }> = {},
   ) {
     const rec = await api.updateGroupTodo(groupId, item.todoId, {
@@ -349,6 +364,9 @@ export function createTodosModule(ctx: ChatContext) {
       // 与上面那条注释同一个坑的另一格：`custom_icon` 声明了却没转发 ⇒
       // 选完图标弹「已更新」而库里一字未动。键集合由 storeContract 那条判据对账。
       customIcon: patch.customIcon,
+      // 关联时间：不传 patch 就沿用 item 里的当前值；显式 `""` 才是"清空"。
+      // 别用 `??` —— 它会把空串当成"没传"，用户就永远删不掉日期。
+      relatedOn: patch.relatedOn !== undefined ? patch.relatedOn : (item.relatedOn ?? undefined),
     });
     enqueueMessage(rec);
   }
