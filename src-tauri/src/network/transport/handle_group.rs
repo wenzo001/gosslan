@@ -70,6 +70,8 @@ async fn handle_group_messages(state: &Arc<AppState>, peer_id: &str, msg: Messag
             // 每成员台账（2026-10-25）：Ack 不再删行，只把该成员行置 delivered。
             // Applied  = 正常送达 → 推进消息状态并播报；
             // LateApplied = 取消/放弃之后才到 → 只记台账，消息状态保持 cancelled/partial；
+            //              例外：消息已判 failed 时也推进成 delivered（决定 2，事实优先，
+            //              `message_promoted = true`）→ 同样要播报，列表与气泡才同源；
             // Duplicate = 重复/伪造/已收尾 → 静默。
             let applied = {
                 let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
@@ -78,11 +80,19 @@ async fn handle_group_messages(state: &Arc<AppState>, peer_id: &str, msg: Messag
             match applied {
                 // Applied / LateApplied 都改了台账，前端都要刷新成员级计数：
                 // · Applied：这一行 pending → delivered（可能还有别的成员没收到 ⇒「N 人待收」变化）；
-                // · LateApplied：取消/放弃之后才到，只记账、消息状态不动（INV-P26）。
+                // · LateApplied：取消/放弃之后才到，只记账、消息状态不动（INV-P26）——
+                //   唯一例外是 `message_promoted = true`（已判 failed 的消息被迟到 Ack 纠正）。
                 // 两者都额外 emit `group-delivery-changed` —— 气泡角标读的是台账，
                 // 少了这一条，「已收到 2/5」会停在旧数字直到下次重开会话。
-                Ok(outcome @ (db::GroupAckOutcome::Applied | db::GroupAckOutcome::LateApplied)) => {
-                    if outcome == db::GroupAckOutcome::Applied {
+                Ok(outcome @ (db::GroupAckOutcome::Applied | db::GroupAckOutcome::LateApplied { .. })) => {
+                    let message_promoted = outcome == db::GroupAckOutcome::Applied
+                        || matches!(
+                            outcome,
+                            db::GroupAckOutcome::LateApplied {
+                                message_promoted: true
+                            }
+                        );
+                    if message_promoted {
                         let _ = state.app.emit(
                             "group-message-acked",
                             &serde_json::json!({ "group_id": group_id, "msg_id": msg_id }),
