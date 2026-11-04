@@ -655,4 +655,29 @@ mod tests {
         assert_eq!(counts[1], ("DISC_BIND_FAILED".to_string(), 1));
         assert_eq!(counts.len(), 2, "裸 code= 与普通大写词不该进表");
     }
+
+    /// Block 4 的落点：入站信任门的拒绝码必须**自动**进诊断包 Top 表。
+    ///
+    /// 这条不是在测正则，而是在钉住"新码不需要另加登记"这个承诺 ——
+    /// 若哪天聚合器改成白名单，这里会红，而不是让现场再摸黑一次。
+    #[test]
+    fn gossip_trust_codes_are_aggregatable() {
+        let parts: &[(&str, String)] = &[(
+            "本轮运行日志",
+            "code=GOSSIP_TRUST_REJECT kind=Chat sender=dev-x anchor=none\n\
+             code=FRIEND_ANCHOR_UNANCHORED peer=dev-y kind=Chat\n\
+             code=GOSSIP_TRUST_REJECT kind=ChatAck sender=dev-x anchor=none\n"
+                .to_string(),
+        )];
+        let counts = super::top_error_codes(parts);
+        assert_eq!(
+            counts[0],
+            ("GOSSIP_TRUST_REJECT".to_string(), 2),
+            "信任门拒绝码必须被数出来（第二个码是 Friend 域的，不该抢首位）"
+        );
+        assert!(
+            counts.iter().any(|(c, n)| c == "FRIEND_ANCHOR_UNANCHORED" && *n == 1),
+            "FRIEND_ANCHOR_* 也必须进表"
+        );
+    }
 }
