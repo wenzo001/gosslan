@@ -915,27 +915,38 @@ JS 侧：任何 WAAPI / `requestAnimationFrame` / 库驱动的动画必须先读
 @media (prefers-reduced-motion: reduce) { .slot-appear { animation: fade 120ms var(--gosslan-ease) } }
 ```
 
-#### 11.3.8 同类动画清点表（2026-11-04 只读排查）
+#### 11.3.8 同类动画清点表（2026-11-04 只读排查，同日补录 2 项漏列）
 
 口径：状态切换**是否重播**一次性进场动画、是否引起**布局位移**。只列"元素出现/消失、
 状态变化"这一类；按压反馈、悬浮变色不算。
 
+**项数不写死**：以本表实际数据行为准（写死数字就会随着加行漂，同 §8.2 那条教训）。
+2026-11-04 现算 = **16 行**（初版 14 行，另有 2 项漏列已在当日补上：浮层 popover 与下拉菜单）。
+文件路径按 2026-11-04 的真实目录记录（组件已按 `message/` `conversation/` `chat/` 分层，
+`ResponsiveLayout.vue` 在 `layouts/`，`designGuards.test.ts` 在 `utils/`）。
+
 | 项 | 动画来源（文件:行） | 状态切换重播？ | 布局位移？ | 风险 |
 |---|---|---|---|---|
-| 消息状态图标 | 原 `<Transition mode="out-in"> + :key="state"`；已改为常驻层 + opacity（`MessageReceipt.vue:348-402`、`style.css:803-830`） | 原：每次都重播 `scale(0.55)`；**已修**为不重播 | 原：`out-in` 空档宽度塌成 0 ⇒ 气泡跳；**已修**为固定 16×16 | 已修 |
-| 未读点 / 未读数徽标 | `@keyframes gosslan-badge-pop`（`style.css:848-855`）+ `UnreadBadge.vue:53,60`；使用点 `ConversationListItem.vue:204`、`ChatHeader.vue:100` | 否：计数只改文本、不重建节点；`0→>0` 是挂载（出现，播一次=正确） | 否（`h-4 min-w-4` 固定高） | 低 |
-| 任务中心状态/进度 | `scaleX` + `transition-transform`（`TaskCenter.vue:430-436`），`animate-pulse` 带 `motion-reduce:animate-none`（436） | 否（进度是连续值，不是进场） | 否（`h-1` 占位固定，`scaleX` 不参与布局） | 低 |
-| 连接/在线指示灯 | 类切换底色（`ConversationListItem.vue:199-201`、`FriendListItem.vue:117`、`ChatHeader.vue:141`） | 无动画（瞬时换色，不重播） | 否（固定小圆点） | 低 |
-| 发送按钮 / 录音按钮 | 仅 `transition`（颜色/背景）`MessageComposer.vue:1064-1068`；**录音按钮未找到**（仓库无语音录制入口） | 否 | 否 | 低 |
-| Toast | `ToastRoot :key="toast.id"` + `data-state` 关键帧（`ToastList.vue:26-30`、`style.css:832-846`） | 每条新 toast 都是新节点 ⇒ 播一次（正确） | 否（`fixed` 容器，`scale` 只走 transform） | 低 |
-| 抽屉/面板开合 | `[data-state="open"]` 关键帧（translate/scale，`style.css:1682-1698`） | 开合各播一次（state 只在开合时变） | 否（`transform` / overlay） | 低 |
-| 骨架与加载态 | `boot-breathe` 无限循环（`boot/skeleton.css:220,241-249`）、`boot-hide` 的 opacity 过渡（70-73）、`.spinner-icon` 旋转 | 循环类，非入场；不存在"重播" | 否 | 低 |
-| 列表项增删 | 消息行**禁止**逐项进场（`designGuards.test.ts:5186`）；motion-v 只用于共享布局药丸 `layout-id`（`NavRail.vue:114/137/161/182`、`ResponsiveLayout.vue:1105/1126/1149/1168`、`GroupTasksBoard.vue:1320`） | 否 | 药丸是共享布局 `transform`，不推列表 | 低 |
-| 设置分区切换 | `<Transition name="settings-swap" mode="out-in"> + :key="section"`（`SettingsWindow.vue:238-239`、`style.css:1612-1628`） | **是**：换分区整块重建，每次都播 enter（`out-in` 中间还有空档） | **可能**：`out-in` 空档里容器没有内容 | **中**，观感改动，待确认 |
-| 整页进场（移动端下钻/返回） | `page-slide*`（`ResponsiveLayout.vue:1194/1199/1204`、`SettingsPanel.vue:197`、`LogViewer.vue:480`、`FavoritePanel.vue:819`） | 整页导航语义，播一次（正确） | `transform` 不参与布局 | 低 |
-| 图片灯箱 | `<Transition>` 只做 opacity（`ImageLightbox.vue:348-353`，带 `motion-reduce:transition-none`） | 打开时淡入（正确） | 否 | 低 |
-| 新消息进场 / 抖动 / 任务闪烁 | `.gosslan-msg-enter`（资格由 `computeEnteringId()` 现算，`ChatWindow.vue:2017`）、`.gosslan-shake`（1715）、`.todo-row-flash`（`GroupTasksBoard.vue:1214/1323`） | 否（各自按触发播一次） | 否（只 `opacity`/`transform`） | 低 |
-| 图片骨架 | 定宽 `w-52` + 预留高度（`MessageImageBubble.vue:128-164`） | 否 | 无尺寸的旧消息解码完成仍会收缩一次（**已知残留**，观感） | 低-中，待确认 |
+| 消息状态图标 | 原 `<Transition mode="out-in"> + :key="state"`；已改为常驻层 + opacity（[MessageReceipt.vue](file:///Users/wendongfu/Documents/code/gosslan/src/components/message/MessageReceipt.vue#L347-L399)、[style.css](file:///Users/wendongfu/Documents/code/gosslan/src/style.css#L802-L830)） | 原：每次都重播 `scale(0.55)`；**已修**为不重播 | 原：`out-in` 空档宽度塌成 0 ⇒ 气泡跳；**已修**为固定 16×16 | 已修 |
+| 未读点 / 未读数徽标 | `@keyframes gosslan-badge-pop`（[style.css](file:///Users/wendongfu/Documents/code/gosslan/src/style.css#L848-L855)）+ [UnreadBadge.vue](file:///Users/wendongfu/Documents/code/gosslan/src/components/UnreadBadge.vue#L53-L60)；使用点 [ConversationListItem.vue](file:///Users/wendongfu/Documents/code/gosslan/src/components/conversation/ConversationListItem.vue#L204)、[ChatHeader.vue](file:///Users/wendongfu/Documents/code/gosslan/src/components/chat/ChatHeader.vue#L100) | 否：计数只改文本、不重建节点；`0→>0` 是挂载（出现，播一次=正确） | 否（`h-4 min-w-4` 固定高） | 低 |
+| 任务中心状态/进度 | `scaleX` + `transition-transform`（[TaskCenter.vue](file:///Users/wendongfu/Documents/code/gosslan/src/components/TaskCenter.vue#L430-L436)），`animate-pulse` 带 `motion-reduce:animate-none`（436） | 否（进度是连续值，不是进场） | 否（`h-1` 占位固定，`scaleX` 不参与布局） | 低 |
+| 连接/在线指示灯 | 类切换底色（[ConversationListItem.vue](file:///Users/wendongfu/Documents/code/gosslan/src/components/conversation/ConversationListItem.vue#L199-L201)、[FriendListItem.vue](file:///Users/wendongfu/Documents/code/gosslan/src/components/conversation/FriendListItem.vue#L117)、[ChatHeader.vue](file:///Users/wendongfu/Documents/code/gosslan/src/components/chat/ChatHeader.vue#L141)） | 无动画（瞬时换色，不重播） | 否（固定小圆点） | 低 |
+| 发送按钮 / 录音按钮 | 仅 `transition`（颜色/背景）[MessageComposer.vue](file:///Users/wendongfu/Documents/code/gosslan/src/components/chat/MessageComposer.vue#L1064-L1068)；**录音按钮未找到**（2026-11-04 `src/` 全库 grep `MediaRecorder`/`getUserMedia`/"录音" = 0 命中） | 否 | 否 | 低 |
+| Toast | `ToastRoot :key="toast.id"` + `data-state` 关键帧（[ToastList.vue](file:///Users/wendongfu/Documents/code/gosslan/src/components/ToastList.vue#L26-L30)、[style.css](file:///Users/wendongfu/Documents/code/gosslan/src/style.css#L832-L846)） | 每条新 toast 都是新节点 ⇒ 播一次（正确） | 否（`fixed` 容器，`scale` 只走 transform） | 低 |
+| 抽屉/面板开合 | `[data-state="open"]` 关键帧（translate/scale，[style.css](file:///Users/wendongfu/Documents/code/gosslan/src/style.css#L1682-L1698)） | 开合各播一次（state 只在开合时变） | 否（`transform` / overlay） | 低 |
+| 浮层淡入淡出（表情面板 / 消息时间 / 回应明细 / 附件菜单） | `.gosslan-popover-in`（[style.css](file:///Users/wendongfu/Documents/code/gosslan/src/style.css#L978-L986)）+ 使用点 [MessageItem.vue](file:///Users/wendongfu/Documents/code/gosslan/src/components/MessageItem.vue#L1754) | 否：**`opacity` 单属性**过渡，`data-state` 只随开关变，元素由 Presence 生命周期管理、不重建节点 | 否（只动 `opacity`；`transform` 属于 floating-ui 定位层，碰了会错位） | 低 |
+| 右键 / 下拉菜单 | `.gosslan-menu[data-state="open"]`（[style.css](file:///Users/wendongfu/Documents/code/gosslan/src/style.css#L1487-L1491)）+ 使用点 [ContextMenu.vue](file:///Users/wendongfu/Documents/code/gosslan/src/components/ContextMenu.vue#L83)、[FriendContextMenu.vue](file:///Users/wendongfu/Documents/code/gosslan/src/components/conversation/FriendContextMenu.vue#L8)、[GroupTasksBoard.vue](file:///Users/wendongfu/Documents/code/gosslan/src/components/GroupTasksBoard.vue#L1720)、[TodoPickField.vue](file:///Users/wendongfu/Documents/code/gosslan/src/components/TodoPickField.vue#L87) | 否：**`opacity` 单属性**、开合各播一次，不重建节点 | 否（`min-width: 168px` 固定，`opacity` 不参与布局） | 低 |
+| 骨架与加载态 | `boot-breathe` 无限循环（[skeleton.css](file:///Users/wendongfu/Documents/code/gosslan/src/boot/skeleton.css#L220) 及 241-249）、`boot-hide` 的 opacity 过渡（[skeleton.css](file:///Users/wendongfu/Documents/code/gosslan/src/boot/skeleton.css#L70-L73)）、`.spinner-icon` 旋转（[style.css](file:///Users/wendongfu/Documents/code/gosslan/src/style.css#L1473)） | 循环类，非入场；不存在"重播" | 否 | 低 |
+| 列表项增删 | 消息行**禁止**逐项进场（[designGuards.test.ts](file:///Users/wendongfu/Documents/code/gosslan/src/utils/designGuards.test.ts#L5186)）；motion-v 只用于共享布局药丸 `layout-id`（[NavRail.vue](file:///Users/wendongfu/Documents/code/gosslan/src/components/NavRail.vue#L114-L182) 的 114/137/161/182、[ResponsiveLayout.vue](file:///Users/wendongfu/Documents/code/gosslan/src/layouts/ResponsiveLayout.vue#L1105-L1168) 的 1105/1126/1149/1168、[GroupTasksBoard.vue](file:///Users/wendongfu/Documents/code/gosslan/src/components/GroupTasksBoard.vue#L1320)） | 否 | 药丸是共享布局 `transform`，不推列表 | 低 |
+| 设置分区切换 | `<Transition name="settings-swap" mode="out-in"> + :key="section"`（[SettingsWindow.vue](file:///Users/wendongfu/Documents/code/gosslan/src/components/SettingsWindow.vue#L238-L239)、[style.css](file:///Users/wendongfu/Documents/code/gosslan/src/style.css#L1615-L1628)） | **是**：换分区整块重建，每次都播 enter（`out-in` 中间还有空档） | **可能**：`out-in` 空档里容器没有内容 | **中**，观感改动，待确认 |
+| 整页进场（移动端下钻/返回） | `page-slide*`（[ResponsiveLayout.vue](file:///Users/wendongfu/Documents/code/gosslan/src/layouts/ResponsiveLayout.vue#L1194-L1204) 的 1194/1199/1204、[SettingsPanel.vue](file:///Users/wendongfu/Documents/code/gosslan/src/components/SettingsPanel.vue#L197)、[LogViewer.vue](file:///Users/wendongfu/Documents/code/gosslan/src/components/LogViewer.vue#L480)、[FavoritePanel.vue](file:///Users/wendongfu/Documents/code/gosslan/src/components/FavoritePanel.vue#L819)） | 整页导航语义，播一次（正确） | `transform` 不参与布局 | 低 |
+| 图片灯箱 | `<Transition>` 只做 opacity（[ImageLightbox.vue](file:///Users/wendongfu/Documents/code/gosslan/src/components/message/ImageLightbox.vue#L348-L353)，带 `motion-reduce:transition-none`） | 打开时淡入（正确） | 否 | 低 |
+| 新消息进场 / 抖动 / 任务闪烁 | `.gosslan-msg-enter`（资格由 `computeEnteringId()` 现算，[ChatWindow.vue](file:///Users/wendongfu/Documents/code/gosslan/src/components/ChatWindow.vue#L2017)）、`.gosslan-shake`（[ChatWindow.vue](file:///Users/wendongfu/Documents/code/gosslan/src/components/ChatWindow.vue#L1715)）、`.todo-row-flash`（[GroupTasksBoard.vue](file:///Users/wendongfu/Documents/code/gosslan/src/components/GroupTasksBoard.vue#L1214) 与 #L1323） | 否（各自按触发播一次） | 否（只 `opacity`/`transform`） | 低 |
+| 图片骨架 | 定宽 `w-52` + 预留高度（[MessageImageBubble.vue](file:///Users/wendongfu/Documents/code/gosslan/src/components/message/MessageImageBubble.vue#L128-L164)） | 否 | 无尺寸的旧消息解码完成仍会收缩一次（**已知残留**，观感） | 低-中，待确认 |
+
+补录两项的判据（2026-11-04 只读）：`src/**/*.css` 全量 `animation:` 枚举 33 处，除循环/spinner 类之外，
+只有 `.gosslan-popover-in` 与 `.gosslan-menu[data-state]` 这两组"出现/消失"动效未进初版表；两者都只动
+`opacity`、都不重建节点，因此风险低，但**遗漏本身是这张表的缺陷**，已补。
 
 ### 11.4 平台分层：**这一条目前是"待收口"，不是"已生效的规矩"**
 
