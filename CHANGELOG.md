@@ -14,6 +14,16 @@
 
 ## [Unreleased]
 
+## [5.17.29] - 2026-11-04
+
+### 内部重构（无用户可感知变化）
+
+- 3B 第二笔：群消息每成员台账（`group_outbox`）的只读投影收进
+  `db/group_offline_queue.rs`：`group_outbox_row_status`（区分「没有这一格」与
+  「读库失败」）与 `group_outbox_counts`（四类行数）。Ack 收尾、取消判定、
+  进度计数、清扫器现在数的是同一批行；`group_outbox_progress_counts` 改为委托投影。
+  新增两个特征用例钉住计数精确性与读失败不可吞。
+
 ## [5.17.28] - 2026-11-04
 
 ### 内部重构（无用户可感知变化）

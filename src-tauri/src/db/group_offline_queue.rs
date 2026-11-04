@@ -29,6 +29,53 @@ pub fn list_group_outbox(conn: &Connection, peer_id: &str) -> Result<Vec<(i64, S
     Ok(rows.filter_map(|r| r.ok()).collect())
 }
 
+/// 群 outbox 的只读投影：某成员这一格的状态。
+///
+/// `Ok(None)` = 没有这一行（重复/伪造 Ack，可以按 Duplicate 处理）；
+/// `Err` = 读库失败（调用方必须返回错误让清扫器重来，不许当成「没有这一行」）。
+pub fn group_outbox_row_status(
+    conn: &Connection,
+    msg_id: &str,
+    peer_id: &str,
+) -> Result<Option<String>> {
+    conn.query_row(
+        "SELECT status FROM group_outbox WHERE msg_id = ?1 AND peer_id = ?2",
+        params![msg_id, peer_id],
+        |r| r.get(0),
+    )
+    .optional()
+}
+
+/// 群 outbox 的只读投影：一条消息的四类行数（每成员台账的计数）。
+/// 四格互斥且求和 = 这条消息在台账里的行数；没有行时四格都是 0。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct GroupOutboxCounts {
+    pub pending: i64,
+    pub delivered: i64,
+    pub cancelled: i64,
+    pub failed: i64,
+}
+
+pub fn group_outbox_counts(conn: &Connection, msg_id: &str) -> Result<GroupOutboxCounts> {
+    conn.query_row(
+        "SELECT
+           COALESCE(SUM(CASE WHEN status = 'pending'   THEN 1 ELSE 0 END), 0),
+           COALESCE(SUM(CASE WHEN status = 'delivered' THEN 1 ELSE 0 END), 0),
+           COALESCE(SUM(CASE WHEN status = 'cancelled' THEN 1 ELSE 0 END), 0),
+           COALESCE(SUM(CASE WHEN status = 'failed'    THEN 1 ELSE 0 END), 0)
+         FROM group_outbox WHERE msg_id = ?1",
+        params![msg_id],
+        |r| {
+            Ok(GroupOutboxCounts {
+                pending: r.get(0)?,
+                delivered: r.get(1)?,
+                cancelled: r.get(2)?,
+                failed: r.get(3)?,
+            })
+        },
+    )
+}
+
 /// GroupAck 的处理结论：调用方据此决定 emit 哪个事件。
 #[derive(Debug, PartialEq, Eq)]
 pub enum GroupAckOutcome {
@@ -52,14 +99,7 @@ pub fn ack_group_delivered(
     peer_id: &str,
 ) -> Result<GroupAckOutcome> {
     let tx = conn.unchecked_transaction()?;
-    let prior: Option<String> = tx
-        .query_row(
-            "SELECT status FROM group_outbox WHERE msg_id = ?1 AND peer_id = ?2",
-            params![msg_id, peer_id],
-            |r| r.get(0),
-        )
-        .optional()?;
-    let Some(prior) = prior else {
+    let Some(prior) = group_outbox_row_status(&tx, msg_id, peer_id)? else {
         return Ok(GroupAckOutcome::Duplicate);
     };
     if prior == "delivered" {
@@ -131,16 +171,13 @@ pub fn cancel_queued_group_message(
     let Some(status) = status else {
         return Ok(GroupMessageCancelOutcome::NotFound);
     };
-    let (pending, delivered, cancelled, failed): (i64, i64, i64, i64) = tx.query_row(
-        "SELECT
-           COALESCE(SUM(CASE WHEN status = 'pending'   THEN 1 ELSE 0 END), 0),
-           COALESCE(SUM(CASE WHEN status = 'delivered' THEN 1 ELSE 0 END), 0),
-           COALESCE(SUM(CASE WHEN status = 'cancelled' THEN 1 ELSE 0 END), 0),
-           COALESCE(SUM(CASE WHEN status = 'failed'    THEN 1 ELSE 0 END), 0)
-         FROM group_outbox WHERE msg_id = ?1",
-        params![msg_id],
-        |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
-    )?;
+    let counts = group_outbox_counts(&tx, msg_id)?;
+    let GroupOutboxCounts {
+        pending,
+        delivered,
+        cancelled,
+        failed,
+    } = counts;
     let next_status = match group_cancel_verdict(
         &status,
         GroupCancelCounts {
@@ -203,15 +240,10 @@ pub fn mark_group_outbox_failed(conn: &Connection, msg_id: &str, peer_id: &str) 
 }
 
 /// 一条消息的 delivered / cancelled 行数（清扫器判断“还能不能整条落 failed”）。
+/// 走同一条只读投影，保证两处数的是同一批行。
 pub fn group_outbox_progress_counts(conn: &Connection, msg_id: &str) -> Result<(i64, i64)> {
-    conn.query_row(
-        "SELECT
-           COALESCE(SUM(CASE WHEN status = 'delivered' THEN 1 ELSE 0 END), 0),
-           COALESCE(SUM(CASE WHEN status = 'cancelled' THEN 1 ELSE 0 END), 0)
-         FROM group_outbox WHERE msg_id = ?1",
-        params![msg_id],
-        |r| Ok((r.get(0)?, r.get(1)?)),
-    )
+    let counts = group_outbox_counts(conn, msg_id)?;
+    Ok((counts.delivered, counts.cancelled))
 }
 
 /// 一条消息在台账里还有没有**任何**行（不论状态）。
@@ -427,6 +459,72 @@ pub fn delete_group_outbox_by_msg_id(conn: &Connection, msg_id: &str) -> Result<
         params![msg_id],
     )?;
     Ok(())
+}
+
+#[cfg(test)]
+mod group_outbox_projection_tests {
+    use super::*;
+
+    fn db() -> Connection {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(crate::db::SCHEMA).unwrap();
+        conn
+    }
+
+    fn seed(conn: &Connection, msg_id: &str, peer: &str, status: &str) {
+        conn.execute(
+            "INSERT INTO group_outbox(msg_id, group_id, peer_id, payload, created_at, status)
+             VALUES(?1, 'g', ?2, '{}', 1, ?3)",
+            params![msg_id, peer, status],
+        )
+        .unwrap();
+    }
+
+    /// 四类计数必须精确、互斥，且只看这一条消息。
+    #[test]
+    fn counts_projection_is_exact_and_scoped_to_one_message() {
+        let conn = db();
+        seed(&conn, "m1", "a", "pending");
+        seed(&conn, "m1", "b", "delivered");
+        seed(&conn, "m1", "c", "cancelled");
+        seed(&conn, "m1", "d", "failed");
+        seed(&conn, "m2", "a", "pending");
+        assert_eq!(
+            group_outbox_counts(&conn, "m1").unwrap(),
+            GroupOutboxCounts {
+                pending: 1,
+                delivered: 1,
+                cancelled: 1,
+                failed: 1,
+            },
+            "四格按状态各数一行，不串入 m2"
+        );
+        assert_eq!(
+            group_outbox_counts(&conn, "missing").unwrap(),
+            GroupOutboxCounts::default(),
+            "没有行时四格都是 0（清扫器据此判「没有可放弃的行」）"
+        );
+        // 进度计数与投影同源：清扫器数的就是同一条消息的同一批行
+        assert_eq!(group_outbox_progress_counts(&conn, "m1").unwrap(), (1, 1));
+    }
+
+    /// 写侧（Ack 收尾）要能分辨「没有这一格」与「读库失败」：前者是重复/伪造 Ack，
+    /// 后者必须让清扫器重来，混成一个 `Option` 会把一次读失败当成重复 Ack 吞掉。
+    #[test]
+    fn row_status_projection_tells_absent_apart_from_unreadable() {
+        let conn = db();
+        seed(&conn, "m1", "a", "pending");
+        assert_eq!(
+            group_outbox_row_status(&conn, "m1", "a").unwrap().as_deref(),
+            Some("pending")
+        );
+        assert_eq!(group_outbox_row_status(&conn, "m1", "ghost").unwrap(), None);
+        conn.execute_batch("DROP TABLE group_outbox").unwrap();
+        assert!(
+            group_outbox_row_status(&conn, "m1", "a").is_err(),
+            "读库失败不许被当成重复 Ack"
+        );
+    }
 }
 
 #[cfg(test)]
