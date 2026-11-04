@@ -37,9 +37,16 @@
             include_str!("../gen/android/app/src/main/java/com/gosslan/app/BackgroundService.kt");
         let rust_bg = include_str!("android_background.rs");
 
+        // 第四条 JNI 桥：安卓应用内升级（PackageInstaller）。同一个坑（描述符写错只在真机
+        // 运行期抛 NoSuchMethodError）⇒ 必须同一条护栏盯着。
+        let kotlin_apk =
+            include_str!("../gen/android/app/src/main/java/com/gosslan/app/ApkInstaller.kt");
+        let rust_apk = include_str!("android_apk_install.rs");
+
         let kotlin_fns = parse_kotlin_funs(kotlin);
         let open_fns = parse_kotlin_funs(kotlin_open);
         let bg_fns = parse_kotlin_funs(kotlin_bg);
+        let apk_fns = parse_kotlin_funs(kotlin_apk);
         for expected in [
             "start",
             "stop",
@@ -89,6 +96,23 @@
                 "没在 BackgroundService.kt 里解析到 `{expected}` —— Kotlin 写法变了就要同步更新本护栏"
             );
         }
+        // 应用内升级桥：Rust 调 install / inspect / canInstall / openSettings；
+        // Kotlin 调 4 个 native 回调。
+        for expected in [
+            "install",
+            "inspect",
+            "canInstall",
+            "openSettings",
+            "nativeAttachApkInstaller",
+            "nativeOnInstallResult",
+            "nativeOnInstallStage",
+            "nativeOnPermissionResult",
+        ] {
+            assert!(
+                apk_fns.iter().any(|(n, _, _)| n == expected),
+                "没在 ApkInstaller.kt 里解析到 `{expected}` —— Kotlin 写法变了就要同步更新本护栏"
+            );
+        }
 
         // ① Rust 登记的每个 Kotlin 方法，描述符必须与 Kotlin 源码推出的**逐字相同**
         let registered = parse_kotlin_method_registrations(rust);
@@ -114,6 +138,15 @@
              解析器失效或有人漏登记",
             bg_registered.len()
         );
+        // 应用内升级桥：应恰好 4 个登记（install / inspect / canInstall / openSettings）。
+        let apk_registered = parse_kotlin_method_registrations(rust_apk);
+        assert_eq!(
+            apk_registered.len(),
+            4,
+            "android_apk_install.rs 应恰好登记 4 个 Kotlin 方法（install + inspect + canInstall + openSettings），实际 {} —— \
+             解析器失效或有人漏登记",
+            apk_registered.len()
+        );
         let mut static_checked = 0usize;
         // ⚠️ **按册配对**比对，不把三条桥的方法名混进一张表再 chain 着查：
         // `start` / `stop` 在 BlePeripheral.kt 与 BackgroundService.kt 里**都存在**，描述符也恰好
@@ -123,6 +156,7 @@
             (&registered, &kotlin_fns, "BlePeripheral.kt", kotlin),
             (&open_registered, &open_fns, "OpenWith.kt", kotlin_open),
             (&bg_registered, &bg_fns, "BackgroundService.kt", kotlin_bg),
+            (&apk_registered, &apk_fns, "ApkInstaller.kt", kotlin_apk),
         ] {
             for (name, desc) in regs {
                 let (_, kotlin_desc, _) = fns
@@ -167,9 +201,9 @@
             }
         }
         assert!(
-            static_checked >= 14,
-            "应检查 ≥14 个 Kotlin 方法：OpenWith 那批先钉死为 6、BlePeripheral 至少 5，\
-             再加后台服务桥的 5 个 ⇒ 14 是「三条桥都走进来了」的最小分母（实际 {static_checked}，\
+            static_checked >= 22,
+            "应检查 ≥22 个 Kotlin 方法：BlePeripheral 7 + OpenWith 6 + BackgroundService 5 + ApkInstaller 4 \
+             ⇒ 22 是「四条桥都走进来了」的最小分母（实际 {static_checked}，\
              少一个就说明某条桥的登记没被解析到）"
         );
 
@@ -178,12 +212,14 @@
             .into_iter()
             .chain(parse_extern_fn_names(rust_open))
             .chain(parse_extern_fn_names(rust_bg))
+            .chain(parse_extern_fn_names(rust_apk))
         {
             let camel = snake_to_lower_camel(&snake);
             let found = kotlin_fns
                 .iter()
                 .chain(open_fns.iter())
                 .chain(bg_fns.iter())
+                .chain(apk_fns.iter())
                 .find(|(n, _, _)| n == &camel)
                 .unwrap_or_else(|| {
                     panic!(
@@ -265,10 +301,12 @@
             include_str!("../gen/android/app/src/main/java/com/gosslan/app/BlePeripheral.kt");
         let open_kt = include_str!("../gen/android/app/src/main/java/com/gosslan/app/OpenWith.kt");
         let bg_kt = include_str!("../gen/android/app/src/main/java/com/gosslan/app/BackgroundService.kt");
+        let apk_kt = include_str!("../gen/android/app/src/main/java/com/gosslan/app/ApkInstaller.kt");
         let cases = [
             (include_str!("transport/ble_android.rs"), ble_kt),
             (include_str!("android_open.rs"), open_kt),
             (include_str!("android_background.rs"), bg_kt),
+            (include_str!("android_apk_install.rs"), apk_kt),
         ];
         let mut checked = 0usize;
         for (rust, kotlin) in cases {
@@ -287,8 +325,9 @@
             }
         }
         assert!(
-            checked >= 6,
-            "应至少检查 6 个 native 方法（BlePeripheral 5 个 + OpenWith 1 个 + BackgroundService 1 个），实际 {checked} —— 解析器失效了"
+            checked >= 11,
+            "应至少检查 11 个 native 方法（BlePeripheral 5 + OpenWith 1 + BackgroundService 1 + ApkInstaller 4），\
+             实际 {checked} —— 解析器失效了"
         );
     }
 
@@ -367,6 +406,9 @@
             )))
             .chain(parse_kotlin_method_registrations(include_str!(
                 "android_background.rs"
+            )))
+            .chain(parse_kotlin_method_registrations(include_str!(
+                "android_apk_install.rs"
             )))
             .collect();
         assert!(
@@ -451,6 +493,43 @@
             5,
             "BackgroundService 块应恰好 keep 5 个方法，实际 {} —— 解析器失效或有人漏加",
             bg_kept.len()
+        );
+
+        // 应用内升级的安装桥同理：4 个 `@JvmStatic` 方法必须各自出现在**它自己的类块**里、
+        // 且写成 `public static`（只 keep 实例方法时 R8 会删掉静态桥，真机报
+        // `Method not found: install`，而 debug 包完全正常）。
+        let apk_block = proguard_class_block(&source_block, "com.gosslan.app.ApkInstaller")
+            .expect(
+                "keep 块里没有 `-keep class com.gosslan.app.ApkInstaller` —— \
+                 R8 会改掉这些名字，release 真机上点「安装」只会 NoSuchMethodError",
+            );
+        for name in ["install", "inspect", "canInstall", "openSettings"] {
+            assert!(
+                apk_block.lines().any(|l| {
+                    let l = l.trim();
+                    l.starts_with("public static") && l.ends_with(';') && l.contains(&format!(" {name}("))
+                }),
+                "ApkInstaller 的 keep 块里缺 `{name}` 的 public static 规则行；块内实测：\n{}",
+                apk_block.trim()
+            );
+        }
+        let apk_kept = proguard_kept_method_names(&apk_block);
+        for name in &apk_kept {
+            assert!(
+                registered.iter().any(|(n, _)| n == name),
+                "ApkInstaller 块里的 `{name}` 在 Rust 侧已经没有登记了（陈旧规则），删掉它"
+            );
+        }
+        assert_eq!(
+            apk_kept.len(),
+            4,
+            "ApkInstaller 块应恰好 keep 4 个方法，实际 {} —— 解析器失效或有人漏加",
+            apk_kept.len()
+        );
+        // native 符号那一头：改名即 UnsatisfiedLinkError，必须整体 keep。
+        assert!(
+            source_block.contains("-keep class com.gosslan.app.ApkInstallerKt"),
+            "keep 块里没有 ApkInstallerKt —— Kotlin 调进 Rust 的 4 个 native 方法改名后真机 UnsatisfiedLinkError"
         );
     }
 

@@ -16,6 +16,11 @@ import {
 } from "@/utils/validation";
 import type { PreviewGallery, PreviewImage } from "@/types";
 import type { UpdaterDownloadEvent, UpdaterInfo, UpdaterStatus } from "@/types";
+import type {
+  AndroidDownloadEvent,
+  AndroidUpdateInfo,
+  AndroidUpdateStatus,
+} from "@/types";
 import { beginOp, endOp } from "@/utils/ipcTracker";
 // 「事件监听注册失败」是用户可见的错误（重连失败时会直接弹在界面上），跟着界面语言走。
 import { t } from "@/i18n";
@@ -805,6 +810,7 @@ export const api = {
 
   // ---------------- 外部链接（左栏「链接」视图） ----------------
   listExternalLinks: () => invoke<ExternalLink[]>("list_external_links"),
+  /** 最近一次「从网址导入」的来源（没导入过 ⇒ null）；刷新键按它重拉。 */
   getExternalLinksImportSource: () =>
     invoke<string | null>("get_external_links_import_source"),
   addExternalLink: (name: string, url: string) =>
@@ -828,6 +834,29 @@ export const api = {
   /** 安装前的复查：清单上出现更高版本时返回它（此时已丢弃手里那份），否则 null。 */
   updaterRecheckReady: () => invoke<UpdaterInfo | null>("updater_recheck_ready"),
   updaterClose: () => invoke<void>("updater_close"),
+
+  // ---------------- 安卓应用内升级（非 Android 目标后端返回 ANDROID_UPDATE_UNSUPPORTED） ----------------
+  /** 查 GitHub Releases 最新版并按 ABI 选包；返回 null = 已是最新。 */
+  androidUpdaterCheck: () => invoke<AndroidUpdateInfo | null>("android_updater_check"),
+  /** 流式下载（后端边下边算 sha256，落 `.part` 后再改名）。 */
+  androidUpdaterDownload: (onEvent: (event: AndroidDownloadEvent) => void) => {
+    const channel = new Channel<AndroidDownloadEvent>();
+    channel.onmessage = onEvent;
+    return invoke<void>("android_updater_download", { onEvent: channel });
+  },
+  /** 复算 sha256 + 解析包名/版本/签名证书；成功后才允许安装。 */
+  androidUpdaterVerify: () => invoke<void>("android_updater_verify"),
+  /** 唤起系统安装器（PackageInstaller）；返回时只代表会话已提交，结果走事件。 */
+  androidUpdaterInstall: () => invoke<void>("android_updater_install"),
+  androidUpdaterCancel: () => invoke<void>("android_updater_cancel"),
+  androidUpdaterStatus: () => invoke<AndroidUpdateStatus>("android_updater_status"),
+  androidUpdaterClose: () => invoke<void>("android_updater_close"),
+  /** 打开「安装未知来源应用」授权页（用户授权后由 onActivityResult 回推 ready）。 */
+  androidUpdaterOpenPermissionSettings: () =>
+    invoke<void>("android_updater_open_permission_settings"),
+  /** 后端状态事件（安装步骤 `preparing/launching/waiting-user` 只从这里来）。 */
+  androidUpdaterOnStatus: (cb: (status: AndroidUpdateStatus) => void) =>
+    listen<AndroidUpdateStatus>("android-update-status", (e) => cb(e.payload)),
   exportExternalLinks: () => invoke<string>("export_external_links"),
   cleanupExternalLinksExport: (path: string) =>
     invoke<void>("cleanup_external_links_export", { path }),

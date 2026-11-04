@@ -74,6 +74,9 @@ mod tests {
             // 中继那三个命令。补登记，让下面那条口令守卫能覆盖到它。
             include_str!("commands/relay.rs"),
             include_str!("commands/updater.rs"),
+            // 安卓应用内升级：`commands.rs` 用 `include!` 装进来的第五册。
+            // 漏登记不会报错，只会让"全部命令面"的守卫看不见它（假绿）。
+            include_str!("commands/android_updater.rs"),
         )
     }
 

@@ -3,6 +3,7 @@ package com.gosslan.app
 import android.os.Bundle
 import androidx.activity.enableEdgeToEdge
 import android.Manifest
+import android.content.Intent
 import android.content.pm.PackageManager
 import android.os.Build
 import androidx.core.app.ActivityCompat
@@ -31,6 +32,14 @@ class MainActivity : TauriActivity() {
     // applicationContext 与 JavaVM/类引用交给 Rust，**不启动服务**。
     // 启动由 Rust 侧在局域网通道起来时调（network::start），服务生命周期与它守的通道完全重合。
     BackgroundService.bootstrap(applicationContext)
+    // 应用内升级：把 Activity 交给 ApkInstaller（PackageInstaller 的「待用户确认」Intent
+    // 必须由 Activity 发起；安装结果与「未知来源」授权结果都经 onActivityResult 回来）。
+    ApkInstaller.bootstrap(this)
+  }
+
+  override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
+    super.onActivityResult(requestCode, resultCode, data)
+    ApkInstaller.onActivityResult(requestCode, resultCode)
   }
 
   /**

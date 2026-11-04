@@ -152,3 +152,14 @@ include!("commands/logs.rs");
 
 // ---- updater.rs（桌面更新；移动端为命令桩） ----
 include!("commands/updater.rs");
+
+// ---- android_updater.rs（Android 应用内升级；非 Android 为命令桩） ----
+// 单独成模块而不是平铺：里面 `PathBuf`/`Arc`/`Duration`/`Serialize` 等导入与
+// `commands.rs` 顶部重名（平铺会 E0252），`fail`/`publish` 这类短名字也容易撞车。
+// 非 Android 目标只编译那几个命令桩 ⇒ 允许那批导入/常量“看起来没被用到”，
+// 否则 `clippy -D warnings` 会在桌面目标上红。
+#[cfg_attr(not(target_os = "android"), allow(dead_code, unused_imports))]
+mod android_updater_impl {
+    include!("commands/android_updater.rs");
+}
+pub use android_updater_impl::*;

@@ -455,6 +455,8 @@ export default {
         "src-tauri/src/win_shortcut.rs", // Windows 专属入口（模块在 test 构建下也编译，跑 .lnk 解析单测）
         "src-tauri/src/open_path.rs",
         "src-tauri/src/android_open.rs", // Android 专属
+        "src-tauri/src/android_apk_install.rs", // Android 专属：应用内升级的安装 JNI 桥（PackageInstaller）
+        "src-tauri/src/android_update_core.rs", // 安卓升级纯逻辑（清单/版本/sha256）；android 目标与测试构建编译
         "src-tauri/src/android_background.rs", // Android 专属（桥）+ 其它平台的空桩，见 ADR-0022
         "src-tauri/src/jni_method.rs", // Android 专属
         "src-tauri/src/notifications.rs",

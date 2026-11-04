@@ -722,6 +722,42 @@ export type UpdaterDownloadEvent =
   | { event: "Progress"; data?: { chunkLength?: number } }
   | { event: "Finished"; data?: undefined };
 
+/** 安卓应用内升级：检查结果（与 Rust `commands/android_updater.rs` 的 `AndroidUpdateInfo` 同形）。 */
+export interface AndroidUpdateInfo {
+  currentVersion: string;
+  version: string;
+  notes: string | null;
+  /** GitHub 资产里的字节数（下载前就能告诉用户"多大"）。 */
+  size: number;
+  /** 发布页 `digest` 字段里的小写 sha256（下载/落盘后各校验一次）。 */
+  sha256: string;
+}
+
+/**
+ * 安卓更新状态：事件 `android-update-status` 与 `android_updater_status` 共用一份形状。
+ *
+ * `phase` 是后端口径（`idle | checking | available | downloading | verifying | ready |
+ * installing | installed | failed | cancelled`），`installStep` 只在 `installing` 期间有值
+ * （`preparing | launching | waiting-user | installing`）—— 这正是「确认之后弹窗不能立刻关掉」
+ * 的依据：`preparing`/`launching` 期间系统安装器**还没出现**，界面必须继续显示状态。
+ */
+export interface AndroidUpdateStatus {
+  phase: string;
+  downloaded: number;
+  total: number | null;
+  version: string | null;
+  size: number | null;
+  sha256: string | null;
+  error: string | null;
+  errorCode: string | null;
+  installStep: string | null;
+}
+
+export type AndroidDownloadEvent =
+  | { event: "Started"; data?: { contentLength?: number | null } }
+  | { event: "Progress"; data?: { chunkLength?: number } }
+  | { event: "Finished"; data?: undefined };
+
 /** 外链 JSON 导入的合并结果（`links` 是导入后的完整列表）。 */
 export interface ExternalLinkImportResult {
   links: ExternalLink[];

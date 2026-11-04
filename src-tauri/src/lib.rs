@@ -9,6 +9,9 @@
 // 膨胀守卫放在**已经物理拆分的模块**里（commands.rs / db.rs / 子模块），
 // 那些文件已控制在 700 行以内，不会误伤。
 
+/// 安卓应用内升级：安装包检查/安装的 JNI 桥（PackageInstaller）。
+#[cfg(target_os = "android")]
+mod android_apk_install;
 /// Android 后台连接的前台服务桥（局域网通道开着时守住 UDP/TCP/Gossip 的 socket，见 ADR-0022）。
 /// 非 Android 目标编译的是三个空实现（这样调用点一处 `#[cfg]` 都不用写），
 /// 所以这里**不加** cfg —— 与下面的 `android_open` 有意不同。
@@ -16,6 +19,13 @@ mod android_background;
 /// Android 的「打开文件」JNI 桥（FileProvider：私有目录文件必须以 content:// 交出去）。
 #[cfg(target_os = "android")]
 mod android_open;
+/// 安卓应用内升级的纯逻辑（清单解析、版本比较、sha256）；主机上可单测。
+///
+/// 只在 Android 构建或测试目标里编译：桌面正式包不需要它，留着会触发
+/// `clippy -D warnings` 的 dead_code（`pub` 在私有模块里同样算未使用）。
+#[cfg(any(target_os = "android", test))]
+#[cfg_attr(not(target_os = "android"), allow(dead_code))]
+mod android_update_core;
 mod commands;
 /// 内容传输**逻辑层**（统一生命周期 + 状态机 + 重试策略）；见 content/mod.rs 的分层说明。
 pub mod content;
@@ -235,6 +245,18 @@ fn note_alloc_failure(what: &str, size: usize, align: usize) {
     ));
     // 这一次的死因也顺手刷进缓存，供下一轮启动的横幅/诊断包对照。
     crate::mem_diag::remember(&fresh);
+}
+
+/// 构造安卓升级会话（Android 目标有真实字段；其它目标是单元结构体）。
+#[cfg(target_os = "android")]
+fn android_updater_session() -> commands::AndroidUpdaterSession {
+    commands::AndroidUpdaterSession::default()
+}
+
+/// 见上面的 Android 版本。
+#[cfg(not(target_os = "android"))]
+fn android_updater_session() -> commands::AndroidUpdaterSession {
+    commands::AndroidUpdaterSession
 }
 
 /// 最早把崩溃现场路径绑好的插件。
@@ -671,7 +693,11 @@ pub fn run() {
         .plugin(tauri_plugin_fs::init())
         .plugin(tauri_plugin_opener::init())
         // 更新会话状态：桌面端持有官方 Update/已下载字节；移动端是空壳（命令桩用）。
-        .manage(commands::UpdaterSession::default());
+        .manage(commands::UpdaterSession::default())
+        // 安卓应用内升级状态：下载/校验/安装阶段可查询，设置窗口重开也能恢复。
+        // 非 Android 目标是个单元结构体，`::default()` 会被 clippy 判为噪音
+        //（`default_constructed_unit_structs`），所以按目标各写一份。
+        .manage(android_updater_session());
 
     // 桌面端记住窗口尺寸/位置（HIG：重开应用恢复窗口状态，macOS/Windows 一致）。
     // 只保存 SIZE/POSITION/MAXIMIZED/FULLSCREEN，**刻意排除 VISIBLE**：
@@ -944,6 +970,14 @@ pub fn run() {
             commands::updater_install,
             commands::updater_recheck_ready,
             commands::updater_close,
+            commands::android_updater_check,
+            commands::android_updater_download,
+            commands::android_updater_verify,
+            commands::android_updater_cancel,
+            commands::android_updater_install,
+            commands::android_updater_status,
+            commands::android_updater_close,
+            commands::android_updater_open_permission_settings,
             commands::save_todo_image_bytes,
             commands::delete_group_announcement,
             commands::list_active_group_announcements,

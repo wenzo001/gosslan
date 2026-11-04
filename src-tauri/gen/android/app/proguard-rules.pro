@@ -109,4 +109,19 @@
 -keep class io.github.gedgygedgy.** { *; }
 -dontwarn com.nonpolynomial.**
 -dontwarn io.github.gedgygedgy.**
+# 应用内升级的安装桥（见 gen/android/.../ApkInstaller.kt）。
+# Rust 侧用 JNI `call_static_method` 调这 4 个 `@JvmStatic` 方法；R8 改名后 release 真机上
+# 点「安装」只会得到 NoSuchMethodError（debug 包不混淆，所以开发期完全看不见）。
+# `install` / `inspect` 的返回类型是 `String?`，JVM 描述符里没有可空这一档 ⇒ `java.lang.String`。
+-keep class com.gosslan.app.ApkInstaller {
+    public static java.lang.String install(java.lang.String);
+    public static java.lang.String inspect(java.lang.String);
+    public static boolean canInstall();
+    public static void openSettings();
+}
+# Kotlin 调进 Rust 的那一头：JVM 按**当前方法名**拼符号
+#（`Java_com_gosslan_app_ApkInstallerKt_nativeOnInstallResult`），改名即 UnsatisfiedLinkError。
+-keep class com.gosslan.app.ApkInstallerKt {
+    native <methods>;
+}
 # GOSSLAN_JNI_END

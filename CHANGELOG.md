@@ -14,6 +14,15 @@
 
 ## [Unreleased]
 
+## [5.18.14] - 2026-11-05
+
+### 安卓应用内升级合入主干（明细见 5.18.10 节）
+
+- 补齐 Rust 侧命令与 JNI 桥、Kotlin `ApkInstaller`/`MainActivity`、前端状态机与设置面板、
+  i18n 键与守卫（`android_update_core` 单测 / `androidService.test.ts` / JNI 签名与 release keep 对账）；
+  安装阶段 `preparing → launching → waiting-user` 期间弹窗保持打开并禁用重复操作，消掉静默期。
+- 同步 `docs/domains.data.mjs` 与 `docs/ARCHITECTURE-MAP.html`（菜单/安装桥归入 `platform` 领域）。
+
 ## [5.18.13] - 2026-11-05
 
 ### 修复：`examples` 编译（5.18.9 给消息加 `lang` 的连带）
