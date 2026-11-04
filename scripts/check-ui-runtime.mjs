@@ -11617,18 +11617,40 @@ async function runAmbient(cdp, url) {
         ok: true, frames: deltas.length,
         long: deltas.filter((d) => d > 50).length,
         p50: Math.round(sorted[Math.floor(sorted.length * 0.5)] || 0),
+        p95: Math.round(sorted[Math.floor(sorted.length * 0.95)] || 0),
         max: Math.round(sorted[sorted.length - 1] || 0),
       };
     })()`);
     console.log(`  ℹ ambient 滚动（${label}）→ ${JSON.stringify(r)}`);
     return r;
   };
-  const scrollDrift = await scrollRun("drift");
-  await setAmbient("off", null);
+  // 各跑 3 遍、**交替取样**，用于把"单次 max 抖动"与"常驻代价"分开：
+  // 2026-11-05 实测两轮（12 个窗口），drift 与 off 都出现过 50/100 ms 的单帧长帧，
+  // p50 两档恒为 17 ms ⇒ 长帧来自机器调度噪声，与动效开关无关。
+  // ⚠️ 判据**仍按原来的单窗口语义**（取第 1 个 drift / off 样本判 long=0 与 p50 差），
+  // 3+3 全样本只打印、不参与判定 —— 把"6 个窗口里恰好 1 个长帧"也判红属于**收紧阈值**，
+  // 需要先拿到"长帧率"参照物与用户签字，不在本轮擅自改。
+  const SCROLL_REPEATS = 3;
+  const scrollSamples = { drift: [], off: [] };
+  for (let i = 0; i < SCROLL_REPEATS; i += 1) {
+    await setAmbient("drift", null, null, null);
+    await sleep(300);
+    scrollSamples.drift.push(await scrollRun(`drift#${i + 1}`));
+    await setAmbient("off", null, null, null);
+    await sleep(300);
+    scrollSamples.off.push(await scrollRun(`off#${i + 1}`));
+  }
+  await setAmbient("drift", null, null, null);
   await sleep(300);
-  const scrollOff = await scrollRun("off");
-  await setAmbient("drift", null);
-  await sleep(300);
+  const okSamples = (xs) => xs.filter((r) => r && r.ok === true);
+  const allDrift = okSamples(scrollSamples.drift);
+  const allOff = okSamples(scrollSamples.off);
+  console.log("  ℹ ambient 滚动全样本（仅诊断，不参与判定）→ " + JSON.stringify({
+    drift: allDrift.map((r) => ({ p50: r.p50, p95: r.p95, max: r.max, long: r.long })),
+    off: allOff.map((r) => ({ p50: r.p50, p95: r.p95, max: r.max, long: r.long })),
+  }));
+  const scrollDrift = scrollSamples.drift[0];
+  const scrollOff = scrollSamples.off[0];
   check("ambient：滚动长帧（>50 ms）= 0", scrollDrift && scrollDrift.ok === true && scrollDrift.long === 0,
     "long=0", JSON.stringify(scrollDrift));
   check("ambient：滚动 p50 不差于关闭档 +2 ms（且 max ≤ 600 ms）",
@@ -11760,14 +11782,15 @@ async function runAmbient(cdp, url) {
     return !!document.getElementById(id);
   })()`);
 
-  // 产品默认档必须是 T3（亮 40% / 暗 36%）—— 截图与读数都从这一档出。
+  // 产品默认档必须是 **T2**（亮 30% / 暗 26%）—— 用户在四档对比图上选定 T2，
+  // 截图与读数都从这一档出；T1/T2/T3/T4 仍可配置（只改 --ambient-alpha，不删档位）。
   await setAppearance(cdp, false);
   const lightDefault = await setAmbient("drift", null, null, null);
   await setAppearance(cdp, true);
   const darkDefault = await setAmbient("drift", null, null, null);
-  check("ambient：产品默认档 = T3（亮 α 0.40 / 暗 α 0.36，与 CSS 默认一致）",
-    Number(lightDefault.alpha) === 0.4 && Number(darkDefault.alpha) === 0.36,
-    "亮 0.4 / 暗 0.36", JSON.stringify({ light: lightDefault.alpha, dark: darkDefault.alpha }));
+  check("ambient：产品默认档 = T2（亮 α 0.30 / 暗 α 0.26，与 CSS 默认一致）",
+    Number(lightDefault.alpha) === 0.3 && Number(darkDefault.alpha) === 0.26,
+    "亮 0.3 / 暗 0.26", JSON.stringify({ light: lightDefault.alpha, dark: darkDefault.alpha }));
 
   await setAppearance(cdp, false);
   await hideContent(true);
@@ -11874,11 +11897,17 @@ async function runAmbient(cdp, url) {
   })()`);
   const settingsShots = [];
   await setAppearance(cdp, false);
-  await setAmbient("drift", TIERS[2].alpha, null, null);
+  await setAmbient("drift", TIERS[1].alpha, null, null);
   await sleep(350);
   await freezeAt(0);
   await sleep(120);
-  settingsShots.push(await shot("08-settings-t3-light"));
+  settingsShots.push(await shot("08-settings-t2-light"));
+  await setAppearance(cdp, true);
+  await setAmbient("drift", TIERS[1].alpha, null, null);
+  await sleep(350);
+  await freezeAt(0);
+  await sleep(120);
+  settingsShots.push(await shot("09-settings-t2-dark"));
 
   // 收尾：把旋钮与冻结状态还原成产品默认，别把夹具状态留给后续段（新 tab 也会重置）
   await unfreeze();
@@ -11895,8 +11924,8 @@ async function runAmbient(cdp, url) {
     mainShots.length === 5 && mainShots.every((p) => fs.existsSync(p)), "5 张", JSON.stringify(mainShots));
   check("ambient：暗色 T2 / T3 两张落盘",
     darkShots.length === 2 && darkShots.every((p) => fs.existsSync(p)), "2 张", JSON.stringify(darkShots));
-  check("ambient：设置页 T3 亮色一张落盘",
-    settingsShots.length === 1 && settingsShots.every((p) => fs.existsSync(p)), "1 张",
+  check("ambient：设置页默认档 T2 亮/暗各一张落盘",
+    settingsShots.length === 2 && settingsShots.every((p) => fs.existsSync(p)), "2 张",
     JSON.stringify(settingsShots));
 }
 
