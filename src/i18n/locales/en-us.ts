@@ -619,6 +619,11 @@ export const enUS: MessageDict = {
   "chat.composer.remind": "Choose people to notify",
   "chat.composer.cancelQuote": "Cancel quote",
   "chat.composer.tooLong": "Input limit reached ({max} characters); the paste was truncated",
+  "chat.composer.pendingAttachments": "Pending images",
+  "chat.composer.removeAttachment": "Remove image",
+  "chat.composer.imageUnsupported": "Unsupported image format ({type}); use PNG, JPEG, GIF, or WebP",
+  "chat.composer.imageDuplicate": "This image is already pending",
+  "chat.composer.imageReadFail": "Failed to read the pasted image",
 
   // ---- Message ----
   "msg.image": "[Image]",

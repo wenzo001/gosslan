@@ -631,6 +631,11 @@ export const zhCN: MessageDict = {
   "chat.composer.remind": "选择提醒的人",
   "chat.composer.cancelQuote": "取消引用",
   "chat.composer.tooLong": "内容已达上限（{max} 字符），本次未全部粘贴",
+  "chat.composer.pendingAttachments": "待发送图片",
+  "chat.composer.removeAttachment": "移除图片",
+  "chat.composer.imageUnsupported": "不支持这种图片格式（{type}），请改用 PNG/JPEG/GIF/WebP",
+  "chat.composer.imageDuplicate": "这张图片已经在待发送列表里",
+  "chat.composer.imageReadFail": "读取粘贴的图片失败",
 
   // ---- 消息 ----
   "msg.image": "[图片]",

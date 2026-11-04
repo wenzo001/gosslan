@@ -681,6 +681,33 @@ select:focus {
 .gosslan-composer:focus-within {
 }
 
+/* 输入框自增高：高度值由 JS 写 inline px，这里只负责把「撑高 / 回落」做成短过渡。
+   回落刻意用同一段短时长（140ms），不要拖沓；reduce 档直接落到目标高度。 */
+.gosslan-composer-editor {
+  transition: height 140ms var(--gosslan-ease);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .gosslan-composer-editor {
+    transition: none;
+  }
+}
+
+/* 「回到最新」按钮只播 fade——不位移/不缩放，因此无需给 reduce 另写降级；
+   节点只在从有到无/无到有时挂载，未读数变化不会重播。 */
+.gosslan-back-to-latest {
+  animation: gosslan-back-to-latest-in 160ms var(--gosslan-ease);
+}
+
+@keyframes gosslan-back-to-latest-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
 /* 所有可输入区域的**插入符（光标）**跟随主题色（用户 2026-09-17：光标要跟主题走）。
    说明：Chromium 只开放 `caret-color`，没有控制光标**宽度**的 CSS 属性 ——
    所以"更粗"做不了，能做的是让它从默认的浅灰变成主题色（深浅两套主题下对比都更强）。

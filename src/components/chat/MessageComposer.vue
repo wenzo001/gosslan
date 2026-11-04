@@ -24,6 +24,9 @@ import { isSelfConversation } from "@/utils/selfChat";
 import { detectCode, stripCodeFence } from "@/utils/codeDetect";
 import { api } from "@/api";
 import AvatarBox from "@/components/ui/AvatarBox.vue";
+import { composerMaxHeight, clampComposerHeight } from "@/utils/composerLayout";
+import { pastedImageRejection, type PastedImageRejection } from "@/utils/composerAttachments";
+import { emojiUrl } from "@/utils/emoji";
 
 const props = defineProps<{
   /** 会话切换时聚焦输入框（切换会话 = 新会话，重置草稿由父组件卸载/挂载决定）。 */
@@ -41,7 +44,7 @@ const emit = defineEmits<{
   (e: "send", payload: { content: string; kind: MsgKind; mentionIds?: string[] }): void;
   // 交出去的是 **File 本身**，不是 data URL：读文件是异步的，若在组件里 await 完再 emit，
   // 接收方只能在"读完之后"才知道要发给谁 —— 期间用户切了会话，图片就发到别的会话去了。
-  // 读取挪到发送方，让会话 id 在粘贴的那一刻被同步捕获（审计阶段 4 · 4.1-5）。
+  // 读取挪到发送方，让会话 id 在按下发送的那一刻被同步捕获（审计阶段 4 · 4.1-5）。
   (e: "send-image", file: File): void;
   (e: "attach"): void;
   (e: "close-quote"): void;
@@ -141,6 +144,150 @@ function warnDraftFull() {
 const editorRef = ref<HTMLDivElement | null>(null);
 const hasDraft = ref(false);
 
+/**
+ * 编辑区封顶高度（px）。按实际字号算：设置里字号有 13/14/16 三档，
+ * 固定 128px 会让「几行封顶」随字号漂移。字号变化时由下面的 watch 重算。
+ */
+const composerMaxPx = ref(composerMaxHeight(14));
+function measureComposerMax() {
+  const el = editorRef.value;
+  if (!el) return;
+  const fontSize = Number.parseFloat(getComputedStyle(el).fontSize);
+  composerMaxPx.value = composerMaxHeight(fontSize);
+}
+
+/**
+ * 输入框自适应高度：内容换行时平滑长高，5 行封顶后内部滚动。
+ *
+ * ⚠️ 不能再用「把 height 设 auto、读 scrollHeight、再写回 px」的老办法：
+ * 读到 scrollHeight 时浏览器已经把 auto 落成内容高度，收缩时过渡的起点变成
+ * 「内容高度」而不是「旧高度」——实测 109→40 会瞬间跳（不是过渡）。
+ *
+ * 改为：拿一个**屏外克隆**量内容高度，真实编辑区的 inline height 不动；
+ * 再一次性写到目标 px。这样浏览器只看到「旧 px → 新 px」，CSS 过渡才能插值。
+ */
+let composerMirror: HTMLDivElement | null = null;
+
+function measureComposerContentHeight(el: HTMLDivElement): number {
+  let mirror = composerMirror;
+  if (!mirror) {
+    mirror = el.cloneNode(false) as HTMLDivElement;
+    // 屏外镜像只用于量高度：不能带 id/role/aria，避免和真实输入框重复。
+    mirror.removeAttribute("id");
+    mirror.removeAttribute("role");
+    mirror.removeAttribute("aria-label");
+    mirror.removeAttribute("data-placeholder");
+    mirror.contentEditable = "false";
+    mirror.setAttribute("aria-hidden", "true");
+    mirror.style.position = "fixed";
+    mirror.style.left = "-10000px";
+    mirror.style.top = "0";
+    mirror.style.visibility = "hidden";
+    mirror.style.pointerEvents = "none";
+    mirror.style.overflow = "hidden";
+    document.body.appendChild(mirror);
+    composerMirror = mirror;
+  }
+  const cs = getComputedStyle(el);
+  mirror.style.width = `${el.getBoundingClientRect().width}px`;
+  mirror.style.height = "auto";
+  mirror.style.maxHeight = "none";
+  // 克隆保留了 class（padding / whitespace / min-height），字号与断行策略跟着设置走。
+  mirror.style.fontFamily = cs.fontFamily;
+  mirror.style.fontSize = cs.fontSize;
+  mirror.style.fontWeight = cs.fontWeight;
+  mirror.style.lineHeight = cs.lineHeight;
+  mirror.style.letterSpacing = cs.letterSpacing;
+  mirror.style.whiteSpace = cs.whiteSpace;
+  mirror.style.wordBreak = cs.wordBreak;
+  mirror.style.overflowWrap = cs.overflowWrap;
+  mirror.style.paddingTop = cs.paddingTop;
+  mirror.style.paddingRight = cs.paddingRight;
+  mirror.style.paddingBottom = cs.paddingBottom;
+  mirror.style.paddingLeft = cs.paddingLeft;
+  mirror.innerHTML = el.innerHTML;
+  return mirror.scrollHeight;
+}
+
+function autoResize() {
+  const el = editorRef.value;
+  if (!el) return;
+  if (!composerMaxPx.value) measureComposerMax();
+  const target = `${clampComposerHeight(measureComposerContentHeight(el), composerMaxPx.value)}px`;
+  // 只在目标值变化时写：同值重复写会打断正在进行的过渡。
+  if (el.style.height !== target) el.style.height = target;
+}
+
+/** 输入框里待发送的图片附件（粘贴图片先入框，发送时才走 send-image）。 */
+interface PendingImage {
+  /** 内容指纹：重复粘贴同一张图时按它去重。 */
+  hash: string;
+  file: File;
+  /** `URL.createObjectURL` 的预览地址，移除/发送/卸载时必须 revoke。 */
+  objectUrl: string;
+}
+const pendingImages = ref<PendingImage[]>([]);
+const pendingImageHashes = new Set<string>();
+/** 只有文本草稿或待发送图片时才允许发送（图片-only 也要能点发送键）。 */
+const canSend = computed(() => hasDraft.value || pendingImages.value.length > 0);
+
+function revokePendingImage(image: PendingImage) {
+  URL.revokeObjectURL(image.objectUrl);
+}
+function removePendingImage(image: PendingImage) {
+  const index = pendingImages.value.indexOf(image);
+  if (index < 0) return;
+  pendingImages.value.splice(index, 1);
+  pendingImageHashes.delete(image.hash);
+  revokePendingImage(image);
+}
+function clearPendingImages() {
+  for (const image of pendingImages.value) revokePendingImage(image);
+  pendingImages.value = [];
+  pendingImageHashes.clear();
+}
+
+/** 内容指纹：重复粘贴同一张位图（File 的 name/lastModified 每次都会变）也能识别。 */
+async function pendingImageHash(file: File): Promise<string> {
+  if (globalThis.crypto?.subtle) {
+    const bytes = await file.arrayBuffer();
+    const digest = await globalThis.crypto.subtle.digest("SHA-256", bytes);
+    return Array.from(new Uint8Array(digest), (b) => b.toString(16).padStart(2, "0")).join("");
+  }
+  // 极老 WebView 的兜底：至少能拦住同名同尺寸同时间的重复文件。
+  return `${file.type}:${file.size}:${file.name}:${file.lastModified}`;
+}
+
+function pastedImageToast(reason: PastedImageRejection, type: string) {
+  app.toast(
+    reason === "too-large"
+      ? t("chat.imageTooLarge", { max: PASTED_IMAGE_LIMIT_MB })
+      : t("chat.composer.imageUnsupported", { type: type || t("msg.image") }),
+    "error",
+  );
+}
+
+/**
+ * 把一张粘贴进来的图片加入待发送列表。
+ *
+ * `convIdAtPaste`：指纹是异步算的，算完必须确认仍停在同一个会话 ——
+ * 否则切走期间算完的图会落进新会话，发送时就发错人了。
+ */
+async function enqueuePastedImage(file: File, convIdAtPaste: string | null) {
+  try {
+    const hash = await pendingImageHash(file);
+    if (props.convId !== convIdAtPaste) return;
+    if (pendingImageHashes.has(hash)) {
+      app.toast(t("chat.composer.imageDuplicate"), "info");
+      return;
+    }
+    pendingImageHashes.add(hash);
+    pendingImages.value.push({ hash, file, objectUrl: URL.createObjectURL(file) });
+  } catch {
+    if (props.convId === convIdAtPaste) app.toast(t("chat.composer.imageReadFail"), "error");
+  }
+}
+
 /** @提及 高亮文字色：输入框底是面板（亮白/暗深灰），按对方气泡同档中性底校验对比。 */
 const composerMentionFg = computed(() =>
   mentionHighlightColor(
@@ -149,14 +296,6 @@ const composerMentionFg = computed(() =>
     resolveChatColors("theme", app.themeColor, app.dark).otherBubble,
   ),
 );
-
-/** 输入框自适应高度：内容换行时自动长高，超过 5 行（128px）出现滚动。 */
-function autoResize() {
-  const el = editorRef.value;
-  if (!el) return;
-  el.style.height = "auto";
-  el.style.height = `${Math.min(el.scrollHeight, 128)}px`;
-}
 
 /** 清空但残留空壳（空的 div/br）时规范化为真·空，让 :empty 的 placeholder 回来。 */
 function normalizeEmpty() {
@@ -167,6 +306,14 @@ function normalizeEmpty() {
 }
 
 watch(codeMode, () => nextTick(() => autoResize()));
+// 字号档位变了 ⇒ 5 行封顶高度也要跟着变，否则 16px 字号下只能看到 4 行多。
+watch(
+  () => app.chatStyle.fontSize,
+  () => nextTick(() => {
+    measureComposerMax();
+    autoResize();
+  }),
+);
 
 // 切换会话：先存旧草稿，再恢复新草稿；输入框不再随会话卸载重挂。
 /**
@@ -175,10 +322,47 @@ watch(codeMode, () => nextTick(() => autoResize()));
  * 这样即使拖入或历史版本留下奇怪标记，也不会被当成 HTML 重新解析执行。
  */
 const DRAFT_TAGS = new Set(["BR", "DIV", "P", "SPAN"]);
+
+/**
+ * 表情 token：输入框里直接显示**表情图形**（与消息气泡同一套资源），
+ * `data-emoji` 保留发送时要读回的 `[名字]` 文本。
+ *
+ * 为什么不把 `[微笑]` 直接当文字：用户 2026-11-04 明确要求"在输入框里直接看到表情本身"。
+ * 消息渲染用的就是这张图片资源（字体无关、跨端一致），输入框跟着它走，
+ * 用户看到的和发出去的才是同一个东西。
+ */
+function createEmojiToken(displayName: string): HTMLSpanElement {
+  const span = document.createElement("span");
+  span.className = "emoji-token";
+  span.contentEditable = "false";
+  span.dataset.emoji = displayName;
+  const src = emojiUrl(displayName);
+  if (src) {
+    const img = document.createElement("img");
+    img.src = src;
+    img.alt = displayName;
+    img.className = "emoji-img";
+    img.draggable = false;
+    img.decoding = "async";
+    span.appendChild(img);
+  } else {
+    span.textContent = displayName;
+  }
+  return span;
+}
+
 function sanitizeDraftHtml(html: string): string {
   const tpl = document.createElement("template");
   tpl.innerHTML = html;
   for (const el of Array.from(tpl.content.querySelectorAll("*"))) {
+    // 表情 token 不从存盘 HTML 里信任 src：按 data-emoji 重建，旧草稿（曾经存的是
+    // 纯文字 `[微笑]`）也能无损升级成图片。
+    if (el.classList.contains("emoji-token")) {
+      const display = (el as HTMLElement).dataset.emoji ?? el.textContent ?? "";
+      const rebuilt = createEmojiToken(display);
+      el.replaceWith(rebuilt);
+      continue;
+    }
     if (!DRAFT_TAGS.has(el.tagName)) {
       el.replaceWith(...Array.from(el.childNodes));
       continue;
@@ -221,7 +405,10 @@ watch(
   () => props.convId,
   async (next, prev) => {
     if (prev) saveComposerDraft(prev, currentDraftHtml());
+    // 待发送图片属于"这个会话的临时草稿"，切走即丢弃，避免把 A 会话的图发进 B 会话。
+    clearPendingImages();
     await nextTick();
+    measureComposerMax();
     restoreDraft(next);
     await nextTick();
     if (!app.isMobile) focusEditor();
@@ -245,10 +432,42 @@ function focusEditor(atEnd = true) {
   sel.addRange(range);
 }
 
-/** 序列化草稿：innerText 把 token 读成 @名字、<br>/块边界读成 \n；
- *  块尾的 \n 是渲染 artifact，剥掉；maxlength 语义挪到发送前截断兜底。 */
+/**
+ * 序列化草稿：文本原样、`<br>`/块边界读成 `\n`、@提及读回 `@名字`、
+ * 表情 token 读回 `data-emoji`（`[名字]`）。
+ *
+ * 为什么不再用 `innerText`：输入框里的表情现在是 `<img>`（见 `createEmojiToken`），
+ * `innerText` 不会返回图片的 `alt`/token 文本，直接用会把表情发丢。
+ * 这里按白名单结构显式走一遍，代价与文本长度线性相关，比 `innerText` 的同步 reflow 更可控。
+ * 块尾的 `\n` 是渲染 artifact，剥掉；maxlength 语义挪到发送前截断兜底。
+ */
 function serializeDraft(): string {
-  return (editorRef.value?.innerText ?? "").replace(/\n+$/, "").slice(0, MAX_INPUT_LENGTH);
+  const root = editorRef.value;
+  if (!root) return "";
+  let out = "";
+  const walk = (node: Node) => {
+    if (node.nodeType === Node.TEXT_NODE) {
+      out += (node as Text).data;
+      return;
+    }
+    if (node.nodeType !== Node.ELEMENT_NODE) return;
+    const el = node as HTMLElement;
+    if (el.classList.contains("emoji-token")) {
+      out += el.dataset.emoji ?? "";
+      return;
+    }
+    if (el.tagName === "BR") {
+      out += "\n";
+      return;
+    }
+    if (el.tagName === "IMG") return;
+    const isBlock = el.tagName === "DIV" || el.tagName === "P";
+    if (isBlock && out && !out.endsWith("\n")) out += "\n";
+    for (const child of el.childNodes) walk(child);
+    if (isBlock && out && !out.endsWith("\n")) out += "\n";
+  };
+  for (const child of root.childNodes) walk(child);
+  return out.replace(/\n+$/, "").slice(0, MAX_INPUT_LENGTH);
 }
 
 /**
@@ -283,13 +502,17 @@ function send(kind?: MsgKind, content?: string) {
   if (content === undefined && k === "code") {
     text = stripCodeFence(text).text;
   }
-  if (k === "text" && !text.trim()) return;
+  const hasText = k !== "text" || text.trim().length > 0;
+  const images = pendingImages.value.map((x) => x.file);
+  // 文本与待发送图片是一个发送动作：只要其中一样有内容就能发（纯图片也允许）。
+  if (!hasText && images.length === 0) return;
   if (k === "text" && props.quote && text.trim()) {
     // 引用头只在 `quote.ts` 构造一次（线上格式，见那里的注释）；这里不再自己拼字面量。
     text = `${buildQuoteHeader(props.quote.sender, props.quote.snippet, props.quote.msgId)}\n${text}`;
   }
   // 清空 DOM 前先把名单读走；非文本（代码 / 由 content 参数直接发的那些）不带名单
   const mentionIds = content === undefined && k === "text" ? draftMentionIds(text) : undefined;
+  clearPendingImages();
   if (editorRef.value) editorRef.value.innerHTML = "";
   hasDraft.value = false;
   mention.value = null;
@@ -303,7 +526,8 @@ function send(kind?: MsgKind, content?: string) {
     clearTimeout(codeDetectTimer);
     codeDetectTimer = null;
   }
-  if (props.quote) emit("close-quote");
+  // 纯图片发送不消耗引用：用户还能接着发送被引用的文字。
+  if (props.quote && hasText) emit("close-quote");
   // 清空 + DOM 更新后重新聚焦并把 caret 放到末尾：连续发送/继续输入无缝衔接
   void nextTick(() => {
     autoResize();
@@ -312,7 +536,10 @@ function send(kind?: MsgKind, content?: string) {
   // 消息已经乐观入列（DOM 立刻更新）→ 给一下轻触觉，确认"发出去了"。
   // 按 Apple 的触觉规则：只在关键动作给，且是按下即给（不是等网络回来才给）。
   haptic("light");
-  emit("send", { content: text, kind: k, mentionIds });
+  // 先发文字，再按入框顺序发图片。渲染侧仍是独立的文字气泡 + 图片气泡，
+  // 这里只把"一次点击"合并；不要合成"带图文字"复合消息。
+  if (hasText) emit("send", { content: text, kind: k, mentionIds });
+  for (const file of images) emit("send-image", file);
 }
 
 /**
@@ -607,9 +834,10 @@ function deleteMentionBeforeCaret(): boolean {
  */
 function syncDraftState() {
   const el = editorRef.value;
-  // textContent 替代 innerText：innerText 每次读取都触发同步 reflow，
-  // 粘贴长文本后这里会被 input 事件高频调用，reflow 累加即"卡死"。
-  hasDraft.value = ((el?.textContent ?? "").trim().length) > 0;
+  // ⚠️ 表情 token 的 textContent 现在是空（里面是 <img>），只看文本会把"只有表情"
+  // 误判成空草稿（发送键点不动、草稿也可能不被保留）。所以 token 存在也算有内容。
+  const hasToken = el?.querySelector(".emoji-token") != null;
+  hasDraft.value = hasToken || ((el?.textContent ?? "").trim().length) > 0;
 }
 
 /** input 统一入口：投影 hasDraft、规范化空壳、非组合输入时更新 @ 触发态。 */
@@ -620,6 +848,8 @@ function onInput(e: Event) {
   else pasteUndo = null;
   syncDraftState();
   normalizeEmpty();
+  // 高度跟着内容走：以前只有切会话/发完才测量，用户连续换行时框并不会长高。
+  autoResize();
   // 同步落盘：这一行必须在事件处理里就跑完（定时器在冻结时不会跑）。
   persistDraft();
   scheduleCodeDetect();
@@ -670,6 +900,11 @@ onUnmounted(() => {
   if (shakeTimer) clearTimeout(shakeTimer);
   // 卸载是少数路径：这里仍走白名单重建（与按输入事件那条原始 innerHTML 路径内容等价）。
   saveComposerDraft(props.convId, currentDraftHtml());
+  // 待发送图片的预览 URL 是浏览器对象 URL，不 revoke 会一直占着 Blob。
+  clearPendingImages();
+  // 量高度用的屏外镜像挂在 body 上，组件卸载时必须摘掉。
+  composerMirror?.remove();
+  composerMirror = null;
 });
 watch(emojiOpen, () => {
   if (emojiOpen.value) autoResize();
@@ -684,10 +919,8 @@ function insertEmoji(e: string) {
   // ⚠️ 两个分支都必须插「token span」，不能插纯文本：
   // token 是 contentEditable=false → 退格/选区删除整体生效；
   // 插纯文本会被浏览器一个字一个字地删掉（就是"表情文字被拆开"的那个 bug）。
-  const span = document.createElement("span");
-  span.className = "emoji-token";
-  span.contentEditable = "false";
-  span.textContent = e; // 如 "[黄脸干杯]"，serializeDraft 经 innerText 读回原文
+  // 视觉上是表情图片（`createEmojiToken`），发送时仍读回 `[名字]` 文本。
+  const span = createEmojiToken(e);
   const sel = window.getSelection();
   if (sel && sel.rangeCount > 0 && el.contains(sel.anchorNode)) {
     const range = sel.getRangeAt(0);
@@ -796,35 +1029,44 @@ async function onPaste(e: ClipboardEvent) {
   const files = Array.from(cd.files ?? []);
   const items = Array.from(cd.items).map((i) => ({ kind: i.kind, type: i.type }));
 
-  // 同步捕获图片 File：files 优先，其次 items.getAsFile()。
+  // 同步捕获图片 File（支持多图）：files 优先，其次 items.getAsFile()。
   // ⚠️ 必须在任何 await 之前完成——Chromium/WebKit 会在 paste 事件返回后清空 clipboardData，
-  // 若先 await 再读 items，getAsFile() 会拿到 null，表现为"截图有时发不出去"。
-  let imageFile: File | null = files.find((x) => x.type.startsWith("image/")) ?? null;
-  if (!imageFile) {
-    for (const item of Array.from(cd.items)) {
-      if (item.kind === "file" && item.type.startsWith("image/")) {
-        imageFile = item.getAsFile();
-        if (imageFile) break;
-      }
-    }
+  // 若先 await 再读 items，getAsFile() 会拿到 null，表现为"截图有时粘不进来"。
+  // files 与 items 可能同时暴露同一张图，这里先按文件描述去重，避免同一次粘贴入框两次。
+  const imageFiles: File[] = [];
+  const seenCandidates = new Set<string>();
+  const addCandidate = (file: File | null) => {
+    if (!file || !file.type.startsWith("image/")) return;
+    const key = `${file.type}:${file.size}:${file.name}:${file.lastModified}`;
+    if (seenCandidates.has(key)) return;
+    seenCandidates.add(key);
+    imageFiles.push(file);
+  };
+  for (const file of files) addCandidate(file);
+  for (const item of Array.from(cd.items)) {
+    if (item.kind === "file" && item.type.startsWith("image/")) addCandidate(item.getAsFile());
   }
 
-  // 图片优先：截图位图即使同时带 "Files"（Win11 临时文件引用），也按图片发送，
+  // 图片优先：截图位图即使同时带 "Files"（Win11 临时文件引用），也按图片入框，
   // 避免去发那个可能已被清理的临时路径。
-  if (imageFile) {
+  if (imageFiles.length > 0) {
     if (isSelfChat.value) {
       app.toast(t("chat.selfChatTextOnly"), "error");
       return;
     }
-    // 前置体积闸（同一判据的 TS 侧镜像，见 utils/imageBytes 的注释）：后端要解完 base64
-    // 才知道超限，而那时 JS 堆 + IPC JSON + Rust Vec 已经各分配了一份。
-    if (imageFile.size > MAX_PASTED_IMAGE_BYTES) {
-      app.toast(t("chat.imageTooLarge", { max: PASTED_IMAGE_LIMIT_MB }), "error");
-      return;
+    // 先入框（可删可继续打字），按发送键时才真正发出去；不再粘贴即发送。
+    // 同步捕获会话 id：指纹运算在 await 之后，切走时据此丢弃，避免发错会话。
+    const convIdAtPaste = props.convId;
+    for (const file of imageFiles) {
+      // 前置闸（同一判据的 TS 侧镜像，见 utils/imageBytes 的注释）：格式不支持/超限都
+      // 给具名原因，不静默吞掉。
+      const reason = pastedImageRejection(file.type, file.size, MAX_PASTED_IMAGE_BYTES);
+      if (reason) {
+        pastedImageToast(reason, file.type);
+        continue;
+      }
+      void enqueuePastedImage(file, convIdAtPaste);
     }
-    // ⚠️ 同步 emit，不许 await：`emit` 之前一旦挂起，ChatWindow 捕获到的就是"切走之后"的
-    // 会话。读取与发送都在那侧完成，粘贴发生在哪个会话就发给哪个会话。
-    emit("send-image", imageFile);
     return;
   }
 
@@ -932,6 +1174,36 @@ async function onPaste(e: ClipboardEvent) {
           <X class="h-3.5 w-3.5" />
         </button>
       </div>
+      <!-- 待发送图片：粘贴进输入框后先出现在这里，可删、可继续打字，按发送键才真正发出。
+           缩略图用 object URL（发送/删除/切会话/卸载时 revoke）。 -->
+      <div
+        v-if="pendingImages.length > 0"
+        class="mb-1.5 flex gap-2 overflow-x-auto pb-0.5"
+        :aria-label="t('chat.composer.pendingAttachments')"
+      >
+        <div
+          v-for="image in pendingImages"
+          :key="image.hash"
+          class="relative h-14 w-14 shrink-0 overflow-hidden rounded-[var(--gosslan-radius-sm)] border border-[var(--gosslan-border)] bg-[var(--gosslan-hover)]"
+        >
+          <img
+            :src="image.objectUrl"
+            :alt="image.file.name"
+            class="h-full w-full object-cover"
+            draggable="false"
+          />
+          <button
+            type="button"
+            class="tap-safe absolute right-0.5 top-0.5 flex h-4 w-4 items-center justify-center rounded-full bg-black/55 text-white transition hover:bg-black/70"
+            :title="t('chat.composer.removeAttachment')"
+            :aria-label="t('chat.composer.removeAttachment')"
+            @mousedown.prevent
+            @click="removePendingImage(image)"
+          >
+            <X class="h-2.5 w-2.5" />
+          </button>
+        </div>
+      </div>
       <!-- contenteditable 编辑区：@提及 为内联原子 token（高亮+整删）。
            用户 2026-09-16 明确要求消息输入框不画任何焦点环（不要主题色/黑框），
            透明即「无替代焦点指示」是用户显式选择 ⇒ 下面那个 div 挂了 `data-focus-ring-ok`
@@ -967,7 +1239,7 @@ async function onPaste(e: ClipboardEvent) {
         :autocorrect="codeMode ? 'off' : 'on'"
         :autocapitalize="codeMode ? 'off' : 'sentences'"
         data-focus-ring-ok
-        class="min-h-10 w-full overflow-y-auto bg-transparent px-0.5 py-0.5 leading-normal whitespace-pre-wrap break-words outline-none"
+        class="gosslan-composer-editor min-h-10 w-full overflow-y-auto bg-transparent px-0.5 py-0.5 leading-normal whitespace-pre-wrap break-words outline-none"
         :class="codeMode ? 'font-mono text-body' : ''"
         :style="{ fontSize: 'var(--gosslan-msg-size, 14px)', overflowWrap: 'anywhere', wordBreak: 'break-word' }"
         @keydown="onKeydown"
@@ -1062,10 +1334,10 @@ async function onPaste(e: ClipboardEvent) {
         </button>
         <button
           class="tap-safe ml-auto flex h-8 shrink-0 items-center rounded-[var(--gosslan-radius-sm)] px-3.5 text-body font-medium transition"
-          :class="hasDraft
+          :class="canSend
             ? 'bg-[var(--gosslan-primary-active)] text-[var(--gosslan-on-primary)] hover:bg-[var(--gosslan-primary-hover)]'
             : 'cursor-default bg-[var(--gosslan-hover)] text-[var(--gosslan-text-2)]'"
-          :disabled="!hasDraft"
+          :disabled="!canSend"
           @mousedown.prevent
           @click="send()"
         >
