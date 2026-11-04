@@ -547,7 +547,7 @@ async function confirmAction() {
         </template>
       </p>
       <div class="mt-5 flex justify-end gap-2">
-        <SecondaryBtn outline size="large" @click="pendingConfirm = null">
+        <SecondaryBtn variant="outline" size="large" @click="pendingConfirm = null">
           {{ t("common.cancel") }}
         </SecondaryBtn>
         <DangerBtn size="large" @click="confirmAction">

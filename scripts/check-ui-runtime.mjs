@@ -15327,6 +15327,9 @@ async function runSettingsMobile(cdp, url) {
         outside: outside.map((b) => String(b.getAttribute('aria-label') || b.textContent || '').trim().slice(0, 24)),
         hasList: text.includes('外观') && text.includes('通用设置') && text.includes('关于'),
         hasFont: text.includes('系统默认'),
+        // 「减少透明效果」两档（zh/en 都认：探针的 --locale 只改 navigator，应用语言仍读 localStorage）
+        reducedRow: /减少透明效果|Reduce transparency/i.test(text),
+        reduceOptions: buttons.filter((b) => /^(减少透明|Reduce)$/.test((b.textContent || '').trim())).length,
         colorPresets: presets.length,
         colorPresetWidths: presetRects.map((r) => +r.width.toFixed(1)),
         colorInputRight: inR ? +inR.right.toFixed(1) : null,
@@ -15376,6 +15379,36 @@ async function runSettingsMobile(cdp, url) {
       JSON.stringify({ presets: s.colorPresets, widths: s.colorPresetWidths,
         inputW: s.colorInputWidth, inputRight: s.colorInputRight,
         lastRight: s.colorLastPresetRight, rowRight: s.colorRowRight }));
+
+    // 「减少透明效果」：受影响段就是外观页这一行。点了之后必须真的落到 DOM
+    // （`data-reduced-transparency=true` → CSS 退实底），且动效背景冻结到 static、布局不溢出。
+    // WKWebView 不支持系统级 prefers-reduced-transparency，所以这条只能验应用内开关。
+    const reduceClicked = await cdp.eval(`(() => {
+      const b = [...document.querySelectorAll('button')]
+        .find((x) => /^(减少透明|Reduce)$/.test((x.textContent || '').trim()));
+      if (!b) return false;
+      b.click();
+      return true;
+    })()`);
+    await sleep(400);
+    const reduced = await cdp.eval(`(() => {
+      const el = document.querySelector('.glass-1, .glass-2, .glass-3, .frost');
+      const cs = el ? getComputedStyle(el) : null;
+      return {
+        attr: document.documentElement.getAttribute('data-reduced-transparency'),
+        ambient: document.documentElement.getAttribute('data-ambient'),
+        scrollW: document.documentElement.scrollWidth,
+        glassBlur: cs ? (cs.backdropFilter || cs.webkitBackdropFilter || 'none') : null,
+      };
+    })()`);
+    check("移动端外观：减少透明开关落到 DOM（实底 + 动效冻结 + 不改布局）",
+      s.reducedRow === true && s.reduceOptions === 1 && reduceClicked === true
+        && reduced.attr === 'true' && reduced.ambient === 'static'
+        && (reduced.glassBlur === null || reduced.glassBlur === 'none')
+        && reduced.scrollW <= s.vw + 1,
+      "两档可见 + 点击后 html[data-reduced-transparency=true] + data-ambient=static + 无横向溢出",
+      JSON.stringify({ row: s.reducedRow, options: s.reduceOptions, clicked: reduceClicked, reduced }));
+
     if (SHOT_PATH) {
       const shot = await cdp.send("Page.captureScreenshot", { format: "png" });
       const p = SHOT_PATH.replace(/\.png$/, "-settingsmobile.png");

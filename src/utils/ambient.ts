@@ -12,7 +12,7 @@
  *   · 不在 JS 里吐 `canvas` / `getImageData` 等逐帧像素路径（AM-04 扫描口径）。
  *   · 页面隐藏时暂停（AM-05）；reduce 档冻结而不是减速（AM-06）。
  */
-import { storageGet, storageSet } from "./safeStorage";
+import { storageGet, storageSet } from "./safeStorage.ts";
 
 export type AmbientSetting = "off" | "drift";
 export type AmbientMode = "off" | "static" | "drift";
@@ -42,13 +42,26 @@ export interface AmbientEnv {
 
 /**
  * 设置 + 环境 → 实际模式。
- * reduced-motion / reduced-transparency 不在这里判：它们由 CSS 直接接管
+ * reduced-motion / **系统级** reduced-transparency 不在这里判：它们由 CSS 直接接管
  * （前者冻结、后者整层隐藏），否则 JS 与 CSS 两份真相会打架。
+ * 例外是**应用内**「减少透明效果」开关：WKWebView 读不到系统特性，只能由 JS 把
+ * `frozen` 置真后走 `static`（冻结到初始帧，不隐藏）。见 `reducedTransparency.ts`。
  */
 export function resolveAmbientMode(setting: AmbientSetting, env: AmbientEnv = {}): AmbientMode {
   if (setting === "off") return "off";
   if (env.coarse || env.narrow) return "static";
   return "drift";
+}
+
+/**
+ * 应用内「减少透明效果」是否生效：生效时动效背景冻结到初始帧（`static`）。
+ * 只影响 `drift` 档；用户明确关掉背景动效（`off`）时仍然隐藏，二者不冲突。
+ */
+let frozen = false;
+
+export function setAmbientFrozen(v: boolean): void {
+  frozen = v;
+  applyAmbientSetting(readStoredAmbient());
 }
 
 function detectCoarse(): boolean {
@@ -76,7 +89,11 @@ export function applyAmbientMode(mode: AmbientMode): void {
 }
 
 export function applyAmbientSetting(setting: AmbientSetting): void {
-  applyAmbientMode(resolveAmbientMode(setting, detectEnv()));
+  if (setting === "off") {
+    applyAmbientMode("off");
+    return;
+  }
+  applyAmbientMode(frozen ? "static" : resolveAmbientMode(setting, detectEnv()));
 }
 
 let installed = false;

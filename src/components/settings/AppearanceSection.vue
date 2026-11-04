@@ -48,6 +48,14 @@ const ambientOptions = computed(() => [
   { value: "drift", label: t("settings.appearance.ambient.drift") },
   { value: "off", label: t("settings.appearance.ambient.off") },
 ]);
+/**
+ * 「减少透明效果」两档。WKWebView 不实现系统级 `prefers-reduced-transparency`，
+ * 所以必须是应用内开关；默认跟随系统（读不到系统偏好 → 关闭），见 utils/reducedTransparency.ts。
+ */
+const transparencyOptions = computed(() => [
+  { value: "false", label: t("settings.appearance.reducedTransparency.off") },
+  { value: "true", label: t("settings.appearance.reducedTransparency.on") },
+]);
 </script>
 
 <template>
@@ -79,6 +87,19 @@ const ambientOptions = computed(() => [
         size="sm"
         :aria-label="t('settings.appearance.ambient.aria')"
         @update:model-value="(v) => app.setAmbientMotion(v as 'off' | 'drift')"
+      />
+    </SettingsRow>
+
+    <SettingsRow
+      :label="t('settings.appearance.reducedTransparency')"
+      :description="t('settings.appearance.reducedTransparency.desc')"
+    >
+      <SegmentedControl
+        :model-value="app.reducedTransparency ? 'true' : 'false'"
+        :options="transparencyOptions"
+        size="sm"
+        :aria-label="t('settings.appearance.reducedTransparency.aria')"
+        @update:model-value="(v) => app.setReducedTransparency(v === 'true')"
       />
     </SettingsRow>
 

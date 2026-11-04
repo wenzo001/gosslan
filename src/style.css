@@ -392,7 +392,6 @@
   --ambient-warm: hsl(32 12% 64%);
   /* 底层底色：接近列表灰，保证半透明浮层过渡自然 */
   --gosslan-app-bg: #edf1f6;
-  --gosslan-shadow: 0 1px 3px rgba(15, 23, 42, 0.05), 0 4px 12px rgba(15, 23, 42, 0.06);
 }
 
 .dark {
@@ -513,7 +512,6 @@
   --ambient-warm: hsl(32 12% 26%);
   /* toast：抬到中性灰 4 档，与画布（1.96）和面板（1.60）都分得开，白字仍有 9.1:1 */
   --gosslan-hud: rgba(72, 72, 74, 0.92);
-  --gosslan-shadow: 0 1px 3px rgba(0, 0, 0, 0.3), 0 4px 12px rgba(0, 0, 0, 0.32);
 }
 
 html,
@@ -1538,10 +1536,6 @@ progress {
   transition: none !important;
 }
 
-.elevated {
-  box-shadow: var(--gosslan-shadow);
-}
-
 /* 移动端安全区 */
 .safe-top {
   height: env(safe-area-inset-top);
@@ -2082,6 +2076,27 @@ img {
     backdrop-filter: none;
     background: rgba(0, 0, 0, 0.62);
   }
+}
+
+/* 应用内「减少透明效果」开关（WKWebView 不实现 prefers-reduced-transparency，
+   用户 2026-11-05 批准自己做）。与上面的系统媒体查询走**同一套实底 token**：
+   这里只改 token 值，不重写 .glass-* 的声明，两条路径的观感不会漂移。
+   动效背景的冻结由 JS 落成 `data-ambient="static"`（停在初始帧），不在这里隐藏。 */
+html[data-reduced-transparency="true"] {
+  --gosslan-glass-1-bg: var(--gosslan-glass-1-fallback);
+  --gosslan-glass-2-bg: var(--gosslan-glass-2-fallback);
+  --gosslan-glass-3-bg: var(--gosslan-glass-3-fallback);
+  --gosslan-glass-1-blur: none;
+  --gosslan-glass-2-blur: none;
+  --gosslan-glass-3-blur: none;
+  --gosslan-blur: none;
+}
+/* `.glass` 只用在 BaseModal 的遮罩上（直接写 rgba，没有 token）：去模糊后改用更实的压暗，
+   与上面系统媒体查询里的同一条逐字一致。 */
+html[data-reduced-transparency="true"] .glass {
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
+  background: rgba(0, 0, 0, 0.62);
 }
 
 /* 2) 提高对比度：把"边界"类 token 提到更实的档位。
