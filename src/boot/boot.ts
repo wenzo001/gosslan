@@ -26,6 +26,8 @@ import { VueQueryPlugin } from "@tanstack/vue-query";
 import { api } from "@/api";
 import { currentLocale, t } from "@/i18n";
 import { copyText } from "@/utils/crashReport";
+import { installAmbient } from "@/utils/ambient";
+import { vPressRipple } from "@/directives/pressRipple";
 
 // ---------------- 前端异常上报（必须在挂载之前注册） ----------------
 // 为什么需要它：界面上"点了没反应"最常见的原因就是**一次 JS 异常** —— 渲染或事件处理里
@@ -186,6 +188,10 @@ export function createWindowApp(root: Component): App {
     reportFrontendError("vue", `${e.message} [${info}]\n${e.stack ?? ""}`);
   };
   app.use(createPinia());
+  // 环境动态层在每个窗口各装一次（主/设置/日志都走这里）。必须在 mount 之前：
+  // 它要排在 #app 前面，晚一帧插进去会让首屏闪一下底色。
+  installAmbient();
+  app.directive("press-ripple", vPressRipple);
   // 异步查询缓存（每个窗口一份 QueryClient：窗口之间本来就不共享内存）。
   // · retry 1 + retryDelay 0：本地 IPC 抖动重试一次，不让用户等退避；
   // · refetchOnWindowFocus false：切回窗口不额外打 IPC（实时事件另有订阅）；

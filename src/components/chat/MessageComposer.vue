@@ -1374,6 +1374,7 @@ async function onPaste(e: ClipboardEvent) {
           <Folder class="h-5 w-5" :stroke-width="1.75" />
         </button>
         <button
+          v-press-ripple
           class="tap-safe ml-auto flex h-8 shrink-0 items-center rounded-[var(--gosslan-radius-sm)] px-3.5 text-body font-medium transition"
           :class="canSend
             ? 'bg-[var(--gosslan-primary-active)] text-[var(--gosslan-on-primary)] hover:bg-[var(--gosslan-primary-hover)]'

@@ -125,6 +125,8 @@ export const canHover =
     ? canHoverByMedia((q) => window.matchMedia(q))
     : false;
 
+export const REDUCED_MOTION_QUERY = "(prefers-reduced-motion: reduce)";
+
 /**
  * 系统有没有开"减弱动态效果"（纯函数，便于单测）。
  *
@@ -135,7 +137,7 @@ export const canHover =
 export function prefersReducedMotionByMedia(
   mm: (query: string) => { matches: boolean },
 ): boolean {
-  return mm("(prefers-reduced-motion: reduce)").matches;
+  return mm(REDUCED_MOTION_QUERY).matches;
 }
 
 /**

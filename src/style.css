@@ -358,16 +358,17 @@
   --gosslan-glass-3-blur: saturate(140%) blur(24px);
   --gosslan-glass-3-fallback: #ffffff;
 
-  /* 环境底（L0）：两团极淡光晕，给玻璃提供"可采样"的内容。
-     ⚠️ **默认关闭**，只有 `<html class="ambient">` 时才挂到 body 上 ——
-     全局底色属于改动最大的那一档观感，用户还没点头，先做成可一键开关的层。
-     alpha 压到 3%–5%（文档 §3.2 的上限）：再高就不是"环境"，正文对比度会跟着底色漂
-     （对比度契约表仍按 --gosslan-app-bg 判，不看这层）。
-     环境层只铺 body、不参与交互；body 自身不滚动（滚动都在内层容器里），
-     所以不需要 `position: fixed`/`background-attachment: fixed`，也不碰 Android WebView 的滚动重绘。 */
-  --gosslan-app-ambient:
-    radial-gradient(70vw 55vh at 8% -10%, color-mix(in srgb, var(--gosslan-primary) 5%, transparent), transparent 70%),
-    radial-gradient(60vw 50vh at 104% 106%, color-mix(in srgb, var(--gosslan-success) 4%, transparent), transparent 72%);
+  /* 环境动态层（AM-01…AM-12，规格 docs/design-language/ambient-motion.md）。
+     **色团强度只有一个旋钮**：--ambient-alpha（亮色默认中档 6%，暗色 7%）。
+     B/C 团由它派生成 2/3，D 团 1/3；调值只改这一个数（改完 AM-01 的读数会跟着变）。
+     α 用 0–1 的数字而不是百分比：噪点层的 opacity 也要从同一个数除出来，
+     百分比在两个属性之间没法共用。 */
+  --ambient-alpha: 0.06;
+  --ambient-alpha-b: calc(var(--ambient-alpha) * 2 / 3);
+  --ambient-alpha-c: calc(var(--ambient-alpha) * 2 / 3);
+  --ambient-alpha-d: calc(var(--ambient-alpha) / 3);
+  /* C 团用不跟主题色的冷蓝灰：三团都是主题色会变成单色渐变，少了"色雾"的层次。 */
+  --ambient-cold: #7c93b3;
   /* 底层底色：接近列表灰，保证半透明浮层过渡自然 */
   --gosslan-app-bg: #edf1f6;
   --gosslan-shadow: 0 1px 3px rgba(15, 23, 42, 0.05), 0 4px 12px rgba(15, 23, 42, 0.06);
@@ -478,10 +479,10 @@
   --gosslan-glass-3-highlight: rgba(248, 250, 252, 0.28);
   --gosslan-glass-3-shadow: 0 24px 64px rgba(0, 0, 0, 0.5);
   --gosslan-glass-3-fallback: #1e293b;
-  /* 环境底暗态：深蓝/靛青光晕，alpha 4%–6%（文档 §3.2） */
-  --gosslan-app-ambient:
-    radial-gradient(70vw 55vh at 8% -10%, color-mix(in srgb, var(--gosslan-primary) 6%, transparent), transparent 70%),
-    radial-gradient(60vw 50vh at 104% 106%, rgba(79, 70, 229, 0.04), transparent 72%);
+  /* 环境动态层暗态：默认 7%（用户拍板的中档；文档给的 8% 留作对比档）。
+     与 :root 的 --ambient-alpha 是同一个旋钮，派生比例自动跟着走。 */
+  --ambient-alpha: 0.07;
+  --ambient-cold: #5b7fb3;
   /* toast：抬到中性灰 4 档，与画布（1.96）和面板（1.60）都分得开，白字仍有 9.1:1 */
   --gosslan-hud: rgba(72, 72, 74, 0.92);
   --gosslan-shadow: 0 1px 3px rgba(0, 0, 0, 0.3), 0 4px 12px rgba(0, 0, 0, 0.32);
@@ -505,11 +506,201 @@ body {
   overflow: hidden;
 }
 
-/* 环境底色（L0）默认**关闭**：用户还没确认要不要改全局底色。
-   打开方式只有一处：给 <html> 加 `ambient` 类（`document.documentElement.classList.add("ambient")`）。
-   body 自身不滚动（滚动都在内层容器里），所以不需要 fixed 背景，也不碰 Android WebView 的滚动重绘。 */
-html.ambient body {
-  background-image: var(--gosslan-app-ambient);
+/* ---------------- 环境动态层（L0 · AM-01…AM-12） ----------------
+   DOM 由 utils/ambient.ts 在 mount 前插到 <body> 首位；这里只负责画。
+   三层状态只认 <html data-ambient>：off（整层 display:none）/ static（冻结雾）/
+   drift（缓慢流动）。低端机与窄屏由 JS 落成 static，reduce 档由下面的媒体查询冻结。
+   z-index 用 -1：文档写的是 0，但 0 会盖住非定位正文（#app 没建 stacking context）；
+   -1 的层级语义相同 —— 透明画布露出它，实色内容压在上面。 */
+.ambient {
+  position: fixed;
+  inset: 0;
+  z-index: -1;
+  overflow: hidden;
+  pointer-events: none;
+  contain: layout paint;
+}
+html[data-ambient="off"] .ambient {
+  display: none;
+}
+/* 画布层在开启动态背景时让位：每个可见区域只留**一层**很薄的纱（α 0.28），
+   雾从下面透出来。纱的底色由各区域自己的 token 给（`--ambient-canvas-base`），
+   所以会话列表仍是 list 灰、聊天仍是 chat 白/深蓝 —— 层级不会被雾抹平。
+   为什么不是全透明：全透明会把聊天画布从 #ffffff 掉到 body 的 #edf1f6，
+   那是"背景变灰"的负优化（用户 2025 的原始要求：只能优化不能负优化）。
+   为什么不是玻璃 blur：这片雾在动，大面 backdrop-filter 会逐帧重算，撞性能红线。
+   嵌套容器用 `ambient-canvas-child`：只清掉自己的实色底，不再叠第二层纱
+   （AM-11 的"不许玻璃套玻璃"）。 */
+html[data-ambient="drift"] .ambient-canvas,
+html[data-ambient="static"] .ambient-canvas {
+  background-color: color-mix(in srgb, var(--ambient-canvas-base, var(--gosslan-chat)) 28%, transparent);
+}
+html[data-ambient="drift"] .ambient-canvas-child,
+html[data-ambient="static"] .ambient-canvas-child {
+  background-color: transparent;
+}
+
+.ambient-blob {
+  position: absolute;
+  border-radius: 50%;
+  pointer-events: none;
+}
+/* A：主题色主团，左上。74vw×62vh，跨 3~6vmax 漂移，72s。 */
+.ambient-blob--a {
+  width: 74vw;
+  height: 62vh;
+  left: 6%;
+  top: -12%;
+  will-change: transform;
+  background: radial-gradient(
+    closest-side,
+    color-mix(in srgb, var(--gosslan-primary) calc(var(--ambient-alpha) * 100%), transparent) 0%,
+    color-mix(in srgb, var(--gosslan-primary) calc(var(--ambient-alpha) * 100%), transparent) 42%,
+    transparent 70%
+  );
+  transform: translate3d(-50%, -50%, 0) scale(1);
+  animation: ambient-drift-a 72s -18s var(--gosslan-ease) infinite alternate;
+}
+/* B：主题色副团，右下。68vw×58vh，96s，反向由外向里。 */
+.ambient-blob--b {
+  width: 68vw;
+  height: 58vh;
+  left: 106%;
+  top: 108%;
+  will-change: transform;
+  background: radial-gradient(
+    closest-side,
+    color-mix(in srgb, var(--gosslan-primary) calc(var(--ambient-alpha-b) * 100%), transparent) 0%,
+    color-mix(in srgb, var(--gosslan-primary) calc(var(--ambient-alpha-b) * 100%), transparent) 42%,
+    transparent 72%
+  );
+  transform: translate3d(2.5vmax, 2vmax, 0) scale(1.04);
+  animation: ambient-drift-b 96s -42s var(--gosslan-ease) infinite alternate;
+}
+/* C：冷蓝灰团，右上。56vw×48vh，120s；不跟主题色，避免三团同色化成单色渐变。 */
+.ambient-blob--c {
+  width: 56vw;
+  height: 48vh;
+  left: 88%;
+  top: 18%;
+  will-change: transform;
+  background: radial-gradient(
+    closest-side,
+    color-mix(in srgb, var(--ambient-cold) calc(var(--ambient-alpha-c) * 100%), transparent) 0%,
+    color-mix(in srgb, var(--ambient-cold) calc(var(--ambient-alpha-c) * 100%), transparent) 42%,
+    transparent 72%
+  );
+  transform: translate3d(0, 2vmax, 0) scale(1);
+  animation: ambient-drift-c 120s -66s var(--gosslan-ease) infinite alternate;
+}
+/* D：静态底洗，只铺不均匀的底、不参与动画（AM-02 的"运行中 ≤3"就靠它）。 */
+.ambient-blob--d {
+  width: 84vw;
+  height: 72vh;
+  left: 40%;
+  top: 55%;
+  background: radial-gradient(
+    closest-side,
+    color-mix(in srgb, var(--gosslan-primary) calc(var(--ambient-alpha-d) * 100%), transparent) 0%,
+    color-mix(in srgb, var(--gosslan-primary) calc(var(--ambient-alpha-d) * 100%), transparent) 42%,
+    transparent 74%
+  );
+  transform: translate3d(-50%, -50%, 0);
+}
+/* 噪点：96×96 可平铺 PNG（3064 B，见 evidence 的 dist 记录）。不参与动画。
+   亮度压在 alpha/2（亮 3% / 暗 3.5%），只负责消色带，不做画面主角。 */
+.ambient-grain {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background-image: url("./assets/ambient-noise.png");
+  background-repeat: repeat;
+  background-size: 96px 96px;
+  opacity: calc(var(--ambient-alpha) / 2);
+}
+
+/* 关键帧只允许 transform / opacity（AM-03 的机器判据按这个白名单扫）。 */
+@keyframes ambient-drift-a {
+  from {
+    transform: translate3d(-50%, -50%, 0) scale(1);
+  }
+  to {
+    transform: translate3d(calc(-50% + 3vmax), calc(-50% + 2vmax), 0) scale(1.05);
+  }
+}
+@keyframes ambient-drift-b {
+  from {
+    transform: translate3d(2.5vmax, 2vmax, 0) scale(1.04);
+  }
+  to {
+    transform: translate3d(0, 0, 0) scale(1);
+  }
+}
+@keyframes ambient-drift-c {
+  from {
+    transform: translate3d(0, 2vmax, 0) scale(1);
+  }
+  to {
+    transform: translate3d(-2vmax, 1vmax, 0) scale(1.03);
+  }
+}
+
+/* AM-05：页面隐藏暂停（属性由 ambient.ts 的 visibilitychange 同步）。 */
+html[data-page-hidden="true"] .ambient-blob {
+  animation-play-state: paused;
+}
+/* AM-06：reduce 档是**冻结**，不是减速 —— 四条动画一律 animation:none，getAnimations 归零。
+   底色仍留在初始帧，所以不会出现"一片死灰"。 */
+@media (prefers-reduced-motion: reduce) {
+  .ambient-blob {
+    animation: none !important;
+  }
+  .press-ripple {
+    display: none !important;
+  }
+}
+
+/* 手机竖屏：只留 A/B 两团漂移（D 底洗与 C 冷团隐藏）。
+   断点必须与 JS/Tailwind 的 md 档（767px）同值，见 platform.test.ts 的布局宽度契约。 */
+@media (max-width: 767px) {
+  .ambient-blob--c,
+  .ambient-blob--d {
+    display: none;
+  }
+}
+/* 低端机：静态雾，不跑动画。 */
+html[data-ambient="static"] .ambient-blob {
+  animation: none !important;
+}
+
+/* ---------------- 按压涟漪（AM-09/AM-10） ----------------
+   只由 `v-press-ripple` 挂在主按钮/发送键上；不是全站按钮。 */
+.press-ripple-host {
+  position: relative;
+  overflow: hidden;
+}
+.press-ripple {
+  position: absolute;
+  left: var(--press-ripple-x);
+  top: var(--press-ripple-y);
+  width: var(--press-ripple-d);
+  height: var(--press-ripple-d);
+  border-radius: 50%;
+  pointer-events: none;
+  background: radial-gradient(closest-side, var(--gosslan-on-primary), transparent 70%);
+  transform: translate3d(-50%, -50%, 0) scale(0.55);
+  opacity: 0.12;
+  animation: press-ripple-in 560ms var(--gosslan-ease) forwards;
+}
+@keyframes press-ripple-in {
+  from {
+    transform: translate3d(-50%, -50%, 0) scale(0.55);
+    opacity: 0.12;
+  }
+  to {
+    transform: translate3d(-50%, -50%, 0) scale(1.25);
+    opacity: 0;
+  }
 }
 
 * {
@@ -1964,4 +2155,13 @@ html.is-mobile .conv-footer-safe {
    两者同时开启会各写一次 scrollTop（用户 2026-10-25：「加表情整个聊天区上下闪一下」）。 */
 .vlist-no-anchor {
   overflow-anchor: none;
+}
+
+/* AM-07：降级 —— 减少透明度 / 高对比 / 强制色 时整层不渲染。
+   放在文件末尾：checkGlassTiers 用 `exec` 找**第一个** reduced-transparency 媒体块当玻璃降级块，
+   这条必须排在它后面，否则会抢走玻璃降级的判据位置（AM-07 的判据自己再单独扫）。 */
+@media (prefers-reduced-transparency: reduce), (prefers-contrast: more), (forced-colors: active) {
+  .ambient {
+    display: none !important;
+  }
 }

@@ -43,6 +43,7 @@
  *
  * 三者都是"写对了但不起作用"，读代码几乎看不出来 —— 正是最该由机器盯住的那类。
  */
+import { REDUCED_MOTION_QUERY } from "./platform.ts";
 import { countNewlines } from "./newlines.ts";
 
 export interface GuardIssue {
@@ -2561,5 +2562,166 @@ export function findHandRolledSegmentLoops(src: string): GuardIssue[] {
         "这里钉的是『把两者拼起来』那几行：抄第三份就会带上第三份的字段差（表情段的 `name`）。",
     });
   }
+  return out.sort((a, b) => a.line - b.line);
+}
+
+// ---------------- AM：环境动态层（docs/design-language/ambient-motion.md） ----------------
+
+export interface AmbientMotionSources {
+  /** `src/style.css` */
+  css: string;
+  /** `src/utils/ambient.ts`（可选：给了就一起扫 AM-04/05） */
+  ambientSource?: string;
+  /** `src/directives/pressRipple.ts`（可选：给了就扫 AM-09/10） */
+  rippleSource?: string;
+}
+
+/** 剥注释后再扫：注释里解释"不要用 canvas / filter"不应算违规。 */
+function stripCssComments(src: string): string {
+  return src.replace(/\/\*[\s\S]*?\*\//g, " ");
+}
+
+function stripJsComments(src: string): string {
+  return src
+    .replace(/\/\*[\s\S]*?\*\//g, " ")
+    .replace(/(^|[^:])\/\/[^\n]*/g, "$1 ");
+}
+
+/**
+ * 环境动态层的静态判据（AM-01…AM-07 / AM-12 / AM-09）。
+ * 运行时项（AM-08 对比度、隐藏后 running=0、性能）由 check-ui-runtime 的 ambient 段实测，
+ * 不在这里假装能判。四条反例见 designGuards.test.ts —— 每一条都必须在对应判据上报红。
+ */
+export function checkAmbientMotion(s: AmbientMotionSources): GuardIssue[] {
+  const out: GuardIssue[] = [];
+  const css = stripCssComments(s.css);
+  const blobNames = ["a", "b", "c", "d"];
+
+  // AM-01：恰好 4 团（多一个就报红）。
+  const allBlobs = new Set([...css.matchAll(/\.ambient-blob--([a-z])\b/g)].map((m) => m[1]));
+  for (const name of allBlobs) {
+    if (!blobNames.includes(name)) {
+      out.push({
+        line: lineAt(css, css.indexOf(`.ambient-blob--${name}`)),
+        message: `AM-01：出现第 5 个色团 .ambient-blob--${name}；每加一团都要重新过性能与对比度判据。`,
+      });
+    }
+  }
+  for (const name of blobNames) {
+    if (!css.includes(`.ambient-blob--${name}`)) {
+      out.push({ line: 0, message: `AM-01：缺少色团 .ambient-blob--${name}（应为 a/b/c/d 四团）。` });
+    }
+  }
+
+  // AM-02：运行中动画 ≤3；D 团必须静态。
+  const animated = blobNames.filter((name) => {
+    const i = css.indexOf(`.ambient-blob--${name}`);
+    if (i < 0) return false;
+    const open = css.indexOf("{", i);
+    const close = css.indexOf("}", open);
+    return open >= 0 && close >= 0 && /animation\s*:/.test(css.slice(open, close));
+  });
+  if (animated.length > 3) {
+    out.push({ line: 0, message: `AM-02：运行中动画 ${animated.length} 个（上限 3）。` });
+  }
+  if (animated.includes("d")) {
+    out.push({ line: 0, message: "AM-02：D 团必须是静态底洗，不能挂 animation。" });
+  }
+
+  // AM-03：关键帧只许 transform / opacity。
+  for (const m of css.matchAll(/@keyframes\s+(ambient-drift-[a-z])\s*\{([\s\S]*?)\n\}/g)) {
+    const props = [...m[2].matchAll(/([a-z-]+)\s*:/g)].map((x) => x[1]);
+    const bad = props.filter((p) => p !== "transform" && p !== "opacity");
+    if (bad.length) {
+      out.push({
+        line: lineAt(css, m.index ?? 0),
+        message: `AM-03：${m[1]} 含非 transform/opacity 属性（${[...new Set(bad)].join(", ")}）；` +
+          "只允许这两类，filter/blur/background-position 一律禁止。",
+      });
+    }
+  }
+
+  // AM-04 / AM-05：源码级（逐帧循环、visibility 暂停）。
+  if (s.ambientSource) {
+    const js = stripJsComments(s.ambientSource);
+    for (const bad of ["requestAnimationFrame", "setInterval", "getImageData", "getContext("]) {
+      if (js.includes(bad)) {
+        out.push({ line: lineAt(js, js.indexOf(bad)), message: `AM-04：ambient 实现里出现 ${bad}（禁止长驻逐帧）。` });
+      }
+    }
+    if (js.includes("<canvas") || /createElement\(\s*"canvas"/.test(js)) {
+      out.push({ line: 0, message: "AM-04：ambient 实现里创建了 canvas（禁止）。" });
+    }
+    if (!js.includes('addEventListener("visibilitychange"')) {
+      out.push({ line: 0, message: "AM-05：缺少 visibilitychange 监听（页面隐藏必须暂停）。" });
+    }
+    if (!js.includes("document.hidden")) {
+      out.push({ line: 0, message: "AM-05：暂停没有读 document.hidden。" });
+    }
+  }
+  if (!css.includes('html[data-page-hidden="true"] .ambient-blob') || !/animation-play-state\s*:\s*paused/.test(css)) {
+    out.push({
+      line: 0,
+      message: 'AM-05：缺少 `html[data-page-hidden="true"] .ambient-blob { animation-play-state: paused }`。',
+    });
+  }
+
+  // AM-06：reduce 档必须 animation:none（只改时长不算）。
+  const reduceAt = css.indexOf(`@media ${REDUCED_MOTION_QUERY}`);
+  if (reduceAt < 0) {
+    out.push({ line: 0, message: "AM-06：缺少 prefers-reduced-motion 降级块。" });
+  } else {
+    const tail = css.slice(reduceAt, reduceAt + 260);
+    if (!/\.ambient-blob[\s\S]*animation\s*:\s*none/.test(tail)) {
+      out.push({ line: lineAt(css, reduceAt), message: "AM-06：reduce 档没有 `animation: none`（必须冻结，不是减速）。" });
+    }
+  }
+
+  // AM-07：减少透明度 / 高对比 / 强制色 → 整层隐藏。
+  // 用最后一次出现：玻璃降级块也在同一条媒体查询上，环境层那条故意排在文件末尾。
+  const hideAt = css.lastIndexOf("@media (prefers-reduced-transparency: reduce)");
+  if (hideAt < 0) {
+    out.push({ line: 0, message: "AM-07：缺少 prefers-reduced-transparency 降级。" });
+  } else {
+    const tail = css.slice(hideAt, hideAt + 220);
+    if (!/\.ambient[\s\S]*display\s*:\s*none/.test(tail)) {
+      out.push({ line: lineAt(css, hideAt), message: "AM-07：降级块里 .ambient 没有 display:none。" });
+    }
+  }
+
+  // AM-12：噪点必须是可平铺 PNG 资源，不许退回 CSS 滤镜实时生成。
+  if (!/\.ambient-grain[\s\S]*url\("\.\/assets\/ambient-noise\.png"\)/.test(css)) {
+    out.push({ line: 0, message: "AM-12：噪点层没有引用 96×96 的 ambient-noise.png。" });
+  }
+  if (css.includes("feTurbulence")) {
+    out.push({ line: 0, message: "AM-12：CSS 里出现 feTurbulence（运行时重绘代价高，改用静态 PNG）。" });
+  }
+
+  // AM-11：环境层不参与交互、不套玻璃。
+  const ambientRule = cssRuleBody(css, ".ambient {");
+  if (ambientRule && !/pointer-events\s*:\s*none/.test(ambientRule)) {
+    out.push({ line: 0, message: "AM-11：.ambient 没有 pointer-events:none。" });
+  }
+  if (/\.ambient[^{]*\{[^}]*backdrop-filter/.test(css)) {
+    out.push({ line: 0, message: "AM-11：环境层里出现 backdrop-filter（不许玻璃套玻璃）。" });
+  }
+
+  // AM-09：涟漪 560ms、scale .55→1.25，且只由显式指令触发。
+  if (!/\.press-ripple[\s\S]*animation\s*:\s*press-ripple-in\s+560ms/.test(css)) {
+    out.push({ line: 0, message: "AM-09：涟漪必须是 560ms 的 press-ripple-in。" });
+  }
+  if (!/@keyframes press-ripple-in[\s\S]*scale\(0\.55\)[\s\S]*scale\(1\.25\)/.test(css)) {
+    out.push({ line: 0, message: "AM-09：涟漪关键帧缺少 scale(.55) → scale(1.25)。" });
+  }
+  if (s.rippleSource) {
+    const js = stripJsComments(s.rippleSource);
+    if (/document\.addEventListener\(\s*"pointerdown"/.test(js)) {
+      out.push({ line: 0, message: "AM-10：涟漪不许做全局 pointerdown 监听（只挂主按钮）。" });
+    }
+    if (!js.includes("active.length >= 2")) {
+      out.push({ line: 0, message: "AM-10：涟漪缺少同屏最多 2 个的护栏。" });
+    }
+  }
+
   return out.sort((a, b) => a.line - b.line);
 }

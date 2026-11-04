@@ -16,6 +16,14 @@ import {
   resolveDark,
   type AppearanceMode,
 } from "@/utils/appearance";
+import {
+  AMBIENT_STORAGE_KEY,
+  applyAmbientSetting,
+  isAmbientSetting,
+  readStoredAmbient,
+  saveStoredAmbient,
+  type AmbientSetting,
+} from "@/utils/ambient";
 import { DEFAULT_CHAT_STYLE, fontPx, parsePeerStyle, type ChatStyleConfig } from "@/utils/chatStyle";
 import {
   t,
@@ -72,6 +80,19 @@ export const useAppStore = defineStore("app", () => {
 
   /** 外观模式（用户意图）。跟随系统时 dark 由系统偏好解析而来。 */
   const appearance = ref<AppearanceMode>(readStoredAppearance(safeStorageBackend));
+  /**
+   * 背景动效档位：`off` / `drift`（默认 drift，见 docs/design-language/ambient-motion.md）。
+   * 启动值先读 localStorage（与主题色/字体同一套"先本地后后端"），后端快照到了再覆盖。
+   * reduce / reduced-transparency 不在这里改档位 —— 由 CSS 冻结或隐藏，避免两份真相。
+   */
+  const ambientMotion = ref<AmbientSetting>(readStoredAmbient());
+
+  function setAmbientMotion(v: AmbientSetting) {
+    ambientMotion.value = v;
+    saveStoredAmbient(v);
+    applyAmbientSetting(v);
+    void persistSettings();
+  }
   /**
    * 系统当前是否为深色。**在 store 创建时就同步取值**，而不是等到 init —— 
    * 这样第一次 applyDarkNow()（可能发生在 init 之前）就已经拿到正确的系统值。
@@ -544,6 +565,7 @@ export const useAppStore = defineStore("app", () => {
         // appearanceMode = 用户的**意图**，重启后据此恢复。
         darkMode: dark.value,
         appearanceMode: appearance.value,
+        ambientMotion: ambientMotion.value,
         notifyEnabled: notifyEnabled.value,
         notifyShowContent: notifyShowContent.value,
         remindSound: remindSound.value,
@@ -707,6 +729,13 @@ export const useAppStore = defineStore("app", () => {
       } else if (has("darkMode") && s.darkMode != null) {
         appearance.value = s.darkMode ? "dark" : "light";
         storageSet(APPEARANCE_STORAGE_KEY, appearance.value);
+      }
+      // 背景动效（null/脏值 → drift）。这是跨窗口同步入口：设置窗口一改，主窗口立刻跟着换。
+      if (has("ambientMotion")) {
+        const v = isAmbientSetting(s.ambientMotion) ? s.ambientMotion : "drift";
+        ambientMotion.value = v;
+        saveStoredAmbient(v);
+        applyAmbientSetting(v);
       }
       // 通知偏好（null = 未设置，按默认 true 处理）
       if (s.notifyEnabled != null) notifyEnabled.value = s.notifyEnabled;
@@ -948,6 +977,9 @@ export const useAppStore = defineStore("app", () => {
     boundIp.value = null;
     chatStyle.value = { ...DEFAULT_CHAT_STYLE };
     peerStyles.value = {};
+    ambientMotion.value = "drift";
+    storageRemove(AMBIENT_STORAGE_KEY);
+    applyAmbientSetting("drift");
     storageRemove(THEME_KEY);
     storageRemove(FONT_KEY);
     storageRemove(APPEARANCE_STORAGE_KEY);
@@ -1101,6 +1133,8 @@ export const useAppStore = defineStore("app", () => {
     /** 外观模式（用户意图）：system | light | dark */
     appearance,
     setAppearance,
+    ambientMotion,
+    setAmbientMotion,
     notifyEnabled,
     notifyShowContent,
     remindSound,

@@ -1713,7 +1713,7 @@ function retryHistory() {
 <template>
   <div
     ref="chatPanelRef"
-    class="relative flex h-full flex-col bg-[var(--gosslan-chat)]"
+    class="ambient-canvas-child relative flex h-full flex-col bg-[var(--gosslan-chat)]"
     :class="{ 'gosslan-shake': shaking }"
     @animationend="onShakeAnimEnd"
   >
@@ -1953,7 +1953,7 @@ function retryHistory() {
       </button>
     </div>
     <!-- 消息区（虚拟滚动，仅纵向）：与头部同底色，无缝衔接 -->
-    <div class="relative min-h-0 flex-1 overflow-hidden bg-[var(--gosslan-chat)]">
+    <div class="ambient-canvas-child relative min-h-0 flex-1 overflow-hidden bg-[var(--gosslan-chat)]">
       <!-- 加载骨架：切会话时**立即**渲染（store 的 loadMessages 完成前 messages[convId] 是 undefined）。
            没有它就会先闪一句"暂无消息，打个招呼吧"再跳出内容——既不准又显得卡。
            规则：UI 先出、数据后到（详见 docs/design-guidelines.md §9）。

@@ -43,6 +43,11 @@ const appearanceOptions = computed(() => [
   { value: "dark", label: t("settings.appearance.dark") },
 ]);
 const fontOptions = computed(() => fonts.map((f) => ({ value: f.value, label: t(f.label) })));
+/** 背景动效只有两档（开关 + 降级档），默认「缓慢流动」。 */
+const ambientOptions = computed(() => [
+  { value: "drift", label: t("settings.appearance.ambient.drift") },
+  { value: "off", label: t("settings.appearance.ambient.off") },
+]);
 </script>
 
 <template>
@@ -61,6 +66,19 @@ const fontOptions = computed(() => fonts.map((f) => ({ value: f.value, label: t(
         size="sm"
         :aria-label="t('settings.appearance.mode.aria')"
         @update:model-value="(v) => app.setAppearance(v as AppearanceMode)"
+      />
+    </SettingsRow>
+
+    <SettingsRow
+      :label="t('settings.appearance.ambient')"
+      :description="t('settings.appearance.ambient.desc')"
+    >
+      <SegmentedControl
+        :model-value="app.ambientMotion"
+        :options="ambientOptions"
+        size="sm"
+        :aria-label="t('settings.appearance.ambient.aria')"
+        @update:model-value="(v) => app.setAmbientMotion(v as 'off' | 'drift')"
       />
     </SettingsRow>
 
