@@ -51,3 +51,39 @@ test("行内标签在中英两份里都存在且非空", () => {
     }
   }
 });
+
+/**
+ * 归档入口的门控与可辨性（用户 2026-11-05 #1/#2）。
+ *
+ * 三条事实一起判：
+ *   ① 唯一门控 `canArchive` 必须带终态判断 —— 否则 todo/doing 行也会挂出「更多」入口；
+ *   ② 归档只能从行尾 ⋯ 的次级菜单里出来，行尾那枚与 ✓完成 同尺寸同色的独立圆钮必须消失；
+ *   ③ ⋯ 这一下只是开菜单，所以触屏误点的第二下不会把刚完成的任务直接归档。
+ *
+ * **反例自证**：第二个用例把门控那一句删掉，同一个正则必须判红。否则这条检查只是
+ * "照着源码抄一遍"——源码被改坏它也照样绿（AGENTS 点名的"检查还在跑、但已查不到东西"）。
+ */
+const ARCHIVE_GATE_SRC =
+  /function canArchive\(x: TodoItem\): boolean \{\s*return isTodoTerminalStatus\(x\.status\) && canArchiveOrReopenTodo\(/;
+
+test("归档入口只对终态开放，且已收进行尾 ⋯ 次级菜单", () => {
+  assert.match(SRC, ARCHIVE_GATE_SRC, "`canArchive` 丢了终态判断 ⇒ todo/doing 也能看到归档入口");
+  assert.match(SRC, /data-todo-more[\s\S]{0,800}?toggleRowMenu\(x, \$event, 'more'\)/, "归档入口没有走 ⋯ 菜单");
+  assert.match(SRC, /data-todo-archive-item/, "菜单里没有归档项 ⇒ 探针的运行时钩子找不到目标");
+  assert.match(SRC, /v-else\s*\n\s*data-todo-archive-item/, "归档项不在 ⋯ 菜单分支里 ⇒ 可能又回到了行尾");
+  // 反面：行尾独立归档圆钮（h-7 w-7 + 同色 text-2，与 ✓完成 一模一样）必须已经不存在
+  assert.equal(
+    /h-7 w-7 shrink-0 items-center justify-center rounded-full text-\[var\(--gosslan-text-2\)\][\s\S]{0,160}archiveTodo\(x\)/.test(SRC),
+    false,
+    "行尾还留着独立归档圆钮 ⇒ 与 ✓完成 同尺寸同色的误点风险回来了",
+  );
+});
+
+test("反例自证：删掉终态门控后，同一条判据必须红", () => {
+  const withoutGate = SRC.replace(
+    /(function canArchive\(x: TodoItem\): boolean \{\s*return )isTodoTerminalStatus\(x\.status\) && /,
+    "$1",
+  );
+  assert.notEqual(withoutGate, SRC, "反例构造失败：没找到 canArchive 里的终态判断，判据会空转");
+  assert.doesNotMatch(withoutGate, ARCHIVE_GATE_SRC, "删掉终态门控后判据仍然绿 ⇒ 这条检查在空转");
+});

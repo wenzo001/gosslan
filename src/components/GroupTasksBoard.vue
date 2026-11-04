@@ -71,7 +71,7 @@ import { t } from "@/i18n";
 import DangerBtn from "@/components/ui/DangerBtn.vue";
 import SecondaryBtn from "@/components/ui/SecondaryBtn.vue";
 import PrimaryBtn from "@/components/ui/PrimaryBtn.vue";
-import { Archive, Bug, CheckCircle2, ChevronDown, ChevronsDown, Circle, CircleDot, Clock, ImagePlus, Lightbulb, ListTodo, Minus, Plus, Tag, XCircle, Zap } from "lucide-vue-next";
+import { Archive, Bug, CheckCircle2, ChevronDown, ChevronsDown, Circle, CircleDot, Clock, ImagePlus, Lightbulb, ListTodo, Minus, MoreHorizontal, Plus, Tag, XCircle, Zap } from "lucide-vue-next";
 import { Check, RotateCcw, Trash2, X } from "@/components/ui/icons";
 import { createInitScope, type InitScope } from "@/utils/initScope";
 
@@ -230,16 +230,19 @@ const filter = ref<TodoFilter>("mine");
  * 本仓只留互斥注册与「滚动就收起」（虚拟锚点是入口当时的坐标，会跟丢）。
  */
 const rowMenuId = ref<string | null>(null);
+/** 同一个入口位置有两种菜单（用户 2026-11-05）：状态胶囊开「切状态」，行尾 ⋯ 开「归档」。 */
+const rowMenuKind = ref<"status" | "more">("status");
 /** Teleport 出去之后拿不到"是哪条任务"，所以目标项自己也要留一份。 */
 const rowMenuTodo = ref<TodoItem | null>(null);
 /** 虚拟锚点：入口右缘 + 下缘。翻转/贴边由 Reka 的 floating-ui 负责，不再手算 top/bottom。 */
 const rowMenuPos = ref<{ x: number; y: number; width: number } | null>(null);
 const ROW_MENU_W = 128; // 8rem
 
-function openRowMenu(x: TodoItem, anchor: HTMLElement) {
+function openRowMenu(x: TodoItem, anchor: HTMLElement, kind: "status" | "more" = "status") {
   const rect = anchor.getBoundingClientRect();
   rowMenuTodo.value = x;
   rowMenuId.value = x.todoId;
+  rowMenuKind.value = kind;
   rowMenuPos.value = {
     x: rect.right,
     y: rect.bottom,
@@ -247,16 +250,18 @@ function openRowMenu(x: TodoItem, anchor: HTMLElement) {
   };
   claimRowMenu();
 }
-function toggleRowMenu(x: TodoItem, e: MouseEvent) {
-  if (rowMenuId.value === x.todoId) {
+function toggleRowMenu(x: TodoItem, e: MouseEvent, kind: "status" | "more" = "status") {
+  // 同一个入口再点一次才收起；两个不同入口之间互斥（不会同时开两个菜单）。
+  if (rowMenuId.value === x.todoId && rowMenuKind.value === kind) {
     closeRowMenu();
     return;
   }
   const el = e.currentTarget as HTMLElement | null;
-  if (el) openRowMenu(x, el);
+  if (el) openRowMenu(x, el, kind);
 }
 function closeRowMenu() {
   rowMenuId.value = null;
+  rowMenuKind.value = "status";
   rowMenuTodo.value = null;
   rowMenuPos.value = null;
   releaseRowMenu();
@@ -460,7 +465,11 @@ function canEditAssigneesOf(x: TodoItem): boolean {
 }
 /**
  * 「归档」这一档对**全体群成员**开放（用户 2026-09-24 #37），
- * 但只在终态（完成 / 做不了）给按钮（后端对非终态任务的归档请求是明确拒绝，不是静默丢弃）。
+ * 但只在终态（完成 / 做不了）给入口（后端对非终态任务的归档请求是明确拒绝，不是静默丢弃）。
+ *
+ * ⚠️ 这一句是归档入口**唯一**的门控（用户 2026-11-05 #1）：行尾 ⋯ 的 `v-if` 直接用它，
+ * 菜单项不再自带一套判据 —— 两处各判一次，改了一处就会出现"按钮在、点了被拒"的静默失效。
+ * 门控被拿掉时由 `taskRowHierarchy.test.ts` 的判据拦下（含反例自证）。
  */
 function canArchive(x: TodoItem): boolean {
   return isTodoTerminalStatus(x.status) && canArchiveOrReopenTodo(x, myId.value, groupCreator.value, groupMembers.value);
@@ -1476,8 +1485,8 @@ watch(
                 :title="t('todo.statusLabel')"
                 :aria-label="t('todo.statusLabel')"
                 aria-haspopup="menu"
-                :aria-expanded="rowMenuId === x.todoId"
-                @click.stop="toggleRowMenu(x, $event)"
+                :aria-expanded="rowMenuId === x.todoId && rowMenuKind === 'status'"
+                @click.stop="toggleRowMenu(x, $event, 'status')"
               >
                 {{ statusText(x.status) }}
                 <ChevronDown class="h-3 w-3" />
@@ -1504,18 +1513,25 @@ watch(
             >
               <Check class="h-4 w-4" />
             </button>
-            <!-- 快捷「归档」：以前只在任务详情里，列表上看到一条干完的想收掉
-                 得先点开详情（用户 2026-09-24：归档该在列表的操作里）。
-                 与「完成」按状态互斥（只有完成态能归档），所以两枚按钮不会同屏抢位。 -->
+            <!-- 「更多」次级菜单（用户 2026-11-05 #1/#2）：归档原先与 ✓完成 是行尾两枚
+                 同尺寸同色的圆钮。完成后那一行落到「已完成」分组，同一坐标上换成归档 ——
+                 触屏没有 hover，肌肉记忆的第二下就把它归档了。现在归档收进这个 ⋯ 菜单
+                 （多一步才落地），触发器换成矮的 ⋯、不再是 28px 圆钮；「完成」仍是绿色
+                 强调的 ✓，两者在图标、颜色、位置上都能分辨。
+                 只在终态（完成 / 做不了）出现：非终态没有可归档的东西，后端也会拒绝 ——
+                 不显示而不是"显示后点了没反应"（见 `canArchive` 的门控注释）。 -->
             <button
               v-if="canArchive(x)"
               type="button"
-              class="tap-safe flex h-7 w-7 shrink-0 items-center justify-center rounded-full text-[var(--gosslan-text-2)] transition hover:bg-[var(--gosslan-hover)] hover:text-[var(--gosslan-text)]"
-              :title="t('todo.archive')"
-              :aria-label="t('todo.archive')"
-              @click.stop="archiveTodo(x)"
+              data-todo-more
+              class="tap-safe flex h-7 w-5 shrink-0 items-center justify-center rounded-[var(--gosslan-radius-sm)] text-[var(--gosslan-text-2)] transition hover:bg-[var(--gosslan-hover)] hover:text-[var(--gosslan-text)]"
+              :title="t('todo.moreActions')"
+              :aria-label="t('todo.moreActions')"
+              aria-haspopup="menu"
+              :aria-expanded="rowMenuId === x.todoId && rowMenuKind === 'more'"
+              @click.stop="toggleRowMenu(x, $event, 'more')"
             >
-              <Archive class="h-4 w-4" />
+              <MoreHorizontal class="h-4 w-4" />
             </button>
           </motion.div>
         </div>
@@ -1812,16 +1828,29 @@ watch(
         class="gosslan-menu frost z-[70]"
         :style="{ width: `${rowMenuPos.width}px` }"
       >
+        <template v-if="rowMenuKind === 'status'">
+          <DropdownMenuItem
+            v-for="s in TODO_STATUSES"
+            :key="s"
+            class="gosslan-menu-item"
+            :class="s === rowMenuTodo.status ? 'font-medium text-[var(--gosslan-accent-ink)]' : ''"
+            :disabled="s === rowMenuTodo.status"
+            :aria-current="s === rowMenuTodo.status ? 'true' : undefined"
+            @select="rowMenuTodo && setStatus(rowMenuTodo, s)"
+          >
+            {{ statusText(s) }}
+          </DropdownMenuItem>
+        </template>
+        <!-- 归档是这一份菜单里的**唯一**动作（用户 2026-11-05）：入口由 `canArchive` 在渲染层
+             门控，所以进到这里就一定可点；`data-todo-archive-item` 是探针的唯一钩子。 -->
         <DropdownMenuItem
-          v-for="s in TODO_STATUSES"
-          :key="s"
-          class="gosslan-menu-item"
-          :class="s === rowMenuTodo.status ? 'font-medium text-[var(--gosslan-accent-ink)]' : ''"
-          :disabled="s === rowMenuTodo.status"
-          :aria-current="s === rowMenuTodo.status ? 'true' : undefined"
-          @select="rowMenuTodo && setStatus(rowMenuTodo, s)"
+          v-else
+          data-todo-archive-item
+          class="gosslan-menu-item flex items-center gap-1.5"
+          @select="rowMenuTodo && archiveTodo(rowMenuTodo)"
         >
-          {{ statusText(s) }}
+          <Archive class="h-3.5 w-3.5 shrink-0" />
+          {{ t("todo.archive") }}
         </DropdownMenuItem>
       </DropdownMenuContent>
     </DropdownMenuPortal>

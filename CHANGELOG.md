@@ -14,6 +14,23 @@
 
 ## [Unreleased]
 
+## [5.18.30] - 2026-11-05
+
+### 群任务看板：归档只对终态开放，且从行尾同色圆钮挪进 ⋯ 次级菜单
+
+- **归档入口只在终态（完成 / 做不了）出现**：`canArchive` 仍是唯一门控，非终态行不渲染入口，
+  不会"显示后点了被后端拒绝"的静默失效；`done` 与 `impossible` 同权（归档认的是终态，不是 done）。
+- **消除行尾误点**：归档原先是与 ✓完成 同尺寸（28px）同色的行尾圆钮。完成任务后那一行换到
+  「已完成」分组，同一坐标上换成归档 —— 触屏没有 hover，肌肉记忆的第二下就把刚完成的任务收走。
+  现在归档收进行尾 **⋯ 「更多操作」次级菜单**，点 ⋯ 只开菜单（不落任何写请求），再点菜单项才归档；
+  「完成」保持绿色强调的 ✓，位置/图标/颜色三者都能分辨。
+- **状态切换语义不变**：仍是行内胶囊下拉 + 乐观更新三分法（`pending/succeeded/failed`、
+  `nextReadSeq` / `isLatestReadSeq` / `canRollback` 未动）；归档请求不改状态位。
+- **探针新增** `--only=todoarchive` 6 条判据（非终态无入口 / 终态两个 ⋯ / 旧圆钮已消失 /
+  点 ⋯ 不写 / 点归档项才发 `archived:true` / 状态保持），并做**反例自证**：
+  删掉 `canArchive` 里的终态判断后，静态判据 `taskRowHierarchy.test.ts` 与运行时探针同时变红。
+- i18n：新增 `todo.moreActions`（更多操作 / More actions），中英同步。
+
 ## [5.18.29] - 2026-11-05
 
 ### 外部链接同步：来源标记 + 只增改刷新 + JSON 导入预览确认
@@ -49,6 +66,7 @@
 - 验证：`npm test` 1731/1731、`npm run build`、`cargo check --all-targets`；
   `settingsmobile` 探针中英各 15/15（新增一条点击开关后 `data-reduced-transparency=true` +
   `data-ambient=static` + 无横向溢出的判据）。
+
 
 ## [5.18.27] - 2026-11-05
 
