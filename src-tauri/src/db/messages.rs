@@ -1083,6 +1083,30 @@ pub fn get_message_render_langs(
     Ok(out)
 }
 
+/// 单条消息当前落库的代码语言（`mode='code'` 且显式指定）；没有记录 / 已切回 text ⇒ None。
+///
+/// 重发与冷加载都从这一处读：语言的事实只有 `message_render` 一份，
+/// 信封里的 `lang` 是**投递时**的副本，送完就没地方查了。
+pub fn get_message_render_lang(conn: &Connection, msg_id: &str) -> Option<String> {
+    conn.query_row(
+        "SELECT lang FROM message_render
+         WHERE msg_id = ?1 AND mode = 'code' AND lang IS NOT NULL",
+        params![msg_id],
+        |r| r.get::<_, String>(0),
+    )
+    .optional()
+    .ok()
+    .flatten()
+}
+
+/// 发送时把"用户显式选择的语言"写成该消息的渲染初值（`msg_id` 级 LWW 的起点）。
+///
+/// 用消息自己的 `seq` 作初值：后续切换走的是新控制消息的 `seq`（恒更大），
+/// 所以初值不会被迟到的旧事件翻回去，也不会挡住用户第一次切换。
+pub fn pin_message_lang(conn: &Connection, msg_id: &str, seq: i64, lang: &str) -> Result<bool> {
+    apply_message_render(conn, msg_id, seq, "code", Some(lang))
+}
+
 #[cfg(test)]
 mod message_render_tests {
     use super::*;

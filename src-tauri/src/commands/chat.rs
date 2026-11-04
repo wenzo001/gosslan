@@ -660,6 +660,43 @@ async fn peer_x25519(s: &AppState, friend_id: &str) -> Option<String> {
     }
 }
 
+/// 发送消息时把显式语言钉进本机 `message_render`（`msg_id` 级 LWW 的初值）。
+///
+/// 1:1（直发 / Hold / 无对端失败）与自聊**共用这一处**：语言必须和消息本身一次落库，
+/// 否则任何一条在 `match deferred` 之后才补的分支都会把 lang 丢掉（2026-11-05 的真实缺口）。
+fn pin_lang_if_code(
+    conn: &rusqlite::Connection,
+    rec: &MessageRecord,
+    lang: Option<&str>,
+) -> rusqlite::Result<()> {
+    if let (true, Some(l)) = (rec.kind == "code", lang) {
+        db::pin_message_lang(conn, &rec.msg_id, rec.seq, l)?;
+    }
+    Ok(())
+}
+
+/// 1:1 发送的本机落库（消息 + 可靠队列 + 显式语言，同一把 db 锁）。
+fn persist_outgoing(
+    conn: &rusqlite::Connection,
+    rec: &MessageRecord,
+    peer_id: &str,
+    payload: &str,
+    lang: Option<&str>,
+) -> rusqlite::Result<()> {
+    db::insert_message_and_outbox(conn, rec, peer_id, payload)?;
+    pin_lang_if_code(conn, rec, lang)
+}
+
+/// 自聊的本机落库（**不进 outbox**，见 `insert_self_message` 的第 2 条）。
+fn persist_self_message(
+    conn: &rusqlite::Connection,
+    rec: &MessageRecord,
+    lang: Option<&str>,
+) -> rusqlite::Result<()> {
+    db::insert_message(conn, rec)?;
+    pin_lang_if_code(conn, rec, lang)
+}
+
 #[tauri::command(async)]
 pub async fn send_message(
     state: State<'_, Arc<AppState>>,
@@ -686,7 +723,7 @@ pub async fn send_message(
                 }
             }
         }
-        return insert_self_message(s, &kind, content, local_id);
+        return insert_self_message(s, &kind, content, local_id, lang);
     }
 
     let msg_kind = match kind.as_str() {
@@ -982,7 +1019,7 @@ pub async fn send_message(
     })?;
     {
         let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());
-        db::insert_message_and_outbox(&dbc, &rec, &friend_id, &payload).map_err(|e| {
+        persist_outgoing(&dbc, &rec, &friend_id, &payload, lang.as_deref()).map_err(|e| {
             crate::error_codes::coded(
                 crate::error_codes::SEND_LOCAL_WRITE_FAILED,
                 format!("消息写入失败：{e}"),
@@ -1009,6 +1046,20 @@ pub async fn send_message(
                 },
             )?;
         }
+    }
+
+    // 显式语言已在 `persist_outgoing` 里随消息一次落库；这里只补前端事件。
+    // ⚠️ **必须在 `match deferred` 之前**：Hold / Unsupported 两条分支在下面直接 return，
+    // 放在分派之后就会让"已落库但界面没收到"的 Hold 消息退回自动识别。
+    if let (true, Some(l)) = (kind == "code", lang.as_deref()) {
+        let _ = s.app.emit(
+            "message-render-changed",
+            &crate::state::RenderChangedInfo {
+                msg_id: msg_id.clone(),
+                kind: "code".to_string(),
+                lang: Some(l.to_string()),
+            },
+        );
     }
 
     // 能力协商的两种"不发"结局：都必须发生在**写完队列之后**（先入队是这一版的本体）。
@@ -1132,28 +1183,25 @@ pub async fn send_message(
         crate::network::transport::update_conv_link(s, &friend_id, &path, hop);
     }
 
-    // 显式语言同样进本机 LWW 表与前端事件：不这么做的话，接收端有 lang、
-    // 发送端自己的气泡却退回自动识别 —— 同一条消息在两端显示成两种语言。
-    if kind == "code" {
-        if let Some(l) = lang.as_deref() {
-            let applied = {
-                let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());
-                db::apply_message_render(&dbc, &msg_id, seq, "code", Some(l)).unwrap_or(false)
-            };
-            if applied {
-                let _ = s.app.emit(
-                    "message-render-changed",
-                    &crate::state::RenderChangedInfo {
-                        msg_id: msg_id.clone(),
-                        kind: "code".to_string(),
-                        lang: Some(l.to_string()),
-                    },
-                );
-            }
-        }
-    }
-
     Ok(rec)
+}
+
+/// 重发时沿用**库里已确认的**语言：它活在 `message_render`，原信封里那份副本早随消息送完了。
+///
+/// 一次读出 `(lang, 明文信封载荷)`：语言只从库里读，避免"信封带 lang、ChatMessage 却不带"的分裂。
+fn stored_lang_and_plaintext(
+    conn: &rusqlite::Connection,
+    msg: &MessageRecord,
+) -> (Option<String>, String) {
+    let lang = db::get_message_render_lang(conn, &msg.msg_id);
+    let plaintext = crate::protocol::gossip_plaintext_with_targets(
+        &msg.kind,
+        &msg.content,
+        None,
+        None,
+        lang.as_deref(),
+    );
+    (lang, plaintext)
 }
 
 /// 重发一条**本端判失败 / 被用户取消**的 1:1 消息（计划 D1：复用稳定消息身份）。
@@ -1239,7 +1287,11 @@ pub async fn resend_message(
     // ③ 用**原来的 ts/seq** 重新密封（内容仍是库里的明文；信封里的密文按当前公钥重签）。
     let ts = msg.ts;
     let seq = msg.seq;
-    let plaintext = crate::protocol::gossip_plaintext(&msg.kind, &msg.content, None);
+    // 显式语言从库里读回（原信封那份已随原消息送完）；老消息没有记录 ⇒ None = 自动识别。
+    let (stored_lang, plaintext) = {
+        let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());
+        stored_lang_and_plaintext(&dbc, &msg)
+    };
     let shared = s.identity.dh(&pubkey).ok_or_else(|| {
         crate::error_codes::coded(crate::error_codes::E2EE_ENCRYPT_FAILED, "密钥交换失败")
     })?;
@@ -1280,7 +1332,7 @@ pub async fn resend_message(
         ts,
         seq,
         // 重发沿用库里的渲染状态：语言已经活在 `message_render`，这里不重新发明。
-        lang: None,
+        lang: stored_lang,
     };
     let payload = serde_json::to_string(&queued).map_err(|e| e.to_string())?;
 
@@ -1414,6 +1466,7 @@ fn insert_self_message(
     kind: &str,
     content: String,
     local_id: Option<String>,
+    lang: Option<String>,
 ) -> Result<MessageRecord, String> {
     // 只支持文本 / 代码：用户 2026-09-16 明确「先只支持文本」。图片与文件要落盘、要文件卡片，
     // 走的是另一条链路（`send_file`），自聊里前端也不会给附件入口 —— 真调到了就明确报错，
@@ -1424,6 +1477,12 @@ fn insert_self_message(
             "和自己聊天暂不支持图片或文件",
         ));
     }
+    // 与 `send_message` 同一条归一化：非法 / 空串 ⇒ None（前端按内容自动识别）。
+    let lang = if kind == "code" {
+        crate::protocol::normalize_render_lang(lang.as_deref())
+    } else {
+        None
+    };
     let content = check_message_content(content)?;
     let ts = db::now_ms();
     let me = s.device_id.clone();
@@ -1450,14 +1509,27 @@ fn insert_self_message(
         seq,
         status: "read".to_string(),
         mention_targets: None,
-        local_id: local_id.or(Some(msg_id)),
+        local_id: local_id.or(Some(msg_id.clone())),
     };
     // ⚠️ `insert_message`（只落库）—— **不是** `insert_message_and_outbox`：
     // 自聊消息没有收件人，进 outbox 就永远排不掉（见上面的第 2 条）。
-    db::insert_message(&dbc, &rec).map_err(|e| format!("消息写入失败：{e}"))?;
+    persist_self_message(&dbc, &rec, lang.as_deref())
+        .map_err(|e| format!("消息写入失败：{e}"))?;
     // unread_inc = 0：自己发的消息不该让自己"有未读"（与 `send_message` 同口径）
     db::touch_conversation(&dbc, &me, "single", &name, avatar.as_deref(), &preview, 0)
         .map_err(|e| format!("会话写入失败：{e}"))?;
+    drop(dbc);
+    // 显式语言同样通知界面：冷却重载后从 `message_render` 补齐，但**这一次**不能等下次打开。
+    if let Some(l) = lang.as_deref() {
+        let _ = s.app.emit(
+            "message-render-changed",
+            &crate::state::RenderChangedInfo {
+                msg_id: msg_id.clone(),
+                kind: "code".to_string(),
+                lang: Some(l.to_string()),
+            },
+        );
+    }
     Ok(rec)
 }
 
@@ -1891,3 +1963,80 @@ pub async fn get_pending_message_operations(
     Ok(ops)
 }
 
+
+#[cfg(test)]
+mod send_lang_persistence_tests {
+    use super::*;
+    use rusqlite::Connection;
+
+    fn db() -> Connection {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(crate::db::SCHEMA).unwrap();
+        conn
+    }
+
+    fn rec(msg_id: &str, kind: &str, seq: i64, status: &str) -> MessageRecord {
+        MessageRecord {
+            id: 0,
+            msg_id: msg_id.to_string(),
+            conv_id: "peer-a".to_string(),
+            sender_id: "me".to_string(),
+            receiver_id: "peer-a".to_string(),
+            kind: kind.to_string(),
+            content: "fn main() {}".to_string(),
+            ts: 1000,
+            seq,
+            status: status.to_string(),
+            mention_targets: None,
+            local_id: None,
+            fail_code: None,
+        }
+    }
+
+    /// Hold 分支：消息停在 `sending`、outbox 里那一行就是它的终态起点；lang 必须已经落库。
+    #[test]
+    fn hold_branch_persists_lang_roundtrip() {
+        let conn = db();
+        let r = rec("m-hold", "code", 7, "sending");
+        persist_outgoing(&conn, &r, "peer-a", "{}", Some("rust")).unwrap();
+        assert_eq!(
+            db::get_message_render_lang(&conn, "m-hold").as_deref(),
+            Some("rust")
+        );
+    }
+
+    /// 自聊分支：不进 outbox，但同样要落库（`insert_self_message` 走的就是这个 helper）。
+    #[test]
+    fn self_chat_persists_lang_roundtrip() {
+        let conn = db();
+        let r = rec("m-self", "code", 3, "sent");
+        persist_self_message(&conn, &r, Some("typescript")).unwrap();
+        assert_eq!(
+            db::get_message_render_lang(&conn, "m-self").as_deref(),
+            Some("typescript")
+        );
+    }
+
+    /// 重发：语言从库里读回并进信封，而不是重新猜。
+    #[test]
+    fn resend_carries_stored_lang() {
+        let conn = db();
+        let r = rec("m-resend", "code", 9, "failed");
+        persist_outgoing(&conn, &r, "peer-a", "{}", Some("rust")).unwrap();
+        let (lang, plaintext) = stored_lang_and_plaintext(&conn, &r);
+        assert_eq!(lang.as_deref(), Some("rust"));
+        assert!(
+            plaintext.contains("\"lang\":\"rust\""),
+            "信封里必须带 lang: {plaintext}"
+        );
+    }
+
+    /// 文本消息不写渲染表（空 lang = 自动识别，不是"未知语言"）。
+    #[test]
+    fn text_message_never_pins_lang() {
+        let conn = db();
+        let r = rec("m-text", "text", 1, "sent");
+        persist_outgoing(&conn, &r, "peer-a", "{}", Some("rust")).unwrap();
+        assert_eq!(db::get_message_render_lang(&conn, "m-text"), None);
+    }
+}
