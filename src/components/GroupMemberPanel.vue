@@ -291,7 +291,7 @@ async function confirmAction() {
           <input
             v-model="nameDraft"
             :maxlength="MAX_GROUP_NAME_CHARS"
-            class="w-full rounded-[var(--gosslan-radius-md)] border border-transparent bg-[var(--gosslan-field)] px-3 py-2 text-sm outline-none transition focus:border-transparent"
+            class="h-9 w-full rounded-[var(--gosslan-radius-md)] border border-transparent bg-[var(--gosslan-field)] px-3 py-1.5 text-sm outline-none transition focus:border-transparent"
             :placeholder="t('group.namePlaceholder')"
             @keydown.enter="ime.enter(saveName, $event)"
             @compositionstart="ime.onStart"

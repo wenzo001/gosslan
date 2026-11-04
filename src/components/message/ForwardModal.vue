@@ -118,7 +118,7 @@ const kindLabel = computed(() => KIND_LABELS[props.kind] ?? t("msg.message"));
         autocapitalize="off"
         spellcheck="false"
         :placeholder="t('msg.searchConversation')"
-        class="w-full rounded-[var(--gosslan-radius-md)] border border-[var(--gosslan-border)] bg-[var(--gosslan-field)] px-3 py-2 text-body outline-none placeholder:text-[var(--gosslan-text-2)] focus:border-transparent"
+        class="h-9 w-full rounded-[var(--gosslan-radius-md)] border border-[var(--gosslan-border)] bg-[var(--gosslan-field)] px-3 py-1.5 text-body outline-none placeholder:text-[var(--gosslan-text-2)] focus:border-transparent"
       />
 
       <div class="max-h-64 select-none overflow-y-auto">
