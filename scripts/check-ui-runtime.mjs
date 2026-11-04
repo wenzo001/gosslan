@@ -1206,9 +1206,9 @@ window.__probe = (() => {
   H.modalStackRead = () => {
     const cap = document.querySelector('[data-caption]');
     const layer = document.querySelector('[role="dialog"]');
-    const panel = document.querySelector('[role="dialog"] .elevated');
+    const panel = document.querySelector('[role="dialog"] .glass-3');
     const row = panel?.parentElement ?? null;
-    if (!panel) return { ok: false, why: '没挂出 .elevated 卡片（BaseModal 没渲染？）' };
+    if (!panel) return { ok: false, why: '没挂出 .glass-3 卡片（BaseModal 没渲染？）' };
     const pr = panel.getBoundingClientRect();
     const cr = cap ? cap.getBoundingClientRect() : null;
     const safeTop = getComputedStyle(document.documentElement)
@@ -1277,8 +1277,8 @@ window.__probe = (() => {
    *   前者直接复现用户那句"缩上去一截"，后者一改字号/行高就自造假红。
    */
   H.modalLayoutRead = () => {
-    const panel = document.querySelector('[role="dialog"] .elevated');
-    if (!panel) return { ok: false, why: '没挂出 .elevated 卡片（BaseModal 没渲染？）' };
+    const panel = document.querySelector('[role="dialog"] .glass-3');
+    if (!panel) return { ok: false, why: '没挂出 .glass-3 卡片（BaseModal 没渲染？）' };
     // 标题行不靠 class 认（那些 utility 会随主题改）：卡片里只有 ✕ 带 aria-label，
     // 它的最近 div 就是标题行那一格 —— 锚点取自被断言的东西自己，不取自我的记忆。
     const closeBtn = panel.querySelector('button[aria-label]');
@@ -1341,8 +1341,8 @@ window.__probe = (() => {
    * 撤了却读不出变化 = 那条判据什么都没证。
    */
   H.modalLayoutFlip = (which) => {
-    const panel = document.querySelector('[role="dialog"] .elevated');
-    if (!panel) return { ok: false, why: '没挂出 .elevated 卡片' };
+    const panel = document.querySelector('[role="dialog"] .glass-3');
+    if (!panel) return { ok: false, why: '没挂出 .glass-3 卡片' };
     const scroller = panel.querySelector('div.min-h-0.flex-1.overflow-y-auto');
     const closeBtn = panel.querySelector('button[aria-label]');
     const titleRow = closeBtn ? closeBtn.closest('div') : null;
@@ -6786,7 +6786,7 @@ async function runModalTitle(cdp, url) {
   const measured = await cdp.eval(`(() => {
     const dialog = document.querySelector('[role="dialog"]');
     const h3 = dialog ? dialog.querySelector('h3') : null;
-    const card = h3 ? h3.closest('.elevated') : null;
+    const card = h3 ? h3.closest('.glass-3') : null;
     if (!h3 || !card) return null;
     const cs = getComputedStyle(h3);
     const lineH = parseFloat(cs.lineHeight) || 24;
@@ -8148,7 +8148,7 @@ async function runOverlay(cdp, url) {
       if (which === 'close') {
         el = document.querySelector('[role="dialog"] button[aria-label]');
         if (!el) {
-          const inPanel = document.querySelectorAll('[role="dialog"] .elevated button');
+          const inPanel = document.querySelectorAll('[role="dialog"] .glass-3 button');
           el = inPanel.length ? inPanel[inPanel.length - 1] : null;
         }
       } else {
@@ -8161,7 +8161,7 @@ async function runOverlay(cdp, url) {
     window.__ovRead = () => {
       const dlgs = document.querySelectorAll('[role="dialog"]');
       const dlg = dlgs[0] || null;
-      const panel = dlg ? dlg.querySelector('.elevated') : null;
+      const panel = dlg ? dlg.querySelector('.glass-3') : null;
       // 「挂到文档根」不再靠库自己的 portal 容器名：Reka UI 用 Vue Teleport 直接挂 body，
       // HeadlessUI 当年是 #headlessui-portal-root。判据要的是**在不在宿主子树之外**，
       // 所以从宿主根反着数 —— 换回任何一家弹层库这条都不用改。
@@ -13784,7 +13784,7 @@ async function runLinks(cdp, url) {
       const row = name.parentElement;
       const span = row ? row.querySelector('span.tabular-nums') : null;
       // 表单已搬进 BaseModal（Portal 到 body），量的是弹窗卡片右沿，不是原列表宿主。
-      const card = name.closest('.elevated') || name.closest('[role="dialog"]');
+      const card = name.closest('.glass-3') || name.closest('[role="dialog"]');
       const ni = name.getBoundingClientRect();
       const cr = card ? card.getBoundingClientRect() : null;
       const r = span ? span.getBoundingClientRect() : null;

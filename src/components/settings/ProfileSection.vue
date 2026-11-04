@@ -251,7 +251,7 @@ function processAvatar(file: File): Promise<string> {
             v-model="nickname"
             :maxlength="MAX_NICKNAME_CHARS"
             :aria-busy="savingProfile"
-            class="min-w-0 flex-1 rounded-[var(--gosslan-radius-md)] border border-transparent bg-[var(--gosslan-bg)] px-3 py-1.5 text-sm outline-none transition focus:border-transparent"
+            class="min-w-0 flex-1 rounded-[var(--gosslan-radius-md)] border border-transparent bg-[var(--gosslan-field)] px-3 py-1.5 text-sm outline-none transition focus:border-transparent"
             :placeholder="t('settings.profile.nickname.placeholder')"
             @blur="saveProfileNow"
             @keydown.enter="onNicknameKeydown"

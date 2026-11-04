@@ -321,6 +321,53 @@
   --gosslan-overlay: rgba(0, 0, 0, 0.45);
   /* 毛玻璃浮层面板底色（配合 .glass 使用） */
   --gosslan-panel-frost: rgba(255, 255, 255, 0.85);
+  /* ---------------- 玻璃三档（唯一出口，2026-11-05） ----------------
+     用户：「灰色界面那个灰色不要一个浅灰色，应该是半透明的模糊效果，就那种毛玻璃」。
+     规格来自 docs/design-language/liquid-glass.md §2（chrome 16px / float 20px / modal 24px）：
+       glass-1  chrome：标题栏 / 侧栏 / 设置侧栏（长期可见的导航壳）
+       glass-2  float ：右键菜单 / 下拉 / Popover / Toast（`.frost` 就是这一档的别名）
+       glass-3  modal ：Dialog / ActionSheet / 全屏面板
+     三条硬上限（不许随手调）：
+       · blur 12–24px，**24px 封顶**。低于 12px 只是"脏色边缘"，成本和 12px 同量级（负优化）。
+       · 同屏 ≤3 层玻璃、≤8 个玻璃元素、单块面积 ≤40% 视口（见 liquid-glass.md §5.2）。
+       · 消息列表 / 气泡 / 代码块 / 日志 / 输入框本体**一律实色**（内容层，见 §4.1/§4.2）。
+     1px 描边用 `inset box-shadow` 而不是 `border`：border 会把盒内宽高各挤掉 1px（布局位移），
+     inset 阴影只画不占位。
+     降级实底按文档 §5.3：glass-1 #f7f9fc / glass-2 #ffffff / glass-3 #ffffff（暗态 #16202f / #1e293b / #1e293b）。 */
+  --gosslan-glass-1-bg: rgba(255, 255, 255, 0.82);
+  --gosslan-glass-1-border: rgba(255, 255, 255, 0.52);
+  --gosslan-glass-1-highlight: rgba(255, 255, 255, 0.6);
+  --gosslan-glass-1-shadow: 0 1px 2px rgba(15, 23, 42, 0.04), 0 8px 24px rgba(15, 23, 42, 0.08);
+  --gosslan-glass-1-blur: saturate(140%) blur(16px);
+  --gosslan-glass-1-fallback: #f7f9fc;
+
+  /* 复用 --gosslan-panel-frost（0.85）而不是另起一个 0.88：
+     那个 token 同时是 `utils/tokenContrast.ts` 里"菜单条目压列表底"的对比度基准（1.32 下限），
+     两处必须是同一个数，否则菜单在暗色下会分裂成两档透明度。 */
+  --gosslan-glass-2-bg: var(--gosslan-panel-frost);
+  --gosslan-glass-2-border: rgba(255, 255, 255, 0.6);
+  --gosslan-glass-2-highlight: rgba(255, 255, 255, 0.7);
+  --gosslan-glass-2-shadow: 0 4px 12px rgba(15, 23, 42, 0.1), 0 16px 40px rgba(15, 23, 42, 0.12);
+  --gosslan-glass-2-blur: saturate(160%) blur(20px);
+  --gosslan-glass-2-fallback: #ffffff;
+
+  --gosslan-glass-3-bg: rgba(255, 255, 255, 0.94);
+  --gosslan-glass-3-border: rgba(255, 255, 255, 0.7);
+  --gosslan-glass-3-highlight: rgba(255, 255, 255, 0.75);
+  --gosslan-glass-3-shadow: 0 24px 64px rgba(15, 23, 42, 0.18);
+  --gosslan-glass-3-blur: saturate(140%) blur(24px);
+  --gosslan-glass-3-fallback: #ffffff;
+
+  /* 环境底（L0）：两团极淡光晕，给玻璃提供"可采样"的内容。
+     ⚠️ **默认关闭**，只有 `<html class="ambient">` 时才挂到 body 上 ——
+     全局底色属于改动最大的那一档观感，用户还没点头，先做成可一键开关的层。
+     alpha 压到 3%–5%（文档 §3.2 的上限）：再高就不是"环境"，正文对比度会跟着底色漂
+     （对比度契约表仍按 --gosslan-app-bg 判，不看这层）。
+     环境层只铺 body、不参与交互；body 自身不滚动（滚动都在内层容器里），
+     所以不需要 `position: fixed`/`background-attachment: fixed`，也不碰 Android WebView 的滚动重绘。 */
+  --gosslan-app-ambient:
+    radial-gradient(70vw 55vh at 8% -10%, color-mix(in srgb, var(--gosslan-primary) 5%, transparent), transparent 70%),
+    radial-gradient(60vw 50vh at 104% 106%, color-mix(in srgb, var(--gosslan-success) 4%, transparent), transparent 72%);
   /* 底层底色：接近列表灰，保证半透明浮层过渡自然 */
   --gosslan-app-bg: #edf1f6;
   --gosslan-shadow: 0 1px 3px rgba(15, 23, 42, 0.05), 0 4px 12px rgba(15, 23, 42, 0.06);
@@ -414,6 +461,27 @@
      与列表栏 list(#1e293b) 复合后**完全同色**（对比 1.00）——浮层浮在列表上等于隐形。
      抬到 1.32（对画布 1.57）才看得出是"↑ 浮起来的一层"。 */
   --gosslan-panel-frost: rgba(48, 62, 88, 0.9);
+  /* 玻璃三档暗态（liquid-glass.md §2.2）：深蓝灰底 + 冷白描边/高光。
+     ⚠️ 与 :root 成对出现，漏一档就会在暗色下继承亮态的白底（玻璃变"白板"）。 */
+  --gosslan-glass-1-bg: rgba(22, 32, 47, 0.78);
+  --gosslan-glass-1-border: rgba(248, 250, 252, 0.14);
+  --gosslan-glass-1-highlight: rgba(248, 250, 252, 0.2);
+  --gosslan-glass-1-shadow: 0 1px 2px rgba(0, 0, 0, 0.3), 0 8px 24px rgba(0, 0, 0, 0.36);
+  --gosslan-glass-1-fallback: #16202f;
+  --gosslan-glass-2-bg: var(--gosslan-panel-frost);
+  --gosslan-glass-2-border: rgba(248, 250, 252, 0.18);
+  --gosslan-glass-2-highlight: rgba(248, 250, 252, 0.24);
+  --gosslan-glass-2-shadow: 0 4px 12px rgba(0, 0, 0, 0.36), 0 16px 40px rgba(0, 0, 0, 0.44);
+  --gosslan-glass-2-fallback: #1e293b;
+  --gosslan-glass-3-bg: rgba(30, 41, 59, 0.92);
+  --gosslan-glass-3-border: rgba(248, 250, 252, 0.2);
+  --gosslan-glass-3-highlight: rgba(248, 250, 252, 0.28);
+  --gosslan-glass-3-shadow: 0 24px 64px rgba(0, 0, 0, 0.5);
+  --gosslan-glass-3-fallback: #1e293b;
+  /* 环境底暗态：深蓝/靛青光晕，alpha 4%–6%（文档 §3.2） */
+  --gosslan-app-ambient:
+    radial-gradient(70vw 55vh at 8% -10%, color-mix(in srgb, var(--gosslan-primary) 6%, transparent), transparent 70%),
+    radial-gradient(60vw 50vh at 104% 106%, rgba(79, 70, 229, 0.04), transparent 72%);
   /* toast：抬到中性灰 4 档，与画布（1.96）和面板（1.60）都分得开，白字仍有 9.1:1 */
   --gosslan-hud: rgba(72, 72, 74, 0.92);
   --gosslan-shadow: 0 1px 3px rgba(0, 0, 0, 0.3), 0 4px 12px rgba(0, 0, 0, 0.32);
@@ -435,6 +503,13 @@ body {
   background: var(--gosslan-app-bg) fixed;
   -webkit-font-smoothing: antialiased;
   overflow: hidden;
+}
+
+/* 环境底色（L0）默认**关闭**：用户还没确认要不要改全局底色。
+   打开方式只有一处：给 <html> 加 `ambient` 类（`document.documentElement.classList.add("ambient")`）。
+   body 自身不滚动（滚动都在内层容器里），所以不需要 fixed 背景，也不碰 Android WebView 的滚动重绘。 */
+html.ambient body {
+  background-image: var(--gosslan-app-ambient);
 }
 
 * {
@@ -665,20 +740,27 @@ button:not(:disabled):active,
   outline-offset: 1px;
 }
 
-/* 表单字段（input / textarea / select）聚焦时**不变任何颜色**（透明）。
-   用户 2026-09-16 明确不要聚焦时的边线变色（深色主题下 `--gosslan-primary` 偏黑，
-   看起来像"黑框"）。保留这条选择器只是为了让焦点护栏 `checkTextFieldFocusRing`
-   知道文本字段的焦点处理是**有意留空**、而非被无意删掉（见该护栏 ②）。
-   本来没有边框的字段（弹窗 / 过滤条）维持静止时的 `border border-transparent`，
-   聚焦时同样不变 —— 不画外圈方框、不改尺寸。 */
-input:focus,
+/* 表单字段（input / textarea / select）聚焦：**只画 1px 内描边，不画外圈方框**。
+   用户 2026-09-16 拒绝的是那个"2px 主题色外框"（浏览器把文本控件恒判 :focus-visible ⇒
+   点一下就冒框）；但规则体留空等于**完全没有焦点指示**（WCAG 2.4.7），键盘用户只剩光标。
+   现在改成文档 docs/design-language/controls.md §4.3 的方案：只改边线，不占位、不改尺寸。
+   `box-shadow: inset` 而不是 `border-width` —— 后者会把盒内宽高各挤掉 1px。
+   ⚠️ 组件里的 `focus:border-transparent` 特异性更高，会吃掉 border-color；
+      真正**看得见**的是那条 inset 阴影，所以两条必须成对保留，只留一条等于没改。 */
+/* ⚠️ 排除非文本型 input：复选框/单选框/滑杆外面没有边框可言，套一圈 inset 会在
+   圆形单选框里画出一个方框（负优化），它们另有自己的焦点表达。 */
+input:not([type="checkbox"]):not([type="radio"]):not([type="range"]):focus,
 textarea:focus,
 select:focus {
+  border-color: var(--gosslan-primary);
+  box-shadow: inset 0 0 0 1px var(--gosslan-primary);
 }
 
-/* 消息输入框：编辑区是卡片里一块透明矩形。聚焦时**卡片边框同样不变色**
-   （与上面文本字段同一口径：用户不要聚焦色）。 */
+/* 消息输入框：编辑区是卡片里一块透明矩形，焦点提示画在**卡片边框**上（1px 内描边），
+   编辑区自己仍然不画外框。 */
 .gosslan-composer:focus-within {
+  border-color: var(--gosslan-primary);
+  box-shadow: inset 0 0 0 1px var(--gosslan-primary);
 }
 
 /* 输入框自增高：高度值由 JS 写 inline px，这里只负责把「撑高 / 回落」做成短过渡。
@@ -1163,17 +1245,55 @@ progress {
   }
 }
 
-/* 毛玻璃：窗口不透明，模糊的是 body 上的渐变底 */
+/* 兼容层：只做模糊、不带上色/描边（ImageLightbox 的全屏遮罩用）。
+   真正的玻璃请用下面 glass-1/2/3 —— 它们的着色、描边、高光、阴影是成对的。 */
 .glass {
   -webkit-backdrop-filter: var(--gosslan-blur);
   backdrop-filter: var(--gosslan-blur);
 }
 
-/* 浮层面板：毛玻璃底（半透明 panel 色 + blur），配合 .glass 用在弹层上 */
+/* ---------------- 玻璃三档（唯一出口） ----------------
+   tint + blur/saturate + 1px 边缘高光 + 柔和外阴影，四层成对出现。
+   ⚠️ `-webkit-` 前缀必须与标准属性**同时写**：WKWebView（macOS/iOS 桌面端）只认前者。 */
+.glass-1 {
+  background: var(--gosslan-glass-1-bg);
+  -webkit-backdrop-filter: var(--gosslan-glass-1-blur);
+  backdrop-filter: var(--gosslan-glass-1-blur);
+  box-shadow:
+    inset 0 0 0 1px var(--gosslan-glass-1-border),
+    inset 0 1px 0 var(--gosslan-glass-1-highlight),
+    var(--gosslan-glass-1-shadow);
+}
+
+/* `.frost` = glass-2 的历史别名（12 处菜单/下拉在用）：保留类名，换成 float 档规格 */
 .frost {
-  background: var(--gosslan-panel-frost);
-  -webkit-backdrop-filter: var(--gosslan-blur);
-  backdrop-filter: var(--gosslan-blur);
+  background: var(--gosslan-glass-2-bg);
+  -webkit-backdrop-filter: var(--gosslan-glass-2-blur);
+  backdrop-filter: var(--gosslan-glass-2-blur);
+  box-shadow:
+    inset 0 0 0 1px var(--gosslan-glass-2-border),
+    inset 0 1px 0 var(--gosslan-glass-2-highlight),
+    var(--gosslan-glass-2-shadow);
+}
+
+.glass-2 {
+  background: var(--gosslan-glass-2-bg);
+  -webkit-backdrop-filter: var(--gosslan-glass-2-blur);
+  backdrop-filter: var(--gosslan-glass-2-blur);
+  box-shadow:
+    inset 0 0 0 1px var(--gosslan-glass-2-border),
+    inset 0 1px 0 var(--gosslan-glass-2-highlight),
+    var(--gosslan-glass-2-shadow);
+}
+
+.glass-3 {
+  background: var(--gosslan-glass-3-bg);
+  -webkit-backdrop-filter: var(--gosslan-glass-3-blur);
+  backdrop-filter: var(--gosslan-glass-3-blur);
+  box-shadow:
+    inset 0 0 0 1px var(--gosslan-glass-3-border),
+    inset 0 1px 0 var(--gosslan-glass-3-highlight),
+    var(--gosslan-glass-3-shadow);
 }
 
 /* 品牌面：头像兜底等强调面用主题色实底（白字），无渐变 */
@@ -1706,10 +1826,24 @@ img {
 }
 
 @media (prefers-reduced-transparency: reduce) {
+  /* 三档玻璃 + 历史别名 `.frost` 一并退回实底（liquid-glass.md §5.3 的第 2 条）。
+     ⚠️ 这里必须**逐个类名列出**：只写 `.frost` 会漏掉 chrome 与 modal 两档。 */
+  .glass-1,
+  .glass-2,
+  .glass-3,
   .frost {
-    background: var(--gosslan-panel);
     -webkit-backdrop-filter: none;
     backdrop-filter: none;
+  }
+  .glass-1 {
+    background: var(--gosslan-glass-1-fallback);
+  }
+  .glass-2,
+  .frost {
+    background: var(--gosslan-glass-2-fallback);
+  }
+  .glass-3 {
+    background: var(--gosslan-glass-3-fallback);
   }
   /* ⚠️ `.glass` 目前只用在 BaseModal 的遮罩上（`glass fixed inset-0 bg-black/40`）：
      去模糊后改用更实的压暗，遮罩才仍然是"遮罩"。若将来把 .glass 复用到别处，
@@ -1742,6 +1876,33 @@ img {
     --gosslan-hover: rgba(248, 250, 252, 0.14);
     --gosslan-window-ring: rgba(248, 250, 252, 0.5);
   }
+  /* 高对比度下玻璃同样退回实底：半透明面会让"边界"与文字对比随背景漂移（§5.3 第 3 条）。 */
+  .glass-1 {
+    background: var(--gosslan-glass-1-fallback);
+  }
+  .glass-2,
+  .frost {
+    background: var(--gosslan-glass-2-fallback);
+  }
+  .glass-3 {
+    background: var(--gosslan-glass-3-fallback);
+  }
+}
+
+/* 内核不支持 backdrop-filter（旧 WebView2 / 合成器被关掉）：直接退回实底，
+   不许让半透明裸奔 —— 那时既没有模糊、也没有可读性背书。
+   ⚠️ 用 `not (... or ...)`：只写标准属性的话，老 WKWebView 会**漏判**（它只认 -webkit-）。 */
+@supports not ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))) {
+  .glass-1 {
+    background: var(--gosslan-glass-1-fallback);
+  }
+  .glass-2,
+  .frost {
+    background: var(--gosslan-glass-2-fallback);
+  }
+  .glass-3 {
+    background: var(--gosslan-glass-3-fallback);
+  }
 }
 
 
@@ -1773,7 +1934,7 @@ img {
    空白区让给遮罩（否则整块屏幕都算"内容里面"，点外部永远关不掉），卡片自己再恢复命中。
    事件冒泡不受祖先 pointer-events 影响，所以卡片里的按钮照常工作。 */
 .gosslan-dialog-card { pointer-events: none !important; }
-.gosslan-dialog-card .elevated { pointer-events: auto !important; }
+.gosslan-dialog-card .glass-3 { pointer-events: auto !important; }
 
 @media (prefers-reduced-motion: reduce) {
   .gosslan-dialog-overlay[data-state],

@@ -27,6 +27,7 @@ import {
   findPreWrapWithoutBreak,
   countPreWrapSites,
   checkTextFieldFocusRing,
+  checkGlassTiers,
   checkSelectionContract,
   findNestedThemeRuleIssues,
   findHandRolledSegmentLoops,
@@ -1433,6 +1434,72 @@ test("真实的 style.css + MessageComposer.vue 通过", () => {
     readFileSync(join(srcDir, "components", "chat", "MessageComposer.vue"), "utf8"),
   );
   assert.deepEqual(issues, [], issues.map((i) => `L${i.line} ${i.message}`).join("\n"));
+});
+
+// 反例自证（2026-11-05）：把规则体改回空 `{ }`，判据必须报红 ——
+// 这正是修复前的真实形状（选择器在、护栏曾一直是绿的）。
+test("反例：焦点规则体留空 → 报红（修复前就是这么写空的）", () => {
+  const css = readFileSync(new URL("../style.css", import.meta.url), "utf8").replace(
+    /(input[^,{}]*:focus[\s\S]{0,200}?select:focus\s*\{)[^{}]*\}/,
+    "$1}",
+  );
+  const issues = checkTextFieldFocusRing(css, "gosslan-composer");
+  assert.ok(
+    issues.some((i) => /规则体是空的/.test(i.message)),
+    "空的焦点规则必须报红 —— 否则「焦点可见」这条判据等于空转",
+  );
+});
+
+// ---------------- ②b 玻璃三档：定义 + 三道降级 ----------------
+//
+// 用户 2026-11-05：「不要一个浅灰色，应该是半透明的模糊效果」。
+// 判据盯的是"只有底色没有模糊 / 降级漏档"这两种形态 —— 它们都编译通过、界面也"看着还行"。
+
+test("真实的 style.css：三档玻璃定义齐全、三道降级都覆盖 → 0 条报红", () => {
+  const css = readFileSync(new URL("../style.css", import.meta.url), "utf8");
+  assert.deepEqual(
+    checkGlassTiers(css),
+    [],
+    checkGlassTiers(css)
+      .map((i) => `L${i.line} ${i.message}`)
+      .join("\n"),
+  );
+});
+
+// 反例自证 ①：「移除玻璃」= 删掉 backdrop-filter，必须报红（只剩半透明灰面就是这次要修的缺陷）
+test("反例：删掉 .glass-2 的 backdrop-filter → 报红", () => {
+  const css = readFileSync(new URL("../style.css", import.meta.url), "utf8")
+    .replace(/(\.glass-2 \{[\s\S]*?)-webkit-backdrop-filter[^\n]*\n/, "$1")
+    .replace(/(\.glass-2 \{[\s\S]*?)backdrop-filter: var\(--gosslan-glass-2-blur\);\n/, "$1");
+  const msgs = checkGlassTiers(css).map((i) => i.message);
+  assert.ok(msgs.some((m) => m.includes("没有标准 `backdrop-filter`")), msgs.join("\n"));
+  assert.ok(msgs.some((m) => m.includes("缺少 `-webkit-backdrop-filter`")), msgs.join("\n"));
+});
+
+// 反例自证 ②：降级块只写 .frost（漏掉 chrome / modal 两档）→ 报红
+test("反例：降低透明度块摘掉 .glass-3 → 报红（modal 档在降级下仍是半透明）", () => {
+  const css = readFileSync(new URL("../style.css", import.meta.url), "utf8").replace(
+    /(\.glass-3 \{)\n    background: var\(--gosslan-glass-3-fallback\);\n  \}/,
+    "$1}",
+  );
+  const msgs = checkGlassTiers(css).map((i) => i.message);
+  assert.ok(
+    msgs.some((m) => m.includes("没有 .glass-3") || m.includes("没有实底回退")),
+    msgs.join("\n"),
+  );
+});
+
+// 反例自证 ③：拿掉「不支持 backdrop-filter」的整块 → 报红
+// ⚠️ 必须锚定 `@supports not ((backdrop-filter` —— 文件里还有一条
+//    `@supports not selector(::-webkit-scrollbar)`（滚动条配色），按 `@supports not` 宽匹配
+//    会先删掉那一条，判据仍然绿，反例就空转了（首版真实踩到）。
+test("反例：删掉 @supports not (backdrop-filter) 降级块 → 报红", () => {
+  const css = readFileSync(new URL("../style.css", import.meta.url), "utf8").replace(
+    /@supports not \(\(backdrop-filter[^{]*\{[\s\S]*?\n\}\n/,
+    "",
+  );
+  const msgs = checkGlassTiers(css).map((i) => i.message);
+  assert.ok(msgs.some((m) => m.includes("不支持 backdrop-filter")), msgs.join("\n"));
 });
 
 // ---------------- ⑫ 浮层 z 序阶梯：弹窗必须盖住整页下钻页，但不能盖住菜单/预览/toast ----------------
@@ -3061,8 +3128,10 @@ test("㊱ 真实树：BaseModal 的外壳层确实读了 window-safe-top，且�
     `BaseModal 的 class 属性里只数到 ${safeHits} 处读 window-safe-top，外壳那两层（遮罩 + 滚动层）都要让开`);
 
   // 卡片高度也要扣掉安全区，否则矮视口下 max-h 仍按屏幕高算，底部会被挤出可视区
-  const cardCls = allClassText.find((c) => c.includes("elevated"));
-  assert.ok(cardCls, "BaseModal 里必须有一个 .elevated 卡片元素");
+  // 2026-11-05：卡片的阴影/材质从 `.elevated` 换成 `.glass-3`（玻璃三档的 modal 档），
+  // 这里按"卡片材质类"取那一行，判据意图不变（仍要求卡片自己读 safe-top / my-auto）。
+  const cardCls = allClassText.find((c) => c.includes("glass-3") || c.includes("elevated"));
+  assert.ok(cardCls, "BaseModal 里必须有一个卡片元素（glass-3 或 elevated）");
   assert.ok(cardCls.includes("max-h-[calc(100vh-var(--gosslan-safe-top)"),
     "卡片 max-h 必须扣掉安全区：`calc(100vh - var(--gosslan-window-safe-top) - 2rem)`");
 
