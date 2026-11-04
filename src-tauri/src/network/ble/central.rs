@@ -141,16 +141,37 @@ async fn scan_loop(
                         .ble_peer_advertises
                         .lock()
                         .unwrap_or_else(|e| e.into_inner())
-                        .insert(adv_id);
+                        .insert(adv_id.clone());
                     // 对端是这条链路上的**指定拨号方**（它比我大）⇒ 别去拨它：
                     // 我们拨过去只会被它按镜像规则拒掉，而每次连接都会打断它拨过来的那条
                     // 好链路（真机症状：45s 收不到帧 → 看门狗拆链 → "加好友时连接已关闭"）。
-                    if state
-                        .ble_no_dial
-                        .lock()
-                        .unwrap_or_else(|e| e.into_inner())
-                        .contains(&peripheral.id().to_string())
-                    {
+                    //
+                    // ⚠️ 名单带 **120s TTL**（见 `BLE_NO_DIAL_TTL_MS`）：过期记录必须在
+                    // 这里**剪掉**再放行 —— 只判"在不在表里"会让一次漏扫变成整场会话的
+                    // 永久拉黑（真体感：搜得到但一直连不上）。剪枝本身也是"表不会单调增长"。
+                    let now = crate::db::now_ms();
+                    let blocked_until = {
+                        let mut map = state
+                            .ble_no_dial
+                            .lock()
+                            .unwrap_or_else(|e| e.into_inner());
+                        match map.get(&adv_id).copied() {
+                            Some(expiry) if no_dial_blocks(Some(expiry), now) => Some(expiry),
+                            Some(_) => {
+                                map.remove(&adv_id);
+                                None
+                            }
+                            None => None,
+                        }
+                    };
+                    if let Some(expiry) = blocked_until {
+                        state.logger.info(
+                            "ble",
+                            format!(
+                                "[DISCOVERY] 跳过候选 id={adv_id} 原因=镜像退让名单 剩余={}ms",
+                                (expiry - now).max(0)
+                            ),
+                        );
                         continue;
                     }
                     // 失败退避：刚连不上的候选先别急着再试（指数退避 5s→60s，见
@@ -411,6 +432,68 @@ fn should_dial_ble(my_id: &str, peer_id: &str, peer_advertises: bool) -> bool {
     !peer_advertises || my_id > peer_id
 }
 
+/// **镜像退让名单的有效期**（毫秒）：记下"不要拨它"之后，最多 120s 内生效。
+///
+/// 为什么必须有上限（真机 2026-09 那一批「搜得到但一直连不上 / 时好时坏」）：
+/// 原实现把名单当**永久黑名单**，只在蓝牙通道停止时清空。指定拨号方只要一次漏扫、
+/// 息屏休眠或拨号失败，小 id 一侧就整场会话都不再去拨它 —— 而失败的那一侧从日志里
+/// 看起来"每次扫描都跳过了候选"，没有任何错误可循。
+///
+/// 为什么是 120s：
+///   · 必须**明显短于**"用户以为它坏了"的容忍时间（用户点「添加好友」后 1~2 分钟内
+///     看不到结果就会判定失败），又要足够长以覆盖一次正常的后台扫描节奏（2s 窗口
+///     + 30s 间隔 ⇒ 4 轮左右）—— 120s ≈ 4 轮后台扫描，够对端把链路拨通；
+///   · 又必须**明显长于**一次 BLE 握手 + 连接的最坏预算（建链 20s + 握手 10s = 30s），
+///     否则会在对方拨号还没结束时提前放行、重新叠一条镜像连接。
+const BLE_NO_DIAL_TTL_MS: i64 = 120_000;
+
+/// 一条镜像链路该**接住**还是该**退让**（纯函数内核，见 `finish_dial` 的调用点）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum MirrorDecision {
+    /// 本机是这条链路的指定拨号方（或对端不广播）⇒ 正常建链。
+    Proceed,
+    /// 对端是指定拨号方，但它**还没有任何健康的蓝牙链路** ⇒ 先接住这一条。
+    ///
+    /// 为什么不能无条件退让：退让的前提是"对方那条链路真的立住了"。对方漏扫/休眠/
+    /// 拨号失败时，无条件退让就是**两侧都在等对方**，而日志里只有"跳过了候选"。
+    Rescue,
+    /// 对端是指定拨号方，且它已有一条**健康**蓝牙链路 ⇒ 退让并记入名单（带 TTL）。
+    Concede,
+}
+
+/// 判断这条镜像链路怎么处理。
+///
+/// `healthy_ble_links` = 该 peer 在**本次连接登记之前**已有的健康蓝牙链路数
+/// （来源 `link_snapshot`，与 `should_accept_inbound` 同一份健康语义）。
+fn mirror_link_decision(
+    my_id: &str,
+    peer_id: &str,
+    peer_advertises: bool,
+    healthy_ble_links: usize,
+) -> MirrorDecision {
+    if should_dial_ble(my_id, peer_id, peer_advertises) {
+        return MirrorDecision::Proceed;
+    }
+    if healthy_ble_links > 0 {
+        MirrorDecision::Concede
+    } else {
+        MirrorDecision::Rescue
+    }
+}
+
+/// 名单记录的过期时刻（`now + BLE_NO_DIAL_TTL_MS`，饱和加避免溢出）。
+fn no_dial_expiry(now: i64) -> i64 {
+    now.saturating_add(BLE_NO_DIAL_TTL_MS)
+}
+
+/// 名单记录此刻是否仍拦着拨号（`true` = 跳过该候选）。过期即放行。
+///
+/// 抽成纯函数的理由：过期判据是**时间**语义，端到端要等 120s 才能验；
+/// 纯函数可以当场把 119999ms / 120000ms 这条边界钉死。
+fn no_dial_blocks(recorded_expiry_ms: Option<i64>, now: i64) -> bool {
+    recorded_expiry_ms.is_some_and(|expiry| now < expiry)
+}
+
 /// 判断一帧**是不是 Hello** 的成本上限（字节）：Hello 只有设备 id + 两个公钥 + 签名，
 /// 几百字节量级；超过这个长度的帧不可能是握手首帧，直接跳过解析。
 ///
@@ -617,7 +700,11 @@ async fn finish_dial(
     // 我拨过去建成的是一条**镜像链路**，它会把这条拒掉（不回 Hello），而这条连接的建立
     // 过程会打断它拨给我的那条好链路 —— 于是好链路 45s 收不到帧被看门狗拆掉、再重来
     // （用户 2026-09-12 实测：「点加好友：发送失败，连接已关闭」）。
-    // 所以：记进"不要再拨"，并主动放弃这一条。
+    //
+    // ⚠️ 退让的前提是「对端那条链路真的立住了」：只有该 peer **已有一条健康蓝牙链路**
+    // 才记入退让名单（带 120s TTL，见 `BLE_NO_DIAL_TTL_MS`）。一条都没有时必须**接住**
+    // 这一条（`MirrorDecision::Rescue`）—— 否则对端漏扫/休眠/拨号失败时两侧都在等对方，
+    // 而日志里只剩"跳过了候选"，没有任何可判的线索。
     //
     // `peer_advertises`：我们是在**扫描结果**里看到这个端点的（扫到 = 它在广播），
     // 但只有 `scan_loop` 真的把它记进 `ble_peer_advertises` 才算"确认能广播"。
@@ -627,26 +714,50 @@ async fn finish_dial(
         .lock()
         .unwrap_or_else(|e| e.into_inner())
         .contains(&ble_id);
-    if !should_dial_ble(&state.device_id, &peer_id, peer_advertises) {
-        state
-            .ble_no_dial
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .insert(ble_id.clone());
-        state.logger.info(
-            "ble",
-            format!(
-                "对端 {peer_id} 是这条链路的指定拨号方（id 更大）⇒ 记下不再主动拨它，避免镜像链路互扰"
-            ),
-        );
-        // 显式断开：只 return 的话这条连接会挂着，继续占着对端 GATT server 的那个连接槽
-        //（对端每次收到我们的新连接都会替换旧连接 ⇒ 正好打断它拨过来的好链路）。
-        let _ = peripheral.disconnect().await;
-        return Ok(());
+    // 先取快照：镜像裁决与下面的入站去重**必须是同一份事实**
+    //（`should_accept_inbound` 的健康语义与 `link_snapshot` 同源，不另算一份）。
+    let existing = link_snapshot(&state, &peer_id).await;
+    let healthy_ble_links = existing
+        .iter()
+        .filter(|(_, kind, healthy)| *kind == PathKind::Bluetooth && *healthy)
+        .count();
+    match mirror_link_decision(
+        &state.device_id,
+        &peer_id,
+        peer_advertises,
+        healthy_ble_links,
+    ) {
+        MirrorDecision::Proceed => {}
+        MirrorDecision::Rescue => {
+            state.logger.info(
+                "ble",
+                format!(
+                    "对端 {peer_id} 是这条链路的指定拨号方（id 更大），但它还没有健康的蓝牙链路 ⇒ 先接住这一条（不退让）"
+                ),
+            );
+        }
+        MirrorDecision::Concede => {
+            let now = crate::db::now_ms();
+            state
+                .ble_no_dial
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .insert(ble_id.clone(), no_dial_expiry(now));
+            state.logger.info(
+                "ble",
+                format!(
+                    "对端 {peer_id} 是这条链路的指定拨号方（id 更大）且已有一条健康蓝牙链路 ⇒ 记下 {}s 内不再主动拨它，避免镜像链路互扰",
+                    BLE_NO_DIAL_TTL_MS / 1000
+                ),
+            );
+            // 显式断开：只 return 的话这条连接会挂着，继续占着对端 GATT server 的那个连接槽
+            //（对端每次收到我们的新连接都会替换旧连接 ⇒ 正好打断它拨过来的好链路）。
+            let _ = peripheral.disconnect().await;
+            return Ok(());
+        }
     }
 
     // ---- 去重：与 TCP 入站**同一个判据**（不要在这里复制第二份"有没有同路径连接"）----
-    let existing = link_snapshot(&state, &peer_id).await;
     if !should_accept_inbound_public(&state.device_id, &peer_id, PathKind::Bluetooth, &existing) {
         return Err("已有蓝牙链路（或该 peer 链路数已满），不重复建链".to_string());
     }

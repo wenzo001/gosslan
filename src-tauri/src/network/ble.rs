@@ -797,6 +797,97 @@ mod tests {
         assert!(should_dial_ble("a", "z", false));
     }
 
+    /// **镜像退让只在对端已有健康蓝牙链路时发生**（2026-11-04）。
+    ///
+    /// 真实缺陷（真机体感「搜得到但一直连不上 / 时好时坏」）：原实现只要握手验签发现
+    /// 对端 id 更大就**无条件**放弃这一条并永久记入名单。对端漏扫/休眠/拨号失败时，
+    /// 这一侧就整场会话都不再尝试 —— 而日志里只有"跳过了候选"，没有任何错误可循。
+    ///
+    /// 判据分三档：
+    ///   · 我是指定拨号方 ⇒ 正常建链（`Proceed`）；
+    ///   · 对端是指定拨号方、但它**一条健康蓝牙链路都没有** ⇒ 接住这一条（`Rescue`）；
+    ///   · 对端是指定拨号方且已有健康蓝牙链路 ⇒ 退让并记名单（`Concede`）。
+    #[test]
+    fn mirror_guard_only_concedes_when_the_peer_already_has_a_healthy_link() {
+        // 我 id 更大 ⇒ 无论对方有没有链路，都该我拨、正常建链
+        assert_eq!(
+            mirror_link_decision("gosslan-bbb", "gosslan-aaa", true, 0),
+            MirrorDecision::Proceed
+        );
+        // 对端不广播（Windows 只做 central）⇒ 同样无条件建链
+        assert_eq!(
+            mirror_link_decision("gosslan-aaa", "gosslan-bbb", false, 0),
+            MirrorDecision::Proceed
+        );
+        // ★ 无其他蓝牙链路 ⇒ 不退让：这是本次修复的核心格
+        assert_eq!(
+            mirror_link_decision("gosslan-aaa", "gosslan-bbb", true, 0),
+            MirrorDecision::Rescue,
+            "对端一条健康蓝牙链路都没有时退让 = 两侧都在等对方（真机表现为永远连不上）"
+        );
+        // 存在健康蓝牙链路 ⇒ 退让并记录（记录由调用点用 `no_dial_expiry` 落库）
+        assert_eq!(
+            mirror_link_decision("gosslan-aaa", "gosslan-bbb", true, 1),
+            MirrorDecision::Concede
+        );
+        assert_eq!(
+            mirror_link_decision("gosslan-aaa", "gosslan-bbb", true, 3),
+            MirrorDecision::Concede,
+            "多条健康链路同样该退让（判据只关心有没有，不关心几条）"
+        );
+    }
+
+    /// **退让名单只在 120s 内生效**：过期记录必须放行。
+    ///
+    /// 为什么值得单独钉：名单过期是**时间**语义，真机要等两分钟才看得到；
+    /// 而写错一个比较符号（`<=` / `<`）会让"过期即放行"变成"永远不放行"或"提前放行"，
+    /// 功能表面完全正常，只有用户在"对端休眠过一次"之后才会遇到。
+    #[test]
+    fn no_dial_record_expires_after_the_ttl() {
+        let t0 = 1_700_000_000_000i64;
+        let expiry = no_dial_expiry(t0);
+        assert_eq!(expiry, t0 + BLE_NO_DIAL_TTL_MS, "过期时刻必须是 now + TTL");
+        assert_eq!(
+            BLE_NO_DIAL_TTL_MS, 120_000,
+            "TTL 固定为 120s（理由见常量注释：覆盖 4 轮后台扫描，且长于一次建链+握手预算）"
+        );
+        assert!(no_dial_blocks(Some(expiry), t0), "刚记下的名单必须拦住拨号");
+        assert!(
+            no_dial_blocks(Some(expiry), expiry - 1),
+            "TTL 未到（119999ms）仍要拦住"
+        );
+        assert!(
+            !no_dial_blocks(Some(expiry), expiry),
+            "TTL 到期（120000ms）必须放行允许再拨"
+        );
+        assert!(!no_dial_blocks(Some(expiry), expiry + 1), "过期后也不拦");
+        assert!(!no_dial_blocks(None, t0), "没有记录当然不拦");
+        // 饱和加：极端时间戳不许溢出成负数（那会被当成"早就过期"）
+        assert_eq!(no_dial_expiry(i64::MAX), i64::MAX);
+    }
+
+    /// **地址轮换 ⇒ 旧记录不生效**：名单按 BLE 地址建键，对端换了随机地址后
+    /// 旧地址的退让记录不能挡住新地址的拨号。
+    #[test]
+    fn rotated_ble_address_does_not_inherit_the_old_no_dial_record() {
+        let now = 1_700_000_000_000i64;
+        let mut records: std::collections::HashMap<String, i64> = std::collections::HashMap::new();
+        records.insert("AA:BB:CC:DD:EE:01".to_string(), no_dial_expiry(now));
+
+        // 同一地址、TTL 内 ⇒ 拦住（防止"把整张表当失效"的假修复）
+        assert!(no_dial_blocks(
+            records.get("AA:BB:CC:DD:EE:01").copied(),
+            now
+        ));
+        // 轮换后的新地址 ⇒ 查不到记录，必须允许拨号
+        assert!(
+            !no_dial_blocks(records.get("AA:BB:CC:DD:EE:02").copied(), now),
+            "地址轮换后旧记录不得作用于新地址 —— 否则对端换个地址就被永久拉黑"
+        );
+        // 记录本身仍只属于旧地址（查新地址不会改写旧记录）
+        assert!(records.contains_key("AA:BB:CC:DD:EE:01"));
+    }
+
     /// **BLE 读循环必须回灌读活性**（2026-09-13 审计抓到的真缺陷）。
     ///
     /// `ConnectionHealth` 的读活性只在**建链时播种一次**
