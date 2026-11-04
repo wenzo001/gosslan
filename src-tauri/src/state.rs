@@ -1138,6 +1138,21 @@ pub struct TodoFocus {
     pub mode: String,
 }
 
+/// 上一次渲染层自愈的结果，前端横幅一次性取走（`ui_recovery_take`）。
+///
+/// 只描述**这一次动作**的结局，不承载判定依据 —— 判定在 `watchdog::recover_decision`，
+/// 入参里没有版本字段（5.16.74 与之后的版本同一套逻辑）。
+#[derive(Clone, Debug, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UiRecoveryNotice {
+    /// `recovered`：重载后心跳已回；`suggest_restart`：自动恢复没救回来，建议手动重启。
+    pub kind: String,
+    /// 触发时的心跳停滞时长（ms）。
+    pub stalled_ms: i64,
+    /// 本轮做过的自愈动作次数（reload / restart）。
+    pub actions: u32,
+}
+
 pub struct AppState {
     pub app: AppHandle,
     pub db: DbLock<Connection>,
@@ -1522,6 +1537,8 @@ pub struct AppState {
     pub ui_last_focus_ms: std::sync::atomic::AtomicI64,
     pub ui_last_focus_focused: AtomicBool,
     pub ui_last_resize_ms: std::sync::atomic::AtomicI64,
+    /// 最近一次自愈动作的结果，供前端横幅一次性取走（取走即清空，见 `ui_recovery_take`）。
+    pub ui_recovery_notice: Mutex<Option<UiRecoveryNotice>>,
     pub group_file_receivers: Mutex<HashMap<String, FileReceiver>>,
     /// 正在接收的文件：transfer_id -> FileReceiver
     pub file_receivers: Mutex<HashMap<String, FileReceiver>>,
@@ -2508,6 +2525,7 @@ impl AppState {
             ui_last_focus_ms: std::sync::atomic::AtomicI64::new(0),
             ui_last_focus_focused: AtomicBool::new(false),
             ui_last_resize_ms: std::sync::atomic::AtomicI64::new(0),
+            ui_recovery_notice: Mutex::new(None),
             group_file_receivers: Mutex::new(HashMap::new()),
             inbound_gate: Mutex::new(()),
             group_file_sending: Mutex::new(std::collections::HashSet::new()),
