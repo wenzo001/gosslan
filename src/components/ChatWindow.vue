@@ -2085,14 +2085,18 @@ function retryHistory() {
         {{ nudgeText }}
       </div>
 
-      <!-- 回到最新（离开底部时出现） -->
+      <!-- 回到最新（离开底部时出现）：水平居中、紧贴消息区底部上方；纯圆 + 向下箭头，无文字。
+           无障碍标签走 i18n（aria-label/title），不硬编码中文。
+           出现只播一次 fade（见 style.css `.gosslan-back-to-latest`）；未读数变化不重建节点。 -->
       <button
         v-if="!nearBottom"
-        class="tap-safe absolute bottom-4 right-5 z-10 flex items-center gap-1.5 rounded-full border border-[var(--gosslan-border)] bg-[var(--gosslan-panel)] px-3 py-1.5 text-xs text-[var(--gosslan-text)] shadow-lg transition hover:bg-[var(--gosslan-hover)]"
+        type="button"
+        class="gosslan-back-to-latest tap-safe absolute bottom-4 left-1/2 z-10 flex h-9 w-9 -translate-x-1/2 items-center justify-center rounded-full border border-[var(--gosslan-border)] bg-[var(--gosslan-panel)] text-[var(--gosslan-text)] shadow-lg transition hover:bg-[var(--gosslan-hover)]"
+        :aria-label="t('chat.backToLatest')"
+        :title="t('chat.backToLatest')"
         @click="nearBottom = true; listRef?.scrollToBottom()"
       >
-        <ArrowDown class="h-3.5 w-3.5" />
-        {{ t("chat.backToLatest") }}
+        <ArrowDown class="h-4 w-4" aria-hidden="true" />
       </button>
     </div>
 
