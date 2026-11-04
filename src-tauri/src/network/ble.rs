@@ -888,6 +888,60 @@ mod tests {
         assert!(records.contains_key("AA:BB:CC:DD:EE:01"));
     }
 
+    /// **拨号预算：满了就延后**（真机 2026-09 的 45s 拆链：一轮扫描把十几个拨号任务
+    /// 同时打向对端 GATT server，它每收到一条新连接就替换旧连接 ⇒ 好链路被看门狗拆掉）。
+    #[test]
+    fn dial_budget_defers_when_full() {
+        assert_eq!(
+            BLE_MAX_CONCURRENT_DIALS, 4,
+            "并发上限固定为 4（理由见常量注释：对端 GATT server 只有 1 个连接槽，越高越互相替换）"
+        );
+        assert_eq!(dial_gate(0, u64::MAX, false), DialGate::Start);
+        assert_eq!(dial_gate(3, u64::MAX, false), DialGate::Start);
+        assert_eq!(
+            dial_gate(4, u64::MAX, false),
+            DialGate::Defer,
+            "在途已达 4 条 ⇒ 本轮延后（下一轮扫描再试）"
+        );
+        assert_eq!(dial_gate(9, 0, false), DialGate::Defer, "超限同样延后");
+        assert_eq!(
+            dial_gate(4, u64::MAX, true),
+            DialGate::Defer,
+            "用户主动触发只旁路 500ms 间隔，**不**放宽并发预算（放开就又把连接槽刷爆）"
+        );
+    }
+
+    /// **最小间隔 500ms**，且用户主动触发扫描可旁路。
+    #[test]
+    fn dial_pacing_waits_500ms_unless_user_triggered() {
+        assert_eq!(
+            BLE_DIAL_MIN_INTERVAL_MS, 500,
+            "最小间隔固定为 500ms（理由见常量注释：够对端完成一次连接替换，又不拖垮一轮扫描）"
+        );
+        assert_eq!(dial_gate(0, 0, false), DialGate::Wait(500));
+        assert_eq!(dial_gate(0, 250, false), DialGate::Wait(250));
+        assert_eq!(dial_gate(0, 499, false), DialGate::Wait(1));
+        assert_eq!(
+            dial_gate(0, 500, false),
+            DialGate::Start,
+            "刚好 500ms 即放行"
+        );
+        assert_eq!(dial_gate(0, 700, false), DialGate::Start);
+        // 用户主动触发 ⇒ 旁路间隔（点了「扫描」就不该再等）
+        assert_eq!(dial_gate(0, 0, true), DialGate::Start);
+        assert_eq!(dial_gate(3, 0, true), DialGate::Start);
+    }
+
+    /// RSSI 门限（可选档）：未知 RSSI 不拦；低于 -90dBm 才拦。
+    #[test]
+    fn dial_rssi_floor_is_optional_and_unknown_never_blocks() {
+        assert_eq!(BLE_DIAL_MIN_RSSI, -90);
+        assert!(rssi_allows(None), "广播没带 RSSI ⇒ 不知道就不拦");
+        assert!(rssi_allows(Some(-89)));
+        assert!(rssi_allows(Some(-90)), "等于门限仍允许");
+        assert!(!rssi_allows(Some(-91)), "低于门限 ⇒ 本轮不拨");
+    }
+
     /// **BLE 读循环必须回灌读活性**（2026-09-13 审计抓到的真缺陷）。
     ///
     /// `ConnectionHealth` 的读活性只在**建链时播种一次**

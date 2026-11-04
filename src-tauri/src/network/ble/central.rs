@@ -86,6 +86,11 @@ async fn scan_loop(
     let mut last_reported: Option<ScanRound> = None;
     // 本轮是不是用户主动触发的（决定拨号退避要不要打折，见下）
     let mut user_triggered = false;
+    // 拨号预算：全局限并发 + 两次开始之间的最小间隔（常量与理由见
+    // `BLE_MAX_CONCURRENT_DIALS` / `BLE_DIAL_MIN_INTERVAL_MS`）。许可是
+    // `OwnedSemaphorePermit`，随拨号任务结束自动归还 —— 不靠手动计数（漏减会永久锁死）。
+    let dial_budget = Arc::new(tokio::sync::Semaphore::new(BLE_MAX_CONCURRENT_DIALS));
+    let mut last_dial_start: Option<std::time::Instant> = None;
     loop {
         match driver::scan_peers(&adapter, SCAN_WINDOW).await {
             Ok((peers, total)) => {
@@ -252,7 +257,7 @@ async fn scan_loop(
                     // 真机上出现过"Windows 搜得到安卓和 Mac，但安卓的扫描里只有 1 个本应用服务"
                     // —— 到底是对端没广播、还是广播里带的是**另一个** UUID（旧版本 / 另一份构建），
                     // 只有把 UUID 打出来才能区分。这是"三方都能扫到、偏偏有一方扫不到"的决定性证据。
-                    let facts = match peripheral.properties().await {
+                    let (facts, rssi) = match peripheral.properties().await {
                         Ok(Some(p)) => {
                             // 直接现算 UUID（`driver::uuid` 是私有的，不为了这条日志去放开它）
                             let svc = uuid::Uuid::parse_str(SERVICE_UUID)
@@ -263,18 +268,72 @@ async fn scan_loop(
                                 .find(|u| **u == svc)
                                 .map(|u| u.to_string())
                                 .unwrap_or_else(|| "(未在本设备广播里看到我们的 UUID)".to_string());
-                            format!(
-                                "rssi={:?} 地址类型={:?} 名字={:?} 广播服务数={} 命中={hit} 发射功率={:?}",
+                            (
+                                format!(
+                                    "rssi={:?} 地址类型={:?} 名字={:?} 广播服务数={} 命中={hit} 发射功率={:?}",
+                                    p.rssi,
+                                    p.address_type,
+                                    p.local_name.as_deref().or(p.advertisement_name.as_deref()),
+                                    p.services.len(),
+                                    p.tx_power_level
+                                ),
                                 p.rssi,
-                                p.address_type,
-                                p.local_name.as_deref().or(p.advertisement_name.as_deref()),
-                                p.services.len(),
-                                p.tx_power_level
                             )
                         }
-                        Ok(None) => "广播属性暂不可用".to_string(),
-                        Err(e) => format!("读广播属性失败：{e}"),
+                        Ok(None) => ("广播属性暂不可用".to_string(), None),
+                        Err(e) => (format!("读广播属性失败：{e}"), None),
                     };
+                    // RSSI 门限（可选档，见 `BLE_DIAL_MIN_RSSI`）：太弱的候选本轮先不拨。
+                    // 留痕是必须的 —— 否则真机上"搜到了但没连"分不清是门限还是失败。
+                    if !rssi_allows(rssi) {
+                        state.logger.info(
+                            "ble",
+                            format!(
+                                "[DISCOVERY] 跳过候选 id={dial_id} 原因=RSSI 太弱（rssi={} < {BLE_DIAL_MIN_RSSI}）",
+                                rssi.unwrap_or_default()
+                            ),
+                        );
+                        continue;
+                    }
+                    // ---- 拨号预算：并发上限 + 最小间隔（用户主动扫描可旁路间隔）----
+                    // 原实现对每个候选直接 spawn，密集环境里十几条连接同时打向对端 Android
+                    // GATT server ⇒ 它每收到一条新连接就替换旧连接 ⇒ 对端拨过来的好链路
+                    // 45s 收不到帧被看门狗拆掉（真机 2026-09 的「加好友时连接已关闭」）。
+                    let since_last_ms = last_dial_start
+                        .map(|t| t.elapsed().as_millis() as u64)
+                        .unwrap_or(u64::MAX);
+                    match dial_gate(
+                        BLE_MAX_CONCURRENT_DIALS - dial_budget.available_permits(),
+                        since_last_ms,
+                        user_triggered,
+                    ) {
+                        DialGate::Defer => {
+                            state.logger.info(
+                                "ble",
+                                format!(
+                                    "[DISCOVERY] 跳过候选 id={dial_id} 原因=拨号预算已满（在途 ≥{BLE_MAX_CONCURRENT_DIALS}，下一轮再试）"
+                                ),
+                            );
+                            continue;
+                        }
+                        DialGate::Wait(ms) => {
+                            // 只等这一小段：轮到本候选时再开始，后续候选同样按这个节奏排队。
+                            tokio::time::sleep(Duration::from_millis(ms)).await;
+                        }
+                        DialGate::Start => {}
+                    }
+                    let Ok(permit) = dial_budget.clone().try_acquire_owned() else {
+                        // 上面的 gate 刚看过可用许可；这里仍然失败只可能是竞态 —— 留痕而不是
+                        // unwrap（在扫描循环里 panic 会让整条 BLE 通道静默停摆）。
+                        state.logger.info(
+                            "ble",
+                            format!(
+                                "[DISCOVERY] 跳过候选 id={dial_id} 原因=拨号许可已被占满（下一轮再试）"
+                            ),
+                        );
+                        continue;
+                    };
+                    last_dial_start = Some(std::time::Instant::now());
                     state.logger.info(
                         "ble",
                         format!(
@@ -283,6 +342,8 @@ async fn scan_loop(
                     );
                     // 每个候选一个任务：连接 + 握手最长 10s，串行会把扫描周期拖垮
                     tokio::spawn(async move {
+                        // 许可跟着任务走：这个拨号结束（无论成败）才归还一个并发名额。
+                        let _permit = permit;
                         let id = peripheral.id().to_string();
                         match dial_and_register(st.clone(), peripheral, sd).await {
                             // 成功 ⇒ 清掉这个候选的失败计数（下次断了还能正常重拨）
@@ -492,6 +553,70 @@ fn no_dial_expiry(now: i64) -> i64 {
 /// 纯函数可以当场把 119999ms / 120000ms 这条边界钉死。
 fn no_dial_blocks(recorded_expiry_ms: Option<i64>, now: i64) -> bool {
     recorded_expiry_ms.is_some_and(|expiry| now < expiry)
+}
+
+/// **同时在途的 BLE 拨号上限**（本机主动发起的 central 连接数）。
+///
+/// 为什么必须有（真机 2026-09 的 45s 拆链事故）：一轮扫描原本对**每个**候选都 spawn
+/// 一个拨号任务，密集环境里十几条连接同时打向对端 —— Android 的 GATT server 每收到
+/// 一条新连接就**替换**旧连接，于是对端拨过来的好链路 45s 收不到帧，被看门狗拆掉。
+///
+/// 为什么是 4：BitChat 用的全局预算是 6 条（README/TransportConfig 的 `maxCentrals`），
+/// 那是给"纯 central 手机"留的发现带宽；我们两侧都跑 peripheral，对端 GATT server 的
+/// 连接槽只有 1 个 ⇒ 并发越高越容易互相替换。取 4 = 保留一条我们自己的外设入站余量、
+/// 同时仍能在小房间一轮里覆盖几个邻居；再多也不会让发现变快（扫描窗口只有 2s）。
+const BLE_MAX_CONCURRENT_DIALS: usize = 4;
+
+/// **两次「开始拨号」之间的最小间隔**（毫秒）。
+///
+/// 为什么需要：并发上限只约束"同时几条"，一轮里 4 个任务接连启动仍会在几十毫秒内
+/// 把对端连接槽刷一遍。BitChat 的全局拨号间隔就是 0.5s（`TransportConfig`）。
+/// 为什么是 500ms：足够让对端 GATT server 完成一次连接建立/替换（Android 实测在
+/// 数百毫秒级），又不会把一轮扫描拖到用户可感知（4 个候选 = 最多 +1.5s，窗口本就要 2s）。
+/// 用户主动触发扫描时**旁路这个间隔**（见 [`dial_gate`]）—— 点了「扫描」就不要再让用户等。
+const BLE_DIAL_MIN_INTERVAL_MS: u64 = 500;
+
+/// 低于这个 RSSI（dBm）的候选**本轮不拨**；`None`（广播没带 RSSI）不拦。
+///
+/// BitChat 的候选门限就是 -90dBm。放开比它更严会把"隔着身体/墙但仍能连"的链路
+/// 直接筛掉；更松（比如 -100）又会在密集环境里把远处不相干的设备也拨一遍。
+const BLE_DIAL_MIN_RSSI: i16 = -90;
+
+/// 拨号节奏的决策（纯函数内核，见 `scan_loop` 的调用点）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DialGate {
+    /// 现在就可以开始拨号。
+    Start,
+    /// 距上次开始拨号还不够 500ms ⇒ 等这么多毫秒再开始。
+    Wait(u64),
+    /// 在途拨号已达上限 ⇒ 本轮延后（下一轮扫描再试）。
+    Defer,
+}
+
+/// 判断这一次候选拨号该「立刻开始 / 等一会 / 延后」。
+///
+/// 顺序是刻意的：**并发预算先于用户旁路** —— 用户主动触发只允许跳过 500ms 间隔，
+/// 不允许把并发上限推开（推开就又把对端连接槽刷爆，那是这次要治的病）。
+fn dial_gate(active_dials: usize, since_last_ms: u64, user_triggered: bool) -> DialGate {
+    if active_dials >= BLE_MAX_CONCURRENT_DIALS {
+        return DialGate::Defer;
+    }
+    if user_triggered {
+        return DialGate::Start;
+    }
+    if since_last_ms >= BLE_DIAL_MIN_INTERVAL_MS {
+        DialGate::Start
+    } else {
+        DialGate::Wait(BLE_DIAL_MIN_INTERVAL_MS - since_last_ms)
+    }
+}
+
+/// RSSI 是否够得着（`None` = 广播没带 RSSI ⇒ 不知道就不拦）。
+fn rssi_allows(rssi: Option<i16>) -> bool {
+    match rssi {
+        None => true,
+        Some(value) => value >= BLE_DIAL_MIN_RSSI,
+    }
 }
 
 /// 判断一帧**是不是 Hello** 的成本上限（字节）：Hello 只有设备 id + 两个公钥 + 签名，
