@@ -319,6 +319,90 @@ fn log_unexpected_encrypted(
     );
 }
 
+/// 一条中继收尾回执落到**本机发送台账**上的结局。
+///
+/// 逐档分开是因为"没写成"有四种完全不同的含义（见 `db::TransferUpsert` 的注释）：
+/// 未知单 / 缺码 / 终态契约挡住 都不该被压成"失败"或"成功"。
+#[derive(Debug, PartialEq, Eq)]
+enum RelayReceiptApply {
+    /// 成功 ⇒ `sent` 升到 `done`（回填 `file-done` 需要的三格）。
+    Delivered {
+        name: String,
+        size: u64,
+        path: String,
+    },
+    /// 失败 ⇒ 撤回，`code` 原样透传（具名码，前端按词典翻译）。
+    Failed { code: String },
+    /// 失败回执却缺具名码：畸形帧，**不新增失败判定**（发送侧维持现状）。
+    IgnoredMissingCode,
+    /// 台账里没有这一单，或方向/对端对不上：不是本机发出的那一单，忽略。
+    IgnoredUnknown,
+    /// 终态契约挡住（已 done / 取消墓碑）：该挡，但要留痕。
+    Refused { reason: String },
+}
+
+/// 把回执应用到发送台账。**只认 `send` 方向且 `peer_id` 与信封发送方一致的行** ——
+/// `transfer_id` 是对端给的，若不核对方向/对端，任何好友都能凭一个 id 改写本机的接收台账。
+/// 成功回执还要求字节数与台账一致（老载荷没有 `size` ⇒ 0 视为未声明，跳过这项核对）。
+fn apply_relay_file_receipt(
+    conn: &rusqlite::Connection,
+    peer_id: &str,
+    p: &crate::protocol::FileRelayReceiptPayload,
+) -> RelayReceiptApply {
+    let Some(target) = db::transfer_receipt_target(conn, &p.transfer_id) else {
+        return RelayReceiptApply::IgnoredUnknown;
+    };
+    if target.direction != "send" || target.peer_id != peer_id {
+        return RelayReceiptApply::IgnoredUnknown;
+    }
+    if p.success && p.size != 0 && p.size != target.size {
+        return RelayReceiptApply::Refused {
+            reason: format!("回执字节数 {} 与台账 {} 不一致", p.size, target.size),
+        };
+    }
+    let code = match p.fail_code.as_deref().map(str::trim) {
+        Some(c) if !c.is_empty() => c.to_string(),
+        _ if p.success => String::new(),
+        _ => return RelayReceiptApply::IgnoredMissingCode,
+    };
+    let (status, progress) = if p.success {
+        ("done", 1.0)
+    } else {
+        ("failed", 0.0)
+    };
+    match db::upsert_transfer(
+        conn,
+        &p.transfer_id,
+        peer_id,
+        &target.name,
+        target.size,
+        "send",
+        status,
+        target.path.as_deref(),
+        progress,
+    ) {
+        Ok(db::TransferUpsert::Applied | db::TransferUpsert::Idempotent) => {
+            if p.success {
+                RelayReceiptApply::Delivered {
+                    name: target.name,
+                    size: target.size,
+                    path: target.path.unwrap_or_default(),
+                }
+            } else {
+                RelayReceiptApply::Failed { code }
+            }
+        }
+        Ok(refused) => RelayReceiptApply::Refused {
+            reason: refused
+                .refusal()
+                .unwrap_or_else(|| "未知拒绝".to_string()),
+        },
+        Err(e) => RelayReceiptApply::Refused {
+            reason: format!("写台账失败: {e}"),
+        },
+    }
+}
+
 async fn handle_gossip(state: &Arc<AppState>, peer_id: &str, env: GossipEnvelope) {
     // Gossip 可经第三方转发，不能仅凭信封内自报的 Ed25519 公钥建立身份。
     // 公钥必须先由 Discovery/Hello 绑定到同一个 device_id；若已知 X25519
@@ -1228,32 +1312,123 @@ async fn handle_gossip(state: &Arc<AppState>, peer_id: &str, env: GossipEnvelope
             }
         }
         GossipKind::FileRelayReceipt => {
-            // 中继文件收件回执（**只做可观测**，2026-11-03）：target == 本机才处理。
-            // 收到只记日志 + 广播事件；没有回执不是失败、也不改任何状态（老端根本不发）。
-            if env.target.as_deref() == Some(state.device_id.as_str()) {
-                if let Some(pt) = plaintext {
-                    if let Ok(v) = serde_json::from_slice::<serde_json::Value>(&pt) {
-                        if let Some(tid) = v.get("transfer_id").and_then(|t| t.as_str()) {
-                            let sha = v.get("sha256").and_then(|t| t.as_str()).unwrap_or("");
-                            state.logger.info(
-                                "relay",
-                                format!(
-                                    "code=RELAY_FILE_RECEIPT tid={tid} peer={} sha={sha}",
-                                    env.sender_id
-                                ),
-                            );
-                            let _ = state.app.emit(
-                                "relay-file-receipt",
-                                serde_json::json!({
-                                    "transfer_id": tid,
-                                    "peer_id": env.sender_id,
-                                    "sha256": sha,
-                                }),
-                            );
-                        }
+            // 中继文件**收尾回执**：target == 本机才消费（中间节点只转发，不碰台账）。
+            // 成功 = 把本机发出的那一单从 `sent` 升到 `done`（用户侧"已送达"）；
+            // 失败 = 撤回并透传接收端的**具名**失败码（前端 `fileFailReasonText` 翻成人话）。
+            // **没有回执不改任何状态** —— 老接收端根本不发，不能把"没等到"判成失败。
+            if env.target.as_deref() != Some(state.device_id.as_str()) {
+                return;
+            }
+            let Some(pt) = plaintext else {
+                return;
+            };
+            let payload = match serde_json::from_slice::<crate::protocol::FileRelayReceiptPayload>(&pt)
+            {
+                Ok(p) => p,
+                Err(e) => {
+                    if log_throttled("relay_receipt_malformed", 10_000) {
+                        state.logger.warn(
+                            "relay",
+                            format!(
+                                "code=RELAY_FILE_RECEIPT result=malformed peer={} —— 回执载荷畸形: {e}",
+                                env.sender_id
+                            ),
+                        );
+                    }
+                    return;
+                }
+            };
+            let applied = {
+                let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
+                apply_relay_file_receipt(&dbc, &env.sender_id, &payload)
+            };
+            match &applied {
+                RelayReceiptApply::Delivered { name, size, path } => {
+                    state.logger.info(
+                        "relay",
+                        format!(
+                            "code=RELAY_FILE_RECEIPT result=ok tid={} peer={} size={} sha={}",
+                            payload.transfer_id, env.sender_id, payload.size, payload.sha256
+                        ),
+                    );
+                    // 先补一条 100% 进度再发终态：最后一片的进度是节流发的，可能没到前端。
+                    let _ = state.app.emit(
+                        "file-progress",
+                        &crate::state::FileProgress {
+                            transfer_id: payload.transfer_id.clone(),
+                            received: *size,
+                            total: *size,
+                        },
+                    );
+                    let _ = state.app.emit(
+                        "file-done",
+                        &crate::state::FileDoneInfo {
+                            transfer_id: payload.transfer_id.clone(),
+                            name: name.clone(),
+                            size: *size,
+                            path: path.clone(),
+                        },
+                    );
+                }
+                RelayReceiptApply::Failed { code } => {
+                    state.logger.warn(
+                        "relay",
+                        format!(
+                            "code=RELAY_FILE_RECEIPT result=failed tid={} peer={} reason={code}",
+                            payload.transfer_id, env.sender_id
+                        ),
+                    );
+                    let _ = state.app.emit(
+                        "file-failed",
+                        &crate::state::FileFailedInfo {
+                            transfer_id: payload.transfer_id.clone(),
+                            reason: code.clone(),
+                        },
+                    );
+                }
+                RelayReceiptApply::IgnoredMissingCode => {
+                    if log_throttled("relay_receipt_no_code", 10_000) {
+                        state.logger.warn(
+                            "relay",
+                            format!(
+                                "code=RELAY_FILE_RECEIPT result=ignored tid={} peer={} —— 失败回执缺具名码，不新增失败判定",
+                                payload.transfer_id, env.sender_id
+                            ),
+                        );
                     }
                 }
+                RelayReceiptApply::IgnoredUnknown => {
+                    if log_throttled("relay_receipt_unknown", 10_000) {
+                        state.logger.warn(
+                            "relay",
+                            format!(
+                                "code=RELAY_FILE_RECEIPT result=ignored tid={} peer={} —— 不是本机发出的那一单（方向/对端不符或台账无行）",
+                                payload.transfer_id, env.sender_id
+                            ),
+                        );
+                    }
+                }
+                RelayReceiptApply::Refused { reason } => {
+                    state.logger.warn(
+                        "relay",
+                        format!(
+                            "code=RELAY_FILE_RECEIPT result=refused tid={} peer={} —— {reason}",
+                            payload.transfer_id, env.sender_id
+                        ),
+                    );
+                }
             }
+            let _ = state.app.emit(
+                "relay-file-receipt",
+                serde_json::json!({
+                    "transfer_id": payload.transfer_id,
+                    "peer_id": env.sender_id,
+                    "sha256": payload.sha256,
+                    "size": payload.size,
+                    "success": payload.success,
+                    "fail_code": payload.fail_code,
+                }),
+            );
         }
         GossipKind::Chat | GossipKind::Group => {
             // 单聊定向：target 存在且不是本机 → 中间节点只转发不消费。即便不判断，

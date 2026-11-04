@@ -165,6 +165,37 @@ pub fn get_transfer_route(conn: &Connection, id: &str) -> Option<(String, String
     .flatten()
 }
 
+/// 发送侧收到「中继收尾回执」时要读的那几格：**方向/对端**用于判定这条回执是不是
+/// 我发出的那一单，`name/size/path` 用于把 `file-done` 事件填完整（前端按它把台账行
+/// 写成 done 并回填本地路径）。
+pub struct TransferReceiptTarget {
+    pub direction: String,
+    pub peer_id: String,
+    pub name: String,
+    pub size: u64,
+    pub path: Option<String>,
+}
+
+/// 回执对账用的只读投影。`None` = 读不到行（不是本机记过账的单）。
+pub fn transfer_receipt_target(conn: &Connection, id: &str) -> Option<TransferReceiptTarget> {
+    conn.query_row(
+        "SELECT direction, peer_id, name, size, path FROM file_transfers WHERE id = ?1",
+        params![id],
+        |r| {
+            Ok(TransferReceiptTarget {
+                direction: r.get(0)?,
+                peer_id: r.get(1)?,
+                name: r.get(2)?,
+                size: r.get::<_, i64>(3)?.max(0) as u64,
+                path: r.get(4)?,
+            })
+        },
+    )
+    .optional()
+    .ok()
+    .flatten()
+}
+
 /// 只把**仍处 active** 的传输行标为 failed，返回是否有行被改。
 ///
 /// 回收中继态时给接收端一个显式失败终态（2026-09-23 审计 A2：旧行为只从内存

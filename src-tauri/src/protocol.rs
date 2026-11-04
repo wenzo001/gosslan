@@ -1726,13 +1726,41 @@ pub enum GossipKind {
     /// payload 为 JSON `{"last_read_ts":n,"last_read_msg_id":"..."}`，`target` = 原始发送方。
     /// 与直连 `Message::ReadReceipt` 语义一致，但可跨跳。
     ChatReadReceipt,
-    /// 中继文件收件回执（定向跨跳）：接收方把中继文件落盘成功、且**原发送方声明过**
-    /// `CONTENT_FEATURE_FILE_RECEIPT` 时回一帧。明文，payload 为 JSON
-    /// `{"transfer_id":"...","sha256":"..."}`，`target` = 原始发送方。
+    /// 中继文件**收尾回执**（定向跨跳）：接收方给出终局判决时回一帧 —— 落盘并校验通过
+    /// 回成功；落盘/校验失败回具名失败码。明文，payload 见 [`FileRelayReceiptPayload`]，
+    /// `target` = 原始发送方。
     ///
-    /// 只做**可观测**（2026-11-03）：发送方收到后记日志 + 广播 `relay-file-receipt` 事件；
-    /// **没有回执不改变任何状态**，老端也不会发。老端不认识这个变体 ⇒ `Message::Unknown` 丢弃。
+    /// 门控：只有**原发送方声明过** `CONTENT_FEATURE_FILE_RECEIPT` 才发 —— 老端的
+    /// `GossipKind` 表里没有这个变体，整帧会被降级成 `Message::Unknown` 丢弃。
+    /// 发送侧收到成功回执才把台账从 `sent` 升到 `done`；**没有回执不改变任何状态**
+    /// （老接收端不会发，不能把"没等到回执"当成失败）。
     FileRelayReceipt,
+}
+
+/// [`GossipKind::FileRelayReceipt`] 的明文载荷。
+///
+/// 向后兼容的两块：
+/// - `success` 缺省 **true**：老接收端只在"落盘 + 校验通过"之后才发，载荷里根本没有这个
+///   字段；把"没写"读成失败会把每一台老对端都判成失败。
+/// - `size` / `fail_code` 缺省：老载荷只有 `transfer_id` + `sha256`，新发送方照样能收。
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+pub struct FileRelayReceiptPayload {
+    pub transfer_id: String,
+    /// 接收端对**组装后的明文**算出的 SHA-256（与 offer 校验用的是同一个算法/同一个值）。
+    pub sha256: String,
+    #[serde(default = "receipt_success_by_default")]
+    pub success: bool,
+    /// 接收端验过的明文字节数；老载荷没有 ⇒ 0。
+    #[serde(default)]
+    pub size: u64,
+    /// 具名失败码（`crate::logging::FAIL_CODE_*`）；成功时为空。发送侧只透传它上屏，
+    /// 缺码的失败回执**不判失败**（那是畸形帧，不是对端的判决）。
+    #[serde(default)]
+    pub fail_code: Option<String>,
+}
+
+fn receipt_success_by_default() -> bool {
+    true
 }
 
 /// Gossip 广播信封（Epidemic 协议消息体）。
