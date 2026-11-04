@@ -387,6 +387,17 @@ pub struct PendingOutAccept {
     pub issued_at: i64,
     pub attempts: u32,
     pub last_at: i64,
+    /// 这条同意回执对应的**入站申请 id**（发起方生成，原样回显）。
+    ///
+    /// 为什么必须带（Block 1 / Case A）：发起方拿它和自己 `pending_out_requests` 里
+    /// 那条申请对比 —— 只有 id 对得上，才承认「这封同意确实是对我那次申请的答复」，
+    /// 才允许把信封里那把 ed25519 写成身份锚点。`request_id` 在申请信封的**加密载荷**里，
+    /// 只有被申请的那台机器解得开 ⇒ 回显它等于证明「收到并解密了我那条申请」。
+    ///
+    /// `default`：老版本发来的同意没有这个字段（载荷是 `{}`），反序列化成 0 = 无法关联，
+    /// 只能走 Block 1 的 Case B（验签 + 既有 x25519 锚点）而**不是**直接绑身份。
+    #[serde(default)]
+    pub request_id: i64,
 }
 
 pub const OUTGOING_FRIEND_REQUEST_KEY_PREFIX: &str = "friend_out:";
@@ -776,6 +787,7 @@ mod friend_request_store_tests {
             issued_at: 100,
             attempts: 0,
             last_at: 0,
+            request_id: 0,
         })
         .unwrap();
         put_withdrawn_request_tombstone(&conn, "dev-c", 100).unwrap();

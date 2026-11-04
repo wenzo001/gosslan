@@ -436,6 +436,7 @@ pub async fn send_friend_request(
 pub(crate) async fn send_friend_accept_via_link(
     s: &Arc<AppState>,
     peer_id: &str,
+    request_id: i64,
 ) -> Result<(), String> {
     // 对方公钥优先从 peers 表读（接收 FriendRequest 时已 upsert_peer 记录），
     // friends 表兜底（maybe_update_friend 可能已持久化）。
@@ -469,7 +470,14 @@ pub(crate) async fn send_friend_accept_via_link(
         s.identity.dh(&target_pubkey).ok_or_else(|| {
         crate::error_codes::coded(crate::error_codes::E2EE_ENCRYPT_FAILED, "密钥交换失败")
     })?;
-    let sealed = crypto::seal(&shared, b"{}").ok_or_else(|| {
+    // 载荷从 `{}` 改成回显申请 id（Block 1 / Case A）：
+    // - 新接收方（本版本起）：用它和本地 `pending_out_requests` 比对，对上才承认这是
+    //   「对我那次申请的答复」，才允许把信封里的 ed25519 写成身份锚点；
+    // - 老接收方：FriendAccept 的处理路径从不读载荷（只认 from/to），多一个字段无影响；
+    // - 老发送方：仍发 `{}` ⇒ 新接收方解析出 0 = 无法关联，退回 Case B（不直接绑身份）。
+    let payload = serde_json::json!({ "request_id": request_id }).to_string();
+    let sealed =
+        crypto::seal(&shared, payload.as_bytes()).ok_or_else(|| {
         crate::error_codes::coded(crate::error_codes::E2EE_ENCRYPT_FAILED, "加密失败")
     })?;
     let payload_b64 = STANDARD.encode(&sealed);
@@ -598,6 +606,16 @@ pub(crate) async fn send_friend_withdraw_ack_via_link(
 
 pub(crate) async fn accept_friend_request(s: &Arc<AppState>, peer_id: &str) -> Result<(), String> {
     let name = resolve_nickname(s, peer_id);
+    // 这条入站申请的 id（Block 1 / Case A）：一会要**原样回显**在同意回执里，
+    // 让对方确认「这封同意是对他那次申请的答复」。取不到（老端/已清）就是 0 ——
+    // 0 在接收侧等于"无法关联"，退回 Case B，不会因此放行身份绑定。
+    let request_id = s
+        .pending_requests
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .get(peer_id)
+        .map(|r| r.request_id)
+        .unwrap_or(0);
     // **撤回 vs 同意的仲裁点**：检查申请仍在 + 写好友 + 建会话 + 删申请行在同一个事务里。
     // 与撤回处理器共用同一把 DB 锁 ⇒ 先提交者赢；后到者拿到明确结果。
     let outcome = {
@@ -646,12 +664,13 @@ pub(crate) async fn accept_friend_request(s: &Arc<AppState>, peer_id: &str) -> R
             issued_at: now,
             attempts: 0,
             last_at: 0,
+            request_id,
         };
         if let Err(e) = db::put_pending_out_accept(&dbc, &entry) {
             crate::logging::log_write_failure(&s.logger, "put_pending_out_accept", e);
         }
     }
-    if let Err(e) = send_friend_accept_via_link(s, peer_id).await {
+    if let Err(e) = send_friend_accept_via_link(s, peer_id, request_id).await {
         s.logger.warn(
             "friend",
             format!("code=FRIEND_ACCEPT_RESEND_QUEUED 好友同意回执发送失败（已登记待补发）peer={peer_id}: {e}"),

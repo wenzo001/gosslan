@@ -195,3 +195,166 @@
         assert!(peer_style_admitted(false, 0));
         assert!(!peer_style_admitted(false, 256), "满员时陌生 peer 不登记");
     }
+
+    // ---------------- Block 1：跨跳好友的身份锚点（Case A / Case B） ----------------
+    //
+    // 现场（RC-1）：只有验签通过的直连 Hello 才写 `friends.ed25519_pubkey`，
+    // 纯中继好友从来没有 Hello ⇒ 该列永远 NULL ⇒ 信任门把 Chat/ChatAck 全静默丢掉，
+    // 双向都断、120s 后变 `OUTBOX_EXPIRED`。下面三条钉住修复的边界。
+
+    /// Case B 的真值表：**唯一**的补锚判据。
+    ///
+    /// 反例（写成"只要验签通过就绑"）：攻击者用某个好友的 `device_id` 自签一条 Chat
+    /// ⇒ 验签通过 ⇒ 锚点被永久钉成他的钥匙（`update_friend_pubkeys` 只填空、
+    /// 首写者永久胜出）。所以只有「已有 x25519 且与信封一致」这一格允许补。
+    #[test]
+    fn friend_anchor_binding_truth_table() {
+        use super::{friend_anchor_binding_decision, FriendAnchorBinding as B};
+        let x = |v: &str| Some(v.to_string());
+        let e = |v: &str| Some(v.to_string());
+
+        assert_eq!(
+            friend_anchor_binding_decision(None, "xk"),
+            B::NotApplicable,
+            "不是好友：轮不到这套机制（走既有信任门）"
+        );
+        assert_eq!(
+            friend_anchor_binding_decision(Some(&(x("xk-a"), e("ek-a"))), "xk-a"),
+            B::NotApplicable,
+            "已经绑过 ed25519 ⇒ fill-only，绝不覆盖（哪怕值一致也不再写一次）"
+        );
+        assert_eq!(
+            friend_anchor_binding_decision(Some(&(x("xk-a"), None)), "xk-a"),
+            B::BindToExistingX25519,
+            "历史 NULL 行 + x25519 锚点一致 ⇒ 允许补"
+        );
+        assert_eq!(
+            friend_anchor_binding_decision(Some(&(x("xk-a"), None)), "xk-evil"),
+            B::X25519Mismatch,
+            "信封自报 x25519 与已绑定值不一致 ⇒ 拒绝（这一格正是防冒充的闸）"
+        );
+        assert_eq!(
+            friend_anchor_binding_decision(Some(&(None, None)), "xk-any"),
+            B::Unanchored,
+            "两把钥匙都 NULL ⇒ 没有任何既有锚点可比对，纯 TOFU 等于允许冒充 ⇒ 拒绝"
+        );
+    }
+
+    /// Case A 的真值表：跨跳 `FriendAccept` 能不能当身份锚点的证明。
+    ///
+    /// 关键一格是「本机没发过申请」/「id 对不上」⇒ 一律 false。
+    /// 验签只证明持有该 ed25519 私钥，不证明 sender_id 身份；绑定点必须是本机那条申请。
+    #[test]
+    fn accept_proof_requires_local_request_and_anchor_agreement() {
+        use super::accept_proves_friend_anchor;
+        assert!(accept_proves_friend_anchor(77, Some(77), None, "xk-b"));
+        assert!(
+            accept_proves_friend_anchor(77, Some(77), Some("xk-b"), "xk-b"),
+            "已有 x25519 且一致 ⇒ 仍可绑（补 ed25519 那一格）"
+        );
+        assert!(
+            !accept_proves_friend_anchor(77, Some(77), Some("xk-b"), "xk-evil"),
+            "已有 x25519 与信封不一致 ⇒ 拒绝"
+        );
+        assert!(
+            !accept_proves_friend_anchor(0, Some(77), None, "xk-b"),
+            "老端回执是 `{{}}`（id=0）⇒ 无法关联，退回 Case B"
+        );
+        assert!(
+            !accept_proves_friend_anchor(77, None, None, "xk-b"),
+            "本机没发过申请 ⇒ 不能拿它当绑定点（这正是 SEC-01 的形状）"
+        );
+        assert!(
+            !accept_proves_friend_anchor(78, Some(77), None, "xk-b"),
+            "id 对不上 ⇒ 不是对我那次申请的答复"
+        );
+    }
+
+    /// 补锚写入必须**只填 ed25519**，且首写者永久胜出（fill-only 是最后一道闸）。
+    ///
+    /// 这条同时钉住 `update_friend_pubkeys` 的 COALESCE 语义：Case B 传 x25519=None，
+    /// 即便之后又有人在别的路径传了另一个 x25519，先前那个也不会被换掉。
+    #[test]
+    fn anchor_backfill_writes_only_ed25519_and_keeps_first_x25519() {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        conn.execute_batch(db::SCHEMA).unwrap();
+        db::add_friend(&conn, "b", "Bob", None).unwrap();
+        db::update_friend_pubkeys(&conn, "b", Some("xk-b"), None).ok();
+        assert!(db::get_friend_ed25519(&conn, "b").is_none(), "复现修复前：锚点为 NULL");
+
+        // Case B 的写入形状：x25519=None（绝不覆盖），ed25519=信封自报值
+        db::update_friend_pubkeys(&conn, "b", None, Some("ek-b")).ok();
+        assert_eq!(db::get_friend_ed25519(&conn, "b").as_deref(), Some("ek-b"));
+        assert_eq!(
+            db::get_friend_x25519(&conn, "b").as_deref(),
+            Some("xk-b"),
+            "补锚不许把已绑的加密钥匙改掉"
+        );
+
+        // 第二次（或别的路径）写入不得覆盖已绑定的身份锚点
+        db::update_friend_pubkeys(&conn, "b", Some("xk-other"), Some("ek-evil")).ok();
+        assert_eq!(
+            db::get_friend_ed25519(&conn, "b").as_deref(),
+            Some("ek-b"),
+            "身份锚点首写者永久胜出（否则一次伪造回执就能永久把锚点换成攻击者的钥匙）"
+        );
+        assert_eq!(db::get_friend_x25519(&conn, "b").as_deref(), Some("xk-b"));
+    }
+
+    /// 源码守卫：Case B 必须真的挂在信任门里、且写入形状是 fill-only、且必留码。
+    ///
+    /// 为什么用源码断言：这三件事（调用点、`None` 那一列、日志码）任一漂移，
+    /// 上面的纯函数测试仍然全绿，而现场会退回"永远绑不上"或"绑上了但没人知道"。
+    #[test]
+    fn gossip_anchor_home_is_named_fill_only_and_coded() {
+        let src = crate::network::transport_src_for_guards();
+        let flat: String = src.chars().filter(|c| !c.is_whitespace()).collect();
+        assert!(
+            src.contains("friend_anchor_binding_decision("),
+            "handle_gossip 不再调用那个唯一判据 ⇒ 真值表与现场分家"
+        );
+        assert!(
+            flat.contains("update_friend_pubkeys(&dbc,&env.sender_id,None,Some(&env.sender_ed25519)"),
+            "Case B 的写入必须是 fill-only（x25519 传 None、只填 ed25519）"
+        );
+        assert!(
+            src.contains("code=FRIEND_ANCHOR_BOUND"),
+            "绑定成功必须留可聚合的日志码（否则现场无从判断'到底绑没绑'）"
+        );
+        assert!(
+            src.contains("code=FRIEND_ANCHOR_UNANCHORED"),
+            "无锚点拒绝也必须留码（不许静默丢弃）"
+        );
+        assert!(
+            src.contains("friend_anchor_unanchored_notice"),
+            "无锚点场景必须给出可见系统提示（'未送达（身份未验证）'）"
+        );
+    }
+
+    /// Case A 的回执必须**回显本机申请 id**，否则新朋友仍会卡在 Case B 之前。
+    ///
+    /// 三个点各钉一下：发送端载荷带 `request_id`、接受时取入站申请的 id、
+    /// 补发那一路从 DB 行取同一个 id（否则首帧能绑、补发不能，两边结论不一致）。
+    #[test]
+    fn friend_accept_echoes_the_request_id_on_both_first_and_retry() {
+        let picker = include_str!("../../commands/mobile_picker.rs");
+        assert!(
+            picker.contains(r#"|r| r.request_id"#),
+            "accept_friend_request 必须从 pending_requests 取入站申请的 id"
+        );
+        assert!(
+            picker.contains(r#"{"request_id": request_id}"#)
+                || picker.contains(r#"json!({ "request_id": request_id })"#),
+            "同意回执的载荷必须回显 request_id（老端 `{{}}` 收到 0 就退回 Case B）"
+        );
+
+        let src = crate::network::transport_src_for_guards();
+        assert!(
+            src.contains("let rid = row.request_id;"),
+            "flush_pending_friend_accept 补发时必须沿用同一个 request_id"
+        );
+        assert!(
+            src.contains("proven_by_matched_request("),
+            "匹配成功必须交出一份'证明快照'，而不是直接把信封公钥当已验证"
+        );
+    }

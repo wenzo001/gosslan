@@ -230,7 +230,11 @@ async fn handle_identity_and_friend_messages(state: &Arc<AppState>, peer_id: &st
             // 直连这一份原先**没有**去重 ⇒ "被『好友申请已通过』反复刷屏"在直连链路上
             // 照旧存在（跨跳那一份早就有这条判据，两份各写一遍正是缺陷的形状）。
             // 现在两条链路都走 `apply_friend_accept` 这一个家。
-            apply_friend_accept(state, &from, "收到好友同意");
+            //
+            // 第 4 个参数是 Block 1 / Case A 的「证明快照」：直连没有 Gossip 信封，
+            // 身份锚点由 Hello 的 `keys_verified` 负责 ⇒ 这里传 `None`，
+            // 走 `FriendKeySnapshot::capture` 那条既有路径。
+            apply_friend_accept(state, &from, "收到好友同意", None);
         }
         Message::FriendReject { from, to } => {
             if from != peer_id {
