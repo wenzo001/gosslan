@@ -1,18 +1,27 @@
 <script setup lang="ts">
-import { computed } from "vue";
+import { computed, onMounted } from "vue";
 import { useAppStore } from "@/stores/useAppStore";
 import SettingsGroup from "@/components/settings/SettingsGroup.vue";
 import UpdatePanel from "@/components/settings/UpdatePanel.vue";
+import AndroidUpdatePanel from "@/components/settings/AndroidUpdatePanel.vue";
 import { useClipboard } from "@/composables/useClipboard";
 import { version } from "../../../package.json";
 import { t } from "@/i18n";
 import { isAndroid, isIOS } from "@/utils/platform";
 import { updater } from "@/updater/instance";
+import { androidUpdater } from "@/updater/androidInstance";
 
 const emit = defineEmits<{ (e: "dev-open"): void }>();
 const app = useAppStore();
-/** 应用内更新只支持桌面；移动端给出发布页手动更新的说明。 */
+/** 应用内更新：桌面用 Tauri updater；Android 用独立的应用内升级；iOS 仍只能手动下载。 */
 const updatesSupported = !isAndroid && !isIOS;
+
+// Android：订阅后端状态事件并补拉一次当前状态。设置页可能是在后台下载/安装中途重新打开的，
+// 只靠本地状态会显示「检查更新」，用户会以为任务丢了。
+onMounted(() => {
+  if (!isAndroid) return;
+  void androidUpdater.subscribe().then(() => androidUpdater.restore());
+});
 const fullId = computed(() => app.device?.device_id ?? "");
 const { copiedKey, copyContent } = useClipboard();
 
@@ -90,7 +99,19 @@ async function onFingerprintTap() {
   </SettingsGroup>
 
   <SettingsGroup :title="t('settings.updates.title')" class="mt-5">
+    <AndroidUpdatePanel
+      v-if="isAndroid"
+      :state="androidUpdater.state"
+      @check="androidUpdater.check()"
+      @download="androidUpdater.download()"
+      @cancel="androidUpdater.cancelDownload()"
+      @install="androidUpdater.install()"
+      @retry="androidUpdater.retry()"
+      @dismiss="androidUpdater.dismiss()"
+      @permission="androidUpdater.openPermissionSettings()"
+    />
     <UpdatePanel
+      v-else
       :state="updater.state"
       :supported="updatesSupported"
       @check="updater.check(true)"
