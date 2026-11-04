@@ -37,6 +37,10 @@ class MainActivity : TauriActivity() {
     ApkInstaller.bootstrap(this)
   }
 
+  // `onActivityResult` 在 ComponentActivity 里已 deprecated（推荐 ActivityResult API），
+  // 但 Tauri 的 Activity 继承链与 `PackageInstaller` 的 legacy 兜底都靠这个回调，
+  // 这里没有可选的新入口，按原样转发并显式抑制这条"覆盖已废弃成员"的告警。
+  @Suppress("OVERRIDE_DEPRECATION")
   override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
     super.onActivityResult(requestCode, resultCode, data)
     ApkInstaller.onActivityResult(requestCode, resultCode)
