@@ -49,8 +49,25 @@ const LATE_WRITE_BLOCKED: [&str; 6] = [
 /// `failed` 也不在（用户仍可把一条失败的消息定住）。顺序与原手写一致。
 const CANCEL_BLOCKED: [&str; 4] = ["delivered", "read", "recalled", "cancelled"];
 
-/// `ack_delivered` 的守卫：Ack 只在硬终态面前让位。
-const ACK_BLOCKED: [&str; 3] = ["read", "delivered", "recalled"];
+/// 硬终态三兄弟：`read` / `delivered` / `recalled` 只能被更强的证据改写，
+/// 其余迟到写一律让位。
+const HARD_TERMINAL: [&str; 3] = ["read", "delivered", "recalled"];
+
+/// `ack_delivered` 的守卫：Ack 只在硬终态面前让位（=`HARD_TERMINAL`）。
+const ACK_BLOCKED: [&str; 3] = HARD_TERMINAL;
+
+/// 任务中心「还在等」的 1:1 投影：这些状态的行不该再挂队列。
+const PENDING_OPS_HIDDEN_1ON1: [&str; 5] = [
+    "delivered",
+    "read",
+    "recalled",
+    "cancelled",
+    "partial_cancelled",
+];
+
+/// 群版投影：这些状态的消息不再出现。`delivered` 不在此列 —— 只要有成员还在
+/// pending，那条消息仍要列出来（"还有 N 人没收到"是真实事实）。
+const PENDING_OPS_HIDDEN_GROUP: [&str; 4] = ["cancelled", "partial_cancelled", "recalled", "read"];
 
 /// 已读回执的守卫：额外排掉本端已收口的行 —— 一条没发出去的消息不可能被对方读过。
 const READ_RECEIPT_BLOCKED: [&str; 5] = [

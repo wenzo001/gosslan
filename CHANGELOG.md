@@ -14,6 +14,20 @@
 
 ## [Unreleased]
 
+## [5.17.37] - 2026-11-04
+
+### 重构（无用户可感知变化）
+
+- 2B 收口：把剩余 5 处手写的状态集合字面量收进一份判据（生成的 SQL 与原先逐字等价）。
+  `fail_pending_messages_for_peer` 复用 `LATE_WRITE_BLOCKED`；`update_message_content`
+  与 `ack_delivered` 共用 `HARD_TERMINAL`；群取消改写消息行用
+  `GROUP_CANCEL_MESSAGE_WRITE_BLOCKED`；任务中心两路只读投影用
+  `PENDING_OPS_HIDDEN_1ON1` / `PENDING_OPS_HIDDEN_GROUP`。行为逐字不变。
+  回退：还原这 5 处调用点与 `message_lifecycle` 新增的 3 个常量即可。
+  证据：`cargo test --features bluetooth --lib -- late_write_door_family_pins_every_status
+  direct_cancel_button_matches group_cancel_button_matches
+  update_message_content_backfills pending_message_ops_cover` → 6 passed。
+
 ## [5.17.36] - 2026-11-04
 
 ### 行为变更（用户可感知）

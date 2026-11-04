@@ -348,7 +348,7 @@ pub fn list_pending_message_operations(
 ) -> Result<Vec<PendingMessageOp>> {
     let mut ops: Vec<PendingMessageOp> = Vec::new();
 
-    let mut dm = conn.prepare(
+    let mut dm = conn.prepare(&format!(
         // 终态的消息不该再挂着一行队列：`ack_delivered` 是「置 delivered + 删行」同一事务，
         // 但历史库/旧版本可能留下"状态已 delivered、outbox 还在"的孤儿（用户看到一条永远
         // 取消不掉、进度也不动的任务）。这里按状态把它滤掉；**消息行整体缺失**的孤儿
@@ -362,10 +362,10 @@ pub fn list_pending_message_operations(
                       AND instr(COALESCE(m.content, ''), '\"nudge\":true') > 0
                      THEN 1 ELSE 0 END
          FROM outbox o LEFT JOIN messages m ON m.msg_id = o.msg_id
-         WHERE COALESCE(m.status, 'sending')
-               NOT IN ('delivered', 'read', 'recalled', 'cancelled', 'partial_cancelled')
+         WHERE {}
          ORDER BY o.created_at DESC LIMIT ?1",
-    )?;
+        sql_not_in("COALESCE(m.status, 'sending')", &PENDING_OPS_HIDDEN_1ON1)
+    ))?;
     let dm_rows = dm.query_map(params![limit, PREVIEW_CHAR_WINDOW], |r| {
         Ok((
             r.get::<_, String>(0)?,
@@ -403,7 +403,7 @@ pub fn list_pending_message_operations(
         });
     }
 
-    let mut grp = conn.prepare(
+    let mut grp = conn.prepare(&format!(
         // 群消息：只列**还有 pending 行**的消息。任一成员 Ack 会被台账记成 delivered，
         // 其余成员仍在队列里 ⇒ 这类行仍要列（"还有 N 人没收到"是真实事实），
         // 并且**可以取消剩余成员**（`can_cancel = waiting_for > 0`）。
@@ -421,12 +421,12 @@ pub fn list_pending_message_operations(
                       AND instr(COALESCE(m.content, ''), '\"nudge\":true') > 0
                      THEN 1 ELSE 0 END
          FROM group_outbox g LEFT JOIN messages m ON m.msg_id = g.msg_id
-         WHERE COALESCE(m.status, 'sending')
-               NOT IN ('cancelled', 'partial_cancelled', 'recalled', 'read')
+         WHERE {}
          GROUP BY g.msg_id, g.group_id
          HAVING waiting > 0
          ORDER BY 4 DESC LIMIT ?1",
-    )?;
+        sql_not_in("COALESCE(m.status, 'sending')", &PENDING_OPS_HIDDEN_GROUP)
+    ))?;
     let grp_rows = grp.query_map(params![limit, PREVIEW_CHAR_WINDOW], |r| {
         Ok((
             r.get::<_, String>(0)?,
@@ -1324,16 +1324,19 @@ pub fn update_message_content(
     content: &str,
     status: &str,
 ) -> Result<()> {
-    conn.execute(
+    // 状态那一半与 `ack_delivered` 共用 `HARD_TERMINAL`（read/delivered/recalled）：
+    // 硬终态不被回填推回 delivered；`failed` / `cancelled` 仍是软终态，照旧可前进。
+    let sql = format!(
         "UPDATE messages
             SET content = ?2,
                 status = CASE
-                    WHEN status NOT IN ('read', 'delivered', 'recalled') THEN ?3
+                    WHEN {} THEN ?3
                     ELSE status
                 END
           WHERE msg_id = ?1",
-        params![msg_id, content, status],
-    )?;
+        sql_not_in("status", &HARD_TERMINAL)
+    );
+    conn.execute(&sql, params![msg_id, content, status])?;
     Ok(())
 }
 
