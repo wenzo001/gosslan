@@ -23,16 +23,31 @@ import sql from "highlight.js/lib/languages/sql";
 import typescript from "highlight.js/lib/languages/typescript";
 import yaml from "highlight.js/lib/languages/yaml";
 import { escHtml } from "./highlight.ts";
+import { normalizeCodeLanguage, PLAINTEXT } from "./codeLanguages.ts";
 
 export interface HighlightResult {
   html: string;
   lang: string;
 }
 
+export interface DetectResult {
+  lang: string | null;
+  relevance: number;
+}
+
 const AUTO_LANGS = [
-  "rust", "javascript", "typescript", "python", "java", "go", "json", "bash", "shell",
+  "rust", "javascript", "typescript", "python", "java", "go", "json", "bash",
   "sql", "html", "css", "xml", "yaml", "markdown",
 ];
+
+/**
+ * 自动识别的两道门：绝对相关度 + 必须**严格领先**第二名。
+ * 只有 5 分的老阈值会把 `SELECT` 这种短词也判成 SQL；这里要求至少 8 分，
+ * 且与第二名打平就视为「不确定」落纯文本（宁可不上色，也不上错色）。
+ * 不要求大比分领先：JS/TS 这类同族语言本来就接近，按第一名即可。
+ */
+const AUTO_MIN_RELEVANCE = 8;
+const AUTO_SAMPLE_MAX = 4000;
 
 let registered = false;
 function ensureLanguages() {
@@ -46,27 +61,51 @@ function ensureLanguages() {
   hljs.registerLanguage("html", xml);
 }
 
-/** 语言名是否被本模块认识（未知/空一律返回 null，由 auto 检测决定）。 */
-export function knownLanguage(language?: string): string | null {
+/**
+ * 语言名是否被本模块认识。
+ * 归一化后 `plaintext` 也返回 null —— 它不是一个可高亮的语言，由调用方显式走纯文本。
+ */
+export function knownLanguage(language?: string | null): string | null {
   ensureLanguages();
-  return language && hljs.getLanguage(language) ? language : null;
+  const normalized = normalizeCodeLanguage(language);
+  if (!normalized || normalized === PLAINTEXT) return null;
+  return hljs.getLanguage(normalized) ? normalized : null;
+}
+
+/**
+ * 自动识别语言（成熟方案 = highlight.js `highlightAuto`，离线随包发布，无新依赖）。
+ * 两道门都过才返回语言；否则返回 null，调用方落纯文本。
+ */
+export function detectCodeLanguage(code: string): DetectResult {
+  ensureLanguages();
+  try {
+    const r = hljs.highlightAuto(code.slice(0, AUTO_SAMPLE_MAX), AUTO_LANGS);
+    const second = r.secondBest?.relevance ?? 0;
+    if (!r.language || r.relevance < AUTO_MIN_RELEVANCE) {
+      return { lang: null, relevance: r.relevance };
+    }
+    if (second > 0 && second >= r.relevance) {
+      return { lang: null, relevance: r.relevance };
+    }
+    return { lang: r.language, relevance: r.relevance };
+  } catch {
+    /* 自动检测失败就按纯文本 */
+    return { lang: null, relevance: 0 };
+  }
 }
 
 /**
  * 同步高亮（Worker 内部与降级路径用）。
- * 认不出语言时按 `plaintext` 返回**转义后的纯文本**，绝不把原文当 HTML 插进去。
+ * 显式 `plaintext` / 认不出 / 自动识别不确定时，返回**转义后的纯文本**；
+ * 绝不把原文当 HTML 插进去。
  */
-export function highlightCode(code: string, language?: string): HighlightResult {
+export function highlightCode(code: string, language?: string | null): HighlightResult {
   ensureLanguages();
-  let lang = knownLanguage(language);
-  if (!lang) {
-    try {
-      const r = hljs.highlightAuto(code, AUTO_LANGS);
-      if (r.language && r.relevance >= 5) lang = r.language;
-    } catch {
-      /* 自动检测失败就按纯文本 */
-    }
+  if (normalizeCodeLanguage(language) === PLAINTEXT) {
+    return { html: escHtml(code), lang: PLAINTEXT };
   }
+  let lang = knownLanguage(language);
+  if (!lang) lang = detectCodeLanguage(code).lang;
   if (lang && hljs.getLanguage(lang)) {
     try {
       return { html: hljs.highlight(code, { language: lang }).value, lang };
@@ -74,5 +113,5 @@ export function highlightCode(code: string, language?: string): HighlightResult 
       /* 落到纯文本 */
     }
   }
-  return { html: escHtml(code), lang: "plaintext" };
+  return { html: escHtml(code), lang: PLAINTEXT };
 }

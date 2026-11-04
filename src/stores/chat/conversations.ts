@@ -64,6 +64,7 @@ export function createConversationsModule(ctx: ChatContext) {
     clearPendingBatch,
     clearPendingReplaceAndAcks,
     clearNotifMap,
+    hydrateRenderLangs,
   } = ctx.api;
 
   /**
@@ -622,6 +623,8 @@ export function createConversationsModule(ctx: ChatContext) {
       ? appendLocalOnly(preserveDeliveryStatus(list, prev), prev)
       : list;
     pagesLoaded.set(convId, 1);
+    // 冷加载补齐代码语言（只读 message_render 里的显式值；失败就当全部自动识别）。
+    void hydrateRenderLangs(convId);
     // 群会话：顺手取成员级投递台账（气泡角标与「补发」按钮的唯一依据）。
     // 失败不阻塞消息加载 —— 角标拿不到事实时宁可不显示，也不许猜一个数字出来。
     if (convId.startsWith("group:")) void refreshGroupDeliveries(convId);

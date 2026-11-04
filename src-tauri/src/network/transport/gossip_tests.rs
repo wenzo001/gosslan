@@ -421,6 +421,7 @@ fn bulk_messages_are_only_large_chunks() {
         content: "hi".into(),
         ts: 1,
         seq: 1,
+        lang: None,
     };
     assert!(!is_bulk(&chat));
     let file_chunk = Message::FileChunk {

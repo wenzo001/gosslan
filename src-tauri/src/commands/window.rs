@@ -179,6 +179,7 @@ pub(crate) async fn send_group_payload(
     content: String,
     mentions: Option<&[String]>,
     local_id: Option<&str>,
+    lang: Option<&str>,
 ) -> Result<MessageRecord, String> {
     // 窗口抖动只支持单聊：群侧没有"独立抖动"的产品语义，且旧成员会收到空 target 的
     // 普通强提醒。放在群发送内核最前面，所有入口一次挡住。
@@ -271,6 +272,7 @@ pub(crate) async fn send_group_payload(
         &content,
         mentions,
         targets.as_deref(),
+        lang,
     );
     let sealed = crypto::seal_symmetric(&key, plaintext.as_bytes()).ok_or_else(|| {
         crate::error_codes::coded(crate::error_codes::E2EE_ENCRYPT_FAILED, "加密失败")
@@ -385,6 +387,27 @@ pub(crate) async fn send_group_payload(
     // 且 `tx.commit()` 成功之后（emit 一条没落库的消息会让前端显示一条刷新即消失的记录）。
     // 重复渲染不用担心：前端 `applyIncoming` 按 `msg_id` upsert，自发的那条也不计未读。
     let _ = s.app.emit("message-received", &rec);
+
+    // 显式语言：本机与接收端同一步进 LWW 表并通知前端，顺序仍是"消息先到、渲染后到"。
+    if kind == "code" {
+        if let Some(l) = lang {
+            let applied = {
+                let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());
+                db::apply_message_render(&dbc, &rec.msg_id, rec.seq, "code", Some(l))
+                    .unwrap_or(false)
+            };
+            if applied {
+                let _ = s.app.emit(
+                    "message-render-changed",
+                    &crate::state::RenderChangedInfo {
+                        msg_id: rec.msg_id.clone(),
+                        kind: "code".to_string(),
+                        lang: Some(l.to_string()),
+                    },
+                );
+            }
+        }
+    }
 
     // §29 可观测性：这一行是「发起方自己为什么看得见」唯一的**行为**证据 —— 双实例 harness
     // 没有任何入口让应用自己执行一次动作（全仓只认 `GOSSLAN_INSTANCE`/`GOSSLAN_AUTOSTART`），

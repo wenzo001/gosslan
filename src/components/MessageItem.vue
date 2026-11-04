@@ -221,6 +221,26 @@ const {
   receiptTitle,
 } = display;
 
+/**
+ * 发送后切换代码语言。
+ * 只更新展示态的语言标签；真正的 LWW 裁决在后端，事件回来前一直显示旧语言 + 转圈，
+ * 失败只 toast 具名原因，**绝不先把界面改口**（否则会出现"看起来切了其实没切"）。
+ */
+const codeLangSwitching = ref(false);
+const renderLang = computed(() => chat.getRenderLang(props.message.msg_id));
+const canSwitchCodeLang = computed(() => mine.value && props.message.kind === "code");
+async function switchCodeLang(value: string | null) {
+  if (!canSwitchCodeLang.value || codeLangSwitching.value) return;
+  codeLangSwitching.value = true;
+  try {
+    await chat.setMessageRender(props.message.conv_id, props.message.msg_id, "code", value);
+  } catch (e) {
+    app.toastError(e, t("msg.renderFail"));
+  } finally {
+    codeLangSwitching.value = false;
+  }
+}
+
 const {
   streamCode,
   streamCodeClamped,
@@ -1863,8 +1883,12 @@ async function copyFileToClipboard() {
             :copied="copiedKey === 'code'"
             :dark="app.dark"
             :mine="mine"
+            :language="renderLang"
+            :can-switch-lang="canSwitchCodeLang"
+            :switching="codeLangSwitching"
             @expand="openFullModal('code', $event)"
             @copy="copyContent('code', copyOut($event))"
+            @switch-lang="switchCodeLang"
           />
 
           <!-- 图片：已被存储清理时给出明确占位，而不是一个永远转圈/裂开的图片框。
@@ -2083,6 +2107,7 @@ async function copyFileToClipboard() {
     :open="fullModalOpen"
     :kind="fullModalKind"
     :content="fullModalContent"
+    :language="fullModalKind === 'code' ? renderLang : null"
     :mention-names="mentionNames"
             :self-mention="selfMention"
             :mention-targets="message.mention_targets"

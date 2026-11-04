@@ -79,6 +79,8 @@ const CODE_RULES: Record<string, string> = {
   RENDER_SELF_ONLY: "errors.rule.renderSelfOnly",
   RENDER_TEXT_CODE_ONLY: "errors.rule.renderTextCodeOnly",
   RENDER_RECALLED: "errors.rule.renderRecalled",
+  RENDER_INVALID_LANG: "errors.rule.renderInvalidLang",
+  RENDER_SUPERSEDED: "errors.rule.renderSuperseded",
   NUDGE_SELF_UNSUPPORTED: "errors.rule.nudgeSelfUnsupported",
   MESSAGE_KIND_UNSUPPORTED: "errors.rule.messageKindUnsupported",
   NUDGE_MISSING: "errors.rule.nudgeMissing",

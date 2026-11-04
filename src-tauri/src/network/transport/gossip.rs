@@ -1471,6 +1471,7 @@ async fn handle_gossip(state: &Arc<AppState>, peer_id: &str, env: GossipEnvelope
                     content,
                     mentions,
                     mention_targets,
+                    lang,
                 } = crate::protocol::parse_gossip_plaintext(&pt);
                 // 入站内容长度（审计 P1 #7）：发送侧的 5 万字符闸只约束本机用户，对端可以
                 // 绕过它投一条超大 content ⇒ 明文整份进 SQLite。口径与发送侧同一份
@@ -1766,6 +1767,9 @@ async fn handle_gossip(state: &Arc<AppState>, peer_id: &str, env: GossipEnvelope
                 // 渲染切换：只认原作者，且目标必须在本会话；LWW 后才广播给前端。
                 if kind == crate::protocol::KIND_RENDER {
                     if let Ok(p) = crate::protocol::parse_render_payload(&content) {
+                        // 切回文本时语言必须视为未指定（同发送端的强制规则），
+                        // 否则前端会拿到 kind=text + lang 这种自相矛盾的事件。
+                        let render_lang = if p.mode == "text" { None } else { p.lang.clone() };
                         let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
                         let allowed = db::get_message_record(&dbc, &p.target)
                             .map(|m| {
@@ -1775,8 +1779,14 @@ async fn handle_gossip(state: &Arc<AppState>, peer_id: &str, env: GossipEnvelope
                             })
                             .unwrap_or(false);
                         let applied = allowed
-                            && db::apply_message_render(&dbc, &p.target, env.seq, &p.mode)
-                                .unwrap_or(false);
+                            && db::apply_message_render(
+                                &dbc,
+                                &p.target,
+                                env.seq,
+                                &p.mode,
+                                render_lang.as_deref(),
+                            )
+                            .unwrap_or(false);
                         if applied {
                             drop(dbc);
                             let _ = state.app.emit(
@@ -1784,6 +1794,7 @@ async fn handle_gossip(state: &Arc<AppState>, peer_id: &str, env: GossipEnvelope
                                 &crate::state::RenderChangedInfo {
                                     msg_id: p.target,
                                     kind: p.mode,
+                                    lang: render_lang,
                                 },
                             );
                         }
@@ -1942,6 +1953,33 @@ async fn handle_gossip(state: &Arc<AppState>, peer_id: &str, env: GossipEnvelope
                             mention_targets: mention_targets.as_deref(),
                         },
                     );
+                    // 代码消息的显式语言：先推进本机 LWW 表，再通知前端（顺序保证前端
+                    // 先看到消息、再收到渲染事件）。没有 lang 的老发送方什么都不做。
+                    if out_rec.kind == "code" {
+                        if let Some(l) = lang.as_deref() {
+                            let applied = {
+                                let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
+                                db::apply_message_render(
+                                    &dbc,
+                                    &out_rec.msg_id,
+                                    out_rec.seq,
+                                    "code",
+                                    Some(l),
+                                )
+                                .unwrap_or(false)
+                            };
+                            if applied {
+                                let _ = state.app.emit(
+                                    "message-render-changed",
+                                    &crate::state::RenderChangedInfo {
+                                        msg_id: out_rec.msg_id.clone(),
+                                        kind: "code".to_string(),
+                                        lang: Some(l.to_string()),
+                                    },
+                                );
+                            }
+                        }
+                    }
                 }
                 // 更新会话「当前链路」：单聊消息的 hop 由 Gossip ttl 反推
                 // （初始 ttl - 收到 ttl），path 取入站连接的路径（直连准确，桥接为最后一段）。

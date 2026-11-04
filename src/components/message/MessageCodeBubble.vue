@@ -19,10 +19,17 @@ const props = defineProps<{
   mine: boolean;
   /** 单聊显示气泡尾巴；群聊不显示（2026-10-23：群聊改为无尾巴的整体气泡）。 */
   tail?: boolean;
+  /** 显式语言（围栏/发送前选择/发送后切换）；缺省自动识别。 */
+  language?: string | null;
+  /** 只有发送方能在发送后切换语言；非发送方只读。 */
+  canSwitchLang?: boolean;
+  /** 切换请求进行中：头部保留旧语言，只转圈。 */
+  switching?: boolean;
 }>();
 const emit = defineEmits<{
   (e: "expand", code: string): void;
   (e: "copy", code: string): void;
+  (e: "switch-lang", value: string | null): void;
 }>();
 
 /**
@@ -80,14 +87,33 @@ function copyFromMenu() {
          若容器透明，CodeBlock 实际渲染高度不足该值时，底部会空出一条画布色亮缝
          （卡片与操作条之间「露出聊天背景」）；故容器自身填卡片底色兜底。
          同时卡片不画下边框，分隔线统一由操作条上边框绘制，避免叠出双线。 -->
+    <!-- 截断态：父层锁死 CODE_CLAMP_HEIGHT，CodeBlock 撑满并把滚动收进代码区
+         （头部固定不动，正文在 `pre` 内滚；外层 overflow-hidden 防双层滚动条）。 -->
     <div
       v-if="clamped"
       class="overflow-hidden rounded-t-[var(--gosslan-radius-sm)]"
       :style="{ height: `${CODE_CLAMP_HEIGHT}px`, background: surface }"
     >
-      <CodeBlock :code="code" attached />
+      <CodeBlock
+        :code="code"
+        :language="language"
+        :can-switch-lang="canSwitchLang"
+        :switching="switching"
+        attached
+        fill
+        scrollable
+        @switch-language="emit('switch-lang', $event)"
+      />
     </div>
-    <CodeBlock v-else :code="code" attached />
+    <CodeBlock
+      v-else
+      :code="code"
+      :language="language"
+      :can-switch-lang="canSwitchLang"
+      :switching="switching"
+      attached
+      @switch-language="emit('switch-lang', $event)"
+    />
     <!-- 操作条＝代码卡片的底栏：总高恒为 previewMetrics.CODE_ACTION_BAR(28px)，改样式不要动高度 -->
     <div class="code-actions" :style="actionsStyle">
       <button v-if="clamped" class="tap-safe preview-action" @click="emit('expand', code)">{{ t("common.expand") }}</button>

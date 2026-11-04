@@ -861,6 +861,7 @@ pub fn run() {
             commands::get_group_delivery_summaries,
             commands::resend_group_delivery,
             commands::set_message_render,
+            commands::get_message_render_langs,
             commands::pin_group_message,
             commands::send_group_announcement,
             commands::send_group_todo,

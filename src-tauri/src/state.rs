@@ -748,6 +748,9 @@ pub struct MessageStatusChanged {
 pub struct RenderChangedInfo {
     pub msg_id: String,
     pub kind: String,
+    /// 代码语言（仅在 Some 时出现在 JSON 里）；`None` = 未指定，前端按内容自动识别。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub lang: Option<String>,
 }
 
 /// 文件传输状态

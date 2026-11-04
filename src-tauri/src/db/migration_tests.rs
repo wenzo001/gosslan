@@ -1210,15 +1210,18 @@ fn the_first_migration_adds_its_columns_when_the_probe_works() {
     (MIGRATIONS[0].run)(&conn).expect("重复执行必须幂等（不然第二步启动就报 duplicate column）");
 }
 
-/// 形状：四处「先问再改」都必须走 `ensure_column`，两种吞失败的写法不许回来。
+/// 形状：「先问再改」必须走 `ensure_column`，两种吞失败的写法不许回来。
+///
+/// 计数是**精确清单**，不是阈值：每新增一处合法调用都要同步把它加进这里（v15→v16 的
+/// `message_render.lang` 就是一次这样的搬迁），这样"悄悄绕过 helper 自己手写问列"才会红。
 #[test]
 fn every_early_migration_column_check_goes_through_ensure_column() {
     let src = include_str!("../db.rs");
     let prod = &src[..src.find("#[cfg(test)]").unwrap_or(src.len())];
     assert_eq!(
         prod.matches("ensure_column(").count(),
-        5,
-        "一处定义 + 四处调用（v1→v2 / v2→v3 / v3→v4 / v4→v5）"
+        6,
+        "一处定义 + 五处调用（v1→v2 / v2→v3 / v3→v4 / v4→v5 / v15→v16）"
     );
     for bad in [
         "skip {col}",

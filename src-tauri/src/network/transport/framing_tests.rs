@@ -105,6 +105,7 @@
             content: "x".repeat(MAX_FRAME + 8),
             ts: 1,
             seq: 1,
+            lang: None,
         };
         let err = write_frame(&mut aw, &msg)
             .await

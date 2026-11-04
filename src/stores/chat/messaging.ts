@@ -48,6 +48,7 @@ export function createMessagingModule(ctx: ChatContext) {
   const {
     app,
     messages,
+    renderLangs,
     conversations,
     activeConv,
     mentionedConvs,
@@ -348,6 +349,8 @@ export function createMessagingModule(ctx: ChatContext) {
     kind: string,
     mentionIds?: string[],
     retryOfMsgId?: string,
+    /** 代码消息的显式语言（围栏标签/发送前选择）；null/缺省 = 自动识别。 */
+    lang?: string | null,
   ): Promise<MessageRecord> {
     const myId = app.device?.device_id ?? "";
 
@@ -361,7 +364,8 @@ export function createMessagingModule(ctx: ChatContext) {
       if (revertedHit) {
         messages.value = revertedHit.lists;
         try {
-          const rec = await sendToBackend(convId, content, kind, mentionIds);
+          const rec = await sendToBackend(convId, content, kind, mentionIds, undefined, lang);
+          if (kind === "code" && lang) setRenderLang(rec.msg_id, lang);
           // Ack 可能已在 await 期间到达 ⇒ 直接提升到 delivered（与下面新建路径同一处理）
           const acked = pendingAcks.delete(rec.msg_id);
           replaceMessage(
@@ -418,7 +422,8 @@ export function createMessagingModule(ctx: ChatContext) {
     // 1:1 才捕获摘要：群摘要由群成员台账/后端快照驱动，本批不改群行为。
     const summaryBefore = convId.startsWith("group:") ? null : captureSummary(convId);
     try {
-      const rec = await sendToBackend(convId, content, kind, mentionIds, localId);
+      const rec = await sendToBackend(convId, content, kind, mentionIds, localId, lang);
+      if (kind === "code" && lang) setRenderLang(rec.msg_id, lang);
       // 如果 Ack 已在 await 期间到达：直接把 real record 提升到 delivered，
       // 然后一次性替换 optimistic → real（不再二次 replaceMessage）。
       const acked = pendingAcks.delete(rec.msg_id);
@@ -468,11 +473,12 @@ export function createMessagingModule(ctx: ChatContext) {
     kind: string,
     mentionIds?: string[],
     localId?: string,
+    lang?: string | null,
   ): Promise<MessageRecord> {
     if (convId.startsWith("group:")) {
-      return api.sendGroupMessage(convId.slice(6), content, kind, mentionIds, localId);
+      return api.sendGroupMessage(convId.slice(6), content, kind, mentionIds, localId, lang);
     }
-    return api.sendMessage(convId, content, kind, localId);
+    return api.sendMessage(convId, content, kind, localId, lang);
   }
 
   /**
@@ -628,9 +634,42 @@ export function createMessagingModule(ctx: ChatContext) {
   };
   const optimisticRecalls = new Map<string, RecallProjection>();
 
-  /** 切换自己发的代码/文本消息渲染；本地更新统一等后端 LWW 后的 `message-render-changed`。 */
-  async function setMessageRender(convId: string, msgId: string, mode: "code" | "text") {
-    await api.setMessageRender(convId, msgId, mode);
+  /**
+   * 切换自己发的代码/文本消息渲染（可带显式代码语言）。
+   *
+   * `await` 成功才改本地显示：后端在 LWW 未应用时返回具名错误（`RENDER_SUPERSEDED`），
+   * 非法语言返回 `RENDER_INVALID_LANG`，所以这里不会出现「看起来切了其实没切」。
+   */
+  async function setMessageRender(
+    convId: string,
+    msgId: string,
+    mode: "code" | "text",
+    lang?: string | null,
+  ) {
+    await api.setMessageRender(convId, msgId, mode, lang ?? null);
+    setRenderLang(msgId, mode === "code" ? (lang ?? null) : null);
+  }
+
+  /** 显式语言（缺省/空 = 自动识别）。 */
+  function getRenderLang(msgId: string): string | null {
+    return renderLangs.value[msgId] ?? null;
+  }
+
+  function setRenderLang(msgId: string, lang: string | null) {
+    const next = { ...renderLangs.value };
+    if (lang) next[msgId] = lang;
+    else delete next[msgId];
+    renderLangs.value = next;
+  }
+
+  /** 冷加载后补齐历史消息的显式语言；失败静默（旧库/旧数据本来就没有 lang）。 */
+  async function hydrateRenderLangs(convId: string) {
+    try {
+      const map = await api.getMessageRenderLangs(convId);
+      if (Object.keys(map).length) renderLangs.value = { ...renderLangs.value, ...map };
+    } catch {
+      /* 读不到就全部按自动识别，与旧行为一致 */
+    }
   }
   async function deleteMessages(convId: string, msgIds: string[]): Promise<number> {
     if (msgIds.length === 0) return 0;
@@ -725,8 +764,14 @@ export function createMessagingModule(ctx: ChatContext) {
    * 与后端的物化视图保持一致：`kind` 改 `recalled`、`content` 清空 ——
    * 这样搜索、预览、复制等所有读 content 的地方**一处都不用改**就自动正确。
    */
-  /** 渲染切换：只改目标消息的 kind；虚拟列表由 ResizeObserver 重测高度。 */
-  function onMessageRenderChanged(msgId: string, kind: "code" | "text") {
+  /**
+   * 渲染切换：改 kind 与显式语言；虚拟列表由 ResizeObserver 重测高度。
+   *
+   * 注意不能像旧实现那样在 `kind` 相同时提前 return —— 只切换语言时 kind 仍是 code，
+   * 早退会把语言更新吞掉（就是"看起来切了其实没切"）。
+   */
+  function onMessageRenderChanged(msgId: string, kind: "code" | "text", lang: string | null) {
+    setRenderLang(msgId, kind === "code" ? lang : null);
     const hit = findFirstMessageById(messages.value, [msgId]);
     if (!hit || hit.rec.kind === kind) return;
     messages.value = replaceMessageAt(messages.value, hit.convId, hit.index, { ...hit.rec, kind });
@@ -804,6 +849,8 @@ export function createMessagingModule(ctx: ChatContext) {
     replaceMessage,
     recallMessage,
     setMessageRender,
+    getRenderLang,
+    hydrateRenderLangs,
     sendReaction,
     sendDmReaction,
     deleteMessages,

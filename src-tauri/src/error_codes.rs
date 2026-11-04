@@ -131,6 +131,10 @@ pub const RENDER_SELF_ONLY: &str = "RENDER_SELF_ONLY";
 pub const RENDER_TEXT_CODE_ONLY: &str = "RENDER_TEXT_CODE_ONLY";
 /// 切换渲染：消息已撤回。
 pub const RENDER_RECALLED: &str = "RENDER_RECALLED";
+/// 切换渲染：代码语言标识不合法（归一化后为空以外的非法字符 / 超长）。
+pub const RENDER_INVALID_LANG: &str = "RENDER_INVALID_LANG";
+/// 切换渲染：这次切换被更新的事件覆盖（LWW 未应用，不得静默成功）。
+pub const RENDER_SUPERSEDED: &str = "RENDER_SUPERSEDED";
 /// 窗口抖动：目标是自己的会话。
 pub const NUDGE_SELF_UNSUPPORTED: &str = "NUDGE_SELF_UNSUPPORTED";
 /// 发送：消息类型不在支持范围。

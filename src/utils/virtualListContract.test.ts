@@ -54,7 +54,7 @@ test("乐观消息把持久本地 id 传给后端（真实记录返回同一个�
   assert.match(store, /local_id: localId/);
   assert.match(
     store,
-    /sendToBackend\(convId, content, kind, mentionIds, localId\)/,
+    /sendToBackend\(convId, content, kind, mentionIds, localId, lang\)/,
     "首次发送必须把 localId 传给 invoke",
   );
   const api = read("src/api/index.ts");

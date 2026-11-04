@@ -197,12 +197,19 @@ export const api = {
   respondFriendRequest: (peerId: string, accept: boolean) =>
     invoke<void>("respond_friend_request", { peerId, accept }),
 
-  sendMessage: (friendId: string, content: string, kind: string, localId?: string) =>
+  sendMessage: (
+    friendId: string,
+    content: string,
+    kind: string,
+    localId?: string,
+    lang?: string | null,
+  ) =>
     invoke<MessageRecord>("send_message", {
       friendId,
       content: assertIpcInput(ipcMessageTextSchema, content, "send_message.content"),
       kind,
       localId,
+      lang,
     }),
   getMessages: (convId: string, limit?: number, offset?: number) =>
     invoke<MessageRecord[]>("get_messages", { convId, limit, offset }),
@@ -278,6 +285,7 @@ export const api = {
     kind: string,
     mentions?: string[],
     localId?: string,
+    lang?: string | null,
   ) =>
     invoke<MessageRecord>("send_group_message", {
       groupId,
@@ -285,6 +293,7 @@ export const api = {
       kind,
       ...(mentions ? { mentions } : {}),
       localId,
+      lang,
     }),
   listGroupFiles: (groupId: string) =>
     invoke<unknown>("list_group_files", { groupId }).then((v) =>
@@ -413,8 +422,11 @@ export const api = {
   resendGroupDelivery: (convId: string, msgId: string) =>
     invoke<GroupResendResult>("resend_group_delivery", { convId, msgId }),
   /** 切换自己发的代码/文本消息渲染（LWW，所有支持该能力位的成员生效）。 */
-  setMessageRender: (convId: string, target: string, mode: "code" | "text") =>
-    invoke<void>("set_message_render", { convId, target, mode }),
+  setMessageRender: (convId: string, target: string, mode: "code" | "text", lang?: string | null) =>
+    invoke<void>("set_message_render", { convId, target, mode, lang }),
+  /** 冷加载后补齐每条代码消息的显式语言（NULL/缺省 = 自动识别）。 */
+  getMessageRenderLangs: (convId: string) =>
+    invoke<Record<string, string>>("get_message_render_langs", { convId }),
   /** 表情回应：一条**静默事件**（不计未读、不改预览、不弹通知）。 */
   sendGroupReaction: (groupId: string, target: string, emoji: string, add: boolean) =>
     invoke<MessageRecord>("send_group_reaction", { groupId, target, emoji, add }),
@@ -932,7 +944,7 @@ export type EventHandlers = {
   /** 某条消息被撤回（msg_id）。本地据此把该行改成「已撤回」形态。 */
   onMessageRecalled: (msgId: string) => void;
   /** 某条消息的渲染方式被作者切换（LWW 已由后端裁决）。 */
-  onMessageRenderChanged: (msgId: string, kind: "code" | "text") => void;
+  onMessageRenderChanged: (msgId: string, kind: "code" | "text", lang: string | null) => void;
   onFileProgress: (p: FileProgress) => void;
   onFileStalled: (p: FileStalledInfo) => void;
   onFileDone: (d: FileDoneInfo) => void;
@@ -1053,8 +1065,12 @@ export async function bindEvents(h: EventHandlers): Promise<UnlistenFn[]> {
     listen<PeerReadInfo>("peer-read", (e) => h.onPeerRead(e.payload)),
     listen<GroupReadInfo>("group-read", (e) => h.onGroupRead(e.payload)),
     listen<string>("message-recalled", (e) => h.onMessageRecalled(e.payload)),
-    listen<{ msg_id: string; kind: string }>("message-render-changed", (e) =>
-      h.onMessageRenderChanged(e.payload.msg_id, e.payload.kind === "code" ? "code" : "text"),
+    listen<{ msg_id: string; kind: string; lang?: string | null }>("message-render-changed", (e) =>
+      h.onMessageRenderChanged(
+        e.payload.msg_id,
+        e.payload.kind === "code" ? "code" : "text",
+        e.payload.lang ?? null,
+      ),
     ),
     listen<FileProgress>("file-progress", (e) => h.onFileProgress(e.payload)),
     listen<FileStalledInfo>("file-stalled", (e) => h.onFileStalled(e.payload)),

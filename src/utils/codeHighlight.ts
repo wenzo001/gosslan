@@ -18,12 +18,12 @@ const cache = new Map<string, HighlightResult>();
 /** 同键并发只发给 Worker 一次；helper 是 `utils/singleFlight` 那一份（不再手抄六行）。 */
 const highlightInflight = createSingleFlight<HighlightResult>();
 
-function cacheKey(code: string, language?: string): string {
+function cacheKey(code: string, language?: string | null): string {
   return `${language ?? ""}\u0000${code}`;
 }
 
 /** 同步查缓存（滚回已高亮过的代码时用；命中时首帧就是彩色）。 */
-export function peekHighlight(code: string, language?: string): HighlightResult | null {
+export function peekHighlight(code: string, language?: string | null): HighlightResult | null {
   const key = cacheKey(code, language);
   const hit = cache.get(key);
   if (!hit) return null;
@@ -33,7 +33,7 @@ export function peekHighlight(code: string, language?: string): HighlightResult 
   return hit;
 }
 
-function remember(code: string, language: string | undefined, result: HighlightResult) {
+function remember(code: string, language: string | null | undefined, result: HighlightResult) {
   const key = cacheKey(code, language);
   // 先删再插：重写同一段代码时它也排到队尾。少了这一句，`trimOldest` 会把刚写的那条
   // 当最旧的先丢掉（原先那段"满则删最旧一条"是在写入**前**问的，正好掩盖了这个差别）。
@@ -45,18 +45,31 @@ function remember(code: string, language: string | undefined, result: HighlightR
 let worker: Worker | null = null;
 let workerBroken = false;
 let seq = 0;
-const pending = new Map<number, { resolve: (r: HighlightResult) => void; code: string; language?: string }>();
+const pending = new Map<number, { resolve: (r: HighlightResult) => void; code: string; language?: string | null }>();
+const pendingDetect = new Map<number, (lang: string | null) => void>();
+
+interface WorkerReply extends Partial<HighlightResult> {
+  id: number;
+  detect?: boolean;
+  relevance?: number;
+}
 
 function ensureWorker(): Worker | null {
   if (worker || workerBroken) return worker;
   try {
     worker = new Worker(new URL("../workers/highlight.worker.ts", import.meta.url), { type: "module" });
-    worker.onmessage = (event: MessageEvent<{ id: number } & HighlightResult>) => {
-      const { id, html, lang } = event.data;
+    worker.onmessage = (event: MessageEvent<WorkerReply>) => {
+      const { id, html, lang, detect } = event.data;
+      if (detect) {
+        const resolveDetect = pendingDetect.get(id);
+        pendingDetect.delete(id);
+        resolveDetect?.(lang ?? null);
+        return;
+      }
       const entry = pending.get(id);
       if (!entry) return;
       pending.delete(id);
-      const result = { html, lang };
+      const result = { html: html ?? "", lang: lang ?? "plaintext" };
       remember(entry.code, entry.language, result);
       entry.resolve(result);
     };
@@ -67,6 +80,8 @@ function ensureWorker(): Worker | null {
       const entries = [...pending.values()];
       pending.clear();
       for (const e of entries) void fallback(e.code, e.language).then(e.resolve);
+      for (const resolveDetect of pendingDetect.values()) resolveDetect(null);
+      pendingDetect.clear();
     };
   } catch {
     workerBroken = true;
@@ -75,7 +90,7 @@ function ensureWorker(): Worker | null {
   return worker;
 }
 
-async function fallback(code: string, language?: string): Promise<HighlightResult> {
+async function fallback(code: string, language?: string | null): Promise<HighlightResult> {
   const { highlightCode } = await import("@/utils/codeHighlightCore");
   const result = highlightCode(code, language);
   remember(code, language, result);
@@ -83,7 +98,7 @@ async function fallback(code: string, language?: string): Promise<HighlightResul
 }
 
 /** 请求高亮；同键并发只发一次。 */
-export function requestHighlight(code: string, language?: string): Promise<HighlightResult> {
+export function requestHighlight(code: string, language?: string | null): Promise<HighlightResult> {
   const cached = peekHighlight(code, language);
   if (cached) return Promise.resolve(cached);
   return highlightInflight.run(cacheKey(code, language), () => {
@@ -94,5 +109,19 @@ export function requestHighlight(code: string, language?: string): Promise<Highl
       pending.set(id, { resolve, code, language });
       w.postMessage({ id, code, language });
     });
+  });
+}
+
+/** 只做语言识别（发送前标签用）；识别不确定返回 null。 */
+export async function requestDetectLanguage(code: string): Promise<string | null> {
+  const w = ensureWorker();
+  if (!w) {
+    const { detectCodeLanguage } = await import("@/utils/codeHighlightCore");
+    return detectCodeLanguage(code).lang;
+  }
+  return new Promise<string | null>((resolve) => {
+    const id = ++seq;
+    pendingDetect.set(id, resolve);
+    w.postMessage({ id, code, detect: true });
   });
 }

@@ -3350,10 +3350,12 @@ async function main() {
     const tododelete = want("tododelete");
     const taskpaste = want("taskpaste");
     const modaltitle = want("modaltitle");
+    const codeblock = want("codeblock");
     const inputpanel = want("inputpanel");
     const winsafe = want("winsafe");
     const logs = want("logs");
     const vlist = want("vlist");
+    const leak = want("leak");
     const perf = want("perf");
     const favorites = want("favorites");
     const links = want("links");
@@ -3573,10 +3575,12 @@ async function main() {
     await runSegment("tododelete", tododelete, () => runTodoDelete(cdp, url));
     await runSegment("taskpaste", taskpaste, () => runTaskPaste(cdp, url));
     await runSegment("modaltitle", modaltitle, () => runModalTitle(cdp, url));
+    await runSegment("codeblock", codeblock, () => runCodeBlock(cdp, url));
     await runSegment("inputpanel", inputpanel, () => runInputPanels(cdp, url));
     await runSegment("winsafe", winsafe, () => runWindowSafe(cdp, url));
     await runSegment("logs", logs, () => runLogs(cdp, url));
     await runSegment("vlist", vlist, () => runVirtualList(cdp, url));
+    await runSegment("leak", leak, () => runLeak(cdp, url));
     await runSegment("perf", perf, () => runPerf(cdp, url));
     await runSegment("favorites", favorites, () => runFavorites(cdp, url));
     await runSegment("namecap", namecap, () => runNameCap(cdp, url));
@@ -6610,6 +6614,130 @@ async function runTaskPaste(cdp, url) {
   check("图片上限 20 张：第 21 张起不再落盘、也不再增加图片",
     !!capped && capped.calls === 20 && capped.thumbs === 20,
     "落盘 20 次 + 图片区 20 张", JSON.stringify(capped));
+}
+
+/**
+ * 代码块：头部固定 + 只有代码区内部滚动（--only=codeblock）。
+ *
+ * 用户 2026-11-04 原话：语言标签/复制这些头部信息不许跟着代码滚，长代码不能撑破气泡，
+ * 也不许出现双层滚动条；移动端触控滚动同样成立。
+ *
+ * 判据全读**滚动前后的真矩形**，不读 class：头部与 `pre` 在滚动前后 top 必须一模一样，
+ * `pre.scrollTop` 必须真的变了；横向 `scrollWidth - clientWidth` 必须为 0（长行折行）；
+ * 移动端用 `synthesizeScrollGesture`（真触摸手势）再滚一遍，读同两条。
+ */
+async function runCodeBlock(cdp, url) {
+  const longCode = Array.from(
+    { length: 40 },
+    (_, i) => `let value_${i}: u32 = ${i}; // 长代码块：只有这里滚动，头部不动`,
+  ).join("\n");
+  const propsJson = JSON.stringify(
+    JSON.stringify({ code: longCode, language: "rust", scrollable: true, maxHeight: "180px" }),
+  );
+  const measureExpr = `(() => {
+    const root = document.querySelector('.code-block');
+    const header = root ? root.firstElementChild : null;
+    const pre = root ? root.querySelector('pre.code-pre') : null;
+    if (!root || !header || !pre) return null;
+    const hr = header.getBoundingClientRect();
+    return {
+      headerTop: +hr.top.toFixed(2), headerH: +hr.height.toFixed(2),
+      preTop: +pre.getBoundingClientRect().top.toFixed(2),
+      scrollTop: Math.round(pre.scrollTop),
+      scrollH: pre.scrollHeight, clientH: pre.clientHeight,
+      overflowX: pre.scrollWidth - pre.clientWidth,
+      rootOverflowX: root.scrollWidth - root.clientWidth,
+      overflowY: getComputedStyle(pre).overflowY,
+      touchAction: getComputedStyle(pre).touchAction,
+      sameParent: header.parentElement === pre.parentElement,
+      preInsideHeader: header.contains(pre),
+      preScrollable: pre.scrollHeight > pre.clientHeight,
+    };
+  })()`;
+
+  await cdp.send("Emulation.setDeviceMetricsOverride", {
+    width: 900, height: 700, deviceScaleFactor: 1, mobile: false,
+  });
+  await cdp.send("Page.navigate", { url });
+  await cdp.settled();
+  await sleep(3_000);
+  await cdp.eval(PAGE_FIXTURE);
+  const mounted = await cdp.eval(
+    `window.__probe.install('/src/components/CodeBlock.vue', '', ${propsJson})`,
+  );
+  check("CodeBlock 挂得起来（固定头这一格的入口）", !!mounted && mounted.ok === true,
+    "install ok", JSON.stringify(mounted));
+  await sleep(600); // 等 Worker 高亮回包（不影响结构性判据，但让文字落到真实字号）
+
+  const before = await cdp.eval(measureExpr);
+  check("代码区是内部唯一滚动容器：头部与 pre 同级、pre 纵向可滚",
+    !!before
+      && before.sameParent === true
+      && before.preInsideHeader === false
+      && before.overflowY === "auto"
+      && before.preScrollable === true,
+    "sameParent + overflowY=auto + scrollHeight>clientHeight", JSON.stringify(before));
+  const scrolled = await cdp.eval(
+    "(() => { const pre = document.querySelector('pre.code-pre'); if (!pre) return null; pre.scrollTop = pre.scrollHeight; return Math.round(pre.scrollTop); })()",
+  );
+  await sleep(250);
+  const after = await cdp.eval(measureExpr);
+  check("滚动后头部矩形完全不变（头部不随内部滚动）",
+    !!before && !!after && scrolled !== null && scrolled > 0
+      && after.headerTop === before.headerTop && after.headerH === before.headerH,
+    "headerTop/headerH 滚动前后相同 + pre.scrollTop>0",
+    JSON.stringify({ scrolled, before: before && [before.headerTop, before.headerH],
+      after: after && [after.headerTop, after.headerH], preTop: after && after.preTop }));
+  check("长代码不撑破气泡宽度：代码区与根节点都没有横向溢出",
+    !!before && before.overflowX <= 1 && before.rootOverflowX <= 1,
+    "scrollWidth - clientWidth <= 1（横线折行）", JSON.stringify(before && {
+      overflowX: before.overflowX, rootOverflowX: before.rootOverflowX }));
+  console.log(`  · 读数（桌面 900x700）：头部 top=${before?.headerTop}px 高=${before?.headerH}px；滚动后 top=${after?.headerTop}px 高=${after?.headerH}px；内部容器 clientHeight=${before?.clientH}px / scrollHeight=${before?.scrollH}px，滚动后 scrollTop=${after?.scrollTop}px`);
+
+  // ---------------- 移动端：真触摸手势滚一遍 ----------------
+  await cdp.send("Emulation.setDeviceMetricsOverride", {
+    width: 390, height: 700, deviceScaleFactor: 2, mobile: true,
+  });
+  await cdp.send("Emulation.setTouchEmulationEnabled", { enabled: true, maxTouchPoints: 1 });
+  await cdp.send("Page.navigate", { url });
+  await cdp.settled();
+  await sleep(3_000);
+  await cdp.eval(PAGE_FIXTURE);
+  const mobileMounted = await cdp.eval(
+    `window.__probe.install('/src/components/CodeBlock.vue', '', ${propsJson})`,
+  );
+  check("移动端 CodeBlock 挂得起来", !!mobileMounted && mobileMounted.ok === true,
+    "install ok", JSON.stringify(mobileMounted));
+  await sleep(600);
+  const mobileBefore = await cdp.eval(measureExpr);
+  check("移动端：代码区仍是内部滚动容器，且允许触控纵向滚动（pre 内不横向）",
+    !!mobileBefore && mobileBefore.overflowY === "auto"
+      && mobileBefore.touchAction === "pan-y" && mobileBefore.overflowX <= 1,
+    "overflowY=auto + touch-action=pan-y + 横向无溢出", JSON.stringify(mobileBefore));
+  const box = await cdp.eval(`(() => {
+    const pre = document.querySelector('pre.code-pre');
+    if (!pre) return null;
+    const r = pre.getBoundingClientRect();
+    return { x: Math.round(r.left + r.width / 2), y: Math.round(r.top + 20) };
+  })()`);
+  if (box) {
+    // yDistance 为负 = 手指向上滑 = 内容向上滚（与鼠标滚轮的符号相反）。
+    await cdp.send("Input.synthesizeScrollGesture", {
+      x: box.x, y: box.y, xDistance: 0, yDistance: -180,
+      gestureSourceType: "touch", speed: 300,
+    });
+    await sleep(400);
+  }
+  const mobileAfter = await cdp.eval(measureExpr);
+  check("移动端触控滚动落到代码区内部，且头部矩形不变",
+    !!mobileBefore && !!mobileAfter
+      && mobileAfter.scrollTop > mobileBefore.scrollTop
+      && mobileAfter.headerTop === mobileBefore.headerTop,
+    "合成触摸后 pre.scrollTop 增大 + headerTop 不变",
+    JSON.stringify({ before: mobileBefore && [mobileBefore.scrollTop, mobileBefore.headerTop],
+      after: mobileAfter && [mobileAfter.scrollTop, mobileAfter.headerTop] }));
+  console.log(`  · 读数（移动端 390x700 触控）：头部 top=${mobileBefore?.headerTop}px 高=${mobileBefore?.headerH}px；触摸后 top=${mobileAfter?.headerTop}px；scrollTop ${mobileBefore?.scrollTop}→${mobileAfter?.scrollTop}px；touch-action=${mobileBefore?.touchAction}；内部容器 clientHeight=${mobileBefore?.clientH}px / scrollHeight=${mobileBefore?.scrollH}px`);
+  await cdp.send("Emulation.setTouchEmulationEnabled", { enabled: false }).catch(() => {});
 }
 
 /**

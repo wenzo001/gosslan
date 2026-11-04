@@ -197,6 +197,8 @@ export const useChatStore = defineStore("chat", () => {
    */
   const updaterStatus = ref<UpdaterStatus | null>(null);
   const messages = ref<Record<string, MessageRecord[]>>({});
+  /** msg_id → 显式代码语言；见 `ChatState.renderLangs` 的说明。 */
+  const renderLangs = ref<Record<string, string>>({});
   /**
    * 群消息的**成员级投递台账摘要**：convId → msgId → `{delivered,pending,cancelled,failed}`。
    *
@@ -343,7 +345,7 @@ export const useChatStore = defineStore("chat", () => {
     memberNames, rawPendingRequests, keyRotations, pendingRequests, rawOutgoingRequests,
     outgoingRequests, conversations, groups, transfers, contentTransfers, messageOps,
     transfersError, contentTransfersError, messageOpsError, groupReadsErrors, updaterStatus,
-    messages, groupDeliveries, messageLoadErrors, groupReads, groupHistorySync, activeConv,
+    messages, renderLangs, groupDeliveries, messageLoadErrors, groupReads, groupHistorySync, activeConv,
     mentionedConvs, activeConversation, totalUnread, operations, liveOperationCount,
     resendingIds, groupTodoRows, eventBridgeOk,
   };
@@ -367,7 +369,7 @@ export const useChatStore = defineStore("chat", () => {
   Object.assign(apiRegistry, mediaModule);
   const { maybeNotify, ensureRemindChannel, handleIncomingNudge, handleIncomingRemind, routeNotificationClick, shakeSignal, nudgeNotice, notifMap, cancelNotificationTimers } = notificationsModule;
   const { refreshUpdaterStatus, markResending, refreshTransfers, scheduleTransfersRepair, cancelTransfersRepairTimer } = taskCenterModule;
-  const { convIdOfMessage, flushNow, enqueueMessage, send, resend, sendReminder, shakeConversation, confirmReminder, recallMessage, setMessageRender, sendReaction, sendDmReaction, deleteMessages, onMessageRecalled, onMessageRenderChanged, PENDING_ACKS_MAX, getPending, pendingAcks } = messagingModule;
+  const { convIdOfMessage, flushNow, enqueueMessage, send, resend, sendReminder, shakeConversation, confirmReminder, recallMessage, setMessageRender, getRenderLang, sendReaction, sendDmReaction, deleteMessages, onMessageRecalled, onMessageRenderChanged, PENDING_ACKS_MAX, getPending, pendingAcks } = messagingModule;
   const { refreshConversations, refreshGroups, resetAfterDataCleared, clearAllData, sendReadReceipt, chatViewerLooking, groupReaderIds, unreadJump, locateRequest, clearLocateRequest, locateInLoaded, locateMessageInConv, openConversation, loadMessages, refreshGroupDeliveries, clearHistoryError, loadMoreMessages, onGroupRead, onGroupHistoryProgress, syncGroupHistoryNow, cancelGroupHistory, deleteConversation, setConversationPinned, historyLoadErrors } = conversationsModule;
   const { openTodoByConv, groupTodoRowsErrors, ensureGroupTodoRows, todosLoadedOnce, loadGroupTodos, watchGroupTodos, createTodo, updateTodo, pinMessage } = todosModule;
   const { refreshPeers, searchNearbyPeers, refreshFriends, refreshPending, refreshOutgoingRequests, refreshKeyRotations, syncFriendKeys, sendFriendRequest, cancelFriendRequest, respondRequest, removeFriend, favorites, refreshFavorites, addFavorite, removeFavorite, addFavorites } = contactsModule;
@@ -821,6 +823,7 @@ export const useChatStore = defineStore("chat", () => {
     operations,
     liveOperationCount,
     messages,
+    renderLangs,
     groupDeliveries,
     refreshGroupDeliveries,
     groupReads,
@@ -893,6 +896,7 @@ export const useChatStore = defineStore("chat", () => {
     sendDmReaction,
     recallMessage,
     setMessageRender,
+    getRenderLang,
     pinMessage,
     publishAnnouncement,
     deleteAnnouncement,

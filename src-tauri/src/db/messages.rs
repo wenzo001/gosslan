@@ -1033,16 +1033,19 @@ pub fn apply_message_render(
     msg_id: &str,
     event_seq: i64,
     mode: &str,
+    lang: Option<&str>,
 ) -> Result<bool> {
     if mode != "code" && mode != "text" {
         return Ok(false);
     }
+    // 切回文本时语言必须一起清掉：留着旧 lang 会让"再切回 code"凭空带上一个用户没选过的语言。
+    let lang = if mode == "text" { None } else { lang };
     let tx = conn.unchecked_transaction()?;
     let changed = tx.execute(
-        "INSERT INTO message_render(msg_id, seq, mode) VALUES(?1, ?2, ?3)
-         ON CONFLICT(msg_id) DO UPDATE SET seq = excluded.seq, mode = excluded.mode
+        "INSERT INTO message_render(msg_id, seq, mode, lang) VALUES(?1, ?2, ?3, ?4)
+         ON CONFLICT(msg_id) DO UPDATE SET seq = excluded.seq, mode = excluded.mode, lang = excluded.lang
          WHERE excluded.seq > message_render.seq",
-        params![msg_id, event_seq, mode],
+        params![msg_id, event_seq, mode, lang],
     )? > 0;
     let mut updated = 0usize;
     if changed {
@@ -1054,6 +1057,30 @@ pub fn apply_message_render(
     tx.commit()?;
     // 只有 messages 真的改了才算“生效”：已撤回消息的 render 事件不得让前端把墓碑复活。
     Ok(updated > 0)
+}
+
+/// 某个会话里所有"显式带了代码语言"的消息（`msg_id -> lang`）。
+///
+/// 前端冷加载时用它补齐历史气泡的语言：只认 `mode='code' AND lang IS NOT NULL`，
+/// 没有记录 / 已切回 text 的消息不在结果里 ⇒ 前端回落到内容自动识别（旧语义）。
+pub fn get_message_render_langs(
+    conn: &Connection,
+    conv_id: &str,
+) -> Result<std::collections::HashMap<String, String>> {
+    let mut stmt = conn.prepare(
+        "SELECT r.msg_id, r.lang FROM message_render r
+         JOIN messages m ON m.msg_id = r.msg_id
+         WHERE m.conv_id = ?1 AND r.mode = 'code' AND r.lang IS NOT NULL",
+    )?;
+    let rows = stmt.query_map(params![conv_id], |r| {
+        Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
+    })?;
+    let mut out = std::collections::HashMap::new();
+    for row in rows {
+        let (id, lang) = row?;
+        out.insert(id, lang);
+    }
+    Ok(out)
 }
 
 #[cfg(test)]
@@ -1084,24 +1111,35 @@ mod message_render_tests {
         .unwrap()
     }
 
+    fn lang_of(conn: &Connection, msg_id: &str) -> Option<String> {
+        conn.query_row(
+            "SELECT lang FROM message_render WHERE msg_id = ?1",
+            params![msg_id],
+            |r| r.get(0),
+        )
+        .ok()
+        .flatten()
+    }
+
     #[test]
     fn render_lww_only_applies_newer_events() {
         let conn = db();
         seed(&conn, "r1");
-        assert!(apply_message_render(&conn, "r1", 10, "code").unwrap());
+        assert!(apply_message_render(&conn, "r1", 10, "code", Some("rust")).unwrap());
         assert_eq!(kind(&conn, "r1"), "code");
 
         assert!(
-            !apply_message_render(&conn, "r1", 9, "text").unwrap(),
+            !apply_message_render(&conn, "r1", 9, "text", None).unwrap(),
             "迟到的旧事件不得把渲染翻回去"
         );
         assert_eq!(kind(&conn, "r1"), "code");
+        assert_eq!(lang_of(&conn, "r1").as_deref(), Some("rust"));
 
-        assert!(apply_message_render(&conn, "r1", 11, "text").unwrap());
+        assert!(apply_message_render(&conn, "r1", 11, "text", None).unwrap());
         assert_eq!(kind(&conn, "r1"), "text");
 
         assert!(
-            !apply_message_render(&conn, "r1", 12, "image").unwrap(),
+            !apply_message_render(&conn, "r1", 12, "image", None).unwrap(),
             "只允许 code/text 两种渲染方式"
         );
 
@@ -1112,8 +1150,95 @@ mod message_render_tests {
             [],
         )
         .unwrap();
-        assert!(!apply_message_render(&conn, "r2", 20, "code").unwrap());
+        assert!(!apply_message_render(&conn, "r2", 20, "code", Some("rust")).unwrap());
         assert_eq!(kind(&conn, "r2"), "recalled");
+    }
+
+    #[test]
+    fn render_lang_follows_lww_and_is_cleared_by_text() {
+        let conn = db();
+        seed(&conn, "r1");
+
+        assert!(apply_message_render(&conn, "r1", 10, "code", Some("rust")).unwrap());
+        assert_eq!(lang_of(&conn, "r1").as_deref(), Some("rust"));
+
+        // 较新的 lang 生效。
+        assert!(apply_message_render(&conn, "r1", 12, "code", Some("typescript")).unwrap());
+        assert_eq!(lang_of(&conn, "r1").as_deref(), Some("typescript"));
+
+        // 较旧的 lang 不覆盖（连同 mode 一起被 LWW 挡住）。
+        assert!(!apply_message_render(&conn, "r1", 11, "code", Some("python")).unwrap());
+        assert_eq!(lang_of(&conn, "r1").as_deref(), Some("typescript"));
+
+        // 显式 plaintext 是合法值，不是 None。
+        assert!(apply_message_render(&conn, "r1", 13, "code", Some("plaintext")).unwrap());
+        assert_eq!(lang_of(&conn, "r1").as_deref(), Some("plaintext"));
+
+        // mode=text 必须清空 lang（即使调用方传了一个值）。
+        assert!(apply_message_render(&conn, "r1", 14, "text", Some("rust")).unwrap());
+        assert_eq!(lang_of(&conn, "r1"), None);
+    }
+
+    #[test]
+    fn render_lang_column_survives_old_database_migration() {
+        // 造一个 v15 形状的库：有 message_render 但没有 lang 列。
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE message_render (
+                 msg_id TEXT PRIMARY KEY,
+                 seq    INTEGER NOT NULL,
+                 mode   TEXT NOT NULL
+             );
+             CREATE TABLE messages (
+                 id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                 msg_id      TEXT UNIQUE NOT NULL,
+                 conv_id     TEXT NOT NULL,
+                 sender_id   TEXT NOT NULL,
+                 receiver_id TEXT NOT NULL,
+                 kind        TEXT NOT NULL,
+                 content     TEXT NOT NULL,
+                 ts          INTEGER NOT NULL
+             );
+             INSERT INTO messages(msg_id, conv_id, sender_id, receiver_id, kind, content, ts)
+             VALUES('old', 'peer-a', 'me', 'peer-a', 'code', 'fn main(){}', 1);
+             INSERT INTO message_render(msg_id, seq, mode) VALUES('old', 1, 'code');",
+        )
+        .unwrap();
+        conn.execute_batch("PRAGMA user_version = 15;").unwrap();
+        crate::db::run_migrations(&conn, 15).expect("v15→v16 迁移不许报错");
+
+        // 老行的 lang = NULL（未指定 ⇒ 接收端按内容自动识别）。
+        assert_eq!(lang_of(&conn, "old"), None);
+        // 迁移后列可用：新值能写进去，并能按会话读回。
+        assert!(apply_message_render(&conn, "old", 2, "code", Some("rust")).unwrap());
+        let langs = get_message_render_langs(&conn, "peer-a").unwrap();
+        assert_eq!(langs.get("old").map(String::as_str), Some("rust"));
+
+        // 幂等：列已存在时重放这一步不许报错（SCHEMA 先建过 / 重复迁移）。
+        let again = db();
+        again.execute_batch("PRAGMA user_version = 15;").unwrap();
+        crate::db::run_migrations(&again, 15).expect("列已存在时 v15→v16 必须静默通过");
+    }
+
+    #[test]
+    fn render_langs_query_only_returns_code_rows_with_explicit_lang() {
+        let conn = db();
+        seed(&conn, "a");
+        seed(&conn, "b");
+        conn.execute(
+            "INSERT INTO messages(msg_id, conv_id, sender_id, receiver_id, kind, content, ts, seq, status)
+             VALUES('c', 'peer-b', 'me', 'peer-b', 'text', 'other conv', 1, 1, 'sent')",
+            [],
+        )
+        .unwrap();
+
+        apply_message_render(&conn, "a", 1, "code", Some("rust")).unwrap();
+        apply_message_render(&conn, "b", 1, "code", None).unwrap();
+        apply_message_render(&conn, "c", 1, "code", Some("rust")).unwrap();
+
+        let langs = get_message_render_langs(&conn, "peer-a").unwrap();
+        assert_eq!(langs.len(), 1, "只返回本会话里带显式 lang 的 code 行");
+        assert_eq!(langs.get("a").map(String::as_str), Some("rust"));
     }
 }
 

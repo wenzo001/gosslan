@@ -22,6 +22,8 @@ import { MENTION_ALL_TOKEN, textMentionsName } from "@/utils/messages";
 import { isMentionLead } from "@/utils/linkify";
 import { isSelfConversation } from "@/utils/selfChat";
 import { detectCode, stripCodeFence } from "@/utils/codeDetect";
+import { requestDetectLanguage } from "@/utils/codeHighlight";
+import CodeLangMenu from "@/components/CodeLangMenu.vue";
 import { api } from "@/api";
 import AvatarBox from "@/components/ui/AvatarBox.vue";
 import { composerMaxHeight, clampComposerHeight } from "@/utils/composerLayout";
@@ -41,7 +43,7 @@ const props = defineProps<{
 const emit = defineEmits<{
   // `mentionIds` = 这条文本 @ 了谁（设备 id）。缺省 = 这条不带名单 = 接收端按昵称兜底，
   // 与"空数组 = 明确回答谁都没 @"是两回事，所以这里不能给默认值。
-  (e: "send", payload: { content: string; kind: MsgKind; mentionIds?: string[] }): void;
+  (e: "send", payload: { content: string; kind: MsgKind; mentionIds?: string[]; lang?: string | null }): void;
   // 交出去的是 **File 本身**，不是 data URL：读文件是异步的，若在组件里 await 完再 emit，
   // 接收方只能在"读完之后"才知道要发给谁 —— 期间用户切了会话，图片就发到别的会话去了。
   // 读取挪到发送方，让会话 id 在按下发送的那一刻被同步捕获（审计阶段 4 · 4.1-5）。
@@ -67,6 +69,10 @@ const codeMode = ref(false);
 const autoCode = ref(false);
 const autoCodeLang = ref<string | null>(null);
 const autoCodeSuppressed = ref(false);
+/** 发送前用户选定/自动识别出的语言；null = 自动（渲染端再按内容识别）。 */
+const codeLang = ref<string | null>(null);
+/** 每次手动改语言都递增，晚到的异步识别结果不许覆盖用户的选择。 */
+let codeLangSeq = 0;
 let codeDetectTimer: ReturnType<typeof setTimeout> | null = null;
 
 function scheduleCodeDetect() {
@@ -75,23 +81,43 @@ function scheduleCodeDetect() {
   codeDetectTimer = setTimeout(() => {
     codeDetectTimer = null;
     if (codeMode.value || autoCodeSuppressed.value) return;
-    const d = detectCode(serializeDraft());
+    const draft = serializeDraft();
+    const d = detectCode(draft);
     if (!d.likely) return;
     codeMode.value = true;
     autoCode.value = true;
     autoCodeLang.value = d.language;
+    codeLang.value = d.language;
+    // 未标语言的围栏/粘贴代码：语言交给 Worker 里的 highlightAuto（成熟方案），
+    // 识别不确定就保持 null（发送后渲染端会落纯文本），绝不在这里手写正则猜。
+    if (!d.language) {
+      const token = ++codeLangSeq;
+      void requestDetectLanguage(stripCodeFence(draft).text).then((lang) => {
+        if (!lang || token !== codeLangSeq || !autoCode.value || !codeMode.value) return;
+        autoCodeLang.value = lang;
+        codeLang.value = lang;
+      });
+    }
   }, 250);
+}
+function onCodeLangChange(value: string | null) {
+  codeLangSeq++;
+  codeLang.value = value;
+  autoCodeLang.value = value;
+  autoCode.value = false;
 }
 function toggleCodeMode() {
   codeMode.value = !codeMode.value;
   autoCode.value = false;
   autoCodeLang.value = null;
+  codeLang.value = null;
   autoCodeSuppressed.value = true;
 }
 function undoAutoCode() {
   codeMode.value = false;
   autoCode.value = false;
   autoCodeLang.value = null;
+  codeLang.value = null;
   autoCodeSuppressed.value = true;
 }
 onUnmounted(() => {
@@ -499,8 +525,15 @@ function send(kind?: MsgKind, content?: string) {
   let text = content ?? serializeDraft();
   const k = kind ?? (codeMode.value ? "code" : "text");
   // 围栏只是输入时的语法；落库的代码消息不带 ```lang。
+  // ⚠️ 这里的 language **必须**带下去：过去只取 `.text`，围栏语言在发送这一步就被丢掉了，
+  // "已标语言按标记走"实际是假的（发送后两端只能自动识别）。
+  let codeLangOut: string | null = null;
   if (content === undefined && k === "code") {
-    text = stripCodeFence(text).text;
+    const stripped = stripCodeFence(text);
+    text = stripped.text;
+    codeLangOut = stripped.language ?? codeLang.value;
+  } else if (k === "code") {
+    codeLangOut = codeLang.value;
   }
   const hasText = k !== "text" || text.trim().length > 0;
   const images = pendingImages.value.map((x) => x.file);
@@ -521,6 +554,7 @@ function send(kind?: MsgKind, content?: string) {
   if (!kind) codeMode.value = false;
   autoCode.value = false;
   autoCodeLang.value = null;
+  codeLang.value = null;
   autoCodeSuppressed.value = false;
   if (codeDetectTimer) {
     clearTimeout(codeDetectTimer);
@@ -538,7 +572,7 @@ function send(kind?: MsgKind, content?: string) {
   haptic("light");
   // 先发文字，再按入框顺序发图片。渲染侧仍是独立的文字气泡 + 图片气泡，
   // 这里只把"一次点击"合并；不要合成"带图文字"复合消息。
-  if (hasText) emit("send", { content: text, kind: k, mentionIds });
+  if (hasText) emit("send", { content: text, kind: k, mentionIds, lang: codeLangOut });
   for (const file of images) emit("send-image", file);
 }
 
@@ -1215,17 +1249,24 @@ async function onPaste(e: ClipboardEvent) {
            （参考图是干净的输入区）。原先走 `:data-placeholder` + `:empty::before`，
            现连同 style.css 里的那条规则与两个 i18n key 一起删除，避免留死代码。
            `normalizeEmpty` 保留 —— 它现在只服务 `hasDraft`（空壳 div/br 会让"有草稿"误判）。 -->
+      <!-- 代码档工具条：手动开代码模式也要能选语言 / 取消代码块。
+           取消 = 回到普通长文本，正文一个字都不动（换行与原样字符全部保留，不高亮）。 -->
       <div
-        v-if="autoCode && codeMode"
+        v-if="codeMode"
         class="mb-1 flex items-center gap-2 text-meta text-[var(--gosslan-text-2)]"
       >
-        <span>{{ t("chat.composer.codeDetected", { lang: autoCodeLang || t("chat.composer.code") }) }}</span>
+        <span v-if="autoCode">{{ t("chat.composer.codeDetected", { lang: autoCodeLang || t("chat.composer.code") }) }}</span>
+        <CodeLangMenu
+          :model-value="codeLang"
+          :aria-label="t('code.lang')"
+          @update:model-value="onCodeLangChange"
+        />
         <button
           type="button"
           class="tap-safe rounded-[var(--gosslan-radius-sm)] px-1 underline-offset-2 hover:underline"
           @click="undoAutoCode"
         >
-          {{ t("chat.composer.codeUndo") }}
+          {{ t("chat.composer.codeCancel") }}
         </button>
       </div>
       <div

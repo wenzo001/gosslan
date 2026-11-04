@@ -632,6 +632,7 @@ fn outbox_payload_preserves_the_relay_envelope_identity() {
         content: "enc1:abc".into(),
         ts: 1,
         seq: 1,
+        lang: None,
     };
     let payload = serde_json::to_string(&crate::network::transport::OutboxPayload {
         direct: direct.clone(),

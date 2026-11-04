@@ -22,6 +22,8 @@ const props = defineProps<{
   selfMention?: { name: string; label: string; id?: string } | null;
   /** @ 的落点（#122）：传了才按身份判「这一段属于谁」，不传按昵称兜底。 */
   mentionTargets?: { id: string; name: string; n: number }[] | null;
+  /** 代码消息的显式语言（与气泡同源，避免同一段代码两处标签不一致）。 */
+  language?: string | null;
 }>();
 const emit = defineEmits<{
   (e: "close"): void;
@@ -66,10 +68,17 @@ async function openLink(href: string) {
     width="max-w-4xl"
     @close="emit('close')"
   >
-    <div class="max-h-[70vh] overflow-y-auto">
-      <CodeBlock v-if="kind === 'code'" :code="content" />
+    <!-- 代码档：滚动收进 CodeBlock 的代码区（头部固定），外层不再滚 ⇒ 只有一层滚动条；
+         文本档保持原来的整块滚动。 -->
+    <CodeBlock
+      v-if="kind === 'code'"
+      :code="content"
+      :language="language"
+      scrollable
+      max-height="60vh"
+    />
+    <div v-else class="max-h-[70vh] overflow-y-auto">
       <div
-        v-else
         class="gosslan-selectable whitespace-pre-wrap break-words text-sm leading-relaxed text-[var(--gosslan-text)]"
         :style="{ wordBreak: 'break-word' }"
       >
