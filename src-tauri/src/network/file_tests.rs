@@ -3543,6 +3543,10 @@ mod group_receive_atomicity_tests {
         // `apply_group_file_ack_db`（同一次事务里落 recipient 终态 + 聚合并写回气泡），
         // 并新增了持久化 ACK 账本 ⇒ 判据同步搬锚点，**语义一点没放宽**：
         // 仍然要求"真去 DB 读该收件人的 status"，而且要拿它判终态。
+        // 2026-11-04（3B 第一笔）：读状态那一步再搬一层 —— 收进 `db/group_files.rs` 的只读投影
+        // `group_file_recipient_status`（写侧必须分辨「没有这一格」与「读库失败」）。
+        // 判据跟着搬锚点：收尾函数仍须经投影真读、仍须拿它判终态；另加反例自证 ——
+        // 投影本身必须真的执行 SELECT，否则"经投影读"就退化成读一个吐 None 的桩。
         let at = src
             .find("fn apply_group_file_ack_db")
             .expect("群文件 ACK 收尾改名/搬家了 ⇒ 同步改这条判据");
@@ -3552,14 +3556,26 @@ mod group_receive_atomicity_tests {
         let end = rest.find("\n}\n").map(|i| i + 3).unwrap_or(rest.len());
         let body = &rest[..end];
         assert!(
-            body.contains(
-                "SELECT status FROM group_file_recipients WHERE transfer_id = ?1 AND recipient_id = ?2"
-            ),
-            "failure ACK 不再真读该收件人的 completed 状态 ⇒ 终态保护只剩测试里那份抄本"
+            body.contains("db::group_file_recipient_status(&tx, transfer_id, recipient_id)"),
+            "failure ACK 不再经只读投影真读该收件人的状态 ⇒ 终态保护只剩测试里那份抄本"
         );
         assert!(
             body.contains(r#"current == "completed""#),
             "读到了状态却不拿它判终态 ⇒ completed 的终态保护没了"
+        );
+        // 反例自证：把投影实现成桩（直接 `Ok(None)`）⇒ 上面那条"经投影读"就失去意义。
+        // 这里直接读投影所在分册，要求 SELECT 仍在投影函数体里。
+        let projection = include_str!("../db/group_files.rs");
+        let pat = projection
+            .find("pub fn group_file_recipient_status(")
+            .expect("只读投影改名/搬家了 ⇒ 同步改这条判据");
+        let prest = &projection[pat..];
+        let pend = prest.find("\n}\n").map(|i| i + 3).unwrap_or(prest.len());
+        assert!(
+            prest[..pend].contains(
+                "SELECT status FROM group_file_recipients WHERE transfer_id = ?1 AND recipient_id = ?2"
+            ),
+            "只读投影成了桩（不真的查库）⇒ ACK 收尾的终态保护形同虚设"
         );
     }
 }

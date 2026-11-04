@@ -14,6 +14,17 @@
 
 ## [Unreleased]
 
+## [5.17.28] - 2026-11-04
+
+### 内部重构（无用户可感知变化）
+
+- 3B 第一笔：群文件成员行（`group_file_recipients`）的只读投影收进
+  `db/group_files.rs`。ACK 收尾不再在传输层手写 `SELECT`，统一走
+  `group_file_recipient_status`（区分「这一格不存在」与「读库失败」）与
+  `group_file_recipient_statuses`（气泡聚合）；`get_group_file_recipient_status`
+  改为委托前者并保持吞错旧契约。新增复合故障用例：
+  `a_read_failure_is_retryable_not_a_stranger_ack`（读失败必须 Err，不许当串台丢账本）。
+
 ## [5.17.27] - 2026-11-04
 
 ### 内部重构（无用户可感知变化）
