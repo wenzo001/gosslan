@@ -3209,7 +3209,30 @@ async function main() {
       process.exit(1);
     }
   }
-  const vite = spawn(process.execPath, [viteBin, "dev", "--port", String(VITE_PORT), "--strictPort"],
+  /**
+   * 长跑（`GOSSLAN_IDLE_MS`）专用：关掉 HMR。
+   *
+   * 为什么需要：**别的会话改 `src/` 时，非组件模块没有 HMR 边界 ⇒ vite 走全量 reload**，
+   * 夹具（`window.__leak` / `window.__probe` / 挂好的 ChatWindow）当场清空。
+   * 2026-11-05 实测：共享工作区里另一会话每分钟级地改 `src/updater/androidService.ts`
+   * 与 `MessageComposer.vue`，15 分钟的空闲段被打断两次以上 ⇒ 永远凑不出一段连续读数。
+   * 关掉 HMR 后 dev server 不再下发更新，页面就停在原地（改码不重载），
+   * 代价是**这一段量到的不是"改码那一刻"的构建**，所以只给手动长跑用，不进默认门禁。
+   *
+   * 配置来自 `GOSSLAN_PROBE_VITE_CONFIG`（一份 import 项目 `vite.config.ts` 再把
+   * `server.hmr` 置 false 的临时配置，放在 /tmp）；不设就完全按老路径起 server。
+   */
+  const noHmrCfg = process.env.GOSSLAN_PROBE_NO_HMR === "1"
+    ? (process.env.GOSSLAN_PROBE_VITE_CONFIG || "")
+    : "";
+  if (process.env.GOSSLAN_PROBE_NO_HMR === "1" && !noHmrCfg) {
+    console.log("\n✗ 要求关 HMR（GOSSLAN_PROBE_NO_HMR=1）但没给 GOSSLAN_PROBE_VITE_CONFIG，判红"); 
+    process.exit(1);
+  }
+  const viteArgs = [viteBin, "dev", "--port", String(VITE_PORT), "--strictPort"];
+  if (noHmrCfg) viteArgs.push("--config", noHmrCfg);
+  console.log(noHmrCfg ? `· dev server 用临时配置（HMR 关闭）：${noHmrCfg}` : "· dev server：项目 vite 配置（HMR 开）");
+  const vite = spawn(process.execPath, viteArgs,
     { cwd: ROOT, stdio: ["ignore", "pipe", "pipe"] });
   const profile = fs.mkdtempSync(path.join(os.tmpdir(), "gosslan-probe-"));
   const launchChrome = () => {
@@ -17738,6 +17761,321 @@ async function runNavIcon(cdp, url) {
       && table.kinds.every((k) => k === "object" || k === "function"),
     "navIcons.NAV_ICONS 恰有 4 键，值为组件",
     JSON.stringify(table));
+}
+
+/**
+ * 前端泄漏形状探针（--only=leak，2026-11-04）。
+ *
+ * 为什么是"形状判据"而不是内存数字：绝对堆/CPU 会随机器与版本漂移（见 perf/README 的量具边界），
+ * 但**泄漏有确定性的形状**——切 N 次会话、再全部卸载之后，监听器与定时器必须回到挂载前的水位，
+ * 堆在两批切换之间不许随批次单调抬升。这里量三件事：
+ *   ① 切会话 30 次（6 个会话轮转）后 DOM 元素数不随批次增长；
+ *   ② 第 2→3 批的 GC 后堆增量不随批次持续抬升（阈值见实测基线，留 GC 噪声）；
+ *   ③ `app.unmount()` 之后 `JSEventListeners` / 活着的 interval 与 rAF 回到挂载前水位
+ *      （夹具自己挂的那 1 个 document click 监听要扣掉）。
+ *
+ * 反例自证：`GOSSLAN_LEAK_INJECT=1` 时在挂载后故意留一个 1s interval，
+ * ③ 的定时器水位必然多 1 → 这一段必须红。删掉真正的清理代码时形状与它同源。
+ */
+async function runLeak(cdp, url) {
+  await cdp.send("Emulation.setDeviceMetricsOverride", {
+    width: 1200, height: 800, deviceScaleFactor: 1, mobile: false,
+  });
+  await cdp.send("Page.navigate", { url });
+  await cdp.settled();
+  await sleep(3_000);
+  /**
+   * 打桩 + 夹具 + 定时器水位记账。
+   *
+   * ⚠️ 为什么要做成可重跑的一组：`window.__leak` / `window.__probe` 都挂在页面上，
+   * 而**别的会话改 `src/` 会触发 vite 全量热重载**，一重载这些全丢 —— 长跑（`GOSSLAN_IDLE_MS`）
+   * 中途被清空过一次（2026-11-05，真踩到：堆读数还没取到就 `__leak` 已 undefined）。
+   * 所以长跑不假设页面会一直在原地，而是每段先探活，丢了就重建夹具、那一段从头再量。
+   */
+  const installHarness = async () => {
+    await cdp.eval(PAGE_FIXTURE);
+    await cdp.eval(`(() => {
+      window.__TAURI_INTERNALS__ = {
+        metadata: { currentWindow: { label: 'main' }, currentWebview: { label: 'main', windowLabel: 'main' } },
+        invoke: async () => null, transformCallback: (cb) => cb, convertFileSrc: (p) => p,
+      };
+      if (!window.__TAURI_EVENT_PLUGIN_INTERNALS__) {
+        window.__TAURI_EVENT_PLUGIN_INTERNALS__ = { unregisterListener: () => {} };
+      }
+    })()`);
+    await cdp.send("Performance.enable");
+    await cdp.send("HeapProfiler.enable");
+
+    // 定时器水位记账：必须在挂载前包（挂载后才包就抓不到组件自己起的那些）。
+    // setTimeout 的包装把一次性回调执行时自动出账 —— 没人会替它 clearTimeout。
+    await cdp.eval(`(() => {
+      const live = { interval: new Set(), timeout: new Set(), raf: new Set(), where: new Map(), product: new Set() };
+      window.__leak = { live };
+      const oi = window.setInterval.bind(window), ci = window.clearInterval.bind(window);
+      const ot = window.setTimeout.bind(window), ct = window.clearTimeout.bind(window);
+      const oraf = window.requestAnimationFrame.bind(window), craf = window.cancelAnimationFrame.bind(window);
+      window.setInterval = (...a) => { const id = oi(...a); live.interval.add(id); return id; };
+      window.clearInterval = (id) => { live.interval.delete(id); ci(id); };
+      window.setTimeout = (fn, ms, ...rest) => {
+        if (typeof fn !== 'function') return ot(fn, ms, ...rest);
+        let id = 0;
+        id = ot((...aa) => {
+          live.timeout.delete(id);
+          live.where.delete(id);
+          live.product.delete(id);
+          fn(...aa);
+        }, ms, ...rest);
+        live.timeout.add(id);
+        // 诊断用：记谁起的（只看前 4 行，够定位文件）；这里不用模板串，避免 Node 侧先插值。
+        const stack = new Error().stack || "";
+        live.where.set(id, ms + "ms @ " + stack.split(String.fromCharCode(10)).slice(2, 5).join(" | "));
+        // 只把产品代码起的定时器记进 product：依赖目录里的 300s GC 定时器（vue-query）不算产品泄漏。
+        if (stack.indexOf("/src/") !== -1 && stack.indexOf("/node_modules/") === -1) live.product.add(id);
+        return id;
+      };
+      window.clearTimeout = (id) => { live.timeout.delete(id); live.where.delete(id); live.product.delete(id); ct(id); };
+      window.requestAnimationFrame = (fn) => {
+        let id = 0;
+        id = oraf((t) => { live.raf.delete(id); fn(t); });
+        live.raf.add(id);
+        return id;
+      };
+      window.cancelAnimationFrame = (id) => { live.raf.delete(id); craf(id); };
+    })()`);
+  };
+  await installHarness();
+
+  async function sample(label) {
+    await cdp.send("HeapProfiler.collectGarbage");
+    await sleep(250);
+    const { metrics } = await cdp.send("Performance.getMetrics");
+    const m = (k) => metrics.find((x) => x.name === k)?.value ?? null;
+    const page = await cdp.eval(`({
+      dom: document.querySelectorAll('*').length,
+      interval: window.__leak.live.interval.size,
+      timeout: window.__leak.live.timeout.size,
+      productTimeout: window.__leak.live.product.size,
+      raf: window.__leak.live.raf.size,
+      pending: [...window.__leak.live.where.values()].filter((s) => s.indexOf('/src/') !== -1).slice(0, 4),
+    })`);
+    // 全局监听器单独记账：window/document 上的多是 store 单例（常驻），组件自己的多在元素上。
+    const win = await cdp.send("Runtime.evaluate", { expression: "window" });
+    const doc = await cdp.send("Runtime.evaluate", { expression: "document" });
+    const wl = await cdp.send("DOMDebugger.getEventListeners", { objectId: win.result.objectId });
+    const dl = await cdp.send("DOMDebugger.getEventListeners", { objectId: doc.result.objectId });
+    const heap = await cdp.send("Runtime.getHeapUsage");
+    return {
+      label,
+      heapMB: +(heap.usedSize / 1048576).toFixed(2),
+      heapTotalMB: +(heap.totalSize / 1048576).toFixed(2),
+      nodes: m("Nodes"),
+      listeners: m("JSEventListeners"),
+      taskS: m("TaskDuration"),
+      dom: page.dom,
+      interval: page.interval,
+      timeout: page.timeout,
+      productTimeout: page.productTimeout,
+      raf: page.raf,
+      windowListeners: wl.listeners.length,
+      documentListeners: dl.listeners.length,
+      elementListeners: (m("JSEventListeners") ?? 0) - wl.listeners.length - dl.listeners.length,
+      pending: page.pending,
+    };
+  }
+
+  const base = await sample("基线（未挂载）");
+
+  /** 挂真 ChatWindow + 灌种子。页面被热重载清空后重建夹具时也要重跑这一段。 */
+  async function mountAndSeed() {
+    const mounted = await cdp.eval(
+      "window.__probe.install('/src/components/ChatWindow.vue', '', '{\"hostHeight\":\"800px\"}')",
+    );
+    await cdp.eval("window.__probe.seedDevice('dev-leak')");
+    const seed = await cdp.eval(`(async () => {
+      const { useChatStore } = await import('/src/stores/useChatStore.ts');
+      const chat = useChatStore();
+      const makeRows = (conv, seedN, n) => {
+        const out = [];
+        for (let i = 0; i < n; i += 1) {
+          const seq = seedN + i + 1;
+          out.push({ id: seedN + i, msg_id: 'm-' + conv + '-' + seq, local_id: 'm-' + conv + '-' + seq,
+            conv_id: conv, sender_id: i % 2 ? 'dev-peer' : 'dev-leak', sender_name: i % 2 ? '对方' : '我',
+            receiver_id: i % 2 ? 'dev-leak' : 'dev-peer', kind: 'text',
+            content: ('第 ' + seq + ' 条，切换用。').repeat(3),
+            status: 'sent', seq, ts: 1700000000000 + seq * 1000 });
+        }
+        return out;
+      };
+      window.__leak.convs = Array.from({ length: 6 }, (_, i) => 'group:lk' + i);
+      for (const [i, conv] of window.__leak.convs.entries()) chat.messages[conv] = makeRows(conv, i * 100, 40);
+      chat.activeConv = window.__leak.convs[0];
+      if (${JSON.stringify(process.env.GOSSLAN_LEAK_INJECT === "1")}) {
+        window.__leak.injected = setInterval(() => {}, 1000);
+      }
+      await new Promise((r) => setTimeout(r, 600));
+      return { ok: true, convs: window.__leak.convs.length, rows: 240 };
+    })()`);
+    return { mounted, seed };
+  }
+
+  const first = await mountAndSeed();
+  check("ChatWindow 挂得起来（泄漏段的入口）",
+    !!first.mounted && first.mounted.ok === true, "install ok", JSON.stringify(first.mounted));
+  check("泄漏段种子数据就位（6 个会话 × 40 条）",
+    !!first.seed && first.seed.ok === true && first.seed.convs === 6 && first.seed.rows === 240,
+    "6 × 40", JSON.stringify(first.seed));
+
+  const afterMount = await sample("挂载后");
+
+  const batches = [];
+  for (let b = 1; b <= 3; b += 1) {
+    for (let i = 0; i < 10; i += 1) {
+      // 每批都从 idx 1 走到 idx 5（各两轮），**收尾固定落在 idx 5**。
+      // 这不是为了让判据好看，而是为了让三批的"终点状态"可比：早先用 (b*10+i)%6 时三批分别停在
+      // 不同会话上，DOM 509 vs 528、监听器 313 vs 322 —— 差的 9 个是"这个会话渲染了更多行"，
+      // 不是泄漏（2026-11-05 真红过一次）。终点不一致时，"监听器不增长"量到的是更换会话的内容差。
+      const idx = 1 + (i % 5);
+      await cdp.eval(`(async () => {
+        const { useChatStore } = await import('/src/stores/useChatStore.ts');
+        useChatStore().activeConv = window.__leak.convs[${idx}];
+      })()`);
+      await sleep(120);
+    }
+    await sleep(400);
+    batches.push(await sample(`第 ${b} 批（累计 ${b * 10} 次切换）`));
+  }
+
+  // 可选的待机长跑（手动用，不进默认门禁）：GOSSLAN_IDLE_MS=900000 ⇒ 两段 15 分钟空闲，
+  // 取 GC 后堆、DOM、监听器与 TaskDuration 增量（≈ 渲染主线程占用率）。
+  //
+  // ⚠️ 每段都先探活再计时：共享工作区里别的会话改 `src/` 会让 vite 全量热重载，页面一重载
+  // `window.__leak` 就没了（2026-11-05 真踩到：13 分钟读数作废）。丢了就重建夹具、
+  // **这一段从头再量** —— 只记"连续未被打断"的那一段，不把两次挂载混成一条趋势。
+  const idleMs = Number(process.env.GOSSLAN_IDLE_MS || 0);
+  const idleSamples = [];
+  if (idleMs > 0) {
+    const alive = () => cdp.eval(
+      "!!(window.__leak && window.__leak.live && window.__probe && window.__probe.app)",
+    );
+    async function rebuild() {
+      await cdp.send("Page.navigate", { url });
+      await cdp.settled();
+      await sleep(3_000);
+      await installHarness();
+      const m = await mountAndSeed();
+      console.log("  · 夹具已重建（挂载=" + !!(m.mounted && m.mounted.ok)
+        + " 种子=" + !!(m.seed && m.seed.ok) + "）");
+    }
+    for (let i = 1; i <= 2; i += 1) {
+      const mins = Math.round(idleMs / 60000);
+      for (let attempt = 1; ; attempt += 1) {
+        if (!(await alive())) await rebuild();
+        const t0 = await sample(`空闲第 ${i} 段起点`);
+        const started = Date.now();
+        let lost = false;
+        while (Date.now() - started < idleMs) {
+          await sleep(10_000);
+          if (!(await alive())) { lost = true; break; }
+        }
+        if (lost) {
+          console.log("  · 空闲第 " + i + " 段第 " + attempt + " 次被热重载打断 ⇒ 重建夹具，本段从头再量");
+          await rebuild();
+          continue;
+        }
+        const s = await sample(`空闲第 ${i} 段（${mins} 分钟）`);
+        // 分母用真实墙钟（探活与 GC 都不计进 CPU% 的分子，但计进耗时）。
+        const secs = Math.round((Date.now() - started) / 1000);
+        s.wallSecs = secs;
+        s.heapDeltaMB = +(s.heapMB - t0.heapMB).toFixed(2);
+        s.cpuPct = +(((s.taskS - t0.taskS) / secs) * 100).toFixed(2);
+        idleSamples.push(s);
+        break;
+      }
+    }
+  }
+
+  const unmounted = await cdp.eval("(() => { window.__probe.app.unmount(); return true; })()");
+  await sleep(600);
+  const afterUnmount = await sample("卸载后");
+  // 夹具把 app 挂在 window.__probe 上（生产里根 App 常驻、从不卸载）⇒ 手动松手，
+  // 否则量到的是"探针自己攥着 vnode 树"的保留，不是产品泄漏。
+  await cdp.eval(`(() => {
+    window.__probe.app = null;
+    window.__probe.state = null;
+    window.__st = null;
+    window.__qc = null;
+    window.__pinia = null;
+    return true;
+  })()`);
+  await sleep(1_200);
+  const afterCleanup = await sample("松手后");
+  await sleep(5_000);
+  const afterSettle = await sample("松手 5s 后");
+
+  const table = [base, afterMount, ...batches, ...idleSamples, afterUnmount, afterCleanup, afterSettle];
+  console.log("  · 泄漏形状读数（每行都是 GC 后现读）：");
+  for (const r of table) {
+    console.log(`     ${r.label.padEnd(24)} heap=${String(r.heapMB).padStart(7)}MB total=${String(r.heapTotalMB).padStart(7)}MB`
+      + ` nodes=${String(r.nodes).padStart(6)} listeners=${String(r.listeners).padStart(5)}`
+      + ` (win=${r.windowListeners} doc=${r.documentListeners} el=${r.elementListeners})`
+      + ` dom=${String(r.dom).padStart(5)} interval=${r.interval} timeout=${r.timeout}`
+      + ` productTimeout=${r.productTimeout} raf=${r.raf}`
+      + (r.cpuPct === undefined ? "" : ` cpu=${r.cpuPct}% Δheap=${r.heapDeltaMB}MB`));
+  }
+  // 这一段不单独落账本：报告直接取上面的现读表。
+
+  const b2 = batches[1], b3 = batches[2];
+  check("切会话 30 次后 DOM 元素数不随批次增长（第 3 批 ≤ 第 2 批 + 60）",
+    b3.dom <= b2.dom + 60, "batch3.dom ≤ batch2.dom + 60",
+    JSON.stringify({ batch2: b2.dom, batch3: b3.dom }));
+  // 阈值依据（2026-11-04 本机 Brave/156）：6 会话 × 40 条夹具下，batch2→batch3 的 GC 后堆差
+  // 实测 0.69～1.05MB（三次运行）；取 2.5MB ≈ 实测上界的 2.4 倍，既压得住 GC 噪声，
+  // 又能在"每次切换真留一坨"时迅速红（240 条消息 × 30 次 ≈ 远大于 2.5MB）。
+  check("切会话 30 次后第 3 批相对第 2 批没有持续抬升（堆增量 ≤ 2.5MB，GC 后现读）",
+    b3.heapMB - b2.heapMB <= 2.5, "heap(batch3) - heap(batch2) ≤ 2.5MB",
+    JSON.stringify({ batch2: b2.heapMB, batch3: b3.heapMB, delta: +(b3.heapMB - b2.heapMB).toFixed(2) }));
+  check("30 次切换期间监听器没有净增（batch3 ≤ batch2 + 8）",
+    b3.listeners <= b2.listeners + 8, "listeners(batch3) ≤ listeners(batch2) + 8",
+    JSON.stringify({ batch2: b2.listeners, batch3: b3.listeners }));
+  // 元素级监听器（el=…）只进读数表、不进判据：Vue 卸载不清 `_vei`，元素上的监听器随节点一起
+  // 回收；本夹具在页面里长期持有 vue/pinia 模块，会保留一部分已脱离 DOM 的 vnode 树，
+  // 于是 el 计数天然回不到基线。这里能用的是"切 30 次不增长"（batch2→batch3 持平）那条。
+  check("ChatWindow 卸载并松开夹具引用后全局监听器不净增（窗口级 ≤ 挂载后 + 2）",
+    afterCleanup.windowListeners + afterCleanup.documentListeners
+      <= afterMount.windowListeners + afterMount.documentListeners + 2,
+    "window+document listeners(afterCleanup) ≤ 挂载后 + 2",
+    JSON.stringify({ afterMount: afterMount.windowListeners + afterMount.documentListeners, afterCleanup: afterCleanup.windowListeners + afterCleanup.documentListeners }));
+  // 定时器：interval / rAF 必须是严格归零（共享 nowTick 也是引用计数，卸载后必须停）。
+  check("ChatWindow 卸载后没有活着的 interval（回到基线水位）",
+    afterCleanup.interval === base.interval,
+    "interval(afterCleanup) === interval(base)",
+    JSON.stringify({ base: base.interval, afterMount: afterMount.interval, afterCleanup: afterCleanup.interval }));
+  check("ChatWindow 卸载后没有活着的 rAF（回到基线水位）",
+    afterSettle.raf <= base.raf,
+    "raf(afterSettle) ≤ raf(base)",
+    JSON.stringify({ base: base.raf, afterCleanup: afterCleanup.raf, afterSettle: afterSettle.raf }));
+  check("ChatWindow 卸载后没有产品代码起的一次性 timeout 残留（5s 后 === 基线）",
+    afterSettle.productTimeout === base.productTimeout,
+    "productTimeout(afterSettle) === productTimeout(base)",
+    JSON.stringify({ base: base.productTimeout, afterCleanup: afterCleanup.productTimeout, afterSettle: afterSettle.productTimeout, pending: afterSettle.pending }));
+
+  if (idleSamples.length === 2) {
+    const [i1, i2] = idleSamples;
+    check("两段空闲之间 DOM 元素数持平（±0）",
+      i2.dom === i1.dom, "idle2.dom === idle1.dom", JSON.stringify({ idle1: i1.dom, idle2: i2.dom }));
+    check("两段空闲之间监听器不增长（≤ +2）",
+      i2.listeners <= i1.listeners + 2, "idle2.listeners ≤ idle1.listeners + 2",
+      JSON.stringify({ idle1: i1.listeners, idle2: i2.listeners }));
+    check("两段空闲之间 GC 后堆增量 ≤ 0.5MB（待机预算基线，15 分钟一段）",
+      i2.heapMB - i1.heapMB <= 0.5, "heap(idle2) - heap(idle1) ≤ 0.5MB",
+      JSON.stringify({ idle1: i1.heapMB, idle2: i2.heapMB, delta: i2.heapDeltaMB }));
+    check("待机时渲染主线程占用 < 1%（TaskDuration 增量 / 墙钟）",
+      i2.cpuPct < 1, "idle cpu% < 1", JSON.stringify({ idle1: i1.cpuPct, idle2: i2.cpuPct }));
+  }
+
+  if (unmounted !== true) {
+    throw new Error("unmount 没有返回 true");
+  }
 }
 
 async function runSegmented(cdp, url) {

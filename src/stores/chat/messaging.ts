@@ -38,6 +38,7 @@ import {
   isNudgePayload,
 } from "@/utils/reminders";
 import { buildReactionPayload } from "@/utils/reactions";
+import { createMsgConvIndex } from "@/utils/msgConvIndex";
 import { shouldRunThrottled } from "@/utils/defer";
 import { mergeIncomingTodoRows, todoMentionsMe } from "@/utils/todos";
 import { t } from "@/i18n";
@@ -94,9 +95,17 @@ export function createMessagingModule(ctx: ChatContext) {
    * 不再遍历所有缓存会话（批量文件回执时原来是 O(会话×消息)）。
    *
    * 表里查不到时退回全量扫描，并在扫描过程中顺手把见到的 id 都记进来 ——
-   * 第一条 Ack 之后的平均成本就降到 O(该会话消息数)。条目随消息量增长，与 `messages` 同阶。
+   * 第一条 Ack 之后的平均成本就降到 O(该会话消息数)。
+   *
+   * ⚠️ 必须有容量上限（审计 2026-11-04 · 只增不减）：`messages` 本身按会话封顶
+   * （`PAGE_SIZE × MAX_PAGES = 1000` 条/会话、`MAX_CACHED_CONVS = 8` 个会话整块逐出），
+   * 但这张表是**跨会话生命周期**的：会话被淘汰后它里面那些 id 没有删除点，
+   * 用户切过的会话越多、跑得越久，条目就越多。上界取 8 × 1000 + 余量 = 8192 ——
+   * 它只需要装得下当前 8 个缓存会话的全部 id，超出的本来就查得到也走回退扫描，
+   * 淘汰最旧的不会改变正确性（`convIdOfMessage` 未命中时仍会全量扫描重建）。
    */
-  const convIdByMsgId = new Map<string, string>();
+  const CONV_ID_BY_MSG_MAX = 8192;
+  const convIdByMsgId = createMsgConvIndex(CONV_ID_BY_MSG_MAX);
 
   function convIdOfMessage(msgId: string): string | null {
     const known = convIdByMsgId.get(msgId);
@@ -105,7 +114,8 @@ export function createMessagingModule(ctx: ChatContext) {
       if (list && list.some((m) => m.msg_id === msgId)) return known;
     }
     for (const [convId, list] of Object.entries(messages.value)) {
-      for (const m of list) convIdByMsgId.set(m.msg_id, convId);
+      // 逐会话收一次：在一次全量扫描中途就把表压回上界，避免"扫描过程中先涨到 N 倍"。
+      convIdByMsgId.remember(convId, list);
       if (list.some((m) => m.msg_id === msgId)) return convId;
     }
     return null;
