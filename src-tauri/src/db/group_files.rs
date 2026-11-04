@@ -330,6 +330,25 @@ pub fn list_group_file_recipients(
     rows.collect()
 }
 
+// ---------------- 群文件成员行的写门（纯判据） ----------------
+//
+// 三扇门各自只排一组状态，集合写在这里、SQL 由 `sql_in` / `sql_not_in` 生成（与手写逐字
+// 等价，SQLite 只认语义）。特征测试 `group_file_status_doors_pin_every_status` 逐状态钉住
+// 每扇门的结论 —— 改成员或改顺序都会在那里红。
+
+/// 进度推进与「卡住行回收」只能动**仍在发送中**的格子：晚到的进度写不许把终态拉回来。
+const GROUP_FILE_IN_FLIGHT: [&str; 1] = ["sending"];
+
+/// 取消只动还没到终态的格子：`completed` 是真的收到了，`failed` 已经说清死因。
+const GROUP_FILE_CANCELLABLE: [&str; 2] = ["pending", "sending"];
+
+/// 通用状态迁移的墓碑：`cancelled` 是本表唯一的硬终态（本表没有独立墓碑列）。
+const GROUP_FILE_STATE_WRITE_BLOCKED: [&str; 1] = ["cancelled"];
+
+/// 接收侧登记（重建接收会话 / 重投同一单）不覆盖的格子：`completed` 已经收完，
+/// `cancelled` 是用户按过取消 —— 两者都不许被"再传一次"点亮回 sending。
+const GROUP_FILE_RECEIVE_WRITE_BLOCKED: [&str; 2] = ["completed", "cancelled"];
+
 /// 更新单个 recipient 的投递状态与进度（时间戳只进不退由 updated_at 刷新保证）。
 /// recipient 不存在时报错（不静默创建群外 state）。
 ///
@@ -351,9 +370,13 @@ pub fn bump_group_file_recipient_progress(
     recipient_id: &str,
     progress: f64,
 ) -> Result<()> {
-    conn.execute(
+    let sql = format!(
         "UPDATE group_file_recipients SET progress = ?3, updated_at = ?4
-         WHERE transfer_id = ?1 AND recipient_id = ?2 AND status = 'sending'",
+         WHERE transfer_id = ?1 AND recipient_id = ?2 AND {}",
+        sql_in("status", &GROUP_FILE_IN_FLIGHT)
+    );
+    conn.execute(
+        &sql,
         params![transfer_id, recipient_id, progress, now_ms()],
     )?;
     Ok(())
@@ -366,9 +389,13 @@ pub fn update_group_file_recipient(
     status: &str,
     progress: f64,
 ) -> Result<()> {
-    let touched = conn.execute(
+    let sql = format!(
         "UPDATE group_file_recipients SET status = ?3, progress = ?4, updated_at = ?5
-         WHERE transfer_id = ?1 AND recipient_id = ?2 AND status <> 'cancelled'",
+         WHERE transfer_id = ?1 AND recipient_id = ?2 AND {}",
+        sql_not_in("status", &GROUP_FILE_STATE_WRITE_BLOCKED)
+    );
+    let touched = conn.execute(
+        &sql,
         params![transfer_id, recipient_id, status, progress, now_ms()],
     )?;
     if touched > 0 {
@@ -402,11 +429,12 @@ pub fn update_group_file_recipient(
 ///    都看不到这些行 —— 前者只捞 `sending`、后者只捞 `pending`，写 `cancelled` 之后
 ///    离线成员重连时不再被补发（判据：`a_cancelled_group_file_is_not_requeued_by_the_offline_path`）。
 pub fn cancel_group_file_recipients(conn: &Connection, transfer_id: &str) -> Result<usize> {
-    let n = conn.execute(
+    let sql = format!(
         "UPDATE group_file_recipients SET status = 'cancelled', progress = 0.0, updated_at = ?2
-         WHERE transfer_id = ?1 AND status IN ('pending', 'sending')",
-        params![transfer_id, now_ms()],
-    )?;
+         WHERE transfer_id = ?1 AND {}",
+        sql_in("status", &GROUP_FILE_CANCELLABLE)
+    );
+    let n = conn.execute(&sql, params![transfer_id, now_ms()])?;
     Ok(n)
 }
 
@@ -421,11 +449,12 @@ pub fn cancel_group_file_recipient(
     transfer_id: &str,
     recipient: &str,
 ) -> Result<bool> {
-    let n = conn.execute(
+    let sql = format!(
         "UPDATE group_file_recipients SET status = 'cancelled', progress = 0.0, updated_at = ?3
-         WHERE transfer_id = ?1 AND recipient_id = ?2 AND status IN ('pending', 'sending')",
-        params![transfer_id, recipient, now_ms()],
-    )?;
+         WHERE transfer_id = ?1 AND recipient_id = ?2 AND {}",
+        sql_in("status", &GROUP_FILE_CANCELLABLE)
+    );
+    let n = conn.execute(&sql, params![transfer_id, recipient, now_ms()])?;
     Ok(n > 0)
 }
 
@@ -545,9 +574,13 @@ pub fn requeue_stale_group_file_sending(
     recipient_id: &str,
     before_ms: i64,
 ) -> Result<bool> {
-    let n = conn.execute(
+    let sql = format!(
         "UPDATE group_file_recipients SET status = 'pending', progress = 0.0, updated_at = ?3
-         WHERE transfer_id = ?1 AND recipient_id = ?2 AND status = 'sending' AND updated_at < ?4",
+         WHERE transfer_id = ?1 AND recipient_id = ?2 AND {} AND updated_at < ?4",
+        sql_in("status", &GROUP_FILE_IN_FLIGHT)
+    );
+    let n = conn.execute(
+        &sql,
         params![transfer_id, recipient_id, now_ms(), before_ms],
     )?;
     Ok(n > 0)
@@ -628,18 +661,23 @@ pub fn upsert_group_file_receive(
     // sending —— 点亮之后的表现是"取消过的文件又自己开始传"。
     // 注意这里**不是**离线补发的查询入口（那条在 `list_pending_group_files_for_recipient`，
     // 它只捞 pending，本来就看不见 cancelled 行）。
-    conn.execute(
-        "UPDATE group_files SET status = 'sending' WHERE transfer_id = ?1 AND status NOT IN ('completed', 'cancelled')",
-        params![f.transfer_id],
-    )?;
+    let sql = format!(
+        "UPDATE group_files SET status = 'sending' WHERE transfer_id = ?1 AND {}",
+        sql_not_in("status", &GROUP_FILE_RECEIVE_WRITE_BLOCKED)
+    );
+    conn.execute(&sql, params![f.transfer_id])?;
     conn.execute(
         "INSERT OR IGNORE INTO group_file_recipients(transfer_id, recipient_id, status, progress, updated_at)
          VALUES(?1, ?2, 'sending', 0.0, ?3)",
         params![f.transfer_id, recipient_id, now_ms()],
     )?;
-    conn.execute(
+    let sql = format!(
         "UPDATE group_file_recipients SET status = 'sending', progress = 0.0, updated_at = ?2
-         WHERE transfer_id = ?1 AND recipient_id = ?3 AND status NOT IN ('completed', 'cancelled')",
+         WHERE transfer_id = ?1 AND recipient_id = ?3 AND {}",
+        sql_not_in("status", &GROUP_FILE_RECEIVE_WRITE_BLOCKED)
+    );
+    conn.execute(
+        &sql,
         params![f.transfer_id, now_ms(), recipient_id],
     )?;
     Ok(())
@@ -1151,5 +1189,89 @@ mod group_file_delivery_tests {
         assert_eq!(read("b"), ("cancelled".to_string(), 0.0));
         assert_eq!(read("c").0, "completed", "已收到的那一格不许被按成员取消改写");
         assert_eq!(read("d").0, "failed", "失败那一格已经说清了它死于什么");
+    }
+
+    /// 五扇写门在同一张状态矩阵上各自给答案：集合成员或顺序一改，这条就红。
+    ///
+    /// 五扇门分别是：进度写（只进 sending）、卡住行回收（只收 sending）、
+    /// 取消（只动 pending/sending）、通用状态迁移（只被 cancelled 挡）、
+    /// 接收侧登记（只保留 completed/cancelled）。
+    #[test]
+    fn group_file_status_doors_pin_every_status() {
+        fn read(conn: &Connection, tid: &str, rid: &str) -> (String, f64) {
+            conn.query_row(
+                "SELECT status, progress FROM group_file_recipients
+                 WHERE transfer_id = ?1 AND recipient_id = ?2",
+                params![tid, rid],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap()
+        }
+
+        for status in ["pending", "sending", "completed", "failed", "cancelled"] {
+            // ① 进度写只进 sending
+            let conn = mem();
+            seed(&conn, "t", "p", status);
+            bump_group_file_recipient_progress(&conn, "t", "p", 0.7).unwrap();
+            assert_eq!(
+                read(&conn, "t", "p").1,
+                if status == "sending" { 0.7 } else { 0.0 },
+                "进度写门对 {status} 的结论变了"
+            );
+
+            // ② 卡住行回收只在 sending 且过期时发生（before 取 MAX，避免与 ① 刚写的 updated_at 比毫秒）
+            assert_eq!(
+                requeue_stale_group_file_sending(&conn, "t", "p", i64::MAX).unwrap(),
+                status == "sending",
+                "回收门对 {status} 的结论变了"
+            );
+
+            // ③ 取消只动 pending / sending
+            assert_eq!(
+                cancel_group_file_recipient(&conn, "t", "p").unwrap(),
+                matches!(status, "pending" | "sending"),
+                "取消门对 {status} 的结论变了"
+            );
+
+            // ④ 通用状态迁移只被 cancelled 挡
+            let conn2 = mem();
+            seed(&conn2, "t", "p", status);
+            update_group_file_recipient(&conn2, "t", "p", "failed", 0.0).unwrap();
+            assert_eq!(
+                read(&conn2, "t", "p").0,
+                if status == "cancelled" {
+                    "cancelled"
+                } else {
+                    "failed"
+                },
+                "状态写门对 {status} 的结论变了"
+            );
+
+            // ⑤ 接收侧登记只保留 completed / cancelled，其余复位成 sending
+            let conn3 = mem();
+            seed(&conn3, "t", "p", status);
+            let gf = crate::state::GroupFile {
+                transfer_id: "t".to_string(),
+                group_id: "g".to_string(),
+                sender_id: "me".to_string(),
+                name: "x".to_string(),
+                size: 1,
+                sha256: String::new(),
+                status: "sending".to_string(),
+                created_at: 1,
+                scope: "chat".to_string(),
+                todo_id: String::new(),
+            };
+            upsert_group_file_receive(&conn3, &gf, "p").unwrap();
+            assert_eq!(
+                read(&conn3, "t", "p").0,
+                if matches!(status, "completed" | "cancelled") {
+                    status
+                } else {
+                    "sending"
+                },
+                "接收登记门对 {status} 的结论变了"
+            );
+        }
     }
 }
