@@ -234,6 +234,68 @@ fn forward_ttl_from(decision: &ForwardDecision) -> Option<u8> {
     }
 }
 
+/// **Case A 的唯一判据**（纯函数）：这封跨跳 `FriendAccept` 能不能当身份锚点的证明。
+///
+/// 必须同时满足：
+/// 1. 信封回显的 `request_id` 非 0（老端发的是 `{}` ⇒ 无法关联，只能退回 Case B）；
+/// 2. 它等于**本机** `pending_out_requests` 里那条申请的 id —— 那个 id 只在申请信封的
+///    加密载荷里，只有被申请的那台机器解得开 ⇒ 回显它证明「收到并解密了我那条申请」；
+/// 3. 若本机已给这位好友绑过 x25519，信封自报的 x25519 必须与它一致。
+///
+/// 第 2 条是这条判据的**全部价值**：Ed25519 验签只证明「持有这把私钥」，
+/// 不证明「这就是 sender_id 那个人」。没有本机发起记录做绑定点，验签通过的自签信封
+/// 等于给冒充开门 —— 所以宁可退回 Case B（验签 + 既有 x25519 锚点），也不直接绑身份。
+pub(crate) fn accept_proves_friend_anchor(
+    echoed_request_id: i64,
+    pending_request_id: Option<i64>,
+    bound_x25519: Option<&str>,
+    env_x25519: &str,
+) -> bool {
+    if echoed_request_id == 0 {
+        return false;
+    }
+    let Some(pending) = pending_request_id else {
+        return false;
+    };
+    if pending != echoed_request_id {
+        return false;
+    }
+    match bound_x25519 {
+        Some(bound) => bound == env_x25519,
+        None => true,
+    }
+}
+
+/// **Case B 的唯一判据**（纯函数）：历史 NULL 好友能不能从验签通过的 Gossip 信封补锚。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum FriendAnchorBinding {
+    /// 不是好友，或 ed25519 已经绑过：本机制不适用（走既有信任门）。
+    NotApplicable,
+    /// 行存在、ed25519 为 NULL，且信封自报的 x25519 与已绑定值一致 ⇒ 可补锚。
+    BindToExistingX25519,
+    /// 行存在、ed25519 为 NULL，但信封自报的 x25519 与已绑定值**不一致** ⇒ 拒绝。
+    X25519Mismatch,
+    /// 行存在、两把钥匙都 NULL ⇒ 没有任何既有锚点可比对 ⇒ 拒绝（纯 TOFU = 允许冒充）。
+    Unanchored,
+}
+
+pub(crate) fn friend_anchor_binding_decision(
+    friend: Option<&(Option<String>, Option<String>)>,
+    env_x25519: &str,
+) -> FriendAnchorBinding {
+    let Some((bound_x25519, bound_ed25519)) = friend else {
+        return FriendAnchorBinding::NotApplicable;
+    };
+    if bound_ed25519.is_some() {
+        return FriendAnchorBinding::NotApplicable;
+    }
+    match bound_x25519.as_deref() {
+        Some(bound) if bound == env_x25519 => FriendAnchorBinding::BindToExistingX25519,
+        Some(_) => FriendAnchorBinding::X25519Mismatch,
+        None => FriendAnchorBinding::Unanchored,
+    }
+}
+
 async fn handle_gossip(state: &Arc<AppState>, peer_id: &str, env: GossipEnvelope) {
     // Gossip 可经第三方转发，不能仅凭信封内自报的 Ed25519 公钥建立身份。
     // 公钥必须先由 Discovery/Hello 绑定到同一个 device_id；若已知 X25519
@@ -249,7 +311,14 @@ async fn handle_gossip(state: &Arc<AppState>, peer_id: &str, env: GossipEnvelope
         // 未验签 ⇒ `None` ⇒ 走下面的 friends 表锚点（持久），跨跳好友不受影响。
         verified_peer_anchor(peers.get(&env.sender_id))
     };
-    let sender_trusted = {
+    // friends 表那份**持久化**锚点：一次读取供下面两处共用（信任门 + Case B 补锚）。
+    // 读失败折成 `None`（`get_friend_pubkeys` 的既有口径）⇒ 落进"不认识"分支，
+    // 而那个分支对 Chat 一律拒绝 —— 失败关闭，不会因为一次读抖动放行任何人。
+    let friend_keys = {
+        let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
+        db::get_friend_pubkeys(&dbc, &env.sender_id)
+    };
+    let mut sender_trusted = {
         if env.sender_id == state.device_id {
             false
         } else {
@@ -269,20 +338,125 @@ async fn handle_gossip(state: &Arc<AppState>, peer_id: &str, env: GossipEnvelope
                 // friends 表才是持久化的身份锚：已在册的 id 一律按绑定的 ed25519 判，
                 // 不给 Presence/FriendRequest/FriendAccept 留 TOFU 后门
                 //（2026-09-19 审计 P0#3：此前攻击者可用自签信封冒充重启后缺席的好友）。
-                None => {
-                    let stored = {
-                        let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
-                        db::get_friend_ed25519(&dbc, &env.sender_id)
-                    };
-                    gossip_trust_for_unpeer_sender(
-                        &env.kind,
-                        stored.as_deref(),
-                        &env.sender_ed25519,
-                    )
-                }
+                None => gossip_trust_for_unpeer_sender(
+                    &env.kind,
+                    friend_keys.as_ref().and_then(|(_, e)| e.as_deref()),
+                    &env.sender_ed25519,
+                ),
             }
         }
     };
+    // 验签结果缓存：Case B 需要在信任门之前验一次，第 1 步不必再付一次同样的成本。
+    let mut envelope_verified: Option<bool> = None;
+    if !sender_trusted {
+        // ---------------- Block 1 / Case B：历史 NULL 好友补锚 ----------------
+        //
+        // 典型现场（RC-1）：跨跳好友的 `friends.ed25519_pubkey` 永远是 NULL ——
+        // 只有验签通过的直连 Hello 才会写它，而纯中继的好友从来没有 Hello。
+        // 于是这个人在信任门这里被判"未验签的陌生人"，Chat/ChatAck 全被静默丢掉，
+        // 双向都断，120s 后变成 `OUTBOX_EXPIRED`。
+        //
+        // 允许从**验签通过的 Gossip 信封**补这一格，但四条同时满足：
+        //   ① 该行存在且 ed25519 为 NULL（fill-only，绝不覆盖已有值）；
+        //   ② 该行已有 x25519 时，信封自报值必须与它相等（唯一可用的既有锚点）；
+        //   ③ 两把钥匙都 NULL ⇒ 拒绝（没有任何可比对的锚点，纯 TOFU 等于允许冒充）；
+        //   ④ 绑定成功必须**可见**：会话系统提示 + `code=FRIEND_ANCHOR_BOUND`。
+        //
+        // 安全理由：验签只证明「持有该 ed25519 私钥」，不证明「这就是 sender_id 那个人」。
+        // 所以必须有既有锚点（x25519）做绑定点 —— 这也是为什么两把都 NULL 时必须拒绝。
+        let decision = friend_anchor_binding_decision(
+            friend_keys.as_ref(),
+            &env.sender_pubkey,
+        );
+        match decision {
+            FriendAnchorBinding::BindToExistingX25519 => {
+                // 只在**该绑**的时候付一次验签成本：陌生人 / 已锚定的好友都走不到这里。
+                let verified = {
+                    let gossip = state.gossip.lock().unwrap_or_else(|e| e.into_inner());
+                    gossip.verify_envelope(&env)
+                };
+                envelope_verified = Some(verified);
+                if verified {
+                    {
+                        // 只填空位（`update_friend_pubkeys` 的 COALESCE），
+                        // 与下面第 2 步"只写 x25519"那处调用刻意分开 —— 两处语义不同。
+                        let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
+                        if let Err(e) = db::update_friend_pubkeys(
+                            &dbc,
+                            &env.sender_id,
+                            None,
+                            Some(&env.sender_ed25519),
+                        ) {
+                            crate::logging::log_write_failure(
+                                &state.logger,
+                                "update_friend_pubkeys",
+                                e,
+                            );
+                        }
+                    }
+                    state.logger.info(
+                        "friend",
+                        format!(
+                            "code=FRIEND_ANCHOR_BOUND source=gossip peer={} kind={:?} \
+                             —— 该好友的身份锚点此前为 NULL，已按既有 x25519 锚点补绑",
+                            env.sender_id, env.kind
+                        ),
+                    );
+                    // ③ 必须可见：会话里留一条系统提示（安全码随之从"未验证"变为可查看）。
+                    crate::commands::insert_system_message(
+                        state,
+                        &env.sender_id,
+                        "已确认对方身份密钥（此前未验证）",
+                    );
+                    let _ = state.app.emit("friend-anchor-bound", &env.sender_id);
+                    sender_trusted = true;
+                } else {
+                    state.logger.warn(
+                        "friend",
+                        format!(
+                            "code=FRIEND_ANCHOR_SIGNATURE_INVALID source=gossip peer={} kind={:?} \
+                             —— 补锚用的信封验签失败，拒绝绑定",
+                            env.sender_id, env.kind
+                        ),
+                    );
+                }
+            }
+            FriendAnchorBinding::X25519Mismatch => {
+                state.logger.warn(
+                    "friend",
+                    format!(
+                        "code=FRIEND_ANCHOR_X25519_MISMATCH source=gossip peer={} kind={:?} \
+                         —— 信封自报 x25519 与已绑定值不一致，拒绝补锚",
+                        env.sender_id, env.kind
+                    ),
+                );
+            }
+            FriendAnchorBinding::Unanchored => {
+                // ④ 两把钥匙都 NULL：拒绝绑定，但**不许静默丢弃** ——
+                // 这条消息的处理结果记为「未送达（身份未验证）」，并在会话里如实提示。
+                if crate::logging::log_throttled("friend_anchor_unanchored_log", 60_000) {
+                    state.logger.warn(
+                        "friend",
+                        format!(
+                            "code=FRIEND_ANCHOR_UNANCHORED peer={} kind={:?} \
+                             —— 该好友两把公钥都为空，无任何既有锚点可比对，拒绝绑定\
+                             （消息记为未送达：身份未验证）",
+                            env.sender_id, env.kind
+                        ),
+                    );
+                }
+                if crate::logging::log_throttled("friend_anchor_unanchored_notice", 300_000) {
+                    crate::commands::insert_system_message(
+                        state,
+                        &env.sender_id,
+                        "有一条消息未送达（对方身份未验证）：对方的身份密钥还没有任何可比对的锚点。让对方重新添加你一次，或等双方成功直连一次后再发。",
+                    );
+                    let _ = state.app.emit("message-undelivered", &env.sender_id);
+                }
+            }
+            FriendAnchorBinding::NotApplicable => {}
+        }
+    }
     if !sender_trusted {
         return;
     }
@@ -304,7 +478,13 @@ async fn handle_gossip(state: &Arc<AppState>, peer_id: &str, env: GossipEnvelope
     // 块返回值 = 本机可继续转发的 TTL（None = 不再转发），供第 4 步使用。
     let mesh_forward_ttl = {
         let gossip = state.gossip.lock().unwrap_or_else(|e| e.into_inner());
-        if !gossip.verify_envelope(&env) {
+        // Case B 已经为补锚验过一次（那一次是**绑定判据**的一部分），这里直接复用：
+        // 同一封信封、同一把钥匙，再验一遍只是白付一次 Ed25519 成本。
+        let verified = match envelope_verified {
+            Some(v) => v,
+            None => gossip.verify_envelope(&env),
+        };
+        if !verified {
             return;
         }
         drop(gossip);
@@ -750,10 +930,68 @@ async fn handle_gossip(state: &Arc<AppState>, peer_id: &str, env: GossipEnvelope
             // 定向好友同意：只有 target == 本机才处理（即「我发的申请被对方同意」）。
             if env.target.as_deref() == Some(state.device_id.as_str()) {
                 let from = env.sender_id.clone();
+                // Block 1 / Case A：这封同意能不能**当身份锚点的证明**，判据在
+                // `accept_proves_friend_anchor`（纯函数，真值表有单测）。
+                //
+                // 绑定点是**本机发起的那次申请**：`request_id` 躺在申请信封的加密载荷里，
+                // 只有被申请的那台机器解得开 ⇒ 回显它证明「收到并解密了我那条申请」。
+                // 验签只证明「持有该 ed25519 私钥」，不证明「这就是 sender_id 那个人」——
+                // 没有这条关联就退回 Case B（验签 + 既有 x25519 锚点），绝不直接绑身份。
+                let echoed_request_id = plaintext
+                    .as_ref()
+                    .and_then(|pt| serde_json::from_slice::<serde_json::Value>(pt).ok())
+                    .and_then(|v| v.get("request_id").and_then(|r| r.as_i64()))
+                    .unwrap_or(0);
+                let pending_request_id = state
+                    .pending_out_requests
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .get(&from)
+                    .map(|(id, _)| *id);
+                let bound_x25519 = {
+                    let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
+                    db::get_friend_x25519(&dbc, &from)
+                };
+                let proof = if accept_proves_friend_anchor(
+                    echoed_request_id,
+                    pending_request_id,
+                    bound_x25519.as_deref(),
+                    &env.sender_pubkey,
+                ) {
+                    Some(FriendKeySnapshot::proven_by_matched_request(
+                        env.sender_ed25519.clone(),
+                        env.sender_pubkey.clone(),
+                    ))
+                } else {
+                    // 只留痕、不改行为：拒绝绑定时**照样**走既有的
+                    // `apply_friend_accept`（好友关系仍是它那套 SEC-01 判据说了算）。
+                    if pending_request_id.is_some() {
+                        let why = if echoed_request_id == 0 {
+                            "NO_REQUEST_ID"
+                        } else if bound_x25519
+                            .as_deref()
+                            .is_some_and(|k| k != env.sender_pubkey)
+                        {
+                            "X25519_MISMATCH"
+                        } else {
+                            "REQUEST_ID_MISMATCH"
+                        };
+                        state.logger.warn(
+                            "friend",
+                            format!(
+                                "code=FRIEND_ANCHOR_UNPROVEN source=friend_accept peer={} why={why} \
+                                 echoed={echoed_request_id} pending={pending_request_id:?} —— \
+                                 本封同意不用于绑定身份锚点（仍按既有判据决定好友关系）",
+                                from
+                            ),
+                        );
+                    }
+                    None
+                };
                 // 与直连同一家（`apply_friend_accept`，就在本模块里 —— 这个文件是被
                 // `include!` 进 transport.rs 的）。"重复投递不许刷屏"这条判据原先**只有这一份有**
                 // ⇒ 直连链路上"被『好友申请已通过』反复刷屏"照旧存在（2026-09-28 复审抓到）。
-                apply_friend_accept(state, &from, "收到跨跳好友同意");
+                apply_friend_accept(state, &from, "收到跨跳好友同意", proof);
             }
         }
         GossipKind::FriendRequestWithdraw => {

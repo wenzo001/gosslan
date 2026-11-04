@@ -190,6 +190,27 @@ impl FriendKeySnapshot {
             },
         }
     }
+
+    /// **Case A 的证明快照**：来自一封「验签通过的 Gossip FriendAccept」，
+    /// 且它的 `request_id` 与本机 `pending_out_requests` 里那条申请对得上。
+    ///
+    /// 为什么它和 `capture` 不是一回事：`capture` 读的是 `peers` 表（可能被未签名
+    /// announce 写过，所以 `verified` 决定 ed25519 能不能绑）；而这里的两个值是
+    /// **信封自报值**，它们的可信度来自两件事，缺一不可：
+    /// 1. Ed25519 签名验证通过（`handle_gossip` 第 1 步已经做过，调用方复用那次结果）；
+    /// 2. `request_id` 回显 —— 那个 id 躺在申请信封的**加密载荷**里，只有被申请的
+    ///    那台机器解得开 ⇒ 回显它证明「收到并解密了我那条申请」。
+    ///
+    /// ⚠️ 安全边界（必须写进提交说明）：验签只证明「持有这把 ed25519 私钥」，
+    /// 不证明「这就是 sender_id 那个人」。所以 Case A 的绑定点是**本机发起申请这条
+    /// 本地记录**（id 对得上），不是信封自报本身 —— 少了第 2 条就退回 Case B。
+    pub(crate) fn proven_by_matched_request(ed25519: String, x25519: String) -> Self {
+        Self {
+            x25519: Some(x25519),
+            ed25519: Some(ed25519),
+            verified: true,
+        }
+    }
 }
 
 /// 这一刻允许绑哪些钥匙（纯函数 —— 把"两列两套规矩"这条判据单独钉住，不必造 AppState）。
@@ -343,10 +364,17 @@ pub(crate) fn friend_accept_is_expected(was_friend: bool, has_pending_out: bool)
     was_friend || has_pending_out
 }
 
-pub(crate) fn apply_friend_accept(state: &Arc<AppState>, from: &str, trace: &str) {
+pub(crate) fn apply_friend_accept(
+    state: &Arc<AppState>,
+    from: &str,
+    trace: &str,
+    // Block 1 / Case A：一封「验签通过 + request_id 与本机申请对得上」的跨跳同意
+    // 带来的证明快照。直连路径传 `None`（那边由 Hello 的 `keys_verified` 负责）。
+    proof: Option<FriendKeySnapshot>,
+) {
     let name = resolve_nickname(state, from);
     // 公钥快照在 db 锁**之外**取好：db 锁内再求 peers 会与 gossip 的 peers→db 构成 ABBA。
-    let key_snapshot = FriendKeySnapshot::capture(state, from);
+    let key_snapshot = proof.unwrap_or_else(|| FriendKeySnapshot::capture(state, from));
     // ① 先判「这是不是我们要的那条同意」——必须在任何写库之前（判据是纯函数，见上）。
     let was_friend = {
         let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
@@ -774,7 +802,7 @@ pub(crate) fn apply_friend_request_withdraw_ack(
     if already_friends {
         // 同意赢：这条申请本来就是"我方发出、等对方处理"，`apply_friend_accept` 接受它；
         // 它会一并清掉撤回队列与出站行。
-        apply_friend_accept(state, from, "收到撤回回执：对端已是好友（同意赢）");
+        apply_friend_accept(state, from, "收到撤回回执：对端已是好友（同意赢）", None);
         return;
     }
     state
@@ -1146,19 +1174,27 @@ pub async fn flush_pending_friend_accept(state: &Arc<AppState>, peer_id: &str) {
             entry.2 = now;
         }
     }
-    {
+    // 回显的申请 id（Block 1 / Case A）：补发的那一帧必须和第一帧**同口径**，
+    // 否则首帧能绑身份、补发却被判"无法关联"，两边结论不一致。id 只落在这里一行，
+    // 丢了（DB 写失败）就是 0 ⇒ 接收侧退回 Case B，不会因此放行身份绑定。
+    let request_id = {
         let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
-        if let Ok(Some(mut row)) = db::list_pending_out_accepts(&dbc)
+        match db::list_pending_out_accepts(&dbc)
             .map(|rows| rows.into_iter().find(|r| r.peer == peer_id))
         {
-            row.attempts = attempt;
-            row.last_at = now;
-            if let Err(e) = db::put_pending_out_accept(&dbc, &row) {
-                crate::logging::log_write_failure(&state.logger, "put_pending_out_accept", e);
+            Ok(Some(mut row)) => {
+                row.attempts = attempt;
+                row.last_at = now;
+                let rid = row.request_id;
+                if let Err(e) = db::put_pending_out_accept(&dbc, &row) {
+                    crate::logging::log_write_failure(&state.logger, "put_pending_out_accept", e);
+                }
+                rid
             }
+            _ => 0,
         }
-    }
-    match crate::commands::send_friend_accept_via_link(state, peer_id).await {
+    };
+    match crate::commands::send_friend_accept_via_link(state, peer_id, request_id).await {
         Ok(()) => state.logger.info(
             "friend",
             format!("[FRIEND] 补发好友同意回执 peer={peer_id}（第 {attempt} 次）"),
