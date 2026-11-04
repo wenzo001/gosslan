@@ -1235,7 +1235,13 @@ pub struct AppState {
     /// 由前端在 `visibilitychange` / `focus` / `blur` 时调 `set_app_active` 更新，
     /// 蓝牙扫描循环据此选快/慢节奏（见 `network::ble::SCAN_INTERVAL_*`）：
     /// 前台（用户在用/PC 窗口聚焦）= 提高刷新率；后台/失焦 = 降频；进程退出/被杀 = 天然停止。
+    /// 注意：这个值只在**稳定 ≥2s** 后才真正翻转（抖动由 `focus_rhythm` 吸收）。
     pub app_active: AtomicBool,
+    /// 前台/失焦信号的防抖状态（见 `focus_rhythm`）。
+    ///
+    /// 为什么不直接 `swap`：窗口焦点/可见性事件会抖动，逐个翻转就会把扫描节奏带着跑
+    /// （用户 2026-11-04 Win11 日志：12 秒内 6 次来回，扫描被强制唤醒 6 次）。
+    pub focus_rhythm: Mutex<crate::focus_rhythm::FocusRhythm>,
     /// 唤醒 BLE 扫描循环**立刻扫一轮**：从后台切回前台、或用户打开「添加好友」时，
     /// 不必再等一个（后台节奏下最长 30s 的）慢周期。
     #[cfg(feature = "bluetooth")]
@@ -2525,6 +2531,7 @@ impl AppState {
             probe: Mutex::new(None),
             diag: Mutex::new(DiscoveryDiag::default()),
             app_active: AtomicBool::new(true),
+            focus_rhythm: Mutex::new(crate::focus_rhythm::FocusRhythm::new(true)),
             #[cfg(feature = "bluetooth")]
             ble_wake: Arc::new(Notify::new()),
             #[cfg(feature = "bluetooth")]

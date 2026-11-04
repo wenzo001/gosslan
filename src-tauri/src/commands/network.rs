@@ -127,41 +127,67 @@ pub async fn search_nearby_peers(state: State<'_, Arc<AppState>>) -> Result<Vec<
 ///   · 后台 / 失焦 ⇒ 30s 一轮（省电；好友申请仍能最终到达）；
 ///   · 进程退出 / 被系统杀死 ⇒ 扫描任务随进程消失，无需额外代码。
 ///
-/// 从后台变回前台时额外 **wake** 一次扫描，立刻补一轮，而不是等完当前慢周期。
+/// 信号先过 `focus_rhythm` 防抖（2026-11-04 用户 Win11 日志：焦点抖动 12 秒内把节奏
+/// 来回切了 6 次、强制扫描 6 次）。只有**稳定 ≥2s** 的目标才落地；同向重复事件幂等丢弃；
+/// 唤醒扫描还有一个不小于前台周期的最小间隔。抖动期间不落盘、不切节奏。
 #[tauri::command(async)]
 pub async fn set_app_active(state: State<'_, Arc<AppState>>, active: bool) -> Result<(), String> {
     use std::sync::atomic::Ordering;
     let s = state.inner().clone();
-    // 只在状态**真的翻转**时做事。注意不能写成「相同就提前 return」：无 bluetooth
-    // 特性时下面的块整体被 cfg 掉，return 会成为函数末语句，新 clippy（1.98）在
-    // 非 bluetooth 构建下以 needless_return 挂门禁。把工作放进「翻转」分支，两种
-    // 特性配置都干净，行为一字不变。
-    if s.app_active.swap(active, Ordering::Relaxed) != active {
-        // 这条**每次窗口聚焦都会打一次**（最热的一批命令之一）：唤醒扫描 + 那条留痕日志
-        // （日志落盘是同步 append，见 `logging.rs` 的 `append_file`）搬进阻塞池（审计 R-18）。
-        // 原子交换本身留在 await 侧 —— 它是判据，也不能被排到池子后面去。
-        tokio::task::spawn_blocking(move || -> Result<(), String> {
-            #[cfg(feature = "bluetooth")]
-            {
-                crate::network::ble::wake_scan(&s);
-                s.logger.info(
+    let scheduled = {
+        // 守卫必须在这里出作用域：async 命令的 future 要 Send。
+        let mut rhythm = s.focus_rhythm.lock().unwrap_or_else(|e| e.into_inner());
+        rhythm.signal(active, crate::logging::now_ms()) == crate::focus_rhythm::Signal::Scheduled
+    };
+    if !scheduled {
+        return Ok(());
+    }
+    // 稳定期后再看一眼：期间再翻转只会改写/取消 pending，只有最后落定的目标会生效。
+    // 多个定时器同时醒来是安全的 —— `tick` 对已被消费的 pending 返回 `None`。
+    let st = s.clone();
+    tokio::spawn(async move {
+        tokio::time::sleep(Duration::from_millis(
+            crate::focus_rhythm::FOCUS_DEBOUNCE_MS as u64,
+        ))
+        .await;
+        #[cfg(feature = "bluetooth")]
+        let active_interval_ms = network::ble::scan_interval_ms(true) as i64;
+        #[cfg(not(feature = "bluetooth"))]
+        let active_interval_ms = 5_000;
+        let switch = {
+            let mut rhythm = st.focus_rhythm.lock().unwrap_or_else(|e| e.into_inner());
+            rhythm.tick(crate::logging::now_ms(), active_interval_ms)
+        };
+        let Some(switch) = switch else { return };
+        // 日志落盘是同步 append（见 `logging.rs` 的 `append_file`）⇒ 搬进阻塞池（审计 R-18）。
+        tokio::task::spawn_blocking(move || {
+            st.app_active.store(switch.active, Ordering::Relaxed);
+            if switch.wake {
+                // 断链重拨 / 从后台切回前台：立刻补一轮（最小间隔已由 `tick` 把关）。
+                #[cfg(feature = "bluetooth")]
+                network::ble::wake_scan(&st);
+            }
+            if switch.log {
+                #[cfg(feature = "bluetooth")]
+                let period = network::ble::scan_interval_ms(switch.active) / 1000;
+                #[cfg(not(feature = "bluetooth"))]
+                let period = if switch.active { 5 } else { 30 };
+                st.logger.info(
                     "ble",
                     format!(
-                        "[SCAN] 应用{} ⇒ 扫描节奏切换为 {}",
-                        if active {
+                        "[SCAN] 应用{} ⇒ 扫描节奏切换为 {period}s",
+                        if switch.active {
                             "回到前台/聚焦"
                         } else {
                             "进入后台/失焦"
-                        },
-                        if active { "5s" } else { "30s" }
+                        }
                     ),
                 );
             }
-            Ok(())
         })
         .await
-        .map_err(|e| format!("前台状态切换被线程池中断: {e}"))??;
-    }
+        .ok();
+    });
     Ok(())
 }
 

@@ -32,6 +32,8 @@ pub mod error_codes;
 /// 聊天记录导出（纯文字单文件）：磁盘满 / 换机时的自救手段。
 pub mod export;
 mod file_relay;
+/// 前台/失焦节奏的防抖状态机（见该文件注释：抖动不许驱动扫描节奏）。
+mod focus_rhythm;
 mod gossip_engine;
 /// JNI 方法登记宏（Android 的两条桥共用，见该文件注释）。
 #[cfg(target_os = "android")]
