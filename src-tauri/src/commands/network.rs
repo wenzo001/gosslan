@@ -160,7 +160,10 @@ pub async fn set_app_active(state: State<'_, Arc<AppState>>, active: bool) -> Re
         };
         let Some(switch) = switch else { return };
         // 日志落盘是同步 append（见 `logging.rs` 的 `append_file`）⇒ 搬进阻塞池（审计 R-18）。
-        tokio::task::spawn_blocking(move || {
+        // `spawn_blocking` 失败（任务被取消/线程池关闭）必须留痕：`.ok()` 会把"节奏没切"
+        // 变成无声事实，而这正是静默丢弃棘轮硬零的形状（B4-F1）。
+        let probe = st.clone();
+        let handle = tokio::task::spawn_blocking(move || {
             st.app_active.store(switch.active, Ordering::Relaxed);
             if switch.wake {
                 // 断链重拨 / 从后台切回前台：立刻补一轮（最小间隔已由 `tick` 把关）。
@@ -184,9 +187,13 @@ pub async fn set_app_active(state: State<'_, Arc<AppState>>, active: bool) -> Re
                     ),
                 );
             }
-        })
-        .await
-        .ok();
+        });
+        if let Err(e) = handle.await {
+            probe.logger.warn(
+                "ble",
+                format!("code=FOCUS_RHYTHM_TASK_FAILED err={e} —— 扫描节奏未必已切换"),
+            );
+        }
     });
     Ok(())
 }
