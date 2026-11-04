@@ -851,8 +851,10 @@ test("群任务订阅：切群竞态必须让旧监听作废并摘除（接线�
   const st = stripComments(readChatStoreSrc(join(ROOT, "stores", "useChatStore.ts")));
   const start = st.indexOf("async function watchGroupTodos(");
   assert.ok(start >= 0, "找不到 watchGroupTodos：改名要同步这条守卫");
-  const end = st.indexOf("async function send(", start);
-  assert.ok(end > start, "找不到 watchGroupTodos 的结束锚点（下一个函数 send）");
+  // 结束锚点用"下一个顶层函数"而不是具体的函数名：拆分后 send() 可能已经搬去别的模块，
+  // 按名字找会把切片拉到另一个模块去（切片越大，越容易把别的函数的 `return () => {` 当成清理）。
+  const end = st.indexOf("\n  async function ", start + 1);
+  assert.ok(end > start, "找不到 watchGroupTodos 的结束锚点（下一个顶层函数）");
   const body = st.slice(start, end);
 
   assert.ok(
