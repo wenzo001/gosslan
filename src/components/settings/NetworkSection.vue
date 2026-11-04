@@ -13,6 +13,7 @@ import { useImeEnterGuard } from "@/composables/useImeEnterGuard";
 import { isAndroid } from "@/utils/platform";
 import { bleUnavailableReason } from "@/utils/bleAvailability";
 import { t } from "@/i18n";
+import { errorText, detailText } from "@/composables/useErrorText";
 import type {RelayConfig, RelayPolicy, RelayProbe, RoutedEndpoint} from "@/types";
 
 const props = defineProps<{ active: boolean; reloadToken?: number }>();
@@ -176,10 +177,7 @@ async function rebindEvents() {
       chat.eventBridgeOk ? "success" : "error",
     );
   } catch (e) {
-    app.toast(
-      `${t("chat.eventBindFail")}${t("common.sep.colon")}${e instanceof Error ? e.message : String(e)}`,
-      "error",
-    );
+    app.toast(errorText(e, t("chat.eventBindFail"), { log: true }), "error");
   } finally {
     rebinding.value = false;
   }
@@ -320,7 +318,7 @@ async function loadRelayConfig() {
   } catch (e) {
     // 读不到就留空值 + 明确提示：设置页**不许**因为一个 IPC 失败而白屏或静默骗人
     // （空表单会被读成"还没配"，所以必须说一声它其实是被后端挡了）。
-    relayLoadError.value = e instanceof Error ? e.message : String(e);
+    relayLoadError.value = detailText(e, { log: true });
     app.toastError(e, t("settings.network.relayServer.toast.loadFailed"));
   }
 }

@@ -85,6 +85,7 @@ import {
 } from "@/utils/todos";
 import { invalidateFilePreview, dropFilePreview, clearFilePreviews } from "@/utils/filePreview";
 import { t } from "@/i18n";
+import { detailText } from "@/composables/useErrorText";
 import { mergePeerList } from "@/utils/peerMerge";
 import { markFriendsOnlineFrom } from "@/utils/friendOnline";
 import {
@@ -286,7 +287,9 @@ export const useChatStore = defineStore("chat", () => {
   const messageOpsError = ref<string | null>(null);
   /** 群任务徽标 / 群已读名单（按群）同一类"读不到"的登记。 */
   const groupReadsErrors = ref<Record<string, string>>({});
-  const asReadError = (e: unknown) => (e instanceof Error ? e.message : String(e));
+  // 这些错误串最终都上屏（会话/任务/好友/已读的「加载失败」块或顶部重试条）⇒ 一律只给
+  // 分类后的说明，原始异常（IO / HRESULT / 英文库错误）进 console。
+  const asReadError = (e: unknown) => detailText(e, { log: true });
   /**
    * 更新下载的可查询状态（B5）。后端是全局 managed state，跨窗口共用；
    * 事件 `updater-status` 是唯一推送口径，首帧由 `refreshUpdaterStatus()` 补拉。
@@ -1168,7 +1171,7 @@ export const useChatStore = defineStore("chat", () => {
     } catch (e) {
       if (!refreshGuard.isCurrent("friends", tok)) return;
       // 失败**不清空**上一次读到的名单：把"读不到"画成"没有了"就是假陈述。
-      friendsError.value = e instanceof Error ? e.message : String(e);
+      friendsError.value = detailText(e, { log: true });
       void app.toastError(e, t("conv.contactsLoadFailed"));
     }
   }
@@ -1420,7 +1423,7 @@ export const useChatStore = defineStore("chat", () => {
         if (!refreshGuard.isCurrent(`todoRows:${convId}`, tok)) return;
         groupTodoRowsErrors.value = {
           ...groupTodoRowsErrors.value,
-          [convId]: e instanceof Error ? e.message : String(e),
+          [convId]: detailText(e, { log: true }),
         };
       }
     });
@@ -1451,7 +1454,7 @@ export const useChatStore = defineStore("chat", () => {
       if (!isTodoRowsLoaded(groupTodoRows.value, convId)) {
         groupTodoRowsErrors.value = {
           ...groupTodoRowsErrors.value,
-          [convId]: e instanceof Error ? e.message : String(e),
+          [convId]: detailText(e, { log: true }),
         };
       }
       return;
@@ -1991,7 +1994,7 @@ export const useChatStore = defineStore("chat", () => {
       // 读库失败也要把该会话标记为「已加载」：留 undefined 会让 ChatWindow 的加载骨架
       // 永远停在那里（UI 先行就得保证"必有终态"）。给空列表 = 回到"暂无消息"的正常态。
       if (messages.value[convId] === undefined) messages.value[convId] = [];
-      messageLoadErrors.value[convId] = e instanceof Error ? e.message : String(e);
+      messageLoadErrors.value[convId] = detailText(e, { log: true });
       return;
     }
     if (seq !== (loadSeqs.get(convId) ?? 0) || activeConv.value !== convId) return;
@@ -2093,7 +2096,7 @@ export const useChatStore = defineStore("chat", () => {
       if (seq === (loadSeqs.get(convId) ?? 0)) {
         historyLoadErrors.value = {
           ...historyLoadErrors.value,
-          [convId]: e instanceof Error ? e.message : String(e),
+          [convId]: detailText(e, { log: true }),
         };
       }
       throw e;

@@ -27,6 +27,7 @@ import {
   type PreviewGalleryView,
 } from "@/utils/previewGalleryState";
 import { t } from "@/i18n";
+import { detailText } from "@/composables/useErrorText";
 import { createInitScope } from "@/utils/initScope";
 
 const view = ref<PreviewGalleryView>({ ...INITIAL_PREVIEW_VIEW });
@@ -77,7 +78,7 @@ async function pull() {
     if (disposed || gen !== generation) return;
     view.value = reducePreviewGallery(view.value, {
       kind: "failed",
-      message: err instanceof Error ? err.message : String(err),
+      message: detailText(err, { log: true }),
     });
   }
 }

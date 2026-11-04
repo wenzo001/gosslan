@@ -12,6 +12,7 @@
  */
 import { onErrorCaptured, ref } from "vue";
 import { t } from "@/i18n";
+import { detailText } from "@/composables/useErrorText";
 import StateBlock from "@/components/ui/StateBlock.vue";
 
 const message = ref("");
@@ -19,7 +20,8 @@ const message = ref("");
 const gen = ref(0);
 
 onErrorCaptured((e) => {
-  message.value = e instanceof Error ? e.message : String(e);
+  // 原始异常只进 console：渲染期抛的多是库错误 / HRESULT 原文，直接上屏等于把转储丢给用户。
+  message.value = detailText(e, { log: true });
   // 关键：返回 false 让人停在这里。否则全局 errorHandler 仍会收到，且 Vue 会卸载子树。
   return false;
 });
