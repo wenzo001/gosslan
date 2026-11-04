@@ -26,3 +26,82 @@ fn direct_cancel_verdict(status: Option<&str>) -> DirectCancelVerdict {
         Some(_) => DirectCancelVerdict::Allowed,
     }
 }
+
+// ---------------- 群消息的取消（每成员台账） ----------------
+
+/// 群台账里与「还能不能取消」有关的四类行数。
+///
+/// 群消息的取消判据不是 `messages.status` —— 任一成员 Ack 都会把它推成 `delivered`，
+/// 而其余成员的 pending 行还在（2026-10-25 实报的死按钮）。判据是**台账行**。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct GroupCancelCounts {
+    pending: i64,
+    delivered: i64,
+    cancelled: i64,
+    failed: i64,
+}
+
+/// 群取消的结论：`Cancel` 之外的几格都是「现在不该真的动数据」。
+#[derive(Debug, PartialEq, Eq)]
+enum GroupCancelVerdict {
+    /// 查无此消息，且台账也没有可解释的行。
+    NotFound,
+    /// `read` / `recalled`：已读或已撤回，取消不成立。
+    Rejected,
+    AlreadyCancelled,
+    AlreadyDelivered { remaining: i64 },
+    AlreadyFailed,
+    /// 还有 pending 行 ⇒ 取消剩余成员；`next_status` 由「已收下的成员」决定。
+    Cancel { next_status: &'static str },
+}
+
+fn group_cancel_verdict(status: &str, counts: GroupCancelCounts) -> GroupCancelVerdict {
+    if matches!(status, "read" | "recalled") {
+        return GroupCancelVerdict::Rejected;
+    }
+    if counts.pending > 0 {
+        return GroupCancelVerdict::Cancel {
+            next_status: if counts.delivered > 0 {
+                "partial_cancelled"
+            } else {
+                "cancelled"
+            },
+        };
+    }
+    // 全部送达后墓碑会被即时清理 ⇒ 台账可能是空的，此时只能靠消息状态兜底，
+    // 否则一条「已送达」的消息会答成 not_found，界面只能猜。
+    if counts.cancelled > 0 || matches!(status, "cancelled" | "partial_cancelled") {
+        return GroupCancelVerdict::AlreadyCancelled;
+    }
+    if counts.delivered > 0 || matches!(status, "delivered" | "read") {
+        return GroupCancelVerdict::AlreadyDelivered {
+            remaining: counts.failed,
+        };
+    }
+    if counts.failed > 0 || status == "failed" {
+        return GroupCancelVerdict::AlreadyFailed;
+    }
+    GroupCancelVerdict::NotFound
+}
+
+/// 读出口只需要「这一刻按下取消会不会真的发生」。
+///
+/// `delivered` / `cancelled` / `failed` 三格在 `pending > 0` 时**不影响结论类型**
+/// （只影响 `next_status` 的标签），所以任务中心那侧传 0 是安全的：它由
+/// `HAVING waiting > 0` 保证只看得到 pending 行还在的消息。
+fn group_cancel_is_offered(status: Option<&str>, pending: i64) -> bool {
+    status.is_some_and(|s| {
+        matches!(
+            group_cancel_verdict(
+                s,
+                GroupCancelCounts {
+                    pending,
+                    delivered: 0,
+                    cancelled: 0,
+                    failed: 0,
+                }
+            ),
+            GroupCancelVerdict::Cancel { .. }
+        )
+    })
+}

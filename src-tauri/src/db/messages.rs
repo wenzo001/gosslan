@@ -453,8 +453,9 @@ pub fn list_pending_message_operations(
             created_at,
             preview,
             peer_offline: false,
-            // 有 pending 行且消息行存在 ⇒ 后端可以取消剩余成员。
-            can_cancel: status.is_some(),
+            // 有 pending 行且消息行存在 ⇒ 后端可以取消剩余成员（判据本体在
+            // `message_lifecycle::group_cancel_is_offered`，不要在这一侧再写一遍）。
+            can_cancel: group_cancel_is_offered(status.as_deref(), waiting_for),
             some_delivered: delivered > 0,
             failed: false,
             fail_code: None,

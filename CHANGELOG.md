@@ -14,6 +14,15 @@
 
 ## [Unreleased]
 
+## [5.17.24] - 2026-11-04
+
+### 内部重构（无用户可感知变化）
+
+- 2B 第二笔：群消息取消判据（「台账里还有没有 pending 行」，不是 `messages.status`）
+  收进 `db/message_lifecycle.rs` 的 `group_cancel_verdict`；写入口
+  `cancel_queued_group_message` 与任务中心群行的 `can_cancel` 共用同一份。
+  「已有一个成员 Ack、其余仍在排队」仍可取消，行为不变。
+
 ## [5.17.23] - 2026-11-04
 
 ### 内部重构（无用户可感知变化）
