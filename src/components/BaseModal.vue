@@ -196,7 +196,7 @@ function onOpenChange(value: boolean) {
           </div>
           <div
             v-else
-            class="elevated pointer-events-auto my-auto flex max-h-[calc(100vh-var(--gosslan-safe-top)-2rem)] w-full flex-col rounded-[var(--gosslan-radius-xl)] bg-[var(--gosslan-panel)] p-5 text-left align-middle text-[var(--gosslan-text)]"
+            class="glass-3 pointer-events-auto my-auto flex max-h-[calc(100vh-var(--gosslan-safe-top)-2rem)] w-full flex-col rounded-[var(--gosslan-radius-xl)] p-5 text-left align-middle text-[var(--gosslan-text)]"
             :class="width"
             :style="app.isMobile && app.keyboardInset > 0
               ? { maxHeight: `calc(100vh - var(--gosslan-safe-top) - ${app.keyboardInset + 12}px - 2rem)` }

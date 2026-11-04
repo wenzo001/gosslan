@@ -940,6 +940,112 @@ export function checkStyleCascade(css: string): GuardIssue[] {
   return out.sort((a, b) => a.line - b.line);
 }
 
+// ---------------- ②b 玻璃三档：定义 + 三道降级 ----------------
+
+/** 从 `startIndex` 所在的选择器/at-rule 开始，按括号配平取出整块（含最外层花括号）。 */
+function blockAt(css: string, startIndex: number): string {
+  const open = css.indexOf("{", startIndex);
+  if (open < 0) return "";
+  let depth = 0;
+  for (let i = open; i < css.length; i++) {
+    if (css[i] === "{") depth += 1;
+    else if (css[i] === "}") {
+      depth -= 1;
+      if (depth === 0) return css.slice(open, i + 1);
+    }
+  }
+  return "";
+}
+
+/** 块内先抹掉注释（等长替换成空白，保行号）：注释里提到类名会让判据"因为注释而通过"。 */
+function stripComments(block: string): string {
+  return block.replace(/\/\*[\s\S]*?\*\//g, (c) => c.replace(/[^\n]/g, " "));
+}
+
+/**
+ * 玻璃三档必须有「定义 + 三道降级」，缺一条都算缺陷。
+ *
+ * 为什么值得机器盯（2026-11-05 用户要求"毛玻璃"，同族三个坑都已真实发生）：
+ *   ① 只加上色不加 `backdrop-filter`（或只写 `-webkit-` 前缀）⇒ 看起来像"糊了一层灰"，
+ *      而编译/测试全绿 —— 这正是用户原话「不要一个浅灰色」的成因；
+ *   ② 降级块只写 `.frost` 一个类名 ⇒ chrome / modal 两档在 `prefers-reduced-transparency`
+ *      下仍是半透明，低端机与高对比度模式下不可读；
+ *   ③ 降级块若排在定义**之前**会被静默覆盖（由 `checkStyleCascade` 盯着，这里只管覆盖完整性）。
+ *
+ * 判据形状：
+ *   · `.glass-1/2/3` 各有顶级定义，块内含 `background: var(--gosslan-glass-N-bg)`、
+ *     标准与 `-webkit-` 两份 `backdrop-filter`；
+ *   · `.frost` 是 glass-2 的历史别名（块内必须吃 `--gosslan-glass-2-bg`）；
+ *   · 降低透明度 / 提高对比度 / `@supports not (...)` 三块里，四个选择器都有实底回退。
+ * 反例自证：删掉任意一份 `backdrop-filter`、或从降级块里摘掉 `.glass-3`，本函数立即报红
+ * （见 `designGuards.test.ts` 的「移除玻璃就变红」三例）。
+ */
+export function checkGlassTiers(css: string): GuardIssue[] {
+  const out: GuardIssue[] = [];
+  const tiers = [
+    { name: "glass-1", token: "--gosslan-glass-1" },
+    { name: "glass-2", token: "--gosslan-glass-2" },
+    { name: "glass-3", token: "--gosslan-glass-3" },
+  ];
+  for (const t of tiers) {
+    const at = lastTopLevelDefIndex(css, `\\.${t.name}`);
+    if (at < 0) {
+      out.push({ line: 0, message: `style.css 缺少 .${t.name} 的顶级定义（玻璃三档的唯一出口）` });
+      continue;
+    }
+    const block = stripComments(blockAt(css, at));
+    if (!new RegExp(`background\\s*:\\s*var\\(${t.token}-bg\\)`).test(block)) {
+      out.push({ line: lineAt(css, at), message: `.${t.name} 没用 ${t.token}-bg 上色` });
+    }
+    if (!/backdrop-filter\s*:\s*var\(/.test(block)) {
+      out.push({
+        line: lineAt(css, at),
+        message: `.${t.name} 没有标准 \`backdrop-filter\` —— 只剩半透明底色，看起来是"糊了一层灰"而不是玻璃`,
+      });
+    }
+    if (!/-webkit-backdrop-filter\s*:\s*var\(/.test(block)) {
+      out.push({ line: lineAt(css, at), message: `.${t.name} 缺少 \`-webkit-backdrop-filter\`（WKWebView 只认前缀这份）` });
+    }
+  }
+
+  const frostAt = lastTopLevelDefIndex(css, "\\.frost");
+  if (frostAt < 0) {
+    out.push({ line: 0, message: "style.css 缺少 .frost（glass-2 的历史别名）的定义" });
+  } else if (!stripComments(blockAt(css, frostAt)).includes("var(--gosslan-glass-2-bg)")) {
+    out.push({ line: lineAt(css, frostAt), message: ".frost 已不是 glass-2 的别名（菜单档位分裂成第二套）" });
+  }
+
+  const fallbacks: [string, RegExp][] = [
+    ["降低透明度", /@media\s*\(\s*prefers-reduced-transparency:\s*reduce\s*\)/],
+    ["提高对比度", /@media\s*\(\s*prefers-contrast:\s*more\s*\)/],
+    ["不支持 backdrop-filter", /@supports\s+not\s*\(/],
+  ];
+  const all = [...tiers, { name: "frost", token: "--gosslan-glass-2" }];
+  for (const [label, header] of fallbacks) {
+    const m = header.exec(css);
+    if (!m) {
+      out.push({ line: 0, message: `style.css 缺少「${label}」的玻璃降级块` });
+      continue;
+    }
+    const block = stripComments(blockAt(css, m.index));
+    for (const t of all) {
+      if (!block.includes(`.${t.name}`)) {
+        out.push({
+          line: lineAt(css, m.index),
+          message: `「${label}」块里没有 .${t.name} —— 这一档在降级场景下仍是半透明（不可读）`,
+        });
+      }
+      if (!block.includes(`var(${t.token}-fallback)`)) {
+        out.push({
+          line: lineAt(css, m.index),
+          message: `「${label}」块里 .${t.name} 没有实底回退（应为 var(${t.token}-fallback)）`,
+        });
+      }
+    }
+  }
+  return out.sort((a, b) => a.line - b.line);
+}
+
 /** `@media (pointer: coarse)` 块内直接声明 `position` 的选择器（`:where()` 包裹的除外）。 */
 function findOverridingPositionInCoarsePointer(css: string): GuardIssue[] {
   const out: GuardIssue[] = [];
@@ -1346,23 +1452,53 @@ export function checkTextFieldFocusRing(css: string, composer: string): GuardIss
     out.push({ line: 0, message: "style.css 里找不到任何 :focus-visible 规则（键盘焦点环被删了？）" });
   }
 
-  // ② 文本输入类必须有一条"边线级"的焦点提示
-  if (!/input:focus[\s\S]{0,160}?textarea:focus[\s\S]{0,160}?select:focus/.test(code)) {
+  // ② 文本输入类必须有一条"边线级"的焦点提示，且**规则体不能是空的**
+  // ⚠️ 2026-11-05 真实缺陷：这条规则体曾经是 `{ }` —— 选择器在、判据①③都绿，
+  //    但**没有任何可见焦点**（键盘用户只剩光标）。只查"选择器存在"等于查空气。
+  // `input` 后面允许跟 :not(...) 之类的限定（排除 checkbox/radio/range 是正当事由）
+  const fieldFocus =
+    /input[^,{}]*:focus[\s\S]{0,200}?textarea:focus[\s\S]{0,200}?select:focus\s*\{([^{}]*)\}/.exec(code);
+  if (!fieldFocus) {
     out.push({
       line: 0,
       message:
         "找不到文本输入类的焦点提示规则（形如 `input:focus, textarea:focus, select:focus { … }`）：" +
         "去掉外圈方框之后，本来就没有边框的输入框会完全没有焦点提示（WCAG 2.4.7）。",
     });
+  } else if (!fieldFocus[1].trim()) {
+    out.push({
+      line: lineAt(css, fieldFocus.index ?? 0),
+      message:
+        "`input:focus / textarea:focus / select:focus` 的**规则体是空的** —— 选择器在、但没有任何可见焦点，" +
+        "键盘用户完全看不出焦点在哪（WCAG 2.4.7）。至少要有 `border-color` + `box-shadow: inset 0 0 0 1px`。",
+    });
+  } else if (
+    !/box-shadow\s*:\s*inset/.test(fieldFocus[1]) ||
+    !/border-color\s*:\s*var\(--gosslan-/.test(fieldFocus[1])
+  ) {
+    out.push({
+      line: lineAt(css, fieldFocus.index ?? 0),
+      message:
+        "文本输入类的焦点提示必须画 1px **内描边**（`box-shadow: inset 0 0 0 1px`）并改 `border-color`；" +
+        "只画外框会把用户 2026-09-16 否掉的「主题色方框」又放回来。",
+    });
   }
 
-  // ③ 消息输入框的卡片钩子
-  if (!/\.gosslan-composer\s*:focus-within/.test(code)) {
+  // ③ 消息输入框的卡片钩子（同样要求规则体非空）
+  const composerFocus = /\.gosslan-composer\s*:focus-within\s*\{([^{}]*)\}/.exec(code);
+  if (!composerFocus) {
     out.push({
       line: 0,
       message:
         "style.css 缺少 `.gosslan-composer:focus-within` 规则：消息输入框的编辑区不能画外框，" +
         "焦点提示必须挂在卡片边框上。",
+    });
+  } else if (!composerFocus[1].trim()) {
+    out.push({
+      line: lineAt(css, composerFocus.index ?? 0),
+      message:
+        "`.gosslan-composer:focus-within` 的规则体是空的 —— 消息输入框（全应用最高频的字段）" +
+        "仍然完全没有焦点提示。",
     });
   }
   if (!composer.includes("gosslan-composer")) {

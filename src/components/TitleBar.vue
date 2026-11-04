@@ -241,7 +241,7 @@ onBeforeUnmount(() => {
        层级由设计判据 ㉕ 从源码现算核对，不靠这里的数字被人记住。 -->
   <div
     v-if="!isMobile"
-    class="relative z-[85] flex shrink-0 select-none items-center bg-[var(--gosslan-caption)]"
+    class="glass-1 relative z-[85] flex shrink-0 select-none items-center"
     data-caption
     :class="isMac ? 'justify-start pl-0' : 'justify-end'"
     :style="{ height: 'var(--gosslan-title-h)' }"

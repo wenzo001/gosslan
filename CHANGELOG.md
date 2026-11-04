@@ -14,6 +14,32 @@
 
 ## [Unreleased]
 
+## [5.18.20] - 2026-11-05
+
+### 玻璃材质层与控件色值收敛（只改材质，不改布局与交互）
+
+- 按 `docs/design-language/liquid-glass.md` 的数值新增三档玻璃 token（亮/暗成对）：
+  半透明底 + `saturate() blur()`（标准与 `-webkit-` 双写，WKWebView 只认前缀版）
+  + 1px 内描边与顶部高光（用 `inset box-shadow` 而非 `border`，避免内容盒宽变化）
+  + 柔和外阴影。`surface/glass-2` 的底色复用既有 `--gosslan-panel-frost`（`.frost` 即它的别名），
+  保持 `tokenContrast` 里「菜单条目压列表底 ≥1.32」的对比度基准单源，不另起第二套数值。
+- 只有控制层换玻璃：侧栏、标题栏、设置左侧导航、Dialog（`BaseModal`）、ActionSheet。
+  消息列表/气泡/正文/代码块/日志/设置表单行保持实色（内容层，可读性优先）。
+- 降级三路逐档退实底（`--gosslan-glass-N-fallback`）：`prefers-reduced-transparency`、
+  `prefers-contrast: more`、`@supports not (backdrop-filter…)`；`.glass`（图片查看器）语义不变。
+- L0 环境底色层 `html.ambient`（极淡 radial-gradient，默认**关闭**）：玻璃需要有可采样的
+  背景才看得出来；关闭时玻璃按实底回退，现有观感零变化。
+- **缺陷修复**：`input:focus` 的规则体原为空，等于输入框**没有可见焦点**。恢复为
+  1px 内描边 + 边框变色（不加外框），选择器排除 checkbox/radio/range；
+  `.gosslan-composer:focus-within` 同补。
+- 输入框底色收敛到 `--gosslan-field`（原散落的 `bg-[var(--gosslan-bg)]` / `bg-transparent`）。
+  外层容器已是 field 底的文本框（会话搜索框、日志过滤条）不改。
+- `designGuards` 新增 `checkGlassTiers`（三档定义、`frost` 别名单源、三道降级全覆盖），
+  并扩展 `checkTextFieldFocusRing`（规则体为空即报红）；附「删 backdrop-filter / 摘一档降级 /
+  focus 规则留空」三组反例自证。
+- 判据锚点随材质搬迁：`scripts/check-ui-runtime.mjs` 里按 `.elevated` 找弹窗卡片的 10 处
+  一并改为 `.glass-3`（不搬锚点会让 overlay / modaltitle / winsafe 三大段空转报红）。
+
 ## [5.18.19] - 2026-11-05
 
 ### 群任务：统一日期字段封装、状态胶囊可点击暗示、自动归档天数与文案消歧
