@@ -11047,6 +11047,66 @@ async function runSearch(cdp, url) {
   check("跟着必须关一次弹窗（打开与关闭是同一次动作，不能只 emit 不关）",
     ev.filter((e) => e[0] === "close").length === 1, "1 次 close", JSON.stringify(ev));
 
+  // ---------------- 每一条命中都可点击：点哪条开哪条，右上角入口不定位 ----------------
+  // 用户反馈是"同会话搜出很多条时，只能靠「进入聊天」进会话，点结果行没反应"。
+  // 静态/单测判的是 `@click="openHit(hi)"` 与载荷；这里在**真渲染的 DOM** 上点两次鼠标，
+  // 判每次 emit 的是不是被点那一行自己的 msg_id（点错行仍会 emit 一次，照样绿是这条的盲点）。
+  const rowMeta = await cdp.eval(`(() => {
+    const dlg = document.querySelector('[role="dialog"]');
+    const rows = [...((dlg && dlg.querySelectorAll('[data-hit]')) || [])];
+    return {
+      n: rows.length,
+      tags: rows.map((r) => r.tagName),
+      msgs: rows.map((r) => r.getAttribute('data-msg')),
+      titles: rows.map((r) => r.getAttribute('title')),
+    };
+  })()`);
+  const clickRowAt = async (idx) => {
+    const p = await cdp.eval(`(() => {
+      const dlg = document.querySelector('[role="dialog"]');
+      const row = dlg && [...dlg.querySelectorAll('[data-hit]')][${idx}];
+      if (!row) return null;
+      const r = row.getBoundingClientRect();
+      return { x: r.left + r.width / 2, y: r.top + r.height / 2 };
+    })()`);
+    if (!p) return false;
+    await cdp.click(p.x, p.y);
+    return true;
+  };
+  check("每一条命中都是可点击按钮，且各自带自己的 data-msg 与「跳转到该消息」提示",
+    rowMeta.n === 3 && rowMeta.tags.every((t) => t === "BUTTON")
+    && rowMeta.msgs.join(",") === "m0,m1,m2" && rowMeta.titles.every((t) => !!t),
+    "3 个 BUTTON / m0,m1,m2 / title 均非空", JSON.stringify(rowMeta));
+  await cdp.eval("window.__probe.reset()");
+  const clicked1 = await clickRowAt(1);
+  const ev1 = await cdp.eval("window.__probe.events");
+  const opened1 = ev1.filter((e) => e[0] === "open").map((e) => JSON.parse(e[1]));
+  check("点第 2 条命中：emit 的 msgId 必须是被点那条（m1），不是高亮残留的那条",
+    clicked1 === true && opened1.length === 1 && opened1[0].msgId === "m1"
+    && opened1[0].convId === "conv-probe",
+    "1 次 open 且 msgId=m1", JSON.stringify({ clicked1, opened1 }));
+  await cdp.eval("window.__probe.reset()");
+  const clicked0 = await clickRowAt(0);
+  const ev0 = await cdp.eval("window.__probe.events");
+  const opened0 = ev0.filter((e) => e[0] === "open").map((e) => JSON.parse(e[1]));
+  check("点第 1 条命中：同一会话的另一条也能各自定位（msgId=m0，与上一条互不影响）",
+    clicked0 === true && opened0.length === 1 && opened0[0].msgId === "m0",
+    "1 次 open 且 msgId=m0", JSON.stringify({ clicked0, opened0 }));
+  await cdp.eval("window.__probe.reset()");
+  const enterHit = await cdp.eval(`(() => {
+    const b = document.querySelector('[data-search-enter-chat]');
+    if (!b) return null;
+    const r = b.getBoundingClientRect();
+    return { x: r.left + r.width / 2, y: r.top + r.height / 2 };
+  })()`);
+  if (enterHit) await cdp.click(enterHit.x, enterHit.y);
+  const evEnter = await cdp.eval("window.__probe.events");
+  const openedEnter = evEnter.filter((e) => e[0] === "open").map((e) => JSON.parse(e[1]));
+  check("右上角「进入聊天」：只进会话（msgId 为空），与点命中的「跳转到该消息」区分开",
+    !!enterHit && openedEnter.length === 1 && openedEnter[0].msgId === ""
+    && openedEnter[0].convId === "conv-probe",
+    "1 次 open 且 msgId=''", JSON.stringify({ enterHit, openedEnter }));
+
   // ---------------- 迁移到 Query 后新增：乱序响应不得跨关键词回填 ----------------
   // 旧实现靠 `seq` 只认最后一次请求；现在靠 query key。这里判的是**可观察结局**：
   // 「慢」的响应晚到，页面上必须仍是「快」的结果 —— 谁也不许把旧关键字的结果铺回来。
@@ -11153,6 +11213,21 @@ async function runSearch(cdp, url) {
       "dlg.width<=vw + dlg.height>=vh + 页面不滚 + outside=0", JSON.stringify(mob));
     check("移动端搜索：结果仍渲染（不是只摆了一个空壳）",
       mob.ok === true && mob.hasResults === true, "结果文本可见", JSON.stringify(mob));
+    // 移动端点第 2 条命中：与桌面判同一条可观察结局（emit 的是被点那行的 msg_id）。
+    const mobClick = await cdp.eval(`(() => {
+      const dlg = document.querySelector('[role="dialog"]');
+      const row = dlg && [...dlg.querySelectorAll('[data-hit]')][1];
+      if (!row) return null;
+      const r = row.getBoundingClientRect();
+      return { x: r.left + r.width / 2, y: r.top + r.height / 2 };
+    })()`);
+    await cdp.eval("window.__probe.reset()");
+    if (mobClick) await cdp.click(mobClick.x, mobClick.y);
+    const mobEv = await cdp.eval("window.__probe.events");
+    const mobOpened = mobEv.filter((e) => e[0] === "open").map((e) => JSON.parse(e[1]));
+    check("移动端：命中行同样可点，点第 2 条 emit msgId=m1（不是只能靠右上角入口）",
+      !!mobClick && mobOpened.length === 1 && mobOpened[0].msgId === "m1",
+      "1 次 open 且 msgId=m1", JSON.stringify({ mobClick, mobOpened }));
     if (SHOT_PATH) {
       const shot = await cdp.send("Page.captureScreenshot", { format: "png" });
       fs.writeFileSync(SHOT_PATH.replace(/\.png$/, "-searchmobile.png"), Buffer.from(shot.data, "base64"));

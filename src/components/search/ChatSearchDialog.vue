@@ -41,6 +41,7 @@ import {
   SEARCH_DATE_PRESETS,
   dateRangeFor,
   hitSnippet,
+  hitTargetAt,
   senderOptionsFrom,
   totalHits,
   type SearchDatePreset,
@@ -247,11 +248,18 @@ function onEnter(e: KeyboardEvent) {
   forceSearch();
 }
 
+/**
+ * 打开并**定位到**某一条命中（点击右栏那一行 / 回车 / 旧「进入聊天」路径都走到这里）。
+ *
+ * 每条命中都带自己的 `msg_id`：同一会话里因为不同关键词搜出十几条时，点哪条就必须落哪条，
+ * 不能像以前那样只能靠右上角「进入聊天」进会话。
+ */
 function openHit(idx: number) {
-  const g = activeGroup.value;
-  const msg = g?.messages[Math.max(0, Math.min((g?.messages.length ?? 1) - 1, idx))];
-  if (!g) return;
-  emit("open-conversation", { convId: g.conv_id, msgId: msg?.msg_id ?? "" });
+  const target = hitTargetAt(activeGroup.value, idx);
+  if (!target) return;
+  // 鼠标点的那一行也同步成键盘高亮，免得弹窗还没关时视觉焦点停在上一次的位置。
+  activeIdx.value = Math.max(0, Math.min((activeGroup.value?.messages.length ?? 1) - 1, idx));
+  emit("open-conversation", target);
   // 路由驱动时，父级会把 /search 替换成 /chats/:id，关闭由那次导航完成。
   // 这里再 emit close 会并发触发一次 router.back()，与 replace 抢历史（可能退回来源页）。
   if (!props.routeDriven) emit("close");
@@ -374,9 +382,15 @@ function onDateOpen(open: boolean) {
   if (open) senderMenuOpen.value = false;
 }
 
+/**
+ * 右上角「进入聊天」：只进会话，**不定位到具体消息**（与点命中的「跳转到该消息」区分）。
+ * `msgId: ""` 是这条语义的载荷约定，父级据此跳过定位。
+ */
 function enterChat() {
-  // 与键盘同一条路：打开**高亮那一条**（以前固定 `messages[0]` ⇒ 鼠标点的和回车跳的可能不是同一条）
-  openHit(activeIdx.value);
+  const g = activeGroup.value;
+  if (!g) return;
+  emit("open-conversation", { convId: g.conv_id, msgId: "" });
+  if (!props.routeDriven) emit("close");
 }
 
 /** 单聊不重复显示发送者名字（微信同款）；群聊才显示"谁说的"。 */
@@ -558,7 +572,10 @@ function showSender(group: ChatSearchGroup): boolean {
           </span>
           <button
             v-if="activeGroup"
+            data-search-enter-chat
             class="tap-safe flex shrink-0 items-center gap-1 text-body text-[var(--gosslan-primary)] transition hover:opacity-80"
+            :title="t('search.enterChatHint')"
+            :aria-label="t('search.enterChatHint')"
             @click="enterChat"
           >
             {{ t("search.enterChat") }}
@@ -566,13 +583,27 @@ function showSender(group: ChatSearchGroup): boolean {
           </button>
         </div>
         <div ref="listRef" class="min-h-0 flex-1 overflow-y-auto px-4 py-3">
-          <div
+          <p
+            v-if="activeGroup?.messages.length"
+            class="px-2 pb-2 text-caption text-[var(--gosslan-text-2)]"
+          >
+            {{ t("search.hitHint") }}
+          </p>
+          <!-- 每一条命中都是独立按钮：点哪条就打开会话并定位到那条消息（同会话多条各自独立）。
+               以前只有右上角「进入聊天」一个入口，且它固定跳高亮项 ⇒ 用户只能进会话、找不到具体那条。 -->
+          <button
             v-for="(m, hi) in activeGroup?.messages ?? []"
             :key="m.msg_id"
+            type="button"
             :data-hit="hi"
+            :data-msg="m.msg_id"
             :aria-current="hi === activeIdx ? 'true' : undefined"
-            class="flex gap-2.5 rounded-[var(--gosslan-radius-md)] px-2 py-2.5"
-            :class="hi === activeIdx ? 'bg-[var(--gosslan-hover)]' : ''"
+            :title="t('search.jumpToHit')"
+            class="flex w-full gap-2.5 rounded-[var(--gosslan-radius-md)] px-2 py-2.5 text-left transition"
+            :class="hi === activeIdx
+              ? 'bg-[var(--gosslan-hover)]'
+              : 'hover:bg-[var(--gosslan-list-hover)]'"
+            @click="openHit(hi)"
           >
             <MessageAvatar :id="m.sender_id" :name="m.sender_name" />
             <div class="min-w-0 flex-1">
@@ -591,7 +622,7 @@ function showSender(group: ChatSearchGroup): boolean {
                 v-html="highlightText(cellText(m), keyword)"
               ></div>
             </div>
-          </div>
+          </button>
           <p
             v-if="activeGroup && activeGroup.total > activeGroup.messages.length"
             class="py-3 text-center text-caption text-[var(--gosslan-text-2)]"

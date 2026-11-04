@@ -111,3 +111,42 @@ export function hitSnippet(content: string, keyword: string, radius = 30): strin
 export function totalHits(groups: ChatSearchGroup[]): number {
   return groups.reduce((sum, g) => sum + g.total, 0);
 }
+
+/** 一条命中要跳到的目标：会话 id + 那条消息的 id。 */
+export interface SearchHitTarget {
+  convId: string;
+  msgId: string;
+}
+
+/**
+ * 第 `idx` 条命中要跳到的目标（右栏列表点击 / 回车 / 「进入聊天」共用）。
+ *
+ * 同一会话里可能有多条命中的是同一个人、同一句话，唯一能把它们分开的就是 `msg_id`
+ * —— 所以这里**按列表里的下标取那一条**，不许退化成"进会话后找第一处关键词"。
+ * 越界钳到边界（键盘高亮与列表长度在异步换词时可能有一帧不一致），空列表回 `null`。
+ */
+export function hitTargetAt(
+  group: ChatSearchGroup | null | undefined,
+  idx: number,
+): SearchHitTarget | null {
+  const list = group?.messages ?? [];
+  if (!group || !list.length) return null;
+  const at = Math.max(0, Math.min(list.length - 1, idx));
+  return { convId: group.conv_id, msgId: list[at].msg_id };
+}
+
+/**
+ * 定位结果 → 具名失败原因（`found` 回 `null`）。
+ *
+ * `not-found`（翻到上限也没这条）与 `error`（翻页请求失败）是两回事：
+ * 前者通常意味着消息已被撤回/删除，后者是网络或磁盘的临时问题。调用方必须说对原因
+ * —— 「跳到会话顶部 + 什么都不说」正是这次用户反馈要消灭的那一种。
+ */
+export type LocateFailure = "missing" | "load-error";
+
+export function locateFailureReason(
+  result: "found" | "not-found" | "error",
+): LocateFailure | null {
+  if (result === "found") return null;
+  return result === "not-found" ? "missing" : "load-error";
+}
