@@ -835,7 +835,11 @@ export const enUS: MessageDict = {
   // Shown with `messages.fail_code` (DB v14→v15). "Send failed" alone leaves nothing to act on:
   // these four each point at a different next step.
   "msg.sendFailedWith": "Send failed: {reason}",
-  "msg.fail.retryExpired": "Still undelivered after repeated retries; sending stopped (the other side may be offline for a long time)",
+  // Block 3: two distinct failure classes, each with a concrete next step.
+  "msg.fail.retryExpired":
+    "Not delivered: the recipient is online, but there was no usable direct link or relay at the time. Next: keep the recipient and the relay nodes online (or add the same relay in the recipient's network settings), then tap Retry in the task center.",
+  "msg.fail.peerOfflineExpired":
+    "Not delivered: the recipient stayed offline the whole time (kept for 7 days). Next: once they are online with the app open, tap Retry in the task center.",
   "msg.fail.kindUnsupported": "This version of Gosslan on the other side doesn't support this content type, so waiting won't help. After they upgrade, tap Resend in the task center.",
   "msg.fail.peerKeyMissing": "We don't have the other side's encryption key, so this can't be sent. Tap Resend once they have been online.",
   "msg.fail.orphanAtStart": "This was still sending when the app restarted with no pending queue, so it is treated as undelivered",

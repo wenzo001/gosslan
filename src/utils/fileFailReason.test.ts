@@ -579,3 +579,35 @@ test("上屏载荷的另外四种形状：map_err / ok_or / e.message / 包装�
     false,
   );
 });
+
+/**
+ * Block 3：过期终态必须拆成**两类**（真离线 vs 在线但送不到），且两类都给出
+ * **可执行的下一步**，中英各一句。反例自证：谁把两格文案合并成一条、或者
+ * 把"下一步"删掉，这条就红；把 `retryExpired` 改回旧措辞（"对方可能长时间离线"）
+ * 也会红 —— 那句正是把"在线却送不到"说成"人不在"，用户会白等。
+ */
+test("两类发送失败各有各的话，且都给下一步（中英都成立）", () => {
+  const zhRetry = zhCN["msg.fail.retryExpired"];
+  const zhOffline = zhCN["msg.fail.peerOfflineExpired"];
+  const enRetry = enUS["msg.fail.retryExpired"];
+  const enOffline = enUS["msg.fail.peerOfflineExpired"];
+  for (const [code, zh, en] of [
+    ["SEND_RETRY_EXPIRED", zhRetry, enRetry],
+    ["SEND_PEER_OFFLINE_EXPIRED", zhOffline, enOffline],
+  ] as const) {
+    assert.ok(zh && zh.length > 0, `${code} 缺中文文案`);
+    assert.ok(en && en.length > 0, `${code} 缺英文文案`);
+    assert.match(zh, /下一步：/, `${code} 中文必须告诉用户下一步做什么`);
+    assert.match(en, /Next:/, `${code} 英文必须告诉用户下一步做什么`);
+  }
+  assert.notEqual(zhRetry, zhOffline, "两类必须是两句话（中）");
+  assert.notEqual(enRetry, enOffline, "两类必须是两句话（英）");
+  assert.ok(
+    !zhRetry.includes("长时间离线"),
+    "“在线但送不到”这一格不许再说“对方可能长时间离线”（旧文案的错位）",
+  );
+  assert.ok(
+    !enRetry.toLowerCase().includes("offline for a long time"),
+    "the online-but-undeliverable class must not claim the peer is offline",
+  );
+});

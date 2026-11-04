@@ -491,7 +491,20 @@ pub fn coded(code: &'static str, msg: impl std::fmt::Display) -> String {
 //   （`group_file.rs::persistable_group_fail_code` 守的就是这条）。
 
 /// 重试窗口耗尽（清扫器把仍在队列里的行落终态）。
+///
+/// **只用于「对方在线、消息却送不到」**（Block 3）：对端在本机发现层可达（有链路或
+/// 45s 内还在广播 announce），120s 内始终没有 Ack —— 说明不是"人不在"，而是当时
+/// 没有可用的直连、也没有可用的中继。两类的下一步完全不同：这一格的用户动作是
+/// "让对方与中间节点保持在线 / 纳入同一中继后点重发"；真离线那一格见
+/// [`SEND_PEER_OFFLINE_EXPIRED`]。
 pub const SEND_RETRY_EXPIRED: &str = "SEND_RETRY_EXPIRED";
+/// 对方**一直离线**，消息在离线保留窗口（7 天）耗尽后落终态（Block 3）。
+///
+/// 与 [`SEND_RETRY_EXPIRED`] 拆开的原因：`SEND_RETRY_EXPIRED` 原来的文案是
+/// "对方可能长时间离线"，而它其实只在**对端可达**时才会写（离线是保留 7 天、不判死）。
+/// 于是用户被告知"可能离线"，实际是"在线但没路走" —— 界面给的下一步完全错位。
+/// 这一格的用户动作是"等对方上线（或让对方开机）后再点重发"。
+pub const SEND_PEER_OFFLINE_EXPIRED: &str = "SEND_PEER_OFFLINE_EXPIRED";
 /// 本机启动时发现"发送中但没有任何队列行"的孤儿（崩溃窗口 / 旧版本收尾顺序）。
 pub const SEND_ORPHAN_AT_START: &str = "SEND_ORPHAN_AT_START";
 /// 好友被删除时，仍在队列里发给这个人的消息随之落败（不是用户取消这一条）。
@@ -563,8 +576,9 @@ pub const FILE_RECEIVE_PLACE_FAILED: &str = "FILE_RECEIVE_PLACE_FAILED";
 
 /// 落进 `messages.fail_code` 的全部档位 —— **与前端那张文案表双向对账的分母**
 /// （`src/utils/fileFailReason.test.ts` 现读这里，两侧任何一侧多加一条都会红）。
-pub const MESSAGE_FAIL_CODES: [&str; 18] = [
+pub const MESSAGE_FAIL_CODES: [&str; 19] = [
     SEND_RETRY_EXPIRED,
+    SEND_PEER_OFFLINE_EXPIRED,
     SEND_ORPHAN_AT_START,
     SEND_PEER_DELETED,
     SEND_GROUP_MEMBER_GONE,

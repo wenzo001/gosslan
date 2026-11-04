@@ -37,7 +37,12 @@
         .unwrap();
 
         // 绿路：两步都成功 ⇒ true，且 status=failed、outbox 行已删
-        assert!(finalize_expired_message(&conn, "m1", false));
+        assert!(finalize_expired_message(
+            &conn,
+            "m1",
+            false,
+            crate::error_codes::SEND_RETRY_EXPIRED
+        ));
         let status: String = conn
             .query_row("SELECT status FROM messages WHERE msg_id='m1'", [], |r| {
                 r.get(0)
@@ -57,7 +62,12 @@
         // 失败路：删掉 outbox 表 ⇒ 第二步写库失败 ⇒ 必须返回 false（emit 因此被门控住，不谎报失败）
         conn.execute_batch("DROP TABLE outbox").unwrap();
         assert!(
-            !finalize_expired_message(&conn, "m2", false),
+            !finalize_expired_message(
+                &conn,
+                "m2",
+                false,
+                crate::error_codes::SEND_RETRY_EXPIRED
+            ),
             "任一步写库失败必须返回 false —— 否则 emit 谎报失败而 outbox 行还在 ⇒ 重复投递"
         );
     }
@@ -298,4 +308,45 @@
             .ok();
         assert!(result.is_none(), "查询不存在的 msg_id 应返回 None");
         // 此时 handler 走 None 分支 → 不做任何修改
+    }
+
+    /// Block 3：过期终态的失败码必须由**可达性**决定，且真的接进了清扫器。
+    ///
+    /// 反例自证：把 `expired_fail_code` 改回恒定返回（旧行为两格都写
+    /// `SEND_RETRY_EXPIRED`）⇒ 前两条断言红；把清扫器那两处调用删掉、或改回写死
+    /// 常量 ⇒ 后几条源码断言红。纯函数测了却没人调，正是"文案错位"最难查的形状。
+    #[test]
+    fn expired_fail_code_splits_offline_from_undeliverable_and_is_wired() {
+        use crate::error_codes::{SEND_PEER_OFFLINE_EXPIRED, SEND_RETRY_EXPIRED};
+        // `outbox_sweep.rs` 是 `include!` 进 `transport` 模块的（不是独立子模块）
+        use crate::network::transport::expired_fail_code;
+        // 对方在线（有链路 / 45s 内有 announce）却始终没 Ack ⇒ 在线但送不到
+        assert_eq!(expired_fail_code(true), SEND_RETRY_EXPIRED);
+        // 对方一直不可达、熬满 7 天离线保留窗口 ⇒ 真离线
+        assert_eq!(expired_fail_code(false), SEND_PEER_OFFLINE_EXPIRED);
+        assert_ne!(
+            expired_fail_code(true),
+            expired_fail_code(false),
+            "两个码必须真的不同 —— 相同就等于文案又混成一类"
+        );
+
+        let src = include_str!("outbox_sweep.rs");
+        assert_eq!(
+            src.matches("expired_fail_code(").count(),
+            3,
+            "1 处定义 + 2 处调用（单聊 + 群消息）；少一处 = 某一类又混回旧码"
+        );
+        let flat: String = src.split_whitespace().collect();
+        assert!(
+            flat.contains("finalize_expired_message(&dbc,&msg_id,false,fail_code)"),
+            "单聊终态必须把选出来的码传下去"
+        );
+        assert!(
+            flat.contains("finalize_expired_message(&dbc,&msg_id,true,fail_code)"),
+            "群消息终态必须把选出来的码传下去"
+        );
+        assert!(
+            !flat.contains("SEND_RETRY_EXPIRED.to_string()"),
+            "emit 载荷必须跟着 fail_code —— 写死旧码会让界面显示错的那一类"
+        );
     }

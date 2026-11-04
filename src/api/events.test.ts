@@ -33,6 +33,11 @@ const ALLOWED_EMIT_WITHOUT_LISTENER: Record<string, string> = {
   // 后端收到回执只记 `code=RELAY_FILE_RECEIPT` 日志 + 广播本事件；任务中心暂不接消费者。
   // 接上的那天必须同时删掉这条（见下方「例外清单不得包含已被监听的事件」）。
   "relay-file-receipt": "只做可观测：回执仅落日志，任务中心尚未接入消费者",
+  // Block 1 Case B：身份锚无法比对（friends 行 ed25519/x25519 双 NULL）时，后端**同时**
+  // 往对话里插一条可见的系统消息（"有一条消息未送达（对方身份未验证）…"，走
+  // `message-received`）—— 用户看得到结论，不会静默丢。本事件只用于诊断聚合/将来做提示，
+  // 现在没有第二份 UI 反应可接。
+  "message-undelivered": "可见性由后端插入的系统消息承担（message-received）；事件仅作可观测",
 };
 
 /** 只发给特定窗口、由该窗口自己监听的事件不算漏接（这里是菜单事件，前端已监听）。 */

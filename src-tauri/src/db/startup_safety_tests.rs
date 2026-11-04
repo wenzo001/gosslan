@@ -328,7 +328,8 @@ fn expired_finalize_is_atomic_when_outbox_delete_fails() {
     )
     .unwrap();
     assert!(
-        finalize_expired_message(&conn, "m1", false).is_err(),
+        finalize_expired_message(&conn, "m1", false, crate::error_codes::SEND_RETRY_EXPIRED)
+            .is_err(),
         "删行失败必须报错"
     );
     assert_eq!(status(&conn, "m1"), "sending", "状态必须随事务回滚");
@@ -341,7 +342,7 @@ fn expired_finalize_is_atomic_when_outbox_delete_fails() {
 
     conn.execute_batch("DROP TRIGGER block_outbox_delete;")
         .unwrap();
-    finalize_expired_message(&conn, "m1", false).unwrap();
+    finalize_expired_message(&conn, "m1", false, crate::error_codes::SEND_RETRY_EXPIRED).unwrap();
     assert_eq!(status(&conn, "m1"), "failed");
     assert_eq!(
         conn.query_row("SELECT COUNT(*) FROM outbox", [], |r| r.get::<_, i64>(0))

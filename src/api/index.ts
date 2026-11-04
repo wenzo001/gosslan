@@ -892,6 +892,14 @@ export type EventHandlers = {
   /** 某好友的密钥轮换已被用户确认同步。 */
   onFriendKeysSynced: (id: string) => void;
   onFriendMessageBlocked: (id: string) => void;
+  /**
+   * 某好友的身份锚（ed25519）由**验签通过的 gossip 信封**补齐（此前的朋友行是 NULL）。
+   *
+   * 后端同时会插一条可见的系统消息（「已确认对方身份密钥（此前未验证）」）并走
+   * `message-received`；这里只负责把好友表 / 密钥轮换重拉一次 —— 好友详情里的
+   * 安全码要从"未验证"变成可查看，否则用户得切页才看得到。
+   */
+  onFriendAnchorBound: (id: string) => void;
   onMessage: (rec: MessageRecord) => void;
   onMessageAcked: (msgId: string) => void;
   onPeerRead: (p: PeerReadInfo) => void;
@@ -1010,6 +1018,8 @@ export async function bindEvents(h: EventHandlers): Promise<UnlistenFn[]> {
     listen<string>("friend-key-changed", (e) => h.onFriendKeyChanged(e.payload)),
     listen<string>("friend-keys-synced", (e) => h.onFriendKeysSynced(e.payload)),
     listen<string>("friend-message-blocked", (e) => h.onFriendMessageBlocked(e.payload)),
+    // Block 1 Case B：历史 NULL 好友的 ed25519 从验签信封补齐（fill-only）。
+    listen<string>("friend-anchor-bound", (e) => h.onFriendAnchorBound(e.payload)),
     listen<MessageRecord>("message-received", (e) => h.onMessage(e.payload)),
     listen<string>("message-acked", (e) => h.onMessageAcked(e.payload)),
     // 群消息的送达确认走**独立事件**（载荷 `{group_id, msg_id}`）；此前前端没接，

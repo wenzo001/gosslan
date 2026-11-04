@@ -1107,7 +1107,7 @@ test("★ 发送 / 重发 / Ack / 状态变更都会刷新任务中心快照（�
  * 快照 —— 拆 store 时若有人在注册表里插一条/挪一条，必须显式改这份 golden，
  * 而不是“看起来只是搬代码”。
  */
-test("bindEvents 注册顺序不变：33 个事件按现有顺序登记", () => {
+test("bindEvents 注册顺序不变：34 个事件按现有顺序登记", () => {
   const api = stripComments(readFileSync(join(ROOT, "api", "index.ts"), "utf8"));
   const at = api.indexOf("export async function bindEvents(");
   assert.ok(at >= 0, "找不到 bindEvents");
@@ -1125,6 +1125,9 @@ test("bindEvents 注册顺序不变：33 个事件按现有顺序登记", () => 
     "friend-key-changed",
     "friend-keys-synced",
     "friend-message-blocked",
+    // Block 1 Case B（5.17.44）：历史 NULL 好友的身份锚从验签信封补齐 ⇒ 重拉好友表，
+    // 好友详情里的安全码从"未验证"变为可查看。
+    "friend-anchor-bound",
     "message-received",
     "message-acked",
     "group-message-acked",

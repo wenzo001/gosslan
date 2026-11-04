@@ -14,6 +14,32 @@
 
 ## [Unreleased]
 
+## [5.17.44] - 2026-11-04
+
+### 修复：发送失败拆成「真离线」与「在线但送不到」两句话，各给下一步（Block 3）
+
+- 现场错位（RC-4）：过期终态**只有一个码** `SEND_RETRY_EXPIRED`，文案写的是
+  「对方可能长时间离线」。可这个码只在**对端可达**（有链路 / 45s 内还在广播 announce）
+  时才会写 —— 真正离线的好友走的是 **7 天离线保留窗口**，不判死。于是用户被告知
+  "可能离线"，照做（等对方上线）却永远等不到；而真离线那一格熬满 7 天后出的也是同一句
+  没有下一步的话。
+- 新增第二个码 `SEND_PEER_OFFLINE_EXPIRED`（落 `messages.fail_code`），由清扫器按
+  **可达性**选（纯函数 `expired_fail_code`，两处调用：单聊 + 群消息；群消息只要任一成员
+  在线就归"在线但送不到"）。落库层 `db::finalize_expired_message` 改为接收实参，
+  不再写死常量（单测刻意用另一个码，证明它没被写死）。
+- 文案：中英双语、两类都给**可执行的下一步** ——
+  · `SEND_RETRY_EXPIRED`（在线但送不到）：让对方与中间节点保持在线（或在对方网络设置里
+    加入同一中继），再在任务中心点「重新发送」；
+  · `SEND_PEER_OFFLINE_EXPIRED`（真离线，已保留 7 天）：等对方上线、打开应用后点「重新发送」。
+  旧措辞「对方可能长时间离线」在该格已被断言禁止（防止错位复现）。
+- 判据：`expired_fail_code_splits_offline_from_undeliverable_and_is_wired`（真值表 +
+  两处调用接线 + emit 不许写死旧码）、`两类发送失败各有各的话，且都给下一步（中英都成立）`
+  （中英非空、`下一步：`/`Next:` 必现、两格不许同句）、
+  `finalize_expired_message` 的落库测试改用另一个码做正控。
+- 证据：`cargo test --features bluetooth --lib` → 1490 passed；
+  `LANG=en_US.UTF-8 LC_ALL=en_US.UTF-8 npm test` → 1641 passed（英文词典下复跑）。
+  回退：`git revert` 本提交（纯文案/码位拆分，不动队列与协议）。
+
 ## [5.17.43] - 2026-11-04
 
 ### 修复：没有直连的 peer 也补发离线队列（Block 2，跨跳重投）

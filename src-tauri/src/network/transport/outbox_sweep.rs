@@ -28,11 +28,38 @@ pub struct MessageFailedInfo {
     pub fail_code: String,
 }
 
-fn finalize_expired_message(dbc: &rusqlite::Connection, msg_id: &str, group: bool) -> bool {
+fn finalize_expired_message(
+    dbc: &rusqlite::Connection,
+    msg_id: &str,
+    group: bool,
+    fail_code: &str,
+) -> bool {
     // 两步写由 `db::finalize_expired_message` 收进**同一事务**（顺序仍是语义：
     // 状态写失败就不删行，否则行没了、状态还是 sending，两个清扫器都看不见）。
     // 失败只返回 false，由调用方保留队列行并在日志里留 code=OUTBOX_FINALIZE_FAILED。
-    db::finalize_expired_message(dbc, msg_id, group).is_ok()
+    db::finalize_expired_message(dbc, msg_id, group, fail_code).is_ok()
+}
+
+/// 过期终态的**失败码**：把"真离线"与"在线但送不到"分成两句话（Block 3）。
+///
+/// 判据就是清扫器已有的可达性（[`outbox_peer_reachable`]）：有链路或 45s 内还在广播
+/// announce 的对端**算在线**。⇒
+/// - `true`：对方在线，但 120s 里始终没有 Ack ⇒ 当时没有可用的直连/中继，落
+///   [`SEND_RETRY_EXPIRED`]；
+/// - `false`：对方一直不可达，走的是 7 天离线保留窗口，熬满才判死 ⇒
+///   [`SEND_PEER_OFFLINE_EXPIRED`]。
+///
+/// 为什么要拆：旧实现两格都写 `SEND_RETRY_EXPIRED`，而它的文案是"对方可能长时间离线"
+/// —— 可达的那条恰恰是"在线却送不到"，用户照着"等对方上线"永远等不到；
+/// 真离线那条又等足 7 天才出一句话，却没有告诉用户"等对方开机后重发"。
+///
+/// 纯函数（`&'static str`）：两个码是编译期常量，这里不拼串、不查库，两条分支各一单测。
+pub(crate) fn expired_fail_code(peer_reachable: bool) -> &'static str {
+    if peer_reachable {
+        crate::error_codes::SEND_RETRY_EXPIRED
+    } else {
+        crate::error_codes::SEND_PEER_OFFLINE_EXPIRED
+    }
 }
 
 /// 把一条过期的**文件** outbox 落终态（审计 A3 同型）：两个消息前缀（`file-` / `gfile-`）
@@ -191,23 +218,18 @@ pub fn spawn_outbox_sweeper(state: &Arc<AppState>) -> tauri::async_runtime::Join
                     continue;
                 }
                 // 写库（置 failed + 删行）成功才 emit；锁只在这块作用域内持有，不跨 emit（审计 B1）。
+                // Block 3：失败码按这条消息**为什么**判死选 —— 用户下一次动作全靠它。
+                let fail_code = expired_fail_code(reachable);
                 let finalized = {
                     let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
-                    finalize_expired_message(&dbc, &msg_id, false)
+                    finalize_expired_message(&dbc, &msg_id, false, fail_code)
                 };
-                if !finalized {
-                    // 队列行会保留、下一 tick 重试；失败必须留痕（带码可检索）。
-                    state.logger.warn(
-                        "outbox",
-                        format!("code=OUTBOX_FINALIZE_FAILED kind=single msg_id={msg_id}"),
-                    );
-                }
                 if finalized {
                     state.logger.warn(
                         "outbox",
                         format!(
                             "code=OUTBOX_EXPIRED kind=single msg_id={msg_id} peer={peer_id} \
-                             age_ms={} reachable={reachable} action=failed",
+                             age_ms={} reachable={reachable} fail_code={fail_code} action=failed",
                             now - created_at
                         ),
                     );
@@ -215,7 +237,7 @@ pub fn spawn_outbox_sweeper(state: &Arc<AppState>) -> tauri::async_runtime::Join
                         "message-failed",
                         &MessageFailedInfo {
                             msg_id: msg_id.clone(),
-                            fail_code: crate::error_codes::SEND_RETRY_EXPIRED.to_string(),
+                            fail_code: fail_code.to_string(),
                         },
                     );
                 } else {
@@ -358,22 +380,20 @@ pub fn spawn_outbox_sweeper(state: &Arc<AppState>) -> tauri::async_runtime::Join
                     );
                     continue;
                 }
+                // Block 3：整条群消息判死时的失败码 —— 只要**任一**成员在线，就不该告诉
+                // 用户"大家都离线"；一个在线成员都没等到 Ack，才是"在线但送不到"。
+                let any_reachable = rows.iter().any(|(peer, _)| is_reachable(peer));
+                let fail_code = expired_fail_code(any_reachable);
                 let finalized = {
                     let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
-                    finalize_expired_message(&dbc, &msg_id, true)
+                    finalize_expired_message(&dbc, &msg_id, true, fail_code)
                 };
-                if !finalized {
-                    state.logger.warn(
-                        "outbox",
-                        format!("code=OUTBOX_FINALIZE_FAILED kind=group msg_id={msg_id}"),
-                    );
-                }
                 if finalized {
                     state.logger.warn(
                         "outbox",
                         format!(
                             "code=OUTBOX_EXPIRED kind=group msg_id={msg_id} group_id={group_id} \
-                             recipients={} action=failed",
+                             recipients={} any_reachable={any_reachable} fail_code={fail_code} action=failed",
                             rows.len()
                         ),
                     );
@@ -381,7 +401,7 @@ pub fn spawn_outbox_sweeper(state: &Arc<AppState>) -> tauri::async_runtime::Join
                         "message-failed",
                         &MessageFailedInfo {
                             msg_id: msg_id.clone(),
-                            fail_code: crate::error_codes::SEND_RETRY_EXPIRED.to_string(),
+                            fail_code: fail_code.to_string(),
                         },
                     );
                 } else {
