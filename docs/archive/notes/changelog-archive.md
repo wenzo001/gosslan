@@ -1,4 +1,4 @@
-# 更新日志归档（0.1.0 ~ 5.17.27）
+# 更新日志归档（0.1.0 ~ 5.17.33）
 
 从 `CHANGELOG.md` 分卷而来：2026-10-07 迁入 4.31.41 及更早；2026-11-03 由 `scripts/compress-changelog.mjs` 再把 4.32.0 ~ 5.16.89 逐字搬入。下面所有小节的内容与搬入前**逐字相同**，没有改写、没有补全、没有删掉任何一条。未发布小节与最近 12 个版本的全文仍在 [`../../../CHANGELOG.md`](../../../CHANGELOG.md)。
 
@@ -9,6 +9,66 @@
 为什么落在 `docs/archive/notes/` 而不是仓库根：不是为了归类，是为了让「文档里引用的命令名是否还存在」那把现算量具继续不扫历史台账 —— `scripts/probe-doc-command-names.mjs` 的跳过规则整段放过 `docs/archive/`、`docs/notes/` 与 `CHANGELOG.md`（台账属于历史，不是现状声明）。
 
 ---
+
+## [5.17.33] - 2026-11-04
+
+### 内部重构（无用户可感知变化）
+
+- 3B 第六笔：群文件 ACK 账本的放弃判据抽成纯函数
+  `ack_replay_should_give_up(attempts)`（第 5 次失败才收手，前面继续重试）。
+  补边界特征用例 `replay_gives_up_exactly_on_the_fifth_failure`：
+  0–3 次继续、4 次放弃，偏移改早或改晚都会红。
+
+## [5.17.32] - 2026-11-04
+
+### 内部重构（无用户可感知变化）
+
+- 3B 第五笔：群消息 Ack 的三组写门集合收进 `db/group_offline_queue.rs`
+  （Ack 可落账的台账格、Ack 不许覆盖的消息状态、保 delivered 墓碑的消息状态），
+  SQL 由 `sql_in` / `sql_not_in` / `quote_statuses` 生成，与手写逐字等价。
+  `lib_delivery_shape_tests` 的墓碑判据同步搬锚点，并加「集合没被真正使用就红」的反例断言。
+  新增 `group_ack_doors_pin_every_status`：逐状态对照三扇门，含
+  「pending Ack 推翻 failed」与「迟到 Ack 保墓碑」两格反向证据。
+
+## [5.17.31] - 2026-11-04
+
+### 内部重构（无用户可感知变化）
+
+- 3B 第四笔：群文件成员行的五扇写门（进度写、卡住行回收、整单取消、按成员取消、
+  通用状态迁移、接收侧登记）收成同一组纯判据集合，SQL 由 `sql_in` / `sql_not_in`
+  生成，与手写逐字等价。新增状态矩阵特征用例 `group_file_status_doors_pin_every_status`：
+  逐状态对照五扇门的结论，集合成员或顺序一改就红。
+
+## [5.17.30] - 2026-11-04
+
+### 内部重构（无用户可感知变化）
+
+- 3B 第三笔：1:1 文件台账（`file_transfers`）的只读投影收进
+  `db/file_transfer.rs`：`file_transfer_row` 一次读回状态 / 取消墓碑 / 已知大小，
+  并明确区分「没有这一行」与「读库失败」。upsert 的五档拒绝诊断、孤儿存在性判据、
+  「已收」判据、终态收尾沿用的 size 全部改走这一个投影。
+  新增特征用例钉住投影三件事、存在性/已收同源、以及四档拒绝顺序不变。
+
+## [5.17.29] - 2026-11-04
+
+### 内部重构（无用户可感知变化）
+
+- 3B 第二笔：群消息每成员台账（`group_outbox`）的只读投影收进
+  `db/group_offline_queue.rs`：`group_outbox_row_status`（区分「没有这一格」与
+  「读库失败」）与 `group_outbox_counts`（四类行数）。Ack 收尾、取消判定、
+  进度计数、清扫器现在数的是同一批行；`group_outbox_progress_counts` 改为委托投影。
+  新增两个特征用例钉住计数精确性与读失败不可吞。
+
+## [5.17.28] - 2026-11-04
+
+### 内部重构（无用户可感知变化）
+
+- 3B 第一笔：群文件成员行（`group_file_recipients`）的只读投影收进
+  `db/group_files.rs`。ACK 收尾不再在传输层手写 `SELECT`，统一走
+  `group_file_recipient_status`（区分「这一格不存在」与「读库失败」）与
+  `group_file_recipient_statuses`（气泡聚合）；`get_group_file_recipient_status`
+  改为委托前者并保持吞错旧契约。新增复合故障用例：
+  `a_read_failure_is_retryable_not_a_stranger_ack`（读失败必须 Err，不许当串台丢账本）。
 
 ## [5.17.27] - 2026-11-04
 
