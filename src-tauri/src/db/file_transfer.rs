@@ -2,6 +2,34 @@
 // - 文件传输记录（FileTransfer CRUD）
 // ---------------- 文件传输记录 ----------------
 
+/// `file_transfers` 的只读投影：这一行的**判定事实**（状态 / 取消墓碑 / 已知大小）。
+///
+/// 同一条行事实此前被四处各写一遍 SELECT（upsert 的拒绝诊断、孤儿对账的存在性、
+/// Offer 的「已收」判据、终态收尾要沿用的 size）。各自手写时没法回答"读的是不是同一格"。
+///
+/// `Ok(None)` = 没有这一行；`Err` = 读库失败 —— 投影**不替调用方吞错**：
+/// 写侧要区分它们（见 `upsert_transfer` 的五档拒绝），`is_transfer_done` 要把 Err 交出去。
+pub struct FileTransferRow {
+    pub status: String,
+    pub cancel_terminal: bool,
+    pub size: u64,
+}
+
+pub fn file_transfer_row(conn: &Connection, id: &str) -> Result<Option<FileTransferRow>> {
+    conn.query_row(
+        "SELECT status, cancel_terminal, size FROM file_transfers WHERE id = ?1",
+        params![id],
+        |r| {
+            Ok(FileTransferRow {
+                status: r.get(0)?,
+                cancel_terminal: r.get::<_, i64>(1)? != 0,
+                size: r.get::<_, i64>(2)?.max(0) as u64,
+            })
+        },
+    )
+    .optional()
+}
+
 #[allow(clippy::too_many_arguments)]
 pub fn upsert_transfer(
     conn: &Connection,
@@ -50,23 +78,19 @@ pub fn upsert_transfer(
     // 判据⑩ 那次真成功的 `done` 就是撞在 `cancel_terminal = 1` 上、被 `Ok(())` 吞掉，
     // 于是"文件躺在下载目录里能打开、台账说已取消"这条矛盾在盘上一个字都没留。
     // 这里只读回那一格把"谁挡的"说清楚 —— 不改写、不放宽上面那条 WHERE。
-    let current: Option<(String, i64)> = conn
-        .query_row(
-            "SELECT status, cancel_terminal FROM file_transfers WHERE id = ?1",
-            params![id],
-            |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?)),
-        )
-        .optional()?;
+    let current = file_transfer_row(conn, id)?;
     Ok(match current {
         None => TransferUpsert::Refused {
             current: "无行".to_string(),
         },
-        Some((cur, _)) if cur == status => TransferUpsert::Idempotent,
-        Some((cur, _)) if cur == "done" => TransferUpsert::BlockedByDone,
-        Some((cur, tombstone)) if tombstone != 0 => TransferUpsert::BlockedByTombstone {
-            current: cur,
-        },
-        Some((cur, _)) => TransferUpsert::Refused { current: cur },
+        Some(FileTransferRow { status: cur, .. }) if cur == status => TransferUpsert::Idempotent,
+        Some(FileTransferRow { status: cur, .. }) if cur == "done" => TransferUpsert::BlockedByDone,
+        Some(FileTransferRow {
+            status: cur,
+            cancel_terminal: true,
+            ..
+        }) => TransferUpsert::BlockedByTombstone { current: cur },
+        Some(FileTransferRow { status: cur, .. }) => TransferUpsert::Refused { current: cur },
     })
 }
 
@@ -280,13 +304,11 @@ pub fn finalize_file_failure(
         if file_bubble || has_ledger || has_queue {
             // 终态写入不知道"这次传了多大"，必须沿用台账里已知的 size：A-11 之后
             // `upsert_transfer` 的冲突分支会同步 size，原样传 0 会把已知大小抹掉。
-            let known_size: u64 = tx
-                .query_row(
-                    "SELECT size FROM file_transfers WHERE id = ?1",
-                    params![transfer_id],
-                    |r| r.get::<_, i64>(0),
-                )
-                .map(|v| v.max(0) as u64)
+            // 读失败当作「不知道大小」（沿用旧的吞错口径），不能因此把收尾整笔打回。
+            let known_size = file_transfer_row(&tx, transfer_id)
+                .ok()
+                .flatten()
+                .map(|row| row.size)
                 .unwrap_or(0);
             upsert_transfer(
                 &tx,
@@ -336,14 +358,7 @@ pub fn finalize_file_failure(
 ///
 /// 收尾路径用它区分"更新一行"与"凭空插一行"（FUNC-03 的幽灵行判据）。
 fn transfer_row_exists(conn: &Connection, id: &str) -> Result<bool> {
-    let row = conn
-        .query_row(
-            "SELECT 1 FROM file_transfers WHERE id = ?1",
-            params![id],
-            |_| Ok(()),
-        )
-        .optional()?;
-    Ok(row.is_some())
+    Ok(file_transfer_row(conn, id)?.is_some())
 }
 
 /// 队列里是否还有这一单（`file_outbox` 只在单聊文件发送时写；群文件不走这张表）。
@@ -369,13 +384,7 @@ fn file_outbox_row_exists(conn: &Connection, id: &str) -> Result<bool> {
 /// `Err` 交给调用方裁决（不折叠成 `false`）：`false` 在这里意味着「还要收」，
 /// 判错方向会让已完成的文件重传落一份"名字(1)"副本，必须留痕。
 pub fn is_transfer_done(conn: &Connection, id: &str) -> Result<bool> {
-    let n = conn.query_row(
-        "SELECT 1 FROM file_transfers WHERE id = ?1 AND status = 'done'",
-        params![id],
-        |_| Ok(()),
-    )
-    .optional()?;
-    Ok(n.is_some())
+    Ok(file_transfer_row(conn, id)?.is_some_and(|row| row.status == "done"))
 }
 
 /// 终态行（`done` / `failed` / `sent` / `cancelled`）最多带回多少条。
@@ -580,6 +589,69 @@ mod file_transfer_status_tests {
             params![id, direction, created_at],
         )
         .unwrap();
+    }
+
+    /// 只读投影三件事一次读回：状态、墓碑、已知大小；没有这一行给 None，读库失败给 Err。
+    /// 存在性与「已收」两个判据必须与投影同源（不许各自再写一套 SELECT）。
+    #[test]
+    fn row_projection_reports_status_tombstone_and_size_or_absence() {
+        let conn = mem();
+        conn.execute(
+            "INSERT INTO file_transfers(id,peer_id,name,size,direction,status,path,progress,cancel_terminal,created_at)
+             VALUES('t1','peer-a','x.bin',42,'send','done',NULL,1.0,1,100)",
+            [],
+        )
+        .unwrap();
+        let row = file_transfer_row(&conn, "t1").unwrap().expect("行在");
+        assert_eq!(row.status, "done");
+        assert!(row.cancel_terminal);
+        assert_eq!(row.size, 42, "终态收尾要沿用的就是这一格 size");
+
+        assert!(file_transfer_row(&conn, "ghost").unwrap().is_none());
+        assert!(is_transfer_done(&conn, "t1").unwrap());
+        assert!(transfer_row_exists(&conn, "t1").unwrap());
+        assert!(!is_transfer_done(&conn, "ghost").unwrap());
+        assert!(!transfer_row_exists(&conn, "ghost").unwrap());
+
+        conn.execute_batch("DROP TABLE file_transfers").unwrap();
+        assert!(
+            file_transfer_row(&conn, "t1").is_err(),
+            "读库失败必须能被区分出来"
+        );
+        assert!(
+            is_transfer_done(&conn, "t1").is_err(),
+            "Err 必须交给调用方裁决（不许折叠成 false ⇒ 已完成文件被重传）"
+        );
+        assert!(transfer_row_exists(&conn, "t1").is_err());
+    }
+
+    /// 五档拒绝里可构造的四档必须保持原判定顺序（幂等 → done → 墓碑 → 其余）。
+    #[test]
+    fn upsert_refusal_still_classifies_idempotent_done_and_tombstone() {
+        let conn = mem();
+        assert_eq!(
+            upsert_transfer(&conn, "t", "p", "x", 7, "send", "done", None, 1.0).unwrap(),
+            TransferUpsert::Applied
+        );
+        assert_eq!(
+            upsert_transfer(&conn, "t", "p", "x", 7, "send", "done", None, 1.0).unwrap(),
+            TransferUpsert::Idempotent
+        );
+        assert_eq!(
+            upsert_transfer(&conn, "t", "p", "x", 7, "send", "active", None, 0.3).unwrap(),
+            TransferUpsert::BlockedByDone
+        );
+        conn.execute(
+            "UPDATE file_transfers SET status = 'cancelled', cancel_terminal = 1 WHERE id = 't'",
+            [],
+        )
+        .unwrap();
+        assert_eq!(
+            upsert_transfer(&conn, "t", "p", "x", 7, "send", "active", None, 0.3).unwrap(),
+            TransferUpsert::BlockedByTombstone {
+                current: "cancelled".to_string()
+            }
+        );
     }
 
     /// 第 19 行那一格：**为什么失败**必须跟着气泡行走 —— 正反两向都钉。
