@@ -14,6 +14,18 @@
 
 ## [Unreleased]
 
+## [5.17.35] - 2026-11-04
+
+### 行为变更（用户可感知）
+
+- 决定 1「取消不被静默翻案」：群文件某个成员被用户取消后，即使对方随后真的收到并回
+  成功 ACK，那一格的 `group_file_recipients.status` 也保持 `cancelled`，不再被悄悄
+  改写成 `completed`。事实不丢——证据写进既有列（`progress = 1.0` + `updated_at`
+  记录收到时刻），界面可在「已取消」行附注「对方后来仍收到」。未取消的行收到 ACK
+  照旧正常完成（反例用例钉住，保护没有写宽成一刀切拒写）。
+  回退：还原 `settle_group_file_recipient_ack` 的取消分支与
+  `ack_write_entrance_keeps_cancel_but_records_the_late_success` 即可。
+
 ## [5.17.34] - 2026-11-04
 
 ### 内部重构（无用户可感知变化）
