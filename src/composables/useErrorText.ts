@@ -27,3 +27,20 @@ export function errorText(e: unknown, prefix: string, opts?: { log?: boolean }):
   if (v.kind === "human") return t("errors.joined", { prefix, detail: v.detail });
   return t("errors.retry", { prefix });
 }
+
+/**
+ * 只要「说明」那一半，**不带动作前缀**。
+ *
+ * 给**自己已经有标题**的落点用（错误边界、看图窗、消息列表加载失败）：那些地方的标题
+ * 已经说了"什么失败了"，再拼一次前缀会变成「加载失败：加载失败」。这一格仍然只让
+ * 分类结果上屏 —— 原始异常串（IO / HRESULT / 英文库错误）进 console，不进界面。
+ */
+export function detailText(e: unknown, opts?: { log?: boolean }): string {
+  if (opts?.log && isTechnicalError(e)) {
+    console.warn(`[gosslan] ${rawErrorMessage(e)}`, e);
+  }
+  const v = classifyError(e);
+  if (v.kind === "copy") return t(v.key, v.params);
+  if (v.kind === "human") return v.detail;
+  return t("errors.retryPlain");
+}

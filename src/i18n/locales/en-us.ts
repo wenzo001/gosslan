@@ -650,6 +650,7 @@ export const enUS: MessageDict = {
   // ---- 错误提示的**文案**（分类器在 utils/errors.ts，它一条文案都不带）----
   "errors.joined": "{prefix}: {detail}",
   "errors.retry": "{prefix}. Please try again later.",
+  "errors.retryPlain": "Please try again later.",
   "errors.rule.pubkey":
     "The peer is offline, so this message cannot be encrypted yet. It is kept and will be sent automatically once the peer comes online.",
   "errors.rule.port": "Port already in use - a Gosslan instance may already be running.",

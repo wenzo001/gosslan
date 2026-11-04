@@ -665,6 +665,7 @@ export const zhCN: MessageDict = {
   // 那两把「拼装模板」是这条链的形状：`发送失败：<说明>` / `<动作>，请稍后重试`。
   "errors.joined": "{prefix}：{detail}",
   "errors.retry": "{prefix}，请稍后重试",
+  "errors.retryPlain": "请稍后重试",
   "errors.rule.pubkey": "对方尚未上线，暂时无法加密发送。消息已保留，对方上线后会自动补发",
   "errors.rule.port": "端口被占用，可能已有一个小院儿实例在运行",
   "errors.rule.system": "系统或网络暂时不可用，请稍后重试",

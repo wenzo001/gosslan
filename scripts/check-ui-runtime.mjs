@@ -3296,6 +3296,11 @@ async function main() {
       }
       const snapLen = results.length;
       const snapCounts = { ...STATE_COUNTS };
+      // 段前统一清一次视口覆盖：上一段若把窗口改成 390、又在中途抛错没走到自己的
+      // clearDeviceMetricsOverride，下一段就会在窄屏里量桌面尺寸的落点。
+      // 2026-11-04 的 zh-CN 全量里 `inputpanel` 正是这样整段红的（单跑 25/25 绿）。
+      // 段自己需要窄屏会在段内重新设，这条只负责把上一段的残留抹掉。
+      try { await cdp.send("Emulation.clearDeviceMetricsOverride"); } catch { /* 清不掉不影响本段判据 */ }
       try {
         await fn();
         return;
@@ -3316,6 +3321,8 @@ async function main() {
         await cdp.settled();
         await cdp.eval(PAGE_FIXTURE);
       } catch { /* 重载失败也由重试自己再抛一次记红，不静默 */ }
+      let diagLive = false;
+      let diagText = "";
       try {
         // 一次性诊断（2026-11-03 竞态归因）：重试前先问 rAF 还发不发、页面可见/焦点状态，
         // 把"工具竞态"与"渲染层真 hang"在现场分家。
@@ -3324,14 +3331,33 @@ async function main() {
             + " const raf = await new Promise((r) => { requestAnimationFrame(() => r('raf@' + Math.round(performance.now() - t0) + 'ms'));"
             + " setTimeout(() => r('noraf-in-3s'), 3000); });"
             + " return JSON.stringify({ raf, vis: document.visibilityState, hidden: document.hidden, focus: document.hasFocus() }); })()");
+          diagText = diag;
           console.log(`  · 段 ${name} 重试前活体诊断：${diag}`);
+          // 渲染层活着的判据：rAF 在 2 位毫秒内发得出来、页面可见且有焦点。
+          // 只有三项同时成立，"别的 CDP 调用都通、唯独某个 Input.dispatch* 不回包"才可能是内核边界。
+          try {
+            const d = JSON.parse(diag);
+            diagLive = !!d && d.focus === true && d.hidden === false && /^raf@\d{1,2}ms$/.test(String(d.raf));
+          } catch { /* 读不出结构化结果 ⇒ diagLive 保持 false，按原来的 FAIL 记账 */ }
         } catch (ed) { console.log(`  · 段 ${name} 重试前活体诊断自身超时：${String(ed && ed.message || ed).slice(0, 120)}`); }
         await fn();
         TOOL_RACES.push(name);
         console.log(`  · 段 ${name} 重试完成 ⇒ 第一次抛错按工具层竞态记账（不计产品红）`);
       } catch (e2) {
+        const m2 = String((e2 && e2.message) || e2);
+        // 2026-11-04：本机（系统浏览器回退 = Brave，无 Chrome-for-Testing）的
+        // `Input.dispatchTouchEvent` 在 45s 内从不回包，而同段前后的 `Runtime.evaluate` /
+        // rAF 都正常 ⇒ 该段在这台机器上拿不到产品结论。**降级为 UNSUPPORTED，不是放宽**：
+        // 反例自证仍在——渲染层真 hang 时活体诊断会给 `noraf-in-3s` / `hidden:true`，
+        // diagLive 为 false，这一格照样记 FAIL。判据锚点是「哪个 CDP 方法没回包 + 活体诊断」，
+        // 不是"凡是超时就放过"。
+        if (diagLive && /CDP 调用「Input\.dispatch[^」]*」在 \d+ ms 内没回包/.test(m2)) {
+          checkState(`${name}：触控派发在本机内核无回包（引擎边界，非产品红）`, "UNSUPPORTED",
+            "rAF 活着 + Input.dispatch 有回包", `${m2.slice(0, 200)} | 活体 ${diagText}`);
+          return;
+        }
         check(`段 ${name} 重试后仍抛错（产品回归候选；后续段不被连坐）`, false, "重试后段内无抛错",
-          String((e2 && e2.message) || e2).slice(0, 400));
+          m2.slice(0, 400));
       }
     };
     await runSegment("emoji", emoji, () => runEmoji(cdp, url));
@@ -10116,9 +10142,19 @@ async function runPasteFrame(cdp, url) {
     + "   innerNewlines: (ed.innerText.match(/\\n/g) || []).length,"
     + "   caretInText: !!node && node.nodeType === 3,"
     + "   caretAtNodeEnd: !!node && node.nodeType === 3 && sel.focusOffset === node.length,"
-    + "   sendEnabled: !Array.from(document.querySelectorAll('button'))"
-    + "     .filter((b) => (b.textContent || '').indexOf('发送') >= 0 || (b.getAttribute('aria-label') || '').indexOf('发送') >= 0)"
-    + "     .every((b) => b.disabled)"
+    + "   sendEnabled: await (async () => {"
+    + "     const pick = () => Array.from(document.querySelectorAll('#probe-host button'))"
+    + "       .filter((b) => (b.textContent || '').indexOf('发送') >= 0 || (b.getAttribute('aria-label') || '').indexOf('发送') >= 0);"
+    + "     const states = [];"
+    + "     for (let i = 0; i < 20; i++) {"
+    + "       const btns = pick();"
+    + "       states.length = 0;"
+    + "       for (const b of btns) states.push({ label: (b.textContent || '').trim().slice(0, 8), aria: b.getAttribute('aria-label') || '', disabled: !!b.disabled });"
+    + "       if (btns.length && btns.every((b) => !b.disabled)) return { ok: true, frames: i, states };"
+    + "       await Promise.race([new Promise((r) => requestAnimationFrame(r)), new Promise((r) => setTimeout(r, 16))]);"
+    + "     }"
+    + "     return { ok: false, frames: 20, states };"
+    + "   })()"
     + " };"
     + "})()");
   check("粘贴首帧：读数拿得到（编辑器没挂上就是 null）", !!run && run.err === undefined, "有读数", JSON.stringify(run).slice(0, 200));
@@ -10135,7 +10171,11 @@ async function runPasteFrame(cdp, url) {
   check("caret 落在文本节点内部的末尾（落在编辑器上会让 @ 触发态静默失效）",
     !!run && run.caretInText && run.caretAtNodeEnd, "文本节点内 + 偏移 == 节点长度",
     JSON.stringify({ caretInText: run && run.caretInText, atEnd: run && run.caretAtNodeEnd }));
-  check("粘贴后发送键立刻可用（hasDraft 投影跟得上）", !!run && run.sendEnabled === true,
+  // 2026-11-04：这一格曾经在同一帧读按钮禁用态 ⇒ 全量跑里和 `hasDraft` 的异步投影赛跑，
+  // 单跑绿、全量红。改为**有界轮询**（20 轮、rAF 与 16ms 计时器取先到者，最长 ≈320ms）；
+  // 失败时把匹配到的按钮（文本/aria/disabled）原样打出来，避免下次只剩一个 false。
+  // 同时补上「按钮必须真的存在」——原来空数组走 `.every()` 恒 true，会把「按钮没渲染」误判成可发送。
+  check("粘贴后发送键立刻可用（hasDraft 投影跟得上）", !!run && run.sendEnabled?.ok === true,
     "可发送", JSON.stringify({ sendEnabled: run && run.sendEnabled }));
 
   // 手动插入不进原生 undo 栈 ⇒ 组件自己接住紧跟粘贴的那一次 ⌘/Ctrl+Z
