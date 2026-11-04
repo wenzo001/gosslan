@@ -3,16 +3,17 @@
  *   ① 多行自增高 5 行封顶；
  *   ② 粘贴图片先入框、发送才发；
  *   ③ 输入框内表情渲染成图片 token；
- *   ④「回到最新」纯圆无文字且水平居中。
+ *   ④「回到最新」纯圆无文字且水平居中；
+ *   ⑤ 单行输入框与多行主输入框的高度只允许三档（sm 32 / md 36 / lg 44）。
  *
- * 前两项是纯函数真值表；后三项读组件源码做**静态接线守卫**。
+ * 前两项是纯函数真值表；后四项读组件源码做**静态接线守卫**。
  * 为什么后三项要读源码：这些是"回退后界面看起来仍然正常"的退化 ——
  * 例：粘贴又改回即时发送、表情又变回文字短码，肉眼回归很难发现。
  * 每条注释都写明"删掉修复会红"的反例锚点，避免守卫空转。
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import {
   COMPOSER_LINE_HEIGHT,
@@ -118,4 +119,57 @@ test("回到最新按钮纯圆无文字且水平居中（回退成文字胶囊�
   // 加回按钮正文，插值文本会留在 textOnly 里 ⇒ 这条会红。
   const textOnly = block.replace(/<!--[\s\S]*?-->/g, "").replace(/<[^>]*>/g, "");
   assert.equal(textOnly.trim(), "", "按钮内不允许出现文字节点");
+});
+
+test("输入框高度收敛为三档（单行 32/36、多行 44；出现 h-7/h-10 会红）", () => {
+  // 高度归外壳/工具条行所有的输入，逐条登记理由；不登记就会因"没有档位"判红。
+  const heightOwnedByShell = new Set([
+    "components/ConversationList.vue", // 输入在 h-9 搜索壳内
+    "components/search/ChatSearchDialog.vue", // 输入在 h-9 搜索壳内
+    "components/LogViewer.vue", // 透明内联筛选，行高由工具条决定
+  ]);
+  const walk = (dir: string): string[] =>
+    readdirSync(dir, { withFileTypes: true }).flatMap((entry) => {
+      const full = join(dir, entry.name);
+      if (entry.isDirectory()) return walk(full);
+      return entry.name.endsWith(".vue") ? [full] : [];
+    });
+
+  const offenders: string[] = [];
+  let inspected = 0;
+  for (const file of walk(srcDir)) {
+    const rel = file.slice(srcDir.length + 1).replaceAll("\\", "/");
+    if (heightOwnedByShell.has(rel)) continue;
+    // 剥掉注释，避免把注释里的 `h-7 = 28px` 或示例 `<input>` 当成真实控件。
+    const src = readFileSync(file, "utf8")
+      .replace(/<!--[\s\S]*?-->/g, "")
+      .replace(/\/\*[\s\S]*?\*\//g, "");
+    for (const match of src.matchAll(/<(input|textarea)\b[\s\S]*?>/g)) {
+      const tag = match[0];
+      const type = (tag.match(/\btype="([^"]*)"/) ?? [])[1] ?? "text";
+      // 非文本输入没有文字行高约束，不参与档位；`:type` 动态表达式按文本输入处理。
+      if (["checkbox", "radio", "color", "file", "hidden", "range"].includes(type)) continue;
+      // 多行 textarea 自增高/可拖拽，属于多行口径，不按单行三档约束。
+      if (match[1] === "textarea") continue;
+      const cls = (tag.match(/class="([^"]*)"/) ?? [])[1] ?? "";
+      const heights = cls.match(/\b(?:min-)?h-\S+/g) ?? [];
+      inspected += 1;
+      const onTier = heights.length === 1 && (heights[0] === "h-8" || heights[0] === "h-9");
+      if (!onTier) {
+        const line = src.slice(0, match.index).split("\n").length;
+        offenders.push(`${rel}:${line} 高度=${heights.join(",") || "(无)"}`);
+      }
+    }
+  }
+
+  // 反例自证：扫描空转（例如改了目录结构、注释误命中）会先在这里红，不会假绿。
+  assert.ok(inspected >= 12, `至少要扫到 12 个单行文本输入，实际 ${inspected}`);
+  assert.deepEqual(offenders, [], `只允许 h-8(32)/h-9(36)：\n${offenders.join("\n")}`);
+
+  // 多行主输入框取 lg 档 44px：改回旧 min-h-10(40) 会红。
+  assert.ok(
+    composerSrc.includes("gosslan-composer-editor min-h-11"),
+    "主输入框必须落在 lg 档 min-h-11（44px）",
+  );
+  assert.ok(!composerSrc.includes("gosslan-composer-editor min-h-10"), "不得回退到 40px 旧档");
 });
