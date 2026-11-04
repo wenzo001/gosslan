@@ -14,6 +14,18 @@
 
 ## [Unreleased]
 
+## [5.17.45] - 2026-11-04
+
+### 修复：前台节奏切换的失败不再静默丢弃（棘轮回归）
+
+- `92481fec`（09:55 那笔"前台/失焦抖动不再驱动蓝牙扫描节奏"）在 `set_app_active`
+  里用 `.await.ok();` 收掉 `spawn_blocking` 的返回值 —— 该文件在「静默丢弃棘轮」
+  里的基线是硬零，`npm run verify` 因此变红（而这笔提交当时没跟着更新基线）。
+- 改为 `if let Err(e) = handle.await { logger.warn("code=FOCUS_RHYTHM_TASK_FAILED …") }`：
+  节奏没切这件事必须留一行可检索的码，不再无声。
+- 证据：`cargo test --features bluetooth --lib` → 1490 passed；`npm run verify` → 通过。
+  回退：`git revert` 本提交（无行为变化，只把丢弃换成留痕）。
+
 ## [5.17.44] - 2026-11-04
 
 ### 修复：发送失败拆成「真离线」与「在线但送不到」两句话，各给下一步（Block 3）
