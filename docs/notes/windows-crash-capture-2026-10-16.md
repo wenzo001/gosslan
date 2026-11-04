@@ -504,6 +504,9 @@ Get-Content "$env:APPDATA\com.gosslan.app\logs\gosslan-crash.log" -Tail 310
   ⇒ 屏幕上那个 `gosslan 0 MB` 是**那个目录本身**，不是 dump。17:53 那次到底有没有落下带堆的 dump，
   这条命令**没看到**，读数作废，要用 `-Recurse` 重取。
 
+- ★ **2026-11-04 又出现 3 条同一形状**（5.16.74 ×2、5.17.52 ×1，同码同偏移）⇒ 见 §10；
+  那天的 `avail_commit` 最低 138 MiB，但**这仍不是已证实的根因**（§10d 三个反证）。
+
 ### 9a. 于是下一步分成两问，别再混着问
 
 1. **A 型（我们自己 abort 的那一族）**：装带机制的构建（tip `8236b1e`），崩了看 `gosslan-crash.log` 有没有块。
@@ -511,3 +514,124 @@ Get-Content "$env:APPDATA\com.gosslan.app\logs\gosslan-crash.log" -Tail 310
 2. **B 型（KERNELBASE 抛出的那一族）**：只认 dump。先确认 17:53 那次有没有留下带堆的 dmp（`-Recurse`），
    有就报大小与时间戳；没有就再崩一次（`DumpType=2` 已生效）。
    两份 dump 的差别（Mini vs Heap）决定我能不能给你一段本机抽取脚本把栈和堆里的文本捞出来。
+
+---
+
+## 10. 2026-11-04 复发：同一天 3 条形状 B（含 5.17.52），这次 WER 读到了
+
+用户 2026-11-05 补来三段 `Get-WinEvent` 输出（Application 18:20–18:40 全量、System 41/6008、
+Application 1000/1001/1002）。先把结论写死：
+
+**这是形状 B 的复发，不是新问题，也不是 panic 或整机断电。** 同一天同一台机器共 3 条，异常码与偏移逐字相同：
+
+| 本地时间 | 版本 | pid | WER 里的进程启动（FILETIME 解出） | 现场文件里的对应路标 |
+|---|---|---|---|---|
+| 13:15:12 | 5.16.74 | `0x50C8` = 20680 | 12:02:03 | `>>> 启动尝试 … pid=20680 @2026-11-04 04:02:03` |
+| 17:15:06 | 5.16.74 | `0x3A0C` = 14860 | 16:11:49 | `>>> 启动尝试 … pid=14860 @2026-11-04 08:11:49` |
+| **18:27:27** | **5.17.52** | **`0x5910` = 22800** | **17:52:39.268** | `>>> 启动尝试 … pid=22800 @2026-11-04 09:52:39` |
+
+三条的模块 / 异常码 / 偏移逐字相同，只换版本、pid 与启动时间。以 5.17.52 那条为例（原文）：
+
+```
+TimeCreated  : 2026/11/4 18:27:27
+Id           : 1000
+ProviderName : Application Error
+Message      : 出错应用程序名称： gosslan.exe，版本： 5.17.52.0，时间戳： 0x6aeafede
+               出错模块名称： KERNELBASE.dll， 版本： 10.0.26100.9818，时间戳： 0x09f91ee4
+               异常代码： 0xe0000008
+               错误偏移： 0x00000000000c569a
+               出错进程 ID： 0x5910
+               出错应用程序开始时间： 0x1DD6C423A4C1309
+               Faulting 应用程序路径： C:\Users\lhcz-fu\AppData\Local\Gosslan\gosslan.exe
+               Faulting 模块路径： C:\WINDOWS\System32\KERNELBASE.dll
+               Report ID： a4ac53f6-e823-4bde-a7a1-e59b2235bb32
+```
+
+（`0x5910` = 22800，与现场文件里 5.17.52 那次 bootstrap 的 `pid=22800 @09:52:39` **逐位对上**；
+FILETIME 解出 `2026-11-04T09:52:39.268Z` ⇒ 同一条记录就是这一轮进程。另两条同样按 pid + 启动时刻对上，
+不是同名安装的另一份。）
+
+### 10a. 三条分类判定（逐条排除，不靠"看起来像"）
+
+| 判定项 | 读数 | 结论 |
+|---|---|---|
+| 真崩（WER 1000 + 异常码） | 有，3 条，码 `0xe0000008` | **命中** |
+| 整机异常（41 / 6008） | 只有 `2026/11/3 10:08:00` 的 41 与 `10:08:21` 的 6008 | **11-04 无记录** ⇒ 不是断电 / 整机重启 |
+| 被系统清理（资源类事件） | Application 18:20–18:40 全量里**没有** `Resource-Exhaustion-Detector`(2004)、没有 `Application Hang`(1002) | **不命中**（WER 1000 本身就是崩溃记录） |
+| WER 上报（1001） | 三条查询里**一条 1001 都没有** | 与 §9「上报链路是断的」一致 ⇒ 拿不到 Bucket |
+
+**所以：类目 1（真崩）。** 但"谁抛的"仍**不确定**：`0xE0000000` 段是软件异常（`RaiseException` 主动抛），
+`KERNELBASE.dll` 是派发这件事的那一层，不是凶手。公开能查到的同类只有"未知软件异常"这一句
+（Teams / Chrome / 游戏都出现过同一码），**没有权威映射，不猜**（§9 口径不变）。
+
+⚠️ **偏移不能当指纹**：10 月那两条是 `0xc408a`，这三条是 `0xc569a`，而 `KERNELBASE` 版本今天才被记下来
+（`10.0.26100.9818`）。系统 dll 的偏移随版本变，**同码 + 同偏移只证明"同为软件异常"**，
+既不证明"同一个凶手"，也不证明"不是同一个凶手"。别再拿偏移做因果推断。
+
+### 10b. 18:27 那次的时间线（本地 = UTC+8；日志是 UTC）
+
+| 本地 | UTC | 事件（原文） |
+|---|---|---|
+| 18:17:40 | 10:17:40 | `code=RUNTIME_MEM … commit=17MiB avail_commit=1893MiB total_commit=40711MiB` |
+| 18:22:40 | 10:22:40 | `avail_commit=600MiB`（5 分钟内 1893 → 600） |
+| **18:27:13** | 10:27:13 | `>>> code=HANG scope=main_thread seconds=2 last_op=get_pending_message_operations last_op_age_s=99 hb_age_ms=1475 active=true inflight=0 … avail_commit=138MiB` ← **最低点** |
+| 18:27:15 | 10:27:15 | `>>> code=HANG scope=ui_renderer seconds=3 … hb_age_ms=3503 … avail_commit=341MiB`（2 秒内 138→341，说明别处在大进大出提交） |
+| 18:27:16 / 18 / 25 | | 后台线程仍在写：`ROUTED_DIAL_FAILED`、`GOSSIP_MESH_DROP` ⇒ **不是全进程冻死** |
+| 18:27:22 | 10:27:22 | `[notify] 已发送系统通知：Gosslan 界面无响应` |
+| 18:27:25 | 10:27:25 | **最后一行日志**（`GOSSIP_MESH_DROP`）；下一句 6–7 s 周期的话没来 |
+| **18:27:27** | 10:27:27 | **WER 1000 / `0xe0000008`** ⇒ 进程在最后一行日志后 **2 s** 死于此异常 |
+| 18:32:13 | 10:32:13 | `pid=16132` 新进程；10:32:14 启动即 `code=COMMIT_PRESSURE avail_commit=405MiB`（阈值 512） |
+
+（崩溃后 4 分 47 秒才重启 ⇒ 是人在点，不是程序自愈。现场：`RUNTIME_SNAPSHOT windows=1 hidden=1 peers=0 sending_msgs=0 outbox=0`，
+窗口 hidden、失焦 535 s。）
+
+### 10c. 为什么自愈那条线一条都没有 —— 不是失效，是来不及
+
+- 渲染层心跳最后一跳 ≈ 10:27:11.5（`hb_age_ms=3503` @10:27:15）⇒ 20 s 动作点 **≈10:27:31.4**；
+  崩溃在 **10:27:27**，早 4 s。
+- 更要紧的一层：主线程 10:27:11 就停了（`scope=main_thread seconds=2` @10:27:13）。`recover_decision` 的 G2
+  在"主线程也停摆"时**不会**在 20 s 直接 reload，而是等 `MAIN_STALL_ESCALATE_MS = 30 s` 走进程重启
+  ⇒ 这条路径的真实动作点是 **10:27:41**，比崩溃晚 14 s。
+- **结论：这次就算把 20 s 提前也救不回来**（reload 排不进已经停住的事件循环）。这是**不许动阈值**的反证，
+  不是"阈值太大"的证据。3 s / 10 s / 20 s / 30 s 一个都不动。
+
+### 10d. 提交内存：相关，但今天不能升级成因果
+
+- 我们自己的量**全程平**：`ws=43MiB commit=17MiB tree_commit=320MiB`，`avail_commit` 却从 1893 → 600 → 138 MiB
+  ⇒ 吃掉的**不是我们**（40.7 GB 的提交额度只剩 138 MiB），与 §3 那条"几百 MB 常挂在 WebView2 子进程树上"同源。
+- 相关性确实在：三条形状 B 里有两条，死前 ≤30 s 留过很低的读数（138 MiB / 446 MiB）。
+- 但三个反证，任一条成立就能推翻"提交耗尽导致崩溃"：
+  1. **04:00:52–04:01:55 那次 63 s 停摆**（同机、同为 UI 停摆）`avail_commit` 是 5298→4910→4864 MiB，**最后自愈了**；
+  2. 提交耗尽的经典出口是 **Rust `handle_alloc_error` → abort → `0xc0000409`**，这里是 `0xe0000008`；
+  3. 进程最后 12 s 仍在分配并写日志（18:27:18 / 18:27:25 两行）⇒ **本进程当时还能申请内存**。
+- 旁证指向"整机当时就不健康"：同日 `vmcompute.exe`(18:13:30, `0xc00000fd`)、`TaskScheduler.exe`(17:15:05, `0xc00000fd`)、
+  `SDXHelper.exe`(13:48:37, `0xc00000fd`)、`dwm.exe`(15:07:06, `0xc00001ad`)、`MarvisKnowledgebase.exe`(14:58:24, `0xc0000409`)、
+  `explorer.exe`(18:35:44, `0xc000027b`) ⇒ 18:35:52 `Winlogon 1002 外壳程序意外停止`、18:38:22 `Weixin.exe` 否决关机、
+  18:38:43→18:39:40 用户配置文件服务停/起（注销又登入）。**一个下午崩了至少 7 个不相干的进程。**
+
+### 10e. 下一步：要的是"凶手的栈"，不是再改一次阈值
+
+形状 B 只认带堆的 dump（§7 的 `DumpType=2` 已在该机生效）。下一次复发时：
+
+```powershell
+Get-ChildItem "$env:LOCALAPPDATA\CrashDumps" -Filter 'gosslan*.dmp' -Recurse |
+  Sort-Object LastWriteTime -Descending | Select-Object -First 3 FullName,Length,LastWriteTime
+```
+
+- 有 dmp ⇒ WinDbg `!analyze -v` + `k`，看**抛异常那一帧的直接调用者**；那一帧落在 `gosslan.exe` /
+  `msedgewebview2` / 注入的第三方 dll，才决定是不是我们能修的缺陷。
+- 顺带补两条**尚未取过**的读数（别再当"已排除"）：
+  1. `Display` 提供程序 4101（GPU TDR）：`Get-WinEvent -FilterHashtable @{LogName='System'; ProviderName='Display'} -MaxEvents 30`；
+  2. `System` 日志 18:20–18:40 全量（现在只查过 41/6008）——看那 8 分钟里有没有存储 / 驱动 / 内核警告。
+
+**本轮不改代码**：没有确认的可修自身缺陷（无 panic、现场文件无块、凶手未知）。
+5.17.53 那笔解析修复已让"上一轮没收尾就没了"能判成 `silent_kill` ⇒ 这种崩法下次会弹横幅，
+但**它不会告诉我们凶手**，别把横幅当成根因解决。
+
+### 10f. 下次判读速查（照这三行做，别再从头猜）
+
+1. 有 `1000` + `KERNELBASE` + `0xe0000008` ⇒ **形状 B**：**别去 `gosslan-crash.log` 找 panic 块**（§9 ★ 已说明那里不会有），
+   也别判成"整机断电"——先看 41/6008 的**日期**。
+2. `avail_commit` 只作**旁证**：低（几百 MiB 级）+ 同日多进程崩 ⇒ 记"整机处于极端压力"，**不写成根因**；
+   反例锚点：04:01 那次 63 s 停摆发生在 4.9 GB 余量。
+3. 主线程停 ⇒ 真实动作点在 30 s（G2），20 s 的 reload 排不进去；**别为了"这次没自愈"去动阈值**。
