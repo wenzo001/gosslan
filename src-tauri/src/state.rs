@@ -1209,9 +1209,13 @@ pub struct AppState {
     /// 小 id 在握手验签后就知道"对端比我大 ⇒ 该它拨我"，把该外设标识记进这里，
     /// 之后扫描直接跳过它 —— 不再去打扰那条好的链路。
     ///
+    /// 值 = **这条记录的过期时刻**（毫秒时间戳）。记录过期后允许再拨：指定拨号方一次
+    /// 漏扫/休眠/失败就永久拉黑，会让小 id 一侧整场会话都不再尝试（真机体感
+    /// 「搜得到但一直连不上 / 时好时坏」）。TTL 与判据见 `network::ble::BLE_NO_DIAL_TTL_MS`。
+    ///
     /// 清空时机：蓝牙通道停止时（下次开启重新学一遍）。
     #[cfg(feature = "bluetooth")]
-    pub ble_no_dial: Mutex<std::collections::HashSet<String>>,
+    pub ble_no_dial: Mutex<std::collections::HashMap<String, i64>>,
     /// **确认在广播的 BLE 外设标识**（central 侧，每次开启蓝牙时清空后重新学）。
     ///
     /// 为什么需要（ADR-0015 §7-f，Windows Phase 1）：BLE 上"谁拨号"原本是
@@ -2471,7 +2475,7 @@ impl AppState {
             #[cfg(feature = "bluetooth")]
             ble: Mutex::new(None),
             #[cfg(feature = "bluetooth")]
-            ble_no_dial: Mutex::new(std::collections::HashSet::new()),
+            ble_no_dial: Mutex::new(std::collections::HashMap::new()),
             #[cfg(feature = "bluetooth")]
             ble_peer_advertises: Mutex::new(std::collections::HashSet::new()),
             #[cfg(feature = "bluetooth")]

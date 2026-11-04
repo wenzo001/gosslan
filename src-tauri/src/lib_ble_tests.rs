@@ -17,13 +17,20 @@
     /// 两端都同时跑 central + peripheral ⇒ **互相拨号**，形成两条镜像 BLE 链路；
     /// 小 id 那一侧拨过去的连接会被对端按镜像规则拒掉（不回 Hello），但**每次连接本身
     /// 都会打断对端拨过来的那条好链路** ⇒ 好链路 45s 收不到帧被看门狗拆掉 ⇒ 再重来。
-    /// 修法：小 id 在握手验签后**记住"不要再拨这个外设"**并主动放弃该镜像链路。
     ///
     /// ⚠️ 2026-09-13（Windows Phase 1）本条判据多了 `peer_advertises` 前缀：
     /// "大 id 拨"只在**两端都能广播**时成立。Windows 只做 central，若照搬会让
     /// "Windows id 更小"变成两侧都不拨的死局（真机现象：搜到了但永远连不上）。
     /// 所以既要**保留**镜像护栏（对端在广播时仍按 id 比较），又要
     /// **保留**"对端不广播 ⇒ 必须我们拨"这个活口 —— 两条都不能被删掉。
+    ///
+    /// ⚠️ 2026-11-04（方案 1）：退让**不再无条件** —— 只有对端**已有一条健康蓝牙链路**
+    /// 才记名单并放弃；一条都没有时必须**接住**这条（否则对端漏扫/休眠/拨号失败时
+    /// 两侧都在等对方，整场会话不再尝试）。名单同时从"永久黑名单"改成 **120s TTL**
+    /// （过期即放行），而名单按 BLE 地址建键 ⇒ 对端地址轮换后旧记录自然不生效。
+    ///
+    /// 判据搬迁同批的反例自证：下面三条 `code_flat` 断言钉住"常量真的被那扇门用上"
+    /// —— 少了 `no_dial_expiry` / `map.remove` 中的任何一条，守卫会报红而不是查空气。
     #[test]
     fn ble_link_has_a_designated_dialer() {
         let ble = &crate::network::ble_src_for_guards();
@@ -37,9 +44,25 @@
             "对端不广播时必须由我们拨（`peer_advertises` 前缀）—— \
              少了它，只做 central 的平台（Windows）在 id 更小时会两侧都不拨，链路永远建不起来"
         );
+        let flat = code_flat(ble);
         assert!(
-            ble.contains("if !should_dial_ble(&state.device_id, &peer_id, peer_advertises)"),
-            "central 侧握手后必须用它决定要不要放弃镜像链路"
+            flat.contains(
+                "matchmirror_link_decision(&state.device_id,&peer_id,peer_advertises,healthy_ble_links,)"
+            ),
+            "central 侧握手后必须用纯函数裁决镜像链路（有健康链路才退让，否则接住）"
+        );
+        assert!(
+            flat.contains("insert(ble_id.clone(),no_dial_expiry(now))"),
+            "退让时必须把『now + TTL』写进名单 —— 只写地址 = 又退回永久黑名单"
+        );
+        assert!(
+            flat.contains("map.remove(&adv_id)"),
+            "扫描循环在放行前必须剪掉过期记录（否则表只增不减，过期判据形同虚设）"
+        );
+        assert!(
+            flat.contains("no_dial_blocks(Some(expiry),now)")
+                && rust_fn_body(ble, "fn no_dial_expiry(").contains("BLE_NO_DIAL_TTL_MS"),
+            "TTL 必须是有名常量、且真的参与了过期判断（反例自证：删掉常量或过期分支即报红）"
         );
         assert!(
             ble.contains("ble_no_dial"),
@@ -50,8 +73,8 @@
             "『对端是否在广播』必须有事实来源（扫描结果登记），不能靠平台常量猜"
         );
         assert!(
-            ble.contains("contains(&peripheral.id().to_string())"),
-            "扫描循环必须跳过名单里的外设"
+            flat.contains("map.get(&adv_id)"),
+            "扫描循环必须跳过名单里（且未过期）的外设"
         );
     }
 
