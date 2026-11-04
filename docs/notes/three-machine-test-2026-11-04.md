@@ -13,8 +13,19 @@ Android BLE 外设（第 1 节）、公网中继（第 3 节）、桥接三机�
 
 - Windows x64：`Gosslan_5.17.52_x64-setup.exe`，6,050,068 B，
   sha256 `4f69030208faf5283b9a42d37e37ffcb153d1dc56f09e9edc20c350ef7733f80`
+- Windows arm64：`Gosslan_5.17.52_arm64-setup.exe`，5,604,314 B，
+  sha256 `b70e907384575f5d8282b6aa8f9d27fa377650020fa23f1e72c2dd355a87de63`
 - macOS arm64：`Gosslan_5.17.52_aarch64.dmg`，9,197,486 B，
   sha256 `89f8221ba6860967bbbae4c49d8eafa4acfd5ca126d090ceeb7bca772ce03b40`
+- macOS x64：`Gosslan_5.17.52_x64.dmg`，9,779,057 B，
+  sha256 `12e12b8c449ba08d2112082f9e4638181b58567e480f746de157990710af0503`
+- Android arm64-v8a：`gosslan-5.17.52-arm64-v8a-release.apk`，17,706,058 B，
+  sha256 `429c499ec28eac6e3b596774c7edb9df1da656d3e0b9b9789e7a778c495af7c5`
+- Android armeabi-v7a：`gosslan-5.17.52-armeabi-v7a-release.apk`，13,366,684 B，
+  sha256 `056829a2ba0a171e1eb330130b8d569449bb29e1f1975e66ebf60caeff191fcf`
+
+（另有 Windows 内置 WebView2 档 `Gosslan_5.17.52_x64-setup-webview2-bundled.exe` /
+`Gosslan_5.17.52_arm64-setup-webview2-bundled.exe`，给装不上 WebView2 运行时的机器。）
 
 版本核对：Windows 由产物文件名 `5.17.52` + `tauri.conf.json` 的 `version`（三处均为 5.17.52）；
 macOS 挂载 dmg 后读 `CFBundleShortVersionString`。以上字节数与 sha256 来自
