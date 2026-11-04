@@ -615,6 +615,30 @@ pub fn group_file_recipient_statuses(conn: &Connection, transfer_id: &str) -> Re
     rows.collect()
 }
 
+/// 群文件 ACK 的**写入口**：把该成员这一格落成终态（`completed` / `failed`）。
+///
+/// 调用方（`transport/group_file.rs::apply_group_file_ack_db`）已先过幂等闸门：
+/// `completed` 不许被迟到的失败 ACK 降级。这里**故意不做状态门** —— 真实 ACK 必须能
+/// 覆盖 `cancelled` / `failed`（它们是"没送到"的旧结论，Ack 是迟到但确凿的反证）。
+pub fn settle_group_file_recipient_ack(
+    conn: &Connection,
+    transfer_id: &str,
+    recipient_id: &str,
+    success: bool,
+) -> Result<()> {
+    let (status, progress) = if success {
+        ("completed", 1.0)
+    } else {
+        ("failed", 0.0)
+    };
+    conn.execute(
+        "UPDATE group_file_recipients SET status = ?3, progress = ?4, updated_at = ?5
+         WHERE transfer_id = ?1 AND recipient_id = ?2",
+        params![transfer_id, recipient_id, status, progress, now_ms()],
+    )?;
+    Ok(())
+}
+
 /// 取单个 recipient 的投递状态（用于「已完成则跳过重建」判断）。不存在返回 None，读库失败也返回 None。
 ///
 /// 读侧只需要「有没有 / 是什么」，吞错是既有契约（行为不变）；写侧要分辨失败请走
@@ -691,6 +715,7 @@ mod group_file_delivery_tests {
         bump_group_file_recipient_progress, get_group_file_delivery_summary,
         get_group_file_recipient_status, group_file_recipient_status, group_file_recipient_statuses,
         is_group_file_cancelled, is_group_file_recipient_cancelled,
+        settle_group_file_recipient_ack,
         list_pending_group_files_for_recipient, list_stale_group_file_sending,
         mark_group_file_cancelled, requeue_stale_group_file_sending, update_group_file_recipient,
         upsert_group_file_receive,
@@ -1024,6 +1049,45 @@ mod group_file_delivery_tests {
             |r| r.get(0),
         )
         .unwrap()
+    }
+
+    fn recipient_progress(conn: &Connection, tid: &str, rid: &str) -> f64 {
+        conn.query_row(
+            "SELECT progress FROM group_file_recipients WHERE transfer_id = ?1 AND recipient_id = ?2",
+            params![tid, rid],
+            |r| r.get(0),
+        )
+        .unwrap()
+    }
+
+    /// Ack 写入口只有两种终态：成功 ⇒ completed/1.0，失败 ⇒ failed/0.0。
+    ///
+    /// 这里**故意不设状态门**：真实 ACK 是"迟到但确凿"的反证，必须能覆盖
+    /// cancelled/failed 的旧结论。唯一的例外（completed 不许被失败 ACK 降级）在
+    /// 传输层幂等闸门里，由 `completed_guard_reads_recipient_status_in_the_handler`
+    /// 与 `a_completed_row_is_never_downgraded` 那组用例钉住。
+    #[test]
+    fn ack_write_entrance_overwrites_every_status_including_cancelled() {
+        for prior in ["pending", "sending", "completed", "failed", "cancelled"] {
+            let conn = mem();
+            seed(&conn, "t", "p", prior);
+            settle_group_file_recipient_ack(&conn, "t", "p", true).unwrap();
+            assert_eq!(
+                recipient_status(&conn, "t", "p"),
+                "completed",
+                "成功 Ack 必须把 {prior} 落成 completed"
+            );
+            assert!(
+                recipient_progress(&conn, "t", "p") > 0.99,
+                "成功 Ack 的进度必须是 1.0"
+            );
+        }
+
+        let conn = mem();
+        seed(&conn, "t", "p", "sending");
+        settle_group_file_recipient_ack(&conn, "t", "p", false).unwrap();
+        assert_eq!(recipient_status(&conn, "t", "p"), "failed");
+        assert_eq!(recipient_progress(&conn, "t", "p"), 0.0);
     }
 
     /// P2-01：只有**真的卡住**的 sending 行才会被回 pending，新鲜行原样不动。

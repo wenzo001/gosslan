@@ -1535,17 +1535,9 @@ pub(crate) fn apply_group_file_ack_db(
         let _ = tx.rollback();
         return Ok(GroupFileAckOutcome::NoChange);
     }
-    let (status, progress) = if success {
-        ("completed", 1.0)
-    } else {
-        ("failed", 0.0)
-    };
-    tx.execute(
-        "UPDATE group_file_recipients SET status = ?3, progress = ?4, updated_at = ?5
-         WHERE transfer_id = ?1 AND recipient_id = ?2",
-        params![transfer_id, recipient_id, status, progress, db::now_ms()],
-    )
-    .map_err(|e| e.to_string())?;
+    // ②' 写入口收进 db 层：台账的写入不再从传输层直接改表。
+    db::settle_group_file_recipient_ack(&tx, transfer_id, recipient_id, success)
+        .map_err(|e| e.to_string())?;
     // ③ 聚合：读全体 recipient ⇒ 决定发送端气泡。空集合绝不能判 failed（见 group_file_bubble）。
     let statuses = db::group_file_recipient_statuses(&tx, transfer_id).map_err(|e| e.to_string())?;
     let refs: Vec<&str> = statuses.iter().map(|s| s.as_str()).collect();
