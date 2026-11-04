@@ -14,6 +14,15 @@
 
 ## [Unreleased]
 
+## [5.18.13] - 2026-11-05
+
+### 修复：`examples` 编译（5.18.9 给消息加 `lang` 的连带）
+
+- `Message::ChatMessage` 新增 `lang` 之后，`examples/dual_link.rs` 与 `examples/e2e_peer.rs` 里的
+  5 处结构体字面量没跟上 ⇒ `cargo clippy --features bluetooth --all-targets -D warnings`
+  报 `E0063 missing field lang`（`verify:full` 第 26 步，此前 `cargo test --lib` 看不见 examples）。
+  这几处是探测用的示例程序、没有"消息语言"语义，补齐 `lang: None`；行为不变。
+
 ## [5.18.12] - 2026-11-05
 
 ### i18n 文案卫生变成可执行门禁：对称性 / 动态前缀 / 死键基线

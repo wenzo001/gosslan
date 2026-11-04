@@ -541,6 +541,7 @@ async fn main() {
         content: seal_direct(&identity, &app_x25519, "e2e-direct-ok"),
         ts: now_ms(),
         seq: 1,
+        lang: None,
     };
     let _ = send_frame(&mut w, &direct).await;
     match waiter
@@ -756,6 +757,7 @@ async fn main() {
                     content: seal_direct(&identity, &app_x25519, content),
                     ts: now_ms(),
                     seq: 1,
+                    lang: None,
                 },
             )
             .await;
@@ -951,6 +953,7 @@ async fn main() {
                     content: seal_direct(&identity, &app_x25519, &format!("out-of-order-{msg_id}")),
                     ts,
                     seq: if msg_id == OOO_A_ID { 2 } else { 1 },
+                    lang: None,
                 },
             )
             .await;
@@ -980,6 +983,7 @@ async fn main() {
                 content: seal_direct(&identity, &app_x25519, "alive"),
                 ts: now_ms(),
                 seq: 1,
+                lang: None,
             },
         )
         .await;
