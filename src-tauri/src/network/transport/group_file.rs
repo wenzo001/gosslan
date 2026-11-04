@@ -1859,7 +1859,7 @@ pub(crate) fn replay_pending_group_file_acks(state: &Arc<AppState>) -> usize {
                 }
             }
             Err(e) => {
-                let give_up = ack.attempts + 1 >= GROUP_FILE_ACK_MAX_ATTEMPTS;
+                let give_up = ack_replay_should_give_up(ack.attempts);
                 {
                     let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
                     if let Err(err) = db::bump_group_file_ack_attempt(
@@ -1935,6 +1935,13 @@ pub(crate) fn replay_pending_group_file_acks(state: &Arc<AppState>) -> usize {
 
 /// 同一行群文件 ACK 最多重放几次；超过就按"失败"收尾（明确终态，不留永久挂起）。
 const GROUP_FILE_ACK_MAX_ATTEMPTS: i64 = 5;
+
+/// 重放放弃判据（纯函数）：第 `attempts + 1` 次仍失败就收手。
+/// 边界由 `replay_gives_up_exactly_on_the_fifth_failure` 钉住：`attempts=4`（即将第 5 次）
+/// 才放弃，`attempts=3` 还要再试一次 —— 改这个偏移会让账本行早死或者永久挂着。
+fn ack_replay_should_give_up(attempts: i64) -> bool {
+    attempts + 1 >= GROUP_FILE_ACK_MAX_ATTEMPTS
+}
 
 /// 幂等：重复 ACK 重复 UPDATE 同状态，无副作用、不报错。
 async fn handle_group_file_complete_ack(
@@ -2316,7 +2323,7 @@ fn write_group_chunk_blocking(
 
 #[cfg(test)]
 mod group_file_ack_recovery_tests {
-    use super::{apply_group_file_ack_db, GroupFileAckOutcome};
+    use super::{ack_replay_should_give_up, apply_group_file_ack_db, GroupFileAckOutcome};
     use rusqlite::{params, Connection};
 
     fn mem_db() -> Connection {
@@ -2550,6 +2557,24 @@ mod group_file_ack_recovery_tests {
             out.is_err(),
             "读库失败必须报 Err，不许答 NotRecipient：{out:?}"
         );
+    }
+
+    /// 放弃重放的边界：第 5 次失败才收手，前面 4 次要继续。
+    /// 这个偏移调早会让一条可能自愈的 ACK 被按失败收尾，调晚就是账本行永久挂着。
+    #[test]
+    fn replay_gives_up_exactly_on_the_fifth_failure() {
+        assert!(!ack_replay_should_give_up(0), "第 1 次失败后必须继续重试");
+        assert!(!ack_replay_should_give_up(1));
+        assert!(!ack_replay_should_give_up(2));
+        assert!(
+            !ack_replay_should_give_up(3),
+            "第 4 次失败后还要再试第 5 次"
+        );
+        assert!(
+            ack_replay_should_give_up(4),
+            "第 5 次失败必须收手并按失败收尾（不许永久挂起）"
+        );
+        assert!(ack_replay_should_give_up(99));
     }
 }
 
