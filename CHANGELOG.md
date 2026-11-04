@@ -14,6 +14,44 @@
 
 ## [Unreleased]
 
+## [5.18.12] - 2026-11-05
+
+### i18n 文案卫生变成可执行门禁：对称性 / 动态前缀 / 死键基线
+
+- 新增 `scripts/check-i18n.mjs` 并接入 `npm run verify:full`（前端组第 15 步）：
+  - **对称性**：`zh-cn.ts` 与 `en-us.ts` 键集合必须一致，缺失/多余各报完整键路径；
+  - **动态前缀**：只从真实 `t(\`prefix.${x}\`)` / `$t(...)` / `i18n.global.t(...)` /
+    `t("prefix." + x)` 调用点提取静态前缀，要求两册有**一致子树**；无法静态验证的必须登记
+    `DYNAMIC_PREFIX_WHITELIST`（附理由），不再靠“跳过所有动态键”蒙混；
+  - **死键**：全仓引用面（`src/**`、`scripts/**`、启动失败窗 `data-i18n`、测试/探针）零引用的键，
+    存量走 `scripts/i18n-dead-keys.baseline.json`，**只减不增**（新增死键红；基线里已失效的登记也红）；
+    工作区零引用但 HEAD 仍被引用的键（并行会话正在改组件）列为「暂缓」，不删不判红；
+  - **值层面疑似残留**：仍活着但只被测试/探针引用、生产界面零引用的键只提示、不判红，人工确认。
+- 内置 6 条反例自证（zh 多键 / en 少键 / 留死键 / 基线失效 / 动态前缀无子树 / 子树中英文不一致），
+  每种都必红且输出完整键路径；扫描下限（900 键 / 500 字面量 / 150 文件 / 5 动态前缀）防止量具空转。
+- `AGENTS.md` 增补 i18n 约定：新增文案必须中英同步并用 `t()`；删除功能同一次提交里删键；
+  死键基线的 `--update` 与手工缩减方式写明。
+- 本轮扫描结果：工作区 1610 × 2 键、0 条真实死键（1 条 `chat.composer.codeUndo` 因 HEAD 仍被
+  `MessageComposer.vue` 引用、对应会话未提交而暂缓，不删）。
+
+## [5.18.10] - 2026-11-05
+
+### 安卓应用内升级：检查 → 下载 → 校验 → 安装，且安装过程不再"静默"
+
+- **选型**：桌面继续用 `tauri-plugin-updater`（不动）；Android 侧清单走 GitHub Releases API
+  （读 `digest: sha256:…`，不改发布流水线），下载/校验/取消放在 Rust（流式落盘、边下边算 sha256），
+  安装走 Kotlin 的 `PackageInstaller` 会话 + 系统确认 UI，异常时回退 `ACTION_INSTALL_PACKAGE`。
+- **核心修复**：点"安装"确认后弹窗**不再立刻关掉**：`installing` 阶段带步骤
+  `preparing → launching → waiting-user`，前两步界面持续显示"正在安装"并禁用重复点击与关闭，
+  直到系统安装器真正接管才关弹窗 —— 消掉"确认后到安装器出现之间"的空白静默期。
+- **可打断可恢复**：下载可取消且清掉 `.part`；校验失败/大小不符/无权限/解析包失败/签名不一致/
+  用户取消在系统界面，全部落 `failed` 并带具名 `code=ANDROID_UPDATE_*` 话术，回到可重试状态。
+- **权限**：`REQUEST_INSTALL_PACKAGES` + `canRequestPackageInstalls()`（Android 8+ 逐应用授权），
+  未授权时打开 `ACTION_MANAGE_UNKNOWN_APP_SOURCES` 引导，授权返回后可直接重试。
+- 守卫：`android_update_core` 单测（清单解析/ABI 选包/digest/版本比较/sha256）、
+  `androidService.test.ts`（11 条状态机转移、重复 install 只调一次、取消与失败回到可重试）、
+  `lib_android_jni_tests.rs`（Kotlin↔Rust 签名与 release keep 规则对账）、移动端编译门禁。
+
 ## [5.18.9] - 2026-11-05
 
 ### 代码块：自动识别语言、发送前/后切换、头部固定 + 内部单层滚动
