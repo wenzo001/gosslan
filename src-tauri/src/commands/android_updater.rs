@@ -225,7 +225,8 @@ fn updates_dir(app: &AppHandle) -> Result<PathBuf, String> {
         .app_cache_dir()
         .map_err(|e| coded(E_IO, format!("拿不到应用缓存目录（{e}）")))?
         .join("updates");
-    std::fs::create_dir_all(&dir).map_err(|e| coded(E_IO, format!("创建更新缓存目录失败（{e}）")))?;
+    std::fs::create_dir_all(&dir)
+        .map_err(|e| coded(E_IO, format!("创建更新缓存目录失败（{e}）")))?;
     Ok(dir)
 }
 
@@ -329,7 +330,10 @@ async fn fetch_update(
         sha256,
     };
     if let Ok(mut cached) = state.info.lock() {
-        *cached = Some(CachedUpdate { info: info.clone(), url: asset.url.clone() });
+        *cached = Some(CachedUpdate {
+            info: info.clone(),
+            url: asset.url.clone(),
+        });
     }
     let dir = updates_dir(app)?;
     let keep = format!("gosslan-{}-{}.apk", release.version, core::abi_name());
@@ -349,8 +353,14 @@ fn map_reqwest_err(e: &reqwest::Error) -> String {
 #[cfg(target_os = "android")]
 fn map_apk_code(code: &str) -> (String, String) {
     match code {
-        "PARSE_FAILED" => (E_PARSE.to_string(), "安装包无法解析，可能已损坏".to_string()),
-        "WRONG_PACKAGE" => (E_WRONG_PACKAGE.to_string(), "安装包不是本应用的升级包".to_string()),
+        "PARSE_FAILED" => (
+            E_PARSE.to_string(),
+            "安装包无法解析，可能已损坏".to_string(),
+        ),
+        "WRONG_PACKAGE" => (
+            E_WRONG_PACKAGE.to_string(),
+            "安装包不是本应用的升级包".to_string(),
+        ),
         "SIGNATURE_MISMATCH" => (
             E_SIGNATURE.to_string(),
             "安装包签名与本应用不一致，系统会拒绝覆盖安装".to_string(),
@@ -363,18 +373,27 @@ fn map_apk_code(code: &str) -> (String, String) {
             E_PARSE.to_string(),
             "安装包版本低于当前版本，系统不允许降级覆盖".to_string(),
         ),
-        "FILE_MISSING" => (E_FILE_MISSING.to_string(), "安装包已不存在，请重新下载".to_string()),
+        "FILE_MISSING" => (
+            E_FILE_MISSING.to_string(),
+            "安装包已不存在，请重新下载".to_string(),
+        ),
         "PERMISSION_REQUIRED" => (
             E_PERMISSION.to_string(),
             "需要允许本应用安装未知来源的应用".to_string(),
         ),
-        "APP_NOT_READY" => (E_INSTALL_FAILED.to_string(), "安装能力尚未就绪，请重开应用".to_string()),
+        "APP_NOT_READY" => (
+            E_INSTALL_FAILED.to_string(),
+            "安装能力尚未就绪，请重开应用".to_string(),
+        ),
         "INSTALLER_UNAVAILABLE" => (
             E_INSTALL_FAILED.to_string(),
             "系统没有可用的安装器".to_string(),
         ),
         "IO_ERROR" => (E_IO.to_string(), "读取或写入安装包失败".to_string()),
-        "SESSION_ERROR" => (E_INSTALL_FAILED.to_string(), "系统安装会话创建失败".to_string()),
+        "SESSION_ERROR" => (
+            E_INSTALL_FAILED.to_string(),
+            "系统安装会话创建失败".to_string(),
+        ),
         other => (E_INSTALL_FAILED.to_string(), other.to_string()),
     }
 }
@@ -407,7 +426,10 @@ pub async fn android_updater_check(
     }
     init_handle(&app);
     publish(&app, state, |s| {
-        *s = AndroidUpdateStatus { phase: "checking".into(), ..Default::default() };
+        *s = AndroidUpdateStatus {
+            phase: "checking".into(),
+            ..Default::default()
+        };
     });
 
     let result = fetch_update(&app, state).await;
@@ -428,7 +450,10 @@ pub async fn android_updater_check(
         }
         Ok(None) => {
             publish(&app, state, |s| {
-                *s = AndroidUpdateStatus { phase: "idle".into(), ..Default::default() };
+                *s = AndroidUpdateStatus {
+                    phase: "idle".into(),
+                    ..Default::default()
+                };
             });
             if let Ok(mut cached) = state.info.lock() {
                 *cached = None;
@@ -519,7 +544,9 @@ async fn download_inner(
             ..Default::default()
         };
     });
-    let _ = on_event.send(AndroidDownloadEvent::Started { content_length: Some(info.size) });
+    let _ = on_event.send(AndroidDownloadEvent::Started {
+        content_length: Some(info.size),
+    });
 
     let client = reqwest::Client::builder()
         .timeout(DOWNLOAD_TIMEOUT)
@@ -581,7 +608,9 @@ async fn download_inner(
         }
         hasher.update(&bytes);
         downloaded += bytes.len() as u64;
-        let _ = on_event.send(AndroidDownloadEvent::Progress { chunk_length: bytes.len() as u64 });
+        let _ = on_event.send(AndroidDownloadEvent::Progress {
+            chunk_length: bytes.len() as u64,
+        });
         publish_progress(app, state, downloaded, total, false);
     }
 
@@ -716,7 +745,11 @@ pub async fn android_updater_install(
     state: State<'_, AndroidUpdaterSession>,
 ) -> Result<(), String> {
     let state = state.inner();
-    if state.installing.compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst).is_err() {
+    if state
+        .installing
+        .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+        .is_err()
+    {
         return Err(coded(E_BUSY, "安装已在进行中，请勿重复点击"));
     }
     let Some(apk) = state.apk.lock().ok().and_then(|g| g.clone()) else {
@@ -797,14 +830,20 @@ pub async fn android_updater_cancel(
     }
     // `.part` 文件清理是磁盘 IO：交给阻塞线程池，别占 tokio worker
     //（否则会被「重活命令棘轮」记一条，也会在低端机上卡住其它通道）。
-    let dir = updates_dir(&app).ok();
+    // 缓存目录取不到时**跳过清理**而不是让取消失败：取消本身必须总能成功；
+    // 这里用显式 match 判断结果（不用 `.ok()`：静默丢弃棘轮硬零）。
+    let dir = match updates_dir(&app) {
+        Ok(dir) => dir,
+        Err(_) => PathBuf::new(),
+    };
     tauri::async_runtime::spawn_blocking(move || {
-        if let Some(dir) = dir {
-            if let Ok(entries) = std::fs::read_dir(&dir) {
-                for entry in entries.flatten() {
-                    if entry.file_name().to_string_lossy().ends_with(".part") {
-                        remove_file_if_exists(&entry.path());
-                    }
+        if dir.as_os_str().is_empty() {
+            return;
+        }
+        if let Ok(entries) = std::fs::read_dir(&dir) {
+            for entry in entries.flatten() {
+                if entry.file_name().to_string_lossy().ends_with(".part") {
+                    remove_file_if_exists(&entry.path());
                 }
             }
         }
@@ -846,13 +885,18 @@ pub async fn android_updater_close(
         }
     }
     // 整目录删除同样是磁盘 IO，走阻塞线程池。
-    let dir = updates_dir(&app).ok();
+    // 同上：目录取不到就跳过清理（关闭面板不该因缓存目录异常而失败），但结果必须显式判断。
+    let dir = match updates_dir(&app) {
+        Ok(dir) => dir,
+        Err(_) => PathBuf::new(),
+    };
     tauri::async_runtime::spawn_blocking(move || {
-        if let Some(dir) = dir {
-            if let Ok(entries) = std::fs::read_dir(&dir) {
-                for entry in entries.flatten() {
-                    remove_file_if_exists(&entry.path());
-                }
+        if dir.as_os_str().is_empty() {
+            return;
+        }
+        if let Ok(entries) = std::fs::read_dir(&dir) {
+            for entry in entries.flatten() {
+                remove_file_if_exists(&entry.path());
             }
         }
     })
@@ -863,7 +907,10 @@ pub async fn android_updater_close(
         *info = None;
     }
     publish(&app, state, |s| {
-        *s = AndroidUpdateStatus { phase: "idle".into(), ..Default::default() };
+        *s = AndroidUpdateStatus {
+            phase: "idle".into(),
+            ..Default::default()
+        };
     });
     Ok(())
 }
@@ -993,7 +1040,10 @@ pub fn on_native_permission_result(granted: bool) {
 
 #[cfg(not(target_os = "android"))]
 fn unsupported(command: &str) -> String {
-    coded("ANDROID_UPDATE_UNSUPPORTED", format!("{command} 仅支持 Android"))
+    coded(
+        "ANDROID_UPDATE_UNSUPPORTED",
+        format!("{command} 仅支持 Android"),
+    )
 }
 
 #[cfg(not(target_os = "android"))]
