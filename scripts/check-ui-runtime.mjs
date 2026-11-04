@@ -3393,6 +3393,7 @@ async function main() {
     const scrollinput = want("scrollinput");
     const todosync = want("todosync");
     const tododelete = want("tododelete");
+    const todoarchive = want("todoarchive");
     const taskpaste = want("taskpaste");
     const modaltitle = want("modaltitle");
     const codeblock = want("codeblock");
@@ -3619,6 +3620,7 @@ async function main() {
     await runSegment("scrollinput", scrollinput, () => runScrollInput(cdp, url));
     await runSegment("todosync", todosync, () => runTodoSync(cdp, url));
     await runSegment("tododelete", tododelete, () => runTodoDelete(cdp, url));
+    await runSegment("todoarchive", todoarchive, () => runTodoArchive(cdp, url));
     await runSegment("taskpaste", taskpaste, () => runTaskPaste(cdp, url));
     await runSegment("modaltitle", modaltitle, () => runModalTitle(cdp, url));
     await runSegment("codeblock", codeblock, () => runCodeBlock(cdp, url));
@@ -6498,6 +6500,162 @@ async function runTodoDelete(cdp, url) {
       && confirmFlow.calls[0].patch.archived === undefined,
     "1 次 update_group_todo：deleted=true / archived=undefined",
     JSON.stringify(confirmFlow));
+}
+
+/**
+ * 归档入口的门控与可辨性（--only=todoarchive，用户 2026-11-05 #1/#2）。
+ *
+ * 用户看到的两件事：
+ *   ① 归档只在终态（完成 / 做不了）可用 —— 非终态行**不出现**归档入口（"不显示"优于
+ *      "显示后在后台被拒"的静默失效）；
+ *   ② 归档不再是一枚和 ✓完成 同尺寸同色的行尾圆钮：完成后那一行换组，同一坐标上换成归档，
+ *      触屏没有 hover，第二下就把刚完成的任务收走了。现在它收进行尾 ⋯ 的次级菜单，
+ *      点开只是开菜单（不落值），再点菜单项才归档。
+ *
+ * 反例自证：`taskRowHierarchy.test.ts` 的静态判据会在 `canArchive` 丢掉终态判断时变红；
+ * 这一段则从**运行时**证明非终态行上真的没有入口（不是"有入口但点不动"）。
+ */
+async function runTodoArchive(cdp, url) {
+  await cdp.send("Emulation.setDeviceMetricsOverride", {
+    width: 1200, height: 800, deviceScaleFactor: 1, mobile: false,
+  });
+  await cdp.send("Page.navigate", { url });
+  await cdp.settled();
+  await sleep(3_000);
+  await cdp.eval(PAGE_FIXTURE);
+  await cdp.eval(`(() => {
+    window.__TAURI_INTERNALS__ = {
+      metadata: {
+        currentWindow: { label: 'main' },
+        currentWebview: { label: 'main', windowLabel: 'main' },
+      },
+      invoke: async () => null,
+      transformCallback: (cb) => cb,
+      convertFileSrc: (p) => p,
+    };
+    if (!window.__TAURI_EVENT_PLUGIN_INTERNALS__) {
+      window.__TAURI_EVENT_PLUGIN_INTERNALS__ = { unregisterListener: () => {} };
+    }
+  })()`);
+  // 裸宿主没有活动 pinia：先挂一个不依赖群资料的组件把 store 建出来（同 tododelete）。
+  await cdp.eval(`window.__probe.install('/src/components/MessageItem.vue', '', ${
+    JSON.stringify(JSON.stringify({
+      message: { msg_id: 'warm-arch', conv_id: 'warm', sender_id: 'dev-me', kind: 'text', content: 'warm', ts: 1, seq: 1 },
+    }))})`);
+  const setup = await cdp.eval(`(async () => {
+    const { api } = await import('/src/api/index.ts');
+    const { useChatStore } = await import('/src/stores/useChatStore.ts');
+    const chat = useChatStore();
+    // 我不是创建者，但我是群成员 ⇒ 终态行应当可归档（窄档判据是"全体群成员"）。
+    const group = { id: 'group-arch', name: '归档探针群', creator: 'other', members: ['dev-me', 'other'] };
+    const rec = (msg_id, seq, p) => ({
+      msg_id, conv_id: 'group:group-arch', sender_id: 'other', kind: 'todo',
+      content: JSON.stringify(p), ts: 1700000000000 + seq, seq, status: 'sent',
+    });
+    api.getGroupTodoMessages = async () => [
+      // 非终态：不许出现归档入口
+      rec('m-open', 1, { todo_id: 'todo-open-1', number: 1, title: '还在做的活', assignees: ['dev-me'],
+        status: 'todo', creator: 'other', deleted: false, description: '', images: [],
+        archived: false, done_at: null, priority: 'normal', category: 'task' }),
+      // 终态一：完成 2 天（尚未到自动归档）
+      rec('m-done', 2, { todo_id: 'todo-done-1', number: 2, title: '完成的活', assignees: ['dev-me'],
+        status: 'done', creator: 'other', deleted: false, description: '', images: [],
+        archived: false, done_at: Date.now() - 2 * 86400_000, priority: 'normal', category: 'task' }),
+      // 终态二：做不了 —— 与完成同权（后端 archive_only_change 认的是终态，不是 done）
+      rec('m-imp', 3, { todo_id: 'todo-imp-1', number: 3, title: '做不了的活', assignees: ['dev-me'],
+        status: 'impossible', creator: 'other', deleted: false, description: '', images: [],
+        archived: false, done_at: Date.now() - 1 * 86400_000, priority: 'normal', category: 'task' }),
+    ];
+    api.getGroups = async () => [group];
+    api.getGroupReads = async () => [];
+    api.getFriends = async () => [];
+    api.getPeers = async () => [];
+    window.__archCalls = [];
+    api.updateGroupTodo = async (groupId, todoId, patch) => {
+      window.__archCalls.push({ groupId, todoId, patch });
+      return { ...rec('m-arch-result', 99, { todo_id: todoId, number: 2, title: '完成的活', assignees: ['dev-me'],
+        status: 'done', creator: 'other', deleted: false, description: '', images: [],
+        archived: true, done_at: Date.now() - 2 * 86400_000, priority: 'normal', category: 'task' }),
+        kind: 'todo_update' };
+    };
+    chat.groups = [group];
+    return { ok: true };
+  })()`);
+  await cdp.eval("window.__probe.seedDevice('dev-me')");
+  check("看板夹具就绪（非创建者 + 群成员 + 一条非终态 / 两条终态任务）",
+    !!setup && setup.ok === true, "ok", JSON.stringify(setup));
+  const mounted = await cdp.eval(`window.__probe.install('/src/components/GroupTasksBoard.vue', '', ${
+    JSON.stringify(JSON.stringify({ reusePinia: true, groupId: 'group-arch', open: true, fill: true }))})`);
+  check("群任务看板挂得起来（归档入口这条判据的入口）",
+    !!mounted && mounted.ok === true, "install ok", JSON.stringify(mounted));
+  await sleep(600);
+
+  const gates = await cdp.eval(`(async () => {
+    const { t } = await import('/src/i18n/index.ts');
+    const more = [...document.querySelectorAll('[data-todo-more]')];
+    const rowOf = (el) => el.closest('.relative');
+    const rowsWithMore = more.map((b) => (rowOf(b)?.textContent || '').replace(/\\s+/g, ' ').trim().slice(0, 40));
+    const open = [...document.querySelectorAll('button')]
+      .find((x) => (x.textContent || '').includes('还在做的活'));
+    const openRow = open ? open.closest('.relative') : null;
+    return {
+      moreCount: more.length,
+      rowsWithMore,
+      openHasMore: openRow ? openRow.querySelectorAll('[data-todo-more]').length : -1,
+      // 旧形状：行尾独立归档圆钮（同尺寸同色）必须彻底消失
+      oldArchiveButtons: document.querySelectorAll('button[aria-label="' + t('todo.archive') + '"]').length,
+      moreLabel: more.length ? more[0].getAttribute('aria-label') : null,
+      wantLabel: t('todo.moreActions'),
+      haspopup: more.length ? more[0].getAttribute('aria-haspopup') : null,
+    };
+  })()`);
+  check("非终态行没有归档入口，终态（完成 / 做不了）各有一个 ⋯ 入口",
+    !!gates && gates.moreCount === 2 && gates.openHasMore === 0
+      && Array.isArray(gates.rowsWithMore) && gates.rowsWithMore.some((x) => x.includes('完成的活'))
+      && gates.rowsWithMore.some((x) => x.includes('做不了的活')),
+    "2 个 ⋯（终态两行），非终态行 0 个", JSON.stringify(gates));
+  check("行尾不再有同色同尺寸的独立归档圆钮，⋯ 带正确语义",
+    !!gates && gates.oldArchiveButtons === 0
+      && gates.moreLabel === gates.wantLabel && gates.haspopup === 'menu',
+    "旧归档钮 0 个；aria-label/aria-haspopup 正确", JSON.stringify(gates));
+
+  const opened = await cdp.eval(`(async () => {
+    const { t } = await import('/src/i18n/index.ts');
+    const b = [...document.querySelectorAll('[data-todo-more]')]
+      .find((x) => (x.closest('.relative')?.textContent || '').includes('完成的活'));
+    if (!b) return { ok: false, why: 'no-more' };
+    b.click();
+    await new Promise((r) => setTimeout(r, 400));
+    const item = document.querySelector('[data-todo-archive-item]');
+    return {
+      ok: true,
+      items: document.querySelectorAll('[data-todo-archive-item]').length,
+      text: item ? (item.textContent || '').replace(/\\s+/g, ' ').trim() : null,
+      want: t('todo.archive'),
+      // 点 ⋯ 只是开菜单：那一下不许落任何写请求（触屏误点的第二下最多到这里）
+      calls: (window.__archCalls || []).length,
+    };
+  })()`);
+  check("点 ⋯ 只开菜单：出现唯一「归档」项，且这一下不发起任何归档请求",
+    !!opened && opened.ok === true && opened.items === 1
+      && opened.text === opened.want && opened.calls === 0,
+    "1 个归档项 / 文本=归档 / 0 次写请求", JSON.stringify(opened));
+
+  const archived = await cdp.eval(`(async () => {
+    const item = document.querySelector('[data-todo-archive-item]');
+    if (!item) return { ok: false, why: 'no-item' };
+    item.click();
+    await new Promise((r) => setTimeout(r, 600));
+    return { ok: true, calls: (window.__archCalls || []) };
+  })()`);
+  check("在终态行点「归档」才真的发 archived:true，且不动状态位（语义不变）",
+    !!archived && archived.ok === true && Array.isArray(archived.calls)
+      && archived.calls.length === 1
+      && archived.calls[0].todoId === 'todo-done-1'
+      && archived.calls[0].patch.archived === true
+      && archived.calls[0].patch.status === 'done',
+    "1 次 update_group_todo：todoId=todo-done-1 / archived=true / status 保持 done（归档不改状态）",
+    JSON.stringify(archived));
 }
 
 /**

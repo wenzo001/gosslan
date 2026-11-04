@@ -1152,6 +1152,7 @@ export const zhCN: MessageDict = {
   "todo.archivedEmpty": "归档里还没有任务",
   "todo.archivedHint": "完成或标记为做不了之后可手动归档；进入终态满 7 天自动归档",
   "todo.archive": "归档",
+  "todo.moreActions": "更多操作",
   "todo.archiveHint": "归档不是删除：可在「已归档」里找回或还原",
   "todo.autoArchiveIn": "{n} 天后自动归档",
   "todo.groupCount": "共 {n} 条",

@@ -1111,6 +1111,7 @@ export const enUS: MessageDict = {
   "todo.archivedEmpty": "Nothing archived yet",
   "todo.archivedHint": "Archive a task manually after it's done or marked can't-do; auto-archives 7 days after the terminal state",
   "todo.archive": "Archive",
+  "todo.moreActions": "More actions",
   "todo.archiveHint": "Archiving isn't deleting: you can find or restore it in Archived",
   "todo.autoArchiveIn": "Auto-archives in {n} days",
   "todo.groupCount": "{n} tasks",
