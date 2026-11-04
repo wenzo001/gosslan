@@ -14,6 +14,32 @@
 
 ## [Unreleased]
 
+## [5.18.17] - 2026-11-05
+
+### 修正
+
+- 托盘「勿扰」回调不再在**主线程**取 `db` 锁：菜单事件改到独立线程落库/广播。
+  后台持锁长活（VACUUM 3s、ledger 回填）期间点托盘菜单会让事件循环被钉在锁上，
+  现场正是 `HANG scope=main_thread`、无 panic、CPU 很低。
+- 群文件续传分支里 `db → group_file_receivers` 的嵌套取锁改为先取快照再取 db，
+  与本文件其它路径约定的 `receivers → db` 一致（今天还没死锁，但这是"等一条新代码就挂"的活扣）。
+- `save_outgoing_image` 的建目录/写盘从 tokio worker 搬进 `spawn_blocking`；粘贴大图时
+  不再把 worker 钉在同步 IO 上（worker 棘轮上限由 31 收到 30）。
+
+### 新增
+
+- 非 `db` 锁的具名观测：`file_receivers` / `group_file_receivers` 改为 `NamedLock`，
+  持锁超 2s 产一条 `LOCK_HELD_LONG name=… holder=tN waited_by=[tN] ms=… wait_ms=…`
+  （由看门狗线程唯一落盘）。快路径实测 +106ns/次取锁，空闲时零取锁、仅 1 次/秒心跳。
+- HANG 现场新增 `locks=`（当前谁握着、谁在等、持有多久）与 `worker_lag_ms=`（worker 心跳漂移），
+  与主线程 / 渲染层心跳构成三条独立证据；`locks` 只含锁名、线程标识与毫秒，不含正文。
+
+## [5.18.16] - 2026-11-05
+
+### 文档
+
+- 修正 CHANGELOG 里 i18n 文案卫生守卫的门禁步号（全量层第 16 步）。
+
 ## [5.18.15] - 2026-11-05
 
 ### 修正

@@ -498,28 +498,49 @@ fn build_tray<R: tauri::Runtime>(
             "dnd" => {
                 // 勿扰模式 = 通知总开关取反（复用同一开关）。CheckMenuItem 点击时已自行翻转
                 // 勾选态，这里只把新值落库 + 同步缓存 + 广播给所有窗口（前端据此停止/恢复通知）。
-                let state = app.state::<std::sync::Arc<crate::state::AppState>>();
-                let now_on = {
-                    let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
-                    crate::db::get_config_bool(&dbc, "notify_enabled", true)
-                };
-                let next = !now_on;
-                let patch = {
-                    let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
-                    let _ = crate::db::set_setting(
-                        &dbc,
-                        "notify_enabled",
-                        if next { "1" } else { "0" },
-                    );
-                    // 与 settings.rs 的 patch 同形（前端按 camelCase 读）：只带这一个键。
-                    serde_json::json!({ "notifyEnabled": next })
-                };
-                state.cache_notify_enabled(next);
-                // origin 用哨兵 "tray"（不是任何窗口 label）：托盘菜单发起、没有"发起窗口"，
-                // 全部窗口都要收到这次变更（主窗的通知开关、设置窗都要跟着刷新）。
-                // 传 `Some(...)` 而非 `None` 是硬约定 —— events 守卫要求每个改设置的后端命令
-                // 都带 origin，避免"发起窗口收到自己事件"的回灌（见 `state.rs::notify_settings_changed`）。
-                state.notify_settings_changed(&["notifyEnabled"], Some("tray"), patch);
+                //
+                // ⚠️ **不许在主线程里取 db 锁**（2026-11-04 卡死审计）：macOS 的托盘菜单事件
+                // 由主线程分发，而这里原先连取两次 `db`（读 + 写）。只要后台任一持锁长活
+                // （VACUUM 3s、ledger 回填全索引扫、长事务）还没放锁，主线程就被钉在锁上 ——
+                // 现场读数正是 `HANG scope=main_thread`、无 panic、CPU 很低。
+                // 落库搬到独立线程：主线程只做一次投递，等锁不再挡住事件循环。
+                // 顺序不变：仍先读旧值、再取反落库、再刷新缓存与广播（都在同一条后台线程里）。
+                let app2 = app.clone();
+                let spawned = std::thread::Builder::new()
+                    .name("tray-dnd".to_string())
+                    .spawn(move || {
+                        let state = app2.state::<std::sync::Arc<crate::state::AppState>>();
+                        let now_on = {
+                            let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
+                            crate::db::get_config_bool(&dbc, "notify_enabled", true)
+                        };
+                        let next = !now_on;
+                        let patch = {
+                            let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
+                            let _ = crate::db::set_setting(
+                                &dbc,
+                                "notify_enabled",
+                                if next { "1" } else { "0" },
+                            );
+                            // 与 settings.rs 的 patch 同形（前端按 camelCase 读）：只带这一个键。
+                            serde_json::json!({ "notifyEnabled": next })
+                        };
+                        state.cache_notify_enabled(next);
+                        // origin 用哨兵 "tray"（不是任何窗口 label）：托盘菜单发起、没有"发起窗口"，
+                        // 全部窗口都要收到这次变更（主窗的通知开关、设置窗都要跟着刷新）。
+                        // 传 `Some(...)` 而非 `None` 是硬约定 —— events 守卫要求每个改设置的后端命令
+                        // 都带 origin，避免"发起窗口收到自己事件"的回灌（见 `state.rs::notify_settings_changed`）。
+                        state.notify_settings_changed(&["notifyEnabled"], Some("tray"), patch);
+                    });
+                if let Err(e) = spawned {
+                    // 线程起不来极少见，但用户点了必须留痕（此时勾选态已翻转、库未变）。
+                    app.state::<std::sync::Arc<crate::state::AppState>>()
+                        .logger
+                        .warn(
+                            "tray",
+                            format!("code=TRAY_DND_SPAWN_FAILED err={e} —— 勿扰状态未能落库"),
+                        );
+                }
             }
             "restart" => {
                 // 重启 = 有界收尾（内部用 network::stop，不改持久化偏好 —— 不能用

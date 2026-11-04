@@ -580,6 +580,18 @@ async fn handle_group_file_offer(
                     return;
                 }
                 let progress = n as f64 / size as f64;
+                // ⚠️ 锁序：先取接收表快照，**再**取 db（2026-11-04 卡死审计）。
+                // 这里原先是 `db` 守卫存活期间再取 `group_file_receivers`，与本文件其它路径
+                // 约定的 `receivers → db`（`write_group_chunk_blocking` 先 drop 再取 db）反向。
+                // 今天没有另一条同时持 receivers 再要 db 的路径，所以还没真死锁；
+                // 但这是"等一条新代码就会挂"的活扣，按既有约定摆正。
+                let final_path = state
+                    .group_file_receivers
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .get(&transfer_id)
+                    .map(|r| r.final_path.clone())
+                    .unwrap_or_else(|| part_path.clone());
                 {
                     let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
                     let _ = db::update_group_file_recipient(
@@ -589,13 +601,6 @@ async fn handle_group_file_offer(
                         "sending",
                         progress,
                     );
-                    let final_path = state
-                        .group_file_receivers
-                        .lock()
-                        .unwrap_or_else(|e| e.into_inner())
-                        .get(&transfer_id)
-                        .map(|r| r.final_path.clone())
-                        .unwrap_or_else(|| part_path.clone());
                     let _ = db::upsert_transfer(
                         &dbc,
                         &transfer_id,

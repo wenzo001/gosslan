@@ -524,6 +524,15 @@ gossip_engine::tests::envelope_ttl_is_preserved
 gossip_engine::tests::fanout_excludes_sender
 gossip_engine::tests::group_envelope_message_id_stable_after_resign
 gossip_engine::tests::group_envelope_resign_covers_creator_and_members
+lock_watch::tests::flush_writes_the_event_to_the_logger
+lock_watch::tests::long_hold_emits_one_named_line
+lock_watch::tests::no_deref_to_bare_mutex
+lock_watch::tests::poisoning_still_reaches_the_caller
+lock_watch::tests::receiver_locks_are_wired
+lock_watch::tests::short_hold_stays_quiet
+lock_watch::tests::snapshot_names_the_waiter
+lock_watch::tests::three_second_hold_is_reported_with_default_threshold
+lock_watch::tests::watchdog_consumes_events_and_snapshot
 logging::installer_marker_tests::parses_version_and_install_dir
 logging::installer_marker_tests::refuses_partial_or_garbage
 logging::tests::allocator_abort_is_its_own_kind_not_no_history

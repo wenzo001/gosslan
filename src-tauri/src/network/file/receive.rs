@@ -559,7 +559,7 @@ pub(crate) fn usage_sum(parts: &[(usize, u64)]) -> (usize, u64) {
 /// 中继那张表（`relay_file_keys`）也必须算进来（审计 SEC-05）：它同样是"对端一次性声明
 /// 一份大小、本机就得为它留出磁盘与内存"的入站资源，漏掉它等于给配额开了一扇侧门。
 fn inbound_usage(state: &AppState) -> (usize, u64) {
-    fn one(map: &std::sync::Mutex<HashMap<String, FileReceiver>>) -> (usize, u64) {
+    fn one(map: &crate::lock_watch::NamedLock<HashMap<String, FileReceiver>>) -> (usize, u64) {
         let g = map.lock().unwrap_or_else(|e| e.into_inner());
         (
             g.len(),
@@ -804,7 +804,7 @@ fn make_receiver(
     size: u64,
     file_key: [u8; 32],
     expected_sha256: String,
-    receivers: &std::sync::Mutex<HashMap<String, FileReceiver>>,
+    receivers: &crate::lock_watch::NamedLock<HashMap<String, FileReceiver>>,
 ) -> Result<PathBuf, String> {
     let safe_name = safe_file_name(name).ok_or("文件名非法")?;
     // transfer_id 会成为 `{id}.part` 的文件名，必须与文件名同级消毒（见 safe_transfer_id）
