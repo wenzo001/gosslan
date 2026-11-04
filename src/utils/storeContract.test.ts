@@ -21,6 +21,7 @@ import assert from "node:assert/strict";
 import { readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import { stripJsLiterals } from "../../scripts/jsScan.ts";
+import { readChatStoreSrc } from "../../scripts/chatStoreSrc.ts";
 
 const ROOT = join(import.meta.dirname, "..");
 const STORES = [
@@ -261,7 +262,7 @@ test("跨 IPC 的回填必须核对「数据还是不是当前会话/群」", ()
  * 判据取代码形状，不取注释文案。
  */
 test("翻页单飞必须「并入在飞那一次」，不许把后来者直接弹回", () => {
-  const st = readFileSync(join(ROOT, "stores", "useChatStore.ts"), "utf8");
+  const st = readChatStoreSrc(join(ROOT, "stores", "useChatStore.ts"));
   const fn = st.slice(st.indexOf("if (historyTops.has(convId)) return;"));
   const head = fn.slice(0, fn.indexOf("async function loadMorePage"));
   assert.ok(
@@ -276,7 +277,7 @@ test("翻页单飞必须「并入在飞那一次」，不许把后来者直接�
 });
 
 test("「已翻到顶」结论必须在每次重新加载时作废，且作废点在任何 await 之前", () => {
-  const st = stripComments(readFileSync(join(ROOT, "stores", "useChatStore.ts"), "utf8"));
+  const st = stripComments(readChatStoreSrc(join(ROOT, "stores", "useChatStore.ts")));
   const fn = st.slice(st.indexOf("async function loadMessages("));
   const body = fn.slice(0, fn.indexOf("\n  }"));
   const del = body.indexOf("historyTops.delete(convId)");
@@ -293,7 +294,7 @@ test("「已翻到顶」结论必须在每次重新加载时作废，且作废�
 });
 
 test("peers 只许经 mergePeerList 写入：每拍换掉整表引用 = 每 333ms 重画一屏", () => {
-  const st = stripComments(readFileSync(join(ROOT, "stores", "useChatStore.ts"), "utf8"));
+  const st = stripComments(readChatStoreSrc(join(ROOT, "stores", "useChatStore.ts")));
   const sites = [...st.matchAll(/peers\.value\s*=\s*([A-Za-z_$][\w$]*)/g)];
   assert.equal(
     sites.length,
@@ -337,7 +338,7 @@ test("isMobile 必须在 init 的第一个 await 之前定好，并同步写 htm
 });
 
 test("冷加载必须一次 IPC 取到最新一页，不许退回「先问总数再按 offset 取」两轮串行", () => {
-  const st = stripComments(readFileSync(join(ROOT, "stores", "useChatStore.ts"), "utf8"));
+  const st = stripComments(readChatStoreSrc(join(ROOT, "stores", "useChatStore.ts")));
   const at = st.indexOf("async function loadMessages(");
   assert.ok(at >= 0, "找不到 loadMessages —— 改名要同步这条守卫");
   const body = st.slice(at, st.indexOf("\n  }", at));
@@ -360,7 +361,7 @@ test("冷加载必须一次 IPC 取到最新一页，不许退回「先问总数
 });
 
 test("prepend 后的未读位移必须按「真正新插入且会渲染」的行数算", () => {
-  const st = readFileSync(join(ROOT, "stores", "useChatStore.ts"), "utf8");
+  const st = readChatStoreSrc(join(ROOT, "stores", "useChatStore.ts"));
   const fn = st.slice(st.indexOf("async function loadMorePage("));
   const body = fn.slice(0, fn.indexOf("\n  }\n"));
   assert.ok(
@@ -378,7 +379,7 @@ function stripComments(src: string): string {
 }
 
 test("store 里不许再有「x.value = await api.foo()」这种直写（后发先至的根源形状）", () => {
-  const st = stripComments(readFileSync(join(ROOT, "stores", "useChatStore.ts"), "utf8"));
+  const st = stripComments(readChatStoreSrc(join(ROOT, "stores", "useChatStore.ts")));
   const bad = st
     .split("\n")
     .map((l, i) => ({ l, n: i + 1 }))
@@ -443,7 +444,7 @@ test("组件侧的回填点必须各自过闸（旧形状一旦复现即红）",
 // ---------------- 通知链路与图片重试（审计阶段 4 · 批次 g） ----------------
 
 test("通知批次：先出队再查权限的那条链必须有「退回队列」的 catch", () => {
-  const st = stripComments(readFileSync(join(ROOT, "stores", "useChatStore.ts"), "utf8"));
+  const st = stripComments(readChatStoreSrc(join(ROOT, "stores", "useChatStore.ts")));
   const from = st.indexOf("function flushNotifications(");
   assert.ok(from >= 0, "找不到 flushNotifications");
   const fn = st.slice(from, st.indexOf("\n  }\n", from) + 4);
@@ -491,7 +492,7 @@ test("图片重试不许再用查询串（blob:/data: 都不接受 query ⇒ 重
 // ---------------- 重复初始化守卫（审计阶段 4 · 4.2，utils/initScope.ts） ----------------
 
 test("chat.init() 必须先拆掉上一轮注册，且每条注册都要配对卸载", () => {
-  const st = stripComments(readFileSync(join(ROOT, "stores", "useChatStore.ts"), "utf8"));
+  const st = stripComments(readChatStoreSrc(join(ROOT, "stores", "useChatStore.ts")));
   const storeStart = st.indexOf("export const useChatStore");
   assert.ok(storeStart > 0, "找不到 useChatStore 定义");
   // 句柄必须在**模块作用域**：`acceptHMRUpdate` 换的是整个 store 实例，
@@ -581,7 +582,7 @@ test("「不打扰」判据只许有一份：未读记账与通知闸门都必�
   // 后端 `protocol.rs::is_non_notifying_kind` = 静默类 + system。前端此前两处各自用
   // `!isSilentKind` ⇒ 经广播来的系统消息（如「X 加入了群聊」）会 +1 未读并弹一条系统通知。
   const msgs = stripComments(readFileSync(join(ROOT, "utils", "messages.ts"), "utf8"));
-  const store = stripComments(readFileSync(join(ROOT, "stores", "useChatStore.ts"), "utf8"));
+  const store = stripComments(readChatStoreSrc(join(ROOT, "stores", "useChatStore.ts")));
   const apply = msgs.slice(
     msgs.indexOf("export function applyIncomingToConversations"),
     msgs.indexOf("export function unreadAnchorIndex"),
@@ -608,7 +609,7 @@ test("「停滞」必须带得上原因：file-stalled 的 reason 要一路走�
   // 只有蓝牙链路时大文件"保持 pending 等 LAN"，那句原因必须落到界面上 ——
   // 否则用户看到的是一句"网络停滞"，会去查网络，而网络没问题。
   const types = readFileSync(join(ROOT, "types.ts"), "utf8");
-  const store = stripComments(readFileSync(join(ROOT, "stores", "useChatStore.ts"), "utf8"));
+  const store = stripComments(readChatStoreSrc(join(ROOT, "stores", "useChatStore.ts")));
   const msg = stripComments(readFileSync(join(ROOT, "composables", "useMessageFile.ts"), "utf8"));
   assert.ok(/reason\?:\s*string/.test(types), "FileStalledInfo 必须带可选 reason（与 Rust 同形）");
   assert.ok(
@@ -673,7 +674,7 @@ test("返回 MessageRecord 的每条命令，调用点必须把结果 enqueueMes
     + " —— 解析前提变了，先修这条守卫再谈别的",
   );
 
-  const storeSrc = stripComments(readFileSync(join(ROOT, "stores", "useChatStore.ts"), "utf8"));
+  const storeSrc = stripComments(readChatStoreSrc(join(ROOT, "stores", "useChatStore.ts")));
   const storeLines = storeSrc.split("\n");
   // 函数体范围：`  function name(` / `  async function name(` 起，到下一条顶格两空格的 `}` 止
   const fns: Array<{ name: string; from: number; to: number }> = [];
@@ -774,7 +775,7 @@ test("返回 MessageRecord 的每条命令，调用点必须把结果 enqueueMes
  */
 test('store 的 updateTodo 不许漏转 patch 里声明过的键（category 那次事故的锁）', () => {
   // 用这份文件自己的 stripComments：注释里提到过那个键名，不剥就会自己命中自己
-  const storeSrc = stripComments(readFileSync(join(ROOT, "stores", "useChatStore.ts"), "utf8"));
+  const storeSrc = stripComments(readChatStoreSrc(join(ROOT, "stores", "useChatStore.ts")));
   const fnStart = storeSrc.indexOf("async function updateTodo(");
   assert.ok(fnStart >= 0, "找不到 updateTodo ⇒ 这条判据失去落点（改名要同步改这里）");
   const body = storeSrc.slice(fnStart, storeSrc.indexOf("enqueueMessage(rec)", fnStart) + 20);
@@ -814,7 +815,7 @@ test('store 的 updateTodo 不许漏转 patch 里声明过的键（category 那�
 test("群历史按钮的 emit 必须有调用方接住，一路到命令名", () => {
   const header = readFileSync(join(ROOT, "components", "chat", "ChatHeader.vue"), "utf8");
   const win = readFileSync(join(ROOT, "components", "ChatWindow.vue"), "utf8");
-  const store = readFileSync(join(ROOT, "stores", "useChatStore.ts"), "utf8");
+  const store = readChatStoreSrc(join(ROOT, "stores", "useChatStore.ts"));
   const api = readFileSync(join(ROOT, "api", "index.ts"), "utf8");
 
   assert.match(header, /\(e: "sync-history"\): void;/, "ChatHeader 里那一声必须还声明着");
@@ -847,7 +848,7 @@ test("群历史按钮的 emit 必须有调用方接住，一路到命令名", ()
  * 且过期分支真的把监听摘掉、清理真的不再碰新群的定时器。
  */
 test("群任务订阅：切群竞态必须让旧监听作废并摘除（接线判据）", () => {
-  const st = stripComments(readFileSync(join(ROOT, "stores", "useChatStore.ts"), "utf8"));
+  const st = stripComments(readChatStoreSrc(join(ROOT, "stores", "useChatStore.ts")));
   const start = st.indexOf("async function watchGroupTodos(");
   assert.ok(start >= 0, "找不到 watchGroupTodos：改名要同步这条守卫");
   const end = st.indexOf("async function send(", start);
@@ -896,7 +897,7 @@ function count(hay: string, needle: string): number {
 }
 
 test("每批快照只许读这一批涉及的会话，不许遍历整份消息缓存（审计 R-17）", () => {
-  const st = stripComments(readFileSync(join(ROOT, "stores", "useChatStore.ts"), "utf8"));
+  const st = stripComments(readChatStoreSrc(join(ROOT, "stores", "useChatStore.ts")));
   const body = sliceFn(st, "async function applyIncoming(", "function enqueueMessage(", "applyIncoming");
 
   // 全表遍历的两种写法：这条函数每帧可能跑一次，而缓存里是"全部会话 × 每会话上限"。
@@ -921,7 +922,7 @@ test("每批快照只许读这一批涉及的会话，不许遍历整份消息�
 
 test("message-failed 用事件自带的事实盖缓存，不再退化成一次整页重查（审计 R-29）", () => {
   const api = stripComments(readFileSync(join(ROOT, "api", "index.ts"), "utf8"));
-  const st = stripComments(readFileSync(join(ROOT, "stores", "useChatStore.ts"), "utf8"));
+  const st = stripComments(readChatStoreSrc(join(ROOT, "stores", "useChatStore.ts")));
 
   // 两条事件按"带不带结论"分家：各走各的处理器，出现次数钉死。
   assert.equal(
@@ -945,7 +946,7 @@ test("message-failed 用事件自带的事实盖缓存，不再退化成一次�
 
 test("message-status-changed 带结论时必须盖全缓存，不许退化成只重查活跃会话（审计第 4 项）", () => {
   const api = stripComments(readFileSync(join(ROOT, "api", "index.ts"), "utf8"));
-  const st = stripComments(readFileSync(join(ROOT, "stores", "useChatStore.ts"), "utf8"));
+  const st = stripComments(readChatStoreSrc(join(ROOT, "stores", "useChatStore.ts")));
 
   // 监听把载荷拆成两个实参：msg_id 与 status 都要到场（少一个就退回旧形状）。
   assert.equal(count(api, "h.onMessageStatusChanged(e.payload.msg_id, e.payload.status)"), 1);
@@ -988,7 +989,7 @@ test("message-status-changed 带结论时必须盖全缓存，不许退化成只
  * 那条按臂体取窗口的理由）。
  */
 test("★ 文件的三条终态事件都收回「网络停滞」标记（那个 Map 只清不涨）", () => {
-  const store = readFileSync(join(ROOT, "stores", "useChatStore.ts"), "utf8");
+  const store = readChatStoreSrc(join(ROOT, "stores", "useChatStore.ts"));
   /** 从某段起点截到下一个空行或 1200 字符，够覆盖 handler 开头那几行。 */
   const window = (from: string) => {
     const at = store.indexOf(from);
@@ -1021,15 +1022,34 @@ test("★ 文件的三条终态事件都收回「网络停滞」标记（那个 
  * 作用域销毁就该把还排着的东西一起放掉。
  */
 test("★ 一次性定时器在 init 作用域销毁时被取消（与 markReadTimer 同一条口径）", () => {
-  const store = readFileSync(join(ROOT, "stores", "useChatStore.ts"), "utf8");
+  const store = readChatStoreSrc(join(ROOT, "stores", "useChatStore.ts"));
   const at = store.indexOf("scope.onDispose(() => {");
   assert.ok(at >= 0, "init 作用域的那段 onDispose 不见了 ⇒ 本判据的锚点失效");
   const dispose = store.slice(at, at + 900);
-  for (const timer of ["markReadTimer", "notifyTimer", "transfersRepairTimer"]) {
-    assert.ok(
-      dispose.includes(`clearTimeout(${timer})`),
-      `${timer} 必须在 init 作用域销毁时被 clearTimeout：重绑事件不该让上一代的定时器留到下一代`,
-    );
+  assert.ok(
+    dispose.includes("clearTimeout(markReadTimer)"),
+    "markReadTimer 必须在 init 作用域销毁时被 clearTimeout",
+  );
+  // 另外两个一次性定时器已随职责模块搬走。判据跟着搬，但两头都要钉：
+  //   ① 入口的 onDispose 调用了模块的 cancel 函数；
+  //   ② cancel 函数里真的 clearTimeout —— 否则"调一个空函数"也能绿（空转）。
+  for (const [cancelFn, timer] of [
+    ["cancelNotificationTimers", "notifyTimer"],
+    ["cancelTransfersRepairTimer", "transfersRepairTimer"],
+  ] as const) {
+    if (dispose.includes(`${cancelFn}()`)) {
+      const modAt = store.indexOf(`function ${cancelFn}(`);
+      assert.ok(modAt >= 0, `${cancelFn} 的实现不见了 ⇒ 判据落空`);
+      assert.ok(
+        store.slice(modAt, modAt + 400).includes(`clearTimeout(${timer})`),
+        `${cancelFn} 被调用，但函数体里没有 clearTimeout(${timer}) ⇒ 取消是空转`,
+      );
+    } else {
+      assert.ok(
+        dispose.includes(`clearTimeout(${timer})`),
+        `${timer} 必须在 init 作用域销毁时被清除（就地 clearTimeout 或调用 cancel 函数）`,
+      );
+    }
   }
 });
 
@@ -1041,7 +1061,7 @@ test("★ 一次性定时器在 init 作用域销毁时被取消（与 markReadT
  * 现在群也走 `api.ensureConversation(id)`（后端按 `group:` 前缀取群名建行）。
  */
 test("★ 打开会话：群没有会话行也要补建（任务中心「去会话」的根因）", () => {
-  const st = stripComments(readFileSync(join(ROOT, "stores", "useChatStore.ts"), "utf8"));
+  const st = stripComments(readChatStoreSrc(join(ROOT, "stores", "useChatStore.ts")));
   const at = st.indexOf("async function openConversation(");
   const end = st.indexOf("const PAGE_SIZE = 100;", at);
   assert.ok(at >= 0 && end > at, "找不到 openConversation 的锚点");
@@ -1069,7 +1089,7 @@ test("★ 打开会话：群没有会话行也要补建（任务中心「去会�
  *  ④ 任意消息状态变更（取消/失败/送达）。
  */
 test("★ 发送 / 重发 / Ack / 状态变更都会刷新任务中心快照（否则行不出现或不消失）", () => {
-  const st = stripComments(readFileSync(join(ROOT, "stores", "useChatStore.ts"), "utf8"));
+  const st = stripComments(readChatStoreSrc(join(ROOT, "stores", "useChatStore.ts")));
   const sendStart = st.indexOf("async function send(");
   const sendEnd = st.indexOf("async function resend(", sendStart);
   assert.ok(sendStart >= 0 && sendEnd > sendStart, "找不到 send / resend 的锚点");
@@ -1156,7 +1176,7 @@ test("bindEvents 注册顺序不变：34 个事件按现有顺序登记", () => 
 });
 
 test("chat.init() 的 bindEvents 必须早于首轮业务刷新", () => {
-  const st = stripComments(readFileSync(join(ROOT, "stores", "useChatStore.ts"), "utf8"));
+  const st = stripComments(readChatStoreSrc(join(ROOT, "stores", "useChatStore.ts")));
   const start = st.indexOf("async function init()");
   const end = st.indexOf("\n  return {", start);
   assert.ok(start >= 0 && end > start, "找不到 init() 函数体");
@@ -1190,7 +1210,7 @@ function storeFnBody(st: string, signature: string): string {
  *  ③ 失败落定按 `local_id` 去命中"真实行" ⇒ 真实成功会被迟到失败改掉 msg_id。
  */
 test("乐观更新判据落在 store 注释块，且回滚只走纯判据（5.16.91）", () => {
-  const raw = readFileSync(join(ROOT, "stores", "useChatStore.ts"), "utf8");
+  const raw = readChatStoreSrc(join(ROOT, "stores", "useChatStore.ts"));
   const st = stripComments(raw);
 
   // ① 判据必须真的落在代码旁（`stripComments` 会把注释删掉，所以这里读原文）。
@@ -1246,7 +1266,7 @@ test("乐观更新判据落在 store 注释块，且回滚只走纯判据（5.16
  * 回滚判据只许住在 `@/utils/optimistic`，store 里不再手写"找一行/删一行"。
  */
 test("第二批乐观（表情回应 / 撤回）只动投影，回滚判据只走 optimistic.ts（5.16.93）", () => {
-  const st = stripComments(readFileSync(join(ROOT, "stores", "useChatStore.ts"), "utf8"));
+  const st = stripComments(readChatStoreSrc(join(ROOT, "stores", "useChatStore.ts")));
 
   // 表情回应：投影先上屏 → 真实结果按临时 msg_id 替换 → 失败整条收回
   const rx = storeFnBody(st, "async function sendDmReaction(");
@@ -1307,7 +1327,7 @@ test("第二批乐观（表情回应 / 撤回）只动投影，回滚判据只�
  * 成功与失败两条路径都要摘 —— 摘晚一步就会在任务中心留一条永不落的幽灵。
  */
 test("第三批乐观（强提醒 / 合并转发）的临时行只认 tmp id，失败必摘（5.16.94）", () => {
-  const st = stripComments(readFileSync(join(ROOT, "stores", "useChatStore.ts"), "utf8"));
+  const st = stripComments(readChatStoreSrc(join(ROOT, "stores", "useChatStore.ts")));
 
   const send = storeFnBody(st, "async function send(");
   assert.ok(
@@ -1354,3 +1374,20 @@ test("第三批乐观（强提醒 / 合并转发）的临时行只认 tmp id，�
   assert.notEqual(mutated, send, "对照注入没生效 ⇒ 这条对照什么都没测");
   assert.ok(!mutated.includes('kind === "remind" || kind === "merge"'), "对照后必须少一处");
 });
+
+/**
+ * 判据聚合器自证（反例能力）：chat store 拆成"入口 + 模块"之后，所有静态判据都改读
+ * `readChatStoreSrc()`。如果这个聚合器悄悄少读了模块（目录名改了、过滤器写错），
+ * 上面那一大批断言会集体变成"找不到锚点"的假红 —— 或者更糟，某些存在性断言直接空转。
+ * 所以这里同时钉住：① 入口在场；② 模块正文也真的在场；③ 聚合串确实比入口长。
+ */
+test("chat store 判据聚合器不是空转：入口与模块正文都必须在场", () => {
+  const entry = readFileSync(join(ROOT, "stores", "useChatStore.ts"), "utf8");
+  const src = readChatStoreSrc(join(ROOT, "stores", "useChatStore.ts"));
+  assert.match(src, /export const useChatStore = defineStore/, "入口文件没被读进来");
+  assert.match(src, /function notifyBody\(/, "通知模块正文没被读进来（`stores/chat/` 的过滤器或目录名变了？）");
+  assert.ok(src.length > entry.length + 500, `聚合串只比入口多 ${src.length - entry.length} 字符 ⇒ 模块几乎没读到`);
+  // 反向对照：聚合串不是"什么都匹配"的万能文本
+  assert.ok(!src.includes("function __nonexistent_probe__("), "聚合串把不存在的符号也当命中 ⇒ 上面的断言是空转");
+});
+

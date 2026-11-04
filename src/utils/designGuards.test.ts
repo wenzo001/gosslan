@@ -6,6 +6,7 @@ import { disabledOpacityFromClasses, disabledOpacityFromRule, parseTokenScopes }
 import { TODO_AUTO_ARCHIVE_DAYS } from "./todos.ts";
 import { mentionHighlightBg } from "./chatStyle.ts";
 import { tsFnBody } from "./tsSource.ts";
+import { readChatStoreSrc } from "../../scripts/chatStoreSrc.ts";
 import {
   checkBubbleMetricsCoupling,
   findTemplateSlotIssues,
@@ -2130,7 +2131,7 @@ test("「有人@我」只许走 messageMentionsMe：昵称判定不许在调用�
   );
   const messagesSrc = readFileSync(join(srcDir, "utils", "messages.ts"), "utf8");
   // ① 唯一入口必须真的还在被消费者用着 —— 否则上面的"零违规"只是因为没人判 @ 了
-  const storeSrc = readFileSync(join(srcDir, "stores", "useChatStore.ts"), "utf8");
+  const storeSrc = readChatStoreSrc(join(srcDir, "stores", "useChatStore.ts"));
   // 2026-09-28：这三条规则整体搬进 `messages.ts::freshMentionedConvs`（搬的目的就是能吃单测）。
   // ⇒ 消费者侧现在认的是**那个入口的调用**，同时**入口自己**必须还在调 `messageMentionsMe`：
   //   两头都钉，才同时排掉「搬成一个没人调的空壳」与「store 里再各判一遍」这两种复活。
@@ -2212,8 +2213,14 @@ test("「有人@我」从输入框到对端、再到气泡的接缝必须齐全�
     ["src-tauri/src/network/transport/gossip.rs", "mention_targets: mention_targets.clone(),", "⑫ 收到的落点没跟着落库 ⇒ 第二段白做"],
   ];
   const missing: string[] = [];
+  // chat store 已按职责拆成「入口 + modules」：这条链的 store 那一环可能落在任一模块里，
+  // 所以按整份实现（入口 + `stores/chat/*.ts`）检查，而不是只盯入口文件。
+  const readSeam = (rel: string) =>
+    rel === "src/stores/useChatStore.ts"
+      ? readChatStoreSrc(join(rootDir, rel))
+      : readFileSync(join(rootDir, rel), "utf8");
   for (const [rel, needle, why] of SEAMS) {
-    const code = readFileSync(join(rootDir, rel), "utf8");
+    const code = readSeam(rel);
     if (!code.includes(needle)) missing.push(`${rel} —— ${why}`);
   }
   assert.deepEqual(missing, [], "「@ 了谁」这条链断了：\n" + missing.join("\n"));
@@ -2231,7 +2238,7 @@ test("「有人@我」从输入框到对端、再到气泡的接缝必须齐全�
 // ⇒ 替换必须按 `msg_id` 认，并且这个判断只许住在 `utils/messages.ts::replaceOptimistic` 一处。
 test("乐观→真实的替换必须走那一个纯函数，store 里不许留第二份裸 splice", () => {
   const root = join(import.meta.dirname, "..");
-  const store = readFileSync(join(root, "stores", "useChatStore.ts"), "utf8");
+  const store = readChatStoreSrc(join(root, "stores", "useChatStore.ts"));
   const utils = readFileSync(join(root, "utils", "messages.ts"), "utf8");
 
   assert.ok(
@@ -2261,7 +2268,7 @@ test("乐观→真实的替换必须走那一个纯函数，store 里不许留�
 // 前端那份曾经正是只排除 `read` ⇒ 同一条规则两个家、其中一家缺条件。
 test("已读回执推进的排除清单在前端只许走那个纯函数，不许再内联一份弱谓词", () => {
   const root = join(import.meta.dirname, "..");
-  const store = readFileSync(join(root, "stores", "useChatStore.ts"), "utf8");
+  const store = readChatStoreSrc(join(root, "stores", "useChatStore.ts"));
   const utils = readFileSync(join(root, "utils", "messages.ts"), "utf8");
   assert.ok(store.includes("promoteOnPeerRead(list, myDeviceId.value"), "store 不再走那个家 ⇒ 谓词会分叉");
   for (const k of ["read", "failed", "recalled"]) {
@@ -5946,7 +5953,7 @@ test("@提及淡底配方只有一个家：16% 的 color-mix 只许出现在 cha
 // 抽成 `findFirstMessageById` + `replaceMessageAt` 之后，语义（跨会话/第一条/不可变）由
 // `utils/messages.test.ts` 驱动；这一条守的是**接线**：那三个 handler 不许再手写跨会话循环。
 test("跨会话按 msg_id 改一条不许手写循环：三个 handler 必须走 utils/messages 的家", () => {
-  const store = readFileSync(join(import.meta.dirname, "..", "stores", "useChatStore.ts"), "utf8");
+  const store = readChatStoreSrc(join(import.meta.dirname, "..", "stores", "useChatStore.ts"));
   const bodyOf = (sig: string) => {
     const at = store.indexOf(sig);
     assert.ok(at >= 0, `store 里找不到 ${sig} ⇒ 锚点写法变了`);
@@ -5991,7 +5998,7 @@ test("跨会话按 msg_id 改一条不许手写循环：三个 handler 必须走
 // （`onMessageAcked` 的送达提升、重发时的原地回退）。它们的边界是"哪个会话由调用方给"，
 // 所以用的是 `patchMessageInConv` 而不是 `findFirstMessageById`——判据要把这个区分也钉住。
 test("会话内的按 msg_id 改一条也走家：store 里不再有手写的 findIndex(msg_id)", () => {
-  const store = readFileSync(join(import.meta.dirname, "..", "stores", "useChatStore.ts"), "utf8");
+  const store = readChatStoreSrc(join(import.meta.dirname, "..", "stores", "useChatStore.ts"));
   const HAND = /\.findIndex\(\(m\)\s*=>\s*m\.msg_id/g;
   const hits = [...store.matchAll(HAND)].length;
   assert.equal(hits, 0, `store 里还有 ${hits} 处手写 findIndex(msg_id) ⇒ 回到"每处一份、没法单测"`);
@@ -6239,7 +6246,7 @@ test("A 档读失败的界面错误档必须接上（后端不许折回空 + 前
       `${site.file}：仍写着"按空显示"⇒ 这一格被改回折叠了（INV-P36 的界面半边回归）`,
     );
   }
-  const store = readFileSync(join(import.meta.dirname, "..", "stores", "useChatStore.ts"), "utf8");
+  const store = readChatStoreSrc(join(import.meta.dirname, "..", "stores", "useChatStore.ts"));
   const list = readFileSync(join(import.meta.dirname, "..", "components", "ConversationList.vue"), "utf8");
   const task = readFileSync(join(import.meta.dirname, "..", "components", "TaskCenter.vue"), "utf8");
   const relay = readFileSync(
@@ -6323,7 +6330,7 @@ test("A 档读失败的界面错误档必须接上（后端不许折回空 + 前
 // 真实风险是判据写完、调用点漏接或被挪到别的分支 ⇒ 全群打扰照旧，而测试全绿
 // （本仓治过的那类：`flush_pending_files` 的在途闸门、`restore_pending_requests` 的启动接线）。
 test("群任务建卡通知闸门必须接在 maybeNotify 上（B：接线判据）", () => {
-  const src = readFileSync(join(import.meta.dirname, "..", "stores", "useChatStore.ts"), "utf8");
+  const src = readChatStoreSrc(join(import.meta.dirname, "..", "stores", "useChatStore.ts"));
   const body = tsFnBody(src, "function maybeNotify(");
   assert.ok(body.length > 200, `只截到 ${body.length} 字符的函数体 ⇒ 截取锚点变了，本判据要跟着改名`);
   const calls = body.split("todoCardConcernsMe(").length - 1;

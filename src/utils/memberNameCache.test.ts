@@ -7,6 +7,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
+import { readChatStoreSrc } from "../../scripts/chatStoreSrc.ts";
 import {
   MEMBER_NAME_CACHE_KEY,
   MEMBER_NAME_CACHE_MAX,
@@ -106,7 +107,7 @@ test("写进去的能被读回来（这条链的往返恒等 = 「重启后名�
  * 新增第四个写入点而没接缓存时，这条会红（而不是等用户再看一次名字会变）。
  */
 test("每个 peers 写入点都接了缓存：赋值处数量 == 记名处数量", () => {
-  const src = readFileSync(join(import.meta.dirname, "..", "stores", "useChatStore.ts"), "utf8");
+  const src = readChatStoreSrc(join(import.meta.dirname, "..", "stores", "useChatStore.ts"));
   const assign = src.match(/peers\.value = merged;/g) ?? [];
   const remember = src.match(/rememberSeenNames\((list|p)\);/g) ?? [];
   // 阳性对照：两边都必须非空，否则"两个 0"也会相等 —— 那是一种假绿。

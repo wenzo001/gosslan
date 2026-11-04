@@ -13,6 +13,7 @@ import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { memberIdTail, resolveMemberName, MEMBER_ID_TAIL_LEN } from "./memberName.ts";
+import { readChatStoreSrc } from "../../scripts/chatStoreSrc.ts";
 import { zhCN } from "../i18n/locales/zh-cn.ts";
 import { enUS } from "../i18n/locales/en-us.ts";
 
@@ -157,7 +158,7 @@ test("跨语言契约：后端兜底与这里的位数/措辞同一条", () => {
  */
 test("入口委托：nicknameOf 必须把判断交给 memberName.ts 那一个家", () => {
   const at = (rel: string) => join(dirname(fileURLToPath(import.meta.url)), rel);
-  const body0 = sliceFnBody(readFileSync(at("../stores/useChatStore.ts"), "utf8"), "function nicknameOf(");
+  const body0 = sliceFnBody(readChatStoreSrc(at("../stores/useChatStore.ts")), "function nicknameOf(");
   assert.ok(body0 !== null, "useChatStore.ts 里找不到 `function nicknameOf(` ⇒ 入口搬家，这条判据失去落点");
   // 先去掉整行注释：那两段注释里**复述了**"这里返回裸 device_id"，留着它既能把反例判成绿、
   // 也能把正例判成红（本仓那条"注释里复述被断言句"的旧账同族）。

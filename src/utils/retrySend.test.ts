@@ -29,9 +29,13 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
+import { readChatStoreSrc } from "../../scripts/chatStoreSrc.ts";
 
 const ROOT = join(import.meta.dirname, "..");
-const read = (p: string) => readFileSync(join(ROOT, p), "utf8");
+const read = (p: string) =>
+  p.endsWith("stores/useChatStore.ts")
+    ? readChatStoreSrc(join(ROOT, p))
+    : readFileSync(join(ROOT, p), "utf8");
 
 test("★ 单聊重发走 resend_message（复用原 msg_id），不再新建一条", () => {
   const item = read("components/MessageItem.vue");

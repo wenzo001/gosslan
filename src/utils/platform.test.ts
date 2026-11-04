@@ -170,7 +170,7 @@ test("减弱动态这条查询不许在生产码里再出现第二份手抄（�
   // 两个消费者各自都得接上这个家（存在性判不出方向，所以按调用点逐个点名）
   for (const [r, fn] of [
     ["utils/haptics.ts", "prefersReducedMotion"],
-    ["stores/useChatStore.ts", "prefersReducedMotion"],
+    ["stores/chat/notifications.ts", "prefersReducedMotion"],
   ] as const) {
     const src = readFileSync(join(SRC_DIR, r), "utf8");
     assert.match(src, new RegExp(`${fn}\\(\\)`), `${r} 没有调用 ${fn}()`);
