@@ -2108,6 +2108,101 @@ fn group_cancel_button_matches_the_backend_outcome_for_every_status() {
     assert_eq!(status_of(&conn, "m-part"), "partial_cancelled");
 }
 
+// ---------------- 批次 2B 第二笔：迟到写被拒的门族逐状态钉死 ----------------
+//
+// 四扇门各自守一份 `status NOT IN (...)`：`set_message_status`、`ack_delivered`、
+// 已读回执（`mark_own_messages_read_upto`）、重发（`requeue_message_for_resend`）。
+// 这一笔只加测试（后续把集合搬进 `message_lifecycle`，行为必须逐字不变）：
+// 逐状态记录「这道门动不动这一行、动成什么」，任何一格变了都是行为变化，不是重构。
+
+#[test]
+fn late_write_door_family_pins_every_status() {
+    // (状态, set_message_status 能否改, 结果状态, Ack 后状态, 已读回执能否推, 能否重发)
+    for (status, set_writes, after_set, after_ack, read_advances, can_resend) in [
+        ("sending", true, "sent", "delivered", true, false),
+        // 已经是 sent 的再写一次 sent：不是终态，门照开（幂等由调用方判是否需要）
+        ("sent", true, "sent", "delivered", true, false),
+        ("failed", false, "failed", "delivered", false, true),
+        ("cancelled", false, "cancelled", "delivered", false, true),
+        (
+            "partial_cancelled",
+            false,
+            "partial_cancelled",
+            "delivered",
+            false,
+            false,
+        ),
+        ("delivered", false, "delivered", "delivered", true, false),
+        ("read", false, "read", "read", false, false),
+        ("recalled", false, "recalled", "recalled", false, false),
+    ] {
+        // ① set_message_status：迟到写把状态推成 sent
+        let conn = fresh_db();
+        ins_msg(&conn, "m-1", "p1", "text", "迟到写", 1);
+        force_status(&conn, "m-1", status);
+        let changed = super::set_message_status(&conn, "m-1", "sent").unwrap();
+        assert_eq!(
+            changed == 1,
+            set_writes,
+            "status={status}：set_message_status 的门变了"
+        );
+        assert_eq!(status_of(&conn, "m-1"), after_set, "status={status}");
+
+        // ② ack_delivered：队列行在 ⇒ 命中；状态只在硬终态才不动。
+        let conn = fresh_db();
+        ins_msg(&conn, "m-1", "p1", "text", "Ack", 1);
+        force_status(&conn, "m-1", status);
+        conn.execute(
+            "INSERT INTO outbox(msg_id, peer_id, payload, created_at) VALUES ('m-1','p1','{}',1)",
+            [],
+        )
+        .unwrap();
+        assert!(
+            super::ack_delivered(&conn, "m-1", "p1").unwrap(),
+            "status={status}：队列行在时 Ack 必须命中"
+        );
+        assert_eq!(status_of(&conn, "m-1"), after_ack, "status={status}");
+        assert_eq!(
+            count(&conn, "SELECT COUNT(*) FROM outbox"),
+            0,
+            "Ack 收尾必须删掉队列行（否则下次补发会再发一遍）"
+        );
+
+        // ③ 已读回执：对端证据只能点亮「本端确实发出去过、且没被本端收口」的行。
+        let conn = fresh_db();
+        ins_msg(&conn, "m-1", "p1", "text", "回执", 1);
+        force_status(&conn, "m-1", status);
+        let advanced = super::mark_own_messages_read_upto(&conn, "p1", "me", 1000).unwrap();
+        assert_eq!(
+            advanced > 0,
+            read_advances,
+            "status={status}：已读回执的门变了"
+        );
+        assert_eq!(
+            status_of(&conn, "m-1"),
+            if read_advances { "read" } else { status },
+            "status={status}"
+        );
+
+        // ④ 重发：只有本端判失败/被取消的行能整条重来。
+        let conn = fresh_db();
+        ins_msg(&conn, "m-1", "p1", "text", "重发", 1);
+        force_status(&conn, "m-1", status);
+        let requeued = super::requeue_message_for_resend(&conn, "m-1", "p1", "{}").unwrap();
+        assert_eq!(requeued == 1, can_resend, "status={status}：重发的门变了");
+        assert_eq!(
+            status_of(&conn, "m-1"),
+            if can_resend { "sending" } else { status },
+            "status={status}"
+        );
+        assert_eq!(
+            count(&conn, "SELECT COUNT(*) FROM outbox"),
+            i64::from(can_resend),
+            "status={status}：重发必须且只能在放行时留下队列行"
+        );
+    }
+}
+
 // ---------------- 批次 3A：四账只读投影 + 策略矩阵 ----------------
 //
 // 投影只做 SELECT；写数据是测试准备。它要证明的是「四张账的终态/复活/墓碑语义
