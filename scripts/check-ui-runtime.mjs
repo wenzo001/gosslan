@@ -11067,11 +11067,77 @@ async function runPerf(cdp, url) {
  * 静态契约（色团数、关键帧属性、visibility 监听、reduce `animation: none`、PNG 噪点…）
  * 在 `designGuards.checkAmbientMotion`；这里只量静态判据读不到的东西：
  * 真实合成器上的动画清点、隐藏后 running=0、reduce 冻结、降级隐藏、
- * 涟漪接线、对比度、空闲 CPU / 滚动帧、以及用户要拿去肉眼定 α 的五张对比图。
+ * 涟漪接线、对比度、空闲 CPU / 滚动帧、以及用户要拿去肉眼挑档的八张对比图。
  *
- * 为什么截图也从这里出：五张图的取值（α、明暗）必须与探针读到的同一份 CSS 变量
+ * 为什么截图也从这里出：八张图的取值（α、明暗）必须与探针读到的同一份 CSS 变量
  * 是同一时刻的同一状态，否则"图好看"和"读数合规"会悄悄变成两件事。
  */
+
+/**
+ * sRGB(0–255) → CIELAB（D65），供 CIE2000 色差用。
+ *
+ * 为什么不用"平均通道差 ≥ N 色阶"：那一格上一轮把采样区放在画面正中（被静态 D 团占着），
+ * 量到的是 D 团而不是配方；而且通道差在低饱和高亮度区与**感知差**严重非线性。
+ * ΔE00 是"人眼能不能看出换了一档"的度量，档位可辨性（AM-13）按它判。
+ */
+function srgbToLab(rgb) {
+  const lin = (v) => {
+    const x = v / 255;
+    return x <= 0.04045 ? x / 12.92 : Math.pow((x + 0.055) / 1.055, 2.4);
+  };
+  const [r, g, b] = [lin(rgb[0]), lin(rgb[1]), lin(rgb[2])];
+  const X = (r * 0.4124564 + g * 0.3575761 + b * 0.1804375) / 0.95047;
+  const Y = r * 0.2126729 + g * 0.7151522 + b * 0.0721750;
+  const Z = (r * 0.0193339 + g * 0.1191920 + b * 0.9503041) / 1.08883;
+  const f = (t) => (t > 0.008856 ? Math.cbrt(t) : 7.787 * t + 16 / 116);
+  const fx = f(X), fy = f(Y), fz = f(Z);
+  return [116 * fy - 16, 500 * (fx - fy), 200 * (fy - fz)];
+}
+
+/** CIEDE2000（Sharma 2005 的标准式；kL=kC=kH=1）。 */
+function deltaE00(lab1, lab2) {
+  const [L1, a1, b1] = lab1;
+  const [L2, a2, b2] = lab2;
+  const rad = (d) => (d * Math.PI) / 180;
+  const C1 = Math.sqrt(a1 * a1 + b1 * b1);
+  const C2 = Math.sqrt(a2 * a2 + b2 * b2);
+  const Cbar = (C1 + C2) / 2;
+  const G = 0.5 * (1 - Math.sqrt(Math.pow(Cbar, 7) / (Math.pow(Cbar, 7) + Math.pow(25, 7))));
+  const a1p = (1 + G) * a1;
+  const a2p = (1 + G) * a2;
+  const C1p = Math.sqrt(a1p * a1p + b1 * b1);
+  const C2p = Math.sqrt(a2p * a2p + b2 * b2);
+  const h1p = C1p === 0 ? 0 : (Math.atan2(b1, a1p) * 180) / Math.PI + (Math.atan2(b1, a1p) < 0 ? 360 : 0);
+  const h2p = C2p === 0 ? 0 : (Math.atan2(b2, a2p) * 180) / Math.PI + (Math.atan2(b2, a2p) < 0 ? 360 : 0);
+  const dLp = L2 - L1;
+  const dCp = C2p - C1p;
+  let dhp = 0;
+  if (C1p * C2p !== 0) {
+    dhp = h2p - h1p;
+    if (dhp > 180) dhp -= 360;
+    else if (dhp < -180) dhp += 360;
+  }
+  const dHp = 2 * Math.sqrt(C1p * C2p) * Math.sin(rad(dhp) / 2);
+  const Lbar = (L1 + L2) / 2;
+  const Cbarp = (C1p + C2p) / 2;
+  let hbarp;
+  if (C1p * C2p === 0) hbarp = h1p + h2p;
+  else if (Math.abs(h1p - h2p) <= 180) hbarp = (h1p + h2p) / 2;
+  else if (h1p + h2p < 360) hbarp = (h1p + h2p + 360) / 2;
+  else hbarp = (h1p + h2p - 360) / 2;
+  const T = 1 - 0.17 * Math.cos(rad(hbarp - 30)) + 0.24 * Math.cos(rad(2 * hbarp)) +
+    0.32 * Math.cos(rad(3 * hbarp + 6)) - 0.20 * Math.cos(rad(4 * hbarp - 63));
+  const dTheta = 30 * Math.exp(-(((hbarp - 275) / 25) ** 2));
+  const RC = 2 * Math.sqrt(Math.pow(Cbarp, 7) / (Math.pow(Cbarp, 7) + Math.pow(25, 7)));
+  const SL = 1 + (0.015 * (Lbar - 50) ** 2) / Math.sqrt(20 + (Lbar - 50) ** 2);
+  const SC = 1 + 0.045 * Cbarp;
+  const SH = 1 + 0.015 * Cbarp * T;
+  const RT = -Math.sin(rad(2 * dTheta)) * RC;
+  return Math.sqrt(
+    (dLp / SL) ** 2 + (dCp / SC) ** 2 + (dHp / SH) ** 2 + RT * (dCp / SC) * (dHp / SH),
+  );
+}
+
 async function runAmbient(cdp, url) {
   const shotDir = path.join(ROOT, "test-results", "ambient-shots");
   fs.mkdirSync(shotDir, { recursive: true });
@@ -11083,16 +11149,24 @@ async function runAmbient(cdp, url) {
     shots.push(p);
     return p;
   };
-  /** 把 α 旋钮直接写在 <html> 上（单一变量 ⇒ 四个派生档一起变），并返回实际生效值。 */
-  const setAmbient = (mode, alpha) => cdp.eval(`(() => {
+  /**
+   * 把三个旋钮直接写在 <html> 上（单一变量组 ⇒ 派生档一起变），并返回实际生效值。
+   * 传 null = 用产品 CSS 默认（T3：亮 40% / 暗 36%）；比较四档时按 TIERS 显式传 α。
+   */
+  const setAmbient = (mode, alpha, s, scale) => cdp.eval(`(() => {
     const h = document.documentElement;
     h.dataset.ambient = ${JSON.stringify(mode)};
-    if (${alpha == null}) h.style.removeProperty('--ambient-alpha');
-    else h.style.setProperty('--ambient-alpha', '${alpha ?? 0}');
+    const set = (k, v) => { if (v == null) h.style.removeProperty(k); else h.style.setProperty(k, String(v)); };
+    set('--ambient-alpha', ${alpha == null ? "null" : alpha});
+    set('--ambient-s', ${s == null ? "null" : s});
+    set('--ambient-scale', ${scale == null ? "null" : scale});
     const root = document.querySelector('.ambient');
+    const cs = getComputedStyle(h);
     return {
       mode: h.dataset.ambient,
-      alpha: getComputedStyle(h).getPropertyValue('--ambient-alpha').trim(),
+      alpha: cs.getPropertyValue('--ambient-alpha').trim(),
+      s: cs.getPropertyValue('--ambient-s').trim(),
+      scale: cs.getPropertyValue('--ambient-scale').trim(),
       display: root ? getComputedStyle(root).display : '(no-root)',
     };
   })()`);
@@ -11388,35 +11462,107 @@ async function runAmbient(cdp, url) {
   check("ambient：AM-09 涟漪自行消失（800 ms 后节点数为 0）",
     ripple && ripple.end === 0, "end=0", "end=" + (ripple && ripple.end));
 
-  // ── ⑧ 对比度（正文最坏合成底：app-bg + 最大候选 α 的色雾）────────
-  const contrast = await cdp.eval(`(() => {
-    const rgb = (s) => {
-      const m = String(s).match(/[0-9a-f]{6}/i);
-      return m ? [parseInt(m[0].slice(0, 2), 16), parseInt(m[0].slice(2, 4), 16), parseInt(m[0].slice(4, 6), 16)] : null;
+  // ── ⑧ 对比度（直接画在画布上的文字：薄纱 + **单团**满 α 的最坏合成底）────
+  // 内容承载面（气泡 / 卡片 / 列表行 / 输入框 / 设置表单行）要求实色 ≥0.95，正文不直接坐在色雾上；
+  // 仍会直接坐在雾上的是空状态、时间戳、分组标题 —— 用「该档薄纱 + 单团满 α」作为它们的合成底。
+  // 不取「两团重叠」：动团被构图钉在左/右/上三侧，两层重叠只发生在四角（那里没有正文），
+  // 中央 40%×40% 只有静态 D 团（α/4），中点的稳定性由 AM-14 单独判。
+  const TIERS = [
+    { id: "t1", alpha: 0.20, alphaDark: 0.16 },
+    { id: "t2", alpha: 0.30, alphaDark: 0.26 },
+    { id: "t3", alpha: 0.40, alphaDark: 0.36 },
+    { id: "t4", alpha: 0.48, alphaDark: 0.44 },
+  ];
+  const contrastFor = async (dark) => {
+    await setAppearance(cdp, dark);
+    return cdp.eval(`(() => {
+      // 自定义属性返回的是原始文本（--ambient-warm 是 hsl(...)），统一交给临时元素算成 rgb。
+      const toRgb = (v) => {
+        const hex = String(v).trim().match(/^#([0-9a-f]{6})$/i);
+        if (hex) return [parseInt(hex[1].slice(0, 2), 16), parseInt(hex[1].slice(2, 4), 16), parseInt(hex[1].slice(4, 6), 16)];
+        const el = document.createElement('span');
+        el.style.color = String(v).trim();
+        document.body.appendChild(el);
+        const c = getComputedStyle(el).color;
+        el.remove();
+        const parts = c.match(/[\\d.]+/g);
+        return parts && parts.length >= 3 ? [Number(parts[0]), Number(parts[1]), Number(parts[2])] : null;
+      };
+      const dark = ${dark ? "true" : "false"};
+      const cs = getComputedStyle(document.documentElement);
+      const canvas = toRgb(cs.getPropertyValue('--gosslan-chat'));
+      const ink = toRgb(cs.getPropertyValue('--gosslan-text-2'));
+      const primary = toRgb(cs.getPropertyValue('--gosslan-primary'));
+      const cold = toRgb(cs.getPropertyValue('--ambient-cold'));
+      const mute = toRgb(cs.getPropertyValue('--ambient-mute'));
+      const warm = toRgb(cs.getPropertyValue('--ambient-warm'));
+      const veil = Number(cs.getPropertyValue('--ambient-veil'));
+      const s = Number(cs.getPropertyValue('--ambient-s'));
+      const tiers = ${JSON.stringify(TIERS)};
+      const mix = (a, b, t) => a.map((v, i) => Math.round(v * t + b[i] * (1 - t)));
+      const over = (base, fg, a) => base.map((b, i) => Math.round(b * (1 - a) + fg[i] * a));
+      const lum = (c) => {
+        const f = c.map((v) => { const x = v / 255; return x <= 0.03928 ? x / 12.92 : Math.pow((x + 0.055) / 1.055, 2.4); });
+        return 0.2126 * f[0] + 0.7152 * f[1] + 0.0722 * f[2];
+      };
+      const ratio = (a, b) => { const l1 = lum(a), l2 = lum(b); const hi = Math.max(l1, l2), lo = Math.min(l1, l2); return (hi + 0.05) / (lo + 0.05); };
+      if (!canvas || !ink || !primary || !cold || !mute || !warm) return { ok: false };
+      const tints = { primary: mix(primary, mute, s), cold: mix(cold, mute, s), warm };
+      const rows = [];
+      for (const t of tiers) {
+        const alpha = dark ? t.alphaDark : t.alpha;
+        for (const [name, tint] of Object.entries(tints)) {
+          // 色雾压在画布上，薄纱再压在雾上（薄纱底色就是画布自身 token）。
+          const veiled = over(over(canvas, tint, alpha), canvas, veil);
+          rows.push({ tier: t.id, tint: name, alpha, veil, ratio: Number(ratio(veiled, ink).toFixed(2)) });
+        }
+      }
+      return { ok: true, dark, veil, s, rows, worst: Math.min(...rows.map((r) => r.ratio)) };
+    })()`);
+  };
+  const contrastLight = await contrastFor(false);
+  const contrastDark = await contrastFor(true);
+  const contrastRows = [
+    ...((contrastLight && contrastLight.rows) || []),
+    ...((contrastDark && contrastDark.rows) || []),
+  ];
+  check("ambient：AM-08 亮/暗 × 四档 × 三色相，薄纱 + 单团满 α 合成底上正文（次级文字）仍 ≥4.5:1",
+    contrastLight && contrastLight.ok === true && contrastDark && contrastDark.ok === true
+      && contrastRows.length === 24 && contrastRows.every((r) => r.ratio >= 4.5),
+    "24 行（亮/暗 × T1–T4 × 主色/冷/暖沙）worst ≥4.5",
+    JSON.stringify({ light: contrastLight, dark: contrastDark }));
+
+  // ── ⑧b 内容承载面必须实色：正文不直接坐在色雾上（合成 alpha ≥0.95）──────
+  // 逐级向上复合 background-color 的 alpha：气泡/输入卡的可见底可能不是它自己那一层
+  // （textarea 透明、外面那层卡才有底色），只看 element 自己的 computed 会读成 0。
+  await setAppearance(cdp, false);
+  const surfaces = await cdp.eval(`(() => {
+    const alphaOf = (el) => {
+      let a = 0;
+      let cur = el;
+      while (cur && cur !== document.documentElement) {
+        const bg = getComputedStyle(cur).backgroundColor || '';
+        const m = bg.match(/rgba?\\(([^)]+)\\)/);
+        if (m) {
+          const p = m[1].split(',').map(Number);
+          const al = p.length >= 4 ? p[3] : 1;
+          a = a + al * (1 - a);
+        }
+        cur = cur.parentElement;
+      }
+      return Number(a.toFixed(3));
     };
-    const dark = document.documentElement.classList.contains('dark');
-    const cs = getComputedStyle(document.documentElement);
-    const bg = rgb(cs.getPropertyValue('--gosslan-app-bg'));
-    const ink = rgb(cs.getPropertyValue('--gosslan-text-2'));
-    const primary = rgb(cs.getPropertyValue('--gosslan-primary'));
-    const cold = rgb(cs.getPropertyValue('--ambient-cold'));
-    const alpha = dark ? 0.09 : 0.08; // 用户给出的最高候选档，按最坏情况判
-    const over = (base, fg, a) => base.map((b, i) => Math.round(b * (1 - a) + fg[i] * a));
-    const lum = (c) => {
-      const f = c.map((v) => { const s = v / 255; return s <= 0.03928 ? s / 12.92 : Math.pow((s + 0.055) / 1.055, 2.4); });
-      return 0.2126 * f[0] + 0.7152 * f[1] + 0.0722 * f[2];
-    };
-    const ratio = (a, b) => { const l1 = lum(a), l2 = lum(b); const hi = Math.max(l1, l2), lo = Math.min(l1, l2); return (hi + 0.05) / (lo + 0.05); };
-    if (!bg || !ink || !primary || !cold) return { ok: false };
-    return {
-      ok: true, dark, alpha,
-      primary: Number(ratio(over(bg, primary, alpha), ink).toFixed(2)),
-      cold: Number(ratio(over(bg, cold, alpha), ink).toFixed(2)),
-    };
+    const items = [];
+    const bubble = document.querySelector('[data-msg-bubble] > :first-child');
+    if (bubble) items.push({ id: 'bubble', alpha: alphaOf(bubble), bg: getComputedStyle(bubble).backgroundColor });
+    const ta = document.querySelector('#probe-host [contenteditable="true"]');
+    if (ta) items.push({ id: 'composer', alpha: alphaOf(ta), bg: getComputedStyle(ta).backgroundColor });
+    return { ok: items.length >= 2, items };
   })()`);
-  check("ambient：AM-08 亮/暗两套在最坏色雾合成底上正文（次级文字）仍 ≥4.5:1",
-    contrast && contrast.ok === true && contrast.primary >= 4.5 && contrast.cold >= 4.5,
-    "≥4.5（亮 8% / 暗 9% 最坏档）", JSON.stringify(contrast));
+  console.log("  ℹ ambient 内容承载面合成 alpha → " + JSON.stringify(surfaces));
+  check("ambient：内容承载面（气泡/输入卡）合成 alpha ≥0.95（正文不直接坐在色雾上）",
+    surfaces && surfaces.ok === true && surfaces.items.every((i) => i.alpha >= 0.95),
+    "至少 2 个承载面 / 全部 ≥0.95", JSON.stringify(surfaces));
 
   // ── ⑨ 空闲 30 s CPU（渲染进程 TaskDuration 增量）──────────────
   await cdp.send("Performance.enable").catch(() => {});
@@ -11491,25 +11637,227 @@ async function runAmbient(cdp, url) {
     "p50(drift) ≤ p50(off)+2 / max ≤600",
     JSON.stringify({ drift: scrollDrift, off: scrollOff }));
 
-  // ── ⑪ 五张定值对比图（用户要拿肉眼定 α；含设置页两张）──────────
-  const mainShots = [];
+  // ── ⑪ 档位可辨性（AM-13）与中点稳定性（AM-14）：动团带 + 同相位 + CIEDE2000 ──
+  // 采样区**不再取画面正中**：中点被静态 D 团（约 42% plateau）覆盖，A/B/C 的位移上限 3vmax
+  // 走不到那里 —— 在中点量到的是 D 团，不是被调的配方（上一轮实测档间只有 0.08–0.10 色阶）。
+  // 两个子采样区，都落在同一个"动团带"里，但量的是两件不同的事（2026-11-05 修订）：
+  //   CORE（42% plateau 内）—— 档间差在这里最大（shape=1）；在 plateau 上量动感必然是 0。
+  //   EDGE（径向 56%，42%→72% 的淡出环上）—— 同一时刻位移在这里改变 α 最多；在环上量档间
+  //     只有 plateau 的 50%（8pp×0.5 必然跌破 1.5）。
+  // 用一个点同时判两条 = 结构上必有一条测不到。所以档间用 CORE、动感用 EDGE，
+  // 坐标都由色团几何现算（见下方注释），不是随手挑的像素。
+  //   CORE：A (6%, 0) / C (88%, 18%) / B (98%, 96%) —— A 夹到 (6% W, 32px)，B/C 已在视口内
+  //   EDGE：A (27.6%, 4.2%) / C (73.8%, 35.2%) / B (82.6%, 84.5%)
+  // 中点只保留为「不干扰正文」的稳定性判据（AM-14）。
+  // 同相位：比较前把三个色团的 animation-delay 归零，再 pause + currentTime=t。
+  // 不归零延迟就比，量到的是相位差而不是配方差（同一配方也能"测出"档差）。
+  const CORE_BANDS = [
+    { id: "a", fx: 0.06, fy: 0.0 },
+    { id: "c", fx: 0.88, fy: 0.18 },
+    { id: "b", fx: 0.98, fy: 0.96 },
+  ];
+  const EDGE_BANDS = [
+    { id: "a", fx: 0.276, fy: 0.042 },
+    { id: "c", fx: 0.738, fy: 0.096 },
+    { id: "b", fx: 0.8535, fy: 0.9325 },
+  ];
+  // ⚠️ 归零 delay 后必须**强制一次样式刷新**再 seek：Animation 对象的 timing 是异步重算的，
+  // 同帧直接写 currentTime 时延迟仍是旧的（-18/-42/-66s），三个团各自落在不同相位 ——
+  // 这正是上一轮 c 带 t=0↔20s 只差 0.21（C 的 120s/66s 偏移把 20s 落在周期尾部）的原因。
+  const freezeAt = (t) => cdp.eval(`(() => {
+    const blobs = [...document.querySelectorAll('.ambient-blob')];
+    for (const el of blobs) el.style.animationDelay = '0s';
+    void document.body.offsetWidth;
+    let n = 0;
+    for (const el of blobs) {
+      for (const a of el.getAnimations()) { a.pause(); a.currentTime = ${t}; n += 1; }
+    }
+    void document.body.offsetWidth;
+    return { n, transforms: blobs.map((el) => getComputedStyle(el).transform) };
+  })()`);
+  const unfreeze = () => cdp.eval(`(() => {
+    const blobs = [...document.querySelectorAll('.ambient-blob')];
+    for (const el of blobs) {
+      el.style.removeProperty('animation-delay');
+      for (const a of el.getAnimations()) a.play();
+    }
+    return blobs.length;
+  })()`);
+  // 采样区夹在**宿主矩形**内（不是视口）：主聊天夹具高 760px、视口 800px，
+  // 底下 40px 是 body 的实色底（雾被它挡住），拿视口夹会把采样块推进那块死区，
+  // 读数变成"body 底色恒定"（上一轮 B 带四档逐字节相同就是这么来的）。
+  const vp = await cdp.eval(`(() => {
+    const h = document.getElementById('probe-host');
+    const r = h ? h.getBoundingClientRect() : { left: 0, top: 0, width: window.innerWidth, height: window.innerHeight };
+    return { x: r.left, y: r.top, w: r.width, h: r.height };
+  })()`);
+  const rectAt = (fx, fy) => {
+    const cx = Math.min(Math.max(vp.x + vp.w * fx, vp.x + 32), vp.x + vp.w - 32);
+    const cy = Math.min(Math.max(vp.y + vp.h * fy, vp.y + 32), vp.y + vp.h - 32);
+    return { x: Math.round(cx - 32), y: Math.round(cy - 32), w: 64, h: 64 };
+  };
+  const probeRects = [
+    ...CORE_BANDS.map((b) => ({ id: b.id, ...rectAt(b.fx, b.fy) })),
+    { id: "mid", ...rectAt(0.5, 0.5) },
+  ];
+  const edgeRects = [
+    ...EDGE_BANDS.map((b) => ({ id: b.id, ...rectAt(b.fx, b.fy) })),
+    { id: "mid", ...rectAt(0.5, 0.5) },
+  ];
+  /** 一次全屏截图 → 页面内解码，按给定矩形求平均 RGB。截图与采样必然同帧。 */
+  const sampleRects = async (rects) => {
+    const img = await cdp.send("Page.captureScreenshot", { format: "png" });
+    return cdp.eval(`(async () => {
+      const blob = await (await fetch("data:image/png;base64,${img.data}")).blob();
+      const bmp = await createImageBitmap(blob);
+      const c = new OffscreenCanvas(bmp.width, bmp.height);
+      const g = c.getContext("2d");
+      g.drawImage(bmp, 0, 0);
+      const rects = ${JSON.stringify(rects)};
+      return rects.map((r) => {
+        const d = g.getImageData(r.x, r.y, r.w, r.h).data;
+        let sr = 0, sg = 0, sb = 0, n = 0;
+        for (let i = 0; i < d.length; i += 4) { sr += d[i]; sg += d[i + 1]; sb += d[i + 2]; n += 1; }
+        return { id: r.id, r: sr / n, g: sg / n, b: sb / n, x: r.x, y: r.y };
+      });
+    })()`);
+  };
+  const bandDE = (a, b) => {
+    const out = {};
+    for (const id of ["a", "c", "b"]) {
+      const x = a.find((s) => s.id === id), y = b.find((s) => s.id === id);
+      out[id] = Number(deltaE00(srgbToLab([x.r, x.g, x.b]), srgbToLab([y.r, y.g, y.b])).toFixed(2));
+    }
+    out.mean = Number(((out.a + out.c + out.b) / 3).toFixed(2));
+    return out;
+  };
+  const midDE = (a, b) => {
+    const x = a.find((s) => s.id === "mid"), y = b.find((s) => s.id === "mid");
+    return Number(deltaE00(srgbToLab([x.r, x.g, x.b]), srgbToLab([y.r, y.g, y.b])).toFixed(2));
+  };
+  const rgbText = (samples) => samples.map((s) => `${s.id}(${s.r.toFixed(1)},${s.g.toFixed(1)},${s.b.toFixed(1)})`).join(" ");
+  /**
+   * 量背景层时把夹具内容藏起来（只留画布纱 + 色雾）。
+   * 为什么必须藏：A/C/B 三处轨迹带在真实聊天里恰好压着不透明的东西
+   * （A 落在标题栏、C 落在蓝色气泡、B 落在输入区）—— 不藏的话四档读数**逐字节相同**
+   * （实测 t1–t4 的 a/c/b 全是 a(245.0,245.4,246.3) c(198.5,210.1,228.1) b(235.5,...)），
+   * 判据量到的是气泡颜色而不是配方。用 visibility 而不是 display:none，
+   * 宿主自己的纱（.ambient-canvas 的 background-color）才会保留在合成里。
+   */
+  const hideContent = (on) => cdp.eval(`(() => {
+    const id = 'probe-hide-content';
+    let el = document.getElementById(id);
+    if (${on ? "true" : "false"}) {
+      if (!el) {
+        el = document.createElement('style');
+        el.id = id;
+        el.textContent = '#probe-host > * { visibility: hidden !important; }';
+        document.head.appendChild(el);
+      }
+    } else if (el) {
+      el.remove();
+    }
+    return !!document.getElementById(id);
+  })()`);
+
+  // 产品默认档必须是 T3（亮 40% / 暗 36%）—— 截图与读数都从这一档出。
   await setAppearance(cdp, false);
-  await setAmbient("off", 0.06);
-  await sleep(350);
-  mainShots.push(await shot("01-main-off-light"));
-  await setAmbient("drift", 0.04);
-  await sleep(450);
-  mainShots.push(await shot("02-main-light-a4"));
-  await setAmbient("drift", 0.06);
-  await sleep(450);
-  mainShots.push(await shot("03-main-light-a6"));
-  await setAmbient("drift", 0.08);
-  await sleep(450);
-  mainShots.push(await shot("04-main-light-a8"));
+  const lightDefault = await setAmbient("drift", null, null, null);
   await setAppearance(cdp, true);
-  await setAmbient("drift", 0.07);
-  await sleep(500);
-  mainShots.push(await shot("05-main-dark-a7"));
+  const darkDefault = await setAmbient("drift", null, null, null);
+  check("ambient：产品默认档 = T3（亮 α 0.40 / 暗 α 0.36，与 CSS 默认一致）",
+    Number(lightDefault.alpha) === 0.4 && Number(darkDefault.alpha) === 0.36,
+    "亮 0.4 / 暗 0.36", JSON.stringify({ light: lightDefault.alpha, dark: darkDefault.alpha }));
+
+  await setAppearance(cdp, false);
+  await hideContent(true);
+  const surfaceChain = await cdp.eval(`(() => {
+    return ${JSON.stringify(probeRects)}.map((r) => {
+      const el = document.elementFromPoint(r.x + 32, r.y + 32);
+      const chain = [];
+      let cur = el;
+      for (let i = 0; cur && i < 5; i += 1) {
+        const cs = getComputedStyle(cur);
+        chain.push({ tag: cur.tagName, cls: String(cur.className || '').slice(0, 44), bg: cs.backgroundColor, vis: cs.visibility, z: cs.zIndex, pos: cs.position });
+        cur = cur.parentElement;
+      }
+      return { id: r.id, chain };
+    });
+  })()`);
+  console.log("  ℹ ambient 采样点上覆元素（已隐藏内容）→ " + JSON.stringify(surfaceChain));
+  const tierSamples = {};
+  for (const t of TIERS) {
+    await setAmbient("drift", t.alpha, null, null);
+    await sleep(200);
+    await freezeAt(0);
+    await sleep(120);
+    tierSamples[t.id] = await sampleRects(probeRects);
+  }
+  const de12 = bandDE(tierSamples.t1, tierSamples.t2);
+  const de23 = bandDE(tierSamples.t2, tierSamples.t3);
+  const de34 = bandDE(tierSamples.t3, tierSamples.t4);
+  console.log("  ℹ ambient 档位采样（t=0 同相位）→ " + JSON.stringify({
+    rects: probeRects,
+    t1: rgbText(tierSamples.t1), t2: rgbText(tierSamples.t2),
+    t3: rgbText(tierSamples.t3), t4: rgbText(tierSamples.t4),
+  }));
+  console.log("  ℹ ambient 档间 ΔE00（A/C/B 三带 + 均值）→ " + JSON.stringify({ t1t2: de12, t2t3: de23, t3t4: de34 }));
+  check("ambient：AM-13① T1↔T2 动团带 ΔE00 ≥ 1.5（同相位）",
+    de12.mean >= 1.5, "mean(A,C,B) ≥1.5", JSON.stringify(de12));
+  check("ambient：AM-13① T2↔T3 动团带 ΔE00 ≥ 1.5（同相位）",
+    de23.mean >= 1.5, "mean(A,C,B) ≥1.5", JSON.stringify(de23));
+  check("ambient：AM-13① T3↔T4 动团带 ΔE00 ≥ 1.5（同相位）",
+    de34.mean >= 1.5, "mean(A,C,B) ≥1.5", JSON.stringify(de34));
+
+  // 动感：同一档 t=0 ↔ t=+20s，采样在 **EDGE**（淡出环），不是 plateau。
+  // plateau 上 α 恒定，任何位移都不会改变颜色 —— 在那里量动感恒为 0（上一轮实测 a/c/b
+  // 分别 0.53 / 0.01 / 0.72，c 就是标准的"量在 plateau 上"）。冻结在同一延迟基准（0s）上。
+  await setAmbient("drift", TIERS[2].alpha, null, null);
+  await sleep(200);
+  await freezeAt(0);
+  await sleep(120);
+  const motionT0 = await sampleRects(edgeRects);
+  const frozen20 = await freezeAt(20_000);
+  await sleep(120);
+  const motionT20 = await sampleRects(edgeRects);
+  const motionDE = bandDE(motionT0, motionT20);
+  console.log("  ℹ ambient 动感冻结 transform → " + JSON.stringify(frozen20));
+  console.log("  ℹ ambient 动感 T3 t=0 ↔ t=+20s → " + JSON.stringify({
+    t0: rgbText(motionT0), t20: rgbText(motionT20), deltaE00: motionDE,
+  }));
+  check("ambient：AM-13② T3 在 t=0 与 t=+20s 动团带 ΔE00 ≥ 1.0（看得出在动）",
+    motionDE.mean >= 1.0, "mean(A,C,B) ≥1.0", JSON.stringify(motionDE));
+
+  // 中点只判稳定（AM-14）：档位切换与时间推进都不许把中央染色。
+  const midPairs = { t1t2: midDE(tierSamples.t1, tierSamples.t2), t2t3: midDE(tierSamples.t2, tierSamples.t3), t3t4: midDE(tierSamples.t3, tierSamples.t4), motion: midDE(motionT0, motionT20) };
+  console.log("  ℹ ambient 中点 64×64 ΔE00（AM-14 稳定性）→ " + JSON.stringify(midPairs));
+  check("ambient：AM-14 中点 64×64 任意两档与 t=0↔20s 的 ΔE00 ≤ 0.5（不干扰正文）",
+    Object.values(midPairs).every((v) => v <= 0.5), "全部 ≤0.5", JSON.stringify(midPairs));
+
+  // ── ⑫ 出图：关闭 / T1 / T2 / T3 / T4（亮）+ T2 / T3（暗）+ 设置页 T3 ──
+  await hideContent(false);
+  const mainShots = [];
+  const shotIndex = { off: "01", t1: "02", t2: "03", t3: "04", t4: "05" };
+  await setAppearance(cdp, false);
+  await setAmbient("off", null, null, null);
+  await sleep(350);
+  mainShots.push(await shot(`${shotIndex.off}-main-off-light`));
+  for (const t of TIERS) {
+    await setAmbient("drift", t.alpha, null, null);
+    await sleep(250);
+    await freezeAt(0);
+    await sleep(120);
+    mainShots.push(await shot(`${shotIndex[t.id]}-main-${t.id}-light`));
+  }
+  const darkShots = [];
+  await setAppearance(cdp, true);
+  for (const t of [TIERS[1], TIERS[2]]) {
+    await setAmbient("drift", t.alphaDark, null, null);
+    await sleep(250);
+    await freezeAt(0);
+    await sleep(120);
+    darkShots.push(await shot(`${t.id === "t2" ? "06" : "07"}-main-${t.id}-dark`));
+  }
 
   // 设置页：同一片雾在「外观」页的观感（只量新开关所在行，不改其它排布）
   await cdp.eval(`(async () => {
@@ -11526,32 +11874,29 @@ async function runAmbient(cdp, url) {
   })()`);
   const settingsShots = [];
   await setAppearance(cdp, false);
-  await setAmbient("off", 0.06);
+  await setAmbient("drift", TIERS[2].alpha, null, null);
   await sleep(350);
-  settingsShots.push(await shot("06-settings-off-light"));
-  await setAmbient("drift", 0.06);
-  await sleep(400);
-  settingsShots.push(await shot("07-settings-light-a6"));
-  await setAppearance(cdp, true);
-  await setAmbient("off", 0.07);
-  await sleep(350);
-  settingsShots.push(await shot("08-settings-off-dark"));
-  await setAmbient("drift", 0.07);
-  await sleep(400);
-  settingsShots.push(await shot("09-settings-dark-a7"));
+  await freezeAt(0);
+  await sleep(120);
+  settingsShots.push(await shot("08-settings-t3-light"));
 
-  // 收尾：把 α 旋钮与状态还原成产品默认，别把夹具状态留给后续段（新 tab 也会重置）
+  // 收尾：把旋钮与冻结状态还原成产品默认，别把夹具状态留给后续段（新 tab 也会重置）
+  await unfreeze();
   await cdp.eval(`(() => {
     const h = document.documentElement;
     h.style.removeProperty('--ambient-alpha');
+    h.style.removeProperty('--ambient-s');
+    h.style.removeProperty('--ambient-scale');
     h.dataset.ambient = 'drift';
     document.body.style.padding = '';
   })()`);
-  console.log("  ℹ ambient 截图 → " + JSON.stringify({ main: mainShots, settings: settingsShots }));
-  check("ambient：五张定值对比图落盘（关闭 / 亮4 / 亮6 / 亮8 / 暗7）",
+  console.log("  ℹ ambient 截图 → " + JSON.stringify({ main: mainShots, dark: darkShots, settings: settingsShots }));
+  check("ambient：四档对比图落盘（关闭 / T1 20% / T2 30% / T3 40% / T4 48%，亮色）",
     mainShots.length === 5 && mainShots.every((p) => fs.existsSync(p)), "5 张", JSON.stringify(mainShots));
-  check("ambient：设置页四张对照图落盘（开/关 × 浅/暗）",
-    settingsShots.length === 4 && settingsShots.every((p) => fs.existsSync(p)), "4 张",
+  check("ambient：暗色 T2 / T3 两张落盘",
+    darkShots.length === 2 && darkShots.every((p) => fs.existsSync(p)), "2 张", JSON.stringify(darkShots));
+  check("ambient：设置页 T3 亮色一张落盘",
+    settingsShots.length === 1 && settingsShots.every((p) => fs.existsSync(p)), "1 张",
     JSON.stringify(settingsShots));
 }
 
