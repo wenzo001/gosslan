@@ -14,6 +14,37 @@
 
 ## [Unreleased]
 
+## [5.17.43] - 2026-11-04
+
+### 修复：没有直连的 peer 也补发离线队列（Block 2，跨跳重投）
+
+- 现场（RC-3，已证实）：`send_message` 在没有直连链路时只 `broadcast_gossip` **一次**；
+  之后的重试器（5s）只遍历 `state.links`（直连对端）⇒ 纯中继好友**一次都补不到**，
+  120s 后被清扫器判死（界面显示「发送失败」）。Android ↔ macOS 那条路径正是这个形状。
+- 新增 `flush_outbox_via_relay`：按 outbox 行反查 peer（`db::list_outbox_peers`），
+  每 15s 一轮，只处理**当前确实没有直连**的 peer（有链路就让 5s 直连路径继续补，
+  不让两条路径同时施压）。15s×8 恰好铺满 120s 判死窗口，更短没有收益、只会放大广播。
+- 同一 peer 并发上限 = 1：驱动它的是**一条顺序循环**（逐个 `await`，不 spawn 子任务），
+  跨跳重投不会叠在同一行上。
+- 幂等（验收点）：outbox 行现在同时存**直连帧 + 原始签名信封**（`{direct, relay}`）。
+  直连补发仍走 `reseal_for_send`（`msg_id` 显式不变）；跨跳补发**原样重发信封**，
+  `message_id = sha256(sender+nonce+payload)` 不变 ⇒ 对端 `gossip.is_new()` 判重 ⇒
+  **不重复入库、不重复 ACK**（首份的 ACK 已让发送方删行）。
+- 老队列行（裸 `Message`，无信封）仍能解析：跨跳那一路明确留码
+  `code=OUTBOX_RELAY_NO_ENVELOPE` 并跳过，**不重建信封**（重建就会换 id）。
+  读失败 / 坏载荷 / 能力未就绪各有独立码：`OUTBOX_RELAY_READ_FAILED` /
+  `OUTBOX_PAYLOAD_CORRUPT` / `OUTBOX_RELAY_HOLD`，成功路径有 `code=OUTBOX_RELAY_SENT`
+  一行读数（今天缺的就是它）。
+- 判据：`outbox_payload_preserves_the_relay_envelope_identity`（构造两次信封先证明 id
+  会变=反例自证，再证明落库读回不变、对端第二次判重）、
+  `outbox_relay_retrier_is_wired_and_never_rebuilds_the_envelope`（15s 门 + 顺序 await +
+  不含 `reseal_for_send` / `GossipEnvelope {` 重建）。
+- 用户可感知：无直连的好友消息会在后台继续尝试，不再是"广播一次就判死"。
+  回退：`git revert` 本提交。**注意**：本版写出的新形状行（`{direct, relay}`）老代码
+  解析不了（会被记 `OUTBOX_PAYLOAD_CORRUPT` 并在 120s 后落 failed）——
+  回退前先把队列清空，或接受这批待发行判死。
+  证据：`cargo test --features bluetooth --lib` → 1489 passed。
+
 ## [5.17.42] - 2026-11-04
 
 ### 改进：入站信任门不再静默丢弃（Block 4，可诊断性）

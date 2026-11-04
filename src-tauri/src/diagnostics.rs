@@ -676,7 +676,9 @@ mod tests {
             "信任门拒绝码必须被数出来（第二个码是 Friend 域的，不该抢首位）"
         );
         assert!(
-            counts.iter().any(|(c, n)| c == "FRIEND_ANCHOR_UNANCHORED" && *n == 1),
+            counts
+                .iter()
+                .any(|(c, n)| c == "FRIEND_ANCHOR_UNANCHORED" && *n == 1),
             "FRIEND_ANCHOR_* 也必须进表"
         );
     }

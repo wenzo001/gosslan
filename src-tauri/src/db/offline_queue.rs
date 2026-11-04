@@ -64,6 +64,16 @@ pub fn insert_outbox(conn: &Connection, msg_id: &str, peer_id: &str, payload: &s
     Ok(())
 }
 
+/// 列出**当前所有**有待发单聊消息的 peer（Block 2）。
+///
+/// 为什么需要它：跨跳补发要按 peer 迭代，而 `AppState::links` 里只有**直连**对端 ——
+/// 纯中继好友永远不在里面。旧重试器只遍历 links，于是"无直连"的消息一次都不会重投。
+pub fn list_outbox_peers(conn: &Connection) -> Result<Vec<String>> {
+    let mut stmt = conn.prepare("SELECT DISTINCT peer_id FROM outbox ORDER BY peer_id")?;
+    let rows = stmt.query_map([], |r| r.get::<_, String>(0))?;
+    Ok(rows.filter_map(|r| r.ok()).collect())
+}
+
 pub fn list_outbox(conn: &Connection, peer_id: &str) -> Result<Vec<(i64, String, String)>> {
     // 队列行自身的身份与载荷。**不 JOIN `messages`**：flush 期要拿业务 kind 做能力协商
     // （5.16.92），但 `outbox` 的本职只到"哪条、发给谁、发了什么"；kind 由
