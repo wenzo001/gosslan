@@ -169,6 +169,10 @@ object ApkInstaller {
      * 这条路径用 `ACTION_INSTALL_PACKAGE`，它会把结果送进 `onActivityResult`，
      * 因此用户取消能回到"未安装"而不是卡住。
      */
+    // `ACTION_INSTALL_PACKAGE` 自 API 26 起被标记 deprecated，但它正是这条**兼容兜底**
+    // 要用的东西：会话路径不可用时只有它还能把结果送回 `onActivityResult`。
+    // 换 `ACTION_VIEW` 会变成"打开文件"而不是"装应用"，行为不一样，不改。
+    @Suppress("DEPRECATION")
     private fun installWithLegacyIntent(path: String): String? {
         val context = appContext ?: return "APP_NOT_READY"
         val activity = activityRef?.get() ?: return "INSTALLER_UNAVAILABLE"
