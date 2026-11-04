@@ -83,11 +83,18 @@ test("★ 群消息重发按成员补发；只有无台账的历史消息才整�
 
 test("★ 重发路径不许 enqueueMessage（那正是「新建第二条」的来源）", () => {
   const store = read("stores/useChatStore.ts");
+  // chat store 拆分后，"全局第一处 enqueueMessage(optimistic)" 可能落在别的模块里，
+  // 所以先切出 send() 的函数体再判序 —— 判据仍然只回答"重发分支里有没有新建"。
+  const at = store.indexOf("async function send(");
+  assert.ok(at > 0, "找不到 send()：改名要同步这条守卫");
+  const end = store.indexOf("\n  async function ", at + 1);
+  assert.ok(end > at, "找不到 send() 的结束锚点（下一个顶层函数）");
+  const body = store.slice(at, end);
   // enqueueMessage 只能在新建分支里出现一次，且必须落在 retryOfMsgId 分支之外
-  const enqueueAt = store.indexOf("enqueueMessage(optimistic)");
-  const retryBranchAt = store.indexOf("if (retryOfMsgId)");
+  const enqueueAt = body.indexOf("enqueueMessage(optimistic)");
+  const retryBranchAt = body.indexOf("if (retryOfMsgId)");
   assert.ok(retryBranchAt > 0 && enqueueAt > retryBranchAt, "enqueueMessage 应在重发分支之后");
-  const branch = store.slice(retryBranchAt, enqueueAt);
+  const branch = body.slice(retryBranchAt, enqueueAt);
   assert.ok(
     !branch.includes("enqueueMessage"),
     "重发分支里绝不能出现 enqueueMessage —— 那会新建一条乐观记录，" +
