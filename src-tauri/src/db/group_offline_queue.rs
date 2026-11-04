@@ -106,8 +106,12 @@ const GROUP_ACK_TOMBSTONE_KEEP: [&str; 3] = ["cancelled", "partial_cancelled", "
 pub enum GroupAckOutcome {
     /// 原行 pending → delivered：正常送达。
     Applied,
-    /// 原行已取消/已放弃，但对方仍然 Ack 了：只记台账，**不**推进消息状态。
-    LateApplied,
+    /// 原行已取消/已放弃，但对方仍然 Ack 了：改台账；消息状态一般**不**推进（INV-P26）。
+    ///
+    /// 唯一例外（决定 2，2026-11-04，事实优先）：消息已判 `failed` 时，迟到的真实 Ack
+    /// 也把 `messages.status` 推进成 `delivered` —— `message_promoted = true`。
+    /// 这时调用方要额外推进前端消息状态（否则列表仍是失败、气泡已是送达）。
+    LateApplied { message_promoted: bool },
     /// 行已是 delivered 或无行（重复/伪造 Ack）：不 emit、不重复写。
     Duplicate,
 }
@@ -117,7 +121,10 @@ pub enum GroupAckOutcome {
 /// 按条件清理 delivered 墓碑。全部在同一事务。
 ///
 /// 为什么不能再删行：删掉之后无法回答“谁已收/谁没收到”，取消与补发都会失去依据。
-/// 迟到 Ack 只更新行（`LateApplied`），消息停在 cancelled/partial_cancelled（INV-P26）。
+/// 迟到 Ack 一般只更新行（`LateApplied`），消息停在 cancelled/partial_cancelled（INV-P26）；
+/// 例外是「消息已判 `failed`」（决定 2）：迟到的真实 Ack 说明本端判死的结论错了 ——
+/// 消息也推进成 `delivered`，让会话列表与气泡同源；同时**保留**那一格 delivered 墓碑，
+/// 它是「本端判过失败、对方后来仍收到」的唯一证据（`created_at` 仍在，可回溯原时间）。
 pub fn ack_group_delivered(
     conn: &Connection,
     msg_id: &str,
@@ -136,34 +143,47 @@ pub fn ack_group_delivered(
         sql_in("status", &GROUP_OUTBOX_ACK_SETTLEABLE)
     );
     tx.execute(&sql, params![msg_id, peer_id])?;
-    if prior == "pending" {
+    let message_promoted = if prior == "pending" {
         let sql = format!(
             "UPDATE messages SET status = 'delivered'
               WHERE msg_id = ?1 AND {}",
             sql_not_in("status", &GROUP_ACK_MESSAGE_WRITE_BLOCKED)
         );
         tx.execute(&sql, params![msg_id])?;
-    }
+        false
+    } else {
+        // 决定 2（2026-11-04，事实优先）：只有「群消息已判 failed」这一格允许
+        // failed → delivered。`WHERE status = 'failed'` 把作用域钉死：已读 / 已撤回 /
+        // 已取消 / 部分取消一个字都不动；其余 `NOT IN (...)` 门也完全不变。
+        let promoted = tx.execute(
+            "UPDATE messages SET status = 'delivered' WHERE msg_id = ?1 AND status = 'failed'",
+            params![msg_id],
+        )?;
+        promoted > 0
+    };
     // delivered 墓碑只在「没有其它非 delivered 行、且消息不是取消/失败态」时删除。
     // 已取消的消息保留它，用来显示「已取消（对方已收到）」；已判失败的消息也保留 ——
     // 那意味着「本端以为没送出去，其实他收到了」，这条证据必须挡住"整条重发"的误判。
-    let sql = format!(
-        "DELETE FROM group_outbox
-          WHERE msg_id = ?1 AND status = 'delivered'
-            AND NOT EXISTS (
-                SELECT 1 FROM group_outbox g
-                 WHERE g.msg_id = ?1 AND g.status <> 'delivered'
-            )
-            AND (SELECT status FROM messages WHERE msg_id = ?1)
-                NOT IN ({})",
-        quote_statuses(&GROUP_ACK_TOMBSTONE_KEEP)
-    );
-    tx.execute(&sql, params![msg_id])?;
+    // 决定 2 刚把消息从 failed 推进成 delivered 时**更必须保留**：墓碑就是那次判死的证据。
+    if !message_promoted {
+        let sql = format!(
+            "DELETE FROM group_outbox
+              WHERE msg_id = ?1 AND status = 'delivered'
+                AND NOT EXISTS (
+                    SELECT 1 FROM group_outbox g
+                     WHERE g.msg_id = ?1 AND g.status <> 'delivered'
+                )
+                AND (SELECT status FROM messages WHERE msg_id = ?1)
+                    NOT IN ({})",
+            quote_statuses(&GROUP_ACK_TOMBSTONE_KEEP)
+        );
+        tx.execute(&sql, params![msg_id])?;
+    }
     tx.commit()?;
     Ok(if prior == "pending" {
         GroupAckOutcome::Applied
     } else {
-        GroupAckOutcome::LateApplied
+        GroupAckOutcome::LateApplied { message_promoted }
     })
 }
 
@@ -596,7 +616,8 @@ mod group_outbox_ack_tests {
     /// （cancelled/partial_cancelled/failed）。
     #[test]
     fn group_ack_doors_pin_every_status() {
-        // ① pending ⇒ Applied，行与消息都推进；② cancelled/failed ⇒ LateApplied，只改行。
+        // ① pending ⇒ Applied，行与消息都推进；② cancelled/failed ⇒ LateApplied，只改行
+        // （消息此刻是 pending，不是 failed ⇒ 不含决定 2 的纠正）。
         for (prior, applied) in [("pending", true), ("cancelled", false), ("failed", false)] {
             let conn = db();
             seed_msg(&conn, "m", "pending");
@@ -609,7 +630,9 @@ mod group_outbox_ack_tests {
                 if applied {
                     GroupAckOutcome::Applied
                 } else {
-                    GroupAckOutcome::LateApplied
+                    GroupAckOutcome::LateApplied {
+                        message_promoted: false
+                    }
                 },
                 "Ack 门对 prior={prior} 的结论变了"
             );
@@ -643,27 +666,51 @@ mod group_outbox_ack_tests {
             assert_eq!(message_status(&conn, "m"), "pending");
         }
 
-        // ④ 墓碑保留（消息不许被覆盖 + 行必须留着）：
-        //  · 消息已 cancelled：即使 Ack 前该格是 pending，cancelled 也在覆盖禁区内 ⇒ 消息不动；
-        //  · 消息已 failed 且 Ack 是**迟到**的（prior 也非 pending）⇒ 消息不动、墓碑留。
-        for (msg_status, prior) in [("cancelled", "pending"), ("failed", "failed")] {
-            let conn = db();
-            seed_msg(&conn, "m", msg_status);
-            seed_row(&conn, "m", "p", prior);
-            ack_group_delivered(&conn, "m", "p").unwrap();
-            assert_eq!(
-                group_outbox_row_status(&conn, "m", "p")
-                    .unwrap()
-                    .as_deref(),
-                Some("delivered"),
-                "消息 {msg_status}（prior={prior}）时 delivered 墓碑必须保留（NOT IN 保留集合）"
-            );
-            assert_eq!(
-                message_status(&conn, "m"),
-                msg_status,
-                "已读/已撤回/已取消/已送达等权威状态不许被成员 Ack 覆盖"
-            );
-        }
+        // ④ 墓碑保留：消息已 cancelled（即使 Ack 前该格是 pending，cancelled 也在覆盖禁区内
+        // ⇒ 消息不动）；delivered 行必须留着当「已取消（对方已收到）」的证据。
+        let conn = db();
+        seed_msg(&conn, "m", "cancelled");
+        seed_row(&conn, "m", "p", "pending");
+        ack_group_delivered(&conn, "m", "p").unwrap();
+        assert_eq!(
+            group_outbox_row_status(&conn, "m", "p")
+                .unwrap()
+                .as_deref(),
+            Some("delivered"),
+            "消息 cancelled 时 delivered 墓碑必须保留（NOT IN 保留集合）"
+        );
+        assert_eq!(
+            message_status(&conn, "m"),
+            "cancelled",
+            "已取消不许被成员 Ack 覆盖"
+        );
+
+        // ④' 决定 2（2026-11-04，事实优先）：消息已判 failed 且 Ack 是**迟到**的
+        // （prior 也非 pending）⇒ 消息推进成 delivered，但墓碑必须留着 ——
+        // 它是"本端曾判死、对方后来仍收到"的唯一证据（created_at 可回溯原时间）。
+        let conn = db();
+        seed_msg(&conn, "m", "failed");
+        seed_row(&conn, "m", "p", "failed");
+        let out = ack_group_delivered(&conn, "m", "p").unwrap();
+        assert_eq!(
+            out,
+            GroupAckOutcome::LateApplied {
+                message_promoted: true
+            },
+            "failed 消息上的迟到 Ack 必须报告「已把消息纠正为 delivered」"
+        );
+        assert_eq!(
+            message_status(&conn, "m"),
+            "delivered",
+            "迟到的真实送达说明本端判死了：列表与气泡都要改口"
+        );
+        assert_eq!(
+            group_outbox_row_status(&conn, "m", "p")
+                .unwrap()
+                .as_deref(),
+            Some("delivered"),
+            "墓碑必须保留：它是那次判死的证据"
+        );
 
         // ⑤ 迟到反证（反过来的一格，必须一起钉）：消息判了 failed，但这格的 Ack 是
         // pending 期的真实送达 ⇒ 消息翻成 delivered、墓碑按普通规则清理。
@@ -694,6 +741,86 @@ mod group_outbox_ack_tests {
         assert!(
             group_outbox_row_status(&conn, "m", "p").unwrap().is_none(),
             "全部 delivered 且消息不是保留集合 ⇒ 墓碑应被清理（保留断言不是恒绿）"
+        );
+    }
+
+    /// 决定 2（2026-11-04，事实优先）：已判 failed 的群消息收到迟到 Ack ⇒
+    /// `messages.status` 推进到 delivered，且**列表与气泡同源**。
+    ///
+    /// 同源的可验证形式：气泡角标读台账摘要（`group_message_delivery_summaries`），
+    /// 消息行读 `messages.status`；这次写入后两者都只能说 delivered ——
+    /// 摘要里 delivered=1、pending/failed/cancelled=0（正好是「后来仍收到」那一格）。
+    ///
+    /// 反例（判据②）：消息没判 failed 时，同形的迟到 Ack 一个字都不改消息状态。
+    /// 证据（判据③）：墓碑必须留着，`created_at` 仍是原入队时间；失败原因 `fail_code`
+    /// 也不清 —— 「原失败时间 / 原因」都还能查到。
+    #[test]
+    fn late_ack_on_a_failed_message_makes_the_row_and_the_badge_agree() {
+        let conn = db();
+        seed_msg(&conn, "m", "failed");
+        conn.execute(
+            "UPDATE messages SET fail_code = 'peer_offline' WHERE msg_id = 'm'",
+            [],
+        )
+        .unwrap();
+        seed_row(&conn, "m", "p", "failed");
+        conn.execute(
+            "UPDATE group_outbox SET created_at = 42 WHERE msg_id = 'm' AND peer_id = 'p'",
+            [],
+        )
+        .unwrap();
+
+        assert_eq!(
+            ack_group_delivered(&conn, "m", "p").unwrap(),
+            GroupAckOutcome::LateApplied {
+                message_promoted: true
+            }
+        );
+        // ① 消息行与气泡角标给出同一个结论（不再"列表失败 / 气泡送达"）
+        assert_eq!(
+            message_status(&conn, "m"),
+            "delivered",
+            "消息行必须改口：迟到 Ack 是确凿的送达证据"
+        );
+        let summaries = group_message_delivery_summaries(&conn, "group:g").unwrap();
+        assert_eq!(summaries.len(), 1, "这一条消息应留在摘要里作证据");
+        assert_eq!(summaries[0].delivered, 1, "气泡角标：1 人后来仍收到");
+        assert_eq!(
+            summaries[0].pending + summaries[0].failed + summaries[0].cancelled,
+            0,
+            "气泡角标不许再说失败/等待（与消息行同源）"
+        );
+        // ③ 墓碑仍能回答"原来什么时候失败、为什么失败"
+        let (created_at, fail_code): (i64, Option<String>) = conn
+            .query_row(
+                "SELECT g.created_at, m.fail_code
+                   FROM group_outbox g JOIN messages m ON m.msg_id = g.msg_id
+                  WHERE g.msg_id = 'm' AND g.peer_id = 'p'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(created_at, 42, "墓碑保留 ⇒ 原入队时间仍可查");
+        assert_eq!(
+            fail_code.as_deref(),
+            Some("peer_offline"),
+            "原失败原因不许被这次纠正擦掉"
+        );
+
+        // ② 反例：消息没判 failed（这里是 sending），同形的迟到 Ack 不许改消息状态。
+        let conn = db();
+        seed_msg(&conn, "m", "sending");
+        seed_row(&conn, "m", "p", "failed");
+        assert_eq!(
+            ack_group_delivered(&conn, "m", "p").unwrap(),
+            GroupAckOutcome::LateApplied {
+                message_promoted: false
+            }
+        );
+        assert_eq!(
+            message_status(&conn, "m"),
+            "sending",
+            "failed→delivered 只在这一格开口，别的状态逐字不变"
         );
     }
 }

@@ -1214,10 +1214,12 @@ mod ack_delivery_tests {
 
     /// 重复 Ack / 迟到 Ack 必须**幂等且不改判**（2026-10-20 验收补，2026-10-25 改为台账口径）。
     ///
-    /// 调用方只在 `Applied` 时 emit `group-message-acked`，所以"第二次 Ack 返回 Duplicate"
-    /// 就是"前端不会收到第二条已送达事件"的唯一保证；这里把它钉在 DB 层。
+    /// 调用方只在 `Applied`（或迟到 Ack 把 failed 纠正成 delivered 的 `LateApplied`）时 emit
+    /// `group-message-acked`，所以"第二次 Ack 返回 Duplicate"就是"前端不会收到第二条已送达
+    /// 事件"的唯一保证；这里把它钉在 DB 层。
     /// 场景覆盖：重复 Ack（同 peer）、群聊重复 Ack、以及**已被清扫判失败**的消息收到迟到 Ack
-    /// —— 失败行仍在台账里（不删），迟到 Ack 只改行（`LateApplied`），不改消息状态。
+    /// —— 1:1 的失败行仍在台账里（不删），迟到 Ack 没有命中对象 ⇒ 不改消息状态；
+    /// 群聊那条迟到 Ack 的口径见 `GroupAckOutcome::LateApplied`（决定 2：failed 也会被纠正）。
     #[test]
     fn duplicate_and_late_acks_are_idempotent_and_never_change_the_verdict() {
         let conn = db();

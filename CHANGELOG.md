@@ -14,6 +14,20 @@
 
 ## [Unreleased]
 
+## [5.17.36] - 2026-11-04
+
+### 行为变更（用户可感知）
+
+- 决定 2「失败对不上送达时统一到送达」：群消息已被判 `failed` 之后，某个成员迟到的
+  真实 ACK 到达时，`messages.status` 也推进到 `delivered`（迟到结论携带
+  `message_promoted = true`），会话列表与气泡不再互相打脸。只在这一条路径上开口
+  （`WHERE status = 'failed'`），已读/已撤回/已取消/已送达等状态逐字不变，其余
+  `WHERE status NOT IN (...)` 门全部不动；1:1 消息状态机未改。
+  证据保留：那一格 `group_outbox` delivered 墓碑不清理，`created_at` 与消息的
+  `fail_code` 仍在，可回溯原失败时间与原因。
+  回退：还原 `ack_group_delivered` 的迟到分支、`GroupAckOutcome::LateApplied` 的字段，
+  以及 `handle_group.rs` 的播报条件即可。
+
 ## [5.17.35] - 2026-11-04
 
 ### 行为变更（用户可感知）

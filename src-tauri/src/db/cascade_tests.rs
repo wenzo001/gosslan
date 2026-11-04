@@ -1188,7 +1188,9 @@ fn cancelling_a_group_message_marks_every_member_row_and_survives_a_late_ack() {
     // 迟到/在途的 Ack：只改台账（LateApplied），不许把 cancelled 提成 delivered。
     assert_eq!(
         super::ack_group_delivered(&conn, "m-g1", "b").unwrap(),
-        super::GroupAckOutcome::LateApplied,
+        super::GroupAckOutcome::LateApplied {
+            message_promoted: false
+        },
         "取消之后迟到的 GroupAck 只允许记账，否则回执会从已取消跳回已送达"
     );
     let status: String = conn
@@ -1310,13 +1312,15 @@ fn a_delivered_group_message_cannot_be_cancelled() {
     );
 }
 
-/// 清扫判死之后才到的 Ack：只改台账（`LateApplied`），不许把 failed 翻成 delivered。
+/// 清扫判死之后才到的 Ack（决定 2，2026-11-04，事实优先）：迟到的真实送达推翻本端
+/// 判死的结论 —— 消息也推进成 delivered（列表与气泡同源），但那一格 delivered 墓碑
+/// 必须保留，仍能回答"原来什么时候失败"。
 ///
 /// 现实顺序：成员离线超时 ⇒ 清扫器把他的 pending 行置 failed（不删，保留证据）⇒
-/// 该成员其实收到了（半开链路对端已落库）⇒ 迟到 Ack 到达。若这里返回 `Applied`，
-/// 界面会收到第二条"已送达"事件，而库里那条消息早就是 failed。
+/// 该成员其实收到了（半开链路对端已落库）⇒ 迟到 Ack 到达。
+/// 旧口径是"只改台账、消息停在 failed"，于是界面出现「列表失败 / 气泡说后来收到」。
 #[test]
-fn a_late_ack_after_sweeper_failure_only_updates_the_ledger() {
+fn a_late_ack_after_sweeper_failure_corrects_the_verdict_but_keeps_the_tombstone() {
     let conn = fresh_db();
     ins_msg(&conn, "m-g4", "group:g1", "text", "清扫之后才到", 1);
     conn.execute(
@@ -1336,8 +1340,10 @@ fn a_late_ack_after_sweeper_failure_only_updates_the_ledger() {
     .unwrap();
     assert_eq!(
         super::ack_group_delivered(&conn, "m-g4", "b").unwrap(),
-        super::GroupAckOutcome::LateApplied,
-        "failed 行上的迟到 Ack 只记账"
+        super::GroupAckOutcome::LateApplied {
+            message_promoted: true
+        },
+        "failed 行上的迟到 Ack 必须把消息也纠正成 delivered"
     );
     let status: String = conn
         .query_row(
@@ -1346,9 +1352,20 @@ fn a_late_ack_after_sweeper_failure_only_updates_the_ledger() {
             |r| r.get(0),
         )
         .unwrap();
-    assert_eq!(status, "failed", "本端判死的结论不会被对端迟到的 Ack 推翻");
+    assert_eq!(
+        status, "delivered",
+        "事实优先：真实送达推翻本端判死，消息行与气泡角标同源"
+    );
     let (delivered, _) = super::group_outbox_progress_counts(&conn, "m-g4").unwrap();
     assert_eq!(delivered, 1, "台账要留下「他其实收到了」这一条证据");
+    let created_at: i64 = conn
+        .query_row(
+            "SELECT created_at FROM group_outbox WHERE msg_id = 'm-g4' AND peer_id = 'b'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(created_at, 1, "墓碑保留 ⇒ 原失败时间仍可查");
 }
 
 /// 投递摘要：正常完成的消息不进摘要（墓碑已清），有尚未送达成员的消息才在。
@@ -1848,7 +1865,9 @@ fn group_message_lifecycle_policy_matches_ledger_sequences() {
     assert!(!group_ack_advances_message_policy("cancelled"));
     assert_eq!(
         super::ack_group_delivered(&conn, "m-g1", "b").unwrap(),
-        super::GroupAckOutcome::LateApplied
+        super::GroupAckOutcome::LateApplied {
+            message_promoted: false
+        }
     );
     assert_eq!(status_of(&conn, "m-g1"), "partial_cancelled");
     assert_eq!(
