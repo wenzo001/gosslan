@@ -16,6 +16,7 @@ import {
   UI_STALL_SNOOZE_MS,
   type StallView,
 } from "@/utils/uiStall";
+import { createStallWatch, type StallWatch } from "@/utils/stallWatch";
 import CrashNotice from "@/components/CrashNotice.vue";
 import HangNotice from "@/components/HangNotice.vue";
 import RecoveryNotice from "@/components/RecoveryNotice.vue";
@@ -68,7 +69,14 @@ const stall = ref<StallView | null>(null);
  */
 const recovery = ref<UiRecoveryNotice | null>(null);
 let stallSnoozeUntil = 0;
-let stallTimer: number | undefined;
+/**
+ * 卡顿计时的"活动时钟"（`utils/stallWatch.ts`）。
+ *
+ * 窗口隐藏时停表并把隐藏时长从判定时钟里扣掉，恢复时立即补一拍 —— 判定逻辑与阈值
+ * （`decideStall` / `UI_STALL_BANNER_MS`）原样不动，改的只是"什么时候计时"。
+ */
+let stallWatch: StallWatch | null = null;
+let visibilityHandler: (() => void) | null = null;
 let heartbeatTimer: number | undefined;
 let heartbeatTick: (() => void) | null = null;
 let lastHeartbeatActive = true;
@@ -108,9 +116,18 @@ function freezeHeartbeatOnceUntil(): number {
 }
 
 function startWatchdogTimers() {
-  stallTimer = window.setInterval(() => {
-    stall.value = decideStall(inflightOps(), performance.now(), stallSnoozeUntil);
-  }, 1000);
+  stallWatch = createStallWatch({
+    tick: () => {
+      const w = stallWatch;
+      if (!w) return;
+      // 两端都换算到活动时钟：`startedAt` 是原始墙钟，不换算会被历史隐藏时长拖成负数。
+      const ops = inflightOps().map((op) => ({ ...op, startedAt: w.activeSince(op.startedAt) }));
+      stall.value = decideStall(ops, w.now(), stallSnoozeUntil);
+    },
+  });
+  // 先对齐可见性再起表：挂载时若已隐藏，`start()` 是 no-op，等恢复时再起。
+  stallWatch.setHidden(document.hidden);
+  stallWatch.start();
   const frozenUntil = freezeHeartbeatOnceUntil();
   // 心跳只在**主窗口**发；隐藏后先补发一条 active=false，再暂停（省 IPC）。
   heartbeatTick = () => {
@@ -129,7 +146,13 @@ function startWatchdogTimers() {
       .catch(() => {});
   };
   heartbeatTimer = window.setInterval(heartbeatTick, 1000);
-  document.addEventListener("visibilitychange", heartbeatTick);
+  // 一个 visibilitychange 处理器同时驱动两件事：stall 停/起表 + 心跳补发。
+  // 用稳定句柄（不是匿名函数）才能在 `stopWatchdogTimers` 里摘干净。
+  visibilityHandler = () => {
+    stallWatch?.setHidden(document.hidden);
+    heartbeatTick?.();
+  };
+  document.addEventListener("visibilitychange", visibilityHandler);
   startLongTaskObserver();
   heartbeatTick();
 }
@@ -159,11 +182,12 @@ function startLongTaskObserver() {
 }
 
 function stopWatchdogTimers() {
-  if (stallTimer) window.clearInterval(stallTimer);
+  stallWatch?.stop();
   if (heartbeatTimer) window.clearInterval(heartbeatTimer);
-  if (heartbeatTick) document.removeEventListener("visibilitychange", heartbeatTick);
+  if (visibilityHandler) document.removeEventListener("visibilitychange", visibilityHandler);
   longTaskObserver?.disconnect();
-  stallTimer = undefined;
+  stallWatch = null;
+  visibilityHandler = null;
   heartbeatTimer = undefined;
   heartbeatTick = null;
   longTaskObserver = null;
@@ -211,7 +235,8 @@ function reEnableBluetoothFromNotice() {
 }
 
 function waitMore() {
-  stallSnoozeUntil = performance.now() + UI_STALL_SNOOZE_MS;
+  // 静默窗口也走活动时钟：隐藏期间不该把 snooze 余额吃掉。
+  stallSnoozeUntil = (stallWatch ? stallWatch.now() : performance.now()) + UI_STALL_SNOOZE_MS;
   stall.value = null;
 }
 

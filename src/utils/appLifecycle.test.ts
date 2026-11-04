@@ -11,6 +11,9 @@ import { join } from "node:path";
 import { test } from "node:test";
 
 const app = readFileSync(join(import.meta.dirname, "..", "App.vue"), "utf8");
+// 卡顿计时器已搬进 `stallWatch.ts`（判据搬迁：锚点跟着搬，否则这条检查会对着
+// App.vue 里不存在的字面量空转）。读它的源码是为了证明"真的还在这里起表/停表"。
+const stallWatchSrc = readFileSync(join(import.meta.dirname, "stallWatch.ts"), "utf8");
 
 function bodyOf(marker: string, endMarker: string): string {
   const at = app.indexOf(marker);
@@ -22,15 +25,27 @@ function bodyOf(marker: string, endMarker: string): string {
 
 test("watchdog 定时器与 long task observer 必须成对起停", () => {
   const start = bodyOf("function startWatchdogTimers()", "function stopWatchdogTimers()");
-  assert.ok(start.includes("stallTimer = window.setInterval"), "缺少卡顿计时器");
+  assert.ok(start.includes("stallWatch = createStallWatch("), "缺少卡顿计时器");
+  assert.ok(start.includes("stallWatch.start()"), "卡顿计时器没起表");
+  assert.ok(
+    start.includes("stallWatch?.setHidden(document.hidden)"),
+    "visibilitychange 必须驱动 stallWatch：隐藏时停表、恢复时补一拍",
+  );
   assert.ok(start.includes("heartbeatTimer = window.setInterval"), "缺少心跳计时器");
   assert.ok(start.includes("startLongTaskObserver()"), "缺少 long task 观察器");
 
+  // 锚点自证：上面那两条不是"扫描空气"——`stallWatch.ts` 里必须真有起表/停表。
+  assert.ok(
+    stallWatchSrc.includes("globalThis.setInterval("),
+    "stallWatch 没有真的起表：上面对 App.vue 的检查会空转",
+  );
+  assert.ok(stallWatchSrc.includes("clearInt(timer)"), "stallWatch 没有真的停表");
+
   const stop = bodyOf("function stopWatchdogTimers()", "async function copyCrashReport");
   for (const line of [
-    "window.clearInterval(stallTimer)",
+    "stallWatch?.stop()",
     "window.clearInterval(heartbeatTimer)",
-    "removeEventListener(\"visibilitychange\", heartbeatTick)",
+    "removeEventListener(\"visibilitychange\", visibilityHandler)",
     "longTaskObserver?.disconnect()",
   ]) {
     assert.ok(stop.includes(line), `stopWatchdogTimers 缺 ${line}：卸载后会留下上一代监听`);

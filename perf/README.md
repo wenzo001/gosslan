@@ -855,8 +855,11 @@ export default async (env) => {
   17.3MB vs 30.6MiB（相差 1.8 倍）。本表一律用 CDP 的，别把两把尺的读数混进一条趋势。
 
 App 自身的待机定时器（静态账，都是对称清理的）：
-`App.vue:110-135` 两个 1s interval（`stall` 计算 + 心跳），`:161-170` 对称清；页面隐藏后心跳
-**只读一次 `document.hidden` 就早退、不发 IPC**（`:119-121`）；`utils/nowTick.ts` 一条 30s
-共享 interval，引用计数归零即清；所有 `requestAnimationFrame` 都是**一次性 coalescer**
-（先 `cancel` 再排一帧，见 `ChatWindow.vue:258-266` / `VirtualList.vue:436-442`），没有逐帧循环；
-没有 5s 级轮询。
+`App.vue:118-158` 两个 1s interval（心跳 + `stall` 计时），`App.vue:184-194` 对称清；
+页面隐藏时两者都**不再产生判定/IPC**，但停法不同 —— 心跳那条仍按拍唤醒、只读一次
+`document.hidden` 就早退（不发 IPC）；`stall` 那条走 `utils/stallWatch.ts` 的**活动时钟**，
+隐藏时**真停表**（连空回调都不跑）、恢复时重新起表**并立即补一拍**，隐藏时长整段从判定时钟扣掉
+（`decideStall` / `UI_STALL_BANNER_MS` / `UI_STALL_ESCALATE_MS` 原样不动，行为见 `stallWatch.test.ts`）；
+`utils/nowTick.ts` 一条 30s 共享 interval，引用计数归零即清；所有 `requestAnimationFrame` 都是
+**一次性 coalescer**（先 `cancel` 再排一帧，见 `ChatWindow.vue:258-266` / `VirtualList.vue:436-442`），
+没有逐帧循环；没有 5s 级轮询。
