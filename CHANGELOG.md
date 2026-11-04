@@ -14,6 +14,19 @@
 
 ## [Unreleased]
 
+## [5.17.48] - 2026-11-04
+
+### 修复：界面停摆不再只能靠人点托盘重启
+
+- 渲染层心跳停滞 20s 自动**重载主窗口**（`run_on_main_thread` + `WebviewWindow::reload`），
+  不再干等用户发现白屏。证据：11-04 那台 5.16.74 停摆 75s、全程不自愈，最后靠人手点托盘重启。
+- reload 后 20s verify：心跳回来记 `code=UI_RENDERER_RECOVERED`；等不到记
+  `code=UI_AUTO_RECOVER_FAILED reason=verify_timeout` 并走 `request_restart`。
+- 主线程也停摆时（G2）reload 排不进事件循环：顺延到 30s 直接请求进程重启。
+- 启动后 60s 仍无任何心跳（含"自动重启后仍死"）⇒ 系统通知 + 托盘提示"建议重启"，
+  不再无限自动重载（判定本身对 5.16.74 与之后的版本一致，不含版本白名单）。
+- 结局写入 `AppState.ui_recovery_notice`，供下一笔的恢复横幅取走（本笔尚无 UI）。
+
 ## [5.17.47] - 2026-11-04
 
 ### 内部（无用户可感知变化）

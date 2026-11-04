@@ -11,8 +11,12 @@ use std::sync::atomic::{AtomicI64, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-#[cfg(desktop)]
+// `get_webview_window` 在移动端也要用（自愈重载不区分平台），所以不再 cfg 掉这个导入。
 use tauri::Manager;
+
+/// 主窗口 label：与 `tray::MAIN_WINDOW_LABEL` 相同。这里自带一份是因为 `mod tray`
+/// 是 `cfg(desktop)`，而看门狗在移动端也要编译。
+const MAIN_WINDOW_LABEL: &str = "main";
 
 /// 探针/心跳检查周期。
 const TICK: Duration = Duration::from_secs(1);
@@ -73,6 +77,13 @@ pub(crate) const RECOVER_MAX_PER_WINDOW: usize = 2;
 /// reload 依赖事件循环，主线程自己卡住时 reload 排不进去；多等 10 s 是给
 /// "主线程只是慢一下、马上恢复"的最后机会。
 pub(crate) const MAIN_STALL_ESCALATE_MS: i64 = UI_STALL_RELOAD_MS + 10_000;
+
+/// 启动后这么久仍收不到任何心跳 ⇒ 渲染层从开机起就是死的。
+///
+/// 为什么是 60 s：用户 2026-11-04 的口径"重启 60 s 仍死才建议重启"。正常启动首心跳
+/// 在 app-ready 后 1 s 内就到，60 s 足够区分"慢"与"死"。这一档**只提示、不动作**：
+/// 从开机就死的渲染层连"点击按钮"都渲染不出来，重载也无从验证。
+pub(crate) const BOOT_HEARTBEAT_GRACE_MS: i64 = 60_000;
 
 /// 一次自愈判定要看的全部读数。
 ///
@@ -147,6 +158,49 @@ pub(crate) fn recover_decision(i: &RecoverInput) -> RecoverDecision {
         };
     }
     RecoverDecision::Reload
+}
+
+/// 一次 reload 之后的 verify 窗口：心跳时间戳越过 `before_hb` 就是恢复了。
+#[derive(Clone, Copy)]
+struct Verify {
+    started_at: i64,
+    before_hb: i64,
+    stalled_ms: i64,
+}
+
+/// verify 窗口的判定（纯函数）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum VerifyVerdict {
+    /// 心跳已经回来 ⇒ 记 `UI_RENDERER_RECOVERED`。
+    Recovered,
+    /// 还在 20 s 窗口内 ⇒ 继续等（等不到就升级重启）。
+    Wait,
+    /// 窗口用尽仍无心跳 ⇒ `UI_AUTO_RECOVER_FAILED` + 请求重启。
+    Escalate,
+}
+
+/// 心跳回来优先于窗口超时：重载后第 21 s 才回心跳也算恢复，不该因为"晚了一秒"就重启。
+pub(crate) fn verify_verdict(hb_recovered: bool, waited_ms: i64) -> VerifyVerdict {
+    if hb_recovered {
+        VerifyVerdict::Recovered
+    } else if waited_ms >= UI_STALL_RELOAD_MS {
+        VerifyVerdict::Escalate
+    } else {
+        VerifyVerdict::Wait
+    }
+}
+
+/// 把自愈结局放进 `AppState`，由前端下一次心跳（`ui_heartbeat` 的返回值）取走。
+///
+/// 不新增长轮询：心跳本来就每秒一次，横幅搭它的顺车（取走即清空，见提交 c）。
+fn set_recovery_notice(state: &crate::state::AppState, kind: &str, stalled_ms: i64, actions: u32) {
+    if let Ok(mut slot) = state.ui_recovery_notice.lock() {
+        *slot = Some(crate::state::UiRecoveryNotice {
+            kind: kind.to_string(),
+            stalled_ms,
+            actions,
+        });
+    }
 }
 
 /// `GOSSLAN_UI_AUTORECOVER` 的解析（纯函数，便于钉死边界）。
@@ -246,6 +300,13 @@ fn run<R: tauri::Runtime>(app: tauri::AppHandle<R>, state: Arc<crate::state::App
     let mut recent_recoveries: std::collections::VecDeque<i64> = std::collections::VecDeque::new();
     // (episode 开始, 本轮已写过的决策码)：避免同一轮停摆每秒刷一行。
     let mut recover_episode: Option<(i64, &'static str)> = None;
+    // 启动时刻与"60 s 仍无心跳"的一次性检查（见 [`BOOT_HEARTBEAT_GRACE_MS`]）。
+    let boot_at = now_ms();
+    let mut boot_checked = false;
+    // reload 之后的 verify 窗口。
+    let mut verify: Option<Verify> = None;
+    // 已经请求过进程重启 ⇒ 不再重复动作（进程正在退出）。
+    let mut restart_requested = false;
 
     loop {
         let now = now_ms();
@@ -271,6 +332,8 @@ fn run<R: tauri::Runtime>(app: tauri::AppHandle<R>, state: Arc<crate::state::App
             renderer_episode = None;
             // 睡眠那一段不算停摆，自愈 episode 也一起丢弃（醒来后重新按读数起算）。
             recover_episode = None;
+            // 跨睡眠的 verify 窗口已失效：用墙钟算的 waited_ms 会把睡眠算进去。
+            verify = None;
             hb_floor = now;
             #[cfg(desktop)]
             crate::tray::set_watchdog_tooltip(&app, None);
@@ -308,6 +371,56 @@ fn run<R: tauri::Runtime>(app: tauri::AppHandle<R>, state: Arc<crate::state::App
             }
         } else if let Some((start, _)) = main_episode.take() {
             note_end("main_thread", now - start);
+        }
+
+        // ---- 启动 60 s 仍无任何心跳 ⇒ 渲染层从开机起就是死的（只提示，不动作）----
+        if !boot_checked && now - boot_at >= BOOT_HEARTBEAT_GRACE_MS {
+            boot_checked = true;
+            if autorecover_enabled && state.ui_heartbeat_ms.load(Ordering::SeqCst) == 0 {
+                crate::logging::crash_note(&format!(
+                    ">>> code=UI_AUTO_RECOVER_FAILED reason=no_heartbeat_after_boot \
+                     waited_ms={BOOT_HEARTBEAT_GRACE_MS}"
+                ));
+                // 渲染层死了就没有能点的按钮：走系统通知 + 托盘提示（重启入口本来就在托盘）。
+                let _ = crate::notifications::show_if_enabled(
+                    &state,
+                    "Gosslan 界面仍无响应",
+                    "请从状态栏菜单点击「重启」恢复。",
+                );
+                #[cfg(desktop)]
+                crate::tray::set_watchdog_tooltip(&app, Some("界面无响应，可从状态栏重启"));
+                set_recovery_notice(&state, "suggest_restart", BOOT_HEARTBEAT_GRACE_MS, 0);
+            }
+        }
+
+        // ---- reload 的 verify 窗口：心跳回来 = 已恢复；窗口（20 s）用尽 = 升级重启 ----
+        if let Some(v) = verify {
+            let now_hb = state.ui_heartbeat_ms.load(Ordering::SeqCst);
+            let waited = now - v.started_at;
+            match verify_verdict(now_hb > v.before_hb, waited) {
+                VerifyVerdict::Recovered => {
+                    crate::logging::crash_note(&format!(
+                        ">>> code=UI_RENDERER_RECOVERED action=reload stalled_ms={} \
+                         verify_ms={waited} hb_age_ms={}",
+                        v.stalled_ms,
+                        now - now_hb
+                    ));
+                    set_recovery_notice(&state, "recovered", v.stalled_ms, 1);
+                    verify = None;
+                    recover_episode = None;
+                }
+                VerifyVerdict::Escalate => {
+                    crate::logging::crash_note(&format!(
+                        ">>> code=UI_AUTO_RECOVER_FAILED reason=verify_timeout \
+                         waited_ms={waited} stalled_ms={} action=restart",
+                        v.stalled_ms
+                    ));
+                    verify = None;
+                    restart_requested = true;
+                    crate::restart::request_restart(&app);
+                }
+                VerifyVerdict::Wait => {}
+            }
         }
 
         // ---- 渲染层心跳：只有它发过至少一次才判（启动早期 hb=0）----
@@ -374,11 +487,12 @@ fn run<R: tauri::Runtime>(app: tauri::AppHandle<R>, state: Arc<crate::state::App
             }
         }
 
-        // ---- 渲染层自愈：判定与取证（本笔只写码，动作在下一笔）----
+        // ---- 渲染层自愈：判定 + 动作 ----
         //
         // 判据只看心跳 / 主线程探针 / 聚焦读数，不看版本号（见 [`RecoverInput`]）：
-        // 5.16.74 与之后的版本走同一套逻辑。
-        if hb > 0 {
+        // 5.16.74 与之后的版本走同一套逻辑。verify 窗口未结束或已请求重启时不再判，
+        // 免得同一轮停摆重复 reload。
+        if hb > 0 && verify.is_none() && !restart_requested {
             let hb_effective = if hb_floor > 0 { hb.max(hb_floor) } else { hb };
             let stale = now - hb_effective;
             let focused = state.ui_last_focus_focused.load(Ordering::SeqCst);
@@ -436,6 +550,50 @@ fn run<R: tauri::Runtime>(app: tauri::AppHandle<R>, state: Arc<crate::state::App
                                  recent={in_window} window_s={} stale_ms={stale}",
                                 RECOVER_WINDOW_MS / 1000
                             )),
+                        }
+                        // 动作与取证同点触发：一轮停摆只动一次，之后交给 verify 窗口。
+                        match decision {
+                            RecoverDecision::Reload => {
+                                // reload 必须回主线程排队（wry 的 reload 只能在事件循环里执行）；
+                                // 主线程自己卡住时这里会返回 Err ⇒ 直接升级，不空等 verify。
+                                let host = app.clone();
+                                let inner = app.clone();
+                                let scheduled = host.run_on_main_thread(move || {
+                                    match inner.get_webview_window(MAIN_WINDOW_LABEL) {
+                                        Some(win) => {
+                                            if let Err(e) = win.reload() {
+                                                crate::logging::crash_note(&format!(
+                                                    "code=UI_RELOAD_FAILED err={e}"
+                                                ));
+                                            }
+                                        }
+                                        None => crate::logging::crash_note(
+                                            "code=UI_RELOAD_FAILED reason=no_main_window",
+                                        ),
+                                    }
+                                });
+                                recent_recoveries.push_back(now);
+                                if scheduled.is_ok() {
+                                    verify = Some(Verify {
+                                        started_at: now,
+                                        before_hb: hb,
+                                        stalled_ms: stale,
+                                    });
+                                } else {
+                                    crate::logging::crash_note(
+                                        ">>> code=UI_AUTO_RECOVER_FAILED \
+                                         reason=main_thread_unavailable action=restart",
+                                    );
+                                    restart_requested = true;
+                                    crate::restart::request_restart(&app);
+                                }
+                            }
+                            RecoverDecision::Restart => {
+                                recent_recoveries.push_back(now);
+                                restart_requested = true;
+                                crate::restart::request_restart(&app);
+                            }
+                            _ => {}
                         }
                     }
                 }
@@ -744,6 +902,66 @@ mod tests {
                 ..base
             }),
             RecoverDecision::Blocked
+        );
+    }
+
+    /// verify 窗口：心跳回来优先于超时（21 s 才回也算恢复），20 s 用尽才升级。
+    #[test]
+    fn verify_window_waits_then_escalates() {
+        assert_eq!(verify_verdict(false, 1_000), VerifyVerdict::Wait);
+        assert_eq!(
+            verify_verdict(false, UI_STALL_RELOAD_MS - 1),
+            VerifyVerdict::Wait
+        );
+        assert_eq!(
+            verify_verdict(false, UI_STALL_RELOAD_MS),
+            VerifyVerdict::Escalate
+        );
+        assert_eq!(verify_verdict(true, 500), VerifyVerdict::Recovered);
+        assert_eq!(
+            verify_verdict(true, UI_STALL_RELOAD_MS + 1_000),
+            VerifyVerdict::Recovered,
+            "晚回一秒也算恢复：重启不该抢在心跳之前"
+        );
+    }
+
+    /// 动作接线守卫：reload 在**主线程**执行、verify 用尽走 request_restart、
+    /// 三码齐全，且结局会交给前端（否则用户看不到任何反馈）。
+    #[test]
+    fn recovery_actions_are_wired_and_named() {
+        let src = include_str!("watchdog.rs");
+        let flat: String = src.chars().filter(|c| !c.is_whitespace()).collect();
+        assert!(
+            flat.contains("run_on_main_thread(move||"),
+            "reload 必须回主线程排队"
+        );
+        assert!(flat.contains("win.reload()"), "自愈动作必须是 reload");
+        assert!(
+            flat.contains("crate::restart::request_restart(&app)"),
+            "verify 失败没有升级到进程重启的路径"
+        );
+        for needle in [
+            "code=UI_RENDERER_STALL ",
+            "code=UI_RENDERER_STALL_FOCUS_GAP",
+            "code=UI_RENDERER_RECOVERED",
+            "code=UI_AUTO_RECOVER_FAILED",
+            "code=UI_AUTO_RECOVER_BLOCKED",
+            "code=UI_AUTORECOVER_DISABLED reason=env",
+        ] {
+            assert!(src.contains(needle), "缺了具名码 {needle}");
+        }
+        // 反例自证：摘掉 reload 那一行，同一把尺子必须说不。
+        let gutted = flat.replace("win.reload()", "");
+        assert_ne!(gutted, flat, "变异没落进去 ⇒ 判据盯错了形状");
+        assert!(!gutted.contains("win.reload()"));
+        // 结局交给前端：恢复 / 建议重启都要能取走（横幅搭下一次心跳的顺车）。
+        assert!(
+            flat.contains("set_recovery_notice(&state,\"recovered\""),
+            "恢复结局没交给前端"
+        );
+        assert!(
+            flat.contains("set_recovery_notice(&state,\"suggest_restart\""),
+            "建议重启没交给前端"
         );
     }
 
