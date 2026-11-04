@@ -134,7 +134,10 @@ CASES: list[Case] = [
         file=TAURI / "src" / "network" / "transport.rs",
         injections=[
             (
-                '            apply_friend_accept(state, &from, "收到好友同意");',
+                # 5.17.41 起 `apply_friend_accept` 多了第 4 参（`proof: Option<FriendKeySnapshot>`，
+                # 跨跳那条带"本机申请 id"证据；直连这条仍是 None）——锚点跟着搬家。
+                # 反例自证：把这一行注释掉 = 直连不再走那个家 ⇒ 守卫必须红。
+                '            apply_friend_accept(state, &from, "收到好友同意", None);',
                 "            // （非空转验证：直连这一条不再走那个家）",
             ),
             (
