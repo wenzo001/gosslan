@@ -83,7 +83,8 @@ pub fn now_ms() -> i64 {
 /// 消息一起点亮成「已读」，用户看到的是一句对方读过、其实从没送达的话。
 ///
 /// ## 排除清单为什么和 `set_message_status` 不完全一样
-/// 那里排除 `read`/`delivered`/`recalled`（单条推进不许回退硬终态）。这里额外排除
+/// 那里排除 `read`/`delivered`/`recalled`（单条推进不许回退硬终态；集合见
+/// `message_lifecycle::READ_RECEIPT_BLOCKED`）。这里额外排除
 /// `failed` —— 已读回执是**对端**的证据，而 `failed` 是**本端**关于这次发送的事实，
 /// 一条没发出去的消息不可能被对方读过。`delivered` 保留在可推进的一侧（回执比 Ack 更新
 /// 时正是往前推），`sending` 也保留（回执是本端状态卡住时唯一的自愈路径）。
@@ -93,11 +94,11 @@ pub fn mark_own_messages_read_upto(
     my_device_id: &str,
     upto_ts: i64,
 ) -> Result<usize> {
-    conn.execute(
+    let sql = format!(
         "UPDATE messages SET status = 'read'
          WHERE conv_id = ?1 AND sender_id = ?2
-           AND status NOT IN ('read', 'failed', 'recalled', 'cancelled', 'partial_cancelled')
-           AND ts <= ?3",
-        params![conv_id, my_device_id, upto_ts],
-    )
+           AND {} AND ts <= ?3",
+        sql_not_in("status", &READ_RECEIPT_BLOCKED)
+    );
+    conn.execute(&sql, params![conv_id, my_device_id, upto_ts])
 }
