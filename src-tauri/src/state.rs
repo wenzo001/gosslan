@@ -1540,15 +1540,22 @@ pub struct AppState {
     pub ui_inflight_oldest_ms: std::sync::atomic::AtomicI64,
     /// `code=IPC_BACKLOG` 的上次落日志时刻（30s 节流，避免每秒刷屏）。
     pub ui_backlog_note_at: std::sync::atomic::AtomicI64,
+    /// tokio worker 心跳的漂移（ms）：1s 一拍的任务实际晚了多久。
+    ///
+    /// 与主线程探针、渲染层心跳是**三条独立证据**：主线程正常、worker 全被同步活钉住时，
+    /// 界面同样"点了没反应"，而 CPU 可能很低（阻塞不是自旋）。看门狗每拍把它写进 HANG 行。
+    pub worker_lag_ms: std::sync::atomic::AtomicI64,
     /// 主窗口最近一次 focus / resize 事件时刻（Windows 渲染层取证用，只写原子量）。
     pub ui_last_focus_ms: std::sync::atomic::AtomicI64,
     pub ui_last_focus_focused: AtomicBool,
     pub ui_last_resize_ms: std::sync::atomic::AtomicI64,
     /// 最近一次自愈动作的结果，供前端横幅一次性取走（取走即清空，见 `ui_recovery_take`）。
     pub ui_recovery_notice: Mutex<Option<UiRecoveryNotice>>,
-    pub group_file_receivers: Mutex<HashMap<String, FileReceiver>>,
+    /// 群文件接收表。用 `NamedLock` 而不是裸 `Mutex`（2026-11-04）：这两张表会在**持锁写盘**，
+    /// 是除 `db` 外最可能长持有的锁；具名之后 HANG 现场能写出 `locks=`（谁握着、谁在等多久）。
+    pub group_file_receivers: crate::lock_watch::NamedLock<HashMap<String, FileReceiver>>,
     /// 正在接收的文件：transfer_id -> FileReceiver
-    pub file_receivers: Mutex<HashMap<String, FileReceiver>>,
+    pub file_receivers: crate::lock_watch::NamedLock<HashMap<String, FileReceiver>>,
     /// 入站登记的**唯一闸门**（审计 SEC-05 的 check-then-act 修正）。
     ///
     /// 配额判定（数活跃接收器 / 累加字节）与"把新接收器插进表里"必须落在同一个临界区：
@@ -2529,11 +2536,15 @@ impl AppState {
             ui_inflight: std::sync::atomic::AtomicU32::new(0),
             ui_inflight_oldest_ms: std::sync::atomic::AtomicI64::new(0),
             ui_backlog_note_at: std::sync::atomic::AtomicI64::new(0),
+            worker_lag_ms: std::sync::atomic::AtomicI64::new(0),
             ui_last_focus_ms: std::sync::atomic::AtomicI64::new(0),
             ui_last_focus_focused: AtomicBool::new(false),
             ui_last_resize_ms: std::sync::atomic::AtomicI64::new(0),
             ui_recovery_notice: Mutex::new(None),
-            group_file_receivers: Mutex::new(HashMap::new()),
+            group_file_receivers: crate::lock_watch::NamedLock::new(
+                "group_file_receivers",
+                HashMap::new(),
+            ),
             inbound_gate: Mutex::new(()),
             group_file_sending: Mutex::new(std::collections::HashSet::new()),
             group_file_dispatching: Arc::new(Mutex::new(std::collections::HashSet::new())),
@@ -2542,7 +2553,7 @@ impl AppState {
             file_sending: Mutex::new(std::collections::HashSet::new()),
             file_send_inflight: Arc::new(Mutex::new(std::collections::HashSet::new())),
             file_send_cancels: Mutex::new(HashMap::new()),
-            file_receivers: Mutex::new(HashMap::new()),
+            file_receivers: crate::lock_watch::NamedLock::new("file_receivers", HashMap::new()),
             file_wire_progress: Mutex::new(HashMap::new()),
             pending_share_tree: Mutex::new(HashMap::new()),
             pending_group_history: Mutex::new(HashMap::new()),
@@ -3192,7 +3203,52 @@ impl AppState {
             }
         })
     }
+
+    /// tokio worker 心跳：一条 1s 一拍的常驻任务，把"这一拍实际晚了多久"写进原子量。
+    ///
+    /// 为什么需要它：主线程探针只看主线程，渲染层心跳只看 WebView。**worker 被同步活钉住**
+    /// （持锁写盘、同步 SQLite、整份文件哈希）时这两条都可能正常，界面却是"点了没反应"，
+    /// 而 CPU 很低 —— 阻塞不是自旋，CPU 读数看不出来。1s 一拍的定时器在 tokio 时钟上，
+    /// worker 全被占住时这一拍必然整体后移，漂移就是最直接的证据。
+    ///
+    /// 开销：空闲时每秒一次 `Instant::now()` + 一次原子写（实测可忽略，见审计报告）。
+    pub fn spawn_worker_lag_watcher(state: &Arc<AppState>) -> tauri::async_runtime::JoinHandle<()> {
+        let st = state.clone();
+        tauri::async_runtime::spawn(async move {
+            let mut tick = tokio::time::interval(WORKER_LAG_TICK);
+            tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+            tick.tick().await; // 第一拍是立即返回的，不参与漂移测量
+            let mut expected = tokio::time::Instant::now() + WORKER_LAG_TICK;
+            let mut last_note = tokio::time::Instant::now();
+            loop {
+                tick.tick().await;
+                let now = tokio::time::Instant::now();
+                let lag = now.saturating_duration_since(expected).as_millis() as i64;
+                expected = now + WORKER_LAG_TICK;
+                st.worker_lag_ms.store(lag.max(0), Ordering::Relaxed);
+                if lag >= WORKER_LAG_WARN_MS as i64
+                    && now.saturating_duration_since(last_note).as_secs() >= WORKER_LAG_NOTE_SECS
+                {
+                    last_note = now;
+                    st.logger.warn(
+                        "worker",
+                        format!(
+                            "code=WORKER_LAG lag_ms={lag} note=托克任务整体后移，\
+                             worker 可能被同步活占住；HANG 现场会带同一读数"
+                        ),
+                    );
+                }
+            }
+        })
+    }
 }
+
+/// tokio worker 心跳周期。
+const WORKER_LAG_TICK: Duration = Duration::from_secs(1);
+/// 漂移超过这个值才留一行（低于它多半只是调度抖动）。
+const WORKER_LAG_WARN_MS: u64 = 2_000;
+/// 同一条告警的最小间隔。
+const WORKER_LAG_NOTE_SECS: u64 = 30;
 
 /// 锁观测摘要的周期（秒）。只在有慢持锁时产出一行，正常窗口零噪声。
 const DB_HOLD_REPORT_SECS: u64 = 60;

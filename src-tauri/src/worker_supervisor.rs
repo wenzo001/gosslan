@@ -65,6 +65,12 @@ pub static RESIDENT_WORKERS: &[WorkerSpec] = &[
         name: "db_hold_reporter",
         spawn: AppState::spawn_db_hold_reporter,
     },
+    // 2026-11-04 卡死审计：worker 漂移心跳。它自己若被同步活钉住，HANG 行就没有
+    // `worker_lag_ms=` 这一条独立证据（这恰恰是最需要它的时刻）。
+    WorkerSpec {
+        name: "worker_lag_watcher",
+        spawn: AppState::spawn_worker_lag_watcher,
+    },
     WorkerSpec {
         name: "outbox_sweeper",
         spawn: crate::network::transport::spawn_outbox_sweeper,
@@ -343,7 +349,7 @@ mod tests {
     fn resident_worker_list_is_complete_and_unique() {
         assert_eq!(
             RESIDENT_WORKERS.len(),
-            6,
+            7,
             "被监督的常驻 worker 数量变了：要么是新增了一个（把它写进 RESIDENT_WORKERS 并更新这里），\
              要么是漏了一个（漏掉的那个死了没人知道）"
         );

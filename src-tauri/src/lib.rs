@@ -48,6 +48,8 @@ mod gossip_engine;
 /// JNI 方法登记宏（Android 的两条桥共用，见该文件注释）。
 #[cfg(target_os = "android")]
 mod jni_method;
+/// 非 db 锁的具名持锁观测与等待关系（卡住时能读出现在「谁握着、谁在等」）。
+mod lock_watch;
 mod logging;
 /// macOS App Sandbox 的安全作用域书签（共享目录重启后不失访，见该文件注释）。
 #[cfg(target_os = "macos")]

@@ -342,6 +342,9 @@ fn run<R: tauri::Runtime>(app: tauri::AppHandle<R>, state: Arc<crate::state::App
         }
 
         // ---- 主线程探针：一次只挂一个，避免主线程恢复时堆满事件队列 ----
+        // 非 db 锁的超阈值事件由本线程**唯一**落盘：没有这个读者，事件环只进不出，
+        // 卡住时"内存里有证据、日志里没有"（与 `db_hold` 唯一读者同一条纪律）。
+        crate::lock_watch::flush_events(&state.logger);
         let tick = last_main_tick.load(Ordering::SeqCst);
         if posted_at.load(Ordering::SeqCst) <= tick {
             posted_at.store(now, Ordering::SeqCst);
@@ -703,10 +706,19 @@ fn note_hang(
         .chars()
         .take(160)
         .collect::<String>();
+    // 2026-11-04 卡死审计：`locks=` 写出"这一刻谁握着非 db 锁、谁在等它"，
+    // `worker_lag_ms=` 是 worker 被同步活钉住的独立证据（主线程与渲染层可能都正常）。
+    // 两者只含锁名、线程标识与毫秒，不含正文；按 key 取字段的老解析不受追加影响。
+    let locks = crate::lock_watch::snapshot_field()
+        .chars()
+        .take(200)
+        .collect::<String>();
+    let worker_lag_ms = state.worker_lag_ms.load(Ordering::SeqCst);
     crate::logging::crash_note(&format!(
         ">>> code=HANG scope={scope} seconds={seconds} last_op={op_name} last_op_age_s={op_age} \
          hb_age_ms={hb_age_ms} active={active} inflight={inflight} inflight_oldest_ms={oldest_ms} \
-         focused={focused} focus_age_s={focus_age_s} resize_age_s={resize_age_s} db_hold={db_hold} {}",
+         focused={focused} focus_age_s={focus_age_s} resize_age_s={resize_age_s} db_hold={db_hold} \
+         locks={locks} worker_lag_ms={worker_lag_ms} {}",
         // 冻住的那一刻我们占了多少内存 / 正在读多少帧字节 —— 没有这一格，
         // "主线程 + 渲染层同一秒双双停滞"只能猜，有了它才分得开"代码死循环"与"提交内存耗尽"。
         // 按 key 取字段的老解析（`logging.rs::field_str`）不受追加影响。

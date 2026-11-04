@@ -505,6 +505,10 @@ export default {
         // 让下一轮 `classify_previous_exit` 分得开「被外部杀」与「崩溃」。只依赖本域
         // logging（同域 self）+ 装配层的 AppHandle ⇒ 叶子性不变。
         "src-tauri/src/signals.rs",
+        // 2026-11-04 卡死审计：非 db 锁的具名持锁观测（`LOCK_HELD_LONG` + HANG 的 `locks=`）。
+        // 与 `db_hold.rs` 同一族：只观测、不改业务；依赖 `logging::Logger`（同域 self）与
+        // `state.rs` 的装配，所以仍然落在这个叶子域里。
+        "src-tauri/src/lock_watch.rs",
       ],
       invariants: ["INV-P16"],
       activeHome: "src-tauri/src/logging.rs",

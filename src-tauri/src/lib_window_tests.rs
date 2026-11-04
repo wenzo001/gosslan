@@ -335,7 +335,7 @@
         // 剪贴板读、目录递归 walk、蓝牙采集藏在 `resolve_media_path`/`clipboard_win::…`（小写，
         // 不匹配 `Clipboard`）/`cache_cleaner::usage`/`collect_ble_diag` 后面。
         // 想把那个洞堵上，得改成"沿调用图一跳看 helper 体"，那是另一件事，别靠加别名标记糊。
-        const CEILING: usize = 31;
+        const CEILING: usize = 30;
         let src = all_commands_src();
         let markers = heavy_markers();
         let mut bound: Vec<String> = Vec::new();
@@ -361,7 +361,7 @@
             }
         }
         // 下限：只判上限时，"命令扫描器退化成一条都认不出"会让 `bound` 恒空 ⇒ 判据恒绿。
-        // 28 是给当前真实读数 31 留的余量；真收敛到更低时这条也要跟着调小
+        // 28 是给当前真实读数 30 留的余量；真收敛到更低时这条也要跟着调小
         // （调小之前先确认扫描器还认得 `#[tauri::command]`，否则调小只是把假绿钉死）。
         assert!(
             bound.len() >= 28,

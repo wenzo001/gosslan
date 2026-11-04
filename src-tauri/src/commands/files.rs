@@ -80,8 +80,13 @@ fn decode_outgoing_image(data_url: &str) -> Result<(&'static str, Vec<u8>), Stri
 
 /// 把前端 paste 产生的 data URL 解码保存为本地文件。
 /// 仅接受 image/* 常见格式，按解码后字节数限制，返回本地路径/文件名/大小。
-#[tauri::command(async)]
-pub fn save_outgoing_image(
+///
+/// 2026-11-04 卡死审计：这条曾是 `#[tauri::command(async)]` + 同步 `fn`，整段 base64 解码
+/// 与建目录/写盘都跑在 **tokio worker** 上。粘贴大图时 worker 被同步 IO 钉住，
+/// 其它命令排队等 worker —— 界面表现为"点了没反应"，而 CPU 很低（阻塞不是自旋）。
+/// 现在解码仍在 worker（纯 CPU，几 MB 量级），落盘整段进 `spawn_blocking`。
+#[tauri::command]
+pub async fn save_outgoing_image(
     state: State<'_, Arc<AppState>>,
     data_url: String,
 ) -> Result<serde_json::Value, String> {
@@ -94,21 +99,29 @@ pub fn save_outgoing_image(
         .unwrap_or_else(|e| e.into_inner())
         .clone();
     let path = dl.join(&name);
-    std::fs::create_dir_all(&dl).map_err(|e| e.to_string())?;
-    std::fs::write(&path, &bytes).map_err(|e| {
-        crate::error_codes::coded(
-            crate::error_codes::IMAGE_SAVE_FAILED,
-            format!("图片保存失败：{e}"),
-        )
-    })?;
-    // 落进**托管目录**的图片含聊天图片本体：只许属主读（审计 P1 #8）。
-    // 用户显式选的导出目的地不在此列（他可能就是要放到共享目录）。
-    crate::private_fs::restrict_to_owner(&path);
-    Ok(serde_json::json!({
-        "path": path.to_string_lossy().to_string(),
-        "name": name,
-        "size": bytes.len() as u64,
-    }))
+    let size = bytes.len() as u64;
+    tokio::task::spawn_blocking(move || {
+        std::fs::create_dir_all(&dl).map_err(|e| e.to_string())?;
+        std::fs::write(&path, &bytes).map_err(|e| {
+            crate::error_codes::coded(
+                crate::error_codes::IMAGE_SAVE_FAILED,
+                format!("图片保存失败：{e}"),
+            )
+        })?;
+        // 落进**托管目录**的图片含聊天图片本体：只许属主读（审计 P1 #8）。
+        // 用户显式选的导出目的地不在此列（他可能就是要放到共享目录）。
+        crate::private_fs::restrict_to_owner(&path);
+        Ok::<std::path::PathBuf, String>(path)
+    })
+    .await
+    .map_err(|e| format!("图片保存任务失败：{e}"))?
+    .map(|path| {
+        serde_json::json!({
+            "path": path.to_string_lossy().to_string(),
+            "name": name,
+            "size": size,
+        })
+    })
 }
 
 /// 删除本地文件（用于图片发送初始化失败后清理孤儿文件）。
