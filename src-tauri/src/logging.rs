@@ -772,14 +772,37 @@ pub struct HangDetail {
     pub ended: bool,
 }
 
+/// 现场行里的 `>>> ` 前缀有**两种历史形状**：`>>> code=X`，以及 `>>> >>> code=X`。
+///
+/// 后者是常态：`crash_note_to` 自己会再补一个 `>>> `，而 HANG 族、内存周期行的调用方
+/// 已经先写了 `>>> code=…`。解析端若只按单前缀匹配，就变成"检查还在跑、但盘上一行都
+/// 认不出"的假绿（2026-11-04 真机现场里 `>>> >>> code=HANG …` 被整段漏掉，上一轮被判
+/// 成 `no_history`，静默死亡横幅不弹）。所以这里一律**先剥掉任意层前缀**再判。
+fn strip_note_prefix(mut line: &str) -> &str {
+    while let Some(rest) = line.strip_prefix(">>> ") {
+        line = rest;
+    }
+    line
+}
+
 /// 看门狗的诊断行（写现场用，不参与"上一轮怎么结束"的判定）。
 ///
 /// `WATCHDOG_CLOCK_JUMP` 是 2026-11-03 加的唤醒豁免路标：它证明"这一跳被跳过、不是没跑"。
 /// 与 HANG 族一样是正交事实，若留着会让最后一条原生行变成它 ⇒ `NoHistory`。
 fn is_hang_native_line(line: &str) -> bool {
-    line.starts_with(">>> code=HANG ")
-        || line.starts_with(">>> code=HANG_END ")
-        || line.starts_with(">>> code=WATCHDOG_CLOCK_JUMP ")
+    let line = strip_note_prefix(line);
+    line.starts_with("code=HANG ")
+        || line.starts_with("code=HANG_END ")
+        || line.starts_with("code=WATCHDOG_CLOCK_JUMP ")
+}
+
+/// 周期诊断行（每 5 分钟一条的 `RUNTIME_MEM`、启动时的 `COMMIT_PRESSURE`）不是收尾路标。
+///
+/// 它们是正交事实，且**每隔几分钟就会出现**：只要进程是静默消失，最后一条原生行几乎
+/// 总是它们之一 ⇒ 真实结束方式被顶成 `NoHistory`，`silent_kill` 变成不可达分支。
+fn is_periodic_diag_native_line(line: &str) -> bool {
+    let line = strip_note_prefix(line);
+    line.starts_with("code=RUNTIME_MEM ") || line.starts_with("code=COMMIT_PRESSURE ")
 }
 
 /// 从一行现场文本里取 panic 位置与消息。
@@ -832,7 +855,7 @@ fn parse_hang(lines: &[String]) -> Option<HangDetail> {
         .iter()
         .enumerate()
         .filter_map(|(i, l)| {
-            let rest = l.strip_prefix(">>> code=HANG ")?;
+            let rest = strip_note_prefix(l).strip_prefix("code=HANG ")?;
             Some((
                 i,
                 field_u64(rest, "seconds=").unwrap_or(0),
@@ -842,7 +865,7 @@ fn parse_hang(lines: &[String]) -> Option<HangDetail> {
         .next_back()?;
     let ended = lines[idx + 1..]
         .iter()
-        .any(|l| l.starts_with(">>> code=HANG_END "));
+        .any(|l| strip_note_prefix(l).starts_with("code=HANG_END "));
     Some(HangDetail {
         seconds,
         last_op,
@@ -949,11 +972,12 @@ pub fn build_previous_run_report(
 /// 按现场文件的原生路标序列判定上一轮的结束方式。输入应是**已剔掉本轮"启动"行**
 /// 的那一段（见 [`Logger::seed_previous_run`]）。
 pub fn classify_previous_exit(native_lines: &[String]) -> PreviousExit {
-    // 卡死记录（`code=HANG` / `HANG_END`）不参与"怎么结束"的判定：它们是正交事实，
-    // 由 `PreviousRunReport.hang` 单独表达；留在序列里会让最后一条变成 HANG ⇒ NoHistory。
+    // 卡死记录（`code=HANG` / `HANG_END`）与周期诊断（`RUNTIME_MEM` / `COMMIT_PRESSURE`）
+    // 不参与"怎么结束"的判定：它们是正交事实，`HANG` 由 `PreviousRunReport.hang` 单独表达；
+    // 留在序列里会让最后一条变成它们 ⇒ NoHistory（静默死亡于是永远判不出来）。
     let lines: Vec<&String> = native_lines
         .iter()
-        .filter(|l| !is_hang_native_line(l))
+        .filter(|l| !is_hang_native_line(l) && !is_periodic_diag_native_line(l))
         .collect();
     if lines.is_empty() {
         return PreviousExit::NoHistory;
@@ -3599,6 +3623,93 @@ mod tests {
             "----- 正常退出 2026-11-03 10:35:00 运行 aa -----",
         ]);
         assert_eq!(classify_previous_exit(&with_exit), PreviousExit::Clean);
+    }
+
+    /// 判据必须**用武器的另一头造行**：现场行由真实的 `crash_note_to` 写（它会自己补一个
+    /// `>>> `，盘上因此是 `>>> >>> code=HANG …`），再用 `read_tail_lines` 读回来判。
+    ///
+    /// 手写 fixture 曾让这一族判据空转：盘上全是双前缀，解析端只认单前缀，
+    /// 2026-11-04 真机现场里整段 HANG 被漏掉、上一轮被判成 `no_history`。
+    ///
+    /// ⚠️ 四段必须顺序跑：再入闸是进程级 `AtomicBool`（同 `crash_note_writes_without_…`），
+    /// 拆成多条会被 libtest 的线程池并发吞掉写入。
+    #[test]
+    fn real_crash_file_hang_and_periodic_diag_do_not_mask_exit() {
+        use std::io::Write;
+
+        const BOOT_A: &str = "----- 启动 2026-11-04 09:52:40 版本 5.17.52 · windows-x86_64 · release · 设备 [dev:test] · 运行 aa -----";
+        const BOOT_B: &str = "----- 启动 2026-11-04 10:32:14 版本 5.17.52 · windows-x86_64 · release · 设备 [dev:test] · 运行 bb -----";
+
+        let dir = std::env::temp_dir().join(format!("gosslan-exit-shape-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+
+        let run_case = |name: &str, note: Option<&str>, exit: Option<&str>| {
+            let file = crash_file_for(&dir, name);
+            std::fs::write(&file, format!("{BOOT_A}\n")).unwrap();
+            if let Some(n) = note {
+                assert!(crash_note_to(&file, n), "独立通道没写进去：{name}");
+            }
+            let mut f = std::fs::OpenOptions::new()
+                .append(true)
+                .open(&file)
+                .unwrap();
+            if let Some(e) = exit {
+                writeln!(f, "{e}").unwrap();
+            }
+            writeln!(f, "{BOOT_B}").unwrap();
+            drop(f);
+            let raw = read_tail_lines(&file, PREV_CRASH_TAIL_BYTES);
+            build_previous_run_report(&raw, &file, &dir)
+        };
+
+        // ① 最后一条是 HANG：必须是静默死亡，且卡死细节要被解析出来。
+        let r = run_case(
+            "hang",
+            Some(
+                ">>> code=HANG scope=ui_renderer seconds=12 last_op=get_pending_message_operations \
+                 last_op_age_s=101 hb_age_ms=3503 active=true inflight=0 ws=43MiB avail_commit=341MiB",
+            ),
+            None,
+        );
+        assert_eq!(r.kind, "silent_kill", "HANG 把收尾判定顶成了 {}", r.kind);
+        let h = r.hang.expect("双前缀的 HANG 必须解析得出来");
+        assert_eq!(h.seconds, 12);
+        assert_eq!(h.last_op.as_deref(), Some("get_pending_message_operations"));
+        assert!(!h.ended);
+
+        // ② 最后一条是周期诊断 `RUNTIME_MEM`：同样是静默死亡。
+        let r = run_case(
+            "mem",
+            Some(">>> code=RUNTIME_MEM ws=43MiB peak_ws=47MiB commit=17MiB avail_commit=600MiB"),
+            None,
+        );
+        assert_eq!(
+            r.kind, "silent_kill",
+            "RUNTIME_MEM 把收尾判定顶成了 {}",
+            r.kind
+        );
+        assert!(r.hang.is_none());
+
+        // ③ `RUNTIME_MEM` 之后跟正常退出路标：这是干净退出，不许被周期行带偏。
+        let r = run_case(
+            "mem-exit",
+            Some(">>> code=RUNTIME_MEM ws=43MiB peak_ws=47MiB commit=17MiB avail_commit=600MiB"),
+            Some("----- 正常退出 2026-11-04 10:35:00 运行 aa -----"),
+        );
+        assert_eq!(r.kind, "clean", "周期行盖过了正常退出：{}", r.kind);
+
+        // ④ 启动时的 `COMMIT_PRESSURE` 也是周期诊断，不能当收尾路标。
+        let r = run_case(
+            "commit",
+            Some(">>> code=COMMIT_PRESSURE avail_commit=405MiB total_commit=40711MiB load=66%"),
+            None,
+        );
+        assert_eq!(
+            r.kind, "silent_kill",
+            "COMMIT_PRESSURE 把收尾判定顶成了 {}",
+            r.kind
+        );
     }
 
     #[test]
