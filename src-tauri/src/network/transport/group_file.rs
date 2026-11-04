@@ -1521,21 +1521,10 @@ pub(crate) fn apply_group_file_ack_db(
     success: bool,
 ) -> Result<GroupFileAckOutcome, String> {
     let tx = conn.unchecked_transaction().map_err(|e| e.to_string())?;
-    // ① 这个 recipient 存在吗？（存在性要单独查：`query_row` 把"没有这行"和"查询出错"混成一个错）
-    let current: Option<String> = {
-        let mut stmt = tx
-            .prepare(
-                "SELECT status FROM group_file_recipients WHERE transfer_id = ?1 AND recipient_id = ?2",
-            )
-            .map_err(|e| e.to_string())?;
-        let mut rows = stmt
-            .query(params![transfer_id, recipient_id])
-            .map_err(|e| e.to_string())?;
-        match rows.next().map_err(|e| e.to_string())? {
-            Some(r) => Some(r.get::<_, String>(0).map_err(|e| e.to_string())?),
-            None => None,
-        }
-    };
+    // ① 这个 recipient 存在吗？走只读投影：`Ok(None)` = 没有这行（串台，可以丢账本），
+    // `Err` = 读库失败（必须重试，账本行要留）。两者绝不能合并成一个 Option。
+    let current = db::group_file_recipient_status(&tx, transfer_id, recipient_id)
+        .map_err(|e| e.to_string())?;
     let Some(current) = current else {
         // 不是 recipient ⇒ 拒绝。不写任何行（事务回滚），调用方要**丢掉账本行**。
         let _ = tx.rollback();
@@ -1558,19 +1547,7 @@ pub(crate) fn apply_group_file_ack_db(
     )
     .map_err(|e| e.to_string())?;
     // ③ 聚合：读全体 recipient ⇒ 决定发送端气泡。空集合绝不能判 failed（见 group_file_bubble）。
-    let statuses: Vec<String> = {
-        let mut stmt = tx
-            .prepare("SELECT status FROM group_file_recipients WHERE transfer_id = ?1")
-            .map_err(|e| e.to_string())?;
-        let rows = stmt
-            .query_map(params![transfer_id], |r| r.get::<_, String>(0))
-            .map_err(|e| e.to_string())?;
-        let mut v = Vec::new();
-        for row in rows {
-            v.push(row.map_err(|e| e.to_string())?);
-        }
-        v
-    };
+    let statuses = db::group_file_recipient_statuses(&tx, transfer_id).map_err(|e| e.to_string())?;
     let refs: Vec<&str> = statuses.iter().map(|s| s.as_str()).collect();
     let bubble = group_file_bubble(&refs, success);
     // ④ 气泡写回（只有聚合能决定时才写；"还有成员在途"就保持原状态）
@@ -2557,6 +2534,22 @@ mod group_file_ack_recovery_tests {
         assert_eq!(out, GroupFileAckOutcome::NotRecipient);
         assert_eq!(recipient_status(&conn, "peer-a"), "sending");
         assert_eq!(bubble_status(&conn), "sending");
+    }
+
+    /// ★ 读库失败 ≠ 串台：前者必须 `Err`（账本行留下重放），后者才是 `NotRecipient`（可丢账本）。
+    ///
+    /// 两者若被合并成一个 Option，一次 SQLITE_BUSY 就会把真实送达的 ACK 当成伪造丢掉，
+    /// 群文件永远停在 sending —— 而对端不会再说第二遍。
+    #[test]
+    fn a_read_failure_is_retryable_not_a_stranger_ack() {
+        let conn = mem_db();
+        seed(&conn);
+        conn.execute_batch("DROP TABLE group_file_recipients").unwrap();
+        let out = apply_group_file_ack_db(&conn, "t1", "peer-a", true);
+        assert!(
+            out.is_err(),
+            "读库失败必须报 Err，不许答 NotRecipient：{out:?}"
+        );
     }
 }
 

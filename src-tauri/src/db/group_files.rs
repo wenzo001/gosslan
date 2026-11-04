@@ -553,20 +553,47 @@ pub fn requeue_stale_group_file_sending(
     Ok(n > 0)
 }
 
-/// 取单个 recipient 的投递状态（用于「已完成则跳过重建」判断）。不存在返回 None。
-pub fn get_group_file_recipient_status(
+/// 群文件成员行的只读投影：**区分「这一格不存在」与「读库失败」**。
+///
+/// 写侧（ACK 收尾，`transport/group_file.rs::apply_group_file_ack_db`）必须能分辨这两者：
+/// 不存在 ⇒ 这条 ACK 是串台的，账本行可以丢；读库失败 ⇒ 必须返回 `Err`，让账本行留下、
+/// 由清扫器重放。混成一个 `Option` 的后果是：一次 SQLITE_BUSY 就把一条真实送达的 ACK
+/// 当成伪造丢掉，群文件永远停在 sending。
+pub fn group_file_recipient_status(
     conn: &Connection,
     transfer_id: &str,
     recipient_id: &str,
-) -> Option<String> {
+) -> Result<Option<String>> {
     conn.query_row(
         "SELECT status FROM group_file_recipients WHERE transfer_id = ?1 AND recipient_id = ?2",
         params![transfer_id, recipient_id],
         |r| r.get(0),
     )
     .optional()
-    .ok()
-    .flatten()
+}
+
+/// 群文件成员行的只读投影：这一单**全部**成员的状态（气泡聚合的输入）。
+/// 终态聚合只关心集合成员，顺序不影响结论；排序仅让结果稳定、便于测试对账。
+pub fn group_file_recipient_statuses(conn: &Connection, transfer_id: &str) -> Result<Vec<String>> {
+    let mut stmt = conn.prepare(
+        "SELECT status FROM group_file_recipients WHERE transfer_id = ?1 ORDER BY recipient_id",
+    )?;
+    let rows = stmt.query_map(params![transfer_id], |r| r.get(0))?;
+    rows.collect()
+}
+
+/// 取单个 recipient 的投递状态（用于「已完成则跳过重建」判断）。不存在返回 None，读库失败也返回 None。
+///
+/// 读侧只需要「有没有 / 是什么」，吞错是既有契约（行为不变）；写侧要分辨失败请走
+/// [`group_file_recipient_status`]。
+pub fn get_group_file_recipient_status(
+    conn: &Connection,
+    transfer_id: &str,
+    recipient_id: &str,
+) -> Option<String> {
+    group_file_recipient_status(conn, transfer_id, recipient_id)
+        .ok()
+        .flatten()
 }
 
 /// 接收方：幂等建立/重建群文件接收会话。
@@ -623,10 +650,12 @@ pub fn upsert_group_file_receive(
 mod group_file_delivery_tests {
     use super::{
         cancel_group_file_recipient, cancel_group_file_recipients,
-        bump_group_file_recipient_progress, get_group_file_delivery_summary, is_group_file_cancelled,
-        is_group_file_recipient_cancelled, list_pending_group_files_for_recipient,
-        list_stale_group_file_sending, mark_group_file_cancelled, requeue_stale_group_file_sending,
-        update_group_file_recipient, upsert_group_file_receive,
+        bump_group_file_recipient_progress, get_group_file_delivery_summary,
+        get_group_file_recipient_status, group_file_recipient_status, group_file_recipient_statuses,
+        is_group_file_cancelled, is_group_file_recipient_cancelled,
+        list_pending_group_files_for_recipient, list_stale_group_file_sending,
+        mark_group_file_cancelled, requeue_stale_group_file_sending, update_group_file_recipient,
+        upsert_group_file_receive,
     };
     use crate::db::SCHEMA;
     use rusqlite::{params, Connection};
@@ -899,6 +928,54 @@ mod group_file_delivery_tests {
             (s.total, s.completed, s.failed, s.waiting),
             (1, 1, 0, 0),
             "别人的行不许串进来"
+        );
+    }
+
+    /// 群文件成员行的只读投影：一条 `transfer` 的全部状态，稳定排序，不串别人的行。
+    #[test]
+    fn recipient_status_projection_reads_every_member_of_one_transfer_only() {
+        let conn = mem();
+        seed(&conn, "t1", "c", "completed");
+        seed(&conn, "t1", "a", "sending");
+        seed(&conn, "t2", "b", "failed");
+        assert_eq!(
+            group_file_recipient_statuses(&conn, "t1").unwrap(),
+            vec!["sending".to_string(), "completed".to_string()],
+            "按 recipient_id 稳定排序，且不串入别的 transfer"
+        );
+    }
+
+    /// 两条读法必须继续分工：写侧能分辨「没有这一格」与「读库失败」，读侧按旧契约吞错。
+    ///
+    /// 这是 ACK 收尾的生死线：`not_recipient`（可以丢账本行）与「读库失败」（必须留着
+    /// 账本行重放）被合并成一个 `Option` 时，一次 SQLITE_BUSY 就会把真实送达的 ACK 当成
+    /// 伪造丢掉 —— 群文件永远停在 sending，对端不会再说第二遍。
+    #[test]
+    fn strict_recipient_status_read_tells_absent_apart_from_unreadable() {
+        let conn = mem();
+        seed(&conn, "t1", "b", "sending");
+        assert_eq!(
+            group_file_recipient_status(&conn, "t1", "b")
+                .unwrap()
+                .as_deref(),
+            Some("sending")
+        );
+        assert_eq!(
+            group_file_recipient_status(&conn, "t1", "ghost").unwrap(),
+            None
+        );
+        assert_eq!(get_group_file_recipient_status(&conn, "t1", "ghost"), None);
+
+        // 读库失败：严格投影必须报 Err，宽松投影仍答 None（既有行为，不许改）
+        conn.execute_batch("DROP TABLE group_file_recipients").unwrap();
+        assert!(
+            group_file_recipient_status(&conn, "t1", "b").is_err(),
+            "读库失败必须能被区分出来，否则 ACK 账本行会被当串台丢掉"
+        );
+        assert_eq!(
+            get_group_file_recipient_status(&conn, "t1", "b"),
+            None,
+            "读侧吞错的旧契约不变"
         );
     }
 
