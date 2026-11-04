@@ -3,7 +3,12 @@
 包：草稿 release <https://github.com/wenzo001/gosslan/releases/tag/untagged-8eaed7e2cd31c51f6ead>
 （需登录 GitHub；未 publish、未建 tag、未改 `latest.json`）
 
-**版本 ↔ 包对照**：`5.17.22` 旧包已撤（draft 已删）；`5.17.36` 为当前唯一可测包。
+**版本 ↔ 包对照**：`5.17.22` 旧包已撤（draft 已删）；`5.17.36` 为当前唯一可测包，
+用户已在 Win11 装好（`ProductVersion=5.17.36`，RSS 65 MB、CPU 2.94s）。
+
+**用户当前进度**（2026-11-04）：Win11 原地升级五步已完成；以下项**尚未测**：
+Android BLE 外设（第 1 节）、公网中继（第 3 节）、桥接三机（第 4 节）、BLE 多跳（第 5 节）。
+用户要求先由我方完成剩余自测并发一版正式 release，他随后按本清单慢测。
 
 - Windows x64：`Gosslan_5.17.36_x64-setup.exe`，6,030,974 B，
   sha256 `a267e8984edb92a609eb6e14f0a30b3c57741328123ccdde8394985380e0bc13`
