@@ -18,6 +18,8 @@ import {
 } from "@/utils/uiStall";
 import CrashNotice from "@/components/CrashNotice.vue";
 import HangNotice from "@/components/HangNotice.vue";
+import RecoveryNotice from "@/components/RecoveryNotice.vue";
+import type { UiRecoveryNotice } from "@/api";
 import VersionMismatchNotice from "@/components/VersionMismatchNotice.vue";
 import ResponsiveLayout from "@/layouts/ResponsiveLayout.vue";
 import TaskCenter from "@/components/TaskCenter.vue";
@@ -60,6 +62,11 @@ const crashReport = computed(() => {
   return r && !crashDismissed.value && shouldShowCrashNotice(r.kind) ? r : null;
 });
 const stall = ref<StallView | null>(null);
+/**
+ * 渲染层自愈的结局横幅（后端的 `UI_RENDERER_RECOVERED` / "建议重启"）。
+ * 取走时机：每秒心跳的返回值（搭顺车，不新增轮询）。
+ */
+const recovery = ref<UiRecoveryNotice | null>(null);
 let stallSnoozeUntil = 0;
 let stallTimer: number | undefined;
 let heartbeatTimer: number | undefined;
@@ -68,18 +75,57 @@ let lastHeartbeatActive = true;
 let longTaskObserver: PerformanceObserver | null = null;
 let lastLongTaskLogAt = performance.now();
 
+/**
+ * 本机验证用的**一次性**心跳冻结注入（仅开发构建）。
+ *
+ * `?freeze_hb_once=60000` ⇒ 本次页面在前 60s 内不发心跳（模拟渲染层主线程冻住）。
+ * 用 `sessionStorage` 记"已注入过"：自愈 reload 之后同一会话不会再冻结，
+ * 于是能观察到 `UI_RENDERER_RECOVERED` 而不是"reload 后又被冻住"的死循环。
+ * 返回冻结到期时刻（ms，`performance.now()` 口径）；未注入返回 0。
+ *
+ * 生产构建里 `import.meta.env.DEV` 为 false ⇒ 整个函数被摇树掉，不会成为可被滥用的后门。
+ */
+function freezeHeartbeatOnceUntil(): number {
+  if (!import.meta.env.DEV) return 0;
+  let ms = 0;
+  try {
+    const params = new URLSearchParams(location.search);
+    const raw = params.get("freeze_hb_once");
+    ms = raw ? Math.min(Math.max(Number.parseInt(raw, 10) || 0, 1_000), 120_000) : 0;
+    if (!ms) return 0;
+    // 把注入参数从地址栏摘掉：`reload` 打的是**当前 URL** ⇒ 自愈 reload 之后不会再冻住。
+    // 不用 sessionStorage 记"已注入"：生产码里只有 `utils/safeStorage` 允许摸存储
+    // （designGuards ㊾ 会拦直连），而这个注入本来就是 dev-only。
+    params.delete("freeze_hb_once");
+    const qs = params.toString();
+    history.replaceState(history.state, "", location.pathname + (qs ? `?${qs}` : "") + location.hash);
+  } catch {
+    // 改不动地址（极端 WebView）：最坏情况是 reload 后又被冻住一次，属可接受偏差。
+    return 0;
+  }
+  console.warn(`[dev] 心跳冻结注入：${ms}ms（?freeze_hb_once）`);
+  return performance.now() + ms;
+}
+
 function startWatchdogTimers() {
   stallTimer = window.setInterval(() => {
     stall.value = decideStall(inflightOps(), performance.now(), stallSnoozeUntil);
   }, 1000);
+  const frozenUntil = freezeHeartbeatOnceUntil();
   // 心跳只在**主窗口**发；隐藏后先补发一条 active=false，再暂停（省 IPC）。
   heartbeatTick = () => {
+    // 注入窗口内一条都不发：后端看到的形状与"渲染层主线程冻住"一致。
+    if (frozenUntil && performance.now() < frozenUntil) return;
     const active = !document.hidden;
     if (!active && !lastHeartbeatActive) return;
     lastHeartbeatActive = active;
     const snap = inflightSnapshot();
     void api
       .uiHeartbeat(active ? lastOpLabel() : null, active, snap.count, snap.oldestMs)
+      .then((notice) => {
+        // 自愈结局搭心跳的顺车送回来（取走即清空）；有就挂横幅。
+        if (notice) recovery.value = notice;
+      })
       .catch(() => {});
   };
   heartbeatTimer = window.setInterval(heartbeatTick, 1000);
@@ -274,6 +320,13 @@ onUnmounted(stopWatchdogTimers);
 </script>
 
 <template>
+  <RecoveryNotice
+    v-if="recovery"
+    :kind="recovery.kind"
+    :mobile="app.isMobile"
+    @restart="restartApp"
+    @dismiss="recovery = null"
+  />
   <CrashNotice
     v-if="crashReport"
     :report="crashReport"

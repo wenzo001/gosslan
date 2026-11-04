@@ -331,6 +331,13 @@ export const enUS: MessageDict = {
   "hang.escalated": "It has been {seconds}s. You can keep waiting or restart the app.",
   "hang.wait": "Keep waiting",
   "hang.restart": "Restart app",
+  // Renderer self-heal banner (watchdog UI_RENDERER_RECOVERED / suggest restart)
+  "recovery.title": "The UI has recovered",
+  "recovery.recovered": "The UI stopped responding and has recovered automatically.",
+  "recovery.draftKept": "Your draft in the message box has been kept.",
+  "recovery.suggestRestart": "The UI still isn't responding. Please restart manually.",
+  "recovery.restart": "Restart now",
+  "recovery.dismiss": "Got it",
   "versionMismatch.title": "Version mismatch detected",
   "versionMismatch.body": "Frontend {frontend} / backend {backend}. Quit completely and reopen.",
   "versionMismatch.restart": "Restart now",

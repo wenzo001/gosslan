@@ -34,7 +34,7 @@ pub fn ui_heartbeat(
     active: bool,
     inflight: Option<u32>,
     oldest_ms: Option<u64>,
-) {
+) -> Option<crate::state::UiRecoveryNotice> {
     let now = crate::logging::now_ms();
     let inflight = inflight.unwrap_or(0);
     let oldest_ms = oldest_ms.unwrap_or(0).min(i64::MAX as u64) as i64;
@@ -65,6 +65,14 @@ pub fn ui_heartbeat(
     }
     // 取证日志由看门狗线程写（见 `watchdog.rs`）：心跳只写原子量，不在这里碰文件 IO，
     // 否则它会成为“贴在 async 命令上的同步重活”，把重活命令棘轮顶高。
+    //
+    // 自愈结局搭心跳的顺车送回前端（横幅显示"已自动恢复/草稿已保留"）。用 `try_lock`：
+    // 拿不到锁（看门狗正在写）就等下一秒，心跳路径绝不为一条横幅阻塞。
+    state
+        .ui_recovery_notice
+        .try_lock()
+        .ok()
+        .and_then(|mut slot| slot.take())
 }
 
 /// 前端慢调用上报（>2 s）：只写一行日志，不回传事件（避免形成回环）。

@@ -20,6 +20,20 @@ import { beginOp, endOp } from "@/utils/ipcTracker";
 // 「事件监听注册失败」是用户可见的错误（重连失败时会直接弹在界面上），跟着界面语言走。
 import { t } from "@/i18n";
 
+/**
+ * 渲染层自愈的结局（后端 `watchdog` 写入，心跳返回值一次性取走）。
+ *
+ * `recovered` = 重载后心跳已回；`suggest_restart` = 自动恢复没救回来（从开机起就没心跳）。
+ * 判定本身不含版本字段：5.16.74 与之后的版本同一套逻辑。
+ */
+export interface UiRecoveryNotice {
+  kind: "recovered" | "suggest_restart";
+  /** 触发时的心跳停滞时长（ms）。 */
+  stalledMs: number;
+  /** 本轮做过的自愈动作次数。 */
+  actions: number;
+}
+
 /** 路径入参统一过 `ipcPathSchema`（审计 P1 #10：入参侧此前 0 处校验）。 */
 const pathArg = (v: string, label: string): string =>
   assertIpcInput(ipcPathSchema, v, label);
@@ -684,7 +698,7 @@ export const api = {
    * 否则每秒一条的自我记录会把真正的卡死原因淹掉。
    */
   uiHeartbeat: (currentOp: string | null, active: boolean, inflight: number, oldestMs: number) =>
-    invoke<void>("ui_heartbeat", { currentOp, active, inflight, oldestMs }),
+    invoke<UiRecoveryNotice | null>("ui_heartbeat", { currentOp, active, inflight, oldestMs }),
   /**
    * 导出**脱敏**诊断包到用户选好的落点（纯文本）。
    *
