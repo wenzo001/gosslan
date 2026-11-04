@@ -1282,6 +1282,14 @@ pub struct TodoPayload {
     /// `None` = 从未完成过（或旧载荷）。
     #[serde(default)]
     pub done_at: Option<i64>,
+    /// 关联时间（可选）：**只到年月日的日历日**，形如 `YYYY-MM-DD`。
+    ///
+    /// 语义刻意不是时间戳：用户选的是"那一天"，不做时区换算 —— 本机选 2026-11-04，
+    /// 别台设备读到的也是 2026-11-04（存 `00:00` 再按 UTC/本地解释会在跨时区时变成前一天/后一天）。
+    /// `None` = 没填 / 已清空；空串由命令层归一成 `None`。
+    /// `#[serde(default)]` ⇒ 旧载荷（键不存在）与旧版本对端读出来都是 `None`，不报错。
+    #[serde(default)]
+    pub related_on: Option<String>,
 }
 
 /// 任务状态的**唯一取值表**（用户 2026-09-16 定的四态）。
@@ -1311,6 +1319,45 @@ pub fn default_todo_status() -> String {
 /// 状态取值是否合法（命令层校验用；未知值一律拒收，避免脏状态流进群里）。
 pub fn todo_status_is_valid(s: &str) -> bool {
     TODO_STATUSES.contains(&s)
+}
+
+/// 关联时间是否合法：**严格的** `YYYY-MM-DD` 日历日。
+///
+/// 拒绝 02-30 这类"形状对、日子不存在"的值；也不接受 `YYYY/M/D`、带时分的字符串。
+/// 与前端 `src/utils/todos.ts::isTodoRelatedOn` 同一口径（前端另有单测，Rust 侧见本文件 `#[cfg(test)]`）。
+pub fn todo_related_on_is_valid(s: &str) -> bool {
+    let b = s.as_bytes();
+    if b.len() != 10 || b[4] != b'-' || b[7] != b'-' {
+        return false;
+    }
+    let digits_ok =
+        |range: std::ops::Range<usize>| b[range.clone()].iter().all(|c| c.is_ascii_digit());
+    if !digits_ok(0..4) || !digits_ok(5..7) || !digits_ok(8..10) {
+        return false;
+    }
+    let year: u32 = match s[0..4].parse() {
+        Ok(v) => v,
+        Err(_) => return false,
+    };
+    let month: u32 = match s[5..7].parse() {
+        Ok(v) => v,
+        Err(_) => return false,
+    };
+    let day: u32 = match s[8..10].parse() {
+        Ok(v) => v,
+        Err(_) => return false,
+    };
+    if year == 0 || !(1..=12).contains(&month) {
+        return false;
+    }
+    let days_in_month = match month {
+        1 | 3 | 5 | 7 | 8 | 10 | 12 => 31,
+        4 | 6 | 9 | 11 => 30,
+        2 if (year % 4 == 0 && year % 100 != 0) || year % 400 == 0 => 29,
+        2 => 28,
+        _ => return false,
+    };
+    (1..=days_in_month).contains(&day)
 }
 
 /// 任务优先级的**唯一取值表**（三档，用户 2026-09-29：只分三级、默认中等）。

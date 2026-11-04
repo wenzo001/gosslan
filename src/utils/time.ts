@@ -60,6 +60,21 @@ export function fmtConversationTime(ts: number | null | undefined, tr: Translate
 }
 
 /**
+ * **任务相关的时间**（发布时间 / 操作时间 / 完成时间）的统一形状：
+ * 当天只报 `HH:mm`；**非当天一律带年月日**（`YYYY-MM-DD HH:mm`）。
+ *
+ * 为什么不复用 `fmtConversationTime`：那个函数对"更早"只报 `MM-DD`，跨年时会把去年的事
+ * 显示成今年（任务时间要用来判断"这活是什么时候的事"，缺年份会被误读）。
+ * 纯数字形状不依赖词典，中英两种界面都读得懂；`now` 可注入，便于单测固定"今天/昨天/跨年"。
+ */
+export function fmtTodoTime(ts: number | null | undefined, now: number = Date.now()): string {
+  if (!ts) return "";
+  const d = dayjs(ts);
+  const n = dayjs(now);
+  return d.isSame(n, "day") ? d.format("HH:mm") : d.format("YYYY-MM-DD HH:mm");
+}
+
+/**
  * 消息时间分割线（微信式智能格式）：今天只报时分；昨天报「昨天 HH:mm」；
  * 一周内报星期（星期名来自 dayjs locale）；今年内报「M月D日 HH:mm」；跨年带年份。
  * 形状（哪一段用月日、哪一段用年份）留在这里 —— 那是产品口径；

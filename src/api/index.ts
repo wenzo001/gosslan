@@ -306,6 +306,7 @@ export const api = {
     category?: string,
     customCategory?: string,
     customIcon?: string,
+    relatedOn?: string,
   ) =>
     invoke<MessageRecord>("send_group_todo", {
       groupId,
@@ -316,6 +317,7 @@ export const api = {
       category: category ?? null,
       customCategory: customCategory ?? null,
       customIcon: customIcon ?? null,
+      relatedOn: relatedOn ?? null,
     }),
   /**
    * 更新群任务：改状态 / 改标题与指派人 / 改描述与图片 / 删除（`deleted: true`）。
@@ -349,6 +351,11 @@ export const api = {
        * 仅 custom 档有意义；`undefined` = 这次不带这格，后端沿用库里挑过的图标。
        */
       customIcon?: string;
+      /**
+       * 关联时间（`YYYY-MM-DD`，只到年月日）：`undefined` = 这次不带这格（后端沿用库里的）；
+       * `""` = 明确清空；日期字符串 = 覆盖。
+       */
+      relatedOn?: string;
     },
   ) =>
     invoke<MessageRecord>("update_group_todo", {
@@ -365,6 +372,8 @@ export const api = {
       category: patch.category ?? null,
       customCategory: patch.customCategory ?? null,
       customIcon: patch.customIcon ?? null,
+      // 空串必须原样传过去（= 明确清空）；`?? null` 只把 undefined 折成"不带这格"。
+      relatedOn: patch.relatedOn ?? null,
     }),
   /** 置顶/取消置顶一条群消息（任意群成员；静默事件，不进时间线）。 */
   pinGroupMessage: (groupId: string, target: string, pinned: boolean) =>

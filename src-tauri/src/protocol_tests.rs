@@ -1994,4 +1994,36 @@ mod tests {
             "撤回帧属于 GossipKind，不属于消息 WIRE_KINDS"
         );
     }
+
+    /// 关联时间只认真实的 `YYYY-MM-DD` 日历日：闰年合法、02-30/13 月/带时分一律拒收。
+    #[test]
+    fn todo_related_on_accepts_real_calendar_days_only() {
+        for ok in ["2026-11-04", "2024-02-29", "2000-02-29", "2026-12-31", "2026-01-01"] {
+            assert!(todo_related_on_is_valid(ok), "{ok} 应合法");
+        }
+        for bad in [
+            "",
+            "2026-2-4",
+            "2026/11/04",
+            "2026-11-04 00:00",
+            "2026-11-04T00:00:00Z",
+            "2023-02-29",
+            "2026-02-30",
+            "2026-13-01",
+            "2026-00-10",
+            "2026-11-00",
+            "0000-01-01",
+            "abcd-ef-gh",
+        ] {
+            assert!(!todo_related_on_is_valid(bad), "{bad} 应不合法");
+        }
+    }
+
+    /// 旧库/旧载荷没有这一格时必须读成 `None`，不是报错 —— 这是"旧库升级后新字段为空"的契约。
+    #[test]
+    fn old_todo_payload_without_related_on_parses_to_none() {
+        let old = r#"{"todo_id":"t","title":"x","assignees":["a"],"status":"todo","creator":"a","deleted":false,"description":"","images":[],"archived":false,"number":1,"priority":"normal","category":"task","custom_category":"","custom_icon":""}"#;
+        let p: TodoPayload = serde_json::from_str(old).expect("旧载荷必须可解析");
+        assert!(p.related_on.is_none());
+    }
 }

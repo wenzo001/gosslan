@@ -13,6 +13,7 @@ import {
   fmtDateTime,
   fmtTimeDivider,
   fmtConversationTime,
+  fmtTodoTime,
   type Translate,
 } from "./time.ts";
 import { enUS, zhCN } from "../i18n/locales.ts";
@@ -27,6 +28,17 @@ test("fmtDateTime / fmtClock / fmtDateStamp：固定形状，不随 WebView 区�
   assert.equal(fmtDateTime(localTs), "2026-10-18 13:45:09");
   assert.equal(fmtClock(localTs), "13:45:09");
   assert.equal(fmtDateStamp(localTs), "20261018");
+});
+
+test("fmtTodoTime：当天只报时分，非当天一律带年月日（昨天/跨年）", () => {
+  const now = new Date(2026, 10, 4, 12, 0, 0).getTime(); // 2026-11-04 12:00
+  const today = new Date(2026, 10, 4, 9, 5, 0).getTime();
+  const yesterday = new Date(2026, 10, 3, 23, 30, 0).getTime();
+  const lastYear = new Date(2025, 11, 31, 18, 45, 0).getTime();
+  assert.equal(fmtTodoTime(today, now), "09:05", "当天只显示时刻");
+  assert.equal(fmtTodoTime(yesterday, now), "2026-11-03 23:30", "昨天必须带年月日");
+  assert.equal(fmtTodoTime(lastYear, now), "2025-12-31 18:45", "跨年必须带年份");
+  assert.equal(fmtTodoTime(null, now), "", "空值不渲染");
 });
 
 test("接线判据：三个消费点走 utils/time，不再手写 new Date / toLocaleTimeString / padStart", () => {
@@ -145,7 +157,14 @@ test("接线判据：相对日期只有一份实现，且**每一处**调用都�
     return out;
   };
   const HOME = path.join(ROOT, "utils", "time.ts");
-  const CALL = /fmt(?:ConversationTime|TimeDivider)\(/g;
+  /*
+   * 2026-11-04：`fmtTodoTime` 成为任务时间的唯一入口（当天 `HH:mm` / 非当天 `YYYY-MM-DD HH:mm`），
+   * TodoDetailDialog 的 4 处 `fmtConversationTime` 换成了它 —— 分母从 12 掉到 8，判据当场红。
+   * 这里**换参照物而不是放宽阈值**：新函数同样必须从 utils/time 走，且它只吐数字形状、
+   * 故意不吃词典（中英文一致），所以跳过 `t` 注入检查；`total >= 12` 原样保留 ——
+   * 哪天这 4 处调用被删/改名，分母照样掉回 8 并红。
+   */
+  const CALL = /fmt(?:ConversationTime|TimeDivider|TodoTime)\(/g;
   const totalOf = (s: string) => (s.match(CALL) ?? []).length;
   let total = 0;
   const bad: string[] = [];
@@ -156,6 +175,8 @@ test("接线判据：相对日期只有一份实现，且**每一处**调用都�
       total++;
       const args = argsOf(src, m.index + m[0].length);
       if (args === null) { bad.push(`${path.relative(ROOT, f)}：括号配不上对，读不出实参`); continue; }
+      // 任务时间只吐数字（`09:05` / `2026-11-03 23:30`），两种语言同一形状，不吃词典。
+      if (m[0].startsWith("fmtTodoTime")) continue;
       if (!/(?:^|,)\s*\bt\s*(?:,|$)/.test(args)) bad.push(`${path.relative(ROOT, f)}：这一处没注入 t ⇒ ${args.trim().slice(0, 60)}`);
       if (m[0].startsWith("fmtTimeDivider") && !/currentLocale\(\)/.test(args)) {
         bad.push(`${path.relative(ROOT, f)}：分割线没把当前语言传进去 ⇒ ${args.trim().slice(0, 60)}`);

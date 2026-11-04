@@ -239,6 +239,24 @@ fn normalize_custom_icon(category: &str, raw: Option<&str>) -> Result<String, St
     Ok(key)
 }
 
+/// 归一关联时间：空串 = 清空（`None`）；非空必须是真实存在的 `YYYY-MM-DD` 日历日。
+///
+/// 「清空」与「没传」刻意分成两种输入：`None` 表示"这一格没改、沿用库里的值"，
+/// `Some("")` 表示"用户明确清掉了" —— 若都折成 `None`，编辑时删掉日期就会被当成"没动"。
+fn normalize_todo_related_on(raw: &str) -> Result<Option<String>, String> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return Ok(None);
+    }
+    if !crate::protocol::todo_related_on_is_valid(trimmed) {
+        return Err(crate::error_codes::coded(
+            crate::error_codes::GROUP_TODO_RELATED_ON_INVALID,
+            "关联时间不合法（应为 YYYY-MM-DD）",
+        ));
+    }
+    Ok(Some(trimmed.to_string()))
+}
+
 /// 创建一条群任务（任意成员）。
 ///
 /// `todo_id` 用随机 id（`todo-<uuid>`）而不是"创建事件的 msg_id"：后续每一次改状态/改标题
@@ -255,6 +273,7 @@ pub async fn send_group_todo(
     category: Option<String>,
     custom_category: Option<String>,
     custom_icon: Option<String>,
+    related_on: Option<String>,
 ) -> Result<MessageRecord, String> {
     let s = state.inner();
     // 类型只在**给了值**时校验；没给就是缺省那一档（旧前端不传这一格也要能建任务）。
@@ -276,6 +295,11 @@ pub async fn send_group_todo(
     let custom_category = normalize_custom_category(&category, custom_category.as_deref())?;
     // 图标同一条规矩的另一个面：只在 custom 档保留，非 custom 档清空（见 `normalize_custom_icon`）。
     let custom_icon = normalize_custom_icon(&category, custom_icon.as_deref())?;
+    // 关联时间可选：没传 / 空串 → 没填；给了值必须是真实的 YYYY-MM-DD。
+    let related_on = match related_on.as_deref() {
+        Some(raw) => normalize_todo_related_on(raw)?,
+        None => None,
+    };
     let title = title.trim().to_string();
     if title.is_empty() {
         return Err(crate::error_codes::coded(
@@ -319,6 +343,7 @@ pub async fn send_group_todo(
         images,
         archived: false,
         done_at: None,
+        related_on,
     };
     let content = serde_json::to_string(&payload).map_err(|e| e.to_string())?;
     let todo_id = payload.todo_id.clone();
@@ -413,6 +438,9 @@ fn latest_todo_def(
     // 图标是同一条沿用规矩的另一个面：老对端重建的载荷不带这一格，不沿用就会把用户挑过的
     // 图标抹回默认那枚（名字那一格已经为这个坑写过注释 —— 两个面必须一起想）。
     let mut carry_custom_icon: Option<String> = None;
+    // 关联时间：外层 `Some` = 这一份载荷**明确说过**这一格；内层 `None` = 明确清空。
+    // 键不存在 = 没说（继续往旧载荷找），空串/null = 说了没有。
+    let mut carry_related_on: Option<Option<String>> = None;
     // 创建那一条说过的号：绝对坐标，压过任何一份更新里的号。DESC 扫到最后一刻 = 最旧那条创建。
     let mut created_number: Option<i64> = None;
     for row in rows.flatten() {
@@ -448,6 +476,21 @@ fn latest_todo_def(
             .map(str::trim)
             .filter(|s| s.is_empty() || crate::protocol::todo_custom_icon_is_valid(s))
             .map(str::to_string);
+        let stated_related_on: Option<Option<String>> = match v.get("related_on") {
+            None => None,
+            Some(serde_json::Value::Null) => Some(None),
+            Some(serde_json::Value::String(s)) => {
+                let s = s.trim();
+                if s.is_empty() {
+                    Some(None)
+                } else if crate::protocol::todo_related_on_is_valid(s) {
+                    Some(Some(s.to_string()))
+                } else {
+                    None // 脏值 = 没说（与 priority/category 同口径，继续往旧载荷找）
+                }
+            }
+            _ => None,
+        };
         let Ok(p) = serde_json::from_value::<crate::protocol::TodoPayload>(v) else {
             continue;
         };
@@ -472,6 +515,9 @@ fn latest_todo_def(
         if carry_custom_icon.is_none() {
             carry_custom_icon = stated_icon;
         }
+        if carry_related_on.is_none() {
+            carry_related_on = stated_related_on;
+        }
         if kind == "todo" && stated_number.is_some() {
             created_number = stated_number;
         }
@@ -487,6 +533,8 @@ fn latest_todo_def(
     if let Some(n) = created_number.or(carry_number) {
         p.number = n;
     }
+    // 关联时间：最新一份"说了"就用它（null/空串 = 明确清空）；"没说"则沿用最近说过的那一天。
+    p.related_on = carry_related_on.flatten();
     // 只有最新那份的类型仍是 custom 时才补名字：非 custom 档的载荷里带不带文本都无意义
     //（保存时服务端会清空），这里也不该把旧名字复活。
     if p.custom_category.is_empty() && p.category == "custom" {
@@ -583,6 +631,8 @@ struct TodoEdit<'a> {
     category: &'a str,
     custom_category: &'a str,
     custom_icon: &'a str,
+    /// 归一后的关联时间（`""` = 没有）。窄档要逐字比这一格：成员不能借归档/还原/认领顺手改日期。
+    related_on: &'a str,
 }
 
 /// 本次请求是否**只动归档位**：其余字段与库里最新定义逐字相同，且归档值确实翻转了。
@@ -605,6 +655,7 @@ fn archive_only_change(def: &crate::protocol::TodoPayload, e: &TodoEdit<'_>) -> 
         // 自定义类型名同理：它是类型的一部分，成员归档时不许顺手改掉
         && e.custom_category == def.custom_category
         && e.custom_icon == def.custom_icon
+        && e.related_on == def.related_on.as_deref().unwrap_or("")
 }
 
 /// 本次请求是否**只是"还原"**：库里状态是终态（完成/做不了），请求把它退回「待办」，
@@ -630,6 +681,7 @@ fn reopen_only_change(def: &crate::protocol::TodoPayload, e: &TodoEdit<'_>) -> b
         && e.category == def.category
         && e.custom_category == def.custom_category
         && e.custom_icon == def.custom_icon
+        && e.related_on == def.related_on.as_deref().unwrap_or("")
 }
 
 /// 请求的指派人名单是否正好等于「原名单 + 末尾追加 actor」这一个改动。
@@ -666,6 +718,7 @@ fn claim_only_change(def: &crate::protocol::TodoPayload, actor: &str, e: &TodoEd
         // 类型名也是"内容"，成员窄档不许顺着认领改掉
         && e.custom_category == def.custom_category
         && e.custom_icon == def.custom_icon
+        && e.related_on == def.related_on.as_deref().unwrap_or("")
         && assignees_are_def_plus_actor(&def.assignees, e.assignees, actor)
 }
 
@@ -711,6 +764,7 @@ fn delete_archived_change(
         && e.category == def.category
         && e.custom_category == def.custom_category
         && e.custom_icon == def.custom_icon
+        && e.related_on == def.related_on.as_deref().unwrap_or("")
 }
 
 /// 「成员窄档」：只服务**本群成员**的四条窄动作（归档 / 还原 / 认领一条需求 / 删除已归档）。
@@ -808,6 +862,7 @@ pub async fn update_group_todo(
     category: Option<String>,
     custom_category: Option<String>,
     custom_icon: Option<String>,
+    related_on: Option<String>,
 ) -> Result<MessageRecord, String> {
     let s = state.inner();
     let title = title.trim().to_string();
@@ -911,6 +966,12 @@ pub async fn update_group_todo(
             }
         }
     };
+    // 关联时间与优先级同口径：`None` ⇒ 沿用库里原值；`Some("")` ⇒ 明确清空；
+    // `Some(YYYY-MM-DD)` ⇒ 覆盖。
+    let related_on = match related_on.as_deref() {
+        Some(raw) => normalize_todo_related_on(raw)?,
+        None => def.related_on.clone(),
+    };
     let edits_assignees = assignees != def.assignees;
     let edits_structure = deleted || title != def.title;
     let edit = TodoEdit {
@@ -925,6 +986,7 @@ pub async fn update_group_todo(
         category: &category,
         custom_category: &custom_category,
         custom_icon: &custom_icon,
+        related_on: related_on.as_deref().unwrap_or(""),
     };
     let lane = MemberLane {
         archive_only: archive_only_change(&def, &edit),
@@ -999,6 +1061,7 @@ pub async fn update_group_todo(
         category,
         custom_category,
         custom_icon,
+        related_on,
     };
     let content = serde_json::to_string(&payload).map_err(|e| e.to_string())?;
     let (todo_id, status) = (payload.todo_id.clone(), payload.status.clone());
