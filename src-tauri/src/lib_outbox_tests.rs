@@ -580,3 +580,149 @@ fn production_transaction_sites_are_all_timed() {
         "这一行只许含阶段名/关联键/毫秒/成败 —— 塞进 SQL、参数、正文或文件名就是把隐私写进日志"
     );
 }
+
+// ---------------- Block 2：跨跳补发（无直连时也要重投） ----------------
+//
+// 现场 RC-3：`send_message` 在无直连时只 `broadcast_gossip` 一次；旧重试器只遍历
+// `links`（直连对端）⇒ 纯中继好友的 outbox 行一次都不会被重投，120s 后判死。
+
+/// 队列行必须同时留住**直连帧**与**跨跳信封**，且信封的 `message_id` 跨序列化不变。
+///
+/// 这是"不重复入库/不重复 ACK"的机制级证据：
+/// - `message_id = sha256(sender + nonce + payload)`，nonce 是随机的 —— 重建信封（重新
+///   签名/加密）必然换 id，对端会把它当成另一条消息 ⇒ 两次 `build_envelope` 的 id 必须不同；
+/// - 因此跨跳重投只能**原样重发**存下来的那一份：序列化→解析后 id 一字不变；
+/// - 对端 `GossipEngine::is_new` 对同一 id 第二次返回 false ⇒ 重复副本不消费（不再入库、
+///   也不再发第二个 ACK）。
+#[test]
+fn outbox_payload_preserves_the_relay_envelope_identity() {
+    let id = crate::crypto::Identity::generate();
+    let engine = crate::gossip_engine::GossipEngine::new(100, 10, 4, 6);
+    let env = engine.build_envelope(
+        &id,
+        "dev-a",
+        crate::protocol::GossipKind::Chat,
+        None,
+        None,
+        "cGF5bG9hZA==",
+        1,
+        1,
+    );
+    // 反例自证：重建（哪怕字段完全相同）会换 nonce ⇒ 换 message_id ⇒ 对端会重复入库。
+    let rebuilt = engine.build_envelope(
+        &id,
+        "dev-a",
+        crate::protocol::GossipKind::Chat,
+        None,
+        None,
+        "cGF5bG9hZA==",
+        1,
+        1,
+    );
+    assert_ne!(
+        env.message_id, rebuilt.message_id,
+        "重新构造信封必须换 id —— 这正是'不能重建、只能原样重发'的理由"
+    );
+
+    let direct = crate::protocol::Message::ChatMessage {
+        msg_id: env.message_id.clone(),
+        from: "dev-a".into(),
+        to: "dev-b".into(),
+        kind: "text".into(),
+        content: "enc1:abc".into(),
+        ts: 1,
+        seq: 1,
+    };
+    let payload = serde_json::to_string(&crate::network::transport::OutboxPayload {
+        direct: direct.clone(),
+        relay: Some(env.clone()),
+    })
+    .unwrap();
+    let parsed =
+        crate::network::transport::parse_outbox_payload(&payload).expect("新形状必须能解析");
+    assert_eq!(
+        parsed.relay.as_ref().map(|e| e.message_id.as_str()),
+        Some(env.message_id.as_str()),
+        "落库再读回来，信封身份必须一字不变（否则跨跳重投等于换了条消息）"
+    );
+
+    // 对端视角：同一信封到两次 ⇒ 第一次消费，第二次判重（不重复入库/不重复 ACK）
+    let mut receiver = crate::gossip_engine::GossipEngine::new(100, 10, 4, 6);
+    assert!(receiver.is_new(&env.message_id), "首份必须处理");
+    assert!(!receiver.is_new(&env.message_id), "重复副本必须挡掉");
+
+    // 老队列行（裸 Message，无信封）仍要能解析：跨跳那一路会明确留码并跳过，
+    // 而不是把整行判成 CORRUPT（那会让升级前入队的消息连"等直连"的机会都没有）。
+    let legacy = serde_json::to_string(&direct).unwrap();
+    let legacy_parsed = crate::network::transport::parse_outbox_payload(&legacy).unwrap();
+    assert!(legacy_parsed.relay.is_none(), "老行没有跨跳信封");
+}
+
+/// 接线判据：跨跳补发按 15s 一轮、只补"没有直连"的 peer、同一 peer 并发上限 1、
+/// 且**绝不重建信封**。
+///
+/// 反例自证：把 `has_link` 那行删掉（两条路径同时施压）、或改成
+/// `GossipEnvelope { … }` 重建信封，这条立即红 —— 而业务测试仍全绿。
+#[test]
+fn outbox_relay_retrier_is_wired_and_never_rebuilds_the_envelope() {
+    let state = include_str!("state.rs");
+    // 不能用 `rust_fn_body`：这个 fn 是 `impl AppState` 里的**方法**，收尾 `}` 缩进 4 格，
+    // 而助手只认列 0 的 `\n}\n` ⇒ 会一路切到 impl 结束，把后面几个方法一并算进来
+    // （实测把 `spawn_runtime_diag_reporter` 的 spawn 也数进来了，spawn 计数变成 3）。
+    let start = state
+        .find("pub fn spawn_outbox_retrier(")
+        .expect("重试器不见了");
+    let rest = &state[start..];
+    let end = rest.find("\n    }\n").map(|i| i + 6).expect("重试器收尾不见了");
+    let body: &str = &rest[..end];
+    for needle in [
+        "OUTBOX_RELAY_INTERVAL_SECS",
+        "db::list_outbox_peers(",
+        "flush_outbox_via_relay(",
+    ] {
+        assert!(
+            body.contains(needle),
+            "重试器缺 {needle} —— 无直连的 peer 又会一次都补不到"
+        );
+    }
+    // 函数体里**唯一**允许的 spawn 是它自己那条 worker 的启动（`spawn_outbox_retrier` 的返回值）；
+    // 跨跳那一段必须是顺序 `await`，再 spawn 一份就等于同一 peer 并发 ≥2（广播叠加）。
+    assert_eq!(
+        body.matches("tauri::async_runtime::spawn(").count(),
+        1,
+        "重试器只许有它自己那一次启动 spawn —— 跨跳补发不许再 spawn 子任务"
+    );
+    assert!(
+        !body.contains("tokio::spawn("),
+        "跨跳补发必须是顺序 await（同一 peer 并发上限 1）"
+    );
+    let relay_head = body
+        .find("if tokio::time::Instant::now() >= next_relay_at")
+        .expect("跨跳补发的 15s 门不见了");
+    let relay_tail = &body[relay_head..];
+    assert!(
+        relay_tail.contains("for peer in peers {")
+            && relay_tail.contains("flush_outbox_via_relay(&st, &peer).await;")
+            && !relay_tail.contains("spawn"),
+        "跨跳补发必须是 `for peer in peers` + 逐个 await，不得并行施压"
+    );
+
+    let flush = include_str!("network/transport/outbox_flush.rs");
+    let relay = rust_fn_body(flush, "pub async fn flush_outbox_via_relay(");
+    assert!(
+        relay.contains("broadcast_gossip(state, envelope)"),
+        "跨跳补发必须走网格定向投递（信封带 target）"
+    );
+    assert!(
+        !relay.contains("reseal_for_send") && !relay.contains("GossipEnvelope {"),
+        "信封必须原样重发：重建会换 message_id ⇒ 对端重复入库 + 重复 ACK"
+    );
+    assert!(
+        relay.contains("has_link("),
+        "有直连时必须让 5s 直连路径来补（两条路径同时施压会放大广播）"
+    );
+    assert!(
+        relay.contains("parse_outbox_payload"),
+        "跨跳补发必须用同一份载荷解析（老行回落也要走这里）"
+    );
+}

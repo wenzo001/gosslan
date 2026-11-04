@@ -902,7 +902,15 @@ pub async fn send_message(
         ts,
         seq,
     };
-    let payload = serde_json::to_string(&queued).map_err(|e| {
+    // Block 2：队列行同时存**直连帧**与**跨跳信封**。
+    // 只用直连帧的话，没有直连链路时（现场：手机—Windows—Mac）这一行永远补发不出去；
+    // 信封必须原样保存 —— 重新签名/加密会换 `message_id`，对端就会当成另一条消息
+    // （重复入库 + 重复 ACK）。两份的取舍见 `OutboxPayload` 的注释。
+    let outbox_payload = crate::network::transport::OutboxPayload {
+        direct: queued,
+        relay: Some(env.clone()),
+    };
+    let payload = serde_json::to_string(&outbox_payload).map_err(|e| {
         crate::error_codes::coded(
             crate::error_codes::SEND_LOCAL_WRITE_FAILED,
             format!("本机没能编码这条消息：{e}"),

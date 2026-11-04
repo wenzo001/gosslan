@@ -1,6 +1,136 @@
 // 单聊 / 群聊离线队列的补发：**只补发不删行**，收到 Ack / GroupAck 才删对应行。
 // 从 transport.rs 搬出：`include!` 回同一模块 ⇒ 模块路径、可见性、测试全名一字不变。
 
+/// outbox 行载荷（Block 2）：同一行里同时存**直连帧**与**跨跳信封**。
+///
+/// 为什么不是一个 `Message`（两条路径的要求是冲突的）：
+/// - 直连补发要 `reseal_for_send`：对端换过身份时用**当前**公钥重封，`ChatMessage`
+///   的 `msg_id` 是显式字段 ⇒ 密文变了但 id 不变，对端仍按 id 幂等；
+/// - 跨跳补发必须**原样重发签名信封**：`message_id = sha256(sender + nonce + payload)`，
+///   一旦重新签名/重新加密，id 就变了 ⇒ 对端会把它当成**另一条消息**（重复入库 + 重复 ACK）。
+///
+/// 所以两份都要留。老版本写的裸 `Message` 行仍能解析（见 [`parse_outbox_payload`]），
+/// 只是那类行没有可信赖的信封，跨跳补发不猜、不重建（重建就是换 id）。
+#[derive(serde::Serialize, serde::Deserialize)]
+pub struct OutboxPayload {
+    pub direct: Message,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub relay: Option<GossipEnvelope>,
+}
+
+/// 解析 outbox 载荷：新形状（`{direct, relay}`）优先，老行（裸 `Message`）回落。
+pub fn parse_outbox_payload(payload: &str) -> Option<OutboxPayload> {
+    if let Ok(v2) = serde_json::from_str::<OutboxPayload>(payload) {
+        return Some(v2);
+    }
+    serde_json::from_str::<Message>(payload)
+        .ok()
+        .map(|direct| OutboxPayload {
+            direct,
+            relay: None,
+        })
+}
+
+/// 跨跳补发（Block 2）：**只对没有直连链路的 peer**，把 outbox 里存的那份签名信封
+/// 原样交给 `broadcast_gossip`，由网格层按信封的 `target` 定向投递。
+///
+/// 调度口径（用户定的"15s×8"）：由 `spawn_outbox_retrier` 每
+/// `OUTBOX_RELAY_INTERVAL_SECS`(15s) 驱动一轮；120s 的
+/// `OUTBOX_FAIL_DEADLINE_MS` 恰好容纳 8 轮。**同一个 peer 的并发上限是 1** ——
+/// 驱动它的是一条顺序循环（不 spawn 子任务），天然不会对同一行并发重投。
+///
+/// 幂等性（验收点）：信封含 `nonce`，原样重发 ⇒ `message_id` 不变 ⇒ 对端
+/// `gossip.is_new()` 判重 ⇒ **不重复入库**；重复副本被丢时也不会再发一次 ACK，
+/// 而首份的 ACK 已经让发送方删掉了这一行。
+///
+/// 直连路径（`flush_outbox`，5s）一行不动：有链路就走那边，这条路只补"永远等不到
+/// 直连"的那一类 peer（现场 RC-3：无直连时 send_message 只广播一次，之后没人再试）。
+pub async fn flush_outbox_via_relay(state: &AppState, peer_id: &str) {
+    if state.has_link(peer_id).await {
+        return; // 直连路径已经在补，别让两条路径对同一行同时施压
+    }
+    let pending = {
+        let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
+        db::list_outbox(&dbc, peer_id)
+    };
+    let pending = match pending {
+        Ok(v) => v,
+        Err(e) => {
+            state.logger.error(
+                "outbox",
+                format!("code=OUTBOX_RELAY_READ_FAILED peer={peer_id} err={e} —— 本轮跨跳补发跳过"),
+            );
+            return;
+        }
+    };
+    let peer_features = state
+        .peer_content_features
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .get(peer_id)
+        .copied();
+    for (id, msg_id, payload) in pending {
+        let parsed = match parse_outbox_payload(&payload) {
+            Some(p) => p,
+            None => {
+                // 与直连路径同一口径：坏载荷不删行，交给清扫器落终态（行还在 = 可见）
+                state.logger.error(
+                    "outbox",
+                    format!(
+                        "code=OUTBOX_PAYLOAD_CORRUPT peer={peer_id} outbox_id={id} \
+                         —— 保留行，等清扫器落终态"
+                    ),
+                );
+                continue;
+            }
+        };
+        let Some(envelope) = parsed.relay else {
+            // 老队列行只有直连帧：**不重建信封**（重建会换 message_id ⇒ 对端重复入库）。
+            if log_throttled("outbox_relay_no_envelope", 30_000) {
+                state.logger.warn(
+                    "outbox",
+                    format!(
+                        "code=OUTBOX_RELAY_NO_ENVELOPE peer={peer_id} msg_id={msg_id} outbox_id={id} \
+                         —— 该行没有跨跳信封（老版本入队），只能等直连"
+                    ),
+                );
+            }
+            continue;
+        };
+        // 能力协商与直连同一判据：Hold 就留着等握手；Unsupported 不硬发，交给清扫器落终态。
+        let (kind, extra_required) = {
+            let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
+            db::message_gating(&dbc, &msg_id).unwrap_or_default()
+        };
+        match crate::protocol::deferred_send_decision_extra(&kind, peer_features, extra_required) {
+            crate::protocol::DeferredSend::Hold => {
+                if log_throttled("outbox_relay_capability_hold", 30_000) {
+                    state.logger.info(
+                        "outbox",
+                        format!(
+                            "code=OUTBOX_RELAY_HOLD peer={peer_id} msg_id={msg_id} \
+                             reason=capability_pending —— 保留队列行，等对端握手"
+                        ),
+                    );
+                }
+                continue;
+            }
+            crate::protocol::DeferredSend::Unsupported => continue,
+            crate::protocol::DeferredSend::Send => {}
+        }
+        broadcast_gossip(state, envelope).await;
+        // 一行读数：跨跳到底试过几次、试的哪条（今天缺的就是这个）
+        state.logger.info(
+            "outbox",
+            format!(
+                "code=OUTBOX_RELAY_SENT peer={peer_id} msg_id={msg_id} outbox_id={id} \
+                 —— 无直连链路，经网格定向重投（信封原样，message_id 不变）"
+            ),
+        );
+    }
+}
+
+
 /// 补发离线队列中的所有消息。
 ///
 /// 注意：这里**只补发、不删除**——outbox 行仅在收到对方 `Ack`（真正确认送达）时删除。
@@ -39,14 +169,14 @@ pub async fn flush_outbox(state: &AppState, peer_id: &str) {
             let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
             db::message_gating(&dbc, &msg_id).unwrap_or_default()
         };
-        let msg = match serde_json::from_str::<Message>(&payload) {
-            Ok(m) => m,
-            Err(e) => {
+        let msg = match parse_outbox_payload(&payload) {
+            Some(p) => p.direct,
+            None => {
                 // 坏载荷永远发不出去；不删行，交给清扫器按超时落 failed（行还在 = 可见）。
                 state.logger.error(
                     "outbox",
                     format!(
-                        "code=OUTBOX_PAYLOAD_CORRUPT peer={peer_id} outbox_id={id} err={e} \
+                        "code=OUTBOX_PAYLOAD_CORRUPT peer={peer_id} outbox_id={id} \
                          —— 保留行，等清扫器落终态"
                     ),
                 );

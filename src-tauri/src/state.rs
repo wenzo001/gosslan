@@ -2927,6 +2927,10 @@ impl AppState {
     pub fn spawn_outbox_retrier(state: &Arc<AppState>) -> tauri::async_runtime::JoinHandle<()> {
         let st = state.clone();
         tauri::async_runtime::spawn(async move {
+            // 跨跳补发的节拍（Block 2）。用**循环局部变量**而不是新的全局状态：
+            // 这个 worker 只有一条任务，局部变量就是它自己的时钟。
+            let mut next_relay_at =
+                tokio::time::Instant::now() + Duration::from_secs(OUTBOX_RELAY_INTERVAL_SECS);
             loop {
                 tokio::time::sleep(Duration::from_secs(OUTBOX_RETRY_SECS)).await;
                 let peers: Vec<String> = {
@@ -2946,6 +2950,41 @@ impl AppState {
                     // 与上面两条同频（5s）：队列空时只是一次 `list_outbox` 级的读，开销与
                     // `flush_outbox` 同一个量级；不能因为"怕 IO"再留一条只靠事件驱动的路。
                     crate::commands::flush_pending_files(&st, &peer).await;
+                }
+
+                // ---------------- Block 2：没有直连链路的 peer 也要补 ----------------
+                //
+                // 现场 RC-3：`send_message` 在无直连时只 `broadcast_gossip` **一次**；
+                // 之后上面这段只遍历 `links`（直连对端），纯中继好友永远补不到，
+                // 120s 后就被清扫器判死。这里按 outbox 行反查 peer（不再依赖 links），
+                // 每 15s 一轮、只对**当前确实没有直连**的 peer 走网格定向重投。
+                //
+                // 为什么用局部时时钟门而不是每条消息计数：120s 的
+                // `OUTBOX_FAIL_DEADLINE_MS` 恰好容纳 8 轮（15s×8），行一超时就由清扫器
+                // 落终态；另存计数只会与那条时间线打架。
+                //
+                // 同一 peer 并发上限 = 1：这是一条顺序循环，`await` 完一个 peer 才下一个，
+                // 不 spawn 子任务 —— 跨跳重投不会叠在同一行上。
+                if tokio::time::Instant::now() >= next_relay_at {
+                    next_relay_at = tokio::time::Instant::now()
+                        + Duration::from_secs(OUTBOX_RELAY_INTERVAL_SECS);
+                    let relay_peers = {
+                        let dbc = st.db.lock().unwrap_or_else(|e| e.into_inner());
+                        db::list_outbox_peers(&dbc)
+                    };
+                    match relay_peers {
+                        Ok(peers) => {
+                            for peer in peers {
+                                crate::network::transport::flush_outbox_via_relay(&st, &peer).await;
+                            }
+                        }
+                        Err(e) => st.logger.error(
+                            "outbox",
+                            format!(
+                                "code=OUTBOX_RELAY_LIST_FAILED err={e} —— 本轮跨跳补发跳过（不猜 peer）"
+                            ),
+                        ),
+                    }
                 }
             }
         })
@@ -3135,6 +3174,14 @@ const DB_HOLD_REPORT_SECS: u64 = 60;
 
 /// 离线队列重放周期（秒），与心跳同量级；A-17。
 const OUTBOX_RETRY_SECS: u64 = 5;
+
+/// 跨跳补发（Block 2）的间隔：15s 一轮，120s 判死窗口里恰好 8 轮。
+///
+/// 为什么不是更短：每一轮都会 `broadcast_gossip`，三节点拓扑下即"发给所有邻居"；
+/// 5s 一轮等于把一次重投放大成 24 次广播 —— 这正是要避开的广播风暴。
+/// 为什么不是更长：120s 内少于 4 轮时，一次丢包就会让"在线但直连不通"的朋友
+/// 错过整个窗口（现场那种网络里丢包是常态）。
+const OUTBOX_RELAY_INTERVAL_SECS: u64 = 15;
 
 /// 运行态快照周期（秒）。5 分钟一行，日志轮转上界（512 KiB）下可保留数天趋势。
 const RUNTIME_DIAG_SECS: u64 = 300;
