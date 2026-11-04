@@ -618,14 +618,34 @@ pub fn group_file_recipient_statuses(conn: &Connection, transfer_id: &str) -> Re
 /// 群文件 ACK 的**写入口**：把该成员这一格落成终态（`completed` / `failed`）。
 ///
 /// 调用方（`transport/group_file.rs::apply_group_file_ack_db`）已先过幂等闸门：
-/// `completed` 不许被迟到的失败 ACK 降级。这里**故意不做状态门** —— 真实 ACK 必须能
-/// 覆盖 `cancelled` / `failed`（它们是"没送到"的旧结论，Ack 是迟到但确凿的反证）。
+/// `completed` 不许被迟到的失败 ACK 降级。
+///
+/// `cancelled` 是**用户按下的硬终态**（决定 1，2026-11-04）：成功 ACK 也不许把它
+/// 翻成 `completed`，否则「我按了取消」会被一条迟到的链路回执静默推翻。
+/// 但事实不许丢 —— `cancelled` 行收到成功 ACK 时，把「对方后来仍收到」写进**既有列**：
+/// `progress = 1.0`（已收完）+ `updated_at = 收到时刻`（何时收到），状态保持 `cancelled`。
+/// 界面据此可在「已取消」行附注证据，不需要新表/新列。
+/// 失败 ACK 在 `cancelled` 行上不改任何东西（已经取消，迟到的失败没有新信息）。
+/// 其余状态保持旧口径：成功 ⇒ completed/1.0，失败 ⇒ failed/0.0。
 pub fn settle_group_file_recipient_ack(
     conn: &Connection,
     transfer_id: &str,
     recipient_id: &str,
     success: bool,
 ) -> Result<()> {
+    let current = group_file_recipient_status(conn, transfer_id, recipient_id)?;
+    if current.as_deref() == Some("cancelled") {
+        if success {
+            // 只落证据：状态一个字不动；`status = 'cancelled'` 再钉一遍，
+            // 让这条写自己就说明"我不会改写非取消行"。
+            conn.execute(
+                "UPDATE group_file_recipients SET progress = 1.0, updated_at = ?3
+                 WHERE transfer_id = ?1 AND recipient_id = ?2 AND status = 'cancelled'",
+                params![transfer_id, recipient_id, now_ms()],
+            )?;
+        }
+        return Ok(());
+    }
     let (status, progress) = if success {
         ("completed", 1.0)
     } else {
@@ -1060,15 +1080,25 @@ mod group_file_delivery_tests {
         .unwrap()
     }
 
-    /// Ack 写入口只有两种终态：成功 ⇒ completed/1.0，失败 ⇒ failed/0.0。
+    fn recipient_updated_at(conn: &Connection, tid: &str, rid: &str) -> i64 {
+        conn.query_row(
+            "SELECT updated_at FROM group_file_recipients WHERE transfer_id = ?1 AND recipient_id = ?2",
+            params![tid, rid],
+            |r| r.get(0),
+        )
+        .unwrap()
+    }
+
+    /// Ack 写入口的状态矩阵（决定 1，2026-11-04）：用户按下的取消是硬终态，
+    /// 但「对方后来仍收到」是事实，必须落在既有列上留证据。
     ///
-    /// 这里**故意不设状态门**：真实 ACK 是"迟到但确凿"的反证，必须能覆盖
-    /// cancelled/failed 的旧结论。唯一的例外（completed 不许被失败 ACK 降级）在
-    /// 传输层幂等闸门里，由 `completed_guard_reads_recipient_status_in_the_handler`
-    /// 与 `a_completed_row_is_never_downgraded` 那组用例钉住。
+    /// 旧口径（本用例前身 `ack_write_entrance_overwrites_every_status_including_cancelled`）
+    /// 把 cancelled 一起落成 completed —— 那是"取消被迟到 ACK 静默翻案"的来源。
+    /// 非 cancelled 的格子必须保持旧口径，防止保护写宽成一刀切拒写。
     #[test]
-    fn ack_write_entrance_overwrites_every_status_including_cancelled() {
-        for prior in ["pending", "sending", "completed", "failed", "cancelled"] {
+    fn ack_write_entrance_keeps_cancel_but_records_the_late_success() {
+        // 反例：非 cancelled 的行收到成功 Ack 仍正常完成（不许一刀切拒写）。
+        for prior in ["pending", "sending", "completed", "failed"] {
             let conn = mem();
             seed(&conn, "t", "p", prior);
             settle_group_file_recipient_ack(&conn, "t", "p", true).unwrap();
@@ -1083,11 +1113,50 @@ mod group_file_delivery_tests {
             );
         }
 
+        // 反例：非 cancelled 的行收到失败 Ack 仍正常落 failed。
         let conn = mem();
         seed(&conn, "t", "p", "sending");
         settle_group_file_recipient_ack(&conn, "t", "p", false).unwrap();
         assert_eq!(recipient_status(&conn, "t", "p"), "failed");
         assert_eq!(recipient_progress(&conn, "t", "p"), 0.0);
+
+        // cancelled + 成功 Ack：状态不许翻案，证据（进度 + 何时收到）必须可读。
+        let conn = mem();
+        seed(&conn, "t", "p", "cancelled");
+        conn.execute(
+            "UPDATE group_file_recipients SET updated_at = 1
+              WHERE transfer_id = 't' AND recipient_id = 'p'",
+            [],
+        )
+        .unwrap();
+        settle_group_file_recipient_ack(&conn, "t", "p", true).unwrap();
+        assert_eq!(
+            recipient_status(&conn, "t", "p"),
+            "cancelled",
+            "用户按下的取消不许被迟到 ACK 静默翻案"
+        );
+        assert!(
+            recipient_progress(&conn, "t", "p") > 0.99,
+            "对方后来仍收到：证据落在既有 progress 列"
+        );
+        assert!(
+            recipient_updated_at(&conn, "t", "p") > 1,
+            "证据要能回答「何时收到」⇒ updated_at 必须被刷新"
+        );
+
+        // cancelled + 失败 Ack：既已取消，迟到的失败没有新信息 ⇒ 一个字都不改。
+        let conn = mem();
+        seed(&conn, "t", "p", "cancelled");
+        conn.execute(
+            "UPDATE group_file_recipients SET updated_at = 1
+              WHERE transfer_id = 't' AND recipient_id = 'p'",
+            [],
+        )
+        .unwrap();
+        settle_group_file_recipient_ack(&conn, "t", "p", false).unwrap();
+        assert_eq!(recipient_status(&conn, "t", "p"), "cancelled");
+        assert_eq!(recipient_progress(&conn, "t", "p"), 0.0);
+        assert_eq!(recipient_updated_at(&conn, "t", "p"), 1);
     }
 
     /// P2-01：只有**真的卡住**的 sending 行才会被回 pending，新鲜行原样不动。
