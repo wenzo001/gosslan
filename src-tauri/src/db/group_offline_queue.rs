@@ -101,6 +101,9 @@ const GROUP_ACK_MESSAGE_WRITE_BLOCKED: [&str; 5] = [
 /// "整条重发"的误判（本端以为没送出去，其实他收到了）。
 const GROUP_ACK_TOMBSTONE_KEEP: [&str; 3] = ["cancelled", "partial_cancelled", "failed"];
 
+/// 群取消改写消息行时不许覆盖的状态：已撤回 / 已读比"取消剩余成员"更权威。
+const GROUP_CANCEL_MESSAGE_WRITE_BLOCKED: [&str; 2] = ["recalled", "read"];
+
 /// GroupAck 的处理结论：调用方据此决定 emit 哪个事件。
 #[derive(Debug, PartialEq, Eq)]
 pub enum GroupAckOutcome {
@@ -257,11 +260,12 @@ pub fn cancel_queued_group_message(
     )?;
     // 群消息例外：delivered 只代表“至少一人已收”，允许被 partial_cancelled 覆盖；
     // 但 recalled/read 仍然不能被取消改写。
-    tx.execute(
+    let sql = format!(
         "UPDATE messages SET status = ?2
-          WHERE msg_id = ?1 AND status NOT IN ('recalled', 'read')",
-        params![msg_id, next_status],
-    )?;
+          WHERE msg_id = ?1 AND {}",
+        sql_not_in("status", &GROUP_CANCEL_MESSAGE_WRITE_BLOCKED)
+    );
+    tx.execute(&sql, params![msg_id, next_status])?;
     tx.commit()?;
     let cancelled_after = cancelled + pending;
     Ok(if delivered > 0 {

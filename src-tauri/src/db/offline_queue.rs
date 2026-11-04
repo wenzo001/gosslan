@@ -145,12 +145,15 @@ pub fn fail_pending_messages_for_peer(conn: &Connection, peer_id: &str) -> Resul
     tx.execute("DELETE FROM outbox WHERE peer_id = ?1", params![peer_id])?;
     let mut changed = Vec::new();
     for msg_id in msg_ids {
-        let n = tx.execute(
+        // 集合与 `set_message_status` 同一份：已送达 / 已读 / 已撤回 / 已取消 /
+        // 部分取消 / 已失败的行只清队列，不改状态。
+        let sql = format!(
             "UPDATE messages SET status = 'failed', fail_code = ?2
               WHERE msg_id = ?1
-                AND status NOT IN ('delivered', 'read', 'recalled', 'cancelled', 'partial_cancelled', 'failed')",
-            params![msg_id, crate::error_codes::SEND_PEER_DELETED],
-        )?;
+                AND {}",
+            sql_not_in("status", &LATE_WRITE_BLOCKED)
+        );
+        let n = tx.execute(&sql, params![msg_id, crate::error_codes::SEND_PEER_DELETED])?;
         if n > 0 {
             changed.push(msg_id);
         }
