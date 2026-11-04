@@ -45,6 +45,138 @@ fn note_interval(notes: u32) -> i64 {
 /// 放在编译期断言（clippy 也不许在测试里写常量断言）。
 const _: () = assert!(SLOW_NOTE_INTERVAL_MS > MIN_NOTE_INTERVAL_MS);
 
+/// 渲染层心跳停滞这么久 ⇒ 允许自愈（`webview.reload()`）。
+///
+/// 为什么是 20 s：本仓已知的合法慢操作上界是 ~3.3 s（`SLOW_OP cmd=updater_check ms=3261`，
+/// 见 11-04 那台的现场日志），20 s ≈ 6× 上界。再小就会把"一次慢更新检查"当成停摆；
+/// 再大则用户已经在看着白屏等太久了。3 s（写现场）与 10 s（系统通知）两档不动。
+pub(crate) const UI_STALL_RELOAD_MS: i64 = 20_000;
+
+/// 聚焦后这么久仍没有**新**心跳 ⇒ 判"聚焦空档停摆"（G1'）。
+///
+/// 为什么需要它：窗口收进托盘后前端会暂停心跳并报 `active=false`，`active` 门（G1）
+/// 因此不判停摆；可用户重新显示窗口时渲染层可能已经是死的（"一显示就白屏"）。
+/// 5 s 是"显示之后连一次心跳都补不上"的容忍窗口，短于 20 s 的动作阈值 ⇒
+/// 刚显示瞬间的空档只会留下取证行，不会触发 reload（见 [`recover_decision`]）。
+pub(crate) const FOCUS_GAP_MS: i64 = 5_000;
+
+/// 自愈限流：窗口内最多触发这么多次（重载与重启共用这一份预算）。
+///
+/// 10 分钟 2 次：一次停摆 = reload + verify，第二次仍失败才升级；若同一台机器
+/// 10 分钟内已经重载过两次而界面还是白的，再自动重载只会把用户的草稿/滚动位置
+/// 反复清掉 —— 那时该停下来让人看见现场，而不是无限循环。
+pub(crate) const RECOVER_WINDOW_MS: i64 = 600_000;
+pub(crate) const RECOVER_MAX_PER_WINDOW: usize = 2;
+
+/// 主线程也停摆时，比渲染层阈值再多等这么久才直接走进程重启（G2）。
+///
+/// reload 依赖事件循环，主线程自己卡住时 reload 排不进去；多等 10 s 是给
+/// "主线程只是慢一下、马上恢复"的最后机会。
+pub(crate) const MAIN_STALL_ESCALATE_MS: i64 = UI_STALL_RELOAD_MS + 10_000;
+
+/// 一次自愈判定要看的全部读数。
+///
+/// ⚠️ **不许加版本字段**（用户 2026-11-04 的跨机器口径）：5.16.74 那台观测到停摆
+/// 且不自愈，5.17.36 那台未验证 —— 同一套判定必须对两者都成立。加版本白名单
+/// 等于把一台机器排除在保护之外，`recovery_decision_inputs_carry_no_version` 会红。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct RecoverInput {
+    /// 渲染层心跳已停滞多久（ms）。
+    pub stale_ms: i64,
+    /// 前端最后一次上报的"可见且应发心跳"（G1 的输入）。
+    pub active: bool,
+    /// 主窗口当前是否处于聚焦态。
+    pub focused: bool,
+    /// 距最近一次 `Focused(true)` 多久（ms）。
+    pub since_focus_ms: i64,
+    /// 聚焦之后有没有来过**新**心跳。
+    pub hb_since_focus: bool,
+    /// 主线程探针已停滞多久（ms）。
+    pub main_stall_ms: i64,
+    /// `GOSSLAN_UI_AUTORECOVER` 是否允许动作（off ⇒ 只取证）。
+    pub enabled: bool,
+    /// 限流窗口内已经动作过几次。
+    pub reloads_in_window: usize,
+}
+
+/// 这一跳该做什么（纯判定，虚拟输入可直接构造）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum RecoverDecision {
+    /// 不需要动作：健康、被 G1 豁免、还没到阈值、或主线程停摆但还没到升级点。
+    None,
+    /// 聚焦空档但停得还不够久 ⇒ 只写 `code=UI_RENDERER_STALL_FOCUS_GAP`，不 reload。
+    FocusGap,
+    /// 真停摆 ⇒ 重载 main webview（由调用方在 verify 窗口内等心跳）。
+    Reload,
+    /// 主线程也停摆且已过升级点 ⇒ 重载排不进去，直接请求进程重启。
+    Restart,
+    /// 限流窗口内次数用尽 ⇒ 只写 `code=UI_AUTO_RECOVER_BLOCKED`。
+    Blocked,
+}
+
+/// 自愈决策。顺序是刻意的：
+///
+/// 1. G1（`active=false` 且不是聚焦空档）⇒ 不判：最小化/托盘隐藏时前端本就暂停心跳；
+/// 2. G1'（聚焦后 5 s 无新心跳）⇒ 停摆，但 `stale < 20 s` 只取证不动作；
+/// 3. 开关关闭 ⇒ 不动作（取证行照写）；
+/// 4. 未到 20 s ⇒ 交给 3 s/10 s 两档继续诊断/通知；
+/// 5. 限流 ⇒ `Blocked`；
+/// 6. G2（主线程也停摆）⇒ reload 排不进事件循环，未到升级点就等，到了直接 `Restart`；
+/// 7. 其余 ⇒ `Reload`。
+pub(crate) fn recover_decision(i: &RecoverInput) -> RecoverDecision {
+    // G1' 的"聚焦空档"：窗口已聚焦 ≥5 s，且聚焦之后**一次新心跳都没有**。
+    let focus_gap = !i.active && i.focused && i.since_focus_ms >= FOCUS_GAP_MS && !i.hb_since_focus;
+    let stalled = (i.active && i.stale_ms >= RENDERER_STALE_MS) || focus_gap;
+    if !stalled {
+        return RecoverDecision::None;
+    }
+    if focus_gap && i.stale_ms < UI_STALL_RELOAD_MS {
+        return RecoverDecision::FocusGap;
+    }
+    if !i.enabled || i.stale_ms < UI_STALL_RELOAD_MS {
+        return RecoverDecision::None;
+    }
+    if i.reloads_in_window >= RECOVER_MAX_PER_WINDOW {
+        return RecoverDecision::Blocked;
+    }
+    if i.main_stall_ms >= MAIN_STALL_NOTE_MS {
+        return if i.main_stall_ms >= MAIN_STALL_ESCALATE_MS {
+            RecoverDecision::Restart
+        } else {
+            RecoverDecision::None
+        };
+    }
+    RecoverDecision::Reload
+}
+
+/// `GOSSLAN_UI_AUTORECOVER` 的解析（纯函数，便于钉死边界）。
+///
+/// 只有显式的关闭词才算关：未设置 / 空串 / 其它值一律按开启处理 —— 回退开关是给
+/// "现场要我立刻停手"用的，不该因为拼错一个值就静默失效。
+pub(crate) fn parse_autorecover(raw: Option<&str>) -> bool {
+    match raw.map(|s| s.trim().to_ascii_lowercase()) {
+        None => true,
+        Some(s) if s.is_empty() => true,
+        Some(s) => !matches!(s.as_str(), "off" | "0" | "false" | "no" | "disabled"),
+    }
+}
+
+fn ui_autorecover_enabled() -> bool {
+    parse_autorecover(std::env::var("GOSSLAN_UI_AUTORECOVER").ok().as_deref())
+}
+
+/// 限流窗口内还剩几次（顺手淘汰过期记录）。
+fn reloads_in_window(recent: &mut std::collections::VecDeque<i64>, now: i64) -> usize {
+    while let Some(&t) = recent.front() {
+        if now - t >= RECOVER_WINDOW_MS {
+            recent.pop_front();
+        } else {
+            break;
+        }
+    }
+    recent.len()
+}
+
 /// 墙钟与单调时钟差多少毫秒就认定"这一跳不能用进程内的停顿时长解释"。
 ///
 /// 为什么是 5 s：看门狗每秒一跳，正常调度抖动是毫秒级；NTP 是缓慢 slew，不会在一个
@@ -102,6 +234,18 @@ fn run<R: tauri::Runtime>(app: tauri::AppHandle<R>, state: Arc<crate::state::App
     let mut mono_prev = Instant::now();
     // 唤醒被检出时把渲染层"停滞起点"抬到此刻：睡眠那几个小时不该算成界面卡死。
     let mut hb_floor = 0i64;
+    // 自愈开关：关掉时只留一行"为什么没动作"，取证逻辑（3 s/10 s 两档）照旧。
+    let autorecover_enabled = ui_autorecover_enabled();
+    if !autorecover_enabled {
+        crate::logging::crash_note(
+            ">>> code=UI_AUTORECOVER_DISABLED reason=env GOSSLAN_UI_AUTORECOVER=off \
+             （只取证，不 reload/重启）",
+        );
+    }
+    // 最近一次自愈动作的时刻（限流窗口 10 分钟 ≤2 次）。
+    let mut recent_recoveries: std::collections::VecDeque<i64> = std::collections::VecDeque::new();
+    // (episode 开始, 本轮已写过的决策码)：避免同一轮停摆每秒刷一行。
+    let mut recover_episode: Option<(i64, &'static str)> = None;
 
     loop {
         let now = now_ms();
@@ -125,6 +269,8 @@ fn run<R: tauri::Runtime>(app: tauri::AppHandle<R>, state: Arc<crate::state::App
             // 也不在豁免时刻再写一条 HANG/HANG_END（否则豁免本身又会污染现场）。
             main_episode = None;
             renderer_episode = None;
+            // 睡眠那一段不算停摆，自愈 episode 也一起丢弃（醒来后重新按读数起算）。
+            recover_episode = None;
             hb_floor = now;
             #[cfg(desktop)]
             crate::tray::set_watchdog_tooltip(&app, None);
@@ -225,6 +371,74 @@ fn run<R: tauri::Runtime>(app: tauri::AppHandle<R>, state: Arc<crate::state::App
                 note_end("ui_renderer", now - start);
                 #[cfg(desktop)]
                 crate::tray::set_watchdog_tooltip(&app, None);
+            }
+        }
+
+        // ---- 渲染层自愈：判定与取证（本笔只写码，动作在下一笔）----
+        //
+        // 判据只看心跳 / 主线程探针 / 聚焦读数，不看版本号（见 [`RecoverInput`]）：
+        // 5.16.74 与之后的版本走同一套逻辑。
+        if hb > 0 {
+            let hb_effective = if hb_floor > 0 { hb.max(hb_floor) } else { hb };
+            let stale = now - hb_effective;
+            let focused = state.ui_last_focus_focused.load(Ordering::SeqCst);
+            let focus_at = state.ui_last_focus_ms.load(Ordering::SeqCst);
+            let since_focus = if focus_at > 0 {
+                now - focus_at
+            } else {
+                i64::MAX
+            };
+            // 聚焦之后有没有**新**心跳：心跳时间戳晚于聚焦事件。
+            let hb_since_focus = focus_at > 0 && hb_effective > focus_at;
+            let in_window = reloads_in_window(&mut recent_recoveries, now);
+            let decision = recover_decision(&RecoverInput {
+                stale_ms: stale,
+                active,
+                focused,
+                since_focus_ms: since_focus,
+                hb_since_focus,
+                main_stall_ms: main_stall,
+                enabled: autorecover_enabled,
+                reloads_in_window: in_window,
+            });
+            let code = match decision {
+                RecoverDecision::None => None,
+                RecoverDecision::FocusGap => Some("focus_gap"),
+                RecoverDecision::Reload | RecoverDecision::Restart => Some("stall"),
+                RecoverDecision::Blocked => Some("blocked"),
+            };
+            match code {
+                None => recover_episode = None,
+                Some(c) => {
+                    // 同一轮停摆只写一次对应的码；FocusGap 升级成 Reload 时换码再写一行。
+                    if recover_episode.map(|(_, wrote)| wrote) != Some(c) {
+                        recover_episode = Some((now - stale, c));
+                        match c {
+                            "focus_gap" => crate::logging::crash_note(&format!(
+                                ">>> code=UI_RENDERER_STALL_FOCUS_GAP stale_ms={stale} \
+                                 since_focus_ms={since_focus} main_stall_ms={main_stall} \
+                                 hb_age_ms={} focused=true",
+                                now - hb
+                            )),
+                            "stall" => crate::logging::crash_note(&format!(
+                                ">>> code=UI_RENDERER_STALL stale_ms={stale} \
+                                 main_stall_ms={main_stall} main_healthy={} focused={focused} \
+                                 since_focus_ms={since_focus} plan={} in_window={in_window}",
+                                main_stall < MAIN_STALL_NOTE_MS,
+                                if decision == RecoverDecision::Restart {
+                                    "restart"
+                                } else {
+                                    "reload"
+                                }
+                            )),
+                            _ => crate::logging::crash_note(&format!(
+                                ">>> code=UI_AUTO_RECOVER_BLOCKED reason=rate_limit \
+                                 recent={in_window} window_s={} stale_ms={stale}",
+                                RECOVER_WINDOW_MS / 1000
+                            )),
+                        }
+                    }
+                }
             }
         }
 
@@ -402,6 +616,193 @@ mod tests {
         );
         // 反控：墙钟回拨 71s（少走）也要静默并重定基线，否则下一次读数会是负数/乱序。
         assert_eq!(tick_verdict(-70_000, 1_000), TickVerdict::Skip);
+    }
+
+    /// 自愈判定的边界（用户 2026-11-04 定稿）：N=20s、G1、G1'、G2、限流、开关。
+    /// 每一组都必须有"反例"，否则"没触发"和"压根没判"分不开。
+    #[test]
+    fn recover_decision_covers_g1_g1p_g2_and_the_rate_limit() {
+        let base = RecoverInput {
+            stale_ms: 500,
+            active: true,
+            focused: true,
+            since_focus_ms: 100,
+            hb_since_focus: true,
+            main_stall_ms: 0,
+            enabled: true,
+            reloads_in_window: 0,
+        };
+        // 健康，以及 3 s 诊断档：都不动作（3 s / 10 s 两档保持原样）。
+        assert_eq!(recover_decision(&base), RecoverDecision::None);
+        assert_eq!(
+            recover_decision(&RecoverInput {
+                stale_ms: RENDERER_STALE_MS,
+                ..base
+            }),
+            RecoverDecision::None,
+            "3 s 只该写现场，不该 reload"
+        );
+        // 真停摆 20 s：主线程健康 ⇒ reload。
+        assert_eq!(
+            recover_decision(&RecoverInput {
+                stale_ms: UI_STALL_RELOAD_MS,
+                ..base
+            }),
+            RecoverDecision::Reload
+        );
+        // 反例：开关关掉 ⇒ 不动作（取证行仍由调用方写）。
+        assert_eq!(
+            recover_decision(&RecoverInput {
+                stale_ms: UI_STALL_RELOAD_MS,
+                enabled: false,
+                ..base
+            }),
+            RecoverDecision::None,
+            "GOSSLAN_UI_AUTORECOVER=off 必须真的不动作"
+        );
+        // 反例：限流窗口内已 2 次 ⇒ Blocked（不许无限重载）。
+        assert_eq!(
+            recover_decision(&RecoverInput {
+                stale_ms: UI_STALL_RELOAD_MS,
+                reloads_in_window: RECOVER_MAX_PER_WINDOW,
+                ..base
+            }),
+            RecoverDecision::Blocked
+        );
+        // G1：窗口隐藏（前端暂停心跳、active=false、未聚焦）⇒ 不判，哪怕 stale 很大。
+        assert_eq!(
+            recover_decision(&RecoverInput {
+                stale_ms: 3_600_000,
+                active: false,
+                focused: false,
+                hb_since_focus: false,
+                ..base
+            }),
+            RecoverDecision::None,
+            "托盘隐藏/最小化被节流不是停摆"
+        );
+        // G1'：聚焦后 5 s 仍无新心跳，但 stale < 20 s ⇒ 只取证（防"刚显示瞬间"误伤）。
+        assert_eq!(
+            recover_decision(&RecoverInput {
+                stale_ms: 6_000,
+                active: false,
+                focused: true,
+                since_focus_ms: FOCUS_GAP_MS,
+                hb_since_focus: false,
+                ..base
+            }),
+            RecoverDecision::FocusGap
+        );
+        // 反例：同样的聚焦空档，但 stale ≥ 20 s（托盘藏了很久，一显示就白屏）⇒ reload。
+        assert_eq!(
+            recover_decision(&RecoverInput {
+                stale_ms: 25_000,
+                active: false,
+                focused: true,
+                since_focus_ms: FOCUS_GAP_MS,
+                hb_since_focus: false,
+                ..base
+            }),
+            RecoverDecision::Reload
+        );
+        // 反例：聚焦后心跳补上了 ⇒ 空档结束，不判。
+        assert_eq!(
+            recover_decision(&RecoverInput {
+                stale_ms: 6_000,
+                active: false,
+                focused: true,
+                since_focus_ms: FOCUS_GAP_MS,
+                hb_since_focus: true,
+                ..base
+            }),
+            RecoverDecision::None
+        );
+        // G2：主线程也停摆 ⇒ reload 排不进事件循环，未到升级点先等。
+        assert_eq!(
+            recover_decision(&RecoverInput {
+                stale_ms: 25_000,
+                main_stall_ms: 25_000,
+                ..base
+            }),
+            RecoverDecision::None
+        );
+        // 到了升级点 ⇒ 直接重启。
+        assert_eq!(
+            recover_decision(&RecoverInput {
+                stale_ms: 40_000,
+                main_stall_ms: MAIN_STALL_ESCALATE_MS,
+                ..base
+            }),
+            RecoverDecision::Restart
+        );
+        // 反例：重启同样吃限流预算。
+        assert_eq!(
+            recover_decision(&RecoverInput {
+                stale_ms: 40_000,
+                main_stall_ms: MAIN_STALL_ESCALATE_MS,
+                reloads_in_window: RECOVER_MAX_PER_WINDOW,
+                ..base
+            }),
+            RecoverDecision::Blocked
+        );
+    }
+
+    /// 回退开关的解析：只有显式关闭词才算关（拼错不该静默失效）。
+    #[test]
+    fn autorecover_env_switch_only_turns_off_on_explicit_words() {
+        for off in ["off", "OFF", " 0 ", "false", "no", "disabled"] {
+            assert!(!parse_autorecover(Some(off)), "「{off}」应当关闭自愈");
+        }
+        for on in [
+            None,
+            Some(""),
+            Some("on"),
+            Some("1"),
+            Some("yes"),
+            Some("garbage"),
+        ] {
+            assert!(parse_autorecover(on), "{on:?} 应当保持开启");
+        }
+    }
+
+    /// 跨机器/跨版本口径（用户 2026-11-04 的硬要求）：自愈判定的入参**不许**带版本字段。
+    ///
+    /// 5.16.74 那台观测到停摆且不自愈、5.17.36 那台未验证 —— 同一套判定必须对两者都成立。
+    /// 反例自证：往 `RecoverInput` 里加一个 `version` 字段（或版本白名单），这条立刻红。
+    #[test]
+    fn recovery_decision_inputs_carry_no_version() {
+        let src = include_str!("watchdog.rs");
+        let start = src
+            .find("struct RecoverInput")
+            .expect("找不到 RecoverInput");
+        let tail = &src[start..];
+        let end = tail.find("\n}\n").expect("RecoverInput 没有闭合") + start;
+        let block = &src[start..end];
+        // 非空转自证：真的截到了结构体（不是截到一段空片）。
+        assert!(block.contains("stale_ms"), "截到的不是 RecoverInput 本体");
+        assert!(
+            !block.to_lowercase().contains("version"),
+            "自愈判定的入参出现了 version ⇒ 跨机器/跨版本口径被破坏"
+        );
+        // 判定函数真的吃这份入参（否则上面只是检查了一段没人用的死结构）。
+        let flat: String = src.chars().filter(|c| !c.is_whitespace()).collect();
+        assert!(
+            flat.contains("fnrecover_decision(i:&RecoverInput)->RecoverDecision"),
+            "判定函数签名变了或不再吃 RecoverInput"
+        );
+        // 接线守卫：看门狗主循环必须真的调它，否则判定再对也不会生效。
+        assert!(
+            flat.contains("recover_decision(&RecoverInput{"),
+            "run() 没有接上 recover_decision ⇒ 自愈判定是空转"
+        );
+        for needle in [
+            "code=UI_AUTORECOVER_DISABLED reason=env",
+            "code=UI_RENDERER_STALL_FOCUS_GAP",
+            "code=UI_RENDERER_STALL ",
+            "code=UI_AUTO_RECOVER_BLOCKED",
+        ] {
+            assert!(src.contains(needle), "缺了具名码 {needle}");
+        }
     }
 
     /// 阈值边界：正常调度抖动不许被当成唤醒（否则豁免会宽到盖住真死）。

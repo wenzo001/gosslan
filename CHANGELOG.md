@@ -14,6 +14,21 @@
 
 ## [Unreleased]
 
+## [5.17.47] - 2026-11-04
+
+### 内部（无用户可感知变化）
+
+- 渲染层自愈的**判定与取证**（三笔中的第一笔，本笔只写码、不动作）：心跳停滞 20s 才允许
+  自愈（本仓已知合法慢操作上界 ~3.3s 的 6 倍），3s 写现场 / 10s 系统通知两档不动。
+- 新增聚焦空档门（G1'）：窗口重新聚焦后 5s 仍无新心跳 ⇒ 判停摆，但 `stale < 20s` 时
+  只写 `code=UI_RENDERER_STALL_FOCUS_GAP`、不 reload（防"刚显示瞬间"误伤）。
+- 回退开关 `GOSSLAN_UI_AUTORECOVER=off`：启动即写一行
+  `code=UI_AUTORECOVER_DISABLED reason=env`，证明它生效过。
+- 限流：10 分钟最多 2 次自愈动作，超限写 `code=UI_AUTO_RECOVER_BLOCKED reason=rate_limit`。
+- 判定入参 `RecoverInput` **不含版本字段**（有源码判据 `recovery_decision_inputs_carry_no_version`）：
+  5.16.74 与之后的版本走同一套逻辑，不做版本白名单。用户可感知：无。
+- 回退：`git revert` 本提交（前两档取证逻辑原样保留）。
+
 ## [5.17.46] - 2026-11-04
 
 ### 内部（无用户可感知变化）
