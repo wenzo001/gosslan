@@ -68,6 +68,14 @@ const canRetry = computed(
     props.retryable === true,
 );
 
+/**
+ * 「出现动画」只在这条消息**第一次带着状态图标出现**时播一次 —— 新发出的消息此刻就是
+ * `sending`。历史消息（sent/delivered/read）随虚拟列表滚进视野时按同一份 DOM 重挂，
+ * 若也弹一次，滑动列表就会一路闪；所以这里**在挂载时快照**，之后状态怎么变都不重启
+ * （CSS 动画只随节点插入触发，改 `state` 不会重播）。
+ */
+const appear = props.state === "sending";
+
 const chat = useChatStore();
 const readerIds = computed(() => props.readerIds ?? []);
 const visibleReaders = computed(() => readerIds.value.slice(0, 3));
@@ -331,36 +339,67 @@ function readerAvatar(id: string): string | null {
     >
       <HelpCircle class="h-4 w-4" stroke-width="2.5" />
     </span>
-    <span v-else class="relative flex items-center" role="img" :title="title" :aria-label="title">
-      <!-- 状态切换给一次短促的弹入：单勾→双勾→主题色双勾是聊天里最常盯的一处，
-           硬切会让人怀疑"到底有没有送到"。 -->
-      <Transition name="receipt-swap" mode="out-in">
-        <span :key="state" class="relative flex items-center">
-          <!-- sending：单勾右下角叠一个小 spinner —— 表达"已经在发但还没到位"。
-               TG 用的是纯 spinner，但纯 spinner 在气泡上很不显眼（小 + 灰）；
-               加一个勾让用户一眼就知道这不是空状态。 -->
-          <!-- 等对端上线：**静态**时钟，不转圈。转圈是"正在发"的语言，而这条此刻
-               谁也没在发 —— 它在离线队列里等（日志里的 peer_offline(hold_7d)）。
-               仍然保留勾：内容本身是完整的，只是还没送出去。 -->
-          <template v-if="state === 'sending' && waiting">
-            <Check class="h-3.5 w-3.5 text-[var(--gosslan-text-2)]" />
-            <Clock3 class="absolute -right-1 -bottom-0.5 h-2.5 w-2.5 text-[var(--gosslan-text-2)]" />
-          </template>
-          <template v-else-if="state === 'sending'">
-            <Check class="h-3.5 w-3.5 text-[var(--gosslan-text-2)]" />
-            <Spinner class="absolute -right-1 -bottom-0.5 text-[var(--gosslan-text-2)]" size-class="h-2.5 w-2.5" decorative />
-          </template>
-          <!-- sent：单勾（灰色）—— 已经发出但还没到对方设备。我们 P2P 链路下 sent 到 delivered
-               之间几乎没有停留（写出去 = 对方收到），所以这状态通常一闪而过。 -->
-          <Check v-else-if="state === 'sent'" class="h-3.5 w-3.5 text-[var(--gosslan-text-2)]" />
-          <!-- delivered：双勾灰色 —— 对方设备已收到但还没打开看。 -->
-          <CheckCheck v-else-if="state === 'delivered'" class="h-4 w-4 text-[var(--gosslan-text-2)]" />
-          <!-- read：双勾主题色 —— 对方已读（TG 是蓝色，我们用 app 主题色）。
-               用 primary 而不是 success：绿色在深色模式下容易跟"在线"状态混淆；
-               TG 选蓝色就是为了跟"送达灰色"形成明确对比。 -->
-          <CheckCheck v-else-if="state === 'read'" class="h-4 w-4 text-[var(--gosslan-primary)]" />
+    <!-- 四种收发状态（发送中 / 等对端上线 / 已送达 / 已读）**常驻叠在同一个固定尺寸占位里**，
+         切换只做透明度交叉淡入 —— 不重建节点、不改 key、不重播缩放。
+         ⚠️ 此前这里是 `<Transition name="receipt-swap" mode="out-in"> + :key="state"`：
+         每次状态变化先把旧节点摘掉（占位宽度塌成 0 ⇒ 气泡左右跳），再挂新节点并重播
+         `scale(0.55)` 的进场动画 ⇒ 用户看到的"缩一下再弹回来"。
+         缩放只留给**第一次出现**（`appear`，随组件挂载触发一次；状态变化不会重启它）。 -->
+    <span
+      v-else
+      data-receipt
+      class="receipt-slot relative flex h-4 w-4 shrink-0 items-center justify-center"
+      :class="{ 'receipt-slot-appear': appear }"
+      role="img" :title="title" :aria-label="title"
+    >
+      <!-- sending：单勾右下角叠一个小 spinner —— 表达"已经在发但还没到位"。
+           TG 用的是纯 spinner，但纯 spinner 在气泡上很不显眼（小 + 灰）；
+           加一个勾让用户一眼就知道这不是空状态。 -->
+      <!-- 等对端上线：**静态**时钟，不转圈。转圈是"正在发"的语言，而这条此刻
+           谁也没在发 —— 它在离线队列里等（日志里的 peer_offline(hold_7d)）。
+           仍然保留勾：内容本身是完整的，只是还没送出去。 -->
+      <span
+        class="receipt-layer" :data-active="state === 'sending' && !!waiting"
+        data-receipt-state="sending-waiting" aria-hidden="true"
+      >
+        <span class="relative flex items-center">
+          <Check class="h-3.5 w-3.5 text-[var(--gosslan-text-2)]" />
+          <Clock3 class="absolute -right-1 -bottom-0.5 h-2.5 w-2.5 text-[var(--gosslan-text-2)]" />
         </span>
-      </Transition>
+      </span>
+      <span
+        class="receipt-layer" :data-active="state === 'sending' && !waiting"
+        data-receipt-state="sending" aria-hidden="true"
+      >
+        <span class="relative flex items-center">
+          <Check class="h-3.5 w-3.5 text-[var(--gosslan-text-2)]" />
+          <Spinner class="absolute -right-1 -bottom-0.5 text-[var(--gosslan-text-2)]" size-class="h-2.5 w-2.5" decorative />
+        </span>
+      </span>
+      <!-- sent：单勾（灰色）—— 已经发出但还没到对方设备。我们 P2P 链路下 sent 到 delivered
+           之间几乎没有停留（写出去 = 对方收到），所以这状态通常一闪而过。 -->
+      <span
+        class="receipt-layer" :data-active="state === 'sent'"
+        data-receipt-state="sent" aria-hidden="true"
+      >
+        <Check class="h-3.5 w-3.5 text-[var(--gosslan-text-2)]" />
+      </span>
+      <!-- delivered：双勾灰色 —— 对方设备已收到但还没打开看。 -->
+      <span
+        class="receipt-layer" :data-active="state === 'delivered'"
+        data-receipt-state="delivered" aria-hidden="true"
+      >
+        <CheckCheck class="h-4 w-4 text-[var(--gosslan-text-2)]" />
+      </span>
+      <!-- read：双勾主题色 —— 对方已读（TG 是蓝色，我们用 app 主题色）。
+           用 primary 而不是 success：绿色在深色模式下容易跟"在线"状态混淆；
+           TG 选蓝色就是为了跟"送达灰色"形成明确对比。 -->
+      <span
+        class="receipt-layer" :data-active="state === 'read'"
+        data-receipt-state="read" aria-hidden="true"
+      >
+        <CheckCheck class="h-4 w-4 text-[var(--gosslan-primary)]" />
+      </span>
     </span>
     <!-- 发送中的取消键。⚠️ 必须是上面那个 `role="img"` 图标的**兄弟节点**，不能塞进它内部：
          ARIA 的 img 会应用 Children Presentational，把后代的角色/动作整棵抹掉 ——
