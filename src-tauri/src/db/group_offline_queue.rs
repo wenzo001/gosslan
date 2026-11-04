@@ -131,9 +131,6 @@ pub fn cancel_queued_group_message(
     let Some(status) = status else {
         return Ok(GroupMessageCancelOutcome::NotFound);
     };
-    if matches!(status.as_str(), "read" | "recalled") {
-        return Ok(GroupMessageCancelOutcome::Rejected);
-    }
     let (pending, delivered, cancelled, failed): (i64, i64, i64, i64) = tx.query_row(
         "SELECT
            COALESCE(SUM(CASE WHEN status = 'pending'   THEN 1 ELSE 0 END), 0),
@@ -144,33 +141,36 @@ pub fn cancel_queued_group_message(
         params![msg_id],
         |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
     )?;
-    if pending == 0 {
-        // 全部送达后墓碑会被即时清理 ⇒ 台账可能是空的。此时用消息状态兜底，
-        // 否则一条「已送达」的消息会答成 not_found，界面只能猜。
-        if cancelled > 0 || matches!(status.as_str(), "cancelled" | "partial_cancelled") {
-            return Ok(GroupMessageCancelOutcome::AlreadyCancelled { delivered, cancelled });
+    let next_status = match group_cancel_verdict(
+        &status,
+        GroupCancelCounts {
+            pending,
+            delivered,
+            cancelled,
+            failed,
+        },
+    ) {
+        GroupCancelVerdict::NotFound => return Ok(GroupMessageCancelOutcome::NotFound),
+        GroupCancelVerdict::Rejected => return Ok(GroupMessageCancelOutcome::Rejected),
+        GroupCancelVerdict::AlreadyCancelled => {
+            return Ok(GroupMessageCancelOutcome::AlreadyCancelled { delivered, cancelled })
         }
-        if delivered > 0 || matches!(status.as_str(), "delivered" | "read") {
+        GroupCancelVerdict::AlreadyDelivered { remaining } => {
             return Ok(GroupMessageCancelOutcome::AlreadyDelivered {
                 delivered,
-                remaining: failed,
-            });
+                remaining,
+            })
         }
-        if failed > 0 || status == "failed" {
-            return Ok(GroupMessageCancelOutcome::AlreadyFailed);
+        GroupCancelVerdict::AlreadyFailed => {
+            return Ok(GroupMessageCancelOutcome::AlreadyFailed)
         }
-        return Ok(GroupMessageCancelOutcome::NotFound);
-    }
+        GroupCancelVerdict::Cancel { next_status } => next_status,
+    };
     tx.execute(
         "UPDATE group_outbox SET status = 'cancelled'
           WHERE msg_id = ?1 AND status = 'pending'",
         params![msg_id],
     )?;
-    let next_status = if delivered > 0 {
-        "partial_cancelled"
-    } else {
-        "cancelled"
-    };
     // 群消息例外：delivered 只代表“至少一人已收”，允许被 partial_cancelled 覆盖；
     // 但 recalled/read 仍然不能被取消改写。
     tx.execute(
