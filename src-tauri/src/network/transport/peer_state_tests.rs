@@ -358,3 +358,26 @@
             "匹配成功必须交出一份'证明快照'，而不是直接把信封公钥当已验证"
         );
     }
+
+    /// Block 4：入站信任门的每条"静默丢弃"都必须留下 `code=`。
+    ///
+    /// 反例自证：把 `GOSSIP_TRUST_REJECT` 那行删掉（恢复成裸 `return`），这条会红；
+    /// 而纯函数与业务测试全绿 —— 这正是"今天这次排查最大障碍"的形状。
+    #[test]
+    fn every_trust_gate_rejection_leaves_a_code() {
+        let src = crate::network::transport_src_for_guards();
+        for code in [
+            "code=GOSSIP_TRUST_REJECT",
+            "code=GOSSIP_SIGNATURE_INVALID",
+            "code=GOSSIP_MESH_DROP",
+            "code=GOSSIP_DUPLICATE",
+            "code=GOSSIP_UNEXPECTED_ENCRYPTED",
+        ] {
+            assert!(src.contains(code), "入站路径缺了 {code} —— 又会变回静默丢弃");
+        }
+        // 拒绝行必须带分诊维度：否则拿到包只能知道"被拒"，不知道"为什么被拒"。
+        assert!(
+            src.contains("anchor={anchor}"),
+            "GOSSIP_TRUST_REJECT 必须带 anchor=（none/friend_bound/peer_verified/self）"
+        );
+    }

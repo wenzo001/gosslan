@@ -14,6 +14,23 @@
 
 ## [Unreleased]
 
+## [5.17.42] - 2026-11-04
+
+### 改进：入站信任门不再静默丢弃（Block 4，可诊断性）
+
+- 今天这次排查最大的障碍是「消息到底死在哪一步」在日志里查不出来：入站信任门直接
+  `return`，什么都不写。现在每个丢弃点都必留一行 `code=`，并自动进诊断包头部 Top-10 码表：
+  - `code=GOSSIP_TRUST_REJECT kind=… sender=… anchor=none|friend_bound|peer_verified|self`
+  - `code=GOSSIP_SIGNATURE_INVALID` / `GOSSIP_MESH_DROP reason=…` / `GOSSIP_DUPLICATE`
+  - `code=GOSSIP_UNEXPECTED_ENCRYPTED`（本应明文的类型带了 `encrypted=true`）
+  - Block 1 的 `FRIEND_ANCHOR_BOUND` / `FRIEND_ANCHOR_UNANCHORED` / `FRIEND_ANCHOR_X25519_MISMATCH`
+- 高频路径（重复投递、网格丢弃、异常形状）按 5s 节流：任何窗口至少留得下一行，不制造刷屏。
+- 判据：`every_trust_gate_rejection_leaves_a_code`（删掉任一码就红）、
+  `gossip_trust_codes_are_aggregatable`（新码无需另加登记就能进 Top 表）。
+- 用户可感知：无界面变化；导出诊断包时多出上面这些码。
+  回退：`git revert` 本提交（纯日志/诊断改动，不影响收发判据）。
+  证据：`cargo test --features bluetooth --lib` → 1487 passed。
+
 ## [5.17.41] - 2026-11-04
 
 ### 修复：跨跳好友的身份锚点（Block 1，分级绑定）

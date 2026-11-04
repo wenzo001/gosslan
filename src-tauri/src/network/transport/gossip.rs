@@ -296,6 +296,29 @@ pub(crate) fn friend_anchor_binding_decision(
     }
 }
 
+/// 本应是明文、却带着 `encrypted=true` 的信封（异常形状）：留码后丢弃。
+///
+/// 单独成函数是为了让这三处 `return` 有同一个名字 —— Block 4 的要求是
+/// "不许有静默 return"：即便这是协议异常，也必须让拿诊断包的人看到它存在。
+fn log_unexpected_encrypted(
+    state: &AppState,
+    env: &GossipEnvelope,
+    which: &'static str,
+) {
+    // 恶意节点可以靠这类形状刷屏，节流 5s；任何一个窗口里都至少留得下一行。
+    if !crate::logging::log_throttled("gossip_unexpected_encrypted_log", 5_000) {
+        return;
+    }
+    state.logger.warn(
+        "gossip",
+        format!(
+            "code=GOSSIP_UNEXPECTED_ENCRYPTED kind={:?} shape={which} sender={} msg={} \
+             —— 该类型本应明文，却带 encrypted=true，丢弃",
+            env.kind, env.sender_id, env.message_id
+        ),
+    );
+}
+
 async fn handle_gossip(state: &Arc<AppState>, peer_id: &str, env: GossipEnvelope) {
     // Gossip 可经第三方转发，不能仅凭信封内自报的 Ed25519 公钥建立身份。
     // 公钥必须先由 Discovery/Hello 绑定到同一个 device_id；若已知 X25519
@@ -311,6 +334,9 @@ async fn handle_gossip(state: &Arc<AppState>, peer_id: &str, env: GossipEnvelope
         // 未验签 ⇒ `None` ⇒ 走下面的 friends 表锚点（持久），跨跳好友不受影响。
         verified_peer_anchor(peers.get(&env.sender_id))
     };
+    // 供 Block 4 的拒绝码区分「认识但键不符」与「根本不认识」：
+    // `peer_anchor` 下面会被 `match` 移走，这里先留一个读数。
+    let peer_anchor_present = peer_anchor.is_some();
     // friends 表那份**持久化**锚点：一次读取供下面两处共用（信任门 + Case B 补锚）。
     // 读失败折成 `None`（`get_friend_pubkeys` 的既有口径）⇒ 落进"不认识"分支，
     // 而那个分支对 Chat 一律拒绝 —— 失败关闭，不会因为一次读抖动放行任何人。
@@ -458,6 +484,35 @@ async fn handle_gossip(state: &Arc<AppState>, peer_id: &str, env: GossipEnvelope
         }
     }
     if !sender_trusted {
+        // Block 4（可诊断性）：信任门**必留一行码**，不许再静默 return。
+        // 今天这次排查最大的障碍就是这里什么都不写 —— 三台机器各有日志，
+        // 而"消息到底死在哪一步"在日志里查不出来。
+        //
+        // 码形状与 `diagnostics::top_error_codes` 对齐：`code=<大写蛇形>`，
+        // 导出诊断包时会自动进头部 Top-10 表（无需另加登记）。
+        //
+        // `anchor=` 取值（拿包的人据此直接分诊）：
+        //   none         —— 不在好友表、peers 里也没有验签过的锚点（真正的陌生人）
+        //   friend_bound —— friends 表有绑定过的 ed25519，但和信封自报值不符（疑似冒充/重装）
+        //   peer_verified—— peers 里有验签过的条目，但键不符
+        //   self         —— sender_id 就是本机（回环/伪造）
+        let anchor = if env.sender_id == state.device_id {
+            "self"
+        } else if peer_anchor_present {
+            "peer_verified"
+        } else if friend_keys.as_ref().is_some_and(|(_, e)| e.is_some()) {
+            "friend_bound"
+        } else {
+            "none"
+        };
+        state.logger.warn(
+            "gossip",
+            format!(
+                "code=GOSSIP_TRUST_REJECT kind={:?} sender={} anchor={anchor} msg={} \
+                 —— 未通过入站信任门，本机不消费这条信封",
+                env.kind, env.sender_id, env.message_id
+            ),
+        );
         return;
     }
     // 直连 TCP 对端在 Hello 中没有携带公钥时，首次合法 Gossip 可完成 TOFU
@@ -485,6 +540,16 @@ async fn handle_gossip(state: &Arc<AppState>, peer_id: &str, env: GossipEnvelope
             None => gossip.verify_envelope(&env),
         };
         if !verified {
+            // Block 4：验签失败也必须有码 —— 它和"信任门拒绝"是**不同的死因**，
+            // 混成一条会让下一个排查的人把冒充/损坏信封误判成身份未绑定。
+            state.logger.warn(
+                "gossip",
+                format!(
+                    "code=GOSSIP_SIGNATURE_INVALID kind={:?} sender={} msg={} \
+                     —— 信封 Ed25519 验签失败，丢弃（未消费）",
+                    env.kind, env.sender_id, env.message_id
+                ),
+            );
             return;
         }
         drop(gossip);
@@ -515,7 +580,20 @@ async fn handle_gossip(state: &Arc<AppState>, peer_id: &str, env: GossipEnvelope
                 payload: Vec::new(),
             };
             let decision = router.on_receive(frame, &state.device_id);
-            if let ForwardDecision::Drop(_) = decision {
+            if let ForwardDecision::Drop(reason) = decision {
+                // Block 4：网格层丢弃也必须留码（`Duplicate` 是正常重投、`TtlExhausted`
+                // 是拓扑问题，两者对排查的指向完全不同）。节流 5s：重投风暴下不刷屏，
+                // 但任何 5s 窗口里至少留得下一行。
+                if crate::logging::log_throttled("gossip_mesh_drop_log", 5_000) {
+                    state.logger.warn(
+                        "gossip",
+                        format!(
+                            "code=GOSSIP_MESH_DROP kind={:?} sender={} msg={} reason={reason:?} \
+                             ttl={} —— 网格层判定丢弃，本机不消费",
+                            env.kind, env.sender_id, env.message_id, env.ttl
+                        ),
+                    );
+                }
                 return;
             }
             forward_ttl_from(&decision)
@@ -523,6 +601,18 @@ async fn handle_gossip(state: &Arc<AppState>, peer_id: &str, env: GossipEnvelope
         // 业务层去重（Mesh 之后的第二道防线）
         let mut gossip = state.gossip.lock().unwrap_or_else(|e| e.into_inner());
         if !gossip.is_new(&env.message_id) {
+            // Block 4：业务层去重在网格层去重之外还拦一次（补发重入 / 双路径）。
+            // 正常重投会走到这里，节流 5s 避免刷屏；但"某条消息只以 Duplicate 出现"
+            // 本身就是可诊断信号（说明第一份被后面某个环节吞了）。
+            if crate::logging::log_throttled("gossip_duplicate_log", 5_000) {
+                state.logger.warn(
+                    "gossip",
+                    format!(
+                        "code=GOSSIP_DUPLICATE kind={:?} sender={} msg={} —— 业务层判重，本机不消费",
+                        env.kind, env.sender_id, env.message_id
+                    ),
+                );
+            }
             return;
         }
         mesh_ttl
@@ -581,10 +671,12 @@ async fn handle_gossip(state: &Arc<AppState>, peer_id: &str, env: GossipEnvelope
             }
             GossipKind::FriendMessageBlocked => {
                 // 已在 encrypted=false 分支处理，这里不应进入
+                log_unexpected_encrypted(state, &env, "FriendMessageBlocked");
                 return;
             }
             GossipKind::Presence => {
                 // Presence 必然是明文；收到 encrypted=true 的是异常，丢弃。
+                log_unexpected_encrypted(state, &env, "Presence");
                 return;
             }
             GossipKind::FriendRequest
@@ -604,6 +696,7 @@ async fn handle_gossip(state: &Arc<AppState>, peer_id: &str, env: GossipEnvelope
             }
             GossipKind::ChatAck | GossipKind::ChatReadReceipt | GossipKind::FileRelayReceipt => {
                 // 回执/确认必然是明文；收到 encrypted=true 的是异常，丢弃。
+                log_unexpected_encrypted(state, &env, "receipt");
                 return;
             }
         }
