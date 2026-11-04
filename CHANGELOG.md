@@ -14,6 +14,20 @@
 
 ## [Unreleased]
 
+## [5.18.24] - 2026-11-05
+
+### 代码块语言：所有发送路径落库（直发 / Hold / 自聊 / 重发）
+
+- `send_message` 原来把 `message_render.lang` 的写入放在 `match deferred` **之后** ⇒ Hold / 无对端
+  两条分支直接 return，显式语言就丢了。改为在 DB 写入处用 `persist_outgoing` **一次落库**
+  （消息 + outbox + lang），三条 1:1 分支结构上不可能再漏。
+- 自聊 `insert_self_message` 新增 `lang` 入参（与 1:1 同一份 `normalize_render_lang`），走
+  `persist_self_message` 落库并 emit `message-render-changed`，不必等下次打开才恢复。
+- 重发 `resend_message` 从 `message_render` 读回**已确认**语言（`stored_lang_and_plaintext`），
+  信封与 `ChatMessage` 同时携带；老消息无记录 ⇒ `None` = 自动识别（行为与现状一致）。
+- 新增 4 条单测：Hold / 自聊「存入后读回 lang 一致」、重发信封带 `lang`、文本消息不写渲染表。
+  **反例自证**：删掉 `pin_message_lang` 那一步 ⇒ 3 条立刻变红（已实跑）。
+
 ## [5.18.23] - 2026-11-05
 
 ### 背景动效：默认档由 T3 改为 T2（亮 30% / 暗 26%）
