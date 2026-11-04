@@ -432,8 +432,15 @@ pub async fn recall_message(
     // 而在写库前报错 —— 它会把那一行判死并返回 `status=failed`。撤回**不能**在这种情况下
     // 继续改本地形态（那会出现「本机显示已撤回、对端根本没收到」），所以这里当场把具名码
     // 交回调用方，让乐观投影回滚；任务中心仍留着那行失败记录可供查看/重试。
-    let recall_rec =
-        send_message(state, friend_id.clone(), content, "recall".to_string(), None).await?;
+    let recall_rec = send_message(
+        state,
+        friend_id.clone(),
+        content,
+        "recall".to_string(),
+        None,
+        None,
+    )
+    .await?;
     if recall_rec.status == "failed" {
         return Err(crate::error_codes::coded(
             crate::error_codes::SEND_KIND_UNSUPPORTED,
@@ -465,6 +472,7 @@ pub async fn set_message_render(
     conv_id: String,
     target: String,
     mode: String,
+    lang: Option<String>,
 ) -> Result<(), String> {
     let s = state.inner().clone();
     if mode != "code" && mode != "text" {
@@ -473,6 +481,21 @@ pub async fn set_message_render(
             "不支持的渲染方式",
         ));
     }
+    // 空串 = 未指定（None），非法字符 / 超长 = 具名错误。切回 text 时语言一律清空。
+    let lang = match lang.as_deref() {
+        None => None,
+        Some(raw) if raw.trim().is_empty() => None,
+        Some(raw) => match crate::protocol::normalize_render_lang(Some(raw)) {
+            Some(v) => Some(v),
+            None => {
+                return Err(crate::error_codes::coded(
+                    crate::error_codes::RENDER_INVALID_LANG,
+                    "代码语言标识不合法",
+                ))
+            }
+        },
+    };
+    let lang = if mode == "text" { None } else { lang };
     let s_db = s.clone();
     let conv_db = conv_id.clone();
     let target_db = target.clone();
@@ -521,6 +544,7 @@ pub async fn set_message_render(
     let payload = crate::protocol::RenderPayload {
         target: target.clone(),
         mode: mode.clone(),
+        lang: lang.clone(),
     };
     let content = serde_json::to_string(&payload).map_err(|e| e.to_string())?;
     let rec = if is_group {
@@ -531,25 +555,49 @@ pub async fn set_message_render(
             content,
             None,
             None,
+            None,
         )
         .await?
     } else {
-        send_message(state, peer, content, "render".to_string(), None).await?
+        send_message(state, peer, content, "render".to_string(), None, None).await?
     };
     let applied = {
         let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());
-        db::apply_message_render(&dbc, &target, rec.seq, &mode).unwrap_or(false)
+        db::apply_message_render(&dbc, &target, rec.seq, &mode, lang.as_deref()).unwrap_or(false)
     };
-    if applied {
-        let _ = s.app.emit(
-            "message-render-changed",
-            &crate::state::RenderChangedInfo {
-                msg_id: target,
-                kind: mode,
-            },
-        );
+    if !applied {
+        // LWW 未应用 ⇒ 这次切换已被更新的事件覆盖。静默成功会让界面显示一个库里没生效的状态。
+        return Err(crate::error_codes::coded(
+            crate::error_codes::RENDER_SUPERSEDED,
+            "这次渲染切换已被更新的事件覆盖",
+        ));
     }
+    let _ = s.app.emit(
+        "message-render-changed",
+        &crate::state::RenderChangedInfo {
+            msg_id: target,
+            kind: mode,
+            lang,
+        },
+    );
     Ok(())
+}
+
+/// 某会话里所有"显式带了代码语言"的消息（`msg_id -> lang`）。
+///
+/// 前端冷加载后调用它补齐历史气泡；没有记录的消息不在结果里 ⇒ 回落到内容自动识别。
+#[tauri::command(async)]
+pub async fn get_message_render_langs(
+    state: State<'_, Arc<AppState>>,
+    conv_id: String,
+) -> Result<std::collections::HashMap<String, String>, String> {
+    let s = state.inner().clone();
+    tokio::task::spawn_blocking(move || -> Result<std::collections::HashMap<String, String>, String> {
+        let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());
+        db::get_message_render_langs(&dbc, &conv_id).map_err(|e| format!("语言状态读取失败: {e}"))
+    })
+    .await
+    .map_err(|e| format!("语言状态读取被线程池中断: {e}"))?
 }
 
 /// 取某位好友的 X25519 公钥（好友表优先，回退在线节点表，都缺失时探测一次）。
@@ -619,6 +667,7 @@ pub async fn send_message(
     content: String,
     kind: String,
     local_id: Option<String>,
+    lang: Option<String>,
 ) -> Result<MessageRecord, String> {
     let s = state.inner();
 
@@ -678,6 +727,14 @@ pub async fn send_message(
             crate::error_codes::MESSAGE_KIND_UNSUPPORTED,
             "不支持的消息类型",
         )),
+    };
+
+    // 代码语言只属于 code 消息；其它 kind 一律丢弃，别让上游误传改变线上形状。
+    // 非法 / 空串归一化成 None == 未指定（接收端按内容自动识别，旧行为）。
+    let lang = if kind == "code" {
+        crate::protocol::normalize_render_lang(lang.as_deref())
+    } else {
+        None
     };
 
     // 好友关系检查：必须优先于公钥查找
@@ -833,7 +890,13 @@ pub async fn send_message(
     // E2EE 加密 + Gossip 信封（先于本地落库：msg_id 三处统一用 Gossip 信封 ID）
     // 1:1 没有 @，恒传 None —— 但走**同一个**编码器：明文形状两处各写一份，
     // 迟早只改对一边（接收端是同一只函数解的）。
-    let plaintext = crate::protocol::gossip_plaintext(&kind, &content, None);
+    let plaintext = crate::protocol::gossip_plaintext_with_targets(
+        &kind,
+        &content,
+        None,
+        None,
+        lang.as_deref(),
+    );
     let shared = s.identity.dh(&pubkey).ok_or_else(|| {
         crate::error_codes::coded(crate::error_codes::E2EE_ENCRYPT_FAILED, "密钥交换失败")
     })?;
@@ -901,6 +964,7 @@ pub async fn send_message(
         content: wire_content,
         ts,
         seq,
+        lang: lang.clone(),
     };
     // Block 2：队列行同时存**直连帧**与**跨跳信封**。
     // 只用直连帧的话，没有直连链路时（现场：手机—Windows—Mac）这一行永远补发不出去；
@@ -1068,6 +1132,27 @@ pub async fn send_message(
         crate::network::transport::update_conv_link(s, &friend_id, &path, hop);
     }
 
+    // 显式语言同样进本机 LWW 表与前端事件：不这么做的话，接收端有 lang、
+    // 发送端自己的气泡却退回自动识别 —— 同一条消息在两端显示成两种语言。
+    if kind == "code" {
+        if let Some(l) = lang.as_deref() {
+            let applied = {
+                let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());
+                db::apply_message_render(&dbc, &msg_id, seq, "code", Some(l)).unwrap_or(false)
+            };
+            if applied {
+                let _ = s.app.emit(
+                    "message-render-changed",
+                    &crate::state::RenderChangedInfo {
+                        msg_id: msg_id.clone(),
+                        kind: "code".to_string(),
+                        lang: Some(l.to_string()),
+                    },
+                );
+            }
+        }
+    }
+
     Ok(rec)
 }
 
@@ -1194,6 +1279,8 @@ pub async fn resend_message(
         content: wire_content,
         ts,
         seq,
+        // 重发沿用库里的渲染状态：语言已经活在 `message_render`，这里不重新发明。
+        lang: None,
     };
     let payload = serde_json::to_string(&queued).map_err(|e| e.to_string())?;
 

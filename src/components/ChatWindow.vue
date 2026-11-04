@@ -1160,15 +1160,17 @@ async function onSend({
   content,
   kind,
   mentionIds,
+  lang,
 }: {
   content: string;
   kind: MsgKind;
   mentionIds?: string[];
+  lang?: string | null;
 }) {
   const convId = chat.activeConv;
   if (!convId || (!isPeerFriend.value && !isSelfChat.value)) return;
   try {
-    await chat.send(convId, content, kind, mentionIds);
+    await chat.send(convId, content, kind, mentionIds, undefined, lang);
   } catch (e) {
     app.toastError(e, t("msg.sendFailed"));
   }

@@ -109,6 +109,7 @@ async fn handle_messaging_arm(state: &Arc<AppState>, peer_id: &str, msg: Message
             content,
             ts: _ts,
             seq,
+            lang,
         } => {
             if from != peer_id {
                 return;
@@ -258,6 +259,34 @@ async fn handle_messaging_arm(state: &Arc<AppState>, peer_id: &str, msg: Message
             }
             if announced_on(&inserted) {
                 let _ = state.app.emit("message-received", &out_rec);
+                // 代码消息的显式语言：先推进本机 LWW 表，再通知前端（顺序保证先消息后渲染）。
+                // 老发送方不带 lang ⇒ 归一化为 None ⇒ 什么都不做（接收端按内容自动识别）。
+                let render_lang = crate::protocol::normalize_render_lang(lang.as_deref());
+                if out_rec.kind == "code" {
+                    if let Some(l) = render_lang.as_deref() {
+                        let applied = {
+                            let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
+                            db::apply_message_render(
+                                &dbc,
+                                &out_rec.msg_id,
+                                out_rec.seq,
+                                "code",
+                                Some(l),
+                            )
+                            .unwrap_or(false)
+                        };
+                        if applied {
+                            let _ = state.app.emit(
+                                "message-render-changed",
+                                &crate::state::RenderChangedInfo {
+                                    msg_id: out_rec.msg_id.clone(),
+                                    kind: "code".to_string(),
+                                    lang: Some(l.to_string()),
+                                },
+                            );
+                        }
+                    }
+                }
                 // 直连单聊消息：链路 = 入站连接的路径，0 个中间节点。
                 let path = inbound_path_kind(state, peer_id).await;
                 update_conv_link(state, &from, &path, 0);

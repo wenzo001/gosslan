@@ -1494,6 +1494,7 @@ mod tests {
             "@张三 看一下",
             Some(&["id-zs".to_string()][..]),
             Some(&targets[..]),
+            None,
         );
         let back = parse_gossip_plaintext(s.as_bytes());
         assert_eq!(back.mentions.as_deref(), Some(&["id-zs".to_string()][..]));
@@ -1993,6 +1994,111 @@ mod tests {
                 .any(|(name, _)| *name == "friend_request_withdraw"),
             "撤回帧属于 GossipKind，不属于消息 WIRE_KINDS"
         );
+    }
+
+    // ---------------- 渲染切换 / 代码语言（lang） ----------------
+    // 语义：None = 未指定（接收端按内容自动识别，旧行为）；Some = 发送方显式指定。
+
+    #[test]
+    fn normalize_render_lang_is_lenient_and_never_panics() {
+        // trim + lowercase，允许 [a-z0-9+#._-]
+        assert_eq!(normalize_render_lang(Some(" Rust ")).as_deref(), Some("rust"));
+        assert_eq!(
+            normalize_render_lang(Some("TypeScript")).as_deref(),
+            Some("typescript")
+        );
+        assert_eq!(normalize_render_lang(Some("c++")).as_deref(), Some("c++"));
+        assert_eq!(normalize_render_lang(Some("plaintext")).as_deref(), Some("plaintext"));
+        // 空 / 缺省 ⇒ None
+        assert_eq!(normalize_render_lang(None), None);
+        assert_eq!(normalize_render_lang(Some("")), None);
+        assert_eq!(normalize_render_lang(Some("   ")), None);
+        // 非法字符 / 非 ASCII / 超长 ⇒ None（不 panic）
+        assert_eq!(normalize_render_lang(Some("rust lang")), None);
+        assert_eq!(normalize_render_lang(Some("中文")), None);
+        assert_eq!(normalize_render_lang(Some("ru\nst")), None);
+        // 首尾空白会被 trim 掉 ⇒ "rust\n" 归一成 rust（不是非法）
+        assert_eq!(normalize_render_lang(Some("rust\n")).as_deref(), Some("rust"));
+        assert_eq!(normalize_render_lang(Some(&"a".repeat(33))), None);
+        // 边界：32 个字符合法
+        let max = "a".repeat(32);
+        assert_eq!(normalize_render_lang(Some(&max)), Some(max));
+    }
+
+    #[test]
+    fn render_payload_lang_is_optional_and_normalized() {
+        let p = parse_render_payload(r#"{"target":"m1","mode":"code"}"#).unwrap();
+        assert!(p.lang.is_none(), "缺键 ⇒ None（旧载荷）");
+        let p = parse_render_payload(r#"{"target":"m1","mode":"code","lang":"  RUST "}"#).unwrap();
+        assert_eq!(p.lang.as_deref(), Some("rust"));
+        // 非法 / null 都退化成 None，不得让整条 render 事件解析失败。
+        let p = parse_render_payload(r#"{"target":"m1","mode":"code","lang":"a b"}"#).unwrap();
+        assert!(p.lang.is_none());
+        let p = parse_render_payload(r#"{"target":"m1","mode":"code","lang":null}"#).unwrap();
+        assert!(p.lang.is_none());
+        // None 不序列化：发出去的 JSON 与旧版本逐字节同形。
+        let none = serde_json::to_string(&RenderPayload {
+            target: "m1".to_string(),
+            mode: "code".to_string(),
+            lang: None,
+        })
+        .unwrap();
+        assert!(!none.contains("\"lang\""));
+        let some = serde_json::to_string(&RenderPayload {
+            target: "m1".to_string(),
+            mode: "code".to_string(),
+            lang: Some("rust".to_string()),
+        })
+        .unwrap();
+        assert!(some.contains("\"lang\":\"rust\""));
+        assert_eq!(parse_render_payload(&some).unwrap().lang.as_deref(), Some("rust"));
+    }
+
+    #[test]
+    fn gossip_plaintext_carries_lang_only_when_some() {
+        let pt =
+            gossip_plaintext_with_targets("code", "fn main(){}", None, None, Some("rust"));
+        let v: serde_json::Value = serde_json::from_str(&pt).unwrap();
+        assert_eq!(v["lang"], "rust");
+        assert_eq!(parse_gossip_plaintext(pt.as_bytes()).lang.as_deref(), Some("rust"));
+
+        // None ⇒ 键不存在（老语义：接收端按内容自动识别）。
+        let old = gossip_plaintext("code", "fn main(){}", None);
+        assert!(!old.contains("\"lang\""));
+        assert!(parse_gossip_plaintext(old.as_bytes()).lang.is_none());
+
+        // 对端写了个脏值：宽松归一化成 None，不 panic、不中断整条消息。
+        let dirty = parse_gossip_plaintext(br#"{"kind":"code","content":"x","lang":" Ru st "}"#);
+        assert!(dirty.lang.is_none());
+        assert_eq!(dirty.kind, "code");
+    }
+
+    #[test]
+    fn chat_message_lang_is_optional_and_backward_compatible() {
+        // 旧载荷没有 lang ⇒ 解析成功且 lang=None。
+        let old = r#"{"type":"chat_message","msg_id":"m","from":"a","to":"b","kind":"text","content":"hi","ts":1,"seq":1}"#;
+        match serde_json::from_str::<Message>(old).expect("旧载荷必须仍可解析") {
+            Message::ChatMessage { lang, .. } => assert!(lang.is_none()),
+            other => panic!("旧载荷解析成了 {other:?}"),
+        }
+        // 新载荷带 lang 能被读回。
+        let new = r#"{"type":"chat_message","msg_id":"m","from":"a","to":"b","kind":"code","content":"x","ts":1,"seq":1,"lang":"rust"}"#;
+        match serde_json::from_str::<Message>(new).expect("新载荷必须可解析") {
+            Message::ChatMessage { lang, .. } => assert_eq!(lang.as_deref(), Some("rust")),
+            other => panic!("新载荷解析成了 {other:?}"),
+        }
+        // None 不序列化：线上帧与旧版本同形。
+        let msg = Message::ChatMessage {
+            msg_id: "m".into(),
+            from: "a".into(),
+            to: "b".into(),
+            kind: "text".into(),
+            content: "hi".into(),
+            ts: 1,
+            seq: 1,
+            lang: None,
+        };
+        assert!(!serde_json::to_string(&msg).unwrap().contains("\"lang\""));
     }
 
     /// 关联时间只认真实的 `YYYY-MM-DD` 日历日：闰年合法、02-30/13 月/带时分一律拒收。

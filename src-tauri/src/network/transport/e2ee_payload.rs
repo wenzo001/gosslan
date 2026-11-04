@@ -77,6 +77,7 @@ fn reseal_for_send(state: &AppState, msg: Message) -> Message {
         content,
         ts,
         seq,
+        lang,
     } = msg
     else {
         return msg;
@@ -90,6 +91,7 @@ fn reseal_for_send(state: &AppState, msg: Message) -> Message {
             content,
             ts,
             seq,
+            lang,
         };
     }
     let (plaintext, from_db) = {
@@ -125,5 +127,7 @@ fn reseal_for_send(state: &AppState, msg: Message) -> Message {
         kind,
         ts,
         seq,
+        // 重封只换密文，消息的元数据（含显式语言）必须原样保留。
+        lang,
     }
 }

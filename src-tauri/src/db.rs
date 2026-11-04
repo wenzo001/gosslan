@@ -19,7 +19,7 @@ use crate::state::{
 /// 建表 / 建索引不需要 step：`init()` 在版本分支**之前**跑 `execute_batch(SCHEMA)`，
 /// 而 SCHEMA 全是 `IF NOT EXISTS` ⇒ 新老库每次启动都会被补齐。
 /// 同一条索引同时写在 SCHEMA 与 MIGRATIONS 里 = 两个家（历史上有过，v8→v9 起收敛）。
-pub const DB_VERSION: u32 = 15;
+pub const DB_VERSION: u32 = 16;
 
 /// 迁移 step：(from_version, to_version, 迁移闭包)。
 struct Migration {
@@ -781,6 +781,25 @@ const MIGRATIONS: &[Migration] = &[
             Ok(())
         },
     },
+    // v15 → v16：`message_render.lang`（代码消息的显式语言）。
+    //
+    // **不回填**：v16 之前没有任何地方记过语言 ⇒ 老行保持 NULL，含义是"未指定"，
+    // 接收端按内容自动识别（与现状完全一致）。也**不加索引**：它只随行读回。
+    Migration {
+        from: 15,
+        to: 16,
+        description: "message_render 加可空 lang（代码语言，不回填）",
+        run: |conn| {
+            // `ensure_column` 自带「表不在就无事可做 / 列已在就跳过」，重复执行安全。
+            ensure_column(
+                conn,
+                "message_render",
+                "lang",
+                "ALTER TABLE message_render ADD COLUMN lang TEXT",
+            )?;
+            Ok(())
+        },
+    },
 ];
 
 /// 建表脚本 —— 表结构的**唯一真源**（另有一张 `content` 表由
@@ -872,12 +891,14 @@ CREATE TABLE IF NOT EXISTS group_recalled_messages (
 -- ⇒ 每次群收件都要全表扫这张**只增不减**的 G-Set。这条索引在收件热路径上。
 CREATE INDEX IF NOT EXISTS idx_group_recalled_msg ON group_recalled_messages(msg_id);
 
--- 代码/文本消息渲染切换的 LWW 状态：只存最后一次生效的 (seq, mode)。
+-- 代码/文本消息渲染切换的 LWW 状态：只存最后一次生效的 (seq, mode, lang)。
 -- `messages.kind` 是它的物化视图；用独立表而不是给 messages 加列，避免老库迁移。
+-- `lang` 是代码消息的显式语言；NULL = 未指定（接收端按内容自动识别，旧语义）。
 CREATE TABLE IF NOT EXISTS message_render (
     msg_id TEXT PRIMARY KEY,
     seq    INTEGER NOT NULL,
-    mode   TEXT NOT NULL
+    mode   TEXT NOT NULL,
+    lang   TEXT
 );
 
 CREATE TABLE IF NOT EXISTS groups (

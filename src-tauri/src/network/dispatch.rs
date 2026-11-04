@@ -197,6 +197,7 @@ mod tests {
             content: "hello".into(),
             ts: 0,
             seq: 0,
+            lang: None,
         };
         assert_eq!(message_priority(&msg), MessagePriority::Normal);
     }
@@ -272,6 +273,7 @@ mod tests {
             content: format!("hi-{id}"),
             ts: 0,
             seq: 0,
+            lang: None,
         }
     }
     fn make_file_accept() -> Message {

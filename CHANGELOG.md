@@ -14,6 +14,53 @@
 
 ## [Unreleased]
 
+## [5.18.9] - 2026-11-05
+
+### 代码块：自动识别语言、发送前/后切换、头部固定 + 内部单层滚动
+
+- **自动识别不再手写正则**：`utils/codeDetect.ts` 的 `guessLanguage` 大礼包删除，语言判断交给
+  highlight.js 的 `highlightAuto`（已在包内、离线可用、无新增依赖）。围栏标了语言就按标记走；
+  **未标语言的围栏**与"看起来像代码"的长文本先判"是不是代码"，语言再交给 Worker 异步识别；
+  相关度 `< 8` 或与第二名打平即落 `plaintext`（宁可不亮，也不猜错）。未知围栏标签同样落纯文本。
+- **修掉一条真缺陷**：`MessageComposer.send` 原先 `text = stripCodeFence(text).text` 把
+  `.language` 直接丢掉 ⇒"已标语言按标记走"实际上是假的（发送后两端都只能靠猜）。
+  现在 `codeLangOut = stripped.language ?? codeLang` 逐层传到 `chat.send → send_message`
+  并落进 `message_render.lang`；`codeDetect.test.ts` 有一条"删掉这行即红"的锚点。
+- **发送前**：输入框代码模式里新增独立 `CodeLangMenu`（自动识别 / 纯文本 / 14 种语言），
+  可随时切换；「取消代码块」把内容退回普通长文本（保留换行与原样字符、不亮）。
+- **发送后**：只有**发送方**能切（服务端 `set_message_render` 用 `msg.sender_id` 判定，前端隐藏
+  菜单只是表象）。切换仍走既有 `message_render` LWW 入口 + `message-render-changed` 事件，
+  双方按确认后的语言渲染；进行中显示转圈且保留旧标签，非法语言给 `RENDER_INVALID_LANG`、
+  被更新的一次覆盖给 `RENDER_SUPERSEDED`，失败绝不留"看起来切了"的假状态。
+- **协议/存储向后兼容**：`RenderPayload` / `ChatMessage` / `GossipPlaintext` 都加了
+  `#[serde(default, skip_serializing_if)] lang`（None 时线上字节与旧版同形）；`message_render`
+  走 `user_version` 15→16 加 `lang TEXT`，**不回填** ⇒ 旧行 NULL = 按内容自动识别，行为不变。
+- **固定头 + 单层滚动**：`CodeBlock` 头部（语言标签、行数、复制）与 `pre` 是兄弟节点，
+  只有 `pre` 滚动（`overflow-y:auto`、`overflow-x:hidden`、`overscroll-behavior:contain`、
+  移动端 `touch-action:pan-y`）；长行折行不撑破气泡，父层 `overflow-hidden` 杜绝双层滚动条。
+- 守卫：`utils/codeLanguages.test.ts`（别名/纯文本/未知标签）、`codeHighlightCore.test.ts`
+  （显式标记优先、不确定落纯文本、长 JS 能识别）、`codeBlockLayout.test.ts`（头部与 pre 同级、
+  pre 唯一滚动容器、非发送方不可切、撤销只关模式不清正文），以及
+  `scripts/check-ui-runtime.mjs --only=codeblock`（中英各跑，桌面 + 390×700 触控：滚动前后
+  头部 rect 不变、内部容器 `scrollHeight>clientHeight`、合成触摸后 `scrollTop` 增大）。
+
+### 前端内存审计：`msg_id → conv_id` 反查表封顶 + 切会话/待机泄漏形状探针
+
+- **修掉一条真正只增不减的表**：`stores/chat/messaging.ts` 的 `convIdByMsgId` 原先没有删除点
+  （注释里也写着"条目随消息量增长，与 messages 同阶"）。`messages` 侧是"1000 条/会话 × 8 个缓存会话
+  整块逐出"，但这张表跨会话生命周期：被逐出的会话留下的一堆 id 没人清理，用户切得越多、跑得越久就越大。
+  现按 `8 × 1000 + 余量 = 8192` 封顶，逐会话 `trimOldest`；未命中仍回退全量扫描，淘汰不改变正确性。
+  容量逻辑抽到纯核心 `src/utils/msgConvIndex.ts`（`messaging.ts` 的运行时依赖都走 `@/` 别名，
+  `node --experimental-strip-types` 解析不了，纯核心才能用真实计数验证）。
+- 守卫：`src/utils/msgConvIndex.test.ts` 灌 12 个会话 × 1000 条 ⇒ 条目必须压回 8192、
+  最后写入的会话仍命中、被淘汰的 id 回退扫描仍能查到；**删掉 `trimOldest` 这一行，计数变 12000，测试立刻红**。
+- 新增运行时探针段 `scripts/check-ui-runtime.mjs --only=leak`（挂真 `ChatWindow` + 真 store，
+  Tauri 调用打桩）：6 个会话 × 40 条种子，切会话 30 次分三批取 GC 后堆 / DOM / 监听器；
+  再卸载并松开夹具引用，校验 interval、rAF、产品代码起的一次性 timeout 是否归零。
+  `GOSSLAN_IDLE_MS=900000` 时额外做两段 15 分钟待机长跑（手动用，不进默认门禁）。
+  反例自证：`GOSSLAN_LEAK_INJECT=1` 在挂载后故意留一个 interval ⇒ 卸载水位判据必红。
+
+
 ## [5.18.7] - 2026-11-04
 
 ### 群任务：关联时间字段、统一任务时间格式、状态切换改为行内下拉

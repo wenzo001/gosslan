@@ -104,7 +104,7 @@ pub async fn pin_group_message(
     // 置顶在界面上的呈现是 `foldPinned(该会话全部消息)` 折叠出来的 ——
     // 事件不进前端 store，折叠就看不到它，界面要等重进会话重新拉全量才刷新。
     // 此前这里返回 `()`，前端拿到了也无从 enqueue。
-    send_group_payload(state.inner(), &group_id, "pin", content, None, None).await
+    send_group_payload(state.inner(), &group_id, "pin", content, None, None, None).await
 }
 
 /// 撤回一条群消息。两档授权（2026-10-28 负责人拍板，见 `docs/adr/0023`）：
@@ -180,7 +180,8 @@ pub async fn recall_group_message(
     let content = serde_json::to_string(&payload).map_err(|e| e.to_string())?;
     // 先发事件（走与普通消息同一条可靠管道），成功后再物化本地 ——
     // 顺序反了会出现「本地显示已撤回、但对端根本没收到」。
-    send_group_payload(s, &group_id, crate::protocol::KIND_RECALL, content, None, None).await?;
+    send_group_payload(s, &group_id, crate::protocol::KIND_RECALL, content, None, None, None)
+        .await?;
     // 群主替别人撤回 ⇒ 帧已经出去了，这时才说"哪些人那侧可能不会消失"（协议零改动，老端按旧规则丢弃）。
     if authority == crate::protocol::RecallAuthority::GroupCreator && author != s.device_id {
         emit_creator_recall_audience(s, &group_id, &conv_id);
@@ -274,7 +275,7 @@ pub async fn send_group_reaction(
     }
     let payload = crate::protocol::ReactionPayload { target, emoji, add };
     let content = serde_json::to_string(&payload).map_err(|e| e.to_string())?;
-    send_group_payload(state.inner(), &group_id, "reaction", content, None, None).await
+    send_group_payload(state.inner(), &group_id, "reaction", content, None, None, None).await
 }
 
 #[tauri::command(async)]

@@ -290,6 +290,7 @@
             content: "hi".into(),
             ts: 1,
             seq: 1,
+            lang: None,
         };
         let sent = tokio::time::timeout(
             std::time::Duration::from_millis(30),

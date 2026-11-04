@@ -814,6 +814,9 @@ pub struct GossipPlaintext {
     /// `None` = 发送方是不认识这个字段的版本 ⇒ 呈现层退回按昵称判（只能"更准"不能"变暗"）；
     /// `Some([])` = 这条确实一个人都没 @。畸形/半截一律整份判成 `None`，不许收下一半。
     pub mention_targets: Option<Vec<MentionTarget>>,
+    /// 代码消息的显式语言（`rust` / `typescript` / `plaintext` …）。**None = 未指定**，
+    /// 接收端按内容自动识别（旧行为）；老发送方不写这个键，因此解析必须容忍缺失。
+    pub lang: Option<String>,
 }
 
 /// 组装群 / 单聊消息的加密前明文。
@@ -826,7 +829,7 @@ pub struct GossipPlaintext {
 /// 为什么要带 id 而不是靠昵称：昵称**可变**（改名后历史上那些 @ 就不再指向这个人）
 /// 又**不唯一**（群里可以两个人同名 ⇒ 一个人被 @，两个人同时亮红点）。
 pub fn gossip_plaintext(kind: &str, content: &str, mentions: Option<&[String]>) -> String {
-    gossip_plaintext_with_targets(kind, content, mentions, None)
+    gossip_plaintext_with_targets(kind, content, mentions, None, None)
 }
 
 /// 按 `mentions` 的顺序把每条 @ 落成正文里的第 n 次出现。
@@ -868,11 +871,14 @@ pub fn build_mention_targets(
 }
 
 /// 带落点的版本：`targets` 是三态的（`None` = 不写这个键，见 `GossipPlaintext::mention_targets`）。
+///
+/// `lang` **只在 `Some` 时写进 JSON**：老发送方不带这个键 ⇒ 接收端按内容自动识别（旧语义）。
 pub fn gossip_plaintext_with_targets(
     kind: &str,
     content: &str,
     mentions: Option<&[String]>,
     targets: Option<&[MentionTarget]>,
+    lang: Option<&str>,
 ) -> String {
     let mut v = serde_json::json!({ "kind": kind, "content": content });
     if let Some(ids) = mentions {
@@ -898,6 +904,10 @@ pub fn gossip_plaintext_with_targets(
             .take(MAX_GOSSIP_MENTIONS)
             .collect();
         v["mention_targets"] = serde_json::json!(clean);
+    }
+    // 只在 Some 时写：None 必须保持"这个键不存在"，否则老语义（接收端自动识别）就变了。
+    if let Some(l) = lang {
+        v["lang"] = serde_json::json!(l);
     }
     v.to_string()
 }
@@ -976,11 +986,14 @@ pub fn parse_gossip_plaintext(pt: &[u8]) -> GossipPlaintext {
             _ => None,
         };
         let mention_targets = mention_targets_from_value(v.get("mention_targets"));
+        // 宽松归一化：非法/空一律 None（不 panic，也不把脏串带进库）。
+        let lang = normalize_render_lang(v.get("lang").and_then(|l| l.as_str()));
         GossipPlaintext {
             kind,
             content,
             mentions,
             mention_targets,
+            lang,
         }
     } else {
         GossipPlaintext {
@@ -988,6 +1001,7 @@ pub fn parse_gossip_plaintext(pt: &[u8]) -> GossipPlaintext {
             content: String::from_utf8_lossy(pt).to_string(),
             mentions: None,
             mention_targets: None,
+            lang: None,
         }
     }
 }
@@ -1706,15 +1720,36 @@ pub const KIND_RECALL: &str = "recall";
 /// 渲染切换事件本身的 `kind`。
 pub const KIND_RENDER: &str = "render";
 
+/// 代码语言标识的归一化：trim + lowercase，只留 `[a-z0-9+#._-]`，长度 1..=32。
+///
+/// 空串 / 非法字符 / 超长一律返回 `None`（**永不 panic**）：`None` 的语义是"未指定"，
+/// 接收端按内容自动识别（旧行为）。`plaintext` 是合法值，表示显式不高亮。
+pub fn normalize_render_lang(raw: Option<&str>) -> Option<String> {
+    const MAX_LEN: usize = 32;
+    let t = raw?.trim().to_ascii_lowercase();
+    if t.is_empty() || t.len() > MAX_LEN {
+        return None;
+    }
+    if !t.chars().all(|c| {
+        c.is_ascii_lowercase() || c.is_ascii_digit() || matches!(c, '+' | '#' | '.' | '_' | '-')
+    }) {
+        return None;
+    }
+    Some(t)
+}
+
 /// 渲染切换载荷：`mode` 只允许 code / text。
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
 pub struct RenderPayload {
     pub target: String,
     pub mode: String,
+    /// 代码语言（可选）。缺省 / null ⇒ 未指定；解析时会被宽松归一化（非法 → None）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lang: Option<String>,
 }
 
 pub fn parse_render_payload(content: &str) -> Result<RenderPayload, String> {
-    let p: RenderPayload =
+    let mut p: RenderPayload =
         serde_json::from_str(content).map_err(|e| format!("渲染切换载荷解析失败：{e}"))?;
     if p.target.trim().is_empty() {
         return Err("渲染切换缺少目标消息".to_string());
@@ -1722,6 +1757,7 @@ pub fn parse_render_payload(content: &str) -> Result<RenderPayload, String> {
     if p.mode != "code" && p.mode != "text" {
         return Err("不支持的渲染方式".to_string());
     }
+    p.lang = normalize_render_lang(p.lang.as_deref());
     Ok(p)
 }
 
@@ -2128,6 +2164,10 @@ pub enum Message {
         /// 会话逻辑序号（Lamport），接收方按此排序，而非发送方墙上时钟。
         #[serde(default)]
         seq: i64,
+        /// 代码语言（可选）。缺省 / null ⇒ 未指定（接收端按内容自动识别，旧行为）；
+        /// 老客户端不认识这个字段会忽略它，新客户端读旧载荷得到 None。
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        lang: Option<String>,
     },
     /// 送达确认（用于离线补发去重）
     Ack {

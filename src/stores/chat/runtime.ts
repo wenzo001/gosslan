@@ -67,6 +67,12 @@ export interface ChatState {
   updaterStatus: Ref<UpdaterStatus | null>;
 
   messages: Ref<Record<string, MessageRecord[]>>;
+  /**
+   * msg_id → 显式代码语言。缺省 = 自动识别（旧数据/旧客户端都是这个行为）。
+   * 单独放一张表而不是塞进 `MessageRecord`：渲染语言属于 `message_render` 的 LWW 域，
+   * 不是消息正文的一部分；冷加载后由 `get_message_render_langs` 补齐。
+   */
+  renderLangs: Ref<Record<string, string>>;
   groupDeliveries: Ref<Record<string, Record<string, GroupDeliverySummary>>>;
   messageLoadErrors: Ref<Record<string, string>>;
   groupReads: Ref<Record<string, Record<string, number>>>;
