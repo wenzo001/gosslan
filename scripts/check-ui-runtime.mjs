@@ -81,6 +81,12 @@ const ONLY = argv.find((a) => a.startsWith("--only="))?.slice("--only=".length) 
 const SELF_CHECK = argv.includes("--self-check");
 /** `--shot=/tmp/x.png` 时顺手存一张会话行的真图（§10 的后半句要肉眼判）。不给就一字不动。 */
 const SHOT_PATH = argv.find((a) => a.startsWith("--shot="))?.slice("--shot=".length) ?? "";
+/**
+ * `--locale=en-US`：把整轮探针钉在指定 locale（G2 要求中英各跑一遍全量）。
+ * 走 CDP `Emulation.setLocaleOverride`，等价于系统语言是英文（`navigator.languages` 跟着变），
+ * 而不是只跑 `locale` 那一段 —— 英文比中文长，溢出问题大多藏在别的段里。
+ */
+const LOCALE_OVERRIDE = argv.find((a) => a.startsWith("--locale="))?.slice("--locale=".length) ?? "";
 
 /**
  * `--only=` 的**段名校验**（2026-10-27）。
@@ -3113,6 +3119,7 @@ async function main() {
     cdp.targetId = currentTargetId;
     await cdp.send("Runtime.enable");
     await cdp.send("Page.enable");
+    if (LOCALE_OVERRIDE) await cdp.send("Emulation.setLocaleOverride", { locale: LOCALE_OVERRIDE }).catch(() => {});
     await cdp.send("Page.navigate", { url });
     await cdp.settled(); // 段间导航竞态收进活体探针（工具层，不动判据）
     // 冷启动要等 vite 现编译依赖，实测 20~30s（等短了会把"还没起来"读成"组件坏了"）
@@ -3249,6 +3256,7 @@ async function main() {
       cdp.targetId = tid;
       await cdp.send("Runtime.enable");
       await cdp.send("Page.enable");
+      if (LOCALE_OVERRIDE) await cdp.send("Emulation.setLocaleOverride", { locale: LOCALE_OVERRIDE }).catch(() => {});
     }
     async function freshTab() {
       const created = await cdp.send("Target.createTarget", { url: "about:blank" });
@@ -3268,6 +3276,7 @@ async function main() {
       cdp.targetId = created.targetId;
       await cdp.send("Runtime.enable");
       await cdp.send("Page.enable");
+      if (LOCALE_OVERRIDE) await cdp.send("Emulation.setLocaleOverride", { locale: LOCALE_OVERRIDE }).catch(() => {});
       try { oldCdp.ws.close(); } catch { /* 旧连接关掉即可，关不掉也不影响新 tab */ }
       await cdp.send("Target.closeTarget", { targetId: oldId }).catch(() => {});
     }
@@ -7379,7 +7388,11 @@ async function rosterChecks(cdp, url) {
       + " rect=" + JSON.stringify(fr.rect) + " 视口=" + fr.vw + "x" + fr.vh);
   await cdp.eval("(function(){var el=document.querySelector('[data-readers-popover]');"
     + "if(!el)return false;"
-    + "var box=el.closest('[data-reka-popper-content-wrapper]')||el;"
+    // 要改的是**真正被定位的那一层**：Reka 这一版可能没有
+    // `[data-reka-popper-content-wrapper]`，内层 div 是 static，
+    // 给它写 left 等于没写（旧版对照因此空转：rect 一动没动）。
+    + "var box=el;for(var n=el;n&&n!==document.body;n=n.parentElement){"
+    + "var st=getComputedStyle(n);if(st.position==='fixed'||st.position==='absolute'){box=n;break;}}"
     + "box._o={left: box.style.left, right: box.style.right, transform: box.style.transform};"
     + "box.style.right='auto';box.style.left=(window.innerWidth - 20) + 'px';box.style.transform='none';return true;})()");
   const frOut = await cdp.eval("window.__probe.floatLayer('[data-readers-popover]')");
@@ -7388,7 +7401,8 @@ async function rosterChecks(cdp, url) {
     "inViewport === false", "rect=" + JSON.stringify(frOut.rect) + " 视口=" + frOut.vw);
   await cdp.eval("(function(){var el=document.querySelector('[data-readers-popover]');"
     + "if(!el)return false;"
-    + "var box=el.closest('[data-reka-popper-content-wrapper]')||el;"
+    + "var box=el;for(var n=el;n&&n!==document.body;n=n.parentElement){"
+    + "var st=getComputedStyle(n);if(st.position==='fixed'||st.position==='absolute'){box=n;break;}}"
     + "if(!box._o)return false;box.style.left=box._o.left;box.style.right=box._o.right;"
     + "box.style.transform=box._o.transform;delete box._o;return true;})()");
   const frBack = await cdp.eval("window.__probe.floatLayer('[data-readers-popover]')");
