@@ -358,17 +358,36 @@
   --gosslan-glass-3-blur: saturate(140%) blur(24px);
   --gosslan-glass-3-fallback: #ffffff;
 
-  /* 环境动态层（AM-01…AM-12，规格 docs/design-language/ambient-motion.md）。
-     **色团强度只有一个旋钮**：--ambient-alpha（亮色默认中档 6%，暗色 7%）。
-     B/C 团由它派生成 2/3，D 团 1/3；调值只改这一个数（改完 AM-01 的读数会跟着变）。
-     α 用 0–1 的数字而不是百分比：噪点层的 opacity 也要从同一个数除出来，
-     百分比在两个属性之间没法共用。 */
-  --ambient-alpha: 0.06;
-  --ambient-alpha-b: calc(var(--ambient-alpha) * 2 / 3);
-  --ambient-alpha-c: calc(var(--ambient-alpha) * 2 / 3);
-  --ambient-alpha-d: calc(var(--ambient-alpha) / 3);
+  /* 环境动态层（AM-01…AM-14，规格 docs/design-language/ambient-motion.md）。
+     **三个旋钮**（用户 2026-11-05 二次拍板：色要看得见，用构图保护内容，不靠压低浓度）：
+       --ambient-alpha  色团自身不透明度（亮 T1 20% / T2 30% / **T3 40%（默认）** / T4 48%；
+                       暗色各 -4pp → 16% / 26% / 36% / 44%）；
+       --ambient-s      色相浓度（与同亮度中性灰混合，0–1；默认 30%）；
+       --ambient-scale  色团尺寸倍率（默认 1.30×）；
+     第四个关联值 `--ambient-veil` 是画布薄纱的不透明度：α 抬高后必须同步下调（0.16 / 暗 0.14），
+     否则整片被白底糊住，色看不到。
+     A/B/C 三团共用同一个 α（用户要"色团自身不透明度 20/30/40/48%"；
+     早先 B/C 取 2/3 会让右下/右上两带的档间差只有 1.2 左右，达不到 AM-13 的 1.5）。
+     D 团是压在中央的静态底洗，固定 4%、不跟档位走（见下方注释）。
+     tint 由 --ambient-s 与 --ambient-mute 派生，改档只动上面三个数，不用逐团改颜色。
+     α 用 0–1 的数字而不是百分比：百分比在 CSS 变量里没法被别的属性复用。 */
+  --ambient-alpha: 0.4;
+  /* D 是**压在中央**的静态底洗，必须与档位解耦：跟着 α 走的话，每换一档都会把中央
+     一起染色，AM-14（中点 ΔE00 ≤0.5）永远过不了，也和"中心留白"直接冲突。
+     所以它是一个固定的 4%，不参与档位派生。 */
+  --ambient-alpha-d: 0.04;
+  --ambient-s: 0.3;
+  --ambient-scale: 1.3;
+  --ambient-veil: 0.16;
+  /* 与主色同亮度附近的中性灰：把主色按 S 混成色雾，不引入第二个品牌色相。 */
+  --ambient-mute: #8d8d8d;
+  --ambient-tint: color-mix(in srgb, var(--gosslan-primary) calc(var(--ambient-s) * 100%), var(--ambient-mute));
+  --ambient-tint-cold: color-mix(in srgb, var(--ambient-cold) calc(var(--ambient-s) * 100%), var(--ambient-mute));
   /* C 团用不跟主题色的冷蓝灰：三团都是主题色会变成单色渐变，少了"色雾"的层次。 */
   --ambient-cold: #7c93b3;
+  /* B 团的第二色相**只允许暖沙**（用户拍板：禁止 neon、禁止 success/warning/danger）。
+     它自带 12% 饱和度，所以不再经 --ambient-s 二次稀释。 */
+  --ambient-warm: hsl(32 12% 64%);
   /* 底层底色：接近列表灰，保证半透明浮层过渡自然 */
   --gosslan-app-bg: #edf1f6;
   --gosslan-shadow: 0 1px 3px rgba(15, 23, 42, 0.05), 0 4px 12px rgba(15, 23, 42, 0.06);
@@ -479,10 +498,17 @@
   --gosslan-glass-3-highlight: rgba(248, 250, 252, 0.28);
   --gosslan-glass-3-shadow: 0 24px 64px rgba(0, 0, 0, 0.5);
   --gosslan-glass-3-fallback: #1e293b;
-  /* 环境动态层暗态：默认 7%（用户拍板的中档；文档给的 8% 留作对比档）。
-     与 :root 的 --ambient-alpha 是同一个旋钮，派生比例自动跟着走。 */
-  --ambient-alpha: 0.07;
+  /* 环境动态层暗态：亮色 α 各 -4pp（T3 默认 36%），薄纱同步下调到 0.14。
+     与 :root 的 --ambient-alpha / --ambient-s / --ambient-scale 是同一组旋钮，
+     暗色只换中性灰与暖沙（深底上用更暗的灰混色，色雾才不会发白发灰）。 */
+  --ambient-alpha: 0.36;
+  --ambient-veil: 0.14;
+  /* 深底上中性灰必须比亮色更暗：α 抬到 36–44% 时，亮灰会把合成底提亮、
+     次级文字对比度掉到 4.2（实测 T4 主色 4.24 / 暖沙 3.65）。#5c5c5c 在深底上是"同感知档"。 */
+  --ambient-mute: #5c5c5c;
   --ambient-cold: #5b7fb3;
+  /* 暖沙在深底取 26% 明度（亮色 64%）：同一个"沙"语义，亮色靠明度、暗色靠暗度站住。 */
+  --ambient-warm: hsl(32 12% 26%);
   /* toast：抬到中性灰 4 档，与画布（1.96）和面板（1.60）都分得开，白字仍有 9.1:1 */
   --gosslan-hud: rgba(72, 72, 74, 0.92);
   --gosslan-shadow: 0 1px 3px rgba(0, 0, 0, 0.3), 0 4px 12px rgba(0, 0, 0, 0.32);
@@ -523,17 +549,19 @@ body {
 html[data-ambient="off"] .ambient {
   display: none;
 }
-/* 画布层在开启动态背景时让位：每个可见区域只留**一层**很薄的纱（α 0.28），
-   雾从下面透出来。纱的底色由各区域自己的 token 给（`--ambient-canvas-base`），
+/* 画布层在开启动态背景时让位：每个可见区域只留**一层**很薄的纱（`--ambient-veil`，
+   默认 0.16 / 暗 0.14），雾从下面透出来。纱的底色由各区域自己的 token 给（`--ambient-canvas-base`），
    所以会话列表仍是 list 灰、聊天仍是 chat 白/深蓝 —— 层级不会被雾抹平。
    为什么不是全透明：全透明会把聊天画布从 #ffffff 掉到 body 的 #edf1f6，
    那是"背景变灰"的负优化（用户 2025 的原始要求：只能优化不能负优化）。
    为什么不是玻璃 blur：这片雾在动，大面 backdrop-filter 会逐帧重算，撞性能红线。
+   薄纱必须与 α 成对调：α 20%→48% 时薄纱 0.16 是"色看得见、字仍压得住"的交叉点，
+   只抬 α 不降薄纱会让整片发白，只降薄纱不抬 α 会让雾浓到压字。
    嵌套容器用 `ambient-canvas-child`：只清掉自己的实色底，不再叠第二层纱
    （AM-11 的"不许玻璃套玻璃"）。 */
 html[data-ambient="drift"] .ambient-canvas,
 html[data-ambient="static"] .ambient-canvas {
-  background-color: color-mix(in srgb, var(--ambient-canvas-base, var(--gosslan-chat)) 28%, transparent);
+  background-color: color-mix(in srgb, var(--ambient-canvas-base, var(--gosslan-chat)) calc(var(--ambient-veil) * 100%), transparent);
 }
 html[data-ambient="drift"] .ambient-canvas-child,
 html[data-ambient="static"] .ambient-canvas-child {
@@ -545,70 +573,75 @@ html[data-ambient="static"] .ambient-canvas-child {
   border-radius: 50%;
   pointer-events: none;
 }
-/* A：主题色主团，左上。74vw×62vh，跨 3~6vmax 漂移，72s。 */
+/* A：主题色主团，左上。74vw×62vh×scale，跨 3~6vmax 漂移，72s。 */
 .ambient-blob--a {
-  width: 74vw;
-  height: 62vh;
+  width: calc(74vw * var(--ambient-scale));
+  height: calc(62vh * var(--ambient-scale));
   left: 6%;
   top: -12%;
   will-change: transform;
   background: radial-gradient(
     closest-side,
-    color-mix(in srgb, var(--gosslan-primary) calc(var(--ambient-alpha) * 100%), transparent) 0%,
-    color-mix(in srgb, var(--gosslan-primary) calc(var(--ambient-alpha) * 100%), transparent) 42%,
+    color-mix(in srgb, var(--ambient-tint) calc(var(--ambient-alpha) * 100%), transparent) 0%,
+    color-mix(in srgb, var(--ambient-tint) calc(var(--ambient-alpha) * 100%), transparent) 42%,
     transparent 70%
   );
   transform: translate3d(-50%, -50%, 0) scale(1);
   animation: ambient-drift-a 72s -18s var(--gosslan-ease) infinite alternate;
 }
-/* B：主题色副团，右下。68vw×58vh，96s，反向由外向里。 */
+/* B：暖沙副团，右下。68vw×58vh×scale，96s，反向由外向里。
+   第二色相只允许这团暖沙（主色相 + 冷中性 + 暖沙，三层色雾不撞色）。 */
 .ambient-blob--b {
-  width: 68vw;
-  height: 58vh;
-  left: 106%;
-  top: 108%;
+  width: calc(68vw * var(--ambient-scale));
+  height: calc(58vh * var(--ambient-scale));
+  left: 100%;
+  top: 100%;
   will-change: transform;
   background: radial-gradient(
     closest-side,
-    color-mix(in srgb, var(--gosslan-primary) calc(var(--ambient-alpha-b) * 100%), transparent) 0%,
-    color-mix(in srgb, var(--gosslan-primary) calc(var(--ambient-alpha-b) * 100%), transparent) 42%,
+    color-mix(in srgb, var(--ambient-warm) calc(var(--ambient-alpha) * 100%), transparent) 0%,
+    color-mix(in srgb, var(--ambient-warm) calc(var(--ambient-alpha) * 100%), transparent) 42%,
     transparent 72%
   );
-  transform: translate3d(2.5vmax, 2vmax, 0) scale(1.04);
+  /* ⚠️ 必须带 -50% 居中：left/top 定的是**元素左上角**，少了它整团会画到视口外。
+     B/C 两团 2026-11-05 实测就因为这个一直不可见（C 的实际圆心在 x≈1592 > 1280，
+     B 在 (1923,1165)），"只有 A 一团"就是用户看到"背景太浅"的真因。 */
+  transform: translate3d(-50%, -50%, 0) scale(1.04);
   animation: ambient-drift-b 96s -42s var(--gosslan-ease) infinite alternate;
 }
-/* C：冷蓝灰团，右上。56vw×48vh，120s；不跟主题色，避免三团同色化成单色渐变。 */
+/* C：冷蓝灰团，右上。56vw×48vh×scale，120s；不跟主题色，避免三团同色化成单色渐变。 */
 .ambient-blob--c {
-  width: 56vw;
-  height: 48vh;
+  width: calc(56vw * var(--ambient-scale));
+  height: calc(48vh * var(--ambient-scale));
   left: 88%;
   top: 18%;
   will-change: transform;
   background: radial-gradient(
     closest-side,
-    color-mix(in srgb, var(--ambient-cold) calc(var(--ambient-alpha-c) * 100%), transparent) 0%,
-    color-mix(in srgb, var(--ambient-cold) calc(var(--ambient-alpha-c) * 100%), transparent) 42%,
+    color-mix(in srgb, var(--ambient-tint-cold) calc(var(--ambient-alpha) * 100%), transparent) 0%,
+    color-mix(in srgb, var(--ambient-tint-cold) calc(var(--ambient-alpha) * 100%), transparent) 42%,
     transparent 72%
   );
-  transform: translate3d(0, 2vmax, 0) scale(1);
+  transform: translate3d(-50%, calc(-50% + 2vmax), 0) scale(1);
   animation: ambient-drift-c 120s -66s var(--gosslan-ease) infinite alternate;
 }
 /* D：静态底洗，只铺不均匀的底、不参与动画（AM-02 的"运行中 ≤3"就靠它）。 */
 .ambient-blob--d {
-  width: 84vw;
-  height: 72vh;
+  width: calc(84vw * var(--ambient-scale));
+  height: calc(72vh * var(--ambient-scale));
   left: 40%;
   top: 55%;
   background: radial-gradient(
     closest-side,
-    color-mix(in srgb, var(--gosslan-primary) calc(var(--ambient-alpha-d) * 100%), transparent) 0%,
-    color-mix(in srgb, var(--gosslan-primary) calc(var(--ambient-alpha-d) * 100%), transparent) 42%,
+    color-mix(in srgb, var(--ambient-tint) calc(var(--ambient-alpha-d) * 100%), transparent) 0%,
+    color-mix(in srgb, var(--ambient-tint) calc(var(--ambient-alpha-d) * 100%), transparent) 42%,
     transparent 74%
   );
   transform: translate3d(-50%, -50%, 0);
 }
 /* 噪点：96×96 可平铺 PNG（3064 B，见 evidence 的 dist 记录）。不参与动画。
-   亮度压在 alpha/2（亮 3% / 暗 3.5%），只负责消色带，不做画面主角。 */
+   亮度**固定** 3%（暗 4%），不再从 α 除 —— α 从 6% 抬到 40% 后，α/2 会变成 20% 的脏噪点。
+   它只负责消色带，不做画面主角。 */
 .ambient-grain {
   position: absolute;
   inset: 0;
@@ -616,7 +649,10 @@ html[data-ambient="static"] .ambient-canvas-child {
   background-image: url("./assets/ambient-noise.png");
   background-repeat: repeat;
   background-size: 96px 96px;
-  opacity: calc(var(--ambient-alpha) / 2);
+  opacity: 0.03;
+}
+.dark .ambient-grain {
+  opacity: 0.04;
 }
 
 /* 关键帧只允许 transform / opacity（AM-03 的机器判据按这个白名单扫）。 */
@@ -630,18 +666,18 @@ html[data-ambient="static"] .ambient-canvas-child {
 }
 @keyframes ambient-drift-b {
   from {
-    transform: translate3d(2.5vmax, 2vmax, 0) scale(1.04);
+    transform: translate3d(calc(-50% + 2.5vmax), calc(-50% + 2vmax), 0) scale(1.04);
   }
   to {
-    transform: translate3d(0, 0, 0) scale(1);
+    transform: translate3d(-50%, -50%, 0) scale(1);
   }
 }
 @keyframes ambient-drift-c {
   from {
-    transform: translate3d(0, 2vmax, 0) scale(1);
+    transform: translate3d(-50%, calc(-50% + 2vmax), 0) scale(1);
   }
   to {
-    transform: translate3d(-2vmax, 1vmax, 0) scale(1.03);
+    transform: translate3d(calc(-50% - 2vmax), calc(-50% + 1vmax), 0) scale(1.03);
   }
 }
 
