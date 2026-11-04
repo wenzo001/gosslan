@@ -1121,6 +1121,8 @@ fn settings_write_failure_is_an_error_not_a_silent_noop() {
 /// 这条判据钉住"这条命令只做三件事"（记 hint + macOS 菜单 + 重建托盘菜单），谁想"顺手补个广播"就红。
 /// 托盘那条是 2026-11-03 补的：菜单文案只在启动时按当时语言建一次，不重建的话切到英文后
 /// 托盘会一直挂着中文。
+/// 窗口标题那条第 4 件事是 2026-11-04 补的：`tauri.conf.json` 的静态标题只有英文默认值，
+/// 不在这里跟着语言改，中文环境的原生窗口标题会一直是 "Gosslan"。
 #[test]
 fn set_ui_language_stays_silent_to_avoid_the_event_ping_pong() {
     let src = include_str!("commands/settings.rs");
@@ -1158,6 +1160,11 @@ fn set_ui_language_stays_silent_to_avoid_the_event_ping_pong() {
     assert!(
         code.contains("crate::tray::refresh_for_language(&app);"),
         "切换语言后必须重建托盘菜单/tooltip，否则英文界面会一直挂着中文托盘"
+    );
+    assert!(
+        code.contains("set_title(&state.display_name())"),
+        "窗口标题必须跟着语言走（中文「小院儿」/ 英文 Gosslan）；\
+         少了这一句，中文环境的原生窗口标题会永远停在 tauri.conf.json 的静态英文"
     );
 }
 

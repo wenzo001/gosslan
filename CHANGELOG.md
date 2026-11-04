@@ -14,6 +14,17 @@
 
 ## [Unreleased]
 
+## [5.17.39] - 2026-11-04
+
+### 修复：原生窗口标题随界面语言
+
+- 中文环境窗口标题显示「小院儿」，英文环境显示 `Gosslan`；切换语言立即同步，
+  重启后由启动路径的 `set_ui_language` 再次对齐（`tauri.conf.json` 的静态标题只作英文默认值）。
+  用户可感知：任务栏/窗口列表里的应用名与界面语言一致。
+  回退：删掉 `settings.rs` 里 `win.set_title(&state.display_name())` 那一段即可。
+  证据：`cargo test --features bluetooth --lib set_ui_language` → 1 passed
+  （并新增源码判据 `set_title(&state.display_name())`，删掉这句会红）。
+
 ## [5.17.38] - 2026-11-04
 
 ### 修复：窗口焦点抖动不再把蓝牙扫描节奏带着跑
