@@ -353,7 +353,7 @@
   取证方式：对运行中的源库 `VACUUM INTO` 一份只读一致性快照（源库 mtime 前后不变，
   仍 `Oct 19 09:24`），快照置 `user_version=10` 后跑
   `real_data_copy_replays_migration_without_losing_rows`（见
-  `src/db/migration_tests.rs:2019`）：
+  `src-tauri/src/db/migration_tests.rs` 的 `real_data_copy_replays_migration_without_losing_rows`）：
   退出 0，`drill ok: tables=19 total_rows=340`，迁移前自动落备份
   `gosslan-copy.pre-v10-to-v11-<pid>-<ts>.db`（**v10/19 表/integrity=ok**）。
   **迁移前后逐表独立复算完全一致**：messages 93、friends 3、groups 1、group_members 4、
