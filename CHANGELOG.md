@@ -14,6 +14,32 @@
 
 ## [Unreleased]
 
+## [5.18.21] - 2026-11-05
+
+### 背景动态（Ambient Motion）：极慢色雾 + 细颗粒 + 主操作按压涟漪
+
+- L0 环境层从单张静态 `radial-gradient` 升级为 **4 团色雾**：3 团漂移（72s / 96s / 120s，
+  `ease-in-out` + `alternate`，负延迟 -18s / -42s / -66s）+ 1 团静态底洗；只动 `transform`，
+  不碰 `filter` / `blur` / `background-position`。透明度收敛到单一变量 `--ambient-alpha`
+  （亮 6% / 暗 7%，B/C/D 按 2/3、1/3 派生），改一处即可全局调档。
+- 色相只取两类：`--gosslan-primary` 主光 + 冷中性灰蓝（亮 `#7c93b3` / 暗 `#5b7fb3`），
+  不引入语义色（成功/警告/危险），避免与用户可选主题色撞色。
+- 画布改为「薄纱」（`color-mix(base 28%, transparent)`）：玻璃采样到的是会动的雾，
+  而不是纯平色；嵌套容器用 `.ambient-canvas-child` 只清实底，不叠第二层纱。
+- 细颗粒：新增 96×96 可平铺索引 PNG（3064 B），`opacity: calc(var(--ambient-alpha) / 2)`，
+  不参与任何动画；Vite 内联阈值内 ⇒ 以 base64 进 CSS（约 +4.1 KB），dist 总计 +12 KB。
+- 按压涟漪 `v-press-ripple`：只挂主按钮（`PrimaryBtn`）、危险主操作（`DangerBtn`）与发送键，
+  560ms / `scale .55→1.25` / `opacity .12→0`，同屏最多 2 个；不给所有按钮。
+- 设置新增 `设置 › 外观 › 背景动效`（`关闭 / 缓慢流动`，默认缓慢流动），中英文案齐全；
+  设置里其它排布未改。
+- 降级：`prefers-reduced-motion: reduce` 冻结在初始帧（`animation: none`，动画数归零）；
+  `prefers-reduced-transparency` / `prefers-contrast: more` / `forced-colors: active` 整层隐藏；
+  `document.hidden` 时 `animation-play-state: paused`。
+- `designGuards` 新增 `checkAmbientMotion`（AM-01…AM-12 共 12 条），附四组反例自证：
+  动画属性换成 `filter: blur()`、多加第 5 团、删 visibility 监听、reduce 档只改时长不 freeze，
+  各自必须报红。`scripts/check-ui-runtime.mjs` 新增 `ambient` 段，产出开关 × 亮暗四组截图
+  与动画/性能读数。
+
 ## [5.18.20] - 2026-11-05
 
 ### 玻璃材质层与控件色值收敛（只改材质，不改布局与交互）

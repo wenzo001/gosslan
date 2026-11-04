@@ -827,7 +827,7 @@ function onResizeEnd() {
         （亮色 #edf1f6 ≈ 白），表现为「窗口角上有一道白缝」，关闭键 hover 成红色后尤其刺眼，
         最大化时四角全会出现。圆角交给系统 = 曲线唯一、严丝合缝。 -->
     <div
-    class="relative flex w-full flex-col overflow-hidden bg-[var(--gosslan-caption)] font-gosslan text-[var(--gosslan-text)]"
+    class="ambient-canvas-child relative flex w-full flex-col overflow-hidden bg-[var(--gosslan-caption)] font-gosslan text-[var(--gosslan-text)]"
     :class="app.isMobile
       ? 'h-dvh'
       : 'h-screen ring-1 ring-inset ring-[var(--gosslan-window-ring)]'"
@@ -866,7 +866,8 @@ function onResizeEnd() {
          离屏面板用 `inert` 摘掉焦点与交互（键盘 Tab 不进不可见面板）。 -->
     <aside
       v-if="app.isMobile || !favoritesOpen"
-      class="h-full shrink-0 overflow-hidden bg-[var(--gosslan-list)]"
+      class="ambient-canvas h-full shrink-0 overflow-hidden bg-[var(--gosslan-list)]"
+      style="--ambient-canvas-base: var(--gosslan-list)"
       :class="app.isMobile
         ? 'absolute inset-y-0 left-0 z-10 w-full ' +
           (paneAnimate ? 'transition-transform duration-[var(--gosslan-duration)] ease-[var(--gosslan-ease)] ' : '') +
@@ -928,7 +929,8 @@ function onResizeEnd() {
          ⚠️ 主区**一律直角**，不加 `rounded-tl`（用户 2026-09-20：「最右边栏的左上角都有个圆角」）——
          之前主区在非整页态带 `rounded-tl`，会在每个页面主区左上角留一个缺角。 -->
     <main
-      class="flex h-full min-w-0 flex-1 flex-col bg-[var(--gosslan-chat)]"
+      class="ambient-canvas flex h-full min-w-0 flex-1 flex-col bg-[var(--gosslan-chat)]"
+      style="--ambient-canvas-base: var(--gosslan-chat)"
       :class="[
         app.isMobile
           ? 'absolute inset-y-0 left-0 z-20 w-full ' +

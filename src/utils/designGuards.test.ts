@@ -28,6 +28,7 @@ import {
   countPreWrapSites,
   checkTextFieldFocusRing,
   checkGlassTiers,
+  checkAmbientMotion,
   checkSelectionContract,
   findNestedThemeRuleIssues,
   findHandRolledSegmentLoops,
@@ -4405,6 +4406,10 @@ function domPhase(opts: string): "capture" | "bubble" | "dyn" {
  */
 const DOM_ONE_SHOT_FILES: { file: string; who: string }[] = [
   { file: "boot/boot.ts", who: "启动期全局错误上报与 boot 卸载：早于任何组件，活到窗口关闭" },
+  {
+    file: "utils/ambient.ts",
+    who: "环境动态层：installed 旗标保证每窗口只装一次，visibilitychange / resize 活到窗口关闭（没有第二次挂载）",
+  },
   { file: "i18n/index.ts", who: "系统语言变化监听：模块单例，一份窗口一个" },
   { file: "composables/useBackLayer.ts", who: "popstate 由 installed 旗标保证全窗只挂一次" },
   {
@@ -6545,3 +6550,71 @@ test("添加好友页：复制邀请常驻 + 整行灰显 + 邀请文案不承�
   assert.ok(dict("en-us.ts").includes("once they add you"), "英文邀请文案缺少能力说明");
 });
 
+
+// ---------------- AM：环境动态层（docs/design-language/ambient-motion.md） ----------------
+
+function ambientCss() {
+  return readFileSync(join(import.meta.dirname, "..", "style.css"), "utf8");
+}
+
+function ambientSources() {
+  return {
+    css: ambientCss(),
+    ambientSource: readFileSync(join(import.meta.dirname, "..", "utils", "ambient.ts"), "utf8"),
+    rippleSource: readFileSync(join(import.meta.dirname, "..", "directives", "pressRipple.ts"), "utf8"),
+  };
+}
+
+test("AM-01…12：现树 style.css 必须 0 条报红", () => {
+  assert.deepEqual(checkAmbientMotion(ambientSources()), []);
+});
+
+test("AM-03 反例自证：把关键帧里的 transform 换成 filter: blur() 必须红", () => {
+  const css = ambientCss().replace(
+    /(@keyframes ambient-drift-a\s*\{\s*from\s*\{\s*)transform/,
+    "$1filter: blur(8px);\n    transform",
+  );
+  const issues = checkAmbientMotion({ ...ambientSources(), css });
+  assert.ok(issues.some((x) => x.message.includes("AM-03")), `期望 AM-03 报红，实际：${JSON.stringify(issues)}`);
+});
+
+test("AM-01 反例自证：加第 5 团必须红", () => {
+  const css = `${ambientCss()}\n.ambient-blob--e { width: 10vw; height: 10vh; }\n`;
+  const issues = checkAmbientMotion({ ...ambientSources(), css });
+  assert.ok(issues.some((x) => x.message.includes("AM-01")), `期望 AM-01 报红，实际：${JSON.stringify(issues)}`);
+});
+
+test("AM-05 反例自证：删掉 visibilitychange 监听必须红", () => {
+  const src = ambientSources();
+  const ambientSource = src.ambientSource.replace(/document\.addEventListener\("visibilitychange", syncHidden\);/, "");
+  const issues = checkAmbientMotion({ ...src, ambientSource });
+  assert.ok(issues.some((x) => x.message.includes("AM-05")), `期望 AM-05 报红，实际：${JSON.stringify(issues)}`);
+});
+
+test("AM-06 反例自证：reduce 档只改时长不冻结必须红", () => {
+  const css = ambientCss().replace(/animation: none !important;/g, "animation-duration: 30s !important;");
+  const issues = checkAmbientMotion({ ...ambientSources(), css });
+  assert.ok(issues.some((x) => x.message.includes("AM-06")), `期望 AM-06 报红，实际：${JSON.stringify(issues)}`);
+});
+
+/**
+ * AM-09 全库扫描：`v-press-ripple` 只许出现在主按钮、危险主按钮与发送键。
+ * 为什么不是"逐个点按钮验一遍"：全站按钮都起涟漪仍能通过任何单点判据，
+ * 而用户明确要求"不要给所有按钮"（廉价特效）。这里钉的是**接线面**，
+ * 多接一处（哪怕是次要图标键）就该报红。
+ */
+test("AM-09：v-press-ripple 只挂在主按钮与发送键", () => {
+  const srcDir = join(import.meta.dirname, "..");
+  const allowed = new Set([
+    "components/ui/PrimaryBtn.vue",
+    "components/ui/DangerBtn.vue",
+    "components/chat/MessageComposer.vue",
+  ]);
+  const hits: string[] = [];
+  for (const f of collectVueFiles(srcDir)) {
+    const rel = f.replace(srcDir + "/", "");
+    if (/v-press-ripple/.test(readFileSync(f, "utf8"))) hits.push(rel);
+  }
+  assert.deepEqual(hits.sort(), [...allowed].sort(),
+    `涟漪只许挂在这三处；实际：${hits.join(", ")}`);
+});

@@ -42,7 +42,8 @@ watch(dark, applyShape);
 
 <template>
   <div
-    class="flex h-screen flex-col overflow-hidden bg-[var(--gosslan-app-bg)] font-gosslan text-[var(--gosslan-text)] ring-1 ring-inset ring-[var(--gosslan-window-ring)]"
+    class="ambient-canvas flex h-screen flex-col overflow-hidden bg-[var(--gosslan-app-bg)] font-gosslan text-[var(--gosslan-text)] ring-1 ring-inset ring-[var(--gosslan-window-ring)]"
+    style="--ambient-canvas-base: var(--gosslan-app-bg)"
   >
     <TitleBar :title="title" :show-maximize="false" :close-to-tray="false" />
     <slot />

@@ -27,6 +27,7 @@ withDefaults(
 
 <template>
   <button
+    v-press-ripple
     :type="type"
     :disabled="disabled"
     :aria-label="ariaLabel"

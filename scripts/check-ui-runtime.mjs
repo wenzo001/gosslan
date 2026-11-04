@@ -650,6 +650,10 @@ window.__probe = (() => {
       window.__qc = new Q.QueryClient();
       app.use(Q.VueQueryPlugin, { queryClient: window.__qc });
     }
+    // 与 boot 对齐：v-press-ripple 由 createWindowApp 注册，夹具 app 也要装同一份实现，
+    // 否则挂出来的主按钮/发送键没有 .press-ripple-host，涟漪判据读到的只是"根本没接上"。
+    const dirMod = await import('/src/directives/pressRipple.ts');
+    app.directive('press-ripple', dirMod.vPressRipple);
     app.mount(host);
     window.__probe.vue = Vue;
     window.__probe.state = state;
@@ -3380,6 +3384,7 @@ async function main() {
     const vlist = want("vlist");
     const leak = want("leak");
     const perf = want("perf");
+    const ambient = want("ambient");
     const favorites = want("favorites");
     const links = want("links");
     const diag = want("diag");
@@ -3605,6 +3610,7 @@ async function main() {
     await runSegment("vlist", vlist, () => runVirtualList(cdp, url));
     await runSegment("leak", leak, () => runLeak(cdp, url));
     await runSegment("perf", perf, () => runPerf(cdp, url));
+    await runSegment("ambient", ambient, () => runAmbient(cdp, url));
     await runSegment("favorites", favorites, () => runFavorites(cdp, url));
     await runSegment("namecap", namecap, () => runNameCap(cdp, url));
     await runSegment("friendfilter", friendfilter, () => runFriendFilter(cdp, url));
@@ -11052,6 +11058,501 @@ async function runPerf(cdp, url) {
     "long ≤ 10", JSON.stringify(scroll));
   check("perf：空闲 3 s 渲染进程 CPU ≤ 600 ms（回归护栏，实测 31 ms）",
     idleCpuMs != null && idleCpuMs <= 600, "≤600 ms / 3 s", "idleCpuMs=" + idleCpuMs);
+}
+
+
+/**
+ * 环境动态层（docs/design-language/ambient-motion.md）的**运行时**判据。
+ *
+ * 静态契约（色团数、关键帧属性、visibility 监听、reduce `animation: none`、PNG 噪点…）
+ * 在 `designGuards.checkAmbientMotion`；这里只量静态判据读不到的东西：
+ * 真实合成器上的动画清点、隐藏后 running=0、reduce 冻结、降级隐藏、
+ * 涟漪接线、对比度、空闲 CPU / 滚动帧、以及用户要拿去肉眼定 α 的五张对比图。
+ *
+ * 为什么截图也从这里出：五张图的取值（α、明暗）必须与探针读到的同一份 CSS 变量
+ * 是同一时刻的同一状态，否则"图好看"和"读数合规"会悄悄变成两件事。
+ */
+async function runAmbient(cdp, url) {
+  const shotDir = path.join(ROOT, "test-results", "ambient-shots");
+  fs.mkdirSync(shotDir, { recursive: true });
+  const shots = [];
+  const shot = async (name) => {
+    const img = await cdp.send("Page.captureScreenshot", { format: "png" });
+    const p = path.join(shotDir, `${name}.png`);
+    fs.writeFileSync(p, Buffer.from(img.data, "base64"));
+    shots.push(p);
+    return p;
+  };
+  /** 把 α 旋钮直接写在 <html> 上（单一变量 ⇒ 四个派生档一起变），并返回实际生效值。 */
+  const setAmbient = (mode, alpha) => cdp.eval(`(() => {
+    const h = document.documentElement;
+    h.dataset.ambient = ${JSON.stringify(mode)};
+    if (${alpha == null}) h.style.removeProperty('--ambient-alpha');
+    else h.style.setProperty('--ambient-alpha', '${alpha ?? 0}');
+    const root = document.querySelector('.ambient');
+    return {
+      mode: h.dataset.ambient,
+      alpha: getComputedStyle(h).getPropertyValue('--ambient-alpha').trim(),
+      display: root ? getComputedStyle(root).display : '(no-root)',
+    };
+  })()`);
+  const readAmbient = () => cdp.eval(`(() => {
+    const root = document.querySelector('.ambient');
+    const blobs = [...document.querySelectorAll('.ambient-blob')];
+    const grain = document.querySelector('.ambient-grain');
+    const anims = root ? root.getAnimations({ subtree: true }) : [];
+    const ALLOW = new Set(['transform', 'opacity', 'offset', 'computedOffset', 'easing', 'composite']);
+    const details = anims.map((a) => {
+      const kf = a.effect ? a.effect.getKeyframes() : [];
+      const props = new Set();
+      for (const f of kf) { for (const k of Object.keys(f)) props.add(k); }
+      return {
+        target: a.effect && a.effect.target ? String(a.effect.target.className).replace(/\\s+/g, '.') : '',
+        type: a.constructor ? a.constructor.name : '',
+        duration: a.effect ? a.effect.getTiming().duration : null,
+        badProps: [...props].filter((p) => !ALLOW.has(p)),
+      };
+    });
+    const cs = root ? getComputedStyle(root) : null;
+    return {
+      root: !!root,
+      blobs: blobs.length,
+      blobSizes: blobs.map((b) => ({ w: b.offsetWidth, h: b.offsetHeight })),
+      grains: grain ? 1 : 0,
+      total: anims.length,
+      running: anims.filter((a) => a.playState === 'running').length,
+      details,
+      display: cs ? cs.display : null,
+      mode: document.documentElement.dataset.ambient || '',
+      pageHidden: document.documentElement.dataset.pageHidden || '',
+      alpha: getComputedStyle(document.documentElement).getPropertyValue('--ambient-alpha').trim(),
+      blobAnimation: blobs.map((b) => ({
+        cls: b.className,
+        name: getComputedStyle(b).animationName,
+        play: getComputedStyle(b).animationPlayState,
+      })),
+      globalRunning: document.getAnimations().filter((a) => a.playState === 'running').length,
+    };
+  })()`);
+
+  await cdp.send("Page.bringToFront").catch(() => {});
+  await cdp.send("Emulation.setDeviceMetricsOverride", {
+    width: 1280, height: 800, deviceScaleFactor: 1, mobile: false,
+  }).catch(() => {});
+  await cdp.send("Emulation.setEmulatedMedia", { features: [] }).catch(() => {});
+  await cdp.send("Page.navigate", { url });
+  await cdp.settled();
+  await sleep(2_500);
+  await cdp.eval(PAGE_FIXTURE);
+
+  // 环境层由 boot 的 createWindowApp 安装；dev 页若 boot 没走到那一步，用**同一份实现**补装，
+  // 保证读数来自产品实现，而不是夹具手搭的假层。
+  const installed = await cdp.eval(`(async () => {
+    if (!document.querySelector('.ambient')) {
+      const A = await import('/src/utils/ambient.ts');
+      A.installAmbient();
+    }
+    return {
+      root: !!document.querySelector('.ambient'),
+      blobs: document.querySelectorAll('.ambient-blob').length,
+      grains: document.querySelectorAll('.ambient-grain').length,
+    };
+  })()`);
+  check("ambient：环境层由真实实现装上（4 团 + 1 颗粒）",
+    installed && installed.root === true && installed.blobs === 4 && installed.grains === 1,
+    "root / blobs=4 / grains=1", JSON.stringify(installed));
+
+  await cdp.eval(`(() => {
+    window.__TAURI_INTERNALS__ = window.__TAURI_INTERNALS__ || {
+      metadata: { currentWindow: { label: 'main' }, currentWebview: { label: 'main', windowLabel: 'main' } },
+      invoke: async () => null, transformCallback: (cb) => cb, convertFileSrc: (p) => p,
+    };
+    if (!window.__TAURI_EVENT_PLUGIN_INTERNALS__) {
+      window.__TAURI_EVENT_PLUGIN_INTERNALS__ = { unregisterListener: () => {} };
+    }
+  })()`);
+
+  // 挂主聊天（保留环境层：install 会清 body，先把 .ambient 拿出来，挂完再放回首个子节点）
+  const mounted = await cdp.eval(`(async () => {
+    const amb = document.querySelector('.ambient');
+    const r = await window.__probe.install('/src/components/ChatWindow.vue', '', '{"hostHeight":"760px"}');
+    if (amb) document.body.insertBefore(amb, document.body.firstChild);
+    // 夹具体外没有 ResponsiveLayout 的 <main>，这里补上**同一层**画布纱（base=chat），
+    // 否则截图读到的是"没有纱"的 body 灰，会和真窗口里的观感差一档。
+    const host = document.getElementById('probe-host');
+    if (host) {
+      host.className = (host.className + ' ambient-canvas').trim();
+      host.style.setProperty('--ambient-canvas-base', 'var(--gosslan-chat)');
+      host.style.background = '';
+    }
+    return r;
+  })()`);
+  check("ambient：主聊天夹具挂载成功（后面的读数先有分母）", !!mounted && mounted.ok === true,
+    "install ok", JSON.stringify(mounted));
+  await cdp.eval("window.__probe.seedDevice('dev-me')");
+
+  const seeded = await cdp.eval(`(async () => {
+    const { useChatStore } = await import('/src/stores/useChatStore.ts');
+    const chat = useChatStore();
+    const conv = 'peer-demo';
+    chat.conversations = [{ id: conv, kind: 'direct', name: '林岸', avatar: null,
+      last_msg: '晚点把图发你', last_ts: 1700000000000, unread: 0, mentioned: 0, pinned: 0, muted: 0 }];
+    const rows = [];
+    for (let i = 0; i < 160; i += 1) {
+      const seq = i + 1;
+      const mine = i % 2 === 1;
+      rows.push({ id: seq, msg_id: 'm-amb-' + seq, local_id: 'm-amb-' + seq, conv_id: conv,
+        sender_id: mine ? 'dev-me' : 'peer-demo', sender_name: mine ? '我' : '林岸',
+        receiver_id: mine ? 'peer-demo' : 'dev-me', kind: 'text',
+        content: mine ? ('今天试了下新背景，动得很慢。' + seq) : ('像玻璃后面的雾，不抢内容。' + seq),
+        status: 'sent', seq, ts: 1700000000000 + seq * 1000 });
+    }
+    chat.activeConv = conv;
+    chat.messages[conv] = rows;
+    await new Promise((r) => setTimeout(r, 900));
+    return { ok: true, rows: rows.length, scroller: !!document.querySelector('.vlist-no-anchor') };
+  })()`);
+  check("ambient：主聊天有可滚动内容（性能读数与截图用同一份）",
+    seeded && seeded.ok === true && seeded.scroller === true, "ok + scroller", JSON.stringify(seeded));
+
+  await setAppearance(cdp, false);
+  await setAmbient("drift", null);
+  await sleep(500);
+
+  // ── ① 动画清点 ────────────────────────────────────────────────
+  const st = await readAmbient();
+  console.log("  ℹ ambient 清点 → " + JSON.stringify({
+    blobs: st.blobs, sizes: st.blobSizes, total: st.total, running: st.running,
+    alpha: st.alpha, globalRunning: st.globalRunning, details: st.details,
+    blobAnimation: st.blobAnimation,
+  }));
+  check("ambient：AM-01 四个色团都在且有实际尺寸",
+    st.blobs === 4 && st.blobSizes.every((s) => s.w > 0 && s.h > 0),
+    "blobs=4 且每个 w/h > 0", JSON.stringify(st.blobSizes));
+  check("ambient：AM-02 常驻动画 = 3（A/B/C；D 静态）",
+    st.running === 3 && st.details.length === 3
+      && st.blobAnimation.filter((b) => b.name !== "none").length === 3
+      && st.blobAnimation.some((b) => b.cls.includes("ambient-blob--d") && b.name === "none"),
+    "running=3 / D animationName=none",
+    JSON.stringify({ running: st.running, anim: st.blobAnimation }));
+  check("ambient：AM-03 动画属性只含 transform/opacity",
+    st.details.every((d) => d.badProps.length === 0),
+    "badProps 全空", JSON.stringify(st.details.map((d) => d.badProps)));
+  check("ambient：AM-04 常驻动画全部由 CSS 合成器驱动（非逐帧 JS）",
+    st.details.every((d) => d.type === "CSSAnimation"), "type=CSSAnimation",
+    JSON.stringify(st.details.map((d) => d.type)));
+  check("ambient：同屏环境层动画元素 ≤ 6（当前 3；页面其它动画只记录不判）",
+    st.running <= 6 && st.details.length <= 6, "环境层 ≤6",
+    JSON.stringify({ ambientRunning: st.running, globalRunning: st.globalRunning }));
+
+  // ── ② 首帧不跳变（0% 关键帧 == 静态基准位移）──────────────────
+  const initFrame = await cdp.eval(`(() => {
+    const a = document.querySelector('.ambient-blob--a');
+    const anim = a.getAnimations()[0];
+    if (!anim) return { ok: false, why: 'no-animation' };
+    const fromStr = anim.effect.getKeyframes()[0].transform;
+    a.style.animation = 'none';
+    const base = getComputedStyle(a).transform;
+    a.style.animation = '';
+    const tmp = document.createElement('div');
+    tmp.style.cssText = 'position:absolute;left:-9999px;top:0;width:' + a.offsetWidth
+      + 'px;height:' + a.offsetHeight + 'px;transform:' + fromStr;
+    document.body.appendChild(tmp);
+    const fromM = getComputedStyle(tmp).transform;
+    tmp.remove();
+    const nums = (s) => (s.match(/-?\\d+(?:\\.\\d+)?/g) || []).map(Number);
+    const a1 = nums(base), b1 = nums(fromM);
+    const diff = Math.max(...a1.map((n, i) => Math.abs(n - (b1[i] ?? 0))));
+    return { ok: true, fromStr, base, fromM, diff };
+  })()`);
+  check("ambient：AM-12 首帧不跳变（0% 关键帧与静态 transform 同位）",
+    initFrame && initFrame.ok === true && initFrame.diff <= 1,
+    "矩阵各分量差 ≤ 1px", JSON.stringify(initFrame));
+
+  // ── ③ 隐藏页面：10 s 后 running = 0，恢复后回到 3 ─────────────
+  const pin = await cdp.eval(`(() => {
+    const pin = (h, s) => {
+      Object.defineProperty(document, 'hidden', { configurable: true, get: () => h });
+      Object.defineProperty(document, 'visibilityState', { configurable: true, get: () => s });
+    };
+    window.__ambVisRestore = () => {
+      delete document.hidden;
+      delete document.visibilityState;
+      document.dispatchEvent(new Event('visibilitychange'));
+    };
+    pin(true, 'hidden');
+    document.dispatchEvent(new Event('visibilitychange'));
+    return { hidden: document.hidden, state: document.visibilityState };
+  })()`);
+  await sleep(10_000);
+  const hidden = await readAmbient();
+  check("ambient：document.hidden 后 10 s 活动动画 = 0",
+    hidden.running === 0 && hidden.pageHidden === "true" && hidden.blobAnimation.every((b) => b.play === "paused"),
+    "running=0 / data-page-hidden=true / animation-play-state=paused",
+    JSON.stringify({ running: hidden.running, pageHidden: hidden.pageHidden,
+      play: hidden.blobAnimation.map((b) => b.play) }));
+  await cdp.eval("window.__ambVisRestore()");
+  await sleep(400);
+  const resumed = await readAmbient();
+  check("ambient：回到前台后动画恢复（running 回到 3）", resumed.running === 3, "running=3",
+    "running=" + resumed.running);
+
+  // ── ④ reduce：冻结在初始帧（getAnimations 归零 + animation:none）────
+  await cdp.send("Emulation.setEmulatedMedia", {
+    features: [{ name: "prefers-reduced-motion", value: "reduce" }],
+  });
+  await sleep(350);
+  const reduced = await readAmbient();
+  const reduceMatch = await cdp.eval("matchMedia('(prefers-reduced-motion: reduce)').matches");
+  check("ambient：AM-06 reduce 档冻结（getAnimations=0 且 animationName=none）",
+    reduceMatch === true && reduced.total === 0 && reduced.blobAnimation.every((b) => b.name === "none"),
+    "total=0 / animationName=none", JSON.stringify({ reduceMatch, total: reduced.total,
+      anim: reduced.blobAnimation.map((b) => b.name) }));
+
+  // ── ⑤ reduced-transparency / 高对比 / 强制色：整层隐藏 ──────────
+  await cdp.send("Emulation.setEmulatedMedia", {
+    features: [{ name: "prefers-reduced-transparency", value: "reduce" }],
+  });
+  await sleep(300);
+  const noTransparency = await readAmbient();
+  check("ambient：AM-07 prefers-reduced-transparency → .ambient display:none",
+    noTransparency.display === "none", "display=none", "display=" + noTransparency.display);
+  await cdp.send("Emulation.setEmulatedMedia", {
+    features: [{ name: "prefers-contrast", value: "more" }],
+  });
+  await sleep(300);
+  const noContrast = await readAmbient();
+  check("ambient：AM-07 prefers-contrast:more → .ambient display:none",
+    noContrast.display === "none", "display=none", "display=" + noContrast.display);
+  await cdp.send("Emulation.setEmulatedMedia", { features: [] });
+  await sleep(300);
+  await setAmbient("drift", null);
+  await sleep(300);
+
+  // ── ⑥ 噪点资源（≤3 KB / 96×96 可平铺）────────────────────────
+  const grain = await cdp.eval(`(async () => {
+    const uri = '/src/assets/ambient-noise.png';
+    const res = await fetch(uri);
+    const buf = await res.arrayBuffer();
+    let w = 0, h = 0;
+    try {
+      const bmp = await createImageBitmap(new Blob([buf]));
+      w = bmp.width; h = bmp.height;
+    } catch (e) { /* 解码失败就留 0 */ }
+    const g = document.querySelector('.ambient-grain');
+    return { bytes: buf.byteLength, w, h,
+      css: g ? getComputedStyle(g).backgroundImage : '', opacity: g ? getComputedStyle(g).opacity : null };
+  })()`);
+  check("ambient：AM-12 噪点是 ≤3KB 的 96×96 可平铺 PNG（不是 CSS 实时生成）",
+    grain && grain.bytes > 0 && grain.bytes <= 3 * 1024 && grain.w === 96 && grain.h === 96
+      && grain.css.includes("ambient-noise.png"),
+    "≤3072B / 96×96 / 引用 ambient-noise.png", JSON.stringify(grain));
+
+  // ── ⑦ 涟漪：主按钮起、普通按钮不起、560 ms 后自行消失 ─────────
+  const ripple = await cdp.eval(`(async () => {
+    const host = document.querySelector('.press-ripple-host');
+    if (!host) return { ok: false, why: 'no .press-ripple-host' };
+    const plain = [...document.querySelectorAll('button')].find((b) => !b.classList.contains('press-ripple-host'));
+    const fire = (el) => {
+      const r = el.getBoundingClientRect();
+      el.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, pointerId: 1,
+        clientX: r.left + r.width / 2, clientY: r.top + r.height / 2 }));
+    };
+    const before = document.querySelectorAll('.press-ripple').length;
+    fire(host);
+    await new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
+    const node = document.querySelector('.press-ripple');
+    const anim = node ? node.getAnimations()[0] : null;
+    const info = node ? {
+      duration: anim ? anim.effect.getTiming().duration : null,
+      props: anim ? [...new Set(anim.effect.getKeyframes().flatMap((f) => Object.keys(f)))].sort() : [],
+    } : null;
+    const mid = document.querySelectorAll('.press-ripple').length;
+    if (plain) fire(plain);
+    const afterPlain = document.querySelectorAll('.press-ripple').length;
+    await new Promise((r) => setTimeout(r, 800));
+    const end = document.querySelectorAll('.press-ripple').length;
+    return { ok: true, before, mid, afterPlain, end, hostTag: host.tagName,
+      hostClass: String(host.className).slice(0, 40), plainTag: plain ? plain.tagName : null, info };
+  })()`);
+  check("ambient：AM-09 主按钮按下出现涟漪，普通按钮不出现",
+    ripple && ripple.ok === true && ripple.mid >= 1 && ripple.afterPlain === ripple.mid,
+    "mid ≥1 且普通按钮不增量", JSON.stringify(ripple));
+  const rippleProps = (ripple && ripple.info && ripple.info.props ? ripple.info.props : [])
+    .filter((p) => !["composite", "computedOffset", "easing", "offset"].includes(p));
+  check("ambient：AM-09 涟漪 560 ms / 只含 transform|opacity",
+    ripple && ripple.info && ripple.info.duration === 560
+      && rippleProps.length === 2 && rippleProps.includes("transform") && rippleProps.includes("opacity"),
+    "duration=560 / 动画属性只有 transform,opacity",
+    JSON.stringify({ duration: ripple && ripple.info && ripple.info.duration, animated: rippleProps }));
+  check("ambient：AM-09 涟漪自行消失（800 ms 后节点数为 0）",
+    ripple && ripple.end === 0, "end=0", "end=" + (ripple && ripple.end));
+
+  // ── ⑧ 对比度（正文最坏合成底：app-bg + 最大候选 α 的色雾）────────
+  const contrast = await cdp.eval(`(() => {
+    const rgb = (s) => {
+      const m = String(s).match(/[0-9a-f]{6}/i);
+      return m ? [parseInt(m[0].slice(0, 2), 16), parseInt(m[0].slice(2, 4), 16), parseInt(m[0].slice(4, 6), 16)] : null;
+    };
+    const dark = document.documentElement.classList.contains('dark');
+    const cs = getComputedStyle(document.documentElement);
+    const bg = rgb(cs.getPropertyValue('--gosslan-app-bg'));
+    const ink = rgb(cs.getPropertyValue('--gosslan-text-2'));
+    const primary = rgb(cs.getPropertyValue('--gosslan-primary'));
+    const cold = rgb(cs.getPropertyValue('--ambient-cold'));
+    const alpha = dark ? 0.09 : 0.08; // 用户给出的最高候选档，按最坏情况判
+    const over = (base, fg, a) => base.map((b, i) => Math.round(b * (1 - a) + fg[i] * a));
+    const lum = (c) => {
+      const f = c.map((v) => { const s = v / 255; return s <= 0.03928 ? s / 12.92 : Math.pow((s + 0.055) / 1.055, 2.4); });
+      return 0.2126 * f[0] + 0.7152 * f[1] + 0.0722 * f[2];
+    };
+    const ratio = (a, b) => { const l1 = lum(a), l2 = lum(b); const hi = Math.max(l1, l2), lo = Math.min(l1, l2); return (hi + 0.05) / (lo + 0.05); };
+    if (!bg || !ink || !primary || !cold) return { ok: false };
+    return {
+      ok: true, dark, alpha,
+      primary: Number(ratio(over(bg, primary, alpha), ink).toFixed(2)),
+      cold: Number(ratio(over(bg, cold, alpha), ink).toFixed(2)),
+    };
+  })()`);
+  check("ambient：AM-08 亮/暗两套在最坏色雾合成底上正文（次级文字）仍 ≥4.5:1",
+    contrast && contrast.ok === true && contrast.primary >= 4.5 && contrast.cold >= 4.5,
+    "≥4.5（亮 8% / 暗 9% 最坏档）", JSON.stringify(contrast));
+
+  // ── ⑨ 空闲 30 s CPU（渲染进程 TaskDuration 增量）──────────────
+  await cdp.send("Performance.enable").catch(() => {});
+  const task = async () => {
+    const m = await cdp.send("Performance.getMetrics");
+    const hit = (m.metrics || []).find((x) => x.name === "TaskDuration");
+    return hit ? hit.value * 1_000 : null;
+  };
+  const cpuBefore = await task();
+  await sleep(30_000);
+  const cpuAfter = await task();
+  const idleMs = cpuBefore == null || cpuAfter == null ? null : Math.round(cpuAfter - cpuBefore);
+  const idlePct = idleMs == null ? null : Number((idleMs / 30_000 * 100).toFixed(2));
+  console.log("  ℹ ambient 空闲 30 s → " + JSON.stringify({ idleCpuMs: idleMs, idlePct }));
+  check("ambient：空闲 30 s 渲染进程 CPU < 1%（30 s 内 ≤300 ms）",
+    idleMs != null && idleMs <= 300, "≤300 ms / 30 s（<1%）",
+    JSON.stringify({ idleCpuMs: idleMs, idlePct }));
+
+  // ── ⑩ 滚动 1.2 s：drift vs off（p50 不得比 baseline 差超 2 ms）────
+  const scrollRun = async (label) => {
+    const r = await cdp.eval(`(async () => {
+      const sc = document.querySelector('.vlist-no-anchor');
+      if (!sc) return { ok: false };
+      sc.scrollTop = sc.scrollHeight - sc.clientHeight;
+      await new Promise((r) => requestAnimationFrame(r));
+      sc.scrollTop = Math.max(0, sc.scrollTop - 400);
+      await new Promise((r) => requestAnimationFrame(r));
+      // 300 ms 预热：先把"改 scrollTop 引发的同步布局"跑掉，再只量稳态滚动帧。
+      // 不预热时第一帧会把夹具搭建/强制布局算进 delta（实测偶发 67 ms，看起来像环境层卡顿）。
+      await new Promise((resolve) => {
+        const t0 = performance.now();
+        const tick = (t) => {
+          sc.scrollTop = Math.max(0, sc.scrollTop - 240);
+          if (t - t0 < 300) requestAnimationFrame(tick); else resolve();
+        };
+        requestAnimationFrame(tick);
+      });
+      const deltas = [];
+      let last = performance.now();
+      const t0 = last;
+      await new Promise((resolve) => {
+        const tick = (t) => {
+          deltas.push(t - last);
+          last = t;
+          sc.scrollTop = Math.max(0, sc.scrollTop - 240);
+          if (t - t0 < 1_200) requestAnimationFrame(tick); else resolve();
+        };
+        requestAnimationFrame(tick);
+      });
+      const sorted = [...deltas].sort((a, b) => a - b);
+      return {
+        ok: true, frames: deltas.length,
+        long: deltas.filter((d) => d > 50).length,
+        p50: Math.round(sorted[Math.floor(sorted.length * 0.5)] || 0),
+        max: Math.round(sorted[sorted.length - 1] || 0),
+      };
+    })()`);
+    console.log(`  ℹ ambient 滚动（${label}）→ ${JSON.stringify(r)}`);
+    return r;
+  };
+  const scrollDrift = await scrollRun("drift");
+  await setAmbient("off", null);
+  await sleep(300);
+  const scrollOff = await scrollRun("off");
+  await setAmbient("drift", null);
+  await sleep(300);
+  check("ambient：滚动长帧（>50 ms）= 0", scrollDrift && scrollDrift.ok === true && scrollDrift.long === 0,
+    "long=0", JSON.stringify(scrollDrift));
+  check("ambient：滚动 p50 不差于关闭档 +2 ms（且 max ≤ 600 ms）",
+    scrollDrift && scrollOff && scrollDrift.ok && scrollOff.ok
+      && scrollDrift.p50 <= scrollOff.p50 + 2 && scrollDrift.max <= 600,
+    "p50(drift) ≤ p50(off)+2 / max ≤600",
+    JSON.stringify({ drift: scrollDrift, off: scrollOff }));
+
+  // ── ⑪ 五张定值对比图（用户要拿肉眼定 α；含设置页两张）──────────
+  const mainShots = [];
+  await setAppearance(cdp, false);
+  await setAmbient("off", 0.06);
+  await sleep(350);
+  mainShots.push(await shot("01-main-off-light"));
+  await setAmbient("drift", 0.04);
+  await sleep(450);
+  mainShots.push(await shot("02-main-light-a4"));
+  await setAmbient("drift", 0.06);
+  await sleep(450);
+  mainShots.push(await shot("03-main-light-a6"));
+  await setAmbient("drift", 0.08);
+  await sleep(450);
+  mainShots.push(await shot("04-main-light-a8"));
+  await setAppearance(cdp, true);
+  await setAmbient("drift", 0.07);
+  await sleep(500);
+  mainShots.push(await shot("05-main-dark-a7"));
+
+  // 设置页：同一片雾在「外观」页的观感（只量新开关所在行，不改其它排布）
+  await cdp.eval(`(async () => {
+    const amb = document.querySelector('.ambient');
+    const r = await window.__probe.install('/src/components/settings/AppearanceSection.vue', '', '{}');
+    if (amb) document.body.insertBefore(amb, document.body.firstChild);
+    const host = document.getElementById('probe-host');
+    if (host) {
+      host.className = (host.className + ' ambient-canvas').trim();
+      host.style.setProperty('--ambient-canvas-base', 'var(--gosslan-bg)');
+      host.style.padding = '24px';
+    }
+    return r;
+  })()`);
+  const settingsShots = [];
+  await setAppearance(cdp, false);
+  await setAmbient("off", 0.06);
+  await sleep(350);
+  settingsShots.push(await shot("06-settings-off-light"));
+  await setAmbient("drift", 0.06);
+  await sleep(400);
+  settingsShots.push(await shot("07-settings-light-a6"));
+  await setAppearance(cdp, true);
+  await setAmbient("off", 0.07);
+  await sleep(350);
+  settingsShots.push(await shot("08-settings-off-dark"));
+  await setAmbient("drift", 0.07);
+  await sleep(400);
+  settingsShots.push(await shot("09-settings-dark-a7"));
+
+  // 收尾：把 α 旋钮与状态还原成产品默认，别把夹具状态留给后续段（新 tab 也会重置）
+  await cdp.eval(`(() => {
+    const h = document.documentElement;
+    h.style.removeProperty('--ambient-alpha');
+    h.dataset.ambient = 'drift';
+    document.body.style.padding = '';
+  })()`);
+  console.log("  ℹ ambient 截图 → " + JSON.stringify({ main: mainShots, settings: settingsShots }));
+  check("ambient：五张定值对比图落盘（关闭 / 亮4 / 亮6 / 亮8 / 暗7）",
+    mainShots.length === 5 && mainShots.every((p) => fs.existsSync(p)), "5 张", JSON.stringify(mainShots));
+  check("ambient：设置页四张对照图落盘（开/关 × 浅/暗）",
+    settingsShots.length === 4 && settingsShots.every((p) => fs.existsSync(p)), "4 张",
+    JSON.stringify(settingsShots));
 }
 
 

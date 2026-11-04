@@ -14,6 +14,8 @@ pub struct Settings {
     /// 与 `dark_mode` 的关系：`appearance_mode` 是**用户意图**，`dark_mode` 是**解析后的结果**
     /// （跟随系统时由前端按系统偏好解析后回写），二者同时持久化，互不冲突。
     pub appearance_mode: Option<String>,
+    /// 背景动效："off" | "drift"（缺省视为 drift，亮/暗 α 由 CSS 管，不进设置）。
+    pub ambient_motion: Option<String>,
     /// 桌面通知开关（缺省视为开启——否则用户会漏消息且不知道有开关）。
     pub notify_enabled: Option<bool>,
     /// 通知是否显示消息正文（隐私：关掉后只显示"收到新消息"，锁屏/通知中心不泄内容）。
@@ -44,11 +46,12 @@ pub struct Settings {
 
 /// e2ee_enabled 键保留在 reset 链中仅为清理 v0.10.0 及更早版本的残留值；
 /// v0.11.0 起 E2EE 恒开、不可关闭，该键不再被读写。
-const SETTINGS_KEYS: [&str; 15] = [
+const SETTINGS_KEYS: [&str; 16] = [
     "theme_color",
     "font_family",
     "dark_mode",
     "appearance_mode",
+    "ambient_motion",
     "notify_enabled",
     "notify_show_content",
     "remind_sound",
@@ -95,6 +98,12 @@ pub fn settings_patch_values(db: &rusqlite::Connection, changed: &[&str]) -> ser
                 map.insert(
                     key.to_string(),
                     json!(db::get_setting(db, "appearance_mode")),
+                );
+            }
+            "ambientMotion" => {
+                map.insert(
+                    key.to_string(),
+                    json!(db::get_setting(db, "ambient_motion")),
                 );
             }
             // 通知两项的缺省是**开**（与 `get_settings` 同口径），否则"没设置过"会被应用成关闭
@@ -162,6 +171,9 @@ pub fn settings_patch_values(db: &rusqlite::Connection, changed: &[&str]) -> ser
 
 /// appearance_mode 的合法取值：脏值一律忽略（宁可回落"跟随系统"，也不要写进库）。
 const APPEARANCE_MODES: [&str; 3] = ["system", "light", "dark"];
+
+/// ambient_motion 的合法取值：脏值忽略（缺省由前端按 drift 显示）。
+const AMBIENT_MODES: [&str; 2] = ["off", "drift"];
 
 /// language 的合法取值：脏值一律忽略（回落"跟随系统"）。
 /// "system" = 前端按系统语言决定（zh* → 中文，其余 → 英文）。
@@ -286,6 +298,7 @@ pub async fn get_settings(state: State<'_, Arc<AppState>>) -> Result<Settings, S
             font_family: db::get_setting(&dbc, "font_family"),
             dark_mode: db::get_config_bool_opt(&dbc, "dark_mode"),
             appearance_mode: db::get_setting(&dbc, "appearance_mode"),
+            ambient_motion: db::get_setting(&dbc, "ambient_motion"),
             // 通知默认开启、默认显示正文：缺省时按 `Some(true)`，旧记录与未设置都能有合理行为。
             notify_enabled: db::get_config_bool_opt(&dbc, "notify_enabled").or(Some(true)),
             notify_show_content: db::get_config_bool_opt(&dbc, "notify_show_content").or(Some(true)),
@@ -359,6 +372,12 @@ pub async fn save_settings(
             if APPEARANCE_MODES.contains(&v.as_str()) {
                 persist_setting(&s, &dbc, "appearance_mode", &v)?;
                 changed.push("appearanceMode");
+            }
+        }
+        if let Some(v) = settings.ambient_motion.as_deref() {
+            if AMBIENT_MODES.contains(&v) {
+                persist_setting(&s, &dbc, "ambient_motion", v)?;
+                changed.push("ambientMotion");
             }
         }
         if let Some(v) = settings.notify_enabled {

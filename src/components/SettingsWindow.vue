@@ -210,7 +210,7 @@ useEventListener(window, "keydown", onKeydown);
   <!-- 自绘标题栏 + 内容（`AuxWindowShell` 与群任务窗口共用，标题栏与主窗口同一套：
        `decorations:false` 之后顶部 caption 与内容同底色，不再有系统标题栏那条接缝）。 -->
   <AuxWindowShell :title="t('settings.title')">
-  <div class="flex min-h-0 flex-1 overflow-hidden bg-[var(--gosslan-bg)]">
+  <div class="ambient-canvas-child flex min-h-0 flex-1 overflow-hidden bg-[var(--gosslan-bg)]">
     <!-- 左：窄导航。
          间距刻意**左右对称**（`px-2` + 项内 `px-2.5`）：用户 2026-09-12 反馈
          「右边的箭头两边都不够对称」——参考图里那一列的对齐问题就出在

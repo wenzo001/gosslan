@@ -443,7 +443,7 @@ useEventListener(document, "click", closeFriendMenu);
 </script>
 
 <template>
-  <div ref="listRoot" class="flex h-full flex-col bg-[var(--gosslan-list)]">
+  <div ref="listRoot" class="ambient-canvas-child flex h-full flex-col bg-[var(--gosslan-list)]">
     <!-- 列表头：搜索框（白底+细边，在浅灰栏上清晰）+ 操作按钮。
          高度必须与右栏 ChatHeader 同源（--gosslan-header-h）并同样画下边框：
          两栏从同一个 y 起算，只有高度与底边线都一致，那条分隔线才是**一条连续的线**。
