@@ -526,11 +526,25 @@ pub fn guard_case_fixture_db(
         "     红必须由判据 C 那句报出，不是由判据 B 的出口扫描代判。",
         file=TAURI / "src" / "commands" / "chat.rs",
         injections=[(
-            """    let plaintext = crate::protocol::gossip_plaintext(&kind, &content, None);
+            # 锚点形状随 5.18.9 的 lang 参数一起搬（语义没变：都是「同一处 Encrypt 前的
+            # 这两行」）；搬的时候同步跑了 --list，确认注入真能落到这两行上。
+            """    let plaintext = crate::protocol::gossip_plaintext_with_targets(
+        &kind,
+        &content,
+        None,
+        None,
+        lang.as_deref(),
+    );
     let shared = s.identity.dh(&pubkey).ok_or_else(|| {
         crate::error_codes::coded(crate::error_codes::E2EE_ENCRYPT_FAILED, "密钥交换失败")
     })?;""",
-            """    let plaintext = crate::protocol::gossip_plaintext(&kind, &content, None);
+            """    let plaintext = crate::protocol::gossip_plaintext_with_targets(
+        &kind,
+        &content,
+        None,
+        None,
+        lang.as_deref(),
+    );
     let shared = crypto::shared_secret(&s.identity.x25519_secret, &pubkey).ok_or_else(|| {
         crate::error_codes::coded(crate::error_codes::E2EE_ENCRYPT_FAILED, "密钥交换失败")
     })?;""",
