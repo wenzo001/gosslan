@@ -108,6 +108,7 @@ export default {
       "commands.rs 的 25 个子模块（include! 物理拆分、逻辑仍属装配层）：",
     ],
     ["src-tauri/src/state.rs", "1494 行 / 284 个 pub 项：跨领域共享状态（耦合热点）"],
+    ["src-tauri/src/focus_rhythm.rs", "前台/失焦节奏的纯状态机（2026-11-04 引入）：`commands/network.rs` 的窗口信号与 `state.rs` 的蓝牙扫描节奏共用 ⇒ 归任一业务域都会造出反向依赖（与 watchdog.rs 同一条口径）"],
     ["src/vite-env.d.ts", "类型声明"],
     ["src/types.ts", "跨领域共享类型"],
     ["src/style.css", "全局样式（令牌化设计体系的落点）"],
