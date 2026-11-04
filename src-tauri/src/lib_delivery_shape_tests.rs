@@ -724,13 +724,26 @@
              重启后那批群消息永远显示未送达（真机 16 行 stuck at sent 就是这个形状）。\
              现在口径与 1:1 一致：走同一个事务出口 `db::ack_group_delivered`"
         );
-        let group_ack_body =
-            rust_fn_body(include_str!("db/group_offline_queue.rs"), "pub fn ack_group_delivered(");
+        let ack_src = include_str!("db/group_offline_queue.rs");
+        let group_ack_body = rust_fn_body(ack_src, "pub fn ack_group_delivered(");
         assert!(
-            group_ack_body.contains("UPDATE group_outbox SET status = 'delivered'")
-                && group_ack_body.contains("NOT IN ('cancelled', 'partial_cancelled', 'failed')"),
+            group_ack_body.contains("UPDATE group_outbox SET status = 'delivered'"),
             "群 Ack 必须以**台账**为准（2026-10-25）：行条件置 delivered（删行就再也回答不了\
-             「谁没收到」，取消与补发都失去依据），且已取消/已判失败的消息必须保留墓碑"
+             「谁没收到」，取消与补发都失去依据）"
+        );
+        // 2026-11-04（3B）：墓碑集合收进 `GROUP_ACK_TOMBSTONE_KEEP`，生成 SQL —— 判据同步
+        // 搬锚点，语义没放宽：① 集合成员与顺序必须仍是这三项（生成结果与旧 SQL 逐字等价）；
+        // ② 收尾函数必须真的用它生成 DELETE 的 NOT IN（反例自证：删掉这句 ⇒ 集合成了摆设，
+        //    下面的行为测试也不会再被它约束）。
+        assert!(
+            ack_src.contains(
+                "const GROUP_ACK_TOMBSTONE_KEEP: [&str; 3] = [\"cancelled\", \"partial_cancelled\", \"failed\"];"
+            ),
+            "已取消/已判失败的消息必须保留墓碑 —— 集合成员或顺序变了就红"
+        );
+        assert!(
+            group_ack_body.contains("quote_statuses(&GROUP_ACK_TOMBSTONE_KEEP)"),
+            "墓碑集合没被收尾函数真正使用 ⇒ 它只是摆设，墓碑口径又回到各写一套"
         );
     }
 

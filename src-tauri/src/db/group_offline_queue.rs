@@ -76,6 +76,31 @@ pub fn group_outbox_counts(conn: &Connection, msg_id: &str) -> Result<GroupOutbo
     )
 }
 
+// ---------------- 群 Ack 的写门（纯判据） ----------------
+//
+// 三组状态：Ack 能把哪些台账格落成 delivered、Ack 不许覆盖哪些消息状态、哪些消息状态
+// 要保住 delivered 墓碑。集合写在这里、SQL 由 `sql_in` / `sql_not_in` / `quote_statuses`
+// 生成 —— 生成结果与原先手写的逐字等价。特征测试 `group_ack_doors_pin_every_status`
+// 逐状态钉住每扇门的结论；`lib_delivery_shape_tests` 钉住墓碑集合的成员与顺序。
+
+/// 一次真实 Ack 能把哪些台账格推进到 `delivered`（已是 delivered 的另按 Duplicate 处理）。
+/// cancelled/failed 也在内：它们本身就是"没送到"的结论，真实 Ack 是**迟到但确凿**的反证。
+const GROUP_OUTBOX_ACK_SETTLEABLE: [&str; 3] = ["pending", "cancelled", "failed"];
+
+/// 成员 Ack 不许覆盖的消息状态：已读 / 已送达 / 已撤回 / 已取消 —— 都比"某个成员收到"
+/// 更权威，Ack 只改台账行。
+const GROUP_ACK_MESSAGE_WRITE_BLOCKED: [&str; 5] = [
+    "read",
+    "delivered",
+    "recalled",
+    "cancelled",
+    "partial_cancelled",
+];
+
+/// 保 `delivered` 墓碑的消息状态：已取消要显示"已取消（对方已收到）"，已判失败则要挡住
+/// "整条重发"的误判（本端以为没送出去，其实他收到了）。
+const GROUP_ACK_TOMBSTONE_KEEP: [&str; 3] = ["cancelled", "partial_cancelled", "failed"];
+
 /// GroupAck 的处理结论：调用方据此决定 emit 哪个事件。
 #[derive(Debug, PartialEq, Eq)]
 pub enum GroupAckOutcome {
@@ -105,23 +130,24 @@ pub fn ack_group_delivered(
     if prior == "delivered" {
         return Ok(GroupAckOutcome::Duplicate);
     }
-    tx.execute(
+    let sql = format!(
         "UPDATE group_outbox SET status = 'delivered'
-          WHERE msg_id = ?1 AND peer_id = ?2 AND status IN ('pending','cancelled','failed')",
-        params![msg_id, peer_id],
-    )?;
+          WHERE msg_id = ?1 AND peer_id = ?2 AND {}",
+        sql_in("status", &GROUP_OUTBOX_ACK_SETTLEABLE)
+    );
+    tx.execute(&sql, params![msg_id, peer_id])?;
     if prior == "pending" {
-        tx.execute(
+        let sql = format!(
             "UPDATE messages SET status = 'delivered'
-              WHERE msg_id = ?1
-                AND status NOT IN ('read', 'delivered', 'recalled', 'cancelled', 'partial_cancelled')",
-            params![msg_id],
-        )?;
+              WHERE msg_id = ?1 AND {}",
+            sql_not_in("status", &GROUP_ACK_MESSAGE_WRITE_BLOCKED)
+        );
+        tx.execute(&sql, params![msg_id])?;
     }
     // delivered 墓碑只在「没有其它非 delivered 行、且消息不是取消/失败态」时删除。
     // 已取消的消息保留它，用来显示「已取消（对方已收到）」；已判失败的消息也保留 ——
     // 那意味着「本端以为没送出去，其实他收到了」，这条证据必须挡住"整条重发"的误判。
-    tx.execute(
+    let sql = format!(
         "DELETE FROM group_outbox
           WHERE msg_id = ?1 AND status = 'delivered'
             AND NOT EXISTS (
@@ -129,9 +155,10 @@ pub fn ack_group_delivered(
                  WHERE g.msg_id = ?1 AND g.status <> 'delivered'
             )
             AND (SELECT status FROM messages WHERE msg_id = ?1)
-                NOT IN ('cancelled', 'partial_cancelled', 'failed')",
-        params![msg_id],
-    )?;
+                NOT IN ({})",
+        quote_statuses(&GROUP_ACK_TOMBSTONE_KEEP)
+    );
+    tx.execute(&sql, params![msg_id])?;
     tx.commit()?;
     Ok(if prior == "pending" {
         GroupAckOutcome::Applied
@@ -523,6 +550,150 @@ mod group_outbox_projection_tests {
         assert!(
             group_outbox_row_status(&conn, "m1", "a").is_err(),
             "读库失败不许被当成重复 Ack"
+        );
+    }
+}
+
+#[cfg(test)]
+mod group_outbox_ack_tests {
+    use super::*;
+
+    fn db() -> Connection {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(crate::db::SCHEMA).unwrap();
+        conn
+    }
+
+    fn seed_msg(conn: &Connection, msg_id: &str, status: &str) {
+        conn.execute(
+            "INSERT INTO messages(msg_id, conv_id, sender_id, receiver_id, kind, content, ts, seq, status)
+             VALUES(?1, 'group:g', 'me', 'peer', 'text', 'x', 1, 1, ?2)",
+            params![msg_id, status],
+        )
+        .unwrap();
+    }
+
+    fn seed_row(conn: &Connection, msg_id: &str, peer: &str, status: &str) {
+        conn.execute(
+            "INSERT INTO group_outbox(msg_id, group_id, peer_id, payload, created_at, status)
+             VALUES(?1, 'g', ?2, '{}', 1, ?3)",
+            params![msg_id, peer, status],
+        )
+        .unwrap();
+    }
+
+    fn message_status(conn: &Connection, msg_id: &str) -> String {
+        conn.query_row(
+            "SELECT status FROM messages WHERE msg_id = ?1",
+            params![msg_id],
+            |r| r.get(0),
+        )
+        .unwrap()
+    }
+
+    /// 三扇门逐状态对照：Ack 落账集合（pending/cancelled/failed）、消息覆盖禁区
+    /// （read/delivered/recalled/cancelled/partial_cancelled）、墓碑保留集合
+    /// （cancelled/partial_cancelled/failed）。
+    #[test]
+    fn group_ack_doors_pin_every_status() {
+        // ① pending ⇒ Applied，行与消息都推进；② cancelled/failed ⇒ LateApplied，只改行。
+        for (prior, applied) in [("pending", true), ("cancelled", false), ("failed", false)] {
+            let conn = db();
+            seed_msg(&conn, "m", "pending");
+            seed_row(&conn, "m", "p", prior);
+            // 另留一格 pending：避免"全部 delivered"的墓碑清理把 p 行删掉，好观察行状态
+            seed_row(&conn, "m", "q", "pending");
+            let out = ack_group_delivered(&conn, "m", "p").unwrap();
+            assert_eq!(
+                out,
+                if applied {
+                    GroupAckOutcome::Applied
+                } else {
+                    GroupAckOutcome::LateApplied
+                },
+                "Ack 门对 prior={prior} 的结论变了"
+            );
+            assert_eq!(
+                group_outbox_row_status(&conn, "m", "p")
+                    .unwrap()
+                    .as_deref(),
+                Some("delivered"),
+                "真实 Ack 必须把 prior={prior} 的台账格落成 delivered"
+            );
+            assert_eq!(
+                message_status(&conn, "m"),
+                if applied { "delivered" } else { "pending" },
+                "Ack 门对 prior={prior} 的消息覆盖结论变了"
+            );
+        }
+
+        // ③ 已是 delivered / 无行 ⇒ Duplicate，一个字节都不动。
+        for prior in [Some("delivered"), None] {
+            let conn = db();
+            seed_msg(&conn, "m", "pending");
+            seed_row(&conn, "m", "q", "pending");
+            if let Some(s) = prior {
+                seed_row(&conn, "m", "p", s);
+            }
+            assert_eq!(
+                ack_group_delivered(&conn, "m", "p").unwrap(),
+                GroupAckOutcome::Duplicate,
+                "重复/伪造 Ack（prior={prior:?}）必须答 Duplicate"
+            );
+            assert_eq!(message_status(&conn, "m"), "pending");
+        }
+
+        // ④ 墓碑保留（消息不许被覆盖 + 行必须留着）：
+        //  · 消息已 cancelled：即使 Ack 前该格是 pending，cancelled 也在覆盖禁区内 ⇒ 消息不动；
+        //  · 消息已 failed 且 Ack 是**迟到**的（prior 也非 pending）⇒ 消息不动、墓碑留。
+        for (msg_status, prior) in [("cancelled", "pending"), ("failed", "failed")] {
+            let conn = db();
+            seed_msg(&conn, "m", msg_status);
+            seed_row(&conn, "m", "p", prior);
+            ack_group_delivered(&conn, "m", "p").unwrap();
+            assert_eq!(
+                group_outbox_row_status(&conn, "m", "p")
+                    .unwrap()
+                    .as_deref(),
+                Some("delivered"),
+                "消息 {msg_status}（prior={prior}）时 delivered 墓碑必须保留（NOT IN 保留集合）"
+            );
+            assert_eq!(
+                message_status(&conn, "m"),
+                msg_status,
+                "已读/已撤回/已取消/已送达等权威状态不许被成员 Ack 覆盖"
+            );
+        }
+
+        // ⑤ 迟到反证（反过来的一格，必须一起钉）：消息判了 failed，但这格的 Ack 是
+        // pending 期的真实送达 ⇒ 消息翻成 delivered、墓碑按普通规则清理。
+        // 这正是"本端以为没送出去，其实他收到了"——failed 故意不在覆盖禁区内。
+        let conn = db();
+        seed_msg(&conn, "m", "failed");
+        seed_row(&conn, "m", "p", "pending");
+        assert_eq!(
+            ack_group_delivered(&conn, "m", "p").unwrap(),
+            GroupAckOutcome::Applied
+        );
+        assert_eq!(
+            message_status(&conn, "m"),
+            "delivered",
+            "真实送达必须能推翻 failed（否则 conversation 永远显示死因）"
+        );
+        assert!(
+            group_outbox_row_status(&conn, "m", "p").unwrap().is_none(),
+            "消息已翻成 delivered ⇒ 墓碑按普通规则清理"
+        );
+
+        // 正控（反例自证）：消息是普通 pending 时同一形状的墓碑必须被清 ——
+        // 否则上面"保留"断言可能只是"从来不清理"。
+        let conn = db();
+        seed_msg(&conn, "m", "pending");
+        seed_row(&conn, "m", "p", "pending");
+        ack_group_delivered(&conn, "m", "p").unwrap();
+        assert!(
+            group_outbox_row_status(&conn, "m", "p").unwrap().is_none(),
+            "全部 delivered 且消息不是保留集合 ⇒ 墓碑应被清理（保留断言不是恒绿）"
         );
     }
 }

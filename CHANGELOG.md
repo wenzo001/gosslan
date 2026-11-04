@@ -14,6 +14,17 @@
 
 ## [Unreleased]
 
+## [5.17.32] - 2026-11-04
+
+### 内部重构（无用户可感知变化）
+
+- 3B 第五笔：群消息 Ack 的三组写门集合收进 `db/group_offline_queue.rs`
+  （Ack 可落账的台账格、Ack 不许覆盖的消息状态、保 delivered 墓碑的消息状态），
+  SQL 由 `sql_in` / `sql_not_in` / `quote_statuses` 生成，与手写逐字等价。
+  `lib_delivery_shape_tests` 的墓碑判据同步搬锚点，并加「集合没被真正使用就红」的反例断言。
+  新增 `group_ack_doors_pin_every_status`：逐状态对照三扇门，含
+  「pending Ack 推翻 failed」与「迟到 Ack 保墓碑」两格反向证据。
+
 ## [5.17.31] - 2026-11-04
 
 ### 内部重构（无用户可感知变化）
