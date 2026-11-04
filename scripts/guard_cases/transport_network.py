@@ -71,14 +71,15 @@ CASES: list[Case] = [
             "读库保护删掉，这条测试照样绿（2026-09-29 审计抓到，形状与群分片那条镜像测试相同）。"
             "现在的具名判据读的是收尾那段里真的去查该收件人 status 的 SQL，"
             "把它换成模拟值（永远 sending）就必须红",
-        file=TAURI / "src" / "network" / "transport.rs",
-        # 2026-10-21：这段"真读库"随事务化收尾搬进了 `apply_group_file_ack_db`
-        # （group_file.rs，transport.rs 的 include! 子模块）⇒ 注入锚点同步搬家。
-        # 改坏方式也换了：把"真读该收件人的 status"换成**模拟值**（永远 sending），
-        # 于是 completed 的终态保护失效 ⇒ 那条具名判据必须当场转红。
+        file=TAURI / "src" / "db" / "group_files.rs",
+        # 2026-10-21：这段"真读库"随事务化收尾搬进了 `apply_group_file_ack_db`；
+        # 2026-11-04（3B 第一笔）：读状态那一步又收进 `db/group_files.rs` 的只读投影
+        # `group_file_recipient_status` ⇒ 注入锚点跟着搬进投影函数体。
+        # 改坏方式不变：把"真读该收件人的 status"换成**模拟值**（永远 sending），
+        # 于是 completed 的终态保护失效；具名判据读取投影分册的 SELECT ⇒ 必须当场转红。
         injections=[(
-            "SELECT status FROM group_file_recipients WHERE transfer_id = ?1 AND recipient_id = ?2",
-            "SELECT 'sending' AS status FROM group_file_recipients WHERE transfer_id = ?1 AND recipient_id = ?2",
+            '"SELECT status FROM group_file_recipients WHERE transfer_id = ?1 AND recipient_id = ?2",\n        params![transfer_id, recipient_id],',
+            '"SELECT \'sending\' AS status FROM group_file_recipients WHERE transfer_id = ?1 AND recipient_id = ?2",\n        params![transfer_id, recipient_id],',
         )],
         cmd=cargo("test", "--lib", "completed_guard_reads_recipient_status_in_the_handler"),
         cwd=TAURI,
