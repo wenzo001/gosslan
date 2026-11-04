@@ -2,6 +2,62 @@
 // 从 transport.rs 搬出：`include!` 回同一模块 ⇒ 模块路径、可见性、测试全名一字不变。
 // 大文件拆分第二批，判据与顺序见 docs/large-file-split-plan.md。
 
+/// 给**原始发送方**回一帧收尾回执（成功 / 具名失败都走这里）。
+///
+/// 门控与旧的可观测版一致：只有对方声明过 `CONTENT_FEATURE_FILE_RECEIPT` 才发 ——
+/// 老端的 `GossipKind` 里没有这个变体，发了只会被整帧降级丢弃（`Message::Unknown`）。
+///
+/// 为什么成功、失败都发：成功是发送侧 `sent → done` 的唯一证据；失败让发送侧能撤回
+/// 并说**具体原因**（`fail_code` 必须是 `logging::FAIL_CODE_*` 里的具名码，不许散文兜底）。
+/// 回执本身丢了不算失败判据 —— 发送侧保持 `sent`，与老对端的行为一致。
+async fn send_relay_file_receipt(
+    state: &Arc<AppState>,
+    to: &str,
+    payload: crate::protocol::FileRelayReceiptPayload,
+) {
+    let receipt_supported = state
+        .peer_content_features
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .get(to)
+        .is_some_and(|f| f & crate::protocol::CONTENT_FEATURE_FILE_RECEIPT != 0);
+    if !receipt_supported {
+        return;
+    }
+    let payload = match serde_json::to_string(&payload) {
+        Ok(p) => p,
+        Err(e) => {
+            state.logger.error(
+                "relay",
+                format!("中继收尾回执序列化失败 to={to}：{e}"),
+            );
+            return;
+        }
+    };
+    let payload_b64 = STANDARD.encode(payload.as_bytes());
+    let mut env = {
+        let gossip = state.gossip.lock().unwrap_or_else(|e| e.into_inner());
+        gossip.build_envelope(
+            &state.identity,
+            &state.device_id,
+            GossipKind::FileRelayReceipt,
+            None,
+            None,
+            &payload_b64,
+            db::now_ms(),
+            0,
+        )
+    };
+    env.encrypted = false;
+    env.target = Some(to.to_string());
+    env.sender_sig = state.identity.sign_b64(&env.signing_bytes());
+    if state.has_link(to).await {
+        let _ = try_send(state, to, &Message::Gossip { envelope: env }).await;
+    } else {
+        broadcast_gossip(state, env).await;
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 async fn handle_relay_file_offer(
     state: &Arc<AppState>,
@@ -60,33 +116,45 @@ async fn handle_relay_file_offer(
         .lock()
         .unwrap_or_else(|e| e.into_inner())
         .contains_key(&transfer_id);
-    {
-        match file::admit_inbound(state, replacing, &transfer_id, &from, size) {
-            Ok(a) => a,
-            // `admit_inbound` 已按 `code=RECV_QUOTA_EXCEEDED` 留痕；这里补一条**给界面的**
-            // 失败（旧写法只 return：请求方界面停在"对方正在发送"，永远等不到结果）。
-            Err(breach) => {
-                // 载荷给**码**：以前这里是 `format!("{breach:?}")` —— 枚举的 Debug 是英文标识符
-                // （`TooManyTransfers` 之类），既不是给用户的话，也会因为改个变体名而静默漂走。
-                // `breach` 的本事（哪个上限、当时几个在收）留在日志里，与 `admit_inbound` 自己那句
-                // `code=RECV_QUOTA_EXCEEDED kind=…` 用**同一个 token**。
-                state.logger.warn(
-                    "file",
-                    format!(
-                        "code={} kind={breach:?} transfer={transfer_id} peer={from} size={size} —— 入站配额拒收",
-                        crate::logging::FAIL_CODE_RECV_QUOTA_EXCEEDED
-                    ),
-                );
-                let _ = state.app.emit(
-                    "file-failed",
-                    &FileFailedInfo {
-                        transfer_id: transfer_id.clone(),
-                        reason: crate::logging::FAIL_CODE_RECV_QUOTA_EXCEEDED.to_string(),
-                    },
-                );
-                return;
-            }
-        };
+    // 配额闸的判定先落成一个值、**再 await**：`InboundAdmission` 持有入站计数守卫
+    // （!Send），把它带进 await 会让整个 reader_loop 不再是 Send（tokio::spawn 编译失败）。
+    // `.err()` 在这里还会立刻丢掉 Ok 臂的守卫，正是我们要的。
+    let quota_breach =
+        file::admit_inbound(state, replacing, &transfer_id, &from, size).err();
+    if let Some(breach) = quota_breach {
+        // `admit_inbound` 已按 `code=RECV_QUOTA_EXCEEDED` 留痕；这里补一条**给界面的**
+        // 失败（旧写法只 return：请求方界面停在"对方正在发送"，永远等不到结果）。
+        // 载荷给**码**：以前这里是 `format!("{breach:?}")` —— 枚举的 Debug 是英文标识符
+        // （`TooManyTransfers` 之类），既不是给用户的话，也会因为改个变体名而静默漂走。
+        // `breach` 的本事（哪个上限、当时几个在收）留在日志里，与 `admit_inbound` 自己那句
+        // `code=RECV_QUOTA_EXCEEDED kind=…` 用**同一个 token**。
+        state.logger.warn(
+            "file",
+            format!(
+                "code={} kind={breach:?} transfer={transfer_id} peer={from} size={size} —— 入站配额拒收",
+                crate::logging::FAIL_CODE_RECV_QUOTA_EXCEEDED
+            ),
+        );
+        let _ = state.app.emit(
+            "file-failed",
+            &FileFailedInfo {
+                transfer_id: transfer_id.clone(),
+                reason: crate::logging::FAIL_CODE_RECV_QUOTA_EXCEEDED.to_string(),
+            },
+        );
+        send_relay_file_receipt(
+            state,
+            &from,
+            crate::protocol::FileRelayReceiptPayload {
+                transfer_id: transfer_id.clone(),
+                sha256: file_sha256.clone(),
+                success: false,
+                size,
+                fail_code: Some(crate::logging::FAIL_CODE_RECV_QUOTA_EXCEEDED.to_string()),
+            },
+        )
+        .await;
+        return;
     }
     // 开好 `.part`（预分配、按 seq 落盘）。失败的两条出路都是**当场拒收**：
     // `chunk_size == 0` = 对端没声明分片尺寸（老版本），不声明就没法流式接收，
@@ -122,6 +190,18 @@ async fn handle_relay_file_offer(
                 reject.code, reject.detail
             ),
         );
+        send_relay_file_receipt(
+            state,
+            &from,
+            crate::protocol::FileRelayReceiptPayload {
+                transfer_id: transfer_id.clone(),
+                sha256: file_sha256.clone(),
+                success: false,
+                size,
+                fail_code: Some(reject.code.to_string()),
+            },
+        )
+        .await;
         return;
     }
 
@@ -265,17 +345,19 @@ async fn handle_relay_chunk(
                 // 这里只负责落库 + 说给人听（静默消失 = 前端永久卡 X%，审计 A2 那条老账）。
                 // 不重写 `upsert_transfer`：offer 到达时那行已经带着 name/size 落过库了，
                 // 这里要的是"把仍 active 的行推进到 failed"，正是 `mark_transfer_failed_if_active`。
-                {
+                let session = {
                     let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
                     if let Err(e) = db::mark_transfer_failed_if_active(&dbc, &transfer_id) {
                         crate::logging::log_write_failure(&state.logger, "mark_transfer_failed_if_active", e);
                     }
+                    // 回执要带 offer 里那个期望摘要/尺寸 —— 必须在摘掉会话之前读出来。
                     state
                         .relay_file_keys
                         .lock()
                         .unwrap_or_else(|e| e.into_inner())
-                        .remove(&transfer_id);
-                }
+                        .remove(&transfer_id)
+                        .map(|rs| (rs.expected_sha256, rs.size))
+                };
                 state.logger.warn(
                     "file",
                     format!(
@@ -290,6 +372,19 @@ async fn handle_relay_chunk(
                         reason: crate::logging::FAIL_CODE_FILE_RELAY_BAD_CHUNK.to_string(),
                     },
                 );
+                let (sha256, size) = session.unwrap_or_default();
+                send_relay_file_receipt(
+                    state,
+                    &from,
+                    crate::protocol::FileRelayReceiptPayload {
+                        transfer_id: transfer_id.clone(),
+                        sha256,
+                        success: false,
+                        size,
+                        fail_code: Some(crate::logging::FAIL_CODE_FILE_RELAY_BAD_CHUNK.to_string()),
+                    },
+                )
+                .await;
                 return;
             }
         };
@@ -327,6 +422,21 @@ async fn handle_relay_chunk(
                         reason: crate::logging::FAIL_CODE_FILE_RELAY_STATE_EXPIRED.to_string(),
                     },
                 );
+                // 会话已被回收 ⇒ 拿不到期望摘要；失败码本身仍是具名的。
+                send_relay_file_receipt(
+                    state,
+                    &from,
+                    crate::protocol::FileRelayReceiptPayload {
+                        transfer_id: transfer_id.clone(),
+                        sha256: String::new(),
+                        success: false,
+                        size: expected_size,
+                        fail_code: Some(
+                            crate::logging::FAIL_CODE_FILE_RELAY_STATE_EXPIRED.to_string(),
+                        ),
+                    },
+                )
+                .await;
                 return;
             };
             // 尺寸：声明与实际落盘必须一致（分片形状已在 add_chunk 判过，这里是最后一道）
@@ -356,6 +466,20 @@ async fn handle_relay_chunk(
                         reason: crate::logging::FAIL_CODE_FILE_RELAY_SIZE_MISMATCH.to_string(),
                     },
                 );
+                send_relay_file_receipt(
+                    state,
+                    &from,
+                    crate::protocol::FileRelayReceiptPayload {
+                        transfer_id: transfer_id.clone(),
+                        sha256: rs.expected_sha256.clone(),
+                        success: false,
+                        size: expected_size,
+                        fail_code: Some(
+                            crate::logging::FAIL_CODE_FILE_RELAY_SIZE_MISMATCH.to_string(),
+                        ),
+                    },
+                )
+                .await;
                 return;
             }
             // 文件级完整性：**流式**算 SHA-256（边读边算，峰值只有一个读缓冲）。
@@ -394,9 +518,21 @@ async fn handle_relay_chunk(
                         "file-failed",
                         &FileFailedInfo {
                             transfer_id: transfer_id.clone(),
-                            reason,
+                            reason: reason.clone(),
                         },
                     );
+                    send_relay_file_receipt(
+                        state,
+                        &from,
+                        crate::protocol::FileRelayReceiptPayload {
+                            transfer_id: transfer_id.clone(),
+                            sha256: rs.expected_sha256.clone(),
+                            success: false,
+                            size: expected_size,
+                            fail_code: Some(reason),
+                        },
+                    )
+                    .await;
                     return;
                 }
             };
@@ -434,6 +570,18 @@ async fn handle_relay_chunk(
                         reason: crate::error_codes::FILE_INTEGRITY_FAILED.to_string(),
                     },
                 );
+                send_relay_file_receipt(
+                    state,
+                    &from,
+                    crate::protocol::FileRelayReceiptPayload {
+                        transfer_id: transfer_id.clone(),
+                        sha256: rs.expected_sha256.clone(),
+                        success: false,
+                        size: expected_size,
+                        fail_code: Some(crate::error_codes::FILE_INTEGRITY_FAILED.to_string()),
+                    },
+                )
+                .await;
                 return;
             }
             // 校验已过 ⇒ 内容指纹就是这个已确证的 sha256，不再重算一遍整份文件。
@@ -480,9 +628,21 @@ async fn handle_relay_chunk(
                         "file-failed",
                         &FileFailedInfo {
                             transfer_id: transfer_id.clone(),
-                            reason,
+                            reason: reason.clone(),
                         },
                     );
+                    send_relay_file_receipt(
+                        state,
+                        &from,
+                        crate::protocol::FileRelayReceiptPayload {
+                            transfer_id: transfer_id.clone(),
+                            sha256: cid.clone(),
+                            success: false,
+                            size: expected_size,
+                            fail_code: Some(reason),
+                        },
+                    )
+                    .await;
                     return;
                 }
             };
@@ -576,44 +736,21 @@ async fn handle_relay_chunk(
                     path: path_str,
                 },
             );
-            // 收件回执（**只做可观测**，2026-11-03）：对端声明过能力位才回一帧；
-            // 老端 / 没声明 ⇒ 一条都不发，发送侧行为与今天完全一致。
-            // 回执丢了不是失败判据 —— 发送方那边只多一条日志/事件，状态不动。
-            let receipt_supported = state
-                .peer_content_features
-                .lock()
-                .unwrap_or_else(|e| e.into_inner())
-                .get(&from)
-                .is_some_and(|f| f & crate::protocol::CONTENT_FEATURE_FILE_RECEIPT != 0);
-            if receipt_supported {
-                let payload = serde_json::json!({
-                    "transfer_id": transfer_id.clone(),
-                    "sha256": cid.clone(),
-                })
-                .to_string();
-                let payload_b64 = STANDARD.encode(payload.as_bytes());
-                let mut env = {
-                    let gossip = state.gossip.lock().unwrap_or_else(|e| e.into_inner());
-                    gossip.build_envelope(
-                        &state.identity,
-                        &state.device_id,
-                        GossipKind::FileRelayReceipt,
-                        None,
-                        None,
-                        &payload_b64,
-                        db::now_ms(),
-                        0,
-                    )
-                };
-                env.encrypted = false;
-                env.target = Some(from.clone());
-                env.sender_sig = state.identity.sign_b64(&env.signing_bytes());
-                if state.has_link(&from).await {
-                    let _ = try_send(state, &from, &Message::Gossip { envelope: env }).await;
-                } else {
-                    broadcast_gossip(state, env).await;
-                }
-            }
+            // 收尾回执（成功）：**落盘 + 校验通过**之后才发，这是发送侧把台账从 `sent`
+            // 升到 `done` 的唯一证据。对端声明过能力位才发；老端/没声明 ⇒ 一条都不发，
+            // 发送侧维持今天的 `sent`（"没有回执"不是失败判据）。
+            send_relay_file_receipt(
+                state,
+                &from,
+                crate::protocol::FileRelayReceiptPayload {
+                    transfer_id: transfer_id.clone(),
+                    sha256: cid.clone(),
+                    success: true,
+                    size: expected_size,
+                    fail_code: None,
+                },
+            )
+            .await;
         }
     } else if ttl > 1 {
         // 中继转发给最终接收方 —— 授权闸同「定向借道」（2026-09-19 P0#5）：

@@ -259,7 +259,8 @@ async fn relay_push_file(
     let result = tokio::time::timeout(RELAY_FILE_SEND_DEADLINE, async {
         // Offer 一个邻居都没接住 ⇒ 这一帧从未离开本机：直接判失败，既不读盘也不推分片。
         // 方向要说清：这里只用「0 必然没送出」这一侧的下限判据；`≥1` **不等于**送达
-        // （邻居未必与对方有直连），真送达要等接收端回执（A1-L2，尚未实施）。
+        // （邻居未必与对方有直连），真送达要等接收端的**收尾回执**
+        // （`GossipKind::FileRelayReceipt`，落到 `gossip.rs::apply_relay_file_receipt`）。
         if crate::network::transport::relay_send_to_neighbors(state, peer_id, &offer).await == 0 {
             state.logger.error(
                 "file",
@@ -397,8 +398,9 @@ async fn relay_push_file(
         // "每一片都被至少一个邻居接住"，**不代表**对端收全、SHA 校验通过、落了盘。而 `file-done`
         // 的语义是"本机这条传输已完成"，前端 `onFileDone` 会把内存里那行写成 done ——
         // 发它就是"库里 sent、界面上 ✓"，正撞验收红线「界面显示成功与对端实际收到不一致」。
-        // 这条链没有接收端回执（`file.rs` 开头自述：中继无握手无回执），所以终态只能停在 `sent`；
-        // 要把它升成 done，得给 `FileCompleteAck` 加 `to` 走定向一跳中继并按能力位门控。
+        // 现在这条升级由接收端的**收尾回执**驱动（`GossipKind::FileRelayReceipt`，见
+        // `gossip.rs::apply_relay_file_receipt`）：只有它确认"落盘 + 校验通过"才发 `file-done`。
+        // 老接收端不发回执 ⇒ 本机终态停在 `sent`，与旧行为一致（不是失败）。
         Ok(())
     })
     .await;

@@ -178,3 +178,192 @@
     // ================================================================
     // 好友权限测试
     // ================================================================
+
+    // ================================================================
+    // 中继文件收尾回执（2026-11-04）：payload 兼容 / 台账对账 / 未知帧
+    // ================================================================
+
+    fn receipt_test_conn() -> rusqlite::Connection {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        conn.execute_batch(db::SCHEMA).unwrap();
+        conn
+    }
+
+    fn receipt_status(conn: &rusqlite::Connection, id: &str) -> String {
+        conn.query_row(
+            "SELECT status FROM file_transfers WHERE id = ?1",
+            params![id],
+            |r| r.get(0),
+        )
+        .unwrap()
+    }
+
+    fn seed_send_row(conn: &rusqlite::Connection, id: &str, peer: &str) {
+        db::upsert_transfer(
+            conn,
+            id,
+            peer,
+            "报告.pdf",
+            1234,
+            "send",
+            "sent",
+            Some("/tmp/报告.pdf"),
+            1.0,
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn relay_receipt_legacy_payload_without_success_reads_as_delivered() {
+        // 老接收端**只在落盘并校验通过后**才发，载荷里根本没有 success/size/fail_code。
+        // 把"没写 success"读成失败，会把每一台老对端都判成失败 —— 这是最贵的兼容错误。
+        let p: crate::protocol::FileRelayReceiptPayload =
+            serde_json::from_str(r#"{"transfer_id":"t-legacy","sha256":"abc"}"#).unwrap();
+        assert!(p.success, "缺 success 必须缺省为成功");
+        assert_eq!(p.size, 0, "老载荷没有字节数");
+        assert!(p.fail_code.is_none());
+    }
+
+    #[test]
+    fn relay_receipt_failure_payload_keeps_named_code() {
+        let payload = crate::protocol::FileRelayReceiptPayload {
+            transfer_id: "t-1".into(),
+            sha256: "abc".into(),
+            success: false,
+            size: 1234,
+            fail_code: Some(crate::error_codes::FILE_INTEGRITY_FAILED.into()),
+        };
+        let json = serde_json::to_string(&payload).unwrap();
+        let back: crate::protocol::FileRelayReceiptPayload = serde_json::from_str(&json).unwrap();
+        assert!(!back.success);
+        assert_eq!(back.fail_code.as_deref(), Some(crate::error_codes::FILE_INTEGRITY_FAILED));
+        assert_eq!(back.size, 1234);
+    }
+
+    #[test]
+    fn relay_receipt_success_marks_send_row_done_and_returns_fill_fields() {
+        let conn = receipt_test_conn();
+        seed_send_row(&conn, "t-ok", "peer-1");
+        let payload = crate::protocol::FileRelayReceiptPayload {
+            transfer_id: "t-ok".into(),
+            sha256: "abc".into(),
+            success: true,
+            size: 1234,
+            fail_code: None,
+        };
+        match super::apply_relay_file_receipt(&conn, "peer-1", &payload) {
+            super::RelayReceiptApply::Delivered { name, size, path } => {
+                assert_eq!(name, "报告.pdf");
+                assert_eq!(size, 1234);
+                assert_eq!(path, "/tmp/报告.pdf");
+            }
+            other => panic!("成功回执应升到 done，实际 {other:?}"),
+        }
+        assert_eq!(receipt_status(&conn, "t-ok"), "done");
+    }
+
+    #[test]
+    fn relay_receipt_failure_marks_send_row_failed_and_passes_code_through() {
+        let conn = receipt_test_conn();
+        seed_send_row(&conn, "t-bad", "peer-1");
+        let payload = crate::protocol::FileRelayReceiptPayload {
+            transfer_id: "t-bad".into(),
+            sha256: "abc".into(),
+            success: false,
+            size: 1234,
+            fail_code: Some(crate::error_codes::FILE_INTEGRITY_FAILED.into()),
+        };
+        match super::apply_relay_file_receipt(&conn, "peer-1", &payload) {
+            super::RelayReceiptApply::Failed { code } => {
+                assert_eq!(code, crate::error_codes::FILE_INTEGRITY_FAILED);
+            }
+            other => panic!("失败回执应撤回并透传具名码，实际 {other:?}"),
+        }
+        assert_eq!(receipt_status(&conn, "t-bad"), "failed");
+    }
+
+    #[test]
+    fn relay_receipt_ignores_receive_direction_and_foreign_peer() {
+        let conn = receipt_test_conn();
+        db::upsert_transfer(
+            &conn,
+            "t-recv",
+            "peer-1",
+            "对方发的.bin",
+            7,
+            "receive",
+            "active",
+            None,
+            0.0,
+        )
+        .unwrap();
+        let ok = crate::protocol::FileRelayReceiptPayload {
+            transfer_id: "t-recv".into(),
+            sha256: "abc".into(),
+            success: true,
+            size: 7,
+            fail_code: None,
+        };
+        assert_eq!(
+            super::apply_relay_file_receipt(&conn, "peer-1", &ok),
+            super::RelayReceiptApply::IgnoredUnknown,
+            "回执不得改写接收方向的台账行"
+        );
+        assert_eq!(receipt_status(&conn, "t-recv"), "active");
+
+        let conn2 = receipt_test_conn();
+        seed_send_row(&conn2, "t-own", "peer-1");
+        let forged = crate::protocol::FileRelayReceiptPayload {
+            transfer_id: "t-own".into(),
+            sha256: "abc".into(),
+            success: false,
+            size: 1234,
+            fail_code: Some(crate::error_codes::FILE_INTEGRITY_FAILED.into()),
+        };
+        assert_eq!(
+            super::apply_relay_file_receipt(&conn2, "peer-2", &forged),
+            super::RelayReceiptApply::IgnoredUnknown,
+            "对端不符的回执不得改台账"
+        );
+        assert_eq!(receipt_status(&conn2, "t-own"), "sent");
+    }
+
+    #[test]
+    fn relay_receipt_without_fail_code_does_not_invent_failure() {
+        // 畸形失败回执（没带具名码）**不新增失败判定**：这条单继续停在 sent，
+        // 与"老对端根本不发回执"的线上表现完全一致。
+        let conn = receipt_test_conn();
+        seed_send_row(&conn, "t-nocode", "peer-1");
+        let payload = crate::protocol::FileRelayReceiptPayload {
+            transfer_id: "t-nocode".into(),
+            sha256: "abc".into(),
+            success: false,
+            size: 1234,
+            fail_code: None,
+        };
+        assert_eq!(
+            super::apply_relay_file_receipt(&conn, "peer-1", &payload),
+            super::RelayReceiptApply::IgnoredMissingCode
+        );
+        assert_eq!(receipt_status(&conn, "t-nocode"), "sent");
+    }
+
+    #[test]
+    fn relay_receipt_absent_keeps_send_row_at_sent() {
+        // 老对端（没声明 CONTENT_FEATURE_FILE_RECEIPT）一条回执都不发 ⇒ 发送侧只到 sent。
+        // 这里把"没有任何回执"钉成一条显式断言，防止后续有人加"超时即失败"把老对端判死。
+        let conn = receipt_test_conn();
+        seed_send_row(&conn, "t-old-peer", "peer-1");
+        assert_eq!(receipt_status(&conn, "t-old-peer"), "sent");
+    }
+
+    #[test]
+    fn unknown_gossip_kind_degrades_to_unknown_without_panic() {
+        // 老端收到新变体 / 新端收到未来变体：整帧降级为 Message::Unknown（不 panic、
+        // 不进任何业务分支，因此也不会污染去重或阻断后续帧）。
+        let raw = br#"{"type":"Gossip","envelope":{"message_id":"m1","sender_id":"p","sender_pubkey":"k","sender_ed25519":"e","sender_sig":"s","ttl":1,"kind":"file_relay_receipt_v2","payload":"e30="}}"#;
+        match super::decode_frame(raw) {
+            Ok(Message::Unknown { wire_type }) => assert_eq!(wire_type, "Gossip"),
+            other => panic!("未知 GossipKind 必须降级为 Unknown，实际 {other:?}"),
+        }
+    }

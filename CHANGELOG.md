@@ -14,6 +14,27 @@
 
 ## [Unreleased]
 
+## [5.18.0] - 2026-11-04
+
+### 新增：文件中继的端到端收尾回执
+
+- `GossipKind::FileRelayReceipt` 从"仅可观测"升级为真正的收发回执：接收端在**完整落盘
+  并校验通过**后回成功；落盘/校验失败回**具名失败码**（`FILE_INTEGRITY_FAILED` /
+  `FILE_RELAY_SIZE_MISMATCH` / `FILE_RELAY_STATE_EXPIRED` / `FILE_RELAY_BAD_CHUNK` /
+  `RECV_QUOTA_EXCEEDED` 等，沿用既有码表，不新造兜底文案）。
+- 载荷扩展为 `{ transfer_id, sha256, success, size, fail_code }`，摘要与 offer 校验用
+  同一个算法/同一个值。
+- 发送侧台账：成功回执把 `sent` 升到 `done` 并补发 `file-progress` / `file-done`，
+  用户侧表现为"已送达"（不弹成功提示）；失败回执把发送单撤回为 `failed`，`file-failed`
+  的 `reason` 原样透传具名码，前端翻译成具体原因。只认 `send` 方向且对端与信封发送方
+  一致的行，回执里的字节数与台账不符时拒绝改账（防伪造）。
+- 兼容：`success` 缺省 `true`（老接收端只在成功时才发，载荷里没有该字段）；老发送端
+  收到扩展载荷只读自己认识的字段；老端收到新变体仍整帧降级 `Message::Unknown` 丢弃，
+  不进业务分支。**没有回执不新增失败判定** —— 发送单停在 `sent`，与旧行为一致。
+- 单测：老载荷缺 `success` 读成成功、失败码透传、成功升 `done`、接收方向/陌生对端
+  拒绝改写、缺码不判失败、无回执保持 `sent`、未知 GossipKind 降级 Unknown。验证
+  `cargo test --lib`（1484 passed）与 `npm run verify:full`。
+
 ## [5.17.54] - 2026-11-04
 
 ### 修复：桌面/移动端设置分区的跨端深链不再落空
