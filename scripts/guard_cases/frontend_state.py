@@ -42,7 +42,9 @@ CASES: list[Case] = [
         why="Tauri 的 notification 插件把 window.Notification 换成转发到 plugin:notification|notify，"
             "onclick 永远不触发、且把真正的 toast 错误 spawn 掉丢了 —— Windows 同事『收不到通知』查无实据。"
             "现在统一 api.notifyDesktop（失败可返回/记录），并修复隐藏窗口下 hasFocus 仍为 true 的漏通知。",
-        file=ROOT / "src" / "stores" / "useChatStore.ts",
+        # 2026-11：chat store 拆成「入口 + 职责模块」后，通知实现在
+        # `src/stores/chat/notifications.ts`；锚点跟着搬（否则注入注不上去、这条用例空转）。
+        file=ROOT / "src" / "stores" / "chat" / "notifications.ts",
         injections=[(
             "void api.notifyDesktop(title, body, convId).catch(() => {",
             "void Promise.resolve().catch(() => {",
@@ -136,10 +138,9 @@ CASES: list[Case] = [
         name="非聊天页不得判已读（④）",
         why="用户 2026-09-12 实测：在聊天界面点进设置页（整页浮层），对方发来的消息自己没看到，"
         "却被判成已读并把回执发了回去",
-        file=ROOT / "src" / "stores" / "useChatStore.ts",
-        # 2026-09-28：这三个条件搬进了 `chatViewerLooking()`（INV-P27：已读与「有人@我」共用一份口径），
-        # 所以注入点跟着搬过去 —— 从那份家里摘掉「聊天视图可见」这一半，两条规则会同时变松，
-        # 正是这条用例要拦的坏法（旧锚点 `activeConv.value !== convId || document.hidden || ...` 已不存在）。
+        # 2026-11：chatViewerLooking（已读与「有人@我」的共用口径）随会话模块搬到
+        # `src/stores/chat/conversations.ts`；注入点跟着搬，判据强度不变。
+        file=ROOT / "src" / "stores" / "chat" / "conversations.ts",
         injections=[(
             "!document.hidden && app.chatVisible;",
             "!document.hidden;",
