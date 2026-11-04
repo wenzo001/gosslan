@@ -135,9 +135,14 @@ onUnmounted(clearTimer);
        代价（已知并接受）：竖长图会在 13rem 的框内左右留白，换来「发出后尺寸恒定」。 -->
   <!-- ⚠️ 这里刻意**不用** layoutId / layout 动画：缩略图高度会随图片解码从骨架高度
        变成真实高度，做 layout 补间就是「图片从底部往上拉伸」的来源。切会话时由
-       ChatWindow 对整列做一次短淡入；单张图只瞬时落定，不参与补间。 -->
+       ChatWindow 对整列做一次短淡入；单张图只瞬时落定，不参与补间。
+       `data-img-frame` 是**稳定外框**：高度在加载/已加载两个状态下都取同一个
+       `placeholderHeight`（有尺寸 = 按比例预留；旧消息无尺寸 = 固定 IMAGE_BUBBLE_HEIGHT），
+       解码完成只换框里的内容 ⇒ 前后 boundingClientRect 一致（探针 imgskel 现读）。 -->
   <div
+    data-img-frame
     class="relative w-52 max-w-full cursor-pointer overflow-hidden rounded-[var(--gosslan-bubble-radius)]"
+    :style="{ height: `${placeholderHeight}px` }"
     :data-img-state="state"
     :role="state === 'loaded' ? 'button' : undefined"
     :tabindex="state === 'loaded' ? 0 : undefined"
@@ -148,9 +153,8 @@ onUnmounted(clearTimer);
   >
     <!-- 骨架按**载荷里的真实像素尺寸**预留（后端从本机文件头读出 w/h 写进 content）。
          有 w/h：预留 == 真实高 = min(288, 208 × h/w) ⇒ 解码完成零跳变；
-         没有（旧消息/HEIC 等读不出）：回退 288 上限，横图完成时仍会收缩一次（已知残留）。
-         失败态：已知尺寸时**保持预留高度**，不缩到 128 —— 为一张不会来的图撑住空间，
-         比再改一次行高把下方内容推上去好；旧消息无尺寸时仍退回紧凑占位。
+         没有（旧消息/HEIC 等读不出）：**固定 288 外框**（无法在解码前推算比例，见下面的
+         「已知残留」注释）；失败态：已知尺寸时保持预留高度，旧消息仍退回紧凑 128。
          ⚠️ 高度只从 previewMetrics 取，别再写回 h-* / max-h-* 字面量
          （由 designGuards ㉞ 与运行时探针 --only=imgskel 两段一起盯着）。 -->
     <div

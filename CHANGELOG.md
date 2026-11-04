@@ -14,6 +14,27 @@
 
 ## [Unreleased]
 
+## [5.18.3] - 2026-11-04
+
+### 修复：四处同类动效缺陷（出现才播一次 / 占位稳定 / 时间轴对齐）
+
+- 设置分区切换（`SettingsWindow.vue`）：去掉 `mode="out-in"`，改为默认同时模式 + 退场层
+  绝对定位；新面板立即在流里占住最终高度，旧面板叠着淡出。切换只做 opacity 交叉淡入，
+  不再整块位移，也不再重播 enter（容器高度不塌、不重建常驻容器）。
+- 旧图片解码前预留尺寸（`MessageImageBubble.vue`）：外层加 `data-img-frame` 稳定外框，
+  高度在加载/已加载两态都取 `placeholderHeight`。有 w/h 的消息按比例预留；**无尺寸的旧消息
+  与后端读不出文件头的格式（如 HEIC）固定 288**（无法在解码前推算比例，见规范 §11.3.9），
+  解码完成只换内容 ⇒ 前后 `boundingClientRect` 一致。代价：横图在框内上下留白。
+- 桌面一级导航（`NavRail.vue` / `ConversationList.vue`）：药丸从 motion-v 共享布局弹簧改为
+  **一个常驻节点 + CSS transform**，与左列内容淡入共用 `--gosslan-nav-switch-duration/-ease`
+  （140ms）⇒ 同一时刻开始、同一时长结束；快速连点从当前计算值就地改目标，不排队补播。
+  移动端底栏仍走 motion-v `layout-id`。
+- 规范补充：状态图标 **16×16 占位列宽为固定契约**（§11.3.7）；新增 §11.3.9 记录导航时间轴
+  约束与图片无法推算比例的两类情形。
+- 守卫：新增 `src/utils/motionContinuity.test.ts`（形状断言 + 旧写法反例自证）；
+  `check-ui-runtime.mjs` 新增 `--only=imgskel`「无尺寸图解码前后外框一致」读数（含撤掉外框的
+  变异对照）与 `--only=railsync` 时间轴/连点采样（含 reduce 档）。
+
 ## [5.18.2] - 2026-11-04
 
 ### 修复：搜索结果每一条命中都可点击并定位到该消息

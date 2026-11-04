@@ -210,6 +210,12 @@
   --gosslan-ease-spring: cubic-bezier(0.34, 1.56, 0.64, 1);
   --gosslan-duration-fast: 150ms;
   --gosslan-duration: 240ms;
+  /* 桌面左侧导航"指示条 ↔ 内容"的时间轴（2026-11-04 用户反馈：内容已经切过去、
+     药丸才滞后滑过去，观感不真实）。两者**必须共用这一组常量**：
+     指示条（`.rail-active-pill` 的 transition）与左列内容（`.conv-view-fade-*`
+     的 animation）都读它，别在两处各写一个毫秒数/曲线。 */
+  --gosslan-nav-switch-duration: 140ms;
+  --gosslan-nav-switch-ease: var(--gosslan-ease);
   /* 窗口抖动：一次提醒需要几下来回摆动才看得出是"抖动"，比结构性变化更长。
      只动时长，曲线仍用 --gosslan-ease（设计规范：新增动效不另写曲线）。 */
   --gosslan-duration-shake: 520ms;
@@ -766,7 +772,8 @@ progress {
     background-color var(--gosslan-duration-fast) var(--gosslan-ease),
     color var(--gosslan-duration-fast) var(--gosslan-ease);
 }
-/* 选中态：底色由 motion-v 的共享布局药丸绘制（见 NavRail / 底栏的 layout-id），
+/* 选中态：底色由共享布局药丸绘制（移动端底栏是 motion-v 的 `layout-id`；
+   桌面 rail 自 2026-11-04 起是**一个常驻节点 + CSS transform**，见 `.rail-active-pill`）。
    这里只保留颜色与缩放，避免两层底色叠加。 */
 .nav-glyph-btn[data-active="true"],
 .nav-glyph-pill[data-active="true"] {
@@ -786,6 +793,35 @@ progress {
   transform: scale(1.08);
 }
 
+/* 桌面 rail 的选中药丸：**同一个节点常驻**，位置只由 `transform: translateY()` 表达。
+   ⚠️ 不用 motion-v 共享布局弹簧（2026-11-04 用户反馈：内容已经切过去、药丸才滞后滑过去）。
+   位移与左列内容的淡入共用 `--gosslan-nav-switch-*`（时间轴同刻开始、同刻结束）；
+   快速连点时 CSS transition 会**从当前计算值就地改目标**，不排队补播中间项。 */
+.rail-active-pill {
+  transition:
+    transform var(--gosslan-nav-switch-duration) var(--gosslan-nav-switch-ease),
+    opacity var(--gosslan-nav-switch-duration) var(--gosslan-nav-switch-ease);
+}
+
+/* 桌面左列内容切换：与药丸同一组时长/缓动做一次淡入（内容本身是硬换的，
+   淡入让它和指示条处在同一条时间轴上，不再是"内容已完全切换、药丸还在路上"）。
+   两个**内容相同、名字不同**的关键帧轮流挂载：快速连点时动画名一变就重播一次，
+   但同一时刻只有一段动画在跑（不叠加、不排队）。 */
+@keyframes gosslan-conv-view-in-a {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+@keyframes gosslan-conv-view-in-b {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+.conv-view-fade-a {
+  animation: gosslan-conv-view-in-a var(--gosslan-nav-switch-duration) var(--gosslan-nav-switch-ease);
+}
+.conv-view-fade-b {
+  animation: gosslan-conv-view-in-b var(--gosslan-nav-switch-duration) var(--gosslan-nav-switch-ease);
+}
+
 @media (prefers-reduced-motion: reduce) {
   .nav-glyph,
   .nav-glyph-btn,
@@ -794,6 +830,11 @@ progress {
   }
   .nav-glyph-pill[data-active="true"] .nav-glyph {
     transform: none;
+  }
+  /* reduce 档只降级、不放映位移动画：药丸直接落位；左列淡入受全局
+     `animation-duration: 0.01ms !important` 约束，观感等同瞬时。 */
+  .rail-active-pill {
+    transition: none;
   }
 }
 
@@ -1609,22 +1650,25 @@ img {
   pointer-events: none;
 }
 
-/* 设置分区切换：轻微位移 + 淡入，`out-in` 避免两页同时占位。
-   ⚠️ 2026-10-25：**不再带 scale**。整页内容缩 0.995 在窄窗口里肉眼就是"列表缩了一下"
-   （用户对移动端一级/二级页的同一句反馈）；位移与淡入已经足够表达"换页了"。 */
+/* 设置分区切换：**只做交叉淡入淡出**，不再位移（2026-11-04 用户：分区之间的"位置感"
+   由内容本身保持，不要整块位移）。旧的 `mode="out-in"` 会先摘掉旧面板、留下一个空档
+   ⇒ 高度塌、滚动条闪。现在用默认（同时）模式 + 退场层绝对定位：新面板立刻在流里占住
+   最终高度，旧面板叠在上面淡出 ⇒ 过渡期间容器高度不塌、也不重播 enter。
+   ⚠️ 2026-10-25 起这里就不带 scale（整页内容缩 0.995 在窄窗口里肉眼就是"列表缩了一下"）。 */
 .settings-swap-enter-active,
 .settings-swap-leave-active {
-  transition:
-    opacity 140ms var(--gosslan-ease),
-    transform 180ms var(--gosslan-ease-spring);
+  transition: opacity var(--gosslan-duration-fast) var(--gosslan-ease);
 }
-.settings-swap-enter-from {
-  opacity: 0;
-  transform: translateY(6px);
-}
+.settings-swap-enter-from,
 .settings-swap-leave-to {
   opacity: 0;
-  transform: translateY(-4px);
+}
+/* 退场层脱离文档流：否则旧面板和新面板会并排堆叠，容器高度瞬间翻倍。 */
+.settings-swap-leave-active {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
 }
 
 /* 设置卡片（`SettingsGroup`）的分隔线只画在**两条信息之间**，最后一行下面永远不画。
