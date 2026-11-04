@@ -435,14 +435,18 @@ const fullCode = computed(() =>
              归档那一档由 `canArchive` 决定 —— 它对**全体群成员**开放（用户 2026-09-24 #37），
              比"改状态"宽；但只在终态给按钮（后端拒绝归档非终态任务）。
              「恢复」仍然要 `canChangeStatus`：它是把状态改回待办，不是"取消归档"。 -->
-        <button
-          v-if="canArchive && isTodoTerminalStatus(item.status) && !archived"
-          type="button"
-          class="tap-safe flex items-center gap-1 rounded-[var(--gosslan-radius-md)] bg-[var(--gosslan-hover)] px-3 py-1.5 text-body text-[var(--gosslan-text-2)] transition hover:text-[var(--gosslan-text)]"
-          @click="emit('archive')"
-        >
-          <Archive class="h-3.5 w-3.5" />{{ t("todo.archive") }}
-        </button>
+        <!-- 「归档」不是删除（用户 2026-11-04 #7）：footer 只剩这一枚时很容易被读成"删掉"，
+             所以按钮下面挂一句副文案说明可从「已归档」找回。按钮本身不动（颜色/尺寸不变）。 -->
+        <div v-if="canArchive && isTodoTerminalStatus(item.status) && !archived" class="flex flex-col items-start gap-0.5">
+          <button
+            type="button"
+            class="tap-safe flex items-center gap-1 rounded-[var(--gosslan-radius-md)] bg-[var(--gosslan-hover)] px-3 py-1.5 text-body text-[var(--gosslan-text-2)] transition hover:text-[var(--gosslan-text)]"
+            @click="emit('archive')"
+          >
+            <Archive class="h-3.5 w-3.5" />{{ t("todo.archive") }}
+          </button>
+          <span class="text-caption text-[var(--gosslan-text-2)]">{{ t("todo.archiveHint") }}</span>
+        </div>
         <!-- 「恢复」不在这里 —— 它是把状态从「完成」退回「待办」，见下面的 canRestore。 -->
         <button
           v-if="archived && canRestore"
