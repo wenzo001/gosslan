@@ -483,11 +483,13 @@ CASES: list[Case] = [
         why="取消信号是异步回流的：投递任务在下一个观测点才退回来，带着上一轮的进度或这次真发完了"
         "的 completed 判定 ⇒ 没有闸门时那一格会被晚到的写改回 sending/completed（与 file_transfers"
         " 的 cancel_terminal 同一族缺陷，只是这张表用状态本身当墓碑）。\n"
-        "     注入方式：去掉 UPDATE 尾巴上那句 `AND status <> 'cancelled'`。",
+        "     注入方式（2026-11-04 判据搬迁）：WHERE 尾巴上的 `status <> 'cancelled'` 已收进"
+        " `GROUP_FILE_STATE_WRITE_BLOCKED`，把被挡的集合从 `[\"cancelled\"]` 换成 `[\"sending\"]` ⇒"
+        " 取消格不再被挡。",
         file=TAURI / "src" / "db" / "group_files.rs",
         injections=[(
-            "         WHERE transfer_id = ?1 AND recipient_id = ?2 AND status <> 'cancelled'",
-            "         WHERE transfer_id = ?1 AND recipient_id = ?2",
+            'const GROUP_FILE_STATE_WRITE_BLOCKED: [&str; 1] = ["cancelled"];',
+            'const GROUP_FILE_STATE_WRITE_BLOCKED: [&str; 1] = ["sending"];',
         )],
         cmd=cargo("test", "--lib", "a_cancelled_recipient_row_is_a_hard_terminal"),
         cwd=TAURI,
@@ -513,12 +515,13 @@ CASES: list[Case] = [
         name="取消群文件只动未到终态的成员（completed/failed 各说各的事）",
         why="把「已收到」改成「已取消」是谎报，把「已失败」覆盖成「已取消」会让下一个排查的人"
         "读错这一单死于什么。\n"
-        "     注入方式：把 `status IN ('pending','sending')` 放宽成 `status <> 'completed'`"
-        "（被改写的行数与 failed 那一格的断言各红一次）。",
+        "     注入方式（2026-11-04 判据搬迁）：`status IN ('pending','sending')` 已收进"
+        " `GROUP_FILE_CANCELLABLE`，把 `failed` 也塞进这个集合（被改写的行数与 failed 那一格的"
+        "断言各红一次）。",
         file=TAURI / "src" / "db" / "group_files.rs",
         injections=[(
-            "         WHERE transfer_id = ?1 AND status IN ('pending', 'sending')",
-            "         WHERE transfer_id = ?1 AND status <> 'completed'",
+            'const GROUP_FILE_CANCELLABLE: [&str; 2] = ["pending", "sending"];',
+            'const GROUP_FILE_CANCELLABLE: [&str; 3] = ["pending", "sending", "failed"];',
         )],
         cmd=cargo("test", "--lib", "cancelling_a_group_file_touches_only_the_members_that_are_not_terminal"),
         cwd=TAURI,
@@ -529,11 +532,12 @@ CASES: list[Case] = [
         name="重建接收会话不许把已取消的成员点亮回 sending",
         why="`upsert_group_file_receive` 是「同一单再来一次」的复位入口，以前只放过 completed ⇒"
         "已取消的成员会被复位成 sending 再传一遍（界面上取消了、链路上照发）。\n"
-        "     注入方式：把成员行那句复位退回旧写法（只放过 completed）。",
+        "     注入方式（2026-11-04 判据搬迁）：`status NOT IN ('completed','cancelled')` 已收进"
+        " `GROUP_FILE_RECEIVE_WRITE_BLOCKED`，把 cancelled 从集合里拿走（退回旧写法：只放过 completed）。",
         file=TAURI / "src" / "db" / "group_files.rs",
         injections=[(
-            "         WHERE transfer_id = ?1 AND recipient_id = ?3 AND status NOT IN ('completed', 'cancelled')",
-            "         WHERE transfer_id = ?1 AND recipient_id = ?3 AND status != 'completed'",
+            'const GROUP_FILE_RECEIVE_WRITE_BLOCKED: [&str; 2] = ["completed", "cancelled"];',
+            'const GROUP_FILE_RECEIVE_WRITE_BLOCKED: [&str; 1] = ["completed"];',
         )],
         cmd=cargo("test", "--lib", "a_cancelled_group_file_is_not_requeued_by_the_offline_or_sweep_paths"),
         cwd=TAURI,
@@ -1071,16 +1075,16 @@ CASES: list[Case] = [
         "`failed` 已经说清它死于什么。\n"
         "     按成员取消只许动 `pending|sending` —— 少了这个状态过滤，摘要里"
         "「收到的人」会凭空少一个，而文件其实就在他盘上。\n"
-        "     注入方式：把 `AND status IN ('pending', 'sending')` 从那条 UPDATE 里摘掉"
-        "（编译照过、其余成员不受影响，只有这一格判据会红）。",
+        "     注入方式（2026-11-04 判据搬迁）：状态集合已收进 `GROUP_FILE_CANCELLABLE`，"
+        "把 `failed` 也塞进去（编译照过、其余成员不受影响，只有这一格判据会红）。",
         file=TAURI / "src" / "db" / "group_files.rs",
         injections=[(
-            "         WHERE transfer_id = ?1 AND recipient_id = ?2 AND status IN ('pending', 'sending')",
-            "         WHERE transfer_id = ?1 AND recipient_id = ?2",
+            'const GROUP_FILE_CANCELLABLE: [&str; 2] = ["pending", "sending"];',
+            'const GROUP_FILE_CANCELLABLE: [&str; 3] = ["pending", "sending", "failed"];',
         )],
         cmd=cargo("test", "--lib", "cancelling_one_recipient_leaves_the_others_alone"),
         cwd=TAURI,
-        expect_fail_hint="重复取消同一格必须返回 false",
+        expect_fail_hint="失败那一格不许被按成员取消改写",
         tags=["rust", "db", "group-file", "terminal-state", "new-guards"],
     ),
     Case(
