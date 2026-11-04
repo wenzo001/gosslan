@@ -155,6 +155,7 @@ async fn send_chat<W: AsyncWrite + Unpin>(
         content: "dual-link-probe".to_string(),
         ts: now_ms(),
         seq,
+        lang: None,
     };
     write_msg(w, &msg)
         .await
