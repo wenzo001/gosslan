@@ -2840,6 +2840,9 @@ mod group_file_fail_reason_tests {
         // 落库词表里**不属于群文件这一族**的档位（它们各自的日志文案在别的文件里）：
         const NOT_GFILE: &[&str] = &[
             crate::error_codes::SEND_RETRY_EXPIRED,
+            // Block 3 拆出来的"真离线"那一格：同属 1:1 发送终态，不归群文件族
+            //（日志文案在 `outbox_sweep` 的 `OUTBOX_EXPIRED` 行上）。
+            crate::error_codes::SEND_PEER_OFFLINE_EXPIRED,
             crate::error_codes::SEND_ORPHAN_AT_START,
             crate::error_codes::SEND_PEER_DELETED,
             crate::error_codes::SEND_GROUP_MEMBER_GONE,

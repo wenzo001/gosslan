@@ -835,19 +835,24 @@ fn set_message_status_with_code(
     Ok(rows)
 }
 
-/// 过期消息 outbox 落终态：置 `failed`（原因 = 重试窗口耗尽）+ 删队列行，**同一事务**。
+/// 过期消息 outbox 落终态：置 `failed`（原因由调用方按"真离线 / 在线但送不到"选，见
+/// `outbox_sweep::expired_fail_code`）+ 删队列行，**同一事务**。
 ///
 /// 为什么必须原子（审计 P1 #6）：两步分开写时，"状态写成 failed、删行失败"会留下
 /// 「界面已判失败、队列行还在」—— 而 `outbox_flush` 只看队列表、不看 messages.status ⇒
 /// 这条"已失败"的消息**继续被补发**，对方确实收到了，界面却显示失败，且不可自愈。
 /// 顺序也保留原语义：状态写失败就不删行（否则行没了、状态还是 sending，两个清扫器都看不见）。
+///
+/// `fail_code` 是**实参而不是写死常量**（Block 3）：清扫器手里才有"这条是怎么没的"证据
+/// （对端可达性），落库这一层只负责把那个结论写进去。
 pub fn finalize_expired_message(
     conn: &Connection,
     msg_id: &str,
     group: bool,
+    fail_code: &str,
 ) -> Result<()> {
     let tx = conn.unchecked_transaction()?;
-    set_message_failed(&tx, msg_id, crate::error_codes::SEND_RETRY_EXPIRED)?;
+    set_message_failed(&tx, msg_id, fail_code)?;
     // 复用既有的删行实现（不要在这里写第二份 SQL）：`Transaction` 解引用到 `Connection`。
     // 队列行本来就不在时它们同样是成功（幂等）。
     if group {
@@ -1766,10 +1771,21 @@ mod fail_code_tests {
         )
         .unwrap();
 
-        finalize_expired_message(&conn, "m3", false).unwrap();
+        // Block 3：失败码由调用方给 —— 这里刻意用**另一个**码，证明它是实参而不是
+        // 被落库层写死的 SEND_RETRY_EXPIRED（写死时这条断言就红）。
+        finalize_expired_message(
+            &conn,
+            "m3",
+            false,
+            error_codes::SEND_PEER_OFFLINE_EXPIRED,
+        )
+        .unwrap();
         assert_eq!(
             pair(&conn, "m3"),
-            ("failed".to_string(), Some(error_codes::SEND_RETRY_EXPIRED.to_string())),
+            (
+                "failed".to_string(),
+                Some(error_codes::SEND_PEER_OFFLINE_EXPIRED.to_string())
+            ),
         );
         let rows: i64 = conn
             .query_row("SELECT COUNT(*) FROM outbox WHERE msg_id = 'm3'", [], |r| r.get(0))
@@ -1990,8 +2006,10 @@ mod fail_code_tests {
     fn message_fail_codes_are_stable_identifiers() {
         assert_eq!(
             error_codes::MESSAGE_FAIL_CODES.len(),
-            18,
+            19,
             "档位变了要同步三处：前端表 `src/utils/fileFailReason.ts`、中英词典、以及这条长度钉"
+            // Block 3：`SEND_PEER_OFFLINE_EXPIRED` 与 `SEND_RETRY_EXPIRED` 拆开
+            //（真离线 vs 在线但送不到），前端各自一条带下一步的文案。
             // 5.15.31 加了 `FILE_SEND_EXPIRED` / `FILE_SEND_GIVEUP`（原先只活在事件载荷里，
             // 现在也会落进这一列，`FileJobEnd::fail_code`）；5.15.32 加了群文件那六格；
             // 5.15.35 加接收收尾那四格（`FILE_RECEIVE_INCOMPLETE` / `FILE_INTEGRITY_FAILED`

@@ -95,6 +95,11 @@ const FILE_FAIL_REASON_KEYS: Record<string, string> = {
   // **在册之外**的失败（如线程池中断那种内部串）读回来是 NULL ⇒ 界面走通用文案；
   // 那是"这一格没记原因"，不是"没有原因"（INV-P16 ③）。
   SEND_RETRY_EXPIRED: "msg.fail.retryExpired",
+  // Block 3：与上一格**必须分开**。`SEND_RETRY_EXPIRED` 只在"对方可达（有链路 / 45s 内
+  // 还有 announce）却始终没 Ack"时写 —— 那是"在线但送不到（没有可用直连/中继）"；
+  // 这一格是"对方一直不可达、熬满 7 天离线保留窗口"。两类的下一步动作完全不同，
+  // 混成一句"对方可能长时间离线"会让可达那一格的用户白等（旧文案就是这个错位）。
+  SEND_PEER_OFFLINE_EXPIRED: "msg.fail.peerOfflineExpired",
   SEND_ORPHAN_AT_START: "msg.fail.orphanAtStart",
   SEND_PEER_DELETED: "msg.fail.peerDeleted",
   SEND_GROUP_MEMBER_GONE: "msg.fail.groupMemberGone",

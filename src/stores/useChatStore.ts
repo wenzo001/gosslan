@@ -3538,6 +3538,13 @@ export const useChatStore = defineStore("chat", () => {
       onFriendMessageBlocked: () => {
         app.toast(t("send.notFriend"), "error");
       },
+      // Block 1 Case B：历史 NULL 好友的身份密钥从验签信封补齐 ⇒ 好友详情里的安全码
+      // 从"未验证"转为可查看。重拉好友表（安全码读的是 friends 表那一列）与轮换候选。
+      // 对话里那条「已确认对方身份密钥（此前未验证）」由后端的系统消息负责，不在这里造第二份。
+      onFriendAnchorBound: () => {
+        void refreshFriends();
+        void refreshKeyRotations();
+      },
       onMessage: (rec) => {
         enqueueMessage(rec);
         if (rec.kind === "remind") {
