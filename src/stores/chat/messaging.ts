@@ -103,6 +103,10 @@ export function createMessagingModule(ctx: ChatContext) {
    * 用户切过的会话越多、跑得越久，条目就越多。上界取 8 × 1000 + 余量 = 8192 ——
    * 它只需要装得下当前 8 个缓存会话的全部 id，超出的本来就查得到也走回退扫描，
    * 淘汰最旧的不会改变正确性（`convIdOfMessage` 未命中时仍会全量扫描重建）。
+   *
+   * ✅ 口径已定（用户拍板 2026-11-05）：**8192 不再调整**，也**不是待办**。
+   * 最坏情况是"会话早被淘汰 + 消息早被逐出"的老消息在搜索里点跳转时命中不到索引，
+   * 走到既有的「找不到该消息」提示即止，不会崩、也不会阻塞其它会话的搜索。
    */
   const CONV_ID_BY_MSG_MAX = 8192;
   const convIdByMsgId = createMsgConvIndex(CONV_ID_BY_MSG_MAX);

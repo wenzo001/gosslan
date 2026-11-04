@@ -14,6 +14,39 @@
 
 ## [Unreleased]
 
+### 设置·外观：应用内「减少透明效果」开关 + 清理死代码
+
+- 新增 `设置 › 外观 › 减少透明效果`（两档：关闭 / 减少透明）。WKWebView 不实现
+  `prefers-reduced-transparency`，所以由应用自己实现：默认跟随系统（读不到系统偏好时按关闭），
+  用户显式选择后以选择为准并落库（`reduced_transparency`，localStorage + SQLite 双层）。
+- 开启后玻璃层退回**已有**的实底 token（`--gosslan-glass-*-fallback`）、动效背景冻结到初始帧
+  （`data-ambient="static"`），布局零变化；系统级媒体查询与应用内开关共用同一套 token，不另造配色。
+- 删除无消费方的 `.elevated` 样式规则及随之变死的 `--gosslan-shadow` token；`designGuards`
+  新增「不得回归」判据（含反例自证）与「应用内开关必须复用实底 token」判据。
+- `SecondaryBtn` 的 `outline` 并入「3 语义 × 4 尺寸」表，作为 secondary 的最弱档
+  （弱底色 + 描边）：2 处调用改为 `variant="outline"`，可见变化是取消键从"只有描边"变成
+  "描边 + 弱底色"；新增守卫禁止组件外手写该档与旧布尔属性。
+- 验证：`npm test` 1731/1731、`npm run build`、`cargo check --all-targets`；
+  `settingsmobile` 探针中英各 15/15（新增一条点击开关后 `data-reduced-transparency=true` +
+  `data-ambient=static` + 无横向溢出的判据）。
+
+## [5.18.26] - 2026-11-05
+
+### 待机：窗口隐藏时暂停卡顿计时（活动时钟），恢复立即补一拍
+
+- `App.vue` 的 1s `stall` 定时器改由 `src/utils/stallWatch.ts` 的活动时钟驱动：`document.hidden`
+  时**真停表**（连空回调都不跑），恢复可见时重新起表并立即补一次判定；隐藏时长整段从判定
+  时钟扣掉，`decideStall` 与 10s / 30s / snooze 阈值**一字未改**。
+- `InflightOp.startedAt`（`performance.now()` 口径）经 `activeSince()` 换算后再比较，避免隐藏
+  次数累积后年龄被拖成负数、真卡住也判不出来；跨多段隐藏的极老操作会略低估年龄（方向是更不容易误报）。
+- 单测 `src/utils/stallWatch.test.ts`（6 条）：隐藏 10 分钟不判、恢复第一拍不误判、恢复后真卡 10s
+  仍判、连续隐藏/恢复任何时刻只有一个 interval、两段隐藏按时段相加、默认实现不依赖 `window`。
+  反例自证：临时删掉 `setHidden(true)` 里的停表，隐藏相关的两条立刻红。
+- `appLifecycle.test.ts` 的锚点随实现搬迁到 `stallWatch.ts`，并保留"起表/停表真的在新位置"的自证。
+- `perf/README.md` 的待机定时器静态账同步为新行为。
+- 口径确认：`stores/chat/messaging.ts` 的 `convIdByMsgId` 上界 **8192 不再调整**（用户拍板），
+  最坏情况走既有「找不到该消息」提示，不崩；注释里已标注为已定口径而非待办。
+
 ## [5.18.25] - 2026-11-05
 
 ### 输入框高度收敛为三档（sm 32 / md 36 / lg 44）
