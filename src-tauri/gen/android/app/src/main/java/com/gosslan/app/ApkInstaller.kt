@@ -288,7 +288,7 @@ object ApkInstaller {
                 PackageInstaller.STATUS_PENDING_USER_ACTION -> {
                     nativeOnInstallStage(1)
                     @Suppress("DEPRECATION")
-                    val confirm = intent.getParcelableExtra<Intent>(PackageInstaller.EXTRA_INTENT)
+                    val confirm = intent.getParcelableExtra<Intent>(Intent.EXTRA_INTENT)
                     launchConfirmation(confirm)
                 }
                 PackageInstaller.STATUS_SUCCESS -> {
