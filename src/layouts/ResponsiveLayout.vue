@@ -39,6 +39,7 @@ import ProfileSection from "@/components/settings/ProfileSection.vue";
 import { ScrollText, Settings, UserCircle } from "lucide-vue-next";
 import type { ExternalLink, Friend, OutgoingFriendRequest, PendingRequest } from "@/types";
 import { selfFriendOf } from "@/utils/selfChat";
+import { locateFailureReason } from "@/utils/chatSearch";
 import { storageGet, storageSet } from "../utils/safeStorage.ts";
 const app = useAppStore();
 const chat = useChatStore();
@@ -358,18 +359,35 @@ function closeSearch() {
 }
 
 /**
- * 从结果页「进入聊天」：打开该会话并**跳到命中那一条**。
- * 跳转复用 `locateMessageInConv`（它会翻页直到找到那条消息），失败时提示而不是静默
- * —— 用户点"进入聊天"就是想看那条，没跳到会以为功能坏了。
+ * 搜索结果 → 会话：两种语义共用这一个入口。
+ *
+ * · 点某一条命中：`msgId` 非空 ⇒ 进会话后**定位到那条消息**（不在已加载窗口里时由
+ *   `locateInLoaded` 逐页向前加载，直到找到或到上限）。
+ * · 右上角「进入聊天」：`msgId` 为空 ⇒ 只进会话，不定位（载荷约定见搜索组件）。
+ *
+ * 定位失败必须说清是哪一种：`not-found`（翻到上限也没有，通常已撤回/删除）与
+ * `error`（翻页请求失败）给出不同文案；绝不能"跳到会话顶部了事"。
  */
+function toastLocateFailure(result: "found" | "not-found" | "error") {
+  const reason = locateFailureReason(result);
+  if (reason === "missing") app.toast(t("search.locateMissing"), "info");
+  else if (reason === "load-error") app.toast(t("search.locateLoadFail"), "error");
+}
+
 async function onOpenSearchHit(payload: { convId: string; msgId: string }) {
   if (app.isMobile) app.mobileView = "chat";
   // 先同步打开会话（activeConv 立刻写），路由 watcher 看到已打开就不会重复拉一次。
   const opening = chat.openConversation(payload.convId);
   await router.replace({ name: "conversation", params: { convId: payload.convId } });
-  await opening;
-  const r = await chat.locateMessageInConv(payload.convId, payload.msgId);
-  if (r !== "found") app.toast(t("search.locateFail"), "error");
+  try {
+    await opening;
+  } catch (e) {
+    // 会话本身都没打开（首屏消息加载失败）：跳不到消息，但要把原因说出来。
+    app.toastError(e, t("search.locateLoadFail"));
+    return;
+  }
+  if (!payload.msgId) return; // 「进入聊天」：只进会话，不定位
+  toastLocateFailure(await chat.locateInLoaded(payload.convId, payload.msgId));
 }
 
 /**
@@ -604,8 +622,11 @@ watch(
       if (chat.activeConv !== convId) await chat.openConversation(convId);
       const msgId = typeof route.query.msgId === "string" ? route.query.msgId : "";
       if (convId && msgId) {
-        const r = await chat.locateMessageInConv(convId, msgId);
-        if (r !== "found") app.toast(t("search.locateFail"), "error");
+        try {
+          toastLocateFailure(await chat.locateMessageInConv(convId, msgId));
+        } catch (e) {
+          app.toastError(e, t("search.locateLoadFail"));
+        }
       }
     } else if (route.name === "friend") {
       const id = String(route.params.friendId ?? "");
