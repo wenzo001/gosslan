@@ -7359,12 +7359,14 @@ async function rosterChecks(cdp, url) {
     "面板四边都在视口内",
     "rect=" + JSON.stringify(pp.rect) + " 视口=" + pp.vw + "x" + pp.vh
       + " 宽=" + (pp.rect.r - pp.rect.l) + " 高=" + (pp.rect.bo - pp.rect.t));
-  // 反面对照：把壳的 fixed 坐标推到视口右缘外 ⇒ 里面那块面板必须跟着出去
+  // 反面对照：把壳的 fixed 坐标推到**远在视口外**（+2000px，而不是贴右缘）⇒ 里面那块面板必须跟着出去。
+  // 贴右缘那版在 756 宽的视口里会被面板自身的居中/位移吃掉（实测 rect 右缘 748 < 756 ⇒ 判据不咬），
+  // 那不是"视口判据坏了"，而是对照没把壳真正推出视口。
   await cdp.eval("(function(){var el=document.querySelector('[data-reaction-picker]');"
     + "if(!el)return false;"
     + "var box=el.closest('[data-reka-popper-content-wrapper]')||el;"
     + "box._o={left: box.style.left, right: box.style.right, transform: box.style.transform};"
-    + "box.style.right='auto';box.style.left=(window.innerWidth - 20) + 'px';box.style.transform='none';return true;})()");
+    + "box.style.right='auto';box.style.left=(window.innerWidth + 2000) + 'px';box.style.transform='none';return true;})()");
   const ppOut = await cdp.eval("window.__probe.floatLayer('[data-reaction-picker] [role=dialog]')");
   check("对照：把选择器那层壳推到视口右缘外 ⇒ 面板必须落到视口外（证明那条视口判据会咬）",
     ppOut.ok === true && ppOut.inViewport === false,
@@ -10143,8 +10145,10 @@ async function runPasteFrame(cdp, url) {
     + "   caretInText: !!node && node.nodeType === 3,"
     + "   caretAtNodeEnd: !!node && node.nodeType === 3 && sel.focusOffset === node.length,"
     + "   sendEnabled: await (async () => {"
-    + "     const pick = () => Array.from(document.querySelectorAll('#probe-host button'))"
-    + "       .filter((b) => (b.textContent || '').indexOf('发送') >= 0 || (b.getAttribute('aria-label') || '').indexOf('发送') >= 0);"
+    + "     const pick = () => {"
+    + "       const all = Array.from(document.querySelectorAll('#probe-host button'));"
+    + "       return all.length ? [all[all.length - 1]] : [];"
+    + "     };"
     + "     const states = [];"
     + "     for (let i = 0; i < 20; i++) {"
     + "       const btns = pick();"
@@ -10171,10 +10175,11 @@ async function runPasteFrame(cdp, url) {
   check("caret 落在文本节点内部的末尾（落在编辑器上会让 @ 触发态静默失效）",
     !!run && run.caretInText && run.caretAtNodeEnd, "文本节点内 + 偏移 == 节点长度",
     JSON.stringify({ caretInText: run && run.caretInText, atEnd: run && run.caretAtNodeEnd }));
-  // 2026-11-04：这一格曾经在同一帧读按钮禁用态 ⇒ 全量跑里和 `hasDraft` 的异步投影赛跑，
-  // 单跑绿、全量红。改为**有界轮询**（20 轮、rAF 与 16ms 计时器取先到者，最长 ≈320ms）；
-  // 失败时把匹配到的按钮（文本/aria/disabled）原样打出来，避免下次只剩一个 false。
-  // 同时补上「按钮必须真的存在」——原来空数组走 `.every()` 恒 true，会把「按钮没渲染」误判成可发送。
+  // 2026-11-04：这一格曾经在同一帧读按钮禁用态 ⇒ 全量跑里和 `hasDraft` 的异步投影赛跑；
+  // 后来又按文案 `发送` 找按钮 ⇒ `i18nshots` 段把 `gosslan.locale` 落成 en-US 后，
+  // 全量跑里那颗按钮叫 "Send"，一个都匹配不到（诊断读数是 `states: []`）。现在按
+  // **位置**取（编辑器底部那一行的最后一颗按钮就是发送键），不依赖界面语言；
+  // 有界轮询 20 轮（rAF 与 16ms 计时器取先到者，最长 ≈320ms），失败时打印它的文本/aria/disabled。
   check("粘贴后发送键立刻可用（hasDraft 投影跟得上）", !!run && run.sendEnabled?.ok === true,
     "可发送", JSON.stringify({ sendEnabled: run && run.sendEnabled }));
 
