@@ -1872,21 +1872,26 @@ window.__probe = (() => {
    * 增/改/删都返回**整份数组**（与 Rust 那侧同形）⇒ 才量得到"写成功把返回值写回读缓存"
    * 与"没有再拉一次 list"；线上导入返回合并结果。每条命令各计一次调用数。
    */
-  H.linksStore = async (initial) => {
+  H.linksStore = async (initial, source = 'https://backup.example.com/links.json') => {
     const m = await import('/src/api/index.ts');
     const rows = initial.map((x) => ({ id: x.id, name: x.name, url: x.url }));
     window.__links = {
       rows: rows,
+      source: source,
       calls: { list: 0, add: 0, update: 0, remove: 0, importUrl: 0, export: 0 },
-      seq: 0, last: null, fail: null,
+      seq: 0, last: null, fail: null, hold: false, release: null,
     };
     const snap = () => rows.map((x) => ({ id: x.id, name: x.name, url: x.url }));
     const trip = (kind) => {
       if (window.__links.fail !== kind) return;
       window.__links.fail = null;
+      // 刷新失败用后端真实错误串的形状（分类器只认 code=…，不认中文原句）。
+      if (kind === 'refreshHttp') throw new Error('code=LINK_DOWNLOAD_HTTP_FAILED 下载失败：HTTP 410');
+      if (kind === 'refreshNetwork') throw new Error('code=LINK_IMPORT_READ_FAILED 读取失败：network is unreachable');
       throw new Error('ipc boom: ' + kind);
     };
     m.api.listExternalLinks = async () => { window.__links.calls.list += 1; return snap(); };
+    m.api.getExternalLinksImportSource = async () => window.__links.source;
     m.api.addExternalLink = async (name, url) => {
       window.__links.calls.add += 1;
       trip('add');
@@ -1912,10 +1917,19 @@ window.__probe = (() => {
       return snap();
     };
     // 线上导入：返回合并结果（links 是导入后的完整列表），并让列表多一行可核对。
+    // 刷新与导入走同一条命令 ⇒ 这里也承担「刷新成功 / 刷新失败 / 刷新挂起」三种夹具。
     m.api.importExternalLinksFromUrl = async (url) => {
       window.__links.calls.importUrl += 1;
+      trip('importUrl');
+      trip('refreshHttp');
+      trip('refreshNetwork');
+      if (window.__links.hold) {
+        window.__links.hold = false;
+        await new Promise((r) => { window.__links.release = r; });
+      }
       window.__links.seq += 1;
       rows.push({ id: 'n' + window.__links.seq, name: '导入的链接', url: 'https://imported.example.com' });
+      window.__links.source = url;
       window.__links.last = { kind: 'importUrl', url: url };
       return { links: snap(), added: 1, skipped: 0, invalid: 0 };
     };
@@ -1932,6 +1946,14 @@ window.__probe = (() => {
   H.linksLast = () => (window.__links ? JSON.parse(JSON.stringify(window.__links.last)) : null);
   /** 让下一次指定写命令 reject（只生效一次）—— 写失败那条格用它把 toast 逼出来。 */
   H.linksFailNext = (kind) => { if (!window.__links) return false; window.__links.fail = kind; return true; };
+  /** 让下一次线上导入/刷新挂起（量「刷新中…」与并发去重），由 linksRelease 放行。 */
+  H.linksHold = () => { if (!window.__links) return false; window.__links.hold = true; return true; };
+  H.linksRelease = () => {
+    if (!window.__links || !window.__links.release) return false;
+    window.__links.release();
+    window.__links.release = null;
+    return true;
+  };
   /**
    * 诊断快照的可控夹具（--only=diag）：首次调用挂起（量"加载中"），之后由 diagResolve 决定成功；
    * diagFailWith 置上后每次调用立即 reject（量 retry:1 之后真的进 error）。
@@ -1971,6 +1993,12 @@ window.__probe = (() => {
     window.__probe.toastApp = app;
     await Vue.nextTick();
     return { ok: true };
+  };
+  /** 重挂一份干净的 HUD（探针中途可能有别的组件把 body 下的节点带走）。 */
+  H.remountToastHud = async () => {
+    const old = document.getElementById('probe-toast-host');
+    if (old) old.remove();
+    return H.mountToastHud();
   };
   /** 读 Toast HUD 里**可见**的条目（与 --only=toast 段同一套选择器）。 */
   H.toastRead = () => {
@@ -13378,6 +13406,30 @@ async function runLinks(cdp, url) {
     await cdp.settled(); // 段间导航竞态收进活体探针（工具层，不动判据）
     await sleep(3_000);
     await cdp.eval(PAGE_FIXTURE);
+    // 语言：显式 --locale 时强制对应偏好（否则宿主机是中文，英文一次会假绿）；
+    // 未指定则沿用页面既有偏好。下面的期望文案全部从词典现取，判据不手抄两套句子。
+    if (LOCALE_OVERRIDE === "en-US" || LOCALE_OVERRIDE === "zh-CN") {
+      await cdp.eval(`(async () => { const m = await import('/src/i18n/index.ts');`
+        + ` m.applyPreference('${LOCALE_OVERRIDE}'); return m.currentLocale(); })()`);
+    }
+    const L = await cdp.eval(`(async () => {
+      const { t } = await import('/src/i18n/index.ts');
+      return {
+        title: t('links.title'),
+        add: t('links.add'), importBtn: t('links.import'), backup: t('links.export'),
+        backupHint: t('links.exportHint'), importTitle: t('links.importTitle'),
+        fileSection: t('links.importFile'), fileAction: t('links.importFileAction'),
+        urlSection: t('links.importUrl'), urlAction: t('links.importUrlAction'),
+        importUrlPh: t('links.importUrlPlaceholder'),
+        namePh: t('links.namePlaceholder'), urlPh: t('links.urlPlaceholder'),
+        edit: t('links.edit'), remove: t('links.remove'),
+        cancel: t('common.cancel'), save: t('common.save'),
+        addFail: t('links.addFail'),
+        sourceLabel: t('links.sourceLabel'), refresh: t('links.refresh'),
+        refreshing: t('links.refreshing'), sourceCopy: t('links.sourceCopy'),
+        failHttp: t('links.refreshFail.http'), failNetwork: t('links.refreshFail.network'),
+      };
+    })()`);
     await cdp.eval(`window.__probe.linksStore(${JSON.stringify(links)})`);
     const mounted = await cdp.eval("window.__probe.install('/src/components/LinksList.vue', '', '')");
     await cdp.eval(`(() => {
@@ -13396,25 +13448,41 @@ async function runLinks(cdp, url) {
       }));
       const btn = (label) => [...document.querySelectorAll('button')]
         .find((b) => ((b.innerText || '').trim() === label));
-      const addBtn = btn('添加');
-      const importBtn = btn('导入');
-      const backupBtn = btn('备份');
+      const addBtn = btn(${JSON.stringify(L.add)});
+      const importBtn = btn(${JSON.stringify(L.importBtn)});
+      const backupBtn = btn(${JSON.stringify(L.backup)});
+      const src = document.querySelector('[data-probe="links-source"]');
+      const refreshBtn = document.querySelector('[data-probe="links-refresh"]');
+      const hostTop = document.getElementById('probe-host').getBoundingClientRect().top;
+      const srcRect = src ? src.getBoundingClientRect() : null;
+      const rRect = refreshBtn ? refreshBtn.getBoundingClientRect() : null;
       return {
         txt, inputs,
         add: !!addBtn,
         importBtn: !!importBtn,
         backup: !!backupBtn,
         backupTitle: backupBtn ? backupBtn.getAttribute('title') : null,
-        filePick: !!btn('选择 JSON 文件…'),
-        urlAction: !!btn('读取并导入'),
-        edits: [...document.querySelectorAll('button[aria-label="编辑链接"]')].length,
-        removes: [...document.querySelectorAll('button[aria-label="删除链接"]')].length,
+        filePick: !!btn(${JSON.stringify(L.fileAction)}),
+        urlAction: !!btn(${JSON.stringify(L.urlAction)}),
+        edits: [...document.querySelectorAll('button[aria-label=${JSON.stringify(L.edit)}]')].length,
+        removes: [...document.querySelectorAll('button[aria-label=${JSON.stringify(L.remove)}]')].length,
         rowTitles: [...document.querySelectorAll('button[title]')]
           .map((b) => b.getAttribute('title'))
           .filter((t) => t === 'https://intra.example.com' || t === 'https://docs.example.com'),
         rows: [...document.querySelectorAll('button[title]')]
           .map((b) => b.getAttribute('title'))
           .filter((t) => t && t.startsWith('https://')),
+        source: !!src ? {
+          text: (src.innerText || '').trim(),
+          title: src.getAttribute('title'),
+          top: srcRect ? Math.round(srcRect.top - hostTop) : null,
+          copy: !!src.querySelector('[data-probe="links-copy"]'),
+        } : null,
+        refreshBtn: !!refreshBtn,
+        refreshText: refreshBtn ? (refreshBtn.innerText || '').trim() : null,
+        refreshBusy: refreshBtn ? refreshBtn.getAttribute('aria-busy') === 'true' : null,
+        refreshDisabled: refreshBtn ? refreshBtn.disabled : null,
+        refreshTop: rRect ? Math.round(rRect.top - hostTop) : null,
         events: window.__probe.events.slice(),
       };
     })()`);
@@ -13506,27 +13574,32 @@ async function runLinks(cdp, url) {
     };
 
     let s = await info();
+    // 首屏读数是异步 Query：等它真的落到 2 行再判（英文档/冷启动时 400ms 可能还不够）。
+    for (let i = 0; i < 15 && s.rowTitles.length !== 2; i++) {
+      await sleep(200);
+      s = await info();
+    }
     check("链接左栏：标题 / 两条链接 / 常显编辑与删除 / 添加·导入·备份入口齐全且都有可见文案",
-      mounted && mounted.ok === true && s.txt.includes("外部链接") && s.rowTitles.length === 2
+      mounted && mounted.ok === true && s.txt.includes(L.title) && s.rowTitles.length === 2
         && s.edits === 2 && s.removes === 2 && s.add && s.importBtn && s.backup
-        && s.backupTitle === "导出链接备份（JSON）",
+        && s.backupTitle === L.backupHint,
       "2 行 + 2 编辑 + 2 删除 + 「添加 / 导入 / 备份」三个入口同一行同样式、文案可见 + 备份 title 说明 JSON",
       JSON.stringify({ rows: s.rowTitles, edits: s.edits, removes: s.removes, add: s.add,
         importBtn: s.importBtn, backup: s.backup, backupTitle: s.backupTitle }));
 
-    const importOpened = await clickText("导入");
+    const importOpened = await clickText(L.importBtn);
     s = await info();
     check("导入：入口打开独立弹窗，文件与网址两种来源都在这一处，且不出现新增/编辑字段",
-      importOpened === true && s.txt.includes("导入链接") && s.txt.includes("从文件导入")
-        && s.txt.includes("从网址导入") && s.filePick && s.urlAction
-        && s.inputs.some((i) => i.ph === "https://example.com/links.json")
-        && !s.inputs.some((i) => i.ph === "显示名称"),
+      importOpened === true && s.txt.includes(L.importTitle) && s.txt.includes(L.fileSection)
+        && s.txt.includes(L.urlSection) && s.filePick && s.urlAction
+        && s.inputs.some((i) => i.ph === L.importUrlPh)
+        && !s.inputs.some((i) => i.ph === L.namePh),
       "导入弹窗含「从文件导入 / 从网址导入」，无「显示名称」",
       JSON.stringify({ inputs: s.inputs, filePick: s.filePick, urlAction: s.urlAction }));
-    await clickText("取消");
+    await clickText(L.cancel);
     s = await info();
     check("导入取消：弹窗收起，列表不受影响",
-      !s.txt.includes("导入链接") && !s.inputs.some((i) => i.ph === "https://example.com/links.json")
+      !s.txt.includes(L.importTitle) && !s.inputs.some((i) => i.ph === L.importUrlPh)
         && s.rowTitles.length === 2,
       "导入弹窗消失 + 2 行", JSON.stringify({ inputs: s.inputs, rows: s.rowTitles }));
 
@@ -13536,17 +13609,17 @@ async function runLinks(cdp, url) {
       opened && s.events.some((e) => e[0] === "open-id"), "事件表出现 open-id",
       JSON.stringify(s.events));
 
-    await clickText("添加");
+    await clickText(L.add);
     s = await info();
     check("点添加：弹窗只有名称/网址两个空输入，不再混入 JSON 导入",
-      s.inputs.length === 2 && s.inputs.some((i) => i.ph === "显示名称" && i.value === "")
-        && s.inputs.some((i) => i.ph === "https://example.com" && i.value === "")
-        && !s.txt.includes("从文件导入") && !s.txt.includes("从网址导入"),
+      s.inputs.length === 2 && s.inputs.some((i) => i.ph === L.namePh && i.value === "")
+        && s.inputs.some((i) => i.ph === L.urlPh && i.value === "")
+        && !s.txt.includes(L.fileSection) && !s.txt.includes(L.urlSection),
       "两个空输入，且无导入入口", JSON.stringify(s.inputs));
     // 新增/编辑现在是同一个 BaseModal：先关掉新增弹窗，才能点到列表行上的编辑。
-    await clickText("取消");
+    await clickText(L.cancel);
 
-    await clickText("编辑链接");
+    await clickText(L.edit);
     s = await info();
     check("点编辑：同一份表单预填该条名称与网址（不是空表单）",
       s.inputs.some((i) => i.value === "公司内网") && s.inputs.some((i) => i.value === "https://intra.example.com"),
@@ -13583,7 +13656,7 @@ async function runLinks(cdp, url) {
       "输入框宽度 >=120、读数右沿 <= 卡片右沿、且读数在输入框右侧",
       JSON.stringify(cap));
 
-    await clickText("取消");
+    await clickText(L.cancel);
     s = await info();
     check("取消：表单收起，两行链接不受影响",
       s.inputs.length === 0 && s.rowTitles.length === 2,
@@ -13653,10 +13726,10 @@ async function runLinks(cdp, url) {
     // 为什么排序要紧：这台引擎的 CSS 动画时钟在长跑里会停摆，Reka 的离场要等 animationend
     // ⇒ 遮罩撤不掉、后面的点击全被吃掉。实测同一段单独跑 13/13，接在 --only=toast 之后
     // 就会红 —— 那是量具的时序，不是产品行为。把真按键那两格放到最后，红也只红它们自己。
-    await clickText("添加");
-    await fill("显示名称", "周报");
-    await fill("https://example.com", "https://weekly.example.com");
-    await clickText("保存");
+    await clickText(L.add);
+    await fill(L.namePh, "周报");
+    await fill(L.urlPh, "https://weekly.example.com");
+    await clickText(L.save);
     await sleep(300);
     s = await info();
     const st1 = await cdp.eval("window.__probe.linksStats()");
@@ -13667,9 +13740,9 @@ async function runLinks(cdp, url) {
       "add=1、list 不变、3 行含「周报」、草稿收起",
       JSON.stringify({ st1, last1, rows: s.rows, inputs: s.inputs.length }));
 
-    const edited = await clickRowBtn("https://weekly.example.com", "编辑链接");
-    const filled = await fill("显示名称", "周报（改）");
-    await clickText("保存");
+    const edited = await clickRowBtn("https://weekly.example.com", L.edit);
+    const filled = await fill(L.namePh, "周报（改）");
+    await clickText(L.save);
     await sleep(300);
     s = await info();
     const st2 = await cdp.eval("window.__probe.linksStats()");
@@ -13681,7 +13754,7 @@ async function runLinks(cdp, url) {
       "update=1、id=n1、3 行、显示新名",
       JSON.stringify({ st2, last2, rows: s.rows }));
 
-    const removed = await clickRowBtn("https://weekly.example.com", "删除链接");
+    const removed = await clickRowBtn("https://weekly.example.com", L.remove);
     await sleep(300);
     s = await info();
     const st3 = await cdp.eval("window.__probe.linksStats()");
@@ -13696,10 +13769,10 @@ async function runLinks(cdp, url) {
     // `links.addFail` 拼出来的那句；③ 草稿还开着、列表没变（失败不许显示成成功态）。
     const hud = await cdp.eval("window.__probe.mountToastHud()");
     await cdp.eval("window.__probe.linksFailNext('add')");
-    await clickText("添加");
-    await fill("显示名称", "会失败");
-    await fill("https://example.com", "https://boom.example.com");
-    await clickText("保存");
+    await clickText(L.add);
+    await fill(L.namePh, "会失败");
+    await fill(L.urlPh, "https://boom.example.com");
+    await clickText(L.save);
     await sleep(500);
     s = await info();
     const st4 = await cdp.eval("window.__probe.linksStats()");
@@ -13707,22 +13780,22 @@ async function runLinks(cdp, url) {
     check("写失败：onError 真的把 error toast 送进 HUD（不是静默失败），且列表与草稿都没被当成成功",
       hud && hud.ok === true && st4.add === 2 && st4.list === stats0.list
         && toast.visible >= 1 && toast.statuses.includes("error")
-        && toast.texts.some((x) => x.includes("添加链接失败"))
+        && toast.texts.some((x) => x.includes(L.addFail))
         && s.rows.length === 2 && !s.rows.includes("https://boom.example.com")
         && s.inputs.some((i) => i.value === "会失败"),
       "add=2、1 条 error toast 含「添加链接失败」、2 行、草稿仍开着",
       JSON.stringify({ hud, toast, st4, rows: s.rows, inputs: s.inputs }));
-    await clickText("取消");
+    await clickText(L.cancel);
 
     // ==== 段尾两格：真按键（CDP Input.dispatchKeyEvent）提交 ====
     // 用户 2026-10-23 那句"不用每次自己手点"要的就是这两格：静态判据只能证明模板里写了
     // ime.enter(fn, $event)，证不了按下回车真的把动作发出去（2026-10-23 之前那 16 处
     // 全都写成 ime.enter(fn)，静态看着对、运行时一次都没执行）。
     // ① 新增：网址框按回车 = 保存（此时列表 2 行：删掉周报之后）
-    await clickText("添加");
-    await fill("显示名称", "周报二");
-    await fill("https://example.com", "https://weekly2.example.com");
-    const addEnter = await pressEnter("https://example.com");
+    await clickText(L.add);
+    await fill(L.namePh, "周报二");
+    await fill(L.urlPh, "https://weekly2.example.com");
+    const addEnter = await pressEnter(L.urlPh);
     await sleep(400);
     s = await info();
     const st5 = await cdp.eval("window.__probe.linksStats()");
@@ -13758,9 +13831,9 @@ async function runLinks(cdp, url) {
       return true;
     })()`);
     await sleep(400);
-    const importAgain = await clickText("导入");
-    await fill("https://example.com/links.json", "https://backup.example.com/links.json");
-    const importEnter = await pressEnter("https://example.com/links.json");
+    const importAgain = await clickText(L.importBtn);
+    await fill(L.importUrlPh, "https://backup.example.com/links.json");
+    const importEnter = await pressEnter(L.importUrlPh);
     await sleep(500);
     s = await info();
     const st6 = await cdp.eval("window.__probe.linksStats()");
@@ -13769,9 +13842,79 @@ async function runLinks(cdp, url) {
       importAgain && importEnter && st6.importUrl === 1 && st6.list === stats0.list
         && last6 && last6.kind === "importUrl" && last6.url === "https://backup.example.com/links.json"
         && s.rows.length === 4 && s.txt.includes("导入的链接")
-        && !s.inputs.some((i) => i.ph === "https://example.com/links.json"),
+        && !s.inputs.some((i) => i.ph === L.importUrlPh),
       "回车提交：importUrl=1、list 不变、4 行含「导入的链接」、弹窗收起",
       JSON.stringify({ st6, last6, rows: s.rows, inputs: s.inputs }));
+
+    // ---- 固定来源 + 刷新（用户 2026-11-04）----
+    s = await info();
+    const st7 = await cdp.eval("window.__probe.linksStats()");
+    check("导入后：来源条固定显示完整链接（含复制键），标题栏刷新键有可见文案且位于正文上方",
+      s.source && s.source.title === "https://backup.example.com/links.json"
+        && s.source.text.includes(L.sourceLabel)
+        && s.source.copy && s.refreshBtn && s.refreshText === L.refresh
+        && s.refreshBusy === false && s.refreshDisabled === false
+        && s.refreshTop !== null && s.source.top !== null && s.refreshTop < s.source.top,
+      "来源条 = label + 完整 URL + 复制键；刷新键在标题栏（top 小于来源条）并显示「刷新」",
+      JSON.stringify({ source: s.source, refreshText: s.refreshText, refreshTop: s.refreshTop }));
+
+    // HUD 可能被中途的模态关合带走（探针夹具现象）；刷新这几格要读 toast，先重挂一份干净的。
+    await cdp.eval("window.__probe.remountToastHud()");
+    const toastBefore = await cdp.eval("window.__probe.toastRead()");
+    await cdp.eval("window.__probe.linksHold()");
+    // 同一轮同步派发两次 click（Vue 还没来得及把按钮置 disabled）⇒ 只有 single-flight 能挡住第二次。
+    const dbl = await cdp.eval(`(() => {
+      const b = document.querySelector('[data-probe="links-refresh"]');
+      if (!b) return false;
+      b.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+      b.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+      return true;
+    })()`);
+    await sleep(300);
+    s = await info();
+    const st8 = await cdp.eval("window.__probe.linksStats()");
+    check("刷新进行中：按钮文案变「刷新中…」且 aria-busy，旧数据仍在；连点两次只发一次请求",
+      dbl && st8.importUrl === st7.importUrl + 1 && s.refreshBusy === true
+        && s.refreshText === L.refreshing && s.refreshDisabled === true
+        && s.rows.length === 4,
+      "importUrl 只 +1、按钮「刷新中…」+ disabled、4 行旧数据仍在",
+      JSON.stringify({ st7, st8, refreshText: s.refreshText, rows: s.rows.length }));
+    await cdp.eval("window.__probe.linksRelease()");
+    await sleep(600);
+    s = await info();
+    const toastAfter = await cdp.eval("window.__probe.toastRead()");
+    check("刷新成功：静默（不新增 toast），列表换成本次返回的 5 行",
+      s.refreshBusy === false && s.rows.length === 5 && toastAfter.total <= toastBefore.total,
+      "无新 toast、5 行",
+      JSON.stringify({ before: toastBefore.total, after: toastAfter.total, rows: s.rows.length }));
+
+    await cdp.eval("window.__probe.remountToastHud()");
+    await cdp.eval("window.__probe.linksFailNext('refreshHttp')");
+    await cdp.eval(`document.querySelector('[data-probe="links-refresh"]').dispatchEvent(new MouseEvent('click', { bubbles: true }))`);
+    await sleep(600);
+    s = await info();
+    const toastHttp = await cdp.eval("window.__probe.toastRead()");
+    const st9 = await cdp.eval("window.__probe.linksStats()");
+
+    check("刷新失败（链接失效）：error toast 给出 HTTP 状态 + 检查/重新导入建议，旧数据不清空，按钮可重试",
+      toastHttp.visible >= 1 && toastHttp.statuses.includes("error")
+        && toastHttp.texts.some((x) => x.includes(L.failHttp.replace("{status}", "410")))
+        && s.rows.length === 5 && s.refreshBusy === false && s.refreshDisabled === false,
+      "toast 含 HTTP 410 具名原因、5 行旧数据仍在、按钮恢复",
+      JSON.stringify({ toast: toastHttp.texts, rows: s.rows.length, st9 }));
+
+    await cdp.eval("window.__probe.remountToastHud()");
+    await cdp.eval("window.__probe.linksFailNext('refreshNetwork')");
+    await cdp.eval(`document.querySelector('[data-probe="links-refresh"]').dispatchEvent(new MouseEvent('click', { bubbles: true }))`);
+    await sleep(600);
+    s = await info();
+    const toastNet = await cdp.eval("window.__probe.toastRead()");
+    check("刷新失败（网络不可达）：给网络话术而不是兜底「操作失败」，旧数据仍在",
+      toastNet.texts.some((x) => x.includes(L.failNetwork))
+        && !toastNet.texts.some((x) => x.includes("操作失败") || x.includes("Operation failed"))
+        && s.rows.length === 5,
+      "toast 含网络不可达话术、无「操作失败」、5 行仍在",
+      JSON.stringify({ toast: toastNet.texts, rows: s.rows.length }));
     if (SHOT_PATH) {
       const shot = await cdp.send("Page.captureScreenshot", { format: "png" });
       fs.writeFileSync(SHOT_PATH.replace(/\.png$/, "-links.png"), Buffer.from(shot.data, "base64"));

@@ -784,6 +784,8 @@ export const api = {
 
   // ---------------- 外部链接（左栏「链接」视图） ----------------
   listExternalLinks: () => invoke<ExternalLink[]>("list_external_links"),
+  getExternalLinksImportSource: () =>
+    invoke<string | null>("get_external_links_import_source"),
   addExternalLink: (name: string, url: string) =>
     invoke<ExternalLink[]>("add_external_link", { name, url }),
   updateExternalLink: (id: string, name: string, url: string) =>
