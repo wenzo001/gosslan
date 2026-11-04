@@ -392,14 +392,14 @@ const MODS = [
     out: ["send_group_todo/update_group_todo → IPC", "save_todo_image_bytes(裸 Uint8Array) → 落盘缓存目录"],
     data: ["归档/重开权限 lane = archive_only|reopen_only|is_member", "isEffectivelyArchived(折叠终态)"] },
 
-  { id: "st-app", l: "ui", n: "useAppStore", s: "设备·外观·通道·toast", cnt: "1043 行",
+  { id: "st-app", l: "ui", n: "useAppStore", s: "设备·外观·通道·toast", cnt: "1163 行（wc -l 2026-11-04 现算）",
     role: "设备身份、外观（主题/字体/聊天样式）、语言与通知偏好、通道运行时快照、toast 与移动端布局态。<b>所有辅助窗口都会跑它的 <code>init()</code></b>（只读）。",
     files: ["src/stores/useAppStore.ts"],
     in: ["DeviceInfo ← get_device_info()", "AppSettings ← get_settings()", "RuntimeSnapshot ← get_runtime_snapshot() / runtime-changed", "系统深色 + 键盘 inset"],
     out: ["save_settings/set_ui_language/broadcast_chat_style → IPC", "toast()/toastError() → ToastHud", "set_unread_badge → 平台外壳"],
     data: ["applySettingsSnapshot/applySettingsPatch（跨窗口零额外 IPC 的关键）", "channels[]: {channel,enabled,available,running,peers,preferred}"] },
 
-  { id: "st-chat", l: "ui", n: "useChatStore", s: "消息·关系·群·传输·收藏", cnt: "3523 行（wc -l 2026-11-03 现算）",
+  { id: "st-chat", l: "ui", n: "useChatStore", s: "消息·关系·群·传输·收藏", cnt: "3996 行（wc -l 2026-11-04 现算）",
     role: "唯一的数据中枢：init 先绑事件再刷数据；<code>createInitScope()</code> 保证 HMR/重复 init 时回调不翻倍（危害不是泄漏，是回调翻倍）。<b>辅助窗口禁止跑它的 init</b>。",
     files: ["src/stores/useChatStore.ts"],
     in: ["39 个后端事件 → enqueueMessage/refreshXxx", "MessageRecord[] / Conversation[] / Group[] / Friend[] / Peer[]", "ContentTransfer[] ← get_content_transfers()"],
@@ -421,13 +421,13 @@ const MODS = [
     data: ["opening: Set<label> 单飞 + lastLaunchAt 防抖（模块作用域，全应用共享一份）"] },
 
   /* ───────────── ② IPC 契约层 ───────────── */
-  { id: "api-invoke", l: "ipc", n: "api.invoke 面", s: "src/api/index.ts 的一个平面对象", cnt: "130 条包装 = 注册表 1:1",
+  { id: "api-invoke", l: "ipc", n: "api.invoke 面", s: "src/api/index.ts 的一个平面对象", cnt: "169 条包装 = 注册表 1:1",
     role: "<b>前端唯一</b>碰 <code>@tauri-apps/api/core</code> 的地方 —— 0-A3 起这句话<b>有守卫兜</b>（src/ 下任何其它文件出现该 import 就必须红，静态与动态 import 都算）。约定：参数写 camelCase，Rust 侧 snake_case 自动转；返回用 <code>invoke&lt;T&gt;</code> 泛型；<b>错误不集中吞</b>，由调用方决定 toast。",
     files: ["src/api/index.ts"],
     in: ["组件/store 的方法调用（带 TS 类型）"],
     out: ["invoke(\"cmd\", {args}) → commands/*", "唯一例外：<code>save_todo_image_bytes</code> 直接传裸 Uint8Array 当请求体"],
     data: ["每个命令的返回类型 = 前端消费契约（见 ③ 接口规则表）", "另两条守卫：门面必须覆盖前端<b>全部</b>调用面；注册表与调用面逐条对账（多出来的一律要显式挂账并写明原因）"] },
-  { id: "api-evt", l: "ipc", n: "事件绑定层", s: "bindEvents / bindMenuEvents", cnt: "27 个 listen",
+  { id: "api-evt", l: "ipc", n: "事件绑定层", s: "bindEvents / bindMenuEvents", cnt: "42 个 listen",
     role: "把后端事件铺成 <code>EventHandlers</code>。<b>先绑事件再刷数据</b>（否则刷新期间到的消息丢）。窄订阅另开：<code>onMessageReceived</code>/<code>onSettingsChanged</code>/<code>onRuntimeChanged</code>/<code>onGroupTodosTarget</code>/<code>onImagePreviewChanged</code> —— 辅助窗口只用窄的。",
     files: ["src/api/index.ts（下半段）", "src/api/events.test.ts"],
     in: ["Tauri 事件（emit / emit_filter）"],
@@ -472,7 +472,7 @@ const MODS = [
     data: ["DeviceInfo{device_id,nickname,avatar,device_type,tcp_port,x25519_pubkey,ed25519_pubkey}"] },
 
   /* ───────────── ④ 领域层 ───────────── */
-  { id: "dom-state", l: "dom", n: "AppState", s: "全局唯一状态容器", cnt: "1961 行",
+  { id: "dom-state", l: "dom", n: "AppState", s: "全局唯一状态容器", cnt: "3718 行（含 tests；wc -l 2026-11-04 现算）",
     role: "所有命令与后台任务共享的那一个 <code>Arc&lt;AppState&gt;</code>：身份、peers、链路、传输账本、窗口上下文、日志器。<b>锁一律抗中毒</b>（<code>unwrap_or_else(|e| e.into_inner())</code>）。",
     in: ["命令层的 &State/Arc 读", "传输域的写（链路注册/注销、进度账本）"],
     out: ["Mutex<HashMap> 快照 → emit_peers / get_runtime_snapshot", "db: Mutex&lt;Connection&gt; → 持久化域"],
@@ -513,7 +513,7 @@ const MODS = [
     in: ["local_path + 对端 x25519", "FileChunk{seq,data,attempt} ← 传输域", "缓存策略 retention_days/max_bytes"],
     out: ["文件密钥封装后的 FileOffer → 对端", "upsert_transfer / content_transfers / file_outbox → 持久化", "file-progress/done/failed/stalled → api-evt"],
     data: ["decide_offer → Accept|ResumeFrom|AlreadyHave（单一函数判续传）", "send_retry_verdict / stall_verdict / should_fail_expired：裁决全在纯函数里", "BLE 上限 16 MiB、chunk 4 KiB"] },
-  { id: "dom-persist", l: "dom", n: "持久化域", s: "db.rs + db/（17 个 include! 分册）", cnt: "212 个 pub fn",
+  { id: "dom-persist", l: "dom", n: "持久化域", s: "db.rs + db/（18 个非测试 include! 分册）", cnt: "212 个 pub fn",
     role: "一条全局 <code>Mutex&lt;Connection&gt;</code>；SCHEMA 幂等建表 + <code>user_version</code> 版本化迁移 + 降级守卫；每域一份 SQL 分册共享一个扁平 <code>crate::db::</code> 命名空间。",
     files: ["src-tauri/src/db.rs", "src-tauri/src/db/*.rs", "src-tauri/src/export.rs"],
     in: ["&Connection 已由调用方上锁 → db::insert_message_and_outbox 等", "PRAGMA user_version（>DB_VERSION 直接拒绝启动，且必须早于任何写）"],
@@ -533,9 +533,9 @@ const MODS = [
     data: ["LogLevel = info|warn|error；LogEntry{ts,level,target,message}"] },
 
   /* ───────────── ⑤ 存储 ───────────── */
-  { id: "st-sql", l: "store", n: "SQLite", s: "gosslan.db（WAL + NORMAL）", cnt: "19 表",
+  { id: "st-sql", l: "store", n: "SQLite", s: "gosslan.db（WAL + NORMAL）", cnt: "21 表",
     role: "文本、密钥、关系、四张离线队列。<b>不存 BLOB</b>。",
-    in: ["db:: 的 118 个公开函数 ← 命令层 + 传输层（⚠️ 耦合热点）"],
+    in: ["db:: 的 212 个公开函数 ← 命令层 + 传输层（⚠️ 耦合热点；`npm run map:stats` 现算）"],
     out: ["行 → 命令层返回类型（serde → 前端 types.ts）"],
     data: ["见 ⑤ 数据契约"],
     note: "零 CHECK、零外键：状态枚举与级联全靠应用层。" },
@@ -1214,7 +1214,7 @@ const DOMAINS = [
   {"id": "persistence", "name": "持久化", "tier": "L3", "paths": ["src-tauri/src/db.rs", "src-tauri/src/db", "src-tauri/src/export.rs"], "inv": ["INV-P05", "INV-P06", "INV-P09", "INV-P15", "INV-P14", "INV-008", "INV-P24", "INV-P26", "INV-P29", "INV-P36"], "home": "src-tauri/src/db", "cons": [], "notes": "⚠️ **耦合热点**：`db::` 被 13 个文件引用，横跨 network/、transport/、mesh/、content/、file_relay、notifications、export、commands、state —— 即**传输层直接写库**。架构上最值得收口的一处（Phase 7）。"},
   {"id": "platform", "name": "平台外壳", "tier": "L2", "paths": ["src-tauri/src/menu.rs", "src-tauri/src/tray.rs", "src-tauri/src/macos_window.rs", "src-tauri/src/macos_bookmark.rs", "src-tauri/src/open_path.rs", "src-tauri/src/android_open.rs", "src-tauri/src/android_background.rs", "src-tauri/src/jni_method.rs", "src-tauri/src/notifications.rs", "src-tauri/src/user_dirs.rs"], "inv": ["INV-P32", "INV-P33"], "home": "src-tauri/src/menu.rs", "cons": ["persistence"], "notes": "按平台分：menu / macos_bookmark / macos_window 是 macOS 专属（模块级 `#[cfg(target_os = \"macos\")]`）；android_open / jni_method / android_background 是 Android 专属（android_background 的模块本身不加 cfg —— 非 Android 目标是三个空实现，好让调用点不写 cfg）。这些平台差异正是 Phase 2/4 两条腿存在的原因。"},
   {"id": "observability", "name": "可观测性", "tier": "L2", "paths": ["src-tauri/src/logging.rs"], "inv": ["INV-P16"], "home": "src-tauri/src/logging.rs", "cons": [], "notes": "本项目最强项（结构化日志 + 日志窗口 + 诊断面板 + CHANGELOG 里大量「真机日志定位」）。Phase 8 要补的是**按 msg_id 串起一条消息的生命周期**（Trace）。另有 logs.html 作为独立日志窗口入口。"},
-  {"id": "presentation", "name": "呈现层", "tier": "L2", "paths": ["src/App.vue", "src/stores", "src/components", "src/composables", "src/api", "src/utils"], "inv": ["INV-P24", "INV-P27", "INV-P29", "INV-P30", "INV-P31"], "home": "src/stores", "cons": [], "notes": "⚠️ **没有领域边界**：`src/stores` 只有 3 个文件、`src/utils` 是平铺的一堆 —— **行数与个数一律现算，不许抄在图上**：`wc -l src/stores/*.ts`、`ls src/utils | wc -l`（截至 2026-11-03 现算：stores 共 4807 行、useChatStore.ts 3523 行、utils 255 个文件）。前端状态串味最容易产生 UI 回归 —— 拆分优先级高于后端大文件（Phase 7）。前端已有一整套源码扫描护栏（utils/designGuards.ts）。消息列表已迁移到 `@tanstack/vue-virtual`（2026-10-25：`anchorTo: 'end'` + `measureElement`；日志窗同库），列表 key 用 `messages.local_id`。"}
+  {"id": "presentation", "name": "呈现层", "tier": "L2", "paths": ["src/App.vue", "src/stores", "src/components", "src/composables", "src/api", "src/utils"], "inv": ["INV-P24", "INV-P27", "INV-P29", "INV-P30", "INV-P31"], "home": "src/stores", "cons": [], "notes": "⚠️ **没有领域边界**：`src/stores` 只有 3 个文件、`src/utils` 是平铺的一堆 —— **行数与个数一律现算，不许抄在图上**：`wc -l src/stores/*.ts`、`ls src/utils | wc -l`（截至 2026-11-04 现算：stores 共 5300 行、useChatStore.ts 3996 行、utils 269 个文件）。前端状态串味最容易产生 UI 回归 —— 拆分优先级高于后端大文件（Phase 7）。前端已有一整套源码扫描护栏（utils/designGuards.ts）。消息列表已迁移到 `@tanstack/vue-virtual`（2026-10-25：`anchorTo: 'end'` + `measureElement`；日志窗同库），列表 key 用 `messages.local_id`。"}
 
 ];
 const DRIFT = [

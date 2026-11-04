@@ -4,6 +4,7 @@ import { computed, ref, onMounted, onUnmounted, watch, watchEffect } from "vue";
 import { useRoute, useRouter, type RouteLocationRaw } from "vue-router";
 import { navigationDirection } from "@/router/main";
 import { motion, useReducedMotion } from "@/utils/motion";
+import { openUrl } from "@tauri-apps/plugin-opener";
 import { useEventListener } from "@vueuse/core";
 import { useAppStore } from "@/stores/useAppStore";
 import { useChatStore } from "@/stores/useChatStore";
@@ -325,6 +326,13 @@ function onLinksBack() {
  * 同一窗口再次打开会 `navigate` 到新网址（不会越开越多）。
  */
 function openLink(link: ExternalLink) {
+  // 移动端没有独立链接窗口（后端 `open_link_window` 在移动端明确返回 Err）⇒
+  // 交给系统浏览器，与消息正文里的链接（MessageTextBubble / MarkdownText）同一条出口。
+  // 不这么分，Android 上「我的 → 链接 → 点一条」只会得到一句「操作失败」。
+  if (app.isMobile) {
+    void openUrl(link.url).catch((e) => app.toastError(e, t("links.openFail")));
+    return;
+  }
   void launchAuxWindow("link", () => api.openLinkWindow(link.url, link.name)).catch((e) =>
     reportAuxFailure(e, t("links.openFail")),
   );
