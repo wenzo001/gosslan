@@ -14,6 +14,22 @@
 
 ## [Unreleased]
 
+## [5.17.53] - 2026-11-04
+
+### 修复：上一轮静默死亡时，现场文件里的 HANG 一直被漏读（横幅不弹）
+
+- 现场行有两种历史形状：`>>> code=…` 与 `>>> >>> code=…`（`crash_note_to` 会自己再补一个
+  `>>> `）。`parse_hang` / `is_hang_native_line` 之前只认单前缀，2026-11-04 真机现场里
+  `>>> >>> code=HANG …` 被整段漏掉 ⇒ 上一轮被判成 `no_history`，「上次异常终止 / 上次卡死」
+  横幅一条都不弹。解析端现在先剥掉任意层 `>>> ` 再判。
+- 收尾判定同时排除每 5 分钟一条的 `RUNTIME_MEM` 与启动时的 `COMMIT_PRESSURE`：它们是正交
+  诊断事实、不是收尾路标，留着会把任何静默消失顶成 `NoHistory`。
+- 判据用武器的另一头造行：`crash_note_to` 真实写盘 → `read_tail_lines` 读回 → 断言
+  （HANG / RUNTIME_MEM / RUNTIME_MEM+正常退出 / COMMIT_PRESSURE 四段）；分别删掉上述两处
+  新增条件各验证过一次变红（`no_history` vs `silent_kill`）。
+- 不动看门狗 3s/10s/20s/30s 阈值、reload 动作与 HANG 写法；停摆本身未修（等 WER 证据）。
+- 回退：`git revert` 本提交。
+
 ## [5.17.52] - 2026-11-04
 
 ### 修复：蓝牙连接更稳（不再「永久不再重连」，也不再一轮猛拨拆掉好链路）
