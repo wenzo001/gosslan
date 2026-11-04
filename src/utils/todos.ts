@@ -796,6 +796,27 @@ export function isEffectivelyArchived(
 }
 
 /**
+ * 终态且**尚未归档**的任务还有几天自动归档（用户 2026-11-04 #5：让自动归档在行内可见）。
+ *
+ * 天数必须与 [`isEffectivelyArchived`] 同一份口径（同一个 `TODO_AUTO_ARCHIVE_DAYS`、
+ * 同一个 `doneAt`、同一个终态判断），否则文案会与真实归档时刻对不上 ——
+ * 所以这里不另写 7，也不再复算一遍终态清单。
+ *
+ * 返回 `null` = 不该显示：非终态 / 没有权威完成时间（`doneAt` 由后端首次进入终态时填）
+ * / 已归档（显式或自动，那里已经没有"几天后"）。
+ * 不足一天按 1 天算：显示「0 天后自动归档」比提前一天消失更误导。
+ */
+export function autoArchiveDaysLeft(
+  item: Pick<TodoItem, "status" | "archived" | "doneAt">,
+  now: number = Date.now(),
+): number | null {
+  if (!isTodoTerminalStatus(item.status) || item.doneAt == null) return null;
+  if (isEffectivelyArchived(item, now)) return null;
+  const left = TODO_AUTO_ARCHIVE_DAYS * 86400000 - (now - item.doneAt);
+  return left <= 0 ? null : Math.max(1, Math.ceil(left / 86400000));
+}
+
+/**
  * 「与我相关且还活着」的任务 —— 蓝色徽标的**唯一**判据（用户 2026-09-26）。
  *
  * 口径原话是"除了完成和归档的其他数据都统计"，所以排除的只有两类：

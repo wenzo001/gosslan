@@ -18,6 +18,7 @@ import {
   isEffectivelyArchived,
   isTodoTerminalStatus,
   isTodoRelatedOn,
+  autoArchiveDaysLeft,
   buildTodoHistory,
   parseTodo,
   todoCategoryName,
@@ -575,6 +576,47 @@ test("isEffectivelyArchived：显式归档 / 完成满 7 天自动归档 / 未�
   assert.equal(isEffectivelyArchived({ status: "todo", archived: false, doneAt: now - 99 * DAY }, now), false);
   // 完成但没有 doneAt（旧载荷）：不自动归档，需要显式 archived
   assert.equal(isEffectivelyArchived({ status: "done", archived: false, doneAt: null }, now), false);
+});
+
+/**
+ * 行内那句「X 天后自动归档」的天数（用户 2026-11-04 #5）。
+ *
+ * 判据与 `isEffectivelyArchived` 必须同源：同一时刻"还剩几天"与"是否已归档"不能打架，
+ * 否则文案会说「1 天后」而它其实已经不在活动列表里。所以这里直接拿同一个边界
+ * （`TODO_AUTO_ARCHIVE_DAYS`）两侧各测一档。
+ */
+test("autoArchiveDaysLeft：按常量现算剩余天数，已归档/非终态/无完成时间都不显示", () => {
+  const DAY = 86400000;
+  const now = 1_800_000_000_000;
+  // 刚完成：整档天数
+  assert.equal(
+    autoArchiveDaysLeft({ status: "done", archived: false, doneAt: now }, now),
+    TODO_AUTO_ARCHIVE_DAYS,
+  );
+  // 差 1 天到归档：剩 1 天
+  assert.equal(
+    autoArchiveDaysLeft(
+      { status: "impossible", archived: false, doneAt: now - (TODO_AUTO_ARCHIVE_DAYS - 1) * DAY },
+      now,
+    ),
+    1,
+  );
+  // 不足一天：按 1 天算（不显示 0）
+  assert.equal(
+    autoArchiveDaysLeft(
+      { status: "done", archived: false, doneAt: now - (TODO_AUTO_ARCHIVE_DAYS * DAY - 3_600_000) },
+      now,
+    ),
+    1,
+  );
+  // 到点即归档：边界那一侧与 `isEffectivelyArchived` 必须一致（前者 null、后者 true）
+  const edge = { status: "done" as const, archived: false, doneAt: now - TODO_AUTO_ARCHIVE_DAYS * DAY };
+  assert.equal(autoArchiveDaysLeft(edge, now), null);
+  assert.equal(isEffectivelyArchived(edge, now), true);
+  // 显式归档 / 非终态 / 没有权威完成时间：都不显示
+  assert.equal(autoArchiveDaysLeft({ status: "done", archived: true, doneAt: now }, now), null);
+  assert.equal(autoArchiveDaysLeft({ status: "doing", archived: false, doneAt: now }, now), null);
+  assert.equal(autoArchiveDaysLeft({ status: "done", archived: false, doneAt: null }, now), null);
 });
 
 /**

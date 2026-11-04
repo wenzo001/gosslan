@@ -43,9 +43,10 @@ import TodoImageThumb from "@/components/TodoImageThumb.vue";
 import TodoPickField from "@/components/TodoPickField.vue";
 import TodoIconPicker from "@/components/TodoIconPicker.vue";
 import CharCounter from "@/components/ui/CharCounter.vue";
+import AppDateField from "@/components/ui/AppDateField.vue";
 import type { TodoFocusRequest } from "@/types";
 import {
-  TODO_CATEGORIES, TODO_CATEGORY_LABEL_KEY, TODO_CATEGORY_ICON_CLASS, TODO_CATEGORY_PILL, TODO_CUSTOM_CATEGORY_MAX_LEN, TODO_PRIORITIES, TODO_PRIORITY_LABEL_KEY, TODO_PRIORITY_ICON_CLASS, TODO_PRIORITY_PILL, TODO_STATUSES, TODO_STATUS_BAR, TODO_STATUS_CLASS, TODO_STATUS_DEFAULT, TODO_STATUS_LABEL_KEY, TODO_STATUS_PILL, assigneesInGroup, buildTodoHistory, canArchiveOrReopenTodo, canEditAssignees, canUpdateTodo, foldTodos, isEffectivelyArchived, isTodoTerminalStatus, parseTodo, todoCategoryName, todoCode, type TodoHistoryEntry, type TodoImage, type TodoItem, type TodoCategory, type TodoPriority, type TodoStatus, TODO_CUSTOM_ICON_DEFAULT, type TodoCustomIcon, } from "@/utils/todos";
+  TODO_CATEGORIES, TODO_CATEGORY_LABEL_KEY, TODO_CATEGORY_ICON_CLASS, TODO_CATEGORY_PILL, TODO_CUSTOM_CATEGORY_MAX_LEN, TODO_PRIORITIES, TODO_PRIORITY_LABEL_KEY, TODO_PRIORITY_ICON_CLASS, TODO_PRIORITY_PILL, TODO_STATUSES, TODO_STATUS_BAR, TODO_STATUS_CLASS, TODO_STATUS_DEFAULT, TODO_STATUS_LABEL_KEY, TODO_STATUS_PILL, assigneesInGroup, autoArchiveDaysLeft, buildTodoHistory, canArchiveOrReopenTodo, canEditAssignees, canUpdateTodo, foldTodos, isEffectivelyArchived, isTodoTerminalStatus, parseTodo, todoCategoryName, todoCode, type TodoHistoryEntry, type TodoImage, type TodoItem, type TodoCategory, type TodoPriority, type TodoStatus, TODO_CUSTOM_ICON_DEFAULT, type TodoCustomIcon, } from "@/utils/todos";
 import {
   isTodoRowsLoaded,
   todoRowsLoadState,
@@ -420,6 +421,19 @@ function statusText(s: TodoStatus): string {
 /** 指派人名（顿号连接；空 = 未指派）。 */
 function assigneeNames(x: TodoItem): string {
   return x.assignees.map((a) => memberProfile(a).name).join(t("common.sep.list"));
+}
+
+/**
+ * 终态行那句「X 天后自动归档」。
+ *
+ * 此前自动归档是**完全不可见**的规则：用户看到一条完成的任务，不知道为什么过几天它
+ * 就从活动列表里消失了（用户 2026-11-04 #5）。天数必须按 `TODO_AUTO_ARCHIVE_DAYS`
+ * 现算（`autoArchiveDaysLeft` 与 `isEffectivelyArchived` 同一份口径），不写死 7：
+ * 改一次常量，文案与真实归档时刻才会一起动。已归档的行不显示（那里已经没有"几天后"）。
+ */
+function autoArchiveTip(x: TodoItem): string {
+  const n = autoArchiveDaysLeft(x);
+  return n === null ? "" : t('todo.autoArchiveIn', { n });
 }
 
 // ---------------- 权限（显示用的镜像，后端才是权威） ----------------
@@ -1361,7 +1375,10 @@ watch(
               :stroke-width="1.9"
             />
             <span class="text-meta font-medium text-[var(--gosslan-text)]">{{ statusText(g.status) }}</span>
-            <span class="text-caption text-[var(--gosslan-text-2)]">{{ g.items.length }}</span>
+            <!-- 只读计数（用户 2026-11-04 #3）：此前这一格只是一个裸数字，与上面筛选胶囊里的
+                 计数长得一模一样，被当成"点它就切分组"。现在写成「共 N 条」，且这一整条
+                 是纯文本（不是按钮、没有 hover / 焦点）—— 分组本身只随任务状态变化。 -->
+            <span class="select-none text-caption tabular-nums text-[var(--gosslan-text-2)]">{{ t("todo.groupCount", { n: g.items.length }) }}</span>
           </div>
 
           <!-- 任务行：固定编号 + 标题/元信息（点开详情）+ 状态 + 快捷完成 -->
@@ -1441,15 +1458,20 @@ watch(
                   {{ t("todo.rowRelatedOn") }}
                   <span class="font-medium tabular-nums text-[var(--gosslan-text)]">{{ x.relatedOn }}</span>
                 </span>
+                <!-- 自动归档可见（#5）：终态任务还有几天从活动列表消失；天数按
+                     `TODO_AUTO_ARCHIVE_DAYS` 现算，已归档的行不显示（见 autoArchiveTip）。 -->
+                <span v-if="autoArchiveTip(x)" class="tabular-nums">{{ autoArchiveTip(x) }}</span>
               </div>
             </button>
             <!-- 状态：有权限时是胶囊按钮（点开小菜单直接在列表上切状态，用户 2026-09-17）；
-                 与详情共用同一份数据源（`foldTodos`），两处状态天然同步。 -->
+                 与详情共用同一份数据源（`foldTodos`），两处状态天然同步。
+                 可点击的暗示给足三种（用户 2026-11-04 #2）：hover 抬起 + 手型光标 +
+                 `aria-haspopup`/`aria-expanded`，不再只靠 `title`（触屏与快速扫视看不到 title） -->
             <div class="relative shrink-0">
               <button
                 v-if="canChangeStatus(x)"
                 type="button"
-                class="tap-safe inline-flex h-5 shrink-0 items-center justify-center gap-1 rounded-full px-2 text-caption font-medium leading-none transition hover:opacity-80"
+                class="tap-safe inline-flex h-5 shrink-0 cursor-pointer items-center justify-center gap-1 rounded-full px-2 text-caption font-medium leading-none transition hover:-translate-y-0.5 hover:opacity-90 hover:shadow-sm active:translate-y-0"
                 :class="TODO_STATUS_PILL[x.status]"
                 :title="t('todo.statusLabel')"
                 :aria-label="t('todo.statusLabel')"
@@ -1558,24 +1580,16 @@ watch(
         />
       </div>
 
-      <!-- 关联时间（可选）：只到年月日。用原生 `type="date"`（组件库没有现成的日期拾取器，
-           原生控件由系统 WebView 提供拾取与校验，不引入新依赖、也不自造拾取逻辑）。
-           v-model 拿到的是 `YYYY-MM-DD`，清空时是空串 ⇒ 后端按"明确清空"处理。 -->
+      <!-- 关联时间（可选）：只到年月日。走统一的 `AppDateField`（原生 `<input type="date">`
+           的薄封装：系统拾取器 + 统一高度/边框/暗色态；「清除」是字段内部的 × 图标，不再
+           另占一格文字按钮）。v-model 拿到的是 `YYYY-MM-DD`，清空时是空串 ⇒ 后端按"明确清空"处理。 -->
       <div>
-        <div class="mb-1.5 flex items-baseline justify-between gap-2">
-          <span class="text-xs text-[var(--gosslan-text-2)]">{{ t("todo.relatedOnLabel") }}</span>
-          <button
-            v-if="draft.relatedOn"
-            type="button"
-            class="tap-safe rounded-[var(--gosslan-radius-sm)] px-1.5 py-0.5 text-caption text-[var(--gosslan-accent-ink)] transition hover:bg-[var(--gosslan-hover)]"
-            @click="draft.relatedOn = ''"
-          >{{ t("todo.relatedOnClear") }}</button>
-        </div>
-        <input
+        <div class="mb-1.5 text-xs text-[var(--gosslan-text-2)]">{{ t("todo.relatedOnLabel") }}</div>
+        <AppDateField
           v-model="draft.relatedOn"
-          type="date"
-          class="w-full rounded-[var(--gosslan-radius-md)] border border-transparent bg-[var(--gosslan-bg)] px-3 py-2 text-sm outline-none transition focus:border-transparent"
-          :aria-label="t('todo.relatedOnLabel')"
+          clearable
+          date-only
+          :label="t('todo.relatedOnLabel')"
         />
         <div class="mt-1 text-caption text-[var(--gosslan-text-2)]">{{ t("todo.relatedOnHint") }}</div>
       </div>
