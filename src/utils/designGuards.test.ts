@@ -5560,7 +5560,12 @@ test("无效路径参数有明确回退（不是 UI 空态挂着错 URL）", () 
   assert.match(fav, /loadedOnce/, "收藏无效参数判据没有等待首轮读取");
   assert.match(fav, /t\("favorite\.notFound"\)[\s\S]{0,120}router\.replace\(\{ name: "favorites" \}\)/, "无效 favId 没有回列表");
   const settings = readFileSync(join(import.meta.dirname, "..", "components", "SettingsPanel.vue"), "utf8");
-  assert.match(settings, /routeSection\.value !== null\) return;[\s\S]{0,160}router\.replace\(\{ name: "settings" \}\)/, "未知设置分区没有归一");
+  assert.match(settings, /resolveMobileSectionKey/, "未知设置分区没有走统一解析器");
+  assert.match(
+    settings,
+    /!res\.aliased && !res\.fallback[\s\S]{0,240}settings\.toast\.sectionFallback[\s\S]{0,160}router\.replace\(\{ name: "settings-section", params: \{ key: res\.key \} \}\)/,
+    "未知设置分区没有归一到真实落点并提示",
+  );
 });
 
 // ---------------- 自动更新接线（Tauri Updater + GitHub Releases） ----------------

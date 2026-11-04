@@ -20,6 +20,8 @@ import {
   ROUTE_SECTIONS,
   desktopContainerForRoute,
   normalizeMobileSectionKey,
+  resolveDesktopRouteKey,
+  resolveMobileSectionKey,
 } from "./settingsManifest.ts";
 
 const srcDir = join(import.meta.dirname, "..");
@@ -297,14 +299,15 @@ const ROUTE_SECTIONS_GOLDEN = [
  * 每个路由键在两个外壳里的落点。
  *
  * `desktop` 是 `SettingsWindow` 的 4 容器之一；`routeValid=false` 的两个键
- * （`chatStyle` / `notification`）是**移动端专属**，桌面路由不认识它们，会归一成
- * `profile`，容器仍是 `general`。
- * `mobile=null` 表示移动端不认这个键：`routeSection` 返回 null，界面弹 toast 并退回一级列表。
+ * （`chatStyle` / `notification`）是**移动端专属**，桌面路由不认识它们，由跨端兼容表
+ * 映射到内容所在容器（`notification → notifications`、`chatStyle → general`）。
+ * `mobile` 是两个端都能落到真实分区：桌面复数 `notifications` → 移动单数 `notification`；
+ * 未知键在两端都回落默认分区并提示，不再退回一级列表或停在空页。
  */
 const DEEP_LINK_MATRIX = [
   { routeKey: "profile", routeValid: true, desktop: "general", mobile: "profile" },
   { routeKey: "general", routeValid: true, desktop: "general", mobile: "general" },
-  { routeKey: "notifications", routeValid: true, desktop: "general", mobile: null },
+  { routeKey: "notifications", routeValid: true, desktop: "general", mobile: "notification" },
   { routeKey: "appearance", routeValid: true, desktop: "general", mobile: "appearance" },
   { routeKey: "network", routeValid: true, desktop: "network", mobile: "network" },
   { routeKey: "files", routeValid: true, desktop: "storageFiles", mobile: "storageFiles" },
@@ -360,10 +363,11 @@ test("设置清单 golden：移动/桌面/路由三份键集、顺序、别名�
   assert.ok(panel.includes('from "@/utils/settingsManifest"'), "SettingsPanel 没接清单");
   assert.ok(panel.includes("MOBILE_SECTIONS"), "SettingsPanel 没消费 MOBILE_SECTIONS");
   assert.ok(panel.includes("MOBILE_GROUPS"), "SettingsPanel 没消费 MOBILE_GROUPS");
-  assert.ok(panel.includes("normalizeMobileSectionKey"), "SettingsPanel 没消费别名归一");
+  assert.ok(panel.includes("resolveMobileSectionKey"), "SettingsPanel 没消费别名归一");
   assert.ok(win.includes('from "@/utils/settingsManifest"'), "SettingsWindow 没接清单");
   assert.ok(win.includes("DESKTOP_NAV"), "SettingsWindow 没消费 DESKTOP_NAV");
   assert.ok(win.includes("desktopContainerForRoute"), "SettingsWindow 没消费容器映射");
+  assert.ok(win.includes("resolveDesktopRouteKey"), "SettingsWindow 没消费跨端兼容解析");
   assert.ok(router.includes("ROUTE_SECTIONS"), "router/settings.ts 没消费 ROUTE_SECTIONS");
 });
 
@@ -378,34 +382,41 @@ test("设置深链矩阵：每个路由键的桌面容器/移动落点/未知键
       `路由键 ${row.routeKey} 的合法性变了（期望 ${row.routeValid}）`,
     );
     assert.equal(
-      desktopContainerForRoute(row.routeKey),
+      desktopContainerForRoute(resolveDesktopRouteKey(row.routeKey).key),
       row.desktop,
       `路由键 ${row.routeKey} 的桌面容器变了（期望 ${row.desktop}）`,
     );
-    const normalized = normalizeMobileSectionKey(row.routeKey);
-    const mobile = (MOBILE_SECTIONS as readonly { key: string }[]).some((s) => s.key === normalized)
-      ? normalized
-      : null;
+    const resolved = resolveMobileSectionKey(row.routeKey);
     assert.equal(
-      mobile,
+      resolved.key,
       row.mobile,
       `路由键 ${row.routeKey} 在移动端的落点变了（期望 ${row.mobile}）`,
     );
+    assert.equal(
+      resolved.fallback,
+      false,
+      `路由键 ${row.routeKey} 有跨端别名，移动端不应回落到默认分区`,
+    );
   }
 
-  // 路由未知键：桌面归一 profile；移动端 toast + 退回一级列表。
-  assert.match(win, /: "profile";/, "桌面未知路由键不再归一 profile");
+  // 路由未知键：两个外壳都用解析器给出真实落点 + toast，不再静默归一/退回一级列表。
+  assert.ok(win.includes("resolveDesktopRouteKey"), "桌面未知路由键不再走解析器");
   assert.ok(
-    win.includes('router.replace("/settings/profile")'),
-    "桌面未知路由键不再 replace 到 profile",
+    win.includes('t("settings.toast.sectionFallback"'),
+    "桌面回落没有可理解的提示",
   );
   assert.ok(
-    panel.includes("return key && SECTIONS[key] ? key : null;"),
-    "移动端分区合法性判据变了",
+    win.includes('router.replace({ name: "settings-section", params: { key: res.key } })'),
+    "桌面未知路由键不再 replace 到解析后的落点",
+  );
+  assert.ok(panel.includes("resolveMobileSectionKey"), "移动端分区不再走解析器");
+  assert.ok(
+    panel.includes('t("settings.toast.sectionFallback"'),
+    "移动端回落没有可理解的提示",
   );
   assert.ok(
-    panel.includes('router.replace({ name: "settings" })'),
-    "移动端未知分区不再退回设置一级页",
+    panel.includes('router.replace({ name: "settings-section", params: { key: res.key } })'),
+    "移动端未知分区不再归一 URL",
   );
 });
 

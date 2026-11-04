@@ -14,6 +14,29 @@
 
 ## [Unreleased]
 
+## [5.17.54] - 2026-11-04
+
+### 修复：桌面/移动端设置分区的跨端深链不再落空
+
+- 抽出两端分区差异：共有 `profile / general / appearance / network / storageFiles /
+  about / reset`；仅桌面 `notifications`（另有旧路由键 `files / storage / security`）；
+  仅移动 `chatStyle / notification`。
+- 新增**双向**跨端兼容表 `DESKTOP_ONLY_SECTIONS` / `MOBILE_ONLY_SECTIONS`：
+  桌面 `notifications` → 移动 `notification`；移动 `notification` → 桌面 `notifications`；
+  移动 `chatStyle` → 桌面包含该内容的 `general` 容器。历史别名
+  `storage / files → storageFiles`、`security → about` 保持原行为。
+- 未知/不存在分区统一回落 `general`，并在落点上方弹一条双语提示
+  （`settings.toast.sectionFallback`），同时把 URL 归一到真实分区；不再白屏、
+  不再退回设置一级列表、也不再静默停在同一 URL。恢复态/外部深链走同一解析器。
+- `src/utils/settingsDeepLink.test.ts` 覆盖两端差异清单、每条别名、每个仅一端分区在
+  `mobile` / `desktop` 两种上下文下的落点，以及未知键默认回落与外壳渲染分支；
+  更新 `settingsStructure.test.ts` 深链矩阵金值。
+- 验证：`npm test`（含英文 locale 复跑）、`npm run build`；
+  `node scripts/check-ui-runtime.mjs --only=settingsmobile --locale=zh-CN` 14/14 绿、
+  `--locale=en-US` 14/14 绿；`npm run verify:full` 见提交前完整通过。
+- 未改变设置窗口形态（桌面仍是独立窗口）与任何页面视觉结构，只增加一次性的
+  toast 提示。回退：`git revert` 本提交。
+
 ## [5.17.53] - 2026-11-04
 
 ### 修复：上一轮静默死亡时，现场文件里的 HANG 一直被漏读（横幅不弹）

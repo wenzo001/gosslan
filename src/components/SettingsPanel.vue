@@ -22,7 +22,7 @@ import {
   MOBILE_GROUPS,
   MOBILE_SECTIONS,
   MOBILE_TITLE_BY_KEY,
-  normalizeMobileSectionKey,
+  resolveMobileSectionKey,
   type MobileSectionKey,
 } from "@/utils/settingsManifest";
 
@@ -79,35 +79,44 @@ const SECTIONS: Record<string, { titleKey: string; render: () => any }> = Object
   ]),
 );
 
-/**
- * 旧深链键 → 新二级页。用户 2026-10-25 把「存储」与「文件」并成「文件与存储」、
- * 把「安全」并进「关于」；已经点过的旧链接（`/me/settings/storage` 等）仍必须落到
- * 同一处 —— URL 说一个分区、界面却停在列表，是最典型的"深链半截状态"。
- */
-function normalizeSectionKey(key: string): string {
-  return normalizeMobileSectionKey(key);
-}
-
 /** 移动端分区 = 路由派生（可深链、可返回）；桌面回退形态仍用本地 ref。 */
 const routeIsSettings = computed(() => !!route && String(route.name ?? "").startsWith("settings"));
-const routeSection = computed<string | null>(() => {
-  if (!props.routeDriven || !routeIsSettings.value || route?.name !== "settings-section") return null;
-  const key = normalizeSectionKey(String(route.params.key ?? ""));
-  return key && SECTIONS[key] ? key : null;
-});
+
+/**
+ * 路由参数 → 可渲染分区。解析器保证 `key` 一定存在于 `SECTIONS`：
+ * 旧键（storage / files / security）走别名，跨端键（桌面复数 `notifications`）走兼容表，
+ * 真正未知的键回落到默认分区。这样 URL 与界面不会停在「说一个分区、显示另一个/空页」。
+ */
+const routeResolution = computed(() =>
+  props.routeDriven && routeIsSettings.value && route?.name === "settings-section"
+    ? resolveMobileSectionKey(String(route.params.key ?? ""))
+    : null,
+);
+const routeSection = computed<string | null>(() => routeResolution.value?.key ?? null);
 const mobileNav = computed<string | null>(() =>
   props.routeDriven && routeIsSettings.value ? routeSection.value : localMobileNav.value,
 );
 
-// `/me/settings/<未知分区>` 不能停在「URL 说分区、界面却是列表」的半截状态。
-// 归一成一级设置页（replace，不额外留历史）。
+// URL 里的分区不存在（或被别名/跨端兼容改写）时：立刻显示真实落点 + 一条可理解的提示，
+// 再把 URL 归一，避免下一次重挂载重复弹提示。绝不再退回一级列表让用户摸不着头脑。
 watch(
-  () => [props.routeDriven, route?.name, route?.params.key, routeSection.value] as const,
+  () => [
+    props.routeDriven,
+    route?.name,
+    route?.params.key,
+    routeResolution.value?.key,
+    routeResolution.value?.aliased,
+    routeResolution.value?.fallback,
+  ] as const,
   () => {
     if (!props.routeDriven || !router || route?.name !== "settings-section") return;
-    if (routeSection.value !== null) return;
-    app.toast(t("layout.routeMissing"), "info");
-    void router.replace({ name: "settings" });
+    const res = routeResolution.value;
+    if (!res || (!res.aliased && !res.fallback)) return;
+    app.toast(
+      t("settings.toast.sectionFallback", { section: t(SECTIONS[res.key].titleKey) }),
+      "info",
+    );
+    void router.replace({ name: "settings-section", params: { key: res.key } });
   },
   { immediate: true },
 );
