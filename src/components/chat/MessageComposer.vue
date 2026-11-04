@@ -199,13 +199,17 @@ function sanitizeDraftHtml(html: string): string {
 function currentDraftHtml(): string {
   return sanitizeDraftHtml(editorRef.value?.innerHTML ?? "");
 }
-let draftTimer: ReturnType<typeof setTimeout> | null = null;
-function scheduleDraftSave() {
-  if (draftTimer) clearTimeout(draftTimer);
-  draftTimer = setTimeout(() => {
-    draftTimer = null;
-    saveComposerDraft(props.convId, currentDraftHtml());
-  }, 400);
+/**
+ * 草稿**同步**落盘（用户 2026-11-04 硬要求）：按输入事件写 `localStorage`，不用定时器。
+ *
+ * 为什么不能用防抖/定时器：渲染层冻住时定时器回调正好不会跑 —— 最后几百毫秒的输入
+ * 会丢，而"注入冻结前输入 20 字、reload 后仍有这 20 字"正是验收判据。
+ *
+ * 这里写编辑器**原始** innerHTML：白名单重建只在恢复时做一次（`restoreDraft`），
+ * 每个按键都重建一遍会把 50k 草稿的解析成本摊到每次输入上。
+ */
+function persistDraft() {
+  saveComposerDraft(props.convId, editorRef.value?.innerHTML ?? "");
 }
 function restoreDraft(convId: string | null) {
   const el = editorRef.value;
@@ -217,10 +221,6 @@ watch(
   () => props.convId,
   async (next, prev) => {
     if (prev) saveComposerDraft(prev, currentDraftHtml());
-    if (draftTimer) {
-      clearTimeout(draftTimer);
-      draftTimer = null;
-    }
     await nextTick();
     restoreDraft(next);
     await nextTick();
@@ -295,10 +295,6 @@ function send(kind?: MsgKind, content?: string) {
   mention.value = null;
   // 发出去的内容不再是草稿；旧草稿若不清，回来会"复活"已发送的文字。
   clearComposerDraft(props.convId);
-  if (draftTimer) {
-    clearTimeout(draftTimer);
-    draftTimer = null;
-  }
   if (!kind) codeMode.value = false;
   autoCode.value = false;
   autoCodeLang.value = null;
@@ -529,7 +525,7 @@ function insertMentionAtEnd(member: { id: string; name: string }) {
   if (!app.isMobile) el.focus();
   autoResize();
   // 与输入事件同一条落盘路径（草稿存在 store，切会话/重开都靠它）。
-  scheduleDraftSave();
+  persistDraft();
   syncDraftState();
 }
 defineExpose({ insertMention: insertMentionAtEnd });
@@ -577,6 +573,8 @@ function applyMention(member: { id: string; name: string }) {
   mention.value = null;
   if (!app.isMobile) el.focus();
   autoResize();
+  // 程序化改 DOM 不触发 input：token 要立刻落盘，否则 reload 后只剩 "@张三" 半截文字。
+  persistDraft();
 }
 
 /** caret 前是「token 尾随的 nbsp」→ 连 token 一起删（微信式一次退格删全）。
@@ -596,6 +594,8 @@ function deleteMentionBeforeCaret(): boolean {
   range.setEnd(node, 1);
   range.deleteContents();
   normalizeEmpty();
+  // 退格删 token 也不触发 input（浏览器不会为原子 span 的变化发 input）。
+  persistDraft();
   return true;
 }
 
@@ -620,7 +620,8 @@ function onInput(e: Event) {
   else pasteUndo = null;
   syncDraftState();
   normalizeEmpty();
-  scheduleDraftSave();
+  // 同步落盘：这一行必须在事件处理里就跑完（定时器在冻结时不会跑）。
+  persistDraft();
   scheduleCodeDetect();
   if (!(e as InputEvent).isComposing) updateMentionState();
 }
@@ -667,7 +668,7 @@ useEventListener(document, "click", onDocClickForMention);
 useEventListener(document, "selectionchange", onSelectionChange);
 onUnmounted(() => {
   if (shakeTimer) clearTimeout(shakeTimer);
-  if (draftTimer) clearTimeout(draftTimer);
+  // 卸载是少数路径：这里仍走白名单重建（与按输入事件那条原始 innerHTML 路径内容等价）。
   saveComposerDraft(props.convId, currentDraftHtml());
 });
 watch(emojiOpen, () => {
@@ -712,6 +713,8 @@ function insertEmoji(e: string) {
   // 直接改 DOM 不会触发 input 事件 → 必须手动同步，否则「只有表情时发送键是灰的」
   syncDraftState();
   autoResize();
+  // 同上：表情 token 要立刻落盘（reload 后仍能恢复）。
+  persistDraft();
   // EmojiPicker 的 open watcher 是 pre-flush：它会在下一拍把焦点还给触发按钮。
   // 选完表情后必须再抢回编辑器一次，否则用户还要手动点一下输入框才能接着打字。
   void nextTick(() => {
@@ -778,7 +781,7 @@ function restorePasteUndo(): boolean {
   // 回灌也走那张白名单（与 `restoreDraft` 同一条口径）：快照里只允许编辑器自己产出的结构。
   el.innerHTML = sanitizeDraftHtml(snap.html);
   syncDraftState();
-  scheduleDraftSave();
+  persistDraft();
   focusEditor();
   return true;
 }

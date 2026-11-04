@@ -328,6 +328,13 @@ export const zhCN: MessageDict = {
   "hang.escalated": "已经等了 {seconds} 秒。可以继续等，或重启应用恢复。",
   "hang.wait": "继续等待",
   "hang.restart": "重启应用",
+  // 渲染层自愈的恢复横幅（watchdog 的 UI_RENDERER_RECOVERED / 建议重启）
+  "recovery.title": "界面已恢复",
+  "recovery.recovered": "界面刚才无响应，已自动恢复。",
+  "recovery.draftKept": "输入框里的草稿已保留。",
+  "recovery.suggestRestart": "界面仍未恢复响应，建议手动重启。",
+  "recovery.restart": "立即重启",
+  "recovery.dismiss": "知道了",
   "versionMismatch.title": "检测到版本不一致",
   "versionMismatch.body": "前端 {frontend} / 后端 {backend}。请完全退出后重新打开。",
   "versionMismatch.restart": "立即重启",
