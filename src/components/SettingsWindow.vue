@@ -14,8 +14,9 @@ import { useRoute, useRouter } from "vue-router";
 import { useEventListener } from "@vueuse/core";
 import {
   DESKTOP_NAV,
-  ROUTE_SECTIONS,
+  DESKTOP_ROUTE_TITLE_BY_KEY,
   desktopContainerForRoute,
+  resolveDesktopRouteKey,
   type DesktopContainer,
   type DesktopIconKey,
   type RouteSectionKey,
@@ -35,6 +36,7 @@ import AboutSection from "@/components/settings/AboutSection.vue";
 import ResetSection from "@/components/settings/ResetSection.vue";
 import { SlidersHorizontal, Wifi, Info, HardDrive } from "lucide-vue-next";
 import { t } from "@/i18n";
+import { useAppStore } from "@/stores/useAppStore";
 import { api } from "@/api";
 import { updater } from "@/updater/instance";
 import { storageGet, storageRemove } from "@/utils/safeStorage";
@@ -50,20 +52,35 @@ const DESKTOP_ICONS: Record<DesktopIconKey, unknown> = {
 
 const route = useRoute();
 const router = useRouter();
+const app = useAppStore();
 
-/** 当前分区 = 路由参数（可深链、可返回），不再是组件内 ref。 */
-const section = computed<SectionKey>(() => {
-  const key = String(route.params.key ?? "profile");
-  return (ROUTE_SECTIONS as readonly string[]).includes(key)
-    ? (key as SectionKey)
-    : "profile";
-});
+/**
+ * 当前分区 = 路由参数（可深链、可返回），不再是组件内 ref。
+ * 解析器把移动端专属键（`notification` / `chatStyle`）映射到桌面内容所在的路由键，
+ * 未知键统一回落到默认分区 —— 任何深链都能落到真实内容，不会停在空页。
+ */
+const sectionResolution = computed(() =>
+  resolveDesktopRouteKey(String(route.params.key ?? "profile")),
+);
+const section = computed<SectionKey>(() => sectionResolution.value.key);
+
 watch(
-  () => route.params.key,
-  (key) => {
-    if (key && !(ROUTE_SECTIONS as readonly string[]).includes(String(key))) {
-      void router.replace("/settings/profile");
-    }
+  () => [
+    route.params.key,
+    sectionResolution.value.key,
+    sectionResolution.value.aliased,
+    sectionResolution.value.fallback,
+  ] as const,
+  () => {
+    const res = sectionResolution.value;
+    if (!res.aliased && !res.fallback) return;
+    app.toast(
+      t("settings.toast.sectionFallback", {
+        section: t(DESKTOP_ROUTE_TITLE_BY_KEY[res.key]),
+      }),
+      "info",
+    );
+    void router.replace({ name: "settings-section", params: { key: res.key } });
   },
   { immediate: true },
 );
@@ -140,9 +157,18 @@ function consumePendingSection() {
   const key = storageGet(SETTINGS_SECTION_KEY);
   if (!key) return;
   storageRemove(SETTINGS_SECTION_KEY);
-  if (!(ROUTE_SECTIONS as readonly string[]).includes(key)) return;
-  void router.push({ name: "settings-section", params: { key } });
-  if (key === "about" && updater.state.phase === "idle") void updater.check(true);
+  // 跨端/遗留键也要接住：解析器给出真实落点，未知键回落默认分区并提示，绝不静默丢弃。
+  const res = resolveDesktopRouteKey(key);
+  if (res.aliased || res.fallback) {
+    app.toast(
+      t("settings.toast.sectionFallback", {
+        section: t(DESKTOP_ROUTE_TITLE_BY_KEY[res.key]),
+      }),
+      "info",
+    );
+  }
+  void router.push({ name: "settings-section", params: { key: res.key } });
+  if (res.key === "about" && updater.state.phase === "idle") void updater.check(true);
 }
 onMounted(() => {
   // B5：本窗口的 UI 服务与新开窗口是两份，而下载任务在后端是**全局单例** ⇒

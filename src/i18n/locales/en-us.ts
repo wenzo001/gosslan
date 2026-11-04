@@ -115,6 +115,7 @@ export const enUS: MessageDict = {
   "search.more": "{n} more matches in this chat — open it to see them",
   "search.locateFail": "Couldn't locate that message",
   "settings.toast.saveFailed": "Couldn't save settings — they may revert after a restart",
+  "settings.toast.sectionFallback": "That settings section isn't available here. Opened “{section}” instead.",
   "settings.group.language": "Language & Region",
   "settings.group.files": "Files & Sharing",
   "settings.group.profile": "Profile",

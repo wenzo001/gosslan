@@ -84,6 +84,87 @@ export const MOBILE_ALIASES = {
   security: "about",
 } as const satisfies Record<string, MobileSectionKey>;
 
+/**
+ * 跨端兼容表（双向，唯一数据源）。
+ *
+ * 两端分区集合本来就不等价：桌面路由有复数 `notifications`，移动端只有单数
+ * `notification`；移动端有 `chatStyle`，桌面把它放在 `general` 容器里。
+ * 这里只表达「在某端不存在时，另一端从哪里能看懂地接住」，不强行合并两端的
+ * 功能集合，也不改变任何一端的界面结构。
+ */
+export const DESKTOP_ONLY_SECTIONS = {
+  /** 桌面路由键 → 移动端落点 */
+  notifications: "notification",
+} as const satisfies Record<string, MobileSectionKey>;
+
+export const MOBILE_ONLY_SECTIONS = {
+  /** 移动端分区键 → 桌面路由键（落到包含该内容的容器） */
+  notification: "notifications",
+  chatStyle: "general",
+} as const satisfies Record<string, RouteSectionKey>;
+
+/** 未知/不存在分区的统一回落点：两端共有且一定存在。 */
+export const DEFAULT_MOBILE_SECTION: MobileSectionKey = "general";
+export const DEFAULT_DESKTOP_ROUTE: RouteSectionKey = "general";
+
+/** 桌面路由键 → 落点文案键（toast 用，按分区条目名而不是容器名，落点更具体）。 */
+export const DESKTOP_ROUTE_TITLE_BY_KEY: Record<RouteSectionKey, string> = {
+  profile: "settings.item.profile",
+  general: "settings.item.general",
+  notifications: "settings.group.notifications",
+  appearance: "settings.item.appearance",
+  network: "settings.item.network",
+  files: "settings.item.storageFiles",
+  storage: "settings.item.storageFiles",
+  storageFiles: "settings.item.storageFiles",
+  security: "settings.item.about",
+  about: "settings.item.about",
+  reset: "settings.item.reset",
+};
+
+/** 一次分区解析的结果：`key` 一定是目标端真实存在的分区，调用方不需要再判空。 */
+export type SectionResolution<K extends string> = {
+  key: K;
+  /** 原键直接命中目标端清单。 */
+  known: boolean;
+  /** 经过旧别名或跨端兼容表命中。 */
+  aliased: boolean;
+  /** 原键无法识别，已回落到默认分区。 */
+  fallback: boolean;
+};
+
+function hasMobileSection(key: string): key is MobileSectionKey {
+  return (MOBILE_SECTIONS as readonly { key: string }[]).some((s) => s.key === key);
+}
+
+/** 移动端分区解析：旧别名 → 跨端兼容 → 默认分区，永远返回可渲染的 key。 */
+export function resolveMobileSectionKey(raw: string): SectionResolution<MobileSectionKey> {
+  const key = raw ?? "";
+  if (hasMobileSection(key)) {
+    return { key, known: true, aliased: false, fallback: false };
+  }
+  const mapped =
+    (MOBILE_ALIASES as Record<string, string>)[key] ??
+    (DESKTOP_ONLY_SECTIONS as Record<string, string>)[key];
+  if (mapped && hasMobileSection(mapped)) {
+    return { key: mapped, known: false, aliased: true, fallback: false };
+  }
+  return { key: DEFAULT_MOBILE_SECTION, known: false, aliased: false, fallback: true };
+}
+
+/** 桌面路由键解析：跨端兼容 → 默认路由，永远返回 4 容器里的合法路由键。 */
+export function resolveDesktopRouteKey(raw: string): SectionResolution<RouteSectionKey> {
+  const key = raw ?? "";
+  if ((ROUTE_SECTIONS as readonly string[]).includes(key)) {
+    return { key: key as RouteSectionKey, known: true, aliased: false, fallback: false };
+  }
+  const mapped = (MOBILE_ONLY_SECTIONS as Record<string, RouteSectionKey>)[key];
+  if (mapped) {
+    return { key: mapped, known: false, aliased: true, fallback: false };
+  }
+  return { key: DEFAULT_DESKTOP_ROUTE, known: false, aliased: false, fallback: true };
+}
+
 /** 独立设置窗口的有效路由键（顺序与旧实现一致）。 */
 export const ROUTE_SECTIONS = [
   "profile",

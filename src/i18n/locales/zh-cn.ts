@@ -114,6 +114,7 @@ export const zhCN: MessageDict = {
   "search.more": "本会话还有 {n} 条命中未显示，点「进入聊天」查看",
   "search.locateFail": "没能定位到那条消息",
   "settings.toast.saveFailed": "设置未能保存，重启后会恢复为旧值",
+  "settings.toast.sectionFallback": "该设置分区在当前端不可用，已为你打开「{section}」",
   "settings.group.language": "语言与地区",
   "settings.group.files": "文件与共享",
   "settings.group.profile": "个人资料",
