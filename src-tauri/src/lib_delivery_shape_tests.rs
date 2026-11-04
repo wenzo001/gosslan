@@ -361,22 +361,39 @@
             !body.is_empty(),
             "找不到 insert_self_message（这条护栏会变成空转）"
         );
+        // 2026-11-05：自聊的落库搬进 `persist_self_message`（与 1:1 共用显式语言那一步）。
+        // 只查 `insert_self_message` 本体已经查不到真正的写库语句 ⇒ 必须同时查它调用的 helper，
+        // 否则这条护栏会退化成"函数里没写 outbox 就行"的空转。
+        assert!(
+            body.contains("persist_self_message("),
+            "自聊消息必须走 `persist_self_message`（纯本地落库，不进 outbox）"
+        );
+        let store = rust_fn_body(commands, "fn persist_self_message(");
+        assert!(
+            !store.is_empty(),
+            "找不到 persist_self_message（这条护栏会变成空转）"
+        );
         // 先查"不该有的"：注入成 `insert_message_and_outbox(` 时下面那条 contains 也会失败，
         // 但真正该说的是"你接回了网络路径"——所以把这条放在前面报。
-        for forbidden in [
-            "insert_message_and_outbox(",
-            "broadcast_gossip(",
-            "try_send(",
-            "crypto::seal(",
-            "seal_symmetric(",
+        for (label, src) in [
+            ("insert_self_message", body.as_ref()),
+            ("persist_self_message", store.as_ref()),
         ] {
-            assert!(
-                !body.contains(forbidden),
-                "自聊消息里不得出现 `{forbidden}`：消息不出本机、也不该进 outbox（详见该函数文档）"
-            );
+            for forbidden in [
+                "insert_message_and_outbox(",
+                "broadcast_gossip(",
+                "try_send(",
+                "crypto::seal(",
+                "seal_symmetric(",
+            ] {
+                assert!(
+                    !src.contains(forbidden),
+                    "{label} 里不得出现 `{forbidden}`：消息不出本机、也不该进 outbox（详见该函数文档）"
+                );
+            }
         }
         assert!(
-            body.contains("db::insert_message("),
+            store.contains("db::insert_message("),
             "自聊消息必须只落本地库（`db::insert_message`）"
         );
     }

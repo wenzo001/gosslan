@@ -126,8 +126,19 @@
             body.contains("db::finalize_blocked_message("),
             "对端**已声明**不支持时必须落终态（同一事务置 failed + 删队列行）"
         );
+        // 2026-11-05：本机落库搬进 `persist_outgoing`（消息 + 队列 + 显式语言一次写入）。
+        // 只查 `send_message` 本体已经看不到那句 ⇒ 必须同时查 helper 本体，否则这里退化成空转。
         assert!(
-            body.contains("db::insert_message_and_outbox("),
+            body.contains("persist_outgoing("),
+            "发送口必须走 `persist_outgoing`（消息与队列行原子写入）"
+        );
+        let store = rust_fn_body(chat, "fn persist_outgoing(");
+        assert!(
+            !store.is_empty(),
+            "找不到 persist_outgoing（这条判据会变成空转）"
+        );
+        assert!(
+            store.contains("db::insert_message_and_outbox("),
             "先入队是这一版的本体：消息与队列行必须原子写入"
         );
         // 给自己发的那条分支在前 —— 自聊不经过网络，不该被判"对方版本不支持"。
