@@ -2,6 +2,7 @@
 // - 外链管理（add/remove/list_link、validate_external_url）
 // ---------------- 外部链接（左栏「链接」视图 → 点开在独立窗口加载） ----------------
 
+use rusqlite::Connection;
 use std::collections::HashSet;
 
 /// 一条用户配置的外部链接。
@@ -25,6 +26,8 @@ pub struct ExternalLinkImportResult {
 }
 
 const EXTERNAL_LINKS_KEY: &str = "external_links";
+/// 最近一次「从网址导入」用的那个链接。刷新按钮按它重拉，用户只有主动再导入才会换掉。
+const EXTERNAL_LINKS_SOURCE_KEY: &str = "external_links_import_source";
 /// 数量上限（防呆：这是一排给人点的入口，不是书签管理器）。
 const MAX_EXTERNAL_LINKS: usize = 20;
 /// 显示名长度上限（字符数）。
@@ -313,29 +316,14 @@ fn parse_import_payload(raw: &str) -> Result<Vec<ImportLink>, String> {
     })
 }
 
-/// 导入并合并（按规范化后的 URL 去重；不覆盖已有条目的名字）。
+/// 纯合并：按规范化后的 URL 去重，且**不覆盖已有条目的名字**（同名的旧行优先保留）。
 ///
-/// 入参从 `&State<'_, Arc<AppState>>` 改成 `&Arc<AppState>`：前者那个生命周期把它钉在
-/// 一次 IPC 调用上，**没法搬进阻塞池**（`spawn_blocking` 要 `'static`）。
-fn import_external_links_raw(
-    s: &Arc<AppState>,
-    raw: &str,
-) -> Result<ExternalLinkImportResult, String> {
-    if raw.len() > MAX_IMPORT_BYTES {
-        return Err(crate::error_codes::coded(
-            crate::error_codes::LINK_IMPORT_TOO_LARGE,
-            format!("导入内容超过 {} KiB 上限", MAX_IMPORT_BYTES / 1024),
-        ));
-    }
-    let inputs = parse_import_payload(raw)?;
-    let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());
-    let mut list =
-        parse_external_links(&db::get_setting_checked(&dbc, EXTERNAL_LINKS_KEY).map_err(|e| {
-            crate::error_codes::coded(
-                crate::error_codes::LINK_LIST_READ_FAILED,
-                format!("读取外链列表失败: {e}"),
-            )
-        })?.unwrap_or_default());
+/// 抽成纯函数是为了让「刷新」这条路径能被直接判：同一份旧列表 + 同一份新数据
+/// 必须每次收敛到同一个结果，且旧行一条不丢。
+fn merge_imported_links(
+    mut list: Vec<ExternalLink>,
+    inputs: Vec<ImportLink>,
+) -> (Vec<ExternalLink>, usize, usize, usize) {
     let mut seen: HashSet<String> = list.iter().map(|l| l.url.clone()).collect();
     let mut added = 0usize;
     let mut skipped = 0usize;
@@ -364,11 +352,48 @@ fn import_external_links_raw(
         });
         added += 1;
     }
+    (list, added, skipped, invalid)
+}
+
+/// 导入 + 落库的**唯一核心**（连接级，便于用真实文件库判「重启后还在」）。
+///
+/// `source_url` 是这次导入用的网址：**解析成功就记下来**（哪怕 `added == 0`），
+/// 因为"刷新按钮该拉哪里"取决于用户最后一次导入了哪份数据，与这次新增了几条无关。
+/// 文件导入传 `None`，不会动掉之前记下的来源。
+fn import_external_links_into(
+    conn: &Connection,
+    raw: &str,
+    source_url: Option<&str>,
+) -> Result<ExternalLinkImportResult, String> {
+    if raw.len() > MAX_IMPORT_BYTES {
+        return Err(crate::error_codes::coded(
+            crate::error_codes::LINK_IMPORT_TOO_LARGE,
+            format!("导入内容超过 {} KiB 上限", MAX_IMPORT_BYTES / 1024),
+        ));
+    }
+    let inputs = parse_import_payload(raw)?;
+    // 读失败在 `?` 处上抛，`unwrap_or_default` 只兜「从没存过」（与既有读路径同口径）。
+    let stored = db::get_setting_checked(conn, EXTERNAL_LINKS_KEY).map_err(|e| {
+        crate::error_codes::coded(
+            crate::error_codes::LINK_LIST_READ_FAILED,
+            format!("读取外链列表失败: {e}"),
+        )
+    })?;
+    let existing = parse_external_links(&stored.unwrap_or_default());
+    let (list, added, skipped, invalid) = merge_imported_links(existing, inputs);
     if added > 0 {
-        db::set_setting(&dbc, EXTERNAL_LINKS_KEY, &encode_external_links(&list)).map_err(|e| {
+        db::set_setting(conn, EXTERNAL_LINKS_KEY, &encode_external_links(&list)).map_err(|e| {
             crate::error_codes::coded(
                 crate::error_codes::LINK_SAVE_FAILED,
                 format!("保存失败: {e}"),
+            )
+        })?;
+    }
+    if let Some(url) = source_url {
+        db::set_setting(conn, EXTERNAL_LINKS_SOURCE_KEY, url).map_err(|e| {
+            crate::error_codes::coded(
+                crate::error_codes::LINK_SAVE_FAILED,
+                format!("保存导入来源失败: {e}"),
             )
         })?;
     }
@@ -378,6 +403,43 @@ fn import_external_links_raw(
         skipped,
         invalid,
     })
+}
+
+/// 导入并合并（按规范化后的 URL 去重；不覆盖已有条目的名字）。
+///
+/// 入参从 `&State<'_, Arc<AppState>>` 改成 `&Arc<AppState>`：前者那个生命周期把它钉在
+/// 一次 IPC 调用上，**没法搬进阻塞池**（`spawn_blocking` 要 `'static`）。
+fn import_external_links_raw(
+    s: &Arc<AppState>,
+    raw: &str,
+    source_url: Option<&str>,
+) -> Result<ExternalLinkImportResult, String> {
+    let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());
+    import_external_links_into(&dbc, raw, source_url)
+}
+
+/// 读取最近一次「从网址导入」的来源；从没导入过 ⇒ `None`（界面不显示来源条与刷新键）。
+#[tauri::command(async)]
+pub async fn get_external_links_import_source(
+    state: tauri::State<'_, Arc<AppState>>,
+) -> Result<Option<String>, String> {
+    let s = state.inner().clone();
+    tokio::task::spawn_blocking(move || -> Result<Option<String>, String> {
+        let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());
+        db::get_setting_checked(&dbc, EXTERNAL_LINKS_SOURCE_KEY).map_err(|e| {
+            crate::error_codes::coded(
+                crate::error_codes::LINK_LIST_READ_FAILED,
+                format!("读取导入来源失败: {e}"),
+            )
+        })
+    })
+    .await
+    .map_err(|e| {
+        crate::error_codes::coded(
+            crate::error_codes::LINK_LIST_READ_FAILED,
+            format!("导入来源读取被线程池中断: {e}"),
+        )
+    })?
 }
 
 /// 导出到缓存目录，返回**真实路径**；移动端随后交给系统保存对话框。
@@ -503,7 +565,8 @@ pub async fn import_external_links_file(
                 format!("读取导入文件失败：{e}"),
             )
         })?;
-        import_external_links_raw(&s, &raw)
+        // 文件导入不改变「从网址导入」的来源（刷新按钮仍指向用户上次填的那个链接）。
+        import_external_links_raw(&s, &raw, None)
     })
     .await
     .map_err(|e| {
@@ -589,8 +652,9 @@ pub async fn import_external_links_from_url(
         )
     })?;
     // 下载（await）留在 worker 之外的异步侧；合并写库那一段进阻塞池（审计 R-18）。
+    // 来源网址与链接在同一个写库段落盘：刷新按钮读的就是它。
     tokio::task::spawn_blocking(move || -> Result<ExternalLinkImportResult, String> {
-        import_external_links_raw(&s, &raw)
+        import_external_links_raw(&s, &raw, Some(&url))
     })
     .await
     .map_err(|e| {
@@ -658,5 +722,144 @@ mod link_input_tests {
             normalize_link_input(&existing, "  新名字  ", " https://b.example/x ", None).unwrap();
         assert_eq!(name, "新名字", "名称两端空白要 trim");
         assert!(url.starts_with("https://b.example/x"), "URL 也要规范化：{url}");
+    }
+}
+
+#[cfg(test)]
+mod import_source_tests {
+    use super::*;
+
+    /// 一份最小的真实文件库：用真实路径前后各开一次连接，模拟两个进程（`:memory:` 证不了重启）。
+    fn with_db(name: &str, body: impl FnOnce(&Connection)) {
+        let dir = std::env::temp_dir().join(format!("gosslan-{name}-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("links.db");
+        let _ = std::fs::remove_file(&path);
+        {
+            let conn = Connection::open(&path).unwrap();
+            conn.execute_batch(crate::db::SCHEMA).unwrap();
+            body(&conn);
+        }
+        let _ = std::fs::remove_file(&path);
+        let _ = std::fs::remove_dir(&dir);
+    }
+
+    fn source_of(conn: &Connection) -> Option<String> {
+        db::get_setting_checked(conn, EXTERNAL_LINKS_SOURCE_KEY).unwrap()
+    }
+
+    fn links_of(conn: &Connection) -> Vec<ExternalLink> {
+        let stored = db::get_setting_checked(conn, EXTERNAL_LINKS_KEY).expect("读取测试库外链失败");
+        parse_external_links(&stored.unwrap_or_default())
+    }
+
+    /// 链接来源必须**固定保留**：导入一次后关掉连接再打开，来源与链接都还在；
+    /// 再导入同一份数据（= 点刷新）不会把来源或旧行弄丢。
+    #[test]
+    fn imported_source_and_links_survive_a_process_restart() {
+        let dir = std::env::temp_dir().join(format!("gosslan-links-restart-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("links.db");
+        let _ = std::fs::remove_file(&path);
+        let payload = r#"[{"name":"公司内网","url":"https://intra.example.com"}]"#;
+        let source = "https://backup.example.com/links.json";
+        {
+            let conn = Connection::open(&path).unwrap();
+            conn.execute_batch(crate::db::SCHEMA).unwrap();
+            let res = import_external_links_into(&conn, payload, Some(source)).unwrap();
+            assert_eq!(res.added, 1);
+            assert_eq!(source_of(&conn).as_deref(), Some(source));
+        }
+        // 第二个"进程"：同一路径重新打开。
+        {
+            let conn = Connection::open(&path).unwrap();
+            assert_eq!(
+                source_of(&conn).as_deref(),
+                Some(source),
+                "重启后来源链接必须还在（刷新按钮要按它拉数据）"
+            );
+            let links = links_of(&conn);
+            assert_eq!(links.len(), 1, "重启后导入的链接也必须还在");
+            assert!(links[0].url.contains("intra.example.com"));
+            // 刷新 = 再导入同一份数据：不新增、不丢旧行、来源不变。
+            let again = import_external_links_into(&conn, payload, Some(source)).unwrap();
+            assert_eq!(again.added, 0);
+            assert_eq!(again.skipped, 1);
+            assert_eq!(links_of(&conn).len(), 1, "刷新不许清空上一次成功的数据");
+            assert_eq!(source_of(&conn).as_deref(), Some(source));
+        }
+        let _ = std::fs::remove_file(&path);
+        let _ = std::fs::remove_dir(&dir);
+    }
+
+    /// 只有用户主动换一个链接才改来源；文件导入（`None`）不许覆盖已有的来源。
+    #[test]
+    fn only_url_import_replaces_the_source() {
+        with_db("links-source-replace", |conn| {
+            import_external_links_into(conn, r#"[]"#, Some("https://a.example/list.json")).unwrap();
+            assert_eq!(source_of(conn).as_deref(), Some("https://a.example/list.json"));
+            import_external_links_into(conn, r#"[]"#, None).unwrap();
+            assert_eq!(
+                source_of(conn).as_deref(),
+                Some("https://a.example/list.json"),
+                "文件导入 / 解析失败都不许把来源清掉"
+            );
+            import_external_links_into(conn, r#"[]"#, Some("https://b.example/list.json")).unwrap();
+            assert_eq!(
+                source_of(conn).as_deref(),
+                Some("https://b.example/list.json"),
+                "主动换链接才改来源"
+            );
+        });
+    }
+
+    /// 合并口径：同 URL 的旧行名字不被新数据覆盖，脏数据只计数、不落库。
+    #[test]
+    fn merge_keeps_existing_rows_and_skips_bad_input() {
+        let existing = vec![ExternalLink {
+            id: "keep".into(),
+            name: "旧名字".into(),
+            url: "https://a.example/".into(),
+        }];
+        let inputs = vec![
+            ImportLink {
+                name: "新名字".into(),
+                url: "https://a.example".into(),
+            },
+            ImportLink {
+                name: "新增".into(),
+                url: "https://b.example".into(),
+            },
+            ImportLink {
+                name: "".into(),
+                url: "https://c.example".into(),
+            },
+            ImportLink {
+                name: "协议不对".into(),
+                url: "javascript:alert(1)".into(),
+            },
+        ];
+        let (list, added, skipped, invalid) = merge_imported_links(existing, inputs);
+        assert_eq!((added, skipped, invalid), (1, 1, 2));
+        assert_eq!(list.len(), 2);
+        assert_eq!(list[0].name, "旧名字", "已有条目的名字不许被覆盖");
+    }
+
+    /// 解析失败必须**原样不动**：旧链接与来源都留在库里，界面才能继续显示上一次成功的数据。
+    #[test]
+    fn invalid_payload_leaves_links_and_source_untouched() {
+        with_db("links-invalid-payload", |conn| {
+            import_external_links_into(
+                conn,
+                r#"[{"name":"旧","url":"https://old.example"}]"#,
+                Some("https://src.example/list.json"),
+            )
+            .unwrap();
+            let err = import_external_links_into(conn, "<html>not json</html>", Some("https://src.example/list.json"))
+                .unwrap_err();
+            assert!(err.contains(crate::error_codes::LINK_IMPORT_JSON_INVALID), "{err}");
+            assert_eq!(links_of(conn).len(), 1, "失败不许清空旧数据");
+            assert_eq!(source_of(conn).as_deref(), Some("https://src.example/list.json"));
+        });
     }
 }

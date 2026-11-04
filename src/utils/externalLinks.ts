@@ -10,6 +10,7 @@
  */
 
 import * as z from "zod/mini";
+import { errorCode, rawErrorMessage } from "./errors.ts";
 
 /** 数量上限（与后端 `MAX_EXTERNAL_LINKS` 一致）。 */
 export const MAX_EXTERNAL_LINKS = 20;
@@ -63,4 +64,61 @@ export function validateLinkInput(
   const url = input.url.trim();
   if (existing.some((l) => l.url === url && l.id !== exceptId)) return "duplicate";
   return null;
+}
+
+/**
+ * 并发去重：同一个动作在第一次还没结束时，后续调用**共用同一个 promise**。
+ *
+ * 刷新按钮会同时被「用户连点」与「按钮禁用前的最后一帧」调到；只靠 `busy` 标志
+ * 挡不住事件队列里的两次同步调用（第二次会在第一次置位前就进来）。
+ */
+export function createSingleFlight<T>(fn: () => Promise<T>): () => Promise<T> {
+  let pending: Promise<T> | null = null;
+  return () => {
+    if (pending) return pending;
+    pending = fn().finally(() => {
+      pending = null;
+    });
+    return pending;
+  };
+}
+
+/** 刷新失败要说哪句话（`key` 就是词典键，`params` 是插值数据）。 */
+export interface RefreshFailure {
+  key: string;
+  params?: Record<string, string | number>;
+}
+
+/**
+ * 把「刷新导入来源」的失败分成人能照着做的三档 + 未识别一档。
+ *
+ * 判据只认后端错误码（`code=…`），不认中文原句 —— 后端改一个字不该让话术换档。
+ * 三档各自给出**下一步**：链接失效 → 重新导入；网络不可达 → 检查网络后重试；
+ * 格式变化 → 检查来源内容或换一份数据。未识别也给「重试 + 重新导入」两个动作，
+ * 绝不用「操作失败」兜底。
+ */
+export function classifyRefreshFailure(e: unknown): RefreshFailure {
+  const raw = rawErrorMessage(e);
+  const code = errorCode(raw);
+  const status = /HTTP\s+(\d{3})/.exec(raw)?.[1];
+  switch (code) {
+    case "LINK_DOWNLOAD_HTTP_FAILED":
+      return status
+        ? { key: "links.refreshFail.http", params: { status } }
+        : { key: "links.refreshFail.sourceInvalid" };
+    case "LINK_URL_EMPTY":
+    case "LINK_URL_INVALID":
+    case "LINK_URL_SCHEME":
+    case "LINK_URL_NO_HOST":
+      return { key: "links.refreshFail.sourceInvalid" };
+    case "LINK_IMPORT_READ_FAILED":
+    case "LINK_NETWORK_INIT_FAILED":
+      return { key: "links.refreshFail.network" };
+    case "LINK_IMPORT_JSON_INVALID":
+    case "LINK_IMPORT_NOT_UTF8":
+    case "LINK_IMPORT_TOO_LARGE":
+      return { key: "links.refreshFail.format" };
+    default:
+      return { key: "links.refreshFail.unknown" };
+  }
 }

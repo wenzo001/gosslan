@@ -25,14 +25,17 @@ import { useImeEnterGuard } from "@/composables/useImeEnterGuard";
 import { api } from "@/api";
 import { t } from "@/i18n";
 import { saveLocalFile } from "@/utils/localFile";
+import { copyText } from "@/utils/crashReport";
 import { panelKey, panelQueryOptions } from "@/utils/panelQuery";
 import {
   MAX_EXTERNAL_LINKS,
   MAX_LINK_NAME_CHARS,
+  classifyRefreshFailure,
+  createSingleFlight,
   isValidExternalUrl,
   validateLinkInput,
 } from "@/utils/externalLinks";
-import { Download, ExternalLink as ExternalLinkIcon, FileJson, Pencil, Plus, Upload } from "lucide-vue-next";
+import { Copy, Download, ExternalLink as ExternalLinkIcon, FileJson, Pencil, Plus, RefreshCw, Upload } from "lucide-vue-next";
 import { Trash2 } from "@/components/ui/icons";
 import type { ExternalLink, ExternalLinkImportResult } from "@/types";
 
@@ -53,6 +56,14 @@ const linksQuery = useQuery(
   panelQueryOptions<ExternalLink[]>("links", "", () => api.listExternalLinks()),
 );
 const links = computed(() => linksQuery.data.value ?? []);
+/**
+ * 「从网址导入」的来源（独立键）：链接固定保存，只有用户再次导入网址才会换。
+ * 没有来源（从没导入过 / 只用文件导入）⇒ 界面不出现来源条与刷新键。
+ */
+const sourceQuery = useQuery(
+  panelQueryOptions<string | null>("links", "source", () => api.getExternalLinksImportSource()),
+);
+const importSource = computed(() => sourceQuery.data.value ?? "");
 /** 首帧与每次重拉都算「加载中」，与旧实现的 `loading` 同义。 */
 const loading = computed(() => linksQuery.isFetching.value);
 /** 首屏读失败才说「读失败」；有旧快照时保留上一次读数，不把整屏换成错误页。 */
@@ -123,7 +134,8 @@ function closeDialog() {
   dialogOpen.value = false;
 }
 function openImport() {
-  urlImport.value = "";
+  // 预填当前来源：用户想换链接时直接改这一格即可，不用重新背一遍旧网址。
+  urlImport.value = importSource.value;
   importOpen.value = true;
 }
 function closeImport() {
@@ -225,12 +237,47 @@ async function importFromUrl() {
   transferBusy.value = "url";
   try {
     applyImport(await api.importExternalLinksFromUrl(url));
+    // 后端已把来源落到设置里；这一句只是让界面立刻显示新来源（不必等下次重开）。
+    void sourceQuery.refetch();
     closeImport();
   } catch (e) {
     app.toastError(e, t("links.importReport"));
   } finally {
     transferBusy.value = "";
   }
+}
+
+// ---------------- 固定来源的「刷新」 ----------------
+
+/** 刷新进行中（按钮要同时显示文案「刷新中…」，不能只转圈）。 */
+const refreshBusy = ref(false);
+
+/**
+ * 用固定来源再拉一次最新数据：成功**静默**（不弹提示、不切页面），失败才提示。
+ *
+ * - `createSingleFlight`：连点 / 并发调用共用同一次网络请求，第二次不会发出去；
+ * - 失败时**不动** `["links",""]` 缓存 ⇒ 上一次成功的数据继续在列表里，可原地重试；
+ * - 失败原因按错误码分成「链接失效 / 网络不可达 / 格式变化 / 未识别」四档话术。
+ */
+const refreshSource = createSingleFlight(async () => {
+  const url = importSource.value;
+  if (!url) return;
+  refreshBusy.value = true;
+  try {
+    const res = await api.importExternalLinksFromUrl(url);
+    queryClient.setQueryData(panelKey("links", ""), res.links);
+  } catch (e) {
+    const fail = classifyRefreshFailure(e);
+    app.toast(t(fail.key, fail.params), "error");
+  } finally {
+    refreshBusy.value = false;
+  }
+});
+
+/** 来源链接可复制（界面上截断显示，完整值在 title 与剪贴板里）。 */
+async function copySource() {
+  const ok = await copyText(importSource.value);
+  app.toast(t(ok ? "links.sourceCopied" : "links.sourceCopyFail"), ok ? "success" : "error");
 }
 </script>
 
@@ -244,6 +291,25 @@ async function importFromUrl() {
     :title="t('links.title')"
     @back="emit('back')"
   >
+    <!-- 刷新放在标题栏右侧：小尺寸、不挤正文；进行中时按钮上直接写「刷新中…」。 -->
+    <template #actions>
+      <button
+        v-if="importSource"
+        type="button"
+        data-probe="links-refresh"
+        class="tap-safe flex h-7 items-center gap-1 rounded-[var(--gosslan-radius-sm)] px-1.5 text-caption text-[var(--gosslan-text-2)] transition hover:bg-[var(--gosslan-hover)] disabled:opacity-60"
+        :title="t('links.refreshHint')"
+        :aria-label="refreshBusy ? t('links.refreshing') : t('links.refresh')"
+        :disabled="refreshBusy"
+        :aria-busy="refreshBusy || undefined"
+        @click="refreshSource()"
+      >
+        <Spinner v-if="refreshBusy" size-class="h-3.5 w-3.5" decorative />
+        <RefreshCw v-else class="h-3.5 w-3.5" />
+        <span>{{ refreshBusy ? t("links.refreshing") : t("links.refresh") }}</span>
+      </button>
+    </template>
+
     <!-- 三个入口同一行、同一档样式（用户 2026-10-23：一个大蓝按钮在上、一个描边按钮在下，
          既突兀又不像一组）。图标只作辅助，文案才是主标识；「添加」保留主色描边表达层级，
          不再用整块实底按钮 —— 左栏最窄只有 200px，实底大按钮会把标题挤没。 -->
@@ -278,6 +344,27 @@ async function importFromUrl() {
         <Spinner v-if="transferBusy === 'export'" size-class="h-4 w-4" decorative />
         <Download v-else class="h-4 w-4" />
         {{ t("links.export") }}
+      </button>
+    </div>
+
+    <!-- 固定来源条：导入后一直留在这里（重启/切页都在），完整网址可复制、可悬停查看。 -->
+    <div
+      v-if="importSource"
+      data-probe="links-source"
+      class="flex shrink-0 items-center gap-1.5 border-b border-[var(--gosslan-divider)] px-2 py-1"
+      :title="importSource"
+    >
+      <span class="shrink-0 text-caption text-[var(--gosslan-text-2)]">{{ t("links.sourceLabel") }}</span>
+      <span class="min-w-0 flex-1 truncate text-caption text-[var(--gosslan-text)]" :title="importSource">{{ importSource }}</span>
+      <button
+        type="button"
+        data-probe="links-copy"
+        class="tap-safe flex h-6 w-6 shrink-0 items-center justify-center rounded-[var(--gosslan-radius-sm)] text-[var(--gosslan-text-2)] transition hover:bg-[var(--gosslan-hover)]"
+        :title="t('links.sourceCopy')"
+        :aria-label="t('links.sourceCopy')"
+        @click="copySource"
+      >
+        <Copy class="h-3.5 w-3.5" />
       </button>
     </div>
 

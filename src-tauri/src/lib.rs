@@ -928,6 +928,7 @@ pub fn run() {
             commands::get_image_preview_gallery,
             commands::open_link_window,
             commands::list_external_links,
+            commands::get_external_links_import_source,
             commands::add_external_link,
             commands::update_external_link,
             commands::remove_external_link,
