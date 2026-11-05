@@ -1,7 +1,7 @@
 {
   "version": 1,
   "created_at": "2026-10-04T12:17:40Z",
-  "updated_at": "2026-11-05T14:16:22Z",
+  "updated_at": "2026-11-05T14:16:36Z",
   "files": {
     ".gitattributes": {
       "role": "index",
@@ -125,9 +125,9 @@
     },
     "aoci.code.txt": {
       "role": "index",
-      "sha256": "2822e3fe8b8c21b3cdc7b7869ce2ba1803ac01b37f39f09b7f8302f3639c4d0e",
+      "sha256": "b5266974b2f978165e7b0f738b43ceb3f6f94b3afa686b724838974bc7ea847e",
       "size": 408624,
-      "normalized_sha256": "2822e3fe8b8c21b3cdc7b7869ce2ba1803ac01b37f39f09b7f8302f3639c4d0e"
+      "normalized_sha256": "b5266974b2f978165e7b0f738b43ceb3f6f94b3afa686b724838974bc7ea847e"
     },
     "aoci.meta.txt": {
       "role": "index",
@@ -5718,9 +5718,9 @@
     },
     "src/composables/useWindowLauncher.ts": {
       "role": "index",
-      "sha256": "94827f48d0888f2a8399d913fe04d9efb78d0ce36db888032af6c640d32720c9",
-      "size": 3241,
-      "normalized_sha256": "94827f48d0888f2a8399d913fe04d9efb78d0ce36db888032af6c640d32720c9"
+      "sha256": "237db9fabad1fc2c90f78023ac823a270f624cfa479732c949eae2a6ad0caff9",
+      "size": 3063,
+      "normalized_sha256": "237db9fabad1fc2c90f78023ac823a270f624cfa479732c949eae2a6ad0caff9"
     },
     "src/data/emojis.test.ts": {
       "role": "observe",
@@ -5844,9 +5844,9 @@
     },
     "src/stores/useImagePreview.ts": {
       "role": "index",
-      "sha256": "cc7968e1d9a6ed231394e8bdbbc5a91b8c3062944aeae6aaaa9197eac804efa3",
-      "size": 6297,
-      "normalized_sha256": "cc7968e1d9a6ed231394e8bdbbc5a91b8c3062944aeae6aaaa9197eac804efa3"
+      "sha256": "31941bcf372a120a172f86e9407d9ded883c16947467340ca030bfa3efad98d6",
+      "size": 3742,
+      "normalized_sha256": "31941bcf372a120a172f86e9407d9ded883c16947467340ca030bfa3efad98d6"
     },
     "src/style.css": {
       "role": "index",
@@ -5928,9 +5928,9 @@
     },
     "src/utils/appearance.ts": {
       "role": "index",
-      "sha256": "008af3be21b173f0f8687b8e652ab7a3e20cf72bcaeaca17e06d994004199430",
-      "size": 2827,
-      "normalized_sha256": "008af3be21b173f0f8687b8e652ab7a3e20cf72bcaeaca17e06d994004199430"
+      "sha256": "d5ce097a6df3a148fc24ab94753aae11ca43c196a8a2b9108a828f188e43a903",
+      "size": 3016,
+      "normalized_sha256": "d5ce097a6df3a148fc24ab94753aae11ca43c196a8a2b9108a828f188e43a903"
     },
     "src/utils/auxWindowFailure.test.ts": {
       "role": "observe",
@@ -5946,9 +5946,9 @@
     },
     "src/utils/avatarImage.ts": {
       "role": "index",
-      "sha256": "fc9c571f6e5d4ea9d126020886f8412242db0607688b13f478c5ece509c33f8e",
-      "size": 4250,
-      "normalized_sha256": "fc9c571f6e5d4ea9d126020886f8412242db0607688b13f478c5ece509c33f8e"
+      "sha256": "cb38fce30bf36cc5e9cab42cc2046c0b1a8878f2f3abe34b858d5ebba9229f17",
+      "size": 4257,
+      "normalized_sha256": "cb38fce30bf36cc5e9cab42cc2046c0b1a8878f2f3abe34b858d5ebba9229f17"
     },
     "src/utils/avatarSeed.test.ts": {
       "role": "observe",
@@ -5958,9 +5958,9 @@
     },
     "src/utils/avatarSeed.ts": {
       "role": "index",
-      "sha256": "a6cfe54c2221d0d8b51f8ccd65c56668f294492f35777670cc62e40434768dd3",
-      "size": 5307,
-      "normalized_sha256": "a6cfe54c2221d0d8b51f8ccd65c56668f294492f35777670cc62e40434768dd3"
+      "sha256": "340a447474fdcbcd13996ddf335b841c0715480c37b62e762b84d954da3d3b28",
+      "size": 9650,
+      "normalized_sha256": "340a447474fdcbcd13996ddf335b841c0715480c37b62e762b84d954da3d3b28"
     },
     "src/utils/backStack.test.ts": {
       "role": "observe",
@@ -6036,9 +6036,9 @@
     },
     "src/utils/cardText.ts": {
       "role": "index",
-      "sha256": "63f52d166692a98e7260ef6207643ef4b6ee79d1ec43c76191e17a15dc12850c",
-      "size": 2450,
-      "normalized_sha256": "63f52d166692a98e7260ef6207643ef4b6ee79d1ec43c76191e17a15dc12850c"
+      "sha256": "68b8127ecda3b296ec6444f94c9aee24e23bea225a5db45363a9365c3514ed6c",
+      "size": 2492,
+      "normalized_sha256": "68b8127ecda3b296ec6444f94c9aee24e23bea225a5db45363a9365c3514ed6c"
     },
     "src/utils/channelState.test.ts": {
       "role": "observe",
@@ -6054,9 +6054,9 @@
     },
     "src/utils/chatSearch.ts": {
       "role": "index",
-      "sha256": "700faef229b14153ecd9d78e688a206ec48a611be78c389d5b2a2e08cfec591f",
-      "size": 4626,
-      "normalized_sha256": "700faef229b14153ecd9d78e688a206ec48a611be78c389d5b2a2e08cfec591f"
+      "sha256": "e53bb7fb7da1081f83ddb2adc250f3d3ff658bcbc0157b8dde30b0f6eed6457d",
+      "size": 6816,
+      "normalized_sha256": "e53bb7fb7da1081f83ddb2adc250f3d3ff658bcbc0157b8dde30b0f6eed6457d"
     },
     "src/utils/chatSearchQuery.test.ts": {
       "role": "observe",
@@ -6198,9 +6198,9 @@
     },
     "src/utils/defer.ts": {
       "role": "index",
-      "sha256": "b8b085cfae2306640e2d6993bfa1122df2af601b65da2979b101159975455113",
-      "size": 4281,
-      "normalized_sha256": "b8b085cfae2306640e2d6993bfa1122df2af601b65da2979b101159975455113"
+      "sha256": "942207072177fe27583abb5da59fbdd0af1be9e2a6fd235c7a95ed2865365493",
+      "size": 4626,
+      "normalized_sha256": "942207072177fe27583abb5da59fbdd0af1be9e2a6fd235c7a95ed2865365493"
     },
     "src/utils/designGuards.test.ts": {
       "role": "observe",
@@ -6228,9 +6228,9 @@
     },
     "src/utils/emoji.ts": {
       "role": "index",
-      "sha256": "082945c076d1afbe9f42f6bd46f3b01519953ab8966fbae7c19b4e33fb321b1c",
-      "size": 2755,
-      "normalized_sha256": "082945c076d1afbe9f42f6bd46f3b01519953ab8966fbae7c19b4e33fb321b1c"
+      "sha256": "c851dd650dc58588908c6478ceac216ce3ac1fcb5b696e498dc2ee97e41b68d8",
+      "size": 2704,
+      "normalized_sha256": "c851dd650dc58588908c6478ceac216ce3ac1fcb5b696e498dc2ee97e41b68d8"
     },
     "src/utils/emojiUsage.test.ts": {
       "role": "observe",
@@ -6270,9 +6270,9 @@
     },
     "src/utils/errors.ts": {
       "role": "index",
-      "sha256": "b54aa4f1257bff74291b01492ca07039bfba4edd7376f161600803c04a36688f",
-      "size": 3895,
-      "normalized_sha256": "b54aa4f1257bff74291b01492ca07039bfba4edd7376f161600803c04a36688f"
+      "sha256": "aeaa00b9939ca1709e0904c4539955dd797f1c7b0d7fd78b3420defb3badf9b6",
+      "size": 19085,
+      "normalized_sha256": "aeaa00b9939ca1709e0904c4539955dd797f1c7b0d7fd78b3420defb3badf9b6"
     },
     "src/utils/escapeRe.test.ts": {
       "role": "observe",
@@ -6288,9 +6288,9 @@
     },
     "src/utils/externalLinks.ts": {
       "role": "index",
-      "sha256": "0f355a53a85d4e011b781bf12b8cf5835c0d755b4db1fdc7c9bb070f788654a7",
-      "size": 2194,
-      "normalized_sha256": "0f355a53a85d4e011b781bf12b8cf5835c0d755b4db1fdc7c9bb070f788654a7"
+      "sha256": "122fe21157160df08353aa6b71dde6cd55b13ab568818f3f5fb902845797d7ca",
+      "size": 6832,
+      "normalized_sha256": "122fe21157160df08353aa6b71dde6cd55b13ab568818f3f5fb902845797d7ca"
     },
     "src/utils/favoritePreview.ts": {
       "role": "index",
@@ -6402,9 +6402,9 @@
     },
     "src/utils/haptics.ts": {
       "role": "index",
-      "sha256": "3a2da7c341855af7e53d230b05bfeb6871199f66aaeb2afddb6a3e76fc51948c",
-      "size": 2653,
-      "normalized_sha256": "3a2da7c341855af7e53d230b05bfeb6871199f66aaeb2afddb6a3e76fc51948c"
+      "sha256": "13b8d9197a5e65b772262e8181e8b59e474426189e04ebaedd1d6b5b6283eae3",
+      "size": 2524,
+      "normalized_sha256": "13b8d9197a5e65b772262e8181e8b59e474426189e04ebaedd1d6b5b6283eae3"
     },
     "src/utils/highlight.test.ts": {
       "role": "observe",

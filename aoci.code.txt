@@ -677,11 +677,11 @@ useMessageDisplay.ts[EU7M]: F:消息展示层的派生：时间分割线与气�
 useMessageFile.ts[EU9M]: F:文件消息的展示与状态组合 | R:code:src/utils/fileMeta.ts,code:src-tauri/src/commands/files.rs | A:msg_id 与 transfer_id 的映射 | S:映射形状是单聊 file-{id}、群文件 gfile-{id}——气泡的连接状态靠它关联，按正文去找会读到 0 行。载荷解析走唯一一份 utils/fileMeta（引用块同一份）。收到 Done 时必须重读预览，否则在途读到的是旧值。刻意不为 code 子类型做内联预览：发出来的就是文件。；气泡那条走 loadThumbPreview、灯箱仍 loadFilePreview ⇒ 两份缓存，别当成同一份
 useSearchKeyword.ts[EU6T]: F:搜索关键词的延迟镜像 | R:- | A:输入态镜像 | S:这里只镜像输入、不发请求——用户 2026-09-12 明确要求搜索要回车后进结果页；保留延迟镜像是为了输入框本身不闪。
 useShortcuts.ts[EU7T]: F:应用内快捷键绑定 | R:code:src-tauri/src/menu.rs | A:按键到动作的映射 | S:macOS 有原生菜单栏负责 ⌘, / ⌘N / ⌘F 的可见性，而 Windows 与 Linux 用自绘标题栏、没有菜单栏，快捷键必须在这一层自己接住。
-useWindowLauncher.ts[EU7S]: F:独立窗口打开的模块级单例 | R:code:src-tauri/src/commands/logs.rs | A:openSettings 等动作的共用状态 | S:模块级单例是有意的：导航栏、菜单事件等多个入口都走同一个动作枚举，它们必须共用同一份「正在打开 / 刚打开过」的状态，否则连点会重复请求建窗。
+useWindowLauncher.ts[EU7T]: F:独立窗口打开的模块级单例 | R:code:src-tauri/src/commands/logs.rs | A:openSettings 等动作的共用状态 | S:模块级单例是有意的：导航栏、菜单事件等多个入口都走同一个动作枚举，它们必须共用同一份「正在打开 / 刚打开过」的状态，否则连点会重复请求建窗。
 
 ===/Users/wendongfu/Documents/code/gosslan/src/data/===
 emojis.ts[FL6L]: F:抖音评论区表情映射（name 到图片文件） | R:code:scripts/scrape-douyin-emoji.py | A:EMOJI_META 与 EmojiMeta | S:生成物：由 scripts 抓下来的 emojis.json 生成，手改会被下一次生成覆盖；要改表情得改源 JSON 再重新生成。
-hanInitials.ts[LL6T]: F:汉字到拼音首字母的查表数据 | R:- | A:HAN_START 与 HAN_INITIALS | S:自带表而不是用 Intl.Collator：文件里记着实测 Node/ICU 的 zh-Hans-u-co-pinyin 不可靠，靠它分组会分错。
+hanInitials.ts[LL6S]: F:汉字到拼音首字母的查表数据 | R:- | A:HAN_START 与 HAN_INITIALS | S:自带表而不是用 Intl.Collator：文件里记着实测 Node/ICU 的 zh-Hans-u-co-pinyin 不可靠，靠它分组会分错。
 
 ===/Users/wendongfu/Documents/code/gosslan/src/entries/===
 logs.ts[EE6T]: F:日志窗口的入口 | R:code:src/components/LogViewer.vue,code:src/boot/boot.ts | A:辅助窗口的启动装配 | S:日志数据由 get_logs 按需拉、LogViewer 自己每 2s 轮询且窗口不可见时跳过；复制/清空/导出必须有可见反馈（用户点过「点了没反应」）。
@@ -691,7 +691,7 @@ todos.ts[EE7T]: F:群任务窗口入口 | R:code:src/components/GroupTodosWindow
 
 ===/Users/wendongfu/Documents/code/gosslan/src/i18n/===
 index.ts[EL8S]: F:语言与词典层：偏好、检测与 t() | R:code:src/i18n/locales.ts,code:src/utils/configBool.ts | A:Locale、t、applyPreference、refreshSystemLocale | S:自写而不是引 vue-i18n：本项目文案量有限、无复数与日期等复杂需求。判定语言时只在调用方没注入列表时才用自己的表——注入了的契约是「就按这个列表判定」。
-locales.ts[SL9L]: F:文案字典的门面（同名再导出中英两册与 MessageDict） | R:code:src/i18n/index.ts,code:docs/protocol-invariants.md | A:MessageDict 与 zhCN/enUS 两份同形表 | S:它是 t() 调用点的唯一命中来源，「调用点必须命中词典」那条护栏抓过两次漏键（2026-10-03）。2026-10-07 按语言切成 locales/{zh-cn,en-us}.ts 后本文件只剩再导出，四个消费者的 import 说明符一字未改；逐册名单的唯一来源是 docs/domains.data.mjs。
+locales.ts[SL9T]: F:文案字典的门面（同名再导出中英两册与 MessageDict） | R:code:src/i18n/index.ts,code:docs/protocol-invariants.md | A:MessageDict 与 zhCN/enUS 两份同形表 | S:它是 t() 调用点的唯一命中来源，「调用点必须命中词典」那条护栏抓过两次漏键（2026-10-03）。2026-10-07 按语言切成 locales/{zh-cn,en-us}.ts 后本文件只剩再导出，四个消费者的 import 说明符一字未改；逐册名单的唯一来源是 docs/domains.data.mjs。
 
 ===/Users/wendongfu/Documents/code/gosslan/src/layouts/===
 ResponsiveLayout.vue[EU9L]: F:移动端/桌面响应式外壳：列表与详情、tab 与浮层 | R:code:src/stores/useImagePreview.ts,code:src/stores/useAppStore.ts | A:移动端页面层级与回退 | S:⚠️ 只在同一个 tab 内做 list↔detail 平移；底部 tab 切换瞬时不转场（用户点名）。独立窗不可用时回退应用内弹窗，保证设置任何环境打得开；不改 app.mobileView（设置是整页浮层）。图片预览 overlay 挂载不能靠「是不是主窗口」推。「我的」头像用 SelfAvatar：旧画 UserCircle 蓝灰人形，与导航栏 emoji 两张脸。
@@ -699,40 +699,40 @@ ResponsiveLayout.vue[EU9L]: F:移动端/桌面响应式外壳：列表与详情�
 ===/Users/wendongfu/Documents/code/gosslan/src/stores/===
 useAppStore.ts[EA9L]: F:应用级 store：设备、好友、权限、外观、拖放与全部通知设置（含强提醒声音/振动） | R:code:src/api/index.ts,code:src/utils/appearance.ts | A:全局应用状态与动作、init 时从配置读通知设置 | S:HMR 句柄必须在模块作用域；权限「没问过」与「被拒」必须可分，用户手动点开关要 force 真问；拖放是 webview 级事件，投放区命中就要让 ChatWindow 监听让位；notifyEnabled 缺省 true，remindSound/remindVibrate 变更只写应用设置，后端通知组装另读 opts。主题切换的 transition 抑制定时器必须单例，连续切换不能叠旧定时器。
 useChatStore.ts[EA9L]: F:聊天 store：消息/会话/未读/通知/回应与强提醒接收链、群任务全表行与看板实时重读 | R:code:src/stores/useAppStore.ts,code:src/utils/reactions.ts,code:src/utils/reminders.ts,code:src/utils/todos.ts,code:src/api/index.ts | A:前端消息主状态、createTodo/updateTodo、watchGroupTodos、handleIncomingRemind/syncGroupHistoryNow | S:自己清理只加不删曾漏删除点；角标闪烁必须与通知同进同出；groupReaderIds 无人时返回共享 EMPTY 常量；任务看板折 groupTodoRows（全表读），独立窗订阅去抖后必须 reload 同一数据源，重载有上界 messages 不会刷新看板；首屏读与事件读共用 StaleGuard 键，后发覆盖先发。；任务进终态单独放行给创建人（todo_update 本是静默事件），文案区分「已完成/标记为做不了」，按 msg_id 去重防多条投递路径重复弹；三个 peers 整表写入点都记名进本机缓存
-useImagePreview.ts[EU7S]: F:全局图片预览的唯一状态源 | R:code:src/components/message/ImageLightbox.vue,code:src/entries/preview.ts | A:投递与 overlay 挂载判定 | S:看图是一个公共能力，不是一个面板一个实例：状态只有本 store 驱动的这一个，桌面端把同一份状态投递给全局唯一的独立预览窗口。overlayMounted 不能用「是不是主窗口」来推。
+useImagePreview.ts[EU7T]: F:全局图片预览的唯一状态源 | R:code:src/components/message/ImageLightbox.vue,code:src/entries/preview.ts | A:投递与 overlay 挂载判定 | S:看图是一个公共能力，不是一个面板一个实例：状态只有本 store 驱动的这一个，桌面端把同一份状态投递给全局唯一的独立预览窗口。overlayMounted 不能用「是不是主窗口」来推。
 
 ===/Users/wendongfu/Documents/code/gosslan/src/utils/===
 a11yLabels.ts[XQ7S]: F:可访问名守卫：找无名按钮与缺 alt 的图片 | R:code:scripts/verify-guards.py,code:src/components/ui/PrimaryBtn.vue | A:findUnlabeledButtons / findUnnamedImages | S:不能复用 templateBranches 的 extractTemplate：它用非贪婪的 </template> 匹配，嵌套模板会截错。图片必须显式声明 alt，包括装饰性的那种——空 alt 是一个明确的决定，不是漏写。
 announcementDismiss.ts[AD6T]: F:群公告收起状态（本机记录） | R:code:src-tauri/src/commands/group_announcements.rs | A:已收起 msgId 的读写 | S:记 msgId 而不是已读时间；是本机记录、不跟群同步。读取失败时方向必须是多提醒（回到未收起），绝不能因为存储坏了就让聊天面板白屏。
 appActions.ts[EA6T]: F:应用级动作枚举与派发 | R:code:src/composables/useShortcuts.ts,code:src-tauri/src/menu.rs | A:APP_ACTION 与 emitAction | S:绕一层 window 事件是为了让 macOS 菜单项与快捷键执行同一批 UI 动作。本模块必须零依赖（不得 import 任何 @/…）：useShortcuts 这类底层件要能反向依赖它而不形成环。
-appearance.ts[EL8S]: F:外观模式的解析与存储（真值在后端 settings） | R:code:src/i18n/index.ts,code:index.html | A:resolveDark 与 APPEARANCE_STORAGE_KEY | S:同一套规则有两份实现且必须永远一致：store 这一份，以及 index.html 里必须跑在 bundle 之前的内联首屏脚本。localStorage 只是首帧快路径。刻意不把老版本那个布尔值当「没设置过」——那是用户当时的一次显式选择。
-avatarImage.ts[KU7S]: F:头像的压缩与编码（尺寸与质量阶梯） | R:code:src/stores/useAppStore.ts,code:src-tauri/src/commands/helpers.rs | A:头像字节上限与落盘前的压缩 | S:一定转 JPG，连输入本来就是 JPEG 也重新编码：字节上限只有靠重编码才守得住，透传会把超限原图直接发出去。单独成文件是因为这段恰好是唯一会错的地方。
-avatarSeed.ts[KU6T]: F:默认头像的种子与配色对 | R:code:src/components/message/MessageAvatar.vue | A:avatarSeedFor | S:从 id 现算而不是随机一次再存起来：存起来要多一个跨设备同步字段，而 id 本来就在每一帧里；现算还保证同一人到处同一张脸。
+appearance.ts[EL8T]: F:外观模式的解析与存储（真值在后端 settings） | R:code:src/i18n/index.ts,code:index.html | A:resolveDark 与 APPEARANCE_STORAGE_KEY | S:同一套规则有两份实现且必须永远一致：store 这一份，以及 index.html 里必须跑在 bundle 之前的内联首屏脚本。localStorage 只是首帧快路径。刻意不把老版本那个布尔值当「没设置过」——那是用户当时的一次显式选择。
+avatarImage.ts[KU7T]: F:头像的压缩与编码（尺寸与质量阶梯） | R:code:src/stores/useAppStore.ts,code:src-tauri/src/commands/helpers.rs | A:头像字节上限与落盘前的压缩 | S:一定转 JPG，连输入本来就是 JPEG 也重新编码：字节上限只有靠重编码才守得住，透传会把超限原图直接发出去。单独成文件是因为这段恰好是唯一会错的地方。
+avatarSeed.ts[KU6S]: F:默认头像的种子与配色对 | R:code:src/components/message/MessageAvatar.vue | A:avatarSeedFor | S:从 id 现算而不是随机一次再存起来：存起来要多一个跨设备同步字段，而 id 本来就在每一帧里；现算还保证同一人到处同一张脸。
 backStack.ts[EL8S]: F:返回栈的纯逻辑（与浏览器 API 解耦） | R:code:src/composables/useBackLayer.ts | A:HistoryPort 与 createBackStack | S:三种情形各有坑：UI 主动关掉栈顶要把对应历史条目回退掉，否则返回键要多按一次；端口压不进条目（自定义协议下 pushState 与 hash 都不可用）就记 0 条、行为退化为现状；用 hash 退化落点压入时，必须吃掉它自己引发的那次 pop，否则刚压入的层立刻被关掉。
 bounded.ts[EL5T]: F:有界集合的 trimOldest | R:- | A:trimOldest | S:唯一的「超量从头丢」实现；不各写一份，否则同一个缓存在两处淘汰顺序不同。
-cardText.ts[EL8S]: F:卡片消息的可复制文本 | R:code:src/utils/linkify.ts,code:src/components/message/MessageContextMenu.vue | A:cardCopyText | S:卡片类消息的复制必须是同一份结果——用户点名的「群任务也不能复制啊，收藏咋还有复制呢」。必须保持零 @/ 依赖（与 appActions、nameGroup 同一规则）；复用 parseTodo 时 kind 不能漏，漏了直接返回 null。
-chatSearch.ts[EL8M]: F:搜索的日期预设、发送人候选与命中片段 | R:code:src/components/search/ChatSearchDialog.vue | A:SEARCH_DATE_PRESETS、dateRangeFor、hitSnippet | S:「今天」按日历天算，不是过去 86400 秒：否则早上搜今天会漏掉昨天深夜、又把今天零点前的算进来。发送人候选始终给全量，否则一旦选了某人候选就只剩他自己、没法切换（这是设计）。片段只给命中处：一条几万字的粘贴消息会把结果页撑爆。
+cardText.ts[EL8T]: F:卡片消息的可复制文本 | R:code:src/utils/linkify.ts,code:src/components/message/MessageContextMenu.vue | A:cardCopyText | S:卡片类消息的复制必须是同一份结果——用户点名的「群任务也不能复制啊，收藏咋还有复制呢」。必须保持零 @/ 依赖（与 appActions、nameGroup 同一规则）；复用 parseTodo 时 kind 不能漏，漏了直接返回 null。
+chatSearch.ts[EL8S]: F:搜索的日期预设、发送人候选与命中片段 | R:code:src/components/search/ChatSearchDialog.vue | A:SEARCH_DATE_PRESETS、dateRangeFor、hitSnippet | S:「今天」按日历天算，不是过去 86400 秒：否则早上搜今天会漏掉昨天深夜、又把今天零点前的算进来。发送人候选始终给全量，否则一旦选了某人候选就只剩他自己、没法切换（这是设计）。片段只给命中处：一条几万字的粘贴消息会把结果页撑爆。
 chatStyle.ts[EL8M]: F:聊天显示样式的预设、字号档与对端样式解析 | R:code:src/utils/color.ts,code:src-tauri/src/commands/settings.rs | A:CHAT_PRESETS、fontPx、parsePeerStyle | S:预设配色以可读性优先，老坑是 text-primary 在浅蓝气泡上对比只有 2.94，所以亮色取主题色深调、暗色取亮调。本机偏好持久化并广播给已连接节点，对方按自己的偏好渲染——不是按我发出去的样式。
-clipboard.ts[EL6S]: F:粘贴内容的分类纯函数 | R:code:src/components/chat/MessageComposer.vue | A:classifyPaste | S:图片必须独立看 items：Windows 11 截图（Win+Shift+S）的剪贴板同时带一个临时文件引用，图片要排在最前；WKWebView/Safari 的 paste 事件里位图要同时看 files 与 items 才判得准。
+clipboard.ts[EL6T]: F:粘贴内容的分类纯函数 | R:code:src/components/chat/MessageComposer.vue | A:classifyPaste | S:图片必须独立看 items：Windows 11 截图（Win+Shift+S）的剪贴板同时带一个临时文件引用，图片要排在最前；WKWebView/Safari 的 paste 事件里位图要同时看 files 与 items 才判得准。
 color.ts[EL7S]: F:主题色派生与 CSS 变量注入 | R:code:src/style.css,code:src/utils/chatStyle.ts | A:applyTheme、contrastRatio、mixToLuma | S:contrastRatio 只认真实色值，喂 var(--x) 这种字符串算不出来；主题色做填充与做文字要分两档，暗色下文字档要提亮而不是继续压暗。
 configBool.ts[EL6T]: F:配置布尔解析（前端这一半） | R:code:src-tauri/src/db/settings.rs | A:parseConfigBool | S:唯一口径（#125）：合法字面量才出 true/false，未知一律返回 null 交给调用方决定回落哪个默认，不许静默当成开或关。前端与 Rust 必须认同一张字面量表，用例钉在 configBool.test.ts。
-defer.ts[EL7S]: F:防抖与节流的最小工具 | R:- | A:debounce、shouldRunThrottled | S:存在的理由是真实缺陷：同一个动作在一帧内被触发多次会把结果算乱；不用 rAF 合并是因为要判定的输入在事件里、不在绘制帧上。
+defer.ts[EL7T]: F:防抖与节流的最小工具 | R:- | A:debounce、shouldRunThrottled | S:存在的理由是真实缺陷：同一个动作在一帧内被触发多次会把结果算乱；不用 rAF 合并是因为要判定的输入在事件里、不在绘制帧上。
 designGuards.ts[XQ9L]: F:前端设计护栏：按源码形状找违规 | R:code:scripts/verify-guards.py,code:src/style.css | A:find/check/count 近二十条判据（含阳性对照） | S:每条判据对应真实踩坑：hover 揭示需触屏兜底；辅助媒体查询排末尾；dev 保留注释曾把示例算成真实用法。改形状先读文件头表。新增：⑤b 菜单缺 frost 底；⑥ role 不授聚焦，静态 buttonish role 无 tabindex 亦报；㉚ 判深度不判有无；㉛ 顶 inset 配底；㉞ 图高只许 previewMetrics；㉟ 禁裸 matchMedia/UA；浮层须 Teleport+根 fixed（形状读不出返回 null 不静默）；字面量 [] prop 报。；可见图片数按形状判唯一家（裸写 4 与自己 slice 都判红）
-emoji.ts[EL7S]: F:表情 token 的切分与图片映射 | R:code:src/data/emojis.ts,code:src/utils/linkify.ts | A:splitEmoji、emojiUrl | S:只匹配已知表情名，绝不误吞正文里其它方括号（如 [图片]、[代码] 这类占位）。
+emoji.ts[EL7T]: F:表情 token 的切分与图片映射 | R:code:src/data/emojis.ts,code:src/utils/linkify.ts | A:splitEmoji、emojiUrl | S:只匹配已知表情名，绝不误吞正文里其它方括号（如 [图片]、[代码] 这类占位）。
 emojiUsage.ts[EL6S]: F:最常使用表情的本机记录 | R:code:src/components/EmojiPicker.vue | A:read/writeEmojiUsage、topEmojiTokens、pickerCells | S:只记本机不进协议（常用度是个人偏好）；读失败按「没有常用行」不抛。pickerCells 矩阵 all 原样不摘（旧法摘常用留洞）；同表情两格 :key 带段号、常用按位置 i 不按 file。
-errors.ts[EL6S]: F:错误信息的兜底翻译与上报 | R:code:src/i18n/locales.ts | A:friendlyError、reportError | S:实测前提写在注释里：本项目 Rust 侧大部分错误本来就是写好的中文说明，所以不能一律替换成通用文案——那会把唯一有用的信息抹掉。
-externalLinks.ts[EL7T]: F:外链的前端校验 | R:code:src-tauri/src/commands/external_links.rs | A:MAX_EXTERNAL_LINKS、validateLinkInput | S:两端各有一份是刻意的：后端权威、前端只为在输入框旁立刻给原因。上限与长度两处必须同值，后端有表驱动测试钉着。
+errors.ts[EL6M]: F:错误信息的兜底翻译与上报 | R:code:src/i18n/locales.ts | A:friendlyError、reportError | S:实测前提写在注释里：本项目 Rust 侧大部分错误本来就是写好的中文说明，所以不能一律替换成通用文案——那会把唯一有用的信息抹掉。
+externalLinks.ts[EL7S]: F:外链的前端校验 | R:code:src-tauri/src/commands/external_links.rs | A:MAX_EXTERNAL_LINKS、validateLinkInput | S:两端各有一份是刻意的：后端权威、前端只为在输入框旁立刻给原因。上限与长度两处必须同值，后端有表驱动测试钉着。
 favoritePreview.ts[EL8T]: F:收藏副本的图片预览读取 | R:code:src/utils/filePreview.ts | A:loadFavoritePreview、dropFavoritePreview | S:不复用 filePreview 是因为链路不同：收藏副本按收藏 id 取字节，而那条按 msg_id 反查 messages 表的 path。仍在读取中的未知失败不能缓存，否则会永久缓存一个空结果。；容量同 filePreview 走 blobLru 按字节封顶；关面板整份释放——原先只有删单条才释放，关面板不释放是主要泄漏面
 fileKind.ts[EL6S]: F:文件类型判定与配色图标 | R:code:src/components/message/MessageFileBubble.vue | A:fileKindOf、fileKindColor | S:唯一的判定点：同一个「这是不是 PDF」散在两处，就会一处显图标一处显颜色。
 fileMeta.ts[EL7T]: F:文件消息载荷的解析 | R:code:src/utils/messages.ts | A:parseFileMeta | S:同一消息可能在两个位置被打开（气泡与收藏、卡片），解析必须同一份（AI_RULES §32）。本模块必须零 @/ 依赖：node:test 不解析别名。
 filePreview.ts[EP9M]: F:附件预览的加载与缓存 | R:code:src/utils/mediaAvailability.ts,code:src/utils/messageKinds.ts | A:loadFilePreview、loadContentPreview、invalidateFilePreview | S:图片走原始字节到 Blob 到 objectURL，绝不把 Base64 塞进 Vue。⚠️ objectURL 的生命周期归本模块缓存，消费者不得 revoke：同一个 cid 的 URL 会同时出现在时间线卡片、看板表单与任务详情三处，任何一处 revoke 就把另外两处打成裂图。字节是后到的（消息先到、传输完成后回填），所以 Done 后要能重取；HEIC 在 Chrome/Edge/Firefox 原生渲染不了，必须先归一。；revoke 只归缓存这一层（逐出/drop/clear），消费者不许就地 revoke；容量按累计字节不按条数
 format.ts[EL3T]: F:字节数格式化 | R:- | A:formatBytes | S:-
-friendOnline.ts[EL7S]: F:好友在线判定的唯一实现 | R:code:src-tauri/src/commands/friends.rs | A:markFriendsOnlineFrom | S:单独成文件是因为「在好友表里」不等价于在线：要看 last_seen 新鲜度或有没有活跃链路，两处各写就会分叉。
+friendOnline.ts[EL7T]: F:好友在线判定的唯一实现 | R:code:src-tauri/src/commands/friends.rs | A:markFriendsOnlineFrom | S:单独成文件是因为「在好友表里」不等价于在线：要看 last_seen 新鲜度或有没有活跃链路，两处各写就会分叉。
 friendRequests.ts[EL5T]: F:待处理好友申请的过滤 | R:code:src/stores/useAppStore.ts | A:actionableRequests | S:渲染时过滤而不是只靠各条路径手动删：申请被「解决」的方式有好几种，漏一种就留下一个点不动的红点。
-haptics.ts[EU6S]: F:触觉反馈的分级出口 | R:code:src-tauri/gen/android/app/src/main/AndroidManifest.xml | A:haptic | S:按 HIG：按下即反馈而不是松手，且按语义分轻重；不是每个点击都给，给了用户很快就麻木。Android 缺 VIBRATE 权限时是静默 no-op。
+haptics.ts[EU6T]: F:触觉反馈的分级出口 | R:code:src-tauri/gen/android/app/src/main/AndroidManifest.xml | A:haptic | S:按 HIG：按下即反馈而不是松手，且按语义分轻重；不是每个点击都给，给了用户很快就麻木。Android 缺 VIBRATE 权限时是静默 no-op。
 highlight.ts[EL6T]: F:搜索高亮的转义与拼接 | R:code:src/utils/logFilter.ts | A:escHtml、highlightText | S:必须先在原文上匹配、再逐段转义。先 escHtml 整段再替换，转义产生的实体符号会把匹配全部打断，高亮就静默失效。
 imageBytes.ts[EL8S]: F:图片体积上限常量与 base64 工具 | R:code:src-tauri/src/commands/group_todo_media.rs,code:src/components/chat/MessageComposer.vue | A:MAX_PASTED_IMAGE_BYTES、MAX_TODO_IMAGE_BYTES | S:这两个上限必须等于 Rust 侧那份（group_todo_media 里有同一条断言）：一边放行一边拒收就表现为「粘贴没反应」。仍走 base64 而不是二进制 IPC 是写明的取舍，不是疏忽。
-ime.ts[EL7S]: F:输入法组合态的判定 | R:code:src/composables/useImeEnterGuard.ts | A:isImeKey、IME_COMMIT_WINDOW_MS | S:不能只信 KeyboardEvent.isComposing：macOS WKWebView 上用 Enter 提交候选时它可能已经是 false，判据要带一个提交后的时间窗。
+ime.ts[EL7T]: F:输入法组合态的判定 | R:code:src/composables/useImeEnterGuard.ts | A:isImeKey、IME_COMMIT_WINDOW_MS | S:不能只信 KeyboardEvent.isComposing：macOS WKWebView 上用 Enter 提交候选时它可能已经是 false，判据要带一个提交后的时间窗。
 initScope.ts[EL6S]: F:初始化作用域与卸载登记 | R:code:src/composables/useBackLayer.ts | A:createInitScope | S:onDispose 必须处理「迟到的注册」：本轮已经 dispose 之后登记进来的卸载器要立刻执行，否则那个监听器永远留在页面上。
 lightboxGestures.ts[EL6S]: F:预览的手势判据：缩放与切图 | R:code:src/components/message/ImageLightbox.vue | A:clampScale、pinchScale、swipeDirection | S:左右滑动切图必须区分轴：斜着划是想平移或误触。缩放下限是适应屏幕，上限再大只是马赛克且手势精度跟不上。
 linkify.ts[EZ9M]: F:文本切段：链接与 @ 的边界 | R:code:src/utils/messages.ts,code:src/utils/emoji.ts | A:linkify、isMentionLead、splitUrl | S:中文句读必须同时出现在两处：从 URL 字符集里排除（否则链接一路吞到句末），又在切段时当分隔。括号是唯一允许出现在 URL 体内又常作句末的字符，要单独判。高亮与被 @ 检测共用同一套边界语义——分叉的表现就是发送端看到蓝色 chip、接收端毫无反应。
@@ -796,7 +796,7 @@ frame_io.rs[AN9S]: F:BLE 读写方向的抽象：FrameSink / FrameSource 两个 
 io_loops.rs[AN9M]: F:BLE 的三级抢占写循环与读活性循环 | R:code:src-tauri/src/network/ble.rs,code:src-tauri/src/network/transport/outbound.rs | A:ble_writer_loop/ble_reader_loop | S:抢占粒度是「帧」：一帧 4KB 的 FileChunk 在小 MTU 上最坏要发数秒，片间 yield 需要四平台同步改 fragment 级 API（尚未实现，别在注释里超前宣称）。真机僵尸链路：只结束写循环而读还活 ⇒ 看门狗 45s 不拆。
 
 ===/Users/wendongfu/Documents/code/gosslan/src/i18n/locales/===
-dict.ts[SL9L]: F:文案字典值的形状（层级 key → 文案） | R:code:src/i18n/locales.ts,code:src/i18n/index.ts | A:MessageDict | S:它单独成文件是因为两册语言与门面都要用它：放进门面会让「门面 re-export 自己」变成类型层面的循环。形状是扁平键表而不是嵌套对象，因为 t() 的回落按 key 直取。
+dict.ts[SL9T]: F:文案字典值的形状（层级 key → 文案） | R:code:src/i18n/locales.ts,code:src/i18n/index.ts | A:MessageDict | S:它单独成文件是因为两册语言与门面都要用它：放进门面会让「门面 re-export 自己」变成类型层面的循环。形状是扁平键表而不是嵌套对象，因为 t() 的回落按 key 直取。
 zh-cn.ts[SL9L]: F:简体中文文案册（强提醒声音/振动、受众弹窗、任务面板/详情等词条） | R:code:src/i18n/locales.ts,code:src/i18n/index.ts | A:zhCN | S:中英 key 一一对应、值非空、t() 命中真实 key 三条护栏按对象现读；「@你」等查看者视角文案只许存在于点名字典册名单。；「做不了」与完成同族终态；操作流水一条事件可含多项、用「·」连接；超过 4 张才出查看更多，行为与「查看任务」一致；todo.icon.* 十枚与 en-us 同键（缺一份英文界面就回退键名）
 en-us.ts[SL9L]: F:英文文案册（与中文同键集合，现含强提醒与群任务三命中区词条） | R:code:src/i18n/locales.ts,code:src/i18n/index.ts | A:enUS | S:键集合一致由 index.test.ts 现读两个对象判；新词条必须中英同批，少接不会静默（Record<Locale,MessageDict>）；t() 字面量调用点必须命中真实 key，三条字典护栏读对象不读文件文本。；与 zh-cn 那份逐键对应（本轮 impossible/custom 那几条两边都有）：加一档状态或类型要两份同时改，缺一份英文就回退键名；与 zh-cn 同键：todo.icon.* 十枚
 
