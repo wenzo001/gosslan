@@ -1,7 +1,7 @@
 {
   "version": 1,
   "created_at": "2026-10-04T12:17:40Z",
-  "updated_at": "2026-11-05T14:16:10Z",
+  "updated_at": "2026-11-05T14:16:22Z",
   "files": {
     ".gitattributes": {
       "role": "index",
@@ -125,9 +125,9 @@
     },
     "aoci.code.txt": {
       "role": "index",
-      "sha256": "41ea915a838f0e8a64b2b6b3dad6b10a3e31221609a7d34a292e968cde2733a3",
+      "sha256": "2822e3fe8b8c21b3cdc7b7869ce2ba1803ac01b37f39f09b7f8302f3639c4d0e",
       "size": 408624,
-      "normalized_sha256": "41ea915a838f0e8a64b2b6b3dad6b10a3e31221609a7d34a292e968cde2733a3"
+      "normalized_sha256": "2822e3fe8b8c21b3cdc7b7869ce2ba1803ac01b37f39f09b7f8302f3639c4d0e"
     },
     "aoci.meta.txt": {
       "role": "index",
@@ -5250,15 +5250,15 @@
     },
     "src/components/LinksList.vue": {
       "role": "index",
-      "sha256": "eb81a54703f0c8654b6d106932460ab5765622ead739d9eaa4c8bd409c98f5b3",
-      "size": 8033,
-      "normalized_sha256": "eb81a54703f0c8654b6d106932460ab5765622ead739d9eaa4c8bd409c98f5b3"
+      "sha256": "25af101d7ef98c7887015d9a1c38055bd463814a29fa1d97b7d894db5a673d5e",
+      "size": 28208,
+      "normalized_sha256": "25af101d7ef98c7887015d9a1c38055bd463814a29fa1d97b7d894db5a673d5e"
     },
     "src/components/LogViewer.vue": {
       "role": "index",
-      "sha256": "4ab97d47a8acffbb3aef64c019438e7e67dc7c9f7dda9c433990a44021a9de82",
-      "size": 25598,
-      "normalized_sha256": "4ab97d47a8acffbb3aef64c019438e7e67dc7c9f7dda9c433990a44021a9de82"
+      "sha256": "53c5c60d47dec99233ca65362c5076aa6b453d164eb8f0a7d3c6add6f7b76406",
+      "size": 30270,
+      "normalized_sha256": "53c5c60d47dec99233ca65362c5076aa6b453d164eb8f0a7d3c6add6f7b76406"
     },
     "src/components/MessageItem.vue": {
       "role": "index",
@@ -5298,9 +5298,9 @@
     },
     "src/components/SettingsWindow.vue": {
       "role": "index",
-      "sha256": "2f7f5420feb8b9647a94c201d50b333f42c72d5b6c6388f2f460776e0c08f6f1",
-      "size": 9247,
-      "normalized_sha256": "2f7f5420feb8b9647a94c201d50b333f42c72d5b6c6388f2f460776e0c08f6f1"
+      "sha256": "b528425eecd22b2e545749e9f909f70d1e9f4f45997421f91b8b1fa67c825aff",
+      "size": 13696,
+      "normalized_sha256": "b528425eecd22b2e545749e9f909f70d1e9f4f45997421f91b8b1fa67c825aff"
     },
     "src/components/ShareDirectory.vue": {
       "role": "index",
@@ -5370,9 +5370,9 @@
     },
     "src/components/chat/ChatHeader.vue": {
       "role": "index",
-      "sha256": "a2d17c6d3feac7e73ab519b5a08e32540b3b1d322e02caeca9c34cc8025214e3",
-      "size": 11997,
-      "normalized_sha256": "a2d17c6d3feac7e73ab519b5a08e32540b3b1d322e02caeca9c34cc8025214e3"
+      "sha256": "c10b606b01522d76534d8b70c029a392cb213defbace80d36637a9212a3cfb38",
+      "size": 12837,
+      "normalized_sha256": "c10b606b01522d76534d8b70c029a392cb213defbace80d36637a9212a3cfb38"
     },
     "src/components/chat/MessageComposer.vue": {
       "role": "index",
@@ -5406,9 +5406,9 @@
     },
     "src/components/conversation/FriendRequestList.vue": {
       "role": "index",
-      "sha256": "f07fb4139c46fe39119951a8781aa8513e942b92618681e5d4c2eaac93f3c52c",
-      "size": 3359,
-      "normalized_sha256": "f07fb4139c46fe39119951a8781aa8513e942b92618681e5d4c2eaac93f3c52c"
+      "sha256": "e587b60d946175995c6115d8d15652ebc8dece0a1f248926c7ccd0b81c52c780",
+      "size": 4716,
+      "normalized_sha256": "e587b60d946175995c6115d8d15652ebc8dece0a1f248926c7ccd0b81c52c780"
     },
     "src/components/message/ForwardModal.vue": {
       "role": "index",
@@ -5424,9 +5424,9 @@
     },
     "src/components/message/MentionText.vue": {
       "role": "index",
-      "sha256": "544592d67945f3aadcc5ec00ab2c1e287e8f3ba039b2de81988b154602560f87",
-      "size": 3210,
-      "normalized_sha256": "544592d67945f3aadcc5ec00ab2c1e287e8f3ba039b2de81988b154602560f87"
+      "sha256": "1511e6cd2bbdf59b9b1b3cc32c5681d915c73cf94d01b0d8bb414c85940d6245",
+      "size": 2699,
+      "normalized_sha256": "1511e6cd2bbdf59b9b1b3cc32c5681d915c73cf94d01b0d8bb414c85940d6245"
     },
     "src/components/message/MergeCard.vue": {
       "role": "index",
@@ -5460,21 +5460,21 @@
     },
     "src/components/message/MessageContextMenu.vue": {
       "role": "index",
-      "sha256": "019759d2ce639dbf0e58f5442cfae0925228b601749d50f89208276157dd6bc6",
-      "size": 7642,
-      "normalized_sha256": "019759d2ce639dbf0e58f5442cfae0925228b601749d50f89208276157dd6bc6"
+      "sha256": "41847e14db21b5b7a238885238012d51ad950ab370e48d529b300b23e2be6d8d",
+      "size": 9132,
+      "normalized_sha256": "41847e14db21b5b7a238885238012d51ad950ab370e48d529b300b23e2be6d8d"
     },
     "src/components/message/MessageFileBubble.vue": {
       "role": "index",
-      "sha256": "e628329a993b02a0749505a674a77a7c709092cc65213eada347aee5f3250e19",
-      "size": 7136,
-      "normalized_sha256": "e628329a993b02a0749505a674a77a7c709092cc65213eada347aee5f3250e19"
+      "sha256": "441d97d34cc40ba16d8b32f7f5a42f493e56f1a2a113c907e911dddf0aa35a1a",
+      "size": 11820,
+      "normalized_sha256": "441d97d34cc40ba16d8b32f7f5a42f493e56f1a2a113c907e911dddf0aa35a1a"
     },
     "src/components/message/MessageImageBubble.vue": {
       "role": "index",
-      "sha256": "4166c271fafc521ab79119db7bfff25a352de284212405da22c0ffd23142cfb5",
-      "size": 8000,
-      "normalized_sha256": "4166c271fafc521ab79119db7bfff25a352de284212405da22c0ffd23142cfb5"
+      "sha256": "ea136ee8cd551cff30ed22d3a33f8303bead0ca0c2b5418162434cabeeff5168",
+      "size": 11540,
+      "normalized_sha256": "ea136ee8cd551cff30ed22d3a33f8303bead0ca0c2b5418162434cabeeff5168"
     },
     "src/components/message/MessageLinkText.vue": {
       "role": "index",
@@ -5490,9 +5490,9 @@
     },
     "src/components/message/MessageReceipt.vue": {
       "role": "index",
-      "sha256": "dd65ecd7b0f2668abb8cf2377c8089919e3a01009b831e9c671eabc2700ba310",
-      "size": 10165,
-      "normalized_sha256": "dd65ecd7b0f2668abb8cf2377c8089919e3a01009b831e9c671eabc2700ba310"
+      "sha256": "f0306033c7ef0df6f5f1c7a3f31e21fbf5d553db4fd5094cd2b19da0db14462d",
+      "size": 20975,
+      "normalized_sha256": "f0306033c7ef0df6f5f1c7a3f31e21fbf5d553db4fd5094cd2b19da0db14462d"
     },
     "src/components/message/MessageTextBubble.vue": {
       "role": "index",
@@ -5514,15 +5514,15 @@
     },
     "src/components/settings/AboutSection.vue": {
       "role": "index",
-      "sha256": "20198256a03e7426ebed102518592ddebdf25556ce7592415febf79de32735e8",
-      "size": 4142,
-      "normalized_sha256": "20198256a03e7426ebed102518592ddebdf25556ce7592415febf79de32735e8"
+      "sha256": "0336eaa8a94debb6873bb433e2bdaacd463e39b0137ab117a0d85c04aea738e6",
+      "size": 5702,
+      "normalized_sha256": "0336eaa8a94debb6873bb433e2bdaacd463e39b0137ab117a0d85c04aea738e6"
     },
     "src/components/settings/AppearanceSection.vue": {
       "role": "index",
-      "sha256": "ae5378f8aeef176fb345e049e65d8334d56df83591ef9d91327c86b68058d77e",
-      "size": 4459,
-      "normalized_sha256": "ae5378f8aeef176fb345e049e65d8334d56df83591ef9d91327c86b68058d77e"
+      "sha256": "bcbea419a17fd354b5ccf3d0a85af166ca03d7c73704e6949ee656e70d9dc0cc",
+      "size": 6467,
+      "normalized_sha256": "bcbea419a17fd354b5ccf3d0a85af166ca03d7c73704e6949ee656e70d9dc0cc"
     },
     "src/components/settings/ChatStyleSection.vue": {
       "role": "index",
@@ -5616,15 +5616,15 @@
     },
     "src/components/ui/PrimaryBtn.vue": {
       "role": "index",
-      "sha256": "4e7d43c88b76020bf74d2a415d78adb3748f2588c4c9b546a95cac342d9fd690",
-      "size": 1393,
-      "normalized_sha256": "4e7d43c88b76020bf74d2a415d78adb3748f2588c4c9b546a95cac342d9fd690"
+      "sha256": "5243496305a4a889ac99fa20b224749954b959433278282f90a3a614e9f7806b",
+      "size": 1686,
+      "normalized_sha256": "5243496305a4a889ac99fa20b224749954b959433278282f90a3a614e9f7806b"
     },
     "src/components/ui/SegmentedControl.vue": {
       "role": "index",
-      "sha256": "e38c2b770bc3dcf867e64c1d10de1d993596dd80f91e699d38534aea84c461b8",
-      "size": 2723,
-      "normalized_sha256": "e38c2b770bc3dcf867e64c1d10de1d993596dd80f91e699d38534aea84c461b8"
+      "sha256": "36c5f9694d5636e903f3422e03a0a03cd2fb58c5c9bd7c6ee33816d1d127a291",
+      "size": 3312,
+      "normalized_sha256": "36c5f9694d5636e903f3422e03a0a03cd2fb58c5c9bd7c6ee33816d1d127a291"
     },
     "src/components/window/AuxWindowShell.vue": {
       "role": "index",
@@ -5640,9 +5640,9 @@
     },
     "src/composables/useBackLayer.ts": {
       "role": "index",
-      "sha256": "c10f875ebef3a1fa70acb9d5c90f604c2b8a1be2a108bb5cb6b11c699581f691",
-      "size": 3765,
-      "normalized_sha256": "c10f875ebef3a1fa70acb9d5c90f604c2b8a1be2a108bb5cb6b11c699581f691"
+      "sha256": "fa10b992db560b9957a9e02dc13f6b7b2d854b1ec525df9798e31417c4a92568",
+      "size": 5043,
+      "normalized_sha256": "fa10b992db560b9957a9e02dc13f6b7b2d854b1ec525df9798e31417c4a92568"
     },
     "src/composables/useClipboard.ts": {
       "role": "index",
@@ -5694,9 +5694,9 @@
     },
     "src/composables/useMessageDisplay.ts": {
       "role": "index",
-      "sha256": "0f7041d3fef4b79dbcbc937e50587a8480aa691f18db4f23a246dc5073dff558",
-      "size": 4791,
-      "normalized_sha256": "0f7041d3fef4b79dbcbc937e50587a8480aa691f18db4f23a246dc5073dff558"
+      "sha256": "41f615d421be6ea332bbfbee876e2a2d98d4fb0505ad07842047720355962159",
+      "size": 10859,
+      "normalized_sha256": "41f615d421be6ea332bbfbee876e2a2d98d4fb0505ad07842047720355962159"
     },
     "src/composables/useMessageFile.ts": {
       "role": "index",
@@ -5712,9 +5712,9 @@
     },
     "src/composables/useShortcuts.ts": {
       "role": "index",
-      "sha256": "b163fd906716c5c56a9e07bb21d8db8b26fa8fb36f7cc7b0a8c9fcaacf0130be",
-      "size": 2667,
-      "normalized_sha256": "b163fd906716c5c56a9e07bb21d8db8b26fa8fb36f7cc7b0a8c9fcaacf0130be"
+      "sha256": "f5f91372b0c8145b0c2e4d614d62dcf007b3ee01345ab9a3333420cb2e0648e7",
+      "size": 2575,
+      "normalized_sha256": "f5f91372b0c8145b0c2e4d614d62dcf007b3ee01345ab9a3333420cb2e0648e7"
     },
     "src/composables/useWindowLauncher.ts": {
       "role": "index",
