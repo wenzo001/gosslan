@@ -85,6 +85,12 @@ pub(crate) const MAIN_STALL_ESCALATE_MS: i64 = UI_STALL_RELOAD_MS + 10_000;
 /// 从开机就死的渲染层连"点击按钮"都渲染不出来，重载也无从验证。
 pub(crate) const BOOT_HEARTBEAT_GRACE_MS: i64 = 60_000;
 
+/// "整棵 WebView2 树零指令"至少要覆盖这么久才算静默。
+///
+/// 心跳是 1 s 一次；窗口太短时分不清"JS 在跑但没发心跳"与"整棵树都停了"。
+/// 10 s 远小于 20 s 的动作阈值，所以真停摆时这个窗口一定攒得够。
+pub(crate) const TREE_SILENT_MIN_WINDOW_MS: i64 = 10_000;
+
 /// 一次自愈判定要看的全部读数。
 ///
 /// ⚠️ **不许加版本字段**（用户 2026-11-04 的跨机器口径）：5.16.74 那台观测到停摆
@@ -108,6 +114,12 @@ pub(crate) struct RecoverInput {
     pub enabled: bool,
     /// 限流窗口内已经动作过几次。
     pub reloads_in_window: usize,
+    /// 整棵 WebView2 子树在 [`TREE_SILENT_MIN_WINDOW_MS`] 内累计 CPU 增量为 0。
+    ///
+    /// 2026-11-05 那台 5.18.30 的现场：请求 reload 后 13 s 心跳仍没回来，而
+    /// `tree_cpu=0ms/30s`（整棵树一个指令都没执行）⇒ 那个形态下 `reload()`
+    /// 是空动作，只有进程重启能救。读不到 ⇒ `false`（未知不许折成静默）。
+    pub tree_silent: bool,
 }
 
 /// 这一跳该做什么（纯判定，虚拟输入可直接构造）。
@@ -133,7 +145,8 @@ pub(crate) enum RecoverDecision {
 /// 4. 未到 20 s ⇒ 交给 3 s/10 s 两档继续诊断/通知；
 /// 5. 限流 ⇒ `Blocked`；
 /// 6. G2（主线程也停摆）⇒ reload 排不进事件循环，未到升级点就等，到了直接 `Restart`；
-/// 7. 其余 ⇒ `Reload`。
+/// 7. 整棵 WebView2 树零指令（`tree_silent`）⇒ reload 排得进去也不会被执行，直接 `Restart`；
+/// 8. 其余 ⇒ `Reload`。
 pub(crate) fn recover_decision(i: &RecoverInput) -> RecoverDecision {
     // G1' 的"聚焦空档"：窗口已聚焦 ≥5 s，且聚焦之后**一次新心跳都没有**。
     let focus_gap = !i.active && i.focused && i.since_focus_ms >= FOCUS_GAP_MS && !i.hb_since_focus;
@@ -157,7 +170,22 @@ pub(crate) fn recover_decision(i: &RecoverInput) -> RecoverDecision {
             RecoverDecision::None
         };
     }
+    if i.tree_silent {
+        return RecoverDecision::Restart;
+    }
     RecoverDecision::Reload
+}
+
+/// "整棵 WebView2 子树在窗口内一个 CPU 刻度都没涨" —— 纯判定，跨平台可测。
+///
+/// 口径来自 `mem_diag` 模块头：`tree_cpu=0ms/<窗口>` 表示整棵树零指令（被挂起，
+/// 或 `ProcessFailed` 之后 WebView2 不再驱动它）；只要涨了一点点就是"活着且空闲"。
+/// 所以任何一格进程涨了 1 ms（100 ns 刻度 +10000）都不算静默 —— 交给 reload。
+pub(crate) fn tree_is_silent(base: Option<(u64, i64)>, now_cpu: Option<u64>, now_ms: i64) -> bool {
+    let (Some((base_cpu, base_at)), Some(now_cpu)) = (base, now_cpu) else {
+        return false;
+    };
+    now_ms - base_at >= TREE_SILENT_MIN_WINDOW_MS && now_cpu == base_cpu
 }
 
 /// 一次 reload 之后的 verify 窗口：心跳时间戳越过 `before_hb` 就是恢复了。
@@ -283,6 +311,8 @@ fn run<R: tauri::Runtime>(app: tauri::AppHandle<R>, state: Arc<crate::state::App
     let mut main_episode: Option<(i64, i64)> = None;
     // (episode 开始, 上次写 HANG 的时刻, 是否已通知)
     let mut renderer_episode: Option<(i64, i64, bool)> = None;
+    // 渲染层 episode 起点的子树 CPU 总刻度（100 ns）与时刻：判"整棵树零指令"的基线。
+    let mut episode_tree_cpu: Option<(u64, i64)> = None;
     // 墙钟与进程内单调时钟的双基线：睡眠/墙钟被改时两者会分叉（见 [`tick_verdict`]）。
     let mut wall_prev = now_ms();
     let mut mono_prev = Instant::now();
@@ -330,6 +360,7 @@ fn run<R: tauri::Runtime>(app: tauri::AppHandle<R>, state: Arc<crate::state::App
             // 也不在豁免时刻再写一条 HANG/HANG_END（否则豁免本身又会污染现场）。
             main_episode = None;
             renderer_episode = None;
+            episode_tree_cpu = None;
             // 睡眠那一段不算停摆，自愈 episode 也一起丢弃（醒来后重新按读数起算）。
             recover_episode = None;
             // 跨睡眠的 verify 窗口已失效：用墙钟算的 waited_ms 会把睡眠算进去。
@@ -457,6 +488,11 @@ fn run<R: tauri::Runtime>(app: tauri::AppHandle<R>, state: Arc<crate::state::App
                 match &mut renderer_episode {
                     None => {
                         renderer_episode = Some((now - stale, now, false));
+                        // 基线只在这里取一次：之后每分钟的 HANG 行会重采样缓存，
+                        // 但那一格的口径是"两次 HANG 之间"，不能拿来做自愈判据。
+                        episode_tree_cpu = crate::mem_diag::child_webview_tree()
+                            .and_then(|(_, _, cpu)| cpu)
+                            .map(|c| (c, now));
                         note_hang("ui_renderer", stale, op.as_ref(), &mut notes, &state);
                     }
                     Some((_, last_note, notified)) => {
@@ -484,6 +520,7 @@ fn run<R: tauri::Runtime>(app: tauri::AppHandle<R>, state: Arc<crate::state::App
                     }
                 }
             } else if let Some((start, _, _)) = renderer_episode.take() {
+                episode_tree_cpu = None;
                 note_end("ui_renderer", now - start);
                 #[cfg(desktop)]
                 crate::tray::set_watchdog_tooltip(&app, None);
@@ -508,6 +545,13 @@ fn run<R: tauri::Runtime>(app: tauri::AppHandle<R>, state: Arc<crate::state::App
             // 聚焦之后有没有**新**心跳：心跳时间戳晚于聚焦事件。
             let hb_since_focus = focus_at > 0 && hb_effective > focus_at;
             let in_window = reloads_in_window(&mut recent_recoveries, now);
+            // 只在真停摆时采这一格（健康时每秒做一次进程快照是白花钱）。
+            let tree_silent = stale >= RENDERER_STALE_MS
+                && tree_is_silent(
+                    episode_tree_cpu,
+                    crate::mem_diag::child_webview_tree().and_then(|(_, _, cpu)| cpu),
+                    now,
+                );
             let decision = recover_decision(&RecoverInput {
                 stale_ms: stale,
                 active,
@@ -517,6 +561,7 @@ fn run<R: tauri::Runtime>(app: tauri::AppHandle<R>, state: Arc<crate::state::App
                 main_stall_ms: main_stall,
                 enabled: autorecover_enabled,
                 reloads_in_window: in_window,
+                tree_silent,
             });
             let code = match decision {
                 RecoverDecision::None => None,
@@ -540,7 +585,8 @@ fn run<R: tauri::Runtime>(app: tauri::AppHandle<R>, state: Arc<crate::state::App
                             "stall" => crate::logging::crash_note(&format!(
                                 ">>> code=UI_RENDERER_STALL stale_ms={stale} \
                                  main_stall_ms={main_stall} main_healthy={} focused={focused} \
-                                 since_focus_ms={since_focus} plan={} in_window={in_window}",
+                                 since_focus_ms={since_focus} plan={} in_window={in_window} \
+                                 tree_silent={tree_silent}",
                                 main_stall < MAIN_STALL_NOTE_MS,
                                 if decision == RecoverDecision::Restart {
                                     "restart"
@@ -801,6 +847,7 @@ mod tests {
             main_stall_ms: 0,
             enabled: true,
             reloads_in_window: 0,
+            tree_silent: false,
         };
         // 健康，以及 3 s 诊断档：都不动作（3 s / 10 s 两档保持原样）。
         assert_eq!(recover_decision(&base), RecoverDecision::None);
@@ -915,6 +962,75 @@ mod tests {
             }),
             RecoverDecision::Blocked
         );
+    }
+
+    /// 2026-11-05 那台的形状：心跳停了 20 s，主线程健康，但整棵 WebView2 子树
+    /// 在窗口内一个 CPU 刻度都没涨 ⇒ `reload()` 排得进去也不会被执行，直接重启。
+    /// 每一组都必须有反例：少了"树静默"这一格就退回 reload（这就是删掉新分支会红的那条）。
+    #[test]
+    fn silent_webview_tree_skips_the_futile_reload() {
+        let stuck = RecoverInput {
+            stale_ms: UI_STALL_RELOAD_MS,
+            active: true,
+            focused: false,
+            since_focus_ms: 600_000,
+            hb_since_focus: false,
+            main_stall_ms: 1_000,
+            enabled: true,
+            reloads_in_window: 0,
+            tree_silent: true,
+        };
+        assert_eq!(
+            recover_decision(&stuck),
+            RecoverDecision::Restart,
+            "整棵树零指令 ⇒ 只有进程重启能救（reload 在这个形态下 3/3 没救回来）"
+        );
+        // 反例：树里还有进程在跑（没有静默证据）⇒ 仍是 reload。
+        assert_eq!(
+            recover_decision(&RecoverInput {
+                tree_silent: false,
+                ..stuck
+            }),
+            RecoverDecision::Reload
+        );
+        // 反例：重启同样吃限流预算，树静默不许绕过它。
+        assert_eq!(
+            recover_decision(&RecoverInput {
+                reloads_in_window: RECOVER_MAX_PER_WINDOW,
+                ..stuck
+            }),
+            RecoverDecision::Blocked
+        );
+        // 反例：主线程也停摆但没到升级点 ⇒ 继续等（树静默不许越过 G2 的等待档）。
+        assert_eq!(
+            recover_decision(&RecoverInput {
+                main_stall_ms: 25_000,
+                ..stuck
+            }),
+            RecoverDecision::None
+        );
+        // 反例：还没到 20 s ⇒ 不动作（哪怕树已经零指令）。
+        assert_eq!(
+            recover_decision(&RecoverInput {
+                stale_ms: RENDERER_STALE_MS,
+                ..stuck
+            }),
+            RecoverDecision::None
+        );
+    }
+
+    /// 零增量判据本身：只有"窗口够长 + 刻度完全没涨"才算静默，未知一律不算。
+    #[test]
+    fn tree_cpu_zero_increment_needs_a_real_window_and_a_reading() {
+        // 本次现场的形状：17 s 窗口，刻度完全没涨。
+        assert!(tree_is_silent(Some((1_234, 1_000)), Some(1_234), 18_000));
+        // 反例：窗口只有 5 s ⇒ 分不清"JS 在跑但没心跳"。
+        assert!(!tree_is_silent(Some((1_234, 1_000)), Some(1_234), 6_000));
+        // 反例：涨了 1 ms（100 ns 刻度 +10000）⇒ 树活着，交给 reload。
+        assert!(!tree_is_silent(Some((1_234, 1_000)), Some(11_234), 18_000));
+        // 反例：读不到 ⇒ 不许折成静默（0 冒充未知会误重启）。
+        assert!(!tree_is_silent(None, Some(1_234), 18_000));
+        assert!(!tree_is_silent(Some((1_234, 1_000)), None, 18_000));
     }
 
     /// verify 窗口：心跳回来优先于超时（21 s 才回也算恢复），20 s 用尽才升级。
