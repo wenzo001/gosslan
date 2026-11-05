@@ -1,7 +1,7 @@
 {
   "version": 1,
   "created_at": "2026-10-04T12:17:40Z",
-  "updated_at": "2026-11-05T03:47:04Z",
+  "updated_at": "2026-11-05T03:50:22Z",
   "files": {
     ".gitattributes": {
       "role": "index",
@@ -125,9 +125,9 @@
     },
     "aoci.code.txt": {
       "role": "index",
-      "sha256": "f305320be9424d5b215b093617a8ec39ea5256fd1585334e09193498993a8b34",
-      "size": 383306,
-      "normalized_sha256": "f305320be9424d5b215b093617a8ec39ea5256fd1585334e09193498993a8b34"
+      "sha256": "a15198a08de23324eadb632d1da2188315cdc81eb638daa56e9f565f0d54a0d5",
+      "size": 386054,
+      "normalized_sha256": "a15198a08de23324eadb632d1da2188315cdc81eb638daa56e9f565f0d54a0d5"
     },
     "aoci.meta.txt": {
       "role": "index",
@@ -3272,11 +3272,17 @@
       "size": 24087,
       "normalized_sha256": "d173e243307dc661d522719cd1d063161cb14f1270dd30799b0186ce12d1b619"
     },
+    "src-tauri/src/focus_rhythm.rs": {
+      "role": "index",
+      "sha256": "5b801470b4668125a4c4a6b27d75bb37139528c05a52af4eccd0eb3dd6b976c5",
+      "size": 7775,
+      "normalized_sha256": "5b801470b4668125a4c4a6b27d75bb37139528c05a52af4eccd0eb3dd6b976c5"
+    },
     "src-tauri/src/gossip_engine.rs": {
       "role": "index",
-      "sha256": "cad9a67fc0fc15f78ac4407c65edf577a4abea14ae2774bf6ddfb1ebe9fb8a0d",
-      "size": 11909,
-      "normalized_sha256": "cad9a67fc0fc15f78ac4407c65edf577a4abea14ae2774bf6ddfb1ebe9fb8a0d"
+      "sha256": "52f8e89e122a385de171a0a800d2e6435657b6ab0b151ed4ff57e37bc0a7c233",
+      "size": 13866,
+      "normalized_sha256": "52f8e89e122a385de171a0a800d2e6435657b6ab0b151ed4ff57e37bc0a7c233"
     },
     "src-tauri/src/jni_method.rs": {
       "role": "index",
@@ -3286,51 +3292,57 @@
     },
     "src-tauri/src/lib.rs": {
       "role": "index",
-      "sha256": "e752dbd2e0c1733bacabc2dd54ca5c938f89559787f5aab46e71ba69ae39dfcf",
-      "size": 41128,
-      "normalized_sha256": "e752dbd2e0c1733bacabc2dd54ca5c938f89559787f5aab46e71ba69ae39dfcf"
+      "sha256": "c933111a7bf27936ee60a39d6701a05377582b29479777b53c3828bd54f2baed",
+      "size": 61971,
+      "normalized_sha256": "c933111a7bf27936ee60a39d6701a05377582b29479777b53c3828bd54f2baed"
     },
     "src-tauri/src/lib_android_jni_tests.rs": {
       "role": "index",
-      "sha256": "2e3690b86e2b1754590100c25666a66cf84f4a5b7623b138794fe91befedeb5a",
-      "size": 39729,
-      "normalized_sha256": "2e3690b86e2b1754590100c25666a66cf84f4a5b7623b138794fe91befedeb5a"
+      "sha256": "afe008ef958376cfae0108c3585bd5343bd944f015ac5367dd277876bfbc9c50",
+      "size": 43702,
+      "normalized_sha256": "afe008ef958376cfae0108c3585bd5343bd944f015ac5367dd277876bfbc9c50"
     },
     "src-tauri/src/lib_ble_tests.rs": {
       "role": "index",
-      "sha256": "33532f80951736e377e756be46433b692077b1dc55a1dba1c6f2c4b09ec82170",
-      "size": 31172,
-      "normalized_sha256": "33532f80951736e377e756be46433b692077b1dc55a1dba1c6f2c4b09ec82170"
+      "sha256": "67a8050ede20918be6d5967ff50d47aaab55f8a1cf2969a993da26651e8b4b4c",
+      "size": 45488,
+      "normalized_sha256": "67a8050ede20918be6d5967ff50d47aaab55f8a1cf2969a993da26651e8b4b4c"
     },
     "src-tauri/src/lib_compat_gating_tests.rs": {
       "role": "index",
-      "sha256": "fbc14b3ead21fcdcec61031e7df390e6b50f9ad75478915da745f1cab2a3490d",
-      "size": 21047,
-      "normalized_sha256": "fbc14b3ead21fcdcec61031e7df390e6b50f9ad75478915da745f1cab2a3490d"
+      "sha256": "c4b70305c913684b2bc28c4ea080d8f7b4abd4e8dd837ac32ba9acab213faa6e",
+      "size": 32412,
+      "normalized_sha256": "c4b70305c913684b2bc28c4ea080d8f7b4abd4e8dd837ac32ba9acab213faa6e"
     },
     "src-tauri/src/lib_delivery_shape_tests.rs": {
       "role": "index",
-      "sha256": "c2ac83d79aaea52a1f5c1d884286bfb9c11d0fc424ee3e0405d2a8bf64376588",
-      "size": 36834,
-      "normalized_sha256": "c2ac83d79aaea52a1f5c1d884286bfb9c11d0fc424ee3e0405d2a8bf64376588"
+      "sha256": "eb49ba01ee9d4fae9250b1f5000bfa4afe7ad23f66292baad1c210a7b399886f",
+      "size": 80407,
+      "normalized_sha256": "eb49ba01ee9d4fae9250b1f5000bfa4afe7ad23f66292baad1c210a7b399886f"
+    },
+    "src-tauri/src/lib_error_code_tests.rs": {
+      "role": "index",
+      "sha256": "fac5b5b768c21b1822c0b113817c87dd96b4aa5b6ac5fa2b39f06102a22226b5",
+      "size": 33380,
+      "normalized_sha256": "fac5b5b768c21b1822c0b113817c87dd96b4aa5b6ac5fa2b39f06102a22226b5"
     },
     "src-tauri/src/lib_file_tests.rs": {
       "role": "index",
-      "sha256": "97e51dead69c0d38009e8381d9bbfbb9236e6a2c8a43a0f8a0740c590d9b8f08",
-      "size": 21159,
-      "normalized_sha256": "97e51dead69c0d38009e8381d9bbfbb9236e6a2c8a43a0f8a0740c590d9b8f08"
+      "sha256": "fb0dec47db57d17caa28084cff1e86a8a1d448771afa662a68213e36baaa632e",
+      "size": 92899,
+      "normalized_sha256": "fb0dec47db57d17caa28084cff1e86a8a1d448771afa662a68213e36baaa632e"
     },
     "src-tauri/src/lib_friend_identity_tests.rs": {
       "role": "index",
-      "sha256": "de7fbc1ff0bdb049a7b74128b66cca2ef98ebb4ffb8dac580443e4f527494f8f",
-      "size": 31528,
-      "normalized_sha256": "de7fbc1ff0bdb049a7b74128b66cca2ef98ebb4ffb8dac580443e4f527494f8f"
+      "sha256": "2ae04479cf99953e4fd625d2155b491081c294e7dc25137809cc7359f3fa2a9d",
+      "size": 43597,
+      "normalized_sha256": "2ae04479cf99953e4fd625d2155b491081c294e7dc25137809cc7359f3fa2a9d"
     },
     "src-tauri/src/lib_outbox_tests.rs": {
       "role": "index",
-      "sha256": "640a3158debac811bdfceecec95a3e7138b97f292b5551186ea903fc2e5e0723",
-      "size": 15133,
-      "normalized_sha256": "640a3158debac811bdfceecec95a3e7138b97f292b5551186ea903fc2e5e0723"
+      "sha256": "a241d72ded38f7a107dbb6caaab89394ff5ca0abacd1515c90eb68f3125e13ea",
+      "size": 37011,
+      "normalized_sha256": "a241d72ded38f7a107dbb6caaab89394ff5ca0abacd1515c90eb68f3125e13ea"
     },
     "src-tauri/src/lib_relay_data_tests.rs": {
       "role": "index",
