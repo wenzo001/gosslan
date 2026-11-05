@@ -107,9 +107,9 @@ history 选择、导航方向与 router 实例。这样路由契约可以在 Nod
 - 设置分区两端集合不同：移动端有 `chatStyle` 与单数 `notification`（9 个二级页），独立设置窗口
   路由有复数 `notifications`、没有 `chatStyle` / 单数 `notification`（11 个路由键，桌面归并成
   `general / network / storageFiles / about` 4 个容器）。这是深链与空间差异，不是配置缺失。
-- 日志/群任务/预览是单页工具：筛选和任务详情是视图状态/浮层，不占页面路由。
+- 日志/群任务是单页工具：筛选和任务详情是视图状态/浮层，不占页面路由；图片预览是应用内覆盖层（桌面与移动同一路径），也不占路由。
 
-**不进路由**：群任务的 `groupId` + `todoId` 仍走后端 `take_group_todo_focus`；图片预览图册走后端 `preview_gallery`；外链窗口加载远端 URL。
+**不进路由**：群任务的 `groupId` + `todoId` 仍走后端 `take_group_todo_focus`；图片预览图册走前端 `useImagePreview` store（覆盖层，2026-11-05 起不再跨窗口）；外链窗口加载远端 URL。
 
 ## 4. 状态派生（这是路由化最关键的一层）
 

@@ -1,7 +1,6 @@
 // 职责边界：
 // - logs.rs 的源码守卫测试
 // - 辅助窗口几何不变式（fit_inside_main / centered）
-// - 跨窗口预览投递的校验（validate_preview 的三条可寻址来源 + 上限）
 #[cfg(test)]
 mod tests {
     use super::{friend_is_online, FRIEND_ONLINE_GRACE_MS};
@@ -103,31 +102,20 @@ mod tests {
         );
     }
 
-    /// 独立窗口**永远不许有一截掉在屏幕外**，且只有预览按显示器居中（用户 2026-10-09）。
+    /// 独立窗口**永远不许有一截掉在屏幕外**。
     ///
     /// 上面那条不变式管的是**创建那一刻**（子窗口不比主窗口大）。这一条管的是它管不到的
-    /// 那半：预览窗口常驻、复用时刻意**不重算尺寸**（留住用户自己拉过的大小），于是
-    /// "后来把主窗口拉小了 / 把预览拉大了" 之后，按主窗口居中就会顶出屏幕边缘，
+    /// 那半：常驻窗口、复用时刻意**不重算尺寸**（留住用户自己拉过的大小），于是
+    /// "后来把主窗口拉小了 / 把窗口拉大了" 之后，按主窗口居中就会顶出屏幕边缘，
     /// 而这几扇都是无边框窗口 —— 掉出去的那一截没有把手能拖回来。
     #[cfg(desktop)]
     #[test]
     fn aux_windows_are_kept_inside_the_monitor_work_area() {
-        use super::{
-            aux_centers_on_monitor, centered_in_rect, clamp_pos_into_rect, fit_aux_window,
-        };
+        use super::{clamp_pos_into_rect, fit_aux_window};
         // 主屏工作区 1512×863，顶部让给菜单栏 ⇒ 左上角 y 不是 0 而是 37
         let screen = (0i32, 37i32, 1512u32, 863u32);
 
-        // ① 预览按屏居中：四边留边相等，且用的是工作区而不是整屏（不许压住菜单栏）
-        let (cx, cy) = centered_in_rect(screen, (1120, 820));
-        assert_eq!(
-            (cx - screen.0, cy - screen.1),
-            ((1512 - 1120) / 2, (863 - 820) / 2),
-            "预览必须在主屏工作区内四边等距居中"
-        );
-        assert!(cy >= screen.1, "居中后仍不许压到菜单栏上面去");
-
-        // ② 复现用户那一屏：主窗口被拖到屏幕顶上（甚至顶出屏幕），预览维持原来的大尺寸。
+        // ① 复现用户那一屏：主窗口被拖到屏幕顶上（甚至顶出屏幕），窗外框维持原来的大尺寸。
         let main_pos = (600i32, -120i32);
         let g = fit_aux_window((700, 400), main_pos, 1.0, (1120.0, 820.0), (480.0, 360.0));
         let raw = g.centered_pos((1120, 820)); // 旧摆法：按主窗口居中，尺寸用真实外框
@@ -146,31 +134,18 @@ mod tests {
         // 只越界一个轴 ⇒ 另一个轴不许跟着动（否则"修一个偏移"会变成窗口横向也跳一下）
         assert_eq!(fixed.0, raw.0, "水平本来就在屏内，不该被挪");
 
-        // ③ 窗口比那块屏还大 ⇒ 贴左上角，且**不许 panic**（clamp 在 lo > hi 时会 panic）
+        // ② 窗口比那块屏还大 ⇒ 贴左上角，且**不许 panic**（clamp 在 lo > hi 时会 panic）
         let tiny = (0i32, 0i32, 800u32, 600u32);
         assert_eq!(clamp_pos_into_rect((5000, 5000), (1120, 820), tiny), (0, 0));
-        assert_eq!(centered_in_rect((100, 100, 500, 500), (600, 600)), (100, 100));
 
-        // ④ 左侧副屏（负坐标）同样成立：边界是那块屏自己的，不是"距原点多远"。
+        // ③ 左侧副屏（负坐标）同样成立：边界是那块屏自己的，不是"距原点多远"。
         // 该屏 x ∈ [-1920, 0] ⇒ 1120 宽的窗最右只能到 0 - 1120 = -1120。
         let left = (-1920i32, 0i32, 1920u32, 1080u32);
         assert_eq!(clamp_pos_into_rect((-5000, -5000), (1120, 820), left), (-1920, 0));
         assert_eq!(clamp_pos_into_rect((9999, 9999), (1120, 820), left), (-1120, 260));
 
-        // ⑤ 已经在工作区里 ⇒ 一字不动（防"钳制成把每扇窗口都硬拽到左上角"）
+        // ④ 已经在工作区里 ⇒ 一字不动（防"钳制成把每扇窗口都硬拽到左上角"）
         assert_eq!(clamp_pos_into_rect((196, 58), (1120, 820), screen), (196, 58));
-
-        // ⑥ 按屏居中**只给预览**，另外四扇仍以主窗口为参照物（2026-09-16 那条口径不许被顺带改掉）
-        assert!(aux_centers_on_monitor(crate::WINDOW_PREVIEW));
-        for label in [
-            crate::WINDOW_SETTINGS,
-            crate::WINDOW_LOGS,
-            crate::WINDOW_TASKS,
-            crate::WINDOW_LINK,
-            crate::WINDOW_MAIN,
-        ] {
-            assert!(!aux_centers_on_monitor(label), "{label} 不该按显示器居中");
-        }
     }
 
     /// 上面那条只证明**算得对**；这一条证明 `recenter_aux_window` 真的去用了它。
@@ -189,11 +164,9 @@ mod tests {
             .expect("recenter_aux_window 必须还在（改名了就把这条一起改掉）");
         let body = &src[start..start + src[start..].find("\n}\n").expect("函数收尾") + 3];
         for call in [
-            "aux_centers_on_monitor(",   // 谁按屏居中、谁按主窗口居中，得由它说了算
-            "centered_in_rect(",         // 预览那一支
-            "clamp_pos_into_rect(",      // 最后一道"不许掉出屏幕"
-            "aux_anchor_rect(",          // 参照物是主窗口那块屏
-            "geo.centered_pos(",         // 另外四扇仍以主窗口为参照（2026-09-16 的口径）
+            "clamp_pos_into_rect(", // 最后一道"不许掉出屏幕"
+            "aux_anchor_rect(",     // 参照物是主窗口那块屏
+            "geo.centered_pos(",    // 以主窗口为参照（2026-09-16 的口径）
         ] {
             assert!(
                 body.contains(call),
@@ -204,7 +177,7 @@ mod tests {
         // （下一个函数是 `open_log_window`，它出现在切片里就说明收尾锚点找错了）
         assert!(
             !body.contains("open_log_window"),
-            "切片吃进了后面的函数 ⇒ 上面五条在任何实现下都恒真"
+            "切片吃进了后面的函数 ⇒ 上面几条在任何实现下都恒真"
         );
         assert!(body.contains("set_position"), "切片没吃到函数体");
     }
@@ -1589,70 +1562,6 @@ mod tests {
             !cmd.contains("if!may_update_todo("),
             "命令层不得再直接调两档判据 —— 那样两条窄档会被绕开"
         );
-    }
-
-    /// 跨窗口预览投递的校验（用户 #40：「全局一个预览窗口，任何界面都能调用」）。
-    ///
-    /// 为什么必须单测而不是只靠前端判据：这条路径的输入**能被远端影响**（名字和 base64
-    /// 来自消息载荷），而且产物挂在全局唯一窗口上 —— 一份畸形相册不会崩，只会一直难看地
-    /// 停在那儿。`blob:` 那条尤其要钉：它是**发起文档**的句柄，跨文档拿到只会渲染成破图，
-    /// 前端 `deliverableToWindow` 也判过一遍，但那是"要不要开新窗"，这里是"开都别让你开"。
-    #[cfg(desktop)]
-    #[test]
-    #[allow(clippy::assertions_on_constants)] // 钉的是常量策略本身（失败信息要带实际值）
-    fn preview_gallery_validation_rejects_unaddressable_and_oversized() {
-        use super::{
-            validate_preview, PREVIEW_MAX_ITEMS, PREVIEW_MAX_NAME_LEN, AUX_PREVIEW_RESIDENT,
-        };
-        use crate::state::{PreviewGallery, PreviewItem};
-        let item = |name: &str, msg: Option<&str>, cid: Option<&str>, data: Option<&str>| {
-            PreviewItem {
-                name: name.to_string(),
-                msg_id: msg.map(|s| s.to_string()),
-                cid: cid.map(|s| s.to_string()),
-                data_src: data.map(|s| s.to_string()),
-            }
-        };
-        let gallery = |items: Vec<PreviewItem>, index: usize| PreviewGallery { items, index };
-
-        // 三种合法来源：消息 id / 内容 cid / 内联 data URL
-        for it in [
-            item("a.png", Some("m1"), None, None),
-            item("b.png", None, Some("cid1"), None),
-            item("c.png", None, None, Some("data:image/png;base64,AAAA")),
-        ] {
-            assert_eq!(validate_preview(&gallery(vec![it], 0)), Ok(()));
-        }
-
-        // 空相册 / 起始越界 / 条数超限 / 名字超长
-        assert!(validate_preview(&gallery(vec![], 0)).is_err(), "空相册不该开窗");
-        assert!(validate_preview(&gallery(vec![item("a", Some("m"), None, None)], 1)).is_err());
-        let many = (0..=PREVIEW_MAX_ITEMS)
-            .map(|i| {
-                let id = format!("m{i}");
-                item("a", Some(id.as_str()), None, None)
-            })
-            .collect();
-        assert!(validate_preview(&gallery(many, 0)).is_err(), "条数必须有上限");
-        let long_name = "x".repeat(PREVIEW_MAX_NAME_LEN + 1);
-        assert!(validate_preview(&gallery(vec![item(&long_name, Some("m"), None, None)], 0)).is_err());
-
-        // 不可寻址：blob 句柄 / 什么引用都没有 / 空字符串占位
-        for it in [
-            item("a", None, None, Some("blob:http://localhost/1")),
-            item("a", None, None, None),
-            item("a", Some(""), Some(""), Some("")),
-        ] {
-            assert!(
-                validate_preview(&gallery(vec![it], 0)).is_err(),
-                "不可跨文档寻址的条目必须整份拒绝"
-            );
-        }
-
-        // 预览窗口现在**常驻**（用户 2026-09-24 要"第二次打开快点"）。常驻带来的新义务在
-        // 前端那一侧：关掉时那个文档必须自己把相册放掉（`PreviewWindow.vue` 挂在
-        // close-requested 上）—— 这里钉住策略本身，别被人当成"漏改的一处布尔值"顺手翻回去。
-        assert!(AUX_PREVIEW_RESIDENT, "预览窗口应当常驻（关闭即隐藏）");
     }
 
     /// 完成 / 归档字段的权威推导（用户 2026-09-17：「完成以后手动归档」）。

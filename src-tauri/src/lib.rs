@@ -114,9 +114,9 @@ pub const WINDOW_LOGS: &str = "logs";
 ///
 /// label **固定** ⇒ 全局只有一扇，看的是哪个群由后端那份"当前上下文"决定
 /// （[`crate::state::AppState::task_window_group`]），切换群就是换内容 ——
-/// 与图片预览窗口同一套做法。这样做唯一的动机是：固定 label 才能**不传参数预热**
-/// （用户 2026-09-24："创建完先放着，用的时候瞬间激活"）；每群一扇的动态 label
-/// 在启动时根本不知道该建哪一扇。代价是任务栏里不再能分清"这是哪个群的窗口"。
+/// 固定 label 才能"创建一次、之后秒开"（用户 2026-09-24："创建完先放着，用的时候
+/// 瞬间激活"）；每群一扇的动态 label 在启动时根本不知道该建哪一扇。代价是任务栏里
+/// 不再能分清"这是哪个群的窗口"。
 pub const WINDOW_TASKS: &str = "tasks";
 /// 独立的「外部链接」窗口（`open_link_window`）。**刻意不进 [`WINDOW_LABELS`]、也不进
 /// capabilities**：它加载的是**远端页面**，不给它任何 capability 才能保证远端内容
@@ -124,20 +124,7 @@ pub const WINDOW_TASKS: &str = "tasks";
 pub const WINDOW_LINK: &str = "link";
 /// 主窗口在 `tray::MAIN_WINDOW_LABEL` 也有一份（那里是 `#[cfg(desktop)]`），
 /// 测试里断言两者一致，避免漂移。
-/// 独立的「图片预览」窗口（`open_image_preview`，用户 2026-09-24 #40）。
-///
-/// label 固定 ⇒ **全局只有一个**：从会话 / 任务 / 收藏点开的图都替换这一个窗口的内容，
-/// 而不是叠出第二、第三扇看图窗。
-pub const WINDOW_PREVIEW: &str = "preview";
-/// 主窗口在 `tray::MAIN_WINDOW_LABEL` 也有一份（那里是 `#[cfg(desktop)]`），
-/// 测试里断言两者一致，避免漂移。
-pub const WINDOW_LABELS: &[&str] = &[
-    WINDOW_MAIN,
-    WINDOW_SETTINGS,
-    WINDOW_LOGS,
-    WINDOW_PREVIEW,
-    WINDOW_TASKS,
-];
+pub const WINDOW_LABELS: &[&str] = &[WINDOW_MAIN, WINDOW_SETTINGS, WINDOW_LOGS, WINDOW_TASKS];
 
 /// **允许被最大化**的窗口标签白名单。
 ///
@@ -952,10 +939,7 @@ pub fn run() {
             commands::open_group_todos_window,
             commands::take_group_todo_focus,
             commands::request_group_todo_focus,
-            commands::open_image_preview,
-            commands::prewarm_aux_windows,
             commands::get_group_todos_context,
-            commands::get_image_preview_gallery,
             commands::open_link_window,
             commands::list_external_links,
             commands::get_external_links_import_source,

@@ -4,11 +4,13 @@
    给整块容器画 2px 环在全屏遮罩/弹出菜单上只会变成噪声。
    ⇒ 按 `designGuards` ⑦ 的约定，用文件级逃生阀显式声明，而不是靠"没人发现"。 */
 import { clampScale, pinchScale, swipeDirection } from "@/utils/lightboxGestures";
+import { flipTransform, type ImageRect } from "@/utils/imageZoom";
 import { t } from "@/i18n";
 import Spinner from "@/components/ui/Spinner.vue";
-import { computed, ref, watch } from "vue";
+import { computed, onUnmounted, ref, watch } from "vue";
 import { useEventListener } from "@vueuse/core";
-import { FocusScope } from "reka-ui";
+import { FocusScope, DropdownMenuItem } from "reka-ui";
+import ContextMenu from "@/components/ContextMenu.vue";
 import { ChevronLeft, ChevronRight, Save } from "lucide-vue-next";
 import { RotateCcw, X } from "@/components/ui/icons";
 import { useAppStore } from "@/stores/useAppStore";
@@ -37,17 +39,11 @@ const props = defineProps<{
   index: number;
   open: boolean;
   /**
-   * 隐藏组件内部那颗 ✕（用户 2026-09-29：「独立窗口调用图片预览时，隐藏预览组件内部的关闭按钮，
-   * 避免和窗口外部关闭按钮重复；同一窗口内调用时可以显示」）。
-   *
-   * 为什么用入参而不是"检测自己是不是在预览窗口里"：本组件同时服务两个宿主 ——
-   * 主窗口那份覆盖层（**唯一的关闭出口就是它**）和独立预览窗口（`AuxWindowShell` 的标题栏
-   * 已经有 ✕，两颗叉同屏就是用户说的那处重复）。宿主是谁只有调用点知道，所以由调用点说。
-   *
-   * ⚠️ 关掉这颗叉**不减少任何出口**：窗口那条路仍有标题栏 ✕、Esc、⌘W 三条
-   * （见 `PreviewWindow.vue` 把 `close-requested` 三条路都接上 `releaseAlbum` 的注释）。
+   * 这次打开时被点中的缩略图矩形（client 坐标）。有它才做"从这里放大"的 FLIP；
+   * 没有（键盘/菜单打开、其他入口）就退化为**居中放大**（只缩放、位移恒 0），不乱飞。
+   * 关闭时用它作为缩回终点。
    */
-  hideClose?: boolean;
+  origin?: ImageRect | null;
 }>();
 const emit = defineEmits<{
   (e: "close"): void;
@@ -69,7 +65,7 @@ const reducedMotion = useReducedMotion();
  * render，所以这条 useBackLayer 自然排在 #1 之后 → 关闭顺序正确：先关预览 → 再关聊天。 */
 useBackLayer(
   () => props.open,
-  () => emit("close"),
+  () => requestClose(),
 );
 
 const src = ref<string>("");
@@ -169,11 +165,199 @@ const ty = ref(0);
 const scaleMV = useMotionValue(1);
 const txMV = useMotionValue(0);
 const tyMV = useMotionValue(0);
+
+/**
+ * 打开/关闭的 FLIP 缩放（用户 2026-11-05：「点图片应该放大缩小，现在只有一下位移感」）。
+ *
+ * 只在**从无到有**时播一次：第一帧用 `flipTransform` 把图片矩形精确映射到缩略图矩形，
+ * 再把四个变换分量收回恒等。翻到下一张（状态切换）**不重播**缩放，避免"每翻一张都先缩一下"。
+ * `prefers-reduced-motion` 下直接切换，不缩放。
+ * 纯 transform，不碰 left/top/width/height —— 不重排，也就没有横向滑动感。
+ */
+const FLIP_OPEN = { duration: 0.24, ease: "easeOut" } as const;
+const FLIP_CLOSE = { duration: 0.16, ease: "easeIn" } as const;
+/**
+ * 没有源矩形时的退化档（键盘/菜单打开）：**居中放大**。
+ * 只改 scale、位移恒为 0，因此不可能出现任何横向滑动；
+ * 起点取 0.92 而不是 0（查看器里的图已经占满大半屏，从 0 长出来会像"炸开"）。
+ */
+const CENTER_ZOOM_FROM = 0.92;
+const CENTER_OPEN = { duration: 0.24, ease: "easeOut" } as const;
+const CENTER_CLOSE = { duration: 0.16, ease: "easeIn" } as const;
+/** 收场动画播完后再留一小段，让"缩回原图位置"真的被看见（而不是最后一帧还没到位就撤浮层）。 */
+const CLOSE_HOLD_MS = 60;
+const flipScaleX = useMotionValue(1);
+const flipScaleY = useMotionValue(1);
+/** 开始 FLIP 的那次打开：只有它为真时才隐藏图片等尺寸落定。 */
+const pendingFlip = ref(false);
+/** 没有源矩形时走居中放大（键盘/菜单打开）；与 `pendingFlip` 互斥。 */
+const pendingCenter = ref(false);
+/** 图片要先量到"落定后的矩形"再显示，避免先以终态闪一帧再缩小。 */
+const imgReady = ref(true);
+const closing = ref(false);
+/** 终态矩形（恒等变换下），关闭时用它反算回缩目标。 */
+const flipBaseRect = ref<ImageRect | null>(null);
+let flipAnims: ReturnType<typeof animate>[] = [];
+let flipTimer: ReturnType<typeof setTimeout> | null = null;
+let closeTimer: ReturnType<typeof setTimeout> | null = null;
+
+function stopFlipAnims() {
+  for (const a of flipAnims) {
+    try { a.stop(); } catch { /* 已经停下就算了 */ }
+  }
+  flipAnims = [];
+}
+function clearFlipTimer() {
+  if (flipTimer !== null) clearTimeout(flipTimer);
+  flipTimer = null;
+}
+function clearCloseTimer() {
+  if (closeTimer !== null) clearTimeout(closeTimer);
+  closeTimer = null;
+}
+
+/** 量终态矩形。⚠️ 必须在**恒等变换**下量：`getBoundingClientRect` 会把当前 transform 算进去。 */
+function measure(el: HTMLElement): ImageRect | null {
+  const r = el.getBoundingClientRect();
+  if (!(r.width > 0) || !(r.height > 0)) return null;
+  return { left: r.left, top: r.top, width: r.width, height: r.height };
+}
+
+/** 把 FLIP 分量归位（不经过动画）。 */
+function resetFlip() {
+  stopFlipAnims();
+  clearFlipTimer();
+  flipScaleX.set(1);
+  flipScaleY.set(1);
+  flipBaseRect.value = null;
+  pendingFlip.value = false;
+  pendingCenter.value = false;
+}
+
+/**
+ * 图片解码完成：这一刻才知道它在查看器里的最终矩形。
+ * 有起点矩形就把四个变换先**瞬时**摆到起点（此时图片还透明），下一帧再显示并收回恒等。
+ * 没有起点矩形（键盘/菜单打开）则退化为**居中放大**：只缩到 0.92，位移恒 0。
+ */
+function onImageLoad(e?: Event) {
+  const target = e?.currentTarget;
+  const el = target instanceof HTMLImageElement
+    ? target
+    : (dialogRef.value?.querySelector<HTMLImageElement>("[data-lightbox-img]") ?? null);
+  if (!el || !props.open || closing.value) return;
+  stopFlipAnims();
+  clearFlipTimer();
+  flipScaleX.set(1);
+  flipScaleY.set(1);
+  const base = measure(el);
+  flipBaseRect.value = base;
+  const o = props.origin;
+  const flip = pendingFlip.value && !!base && !!o && !reducedMotion.value;
+  const center = pendingCenter.value && !!base && !o && !reducedMotion.value;
+  if (!flip && !center) {
+    pendingFlip.value = false;
+    pendingCenter.value = false;
+    imgReady.value = true;
+    setTranslate(0, 0);
+    return;
+  }
+  if (flip && base && o) {
+    const start = flipTransform(base, o);
+    flipScaleX.set(start.scaleX);
+    flipScaleY.set(start.scaleY);
+    setTranslate(start.x, start.y);
+  } else {
+    flipScaleX.set(CENTER_ZOOM_FROM);
+    flipScaleY.set(CENTER_ZOOM_FROM);
+    setTranslate(0, 0);
+  }
+  const tween = flip ? FLIP_OPEN : CENTER_OPEN;
+  requestAnimationFrame(() => {
+    if (!props.open || closing.value) return;
+    // 先让图片以**起点姿态**显示出来（此时 transform 已写到 DOM），再在下一帧开始收回恒等：
+    // 同一个 rAF 里立刻起动画的话，第一帧可能还是终态尺寸，会闪一下。
+    imgReady.value = true;
+    requestAnimationFrame(() => {
+      if (!props.open || closing.value) return;
+      flipAnims = [
+        animate(flipScaleX, 1, tween),
+        animate(flipScaleY, 1, tween),
+        animate(txMV, 0, tween),
+        animate(tyMV, 0, tween),
+      ];
+      flipTimer = setTimeout(() => {
+        flipTimer = null;
+        // 归位到恒等（动画终点本来就该是它，这里顺手把 ref 同步给手势判据）
+        flipScaleX.set(1);
+        flipScaleY.set(1);
+        setTranslate(0, 0);
+        pendingFlip.value = false;
+        pendingCenter.value = false;
+      }, 260);
+    });
+  });
+}
+
+/**
+ * 唯一的关闭出口：先把图片缩回原图位置，动画结束后才真的 `emit("close")`。
+ * 有源矩形 ⇒ FLIP 缩回缩略图；没有源矩形（键盘/菜单打开）⇒ 反向缩回 0.92，
+ * **位移恒为 0**（只有缩放，不可能出现横向滑动）。reduce 档或没量到矩形时立刻关。
+ * `closing` 期间所有手势与二次关闭都忽略 ⇒ 连点不会重复收窗。
+ */
+function requestClose() {
+  if (!props.open || closing.value) return;
+  menu.value = null;
+  const o = props.origin;
+  const base = flipBaseRect.value;
+  if (reducedMotion.value || !base) {
+    emit("close");
+    return;
+  }
+  closing.value = true;
+  stopFlipAnims();
+  clearFlipTimer();
+  const tween = o ? FLIP_CLOSE : CENTER_CLOSE;
+  const back = o ? flipTransform(base, o) : null;
+  const toX = back ? back.scaleX : CENTER_ZOOM_FROM;
+  const toY = back ? back.scaleY : CENTER_ZOOM_FROM;
+  const toTx = back ? back.x : 0;
+  const toTy = back ? back.y : 0;
+  flipAnims = [
+    animate(flipScaleX, toX, tween),
+    animate(flipScaleY, toY, tween),
+    animate(scaleMV, 1, tween),
+    animate(txMV, toTx, tween),
+    animate(tyMV, toTy, tween),
+  ];
+  closeTimer = setTimeout(() => {
+    closeTimer = null;
+    // 动画播完再钉一次终值：帧采样的最后一帧可能落在曲线收尾的几毫秒里（差几像素）。
+    // 钉完之后还留 `CLOSE_HOLD_MS`，让用户真的看见图缩回了原图位置。
+    flipScaleX.set(toX);
+    flipScaleY.set(toY);
+    setTranslate(toTx, toTy);
+    closeTimer = setTimeout(() => {
+      closeTimer = null;
+      // 缩到原图大小；隐藏它，让退场只剩下遮罩淡出，不在原位留下一张图。
+      imgReady.value = false;
+      emit("close");
+    }, CLOSE_HOLD_MS);
+  }, tween.duration * 1000);
+}
+
+onUnmounted(() => {
+  stopFlipAnims();
+  clearFlipTimer();
+  clearCloseTimer();
+  stopResetAnims();
+});
 function setScale(v: number) {
+  stopResetAnims();
   scale.value = v;
   scaleMV.set(v);
 }
 function setTranslate(x: number, y: number) {
+  stopResetAnims();
   tx.value = x;
   ty.value = y;
   txMV.set(x);
@@ -187,6 +371,22 @@ const pointers = new Map<number, { x: number; y: number }>();
 /** 双指手势的起点：两指距离与当时的倍率。 */
 let pinchStart: { distance: number; scale: number } | null = null;
 
+/** 复位（双击 / 复位键 / `0` 键）的弹性动画句柄。 */
+let resetAnims: ReturnType<typeof animate>[] = [];
+/**
+ * 停掉尚未落定的复位弹性。
+ *
+ * 归位是 `animate(scaleMV, 1, spring)`：它会**每帧继续写** motion 值。若用户在这个弹簧还在跑的时候
+ * 滚轮/按 +/- 缩放，`scaleMV.set(1.2)` 会被下一帧的弹簧覆盖回 1 —— 表现为"滚轮完全没反应"
+ * （2026-11-05 探针实测：`0` 后 220ms 再滚轮，读数仍是 1.001）。手势接手前先收掉它。
+ */
+function stopResetAnims() {
+  for (const a of resetAnims) {
+    try { a.stop(); } catch { /* 已停下就算了 */ }
+  }
+  resetAnims = [];
+}
+
 function reset(instant = false) {
   pointers.clear();
   pinchStart = null;
@@ -194,6 +394,7 @@ function reset(instant = false) {
   scale.value = 1;
   tx.value = 0;
   ty.value = 0;
+  stopResetAnims();
   if (instant || reducedMotion.value) {
     scaleMV.set(1);
     txMV.set(0);
@@ -201,16 +402,35 @@ function reset(instant = false) {
     return;
   }
   // 双击/点复位键：弹性回到原位；手势本身仍是直接跟手。
-  animate(scaleMV, 1, { type: "spring", stiffness: 420, damping: 40 });
-  animate(txMV, 0, { duration: 0.18 });
-  animate(tyMV, 0, { duration: 0.18 });
+  resetAnims = [
+    animate(scaleMV, 1, { type: "spring", stiffness: 420, damping: 40 }),
+    animate(txMV, 0, { duration: 0.18 }),
+    animate(tyMV, 0, { duration: 0.18 }),
+  ];
+}
+
+function zoomBy(delta: number) {
+  const next = clampScale(scale.value + delta);
+  if (next === 1) setTranslate(0, 0);
+  setScale(next);
 }
 
 function onWheel(e: WheelEvent) {
   e.preventDefault();
-  const next = clampScale(scale.value + (e.deltaY < 0 ? 0.2 : -0.2));
-  if (next === 1) setTranslate(0, 0);
-  setScale(next);
+  zoomBy(e.deltaY < 0 ? 0.2 : -0.2);
+}
+
+/**
+ * 右键菜单（桌面端）：查看器在独立窗口里时，保存只能靠右上角那颗按钮；
+ * 覆盖层统一后补一个与别处一致的右键入口。层级必须压过 z-80 的遮罩，故传 z-[90]。
+ */
+const menu = ref<{ x: number; y: number } | null>(null);
+function openMenu(e: MouseEvent) {
+  e.preventDefault();
+  menu.value = { x: e.clientX, y: e.clientY };
+}
+function closeMenu() {
+  menu.value = null;
 }
 
 function twoPointerDistance(): number | null {
@@ -221,6 +441,8 @@ function twoPointerDistance(): number | null {
 }
 
 function onPointerDown(e: PointerEvent) {
+  // 开场 FLIP / 收场回缩期间不接受手势：否则手势与动画同时写 transform，图会抖。
+  if (closing.value || pendingFlip.value) return;
   pointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
   (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
   if (pointers.size === 2) {
@@ -298,15 +520,16 @@ function onShadePointerDown(e: PointerEvent) {
   lastPointerDownTarget = e.target;
 }
 function onShadeClick(e: MouseEvent) {
+  if (closing.value) return;
   if (e.target instanceof Element && e.target.closest("button, a, input, textarea, select, [role='button']")) return;
   if (e.target !== lastPointerDownTarget) return;
-  emit("close");
+  requestClose();
 }
 
 function onKey(e: KeyboardEvent) {
-  if (!props.open) return;
+  if (!props.open || closing.value) return;
   if (e.key === "Escape") {
-    emit("close");
+    requestClose();
     return;
   }
   if (e.key === "ArrowLeft") {
@@ -317,12 +540,67 @@ function onKey(e: KeyboardEvent) {
     go(1);
     return;
   }
+  // 桌面键位：`+`/`=` 放大、`-` 缩小、`0` 复位（与滚轮同一套 clampScale）。
+  if (e.key === "+" || e.key === "=") {
+    zoomBy(0.2);
+    return;
+  }
+  if (e.key === "-" || e.key === "_") {
+    zoomBy(-0.2);
+    return;
+  }
+  if (e.key === "0") {
+    reset();
+  }
 }
 
-// 打开 / 关闭 / 切图时复位缩放与位移
+/**
+ * 打开 / 切图时的变换复位。
+ * `open` 从关到开 ⇒ 准备一次 FLIP（有起点矩形且不是 reduce 档）；翻图（状态切换）⇒ 只复位，
+ * **不重播**缩放 —— 否则每翻一张都会先缩回原图再放大一次。
+ */
 watch(
-  () => [props.open, props.index] as const,
-  () => reset(true),
+  () => props.open,
+  (open) => {
+    closing.value = false;
+    clearCloseTimer();
+    if (!open) {
+      menu.value = null;
+      // ⚠️ 这里**不**把 scaleX/scaleY 复位：收场已经把图钉在原图大小，
+      // Transition 退场那 100ms 保持这个姿态淡出。复位成 1 会让图先跳回终态大小
+      // （平移还停在收场起点，看起来就是"关掉后突然又冒出一张大图"）。
+      stopFlipAnims();
+      clearFlipTimer();
+      clearCloseTimer();
+      pendingFlip.value = false;
+      pendingCenter.value = false;
+      imgReady.value = false;
+      return;
+    }
+    reset(true);
+    flipScaleX.set(1);
+    flipScaleY.set(1);
+    flipBaseRect.value = null;
+    pendingFlip.value = !!props.origin && !reducedMotion.value;
+    // 没有源矩形（键盘 / 右键菜单打开）⇒ 居中放大，而不是"什么都不播"。
+    pendingCenter.value = !props.origin && !reducedMotion.value;
+    imgReady.value = !(pendingFlip.value || pendingCenter.value);
+  },
+  { immediate: true },
+);
+
+watch(
+  () => props.index,
+  () => {
+    if (!props.open) return;
+    // ⚠️ 开场 FLIP 还没落定时**不算切图**：`openGallery()` 是一次性把 `index` 与 `open`
+    // 一起改掉的（从上次的旧下标换成这次点中的那张），两个 watcher 会在同一批里先后跑。
+    // 若这里照常 `resetFlip()`，会把刚摆好的起点姿势抹成恒等 ⇒ 用户看到的是"没有放大"。
+    if (pendingFlip.value || pendingCenter.value) return;
+    reset(true);
+    resetFlip();
+    imgReady.value = true;
+  },
 );
 
 /**
@@ -378,7 +656,7 @@ useEventListener(window, "keydown", onKey);
              · 2026-10-20 把「谁让开顶部」收成一个出口 `--gosslan-safe-top`（桌面=caption、移动端=
                刘海/状态栏，取 max 不是相加）挂在**外壳**上，这一层的两个补丁一起删。
              真浏览器量过：钉 44px 时旧写法 delta=60（44+16），现在 delta=16。
-             ⚠️ 那颗 ✕ 是否在，由宿主决定（`hideClose`），与本条无关。 -->
+             ⚠️ 桌面/移动端都是这一份覆盖层，关闭出口固定为：这颗 ✕、Esc、点遮罩。 -->
         <div
           class="absolute right-4 z-10 flex items-center gap-1"
           :style="{ top: '1rem' }"
@@ -408,11 +686,10 @@ useEventListener(window, "keydown", onKey);
             <RotateCcw class="h-4 w-4" />
           </button>
           <button
-            v-if="!hideClose"
             class="tap-safe flex h-9 w-9 items-center justify-center rounded-full bg-black/35 text-white ring-1 ring-white/25 transition hover:bg-black/55"
             style="text-shadow: 0 1px 2px rgba(0,0,0,0.55); filter: drop-shadow(0 1px 2px rgba(0,0,0,0.35));"
             :title="t('common.closeEsc')" :aria-label="t('common.closeEsc')"
-            @click.stop="emit('close')"
+            @click.stop="requestClose"
           >
             <X class="h-5 w-5" />
           </button>
@@ -454,17 +731,26 @@ useEventListener(window, "keydown", onKey);
           <!-- 手势的 x/y/scale 走 MotionValue（在 Vue 渲染周期外执行）。
                ⚠️ 不再挂 layoutId：缩略图侧已经不做 layout 补间，单边保留只是一段死契约。 -->
           <div class="flex items-center justify-center">
+            <!-- 打开/关闭的缩放是**纯 transform**（scaleX/scaleY + 中心对齐平移），
+                 不写 left/top/width/height：布局位移会重排，也会把"一路向右滑"的观感带回来。
+                 `opacity` 只在开场量尺寸那一帧藏住图片，避免先闪一帧终态再缩小。 -->
             <motion.img :alt="current?.name || t('msg.imagePreview')"
+              data-lightbox-img
               :src="src"
               class="max-h-[85vh] max-w-[88vw] touch-none select-none shadow-2xl"
               :style="{
                 x: txMV,
                 y: tyMV,
                 scale: scaleMV,
+                scaleX: flipScaleX,
+                scaleY: flipScaleY,
+                opacity: imgReady ? 1 : 0,
                 cursor: scale > 1 ? (dragging ? 'grabbing' : 'grab') : 'zoom-in',
               }"
               draggable="false"
+              @load="onImageLoad"
               @click.stop
+              @contextmenu="openMenu"
               @dblclick="reset()"
               @pointerdown="onPointerDown"
               @pointermove="onPointerMove"
@@ -506,6 +792,16 @@ useEventListener(window, "keydown", onKey);
         </div>
         </div>
         </FocusScope>
+
+        <!-- 右键菜单：保存 / 关闭（Reka 负责贴边翻转、键盘导航与点外部关闭）。 -->
+        <ContextMenu v-if="menu" :x="menu.x" :y="menu.y" z-class="z-[84]" @close="closeMenu">
+          <DropdownMenuItem class="gosslan-menu-item" @select="saveImage">
+            {{ t("common.saveImage") }}
+          </DropdownMenuItem>
+          <DropdownMenuItem class="gosslan-menu-item" @select="requestClose">
+            {{ t("common.close") }}
+          </DropdownMenuItem>
+        </ContextMenu>
       </div>
     </Transition>
   </Teleport>

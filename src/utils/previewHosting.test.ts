@@ -1,42 +1,70 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { readFileSync, readdirSync } from "node:fs";
+import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 
 /**
- * 图片预览的**宿主契约**（用户 2026-09-29 需求汇总第六条：独立窗口调用时隐藏组件内部的关闭按钮、
- * 同一窗口内可以显示；并修「从任务列表进入任务后查看图片可能打不开」）。
+ * 图片预览的**宿主契约**。
  *
- * 为什么是源码形状判据：这几条都住在"谁宿主这份看图器"的接线里，而单测环境没有 WebView
- * （开不了第二扇窗口，也造不出"预览窗口建不出来"那种失败）。形状判据挡的是以后有人把它改回去。
+ * 2026-11-05 用户拍板 B：桌面端不再开独立预览窗口，改成与移动端**同一套应用内覆盖层**
+ * （同一 `ImageLightbox`、同一 FLIP、同一 `useImagePreviewStore` 契约）。
+ * 于是这份判据要守三件事：
+ * 1. 关闭按钮**只有一颗**，且 ✕/Esc/遮罩三条出口都必须先播回缩（不许出现绕过 requestClose 的出口）；
+ * 2. 每个会点图文档都挂了覆盖层（主窗口 `ResponsiveLayout` + 群任务窗口 `GroupTodosWindow`）；
+ * 3. 旧窗口路径**删干净且不许复活** —— 这条就是"删无用代码"的守卫（反面自证：让
+ *    `openImagePreview` 回来，下面那条会点名报红）。
  *
- * ⚠️ 每条取反判据都配了一条正面判据（同一份源码里必须存在什么），否则"把两处一起删掉"也算通过。
+ * ⚠️ 每条取反判据都配一条正面判据（同一份源码里必须存在什么），否则"把两处一起删掉"也算通过。
  */
 const ROOT = join(import.meta.dirname, "..");
 const read = (rel: string) => readFileSync(join(ROOT, rel), "utf8");
 const LIGHTBOX = read("components/message/ImageLightbox.vue");
-const WINDOW = read("components/window/PreviewWindow.vue");
 const SHELL = read("layouts/ResponsiveLayout.vue");
+const TASKS_WINDOW = read("components/GroupTodosWindow.vue");
 const THUMB = read("components/TodoImageThumb.vue");
 const STORE = read("stores/useImagePreview.ts");
 
-test("内部那颗 ✕ 由宿主决定画不画（独立窗口不重复、覆盖层仍要画）", () => {
-  // 反面：不许再出现"无条件渲染关闭按钮"
-  assert.match(LIGHTBOX, /<button\s+v-if="!hideClose"[\s\S]{0,400}?@click\.stop="emit\('close'\)"/);
-  assert.equal(
-    /<button(?![\s\S]{0,20}v-if)[\s\S]{0,300}?emit\('close'\)/.test(LIGHTBOX.split("<template>")[1]),
-    false,
-    "看图器里出现了一颗没有开关的关闭按钮 ⇒ 预览窗口又会有两把叉",
+test("关闭按钮只有一颗，且三条出口都先播回缩再收场", () => {
+  // 正面：✕ 必须在。
+  assert.match(
+    LIGHTBOX,
+    /<button[\s\S]{0,500}?@click\.stop="requestClose"/,
+    "✕ 没接回 requestClose ⇒ 这条关闭路径会跳过收场回缩",
   );
-  // 正面：两个宿主各自的选择都必须存在
-  assert.match(WINDOW, /\n      hide-close/, "独立预览窗口没关内部 ✕ ⇒ 与标题栏那把重复（用户点名的就是这处）");
-  assert.equal(SHELL.includes("hide-close"), false, "主窗口那份覆盖层不该关掉 ✕：那是它唯一的可见关闭出口");
+  // 反面：不许再出现"由宿主决定画不画"的 hideClose（那是独立窗口时代的形状）。
+  assert.equal(
+    /hideClose/.test(LIGHTBOX),
+    false,
+    "看图器里又出现 hideClose ⇒ 有人把'独立预览窗口'那套宿主分支装回来了",
+  );
+  // 反面：模板里不许有绕过 requestClose 的 `emit('close')` —— 遮罩/Esc/✕ 三条路都必须
+  // 先播完回缩再收窗，否则"点遮罩"和"点 ✕"的观感会分叉。
+  assert.equal(
+    LIGHTBOX.split("<template>")[1].includes("emit('close')"),
+    false,
+    "模板里还有直接 emit('close') 的出口 ⇒ 那条路关掉时不播回缩",
+  );
+});
+
+test("两个会点图的文档都挂了覆盖层，且数据都来自 store", () => {
+  for (const [name, src] of [
+    ["ResponsiveLayout.vue", SHELL],
+    ["GroupTodosWindow.vue", TASKS_WINDOW],
+  ]) {
+    assert.match(src, /const preview = useImagePreviewStore\(\)/, `${name} 没挂 store`);
+    assert.match(src, /<ImageLightbox/, `${name} 没有覆盖层 ⇒ 这个文档里点图没反应`);
+    assert.match(src, /:open="preview\.open"/, `${name} 的覆盖层没接 store 的 open`);
+    assert.match(src, /@close="preview\.close\(\)"/, `${name} 的覆盖层没接关闭`);
+  }
+  // store 侧契约：打开时记下来源缩略图矩形（FLIP 的起点），关闭时清空。
+  assert.match(STORE, /origin\.value = takeImageOrigin\(\)/, "打开时没记缩略图矩形 ⇒ 桌面没有 FLIP");
 });
 
 /**
- * 「点了没反应」的真根因（本轮读出来的，不是猜的）：缩略图与大图是在**两个文档**里各读一次的
- * （主窗口这份 objectURL 缓存 vs 独立预览窗口那份），所以"字节其实取得了、只有这里的读取
- * 还没成功"是一个会稳定出现的状态。旧写法把可点性与 `url` 绑死 ⇒ 那一格点击完全静默。
+ * 「点了没反应」的真根因（2026-09-29 读出来的，不是猜的）：缩略图与大图是在**两个文档**里
+ * 各读一次的（主窗口这份 objectURL 缓存 vs 独立的预览文档那份），所以"字节其实取得了、
+ * 只有这里的读取还没成功"是一个会稳定出现的状态。旧写法把可点性与 `url` 绑死 ⇒ 那一格点击
+ * 完全静默。现在覆盖层就在同一份文档里，这条仍然要守：可点性只由 `clickable` 决定。
  */
 test("任务缩略图的可点性不再依赖缩略图是否加载成功", () => {
   // 钉的是**契约**（可点性只由 `clickable` 决定），不是某一句字面量：
@@ -57,41 +85,26 @@ test("任务缩略图的可点性不再依赖缩略图是否加载成功", () =>
 });
 
 /**
- * 投递被拒时，**没有覆盖层的文档**必须收起状态并说一声。
+ * 「删干净」守卫：独立预览窗口那条路已经彻底作废（用户 2026-11-05「不许留死代码」）。
  *
- * 为什么这不是"体验小改善"而是缺陷：主窗口退回覆盖层就行，而独立群任务窗口根本没有覆盖层
- * （全应用只允许一份 `ImageLightbox`）。留着 `open = true` 的话，任务详情会以为"预览正开着"，
- * 下一次点遮罩只吃掉"关预览" ⇒ 一个从没显示出来的预览把弹窗锁成关不掉。
+ * 反面自证：把 `openImagePreview`（或 `open_image_preview` / `window_tween` /
+ * `PreviewWindow.vue` / `preview.html`）任意一处装回来 ⇒ 下面第一条点名报红。
+ * 正面：覆盖层路径必须在（否则"把两条路都删了"也算通过）。
  */
-test("投递被拒：没有覆盖层的文档要收起状态并明确报错", () => {
-  assert.match(STORE, /if \(!overlayMounted\.value\) \{\s*\n\s*close\(\);/, "拒绝分支没收起状态 ⇒ 弹窗会被一个看不见的预览锁住");
-  assert.match(STORE, /app\.toast\(t\("preview\.unavailable"\), "error"\)/, "拒绝分支没有面向用户的说法");
-  assert.match(STORE, /    overlayMounted,/, "标记没导出 ⇒ 宿主设了也没人读得到");
-  // 正面：覆盖层的宿主确实把它置真（否则上面那两条永远走"报错"那一支，主窗口反而变成误报）
-  assert.match(SHELL, /preview\.overlayMounted = true;/, "ResponsiveLayout 没认领自己是覆盖层宿主");
-});
-
-/**
- * 「关闭即隐藏」这半边有一个**只写在依赖源码里**的坑（2026-10-13 从用户日志里那条
- * `window.destroy not allowed. Permissions associated with this command: core:window:allow-destroy`
- * 反查出来的，不是读我们自己代码能看到的）。
- *
- * `@tauri-apps/api` 的包装长这样（现读 `dist/assets/tauri-*.js`，api 2.11.1）：
- *   `this.listen(WINDOW_CLOSE_REQUESTED, async e => { const l = new K(e); await handler(l); l.isPreventDefault() || await this.destroy(); })`
- * ⇒ **handler 不 `preventDefault()` 就等于授权它去销毁窗口**。而 Rust 那侧的
- * `install_hide_on_close` 是 `prevent_close() + hide()`（那条形状判据在 `lib_window_tests.rs`），
- * 这扇预览窗是**常驻、关闭即隐藏**的（第二次看图要秒开）⇒ 它从来就不该被销毁。
- * 眼下能力表里没有 `core:window:allow-destroy`，所以那次调用只落成一条界面 rejection；
- * 但"设计靠一个没批的权限兜住"是隐患：**哪天有人放宽它，常驻窗会连 WebView 一起被销毁**，
- * 秒开没了、还要重新建窗。拦下 `preventDefault()` 是唯一两边都成立、也不动权限表的写法。
- *
- * ⚠️ 口径边界（写清楚，别让下一个人以为这条覆盖了所有形状）：它只解析**内联** handler
- * （`.onCloseRequested(x => { ... })`）。以后若改成具名函数（`.onCloseRequested(onClose)`），
- * 这条会红 —— 那时要么把 `preventDefault()` 写回内联，要么在这里补一次"解析被引用函数体"，
- * 不许直接放宽成"文件里出现过 preventDefault 就行"（那等于没有判据）。
- */
-test("注册了 close-requested 的窗口必须 preventDefault（否则库会替它调 destroy）", () => {
-  const sites: Array<{ file: string; span: string }> = [];
+test("独立预览窗口路径不许复活（删除清单是判据，不是注释）", () => {
+  const needles = [
+    "openImagePreview",
+    "getImagePreviewGallery",
+    "onImagePreviewChanged",
+    "preview-gallery",
+    "windowAnimated",
+    "window_tween",
+    "PreviewWindow.vue",
+    "preview.html",
+    "open_image_preview",
+    "get_image_preview_gallery",
+  ];
+  const offenders: string[] = [];
   const walk = (dir: string) => {
     for (const ent of readdirSync(dir, { withFileTypes: true })) {
       const p = join(dir, ent.name);
@@ -99,35 +112,21 @@ test("注册了 close-requested 的窗口必须 preventDefault（否则库会替
         walk(p);
         continue;
       }
-      if (!/\.(vue|ts)$/.test(ent.name) || ent.name.endsWith(".test.ts")) continue;
+      if (!/\.(vue|ts|mjs|json|html|rs)$/.test(ent.name) || ent.name.endsWith(".test.ts")) continue;
       const text = readFileSync(p, "utf8");
-      if (!text.includes("onCloseRequested(")) continue;
-      // 按括号配对切出这一次调用的整段（定长窗口会跨进邻居，那是假绿/假红的来源）
-      let at = -1;
-      while ((at = text.indexOf("onCloseRequested(", at + 1)) !== -1) {
-        let depth = 0;
-        let end = -1;
-        for (let i = at + "onCloseRequested".length; i < text.length; i++) {
-          if (text[i] === "(") depth++;
-          else if (text[i] === ")" && --depth === 0) {
-            end = i;
-            break;
-          }
-        }
-        assert.ok(end > at, `${p}：onCloseRequested( 的括号没闭合 ⇒ 这条判据没有分母`);
-        sites.push({ file: p.slice(ROOT.length + 1), span: text.slice(at, end + 1) });
+      for (const n of needles) {
+        if (text.includes(n)) offenders.push(`${p.slice(ROOT.length + 1)} ← ${n}`);
       }
     }
   };
-  walk(ROOT); // src/
-
-  // 阳性对照：扫描必须真找到注册点。0 个的话下面那句循环就是空转，等于没判
-  assert.ok(sites.length >= 1, `一处 onCloseRequested 注册都没扫到 ⇒ 判据空转（分母现算 = ${sites.length}）`);
-  for (const s of sites) {
-    assert.match(
-      s.span,
-      /preventDefault\s*\(\s*\)/,
-      `${s.file}：close-requested 的 handler 没 preventDefault ⇒ 库会在 handler 之后自己调 window.destroy()（用户日志里那条 rejection 就是这么来的；放宽权限那天起还会把常驻窗连 WebView 一起销毁）`,
-    );
-  }
+  walk(ROOT);
+  walk(join(ROOT, "..", "src-tauri", "src"));
+  assert.deepEqual(
+    offenders,
+    [],
+    `独立预览窗口的残留：\n${offenders.join("\n")}`,
+  );
+  // 正面分母：覆盖层与 store 必须在，否则上面这条"全删了也绿"。
+  assert.ok(existsSync(join(ROOT, "components/message/ImageLightbox.vue")));
+  assert.ok(existsSync(join(ROOT, "stores/useImagePreview.ts")));
 });

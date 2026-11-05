@@ -14,6 +14,51 @@
 
 ## [Unreleased]
 
+## [5.18.34] - 2026-11-05
+
+### 图片预览：桌面改走应用内覆盖层，独立预览窗口路径整体删除（本批因 5.18.33 被占用改挂 5.18.34）
+
+- **形态统一（拍板 B）**：桌面端点图片不再开独立预览窗，改走与移动端**同一个** `ImageLightbox`
+  覆盖层（同一组件、同一条 FLIP、同一个 `useImagePreview` store），不再维护两套视觉。覆盖层在
+  窗口内按**视口**定位/定尺寸（client 坐标量、client 坐标画），`clientRectToScreen` / 屏幕矩形
+  那一套换算随窗口一起删掉。
+- **删除清单（先全仓 grep 逐个确认无其它依赖，再删）**：
+  · Rust：`open_image_preview` / `get_image_preview_gallery` / `prewarm_aux_windows` 三条命令、
+    `window_tween.rs`、`examples/preview_tween_probe.rs`、`PREVIEW_WINDOW_TWEEN` 与 `PreviewReveal`、
+    `state.rs` 的 `PreviewItem/PreviewGallery`（含 `window_animated`）、`install_preview_hide_on_close`、
+    `preview_instant_reason`/`log_preview_tween`、`AUX_PREVIEW_RESIDENT`、`AuxWindowOpts`，
+    以及随窗口居中立项一起失活的 `centered_in_rect`；
+  · 前端：`api.openImagePreview/getImagePreviewGallery/onImagePreviewChanged/prewarmAuxWindows`、
+    `entries/preview.ts`、`components/window/PreviewWindow.vue`、`utils/previewGalleryState.*`、
+    `preview.html`（含 `vite.config.ts` 入口）、`useImagePreview` 的窗口投递分支（`inWindow`/
+    `overlayMounted`/`screenOrigin`）、`utils/imageZoom` 的 `ScreenRect`/`WindowFrameLike`、
+    `preview.*` 文案键（中英同步）、`#boot-preview` 骨架与 `App.vue` 的预热；
+  · 配置：`capabilities/default.json` 只为预览窗开的那一项（窗口清单收成 main/settings/logs/tasks）；
+  · 文档：架构图、路由/前端清单、领域表里的对应条目同步删除。
+  · **留给同类问题的守卫**：`previewHosting.test.ts` 改为扫 `src` + `src-tauri/src`，禁止
+    `openImagePreview` / `getImagePreviewGallery` / `onImagePreviewChanged` / `preview-gallery` /
+    `PreviewWindow.vue` / `open_image_preview` / `window_tween` 等字符串复活。
+- **桌面交互补齐**：Esc、点遮罩、右键菜单（保存 / 关闭，`ContextMenu` 新增 `zClass` 以压过 z-80
+  遮罩）、滚轮缩放、`+ / - / 0` 键位、双击复位、方向键连续左右切换。
+- **取舍（覆盖层无法对应的能力）**：原"每张图各开一个窗口、多张并排对比"没有对应物 —— 覆盖层一次
+  只显示一张，切换靠方向键/左右按钮（与移动端同一条路径）。这项能力按用户拍板整体舍弃。
+- **顺带修两处真实缺陷**：
+  · 「回到最新」按下时被全站 `:where(button):active { transform: scale(.97) }` 顶掉
+    `-translate-x-1/2` ⇒ 按钮右跳 18px、pointerup 落到图片上、click 派发给共同祖先 ⇒ `press`
+    丢事件（探针实测）。改为 `active:scale-[0.97]`（Tailwind 组合 transform，保住 translate）。
+  · `ImageLightbox` 的复位弹性原是不可中断的 `animate()`：弹簧每帧继续写 `scaleMV`，
+    "按 `0` 后立刻滚轮"时 `scaleMV.set(1.2)` 会被覆盖回 1（读数 1.001）。新增
+    `stopResetAnims()`，滚轮/键位/拖拽接手前先收掉弹簧。
+- **回归**：`scripts/check-ui-runtime.mjs --only=imgzoom` 34 条判定（桌面 headed，视口 1440×900）——
+  打开 first 帧 208×117 / cx 720（= 缩略图矩形，水平偏移 0）、关闭末帧同矩形、可打断、reduce 档、
+  冷/热态真鼠标连点 3/3、键盘/滚轮/双击/右键菜单/Esc/遮罩、贴底按钮不抢热区。
+- **反例自证**：关掉开场 FLIP ⇒「第一帧 ≈ 缩略图矩形」「第一帧是 transform scale」两条红
+  （startFrame `640×360` vs origin `208×117`，`startScale=null`）；把 `openImagePreview` 字符串
+  塞回 `src/utils/imageZoom.ts` ⇒ `previewHosting` 的"独立预览窗口路径不许复活"红
+  （`utils/imageZoom.ts ← openImagePreview`）——"删干净"这条有守卫，不是靠注释。
+- 版本 **5.18.34**（5.18.32 / 5.18.33 已被另一条线的批次占用，这次单独推进，不撞号）。
+
+
 ## [5.18.33] - 2026-11-05
 
 ### 修复：自己的文本气泡与尾巴之间的浅色缝（第三次同一处）
@@ -63,6 +108,7 @@
   91 天前后读取只剩长期标签（候选池清理 test）；把 `to_lowercase()` 判等去掉后
   `Bug` + `bug` 会变成两条（Rust 回填 test / 前端 `normalizeTodoTags` test 同时红）；
   前端删去重判断即红。
+
 
 ## [5.18.31] - 2026-11-05
 

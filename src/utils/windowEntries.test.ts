@@ -52,12 +52,6 @@ const WINDOWS = [
     htmlClass: "boot-todos",
   },
   {
-    html: "preview.html",
-    entry: "src/entries/preview.ts",
-    skeleton: "boot-preview",
-    htmlClass: "boot-preview",
-  },
-  {
     // 审计 A2：数据库打不开时那扇独立错误窗（label="startup-error"，桌面端）。
     html: "startup-error.html",
     entry: "src/entries/startup-error.ts",
@@ -187,14 +181,13 @@ test("辅助窗口的入口不得把聊天那一套拉进来（这是「设置�
     "src/entries/settings.ts",
     "src/entries/logs.ts",
     "src/entries/todos.ts",
-    "src/entries/preview.ts",
   ]) {
     const code = codeOnly(read(entry));
     for (const bad of ["chat.init(", "bindEvents("]) {
       assert.ok(!code.includes(bad), `${entry} 不得调用 ${bad}（独立窗口注册第二套事件监听会重复通知/未读/回执）`);
     }
   }
-  // 聊天组件树 / 聊天 store：设置、日志、预览窗口完全不该碰。群任务窗口**确实需要**聊天
+  // 聊天组件树 / 聊天 store：设置、日志窗口完全不该碰。群任务窗口**确实需要**聊天
   // 数据层（折叠任务、建/改任务），但那份需求已经从入口搬到根组件 `GroupTodosWindow.vue`
   // 了（取数搬走是"点了没反应"那次修复的一部分）⇒ 入口连 `useChatStore` 都不该出现：
   // 留在入口里的唯一用法就是 init/取数，两条都是红线。
@@ -203,8 +196,6 @@ test("辅助窗口的入口不得把聊天那一套拉进来（这是「设置�
     "src/entries/settings.ts": ["useChatStore"],
     "src/entries/logs.ts": ["useChatStore"],
     "src/entries/todos.ts": ["useChatStore"],
-    // 预览窗口只按 msgId/cid 自己取字节，连聊天 store 都不需要
-    "src/entries/preview.ts": ["useChatStore"],
   };
   for (const [entry, extra] of Object.entries(perEntry)) {
     const code = codeOnly(read(entry));
@@ -417,13 +408,11 @@ test("常驻窗口必须有自愈兜底（常驻集合从 Rust 的 *_RESIDENT �
       files: ["src/components/GroupTodosWindow.vue", "src/entries/todos.ts"],
     },
     {
-      flag: "PREVIEW",
-      label: "图片预览窗口",
+      flag: "LINK",
+      label: "外链窗口",
       selfFetch: false,
-      files: ["src/components/window/PreviewWindow.vue", "src/entries/preview.ts"],
-      pushListener: /onImagePreviewChanged/,
+      files: [],
     },
-    { flag: "LINK", label: "外链窗口", selfFetch: false, files: [] },
     {
       flag: "WINDOWS",
       label: "设置 / 日志窗口",

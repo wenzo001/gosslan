@@ -166,8 +166,8 @@
                 );
             }
             // 双向绑定：builder 里显式禁掉的窗数 == 白名单之外的已登记窗数。
-            // 左侧 4 = settings/logs/preview/tasks（见 `commands/logs.rs` 四扇辅助窗）；
-            // 右侧 = WINDOW_LABELS − MAXIMIZABLE_WINDOWS = 5 − 1 = 4。
+            // 左侧 3 = settings/logs/tasks（见 `commands/logs.rs` 三扇辅助窗）；
+            // 右侧 = WINDOW_LABELS − MAXIMIZABLE_WINDOWS = 4 − 1 = 3。
             let disabled = logs_src.matches(".maximizable(false)").count();
             let allowed = crate::WINDOW_LABELS
                 .iter()
@@ -549,8 +549,8 @@
             urls.push(rest[..end].to_string());
         }
         assert!(
-            urls.len() >= 5,
-            "应当能找到设置 / 日志 / 群任务 / 图片预览 / 启动错误五个窗口的 URL，实际 {}",
+            urls.len() >= 4,
+            "应当能找到设置 / 日志 / 群任务 / 启动错误四个窗口的 URL，实际 {}",
             urls.len()
         );
         assert!(
@@ -569,7 +569,6 @@
             ("settings.html", "src/entries/settings.ts"),
             ("logs.html", "src/entries/logs.ts"),
             ("todos.html", "src/entries/todos.ts"),
-            ("preview.html", "src/entries/preview.ts"),
             ("startup-error.html", "src/entries/startup-error.ts"),
         ] {
             assert!(
@@ -582,7 +581,6 @@
                 "settings.html" => include_str!("../../settings.html").to_string(),
                 "logs.html" => include_str!("../../logs.html").to_string(),
                 "todos.html" => include_str!("../../todos.html").to_string(),
-                "preview.html" => include_str!("../../preview.html").to_string(),
                 "startup-error.html" => {
                     include_str!("../../startup-error.html").to_string()
                 }
@@ -602,9 +600,6 @@
                 }
                 "src/entries/todos.ts" => {
                     let _ = include_str!("../../src/entries/todos.ts");
-                }
-                "src/entries/preview.ts" => {
-                    let _ = include_str!("../../src/entries/preview.ts");
                 }
                 "src/entries/startup-error.ts" => {
                     let _ = include_str!("../../src/entries/startup-error.ts");
@@ -631,7 +626,6 @@
             "pub fn open_settings_window(",
             "pub fn open_log_window(",
             "pub fn open_link_window(",
-            "fn ensure_preview_window(",
             "fn ensure_tasks_window(",
         ] {
             let body = rust_fn_body_nth(commands, signature, 0);
@@ -662,6 +656,9 @@
             // 变的是"锁内那一次怎么查"：现在必须是 `get_webview_window`（只读管理器那张表），
             // **不许**是 `show_existing_aux_window`（它里面要 `recenter` ⇒ 等主线程应答的 getter，
             // 那就是"带着不可重入的锁等主线程"，见 `aux_window_create_lock_scope_never_waits_on_the_main_thread`）。
+            //
+            // 2026-11-05（拍板 B）：图片预览改走应用内覆盖层，预览窗路径已删除 ⇒
+            // 快路径回到不带起始矩形的最简签名。
             helper.contains("show_existing_aux_window(app, label, geo, reveal)")
                 && helper.contains("app.get_webview_window(label)"),
             "`ensure_aux_window` 必须做双重检查（锁外快路径 + 锁内存在性判定），少一次就会开出第二个窗口"
@@ -669,15 +666,16 @@
         assert!(
             // 2026-09-17：`resident` 改成参数（设置/日志常驻；群任务窗口每群一个 ⇒ 关闭即销毁）。
             // 判据是"常驻开关接上了 hide-on-close"，不再要求 helper 里出现某个具体常量。
-            helper.contains("resident: bool") && helper.contains("install_hide_on_close(&win)"),
+            // 2026-11-05（拍板 B）：`AuxWindowOpts` 随预览窗一起删除，参数回到扁平的 `resident: bool`。
+            helper.contains("if resident {")
+                && helper.contains("install_hide_on_close(&win)"),
             "`ensure_aux_window` 里必须接上「关闭即隐藏」（常驻）——              否则每次打开都要重新加载 WebView + 前端，用户要等（`resident` 是开关）"
         );
         // 2026-09-24 策略翻转（用户："其他新窗口默认不销毁，第二次打开速度优化快点"）：
-        // 常驻 = 群任务 / 预览 / 外链；销毁 = 设置 / 日志（这两个每次都要读最新的环境与日志尾部）。
+        // 常驻 = 群任务 / 外链；销毁 = 设置 / 日志（这两个每次都要读最新的环境与日志尾部）。
         // 钉四件事，缺一条都是一个具体的回归：
         for (signature, want_resident) in [
             ("const AUX_TASKS_RESIDENT: bool = ", true),
-            ("const AUX_PREVIEW_RESIDENT: bool = ", true),
             ("const AUX_LINK_RESIDENT: bool = ", true),
             ("const AUX_WINDOWS_RESIDENT: bool = ", false),
         ] {
@@ -693,28 +691,14 @@
             !code_flat(commands).contains("WINDOW_GROUP_TODOS_PREFIX"),
             "群任务窗口又回到动态 label 了：那样既不累积不了（需要淘汰），也没法不传参数预热"
         );
-        // 预热必须是"建好但不显示"：reveal 传 false，且它自己不许出现 show/focus。
-        // 少了这条，预热就变成"启动时弹出一扇没内容的预览窗"（比慢更糟）。
-        let prewarm = rust_fn_body_nth(commands, "pub fn prewarm_aux_windows(", 0);
-        assert!(
-            code_flat(&prewarm).contains("ensure_preview_window(&app,&state,false)"),
-            "预热必须把预览窗备好，且走共用的窗口构造、reveal 传 false"
-        );
         // ⚠️ **群任务窗不预热**（2026-10-12 决策，反了这条就是回归）：
         // 它常驻（`AUX_TASKS_RESIDENT = true`）⇒ 启动时那 ~23 MB 的 WebView 是**白占**的，
         // 而首开群任务是低频动作，付一次 1–2 秒完全可以接受，付完之后照样秒开。
-        // 旧注释里"label 是 `todo-<groupId>`、启动时不知道是哪个群"那套说法**已过时**：
-        // label 现在是固定常量 `WINDOW_TASKS`（`ensure_tasks_window` 里实证），
-        // 全应用只有一扇常驻群任务窗，切群是对已存在的窗发 `group-todos-target` 事件。
-        // ⇒ 当年"预热没有确定性"的理由不成立，但"不预热"这个结论仍然成立，只是理由换成了收益。
+        // 2026-11-05（拍板 B）：唯一的预热目标（图片预览窗）随覆盖层方案一起删除 ⇒
+        // 整个 `prewarm_aux_windows` 命令已不存在，这里改为正面钉住"预热路径不得复活"。
         assert!(
-            !code_flat(&prewarm).contains("ensure_tasks_window("),
-            "群任务窗不许再预热：它常驻 ⇒ 启动预热纯属白占约 23 MB 常驻内存（2026-10-12）"
-        );
-        assert!(
-            !code_flat(&prewarm).contains(".show()")
-                && !code_flat(&prewarm).contains(".set_focus()"),
-            "预热路径里不许出现 show / set_focus —— 那会变成启动时弹一扇空窗"
+            !commands.contains("prewarm_aux_windows"),
+            "预热命令已随预览窗删除（2026-11-05 拍板 B）：不要让它在别处复活"
         );
         let hide = rust_fn_body(commands, "fn install_hide_on_close(");
         assert!(
@@ -737,7 +721,6 @@
             "pub fn open_settings_window(",
             "pub fn open_log_window(",
             "pub fn open_link_window(",
-            "fn ensure_preview_window(",
             "fn ensure_tasks_window(",
         ] {
             let body = rust_fn_body_nth(commands, signature, 0);

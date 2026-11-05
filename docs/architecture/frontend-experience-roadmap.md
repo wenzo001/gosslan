@@ -12,7 +12,7 @@
 | 图标源 | 仅 `lucide-vue-next`；`components/ui/icons.ts` 是语义入口（现有 7 个名字） | `grep -rn lucide-vue-next src --include='*.vue'` |
 | 空态实现 | **20 个文件、≥5 套内联样式**，无共享组件 | 见 §3 清单 |
 | 只转圈无重试 | GroupFilesPanel / FavoritePanel / GroupTasksBoard / ChatWindow / LinksList / ChatSearchDialog | 盘点记录（子代理，已抽读核对） |
-| 图片预览窗口 | IPC 失败/空相册时**静默白屏**（已修，见 P1） | `src/components/window/PreviewWindow.vue` |
+| 图片预览 | 原独立预览窗的 IPC 失败/空相册静默白屏（P1 已修）；窗口路径已于 2026-11-05 删除，桌面统一走应用内 `ImageLightbox` 覆盖层，该失败面不复存在 | `src/components/message/ImageLightbox.vue` |
 | 前端单测 | 1009 → **1015**（P1 新增 6 条状态机用例） | `npm test` 自己打印 |
 | 生产包 | 310.67 → **310.01 kB**（gzip 93.21 → 92.99） | `npm run build` |
 | 长列表 | 20k 行 p50 16.7 / p95 17.3 ms，长帧 0（5.0 期读数） | `perf/README.md` |
@@ -37,7 +37,7 @@
 | 批次 | 内容 | 风险 | 状态 |
 |---|---|---|---|
 | P0 | 迁移回主工作区、rebase、基线 1009/1009、build 0 | 无 | 完成（2026-10-18） |
-| P1 | **预览窗口异步状态机**：loading/empty/error/retry/8s 超时；新增公共 `ui/StateBlock.vue`；6 条纯状态机单测 | 低 | 完成（`npm test` 1015/1015；build 0；包体 310.01 kB） |
+| P1 | **预览窗口异步状态机**：loading/empty/error/retry/8s 超时；新增公共 `ui/StateBlock.vue`；6 条纯状态机单测（2026-11-05：独立预览窗删除，这部分 IPC 状态机随之移除；`StateBlock` 仍在其他面板用） | 低 | 完成（`npm test` 1015/1015；build 0；包体 310.01 kB） |
 | P2 | 其余辅助窗口状态：群任务窗口首屏失败改为错误态+重试；日志窗口区分“无日志/读失败”并在空屏时给重试；网络设置网卡枚举失败不再截断后续加载 | 中 | 完成（`npm test` 1015/1015；build 0；包体 310.08 kB） |
 | P3 | 图标收口：**修正 ㊵ 判据假绿**（旧正则跨 import 吞行 ⇒ 12 处直连漏报），12 处改走入口；10 处手写 SVG 逐处判定保留 | 低 | 完成（`npm test` 1015/1015；build 0；㊵ 真实树 195 份源码 0 处） |
 | P4 | 菜单/确认框收口：5 处手搓菜单改走 `ContextMenu`；10 处 BaseModal 确认体抽 `ConfirmDialog`（含重复点击保护） | 中 | 完成（`ConfirmDialog` 覆盖 10 处：Storage 2 / Reset 2 / ConversationList 2 / ChatWindow 3 / MessageItem 1；群公告删除是查看弹窗内的两段式确认，不套独立确认框；菜单 5 处已共用 `.gosslan-menu*` 样式且带键盘导航，逐处核对后保留） |

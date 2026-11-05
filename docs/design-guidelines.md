@@ -925,6 +925,7 @@ JS 侧：任何 WAAPI / `requestAnimationFrame` / 库驱动的动画必须先读
 
 **项数不写死**：以本表实际数据行为准（写死数字就会随着加行漂，同 §8.2 那条教训）。
 2026-11-04 现算 = **16 行**（初版 14 行，另有 2 项漏列已在当日补上：浮层 popover 与下拉菜单）。
+2026-11-05 补 1 行「回到最新按钮」⇒ 现算 **17 行**。
 文件路径按 2026-11-04 的真实目录记录（组件已按 `message/` `conversation/` `chat/` 分层，
 `ResponsiveLayout.vue` 在 `layouts/`，`designGuards.test.ts` 在 `utils/`）。
 
@@ -943,13 +944,33 @@ JS 侧：任何 WAAPI / `requestAnimationFrame` / 库驱动的动画必须先读
 | 列表项增删 | 消息行**禁止**逐项进场（[designGuards.test.ts](file:///Users/wendongfu/Documents/code/gosslan/src/utils/designGuards.test.ts#L5186)）；motion-v 只用于**移动端底栏**共享布局药丸（[ResponsiveLayout.vue](file:///Users/wendongfu/Documents/code/gosslan/src/layouts/ResponsiveLayout.vue#L1105-L1168) 的 1105/1126/1149/1168、[GroupTasksBoard.vue](file:///Users/wendongfu/Documents/code/gosslan/src/components/GroupTasksBoard.vue#L1320)）；**桌面 rail 已改为常驻节点 + CSS transform**（[NavRail.vue](file:///Users/wendongfu/Documents/code/gosslan/src/components/NavRail.vue)、§11.3.9） | 否 | 药丸只动 `transform`，不推列表 | 低 |
 | 设置分区切换 | 默认（同时）模式的 `<Transition name="settings-swap">` + 退场层绝对定位（[SettingsWindow.vue](file:///Users/wendongfu/Documents/code/gosslan/src/components/SettingsWindow.vue#L236-L268)、[style.css](file:///Users/wendongfu/Documents/code/gosslan/src/style.css#L1652-L1671)） | 否：不再 `out-in`、不做位移，只做 opacity 交叉淡入 | 否：新面板立即在流里占住最终高度，旧面板绝对定位淡出 | 已修（2026-11-04） |
 | 整页进场（移动端下钻/返回） | `page-slide*`（[ResponsiveLayout.vue](file:///Users/wendongfu/Documents/code/gosslan/src/layouts/ResponsiveLayout.vue#L1194-L1204) 的 1194/1199/1204、[SettingsPanel.vue](file:///Users/wendongfu/Documents/code/gosslan/src/components/SettingsPanel.vue#L197)、[LogViewer.vue](file:///Users/wendongfu/Documents/code/gosslan/src/components/LogViewer.vue#L480)、[FavoritePanel.vue](file:///Users/wendongfu/Documents/code/gosslan/src/components/FavoritePanel.vue#L819)） | 整页导航语义，播一次（正确） | `transform` 不参与布局 | 低 |
-| 图片灯箱 | `<Transition>` 只做 opacity（[ImageLightbox.vue](file:///Users/wendongfu/Documents/code/gosslan/src/components/message/ImageLightbox.vue#L348-L353)，带 `motion-reduce:transition-none`） | 打开时淡入（正确） | 否 | 低 |
+| 图片灯箱 | 开场/收场 **FLIP**：纯 `transform`（`scaleX/scaleY` + 中心对齐平移，映射只由 [imageZoom.ts](file:///Users/wendongfu/Documents/code/gosslan/src/utils/imageZoom.ts) 算）+ 外壳 `opacity` 的 `<Transition>`（[ImageLightbox.vue](file:///Users/wendongfu/Documents/code/gosslan/src/components/message/ImageLightbox.vue#L180-L330)、[#L546-L553](file:///Users/wendongfu/Documents/code/gosslan/src/components/message/ImageLightbox.vue#L546-L553)，带 `motion-reduce:transition-none`）。桌面与移动**同一组件、同一条 store 路径**（`useImagePreview`），覆盖层在窗口内按视口定位 | 打开：覆盖层从被点缩略图**放大**展开一次；翻图（`index` 变化）不重播；`prefers-reduced-motion` 不缩放、只淡入 | 否：不写 `left/top/width/height`，不重排；位移只由 transform 表达 ⇒ 不存在横向滑动（"向右滑一下"那种布局补间已无入口） | 已修（2026-11-05 拍板 B：删独立预览窗，桌面统一走覆盖层） |
+| 回到最新按钮 | 只在可见时挂 `.gosslan-back-to-latest` 的 fade（[BackToLatestButton.vue](file:///Users/wendongfu/Documents/code/gosslan/src/components/chat/BackToLatestButton.vue)、[style.css](file:///Users/wendongfu/Documents/code/gosslan/src/style.css#L1007)）；可见性由 [backToLatest.ts](file:///Users/wendongfu/Documents/code/gosslan/src/utils/backToLatest.ts) 的**现算几何**驱动，不跟 `pinned` 的陈旧值 | 否：可见状态内的重渲染不重挂 fade 类；每次"从无到有"播一次 | 否（`absolute` 浮层，不推列表）；贴底时 `pointer-events: none` + `opacity-0`，热区只有 36×36 本体（不挂 `tap-safe`、无 `::after` 扩热区） | 已修（2026-11-05，探针 `--only=imgzoom` ⑧：贴底时点图片中心命中图片，离底才可点） |
 | 新消息进场 / 抖动 / 任务闪烁 | `.gosslan-msg-enter`（资格由 `computeEnteringId()` 现算，[ChatWindow.vue](file:///Users/wendongfu/Documents/code/gosslan/src/components/ChatWindow.vue#L2017)）、`.gosslan-shake`（[ChatWindow.vue](file:///Users/wendongfu/Documents/code/gosslan/src/components/ChatWindow.vue#L1715)）、`.todo-row-flash`（[GroupTasksBoard.vue](file:///Users/wendongfu/Documents/code/gosslan/src/components/GroupTasksBoard.vue#L1214) 与 #L1323） | 否（各自按触发播一次） | 否（只 `opacity`/`transform`） | 低 |
 | 图片骨架 | 定宽 `w-52` + **稳定外框**（[MessageImageBubble.vue](file:///Users/wendongfu/Documents/code/gosslan/src/components/message/MessageImageBubble.vue#L136-L167)） | 否 | 有 w/h 的消息：预留 == 真实高；**无尺寸的旧消息固定 288 外框**，解码完成不再收缩（代价：横图在框内上下留白）。无法推算比例的类别见 §11.3.9 末尾 | 已修（2026-11-04） |
 
 补录两项的判据（2026-11-04 只读）：`src/**/*.css` 全量 `animation:` 枚举 33 处，除循环/spinner 类之外，
 只有 `.gosslan-popover-in` 与 `.gosslan-menu[data-state]` 这两组"出现/消失"动效未进初版表；两者都只动
 `opacity`、都不重建节点，因此风险低，但**遗漏本身是这张表的缺陷**，已补。
+
+**图片灯箱那行的运行时判据（2026-11-05）**：`node scripts/check-ui-runtime.mjs --only=imgzoom`
+逐帧量被点缩略图与查看器图的实际矩形/`transform` —— 首帧 ≈ 缩略图矩形、水平位移恒为 0、
+宽度单调增大、关闭最后一帧 ≈ 缩略图矩形、reduce 档不缩放、冷/热态真鼠标连点 3 次必开 3 次。
+反例自证见该段注释（把 FLIP 或 `loaded` 门控改回去，对应判据必红）。
+
+**为什么桌面不做"窗口级补间"（2026-11-05 实测结论，随后整条路径删除）**：窗口级的做法是
+"先以缩略图矩形建窗，再 160–200ms 把 position+size 补到目标"。数学部分当时实现过并单测过
+（端点精确 / 单调 / 钳制 / 时长兜底 / DPR 只乘一次 / 撕裂检测），但 macOS 实测不通过：
+
+- 探针用**生产同一条**逐帧驱动跑真窗口，4 轮开/关：`end_error_px=0/1`（终点精确）、`monotonic=true`；
+- 但 `max_tick_ms=20`（一帧预算 16ms ⇒ ~50fps，掉帧），单帧最大位移 240–282px；
+- 且 8 次补间里有 **2 次** `skew_reads=1` —— "位置已动、尺寸还没落"的中间帧。
+  这是 tao 的结构性后果（`set_outer_position` 与 `set_inner_size` 是两条 main-queue 派发），
+  不是参数没调好。
+
+判定标准是"看起来稳、不晃"，一次不同步的中间帧就是一次撕裂 ⇒ 用户 2026-11-05 拍板 B：
+桌面端改为**应用内覆盖层**，与移动端共用同一组件与同一条 FLIP。窗口补间的生产代码、常量、
+埋点与探针已随该方案**整条删除**（`previewHosting.test.ts` 有一条反空转扫描，防止它复活）。
 
 ### 11.3.9 桌面一级导航：指示条与内容共用一条时间轴
 

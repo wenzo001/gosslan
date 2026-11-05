@@ -21,7 +21,12 @@ import {
   DropdownMenuRoot,
 } from "reka-ui";
 
-const props = defineProps<{ x: number; y: number }>();
+const props = defineProps<{
+  x: number;
+  y: number;
+  /** 弹层层级。默认与各业务菜单一致（70）；图片灯箱要压在 z-80 的遮罩之上，传 "z-[84]"。 */
+  zClass?: string;
+}>();
 
 const emit = defineEmits<{ (e: "close"): void }>();
 
@@ -80,7 +85,8 @@ function onOpenChange(open: boolean) {
         :side-offset="0"
         :align-offset="0"
         :collision-padding="8"
-        class="frost gosslan-menu z-[70] select-none outline-none"
+        class="frost gosslan-menu select-none outline-none"
+        :class="zClass ?? 'z-[70]'"
         aria-orientation="vertical"
         @click.stop
         @contextmenu.prevent

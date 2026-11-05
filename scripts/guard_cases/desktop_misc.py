@@ -169,12 +169,12 @@ pub fn guard_case_fixture_db(
         name="capability 覆盖每个窗口（漏一个窗口 ACL 会静默拒绝）",
         why="设置窗口曾经不在 capability 的 windows 里，表现为「选目录/订阅事件静默失败」",
         file=TAURI / "capabilities" / "default.json",
-        # 2026-09-24：群任务窗口从动态 label `todo-*` 改成固定的 `tasks`，预览窗口新增 ⇒
-        # 锚点跟着换成现行那一行（锚点过期会被判成"注入 0 次"，等于这条护栏不再被证明）。
+        # 2026-09-24：群任务窗口从动态 label `todo-*` 改成固定的 `tasks`。
+        # 2026-11-05：预览窗口随"桌面覆盖层"删除 ⇒ 锚点再跟着收敛到现行三扇常驻窗口。
         injections=[
             (
-                '"windows": ["main", "settings", "logs", "preview", "tasks"]',
-                '"windows": ["main", "logs", "preview", "tasks"]',
+                '"windows": ["main", "settings", "logs", "tasks"]',
+                '"windows": ["main", "logs", "tasks"]',
             )
         ],
         cmd=cargo("test", "--lib", "capability_covers_every_window_label"),
@@ -365,8 +365,9 @@ pub fn guard_case_fixture_db(
         "dialog/opener/event 等命令面 —— 等于把本机能力交给用户随手配置的网址",
         file=TAURI / "capabilities" / "default.json",
         # 锚点=现行 windows 数组的收尾（把外链 label 追加进去就是那条被禁止的回归）。
-        # ⚠️ 别用 `"todo-*"` 当锚点：动态 label 已在 2026-09-24 换成固定的 `tasks`。
-        injections=[('"preview", "tasks"]', '"preview", "tasks", "link"]')],
+        # ⚠️ 别用 `"todo-*"` 当锚点：动态 label 已在 2026-09-24 换成固定的 `tasks`；
+        # 也别再用 `"preview"` 当锚点 —— 该窗口 2026-11-05 已删除。
+        injections=[('"logs", "tasks"]', '"logs", "tasks", "link"]')],
         cmd=cargo("test", "--lib", "link_window_is_not_capability_covered"),
         cwd=TAURI,
         expect_fail_hint="link",

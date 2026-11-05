@@ -4,6 +4,7 @@ import { computed, onUnmounted, ref, watch } from "vue";
 import { ImageIcon } from "lucide-vue-next";
 import { ImageOff } from "@/components/ui/icons";
 import { IMAGE_BUBBLE_HEIGHT, IMAGE_PLACEHOLDER_HEIGHT, imageBubbleHeight } from "@/utils/previewMetrics";
+import { rememberImageOrigin } from "@/utils/imageZoom";
 
 const props = withDefaults(
   defineProps<{
@@ -42,6 +43,29 @@ const emit = defineEmits<{ (e: "open", src: string): void; (e: "refetch"): void 
 function onFailedClick() {
   retry();
   if (!props.mine) emit("refetch");
+}
+
+/**
+ * 点击热区（用户 2026-11-05「点击区域有时候功能不生效」）。
+ *
+ * 旧实现只在 `state === "loaded"` 时才可点：图还在退避重试（最长约 10s）、
+ * 或预算里根本没拿到地址时，点上去**什么都不发生** —— 这就是"有时候点不开、要点两次"。
+ * 缩略图没解码完并不代表消息打不开：灯箱按 msgId 自己取图，和这张缩略图无关。
+ * ⇒ 加载中/已加载都直接开预览；只有**确定失败**时点一下仍是"重试缩略图"（气泡上有文字承诺）。
+ *
+ * `@pointerdown` 顺手记下这张缩略图的矩形，灯箱据此做"从这里放大"的 FLIP；
+ * 键盘/菜单等没有指针的入口记不到，灯箱退回淡入，不乱飞。
+ */
+function onFrameClick() {
+  if (state.value === "failed") {
+    onFailedClick();
+    return;
+  }
+  emit("open", props.src);
+}
+
+function captureOrigin(e: PointerEvent) {
+  rememberImageOrigin(e.currentTarget);
 }
 
 /**
@@ -141,15 +165,16 @@ onUnmounted(clearTimer);
        解码完成只换框里的内容 ⇒ 前后 boundingClientRect 一致（探针 imgskel 现读）。 -->
   <div
     data-img-frame
-    class="relative w-52 max-w-full cursor-pointer overflow-hidden rounded-[var(--gosslan-bubble-radius)]"
+    class="relative w-52 max-w-full cursor-pointer touch-manipulation overflow-hidden rounded-[var(--gosslan-bubble-radius)]"
     :style="{ height: `${placeholderHeight}px` }"
     :data-img-state="state"
-    :role="state === 'loaded' ? 'button' : undefined"
-    :tabindex="state === 'loaded' ? 0 : undefined"
-    :aria-label="state === 'loaded' ? t('msg.clickToOpen') : undefined"
-    @click="state === 'loaded' ? emit('open', src) : state === 'failed' && onFailedClick()"
-    @keydown.enter.prevent="state === 'loaded' && emit('open', src)"
-    @keydown.space.prevent="state === 'loaded' && emit('open', src)"
+    role="button"
+    tabindex="0"
+    :aria-label="state === 'failed' ? t('msg.imageLoadFailed') : t('msg.imagePreview')"
+    @pointerdown="captureOrigin"
+    @click="onFrameClick"
+    @keydown.enter.prevent="onFrameClick"
+    @keydown.space.prevent="onFrameClick"
   >
     <!-- 骨架按**载荷里的真实像素尺寸**预留（后端从本机文件头读出 w/h 写进 content）。
          有 w/h：预留 == 真实高 = min(288, 208 × h/w) ⇒ 解码完成零跳变；
@@ -181,8 +206,9 @@ onUnmounted(clearTimer);
          参与排版"的元素发请求 —— display:none 的懒加载图**永不发请求**（Chromium/WebKit/WebView2
          三引擎同形，2026-10-12 headless 实测：blob 有效、手动 new Image() 能解码，挂在这里
          12 秒 naturalWidth 仍是 0，资源计数 0）。⇒ @load 永不触发 ⇒ state 永不进 loaded ⇒
-         图永远被藏住，退避 5 次后落「图片加载失败」，点击也只走重取而不开预览
-         （6853680 给消息行统一补 lazy 时引入，v4.35.2 真机：自己发的和对方发的图全打不开）。
+         图永远被藏住，退避 5 次后落「图片加载失败」。（6853680 给消息行统一补 lazy 时引入，
+         v4.35.2 真机：自己发的和对方发的图全打不开）。
+         ⚠️ 气泡热区**不再**跟着 `state` 走：加载中/已加载都一次点击开预览（见 onFrameClick）。
          虚拟列表只挂载视口附近的行，eager 不会把屏外图提前拉下来；异步解码仍由 decoding="async" 保留。 -->
     <img decoding="async" :alt="t('msg.imageMessage')"
       data-img-el

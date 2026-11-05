@@ -1694,18 +1694,20 @@ test("图片预览只有一处渲染点，其余组件一律走 useImagePreviewS
     // 别人不许再自己攒一套 open/index 状态（那等于又长出第二个预览实例）
     if (
       rel !== "layouts/ResponsiveLayout.vue" &&
+      rel !== "components/GroupTodosWindow.vue" &&
       /const\s+\w*lightbox\w*\s*=\s*ref\(/i.test(src)
     ) {
       stateful.push(rel);
     }
   }
-  // 允许**两个文档各一个实例**：主窗口的覆盖层（移动端 + 不可跨文档时的退回路径）
-  // 与桌面端那个全局唯一的预览窗口。"全局只有一个预览"说的是**同一时刻用户看到的界面**，
-  // 而这两处不会同时亮：store 的 `inWindow` 为真时壳层那份就让位（ResponsiveLayout 的 :open）。
+  // 允许**两个文档各一个实例**：主窗口的覆盖层（主界面 + 移动端）与群任务窗口
+  // （任务看板里也会点开图片）。2026-11-05 桌面端独立预览窗口作废后，"全局只有一个预览"
+  // 说的是**同一时刻用户看到的界面**；这两个文档各有自己的 Pinia 实例，
+  // 同一组件、同一 FLIP、同一 store 契约，不会同时出现在用户眼前。
   assert.deepEqual(
     [...new Set(renderers)].sort(),
-    ["components/window/PreviewWindow.vue", "layouts/ResponsiveLayout.vue"],
-    `图片预览的渲染点不对：${renderers.join(", ")} —— 只许壳层覆盖层 + 预览窗口这两处`,
+    ["components/GroupTodosWindow.vue", "layouts/ResponsiveLayout.vue"],
+    `图片预览的渲染点不对：${renderers.join(", ")} —— 只许壳层覆盖层 + 群任务窗口两处`,
   );
   assert.deepEqual(stateful, [], `这些组件还自己持有预览开关状态：${stateful.join(", ")}`);
   // store 侧：唯一那份实例绑在 store 上，不是本地 ref
@@ -1869,7 +1871,7 @@ test("src 下每个修饰类都能在样式里找到定义", () => {
  *
  * 这条按形状抓：模板里（剥掉 HTML 注释之后）凡是一个带 `fixed` 且带 `inset-0` 的元素**内部**
  * 出现 `<img :src="X">`，而 X 是本组件 script 段里 `const X = ref(...)` 声明的 —— 就是第二个预览实例。
- * 白名单只有那两个渲染点（壳层覆盖层 + 预览窗口）；缩略图不算（它不在整屏元素内部，
+ * 白名单只有那两个渲染点（壳层覆盖层 + 群任务窗口）；缩略图不算（它不在整屏元素内部，
  * 且绑的是数组/prop 而不是本地图像状态）。
  *
  * 反向自证（非空转）：把 FavoritePanel 接进统一预览之后这一条应当绿；
@@ -1878,7 +1880,7 @@ test("src 下每个修饰类都能在样式里找到定义", () => {
 test("整屏图片覆盖层只许长在统一渲染点（私有 viewer 是第二个预览实例）", () => {
   const srcDir = join(import.meta.dirname, "..");
   const files = collectVueFiles(join(srcDir, "components")).concat(collectVueFiles(join(srcDir, "layouts")));
-  const ALLOWED = new Set(["layouts/ResponsiveLayout.vue", "components/window/PreviewWindow.vue"]);
+  const ALLOWED = new Set(["layouts/ResponsiveLayout.vue", "components/GroupTodosWindow.vue"]);
   const offenders: string[] = [];
   for (const f of files) {
     const rel = f.replace(srcDir + "/", "");
@@ -4751,12 +4753,12 @@ test("㊿ BaseModal：卡片与 max-h 读出口、遮罩故意读 window、整�
   assert.ok(!/pt-\[env\(safe-area-inset-top/.test(src), "整屏面板里那句自己加的 env 该删了：外壳已经让位，两层都让就是双计");
 });
 
-test("㊿ 图片预览：外壳读出口、工具条只留 1rem、那个只为绕过 caption 而存在的 topInset prop 已删净", () => {
+test("㊿ 图片灯箱：外壳读出口、那个只为绕过 caption 而存在的 topInset prop 已删净", () => {
   const lb = code691(readFileSync(join(srcDir691, "components", "message", "ImageLightbox.vue"), "utf8"));
   assert.ok(/top-\[var\(--gosslan-safe-top,0px\)\]/.test(lb), "预览外壳要读出口");
   assert.ok(!/topInset/.test(lb), "prop 还在（" + (lb.match(/topInset/g) || []).length + " 处）：外壳已经读同一枚，它是没有活干的兼容层");
-  const pv = code691(readFileSync(join(srcDir691, "components", "window", "PreviewWindow.vue"), "utf8"));
-  assert.ok(!/top-inset/.test(pv), "预览窗还在手动传那条让位：外壳已经读同一枚");
+  // 2026-11-05（拍板 B）：桌面独立预览窗已删除 ⇒ 原来"预览窗不许手动传 top-inset"那半条
+  // 跟着窗口一起消失（再断言 `PreviewWindow.vue` 的存在就是让判据空转）。
   // 页面级整屏覆盖（没有外层 shell 让它们靠）必须继续自己读 env —— 这条不许被"统一"顺手删掉。
   const pageOwners = ["components/MobilePageFrame.vue", "components/FavoritePanel.vue"]
     .filter((r) => /pt-\[env\(safe-area-inset-top/.test(code691(readFileSync(join(srcDir691, r), "utf8"))));

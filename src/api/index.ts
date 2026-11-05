@@ -14,7 +14,6 @@ import {
   parseIpcValue,
   shareTreeSchema,
 } from "@/utils/validation";
-import type { PreviewGallery, PreviewImage } from "@/types";
 import type { UpdaterDownloadEvent, UpdaterInfo, UpdaterStatus } from "@/types";
 import type {
   AndroidDownloadEvent,
@@ -809,25 +808,6 @@ export const api = {
    */
   requestGroupTodoFocus: (groupId: string, todoId: string, mode?: TodoFocusMode) =>
     invoke<void>("request_group_todo_focus", { groupId, todoId, mode: mode ?? null }),
-
-  // ---------------- 全局图片预览（用户 2026-09-24 #40） ----------------
-  /**
-   * 把这份相册设为**那个全局唯一预览窗口**的内容（桌面端）。
-   * 已开着就替换内容并聚焦，没开就建一个 —— 调用方不需要知道窗口在不在。
-   */
-  openImagePreview: (items: PreviewImage[], index: number) =>
-    invoke<void>("open_image_preview", { gallery: { items, index } }),
-  /** 预览窗口自己取"现在该显示哪一份"（不清：每次投递都整体覆盖，见 Rust 侧说明）。 */
-  getImagePreviewGallery: () => invoke<PreviewGallery | null>("get_image_preview_gallery"),
-  /** 窗口已经开着时的"内容换了，再取一次"提醒。 */
-  onImagePreviewChanged: (cb: () => void) => listen("preview-gallery", () => cb()),
-  /**
-   * 把高频的两扇窗（图片预览 + 群任务）**先建好、文档先加载**，但不显示也不抢焦点。
-   * 桌面端启动后延后一拍调用；失败无所谓（最坏就是第一次仍然慢一点），
-   * 所以调用方一律 `.catch(() => {})`，不要给它弹提示。
-   */
-  prewarmAuxWindows: () => invoke<void>("prewarm_aux_windows"),
-
 
   /** 在独立窗口里加载一个外部网址（桌面端；窗口隔离，不授予远端页面任何命令权限）。 */
   openLinkWindow: (url: string, name: string) => invoke<void>("open_link_window", { url, name }),
