@@ -58,7 +58,14 @@
  *     node scripts/check-ui-runtime.mjs              # 跑全部段
  *     node scripts/check-ui-runtime.mjs --only=emoji # 只跑某段
  *     node scripts/check-ui-runtime.mjs --self-check # 跑反面对照（判据必须报红，不是恒过）
- * 退出码：0 = 全绿；1 = 有判据红 / 环境缺件（**缺件是红，不是跳过**，§十 不许把没跑写成 PASS）。
+ * 退出码：0 = 没有失败态；1 = 有判据红 / 环境缺件（**缺件是红，不是跳过**，§十 不许把没跑写成 PASS）。
+ *
+ * **失败态口径（2026-11-05 定）**：唯一算失败的判据是 `FAIL`（外加 `UNKNOWN`）。
+ * `UNSUPPORTED` 表示「这台引擎上这一格没有判据」——它单独计数、逐条列名，但**不**导致退出码非 0；
+ * 前提是命中 `UNSUPPORTED_ALLOWLIST` 里登记的已知引擎边界。**白名单外**的 UNSUPPORTED、
+ * 或白名单条目自己的 `precondition` 不成立（本该能测的格掉成了 UNSUPPORTED）**照旧算失败**。
+ * 白名单固定只有四条（headed 可见时长 / 原生键盘 PageDown / 合成手势惯性 / ctxguard 触控派发），
+ * 加一条是要写理由的显式动作 —— 见下面 `UNSUPPORTED_ALLOWLIST` 的注释。
  *
  * ## 改这个文件前先读三条（都是本轮实际踩过的）
  * - 页面侧那段是**模板字符串里的源码** ⇒ 里面不许出现反引号（会把模板提前结束），
@@ -150,22 +157,125 @@ const RAN_SEGMENTS = [];
  */
 let lastCellMark = "(一条判据都还没记录)";
 /**
- * 判据四态（2026-10-27）：
+ * 判据四态（2026-10-27；2026-11-05 改失败口径）：
  *   PASS / FAIL —— `check()` 记；
  *   UNSUPPORTED —— 这台机器/这个内核没有该能力（例如 headless 量不到动画）；
  *   UNKNOWN     —— 采到了，但归因不确定（例如"这次 scrollTop 变化没人能认领"）。
- * 后两态**都算红**（沿用文件头"缺件是红，不是跳过"），但分开记账：汇总能把
- * "判据不成立"与"这台机器做不到"分开印出来，免得两者都被读成同一个 ❌。
- * 它们也绝不算绿 —— 这正是本仓最容易被绕开的那种假绿。
+ *
+ * 旧口径是「后两态都算红」；2026-11-05 起改成：
+ *   · FAIL 是唯一的标准失败态（UNKNOWN 仍算失败 —— 它是"采到了但归因不确定"，不是引擎边界）；
+ *   · UNSUPPORTED 单独记账、逐条列名，**只有**命中 UNSUPPORTED_ALLOWLIST 的条目才不导致
+ *     退出码非 0；白名单外的一律算失败。
+ * 这条口径不是"放宽"，因为它同时收紧了另一头：白名单是**显式**的（一条一个 id + 原因 +
+ * 引擎限制 + 自己的 precondition），任何新塞进来的 UNSUPPORTED 都是白名单外 ⇒ 红。
  */
 const STATE_COUNTS = { PASS: 0, FAIL: 0, UNSUPPORTED: 0, UNKNOWN: 0 };
+
+/**
+ * UNSUPPORTED 白名单（2026-11-05）——**只允许这四个已知引擎边界**，一条一个 id。
+ *
+ * 为什么需要白名单而不是直接放过 UNSUPPORTED：直接放过等于把门禁静默关掉 ——
+ * 谁写一条 `checkState("…", "UNSUPPORTED")` 就能把一格红改成不算红，而且没人看得出来。
+ * 所以这里是**显式**的：名字必须**逐字**对上（`matches` 用 `===`，不用模糊匹配），
+ * 改名/换格的同义 UNSUPPORTED 一律落进"白名单外 ⇒ 算失败"。
+ *
+ * 每条还有自己的 `precondition`：**该引擎边界在当前这一趟真的成立**才免红。
+ * 这正是「任何检查项从绿掉成 UNSUPPORTED 也算失败」——例如 headed 那一趟本该能测
+ * 可见空白时长，若还报 UNSUPPORTED，说明量具前提没成立（不是引擎做不到）⇒ 照旧红。
+ *
+ * ⚠️ 扩张白名单 = 一次要写理由的显式动作。新增条目前先问：这是"引擎做不到"，
+ * 还是"我们没测到"？后者一律不许进白名单。
+ */
+const UNSUPPORTED_ALLOWLIST = [
+  {
+    id: "headed-visible-blank",
+    matches: (name) => name === "切到已缓存会话：可见空白总时长这一格需要 headed（headless 不推动画时钟）",
+    reason: "同一段 headed 分支有等价判据（可见空白总时长 ≤34ms）；白名单只免掉 headless 那一趟。",
+    engineLimit: "headless=new 的合成帧不推进动画时钟 ⇒ transition / opacity 的 computed 值停在起点，"
+      + "visibleBlankMs 量不出来（只有 headed 那趟可信）。",
+    precondition: ({ actual }) => {
+      // 必须是"确实以 headless 启动"并且"页面如实报 headed=false"两个条件同时成立。
+      // · headed 启动（GOSSLAN_PROBE_HEADLESS=0）却走到这一支 ⇒ 本该绿的格掉了 ⇒ 失败；
+      // · cached/vis 缺失（没采到读数）⇒ 不是引擎边界，是量具没测到 ⇒ 失败。
+      if (process.env.GOSSLAN_PROBE_HEADLESS === "0") return false;
+      let o; try { o = JSON.parse(actual); } catch { return false; }
+      return !!o && !!o.vis && o.vis.headed === false;
+    },
+  },
+  {
+    id: "keyboard-pagedown",
+    matches: (name) => name === "键盘 PageDown 未驱动容器 —— 键盘原生滚动这一格无判据",
+    reason: "「我们一次都不写」的原生滚动那一格；合成/滚轮/手势的位移对照仍在判（上面那条组合判据）。",
+    engineLimit: "本机内核收到合成 PageDown 后容器 scrollTop 不动（moved=0，frameP50=0）。",
+    precondition: ({ actual }) => {
+      let o; try { o = JSON.parse(actual); } catch { return false; }
+      if (!o) return false;
+      // 焦点必须真的落在容器上，且 moved 是采到的数、只是没到 100px。
+      // focusOk 是对象（{focused,tabIndex,scrollable}）；焦点没落上去 ⇒ 量具前提没成立 ⇒ 失败。
+      const focused = o.focusOk === true || !!(o.focusOk && o.focusOk.focused === true);
+      return focused && typeof o.moved === "number" && o.moved < 100;
+    },
+  },
+  {
+    id: "synthetic-fling-tail",
+    matches: (name) => name === "输入自证②：本引擎的合成手势没产生惯性尾巴 —— 惯性那一格无判据",
+    reason: "惯性尾巴必须由引擎自证；白名单只免掉这半格，「三种输入都真的滚动了」那条组合判据仍在判。",
+    engineLimit: "本机内核的 Input.synthesizeScrollGesture(touch, preventFling:false) 不产生 fling："
+      + "手势结束 5736 → +400ms 5736（动量位移 0px）。",
+    precondition: ({ actual }) => {
+      let o; try { o = JSON.parse(actual); } catch { return false; }
+      if (!o) return false;
+      // 手势本身必须真的滚过（moved ≥100，只用绝对值）：否则是"手势没生效"，
+      // 交给上面那条组合判据红，这一格不许跟着被免掉。
+      return typeof o.momentum === "number" && Math.abs(o.momentum) < 8
+        && typeof o.moved === "number" && Math.abs(o.moved) >= 100;
+    },
+  },
+  {
+    id: "ctxguard-touch-dispatch",
+    matches: (name) => name === "ctxguard：触控派发在本机内核无回包（引擎边界，非产品红）",
+    reason: "只有 ctxguard 这一段登记过：它的触控路径在本机内核拿不到回包，同段其他判据照常跑。"
+      + "（名字带段名 ⇒ 别的段撞上同一现象会落进白名单外，需要人决定要不要另立条目。）",
+    engineLimit: "本机系统浏览器（Brave 回退）的 Input.dispatchTouchEvent 在 45s 内从不回包，"
+      + "而同段 Runtime.evaluate / rAF 正常 ⇒ 内核边界，不是渲染层 hang。",
+    precondition: ({ actual }) => {
+      // 只认"另一条 CDP 通路活着"的现场（与 runSegment 里 diagLive 同一组条件，这里独立复核）：
+      // rAF 在 2 位毫秒内发得出 + 页面可见 + 有焦点。渲染层真 hang（noraf / hidden）⇒ 失败。
+      const s = String(actual);
+      const i = s.lastIndexOf("| 活体 ");
+      if (i < 0) return false;
+      let d; try { d = JSON.parse(s.slice(i + "| 活体 ".length)); } catch { return false; }
+      return !!d && d.focus === true && d.hidden === false && /^raf@\d{1,2}ms$/.test(String(d.raf));
+    },
+  },
+];
+
 function recordCheck(name, state, expect, actual) {
-  const ok = state === "PASS";
+  const entry = state === "UNSUPPORTED"
+    ? UNSUPPORTED_ALLOWLIST.find((e) => e.matches(String(name)))
+    : null;
+  let premiseOk = false;
+  if (entry) {
+    // precondition 自己抛错也算"前提不成立"：白名单条目不许因为判据异常而静默放过。
+    try { premiseOk = entry.precondition({ name, expect, actual }) === true; } catch { premiseOk = false; }
+  }
+  const waived = state === "UNSUPPORTED" && !!entry && premiseOk;
+  const waiverRejected = state === "UNSUPPORTED" && !!entry && !premiseOk ? entry.id : null;
+  const ok = state === "PASS" || waived;
   STATE_COUNTS[state] += 1;
-  results.push({ name, ok, state, expect, actual });
+  results.push({ name, ok, state, expect, actual, waived, waiverRejected });
   lastCellMark = `第 ${results.length} 格《${String(name).slice(0, 46)}》`;
-  console.log(`  ${ok ? "✅" : "❌"} ${state === "PASS" || state === "FAIL" ? "" : `[${state}] `}${name}`);
-  if (!ok) console.log(`      预期 ${JSON.stringify(expect)} / 实际 ${JSON.stringify(actual)}`);
+  const mark = state === "PASS" ? "✅" : waived ? "⚪" : "❌";
+  const tag = state === "PASS" ? ""
+    : waived ? `[UNSUPPORTED·白名单:${entry.id}] `
+    : waiverRejected ? `[UNSUPPORTED·白名单条目前提不成立:${waiverRejected}] `
+    : state === "FAIL" ? "[FAIL] "
+    : `[${state}] `;
+  console.log(`  ${mark} ${tag}${name}`);
+  if (!ok || waived) console.log(`      预期 ${JSON.stringify(expect)} / 实际 ${JSON.stringify(actual)}`);
+  if (waiverRejected) {
+    console.log(`      ✗ 白名单条目「${waiverRejected}」的引擎边界前提不成立 ⇒ 这一格按失败记账（不是引擎做不到，是该测没测）`);
+  }
   return ok;
 }
 function check(name, pass, expect, actual) {
@@ -3686,15 +3796,42 @@ async function main() {
     check("探针自己跑完了（没在半路抛错）", false, "正常结束", String(e && e.message || e).slice(0, 1200));
     exitCode = 1;
   } finally {
-    const tally = results.filter((r) => r.ok).length;
+    const passCount = results.filter((r) => r.state === "PASS").length;
+    const failCount = results.filter((r) => r.state === "FAIL").length;
+    const unknownCount = results.filter((r) => r.state === "UNKNOWN").length;
+    const waivedList = results.filter((r) => r.waived);
+    const outsideList = results.filter((r) => r.state === "UNSUPPORTED" && !r.waived);
     console.log(`  · 已选段 ${RAN_SEGMENTS.length} 个：${RAN_SEGMENTS.join(", ") || "(空 —— 这本身就是红)"}`);
-    console.log(`  · 状态 PASS ${STATE_COUNTS.PASS} / FAIL ${STATE_COUNTS.FAIL}`
-      + ` / UNSUPPORTED ${STATE_COUNTS.UNSUPPORTED} / UNKNOWN ${STATE_COUNTS.UNKNOWN}`
-      + "（后两态也算红，只是分开记账）");
+    // 四类分开报数（2026-11-05 口径）：绿 / FAIL / UNSUPPORTED·白名单内 / UNSUPPORTED·白名单外。
+    // 后者是这层的反向守卫 —— 谁把新格子塞进 UNSUPPORTED，这里就会多一个数并让退出码变 1。
+    console.log(`  · 绿 ${passCount} / FAIL ${failCount}`
+      + ` / UNSUPPORTED·白名单内 ${waivedList.length} / UNSUPPORTED·白名单外 ${outsideList.length}`
+      + "（后两类分开记账：白名单内 = 已知引擎边界，白名单外 = 算失败）");
+    if (unknownCount > 0) {
+      console.log(`  · 另有 UNKNOWN ${unknownCount}（采到了但归因不确定 ⇒ 算失败，不在白名单口径里）`);
+    }
+    if (waivedList.length) {
+      console.log("  · 白名单内 UNSUPPORTED（引擎边界，不导致退出码非 0）逐条列名 + 原因：");
+      for (const r of waivedList) {
+        const e = UNSUPPORTED_ALLOWLIST.find((x) => x.matches(String(r.name)));
+        console.log(`      ⚪ ${e.id}｜${r.name}`);
+        console.log(`         原因：${e.reason}`);
+        console.log(`         引擎限制：${e.engineLimit}`);
+      }
+    }
+    if (outsideList.length) {
+      console.log("  · 白名单外 UNSUPPORTED（**算失败**；未登记的引擎边界 / 白名单条目前提不成立）逐条列名：");
+      for (const r of outsideList) {
+        console.log(`      ❌ ${r.waiverRejected ? `白名单条目「${r.waiverRejected}」前提不成立` : "未登记"}｜${r.name}`);
+        console.log(`         实际：${String(r.actual).slice(0, 200)}`);
+      }
+    }
     if (TOOL_RACES.length) {
       console.log(`  · 工具层竞态隔离命中 ${TOOL_RACES.length} 段：${TOOL_RACES.join(", ")}（首抛、重试全绿 ⇒ 不计产品红）`);
     }
-    console.log(`\n${exitCode === 0 ? "✅" : "✗"} UI 运行时探针：${tally}/${results.length} 条判据绿`
+    console.log(`\n${exitCode === 0 ? "✅" : "✗"} UI 运行时探针：${passCount} 条绿`
+      + (waivedList.length ? ` + ${waivedList.length} 条白名单内 UNSUPPORTED（引擎边界）` : "")
+      + ` / 共 ${results.length} 条判据`
       + (SELF_CHECK ? "（这一段是反面对照：判据**必须**报红）" : ""));
     vite.kill("SIGTERM");
     chromeProc.kill("SIGTERM");
@@ -6188,7 +6325,10 @@ async function runScrollInput(cdp, url) {
       true, "|momentum| ≥8", JSON.stringify({ momentum: table.swipe.momentum }));
   } else {
     checkState("输入自证②：本引擎的合成手势没产生惯性尾巴 —— 惯性那一格无判据",
-      "UNSUPPORTED", "|momentum| ≥8", JSON.stringify({ momentum: table.swipe.momentum }));
+      "UNSUPPORTED", "|momentum| ≥8",
+      // 必须把 moved 一起记进来：白名单条目的 precondition 要靠它证明"手势真的滚过、
+      // 只是没有惯性尾巴"；手势没生效时这一格不许被免掉（那条组合判据已经会红）。
+      JSON.stringify({ momentum: table.swipe.momentum, moved: table.swipe && table.swipe.moved }));
   }
 }
 
