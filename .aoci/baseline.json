@@ -1,7 +1,7 @@
 {
   "version": 1,
   "created_at": "2026-10-04T12:17:40Z",
-  "updated_at": "2026-11-05T04:28:47Z",
+  "updated_at": "2026-11-05T04:33:32Z",
   "files": {
     ".gitattributes": {
       "role": "index",
@@ -125,9 +125,9 @@
     },
     "aoci.code.txt": {
       "role": "index",
-      "sha256": "3310c4d54772b56e0080e613591f2af7b52e308ce551ef7473f3f8cd8db871ed",
-      "size": 396127,
-      "normalized_sha256": "3310c4d54772b56e0080e613591f2af7b52e308ce551ef7473f3f8cd8db871ed"
+      "sha256": "0afbe6d95a347717a5fef6f0c9112bbbecd9623f12b143a8899a91c6ab0e12d4",
+      "size": 396772,
+      "normalized_sha256": "0afbe6d95a347717a5fef6f0c9112bbbecd9623f12b143a8899a91c6ab0e12d4"
     },
     "aoci.meta.txt": {
       "role": "index",
@@ -3652,57 +3652,57 @@
     },
     "src-tauri/src/network/transport/gossip.rs": {
       "role": "index",
-      "sha256": "9a053eb0536be9890cb78a2e000a31c190acef80cc7d208cbed67599af76cb75",
-      "size": 55674,
-      "normalized_sha256": "9a053eb0536be9890cb78a2e000a31c190acef80cc7d208cbed67599af76cb75"
+      "sha256": "67ab24fa894777306462269aef15e4fa65af4b052f8260a633dbfcdaa58fc5ab",
+      "size": 111650,
+      "normalized_sha256": "67ab24fa894777306462269aef15e4fa65af4b052f8260a633dbfcdaa58fc5ab"
     },
     "src-tauri/src/network/transport/gossip_tests.rs": {
       "role": "index",
-      "sha256": "bd6cf91e43f35bc4e523232c6b98935e12eaee40ae511e30770d9dd880354b0f",
-      "size": 12500,
-      "normalized_sha256": "bd6cf91e43f35bc4e523232c6b98935e12eaee40ae511e30770d9dd880354b0f"
+      "sha256": "c04de1a1fda63b16115240b2288d83c4c77af87677ed03aed71448c19cdcaf58",
+      "size": 26302,
+      "normalized_sha256": "c04de1a1fda63b16115240b2288d83c4c77af87677ed03aed71448c19cdcaf58"
     },
     "src-tauri/src/network/transport/group_file.rs": {
       "role": "index",
-      "sha256": "b4dd267aa63fc52ec0d8a0d27702affd1103b5f7e32df84f83e95d0e02285121",
-      "size": 34633,
-      "normalized_sha256": "b4dd267aa63fc52ec0d8a0d27702affd1103b5f7e32df84f83e95d0e02285121"
+      "sha256": "e11185d0da83734ef4352f7c18e170eace551548f14f1f3a799e8ab87f8307a0",
+      "size": 135798,
+      "normalized_sha256": "e11185d0da83734ef4352f7c18e170eace551548f14f1f3a799e8ab87f8307a0"
     },
     "src-tauri/src/network/transport/group_keys_tests.rs": {
       "role": "index",
-      "sha256": "d3e9d77737aae5bd7fe82d1796616a2ff1721582853c931a6dd63d3d79e7ae6c",
-      "size": 17546,
-      "normalized_sha256": "d3e9d77737aae5bd7fe82d1796616a2ff1721582853c931a6dd63d3d79e7ae6c"
+      "sha256": "09a630497bb6d6ce3abb7234128ae01a91874f3065c8bd98156dd92d038fb2c1",
+      "size": 17857,
+      "normalized_sha256": "09a630497bb6d6ce3abb7234128ae01a91874f3065c8bd98156dd92d038fb2c1"
     },
     "src-tauri/src/network/transport/group_membership.rs": {
       "role": "index",
-      "sha256": "64def1cf7753b09354d0de553cb4ac5eb84cea7f57698513771db187b27e9ab4",
-      "size": 6300,
-      "normalized_sha256": "64def1cf7753b09354d0de553cb4ac5eb84cea7f57698513771db187b27e9ab4"
+      "sha256": "0dd46cf2c96799cdf04ef792d02ff0f30892006b4030e413f49fc5f41684993a",
+      "size": 6918,
+      "normalized_sha256": "0dd46cf2c96799cdf04ef792d02ff0f30892006b4030e413f49fc5f41684993a"
     },
     "src-tauri/src/network/transport/handle_file.rs": {
       "role": "index",
-      "sha256": "5572a2f7f5573c1918736778e2cae91abc4af3f4cdf9775cdff973cd691fc9d0",
-      "size": 25791,
-      "normalized_sha256": "5572a2f7f5573c1918736778e2cae91abc4af3f4cdf9775cdff973cd691fc9d0"
+      "sha256": "bf0723c81db575e586cb20959d450b143815431e0198bc4c0350d91be3bea222",
+      "size": 38125,
+      "normalized_sha256": "bf0723c81db575e586cb20959d450b143815431e0198bc4c0350d91be3bea222"
     },
     "src-tauri/src/network/transport/handle_group.rs": {
       "role": "index",
-      "sha256": "056eb83cd393583a5105022ce25e24268101fcae8e89220b08217827cb2135b6",
-      "size": 9554,
-      "normalized_sha256": "056eb83cd393583a5105022ce25e24268101fcae8e89220b08217827cb2135b6"
+      "sha256": "392d395069fb744083cb9105fe81045304aec5025ae0898357f208ecd79ccaa0",
+      "size": 11678,
+      "normalized_sha256": "392d395069fb744083cb9105fe81045304aec5025ae0898357f208ecd79ccaa0"
     },
     "src-tauri/src/network/transport/handle_identity.rs": {
       "role": "index",
-      "sha256": "2a5e7be1f54dcfe7c62b0ddb8357d0618e9752448779da7d50fdc46cd3f8a3af",
-      "size": 13945,
-      "normalized_sha256": "2a5e7be1f54dcfe7c62b0ddb8357d0618e9752448779da7d50fdc46cd3f8a3af"
+      "sha256": "bc9ac80c4806c43d7127315bc2ce7a783b8ccbab93fd15e654ceb8caf81b7def",
+      "size": 16107,
+      "normalized_sha256": "bc9ac80c4806c43d7127315bc2ce7a783b8ccbab93fd15e654ceb8caf81b7def"
     },
     "src-tauri/src/network/transport/handle_messaging.rs": {
       "role": "index",
-      "sha256": "406c98eea2d58fb1d85c5dc68e99420d2dfb73ce67fcca499da57be8022bde25",
-      "size": 13706,
-      "normalized_sha256": "406c98eea2d58fb1d85c5dc68e99420d2dfb73ce67fcca499da57be8022bde25"
+      "sha256": "b9f06d2b15d7e40d362f03adbf899ba1f1b68eb69bfdc5009ac48bb96cd95d5f",
+      "size": 22788,
+      "normalized_sha256": "b9f06d2b15d7e40d362f03adbf899ba1f1b68eb69bfdc5009ac48bb96cd95d5f"
     },
     "src-tauri/src/network/transport/handle_share.rs": {
       "role": "index",
