@@ -1,4 +1,7 @@
 <script setup lang="ts">
+import { computed } from "vue";
+import { bubbleSkinLinePath, bubbleSkinPath, type BubbleSkinBox } from "@/utils/bubbleSkinPath";
+
 /**
  * 聊天气泡的「小尾巴」—— 指向头像的那枚叶形。
  *
@@ -32,12 +35,49 @@
  */
 // 2026-10-24：群聊不渲染（`tail` 由 MessageItem 按 `isGroup` 给）；单聊挂在左下/右下角贴底边。
 // 朝向靠 `.tail-mine { scaleX(-1) }` 镜像，形状只有一份 —— 两份路径迟早会漂。
-withDefaults(defineProps<{ mine?: boolean }>(), { mine: false });
+//
+// 2026-11-05（第三次同一处接缝）：自己的消息改成**单填充皮肤** —— 一条闭合路径同时画出
+// 气泡四角与叶形，只有一次填充、一条边。旧 14×14 叶形与矩形气泡是两块独立抗锯齿的
+// 形状，且叶形底边停在盒内 y=13.5（比气泡底边短 0.5px），自己的消息描边又透明 ⇒
+// 那 0.5px 没人补，就是用户截图里的浅色缝（几何错位，不只是半透明边界）。
+// `skin` 由 MessageItem 按「单聊 + 自己 + 文本气泡」打开；`box` 是外壳的现量尺寸与
+// 四角圆角（见 `utils/bubbleSkinPath`）。其余气泡/群聊仍走旧叶形，形状不变。
+const props = withDefaults(
+  defineProps<{
+    mine?: boolean;
+    /** 单填充皮肤（自己的文本气泡）：一条路径覆盖「气泡 + 叶形」，见 bubbleSkinPath。 */
+    skin?: boolean;
+    /** 皮肤坐标系 = 外壳（气泡 border-box）的尺寸与四角圆角，CSS px。 */
+    box?: BubbleSkinBox | null;
+  }>(),
+  { mine: false, skin: false, box: null },
+);
+
+const skinD = computed(() => (props.skin && props.box ? bubbleSkinPath(props.box) : null));
+const skinLineD = computed(() => (props.skin && props.box ? bubbleSkinLinePath(props.box) : null));
 </script>
 
 <template>
-  <span aria-hidden="true" class="bubble-tail" :class="mine ? 'tail-mine' : 'tail-other'">
-    <svg viewBox="0 0 14 14">
+  <!-- ⚠️ `class="bubble-tail" :class="mine ? 'tail-mine' : 'tail-other'"` 必须逐字保留
+       （designGuards 钉住的分方向契约）；皮肤模式只追加一个 data 属性，
+       不写第二个 `:class`（避免同元素上两个 class 绑定被 lint 当重复属性）。 -->
+  <span
+    aria-hidden="true"
+    class="bubble-tail" :class="mine ? 'tail-mine' : 'tail-other'"
+    :data-tail-skin="skinD ? '1' : undefined"
+  >
+    <!-- 单填充皮肤：坐标 = 外壳，路径由 `bubbleSkinPath` 生成。`tail-fill` 仍是唯一填充层；
+         `tail-line` 是**开口**描边（自己的消息是 transparent，不会成为第二条边）。 -->
+    <svg
+      v-if="skinD && box"
+      class="tail-skin-svg"
+      :viewBox="`0 0 ${box.w} ${box.h}`"
+      :style="{ width: box.w + 'px', height: box.h + 'px' }"
+    >
+      <path class="tail-fill" :d="skinD" />
+      <path class="tail-line" :d="skinLineD ?? undefined" />
+    </svg>
+    <svg v-else viewBox="0 0 14 14">
     <!-- 左下角的一枚小鳍：外缘从气泡左边框 (10.5,4) 起笔（切线竖直，与上面的竖边框
          无缝接上），弯到**气泡底边**上的尖端 (2,13.5)；底边从尖端继续向右 ——
          尾巴不是挂在侧边的一块叶子，而是气泡左下角自己拐出去的一小段轮廓。

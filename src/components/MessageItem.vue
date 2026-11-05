@@ -9,6 +9,7 @@ import { PopoverContent, PopoverPortal, PopoverRoot, PopoverTrigger } from "reka
 import { useMessageFile } from "@/composables/useMessageFile";
 import { useMemberProfile } from "@/composables/useMemberProfile";
 import { CODE_SURFACE, IMAGE_PLACEHOLDER_HEIGHT, textNeedsClamp } from "@/utils/previewMetrics";
+import type { BubbleSkinBox } from "@/utils/bubbleSkinPath";
 import {
   isFavoritableKind, isForwardableKind, isKnownKind, isMultiSelectable, isRemindableKind, isTipKind, isTransferKind, kindClass, } from "@/utils/messageKinds";
 import { cardCopyText } from "@/utils/cardText";
@@ -1115,6 +1116,61 @@ watch(stripEl, (el) => {
 });
 onBeforeUnmount(() => stripRo?.disconnect());
 
+/**
+ * 单填充皮肤（2026-11-05）：自己的**文本**气泡不再用「矩形气泡 + 14×14 叶形」两块形状
+ * 叠合，而是由 `BubbleTail` 用一条闭合路径一次画完「气泡四角 + 尾巴」。
+ *
+ * 为什么只开给文本：卡片/代码气泡的可见面不是 bubble 的 `:first-child` 这一层
+ * （代码卡片内部各自有面、宽度由内容定），套皮肤会凭空多出 1px 轮廓和一块垫底色；
+ * 群聊 `tailSide` 为 null，本来就没有尾巴。
+ *
+ * 尺寸/圆角必须**现量现读**（不能用固定常数）：连续消息会把相邻角收成 6px、
+ * 有回应底栏时整块的下圆角属于底栏、文本换行会改高度。ResizeObserver 跟上尺寸；
+ * 圆角随 props（groupSide / 回应有无）变化时再读一次。
+ */
+const skinTail = computed(() => showTail.value && mine.value && props.message.kind === "text");
+const skinShellEl = ref<HTMLElement | null>(null);
+const skinBox = ref<BubbleSkinBox | null>(null);
+let skinRo: ResizeObserver | null = null;
+function readSkinBox() {
+  const shell = skinShellEl.value;
+  if (!skinTail.value || !shell) {
+    skinBox.value = null;
+    return;
+  }
+  const bubble = shell.querySelector("[data-msg-bubble] > :first-child") as HTMLElement | null;
+  if (!bubble) return;
+  const { width: w, height: h } = shell.getBoundingClientRect();
+  if (w <= 0 || h <= 0) return;
+  const bubbleStyle = getComputedStyle(bubble);
+  // 有回应底栏时整块的最下沿是底栏（气泡自己的两个下角已被 style.css 抹平）。
+  const stripStyle = getComputedStyle(stripEl.value ?? bubble);
+  const px = (v: string) => Number.parseFloat(v) || 0;
+  skinBox.value = {
+    w,
+    h,
+    tl: px(bubbleStyle.borderTopLeftRadius),
+    tr: px(bubbleStyle.borderTopRightRadius),
+    bl: px(stripStyle.borderBottomLeftRadius),
+    br: px(stripStyle.borderBottomRightRadius),
+  };
+}
+watch(
+  [skinShellEl, skinTail],
+  ([el, on]) => {
+    skinRo?.disconnect();
+    skinRo = null;
+    skinBox.value = null;
+    if (!el || !on) return;
+    readSkinBox();
+    skinRo = new ResizeObserver(() => readSkinBox());
+    skinRo.observe(el);
+  },
+  { flush: "post" },
+);
+watch([() => props.groupSide, () => hasReactions.value], readSkinBox, { flush: "post" });
+onBeforeUnmount(() => skinRo?.disconnect());
+
 function doCancelSend() {
   closeContextMenu();
   closeActionSheet();
@@ -1846,12 +1902,14 @@ async function copyFileToClipboard() {
                  与底栏同一底色，不会悬在中间；
                · 回执留在外壳外，与整块底边对齐。 -->
           <div
+            ref="skinShellEl"
             data-msg-bubble-shell
             class="msg-shell relative flex min-w-0 max-w-full flex-col"
             :class="mine ? 'items-end' : 'items-start'"
             :style="shellStyle"
             :data-has-reactions="hasReactions ? 'true' : undefined"
             :data-tail-side="tailSide ?? undefined"
+            :data-bubble-skin="skinTail ? '1' : undefined"
           >
             <div
               data-msg-bubble
@@ -2042,7 +2100,7 @@ async function copyFileToClipboard() {
               />
             </div>
             <!-- 尾巴挂在整块外壳上：有回应条时它落在底栏的左下/右下角，与底栏同一底色。 -->
-            <BubbleTail v-if="showTail" :mine="mine" />
+            <BubbleTail v-if="showTail" :mine="mine" :skin="skinTail" :box="skinBox" />
           </div>
         </div>
       </div>

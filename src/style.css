@@ -1691,6 +1691,47 @@ html.has-caption {
   left: -10px;
 }
 
+/* ── 单填充皮肤（2026-11-05，用户第三次报「尾巴与气泡底边有缝」） ────────────────
+ *
+ * 旧实现是两块**各自**抗锯齿的形状：气泡矩形（border-radius）+ 14×14 叶形 SVG，
+ * 同色叠合处仍是一条"有两条边"的边界；而且叶形填充底边停在 y=13.5（盒内），
+ * 盒子 `bottom:0` 贴气泡边框盒底边 ⇒ 比气泡底边短 0.5px。自己的消息描边透明，
+ * 这 0.5px 没有任何一层去补 —— 就是用户截图里的浅色缝（**几何错位**，不只是
+ * 半透明边界；2026-11-05 沿交界采样实测的台阶恰好是 0.5 CSS px）。
+ *
+ * 新结构：`BubbleTail` 用**一条闭合路径**同时画出气泡四角与叶形（`utils/bubbleSkinPath`），
+ * 塞进原来的 14×14 span 里（span 的尺寸/位置不变，探针按它量根部），SVG 放大到整块外壳，
+ * 只保留这一个填充。气泡自己的背景仍保留（探针读 computed backgroundColor、内容也靠它），
+ * 但收进 1px（`background-clip: padding-box`）—— 外沿只由皮肤那一条边负责。
+ *
+ * ⚠️ 皮肤模式下 span 不能镜像（路径已经按"朝右/自己"画好），`.bubble-tail[data-tail-skin]`
+ * 的选择器强度高于 `.tail-mine`，只取消变换，不改盒子的定位。
+ * ⚠️ `background-clip` 与底栏 `background` 都必须带 `!important`：气泡/底栏的
+ * background 是**内联**写的（主题预设要与内联样式合用），普通声明压不过内联。 */
+.msg-shell[data-bubble-skin] {
+  /* 负 z-index 的皮肤要落在 shell 的背景之上、内容之下 —— 需要一格格层叠上下文，
+     否则会穿到页面底色下面看不见。 */
+  isolation: isolate;
+}
+.msg-shell[data-bubble-skin] > [data-msg-bubble] > :first-child {
+  background-clip: padding-box !important;
+}
+.msg-shell[data-bubble-skin] > [data-reaction-strip] {
+  /* 整块的底沿归皮肤；底栏自己再填一次就会长出第二块背景/第二条边。 */
+  background: transparent !important;
+  border-color: transparent !important;
+}
+.bubble-tail[data-tail-skin] {
+  transform: none;
+}
+.bubble-tail[data-tail-skin] > .tail-skin-svg {
+  position: absolute;
+  /* 与 span 的右缘差 10px：皮肤右边缘正好压在气泡边框盒右边（镜像版的同一个常数）。
+     用 inset 简写而不是单独写 bottom，避免与 `.bubble-tail` 的定位契约被重复钉一次。 */
+  inset: auto 10px 0 auto;
+  z-index: -1;
+}
+
 /* 连续消息合并那一格：**这里没有规则**。四角（相邻侧收成 --gosslan-bubble-radius-tight、
    外侧保持 --gosslan-bubble-radius）出自 `useMessageDisplay.bubbleStyle` 的**内联样式** ——
    上一版把这些声明写在样式表的 `.msg-stack[data-pos=…] .gosslan-bubble-text` 上，
