@@ -1,7 +1,7 @@
 {
   "version": 1,
   "created_at": "2026-10-04T12:17:40Z",
-  "updated_at": "2026-11-05T04:04:35Z",
+  "updated_at": "2026-11-05T04:13:45Z",
   "files": {
     ".gitattributes": {
       "role": "index",
@@ -95,9 +95,9 @@
     },
     "CHANGELOG.md": {
       "role": "index",
-      "sha256": "d6b9d7801a563d4d50aa938fa31b22398af0675dd9e7ee0d8ee1ee6aac39dc8a",
-      "size": 86229,
-      "normalized_sha256": "d6b9d7801a563d4d50aa938fa31b22398af0675dd9e7ee0d8ee1ee6aac39dc8a"
+      "sha256": "049797210a8b65de8de777d4b590545c660628be5f59c7df37d4258c218077a2",
+      "size": 87784,
+      "normalized_sha256": "049797210a8b65de8de777d4b590545c660628be5f59c7df37d4258c218077a2"
     },
     "CONTEXT.md": {
       "role": "index",
@@ -125,9 +125,9 @@
     },
     "aoci.code.txt": {
       "role": "index",
-      "sha256": "65c8160d674bec2d49fda8d83385c30849e1d782f88f986e81f10c8c564b4e98",
-      "size": 391652,
-      "normalized_sha256": "65c8160d674bec2d49fda8d83385c30849e1d782f88f986e81f10c8c564b4e98"
+      "sha256": "710b019d20ee1a86728d8d89d3c6702d038814422208d7d2883510a6c1ae22df",
+      "size": 392693,
+      "normalized_sha256": "710b019d20ee1a86728d8d89d3c6702d038814422208d7d2883510a6c1ae22df"
     },
     "aoci.meta.txt": {
       "role": "index",
@@ -1097,15 +1097,15 @@
     },
     "package-lock.json": {
       "role": "index",
-      "sha256": "05bfdc7a2f64dd4bff65b1ed68247afbc7f312ed4c67469d7c9d6ac50bab6895",
+      "sha256": "2b79348d47150fa6229b43ebca323de20dd1280ff6675632f9ae76a4c6a40360",
       "size": 138315,
-      "normalized_sha256": "05bfdc7a2f64dd4bff65b1ed68247afbc7f312ed4c67469d7c9d6ac50bab6895"
+      "normalized_sha256": "2b79348d47150fa6229b43ebca323de20dd1280ff6675632f9ae76a4c6a40360"
     },
     "package.json": {
       "role": "index",
-      "sha256": "2917b29d61c13cc5eafd69a1ca20dd1f12d4ee518e668d51df5a4be7c13e6df6",
+      "sha256": "55a14aaf4b79a291c8e49e6ddcf51bee1e463506742c62d075e33b6e75faa60e",
       "size": 9143,
-      "normalized_sha256": "2917b29d61c13cc5eafd69a1ca20dd1f12d4ee518e668d51df5a4be7c13e6df6"
+      "normalized_sha256": "55a14aaf4b79a291c8e49e6ddcf51bee1e463506742c62d075e33b6e75faa60e"
     },
     "perf/README.md": {
       "role": "index",
@@ -2183,15 +2183,15 @@
     },
     "src-tauri/Cargo.lock": {
       "role": "index",
-      "sha256": "8e788f293be2caafbf85ddc9fe39acf0762eb9f9bfabe17a249261caa5ef9bd5",
+      "sha256": "ca71796efc72caf41ef3cc1e8391af1b903e9c22c429cf7cda249e23f1c1c001",
       "size": 156851,
-      "normalized_sha256": "8e788f293be2caafbf85ddc9fe39acf0762eb9f9bfabe17a249261caa5ef9bd5"
+      "normalized_sha256": "ca71796efc72caf41ef3cc1e8391af1b903e9c22c429cf7cda249e23f1c1c001"
     },
     "src-tauri/Cargo.toml": {
       "role": "index",
-      "sha256": "f8e764a78b6a086d3dcbba9159118381cde5afcf15a7cdb90f24a7c4858b74a9",
+      "sha256": "d7b6e498de9e32fe1cc6848f849c3fd4a5ccf2c6034e476d9d5e1224e0c92cfa",
       "size": 17122,
-      "normalized_sha256": "f8e764a78b6a086d3dcbba9159118381cde5afcf15a7cdb90f24a7c4858b74a9"
+      "normalized_sha256": "d7b6e498de9e32fe1cc6848f849c3fd4a5ccf2c6034e476d9d5e1224e0c92cfa"
     },
     "src-tauri/Info.plist": {
       "role": "index",
@@ -3526,9 +3526,15 @@
     },
     "src-tauri/src/network/file.rs": {
       "role": "index",
-      "sha256": "aad9b4e0f273df932113c065491598e79234c7e14cf76965a059e1a1bb08d980",
-      "size": 30685,
-      "normalized_sha256": "aad9b4e0f273df932113c065491598e79234c7e14cf76965a059e1a1bb08d980"
+      "sha256": "bc97f1d8c17378259590827a803625b395a8e7712eeacc5feb8f97ca7b638c37",
+      "size": 30717,
+      "normalized_sha256": "bc97f1d8c17378259590827a803625b395a8e7712eeacc5feb8f97ca7b638c37"
+    },
+    "src-tauri/src/network/file/group_pull.rs": {
+      "role": "index",
+      "sha256": "db5001392e43b511853c155e512f2010c19a289509b1357eadce02e1e9158844",
+      "size": 5925,
+      "normalized_sha256": "db5001392e43b511853c155e512f2010c19a289509b1357eadce02e1e9158844"
     },
     "src-tauri/src/network/file/group_receive.rs": {
       "role": "index",
@@ -3544,21 +3550,21 @@
     },
     "src-tauri/src/network/file/ledger_backfill.rs": {
       "role": "index",
-      "sha256": "bab9a796f8ff47cec858fa89640343480997849052024b60f61e30e2573daafb",
-      "size": 16573,
-      "normalized_sha256": "bab9a796f8ff47cec858fa89640343480997849052024b60f61e30e2573daafb"
+      "sha256": "eb8a9c37b98d8a2d8bd9f692f2d10b66c14b76ebefa086b9bf80bde217a41019",
+      "size": 17128,
+      "normalized_sha256": "eb8a9c37b98d8a2d8bd9f692f2d10b66c14b76ebefa086b9bf80bde217a41019"
     },
     "src-tauri/src/network/file/ledger_backfill_tests.rs": {
       "role": "index",
-      "sha256": "958951b4174745239df7c21337e0e1b067a31182674eaf6b5b3a90cba04e325a",
-      "size": 27221,
-      "normalized_sha256": "958951b4174745239df7c21337e0e1b067a31182674eaf6b5b3a90cba04e325a"
+      "sha256": "46c3ce9f9082c10b8a8b108482820ebc0d506ea9e2e256e9bd34029555ab4806",
+      "size": 27961,
+      "normalized_sha256": "46c3ce9f9082c10b8a8b108482820ebc0d506ea9e2e256e9bd34029555ab4806"
     },
     "src-tauri/src/network/file/receive.rs": {
       "role": "index",
-      "sha256": "e564abbf38a56a26261483dcd109ef50bc7a89e4ca8752517cb5a1619a7b11f3",
-      "size": 40789,
-      "normalized_sha256": "e564abbf38a56a26261483dcd109ef50bc7a89e4ca8752517cb5a1619a7b11f3"
+      "sha256": "0e8c2ebcc98d5eb434e54491d8d1f82bafba79386ab501b6129140cc297150e6",
+      "size": 80853,
+      "normalized_sha256": "0e8c2ebcc98d5eb434e54491d8d1f82bafba79386ab501b6129140cc297150e6"
     },
     "src-tauri/src/network/file/relay_push.rs": {
       "role": "index",
@@ -6132,9 +6138,9 @@
     },
     "src/utils/designGuards.test.ts": {
       "role": "observe",
-      "sha256": "4721e4cf7cc95e4c23d52ce0fc474d2d4ce6b58d6c2b0ebf97b5c37fb438945b",
-      "size": 400651,
-      "normalized_sha256": "4721e4cf7cc95e4c23d52ce0fc474d2d4ce6b58d6c2b0ebf97b5c37fb438945b"
+      "sha256": "ee6b9defb77505d5896647a611adfb0e977b63db0a1c5056a4de3d24b8e3882f",
+      "size": 402939,
+      "normalized_sha256": "ee6b9defb77505d5896647a611adfb0e977b63db0a1c5056a4de3d24b8e3882f"
     },
     "src/utils/designGuards.ts": {
       "role": "index",
