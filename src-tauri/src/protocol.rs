@@ -1304,6 +1304,15 @@ pub struct TodoPayload {
     /// `#[serde(default)]` ⇒ 旧载荷（键不存在）与旧版本对端读出来都是 `None`，不报错。
     #[serde(default)]
     pub related_on: Option<String>,
+    /// 任务标签（**多选**，用户 2026-11-05）：一个任务可挂多个标签，顺序即展示顺序。
+    ///
+    /// `#[serde(default)]` ⇒ 旧版本对端发的载荷读出来是空数组（不报错、不当标题）；
+    /// 本端更新时会把"键不存在"当作**没说**并沿用旧定义里的标签（见 `latest_todo_def` 的
+    /// `carry_tags`），避免老客户端改一次状态就把标签抹光。显式空数组 `[]` = 明确清空。
+    /// 单条上限见 [`TODO_TAG_MAX_LEN`]，条数上限见 [`TODO_MAX_TAGS`]；归一/去重在
+    /// [`normalize_todo_tags`]，数据库另有 `(todo_id, tag)` 唯一约束兜底。
+    #[serde(default)]
+    pub tags: Vec<String>,
 }
 
 /// 任务状态的**唯一取值表**（用户 2026-09-16 定的四态）。
@@ -1426,6 +1435,46 @@ pub const TODO_CUSTOM_ICONS: [&str; 10] = [
 
 /// 默认那枚图标键（自定义类型没挑、或旧对端不认识这一格时，两端画同一个形状）。
 pub const TODO_CUSTOM_ICON_DEFAULT: &str = "tag";
+
+/// 单个任务标签的长度上限（按字符数）。标签是"扫一眼分类"的短语，不是第二段描述。
+pub const TODO_TAG_MAX_LEN: usize = 20;
+
+/// 一个任务最多挂多少个标签。与前端 `src/utils/todos.ts::TODO_MAX_TAGS` 同值，
+/// 由 `src/utils/messageKinds.test.ts` 的跨语言契约守卫核对。
+pub const TODO_MAX_TAGS: usize = 10;
+
+/// 标签归一：去首尾空白、丢掉空串、按**首次出现顺序**去重。
+///
+/// 去重按 `to_lowercase()` 判等（用户 2026-11-05 拍板：不区分大小写），但**保留首次出现的写法**：
+/// `["Bug", "bug"]` 归成 `["Bug"]`，后来的写法只用于命中，不会产生第二条候选。
+///
+/// 去重在这里也要兜一层：界面允许"自定义输入 + 历史候选"两条路加同一个词，
+/// 数据库的 `(todo_id, tag)` 唯一约束是最后一道闸（反例自证见 `db/migration_tests.rs`），
+/// 不是唯一一道。
+pub fn normalize_todo_tags(raw: &[String]) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    for t in raw {
+        let t = t.trim();
+        if t.is_empty() {
+            continue;
+        }
+        let lowered = t.to_lowercase();
+        if out.iter().any(|x| x.to_lowercase() == lowered) {
+            continue;
+        }
+        out.push(t.to_string());
+    }
+    out
+}
+
+/// 归一后的标签是否合法：条数 ≤ [`TODO_MAX_TAGS`]、每条 ≤ [`TODO_TAG_MAX_LEN`] 字符。
+/// 空列表合法（= 不挂标签）。
+pub fn todo_tags_are_valid(tags: &[String]) -> bool {
+    tags.len() <= TODO_MAX_TAGS
+        && tags
+            .iter()
+            .all(|t| !t.is_empty() && t.chars().count() <= TODO_TAG_MAX_LEN)
+}
 
 /// 终态（完成 / 做不了）满多少天算"自动归档"。
 ///

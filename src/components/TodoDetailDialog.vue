@@ -6,21 +6,23 @@
  * 纯展示 + 意图上抛：真正的改状态/归档/编辑/删除都在 `GroupTasksBoard` 里
  * （那里已经握有折叠数据、权限判据与 API 调用），这里只渲染与 `emit`。
  */
-import { computed, nextTick, ref, watch } from "vue";
+import { computed, watch } from "vue";
 import BaseModal from "@/components/BaseModal.vue";
 import { useImagePreviewStore } from "@/stores/useImagePreview";
 import MentionText from "@/components/message/MentionText.vue";
 import TodoImageThumb from "@/components/TodoImageThumb.vue";
 import TodoPickField from "@/components/TodoPickField.vue";
 import TodoIconPicker from "@/components/TodoIconPicker.vue";
-import CharCounter from "@/components/ui/CharCounter.vue";
+import TodoAttrDateField from "@/components/TodoAttrDateField.vue";
+import TodoAttrTypeField from "@/components/TodoAttrTypeField.vue";
+import TodoAttrTagsField from "@/components/TodoAttrTagsField.vue";
 import {
-  TODO_CATEGORIES, TODO_CATEGORY_LABEL_KEY, TODO_CATEGORY_PILL, TODO_CUSTOM_CATEGORY_MAX_LEN, TODO_PRIORITIES, TODO_PRIORITY_LABEL_KEY, TODO_PRIORITY_PILL, TODO_STATUSES, TODO_STATUS_LABEL_KEY, TODO_STATUS_PILL, isTodoTerminalStatus, todoCode, type TodoHistoryChange, type TodoHistoryEntry, type TodoCategory, type TodoItem, type TodoPriority, type TodoStatus, TODO_CUSTOM_ICON_DEFAULT, type TodoCustomIcon, } from "@/utils/todos";
+  TODO_CATEGORIES, TODO_CATEGORY_LABEL_KEY, TODO_CATEGORY_PILL, TODO_PRIORITIES, TODO_PRIORITY_LABEL_KEY, TODO_PRIORITY_PILL, TODO_STATUSES, TODO_STATUS_LABEL_KEY, TODO_STATUS_PILL, isTodoTerminalStatus, todoCode, type TodoHistoryChange, type TodoHistoryEntry, type TodoCategory, type TodoItem, type TodoPriority, type TodoStatus, TODO_CUSTOM_ICON_DEFAULT, type TodoCustomIcon, } from "@/utils/todos";
+import type { TodoTagCandidate } from "@/api";
 import { fmtTodoTime } from "@/utils/time";
-import { Archive, Pencil, Tag, UserPlus } from "lucide-vue-next";
+import { Archive, Pencil, UserPlus } from "lucide-vue-next";
 import { RotateCcw, Trash2 } from "@/components/ui/icons";
 import { t } from "@/i18n";
-import { useImeEnterGuard } from "@/composables/useImeEnterGuard";
 
 const props = defineProps<{
   open: boolean;
@@ -48,6 +50,16 @@ const props = defineProps<{
   /** 能否改指派人（创建者/群主/当前被指派人）—— 被指派人也能通过编辑改指派人。 */
   canEditAssignees: boolean;
   /**
+   * 能否改**属性**（关联时间 / 类型 / 标签）。
+   *
+   * 用户 2026-11-05 的口径：**全体群成员**都可以加/改这三格，**不需要进编辑态**
+   * （与状态下拉、关联时间同一行为）。后端对应 `MemberLane::attributes_only` 那一条窄档，
+   * 这里只是"给不给控件"，拦截仍在命令层。⚠️ 不要把它做成"仅编辑态可改"的只读门控。
+   */
+  canEditAttributes: boolean;
+  /** 历史标签候选（由看板从 `list_group_todo_tags` 读来，已排序）。 */
+  tagCandidates?: TodoTagCandidate[];
+  /**
    * 能否**认领**这条需求（群成员皆可，但只限「需求」且自己还不在名单里）。
    * 后端那条窄档是 `commands::claim_only_change`；这里只是"给不给按钮"，拦截在命令层。
    */
@@ -71,6 +83,10 @@ const emit = defineEmits<{
   (e: "close"): void;
   (e: "status", status: TodoStatus): void;
   (e: "priority", priority: TodoPriority): void;
+  /** 关联时间（`YYYY-MM-DD`；`""` = 明确清空）—— 全体群成员随时可改，不走编辑态。 */
+  (e: "relatedOn", value: string): void;
+  /** 任务标签（多选）—— 同样是成员随时可改；移除只解除关联，不动历史候选池。 */
+  (e: "tags", tags: string[]): void;
   /** 切类型；custom 档第二个参数带用户输入的名字。 */
   (e: "category", category: TodoCategory, customName?: string): void;
   /** 换自定义类型的图标（用户 2026-10-14 同一条需求的另一格）：单字段发出去，其余由后端沿用。 */
@@ -106,59 +122,18 @@ const categoryOptions = computed(() =>
   TODO_CATEGORIES.map((c) => ({ value: c, label: t(TODO_CATEGORY_LABEL_KEY[c]) })),
 );
 /**
- * 自定义类型名的**编辑缓冲**：选「自定义…」只是把档位切到 custom，真正写入要等用户
- * 输完名字确认（与状态/优先级的"一点即写"刻意不同 —— custom 没有名字会被后端拒）。
- * 切到别的任务/打开弹窗时，用该任务当前的名字预填。
+ * 类型胶囊当前文案：custom 档显示用户输入的名字，其余档走 i18n。
+ * 自定义名的输入缓冲已经收进 `TodoAttrTypeField` 的面板里（同一块弹出面板），
+ * 这里不再持有一份 draft —— 两处各存一份就会出现"面板里改了、胶囊上还是旧名"。
  */
-const customDraft = ref("");
-/** 本地“正在选自定义”档位：先让输入框出现并聚焦，不立刻写库。 */
-const categoryDraft = ref<TodoCategory | null>(null);
-const customInput = ref<HTMLInputElement | null>(null);
-watch(
-  () => [props.open, props.item?.todoId] as const,
-  ([open]) => {
-    if (open) {
-      customDraft.value = props.item?.category === "custom" ? (props.item.customCategory ?? "") : "";
-      categoryDraft.value = props.item?.category === "custom" ? "custom" : null;
-    }
-  },
-  { immediate: true },
-);
-
-/** 类型胶囊当前文案：custom 档（已落库或正在选）显示用户输入的名字。 */
 const categoryCurrent = computed(() => {
   const x = props.item;
   if (!x) return "";
-  if (categoryDraft.value === "custom" || x.category === "custom") {
-    return customDraft.value.trim() || x.customCategory || t(TODO_CATEGORY_LABEL_KEY.custom);
+  if (x.category === "custom") {
+    return x.customCategory || t(TODO_CATEGORY_LABEL_KEY.custom);
   }
   return t(TODO_CATEGORY_LABEL_KEY[x.category]);
 });
-/** 正在选自定义或已落库为自定义 —— 名字输入框与确认按钮的显示条件。 */
-const showCustomCategory = computed(
-  () => props.item?.category === "custom" || categoryDraft.value === "custom",
-);
-
-function onCategoryPick(v: string) {
-  if (v === "custom") {
-    // 已经是 custom 且有名字：再次点开菜单点它不产生写入（disabled 已挡住，这里兜底）。
-    if (props.item?.category === "custom" && props.item.customCategory) return;
-    // 第一次切到 custom：只展开输入框，不发请求（没名字，发了必被拒）。
-    customDraft.value = props.item?.customCategory ?? "";
-    categoryDraft.value = "custom";
-    void nextTick(() => customInput.value?.focus());
-    return;
-  }
-  categoryDraft.value = null;
-  emit("category", v as TodoCategory);
-}
-const ime = useImeEnterGuard();
-
-function applyCustomCategory() {
-  const name = customDraft.value.trim();
-  if (!name) return;
-  emit("category", "custom", name);
-}
 
 // ---------------- 操作记录（纯展示；diff 在 utils/todos.ts 的 buildTodoHistory） ----------------
 const historyEntries = computed<TodoHistoryEntry[]>(() => props.history ?? []);
@@ -269,7 +244,7 @@ const fullCode = computed(() =>
     <div v-if="item" class="space-y-4">
       <!-- 优先级三档（默认「常规」）。可用的人 = 发起人 / 关联人 / 群主：
            与「改状态」同一档，所以复用同一个 `canChangeStatus` 入参，不另起一套判权。
-           三格（状态 / 优先级 / 类型）共用 `TodoPickField` —— 观感与键盘行为只有一份，
+           状态与优先级共用 `TodoPickField` —— 观感与键盘行为只有一份，
            也修掉了原生 select 在暗夜模式下的"浅底 + 近白字"（见该组件头部注释）。 -->
       <TodoPickField
         :label="t('todo.priorityLabel')"
@@ -281,50 +256,43 @@ const fullCode = computed(() =>
         :disabled="!canChangeStatus"
         @update:model-value="(v: string) => emit('priority', v as TodoPriority)"
       />
-      <!-- 类型四档（任务/需求/缺陷/自定义，默认「任务」）。判权与优先级同一档。
-           custom 档选中后不立即写入：先展开输入框拿到名字，确认才发请求（后端对空名明确拒收）。 -->
-      <div>
-        <TodoPickField
-          :label="t('todo.categoryLabel')"
-          :hint="t('todo.categoryHint')"
-          :model-value="categoryDraft ?? item.category ?? 'task'"
-          :current="categoryCurrent"
-          :current-class="TODO_CATEGORY_PILL[categoryDraft ?? item.category ?? 'task']"
-          :options="categoryOptions"
-          :disabled="!canChangeStatus"
-          @update:model-value="onCategoryPick"
+      <!-- 关联时间 / 类型 / 标签：三者共用 `TodoAttrField` 外壳（同标签排布、同高度、同圆角、
+           同一块 280px 弹出面板）。⚠️ 判权是 `canEditAttributes`（群成员皆可），
+           **不再要求进编辑态** —— 用户 2026-11-05 明确纠正过这一条。 -->
+      <TodoAttrDateField
+        :label="t('todo.relatedOnLabel')"
+        :hint="t('todo.relatedOnHint')"
+        :model-value="item.relatedOn ?? ''"
+        :disabled="!canEditAttributes"
+        @update:model-value="(v: string) => emit('relatedOn', v)"
+      />
+      <TodoAttrTypeField
+        :label="t('todo.categoryLabel')"
+        :hint="t('todo.categoryHint')"
+        :model-value="item.category ?? 'task'"
+        :current="categoryCurrent"
+        :current-class="TODO_CATEGORY_PILL[item.category ?? 'task']"
+        :options="categoryOptions"
+        :custom-value="item.customCategory ?? ''"
+        :disabled="!canEditAttributes"
+        @update:model-value="(v: string, name?: string) => emit('category', v as TodoCategory, name)"
+      />
+      <!-- 图标那一格与自定义名同档展开。这一份与看板草稿共用 `TodoIconPicker`：
+           两个编辑器各写一排按钮就会开始不一致（同一判据两个家）。 -->
+      <div v-if="canEditAttributes && item.category === 'custom'" class="-mt-2">
+        <TodoIconPicker
+          :model-value="item.customIcon ?? TODO_CUSTOM_ICON_DEFAULT"
+          @update:model-value="(v: TodoCustomIcon) => emit('icon', v)"
         />
-        <div v-if="canChangeStatus && showCustomCategory" class="mt-2 flex items-center gap-2">
-          <Tag class="h-3.5 w-3.5 shrink-0 text-[var(--gosslan-text-2)]" aria-hidden="true" />
-          <input
-            ref="customInput"
-            v-model="customDraft"
-            :maxlength="TODO_CUSTOM_CATEGORY_MAX_LEN"
-            class="h-9 min-w-0 flex-1 rounded-[var(--gosslan-radius-md)] border border-transparent bg-[var(--gosslan-field)] px-2.5 py-1 text-body outline-none transition focus:border-transparent"
-            :placeholder="t('todo.categoryCustomPlaceholder')"
-            @keydown.enter="ime.enter(applyCustomCategory, $event)"
-            @compositionstart="ime.onStart"
-            @compositionend="ime.onEnd"
-          />
-          <CharCounter :text="customDraft" :max="TODO_CUSTOM_CATEGORY_MAX_LEN" />
-          <button
-            type="button"
-            class="tap-safe shrink-0 rounded-[var(--gosslan-radius-md)] bg-[var(--gosslan-primary-active)] px-2.5 py-1.5 text-meta text-[var(--gosslan-on-primary)] transition hover:opacity-90 disabled:opacity-40"
-            :disabled="!customDraft.trim()"
-            @click="applyCustomCategory"
-          >
-            {{ t("common.confirm") }}
-          </button>
-        </div>
-        <!-- 图标那一格与名字同档展开。这一份与看板草稿共用 `TodoIconPicker`：
-             两个编辑器各写一排按钮就会开始不一致（同一判据两个家）。 -->
-        <div v-if="canChangeStatus && item.category === 'custom'" class="mt-2">
-          <TodoIconPicker
-            :model-value="item.customIcon ?? TODO_CUSTOM_ICON_DEFAULT"
-            @update:model-value="(v: TodoCustomIcon) => emit('icon', v)"
-          />
-        </div>
       </div>
+      <TodoAttrTagsField
+        :label="t('todo.tagsLabel')"
+        :hint="t('todo.tagsHintInline')"
+        :model-value="item.tags"
+        :candidates="tagCandidates ?? []"
+        :disabled="!canEditAttributes"
+        @update:model-value="(v: string[]) => emit('tags', v)"
+      />
       <!-- 认领：只在这一格出现 —— 需求 + 自己还不在名单里（+ 本群成员，由 canClaim 判）。
            按下之后走的是"改指派人"那条既有命令，不新增接口，也不新增一次同步。 -->
       <div v-if="canClaim" class="flex items-center justify-between gap-2">
@@ -359,8 +327,8 @@ const fullCode = computed(() =>
         <div v-if="item.createdAt">{{ t("todo.createdAt", { time: fmtTodoTime(item.createdAt) }) }}</div>
         <div v-if="creator">{{ t("todo.creator", { name: creator }) }}</div>
         <div v-if="assignees" :title="assignees">{{ t("todo.assigneesInline", { names: assignees }) }}</div>
-        <!-- 关联时间：只到年月日，原样显示（不补时分） -->
-        <div v-if="item.relatedOn">{{ t("todo.relatedOnAt", { date: item.relatedOn }) }}</div>
+        <!-- 关联时间不在这里回显：它已经是上方可编辑属性（`TodoAttrDateField`），
+             再抄一行只读文本会出现"同一条信息两个家"。 -->
         <!-- 终态时间：完成显示「完成时间」，做不了显示「标记时间」（同一个后端权威时间戳 done_at）。 -->
         <div v-if="item.doneAt && item.status === 'done'">{{ t("todo.doneAt", { time: fmtTodoTime(item.doneAt) }) }}</div>
         <div v-else-if="item.doneAt && item.status === 'impossible'">{{ t("todo.impossibleAt", { time: fmtTodoTime(item.doneAt) }) }}</div>

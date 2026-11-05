@@ -223,6 +223,35 @@ export const TODO_CATEGORY_LETTER: Record<TodoCategory, string> = {
 /** 自定义类型名上限 —— 必须与 Rust `TODO_CUSTOM_CATEGORY_MAX_LEN` 同一个数。 */
 export const TODO_CUSTOM_CATEGORY_MAX_LEN = 20;
 
+/** 单个任务标签的长度上限 —— 必须与 Rust `TODO_TAG_MAX_LEN` 同一个数。 */
+export const TODO_TAG_MAX_LEN = 20;
+/** 一个任务最多挂多少个标签 —— 必须与 Rust `TODO_MAX_TAGS` 同一个数。 */
+export const TODO_MAX_TAGS = 10;
+
+/**
+ * 标签归一：去首尾空白、丢掉空串与超长词、按**首次出现顺序**去重（用户 2026-11-05）。
+ *
+ * 与 Rust `protocol::normalize_todo_tags` 同一口径：界面层"自定义输入 + 历史候选"两条路
+ * 可能加同一个词，这里先去重；数据库 `(todo_id, tag)` 唯一约束是最后一道闸。
+ *
+ * 去重按 `toLowerCase()` 判等（用户 2026-11-05：不区分大小写），保留首次出现的写法：
+ * `["Bug", "bug"]` 归成 `["Bug"]`，后来的 `bug` 只命中已有那枚，不新增重复候选。
+ */
+export function normalizeTodoTags(raw: unknown): string[] {
+  if (!Array.isArray(raw)) return [];
+  const out: string[] = [];
+  for (const x of raw) {
+    if (typeof x !== "string") continue;
+    const t = x.trim();
+    if (!t || t.length > TODO_TAG_MAX_LEN) continue;
+    const lowered = t.toLowerCase();
+    if (out.some((y) => y.toLowerCase() === lowered)) continue;
+    out.push(t);
+    if (out.length >= TODO_MAX_TAGS) break;
+  }
+  return out;
+}
+
 /** 任务标题上限（Rust `group_files.rs::MAX_TODO_TITLE_LEN`）。 */
 export const MAX_TODO_TITLE_CHARS = 200;
 
@@ -439,6 +468,11 @@ export interface TodoItem {
    * `null` = 未填 / 已清空（旧载荷没有这一格时也是 `null`，见 `parseTodo`）。
    */
   relatedOn: string | null;
+  /**
+   * 任务标签（多选，用户 2026-11-05）：顺序即展示顺序。
+   * 旧载荷没有这一格 / 读不出数组 ⇒ `[]`；折叠时"没说"会沿用前一份（见 `carryAbsentTodoFields`）。
+   */
+  tags: string[];
   /** 状态变为「完成」的权威时间戳（ms）；未完成/旧载荷为 null。 */
   doneAt: number | null;
   /** 创建时间（创建那条 `todo` 消息的 ts）；由 `foldTodos` 从创建记录回填，旧数据可能为 null。 */
@@ -468,6 +502,8 @@ interface TodoAbsent {
   customIcon: boolean;
   /** 载荷里没带 `related_on`（或读了脏值）⇒ 折叠时沿用已知的日期，别把已填的抹成空。 */
   relatedOn: boolean;
+  /** 载荷里没带 `tags`（老对端不认识这一格）⇒ 折叠时沿用已知标签，别把已挂的抹光。 */
+  tags: boolean;
 }
 
 /** 完成态超过该天数后自动归档（前端计算，见 `isEffectivelyArchived`）。 */
@@ -505,12 +541,15 @@ export function parseTodo(rec: MessageRecord): TodoDef | null {
     // 「这一格没说」= 键不存在 **或** 值本端读不出合法值（后者含未来新增的档位：
     // 本端表达不了就等于没说，宁可沿用自己的已知值，也不要每来一份新载荷就回落默认值抖一次）。
     const related = readTodoRelatedOn(p.related_on);
+    // 键不存在 = 没说；数组（含空数组）= 说过（空数组就是明确清空）。非数组算没说。
+    const tagsAbsent = !Array.isArray(p.tags);
     const absent: TodoAbsent = {
       priority: !isTodoPriority(p.priority),
       category: !isTodoCategory(p.category),
       number: !(typeof p.number === "number" && p.number > 0),
       customIcon: !isTodoCustomIcon(p.custom_icon),
       relatedOn: related.absent,
+      tags: tagsAbsent,
     };
     return {
       todoId: p.todo_id,
@@ -542,6 +581,7 @@ export function parseTodo(rec: MessageRecord): TodoDef | null {
       archived: p.archived === true,
       number: typeof p.number === "number" && p.number > 0 ? Math.trunc(p.number) : 0,
       relatedOn: related.value,
+      tags: tagsAbsent ? [] : normalizeTodoTags(p.tags),
       doneAt: typeof p.done_at === "number" ? p.done_at : null,
       createdAt: null,
       seq: rec.seq,
@@ -563,7 +603,10 @@ export function parseTodo(rec: MessageRecord): TodoDef | null {
  */
 export function carryAbsentTodoFields(prev: TodoDef, next: TodoDef): TodoDef {
   const a = next.absent;
-  if (!a || (!a.priority && !a.category && !a.number && !a.customIcon && !a.relatedOn)) {
+  if (
+    !a ||
+    (!a.priority && !a.category && !a.number && !a.customIcon && !a.relatedOn && !a.tags)
+  ) {
     return next;
   }
   return {
@@ -578,6 +621,8 @@ export function carryAbsentTodoFields(prev: TodoDef, next: TodoDef): TodoDef {
     customIcon: a.customIcon ? prev.customIcon : next.customIcon,
     // 关联时间同理：老对端不认识这一格 ⇒ 不许把用户填过的日期抹成空。
     relatedOn: a.relatedOn ? prev.relatedOn : next.relatedOn,
+    // 标签同理：老对端不认识这一格 ⇒ 不许把别人挂过的标签抹光。
+    tags: a.tags ? prev.tags : next.tags,
     number: a.number ? prev.number : next.number,
   };
 }
@@ -673,7 +718,7 @@ export function foldTodos(records: MessageRecord[]): TodoItem[] {
       if (a.seq !== b.seq) return b.seq - a.seq; // 新的在前
       return a.msgId < b.msgId ? 1 : -1; // 同 seq 按 msg_id 比（与 newer 同规则）
     })
-    .map(({ todoId, title, assignees, status, creator, priority, category, customCategory, customIcon, description, images, archived, relatedOn, doneAt }) => ({
+    .map(({ todoId, title, assignees, status, creator, priority, category, customCategory, customIcon, description, images, archived, relatedOn, tags, doneAt }) => ({
       todoId,
       number: numbers.get(todoId) ?? 0,
       title,
@@ -690,6 +735,7 @@ export function foldTodos(records: MessageRecord[]): TodoItem[] {
       images,
       archived,
       relatedOn,
+      tags,
       doneAt,
       createdAt: created.get(todoId) ?? null,
     }));

@@ -104,6 +104,9 @@ test("生产模板里不许再有手抄的 maxlength 数字（分母现扫，白
     "MAX_TODO_TITLE_CHARS",
     "MAX_TODO_DESC_CHARS",
     "TODO_CUSTOM_CATEGORY_MAX_LEN",
+    // 任务标签单条上限（2026-11-05）：与 Rust `protocol::TODO_TAG_MAX_LEN` 同一份口径，
+    // 由 `utils/todos::normalizeTodoTags` 与命令层校验共同兑现。
+    "TODO_TAG_MAX_LEN",
     "MAX_LINK_NAME_CHARS",
   ]);
   const unknown = [...new Set(bound)].filter((n) => !allowed.has(n));

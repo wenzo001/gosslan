@@ -289,6 +289,7 @@ export function createTodosModule(ctx: ChatContext) {
     customCategory?: string,
     customIcon?: string,
     relatedOn?: string,
+    tags?: string[],
   ): Promise<MessageRecord> {
     const rec = await api.sendGroupTodo(
       groupId,
@@ -300,6 +301,7 @@ export function createTodosModule(ctx: ChatContext) {
       customCategory,
       customIcon,
       relatedOn,
+      tags,
     );
     enqueueMessage(rec);
     return rec;
@@ -322,6 +324,7 @@ export function createTodosModule(ctx: ChatContext) {
       description?: string;
       images?: TodoImage[];
       relatedOn?: string | null;
+      tags?: string[];
     },
     patch: Partial<{
       title: string;
@@ -345,6 +348,8 @@ export function createTodosModule(ctx: ChatContext) {
        * 不传 = 保留库里原值；`""` = 明确清空；`YYYY-MM-DD` = 覆盖。
        */
       relatedOn: string;
+      /** 任务标签：不传 = 沿用 item 里的当前值；显式 `[]` = 明确清空。 */
+      tags: string[];
     }> = {},
   ) {
     const rec = await api.updateGroupTodo(groupId, item.todoId, {
@@ -367,6 +372,8 @@ export function createTodosModule(ctx: ChatContext) {
       // 关联时间：不传 patch 就沿用 item 里的当前值；显式 `""` 才是"清空"。
       // 别用 `??` —— 它会把空串当成"没传"，用户就永远删不掉日期。
       relatedOn: patch.relatedOn !== undefined ? patch.relatedOn : (item.relatedOn ?? undefined),
+      // 标签同理：空数组是"明确清空"，不能折成 undefined（否则用户永远删不干净）。
+      tags: patch.tags !== undefined ? patch.tags : (item.tags ?? []),
     });
     enqueueMessage(rec);
   }

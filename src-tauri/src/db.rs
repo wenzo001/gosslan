@@ -19,7 +19,7 @@ use crate::state::{
 /// 建表 / 建索引不需要 step：`init()` 在版本分支**之前**跑 `execute_batch(SCHEMA)`，
 /// 而 SCHEMA 全是 `IF NOT EXISTS` ⇒ 新老库每次启动都会被补齐。
 /// 同一条索引同时写在 SCHEMA 与 MIGRATIONS 里 = 两个家（历史上有过，v8→v9 起收敛）。
-pub const DB_VERSION: u32 = 16;
+pub const DB_VERSION: u32 = 17;
 
 /// 迁移 step：(from_version, to_version, 迁移闭包)。
 struct Migration {
@@ -800,6 +800,17 @@ const MIGRATIONS: &[Migration] = &[
             Ok(())
         },
     },
+    // v16 → v17：把历史消息里已经存在的 `tags` 回填进关联表与候选池。
+    //
+    // 表与索引都在 SCHEMA 里（新老库启动即补齐），这个 step 只做 SCHEMA 表达不了的回填：
+    // 混合版本期间，旧库可能已经从"新对端"收到过带 `tags` 的 todo 消息，但当时没人理解这个字段。
+    // 按 (ts, id) 重放一遍即可幂等重建；没有这类消息时是空操作。
+    Migration {
+        from: 16,
+        to: 17,
+        description: "回填群任务标签关联与候选池（从历史 todo 消息）",
+        run: |conn| rebuild_todo_tags_from_messages(conn),
+    },
 ];
 
 /// 建表脚本 —— 表结构的**唯一真源**（另有一张 `content` 表由
@@ -1085,6 +1096,29 @@ CREATE TABLE IF NOT EXISTS favorites (
 );
 CREATE UNIQUE INDEX IF NOT EXISTS idx_favorites_msg  ON favorites(msg_id);
 CREATE INDEX        IF NOT EXISTS idx_favorites_time ON favorites(favorited_at DESC);
+
+-- 群任务标签（2026-11-05）：当前关联 + 历史候选池。
+--
+-- 主键 (todo_id, tag) 就是唯一约束：同一个任务重复挂同一个标签会被 SQLite 直接拒掉
+-- （载荷归一化已经先去重，这里是最后一道闸；反例自证见 migration_tests）。
+-- 候选池按 group 维度独立：移除标签只删关联行，不删池；池按 last_used_at 自动清理。
+CREATE TABLE IF NOT EXISTS todo_task_tags (
+    group_id   TEXT NOT NULL,
+    todo_id    TEXT NOT NULL,
+    tag        TEXT NOT NULL,
+    updated_at INTEGER NOT NULL,
+    PRIMARY KEY (todo_id, tag)
+);
+CREATE INDEX IF NOT EXISTS idx_todo_task_tags_group ON todo_task_tags(group_id);
+
+CREATE TABLE IF NOT EXISTS todo_tag_pool (
+    group_id     TEXT NOT NULL,
+    tag          TEXT NOT NULL,
+    use_count    INTEGER NOT NULL DEFAULT 0,
+    last_used_at INTEGER NOT NULL,
+    PRIMARY KEY (group_id, tag)
+);
+CREATE INDEX IF NOT EXISTS idx_todo_tag_pool_recent ON todo_tag_pool(group_id, last_used_at DESC);
 "#;
 
 /// 迁移前备份的保留份数（含本次刚生成的那一份）。
@@ -1506,6 +1540,7 @@ include!("db/favorites.rs");
 include!("db/recalls.rs");
 // 群历史同步的两半：服务端分页取数 + 新成员侧幂等落库（2026-10-16 需求）
 include!("db/group_history.rs");
+include!("db/todo_tags.rs");
 
 #[cfg(test)]
 mod cascade_tests;

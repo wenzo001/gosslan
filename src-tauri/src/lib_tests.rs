@@ -120,6 +120,8 @@ mod tests {
             include_str!("db/recalls.rs"),
             "\n",
             include_str!("db/group_history.rs"),
+            "\n",
+            include_str!("db/todo_tags.rs"),
         )
     }
 

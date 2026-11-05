@@ -39,6 +39,18 @@ export interface UiRecoveryNotice {
   actions: number;
 }
 
+/**
+ * 任务标签的历史候选（后端 `list_group_todo_tags` 返回值）。
+ *
+ * 已按 使用次数 ↓ → 最近使用 ↓ → 字典序 ↑ 排好；前端不再重排。
+ * `use_count` = 这个标签被"新挂到某任务上"的次数（同一任务反复保存不累加）。
+ */
+export interface TodoTagCandidate {
+  tag: string;
+  use_count: number;
+  last_used_at: number;
+}
+
 /** 路径入参统一过 `ipcPathSchema`（审计 P1 #10：入参侧此前 0 处校验）。 */
 const pathArg = (v: string, label: string): string =>
   assertIpcInput(ipcPathSchema, v, label);
@@ -321,6 +333,7 @@ export const api = {
     customCategory?: string,
     customIcon?: string,
     relatedOn?: string,
+    tags?: string[],
   ) =>
     invoke<MessageRecord>("send_group_todo", {
       groupId,
@@ -332,6 +345,7 @@ export const api = {
       customCategory: customCategory ?? null,
       customIcon: customIcon ?? null,
       relatedOn: relatedOn ?? null,
+      tags: tags ?? null,
     }),
   /**
    * 更新群任务：改状态 / 改标题与指派人 / 改描述与图片 / 删除（`deleted: true`）。
@@ -370,6 +384,8 @@ export const api = {
        * `""` = 明确清空；日期字符串 = 覆盖。
        */
       relatedOn?: string;
+      /** 标签：`undefined` = 不带这格（后端沿用库里）；`[]` = 明确清空；数组 = 覆盖。 */
+      tags?: string[];
     },
   ) =>
     invoke<MessageRecord>("update_group_todo", {
@@ -388,7 +404,15 @@ export const api = {
       customIcon: patch.customIcon ?? null,
       // 空串必须原样传过去（= 明确清空）；`?? null` 只把 undefined 折成"不带这格"。
       relatedOn: patch.relatedOn ?? null,
+      // 空数组必须原样传（= 明确清空）；`?? null` 只把 undefined 折成"不带这格"。
+      tags: patch.tags ?? null,
     }),
+  /**
+   * 读某群的任务标签候选（历史下拉用）：后端已按 使用次数 → 最近使用 → 字典序 排好，
+   * 并在读取时顺手清理超过保留期（90 天）的行。见 `docs/todo-tags.md`。
+   */
+  listGroupTodoTags: (groupId: string) =>
+    invoke<TodoTagCandidate[]>("list_group_todo_tags", { groupId }),
   /** 置顶/取消置顶一条群消息（任意群成员；静默事件，不进时间线）。 */
   pinGroupMessage: (groupId: string, target: string, pinned: boolean) =>
     invoke<MessageRecord>("pin_group_message", { groupId, target, pinned }),

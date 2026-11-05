@@ -2374,23 +2374,30 @@ const stripShapeComments = (s: string): string =>
 // 根因不是配色错，是**渲染者不同**：原生 `<select>` 的弹层由系统画，而我们给控件写了
 // `bg-transparent` + 主题文字色 ⇒ 浅底上落近白字，只有当前项因系统反色才读得出来。
 // 同弹窗里「状态」早就是自绘菜单（`.gosslan-menu`），一处原生一处自绘才会只坏一半。
-test("详情弹窗的三选一字段只许走 TodoPickField，不许再出现原生 select", () => {
+test("详情弹窗的三选一字段只许走自绘组件，不许再出现原生 select", () => {
   const root = join(import.meta.dirname, "..");
   const dialog = stripShapeComments(readFileSync(join(root, "components", "TodoDetailDialog.vue"), "utf8"));
-  const field = stripShapeComments(readFileSync(join(root, "components", "TodoPickField.vue"), "utf8"));
-  // 三格（状态 / 优先级 / 类型）都在，且一个不少
+  const pick = stripShapeComments(readFileSync(join(root, "components", "TodoPickField.vue"), "utf8"));
+  // 2026-11-05 三件属性统一后：状态/优先级仍走 TodoPickField，类型走 TodoAttrTypeField。
   assert.equal(
     (dialog.match(/<TodoPickField\b/g) ?? []).length,
-    3,
-    "详情弹窗里三选一字段应当是 3 处 TodoPickField（状态 / 优先级 / 类型）",
+    2,
+    "详情弹窗里 TodoPickField 应当是 2 处（状态 / 优先级）",
+  );
+  assert.equal(
+    (dialog.match(/<TodoAttrTypeField\b/g) ?? []).length,
+    1,
+    "详情弹窗里的类型必须走统一的 TodoAttrTypeField（关联时间/标签同一套壳）",
   );
   for (const bad of ["<select", "<option"]) {
     assert.ok(!dialog.includes(bad), `详情弹窗又出现了 ${bad} ⇒ 暗夜下那半截看不见的弹层会回来`);
   }
   // 共用组件必须吃主题（自绘菜单），且不许写死色值
-  assert.ok(field.includes("gosslan-menu"), "TodoPickField 不再走 .gosslan-menu ⇒ 观感分叉");
-  assert.ok(field.includes("update:modelValue"), "TodoPickField 不再往上抛值 ⇒ 三格点了没反应");
-  assert.ok(!/#[0-9a-fA-F]{3,8}\b/.test(field), "TodoPickField 里出现了写死的十六进制色 ⇒ 暗色档不会跟着变");
+  for (const field of [pick, stripShapeComments(readFileSync(join(root, "components", "TodoAttrField.vue"), "utf8"))]) {
+    assert.ok(field.includes("gosslan-menu"), "自绘字段不再走 .gosslan-menu ⇒ 观感分叉");
+    assert.ok(!/#[0-9a-fA-F]{3,8}\b/.test(field), "自绘字段里出现了写死的十六进制色 ⇒ 暗色档不会跟着变");
+  }
+  assert.ok(pick.includes("update:modelValue"), "TodoPickField 不再往上抛值 ⇒ 两格点了没反应");
   // 反空转：这台判据必须抓得住"退回原生下拉"那个坏形状
   const native = /<select\b/;
   assert.ok(
