@@ -13,31 +13,34 @@
 `aoci check` 因此**长期退 1**。这是登记在案的已知状态，不是新一轮回归：
 判「有没有回归」要看本文件的分类计数有没有变坏，而不是看退出码。
 
-## 2. 当次读数（2026-11-05，`aoci check --json`）
+## 2. 当次读数（2026-11-05 收盘，`aoci check --json`）
 
 | 类别 | 条数 | 说明 |
 |---|---:|---|
 | `code_skipped` | 291 | 合同免条目（二进制 / 超 1 MiB），不用处理 |
-| `code_stale` | 169 | 已收录但源码变了 ⇒ 条目过期（含本轮临时落盘的 `todo_tags.rs`，见 §4） |
-| `code_missing` | 129 | 磁盘有、索引没有（见 §3 聚合） |
-| `code_unbaselined` | 129 | 未进基线指纹的新文件（与 missing 基本同一批） |
+| `code_stale` | 169 | 已收录但源码变了 ⇒ 条目过期；其中 1 条是本轮临时落盘的 `todo_tags.rs`（见 §4） |
+| `code_missing` | 128 | 磁盘有、索引没有（见 §3 聚合） |
+| `code_unbaselined` | 128 | 未进基线指纹的新文件（与 missing 基本同一批） |
 | `code_orphan` | **0** | 已消解（见 §4） |
-| **合计** | **718** | |
+| **合计** | **716** | |
 
 其它现读：`structure_valid=true`、`governance_aligned=false`、S 覆盖 570/570、
 `next_action=authoring_required`、`aoci check` 退 1。
 
-与上一组读数（missing 128 / stale 168 / unbaselined 128 / skipped 291 / orphan 1，合计 716）的差值全部可解释：
+读数轨迹（同一口径，逐条可解释，不是抖动）：
 
-- `-1 orphan`：`todo_tags.rs` 落盘后不再是 orphan，转为 `code_stale`（磁盘内容 ≠ 基线指纹）；
-- `+1 stale`：即上面那条转移；
-- `+2`（missing / unbaselined 各 +1）：本文件自身是新增未收录文件（见 §5）。
+| 时刻 | 合计 | 变化原因 |
+|---|---:|---|
+| 开工 | 716 | missing 128 / stale 168 / unbaselined 128 / skipped 291 / orphan 1 |
+| `todo_tags.rs` 落盘 | 718 | orphan −1、该文件转 `code_stale` +1、本账本自身新增 missing/unbaselined 各 +1 |
+| 本账本补条目 | 717 | missing / unbaselined 各 −1 |
+| 刷新 `docs/aoci-usage.md` 条目 | **716** | 该文档加了 §9，重写条目后 stale −1 |
 
 **`audit.warnings`**：rc18 的 `check --json` / `verify --json` 顶层都没有这个字段
 （`check` 的键只有 `ok`、`exit_code`、`structure_valid`、`governance_aligned`、`findings`、
 `next_action`、`governance`）。该版本无此字段，用 `findings` 分类计数替代。
 
-## 3. `code_missing` 按目录聚合（129 条）
+## 3. `code_missing` 按目录聚合（128 条）
 
 | 目录 | 条数 |
 |---|---:|
@@ -51,7 +54,6 @@
 | `src-tauri/`（顶层文件） | 2 |
 | `src/boot/` | 2 |
 | `src/entries/` | 2 |
-| `docs/notes/` | 1 |
 | `src/directives/` | 1 |
 | `src/styles/` | 1 |
 | `src/workers/` | 1 |
