@@ -1,7 +1,7 @@
 {
   "version": 1,
   "created_at": "2026-10-04T12:17:40Z",
-  "updated_at": "2026-11-05T02:40:53Z",
+  "updated_at": "2026-11-05T02:44:50Z",
   "files": {
     ".gitattributes": {
       "role": "index",
@@ -125,9 +125,9 @@
     },
     "aoci.code.txt": {
       "role": "index",
-      "sha256": "e10f4805971fd7891e5bc990896a9929458895ce0444673d304346ba16750984",
-      "size": 348407,
-      "normalized_sha256": "e10f4805971fd7891e5bc990896a9929458895ce0444673d304346ba16750984"
+      "sha256": "64b1378a0bff204198e5c04146906184b2f84aa1afe72ab338d2d78a2b6e657d",
+      "size": 353101,
+      "normalized_sha256": "64b1378a0bff204198e5c04146906184b2f84aa1afe72ab338d2d78a2b6e657d"
     },
     "aoci.meta.txt": {
       "role": "index",
@@ -1091,27 +1091,27 @@
     },
     "logs.html": {
       "role": "index",
-      "sha256": "74b2f890d2d7d8a53f22d61eebf918bcc4d5981470754aa19ba970fd4a33a7e5",
-      "size": 2059,
-      "normalized_sha256": "74b2f890d2d7d8a53f22d61eebf918bcc4d5981470754aa19ba970fd4a33a7e5"
+      "sha256": "49eb28bdadc5de50e4d6cbd33aaf2a1c34691c65784d66660c88d1889c5498c7",
+      "size": 2094,
+      "normalized_sha256": "49eb28bdadc5de50e4d6cbd33aaf2a1c34691c65784d66660c88d1889c5498c7"
     },
     "package-lock.json": {
       "role": "index",
-      "sha256": "609c26bff64fb8f0f429d53914b9589f55938491904804bd52ba8f196be36753",
-      "size": 102669,
-      "normalized_sha256": "609c26bff64fb8f0f429d53914b9589f55938491904804bd52ba8f196be36753"
+      "sha256": "05bfdc7a2f64dd4bff65b1ed68247afbc7f312ed4c67469d7c9d6ac50bab6895",
+      "size": 138315,
+      "normalized_sha256": "05bfdc7a2f64dd4bff65b1ed68247afbc7f312ed4c67469d7c9d6ac50bab6895"
     },
     "package.json": {
       "role": "index",
-      "sha256": "a0ded956190d0c107b23a46fc2ca11559919fd67bfe26a17e1f0ed494e31ca4e",
-      "size": 10661,
-      "normalized_sha256": "a0ded956190d0c107b23a46fc2ca11559919fd67bfe26a17e1f0ed494e31ca4e"
+      "sha256": "2917b29d61c13cc5eafd69a1ca20dd1f12d4ee518e668d51df5a4be7c13e6df6",
+      "size": 9143,
+      "normalized_sha256": "2917b29d61c13cc5eafd69a1ca20dd1f12d4ee518e668d51df5a4be7c13e6df6"
     },
     "perf/README.md": {
       "role": "index",
-      "sha256": "8472a9343818192614718678f62bdb3698f7058520c3b699eee22eb6fb3ebc3b",
-      "size": 57574,
-      "normalized_sha256": "8472a9343818192614718678f62bdb3698f7058520c3b699eee22eb6fb3ebc3b"
+      "sha256": "d111b79c9690209f60beb43fe77d6e646c6c82e66175474fa2e11c823a4a32b5",
+      "size": 69707,
+      "normalized_sha256": "d111b79c9690209f60beb43fe77d6e646c6c82e66175474fa2e11c823a4a32b5"
     },
     "perf/background.mjs": {
       "role": "index",
@@ -1151,15 +1151,51 @@
     },
     "perf/probe.mjs": {
       "role": "index",
-      "sha256": "9b92c9d1f437278626a10dcba44ce53b777a9414ce9d53be3779f6c892853b62",
-      "size": 2196,
-      "normalized_sha256": "9b92c9d1f437278626a10dcba44ce53b777a9414ce9d53be3779f6c892853b62"
+      "sha256": "93d3dffaa7f01635c3000acde6dc1fae8a979100671f1f986478e44c053f5f43",
+      "size": 2734,
+      "normalized_sha256": "93d3dffaa7f01635c3000acde6dc1fae8a979100671f1f986478e44c053f5f43"
     },
     "perf/run.mjs": {
       "role": "index",
-      "sha256": "adc593f9cfd8bd8735c958df6ab8069b58e4160e27702b3d4750a402213a5975",
-      "size": 13915,
-      "normalized_sha256": "adc593f9cfd8bd8735c958df6ab8069b58e4160e27702b3d4750a402213a5975"
+      "sha256": "4b9e01bd7320d488c5c9a88a6b82e43fbc11a7234168f273b75b03466bd12d54",
+      "size": 14369,
+      "normalized_sha256": "4b9e01bd7320d488c5c9a88a6b82e43fbc11a7234168f273b75b03466bd12d54"
+    },
+    "perf/scrollab.mjs": {
+      "role": "index",
+      "sha256": "6b19bad0b6df7e5f35d918f31009ede76837fdf118f3eac3e699a01f1960f6eb",
+      "size": 4018,
+      "normalized_sha256": "6b19bad0b6df7e5f35d918f31009ede76837fdf118f3eac3e699a01f1960f6eb"
+    },
+    "perf/scrollkinds.mjs": {
+      "role": "index",
+      "sha256": "4868bb132ccf89811547a2267aba8fd51ba1e12429c0732153d3fa1de9de90c6",
+      "size": 2807,
+      "normalized_sha256": "4868bb132ccf89811547a2267aba8fd51ba1e12429c0732153d3fa1de9de90c6"
+    },
+    "perf/scrollprobe.html": {
+      "role": "index",
+      "sha256": "413767f46222058d43fd011afce1f148f36966a7cf9aef23c6cb756d9a46bff7",
+      "size": 744,
+      "normalized_sha256": "413767f46222058d43fd011afce1f148f36966a7cf9aef23c6cb756d9a46bff7"
+    },
+    "perf/scrollprobe.mjs": {
+      "role": "index",
+      "sha256": "41d888c4a54eb12d0089b5546cf77364e8b7e8407e5bf40f719416c553cdfc51",
+      "size": 9165,
+      "normalized_sha256": "41d888c4a54eb12d0089b5546cf77364e8b7e8407e5bf40f719416c553cdfc51"
+    },
+    "perf/scrollprobe.ts": {
+      "role": "index",
+      "sha256": "9ea568fa07c52b523f05a95fe27c58ece636a10572973c220e21c27aec27a549",
+      "size": 33401,
+      "normalized_sha256": "9ea568fa07c52b523f05a95fe27c58ece636a10572973c220e21c27aec27a549"
+    },
+    "perf/scrollscenarios.mjs": {
+      "role": "index",
+      "sha256": "834fea2ca04743c7503fefef67fca89aaf2612b3e2b04983d6d2127f8a6d3ac4",
+      "size": 8391,
+      "normalized_sha256": "834fea2ca04743c7503fefef67fca89aaf2612b3e2b04983d6d2127f8a6d3ac4"
     },
     "perf/vlist.html": {
       "role": "index",
@@ -1169,9 +1205,45 @@
     },
     "perf/vlist.ts": {
       "role": "index",
-      "sha256": "26441b62cec9adda7cdee8ed42888b0fc7ad8b64e0b8c6c424a22fc16cd337f4",
-      "size": 17175,
-      "normalized_sha256": "26441b62cec9adda7cdee8ed42888b0fc7ad8b64e0b8c6c424a22fc16cd337f4"
+      "sha256": "e69fd09f9a679b634f6dd1a905c7bf8e0fd255290c16fefe9a99d017b7b3b242",
+      "size": 17506,
+      "normalized_sha256": "e69fd09f9a679b634f6dd1a905c7bf8e0fd255290c16fefe9a99d017b7b3b242"
+    },
+    "perf/wk-a8.mjs": {
+      "role": "index",
+      "sha256": "ee60c7fbcf312f3e77c27af16f6b50b1db8e599539c5c778569c8381183c0063",
+      "size": 13588,
+      "normalized_sha256": "ee60c7fbcf312f3e77c27af16f6b50b1db8e599539c5c778569c8381183c0063"
+    },
+    "perf/wk-a8app.mjs": {
+      "role": "index",
+      "sha256": "bccb8fef95015f0901baaba6d894c3ebce8779fa12731d9e34f9bdc9be95fee6",
+      "size": 8051,
+      "normalized_sha256": "bccb8fef95015f0901baaba6d894c3ebce8779fa12731d9e34f9bdc9be95fee6"
+    },
+    "perf/wk-app-cell.js": {
+      "role": "index",
+      "sha256": "a2ecac6c7df9190b4e39062b14dfdba4c24e828084e019b1cacc9303edc874d2",
+      "size": 8922,
+      "normalized_sha256": "a2ecac6c7df9190b4e39062b14dfdba4c24e828084e019b1cacc9303edc874d2"
+    },
+    "perf/wk-check.html": {
+      "role": "index",
+      "sha256": "52375fbc71e646d05dbe304ec829d831e1633ad110ee3e5b8ef162398151e6aa",
+      "size": 10084,
+      "normalized_sha256": "52375fbc71e646d05dbe304ec829d831e1633ad110ee3e5b8ef162398151e6aa"
+    },
+    "perf/wk-host.swift": {
+      "role": "index",
+      "sha256": "ace86e9679275af497c6e08f2f3d4a63a322966c51ec0c33aa1b6a7572b6886b",
+      "size": 4615,
+      "normalized_sha256": "ace86e9679275af497c6e08f2f3d4a63a322966c51ec0c33aa1b6a7572b6886b"
+    },
+    "perf/wk-scroll-sampler.js": {
+      "role": "index",
+      "sha256": "8892764b5d27a8cc0246c42589da64d15209c4e4d1da4329a53848e166c22b69",
+      "size": 7286,
+      "normalized_sha256": "8892764b5d27a8cc0246c42589da64d15209c4e4d1da4329a53848e166c22b69"
     },
     "postcss.config.js": {
       "role": "index",
@@ -1181,9 +1253,15 @@
     },
     "preview.html": {
       "role": "index",
-      "sha256": "2d122739185c3899cd389d5e591ba37b595e17e0396f37e0b567e40d0e426eb4",
-      "size": 1187,
-      "normalized_sha256": "2d122739185c3899cd389d5e591ba37b595e17e0396f37e0b567e40d0e426eb4"
+      "sha256": "0b733ede9e7684eb513acf93494a0a2193f5b34fff33028d30f539e0d8190081",
+      "size": 1222,
+      "normalized_sha256": "0b733ede9e7684eb513acf93494a0a2193f5b34fff33028d30f539e0d8190081"
+    },
+    "ruff.toml": {
+      "role": "index",
+      "sha256": "7040592d8fe804aeb8d7f1929742643d629261c9db96c9ba2b106ea66d6bbf14",
+      "size": 729,
+      "normalized_sha256": "7040592d8fe804aeb8d7f1929742643d629261c9db96c9ba2b106ea66d6bbf14"
     },
     "scripts/android/AndroidManifest.xml": {
       "role": "index",
