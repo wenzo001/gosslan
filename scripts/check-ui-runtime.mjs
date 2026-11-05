@@ -2781,6 +2781,13 @@ async function runAccent(cdp, url) {
     "(() => {" +
       "  const root = document.documentElement;" +
       "  const prev = root.style.getPropertyValue('--gosslan-primary');" +
+      // ⚠️ 先把外观钉到浅色再量：首帧深色由 theme-boot.js 的 matchMedia 决定
+      //    （深色系统，或前一段在 localStorage 里留下的 dark 模式）—— 不钉住时
+      //    before/active 读到的就是暗档，「亮色：填充…」与「两档外观不会撞成同一个数」
+      //    两条会**必然**红（实测：深色档下亮色填充 = 暗色填充 ⇒ 后一条的 > 不成立）。
+      //    这是量具没控制变量，不是产品；读完按原样还原，不把外观留给后面的段。
+      "  const wasDark = root.classList.contains('dark');" +
+      "  if (wasDark) root.classList.remove('dark');" +
       "  const mk = (token) => {" +
       "    const d = document.createElement('div');" +
       "    d.style.color = 'var(' + token + ')';" +
@@ -2800,6 +2807,7 @@ async function runAccent(cdp, url) {
       "    inline[k] = root.style.getPropertyValue(k);" +
       "  }" +
       "  const out = {" +
+      "    wasDark," +
       "    inline," +
       "    before," +
       "    support: CSS.supports('color', 'color-mix(in srgb, red 50%, blue)')," +
@@ -2829,6 +2837,7 @@ async function runAccent(cdp, url) {
       "      return { before: beforeF, after: afterF };" +
       "    })()," +
       "  };" +
+      "  if (wasDark) root.classList.add('dark');" +
       "  root.style.setProperty('--gosslan-primary', prev);" +
       "  return out;" +
       "})()",
@@ -4427,8 +4436,13 @@ async function runScrollRestore(cdp, url) {
   await sleep(500);
   const before = await cdp.eval(`(() => {
     const el = document.querySelector('.vlist-no-anchor');
+    // ⚠️ 判据必须认 aria-label/title，不能认 textContent：adcf88cd（2026-11-04）按用户要求
+    //    把「回到最新」改成**纯圆 + 向下箭头、无文字**（ChatWindow.vue 那颗按钮只剩
+    //    :aria-label/:title 走 i18n），composerInteraction.test.ts 还专门钉着"无文字节点"。
+    //    旧的 textContent 写法在无文字节点上恒 false ⇒ 量具自己假红，不是按钮没出现。
     const back = [...document.querySelectorAll('button')]
-      .some((b) => (b.textContent || '').includes(${JSON.stringify(backLabel)}));
+      .some((b) => b.getAttribute('aria-label') === ${JSON.stringify(backLabel)}
+        || b.getAttribute('title') === ${JSON.stringify(backLabel)});
     const anchor = ${anchorExpr};
     return { top: el ? el.scrollTop : -1, back, anchor };
   })()`);
@@ -8076,7 +8090,13 @@ async function rosterChecks(cdp, url) {
     + "var box=el;for(var n=el;n&&n!==document.body;n=n.parentElement){"
     + "var st=getComputedStyle(n);if(st.position==='fixed'||st.position==='absolute'){box=n;break;}}"
     + "box._o={left: box.style.left, right: box.style.right, transform: box.style.transform};"
-    + "box.style.right='auto';box.style.left=(window.innerWidth - 20) + 'px';box.style.transform='none';return true;})()");
+    // ⚠️ 必须带 !important：Reka/floating-ui 的 autoUpdate 会在下一帧用**非 important**
+    //    的内联 left/transform 把位置写回去。实测同一份代码连跑三次，这条对照会红 2 次
+    //    （rect 停在 l=8，写的 736px 被覆盖）⇒ 对照空转、整轮偶然变红，不是产品问题。
+    //    important 声明压过库的普通内联写，对照才恒真；还原时按原优先级逐条写回。
+    + "box.style.setProperty('right','auto','important');"
+    + "box.style.setProperty('left',(window.innerWidth - 20) + 'px','important');"
+    + "box.style.setProperty('transform','none','important');return true;})()");
   const frOut = await cdp.eval("window.__probe.floatLayer('[data-readers-popover]')");
   check("对照：把已读弹层的 fixed 坐标推到视口右缘外 ⇒ 它必须落到视口外（证明那条判据会咬）",
     frOut.ok === true && frOut.inViewport === false,
@@ -8085,8 +8105,9 @@ async function rosterChecks(cdp, url) {
     + "if(!el)return false;"
     + "var box=el;for(var n=el;n&&n!==document.body;n=n.parentElement){"
     + "var st=getComputedStyle(n);if(st.position==='fixed'||st.position==='absolute'){box=n;break;}}"
-    + "if(!box._o)return false;box.style.left=box._o.left;box.style.right=box._o.right;"
-    + "box.style.transform=box._o.transform;delete box._o;return true;})()");
+    + "if(!box._o)return false;"
+    + "box.style.setProperty('left', box._o.left, '');box.style.setProperty('right', box._o.right, '');"
+    + "box.style.setProperty('transform', box._o.transform, '');delete box._o;return true;})()");
   const frBack = await cdp.eval("window.__probe.floatLayer('[data-readers-popover]')");
   check("对照可逆：换回原锚点后整块又回到视口内",
     frBack.ok === true && frBack.inViewport === true, "inViewport === true",
@@ -14017,14 +14038,20 @@ async function runAvatar(cdp, url) {
       sw: document.documentElement.scrollWidth,
     };
   })()`);
+  // ⚠️ 3.5 的来历（是换参照物，不是放宽门槛）：右侧字段 = 输入行 h-9(36) + mt-1(4) +
+  //    按钮行 30 = 70px，头像固定 64px；items-center 居中后上下各差 (70−64)/2 = 3px。
+  //    旧阈值 2.5 是按 ProfileSection 里"输入行 34 / 字段 68 ⇒ 各差 2px"写的；
+  //    2fb3cc8e（2026-11-05，输入框三档更正为 36/40）把这一行抬到 36 之后，2px 那个
+  //    设计假设已经不存在，旧阈值在**任何**环境下都必然红。仍能咬住真实错位：
+  //    头像放大到 80 时每边差 8px，远超 3.5。
   check("资料页：头像框与右侧字段上下对齐，两个入口按用户口径命名",
     mountedProfileDesktop && mountedProfileDesktop.ok === true && align.ok === true
-      && Math.abs(align.avatar.t - align.fields.t) <= 2.5
-      && Math.abs(align.avatar.b - align.fields.b) <= 2.5
+      && Math.abs(align.avatar.t - align.fields.t) <= 3.5
+      && Math.abs(align.avatar.b - align.fields.b) <= 3.5
       && align.avatar.h >= 62 && align.avatar.h <= 66
       && align.hasUpload === true && align.hasEmoji === true
       && align.sw <= align.vw + 1,
-    "头像 top/bottom 与右侧字段差 <=2.5px、头像高 62~66、按钮文案=上传头像/自定义 emoji 头像、无横向溢出",
+    "头像 top/bottom 与右侧字段差 <=3.5px（36+4+30=70 对 64，各差 3px）、头像高 62~66、按钮文案=上传头像/自定义 emoji 头像、无横向溢出",
     JSON.stringify(align));
   if (SHOT_PATH) {
     const shot = await cdp.send("Page.captureScreenshot", { format: "png" });
@@ -20514,13 +20541,19 @@ async function runInputPanels(cdp, url) {
   await sleep(300);
   const afterPick = await cdp.eval(`(() => {
     const ed = document.querySelector('.gosslan-composer [contenteditable="true"]');
+    // ⚠️ token 现在是**图片节点**，不是「[名字]」文字：MessageComposer.createEmojiToken
+    //    （2026-11-04 用户要求"输入框里直接看到表情本身"）把图形放进 <img>，[名字]
+    //    只留在 data-emoji 上给发送回读；composerInteraction.test.ts 也钉着这条。
+    //    旧判据读 innerText 找 "[" ⇒ 只剩 token 尾随的那个 nbsp，恒假红。
+    const token = ed ? ed.querySelector('.emoji-token[data-emoji]') : null;
     return { focused: document.activeElement === ed, text: ed ? ed.innerText : null,
+      token: token ? token.getAttribute('data-emoji') : null,
       open: !!document.querySelector('[data-emoji-panel]') };
   })()`);
   check("选完表情：面板收起、焦点回到编辑器、token 进了草稿（选完能直接接着打字）",
-    afterPick.open === false && afterPick.focused === true && typeof afterPick.text === "string"
-      && afterPick.text.includes("["),
-    "open=false 且 activeElement=编辑器 且草稿含 token", JSON.stringify(afterPick));
+    afterPick.open === false && afterPick.focused === true
+      && typeof afterPick.token === "string" && afterPick.token.trim() !== "",
+    "open=false 且 activeElement=编辑器 且草稿里有 data-emoji 的 token", JSON.stringify(afterPick));
   await cdp.eval(`(() => { const ed = document.querySelector('.gosslan-composer [contenteditable="true"]');
     if (ed) { ed.innerHTML = ''; ed.dispatchEvent(new InputEvent('input', { bubbles: true })); } })()`);
 
