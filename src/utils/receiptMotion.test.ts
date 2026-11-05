@@ -18,6 +18,7 @@ import { readFileSync } from "node:fs";
 
 const vueSrc = readFileSync(new URL("../components/message/MessageReceipt.vue", import.meta.url), "utf8");
 const css = readFileSync(new URL("../style.css", import.meta.url), "utf8");
+const tailVueSrc = readFileSync(new URL("../components/message/BubbleTail.vue", import.meta.url), "utf8");
 
 /** 取某个选择器所有规则块的正文（按花括号配对；同名媒体查询在仓库里不止一块）。 */
 function ruleBodies(source: string, selector: string): string[] {
@@ -137,4 +138,86 @@ test("反例自证：旧的 Transition + :key=\"state\" + enter scale 写法必�
   assert.match(issues, /缺状态层/, issues);
   assert.match(issues, /找不到固定占位/, issues);
   assert.match(issues, /缺 \.receipt-layer 规则/, issues);
+});
+
+/**
+ * 尾巴与气泡「只允许一个背景层」守门（2026-11-05 用户第三次报接缝）。
+ *
+ * 判据是**结构**：皮肤模式下整块「气泡 + 叶形」只能由一条闭合路径填充一次。
+ * 出现第二个填充路径 / 第二个几何块 / 尾巴子树自带 background / 底栏又填一层，
+ * 都会重新长出一条与主轮廓独立的边 —— 那正是"半透明接缝"复发的方式。
+ *
+ * 反例自证在同一节末尾：喂一份"两个 tail-fill + 尾巴子树自挂 background"的旧写法，
+ * 每条都要报出来（否则检查只是在空转）。
+ */
+function findTailFillIssues(vueRaw: string, sheet: string): string[] {
+  const out: string[] = [];
+  const vue = vueRaw.replace(/<!--[\s\S]*?-->/g, "");
+
+  const svgs = Array.from(vue.matchAll(/<svg[\s\S]*?<\/svg>/g), (m) => m[0]);
+  // 找不到两个分支（旧叶形 + 皮肤）⇒ 等于守卫没在看任何东西，先判红。
+  if (svgs.length < 2) out.push("找不到皮肤分支：BubbleTail 必须同时保留旧叶形与单填充分支");
+  for (const svg of svgs) {
+    const fills = Array.from(svg.matchAll(/<path[^>]*class="tail-fill"/g)).length;
+    if (fills !== 1) out.push(`某个尾巴分支里有 ${fills} 个 tail-fill 填充层（必须恰好 1 个）`);
+    if (/<(?:rect|circle|ellipse)\b/.test(svg)) {
+      out.push("尾巴子树里出现了第二个几何填充块（rect/circle/ellipse）");
+    }
+    if (/\bstyle="[^"]*(?:background|fill)"| \bfill="[^"]+"/.test(svg)) {
+      out.push("尾巴子树里出现了内联背景/第二份填充色 ⇒ 第二块背景");
+    }
+  }
+
+  // 皮肤必须真的由 `bubbleSkinPath` 生成（否则"单路径"只是注释）。
+  if (!/v-if="skinD && box"[\s\S]{0,500}class="tail-fill" :d="skinD"/.test(vue)) {
+    out.push("皮肤分支没有用 bubbleSkinPath 生成的单条路径（`class=\"tail-fill\" :d=\"skinD\"`）");
+  }
+
+  // 样式表：尾巴子树自己不许带 background（会变成第二个独立填充块）。
+  // 先剥注释 —— 本文件用注释记录了"旧实现里有几层"，那不是仍在生效的声明。
+  const bareSheet = sheet.replace(/\/\*[\s\S]*?\*\//g, "");
+  for (const rule of Array.from(bareSheet.matchAll(/\.(?:bubble-tail|tail-[a-z-]+)[^;{}]*\{[^}]*\}/g), (m) => m[0])) {
+    if (/background(?!-clip)/.test(rule)) out.push(`尾巴规则里自带 background ⇒ 第二块背景：${rule.trim()}`);
+  }
+
+  // 皮肤模式下：气泡自己的面收进 1px；底栏不再填第二层。
+  if (
+    !/\[data-bubble-skin\] > \[data-msg-bubble\] > :first-child\s*\{[^}]*background-clip:\s*padding-box\s*!important/.test(
+      sheet,
+    )
+  ) {
+    out.push("气泡自己的背景没有收进 padding-box ⇒ 外沿仍是两条边（皮肤 + 气泡背景）");
+  }
+  if (
+    !/\[data-bubble-skin\] > \[data-reaction-strip\]\s*\{[^}]*background:\s*transparent\s*!important/.test(sheet)
+  ) {
+    out.push("回应底栏在皮肤模式下仍自带背景 ⇒ 整块底部还有第二个背景层");
+  }
+
+  return out;
+}
+
+test("真实文件：尾巴子树只有一个填充层（0 条）", () => {
+  assert.deepEqual(findTailFillIssues(tailVueSrc, css), []);
+});
+
+test("反例自证：两个 tail-fill + 尾巴自挂 background + 底栏未让位 ⇒ 必须全部报红", () => {
+  const doubleVue = `<span class="bubble-tail">
+  <svg viewBox="0 0 14 14">
+    <path class="tail-fill" d="M10.5 4C10.5 7 6 10.5 2 13.5L13.5 13.5L13.5 4Z" />
+    <path class="tail-fill" d="M0 0L14 0L14 14L0 14Z" />
+  </svg>
+  <svg viewBox="0 0 14 14"><path class="tail-fill" d="M0 0Z" /></svg>
+</span>`;
+  const twoLayerCss = `.bubble-tail .tail-extra {
+  background: var(--bubble-bg);
+}
+.msg-shell[data-bubble-skin] > [data-reaction-strip] {
+  opacity: 0.4;
+}`;
+  const issues = findTailFillIssues(doubleVue, twoLayerCss).join("\n");
+  assert.match(issues, /2 个 tail-fill 填充层/, issues);
+  assert.match(issues, /尾巴规则里自带 background/, issues);
+  assert.match(issues, /回应底栏在皮肤模式下仍自带背景/, issues);
+  assert.match(issues, /没有用 bubbleSkinPath 生成的单条路径/, issues);
 });

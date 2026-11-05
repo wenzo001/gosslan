@@ -9592,6 +9592,11 @@ async function runRowPair(cdp, url) {
       ? +(isMine ? tr.right - br.right : br.left - tr.left).toFixed(2)
       : null;
     const tailCount = document.querySelectorAll('.bubble-tail').length;
+    // 2026-11-05 单填充皮肤：自己的文本气泡应该走整块路径（外壳带 data-bubble-skin、
+    // 尾巴子树里恰好一个 .tail-skin-svg），而不是旧「矩形气泡 + 14×14 叶形」两块形状。
+    const skinShell = document.querySelector('[data-bubble-skin]');
+    const skinSvgCount = document.querySelectorAll('.bubble-tail .tail-skin-svg').length;
+    const tailSvgCount = tail ? tail.querySelectorAll('svg').length : 0;
     const groupAvatarCount = root.querySelectorAll('.gosslan-avatar-box').length;
     const nickCount = [...document.querySelectorAll('[data-msg-col]')]
       .reduce((n, col) => n + [...col.children].filter((el) => el.textContent.trim() === '对方').length, 0);
@@ -9609,6 +9614,9 @@ async function runRowPair(cdp, url) {
       tailInsideBubble,
       tailSideReach,
       tailCount,
+      skin: !!skinShell,
+      skinSvgCount,
+      tailSvgCount,
       groupAvatarCount,
       nickCount,
       isMine,
@@ -9848,6 +9856,20 @@ async function runRowPair(cdp, url) {
     check("自己·" + kindLabel + "尾巴填充 == 这条自己的底色（预设色，暗色同理）",
       !!g && typeof g.tailFill === "string" && g.tailFill === g.bubbleBg,
       "fill == backgroundColor", JSON.stringify({ kindLabel, tailFill: g && g.tailFill, bubbleBg: g && g.bubbleBg }));
+    // 2026-11-05（第三次同一处接缝）：自己的**文本**气泡必须走单填充皮肤 ——
+    // 一条闭合路径同时画气泡四角与叶形，尾巴子树里只有**一个** svg（旧 14×14 叶形不再出现）。
+    // 其它气泡种类仍走旧叶形（皮肤只开给文本；卡片/代码的可见面不在 bubble 首子层）。
+    if (kind === "text") {
+      check("自己·文本气泡走单填充皮肤（data-bubble-skin + 尾巴子树恰好一个 svg，无第二块形状）",
+        !!g && g.skin === true && g.skinSvgCount === 1 && g.tailSvgCount === 1,
+        "skin && 1 svg",
+        JSON.stringify({ skin: g && g.skin, skinSvgCount: g && g.skinSvgCount, tailSvgCount: g && g.tailSvgCount }));
+    } else {
+      check("自己·" + kindLabel + "不套皮肤（仍走旧叶形：皮肤只开给文本气泡）",
+        !!g && g.skin === false && g.skinSvgCount === 0 && g.tailSvgCount === 1,
+        "无 skin && 旧叶形",
+        JSON.stringify({ skin: g && g.skin, skinSvgCount: g && g.skinSvgCount, tailSvgCount: g && g.tailSvgCount }));
+    }
   }
 
   // ---- 卡片文字的**桌面档**选字（负责人 2026-10-28 拍板「只开桌面档」）----
