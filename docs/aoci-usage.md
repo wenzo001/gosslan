@@ -76,8 +76,12 @@ aoci --repo . ui --detach --json    # 本地只读状态页；aoci ui --repo . -
 ```
 
 两个坑：① **没有**顶层 `aoci guide` 命令，Guide 在 `aoci index agent guide` 且 `--agent` 必填；
-② CLI 的写入通道（`index agent plan/stage`）在 Volumes v1 下直接拒（`error_code=config`），
-**写条目只有 MCP 一条路**。要「重新索引」先看 §8 —— 那组会被拒的命令有一整张对照表。
+② CLI 的 `index agent plan/stage` 在 Volumes v1 下直接拒（`error_code=config`）；但
+**单条写入 `aoci update-entry` 是可用的**（2026-11-05 实测：`--preview` 打行级红绿 diff 且零写入，
+去掉 `--preview` 后回「认知已更新: 1个对象; alignment=complete」）。
+它同样要求 `--source-sha256`；该仓里自己算的文件哈希（`shasum -a 256`）能被接受，
+但**没有** `candidate_id` / 批次身份 —— 批量维护仍走 MCP（§2、§3），
+单条改口径（E 档位、措辞）用 CLI 更省事。要「重新索引」先看 §8。
 
 收尾三件套（每轮维护跑完都要过）：`verify` → `check` → `index agent guide`，
 直到 `guide` 返回 `stage=aligned`、`complete=true`、`next_action=none`。
@@ -265,3 +269,36 @@ for l in sys.stdin:
 - ❌ 在 `/tmp` 下 clone 一份来验证可移植性：macOS 的 `/tmp` 是符号链接，AOCI 对这种 Git 边界失败关闭（见 §1）。
 - ❌ 看到 `aoci check` 退 1 就判「索引坏了」：先按 §8.3 数那五类各有多少，再看 `observed_pending`
   是不是在等**你**复核——那一格机器永远等不出结果。
+
+## 9. 2026-11-05 拍板：只维护 orphan 与明显错账
+
+**结论**：AOCI 的日常维护收缩为两件事 —— 消解 `code_orphan`、修明显错账（E 规模档位、
+把"演进叙事"改回"当下约束"）。`code_missing` / `code_stale` / `code_unbaselined` 的存量
+**登记为既有偏差，不再逐条追全量对齐**。账本在
+[`docs/notes/aoci-deviation-2026-11-05.md`](notes/aoci-deviation-2026-11-05.md)。
+
+**当次读数（2026-11-05，`aoci check --json`）**：`code_skipped=291`、`code_stale=169`、
+`code_missing=129`、`code_unbaselined=129`、`code_orphan=0`，合计 718；
+`structure_valid=true`、`governance_aligned=false`、`next_action=authoring_required`、退 1。
+早一组读数是 missing 128 / stale 168 / unbaselined 128 / orphan 1（合计 716），
+差值全部可解释（orphan 转 stale、本账本自身是新增文件），逐条说明在账本 §2。
+
+**为什么不再追 aligned**：`aoci_maintain` 的批次只包含**漂移候选**（当前是 7 个在途 Rust 文件 +
+`scripts/check-ui-runtime.mjs` + 本账本，`included=9 / remaining=289`），要给它们写条目就得对
+**别人还没落定的在途代码**下语义结论 —— 这既越界也不可信。而"重写已对齐条目"的唯一通道
+`intent=cognition_optimization` 要求仓库已 aligned，现读直接回
+`[candidate_invalid] cognition_optimization_requires_ordinary_alignment`。
+两者合起来的结论就是：**在别人在途期间，E 档位与措辞这类错账走单条 CLI `update-entry`（§4 ②），
+不要为了拉绿而吃掉别人的漂移。**
+
+**`audit.warnings` 不存在**：rc18 的 `check --json` / `verify --json` 顶层没有该字段
+（`check` 的键只有 `ok`、`exit_code`、`structure_valid`、`governance_aligned`、`findings`、
+`next_action`、`governance`）。达标口径因此改成：`code_orphan=0`、本文件列明的错账修完、
+`findings` 分类计数相对账本 §2 不变坏。
+
+**什么时候恢复全量对齐**（任一条件）：
+1. 大改架构（目录级重构、模块拆分/合并）导致 missing 分布整体变化；
+2. 换 AOCI 二进制大版本且 `scope` / `budget` 的 policy identity 变化（§8.6）；
+3. `code_missing` / `code_stale` 明显变坏（成批增长，不是抖动）。
+恢复时按 §8 第一行逐批 maintain，直到 `index agent guide` 回到
+`stage=aligned / complete=true / next_action=none`。

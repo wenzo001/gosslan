@@ -1,7 +1,7 @@
 {
   "version": 1,
   "created_at": "2026-10-04T12:17:40Z",
-  "updated_at": "2026-11-05T05:02:32Z",
+  "updated_at": "2026-11-05T11:58:58Z",
   "files": {
     ".gitattributes": {
       "role": "index",
@@ -125,9 +125,9 @@
     },
     "aoci.code.txt": {
       "role": "index",
-      "sha256": "66b5c9f5d42f77768bc03522c975d4311fcd413eb93cf9f0f16da7ef52eae735",
-      "size": 409032,
-      "normalized_sha256": "66b5c9f5d42f77768bc03522c975d4311fcd413eb93cf9f0f16da7ef52eae735"
+      "sha256": "fab3a5ba4cf08d98dc0a97f7d21b325a0c715a219a0c9421a445e7a3aa724e24",
+      "size": 409817,
+      "normalized_sha256": "fab3a5ba4cf08d98dc0a97f7d21b325a0c715a219a0c9421a445e7a3aa724e24"
     },
     "aoci.meta.txt": {
       "role": "index",
@@ -824,6 +824,12 @@
       "sha256": "a8512ba81bc24b0511b19e7c0cb98f1e5607142dfa5033d1a47ab5e3df7078be",
       "size": 6003,
       "normalized_sha256": "a8512ba81bc24b0511b19e7c0cb98f1e5607142dfa5033d1a47ab5e3df7078be"
+    },
+    "docs/notes/aoci-deviation-2026-11-05.md": {
+      "role": "index",
+      "sha256": "1cb367bb480e48db1a096a4c25d9d329e2b3ccb343195b2eecea27ac1b436dce",
+      "size": 7045,
+      "normalized_sha256": "1cb367bb480e48db1a096a4c25d9d329e2b3ccb343195b2eecea27ac1b436dce"
     },
     "docs/notes/async-cycles-leaks-audit-2026-10-23.md": {
       "role": "index",
@@ -5998,6 +6004,12 @@
       "size": 2226,
       "normalized_sha256": "0286f51dfa4fd514dc02c14d6fbab8d04e3b68b6a26df0ad937aee637cb96940"
     },
+    "src/utils/bubbleSkinPath.test.ts": {
+      "role": "observe",
+      "sha256": "63339dcdeacbf5ef87c12e087a90d27219bddc489bc82aca7ea46522fce1267d",
+      "size": 3220,
+      "normalized_sha256": "63339dcdeacbf5ef87c12e087a90d27219bddc489bc82aca7ea46522fce1267d"
+    },
     "src/utils/buildConfig.test.ts": {
       "role": "observe",
       "sha256": "88df4a3c6cbecc9eae32a64c09c70cbc683dfd78114b4ee77741f895d3c262a3",
@@ -6864,9 +6876,9 @@
     },
     "src/utils/receiptMotion.test.ts": {
       "role": "observe",
-      "sha256": "23ddbdd918bdc08eca5adee72ff646634785cc51378da4d65af63965b22c3bd9",
-      "size": 6975,
-      "normalized_sha256": "23ddbdd918bdc08eca5adee72ff646634785cc51378da4d65af63965b22c3bd9"
+      "sha256": "4f1fcec95a3a041b4b1807689e9539f652fc8d9235318e5f0456200505ba8f6e",
+      "size": 11209,
+      "normalized_sha256": "4f1fcec95a3a041b4b1807689e9539f652fc8d9235318e5f0456200505ba8f6e"
     },
     "src/utils/reducedTransparency.test.ts": {
       "role": "observe",
