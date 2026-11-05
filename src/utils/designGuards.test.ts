@@ -29,6 +29,7 @@ import {
   checkTextFieldFocusRing,
   checkGlassTiers,
   checkAmbientMotion,
+  checkComposerSurface,
   checkSelectionContract,
   findNestedThemeRuleIssues,
   findHandRolledSegmentLoops,
@@ -6668,6 +6669,57 @@ test("AM-06 反例自证：reduce 档只改时长不冻结必须红", () => {
   const css = ambientCss().replace(/animation: none !important;/g, "animation-duration: 30s !important;");
   const issues = checkAmbientMotion({ ...ambientSources(), css });
   assert.ok(issues.some((x) => x.message.includes("AM-06")), `期望 AM-06 报红，实际：${JSON.stringify(issues)}`);
+});
+
+// ---------------- CS：聊天输入区表面（背景动效白条回归） ----------------
+
+function composerSources() {
+  const srcDir = join(import.meta.dirname, "..");
+  return {
+    chatWindow: readFileSync(join(srcDir, "components", "ChatWindow.vue"), "utf8"),
+    composer: readFileSync(join(srcDir, "components", "chat", "MessageComposer.vue"), "utf8"),
+  };
+}
+
+test("CS-01/02：现树输入区外框有色调、输入卡圆角与 1px 描边恒定", () => {
+  const { chatWindow, composer } = composerSources();
+  const issues = checkComposerSurface(chatWindow, composer);
+  assert.deepEqual(issues, [], issues.map((i) => `L${i.line} ${i.message}`).join("\n"));
+});
+
+test("CS-01 反例自证：外框底色改回 --gosslan-chat（纯白）必须红", () => {
+  const { chatWindow, composer } = composerSources();
+  // 模拟回归：把「有色调 surface」改回「亮色下等于纯白」的 chat token。
+  const reverted = chatWindow.replace(
+    "bg-[var(--gosslan-bg)] px-4 pt-2",
+    "bg-[var(--gosslan-chat)] px-4 pt-2",
+  );
+  assert.notEqual(reverted, chatWindow, "锚点没命中：输入区外框的底色类变了形状");
+  const issues = checkComposerSurface(reverted, composer);
+  assert.ok(
+    issues.some((i) => i.message.includes("CS-01") && i.message.includes("纯白")),
+    `期望 CS-01 因纯白报红，实际：${JSON.stringify(issues)}`,
+  );
+});
+
+test("CS-02 反例自证：输入卡去掉圆角或缺 1px 描边必须红", () => {
+  const { chatWindow, composer } = composerSources();
+  const noRadius = composer.replace("rounded-[var(--gosslan-radius-md)] border ", "border ");
+  assert.notEqual(noRadius, composer, "锚点没命中：输入卡圆角类变了形状");
+  assert.ok(
+    checkComposerSurface(chatWindow, noRadius).some((i) => i.message.includes("圆角")),
+    "去掉圆角必须报 CS-02",
+  );
+
+  const noBorder = composer.replace(
+    "rounded-[var(--gosslan-radius-md)] border border-[var(--gosslan-border)]",
+    "rounded-[var(--gosslan-radius-md)]",
+  );
+  assert.notEqual(noBorder, composer, "锚点没命中：输入卡描边类变了形状");
+  assert.ok(
+    checkComposerSurface(chatWindow, noBorder).some((i) => i.message.includes("描边")),
+    "去掉 1px 描边必须报 CS-02",
+  );
 });
 
 /**
