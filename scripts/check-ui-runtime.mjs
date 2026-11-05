@@ -1878,14 +1878,20 @@ window.__probe = (() => {
    */
   H.linksStore = async (initial, source = 'https://backup.example.com/links.json') => {
     const m = await import('/src/api/index.ts');
-    const rows = initial.map((x) => ({ id: x.id, name: x.name, url: x.url }));
+    const rows = initial.map((x) => ({
+      id: x.id, name: x.name, url: x.url,
+      source: x.source || 'user', remoteUrl: x.remoteUrl || '',
+    }));
     window.__links = {
       rows: rows,
       source: source,
       calls: { list: 0, add: 0, update: 0, remove: 0, importUrl: 0, export: 0 },
       seq: 0, last: null, fail: null, hold: false, release: null,
     };
-    const snap = () => rows.map((x) => ({ id: x.id, name: x.name, url: x.url }));
+    const snap = () => rows.map((x) => ({
+      id: x.id, name: x.name, url: x.url,
+      source: x.source || 'user', remoteUrl: x.remoteUrl || '',
+    }));
     const trip = (kind) => {
       if (window.__links.fail !== kind) return;
       window.__links.fail = null;
@@ -1900,7 +1906,10 @@ window.__probe = (() => {
       window.__links.calls.add += 1;
       trip('add');
       window.__links.seq += 1;
-      rows.push({ id: 'n' + window.__links.seq, name: name, url: url });
+      rows.push({
+        id: 'n' + window.__links.seq, name: name, url: url,
+        source: 'user', remoteUrl: '',
+      });
       window.__links.last = { kind: 'add', name: name, url: url };
       return snap();
     };
@@ -1932,12 +1941,21 @@ window.__probe = (() => {
         await new Promise((r) => { window.__links.release = r; });
       }
       window.__links.seq += 1;
-      rows.push({ id: 'n' + window.__links.seq, name: '导入的链接', url: 'https://imported.example.com' });
+      rows.push({
+        id: 'n' + window.__links.seq, name: '导入的链接', url: 'https://imported.example.com',
+        source: 'url:' + url, remoteUrl: 'https://imported.example.com',
+      });
       window.__links.source = url;
       window.__links.last = { kind: 'importUrl', url: url };
-      return { links: snap(), added: 1, skipped: 0, invalid: 0 };
+      return { links: snap(), added: 1, updated: 0, removed: 0, skipped: 0, invalid: 0, unchanged: 0 };
     };
-    m.api.importExternalLinksFile = async () => ({ links: snap(), added: 0, skipped: 0, invalid: 0 });
+    // JSON 导入预览：只读，返回空清单（探针没有文件选择器，不点这条路径）。
+    m.api.previewExternalLinksFile = async () => ({
+      added: [], updated: [], removed: [], skipped: 0, invalid: 0, unchanged: 0,
+    });
+    m.api.importExternalLinksFile = async () => ({
+      links: snap(), added: 0, updated: 0, removed: 0, skipped: 0, invalid: 0, unchanged: 0,
+    });
     m.api.importPickedFile = async (path) => path;
     m.api.exportExternalLinks = async () => {
       window.__links.calls.export += 1;
@@ -14421,8 +14439,14 @@ async function runDiag(cdp, url) {
  */
 async function runLinks(cdp, url) {
   const links = [
-    { id: "l1", name: "公司内网", url: "https://intra.example.com" },
-    { id: "l2", name: "产品文档", url: "https://docs.example.com" },
+    {
+      id: "l1", name: "公司内网", url: "https://intra.example.com",
+      source: "user", remoteUrl: "",
+    },
+    {
+      id: "l2", name: "产品文档", url: "https://docs.example.com",
+      source: "url:https://backup.example.com/links.json", remoteUrl: "https://docs.example.com",
+    },
   ];
   await cdp.send("Emulation.setDeviceMetricsOverride", {
     width: 1400, height: 900, deviceScaleFactor: 1, mobile: false,
@@ -14453,6 +14477,7 @@ async function runLinks(cdp, url) {
         addFail: t('links.addFail'),
         sourceLabel: t('links.sourceLabel'), refresh: t('links.refresh'),
         refreshing: t('links.refreshing'), sourceCopy: t('links.sourceCopy'),
+        sourceUser: t('links.source.user'), sourceUrlWith: t('links.source.urlWith'),
         failHttp: t('links.refreshFail.http'), failNetwork: t('links.refreshFail.network'),
       };
     })()`);
@@ -14466,6 +14491,14 @@ async function runLinks(cdp, url) {
       return true;
     })()`);
     await sleep(400);
+    const sourceRows = await cdp.eval(`[...document.querySelectorAll('[data-probe="links-row-source"]')]
+      .map((e) => (e.innerText || '').trim())`);
+    check("来源标识：每行都可见「用户添加」或「远程来源 + 来源地址」",
+      mounted && mounted.ok === true && sourceRows.length === 2
+        && sourceRows.includes(L.sourceUser)
+        && sourceRows.includes(L.sourceUrlWith.replace("{url}", "https://backup.example.com/links.json")),
+      "2 行来源标识：用户添加 + 远程来源含完整地址",
+      JSON.stringify(sourceRows));
 
     const info = () => cdp.eval(`(() => {
       const txt = document.body.innerText;

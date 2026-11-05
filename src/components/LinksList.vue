@@ -32,12 +32,19 @@ import {
   MAX_LINK_NAME_CHARS,
   classifyRefreshFailure,
   createSingleFlight,
+  describeLinkSource,
   isValidExternalUrl,
+  summarizeImportPreview,
   validateLinkInput,
+  type LinkSourceView,
 } from "@/utils/externalLinks";
 import { Copy, Download, ExternalLink as ExternalLinkIcon, FileJson, Pencil, Plus, RefreshCw, Upload } from "lucide-vue-next";
 import { Trash2 } from "@/components/ui/icons";
-import type { ExternalLink, ExternalLinkImportResult } from "@/types";
+import type {
+  ExternalLink,
+  ExternalLinkImportPreview,
+  ExternalLinkImportResult,
+} from "@/types";
 
 const props = defineProps<{ opening?: boolean; routeDriven?: boolean }>();
 const emit = defineEmits<{
@@ -79,6 +86,18 @@ const draft = ref<{ id: string | null; name: string; url: string } | null>(null)
 const dialogOpen = ref(false);
 const importOpen = ref(false);
 const urlImport = ref("");
+/**
+ * JSON 导入的预览确认（规则 3）：选择文件后先只读预览，用户确认才真正写库。
+ * 删除只会发生在 `confirmImportFile`，取消 = 零写入。
+ */
+const previewOpen = ref(false);
+const previewPath = ref("");
+const previewData = ref<ExternalLinkImportPreview | null>(null);
+const previewCounts = computed(() =>
+  summarizeImportPreview(
+    previewData.value ?? { added: [], updated: [], removed: [] },
+  ),
+);
 
 /**
  * 三条写命令（增 / 改 / 删）后端都返回**整份数组** ⇒ 成功时直接写回读缓存，
@@ -180,14 +199,15 @@ const transferBusy = ref<"" | "export" | "file" | "url">("");
 
 function applyImport(res: ExternalLinkImportResult) {
   queryClient.setQueryData(panelKey("links", ""), res.links);
-  const lines: string[] = [];
-  lines.push(
-    res.added > 0
-      ? t("links.importDone", { n: res.added })
-      : t("links.importNone", { n: res.skipped }),
-  );
-  if (res.invalid > 0) lines.push(t("links.importInvalid", { n: res.invalid }));
-  app.toast(lines.join(" · "), res.added > 0 ? "success" : "info");
+  const parts: string[] = [];
+  if (res.added > 0) parts.push(t("links.importAdd", { n: res.added }));
+  if (res.updated > 0) parts.push(t("links.importUpdate", { n: res.updated }));
+  if (res.removed > 0) parts.push(t("links.importRemove", { n: res.removed }));
+  let text = parts.length
+    ? t("links.importDone", { summary: parts.join(" · ") })
+    : t("links.importNothing");
+  if (res.invalid > 0) text += ` · ${t("links.importInvalid", { n: res.invalid })}`;
+  app.toast(text, parts.length ? "success" : "info");
 }
 
 async function exportLinks() {
@@ -206,6 +226,7 @@ async function exportLinks() {
   }
 }
 
+/** 选择文件 → **只预览**：不写库，把新增/更新/删除清单交给用户确认。 */
 async function importFile() {
   if (transferBusy.value) return;
   try {
@@ -218,8 +239,32 @@ async function importFile() {
     if (!rawPath) return;
     transferBusy.value = "file";
     const localPath = await api.importPickedFile(String(rawPath), "links.json");
-    applyImport(await api.importExternalLinksFile(localPath));
+    previewPath.value = localPath;
+    previewData.value = await api.previewExternalLinksFile(localPath);
     importOpen.value = false;
+    previewOpen.value = true;
+  } catch (e) {
+    previewPath.value = "";
+    previewData.value = null;
+    app.toastError(e, t("links.importReport"));
+  } finally {
+    transferBusy.value = "";
+  }
+}
+
+function closePreview() {
+  previewOpen.value = false;
+  previewPath.value = "";
+  previewData.value = null;
+}
+
+/** 用户在预览里点「确认导入」后才真正写库（删除也只在这一步发生）。 */
+async function confirmImportFile() {
+  if (transferBusy.value || !previewPath.value || !previewCounts.value.hasChanges) return;
+  transferBusy.value = "file";
+  try {
+    applyImport(await api.importExternalLinksFile(previewPath.value));
+    closePreview();
   } catch (e) {
     app.toastError(e, t("links.importReport"));
   } finally {
@@ -278,6 +323,28 @@ const refreshSource = createSingleFlight(async () => {
 async function copySource() {
   const ok = await copyText(importSource.value);
   app.toast(t(ok ? "links.sourceCopied" : "links.sourceCopyFail"), ok ? "success" : "error");
+}
+
+// ---------------- 来源标识（规则 1 / 5） ----------------
+
+function sourceView(l: ExternalLink): LinkSourceView {
+  return describeLinkSource(l.source, importSource.value);
+}
+
+/**
+ * 每行来源的第二行文案：用户添加 / 远程来源 + 地址 / 文件导入 + 文件名。
+ * `url:` 且不是当前导入来源 ⇒ 旧来源（保留在本地，但不再被任何来源同步）。
+ */
+function sourceText(l: ExternalLink): string {
+  const v = sourceView(l);
+  if (v.kind === "user") return t("links.source.user");
+  if (v.kind === "json") {
+    return v.address ? t("links.source.jsonWith", { file: v.address }) : t("links.source.json");
+  }
+  if (v.stale) {
+    return v.address ? t("links.source.oldWith", { url: v.address }) : t("links.source.old");
+  }
+  return v.address ? t("links.source.urlWith", { url: v.address }) : t("links.source.url");
 }
 </script>
 
@@ -471,6 +538,93 @@ async function copySource() {
         </div>
       </BaseModal>
 
+      <!-- JSON 导入预览确认：先看「将新增 / 更新 / 删除」清单，确认后才写库。 -->
+      <BaseModal
+        :open="previewOpen"
+        :title="t('links.previewTitle')"
+        @close="closePreview"
+      >
+        <div v-if="previewData" class="space-y-3" data-probe="links-preview">
+          <p class="text-body text-[var(--gosslan-text)]">
+            {{
+              t("links.previewSummary", {
+                added: previewCounts.added,
+                updated: previewCounts.updated,
+                removed: previewCounts.removed,
+              })
+            }}
+          </p>
+          <p v-if="previewData.skipped > 0" class="text-caption text-[var(--gosslan-text-2)]">
+            {{ t("links.previewSkipped", { n: previewData.skipped }) }}
+          </p>
+          <p v-if="!previewCounts.hasChanges" class="text-caption text-[var(--gosslan-text-2)]">
+            {{ t("links.previewNothing") }}
+          </p>
+
+          <details v-if="previewCounts.added > 0" class="text-caption text-[var(--gosslan-text-2)]">
+            <summary class="cursor-pointer select-none">
+              {{ t("links.previewAdd", { n: previewCounts.added }) }}
+            </summary>
+            <ul class="mt-1 space-y-1 pl-4">
+              <li
+                v-for="c in previewData.added"
+                :key="`a:${c.url}`"
+                class="truncate"
+                :title="`${c.name} — ${c.url}`"
+              >
+                {{ c.name }} — {{ c.url }}
+              </li>
+            </ul>
+          </details>
+          <details v-if="previewCounts.updated > 0" class="text-caption text-[var(--gosslan-text-2)]">
+            <summary class="cursor-pointer select-none">
+              {{ t("links.previewUpdate", { n: previewCounts.updated }) }}
+            </summary>
+            <ul class="mt-1 space-y-1 pl-4">
+              <li
+                v-for="c in previewData.updated"
+                :key="`u:${c.url}`"
+                class="truncate"
+                :title="`${c.name} — ${c.url}`"
+              >
+                {{ c.name }} — {{ c.url }}
+              </li>
+            </ul>
+          </details>
+          <details v-if="previewCounts.removed > 0" class="text-caption text-[var(--gosslan-text-2)]">
+            <summary class="cursor-pointer select-none">
+              {{ t("links.previewRemove", { n: previewCounts.removed }) }}
+            </summary>
+            <ul class="mt-1 space-y-1 pl-4">
+              <li
+                v-for="c in previewData.removed"
+                :key="`r:${c.url}`"
+                class="truncate"
+                :title="`${c.name} — ${c.url}`"
+              >
+                {{ c.name }} — {{ c.url }}
+              </li>
+            </ul>
+          </details>
+
+          <p class="text-caption leading-relaxed text-[var(--gosslan-text-2)]">
+            {{ t("links.previewProtected") }}
+          </p>
+          <div class="flex justify-end gap-2 pt-1">
+            <SecondaryBtn @click="closePreview">
+              {{ t("common.cancel") }}
+            </SecondaryBtn>
+            <PrimaryBtn
+              data-probe="links-preview-confirm"
+              :disabled="!previewCounts.hasChanges || transferBusy === 'file'"
+              @click="confirmImportFile"
+            >
+              {{ t("links.previewConfirm") }}
+            </PrimaryBtn>
+          </div>
+        </div>
+      </BaseModal>
+
       <p v-if="loading" class="px-2 py-3 text-xs text-[var(--gosslan-text-2)]">{{ t("links.loading") }}</p>
       <StateBlock
         v-else-if="loadError"
@@ -503,8 +657,17 @@ async function copySource() {
           @click="emit('open', l)"
         >
           <ExternalLinkIcon class="h-4 w-4 shrink-0 text-[var(--gosslan-text-2)]" />
-          <span class="min-w-0 flex-1 truncate text-body text-[var(--gosslan-text)]" :title="l.name">
-            {{ l.name }}
+          <span class="min-w-0 flex-1">
+            <span class="block truncate text-body text-[var(--gosslan-text)]" :title="l.name">
+              {{ l.name }}
+            </span>
+            <span
+              data-probe="links-row-source"
+              class="block truncate text-caption text-[var(--gosslan-text-2)]"
+              :title="sourceText(l)"
+            >
+              {{ sourceText(l) }}
+            </span>
           </span>
         </button>
         <button

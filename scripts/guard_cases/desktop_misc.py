@@ -60,8 +60,13 @@ CASES: list[Case] = [
         # 被搬进阻塞池，摘掉 `(async)` 就不再改变执行位置 ⇒ 注上去什么都没变、守卫静默空转。
         # 本会话已经为这件事换过两次人（get_settings → save_settings → add_external_link），
         # 第三版改成自己造违规形状：锚点是一条永久留在模块层的 doc 行，注入体自己带 db 访问。
+        # 2026-11-05 重写外链同步语义时，旧的锚点（钉在 `import_external_links_raw` 的 doc 上）
+        # 跟着那个 helper 一起被删了 —— `--list` 当场报红。现在锚点钉在 `SOURCE_USER` 的
+        # doc 上，且**不依附任何业务函数**：业务函数可以被重写/搬走，这个常量不会。
+        # 搬锚点时必须同一次提交里跑 `python3 scripts/verify-guards.py --list`，
+        # 确认新位置生效，否则等于把这条门禁静默关掉。
         injections=[(
-            "/// 导入并合并（按规范化后的 URL 去重；不覆盖已有条目的名字）。",
+            "/// 注入锚点（`scripts/guard_cases/desktop_misc.py` 的「主线程守卫」把一条合成违规命令插在这行之前）。",
             '''#[tauri::command]
 pub fn guard_case_fixture_db(
     state: tauri::State<'_, Arc<AppState>>,
@@ -71,7 +76,7 @@ pub fn guard_case_fixture_db(
     Vec::new()
 }
 
-/// 导入并合并（按规范化后的 URL 去重；不覆盖已有条目的名字）。''',
+/// 注入锚点（`scripts/guard_cases/desktop_misc.py` 的「主线程守卫」把一条合成违规命令插在这行之前）。''',
         )],
         cmd=cargo("test", "--lib", "blocking_commands_run_off_the_main_thread"),
         cwd=TAURI,
