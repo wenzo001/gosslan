@@ -650,9 +650,11 @@ export async function run() {
     }
     const denied = countLinesWith(INSTANCES[0], "ContentRequest：请求方无权限", cid);
     const served = countLinesWith(INSTANCES[0], "code=GROUP_PULL_SERVED", cid);
-    // 1:1 回程的指纹：群 cid 一旦落进 `send_file_from_path_at`，A 侧必然留下针对原 transfer_id
-    // 的 `offer SENT`（B 之后这条路径给群内容现铸 `pull-<uuid>`，原 tid 不可能再出现）。
-    const oneToOne = countLinesWith(INSTANCES[0], "[FILE] offer SENT", tid);
+    // 1:1 回程的指纹：群 cid 一旦落进 `send_file_from_path_at`，A 侧成功的服务必然留下
+    // `[content] 已按 ContentRequest 回发内容 cid=…`（B 之后群 cid 只走群帧，这句对群 cid 应为 0）。
+    // ⚠️ 别用 `[FILE] offer SENT` 当锚点：那句属于另一条直发链路，1:1 补拉回程根本不打它 ——
+    // 反例实跑时它照样是 0，"没有 1:1 回程"那一半就变成了查空气。
+    const oneToOne = countLinesWith(INSTANCES[0], "已按 ContentRequest 回发内容", cid);
     check("前置：A 侧确实不再把 B 当好友，但两人仍是同一个群的成员（否则测的不是这一臂）",
       friendGone.n === 0 && friendGone.m === 2, "好友 0 行 / 群成员 2 行",
       `好友 ${friendGone.n} 行 / 群成员 ${friendGone.m} 行`);
