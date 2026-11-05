@@ -1,7 +1,7 @@
 {
   "version": 1,
   "created_at": "2026-10-04T12:17:40Z",
-  "updated_at": "2026-11-05T03:07:16Z",
+  "updated_at": "2026-11-05T03:11:18Z",
   "files": {
     ".gitattributes": {
       "role": "index",
@@ -125,9 +125,9 @@
     },
     "aoci.code.txt": {
       "role": "index",
-      "sha256": "012c20f983cff5b3ad1c65876c6ea09894f2e8d7e80ba983ea937cee930c1371",
-      "size": 365642,
-      "normalized_sha256": "012c20f983cff5b3ad1c65876c6ea09894f2e8d7e80ba983ea937cee930c1371"
+      "sha256": "530af2f1485ce7977251b25cd1d2c4966afcaf41117d76a697d21cabb1929932",
+      "size": 368220,
+      "normalized_sha256": "530af2f1485ce7977251b25cd1d2c4966afcaf41117d76a697d21cabb1929932"
     },
     "aoci.meta.txt": {
       "role": "index",
@@ -2189,15 +2189,15 @@
     },
     "src-tauri/Cargo.toml": {
       "role": "index",
-      "sha256": "ab9bc63961746f7942973978d68258766defb04e6097fd415c3359e9536fb87c",
-      "size": 12380,
-      "normalized_sha256": "ab9bc63961746f7942973978d68258766defb04e6097fd415c3359e9536fb87c"
+      "sha256": "f8e764a78b6a086d3dcbba9159118381cde5afcf15a7cdb90f24a7c4858b74a9",
+      "size": 17122,
+      "normalized_sha256": "f8e764a78b6a086d3dcbba9159118381cde5afcf15a7cdb90f24a7c4858b74a9"
     },
     "src-tauri/Info.plist": {
       "role": "index",
-      "sha256": "f0b7661a9b7d10b3b41a9cb03c80b2dba4fc9cf697e5f9682c50f1399d06efe8",
-      "size": 1814,
-      "normalized_sha256": "f0b7661a9b7d10b3b41a9cb03c80b2dba4fc9cf697e5f9682c50f1399d06efe8"
+      "sha256": "776670e90b472a21502b92ab65b2dad28db420140fee5f5dd0443fc603ae69da",
+      "size": 2554,
+      "normalized_sha256": "776670e90b472a21502b92ab65b2dad28db420140fee5f5dd0443fc603ae69da"
     },
     "src-tauri/PrivacyInfo.xcprivacy": {
       "role": "index",
@@ -2213,9 +2213,15 @@
     },
     "src-tauri/capabilities/default.json": {
       "role": "index",
-      "sha256": "85a3a6c37c7ae19df5176f42181dba46a6f363f5447ef743f33b19214052fd8e",
-      "size": 1117,
-      "normalized_sha256": "85a3a6c37c7ae19df5176f42181dba46a6f363f5447ef743f33b19214052fd8e"
+      "sha256": "ed00573c0ac8ec9e66e93ca0d015db7f524b569309f0bbf0ed58106208dcc1d3",
+      "size": 1038,
+      "normalized_sha256": "ed00573c0ac8ec9e66e93ca0d015db7f524b569309f0bbf0ed58106208dcc1d3"
+    },
+    "src-tauri/deny.toml": {
+      "role": "index",
+      "sha256": "32f4371b0f2f4564457f8f34db5ad8f7ae116fe94674636c9498b486f2561853",
+      "size": 4721,
+      "normalized_sha256": "32f4371b0f2f4564457f8f34db5ad8f7ae116fe94674636c9498b486f2561853"
     },
     "src-tauri/entitlements.plist": {
       "role": "index",
@@ -2225,15 +2231,15 @@
     },
     "src-tauri/examples/dual_link.rs": {
       "role": "index",
-      "sha256": "5934e17cb7346bdb1e61c5256e4fb152c901408362cda95ccdfbaf0aa7024d32",
-      "size": 12855,
-      "normalized_sha256": "5934e17cb7346bdb1e61c5256e4fb152c901408362cda95ccdfbaf0aa7024d32"
+      "sha256": "5efccb8e05d26564169e1ca0fc9f8962348eb81e409003ae7b2fa4139d874963",
+      "size": 12875,
+      "normalized_sha256": "5efccb8e05d26564169e1ca0fc9f8962348eb81e409003ae7b2fa4139d874963"
     },
     "src-tauri/examples/e2e_peer.rs": {
       "role": "index",
-      "sha256": "8ed4e810a9881fddf07095e82694e9847e9557851db3ec2efd24a4cc041eaa78",
-      "size": 55543,
-      "normalized_sha256": "8ed4e810a9881fddf07095e82694e9847e9557851db3ec2efd24a4cc041eaa78"
+      "sha256": "38657ba2e86a546df05f318ae02cf5099d7c9166ae4e94384f270e2655431cbb",
+      "size": 55625,
+      "normalized_sha256": "38657ba2e86a546df05f318ae02cf5099d7c9166ae4e94384f270e2655431cbb"
     },
     "src-tauri/examples/mirror_dial.rs": {
       "role": "index",
@@ -2261,21 +2267,27 @@
     },
     "src-tauri/gen/android/app/build.gradle.kts": {
       "role": "index",
-      "sha256": "2a9103aa5312206e854d882e42760426cb0908fe141899a967361b384e6151ea",
-      "size": 3104,
-      "normalized_sha256": "2a9103aa5312206e854d882e42760426cb0908fe141899a967361b384e6151ea"
+      "sha256": "048d26e99ad6c97177d3fa924a29873022362ba1763f9f91b598eaf2d7fd9536",
+      "size": 3100,
+      "normalized_sha256": "048d26e99ad6c97177d3fa924a29873022362ba1763f9f91b598eaf2d7fd9536"
     },
     "src-tauri/gen/android/app/proguard-rules.pro": {
       "role": "index",
-      "sha256": "e8729123ea9c03d03f0a5b771cd2058d622975f61dadf444c56454d38f0dcc5b",
-      "size": 5663,
-      "normalized_sha256": "e8729123ea9c03d03f0a5b771cd2058d622975f61dadf444c56454d38f0dcc5b"
+      "sha256": "05978d9227a3c29a5a3675f5808ee6c7f381c35e877c0c6cc7d44ea4f2c81855",
+      "size": 7896,
+      "normalized_sha256": "05978d9227a3c29a5a3675f5808ee6c7f381c35e877c0c6cc7d44ea4f2c81855"
     },
     "src-tauri/gen/android/app/src/main/AndroidManifest.xml": {
       "role": "index",
       "sha256": "6c085871cdeb3c0024d297ff898b9fdd6ee67f673fa062d773c56e8faca381f8",
       "size": 7551,
       "normalized_sha256": "6c085871cdeb3c0024d297ff898b9fdd6ee67f673fa062d773c56e8faca381f8"
+    },
+    "src-tauri/gen/android/app/src/main/java/com/gosslan/app/ApkInstaller.kt": {
+      "role": "index",
+      "sha256": "a94ef1cf7f0b14b76d6579c57e23fb72f0bbe7bddd3ac7a4ca214f0ce15dc608",
+      "size": 13502,
+      "normalized_sha256": "a94ef1cf7f0b14b76d6579c57e23fb72f0bbe7bddd3ac7a4ca214f0ce15dc608"
     },
     "src-tauri/gen/android/app/src/main/java/com/gosslan/app/BackgroundService.kt": {
       "role": "index",
@@ -2297,15 +2309,15 @@
     },
     "src-tauri/gen/android/app/src/main/java/com/gosslan/app/MainActivity.kt": {
       "role": "index",
-      "sha256": "11d8f5a62101253c3766db31f09a7e9fb5d9054a497583450271f12a46ea4950",
-      "size": 3248,
-      "normalized_sha256": "11d8f5a62101253c3766db31f09a7e9fb5d9054a497583450271f12a46ea4950"
+      "sha256": "93b42a771e2aa0001c90d34ed866a7af1ef52ba1ce67ecce194842c87ec7ea70",
+      "size": 4085,
+      "normalized_sha256": "93b42a771e2aa0001c90d34ed866a7af1ef52ba1ce67ecce194842c87ec7ea70"
     },
     "src-tauri/gen/android/app/src/main/java/com/gosslan/app/OpenWith.kt": {
       "role": "index",
-      "sha256": "f58f4386674fc4ce78566b08a81554e6bceb288306a6d520137733c5ca5d9785",
-      "size": 15366,
-      "normalized_sha256": "f58f4386674fc4ce78566b08a81554e6bceb288306a6d520137733c5ca5d9785"
+      "sha256": "d9f5dd1450db07dbe5f835b4db5d1c6647cc45f0abf75ca90a585e61d232eec2",
+      "size": 16240,
+      "normalized_sha256": "d9f5dd1450db07dbe5f835b4db5d1c6647cc45f0abf75ca90a585e61d232eec2"
     },
     "src-tauri/gen/android/app/src/main/res/drawable-v24/ic_launcher_foreground.xml": {
       "role": "index",
@@ -2406,11 +2418,23 @@
       "sha256": "f3610b2e86ca6a28537f2b19f9f50e4ac4096a5c0f5ac8311975755527dea371",
       "size": 35369
     },
+    "src-tauri/gen/android/app/src/main/res/values-en/strings.xml": {
+      "role": "index",
+      "sha256": "df81571bff140f1a13eb50ea11011fd76cbdf3d1e605758a41cab48814ef13c1",
+      "size": 829,
+      "normalized_sha256": "df81571bff140f1a13eb50ea11011fd76cbdf3d1e605758a41cab48814ef13c1"
+    },
     "src-tauri/gen/android/app/src/main/res/values-night/themes.xml": {
       "role": "index",
       "sha256": "8189dbade0bba0cfb01fa4d3050e0f3fabd347574ff1f87a3446fb44d86a01c2",
       "size": 254,
       "normalized_sha256": "8189dbade0bba0cfb01fa4d3050e0f3fabd347574ff1f87a3446fb44d86a01c2"
+    },
+    "src-tauri/gen/android/app/src/main/res/values-zh/strings.xml": {
+      "role": "index",
+      "sha256": "d633a6ef0696d3858e0cfa1c07f98a5a77dc5f7c3d791e9b7134d682cc2791c9",
+      "size": 748,
+      "normalized_sha256": "d633a6ef0696d3858e0cfa1c07f98a5a77dc5f7c3d791e9b7134d682cc2791c9"
     },
     "src-tauri/gen/android/app/src/main/res/values/colors.xml": {
       "role": "index",
