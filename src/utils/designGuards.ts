@@ -2774,3 +2774,93 @@ export function checkAmbientMotion(s: AmbientMotionSources): GuardIssue[] {
 
   return out.sort((a, b) => a.line - b.line);
 }
+
+// ---------------- CS：聊天输入区表面（背景动效白条回归） ----------------
+
+/**
+ * 亮色下等同于纯白的 token。拿它们当输入区外框底色，背景动效开启时会在底部露成白条
+ * （`--gosslan-chat` / `--gosslan-panel` 在 light 下就是 #ffffff）。
+ */
+const COMPOSER_WHITE_TOKENS = new Set(["--gosslan-chat", "--gosslan-panel"]);
+
+/**
+ * 允许作为输入区外框底色的有色调 token。
+ * 三道玻璃降级（reduced-transparency / prefers-reduced-transparency / `@supports not (backdrop-filter)`）
+ * 只换 `--gosslan-glass-*-*`，不会把这几个刷白 —— 所以在八种组合里它们都保持有色调。
+ */
+const COMPOSER_TINTED_TOKENS = new Set(["--gosslan-field", "--gosslan-bg", "--gosslan-app-bg"]);
+
+/**
+ * 聊天输入区外框必须是**有色调**的表面，且输入卡的圆角与 1px 描边不随档位变化。
+ *
+ * 2026-11-05 真机反馈（5.18.30，Windows）：「开背景动效后底部输入区整条变成纯白长条，
+ * 圆角和玻璃感全丢」。根因不在玻璃降级 —— 输入区里没有 `backdrop-filter`，
+ * 而是外框用了 `--gosslan-chat`（light 下就是 #fff）：背景动效开启时消息区参与薄纱、
+ * 是透明的，这一条保持纯白，于是横贯全宽露出来，卡片的 8px 圆角与 1px 描边也被同色吃掉。
+ *
+ * @param chatWindowSrc `src/components/ChatWindow.vue`
+ * @param composerSrc   `src/components/chat/MessageComposer.vue`
+ */
+export function checkComposerSurface(chatWindowSrc: string, composerSrc: string): GuardIssue[] {
+  const out: GuardIssue[] = [];
+  const classesOf = (m: RegExpMatchArray): string[] => (m[1] ?? "").split(/\s+/).filter(Boolean);
+
+  // 外框：`shrink-0` + `px-4` + `pt-2` 那一条（包住 MessageComposer 与多选操作条）。
+  const strips = [...chatWindowSrc.matchAll(/<div[^>]*\bclass="([^"]*)"/g)].filter((m) => {
+    const c = classesOf(m);
+    return c.includes("shrink-0") && c.includes("px-4") && c.includes("pt-2");
+  });
+  if (strips.length !== 1) {
+    out.push({
+      line: 0,
+      message: `CS-01：聊天输入区外框应恰好 1 处（shrink-0 + px-4 + pt-2），实际 ${strips.length} 处 —— 无法确认它的底色。`,
+    });
+  }
+  for (const m of strips) {
+    const token = classesOf(m)
+      .map((c) => c.match(/^bg-\[var\((--[a-z0-9-]+)\)\]$/)?.[1])
+      .find(Boolean);
+    if (!token) {
+      out.push({
+        line: lineAt(chatWindowSrc, m.index ?? 0),
+        message: "CS-01：聊天输入区外框缺少静态 `bg-[var(--token)]` 底色 —— 背景动效开启时无法保证它与消息区同调。",
+      });
+    } else if (COMPOSER_WHITE_TOKENS.has(token)) {
+      out.push({
+        line: lineAt(chatWindowSrc, m.index ?? 0),
+        message:
+          `CS-01：聊天输入区外框用了 \`${token}\`（亮色下就是 #ffffff）—— 背景动效开启时消息区是透明的，` +
+          "这条会在底部露成横贯全宽的纯白长条。改用有色调的 --gosslan-field（或 --gosslan-bg / --gosslan-app-bg）。",
+      });
+    } else if (!COMPOSER_TINTED_TOKENS.has(token)) {
+      out.push({
+        line: lineAt(chatWindowSrc, m.index ?? 0),
+        message: `CS-01：聊天输入区外框底色 \`${token}\` 不在允许的有色调清单（--gosslan-field / --gosslan-bg / --gosslan-app-bg）里。`,
+      });
+    }
+  }
+
+  // 输入卡：圆角与 1px 描边必须是**静态常数**，不随玻璃三档/降级档变化。
+  const card = [...composerSrc.matchAll(/<div[^>]*\bclass="([^"]*)"/g)].find((m) =>
+    classesOf(m).includes("gosslan-composer"),
+  );
+  if (!card) {
+    out.push({ line: 0, message: "CS-02：MessageComposer 里找不到 `.gosslan-composer` 输入卡，无法确认圆角与描边。" });
+  } else {
+    const c = classesOf(card);
+    if (!c.includes("rounded-[var(--gosslan-radius-md)]")) {
+      out.push({
+        line: lineAt(composerSrc, card.index ?? 0),
+        message: "CS-02：输入卡缺少 `rounded-[var(--gosslan-radius-md)]` —— 圆角必须不随玻璃档位变化。",
+      });
+    }
+    if (!c.includes("border") || !c.includes("border-[var(--gosslan-border)]")) {
+      out.push({
+        line: lineAt(composerSrc, card.index ?? 0),
+        message: "CS-02：输入卡缺少 1px 全档描边（`border border-[var(--gosslan-border)]`）。",
+      });
+    }
+  }
+
+  return out.sort((a, b) => a.line - b.line);
+}

@@ -2108,7 +2108,12 @@ function retryHistory() {
          之前 pb-3 留了 12px 但没有 safe-area-inset，手机底部输入框会被圆角区域压住。 -->
     <!-- Material 3 规范：组件外最小 padding 8dp (pt-2)，safe-area 下额外 8px breathing room
          （Chrome 135 edge-to-edge 推荐的最小值，Android 15+ 强制 edge-to-edge 后手势导航条必留）。 -->
-    <div class="shrink-0 bg-[var(--gosslan-chat)] px-4 pt-2" :style="{ paddingBottom: 'calc(env(safe-area-inset-bottom) + 8px)' }">
+    <!-- 底色必须是**有色调**的 --gosslan-bg，不能用 --gosslan-chat（亮色下就是 #fff）。
+         背景动效开启时消息区参与薄纱、是透明的；这一条若保持纯白，就会在底部露成一条
+         "横贯全宽的纯白长条"，输入卡的圆角与 1px 描边也一并被吃掉（2026-11-05 真机反馈）。
+         选 bg 而不是 field：暗色下 bg = chat = #0f172a（不会像 field #2a3a52 那样在底部抬起一道亮带），
+         亮色下 bg = #f1f5f9 与消息区薄纱后的杏灰只差个位数。 -->
+    <div class="shrink-0 bg-[var(--gosslan-bg)] px-4 pt-2" :style="{ paddingBottom: 'calc(env(safe-area-inset-bottom) + 8px)' }">
       <!-- 多选态：输入区被操作条**替换**（微信同款）。
            高度固定 4rem，与 Composer 的最小高度一致 —— 否则进出多选时消息区高度跳变，
            虚拟列表会跟着滚一下。 -->
