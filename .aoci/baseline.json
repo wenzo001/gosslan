@@ -1,7 +1,7 @@
 {
   "version": 1,
   "created_at": "2026-10-04T12:17:40Z",
-  "updated_at": "2026-11-05T04:44:47Z",
+  "updated_at": "2026-11-05T04:55:45Z",
   "files": {
     ".gitattributes": {
       "role": "index",
@@ -125,9 +125,9 @@
     },
     "aoci.code.txt": {
       "role": "index",
-      "sha256": "a9e9b3ead1d2de1f2e178fc0845e9b5f705ea3ee011c49a2b2037acb8607d6cd",
-      "size": 399479,
-      "normalized_sha256": "a9e9b3ead1d2de1f2e178fc0845e9b5f705ea3ee011c49a2b2037acb8607d6cd"
+      "sha256": "5f5b91002fc7f325f55a94d84b547267057115e7aa490130b81f1951814dbe7d",
+      "size": 404409,
+      "normalized_sha256": "5f5b91002fc7f325f55a94d84b547267057115e7aa490130b81f1951814dbe7d"
     },
     "aoci.meta.txt": {
       "role": "index",
@@ -1769,9 +1769,9 @@
     },
     "scripts/e2e/rounds/contentpull.mjs": {
       "role": "index",
-      "sha256": "8d7d44e482a66b82420ced016a79a81b692adc7f470dcdf0d498195c71270d2d",
-      "size": 49307,
-      "normalized_sha256": "8d7d44e482a66b82420ced016a79a81b692adc7f470dcdf0d498195c71270d2d"
+      "sha256": "d6fdcdb6c1f99fa14dd366c4a656c5eb785b40f288c168ca79224f74f3b527bc",
+      "size": 49551,
+      "normalized_sha256": "d6fdcdb6c1f99fa14dd366c4a656c5eb785b40f288c168ca79224f74f3b527bc"
     },
     "scripts/e2e/rounds/disk.mjs": {
       "role": "index",
@@ -3706,9 +3706,9 @@
     },
     "src-tauri/src/network/transport/handle_share.rs": {
       "role": "index",
-      "sha256": "cc2eb31c67a2d629f735a06065ee9843553ceb5b1f0e96c2d08cbb833365eba6",
-      "size": 32392,
-      "normalized_sha256": "cc2eb31c67a2d629f735a06065ee9843553ceb5b1f0e96c2d08cbb833365eba6"
+      "sha256": "45367cb804016cf4d018eef123b5844bf4e40a416022612e39cff8a110ef5e3d",
+      "size": 32398,
+      "normalized_sha256": "45367cb804016cf4d018eef123b5844bf4e40a416022612e39cff8a110ef5e3d"
     },
     "src-tauri/src/network/transport/handshake.rs": {
       "role": "index",
@@ -3832,9 +3832,9 @@
     },
     "src-tauri/src/network/transport/relay_tests.rs": {
       "role": "index",
-      "sha256": "484d1dc42b9f4b1ea35df7fc7d3fdd6cc09d7e1ac247f07051be2107ee0474aa",
-      "size": 7209,
-      "normalized_sha256": "484d1dc42b9f4b1ea35df7fc7d3fdd6cc09d7e1ac247f07051be2107ee0474aa"
+      "sha256": "7668a7991031e1d1aecd0d5c3b14a3554e1604585e0a9e206129277f0625cfe2",
+      "size": 14969,
+      "normalized_sha256": "7668a7991031e1d1aecd0d5c3b14a3554e1604585e0a9e206129277f0625cfe2"
     },
     "src-tauri/src/network/transport/route_tests.rs": {
       "role": "index",
@@ -3844,9 +3844,9 @@
     },
     "src-tauri/src/network/transport/tests.rs": {
       "role": "index",
-      "sha256": "87fed6c36ab7dc0805545a35c2e6cfe5d80603e0f2888ec564f9f41069a452ac",
-      "size": 2859,
-      "normalized_sha256": "87fed6c36ab7dc0805545a35c2e6cfe5d80603e0f2888ec564f9f41069a452ac"
+      "sha256": "8779d905e02715ab1c0c338f9b1ce7e5ec3d8e08b678e076ef870865bc57e23d",
+      "size": 3003,
+      "normalized_sha256": "8779d905e02715ab1c0c338f9b1ce7e5ec3d8e08b678e076ef870865bc57e23d"
     },
     "src-tauri/src/nickname.rs": {
       "role": "index",
@@ -3856,27 +3856,51 @@
     },
     "src-tauri/src/notifications.rs": {
       "role": "index",
-      "sha256": "4da3b515ea32c87096d3a7449cdc9b68c2b1c92c68953cd7428f02bda83471fc",
-      "size": 21916,
-      "normalized_sha256": "4da3b515ea32c87096d3a7449cdc9b68c2b1c92c68953cd7428f02bda83471fc"
+      "sha256": "7fc6630a6ac6597a81a65d8e6b76b3b4e18ec53eeddad8bc2311e8cdbf1f8362",
+      "size": 38996,
+      "normalized_sha256": "7fc6630a6ac6597a81a65d8e6b76b3b4e18ec53eeddad8bc2311e8cdbf1f8362"
     },
     "src-tauri/src/open_path.rs": {
       "role": "index",
-      "sha256": "1998153507197a2a854e92e7788206e05de71f7538cf903e44c8855fbcd95258",
-      "size": 2339,
-      "normalized_sha256": "1998153507197a2a854e92e7788206e05de71f7538cf903e44c8855fbcd95258"
+      "sha256": "776c558e254cd3e9ec0c34881adac411bbcb6fc4b8874c58bde2ad06886bb239",
+      "size": 5633,
+      "normalized_sha256": "776c558e254cd3e9ec0c34881adac411bbcb6fc4b8874c58bde2ad06886bb239"
+    },
+    "src-tauri/src/private_fs.rs": {
+      "role": "index",
+      "sha256": "a392941ec7e1b8ce89362bf6dd578abddfaf97e20b5535a9d96dd796cd61094b",
+      "size": 5882,
+      "normalized_sha256": "a392941ec7e1b8ce89362bf6dd578abddfaf97e20b5535a9d96dd796cd61094b"
     },
     "src-tauri/src/protocol.rs": {
       "role": "index",
-      "sha256": "68d065a96c750781df21fbb9f46bb8991f4d8f79e6d0bbb08fee1799bea630e7",
-      "size": 103982,
-      "normalized_sha256": "68d065a96c750781df21fbb9f46bb8991f4d8f79e6d0bbb08fee1799bea630e7"
+      "sha256": "5893e88060073c22aa9bd666e5874665fea32749dff169edaff4380637511541",
+      "size": 135298,
+      "normalized_sha256": "5893e88060073c22aa9bd666e5874665fea32749dff169edaff4380637511541"
     },
     "src-tauri/src/protocol_tests.rs": {
       "role": "index",
-      "sha256": "5e97e06c24f537604fb271b830ea10d76280d2120a2b5fa3f1554f92c3a5453e",
-      "size": 66023,
-      "normalized_sha256": "5e97e06c24f537604fb271b830ea10d76280d2120a2b5fa3f1554f92c3a5453e"
+      "sha256": "69ff98acd7cf386ed5454d2aa4b3c3c91247d846e6941e37be1ebe746f571e76",
+      "size": 95928,
+      "normalized_sha256": "69ff98acd7cf386ed5454d2aa4b3c3c91247d846e6941e37be1ebe746f571e76"
+    },
+    "src-tauri/src/restart.rs": {
+      "role": "index",
+      "sha256": "02f5bb5ea23103cdf72d91c285794bcb5780baed94b466541000b3ffbaeebf67",
+      "size": 4115,
+      "normalized_sha256": "02f5bb5ea23103cdf72d91c285794bcb5780baed94b466541000b3ffbaeebf67"
+    },
+    "src-tauri/src/signals.rs": {
+      "role": "index",
+      "sha256": "30b9dcd1df968686bc1144364be1d5f0fc9adcde83779f9b9202ba535fd87eaf",
+      "size": 5462,
+      "normalized_sha256": "30b9dcd1df968686bc1144364be1d5f0fc9adcde83779f9b9202ba535fd87eaf"
+    },
+    "src-tauri/src/startup_error.rs": {
+      "role": "index",
+      "sha256": "308cceac6c647e880af38969efb00ccbf57bc76a50816466299d10c43daecdad",
+      "size": 17755,
+      "normalized_sha256": "308cceac6c647e880af38969efb00ccbf57bc76a50816466299d10c43daecdad"
     },
     "src-tauri/src/state.rs": {
       "role": "index",
