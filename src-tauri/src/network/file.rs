@@ -607,4 +607,5 @@ include!("file/group_receive.rs");
 include!("file/group_resume.rs");
 include!("file/ledger_backfill.rs");
 include!("file/share_walk.rs");
+include!("file/group_pull.rs");
 include!("file_tests.rs");

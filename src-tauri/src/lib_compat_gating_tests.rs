@@ -541,8 +541,14 @@
     fn content_request_serve_gate_delegates_to_the_pure_kernel() {
         const SRC: &str = include_str!("network/transport/handle_share.rs");
         let arm = code_flat(&rust_fn_body(SRC, "async fn handle_share_and_relay_messages("));
+        // 5.18.31：这一臂要多取一个事实（`requester_in_group`，路由纯函数 `content_pull_route` 用），
+        // 于是调用从"块尾表达式"变成一次 let 绑定、按 rustfmt 竖排 ⇒ 尾随逗号与参数间空白都不再稳定。
+        // 锚点收成**参数前缀**（四个实参一个不少），括号收尾交给下一条"恰好一处"去守：
+        // 这样它仍能区分"委托给纯核"与"把判定写回臂里"，又不会被一次纯格式化碰红。
         assert!(
-            arm.contains("content_serve_allowed(is_friend,group_id.as_deref(),members.as_deref(),&from)"),
+            arm.contains(
+                "content_serve_allowed(is_friend,group_id.as_deref(),members.as_deref(),&from"
+            ),
             "ContentRequest 那臂必须把受众判定交给纯核 content_serve_allowed（写回臂里 = 那 5 条边界又变成测不到）"
         );
         assert_eq!(

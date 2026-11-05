@@ -319,6 +319,7 @@ export default {
         "src-tauri/src/network/transport/outbox_tests.rs", // 测试分册：离线队列与过期终态
         "src-tauri/src/network/transport/read_receipt_tests.rs", // 测试分册：已读回执
         "src-tauri/src/network/transport/listen_tests.rs", // 测试分册：监听口平台语义
+        "src-tauri/src/network/transport/content_pull_route_tests.rs", // 测试分册（5.18.31）：补拉回程路由（群 cid 只走群文件帧 / 非成员拒绝 / 单聊才走 1:1）
         "src-tauri/src/network/dispatch.rs", // 三优先级调度 + BLE yield + 发送状态定义（新建，2026-09）
         "src-tauri/src/transport", // 新栈（部分接线）
       ],
@@ -367,7 +368,7 @@ export default {
       paths: [
         "src-tauri/src/network/file.rs",
         "src-tauri/src/network/file_tests.rs", // 分册：尾部行为测试（include! 回同一模块，2026-09-28 搬出）
-        // 分册目录：`network/file/{send,relay_push,receive,group_receive,ledger_backfill,share_walk}.rs`
+        // 分册目录：`network/file/{send,relay_push,receive,group_receive,group_resume,ledger_backfill,share_walk,group_pull}.rs`
         // （2026-10-07 按角色切册，`include!` 回同一模块 ⇒ 同域、非新领域；
         //  2026-10-16 加第六册 ledger_backfill = 群台账一次性补账，同一条 `include!` 机制）。
         // 这里**按目录认领而不是逐册点名**：`check-domain-map.mjs` 判据 D 会把该目录下任何新文件

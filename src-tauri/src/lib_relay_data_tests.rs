@@ -496,6 +496,9 @@
             "commands/group_todo_media.rs",
             "commands/helpers.rs",
             "commands/mobile_picker.rs",
+            // 5.18.31 群任务图片补拉：回程走群文件帧，发前那份整文件校验
+            // （`sha256_file_hex` 必须等于请求的 cid）在 `spawn_blocking` 里、且等它。
+            "network/file/group_pull.rs",
             // 4.40.9 群台账一次性补账：候选闸之后的那份整文件哈希（在 spawn_blocking 里、且等它）。
             "network/file/ledger_backfill.rs",
             "network/file/receive.rs",
@@ -628,10 +631,13 @@
         // 2026-10-31（审计 A3）：19 → 18。少的那一格是 `clear_all_data` 里对 `favorites_dir` 的
         // 那份 `clear_dir_contents(` —— 普通清理不再连带删收藏副本目录，调用点本身没了，
         // 不是"搬出池外"。`commands/favorites.rs` 仍是家（cache_dir / downloads_dir 两格还在池里）。
+        // 2026-11-05（5.18.31）：18 → 19。新增的一格是群任务图片补拉回程（`network/file/group_pull.rs`）
+        // 发前那份整文件校验 —— 它本就在 `spawn_blocking` 里、且等它 ⇒ 属于「① 合规的一格」，
+        // 与 homes 清单一起改上来（不是把没包的放行，offenders 仍为空才是那一半的证据）。
         assert_eq!(
             total,
-            18,
-            "整份慢活现数到 {total} 处、登记 18 处。对不上时先分清哪一种：\\n             ① 新增的是**合规**的一格（也在池里跑）⇒ 把这一格数与 `homes` 清单一起改上来，\\n             ② 新增的是**没包的** ⇒ 先搬进 spawn_blocking（同链已有 18 处写法可抄），\\n             ③ 改了 helper 的名字 ⇒ PRIMITIVES 清单要同步，否则这条法就悄悄少了一格。"
+            19,
+            "整份慢活现数到 {total} 处、登记 19 处。对不上时先分清哪一种：\\n             ① 新增的是**合规**的一格（也在池里跑）⇒ 把这一格数与 `homes` 清单一起改上来，\\n             ② 新增的是**没包的** ⇒ 先搬进 spawn_blocking（同链已有 19 处写法可抄），\\n             ③ 改了 helper 的名字 ⇒ PRIMITIVES 清单要同步，否则这条法就悄悄少了一格。"
         );
         assert!(
             offenders.is_empty(),

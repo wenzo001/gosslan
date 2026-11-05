@@ -212,7 +212,37 @@ fn ensure_serve_worker(state: &Arc<AppState>, peer_id: &str) {
                         }
                     }
                 }
+            } else if let Some(group_id) = job.group_id.clone() {
+                // 群维度内容：只走 GroupFileOffer(scope=todo)，绝不落到下面的 1:1 分支。
+                match crate::network::file::send_group_file_pull_at(
+                    &st,
+                    &job.peer_id,
+                    &group_id,
+                    &job.transfer_id,
+                    job.path.clone(),
+                    &job.cid,
+                )
+                .await
+                {
+                    Ok(()) => st.logger.info(
+                        "content",
+                        format!(
+                            "code=GROUP_PULL_SERVED cid={} -> {} group={}",
+                            job.cid, job.peer_id, group_id
+                        ),
+                    ),
+                    Err(e) => st.logger.warn(
+                        "content",
+                        format!(
+                            "code=GROUP_PULL_FAILED cid={} from={} group={}: {e}",
+                            job.cid, job.peer_id, group_id
+                        ),
+                    ),
+                }
             } else {
+                // ⚠️ legacy 路径：普通 1:1 内容（单聊图片/文件）仍走这里。
+                // 群维度已在上面分流；这道判断是"群 cid 不得进单聊"的结构性保证，
+                // 不要把它合并回一个无条件分支。
                 match crate::network::file::send_file_from_path_at(
                     &st,
                     &job.peer_id,
@@ -273,17 +303,19 @@ async fn handle_share_and_relay_messages(state: &Arc<AppState>, peer_id: &str, m
             // 授权：是好友，**或** 是该内容所属群的成员 —— 群聊里 A→B 成功后，
             // 没拿到的 C 可以从已收完的 B 拉（B 是种子，内容寻址的意义所在）。
             // 判据本体在 `content_serve_allowed`（纯函数 ⇒ 五条边界都有单测）；这里只把事实取出来。
-            let allowed = {
+            let (allowed, requester_in_group) = {
                 let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
                 let is_friend = db::get_friend(&dbc, &from).is_some();
-                let members = if is_friend {
-                    None
-                } else {
-                    group_id
-                        .as_deref()
-                        .and_then(|g| db::get_group(&dbc, g).map(|grp| grp.members))
-                };
-                content_serve_allowed(is_friend, group_id.as_deref(), members.as_deref(), &from)
+                let members = group_id
+                    .as_deref()
+                    .and_then(|g| db::get_group(&dbc, g).map(|grp| grp.members));
+                let requester_in_group = members
+                    .as_deref()
+                    .is_some_and(|m| m.iter().any(|x| x == &from));
+                let allowed = content_serve_allowed(
+                    is_friend, group_id.as_deref(), members.as_deref(), &from,
+                );
+                (allowed, requester_in_group)
             };
             if !allowed {
                 state.logger.warn(
@@ -292,11 +324,28 @@ async fn handle_share_and_relay_messages(state: &Arc<AppState>, peer_id: &str, m
                 );
                 return;
             }
-            // 续传：沿用原 transfer_id（接收端才找得到 <tid>.part），并从已收字节起发。
-            let transfer_id = if transfer_id.is_empty() {
-                format!("refetch-{}", uuid::Uuid::new_v4())
-            } else {
-                transfer_id
+            // 群维度内容**绝不**走 1:1 回程：1:1 的 FileDone 会在请求方落一条
+            // `conv_id = 服务成员` 的消息，群任务图片冒到单聊的根就在这里。
+            // 路由只由这个纯函数决定，worker 不存在"群 cid 还能走单聊"的分支。
+            let route = content_pull_route(group_id.as_deref(), requester_in_group);
+            if route == ContentPullRoute::Refuse {
+                state.logger.warn(
+                    "content",
+                    format!(
+                        "ContentRequest：群维度内容但请求方不在群名册，拒绝服务 cid={cid} from={from}"
+                    ),
+                );
+                return;
+            }
+            let transfer_id = match route {
+                // 群维度：新 transfer_id ⇒ 对端从 0 字节起收，避免把残留 .part 当续传前缀。
+                ContentPullRoute::GroupFile => format!("pull-{}", uuid::Uuid::new_v4()),
+                // 单聊：沿用原 transfer_id（接收端才找得到 <tid>.part），并从已收字节起发。
+                ContentPullRoute::SingleChatFile if transfer_id.is_empty() => {
+                    format!("refetch-{}", uuid::Uuid::new_v4())
+                }
+                ContentPullRoute::SingleChatFile => transfer_id,
+                ContentPullRoute::Refuse => unreachable!(),
             };
             // ⚠️ 不在这个臂里 await 整条握手（2026-10-13 真机第 7 条的自死锁）：
             // `send_file_from_path_at` 发完 FileOffer 要等对端的 FileAccept/FileReject，
@@ -313,6 +362,11 @@ async fn handle_share_and_relay_messages(state: &Arc<AppState>, peer_id: &str, m
                 path: std::path::PathBuf::from(&path),
                 from_seq,
                 from_bytes,
+                // 只有 GroupFile 路由才会带群维度；其余一律 None（1:1 走既有 legacy 路径）。
+                group_id: match route {
+                    ContentPullRoute::GroupFile => group_id.clone(),
+                    _ => None,
+                },
             }) {
                 // Merged（同 cid 已在队里）也走这一支：不重复服务是设计，静默即可
                 ServeTicket::Accepted | ServeTicket::Merged => {}
@@ -479,6 +533,8 @@ async fn handle_share_and_relay_messages(state: &Arc<AppState>, peer_id: &str, m
                 path: canon_full,
                 from_seq: 0,
                 from_bytes: 0,
+                // 共享目录文件不是群维度内容，走既有 1:1 路径。
+                group_id: None,
             }) {
                 ServeTicket::Accepted | ServeTicket::Merged => {
                     crate::commands::insert_system_message(

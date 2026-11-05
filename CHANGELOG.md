@@ -14,6 +14,30 @@
 
 ## [Unreleased]
 
+## [5.18.31] - 2026-11-05
+
+### 群任务图片补拉：回程改走群文件帧，群里发的图不再冒到单聊
+
+- **根因**：`ContentRequest` 帧不带会话/群维度，服务端对群维度 cid 也一律用 1:1 `FileOffer`
+  回程；请求端的单聊 `FileDone` 分支会写一条 `conv_id = 服务成员` 的消息，于是群任务图片
+  出现在与某个群成员的私聊里。
+- **修法**：群维度 cid 的回程一律改走 `GroupFileOffer(scope=todo)`
+  （`src-tauri/src/network/file/group_pull.rs`），不再调用 1:1 的 `send_file_from_path_at`；
+  请求方不在群名册时直接拒绝服务。1:1 通道只保留给真正的单聊内容。`handle_share.rs` 的
+  worker 拆成「群分支 → 单聊 legacy 分支」，路由只由纯函数 `content_pull_route` 决定。
+- **老端兼容**：能发起补拉的客户端（2026-09-29 起）都晚于 `GroupFileOffer`（2026-09-08），
+  因此老端收到群帧后既能拿到图，也不会落单聊卡。但若两端都停留在老版本（老 responder 仍回
+  1:1、老 requester 无识别），泄漏仍会复现，至少需要一端升级。
+- **legacy guard 保留**：5.16.28 / 5.16.34 的内存 `cid` / `transfer_id` 登记表与三道 `refold`
+  闸不删。B 之后新路径不再依赖登记表；它只兜"老 responder 仍以 1:1 回程"的残余
+  （`state.rs::CONTENT_PULL_TTL_MS` 与 `handle_file.rs` 两处已就地标注 `legacy guard`，
+  并写清"对端版本下限抬到 5.18.31 之后才能连调用点一起删"）。
+- **e2e 判据搬迁**：`scripts/e2e/rounds/contentpull.mjs` 的 A-16 步改判 `code=GROUP_PULL_SERVED`
+  （并反向锚定"针对原 `transfer_id` 的 1:1 `offer SENT` 必须为 0"），预置补齐两端同值的 `gk:`
+  —— 群文件帧要用群密钥封/解 file_key，没有它这一格测的就不是真实路径。
+- **回归**：新增 `content_pull_route_tests.rs` 三条边界 + 一条源码结构断言。反例自证：把路由
+  改回全走 1:1，前两条红；把 worker 群分支删除，结构断言红。
+
 ## [5.18.30] - 2026-11-05
 
 ### 群任务看板：归档只对终态开放，且从行尾同色圆钮挪进 ⋯ 次级菜单

@@ -57,6 +57,11 @@ async fn handle_file_messages(state: &Arc<AppState>, peer_id: &str, msg: Message
             // 这是我发起过的补拉吗？cid 只有在这一臂拿得到 —— `FileDone` 帧只带
             // `transfer_id` + `attempt`（`protocol.rs:2021-2027`），到落库那一步已经问不着了，
             // 所以此刻把 cid 认下来、把这条传输号登记进补拉回程表（审计 §4.0br）。
+            // ⚠️ legacy guard（5.16.28 引入；5.18.31 起只剩老 responder 需要它）：
+            // 群维度 cid 的补拉回程已改走 `GroupFileOffer(scope=todo)`（`network/file/group_pull.rs`），
+            // **新路径根本不会进这一臂**；这里认的是"对端仍停在 5.18.30 及以前、照旧用 1:1
+            // `FileOffer` 回我们群内容"的旧行为。删掉它 = 那张群图重新落到单聊卡片
+            // （`conv_id = 服务成员` 的那条消息在下面 FileDone 分支写）。
             if state.is_content_pull_cid(&file_sha256) {
                 state.note_content_pull_transfer(&transfer_id);
             }
@@ -570,6 +575,9 @@ async fn handle_file_messages(state: &Arc<AppState>, peer_id: &str, msg: Message
                     //   · `file-done` 事件照发 —— 它是前端把任务卡上那张缩略图填上的信号；
                     //   · `FileCompleteAck{success:true}` 照发 —— 漏了它，服务侧把这单判成未确认，
                     //     会重发/换轮次（`file_epochs`），比多一张卡严重得多。
+                    // ⚠️ legacy guard（5.16.34 的落地闸；5.18.31 起只兜老 responder）：
+                    // 新端补拉群内容走群文件帧、不再进这一臂；命中的只会是对端老版本回的
+                    // 1:1 FileDone。判据本身与三道跳过（卡片/未读/预览）一字未改。
                     let refold = state.is_content_pull_transfer(&transfer_id);
                     if refold && log_throttled("content_pull_refolded", 60_000) {
                         state.logger.info(

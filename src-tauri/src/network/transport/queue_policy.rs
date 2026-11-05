@@ -364,6 +364,32 @@ pub(crate) struct FileServeJob {
     pub path: std::path::PathBuf,
     pub from_seq: u32,
     pub from_bytes: u64,
+    /// 非空 ⇒ 这份内容是群维度（任务图片/群文件）的，回程**必须**走群文件帧
+    /// （`GroupFileOffer(scope=todo)`）；`None` 才是普通 1:1 内容（单聊图片/文件）。
+    /// 它只由 [`content_pull_route`] 决定，不允许任何调用点自行填写。
+    pub group_id: Option<String>,
+}
+
+/// `ContentRequest` 回程用哪条通道（纯决策，无 IO）。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum ContentPullRoute {
+    /// 普通单聊内容：沿用 1:1 `FileOffer`。
+    SingleChatFile,
+    /// 群维度内容且请求方在当前群名册里：走 `GroupFileOffer(scope=todo)`。
+    GroupFile,
+    /// 群维度内容但请求方不在群名册：不服务（群内容不落到任何单聊通道）。
+    Refuse,
+}
+
+pub(crate) fn content_pull_route(
+    group_id: Option<&str>,
+    requester_in_group: bool,
+) -> ContentPullRoute {
+    match group_id {
+        Some(_) if requester_in_group => ContentPullRoute::GroupFile,
+        Some(_) => ContentPullRoute::Refuse,
+        None => ContentPullRoute::SingleChatFile,
+    }
 }
 
 /// `submit` 的三种结局 —— 第三种**必须**是可断言的，因为"队列满只打日志然后丢单"
@@ -579,6 +605,7 @@ mod file_service_tests {
             path: PathBuf::from(format!("/tmp/{cid}.bin")),
             from_seq: 0,
             from_bytes: 0,
+            group_id: None,
         }
     }
 
