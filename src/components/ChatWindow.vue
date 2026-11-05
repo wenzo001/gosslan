@@ -31,6 +31,7 @@ import ConfirmDialog from "@/components/ui/ConfirmDialog.vue";
 import DropSendConfirm from "@/components/chat/DropSendConfirm.vue";
 import { useDropSend } from "@/composables/useDropSend";
 import ChatHeader from "@/components/chat/ChatHeader.vue";
+import BackToLatestButton from "@/components/chat/BackToLatestButton.vue";
 import MessageComposer from "@/components/chat/MessageComposer.vue";
 import ForwardModal from "@/components/message/ForwardModal.vue";
 import MergeCardModal from "@/components/message/MergeCardModal.vue";
@@ -54,7 +55,7 @@ import { activePopupKey } from "@/utils/popupRegistry";
 import { previewText } from "@/utils/messages";
 import DangerBtn from "@/components/ui/DangerBtn.vue";
 import SecondaryBtn from "@/components/ui/SecondaryBtn.vue";
-import { ArrowDown, Bluetooth, Layers, Pin, Megaphone, Share2, Star, ShieldAlert, KeyRound } from "lucide-vue-next";
+import { Bluetooth, Layers, Pin, Megaphone, Share2, Star, ShieldAlert, KeyRound } from "lucide-vue-next";
 import { Trash2, X } from "@/components/ui/icons";
 import {
   isAnnounceDismissed,
@@ -1037,6 +1038,11 @@ function groupSideAt(index: number) {
 
 // ---------------- 滚动 ----------------
 const nearBottom = ref(true);
+/**
+ * 「回到最新」按钮可见性：来自 VirtualList 的 `offBottom`（现算几何，跨阈值才发一次）。
+ * 与 `nearBottom`（要不要贴底）分开 —— 后者在收敛窗口里会故意滞后（见 VirtualList 注释）。
+ */
+const showBackToLatest = ref(false);
 
 // ---------------- 新消息进入动效 ----------------
 /**
@@ -2012,6 +2018,7 @@ function retryHistory() {
         :layout-key="app.chatStyle.fontSize"
         @load-more="onLoadMore"
         @near-bottom="nearBottom = $event"
+        @off-bottom="showBackToLatest = $event"
       >
         <template #default="{ item, index }">
           <MessageItem
@@ -2089,17 +2096,14 @@ function retryHistory() {
 
       <!-- 回到最新（离开底部时出现）：水平居中、紧贴消息区底部上方；纯圆 + 向下箭头，无文字。
            无障碍标签走 i18n（aria-label/title），不硬编码中文。
-           出现只播一次 fade（见 style.css `.gosslan-back-to-latest`）；未读数变化不重建节点。 -->
-      <button
-        v-if="!nearBottom"
-        type="button"
-        class="gosslan-back-to-latest tap-safe absolute bottom-4 left-1/2 z-10 flex h-9 w-9 -translate-x-1/2 items-center justify-center rounded-full border border-[var(--gosslan-border)] bg-[var(--gosslan-panel)] text-[var(--gosslan-text)] shadow-lg transition hover:bg-[var(--gosslan-hover)]"
-        :aria-label="t('chat.backToLatest')"
-        :title="t('chat.backToLatest')"
-        @click="nearBottom = true; listRef?.scrollToBottom()"
-      >
-        <ArrowDown class="h-4 w-4" aria-hidden="true" />
-      </button>
+           可见性由 VirtualList 的**现算几何**驱动（`showBackToLatest`），不再跟 `nearBottom`
+           的陈旧值走；不贴底时 `pointer-events: none` + 不可见，且命中区只覆盖按钮本体
+           （不挂 tap-safe、没有 ::after 扩热区）—— 用户 2026-11-05 报的「点图片有时不生效」
+           就是这颗按钮在收敛窗口里残留可点、压住了图片。 -->
+      <BackToLatestButton
+        :visible="showBackToLatest"
+        @press="showBackToLatest = false; listRef?.scrollToBottom()"
+      />
     </div>
 
     <!-- 输入区：浅灰底上放一个白底圆角卡片，无顶部分割线。

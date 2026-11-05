@@ -208,17 +208,6 @@ const AUX_DEVTOOLS: bool = cfg!(debug_assertions);
 #[cfg(desktop)]
 const AUX_TASKS_RESIDENT: bool = true;
 
-/// 图片预览窗口**关闭即隐藏**（常驻）。
-///
-/// "全局只有一个"本来就靠固定 label + `ensure_aux_window` 的单例，与是否常驻无关；
-/// 改成常驻之后 ✕ 不再释放相册，所以**隐藏时要让那个文档自己把内容放掉** ——
-/// 但这件事不在 `install_hide_on_close` 里做（那个回调只 `prevent_close + hide`，不 await、
-/// 不发 IPC，见它自己的注释），而是前端自己监听关闭请求（`PreviewWindow.vue` 的
-/// `onCloseRequested`）。本注释原先写着"见 `aux-hidden` 事件"，而**全仓不存在那个事件**
-/// —— 照着它去 Rust 里找会一无所获，所以改成写实：释放动作在前端，入口是关闭请求。
-#[cfg(desktop)]
-const AUX_PREVIEW_RESIDENT: bool = true;
-
 /// 串行化"创建独立窗口"这一步 —— 并发打开同一个窗口是有真实竞态的。
 ///
 /// `WebviewWindowBuilder::build()` 的重复 label 检查在 `prepare_window` 里做
@@ -320,16 +309,8 @@ fn decorate_aux_window(win: &tauri::WebviewWindow, app: &tauri::AppHandle) {
 /// 已存在时用它把窗口重新摆回主窗口那块屏（见 [`show_existing_aux_window`]）。
 ///
 /// `resident`：关闭时"隐藏（常驻）"还是"销毁"。2026-09-24 之后的分布是
-/// 常驻 = 群任务 / 预览 / 外链，销毁 = 设置 / 日志（这两个每次都要读最新的环境与日志尾部）。
+/// 常驻 = 群任务 / 外链，销毁 = 设置 / 日志（这两个每次都要读最新的环境与日志尾部）。
 /// 每扇的取舍理由写在各自的 `AUX_*_RESIDENT` 常量上，别在这里再数一遍（数一遍就会过时）。
-///
-/// 打开（或聚焦）一个独立窗口：**单例 + 串行创建**。
-///
-/// 所有独立窗口都走这里，别在各自的命令里各写一遍 —— 单例与并发安全是"每个窗口都要有"的
-/// 性质，散着写就一定会漏（这正是用户 2026-09-12 报的"连点会出怪事"的来源）。
-///
-/// `geo` 是**按主窗口**算好的几何（见 [`aux_window_geometry`]）：创建时用它摆尺寸与位置，
-/// 已存在时用它把窗口重新摆回主窗口那块屏（见 [`show_existing_aux_window`]）。
 ///
 /// ## 参数拆成 `build` + `placed` 两个闭包（2026-10-14，Windows 真机）
 ///
@@ -345,8 +326,7 @@ fn decorate_aux_window(win: &tauri::WebviewWindow, app: &tauri::AppHandle) {
 /// 于是**四扇辅助窗一起点不开**，要等前面那单跑完才恢复。
 /// 拆开之后：锁的作用域只剩「再查一次在不在 + 建出来」，任何等主线程的调用都在锁外。
 ///
-/// `reveal`：真的要打开（显示 + 抢焦点），还是**预热**（只把 WebView 与文档准备好，不显示）。
-/// 见 [`prewarm_aux_windows`]。
+/// `reveal`：真的要打开（显示 + 抢焦点），还是只做创建/复用（不显示）。
 ///
 /// 返回 `(窗口, 是否本次新建)`：外链窗口需要在"已存在"这条路径上 `navigate()` 到新网址。
 ///
@@ -609,33 +589,9 @@ fn clamp_aux_size(cur: (u32, u32), min: (u32, u32), max: (u32, u32)) -> (u32, u3
     )
 }
 
-/// 独立窗口里**只有图片预览**改按显示器居中（用户 2026-10-09：主窗口上移到屏幕靠上的位置后，
-/// 「打开预览图片 窗口会有一部分展示在屏幕外面了」）。
-///
-/// 其余四扇仍以主窗口为参照物，那是 2026-09-16「新窗口没居中、而且比主窗口还大很多」定下来的
-/// 口径（见 [`aux_window_geometry`] 的说明），不跟着改。预览这一扇给不同的摆法是因为它
-/// **1120×820 比多数主窗口还大**：以主窗口为参照居中，等于必然顶出屏幕边缘。
-#[cfg(desktop)]
-fn aux_centers_on_monitor(label: &str) -> bool {
-    label == crate::WINDOW_PREVIEW
-}
-
 /// 一块屏幕区域（物理像素：左上角 + 宽高）。
 #[cfg(desktop)]
 type AuxRect = (i32, i32, u32, u32);
-
-/// 在矩形内**居中**（纯计算，便于单测）。装得下才居中，装不下贴左上角，
-/// 剩下的交给 [`clamp_pos_into_rect`] 收尾。
-#[cfg(desktop)]
-fn centered_in_rect(rect: AuxRect, size: (u32, u32)) -> (i32, i32) {
-    let axis = |origin: i32, span: u32, want: u32| -> i32 {
-        if want as i64 >= span as i64 {
-            return origin;
-        }
-        origin + ((span as i64 - want as i64) / 2) as i32
-    };
-    (axis(rect.0, rect.2, size.0), axis(rect.1, rect.3, size.1))
-}
 
 /// 把整扇窗**平移**进矩形内（纯计算，便于单测；不改尺寸）。
 ///
@@ -696,8 +652,8 @@ fn aux_anchor_rect(app: &tauri::AppHandle, win: &tauri::WebviewWindow) -> Option
 ///
 /// ⚠️ 钳制这一步是本轮补的：常驻窗口的尺寸**不随主窗口重算**（`show_existing_aux_window`
 /// 故意只重摆位置，留住用户拉过的大小），所以"子窗口永远不比主窗口大"那条不变式只在
-/// **创建那一刻**成立。用户后来把主窗口拉小、或自己把预览拉大，再打开时按主窗口居中就会
-/// 顶出屏幕 —— 这就是 2026-10-09 报的那一屏。
+/// **创建那一刻**成立。用户后来把主窗口拉小、或自己把窗口拉大，再打开时按主窗口居中就会
+/// 顶出屏幕 —— 所以要夹回主窗口所在屏。
 #[cfg(desktop)]
 fn recenter_aux_window(win: &tauri::WebviewWindow, geo: &AuxWindowGeometry) {
     use tauri::{PhysicalPosition, Position};
@@ -706,10 +662,7 @@ fn recenter_aux_window(win: &tauri::WebviewWindow, geo: &AuxWindowGeometry) {
         Err(_) => geo.size, // 拿不到就按内尺寸居中（差半个标题栏，无伤）
     };
     let rect = aux_anchor_rect(win.app_handle(), win);
-    let base = match (aux_centers_on_monitor(win.label()), rect) {
-        (true, Some(r)) => centered_in_rect(r, outer),
-        _ => geo.centered_pos(outer),
-    };
+    let base = geo.centered_pos(outer);
     let pos = match rect {
         Some(r) => clamp_pos_into_rect(base, outer, r),
         None => base,
@@ -753,7 +706,7 @@ pub fn open_log_window(
         crate::WINDOW_LOGS,
         geo,
         AUX_WINDOWS_RESIDENT,
-        true, // reveal：真的要把这扇窗显示出来（不是预热）
+        true, // reveal：真的要把这扇窗显示出来
         move || {
             WebviewWindowBuilder::new(
                 &build_app,
@@ -827,7 +780,7 @@ pub fn open_settings_window(
         crate::WINDOW_SETTINGS,
         geo,
         AUX_WINDOWS_RESIDENT,
-        true, // reveal：真的要把这扇窗显示出来（不是预热）
+        true, // reveal：真的要把这扇窗显示出来
         move || {
             WebviewWindowBuilder::new(
                 &build_app,
@@ -1151,212 +1104,6 @@ pub fn open_group_todos_window(
     Err("移动端没有独立群任务窗口（任务面板是应用内弹窗）".to_string())
 }
 
-/// 一次投递给预览窗口的相册上限（条数 / 名字长度 / data URL 总量）。
-///
-/// 为什么要上限：这是**远端不可信输入能直接塞进内存**的一条路径（条目来自消息载荷里的
-/// 名字与 base64），而且它是全局唯一窗口 —— 一份畸形相册会一直挂在那儿。
-/// 超限就整份拒绝，前端退回应用内覆盖层（不是"少显示几张"那种半成品）。
-#[cfg(desktop)]
-const PREVIEW_MAX_ITEMS: usize = 500;
-#[cfg(desktop)]
-const PREVIEW_MAX_NAME_LEN: usize = 200;
-#[cfg(desktop)]
-const PREVIEW_MAX_TOTAL_BYTES: usize = 32 * 1024 * 1024;
-
-/// 校验一次预览投递（纯函数，便于单测）。
-///
-/// 只验形状不验"图取不取得到"：取不到字节是预览窗口自己的事（它会显示"文件已被清理"
-/// 那套既有状态），在这里拒绝反而会让用户点了完全没反应。
-#[cfg(desktop)]
-fn validate_preview(g: &crate::state::PreviewGallery) -> Result<(), String> {
-    if g.items.is_empty() {
-        return Err("没有可预览的图片".to_string());
-    }
-    if g.items.len() > PREVIEW_MAX_ITEMS {
-        return Err(format!("一次最多预览 {PREVIEW_MAX_ITEMS} 张图"));
-    }
-    if g.index >= g.items.len() {
-        return Err("预览起始位置越界".to_string());
-    }
-    let mut bytes = 0usize;
-    for it in &g.items {
-        if it.name.chars().count() > PREVIEW_MAX_NAME_LEN {
-            return Err(format!("图片名最长 {PREVIEW_MAX_NAME_LEN} 字符"));
-        }
-        // 每条都必须可寻址：`data_src` 只接受 data URL —— `blob:` 是**发起文档**的句柄，
-        // 预览窗口拿到只会渲染成破图（用户 #40 要求"任何界面都能调用这个组件"，
-        // 那就更要把"能不能跨文档"说清楚，而不是默默显示一个坏掉的框）。
-        match (&it.msg_id, &it.cid, &it.data_src) {
-            (Some(m), _, _) if !m.is_empty() => {}
-            (_, Some(c), _) if !c.is_empty() => {}
-            (_, _, Some(d)) if d.starts_with("data:") => {
-                bytes += d.len();
-            }
-            _ => return Err("图片数据不可跨窗口预览".to_string()),
-        }
-    }
-    if bytes > PREVIEW_MAX_TOTAL_BYTES {
-        return Err("图片数据过大，无法跨窗口预览".to_string());
-    }
-    Ok(())
-}
-
-/// 桌面端：打开（或复用）**全局唯一**的「图片预览」窗口，并把这份相册设为它当前内容。
-///
-/// 用户 2026-09-24 #40 的口径："不同界面查看图片会替换里面的内容"，所以：
-/// - label 固定 [`crate::WINDOW_PREVIEW`] ⇒ 从会话、任务、收藏点进来的都是同一个窗口；
-/// - 内容写进 [`AppState::preview_gallery`]（**当前值**，不是一次性请求）；
-/// - **已开着**：定向 `emit` 一条 `preview-gallery` 叫它重新取；
-/// - **刚新建**：那条事件一定发丢（监听器还没注册），由窗口挂载时自己 `get_image_preview_gallery`。
-///   两条路都读同一份当前值，所以谁先到都一样，不存在"丢一次点击"。
-#[cfg(desktop)]
-#[tauri::command(async)]
-pub fn open_image_preview(
-    app: tauri::AppHandle,
-    state: tauri::State<'_, Arc<AppState>>,
-    gallery: crate::state::PreviewGallery,
-) -> Result<(), String> {
-    use tauri::Emitter;
-    validate_preview(&gallery)?;
-    *state
-        .preview_gallery
-        .lock()
-        .unwrap_or_else(|e| e.into_inner()) = Some(gallery);
-    let (_win, created) = ensure_preview_window(&app, &state, true)?;
-    if !created {
-        let _ = _win.emit("preview-gallery", ());
-    }
-    Ok(())
-}
-
-/// **预热**：先把那扇全局唯一的预览窗口建好、文档加载好，但**不显示、不抢焦点**。
-///
-/// 用户 2026-09-24："启动的时候后台异步把这些不需要销毁、高频使用的新窗口的 WebView 开销
-/// 开好，到用的时候就能秒开"。第一次点图要付的成本几乎全在"建 WebView + 载入文档"上，
-/// 预热把它挪到空闲时段；之后每次点图走的都是 `show_existing_aux_window` 那条快路径。
-///
-/// 为什么**只**预热这一扇（其余各有各的理由，别顺手往这里加）：
-/// - 设置 / 日志：按口径仍然是"关窗即销毁"（每次都要读最新的环境数据与日志尾部），
-///   预热出来的窗口一关就被丢掉，白占一份 WebView；
-/// - 群任务窗口：**常驻**（`AUX_TASKS_RESIDENT`，第一次付一次建窗成本、之后秒开）。
-///   ⇒ 启动时预热它等于**白占约 23 MB 常驻内存**（2026-10-12 用户报主窗 601.7 MB 时实测的量级），
-///   而首开群任务是低频动作、付一次 1–2 秒完全可接受。故 2026-10-12 起不预热它。
-///
-/// ⚠️ 本条注释 2026-10-12 更正过一句**过期表述**：旧话说"群任务窗 label 是 `todo-<groupId>`、
-/// 启动时不知道是哪个群 ⇒ 预热没有确定性"—— 那个形状早就不是了：label 是固定常量
-/// `WINDOW_TASKS`（见 `ensure_tasks_window`），全应用只有一扇常驻群任务窗，切群只是对
-/// 已存在的窗发 `group-todos-target` 事件。⇒ "预热没有确定性"这个**理由**不成立，
-/// 但"不预热"这个**结论**仍然成立，理由换成了上面那条收益账。
-///
-/// 已经存在就直接返回（既不重复建、也绝不 show）—— 预热的正确性不依赖它跑几次。
-///
-/// ⚠️ 这里**不自己查窗口存在性**：`ensure_aux_window(reveal = false)` 的快路径就是
-/// "已存在 ⇒ 返回它、什么都不做"。自己写一次 `get_webview_window` 判存在，正是本仓库
-/// 那条护栏禁止的形状（并发下会开出第二个窗口），而且这里连必要性都没有。
-#[cfg(desktop)]
-#[tauri::command(async)]
-pub fn prewarm_aux_windows(
-    app: tauri::AppHandle,
-    state: tauri::State<'_, Arc<AppState>>,
-) -> Result<(), String> {
-    // 只备预览窗这一扇。失败不影响后续真正打开（那时的错误才是用户需要看到的）。
-    let _ = ensure_preview_window(&app, &state, false);
-    Ok(())
-}
-
-/// 预览窗口本体（打开与预热**共用这一份**构造，差别只在最后要不要显示出来）。
-///
-/// 为什么要共用：两条路各自写一份 builder 的话，"预热出来的窗口和真正打开的不一样"
-/// 这种缺陷是查不出来的（尺寸/标题栏/背景色/装饰少一项，秒开就变成"开出来是另一个样子"）。
-#[cfg(desktop)]
-fn ensure_preview_window(
-    app: &tauri::AppHandle,
-    state: &tauri::State<'_, Arc<AppState>>,
-    reveal: bool,
-) -> Result<(tauri::WebviewWindow, bool), String> {
-    use tauri::{WebviewUrl, WebviewWindowBuilder};
-    let bg = aux_window_background(state);
-    let title = aux_window_title(state, "图片预览", "Image preview", None);
-    // 设计尺寸 1120×820：用户要的是"比聊天界面大一圈"。`fit_aux_window` 会把它夹到
-    // 「主窗口 − 两侧各 24px」，所以**永不比主窗口大**（那条几何不变式见 logs_tests），
-    // 主窗口本身小的时候跟着缩 —— 这正是想要的，不去破不变式。
-    let geo = aux_window_geometry(app, (1120.0, 820.0), (480.0, 360.0));
-    let placed_app = app.clone(); // decorate 那几步在锁外跑 ⇒ 单独一个 handle（AppHandle 是廉价克隆）
-    let build_app = app.clone();
-    ensure_aux_window(
-        app,
-        crate::WINDOW_PREVIEW,
-        geo,
-        AUX_PREVIEW_RESIDENT,
-        reveal,
-        move || {
-            WebviewWindowBuilder::new(
-                &build_app,
-                crate::WINDOW_PREVIEW,
-                WebviewUrl::App("preview.html".into()),
-            )
-            .title(title)
-            .devtools(AUX_DEVTOOLS)
-            .inner_size(1120.0, 820.0)
-            .min_inner_size(480.0, 360.0)
-            .background_color(bg)
-            .visible(false)
-            .decorations(false)
-            .resizable(true)
-            .maximizable(false)
-            .minimizable(true)
-            .closable(true)
-            .build()
-        },
-        // ↓ `placed`（锁外），理由同群任务窗那处。
-        move |win| {
-            decorate_aux_window(win, &placed_app);
-            if let Some(g) = geo {
-                apply_aux_geometry(win, g);
-                restore_aux_window_size(win, &g);
-                recenter_aux_window(win, &g);
-            }
-        },
-    )
-}
-
-/// 预览窗口取当前该显示的相册（**不清**，理由见 [`AppState::preview_gallery`]）。
-/// 不分桌面/移动：只是读一块内存。
-#[tauri::command]
-pub fn get_image_preview_gallery(
-    state: tauri::State<'_, Arc<AppState>>,
-) -> Option<crate::state::PreviewGallery> {
-    state
-        .preview_gallery
-        .lock()
-        .unwrap_or_else(|e| e.into_inner())
-        .clone()
-}
-
-/// 移动端桩：预览窗口是桌面概念（移动端仍是应用内全屏覆盖层）。
-#[cfg(mobile)]
-#[tauri::command]
-pub fn open_image_preview(
-    _app: tauri::AppHandle,
-    _state: tauri::State<'_, Arc<AppState>>,
-    _gallery: crate::state::PreviewGallery,
-) -> Result<(), String> {
-    Err("移动端图片预览用应用内覆盖层（没有独立窗口）".to_string())
-}
-
-/// 移动端桩：没有独立窗口，也就没有"预付 WebView 开销"这件事。
-///
-/// 与上面那条同口径返回 `Err`：前端的预热调用只在桌面上发起，走到这里就是调用点写错了，
-/// 写错要被看见，而不是被一个假的 `Ok(())` 掩盖。
-#[cfg(mobile)]
-#[tauri::command]
-pub fn prewarm_aux_windows(
-    _app: tauri::AppHandle,
-    _state: tauri::State<'_, Arc<AppState>>,
-) -> Result<(), String> {
-    Err("移动端没有独立窗口可预热".to_string())
-}
-
 /// 桌面端：打开（或复用）独立的「外部链接」窗口，在窗口内加载该网址。
 ///
 /// **安全边界**（本仓库唯一一处在本机渲染第三方网页，三道锁）：
@@ -1446,7 +1193,7 @@ pub fn open_link_window(_app: tauri::AppHandle, _url: String, _name: String) -> 
 /// → 整个 App 卡死。try_lock 失败时返回**默认浅色**（安全降级：暗色会闪一下白，
 /// 但下一个 async 命令读 db 更新主题很快，用户感知不到；比卡死好得多）。
 #[cfg(desktop)]
-fn aux_window_background(state: &tauri::State<'_, Arc<AppState>>) -> tauri::window::Color {
+fn aux_window_background(state: &AppState) -> tauri::window::Color {
     let dark = {
         let Ok(dbc) = state.db.try_lock() else {
             return tauri::window::Color(237, 241, 246, 255); // 默认浅色兜底
@@ -1469,7 +1216,7 @@ fn aux_window_background(state: &tauri::State<'_, Arc<AppState>>) -> tauri::wind
 /// 前端加载后仍会按语言把 `document.title` 设成同样的格式，两边口径一致。
 #[cfg(desktop)]
 fn aux_window_title(
-    state: &tauri::State<'_, Arc<AppState>>,
+    state: &AppState,
     feature_zh: &str,
     feature_en: &str,
     extra: Option<&str>,

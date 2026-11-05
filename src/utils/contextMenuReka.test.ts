@@ -69,7 +69,15 @@ test("菜单内容不得再写 fixed（popper wrapper 会量到 0×0，翻转/�
   const contentClass = /class="([^"]*gosslan-menu[^"]*)"/.exec(shell)?.[1] ?? "";
   assert.ok(contentClass.includes("gosslan-menu"), "找不到菜单内容的类名");
   assert.ok(!/\bfixed\b/.test(contentClass), "内容又写了 fixed ⇒ floating-ui 量不到尺寸，贴边翻转会失效");
-  assert.ok(contentClass.includes("z-[70]"), "菜单内容的层级必须是 z-[70]（浮层阶梯由 designGuards 钉）");
+  // 层级自 2026-11-05 起可被调用点覆写（图片灯箱要压过 z-80 遮罩，传 z-[84]）⇒
+  // 不再钉"模板里写死 z-[70]"，改成钉"默认值仍是 z-[70] 且确实由 zClass 这一条出口覆写"。
+  assert.ok(
+    shell.includes(':class="zClass ?? '),
+    "层级必须只有 zClass 这一个出口（否则调用点无法覆写、又会各自写死）",
+  );
+  const zDefault = /zClass\s*?\?\?\s*'z-\[(\d+)\]'/.exec(shell)?.[1];
+  assert.ok(zDefault, "zClass 的默认值必须显式声明一个 z-[NN]");
+  assert.equal(Number(zDefault), 70, "菜单内容默认层级必须是 z-[70]（浮层阶梯由 designGuards 钉）");
 });
 
 test("搜索筛选菜单走 Reka DropdownMenu，且不抢搜索框焦点", () => {

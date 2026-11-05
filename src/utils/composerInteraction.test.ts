@@ -28,6 +28,7 @@ import { tsFnBody } from "./tsSource.ts";
 const srcDir = join(import.meta.dirname, "..");
 const composerSrc = readFileSync(join(srcDir, "components/chat/MessageComposer.vue"), "utf8");
 const chatWindowSrc = readFileSync(join(srcDir, "components/ChatWindow.vue"), "utf8");
+const backToLatestSrc = readFileSync(join(srcDir, "components/chat/BackToLatestButton.vue"), "utf8");
 
 test("输入框 5 行封顶后高度恒定（删掉 clamp 会红）", () => {
   assert.equal(COMPOSER_MAX_LINES, 5);
@@ -102,18 +103,38 @@ test("输入框表情渲染成图片 token（改回纯文字短码会红）", ()
 });
 
 test("回到最新按钮纯圆无文字且水平居中（回退成文字胶囊会红）", () => {
-  // 锚点用 class 本身，不要用文件里第一次出现 `gosslan-back-to-latest`（注释里也有一次）。
-  const marker = chatWindowSrc.indexOf('class="gosslan-back-to-latest');
+  // 2026-11-05 按钮从 ChatWindow 抽成组件（可见性改由几何现算）。
+  // 判据搬到组件里，**同时**断言 ChatWindow 真的在用这个组件 —— 否则这条检查会退化成
+  // "扫一个已经没人渲染的文件"，空转还永远是绿的。
+  const marker = backToLatestSrc.indexOf('class="absolute bottom-4 left-1/2');
   assert.ok(marker >= 0, "按钮必须存在（锚点缺失即失败）");
-  const open = chatWindowSrc.lastIndexOf("<button", marker);
-  const close = chatWindowSrc.indexOf("</button>", marker);
+  const open = backToLatestSrc.lastIndexOf("<button", marker);
+  const close = backToLatestSrc.indexOf("</button>", marker);
   assert.ok(open >= 0 && close > marker, "必须能截到按钮块");
-  const block = chatWindowSrc.slice(open, close + "</button>".length);
+  const block = backToLatestSrc.slice(open, close + "</button>".length);
 
   for (const cls of ["left-1/2", "-translate-x-1/2", "rounded-full", "h-9", "w-9"]) {
     assert.ok(block.includes(cls), `按钮必须是水平居中的纯圆：缺 ${cls}`);
   }
-  assert.ok(block.includes(":aria-label=\"t('chat.backToLatest')\""), "无障碍标签必须走 i18n");
+  assert.ok(block.includes(":aria-label=\"visible ? t('chat.backToLatest') : undefined\""), "无障碍标签必须走 i18n");
+
+  // 反例锚点 ①：热区只覆盖按钮本体。`tap-safe` 在 `@media (pointer: coarse)` 下用
+  // `::after { inset: -8px 0 }` 把命中区扩到 44px —— 用户点图片时会先打到按钮。
+  assert.ok(!block.includes("tap-safe"), "按钮本体不许挂 tap-safe（会扩热区）");
+  assert.ok(!block.includes("::after"), "按钮不许用 ::after 扩热区");
+  assert.ok(!block.includes("inset"), "按钮不许用 inset 扩热区");
+  // 反例锚点 ②：不可见时必须 `pointer-events: none`（只隐藏不关命中区，等于还在抢热区）。
+  assert.ok(block.includes("pointer-events-none"), "不可见档必须 pointer-events: none");
+  assert.ok(block.includes("pointer-events-auto"), "可见档必须恢复 pointer-events");
+
+  // ChatWindow 的接线（删掉就红）：可见性来自 VirtualList 的 `offBottom`，点击后才贴底。
+  assert.ok(chatWindowSrc.includes("<BackToLatestButton"), "ChatWindow 必须渲染这个组件");
+  assert.ok(
+    chatWindowSrc.includes(':visible="showBackToLatest"'),
+    "可见性必须绑 showBackToLatest（几何现算），不能回到 nearBottom",
+  );
+  assert.ok(chatWindowSrc.includes('@off-bottom="showBackToLatest = $event"'), "必须有 offBottom 接线");
+  assert.ok(!chatWindowSrc.includes('v-if="!nearBottom"'), "旧的 nearBottom 门控必须删掉");
 
   // 无文字节点：剥掉注释与标签后只剩空白。若把 `{{ t('chat.backToLatest') }}`
   // 加回按钮正文，插值文本会留在 textOnly 里 ⇒ 这条会红。

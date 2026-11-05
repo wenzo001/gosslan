@@ -18,6 +18,7 @@ import { useEventListener } from "@vueuse/core";
 import { useVirtualizer, type VirtualItem, type Virtualizer } from "@tanstack/vue-virtual";
 import { classifyItemsChange } from "@/utils/scrollIntent";
 import { computeListBuffer } from "@/utils/listBuffer";
+import { gapAtBottom, shouldShowBackToLatest } from "@/utils/backToLatest";
 
 const props = withDefaults(
   defineProps<{
@@ -53,6 +54,13 @@ const props = withDefaults(
 const emit = defineEmits<{
   (e: "loadMore"): void;
   (e: "nearBottom", v: boolean): void;
+  /**
+   * 「回到最新」按钮的可见性：按**现算几何**判定，crossing-only（只在跨越阈值时发一次）。
+   *
+   * 为什么不复用 `nearBottom`：那个事件在收敛窗口内不更新（见 `computeScrollState`），
+   * 而且它的语义是"要不要贴底"。按钮需要的是"此刻到底离底多远"，两者不能混用。
+   */
+  (e: "offBottom", v: boolean): void;
 }>();
 
 const container = ref<HTMLElement | null>(null);
@@ -258,6 +266,11 @@ function boundMeasureCache() {
 // ---------------- 滚动状态机（贴底 / 「回到最新」按钮 / 用户上滚豁免） ----------------
 let raf = 0;
 let pinned = true;
+/**
+ * 「回到最新」按钮此刻该不该出现（按几何现算，与 `pinned` 分开维护）。
+ * 初始 false：首帧还没量，先不给按钮（避免"贴着底部却先闪一下按钮"）。
+ */
+let offBottom = false;
 let prevScrollTop = 0;
 let lastScrollUpAt = 0;
 let suppressNearBottomUntil = 0;
@@ -412,6 +425,15 @@ function computeScrollState() {
   programmaticTop = false;
   prevScrollTop = el.scrollTop;
   const nearBottom = el.scrollHeight - el.scrollTop - el.clientHeight < NEAR_BOTTOM_THRESHOLD;
+  // ⚠️ 必须在 `if (settling) return` **之前**更新：收敛窗口只是"先别贴底/先别翻页"，
+  // 它不该冻结按钮的可见性。否则用户滚回底部后按钮仍留在原地、压住最新那条图片
+  //（用户 2026-11-05 报的"点击区域有时候不生效"，截图里按钮 tooltip 正压在图上）。
+  const gap = gapAtBottom(el);
+  const off = shouldShowBackToLatest(gap);
+  if (off !== offBottom) {
+    offBottom = off;
+    emit("offBottom", off);
+  }
   if (settling) {
     // 收敛窗口由 `armSettleHold` 独占收口；只有"没有 settle 窗口"的瞬态
     //（scrollToBottom / scrollToIndex / resize）才在这里补一个定时器。

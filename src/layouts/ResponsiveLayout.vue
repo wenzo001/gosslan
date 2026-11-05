@@ -45,11 +45,6 @@ const app = useAppStore();
 const chat = useChatStore();
 /** 全局图片预览的宿主（实例只有一个，见模板末尾那处 `<ImageLightbox>`）。 */
 const preview = useImagePreviewStore();
-// 本布局就是那份覆盖层的宿主 ⇒ 告诉预览 store「投递被拒时退回我这里，是有东西可看的」。
-// 独立群任务窗口不渲染 ResponsiveLayout，那个文档里这个标记一直是 false ⇒ 同一场失败会
-// 被明确报出来并收起状态，而不是留着 open=true 把任务详情锁成「点遮罩关不掉」
-// （为什么不能靠"是不是主窗口"来推，见 useImagePreview.ts 里 overlayMounted 那段说明）。
-preview.overlayMounted = true;
 
 /**
  * 导航状态——**单一数据源**，替代之前分散的 `view` + `favoritesOpen`。
@@ -1244,11 +1239,13 @@ function onResizeEnd() {
 
     <!-- 全局图片预览：**整个应用只有这一个实例**（用户 2026-09-24 #40）。
          状态在 `useImagePreviewStore`，任何功能都按 `{items, startIndex, source}` 调它，
-         不再各自挂一份 `<ImageLightbox>` 各抄一遍数组。 -->
+         不再各自挂一份 `<ImageLightbox>` 各抄一遍数组。
+         桌面端也走这一份（2026-11-05 拍板 B：独立预览窗口作废），不再有第二套窗口路径。 -->
     <ImageLightbox
       :images="preview.images"
       v-model:index="preview.index"
-      :open="preview.open && !preview.inWindow"
+      :open="preview.open"
+      :origin="preview.origin"
       @close="preview.close()"
     />
 

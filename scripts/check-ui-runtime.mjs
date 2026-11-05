@@ -1040,6 +1040,304 @@ window.__probe = (() => {
     await V.nextTick(); await V.nextTick();
     return { ok: true };
   };
+  /**
+   * 图片 FLIP 缩放段（--only=imgzoom）的挂载：一颗真实的 208×117 缩略图
+   * （data-img-frame，故意水平居中）+ 受控灯箱，并把逐帧矩形/transform 记进 window。
+   *
+   * 为什么缩略图必须水平居中：用户报的是"点图片只有向右一下"。居中时 FLIP 的必要横向分量
+   * 恰好为 0，任何"额外向右滑"都会在逐帧 cx 上露出来；竖向放在下方，才能看出"从下面那张小图长出来"。
+   * 图片用 640×360 的 SVG（不是 1×1 gif）：有真实内在尺寸，灯箱里的落定矩形才量得出来。
+   * 三张同尺寸图：方向键左右切换那组判据要一个真能翻的相册（翻图不许重播开场 FLIP）。
+   *
+   * 2026-11-05（拍板 B）：桌面独立预览窗已删除，桌面与移动都走这条覆盖层路径 ⇒
+   * 不再有"拿不到源矩形"的分支；origin 恒为被点缩略图的 client 矩形。
+   */
+  H.zoomMount = async () => {
+    if (!window.__probe.vue) {
+      await H.install('/src/components/message/ImageLightbox.vue', '', JSON.stringify({ images: [], index: 0 }));
+    }
+    const V = window.__probe.vue;
+    if (!V) return { ok: false, why: 'no-vue' };
+    const mod = await import('/src/components/message/ImageLightbox.vue');
+    const svg = "data:image/svg+xml," + encodeURIComponent(
+      "<svg xmlns='http://www.w3.org/2000/svg' width='640' height='360'><rect width='640' height='360' fill='#2f80ed'/></svg>");
+    window.__probe.reset();
+    const cw = document.documentElement.clientWidth;
+    const ch = document.documentElement.clientHeight;
+    const tw = 208;
+    const th = 117;
+    document.body.innerHTML = '';
+    const thumb = document.createElement('div');
+    thumb.id = 'lb-thumb';
+    thumb.setAttribute('data-img-frame', '');
+    thumb.style.cssText = 'position:fixed;width:' + tw + 'px;height:' + th + 'px;left:'
+      + Math.round((cw - tw) / 2) + 'px;top:' + Math.round(ch - 190) + 'px;background:#64748b;';
+    document.body.appendChild(thumb);
+    const tr = thumb.getBoundingClientRect();
+    const origin = { left: tr.left, top: tr.top, width: tr.width, height: tr.height };
+    const host = document.createElement('div');
+    host.id = 'probe-host';
+    document.body.appendChild(host);
+    // 打开前给一个**旧下标**：真实入口 openGallery() 是同一批里把 index 换成点中的那张、
+    // 并把 open 置真。两个 watcher 会在同一 tick 里先后跑（见 ImageLightbox 里的说明），
+    // 这里必须复现这个顺序，否则测不出"翻图复位把开场 FLIP 抹掉"的那条竞态。
+    const st = V.reactive({ open: false, index: 2 });
+    window.__lbState = st;
+    const images = [0, 1, 2].map((i) => ({ dataSrc: svg, name: 'zoom-' + i + '.svg' }));
+    const app = V.createApp({
+      setup() {
+        return () => V.h(mod.default, {
+          images,
+          index: st.index,
+          open: st.open,
+          origin,
+          "onUpdate:index": (i) => { st.index = i; },
+          onClose: () => { window.__probe.events.push(['close']); st.open = false; },
+        });
+      },
+    });
+    if (window.__pinia) app.use(window.__pinia);
+    app.mount(host);
+    st.index = 0;
+    st.open = true;
+    window.__lbOrigin = origin;
+    window.__lbView = { w: cw, h: ch };
+    window.__lbFrames = [];
+    window.__lbCloseAt = null;
+    window.__lbT0 = performance.now();
+    const tick = () => {
+      const img = document.querySelector('[data-lightbox-img]');
+      if (img) {
+        const rr = img.getBoundingClientRect();
+        if (rr.width > 0) {
+          window.__lbFrames.push({
+            t: Math.round((performance.now() - window.__lbT0) * 10) / 10,
+            left: +rr.left.toFixed(2), top: +rr.top.toFixed(2),
+            w: +rr.width.toFixed(2), h: +rr.height.toFixed(2),
+            cx: +(rr.left + rr.width / 2).toFixed(2),
+            cy: +(rr.top + rr.height / 2).toFixed(2),
+            opacity: getComputedStyle(img).opacity,
+            tf: getComputedStyle(img).transform,
+          });
+        }
+      }
+      if (performance.now() - window.__lbT0 < 3200) requestAnimationFrame(tick);
+    };
+    requestAnimationFrame(tick);
+    await V.nextTick(); await V.nextTick();
+    return { ok: true, origin, viewport: { w: cw, h: ch } };
+  };
+  /**
+   * 等浮层撤掉 —— 在页面内轮询。
+   *
+   * 原来 Node 侧每 32ms 发一次 CDP evaluate：每次 eval 都占一个主线程时间片，
+   * 关闭动画只有 ~200ms，被这么挤之后只剩 5 个 rAF 帧（判据要 ≥6 ⇒ 偶发红，
+   * 而同一棵树在放开轮询时是 12+ 帧）。轮询搬到页面里只花 setTimeout，不抢帧。
+   */
+  H.zoomWaitClosed = (ms) => new Promise((resolve) => {
+    const t0 = performance.now();
+    const step = () => {
+      if (!document.querySelector('[role="dialog"]')) return resolve(true);
+      if (performance.now() - t0 >= ms) return resolve(false);
+      setTimeout(step, 16);
+    };
+    step();
+  });
+  /** 读 zoomMount 累积的逐帧读数（frames 里只含图片已布局的帧）。 */
+  H.zoomTake = () => ({
+    origin: window.__lbOrigin,
+    viewport: window.__lbView,
+    frames: (window.__lbFrames || []).slice(),
+    closeAt: window.__lbCloseAt,
+    closes: window.__probe.events.filter((e) => e[0] === 'close').length,
+    open: !!document.querySelector('[role="dialog"]'),
+  });
+  /** 当前下标 / 缩放矩阵 / 计数文案 / 右键菜单 —— 桌面键盘与菜单那几条判据的读数。 */
+  H.zoomInfo = () => {
+    const img = document.querySelector('[data-lightbox-img]');
+    const tf = img ? getComputedStyle(img).transform : '';
+    // 注意：这段是模板字符串里的源码，反斜杠会被模板吃掉一层 ⇒ 不用正则，
+    // 直接按 "matrix(" 前缀切（用正则写 matrix 匹配在页面里会变成匹配不到的残片）。
+    const mi = tf ? tf.indexOf('matrix(') : -1;
+    const p = mi >= 0
+      ? tf.slice(mi + 7, tf.indexOf(')', mi)).split(',').map(Number)
+      : [];
+    // motion-v 落定后会清掉 transform（恒等写成 none）⇒ 矩阵读不到时按 1 算。
+    const dialog = document.querySelector('[role="dialog"]');
+    const menuEl = document.querySelector('[role="menu"]');
+    return {
+      index: window.__lbState ? window.__lbState.index : -1,
+      scale: p.length === 6 ? +p[0].toFixed(3) : 1,
+      tx: p.length === 6 ? +p[4].toFixed(2) : 0,
+      open: !!dialog,
+      menu: !!menuEl,
+      menuItems: menuEl
+        ? [...menuEl.querySelectorAll('[role="menuitem"]')].map((i) => String(i.textContent || '').trim())
+        : [],
+      counter: dialog ? String(dialog.textContent || '').replace(/\s+/g, ' ').trim().slice(0, 80) : '',
+    };
+  };
+  /** 与用户手上同一条 window keydown 路径（Esc / 方向键 / +/-/0）。 */
+  H.zoomKey = async (key) => {
+    window.dispatchEvent(new KeyboardEvent('keydown', { key, bubbles: true, cancelable: true }));
+    return true;
+  };
+  /** 鼠标滚轮缩放（真实 wheel 事件，走 onWheel 的 clampScale）。 */
+  H.zoomWheel = (deltaY) => {
+    const img = document.querySelector('[data-lightbox-img]');
+    if (!img) return { ok: false };
+    const r = img.getBoundingClientRect();
+    img.dispatchEvent(new WheelEvent('wheel', {
+      deltaY, bubbles: true, cancelable: true,
+      clientX: Math.round(r.left + r.width / 2), clientY: Math.round(r.top + r.height / 2),
+    }));
+    return { ok: true };
+  };
+  /** 右键菜单：在图片中心发一次真实 contextmenu。 */
+  H.zoomMenu = () => {
+    const img = document.querySelector('[data-lightbox-img]');
+    if (!img) return { ok: false };
+    const r = img.getBoundingClientRect();
+    img.dispatchEvent(new MouseEvent('contextmenu', {
+      bubbles: true, cancelable: true,
+      clientX: Math.round(r.left + r.width / 2), clientY: Math.round(r.top + r.height / 2),
+    }));
+    return { ok: true };
+  };
+  /** 双击图片（桌面复位手势）：在图片中心发一次真实 dblclick。 */
+  H.zoomDblclick = () => {
+    const img = document.querySelector('[data-lightbox-img]');
+    if (!img) return { ok: false };
+    const r = img.getBoundingClientRect();
+    img.dispatchEvent(new MouseEvent('dblclick', {
+      bubbles: true, cancelable: true,
+      clientX: Math.round(r.left + r.width / 2), clientY: Math.round(r.top + r.height / 2),
+    }));
+    return { ok: true };
+  };
+  /** 点灯箱右上角的关闭键（与用户手上那一下同一条 requestClose 路径）。 */
+  H.zoomClose = async () => {
+    let label = window.__lbCloseLabel;
+    if (!label) label = (await import('/src/i18n/index.ts')).t('common.closeEsc');
+    const btn = [...document.querySelectorAll('[role="dialog"] button')]
+      .find((b) => b.getAttribute('aria-label') === label);
+    if (!btn) return { ok: false };
+    window.__lbCloseAt = Math.round((performance.now() - window.__lbT0) * 10) / 10;
+    btn.click();
+    return { ok: true, at: window.__lbCloseAt };
+  };
+  /**
+   * 预热关闭键文案（一次，放在任何计时判据之前）。
+   *
+   * zoomClose 原先每次 await import('/src/i18n/index.ts') 再查按钮：首次冷加载能把点击推迟
+   * 200–300ms ⇒ "开场中途打断"/"连点两下"两条判据实际测到的时序每次都不同（真的红过一次）。
+   * 现在标签提前缓存，点击落在调用它的那一刻（±1 帧）。
+   */
+  H.zoomWarm = async () => {
+    for (let i = 0; i < 60; i++) {
+      if (window.__lbCloseLabel) return true;
+      await new Promise((r) => setTimeout(r, 50));
+    }
+    return false;
+  };
+  H.zoomKick = () => {
+    import('/src/i18n/index.ts')
+      .then((m) => { window.__lbCloseLabel = m.t('common.closeEsc'); })
+      .catch(() => {});
+    return true;
+  };
+  /**
+   * 「回到最新」抢热区段（--only=imgzoom ⑦）：真实按钮组件 + 一张正对按钮圆心的 208×117 缩略图。
+   *
+   * 场景就是用户截图那一幕：按钮浮在消息区底部中央，图片正好长在它脚下。
+   * visible 由 utils/backToLatest.ts 的 shouldShowBackToLatest(gap) 驱动（与 VirtualList/ChatWindow
+   * 同一判据），所以这里 elementFromPoint 读到的"命中谁"就是用户手上那一下。
+   * 只用 fine pointer（桌面）的 36×36 本体：按钮已不挂 tap-safe，没有 ::after 扩热区。
+   */
+  H.backMount = async () => {
+    if (!window.__probe.vue) {
+      await H.install('/src/components/UnreadBadge.vue', '', JSON.stringify({ count: 3 }));
+    }
+    const V = window.__probe.vue;
+    if (!V) return { ok: false, why: 'no-vue' };
+    const mod = await import('/src/components/chat/BackToLatestButton.vue');
+    const B = await import('/src/utils/backToLatest.ts');
+    window.__probe.reset();
+    const cw = document.documentElement.clientWidth;
+    const ch = document.documentElement.clientHeight;
+    document.body.innerHTML = '';
+    const host = document.createElement('div');
+    host.id = 'bl-host';
+    host.style.cssText = 'position:fixed;left:0;right:0;bottom:0;height:120px;';
+    document.body.appendChild(host);
+    // 图片中心 = 按钮圆心：bottom-4(16) + h-9(36) 的一半 ⇒ 圆心距视口底 34px。
+    const tw = 208;
+    const th = 117;
+    const img = document.createElement('div');
+    img.id = 'bl-img';
+    img.setAttribute('data-img-frame', '');
+    img.style.cssText = 'position:absolute;width:' + tw + 'px;height:' + th + 'px;left:'
+      + Math.round((cw - tw) / 2) + 'px;top:' + Math.round(120 - 34 - th / 2) + 'px;background:#64748b;';
+    const st = V.reactive({ visible: false, gap: 0 });
+    const app = V.createApp({
+      setup() {
+        return () => V.h(mod.default, {
+          visible: st.visible,
+          onPress: () => window.__probe.events.push(['back']),
+        });
+      },
+    });
+    if (window.__pinia) app.use(window.__pinia);
+    app.mount(host);
+    // app.mount 会清空容器 ⇒ 图片必须在挂载之后插入（放在按钮**下面**一层：按钮 z-10）。
+    host.insertBefore(img, host.firstChild);
+    img.addEventListener('click', () => window.__probe.events.push(['img-click']));
+    window.__probe.backSet = (gap) => {
+      st.gap = gap;
+      st.visible = B.shouldShowBackToLatest(gap);
+      return true;
+    };
+    window.__probe.backRead = () => {
+      const btn = document.querySelector('[data-back-to-latest]');
+      const cx = Math.round(cw / 2);
+      const cy = Math.round(ch - 34);
+      const of = (h) => (!h ? null
+        : h.closest('[data-back-to-latest]') ? 'back-to-latest'
+        : h.closest('[data-img-frame]') ? 'img-frame'
+        : (h.id || h.tagName));
+      return {
+        gap: st.gap,
+        visible: st.visible,
+        hit: of(document.elementFromPoint(cx, cy)),
+        hitAbove: of(document.elementFromPoint(cx, cy - 22)),
+        btn: btn ? {
+          pointerEvents: getComputedStyle(btn).pointerEvents,
+          opacity: getComputedStyle(btn).opacity,
+          ariaHidden: btn.getAttribute('aria-hidden'),
+          tabindex: btn.getAttribute('tabindex'),
+          after: getComputedStyle(btn, '::after').content,
+        } : null,
+        cx, cy,
+      };
+    };
+    await V.nextTick(); await V.nextTick();
+    return { ok: true, viewport: { w: cw, h: ch } };
+  };
+  /** 图片气泡外框的几何与可访问属性（冷/热态点击命中率用）。 */
+  H.imgFrame = () => {
+    const el = document.querySelector('#probe-host [data-img-frame]');
+    if (!el) return null;
+    const r = el.getBoundingClientRect();
+    return {
+      state: el.getAttribute('data-img-state'),
+      role: el.getAttribute('role'),
+      tab: el.getAttribute('tabindex'),
+      cx: Math.round(r.left + r.width / 2),
+      cy: Math.round(r.top + r.height / 2),
+      w: +r.width.toFixed(1),
+      h: +r.height.toFixed(1),
+    };
+  };
   /** 第一个带 aria-haspopup=menu 的按钮中心点（三选一字段那一段用）。 */
   H.firstMenuTrigger = () => {
     const b = document.querySelector('button[aria-haspopup="menu"]');
@@ -3399,8 +3697,11 @@ async function main() {
      */
     const headless = process.env.GOSSLAN_PROBE_HEADLESS !== "0";
     if (!headless) console.log("· 启动参数：headed（GOSSLAN_PROBE_HEADLESS=0）—— 可量真实动画，但会弹窗口");
+    // 桌面口径：imgzoom 要求 ≥1440×900（覆盖层按视口定位），默认 1200×900 不够宽。
+    // 只影响 headed 的窗口尺寸；headless 仍由 Emulation.setDeviceMetricsOverride 定视口。
+    const windowSize = process.env.GOSSLAN_PROBE_WINDOW || "1200,900";
     const p = spawn(chrome, [
-      ...(headless ? ["--headless=new"] : ["--window-size=1200,900"]),
+      ...(headless ? ["--headless=new"] : [`--window-size=${windowSize}`]),
       ...(noSandbox ? ["--no-sandbox"] : []),
       `--remote-debugging-port=${CDP_PORT}`, `--user-data-dir=${profile}`,
       "--no-first-run", "--no-default-browser-check", "--disable-gpu", "about:blank",
@@ -3504,6 +3805,7 @@ async function main() {
     const imgskel = want("imgskel");
     const railsync = want("railsync");
     const imgload = want("imgload");
+    const imgzoom = want("imgzoom");
     const pinkb = want("pinkb");
     const scrollrestore = want("scrollrestore");
     const scrollshake = want("scrollshake");
@@ -3729,6 +4031,7 @@ async function main() {
     await runSegment("imgskel", imgskel, () => runImageSkeleton(cdp, url));
     await runSegment("railsync", railsync, () => runRailSync(cdp, url));
     await runSegment("imgload", imgload, () => runImageLoad(cdp, url));
+    await runSegment("imgzoom", imgzoom, () => runImageZoom(cdp, url));
     if (want("imgretry")) await runImageRetryPace(cdp, url);
     if (want("mergeheight")) await runMergeCardHeight(cdp, url);
     await runSegment("pinkb", pinkb, () => runPinKeyboard(cdp, url));
@@ -7768,7 +8071,7 @@ async function runImageLoad(cdp, url) {
     box.nw > 0 && box.display !== "none", `naturalWidth>0 且 display!=none`, JSON.stringify(box));
   check("有效图：这一条不许带 loading=\"lazy\"（与 display:none 同框就是死锁；豁免理由写在 img-eager-ok 注释里）",
     box.loading === null, "loading 属性不存在", "loading=" + JSON.stringify(box.loading));
-  check("有效图：loaded 后盒子才可点（role=button；没加载完时点击只该走重取）",
+  check("有效图：loaded 后盒子仍是可点按钮（role=button；加载中也同样可点，见 --only=imgzoom 的冷态）",
     box.role === "button", "role=button", "role=" + JSON.stringify(box.role));
 
   // 点击：夹具把组件的 @open 记成 ['open-id', src]（见 PAGE_FIXTURE 的 mkProps.onOpen）
@@ -18735,6 +19038,388 @@ async function runLightbox(cdp, url) {
   check("Esc 关闭：浮层 DOM 撤净且焦点回到 opener（FocusScope 的卸载归还）",
     s.open === false && focusBack === "opener",
     "dialog=0 且 activeElement=#opener", JSON.stringify({ s, focusBack }));
+}
+
+/**
+ * 图片灯箱 FLIP 缩放 + 点击热区那一段（--only=imgzoom）。
+ *
+ * 用户 2026-11-05：「点图片应该放大缩小，现在只有向右一下；点击区域有时候不生效」。
+ * 这里不靠肉眼：逐帧（rAF）读**被点缩略图**与**查看器图片**的真实矩形/transform，
+ * 证明打开第一帧 ≈ 原图矩形、水平位移恒为 0（缩略图与查看器同轴）、宽度单调放大；
+ * 关闭反向缩回且可打断（开场中途关、连点两下都只关一次）。
+ * 点击命中率在 MessageImageBubble 上冷（还在退避重试）/ 热（已解码）各真鼠标点 3 次，必须 3/3。
+ * reduce 档另起一份：不缩放，直接落终态。
+ */
+async function runImageZoom(cdp, url) {
+  await cdp.send("Page.bringToFront").catch(() => {});
+  await cdp.send("Emulation.setFocusEmulationEnabled", { enabled: true }).catch(() => {});
+  // 桌面真实窗口口径（用户 2026-11-05 明确要求 ≥1440×900）：headless 的 1200×900 不够宽，
+  // 覆盖层在更宽的视口下才看得出"水平位移恒 0"这条。只在本段生效，段末清掉。
+  await cdp.send("Emulation.setDeviceMetricsOverride", {
+    width: 1440, height: 900, deviceScaleFactor: 1, mobile: false,
+  }).catch(() => {});
+  await cdp.send("Page.navigate", { url });
+  await cdp.settled();
+  await sleep(3_000);
+  await cdp.eval(PAGE_FIXTURE);
+  const view = await cdp.eval("({ w: innerWidth, h: innerHeight })");
+  check("桌面视口 ≥1440×900（覆盖层按视口定位；窗口级补间那条路已删除）",
+    !!view && view.w >= 1440 && view.h >= 900,
+    "innerWidth/innerHeight ≥1440×900", JSON.stringify(view));
+
+  const vis = (t) => t.frames.filter((f) => Number(f.opacity) >= 0.99);
+  const near = (f, o, tol) =>
+    !!f && Math.abs(f.left - o.left) <= tol && Math.abs(f.top - o.top) <= tol
+    && Math.abs(f.w - o.width) <= tol && Math.abs(f.h - o.height) <= tol;
+  const scaleOf = (tf) => {
+    const m = /matrix\(([^)]+)\)/.exec(tf || "");
+    if (!m) return null;
+    const p = m[1].split(",").map(Number);
+    return { sx: p[0], sy: p[3], tx: p[4], ty: p[5] };
+  };
+  /**
+   * 等浮层真的撤掉（退场 100ms）。用轮询而不是死等一个固定时长：
+   * 这台机器上并行构建/浏览器一忙，主线程会被占住几百毫秒，rAF 与 setTimeout 一起被拖长
+   * ⇒ 原来写死 480/520ms 的"关闭后立刻断言"会偶发读到还挂在退场里的 dialog（真的红过）。
+   * 轮询本身放在页面里（zoomWaitClosed）：Node 侧 32ms 一 eval 会把关闭动画的 rAF 帧挤掉。
+   */
+  const waitClosed = async (ms = 2500) => !!(await cdp.eval(`window.__probe.zoomWaitClosed(${ms})`));
+
+  // ── ① 打开：从原图长出来，纯放大、无横向位移 ─────────────────────────
+  // 先把关闭键文案预热好（冷 import 会拖慢后面两次点击的时序，见 H.zoomWarm 的说明）。
+  await cdp.eval("window.__probe.zoomKick()");
+  await cdp.eval("window.__probe.zoomWarm()");
+  const mounted = await cdp.eval("window.__probe.zoomMount()");
+  check("图片缩放：灯箱挂载成功（真实缩略图 + 640×360 图）",
+    !!mounted && mounted.ok === true, "mount ok", JSON.stringify(mounted));
+  // 等动画真的落定：轮询"最后一帧宽度 ≥600 且连续两次不变"，而不是死等 760ms。
+  // 间隔取 150ms：每次 CDP eval 都占一个主线程时间片，40ms 一询会把动画自己的帧挤掉
+  // （实测 n 从 9 掉到 5，判据反而更容易红）。
+  let opened = null;
+  let prevW = -1;
+  let stable = 0;
+  for (let i = 0; i < 24; i += 1) {
+    opened = await cdp.eval("window.__probe.zoomTake()");
+    const vf = vis(opened);
+    const w = vf.length ? vf[vf.length - 1].w : -1;
+    if (w >= 600 && Math.abs(w - prevW) < 0.5) stable += 1; else stable = 0;
+    prevW = w;
+    if (stable >= 2) break;
+    await sleep(150);
+  }
+  const openFrames = vis(opened);
+  const startFrame = openFrames.reduce((a, b) => (b.w < a.w ? b : a), openFrames[0]);
+  const finalFrame = openFrames[openFrames.length - 1];
+  check("打开：第一个可见帧 ≈ 被点缩略图矩形（从原图位置长出来，不是从别处滑入）",
+    !!startFrame && near(startFrame, opened.origin, 4) && openFrames.length >= 6,
+    "起点矩形 ≈ origin(±4px) 且可见帧 ≥6", JSON.stringify({ startFrame, origin: opened.origin, n: openFrames.length }));
+  const maxCxDev = openFrames.reduce((m, f) => Math.max(m, Math.abs(f.cx - opened.viewport.w / 2)), 0);
+  check("打开：水平位移恒为 0（缩略图与查看器同轴；任何\"向右一下\"都会在这里露头）",
+    openFrames.length > 2 && maxCxDev <= 1.5,
+    "所有帧 |cx - 视图中心| ≤ 1.5px", JSON.stringify({ maxCxDev, frames: openFrames.length }));
+  let monotone = true;
+  for (let i = 1; i < openFrames.length; i += 1) {
+    if (openFrames[i].w < openFrames[i - 1].w - 0.75) monotone = false;
+  }
+  check("打开：宽度逐帧单调增大（是纯放大，不是来回滑）",
+    monotone && openFrames.length > 2, "宽度列无回落（>0.75px 才算）", JSON.stringify(openFrames.map((f) => f.w)));
+  check("打开：终态是查看器落定位置（宽度≈640、中心在视口中心）",
+    !!finalFrame && finalFrame.w > 500 && Math.abs(finalFrame.cx - opened.viewport.w / 2) <= 1.5,
+    "终态 w>500 且居中", JSON.stringify(finalFrame));
+  const startScale = scaleOf(startFrame && startFrame.tf);
+  const finalW = finalFrame ? finalFrame.w : 0;
+  check("打开：第一帧是 transform scale（不是 left/top/width 布局补间）",
+    !!startScale && finalW > 0 && Math.abs(startScale.sx - opened.origin.width / finalW) <= 0.02,
+    "矩阵 scaleX ≈ origin.w/final.w", JSON.stringify({ startScale, expect: finalW ? opened.origin.width / finalW : null }));
+
+  // ── ② 关闭：反向缩回原图位置，且真的播完再关 ────────────────────────
+  await cdp.eval("window.__probe.zoomClose()");
+  await waitClosed();
+  await sleep(120);
+  const closed = await cdp.eval("window.__probe.zoomTake()");
+  const closeFrames = vis(closed).filter((f) => f.t >= (closed.closeAt ?? 0));
+  const lastClose = closeFrames[closeFrames.length - 1];
+  // 逐帧读数留首尾各 3 段（≥6 帧可复现"从原图长出来 / 缩回原图"的起落），又不把整段日志淹掉。
+  console.log("· imgzoom 打开帧:", JSON.stringify({
+    origin: closed.origin,
+    viewport: closed.viewport,
+    n: openFrames.length,
+    head: openFrames.slice(0, 3).map((f) => [f.t, f.w, f.h, f.cx, f.tf]),
+    mid: openFrames.slice(3, 6).map((f) => [f.t, f.w, f.h, f.cx, f.tf]),
+    tail: openFrames.slice(-1).map((f) => [f.t, f.w, f.h, f.cx, f.tf]),
+  }));
+  console.log("· imgzoom 关闭帧:", JSON.stringify({
+    closeAt: closed.closeAt,
+    n: closeFrames.length,
+    head: closeFrames.slice(0, 3).map((f) => [f.t, f.w, f.h, f.cx, f.cy, f.tf]),
+    mid: closeFrames.slice(3, 6).map((f) => [f.t, f.w, f.h, f.cx, f.cy, f.tf]),
+    tail: closeFrames.slice(-1).map((f) => [f.t, f.w, f.h, f.cx, f.cy, f.tf]),
+  }));
+  check("关闭：反向缩回原图位置（最后一帧 ≈ 缩略图矩形，且回缩过程 ≥6 帧可读）",
+    !!lastClose && near(lastClose, closed.origin, 4) && closeFrames.length >= 6,
+    "收尾矩形 ≈ origin(±4px) 且回缩帧 ≥6", JSON.stringify({ lastClose, origin: closed.origin, n: closeFrames.length }));
+  check("关闭：先反向播放再卸载（不是瞬间消失）",
+    !!lastClose && lastClose.t - closed.closeAt >= 140 && closed.closes === 1 && closed.open === false,
+    "收尾 +≥140ms / close 只发一次 / 浮层已撤", JSON.stringify({ closeAt: closed.closeAt, last: lastClose && lastClose.t, closes: closed.closes, open: closed.open }));
+
+  // ── ③ 可打断：开场动画中途点关闭 ────────────────────────────────────
+  await cdp.eval("window.__probe.zoomMount()");
+  // "中途"不能靠固定 60ms 赌：等真的跑起来（≥2 可见帧，且还没到终态尺寸）再打断。
+  // 这样无论首帧解码多慢，打断点都在动画进行中（否则这条判据只是空测）。
+  let midOpen = null;
+  for (let i = 0; i < 90; i++) {
+    const snap = await cdp.eval("window.__probe.zoomTake()");
+    const vf = vis(snap);
+    midOpen = vf.length >= 2 ? vf[vf.length - 1] : null;
+    if (vf.length >= 2 && midOpen.w < 500) break;
+    await sleep(16);
+  }
+  const interruptHit = await cdp.eval("window.__probe.zoomClose()");
+  await waitClosed();
+  await sleep(200);
+  const interrupted = await cdp.eval("window.__probe.zoomTake()");
+  const iFrames = vis(interrupted).filter((f) => f.t >= (interrupted.closeAt ?? 0));
+  const iLast = iFrames[iFrames.length - 1];
+  check("关闭可打断：开场中途关闭也只关一次，且仍收回原图位置",
+    (!!interruptHit && interruptHit.ok === true) && !!midOpen && midOpen.w < 500
+      && interrupted.closes === 1 && interrupted.open === false
+      && (!iLast || near(iLast, interrupted.origin, 4)),
+    "打断点确在动画中（w<500）且 closes=1 / open=false / 收尾≈origin",
+    JSON.stringify({
+      hit: interruptHit, midW: midOpen && midOpen.w,
+      closes: interrupted.closes, open: interrupted.open, closeAt: interrupted.closeAt, n: iFrames.length,
+      iLast, frames: iFrames.map((f) => [f.t, f.w, f.tf]),
+    }));
+  console.log("· imgzoom 打断帧:", JSON.stringify({
+    midW: midOpen && midOpen.w, closeAt: interrupted.closeAt, n: iFrames.length,
+    frames: iFrames.map((f) => [f.t, f.w, f.top, f.tf]),
+  }));
+
+  // ── ④ 连点两下关闭：closing 门闩只放行一次 ──────────────────────────
+  await cdp.eval("window.__probe.zoomMount()");
+  await sleep(700);
+  const firstHit = await cdp.eval("window.__probe.zoomClose()");
+  await sleep(50);
+  const secondHit = await cdp.eval("window.__probe.zoomClose()");
+  await waitClosed();
+  await sleep(120);
+  const doubleClosed = await cdp.eval("window.__probe.zoomTake()");
+  check("关闭连点：两次都命中关闭键，但 close 只发生一次（不会关窗两次/打断回缩）",
+    (!!firstHit && firstHit.ok === true) && (!!secondHit && secondHit.ok === true)
+      && doubleClosed.closes === 1 && doubleClosed.open === false,
+    "两次点击都命中 / closes=1 / open=false",
+    JSON.stringify({ firstHit, secondHit, closes: doubleClosed.closes, open: doubleClosed.open }));
+
+  // ── ⑤ reduce 档：不缩放，直接落终态 ───────────────────────────────
+  await cdp.send("Emulation.setEmulatedMedia", {
+    features: [{ name: "prefers-reduced-motion", value: "reduce" }],
+  }).catch(() => {});
+  await cdp.eval("window.__probe.zoomMount()");
+  await sleep(480);
+  const reduced = await cdp.eval("window.__probe.zoomTake()");
+  const rFrames = vis(reduced);
+  const rMin = rFrames.reduce((m, f) => Math.min(m, f.w), Infinity);
+  check("reduce 档：打开不缩放（所有帧都已是终态尺寸，不从缩略图放大）",
+    rFrames.length > 0 && rMin > 500,
+    "min(w) > 500", JSON.stringify({ rMin, frames: rFrames.map((f) => f.w) }));
+  await cdp.eval("window.__probe.zoomClose()");
+  await waitClosed();
+  await sleep(120);
+  const rClosed = await cdp.eval("window.__probe.zoomTake()");
+  // 判据从"140ms 内必须撤掉"换成"关闭期间一帧回缩都没有"：
+  // 前者量的是 Vue 退场 Transition 的耗时（机器一忙就被拖长，2026-11-05 真红过一次），
+  // 后者才是这条要守的东西 —— reduce 档不许有回缩动画。耗时仍打印出来备查。
+  const rShrink = vis(rClosed)
+    .filter((f) => f.t >= (rClosed.closeAt ?? 0))
+    .filter((f) => f.w < 500);
+  check("reduce 档：关闭不播回缩（关闭期间没有任何一帧比终态小，且只 close 一次）",
+    rClosed.closes === 1 && rClosed.open === false && rShrink.length === 0,
+    "closes=1 / open=false / 回缩帧 0",
+    JSON.stringify({ closes: rClosed.closes, open: rClosed.open, closeAt: rClosed.closeAt,
+      shrink: rShrink.length, frames: vis(rClosed).map((f) => [f.t, f.w]) }));
+  await cdp.send("Emulation.setEmulatedMedia", {
+    features: [{ name: "prefers-reduced-motion", value: "no-preference" }],
+  }).catch(() => {});
+
+  // ── ⑥ 点击命中率：冷（还在退避重试）/ 热（已解码）各真鼠标点 3 次 ─────
+  await cdp.eval("window.__probe.install('/src/components/message/MessageImageBubble.vue', '', "
+    + JSON.stringify(JSON.stringify({ src: "/probe-img-never-loads.png", mine: true })) + ")");
+  await sleep(60);
+  const cold = await cdp.eval("window.__probe.imgFrame()");
+  check("点击热区：缩略图还没解码（loading）时外框就是可点按钮（role=button / tabindex=0）",
+    !!cold && cold.state === "loading" && cold.role === "button" && cold.tab === "0",
+    "loading 且 role=button/tab=0", JSON.stringify(cold));
+  await cdp.eval("window.__probe.reset()");
+  for (let i = 0; i < 3; i += 1) {
+    const box = await cdp.eval("window.__probe.imgFrame()");
+    if (!box) break;
+    await cdp.click(box.cx, box.cy);
+    await sleep(120);
+  }
+  const coldOpened = await cdp.eval("window.__probe.events.filter((e) => e[0] === 'open-id').length");
+  check("点击一次必开：冷态（缩略图未加载）真鼠标连点 3 次 → open 3/3",
+    coldOpened === 3, "open-id = 3", JSON.stringify({ coldOpened, state: (await cdp.eval("window.__probe.imgFrame()"))?.state }));
+
+  const hotSrc = "data:image/svg+xml," + encodeURIComponent(
+    "<svg xmlns='http://www.w3.org/2000/svg' width='640' height='360'><rect width='640' height='360' fill='#2f80ed'/></svg>");
+  await cdp.eval("window.__probe.install('/src/components/message/MessageImageBubble.vue', '', "
+    + JSON.stringify(JSON.stringify({ src: hotSrc, mine: true })) + ")");
+  let hot = await cdp.eval("window.__probe.imgFrame()");
+  for (let i = 0; i < 20 && (!hot || hot.state !== "loaded"); i += 1) {
+    await sleep(80);
+    hot = await cdp.eval("window.__probe.imgFrame()");
+  }
+  check("点击热区：热态缩略图已解码（loaded）", !!hot && hot.state === "loaded", "state=loaded", JSON.stringify(hot));
+  await cdp.eval("window.__probe.reset()");
+  for (let i = 0; i < 3; i += 1) {
+    const box = await cdp.eval("window.__probe.imgFrame()");
+    if (!box) break;
+    await cdp.click(box.cx, box.cy);
+    await sleep(120);
+  }
+  const hotOpened = await cdp.eval("window.__probe.events.filter((e) => e[0] === 'open-id').length");
+  check("点击一次必开：热态（已解码）真鼠标连点 3 次 → open 3/3",
+    hotOpened === 3, "open-id = 3", JSON.stringify({ hotOpened }));
+
+  // ── ⑦ 桌面覆盖层的键盘 / 滚轮 / 双击 / 右键菜单 / 遮罩点击 / 左右切换 ─────
+  // 这一组替代了原来的"独立预览窗（无源矩形）居中放大"：窗口那条路已删除，
+  // 桌面与移动共用同一覆盖层，桌面缺的只是这些输入设备上的补齐。
+  await cdp.eval("window.__probe.zoomMount()");
+  await sleep(760);
+  const kb0 = await cdp.eval("window.__probe.zoomInfo()");
+  check("桌面覆盖层：打开后 index=0、scale=1、只挂一份灯箱",
+    !!kb0 && kb0.open && kb0.index === 0 && Math.abs((kb0.scale ?? 0) - 1) <= 0.01,
+    "open / index=0 / scale≈1", JSON.stringify(kb0));
+
+  const framesBeforeSwitch = await cdp.eval("window.__probe.zoomTake()");
+  await cdp.eval("window.__probe.zoomKey('ArrowRight')");
+  await sleep(200);
+  const kbR = await cdp.eval("window.__probe.zoomInfo()");
+  const switchFrames = vis(await cdp.eval("window.__probe.zoomTake()"))
+    .slice(framesBeforeSwitch.frames.length);
+  const switchMinW = switchFrames.reduce((m, f) => Math.min(m, f.w), Infinity);
+  check("桌面覆盖层：→ 切下一张、← 切回（翻图不重播开场 FLIP）",
+    !!kbR && kbR.index === 1 && switchFrames.length >= 2 && switchMinW > 500
+      && Math.abs((kbR.scale ?? 0) - 1) <= 0.01,
+    "index 0→1 且新帧没有缩回缩略图尺寸", JSON.stringify({
+      index: kbR && kbR.index, n: switchFrames.length, minW: switchMinW, scale: kbR && kbR.scale,
+    }));
+  await cdp.eval("window.__probe.zoomKey('ArrowLeft')");
+  await sleep(180);
+  const kbL = await cdp.eval("window.__probe.zoomInfo()");
+  check("桌面覆盖层：← 切回上一张", !!kbL && kbL.index === 0, "index 1→0", JSON.stringify(kbL));
+
+  await cdp.eval("window.__probe.zoomKey('+')");
+  await cdp.eval("window.__probe.zoomKey('+')");
+  await sleep(220);
+  const kbPlus = await cdp.eval("window.__probe.zoomInfo()");
+  check("桌面覆盖层：+ 键放大（scale > 1.3）", !!kbPlus && kbPlus.scale > 1.3,
+    "scale > 1.3", JSON.stringify(kbPlus));
+  await cdp.eval("window.__probe.zoomKey('-')");
+  await sleep(200);
+  const kbMinus = await cdp.eval("window.__probe.zoomInfo()");
+  check("桌面覆盖层：- 键缩小（scale 回落）",
+    !!kbMinus && kbMinus.scale < kbPlus.scale && kbMinus.scale > 1.1,
+    "1.1 < scale < 放大后的值", JSON.stringify({ plus: kbPlus && kbPlus.scale, minus: kbMinus && kbMinus.scale }));
+  await cdp.eval("window.__probe.zoomKey('0')");
+  // 归位是弹性（spring 420/40），220ms 时还在回弹中（读数 1.038）⇒ 等它落定再读。
+  await sleep(600);
+  const kbZero = await cdp.eval("window.__probe.zoomInfo()");
+  check("桌面覆盖层：0 键复位（scale 回到 1）",
+    !!kbZero && Math.abs((kbZero.scale ?? 0) - 1) <= 0.01,
+    "scale ≈1", JSON.stringify({ scale: kbZero && kbZero.scale }));
+
+  await cdp.eval("window.__probe.zoomWheel(-120)");
+  await sleep(220);
+  const kbWheelIn = await cdp.eval("window.__probe.zoomInfo()");
+  await cdp.eval("window.__probe.zoomWheel(120)");
+  await sleep(220);
+  const kbWheelOut = await cdp.eval("window.__probe.zoomInfo()");
+  check("桌面覆盖层：滚轮缩放（上滚放大 / 下滚缩小）",
+    !!kbWheelIn && !!kbWheelOut && kbWheelIn.scale > 1.02 && kbWheelOut.scale < kbWheelIn.scale,
+    "上滚 scale↑ / 下滚 scale↓", JSON.stringify({ in: kbWheelIn, out: kbWheelOut }));
+
+  await cdp.eval("window.__probe.zoomKey('+')");
+  await cdp.eval("window.__probe.zoomKey('+')");
+  await sleep(160);
+  await cdp.eval("window.__probe.zoomDblclick()");
+  // 同一条弹性路径（双击 → reset()）⇒ 等弹簧落定，别看回弹中途的 1.017。
+  await sleep(600);
+  const kbDbl = await cdp.eval("window.__probe.zoomInfo()");
+  check("桌面覆盖层：双击复位（放大后双击回到 scale=1）",
+    !!kbDbl && Math.abs((kbDbl.scale ?? 0) - 1) <= 0.01,
+    "scale ≈1", JSON.stringify({ scale: kbDbl && kbDbl.scale }));
+
+  await cdp.eval("window.__probe.zoomMenu()");
+  await sleep(120);
+  const kbMenu = await cdp.eval("window.__probe.zoomInfo()");
+  check("桌面覆盖层：右键图片出菜单（保存图片 / 关闭）",
+    !!kbMenu && kbMenu.menu && kbMenu.menuItems.length === 2 && kbMenu.open,
+    "role=menu + 2 个菜单项，灯箱仍在", JSON.stringify({ menu: kbMenu && kbMenu.menuItems, open: kbMenu && kbMenu.open }));
+  await cdp.eval("window.__probe.zoomKey('Escape')");
+  await waitClosed();
+  await sleep(120);
+  const kbEsc = await cdp.eval("window.__probe.zoomTake()");
+  const kbEscInfo = await cdp.eval("window.__probe.zoomInfo()");
+  check("桌面覆盖层：Esc 关闭（菜单同时收起、只发一次 close）",
+    !!kbEsc && kbEsc.closes === 1 && kbEsc.open === false && !kbEscInfo.menu,
+    "closes=1 / open=false / menu=false", JSON.stringify({ closes: kbEsc && kbEsc.closes, open: kbEsc && kbEsc.open, menu: kbEscInfo && kbEscInfo.menu }));
+
+  await cdp.eval("window.__probe.zoomMount()");
+  await sleep(760);
+  await cdp.click(30, 30);
+  await waitClosed();
+  await sleep(120);
+  const maskClosed = await cdp.eval("window.__probe.zoomTake()");
+  check("桌面覆盖层：点击遮罩关闭（closes=1）",
+    !!maskClosed && maskClosed.closes === 1 && maskClosed.open === false,
+    "closes=1 / open=false", JSON.stringify({ closes: maskClosed && maskClosed.closes, open: maskClosed && maskClosed.open }));
+
+  // ⑦ 结束时留一份桌面覆盖层读数（用户要 ≥6 帧，上面两组分别打印了打开/关闭的首 6 帧）。
+
+  // ── ⑧ 「回到最新」按钮抢热区：贴底时点图片中心必须命中图片 ──────────────
+  const backMounted = await cdp.eval("window.__probe.backMount()");
+  await sleep(320);
+  await cdp.eval("window.__probe.backSet(0)");
+  await sleep(260);
+  const back0 = await cdp.eval("window.__probe.backRead()");
+  check("回到最新：贴底（gap=0）时按钮不可见且 pointer-events: none",
+    !!backMounted && !!back0 && back0.visible === false && !!back0.btn
+      && back0.btn.pointerEvents === "none" && back0.btn.opacity === "0"
+      && back0.btn.ariaHidden === "true",
+    "visible=false / pe=none / opacity=0 / aria-hidden", JSON.stringify(back0));
+  check("回到最新：贴底时图片中心命中图片本身（不再被按钮抢热区）",
+    !!back0 && back0.hit === "img-frame",
+    "elementFromPoint(cx, cy) = img-frame", JSON.stringify({ hit: back0 && back0.hit }));
+  await cdp.eval("window.__probe.reset()");
+  await cdp.click(back0.cx, back0.cy);
+  await sleep(150);
+  const back0Events = await cdp.eval("window.__probe.events.slice()");
+  check("回到最新：贴底时真鼠标点图片中心 → 图片收到点击、按钮 0 次",
+    back0Events.filter((e) => e[0] === "img-click").length === 1
+      && back0Events.filter((e) => e[0] === "back").length === 0,
+    "img-click=1 / back=0", JSON.stringify(back0Events));
+
+  await cdp.eval("window.__probe.backSet(200)");
+  await sleep(260);
+  const back200 = await cdp.eval("window.__probe.backRead()");
+  check("回到最新：真正离底（gap=200）时按钮出现且可点（证明场景确实重叠，不是空测）",
+    !!back200 && back200.visible === true && back200.hit === "back-to-latest"
+      && !!back200.btn && back200.btn.pointerEvents === "auto",
+    "visible=true / 命中按钮 / pe=auto", JSON.stringify(back200));
+  check("回到最新：热区只覆盖按钮本体（按钮上方 4px 仍是图片，::after 不存在）",
+    !!back200 && back200.hitAbove === "img-frame" && back200.btn.after === "none",
+    "cy-22 → img-frame / ::after=none", JSON.stringify({
+      hitAbove: back200 && back200.hitAbove, after: back200 && back200.btn.after,
+    }));
+  await cdp.eval("window.__probe.reset()");
+  await cdp.click(back200.cx, back200.cy);
+  await sleep(150);
+  const back200Events = await cdp.eval("window.__probe.events.slice()");
+  check("回到最新：离底时点它 → 按钮收到 press（可见即真的接上了）",
+    back200Events.filter((e) => e[0] === "back").length === 1,
+    "back=1", JSON.stringify(back200Events));
+  await cdp.send("Emulation.clearDeviceMetricsOverride").catch(() => {});
 }
 
 /**

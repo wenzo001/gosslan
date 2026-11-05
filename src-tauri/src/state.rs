@@ -1089,31 +1089,6 @@ impl Drop for FileSendGate {
     }
 }
 
-/// 预览窗口里的一张图 —— 字段名与前端 `PreviewImage` 一一对应（camelCase 上线）。
-///
-/// ⚠️ 刻意**只带引用**（`msg_id` / `cid`）或自包含的 `data_src`：
-/// 主窗口里那些 `blob:` objectURL 跨文档一律取不到字节，传过去就是一片破图。
-/// 所以能不能走独立预览窗口，判据就是"每一条都可寻址"（见前端 `deliverableToWindow`）。
-#[derive(Serialize, Deserialize, Clone, Debug)]
-#[serde(rename_all = "camelCase")]
-pub struct PreviewItem {
-    pub name: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub msg_id: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub cid: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub data_src: Option<String>,
-}
-
-/// 一次"看图"投递的完整内容（相册 + 起始下标）。
-#[derive(Serialize, Deserialize, Clone, Debug)]
-#[serde(rename_all = "camelCase")]
-pub struct PreviewGallery {
-    pub items: Vec<PreviewItem>,
-    pub index: usize,
-}
-
 /// 群文件会话密钥条目（内存态）。**不派生 Debug**：密钥不许被 `{:?}` 带进日志。
 pub struct GroupFileKey {
     pub key: [u8; 32],
@@ -1312,18 +1287,11 @@ pub struct AppState {
     /// 否则下次从标题栏按钮打开会莫名展开上次那条），窗口挂载时取走一次；
     /// 只有"窗口本来就开着"（不会经历挂载）才走定向事件那条路。
     pub todo_focus_request: Mutex<std::collections::HashMap<String, TodoFocus>>,
-    /// 独立「图片预览」窗口当前该显示哪一份相册（用户 2026-09-24 #40）。
-    ///
-    /// 这是**当前值**而不是一次性请求：每次投递都整体覆盖，所以窗口不管是挂载后自己来取、
-    /// 还是被事件叫醒后来取，拿到的都是"用户最后一次点的那组图"。也正因如此 `get` 不清它 ——
-    /// 清了反而会在"事件先于监听器到达"那个窗口期把内容丢掉（批次 w 记过的同一个竞态）。
-    pub preview_gallery: Mutex<Option<PreviewGallery>>,
     /// 「那扇群任务窗口现在显示的是哪个群」—— **当前值**，不是一次性请求。
     ///
     /// 群任务窗口的 label 是固定的 `tasks`（不再是每群一扇），所以"看哪个群"必须由这里给：
     /// 预热时它是 `None`（窗口已经建好、还没有内容），第一次真正打开写入某个群 ⇒ 窗口
     /// 要么在挂载时自己取到（新建/预热后首用），要么被定向事件叫醒后再取（已开着）。
-    /// 与 `preview_gallery` 同一套"当前值"语义 ⇒ 不存在"丢一次点击"。
     pub task_window_group: Mutex<Option<String>>,
     /// 节点身份（X25519 + Ed25519）
     pub identity: Identity,
@@ -2501,7 +2469,6 @@ impl AppState {
             ble_dial_failures: Mutex::new(std::collections::HashMap::new()),
             dialing: Mutex::new(std::collections::HashSet::new()),
             todo_focus_request: Mutex::new(std::collections::HashMap::new()),
-            preview_gallery: Mutex::new(None),
             task_window_group: Mutex::new(None),
             dial_permits: Arc::new(tokio::sync::Semaphore::new(MAX_CONCURRENT_DIALS)),
             inbound_permits: Arc::new(tokio::sync::Semaphore::new(MAX_INBOUND_CONNECTIONS)),

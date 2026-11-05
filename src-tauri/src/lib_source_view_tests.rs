@@ -337,9 +337,9 @@ fn definition_hits(src: &str, signature: &str) -> usize {
 
 /// 取**第 `nth` 次出现**（0 基）的那个顶层函数体 —— 只给「同名 cfg 双胞胎」用。
 ///
-/// 两处已知调用点都在 `lib_window_tests.rs`（`prewarm_aux_windows` / `open_group_todos_window`，
-/// desktop 与 mobile 各一份、签名逐字相同）。注意 **不能靠"把签名写长"绕开**：
-/// 双胞胎的差别在 `app` / `_app` 与属性行，写长就绑死在 `cargo fmt` 的换行上。
+/// 当前调用点在 `lib_window_tests.rs`（`open_group_todos_window`，desktop 与 mobile
+/// 各一份、签名逐字相同）。注意 **不能靠"把签名写长"绕开**：双胞胎的差别在
+/// `app` / `_app` 与属性行，写长就绑死在 `cargo fmt` 的换行上。
 fn rust_fn_body_nth<'a>(
     src: &'a str,
     signature: &str,

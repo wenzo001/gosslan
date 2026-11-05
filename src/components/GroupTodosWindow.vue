@@ -30,12 +30,23 @@ import { api } from "@/api";
 import AuxWindowShell from "@/components/window/AuxWindowShell.vue";
 import StateBlock from "@/components/ui/StateBlock.vue";
 import GroupTasksBoard from "@/components/GroupTasksBoard.vue";
+import ImageLightbox from "@/components/message/ImageLightbox.vue";
+import { useImagePreviewStore } from "@/stores/useImagePreview";
 import { errorText } from "@/composables/useErrorText";
 import { currentLocale, t } from "@/i18n";
 import { createInitScope } from "@/utils/initScope";
 import type { TodoFocus } from "@/types";
 
 const chat = useChatStore();
+/**
+ * 本窗口自己的图片预览宿主（任务看板里也会点开图片）。
+ *
+ * 桌面预览改成应用内覆盖层后，`useImagePreviewStore` 是**每个文档一份**的 Pinia 状态：
+ * 本窗口不渲染 `ResponsiveLayout`，不在这里挂一份 `ImageLightbox`，任务里的图点了就没反应。
+ * 两个文档各有各的覆盖层实例不是"两套视觉"——同一组件、同一 FLIP、同一 store 契约，
+ * 只是每个 WebView 各自持有自己的那一份状态。
+ */
+const preview = useImagePreviewStore();
 
 /** 这扇窗现在服务哪个群（`null` = 还没被打开过，只是预热放着）。 */
 const groupId = ref<string | null>(null);
@@ -181,4 +192,11 @@ onUnmounted(() => listenerScope.dispose());
       <GroupTasksBoard :key="groupId" ref="boardRef" :group-id="groupId" standalone />
     </div>
   </AuxWindowShell>
+  <ImageLightbox
+    :images="preview.images"
+    v-model:index="preview.index"
+    :open="preview.open"
+    :origin="preview.origin"
+    @close="preview.close()"
+  />
 </template>

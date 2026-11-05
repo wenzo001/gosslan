@@ -23,121 +23,125 @@
 <!-- BEGIN:generated (node scripts/frontend-inventory.mjs) -->
 
 > 复跑：`node scripts/frontend-inventory.mjs`（本段与 `--check` 对账，手改本段数字没有意义）。
-> 现读：`src/` 共 414 份源码 = 生产 275 份 / 56,831 行 + 测试 139 份 / 29,812 行（不含 `src/assets/` 里的 214 个表情图）。
+> 现读：`src/` 共 466 份源码 = 生产 306 份 / 64,391 行 + 测试 160 份 / 33,904 行（不含 `src/assets/` 里的 215 个表情图）。
 
 ### 1.1 按职责分类（生产码，机器现算）
 
 | 类 | 文件 | 行 |
 |---|---:|---:|
-| D-业务组件 | 76 | 24,453 |
-| B-utils | 112 | 14,207 |
-| C-状态层 | 3 | 4,807 |
-| B-国际化 | 5 | 3,138 |
-| D-数据表 | 3 | 2,131 |
-| A-公共UI | 26 | 2,129 |
-| A-布局 | 2 | 1,480 |
-| B-composables | 17 | 1,392 |
-| E-IPC/事件 | 1 | 1,078 |
-| E-入口/启动 | 10 | 727 |
-| E-平台适配 | 11 | 667 |
-| 其他 | 9 | 622 |
-| **合计** | **275** | **56,831** |
+| D-业务组件 | 81 | 26,680 |
+| B-utils | 125 | 16,441 |
+| C-状态层 | 12 | 6,018 |
+| B-国际化 | 5 | 3,848 |
+| D-数据表 | 3 | 2,226 |
+| A-公共UI | 26 | 2,091 |
+| A-布局 | 2 | 1,624 |
+| B-composables | 18 | 1,442 |
+| 其他 | 13 | 1,323 |
+| E-IPC/事件 | 1 | 1,177 |
+| E-平台适配 | 11 | 781 |
+| E-入口/启动 | 9 | 740 |
+| **合计** | **306** | **64,391** |
 
 ### 1.2 已装库在生产码里的实际使用面（装了不等于用了）
 
 | 依赖 | 生产文件 | 行 |
 |---|---:|---:|
-| `vue` | 105 | 34,140 |
-| `lucide-vue-next` | 49 | 20,300 |
-| `reka-ui` | 27 | 11,544 |
-| `@vueuse/core` | 19 | 13,528 |
-| `vue-router` | 13 | 7,598 |
-| `@tanstack/vue-query` | 9 | 2,475 |
-| `@tauri-apps/api` | 8 | 6,591 |
-| `@tauri-apps/plugin-dialog` | 6 | 4,985 |
-| `@tauri-apps/plugin-opener` | 5 | 927 |
-| `pinia` | 4 | 5,072 |
-| `@tanstack/vue-virtual` | 2 | 1,521 |
-| `@tauri-apps/plugin-notification` | 2 | 4,677 |
-| `dayjs` | 2 | 202 |
-| `zod` | 2 | 262 |
+| `vue` | 118 | 37,220 |
+| `lucide-vue-next` | 51 | 21,863 |
+| `reka-ui` | 28 | 12,554 |
+| `@vueuse/core` | 19 | 14,719 |
+| `vue-router` | 13 | 7,774 |
+| `@tanstack/vue-query` | 9 | 2,766 |
+| `@tauri-apps/api` | 7 | 6,700 |
+| `@tauri-apps/plugin-dialog` | 6 | 5,369 |
+| `@tauri-apps/plugin-opener` | 6 | 2,191 |
+| `pinia` | 4 | 2,528 |
+| `@tauri-apps/plugin-notification` | 3 | 2,734 |
+| `@tanstack/vue-virtual` | 2 | 1,543 |
+| `dayjs` | 2 | 256 |
+| `zod` | 2 | 382 |
 | `vue-i18n` | 1 | 176 |
 | `mitt` | 1 | 51 |
-| `highlight.js` | 1 | 78 |
-| `dompurify` | 1 | 55 |
-| `marked` | 1 | 55 |
+| `highlight.js` | 1 | 117 |
+| `dompurify` | 1 | 74 |
+| `marked` | 1 | 74 |
 | `motion-v` | 1 | 20 |
 
 ### 1.3 全量生产文件索引
 
 | 文件 | 类 | 行 | 直接用到的库 |
 |---|---|---:|---|
-| `src/api/index.ts` | E-IPC/事件 | 1078 | `@tauri-apps/api` |
-| `src/App.vue` | A-布局 | 276 | `@vueuse/core` `vue` |
+| `src/api/index.ts` | E-IPC/事件 | 1177 | `@tauri-apps/api` |
+| `src/App.vue` | A-布局 | 369 | `@vueuse/core` `vue` |
 | `src/boot/boot-guard.js` | E-入口/启动 | 78 | — |
 | `src/boot/boot-window.d.ts` | E-入口/启动 | 14 | — |
-| `src/boot/boot.ts` | E-入口/启动 | 265 | `@tanstack/vue-query` `pinia` `vue` |
+| `src/boot/boot.ts` | E-入口/启动 | 275 | `@tanstack/vue-query` `pinia` `vue` |
 | `src/boot/theme-boot.js` | E-入口/启动 | 111 | — |
 | `src/components/ActionSheet.vue` | A-公共UI | 194 | `reka-ui` `vue` |
-| `src/components/AddFriendModal.vue` | D-业务组件 | 436 | `@vueuse/core` `lucide-vue-next` `vue` |
+| `src/components/AddFriendModal.vue` | D-业务组件 | 569 | `@vueuse/core` `lucide-vue-next` `vue` |
 | `src/components/BaseModal.vue` | A-公共UI | 267 | `reka-ui` `vue` |
+| `src/components/chat/BackToLatestButton.vue` | D-业务组件 | 40 | `lucide-vue-next` |
 | `src/components/chat/ChatHeader.vue` | D-业务组件 | 222 | `lucide-vue-next` `vue` |
 | `src/components/chat/DropSendConfirm.vue` | D-业务组件 | 30 | — |
-| `src/components/chat/MessageComposer.vue` | D-业务组件 | 1073 | `@vueuse/core` `lucide-vue-next` `reka-ui` `vue` |
-| `src/components/ChatWindow.vue` | D-业务组件 | 2332 | `@tauri-apps/api` `@tauri-apps/plugin-dialog` `@vueuse/core` `lucide-vue-next` `vue` `vue-router` |
-| `src/components/CodeBlock.vue` | D-业务组件 | 97 | `vue` |
-| `src/components/ContextMenu.vue` | A-公共UI | 92 | `reka-ui` `vue` |
+| `src/components/chat/MessageComposer.vue` | D-业务组件 | 1391 | `@vueuse/core` `lucide-vue-next` `reka-ui` `vue` |
+| `src/components/ChatWindow.vue` | D-业务组件 | 2345 | `@tauri-apps/api` `@tauri-apps/plugin-dialog` `@vueuse/core` `lucide-vue-next` `vue` `vue-router` |
+| `src/components/CodeBlock.vue` | D-业务组件 | 153 | `vue` |
+| `src/components/CodeLangMenu.vue` | D-业务组件 | 127 | `lucide-vue-next` `reka-ui` `vue` |
+| `src/components/ContextMenu.vue` | A-公共UI | 98 | `reka-ui` `vue` |
 | `src/components/conversation/ConversationContextMenu.vue` | D-业务组件 | 43 | `lucide-vue-next` `reka-ui` |
-| `src/components/conversation/ConversationListItem.vue` | D-业务组件 | 277 | `lucide-vue-next` `vue` |
+| `src/components/conversation/ConversationListItem.vue` | D-业务组件 | 278 | `lucide-vue-next` `vue` |
 | `src/components/conversation/FriendContextMenu.vue` | D-业务组件 | 41 | `lucide-vue-next` `reka-ui` |
 | `src/components/conversation/FriendListItem.vue` | D-业务组件 | 149 | `vue` |
-| `src/components/conversation/FriendRequestList.vue` | D-业务组件 | 72 | — |
-| `src/components/ConversationList.vue` | D-业务组件 | 747 | `@tauri-apps/api` `@vueuse/core` `lucide-vue-next` `reka-ui` `vue` `vue-router` |
+| `src/components/conversation/FriendRequestList.vue` | D-业务组件 | 105 | — |
+| `src/components/ConversationList.vue` | D-业务组件 | 768 | `@tauri-apps/api` `@vueuse/core` `lucide-vue-next` `reka-ui` `vue` `vue-router` |
 | `src/components/CrashNotice.vue` | D-业务组件 | 178 | `vue` |
 | `src/components/DevDiagPanel.vue` | D-业务组件 | 499 | `@tanstack/vue-query` `lucide-vue-next` `vue` |
 | `src/components/EmojiPicker.vue` | D-业务组件 | 179 | `vue` |
-| `src/components/FavoritePanel.vue` | D-业务组件 | 1071 | `@vueuse/core` `lucide-vue-next` `reka-ui` `vue` `vue-router` |
+| `src/components/FavoritePanel.vue` | D-业务组件 | 1070 | `@vueuse/core` `lucide-vue-next` `reka-ui` `vue` `vue-router` |
 | `src/components/FriendProfile.vue` | D-业务组件 | 303 | `lucide-vue-next` `vue` `vue-router` |
 | `src/components/GroupCreateModal.vue` | D-业务组件 | 130 | `vue` `vue-router` |
 | `src/components/GroupFilesPanel.vue` | D-业务组件 | 406 | `@tanstack/vue-query` `@tauri-apps/plugin-opener` `lucide-vue-next` `reka-ui` `vue` |
 | `src/components/GroupMemberPanel.vue` | D-业务组件 | 559 | `lucide-vue-next` `reka-ui` `vue` |
-| `src/components/GroupTasksBoard.vue` | D-业务组件 | 1737 | `@tauri-apps/api` `@tauri-apps/plugin-dialog` `@vueuse/core` `lucide-vue-next` `reka-ui` `vue` |
+| `src/components/GroupTasksBoard.vue` | D-业务组件 | 1858 | `@tauri-apps/api` `@tauri-apps/plugin-dialog` `@vueuse/core` `lucide-vue-next` `reka-ui` `vue` |
 | `src/components/GroupTasksPanel.vue` | D-业务组件 | 73 | `vue` |
-| `src/components/GroupTodosWindow.vue` | D-业务组件 | 184 | `@tauri-apps/api` `vue` |
+| `src/components/GroupTodosWindow.vue` | D-业务组件 | 202 | `@tauri-apps/api` `vue` |
 | `src/components/HangNotice.vue` | D-业务组件 | 102 | `vue` |
-| `src/components/LinksList.vue` | D-业务组件 | 444 | `@tanstack/vue-query` `@tauri-apps/plugin-dialog` `lucide-vue-next` `vue` |
+| `src/components/LinksList.vue` | D-业务组件 | 694 | `@tanstack/vue-query` `@tauri-apps/plugin-dialog` `lucide-vue-next` `vue` |
 | `src/components/LogRows.vue` | D-业务组件 | 88 | — |
 | `src/components/LogViewer.vue` | D-业务组件 | 612 | `@tanstack/vue-virtual` `@vueuse/core` `lucide-vue-next` `vue` |
 | `src/components/message/BubbleTail.vue` | D-业务组件 | 51 | — |
 | `src/components/message/ForwardModal.vue` | D-业务组件 | 165 | `@vueuse/core` `vue` |
-| `src/components/message/ImageLightbox.vue` | D-业务组件 | 512 | `@vueuse/core` `lucide-vue-next` `reka-ui` `vue` |
+| `src/components/message/ImageLightbox.vue` | D-业务组件 | 786 | `@vueuse/core` `lucide-vue-next` `reka-ui` `vue` |
 | `src/components/message/MentionText.vue` | D-业务组件 | 72 | `@tauri-apps/plugin-opener` |
 | `src/components/message/MergeCard.vue` | D-业务组件 | 74 | `lucide-vue-next` `vue` |
 | `src/components/message/MergeCardModal.vue` | D-业务组件 | 283 | `vue` |
 | `src/components/message/MessageAvatar.vue` | D-业务组件 | 30 | — |
-| `src/components/message/MessageCodeBubble.vue` | D-业务组件 | 134 | `lucide-vue-next` `reka-ui` `vue` |
-| `src/components/message/MessageContentModal.vue` | D-业务组件 | 114 | `@tauri-apps/plugin-opener` `lucide-vue-next` `vue` |
+| `src/components/message/MessageCodeBubble.vue` | D-业务组件 | 160 | `lucide-vue-next` `reka-ui` `vue` |
+| `src/components/message/MessageContentModal.vue` | D-业务组件 | 123 | `@tauri-apps/plugin-opener` `lucide-vue-next` `vue` |
 | `src/components/message/MessageContextMenu.vue` | D-业务组件 | 202 | `lucide-vue-next` `reka-ui` `vue` |
 | `src/components/message/MessageFileBubble.vue` | D-业务组件 | 223 | `lucide-vue-next` `vue` |
-| `src/components/message/MessageImageBubble.vue` | D-业务组件 | 194 | `lucide-vue-next` `vue` |
+| `src/components/message/MessageImageBubble.vue` | D-业务组件 | 224 | `lucide-vue-next` `vue` |
 | `src/components/message/MessageLinkText.vue` | D-业务组件 | 30 | `vue` |
 | `src/components/message/MessageReactionBar.vue` | D-业务组件 | 266 | `reka-ui` `vue` |
-| `src/components/message/MessageReceipt.vue` | D-业务组件 | 379 | `lucide-vue-next` `reka-ui` `vue` |
+| `src/components/message/MessageReceipt.vue` | D-业务组件 | 418 | `lucide-vue-next` `reka-ui` `vue` |
 | `src/components/message/MessageTextBubble.vue` | D-业务组件 | 233 | `@tauri-apps/plugin-opener` `lucide-vue-next` `vue` |
 | `src/components/message/UnsupportedKindBubble.vue` | D-业务组件 | 44 | `vue` |
-| `src/components/MessageItem.vue` | D-业务组件 | 2283 | `lucide-vue-next` `reka-ui` `vue` |
+| `src/components/MessageItem.vue` | D-业务组件 | 2309 | `lucide-vue-next` `reka-ui` `vue` |
 | `src/components/MobilePageFrame.vue` | A-公共UI | 106 | — |
-| `src/components/NavRail.vue` | D-业务组件 | 252 | `lucide-vue-next` `reka-ui` `vue` |
+| `src/components/NavRail.vue` | D-业务组件 | 250 | `lucide-vue-next` `reka-ui` `vue` |
+| `src/components/RecoveryNotice.vue` | D-业务组件 | 122 | `vue` |
 | `src/components/RemindAudienceDialog.vue` | D-业务组件 | 109 | `vue` |
-| `src/components/search/ChatSearchDialog.vue` | D-业务组件 | 606 | `@tanstack/vue-query` `@vueuse/core` `lucide-vue-next` `reka-ui` `vue` `vue-router` |
+| `src/components/search/ChatSearchDialog.vue` | D-业务组件 | 637 | `@tanstack/vue-query` `@vueuse/core` `lucide-vue-next` `reka-ui` `vue` `vue-router` |
 | `src/components/SelfAvatar.vue` | D-业务组件 | 51 | `vue` |
-| `src/components/settings/AboutSection.vue` | D-业务组件 | 103 | `vue` |
-| `src/components/settings/AppearanceSection.vue` | D-业务组件 | 103 | `vue` |
+| `src/components/settings/AboutSection.vue` | D-业务组件 | 124 | `vue` |
+| `src/components/settings/AndroidUpdatePanel.vue` | D-业务组件 | 298 | `vue` |
+| `src/components/settings/AppearanceSection.vue` | D-业务组件 | 142 | `vue` |
 | `src/components/settings/AvatarPresetDialog.vue` | D-业务组件 | 198 | `lucide-vue-next` `vue` |
 | `src/components/settings/ChatStyleSection.vue` | D-业务组件 | 254 | `reka-ui` `vue` |
 | `src/components/settings/FilesSection.vue` | D-业务组件 | 129 | `@tauri-apps/plugin-dialog` `lucide-vue-next` `vue` |
 | `src/components/settings/GeneralSection.vue` | D-业务组件 | 53 | `vue` |
-| `src/components/settings/NetworkSection.vue` | D-业务组件 | 726 | `vue` |
+| `src/components/settings/NetworkSection.vue` | D-业务组件 | 728 | `vue` |
 | `src/components/settings/NotificationSection.vue` | D-业务组件 | 95 | `lucide-vue-next` `vue` |
 | `src/components/settings/ProfileSection.vue` | D-业务组件 | 297 | `lucide-vue-next` `vue` |
 | `src/components/settings/ResetSection.vue` | D-业务组件 | 131 | `vue` |
@@ -147,44 +151,46 @@
 | `src/components/settings/SettingsToggle.vue` | D-业务组件 | 63 | `reka-ui` |
 | `src/components/settings/StorageSection.vue` | D-业务组件 | 273 | `@tauri-apps/plugin-dialog` `lucide-vue-next` `vue` |
 | `src/components/settings/UpdatePanel.vue` | D-业务组件 | 233 | `vue` |
-| `src/components/SettingsPanel.vue` | D-业务组件 | 282 | `lucide-vue-next` `vue` `vue-router` |
-| `src/components/SettingsWindow.vue` | D-业务组件 | 243 | `@vueuse/core` `lucide-vue-next` `vue` `vue-router` |
+| `src/components/SettingsPanel.vue` | D-业务组件 | 291 | `lucide-vue-next` `vue` `vue-router` |
+| `src/components/SettingsWindow.vue` | D-业务组件 | 274 | `@vueuse/core` `lucide-vue-next` `vue` `vue-router` |
 | `src/components/ShareDirectory.vue` | D-业务组件 | 146 | `@tanstack/vue-query` `lucide-vue-next` `vue` |
-| `src/components/TaskCenter.vue` | D-业务组件 | 452 | `vue` `vue-router` |
+| `src/components/TaskCenter.vue` | D-业务组件 | 473 | `vue` `vue-router` |
 | `src/components/TitleBar.vue` | A-公共UI | 317 | `@tauri-apps/api` `@vueuse/core` `vue` |
 | `src/components/ToastHud.vue` | A-公共UI | 26 | `reka-ui` |
-| `src/components/ToastList.vue` | A-公共UI | 39 | `lucide-vue-next` `reka-ui` |
+| `src/components/ToastList.vue` | A-公共UI | 50 | `lucide-vue-next` `reka-ui` |
 | `src/components/TodoCardBubble.vue` | D-业务组件 | 380 | `lucide-vue-next` `vue` |
-| `src/components/TodoDetailDialog.vue` | D-业务组件 | 482 | `lucide-vue-next` `vue` |
+| `src/components/TodoDetailDialog.vue` | D-业务组件 | 487 | `lucide-vue-next` `vue` |
 | `src/components/TodoIconPicker.vue` | D-业务组件 | 70 | — |
 | `src/components/TodoImageThumb.vue` | D-业务组件 | 184 | `vue` |
 | `src/components/TodoPickField.vue` | D-业务组件 | 112 | `lucide-vue-next` `reka-ui` `vue` |
+| `src/components/ui/AppDateField.vue` | A-公共UI | 95 | `vue` |
 | `src/components/ui/AvatarBox.vue` | A-公共UI | 85 | `vue` |
 | `src/components/ui/BackArrow.vue` | A-公共UI | 30 | `lucide-vue-next` |
 | `src/components/ui/CharCounter.vue` | A-公共UI | 27 | `vue` |
 | `src/components/ui/ConfirmDialog.vue` | A-公共UI | 68 | — |
-| `src/components/ui/DangerBtn.vue` | A-公共UI | 46 | — |
-| `src/components/ui/ErrorBoundary.vue` | A-公共UI | 45 | `vue` |
+| `src/components/ui/DangerBtn.vue` | A-公共UI | 47 | — |
+| `src/components/ui/ErrorBoundary.vue` | A-公共UI | 47 | `vue` |
 | `src/components/ui/icons.ts` | A-公共UI | 15 | `lucide-vue-next` |
 | `src/components/ui/LinkIcon.vue` | A-公共UI | 28 | `lucide-vue-next` |
 | `src/components/ui/MarkdownText.vue` | A-公共UI | 102 | `@tauri-apps/plugin-opener` `vue` |
 | `src/components/ui/NavIcon.vue` | A-公共UI | 32 | — |
 | `src/components/ui/navIcons.ts` | A-公共UI | 22 | `lucide-vue-next` |
-| `src/components/ui/PrimaryBtn.vue` | A-公共UI | 44 | — |
-| `src/components/ui/SecondaryBtn.vue` | A-公共UI | 51 | — |
+| `src/components/ui/PrimaryBtn.vue` | A-公共UI | 45 | — |
+| `src/components/ui/SecondaryBtn.vue` | A-公共UI | 59 | — |
 | `src/components/ui/SegmentedControl.vue` | A-公共UI | 86 | `reka-ui` |
 | `src/components/ui/SettingsSelect.vue` | A-公共UI | 73 | `lucide-vue-next` `reka-ui` `vue` |
 | `src/components/ui/Spinner.vue` | A-公共UI | 35 | — |
 | `src/components/ui/StateBlock.vue` | A-公共UI | 80 | `vue` |
 | `src/components/UnreadBadge.vue` | D-业务组件 | 62 | — |
-| `src/components/VirtualList.vue` | D-业务组件 | 909 | `@tanstack/vue-virtual` `@vueuse/core` `vue` |
-| `src/components/window/AuxWindowShell.vue` | A-公共UI | 56 | `vue` |
-| `src/components/window/PreviewWindow.vue` | A-公共UI | 163 | `@tauri-apps/api` `vue` |
+| `src/components/VersionMismatchNotice.vue` | D-业务组件 | 94 | `vue` |
+| `src/components/VirtualList.vue` | D-业务组件 | 931 | `@tanstack/vue-virtual` `@vueuse/core` `vue` |
+| `src/components/window/AuxWindowShell.vue` | A-公共UI | 57 | `vue` |
+| `src/composables/useAuxWindowFailureReport.ts` | B-composables | 33 | — |
 | `src/composables/useBackLayer.ts` | B-composables | 121 | `vue` |
 | `src/composables/useClipboard.ts` | B-composables | 43 | `@vueuse/core` `vue` |
 | `src/composables/useDocumentDark.ts` | B-composables | 27 | `vue` |
 | `src/composables/useDropSend.ts` | B-composables | 88 | `vue` |
-| `src/composables/useErrorText.ts` | B-composables | 29 | — |
+| `src/composables/useErrorText.ts` | B-composables | 46 | — |
 | `src/composables/useExclusivePopup.ts` | B-composables | 32 | `vue` |
 | `src/composables/useImeEnterGuard.ts` | B-composables | 62 | `vue` |
 | `src/composables/useMemberProfile.ts` | B-composables | 38 | `vue` |
@@ -199,67 +205,86 @@
 | `src/composables/useWindowLauncher.ts` | B-composables | 67 | `vue` |
 | `src/data/emojis.ts` | D-数据表 | 1074 | — |
 | `src/data/hanInitials.ts` | D-数据表 | 115 | — |
+| `src/directives/pressRipple.ts` | 其他 | 63 | `vue` |
 | `src/entries/logs.ts` | E-入口/启动 | 32 | `vue` |
 | `src/entries/main.ts` | E-入口/启动 | 36 | — |
-| `src/entries/preview.ts` | E-入口/启动 | 19 | — |
 | `src/entries/settings.ts` | E-入口/启动 | 33 | `@tauri-apps/api` |
-| `src/entries/startup-error.ts` | E-入口/启动 | 108 | — |
+| `src/entries/startup-error.ts` | E-入口/启动 | 130 | — |
 | `src/entries/todos.ts` | E-入口/启动 | 31 | — |
 | `src/i18n/index.ts` | B-国际化 | 176 | `vue` `vue-i18n` |
 | `src/i18n/locales.ts` | B-国际化 | 16 | — |
 | `src/i18n/locales/dict.ts` | B-国际化 | 7 | — |
-| `src/i18n/locales/en-us.ts` | B-国际化 | 1450 | — |
-| `src/i18n/locales/zh-cn.ts` | B-国际化 | 1489 | — |
-| `src/layouts/ResponsiveLayout.vue` | A-布局 | 1204 | `@vueuse/core` `lucide-vue-next` `vue` `vue-router` |
+| `src/i18n/locales/en-us.ts` | B-国际化 | 1802 | — |
+| `src/i18n/locales/zh-cn.ts` | B-国际化 | 1847 | — |
+| `src/layouts/ResponsiveLayout.vue` | A-布局 | 1255 | `@tauri-apps/plugin-opener` `@vueuse/core` `lucide-vue-next` `vue` `vue-router` |
 | `src/router/main.ts` | 其他 | 51 | `vue` `vue-router` |
 | `src/router/mainRoutes.ts` | 其他 | 141 | `vue` `vue-router` |
 | `src/router/settings.ts` | 其他 | 36 | `vue` `vue-router` |
-| `src/stores/useAppStore.ts` | C-状态层 | 1154 | `@tauri-apps/plugin-notification` `@vueuse/core` `pinia` `vue` |
-| `src/stores/useChatStore.ts` | C-状态层 | 3523 | `@tauri-apps/plugin-notification` `pinia` `vue` |
-| `src/stores/useImagePreview.ts` | C-状态层 | 130 | `pinia` `vue` |
-| `src/types.ts` | D-数据表 | 942 | — |
+| `src/stores/chat/contacts.ts` | C-状态层 | 266 | `vue` |
+| `src/stores/chat/conversations.ts` | C-状态层 | 922 | `vue` |
+| `src/stores/chat/groups.ts` | C-状态层 | 207 | `vue` |
+| `src/stores/chat/media.ts` | C-状态层 | 243 | `vue` |
+| `src/stores/chat/messaging.ts` | C-状态层 | 883 | — |
+| `src/stores/chat/notifications.ts` | C-状态层 | 566 | `@tauri-apps/plugin-notification` `vue` |
+| `src/stores/chat/runtime.ts` | C-状态层 | 124 | `vue` |
+| `src/stores/chat/taskCenter.ts` | C-状态层 | 156 | — |
+| `src/stores/chat/todos.ts` | C-状态层 | 398 | `vue` |
+| `src/stores/useAppStore.ts` | C-状态层 | 1238 | `@tauri-apps/plugin-notification` `@vueuse/core` `pinia` `vue` |
+| `src/stores/useChatStore.ts` | C-状态层 | 930 | `@tauri-apps/plugin-notification` `pinia` `vue` |
+| `src/stores/useImagePreview.ts` | C-状态层 | 85 | `pinia` `vue` |
+| `src/types.ts` | D-数据表 | 1037 | — |
+| `src/updater/androidAdapter.ts` | 其他 | 22 | — |
+| `src/updater/androidInstance.ts` | 其他 | 13 | — |
+| `src/updater/androidService.ts` | 其他 | 596 | `vue` |
 | `src/updater/instance.ts` | 其他 | 6 | — |
 | `src/updater/schedule.ts` | 其他 | 18 | — |
 | `src/updater/service.ts` | 其他 | 337 | `vue` |
 | `src/updater/tauriAdapter.ts` | 其他 | 12 | — |
 | `src/utils/a11yLabels.ts` | B-utils | 130 | — |
+| `src/utils/addFriendProbe.ts` | B-utils | 30 | — |
+| `src/utils/ambient.ts` | B-utils | 139 | — |
 | `src/utils/announcementDismiss.ts` | B-utils | 73 | — |
 | `src/utils/appActions.ts` | B-utils | 51 | `mitt` |
 | `src/utils/appearance.ts` | B-utils | 57 | — |
+| `src/utils/auxWindowFailure.ts` | B-utils | 62 | — |
 | `src/utils/avatarImage.ts` | B-utils | 78 | — |
 | `src/utils/avatarSeed.ts` | B-utils | 182 | — |
 | `src/utils/backStack.ts` | B-utils | 123 | — |
+| `src/utils/backToLatest.ts` | B-utils | 33 | — |
 | `src/utils/bleAvailability.ts` | B-utils | 21 | — |
 | `src/utils/blobLru.ts` | B-utils | 156 | — |
 | `src/utils/bounded.ts` | B-utils | 82 | — |
 | `src/utils/cancelFeedback.ts` | B-utils | 132 | — |
 | `src/utils/cancelSend.ts` | B-utils | 51 | — |
 | `src/utils/cardText.ts` | B-utils | 61 | — |
-| `src/utils/chatSearch.ts` | B-utils | 113 | `dayjs` |
+| `src/utils/chatSearch.ts` | B-utils | 152 | `dayjs` |
 | `src/utils/chatSearchQuery.ts` | B-utils | 50 | `@tanstack/vue-query` |
 | `src/utils/chatStyle.ts` | B-utils | 252 | — |
 | `src/utils/clipboard.ts` | E-平台适配 | 52 | — |
-| `src/utils/codeDetect.ts` | B-utils | 76 | — |
-| `src/utils/codeHighlight.ts` | B-utils | 98 | — |
-| `src/utils/codeHighlightCore.ts` | B-utils | 78 | `highlight.js` |
+| `src/utils/codeDetect.ts` | B-utils | 48 | — |
+| `src/utils/codeHighlight.ts` | B-utils | 127 | — |
+| `src/utils/codeHighlightCore.ts` | B-utils | 117 | `highlight.js` |
+| `src/utils/codeLanguages.ts` | B-utils | 89 | — |
 | `src/utils/color.ts` | B-utils | 128 | — |
-| `src/utils/composerDrafts.ts` | B-utils | 36 | — |
+| `src/utils/composerAttachments.ts` | B-utils | 39 | — |
+| `src/utils/composerDrafts.ts` | B-utils | 180 | — |
+| `src/utils/composerLayout.ts` | B-utils | 41 | — |
 | `src/utils/concurrencyGate.ts` | B-utils | 31 | — |
 | `src/utils/configBool.ts` | B-utils | 19 | — |
 | `src/utils/contextMenu.ts` | B-utils | 44 | — |
 | `src/utils/crashLoop.ts` | B-utils | 41 | — |
 | `src/utils/crashReport.ts` | B-utils | 61 | — |
 | `src/utils/defer.ts` | B-utils | 71 | — |
-| `src/utils/designGuards.ts` | B-utils | 2429 | — |
+| `src/utils/designGuards.ts` | B-utils | 2866 | — |
 | `src/utils/dropPoint.ts` | B-utils | 20 | — |
 | `src/utils/emoji.ts` | B-utils | 68 | — |
 | `src/utils/emojiUsage.ts` | B-utils | 139 | — |
 | `src/utils/emptyList.ts` | B-utils | 26 | — |
-| `src/utils/errors.ts` | B-utils | 141 | — |
+| `src/utils/errors.ts` | B-utils | 340 | — |
 | `src/utils/escapeRe.ts` | B-utils | 13 | — |
-| `src/utils/externalLinks.ts` | E-平台适配 | 66 | `zod` |
+| `src/utils/externalLinks.ts` | E-平台适配 | 178 | `zod` |
 | `src/utils/favoritePreview.ts` | B-utils | 81 | — |
-| `src/utils/fileFailReason.ts` | B-utils | 139 | — |
+| `src/utils/fileFailReason.ts` | B-utils | 148 | — |
 | `src/utils/fileKind.ts` | B-utils | 170 | `lucide-vue-next` `vue` |
 | `src/utils/fileMeta.ts` | B-utils | 56 | — |
 | `src/utils/filePreview.ts` | B-utils | 293 | — |
@@ -276,6 +301,7 @@
 | `src/utils/imageMime.ts` | B-utils | 44 | — |
 | `src/utils/imageThumb.ts` | B-utils | 128 | — |
 | `src/utils/imageThumbnail.ts` | B-utils | 85 | — |
+| `src/utils/imageZoom.ts` | B-utils | 89 | — |
 | `src/utils/ime.ts` | E-平台适配 | 60 | — |
 | `src/utils/initScope.ts` | B-utils | 43 | — |
 | `src/utils/ipcTracker.ts` | B-utils | 80 | — |
@@ -285,37 +311,40 @@
 | `src/utils/localFile.ts` | E-平台适配 | 70 | `@tauri-apps/plugin-dialog` |
 | `src/utils/logFilter.ts` | B-utils | 129 | — |
 | `src/utils/longPress.ts` | B-utils | 87 | — |
-| `src/utils/markdown.ts` | B-utils | 55 | `dompurify` `marked` |
+| `src/utils/markdown.ts` | B-utils | 74 | `dompurify` `marked` |
 | `src/utils/mediaAvailability.ts` | B-utils | 55 | — |
 | `src/utils/memberName.ts` | B-utils | 81 | — |
 | `src/utils/memberNameCache.ts` | B-utils | 109 | — |
-| `src/utils/mergeCard.ts` | B-utils | 173 | — |
+| `src/utils/mergeCard.ts` | B-utils | 174 | — |
 | `src/utils/messageEnter.ts` | B-utils | 42 | — |
 | `src/utils/messageHeight.ts` | B-utils | 272 | — |
-| `src/utils/messageKinds.ts` | B-utils | 313 | — |
-| `src/utils/messages.ts` | B-utils | 816 | — |
+| `src/utils/messageKinds.ts` | B-utils | 306 | — |
+| `src/utils/messages.ts` | B-utils | 903 | — |
 | `src/utils/motion/index.ts` | B-utils | 20 | `motion-v` |
+| `src/utils/msgConvIndex.ts` | B-utils | 40 | — |
 | `src/utils/nameGroup.ts` | B-utils | 90 | — |
 | `src/utils/newlines.ts` | B-utils | 12 | — |
 | `src/utils/notifications.ts` | E-平台适配 | 67 | — |
+| `src/utils/notifyTitle.ts` | B-utils | 18 | — |
 | `src/utils/notifyUrgency.ts` | E-平台适配 | 37 | — |
 | `src/utils/nowTick.ts` | B-utils | 37 | `vue` |
 | `src/utils/nudge.ts` | B-utils | 7 | — |
+| `src/utils/optimistic.ts` | B-utils | 161 | — |
 | `src/utils/panelQuery.ts` | B-utils | 41 | `@tanstack/vue-query` |
 | `src/utils/payloadParseCache.ts` | B-utils | 42 | — |
-| `src/utils/peerConnectionInfo.ts` | B-utils | 123 | — |
-| `src/utils/peerMerge.ts` | B-utils | 43 | — |
+| `src/utils/peerConnectionInfo.ts` | B-utils | 146 | — |
+| `src/utils/peerMerge.ts` | B-utils | 102 | — |
 | `src/utils/pins.ts` | B-utils | 64 | — |
-| `src/utils/platform.ts` | E-平台适配 | 150 | — |
+| `src/utils/platform.ts` | E-平台适配 | 152 | — |
 | `src/utils/popupRegistry.ts` | B-utils | 47 | — |
 | `src/utils/pressGesture.ts` | B-utils | 33 | — |
-| `src/utils/previewGalleryState.ts` | B-utils | 79 | — |
 | `src/utils/previewMetrics.ts` | B-utils | 205 | — |
-| `src/utils/quote.ts` | B-utils | 61 | — |
+| `src/utils/quote.ts` | B-utils | 100 | — |
 | `src/utils/quoteStyle.ts` | B-utils | 14 | — |
-| `src/utils/reactions.ts` | B-utils | 170 | — |
+| `src/utils/reactions.ts` | B-utils | 175 | — |
 | `src/utils/recall.ts` | B-utils | 76 | — |
-| `src/utils/reminders.ts` | B-utils | 224 | — |
+| `src/utils/reducedTransparency.ts` | B-utils | 74 | — |
+| `src/utils/reminders.ts` | B-utils | 239 | — |
 | `src/utils/resendChannel.ts` | B-utils | 64 | — |
 | `src/utils/safeStorage.ts` | B-utils | 99 | — |
 | `src/utils/saveDestination.ts` | B-utils | 39 | — |
@@ -325,32 +354,34 @@
 | `src/utils/scrollRestore.ts` | B-utils | 86 | — |
 | `src/utils/selfChat.ts` | B-utils | 48 | — |
 | `src/utils/sendWaiting.ts` | B-utils | 31 | — |
-| `src/utils/settingsManifest.ts` | B-utils | 137 | — |
+| `src/utils/settingsManifest.ts` | B-utils | 218 | — |
 | `src/utils/shareTreeQuery.ts` | B-utils | 28 | — |
 | `src/utils/shortcuts.ts` | B-utils | 40 | — |
 | `src/utils/singleFlight.ts` | B-utils | 42 | — |
 | `src/utils/staleGuard.ts` | B-utils | 43 | — |
-| `src/utils/taskCenter.ts` | B-utils | 452 | — |
+| `src/utils/stallWatch.ts` | B-utils | 123 | — |
+| `src/utils/taskCenter.ts` | B-utils | 497 | — |
 | `src/utils/templateBranches.ts` | B-utils | 169 | — |
 | `src/utils/textSelection.ts` | B-utils | 50 | — |
-| `src/utils/time.ts` | B-utils | 89 | `dayjs` |
-| `src/utils/toastManager.ts` | B-utils | 27 | `reka-ui` |
+| `src/utils/time.ts` | B-utils | 104 | `dayjs` |
+| `src/utils/toastManager.ts` | B-utils | 40 | `reka-ui` |
 | `src/utils/todoCustomIcons.ts` | B-utils | 53 | `lucide-vue-next` `vue` |
-| `src/utils/todos.ts` | B-utils | 1120 | — |
+| `src/utils/todos.ts` | B-utils | 1190 | — |
 | `src/utils/tokenContrast.ts` | B-utils | 527 | — |
 | `src/utils/transferProgressWatch.ts` | B-utils | 78 | — |
 | `src/utils/transferState.ts` | B-utils | 111 | — |
 | `src/utils/transferSummary.ts` | B-utils | 19 | — |
 | `src/utils/tsSource.ts` | B-utils | 44 | — |
 | `src/utils/uiStall.ts` | B-utils | 49 | — |
-| `src/utils/validation.ts` | B-utils | 196 | `zod` |
+| `src/utils/validation.ts` | B-utils | 204 | `zod` |
+| `src/utils/versionGuard.ts` | B-utils | 34 | — |
 | `src/utils/windowLaunch.ts` | E-平台适配 | 29 | — |
 | `src/vite-env.d.ts` | 其他 | 7 | `vue` |
-| `src/workers/highlight.worker.ts` | 其他 | 14 | — |
+| `src/workers/highlight.worker.ts` | 其他 | 21 | — |
 
 ### 1.4 测试码（分列，不计进业务成果）
 
-共 139 份 / 29,812 行；由 `npm test` 的清单自己打印条数。
+共 160 份 / 33,904 行；由 `npm test` 的清单自己打印条数。
 <!-- END:generated -->
 
 ## 2. 能力域 × 替换结论
@@ -380,7 +411,7 @@
 | 文本长度上限（跨语言同一件事） | 前端 `utils/validation.ts`(群名 40 / 昵称 40 / 公告 500 / 搜索词 100 / 列表过滤 50) + `utils/todos.ts`(自定义类型 20 / 标题 200 / 描述 4000) + `utils/externalLinks.ts`(链接名 32) + `utils/logFilter.ts`(日志过滤 200)；后端主人：`commands.rs`、`commands/group_announcements.rs`、`commands/group_files.rs`、`commands/external_links.rs`、`protocol.rs` | 不用库（VueUse 的 `useMaxLength` 给不了跨语言对账） | **组合替换（已完成，P1 #8）** | 整改前生产模板里有 **10 处 `maxlength="数字"`**（同一概念三个不同值：搜索/过滤关键词 100、100、100、50、50、200、200），数值全对但没有任何机器判据 ⇒ 后端那几处多是**私有 const**，且超长走的是 `chars().take()` **静默截断**（`chat_search.rs:59`、`group_membership.rs:10`），任一侧改动都不会红。现在每一格绑具名常量，`utils/textLimits.test.ts` 现读两边数值 + 扫全模板禁止裸数字（白名单为空）。⚠️ 口径差异是已知且方向安全的：`maxlength` 数 UTF-16 单元、后端数码点 ⇒ 含 emoji 时前端更严，不会出现"前端放过、后端偷偷截"。⚠️ 这句在 §6.41 后**只对了后端那一半**：前端更严是真的，但"更严"本身原来对用户静默 —— 现在 9 格存值字段都由 `components/ui/CharCounter.vue` 把长度说出来（数字数码点 = schema = 后端，告警色按两把尺里**先到**的那一把亮 ⇒ 不会出现"20/40 却打不进字"）|
 | 国际化 | `i18n/index.ts` + `i18n/locales/*`（zh / en，key 一一对应有现成护栏） 仍绕开 vue-i18n 的用户可见中文只剩会话预览那一族标签：`utils/messages.ts`(12 档 `[文件]/[图片]/…`) + `utils/mergeCard.ts`(2 档 `[聊天记录]`) ⇒ 存储 / 协议面，判**暂缓**（§6.42）| `vue-i18n@11` | **组合替换（P1 #2：时间 ✅、预览原因 ✅、通知与日志标题 ✅、表单校验 ✅、错误文案 ✅；剩会话预览标签一族 = 暂缓）** | 已接上的键：`date.yesterday` `date.md` `date.ymd`、`media.tooLarge`、`notify.one` `notify.count` `notify.senderCount`、`logs.merge` `logs.mergeDup` `logs.mergedCount`、`errors.*`（9 条，中英各一份）。现算口径（剥注释后扫「`return "…"` 里含中文」）：生产 `src/utils/**` 只剩 `messages.ts`(12) + `mergeCard.ts`(2)；`errors.ts` 与 `validation.ts` 已归零（本批 + §6.36）。⚠️ `errors.ts` 与 `filePreview.ts`/`mediaAvailability.ts` 里剩下的那批中文**不是文案，而是「匹配后端中文错误串」的分类判据** ⇒ 要说全英文得先让后端给结构化错误码，那属协议面（记为暂缓，不在本专项动）。⚠️ 约束：`utils/*` 被 `node --test` 直接 import，裸 Node 解析不了 `@/` ⇒ 只能由调用侧注入文案（先例：`fileKind.extBadgeLabel`、`time.fmtTimeDivider`；错误那一族的落点见 `composables/useErrorText.ts`）。数据表（`data/emojis.ts`）、判据文案（`designGuards.ts`）与协议占位符（`messages.ts` 的方括号那批）不算这条账 |
 | 事件总线 | `utils/appActions.ts`(51) | `mitt@3.0.1` | **直接替换（已完成）** | 只有一个家；`appActions.test.ts` 钉"卸载必须调掉全部解绑"。跨窗口动作不再各写一遍 `window.addEventListener` |
-| 订阅↔卸载配对 | **`utils/initScope.ts` 一个家，10 份生产文件在用**（两个 store + `GroupFilesPanel` + §6.59 并进来的 `TitleBar`/`ChatWindow`/`GroupTasksBoard`/`GroupTodosWindow`/`PreviewWindow` + §6.60 的 `ConversationList`/`ResponsiveLayout`） | 不用库（Vue 只提供 `onScopeDispose`，管不到 `listen()` 要等一次 IPC 往返这件事） | **组合替换（§6.59 + §6.60 完成）** | 关键语义是「**迟到的注册**」：卸载函数在 `onBeforeUnmount` 之后才到手时，就地执行它而不是攒进一个已拆掉的列表。§6.59 之前这一族有 4 个家（3 份手写守卫 + 2 处**根本没有守卫**），并回一处后手工句柄与手写守卫在生产码里都是 0（判据 ㊷）；⚠️ 判据只认两个信号（名字前缀 `dispose\|unlisten\|cancel\|teardown\|cleanup` ∪ 类型 `UnlistenFn`），**滚动释放句柄**（`useBackLayer` 的 `release`、`useChatStore` 切群的 `groupTodosUnlisten`，竞态由 `StaleGuard` 裁决）是另一个家，写成反控不许误伤 |
+| 订阅↔卸载配对 | **`utils/initScope.ts` 一个家，9 份生产文件在用**（两个 store + `GroupFilesPanel` + §6.59 并进来的 `TitleBar`/`ChatWindow`/`GroupTasksBoard`/`GroupTodosWindow` + §6.60 的 `ConversationList`/`ResponsiveLayout`；原 `PreviewWindow` 已于 2026-11-05 删除） | 不用库（Vue 只提供 `onScopeDispose`，管不到 `listen()` 要等一次 IPC 往返这件事） | **组合替换（§6.59 + §6.60 完成）** | 关键语义是「**迟到的注册**」：卸载函数在 `onBeforeUnmount` 之后才到手时，就地执行它而不是攒进一个已拆掉的列表。§6.59 之前这一族有 4 个家（3 份手写守卫 + 2 处**根本没有守卫**），并回一处后手工句柄与手写守卫在生产码里都是 0（判据 ㊷）；⚠️ 判据只认两个信号（名字前缀 `dispose\|unlisten\|cancel\|teardown\|cleanup` ∪ 类型 `UnlistenFn`），**滚动释放句柄**（`useBackLayer` 的 `release`、`useChatStore` 切群的 `groupTodosUnlisten`，竞态由 `StaleGuard` 裁决）是另一个家，写成反控不许误伤 |
 | 浮层全局互斥 | `utils/popupRegistry.ts`(47) + `composables/useExclusivePopup.ts`(32) | 不用库 | **保留自研** | Reka `DismissableLayer` 管的是**栈内**外点/Esc，不提供"不同浮层之间同一时刻只开一个"（`contextmenu` 不触发 click，历史缺陷就是两个菜单并存）。纯状态机、可 Node 直测 |
 | 请求缓存 / 去重 / 失效 | `utils/panelQuery.ts`(40) + `utils/groupFilesQuery.ts`(25) + `utils/shareTreeQuery.ts`(28)，消费者 `GroupFilesPanel`、`ShareDirectory`、`ChatSearchDialog` | `@tanstack/vue-query` | **组合替换（已完成）** | 只读面板交给库；消息状态机**刻意不进 Query**（可靠投递/离线队列是业务状态，不是服务端缓存 —— 目标 C 档那条边界） |
 | 预览字节缓存 + inflight 去重 | 字节那份：`utils/blobLru.ts`(一个家)。在途去重那份：**已收到** `utils/singleFlight.ts`(一个家)，现 **5 处**在飞取数口各调 `run()`（`filePreview` 3 + `favoritePreview` 1 + `useChatStore.ensureGroupTodoRows` 1）—— 原来自抄 **五份**（预览那 4 份里，`loadThumbPreview` 一度被本行漏数，它是唯一用 `p.finally(...)` 那种**会在同键重新登记后误删别人记录**的写法；第 5 份是群任务补读） | 不用库 | **组合替换（已完成，P1 #3 / #3b）** | Query 不管「按字节封顶的 blob + objectURL 生命周期」⇒ 缓存那层保留自研；去重那 6 行是纯通用逻辑 ⇒ 共用一个 helper。⚠️ 唯一留下的同形状手写在 `useChatStore.loadingMore`（`new Map<string, Promise<void>>`）：它有两处被注释保护的偏离 —— 容量闸门 `pages >= MAX_PAGES` 夹在"并入在飞"与"登记"之间、摘除用 `page.finally(...)` **挂在链上**（让 `page` 始终带处理器，reject 不变成 unhandled rejection，同时所有 await 方各拿同一次结果），这两条都没有判据兜着 ⇒ **保留自研**，判定与实测见 §6.38 **§6.62 又并一层：单条预览上限 `15 MiB` 曾在前端抄三份、Rust 另有三处 `.min(15*1024*1024)`；前端收成 `filePreview.ts` 的 `IMAGE_PREVIEW_MAX_BYTES` 一个家，跨语言同值由 `imageBytes.test.ts` 现读两侧源码对账（那句「与后端同一口径」从此有机凭据）。**
@@ -473,7 +504,7 @@
 | 27 | ~~P1~~ **已完成（见 §6.56）** | 搜索的日期筛选 `dateRangeFor` 把"一天"当 `86_400_000` 毫秒：拆年/月/日求零点后用固定毫秒减法求「昨天 / 近 7 天 / 近 30 天」⇒ 夏令时时区在切换日的**次日**边界差一小时；改走已装的 `dayjs`（`startOf("day").subtract(N,"day")`）。同族再扫 `setHours(` / `getDay()` / `Math.floor(…86` / `toDateString()` ⇒ **零命中**；`todos.ts` 的"满 N 天"与 `logFilter.ts` 的环形秒差语义不是日历日 ⇒ **不改**并写明理由 | 本机（中国无夏令时）永远复现不了 ⇒ 从写下那天起就一直错着。更硬的一条：**同一个「昨天」本仓有两种算法**（`utils/time.ts` 用日历法、这里用固定毫秒），列表标「昨天」的消息在搜索选「昨天」可能筛不到 —— 目标 C 档的"同一份数据两种口径"，只不过口径是**算法**不是状态源 | **先红后绿**：新用例改实现之前跑就红（打印 `差 3600000 ms`），改后 `chatSearch.test.ts` 5/5；四条边界各自能红（`/tmp/dst-discriminate.mjs` 现算：回拨日次日三条各 +3 600 000、拨前日次日那条 −3 600 000；"今天"那条抓不到 ⇒ 明确标成对照）；测试自带时区正控（`getTimezoneOffset()` 必须 300）并把 `process.env.TZ` 在 `finally` 还原；老用例的期望值从"零点减 N 天毫秒"改写成"本地日历日"。`npm test` **1086 → 1087/1087**、快速层 **17/17、26.5s exit 0**、探针 `search` 段 **18/18**。**Rust 侧同族也数完**（现算 `grep -rn "86_400\|86400" src-tauri/src` = 12 命中，逐格读语义）：`export.rs` 的 `format_local_time` 是唯一对夏令时敏感的一处，而它**头注释早已写明**（偏移由前端 `getTimezoneOffset()` 给一个值 ⇒ 跨切换日的历史消息可能差 1 小时，导出功能接受但不假装精确）；`logging.rs` 两处明写 UTC；`relay.rs` 那处是**协议日 key**（动它=改线上语义）；`cache_cleaner.rs`/`offline_queue.rs` 是保留时长。⇒ 无待修项，且这一族在两端都数完了 |
 | 29 | ~~P3~~ **已完成（见 §6.57，无码改动）** | 「只为绕过问题而存在的兼容层 + 类型逃生口」这一族机器数完：`@ts-ignore`/`@ts-expect-error`/`eslint-disable` 全 **0**；`as any` 2（VirtualList 键兜底）、`as unknown as` 2（peerMerge 通用合并形状）、非空断言 6（5 处由上一行 early-return 把住、2 处在 `try` 里 ⇒ **没有一处能抛到界面外**）、`legacy` 系 9 行（VueUse 官方开关 / vue-i18n composition mode / `LEGACY_DARK_STORAGE_KEY` 的"读一次+立刻删键"迁移形状）、环境嗅探 7（`node --test` 直连 utils 的结构性必要）、`TODO`/`FIXME`/`HACK`/`@deprecated` 全 **0** | 目标 P3 那句除死代码外还点名"兼容层"，而这一格的存量此前只有印象没有数；**判"兼容层是不是债"看形状不是年龄** —— 读一次就删键的是迁移，每次读都走 legacy 分支的才是债 | 复跑 `node /tmp/escape-scan.mjs` + `node /tmp/shim-scan.mjs` ⇒ 上面每个数。**故意不加棘轮**（理由与 §6.55 那条为什么该写形成对照，写在 §6.57）：新加一处 `foo!.bar` 而 `foo` 真为 null 会当场抛 `TypeError`、面板白掉 ⇒ 响亮失败，棘轮只拦得住自己会喊的东西、却长期拦住合法写法。应用码一字未动 |
 | 30 | ~~P1/A 档~~ **已复核 → 判定"不该迁"（见 §6.58，无码改动）** | A 档「浮层 / 提示」的剩余存量数完：Reka `Popover*`/`HoverCard*` **8 处 / 4 本**（已迁的那批）；Reka `Tooltip*` **0**；原生 `title=` 273 行 / 62 本（元素级 **195** 处）；手搓悬停浮层 **1**（`MessageReactionBar` 触摸 reveal，§6.51–6.53 已判）；手搓 `z-index: 9xxx` **0** | 195 处原生 title **不迁** Reka Tooltip，三条实测/口径理由：① 原生 title 是**平台**轮子不是自研轮子（摆位/延迟/聚焦显示浏览器已做好且不占本仓 JS）；② 换过去每处要包 Trigger/Content + Provider，显示时长反而变成本仓要定的事，而触摸端原生 title 本就不显示、Reka 也不会自动在手机上变好；③ 可访问名已由 `aria-label`/内容承担（现算缺口 **0**）| ⚠️ **本批最大收获是量具**：第一版按行匹配报「171 处缺可访问名」，改成按**起始标签整块属性**解析（`/<(div\|span\|button\|a\|li\|td\|th\|p)\b([^>]*?)>/gs`）后 = 1 处，而那 1 处是 `v-html`（解析期无文本、AT 读得到）⇒ 真缺口 **0**。**模板类判据一律按元素解析不按行**（这是"解析期看不见内容"的第三个已知形状，前两个：`git grep` 行式把跨行调用数成 0、`include!` 拆册让锚点不唯一）。复跑 `node /tmp/overlay-scan.mjs` + `node /tmp/title-a11y2.mjs`。**§6.55–§6.58 四批的收尾全量探针 434/434、exit 0（40 段，跑的是 §6.58 之后的树）** |
-| 31 | ~~P0/P1~~ **已完成（见 §6.59）** | E 档「Tauri 事件订阅 ↔ 卸载」第一次数：生产码 **8 处订阅 / 5 本组件**，这一族当时有 **4 个家**（`ChatWindow`、`GroupTodosWindow`、`PreviewWindow` 各写一份「迟到就当场取消」的守卫，`TitleBar` 两处**根本没写**）⇒ 全部并回已有的 `utils/initScope`（它头注释早就写着这条竞态与解法）；`GroupTasksBoard` 随草稿开关起伏，改成"每轮一个 scope"（异常分支清空，否则一次注册失败锁死后续所有轮次） | `listen()` 拿卸载函数要等一次 IPC 往返：卸载若发生在往返途中，赋值落在清理**之后** ⇒ 取消函数永远没人调用，监听留在窗口上继续跑一份绑着已丢弃 state 的闭包。后果可见的一格：`GroupTasksBoard` 留下的拖放 handler 会翻 `app.boardDropActive`，而 `ChatWindow.canDropInto()` 正是读它决定"拖进来的文件算任务还是算聊天附件" | `npm test` **1087 → 1088/1088**（+1 判据 ㊷）、快速层 **17/17、21.9s exit 0**、四道文档门 + change-budget 各 exit 0；新守卫一次单点变异红并点名文件（塞回一行手工 `let unlistenProbe` ⇒ `GroupTasksBoard.vue: 手工 unlisten 句柄`）；旧那条贴形状的 `titleBarIcons` 判据迁移后红 ⇒ **换成贴语义的两条**（注册进 scope + 卸载拆 scope），两条各用一次单点变异证能红、`diff -q` 复原后 7/7。组件码净 **−16 行**（−83/+67），手写守卫 3 份 → 0；收尾全量探针 **434/434、exit 0**（40 段，跑的是本批之后的树）。⚠️ **NOT RUN**：真鼠标拖放与"秒关辅助窗"两格没有运行时证据（都要人手赶一个瞬时窗口）；本批另记一条自伤：脚本替换时把整行新内容拼到"只含行首几列"的锚点上，将相邻一行的开头吞掉 ⇒ **改表格行要按整行替换并复看 `git diff`** |
+| 31 | ~~P0/P1~~ **已完成（见 §6.59）** | E 档「Tauri 事件订阅 ↔ 卸载」第一次数：生产码 **8 处订阅 / 5 本组件**，这一族当时有 **4 个家**（`ChatWindow`、`GroupTodosWindow`、`PreviewWindow` 各写一份「迟到就当场取消」的守卫，`TitleBar` 两处**根本没写**；`PreviewWindow` 已于 2026-11-05 删除，今天是 3 个家）⇒ 全部并回已有的 `utils/initScope`（它头注释早就写着这条竞态与解法）；`GroupTasksBoard` 随草稿开关起伏，改成"每轮一个 scope"（异常分支清空，否则一次注册失败锁死后续所有轮次） | `listen()` 拿卸载函数要等一次 IPC 往返：卸载若发生在往返途中，赋值落在清理**之后** ⇒ 取消函数永远没人调用，监听留在窗口上继续跑一份绑着已丢弃 state 的闭包。后果可见的一格：`GroupTasksBoard` 留下的拖放 handler 会翻 `app.boardDropActive`，而 `ChatWindow.canDropInto()` 正是读它决定"拖进来的文件算任务还是算聊天附件" | `npm test` **1087 → 1088/1088**（+1 判据 ㊷）、快速层 **17/17、21.9s exit 0**、四道文档门 + change-budget 各 exit 0；新守卫一次单点变异红并点名文件（塞回一行手工 `let unlistenProbe` ⇒ `GroupTasksBoard.vue: 手工 unlisten 句柄`）；旧那条贴形状的 `titleBarIcons` 判据迁移后红 ⇒ **换成贴语义的两条**（注册进 scope + 卸载拆 scope），两条各用一次单点变异证能红、`diff -q` 复原后 7/7。组件码净 **−16 行**（−83/+67），手写守卫 3 份 → 0；收尾全量探针 **434/434、exit 0**（40 段，跑的是本批之后的树）。⚠️ **NOT RUN**：真鼠标拖放与"秒关辅助窗"两格没有运行时证据（都要人手赶一个瞬时窗口）；本批另记一条自伤：脚本替换时把整行新内容拼到"只含行首几列"的锚点上，将相邻一行的开头吞掉 ⇒ **改表格行要按整行替换并复看 `git diff`** |
 | 32 | ~~P1~~ **已完成（见 §6.60）** | 判据 ㊷ 自己的两处漏：句柄 matcher 按变量名前缀 + 单函数类型认，于是漏掉 `ConversationList` 的 `let disposeFocusSearch`（名字不对）与 `ResponsiveLayout` 的 `let unlistenMenu: UnlistenFn[]`（类型是数组）。两份手抄守卫并回 `initScope`（后者正是「迟到的注册」本人：`void bindMenuEvents().then(fns => unlistenMenu = fns)`）；同轮数完另两条轴：非 `.vue` 生产码 12 处 DOM 监听（**0 泄漏**，模块级 `installed` 闸门结构性不累积 ⇒ 不加判据）、丢弃订阅返回值的形状（生产码 0 处 ⇒ 不加判据） | 判据按名字认句柄＝只覆盖碰巧起对名字的那几处；而「按类型形状全收」当场误伤两处**滚动句柄**（`release`、`groupTodosUnlisten`），那两处的家是 `StaleGuard` 不是 `initScope` ⇒ 判据收到两个信号并把它们写成反控 | `npm test` **1088/1088**（㊷ 是加宽不是新增）、`designGuards` 单册 **155/155**、快速层 **17/17、21.9s exit 0**；**两次单点变异各点名自己的文件**（塞回 `let disposeFocusSearch` ⇒ ConversationList 红；塞回 `let unlistenMenu: UnlistenFn[]` ⇒ ResponsiveLayout 红），各自 `diff -q` 复原；反向下限 6 → 8（实测 10 份消费者）；组件码 **−4 行**；收尾全量探针 **434/434、exit 0**（40 段，跑的是本批之后的树）。⚠️ **NOT RUN**：macOS 菜单在「布局重挂后只执行一遍」没有运行时证据 —— 现网 `<ResponsiveLayout />` 没有 `v-if`（只有 HMR/分支切换能触发重挂），所以这条判**形状不合家 + 迟到竞态未接住**，不写用户可见现象 |
 | 33 | ~~P1~~ **已完成（见 §6.61）** | 定时器轴接着数：自研 `sleep` 2 份（`MergeCardModal` 私有 helper + `useAppStore` 内联 2000ms）⇒ 并进 `utils/defer.ts` 一个家；`setTimeout(fn, 0)` 当「等这一拍」用 2 处（`StorageSection` 回显时按住自动落库）⇒ 换 Vue 的 `nextTick`，第 3 处 `useChatStore.ts:684` 是**宏任务边界**的批量冲刷、语义不是同一件事 ⇒ 保留并写明 | 成熟库优先评估先做**在库里的实测**而不是印象：`@vueuse/core@14.4.0`/`@vueuse/shared` 的 `dist/index.d.ts` grep `sleep` 各 **0 命中** ⇒ 没有可换的东西，就不许为了「多用一个库」再包一层；而 `nextTick` 是平台已有能力、全仓 10 份文件已在用 ⇒ 「同一个词两种写法」这一型要靠现扫分母才看得见 | `npm test` **1088 → 1090/1090**（`defer.test.ts` 12 → 14：行为层「499ms 不许醒」+ 绑定层「手抄 sleep 只有 defer 一个家」带 2 条正控与反向钉 ≥2 份消费者）、快速层 **17/17、20.1s exit 0**；两次单点变异各红自己那一条（`sleep` 改成 `Promise.resolve()` ⇒ 行为层红并印出 499ms 那句；塞回 `sleepLocal` ⇒ 绑定层点名 `MergeCardModal`），`diff -q` 复原后 14/14。收尾全量探针 **434/434、exit 0**（40 段，跑的是本批之后的树）。⚠️ **NOT RUN**：「回显不再触发自动落库确认弹窗」在真设置页改保留天数那一发没有机器凭据（`nextTick` 比 `setTimeout(…,0)` 早一拍，这一拍差要真机看）|
 | 34 | ~~P1~~ **已完成（见 §6.62）** | 现算 `15 * 1024 * 1024` 的全部落点：前端 3 份（`filePreview.ts:74`、`favoritePreview.ts:26`、`MergeCardModal.vue:41`）+ Rust 3 处 `.min(...)`（`helpers.rs:246`、`favorites.rs:246/314`）；前端收成 `IMAGE_PREVIEW_MAX_BYTES` 一个家（两处消费方改 import），Rust 侧**本批不收常**（要动 `src-tauri/**`：cargo 门禁 + 档位 + 版本清单，且会新造一个跨命令模块的公共导出面 ⇒ 交后端那条线按自己节奏做，同值已由判据钉住）；顺带去掉全仓唯一的裸 `1048576`（`StorageSection.vue:62/109` 改 `(1024 * 1024)`，不新增导出） | §6.39 那条「手抄数字 + TS↔Rust 对账」当时只办了文本长度一维；预览上限是同一族的另一维，坏起来是安静的（前端要 20MiB、后端悄悄截到 15MiB ⇒ 用户只见「这张图点开少一截」，没有异常）| `imageBytes.test.ts` 8 → **9 条**（两侧都从**源码文本**现读现算 —— 不能 import：`filePreview.ts` 要 `@/api`，`node --test` 解析不了 `@/` 别名 ⇒ 判据只能当文本量具）；**三发单点变异各红各的那一条**（Rust 改 16MiB ⇒ 打印 `TS 15728640 vs Rust 16777216`；前端塞回一份手抄 ⇒ 点名 `favoritePreview.ts`；Rust 两处改写成 matcher 不认的 `15_728_640` ⇒ 分母红「只认出 1 处（实测 3）」），三处 `diff -q` 复原；`npm test` **1090 → 1091/1091**、快速层 **17/17、19.7s exit 0**、收尾全量探针 **434/434、exit 0**（40 段，跑的是本批之后的树）。⚠️ 第一次跑快速层在第 5 步 **db 锁作用域守卫** 以 `ENOENT stat logging.rs.tmp.<pid>` 失败（并行会话原子写的临时文件在同一次扫描中消失）—— 同命令复跑绿，根因是那条守卫缺 `ENOENT` 容错，属今晚 J2 线新加的工具，**本批不动它**、只记复现条件。⚠️ 收尾探针**第一次**尝试读到 `✗ 82/86`（4 条红全在 `files` 段、`window.__gf.emit is not a function`），同一棵树 `--only=files` 复跑 **10/10 exit 0** —— 那时 `check-ui-runtime.mjs` 与 `GroupFilesPanel.vue` 都是并行会话的未提交 `M`，而探针是**边跑边 `import('/src/…')`**（`check-ui-runtime.mjs:974/994`），并行写入会让后面几段读到另一份实现 ⇒ 与上面那次 `ENOENT` 同根因；纪律补一条：**跑探针期间自己也不改 `src/**`**。⚠️ **NOT RUN**：真实点开一张 15–20 MiB 的图（要两侧同改才看得见钳制行为）|
@@ -516,7 +547,7 @@
 ## 5. 未验证 / 风险
 
 - **真机**：Windows WebView2、Android、iOS 全部 NOT RUN（需要用户设备与授权）；Linux 运行时 NOT RUN。
-- **预览窗口**（`components/window/PreviewWindow.vue`）的真实 WKWebView 点击仍 NOT RUN。
+- **图片灯箱覆盖层**的真实 WKWebView 点击仍 NOT RUN（原独立预览窗口已于 2026-11-05 删除）。
 - **跨进程 E2E**：并行会话在用同一 `src-tauri/target`，本轮不起。
 - **最长门禁**「护栏非空转」整链按本地策略不在本地起（归发版前 / 远端 CI）。
 - **英文文案**（这条已由 §6.42 收口，旧表述是"第 1、2 项落地前存在成片中文残留"）：现在唯一还绕开词典的
