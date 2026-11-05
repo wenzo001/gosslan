@@ -733,7 +733,7 @@ async function confirmDelete() {
               :maxlength="MAX_LIST_FILTER_KEYWORD_CHARS"
               autocomplete="off"
               :placeholder="t('favorite.searchPlaceholder')"
-              class="h-9 w-full rounded-[var(--gosslan-radius-md)] border border-[var(--gosslan-border)] bg-[var(--gosslan-field)] px-3 py-1.5 text-body outline-none placeholder:text-[var(--gosslan-text-2)] focus:border-transparent"
+              class="h-10 w-full rounded-[var(--gosslan-radius-md)] border border-[var(--gosslan-border)] bg-[var(--gosslan-field)] px-3 py-1.5 text-body outline-none placeholder:text-[var(--gosslan-text-2)] focus:border-transparent"
             />
             <!-- 类型筛选：独立胶囊 chips，与「群任务过滤 / 日志时间窗口」同款
                  （此前激活态写了不存在的 `bg-primary` 类导致选中没底色，用户 2026-09-20；

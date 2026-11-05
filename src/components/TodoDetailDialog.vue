@@ -300,7 +300,7 @@ const fullCode = computed(() =>
             ref="customInput"
             v-model="customDraft"
             :maxlength="TODO_CUSTOM_CATEGORY_MAX_LEN"
-            class="h-8 min-w-0 flex-1 rounded-[var(--gosslan-radius-md)] border border-transparent bg-[var(--gosslan-field)] px-2.5 py-1 text-body outline-none transition focus:border-transparent"
+            class="h-9 min-w-0 flex-1 rounded-[var(--gosslan-radius-md)] border border-transparent bg-[var(--gosslan-field)] px-2.5 py-1 text-body outline-none transition focus:border-transparent"
             :placeholder="t('todo.categoryCustomPlaceholder')"
             @keydown.enter="ime.enter(applyCustomCategory, $event)"
             @compositionstart="ime.onStart"

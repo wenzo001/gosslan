@@ -86,7 +86,7 @@ async function create() {
       </div>
       <input
         v-model="name"
-        class="h-9 w-full rounded-[var(--gosslan-radius-md)] border border-transparent bg-[var(--gosslan-field)] px-3 py-1.5 text-sm outline-none transition focus:border-transparent"
+        class="h-10 w-full rounded-[var(--gosslan-radius-md)] border border-transparent bg-[var(--gosslan-field)] px-3 py-1.5 text-sm outline-none transition focus:border-transparent"
         :placeholder="t('group.namePlaceholder')"
         :maxlength="MAX_GROUP_NAME_CHARS"
         enterkeyhint="done"
