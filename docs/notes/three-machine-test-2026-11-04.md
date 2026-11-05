@@ -1,39 +1,41 @@
-# 三机实测清单 — 5.17.52 正式包（2026-11-04）
+# 三机实测清单 — 5.18.30 正式包（2026-11-05）
 
-包：正式 release <https://github.com/wenzo001/gosslan/releases/tag/v5.17.52>
-（已 publish、已建 tag，`latest.json` 已指向 5.17.52；所有已装用户会收到应用内更新）
+包：正式 release <https://github.com/wenzo001/gosslan/releases/tag/v5.18.30>
+（已 publish、已建 tag，`latest.json` 已指向 5.18.30；所有已装用户会收到应用内更新）
 
-**版本 ↔ 包对照**：`5.17.22`、`5.17.36` 旧包已撤（draft 已删）；`5.17.52` 为当前唯一正式包。
-用户此前在 Win11 装的是 `5.17.36`（`ProductVersion=5.17.36`，RSS 65 MB、CPU 2.94s），
-升级到 5.17.52 后按本清单复测。
+**版本 ↔ 包对照**：`5.17.22`、`5.17.36` 旧包已撤（draft 已删）；`5.17.52` 为上一版正式包，
+`5.18.30` 为当前正式包。用户此前在 Win11 装的是 `5.17.36`（`ProductVersion=5.17.36`，
+RSS 65 MB、CPU 2.94s），已在 5.17.52 完成原地升级五步；本轮按 5.18.30 复测。
 
-**用户当前进度**（2026-11-04）：Win11 原地升级五步已完成；以下项**尚未测**：
+**用户当前进度**（2026-11-05）：Win11 原地升级五步在 5.17.52 上已完成；以下项**尚未测**：
 Android BLE 外设（第 1 节）、公网中继（第 3 节）、桥接三机（第 4 节）、BLE 多跳（第 5 节）。
-用户要求先由我方完成剩余自测并发一版正式 release；`5.17.52` 已正式发布，他随后按本清单慢测。
+`5.18.30` 已正式发布，按本清单逐项慢测。
 
-- Windows x64：`Gosslan_5.17.52_x64-setup.exe`，6,050,068 B，
-  sha256 `4f69030208faf5283b9a42d37e37ffcb153d1dc56f09e9edc20c350ef7733f80`
-- Windows arm64：`Gosslan_5.17.52_arm64-setup.exe`，5,604,314 B，
-  sha256 `b70e907384575f5d8282b6aa8f9d27fa377650020fa23f1e72c2dd355a87de63`
-- macOS arm64：`Gosslan_5.17.52_aarch64.dmg`，9,197,486 B，
-  sha256 `89f8221ba6860967bbbae4c49d8eafa4acfd5ca126d090ceeb7bca772ce03b40`
-- macOS x64：`Gosslan_5.17.52_x64.dmg`，9,779,057 B，
-  sha256 `12e12b8c449ba08d2112082f9e4638181b58567e480f746de157990710af0503`
-- Android arm64-v8a：`gosslan-5.17.52-arm64-v8a-release.apk`，17,706,058 B，
-  sha256 `429c499ec28eac6e3b596774c7edb9df1da656d3e0b9b9789e7a778c495af7c5`
-- Android armeabi-v7a：`gosslan-5.17.52-armeabi-v7a-release.apk`，13,366,684 B，
-  sha256 `056829a2ba0a171e1eb330130b8d569449bb29e1f1975e66ebf60caeff191fcf`
+- Windows x64：`Gosslan_5.18.30_x64-setup.exe`，6,102,897 B，
+  sha256 `4748fe2505431c67e43f8f4ff8b22dd2d9a772032703c91e9cb0d4eef1901ac3`
+- Windows arm64：`Gosslan_5.18.30_arm64-setup.exe`，5,653,902 B，
+  sha256 `391aa5ea70bef795272e2f1ab07d6f59990c4128dc725cdf73c76f3450a11d41`
+- macOS arm64：`Gosslan_5.18.30_aarch64.dmg`，9,304,357 B，
+  sha256 `9ca2128e8c9bcade5069e5ff15862b16a4386c523830e0eb34925bb0a4905cf7`
+- macOS x64：`Gosslan_5.18.30_x64.dmg`，9,860,032 B，
+  sha256 `8384992971a3aa9b4e32418db9a2debfbb9059f9769aba7963948d4057c4ec3b`
+- Android arm64-v8a：`gosslan-5.18.30-arm64-v8a-release.apk`，17,979,930 B，
+  sha256 `49228a7bbf90a9df2e974e323c272ae3e4153c18c2214653bb64ca242c66eecf`
+- Android armeabi-v7a：`gosslan-5.18.30-armeabi-v7a-release.apk`，13,539,852 B，
+  sha256 `7637b5d758a402dd13ade27a9c826855c0c90039e0945bd42367ffe75f92bfa7`
 
-（另有 Windows 内置 WebView2 档 `Gosslan_5.17.52_x64-setup-webview2-bundled.exe` /
-`Gosslan_5.17.52_arm64-setup-webview2-bundled.exe`，给装不上 WebView2 运行时的机器。）
+（另有 Windows 内置 WebView2 档 `Gosslan_5.18.30_x64-setup-webview2-bundled.exe` /
+`Gosslan_5.18.30_arm64-setup-webview2-bundled.exe`，给装不上 WebView2 运行时的机器。）
 
-版本核对：Windows 由产物文件名 `5.17.52` + `tauri.conf.json` 的 `version`（三处均为 5.17.52）；
+版本核对：Windows 由产物文件名 `5.18.30` + `tauri.conf.json` 的 `version`（三处均为 5.18.30）；
 macOS 挂载 dmg 后读 `CFBundleShortVersionString`。以上字节数与 sha256 来自
-`gh release view v5.17.52 --json assets` 的现读值。
+`gh release view v5.18.30 --json assets` 的现读值。
 
-> 本包相对 5.17.36 的用户可感知变更：Android「我的 → 链接」改走系统浏览器（不再报「操作失败」）；
-> 蓝牙镜像退让只在存在健康链路时生效、退让名单 120s 过期；拨号全局预算（在途 ≤4、间隔 ≥500ms、
-> RSSI < -90 跳过）。BLE 两项只过了决策层单测，两设备真机效果仍按本清单复测。
+> 本包相对 5.17.52 的用户可感知变更：群任务看板（关联时间字段、日期控件、归档只对终态开放且收进
+> 行尾 ⋯ 菜单、状态胶囊可点击暗示、自动归档天数文案）；代码块语言自动识别并随发送落库；
+> 安卓应用内升级（检查 → 下载 → 校验 → 安装）；外部链接来源标记与 JSON 导入预览确认；
+> 外观（减少透明开关、背景动效、玻璃材质收敛）与输入框三档；待机时暂停卡顿计时。
+> BLE 两项只过了决策层单测，两设备真机效果仍按本清单复测。
 
 > 总时长：必做 ≈ 13 分钟；可选（BLE 多跳）≈ 4 分钟。每条"不对就发我"统一指：
 > 截图（标出位置）+ 两端日志最后 30 行里带 `code=` 的行。Windows 日志在
@@ -45,8 +47,8 @@ macOS 挂载 dmg 后读 `CFBundleShortVersionString`。以上字节数与 sha256
 
 1. 设置 → 关于，记下旧版本号。
 2. 托盘右键 → 退出（任务管理器里确认无 `gosslan.exe`）。
-3. 双击 `Gosslan_5.17.52_x64-setup.exe` → 下一步 → 安装（同目录原地升级，不应要求先卸载）。
-4. 打开应用 → 设置 → 关于，应显示 `5.17.52`。
+3. 双击 `Gosslan_5.18.30_x64-setup.exe` → 下一步 → 安装（同目录原地升级，不应要求先卸载）。
+4. 打开应用 → 设置 → 关于，应显示 `5.18.30`。
 5. 打开一个旧会话 + 好友列表，历史消息与好友都还在。
 
 PowerShell 三行（整段粘贴即可）：
@@ -57,7 +59,7 @@ Get-Process gosslan -ErrorAction SilentlyContinue | Select-Object Id,CPU,Working
 Get-Content "$env:APPDATA\com.gosslan.app\logs\gosslan.log" -Tail 20
 ```
 
-看什么：第 1 行输出 `5.17.52`；第 2 行只有 1 个进程；第 3 行末尾没有 `code=E_`。
+看什么：第 1 行输出 `5.18.30`；第 2 行只有 1 个进程；第 3 行末尾没有 `code=E_`。
 不对就发我：三行完整输出 + 关于页截图。
 
 ## 1. Android BLE 外设（必做，2 分钟）
@@ -114,7 +116,7 @@ Get-Content "$env:APPDATA\com.gosslan.app\logs\gosslan.log" -Tail 20
 ## 6. 跨网段凭设备 ID 找人（必做，2 分钟）
 
 前置：A、B 在不同网段、**还不是好友**；两端都已按第 3 节或第 4 节配好
-（同一公网中继并已建立电路，或填了同一个桥接机的「跨网段连接」地址）；两端都是 5.17.52。
+（同一公网中继并已建立电路，或填了同一个桥接机的「跨网段连接」地址）；两端都是 5.18.30。
 
 点击：B → 设置 → 关于 → 复制设备 ID 发给 A；A → 添加好友 → 粘贴到搜索框 → 等 2~3 秒。
 
