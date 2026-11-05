@@ -1,7 +1,7 @@
 {
   "version": 1,
   "created_at": "2026-10-04T12:17:40Z",
-  "updated_at": "2026-11-05T02:52:43Z",
+  "updated_at": "2026-11-05T02:57:35Z",
   "files": {
     ".gitattributes": {
       "role": "index",
@@ -125,9 +125,9 @@
     },
     "aoci.code.txt": {
       "role": "index",
-      "sha256": "985fe41e00cfe6d1e107f90c83372906fb0ecf9e2a7ab4bd4f7b1bc5be5483b8",
-      "size": 359126,
-      "normalized_sha256": "985fe41e00cfe6d1e107f90c83372906fb0ecf9e2a7ab4bd4f7b1bc5be5483b8"
+      "sha256": "10ad62e1eb34ce2385ce7296db879794a42354dda7d92d37eb2b7e91a9c064a9",
+      "size": 361537,
+      "normalized_sha256": "10ad62e1eb34ce2385ce7296db879794a42354dda7d92d37eb2b7e91a9c064a9"
     },
     "aoci.meta.txt": {
       "role": "index",
@@ -1697,9 +1697,9 @@
     },
     "scripts/check-ui-runtime.mjs": {
       "role": "index",
-      "sha256": "0ecc198d5459ff9383ac25b3b8f62bd14673aa70275b917d7ea1d0f45e0739f9",
-      "size": 274733,
-      "normalized_sha256": "0ecc198d5459ff9383ac25b3b8f62bd14673aa70275b917d7ea1d0f45e0739f9"
+      "sha256": "7a3cb1bd8f8b6cee1c3e4a4c192e573162ed72c624dd3b4062cc558a91ca3e52",
+      "size": 1180794,
+      "normalized_sha256": "7a3cb1bd8f8b6cee1c3e4a4c192e573162ed72c624dd3b4062cc558a91ca3e52"
     },
     "scripts/ci-run.sh": {
       "role": "index",
@@ -1713,17 +1713,29 @@
       "size": 8167,
       "normalized_sha256": "10968236a2b77ac1ca7bac7ac007b1d4ee76590f836a37d4f14993a39f7e4719"
     },
+    "scripts/compress-changelog.mjs": {
+      "role": "index",
+      "sha256": "95d1e83f6b3ffebcc2fb2618a058bd9197d63438fac72e08b4f8a5b0bbd2de97",
+      "size": 10726,
+      "normalized_sha256": "95d1e83f6b3ffebcc2fb2618a058bd9197d63438fac72e08b4f8a5b0bbd2de97"
+    },
     "scripts/coverage-inventory.py": {
       "role": "index",
       "sha256": "c3521c6232048f6ee365b6a136f282567bf179fe84c57190f3fed6a88a3911aa",
       "size": 2407,
       "normalized_sha256": "c3521c6232048f6ee365b6a136f282567bf179fe84c57190f3fed6a88a3911aa"
     },
+    "scripts/dev.ps1": {
+      "role": "index",
+      "sha256": "4fb0a2d2443a8c379663691c3e0e37b4e468725805fc4a98c23efee08897a01f",
+      "size": 4222,
+      "normalized_sha256": "4fb0a2d2443a8c379663691c3e0e37b4e468725805fc4a98c23efee08897a01f"
+    },
     "scripts/e2e-dev.sh": {
       "role": "index",
-      "sha256": "dd937887959b2d401ad12f44e0fe7328d9833f0378959593dd055222e973afee",
-      "size": 4339,
-      "normalized_sha256": "dd937887959b2d401ad12f44e0fe7328d9833f0378959593dd055222e973afee"
+      "sha256": "ff47b39372d50dfb1313e92a3339cd222dbde8701f47070c6cf4ddb28ebae49d",
+      "size": 5652,
+      "normalized_sha256": "ff47b39372d50dfb1313e92a3339cd222dbde8701f47070c6cf4ddb28ebae49d"
     },
     "scripts/e2e-logtail.mjs": {
       "role": "index",
@@ -1733,9 +1745,9 @@
     },
     "scripts/e2e-multi-instance.mjs": {
       "role": "index",
-      "sha256": "7eaa2c2b101b559f36ac51da44e5250ba23bb04eecd8aa688203de2011a243ff",
-      "size": 67672,
-      "normalized_sha256": "7eaa2c2b101b559f36ac51da44e5250ba23bb04eecd8aa688203de2011a243ff"
+      "sha256": "be16afbe612adef7e8d043d03fc251d534bca995cee7b6563c6f13270c9e698b",
+      "size": 69375,
+      "normalized_sha256": "be16afbe612adef7e8d043d03fc251d534bca995cee7b6563c6f13270c9e698b"
     },
     "scripts/e2e-shot.mjs": {
       "role": "index",
@@ -1745,9 +1757,9 @@
     },
     "scripts/e2e/core.mjs": {
       "role": "index",
-      "sha256": "f9c40483534370319fc7ef6e4d7edddacf29a67f1997f374f822fdcddf491cdb",
-      "size": 46838,
-      "normalized_sha256": "f9c40483534370319fc7ef6e4d7edddacf29a67f1997f374f822fdcddf491cdb"
+      "sha256": "e339e6f9485535f53d67d1a01ce1c9fff5e495eadf5f30e0e13836c57b59b2cb",
+      "size": 56972,
+      "normalized_sha256": "e339e6f9485535f53d67d1a01ce1c9fff5e495eadf5f30e0e13836c57b59b2cb"
     },
     "scripts/e2e/rounds/chain.mjs": {
       "role": "index",
@@ -1757,9 +1769,9 @@
     },
     "scripts/e2e/rounds/contentpull.mjs": {
       "role": "index",
-      "sha256": "e5be2250302e70b56c829c6528afea798c52c621b1ab780c11503d6b8d3e3465",
-      "size": 34918,
-      "normalized_sha256": "e5be2250302e70b56c829c6528afea798c52c621b1ab780c11503d6b8d3e3465"
+      "sha256": "8caeadc60e67cde7ec153a5a9a85d7f50c8e9f9f03236e51193493a433a8bfb6",
+      "size": 47601,
+      "normalized_sha256": "8caeadc60e67cde7ec153a5a9a85d7f50c8e9f9f03236e51193493a433a8bfb6"
     },
     "scripts/e2e/rounds/disk.mjs": {
       "role": "index",
@@ -1779,6 +1791,12 @@
       "size": 7907,
       "normalized_sha256": "1221a0dde096de071e6c0390293e57550f53d027d2776580e9287430a3fcc0a9"
     },
+    "scripts/e2e/rounds/friendreq.mjs": {
+      "role": "index",
+      "sha256": "3a9d213f3899ea7e43d8795a6d21f4610e68c97a51992658464b9103efdc5039",
+      "size": 11929,
+      "normalized_sha256": "3a9d213f3899ea7e43d8795a6d21f4610e68c97a51992658464b9103efdc5039"
+    },
     "scripts/e2e/rounds/gcrash.mjs": {
       "role": "index",
       "sha256": "efdf89e329b7fc30ce8e93288b5405ec1427473929922deef0db721989ac6df8",
@@ -1787,15 +1805,15 @@
     },
     "scripts/e2e/rounds/gfile.mjs": {
       "role": "index",
-      "sha256": "582aa829e806570605171deb32a927cf0b267e96e3a5e1d76eb61e853a6bf806",
-      "size": 13102,
-      "normalized_sha256": "582aa829e806570605171deb32a927cf0b267e96e3a5e1d76eb61e853a6bf806"
+      "sha256": "36528ab5aa849b0c3def8ce5e3d03b358c75806c2cb8cce8d8dd4bf828df67a3",
+      "size": 14552,
+      "normalized_sha256": "36528ab5aa849b0c3def8ce5e3d03b358c75806c2cb8cce8d8dd4bf828df67a3"
     },
     "scripts/e2e/rounds/ghsync.mjs": {
       "role": "index",
-      "sha256": "58f9560967d5868a7684b7a7efcc5e971bd40060d09179aff69c5c5c68fd292c",
-      "size": 16368,
-      "normalized_sha256": "58f9560967d5868a7684b7a7efcc5e971bd40060d09179aff69c5c5c68fd292c"
+      "sha256": "f494a9e3abcc7e8140206c80c8f701e6bef62248e6339e05a57f6c6c0c18c7ad",
+      "size": 24269,
+      "normalized_sha256": "f494a9e3abcc7e8140206c80c8f701e6bef62248e6339e05a57f6c6c0c18c7ad"
     },
     "scripts/e2e/rounds/group.mjs": {
       "role": "index",
@@ -1811,9 +1829,9 @@
     },
     "scripts/e2e/rounds/lanoff.mjs": {
       "role": "index",
-      "sha256": "462cfc2a0b1c42d7608365b45c74e9bbe3bdbdc779b7ba0b7424f261fa95277b",
-      "size": 8491,
-      "normalized_sha256": "462cfc2a0b1c42d7608365b45c74e9bbe3bdbdc779b7ba0b7424f261fa95277b"
+      "sha256": "3461a252243bbbcf4190474e585e37316317074cdd3acb8c08db202cf1704ddb",
+      "size": 10163,
+      "normalized_sha256": "3461a252243bbbcf4190474e585e37316317074cdd3acb8c08db202cf1704ddb"
     },
     "scripts/e2e/rounds/late.mjs": {
       "role": "index",
@@ -1823,9 +1841,9 @@
     },
     "scripts/e2e/rounds/multi.mjs": {
       "role": "index",
-      "sha256": "ce43980613312aa08107d8b91c524dc31566daf9d5936cd9a7c8492f24d79707",
-      "size": 6824,
-      "normalized_sha256": "ce43980613312aa08107d8b91c524dc31566daf9d5936cd9a7c8492f24d79707"
+      "sha256": "0f816025cc78e3789dacd0d3879114725f1765b472363b63a3f6fd72a8720217",
+      "size": 13511,
+      "normalized_sha256": "0f816025cc78e3789dacd0d3879114725f1765b472363b63a3f6fd72a8720217"
     },
     "scripts/e2e/rounds/poison.mjs": {
       "role": "index",
@@ -1859,9 +1877,9 @@
     },
     "scripts/e2e/rounds/shrink.mjs": {
       "role": "index",
-      "sha256": "777af1dbe83f9219a41cb8aeaac494f98202f99a34c6b34094342f41912cabbd",
-      "size": 8586,
-      "normalized_sha256": "777af1dbe83f9219a41cb8aeaac494f98202f99a34c6b34094342f41912cabbd"
+      "sha256": "d7aa17421c333ef60faa9589e6a07fa00694f5c7f74ba7dc1d702fd2ead39140",
+      "size": 8561,
+      "normalized_sha256": "d7aa17421c333ef60faa9589e6a07fa00694f5c7f74ba7dc1d702fd2ead39140"
     },
     "scripts/e2e/rounds/stall.mjs": {
       "role": "index",
@@ -1892,6 +1910,18 @@
       "sha256": "0298c222d734c2998cfb0c8df315c2e4b42ae571f50d5e161e25c2e530ad75b8",
       "size": 2398,
       "normalized_sha256": "0298c222d734c2998cfb0c8df315c2e4b42ae571f50d5e161e25c2e530ad75b8"
+    },
+    "scripts/frontend-inventory.mjs": {
+      "role": "index",
+      "sha256": "fda2b35d81d2b5bdad6fb72782e21ed4e57f2cfac5336824e9a5d9b7217b95e0",
+      "size": 6381,
+      "normalized_sha256": "fda2b35d81d2b5bdad6fb72782e21ed4e57f2cfac5336824e9a5d9b7217b95e0"
+    },
+    "scripts/git-hooks/commit-msg": {
+      "role": "index",
+      "sha256": "efeba964403ce31d996bf08208c112e1c2b92c412052bdf3cd088e6899d86e6e",
+      "size": 827,
+      "normalized_sha256": "efeba964403ce31d996bf08208c112e1c2b92c412052bdf3cd088e6899d86e6e"
     },
     "scripts/guard_cases/__init__.py": {
       "role": "index",
