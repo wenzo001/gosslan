@@ -1,7 +1,7 @@
 {
   "version": 1,
   "created_at": "2026-10-04T12:17:40Z",
-  "updated_at": "2026-11-05T11:58:58Z",
+  "updated_at": "2026-11-05T12:00:39Z",
   "files": {
     ".gitattributes": {
       "role": "index",
@@ -125,9 +125,9 @@
     },
     "aoci.code.txt": {
       "role": "index",
-      "sha256": "fab3a5ba4cf08d98dc0a97f7d21b325a0c715a219a0c9421a445e7a3aa724e24",
-      "size": 409817,
-      "normalized_sha256": "fab3a5ba4cf08d98dc0a97f7d21b325a0c715a219a0c9421a445e7a3aa724e24"
+      "sha256": "0148e95caff87c4a512c1843b2c0c1485062911670c88da5402ad9975ac9caf7",
+      "size": 409922,
+      "normalized_sha256": "0148e95caff87c4a512c1843b2c0c1485062911670c88da5402ad9975ac9caf7"
     },
     "aoci.meta.txt": {
       "role": "index",
@@ -569,9 +569,9 @@
     },
     "docs/aoci-usage.md": {
       "role": "index",
-      "sha256": "6855e6544d2d0644955b63d939a6b10b1a8579767c70a0891fd58a4dac06172f",
-      "size": 21083,
-      "normalized_sha256": "6855e6544d2d0644955b63d939a6b10b1a8579767c70a0891fd58a4dac06172f"
+      "sha256": "2cc195cd5d1fba0a0966b4c824e4ee6f7f90e66e57b24cc9ef302b02aeefe768",
+      "size": 23870,
+      "normalized_sha256": "2cc195cd5d1fba0a0966b4c824e4ee6f7f90e66e57b24cc9ef302b02aeefe768"
     },
     "docs/architecture/backend-modernization.md": {
       "role": "index",
@@ -827,9 +827,9 @@
     },
     "docs/notes/aoci-deviation-2026-11-05.md": {
       "role": "index",
-      "sha256": "1cb367bb480e48db1a096a4c25d9d329e2b3ccb343195b2eecea27ac1b436dce",
-      "size": 7045,
-      "normalized_sha256": "1cb367bb480e48db1a096a4c25d9d329e2b3ccb343195b2eecea27ac1b436dce"
+      "sha256": "635953b72ad07e3cee1e741a07f1f684764e74591263e53fe21a4ef6cf4d32ad",
+      "size": 7148,
+      "normalized_sha256": "635953b72ad07e3cee1e741a07f1f684764e74591263e53fe21a4ef6cf4d32ad"
     },
     "docs/notes/async-cycles-leaks-audit-2026-10-23.md": {
       "role": "index",
