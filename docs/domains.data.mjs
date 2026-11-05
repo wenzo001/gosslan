@@ -533,6 +533,7 @@ export default {
         "src/components",
         "src/composables",
         "src/api",
+        "src/directives", // 渲染层指令（v-press-ripple 等）：只改 DOM/动画表现，不碰数据与 IPC
         "src/utils",
         // 构建期静态样式（代码高亮主题）与前端 Worker：都是呈现层的实现，不单独成域。
         "src/styles",

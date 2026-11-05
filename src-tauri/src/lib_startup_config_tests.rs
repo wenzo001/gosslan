@@ -1040,8 +1040,8 @@ fn settings_writes_go_through_the_named_code_helper() {
     let src = include_str!("commands/settings.rs");
     assert_eq!(
         src.matches("persist_setting(").count(),
-        14,
-        "写设置的调用点数变了（含定义应为 14）⇒ 本判据分母要跟着改"
+        16,
+        "写设置的调用点数变了（含定义应为 16）⇒ 本判据分母要跟着改"
     );
     assert_eq!(src.matches("remove_setting(").count(), 2, "删设置的调用点数变了（含定义应为 2）");
     // ⚠️ 只数**代码**：本文件的文档注释里就写着 `db::set_setting(..)` 那句反例，
