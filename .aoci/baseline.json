@@ -1,7 +1,7 @@
 {
   "version": 1,
   "created_at": "2026-10-04T12:17:40Z",
-  "updated_at": "2026-11-05T04:55:45Z",
+  "updated_at": "2026-11-05T05:02:32Z",
   "files": {
     ".gitattributes": {
       "role": "index",
@@ -125,9 +125,9 @@
     },
     "aoci.code.txt": {
       "role": "index",
-      "sha256": "5f5b91002fc7f325f55a94d84b547267057115e7aa490130b81f1951814dbe7d",
-      "size": 404409,
-      "normalized_sha256": "5f5b91002fc7f325f55a94d84b547267057115e7aa490130b81f1951814dbe7d"
+      "sha256": "66b5c9f5d42f77768bc03522c975d4311fcd413eb93cf9f0f16da7ef52eae735",
+      "size": 409032,
+      "normalized_sha256": "66b5c9f5d42f77768bc03522c975d4311fcd413eb93cf9f0f16da7ef52eae735"
     },
     "aoci.meta.txt": {
       "role": "index",
@@ -3224,6 +3224,12 @@
       "size": 5736,
       "normalized_sha256": "97cbf55c38964b1ad00bdabff995f5f1faceea492c6c9be08bbfd09a9b0ca988"
     },
+    "src-tauri/src/db/todo_tags.rs": {
+      "role": "index",
+      "sha256": "10e64635a7cf53a07ef6531890028b70e2c4dba31b70e41625b60c9c914026b5",
+      "size": 8140,
+      "normalized_sha256": "10e64635a7cf53a07ef6531890028b70e2c4dba31b70e41625b60c9c914026b5"
+    },
     "src-tauri/src/db_hold.rs": {
       "role": "index",
       "sha256": "64be2649b5a1bb3a58e66aa975a329168ac0af2e1e1954eaaf6aa6d0dc43cb6d",
@@ -3904,27 +3910,39 @@
     },
     "src-tauri/src/state.rs": {
       "role": "index",
-      "sha256": "292a05c865369cb36c13aaaf3903633e7a50946d62309edf422542196e6db1c2",
-      "size": 107492,
-      "normalized_sha256": "292a05c865369cb36c13aaaf3903633e7a50946d62309edf422542196e6db1c2"
+      "sha256": "a2827cc31303d14be8a1d641dcec0bda6021dadac7dac1ce8abbf2dcd5250a53",
+      "size": 207427,
+      "normalized_sha256": "a2827cc31303d14be8a1d641dcec0bda6021dadac7dac1ce8abbf2dcd5250a53"
     },
     "src-tauri/src/storage/cache_cleaner.rs": {
       "role": "index",
-      "sha256": "b09d8f482b96c5b8031b8a8adfc9e3b1ddc5264b118d9a0167152bb51aaf0988",
-      "size": 10450,
-      "normalized_sha256": "b09d8f482b96c5b8031b8a8adfc9e3b1ddc5264b118d9a0167152bb51aaf0988"
+      "sha256": "09bed76243416e2c25c9f2c7fd9fd12ed9241d2d4a712b4a629fc4683570b3e9",
+      "size": 10921,
+      "normalized_sha256": "09bed76243416e2c25c9f2c7fd9fd12ed9241d2d4a712b4a629fc4683570b3e9"
+    },
+    "src-tauri/src/storage/disk_space.rs": {
+      "role": "index",
+      "sha256": "3a9afa41177e14a2006da1f82987f81de966d78b4d7060546ed581576541b508",
+      "size": 18665,
+      "normalized_sha256": "3a9afa41177e14a2006da1f82987f81de966d78b4d7060546ed581576541b508"
     },
     "src-tauri/src/storage/mod.rs": {
       "role": "index",
-      "sha256": "830702732f3536ea386f3fc0206250cb25f155a3cad3f91670d214fa320a4530",
-      "size": 431,
-      "normalized_sha256": "830702732f3536ea386f3fc0206250cb25f155a3cad3f91670d214fa320a4530"
+      "sha256": "9dad0717bbd8eec2bd1354edd842e1f2bcfe8b522c42c91242ae9646458a7e5e",
+      "size": 467,
+      "normalized_sha256": "9dad0717bbd8eec2bd1354edd842e1f2bcfe8b522c42c91242ae9646458a7e5e"
+    },
+    "src-tauri/src/storage/vacuum.rs": {
+      "role": "index",
+      "sha256": "4349560cc907a4248011d35694a0b01823244b61c842d9ac614bd34cc0bac3fe",
+      "size": 21367,
+      "normalized_sha256": "4349560cc907a4248011d35694a0b01823244b61c842d9ac614bd34cc0bac3fe"
     },
     "src-tauri/src/transport/ble_android.rs": {
       "role": "index",
-      "sha256": "41478e6b9e14c27e1e0ef4c1b2ff0a50b3034f72fcd103eea78bca9477af15dd",
-      "size": 22294,
-      "normalized_sha256": "41478e6b9e14c27e1e0ef4c1b2ff0a50b3034f72fcd103eea78bca9477af15dd"
+      "sha256": "5e92c043a050aa717a8be5c21ae1ae5e01c1b72882e61054d3cca7c8e98e95d9",
+      "size": 22554,
+      "normalized_sha256": "5e92c043a050aa717a8be5c21ae1ae5e01c1b72882e61054d3cca7c8e98e95d9"
     },
     "src-tauri/src/transport/ble_framing.rs": {
       "role": "index",
@@ -3932,23 +3950,29 @@
       "size": 26490,
       "normalized_sha256": "0f16d2d699849bbdf734512bc4890d7e9010b54ac2cf739bde85b45df2bd25af"
     },
+    "src-tauri/src/transport/ble_pending.rs": {
+      "role": "index",
+      "sha256": "50727d7773a4810cf1cdcbf23f1276e240f21cde35d06be92cdffb2c8b93d957",
+      "size": 5943,
+      "normalized_sha256": "50727d7773a4810cf1cdcbf23f1276e240f21cde35d06be92cdffb2c8b93d957"
+    },
     "src-tauri/src/transport/bluetooth.rs": {
       "role": "index",
-      "sha256": "e2b1b5d975aafdefbf61ac726e04c1f103039335beaa0604bb9035971fbe60bc",
-      "size": 35977,
-      "normalized_sha256": "e2b1b5d975aafdefbf61ac726e04c1f103039335beaa0604bb9035971fbe60bc"
+      "sha256": "fc2810854c184f8372c395833aaa427ae9ee6174d99eaec5318d2653276d59a5",
+      "size": 36087,
+      "normalized_sha256": "fc2810854c184f8372c395833aaa427ae9ee6174d99eaec5318d2653276d59a5"
     },
     "src-tauri/src/transport/bluetooth_peripheral.rs": {
       "role": "index",
-      "sha256": "34d76a758d601f53f39ede07c4932a0a9a88e3ccda61db4cb8fb08aa4e43346b",
-      "size": 38088,
-      "normalized_sha256": "34d76a758d601f53f39ede07c4932a0a9a88e3ccda61db4cb8fb08aa4e43346b"
+      "sha256": "87c9fee5b047ec63e43f1ff4355afc45b423e512ddc7fc3ad5d342a6a8373171",
+      "size": 38316,
+      "normalized_sha256": "87c9fee5b047ec63e43f1ff4355afc45b423e512ddc7fc3ad5d342a6a8373171"
     },
     "src-tauri/src/transport/bluetooth_peripheral_windows.rs": {
       "role": "index",
-      "sha256": "7982e1285a7f61f584b7f8d657323805b4d54a5d21e98782155be881e2f288f6",
-      "size": 33821,
-      "normalized_sha256": "7982e1285a7f61f584b7f8d657323805b4d54a5d21e98782155be881e2f288f6"
+      "sha256": "a76a6859efd08370bfba0c5fdb8aec593356a8c38489293b32886604adf8173e",
+      "size": 33706,
+      "normalized_sha256": "a76a6859efd08370bfba0c5fdb8aec593356a8c38489293b32886604adf8173e"
     },
     "src-tauri/src/transport/lan.rs": {
       "role": "index",
@@ -3958,15 +3982,15 @@
     },
     "src-tauri/src/transport/mod.rs": {
       "role": "index",
-      "sha256": "f692540df6c7ba741098bca51dd1771447bab53e05c554c08ab36d0eeb4a8fc9",
-      "size": 5376,
-      "normalized_sha256": "f692540df6c7ba741098bca51dd1771447bab53e05c554c08ab36d0eeb4a8fc9"
+      "sha256": "2a53ddd77baf623adc0d6b86e925c7bf01f0d42863dfb6a751304b6de543311e",
+      "size": 5530,
+      "normalized_sha256": "2a53ddd77baf623adc0d6b86e925c7bf01f0d42863dfb6a751304b6de543311e"
     },
     "src-tauri/src/transport/relay_seal.rs": {
       "role": "index",
-      "sha256": "361e3cb76e48936e83e987a04b9df130c268b642bdc1e371b580bc002e6380ec",
-      "size": 37167,
-      "normalized_sha256": "361e3cb76e48936e83e987a04b9df130c268b642bdc1e371b580bc002e6380ec"
+      "sha256": "018d1116ea9aafdcc5c3b2133645838545fa0497e6ac48c8ad12358eb7df98aa",
+      "size": 46611,
+      "normalized_sha256": "018d1116ea9aafdcc5c3b2133645838545fa0497e6ac48c8ad12358eb7df98aa"
     },
     "src-tauri/src/transport/tcp.rs": {
       "role": "index",
