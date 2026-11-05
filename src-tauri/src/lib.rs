@@ -963,6 +963,7 @@ pub fn run() {
             commands::remove_external_link,
             commands::export_external_links,
             commands::cleanup_external_links_export,
+            commands::preview_external_links_file,
             commands::import_external_links_file,
             commands::import_external_links_from_url,
             commands::updater_check,

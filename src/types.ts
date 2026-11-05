@@ -692,6 +692,10 @@ export interface ExternalLink {
   id: string;
   name: string;
   url: string;
+  /** 来源：`user` / `url:<来源网址>` / `json:<文件名>`；旧数据为空串（按 `user` 保护）。 */
+  source: string;
+  /** 上一次从远程拿到的 URL（远程身份）；`user` 条目为空串。 */
+  remoteUrl: string;
 }
 
 /** 应用内更新：检查结果（时间戳为 Unix 秒，文案/格式化留给界面）。 */
@@ -758,12 +762,32 @@ export type AndroidDownloadEvent =
   | { event: "Progress"; data?: { chunkLength?: number } }
   | { event: "Finished"; data?: undefined };
 
-/** 外链 JSON 导入的合并结果（`links` 是导入后的完整列表）。 */
+/** 一条将要新增 / 更新 / 删除的链接（导入预览清单用）。 */
+export interface ExternalLinkChange {
+  name: string;
+  url: string;
+  source: string;
+}
+
+/** JSON 导入预览（后端只读计算，前端拿它做确认弹窗）。 */
+export interface ExternalLinkImportPreview {
+  added: ExternalLinkChange[];
+  updated: ExternalLinkChange[];
+  removed: ExternalLinkChange[];
+  skipped: number;
+  invalid: number;
+  unchanged: number;
+}
+
+/** 外链导入结果（`links` 是导入后的完整列表）。 */
 export interface ExternalLinkImportResult {
   links: ExternalLink[];
   added: number;
+  updated: number;
+  removed: number;
   skipped: number;
   invalid: number;
+  unchanged: number;
 }
 
 /** 应用偏好设置（外观 / 网卡选择 / 聊天样式，持久化到本地 SQLite）。

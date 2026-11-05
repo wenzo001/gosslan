@@ -1,10 +1,15 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import {
   MAX_LINK_NAME_CHARS,
   classifyRefreshFailure,
   createSingleFlight,
+  describeLinkSource,
   isValidExternalUrl,
+  summarizeImportPreview,
   validateLinkInput,
 } from "./externalLinks.ts";
 
@@ -103,4 +108,80 @@ test("classifyRefreshFailure：链接失效 / 网络不可达 / 格式变化分�
   const unknown = classifyRefreshFailure(new Error("ipc boom"));
   assert.equal(unknown.key, "links.refreshFail.unknown");
   assert.ok(unknown.key !== "errors.rule.system");
+});
+
+test("describeLinkSource：用户 / 远程 / 文件 / 旧来源四档，未知来源按 user 保护", () => {
+  const current = "https://a.example/links.json";
+  assert.deepEqual(describeLinkSource("", current), { kind: "user", address: "", stale: false });
+  assert.deepEqual(describeLinkSource("user", current), {
+    kind: "user",
+    address: "",
+    stale: false,
+  });
+  assert.deepEqual(describeLinkSource(`url:${current}`, current), {
+    kind: "url",
+    address: current,
+    stale: false,
+  });
+  assert.deepEqual(describeLinkSource("url:https://old.example/links.json", current), {
+    kind: "url",
+    address: "https://old.example/links.json",
+    stale: true,
+  });
+  assert.deepEqual(describeLinkSource("json:backup.json", current), {
+    kind: "json",
+    address: "backup.json",
+    stale: false,
+  });
+  // 后端未知来源也按 user 保守处理（与 `is_protected_source` 同口径）。
+  assert.deepEqual(describeLinkSource("weird:whatever", current), {
+    kind: "user",
+    address: "",
+    stale: false,
+  });
+});
+
+test("summarizeImportPreview：确认按钮只在三类变更都为空时不可用", () => {
+  const empty = summarizeImportPreview({ added: [], updated: [], removed: [] });
+  assert.deepEqual(empty, { added: 0, updated: 0, removed: 0, hasChanges: false });
+  const counts = summarizeImportPreview({
+    added: [{}, {}],
+    updated: [{}],
+    removed: [{}],
+  });
+  assert.deepEqual(counts, { added: 2, updated: 1, removed: 1, hasChanges: true });
+  assert.equal(
+    summarizeImportPreview({ added: [], updated: [], removed: [{}] }).hasChanges,
+    true,
+    "只有删除也算变更，必须让用户确认",
+  );
+});
+
+test("LinksList 接线：JSON 导入先预览、确认后才写库；刷新只走 URL 同步", () => {
+  const here = dirname(fileURLToPath(import.meta.url));
+  const src = readFileSync(join(here, "../components/LinksList.vue"), "utf8");
+  const importFn = src.slice(
+    src.indexOf("async function importFile"),
+    src.indexOf("function closePreview"),
+  );
+  assert.match(importFn, /previewExternalLinksFile/, "选择文件后必须先取预览");
+  assert.doesNotMatch(importFn, /importExternalLinksFile/, "选文件阶段不许直接写库");
+  assert.match(importFn, /previewOpen\.value = true/, "预览要交给用户确认");
+
+  const confirmFn = src.slice(
+    src.indexOf("async function confirmImportFile"),
+    src.indexOf("async function importFromUrl"),
+  );
+  assert.match(confirmFn, /importExternalLinksFile/, "只有确认函数才允许 apply");
+  assert.match(src, /data-probe="links-preview-confirm"/, "确认按钮必须真实存在");
+  assert.match(src, /:disabled="!previewCounts\.hasChanges/, "没有变更时不许写库");
+  assert.match(src, /links\.previewSummary/, "预览必须写清新增 / 更新 / 删除计数");
+
+  // 刷新块只调 URL 同步，不许夹带文件导入（刷新语义保持「只增改」）。
+  const refreshBlock = src.slice(
+    src.indexOf("const refreshSource = createSingleFlight"),
+    src.indexOf("/** 来源链接可复制"),
+  );
+  assert.match(refreshBlock, /importExternalLinksFromUrl/);
+  assert.doesNotMatch(refreshBlock, /importExternalLinksFile/);
 });

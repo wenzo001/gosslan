@@ -83,6 +83,60 @@ export function createSingleFlight<T>(fn: () => Promise<T>): () => Promise<T> {
   };
 }
 
+/** 来源种类（对应 `links.source.<kind>` 文案）。 */
+export type LinkSourceKind = "user" | "url" | "json";
+
+/** 界面上一条链接的来源描述。 */
+export interface LinkSourceView {
+  kind: LinkSourceKind;
+  /** `url:` 的来源地址 / `json:` 的文件名；`user` 为空串。 */
+  address: string;
+  /** `url:` 且不是当前导入来源 ⇒ 旧来源（保留但不再同步）。 */
+  stale: boolean;
+}
+
+/**
+ * 把后端来源标记翻译成界面描述。与后端 `is_protected_source` 同口径：
+ * 空串（旧数据）与 `user` 都按用户添加处理；未知形状也按 user 保守处理。
+ */
+export function describeLinkSource(
+  source: string | undefined,
+  currentSource: string,
+): LinkSourceView {
+  const s = (source ?? "").trim();
+  if (!s || s === "user") return { kind: "user", address: "", stale: false };
+  if (s.startsWith("url:")) {
+    const address = s.slice("url:".length);
+    return { kind: "url", address, stale: address !== "" && address !== currentSource };
+  }
+  if (s.startsWith("json:")) {
+    return { kind: "json", address: s.slice("json:".length), stale: false };
+  }
+  return { kind: "user", address: "", stale: false };
+}
+
+/** 预览计数（只关心三类变更的条数与「是否有变更」）。 */
+export interface ImportPreviewCounts {
+  added: number;
+  updated: number;
+  removed: number;
+  hasChanges: boolean;
+}
+
+export interface ImportPreviewLike {
+  added: readonly unknown[];
+  updated: readonly unknown[];
+  removed: readonly unknown[];
+}
+
+/** 预览确认按钮唯一的启用判据：三类清单都空 ⇒ 不写库。 */
+export function summarizeImportPreview(p: ImportPreviewLike): ImportPreviewCounts {
+  const added = p.added.length;
+  const updated = p.updated.length;
+  const removed = p.removed.length;
+  return { added, updated, removed, hasChanges: added + updated + removed > 0 };
+}
+
 /** 刷新失败要说哪句话（`key` 就是词典键，`params` 是插值数据）。 */
 export interface RefreshFailure {
   key: string;
