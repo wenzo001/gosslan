@@ -188,6 +188,50 @@ pub(crate) fn tree_is_silent(base: Option<(u64, i64)>, now_cpu: Option<u64>, now
     now_ms - base_at >= TREE_SILENT_MIN_WINDOW_MS && now_cpu == base_cpu
 }
 
+/// 「冻住时子树少了几个进程」：读不到就写 `?`，不许用 0 冒充未知。
+///
+/// 这一格是给下一次判"为什么静默"用的：`tree_procs` 掉几个能区分
+/// "渲染进程退出"与"整棵树被挂起（进程数不变、CPU 归零）"。
+fn tree_procs_note(base: Option<u32>, now: Option<u32>) -> String {
+    match (base, now) {
+        (Some(b), Some(n)) => format!("tree_procs={n} tree_procs_delta={:+}", n as i64 - b as i64),
+        _ => "tree_procs=? tree_procs_delta=?".to_string(),
+    }
+}
+
+/// `UI_RENDERER_STALL` 那一行要的全部读数。
+struct RendererStallFacts {
+    stale_ms: i64,
+    main_stall_ms: i64,
+    focused: bool,
+    since_focus_ms: i64,
+    plan_restart: bool,
+    in_window: usize,
+    tree_silent: bool,
+    tree_procs_base: Option<u32>,
+    tree_procs_now: Option<u32>,
+}
+
+/// 产出唯一那一行停摆现场。
+///
+/// 单独成函数是为了让单测能真的执行命中路径上的格式化，而不是只断言
+/// "源码里出现过某个字段名"。
+fn renderer_stall_line(f: &RendererStallFacts) -> String {
+    format!(
+        ">>> code=UI_RENDERER_STALL stale_ms={} main_stall_ms={} main_healthy={} \
+         focused={} since_focus_ms={} plan={} in_window={} tree_silent={} {}",
+        f.stale_ms,
+        f.main_stall_ms,
+        f.main_stall_ms < MAIN_STALL_NOTE_MS,
+        f.focused,
+        f.since_focus_ms,
+        if f.plan_restart { "restart" } else { "reload" },
+        f.in_window,
+        f.tree_silent,
+        tree_procs_note(f.tree_procs_base, f.tree_procs_now)
+    )
+}
+
 /// 一次 reload 之后的 verify 窗口：心跳时间戳越过 `before_hb` 就是恢复了。
 #[derive(Clone, Copy)]
 struct Verify {
@@ -311,8 +355,9 @@ fn run<R: tauri::Runtime>(app: tauri::AppHandle<R>, state: Arc<crate::state::App
     let mut main_episode: Option<(i64, i64)> = None;
     // (episode 开始, 上次写 HANG 的时刻, 是否已通知)
     let mut renderer_episode: Option<(i64, i64, bool)> = None;
-    // 渲染层 episode 起点的子树 CPU 总刻度（100 ns）与时刻：判"整棵树零指令"的基线。
-    let mut episode_tree_cpu: Option<(u64, i64)> = None;
+    // 渲染层 episode 起点的子树读数 (进程数, CPU 总刻度 100 ns, 时刻)：
+    // 判"整棵树零指令"的基线，同时给 STALL 行留"冻住时少了几个进程"。
+    let mut episode_tree: Option<(u32, Option<u64>, i64)> = None;
     // 墙钟与进程内单调时钟的双基线：睡眠/墙钟被改时两者会分叉（见 [`tick_verdict`]）。
     let mut wall_prev = now_ms();
     let mut mono_prev = Instant::now();
@@ -360,7 +405,7 @@ fn run<R: tauri::Runtime>(app: tauri::AppHandle<R>, state: Arc<crate::state::App
             // 也不在豁免时刻再写一条 HANG/HANG_END（否则豁免本身又会污染现场）。
             main_episode = None;
             renderer_episode = None;
-            episode_tree_cpu = None;
+            episode_tree = None;
             // 睡眠那一段不算停摆，自愈 episode 也一起丢弃（醒来后重新按读数起算）。
             recover_episode = None;
             // 跨睡眠的 verify 窗口已失效：用墙钟算的 waited_ms 会把睡眠算进去。
@@ -490,9 +535,8 @@ fn run<R: tauri::Runtime>(app: tauri::AppHandle<R>, state: Arc<crate::state::App
                         renderer_episode = Some((now - stale, now, false));
                         // 基线只在这里取一次：之后每分钟的 HANG 行会重采样缓存，
                         // 但那一格的口径是"两次 HANG 之间"，不能拿来做自愈判据。
-                        episode_tree_cpu = crate::mem_diag::child_webview_tree()
-                            .and_then(|(_, _, cpu)| cpu)
-                            .map(|c| (c, now));
+                        episode_tree = crate::mem_diag::child_webview_tree()
+                            .map(|(procs, _, cpu)| (procs, cpu, now));
                         note_hang("ui_renderer", stale, op.as_ref(), &mut notes, &state);
                     }
                     Some((_, last_note, notified)) => {
@@ -520,7 +564,7 @@ fn run<R: tauri::Runtime>(app: tauri::AppHandle<R>, state: Arc<crate::state::App
                     }
                 }
             } else if let Some((start, _, _)) = renderer_episode.take() {
-                episode_tree_cpu = None;
+                episode_tree = None;
                 note_end("ui_renderer", now - start);
                 #[cfg(desktop)]
                 crate::tray::set_watchdog_tooltip(&app, None);
@@ -546,12 +590,19 @@ fn run<R: tauri::Runtime>(app: tauri::AppHandle<R>, state: Arc<crate::state::App
             let hb_since_focus = focus_at > 0 && hb_effective > focus_at;
             let in_window = reloads_in_window(&mut recent_recoveries, now);
             // 只在真停摆时采这一格（健康时每秒做一次进程快照是白花钱）。
-            let tree_silent = stale >= RENDERER_STALE_MS
-                && tree_is_silent(
-                    episode_tree_cpu,
-                    crate::mem_diag::child_webview_tree().and_then(|(_, _, cpu)| cpu),
-                    now,
-                );
+            let tree_now = if stale >= RENDERER_STALE_MS {
+                crate::mem_diag::child_webview_tree()
+            } else {
+                None
+            };
+            let tree_silent = match (&episode_tree, &tree_now) {
+                (Some((_, base_cpu, base_at)), Some((_, _, cpu))) => {
+                    tree_is_silent(base_cpu.map(|c| (c, *base_at)), *cpu, now)
+                }
+                _ => false,
+            };
+            let tree_procs_base = episode_tree.map(|(procs, _, _)| procs);
+            let tree_procs_now = tree_now.map(|(procs, _, _)| procs);
             let decision = recover_decision(&RecoverInput {
                 stale_ms: stale,
                 active,
@@ -582,17 +633,18 @@ fn run<R: tauri::Runtime>(app: tauri::AppHandle<R>, state: Arc<crate::state::App
                                  hb_age_ms={} focused=true",
                                 now - hb
                             )),
-                            "stall" => crate::logging::crash_note(&format!(
-                                ">>> code=UI_RENDERER_STALL stale_ms={stale} \
-                                 main_stall_ms={main_stall} main_healthy={} focused={focused} \
-                                 since_focus_ms={since_focus} plan={} in_window={in_window} \
-                                 tree_silent={tree_silent}",
-                                main_stall < MAIN_STALL_NOTE_MS,
-                                if decision == RecoverDecision::Restart {
-                                    "restart"
-                                } else {
-                                    "reload"
-                                }
+                            "stall" => crate::logging::crash_note(&renderer_stall_line(
+                                &RendererStallFacts {
+                                    stale_ms: stale,
+                                    main_stall_ms: main_stall,
+                                    focused,
+                                    since_focus_ms: since_focus,
+                                    plan_restart: decision == RecoverDecision::Restart,
+                                    in_window,
+                                    tree_silent,
+                                    tree_procs_base,
+                                    tree_procs_now,
+                                },
                             )),
                             _ => crate::logging::crash_note(&format!(
                                 ">>> code=UI_AUTO_RECOVER_BLOCKED reason=rate_limit \
@@ -1091,6 +1143,65 @@ mod tests {
             flat.contains("set_recovery_notice(&state,\"suggest_restart\""),
             "建议重启没交给前端"
         );
+    }
+
+    /// 观测守卫（2026-11-05）：`UI_RENDERER_STALL` 在命中路径上必须真的打出
+    /// "冻住时子树少了几个进程"。这里调的就是产出那一行的函数，跑的是真格式化。
+    #[test]
+    fn stall_line_really_prints_tree_procs_on_the_hit_path() {
+        let facts = |base: Option<u32>, now: Option<u32>| RendererStallFacts {
+            stale_ms: 20_609,
+            main_stall_ms: 1_001,
+            focused: false,
+            since_focus_ms: 599_661,
+            plan_restart: true,
+            in_window: 0,
+            tree_silent: true,
+            tree_procs_base: base,
+            tree_procs_now: now,
+        };
+        // 本次现场的形状：8 → 6 且整棵树零指令。
+        let line = renderer_stall_line(&facts(Some(8), Some(6)));
+        assert!(line.starts_with(">>> code=UI_RENDERER_STALL "), "{line}");
+        assert!(line.contains("tree_silent=true"), "{line}");
+        assert!(line.contains("tree_procs=6"), "{line}");
+        assert!(line.contains("tree_procs_delta=-2"), "{line}");
+        assert!(line.contains("plan=restart"), "{line}");
+        // 反例：进程数没变 ⇒ 增量是 +0（不是空串，也不是缺字段）。
+        let same = renderer_stall_line(&facts(Some(8), Some(8)));
+        assert!(same.contains("tree_procs=8 tree_procs_delta=+0"), "{same}");
+        // 反例：读不到 ⇒ 写 ?，绝不用 0 冒充"没变化"。
+        let unknown = renderer_stall_line(&facts(None, None));
+        assert!(
+            unknown.contains("tree_procs=? tree_procs_delta=?"),
+            "{unknown}"
+        );
+        assert!(!unknown.contains("tree_procs=0"), "{unknown}");
+    }
+
+    /// 接线守卫：真停摆那条分支必须由 `renderer_stall_line` 产出，
+    /// 否则新字段只活在函数里、线上永远打不出来。
+    #[test]
+    fn stall_line_writer_is_wired_into_the_loop() {
+        let flat: String = include_str!("watchdog.rs")
+            .chars()
+            .filter(|c| !c.is_whitespace())
+            .collect();
+        // 针分成两段拼：否则这条断言会命中自己的字面量，变成空转。
+        let needle = format!(
+            "{}{}",
+            "crate::logging::crash_note(&renderer", "_stall_line("
+        );
+        assert!(
+            flat.contains(&needle),
+            "STALL 分支没走 renderer_stall_line ⇒ 新字段线上打不出来"
+        );
+        // 反例自证：同一把尺子对不存在的调用必须说不。
+        let bogus = format!(
+            "{}{}",
+            "crate::logging::crash_note(&renderer", "_never_line("
+        );
+        assert!(!flat.contains(&bogus), "扫描器把不存在的调用也当成存在");
     }
 
     /// 回退开关的解析：只有显式关闭词才算关（拼错不该静默失效）。
