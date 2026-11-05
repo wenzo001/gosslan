@@ -873,6 +873,7 @@ mod tests {
             // 与 `custom_category` 同一格道理：夹具/测试载荷少一个字段，被测的就是自造路径。
             custom_icon: String::new(),
             related_on: None,
+            tags: vec![],
         };
         let insert = |msg_id: &str, seq: i64, p: &TodoPayload| {
             conn.execute(
@@ -1080,6 +1081,7 @@ mod tests {
             // 与 `custom_category` 同一格道理：夹具/测试载荷少一个字段，被测的就是自造路径。
             custom_icon: String::new(),
             related_on: None,
+            tags: vec![],
         };
         // 参数顺序：(def, actor, group_creator, edits_structure)
         // 档位只有两档（结构 = 改标题/删除；其余 = 描述/图片/指派人/状态/归档），
@@ -1137,6 +1139,7 @@ mod tests {
             custom_category: String,
             custom_icon: String,
             related_on: String,
+            tags: Vec<String>,
         }
         fn req_of(def: &TodoPayload) -> Req {
             Req {
@@ -1152,6 +1155,7 @@ mod tests {
                 custom_category: def.custom_category.clone(),
                 custom_icon: def.custom_icon.clone(),
                 related_on: def.related_on.clone().unwrap_or_default(),
+                tags: def.tags.clone(),
             }
         }
         fn edit(r: &Req) -> super::TodoEdit<'_> {
@@ -1168,6 +1172,7 @@ mod tests {
                 custom_category: &r.custom_category,
                 custom_icon: &r.custom_icon,
                 related_on: &r.related_on,
+                tags: &r.tags,
             }
         }
         let def = TodoPayload {
@@ -1188,6 +1193,7 @@ mod tests {
             // 与 `custom_category` 同一格道理：夹具/测试载荷少一个字段，被测的就是自造路径。
             custom_icon: String::new(),
             related_on: None,
+            tags: vec![],
         };
         // 成员窄档只对"什么别的都没动"的请求成立，所以每个否定用例都从**已满足**的那一位
         // 出发再加一处改动 —— 否则测的是另一个判据，不是"夹带"这一条。
@@ -1338,6 +1344,7 @@ mod tests {
                     claim_only: true,
                     is_member: true,
                     delete_archived: false,
+                    attributes_only: false,
                 },
             ),
             "认领档亮起来时，非创建者/非群主的成员必须真的过得去"
@@ -1354,6 +1361,7 @@ mod tests {
                     claim_only: true,
                     is_member: false,
                     delete_archived: false,
+                    attributes_only: false,
                 },
             ),
             "不是本群成员 ⇒ 认领档亮着也不许过（认领是群内协作动作）"
@@ -1515,7 +1523,7 @@ mod tests {
                 "carol",
                 "owner",
                 false,
-                super::MemberLane { archive_only, reopen_only, claim_only: false, is_member, delete_archived: false },
+                super::MemberLane { archive_only, reopen_only, claim_only: false, is_member, delete_archived: false, attributes_only: false },
             )
         };
         assert!(may(true, false, true), "群成员只动归档位 ⇒ 可以");
@@ -1532,7 +1540,7 @@ mod tests {
                 "carol",
                 "owner",
                 true,
-                super::MemberLane { archive_only: false, reopen_only: false, claim_only: false, is_member: true, delete_archived: false }
+                super::MemberLane { archive_only: false, reopen_only: false, claim_only: false, is_member: true, delete_archived: false, attributes_only: false }
             ),
             "结构改动（改标题 / 删除）不开给普通成员"
         );

@@ -42,11 +42,14 @@ import TodoDetailDialog from "@/components/TodoDetailDialog.vue";
 import TodoImageThumb from "@/components/TodoImageThumb.vue";
 import TodoPickField from "@/components/TodoPickField.vue";
 import TodoIconPicker from "@/components/TodoIconPicker.vue";
+import TodoAttrDateField from "@/components/TodoAttrDateField.vue";
+import TodoAttrTypeField from "@/components/TodoAttrTypeField.vue";
+import TodoAttrTagsField from "@/components/TodoAttrTagsField.vue";
 import CharCounter from "@/components/ui/CharCounter.vue";
-import AppDateField from "@/components/ui/AppDateField.vue";
 import type { TodoFocusRequest } from "@/types";
+import type { TodoTagCandidate } from "@/api";
 import {
-  TODO_CATEGORIES, TODO_CATEGORY_LABEL_KEY, TODO_CATEGORY_ICON_CLASS, TODO_CATEGORY_PILL, TODO_CUSTOM_CATEGORY_MAX_LEN, TODO_PRIORITIES, TODO_PRIORITY_LABEL_KEY, TODO_PRIORITY_ICON_CLASS, TODO_PRIORITY_PILL, TODO_STATUSES, TODO_STATUS_BAR, TODO_STATUS_CLASS, TODO_STATUS_DEFAULT, TODO_STATUS_LABEL_KEY, TODO_STATUS_PILL, assigneesInGroup, autoArchiveDaysLeft, buildTodoHistory, canArchiveOrReopenTodo, canEditAssignees, canUpdateTodo, foldTodos, isEffectivelyArchived, isTodoTerminalStatus, parseTodo, todoCategoryName, todoCode, type TodoHistoryEntry, type TodoImage, type TodoItem, type TodoCategory, type TodoPriority, type TodoStatus, TODO_CUSTOM_ICON_DEFAULT, type TodoCustomIcon, } from "@/utils/todos";
+  TODO_CATEGORIES, TODO_CATEGORY_LABEL_KEY, TODO_CATEGORY_ICON_CLASS, TODO_CATEGORY_PILL, TODO_PRIORITIES, TODO_PRIORITY_LABEL_KEY, TODO_PRIORITY_ICON_CLASS, TODO_PRIORITY_PILL, TODO_STATUSES, TODO_STATUS_BAR, TODO_STATUS_CLASS, TODO_STATUS_DEFAULT, TODO_STATUS_LABEL_KEY, TODO_STATUS_PILL, assigneesInGroup, autoArchiveDaysLeft, buildTodoHistory, canArchiveOrReopenTodo, canEditAssignees, canUpdateTodo, foldTodos, isEffectivelyArchived, isTodoTerminalStatus, parseTodo, todoCategoryName, todoCode, type TodoHistoryEntry, type TodoImage, type TodoItem, type TodoCategory, type TodoPriority, type TodoStatus, TODO_CUSTOM_ICON_DEFAULT, type TodoCustomIcon, } from "@/utils/todos";
 import {
   isTodoRowsLoaded,
   todoRowsLoadState,
@@ -164,6 +167,22 @@ async function loadTodoRows() {
     rowsLoading.value = false;
   }
 }
+/**
+ * 历史标签候选池（后端按 `use_count` / `last_used_at` 排序，并顺手清理长期未用的）。
+ *
+ * 读失败**不弹错**：候选只是"复用入口"，自定义输入仍然可用；为一次辅助数据打断
+ * 属性编辑反而更糟（一致性口径：主链路失败才 toast）。
+ */
+const tagCandidates = ref<TodoTagCandidate[]>([]);
+async function loadTagCandidates() {
+  if (!props.groupId) return;
+  try {
+    tagCandidates.value = await api.listGroupTodoTags(props.groupId);
+  } catch {
+    tagCandidates.value = [];
+  }
+}
+
 watch(
   [() => props.groupId, () => props.open],
   ([id, open]) => {
@@ -171,6 +190,7 @@ watch(
       // 成员可能在别处/离线期间退群：打开看板时拉一次最新群资料，指派人候选不拿旧名单。
       void chat.refreshGroups().catch(() => {});
       void loadTodoRows();
+      void loadTagCandidates();
     }
   },
   { immediate: true },
@@ -508,6 +528,8 @@ const detailArchived = computed(() => (detailItem.value ? isEffectivelyArchived(
 
 function openDetail(x: TodoItem) {
   detailId.value = x.todoId;
+  // 详情里的标签候选要反映"别端刚用过"的最新计数，打开时重读一次（失败不影响编辑）。
+  void loadTagCandidates();
 }
 function closeDetail() {
   detailId.value = null;
@@ -597,15 +619,16 @@ const draft = ref<{
   customIcon: TodoCustomIcon;
   /** 草稿内的优先级。 */
   priority: TodoPriority;
-  /** 草稿内的关联时间：`YYYY-MM-DD`；空串 = 没填（原生日期输入返回空串表示清空）。 */
+  /** 草稿内的关联时间：`YYYY-MM-DD`；空串 = 没填（清空发空串，父层按"明确清空"处理）。 */
   relatedOn: string;
+  /** 草稿内的任务标签（多选；移除只解除关联，不动历史候选池）。 */
+  tags: string[];
   description: string;
   images: TodoImage[];
   /** 本次编辑新选中的图片本地路径，按 sha256 索引（仅需随字节管线投递，不进定义元数据）。
    *  用 sha256 而不是下标：删掉一张**已有**图片时，下标会与新图错位（把新图的待投递路径误删）。 */
   imagePaths: Record<string, string>;
 } | null>(null);
-const draftCustomInput = ref<HTMLInputElement | null>(null);
 const saving = ref(false);
 
 /**
@@ -656,6 +679,7 @@ function startCreate() {
     customIcon: TODO_CUSTOM_ICON_DEFAULT,
     priority: "normal",
     relatedOn: "",
+    tags: [],
     description: "",
     images: [],
     imagePaths: {},
@@ -673,17 +697,21 @@ function startEdit(x: TodoItem) {
     customIcon: x.customIcon ?? TODO_CUSTOM_ICON_DEFAULT,
     priority: x.priority,
     relatedOn: x.relatedOn ?? "",
+    tags: [...x.tags],
     description: x.description,
     images: [...x.images],
     imagePaths: {},
   };
 }
-/** 草稿类型切换：选「自定义…」时展开并聚焦名字输入框；切走其它档不清名字，切回来还在。 */
-function setDraftCategory(c: TodoCategory) {
+/**
+ * 草稿类型切换：`TodoAttrTypeField` 在面板内拿到自定义名后一起回传。
+ * 非 custom 档清掉自定义名（与保存时 `customCategory = ""` 的落库口径一致）。
+ */
+function setDraftCategory(c: TodoCategory, customName?: string) {
   const d = draft.value;
   if (!d) return;
   d.category = c;
-  if (c === "custom") void nextTick(() => draftCustomInput.value?.focus());
+  d.customCategory = c === "custom" ? (customName ?? "").trim() : "";
 }
 function setDraftPriority(p: TodoPriority) {
   const d = draft.value;
@@ -1021,12 +1049,14 @@ async function saveDraft() {
         cur ?? {
           todoId: d.todoId, title, assignees, status: d.status,
           description: d.description, images: d.images, relatedOn: d.relatedOn || null,
+          tags: d.tags,
         },
         {
           title, assignees, status: d.status, description: d.description, images: d.images,
           priority: d.priority, category: d.category, customCategory, customIcon,
           // 空串 = 明确清空（不能让 store 的 `??` 把它当成"没传"）
           relatedOn: d.relatedOn,
+          tags: d.tags,
         },
       );
       todoId = d.todoId;
@@ -1036,6 +1066,7 @@ async function saveDraft() {
         props.groupId, title, assignees, d.description, d.images, d.category, customCategory, customIcon,
         // 新建时空串 = 不填（后端 Option 收到 null/undefined 就是没填）
         d.relatedOn || undefined,
+        d.tags,
       );
       const parsed = parseTodo(rec);
       todoId = parsed?.todoId ?? "";
@@ -1132,6 +1163,41 @@ async function setIcon(item: TodoItem, icon: TodoCustomIcon) {
     // 只发这一格：其余字段后端按"没说就沿用库里的"处理（与自定义名同一套 carry 规矩）。
     await chat.updateTodo(gid, item, { customIcon: icon });
     app.toast(t("todo.updateDone"), "success");
+  } catch (e) {
+    app.toastError(e, t("todo.updateFail"));
+  }
+}
+
+/**
+ * 只动「关联时间」这一格。`""` = 用户点了面板里的清除，与"没说"（`undefined`）不同：
+ * store 用 `patch.relatedOn !== undefined` 决定是"发空串"还是"沿用旧值"。
+ * 权限：后端 `attributes_only` 窄档对**全体群成员**放行，前端不额外加编辑态门控。
+ */
+async function setRelatedOn(item: TodoItem, value: string) {
+  const gid = props.groupId;
+  if (!gid) return;
+  try {
+    await chat.updateTodo(gid, item, { relatedOn: value });
+    app.toast(t("todo.updateDone"), "success");
+  } catch (e) {
+    app.toastError(e, t("todo.updateFail"));
+  }
+}
+
+/**
+ * 只动「任务标签」这一格（多选整组覆盖，不做增量协议）。
+ *
+ * 移除某标签在这里就是"从数组里去掉它并写回" —— 后端 `apply_todo_tags` 只删关联行，
+ * 历史候选池的 `use_count` / `last_used_at` 不动（用户 2026-11-05 的删除语义）。
+ * 写成功后重读候选：刚落库的标签要立刻出现在"最近使用"里，计数也顺手刷新。
+ */
+async function setTagsFor(item: TodoItem, tags: string[]) {
+  const gid = props.groupId;
+  if (!gid) return;
+  try {
+    await chat.updateTodo(gid, item, { tags });
+    app.toast(t("todo.updateDone"), "success");
+    void loadTagCandidates();
   } catch (e) {
     app.toastError(e, t("todo.updateFail"));
   }
@@ -1553,6 +1619,8 @@ watch(
     :can-delete="detailItem ? canDelete(detailItem) : false"
     :can-edit-assignees="detailItem ? canEditAssigneesOf(detailItem) : false"
     :can-claim="detailItem ? canClaim(detailItem) : false"
+    :can-edit-attributes="myMembership"
+    :tag-candidates="tagCandidates"
     :name-of="(id: string) => memberProfile(id).name"
     :mention-names="mentionNames"
     :self-mention="selfMention"
@@ -1561,6 +1629,8 @@ watch(
     @priority="(p: TodoPriority) => detailItem && setPriority(detailItem, p)"
     @category="(c: TodoCategory, name?: string) => detailItem && setCategory(detailItem, c, name)"
     @icon="(i: TodoCustomIcon) => detailItem && setIcon(detailItem, i)"
+    @related-on="(v: string) => detailItem && setRelatedOn(detailItem, v)"
+    @tags="(tags: string[]) => detailItem && setTagsFor(detailItem, tags)"
     @claim="detailItem && claim(detailItem)"
     @archive="detailItem && archiveTodo(detailItem)"
     @restore="detailItem && restoreTodo(detailItem)"
@@ -1596,19 +1666,13 @@ watch(
         />
       </div>
 
-      <!-- 关联时间（可选）：只到年月日。走统一的 `AppDateField`（原生 `<input type="date">`
-           的薄封装：系统拾取器 + 统一高度/边框/暗色态；「清除」是字段内部的 × 图标，不再
-           另占一格文字按钮）。v-model 拿到的是 `YYYY-MM-DD`，清空时是空串 ⇒ 后端按"明确清空"处理。 -->
-      <div>
-        <div class="mb-1.5 text-xs text-[var(--gosslan-text-2)]">{{ t("todo.relatedOnLabel") }}</div>
-        <AppDateField
-          v-model="draft.relatedOn"
-          clearable
-          date-only
-          :label="t('todo.relatedOnLabel')"
-        />
-        <div class="mt-1 text-caption text-[var(--gosslan-text-2)]">{{ t("todo.relatedOnHint") }}</div>
-      </div>
+      <!-- 关联时间（可选）：与详情弹窗**同一格控件**（`TodoAttrDateField`，自绘日历面板，
+           宽度/圆角/阴影与标签下拉一致）。v-model 拿到 `YYYY-MM-DD`，清空时是空串 ⇒ 后端按"明确清空"处理。 -->
+      <TodoAttrDateField
+        v-model="draft.relatedOn"
+        :label="t('todo.relatedOnLabel')"
+        :hint="t('todo.relatedOnHint')"
+      />
 
       <!-- 状态：仅**编辑**时出现（新建恒为「待办」，`send_group_todo` 不收状态）。
            表单里的改动要到「保存」才写库 ⇒ 这里的分段控件没有"误触改状态"的问题。 -->
@@ -1633,8 +1697,9 @@ watch(
         </div>
       </div>
 
-      <!-- 优先级 + 类型：与详情弹窗同一套 TodoPickField（一个家）。
-           新建也能选（此前只能建完再进详情改，自定义类型没有入口）。 -->
+      <!-- 优先级 + 类型：优先级与状态仍共用 `TodoPickField`；类型换成与详情弹窗
+           同一个 `TodoAttrTypeField`（关联时间/标签也在这一套壳里，同高同圆角同面板）。
+           「自定义…」的名字输入已经收进面板，不再在字段下方另起一行。 -->
       <TodoPickField
         :label="t('todo.priorityLabel')"
         :model-value="draft.priority"
@@ -1644,35 +1709,30 @@ watch(
         @update:model-value="(v: string) => setDraftPriority(v as TodoPriority)"
       />
       <div>
-        <TodoPickField
+        <TodoAttrTypeField
           :label="t('todo.categoryLabel')"
+          :hint="t('todo.categoryHint')"
           :model-value="draft.category"
           :current="draftCategoryLabel"
           :current-class="TODO_CATEGORY_PILL[draft.category]"
           :options="draftCategoryOptions"
-          @update:model-value="(v: string) => setDraftCategory(v as TodoCategory)"
+          :custom-value="draft.customCategory"
+          @update:model-value="(v: string, name?: string) => setDraftCategory(v as TodoCategory, name)"
         />
-        <!-- 自定义名输入：只在 custom 档展开。:maxlength 与后端同一份上限。 -->
-        <div v-if="draft.category === 'custom'" class="mt-2 flex items-center gap-2 pl-1">
-          <Tag class="h-3.5 w-3.5 shrink-0 text-[var(--gosslan-text-2)]" aria-hidden="true" />
-          <input
-            ref="draftCustomInput"
-            v-model="draft.customCategory"
-            :maxlength="TODO_CUSTOM_CATEGORY_MAX_LEN"
-            class="h-9 min-w-0 flex-1 rounded-[var(--gosslan-radius-md)] border border-transparent bg-[var(--gosslan-field)] px-2.5 py-1 text-body outline-none transition focus:border-transparent"
-            :placeholder="t('todo.categoryCustomPlaceholder')"
-            @keydown.enter="ime.enter(saveDraft, $event)"
-            @compositionstart="ime.onStart"
-            @compositionend="ime.onEnd"
-          />
-          <CharCounter :text="draft.customCategory" :max="TODO_CUSTOM_CATEGORY_MAX_LEN" />
-        </div>
         <!-- 图标那一格与名字同一档展开（用户 2026-10-14 同一条需求的两半）。
              与详情弹窗共用 `TodoIconPicker`：两份编辑器不许各写一排按钮。 -->
         <div v-if="draft.category === 'custom'" class="mt-2 pl-1">
           <TodoIconPicker v-model="draft.customIcon" :aria-label="t('todo.pickIcon')" />
         </div>
       </div>
+
+      <!-- 任务标签：自定义输入 + 历史候选复用，与类型/关联时间同一套属性控件。 -->
+      <TodoAttrTagsField
+        v-model="draft.tags"
+        :label="t('todo.tagsLabel')"
+        :hint="t('todo.tagsHintInline')"
+        :candidates="tagCandidates"
+      />
 
       <!-- 描述 -->
       <div>

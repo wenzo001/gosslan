@@ -894,6 +894,7 @@ pub fn run() {
             commands::send_group_announcement,
             commands::send_group_todo,
             commands::update_group_todo,
+            commands::list_group_todo_tags,
             commands::send_group_file,
             commands::send_todo_image,
             commands::todo_image_meta,

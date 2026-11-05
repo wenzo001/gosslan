@@ -204,6 +204,8 @@ pub const GROUP_TODO_STATUS_INVALID: &str = "GROUP_TODO_STATUS_INVALID";
 pub const GROUP_TODO_PRIORITY_INVALID: &str = "GROUP_TODO_PRIORITY_INVALID";
 /// 待办：关联时间不合法（只接受 `YYYY-MM-DD` 的真实日历日）。
 pub const GROUP_TODO_RELATED_ON_INVALID: &str = "GROUP_TODO_RELATED_ON_INVALID";
+/// 待办：标签不合法（超过条数上限，或单个标签超过长度上限）。
+pub const GROUP_TODO_TAGS_INVALID: &str = "GROUP_TODO_TAGS_INVALID";
 /// 公告：内容为空。
 pub const GROUP_ANNOUNCEMENT_EMPTY: &str = "GROUP_ANNOUNCEMENT_EMPTY";
 /// 公告：标识缺失。

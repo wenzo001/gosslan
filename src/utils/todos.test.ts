@@ -30,6 +30,9 @@ import {
   MAX_TODO_ROWS_PER_CONV,
   TODO_PRIORITIES,
   TODO_PRIORITY_DEFAULT,
+  TODO_MAX_TAGS,
+  TODO_TAG_MAX_LEN,
+  normalizeTodoTags,
   resolveTodoNumbers,
   TODO_CATEGORIES,
   TODO_CATEGORY_DEFAULT,
@@ -527,19 +530,85 @@ test("parseTodo：旧载荷缺新字段时回落安全默认值", () => {
   assert.deepEqual(t.images, []);
   assert.equal(t.archived, false);
   assert.equal(t.relatedOn, null, "旧载荷没有 related_on ⇒ 读成 null，不是报错");
+  assert.deepEqual(t.tags, [], "旧载荷没有 tags ⇒ 读成空数组，不是报错");
   assert.equal(t.doneAt, null);
+});
+
+/**
+ * 标签的**兼容携带**（用户 2026-11-05 第 5 条）：老版本对端重建载荷时不认识 `tags`，
+ * 不能因为"键不存在"就把已挂标签抹光；显式空数组才是清空。
+ */
+test("foldTodos：缺 tags 键沿用、空数组清空（老版本兼容）", () => {
+  const created = rec(
+    "todo",
+    "m1",
+    "a",
+    {
+      todo_id: "t1", title: "x", assignees: ["a"], status: "todo", creator: "a", deleted: false,
+      description: "", images: [], archived: false, tags: ["bug", "登录"],
+    },
+    1,
+  );
+  const legacy = rec(
+    "todo_update",
+    "m2",
+    "b",
+    {
+      todo_id: "t1", title: "x", assignees: ["a"], status: "doing", creator: "a", deleted: false,
+      description: "", images: [], archived: false,
+    },
+    2,
+  );
+  assert.deepEqual(
+    foldTodos([created, legacy])[0].tags,
+    ["bug", "登录"],
+    "没带 `tags` ≠ 清空（反例：删掉 carryAbsentTodoFields 里的 tags 这一行，这条就红）",
+  );
+
+  const cleared = rec(
+    "todo_update",
+    "m3",
+    "a",
+    { todo_id: "t1", title: "x", assignees: ["a"], status: "doing", creator: "a", deleted: false, description: "", images: [], archived: false, tags: [] },
+    3,
+  );
+  assert.deepEqual(foldTodos([created, cleared])[0].tags, [], "显式空数组 = 明确清空");
+});
+
+/**
+ * **反例自证 2（前端侧）**：同一个标签重复挂到同一任务，必须被归一化去重。
+ * 删掉 `normalizeTodoTags` 里的 `out.some(...)` 这一行，下面的 deepEqual 立即红。
+ *
+ * **反例自证 3（大小写）**：`["Bug", "bug", "BUG"]` 必须只留首次写法 `Bug`。
+ * 把大小写判等（`toLowerCase()`）去掉，会归成三枚，第二条断言立即红。
+ */
+test("normalizeTodoTags：去空白 / 去重 / 超长与超量截断", () => {
+  assert.deepEqual(
+    normalizeTodoTags([" bug ", "bug", "UI", "", "bug"]),
+    ["bug", "UI"],
+    "重复标签必须只留第一次出现的那枚",
+  );
+  assert.deepEqual(
+    normalizeTodoTags(["Bug", "bug", "BUG"]),
+    ["Bug"],
+    "大小写不敏感去重：保留首次出现的写法（去掉 toLowerCase 判等这条立刻红）",
+  );
+  assert.deepEqual(normalizeTodoTags(["a".repeat(TODO_TAG_MAX_LEN + 1), "ok"]), ["ok"], "超长标签被丢掉");
+  const many = Array.from({ length: TODO_MAX_TAGS + 3 }, (_, i) => `t${i}`);
+  assert.equal(normalizeTodoTags(many).length, TODO_MAX_TAGS, "超过条数上限只留前 N 个");
 });
 
 test("parseTodo：新字段（描述 / 图片 / 归档 / done_at）被读取", () => {
   const img = { id: "sha1", name: "a.png", size: 10, sha256: "sha1", subtype: "png" };
   const recs = [
-    def("t1", 1, { description: "第一行\n第二行", images: [img], archived: true, done_at: 1700000000000, related_on: "2026-11-04" }),
+    def("t1", 1, { description: "第一行\n第二行", images: [img], archived: true, done_at: 1700000000000, related_on: "2026-11-04", tags: ["bug"] }),
   ];
   const [t] = foldTodos(recs);
   assert.equal(t.description, "第一行\n第二行");
   assert.deepEqual(t.images, [img]);
   assert.equal(t.archived, true);
   assert.equal(t.relatedOn, "2026-11-04");
+  assert.deepEqual(t.tags, ["bug"]);
   assert.equal(t.doneAt, 1700000000000);
 });
 
@@ -720,6 +789,7 @@ const todoFixture = (
   images: [],
   archived: false,
   relatedOn: null,
+  tags: [],
   doneAt: null,
   createdAt: null,
   ...over,

@@ -267,6 +267,26 @@ fn normalize_todo_related_on(raw: &str) -> Result<Option<String>, String> {
     Ok(Some(trimmed.to_string()))
 }
 
+/// 归一 + 校验一次请求里的任务标签：先 trim / 丢空串 / 去重，再按上限拒绝。
+///
+/// 去重放在这里而不是只靠数据库：重复标签如果进了载荷，前端会渲染出两枚同样的胶囊，
+/// 而用户只看到"怎么多了一个"。数据库的 `(todo_id, tag)` 唯一约束是最后一道闸（反例自证在
+/// `db/migration_tests.rs`），不是唯一一道。
+fn normalize_todo_tags_param(raw: &[String]) -> Result<Vec<String>, String> {
+    let tags = crate::protocol::normalize_todo_tags(raw);
+    if !crate::protocol::todo_tags_are_valid(&tags) {
+        return Err(crate::error_codes::coded(
+            crate::error_codes::GROUP_TODO_TAGS_INVALID,
+            format!(
+                "任务标签最多 {} 个，每个不超过 {} 字",
+                crate::protocol::TODO_MAX_TAGS,
+                crate::protocol::TODO_TAG_MAX_LEN
+            ),
+        ));
+    }
+    Ok(tags)
+}
+
 /// 创建一条群任务（任意成员）。
 ///
 /// `todo_id` 用随机 id（`todo-<uuid>`）而不是"创建事件的 msg_id"：后续每一次改状态/改标题
@@ -284,6 +304,7 @@ pub async fn send_group_todo(
     custom_category: Option<String>,
     custom_icon: Option<String>,
     related_on: Option<String>,
+    tags: Option<Vec<String>>,
 ) -> Result<MessageRecord, String> {
     let s = state.inner();
     // 类型只在**给了值**时校验；没给就是缺省那一档（旧前端不传这一格也要能建任务）。
@@ -310,6 +331,8 @@ pub async fn send_group_todo(
         Some(raw) => normalize_todo_related_on(raw)?,
         None => None,
     };
+    // 标签可选：没传 = 不挂；传了就先归一/去重，再按上限校验。
+    let tags = normalize_todo_tags_param(tags.as_deref().unwrap_or(&[]))?;
     let title = title.trim().to_string();
     if title.is_empty() {
         return Err(crate::error_codes::coded(
@@ -354,6 +377,7 @@ pub async fn send_group_todo(
         archived: false,
         done_at: None,
         related_on,
+        tags,
     };
     let content = serde_json::to_string(&payload).map_err(|e| e.to_string())?;
     let todo_id = payload.todo_id.clone();
@@ -451,6 +475,8 @@ fn latest_todo_def(
     // 关联时间：外层 `Some` = 这一份载荷**明确说过**这一格；内层 `None` = 明确清空。
     // 键不存在 = 没说（继续往旧载荷找），空串/null = 说了没有。
     let mut carry_related_on: Option<Option<String>> = None;
+    // 标签同理（2026-11-05）：`Some(vec![])` = 明确清空；键不存在 = 没说（老对端重建的载荷不认识这一格）。
+    let mut carry_tags: Option<Vec<String>> = None;
     // 创建那一条说过的号：绝对坐标，压过任何一份更新里的号。DESC 扫到最后一刻 = 最旧那条创建。
     let mut created_number: Option<i64> = None;
     for row in rows.flatten() {
@@ -501,6 +527,19 @@ fn latest_todo_def(
             }
             _ => None,
         };
+        // 键在不在 → 三态：没带 = 沿用；数组（含空数组）= 说过，归一后采用；非数组 = 脏值当没说。
+        let stated_tags: Option<Vec<String>> = match v.get("tags") {
+            None => None,
+            Some(serde_json::Value::Array(a)) => {
+                let raw: Vec<String> = a
+                    .iter()
+                    .filter_map(|x| x.as_str())
+                    .map(str::to_string)
+                    .collect();
+                Some(crate::protocol::normalize_todo_tags(&raw))
+            }
+            _ => None,
+        };
         let Ok(p) = serde_json::from_value::<crate::protocol::TodoPayload>(v) else {
             continue;
         };
@@ -528,6 +567,9 @@ fn latest_todo_def(
         if carry_related_on.is_none() {
             carry_related_on = stated_related_on;
         }
+        if carry_tags.is_none() {
+            carry_tags = stated_tags;
+        }
         if kind == "todo" && stated_number.is_some() {
             created_number = stated_number;
         }
@@ -545,6 +587,8 @@ fn latest_todo_def(
     }
     // 关联时间：最新一份"说了"就用它（null/空串 = 明确清空）；"没说"则沿用最近说过的那一天。
     p.related_on = carry_related_on.flatten();
+    // 标签：最新一份说了（含空数组）就用它；"没说"则沿用更早那份说过的；都没说过 = 空。
+    p.tags = carry_tags.unwrap_or_default();
     // 只有最新那份的类型仍是 custom 时才补名字：非 custom 档的载荷里带不带文本都无意义
     //（保存时服务端会清空），这里也不该把旧名字复活。
     if p.custom_category.is_empty() && p.category == "custom" {
@@ -643,6 +687,8 @@ struct TodoEdit<'a> {
     custom_icon: &'a str,
     /// 归一后的关联时间（`""` = 没有）。窄档要逐字比这一格：成员不能借归档/还原/认领顺手改日期。
     related_on: &'a str,
+    /// 归一后的标签。窄档同样逐字比：成员不能借归档/还原/认领/删除顺手改标签。
+    tags: &'a [String],
 }
 
 /// 本次请求是否**只动归档位**：其余字段与库里最新定义逐字相同，且归档值确实翻转了。
@@ -666,6 +712,7 @@ fn archive_only_change(def: &crate::protocol::TodoPayload, e: &TodoEdit<'_>) -> 
         && e.custom_category == def.custom_category
         && e.custom_icon == def.custom_icon
         && e.related_on == def.related_on.as_deref().unwrap_or("")
+        && e.tags == def.tags.as_slice()
 }
 
 /// 本次请求是否**只是"还原"**：库里状态是终态（完成/做不了），请求把它退回「待办」，
@@ -692,6 +739,7 @@ fn reopen_only_change(def: &crate::protocol::TodoPayload, e: &TodoEdit<'_>) -> b
         && e.custom_category == def.custom_category
         && e.custom_icon == def.custom_icon
         && e.related_on == def.related_on.as_deref().unwrap_or("")
+        && e.tags == def.tags.as_slice()
 }
 
 /// 请求的指派人名单是否正好等于「原名单 + 末尾追加 actor」这一个改动。
@@ -729,7 +777,29 @@ fn claim_only_change(def: &crate::protocol::TodoPayload, actor: &str, e: &TodoEd
         && e.custom_category == def.custom_category
         && e.custom_icon == def.custom_icon
         && e.related_on == def.related_on.as_deref().unwrap_or("")
+        && e.tags == def.tags.as_slice()
         && assignees_are_def_plus_actor(&def.assignees, e.assignees, actor)
+}
+
+/// 本次请求是否**只动了"属性"**：关联时间 / 任务类型 / 任务标签（用户 2026-11-05）。
+///
+/// 这三件在详情页与状态下拉是同一交互（任何群成员随时可改），所以单独开一条成员窄档；
+/// 标题 / 指派人 / 状态 / 描述 / 图片 / 归档 / 删除仍逐字相同 —— 不能借着"改标签"
+/// 顺手改掉任何一项。优先级也**不在**这一档：它仍是创建者/群主/指派人的权限。
+fn attributes_only_change(def: &crate::protocol::TodoPayload, e: &TodoEdit<'_>) -> bool {
+    !e.deleted
+        && e.title == def.title
+        && e.status == def.status
+        && e.assignees == def.assignees
+        && e.description == def.description
+        && same_images(e.images, &def.images)
+        && e.archived.is_none()
+        && e.priority == def.priority
+        && (e.category != def.category
+            || e.custom_category != def.custom_category
+            || e.custom_icon != def.custom_icon
+            || e.related_on != def.related_on.as_deref().unwrap_or("")
+            || e.tags != def.tags.as_slice())
 }
 
 /// 这条任务**实际上**是否处于归档态：显式归档，或终态（完成/做不了）满
@@ -775,15 +845,19 @@ fn delete_archived_change(
         && e.custom_category == def.custom_category
         && e.custom_icon == def.custom_icon
         && e.related_on == def.related_on.as_deref().unwrap_or("")
+        && e.tags == def.tags.as_slice()
 }
 
-/// 「成员窄档」：只服务**本群成员**的四条窄动作（归档 / 还原 / 认领一条需求 / 删除已归档）。
+/// 「成员窄档」：只服务**本群成员**的五条窄动作
+/// （归档 / 还原 / 认领一条需求 / 删除已归档 / 只改任务属性）。
 #[derive(Clone, Copy, Default)]
 struct MemberLane {
     archive_only: bool,
     reopen_only: bool,
     claim_only: bool,
     delete_archived: bool,
+    /// 只改关联时间 / 任务类型 / 任务标签（用户 2026-11-05：全体成员随时可改）。
+    attributes_only: bool,
     is_member: bool,
 }
 
@@ -793,11 +867,12 @@ impl MemberLane {
             && (self.archive_only
                 || self.reopen_only
                 || self.claim_only
-                || self.delete_archived)
+                || self.delete_archived
+                || self.attributes_only)
     }
 }
 
-/// 命令层的总判权：[`may_update_todo`] 的两档，外加 [`MemberLane`] 那两条放宽档。
+/// 命令层的总判权：[`may_update_todo`] 的两档，外加 [`MemberLane`] 那五条放宽档。
 ///
 /// 归档、还原与"删除已归档"放宽给**全体群成员**（用户 2026-09-24：「群里所有人都可以归档」，
 /// 同日追加：「归档和被归档的数据还原，任何人都可以操作，其他权限不变」；
@@ -873,6 +948,7 @@ pub async fn update_group_todo(
     custom_category: Option<String>,
     custom_icon: Option<String>,
     related_on: Option<String>,
+    tags: Option<Vec<String>>,
 ) -> Result<MessageRecord, String> {
     let s = state.inner();
     let title = title.trim().to_string();
@@ -982,6 +1058,11 @@ pub async fn update_group_todo(
         Some(raw) => normalize_todo_related_on(raw)?,
         None => def.related_on.clone(),
     };
+    // 标签与关联时间同口径：`None`（旧前端没传这一格）⇒ 沿用库里那份；`Some([])` = 明确清空。
+    let tags = match tags.as_deref() {
+        Some(raw) => normalize_todo_tags_param(raw)?,
+        None => def.tags.clone(),
+    };
     let edits_assignees = assignees != def.assignees;
     let edits_structure = deleted || title != def.title;
     let edit = TodoEdit {
@@ -997,12 +1078,14 @@ pub async fn update_group_todo(
         custom_category: &custom_category,
         custom_icon: &custom_icon,
         related_on: related_on.as_deref().unwrap_or(""),
+        tags: &tags,
     };
     let lane = MemberLane {
         archive_only: archive_only_change(&def, &edit),
         reopen_only: reopen_only_change(&def, &edit),
         claim_only: claim_only_change(&def, &s.device_id, &edit),
         delete_archived: delete_archived_change(&def, &edit, crate::db::now_ms()),
+        attributes_only: attributes_only_change(&def, &edit),
         is_member: members.iter().any(|m| m == &s.device_id),
     };
     if !may_change_todo(
@@ -1022,6 +1105,8 @@ pub async fn update_group_todo(
             || lane.delete_archived
         {
             "只有群成员可以归档、还原、认领或删除已归档任务".to_string()
+        } else if lane.attributes_only {
+            "只有群成员可以修改任务属性".to_string()
         } else {
             "只有创建者或被指派人可以修改任务状态".to_string()
         };
@@ -1072,6 +1157,7 @@ pub async fn update_group_todo(
         custom_category,
         custom_icon,
         related_on,
+        tags,
     };
     let content = serde_json::to_string(&payload).map_err(|e| e.to_string())?;
     let (todo_id, status) = (payload.todo_id.clone(), payload.status.clone());
@@ -1090,6 +1176,26 @@ pub async fn update_group_todo(
         ),
     );
     Ok(rec)
+}
+
+/// 读某群的标签候选（历史下拉用）：按使用次数 → 最近使用 → 字典序排。
+///
+/// 这一读同时负责候选池的自动清理（超过保留期的行在读取时被删掉，见
+/// `db::TODO_TAG_POOL_RETENTION_DAYS`）；前端只在下拉打开/保存标签后各拉一次。
+#[tauri::command(async)]
+pub async fn list_group_todo_tags(
+    state: State<'_, Arc<AppState>>,
+    group_id: String,
+) -> Result<Vec<db::TodoTagCandidate>, String> {
+    // 整段读库进阻塞池（INV-P34 / `worker_bound_heavy_commands_do_not_grow`）：
+    // `#[tauri::command(async)]` 只是把同步 fn 丢进 tokio worker，等 DB 锁仍会占住 worker。
+    let s = state.inner().clone();
+    tokio::task::spawn_blocking(move || {
+        let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());
+        db::list_todo_tag_candidates(&dbc, &group_id, crate::db::now_ms()).map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| format!("读取任务标签候选被线程池中断: {e}"))?
 }
 
 /// 发布群公告（**仅群主**）。

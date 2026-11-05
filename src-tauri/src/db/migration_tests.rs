@@ -27,8 +27,9 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use super::{
-    ensure_post_schema_shape, get_setting, init, init_with_notices, last_migration, run_migrations,
-    set_setting, user_version, InitError, DB_VERSION, GROUP_ORPHAN_RETRY_KEY, MIGRATIONS, SCHEMA,
+    apply_todo_tags, ensure_post_schema_shape, get_setting, init, init_with_notices,
+    last_migration, list_todo_tag_candidates, run_migrations, set_setting, user_version, InitError,
+    DB_VERSION, GROUP_ORPHAN_RETRY_KEY, MIGRATIONS, SCHEMA, TODO_TAG_POOL_RETENTION_DAYS,
 };
 
 /// 每个测试创建一个独立临时 DB 文件，避免跨测试污染。
@@ -3084,6 +3085,147 @@ fn pending_group_orphan_cleanup_is_retried_on_next_startup() {
     assert!(
         notices.iter().any(|n| n.contains("孤儿清理")),
         "补跑成功要留启动通知（否则用户只看到日志里的 v7/v10 告警就永远不知道后来补上了）：{notices:?}"
+    );
+    drop(conn);
+    cleanup_db_and_backups(&path);
+}
+
+// ---------------------------------------------------------------------------
+// v16 → v17：群任务标签（关联表 + 候选池）
+// ---------------------------------------------------------------------------
+
+/// **反例自证 1**：同一个任务重复挂同一个标签必须被数据库拒掉。
+///
+/// 判据不是"表里有唯一索引定义"，而是真的插两次会红：把 `todo_task_tags` 的主键
+/// `(todo_id, tag)` 去掉（例如误改成自增 id），下面 `second` 的 exec 就会成功，测试立即失败。
+/// 同时验证 v16→v17 迁移会把历史消息里的 `tags` 回填进来（混合版本期间旧库可能已收到过）。
+///
+/// **反例自证 2（大小写）**：`["Bug", "bug", "UI"]` 必须按小写判等归成两条，且保留首次写法 `Bug`。
+/// 把 `normalize_todo_tags` 里的 `to_lowercase()` 去掉，回填会变成 3 行关联 / 3 行候选，下面断言立即红。
+#[test]
+fn v16_to_v17_backfills_todo_tags_and_enforces_unique_constraint() {
+    let path = temp_db_path();
+    let conn = init(&path).expect("init fresh db");
+    // 造一个"v16 的旧库"：清空标签表、写入一条带 tags 的 todo 消息，再把版本压回 16。
+    conn.execute("DELETE FROM todo_task_tags", []).unwrap();
+    conn.execute("DELETE FROM todo_tag_pool", []).unwrap();
+    conn.execute(
+        "INSERT INTO messages(msg_id, conv_id, sender_id, receiver_id, kind, content, ts, seq, status) \
+         VALUES(?1, ?2, ?3, ?4, 'todo', ?5, ?6, 1, 'sent')",
+        params![
+            "m-tags-1",
+            "group:g-tags",
+            "alice",
+            "g-tags",
+            r#"{"todo_id":"t-tags-1","title":"修登录","tags":["Bug","bug","UI"]}"#,
+            1000i64
+        ],
+    )
+    .unwrap();
+    conn.execute("PRAGMA user_version = 16", []).unwrap();
+    drop(conn);
+
+    let conn = init(&path).expect("re-init v16 db");
+    assert_eq!(read_user_version(&conn), 17, "v16 旧库应升到 17");
+    // 回填：`bug` 与 `Bug` 按小写判等只留一行，关联 2 行、候选池 2 行，写法保留首次的 `Bug`。
+    let assoc: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM todo_task_tags WHERE todo_id = 't-tags-1'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(
+        assoc, 2,
+        "回填后应只有 Bug / UI 两行关联（大小写不敏感去重）"
+    );
+    let pool: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM todo_tag_pool WHERE group_id = 'g-tags'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(pool, 2, "候选池应回填两行（大小写不敏感去重）");
+    let kept_case: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM todo_tag_pool WHERE group_id = 'g-tags' AND tag = 'Bug'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(kept_case, 1, "候选池保留首次输入时的原始大小写 `Bug`");
+
+    // 唯一约束：同一 (todo_id, tag) 第二行必须被拒。
+    let second = conn.execute(
+        "INSERT INTO todo_task_tags(group_id, todo_id, tag, updated_at) VALUES('g-tags','t-tags-1','Bug',2000)",
+        [],
+    );
+    assert!(
+        second.is_err(),
+        "同一个任务重复挂同一个标签必须被唯一约束拒掉（把主键去掉这条就会红）"
+    );
+
+    // 后输入的小写 `bug` 复用候选池里的 `Bug`：不新建 `bug` 行。
+    apply_todo_tags(&conn, "g-tags", "t-tags-1", &["bug".to_string()], 3000).unwrap();
+    let lower_rows: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM todo_tag_pool WHERE group_id = 'g-tags' AND tag = 'bug'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(lower_rows, 0, "`bug` 必须命中已有的 `Bug`，不新建重复候选");
+    let assoc_after: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM todo_task_tags WHERE todo_id = 't-tags-1' AND tag = 'Bug'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(assoc_after, 1, "关联也按候选池的首次写法落库");
+    drop(conn);
+    cleanup_db_and_backups(&path);
+}
+
+/// **反例自证 2**：从任务上移除标签只解除关联，**候选池不删**；
+/// 超过 90 天没被任何任务"说"过的候选才在读取时被清掉。
+///
+/// 如果误把"解除关联"实现成 `DELETE FROM todo_tag_pool`，或者把保留期清成 0，
+/// 下面两条断言会分别红。
+#[test]
+fn tag_pool_survives_unlink_and_cleans_only_stale_candidates() {
+    let path = temp_db_path();
+    let conn = init(&path).expect("init fresh db");
+    let now = 1_700_000_000_000i64;
+    let tags = vec!["长期".to_string(), "临时".to_string()];
+    apply_todo_tags(&conn, "g1", "t1", &tags, now).unwrap();
+    // 解除关联（空集合 = 明确清空），候选池应原样保留。
+    apply_todo_tags(&conn, "g1", "t1", &[], now + 1).unwrap();
+    let mut kept: Vec<String> = list_todo_tag_candidates(&conn, "g1", now + 2)
+        .unwrap()
+        .into_iter()
+        .map(|c| c.tag)
+        .collect();
+    kept.sort_unstable();
+    assert_eq!(
+        kept,
+        vec!["临时".to_string(), "长期".to_string()],
+        "移除标签只解除关联，候选池必须还在"
+    );
+
+    // 把其中一个候选推到保留期之外 → 只剩最近那个。
+    let stale = now - (TODO_TAG_POOL_RETENTION_DAYS + 1) * 24 * 60 * 60 * 1000;
+    conn.execute(
+        "UPDATE todo_tag_pool SET last_used_at = ?1 WHERE group_id = 'g1' AND tag = '临时'",
+        params![stale],
+    )
+    .unwrap();
+    let cleaned = list_todo_tag_candidates(&conn, "g1", now).unwrap();
+    assert_eq!(
+        cleaned.iter().map(|c| c.tag.as_str()).collect::<Vec<_>>(),
+        vec!["长期"],
+        "超过保留期的候选应在读取时被清理"
     );
     drop(conn);
     cleanup_db_and_backups(&path);

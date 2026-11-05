@@ -48,6 +48,8 @@ export function todoFixturePayload(deviceId, over = {}) {
     // 关联时间：生产侧没填时写的就是 `null`（`Option<String>`）。这台探针读的是编号角标，
     // 与日期无关，用最空的形状即可。
     related_on: null,
+    // 任务标签：生产侧没填时写的就是空数组（`Vec<String>`），与 `related_on` 同理。
+    tags: [],
     ...over,
   };
 }

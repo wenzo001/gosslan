@@ -35,6 +35,10 @@ pub fn insert_message_if_new(conn: &Connection, m: &MessageRecord) -> Result<boo
         params![m.msg_id, m.conv_id, m.sender_id, m.receiver_id, m.kind, m.content, m.ts, m.seq, m.status,
                 encode_mention_targets(&m.mention_targets), m.local_id],
     )?;
+    // 群任务标签是"消息载荷的派生索引"：本地发送、Gossip 接收、历史回放都从这里落库，
+    // 在这里同步一次即可覆盖全部来源（关联表/候选池见 `db/todo_tags.rs`）。
+    // 失败不影响主消息 —— 这只是候选池缓存，下一条同名任务更新会自愈。
+    sync_todo_tags_from_message(conn, &m.conv_id, &m.kind, &m.content, now_ms());
     Ok(changed > 0)
 }
 

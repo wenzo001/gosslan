@@ -730,7 +730,8 @@ const CMDS = [
   ["send_group_announcement", "group_files", "group_id str; text str", "MessageRecord|err"],
   ["send_group_message", "group_files", "group_id str; content str; kind str; mentions str[]?; local_id str?", "MessageRecord|err"],
   ["send_group_todo", "group_files", "group_id str; title str; assignees str[]; description str?; images TodoImage[]?; category str?", "MessageRecord|err"],
-  ["update_group_todo", "group_files", "group_id str; todo_id str; title str; assignees str[]; status str; deleted bool; description str?; images TodoImage[]?; archived bool?; priority str?; category str?", "MessageRecord|err"],
+  ["update_group_todo", "group_files", "group_id str; todo_id str; title str; assignees str[]; status str; deleted bool; description str?; images TodoImage[]?; archived bool?; priority str?; category str?; tags str[]?", "MessageRecord|err"],
+  ["list_group_todo_tags", "group_files", "group_id str", "TodoTagCandidate[]|err"],
   ["save_todo_image_bytes", "group_todo_media", "request Request<'_>", "str|err"],
   ["todo_image_meta", "group_todo_media", "path str", "TodoImage|err"],
   ["create_group", "groups", "name str; members str[]", "Group|err"],
@@ -914,7 +915,8 @@ const SEM = {
   send_group_announcement: { d: "发布群公告（<b>仅群主</b>）：权限口径与改名逐字同构（<code>group.creator == 我</code>）。"
     + "公告是发给全群的权威信息，人人可发就失去意义；<b>群主离线就是发不了</b> —— 无中心即无中心授权，不降级成谁都能发" },
   send_group_todo: { d: "建任务。<code>kind=todo</code> 属 <b>Card 类</b>（计未读）。通知只给<b>相关人</b>：创建人 + 被指派人（判据 <code>utils/todos::todoCardConcernsMe</code>）—— 2026-11-02 之前实现是全群每个人都弹，与本图那句「通知被指派人」不符。", w: "messages(JSON)" },
-  update_group_todo: { d: "改任务（标题 / 指派 / 状态 / 归档 / 删除 / 图片）。<code>kind=todo_update</code> 属 <b>Silent 类</b>：不通知。⚠️ <b>状态存在 JSON content 里，不是表列</b>，读的时候由 <code>foldTodos</code> 折叠。" },
+  update_group_todo: { d: "改任务（标题 / 指派 / 状态 / 归档 / 删除 / 图片 / <b>关联时间 / 类型 / 标签</b>）。<code>kind=todo_update</code> 属 <b>Silent 类</b>：不通知。⚠️ <b>状态存在 JSON content 里，不是表列</b>，读的时候由 <code>foldTodos</code> 折叠。标签的关联行由入库钩子同步进 <code>todo_task_tags</code>，候选池在 <code>todo_tag_pool</code>。" },
+  list_group_todo_tags: { d: "读任务标签的历史候选池（按 <code>use_count</code> / <code>last_used_at</code> 排序；顺手清理 <code>TODO_TAG_POOL_RETENTION_DAYS</code>=90 天未用的候选）。" },
   delete_group_announcement: { d: "删公告（<code>announcement_delete</code>）。" },
 
   /* ── commands/group_todo_media.rs ── */
