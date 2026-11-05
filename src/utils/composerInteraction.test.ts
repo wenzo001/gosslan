@@ -4,7 +4,7 @@
  *   ② 粘贴图片先入框、发送才发；
  *   ③ 输入框内表情渲染成图片 token；
  *   ④「回到最新」纯圆无文字且水平居中；
- *   ⑤ 单行输入框与多行主输入框的高度只允许三档（sm 32 / md 36 / lg 44）。
+ *   ⑤ 单行输入框与多行主输入框的高度只允许三档（sm 36 / md 40 / lg 44）。
  *
  * 前两项是纯函数真值表；后四项读组件源码做**静态接线守卫**。
  * 为什么后三项要读源码：这些是"回退后界面看起来仍然正常"的退化 ——
@@ -121,7 +121,7 @@ test("回到最新按钮纯圆无文字且水平居中（回退成文字胶囊�
   assert.equal(textOnly.trim(), "", "按钮内不允许出现文字节点");
 });
 
-test("输入框高度收敛为三档（单行 32/36、多行 44；出现 h-7/h-10 会红）", () => {
+test("输入框高度收敛为三档（单行 36/40、多行 44；出现 h-7/h-8 会红）", () => {
   // 高度归外壳/工具条行所有的输入，逐条登记理由；不登记就会因"没有档位"判红。
   const heightOwnedByShell = new Set([
     "components/ConversationList.vue", // 输入在 h-9 搜索壳内
@@ -154,7 +154,7 @@ test("输入框高度收敛为三档（单行 32/36、多行 44；出现 h-7/h-1
       const cls = (tag.match(/class="([^"]*)"/) ?? [])[1] ?? "";
       const heights = cls.match(/\b(?:min-)?h-\S+/g) ?? [];
       inspected += 1;
-      const onTier = heights.length === 1 && (heights[0] === "h-8" || heights[0] === "h-9");
+      const onTier = heights.length === 1 && (heights[0] === "h-9" || heights[0] === "h-10");
       if (!onTier) {
         const line = src.slice(0, match.index).split("\n").length;
         offenders.push(`${rel}:${line} 高度=${heights.join(",") || "(无)"}`);
@@ -164,7 +164,7 @@ test("输入框高度收敛为三档（单行 32/36、多行 44；出现 h-7/h-1
 
   // 反例自证：扫描空转（例如改了目录结构、注释误命中）会先在这里红，不会假绿。
   assert.ok(inspected >= 12, `至少要扫到 12 个单行文本输入，实际 ${inspected}`);
-  assert.deepEqual(offenders, [], `只允许 h-8(32)/h-9(36)：\n${offenders.join("\n")}`);
+  assert.deepEqual(offenders, [], `只允许 h-9(36)/h-10(40)：\n${offenders.join("\n")}`);
 
   // 多行主输入框取 lg 档 44px：改回旧 min-h-10(40) 会红。
   assert.ok(
