@@ -587,13 +587,13 @@ GroupMemberPanel.vue[EU7L]: F:群成员面板：名册、角色与群主操作 |
 GroupTasksBoard.vue[ED9L]: F:群任务看板本体（无壳），弹窗与独立窗口共用 | R:code:src/components/GroupTodosWindow.vue,code:src/components/TodoDetailDialog.vue,code:src/utils/todos.ts | A:折叠数据、权限判据、行首图标与状态/归档操作 | S:下拉弹层必须 Teleport 到 body 再 fixed（外层 overflow-y-auto，同坑第三处）；编号建条即固定、位置序号不能当编号；状态菜单同时只开一个；只统计已加载页。行首优先级+类型图标三档全画（缺省档最难认），aria-hidden 因文字层已说；编号首字母 T/R/B 是 INV-P29 口头引用件，不许为去重复拿掉。；「已完成 n/总数」只数 done；impossible 是看板里自成一组的另一种终态，不并进分子；指派那一格不再内嵌滚动；图标选择器与详情共用一份
 GroupTasksPanel.vue[EU6T]: F:群任务的应用内弹窗壳 | R:code:src/components/GroupTasksBoard.vue | A:桌面窗口不可用时的回退入口 | S:桌面端正常路径是独立窗口；这个壳只留给两处：移动端（独立窗口是桌面能力）与桌面建窗失败的回退。看板本体在 GroupTasksBoard，别在这里复制一份。
 GroupTodosWindow.vue[EU8M]: F:独立群任务窗口的根组件（label=tasks，全局只有一扇） | R:code:src/components/GroupTasksBoard.vue,code:src-tauri/src/commands/logs.rs | A:窗口与 groupId 的绑定与换群清理 | S:label 不再是 todo-<groupId>：改成固定一扇后换群必须做两件事，否则上一群的看板状态会留在屏上。别把这一刀改成组件里 watch groupId 清状态——清 draft/detailId/pendingDelete 的责任在看板自己那份。
-LinksList.vue[EU7S]: F:左栏外链列表与增改删 | R:code:src-tauri/src/commands/external_links.rs,code:src-tauri/src/commands/logs.rs | A:外链表操作与打开入口 | S:点链接是交给父级在独立窗口里加载：窗口隔离、不授予远端页面任何命令权限。数据只在主窗口左列用，所以走独立命令而不是塞进 runtime 快照。
-LogViewer.vue[EO8M]: F:运行日志窗口的前端 | R:code:src-tauri/src/logging.rs,code:src/api/index.ts | A:日志过滤与轮询 | S:判据必须与屏幕上渲染的文本一致（所见即所匹配），所以时间取 HH:MM:SS 而不是完整时间戳。后端暂不可用时保持现状下次轮询重试；窗口重新可见要立刻补一次，否则用户看到过期日志还要等 2s。
+LinksList.vue[EU7L]: F:左栏外链列表与增改删 | R:code:src-tauri/src/commands/external_links.rs,code:src-tauri/src/commands/logs.rs | A:外链表操作与打开入口 | S:点链接是交给父级在独立窗口里加载：窗口隔离、不授予远端页面任何命令权限。数据只在主窗口左列用，所以走独立命令而不是塞进 runtime 快照。
+LogViewer.vue[EO8L]: F:运行日志窗口的前端 | R:code:src-tauri/src/logging.rs,code:src/api/index.ts | A:日志过滤与轮询 | S:判据必须与屏幕上渲染的文本一致（所见即所匹配），所以时间取 HH:MM:SS 而不是完整时间戳。后端暂不可用时保持现状下次轮询重试；窗口重新可见要立刻补一次，否则用户看到过期日志还要等 2s。
 MessageItem.vue[EU9L]: F:单条消息气泡：文本/图片/文件/卡片/任务/强提醒标识的渲染与全套操作 | R:code:src/components/VirtualList.vue,code:src-tauri/src/protocol.rs,code:src/components/TodoCardBubble.vue,code:src/components/RemindAudienceDialog.vue | A:气泡可点面、回应浮层、复制/转发/引用/收藏/强提醒入口、open-tasks 转发 | S:头像取色与列表/回执同源；catch 分支也过状态闸；回应浮层 Teleport 壳零高度；坐标清空必须连带关 open 态否则 aria-expanded 假 true；入口用 kb-reveal（display:none 连可聚焦一起去掉）；任务卡两个事件必须分别转发（open 带 todoId 直达详情、open-panel 只开面板）。；头像取色名不再兜底裸 id：nicknameOf 永不空，再兜一次就是把第二条兜底写进第二个家
 MobilePageFrame.vue[EU6S]: F:移动端详情页统一框架：头部返回 + overlay 底部安全区 | R:code:src/components/SettingsPanel.vue,code:src/components/LogViewer.vue | A:返回键、标题槽与 safe-bottom | S:所有移动端详情页共用这一个头部，曾三套返回画法不一致。safe-bottom 只加在 overlay 的滚动层（非根层）：内容能滚过指示条、停底时最后一行不被压；inline 形态不写。
 NavRail.vue[EU7M]: F:左栏导航轨，本人头像收进 SelfAvatar | R:code:src/components/ConversationList.vue,code:src/components/LinksList.vue | A:视图切换、二级菜单与未读入口 | S:本人头像只用 SelfAvatar（与全仓同数据源同默认脸），别在本组件再按 device_id 自算种子自画 emoji；二级菜单惯用法与 ConversationList「+」一致（互斥+键盘可达）。
 SettingsPanel.vue[EU7M]: F:设置内容（应用内弹窗形态） | R:code:src/components/SettingsWindow.vue,code:src/api/index.ts | A:分区条目与开关 | S:⚠️ titleKey 一律用条目名（settings.item.*，与列表里那一条同键）——用分区键会让标题和内容对不上。列表项文案与打开的分区必须同源。
-SettingsWindow.vue[EU7S]: F:独立设置窗口的内容（label=settings） | R:code:src/components/SettingsPanel.vue,code:src-tauri/src/commands/settings.rs | A:左侧导航加分区内容的窗口形态 | S:两条教训钉在文件头：导航项的标签必须与它打开的分区内容一致（此前 general 那项就对不上）；「关于」与「重置」必须分成两项，合并会让桌面版找不到重置入口。
+SettingsWindow.vue[EU7M]: F:独立设置窗口的内容（label=settings） | R:code:src/components/SettingsPanel.vue,code:src-tauri/src/commands/settings.rs | A:左侧导航加分区内容的窗口形态 | S:两条教训钉在文件头：导航项的标签必须与它打开的分区内容一致（此前 general 那项就对不上）；「关于」与「重置」必须分成两项，合并会让桌面版找不到重置入口。
 ShareDirectory.vue[EU6S]: F:共享目录选择与状态 | R:code:src-tauri/src/user_dirs.rs,code:src/api/index.ts | A:共享目录的设置与列表 | S:用 loadedFor 而不是当场取 friendId()：弹窗开着时 activeConv 会被程序化路径换掉，当场取会拿到错的会话。
 TitleBar.vue[EU9M]: F:自绘标题栏，主窗口与所有应用自己的辅助窗口共用 | R:code:src-tauri/src/commands/logs.rs,code:src/boot/theme-boot.js | A:caption 区与窗口控制 | S:caption 由前端画（decorations:false），能否最大化由后端白名单判，两个处理器都不许按桌面平台分支；字形必须随 onResized/全屏事件刷新；★双击只接 dblclick 不够——mousedown 起的 startDragging 在 Windows 进 OS 模态移动循环、那次 mouseup 被吞 ⇒ 合成不出 click，所以第二下按下直接翻缩放且不起拖拽，两条通路按时刻去重（翻两次＝放大又还原，看着像没反应）
 ToastHud.vue[EU5T]: F:应用内唯一轻量反馈层 | R:code:src/components/GroupTasksBoard.vue | A:toast 的显示接口 | S:抽成组件的理由：独立窗口（如群任务窗口）也要能显示 toast，否则那些窗口里的「创建/更新失败」是静默的——用户点了没反应。
@@ -608,7 +608,7 @@ RemindAudienceDialog.vue[DU5S]: F:强提醒受众选择弹窗（1:1 默认对方
 TodoIconPicker.vue[EU8T]: F:自定义类型的图标选择器（两个编辑器共用的一份按钮组） | R:code:src/utils/todoCustomIcons.ts,code:src/components/TodoDetailDialog.vue | A:modelValue、disabled、ariaLabel 与 update:modelValue | S:看板草稿与详情弹窗两个入口必须用这一份：各写一排按钮就会开始不一致；无权限时只回显当前一枚（给一排点不动的按钮会被读成点坏了）；每枚带 tap-safe 与 aria-pressed
 
 ===/Users/wendongfu/Documents/code/gosslan/src/components/chat/===
-ChatHeader.vue[EU7S]: F:聊天头部：会话标题、链路提示与入口 | R:code:src/components/ChatWindow.vue,code:src/utils/peerConnectionInfo.ts | A:头部状态与按钮 | S:最后一枚群按钮是「从群里补齐历史消息」，刻意暗一档（"不要太明显，但要有功能"）；"在搬"的读数取自 store，不在这判第二遍；跑时图标换转圈（18px 调暗几乎看不出）。
+ChatHeader.vue[EU7M]: F:聊天头部：会话标题、链路提示与入口 | R:code:src/components/ChatWindow.vue,code:src/utils/peerConnectionInfo.ts | A:头部状态与按钮 | S:最后一枚群按钮是「从群里补齐历史消息」，刻意暗一档（"不要太明显，但要有功能"）；"在搬"的读数取自 store，不在这判第二遍；跑时图标换转圈（18px 调暗几乎看不出）。
 MessageComposer.vue[EU9L]: F:消息输入区：@ 名单、粘贴上限、发送与引用 | R:code:src/components/MessageItem.vue,code:src-tauri/src/protocol.rs | A:发送前的载荷组装与 @ 名单 | S:@ 名单是三态：不能给默认值，空数组是「明确回答谁都没 @」，与「不知道」是两回事。⚠️ 不能只依赖 KeyboardEvent.isComposing——macOS WKWebView 上用 Enter 提交候选时它会假。粘贴限总量而不是单次：按住 Ctrl+V 连发每次都插一份，提示还要节流否则刷屏。
 
 ===/Users/wendongfu/Documents/code/gosslan/src/components/conversation/===
@@ -616,23 +616,23 @@ ConversationContextMenu.vue[EU5T]: F:会话行右键菜单 | R:code:src/componen
 ConversationListItem.vue[EU8M]: F:会话列表的一行 | R:code:src/components/UnreadBadge.vue,code:src/stores/useChatStore.ts | A:行的摘要、未读与 hover 操作 | S:hover 揭示必须有触屏兜底（既有护栏判的就是这个）。未读折叠要复用 store 缓存成的 map，不能从 chat.messages 折——那是只有约 4 个会话的 LRU。
 FriendContextMenu.vue[EU5T]: F:通讯录行右键菜单 | R:code:src/components/conversation/ConversationListItem.vue,code:src/components/ContextMenu.vue | A:发起聊天与删除两项 | S:只做用户点名的两项（发起聊天、删除）：微信 macOS 那套里的「标为星标朋友」本应用没有对应概念，别顺手补成第二套语义。
 FriendListItem.vue[EU7S]: F:通讯录的一行：分组模式与长按手势 | R:code:src/components/NavRail.vue | A:compact 形态与行操作入口 | S:compact 只缩头像与行高（40→32、64→56），在线状态点必须保留——用户要的是跟消息列表区别一下，不是把状态删掉。长按有手指抖动容差：小于它不算滑动、不取消长按。
-FriendRequestList.vue[EU5T]: F:好友申请列表 | R:- | A:由通讯录头部铃铛控制展开 | S:-
+FriendRequestList.vue[EU5S]: F:好友申请列表 | R:- | A:由通讯录头部铃铛控制展开 | S:-
 
 ===/Users/wendongfu/Documents/code/gosslan/src/components/message/===
 ForwardModal.vue[EU7S]: F:转发弹窗：单条或多选转发到目标会话 | R:code:src/components/message/MergeCard.vue | A:转发类型与预览片段 | S:没选中目标时底部两按钮不可点；预览片段截断、转发载荷不截。KIND_LABELS 是 Record<MsgKind>：新增 kind 漏标即编译错，静默 remind/remind_ack 也给中性兜底。
 ImageLightbox.vue[EU9L]: F:图片大图预览，同时服务应用内与独立预览窗口两个宿主 | R:code:src/components/ChatWindow.vue,code:src-tauri/src/commands/logs.rs | A:预览的宿主入口与返回栈注册 | S:宿主差异走入参而不是自己检测在哪个窗口。关掉 Android 那颗叉不减少出口：窗口那条路仍有标题栏 ✕、Esc、⌘W。必须给图片预览自己注册返回栈层，否则 Android 侧滑返回会把 ChatWindow 那一层弹掉；注册顺序也有讲究（本组件在 ChatWindow 里 mount，而 ChatWindow 在 ResponsiveLayout 之后）。主图刻意不懒加载、标 img-eager-ok：主动点开的图懒加载只会更晚，标记供 designGuards ㉜ 例外跳过。；顶部让位是两层口径：class 默认值 + 显式 topInset，只留一层会压住 caption
-MentionText.vue[EU6S]: F:@ 与链接的统一渲染件（聊天与任务共用） | R:code:src/components/message/MessageTextBubble.vue | A:按段渲染 | S:语义不在这里：段怎么切、怎样算 @ 到我、显示什么文案，全部单源在 utils/linkify。这里刻意不按底色现算 @ 文字色——气泡那样做是因为它的底色逐条消息变。
+MentionText.vue[EU6T]: F:@ 与链接的统一渲染件（聊天与任务共用） | R:code:src/components/message/MessageTextBubble.vue | A:按段渲染 | S:语义不在这里：段怎么切、怎样算 @ 到我、显示什么文案，全部单源在 utils/linkify。这里刻意不按底色现算 @ 文字色——气泡那样做是因为它的底色逐条消息变。
 MergeCard.vue[EU7T]: F:合并转发的卡片（微信式聊天记录） | R:- | A:卡片固定高度 | S:高度定死 96px 是因为虚拟列表按 messageHeight.MERGE_CARD 估算它；卡片内每行都是 truncate，所以本来就该确定。两处一旦分叉，后果是相邻消息互相遮挡。
 MergeCardModal.vue[EU8M]: F:合并转发详情：按发送者列出卡片里的 N 条 | R:code:src/components/message/ImageLightbox.vue,code:src-tauri/src/commands/helpers.rs | A:按 cid 回源与图片两种形态 | S:图片只带元信息（sha256 就是 cid）：先按 cid 读本机字节，没有就给一个拉取按钮向卡片发送者按需回源（拥有即授权），所以图片本体不随卡片发、帧大小不变。⚠️ 交给独立预览要优先给 cid 而不是 blob: objectURL——它只在本文档有效且卡片一关就被 revoke，预览绝不能比它活得久。
 MessageAvatar.vue[EU6T]: F:消息头像 | R:code:src/components/MessageItem.vue | A:按 id 取色的头像 | S:种子用设备 id 或群 id：昵称可改也会撞名，而这张脸要的是稳定加不撞脸。缺 id 才退回昵称，调用点漏传由 designGuards 盯。
 MessageCodeBubble.vue[EU6S]: F:代码消息气泡（inline 与附件两种） | R:code:src/components/CodeBlock.vue | A:两种取文路径与气泡朝向 | S:代码卡片底色在截断容器、操作条、尖角三处必须同色，否则接缝处露出一条边。
 MessageContentModal.vue[EU6S]: F:消息全文弹窗 | R:code:src/components/message/MessageTextBubble.vue | A:全文渲染与 @ 配色 | S:@ 配色以弹窗面板底色为对比基准，不能复用气泡那套。必须显式给值：不给就落到 style.css 里 12% 的兜底，同一句话在气泡与全文里两种颜色。
-MessageContextMenu.vue[EU7S]: F:消息右键/长按菜单（含强提醒发起入口） | R:code:src/components/MessageItem.vue | A:可用动作集合（复制/转发/引用/收藏/回应/强提醒/多选） | S:撤回只对自己的消息显示；分隔线必须跟着本段有无内容走，卡片类消息没有复制/保存时硬编码会留空段；强提醒入口只在自己已成功发出的消息上给（sending/failed/提示行不给）。
-MessageFileBubble.vue[EU6S]: F:文件气泡 | R:code:src-tauri/src/commands/files.rs | A:进度与状态展示 | S:progress 传 null 才是不显示进度条（历史消息、已完成）；别拿 0 当没有进度。
-MessageImageBubble.vue[EU8S]: F:图片气泡与加载态 | R:code:src-tauri/src/commands/files.rs | A:骨架占位与点击重取 | S:失败终态不可逆，能自愈不说失败；点击本地重试并请对端按 cid 重发。高只取 previewMetrics：载荷无尺寸，预留上限使竖图零跳变（横幅收缩 N22）；失败退紧凑占位高。；气泡走缩略图（宽只有 208px），压不动时原样回退原图；点开大图仍走原图那份缓存
+MessageContextMenu.vue[EU7M]: F:消息右键/长按菜单（含强提醒发起入口） | R:code:src/components/MessageItem.vue | A:可用动作集合（复制/转发/引用/收藏/回应/强提醒/多选） | S:撤回只对自己的消息显示；分隔线必须跟着本段有无内容走，卡片类消息没有复制/保存时硬编码会留空段；强提醒入口只在自己已成功发出的消息上给（sending/failed/提示行不给）。
+MessageFileBubble.vue[EU6M]: F:文件气泡 | R:code:src-tauri/src/commands/files.rs | A:进度与状态展示 | S:progress 传 null 才是不显示进度条（历史消息、已完成）；别拿 0 当没有进度。
+MessageImageBubble.vue[EU8M]: F:图片气泡与加载态 | R:code:src-tauri/src/commands/files.rs | A:骨架占位与点击重取 | S:失败终态不可逆，能自愈不说失败；点击本地重试并请对端按 cid 重发。高只取 previewMetrics：载荷无尺寸，预留上限使竖图零跳变（横幅收缩 N22）；失败退紧凑占位高。；气泡走缩略图（宽只有 208px），压不动时原样回退原图；点开大图仍走原图那份缓存
 MessageLinkText.vue[EU5T]: F:链接文本片段 | R:- | A:点击地址与展示文本 | S:-
 MessageReactionBar.vue[EU8M]: F:气泡下方的表情回应条 | R:- | A:折叠展示、名单 Teleport 浮层 | S:回应须折叠。名单必须 Teleport+fixed（overflow:hidden 内被裁）；openEmoji 与 pos 同开关，滚动只清 pos 则 aria-expanded 假 true。列名上限同源 summarizeActors；对齐 60px＝16+36+8，pl 拆两档会覆盖。；nameOf 不再兜底裸 id（判据永不空）
-MessageReceipt.vue[EU7M]: F:已读回执：单聊图标与群成员头像弹层 | R:code:src/components/MessageItem.vue | A:已读成员弹层与四向摆位 | S:摆位走 useHoverCard.placeCard：不再写死右对齐，入口在左半往右长。pos 与展开权双向 watch（滚动只清坐标、回收/抢权只清 isActive，缺一向则两浮层并存或占权不可见）。
+MessageReceipt.vue[EU7L]: F:已读回执：单聊图标与群成员头像弹层 | R:code:src/components/MessageItem.vue | A:已读成员弹层与四向摆位 | S:摆位走 useHoverCard.placeCard：不再写死右对齐，入口在左半往右长。pos 与展开权双向 watch（滚动只清坐标、回收/抢权只清 isActive，缺一向则两浮层并存或占权不可见）。
 MessageTextBubble.vue[EU8M]: F:文本气泡（含引用与 @ 展示） | R:code:src/components/message/MentionText.vue | A:气泡样式与选字模式 | S:展示层的修补绝不能在发送或落库侧改文案——那会污染对端视图与历史。触屏下气泡默认不可选（长按归消息菜单），只有进选字模式才开原生选字。算对比度前必须把 var(--bubble-bg) resolve 成真实 hex：contrastRatio 不认变量字符串（text-primary 在浅蓝气泡上只有 2.94 就是历史坑）。
 UnsupportedKindBubble.vue[EU7T]: F:认不出的消息类型怎么显示（INV-P24 第 2 条） | R:- | A:未知 kind 的降级展示 | S:触发条件只有一个：kind 不在 protocol.rs 的 WIRE_KINDS 表里。不能直接隐藏（等于静默丢消息）；原文要主动展开才给——载荷是 JSON，默认铺在时间线上正是用户不要的。
 
@@ -640,8 +640,8 @@ UnsupportedKindBubble.vue[EU7T]: F:认不出的消息类型怎么显示（INV-P2
 ChatSearchDialog.vue[EU9L]: F:搜索聊天记录的结果页（逐条命中） | R:code:src-tauri/src/db/messages.rs,code:src/components/ConversationList.vue | A:搜索与筛选契约 | S:命中总数必须按当前筛选走后端算，不能只筛已加载的那几条。选人后候选里就只剩他自己——这是设计不是漏考虑。与列表搜索框的分工：那里是即时过滤，回车才进这个逐条结果页。这里只缺方向键，Esc 与点遮罩由 BaseModal 兜住。重置筛选不该多发请求，否则每次打开都白跑一次全表扫描。cellText 只走 previewBody(kind,content,0)：SQL 命中原文，图片/文件/合并/任务/投票/公告六种载荷也是 JSON；0＝不截断，截了关键词无位定位。
 
 ===/Users/wendongfu/Documents/code/gosslan/src/components/settings/===
-AboutSection.vue[EU6T]: F:关于分区：版本与设备指纹 | R:code:src-tauri/src/commands/system.rs | A:信息展示与复制 | S:用就地提示而不是 toast：指尖就在这一行上，弹 toast 反而是噪音。设备指纹那一行是 role=button，点了必须有反应。
-AppearanceSection.vue[EU5T]: F:外观分区：主题与色板 | R:code:src/style.css | A:主题选项 | S:色板格子只有颜色没有文字，读屏下必须靠 aria-label 才知道这一格是什么；label 存 i18n key、由模板翻译。
+AboutSection.vue[EU6S]: F:关于分区：版本与设备指纹 | R:code:src-tauri/src/commands/system.rs | A:信息展示与复制 | S:用就地提示而不是 toast：指尖就在这一行上，弹 toast 反而是噪音。设备指纹那一行是 role=button，点了必须有反应。
+AppearanceSection.vue[EU5S]: F:外观分区：主题与色板 | R:code:src/style.css | A:主题选项 | S:色板格子只有颜色没有文字，读屏下必须靠 aria-label 才知道这一格是什么；label 存 i18n key、由模板翻译。
 ChatStyleSection.vue[EU7M]: F:聊天样式分区：字号档与滑块 | R:- | A:字号与气泡样式设置 | S:用 Pointer Events 而非分别处理 mouse/touch，一次覆盖移动端的坑；不用原生 range 是因为轨道由系统绘制、不受主题控制。thumb 位置是五档百分比。
 FilesSection.vue[EU6S]: F:文件与共享分区：两个目录收在一处 | R:code:src-tauri/src/user_dirs.rs | A:接收目录与共享目录入口 | S:移动端隐藏「文件保存目录」：iOS/Android 跑在系统沙盒里，用户不能任选目录，给出来就是一条点不动的死路。
 GeneralSection.vue[EU5T]: F:通用分区：只放语言与地区 | R:- | A:分区内容边界 | S:这个分区曾同时塞通知与共享目录，而导航项只写「通知」，用户点开第 1 项是语言——分区定位就来自这条教训。「跟随系统」要放 computed 才随语言变。
@@ -659,24 +659,24 @@ StorageSection.vue[EU8M]: F:存储分区：用量、自动清理与导出入口 
 BackArrow.vue[EU5T]: F:头部返回箭头，应用内所有返回箭头的唯一实现 | R:- | A:按平台适配的返回键 | S:唯一实现就是它存在的理由：此前设置用自绘 chevron、收藏用 ← 文字、日志用 ArrowLeft 图标，三套并存。
 DangerBtn.vue[EU4T]: F:危险操作按钮 | R:- | A:统一样式的删除/重置按钮 | S:-
 LinkIcon.vue[EU6T]: F:连接类型图标的唯一渲染处 | R:- | A:四种通道图标 | S:⚠️ 调用方只应在有真实链路时渲染（name 不是 discovered）：发现了但没建链时给出图标就是在撒谎——四种通道的图标各界面全局统一是用户点名的要求。
-PrimaryBtn.vue[EU5S]: F:主按钮 | R:- | A:三档密度与图标按钮的 aria-label | S:默认不要 flex-1：那会让按钮占满容器宽度；图标按钮必须给 aria-label。
-SegmentedControl.vue[EU6S]: F:分段选择控件 | R:- | A:当前档位的呈现 | S:抽出来的理由是此前 AppearanceSection、ChatStyleSection、GroupTasksBoard 的过滤条各画一份。
+PrimaryBtn.vue[EU5T]: F:主按钮 | R:- | A:三档密度与图标按钮的 aria-label | S:默认不要 flex-1：那会让按钮占满容器宽度；图标按钮必须给 aria-label。
+SegmentedControl.vue[EU6T]: F:分段选择控件 | R:- | A:当前档位的呈现 | S:抽出来的理由是此前 AppearanceSection、ChatStyleSection、GroupTasksBoard 的过滤条各画一份。
 
 ===/Users/wendongfu/Documents/code/gosslan/src/components/window/===
 AuxWindowShell.vue[EU6T]: F:辅助窗口的共用外壳 | R:code:src-tauri/src/macos_window.rs | A:窗口 caption 与圆角时机 | S:圆角必须在 onMounted 设：wry 载入后才替换 contentView，setup 阶段设下去会被丢掉。非 macOS 或命令不可用就静默忽略，不影响功能。
 
 ===/Users/wendongfu/Documents/code/gosslan/src/composables/===
-useBackLayer.ts[EU9M]: F:移动端页面层级的返回栈（push/pop 与系统返回联动） | R:code:src/components/ui/BackArrow.vue,code:src/components/message/ImageLightbox.vue | A:push 的落点回报与 pop 行为 | S:应用是单页 WebView：Android 侧滑或系统返回在 canGoBack() 为真时 goBack()，否则直接结束 Activity（退出应用）。所以 push 必须如实回报落点是 pushState 还是 hash——退化成 location.hash 会让返回行为错位。瞬时浮层（表情面板、右键菜单）不压条目，否则返回键要按好几下才有反应。
+useBackLayer.ts[EU9S]: F:移动端页面层级的返回栈（push/pop 与系统返回联动） | R:code:src/components/ui/BackArrow.vue,code:src/components/message/ImageLightbox.vue | A:push 的落点回报与 pop 行为 | S:应用是单页 WebView：Android 侧滑或系统返回在 canGoBack() 为真时 goBack()，否则直接结束 Activity（退出应用）。所以 push 必须如实回报落点是 pushState 还是 hash——退化成 location.hash 会让返回行为错位。瞬时浮层（表情面板、右键菜单）不压条目，否则返回键要按好几下才有反应。
 useClipboard.ts[EU5T]: F:剪贴板写入的可组合件 | R:- | A:复制结果的静默处理 | S:剪贴板不可用时静默：不弹 toast 打扰发送这条主路径。
 useDocumentDark.ts[EU6T]: F:在任意文档里读深色态 | R:- | A:跨窗口的深色态来源 | S:不能用 useAppStore().dark：独立窗口里 store 不一定初始化（日志窗口完全没有 store），所以深色态要从 document 上读。
 useExclusivePopup.ts[EU6T]: F:同一时间只允许一个浮层展开 | R:- | A:展开权与 key 约定 | S:key 要在实例内固定且全局唯一；isActive 变为 false 就表示别的浮层抢走了展开权，此时必须收起自己。
 useImeEnterGuard.ts[EU7T]: F:输入框回车让路给输入法的守卫 | R:code:src/components/chat/MessageComposer.vue | A:这次按键是否属于组合输入 | S:这是 MessageComposer 修过的真实缺陷（用户：输入拼音或英文后按回车把消息发出去了），所以判定不能只靠 KeyboardEvent.isComposing。
 useMemberProfile.ts[EU5T]: F:成员资料卡片的取数与展示 | R:- | A:成员资料的复用入口 | S:-；名字不再在这里判，一律取 chat.nicknameOf（判据在 utils/memberName.ts），这里只管头像与在线
-useMentionContext.ts[EU6S]: F:@ 语义需要的两个输入：群成员名单与本机身份 | R:- | A:渲染件的上游输入 | S:@ 的语义本来已单源在 utils/linkify，这里抽的是它的两个输入。文件头明写有两个坑（踩过或差一点踩），改之前先读那段。
-useMessageDisplay.ts[EU7S]: F:消息展示层的派生：时间分割线与气泡取色 | R:code:src/components/message/MessageTextBubble.vue | A:时间阈值与对比度取色 | S:时间分割线阈值是与上一条间隔 ≥ 5 分钟。CSS 变量字符串传不进 contrastRatio，所以必须额外挂一个真实色值。
+useMentionContext.ts[EU6T]: F:@ 语义需要的两个输入：群成员名单与本机身份 | R:- | A:渲染件的上游输入 | S:@ 的语义本来已单源在 utils/linkify，这里抽的是它的两个输入。文件头明写有两个坑（踩过或差一点踩），改之前先读那段。
+useMessageDisplay.ts[EU7M]: F:消息展示层的派生：时间分割线与气泡取色 | R:code:src/components/message/MessageTextBubble.vue | A:时间阈值与对比度取色 | S:时间分割线阈值是与上一条间隔 ≥ 5 分钟。CSS 变量字符串传不进 contrastRatio，所以必须额外挂一个真实色值。
 useMessageFile.ts[EU9M]: F:文件消息的展示与状态组合 | R:code:src/utils/fileMeta.ts,code:src-tauri/src/commands/files.rs | A:msg_id 与 transfer_id 的映射 | S:映射形状是单聊 file-{id}、群文件 gfile-{id}——气泡的连接状态靠它关联，按正文去找会读到 0 行。载荷解析走唯一一份 utils/fileMeta（引用块同一份）。收到 Done 时必须重读预览，否则在途读到的是旧值。刻意不为 code 子类型做内联预览：发出来的就是文件。；气泡那条走 loadThumbPreview、灯箱仍 loadFilePreview ⇒ 两份缓存，别当成同一份
 useSearchKeyword.ts[EU6T]: F:搜索关键词的延迟镜像 | R:- | A:输入态镜像 | S:这里只镜像输入、不发请求——用户 2026-09-12 明确要求搜索要回车后进结果页；保留延迟镜像是为了输入框本身不闪。
-useShortcuts.ts[EU7S]: F:应用内快捷键绑定 | R:code:src-tauri/src/menu.rs | A:按键到动作的映射 | S:macOS 有原生菜单栏负责 ⌘, / ⌘N / ⌘F 的可见性，而 Windows 与 Linux 用自绘标题栏、没有菜单栏，快捷键必须在这一层自己接住。
+useShortcuts.ts[EU7T]: F:应用内快捷键绑定 | R:code:src-tauri/src/menu.rs | A:按键到动作的映射 | S:macOS 有原生菜单栏负责 ⌘, / ⌘N / ⌘F 的可见性，而 Windows 与 Linux 用自绘标题栏、没有菜单栏，快捷键必须在这一层自己接住。
 useWindowLauncher.ts[EU7S]: F:独立窗口打开的模块级单例 | R:code:src-tauri/src/commands/logs.rs | A:openSettings 等动作的共用状态 | S:模块级单例是有意的：导航栏、菜单事件等多个入口都走同一个动作枚举，它们必须共用同一份「正在打开 / 刚打开过」的状态，否则连点会重复请求建窗。
 
 ===/Users/wendongfu/Documents/code/gosslan/src/data/===
