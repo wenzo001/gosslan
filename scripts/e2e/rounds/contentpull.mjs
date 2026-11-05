@@ -578,6 +578,10 @@ export async function run() {
     fs.writeFileSync(src, buf);
     const cid = createHash("sha256").update(buf).digest("hex");
     const ts = nowMs();
+    // ⚠️ 群密钥必须两端同值：5.18.31 起群维度补拉走 `GroupFileOffer(scope=todo)`，
+    // 服务侧用它封 file_key、接收侧用它解封（`get_group_key` 读的就是 `gk:<gid>` 这条 setting）。
+    // 这里停机写库正是真机的形状（群建好就有密钥），不是为测试造的新常量。
+    const gkB64 = randomBytes(32).toString("base64");
     seed(INSTANCES[0].db, (db) => {
       db.prepare("DELETE FROM friends WHERE device_id=?1").run(S.idB.runtimeId);
       db.prepare("INSERT OR REPLACE INTO groups(id,name,creator,created_at) VALUES(?1,?2,?3,?4)")
@@ -586,6 +590,8 @@ export async function run() {
       for (const m of [S.idA.runtimeId, S.idB.runtimeId]) {
         db.prepare("INSERT INTO group_members(group_id,device_id) VALUES(?1,?2)").run(gid, m);
       }
+      db.prepare("INSERT OR REPLACE INTO settings(key,value) VALUES(?1,?2)")
+        .run(`gk:${gid}`, gkB64);
       db.prepare("DELETE FROM content_transfers WHERE cid=?1").run(cid);
       db.prepare(
         `INSERT INTO content_transfers(cid,transfer_id,peer_id,group_id,name,size,direction,status,
@@ -600,6 +606,8 @@ export async function run() {
       for (const m of [S.idA.runtimeId, S.idB.runtimeId]) {
         db.prepare("INSERT INTO group_members(group_id,device_id) VALUES(?1,?2)").run(gid, m);
       }
+      db.prepare("INSERT OR REPLACE INTO settings(key,value) VALUES(?1,?2)")
+        .run(`gk:${gid}`, gkB64);
       db.prepare("DELETE FROM content_transfers WHERE cid=?1").run(cid);
       db.prepare("DELETE FROM file_transfers WHERE id=?1").run(tid);
       db.prepare(
@@ -632,8 +640,19 @@ export async function run() {
     }, 120_000, "A-16：非好友同群的内容必须被服务并落盘");
     const fileSha = got?.path && fs.existsSync(got.path)
       ? createHash("sha256").update(fs.readFileSync(got.path)).digest("hex") : null;
+    // 群回程的落点是 A 侧那句 `code=GROUP_PULL_SERVED`（`handle_share.rs` worker 的群分支）。
+    // 它写在 `send_group_file_pull_at` 返回之后，可能比 B 的落库晚几毫秒 ⇒ 有界等一小窗，
+    // 免得把"日志还没刷出来"读成"没走群回程"。等不到就交给下面的判据报红（带读数）。
+    const servedDeadline = nowMs() + 30_000;
+    while (countLinesWith(INSTANCES[0], "code=GROUP_PULL_SERVED", cid) === 0
+      && nowMs() < servedDeadline) {
+      await sleep(250);
+    }
     const denied = countLinesWith(INSTANCES[0], "ContentRequest：请求方无权限", cid);
-    const offered = countLinesWith(INSTANCES[0], "[FILE] offer SENT", tid);
+    const served = countLinesWith(INSTANCES[0], "code=GROUP_PULL_SERVED", cid);
+    // 1:1 回程的指纹：群 cid 一旦落进 `send_file_from_path_at`，A 侧必然留下针对原 transfer_id
+    // 的 `offer SENT`（B 之后这条路径给群内容现铸 `pull-<uuid>`，原 tid 不可能再出现）。
+    const oneToOne = countLinesWith(INSTANCES[0], "[FILE] offer SENT", tid);
     check("前置：A 侧确实不再把 B 当好友，但两人仍是同一个群的成员（否则测的不是这一臂）",
       friendGone.n === 0 && friendGone.m === 2, "好友 0 行 / 群成员 2 行",
       `好友 ${friendGone.n} 行 / 群成员 ${friendGone.m} 行`);
@@ -642,13 +661,14 @@ export async function run() {
       JSON.stringify({ status: got?.status, path: got?.path }));
     check("取回的字节必须逐份等于 cid（授权放行不等于可以给错内容）",
       fileSha === cid, cid.slice(0, 12) + "…", fileSha ? fileSha.slice(0, 12) + "…" : "未落盘");
-    check("A 侧必须真的走出服务分支：有 offer SENT，且没有针对这个 cid 的“无权限”拒绝",
-      offered > 0 && denied === 0, "offer ≥1 行 / 拒绝 0 行",
-      `offer ${offered} 行 / 拒绝 ${denied} 行`);
-    // 群内容（`content_transfers.group_id` 非空）的补拉应答**同样走 1:1 文件通道**回来 ——
-    // 这正是用户 2026-11-01 报的形状：群任务的图片缺字节，自动补拉成功后在**提供方的私聊**里
-    // 多出一张卡。服务侧只认 cid、不看 group_id ⇒ 落不落卡由接收侧那道 refold 门决定，
-    // 而这一格的预置恰好是唯一带着 group_id 的一单，所以"群内容"这一支在这里有独立读数。
+    check("A 侧必须真的走出群文件服务分支：有 GROUP_PULL_SERVED、没有针对这个 cid 的“无权限”拒绝，且**一条 1:1 回程都没有**（后者就是群 cid 落进单聊通道的指纹）",
+      served > 0 && denied === 0 && oneToOne === 0, "群回程 ≥1 行 / 拒绝 0 行 / 1:1 回程 0 行",
+      `群回程 ${served} 行 / 拒绝 ${denied} 行 / 1:1 回程 ${oneToOne} 行`);
+    // 群内容（`content_transfers.group_id` 非空）的补拉应答从 5.18.31 起**只走群文件帧**
+    // （`GroupFileOffer(scope=todo)`，见 `network/file/group_pull.rs`）；上一版这里记的是
+    // "同样走 1:1 通道、靠接收侧 refold 门不落卡" —— 那扇门现在只剩 legacy 兜底，
+    // 对端仍是老 responder 时才会被走到。这一格的预置恰好是唯一带 group_id 的一单，
+    // 所以"群内容"这一支在这里有独立读数：既不许折成私聊卡片，也必须走群回程。
     const a16Card = (() => {
       const db = openDb(INSTANCES[1].db, true);
       const r = db.prepare("SELECT conv_id,kind,content FROM messages WHERE msg_id=?1").get(`file-${tid}`) ?? null;
