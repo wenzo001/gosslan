@@ -68,4 +68,4 @@ Outbox、虚拟列表、Tauri 原生化这些 unslop 原版不涉及的面向。
 2. 同屏最多 **2 条**；同 key 重复**合并计数**（`×N`），不叠新条。
 3. **不新增**「去设置」这类跳转动作按钮；遮挡问题用分层与位置解决，不靠多一条入口。
 4. 390 宽下任何 toast 不盖页头标题区、搜索框与列表首行：移动端 toast 固定在 TabBar 之上。
-   证据：`docs/notes/unslop-review-2026-11-06/shots/stage1/a1-toast-390-light.png`。
+   证据：`docs/notes/unslop-review-2026-11-06/shots/stage2/a1-toast-390-light.png`。
