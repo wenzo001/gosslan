@@ -3551,6 +3551,160 @@ window.__probe = (() => {
     };
     tick();
   });
+  /**
+   * 折叠代码块夹具（--only=codefold，2026-11-06）。
+   *
+   * 判据是「消息列表里不滚、只显示固定几行、余下截断；展开才在弹窗里滚」，
+   * 所以必须摆出真实结构：外层 scroller（消息列表，overflow-y:auto）里放一条
+   * MessageCodeBubble（折叠态），expand 事件打开 MessageContentModal（与 MessageItem 同款接线）。
+   * 不喂任何 ref —— 组件自己就会按 clamped 走 fill+clipped。
+   *
+   * 依赖 window.__probe.vue / __pinia（先调一次 install 把页面那份 vue/pinia 拿进来）。
+   */
+  H.codefoldMount = async (optsJson) => {
+    const o = JSON.parse(optsJson || '{}');
+    const V = window.__probe.vue;
+    if (!V) return { ok: false, why: 'no-vue' };
+    const Bubble = (await import('/src/components/message/MessageCodeBubble.vue')).default;
+    const Modal = (await import('/src/components/message/MessageContentModal.vue')).default;
+    const Store = await import('/src/stores/useAppStore.ts');
+    const Metrics = await import('/src/utils/previewMetrics.ts');
+    // 折叠与否必须走**产品同一个判据**（MessageItem 用 codeNeedsClamp 决定传不给 clamped），
+    // 否则短块夹具会被人为塞成 clamped ⇒ 量出一条产品里并不存在的「展开」按钮。
+    const clamped = Metrics.codeNeedsClamp(o.code || '');
+    if (window.__pinia) Store.useAppStore(window.__pinia).setAppearance(o.dark ? 'dark' : 'light');
+    // 同一页反复挂（5 档 × 亮暗）：先把上一份 app 卸掉，避免上一个弹窗的 portal 残留。
+    if (window.__probe.app) { try { window.__probe.app.unmount(); } catch { /* 已卸载 */ } }
+    document.body.innerHTML = '';
+    const host = document.createElement('div');
+    host.id = 'codefold-host';
+    document.body.appendChild(host);
+    const app = V.createApp({
+      setup() {
+        const open = V.ref(o.forceOpen === true);
+        const onExpand = () => { open.value = true; };
+        const bg = o.dark ? '#0f172a' : '#fafafa';
+        return () => V.h('div', {
+          id: 'codefold-scroller',
+          'data-codefold-scroller': '',
+          style: {
+            position: 'fixed', left: (o.left || 0) + 'px', top: (o.top || 0) + 'px',
+            width: (o.width || window.innerWidth) + 'px', height: (o.height || window.innerHeight) + 'px',
+            overflowY: 'auto', overflowX: 'hidden', background: bg,
+          },
+        }, [
+          V.h('div', { style: { height: (o.padTop ?? 120) + 'px' } }),
+          V.h('div', {
+            id: 'codefold-bubble',
+            style: { width: (o.bubbleW || Math.min(560, (o.width || window.innerWidth) - 24)) + 'px', marginLeft: '12px' },
+          }, [
+            V.h(Bubble, {
+              code: o.code || '', clamped, copied: false, dark: !!o.dark, mine: true,
+              language: o.language || 'javascript', canSwitchLang: true, switching: false,
+              expanded: open.value, onExpand, onCopy: () => {}, onSwitchLang: () => {},
+            }),
+          ]),
+          V.h('div', { style: { height: (o.padBottom ?? 800) + 'px' } }),
+          V.h(Modal, {
+            open: open.value, kind: 'code', content: o.code || '', copied: false,
+            language: o.language || 'javascript',
+            onClose: () => { open.value = false; }, onCopy: () => {},
+          }),
+        ]);
+      },
+    });
+    if (window.__pinia) app.use(window.__pinia);
+    app.mount(host);
+    window.__probe.app = app;
+    await V.nextTick(); await V.nextTick();
+    return { ok: true, dark: !!o.dark };
+  };
+  /** 折叠态读数：pre 是否滚动容器、外层列表位置、展开按钮/提示/遮罩。 */
+  H.codefoldMeasure = () => {
+    const scroller = document.querySelector('[data-codefold-scroller]');
+    const bubble = document.querySelector('#codefold-bubble .code-block');
+    // 长块走折叠分支（带 data-code-fold 标记）；短块走未折叠分支，靠 .code-block 兜底。
+    const root = document.querySelector('[data-code-fold="clamped"]') || bubble;
+    const pre = root ? root.querySelector('pre.code-pre') : null;
+    if (!scroller || !root || !pre) {
+      return { present: false, why: !scroller ? 'no-scroller' : (!root ? 'no-root' : 'no-pre') };
+    }
+    const sr = scroller.getBoundingClientRect();
+    const ar = document.querySelector('.code-actions').getBoundingClientRect();
+    const rr = root.getBoundingClientRect();
+    const er = document.querySelector('[data-code-fold-expand]');
+    const hint = document.querySelector('[data-code-more]');
+    const overflowY = getComputedStyle(pre).overflowY;
+    return {
+      present: true,
+      clamped: root.hasAttribute('data-code-fold') || false,
+      rootH: +rr.height.toFixed(1),
+      preH: pre.clientHeight,
+      preScrollH: pre.scrollHeight,
+      // 「可滚」只看 overflow 值：overflow:hidden 时 scrollHeight 仍会 > clientHeight（那是被裁掉的内容）。
+      preScrollable: /auto|scroll/.test(overflowY),
+      contentClipped: pre.scrollHeight > pre.clientHeight + 1,
+      overflowY,
+      scrollMode: pre.getAttribute('data-code-scroll'),
+      preScrollTop: Math.round(pre.scrollTop),
+      preTouchAction: getComputedStyle(pre).touchAction,
+      actionsVisible: ar.bottom <= sr.bottom + 0.5 && ar.top >= sr.top - 0.5,
+      actionsDeltaBottom: +(sr.bottom - ar.bottom).toFixed(1),
+      expandBtn: !!er,
+      expandAria: er ? er.getAttribute('aria-expanded') : null,
+      expandFocusable: !!er && er.tabIndex >= 0 && !er.disabled,
+      hint: hint ? String(hint.textContent || '').trim() : '',
+      fade: !!document.querySelector('.code-clip-fade'),
+      outer: {
+        scrollTop: Math.round(scroller.scrollTop),
+        clientH: scroller.clientHeight,
+        scrollH: scroller.scrollHeight,
+      },
+      vw: window.innerWidth, vh: window.innerHeight,
+    };
+  };
+  /** 全文弹窗读数：只有超过上限才可滚（短内容 scrollHeight == clientHeight）。 */
+  H.codefoldModal = () => {
+    const dialog = document.querySelector('[role="dialog"]');
+    const pre = dialog ? dialog.querySelector('pre.code-pre') : null;
+    if (!dialog || !pre) return { present: false, why: !dialog ? 'no-dialog' : 'no-pre' };
+    const dr = dialog.getBoundingClientRect();
+    const pr = pre.getBoundingClientRect();
+    const overflowY = getComputedStyle(pre).overflowY;
+    return {
+      present: true,
+      dialog: {
+        left: +dr.left.toFixed(1), top: +dr.top.toFixed(1),
+        right: +dr.right.toFixed(1), bottom: +dr.bottom.toFixed(1),
+      },
+      preH: pre.clientHeight,
+      preScrollH: pre.scrollHeight,
+      preScrollable: /auto|scroll/.test(overflowY) && pre.scrollHeight > pre.clientHeight + 1,
+      overflowY,
+      scrollMode: pre.getAttribute('data-code-scroll'),
+      preScrollTop: Math.round(pre.scrollTop),
+      preBottomInsideDialog: pr.bottom <= dr.bottom + 0.5,
+      insideViewport: dr.top >= -0.5 && dr.bottom <= window.innerHeight + 0.5
+        && dr.left >= -0.5 && dr.right <= window.innerWidth + 0.5,
+      vw: window.innerWidth, vh: window.innerHeight,
+    };
+  };
+  /** 当前的焦点落点（展开/收起后不许掉到 body 或输入区）。 */
+  H.codefoldFocus = () => {
+    const el = document.activeElement;
+    return {
+      tag: el ? el.tagName : null,
+      isExpandBtn: !!el && el.hasAttribute && el.hasAttribute('data-code-fold-expand'),
+      isBody: !el || el === document.body,
+    };
+  };
+  /** 折叠态里 pre 的几何中心：滚轮/触控手势的落点。 */
+  H.codefoldPoint = () => {
+    const pre = document.querySelector('[data-code-fold="clamped"] pre.code-pre');
+    if (!pre) return null;
+    const r = pre.getBoundingClientRect();
+    return { x: Math.round(r.left + r.width / 2), y: Math.round(r.top + r.height / 2) };
+  };
   return H;
 })();
 true;
@@ -4255,6 +4409,7 @@ async function main() {
     const taskpaste = want("taskpaste");
     const modaltitle = want("modaltitle");
     const codeblock = want("codeblock");
+    const codefold = want("codefold");
     const langdd = want("langdd");
     const inputpanel = want("inputpanel");
     const winsafe = want("winsafe");
@@ -4493,6 +4648,7 @@ async function main() {
     await runSegment("taskpaste", taskpaste, () => runTaskPaste(cdp, url));
     await runSegment("modaltitle", modaltitle, () => runModalTitle(cdp, url));
     await runSegment("codeblock", codeblock, () => runCodeBlock(cdp, url));
+    await runSegment("codefold", codefold, () => runCodeFold(cdp, url));
     await runSegment("langdd", langdd, () => runLangDd(cdp, url));
     await runSegment("inputpanel", inputpanel, () => runInputPanels(cdp, url));
     await runSegment("winsafe", winsafe, () => runWindowSafe(cdp, url));
@@ -7857,6 +8013,348 @@ async function runCodeBlock(cdp, url) {
       after: mobileAfter && [mobileAfter.scrollTop, mobileAfter.headerTop] }));
   console.log(`  · 读数（移动端 390x700 触控）：头部 top=${mobileBefore?.headerTop}px 高=${mobileBefore?.headerH}px；触摸后 top=${mobileAfter?.headerTop}px；scrollTop ${mobileBefore?.scrollTop}→${mobileAfter?.scrollTop}px；touch-action=${mobileBefore?.touchAction}；内部容器 clientHeight=${mobileBefore?.clientH}px / scrollHeight=${mobileBefore?.scrollH}px`);
   await cdp.send("Emulation.setTouchEmulationEnabled", { enabled: false }).catch(() => {});
+}
+
+/**
+ * 消息列表代码块折叠：**折叠不滚 / 固定行数截断 / 展开才滚**（--only=codefold，2026-11-06）。
+ *
+ * 用户原话：「代码在消息列表不需要滚动。展示。只展示固定几行 余下截断即可，展开滚动展示」。
+ * 真实缺陷：折叠态带着 `scrollable`，代码区自带内部滚动条、只露五六行，还压住消息底部时间。
+ *
+ * 这一段的判据全部是**真渲染读数**（夹具见 PAGE_FIXTURE 的 codefoldMount）：
+ *   ① 折叠态 pre 不是滚动容器：`data-code-scroll=clip` + `overflow-y:hidden` +
+ *      `scrollHeight > clientHeight`（真截断）但 `scrollTop` 恒 0；
+ *   ② 折叠态滚轮/触控落到**外层消息列表**：`outer.scrollTop` 增大、`pre.scrollTop` 不动；
+ *   ③ 折叠高度 = toolbar 32 + padding 12 + 8×20 = 216px（短块也用它，正好 8 行不进折叠）；
+ *   ④ 长块有「展开」按钮 + `aria-expanded=false` + 「还有 N 行」+ 淡出遮罩；短块/8 行块**没有**按钮；
+ *   ⑤ 展开弹窗：长块才 `overflow-y:auto` 且能滚到底；短内容 `scrollHeight == clientHeight`；
+ *   ⑥ Esc 关弹窗：焦点回到展开按钮、外层列表滚动位置不变。
+ *
+ * 每档还落两张图到 `test-results/codefold/`（折叠态 / 展开态），窗口 1280/768/430/390/360 × 亮/暗。
+ */
+async function runCodeFold(cdp, url) {
+  const longCode = Array.from(
+    { length: 99 },
+    (_, i) => `const todo_${i} = { id: ${i}, done: ${i % 2 === 0}, title: "sample item ${i}" };`,
+  ).join("\n");
+  const shortCode = "const a = 1;\nconst b = 2;\nconsole.log(a + b);";
+  const exactCode = Array.from({ length: 8 }, (_, i) => `const v${i} = ${i};`).join("\n");
+
+  const SIZES = [
+    { id: "1280", w: 1280, h: 800 },
+    { id: "768", w: 768, h: 700 },
+    { id: "430", w: 430, h: 700, mobile: true },
+    { id: "390", w: 390, h: 700, mobile: true },
+    { id: "360", w: 360, h: 640, mobile: true },
+  ];
+  const shotDir = path.join(ROOT, "test-results", "codefold");
+  fs.mkdirSync(shotDir, { recursive: true });
+  const shot = async (name) => {
+    const s = await cdp.send("Page.captureScreenshot", { format: "png" });
+    fs.writeFileSync(path.join(shotDir, `${name}.png`), Buffer.from(s.data, "base64"));
+  };
+  const mount = (opts) => cdp.eval(
+    `window.__probe.codefoldMount(${JSON.stringify(JSON.stringify(opts))})`,
+  );
+
+  await cdp.send("Emulation.setDeviceMetricsOverride", {
+    width: 1280, height: 800, deviceScaleFactor: 1, mobile: false,
+  });
+  await cdp.send("Page.navigate", { url });
+  await cdp.settled();
+  await sleep(3_000);
+  await cdp.eval(PAGE_FIXTURE);
+  // 先借一颗最轻的组件把页面那份 vue/pinia 拿进来（codefoldMount 依赖它们）。
+  const boot = await cdp.eval(
+    `window.__probe.install('/src/components/UnreadBadge.vue', '', '{"count":3}')`,
+  );
+  check("折叠段入口：页面 vue/pinia 已就绪", !!boot && boot.ok === true, "install ok", JSON.stringify(boot));
+  // Esc 与「焦点还给 opener」都要真按键 + 焦点模拟（与 overlay 段同一口径）。
+  await cdp.send("Emulation.setFocusEmulationEnabled", { enabled: true });
+
+  const table = [];
+  const clickExpand = async () => {
+    const center = await cdp.eval(`(() => {
+      const b = document.querySelector('[data-code-fold-expand]');
+      if (!b) return null;
+      b.focus({ preventScroll: true });
+      const r = b.getBoundingClientRect();
+      return { x: Math.round(r.left + r.width / 2), y: Math.round(r.top + r.height / 2) };
+    })()`);
+    if (!center) return false;
+    await cdp.click(center.x, center.y);
+    return true;
+  };
+
+  for (const size of SIZES) {
+    for (const dark of [false, true]) {
+      const tag = `${size.id}-${dark ? "dark" : "light"}`;
+      await cdp.send("Emulation.setDeviceMetricsOverride", {
+        width: size.w, height: size.h, deviceScaleFactor: size.mobile ? 2 : 1, mobile: !!size.mobile,
+      });
+      await cdp.send("Emulation.setTouchEmulationEnabled", {
+        enabled: !!size.mobile, maxTouchPoints: 1,
+      }).catch(() => {});
+      await sleep(200);
+
+      // ---- 长块（99 行）折叠态 ----
+      const mounted = await mount({
+        code: longCode, dark, width: size.w, height: size.h, padTop: 80, padBottom: 1200,
+      });
+      check(`[${tag}] 折叠夹具挂得起来`, !!mounted && mounted.ok === true, "mount ok", JSON.stringify(mounted));
+      await sleep(700);
+      const before = await cdp.eval("window.__probe.codefoldMeasure()");
+      check(
+        `[${tag}] 折叠态不是滚动容器（clip + overflow-y:hidden + scrollTop=0）`,
+        !!before && before.present === true && before.scrollMode === "clip"
+          && before.overflowY === "hidden" && before.preScrollTop === 0,
+        "data-code-scroll=clip + overflow-y=hidden + pre.scrollTop=0",
+        JSON.stringify(before),
+      );
+      check(
+        `[${tag}] 折叠态真的把 99 行截断了（scrollHeight > clientHeight 但不许滚）`,
+        !!before && before.contentClipped === true && before.preScrollable === false,
+        "cut=true / scrollable=false",
+        JSON.stringify(before && { preH: before.preH, preScrollH: before.preScrollH }),
+      );
+      check(
+        `[${tag}] 折叠高度固定为 204px（toolbar 32 + 上 padding 12 + 8×20，下 padding 归零）`,
+        !!before && Math.abs(before.rootH - 204) <= 1,
+        "root height ≈204px", JSON.stringify(before && { rootH: before.rootH }),
+      );
+      check(
+        `[${tag}] 折叠态正好露 8 行（第 9 行整行不可见，无半行笔尖）`,
+        !!before && before.preH === 172,
+        "preH=172px = 上 padding 12 + 8×20",
+        JSON.stringify(before && { preH: before.preH }),
+      );
+      check(
+        `[${tag}] 操作条（展开/复制）仍在消息区可见，没被代码块压出视口`,
+        !!before && before.actionsVisible === true && before.actionsDeltaBottom >= 0,
+        "actions 完全落在消息列表可见矩形内",
+        JSON.stringify(before && { actionsVisible: before.actionsVisible, delta: before.actionsDeltaBottom }),
+      );
+      check(
+        `[${tag}] 长块有「展开」按钮：可聚焦 + aria-expanded=false + aria-haspopup`,
+        !!before && before.expandBtn === true && before.expandFocusable === true
+          && before.expandAria === "false",
+        "expandBtn + focusable + aria-expanded=false",
+        JSON.stringify(before && { btn: before.expandBtn, focusable: before.expandFocusable, aria: before.expandAria }),
+      );
+      check(
+        `[${tag}] 截断有可发现信号：淡出遮罩 +「还有 N 行」`,
+        !!before && before.fade === true && /\d+\s*行|line/i.test(before.hint || ""),
+        "fade=true + hint 含数字",
+        JSON.stringify(before && { fade: before.fade, hint: before.hint }),
+      );
+      await shot(`folded-${tag}`);
+
+      // ---- 折叠态滚轮：必须落到外层消息列表 ----
+      const pt = await cdp.eval("window.__probe.codefoldPoint()");
+      if (pt) {
+        await cdp.send("Input.dispatchMouseEvent", {
+          type: "mouseWheel", x: pt.x, y: pt.y, deltaX: 0, deltaY: 150, button: "none",
+        });
+      }
+      await sleep(500);
+      const afterWheel = await cdp.eval("window.__probe.codefoldMeasure()");
+      check(
+        `[${tag}] 折叠态滚轮落到外层消息列表（pre 一动不动）`,
+        !!before && !!afterWheel && afterWheel.outer.scrollTop > before.outer.scrollTop
+          && afterWheel.preScrollTop === 0,
+        "outer.scrollTop 增大 + pre.scrollTop 仍 0",
+        JSON.stringify({
+          outerBefore: before && before.outer.scrollTop,
+          outerAfter: afterWheel && afterWheel.outer.scrollTop,
+          preAfter: afterWheel && afterWheel.preScrollTop,
+        }),
+      );
+
+      // ---- 移动档：触控手势同样落到外层列表 ----
+      if (size.mobile) {
+        await cdp.eval(`(() => {
+          const s = document.querySelector('[data-codefold-scroller]');
+          if (s) s.scrollTop = 0;
+          return true;
+        })()`);
+        await sleep(200);
+        const preTouch = await cdp.eval("window.__probe.codefoldMeasure()");
+        const pt2 = await cdp.eval("window.__probe.codefoldPoint()");
+        if (pt2) {
+          await cdp.send("Input.synthesizeScrollGesture", {
+            x: pt2.x, y: pt2.y, xDistance: 0, yDistance: -180,
+            gestureSourceType: "touch", speed: 300,
+          });
+        }
+        await sleep(500);
+        const afterTouch = await cdp.eval("window.__probe.codefoldMeasure()");
+        check(
+          `[${tag}] 折叠态触控手势落到外层消息列表（pre 一动不动）`,
+          !!preTouch && !!afterTouch && afterTouch.outer.scrollTop > preTouch.outer.scrollTop
+            && afterTouch.preScrollTop === 0,
+          "touch 后 outer.scrollTop 增大 + pre.scrollTop 仍 0",
+          JSON.stringify({
+            outerBefore: preTouch && preTouch.outer.scrollTop,
+            outerAfter: afterTouch && afterTouch.outer.scrollTop,
+            preAfter: afterTouch && afterTouch.preScrollTop,
+            touchAction: afterTouch && afterTouch.preTouchAction,
+          }),
+        );
+      }
+
+      // ---- 展开态（全文弹窗）----
+      const outerBeforeOpen = await cdp.eval(`(() => {
+        const s = document.querySelector('[data-codefold-scroller]');
+        return s ? Math.round(s.scrollTop) : -1;
+      })()`);
+      const clicked = await clickExpand();
+      check(`[${tag}] 点「展开」真的打开全文弹窗`, clicked === true, "真点击命中按钮", String(clicked));
+      await sleep(600);
+      const modal = await cdp.eval("window.__probe.codefoldModal()");
+      check(
+        `[${tag}] 展开态长代码才出现内部滚动（overflow-y:auto + 能滚到底）`,
+        !!modal && modal.present === true && modal.scrollMode === "scroll"
+          && modal.overflowY === "auto" && modal.preScrollable === true,
+        "scroll mode + overflow-y=auto + scrollHeight>clientHeight",
+        JSON.stringify(modal),
+      );
+      check(
+        `[${tag}] 展开弹窗在视口内、代码区底边没被卡片裁掉`,
+        !!modal && modal.insideViewport === true && modal.preBottomInsideDialog === true,
+        "dialog 四边在视口内 + pre.bottom <= dialog.bottom",
+        JSON.stringify(modal && { dialog: modal.dialog, inside: modal.insideViewport, preOk: modal.preBottomInsideDialog }),
+      );
+      const ariaOpen = await cdp.eval(`(() => {
+        const b = document.querySelector('[data-code-fold-expand]');
+        return b ? b.getAttribute('aria-expanded') : null;
+      })()`);
+      check(`[${tag}] 弹窗打开时展开按钮 aria-expanded=true`, ariaOpen === "true",
+        "aria-expanded=true", String(ariaOpen));
+      // 截图放在"滚到底"之前：展开态要能看见弹窗顶部（长代码下滚的是内部 pre）。
+      await shot(`expanded-${tag}`);
+      const modalScrolled = await cdp.eval(`(() => {
+        const p = document.querySelector('[role="dialog"] pre.code-pre');
+        if (!p) return null;
+        p.scrollTop = p.scrollHeight;
+        return Math.round(p.scrollTop);
+      })()`);
+      await sleep(200);
+      const modalAfter = await cdp.eval("window.__probe.codefoldModal()");
+      check(
+        `[${tag}] 展开态能滚到全文末尾（scrollTop 真的变了）`,
+        modalScrolled !== null && modalScrolled > 0 && !!modalAfter && modalAfter.preScrollTop > 0,
+        "pre.scrollTop > 0 after scrollToBottom",
+        JSON.stringify({ scrolled: modalScrolled, after: modalAfter && modalAfter.preScrollTop }),
+      );
+
+      // Esc 关闭：焦点回到展开按钮、外层列表滚动位置不变
+      await cdp.key("Escape", "Escape", "", 27);
+      await sleep(400);
+      const closed = await cdp.eval("window.__probe.codefoldModal()");
+      const focus = await cdp.eval("window.__probe.codefoldFocus()");
+      const outerAfterClose = await cdp.eval(`(() => {
+        const s = document.querySelector('[data-codefold-scroller]');
+        return s ? Math.round(s.scrollTop) : -1;
+      })()`);
+      check(
+        `[${tag}] Esc 关掉弹窗后焦点回到展开按钮（不落到 body/输入区）`,
+        !!closed && closed.present === false && !!focus && focus.isExpandBtn === true,
+        "dialog gone + activeElement=展开按钮",
+        JSON.stringify({ modal: closed, focus }),
+      );
+      check(
+        `[${tag}] 展开/收起不改变外层消息列表滚动位置`,
+        outerBeforeOpen >= 0 && outerAfterClose === outerBeforeOpen,
+        "outer.scrollTop 前后相同",
+        JSON.stringify({ before: outerBeforeOpen, after: outerAfterClose }),
+      );
+
+      // ---- 短块（3 行）/ 正好等于上限（8 行）：不许出现「展开」按钮 ----
+      const shortMounted = await mount({
+        code: shortCode, dark, width: size.w, height: size.h, padTop: 80, padBottom: 300,
+      });
+      check(`[${tag}] 短块夹具挂得起来`, !!shortMounted && shortMounted.ok === true,
+        "mount ok", JSON.stringify(shortMounted));
+      await sleep(500);
+      const shortM = await cdp.eval("window.__probe.codefoldMeasure()");
+      check(
+        `[${tag}] 3 行短块不出现「展开」按钮、不滚、不截断`,
+        !!shortM && shortM.present === true && shortM.expandBtn === false
+          && shortM.clamped === false && shortM.preScrollable === false
+          && shortM.contentClipped === false && shortM.scrollMode === "none",
+        "no expand + not clamped + scrollable=false + no clipping",
+        JSON.stringify(shortM),
+      );
+
+      const exactMounted = await mount({
+        code: exactCode, dark, width: size.w, height: size.h, padTop: 80, padBottom: 300,
+      });
+      check(`[${tag}] 8 行（正好等于上限）夹具挂得起来`, !!exactMounted && exactMounted.ok === true,
+        "mount ok", JSON.stringify(exactMounted));
+      await sleep(500);
+      const exactM = await cdp.eval("window.__probe.codefoldMeasure()");
+      check(
+        `[${tag}] 正好 8 行不出现「展开」按钮（边界不误判）`,
+        !!exactM && exactM.present === true && exactM.expandBtn === false
+          && exactM.clamped === false && exactM.preScrollable === false
+          && exactM.contentClipped === false,
+        "no expand + not clamped + no hidden content",
+        JSON.stringify(exactM),
+      );
+
+      // 展开态上限：短内容在弹窗里**不**出现滚动（只在 1280 两档量；掺主题没意义，但矩阵要求亮/暗各一）
+      let shortModal = null;
+      if (size.id === "1280") {
+        const shortModalMounted = await mount({
+          code: shortCode, dark, width: size.w, height: size.h, padTop: 80, padBottom: 300, forceOpen: true,
+        });
+        check(`[${tag}] 短块弹窗夹具挂得起来`, !!shortModalMounted && shortModalMounted.ok === true,
+          "mount ok", JSON.stringify(shortModalMounted));
+        await sleep(500);
+        shortModal = await cdp.eval("window.__probe.codefoldModal()");
+        check(
+          `[${tag}] 展开态短内容不出现内部滚动（只有超过上限才滚）`,
+          !!shortModal && shortModal.present === true && shortModal.preScrollable === false,
+          "scrollHeight <= clientHeight", JSON.stringify(shortModal),
+        );
+        // 把这份强制打开的弹窗关掉，别把"开着的浮层"带进下一档（本仓踩过 renderer 卡死）。
+        await cdp.key("Escape", "Escape", "", 27);
+        await sleep(300);
+      }
+
+      table.push({
+        size: size.id,
+        theme: dark ? "dark" : "light",
+        foldScrollable: before && before.preScrollable,
+        foldOverflowY: before && before.overflowY,
+        foldScrollTop: before && before.preScrollTop,
+        outerBefore: before && before.outer.scrollTop,
+        outerAfterWheel: afterWheel && afterWheel.outer.scrollTop,
+        wheelPreTop: afterWheel && afterWheel.preScrollTop,
+        expandedScrollable: modal && modal.preScrollable,
+        expandedScrollTop: modalAfter && modalAfter.preScrollTop,
+        expandBtn: before && before.expandBtn,
+        hint: before && before.hint,
+        short3Btn: shortM && shortM.expandBtn,
+        exact8Btn: exactM && exactM.expandBtn,
+        shortModalScrollable: shortModal && shortModal.preScrollable,
+      });
+    }
+  }
+
+  await cdp.send("Emulation.setTouchEmulationEnabled", { enabled: false }).catch(() => {});
+  await cdp.send("Emulation.setFocusEmulationEnabled", { enabled: false }).catch(() => {});
+  console.log("  · 折叠代码块读数表（fold=折叠态，expand=全文弹窗）：");
+  for (const r of table) {
+    console.log(
+      `    ${r.size}/${r.theme}: fold scrollable=${r.foldScrollable} overflowY=${r.foldOverflowY}`
+      + ` scrollTop=${r.foldScrollTop} | wheel outer ${r.outerBefore}→${r.outerAfterWheel} pre=${r.wheelPreTop}`
+      + ` | expand scrollable=${r.expandedScrollable} scrollTop=${r.expandedScrollTop}`
+      + ` | btn long=${r.expandBtn} short3=${r.short3Btn} exact8=${r.exact8Btn}`
+      + ` shortModal=${r.shortModalScrollable} hint="${r.hint}"`,
+    );
+  }
+  console.log(`  📷 折叠/展开截图 → ${shotDir}/folded-<size>-<theme>.png / expanded-<size>-<theme>.png`);
 }
 
 /**

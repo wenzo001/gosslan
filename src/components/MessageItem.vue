@@ -1949,6 +1949,7 @@ async function copyFileToClipboard() {
             :language="renderLang"
             :can-switch-lang="canSwitchCodeLang"
             :switching="codeLangSwitching"
+            :expanded="fullModalOpen && fullModalKind === 'code'"
             @expand="openFullModal('code', $event)"
             @copy="copyContent('code', copyOut($event))"
             @switch-lang="switchCodeLang"

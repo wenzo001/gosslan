@@ -3,7 +3,7 @@ import { t } from "@/i18n";
 import BubbleTail from "@/components/message/BubbleTail.vue";
 import { computed, ref } from "vue";
 import CodeBlock from "@/components/CodeBlock.vue";
-import { CODE_CLAMP_HEIGHT, CODE_SURFACE } from "@/utils/previewMetrics";
+import { CODE_CLAMP_HEIGHT, CODE_SURFACE, codePreviewRemainingLines } from "@/utils/previewMetrics";
 import { Copy } from "lucide-vue-next";
 import { DropdownMenuItem } from "reka-ui";
 import ContextMenu from "@/components/ContextMenu.vue";
@@ -25,6 +25,8 @@ const props = defineProps<{
   canSwitchLang?: boolean;
   /** 切换请求进行中：头部保留旧语言，只转圈。 */
   switching?: boolean;
+  /** 全文弹窗是否打开：驱动展开按钮的 `aria-expanded`（折叠态恒为 false）。 */
+  expanded?: boolean;
 }>();
 const emit = defineEmits<{
   (e: "expand", code: string): void;
@@ -44,6 +46,9 @@ const actionsStyle = computed(() => ({
 }));
 /** 尖角取代码卡片底色（代码气泡不走 bubbleStyle，得自己给 --bubble-bg 赋值）。 */
 const tailBg = computed(() => surface.value);
+
+/** 折叠态被截掉的逻辑行数：操作条上给出「还有 N 行」的可发现信号（短块为 0）。 */
+const hiddenLines = computed(() => (props.clamped ? codePreviewRemainingLines(props.code) : 0));
 
 /** 右键菜单坐标（N6-1：代码块右键 →「复制」，与底栏按钮走同一个 emit）。 */
 const ctx = ref<{ x: number; y: number } | null>(null);
@@ -87,11 +92,14 @@ function copyFromMenu() {
          若容器透明，CodeBlock 实际渲染高度不足该值时，底部会空出一条画布色亮缝
          （卡片与操作条之间「露出聊天背景」）；故容器自身填卡片底色兜底。
          同时卡片不画下边框，分隔线统一由操作条上边框绘制，避免叠出双线。 -->
-    <!-- 截断态：父层锁死 CODE_CLAMP_HEIGHT，CodeBlock 撑满并把滚动收进代码区
-         （头部固定不动，正文在 `pre` 内滚；外层 overflow-hidden 防双层滚动条）。 -->
+    <!-- 折叠态（用户 2026-11-06：「代码在消息列表不需要滚动，只展示固定几行，余下截断，
+         展开滚动展示」）：父层锁死 CODE_CLAMP_HEIGHT，CodeBlock 撑满但**不是滚动容器**
+         （`clipped` ⇒ pre 是 overflow:hidden）⇒ 滚轮/触控事件冒泡给外层消息列表。
+         底部再压一层同色渐隐 + 操作条上的「还有 N 行」，让"被截断"可发现。 -->
     <div
       v-if="clamped"
-      class="overflow-hidden rounded-t-[var(--gosslan-radius-sm)]"
+      data-code-fold="clamped"
+      class="relative overflow-hidden rounded-t-[var(--gosslan-radius-sm)]"
       :style="{ height: `${CODE_CLAMP_HEIGHT}px`, background: surface }"
     >
       <CodeBlock
@@ -101,8 +109,14 @@ function copyFromMenu() {
         :switching="switching"
         attached
         fill
-        scrollable
+        clipped
         @switch-language="emit('switch-lang', $event)"
+      />
+      <div
+        v-if="hiddenLines > 0"
+        class="code-clip-fade pointer-events-none absolute inset-x-0 bottom-0 h-4"
+        aria-hidden="true"
+        :style="{ background: `linear-gradient(to bottom, transparent, ${surface})` }"
       />
     </div>
     <CodeBlock
@@ -116,7 +130,21 @@ function copyFromMenu() {
     />
     <!-- 操作条＝代码卡片的底栏：总高恒为 previewMetrics.CODE_ACTION_BAR(28px)，改样式不要动高度 -->
     <div class="code-actions" :style="actionsStyle">
-      <button v-if="clamped" class="tap-safe preview-action" @click="emit('expand', code)">{{ t("common.expand") }}</button>
+      <button
+        v-if="clamped"
+        class="tap-safe preview-action"
+        data-code-fold-expand
+        aria-haspopup="dialog"
+        :aria-expanded="expanded ? 'true' : 'false'"
+        @click="emit('expand', code)"
+      >{{ t("common.expand") }}</button>
+      <!-- 截断的可发现信号：明确告诉用户「还有 N 行」没显示（不是滚动条不见了）。 -->
+      <span
+        v-if="hiddenLines > 0"
+        class="min-w-0 truncate text-caption opacity-60"
+        :title="t('code.moreLines', { n: hiddenLines })"
+        data-code-more
+      >{{ t("code.moreLines", { n: hiddenLines }) }}</span>
       <button
         class="tap-safe preview-action"
         :class="copied ? 'opacity-100' : 'opacity-70 hover:opacity-100'"

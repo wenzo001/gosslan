@@ -664,6 +664,8 @@ export const zhCN: MessageDict = {
   "code.lang": "代码语言",
   "code.auto": "自动识别",
   "code.plaintext": "纯文本",
+  // 折叠态被截掉的行数（消息列表不滚，只显示固定几行）。
+  "code.moreLines": "还有 {n} 行",
   "chat.composer.sendFile": "发送文件（自动选择最优路线）",
   // 窗口抖动（仿 QQ）：仅单聊可用；独立 nudge 事件，不锚定消息
   "chat.composer.shake": "抖动窗口",
