@@ -1660,6 +1660,7 @@ async function copyFileToClipboard() {
          正文块的 6px 上间距由它自己带。不透明的原因同时间分割线（这一行也不属于选中块）。 -->
     <div
       v-if="showUnreadDivider"
+      data-unread-divider
       class="mt-3 mb-1.5 flex items-center gap-2 bg-[var(--gosslan-chat)] px-3"
       :class="tintOn ? '' : 'ambient-canvas-child'"
     >
