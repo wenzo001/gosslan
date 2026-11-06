@@ -3234,6 +3234,84 @@ export function checkAmbientChromeSurfaces(src: AmbientChromeSources): GuardIssu
   return out.sort((a, b) => a.line - b.line);
 }
 
+/* ============================================================================
+ * BT —— 「回到最新」悬浮钮不许压在时间/未读分割行上（2026-11-06 用户拍板）
+ *
+ * 判据来源：用户截图里 36×36 圆钮正好盖住滚到消息区底部的 `10月27日 16:21`。
+ * 修法是**实测驱动**：可见时取自己与视口内 `[data-time-divider]` /
+ * `[data-unread-divider]` 的 `getBoundingClientRect`，相交才按「行高 + 8px」上移
+ * （最多 3 步），不相交回基准位 —— 不做固定 `bottom` 抬高，也不改 `gap>150` 出现阈值。
+ *
+ * 这一层是静态回归闸：像素/矩形读数在运行时探针里（六档 × 亮/暗）；
+ * 纯函数判据（避让后重叠面积 = 0）在 `utils/backToLatest.test.ts`。
+ * ========================================================================== */
+
+export interface BackToLatestAvoidSources {
+  button: string;
+  messageItem: string;
+}
+
+export function checkBackToLatestAvoidance(src: BackToLatestAvoidSources): GuardIssue[] {
+  const out: GuardIssue[] = [];
+  const btn = src.button;
+
+  // BT-01：位移必须来自 `computeBackToLatestAvoidOffset`，且写回的是 `avoidOffset`。
+  // 反例锚点：把这一行换成 `avoidOffset.value = 0;`（=关掉避让）必须红。
+  const call = [...btn.matchAll(/avoidOffset\.value\s*=\s*computeBackToLatestAvoidOffset\(/g)][0];
+  if (!call) {
+    out.push({
+      line: 0,
+      message:
+        "BT-01：「回到最新」没有把实测结果写进 `avoidOffset`（`avoidOffset.value = computeBackToLatestAvoidOffset(...)` 找不到）—— " +
+        "圆钮会重新压住滚动到底部的时间/未读分割行。",
+    });
+  }
+  if (!/\bcomputeBackToLatestAvoidOffset\b[\s\S]*from\s*["']@\/utils\/backToLatest["']/.test(btn)) {
+    out.push({
+      line: 0,
+      message: "BT-01：「回到最新」没有从 `@/utils/backToLatest` 引用避让计算 —— 无法证明它按实测矩形上移。",
+    });
+  }
+
+  // BT-02：实测必须覆盖两类分割行（时间 + 未读）；MessageItem 必须给出未读行的钩子。
+  if (!btn.includes("[data-time-divider]")) {
+    out.push({ line: 0, message: "BT-02：「回到最新」避让没查 `[data-time-divider]` —— 时间行仍会被压住。" });
+  }
+  if (!btn.includes("[data-unread-divider]")) {
+    out.push({ line: 0, message: "BT-02：「回到最新」避让没查 `[data-unread-divider]` —— 未读行仍会被压住。" });
+  }
+  if (!src.messageItem.includes("data-unread-divider")) {
+    out.push({
+      line: 0,
+      message: "BT-02：MessageItem 的未读分割线缺少 `data-unread-divider` 钩子 —— 按钮无从实测它的矩形。",
+    });
+  }
+
+  // BT-03：位移只能通过 `bottom` 生效；没有 `:style` 绑定等于算完不落地。
+  if (!/:style="\s*avoidOffset\s*\?/.test(btn) || !btn.includes("calc(1rem +")) {
+    out.push({
+      line: lineAt(btn, btn.indexOf(":style") === -1 ? 0 : btn.indexOf(":style")),
+      message: "BT-03：「回到最新」的 `avoidOffset` 没有绑到 `bottom`（`calc(1rem + …)` 找不到）—— 避让不会生效。",
+    });
+  }
+
+  // BT-04：上一轮的硬约束不能被这次改动破坏（热区/不可见态/无新增过渡属性）。
+  // 注释里解释「没有 ::after」不算违规，先剥注释再扫。
+  if (/\btap-safe\b|::after|\bafter:/.test(stripMarkupComments(btn))) {
+    out.push({
+      line: 0,
+      message: "BT-04：「回到最新」出现了扩热区写法（`tap-safe` / `::after` / `after:`）—— 36×36 就是全部命中区。",
+    });
+  }
+  for (const needle of ["h-9 w-9", "'pointer-events-none opacity-0'", ':aria-hidden="!visible"', ':tabindex="visible ? 0 : -1"']) {
+    if (!btn.includes(needle)) {
+      out.push({ line: 0, message: `BT-04：「回到最新」丢失既有约束 \`${needle}\`（热区/不可见态被改坏）。` });
+    }
+  }
+
+  return out.sort((a, b) => a.line - b.line);
+}
+
 // ---------------- IP-01 图片预览：圆角裁剪面必须贴住内容角，且不许写死深色垫底 ----------------
 
 /**

@@ -57,6 +57,7 @@ import {
   findVHtmlSinks,
   V_HTML_ALLOWED,
   checkContainImageClip,
+  checkBackToLatestAvoidance,
 } from "./designGuards.ts";
 
 // ---------------- ⓪ 选中态/原生控件颜色必须吃主题变量（#35-N7） ----------------
@@ -7041,4 +7042,57 @@ test("IP-01 反例自证：把垫底写成 `bg-black` / `rgba(0,0,0,.4)` 必须�
       `期望因 ${pad} 报红，实际：${JSON.stringify(issues)}`,
     );
   }
+});
+
+// ---------------- BT：「回到最新」不许压在时间/未读分割行上（2026-11-06） ----------------
+function backToLatestSources() {
+  const srcDir = join(import.meta.dirname, "..");
+  return {
+    button: readFileSync(join(srcDir, "components", "chat", "BackToLatestButton.vue"), "utf8"),
+    messageItem: readFileSync(join(srcDir, "components", "MessageItem.vue"), "utf8"),
+  };
+}
+
+test("BT-01..04：现树里「回到最新」按实测矩形避让、热区/不可见态未变", () => {
+  const issues = checkBackToLatestAvoidance(backToLatestSources());
+  assert.deepEqual(issues, [], issues.map((i) => `L${i.line} ${i.message}`).join("\n"));
+});
+
+test("BT-01 反例自证：把避让关掉（offset 恒为 0）必须红", () => {
+  const src = backToLatestSources();
+  const broken = src.button.replace(
+    "avoidOffset.value = computeBackToLatestAvoidOffset(base, dividers);",
+    "avoidOffset.value = 0;",
+  );
+  assert.notEqual(broken, src.button, "锚点没命中：避让调用那一行的形状变了");
+  const issues = checkBackToLatestAvoidance({ ...src, button: broken });
+  assert.ok(
+    issues.some((i) => i.message.includes("BT-01") && i.message.includes("avoidOffset")),
+    `关掉避让必须报 BT-01，实际：${JSON.stringify(issues)}`,
+  );
+});
+
+test("BT-02 反例自证：删掉未读分割线的 data 钩子必须红", () => {
+  const src = backToLatestSources();
+  const broken = src.messageItem.replace("      data-unread-divider\n", "");
+  assert.notEqual(broken, src.messageItem, "锚点没命中：未读分割线的 data-unread-divider 不在了");
+  const issues = checkBackToLatestAvoidance({ ...src, messageItem: broken });
+  assert.ok(
+    issues.some((i) => i.message.includes("BT-02") && i.message.includes("data-unread-divider")),
+    `删掉钩子必须报 BT-02，实际：${JSON.stringify(issues)}`,
+  );
+});
+
+test("BT-03 反例自证：把位移绑回 bottom 的 style 删掉必须红", () => {
+  const src = backToLatestSources();
+  const broken = src.button.replace(
+    /\n\s*:style="avoidOffset \? \{ bottom: `calc\(1rem \+ \$\{avoidOffset\}px\)` \} : undefined"/,
+    "",
+  );
+  assert.notEqual(broken, src.button, "锚点没命中：:style 绑定那一行的形状变了");
+  const issues = checkBackToLatestAvoidance({ ...src, button: broken });
+  assert.ok(
+    issues.some((i) => i.message.includes("BT-03")),
+    `删掉 style 绑定必须报 BT-03，实际：${JSON.stringify(issues)}`,
+  );
 });

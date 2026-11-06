@@ -17,19 +17,85 @@
  *    pointerup 落到下面的图片上，click 被派发到共同祖先 ⇒ `press` 丢事件（2026-11-05 实测）。
  *    `active:scale-[0.97]` 是 Tailwind 的**组合 transform**（含 `translate(var(--tw-translate-x)…)`），
  *    既保住水平居中又保留按下去的缩小反馈。
+ *
+ * ④ **不许压住时间/未读分割行**（2026-11-06 用户拍板）：`bottom-4` 是基准位，
+ *    按钮可见时实测自己与可视区内 `[data-time-divider]` / `[data-unread-divider]` 的矩形，
+ *    相交才按「行高 + 8px」上移（最多 3 步，见 `computeBackToLatestAvoidOffset`）；
+ *    不相交就回到基准位 —— 绝不"永远抬高"去压消息正文。
+ *    位移直接写 `bottom`，不新增 transition 属性/曲线。
  */
+import { nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { ArrowDown } from "lucide-vue-next";
 import { t } from "@/i18n";
+import { computeBackToLatestAvoidOffset } from "@/utils/backToLatest";
 
-defineProps<{ visible: boolean }>();
+const props = defineProps<{ visible: boolean }>();
 const emit = defineEmits<{ (e: "press"): void }>();
+
+const root = ref<HTMLButtonElement | null>(null);
+const avoidOffset = ref(0);
+let raf = 0;
+
+/** 实测避让：基准位矩形 → 分割行矩形 → 需要上移多少。 */
+function measure() {
+  raf = 0;
+  const btn = root.value;
+  if (!btn || !props.visible) return;
+  // `getBoundingClientRect` 读到的已经是"上移后"的位置；先把 offset 加回去，
+  // 否则每次重算都在上一次结果上再抬一次，按钮会一路往上爬。
+  const r = btn.getBoundingClientRect();
+  const base = {
+    top: r.top + avoidOffset.value,
+    bottom: r.bottom + avoidOffset.value,
+    left: r.left,
+    right: r.right,
+  };
+  const scope = btn.parentElement;
+  const dividers = scope
+    ? Array.from(scope.querySelectorAll<HTMLElement>("[data-time-divider], [data-unread-divider]"))
+        .map((el) => el.getBoundingClientRect())
+        // overscan 会渲染视口外的行，先筛掉（重叠判据本身也会排除，这里省点算术）。
+        .filter((x) => x.bottom > 0 && x.top < window.innerHeight)
+    : [];
+  avoidOffset.value = computeBackToLatestAvoidOffset(base, dividers);
+}
+
+function schedule() {
+  if (!props.visible || raf) return;
+  raf = requestAnimationFrame(measure);
+}
+
+watch(
+  () => props.visible,
+  (v) => {
+    if (!v) {
+      avoidOffset.value = 0;
+      return;
+    }
+    nextTick(schedule);
+  },
+);
+
+// 滚动/窗口尺寸变化时分割行的位置会变：只重算位移，不改出现阈值（`gap > 150` 仍由 VirtualList 驱动）。
+onMounted(() => {
+  document.addEventListener("scroll", schedule, { capture: true, passive: true });
+  window.addEventListener("resize", schedule);
+});
+onBeforeUnmount(() => {
+  document.removeEventListener("scroll", schedule, { capture: true });
+  window.removeEventListener("resize", schedule);
+  if (raf) cancelAnimationFrame(raf);
+  raf = 0;
+});
 </script>
 
 <template>
   <button
+    ref="root"
     type="button"
     data-back-to-latest
     class="frost absolute bottom-4 left-1/2 z-10 flex h-9 w-9 -translate-x-1/2 items-center justify-center rounded-full text-[var(--gosslan-text)] transition active:scale-[0.97]"
+    :style="avoidOffset ? { bottom: `calc(1rem + ${avoidOffset}px)` } : undefined"
     :class="
       visible
         ? 'gosslan-back-to-latest pointer-events-auto opacity-100 hover:bg-[var(--gosslan-hover)]'
