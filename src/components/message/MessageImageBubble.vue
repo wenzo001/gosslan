@@ -185,11 +185,11 @@ onUnmounted(clearTimer);
     <div
       v-if="state !== 'loaded'"
       data-img-skeleton
-      class="flex w-full items-center justify-center bg-[var(--gosslan-hover)]"
+      class="gosslan-skeleton-in flex w-full items-center justify-center bg-[var(--gosslan-hover)]"
       :style="{ height: `${placeholderHeight}px` }"
     >
       <ImageOff v-if="state === 'failed'" class="size-6 opacity-50" />
-      <ImageIcon v-else class="size-6 animate-pulse opacity-40" />
+      <ImageIcon v-else class="size-6 opacity-40" />
     </div>
     <div
       v-if="state === 'failed'"

@@ -29,6 +29,7 @@ import {
   checkTextFieldFocusRing,
   checkGlassTiers,
   checkAmbientMotion,
+  checkSkeletonStatic,
   checkComposerSurface,
   checkAmbientChromeSurfaces,
   checkSelectionContract,
@@ -6687,6 +6688,48 @@ test("AM-06 反例自证：reduce 档只改时长不冻结必须红", () => {
   const css = ambientCss().replace(/animation: none !important;/g, "animation-duration: 30s !important;");
   const issues = checkAmbientMotion({ ...ambientSources(), css });
   assert.ok(issues.some((x) => x.message.includes("AM-06")), `期望 AM-06 报红，实际：${JSON.stringify(issues)}`);
+});
+
+// ---------------- SK：消息骨架静态化（2026-11-06 阶段 5 裁决） ----------------
+
+function skeletonSources() {
+  const srcDir = join(import.meta.dirname, "..");
+  return {
+    chatWindow: readFileSync(join(srcDir, "components", "ChatWindow.vue"), "utf8"),
+    imageBubble: readFileSync(join(srcDir, "components", "message", "MessageImageBubble.vue"), "utf8"),
+  };
+}
+
+test("SK-01：现树骨架是静态灰块 + 一次淡入，两个锚点都在（分母现算）", () => {
+  const src = skeletonSources();
+  assert.deepEqual(checkSkeletonStatic(src), []);
+  // 反例自证的前提：锚点真的存在，否则这条判据只是在扫空气。
+  assert.match(src.chatWindow, /data-msg-skeleton/);
+  assert.match(src.imageBubble, /data-img-skeleton/);
+});
+
+test("SK-01 反例自证：给 ChatWindow 骨架塞回循环脉冲必须红", () => {
+  const src = skeletonSources();
+  // 只认模板里的锚点（注释里也提到了这个属性名，判据会先剥注释再数）。
+  const chatWindow = src.chatWindow.replace(
+    /\n        data-msg-skeleton\n/,
+    '\n        data-msg-skeleton class="animate-pulse"\n',
+  );
+  const issues = checkSkeletonStatic({ ...src, chatWindow });
+  assert.ok(
+    issues.some((i) => i.message.includes("SK-01") && i.message.includes("animate-pulse")),
+    `期望 SK-01 报红，实际：${JSON.stringify(issues)}`,
+  );
+});
+
+test("SK-01 反例自证：锚点被改名必须红（否则探针与判据同时扫空）", () => {
+  const src = skeletonSources();
+  const imageBubble = src.imageBubble.replace(/\n      data-img-skeleton\n/, "\n      data-img-skeleton-old\n");
+  const issues = checkSkeletonStatic({ ...src, imageBubble });
+  assert.ok(
+    issues.some((i) => i.message.includes("SK-01") && i.message.includes("data-img-skeleton")),
+    `期望 SK-01 报红，实际：${JSON.stringify(issues)}`,
+  );
 });
 
 // ---------------- CS：聊天输入区表面（背景动效白条回归） ----------------

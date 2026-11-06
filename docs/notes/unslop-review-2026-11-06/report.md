@@ -204,6 +204,23 @@ $ git rev-list --left-right --count origin/main...HEAD
 - **未改（需裁决）**：A1 的「叠 3 条 / 长句遮挡」要改成「toast 短句 + 页面内错误档 + 可选动作」，属于交互变化，按指令先报后改。
 - **未做**：`errorText` 本身的口径未动（只修前缀与护栏），避免全局文案口径变化面过大。
 
+### 阶段 5 — 动效取舍（2026-11-06）
+
+- **B7 色雾（桌面保留 / 移动端降档）**：桌面 4 层 radial 与 72·96·120s 原样不动。
+  `@media (max-width: 767px)` 把 A/B 的漂移冻结到初始帧（速度降一档到 0），C/D 早已隐藏
+  ⇒ 竖屏可见 2 团、运行中动画 0 个；不整体降饱和、不隐藏整层。
+  同口径写进 `ambient-motion.md` §5.2（与 <480 的 JS `narrow` 判定对齐）。
+- **B8 消息骨架静态化**：`ChatWindow.vue` 9 处与 `MessageImageBubble.vue` 1 处
+  `animate-pulse` 全部移除，改静态灰块 + `gosslan-skeleton-in`（240ms opacity 一次淡入，
+  reduce 档不播，符合 §11.3.7）。锚点 `data-msg-skeleton` 供 `--only=scrollswitch` 复用，
+  探针里旧的 `.animate-pulse` 选择器同提交迁走（判据搬迁，不是删断言）。
+- **判据**：新增 `designGuards` SK-01（两个文件 0 脉冲 + 两个锚点分母现算）；
+  两条反例自证：塞回 `animate-pulse` 必红、把 `data-img-skeleton` 改名必红。
+- **边界核对**：基点上 `ChatWindow.vue` / `MessageItem.vue` 的 `shadow-lg|xl` /
+  `transition-all` / `hover:scale` 均已是 0 处（玻璃线已收）；`ImageLightbox` 的
+  3 处 `shadow-lg` + 1 处 `shadow-2xl` 保留 —— 它们压在**任意照片**与黑底浮控之上，
+  需要的是"与照片内容分离"的抬升，玻璃 token 的投影是给应用表面上的面板用的，不适用。
+
 ---
 
 ## 8. 需要你裁决的 6 件事（我不猜）
