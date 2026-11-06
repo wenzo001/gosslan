@@ -346,8 +346,12 @@ function stateText(state: GroupFileEntry["local_state"]): string {
               <span>{{ formatBytes(f.size) }}</span>
               <span>·</span>
               <span class="truncate" :title="senderLabel(f.sender_id)">{{ senderLabel(f.sender_id) }}</span>
-              <span>·</span>
-              <span class="shrink-0">{{ fmtConversationTime(f.created_at, t) }}</span>
+              <!-- B6（2026-11-06）：时间缺失时 `fmtConversationTime` 返回空串，分隔点必须跟着一起消失，
+                   否则行尾会留下悬空的「·」。 -->
+              <template v-if="fmtConversationTime(f.created_at, t)">
+                <span>·</span>
+                <span class="shrink-0">{{ fmtConversationTime(f.created_at, t) }}</span>
+              </template>
               <template v-if="deliveryText(f)">
                 <span>·</span>
                 <span class="shrink-0">{{ deliveryText(f) }}</span>

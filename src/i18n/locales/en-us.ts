@@ -70,8 +70,6 @@ export const enUS: MessageDict = {
   "logs.filterClear": "Clear filter",
   "logs.filterCount": "{n} of {total} matched",
   "logs.filterEmpty": "No matching logs.",
-  "logs.merge": "Collapse duplicate logs",
-  "logs.mergeDup": "Expand duplicate logs",
   "logs.mergedCount": "{n} identical logs collapsed",
 
   // ---- Settings shell ----

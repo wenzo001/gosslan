@@ -26,6 +26,7 @@ import {
   filterLogLines,
   mergeLogRows,
 } from "@/utils/logFilter";
+import SettingsToggle from "@/components/settings/SettingsToggle.vue";
 import { fmtClock, fmtDateTime } from "@/utils/time";
 import type { LogEntry } from "@/types";
 
@@ -309,8 +310,8 @@ function close() {
       :class="'bg-[var(--gosslan-app-bg)]'"
       :style="{ height: 'var(--gosslan-header-h)' }"
     >
+      <!-- B1（2026-11-06）：功能名已在 TitleBar 上，内容区不再重复打印；这里只留计数与状态。 -->
       <div class="flex min-w-0 items-baseline gap-2">
-        <span class="truncate text-title font-medium" :title="t('logs.title')">{{ t("logs.title") }}</span>
         <span class="shrink-0 text-xs text-[var(--gosslan-text-2)]">
           {{ t("logs.count", { n: logs.length }) }}
         </span>
@@ -320,7 +321,7 @@ function close() {
         <!-- 自动刷新开关 -->
         <button
           class="tap-safe flex h-8 items-center gap-1.5 rounded-[var(--gosslan-radius-sm)] px-2 text-xs transition hover:bg-[var(--gosslan-hover)]"
-          :class="autoRefresh ? 'text-[var(--gosslan-primary)]' : 'text-[var(--gosslan-text-2)]'"
+          :class="autoRefresh ? 'text-[var(--gosslan-accent-ink)]' : 'text-[var(--gosslan-text-2)]'"
           :title="t('logs.autoRefresh')"
           :aria-label="t('logs.autoRefresh')"
           :aria-pressed="autoRefresh"
@@ -416,12 +417,10 @@ function close() {
         @click="timeWindow = 120; void load()"
       >{{ t("logs.window2m") }}</button>
       <span class="mx-1 h-3 w-px shrink-0 bg-[var(--gosslan-divider)]"></span>
-      <button
-        class="tap-safe rounded-[var(--gosslan-radius-sm)] px-2 py-0.5 text-caption transition"
-        :class="mergeDup ? 'border border-[var(--gosslan-primary)] bg-[var(--gosslan-primary-light)] font-medium text-[var(--gosslan-accent-ink)]' : 'text-[var(--gosslan-text-2)] hover:bg-[var(--gosslan-hover)]'"
-        :title="mergeDup ? t('logs.mergeDup') : t('logs.merge')"
-        @click="mergeDup = !mergeDup"
-      >{{ t("logs.mergeButton") }}</button>
+      <!-- B2（2026-11-06）：合并重复是「持续生效的开关」，不是「切一下就走的时间窗」。
+           和 4 个时间窗 chip 拆成两种形状：文字标签 + 同款 SettingsToggle。 -->
+      <span class="shrink-0 text-caption text-[var(--gosslan-text-2)]">{{ t("logs.mergeButton") }}</span>
+      <SettingsToggle v-model="mergeDup" :label="t('logs.mergeButton')" />
     </div>
 
     <!-- 过滤条：字面包含匹配，命中处高亮。 -->
@@ -485,7 +484,7 @@ function close() {
         </span>
         <button
           class="tap-safe flex h-8 items-center gap-1.5 rounded-[var(--gosslan-radius-sm)] px-2 text-xs transition hover:bg-[var(--gosslan-hover)]"
-          :class="autoRefresh ? 'text-[var(--gosslan-primary)]' : 'text-[var(--gosslan-text-2)]'"
+          :class="autoRefresh ? 'text-[var(--gosslan-accent-ink)]' : 'text-[var(--gosslan-text-2)]'"
           :title="t('logs.autoRefresh')"
           :aria-label="t('logs.autoRefresh')"
           :aria-pressed="autoRefresh"
@@ -554,12 +553,9 @@ function close() {
           @click="timeWindow = 120; void load()"
         >{{ t("logs.window2m") }}</button>
         <span class="mx-1 h-3 w-px shrink-0 bg-[var(--gosslan-divider)]"></span>
-        <button
-          class="tap-safe rounded-[var(--gosslan-radius-sm)] px-2 py-0.5 text-caption transition"
-          :class="mergeDup ? 'border border-[var(--gosslan-primary)] bg-[var(--gosslan-primary-light)] font-medium text-[var(--gosslan-accent-ink)]' : 'text-[var(--gosslan-text-2)] hover:bg-[var(--gosslan-hover)]'"
-          :title="mergeDup ? t('logs.mergeDup') : t('logs.merge')"
-          @click="mergeDup = !mergeDup"
-        >{{ t("logs.mergeButton") }}</button>
+        <!-- B2（2026-11-06）：与桌面同形 —— 文字标签 + SettingsToggle，不再和 chip 同款。 -->
+        <span class="shrink-0 text-caption text-[var(--gosslan-text-2)]">{{ t("logs.mergeButton") }}</span>
+        <SettingsToggle v-model="mergeDup" :label="t('logs.mergeButton')" />
       </div>
 
       <div class="flex shrink-0 items-center gap-2 border-b border-[var(--gosslan-divider)] px-3 py-1.5">
