@@ -14,6 +14,36 @@
 
 ## [Unreleased]
 
+## [5.18.35] - 2026-11-06
+
+四条 UI 线（各自停在 `b1da5b4f` 之后）的线性合并发布，历史中不含 merge 提交。
+
+### 玻璃表面：聊天与全应用「该透却没透」统一（glass/chat-surfaces）
+
+- 聊天顶栏、输入区外框、药丸、返回最新按钮、好友资料、收藏面板等 chrome / float 面去掉实色底，
+  纳入同一条背景薄纱；通讯录字母分组条改为 `color-mix(in srgb, var(--gosslan-list) 72%, transparent)`
+  + `blur(8px)`，减少透明 / 高对比 / 不支持 `backdrop-filter` 三档退回可读实色。
+- 搜索对话框左右两列去掉 `list` / `chat` 实底，改透明 + 专用 `--gosslan-divider-strong`
+  （采样对两侧底色亮 3.45:1、暗 3.72:1）；全站发丝线 `--gosslan-divider` 保持原值。
+- 移动端底部 TabBar 改 `.frost`，保留 `html[data-frost="off"]` 的「半透明无 blur」退路。
+- 设置卡片属内容承载面，刻意维持实色，已在 `liquid-glass.md` 写明不是漏改。
+- 守卫 AC-09…AC-14 含反例自证；`--only=surfaces` 探针读数落在 `scripts/check-ui-runtime.mjs`。
+
+### 代码块语言下拉限制在聊天区内并限高（fix/lang-dropdown）
+
+- 语言下拉的定位边界收进聊天区（`data-lang-menu-boundary`），并加最大高度；
+  新增 `codeBlockLayout.test.ts` 与对应探针段。
+
+### 收藏页图片圆角：容器贴合画面、统一圆角（fix/fav-thumb-corners）
+
+- `object-contain` 的图片去掉 `w-full`、补圆角裁剪，禁止字面深色垫底；
+  新增 IP-01 守卫与反例自证。
+
+### 去 AI 味：空态 / 阴影 / 动效 / 文案语气 + unslop 方法论署名（unslop/ui-polish）
+
+- 空态组件、Toast、设置项、消息回执等去掉口号式文案与多余阴影；中英两册文案同步；
+  `sources.md` 记录方法论出处。
+
 ## [5.18.34] - 2026-11-05
 
 ### 图片预览：桌面改走应用内覆盖层，独立预览窗口路径整体删除（本批因 5.18.33 被占用改挂 5.18.34）
