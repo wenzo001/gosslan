@@ -362,13 +362,17 @@ test("toast 正文：短原因拼成「结论 · 原因」，长原因退回结�
     buildToastText("code=GROUP_TODO_TITLE_EMPTY 原始说明", "Save failed", trOf(enUS)),
     "Save failed · A todo needs a title.",
   );
-  // ② 反例自证：这条真实的后端说明拼完确实超过一行，上面的「短」与下面的「长」不是同一段逻辑；
-  //    若把上限改大 / 删掉长度判断，这条样本就会重新上屏 ⇒ 断言会红。
+  // ② 反例自证：这条真实的后端说明**自己**就超过一行，上面的「短」与下面的「长」不是同一段逻辑；
+  //    若把原因上限改大 / 删掉长度判断，这条样本就会重新上屏 ⇒ 断言会红。
   const longRaw = "对方不是好友，请先扫描添加好友之后再继续聊天。";
   const longJoined = tr("errors.toastJoined", { prefix: "发送失败", detail: longRaw });
   assert.ok(
+    toastDisplayWidth(longRaw) > TOAST_TEXT_MAX_COLUMNS,
+    `样本原因只有 ${toastDisplayWidth(longRaw)} 列，本来就该上屏 ⇒ 下面的断言会空转`,
+  );
+  assert.ok(
     toastDisplayWidth(longJoined) > TOAST_TEXT_MAX_COLUMNS,
-    `样本只有 ${toastDisplayWidth(longJoined)} 列，不够触发长度闸 ⇒ 下面的断言会空转`,
+    `样本整句只有 ${toastDisplayWidth(longJoined)} 列，触发不了长度闸 ⇒ 下面的断言会空转`,
   );
   assert.equal(buildToastText(longRaw, "发送失败", tr), "发送失败");
 });
@@ -387,19 +391,55 @@ test("toast 正文不含技术串：URL / err: / 十六进制 / 栈帧都退回�
   }
 });
 
-test("每个错误码的说明都过 toast 闸：≤ 20 字宽、不含技术串、结论句不丢（中英两册）", () => {
+test("每个错误码的说明都过 toast 闸：原因自身 ≤ 一行、不含技术串、结论句不丢（中英两册，前缀用真实文案）", () => {
+  // 前缀必须用**该语言真实的**那句话：旧版中英都用中文「操作失败」，
+  // 英文分支实际在断言「中文前缀还在」，前缀原样返回也能过 —— 闸一直在空转。
+  const prefixKey = "settings.network.toast.btFail";
   for (const [locale, dict] of [["zh", zhCN], ["en", enUS]] as const) {
     const tr = trOf(dict);
+    const prefix = dict[prefixKey];
+    assert.ok(prefix, `${locale} 词典缺 ${prefixKey}`);
     for (const [code, key] of Object.entries(ERROR_CODE_RULES)) {
-      const text = buildToastText(`code=${code} 原始说明`, "操作失败", tr);
-      assert.ok(
-        toastDisplayWidth(text) <= TOAST_TEXT_MAX_COLUMNS,
-        `${locale}/${code} 的 toast 超过一行（${toastDisplayWidth(text)} 列）：${text}`,
-      );
+      const text = buildToastText(`code=${code} 原始说明`, prefix, tr);
+      assert.ok(text.includes(prefix), `${locale}/${code} 丢了结论句：${text}`);
       assert.equal(TOAST_TECHNICAL.test(text), false, `${locale}/${code} 把技术串带上屏了：${text}`);
-      assert.ok(text.includes("操作失败"), `${locale}/${code} 丢了结论句：${text}`);
+      // 契约：要么只剩结论，要么上屏的原因自己不超过一行（可以折到第二行）。
+      if (text !== prefix) {
+        assert.ok(
+          toastDisplayWidth(dict[key]) <= TOAST_TEXT_MAX_COLUMNS,
+          `${locale}/${code} 把一个超过一行的段落推上了 toast（${toastDisplayWidth(dict[key])} 列）：${text}`,
+        );
+      }
       assert.ok(key in dict, `${locale} 词典缺 ${key}`);
     }
+  }
+});
+
+test("英文前缀更长也不许把原因挤没：同一件事中英都要看得见原因（改回旧总宽判据必红）", () => {
+  // 真实调用点：`GroupMemberPanel` 的强提醒失败；原因码 `GROUP_REMIND_TARGET_REQUIRED`。
+  for (const [locale, dict] of [["zh", zhCN], ["en", enUS]] as const) {
+    const tr = trOf(dict);
+    const prefix = dict["remind.sendFail"];
+    const detail = dict["errors.rule.groupRemindTargetRequired"];
+    const joined = tr("errors.toastJoined", { prefix, detail });
+    // 自证：两边**原因一样长**，差别只在语言前缀宽度 —— 这正是旧判据丢原因的根因。
+    assert.ok(toastDisplayWidth(prefix) <= TOAST_TEXT_MAX_COLUMNS, `${locale} 前缀样本已超一行，样本选错了`);
+    assert.ok(
+      toastDisplayWidth(detail) <= TOAST_TEXT_MAX_COLUMNS,
+      `${locale} 原因样本已超一行（${toastDisplayWidth(detail)} 列），它本来就不该上屏 ⇒ 下面会空转`,
+    );
+    if (locale === "en") {
+      // 旧逻辑：34 + 3 + 27 = 64 > 40 ⇒ 只留 "Failed to send the strong reminder"。
+      assert.ok(
+        toastDisplayWidth(joined) > TOAST_TEXT_MAX_COLUMNS,
+        `英文样本整句只有 ${toastDisplayWidth(joined)} 列，触发不了旧判据 ⇒ 下面的反例自证会空转`,
+      );
+    }
+    assert.equal(
+      buildToastText("code=GROUP_REMIND_TARGET_REQUIRED 原始说明", prefix, tr),
+      joined,
+      `${locale} 把原因挤没了：${buildToastText("code=GROUP_REMIND_TARGET_REQUIRED 原始说明", prefix, tr)}`,
+    );
   }
 });
 

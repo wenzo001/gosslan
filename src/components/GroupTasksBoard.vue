@@ -649,8 +649,9 @@ function openDraftImage(i: number) {
 }
 
 /** 关表单：预览开着时**只收预览、不关表单** —— HeadlessUI 的 Dialog 把「面板之外的任何点击」
- *  都当成关闭信号，而预览是 Teleport 到 body 的、就在面板外面；不挡一下的话，在预览里点
- *  「保存」，底下的表单会连编辑内容一起关掉（与 `TodoDetailDialog.onDialogClose` 同款处理）。 */
+ *  都当成关闭信号，而预览在桌面端是**独立窗口**、移动端是 Teleport 到 body 的覆盖层，
+ *  两种宿主都在面板外面；不挡一下的话，在预览里点「保存」，底下的表单会连编辑内容一起
+ *  关掉（与 `TodoDetailDialog.onDialogClose` 同款处理）。 */
 function closeDraft() {
   if (draftPreviewOpen.value) {
     preview.close();
@@ -1864,9 +1865,6 @@ watch(
       </DangerBtn>
     </div>
   </BaseModal>
-
-  <!-- 大图预览：表单里的缩略图也可点开（与任务详情一致）。
-       Teleport 到 body、z-[80] 压在上面那些弹窗之上；放在模板最末 ⇒ 返回栈里它是最上面一层。 -->
 
   <!-- 行内状态菜单：虚拟锚点由入口右缘/下缘给出，Reka 负责 Portal、翻转与点外部。
        挂在行里时它被两层东西裁掉 —— 列表卡片的 `overflow-hidden`（画圆角用）与外面那层

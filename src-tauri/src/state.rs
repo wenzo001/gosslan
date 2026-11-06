@@ -165,6 +165,13 @@ pub const EVENT_DATA_CLEARED: &str = "data-cleared";
 /// 用户实测「外面把局域网打开、里面还是关的」就是缺这条推送：两处 UI 各自持一份快照，
 /// 谁都不知道对方改了。现在任何一次通道开关都会广播，前端统一重拉（唯一真相源在后端）。
 pub const EVENT_RUNTIME_CHANGED: &str = "runtime-changed";
+/// 「预览窗口已被销毁」事件名（用户手动关窗 / `close_image_preview` 生效的回声）。
+///
+/// 预览窗关闭即销毁（`AUX_PREVIEW_RESIDENT = false`，见 `commands/logs.rs`），所以
+/// `WindowEvent::Destroyed` 是"窗没了"的**唯一回声**。主窗口与其他挂了
+/// `useImagePreviewStore` 的文档收到后**只清状态**、**不得再关窗** —— 否则
+/// 关窗 → 回声 → 再关窗会形成回环（而且第二次关的是一扇已经没了的窗）。
+pub const EVENT_PREVIEW_CLOSED: &str = "preview-closed";
 
 /// 「设置已变更」的载荷：**带补丁、且不回发给发起窗口**。
 ///

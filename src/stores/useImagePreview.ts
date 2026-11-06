@@ -64,12 +64,13 @@ export const useImagePreviewStore = defineStore("imagePreview", () => {
    */
   const origin = ref<ImageRect | null>(null);
   /**
-   * 本文档里到底有没有那份覆盖层（由 `ResponsiveLayout` 挂载时置真、卸载时清）。
+   * 本文档里到底有没有那份覆盖层（由壳层挂载时置真、卸载时清）。
    *
-   * 为什么要一个显式标记而不是"看是不是主窗口"：**独立群任务窗口没有覆盖层**
-   * （全应用只允许一个 `ImageLightbox` 实例，那条按形状数的判据会把第二个实例判红）。
-   * 于是"投递被预览窗口拒绝"（超出条数/字节上限、窗口建不出来）在两个文档里结局完全不同：
-   * 主窗口退回覆盖层 ⇒ 用户照样看到图；任务窗口 ⇒ 屏幕上什么都没有。
+   * 为什么要一个显式标记而不是"看是不是主窗口"：**预览窗口自己那个文档**没有覆盖层
+   * （它就是消费者），将来新增的文档也未必挂 —— 按 label 猜迟早猜错。
+   * 于是"投递被预览窗口拒绝"（超出条数/字节上限、窗口建不出来）在两种文档里结局不同：
+   * 挂了覆盖层的（主窗口 / 群任务窗口）退回覆盖层 ⇒ 用户照样看到图；
+   * 没挂的 ⇒ 屏幕上什么都没有。
    * 不认这一半的话，后果不只是"点了没反应"：状态里会留着 `open = true`，
    * 任务详情据此认为"预览正开着"，于是下一次点遮罩只吃掉"关预览"、**弹窗关不掉**
    * —— 一个从没显示出来的预览把界面锁住（这正是 `onDialogClose` 那段注释里
@@ -111,7 +112,7 @@ export const useImagePreviewStore = defineStore("imagePreview", () => {
         reportAuxFailure(e, t("preview.unavailable"));
         return;
       }
-      // 本文档没有那份覆盖层可退（独立群任务窗口）⇒ 收起状态 + 说一声，
+      // 本文档没有那份覆盖层可退（例如预览窗口自己那个文档）⇒ 收起状态 + 说一声，
       // 而不是留着 open=true：那会让任务详情以为"预览开着"，下一次点遮罩只吃掉
       // "关预览"，一个从没显示出来的预览就把弹窗锁住了。
       if (!overlayMounted.value) {
@@ -126,6 +127,32 @@ export const useImagePreviewStore = defineStore("imagePreview", () => {
   }
 
   function close() {
+    // 先记下"这份内容现在归窗口显示"再清：`inWindow` 清掉之后就没法判断
+    // 那扇窗还在不在，也就发不出关窗 IPC 了。
+    const wasInWindow = inWindow.value;
+    resetState();
+    if (wasInWindow) {
+      // **只清本文档的状态是关不掉真窗口的**（预览内容在另一个 WebView）：
+      // 切会话后那扇窗会继续显示上一个会话的图。关窗由后端执行，销毁回声
+      // `preview-closed` 再让各文档回收状态（见下面的订阅）。
+      void api.closeImagePreview().catch(() => {
+        // 窗口可能已经被用户先关掉（那条回声也会清状态）；关窗失败不把状态改回去。
+      });
+    }
+  }
+
+  /**
+   * **只回收状态**，不发任何 IPC。
+   *
+   * 两个调用点：
+   * 1. `close()`（`inWindow` 为真时会另外发一条 `close_image_preview`）；
+   * 2. 「预览窗已被销毁」的回声 —— 窗口已经没了，这里**绝不能**再关窗，
+   *    否则就是关 → 回声 → 关的回环。
+   *
+   * 这个函数是"用户亲手关窗"时唯一把 `open` 收回来的地方。不收的话，下一次点遮罩
+   * 只会吃掉"关预览"、弹窗关不掉（要按两次），而且切会话后窗里还挂着上一份相册。
+   */
+  function resetState() {
     open.value = false;
     source.value = null;
     images.value = [];
@@ -133,6 +160,18 @@ export const useImagePreviewStore = defineStore("imagePreview", () => {
     origin.value = null;
     inWindow.value = false;
   }
+
+  /**
+   * 预览窗销毁的回声（用户点 ✕ / ⌘W，或 `close()` 那条命令生效）。
+   *
+   * Rust 侧是**广播**而不是只发给 main：群任务窗口（`GroupTodosWindow`）也挂了这份
+   * store，只发 main 的话那边的状态同样会残留（同样的"要按两次"）。
+   */
+  void api
+    .onImagePreviewClosed(() => resetState())
+    .catch(() => {
+      /* 订阅失败只影响"用户亲手关窗后状态回收"；下一次打开会整体覆盖 */
+    });
 
   /** 来源页关闭：只有这份相册确实是它给的才收起预览。 */
   function closeIfFrom(from: string) {

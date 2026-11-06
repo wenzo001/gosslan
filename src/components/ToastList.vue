@@ -17,6 +17,14 @@ import { releaseToastCount } from "@/utils/toastManager";
  */
 const { toastStore } = injectToastProviderContext();
 const toasts = toastStore.toasts;
+
+/**
+ * 条真正关闭（到点 / 手动按钮 / Esc / 滑动）时库会发 `update:open = false`：
+ * 那才是释放「×N」计数的时机。`ToastRoot` **没有** `close` 事件 —— 旧绑定是死代码。
+ */
+function onOpenChange(id: string, open: boolean) {
+  if (!open) releaseToastCount(id);
+}
 </script>
 
 <template>
@@ -30,7 +38,7 @@ const toasts = toastStore.toasts;
       :toast="toast"
       class="gosslan-toast pointer-events-auto flex max-w-[min(92vw,32rem)] items-center gap-2 rounded-[var(--gosslan-radius-md)] border border-white/10 px-4 py-2 text-sm text-white shadow-[var(--gosslan-glass-2-shadow)] backdrop-blur-sm transition data-[limited]:hidden data-[swipe=move]:translate-x-[var(--reka-toast-swipe-move-x,0px)]"
       :class="toast.data?.kind === 'error' ? 'bg-[var(--gosslan-danger)]' : 'bg-[var(--gosslan-hud)]'"
-      @close="releaseToastCount(toast.id)"
+      @update:open="(open: boolean) => onOpenChange(toast.id, open)"
     >
       <CheckCircle2 v-if="toast.data?.kind === 'success'" class="h-4 w-4 shrink-0" aria-hidden="true" />
       <XCircle v-else-if="toast.data?.kind === 'error'" class="h-4 w-4 shrink-0" aria-hidden="true" />

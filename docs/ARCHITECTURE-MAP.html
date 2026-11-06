@@ -746,6 +746,7 @@ const CMDS = [
   ["save_data_file", "helpers", "base64_data str; destination str", "()|err"],
   ["save_media_as", "helpers", "msg_id str?; cid str?; destination str", "()|err"],
   ["clear_logs", "logs", "", "()|err"],
+  ["close_image_preview", "logs", "", "()|err"],
   ["close_settings_window", "logs", "", "()|err"],
   ["export_diagnostics_bundle", "logs", "destination str", "BundleSummary|err"],
   ["get_group_todos_context", "logs", "", "str?"],
@@ -948,6 +949,7 @@ const SEM = {
   open_link_window: { d: "开外链窗口：<b>唯一走 <code>WebviewUrl::External</code> 的窗口</b>，且刻意<b>不在 capability 的 windows 列表里</b>（否则远端页面能调本应用命令面）。URL 只放行 http/https 且必须有主机名。" },
   open_image_preview: { d: "开 / 复用<b>全局唯一</b>的预览窗口（固定 <code>label=preview</code>，关闭即销毁）。相册写进 <code>preview_gallery</code>（当前值不是一次性请求）；<b>只有复用才 emit <code>preview-gallery</code></b>，新建那扇靠挂载后自取。复用只 show+focus，<b>不重设几何</b>（位置/尺寸/层级不动）。移动端是桩，走应用内覆盖层。", n: "关闭即销毁", k: "ok" },
   get_image_preview_gallery: { d: "「这扇窗现在该显示哪份相册」——新文档挂载后自取（<b>不清</b>，避免事件先于监听器那个竞态）。" },
+  close_image_preview: { d: "真正关掉那扇预览窗（前端 <code>close()</code> 在 <code>inWindow</code> 为真时必须调它：只清 Pinia 关不掉另一个 WebView）。幂等：窗没开/已被用户关掉也算成功。窗口销毁后 Rust 广播 <code>preview-closed</code>，各文档 store 收到后<b>只清状态、不得再关窗</b>。移动端是桩（覆盖层是纯前端状态）。", n: "关闭即销毁" },
   get_logs: { d: "拉运行期日志（可传 <code>sinceSecs</code>）。<b>由窗口每 2s 轮询而不是后端推</b>：窗口关着时不该有人往 IPC 灌日志。" },
   clear_logs: { d: "清空日志缓冲。" },
 

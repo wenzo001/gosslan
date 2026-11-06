@@ -1215,7 +1215,7 @@ fn ensure_preview_window(
     let geo = aux_window_geometry(app, (1120.0, 820.0), (480.0, 360.0));
     let placed_app = app.clone(); // decorate 那几步在锁外跑 ⇒ 单独一个 handle（AppHandle 是廉价克隆）
     let build_app = app.clone();
-    ensure_aux_window(
+    let (win, created) = ensure_aux_window(
         app,
         crate::WINDOW_PREVIEW,
         // ⚠️ 这里传 `None`（而不是 `geo`）：已存在的预览窗口**不许被重新居中** ——
@@ -1252,7 +1252,26 @@ fn ensure_preview_window(
                 recenter_aux_window(win, &g);
             }
         },
-    )
+    )?;
+    // **关窗回声**：预览窗是"关闭即销毁"，用户亲手点 ✕ / ⌘W / 我们自己 `close()` 之后，
+    // 主窗口 store 里的 `open`/`inWindow` 还留着 —— 下一次点遮罩只会吃掉"关预览"、
+    // 弹窗关不掉（要按两次），切会话后窗里还挂着上一份相册。`Destroyed` 是这扇窗
+    // **唯一**会发出的"我没了"，这里转成一条广播，让所有挂了 store 的文档一起回收状态。
+    //
+    // ⚠️ 只在 `created` 那条路上挂：复用时 `on_window_event` 会累积，销毁一次就广播 N 次。
+    // ⚠️ 只发信号，**不**在这里碰任何窗口 —— 回收状态是前端的事（store 只清状态，
+    // 不得再调 `close_image_preview`，否则形成回环）。
+    if created {
+        use crate::state::EVENT_PREVIEW_CLOSED;
+        use tauri::Emitter;
+        let app = app.clone();
+        win.on_window_event(move |event| {
+            if matches!(event, tauri::WindowEvent::Destroyed) {
+                let _ = app.emit(EVENT_PREVIEW_CLOSED, ());
+            }
+        });
+    }
+    Ok((win, created))
 }
 
 /// 预览窗口取当前该显示的相册（**不清**，理由见 [`AppState::preview_gallery`]）。
@@ -1277,6 +1296,31 @@ pub fn open_image_preview(
     _gallery: crate::state::PreviewGallery,
 ) -> Result<(), String> {
     Err("移动端图片预览用应用内覆盖层（没有独立窗口）".to_string())
+}
+
+/// 桌面端：**真正关掉**那扇单例预览窗。
+///
+/// 为什么必须有这条命令：前端 `close()` 只清本文档的 Pinia 状态，而预览内容是另一个
+/// WebView —— 不关窗的话，切会话（`closeIfFrom(conv:prev)`）之后那扇窗会继续显示
+/// **上一个会话的图**。闭环的另一半由 `ensure_preview_window` 的
+/// `WindowEvent::Destroyed` 回声提供：关窗 → 广播 `preview-closed` → 各文档 store 清状态。
+///
+/// 幂等：窗口没开/已经被用户关掉 ⇒ 直接成功（调用方不需要知道窗口在不在）。
+#[cfg(desktop)]
+#[tauri::command(async)]
+pub fn close_image_preview(app: tauri::AppHandle) -> Result<(), String> {
+    if let Some(win) = app.get_webview_window(crate::WINDOW_PREVIEW) {
+        win.close()
+            .map_err(|e| format!("关闭预览窗口失败：{e}"))?;
+    }
+    Ok(())
+}
+
+/// 移动端桩：见 `open_image_preview`（移动端没有独立预览窗口，覆盖层是纯前端状态）。
+#[cfg(mobile)]
+#[tauri::command]
+pub fn close_image_preview(_app: tauri::AppHandle) -> Result<(), String> {
+    Ok(())
 }
 
 /// 桌面端：打开（或复用）独立的「外部链接」窗口，在窗口内加载该网址。

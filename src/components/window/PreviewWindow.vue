@@ -60,8 +60,8 @@ const blockedRetry = computed(() => (view.value.status === "error" ? t("preview.
 
 /**
  * 取当前该看的相册。⚠️ **不清**后端那份暂存 —— 每次投递都会整体覆盖它，
- * 所以留着也不会把"上一次的内容"带给下一次；反过来如果这里清掉，
- * 窗口在"事件先到、监听器还没注册"的窗口期就会拿不到内容（这正是批次 w 记过的竞态）。
+ * 所以留着也不会把"上一次的内容"带给下一次；反过来如果这里清掉，任何比监听
+ * 更早到达的一次投递就会被读成空相册。
  */
 async function pull(replace = false) {
   const gen = ++generation;
@@ -104,16 +104,18 @@ function releaseAlbum() {
 }
 
 onMounted(() => {
-  // 首次挂载：保留 `begin` 的语义（新建窗口本来就没有旧内容）。
-  void pull();
-  // 窗口已开着 ⇒ Rust 只 show + focus，再发这条事件叫它换内容。
-  // **replace**：用户点了 B 就不该再看到 A（哪怕一帧）。
+  // **监听先注册，事件先到也无所谓**：Rust 在"窗口已开着"那条路上是 show + focus
+  // 之后才发 `preview-gallery`，先挂监听能把"事件到了但没人接"的窗口期缩小到一次
+  // IPC 往返。真先到了也不丢内容 —— 首次 `pull()` 读的是后端那份**当前值**，
+  // 而后面那次 `replace` 由 generation 守卫保证胜出（旧图不会残留）。
   api
     .onImagePreviewChanged(() => void pull(true))
     .then((fn) => listenerScope.onDispose(fn))
     .catch(() => {
       /* 订阅失败只影响"窗口已开着时再点图"这一条路（内容会停在上一次） */
     });
+  // 首次挂载：保留 `begin` 的语义（新建窗口本来就没有旧内容）。
+  void pull();
 });
 onUnmounted(() => {
   disposed = true;

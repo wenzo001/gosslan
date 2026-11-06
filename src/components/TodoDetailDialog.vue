@@ -201,9 +201,10 @@ function openAt(i: number) {
  * 弹窗要求关闭（点遮罩 / Esc）。
  *
  * 预览开着时**只收预览、不关详情**：HeadlessUI 的 `Dialog` 把「面板之外的任何点击」都当成
- * 关闭信号（`useOutsideClick` 只认 `DialogPanel` 那几个容器），而预览是 `Teleport to="body"`
- * 的、就排在面板外面 —— 不挡一下的话，在预览里点「保存 / 关闭」会顺带把任务详情一起关掉。
- * 让最上面那层吃掉这一次关闭，也正好是浮层该有的层级语义。
+ * 关闭信号（`useOutsideClick` 只认 `DialogPanel` 那几个容器），而预览在桌面端是**独立窗口**、
+ * 移动端是 Teleport 到 body 的覆盖层 —— 两种宿主都排在面板外面。不挡一下的话，在预览里
+ * 点「保存 / 关闭」会顺带把任务详情一起关掉。让最上面那层吃掉这一次关闭，也正好是浮层
+ * 该有的层级语义。
  */
 function onDialogClose() {
   if (previewIsMine.value) {
@@ -450,6 +451,4 @@ const fullCode = computed(() =>
       </div>
     </template>
   </BaseModal>
-
-  <!-- 大图预览：Teleport 到 body，压在弹窗之上（与合并转发卡片同一做法） -->
 </template>

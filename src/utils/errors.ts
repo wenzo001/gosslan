@@ -344,8 +344,10 @@ export function isTechnicalError(e: unknown): boolean {
 // ---------------- toast 正文：结论 + 一句人话原因 ----------------
 
 /**
- * toast 一行放得下的上限：**40 显示列 ≈ 20 个汉字宽**（CJK / 全角按 2 列，其余按 1 列）。
- * 超过就只留结论句，原因交给页面内错误档 —— toast 不是错误详情页。
+ * 一行放得下的上限：**40 显示列 ≈ 20 个汉字宽**（CJK / 全角按 2 列，其余按 1 列）。
+ *
+ * 它同时是两个判据：① 整句「结论 · 原因」能单行放下最好；② 原因自己最多占一行 ——
+ * toast 容器是 `max-w-[min(92vw,32rem)]`，允许原因折到第二行，但再长就是段落，交页面内错误档。
  */
 export const TOAST_TEXT_MAX_COLUMNS = 40;
 
@@ -368,7 +370,10 @@ export function toastDisplayWidth(s: string): number {
  *
  * A1 修正（2026-11-06）：失败必须给出具体原因，不能只报失败；但 toast 只有一行，
  * 所以 ① 通用 `retry` 不算原因，不拿「请稍后重试」凑字数；② 说明里带技术串时整句退回结论；
- * ③ 拼完超过 {@link TOAST_TEXT_MAX_COLUMNS} 列就退回结论，原因落到页面内错误档。
+ * ③ 长度按**原因自己**判，不按「前缀 + 分隔符 + 原因」的总宽判 ——
+ *    英文前缀天然更宽（`settings.network.toast.btFail` 34 列），旧的总宽判据只剩 3 列给原因，
+ *    同一件事中文看得见、英文看不见。现在原因 ≤ 40 列就折到第二行上屏，
+ *    超过 40 列说明它是段落，退回结论（原因由页面内错误档承接）。
  *
  * `tr` 由调用侧注入（`t` 或测试里的词典查表），本函数因此仍是纯函数、可被 `node --test` 直接吃。
  */
@@ -381,5 +386,7 @@ export function buildToastText(
   const detail = v.kind === "copy" ? tr(v.key, v.params) : v.kind === "human" ? v.detail : "";
   if (!detail || TOAST_TECHNICAL.test(detail)) return prefix;
   const joined = tr("errors.toastJoined", { prefix, detail });
-  return toastDisplayWidth(joined) <= TOAST_TEXT_MAX_COLUMNS ? joined : prefix;
+  if (toastDisplayWidth(joined) <= TOAST_TEXT_MAX_COLUMNS) return joined;
+  // 前缀吃掉单行预算时，原因仍可按「自己一行」折到第二行 —— 不再因为英文前缀更长就整句丢掉。
+  return toastDisplayWidth(detail) <= TOAST_TEXT_MAX_COLUMNS ? joined : prefix;
 }
