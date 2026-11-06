@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" fill="none" role="img" aria-label="Gosslan 小院 Android themed-icon 单色层">
+  <!-- Android 13+ themed icon 只读 alpha 通道，颜色由系统取主题色；这里画白色剪影，
+       背景必须透明（不透明底会被当成整块色，主题化后看不出门洞）。 -->
+  <g transform="translate(512 512) scale(0.66) translate(-512 -512)">
+    <path d="M342 944V640a170 170 0 0 1 340 0v304Z" fill="#FFFFFF"/>
+    <path d="M512 470v-50" stroke="#FFFFFF" stroke-width="28" stroke-linecap="round"/>
+    <path d="M512 442c-48 0-76-24-76-62 45 0 76 21 76 62Z" fill="#FFFFFF"/>
+    <path d="M512 416c48 0 76-24 76-62-45 0-76 21-76 62Z" fill="#FFFFFF"/>
+  </g>
+</svg>
