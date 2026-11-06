@@ -252,6 +252,42 @@ $ git rev-list --left-right --count origin/main...HEAD
 
 ---
 
+## 追加问题 — 自愈横幅遮住内容（2026-11-06 用户截图）
+
+- **定位**：文案 `recovery.title` / `recovery.body` 在
+  [RecoveryNotice.vue](file:///Users/wendongfu/Documents/code/gosslan-unslop/src/components/RecoveryNotice.vue)；
+  由 [App.vue](file:///Users/wendongfu/Documents/code/gosslan-unslop/src/App.vue) 的 `recovery`
+  状态渲染。旧规则 `.recovery-notice { position: fixed; top: 16px; left: 50%;
+  width: min(560px, 100vw - 24px) }` —— 浮层，必然压内容。
+- **修法（规则，不是挪坐标）**：系统提示改为**占独立占位行**。`ResponsiveLayout`
+  新增 `#banner` 插槽（caption 之后、三列之前；移动端无 caption，等价于 safe-top 之后），
+  App 把 `RecoveryNotice` 放进去；`.recovery-notice` 改为 `position: relative`、`flex: none`、
+  全宽居中。不引入新交互（仍是「知道了」关闭 / 「立即重启」），不删任何动作。
+- **分档读数（`--only=recoverynotice`，提示卡片矩形 × 内容矩形，单位 px²）**：
+
+  | 宽度 | 改动前：列表头 / 聊天头 / 标题栏 / 可操作元素 | 改动后 | 是否回归 |
+  | --- | --- | --- | --- |
+  | 1280×800 | 0 / 26880 / 6720 / 0 | 0 / 0 / 0 / 0 | 否 |
+  | 1024×700 | 3936 / 22944 / 6720 / 784 | 0 / 0 / 0 / 0 | 否 |
+  | 768×800 | 10080 / 16800 / 6720 / 2774 | 0 / 0 / 0 / 0 | 否 |
+  | 640×480 | 33600 / 0 / 无 caption / 9112（搜索输入框） | 0 / 0 / — / 0 | 否 |
+  | 390×844 | 27300 / 0 / 无 caption / 3718（搜索输入框） | 0 / 0 / — / 0 | 否 |
+
+  改后内容整体下移：1280/1024/768 的列表头与聊天头顶边由 `y=28` → `y=104`；
+  640/390 由 `y=0` → `y=76 / 86`。五档 `overflowX=0`，卡片整卡在视口内。
+- **"半行字"的证伪**：按 `scrollHeight-clientHeight` 口径，横幅自身前后都是 **0 / 0**，
+  并没有被自身容器裁切。截图上方那半行经矩形定位是 **caption 被 `top:16px` 横切**：
+  caption 高 28px，横幅从 16px 起 ⇒ 上 16px 露出、下 12px 被盖，交叠 6720 px²。
+  改成占位行后 caption 交叠 = 0，半行字随之消失（640/390 无 caption，症状不存在）。
+- **判据与反例**：`--only=recoverynotice` 15 条（5 档 × 3 条）。把 `.recovery-notice`
+  改回 `position: fixed; top:16px` ⇒ 9 条红（640/390 的 `overlapList` 与 `maxOp` 先红），
+  恢复后 15/15 绿。
+- **回归**：`npm test` 1783 pass / 0 fail；`npm run build` ✓；`check-i18n` zh=en=1651 死键 0；
+  文档引用 76 处 / 硬数字 290 条 ✓。
+- **截图**：`shots/recoverynotice/recovery-{1280x800,1024x700,768x800,640x480,390x844}-{light,dark}.png`。
+
+---
+
 ## 8. 需要你裁决的 6 件事（我不猜）
 
 1. **色雾**（4 层 radial + 72/96/120s 循环）：保留 / 降饱和 30% / 只在空态出现 / 全关？
