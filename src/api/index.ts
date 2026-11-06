@@ -2,7 +2,7 @@
 
 import { Channel, invoke as rawInvoke, type InvokeArgs } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
-import type { AppSettings, CacheInfo, CleanupReport, ContentAudience, ContentCancelResult, ContentTransfer, Conversation, DeviceInfo, DiscoveryDiag, ExportSummary, ExternalLink, ExternalLinkImportPreview, ExternalLinkImportResult, FavoriteEntry, FileDoneInfo, FileFailedInfo, FileProgress, FileStalledInfo, Friend, FriendKeyRotation, Group, GroupDeliverySummary, GroupHistoryProgress, GroupReadInfo, GroupResendResult, InterfaceInfo, LinkState, LogEntry, MessageCancelResult, MessageFailedInfo, MessageRecord, Peer, PeerReadInfo, PendingMessageOp, PendingRequest, OutgoingFriendRequest, PreviousRunReport, RelayConfig, RelayProbe, RoutedEndpoint, RuntimeDiag, RuntimeSnapshot, TransferInfo, TodoFocus, TodoFocusMode, DropPathInfo } from "@/types";
+import type { AppSettings, CacheInfo, CleanupReport, ContentAudience, ContentCancelResult, ContentTransfer, Conversation, DeviceInfo, DiscoveryDiag, ExportSummary, ExternalLink, ExternalLinkImportPreview, ExternalLinkImportResult, FavoriteEntry, FileDoneInfo, FileFailedInfo, FileProgress, FileStalledInfo, Friend, FriendKeyRotation, Group, GroupDeliverySummary, GroupHistoryProgress, GroupReadInfo, GroupResendResult, InterfaceInfo, LinkState, LogEntry, MessageCancelResult, MessageFailedInfo, MessageRecord, Peer, PeerReadInfo, PendingMessageOp, PendingRequest, OutgoingFriendRequest, PreviousRunReport, PreviewGallery, PreviewImage, RelayConfig, RelayProbe, RoutedEndpoint, RuntimeDiag, RuntimeSnapshot, TransferInfo, TodoFocus, TodoFocusMode, DropPathInfo } from "@/types";
 import type { TodoImage } from "@/utils/todos";
 import {
   chatSearchGroupSchema,
@@ -808,6 +808,17 @@ export const api = {
    */
   requestGroupTodoFocus: (groupId: string, todoId: string, mode?: TodoFocusMode) =>
     invoke<void>("request_group_todo_focus", { groupId, todoId, mode: mode ?? null }),
+
+  /**
+   * 把这份相册设为**那个全局唯一预览窗口**的内容（桌面端）。
+   * 已开着就替换内容并聚焦，没开就建一个 —— 调用方不需要知道窗口在不在。
+   */
+  openImagePreview: (items: PreviewImage[], index: number) =>
+    invoke<void>("open_image_preview", { gallery: { items, index } }),
+  /** 预览窗口自己取"现在该显示哪一份"（不清：每次投递都整体覆盖，见 Rust 侧说明）。 */
+  getImagePreviewGallery: () => invoke<PreviewGallery | null>("get_image_preview_gallery"),
+  /** 窗口已经开着时的"内容换了，再取一次"提醒。 */
+  onImagePreviewChanged: (cb: () => void) => listen("preview-gallery", () => cb()),
 
   /** 在独立窗口里加载一个外部网址（桌面端；窗口隔离，不授予远端页面任何命令权限）。 */
   openLinkWindow: (url: string, name: string) => invoke<void>("open_link_window", { url, name }),

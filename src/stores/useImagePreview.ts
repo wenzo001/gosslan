@@ -10,8 +10,10 @@
  *   —— 那份知识锁在那个组件里，别处复用不到。
  *
  * 现在契约是 `{ items, startIndex, source }` 一次调用，实现只有 `ImageLightbox` 一份。
- * 桌面端与移动端走**同一条覆盖层路径**（用户 2026-11-05 拍板 B：不再开独立预览窗口）；
- * 覆盖层里用视口 client 坐标做 FLIP，所以"从缩略图长出来"在两端都成立。
+ * **桌面端**把同一份状态投递给**全局唯一的独立预览窗口**（用户 2026-11-06："窗实例只有一个，
+ * 已经打开过一个，点了其他图片就替换内容"）；**移动端**没有多窗口能力，继续走应用内覆盖层
+ * ——两端共用同一个 `ImageLightbox`，只是宿主不同。
+ * `inWindow` 为真时主文档那份覆盖层让位（见 `ResponsiveLayout` 的 `:open`）。
  *
  * ## `source` 为什么必须留
  * 预览浮层不再长在来源面板里，来源面板关闭时**不能无条件关掉预览**
@@ -20,23 +22,60 @@
  */
 import { defineStore } from "pinia";
 import { ref } from "vue";
-import type { PreviewImage } from "@/types";
+import { useAuxWindowFailureReport } from "@/composables/useAuxWindowFailureReport";
+import { isAuxWindowCreateFailure } from "@/utils/auxWindowFailure";
+import { useAppStore } from "@/stores/useAppStore";
+import { api } from "@/api";
+import { t } from "@/i18n";
 import { takeImageOrigin, type ImageRect } from "@/utils/imageZoom";
+import type { PreviewImage } from "@/types";
 
 /** 线格式与渲染入参是同一个类型（放在 `@/types`：api 与 store 都要用，别互相 import）。 */
 export type { PreviewImage } from "@/types";
 
+/**
+ * 这份相册能不能交给独立预览窗口：**每个条目都可寻址**（`msgId` / `cid`），
+ * 或者带一个**自包含**的 `data:` URL。
+ *
+ * `blob:` objectURL 是唯一要挡住的形状 —— 它只在发起它的那个文档里有效，
+ * 拿到另一个文档去 `<img src>` 就是破图。判不了"取不取得到"就别硬传。
+ */
+export function deliverableToWindow(items: PreviewImage[]): boolean {
+  return items.every(
+    (it) => !!it.msgId || !!it.cid || !!it.favoriteId || (it.dataSrc ?? "").startsWith("data:"),
+  );
+}
+
 export const useImagePreviewStore = defineStore("imagePreview", () => {
+  const app = useAppStore();
+  /** 独立预览窗口建不出来时的统一上报（人话 + 立即重启）；覆盖层降级照旧。 */
+  const reportAuxFailure = useAuxWindowFailureReport();
   const images = ref<PreviewImage[]>([]);
   const index = ref(0);
   const open = ref(false);
   /** 这份相册是谁给的（`conv:<id>` / `task:<todoId>` / `merge:<msgId>`）。 */
   const source = ref<string | null>(null);
+  /** 当前内容是否由**独立预览窗口**显示（桌面端）。壳层那份覆盖层据此让位。 */
+  const inWindow = ref(false);
   /**
    * 这次打开是从哪张缩略图点出来的（client 坐标矩形；拿不到就是 null）。
    * 覆盖层据此把图片从原图位置放大展开 / 关闭时缩回；键盘/菜单打开时拿不到就居中放大。
+   * 独立窗口用不到它（窗口自己开局就是一张大图），但覆盖层路径必须留着。
    */
   const origin = ref<ImageRect | null>(null);
+  /**
+   * 本文档里到底有没有那份覆盖层（由 `ResponsiveLayout` 挂载时置真、卸载时清）。
+   *
+   * 为什么要一个显式标记而不是"看是不是主窗口"：**独立群任务窗口没有覆盖层**
+   * （全应用只允许一个 `ImageLightbox` 实例，那条按形状数的判据会把第二个实例判红）。
+   * 于是"投递被预览窗口拒绝"（超出条数/字节上限、窗口建不出来）在两个文档里结局完全不同：
+   * 主窗口退回覆盖层 ⇒ 用户照样看到图；任务窗口 ⇒ 屏幕上什么都没有。
+   * 不认这一半的话，后果不只是"点了没反应"：状态里会留着 `open = true`，
+   * 任务详情据此认为"预览正开着"，于是下一次点遮罩只吃掉"关预览"、**弹窗关不掉**
+   * —— 一个从没显示出来的预览把界面锁住（这正是 `onDialogClose` 那段注释里
+   * 用来保护用户的机制，反过来变成了陷阱）。
+   */
+  const overlayMounted = ref(false);
 
   /**
    * 打开相册。`items` 为空**什么都不做** —— 调用方不必各自判空
@@ -49,9 +88,37 @@ export const useImagePreviewStore = defineStore("imagePreview", () => {
     images.value = items;
     index.value = at;
     source.value = from;
+    open.value = true;
     // 必须在 `open` 之前取：缩略图的 pointerdown 记忆是一次性的，别让它漏到下一次打开。
     origin.value = takeImageOrigin();
-    open.value = true;
+    // 桌面端 + 每个条目都可跨文档寻址 ⇒ 交给那扇**全局唯一**的预览窗口（用户 #40：
+    // "不同界面查看图片会替换里面的内容"）。两种情况宁可留在覆盖层也不递过去：
+    //  - 移动端没有独立窗口（那条命令只有桌面实现）；
+    //  - 带 `blob:` objectURL 的相册跨文档一定是破图（见 `deliverableToWindow`）。
+    // 投递被拒（超出上限、窗口建不出来）同样退回覆盖层 ——
+    // 用户点了就必须看到图，而不是"什么都没发生"。
+    if (app.isMobile || !deliverableToWindow(items)) {
+      inWindow.value = false;
+      return;
+    }
+    inWindow.value = true;
+    api.openImagePreview(items, at).catch((e) => {
+      inWindow.value = false;
+      if (isAuxWindowCreateFailure(e)) {
+        // 渲染环境残留：覆盖层照旧接管（用户点了就必须看到图），但要说清为什么
+        // 这次不是独立窗口，并给一个"立即重启"。
+        if (!overlayMounted.value) close();
+        reportAuxFailure(e, t("preview.unavailable"));
+        return;
+      }
+      // 本文档没有那份覆盖层可退（独立群任务窗口）⇒ 收起状态 + 说一声，
+      // 而不是留着 open=true：那会让任务详情以为"预览开着"，下一次点遮罩只吃掉
+      // "关预览"，一个从没显示出来的预览就把弹窗锁住了。
+      if (!overlayMounted.value) {
+        close();
+        app.toast(t("preview.unavailable"), "error");
+      }
+    });
   }
 
   function setIndex(i: number) {
@@ -64,6 +131,7 @@ export const useImagePreviewStore = defineStore("imagePreview", () => {
     images.value = [];
     index.value = 0;
     origin.value = null;
+    inWindow.value = false;
   }
 
   /** 来源页关闭：只有这份相册确实是它给的才收起预览。 */
@@ -77,6 +145,8 @@ export const useImagePreviewStore = defineStore("imagePreview", () => {
     open,
     source,
     origin,
+    inWindow,
+    overlayMounted,
     openGallery,
     setIndex,
     close,

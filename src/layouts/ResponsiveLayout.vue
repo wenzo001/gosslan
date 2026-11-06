@@ -764,6 +764,9 @@ watchEffect(() => {
 });
 
 onMounted(() => {
+  // 本文档确实有那份覆盖层（见 store 里 `overlayMounted` 的长注释）：
+  // 独立窗口投递失败时，只有这里能接住。
+  preview.overlayMounted = true;
   // mitt 不自动清理，而菜单那 4 条 `listen()` 要等一次 IPC 往返 ⇒ 两半都登记进 initScope。
   // 手写句柄漏的是后半：往返回来时本轮已拆，`unlistenMenu` 还停在 null ⇒ 4 条监听永久挂着。
   appActionScope.onDispose(onAction(NAVIGATE_TO_CONTACTS, onNavigateToContacts));
@@ -775,7 +778,10 @@ onMounted(() => {
     for (const fn of fns) appActionScope.onDispose(fn);
   });
 });
-onUnmounted(() => appActionScope.dispose());
+onUnmounted(() => {
+  preview.overlayMounted = false;
+  appActionScope.dispose();
+});
 
 // ---------------- 桌面端：列表栏宽度拖拽（rail 64px 固定，列表 200~420px，持久化） ----------------
 const RAIL_W = 64;
@@ -1240,11 +1246,12 @@ function onResizeEnd() {
     <!-- 全局图片预览：**整个应用只有这一个实例**（用户 2026-09-24 #40）。
          状态在 `useImagePreviewStore`，任何功能都按 `{items, startIndex, source}` 调它，
          不再各自挂一份 `<ImageLightbox>` 各抄一遍数组。
-         桌面端也走这一份（2026-11-05 拍板 B：独立预览窗口作废），不再有第二套窗口路径。 -->
+         桌面端由**独立预览窗口**（`preview.html`，全局单例）显示，`inWindow` 为真时
+         这份覆盖层让位（不要两份同时画同一张图）。移动端没有多窗口能力，仍走这里。 -->
     <ImageLightbox
       :images="preview.images"
       v-model:index="preview.index"
-      :open="preview.open"
+      :open="preview.open && !preview.inWindow"
       :origin="preview.origin"
       @close="preview.close()"
     />

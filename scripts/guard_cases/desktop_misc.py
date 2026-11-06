@@ -170,11 +170,12 @@ pub fn guard_case_fixture_db(
         why="设置窗口曾经不在 capability 的 windows 里，表现为「选目录/订阅事件静默失败」",
         file=TAURI / "capabilities" / "default.json",
         # 2026-09-24：群任务窗口从动态 label `todo-*` 改成固定的 `tasks`。
-        # 2026-11-05：预览窗口随"桌面覆盖层"删除 ⇒ 锚点再跟着收敛到现行三扇常驻窗口。
+        # 2026-11-06：图片预览窗口恢复成独立窗口（全局单例）⇒ windows 里又有 `preview`，
+        # 锚点跟着搬到现行数组（不改锚点 ⇒ 注入注不进去、这条守卫会静默空转）。
         injections=[
             (
-                '"windows": ["main", "settings", "logs", "tasks"]',
-                '"windows": ["main", "logs", "tasks"]',
+                '"windows": ["main", "settings", "logs", "preview", "tasks"]',
+                '"windows": ["main", "logs", "preview", "tasks"]',
             )
         ],
         cmd=cargo("test", "--lib", "capability_covers_every_window_label"),
@@ -366,8 +367,8 @@ pub fn guard_case_fixture_db(
         file=TAURI / "capabilities" / "default.json",
         # 锚点=现行 windows 数组的收尾（把外链 label 追加进去就是那条被禁止的回归）。
         # ⚠️ 别用 `"todo-*"` 当锚点：动态 label 已在 2026-09-24 换成固定的 `tasks`；
-        # 也别再用 `"preview"` 当锚点 —— 该窗口 2026-11-05 已删除。
-        injections=[('"logs", "tasks"]', '"logs", "tasks", "link"]')],
+        # 也别用 `"logs"` 当锚点 —— 2026-11-06 预览窗恢复后它在数组中间，收尾变成了 `preview`, `tasks`。
+        injections=[('"preview", "tasks"]', '"preview", "tasks", "link"]')],
         cmd=cargo("test", "--lib", "link_window_is_not_capability_covered"),
         cwd=TAURI,
         expect_fail_hint="link",

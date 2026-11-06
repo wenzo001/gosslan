@@ -530,8 +530,11 @@ async function previewImage(f: FavoriteEntry) {
     return;
   }
   // 收藏不再自己攒一层查看器（§12）：看图交给统一能力，桌面走单例预览窗口、移动走壳层覆盖层。
-  // 字节仍**按收藏 id 异步取**，objectURL 放进 `dataSrc` —— 不把 BLOB 塞回收录对象。
-  preview.openGallery([{ name: displayName(f), dataSrc: url }], 0, favSource(f.id));
+  // 传的是**收藏 id** 而不是刚才那个 objectURL —— objectURL 只在本文档有效，
+  // 独立预览窗口拿到只会是破图；窗口按 id 自己 `read_favorite_preview`（用户 2026-11-06：
+  // "所有预览图片还是用这个窗口"）。上面那次 `url` 取值仍然保留：它是"这张还在不在"的探路，
+  // 顺便把字节预热进缓存，窗口那边基本是秒回。
+  preview.openGallery([{ name: displayName(f), favoriteId: f.id }], 0, favSource(f.id));
 }
 
 /**

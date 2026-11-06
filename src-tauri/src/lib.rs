@@ -118,13 +118,24 @@ pub const WINDOW_LOGS: &str = "logs";
 /// 瞬间激活"）；每群一扇的动态 label 在启动时根本不知道该建哪一扇。代价是任务栏里
 /// 不再能分清"这是哪个群的窗口"。
 pub const WINDOW_TASKS: &str = "tasks";
+/// 独立的「图片预览」窗口（`open_image_preview`，用户 2026-09-24 #40 / 2026-11-06）。
+///
+/// label 固定 ⇒ **全局只有一个**：从会话 / 任务 / 收藏点开的图都替换这一个窗口的内容，
+/// 而不是叠出第二、第三扇看图窗（用户 2026-11-06："窗实例只有一个"）。
+pub const WINDOW_PREVIEW: &str = "preview";
 /// 独立的「外部链接」窗口（`open_link_window`）。**刻意不进 [`WINDOW_LABELS`]、也不进
 /// capabilities**：它加载的是**远端页面**，不给它任何 capability 才能保证远端内容
 /// 调不动本应用的任何命令（`link_window_is_not_capability_covered` 测试锁死这一点）。
 pub const WINDOW_LINK: &str = "link";
 /// 主窗口在 `tray::MAIN_WINDOW_LABEL` 也有一份（那里是 `#[cfg(desktop)]`），
 /// 测试里断言两者一致，避免漂移。
-pub const WINDOW_LABELS: &[&str] = &[WINDOW_MAIN, WINDOW_SETTINGS, WINDOW_LOGS, WINDOW_TASKS];
+pub const WINDOW_LABELS: &[&str] = &[
+    WINDOW_MAIN,
+    WINDOW_SETTINGS,
+    WINDOW_LOGS,
+    WINDOW_PREVIEW,
+    WINDOW_TASKS,
+];
 
 /// **允许被最大化**的窗口标签白名单。
 ///
@@ -940,6 +951,8 @@ pub fn run() {
             commands::take_group_todo_focus,
             commands::request_group_todo_focus,
             commands::get_group_todos_context,
+            commands::open_image_preview,
+            commands::get_image_preview_gallery,
             commands::open_link_window,
             commands::list_external_links,
             commands::get_external_links_import_source,

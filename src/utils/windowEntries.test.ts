@@ -52,6 +52,13 @@ const WINDOWS = [
     htmlClass: "boot-todos",
   },
   {
+    // 2026-11-06 恢复：桌面端全局唯一的图片预览窗（label="preview"，关闭即销毁）。
+    html: "preview.html",
+    entry: "src/entries/preview.ts",
+    skeleton: "boot-preview",
+    htmlClass: "boot-preview",
+  },
+  {
     // 审计 A2：数据库打不开时那扇独立错误窗（label="startup-error"，桌面端）。
     html: "startup-error.html",
     entry: "src/entries/startup-error.ts",
@@ -412,6 +419,15 @@ test("常驻窗口必须有自愈兜底（常驻集合从 Rust 的 *_RESIDENT �
       label: "外链窗口",
       selfFetch: false,
       files: [],
+    },
+    {
+      flag: "PREVIEW",
+      label: "图片预览窗口",
+      selfFetch: false,
+      // 2026-11-06 恢复：内容由 `open_image_preview` 定向推送（已开着才发），
+      // 关闭即销毁（`RESIDENT = false`），所以这里只登记形状，不要求常驻兜底。
+      files: ["src/components/window/PreviewWindow.vue"],
+      pushListener: /onImagePreviewChanged\(/,
     },
     {
       flag: "WINDOWS",
