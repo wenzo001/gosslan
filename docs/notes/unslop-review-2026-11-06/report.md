@@ -182,7 +182,7 @@ $ git diff --stat
 （空）
 
 $ git rev-list --left-right --count origin/main...HEAD
-0	1
+0   1
 ```
 
 - 唯一新增：`docs/notes/unslop-review-2026-11-06/`（本报告 + `plan.md` + `shots/`）与未跟踪的 `.claude/`（上一轮按旧指令拷的技能副本，已按裁决 6 删除）。
