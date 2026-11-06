@@ -96,13 +96,16 @@
 
   /* ---------------- 布局尺寸 ----------------
      Header 高度由 TitleBar 的 padding + 图标大小决定，
-     移动端 TabBar 高度 = 4rem（64px @ 根字号 16px：py-2.5 + icon h-5 + text-[11px] + border-t）。 */
+     移动端 TabBar 高度 = 3.5rem（56px @ 根字号 16px：py-1.5 + icon 21px + 11px 标签 + border-t）。 */
   --gosslan-header-h: 52px;
-  /* ⚠️ 这一档**必须写 rem，不许改成 64px**：TabBar 自己的几何（`py-2.5` / `h-5`）也是 rem，
+  /* ⚠️ 这一档**必须写 rem，不许改成固定 px**：TabBar 自己的几何（`py-1.5` / `h-5`）也是 rem，
      Android WebView 的 textZoom 会连根字号一起放大 ⇒ 条子变高时，rem 的占位跟着变高，
      写死 px 会让占位不够、最后一行被固定条压住（这条只有真机能验，故按单位形状钉死）。
+     画板 v2.2 的站姿是 56px（原 4rem/64px 偏高）。
      家在这里，两处占位（`ResponsiveLayout` 主内容区、`ConversationList` 列表）都读它。 */
-  --gosslan-mobile-tabbar-h: 4rem;
+  --gosslan-mobile-tabbar-h: 3.5rem;
+  /* 移动端一级页顶栏（画板 v2.2：56px；下面是独立的 36px 搜索行）。 */
+  --gosslan-mobile-header-h: 3.5rem;
 
   /* 主面板三档灰阶（Slate 系，对应设计规范）：rail/顶栏 #E2E8F0、列表 #F1F5F9、聊天 #F8FAFC，
      由深到浅拉开层次，面板圆角交界。 */
@@ -1184,6 +1187,7 @@ progress {
   align-items: center;
   justify-content: center;
   border-radius: 9999px;
+  min-width: 48px;
   padding: 3px 10px;
 }
 .nav-glyph-pill[data-active="true"] .nav-glyph {

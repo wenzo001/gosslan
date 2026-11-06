@@ -958,6 +958,7 @@ function onResizeEnd() {
         @open-group="groupOpen = true"
         @open-friend="openFriendProfile"
         @open-requests="openRequests"
+        @open-profile="openProfile"
         @search-history="openSearchHistory"
       />
     </aside>
@@ -1225,7 +1226,7 @@ function onResizeEnd() {
       class="safe-bottom frost tabbar-chrome absolute bottom-0 left-0 right-0 z-40 flex items-center justify-around border-t border-[var(--gosslan-border)]"
     >
       <button
-        class="relative flex flex-1 flex-col items-center gap-0.5 py-2.5"
+        class="relative flex flex-1 flex-col items-center justify-center gap-0.5 py-1.5"
         :class="navState === 'chats' ? 'text-[var(--gosslan-accent-ink)]' : 'text-[var(--gosslan-text-2)]'"
         @click="selectMobileTab('chats', 'list')"
       >
@@ -1246,7 +1247,7 @@ function onResizeEnd() {
         <span class="text-caption">{{ t("nav.chats") }}</span>
       </button>
       <button
-        class="relative flex flex-1 flex-col items-center gap-0.5 py-2.5"
+        class="relative flex flex-1 flex-col items-center justify-center gap-0.5 py-1.5"
         :class="navState === 'contacts' ? 'text-[var(--gosslan-accent-ink)]' : 'text-[var(--gosslan-text-2)]'"
         @click="selectMobileTab('contacts', 'list')"
       >
@@ -1269,7 +1270,7 @@ function onResizeEnd() {
       <!-- 收藏：移动端 rail hidden desktop:md:flex（看不到），TabBar 保留入口。
            桌面端 NavRail 也有星标按钮，风格一致。 -->
       <button
-        class="relative flex flex-1 flex-col items-center gap-0.5 py-2.5"
+        class="relative flex flex-1 flex-col items-center justify-center gap-0.5 py-1.5"
         :class="navState === 'favorites' ? 'text-[var(--gosslan-accent-ink)]' : 'text-[var(--gosslan-text-2)]'"
         @click="selectMobileTab('favorites', 'chat')"
       >
@@ -1288,7 +1289,7 @@ function onResizeEnd() {
            本分支用「我的」tab 取代了旧的「更多」弹出 sheet（用户 2026-09-20 的改版：
            设置/链接/日志都进「我的」，不再需要二级 sheet）。 -->
       <button
-        class="relative flex flex-1 flex-col items-center gap-0.5 py-2.5"
+        class="relative flex flex-1 flex-col items-center justify-center gap-0.5 py-1.5"
         :class="navState === 'me' ? 'text-[var(--gosslan-accent-ink)]' : 'text-[var(--gosslan-text-2)]'"
         @click="selectMobileTab('me', 'chat')"
       >
