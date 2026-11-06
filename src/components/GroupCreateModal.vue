@@ -11,6 +11,7 @@ import { useImeEnterGuard } from "@/composables/useImeEnterGuard";
 import { groupNameSchema, MAX_GROUP_NAME_CHARS } from "@/utils/validation";
 import CharCounter from "@/components/ui/CharCounter.vue";
 import PrimaryBtn from "@/components/ui/PrimaryBtn.vue";
+import StateBlock from "@/components/ui/StateBlock.vue";
 import AvatarBox from "@/components/ui/AvatarBox.vue";
 
 const props = defineProps<{ open: boolean }>();
@@ -118,9 +119,7 @@ async function create() {
         <span class="flex-1 text-sm">{{ f.nickname }}</span>
         <span class="text-xs text-[var(--gosslan-text-2)]">{{ f.online ? t("common.online") : t("common.offline") }}</span>
       </button>
-      <div v-if="chat.friends.length === 0" class="py-6 text-center text-sm text-[var(--gosslan-text-2)]">
-        {{ t("group.noFriends") }}
-      </div>
+      <StateBlock v-if="chat.friends.length === 0" kind="empty" compact :title="t('group.noFriends')" />
     </div>
 
     <PrimaryBtn size="dense" class="mt-4 w-full" :disabled="selected.length === 0 || !name.trim() || creating" @click="create">

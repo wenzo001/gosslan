@@ -1334,9 +1334,11 @@ watch(
         @retry="loadTodoRows"
       />
       <!-- 空态（按当前筛选分流） -->
-      <div v-else-if="shownCount === 0 && !draft" class="py-8 text-center text-sm text-[var(--gosslan-text-2)]">
-        {{ filter === "archived" ? t("todo.archivedEmpty") : filter === "all" ? t("todo.empty") : t("todo.filterEmpty") }}
-      </div>
+      <StateBlock
+        v-else-if="shownCount === 0 && !draft"
+        kind="empty"
+        :title="filter === 'archived' ? t('todo.archivedEmpty') : filter === 'all' ? t('todo.empty') : t('todo.filterEmpty')"
+      />
 
       <!-- 列表卡片：给条目一个**独立的面** —— 此前行是透明的、直接坐在窗口底色上，看起来
            "背景和任务条目混在一起"（用户 2026-09-17）。配方与设置页的分组卡片一致

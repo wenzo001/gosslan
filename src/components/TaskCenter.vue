@@ -3,6 +3,7 @@ import { computed, ref } from "vue";
 import { useRouter } from "vue-router";
 import BaseModal from "@/components/BaseModal.vue";
 import Spinner from "@/components/ui/Spinner.vue";
+import StateBlock from "@/components/ui/StateBlock.vue";
 import { api } from "@/api";
 import { t } from "@/i18n";
 import { useAppStore } from "@/stores/useAppStore";
@@ -382,19 +383,21 @@ async function openConversation(row: OperationRow) {
     <BaseModal :open="app.taskCenterOpen" :title="t('task.title')" width="max-w-md" @close="app.closeTaskCenter()">
     <!-- A 档（INV-P36）：三路台账各自可能读失败。全部为空且**有失败记录**时不许说
          "没有进行中的任务" —— 那是把 IO 失败断言成用户的数据状态。给一次只重读本面板的重试。 -->
-    <div v-if="rows.length === 0 && ledgerError" class="space-y-2 py-6 text-center" role="alert">
-      <p class="text-sm font-medium text-[var(--gosslan-danger-ink)]">{{ ledgerError }}</p>
-      <p class="text-xs text-[var(--gosslan-text-2)]">{{ t("task.loadFailedHint") }}</p>
-      <button
-        class="tap-safe rounded-[var(--gosslan-radius-md)] border border-[var(--gosslan-border)] px-3 py-1.5 text-xs transition hover:bg-[var(--gosslan-hover)]"
-        @click="chat.refreshTransfers()"
-      >
-        {{ t("common.retry") }}
-      </button>
-    </div>
-    <p v-else-if="rows.length === 0" class="py-6 text-center text-sm text-[var(--gosslan-text-2)]">
-      {{ t("task.empty") }}
-    </p>
+    <StateBlock
+      v-if="rows.length === 0 && ledgerError"
+      kind="error"
+      compact
+      :title="ledgerError"
+      :detail="t('task.loadFailedHint')"
+      :retry-label="t('common.retry')"
+      @retry="chat.refreshTransfers()"
+    />
+    <StateBlock
+      v-else-if="rows.length === 0"
+      kind="empty"
+      compact
+      :title="t('task.empty')"
+    />
     <ul v-else class="max-h-[55vh] space-y-2 overflow-y-auto pr-0.5">
       <li
         v-for="row in rows"

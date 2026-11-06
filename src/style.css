@@ -82,8 +82,9 @@
        --gosslan-text-footnote     12px  Caption1        摘要、引用块、辅助说明
        --gosslan-text-caption      11px  Caption2        **正文最小可用字号**：昵称、时间、徽标
 
-     约束（写新 UI 时照此选，不要写 10px/13.5px 这类中间值）：
+     约束（写新 UI 时照此选，不要写 9px/10px/13.5px 这类中间值）：
        —— 字号必须取自上面五档；**11px 是下限**（Apple 正文最小档），再小就不可读了。
+         Tailwind 侧的 `micro` 已在 2026-11-06 抬到同一档 11px，全站不再有 10px 文本。
        —— 字重只用 Regular(400，默认) / Medium(500) / Semibold(600) 三级；
           Bold/Black 不用于正文与列表（本仓现状合规，只有 medium/semibold）。
        —— 字号与行高成对：11px↔16px、12px↔20px、13px↔20px、14px↔22px（leading-relaxed）、15px↔24px。

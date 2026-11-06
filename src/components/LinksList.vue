@@ -647,21 +647,22 @@ function sourceText(l: ExternalLink): string {
         </div>
       </BaseModal>
 
-      <p v-if="loading" class="px-2 py-3 text-xs text-[var(--gosslan-text-2)]">{{ t("links.loading") }}</p>
+      <StateBlock v-if="loading" kind="loading" compact :title="t('links.loading')" />
       <StateBlock
         v-else-if="loadError"
         kind="error"
+        compact
         :title="t('links.loadFail')"
         :detail="loadError"
         :retry-label="t('common.retry')"
         @retry="linksQuery.refetch()"
       />
-      <p
+      <StateBlock
         v-else-if="!links.length && !draft"
-        class="px-2 py-8 text-center text-xs text-[var(--gosslan-text-2)]"
-      >
-        {{ t("links.empty") }}
-      </p>
+        kind="empty"
+        compact
+        :title="t('links.empty')"
+      />
 
       <!-- 链接行：点名称打开独立窗口；右侧编辑 / 删除常显（触屏友好）。
            行样式与聊天 / 通讯录 / 收藏列表**同款**：满宽不圆角 + `--gosslan-list-hover` 悬停

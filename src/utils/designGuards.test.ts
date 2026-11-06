@@ -2557,14 +2557,26 @@ test("本人头像只走 SelfAvatar，且只在标题栏 / 设置页各一处", 
   const srcDir = join(import.meta.dirname, "..");
   // 2026-11-06 改版：rail 顶部的本人头像上移到主窗口标题栏（画板 me 位）。
   // 仍是「都走 SelfAvatar」，但同一身份不再在 rail 里重复画第二份。
+  // ⚠️ 2026-11-06（第 6 段验收抓到的空转）：这里原来只断言「文件里出现过 `<SelfAvatar`」，
+  // 而标题栏那一处（h-6）本身就让断言恒真 ⇒ 「我的」页那处被删掉也照样绿。
+  // 现在正向钉**两处具体落点**，注入用例才能真的触发（反例自证由 verify 的非空转步骤跑）。
   const surfaces = [
-    "layouts/ResponsiveLayout.vue",
-    "components/settings/ProfileSection.vue",
+    {
+      rel: "layouts/ResponsiveLayout.vue",
+      // 标题栏 me 位（缩小档）
+      re: /<SelfAvatar class="h-6 w-6 rounded-full" \/>/,
+    },
+    {
+      rel: "layouts/ResponsiveLayout.vue",
+      // 「我的」页身份卡（56px 档）
+      re: /<SelfAvatar class="h-14 w-14 shrink-0 rounded-full" \/>/,
+    },
+    { rel: "components/settings/ProfileSection.vue", re: /<SelfAvatar\b/ },
   ];
-  for (const rel of surfaces) {
+  for (const { rel, re } of surfaces) {
     const src = readFileSync(join(srcDir, rel), "utf8");
     assert.match(src, /import SelfAvatar from "@\/components\/SelfAvatar\.vue";/, `${rel} 必须 import SelfAvatar`);
-    assert.match(src, /<SelfAvatar\b/, `${rel} 必须用 <SelfAvatar> 渲染本人头像`);
+    assert.match(src, re, `${rel} 必须用 <SelfAvatar> 渲染本人头像`);
   }
   // 反例自证：rail 里塞回 <SelfAvatar> 就是第二份身份，必须报。
   const rail = readFileSync(join(srcDir, "components", "NavRail.vue"), "utf8");
@@ -5076,7 +5088,8 @@ test("㊿ 字号只走令牌：生产码 0 处 text-[NNpx]，且六档像素/行
 
   const cfg = readFileSync(join(srcDir691, "..", "tailwind.config.js"), "utf8");
   for (const [name, px] of [
-    ["micro", 10],
+    // 2026-11-06 第 6 段统一抬档：micro 10 → 11（与 caption 同值、语义不同）。
+    ["micro", 11],
     ["caption", 11],
     ["meta", 12],
     ["body", 13],
@@ -5122,10 +5135,24 @@ test("51 列表行长按只有一份实现：两个列表项都走 usePressMenu�
  * 这条钉住三个面板都走 StateBlock 的 compact 形态。
  */
 test("52 弹窗列表三态走 StateBlock：不允许再各写一段内联 div", () => {
+  // 2026-11-06 第 6 段把「面板级三态」全部收进 StateBlock：这里的清单就是收口后的全集，
+  // 少一个 kind 说明那个面板又长回了手写块（或状态被删掉）。
   const cases = [
     { rel: "components/ShareDirectory.vue", kinds: ["loading", "empty", "error"] },
     { rel: "components/GroupFilesPanel.vue", kinds: ["loading", "empty", "error"] },
     { rel: "components/DevDiagPanel.vue", kinds: ["loading", "error"] },
+    { rel: "components/ConversationList.vue", kinds: ["empty", "error"] },
+    { rel: "components/TaskCenter.vue", kinds: ["empty", "error"] },
+    { rel: "components/LinksList.vue", kinds: ["loading", "empty", "error"] },
+    { rel: "components/LogViewer.vue", kinds: ["empty", "error"] },
+    { rel: "components/search/ChatSearchDialog.vue", kinds: ["loading", "empty", "error"] },
+    { rel: "components/GroupTasksBoard.vue", kinds: ["loading", "empty", "error"] },
+    { rel: "components/GroupMemberPanel.vue", kinds: ["loading", "empty", "error"] },
+    { rel: "components/settings/NetworkSection.vue", kinds: ["empty"] },
+    { rel: "components/FavoritePanel.vue", kinds: ["empty", "error"] },
+    { rel: "components/message/ForwardModal.vue", kinds: ["empty"] },
+    { rel: "components/GroupCreateModal.vue", kinds: ["empty"] },
+    { rel: "components/AddFriendModal.vue", kinds: ["loading"] },
   ];
   for (const c of cases) {
     const src = code691(readFileSync(join(srcDir691, c.rel), "utf8"));
@@ -6483,8 +6510,18 @@ test("A 档读失败的界面错误档必须接上（后端不许折回空 + 前
     /groupReadsLoadFailed[\s\S]{0,1200}common\.retry/.test(chatWin),
     "群已读名单的错误提示没有重试入口",
   );
-  assert.ok(/friendsLoadFailed[\s\S]{0,400}role="alert"/.test(list), "好友列表没有错误档（空态会说谎）");
-  assert.ok(/ledgerError[\s\S]{0,400}role="alert"/.test(task), "任务中心没有错误档");
+  // 2026-11-06 第 6 段：错误档从"各写一段 role=alert 的 div"收敛到 `StateBlock`。
+  // 判据跟着搬家：不再盯组件里的 role 字面量，而是盯"这个面板确实挂了错误档 StateBlock"；
+  // role=alert 由 StateBlock 自己保证（下面那条钉住它，避免搬家后没人管可访问语义）。
+  assert.ok(/<StateBlock[\s\S]{0,80}v-if="friendsLoadFailed"/.test(list), "好友列表没有错误档（空态会说谎）");
+  assert.ok(/<StateBlock[\s\S]{0,200}:title="ledgerError"/.test(task), "任务中心没有错误档");
+  const stateBlockSrc = readFileSync(join(import.meta.dirname, "..", "components", "ui", "StateBlock.vue"), "utf8");
+  assert.match(stateBlockSrc, /:role="kind === 'error' \? 'alert'/, "StateBlock 自己丢了 role=alert ⇒ 全站错误档的读屏语义一起消失");
+  // 反例自证：手写块不再是合法形状（否则上面的正控可以靠"随便找个 div"通过）。
+  assert.ok(
+    !/<StateBlock[\s\S]{0,80}v-if="friendsLoadFailed"/.test('<div v-if="friendsLoadFailed" role="alert">x</div>'),
+    "判据认不出手写错误块 ⇒ 这条在空转",
+  );
   assert.ok(/relayLoadError[\s\S]{0,200}role="alert"/.test(relay), "中继配置没有内联错误档");
   for (const [name, src] of [["好友列表", list], ["任务中心", task], ["中继配置", relay]] as const) {
     assert.ok(src.includes('t("common.retry")') || src.includes("t('common.retry')"), `${name} 的错误档没有重试入口`);
@@ -6503,7 +6540,7 @@ test("A 档读失败的界面错误档必须接上（后端不许折回空 + 前
     "好友栏的错误档与空态不互斥：要么空态被吞掉，要么两条一起画",
   );
   assert.ok(
-    /rows\.length === 0 && ledgerError"[\s\S]{0,600}v-else-if="rows\.length === 0"[\s\S]{0,160}t\("task\.empty"\)/.test(
+    /rows\.length === 0 && ledgerError"[\s\S]{0,600}v-else-if="rows\.length === 0"[\s\S]{0,160}t\(["']task\.empty["']\)/.test(
       task,
     ),
     "任务中心的错误档与空态不互斥（或「没有进行中的任务」被删）",

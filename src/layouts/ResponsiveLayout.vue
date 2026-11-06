@@ -1103,12 +1103,6 @@ function onResizeEnd() {
               @reject="rejectRequest"
               @cancel="cancelOutgoingRequest"
             />
-            <div
-              v-if="chat.pendingRequests.length === 0 && chat.outgoingRequests.length === 0"
-              class="mt-20 text-center text-sm text-[var(--gosslan-text-2)]"
-            >
-              {{ t("friend.request.empty") }}
-            </div>
           </div>
         </div>
         <FriendProfile
