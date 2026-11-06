@@ -157,7 +157,7 @@ const gridTiles = computed(() => {
     role="button"
     tabindex="0"
     :data-conv-row="conv.id"
-    class="group/conv relative flex h-[var(--gosslan-row-h-mobile)] cursor-pointer items-center gap-3 px-3 transition-colors desktop:h-[var(--gosslan-row-h-desktop)]"
+    class="group/conv relative flex h-[var(--gosslan-row-h-mobile)] cursor-pointer items-center gap-2.5 px-3.5 transition-colors desktop:h-[var(--gosslan-row-h-desktop)]"
     :class="[active
       ? 'bg-[var(--gosslan-list-active)] text-[var(--gosslan-list-active-text)]'
       : 'hover:bg-[var(--gosslan-list-hover)]',
@@ -176,7 +176,7 @@ const gridTiles = computed(() => {
       <!-- 群聊：微信式 2x2 九宫格头像；单聊：单头像 -->
       <div
         v-if="conv.kind === 'group' && gridTiles.length"
-        class="grid h-10 w-10 grid-cols-2 grid-rows-2 gap-px overflow-hidden rounded-[var(--gosslan-avatar-radius)] bg-[var(--gosslan-divider)]"
+        class="grid h-[42px] w-[42px] grid-cols-2 grid-rows-2 gap-px overflow-hidden rounded-[var(--gosslan-avatar-radius)] bg-[var(--gosslan-divider)]"
       >
         <AvatarBox
           v-for="(t, i) in gridTiles"
@@ -189,7 +189,7 @@ const gridTiles = computed(() => {
       </div>
       <AvatarBox
         v-else
-        class="h-10 w-10"
+        class="h-[42px] w-[42px]"
         :class="online === false ? 'grayscale opacity-70' : ''"
         :id="conv.id"
         :src="conv.avatar"
@@ -197,7 +197,7 @@ const gridTiles = computed(() => {
       <!-- 在线标识：群聊不显示；离线标灰半透 -->
       <span
         v-if="online !== null"
-        class="absolute -bottom-0.5 -right-0.5 h-2.5 w-2.5 rounded-full border-2 border-[var(--gosslan-list)]"
+        class="absolute bottom-0 right-[-1px] h-2.5 w-2.5 rounded-full shadow-[0_0_0_2px_var(--gosslan-list)]"
         :class="online ? 'bg-[var(--gosslan-success)]' : 'bg-[var(--gosslan-status-offline)]'"
       ></span>
       <!-- 未读小红点：正常显示 -->
@@ -209,7 +209,7 @@ const gridTiles = computed(() => {
              整行的 aria-label 只服务读屏，不产生 tooltip。 -->
         <span
           data-conv-name
-          class="truncate text-body leading-5"
+          class="truncate text-title leading-[20px] desktop:text-row desktop:leading-[19px]"
           :class="active ? 'font-medium text-[var(--gosslan-list-active-text)]' : 'text-[var(--gosslan-text)]'"
           :title="displayName"
         >
@@ -259,9 +259,9 @@ const gridTiles = computed(() => {
           </span>
         </span>
       </div>
-      <div class="mt-0.5 flex items-center justify-between gap-2">
+      <div class="mt-px flex items-center justify-between gap-1.5">
         <span
-          class="truncate text-meta leading-5"
+          class="truncate text-fine leading-[17px]"
           :class="active ? 'text-[var(--gosslan-list-active-text)] opacity-90' : 'text-[var(--gosslan-text-2)]'"
           :title="conv.last_msg ? localizeLastMsg(conv.last_msg) : t('msg.noMessage')"
         >
@@ -271,7 +271,8 @@ const gridTiles = computed(() => {
       </div>
     </div>
     <!-- 微信式行间细分隔线：从文本列起（头像后缩进），最后一行不显（由容器裁边） -->
-    <div class="absolute bottom-0 left-[64px] right-0 h-px bg-[var(--gosslan-divider)]"></div>
+    <!-- 画板 divider 左缩进 66px = 头像 42 + 间距 10 + 行左内距 14，随上面三处一起变。 -->
+    <div class="absolute bottom-0 left-[66px] right-0 h-px bg-[var(--gosslan-divider)]"></div>
     <!-- 删除入口**不再有悬停叉叉**（用户 2026-09-12 晚 #3：「选中框上的叉叉感觉很丑……
          取消叉叉，改为统一的右键删除操作」）：删除走本行的右键菜单（由父组件渲染），
          移动端用长按等价入口（见本组件 `onTouchStart`，满足 hover 兜底护栏）。
