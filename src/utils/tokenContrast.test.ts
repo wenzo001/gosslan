@@ -10,6 +10,7 @@ import {
   auditLightBubbleVsCanvas,
   disabledOpacityFromClasses,
   disabledOpacityFromRule,
+  disabledRuleHasSolidColor,
   findTokenContrastFailures,
   findTokenContrastUnresolved,
   lightCanvasHex,
@@ -171,10 +172,10 @@ test("亮色语义色的实际取值（钉住本次审计结论）", () => {
   assert.equal(light.get("--gosslan-warning-text-ink"), "#8a5200");
   assert.equal(light.get("--gosslan-placeholder"), "#5f6b7a");
   assert.equal(light.get("--gosslan-status-offline"), "#8e8e93");
-  // 填充档：承担白字的那一族（danger）必须过 4.5，所以它**不**保持系统色
-  // （#ff3b30 白字只有 3.55 ⇒ 2026-09-26 压深到 #d43d43 = 4.62）；
+  // 填充档：承担白字的那一族（danger）必须过 4.5，所以它**不**保持画板/系统色
+  // （#f04452 白字 3.71 不达标 ⇒ 2026-11-06 取"最近更深一档" #df3146 = 4.50，与画板 ΔE76 5.5）；
   // 不承担白字的填充（warning 橙，只当图标/进度条底）仍保持 Apple 系统色。
-  assert.equal(light.get("--gosslan-danger"), "#d43d43");
+  assert.equal(light.get("--gosslan-danger"), "#df3146");
   assert.equal(light.get("--gosslan-warning"), "#ff9500");
 });
 
@@ -450,17 +451,22 @@ test("禁用 α 收进 token 后：必须按作用域解 var，解不出就算�
   assert.deepEqual(disabledOpacityFromRule(fake, "[data-disabled]", sc.light), [],
     "token 没定义 ⇒ 空数组：让调用方报『这行取不到 α』，不许回退成兜底数字");
 
-  // 真实树：搬进 token 不该改变任何一个读数（值完全没动 ⇒ 观感零变化）
+  // 真实树：菜单档按 token 现取（2026-11-06 正文色抬亮后配到 0.6）；
+  // 字段族已改实色禁用墨 ⇒ 这里必须**取不到 opacity**（空数组），由 solid 分支接住。
   const real = parseTokenScopes(css);
-  assert.deepEqual(disabledOpacityFromRule(css, ".gosslan-menu-item:disabled", real.light), [0.5]);
-  assert.deepEqual(disabledOpacityFromRule(css, "select):disabled", real.light), [0.62]);
+  assert.deepEqual(disabledOpacityFromRule(css, ".gosslan-menu-item:disabled", real.light), [0.6]);
+  assert.deepEqual(disabledOpacityFromRule(css, "select):disabled", real.light), []);
+  assert.ok(
+    disabledRuleHasSolidColor(css, "select):disabled", "color: var(--gosslan-text-2)"),
+    "字段族的禁用墨必须真的写在 :disabled 规则里",
+  );
 
   // 非空转之一：把控件档 token 按坏 ⇒ 菜单那一行必须落进 fails，且读数里的 α 跟着变。
   const baseline = auditDisabledContrast(css, disabledSources());
   const baseRating = baseline.ratings.find((r) => r.name === "菜单禁用条目" && r.theme === "light");
   assert.ok(baseRating !== undefined && baseRating.ratio >= 3.3, "基线读数就不在门槛上，这条变异对照没有意义");
   const broken = auditDisabledContrast(
-    css.replace("--gosslan-disabled-alpha: 0.5;", "--gosslan-disabled-alpha: 0.15;"),
+    css.replace("--gosslan-disabled-alpha-menu: 0.6;", "--gosslan-disabled-alpha-menu: 0.15;"),
     disabledSources(),
   );
   assert.ok(
@@ -472,12 +478,26 @@ test("禁用 α 收进 token 后：必须按作用域解 var，解不出就算�
 
   // 非空转之二：摘掉 token 定义 ⇒ 不许静默通过，要变成 unresolved
   const missing = auditDisabledContrast(
-    css.replace("--gosslan-disabled-alpha: 0.5;", "--dim-token-removed: 0.5;"),
+    css.replace("--gosslan-disabled-alpha-menu: 0.6;", "--dim-token-removed: 0.6;"),
     disabledSources(),
   );
   assert.ok(
     missing.unresolved.some((u) => u.includes("菜单禁用条目")),
     `token 没了要报「这行从没被算过」，实际 ${JSON.stringify(missing.unresolved)}`,
+  );
+});
+
+test("实色禁用族：删掉那条 color 声明就必须变 unresolved（α=1 不许退化成永远通过）", () => {
+  // 只摘字段族那一条规则里的声明；全文第一次出现的位置在别的控件上，摘错了会假绿。
+  // 注意 sources 里 StyleCss 必须一起换成改写后的文本，否则这张对照量的是原文件。
+  const mutated = css.replace(
+    "  cursor: not-allowed;\n  color: var(--gosslan-text-2);\n}",
+    "  cursor: not-allowed;\n}",
+  );
+  const audit = auditDisabledContrast(mutated, { ...disabledSources(), StyleCss: mutated });
+  assert.ok(
+    audit.unresolved.some((u) => u.includes("禁用输入框")),
+    `字段族改成实色后，那条 color 就是它唯一的证据；删掉却还绿 ⇒ 判定在空转：${JSON.stringify(audit.unresolved)}`,
   );
 });
 

@@ -133,7 +133,7 @@ export const useAppStore = defineStore("app", () => {
    * 写入则统一走 applyAppearance()。
    */
   const dark = computed<boolean>(() => resolveDark(appearance.value, systemDark.value));
-  const themeColor = ref<string>(storageGet(THEME_KEY) || "#3b82f6");
+  const themeColor = ref<string>(storageGet(THEME_KEY) || "#2f6bff");
   const fontFamily = ref<string>(storageGet(FONT_KEY) || "");
 
   /** 本机聊天显示样式（气泡配色 / 字号 / 紧凑模式），即点即存并广播同步。 */
@@ -998,7 +998,7 @@ export const useAppStore = defineStore("app", () => {
       device.value.avatar = null;
     }
     await api.resetSettings();
-    themeColor.value = "#3b82f6";
+    themeColor.value = "#2f6bff";
     fontFamily.value = "";
     appearance.value = "system";
     notifyEnabled.value = true;

@@ -9,11 +9,12 @@
      是"主题没关联上"最典型的破绽。改主题时这一条必须成对出现。 */
   color-scheme: light;
 
-  /* 品牌色：出厂默认值（设计规范强调/按钮色 #3B82F6）。用户在设置里改色时 `applyTheme`
+  /* 品牌色：出厂默认值（画板 Pulse 强调/按钮色 #2F6BFF）。用户在设置里改色时 `applyTheme`
      只往 <html> 写 --gosslan-primary 这一个变量，下面三档由 CSS 现派生（与 --soft/--ring/accent-ink
      同一套做法）。以前这里是两份实现：:root 硬编一份出厂蓝的近似值、utils/color.ts 的
      lighten/darken 按另一个比例再算一份 ⇒ 首屏会出现"主色已换成用户的、hover/浅底还是出厂蓝"的分裂。 */
-  --gosslan-primary: #3b82f6;
+  /* 出厂默认主色 = 画板 Pulse 蓝；用户自选值由 theme-boot.js 以 inline 覆盖，不受影响。 */
+  --gosslan-primary: #2f6bff;
   /* 「主色实底 + 其上放文字/图标」这一对（填充档 + 前景档）—— 两档必须成对改，见 .dark 里同名的三行。
      亮色：填充压深（白字压得住），hover 朝**更深**走；暗色：填充提亮（与 #1e293b 面板分得开），
      前景换成深墨，hover 朝**更亮**走。方向都是"更强调"，不是"更亮/更暗"这个常数。
@@ -22,7 +23,9 @@
        · 压深到 72% 后白字两档外观都过（4.85~7.10），但填充 vs 暗面板只剩 2.06~3.01；
        · 要白字 ≥4.5，填充亮度必须 ≤0.183；要 vs #1e293b ≥3:1，必须 ≥0.180 —— 只剩 0.003 的窗口。
        ⇒ 暗色下"白字过 AA"和"按钮跟面板分开"数学上不能同时满足，所以暗色换前景，不换填充的深度方向。
-     对照：`--gosslan-danger` #d43d43 两档同值就成立，因为它本身就够暗（白字 4.62 / vs 暗面板 3.17 双过）。 */
+     对照：`--gosslan-danger` 两档同值就成立，因为它本身就够暗（白字 4.50 / vs 暗面板 3.0 双过）。
+     2026-11-06：画板取 #f04452（白字 3.71，达不到 4.5），按"最近的更深一档"落到 #df3146
+     （白字 4.50、与画板色 ΔE76=5.5）；这是全仓唯一允许偏离画板的取值。 */
   --gosslan-primary-hover: color-mix(in srgb, var(--gosslan-primary) 66%, #000000);
   /* 承载白字的填充档。六套可选主色逐档核算由 tokenContrast.test.ts 判（主色是 inline 写在
      <html> 上的，静态解析看不见 ⇒ 那一节把 :root 的主色声明逐档替换后再重算全表）。
@@ -135,7 +138,7 @@
      它承担的是列表行之间的"轻分隔"，一次改成 3:1 会把上百处行分隔变成表格线。
      取值按采样底色算到 ≥3:1（亮底 ≈#f5f5f7 → 3.3:1，暗底 ≈#1e293b → 3.6:1）。 */
   --gosslan-divider-strong: #7c8798;
-  --gosslan-text: #0f172a;
+  --gosslan-text: #1f2329;
   /* 次要文字（说明文案 / 会话摘要 / 辅助图标）：11~13px 小字同样按正文标准 4.5 判。
      原 #64748b 只达 4.34（列表底）/ 4.11（卡片底），不达标 → 按项目既有的 Slate 梯度下走一档。
      现 #5a6068：卡片 5.91 / 列表 6.21 / 画布 6.55 / 面板 6.81，全部达标且仍明显浅于正文。 */
@@ -147,20 +150,19 @@
   --gosslan-hover: rgba(15, 23, 42, 0.05);
   /* 按压态：比 hover 深一档。iOS 要求交互元素**必须有 press 反馈**，不能只有 hover */
   --gosslan-pressed: rgba(15, 23, 42, 0.09);
-  /* 禁用态的**唯一一档 α**（2026-10-24 收家）。
-     为什么是 α 而不是"成对的禁用前景/填充/边框色"：现算 `grep -rEn "disabled:[a-z-]+" src --include="*.vue"`
-     与 style.css 里三条 `:disabled` 规则 ⇒ 全仓禁用态**没有一处按颜色表达**（只有 opacity 与 cursor），
-     禁用 = 整元素被同一个 α 拉向背景面。凭空加一套 *-disabled 颜色 token 是第二个家，不加。
-     两档按**用途**分，不按外观分：
-       · 控件（按钮/开关/菜单条目）0.5 —— 里面没有需要读的内容，压得下去；
-       · 字段（input/textarea/select 的 disabled 与 readonly）0.62 —— 里面是用户数据，
-         只读不等于"别读"，压到 0.5 就把正文压成了次级文字。
-     ⚠️ **故意不在 .dark 里覆盖**：合成对比度实测（`tokenContrast.test.ts` 打印的六行表）
-       暗色每一档都 ≥ 亮色（如主色实底 2.72 vs 2.25、菜单条目 3.91 vs 3.41），
-       没有一档需要暗色单独抬 α。真要加覆盖时，α 的家用 var 写，判据会从同一份 scope 现读。
-     ⚠️ 这两个数不许手抄进契约：`DISABLED_CONTRAST_CONTRACT` 各行声明自己的 α 家并现取。 */
-  --gosslan-disabled-alpha: 0.5;
-  --gosslan-disabled-alpha-field: 0.62;
+  /* 禁用态的 α 家（2026-10-24 收家；2026-11-06 正文色抬到 #1f2329 后重新配档）。
+     为什么是 α 而不是"成对的禁用前景/填充/边框色"：组件里的禁用态几乎都靠整元素 opacity
+     拉向背景面。凭空给每个控件加一套 *-disabled 颜色 token 是第二个家，不加。
+     ⚠️ **故意不在 .dark 里覆盖**：合成对比度实测（`tokenContrast.test.ts` 打印的表）
+       暗色每一档都 ≥ 亮色，没有一档需要暗色单独抬 α。真要加覆盖时，α 的家用 var 写，
+       判据会从同一份 scope 现读。
+     ⚠️ 数值不许手抄进契约：`DISABLED_CONTRAST_CONTRACT` 各行声明自己的 α 家并现取。 */
+  /* 菜单条目单独一档：0.5 在抬亮后的正文色下只有 3.16，低于菜单禁用契约 3.3；
+     0.6 是现有四档里已存在的一档，不是新增档位。 */
+  --gosslan-disabled-alpha-menu: 0.6;
+  /* 字段（input/textarea/select 的 disabled 与 readonly）不再走 α：0.62 是四档里最高的一档，
+     正文色抬亮后合成值只有 4.24，击穿本族 ≥4.5 的 AA 契约，再抬就是第五档。
+     这一族的禁用墨改由 `--gosslan-text-2` 实色表达（见下面 `:disabled` 规则）。 */
   /* 语义色（Apple 系统色，Light 值；Dark 在 .dark 里覆盖）。
      危险/警告只用语义 token，不写死十六进制、也不用 Tailwind 的 red-500 一类固定色阶。
      每个语义色分「填充档」与「文字档」两条（与 --gosslan-success / -success-ink 同一套做法）：
@@ -172,14 +174,14 @@
      而契约表当时还没覆盖"白字压实底"这一形状。压深到 #d43d43 → 白字 4.62。
      ⚠️ 只有"上面有白字"的填充才要压深；不承担白字的填充（状态点 / 色条）保持系统色，
      要压白字的橙与绿走下面那一对 `*-solid`（这一族过去没有第三档，所以只能拿状态点当按钮底）。 */
-  --gosslan-danger: #d43d43;
+  --gosslan-danger: #df3146;
   /* 危险色「文字档」：系统红 #ff3b30 当文字只有 3.55（白底），11px 的「发送失败」这类提示读不动。
      压暗到 #b0170d → 面板 7.06 / 列表 6.44 / 卡片 5.53，全部达标。
      `danger-soft` 软底上的文字也要过：panel 5.98 / list 5.48 / chat 5.39 / card 4.75 ——
      失败胶囊与错误横幅真实落在 chat / card 上（MessageItem / LinksList），只钉 panel 会漏掉后两档。
      （2026-11-06 卡片底从 #eeeef0 压到 #e0e4e9 后，旧值 #cc2418 在卡片上只剩 4.29，故再压深两档。） */
   --gosslan-danger-ink: #b0170d;
-  --gosslan-danger-soft: rgba(212, 61, 67, 0.12);
+  --gosslan-danger-soft: rgba(223, 49, 70, 0.12);
   /* 危险按钮 hover：朝**暗**混一档。原来朝白混（85% + 白）会把白字对比度从 3.55 再降到 3.11，
      方向是反的 —— 实底上的白字要越 hover 越清楚，不是越淡。 */
   --gosslan-danger-hover: color-mix(in srgb, var(--gosslan-danger) 88%, #000000);
@@ -488,11 +490,11 @@
      再亮又会拖低"白字压红底"（未读徽标）的对比，4.63 / 3.16 是两者的平衡点。 */
   /* 填充档与亮色同值：前景是**白字**，所以能压住它的亮度上限由 4.5 决定，与画布无关
      —— 暗色想要更鲜的红只能给"文字档"（下面那档），给填充加亮就是把白字重新推回不合格。 */
-  --gosslan-danger: #d43d43;
+  --gosslan-danger: #df3146;
   /* 文字档在暗色下仍是鲜红：暗底上 #ff7a85 当文字读得动（面板 #2c2f33 上 ≥4.5）。
      新增 :root 的 *-ink 时这里必须成对出现。 */
   --gosslan-danger-ink: #ff7a85;
-  --gosslan-danger-soft: rgba(255, 85, 72, 0.18);
+  --gosslan-danger-soft: rgba(223, 49, 70, 0.18);
   /* hover 朝暗混（与 :root 同方向）：实底上的白字要越 hover 越清楚。 */
   --gosslan-danger-hover: color-mix(in srgb, var(--gosslan-danger) 88%, #000000);
   --gosslan-warning: #ff9f0a;
@@ -1144,10 +1146,14 @@ progress {
 :where(button[aria-busy="true"]) {
   cursor: progress;
 }
+/* 禁用 / 只读输入框：改用**实色禁用墨**（`--gosslan-text-2`），不再叠整元素 opacity。
+   起因：正文色按画板抬到 #1f2329 后，α 0.62 的合成值只有 4.24，击穿本族"≥4.5"的 AA 契约；
+   而 0.62 已是现有四档禁用透明度里最高的一档，再抬就等于新增第五档（§2.2 禁止）。
+   改成实色后仍明显浅于正文，"不可编辑"的观感不变，读数见 tokenContrast 的禁用态契约。 */
 :where(input, textarea, select):disabled,
 :where(input, textarea, select)[readonly] {
   cursor: not-allowed;
-  opacity: var(--gosslan-disabled-alpha-field);
+  color: var(--gosslan-text-2);
 }
 
 /* 一级导航选中态：药丸底 + 主题色 + 弹簧缩放（PC rail 与移动底栏共用这一份） */
@@ -2105,12 +2111,12 @@ img {
 
 .gosslan-menu-item[data-disabled],
 .gosslan-menu-item[aria-disabled="true"] {
-  opacity: var(--gosslan-disabled-alpha);
+  opacity: var(--gosslan-disabled-alpha-menu);
   cursor: default;
 }
 
 .gosslan-menu-item:disabled {
-  opacity: var(--gosslan-disabled-alpha);
+  opacity: var(--gosslan-disabled-alpha-menu);
   cursor: default;
 }
 

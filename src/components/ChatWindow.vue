@@ -2143,7 +2143,7 @@ function retryHistory() {
         </span>
         <div class="flex items-center gap-1">
           <button
-            class="tap-safe flex items-center gap-1 rounded-[var(--gosslan-radius-md)] px-2.5 py-1.5 text-body text-[var(--gosslan-text)] transition hover:bg-[var(--gosslan-hover)] disabled:opacity-40"
+            class="tap-safe flex items-center gap-1 rounded-[var(--gosslan-radius-md)] px-2.5 py-1.5 text-body text-[var(--gosslan-text)] transition hover:bg-[var(--gosslan-hover)] disabled:opacity-50"
             :disabled="!selectedCount"
             :title="t('multi.forwardPerMessage')"
             :aria-label="t('multi.forwardPerMessage')"
@@ -2153,7 +2153,7 @@ function retryHistory() {
             <span class="hidden sm:inline">{{ t("multi.forwardPerMessage") }}</span>
           </button>
           <button
-            class="tap-safe flex items-center gap-1 rounded-[var(--gosslan-radius-md)] px-2.5 py-1.5 text-body text-[var(--gosslan-text)] transition hover:bg-[var(--gosslan-hover)] disabled:opacity-40"
+            class="tap-safe flex items-center gap-1 rounded-[var(--gosslan-radius-md)] px-2.5 py-1.5 text-body text-[var(--gosslan-text)] transition hover:bg-[var(--gosslan-hover)] disabled:opacity-50"
             :disabled="!selectedCount"
             :title="t('multi.forwardMerged')"
             :aria-label="t('multi.forwardMerged')"
@@ -2163,7 +2163,7 @@ function retryHistory() {
             <span class="hidden sm:inline">{{ t("multi.forwardMerged") }}</span>
           </button>
           <button
-            class="tap-safe flex items-center gap-1 rounded-[var(--gosslan-radius-md)] px-2.5 py-1.5 text-body text-[var(--gosslan-text)] transition hover:bg-[var(--gosslan-hover)] disabled:opacity-40"
+            class="tap-safe flex items-center gap-1 rounded-[var(--gosslan-radius-md)] px-2.5 py-1.5 text-body text-[var(--gosslan-text)] transition hover:bg-[var(--gosslan-hover)] disabled:opacity-50"
             :disabled="!selectedCount"
             @click="batchFavorite"
           >
@@ -2171,7 +2171,7 @@ function retryHistory() {
             {{ t("multi.favorite") }}
           </button>
           <button
-            class="tap-safe flex items-center gap-1 rounded-[var(--gosslan-radius-md)] px-2.5 py-1.5 text-body text-[var(--gosslan-danger-ink)] transition hover:bg-[var(--gosslan-hover)] disabled:opacity-40"
+            class="tap-safe flex items-center gap-1 rounded-[var(--gosslan-radius-md)] px-2.5 py-1.5 text-body text-[var(--gosslan-danger-ink)] transition hover:bg-[var(--gosslan-hover)] disabled:opacity-50"
             :disabled="!selectedCount"
             @click="confirmBatchDelete = true"
           >
