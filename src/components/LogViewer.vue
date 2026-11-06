@@ -430,12 +430,8 @@ function close() {
         :retry-label="t('common.retry')"
         @retry="load()"
       />
-      <div v-else-if="logs.length === 0" class="mt-16 text-center text-footnote text-[var(--gosslan-text-2)]">
-        {{ t("logs.empty") }}
-      </div>
-      <div v-else-if="mergedRows.length === 0" class="mt-16 text-center text-footnote text-[var(--gosslan-text-2)]">
-        {{ t("logs.filterEmpty") }}
-      </div>
+      <StateBlock v-else-if="logs.length === 0" kind="empty" :title="t('logs.empty')" />
+      <StateBlock v-else-if="mergedRows.length === 0" kind="empty" :title="t('logs.filterEmpty')" />
       <!-- 虚拟行模板只有一份（`LogRows.vue`）：桌面与移动两种外壳在同一时刻只挂一个，
            行内容、级别配色与 `v-memo` 判据必须完全一致（2026-10-29 审计 DUP-05）。 -->
       <LogRows v-else :items="virtualRows" :total-size="totalSize" :measure="measureRow" />
@@ -588,12 +584,8 @@ function close() {
           :retry-label="t('common.retry')"
           @retry="load()"
         />
-        <div v-else-if="logs.length === 0" class="mt-16 text-center text-sm text-[var(--gosslan-text-2)]">
-          {{ t("logs.empty") }}
-        </div>
-        <div v-else-if="mergedRows.length === 0" class="mt-16 text-center text-sm text-[var(--gosslan-text-2)]">
-          {{ t("logs.filterEmpty") }}
-        </div>
+        <StateBlock v-else-if="logs.length === 0" kind="empty" :title="t('logs.empty')" />
+        <StateBlock v-else-if="mergedRows.length === 0" kind="empty" :title="t('logs.filterEmpty')" />
         <LogRows v-else :items="virtualRows" :total-size="totalSize" :measure="measureRow" />
       </div>
     </MobilePageFrame>

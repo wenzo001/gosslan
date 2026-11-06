@@ -9,6 +9,7 @@ import SettingsRow from "@/components/settings/SettingsRow.vue";
 import SettingsToggle from "@/components/settings/SettingsToggle.vue";
 import SettingsSelect from "@/components/ui/SettingsSelect.vue";
 import PrimaryBtn from "@/components/ui/PrimaryBtn.vue";
+import StateBlock from "@/components/ui/StateBlock.vue";
 import { useImeEnterGuard } from "@/composables/useImeEnterGuard";
 import { isAndroid } from "@/utils/platform";
 import { bleUnavailableReason } from "@/utils/bleAvailability";
@@ -562,9 +563,13 @@ async function removeEndpoint(address: string) {
     <div v-if="endpoints.length" class="ml-4 h-px bg-[var(--gosslan-divider)]" />
 
     <!-- 空状态 -->
-    <p v-if="!endpoints.length" class="px-4 py-3 text-xs text-[var(--gosslan-text-2)]">
-      {{ t("settings.network.routed.empty") }}
-    </p>
+    <StateBlock
+      v-if="!endpoints.length"
+      inline
+      kind="empty"
+      :title="t('settings.network.routed.empty')"
+      class="px-4 py-3"
+    />
 
     <!-- 添加 -->
     <div class="flex items-center gap-2 px-4 py-3">
@@ -709,9 +714,13 @@ async function removeEndpoint(address: string) {
 
       <!-- 白名单：只在 allowlist 模式下出现，平时不占地方 -->
       <template v-if="app.relayPolicy === 'allowlist'">
-        <div v-if="!chat.friends.length" class="px-4 py-3 text-xs text-[var(--gosslan-text-2)]">
-          {{ t("settings.relay.allowlist.empty") }}
-        </div>
+        <StateBlock
+          v-if="!chat.friends.length"
+          inline
+          kind="empty"
+          :title="t('settings.relay.allowlist.empty')"
+          class="px-4 py-3"
+        />
         <div v-for="f in chat.friends" :key="f.device_id" class="flex items-center gap-3 px-4 py-2.5">
           <span class="min-w-0 flex-1 truncate text-sm text-[var(--gosslan-text)]" :title="f.nickname">
             {{ f.nickname }}

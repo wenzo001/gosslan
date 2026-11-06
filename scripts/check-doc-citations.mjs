@@ -236,6 +236,14 @@ const PATH_ALLOW = new Map([
 /** 只认"看起来像仓库内路径"且带扩展名的反引号 token。 */
 const PATHREF = /`((?:src|src-tauri|docs|scripts|perf|examples)\/[A-Za-z0-9_./-]+\.[A-Za-z0-9]+)`/g;
 
+/**
+ * 自包含的设计源包：包内的 `docs/xxx.md`、`design-system-pulse/...` 是**相对包根**写的
+ * （`designs/gosslan-redesign/HANDOFF.md` 里 `docs/edge-cases.md` 指的是包内的同名文件），
+ * 不是相对仓库根。这里给这些包加一个解析根，**不放宽判据**：两个根都找不到仍然判红。
+ * 覆盖自证仍在（PATHREF 总数 ≥ 40 的闸门不变，包内引用也照常计数）。
+ */
+const DESIGN_BUNDLES = ["designs/gosslan-redesign/"];
+
 const pathDocs = execFileSync("git", ["ls-files", "*.md"], { cwd: ROOT, encoding: "utf8" })
   .split("\n")
   .filter(Boolean)
@@ -261,7 +269,11 @@ for (const doc of pathDocs) {
     if (ref.includes("...")) continue; // 示例占位
     if (PATH_ALLOW.has(ref)) continue; // 豁免表里带理由
     pathTotal++;
-    if (!fs.existsSync(path.join(ROOT, ref))) {
+    const bundleRoot = DESIGN_BUNDLES.find((b) => doc.startsWith(b));
+    const found =
+      fs.existsSync(path.join(ROOT, ref)) ||
+      (bundleRoot ? fs.existsSync(path.join(ROOT, bundleRoot, ref)) : false);
+    if (!found) {
       fails.push(
         `${doc}:${line(text, m.index)} 引用 \`${ref}\` —— 本仓找不到这个文件` +
           `（文件搬家/删除后没同步文档？改路径，或加进 PATH_ALLOW 并写明理由）`,

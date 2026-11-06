@@ -1,6 +1,5 @@
 <script setup lang="ts">
 import Icon from "@/components/ui/Icon.vue";
-import Spinner from "@/components/ui/Spinner.vue";
 /**
  * 「搜索聊天记录」结果页（用户需求 2026-09-12 晚）：
  * 「搜索并点击回车后，弹出一个框。样式参考微信，但配色/圆角按本项目的约束标准。」
@@ -519,21 +518,22 @@ function showSender(group: ChatSearchGroup): boolean {
         </p>
         <!-- 搜索中：用户反馈「感觉显示得比较慢、当前状态没有提示」——
              以前只有"有没有结果"两种静态文案，请求在途时界面看起来像卡住了。 -->
-        <p v-else-if="searching" class="flex items-center justify-center gap-2 px-3 py-6 text-center text-xs text-[var(--gosslan-text-2)]">
-          <Spinner size-class="h-3 w-3" decorative />
-          {{ t("search.searching") }}
-        </p>
+        <StateBlock v-else-if="searching" kind="loading" compact :title="t('search.searching')" />
         <StateBlock
           v-else-if="searchError"
           kind="error"
+          compact
           :title="t('search.fail')"
           :detail="searchError"
           :retry-label="t('common.retry')"
           @retry="retrySearch"
         />
-        <p v-else-if="!groups.length" class="px-3 py-6 text-center text-xs text-[var(--gosslan-text-2)]">
-          {{ t("search.empty") }}
-        </p>
+        <StateBlock
+          v-else-if="!groups.length"
+          kind="empty"
+          compact
+          :title="t('search.empty')"
+        />
         <button
           v-for="g in groups"
           :key="g.conv_id"

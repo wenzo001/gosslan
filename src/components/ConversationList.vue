@@ -23,6 +23,7 @@ import FriendContextMenu from "@/components/conversation/FriendContextMenu.vue";
 import ConversationContextMenu from "@/components/conversation/ConversationContextMenu.vue";
 import ConfirmDialog from "@/components/ui/ConfirmDialog.vue";
 import PrimaryBtn from "@/components/ui/PrimaryBtn.vue";
+import StateBlock from "@/components/ui/StateBlock.vue";
 import UnreadBadge from "@/components/UnreadBadge.vue";
 import SelfAvatar from "@/components/SelfAvatar.vue";
 import appMark from "@/assets/app-mark.png";
@@ -665,8 +666,11 @@ useEventListener(document, "click", closeFriendMenu);
           </div>
         </div>
 
-        <div v-if="listConversations.length === 0 && !(app.isMobile && !query.trim())" class="mt-16 flex flex-col items-center gap-3 text-center text-sm text-[var(--gosslan-text-2)]">
-          <span>{{ t("conv.noConversation") }}</span>
+        <StateBlock
+          v-if="listConversations.length === 0 && !(app.isMobile && !query.trim())"
+          kind="empty"
+          :title="t('conv.noConversation')"
+        >
           <!-- 空态下一步（用户 2026-09-12 晚）：**有好友 → 发起聊天**；**一个好友都没有 →
                只有「添加好友」**（原先还并列一个「发现好友」，与本条冲突，已去掉）。
                两个入口都带一句说明文字：空态只陈述"没有会话"会让人不知所措。 -->
@@ -679,17 +683,16 @@ useEventListener(document, "click", closeFriendMenu);
             <PrimaryBtn v-else size="xs" @click="emit('open-add-friend')">
               {{ t("common.addFriend") }}
             </PrimaryBtn>
-            <span class="max-w-[220px] text-caption leading-relaxed">
+            <!-- 好友读取失败时这里不再复述同一句诊断：中央空态已经讲一次（同屏一个状态只出现一次）。 -->
+            <span v-if="!chat.friendsError" class="max-w-[220px] text-caption leading-relaxed">
               {{
                 chat.friends.length
                   ? t("conv.emptyHintHasFriends")
-                  : chat.friendsError
-                    ? t("conv.contactsLoadFailedHint")
-                    : t("conv.emptyHintNoFriends")
+                  : t("conv.emptyHintNoFriends")
               }}
             </span>
           </template>
-        </div>
+        </StateBlock>
       </template>
 
       <template v-else>
@@ -758,26 +761,23 @@ useEventListener(document, "click", closeFriendMenu);
         </template>
         <!-- A 档（INV-P36）：读失败与"真的没有好友"是两个值。成功过就以数据为准，
              只有"一次都没读到 + 有失败记录"才画错误档（同 `todoRowsLoadState` 的三态口径）。 -->
-        <div v-if="friendsLoadFailed" class="mt-16 flex flex-col items-center gap-3 text-center text-sm" role="alert">
-          <span class="font-medium text-[var(--gosslan-danger-ink)]">{{ t("conv.contactsLoadFailed") }}</span>
-          <span class="text-xs text-[var(--gosslan-text-2)]">{{ t("conv.contactsLoadFailedHint") }}</span>
-          <button
-            class="tap-safe rounded-[var(--gosslan-radius-md)] border border-[var(--gosslan-border)] px-3 py-1.5 text-xs text-[var(--gosslan-text)] transition hover:bg-[var(--gosslan-hover)]"
-            @click="chat.refreshFriends()"
-          >
-            {{ t("common.retry") }}
-          </button>
-        </div>
-        <div v-else-if="filteredFriends.length === 0" class="mt-16 flex flex-col items-center gap-3 text-center text-sm text-[var(--gosslan-text-2)]">
-          <span>{{ query.trim() ? t("conv.noMatchContact") : t("conv.noFriends") }}</span>
-          <button
-            v-if="!query.trim()"
-            class="tap-safe rounded-[var(--gosslan-radius-md)] border border-[var(--gosslan-border)] px-3 py-1.5 text-xs text-[var(--gosslan-text)] transition hover:bg-[var(--gosslan-hover)]"
-            @click="emit('open-add-friend')"
-          >
+        <StateBlock
+          v-if="friendsLoadFailed"
+          kind="error"
+          :title="t('conv.contactsLoadFailed')"
+          :detail="t('conv.contactsLoadFailedHint')"
+          :retry-label="t('common.retry')"
+          @retry="chat.refreshFriends()"
+        />
+        <StateBlock
+          v-else-if="filteredFriends.length === 0"
+          kind="empty"
+          :title="query.trim() ? t('conv.noMatchContact') : t('conv.noFriends')"
+        >
+          <PrimaryBtn v-if="!query.trim()" size="xs" @click="emit('open-add-friend')">
             {{ t("common.addFriend") }}
-          </button>
-        </div>
+          </PrimaryBtn>
+        </StateBlock>
       </template>
     </div>
 

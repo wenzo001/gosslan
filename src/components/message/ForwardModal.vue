@@ -8,6 +8,7 @@ import { MAX_LIST_FILTER_KEYWORD_CHARS } from "@/utils/validation";
 import BaseModal from "@/components/BaseModal.vue";
 import SecondaryBtn from "@/components/ui/SecondaryBtn.vue";
 import PrimaryBtn from "@/components/ui/PrimaryBtn.vue";
+import StateBlock from "@/components/ui/StateBlock.vue";
 import type { MsgKind } from "@/types";
 import AvatarBox from "@/components/ui/AvatarBox.vue";
 
@@ -146,7 +147,7 @@ const kindLabel = computed(() => KIND_LABELS[props.kind] ?? t("msg.message"));
           <AvatarBox v-else class="h-9 w-9 shrink-0 text-sm" :id="c.id" :src="c.avatar" />
           <span class="min-w-0 flex-1 truncate text-body text-[var(--gosslan-text)]" :title="c.name">{{ c.name }}</span>
         </button>
-        <div v-if="filtered.length === 0" class="py-8 text-center text-sm text-[var(--gosslan-text-2)]">{{ t("msg.noMatch") }}</div>
+        <StateBlock v-if="filtered.length === 0" kind="empty" compact :title="t('msg.noMatch')" />
       </div>
 
       <!-- 批量转发且**调用方没给方式**时的兜底：先选会话，再选转发方式（微信同款）。

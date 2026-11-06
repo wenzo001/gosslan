@@ -23,12 +23,16 @@ export default {
         gosslan: "var(--gosslan-font-family, -apple-system, 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', sans-serif)",
       },
       /**
-       * 字号令牌：像素值与原来逐点一致，只把「散落的 text-[NNpx]」收成语义名。
+       * 字号令牌：六档，像素值与规范逐档一致，只把「散落的 text-[NNpx]」收成语义名。
        * `line-height: inherit` 是承重件 —— Tailwind 的任意字号只设 font-size，行高靠继承；
        * 若这里改用默认行高，整站排版会在替换后整体变紧。
+       *
+       * 2026-11-06（第 6 段）：`micro` 由 10px 抬到 11px —— 10px 低于 Apple 正文最小档，
+       * 在紧凑聊天界面里也读不清。抬档后 micro / caption 同为 11px，语义分工不变
+       * （micro = 徽标/状态条这类恒定短文案，caption = 正文最小档），不再出现第二套像素。
        */
       fontSize: {
-        micro: ["10px", { lineHeight: "inherit" }],
+        micro: ["11px", { lineHeight: "inherit" }],
         caption: ["11px", { lineHeight: "inherit" }],
         meta: ["12px", { lineHeight: "inherit" }],
         body: ["13px", { lineHeight: "inherit" }],

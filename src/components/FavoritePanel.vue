@@ -805,9 +805,7 @@ async function confirmDelete() {
               <Icon name="more-horizontal" class="h-4 w-4" />
             </button>
           </div>
-          <div v-if="filtered.length === 0" class="py-8 text-center text-xs text-[var(--gosslan-text-2)]">
-            {{ t("favorite.noMatch") }}
-          </div>
+          <StateBlock v-if="filtered.length === 0" kind="empty" :title="t('favorite.noMatch')" />
         </div>
         </div>
 

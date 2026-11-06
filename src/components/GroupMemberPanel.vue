@@ -2,6 +2,7 @@
 import Icon from "@/components/ui/Icon.vue";
 import { t } from "@/i18n";
 import Spinner from "@/components/ui/Spinner.vue";
+import StateBlock from "@/components/ui/StateBlock.vue";
 import { computed, ref, watch } from "vue";
 import { useAppStore } from "@/stores/useAppStore";
 import { useChatStore } from "@/stores/useChatStore";
@@ -397,9 +398,12 @@ async function confirmAction() {
             <Icon name="user-minus" class="h-4 w-4" />
           </button>
         </div>
-        <div v-if="group.members.length === 0" class="py-6 text-center text-sm text-[var(--gosslan-text-2)]">
-          {{ t("group.noMembers") }}
-        </div>
+        <StateBlock
+          v-if="group.members.length === 0"
+          kind="empty"
+          compact
+          :title="t('group.noMembers')"
+        />
       </div>
 
       <!-- 群任务分区：只给"有几项、各什么状态"+入口，完整列表在 GroupTasksPanel
@@ -434,22 +438,23 @@ async function confirmAction() {
             {{ t(TODO_STATUS_LABEL_KEY[s]) }} {{ todoSummary.byStatus[s] }}
           </span>
         </div>
-        <div v-else class="mt-1.5 text-caption text-[var(--gosslan-text-2)]">
-          <template v-if="todoRowsLoaded">{{ t("todo.empty") }}</template>
-          <template v-else-if="todoRowsError">
-            {{ errorText(todoRowsError, t("todo.loadFail")) }}
-            <button
-              type="button"
-              class="tap-safe ml-1 inline-flex items-center rounded-[var(--gosslan-radius-sm)] px-1 text-[var(--gosslan-primary)] hover:bg-[var(--gosslan-hover)]"
-              @click="retryTodoRows"
-            >
-              {{ t("common.retry") }}
-            </button>
-          </template>
-          <template v-else>
-            <Spinner class="mr-1" size-class="h-3 w-3" decorative />{{ t("todo.loading") }}
-          </template>
-        </div>
+        <StateBlock
+          v-else-if="todoRowsLoaded"
+          inline
+          kind="empty"
+          :title="t('todo.empty')"
+          class="mt-1.5"
+        />
+        <StateBlock
+          v-else-if="todoRowsError"
+          inline
+          kind="error"
+          :title="errorText(todoRowsError, t('todo.loadFail'))"
+          :retry-label="t('common.retry')"
+          class="mt-1.5"
+          @retry="retryTodoRows"
+        />
+        <StateBlock v-else inline kind="loading" :title="t('todo.loading')" class="mt-1.5" />
       </div>
 
       <!-- 添加成员（仅群主）：切换出一列可选好友 -->
@@ -486,9 +491,13 @@ async function confirmAction() {
               <span class="min-w-0 flex-1 truncate text-sm" :title="f.nickname">{{ f.nickname }}</span>
               <Icon name="plus" class="h-3.5 w-3.5 shrink-0 text-[var(--gosslan-text-2)]" />
             </button>
-            <div v-if="addableFriends.length === 0" class="py-3 text-center text-xs text-[var(--gosslan-text-2)]">
-              {{ t("group.allInGroup") }}
-            </div>
+            <StateBlock
+              v-if="addableFriends.length === 0"
+              inline
+              kind="empty"
+              :title="t('group.allInGroup')"
+              class="py-3"
+            />
           </div>
         </div>
       </template>

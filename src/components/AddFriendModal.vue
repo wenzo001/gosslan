@@ -20,6 +20,7 @@ import { X } from "@/components/ui/icons";
 import AvatarBox from "@/components/ui/AvatarBox.vue";
 import PrimaryBtn from "@/components/ui/PrimaryBtn.vue";
 import SecondaryBtn from "@/components/ui/SecondaryBtn.vue";
+import StateBlock from "@/components/ui/StateBlock.vue";
 
 const props = defineProps<{ open: boolean }>();
 const emit = defineEmits<{
@@ -365,9 +366,7 @@ async function add(peerId: string) {
 
 <template>
   <BaseModal :open="open" :title="t('friend.add.title')" @close="emit('close')">
-    <div v-if="loading" class="py-8 text-center text-sm text-[var(--gosslan-text-2)]">
-      {{ t("friend.add.scanning") }}
-    </div>
+    <StateBlock v-if="loading" kind="loading" compact :title="t('friend.add.scanning')" />
 
     <div v-else-if="chat.peers.length === 0" class="py-4">
       <div class="text-center text-sm text-[var(--gosslan-text)]">{{ t("friend.add.noPeers") }}</div>

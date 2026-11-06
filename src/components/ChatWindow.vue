@@ -2009,12 +2009,7 @@ function retryHistory() {
         :retry-label="t('common.retry')"
         @retry="retryMessages"
       />
-      <div
-        v-else-if="messages.length === 0"
-        class="mt-20 text-center text-sm text-[var(--gosslan-text-2)]"
-      >
-        {{ t("chat.empty") }}
-      </div>
+      <StateBlock v-else-if="messages.length === 0" kind="empty" :title="t('chat.empty')" />
       <ErrorBoundary v-else>
         <VirtualList
           ref="listRef"
