@@ -218,7 +218,7 @@ watch(
           <!-- 一级页：分组列表 -->
           <div v-if="mobileNav === null">
             <div v-for="g in GROUPS" :key="g.key" class="mb-5 last:mb-0">
-              <div class="pb-1 text-caption font-medium uppercase tracking-wider text-[var(--gosslan-text-2)]">
+              <div data-settings-group class="pb-1 text-caption font-medium tracking-wide text-[var(--gosslan-text-2)]">
                 {{ t(g.titleKey) }}
               </div>
               <div class="overflow-hidden rounded-[var(--gosslan-radius-md)] border border-[var(--gosslan-border)] bg-[var(--gosslan-panel)]">

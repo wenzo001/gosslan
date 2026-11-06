@@ -27,6 +27,8 @@ const fonts = [
   { value: "'JetBrains Mono', Consolas, monospace", label: "settings.appearance.font.mono" },
 ];
 const fontModel = computed(() => (app.fontFamily === "" ? SYSTEM_FONT : app.fontFamily));
+/** 当前色不在 6 个预设里 ⇒ 自定义色入口要自己带上选中环（B3：同尺寸同形状，选中态也一样）。 */
+const isCustomThemeColor = computed(() => !presets.includes(app.themeColor));
 function onFont(value: string) {
   app.setFontFamily(value === SYSTEM_FONT ? "" : value);
 }
@@ -121,7 +123,8 @@ const transparencyOptions = computed(() => [
         <input
           type="color"
           :value="app.themeColor"
-          class="tap-safe h-6 w-7 cursor-pointer rounded-[var(--gosslan-radius-xs)] border border-transparent bg-transparent p-0 outline-none transition focus:border-transparent"
+          class="color-swatch tap-safe h-6 w-6 shrink-0 cursor-pointer appearance-none rounded-full border-0 bg-transparent p-0"
+          :style="{ outline: isCustomThemeColor ? '2px solid var(--gosslan-text)' : 'none', outlineOffset: '1px' }"
           :title="t('settings.appearance.customColor')"
           :aria-label="t('settings.appearance.customColor.aria')"
           @input="(e) => app.setThemeColor((e.target as HTMLInputElement).value, true)"
@@ -140,3 +143,21 @@ const transparencyOptions = computed(() => [
     </SettingsRow>
   </SettingsGroup>
 </template>
+
+<style scoped>
+/* B3：原生 `<input type="color">` 剥成与 6 个 preset **同尺寸同形状**的圆点。
+   只写 `rounded-full` 不够 —— 各内核对内层 swatch 的默认圆角/内距不同（Windows 上会画成
+   圆角方块、四周还留白），所以把 wrapper 的 padding 和内层圆角一起归零。Chromium 与
+   WebKit 都吃 `::-webkit-color-swatch*`，Firefox 走 `::-moz-color-swatch`。 */
+.color-swatch::-webkit-color-swatch-wrapper {
+  padding: 0;
+}
+.color-swatch::-webkit-color-swatch {
+  border: 0;
+  border-radius: 9999px;
+}
+.color-swatch::-moz-color-swatch {
+  border: 0;
+  border-radius: 9999px;
+}
+</style>

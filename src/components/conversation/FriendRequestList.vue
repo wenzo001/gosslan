@@ -26,7 +26,7 @@ const emit = defineEmits<{
     <div v-if="requests.length || outgoing.length" class="rounded-[var(--gosslan-radius-lg)]">
       <!-- 我发出的：等待对方同意（可取消）/ 已撤回（可分已确认/未确认） -->
       <div v-if="outgoing.length" class="mb-1">
-        <div class="px-2 pb-1 pt-0.5 text-caption font-medium uppercase tracking-wide text-[var(--gosslan-text-2)]">
+        <div class="px-2 pb-1 pt-0.5 text-caption font-medium tracking-wide text-[var(--gosslan-text-2)]">
           {{ t("friend.request.outgoingTitle") }}
         </div>
         <div
@@ -55,7 +55,7 @@ const emit = defineEmits<{
         </div>
       </div>
       <div
-        class="flex items-center justify-between px-2 pb-1 pt-0.5 text-caption font-medium uppercase tracking-wide text-[var(--gosslan-text-2)]"
+        class="flex items-center justify-between px-2 pb-1 pt-0.5 text-caption font-medium tracking-wide text-[var(--gosslan-text-2)]"
       >
         <span>{{ t("friend.request.title") }}</span>
         <button
