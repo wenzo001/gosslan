@@ -233,7 +233,7 @@ const confirmRemove = ref(false);
                   <!-- 这才是 INV-P24 要的"可解释状态"：说清差异、说清该升级哪一台 -->
                   <span
                     v-if="friend.peer_version_newer"
-                    class="mt-0.5 block text-xs text-[var(--gosslan-warning-ink)]"
+                    class="mt-0.5 block text-xs text-[var(--gosslan-warning-text-ink)]"
                   >
                     {{ t("friend.profile.versionNewerHint") }}
                   </span>

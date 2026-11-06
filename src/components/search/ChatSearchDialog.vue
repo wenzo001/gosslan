@@ -429,7 +429,7 @@ function showSender(group: ChatSearchGroup): boolean {
           spellcheck="false"
           :placeholder="t('search.placeholder')"
           :aria-label="t('search.placeholder')"
-          class="w-full bg-transparent text-body placeholder:text-[var(--gosslan-text-2)] outline-none focus:border-transparent"
+          class="w-full bg-transparent text-body placeholder:text-[var(--gosslan-placeholder)] outline-none focus:border-transparent"
           @keydown.enter.prevent="onEnter"
           @keydown.down.prevent="stepHit(1)"
           @keydown.up.prevent="stepHit(-1)"

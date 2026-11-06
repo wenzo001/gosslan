@@ -409,7 +409,7 @@ async function openConversation(row: OperationRow) {
             class="shrink-0 text-xs tabular-nums"
             :class="
               row.state === 'blocked'
-                ? 'text-[var(--gosslan-warning-ink)]'
+                ? 'text-[var(--gosslan-warning-text-ink)]'
                 : 'text-[var(--gosslan-text-2)]'
             "
           >

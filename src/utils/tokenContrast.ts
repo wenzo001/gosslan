@@ -154,6 +154,85 @@ export function resolveToken(name: string, scope: Map<string, string>, over?: Rg
 }
 
 /**
+ * 亮色某区域的**最终画布色**：区域底色 token（chat / list）按 `--ambient-veil`
+ * 叠在 `--gosslan-app-bg`（环境层的底层）上。
+ *
+ * 为什么不能拿 `--gosslan-chat`（#ffffff）直接当画布：开启动态背景后，每个可见区域
+ * 都盖了一层 16% 的薄纱，白面实际合成成 ≈#eaeef2。拿纯白算对比度会把
+ * 「#eeeef0 对方气泡」量成 1.16（看着合格），而屏幕上只有 1.006 —— 气泡等于消失。
+ * 这里只做"薄纱 + 底层"，不含色雾：色雾是动态的，静态判据取**没有雾**的那一侧，
+ * 作为"气泡必须能从画布上站起来"的下限。
+ */
+export function lightCanvasHex(css: string | Map<string, string>, baseToken: string): string | null {
+  const light = typeof css === "string" ? parseTokenScopes(css).light : css;
+  const veilRaw = light.get("--ambient-veil");
+  const veil = veilRaw === undefined ? Number.NaN : Number.parseFloat(veilRaw);
+  if (!Number.isFinite(veil)) return null;
+  const appBg = resolveToken("--gosslan-app-bg", light);
+  const base = resolveToken(baseToken, light);
+  if (!appBg || !base) return null;
+  return toHex(composite({ ...base, a: base.a * veil }, appBg));
+}
+
+export interface BubbleCanvasRow {
+  bubble: string;
+  canvasToken: string;
+  /** 合成后的画布实色 */
+  canvas: string;
+  ratio: number;
+}
+
+export interface BubbleCanvasAudit {
+  rows: BubbleCanvasRow[];
+  fails: (BubbleCanvasRow & { min: number })[];
+  unresolved: string[];
+}
+
+/**
+ * 亮色「对方气泡 vs 画布」对比审计（守卫 `tokenContrast.test.ts`）。
+ *
+ * 气泡色从 `chatStyle.ts` **源码现取**（预设表里的 `light.otherBubble` 与
+ * `LIGHT_OTHER_BUBBLE`），不从测试手抄 —— 抄一份就会漂，而这条判据存在的理由
+ * 正是"值改了、界面糊了、测试还绿"。
+ * 画布按 [`lightCanvasHex`] 的薄纱合成算，chat / list 两档都要断言
+ * （列表页与聊天页的底色不同，气泡在同一套浅灰里都可能被吃掉）。
+ */
+export function auditLightBubbleVsCanvas(
+  css: string,
+  chatStyleSrc: string,
+  min = 1.08,
+): BubbleCanvasAudit {
+  const rows: BubbleCanvasRow[] = [];
+  const fails: (BubbleCanvasRow & { min: number })[] = [];
+  const unresolved: string[] = [];
+  // 只取 light 那一行里的 otherBubble：dark 行同名，但那是深底方案，不属于这条判据。
+  const found = [
+    ...chatStyleSrc.matchAll(/light:\s*\{[^}]*otherBubble:\s*"(#[0-9a-fA-F]{3,6})"/g),
+  ].map((m) => m[1].toLowerCase());
+  const literal = /const\s+LIGHT_OTHER_BUBBLE\s*=\s*"(#[0-9a-fA-F]{3,6})"/.exec(chatStyleSrc);
+  if (literal) found.push(literal[1].toLowerCase());
+  const bubbles = [...new Set(found)];
+  if (bubbles.length === 0) {
+    // 正则没命中 ⇒ 循环一格不跑 ⇒ 判据全绿却在查空气。必须报"取不到"。
+    unresolved.push("chatStyle.ts 里取不到任何亮色 otherBubble（预设表写法变了？）");
+    return { rows, fails, unresolved };
+  }
+  for (const canvasToken of ["--gosslan-chat", "--gosslan-list"]) {
+    const canvas = lightCanvasHex(css, canvasToken);
+    if (!canvas) {
+      unresolved.push(`${canvasToken} 的薄纱合成画布解析不出（--ambient-veil / --gosslan-app-bg 缺了？）`);
+      continue;
+    }
+    for (const bubble of bubbles) {
+      const row: BubbleCanvasRow = { bubble, canvasToken, canvas, ratio: contrastRatio(bubble, canvas) };
+      rows.push(row);
+      if (row.ratio < min) fails.push({ ...row, min });
+    }
+  }
+  return { rows, fails, unresolved };
+}
+
+/**
  * 配色契约：每条都对应界面上一处真实组合。
  *
  * `min` 的取值原则：
@@ -171,6 +250,7 @@ export const TOKEN_CONTRAST_CONTRACT: Record<"light" | "dark", TokenPair[]> = {
     { fg: "--gosslan-text-2", bg: "--gosslan-list", min: 4.5, why: "会话列表摘要（12px）" },
     { fg: "--gosslan-text-2", bg: "--gosslan-card", min: 4.5, why: "文件气泡里的辅助信息（10px）" },
     { fg: "--gosslan-text-2", bg: "--gosslan-chat", min: 4.5, why: "空态 / 占位提示" },
+    { fg: "--gosslan-placeholder", bg: "--gosslan-field", min: 4.5, why: "输入框占位符（只准落字段底：chat 4.87 / list 4.95 也可，caption 4.40 / card 4.25 不达标，禁止落到那两档）" },
     { fg: "--gosslan-list-active-text", bg: "--gosslan-list-active", min: 4.5, why: "选中的会话行标题" },
     { fg: "--gosslan-accent-ink", bg: "--gosslan-panel", min: 4.5, why: "主题色当文字（链接 / 未读标签）" },
     { fg: "--gosslan-accent-ink", bg: "--gosslan-list", min: 4.5, why: "同上，落在列表底上" },
@@ -179,9 +259,19 @@ export const TOKEN_CONTRAST_CONTRACT: Record<"light" | "dark", TokenPair[]> = {
     { fg: "--gosslan-danger-ink", bg: "--gosslan-panel", min: 4.5, why: "「发送失败」/ 删除按钮 / 错误提示" },
     { fg: "--gosslan-danger-ink", bg: "--gosslan-list", min: 4.5, why: "「[有人@我]」标签" },
     { fg: "--gosslan-danger-ink", bg: "--gosslan-card", min: 4.5, why: "文件气泡内的失败文案" },
-    { fg: "--gosslan-danger-ink", bg: "--gosslan-danger-soft", bgOver: "--gosslan-panel", min: 4.5, why: "危险软底上的文字" },
+    // 危险软底会落在**三种面**上（设置面板 / 聊天画布 / 卡片），只钉 panel 会漏掉后两档：
+    // 旧值 #c52115 在 chat 4.45、card 3.92（真实用法：MessageItem 失败胶囊 / LinksList 错误横幅）。
+    { fg: "--gosslan-danger-ink", bg: "--gosslan-danger-soft", bgOver: "--gosslan-panel", min: 4.5, why: "危险软底上的文字（面板底）" },
+    { fg: "--gosslan-danger-ink", bg: "--gosslan-danger-soft", bgOver: "--gosslan-list", min: 4.5, why: "同上，落在列表底" },
+    { fg: "--gosslan-danger-ink", bg: "--gosslan-danger-soft", bgOver: "--gosslan-chat", min: 4.5, why: "失败胶囊落在聊天画布上（MessageItem）" },
+    { fg: "--gosslan-danger-ink", bg: "--gosslan-danger-soft", bgOver: "--gosslan-card", min: 4.5, why: "错误横幅落在卡片底上（LinksList）" },
     { fg: "--gosslan-warning-ink", bg: "--gosslan-panel", min: 3.0, why: "群主皇冠 / 文件夹图标（非文字）" },
     { fg: "--gosslan-warning-ink", bg: "--gosslan-card", min: 3.0, why: "同上，落在卡片底" },
+    // 警告**文字**档：同色相再压一档，与图标档分家（图标 3.0 / 文字 4.5 是两条判据）。
+    { fg: "--gosslan-warning-text-ink", bg: "--gosslan-panel", min: 4.5, why: "「逾期 / 阻塞」等警告文字（TaskCenter / LogRows）" },
+    { fg: "--gosslan-warning-text-ink", bg: "--gosslan-card", min: 4.5, why: "文件气泡内警告文案 / FriendProfile 版本提示" },
+    { fg: "--gosslan-warning-text-ink", bg: "--gosslan-warning-soft", bgOver: "--gosslan-chat", min: 4.5, why: "蓝牙慢速横幅（画布上的软底）" },
+    { fg: "--gosslan-warning-text-ink", bg: "--gosslan-warning-soft", bgOver: "--gosslan-card", min: 4.5, why: "分享目录截断提示（卡片软底，最紧的一档 4.66）" },
     { fg: "--gosslan-status-offline", bg: "--gosslan-panel", min: 3.0, why: "离线状态点（非文字）" },
     { fg: "#ffffff", bg: "--gosslan-hud", bgOver: "--gosslan-chat", min: 4.5, why: "toast 白字（hud 底是半透明，按叠在画布上算）" },
     // 主色实底控件这一族（16 处主色按钮 + 信息徽标）：**填充与前景成对**判，前景取
@@ -216,7 +306,6 @@ export const TOKEN_CONTRAST_CONTRACT: Record<"light" | "dark", TokenPair[]> = {
     // ⚠️ 选中态轨道走 `--gosslan-primary`（用户可选主色，由 applyTheme 以 inline 写在 <html> 上），
     //   契约表读的是 CSS 默认值 ⇒ 那一档不进这张表，归"六套可选主色"那一节逐档算，别在这里假钉一个数。
     { fg: "--gosslan-toggle-off", bg: "--gosslan-panel", min: 3.0, why: "开关未选中轨道 vs 面板（控件边界要看得出）" },
-    { fg: "--gosslan-toggle-off", bg: "--gosslan-card", min: 3.0, why: "同上，落在卡片底（设置页分组）" },
     { fg: "#ffffff", bg: "--gosslan-toggle-off", min: 3.0, why: "白色滑块 vs 未选中轨道（滑块位置要读得出来）" },
   ],
   dark: [
@@ -231,6 +320,7 @@ export const TOKEN_CONTRAST_CONTRACT: Record<"light" | "dark", TokenPair[]> = {
     { fg: "--gosslan-danger-ink", bg: "--gosslan-panel", min: 4.5, why: "失败 / 删除 / 错误提示" },
     { fg: "--gosslan-danger-ink", bg: "--gosslan-list", min: 4.5, why: "同上，落在列表底" },
     { fg: "--gosslan-warning-ink", bg: "--gosslan-panel", min: 3.0, why: "皇冠 / 文件夹图标" },
+    { fg: "--gosslan-warning-text-ink", bg: "--gosslan-panel", min: 4.5, why: "警告文字（暗色与图标档同值：亮底上压深反而掉对比度）" },
     { fg: "--gosslan-status-offline", bg: "--gosslan-panel", min: 3.0, why: "离线状态点" },
     // 主色实底控件在暗色下**换了方向**：填充提亮（要跟 #1e293b 面板分得开），前景换成深墨
     // （--gosslan-on-primary 在 .dark 里 = --gosslan-app-bg）。这两行就是那一次换向的全部凭据：

@@ -43,7 +43,7 @@ const levelTextClass = (lv: string) =>
   lv === "error"
     ? "text-[var(--gosslan-danger-ink)]"
     : lv === "warn"
-      ? "text-[var(--gosslan-warning-ink)]"
+      ? "text-[var(--gosslan-warning-text-ink)]"
       : "text-[var(--gosslan-text-2)]";
 
 /** 级别 → 整行浅底色（hover 时叠加，error=浅红、warn=浅黄、其他=透明） */

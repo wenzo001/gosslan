@@ -18,7 +18,8 @@ export const PREVIEW_LINES = 5;
  *  暗色用 #161b22（比画布 #0f172a 亮一档）。
  *  亮色原为 #f6f8fa——与画布 #fafafa 仅差 2~4 个色阶，实测卡片边界只剩 1px 描边、
  *  尖角完全看不见（尖角填充的就是这个色，贴着画布等于没有尖角）。
- *  与聊天样式里「对方气泡 #eeeef0 才不与画布同色」是同一个坑，故亮色改为一档更深的冷灰。 */
+ *  与聊天样式里「对方气泡按画布**最终合成色**（chat 白 + 16% 薄纱，≈#eaeef2）定值」
+ *  是同一个坑，故亮色改为一档更深的冷灰。 */
 export const CODE_SURFACE = { dark: "#161b22", light: "#eaeef3" } as const;
 
 /** 文本气泡：`leading-normal` = 1.5 倍行距（原 1.625 即 `leading-relaxed`，

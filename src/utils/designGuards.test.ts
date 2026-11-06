@@ -6876,7 +6876,10 @@ test("AC-12 反例自证：把设置卡片改成透明必须红", () => {
 test("AC-13 反例自证：TabBar 退回实底 / 关掉 frost 必须红", () => {
   const src = ambientChromeSources();
   const cases = [
-    src.responsiveLayout.replace("safe-bottom frost absolute", "safe-bottom bg-[var(--gosslan-panel)] absolute"),
+    src.responsiveLayout.replace(
+      "safe-bottom frost tabbar-chrome absolute",
+      "safe-bottom bg-[var(--gosslan-panel)] absolute",
+    ),
     src.styleCss.replace('html[data-frost="off"] .frost', "html[data-frost-missing] .frost"),
   ];
   assert.notEqual(cases[0], src.responsiveLayout, "锚点没命中：TabBar 类名变了");
@@ -6914,6 +6917,42 @@ test("AC-14 反例自证：分栏线退回发丝线 / 扩散到别处 / 动全�
   assert.ok(
     checkAmbientChromeSurfaces({ ...src, styleCss: globalDivider }).some((i) => i.message.includes("AC-14")),
     "改全站发丝线必须报 AC-14",
+  );
+});
+
+test("AC-15 反例自证：摘掉 pane-under-chat / 改回 visible / 删延迟 / 只改一边镜像 必须红", () => {
+  const src = ambientChromeSources();
+  const noClass = src.responsiveLayout.replace("pane-under-chat'", "''");
+  const halfMirror = src.responsiveLayout.replace(
+    "mobileView === 'chat' || favoritesOpen\n            ? 'pane-under-chat'",
+    "mobileView === 'chat'\n            ? 'pane-under-chat'",
+  );
+  const toVisible = src.styleCss.replace("visibility: hidden;", "visibility: visible;");
+  const noDelay = src.styleCss.replace(
+    "transition-delay: 0s, var(--gosslan-duration);",
+    "transition-delay: 0s, 0s;",
+  );
+  assert.notEqual(noClass, src.responsiveLayout, "锚点没命中：`pane-under-chat` 的类名绑定变了");
+  assert.notEqual(halfMirror, src.responsiveLayout, "锚点没命中：列表的镜像条件变了");
+  assert.notEqual(toVisible, src.styleCss, "锚点没命中：`visibility` 那行变了");
+  assert.notEqual(noDelay, src.styleCss, "锚点没命中：visibility 的延迟那行变了");
+  assert.ok(
+    checkAmbientChromeSurfaces({ ...src, responsiveLayout: noClass }).some((i) => i.message.includes("AC-15")),
+    "摘掉 `pane-under-chat`（=退回穿透缺陷）必须报 AC-15",
+  );
+  assert.ok(
+    checkAmbientChromeSurfaces({ ...src, responsiveLayout: halfMirror }).some((i) =>
+      i.message.includes("AC-15"),
+    ),
+    "只改列表/主区一边的判据必须报 AC-15",
+  );
+  assert.ok(
+    checkAmbientChromeSurfaces({ ...src, styleCss: toVisible }).some((i) => i.message.includes("AC-15")),
+    "把 `visibility: hidden` 改回 visible 必须报 AC-15",
+  );
+  assert.ok(
+    checkAmbientChromeSurfaces({ ...src, styleCss: noDelay }).some((i) => i.message.includes("AC-15")),
+    "删掉 240ms 延迟（吃掉 push/pop 视差）必须报 AC-15",
   );
 });
 

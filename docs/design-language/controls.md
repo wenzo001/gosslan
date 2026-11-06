@@ -21,7 +21,7 @@
 | `control/bg-primary-hover` | `--gosslan-primary-hover` | `bg-control-primary-hover` | 主按钮悬停 |
 | `control/bg-danger` | `--gosslan-danger` | `bg-control-danger` | 危险按钮填充 |
 | `control/fg` | `--gosslan-text` | `text-control-fg` | 控件文字 |
-| `control/fg-muted` | `--gosslan-text-2` | `text-control-fg-muted` | 次级文字/placeholder |
+| `control/fg-muted` | `--gosslan-text-2` | `text-control-fg-muted` | 次级文字（placeholder 另走 `--gosslan-placeholder`） |
 | `control/border-rest` | `--gosslan-border` | `border-control-rest` | 输入框静止描边 |
 | `control/focus` | `--gosslan-focus-ring` | `ring-control-focus` | 焦点环 |
 | `control/danger` | `--gosslan-danger-ink` | `text-control-danger` | 错误文字与描边 |
@@ -132,11 +132,11 @@ colors: {
 | --- | --- | --- |
 | 背景 | `--gosslan-field` `#f3f5f8` | `#2a3a52` |
 | 文字 | `--gosslan-text` `#0f172a` | `#f1f5f9` |
-| placeholder | `--gosslan-text-2` `#475569` | `#94a3b8` |
+| placeholder | `--gosslan-placeholder` `#5f6b7a` | `#94a3b8` |
 | 静止描边 | `--gosslan-border` `#e2e8f0` | `#3a4a66` |
 | 悬停描边 | 在静止描边上叠 6% 黑/白 | 同 |
 | 焦点 | 1px `--gosslan-primary` | 同 |
-| 错误 | 1px `--gosslan-danger-ink` `#cc2418` | `#ff5548` |
+| 错误 | 1px `--gosslan-danger-ink` `#b0170d` | `#ff5548` |
 | 禁用 | `opacity: .62` | 同 |
 
 - 只使用一个底色家族：`surface/field`。禁止再混用 `--gosslan-bg`、`--gosslan-panel`、`--gosslan-list`。
