@@ -96,7 +96,6 @@
   （`utils/imageZoom.ts ← openImagePreview`）——"删干净"这条有守卫，不是靠注释。
 - 版本 **5.18.34**（5.18.32 / 5.18.33 已被另一条线的批次占用，这次单独推进，不撞号）。
 
-
 ## [5.18.33] - 2026-11-05
 
 ### 修复：自己的文本气泡与尾巴之间的浅色缝（第三次同一处）
@@ -147,7 +146,6 @@
   `Bug` + `bug` 会变成两条（Rust 回填 test / 前端 `normalizeTodoTags` test 同时红）；
   前端删去重判断即红。
 
-
 ## [5.18.31] - 2026-11-05
 
 ### 群任务图片补拉：回程改走群文件帧，群里发的图不再冒到单聊
@@ -171,7 +169,6 @@
   —— 群文件帧要用群密钥封/解 file_key，没有它这一格测的就不是真实路径。
 - **回归**：新增 `content_pull_route_tests.rs` 三条边界 + 一条源码结构断言。反例自证：把路由
   改回全走 1:1，前两条红；把 worker 群分支删除，结构断言红。
-
 
 ## [5.18.30] - 2026-11-05
 
@@ -226,7 +223,6 @@
   `settingsmobile` 探针中英各 15/15（新增一条点击开关后 `data-reduced-transparency=true` +
   `data-ambient=static` + 无横向溢出的判据）。
 
-
 ## [5.18.27] - 2026-11-05
 
 ### 输入框三档更正为 sm 36 / md 40（不取 32）
@@ -275,271 +271,27 @@
   `ChatSearchDialog` 输入（高度归 `h-9` 搜索壳）、`GroupMemberPanel`/`GroupTasksBoard` 的多行
   textarea（可拖拽/多行）、原生 `type=color`/`type=file` 非文本输入。
 
-## [5.18.24] - 2026-11-05
 
-### 代码块语言：所有发送路径落库（直发 / Hold / 自聊 / 重发）
-
-- `send_message` 原来把 `message_render.lang` 的写入放在 `match deferred` **之后** ⇒ Hold / 无对端
-  两条分支直接 return，显式语言就丢了。改为在 DB 写入处用 `persist_outgoing` **一次落库**
-  （消息 + outbox + lang），三条 1:1 分支结构上不可能再漏。
-- 自聊 `insert_self_message` 新增 `lang` 入参（与 1:1 同一份 `normalize_render_lang`），走
-  `persist_self_message` 落库并 emit `message-render-changed`，不必等下次打开才恢复。
-- 重发 `resend_message` 从 `message_render` 读回**已确认**语言（`stored_lang_and_plaintext`），
-  信封与 `ChatMessage` 同时携带；老消息无记录 ⇒ `None` = 自动识别（行为与现状一致）。
-- 新增 4 条单测：Hold / 自聊「存入后读回 lang 一致」、重发信封带 `lang`、文本消息不写渲染表。
-  **反例自证**：删掉 `pin_message_lang` 那一步 ⇒ 3 条立刻变红（已实跑）。
-
-## [5.18.23] - 2026-11-05
-
-### 背景动效：默认档由 T3 改为 T2（亮 30% / 暗 26%）
-
-- 用户在四档对比图上选定 **T2**：`--ambient-alpha` 默认从 `0.4` 改为 `0.3`，暗色从 `0.36` 改为 `0.26`；
-  **T1/T2/T3/T4 四档仍可配置**（亮 20/30/40/48%，暗 16/26/36/44%），S 30%、尺寸 1.30×、薄纱 16/14% 不变。
-- `docs/design-language/ambient-motion.md` 同步：§3.3 的「默认」标注从 T3 移到 T2，§3.4 配方表的加粗行同步；
-  §0 / §3.3 / §3.4 / §3.6 / §7 / §9 / §10 里「默认 T3 40% / 36%」的表述全部改为 T2 30% / 26%。
-- `scripts/check-ui-runtime.mjs`：默认档判据改为 **亮 0.30 / 暗 0.26**；设置页截图从 1 张 T3 亮色改为
-  **T2 亮/暗两张**（`08-settings-t2-light.png` / `09-settings-t2-dark.png`），主界面四档对比图不变。
-- 滚动帧采样：drift / off **交替各 3 遍**并输出 p95（仅诊断，判定仍沿用原单窗口语义）。
-  三轮 18 个窗口实测：p50 两档常态均为 17 ms；单帧 50–100 ms 的长帧在 **drift 与 off 都出现**，
-  最严重的一次长帧簇（`long=8` / `p50=50 ms`）出现在 **off** 档 ⇒ 属机器调度噪声，不是色团合成的常驻代价；
-  未改判据、未改可见行为。
-
-## [5.18.22] - 2026-11-05
-
-### 背景动效：α 四档抬到 20–48%、副光常驻、采样区改为动团带
-
-- `--ambient-alpha` 四档 **20% / 30% / 40% / 48%**（暗色 -4pp：16 / 26 / 36 / 44%），默认 **T3 40%**；
-  主色 S 固定 **30%**，尺寸固定 **1.30×**，薄纱固定 **16% / 14%**，三者都收敛成变量。
-- A/B/C 三团共用同一个 α（旧实现 B/C 取 2/3，导致右下/右上带档间差只有 ~1.2）。
-- **B 团锚点 `100% 100%` + `translate(-50%,-50%)`**：旧值 `106% / 108%` 且缺居中，整团落在视口外，
-  是“只有一团在动、背景太浅”的真因；C 团同样补回居中。B 用暖沙 `hsl(32 12% 64%)`（暗 26%）。
-- 探针 AM-13 采样改为 **CORE（plateau，判档间）+ EDGE（径向 56% 淡出环，判动感）**，
-  冻结前强制一次样式刷新（否则负延迟未生效，三团各自落在不同相位）。
-  实测：档间 ΔE00 **1.80 / 1.89 / 1.58**，动感 **1.81**，中点四组 **0**，AM-14 全过。
-- 新增运行期判据 **AM-15**：气泡/输入卡合成 alpha ≥0.95（实测 1.00 / 0.966）。
-
-## [5.18.21] - 2026-11-05
-
-### 背景动态（Ambient Motion）：极慢色雾 + 细颗粒 + 主操作按压涟漪
-
-- L0 环境层从单张静态 `radial-gradient` 升级为 **4 团色雾**：3 团漂移（72s / 96s / 120s，
-  `ease-in-out` + `alternate`，负延迟 -18s / -42s / -66s）+ 1 团静态底洗；只动 `transform`，
-  不碰 `filter` / `blur` / `background-position`。透明度收敛到单一变量 `--ambient-alpha`
-  （亮 6% / 暗 7%，B/C/D 按 2/3、1/3 派生），改一处即可全局调档。
-- 色相只取两类：`--gosslan-primary` 主光 + 冷中性灰蓝（亮 `#7c93b3` / 暗 `#5b7fb3`），
-  不引入语义色（成功/警告/危险），避免与用户可选主题色撞色。
-- 画布改为「薄纱」（`color-mix(base 28%, transparent)`）：玻璃采样到的是会动的雾，
-  而不是纯平色；嵌套容器用 `.ambient-canvas-child` 只清实底，不叠第二层纱。
-- 细颗粒：新增 96×96 可平铺索引 PNG（3064 B），`opacity: calc(var(--ambient-alpha) / 2)`，
-  不参与任何动画；Vite 内联阈值内 ⇒ 以 base64 进 CSS（约 +4.1 KB），dist 总计 +12 KB。
-- 按压涟漪 `v-press-ripple`：只挂主按钮（`PrimaryBtn`）、危险主操作（`DangerBtn`）与发送键，
-  560ms / `scale .55→1.25` / `opacity .12→0`，同屏最多 2 个；不给所有按钮。
-- 设置新增 `设置 › 外观 › 背景动效`（`关闭 / 缓慢流动`，默认缓慢流动），中英文案齐全；
-  设置里其它排布未改。
-- 降级：`prefers-reduced-motion: reduce` 冻结在初始帧（`animation: none`，动画数归零）；
-  `prefers-reduced-transparency` / `prefers-contrast: more` / `forced-colors: active` 整层隐藏；
-  `document.hidden` 时 `animation-play-state: paused`。
-- `designGuards` 新增 `checkAmbientMotion`（AM-01…AM-12 共 12 条），附四组反例自证：
-  动画属性换成 `filter: blur()`、多加第 5 团、删 visibility 监听、reduce 档只改时长不 freeze，
-  各自必须报红。`scripts/check-ui-runtime.mjs` 新增 `ambient` 段，产出开关 × 亮暗四组截图
-  与动画/性能读数。
-
-## [5.18.20] - 2026-11-05
-
-### 玻璃材质层与控件色值收敛（只改材质，不改布局与交互）
-
-- 按 `docs/design-language/liquid-glass.md` 的数值新增三档玻璃 token（亮/暗成对）：
-  半透明底 + `saturate() blur()`（标准与 `-webkit-` 双写，WKWebView 只认前缀版）
-  + 1px 内描边与顶部高光（用 `inset box-shadow` 而非 `border`，避免内容盒宽变化）
-  + 柔和外阴影。`surface/glass-2` 的底色复用既有 `--gosslan-panel-frost`（`.frost` 即它的别名），
-  保持 `tokenContrast` 里「菜单条目压列表底 ≥1.32」的对比度基准单源，不另起第二套数值。
-- 只有控制层换玻璃：侧栏、标题栏、设置左侧导航、Dialog（`BaseModal`）、ActionSheet。
-  消息列表/气泡/正文/代码块/日志/设置表单行保持实色（内容层，可读性优先）。
-- 降级三路逐档退实底（`--gosslan-glass-N-fallback`）：`prefers-reduced-transparency`、
-  `prefers-contrast: more`、`@supports not (backdrop-filter…)`；`.glass`（图片查看器）语义不变。
-- L0 环境底色层 `html.ambient`（极淡 radial-gradient，默认**关闭**）：玻璃需要有可采样的
-  背景才看得出来；关闭时玻璃按实底回退，现有观感零变化。
-- **缺陷修复**：`input:focus` 的规则体原为空，等于输入框**没有可见焦点**。恢复为
-  1px 内描边 + 边框变色（不加外框），选择器排除 checkbox/radio/range；
-  `.gosslan-composer:focus-within` 同补。
-- 输入框底色收敛到 `--gosslan-field`（原散落的 `bg-[var(--gosslan-bg)]` / `bg-transparent`）。
-  外层容器已是 field 底的文本框（会话搜索框、日志过滤条）不改。
-- `designGuards` 新增 `checkGlassTiers`（三档定义、`frost` 别名单源、三道降级全覆盖），
-  并扩展 `checkTextFieldFocusRing`（规则体为空即报红）；附「删 backdrop-filter / 摘一档降级 /
-  focus 规则留空」三组反例自证。
-- 判据锚点随材质搬迁：`scripts/check-ui-runtime.mjs` 里按 `.elevated` 找弹窗卡片的 10 处
-  一并改为 `.glass-3`（不搬锚点会让 overlay / modaltitle / winsafe 三大段空转报红）。
-
-## [5.18.19] - 2026-11-05
-
-### 群任务：统一日期字段封装、状态胶囊可点击暗示、自动归档天数与文案消歧
-
-- 新增 `AppDateField`（原生 `<input type="date">` 的薄封装，不引依赖）：高度/边框/圆角/暗色态
-  与其它输入框一致，「清除」改为输入框**内部**的 × 图标按钮；三个能力留成参数
-  `clearable` / `minToday` / `dateOnly`（本处只用「可清空 + 年月日」）。「关联时间」改用它。
-- #2 状态胶囊补上可点击暗示：hover 抬起 + 手型光标，`aria-haspopup` / `aria-expanded` 已有，
-  不再只靠 `title`。#3 分组标题改成只读计数「共 N 条」，不再与筛选胶囊混淆。
-- #4「我要认领」改「加入指派」（中英同步）。#5 终态且未归档的行显示「X 天后自动归档」，
-  天数按 `TODO_AUTO_ARCHIVE_DAYS` 现算（新增 `autoArchiveDaysLeft`，与 `isEffectivelyArchived`
-  同一口径），已归档不显示。#7 详情「归档」按钮下加副文案说明可从「已归档」找回。
-- #1（行尾三枚同色小图标）按要求**未改动**，留待布局拍板。
-
-## [5.18.18] - 2026-11-05
-
-### 前端内存审计（续）：30 分钟待机取证跑通 + 待机预算落地
-
-- `scripts/check-ui-runtime.mjs` 的泄漏段：每批切会话**终点固定同一会话**。
-  早先三批停在不同会话上，DOM 509 vs 528、监听器 313 vs 322 —— 那 9 个差是"该会话多渲染了
-  19 个元素"，不是泄漏。判据阈值未动，三批现在 `nodes`/`dom`/`listeners` 一格不差。
-- 长跑（`GOSSLAN_IDLE_MS`）加了两件事：① 每 10s 探活，页面被热重载清空时**重建夹具、该段从头再量**
-  （共享工作区里别的会话改 `src/` 非组件模块会让 vite 全量 reload，第一次 15 分钟段就是这么废的）；
-  ② 新增 `GOSSLAN_PROBE_NO_HMR=1` + `GOSSLAN_PROBE_VITE_CONFIG`：用 /tmp 的临时配置把 `server.hmr`
-  关掉起 dev server，从根上不让它重载（**不改仓库的 `vite.config.ts`**）。
-- `perf/README.md` 新增第 9 台量具与待机预算一节：实测两段各 15 分钟空闲，渲染主线程占用
-  **0.09%**、GC 后堆增量 **0.01 MB**、DOM/监听器 0 增量；预算定为 CPU < 1%、
-  堆 ≤ 0.5 MB/15min、DOM ±0、监听器 ≤ +2，RSS 只记录不进判据（本仓既有证据：renderer RSS 不跟剂量走）。
-
-## [5.18.17] - 2026-11-05
-
-### 修正
-
-- 托盘「勿扰」回调不再在**主线程**取 `db` 锁：菜单事件改到独立线程落库/广播。
-  后台持锁长活（VACUUM 3s、ledger 回填）期间点托盘菜单会让事件循环被钉在锁上，
-  现场正是 `HANG scope=main_thread`、无 panic、CPU 很低。
-- 群文件续传分支里 `db → group_file_receivers` 的嵌套取锁改为先取快照再取 db，
-  与本文件其它路径约定的 `receivers → db` 一致（今天还没死锁，但这是"等一条新代码就挂"的活扣）。
-- `save_outgoing_image` 的建目录/写盘从 tokio worker 搬进 `spawn_blocking`；粘贴大图时
-  不再把 worker 钉在同步 IO 上（worker 棘轮上限由 31 收到 30）。
-
-### 新增
-
-- 非 `db` 锁的具名观测：`file_receivers` / `group_file_receivers` 改为 `NamedLock`，
-  持锁超 2s 产一条 `LOCK_HELD_LONG name=… holder=tN waited_by=[tN] ms=… wait_ms=…`
-  （由看门狗线程唯一落盘）。快路径实测 +106ns/次取锁，空闲时零取锁、仅 1 次/秒心跳。
-- HANG 现场新增 `locks=`（当前谁握着、谁在等、持有多久）与 `worker_lag_ms=`（worker 心跳漂移），
-  与主线程 / 渲染层心跳构成三条独立证据；`locks` 只含锁名、线程标识与毫秒，不含正文。
-
-## [5.18.16] - 2026-11-05
-
-### 文档
-
-- 修正 CHANGELOG 里 i18n 文案卫生守卫的门禁步号（全量层第 16 步）。
-
-## [5.18.15] - 2026-11-05
-
-### 修正
-
-- 修正安卓升级命令里「取不到缓存目录仍继续」的写法：改成显式判断后跳过清理，
-  不再以 `.ok();` 静默丢弃结果（`静默丢弃棘轮` 恢复到 14 处基线）。
-
-## [5.18.14] - 2026-11-05
-
-### 安卓应用内升级合入主干（明细见 5.18.10 节）
-
-- 补齐 Rust 侧命令与 JNI 桥、Kotlin `ApkInstaller`/`MainActivity`、前端状态机与设置面板、
-  i18n 键与守卫（`android_update_core` 单测 / `androidService.test.ts` / JNI 签名与 release keep 对账）；
-  安装阶段 `preparing → launching → waiting-user` 期间弹窗保持打开并禁用重复操作，消掉静默期。
-- 同步 `docs/domains.data.mjs` 与 `docs/ARCHITECTURE-MAP.html`（菜单/安装桥归入 `platform` 领域）。
-
-## [5.18.13] - 2026-11-05
-
-### 修复：`examples` 编译（5.18.9 给消息加 `lang` 的连带）
-
-- `Message::ChatMessage` 新增 `lang` 之后，`examples/dual_link.rs` 与 `examples/e2e_peer.rs` 里的
-  5 处结构体字面量没跟上 ⇒ `cargo clippy --features bluetooth --all-targets -D warnings`
-  报 `E0063 missing field lang`（`verify:full` 第 26 步，此前 `cargo test --lib` 看不见 examples）。
-  这几处是探测用的示例程序、没有"消息语言"语义，补齐 `lang: None`；行为不变。
-
-## [5.18.12] - 2026-11-05
-
-### i18n 文案卫生变成可执行门禁：对称性 / 动态前缀 / 死键基线
-
-- 新增 `scripts/check-i18n.mjs` 并接入 `npm run verify:full`（全量层第 16 步）：
-  - **对称性**：`zh-cn.ts` 与 `en-us.ts` 键集合必须一致，缺失/多余各报完整键路径；
-  - **动态前缀**：只从真实 `t(\`prefix.${x}\`)` / `$t(...)` / `i18n.global.t(...)` /
-    `t("prefix." + x)` 调用点提取静态前缀，要求两册有**一致子树**；无法静态验证的必须登记
-    `DYNAMIC_PREFIX_WHITELIST`（附理由），不再靠“跳过所有动态键”蒙混；
-  - **死键**：全仓引用面（`src/**`、`scripts/**`、启动失败窗 `data-i18n`、测试/探针）零引用的键，
-    存量走 `scripts/i18n-dead-keys.baseline.json`，**只减不增**（新增死键红；基线里已失效的登记也红）；
-    工作区零引用但 HEAD 仍被引用的键（并行会话正在改组件）列为「暂缓」，不删不判红；
-  - **值层面疑似残留**：仍活着但只被测试/探针引用、生产界面零引用的键只提示、不判红，人工确认。
-- 内置 6 条反例自证（zh 多键 / en 少键 / 留死键 / 基线失效 / 动态前缀无子树 / 子树中英文不一致），
-  每种都必红且输出完整键路径；扫描下限（900 键 / 500 字面量 / 150 文件 / 5 动态前缀）防止量具空转。
-- `AGENTS.md` 增补 i18n 约定：新增文案必须中英同步并用 `t()`；删除功能同一次提交里删键；
-  死键基线的 `--update` 与手工缩减方式写明。
-- 本轮扫描结果：工作区 1610 × 2 键、0 条真实死键（1 条 `chat.composer.codeUndo` 因 HEAD 仍被
-  `MessageComposer.vue` 引用、对应会话未提交而暂缓，不删）。
-
-## [5.18.10] - 2026-11-05
-
-### 安卓应用内升级：检查 → 下载 → 校验 → 安装，且安装过程不再"静默"
-
-- **选型**：桌面继续用 `tauri-plugin-updater`（不动）；Android 侧清单走 GitHub Releases API
-  （读 `digest: sha256:…`，不改发布流水线），下载/校验/取消放在 Rust（流式落盘、边下边算 sha256），
-  安装走 Kotlin 的 `PackageInstaller` 会话 + 系统确认 UI，异常时回退 `ACTION_INSTALL_PACKAGE`。
-- **核心修复**：点"安装"确认后弹窗**不再立刻关掉**：`installing` 阶段带步骤
-  `preparing → launching → waiting-user`，前两步界面持续显示"正在安装"并禁用重复点击与关闭，
-  直到系统安装器真正接管才关弹窗 —— 消掉"确认后到安装器出现之间"的空白静默期。
-- **可打断可恢复**：下载可取消且清掉 `.part`；校验失败/大小不符/无权限/解析包失败/签名不一致/
-  用户取消在系统界面，全部落 `failed` 并带具名 `code=ANDROID_UPDATE_*` 话术，回到可重试状态。
-- **权限**：`REQUEST_INSTALL_PACKAGES` + `canRequestPackageInstalls()`（Android 8+ 逐应用授权），
-  未授权时打开 `ACTION_MANAGE_UNKNOWN_APP_SOURCES` 引导，授权返回后可直接重试。
-- 守卫：`android_update_core` 单测（清单解析/ABI 选包/digest/版本比较/sha256）、
-  `androidService.test.ts`（11 条状态机转移、重复 install 只调一次、取消与失败回到可重试）、
-  `lib_android_jni_tests.rs`（Kotlin↔Rust 签名与 release keep 规则对账）、移动端编译门禁。
-
-## [5.18.9] - 2026-11-05
-
-### 代码块：自动识别语言、发送前/后切换、头部固定 + 内部单层滚动
-
-- **自动识别不再手写正则**：`utils/codeDetect.ts` 的 `guessLanguage` 大礼包删除，语言判断交给
-  highlight.js 的 `highlightAuto`（已在包内、离线可用、无新增依赖）。围栏标了语言就按标记走；
-  **未标语言的围栏**与"看起来像代码"的长文本先判"是不是代码"，语言再交给 Worker 异步识别；
-  相关度 `< 8` 或与第二名打平即落 `plaintext`（宁可不亮，也不猜错）。未知围栏标签同样落纯文本。
-- **修掉一条真缺陷**：`MessageComposer.send` 原先 `text = stripCodeFence(text).text` 把
-  `.language` 直接丢掉 ⇒"已标语言按标记走"实际上是假的（发送后两端都只能靠猜）。
-  现在 `codeLangOut = stripped.language ?? codeLang` 逐层传到 `chat.send → send_message`
-  并落进 `message_render.lang`；`codeDetect.test.ts` 有一条"删掉这行即红"的锚点。
-- **发送前**：输入框代码模式里新增独立 `CodeLangMenu`（自动识别 / 纯文本 / 14 种语言），
-  可随时切换；「取消代码块」把内容退回普通长文本（保留换行与原样字符、不亮）。
-- **发送后**：只有**发送方**能切（服务端 `set_message_render` 用 `msg.sender_id` 判定，前端隐藏
-  菜单只是表象）。切换仍走既有 `message_render` LWW 入口 + `message-render-changed` 事件，
-  双方按确认后的语言渲染；进行中显示转圈且保留旧标签，非法语言给 `RENDER_INVALID_LANG`、
-  被更新的一次覆盖给 `RENDER_SUPERSEDED`，失败绝不留"看起来切了"的假状态。
-- **协议/存储向后兼容**：`RenderPayload` / `ChatMessage` / `GossipPlaintext` 都加了
-  `#[serde(default, skip_serializing_if)] lang`（None 时线上字节与旧版同形）；`message_render`
-  走 `user_version` 15→16 加 `lang TEXT`，**不回填** ⇒ 旧行 NULL = 按内容自动识别，行为不变。
-- **固定头 + 单层滚动**：`CodeBlock` 头部（语言标签、行数、复制）与 `pre` 是兄弟节点，
-  只有 `pre` 滚动（`overflow-y:auto`、`overflow-x:hidden`、`overscroll-behavior:contain`、
-  移动端 `touch-action:pan-y`）；长行折行不撑破气泡，父层 `overflow-hidden` 杜绝双层滚动条。
-- 守卫：`utils/codeLanguages.test.ts`（别名/纯文本/未知标签）、`codeHighlightCore.test.ts`
-  （显式标记优先、不确定落纯文本、长 JS 能识别）、`codeBlockLayout.test.ts`（头部与 pre 同级、
-  pre 唯一滚动容器、非发送方不可切、撤销只关模式不清正文），以及
-  `scripts/check-ui-runtime.mjs --only=codeblock`（中英各跑，桌面 + 390×700 触控：滚动前后
-  头部 rect 不变、内部容器 `scrollHeight>clientHeight`、合成触摸后 `scrollTop` 增大）。
-
-### 前端内存审计：`msg_id → conv_id` 反查表封顶 + 切会话/待机泄漏形状探针
-
-- **修掉一条真正只增不减的表**：`stores/chat/messaging.ts` 的 `convIdByMsgId` 原先没有删除点
-  （注释里也写着"条目随消息量增长，与 messages 同阶"）。`messages` 侧是"1000 条/会话 × 8 个缓存会话
-  整块逐出"，但这张表跨会话生命周期：被逐出的会话留下的一堆 id 没人清理，用户切得越多、跑得越久就越大。
-  现按 `8 × 1000 + 余量 = 8192` 封顶，逐会话 `trimOldest`；未命中仍回退全量扫描，淘汰不改变正确性。
-  容量逻辑抽到纯核心 `src/utils/msgConvIndex.ts`（`messaging.ts` 的运行时依赖都走 `@/` 别名，
-  `node --experimental-strip-types` 解析不了，纯核心才能用真实计数验证）。
-- 守卫：`src/utils/msgConvIndex.test.ts` 灌 12 个会话 × 1000 条 ⇒ 条目必须压回 8192、
-  最后写入的会话仍命中、被淘汰的 id 回退扫描仍能查到；**删掉 `trimOldest` 这一行，计数变 12000，测试立刻红**。
-- 新增运行时探针段 `scripts/check-ui-runtime.mjs --only=leak`（挂真 `ChatWindow` + 真 store，
-  Tauri 调用打桩）：6 个会话 × 40 条种子，切会话 30 次分三批取 GC 后堆 / DOM / 监听器；
-  再卸载并松开夹具引用，校验 interval、rAF、产品代码起的一次性 timeout 是否归零。
-  `GOSSLAN_IDLE_MS=900000` 时额外做两段 15 分钟待机长跑（手动用，不进默认门禁）。
-  反例自证：`GOSSLAN_LEAK_INJECT=1` 在挂载后故意留一个 interval ⇒ 卸载水位判据必红。
-
-
-## 历史版本摘要（5.17.34 及更早，全文见 [归档](docs/archive/notes/changelog-archive.md)）
+## 历史版本摘要（5.18.9 及更早，全文见 [归档](docs/archive/notes/changelog-archive.md)）
 
 > 由 `scripts/compress-changelog.mjs` 生成（`--keep 12`）：这里只留「版本 + 一句话主旨」，
 > 全文逐字在归档；带 〔破坏性〕〔协议〕〔安全〕的版本，压缩前正文命中了对应关键字。
 
+- **5.18.24**（2026-11-05）— 代码块语言：所有发送路径落库（直发 / Hold / 自聊 / 重发）
+- **5.18.23**（2026-11-05）— 背景动效：默认档由 T3 改为 T2（亮 30% / 暗 26%） 〔协议〕
+- **5.18.22**（2026-11-05）— 背景动效：α 四档抬到 20–48%、副光常驻、采样区改为动团带
+- **5.18.21**（2026-11-05）— 背景动态（Ambient Motion）：极慢色雾 + 细颗粒 + 主操作按压涟漪 〔协议〕
+- **5.18.20**（2026-11-05）— 玻璃材质层与控件色值收敛（只改材质，不改布局与交互）
+- **5.18.19**（2026-11-05）— 群任务：统一日期字段封装、状态胶囊可点击暗示、自动归档天数与文案消歧
+- **5.18.18**（2026-11-05）— 前端内存审计（续）：30 分钟待机取证跑通 + 待机预算落地
+- **5.18.17**（2026-11-05）— 修正
+- **5.18.16**（2026-11-05）— 文档
+- **5.18.15**（2026-11-05）— 修正
+- **5.18.14**（2026-11-05）— 安卓应用内升级合入主干（明细见 5.18.10 节）
+- **5.18.13**（2026-11-05）— 修复：examples 编译（5.18.9 给消息加 lang 的连带）
+- **5.18.12**（2026-11-05）— i18n 文案卫生变成可执行门禁：对称性 / 动态前缀 / 死键基线
+- **5.18.10**（2026-11-05）— 安卓应用内升级：检查 → 下载 → 校验 → 安装，且安装过程不再"静默"
+- **5.18.9**（2026-11-05）— 代码块：自动识别语言、发送前/后切换、头部固定 + 内部单层滚动 〔协议〕
 - **5.18.7**（2026-11-04）— 群任务：关联时间字段、统一任务时间格式、状态切换改为行内下拉
 - **5.18.5**（2026-11-04）— 新增：链接导入后固定来源 + 标题栏刷新键取最新数据
 - **5.18.4**（2026-11-04）— 新增：聊天输入框自增高 / 粘贴图片先入框 / 输入框内表情图 /「回到最新」居中圆钮
