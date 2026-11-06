@@ -1,0 +1,171 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>Brand — 小院 mascot & app icon</title>
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<style>
+  *{box-sizing:border-box}
+  body{margin:0;background:#f2f3f5;font-family:-apple-system,BlinkMacSystemFont,"PingFang SC","Microsoft YaHei","Segoe UI",sans-serif;color:#1f2329;-webkit-font-smoothing:antialiased}
+  .board{width:1400px;height:980px;background:#f2f3f5;padding:26px;display:flex;flex-direction:column;gap:16px;overflow:hidden}
+  .head{display:flex;align-items:flex-end;gap:12px;flex:0 0 auto}
+  .head h1{font-size:24px;line-height:30px;font-weight:600;letter-spacing:-.03em;margin:0}
+  .head p{font-size:12px;line-height:18px;color:#5a6068;margin:0 0 2px}
+  .head .badge{margin-left:auto;font-size:11px;font-weight:600;color:#1f5ae8;background:#e8f0ff;border-radius:999px;padding:4px 10px}
+  .hero{display:grid;grid-template-columns:360px 1fr 330px;gap:14px;flex:0 0 auto}
+  .card{background:#fff;border-radius:18px;box-shadow:inset 0 0 0 1px #e5e6eb;padding:16px;min-width:0}
+  .heroMascot{display:flex;flex-direction:column;align-items:center;justify-content:center;gap:10px;background:#fff;border-radius:18px;box-shadow:inset 0 0 0 1px #e5e6eb;padding:18px;position:relative;overflow:hidden}
+  .heroMascot:before{content:"";position:absolute;width:260px;height:260px;border-radius:999px;background:#f7f8fa;left:50%;top:56%;transform:translate(-50%,-50%)}
+  .heroMascot svg{position:relative;z-index:1;filter:drop-shadow(0 18px 30px rgba(31,35,41,.16))}
+  .heroMascot .name{position:relative;z-index:1;font-size:20px;line-height:26px;font-weight:600;letter-spacing:-.02em}
+  .heroMascot .sub{position:relative;z-index:1;font-size:11px;color:#8a9099}
+  .title{font-size:11px;line-height:15px;font-weight:600;color:#8a9099;letter-spacing:.04em;text-transform:uppercase;margin:0 0 8px}
+  .construct{display:flex;gap:16px;align-items:center;height:100%}
+  .gridBox{width:230px;flex:0 0 auto;border-radius:16px;background:#f7f8fa;box-shadow:inset 0 0 0 1px #eef0f2;padding:10px;position:relative}
+  .gridBox svg{display:block;width:100%;height:auto}
+  .specs{min-width:0;display:flex;flex-direction:column;gap:7px}
+  .spec{display:flex;gap:8px;align-items:flex-start;font-size:11px;line-height:15px;color:#5a6068}
+  .spec b{color:#1f2329;font-weight:600;white-space:nowrap;min-width:74px}
+  .spec .dot{width:6px;height:6px;border-radius:999px;background:#2f6bff;flex:0 0 auto;margin-top:5px}
+  .rightCol{display:flex;flex-direction:column;gap:10px}
+  .sizes{display:flex;align-items:flex-end;gap:14px;flex-wrap:wrap}
+  .size{display:flex;flex-direction:column;align-items:center;gap:4px;color:#8a9099;font-size:10px}
+  .size svg{display:block;filter:drop-shadow(0 4px 8px rgba(31,35,41,.12))}
+  .states{display:grid;grid-template-columns:repeat(5,1fr);gap:10px;flex:0 0 auto}
+  .state{background:#fff;border-radius:16px;box-shadow:inset 0 0 0 1px #e5e6eb;padding:12px 10px;display:flex;flex-direction:column;align-items:center;gap:7px}
+  .state .cap{font-size:11px;line-height:14px;font-weight:600;color:#3a3f47}
+  .state .desc{font-size:10px;line-height:13px;color:#8a9099;text-align:center}
+  .state .stage{height:92px;display:flex;align-items:center;justify-content:center;width:100%;background:#f7f8fa;border-radius:12px;position:relative}
+  .badgeDot{position:absolute;right:8px;bottom:8px;width:20px;height:20px;border-radius:999px;display:flex;align-items:center;justify-content:center;color:#fff;font-size:11px;font-weight:700;box-shadow:0 0 0 2px #f7f8fa}
+  .apps{display:grid;grid-template-columns:1.15fr .85fr;gap:14px;flex:1;min-height:0}
+  .appRow{display:flex;gap:14px;align-items:center;flex-wrap:wrap}
+  .appTile{display:flex;flex-direction:column;align-items:center;gap:5px;font-size:10px;color:#8a9099}
+  .appTile svg{display:block;filter:drop-shadow(0 10px 18px rgba(31,35,41,.18))}
+  .lockup{display:flex;align-items:center;gap:10px;padding:10px 12px;border-radius:14px;background:#f7f8fa;box-shadow:inset 0 0 0 1px #eef0f2}
+  .lockup .wm{font-size:18px;line-height:22px;font-weight:600;letter-spacing:-.02em}
+  .lockup .wm small{display:block;font-size:10px;line-height:13px;font-weight:500;color:#8a9099;letter-spacing:.08em;text-transform:uppercase}
+  .rules{display:grid;grid-template-columns:1fr 1fr;gap:12px;flex:0 0 auto}
+  .rule{border-radius:14px;padding:11px 13px;font-size:11px;line-height:16px;color:#5a6068;background:#fff;box-shadow:inset 0 0 0 1px #e5e6eb}
+  .rule h4{font-size:11px;line-height:15px;font-weight:700;margin:0 0 4px}
+  .rule.do h4{color:#068a4a}.rule.dont h4{color:#d93a3a}
+  .foot{display:flex;align-items:center;justify-content:space-between;font-size:10px;color:#8a9099;flex:0 0 auto}
+  .mono{font-family:"JetBrains Mono","SFMono-Regular",Consolas,monospace}
+</style>
+</helmet>
+<div class="board">
+  <div class="head">
+    <div><h1>小院 · 品牌标记与吉祥物</h1><p>一座小院子：圆角院墙 + 拱门 + 一株小苗。抽象到 16px 仍能认，展开后有一点性格。</p></div>
+    <span class="badge">Brand v1 · 小院</span>
+  </div>
+
+  <div class="hero">
+    <div class="heroMascot">
+      <svg width="210" height="210" viewBox="0 0 128 128" fill="none" aria-label="小院吉祥物">
+        <rect x="10" y="20" width="108" height="100" rx="26" fill="#2f6bff"/>
+        <path d="M47 120V64a17 17 0 0 1 34 0v56Z" fill="#fff8ea"/>
+        <path d="M84 20v-5" stroke="#07c160" stroke-width="4" stroke-linecap="round"/>
+        <path d="M84 16c-7 0-11-3.5-11-9 6.5 0 11 3 11 9Z" fill="#07c160"/>
+        <path d="M84 12c7 0 11-3.5 11-9-6.5 0-11 3-11 9Z" fill="#07c160"/>
+        <circle cx="56" cy="74" r="2.8" fill="#2f6bff"/>
+        <circle cx="72" cy="74" r="2.8" fill="#2f6bff"/>
+        <path d="M61 82c2 2.6 4 2.6 6 0" stroke="#2f6bff" stroke-width="2.4" stroke-linecap="round"/>
+      </svg>
+      <div class="name">小院</div>
+      <div class="sub">Gosslan mascot · 院子里的局域网</div>
+    </div>
+
+    <div class="card">
+      <p class="title">Construction</p>
+      <div class="construct">
+        <div class="gridBox">
+          <svg viewBox="0 0 128 128" fill="none" aria-hidden="true">
+            <defs>
+              <pattern id="g8" width="8" height="8" patternUnits="userSpaceOnUse"><path d="M8 0H0V8" stroke="#e5e6eb" stroke-width="1"/></pattern>
+            </defs>
+            <rect width="128" height="128" fill="url(#g8)"/>
+            <rect x="10" y="20" width="108" height="100" rx="26" fill="#2f6bff" fill-opacity=".14" stroke="#2f6bff" stroke-width="1.5"/>
+            <path d="M47 120V64a17 17 0 0 1 34 0v56Z" fill="#fff8ea" stroke="#d9b96a" stroke-width="1.5"/>
+            <path d="M84 20v-5M84 16c-7 0-11-3.5-11-9 6.5 0 11 3 11 9ZM84 12c7 0 11-3.5 11-9-6.5 0-11 3-11 9Z" stroke="#07c160" stroke-width="2" stroke-linecap="round"/>
+            <path d="M10 20h108M10 120h108M47 120V64M81 120V64" stroke="#2f6bff" stroke-width="1" stroke-dasharray="3 3" opacity=".55"/>
+            <circle cx="118" cy="120" r="2.5" fill="#fa5151"/>
+          </svg>
+        </div>
+        <div class="specs">
+          <div class="spec"><span class="dot"></span><span><b>院墙</b>128 网格上的 108×100 squircle，圆角 26（约 24%）。</span></div>
+          <div class="spec"><span class="dot" style="background:#d9b96a"></span><span><b>拱门</b>宽 34，拱顶半径 17，底部与院墙齐平；负空间就是门。</span></div>
+          <div class="spec"><span class="dot" style="background:#07c160"></span><span><b>小苗</b>两片叶子 + 4px 茎，只出现在院墙上方，像院里的植物。</span></div>
+          <div class="spec"><span class="dot" style="background:#fff8ea;box-shadow:inset 0 0 0 1px #d9b96a"></span><span><b>奶油</b>门洞与表情用 #FFF8EA，不用纯白，和蓝色更柔和。</span></div>
+          <div class="spec"><span class="dot" style="background:#fa5151"></span><span><b>留白</b>四周至少 10px；16px 时省掉表情，只保留门与小苗。</span></div>
+        </div>
+      </div>
+    </div>
+
+    <div class="rightCol">
+      <div class="card" style="flex:1">
+        <p class="title">Sizes</p>
+        <div class="sizes">
+          <div class="size"><svg width="96" height="96" viewBox="0 0 128 128" fill="none"><rect x="10" y="20" width="108" height="100" rx="26" fill="#2f6bff"/><path d="M47 120V64a17 17 0 0 1 34 0v56Z" fill="#fff8ea"/><path d="M84 20v-5M84 16c-7 0-11-3.5-11-9 6.5 0 11 3 11 9ZM84 12c7 0 11-3.5 11-9-6.5 0-11 3-11 9Z" stroke="#07c160" stroke-width="4" stroke-linecap="round"/></svg><span>96</span></div>
+          <div class="size"><svg width="64" height="64" viewBox="0 0 128 128" fill="none"><rect x="10" y="20" width="108" height="100" rx="26" fill="#2f6bff"/><path d="M47 120V64a17 17 0 0 1 34 0v56Z" fill="#fff8ea"/><path d="M84 20v-5M84 16c-7 0-11-3.5-11-9 6.5 0 11 3 11 9ZM84 12c7 0 11-3.5 11-9-6.5 0-11 3-11 9Z" stroke="#07c160" stroke-width="4" stroke-linecap="round"/></svg><span>64</span></div>
+          <div class="size"><svg width="32" height="32" viewBox="0 0 128 128" fill="none"><rect x="10" y="20" width="108" height="100" rx="26" fill="#2f6bff"/><path d="M47 120V64a17 17 0 0 1 34 0v56Z" fill="#fff8ea"/><path d="M84 20v-5M84 16c-7 0-11-3.5-11-9 6.5 0 11 3 11 9ZM84 12c7 0 11-3.5 11-9-6.5 0-11 3-11 9Z" stroke="#07c160" stroke-width="5" stroke-linecap="round"/></svg><span>32</span></div>
+          <div class="size"><svg width="16" height="16" viewBox="0 0 128 128" fill="none"><rect x="10" y="20" width="108" height="100" rx="26" fill="#2f6bff"/><path d="M47 120V64a17 17 0 0 1 34 0v56Z" fill="#fff8ea"/><circle cx="84" cy="12" r="7" fill="#07c160"/></svg><span>16</span></div>
+        </div>
+        <p class="sub" style="font-size:10.5px;line-height:15px;color:#8a9099;margin:10px 0 0">16px 时小苗收成一个绿点；门洞加宽 2px，避免糊成一团。</p>
+      </div>
+      <div class="card">
+        <p class="title">Lockup</p>
+        <div class="lockup">
+          <svg width="38" height="38" viewBox="0 0 128 128" fill="none"><rect x="10" y="20" width="108" height="100" rx="26" fill="#2f6bff"/><path d="M47 120V64a17 17 0 0 1 34 0v56Z" fill="#fff8ea"/><path d="M84 20v-5M84 16c-7 0-11-3.5-11-9 6.5 0 11 3 11 9ZM84 12c7 0 11-3.5 11-9-6.5 0-11 3-11 9Z" stroke="#07c160" stroke-width="4" stroke-linecap="round"/></svg>
+          <div class="wm">Gosslan<small>小院 · local chat</small></div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="states">
+    <div class="state"><div class="stage"><svg width="56" height="56" viewBox="0 0 128 128" fill="none"><rect x="10" y="20" width="108" height="100" rx="26" fill="#2f6bff"/><path d="M47 120V64a17 17 0 0 1 34 0v56Z" fill="#fff8ea"/><path d="M84 20v-5M84 16c-7 0-11-3.5-11-9 6.5 0 11 3 11 9ZM84 12c7 0 11-3.5 11-9-6.5 0-11 3-11 9Z" stroke="#07c160" stroke-width="4" stroke-linecap="round"/><circle cx="56" cy="74" r="2.8" fill="#2f6bff"/><circle cx="72" cy="74" r="2.8" fill="#2f6bff"/><path d="M61 82c2 2.6 4 2.6 6 0" stroke="#2f6bff" stroke-width="2.4" stroke-linecap="round"/></svg></div><div class="cap">日常</div><div class="desc">默认；用于空态、欢迎页</div></div>
+    <div class="state"><div class="stage"><svg width="56" height="56" viewBox="0 0 128 128" fill="none"><rect x="10" y="20" width="108" height="100" rx="26" fill="#2f6bff"/><path d="M47 120V64a17 17 0 0 1 34 0v56Z" fill="#fff8ea"/><path d="M84 20v-5M84 16c-7 0-11-3.5-11-9 6.5 0 11 3 11 9ZM84 12c7 0 11-3.5 11-9-6.5 0-11 3-11 9Z" stroke="#07c160" stroke-width="4" stroke-linecap="round"/><circle cx="56" cy="74" r="2.8" fill="#2f6bff"/><circle cx="72" cy="74" r="2.8" fill="#2f6bff"/><path d="M61 82c2 2.6 4 2.6 6 0" stroke="#2f6bff" stroke-width="2.4" stroke-linecap="round"/></svg><span class="badgeDot" style="background:#07c160">✓</span></div><div class="cap">成功</div><div class="desc">发送/保存完成，停留 2 秒</div></div>
+    <div class="state"><div class="stage"><svg width="56" height="56" viewBox="0 0 128 128" fill="none"><rect x="10" y="20" width="108" height="100" rx="26" fill="#2f6bff"/><path d="M47 120V64a17 17 0 0 1 34 0v56Z" fill="#fff8ea"/><path d="M84 20v-5" stroke="#07c160" stroke-width="4" stroke-linecap="round"/><circle cx="56" cy="74" r="2.8" fill="#2f6bff"/><circle cx="72" cy="74" r="2.8" fill="#2f6bff"/><path d="M61 82c2 2.6 4 2.6 6 0" stroke="#2f6bff" stroke-width="2.4" stroke-linecap="round"/></svg><span class="badgeDot" style="background:#2f6bff">···</span></div><div class="cap">处理中</div><div class="desc">三点脉冲，不旋转整只吉祥物</div></div>
+    <div class="state"><div class="stage"><svg width="56" height="56" viewBox="0 0 128 128" fill="none"><rect x="10" y="20" width="108" height="100" rx="26" fill="#e5e6eb"/><path d="M47 120V64a17 17 0 0 1 34 0v56Z" fill="#f7f8fa"/><path d="M84 20v-5M84 16c-7 0-11-3.5-11-9 6.5 0 11 3 11 9Z" stroke="#8a9099" stroke-width="4" stroke-linecap="round"/><circle cx="56" cy="74" r="2.8" fill="#8a9099"/><circle cx="72" cy="74" r="2.8" fill="#8a9099"/><path d="M61 82c2 2.6 4 2.6 6 0" stroke="#8a9099" stroke-width="2.4" stroke-linecap="round"/></svg></div><div class="cap">离线</div><div class="desc">灰阶，不隐藏；小苗还立着</div></div>
+    <div class="state"><div class="stage"><svg width="56" height="56" viewBox="0 0 128 128" fill="none"><rect x="10" y="20" width="108" height="100" rx="26" fill="#2f6bff"/><path d="M47 120V64a17 17 0 0 1 34 0v56Z" fill="#fff8ea"/><path d="M84 20v-5M84 16c-7 0-11-3.5-11-9 6.5 0 11 3 11 9ZM84 12c7 0 11-3.5 11-9-6.5 0-11 3-11 9Z" stroke="#07c160" stroke-width="4" stroke-linecap="round"/><circle cx="56" cy="74" r="2.8" fill="#2f6bff"/><circle cx="72" cy="74" r="2.8" fill="#2f6bff"/><path d="M62 84c-2-2.6-4-2.6-6 0M67 84c2-2.6 4-2.6 6 0" stroke="#2f6bff" stroke-width="2.4" stroke-linecap="round"/></svg><span class="badgeDot" style="background:#fa5151">!</span></div><div class="cap">出错</div><div class="desc">蓝色身体不改成红色；红点只做提示</div></div>
+  </div>
+
+  <div class="apps">
+    <div class="card">
+      <p class="title">App icon · macOS</p>
+      <div class="appRow">
+        <div class="appTile"><svg width="104" height="104" viewBox="0 0 128 128" fill="none"><rect x="4" y="4" width="120" height="120" rx="27" fill="#2f6bff"/><path d="M44 120V78a20 20 0 0 1 40 0v42Z" fill="#fff8ea"/><path d="M64 58v-6" stroke="#07c160" stroke-width="4" stroke-linecap="round"/><path d="M64 54c-6 0-10-3-10-8 6 0 10 3 10 8Z" fill="#07c160"/><path d="M64 50c6 0 10-3 10-8-6 0-10 3-10 8Z" fill="#07c160"/></svg><span>1024 · light</span></div>
+        <div class="appTile"><svg width="104" height="104" viewBox="0 0 128 128" fill="none"><rect x="4" y="4" width="120" height="120" rx="27" fill="#141518"/><path d="M44 120V78a20 20 0 0 1 40 0v42Z" fill="#fff8ea"/><path d="M64 58v-6" stroke="#07c160" stroke-width="4" stroke-linecap="round"/><path d="M64 54c-6 0-10-3-10-8 6 0 10 3 10 8Z" fill="#07c160"/><path d="M64 50c6 0 10-3 10-8-6 0-10 3-10 8Z" fill="#07c160"/></svg><span>1024 · dark</span></div>
+        <div class="appTile"><svg width="56" height="56" viewBox="0 0 128 128" fill="none"><rect x="4" y="4" width="120" height="120" rx="27" fill="#2f6bff"/><path d="M44 120V78a20 20 0 0 1 40 0v42Z" fill="#fff8ea"/><circle cx="64" cy="50" r="6" fill="#07c160"/></svg><span>32</span></div>
+        <div class="appTile"><svg width="32" height="32" viewBox="0 0 128 128" fill="none"><rect x="4" y="4" width="120" height="120" rx="27" fill="#2f6bff"/><path d="M44 120V78a20 20 0 0 1 40 0v42Z" fill="#fff8ea"/><circle cx="64" cy="50" r="8" fill="#07c160"/></svg><span>16</span></div>
+      </div>
+      <p class="sub" style="font-size:10.5px;line-height:15px;color:#8a9099;margin:9px 0 0">上架 macOS 时按 Apple 图标网格缩放；圆角由系统 mask 决定，源文件保留完整方形画布。</p>
+    </div>
+    <div class="card">
+      <p class="title">Usage</p>
+      <div class="specs">
+        <div class="spec"><span class="dot"></span><span><b>空态/欢迎</b>用带表情的吉祥物，尺寸 72–120px。</span></div>
+        <div class="spec"><span class="dot"></span><span><b>导航/角标</b>用无表情标记，16–32px。</span></div>
+        <div class="spec"><span class="dot"></span><span><b>提醒</b>只加小徽标，不改变身体颜色。</span></div>
+        <div class="spec"><span class="dot"></span><span><b>不做</b>不给它加 3D、阴影叠阴影、彩虹渐变或复杂背景。</span></div>
+      </div>
+    </div>
+  </div>
+
+  <div class="rules">
+    <div class="rule do"><h4>✓ Do</h4><p>蓝院墙、奶油拱门、绿小苗；三色以内。抽象几何 + 一个小表情，远看是房子，近看是院子。</p></div>
+    <div class="rule dont"><h4>✕ Don't</h4><p>不要写实屋顶、不要加窗户格子、不要把“院”字塞进图标、不要让小苗盖住门、不要用红色做身体。</p></div>
+  </div>
+  <div class="foot"><span>Gosslan — brand v1 · 小院</span><span>mark 128 grid · app icon 1024 · min 16px</span></div>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"$preview":{"width":1400,"height":980}}'>
+class Component extends DCLogic {
+  renderVals() { return {}; }
+}
+</script>
+</body>
+</html>

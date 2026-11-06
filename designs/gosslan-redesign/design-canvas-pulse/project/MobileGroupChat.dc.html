@@ -1,0 +1,135 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>Pulse — Mobile group</title>
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+  *{box-sizing:border-box}
+  body{margin:0;background:#f2f3f5;font-family:-apple-system,BlinkMacSystemFont,"PingFang SC","Microsoft YaHei","Segoe UI",sans-serif;color:#1f2329;-webkit-font-smoothing:antialiased}
+  .phone{width:390px;height:844px;background:#fff;display:flex;flex-direction:column;overflow:hidden;position:relative}
+  .topbar{height:56px;flex:0 0 auto;display:flex;align-items:center;gap:8px;padding:0 8px 0 2px;background:rgba(255,255,255,.92);border-bottom:1px solid #eef0f2;z-index:2;backdrop-filter:blur(10px)}
+  .back{width:44px;height:44px;border:0;border-radius:12px;background:transparent;color:#3a3f47;display:flex;align-items:center;justify-content:center;flex:0 0 auto}
+  .back:active{background:#f2f3f5}
+  .gAv{width:34px;height:34px;border-radius:13px;flex:0 0 auto;box-shadow:0 0 0 2px #fff,0 0 0 4px #e8f0ff}
+  .g4{background:linear-gradient(#b9c8f6,#b9c8f6) left top/calc(50% - 1px) calc(50% - 1px) no-repeat,linear-gradient(#e8b28a,#e8b28a) right top/calc(50% - 1px) calc(50% - 1px) no-repeat,linear-gradient(#9fdbcd,#9fdbcd) left bottom/calc(50% - 1px) calc(50% - 1px) no-repeat,linear-gradient(#cbbbe2,#cbbbe2) right bottom/calc(50% - 1px) calc(50% - 1px) no-repeat,#e8f0ff}
+  .hText{min-width:0}
+  .hName{font-family:-apple-system,BlinkMacSystemFont,"PingFang SC","Microsoft YaHei","Segoe UI",sans-serif;font-size:15px;line-height:20px;font-weight:600}
+  .hMeta{font-size:10px;line-height:14px;color:#5a6068;display:flex;align-items:center;gap:4px;margin-top:1px}
+  .hMeta i{width:5px;height:5px;border-radius:999px;background:#07c160;display:block}
+  .hMeta b{color:#068a4a;font-weight:600}
+  .moreBtn{width:44px;height:44px;border:0;border-radius:12px;background:transparent;color:#3a3f47;display:flex;align-items:center;justify-content:center;cursor:pointer;margin-left:auto}
+  .pinBar{height:36px;flex:0 0 auto;background:#fff7e6;border-bottom:1px solid #ffe9ad;display:flex;align-items:center;gap:6px;padding:0 14px;font-size:10.5px;color:#8a5a00}
+  .pinBar .ic{display:flex;color:#9a6b00}
+  .pinBar b{font-weight:600;color:#5a3b00;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .pinBar .tag{margin-left:auto;font-size:10px;font-weight:700;color:#068a4a;background:#e8f8ee;border-radius:999px;padding:2px 6px;flex:0 0 auto}
+  .msgs{flex:1;overflow:hidden;padding:7px 14px 8px;position:relative;background:radial-gradient(420px 300px at 85% 0%,#ffffff 0%,#fff 70%)}
+  .day{text-align:center;font-size:10.5px;color:#8a9099;margin:9px 0 12px}
+  .run{display:flex;gap:7px;margin-bottom:12px;align-items:flex-start}
+  .run.own{justify-content:flex-end}
+  .av{width:24px;height:24px;border-radius:999px;display:flex;align-items:center;justify-content:center;font-size:10px;font-weight:700;flex:0 0 auto;margin-top:2px;box-shadow:0 0 0 2px #fff}
+  .a2{background:#f5e6dc;color:#8a4b22}.a3{background:#e0f5ef;color:#068a4a}.a4{background:#eee6f7;color:#6b4aa3}
+  .runBody{max-width:76%;min-width:0}
+  .name{font-size:10px;line-height:14px;color:#8a9099;margin:0 0 3px 2px}
+  .bubble{padding:9px 13px;border-radius:20px;font-size:15px;line-height:21px;width:fit-content;max-width:100%}
+  .in{background:#f2f3f5;color:#1f2329;border-bottom-left-radius:6px;box-shadow:inset 0 0 0 1px #e5e6eb}
+  .out{background:#2f6bff;color:#fff;border-bottom-right-radius:6px;margin-left:auto;box-shadow:0 8px 20px rgba(31,35,41,.22)}
+  .meta{display:flex;align-items:center;gap:4px;font-size:10px;color:#8a9099;margin-top:4px}
+  .own .meta{justify-content:flex-end;color:#068a4a;font-weight:500}
+  .mention{color:#1f5ae8;background:#e8f0ff;border-radius:5px;padding:0 4px;font-weight:600}
+  .out .mention{color:#fff;background:rgba(255,255,255,.22)}
+  .card{width:272px;background:#fff;border-radius:16px;box-shadow:inset 0 0 0 1px #e5e6eb,0 8px 22px rgba(31,35,41,.10);padding:10px 12px}
+  .cardTop{display:flex;align-items:center;gap:6px;font-size:10px;color:#8a9099;margin-bottom:5px}
+  .pill{font-size:10px;font-weight:700;color:#d93a3a;background:#ffecec;border-radius:999px;padding:2px 6px}
+  .cardTitle{font-family:-apple-system,BlinkMacSystemFont,"PingFang SC","Microsoft YaHei","Segoe UI",sans-serif;font-size:12.5px;line-height:17px;font-weight:600;color:#1f2329;margin-bottom:6px}
+  .cardMeta{display:flex;align-items:center;gap:5px;font-size:10.5px;color:#5a6068}
+  .minis{display:flex}
+  .minis span{width:15px;height:15px;border-radius:999px;border:1.5px solid #fff;margin-left:-4px;display:flex;align-items:center;justify-content:center;font-size:6px;font-weight:700}
+  .minis span:first-child{margin-left:0}
+  .cardBar{height:3px;border-radius:2px;background:#eef0f2;margin-top:7px;overflow:hidden}
+  .cardBar i{display:block;height:100%;width:60%;background:#2f6bff;border-radius:2px}
+  .file{display:flex;align-items:center;gap:9px;padding:9px 11px;background:#fff;border-radius:14px;box-shadow:inset 0 0 0 1px #e5e6eb,0 4px 14px rgba(31,35,41,.08);width:240px}
+  .ftile{width:32px;height:38px;border-radius:8px;background:#e8f0ff;color:#1f5ae8;display:flex;align-items:center;justify-content:center;flex:0 0 auto}
+  .fname{font-size:12.5px;font-weight:600;line-height:17px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:168px;color:#1f2329}
+  .fmeta{font-size:10px;color:#8a9099;line-height:14px}
+  .reacts{display:flex;gap:5px;margin-top:-2px;margin-left:7px}
+  .react{display:inline-flex;align-items:center;gap:4px;height:26px;padding:0 9px;border-radius:999px;background:#fff;box-shadow:inset 0 0 0 1px #e5e6eb,0 2px 8px rgba(31,35,41,.10);font-size:11px;color:#5a6068}
+  .receipt{display:inline-flex;align-items:center;gap:4px}
+  .avatars{display:flex}
+  .avatars span{width:13px;height:13px;border-radius:999px;border:1.5px solid #fff;margin-left:-4px;display:flex;align-items:center;justify-content:center;font-size:6px;font-weight:700}
+  .avatars span:first-child{margin-left:0}
+  .composerWrap{flex:0 0 auto;padding:0 10px 10px}
+  .composer{background:#fff;border-radius:22px;box-shadow:0 12px 30px rgba(31,35,41,.16),inset 0 0 0 1px #eef0f2;padding:6px 7px 6px 9px;display:flex;align-items:flex-end;gap:4px}
+  .ib{width:40px;height:40px;border:0;border-radius:12px;background:transparent;color:#8a9099;display:flex;align-items:center;justify-content:center;flex:0 0 auto}
+  .ib:active{background:#f2f3f5}
+  .input{flex:1;min-height:38px;padding:9px 1px;font-size:15px;line-height:20px;color:#8a9099;display:flex;align-items:center}
+  .send{width:40px;height:40px;border-radius:999px;border:0;background:#2f6bff;color:#fff;display:flex;align-items:center;justify-content:center;flex:0 0 auto;box-shadow:0 6px 14px rgba(31,35,41,.28)}
+  svg{display:block}
+</style>
+<style>.composerWrap{padding:0}.composer{margin:0;padding:8px 10px;background:#fff;border-top:1px solid #eef0f2;border-radius:0;box-shadow:none}</style>
+<style>.msgs{background:#fff}</style>
+<style>
+/* edge cases: long names, long words, tight rows */
+.hText{min-width:0;flex:1}
+.hName,.hMeta{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.bubble{overflow-wrap:anywhere;word-break:break-word}
+.quote{overflow-wrap:anywhere}
+.pinBar b{max-width:calc(100% - 40px)}
+</style>
+<style>
+/* v2.2 compact apple-like geometry */
+.topbar{height:52px}
+.gAv{width:32px;height:32px;border-radius:12px}
+.hName{font-size:15px;line-height:20px}
+.hMeta{font-size:10.5px;line-height:14px}
+.hText{flex:1}
+.msgs{padding:6px 12px 8px}
+.run{margin-bottom:10px}
+.bubble{padding:8px 12px;border-radius:20px;font-size:14.5px;line-height:20px}
+.meta{font-size:10.5px}
+.fname{font-size:12.5px;line-height:17px;max-width:176px}
+.composer{padding:7px 8px 7px 9px;border-radius:20px}
+.input{min-height:36px;padding:8px 11px;border-radius:10px}
+.send{width:34px;height:34px}
+</style>
+</helmet>
+<div class="phone">
+  <div class="topbar">
+    <button class="back" aria-label="返回"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M15 5.5 8.5 12l6.5 6.5"/></svg></button>
+    <div class="gAv g4"></div>
+    <div class="hText"><div class="hName">设计组</div><div class="hMeta"><i></i><b>3 人在线</b> · 5 位成员</div></div>
+    <button class="moreBtn" aria-label="群信息"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" aria-hidden="true"><circle cx="5.5" cy="12" r="1.4" fill="currentColor" stroke="none"/><circle cx="12" cy="12" r="1.4" fill="currentColor" stroke="none"/><circle cx="18.5" cy="12" r="1.4" fill="currentColor" stroke="none"/></svg></button>
+  </div>
+  <div class="pinBar"><span class="ic"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 17v5M9 3h6l-1 9h-4Z"/><path d="M7 21h10"/></svg></span>置顶 · <b>周五 14:00 前提交终稿</b><span class="tag">2 个任务</span></div>
+
+  <div class="msgs">
+    <div class="day">今天 11:20</div>
+    <div class="run"><div class="av a2">林</div><div class="runBody"><div class="name">林一</div><div class="bubble in">评审改到 3 点，会议室 B。@你 材料麻烦再顺一遍。</div><div class="meta">11:21</div></div></div>
+    <div class="run own"><div class="runBody"><div class="bubble out">收到，我把 <span class="mention">@阿泽</span> 的交互稿一起带上。</div><div class="meta"><span class="receipt"><span class="avatars"><span style="background:#e8b28a;color:#8a4b22">周</span><span style="background:#9fdbcd;color:#068a4a">林</span><span style="background:#cbbbe2;color:#6b4aa3">阿</span></span>已读 3/5</span></div></div></div>
+    <div class="run"><div class="av a4">阿</div><div class="runBody"><div class="name">阿泽</div><div class="bubble in" style="padding:0;background:transparent;box-shadow:none"><div class="file"><div class="ftile"><svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8Z"/><path d="M14 3v5h5"/></svg></div><div><div class="fname">评审材料-v3.pdf</div><div class="fmeta">2.4 MB · 5 人已接收</div></div></div></div><div class="meta">11:26</div></div></div>
+    <div class="run"><div class="av a3">周</div><div class="runBody"><div class="name">周岚</div><div class="card"><div class="cardTop"><span class="pill">进行中</span>群任务 · T-18</div><div class="cardTitle">补齐设置页的离线与失败状态</div><div class="cardMeta"><span class="minis"><span style="background:#b9c8f6;color:#1f5ae8">周</span><span style="background:#e8b28a;color:#8a4b22">林</span></span>2 人负责 · 截止周五</div><div class="cardBar"><i></i></div></div><div class="meta">11:28</div></div></div>
+    <div class="run own"><div class="runBody"><div class="bubble out">我这边的状态稿也放上去了，下午一起过。</div><div class="reacts"><span class="react">🔥 2</span></div><div class="meta">已读 4/5</div></div></div>
+  </div>
+
+  <div class="composerWrap">
+    <div class="composer">
+      <button class="ib" aria-label="添加附件"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m19.5 11.8-8.1 8.1a4.6 4.6 0 0 1-6.5-6.5l8.8-8.8a3.1 3.1 0 0 1 4.4 4.4l-8.8 8.8a1.6 1.6 0 0 1-2.3-2.3l8-8"/></svg></button>
+      <div class="input">发消息给 设计组…</div>
+      <button class="ib" aria-label="强提醒"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M18 8a6 6 0 0 0-12 0c0 7-3 7-3 9h18c0-2-3-2-3-9"/><path d="M10 21h4"/></svg></button>
+      <button class="send" aria-label="发送"><svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.1" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 18.5v-12M7.5 11 12 6.5l4.5 4.5"/></svg></button>
+    </div>
+  </div>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"$preview":{"width":390,"height":844}}'>
+class Component extends DCLogic {
+  renderVals() { return {}; }
+}
+</script>
+</body>
+</html>

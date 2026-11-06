@@ -1,0 +1,110 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>Mobile — Offline & failure states</title>
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+  *{box-sizing:border-box}
+  body{margin:0;background:#f2f3f5;font-family:-apple-system,BlinkMacSystemFont,"PingFang SC","Microsoft YaHei","Segoe UI",sans-serif;color:#1f2329;-webkit-font-smoothing:antialiased}
+  .phone{width:390px;height:844px;background:#fff;display:flex;flex-direction:column;overflow:hidden;position:relative}
+  .topbar{height:56px;flex:0 0 auto;display:flex;align-items:center;gap:8px;padding:0 8px 0 2px;border-bottom:1px solid #eef0f2}
+  .back{width:44px;height:44px;border:0;border-radius:10px;background:transparent;color:#3a3f47;display:flex;align-items:center;justify-content:center}
+  .hAv{width:30px;height:30px;border-radius:999px;background:#f5e6dc;color:#8a4b22;display:flex;align-items:center;justify-content:center;font-size:12px;font-weight:600;flex:0 0 auto;position:relative}
+  .hAv .dot{position:absolute;right:-1px;bottom:0;width:9px;height:9px;border-radius:999px;background:#a9a2b8;box-shadow:0 0 0 2px #fff}
+  .hName{font-size:15px;line-height:20px;font-weight:600}
+  .hMeta{font-size:10.5px;line-height:14px;color:#8a4b22;display:flex;align-items:center;gap:4px;margin-top:1px}
+  .moreBtn{width:44px;height:44px;border:0;border-radius:10px;background:transparent;color:#3a3f47;display:flex;align-items:center;justify-content:center;margin-left:auto}
+  .offline{height:34px;flex:0 0 auto;display:flex;align-items:center;gap:6px;padding:0 14px;background:#f8f1e2;color:#8a4b22;font-size:10.5px;border-bottom:1px solid #f1dfc2}
+  .offline a{margin-left:auto;color:#8a4b22;font-weight:500;text-decoration:none;padding:2px 6px;border-radius:4px;background:rgba(138,77,0,.08);flex:0 0 auto}
+  .msgs{flex:1;overflow:hidden;padding:6px 14px 10px}
+  .day{text-align:center;font-size:10.5px;color:#8a9099;margin:10px 0 12px}
+  .run{display:flex;margin-bottom:12px;align-items:flex-start}
+  .run.own{justify-content:flex-end}
+  .runBody{max-width:80%;min-width:0}
+  .bubble{padding:9px 13px;border-radius:20px;font-size:15px;line-height:21px;width:fit-content;max-width:100%}
+  .in{background:#f2f3f5;color:#1f2329;border-bottom-left-radius:6px;box-shadow:inset 0 0 0 1px #e5e6eb}
+  .out{background:#2f6bff;color:#fff;border-bottom-right-radius:6px;margin-left:auto}
+  .meta{display:flex;align-items:center;gap:4px;font-size:10.5px;color:#8a9099;margin-top:4px}
+  .own .meta{justify-content:flex-end}
+  .failed{display:flex;align-items:center;gap:5px;font-size:10.5px;color:#d93a3a;margin-top:5px}
+  .retry{color:#1f5ae8;font-weight:500;text-decoration:none;padding:2px 5px;border-radius:4px;background:#e8f0ff}
+  .fileCard{width:286px;background:#fff;border-radius:14px;box-shadow:inset 0 0 0 1px #e5e6eb;padding:10px 12px}
+  .fTop{display:flex;align-items:center;gap:9px}
+  .ftile{width:32px;height:38px;border-radius:6px;display:flex;align-items:center;justify-content:center;flex:0 0 auto}
+  .tBlue{background:#e8f0ff;color:#1f5ae8}.tOrange{background:#f8f1e2;color:#8a4b22}.tRed{background:#ffecec;color:#d93a3a}
+  .fMain{min-width:0;flex:1}
+  .fname{font-size:12.5px;line-height:17px;font-weight:500;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .fmeta{font-size:10px;line-height:14px;color:#8a9099;margin-top:1px}
+  .bar{height:4px;border-radius:999px;background:#eef0f2;margin-top:8px;overflow:hidden}
+  .bar i{display:block;height:100%;border-radius:999px}
+  .blue{background:#2f6bff}.orange{background:#e08a00}.red{background:#f04452}
+  .fActions{display:flex;gap:4px;margin-top:7px}
+  .fBtn{height:28px;padding:0 8px;border:0;border-radius:6px;background:transparent;color:#1f5ae8;font:inherit;font-size:10.5px;font-weight:500}
+  .fBtn.danger{color:#d93a3a}
+  .fBtn.muted{color:#8a9099}
+  .tag{font-size:10px;font-weight:500;border-radius:4px;padding:1px 5px}
+  .tagPause{background:#f8f1e2;color:#8a4b22}.tagFail{background:#ffecec;color:#d93a3a}
+  .composer{flex:0 0 auto;border-top:1px solid #eef0f2;background:#fff;padding:8px 8px 8px 6px;display:flex;align-items:flex-end;gap:4px}
+  .ib{width:44px;height:44px;border:0;border-radius:10px;background:transparent;color:#5a6068;display:flex;align-items:center;justify-content:center}
+  .inputWrap{flex:1;min-height:40px;border-radius:20px;background:#f2f3f5;display:flex;align-items:center;padding:0 12px;margin:2px 0}
+  .input{font-size:14px;line-height:19px;color:#8a9099;padding:9px 0}
+  .send{width:40px;height:40px;border-radius:999px;border:0;background:#2f6bff;color:#fff;display:flex;align-items:center;justify-content:center;flex:0 0 auto;margin:2px 0}
+  .queue{display:flex;align-items:center;gap:5px;font-size:10.5px;color:#8a4b22;padding:4px 12px 0;background:#fff}
+  svg{display:block}
+</style>
+<style>h1,h2,h3,h4,.hName,.hTitle,.name,.pName,.rname,.fName,.fname,.cardTitle,.dTitle,.empty h3,.emptyIn h3,.bigEmpty h3,.infoName,.title,.setHead h3,.modal h3,.mHead h3,.h2,.fTitle{font-family:-apple-system,BlinkMacSystemFont,"PingFang SC","Microsoft YaHei","Segoe UI",sans-serif}</style>
+</helmet>
+<div class="phone">
+  <div class="topbar">
+    <button class="back" aria-label="返回"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M15 5.5 8.5 12l6.5 6.5"/></svg></button>
+    <div class="hAv">林<span class="dot"></span></div>
+    <div><div class="hName">林一</div><div class="hMeta"><svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12.5a10 10 0 0 1 14 0M8.5 16a5 5 0 0 1 7 0M12 19.5h.01"/><path d="m3 3 18 18"/></svg>离线 · 正在重连</div></div>
+    <button class="moreBtn" aria-label="更多"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" aria-hidden="true"><circle cx="5.5" cy="12" r="1.4" fill="currentColor" stroke="none"/><circle cx="12" cy="12" r="1.4" fill="currentColor" stroke="none"/><circle cx="18.5" cy="12" r="1.4" fill="currentColor" stroke="none"/></svg></button>
+  </div>
+  <div class="offline">
+    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12.5a10 10 0 0 1 14 0M8.5 16a5 5 0 0 1 7 0M12 19.5h.01"/><path d="m3 3 18 18"/></svg>
+    局域网连接已断开，正在重试…
+    <a href="#retry">立即重试</a>
+  </div>
+  <div class="msgs">
+    <div class="day">今天 14:20</div>
+    <div class="run"><div class="runBody"><div class="bubble in">先别发大文件，我这边信号不太好。</div><div class="meta">14:20</div></div></div>
+    <div class="run own"><div class="runBody"><div class="bubble out">好，我等你回来。</div><div class="meta">14:21 已发送</div></div></div>
+    <div class="run own"><div class="runBody"><div class="bubble out">文件我晚点再发一次。</div><div class="failed"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M12 7v6M12 16.5v.5"/></svg>发送失败 · 对方离线 · <a class="retry" href="#retry">重试</a></div></div></div>
+    <div class="run"><div class="runBody">
+      <div class="fileCard">
+        <div class="fTop"><div class="ftile tOrange"><svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8Z"/><path d="M14 3v5h5"/></svg></div><div class="fMain"><div class="fname">合照-2026.jpg</div><div class="fmeta"><span class="tag tagPause">已暂停</span> 1.7 MB / 4.1 MB</div></div></div>
+        <div class="bar"><i class="orange" style="width:41%"></i></div>
+        <div class="fActions"><button class="fBtn">继续</button><button class="fBtn muted">取消</button></div>
+      </div>
+      <div class="meta">14:22</div>
+    </div></div>
+    <div class="run own"><div class="runBody">
+      <div class="fileCard" style="margin-left:auto">
+        <div class="fTop"><div class="ftile tRed"><svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8Z"/><path d="M14 3v5h5"/></svg></div><div class="fMain"><div class="fname">设计稿.fig</div><div class="fmeta"><span class="tag tagFail">发送失败</span> 对端已离线</div></div></div>
+        <div class="bar"><i class="red" style="width:22%"></i></div>
+        <div class="fActions"><button class="fBtn">重试</button><button class="fBtn danger">删除</button></div>
+      </div>
+    </div></div>
+  </div>
+  <div class="queue"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg>离线时消息会排队，重连后自动发送</div>
+  <div class="composer">
+    <button class="ib" aria-label="添加附件"><svg width="23" height="23" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m19.5 11.8-8.1 8.1a4.6 4.6 0 0 1-6.5-6.5l8.8-8.8a3.1 3.1 0 0 1 4.4 4.4l-8.8 8.8a1.6 1.6 0 0 1-2.3-2.3l8-8"/></svg></button>
+    <div class="inputWrap"><div class="input">发消息…（排队中）</div></div>
+    <button class="send" aria-label="发送"><svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 18.5v-12M7.5 11 12 6.5l4.5 4.5"/></svg></button>
+  </div>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"$preview":{"width":390,"height":844}}'>
+class Component extends DCLogic {
+  renderVals() { return {}; }
+}
+</script>
+</body>
+</html>

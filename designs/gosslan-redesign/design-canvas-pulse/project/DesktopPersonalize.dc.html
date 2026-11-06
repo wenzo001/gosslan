@@ -1,0 +1,191 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>Pulse — Personalize</title>
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+  *{box-sizing:border-box}
+  body{margin:0;background:#f2f3f5;font-family:-apple-system,BlinkMacSystemFont,"PingFang SC","Microsoft YaHei","Segoe UI",sans-serif;color:#1f2329;-webkit-font-smoothing:antialiased}
+  .app{width:1000px;height:680px;display:flex;flex-direction:column;overflow:hidden}
+  .titlebar{height:40px;background:#e9ebee;border-bottom:1px solid #e5e6eb;display:flex;align-items:center;padding:0 12px;position:relative;flex:0 0 auto;z-index:3}
+  .lights{display:flex;gap:8px;width:76px}.light{width:11px;height:11px;border-radius:999px;background:#cfc6e2}
+  .title{position:absolute;left:0;right:0;text-align:center;font-family:-apple-system,BlinkMacSystemFont,"PingFang SC","Microsoft YaHei","Segoe UI",sans-serif;font-size:12px;font-weight:600;color:#5a6068}
+  .tbRight{margin-left:auto;display:flex;align-items:center;gap:6px}
+  .saved{display:flex;align-items:center;gap:4px;font-size:10px;font-weight:600;color:#068a4a;background:#e8f8ee;border-radius:999px;padding:3px 8px}
+  .tbBtn{width:30px;height:30px;border:0;background:transparent;border-radius:9px;color:#5a6068;display:flex;align-items:center;justify-content:center;cursor:pointer}
+  .tbBtn:hover{background:#e8f0ff;color:#1f2329}
+  .body{flex:1;display:flex;min-height:0}
+  .side{width:356px;flex:0 0 auto;border-right:1px solid #e5e6eb;background:#f7f8fa;padding:16px 16px 12px;overflow:hidden;display:flex;flex-direction:column}
+  .sideHead{display:flex;align-items:center;gap:10px;margin-bottom:12px}
+  .back{width:32px;height:32px;border:0;border-radius:9px;background:#fff;color:#3a3f47;display:flex;align-items:center;justify-content:center;box-shadow:inset 0 0 0 1px #e5e6eb;cursor:pointer}
+  .sideHead h1{font-family:-apple-system,BlinkMacSystemFont,"PingFang SC","Microsoft YaHei","Segoe UI",sans-serif;font-size:18px;line-height:23px;font-weight:600;margin:0}
+  .sideHead p{font-size:10px;line-height:14px;color:#8a9099;margin:1px 0 0}
+  .scroll{flex:1;overflow:hidden;padding-right:2px}
+  .section{margin-bottom:15px}
+  .label{display:flex;align-items:baseline;gap:6px;font-size:10.5px;font-weight:600;color:#5a6068;margin:0 0 7px}
+  .label span{font-weight:400;color:#8a9099;font-size:10.5px}
+  .swatches{display:flex;gap:8px;align-items:center}
+  .sw{width:28px;height:28px;border-radius:999px;border:0;padding:0;cursor:pointer;position:relative;box-shadow:inset 0 0 0 1px rgba(23,18,38,.06)}
+  .sw.on:after{content:"";position:absolute;inset:-4px;border-radius:999px;box-shadow:0 0 0 2px #f7f8fa,0 0 0 3.5px #2f6bff}
+  .sw.custom{background:conic-gradient(#fa5151,#ffb400,#07c160,#2f6bff,#fa5151);display:flex;align-items:center;justify-content:center;color:#fff}
+  .sw.custom:after{content:"";position:absolute;inset:4px;border-radius:999px;background:#f7f8fa}
+  .sw.custom svg{position:relative;z-index:1;color:#1f5ae8}
+  .hexRow{display:flex;align-items:center;gap:6px;margin-top:8px}
+  .hex{height:30px;flex:1;border-radius:8px;background:#fff;box-shadow:inset 0 0 0 1px #e5e6eb;display:flex;align-items:center;padding:0 9px;font-family:"JetBrains Mono",monospace;font-size:10px;color:#1f5ae8}
+  .smallBtn{height:30px;padding:0 9px;border:0;border-radius:8px;background:#e8f0ff;color:#1f5ae8;font:inherit;font-size:10px;font-weight:600;cursor:pointer}
+  .palGrid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:7px}
+  .pal{background:#fff;border-radius:11px;box-shadow:inset 0 0 0 1px #e5e6eb;padding:8px 9px;cursor:pointer}
+  .pal.on{box-shadow:inset 0 0 0 2px #2f6bff;background:#f7f8fa}
+  .pal .top{display:flex;align-items:center;justify-content:space-between;font-size:10.5px;font-weight:600;color:#5a6068;margin-bottom:6px}
+  .pal.on .top{color:#1f5ae8}
+  .pal .top i{width:12px;height:12px;border-radius:999px;display:block;box-shadow:inset 0 0 0 1px rgba(23,18,38,.08)}
+  .bars{display:flex;gap:3px}
+  .bars span{display:block;height:11px;border-radius:6px;flex:1}
+  .customBubble{background:#fff;border-radius:11px;box-shadow:inset 0 0 0 1px #e5e6eb;padding:10px;margin-top:7px}
+  .cbTop{display:flex;align-items:center;gap:7px;margin-bottom:8px}
+  .cb{display:flex;align-items:center;gap:6px;font-size:10.5px;color:#5a6068}
+  .cb i{width:20px;height:20px;border-radius:7px;display:block;box-shadow:inset 0 0 0 1px rgba(23,18,38,.08)}
+  .cbArrow{color:#8a9099}
+  .cbPreview{padding:8px 11px;border-radius:16px;background:#2f6bff;color:#fff;font-size:11.5px;line-height:17px;width:fit-content;margin-left:auto;box-shadow:0 6px 14px rgba(31,35,41,.22)}
+  .row{min-height:42px;display:flex;align-items:center;gap:10px;background:#fff;border-radius:11px;box-shadow:inset 0 0 0 1px #e5e6eb;padding:7px 10px;margin-bottom:7px}
+  .row .rText{flex:1;min-width:0}
+  .rLabel{font-size:11px;font-weight:500}
+  .rDesc{font-size:10.5px;color:#8a9099;margin-top:1px}
+  .switch{width:38px;height:22px;border-radius:999px;background:#2f6bff;position:relative;border:0;padding:0;cursor:pointer;flex:0 0 auto}
+  .switch:after{content:"";position:absolute;width:18px;height:18px;border-radius:999px;background:#fff;top:2px;left:18px;box-shadow:0 1px 2px rgba(23,18,38,.2)}
+  .switch.off{background:#cfc6e2}.switch.off:after{left:2px}
+  .sliderRow{display:flex;align-items:center;gap:9px}
+  .sizeA{font-weight:700;color:#8a9099;flex:0 0 auto}
+  .slider{flex:1;height:4px;border-radius:999px;background:#eef0f2;position:relative}
+  .slider .fill{position:absolute;left:0;top:0;bottom:0;width:52%;background:#2f6bff;border-radius:999px}
+  .slider .knob{position:absolute;left:52%;top:50%;transform:translate(-50%,-50%);width:20px;height:20px;border-radius:999px;background:#fff;box-shadow:0 1px 4px rgba(23,18,38,.2),inset 0 0 0 1px #e5e6eb}
+  .sizeVal{font-family:"JetBrains Mono",monospace;font-size:10.5px;color:#1f5ae8;background:#e8f0ff;border-radius:5px;padding:2px 6px}
+  .note{display:flex;align-items:flex-start;gap:6px;font-size:10.5px;line-height:14px;color:#8a9099;background:#f2f3f5;border-radius:9px;padding:8px 9px}
+  .note svg{flex:0 0 auto;color:#1f5ae8;margin-top:1px}
+  .sideFoot{height:38px;display:flex;align-items:center;gap:8px;padding-top:8px;border-top:1px solid #eef0f2;flex:0 0 auto}
+  .reset{height:30px;padding:0 9px;border:0;border-radius:8px;background:transparent;color:#8a9099;font:inherit;font-size:10px;font-weight:600;cursor:pointer}
+  .reset:hover{background:#f2f3f5;color:#1f5ae8}
+  .done{margin-left:auto;height:32px;padding:0 14px;border:0;border-radius:9px;background:#2f6bff;color:#fff;font:inherit;font-size:11px;font-weight:600;cursor:pointer;box-shadow:0 8px 18px rgba(31,35,41,.24)}
+  .previewPane{flex:1;min-width:0;display:flex;flex-direction:column;align-items:center;justify-content:center;padding:18px 26px;background:radial-gradient(560px 400px at 60% 30%,#f7f8fa 0%,#ffffff 72%);position:relative}
+  .previewHead{position:absolute;top:18px;left:26px;right:26px;display:flex;align-items:center;gap:8px}
+  .previewHead .pTitle{font-family:-apple-system,BlinkMacSystemFont,"PingFang SC","Microsoft YaHei","Segoe UI",sans-serif;font-size:13px;font-weight:600}
+  .previewHead .pSub{font-size:10.5px;color:#8a9099}
+  .previewHead .right{margin-left:auto;display:flex;align-items:center;gap:6px}
+  .themeTag{font-size:10.5px;font-weight:600;color:#1f5ae8;background:#e8f0ff;border-radius:999px;padding:3px 8px}
+  .previewPhone{width:372px;background:#fff;border-radius:22px;box-shadow:0 28px 64px rgba(31,35,41,.18),inset 0 0 0 1px #eef0f2;overflow:hidden;margin-top:20px}
+  .pvHead{height:54px;display:flex;align-items:center;gap:9px;padding:0 13px;border-bottom:1px solid #eef0f2}
+  .pvAv{width:32px;height:32px;border-radius:999px;background:#f5e6dc;color:#8a4b22;display:flex;align-items:center;justify-content:center;font-size:12px;font-weight:700;box-shadow:0 0 0 2px #fff,0 0 0 4px #ffd8c4}
+  .pvName{font-family:-apple-system,BlinkMacSystemFont,"PingFang SC","Microsoft YaHei","Segoe UI",sans-serif;font-size:14px;font-weight:600}
+  .pvMeta{font-size:10.5px;color:#068a4a;margin-top:1px}
+  .pvMore{margin-left:auto;color:#8a9099}
+  .pvMsgs{padding:13px 13px 10px;background:linear-gradient(180deg,#f7f8fa 0%,#fff 65%)}
+  .pvDay{text-align:center;font-size:10px;color:#8a9099;margin-bottom:9px}
+  .pvRun{display:flex;margin-bottom:8px}
+  .pvRun.own{justify-content:flex-end}
+  .pvBubble{padding:8px 11px;border-radius:18px;font-size:12.5px;line-height:17px;width:fit-content;max-width:78%}
+  .pvIn{background:#f2f3f5;color:#1f2329;border-bottom-left-radius:6px;box-shadow:inset 0 0 0 1px #e5e6eb}
+  .pvOut{background:#2f6bff;color:#fff;border-bottom-right-radius:6px;box-shadow:0 6px 14px rgba(31,35,41,.18)}
+  .pvReact{display:flex;gap:4px;margin-top:-2px;margin-left:5px}
+  .pvReact span{height:22px;padding:0 7px;border-radius:999px;background:#fff;box-shadow:inset 0 0 0 1px #e5e6eb;display:flex;align-items:center;gap:3px;font-size:10.5px;color:#5a6068}
+  .pvComp{display:flex;align-items:center;gap:6px;padding:8px 10px 10px;border-top:1px solid #eef0f2}
+  .pvField{flex:1;height:32px;border-radius:999px;background:#f2f3f5;display:flex;align-items:center;padding:0 10px;font-size:11px;color:#8a9099}
+  .pvSend{width:30px;height:30px;border-radius:999px;background:#2f6bff;display:flex;align-items:center;justify-content:center;color:#fff}
+  .pvHint{font-size:10px;color:#8a9099;margin-top:12px;display:flex;align-items:center;gap:5px}
+  svg{display:block}
+</style>
+<style>.previewPane{background:#f7f8fa}</style>
+<style>
+/* v2.2 compact apple-like geometry */
+.section{border-radius:16px}
+.sw{width:28px;height:28px}
+.pal{border-radius:14px}
+.previewPane{border-radius:16px}
+</style>
+</helmet>
+<div class="app">
+  <div class="titlebar"><div class="lights"><span class="light"></span><span class="light"></span><span class="light"></span></div><span class="title">Gosslan · 个性化</span>
+    <div class="tbRight"><span class="saved"><svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m5 12 4 4 9-9"/></svg>已自动保存</span><button class="tbBtn" aria-label="更多"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" aria-hidden="true"><circle cx="5.5" cy="12" r="1.4" fill="currentColor" stroke="none"/><circle cx="12" cy="12" r="1.4" fill="currentColor" stroke="none"/><circle cx="18.5" cy="12" r="1.4" fill="currentColor" stroke="none"/></svg></button></div>
+  </div>
+  <div class="body">
+    <aside class="side">
+      <div class="sideHead"><button class="back" aria-label="返回"><svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M15 5.5 8.5 12l6.5 6.5"/></svg></button><div><h1>个性化</h1><p>调整主题、气泡与字号，实时预览。</p></div></div>
+      <div class="scroll">
+        <div class="section">
+          <p class="label">主题色 <span>主按钮 / 选中 / 自己消息</span></p>
+          <div class="swatches">
+            <button class="sw on" style="background:#2f6bff" aria-label="蓝色"></button>
+            <button class="sw" style="background:#fa5151" aria-label="红色"></button>
+            <button class="sw" style="background:#07c160" aria-label="绿色"></button>
+            <button class="sw" style="background:#ffb400" aria-label="金色"></button>
+            <button class="sw" style="background:#3b82f6" aria-label="浅蓝"></button>
+            <button class="sw" style="background:#ff7ab6" aria-label="粉色"></button>
+            <button class="sw custom" aria-label="自定义颜色"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z"/></svg></button>
+          </div>
+          <div class="hexRow"><span class="hex">#2F6BFF</span><button class="smallBtn">取色</button><button class="smallBtn">恢复默认</button></div>
+        </div>
+
+        <div class="section">
+          <p class="label">气泡配色 <span>会同步给聊天对象</span></p>
+          <div class="palGrid">
+            <div class="pal on"><div class="top">默认纯色 <i style="background:#2f6bff"></i></div><div class="bars"><span style="background:#f2f3f5;box-shadow:inset 0 0 0 1px #e5e6eb"></span><span style="background:#2f6bff"></span></div></div>
+            <div class="pal"><div class="top">红色 <i style="background:#fa5151"></i></div><div class="bars"><span style="background:#fff0f0;box-shadow:inset 0 0 0 1px #ffecec"></span><span style="background:#fa5151"></span></div></div>
+            <div class="pal"><div class="top">绿色 <i style="background:#07c160"></i></div><div class="bars"><span style="background:#e8fbf7;box-shadow:inset 0 0 0 1px #e0f5ef"></span><span style="background:#07c160"></span></div></div>
+            <div class="pal"><div class="top">金色 <i style="background:#ffb400"></i></div><div class="bars"><span style="background:#fff9e8;box-shadow:inset 0 0 0 1px #fff1c9"></span><span style="background:#ffb400"></span></div></div>
+            <div class="pal"><div class="top">深灰 <i style="background:#2c2f33"></i></div><div class="bars"><span style="background:#eef0f2;box-shadow:inset 0 0 0 1px #e5e6eb"></span><span style="background:#2c2f33"></span></div></div>
+            <div class="pal"><div class="top">自定义 <i style="background:conic-gradient(#fa5151,#ffb400,#07c160,#2f6bff,#fa5151)"></i></div><div class="bars"><span style="background:#f2f3f5"></span><span style="background:linear-gradient(135deg,#2f6bff,#fa5151)"></span></div></div>
+          </div>
+          <div class="customBubble">
+            <div class="cbTop"><span class="cb"><i style="background:#2f6bff"></i>起</span><span class="cbArrow">→</span><span class="cb"><i style="background:#2f6bff"></i>止</span><span style="margin-left:auto;font-size:10px;color:#8a9099">135°</span></div>
+            <div class="cbPreview">收到，我把材料再顺一遍。</div>
+          </div>
+        </div>
+
+        <div class="section">
+          <p class="label">字号 <span>正文 12–16px</span></p>
+          <div class="sliderRow"><span class="sizeA" style="font-size:11px">A</span><div class="slider"><div class="fill"></div><div class="knob"></div></div><span class="sizeA" style="font-size:19px">A</span><span class="sizeVal">14px</span></div>
+        </div>
+
+        <div class="section">
+          <p class="label">显示效果</p>
+          <div class="row"><div class="rText"><div class="rLabel">界面动效</div><div class="rDesc">界面切换与消息动画；关闭后只保留淡入淡出</div></div><button class="switch off" role="switch" aria-checked="false" aria-label="环境动效"></button></div>
+          <div class="row"><div class="rText"><div class="rLabel">减少透明度</div><div class="rDesc">标题栏与底栏不透明</div></div><button class="switch off" role="switch" aria-checked="false" aria-label="减少透明度"></button></div>
+          <div class="row"><div class="rText"><div class="rLabel">跟随系统减少动态</div><div class="rDesc">已检测到系统开启</div></div><span style="font-size:10.5px;font-weight:600;color:#068a4a;background:#e8f8ee;border-radius:5px;padding:2px 7px">已开启</span></div>
+        </div>
+
+        <div class="note"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M12 11v5M12 7.5v.5"/></svg><span>气泡配色会同步给聊天对象；主题色只影响本机。若希望主题色也同步，需要产品确认。</span></div>
+      </div>
+      <div class="sideFoot"><button class="reset">恢复默认</button><button class="done">完成</button></div>
+    </aside>
+
+    <main class="previewPane">
+      <div class="previewHead"><div><div class="pTitle">实时预览</div><div class="pSub">主题、气泡与字号</div></div><div class="right"><span class="themeTag">蓝色 · 14px</span><span style="font-size:10.5px;color:#8a9099">跟随系统</span></div></div>
+      <div class="previewPhone">
+        <div class="pvHead"><div class="pvAv">林</div><div><div class="pvName">林一</div><div class="pvMeta">在线 · 局域网</div></div><div class="pvMore"><svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" aria-hidden="true"><circle cx="5.5" cy="12" r="1.4" fill="currentColor" stroke="none"/><circle cx="12" cy="12" r="1.4" fill="currentColor" stroke="none"/><circle cx="18.5" cy="12" r="1.4" fill="currentColor" stroke="none"/></svg></div></div>
+        <div class="pvMsgs">
+          <div class="pvDay">今天 14:20</div>
+          <div class="pvRun"><div class="pvBubble pvIn">在楼下咖啡店等你，靠窗的位置。</div></div>
+          <div class="pvRun own"><div class="pvBubble pvOut">好，我五分钟后到。</div></div>
+          <div class="pvRun"><div class="pvBubble pvIn">美式，谢谢。评审改到 3 点。</div></div>
+          <div class="pvReact"><span>🔥 2</span><span>♥ 1</span></div>
+          <div class="pvRun own" style="margin-top:8px"><div class="pvBubble pvOut">收到，我把材料再顺一遍。</div></div>
+        </div>
+        <div class="pvComp"><div class="pvField">发消息…</div><div class="pvSend"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 18.5v-12M7.5 11 12 6.5l4.5 4.5"/></svg></div></div>
+      </div>
+      <div class="pvHint"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m5 12 4 4 9-9"/></svg>预览使用真实组件，不是截图。</div>
+    </main>
+  </div>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"$preview":{"width":1000,"height":680}}'>
+class Component extends DCLogic {
+  renderVals() { return {}; }
+}
+</script>
+</body>
+</html>

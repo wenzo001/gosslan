@@ -1,0 +1,13 @@
+/* Gosslan Still — shared preview styles.
+   Component previews carry their own markup styles; this file only fixes the
+   page-level defaults that should not be repeated per card. */
+html,
+body {
+  background: #f4f4f1;
+  color: #17181a;
+  font-family: "Inter", -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif;
+}
+
+* {
+  box-sizing: border-box;
+}

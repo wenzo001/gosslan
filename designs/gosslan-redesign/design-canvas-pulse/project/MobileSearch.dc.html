@@ -1,0 +1,102 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>Mobile — Search</title>
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+  *{box-sizing:border-box}
+  body{margin:0;background:#f2f3f5;font-family:-apple-system,BlinkMacSystemFont,"PingFang SC","Microsoft YaHei","Segoe UI",sans-serif;color:#1f2329;-webkit-font-smoothing:antialiased}
+  .phone{width:390px;height:844px;background:#fff;display:flex;flex-direction:column;overflow:hidden}
+  .topbar{height:56px;flex:0 0 auto;display:flex;align-items:center;gap:6px;padding:0 8px 0 14px;border-bottom:1px solid #eef0f2}
+  .searchBox{flex:1;height:40px;border-radius:10px;background:#f2f3f5;display:flex;align-items:center;gap:8px;padding:0 10px;min-width:0}
+  .searchBox input{border:0;background:transparent;outline:none;font:inherit;font-size:14px;color:#1f2329;flex:1;min-width:0}
+  .caret{width:1.5px;height:18px;background:#2f6bff;margin-left:-4px;animation:blink 1.1s steps(1) infinite}
+  @keyframes blink{50%{opacity:0}}
+  .cancel{height:44px;padding:0 6px;border:0;background:transparent;color:#1f5ae8;font:inherit;font-size:13.5px;font-weight:500;cursor:pointer;flex:0 0 auto}
+  .filters{display:flex;gap:6px;padding:8px 14px 6px;overflow:hidden;flex:0 0 auto}
+  .f{height:30px;padding:0 10px;border:0;border-radius:999px;background:#f2f3f5;color:#5a6068;font:inherit;font-size:11.5px;display:flex;align-items:center;gap:4px;flex:0 0 auto;cursor:pointer}
+  .f.on{background:#e8f0ff;color:#1f5ae8;font-weight:500}
+  .f .x{color:#8a9099;margin-left:1px}
+  .summary{height:28px;display:flex;align-items:center;padding:0 16px;font-size:10.5px;color:#8a9099;flex:0 0 auto}
+  .summary b{font-weight:500;color:#5a6068}
+  .body{flex:1;overflow:hidden}
+  .group{height:28px;display:flex;align-items:center;justify-content:space-between;padding:0 16px;font-size:10.5px;font-weight:500;color:#8a9099;background:#f7f8fa}
+  .group span{font-weight:400;color:#8a9099}
+  .hit{padding:10px 16px;border-bottom:1px solid #eef0f2;cursor:pointer}
+  .hit:active{background:#f7f8fa}
+  .hitTop{display:flex;align-items:center;gap:6px;font-size:11px;color:#5a6068}
+  .av{width:20px;height:20px;border-radius:999px;display:flex;align-items:center;justify-content:center;font-size:8px;font-weight:600;flex:0 0 auto}
+  .a2{background:#f5e6dc;color:#8a4b22}.a3{background:#e0f5ef;color:#068a4a}.a4{background:#eee6f7;color:#6b4aa3}
+  .hitName{font-weight:500;color:#1f2329}
+  .hitTime{margin-left:auto;font-size:10px;color:#8a9099}
+  .snippet{font-size:12.5px;line-height:19px;color:#3a3f47;margin-top:4px;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
+  .snippet mark{background:#ded5ff;color:#1f2329;border-radius:3px;padding:0 1px}
+  .hitMeta{font-size:10px;color:#8a9099;margin-top:4px}
+  .more{height:44px;display:flex;align-items:center;justify-content:center;font-size:11px;color:#8a9099;gap:5px}
+  .more a{color:#1f5ae8;font-weight:500;text-decoration:none;padding:4px 8px;border-radius:5px}
+  svg{display:block}
+</style>
+<style>h1,h2,h3,h4,.hName,.hTitle,.name,.pName,.rname,.fName,.fname,.cardTitle,.dTitle,.empty h3,.emptyIn h3,.bigEmpty h3,.infoName,.title,.setHead h3,.modal h3,.mHead h3,.h2,.fTitle{font-family:-apple-system,BlinkMacSystemFont,"PingFang SC","Microsoft YaHei","Segoe UI",sans-serif}</style>
+<style>
+/* edge cases: long names, long words, tight rows */
+.snippet mark{background:#fff1c9}
+.sTitle,.sMeta{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+</style>
+</helmet>
+<div class="phone">
+  <div class="topbar">
+    <div class="searchBox"><svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="#8a9099" stroke-width="1.75" stroke-linecap="round" aria-hidden="true"><circle cx="10.5" cy="10.5" r="6.2"/><path d="m15.2 15.2 4.3 4.3"/></svg><input value="评审" aria-label="搜索消息" autocomplete="off"><span class="caret" aria-hidden="true"></span><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#8a9099" stroke-width="1.9" stroke-linecap="round" aria-hidden="true"><path d="m6.5 6.5 11 11M17.5 6.5l-11 11"/></svg></div>
+    <button class="cancel">取消</button>
+  </div>
+  <div class="filters">
+    <button class="f on">全部会话 <span class="x">×</span></button>
+    <button class="f on">林一 <span class="x">×</span></button>
+    <button class="f">最近 30 天</button>
+    <button class="f">筛选</button>
+  </div>
+  <div class="summary">找到 <b>6</b> 条结果 · 用时 0.08 秒</div>
+  <div class="body">
+    <div class="group">设计组 <span>4 条</span></div>
+    <div class="hit">
+      <div class="hitTop"><span class="av a2">林</span><span class="hitName">林一</span>在 设计组 <span class="hitTime">10 月 28 日 11:21</span></div>
+      <div class="snippet"><mark>评审</mark>改到 3 点，会议室 B。@你 材料麻烦再顺一遍。</div>
+      <div class="hitMeta">文本消息 · 点击跳转到会话</div>
+    </div>
+    <div class="hit">
+      <div class="hitTop"><span class="av a3">周</span><span class="hitName">周岚</span>在 设计组 <span class="hitTime">10 月 27 日 15:02</span></div>
+      <div class="snippet">下午的<mark>评审</mark>材料我放到群文件了，大家先过一遍。</div>
+      <div class="hitMeta">文本消息</div>
+    </div>
+    <div class="hit">
+      <div class="hitTop"><span class="av a4">阿</span><span class="hitName">阿泽</span>在 设计组 <span class="hitTime">10 月 26 日 18:02</span></div>
+      <div class="snippet">合并转发 · 与<mark>评审</mark>相关的 8 条消息</div>
+      <div class="hitMeta">合并转发 · 3 个附件</div>
+    </div>
+    <div class="group">林一 <span>2 条</span></div>
+    <div class="hit">
+      <div class="hitTop"><span class="av a2">林</span><span class="hitName">林一</span><span class="hitTime">10 月 28 日 14:24</span></div>
+      <div class="snippet">美式，谢谢。<mark>评审</mark>改到 3 点，会议室 B。</div>
+      <div class="hitMeta">单聊</div>
+    </div>
+    <div class="hit">
+      <div class="hitTop"><span class="av a2">林</span><span class="hitName">林一</span><span class="hitTime">10 月 24 日 09:40</span></div>
+      <div class="snippet">这版交互稿的离线态处理，<mark>评审</mark>时重点讲。</div>
+      <div class="hitMeta">单聊</div>
+    </div>
+    <div class="more">还有 1 条 · <a href="#more">继续加载</a></div>
+  </div>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"$preview":{"width":390,"height":844}}'>
+class Component extends DCLogic {
+  renderVals() { return {}; }
+}
+</script>
+</body>
+</html>

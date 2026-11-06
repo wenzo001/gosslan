@@ -1,0 +1,170 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>Desktop — Search</title>
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+  *{box-sizing:border-box}
+  body{margin:0;background:#f4f4f1;font-family:"Inter",-apple-system,"PingFang SC","Microsoft YaHei",sans-serif;color:#17181a;-webkit-font-smoothing:antialiased}
+  .app{width:1000px;height:680px;display:flex;flex-direction:column;overflow:hidden;position:relative}
+  .titlebar{height:40px;background:#ecece8;border-bottom:1px solid #e2e3de;display:flex;align-items:center;padding:0 14px;position:relative;z-index:3}
+  .lights{display:flex;gap:8px;width:76px}.light{width:11px;height:11px;border-radius:999px;background:#cfd1ca}
+  .title{position:absolute;left:0;right:0;text-align:center;font-size:12px;font-weight:500;color:#5a5d63}
+  .tbRight{margin-left:auto;display:flex;align-items:center;gap:10px}
+  .conn{display:flex;align-items:center;gap:5px;font-size:11px;color:#14663f;background:#e4f3ea;border-radius:999px;padding:3px 8px}
+  .conn i{width:6px;height:6px;border-radius:999px;background:#22a06b;display:block}
+  .workspace{flex:1;display:flex;min-height:0;position:relative}
+  .rail{width:64px;background:#ecece8;border-right:1px solid #e2e3de;display:flex;flex-direction:column;align-items:center;padding:12px 0 10px;flex:0 0 auto}
+  .me{width:34px;height:34px;border-radius:999px;background:#d9e2f7}
+  .nav{display:flex;flex-direction:column;gap:6px;margin-top:18px}
+  .nav button{width:38px;height:38px;border:0;border-radius:10px;background:transparent;color:#5a5d63;display:flex;align-items:center;justify-content:center}
+  .nav button.on{background:#e8effd;color:#2356c4}
+  .list{width:320px;background:#f8f8f5;border-right:1px solid #e2e3de;padding:10px 12px;flex:0 0 auto}
+  .lHead{height:26px;font-size:17px;font-weight:600;padding:0 4px}
+  .search{height:34px;border-radius:8px;background:#f1f2ee;margin:6px 0 10px}
+  .row{height:58px;display:flex;gap:10px;align-items:center;padding:0 4px}
+  .av{width:36px;height:36px;border-radius:999px;background:#e0e1dc}
+  .ln{height:7px;border-radius:4px;background:#dedfd9;margin-bottom:5px}
+  .chat{flex:1;background:#fff}
+  .scrim{position:absolute;inset:40px 0 0 0;background:rgba(16,17,20,.4);z-index:5}
+  .panel{position:absolute;left:50%;top:50%;transform:translate(-50%,-50%);width:900px;height:590px;background:#fff;border-radius:12px;box-shadow:0 24px 64px rgba(9,10,12,.3);z-index:6;display:flex;flex-direction:column;overflow:hidden}
+  .searchHead{padding:14px 18px 10px;border-bottom:1px solid #ecede9;flex:0 0 auto}
+  .searchBox{height:44px;display:flex;align-items:center;gap:10px;padding:0 12px;background:#f1f2ee;border-radius:10px}
+  .searchBox input{border:0;background:transparent;outline:none;font:inherit;font-size:15px;color:#17181a;flex:1;min-width:0}
+  .searchBox input::placeholder{color:#70747b}
+  .caret{width:1.5px;height:19px;background:#2f6beb;margin-left:-6px;animation:blink 1.1s steps(1) infinite}
+  @keyframes blink{50%{opacity:0}}
+  .esc{font-size:10px;color:#70747b;background:#fff;border-radius:5px;padding:2px 6px;box-shadow:inset 0 0 0 1px #e4e5e0;font-family:"JetBrains Mono",monospace}
+  .filters{display:flex;align-items:center;gap:6px;margin-top:10px}
+  .fchip{height:26px;padding:0 8px;border:0;border-radius:7px;background:transparent;font:inherit;font-size:11.5px;color:#5a5d63;display:flex;align-items:center;gap:4px;cursor:pointer}
+  .fchip:hover{background:#f1f2ee}.fchip.on{background:#e8effd;color:#2356c4;font-weight:500}
+  .filters .clear{margin-left:auto;font-size:11px;color:#70747b;background:transparent;border:0;padding:4px 7px;border-radius:6px;cursor:pointer}
+  .filters .clear:hover{background:#f1f2ee;color:#17181a}
+  .cols{flex:1;display:flex;min-height:0}
+  .results{width:430px;border-right:1px solid #ecede9;display:flex;flex-direction:column;min-height:0;flex:0 0 auto}
+  .resultSummary{height:34px;display:flex;align-items:center;gap:6px;padding:0 16px;font-size:10.5px;color:#8a8d92;border-bottom:1px solid #ecede9;flex:0 0 auto}
+  .resultList{flex:1;overflow:hidden}
+  .group{font-size:10.5px;font-weight:500;color:#70747b;padding:9px 16px 4px;display:flex;align-items:center;justify-content:space-between}
+  .group .n{font-weight:400;color:#8a8d92}
+  .hit{padding:8px 16px;cursor:pointer;border-left:2px solid transparent}
+  .hit:hover{background:#f8f8f5}
+  .hit.sel{background:#e8effd;border-left-color:#2f6beb}
+  .hitTop{display:flex;align-items:center;gap:6px;font-size:11px;color:#5a5d63}
+  .hitName{font-weight:500;color:#17181a}
+  .hitTime{margin-left:auto;font-size:10px;color:#8a8d92}
+  .snippet{font-size:12px;line-height:18px;color:#3d4045;margin-top:3px;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
+  .snippet mark{background:#dce7fd;color:#17181a;border-radius:3px;padding:0 1px}
+  .hitMeta{font-size:10px;color:#8a8d92;margin-top:3px}
+  .more{height:34px;border-top:1px solid #ecede9;display:flex;align-items:center;justify-content:center;font-size:10.5px;color:#70747b;flex:0 0 auto}
+  .context{flex:1;display:flex;flex-direction:column;min-width:0}
+  .ctxHead{height:44px;border-bottom:1px solid #ecede9;display:flex;align-items:center;gap:8px;padding:0 16px;flex:0 0 auto}
+  .ctxAv{width:26px;height:26px;border-radius:999px;background:#dcefe3;color:#14663f;display:flex;align-items:center;justify-content:center;font-size:10px;font-weight:600}
+  .ctxName{font-size:12px;font-weight:600}
+  .ctxMeta{font-size:10px;color:#70747b}
+  .ctxAction{margin-left:auto;height:28px;padding:0 9px;border:0;border-radius:7px;background:#2f6beb;color:#fff;font:inherit;font-size:11px;font-weight:500;display:flex;align-items:center;gap:4px;cursor:pointer}
+  .ctxBody{flex:1;overflow:hidden;padding:14px 16px;display:flex;flex-direction:column;gap:10px}
+  .day{text-align:center;font-size:10px;color:#8a8d92;margin:2px 0 4px}
+  .msg{display:flex;gap:7px;align-items:flex-start}
+  .msg.own{justify-content:flex-end}
+  .mAv{width:20px;height:20px;border-radius:999px;display:flex;align-items:center;justify-content:center;font-size:8px;font-weight:600;flex:0 0 auto;margin-top:1px}
+  .mBody{max-width:78%}
+  .mName{font-size:9.5px;color:#70747b;margin:0 0 2px 2px}
+  .bubble{padding:6px 10px;border-radius:14px;font-size:12px;line-height:17px;width:fit-content}
+  .in{background:#f0f1ed;color:#17181a;border-bottom-left-radius:5px;box-shadow:inset 0 0 0 1px #e4e5e0}
+  .out{background:#2f6beb;color:#fff;border-bottom-right-radius:5px;margin-left:auto}
+  .bubble mark{background:#dce7fd;color:#17181a;border-radius:3px;padding:0 1px}
+  .out mark{background:rgba(255,255,255,.24);color:#fff}
+  .ctxFoot{height:38px;border-top:1px solid #ecede9;display:flex;align-items:center;gap:6px;padding:0 16px;font-size:10px;color:#8a8d92;flex:0 0 auto}
+  .ctxFoot .keys{margin-left:auto;display:flex;gap:8px}
+  .kbd{font-family:"JetBrains Mono",monospace;font-size:9.5px;background:#f1f2ee;border-radius:4px;padding:2px 5px;color:#5a5d63}
+  svg{display:block}
+</style>
+</helmet>
+<div class="app">
+  <div class="titlebar">
+    <div class="lights"><span class="light"></span><span class="light"></span><span class="light"></span></div><span class="title">Gosslan</span>
+    <div class="tbRight"><span class="conn"><i></i>局域网已连接 · 4 台设备</span></div>
+  </div>
+  <div class="workspace">
+    <div class="rail"><div class="me"></div><div class="nav"><button class="on"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 15a3 3 0 0 1-3 3H8l-4 3V6a3 3 0 0 1 3-3h10a3 3 0 0 1 3 3Z"/></svg></button><button><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M16 20v-1.5a4 4 0 0 0-4-4H7a4 4 0 0 0-4 4V20"/><circle cx="9.5" cy="7" r="3"/></svg></button><button><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m12 3 2.7 5.5 6.1.9-4.4 4.3 1 6-5.4-2.8-5.4 2.8 1-6-4.4-4.3 6.1-.9Z"/></svg></button><button><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M10 13a5 5 0 0 0 7 0l2-2a5 5 0 0 0-7-7l-1 1"/><path d="M14 11a5 5 0 0 0-7 0l-2 2a5 5 0 0 0 7 7l1-1"/></svg></button></div></div>
+    <div class="list"><div class="lHead">聊天</div><div class="search"></div><div class="row"><div class="av"></div><div style="flex:1"><div class="ln" style="width:52%"></div><div class="ln" style="width:66%"></div></div></div><div class="row"><div class="av"></div><div style="flex:1"><div class="ln" style="width:44%"></div><div class="ln" style="width:58%"></div></div></div><div class="row"><div class="av"></div><div style="flex:1"><div class="ln" style="width:60%"></div><div class="ln" style="width:48%"></div></div></div></div>
+    <div class="chat"></div>
+
+    <div class="scrim"></div>
+    <section class="panel" role="dialog" aria-modal="true" aria-label="搜索消息">
+      <div class="searchHead">
+        <div class="searchBox">
+          <svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="#70747b" stroke-width="1.75" stroke-linecap="round" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.2-3.2"/></svg>
+          <input value="评审" aria-label="搜索消息" autocomplete="off"><span class="caret" aria-hidden="true"></span>
+          <span class="esc">Esc</span>
+        </div>
+        <div class="filters">
+          <button class="fchip on">全部会话 <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m6 9 6 6 6-6"/></svg></button>
+          <button class="fchip on">发送者：林一 <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m6 9 6 6 6-6"/></svg></button>
+          <button class="fchip on">最近 30 天 <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m6 9 6 6 6-6"/></svg></button>
+          <button class="clear">清除筛选</button>
+        </div>
+      </div>
+      <div class="cols">
+        <div class="results">
+          <div class="resultSummary"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.2-3.2"/></svg>找到 6 条结果 · 用时 0.08 秒</div>
+          <div class="resultList">
+            <div class="group">设计组 <span class="n">4 条</span></div>
+            <div class="hit sel">
+              <div class="hitTop"><span class="hitName">林一</span>在 设计组 <span class="hitTime">10 月 28 日 11:21</span></div>
+              <div class="snippet"><mark>评审</mark>改到 3 点，会议室 B。@你 材料麻烦再顺一遍。</div>
+              <div class="hitMeta">文本消息</div>
+            </div>
+            <div class="hit">
+              <div class="hitTop"><span class="hitName">周岚</span>在 设计组 <span class="hitTime">10 月 27 日 15:02</span></div>
+              <div class="snippet">下午的<mark>评审</mark>材料我放到群文件了，大家先过一遍。</div>
+              <div class="hitMeta">文本消息</div>
+            </div>
+            <div class="hit">
+              <div class="hitTop"><span class="hitName">阿泽</span>在 设计组 <span class="hitTime">10 月 26 日 18:02</span></div>
+              <div class="snippet">合并转发 · 与<mark>评审</mark>相关的 8 条消息</div>
+              <div class="hitMeta">合并转发</div>
+            </div>
+            <div class="hit">
+              <div class="hitTop"><span class="hitName">林一</span>在 设计组 <span class="hitTime">10 月 24 日 09:40</span></div>
+              <div class="snippet">这版交互稿的离线态处理，<mark>评审</mark>时重点讲。</div>
+              <div class="hitMeta">文本消息</div>
+            </div>
+            <div class="group">林一 <span class="n">2 条</span></div>
+            <div class="hit">
+              <div class="hitTop"><span class="hitName">林一</span><span class="hitTime">10 月 28 日 14:24</span></div>
+              <div class="snippet">美式，谢谢。<mark>评审</mark>改到 3 点，会议室 B。</div>
+              <div class="hitMeta">单聊</div>
+            </div>
+          </div>
+          <div class="more">还有 1 条 · 继续滚动加载</div>
+        </div>
+        <div class="context">
+          <div class="ctxHead"><div class="ctxAv">林</div><div><div class="ctxName">设计组</div><div class="ctxMeta">2 位发送者 · 4 条命中</div></div><button class="ctxAction"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12h14M13 6l6 6-6 6"/></svg>跳转到会话</button></div>
+          <div class="ctxBody">
+            <div class="day">10 月 28 日 11:20</div>
+            <div class="msg"><div class="mAv" style="background:#f3e2d6;color:#8a4d00">林</div><div class="mBody"><div class="mName">林一</div><div class="bubble in"><mark>评审</mark>改到 3 点，会议室 B。@你 材料麻烦再顺一遍。</div></div></div>
+            <div class="msg own"><div class="mBody"><div class="bubble out">收到，我把 @阿泽 的交互稿一起带上。</div></div></div>
+            <div class="msg"><div class="mAv" style="background:#dcefe3;color:#14663f">周</div><div class="mBody"><div class="mName">周岚</div><div class="bubble in">群公告我更新了，周五 14:00 前提交终稿。</div></div></div>
+            <div class="msg own"><div class="mBody"><div class="bubble out">我这边的状态稿也放上去了，下午一起过。</div></div></div>
+          </div>
+          <div class="ctxFoot">命中位置已高亮<span class="keys"><span><span class="kbd">↑</span> <span class="kbd">↓</span> 切换</span><span><span class="kbd">Enter</span> 跳转</span></span></div>
+        </div>
+      </div>
+    </section>
+  </div>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"$preview":{"width":1000,"height":680}}'>
+class Component extends DCLogic {
+  renderVals() { return {}; }
+}
+</script>
+</body>
+</html>

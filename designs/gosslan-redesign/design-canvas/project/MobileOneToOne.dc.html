@@ -1,0 +1,95 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>Mobile — 1:1 chat</title>
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+  *{box-sizing:border-box}
+  body{margin:0;background:#f4f4f1;font-family:"Inter",-apple-system,"PingFang SC","Microsoft YaHei",sans-serif;color:#17181a;-webkit-font-smoothing:antialiased}
+  .phone{width:390px;height:844px;background:#fff;display:flex;flex-direction:column;overflow:hidden;position:relative}
+  .topbar{height:56px;flex:0 0 auto;display:flex;align-items:center;gap:8px;padding:0 8px 0 2px;background:#fff;border-bottom:1px solid #ecede9;z-index:2}
+  .back{width:44px;height:44px;border:0;border-radius:10px;background:transparent;color:#3d4045;display:flex;align-items:center;justify-content:center;cursor:pointer}
+  .back:active{background:#f1f2ee}
+  .hAv{width:30px;height:30px;border-radius:999px;background:#f3e2d6;color:#8a4d00;display:flex;align-items:center;justify-content:center;font-size:12px;font-weight:600;position:relative;flex:0 0 auto}
+  .hAv .dot{position:absolute;right:-1px;bottom:0;width:9px;height:9px;border-radius:999px;background:#22a06b;box-shadow:0 0 0 2px #fff}
+  .hText{min-width:0}
+  .hName{font-size:15px;line-height:20px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .hMeta{font-size:10.5px;line-height:14px;color:#14663f;display:flex;align-items:center;gap:4px;margin-top:1px}
+  .hMeta i{width:5px;height:5px;border-radius:999px;background:#22a06b;display:block}
+  .moreBtn{width:44px;height:44px;border:0;border-radius:10px;background:transparent;color:#3d4045;display:flex;align-items:center;justify-content:center;cursor:pointer;margin-left:auto}
+  .moreBtn:active{background:#f1f2ee}
+  .msgs{flex:1;overflow:hidden;padding:6px 14px 10px;position:relative}
+  .day{text-align:center;font-size:10.5px;color:#8a8d92;margin:10px 0 12px}
+  .run{display:flex;margin-bottom:12px;align-items:flex-start}
+  .run.own{justify-content:flex-end}
+  .runBody{max-width:78%;min-width:0}
+  .stack{display:flex;flex-direction:column;gap:2px}
+  .bubble{padding:9px 13px;border-radius:18px;font-size:15px;line-height:21px;width:fit-content;max-width:100%}
+  .in{background:#f0f1ed;color:#17181a;border-bottom-left-radius:6px;box-shadow:inset 0 0 0 1px #e4e5e0}
+  .out{background:#2f6beb;color:#fff;border-bottom-right-radius:6px;margin-left:auto}
+  .meta{display:flex;align-items:center;gap:4px;font-size:10.5px;color:#8a8d92;margin-top:4px;font-variant-numeric:tabular-nums}
+  .own .meta{justify-content:flex-end}
+  .quote{display:block;padding:1px 0 1px 8px;border-left:2px solid rgba(23,24,26,.22);font-size:12px;line-height:17px;color:#5a5d63;margin-bottom:5px}
+  .out .quote{border-left-color:rgba(255,255,255,.5);color:rgba(255,255,255,.82)}
+  .img{width:224px;height:150px;border-radius:12px;background:#e9eae6;position:relative;overflow:hidden}
+  .img .sun{position:absolute;left:30px;top:28px;width:26px;height:26px;border-radius:999px;background:#f4f4f1}
+  .img .hill{position:absolute;left:-20px;bottom:-38px;width:190px;height:110px;background:#d5d7cf;transform:rotate(-8deg);border-radius:40px}
+  .img .hill2{position:absolute;right:-34px;bottom:-46px;width:150px;height:100px;background:#c7cac0;transform:rotate(9deg);border-radius:36px}
+  .img .tag{position:absolute;left:8px;bottom:8px;font-size:10px;color:#3d4045;background:rgba(255,255,255,.84);padding:2px 6px;border-radius:5px}
+  .file{display:flex;align-items:center;gap:10px;padding:10px 12px;background:#fff;border-radius:12px;box-shadow:inset 0 0 0 1px #e4e5e0;width:244px}
+  .ftile{width:34px;height:40px;border-radius:6px;background:#e8effd;color:#2356c4;display:flex;align-items:center;justify-content:center;flex:0 0 auto}
+  .fname{font-size:13px;font-weight:500;line-height:18px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:170px;color:#17181a}
+  .fmeta{font-size:11px;color:#70747b;line-height:15px}
+  .reacts{display:flex;gap:4px;margin-top:-2px;margin-left:6px}
+  .react{display:inline-flex;align-items:center;gap:3px;height:22px;padding:0 8px;border-radius:999px;background:#fff;box-shadow:inset 0 0 0 1px #e4e5e0;font-size:11px;color:#5a5d63}
+  .latest{position:absolute;left:50%;transform:translateX(-50%);bottom:12px;height:32px;padding:0 12px;border:0;border-radius:999px;background:#fff;box-shadow:0 2px 8px rgba(16,17,20,.12),inset 0 0 0 1px #e6e7e2;font:inherit;font-size:11.5px;color:#5a5d63;display:flex;align-items:center;gap:5px}
+  .composer{flex:0 0 auto;border-top:1px solid #ecede9;background:#fff;padding:8px 8px 8px 6px;display:flex;align-items:flex-end;gap:4px}
+  .ib{width:44px;height:44px;border:0;border-radius:10px;background:transparent;color:#5a5d63;display:flex;align-items:center;justify-content:center;flex:0 0 auto}
+  .ib:active{background:#f1f2ee}
+  .inputWrap{flex:1;min-height:40px;border-radius:20px;background:#f1f2ee;display:flex;align-items:center;padding:0 12px;margin:2px 0}
+  .input{font-size:15px;line-height:20px;color:#70747b;padding:9px 0}
+  .send{width:40px;height:40px;border-radius:999px;border:0;background:#2f6beb;color:#fff;display:flex;align-items:center;justify-content:center;flex:0 0 auto;margin:2px 0;cursor:pointer}
+  .send:active{background:#2459ce}
+  svg{display:block}
+</style>
+</helmet>
+<div class="phone">
+  <div class="topbar">
+    <button class="back" aria-label="返回"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m15 6-6 6 6 6"/></svg></button>
+    <div class="hAv">林<span class="dot"></span></div>
+    <div class="hText"><div class="hName">林一</div><div class="hMeta"><i></i>在线 · 局域网</div></div>
+    <button class="moreBtn" aria-label="更多"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" aria-hidden="true"><circle cx="5" cy="12" r="1"/><circle cx="12" cy="12" r="1"/><circle cx="19" cy="12" r="1"/></svg></button>
+  </div>
+
+  <div class="msgs">
+    <div class="day">今天 14:20</div>
+    <div class="run"><div class="runBody"><div class="stack"><div class="bubble in">在楼下咖啡店等你，靠窗的位置。</div><div class="bubble in">不用急，我先改完这段。</div></div><div class="meta">14:21</div></div></div>
+    <div class="run own"><div class="runBody"><div class="stack"><div class="bubble out">好，我五分钟后到。</div><div class="bubble out">要给你带一杯吗？</div></div><div class="meta">14:22 已读</div></div></div>
+    <div class="run"><div class="runBody"><div class="bubble in">美式，谢谢。评审改到 3 点，会议室 B。</div><div class="reacts"><span class="react">👍 1</span></div><div class="meta">14:24</div></div></div>
+    <div class="run own"><div class="runBody"><div class="bubble out" style="max-width:300px"><span class="quote">「评审改到 3 点，会议室 B」</span>收到，我把材料再顺一遍。</div><div class="meta">14:26 已读</div></div></div>
+    <div class="run own"><div class="runBody"><div style="margin-left:auto;width:fit-content"><div class="img"><div class="sun"></div><div class="hill"></div><div class="hill2"></div><span class="tag">IMG_2041.jpg · 1.8 MB</span></div></div><div class="meta">14:28 已读</div></div></div>
+    <div class="run"><div class="runBody"><div class="bubble in" style="padding:0;background:transparent;box-shadow:none"><div class="file"><div class="ftile"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8Z"/><path d="M14 3v5h5"/></svg></div><div><div class="fname">评审材料-v3.pdf</div><div class="fmeta">2.4 MB · 已接收</div></div></div></div><div class="meta">14:31</div></div></div>
+    <button class="latest"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 5v14M5 12l7 7 7-7"/></svg>回到最新</button>
+  </div>
+
+  <div class="composer">
+    <button class="ib" aria-label="添加附件"><svg width="23" height="23" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m20 11-8.5 8.5a5 5 0 0 1-7-7L13 4a3.5 3.5 0 0 1 5 5l-8.5 8.5a2 2 0 0 1-3-3L14 7"/></svg></button>
+    <div class="inputWrap"><div class="input">发消息…</div></div>
+    <button class="ib" aria-label="表情"><svg width="23" height="23" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M8.5 14.5a4 4 0 0 0 7 0M9 9.5v.5M15 9.5v.5"/></svg></button>
+    <button class="send" aria-label="发送"><svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 19V5M5 12l7-7 7 7"/></svg></button>
+  </div>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"$preview":{"width":390,"height":844}}'>
+class Component extends DCLogic {
+  renderVals() { return {}; }
+}
+</script>
+</body>
+</html>

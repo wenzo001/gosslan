@@ -1,0 +1,14 @@
+{
+  "v": 3,
+  "layout": "files",
+  "createdOnFiles": { "v": 1, "at": "2026-11-06T08:53:00Z" },
+  "title": "Gosslan Still",
+  "namespace": "GosslanStill",
+  "libraries": [],
+  "sections": {},
+  "groups": [],
+  "assetGroups": {},
+  "blobs": {},
+  "docs": { "readme": "project/README.md", "sections": [] },
+  "lastChange": { "by": "Qoder", "at": "2026-11-06T08:53:00Z", "via": "Qoder Desktop", "note": "Initial design system: tokens, brand book, 8 component previews and cover." }
+}

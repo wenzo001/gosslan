@@ -1,0 +1,98 @@
+<!-- @dsCard group="Overlays" height=620 -->
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>Overlay — preview</title>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+  *{box-sizing:border-box}
+  body{margin:0;padding:24px;background:#f2f3f5;font-family:-apple-system,BlinkMacSystemFont,"PingFang SC","Microsoft YaHei","Segoe UI",sans-serif;color:#1f2329}
+  .sec{font-size:11px;font-weight:500;color:#8a9099;margin:0 0 10px;letter-spacing:.02em}
+  .flex{display:flex;gap:24px;align-items:flex-start;flex-wrap:wrap}
+  .menu{width:216px;background:#fff;border-radius:10px;box-shadow:0 8px 24px rgba(16,17,20,.12),0 0 0 1px rgba(16,17,20,.05);padding:6px}
+  .mi{height:32px;display:flex;align-items:center;gap:9px;padding:0 9px;border:0;background:transparent;border-radius:6px;width:100%;font:inherit;font-size:13px;color:#1f2329;cursor:pointer;text-align:left}
+  .mi:hover{background:#f2f3f5}
+  .mi svg{color:#5a6068}
+  .mi .sc{margin-left:auto;font-size:11px;color:#8a9099}
+  .sep{height:1px;background:#eef0f2;margin:5px 6px}
+  .danger{color:#d93a3a}
+  .danger svg{color:#d93a3a}
+  .danger:hover{background:#ffecec}
+  .dialogWrap{width:440px;height:330px;border-radius:16px;background:#eef0f2;position:relative;overflow:hidden;display:flex;align-items:center;justify-content:center}
+  .scrim{position:absolute;inset:0;background:rgba(16,17,20,.4)}
+  .dialog{position:relative;width:400px;background:#fff;border-radius:16px;box-shadow:0 24px 64px rgba(9,10,12,.28);padding:22px 22px 18px}
+  .dialog h4{font-size:17px;line-height:24px;margin:0 0 8px;font-weight:600}
+  .dialog p{font-size:13px;line-height:19px;color:#5a6068;margin:0 0 18px}
+  .dialog p strong{color:#1f2329;font-weight:500}
+  .actions{display:flex;justify-content:flex-end;gap:8px}
+  .btn{height:36px;padding:0 14px;border:0;border-radius:10px;font:inherit;font-size:13px;font-weight:500;cursor:pointer}
+  .ghost{background:transparent;color:#1f2329}
+  .ghost:hover{background:#f2f3f5}
+  .secondary{background:#f2f3f5;color:#1f2329;box-shadow:inset 0 0 0 1px #e5e6eb}
+  .primary{background:#2f6bff;color:#fff}
+  .dangerBtn{background:#f04452;color:#fff}
+  .toastCol{display:flex;flex-direction:column;gap:10px;width:360px}
+  .toast{display:flex;align-items:center;gap:9px;min-height:44px;padding:10px 12px;background:#fff;border-radius:12px;box-shadow:0 8px 24px rgba(16,17,20,.12),0 0 0 1px rgba(16,17,20,.05);font-size:13px}
+  .toast .ic{width:20px;height:20px;border-radius:999px;display:flex;align-items:center;justify-content:center;flex:0 0 auto}
+  .ok{background:#e8f8ee;color:#068a4a}
+  .bad{background:#ffecec;color:#d93a3a}
+  .toast .x{margin-left:auto;border:0;background:transparent;color:#8a9099;width:24px;height:24px;border-radius:6px;cursor:pointer;display:flex;align-items:center;justify-content:center}
+  .toast .x:hover{background:#f2f3f5}
+  .retry{margin-left:auto;border:0;background:transparent;color:#1f5ae8;font:inherit;font-size:12px;font-weight:500;cursor:pointer;padding:4px 6px;border-radius:6px}
+  .retry:hover{background:#e8f0ff}
+  .sheet{width:330px;background:#fff;border-radius:16px;overflow:hidden;box-shadow:0 8px 24px rgba(16,17,20,.12),0 0 0 1px rgba(16,17,20,.05)}
+  .sheet .mi{height:44px;border-radius:0;font-size:14px;padding:0 16px}
+  .sheet .sep{margin:0}
+  .sheet .cancel{margin-top:8px;height:48px;display:flex;align-items:center;justify-content:center;font-size:14px;font-weight:500;color:#5a6068;background:#f7f8fa}
+  svg{display:block}
+</style>
+<style>h1,h2,h3,h4,.name,.rname,.title,.fname,.cardTitle,.bigEmpty h3{font-family:-apple-system,BlinkMacSystemFont,"PingFang SC","Microsoft YaHei","Segoe UI",sans-serif}</style>
+</head>
+<body>
+  <p class="sec">Context menu · destructive action last, after a divider</p>
+  <div class="flex">
+    <div class="menu" role="menu" aria-label="消息操作">
+      <button class="mi" role="menuitem"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 17 4 12l5-5"/><path d="M4 12h10a6 6 0 0 1 6 6v1"/></svg>回复</button>
+      <button class="mi" role="menuitem"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m15 17 5-5-5-5"/><path d="M20 12H10a6 6 0 0 0-6 6v1"/></svg>转发</button>
+      <button class="mi" role="menuitem"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>复制<span class="sc">⌘C</span></button>
+      <button class="mi" role="menuitem"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m12 3 2.7 5.5 6.1.9-4.4 4.3 1 6-5.4-2.8-5.4 2.8 1-6-4.4-4.3 6.1-.9Z"/></svg>收藏</button>
+      <button class="mi" role="menuitem"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 17v5M9 3h6l-1 9h-4Z"/><path d="M7 21h10"/></svg>置顶</button>
+      <div class="sep" role="separator"></div>
+      <button class="mi danger" role="menuitem"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 7h16M9 7V4h6v3M6 7l1 13h10l1-13"/></svg>删除消息</button>
+    </div>
+
+    <div class="dialogWrap">
+      <div class="scrim"></div>
+      <div class="dialog" role="dialog" aria-modal="true" aria-labelledby="dlgTitle">
+        <h4 id="dlgTitle">退出「设计组」？</h4>
+        <p>退出后将不再接收该群消息。<strong>聊天记录仅保存在本机</strong>，退出不会自动删除已有记录。</p>
+        <div class="actions">
+          <button class="btn ghost">取消</button>
+          <button class="btn secondary">仅退出</button>
+          <button class="btn dangerBtn">退出并删除记录</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <p class="sec" style="margin-top:26px">Toasts — state is in the icon and the words, not a colour wash</p>
+  <div class="flex">
+    <div class="toastCol">
+      <div class="toast" role="status"><span class="ic ok"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m5 12 5 5 9-10"/></svg></span>已复制到剪贴板<button class="x" aria-label="关闭"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" aria-hidden="true"><path d="m6 6 12 12M18 6 6 18"/></svg></button></div>
+      <div class="toast" role="alert"><span class="ic bad"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M12 7v6M12 16.5v.5"/></svg></span>文件发送失败<button class="retry">重试</button></div>
+    </div>
+
+    <div class="sheet" role="dialog" aria-label="会话操作">
+      <button class="mi">标记为已读</button>
+      <div class="sep"></div>
+      <button class="mi">置顶会话</button>
+      <div class="sep"></div>
+      <button class="mi">消息免打扰</button>
+      <div class="sep"></div>
+      <button class="mi danger">删除会话</button>
+      <div class="cancel">取消</div>
+    </div>
+  </div>
+</body>
+</html>

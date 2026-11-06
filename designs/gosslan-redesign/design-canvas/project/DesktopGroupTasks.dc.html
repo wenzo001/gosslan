@@ -1,0 +1,174 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>Desktop — Group tasks window</title>
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+  *{box-sizing:border-box}
+  body{margin:0;background:#f4f4f1;font-family:"Inter",-apple-system,"PingFang SC","Microsoft YaHei",sans-serif;color:#17181a;-webkit-font-smoothing:antialiased}
+  .win{width:780px;height:620px;display:flex;flex-direction:column;background:#fff;overflow:hidden}
+  .titlebar{height:38px;background:#f1f2ee;border-bottom:1px solid #e2e3de;display:flex;align-items:center;padding:0 14px;position:relative;flex:0 0 auto}
+  .lights{display:flex;gap:8px;width:70px}.light{width:11px;height:11px;border-radius:999px;background:#cfd1ca}
+  .title{position:absolute;left:0;right:0;text-align:center;font-size:12px;font-weight:500;color:#5a5d63}
+  .head{height:52px;border-bottom:1px solid #ecede9;display:flex;align-items:center;gap:9px;padding:0 16px;flex:0 0 auto}
+  .gAv{width:30px;height:30px;border-radius:8px;display:grid;grid-template-columns:repeat(2,1fr);grid-template-rows:repeat(2,1fr);gap:2px;padding:4px;background:#e8effd;flex:0 0 auto}
+  .gAv span{border-radius:2px}.gAv .a{background:#9db8ef}.gAv .b{background:#e3b28d}.gAv .c{background:#9bcfb0}.gAv .d{background:#c4a9e0}
+  .head h2{font-size:14px;line-height:19px;font-weight:600;margin:0}
+  .head p{font-size:10px;line-height:14px;color:#70747b;margin:0}
+  .head .cnt{font-size:10px;color:#70747b;background:#f1f2ee;border-radius:999px;padding:1px 6px;margin-left:2px}
+  .head .close{margin-left:auto;width:28px;height:28px;border:0;border-radius:7px;background:transparent;color:#5a5d63;display:flex;align-items:center;justify-content:center;cursor:pointer}
+  .head .close:hover{background:#f1f2ee}
+  .tabs{height:44px;display:flex;align-items:center;gap:2px;padding:0 16px;border-bottom:1px solid #ecede9;flex:0 0 auto}
+  .tab{height:28px;padding:0 10px;border:0;border-radius:7px;background:transparent;font:inherit;font-size:11.5px;color:#5a5d63;cursor:pointer;display:flex;align-items:center;gap:4px}
+  .tab:hover{background:#f1f2ee}.tab.on{background:#e8effd;color:#2356c4;font-weight:500}
+  .tab .n{font-size:9.5px;color:#8a8d92}.tab.on .n{color:#2356c4}
+  .tabs .add{margin-left:auto;height:28px;padding:0 9px;border:0;border-radius:7px;background:#2f6beb;color:#fff;font:inherit;font-size:11px;font-weight:500;display:flex;align-items:center;gap:4px;cursor:pointer}
+  .body{flex:1;display:flex;min-height:0}
+  .listPane{width:410px;border-right:1px solid #ecede9;display:flex;flex-direction:column;min-height:0;flex:0 0 auto}
+  .filters{height:38px;display:flex;align-items:center;gap:3px;padding:0 12px;border-bottom:1px solid #ecede9;flex:0 0 auto}
+  .f{height:24px;padding:0 7px;border:0;border-radius:6px;background:transparent;font:inherit;font-size:10.5px;color:#70747b;cursor:pointer}
+  .f:hover{background:#f1f2ee}.f.on{background:#f1f2ee;color:#17181a;font-weight:500}
+  .tasks{flex:1;overflow:hidden;padding:4px 8px}
+  .groupLabel{display:flex;align-items:center;gap:5px;font-size:10px;font-weight:500;color:#70747b;padding:8px 6px 4px}
+  .groupLabel .dot{width:6px;height:6px;border-radius:999px;display:block}
+  .groupLabel .n{font-weight:400;color:#8a8d92;margin-left:auto}
+  .task{display:flex;gap:9px;padding:8px;border-radius:8px;cursor:pointer;align-items:flex-start}
+  .task:hover{background:#f8f8f5}
+  .task.sel{background:#e8effd}
+  .pIcon{width:26px;height:26px;border-radius:7px;display:flex;align-items:center;justify-content:center;flex:0 0 auto}
+  .pHigh{background:#fbe9e7;color:#a32b22}.pMid{background:#fbf0df;color:#8a4d00}.pLow{background:#f1f2ee;color:#5a5d63}.pDone{background:#e4f3ea;color:#14663f}
+  .tMain{min-width:0;flex:1}
+  .tTop{display:flex;align-items:center;gap:5px}
+  .code{font-family:"JetBrains Mono",monospace;font-size:9px;color:#8a8d92}
+  .tTitle{font-size:11.5px;line-height:16px;font-weight:500;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .tMeta{display:flex;align-items:center;gap:5px;font-size:9.5px;color:#70747b;margin-top:3px}
+  .tMeta .sep{width:2px;height:2px;border-radius:999px;background:#c9cbc5;display:block}
+  .minis{display:flex;margin-left:auto}
+  .minis span{width:15px;height:15px;border-radius:999px;border:1.5px solid #fff;margin-left:-4px;display:flex;align-items:center;justify-content:center;font-size:6.5px;font-weight:600}
+  .minis span:first-child{margin-left:0}
+  .task.sel .minis span{border-color:#e8effd}
+  .pill{font-size:8.5px;font-weight:500;border-radius:4px;padding:1px 4px;flex:0 0 auto}
+  .sTodo{background:#f1f2ee;color:#5a5d63}.sDoing{background:#e8effd;color:#2356c4}.sLate{background:#fbe9e7;color:#a32b22}.sDone{background:#e4f3ea;color:#14663f}.sBlocked{background:#fbf0df;color:#8a4d00}
+  .detail{flex:1;display:flex;flex-direction:column;min-width:0}
+  .dHead{height:40px;border-bottom:1px solid #ecede9;display:flex;align-items:center;gap:7px;padding:0 16px;flex:0 0 auto}
+  .dHead .code{font-size:9.5px}
+  .dHead .pill{margin-left:2px}
+  .dHead .more{margin-left:auto;width:26px;height:26px;border:0;border-radius:6px;background:transparent;color:#70747b;display:flex;align-items:center;justify-content:center;cursor:pointer}
+  .dBody{flex:1;overflow:hidden;padding:14px 16px}
+  .dTitle{font-size:15px;line-height:21px;font-weight:600;margin:0 0 10px}
+  .fields{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px 12px;margin-bottom:12px}
+  .field .k{font-size:9px;color:#8a8d92;margin-bottom:2px}
+  .field .v{font-size:11px;color:#17181a;display:flex;align-items:center;gap:4px;min-height:18px}
+  .field .v .avatar{width:16px;height:16px;border-radius:999px;display:flex;align-items:center;justify-content:center;font-size:6.5px;font-weight:600}
+  .tags{display:flex;gap:4px}
+  .tag{font-size:9px;color:#5a5d63;background:#f1f2ee;border-radius:4px;padding:1px 5px}
+  .desc{font-size:11px;line-height:17px;color:#5a5d63;background:#f8f8f5;border-radius:8px;padding:9px 10px;margin-bottom:12px}
+  .desc b{color:#17181a;font-weight:500;display:block;margin-bottom:3px;font-size:10px}
+  .histTitle{font-size:9.5px;font-weight:500;color:#70747b;margin-bottom:6px}
+  .hist{display:flex;flex-direction:column;gap:7px}
+  .hItem{display:flex;gap:7px;align-items:flex-start;font-size:10px;color:#5a5d63;line-height:14px}
+  .hDot{width:5px;height:5px;border-radius:999px;background:#c9cbc5;margin-top:4px;flex:0 0 auto}
+  .hItem b{font-weight:500;color:#17181a}
+  .hTime{margin-left:auto;font-size:9px;color:#8a8d92;flex:0 0 auto}
+  .dFoot{border-top:1px solid #ecede9;padding:10px 16px;display:flex;gap:6px;flex:0 0 auto}
+  .btn{height:30px;padding:0 9px;border:0;border-radius:7px;font:inherit;font-size:10.5px;font-weight:500;display:flex;align-items:center;gap:4px;cursor:pointer}
+  .primary{background:#2f6beb;color:#fff}.primary:hover{background:#2459ce}
+  .secondary{background:#f1f2ee;color:#17181a;box-shadow:inset 0 0 0 1px #e4e5e0}
+  .danger{background:transparent;color:#a32b22}.danger:hover{background:#fbe9e7}
+  .dFoot .right{margin-left:auto;font-size:9px;color:#8a8d92;display:flex;align-items:center;gap:4px}
+  svg{display:block}
+</style>
+</helmet>
+<div class="win">
+  <div class="titlebar"><div class="lights"><span class="light"></span><span class="light"></span><span class="light"></span></div><span class="title">群任务 · 设计组</span></div>
+  <div class="head">
+    <div class="gAv"><span class="a"></span><span class="b"></span><span class="c"></span><span class="d"></span></div>
+    <div><h2>设计组</h2><p>群任务 · 5 项未完成 · 1 项已完成</p></div><span class="cnt">6</span>
+    <button class="close" aria-label="关闭"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" aria-hidden="true"><path d="m6 6 12 12M18 6 6 18"/></svg></button>
+  </div>
+  <div class="tabs">
+    <button class="tab on">我的 <span class="n">3</span></button>
+    <button class="tab">全部 <span class="n">6</span></button>
+    <button class="tab">我创建 <span class="n">2</span></button>
+    <button class="tab">已归档 <span class="n">4</span></button>
+    <button class="add"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg>新建任务</button>
+  </div>
+  <div class="body">
+    <div class="listPane">
+      <div class="filters">
+        <button class="f on">全部状态</button><button class="f">待办</button><button class="f">进行中</button><button class="f">延期</button><button class="f">做不了</button><button class="f">完成</button>
+      </div>
+      <div class="tasks">
+        <div class="groupLabel"><span class="dot" style="background:#2f6beb"></span>进行中<span class="n">2</span></div>
+        <div class="task sel">
+          <div class="pIcon pHigh"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 19V5M5 12l7-7 7 7"/></svg></div>
+          <div class="tMain"><div class="tTop"><span class="code">T-18</span><span class="tTitle">补齐设置页的离线与失败状态</span></div><div class="tMeta"><span class="pill sDoing">进行中</span><span class="sep"></span>周五截止<span class="sep"></span><span class="minis"><span style="background:#9db8ef;color:#2356c4">周</span><span style="background:#e3b28d;color:#8a4d00">林</span></span></div></div>
+        </div>
+        <div class="task">
+          <div class="pIcon pMid"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 19V5M5 12l7-7 7 7"/></svg></div>
+          <div class="tMain"><div class="tTop"><span class="code">T-17</span><span class="tTitle">群文件列表的逐人送达状态</span></div><div class="tMeta"><span class="pill sDoing">进行中</span><span class="sep"></span>今天截止<span class="sep"></span><span class="minis"><span style="background:#c4a9e0;color:#6b3fa0">阿</span></span></div></div>
+        </div>
+        <div class="groupLabel"><span class="dot" style="background:#9a9ea5"></span>待办<span class="n">2</span></div>
+        <div class="task">
+          <div class="pIcon pLow"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 19V5M5 12l7-7 7 7"/></svg></div>
+          <div class="tMain"><div class="tTop"><span class="code">T-19</span><span class="tTitle">深色模式的对比度复核</span></div><div class="tMeta"><span class="pill sTodo">待办</span><span class="sep"></span>下周三<span class="sep"></span><span class="minis"><span style="background:#9db8ef;color:#2356c4">我</span></span></div></div>
+        </div>
+        <div class="task">
+          <div class="pIcon pLow"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 19V5M5 12l7-7 7 7"/></svg></div>
+          <div class="tMain"><div class="tTop"><span class="code">T-20</span><span class="tTitle">移动端返回手势的边界情况</span></div><div class="tMeta"><span class="pill sTodo">待办</span><span class="sep"></span>未排期<span class="sep"></span><span class="minis"><span style="background:#9bcfb0;color:#14663f">林</span></span></div></div>
+        </div>
+        <div class="groupLabel"><span class="dot" style="background:#c0392f"></span>延期<span class="n">1</span></div>
+        <div class="task">
+          <div class="pIcon pHigh"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 19V5M5 12l7-7 7 7"/></svg></div>
+          <div class="tMain"><div class="tTop"><span class="code">T-15</span><span class="tTitle">转发合并卡片的展开性能</span></div><div class="tMeta"><span class="pill sLate">延期 2 天</span><span class="sep"></span>原定 10 月 24 日<span class="sep"></span><span class="minis"><span style="background:#c4a9e0;color:#6b3fa0">阿</span></span></div></div>
+        </div>
+        <div class="groupLabel"><span class="dot" style="background:#22a06b"></span>完成<span class="n">1</span></div>
+        <div class="task">
+          <div class="pIcon pDone"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m5 12 5 5 9-10"/></svg></div>
+          <div class="tMain"><div class="tTop"><span class="code">T-16</span><span class="tTitle">群公告的编辑与删除权限</span></div><div class="tMeta"><span class="pill sDone">完成</span><span class="sep"></span>10 月 26 日<span class="sep"></span><span class="minis"><span style="background:#9db8ef;color:#2356c4">我</span></span></div></div>
+        </div>
+      </div>
+    </div>
+    <div class="detail">
+      <div class="dHead"><span class="code">T-18</span><span class="pill sDoing">进行中</span><button class="more" aria-label="更多"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" aria-hidden="true"><circle cx="5" cy="12" r="1"/><circle cx="12" cy="12" r="1"/><circle cx="19" cy="12" r="1"/></svg></button></div>
+      <div class="dBody">
+        <h3 class="dTitle">补齐设置页的离线与失败状态</h3>
+        <div class="fields">
+          <div class="field"><div class="k">优先级</div><div class="v"><span class="pill pHigh" style="background:#fbe9e7;color:#a32b22">高</span></div></div>
+          <div class="field"><div class="k">类型</div><div class="v"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="#2356c4" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3 3 8l9 5 9-5Z"/><path d="m3 16 9 5 9-5M3 12l9 5 9-5"/></svg>需求</div></div>
+          <div class="field"><div class="k">负责人</div><div class="v"><span class="avatar" style="background:#9db8ef;color:#2356c4">周</span><span class="avatar" style="background:#e3b28d;color:#8a4d00">林</span></div></div>
+          <div class="field"><div class="k">截止日期</div><div class="v" style="color:#8a4d00"><svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="5" width="18" height="16" rx="2"/><path d="M16 3v4M8 3v4M3 11h18"/></svg>周五 14:00</div></div>
+          <div class="field"><div class="k">创建者</div><div class="v"><span class="avatar" style="background:#dcefe3;color:#14663f">周</span>周岚</div></div>
+          <div class="field"><div class="k">标签</div><div class="v tags"><span class="tag">设计</span><span class="tag">状态</span></div></div>
+        </div>
+        <div class="desc"><b>说明</b>设置页的加载、空、错误、离线四种状态不统一；需要按 Still 规范收敛解剖，并补齐键盘焦点与重试。</div>
+        <div class="histTitle">动态</div>
+        <div class="hist">
+          <div class="hItem"><span class="hDot"></span><span><b>周岚</b> 创建了任务</span><span class="hTime">10 月 26 日</span></div>
+          <div class="hItem"><span class="hDot" style="background:#2f6beb"></span><span><b>林一</b> 认领并设为「进行中」</span><span class="hTime">10 月 27 日</span></div>
+          <div class="hItem"><span class="hDot" style="background:#2f6beb"></span><span><b>我</b> 关联了 3 张状态稿</span><span class="hTime">昨天 16:20</span></div>
+        </div>
+      </div>
+      <div class="dFoot">
+        <button class="btn primary"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m5 12 5 5 9-10"/></svg>标记完成</button>
+        <button class="btn secondary">编辑</button>
+        <button class="btn secondary">归档</button>
+        <span class="right"><svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg>完成后 7 天自动归档</span>
+      </div>
+    </div>
+  </div>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"$preview":{"width":780,"height":620}}'>
+class Component extends DCLogic {
+  renderVals() { return {}; }
+}
+</script>
+</body>
+</html>

@@ -1,0 +1,509 @@
+{
+  "v": 3,
+  "attachments": {},
+  "boards": {
+    "BrandMascot.dc.html": {
+      "h": 980,
+      "page": "brand",
+      "title": "小院 — mascot, app icon & lockup",
+      "w": 1400,
+      "x": 0,
+      "y": 0
+    },
+    "DesktopChats.dc.html": {
+      "h": 680,
+      "page": "pulse",
+      "title": "Chats — simple empty",
+      "w": 1000,
+      "x": 1200,
+      "y": 0
+    },
+    "DesktopContacts.dc.html": {
+      "h": 680,
+      "page": "desktop",
+      "title": "Contacts & profile",
+      "w": 1000,
+      "x": 1080,
+      "y": 0
+    },
+    "DesktopDark.dc.html": {
+      "h": 680,
+      "page": "desktop",
+      "title": "Dark — offline",
+      "w": 1000,
+      "x": 0,
+      "y": 3480
+    },
+    "DesktopDiscover.dc.html": {
+      "h": 680,
+      "page": "pulse",
+      "title": "Add friend — full page",
+      "w": 1000,
+      "x": 1080,
+      "y": 1220
+    },
+    "DesktopEdgeCases.dc.html": {
+      "h": 900,
+      "page": "edge",
+      "title": "Edge cases — long text & overflow",
+      "w": 1360,
+      "x": 0,
+      "y": 0
+    },
+    "DesktopFavorites.dc.html": {
+      "h": 680,
+      "page": "desktop",
+      "title": "Favorites",
+      "w": 1000,
+      "x": 0,
+      "y": 920
+    },
+    "DesktopGroupChat.dc.html": {
+      "h": 680,
+      "page": "pulse",
+      "title": "Group — identity & tasks",
+      "w": 1000,
+      "x": 0,
+      "y": 1220
+    },
+    "DesktopGroupInfo.dc.html": {
+      "h": 800,
+      "page": "desktop",
+      "title": "Group info",
+      "w": 1280,
+      "x": 2160,
+      "y": 0
+    },
+    "DesktopGroupTasks.dc.html": {
+      "h": 620,
+      "page": "desktop",
+      "title": "Group tasks window",
+      "w": 780,
+      "x": 0,
+      "y": 2520
+    },
+    "DesktopLinks.dc.html": {
+      "h": 680,
+      "page": "desktop",
+      "title": "Links",
+      "w": 1000,
+      "x": 1080,
+      "y": 920
+    },
+    "DesktopLogs.dc.html": {
+      "h": 560,
+      "page": "desktop",
+      "title": "Logs window",
+      "w": 760,
+      "x": 860,
+      "y": 2520
+    },
+    "DesktopModals.dc.html": {
+      "h": 1100,
+      "page": "desktop",
+      "title": "Dialogs & overlays",
+      "w": 1120,
+      "x": 1700,
+      "y": 2520
+    },
+    "DesktopOneToOne.dc.html": {
+      "h": 680,
+      "page": "pulse",
+      "title": "1:1 — solid bubbles",
+      "w": 1000,
+      "x": 2280,
+      "y": 0
+    },
+    "DesktopPersonalize.dc.html": {
+      "h": 680,
+      "page": "pulse",
+      "title": "Personalize — theme & bubbles",
+      "w": 1000,
+      "x": 2160,
+      "y": 1220
+    },
+    "DesktopPreviewWindow.dc.html": {
+      "h": 820,
+      "page": "pulse",
+      "title": "Image preview window",
+      "w": 1120,
+      "x": 0,
+      "y": 1900
+    },
+    "DesktopRequests.dc.html": {
+      "h": 680,
+      "page": "desktop",
+      "title": "Requests — list & cooldown",
+      "w": 1000,
+      "x": 0,
+      "y": 0
+    },
+    "DesktopSearch.dc.html": {
+      "h": 680,
+      "page": "desktop",
+      "title": "Global search",
+      "w": 1000,
+      "x": 1080,
+      "y": 1720
+    },
+    "DesktopSettings.dc.html": {
+      "h": 600,
+      "page": "desktop",
+      "title": "Settings — personalization",
+      "w": 780,
+      "x": 2160,
+      "y": 1720
+    },
+    "DesktopShare.dc.html": {
+      "h": 680,
+      "page": "desktop",
+      "title": "Shared directory",
+      "w": 1000,
+      "x": 2160,
+      "y": 920
+    },
+    "DesktopStartupError.dc.html": {
+      "h": 400,
+      "page": "pulse",
+      "title": "Startup error window",
+      "w": 560,
+      "x": 2400,
+      "y": 1900
+    },
+    "DesktopTasks.dc.html": {
+      "h": 680,
+      "page": "desktop",
+      "title": "Task center",
+      "w": 1000,
+      "x": 0,
+      "y": 1720
+    },
+    "Foundations.dc.html": {
+      "h": 1150,
+      "page": "pulse",
+      "title": "Foundations — color, type, motion",
+      "w": 1120,
+      "x": 0,
+      "y": 0
+    },
+    "IconSet.dc.html": {
+      "h": 900,
+      "page": "brand",
+      "title": "Icons — Rounded 2.0",
+      "w": 1200,
+      "x": 1500,
+      "y": 0
+    },
+    "Layout.dc.html": {
+      "h": 1640,
+      "page": "pulse",
+      "title": "Layout & responsive",
+      "w": 1120,
+      "x": 1200,
+      "y": 1900
+    },
+    "MobileChats.dc.html": {
+      "h": 844,
+      "page": "mobile",
+      "title": "Mobile chats — familiar list",
+      "w": 390,
+      "x": 0,
+      "y": 0
+    },
+    "MobileContacts.dc.html": {
+      "h": 844,
+      "page": "mobile",
+      "title": "Mobile contacts",
+      "w": 390,
+      "x": 2350,
+      "y": 0
+    },
+    "MobileDark.dc.html": {
+      "h": 844,
+      "page": "mobile",
+      "title": "Mobile dark",
+      "w": 390,
+      "x": 470,
+      "y": 1928
+    },
+    "MobileDiscover.dc.html": {
+      "h": 844,
+      "page": "mobile",
+      "title": "Mobile discover",
+      "w": 390,
+      "x": 1410,
+      "y": 0
+    },
+    "MobileEdgeCases.dc.html": {
+      "h": 960,
+      "page": "edge",
+      "title": "Mobile edge cases — long text",
+      "w": 1180,
+      "x": 1400,
+      "y": 0
+    },
+    "MobileEmpty.dc.html": {
+      "h": 844,
+      "page": "mobile",
+      "title": "Mobile empty",
+      "w": 390,
+      "x": 1410,
+      "y": 1928
+    },
+    "MobileFavorites.dc.html": {
+      "h": 844,
+      "page": "mobile",
+      "title": "Mobile favorites",
+      "w": 390,
+      "x": 940,
+      "y": 964
+    },
+    "MobileFriend.dc.html": {
+      "h": 844,
+      "page": "mobile",
+      "title": "Mobile friend",
+      "w": 390,
+      "x": 0,
+      "y": 964
+    },
+    "MobileGroupChat.dc.html": {
+      "h": 844,
+      "page": "mobile",
+      "title": "Mobile group",
+      "w": 390,
+      "x": 940,
+      "y": 0
+    },
+    "MobileMe.dc.html": {
+      "h": 844,
+      "page": "mobile",
+      "title": "Mobile me",
+      "w": 390,
+      "x": 1410,
+      "y": 964
+    },
+    "MobileOneToOne.dc.html": {
+      "h": 844,
+      "page": "mobile",
+      "title": "Mobile 1:1",
+      "w": 390,
+      "x": 470,
+      "y": 0
+    },
+    "MobilePersonalize.dc.html": {
+      "h": 844,
+      "page": "mobile",
+      "title": "Mobile personalize",
+      "w": 390,
+      "x": 1880,
+      "y": 0
+    },
+    "MobileRequests.dc.html": {
+      "h": 844,
+      "page": "mobile",
+      "title": "Mobile requests",
+      "w": 390,
+      "x": 470,
+      "y": 964
+    },
+    "MobileSearch.dc.html": {
+      "h": 844,
+      "page": "mobile",
+      "title": "Mobile search",
+      "w": 390,
+      "x": 0,
+      "y": 1928
+    },
+    "MobileSettings.dc.html": {
+      "h": 844,
+      "page": "mobile",
+      "title": "Mobile settings",
+      "w": 390,
+      "x": 1880,
+      "y": 964
+    },
+    "MobileSettingsSection.dc.html": {
+      "h": 844,
+      "page": "mobile",
+      "title": "Mobile chat style",
+      "w": 390,
+      "x": 2350,
+      "y": 964
+    },
+    "MobileStates.dc.html": {
+      "h": 844,
+      "page": "mobile",
+      "title": "Mobile failure states",
+      "w": 390,
+      "x": 940,
+      "y": 1928
+    },
+    "PrototypeDesktop.dc.html": {
+      "h": 680,
+      "is_interactive": true,
+      "page": "proto",
+      "title": "Interactive — desktop",
+      "w": 1000,
+      "x": 0,
+      "y": 0
+    },
+    "PrototypeMobile.dc.html": {
+      "h": 844,
+      "is_interactive": true,
+      "page": "proto",
+      "title": "Interactive — mobile",
+      "w": 390,
+      "x": 1080,
+      "y": 0
+    },
+    "PulseGapClosures.dc.html": {
+      "h": 940,
+      "page": "desktop",
+      "title": "Flow closures — search, multi-select, receipts, files, import, transfer",
+      "w": 1120,
+      "x": 0,
+      "y": 4280
+    },
+    "AppIcon.dc.html": {
+      "x": 0,
+      "y": 1020,
+      "w": 1400,
+      "h": 980,
+      "title": "App icon — 小院 cross-platform",
+      "page": "brand"
+    }
+  },
+  "createdOnFiles": {
+    "at": "2026-11-06T09:28:00Z",
+    "v": 1
+  },
+  "designSystems": [],
+  "launch": {
+    "view": "canvas"
+  },
+  "notes": {
+    "note-brand": {
+      "kind": "title1",
+      "maxW": 2800,
+      "page": "brand",
+      "text": "06 · Brand — 小院 mascot & Rounded 2.0 icons",
+      "x": 0,
+      "y": -300
+    },
+    "note-desktop": {
+      "kind": "title1",
+      "maxW": 3500,
+      "page": "desktop",
+      "text": "02 · Desktop coverage",
+      "x": 0,
+      "y": -300
+    },
+    "note-edge": {
+      "kind": "title1",
+      "maxW": 2800,
+      "page": "edge",
+      "text": "05 · Edge cases — long text, overflow, dense information",
+      "x": 0,
+      "y": -300
+    },
+    "note-mobile": {
+      "kind": "title1",
+      "maxW": 2740,
+      "page": "mobile",
+      "text": "03 · Mobile — 390 × 844",
+      "x": 0,
+      "y": -300
+    },
+    "note-proto": {
+      "kind": "title1",
+      "maxW": 1800,
+      "page": "proto",
+      "text": "04 · Interactive prototypes — press Play",
+      "x": 0,
+      "y": -300
+    },
+    "note-pulse": {
+      "kind": "title1",
+      "maxW": 3500,
+      "page": "pulse",
+      "text": "01 · Gosslan Pulse — 年轻团队工具",
+      "x": 0,
+      "y": -300
+    }
+  },
+  "order": [
+    "Foundations.dc.html",
+    "DesktopChats.dc.html",
+    "DesktopOneToOne.dc.html",
+    "DesktopGroupChat.dc.html",
+    "DesktopDiscover.dc.html",
+    "DesktopPersonalize.dc.html",
+    "DesktopPreviewWindow.dc.html",
+    "Layout.dc.html",
+    "DesktopStartupError.dc.html",
+    "DesktopRequests.dc.html",
+    "DesktopContacts.dc.html",
+    "DesktopGroupInfo.dc.html",
+    "DesktopFavorites.dc.html",
+    "DesktopLinks.dc.html",
+    "DesktopShare.dc.html",
+    "DesktopTasks.dc.html",
+    "DesktopSearch.dc.html",
+    "DesktopSettings.dc.html",
+    "DesktopGroupTasks.dc.html",
+    "DesktopLogs.dc.html",
+    "DesktopModals.dc.html",
+    "DesktopDark.dc.html",
+    "MobileChats.dc.html",
+    "MobileOneToOne.dc.html",
+    "MobileGroupChat.dc.html",
+    "MobileDiscover.dc.html",
+    "MobilePersonalize.dc.html",
+    "MobileContacts.dc.html",
+    "MobileFriend.dc.html",
+    "MobileRequests.dc.html",
+    "MobileFavorites.dc.html",
+    "MobileMe.dc.html",
+    "MobileSettings.dc.html",
+    "MobileSettingsSection.dc.html",
+    "MobileSearch.dc.html",
+    "MobileDark.dc.html",
+    "MobileStates.dc.html",
+    "MobileEmpty.dc.html",
+    "PulseGapClosures.dc.html",
+    "PrototypeDesktop.dc.html",
+    "PrototypeMobile.dc.html",
+    "DesktopEdgeCases.dc.html",
+    "MobileEdgeCases.dc.html",
+    "BrandMascot.dc.html",
+    "IconSet.dc.html",
+    "AppIcon.dc.html"
+  ],
+  "pages": [
+    {
+      "id": "pulse",
+      "name": "01 Pulse"
+    },
+    {
+      "id": "desktop",
+      "name": "02 Desktop coverage"
+    },
+    {
+      "id": "mobile",
+      "name": "03 Mobile"
+    },
+    {
+      "id": "proto",
+      "name": "04 Prototypes"
+    },
+    {
+      "id": "edge",
+      "name": "05 Edge cases"
+    },
+    {
+      "id": "brand",
+      "name": "06 Brand"
+    }
+  ],
+  "title": "Gosslan Pulse — Redesign v2.2"
+}

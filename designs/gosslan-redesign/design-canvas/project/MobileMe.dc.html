@@ -1,0 +1,92 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>Mobile — Me</title>
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+  *{box-sizing:border-box}
+  body{margin:0;background:#f4f4f1;font-family:"Inter",-apple-system,"PingFang SC","Microsoft YaHei",sans-serif;color:#17181a;-webkit-font-smoothing:antialiased}
+  .phone{width:390px;height:844px;background:#f8f8f5;display:flex;flex-direction:column;overflow:hidden}
+  .topbar{height:56px;flex:0 0 auto;display:flex;align-items:center;padding:0 16px;border-bottom:1px solid #e6e7e2}
+  .topbar h1{font-size:17px;line-height:24px;font-weight:600;margin:0}
+  .body{flex:1;overflow:hidden;padding:16px 14px 10px}
+  .profile{display:flex;align-items:center;gap:14px;padding:8px 6px 18px}
+  .avatar{width:64px;height:64px;border-radius:999px;background:#d9e2f7;color:#2356c4;display:flex;align-items:center;justify-content:center;font-size:24px;font-weight:600;position:relative;flex:0 0 auto}
+  .avatar .dot{position:absolute;right:0;bottom:2px;width:14px;height:14px;border-radius:999px;background:#22a06b;box-shadow:0 0 0 3px #f8f8f5}
+  .pMain{min-width:0;flex:1}
+  .name{font-size:21px;line-height:27px;font-weight:600;letter-spacing:-.01em;margin:0 0 3px}
+  .meta{font-size:11px;line-height:16px;color:#70747b;display:flex;align-items:center;gap:6px;flex-wrap:wrap}
+  .meta .mono{font-family:"JetBrains Mono",monospace;font-size:10px;color:#8a8d92}
+  .meta .sep{width:2px;height:2px;border-radius:999px;background:#c9cbc5;display:block}
+  .edit{width:44px;height:44px;border:0;border-radius:11px;background:#f1f2ee;color:#5a5d63;display:flex;align-items:center;justify-content:center;flex:0 0 auto}
+  .statusBar{display:flex;align-items:center;gap:6px;background:#e4f3ea;color:#14663f;border-radius:9px;padding:8px 11px;font-size:11px;margin-bottom:16px}
+  .statusBar i{width:6px;height:6px;border-radius:999px;background:#22a06b;display:block}
+  .statusBar .right{margin-left:auto;font-size:10px;color:#14663f}
+  .groupTitle{font-size:10.5px;font-weight:500;color:#70747b;margin:0 6px 6px}
+  .card{background:#fff;border-radius:12px;box-shadow:inset 0 0 0 1px #e6e7e2;overflow:hidden;margin-bottom:16px}
+  .row{min-height:54px;display:flex;align-items:center;gap:11px;padding:0 14px;border-bottom:1px solid #ecede9;font-size:14px;color:#17181a;cursor:pointer}
+  .row:last-child{border-bottom:0}
+  .row:active{background:#fafaf7}
+  .ico{width:30px;height:30px;border-radius:8px;display:flex;align-items:center;justify-content:center;flex:0 0 auto}
+  .i1{background:#e8effd;color:#2356c4}.i2{background:#e4f3ea;color:#14663f}.i3{background:#fbf0df;color:#8a4d00}
+  .row .label{flex:1}
+  .row .sub{font-size:10.5px;color:#8a8d92;margin-left:auto}
+  .chev{color:#b0b3b9}
+  .about{text-align:center;font-size:10px;line-height:16px;color:#8a8d92;margin-top:22px}
+  .about b{color:#5a5d63;font-weight:500}
+  .tabbar{height:56px;flex:0 0 auto;background:rgba(248,248,245,.96);border-top:1px solid #e6e7e2;display:flex;align-items:stretch;padding-bottom:env(safe-area-inset-bottom)}
+  .tab{flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:2px;border:0;background:transparent;color:#70747b;font:inherit;cursor:pointer;position:relative;min-height:44px}
+  .tab .pill{width:46px;height:26px;border-radius:999px;display:flex;align-items:center;justify-content:center;position:relative}
+  .tab.on{color:#2356c4}.tab.on .pill{background:#e8effd}
+  .tab .lbl{font-size:10px;line-height:12px;font-weight:500}
+  .tab .badge{position:absolute;top:-3px;right:4px;min-width:15px;height:15px;border-radius:999px;background:#2f6beb;color:#fff;font-size:8.5px;font-weight:600;line-height:15px;text-align:center;padding:0 3px;box-shadow:0 0 0 2px #f8f8f5}
+  svg{display:block}
+</style>
+</helmet>
+<div class="phone">
+  <div class="topbar"><h1>我的</h1></div>
+  <div class="body">
+    <div class="profile">
+      <div class="avatar">我<span class="dot"></span></div>
+      <div class="pMain"><h2 class="name">小院儿</h2><div class="meta"><span>在线</span><span class="sep"></span><span>这台 iPhone</span><span class="sep"></span><span class="mono">4F2A-9C1D</span></div></div>
+      <button class="edit" aria-label="编辑资料"><svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z"/></svg></button>
+    </div>
+
+    <div class="statusBar"><i></i>局域网已连接 · 4 台设备在线<span class="right">端到端加密</span></div>
+
+    <p class="groupTitle">应用</p>
+    <div class="card">
+      <div class="row"><span class="ico i1"><svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.9l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.9-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.9.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.9 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.9l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.9.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.9-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.9V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1Z"/></svg></span><span class="label">设置</span><svg class="chev" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m9 6 6 6-6 6"/></svg></div>
+      <div class="row"><span class="ico i2"><svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M10 13a5 5 0 0 0 7 0l2-2a5 5 0 0 0-7-7l-1 1"/><path d="M14 11a5 5 0 0 0-7 0l-2 2a5 5 0 0 0 7 7l1-1"/></svg></span><span class="label">链接</span><span class="sub">12 条</span><svg class="chev" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m9 6 6 6-6 6"/></svg></div>
+      <div class="row"><span class="ico i3"><svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 6h16M4 12h16M4 18h10"/></svg></span><span class="label">运行日志</span><svg class="chev" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m9 6 6 6-6 6"/></svg></div>
+    </div>
+
+    <p class="groupTitle">设备</p>
+    <div class="card">
+      <div class="row"><span class="ico i1"><svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="7" y="2" width="10" height="20" rx="2"/><path d="M11 18h2"/></svg></span><span class="label">这台设备</span><span class="sub">iPhone · 已加密</span></div>
+      <div class="row"><span class="ico i2"><svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3 4 6v6c0 5 3.4 8 8 9 4.6-1 8-4 8-9V6Z"/><path d="m9 12 2 2 4-4"/></svg></span><span class="label">安全与加密</span><span class="sub">密钥正常</span><svg class="chev" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m9 6 6 6-6 6"/></svg></div>
+    </div>
+
+    <div class="about"><b>Gosslan 5.18.35</b><br>无服务器 · 端到端加密 · 数据仅保存在本机</div>
+  </div>
+  <nav class="tabbar" aria-label="主导航">
+    <button class="tab"><span class="pill"><svg width="21" height="21" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 15a3 3 0 0 1-3 3H8l-4 3V6a3 3 0 0 1 3-3h10a3 3 0 0 1 3 3Z"/><path d="M9 10h6M9 13.5h4"/></svg><span class="badge">3</span></span><span class="lbl">聊天</span></button>
+    <button class="tab"><span class="pill"><svg width="21" height="21" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M16 20v-1.5a4 4 0 0 0-4-4H7a4 4 0 0 0-4 4V20"/><circle cx="9.5" cy="7" r="3"/><path d="M17 4.5a3 3 0 0 1 0 5.5M21 20v-1.4a3.6 3.6 0 0 0-2.6-3.4"/></svg><span class="badge">2</span></span><span class="lbl">通讯录</span></button>
+    <button class="tab"><span class="pill"><svg width="21" height="21" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m12 3 2.7 5.5 6.1.9-4.4 4.3 1 6-5.4-2.8-5.4 2.8 1-6-4.4-4.3 6.1-.9Z"/></svg></span><span class="lbl">收藏</span></button>
+    <button class="tab on" aria-current="page"><span class="pill"><svg width="21" height="21" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="8" r="4"/><path d="M4 21a8 8 0 0 1 16 0"/></svg></span><span class="lbl">我的</span></button>
+  </nav>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"$preview":{"width":390,"height":844}}'>
+class Component extends DCLogic {
+  renderVals() { return {}; }
+}
+</script>
+</body>
+</html>

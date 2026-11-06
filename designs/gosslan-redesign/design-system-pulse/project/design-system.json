@@ -1,0 +1,14 @@
+{
+  "v": 3,
+  "layout": "files",
+  "createdOnFiles": { "v": 1, "at": "2026-11-06T09:18:00Z" },
+  "title": "Gosslan Pulse",
+  "namespace": "GosslanPulse",
+  "libraries": [],
+  "sections": {},
+  "groups": [],
+  "assetGroups": {},
+  "blobs": {},
+  "docs": { "readme": "project/README.md", "sections": [] },
+  "lastChange": { "by": "Qoder", "at": "2026-11-06T10:20:00Z", "via": "Qoder Desktop", "note": "v2.2: compact Apple-inspired geometry, overflow-safe text, 小院 mascot and Rounded 2.0 icon set." }
+}

@@ -1,0 +1,427 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>Prototype — Mobile</title>
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+  *{box-sizing:border-box}
+  body{margin:0;background:#f2f3f5;font-family:-apple-system,BlinkMacSystemFont,"PingFang SC","Microsoft YaHei","Segoe UI",sans-serif;color:#1f2329;-webkit-font-smoothing:antialiased}
+  .phone{width:390px;height:844px;background:#f7f8fa;display:flex;flex-direction:column;overflow:hidden;position:relative}
+  .topbar{height:56px;flex:0 0 auto;display:flex;align-items:center;gap:8px;padding:0 8px 0 14px;background:#f7f8fa;border-bottom:1px solid #e5e6eb;z-index:2}
+  .topbar.chat{background:#fff;border-bottom-color:#eef0f2;padding-left:2px}
+  .me{width:32px;height:32px;border-radius:999px;background:#dcd3ff;color:#1f5ae8;display:flex;align-items:center;justify-content:center;font-size:12px;font-weight:600;position:relative;flex:0 0 auto}
+  .me .dot{position:absolute;right:-1px;bottom:0;width:10px;height:10px;border-radius:999px;background:#07c160;box-shadow:0 0 0 2px #f7f8fa}
+  .topbar h1{font-size:17px;line-height:24px;font-weight:600;margin:0;flex:1}
+  .topBtn{width:44px;height:44px;border:0;border-radius:10px;background:transparent;color:#3a3f47;display:flex;align-items:center;justify-content:center;cursor:pointer;margin-right:-4px}
+  .topBtn:active{background:#eef0f2}
+  .back{width:44px;height:44px;border:0;border-radius:10px;background:transparent;color:#3a3f47;display:flex;align-items:center;justify-content:center;cursor:pointer;flex:0 0 auto}
+  .back:active{background:#f2f3f5}
+  .hAv{width:30px;height:30px;border-radius:999px;display:flex;align-items:center;justify-content:center;font-size:12px;font-weight:600;position:relative;flex:0 0 auto}
+  .hAv.a2{background:#f5e6dc;color:#8a4b22}.hAv.a3{background:#e0f5ef;color:#068a4a}.hAv.a4{background:#eee6f7;color:#6b4aa3}
+  .hAv .dot{position:absolute;right:-1px;bottom:0;width:9px;height:9px;border-radius:999px;background:#07c160;box-shadow:0 0 0 2px #fff}
+  .hAv .dot.off{background:#a9a2b8}
+  .hName{font-size:15px;line-height:20px;font-weight:600}
+  .hMeta{font-size:10.5px;line-height:14px;color:#068a4a;display:flex;align-items:center;gap:4px;margin-top:1px}
+  .hMeta i{width:5px;height:5px;border-radius:999px;background:#07c160;display:block}
+  .searchWrap{padding:6px 14px 8px;flex:0 0 auto}
+  .search{height:36px;border-radius:9px;background:#f2f3f5;display:flex;align-items:center;gap:7px;padding:0 10px;color:#8a9099;font-size:13px}
+  .section{padding:8px 16px 2px;font-size:11px;font-weight:500;color:#8a9099;display:flex;align-items:center;gap:6px}
+  .pin{font-size:10px;background:#eef0f2;border-radius:4px;padding:1px 5px;color:#8a9099}
+  .rows{flex:1;overflow:hidden;min-height:0}
+  .row{height:68px;display:flex;align-items:center;gap:12px;padding:0 16px;position:relative;cursor:pointer}
+  .row:active{background:#f2f3f5}.row.sel{background:#e8f0ff}
+  .avatar{width:44px;height:44px;border-radius:999px;display:flex;align-items:center;justify-content:center;font-size:15px;font-weight:600;flex:0 0 auto;position:relative}
+  .avatar.sq{border-radius:14px}
+  .g4{display:grid;grid-template-columns:repeat(2,1fr);grid-template-rows:repeat(2,1fr);gap:2px;padding:5px;background:#e8f0ff}
+  .g4 span{border-radius:3px;display:block}.g4 .g1{background:#b9c8f6}.g4 .g2{background:#e8b28a}.g4 .g3{background:#9fdbcd}.g4 .g4c{background:#cbbbe2}
+  .a2{background:#f5e6dc;color:#8a4b22}.a3{background:#e0f5ef;color:#068a4a}.a4{background:#eee6f7;color:#6b4aa3}.a5{background:#ffecec;color:#d93a3a}
+  .pdot{position:absolute;right:-1px;bottom:0;width:11px;height:11px;border-radius:999px;background:#07c160;box-shadow:0 0 0 2px #f7f8fa}
+  .pdot.off{background:#a9a2b8}.row.sel .pdot{box-shadow:0 0 0 2px #e8f0ff}
+  .rmain{min-width:0;flex:1}
+  .rline{display:flex;align-items:baseline;gap:8px}
+  .rname{font-size:15px;line-height:20px;font-weight:500;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .rname.unread{font-weight:600}
+  .rtime{margin-left:auto;font-size:11px;line-height:14px;color:#8a9099;flex:0 0 auto}
+  .rprev{display:flex;align-items:center;gap:6px;margin-top:2px}
+  .rprev > span:first-of-type{font-size:13px;line-height:18px;color:#5a6068;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;flex:1;min-width:0}
+  .rbadge{min-width:18px;height:18px;padding:0 5px;border-radius:999px;background:#fa5151;color:#fff;font-size:10px;font-weight:600;line-height:18px;text-align:center;flex:0 0 auto}
+  .divider{height:1px;background:#eef0f2;margin-left:72px}
+  .tabbar{height:56px;flex:0 0 auto;background:rgba(248,248,245,.96);border-top:1px solid #e5e6eb;display:flex;align-items:stretch;padding-bottom:env(safe-area-inset-bottom)}
+  .tab{flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:2px;border:0;background:transparent;color:#8a9099;font:inherit;cursor:pointer;position:relative;min-height:44px}
+  .tab .pill{width:46px;height:26px;border-radius:999px;display:flex;align-items:center;justify-content:center;position:relative}
+  .tab.on{color:#1f5ae8}.tab.on .pill{background:#e8f0ff}
+  .tab .lbl{font-size:10px;line-height:12px;font-weight:500}
+  .tab .badge{position:absolute;top:-3px;right:5px;min-width:15px;height:15px;border-radius:999px;background:#2f6bff;color:#fff;font-size:10px;font-weight:600;line-height:15px;text-align:center;padding:0 3px;box-shadow:0 0 0 2px #f7f8fa}
+  .msgs{flex:1;overflow:hidden;padding:6px 14px 10px;position:relative;background:#fff}
+  .day{text-align:center;font-size:10.5px;color:#8a9099;margin:10px 0 12px}
+  .run{display:flex;margin-bottom:12px;align-items:flex-start}
+  .run.own{justify-content:flex-end}
+  .runBody{max-width:78%;min-width:0}
+  .stack{display:flex;flex-direction:column;gap:2px}
+  .bubble{padding:9px 13px;border-radius:20px;font-size:15px;line-height:21px;width:fit-content;max-width:100%;cursor:pointer}
+  .in{background:#f2f3f5;color:#1f2329;border-bottom-left-radius:6px;box-shadow:inset 0 0 0 1px #e5e6eb}
+  .out{background:#2f6bff;color:#fff;border-bottom-right-radius:6px;margin-left:auto}
+  .meta{display:flex;align-items:center;gap:4px;font-size:10.5px;color:#8a9099;margin-top:4px}
+  .own .meta{justify-content:flex-end}
+  .reacts{display:flex;gap:4px;margin-top:-2px;margin-left:6px}
+  .react{display:inline-flex;align-items:center;height:22px;padding:0 8px;border-radius:999px;background:#fff;box-shadow:inset 0 0 0 1px #e5e6eb;font-size:11px;color:#5a6068}
+  .composer{flex:0 0 auto;margin:0 10px 10px;background:#fff;padding:7px 8px;border-radius:22px;display:flex;align-items:flex-end;gap:4px;box-shadow:0 12px 30px rgba(31,35,41,.16),inset 0 0 0 1px #eef0f2}
+  .ib{width:44px;height:44px;border:0;border-radius:10px;background:transparent;color:#5a6068;display:flex;align-items:center;justify-content:center;flex:0 0 auto;cursor:pointer}
+  .ib:active{background:#f2f3f5}
+  .inputWrap{flex:1;min-height:40px;border-radius:20px;background:#f2f3f5;display:flex;align-items:center;padding:0 12px;margin:2px 0}
+  .input{border:0;background:transparent;outline:none;font:inherit;font-size:15px;line-height:20px;color:#1f2329;padding:9px 0;width:100%}
+  .input::placeholder{color:#8a9099}
+  .send{width:40px;height:40px;border-radius:999px;border:0;background:#2f6bff;color:#fff;display:flex;align-items:center;justify-content:center;flex:0 0 auto;margin:2px 0;cursor:pointer}
+  .send:active{background:#5a49d6}
+  .sheetScrim{position:absolute;inset:0;background:rgba(16,17,20,.42);z-index:5}
+  .sheet{position:absolute;left:0;right:0;bottom:0;background:#fff;border-radius:16px 16px 0 0;box-shadow:0 -8px 32px rgba(16,17,20,.18);z-index:6;padding:10px 12px 16px}
+  .sheetHead{font-size:10.5px;color:#8a9099;padding:2px 4px 10px}
+  .reactRow{display:flex;gap:6px;justify-content:space-between}
+  .reactOpt{flex:1;height:60px;border:0;border-radius:14px;background:#f7f8fa;box-shadow:inset 0 0 0 1px #e5e6eb;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:3px;font:inherit;font-size:10px;color:#5a6068;cursor:pointer}
+  .reactOpt:active{background:#e8f0ff;color:#1f5ae8;box-shadow:none}
+  .sheetCancel{height:48px;margin-top:10px;border-radius:14px;background:#f2f3f5;display:flex;align-items:center;justify-content:center;font-size:14px;font-weight:500;color:#3a3f47}
+  .toastWrap{position:absolute;left:50%;bottom:18px;transform:translateX(-50%);z-index:8;width:calc(100% - 32px);display:flex;justify-content:center}
+  .toast{display:flex;align-items:center;gap:8px;min-height:42px;padding:9px 12px;background:#2c2f33;color:#f2f3f5;border-radius:10px;box-shadow:0 8px 24px rgba(0,0,0,.24);font-size:12px;width:fit-content;max-width:100%}
+  .toast .ok{width:18px;height:18px;border-radius:999px;background:rgba(69,199,141,.16);color:#5cefd6;display:flex;align-items:center;justify-content:center;flex:0 0 auto}
+  .toast .x{margin-left:6px;border:0;background:transparent;color:#8a9099;width:22px;height:22px;border-radius:5px;cursor:pointer}
+  .toast .x:active{background:#2d3036}
+  .simplePage{flex:1;overflow:hidden;background:#f7f8fa}
+  .bigEmpty{height:100%;display:flex;flex-direction:column;align-items:center;justify-content:center;text-align:center;padding:0 32px}
+  .bigEmpty .ic{width:56px;height:56px;border-radius:16px;background:#fff;box-shadow:inset 0 0 0 1px #e5e6eb;color:#8a9099;display:flex;align-items:center;justify-content:center;margin-bottom:14px}
+  .bigEmpty h3{font-size:17px;line-height:24px;font-weight:600;margin:0 0 5px}
+  .bigEmpty p{font-size:12px;line-height:18px;color:#5a6068;margin:0}
+  .favRow{display:flex;gap:11px;padding:13px 16px;border-bottom:1px solid #eef0f2;background:#fff;cursor:pointer}
+  .favRow:active{background:#fafaf7}
+  .type{width:38px;height:38px;border-radius:9px;background:#e8f0ff;color:#1f5ae8;display:flex;align-items:center;justify-content:center;flex:0 0 auto}
+  .fMain{min-width:0;flex:1}
+  .fTitle{font-size:14px;line-height:19px;font-weight:500;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .fSub{font-size:11px;color:#8a9099;margin-top:2px}
+  .mePage{flex:1;overflow:hidden;background:#f7f8fa;padding:16px 14px}
+  .meHead{display:flex;align-items:center;gap:12px;padding:6px 6px 18px}
+  .meAv{width:60px;height:60px;border-radius:999px;background:#dcd3ff;color:#1f5ae8;display:flex;align-items:center;justify-content:center;font-size:22px;font-weight:600;position:relative;flex:0 0 auto}
+  .meAv .dot{position:absolute;right:0;bottom:1px;width:13px;height:13px;border-radius:999px;background:#07c160;box-shadow:0 0 0 3px #f7f8fa}
+  .meName{font-size:19px;line-height:25px;font-weight:600}
+  .meMeta{font-size:10.5px;color:#8a9099;margin-top:2px}
+  .card{background:#fff;border-radius:14px;box-shadow:inset 0 0 0 1px #e5e6eb;overflow:hidden;margin-bottom:14px}
+  .mRow{height:52px;display:flex;align-items:center;gap:10px;padding:0 14px;border-bottom:1px solid #eef0f2;font-size:13.5px}
+  .mRow:last-child{border-bottom:0}
+  .mRow .ico{width:28px;height:28px;border-radius:7px;background:#e8f0ff;color:#1f5ae8;display:flex;align-items:center;justify-content:center}
+  .mRow .chev{margin-left:auto;color:#b0b3b9}
+  .g4{background:linear-gradient(#b9c8f6,#b9c8f6) left top/calc(50% - 1px) calc(50% - 1px) no-repeat,linear-gradient(#e8b28a,#e8b28a) right top/calc(50% - 1px) calc(50% - 1px) no-repeat,linear-gradient(#9fdbcd,#9fdbcd) left bottom/calc(50% - 1px) calc(50% - 1px) no-repeat,linear-gradient(#cbbbe2,#cbbbe2) right bottom/calc(50% - 1px) calc(50% - 1px) no-repeat,#e8f0ff}
+  .dStage{position:absolute;inset:0;z-index:9;overflow:hidden;background:#f7f8fa;display:flex;flex-direction:column;padding:0 16px}
+  .dTop{height:54px;display:flex;align-items:center;gap:8px;flex:0 0 auto}
+  .dBack{width:38px;height:38px;border:0;border-radius:11px;background:#fff;color:#3a3f47;display:flex;align-items:center;justify-content:center;box-shadow:inset 0 0 0 1px #e5e6eb}
+  .dTop h2{font-family:-apple-system,BlinkMacSystemFont,"PingFang SC","Microsoft YaHei","Segoe UI",sans-serif;font-size:17px;font-weight:600;margin:0;flex:1}
+  .dSeg{display:flex;gap:2px;background:#fff;border-radius:9px;padding:3px;box-shadow:inset 0 0 0 1px #e5e6eb}
+  .dSeg span{height:26px;padding:0 8px;border-radius:7px;display:flex;align-items:center;font-size:10px;font-weight:600;color:#8a9099}
+  .dSeg span.on{background:#e8f0ff;color:#1f5ae8}
+  .dHero{padding:6px 2px 10px;flex:0 0 auto}
+  .dHero h3{font-family:-apple-system,BlinkMacSystemFont,"PingFang SC","Microsoft YaHei","Segoe UI",sans-serif;font-size:27px;line-height:32px;font-weight:600;letter-spacing:-.04em;margin:0 0 4px}
+  .dHero h3 em{font-style:normal;background:#2f6bff;-webkit-background-clip:text;background-clip:text;color:transparent}
+  .dHero p{font-size:10.5px;line-height:16px;color:#5a6068;margin:0}
+  .dHero p b{color:#1f2329;font-weight:600}
+  .dCards{display:flex;flex-direction:column;gap:7px;flex:1;overflow:hidden}
+  .dCard{display:flex;align-items:center;gap:9px;background:rgba(255,255,255,.92);border-radius:13px;box-shadow:inset 0 0 0 1px #e5e6eb,0 6px 16px rgba(31,35,41,.07);padding:9px}
+  .dAv{width:38px;height:38px;border-radius:999px;display:flex;align-items:center;justify-content:center;font-size:12px;font-weight:700;flex:0 0 auto;box-shadow:0 0 0 2px #fff,0 4px 10px rgba(31,35,41,.14)}
+  .dMain{min-width:0;flex:1}
+  .dName{font-family:-apple-system,BlinkMacSystemFont,"PingFang SC","Microsoft YaHei","Segoe UI",sans-serif;font-size:11.5px;font-weight:600}
+  .dMeta{font-size:10px;color:#8a9099;margin-top:1px}
+  .dBtn{height:28px;padding:0 8px;border:0;border-radius:8px;font:inherit;font-size:10px;font-weight:700;background:#2f6bff;color:#fff;flex:0 0 auto}
+  .dBtn.wait{background:#f2f3f5;color:#8a9099}.dBtn.msg{background:#e8f8ee;color:#068a4a}
+  .dFoot{display:flex;align-items:center;gap:6px;padding:9px 0 14px;font-size:10px;color:#8a9099;flex:0 0 auto}
+  .dInvite{display:flex;align-items:center;gap:5px;background:#fff;border-radius:8px;box-shadow:inset 0 0 0 1px #e5e6eb;padding:4px 7px;font-size:10px}
+  .dInvite code{font-family:"JetBrains Mono",monospace;font-size:10px;color:#1f5ae8}
+  .dFoot .right{margin-left:auto;color:#1f5ae8;font-weight:600}
+  svg{display:block}
+</style>
+<style>h1,h2,h3,h4,.hName,.hTitle,.name,.pName,.rname,.fName,.fname,.cardTitle,.dTitle,.empty h3,.emptyIn h3,.bigEmpty h3,.infoName,.title,.setHead h3,.modal h3,.mHead h3,.h2,.fTitle{font-family:-apple-system,BlinkMacSystemFont,"PingFang SC","Microsoft YaHei","Segoe UI",sans-serif}</style>
+<style>.dStage{background:#f7f8fa}.dHero h3{font-size:22px;line-height:27px;letter-spacing:-.01em}</style>
+<style>.composer{margin:0;padding:8px 10px;background:#fff;border-top:1px solid #eef0f2;border-radius:0;box-shadow:none}</style>
+<style>
+/* edge cases: long names, long words, tight rows */
+.hText{min-width:0;flex:1}
+.hName,.hMeta{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.bubble{overflow-wrap:anywhere;word-break:break-word}
+.dName,.dMeta{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.dCards{overflow-y:auto;min-height:0}
+.toast{max-width:100%}
+.toastText,.toast .sc-interp{min-width:0;flex:1;overflow-wrap:anywhere;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
+</style>
+<style>
+/* v2.2 compact apple-like geometry */
+.topbar{height:52px;padding:0 6px 0 12px}
+.topbar h1{font-size:18px;line-height:23px}
+.me{width:30px;height:30px}
+.searchWrap{padding:6px 12px 4px}
+.search{height:36px;border-radius:11px}
+.section{padding:6px 14px 2px;font-size:10.5px}
+.row{height:64px;gap:10px;padding:0 14px}
+.avatar{width:42px;height:42px;border-radius:999px;font-size:14px}
+.avatar.sq{border-radius:13px}
+.pdot{width:10px;height:10px}
+.rname{font-size:15px;line-height:20px}
+.rtime{font-size:11px}
+.rprev > span:first-of-type{font-size:12.5px;line-height:17px}
+.rbadge{min-width:18px;height:18px;font-size:10.5px;line-height:18px}
+.divider{margin-left:66px}
+.tabbar{height:56px}
+.tab .lbl{font-size:10.5px;line-height:13px}
+.tab .badge{font-size:10.5px;min-width:16px;height:16px;line-height:16px}
+.hAvatar{width:30px;height:30px}
+.hName{font-size:15px;line-height:20px}
+.hMeta{font-size:10.5px;line-height:14px}
+.msgs{padding:6px 12px 10px}
+.run{margin-bottom:10px}
+.bubble{padding:8px 12px;border-radius:20px;font-size:14.5px;line-height:20px}
+.meta{font-size:10.5px}
+.composer{padding:7px 8px;border-radius:20px}
+.inputWrap{min-height:36px;border-radius:11px}
+.input{padding:8px 0;font-size:14.5px}
+.send{width:34px;height:34px}
+.dCard{border-radius:16px;padding:9px}
+</style>
+</helmet>
+<div class="phone">
+  <!-- Chats list -->
+  <sc-if value="{{ isChatsList }}" hint-placeholder-val="{{ true }}">
+    <div class="topbar"><div class="me">我<span class="dot"></span></div><h1>聊天</h1><button class="topBtn" onClick="{{ openDiscover }}" aria-label="添加好友"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" aria-hidden="true"><path d="M12 5.5v13M5.5 12h13"/></svg></button></div>
+    <div class="searchWrap"><div class="search" onClick="{{ demoOnly }}"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" aria-hidden="true"><circle cx="10.5" cy="10.5" r="6.2"/><path d="m15.2 15.2 4.3 4.3"/></svg>搜索会话、联系人或消息</div></div>
+    <div class="section"><span class="pin">置顶</span></div>
+    <div class="rows">
+      <sc-for list="{{ convs }}" as="c" hint-placeholder-count="4">
+        <div class="row" onClick="{{ c.pick }}">
+          <div class="{{ c.avatarClass }}">
+            <sc-if value="{{ c.isPerson }}" hint-placeholder-val="{{ true }}">{{ c.initial }}<span class="{{ c.dotClass }}"></span></sc-if>
+          </div>
+          <div class="rmain"><div class="rline"><span class="rname {{ c.nameClass }}">{{ c.name }}</span><span class="rtime">{{ c.time }}</span></div><div class="rprev"><span>{{ c.preview }}</span><sc-if value="{{ c.showBadge }}"><span class="rbadge">{{ c.badge }}</span></sc-if></div></div>
+        </div>
+        <div class="divider"></div>
+      </sc-for>
+    </div>
+    <nav class="tabbar" aria-label="主导航">
+      <button class="tab on" onClick="{{ goChats }}"><span class="pill"><svg width="21" height="21" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4.5 7.5A3.5 3.5 0 0 1 8 4h8a3.5 3.5 0 0 1 3.5 3.5v5a3.5 3.5 0 0 1-3.5 3.5h-5.2L7 19v-3.1a3.5 3.5 0 0 1-2.5-3.4Z"/><path d="M8.5 8.5h7M8.5 11.5h4"/></svg><span class="badge">3</span></span><span class="lbl">聊天</span></button>
+      <button class="tab" onClick="{{ goContacts }}"><span class="pill"><svg width="21" height="21" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="9" cy="8" r="3.2"/><path d="M3.5 19.5v-1a5 5 0 0 1 5-5h1a5 5 0 0 1 5 5v1"/><path d="M16 5.2a3.2 3.2 0 0 1 0 5.6M17.5 13.8a4.8 4.8 0 0 1 3 4.4v1.3"/></svg><span class="badge">2</span></span><span class="lbl">通讯录</span></button>
+      <button class="tab" onClick="{{ goFav }}"><span class="pill"><svg width="21" height="21" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M7 4.5A2.5 2.5 0 0 1 9.5 2h5A2.5 2.5 0 0 1 17 4.5V21l-5-3-5 3Z"/></svg></span><span class="lbl">收藏</span></button>
+      <button class="tab" onClick="{{ goMe }}"><span class="pill"><svg width="21" height="21" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="8" r="3.5"/><path d="M5 20.5v-1.2a6 6 0 0 1 6-6h2a6 6 0 0 1 6 6v1.2"/></svg></span><span class="lbl">我的</span></button>
+    </nav>
+  </sc-if>
+
+  <!-- Chat -->
+  <sc-if value="{{ isChat }}" hint-placeholder-val="{{ true }}">
+    <div class="topbar chat">
+      <button class="back" onClick="{{ goBack }}" aria-label="返回"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M15 5.5 8.5 12l6.5 6.5"/></svg></button>
+      <div class="{{ activeAvatarClass }}">
+        <sc-if value="{{ isPersonChat }}">{{ activeInitial }}<span class="{{ activeDotClass }}"></span></sc-if>
+      </div>
+      <div class="hText"><div class="hName">{{ activeTitle }}</div><div class="hMeta"><sc-if value="{{ isGroupChat }}"><i></i></sc-if>{{ activeMeta }}</div></div>
+      <button class="topBtn" onClick="{{ demoOnly }}" aria-label="更多"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" aria-hidden="true"><circle cx="5.5" cy="12" r="1.4" fill="currentColor" stroke="none"/><circle cx="12" cy="12" r="1.4" fill="currentColor" stroke="none"/><circle cx="18.5" cy="12" r="1.4" fill="currentColor" stroke="none"/></svg></button>
+    </div>
+    <div class="msgs">
+      <div class="day">今天 14:20</div>
+      <sc-for list="{{ messages }}" as="m" hint-placeholder-count="5">
+        <div class="{{ m.runClass }}">
+          <div class="runBody">
+            <div class="{{ m.bubbleClass }}" onClick="{{ m.pick }}">{{ m.text }}</div>
+            <sc-if value="{{ m.showReaction }}" hint-placeholder-val="{{ true }}"><div class="reacts"><span class="react">{{ m.reaction }}</span></div></sc-if>
+            <div class="meta">{{ m.time }}<sc-if value="{{ m.own }}"> · 已读</sc-if></div>
+          </div>
+        </div>
+      </sc-for>
+    </div>
+    <div class="composer">
+      <button class="ib" onClick="{{ demoOnly }}" aria-label="添加附件"><svg width="23" height="23" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m19.5 11.8-8.1 8.1a4.6 4.6 0 0 1-6.5-6.5l8.8-8.8a3.1 3.1 0 0 1 4.4 4.4l-8.8 8.8a1.6 1.6 0 0 1-2.3-2.3l8-8"/></svg></button>
+      <div class="inputWrap"><input class="input" placeholder="发消息…" value="{{ draft }}" onInput="{{ onInput }}" onKeyDown="{{ onKey }}"></div>
+      <button class="send" onClick="{{ send }}" aria-label="发送"><svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 18.5v-12M7.5 11 12 6.5l4.5 4.5"/></svg></button>
+    </div>
+  </sc-if>
+
+  <!-- Contacts -->
+  <sc-if value="{{ isContacts }}" hint-placeholder-val="{{ true }}">
+    <div class="topbar"><h1>通讯录</h1><button class="topBtn" onClick="{{ demoOnly }}" aria-label="添加好友"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M15 20v-1.5a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4V20"/><circle cx="8.5" cy="7" r="3"/><path d="M18 8v6M15 11h6"/></svg></button></div>
+    <div class="searchWrap"><div class="search"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" aria-hidden="true"><circle cx="10.5" cy="10.5" r="6.2"/><path d="m15.2 15.2 4.3 4.3"/></svg>搜索联系人</div></div>
+    <div class="rows">
+      <div class="row" onClick="{{ demoOnly }}"><div class="avatar" style="background:#e8f0ff;color:#1f5ae8"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M15 20v-1.5a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4V20"/><circle cx="8.5" cy="7" r="3.2"/><path d="M18 8v6M15 11h6"/></svg></div><div class="rmain"><div class="rname">新的朋友</div><div class="rprev"><span>李知远 请求添加你为好友</span></div></div><span class="rbadge">2</span></div>
+      <div class="divider"></div>
+      <div class="section">在线 · 3 位</div>
+      <div class="row" onClick="{{ openLin }}"><div class="avatar a2">林<span class="pdot"></span></div><div class="rmain"><div class="rname">林一</div><div class="rprev"><span>iPhone · 局域网</span></div></div></div>
+      <div class="divider"></div>
+      <div class="row" onClick="{{ openLin }}"><div class="avatar a3">张<span class="pdot"></span></div><div class="rmain"><div class="rname">张野</div><div class="rprev"><span>Windows · 2 跳</span></div></div></div>
+      <div class="divider"></div>
+      <div class="section">离线 · 2 位</div>
+      <div class="row" onClick="{{ openZhou }}"><div class="avatar a4">周<span class="pdot off"></span></div><div class="rmain"><div class="rname">周岚</div><div class="rprev"><span>上次 10 月 30 日</span></div></div></div>
+      <div class="divider"></div>
+    </div>
+    <nav class="tabbar"><button class="tab" onClick="{{ goChats }}"><span class="pill"><svg width="21" height="21" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4.5 7.5A3.5 3.5 0 0 1 8 4h8a3.5 3.5 0 0 1 3.5 3.5v5a3.5 3.5 0 0 1-3.5 3.5h-5.2L7 19v-3.1a3.5 3.5 0 0 1-2.5-3.4Z"/><path d="M8.5 8.5h7M8.5 11.5h4"/></svg><span class="badge">3</span></span><span class="lbl">聊天</span></button><button class="tab on"><span class="pill"><svg width="21" height="21" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="9" cy="8" r="3.2"/><path d="M3.5 19.5v-1a5 5 0 0 1 5-5h1a5 5 0 0 1 5 5v1"/><path d="M16 5.2a3.2 3.2 0 0 1 0 5.6M17.5 13.8a4.8 4.8 0 0 1 3 4.4v1.3"/></svg><span class="badge">2</span></span><span class="lbl">通讯录</span></button><button class="tab" onClick="{{ goFav }}"><span class="pill"><svg width="21" height="21" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M7 4.5A2.5 2.5 0 0 1 9.5 2h5A2.5 2.5 0 0 1 17 4.5V21l-5-3-5 3Z"/></svg></span><span class="lbl">收藏</span></button><button class="tab" onClick="{{ goMe }}"><span class="pill"><svg width="21" height="21" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="8" r="3.5"/><path d="M5 20.5v-1.2a6 6 0 0 1 6-6h2a6 6 0 0 1 6 6v1.2"/></svg></span><span class="lbl">我的</span></button></nav>
+  </sc-if>
+
+  <!-- Favorites -->
+  <sc-if value="{{ isFavorites }}" hint-placeholder-val="{{ true }}">
+    <div class="topbar"><h1>收藏</h1><button class="topBtn" onClick="{{ demoOnly }}" aria-label="搜索收藏"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" aria-hidden="true"><circle cx="10.5" cy="10.5" r="6.2"/><path d="m15.2 15.2 4.3 4.3"/></svg></button></div>
+    <div class="searchWrap"><div class="search"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" aria-hidden="true"><circle cx="10.5" cy="10.5" r="6.2"/><path d="m15.2 15.2 4.3 4.3"/></svg>搜索收藏内容</div></div>
+    <div class="rows" style="background:#fff">
+      <div class="favRow" onClick="{{ demoOnly }}"><div class="type"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4.5 7.5A3.5 3.5 0 0 1 8 4h8a3.5 3.5 0 0 1 3.5 3.5v5a3.5 3.5 0 0 1-3.5 3.5h-5.2L7 19v-3.1a3.5 3.5 0 0 1-2.5-3.4Z"/><path d="M8.5 8.5h7M8.5 11.5h4"/></svg></div><div class="fMain"><div class="fTitle">评审改到 3 点，会议室 B</div><div class="fSub">林一 · 设计组 · 10 月 28 日</div></div></div>
+      <div class="favRow" onClick="{{ demoOnly }}"><div class="type" style="background:#e8f8ee;color:#068a4a"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="4" width="18" height="16" rx="2"/><circle cx="9" cy="10" r="1.5"/><path d="m4 18 5-5 4 4 2-2 5 5"/></svg></div><div class="fMain"><div class="fTitle">IMG_2041.jpg</div><div class="fSub">林一 · 1.8 MB · 10 月 28 日</div></div></div>
+      <div class="favRow" onClick="{{ demoOnly }}"><div class="type" style="background:#f8f1e2;color:#8a4b22"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8Z"/><path d="M14 3v5h5"/></svg></div><div class="fMain"><div class="fTitle">评审材料-v3.pdf</div><div class="fSub">阿泽 · 2.4 MB · 10 月 27 日</div></div></div>
+    </div>
+    <nav class="tabbar"><button class="tab" onClick="{{ goChats }}"><span class="pill"><svg width="21" height="21" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4.5 7.5A3.5 3.5 0 0 1 8 4h8a3.5 3.5 0 0 1 3.5 3.5v5a3.5 3.5 0 0 1-3.5 3.5h-5.2L7 19v-3.1a3.5 3.5 0 0 1-2.5-3.4Z"/><path d="M8.5 8.5h7M8.5 11.5h4"/></svg><span class="badge">3</span></span><span class="lbl">聊天</span></button><button class="tab" onClick="{{ goContacts }}"><span class="pill"><svg width="21" height="21" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="9" cy="8" r="3.2"/><path d="M3.5 19.5v-1a5 5 0 0 1 5-5h1a5 5 0 0 1 5 5v1"/><path d="M16 5.2a3.2 3.2 0 0 1 0 5.6M17.5 13.8a4.8 4.8 0 0 1 3 4.4v1.3"/></svg><span class="badge">2</span></span><span class="lbl">通讯录</span></button><button class="tab on"><span class="pill"><svg width="21" height="21" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M7 4.5A2.5 2.5 0 0 1 9.5 2h5A2.5 2.5 0 0 1 17 4.5V21l-5-3-5 3Z"/></svg></span><span class="lbl">收藏</span></button><button class="tab" onClick="{{ goMe }}"><span class="pill"><svg width="21" height="21" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="8" r="3.5"/><path d="M5 20.5v-1.2a6 6 0 0 1 6-6h2a6 6 0 0 1 6 6v1.2"/></svg></span><span class="lbl">我的</span></button></nav>
+  </sc-if>
+
+  <!-- Me -->
+  <sc-if value="{{ isMe }}" hint-placeholder-val="{{ true }}">
+    <div class="topbar"><h1>我的</h1></div>
+    <div class="mePage">
+      <div class="meHead"><div class="meAv">我<span class="dot"></span></div><div><div class="meName">小院儿</div><div class="meMeta">这台 iPhone · 4F2A-9C1D</div></div></div>
+      <div class="card">
+        <div class="mRow" onClick="{{ demoOnly }}"><span class="ico"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.9l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.9-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.9.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.9 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.9l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.9.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.9-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.9V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1Z"/></svg></span>设置<svg class="chev" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m9 6 6 6-6 6"/></svg></div>
+        <div class="mRow" onClick="{{ demoOnly }}"><span class="ico" style="background:#e8f8ee;color:#068a4a"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M10 14.2 6.8 17.4a4 4 0 0 1-5.6-5.6l3.2-3.2"/><path d="M14 9.8l3.2-3.2a4 4 0 0 1 5.6 5.6l-3.2 3.2"/><path d="m8.8 15.2 6.4-6.4"/></svg></span>链接<svg class="chev" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m9 6 6 6-6 6"/></svg></div>
+        <div class="mRow" onClick="{{ demoOnly }}"><span class="ico" style="background:#f8f1e2;color:#8a4b22"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 6h16M4 12h16M4 18h10"/></svg></span>运行日志<svg class="chev" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m9 6 6 6-6 6"/></svg></div>
+      </div>
+      <div style="text-align:center;font-size:10px;color:#8a9099;margin-top:16px">Gosslan 5.18.35 · 端到端加密</div>
+    </div>
+    <nav class="tabbar"><button class="tab" onClick="{{ goChats }}"><span class="pill"><svg width="21" height="21" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4.5 7.5A3.5 3.5 0 0 1 8 4h8a3.5 3.5 0 0 1 3.5 3.5v5a3.5 3.5 0 0 1-3.5 3.5h-5.2L7 19v-3.1a3.5 3.5 0 0 1-2.5-3.4Z"/><path d="M8.5 8.5h7M8.5 11.5h4"/></svg><span class="badge">3</span></span><span class="lbl">聊天</span></button><button class="tab" onClick="{{ goContacts }}"><span class="pill"><svg width="21" height="21" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="9" cy="8" r="3.2"/><path d="M3.5 19.5v-1a5 5 0 0 1 5-5h1a5 5 0 0 1 5 5v1"/><path d="M16 5.2a3.2 3.2 0 0 1 0 5.6M17.5 13.8a4.8 4.8 0 0 1 3 4.4v1.3"/></svg><span class="badge">2</span></span><span class="lbl">通讯录</span></button><button class="tab" onClick="{{ goFav }}"><span class="pill"><svg width="21" height="21" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M7 4.5A2.5 2.5 0 0 1 9.5 2h5A2.5 2.5 0 0 1 17 4.5V21l-5-3-5 3Z"/></svg></span><span class="lbl">收藏</span></button><button class="tab on"><span class="pill"><svg width="21" height="21" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="8" r="3.5"/><path d="M5 20.5v-1.2a6 6 0 0 1 6-6h2a6 6 0 0 1 6 6v1.2"/></svg></span><span class="lbl">我的</span></button></nav>
+  </sc-if>
+
+  <sc-if value="{{ reactionOpen }}" hint-placeholder-val="{{ true }}">
+    <div class="sheetScrim" onClick="{{ closeReaction }}"></div>
+    <div class="sheet" role="dialog" aria-label="回应消息">
+      <div class="sheetHead">选择回应 · 表情资源为本地图片</div>
+      <div class="reactRow">
+        <button class="reactOpt" onClick="{{ reactLike }}"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M7 21V10l5-7 1 1v6h5a2 2 0 0 1 2 2l-1 7a2 2 0 0 1-2 2H7Z"/><path d="M3 21V10h4"/></svg>赞</button>
+        <button class="reactOpt" onClick="{{ reactSmile }}"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M8.5 14.5a4 4 0 0 0 7 0M9 9.5v.5M15 9.5v.5"/></svg>开心</button>
+        <button class="reactOpt" onClick="{{ reactHeart }}"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 20s-7-4.4-7-9.2A3.8 3.8 0 0 1 12 8a3.8 3.8 0 0 1 7 2.8C19 15.6 12 20 12 20Z"/></svg>比心</button>
+        <button class="reactOpt" onClick="{{ reactLater }}"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg>稍后</button>
+        <button class="reactOpt" onClick="{{ reactDone }}"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m5 12 5 5 9-10"/></svg>收到</button>
+      </div>
+      <div class="sheetCancel" onClick="{{ closeReaction }}">取消</div>
+    </div>
+  </sc-if>
+
+  <sc-if value="{{ discover }}" hint-placeholder-val="{{ true }}">
+    <div class="dStage">
+      <div class="dTop"><button class="dBack" onClick="{{ closeDiscover }}" aria-label="返回"><svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M15 5.5 8.5 12l6.5 6.5"/></svg></button><h2>添加好友</h2><div class="dSeg"><span class="on">附近</span><span>邀请码</span></div></div>
+      <div class="dHero"><h3>局域网设备</h3><p><b>同一局域网内的设备会自动出现。</b><br>选择一位，发送好友申请。</p></div>
+      <div class="dCards">
+        <div class="dCard"><div class="dAv" style="background:#e0f5ef;color:#068a4a">苏</div><div class="dMain"><div class="dName">苏晚</div><div class="dMeta">iPhone · 同一 Wi-Fi · 2 跳</div></div><button class="dBtn" onClick="{{ demoOnly }}">打招呼</button></div>
+        <div class="dCard"><div class="dAv" style="background:#f5e6dc;color:#8a4b22">林</div><div class="dMain"><div class="dName">林一</div><div class="dMeta">MacBook · 已是好友</div></div><button class="dBtn msg" onClick="{{ closeDiscover }}">发消息</button></div>
+        <div class="dCard"><div class="dAv" style="background:#eee6f7;color:#6b4aa3">周</div><div class="dMain"><div class="dName">周岚</div><div class="dMeta">Windows · 等待确认</div></div><button class="dBtn wait">等待中</button></div>
+        <div class="dCard"><div class="dAv" style="background:#f8f1e2;color:#9a6b00">陈</div><div class="dMain"><div class="dName">陈默</div><div class="dMeta">Android · 蓝牙 30–40 KB/s</div></div><button class="dBtn" style="background:#fff7e6;color:#9a6b00">邀请</button></div>
+      </div>
+      <div class="dFoot"><div class="dInvite">邀请码 <code>GOSSLAN-4F2A</code></div><span>同一 Wi-Fi</span><span class="right">手动输入</span></div>
+    </div>
+  </sc-if>
+
+  <sc-if value="{{ toast }}" hint-placeholder-val="{{ true }}">
+    <div class="toastWrap"><div class="toast"><span class="ok"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m5 12 5 5 9-10"/></svg></span><span class="toastText">{{ toastText }}</span><button class="x" onClick="{{ closeToast }}" aria-label="关闭"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" aria-hidden="true"><path d="m6.5 6.5 11 11M17.5 6.5l-11 11"/></svg></button></div></div>
+  </sc-if>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"$preview":{"width":390,"height":844}}'>
+class Component extends DCLogic {
+  constructor(props) {
+    super(props);
+    this.state = {
+      tab: 'chats',
+      view: 'list',
+      active: 'lin',
+      draft: '',
+      toast: false,
+      toastText: '',
+      reactionOpen: false,
+      discover: false,
+      reactionTarget: null,
+      messages: [
+        { id: 1, own: false, text: '在楼下咖啡店等你，靠窗的位置。', time: '14:21', reaction: '' },
+        { id: 2, own: true, text: '好，我五分钟后到。', time: '14:22', reaction: '' },
+        { id: 3, own: false, text: '美式，谢谢。评审改到 3 点，会议室 B。', time: '14:24', reaction: '' },
+        { id: 4, own: true, text: '收到，我把材料再顺一遍。', time: '14:26', reaction: '' }
+      ]
+    };
+  }
+  openChat(id) { this.setState({ view: 'chat', active: id, tab: 'chats' }); }
+  toast(text) { this.setState({ toast: true, toastText: text }); }
+  addReaction(label) {
+    const id = this.state.reactionTarget;
+    this.setState({
+      messages: this.state.messages.map((m) => m.id === id ? { ...m, reaction: label + ' 1' } : m),
+      reactionOpen: false, toast: true, toastText: '已回应「' + label + '」'
+    });
+  }
+  renderVals() {
+    const s = this.state;
+    const active = s.active === 'design'
+      ? { title: '设计组', meta: '5 位成员 · 3 人在线', initial: '', avatarClass: 'hAv g4', isGroup: true }
+      : s.active === 'zhou'
+        ? { title: '周岚', meta: 'Windows', initial: '周', avatarClass: 'hAv a4', isGroup: false, offline: true }
+        : { title: '林一', meta: 'iPhone · 局域网', initial: '林', avatarClass: 'hAv a2', isGroup: false };
+    const convs = [
+      { name: '设计组', time: '11:34', preview: '[文件] 评审材料-v3.pdf', badge: '3', showBadge: true, isGroup: true, isPerson: false, initial: '', avatarClass: 'avatar sq g4', dotClass: '', nameClass: 'unread', pick: () => this.openChat('design') },
+      { name: '林一', time: '14:32', preview: '好，我五分钟后到', badge: '', showBadge: false, isGroup: false, isPerson: true, initial: '林', avatarClass: 'avatar a2', dotClass: 'pdot', nameClass: '', pick: () => this.openChat('lin') },
+      { name: '周岚', time: '昨天', preview: '那套配色舒服多了', badge: '', showBadge: false, isGroup: false, isPerson: true, initial: '周', avatarClass: 'avatar a3', dotClass: 'pdot off', nameClass: '', pick: () => this.openChat('zhou') },
+      { name: '阿泽', time: '周二', preview: '你：收到，我把材料再顺一遍', badge: '', showBadge: false, isGroup: false, isPerson: true, initial: '阿', avatarClass: 'avatar a4', dotClass: 'pdot', nameClass: '', pick: () => this.openChat('azhe') }
+    ];
+    return {
+      isChatsList: s.tab === 'chats' && s.view === 'list',
+      isChat: s.view === 'chat',
+      isContacts: s.tab === 'contacts' && s.view === 'list',
+      isFavorites: s.tab === 'favorites' && s.view === 'list',
+      isMe: s.tab === 'me' && s.view === 'list',
+      isGroupChat: active.isGroup,
+      isPersonChat: !active.isGroup,
+      activeDotClass: active.offline ? 'dot off' : 'dot',
+      activeTitle: active.title,
+      activeMeta: active.meta,
+      activeInitial: active.initial,
+      activeAvatarClass: active.avatarClass,
+      convs,
+      messages: s.messages.map((m) => ({
+        ...m,
+        runClass: 'run' + (m.own ? ' own' : ''),
+        bubbleClass: 'bubble ' + (m.own ? 'out' : 'in'),
+        showReaction: !!m.reaction,
+        pick: () => this.setState({ reactionOpen: true, reactionTarget: m.id })
+      })),
+      draft: s.draft,
+      toast: s.toast,
+      toastText: s.toastText,
+      reactionOpen: s.reactionOpen,
+      discover: s.discover,
+      openDiscover: () => this.setState({ discover: true }),
+      closeDiscover: () => this.setState({ discover: false }),
+      goChats: () => this.setState({ tab: 'chats', view: 'list' }),
+      goContacts: () => this.setState({ tab: 'contacts', view: 'list' }),
+      goFav: () => this.setState({ tab: 'favorites', view: 'list' }),
+      goMe: () => this.setState({ tab: 'me', view: 'list' }),
+      goBack: () => this.setState({ view: 'list', reactionOpen: false }),
+      openLin: () => this.openChat('lin'),
+      openZhou: () => this.openChat('zhou'),
+      closeReaction: () => this.setState({ reactionOpen: false }),
+      reactLike: () => this.addReaction('赞'),
+      reactSmile: () => this.addReaction('开心'),
+      reactHeart: () => this.addReaction('比心'),
+      reactLater: () => this.addReaction('稍后'),
+      reactDone: () => this.addReaction('收到'),
+      closeToast: () => this.setState({ toast: false }),
+      demoOnly: () => this.setState({ toast: true, toastText: '此原型聚焦主流程；其余页面见静态画板' }),
+      onInput: (e) => this.setState({ draft: e.target.value }),
+      onKey: (e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); this.doSend(); } },
+      send: () => this.doSend()
+    };
+  }
+  doSend() {
+    const text = this.state.draft.trim();
+    if (!text) return;
+    this.setState({
+      messages: this.state.messages.concat([{ id: Date.now(), own: true, text, time: '14:35', reaction: '' }]),
+      draft: ''
+    });
+  }
+}
+</script>
+</body>
+</html>

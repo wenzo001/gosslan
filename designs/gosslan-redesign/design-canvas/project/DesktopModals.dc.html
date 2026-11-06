@@ -1,0 +1,195 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>Desktop — Modals & overlays</title>
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+  *{box-sizing:border-box}
+  body{margin:0;background:#f4f4f1;font-family:"Inter",-apple-system,"PingFang SC","Microsoft YaHei",sans-serif;color:#17181a;-webkit-font-smoothing:antialiased}
+  .page{width:1120px;padding:32px 36px 28px}
+  .top{display:flex;align-items:flex-end;justify-content:space-between;margin-bottom:22px}
+  h1{font-size:24px;line-height:30px;font-weight:600;letter-spacing:-.02em;margin:0}
+  .sub{font-size:12px;color:#5a5d63;margin:2px 0 0}
+  .badge{font-size:10.5px;font-weight:500;color:#2356c4;background:#e8effd;border-radius:999px;padding:3px 9px}
+  .grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:26px}
+  .cell{}
+  .cap{font-size:10.5px;color:#70747b;margin-bottom:7px;display:flex;align-items:center;gap:6px}
+  .cap b{color:#17181a;font-weight:600;font-size:11.5px}
+  .stage{border-radius:12px;background:#e9eae6;padding:18px;min-height:360px;display:flex;align-items:center;justify-content:center;position:relative;overflow:hidden}
+  .modal{width:440px;background:#fff;border-radius:12px;box-shadow:0 24px 64px rgba(9,10,12,.24);overflow:hidden}
+  .mHead{padding:16px 18px 10px;display:flex;align-items:flex-start;gap:8px}
+  .mHead h3{font-size:16px;line-height:22px;font-weight:600;margin:0}
+  .mHead p{font-size:11px;line-height:16px;color:#5a5d63;margin:2px 0 0}
+  .x{width:28px;height:28px;border:0;border-radius:7px;background:transparent;color:#5a5d63;display:flex;align-items:center;justify-content:center;cursor:pointer;margin-left:auto;flex:0 0 auto}
+  .x:hover{background:#f1f2ee}
+  .mBody{padding:0 18px 12px}
+  .label{font-size:10px;font-weight:500;color:#70747b;margin:0 0 5px}
+  .input{height:36px;border-radius:8px;background:#f1f2ee;display:flex;align-items:center;padding:0 10px;font-size:12.5px;color:#17181a}
+  .input.ph{color:#70747b}
+  .search{height:32px;border-radius:7px;background:#f1f2ee;display:flex;align-items:center;gap:6px;padding:0 9px;font-size:11px;color:#70747b;margin-bottom:6px}
+  .pickList{max-height:172px;overflow:hidden}
+  .pick{display:flex;align-items:center;gap:9px;padding:6px 4px;border-radius:7px}
+  .pick:hover{background:#f8f8f5}
+  .av{width:28px;height:28px;border-radius:999px;display:flex;align-items:center;justify-content:center;font-size:10px;font-weight:600;flex:0 0 auto}
+  .avA{background:#f3e2d6;color:#8a4d00}.avB{background:#dcefe3;color:#14663f}.avC{background:#ece3f6;color:#6b3fa0}.avD{background:#f6e0e0;color:#a32b22}.avE{background:#d9e2f7;color:#2356c4}
+  .pickMain{min-width:0;flex:1}
+  .pickName{font-size:12px;line-height:17px;font-weight:500}
+  .pickSub{font-size:10px;line-height:14px;color:#70747b}
+  .check{width:18px;height:18px;border-radius:5px;box-shadow:inset 0 0 0 1.5px #c9cbc5;background:#fff;flex:0 0 auto;position:relative}
+  .check.on{background:#2f6beb;box-shadow:none}
+  .check.on:after{content:"";position:absolute;left:5px;top:2px;width:5px;height:9px;border:solid #fff;border-width:0 1.8px 1.8px 0;transform:rotate(42deg)}
+  .mFoot{padding:10px 18px 14px;border-top:1px solid #ecede9;display:flex;justify-content:flex-end;gap:7px}
+  .btn{height:32px;padding:0 12px;border:0;border-radius:7px;font:inherit;font-size:11.5px;font-weight:500;cursor:pointer;display:flex;align-items:center;gap:5px}
+  .primary{background:#2f6beb;color:#fff}.primary:hover{background:#2459ce}
+  .secondary{background:#f1f2ee;color:#17181a;box-shadow:inset 0 0 0 1px #e4e5e0}
+  .ghost{background:transparent;color:#5a5d63}
+  .count{font-size:9.5px;color:#70747b;background:#e8effd;border-radius:4px;padding:1px 5px}
+
+  .lightbox{width:500px;height:332px;border-radius:12px;background:#111214;box-shadow:0 24px 64px rgba(9,10,12,.32);display:flex;flex-direction:column;overflow:hidden;position:relative}
+  .lbTop{height:42px;display:flex;align-items:center;gap:8px;padding:0 14px;color:#c9cbd0;font-size:11px;z-index:2}
+  .lbTop .right{margin-left:auto;display:flex;gap:4px}
+  .lbBtn{height:28px;padding:0 8px;border:0;border-radius:7px;background:rgba(255,255,255,.1);color:#ecedef;font:inherit;font-size:10.5px;display:flex;align-items:center;gap:4px;cursor:pointer}
+  .lbBtn:hover{background:rgba(255,255,255,.18)}
+  .lbCanvas{flex:1;display:flex;align-items:center;justify-content:center;position:relative}
+  .photo{width:360px;height:216px;border-radius:8px;background:#e9eae6;position:relative;overflow:hidden;box-shadow:0 12px 32px rgba(0,0,0,.35)}
+  .photo .sun{position:absolute;left:44px;top:38px;width:34px;height:34px;border-radius:999px;background:#f4f4f1}
+  .photo .hill{position:absolute;left:-24px;bottom:-52px;width:300px;height:150px;background:#d5d7cf;transform:rotate(-8deg);border-radius:60px}
+  .photo .hill2{position:absolute;right:-44px;bottom:-62px;width:240px;height:140px;background:#c7cac0;transform:rotate(9deg);border-radius:54px}
+  .arrow{position:absolute;top:50%;transform:translateY(-50%);width:36px;height:36px;border-radius:999px;background:rgba(20,21,24,.72);color:#fff;display:flex;align-items:center;justify-content:center;border:0;cursor:pointer}
+  .arrow.l{left:12px}.arrow.r{right:12px}
+  .lbBottom{height:40px;display:flex;align-items:center;justify-content:center;gap:10px;color:#a6aab2;font-size:10px}
+  .zoom{display:flex;align-items:center;gap:4px;background:rgba(255,255,255,.08);border-radius:7px;padding:3px 5px}
+  .zoom button{width:22px;height:22px;border:0;border-radius:5px;background:transparent;color:#ecedef;cursor:pointer}
+  .zoom span{font-family:"JetBrains Mono",monospace;font-size:10px;color:#ecedef;min-width:38px;text-align:center}
+
+  .rightCol{display:flex;flex-direction:column;gap:18px;width:100%}
+  .picker{width:100%;background:#fff;border-radius:12px;box-shadow:0 12px 32px rgba(9,10,12,.16);overflow:hidden}
+  .pkHead{display:flex;align-items:center;gap:6px;padding:8px 10px;border-bottom:1px solid #ecede9}
+  .pkTabs{display:flex;gap:2px;flex:1}
+  .pkTab{height:24px;padding:0 7px;border:0;border-radius:6px;background:transparent;font:inherit;font-size:10px;color:#70747b;cursor:pointer}
+  .pkTab.on{background:#f1f2ee;color:#17181a;font-weight:500}
+  .pkGrid{display:grid;grid-template-columns:repeat(9,minmax(0,1fr));gap:2px;padding:8px}
+  .em{height:30px;border:0;border-radius:6px;background:transparent;display:flex;align-items:center;justify-content:center;cursor:pointer;color:#5a5d63}
+  .em:hover{background:#f1f2ee}
+  .em svg{width:18px;height:18px}
+  .pkFoot{height:30px;border-top:1px solid #ecede9;display:flex;align-items:center;padding:0 10px;font-size:9.5px;color:#8a8d92;gap:5px}
+
+  .remind{width:100%;background:#fff;border-radius:12px;box-shadow:0 12px 32px rgba(9,10,12,.16);padding:12px 14px}
+  .remind h4{font-size:13px;line-height:18px;font-weight:600;margin:0 0 2px;display:flex;align-items:center;gap:5px}
+  .remind p{font-size:10.5px;line-height:15px;color:#5a5d63;margin:0 0 8px}
+  .remind .picks{display:flex;flex-wrap:wrap;gap:5px;margin-bottom:9px}
+  .mpick{height:26px;padding:0 8px;border-radius:999px;box-shadow:inset 0 0 0 1px #e4e5e0;background:#fff;display:flex;align-items:center;gap:5px;font-size:10.5px;color:#5a5d63;cursor:pointer}
+  .mpick.on{background:#e8effd;box-shadow:inset 0 0 0 1px #b9cdf6;color:#2356c4;font-weight:500}
+  .remindFoot{display:flex;justify-content:flex-end;gap:6px}
+  .note{font-size:9.5px;color:#8a8d92;margin-top:10px;display:flex;align-items:center;gap:5px}
+  .footer{display:flex;align-items:center;justify-content:space-between;margin-top:24px;padding-top:10px;border-top:1px solid #e6e7e2;font-size:10px;color:#70747b}
+  svg{display:block}
+</style>
+</helmet>
+<div class="page">
+  <div class="top"><div><h1>Dialogs & overlays</h1><p class="sub">浮层是唯一允许使用阴影与抬升的地方；一层实色，不再叠玻璃。</p></div><span class="badge">5 patterns</span></div>
+  <div class="grid">
+    <div class="cell">
+      <div class="cap"><b>Create group</b> · 名称 + 好友选择 · 创建后自动入群</div>
+      <div class="stage">
+        <div class="modal">
+          <div class="mHead"><div><h3>创建群聊</h3><p>选择好友，创建后自动拉入群聊。</p></div><button class="x" aria-label="关闭"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" aria-hidden="true"><path d="m6 6 12 12M18 6 6 18"/></svg></button></div>
+          <div class="mBody">
+            <p class="label">群名称</p>
+            <div class="input">设计评审</div>
+            <p class="label" style="margin-top:11px">选择成员 <span class="count">已选 2</span></p>
+            <div class="search"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.2-3.2"/></svg>搜索好友</div>
+            <div class="pickList">
+              <div class="pick"><div class="av avA">林</div><div class="pickMain"><div class="pickName">林一</div><div class="pickSub">在线 · iPhone</div></div><span class="check on"></span></div>
+              <div class="pick"><div class="av avB">周</div><div class="pickMain"><div class="pickName">周岚</div><div class="pickSub">在线 · Windows</div></div><span class="check on"></span></div>
+              <div class="pick"><div class="av avC">阿</div><div class="pickMain"><div class="pickName">阿泽</div><div class="pickSub">在线 · Mac</div></div><span class="check"></span></div>
+              <div class="pick"><div class="av avD">陈</div><div class="pickMain"><div class="pickName">陈默</div><div class="pickSub">离线</div></div><span class="check"></span></div>
+            </div>
+          </div>
+          <div class="mFoot"><button class="btn ghost">取消</button><button class="btn primary">创建群聊 <span style="opacity:.7">2</span></button></div>
+        </div>
+      </div>
+    </div>
+
+    <div class="cell">
+      <div class="cap"><b>Forward</b> · 单选会话 + 可选留言 · 合并转发走同一入口</div>
+      <div class="stage">
+        <div class="modal">
+          <div class="mHead"><div><h3>转发给…</h3><p>选择 1 个会话；多条消息可切换为合并转发。</p></div><button class="x" aria-label="关闭"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" aria-hidden="true"><path d="m6 6 12 12M18 6 6 18"/></svg></button></div>
+          <div class="mBody">
+            <div class="search"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.2-3.2"/></svg>搜索会话或联系人</div>
+            <div class="pickList" style="max-height:148px">
+              <div class="pick"><div class="av avE" style="border-radius:8px"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M16 20v-1.5a4 4 0 0 0-4-4H7a4 4 0 0 0-4 4V20"/><circle cx="9.5" cy="7" r="3"/></svg></div><div class="pickMain"><div class="pickName">设计组</div><div class="pickSub">5 位成员</div></div><span class="check"></span></div>
+              <div class="pick"><div class="av avA">林</div><div class="pickMain"><div class="pickName">林一</div><div class="pickSub">最近：好，我五分钟后到</div></div><span class="check on"></span></div>
+              <div class="pick"><div class="av avB">周</div><div class="pickMain"><div class="pickName">周岚</div><div class="pickSub">最近：那套配色舒服多了</div></div><span class="check"></span></div>
+              <div class="pick"><div class="av avC">阿</div><div class="pickMain"><div class="pickName">阿泽</div><div class="pickSub">最近：收到，我把材料再顺一遍</div></div><span class="check"></span></div>
+            </div>
+            <p class="label" style="margin-top:8px">留言（可选）</p>
+            <div class="input ph">说点什么…</div>
+          </div>
+          <div class="mFoot"><button class="btn ghost">取消</button><button class="btn secondary">合并转发</button><button class="btn primary">发送</button></div>
+        </div>
+      </div>
+    </div>
+
+    <div class="cell">
+      <div class="cap"><b>Image lightbox</b> · 独立预览窗 · 无 app chrome · 支持缩放 / 切换 / 保存</div>
+      <div class="stage" style="background:#d9dbd5">
+        <div class="lightbox">
+          <div class="lbTop"><span>IMG_2041.jpg</span><span style="color:#70747b">·</span><span>2 / 2</span><div class="right"><button class="lbBtn"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3v12M7 10l5 5 5-5"/><path d="M4 19h16"/></svg>保存</button><button class="lbBtn" aria-label="关闭"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" aria-hidden="true"><path d="m6 6 12 12M18 6 6 18"/></svg></button></div></div>
+          <div class="lbCanvas">
+            <button class="arrow l" aria-label="上一张"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m15 6-6 6 6 6"/></svg></button>
+            <div class="photo"><div class="sun"></div><div class="hill"></div><div class="hill2"></div></div>
+            <button class="arrow r" aria-label="下一张"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m9 6 6 6-6 6"/></svg></button>
+          </div>
+          <div class="lbBottom"><div class="zoom"><button aria-label="缩小">−</button><span>100%</span><button aria-label="放大">+</button></div><span>滚轮缩放 · 放大后拖动 · 双击复位 · Esc 关闭</span></div>
+        </div>
+      </div>
+    </div>
+
+    <div class="cell">
+      <div class="cap"><b>Emoji picker + Strong reminder</b> · 表情资源为本地图片 · 强提醒需确认收到</div>
+      <div class="stage" style="align-items:flex-start;padding-top:18px">
+        <div class="rightCol">
+          <div class="picker">
+            <div class="pkHead"><div class="pkTabs"><button class="pkTab on">常用</button><button class="pkTab">表情</button><button class="pkTab">手势</button><button class="pkTab">符号</button></div><button class="x" aria-label="关闭" style="width:24px;height:24px"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" aria-hidden="true"><path d="m6 6 12 12M18 6 6 18"/></svg></button></div>
+            <div class="pkGrid">
+              <button class="em" aria-label="微笑"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><path d="M8.5 14a4 4 0 0 0 7 0M9 9.5v.5M15 9.5v.5"/></svg></button>
+              <button class="em" aria-label="大笑"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><path d="M8 13h8a4 4 0 0 1-8 0ZM9 9h.01M15 9h.01"/></svg></button>
+              <button class="em" aria-label="眨眼"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><path d="M8.5 14.5a4 4 0 0 0 7 0M9 9.5v.5M15 9.5v.5"/></svg></button>
+              <button class="em" aria-label="难过"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><path d="M8.5 16a4 4 0 0 1 7 0M9 9.5v.5M15 9.5v.5"/></svg></button>
+              <button class="em" aria-label="惊讶"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><circle cx="12" cy="15" r="1.6"/><path d="M9 9.5v.5M15 9.5v.5"/></svg></button>
+              <button class="em" aria-label="爱心"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20s-7-4.4-7-9.2A3.8 3.8 0 0 1 12 8a3.8 3.8 0 0 1 7 2.8C19 15.6 12 20 12 20Z"/></svg></button>
+              <button class="em" aria-label="赞"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M7 21V10l5-7 1 1v6h5a2 2 0 0 1 2 2l-1 7a2 2 0 0 1-2 2H7Z"/><path d="M3 21V10h4"/></svg></button>
+              <button class="em" aria-label="握手"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="m8 12 3 3 2-2 3 3M3 10l4-4 5 3 5-3 4 4-6 6-3-2-3 2Z"/></svg></button>
+              <button class="em" aria-label="星星"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="m12 3 2.7 5.5 6.1.9-4.4 4.3 1 6-5.4-2.8-5.4 2.8 1-6-4.4-4.3 6.1-.9Z"/></svg></button>
+            </div>
+            <div class="pkFoot"><svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M12 11v5M12 7.5v.5"/></svg>表情以本地图片渲染，不依赖网络</div>
+          </div>
+          <div class="remind">
+            <h4><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#a32b22" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M18 8a6 6 0 0 0-12 0c0 7-3 7-3 9h18c0-2-3-2-3-9"/><path d="M10 21h4"/></svg>发送强提醒</h4>
+            <p>对方会收到明显提示，需要点「收到」确认。</p>
+            <div class="picks"><span class="mpick on"><span class="av avA" style="width:16px;height:16px;font-size:6.5px">林</span>林一</span><span class="mpick on"><span class="av avB" style="width:16px;height:16px;font-size:6.5px">周</span>周岚</span><span class="mpick"><span class="av avC" style="width:16px;height:16px;font-size:6.5px">阿</span>阿泽</span><span class="mpick"><span class="av avD" style="width:16px;height:16px;font-size:6.5px">陈</span>陈默</span></div>
+            <div class="remindFoot"><button class="btn ghost">取消</button><button class="btn primary">发送给 2 人</button></div>
+            <div class="note"><svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M12 11v5M12 7.5v.5"/></svg>强提醒不会重复发送；未确认会在会话内置顶</div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+  <div class="footer"><span>Gosslan Still — overlays</span><span>Scrim #10111466 · dialog radius 12 · menu shadow md · toast bottom-right</span></div>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"$preview":{"width":1120,"height":840}}'>
+class Component extends DCLogic {
+  renderVals() { return {}; }
+}
+</script>
+</body>
+</html>

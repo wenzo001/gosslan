@@ -1,0 +1,108 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>Mobile — Group chat</title>
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+  *{box-sizing:border-box}
+  body{margin:0;background:#f4f4f1;font-family:"Inter",-apple-system,"PingFang SC","Microsoft YaHei",sans-serif;color:#17181a;-webkit-font-smoothing:antialiased}
+  .phone{width:390px;height:844px;background:#fff;display:flex;flex-direction:column;overflow:hidden;position:relative}
+  .topbar{height:56px;flex:0 0 auto;display:flex;align-items:center;gap:8px;padding:0 8px 0 2px;background:#fff;border-bottom:1px solid #ecede9;z-index:2}
+  .back{width:44px;height:44px;border:0;border-radius:10px;background:transparent;color:#3d4045;display:flex;align-items:center;justify-content:center;cursor:pointer}
+  .back:active{background:#f1f2ee}
+  .gAv{width:32px;height:32px;border-radius:9px;display:grid;grid-template-columns:repeat(2,1fr);grid-template-rows:repeat(2,1fr);gap:2px;padding:4px;background:#e8effd;flex:0 0 auto}
+  .gAv span{border-radius:2px}.gAv .a{background:#9db8ef}.gAv .b{background:#e3b28d}.gAv .c{background:#9bcfb0}.gAv .d{background:#c4a9e0}
+  .hText{min-width:0}
+  .hName{font-size:15px;line-height:20px;font-weight:600}
+  .hMeta{font-size:10.5px;line-height:14px;color:#5a5d63;display:flex;align-items:center;gap:4px;margin-top:1px}
+  .hMeta i{width:5px;height:5px;border-radius:999px;background:#22a06b;display:block}
+  .moreBtn{width:44px;height:44px;border:0;border-radius:10px;background:transparent;color:#3d4045;display:flex;align-items:center;justify-content:center;cursor:pointer;margin-left:auto}
+  .pinBar{height:34px;flex:0 0 auto;background:#f8f8f5;border-bottom:1px solid #ecede9;display:flex;align-items:center;gap:6px;padding:0 14px;font-size:11px;color:#5a5d63}
+  .pinBar .ic{color:#2356c4;display:flex;flex:0 0 auto}
+  .pinBar b{font-weight:500;color:#17181a;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .pinBar a{margin-left:auto;color:#2356c4;font-weight:500;font-size:10.5px;text-decoration:none;flex:0 0 auto}
+  .msgs{flex:1;overflow:hidden;padding:6px 14px 10px;position:relative}
+  .day{text-align:center;font-size:10.5px;color:#8a8d92;margin:9px 0 12px}
+  .run{display:flex;gap:7px;margin-bottom:12px;align-items:flex-start}
+  .run.own{justify-content:flex-end}
+  .av{width:24px;height:24px;border-radius:999px;display:flex;align-items:center;justify-content:center;font-size:9px;font-weight:600;flex:0 0 auto;margin-top:2px}
+  .a2{background:#f3e2d6;color:#8a4d00}.a3{background:#dcefe3;color:#14663f}.a4{background:#ece3f6;color:#6b3fa0}
+  .runBody{max-width:76%;min-width:0}
+  .name{font-size:10.5px;line-height:14px;color:#70747b;margin:0 0 3px 2px}
+  .stack{display:flex;flex-direction:column;gap:2px}
+  .bubble{padding:9px 13px;border-radius:18px;font-size:15px;line-height:21px;width:fit-content;max-width:100%}
+  .in{background:#f0f1ed;color:#17181a;border-bottom-left-radius:6px;box-shadow:inset 0 0 0 1px #e4e5e0}
+  .out{background:#2f6beb;color:#fff;border-bottom-right-radius:6px;margin-left:auto}
+  .meta{display:flex;align-items:center;gap:4px;font-size:10.5px;color:#8a8d92;margin-top:4px}
+  .own .meta{justify-content:flex-end}
+  .mention{color:#2356c4;background:#e8effd;border-radius:4px;padding:0 3px;font-weight:500}
+  .out .mention{color:#fff;background:rgba(255,255,255,.2)}
+  .card{width:270px;background:#fff;border-radius:12px;box-shadow:inset 0 0 0 1px #e4e5e0;padding:10px 12px}
+  .cardTop{display:flex;align-items:center;gap:6px;font-size:9.5px;color:#70747b;margin-bottom:5px}
+  .pill{font-size:9px;font-weight:500;color:#2356c4;background:#e8effd;border-radius:999px;padding:1px 6px}
+  .cardTitle{font-size:12.5px;line-height:17px;font-weight:500;color:#17181a;margin-bottom:6px}
+  .cardMeta{display:flex;align-items:center;gap:5px;font-size:10px;color:#5a5d63}
+  .minis{display:flex}
+  .minis span{width:15px;height:15px;border-radius:999px;border:1.5px solid #fff;margin-left:-4px;display:flex;align-items:center;justify-content:center;font-size:6.5px;font-weight:600}
+  .minis span:first-child{margin-left:0}
+  .cardBar{height:3px;border-radius:2px;background:#e9eae6;margin-top:7px;overflow:hidden}
+  .cardBar i{display:block;height:100%;width:60%;background:#2f6beb;border-radius:2px}
+  .file{display:flex;align-items:center;gap:9px;padding:9px 11px;background:#fff;border-radius:12px;box-shadow:inset 0 0 0 1px #e4e5e0;width:238px}
+  .ftile{width:32px;height:38px;border-radius:6px;background:#e8effd;color:#2356c4;display:flex;align-items:center;justify-content:center;flex:0 0 auto}
+  .fname{font-size:12.5px;font-weight:500;line-height:17px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:168px;color:#17181a}
+  .fmeta{font-size:10px;color:#70747b;line-height:14px}
+  .receipt{display:inline-flex;align-items:center;gap:4px}
+  .avatars{display:flex}
+  .avatars span{width:13px;height:13px;border-radius:999px;border:1.5px solid #fff;margin-left:-4px;display:flex;align-items:center;justify-content:center;font-size:6px;font-weight:600}
+  .avatars span:first-child{margin-left:0}
+  .composer{flex:0 0 auto;border-top:1px solid #ecede9;background:#fff;padding:8px 8px 8px 6px;display:flex;align-items:flex-end;gap:4px}
+  .ib{width:44px;height:44px;border:0;border-radius:10px;background:transparent;color:#5a5d63;display:flex;align-items:center;justify-content:center;flex:0 0 auto}
+  .inputWrap{flex:1;min-height:40px;border-radius:20px;background:#f1f2ee;display:flex;align-items:center;padding:0 12px;margin:2px 0}
+  .input{font-size:15px;line-height:20px;color:#70747b;padding:9px 0}
+  .send{width:40px;height:40px;border-radius:999px;border:0;background:#2f6beb;color:#fff;display:flex;align-items:center;justify-content:center;flex:0 0 auto;margin:2px 0;cursor:pointer}
+  .g4{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));grid-template-rows:repeat(2,minmax(0,1fr))}
+  svg{display:block}
+</style>
+</helmet>
+<div class="phone">
+  <div class="topbar">
+    <button class="back" aria-label="返回"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m15 6-6 6 6 6"/></svg></button>
+    <div class="gAv"><span class="a"></span><span class="b"></span><span class="c"></span><span class="d"></span></div>
+    <div class="hText"><div class="hName">设计组</div><div class="hMeta"><i></i>5 位成员 · 3 人在线</div></div>
+    <button class="moreBtn" aria-label="群信息"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" aria-hidden="true"><circle cx="5" cy="12" r="1"/><circle cx="12" cy="12" r="1"/><circle cx="19" cy="12" r="1"/></svg></button>
+  </div>
+  <div class="pinBar"><span class="ic"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 17v5M9 3h6l-1 9h-4Z"/><path d="M7 21h10"/></svg></span>置顶 · <b>周五 14:00 前提交终稿</b><a href="#pin">查看</a></div>
+
+  <div class="msgs">
+    <div class="day">今天 11:20</div>
+    <div class="run"><div class="av a2">林</div><div class="runBody"><div class="name">林一</div><div class="bubble in">评审改到 3 点，会议室 B。@你 材料麻烦再顺一遍。</div><div class="meta">11:21</div></div></div>
+    <div class="run own"><div class="runBody"><div class="bubble out">收到，我把 <span class="mention">@阿泽</span> 的交互稿一起带上。</div><div class="meta">11:23 <span class="receipt"><span class="avatars"><span style="background:#e3b28d;color:#8a4d00">周</span><span style="background:#9bcfb0;color:#14663f">林</span><span style="background:#c4a9e0;color:#6b3fa0">阿</span></span>已读 3/5</span></div></div></div>
+    <div class="run"><div class="av a4">阿</div><div class="runBody"><div class="name">阿泽</div><div class="bubble in" style="padding:0;background:transparent;box-shadow:none"><div class="file"><div class="ftile"><svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8Z"/><path d="M14 3v5h5"/></svg></div><div><div class="fname">评审材料-v3.pdf</div><div class="fmeta">2.4 MB · 5 人已接收</div></div></div></div><div class="meta">11:26</div></div></div>
+    <div class="run"><div class="av a3">周</div><div class="runBody"><div class="name">周岚</div>
+      <div class="card"><div class="cardTop"><span class="pill">进行中</span>群任务 · T-18</div><div class="cardTitle">补齐设置页的离线与失败状态</div><div class="cardMeta"><span class="minis"><span style="background:#9db8ef;color:#2356c4">周</span><span style="background:#e3b28d;color:#8a4d00">林</span></span>2 人负责 · 截止周五</div><div class="cardBar"><i></i></div></div>
+      <div class="meta">11:28</div>
+    </div></div>
+    <div class="run own"><div class="runBody"><div class="bubble out">我这边的状态稿也放上去了，下午一起过。</div><div class="meta">11:32 已读 4/5</div></div></div>
+  </div>
+
+  <div class="composer">
+    <button class="ib" aria-label="添加附件"><svg width="23" height="23" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m20 11-8.5 8.5a5 5 0 0 1-7-7L13 4a3.5 3.5 0 0 1 5 5l-8.5 8.5a2 2 0 0 1-3-3L14 7"/></svg></button>
+    <div class="inputWrap"><div class="input">发消息给 设计组…</div></div>
+    <button class="ib" aria-label="提醒"><svg width="23" height="23" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M18 8a6 6 0 0 0-12 0c0 7-3 7-3 9h18c0-2-3-2-3-9"/><path d="M10 21h4"/></svg></button>
+    <button class="send" aria-label="发送"><svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 19V5M5 12l7-7 7 7"/></svg></button>
+  </div>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"$preview":{"width":390,"height":844}}'>
+class Component extends DCLogic {
+  renderVals() { return {}; }
+}
+</script>
+</body>
+</html>

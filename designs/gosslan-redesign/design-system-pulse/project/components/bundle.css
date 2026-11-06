@@ -1,0 +1,13 @@
+/* Gosslan Pulse — shared preview styles.
+   Component previews carry their own markup styles; this file only fixes the
+   page-level defaults that should not be repeated per card. */
+html,
+body {
+  background: #f2f3f5;
+  color: #1f2329;
+  font-family: "Inter", -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif;
+}
+
+* {
+  box-sizing: border-box;
+}

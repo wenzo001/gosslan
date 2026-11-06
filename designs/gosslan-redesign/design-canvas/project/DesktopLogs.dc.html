@@ -1,0 +1,124 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>Desktop — Logs window</title>
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+  *{box-sizing:border-box}
+  body{margin:0;background:#f4f4f1;font-family:"Inter",-apple-system,"PingFang SC","Microsoft YaHei",sans-serif;color:#17181a;-webkit-font-smoothing:antialiased}
+  .win{width:760px;height:560px;display:flex;flex-direction:column;background:#fff;overflow:hidden}
+  .titlebar{height:38px;background:#f1f2ee;border-bottom:1px solid #e2e3de;display:flex;align-items:center;padding:0 14px;position:relative;flex:0 0 auto}
+  .lights{display:flex;gap:8px;width:70px}.light{width:11px;height:11px;border-radius:999px;background:#cfd1ca}
+  .title{position:absolute;left:0;right:0;text-align:center;font-size:12px;font-weight:500;color:#5a5d63}
+  .head{height:46px;border-bottom:1px solid #ecede9;display:flex;align-items:center;gap:8px;padding:0 14px;flex:0 0 auto}
+  .head h2{font-size:14px;line-height:19px;font-weight:600;margin:0}
+  .head .live{display:flex;align-items:center;gap:4px;font-size:9.5px;color:#14663f;background:#e4f3ea;border-radius:999px;padding:2px 6px}
+  .head .live i{width:5px;height:5px;border-radius:999px;background:#22a06b;display:block}
+  .head .right{margin-left:auto;display:flex;align-items:center;gap:2px}
+  .ib{width:28px;height:28px;border:0;border-radius:7px;background:transparent;color:#5a5d63;display:flex;align-items:center;justify-content:center;cursor:pointer}
+  .ib:hover{background:#f1f2ee;color:#17181a}
+  .filters{height:42px;display:flex;align-items:center;gap:4px;padding:0 14px;border-bottom:1px solid #ecede9;flex:0 0 auto}
+  .chip{height:24px;padding:0 7px;border:0;border-radius:6px;background:transparent;font:inherit;font-size:10.5px;color:#70747b;cursor:pointer;display:flex;align-items:center;gap:4px}
+  .chip:hover{background:#f1f2ee}
+  .chip.on{background:#f1f2ee;color:#17181a;font-weight:500}
+  .lv{width:6px;height:6px;border-radius:999px;display:block}
+  .lInfo{background:#2f6beb}.lWarn{background:#d98a00}.lError{background:#c0392f}.lDebug{background:#9a9ea5}
+  .sepv{width:1px;height:16px;background:#e6e7e2;margin:0 3px}
+  .search{margin-left:auto;width:172px;height:28px;border-radius:7px;background:#f1f2ee;display:flex;align-items:center;gap:5px;padding:0 8px;font-size:10.5px;color:#70747b}
+  .search .n{margin-left:auto;font-size:9px;color:#8a8d92}
+  .toggle{display:flex;align-items:center;gap:5px;font-size:10px;color:#5a5d63;margin-left:8px}
+  .sw{width:30px;height:18px;border-radius:999px;background:#2f6beb;position:relative;border:0;padding:0;cursor:pointer}
+  .sw:after{content:"";position:absolute;width:14px;height:14px;border-radius:999px;background:#fff;top:2px;left:14px}
+  .logArea{flex:1;display:flex;min-height:0;background:#fbfbf8}
+  .gutter{width:46px;flex:0 0 auto;border-right:1px solid #ecede9;padding:8px 0;text-align:right;font-family:"JetBrains Mono",monospace;font-size:9.5px;line-height:20px;color:#a4a7ad}
+  .gutter div{padding-right:8px}
+  .logs{flex:1;overflow:hidden;padding:8px 0;font-family:"JetBrains Mono",monospace;font-size:10.5px;line-height:20px}
+  .line{display:flex;gap:8px;padding:0 12px;white-space:nowrap}
+  .line:hover{background:#f4f4f1}
+  .line.sel{background:#e8effd}
+  .ts{color:#8a8d92;width:66px;flex:0 0 auto}
+  .level{width:40px;flex:0 0 auto;font-weight:500}
+  .iInfo{color:#2356c4}.iWarn{color:#8a4d00}.iError{color:#a32b22}.iDebug{color:#70747b}
+  .src{color:#5a5d63;width:96px;flex:0 0 auto;overflow:hidden;text-overflow:ellipsis}
+  .msg{color:#17181a;overflow:hidden;text-overflow:ellipsis;min-width:0;flex:1}
+  .msg .dim{color:#70747b}
+  .count{font-size:9px;color:#2356c4;background:#e8effd;border-radius:4px;padding:0 4px;margin-left:5px}
+  .detail{flex:0 0 auto;border-top:1px solid #e2e3de;background:#fff;padding:10px 14px;max-height:112px;overflow:hidden}
+  .dTitle{display:flex;align-items:center;gap:6px;font-size:10.5px;font-weight:500;color:#17181a;margin-bottom:5px}
+  .dTitle .pill{font-size:9px;font-weight:500;color:#a32b22;background:#fbe9e7;border-radius:4px;padding:1px 5px}
+  .dTitle .right{margin-left:auto;color:#8a8d92;font-family:"JetBrains Mono",monospace;font-size:9px;font-weight:400}
+  .code{font-family:"JetBrains Mono",monospace;font-size:9.5px;line-height:15px;color:#3d4045;white-space:pre-wrap}
+  .code b{color:#a32b22;font-weight:500}
+  .foot{height:34px;border-top:1px solid #ecede9;display:flex;align-items:center;gap:6px;padding:0 14px;font-size:9px;color:#8a8d92;flex:0 0 auto}
+  .foot .right{margin-left:auto;display:flex;align-items:center;gap:10px}
+  .foot .link{color:#2356c4;font-weight:500;font-size:9.5px;padding:2px 5px;border-radius:4px;cursor:pointer}
+  .foot .link:hover{background:#e8effd}
+  svg{display:block}
+</style>
+</helmet>
+<div class="win">
+  <div class="titlebar"><div class="lights"><span class="light"></span><span class="light"></span><span class="light"></span></div><span class="title">日志</span></div>
+  <div class="head">
+    <h2>日志</h2><span class="live"><i></i>实时</span>
+    <div class="right">
+      <button class="ib" aria-label="复制日志"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg></button>
+      <button class="ib" aria-label="导出脱敏日志"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3v12M7 10l5 5 5-5"/><path d="M4 19h16"/></svg></button>
+      <button class="ib" aria-label="清空日志"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 7h16M9 7V4h6v3M6 7l1 13h10l1-13"/></svg></button>
+      <button class="ib" aria-label="关闭"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" aria-hidden="true"><path d="m6 6 12 12M18 6 6 18"/></svg></button>
+    </div>
+  </div>
+  <div class="filters">
+    <button class="chip on">全部</button>
+    <button class="chip"><span class="lv lInfo"></span>Info</button>
+    <button class="chip"><span class="lv lWarn"></span>Warn</button>
+    <button class="chip"><span class="lv lError"></span>Error</button>
+    <button class="chip"><span class="lv lDebug"></span>Debug</button>
+    <span class="sepv"></span>
+    <button class="chip on">全部时间</button><button class="chip">30 秒</button><button class="chip">1 分钟</button><button class="chip">2 分钟</button>
+    <div class="search"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.2-3.2"/></svg>过滤 <span class="n">3 条匹配</span></div>
+    <span class="toggle">自动刷新 <button class="sw" role="switch" aria-checked="true" aria-label="自动刷新"></button></span>
+  </div>
+  <div class="logArea">
+    <div class="gutter"><div>1</div><div>2</div><div>3</div><div>4</div><div>5</div><div>6</div><div>7</div><div>8</div><div>9</div><div>10</div><div>11</div><div>12</div><div>13</div><div>14</div></div>
+    <div class="logs">
+      <div class="line"><span class="ts">14:32:08.118</span><span class="level iInfo">INFO</span><span class="src">peer/discovery</span><span class="msg">found peer <span class="dim">林一</span> at 192.168.1.24:53317</span></div>
+      <div class="line"><span class="ts">14:32:08.142</span><span class="level iInfo">INFO</span><span class="src">transport/lan</span><span class="msg">handshake ok · cipher X25519 · rtt 3ms</span></div>
+      <div class="line"><span class="ts">14:32:08.160</span><span class="level iDebug">DEBUG</span><span class="src">sync/queue</span><span class="msg">outbox flush · 0 pending</span></div>
+      <div class="line"><span class="ts">14:32:09.004</span><span class="level iInfo">INFO</span><span class="src">chat/message</span><span class="msg">send text <span class="dim">conv=7f3a</span> · queued</span></div>
+      <div class="line"><span class="ts">14:32:09.244</span><span class="level iInfo">INFO</span><span class="src">transport/lan</span><span class="msg">delivered · ack 1/1 <span class="count">×12 合并</span></span></div>
+      <div class="line sel"><span class="ts">14:32:10.892</span><span class="level iWarn">WARN</span><span class="src">transfer/file</span><span class="msg">peer busy · retry in 800ms <span class="dim">(attempt 2/5)</span></span></div>
+      <div class="line"><span class="ts">14:32:11.701</span><span class="level iError">ERROR</span><span class="src">transfer/file</span><span class="msg">send failed · peer offline <span class="dim">file=评审材料-v3.pdf</span></span></div>
+      <div class="line"><span class="ts">14:32:12.020</span><span class="level iInfo">INFO</span><span class="src">presence</span><span class="msg">peer 林一 → online <span class="dim">via lan</span></span></div>
+      <div class="line"><span class="ts">14:32:12.338</span><span class="level iInfo">INFO</span><span class="src">transfer/file</span><span class="msg">resume · offset 2.4MB · speed 3.4MB/s</span></div>
+      <div class="line"><span class="ts">14:32:13.005</span><span class="level iDebug">DEBUG</span><span class="src">db/chat</span><span class="msg">flush 12 rows · 3.1ms</span></div>
+      <div class="line"><span class="ts">14:32:13.220</span><span class="level iInfo">INFO</span><span class="src">group/history</span><span class="msg">backfill progress 120/420 <span class="dim">group=设计组</span></span></div>
+      <div class="line"><span class="ts">14:32:13.880</span><span class="level iWarn">WARN</span><span class="src">group/history</span><span class="msg">no progress for 12s · will retry</span></div>
+      <div class="line"><span class="ts">14:32:14.010</span><span class="level iInfo">INFO</span><span class="src">ui/toast</span><span class="msg">show <span class="dim">"文件发送失败"</span> · kind=error</span></div>
+      <div class="line"><span class="ts">14:32:14.400</span><span class="level iDebug">DEBUG</span><span class="src">window/main</span><span class="msg">focus regained · 1240ms</span></div>
+    </div>
+  </div>
+  <div class="detail">
+    <div class="dTitle"><span class="pill">ERROR</span>transfer/file · 14:32:11.701 <span class="right">code=PEER_OFFLINE · conv=7f3a · file=4c1e</span></div>
+    <div class="code">send failed: peer is offline; retry scheduled (attempt 2/5)
+  peer=192.168.1.24:53317  state=offline  last_seen=14:32:11.690
+  <b>hint: 文件已保留在任务中心，可等待对方上线后重试</b></div>
+  </div>
+  <div class="foot">
+    <span>自动刷新 2s</span><span>·</span><span>显示 14 / 2,318 行</span><span>·</span><span>~/Library/Logs/Gosslan/gosslan.log</span>
+    <span class="right"><span class="link">打开日志目录</span><span class="link">导出脱敏包</span></span>
+  </div>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"$preview":{"width":760,"height":560}}'>
+class Component extends DCLogic {
+  renderVals() { return {}; }
+}
+</script>
+</body>
+</html>

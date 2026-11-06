@@ -1,0 +1,55 @@
+<!-- @dsCard group="Actions" height=220 -->
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>Button — preview</title>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+  body{margin:0;padding:24px;background:#ffffff;font-family:-apple-system,BlinkMacSystemFont,"PingFang SC","Microsoft YaHei","Segoe UI",sans-serif;color:#1f2329}
+  .row{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-bottom:20px}
+  .label{font-size:11px;font-weight:500;color:#8a9099;width:100%;margin:0 0 8px;letter-spacing:.02em}
+  .btn{height:36px;padding:0 14px;border:0;border-radius:8px;font-size:13px;font-weight:500;font-family:inherit;display:inline-flex;align-items:center;gap:6px;cursor:pointer;transition:background .12s ease,transform .12s ease}
+  .btn:active{transform:scale(.98)}
+  .primary{background:#2f6bff;color:#fff}
+  .primary:hover{background:#5a49d6}
+  .secondary{background:#f2f3f5;color:#1f2329;box-shadow:inset 0 0 0 1px #e5e6eb}
+  .secondary:hover{background:#eef0f2}
+  .ghost{background:transparent;color:#1f2329}
+  .ghost:hover{background:#f2f3f5}
+  .danger{background:#f04452;color:#fff}
+  .danger:hover{background:#d93a3a}
+  .danger-ghost{background:transparent;color:#d93a3a}
+  .danger-ghost:hover{background:#ffecec}
+  .disabled{background:#2f6bff;color:#fff;opacity:.48;cursor:not-allowed}
+  .icon{width:36px;height:36px;padding:0;justify-content:center;background:transparent;color:#5a6068;border-radius:8px}
+  .icon:hover{background:#f2f3f5;color:#1f2329}
+  .icon.active{background:#e8f0ff;color:#1f5ae8}
+  .lg{height:44px;padding:0 18px;font-size:14px}
+  .spinner{width:14px;height:14px;border:2px solid rgba(255,255,255,.35);border-top-color:#fff;border-radius:50%;animation:spin 1s linear infinite}
+  @keyframes spin{to{transform:rotate(360deg)}}
+  svg{display:block}
+</style>
+<style>h1,h2,h3,h4,.name,.rname,.title,.fname,.cardTitle,.bigEmpty h3{font-family:-apple-system,BlinkMacSystemFont,"PingFang SC","Microsoft YaHei","Segoe UI",sans-serif}</style>
+</head>
+<body>
+  <p class="label">Primary / secondary / ghost / destructive</p>
+  <div class="row">
+    <button class="btn primary"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 19V5M5 12l7-7 7 7"/></svg>发送</button>
+    <button class="btn secondary">取消</button>
+    <button class="btn ghost">稍后再说</button>
+    <button class="btn danger">删除会话</button>
+    <button class="btn danger-ghost">退出群组</button>
+    <button class="btn primary disabled" disabled>发送</button>
+    <button class="btn primary" aria-label="正在发送"><span class="spinner" aria-hidden="true"></span>发送中</button>
+  </div>
+  <p class="label">Sizes and icon buttons</p>
+  <div class="row">
+    <button class="btn primary lg">添加好友</button>
+    <button class="btn secondary lg">浏览文件</button>
+    <button class="btn icon" aria-label="搜索"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.2-3.2"/></svg></button>
+    <button class="btn icon active" aria-label="聊天"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 15a3 3 0 0 1-3 3H8l-4 3V6a3 3 0 0 1 3-3h10a3 3 0 0 1 3 3Z"/></svg></button>
+    <button class="btn icon" aria-label="更多"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="5" cy="12" r="1"/><circle cx="12" cy="12" r="1"/><circle cx="19" cy="12" r="1"/></svg></button>
+  </div>
+</body>
+</html>

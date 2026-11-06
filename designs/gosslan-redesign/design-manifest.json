@@ -1,0 +1,266 @@
+{
+  "name": "Gosslan Pulse",
+  "version": "2.2",
+  "updated": "2026-11-06",
+  "designRoot": "designs/gosslan-redesign",
+  "status": "design delivered, awaiting implementation review",
+  "entryPoint": "designs/gosslan-redesign/HANDOFF.md",
+  "readOrder": [
+    "HANDOFF.md",
+    "design-system-pulse/project/tokens.json",
+    "design-system-pulse/project/README.md",
+    "docs/decisions.md",
+    "docs/edge-cases.md",
+    "docs/feature-coverage.md",
+    "docs/verification-v2.md"
+  ],
+  "tokens": {
+    "source": "design-system-pulse/project/tokens.json",
+    "code": "src/style.css",
+    "tailwind": "tailwind.config.js",
+    "themeBoot": "src/boot/theme-boot.js",
+    "appearance": "src/utils/appearance.ts",
+    "notes": "Use CSS variables/tokens; do not hardcode hex in components. Current code primary is #3b82f6; design primary is #2f6bff."
+  },
+  "rules": [
+    "No new features, no Rust/protocol/DB changes for a UI-only task.",
+    "Do not copy artboard DOM/CSS; implement with existing Vue components and tokens.",
+    "One icon set across desktop, mobile and auxiliary windows; only sizes change.",
+    "One status signal only: if avatar has presence dot, meta must not repeat a dot or 在线/离线 text.",
+    "Long text: single-line ellipsis with min-width:0, two-line clamp for snippets/reasons, overflow-wrap:anywhere for URLs, mono word-break for technical strings.",
+    "i18n: every new UI string in zh-cn and en-us, referenced through t().",
+    "Motion: appear-once, no replay on state change, reduce motion uses fade only.",
+    "If uncertain about product behavior, ask; do not invent."
+  ],
+  "screens": [
+    {
+      "id": "desktop-chats",
+      "route": "/chats",
+      "artboards": ["design-canvas-pulse/project/DesktopChats.dc.html", "design-canvas-pulse/project/DesktopEdgeCases.dc.html"],
+      "code": ["src/layouts/ResponsiveLayout.vue", "src/components/NavRail.vue", "src/components/TitleBar.vue", "src/components/ConversationList.vue", "src/components/SelfAvatar.vue"],
+      "states": ["empty", "list", "pinned", "unread", "offline", "long-text"]
+    },
+    {
+      "id": "desktop-one-to-one",
+      "route": "/chats/:convId",
+      "artboards": ["design-canvas-pulse/project/DesktopOneToOne.dc.html"],
+      "code": ["src/components/ChatWindow.vue", "src/components/message/"],
+      "states": ["messages", "read-receipt", "quote", "image", "file", "failed", "offline"]
+    },
+    {
+      "id": "desktop-group",
+      "route": "/chats/:convId",
+      "artboards": ["design-canvas-pulse/project/DesktopGroupChat.dc.html", "design-canvas-pulse/project/DesktopGroupInfo.dc.html"],
+      "code": ["src/components/ChatWindow.vue", "src/components/message/"],
+      "states": ["group-members", "mention", "pinned", "group-task-card", "read-by-member", "files", "tasks"]
+    },
+    {
+      "id": "desktop-contacts",
+      "route": "/contacts",
+      "artboards": ["design-canvas-pulse/project/DesktopContacts.dc.html"],
+      "code": ["src/components/FriendProfile.vue", "src/components/FriendRequestList.vue", "src/layouts/ResponsiveLayout.vue"],
+      "states": ["online-offline-groups", "friend-profile", "security-code", "long-device-name"]
+    },
+    {
+      "id": "desktop-requests",
+      "route": "/contacts/requests",
+      "artboards": ["design-canvas-pulse/project/DesktopRequests.dc.html"],
+      "code": ["src/components/conversation/FriendRequestList.vue"],
+      "states": ["incoming", "outgoing", "accepted", "waiting", "cooldown"]
+    },
+    {
+      "id": "desktop-favorites",
+      "route": "/favorites",
+      "artboards": ["design-canvas-pulse/project/DesktopFavorites.dc.html"],
+      "code": ["src/components/FavoritePanel.vue"],
+      "states": ["list", "detail", "filter", "empty"]
+    },
+    {
+      "id": "desktop-links",
+      "route": "/links",
+      "artboards": ["design-canvas-pulse/project/DesktopLinks.dc.html", "design-canvas-pulse/project/DesktopShare.dc.html"],
+      "code": ["src/components/LinksList.vue", "src/components/ShareDirectory.vue"],
+      "states": ["list", "import-export", "external-window", "truncated", "download"]
+    },
+    {
+      "id": "desktop-search",
+      "route": "/search",
+      "artboards": ["design-canvas-pulse/project/DesktopSearch.dc.html"],
+      "code": ["src/components/search/ChatSearchDialog.vue"],
+      "states": ["query", "filters", "results", "context", "empty", "long-snippet"]
+    },
+    {
+      "id": "desktop-tasks",
+      "route": "main window task center",
+      "artboards": ["design-canvas-pulse/project/DesktopTasks.dc.html"],
+      "code": ["src/components/TaskCenter.vue"],
+      "states": ["transfer", "fetch", "queued", "group-history", "failed", "long-filename"]
+    },
+    {
+      "id": "desktop-settings",
+      "route": "settings.html",
+      "artboards": ["design-canvas-pulse/project/DesktopSettings.dc.html", "design-canvas-pulse/project/DesktopPersonalize.dc.html"],
+      "code": ["settings.html", "src/entries/settings.ts", "src/components/SettingsWindow.vue", "src/components/SettingsPanel.vue", "src/utils/settingsManifest.ts"],
+      "states": ["9-section-two-pane", "appearance", "chat-style", "theme", "bubble-colors", "font-size", "long-values"]
+    },
+    {
+      "id": "desktop-logs",
+      "route": "logs.html",
+      "artboards": ["design-canvas-pulse/project/DesktopLogs.dc.html"],
+      "code": ["logs.html", "src/entries/logs.ts", "src/components/LogViewer.vue"],
+      "states": ["levels", "time-window", "dedupe", "filter", "export"]
+    },
+    {
+      "id": "desktop-group-tasks-window",
+      "route": "todos.html",
+      "artboards": ["design-canvas-pulse/project/DesktopGroupTasks.dc.html"],
+      "code": ["todos.html", "src/entries/todos.ts", "src/components/GroupTodosWindow.vue"],
+      "states": ["board", "filter", "detail", "history"]
+    },
+    {
+      "id": "desktop-preview-window",
+      "route": "preview.html",
+      "artboards": ["design-canvas-pulse/project/DesktopPreviewWindow.dc.html"],
+      "code": ["preview.html", "src/entries/preview.ts", "src/components/window/PreviewWindow.vue"],
+      "states": ["image", "thumbnails", "toolbar", "cleaned-media"]
+    },
+    {
+      "id": "desktop-startup-error",
+      "route": "startup error window",
+      "artboards": ["design-canvas-pulse/project/DesktopStartupError.dc.html"],
+      "code": ["existing startup error component / boot guard"],
+      "states": ["error", "copy-diagnostics", "logs", "retry"]
+    },
+    {
+      "id": "desktop-modals",
+      "route": "overlays",
+      "artboards": ["design-canvas-pulse/project/DesktopModals.dc.html"],
+      "code": ["src/components/AddFriendModal.vue", "src/components/GroupCreateModal.vue", "src/components/message/ImageLightbox.vue"],
+      "states": ["add-friend", "create-group", "forward", "strong-reminder", "lightbox", "reaction-picker"]
+    },
+    {
+      "id": "mobile-chats",
+      "route": "/chats",
+      "artboards": ["design-canvas-pulse/project/MobileChats.dc.html", "design-canvas-pulse/project/MobileEdgeCases.dc.html"],
+      "code": ["src/layouts/ResponsiveLayout.vue", "src/components/MobilePageFrame.vue", "src/components/ConversationList.vue"],
+      "states": ["list", "4-tabs", "top-plus", "unread", "offline", "long-text"]
+    },
+    {
+      "id": "mobile-one-to-one",
+      "route": "/chats/:convId",
+      "artboards": ["design-canvas-pulse/project/MobileOneToOne.dc.html"],
+      "code": ["src/components/ChatWindow.vue", "src/components/message/"],
+      "states": ["messages", "composer", "read", "quote", "image", "file"]
+    },
+    {
+      "id": "mobile-group",
+      "route": "/chats/:convId",
+      "artboards": ["design-canvas-pulse/project/MobileGroupChat.dc.html"],
+      "code": ["src/components/ChatWindow.vue", "src/components/message/"],
+      "states": ["group", "mention", "pinned", "task-card", "read-by-member"]
+    },
+    {
+      "id": "mobile-contacts",
+      "route": "/contacts",
+      "artboards": ["design-canvas-pulse/project/MobileContacts.dc.html", "design-canvas-pulse/project/MobileFriend.dc.html"],
+      "code": ["src/components/FriendProfile.vue", "src/components/FriendRequestList.vue"],
+      "states": ["online-offline-groups", "profile", "security-code", "long-values"]
+    },
+    {
+      "id": "mobile-requests",
+      "route": "/contacts/requests",
+      "artboards": ["design-canvas-pulse/project/MobileRequests.dc.html"],
+      "code": ["src/components/conversation/FriendRequestList.vue"],
+      "states": ["incoming", "outgoing", "accepted", "waiting", "cooldown"]
+    },
+    {
+      "id": "mobile-favorites",
+      "route": "/favorites",
+      "artboards": ["design-canvas-pulse/project/MobileFavorites.dc.html"],
+      "code": ["src/components/FavoritePanel.vue"],
+      "states": ["list", "filter", "empty"]
+    },
+    {
+      "id": "mobile-me",
+      "route": "/me",
+      "artboards": ["design-canvas-pulse/project/MobileMe.dc.html"],
+      "code": ["src/layouts/ResponsiveLayout.vue", "src/components/settings/ProfileSection.vue"],
+      "states": ["profile", "entries", "status-bar"]
+    },
+    {
+      "id": "mobile-settings",
+      "route": "/me/settings",
+      "artboards": ["design-canvas-pulse/project/MobileSettings.dc.html", "design-canvas-pulse/project/MobileSettingsSection.dc.html", "design-canvas-pulse/project/MobilePersonalize.dc.html"],
+      "code": ["src/components/SettingsPanel.vue", "src/components/SettingsWindow.vue", "src/utils/settingsManifest.ts"],
+      "states": ["home", "appearance", "chat-style", "theme", "bubble-colors", "font-size"]
+    },
+    {
+      "id": "mobile-search",
+      "route": "/search",
+      "artboards": ["design-canvas-pulse/project/MobileSearch.dc.html"],
+      "code": ["src/components/search/ChatSearchDialog.vue"],
+      "states": ["query", "filters", "results", "empty", "long-snippet"]
+    },
+    {
+      "id": "mobile-states",
+      "route": "cross-screen",
+      "artboards": ["design-canvas-pulse/project/MobileStates.dc.html", "design-canvas-pulse/project/MobileEmpty.dc.html"],
+      "code": ["various"],
+      "states": ["offline", "send-failed", "retry", "transfer-paused", "transfer-failed", "first-run-empty"]
+    },
+    {
+      "id": "edge-cases",
+      "route": "cross-screen",
+      "artboards": ["design-canvas-pulse/project/DesktopEdgeCases.dc.html", "design-canvas-pulse/project/MobileEdgeCases.dc.html"],
+      "code": ["cross-screen"],
+      "states": ["long-names", "long-url", "long-filename", "ipv6", "security-code", "99+", "two-line-clamp", "toast", "long-draft"]
+    },
+    {
+      "id": "brand-app-icon",
+      "route": "application icon",
+      "artboards": ["design-canvas-pulse/project/AppIcon.dc.html", "design-canvas-pulse/project/BrandMascot.dc.html", "design-canvas-pulse/project/IconSet.dc.html"],
+      "code": ["src-tauri/icons/", "src/components/ui/", "src/components/ui/NavIcon.vue"],
+      "states": ["macos", "ios", "android-adaptive", "windows", "tinted", "16px", "32px", "64px", "1024px"]
+    }
+  ],
+  "windows": [
+    { "label": "main", "size": "1000x680", "min": "360x640", "config": "src-tauri/tauri.conf.json" },
+    { "label": "settings", "size": "780x600", "min": "560x420", "config": "src-tauri/src/commands/logs.rs" },
+    { "label": "logs", "size": "760x560", "min": "420x320", "config": "src-tauri/src/commands/logs.rs" },
+    { "label": "tasks", "size": "780x620", "min": "360x420", "config": "src-tauri/src/commands/logs.rs" },
+    { "label": "preview", "size": "1120x820", "min": "480x360", "config": "src-tauri/src/commands/logs.rs" },
+    { "label": "external-link", "size": "1000x720", "min": "420x320", "config": "src-tauri/src/commands/logs.rs" }
+  ],
+  "assets": {
+    "mascot": "brand/xiaoyuan-mascot.svg",
+    "mark": "brand/xiaoyuan-mark.svg",
+    "appIconMaster": "brand/app-icon-light.svg",
+    "appIconMacos": "brand/app-icon-macos.svg",
+    "appIconIos": "brand/app-icon-ios.svg",
+    "appIconAndroid": "brand/app-icon-android.svg",
+    "appIconTinted": "brand/app-icon-tinted.svg",
+    "appIconPng": "brand/png/",
+    "interfaceIcons": "brand/icons.svg",
+    "tauriIcons": "src-tauri/icons/",
+    "tauriIconCommand": "replace src-tauri/icons/icon.png with the 1024 master, then run npm run icon"
+  },
+  "verification": {
+    "commands": ["npm test", "npm run test:ui-runtime", "npm run verify:full"],
+    "designChecks": [
+      "no horizontal overflow at 1000x680, 780x600, 760x560, 780x620, 1120x820, 390x844",
+      "long names, long URL, long filename, IPv6 and security code handled",
+      "one presence signal only; no duplicate online dot/text",
+      "same icon paths on desktop/mobile/aux windows",
+      "zh-cn and en-us both pass",
+      "dark, reduced motion, keyboard focus, 44px hit targets"
+    ]
+  },
+  "phases": [
+    "tokens + skeleton (52 header, 320 list, 62/64 rows)",
+    "icon registry + app icon bundle",
+    "desktop main shell/list/chat",
+    "mobile tabs/list/chat",
+    "aux windows and dense screens",
+    "states, edge cases, i18n and verification"
+  ]
+}
