@@ -11,7 +11,7 @@ export function escHtml(s: string): string {
 }
 
 const MARK_OPEN =
-  '<mark class="bg-yellow-200 dark:bg-yellow-800/50 rounded-[var(--gosslan-radius-xs)] px-0.5">';
+  '<mark class="bg-[var(--gosslan-primary-light)] text-[var(--gosslan-text)] rounded-[var(--gosslan-radius-xs)] px-0.5">';
 
 /**
  * 将文本按关键词分割，用 <mark> 包裹匹配部分。

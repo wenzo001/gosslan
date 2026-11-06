@@ -18,6 +18,16 @@ test("命中处包 <mark>（日志过滤的「颜色标识」就靠它）", () =
   assert.ok(out.startsWith("mesh +"), "未命中部分原样保留");
 });
 
+test("命中底色/文字走 token，不许再写死 Tailwind 调色板（U-2 全站唯一 accent）", () => {
+  const out = highlightText("命中", "命中");
+  // 反例自证：把 class 改回 `bg-yellow-200 dark:bg-yellow-800/50` 这条就红。
+  assert.ok(out.includes("var(--gosslan-primary-light)"), "底色必须取 --gosslan-primary-light");
+  // 文字用正文色（--gosslan-text），不用 accent-ink：实测 accent-ink 在 12% 底上亮 4.35 / 暗 3.69，
+  // 低于 4.5（见 check-ui-runtime stage6mobile 的分档读数）。
+  assert.ok(out.includes("var(--gosslan-text)"), "文字必须取 --gosslan-text");
+  assert.ok(!/bg-yellow|yellow-\d|#[0-9a-f]{3,6}/i.test(out), `不得写死颜色：${out}`);
+});
+
 test("大小写不敏感，且**每一处**都标记（不是只标第一处）", () => {
   const out = highlightText("ERROR error Error", "error");
   assert.equal(out.match(/<mark/g)?.length, 3);

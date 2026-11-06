@@ -221,6 +221,35 @@ $ git rev-list --left-right --count origin/main...HEAD
   3 处 `shadow-lg` + 1 处 `shadow-2xl` 保留 —— 它们压在**任意照片**与黑底浮控之上，
   需要的是"与照片内容分离"的抬升，玻璃 token 的投影是给应用表面上的面板用的，不适用。
 
+### 阶段 6 — 搜索命中与焦点框（2026-11-06）
+
+- **C1 命中色**：[highlight.ts:13](file:///Users/wendongfu/Documents/code/gosslan-unslop/src/utils/highlight.ts#L13)
+  `<mark>` 从 `bg-yellow-200 dark:bg-yellow-800/50` 换成
+  `bg-[var(--gosslan-primary-light)] text-[var(--gosslan-text)]`。选 `--gosslan-text` 而不是
+  `--gosslan-accent-ink`：后者在 12% 主题色底上实测亮 4.35 / 暗 3.69，不达 4.5。
+- **C2 焦点框**：`ChatSearchDialog` 输入框**未改**。复核确认可见提示是文本控件自己的
+  `box-shadow: inset 0 0 0 1px var(--gosslan-primary)`（`controls.md` §4.3 既有方案），
+  `outline` 是 Tailwind `outline-none` 留下的 2px **透明**环（`outlineStyle` 非 none 但 alpha≈0）。
+  按用户裁决：焦点环不算"有边框按钮"，保留键盘可达性现状。
+- **分档读数（`--only=stage6mobile`，5 档 × 亮/暗，`marks=3`）**：
+
+  | 宽度 | 改动前（yellow） | 改动后（token） | 是否回归 |
+  | --- | --- | --- | --- |
+  | 360×640 亮 | 18.05 | 12.28 | 否（≥4.5） |
+  | 360×640 暗 | **2.40** | **8.35** | 否（由不合格转合格） |
+  | 390×844 亮/暗 | 18.05 / 2.40 | 12.28 / 8.35 | 否 |
+  | 430×932 亮/暗 | 18.05 / 2.40 | 12.28 / 8.35 | 否 |
+  | 768×800 亮/暗 | 18.05 / 2.40 | 12.28 / 8.35 | 否 |
+  | 1280×800 亮/暗 | 18.05 / 2.40 | 12.28 / 8.35 | 否 |
+
+  横向溢出 5 档 × 2 主题均为 `overflowX=0`；弹窗矩形全部在视口内。
+  移动端三档都真实走到搜索弹窗分支（不是"走不到"）。
+- **判据**：`--only=search` 23/23 绿；`--only=stage6mobile` 10/10 绿；
+  `highlight.test.ts` 新增"命中底色/文字走 token、不得出现 `bg-yellow|yellow-\d|#hex`"。
+- **反例自证**：把 `MARK_OPEN` 改回 yellow → `highlight.test.ts` 该条红，
+  同一次改动下 `stage6mobile` 5/10 FAIL（暗档 2.40 < 4.5），恢复后 10/10 绿。
+- **截图**：`shots/stage6/search-{360x640,390x844,430x932,768x800,1280x800}-{light,dark}.png`。
+
 ---
 
 ## 8. 需要你裁决的 6 件事（我不猜）
