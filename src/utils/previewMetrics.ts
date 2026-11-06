@@ -11,8 +11,23 @@ import { parseQuote, quoteBody } from "@/utils/quote";
 // 连续消息合并的时间窗与时间分割线同值：超过它一定有一条分割行，组自然断开（唯一家在这里）。
 import { GROUP_GAP_MS } from "@/utils/messageKinds";
 
-/** 消息流内预览行数上限（文本 / 代码 / 附件代码一致），超出部分只能在 Modal 里看。 */
+/** 消息流内**文本**预览行数上限，超出部分只能在 Modal 里看。
+ *  ⚠️ 代码块不再共用这个数：用户 2026-11-06 要求代码块「固定几行、余下截断、展开才滚」，
+ *  代码自己的上限是 `CODE_PREVIEW_LINES`。 */
 export const PREVIEW_LINES = 5;
+
+/**
+ * 消息流内**代码块**的折叠行数上限（用户 2026-11-06：只展示固定几行，余下截断，展开才滚）。
+ *
+ * 取 8 的依据：12.5px × 1.6 = 20px/行，toolbar 32px + pre 上内边距 12px，
+ * 折叠态整块 = 32 + 12 + 8×20 = 204px，加操作条 28px = 232px。
+ * 产品最小窗口 360×640 时约占 36%，仍给消息正文/时间/操作区留出空间；
+ * 9~12 行会让 360×640 下的代码卡片吃掉接近一半消息区，故取区间下限 8。
+ *
+ * ⚠️ 与 `codeNeedsClamp` / `CODE_CLAMP_HEIGHT` / `codeBlockHeight` 成对：
+ * 改这个数会同时改渲染高度与 VirtualList 的估算高度（`messageHeight.ts` 只引常量）。
+ */
+export const CODE_PREVIEW_LINES = 8;
 
 /** 代码卡片底色：必须比聊天画布亮/暗一档，卡片与尖角才「浮起」有层次。
  *  暗色用 #161b22（比画布 #0f172a 亮一档）。
@@ -108,9 +123,20 @@ export function textBubbleHeight(content: string, fontSize: FontSizeKey): number
 
 // ---------------- 代码 ----------------
 
-/** 代码内容（inline code 消息 / 代码附件）是否需要截断。 */
+/** 代码内容（inline code 消息 / 代码附件）是否需要截断（按视觉行，长行折行也算）。 */
 export function codeNeedsClamp(content: string): boolean {
-  return visualLineCount(content, COLUMNS_PER_LINE) > PREVIEW_LINES;
+  return visualLineCount(content, COLUMNS_PER_LINE) > CODE_PREVIEW_LINES;
+}
+
+/**
+ * 折叠态被截掉的**逻辑行数**（操作条上的「还有 N 行」用它；短块为 0）。
+ *
+ * 用逻辑行而不是视觉行，是为了和头部的「JavaScript · 99 行」同一口径：
+ * 视觉行受宽度影响（同一段代码 360px 下比 1280px 多折两三倍），
+ * 会读出「99 行 / 还有 190 行」这种自相矛盾的数字。
+ */
+export function codePreviewRemainingLines(content: string): number {
+  return Math.max(0, content.split("\n").length - CODE_PREVIEW_LINES);
 }
 
 /** 完整代码块（未截断）自身高度：toolbar + 上下内边距 + 若干行（消息流里的卡片无描边）。 */
@@ -119,12 +145,20 @@ function codeBlockNaturalHeight(lines: number): number {
 }
 
 /**
- * 截断容器高度：从顶部往下裁，可见部分只有「toolbar + pre 上内边距 + 5 个整行」。
- * 不能再带上内边距和下边框，否则会在第 6 行上裁出一个笔尖。
+ * 折叠容器高度 = toolbar + pre **上**内边距 + 正好 CODE_PREVIEW_LINES 个整行
+ * = 32 + 12 + 8×20 = 204px。
+ *
+ * 不能带下内边距：`overflow: hidden` 会把内容盒里的下内边距一起算进裁切区，
+ * 实测 preH=172 时只露 7.4 行（第 8 行被裁出笔尖）。
+ * 所以折叠态在 `.code-pre--clip` 里把 `padding-bottom` 归零 —— 内容盒恰好 160px = 8 行，
+ * 第 9 行从裁切线下方开始，整行不可见（配合底部淡出遮罩 + 「还有 N 行」）。
+ *
+ * 折叠态**没有**内部滚动容器（`overflow-y: hidden`）：滚轮/触控事件必须冒泡给外层消息列表。
+ * 展开态（全文弹窗）才允许在代码区内部滚动。
  */
-export const CODE_CLAMP_HEIGHT = CODE_TOOLBAR + CODE_PADDING + PREVIEW_LINES * CODE_LINE_HEIGHT;
+export const CODE_CLAMP_HEIGHT = CODE_TOOLBAR + CODE_PADDING + CODE_PREVIEW_LINES * CODE_LINE_HEIGHT;
 
-/** 代码块占位高度 = 预览区（截断时为固定 5 行）+ 常驻操作条（复制 / 展开显示）。 */
+/** 代码块占位高度 = 预览区（截断时为固定 CODE_PREVIEW_LINES 行）+ 常驻操作条（复制 / 展开显示）。 */
 export function codeBlockHeight(content: string): number {
   const preview = codeNeedsClamp(content)
     ? CODE_CLAMP_HEIGHT

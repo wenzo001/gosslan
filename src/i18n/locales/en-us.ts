@@ -651,6 +651,8 @@ export const enUS: MessageDict = {
   "code.lang": "Code language",
   "code.auto": "Auto-detect",
   "code.plaintext": "Plain text",
+  // Lines hidden in the folded message-list code block.
+  "code.moreLines": "{n} more lines",
   "chat.composer.sendFile": "Send file (auto route)",
   // Window shake (QQ-like): single chat only; sends a strong reminder to the latest sent message
   "chat.composer.shake": "Shake window",
