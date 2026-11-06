@@ -123,10 +123,10 @@ const confirmRemove = ref(false);
 </script>
 
 <template>
-  <div class="flex h-full flex-col bg-[var(--gosslan-chat)]">
+  <div class="ambient-canvas-child flex h-full flex-col bg-[var(--gosslan-chat)]">
     <!-- 返回条：资料页占据整个内容区，**桌面端也必须有显式返回入口**（修 D-B） -->
     <div
-      class="flex items-center gap-2 border-b border-[var(--gosslan-divider)] bg-[var(--gosslan-chat)] px-2"
+      class="ambient-canvas-child flex items-center gap-2 border-b border-[var(--gosslan-divider)] bg-[var(--gosslan-chat)] px-2"
       :style="{ height: 'var(--gosslan-header-h)' }"
     >
       <button

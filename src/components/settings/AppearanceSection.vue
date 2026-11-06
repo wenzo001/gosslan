@@ -112,7 +112,7 @@ const transparencyOptions = computed(() => [
         <button
           v-for="c in presets"
           :key="c"
-          class="tap-safe h-6 w-6 rounded-full transition hover:scale-110"
+          class="tap-safe h-6 w-6 rounded-full"
           :style="{ background: c, outline: app.themeColor === c ? '2px solid var(--gosslan-text)' : 'none', outlineOffset: '1px' }"
           :aria-label="t('settings.appearance.themeColor.aria', { color: c })"
           :aria-pressed="app.themeColor === c"

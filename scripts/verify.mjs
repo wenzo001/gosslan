@@ -466,7 +466,7 @@ const steps = [
   {
     group: "frontend",
     name: "前端测试（npm test）",
-    why: "前端全部断言。条数交给 npm test 自己打印 —— 写死在这里一定会腐烂",
+    why: "前端全部断言，含 i18n 语气判据「界面文案不喊口号也不写占位话」（中英两册）。条数交给 npm test 自己打印 —— 写死在这里一定会腐烂",
     cwd: ROOT,
     cmd: NPM,
     args: ["test"],

@@ -652,7 +652,7 @@ window.__probe = (() => {
     const host = document.createElement('div');
     host.id = 'probe-host';
     document.body.appendChild(host);
-    const state = Vue.reactive({ open: false, initialKeyword: '', groupId: null, selectValue: 'b', liveModel: false, isolated: false });
+    const state = Vue.reactive({ open: false, initialKeyword: '', groupId: null, selectValue: 'b', liveModel: false, isolated: false, recordLang: false });
     window.__st = state;
     // 夹具原先把 props 写死成 open/initialKeyword + 三个回调；任务卡那一族要的是
     // message / liveTodo / mentionNames / selfMention ⇒ 第三参收一份 JSON props。
@@ -660,6 +660,13 @@ window.__probe = (() => {
     // 而且**必须走应用自己那份 todoLiveMap**（import 到的还是组件用的同一个模块实例）：
     // 在这里手写一遍"字母怎么拼、几位要缩短"就是给编号口径开第二个家，探针会先骗过自己。
     const extra = propsJson ? JSON.parse(propsJson) : {};
+    // 布局壳（ResponsiveLayout）要用 useRoute/useRouter：装**产品自己那份** router，
+    // 否则裸 app 里 useRoute() 直接抛，量到的就不是 TabBar 而是异常。
+    if (extra.router) {
+      const R = await import('/src/router/main.ts');
+      extra.__router = R.mainRouter;
+      delete extra.router;
+    }
     // --only=scrollrestore 要模拟"同一个应用里的组件卸载再挂载"：第二次 install 必须
     // 复用同一份 pinia（否则消息缓存跟着新 store 一起没了，量到的就不是滚动位置那条链）。
     // 只在这个显式开关打开时复用，其余段仍是每次全新 store（既有判据的隔离性不变）。
@@ -673,6 +680,10 @@ window.__probe = (() => {
     }
     if (extra.liveModel) state.liveModel = true;
     delete extra.liveModel;
+    // 代码块语言下拉（--only=langdd）：只有显式开了才挂 switch-language 记账，
+    // 否则所有段的根节点都会多一条无关监听（与 liveModel 同理，默认不串味）。
+    if (extra.recordLang) state.recordLang = true;
+    delete extra.recordLang;
     // 任务看板的"落到哪条、怎么落"（--only=tasksrt）：要能在挂载后改，
     // 所以这个 prop 也必须读 reactive 状态（与 open 同理，写死在 extra 里就改不动）。
     if (extra.focusProp) {
@@ -718,6 +729,8 @@ window.__probe = (() => {
         // 回执那一格「发送中」的取消键（--only=delivery ③c）：组件只 emit，动作接线在 MessageItem
         // （它把这一发交给菜单里那个同一个 doCancelSend）⇒ 没有这条记账就量不到"这一下接没接上"。
         onCancel: () => events.push(['cancel']),
+        // 代码块语言切换（--only=langdd）：只在该段显式开启时挂（见上面 recordLang）。
+        ...(state.recordLang ? { onSwitchLanguage: (v) => events.push(['lang', v === null ? null : String(v)]) } : {}),
         // 默认头像选择器（--only=avatar）：确认时把组合记进账本。
         onApply: (seed) => events.push(['apply', seed && seed.emoji, seed && seed.bg]),
         // 输入框那一族（--only=inputpanel）要读得到"这条到底带不带 @ 的名单"：
@@ -751,6 +764,7 @@ window.__probe = (() => {
       },
     });
     if (pinia) app.use(pinia);
+    if (extra.__router) { app.use(extra.__router); delete extra.__router; }
     window.__pinia = pinia;
     // TanStack Query：组件用 useQuery/useQueryClient 时，夹具 app 必须装同一份插件。
     // vue-query 的预构建文件是组件 import 时加载的 ⇒ 从资源条目取真实 URL，不手拼版本号。
@@ -803,6 +817,196 @@ window.__probe = (() => {
     window.__probe.vue = V;
     await V.nextTick(); await V.nextTick();
     return { ok: true };
+  };
+  /**
+   * 代码块语言下拉的「聊天区」夹具（--only=langdd，2026-11-05）。
+   *
+   * 为什么不能单挂 CodeLangMenu：判据是「以消息滚动容器的可见矩形为界」，
+   * 没有那个容器，量到的四边差值与真实聊天窗没有任何关系。
+   * 这里按真实结构摆：一个固定尺寸 + overflow-y:auto 的 scroller（模拟消息区），
+   * 里面放一颗 canSwitchLang 的 CodeBlock，并按 align=top/bottom 把它贴到可见区顶部/底部。
+   * 组件自己的 resolveBoundary 会从触发器往上找到这个 scroller —— 夹具不喂任何 ref。
+   *
+   * 两种形态：
+   * - 默认（scroll=true）：消息流 scroller，tail 可加尾部空白，用来量「滚动把触发器带出可视区」；
+   * - panel=true：非滚动、带 data-lang-menu-boundary 的聊天面板（模拟 ChatWindow 根节点），
+   *   宿主贴底 —— 这是输入区（Composer）那条路径：上方没有滚动容器，边界只能退到面板。
+   */
+  H.langddMount = (optsJson) => {
+    const o = JSON.parse(optsJson || '{}');
+    const host = document.getElementById('probe-host');
+    if (!host) return { ok: false, why: 'no-host' };
+    const panel = !!o.panel;
+    const scroller = document.createElement('div');
+    if (!panel) scroller.setAttribute('data-langdd-scroller', '');
+    if (panel) scroller.setAttribute('data-lang-menu-boundary', '');
+    scroller.style.cssText = [
+      'position:fixed',
+      'box-sizing:border-box',
+      panel ? 'overflow:visible' : 'overflow-y:auto',
+      'overflow-x:hidden',
+      ...(panel ? ['display:flex', 'flex-direction:column', 'justify-content:flex-end'] : []),
+      'background:rgba(120,120,120,0.12)',
+      'border:1px solid rgba(120,120,120,0.35)',
+      'left:' + o.left + 'px',
+      'top:' + o.top + 'px',
+      'width:' + o.width + 'px',
+      'height:' + o.height + 'px',
+    ].join(';');
+    if (host.parentElement) host.parentElement.removeChild(host);
+    document.body.appendChild(scroller);
+    scroller.appendChild(host);
+    host.style.boxSizing = 'border-box';
+    host.style.width = (o.hostWidth ?? Math.max(220, Math.min(420, o.width - 24))) + 'px';
+    host.style.margin = '0 auto';
+    if (panel) {
+      // 输入卡片贴面板底部：这正是「弹层该以面板底边为界、而不是视口底边」的现场。
+      return { ok: true, panel: true, areaH: scroller.clientHeight, areaW: scroller.clientWidth };
+    }
+    const padTop = document.createElement('div');
+    padTop.setAttribute('data-langdd-pad', 'top');
+    const padBottom = document.createElement('div');
+    padBottom.style.height = (o.tail ?? 16) + 'px';
+    scroller.insertBefore(padTop, host);
+    scroller.appendChild(padBottom);
+    // 贴底：上方空白 = scroller 可视高 − 块高（让块正好躺在可见区底部）；
+    // 贴顶：上方空白 = 0。
+    const blockH = host.getBoundingClientRect().height;
+    const viewH = scroller.clientHeight;
+    const top = o.align === 'bottom' ? Math.max(0, viewH - blockH - 1) : 0;
+    padTop.style.height = top + 'px';
+    return {
+      ok: true,
+      blockH: +blockH.toFixed(1),
+      scrollerH: viewH,
+      padTop: +top.toFixed(1),
+      align: o.align,
+    };
+  };
+  /** 语言下拉的「被量容器」：消息流用 scroller，输入区用面板（二选一）。 */
+  H.langddArea = () => document.querySelector('[data-langdd-scroller]')
+    || document.querySelector('[data-lang-menu-boundary]');
+  /** 弹层 vs 聊天区的四边差值 + 内部滚动读数（--only=langdd 的主量具）。 */
+  H.langddMeasure = () => {
+    const scroller = H.langddArea();
+    const menu = document.querySelector('[role="menu"].code-lang-menu');
+    if (!scroller || !menu) return { present: false, why: !scroller ? 'no-scroller' : 'no-menu' };
+    const s = scroller.getBoundingClientRect();
+    const m = menu.getBoundingClientRect();
+    const round = (n) => +n.toFixed(1);
+    return {
+      present: true,
+      scroller: { left: round(s.left), top: round(s.top), right: round(s.right), bottom: round(s.bottom), w: round(s.width), h: round(s.height) },
+      menu: { left: round(m.left), top: round(m.top), right: round(m.right), bottom: round(m.bottom), w: round(m.width), h: round(m.height) },
+      deltas: {
+        left: round(m.left - s.left),
+        top: round(m.top - s.top),
+        right: round(s.right - m.right),
+        bottom: round(s.bottom - m.bottom),
+      },
+      side: menu.getAttribute('data-side'),
+      scroll: {
+        scrollHeight: menu.scrollHeight,
+        clientHeight: menu.clientHeight,
+        scrollTop: Math.round(menu.scrollTop),
+        gutter: getComputedStyle(menu).scrollbarGutter,
+        overflowY: getComputedStyle(menu).overflowY,
+        overflowX: getComputedStyle(menu).overflowX,
+        textOverflow: getComputedStyle(menu).textOverflow,
+      },
+      minWidth: getComputedStyle(menu).minWidth,
+      maxWidth: getComputedStyle(menu).maxWidth,
+      itemCount: menu.querySelectorAll('[data-lang]').length,
+      current: String((menu.querySelector('[aria-current="true"]') || {}).textContent || '').trim(),
+      vw: window.innerWidth,
+      vh: window.innerHeight,
+    };
+  };
+  /**
+   * 单个选项的可点性（--only=langdd）：先把这一项滚进可见区，再逐项 elementFromPoint。
+   * idx=-1 表示最后一项。返回值里同时给出「该项矩形是否仍在聊天区内」与「命中的是不是它」，
+   * 这样"最后一项点不到"能拆成"被裁掉"还是"被别的层盖住"。
+   */
+  H.langddItem = (idx) => {
+    const scroller = H.langddArea();
+    const menu = document.querySelector('[role="menu"].code-lang-menu');
+    if (!scroller || !menu) return { present: false };
+    const items = Array.from(menu.querySelectorAll('[data-lang]'));
+    const item = items[idx < 0 ? items.length - 1 : idx];
+    if (!item) return { present: false, why: 'no-item' };
+    item.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+    const r = item.getBoundingClientRect();
+    const s = scroller.getBoundingClientRect();
+    const x = Math.round(r.left + r.width / 2);
+    const y = Math.round(r.top + r.height / 2);
+    const hit = document.elementFromPoint(x, y);
+    const label = item.querySelector('span');
+    return {
+      present: true,
+      index: idx < 0 ? items.length - 1 : idx,
+      lang: item.getAttribute('data-lang'),
+      x, y,
+      rect: { left: +r.left.toFixed(1), top: +r.top.toFixed(1), right: +r.right.toFixed(1), bottom: +r.bottom.toFixed(1) },
+      insideScroller: r.left >= s.left && r.right <= s.right && r.top >= s.top && r.bottom <= s.bottom,
+      hitIsItem: !!hit && item.contains(hit),
+      hit: String((hit && hit.textContent) || '').trim().slice(0, 24),
+      // 极窄容器：文字被省略才算 truncate 生效（label 自身溢出、外层没有横向溢出）。
+      truncated: !!label && label.scrollWidth > label.clientWidth + 1,
+      scrollTop: Math.round(menu.scrollTop),
+      scrollHeight: menu.scrollHeight,
+      clientHeight: menu.clientHeight,
+    };
+  };
+  /** 把消息流滚到指定 scrollTop（--only=langdd 的「触发器被滚出可视区」那一格）。 */
+  H.langddScroll = (y) => {
+    const area = document.querySelector('[data-langdd-scroller]');
+    const trigger = document.querySelector('button[aria-haspopup="menu"]');
+    if (!area || !trigger) return { ok: false };
+    area.scrollTop = y;
+    const s = area.getBoundingClientRect();
+    const t = trigger.getBoundingClientRect();
+    return {
+      ok: true,
+      scrollTop: Math.round(area.scrollTop),
+      area: { top: +s.top.toFixed(1), bottom: +s.bottom.toFixed(1) },
+      trigger: { top: +t.top.toFixed(1), bottom: +t.bottom.toFixed(1) },
+      triggerVisible: t.bottom > s.top && t.top < s.bottom,
+    };
+  };
+  /**
+   * 键盘那一格的焦点读数（--only=langdd）：Esc / Enter 之后焦点到底落在哪。
+   * isEditable 专门回答「有没有掉进聊天输入框」——输入框是 textarea/contenteditable，
+   * 不是菜单项也不是触发器。
+   */
+  H.langddActive = () => {
+    const el = document.activeElement;
+    const trigger = document.querySelector('button[aria-haspopup="menu"]');
+    return {
+      tag: el ? el.tagName : null,
+      isTrigger: !!el && el === trigger,
+      isEditable: !!el && (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA' || !!el.isContentEditable),
+      role: el ? el.getAttribute('role') : null,
+      text: String((el && el.textContent) || '').trim().slice(0, 24),
+      lang: el ? el.getAttribute('data-lang') : null,
+      open: !!document.querySelector('[role="menu"].code-lang-menu'),
+    };
+  };
+  /** 打开瞬间「当前语言」有没有被 scrollIntoView 滚进弹层可见区（--only=langdd）。 */
+  H.langddCurrent = () => {
+    const menu = document.querySelector('[role="menu"].code-lang-menu');
+    if (!menu) return { present: false };
+    const cur = menu.querySelector('[aria-current="true"]');
+    if (!cur) return { present: false, why: 'no-current' };
+    const m = menu.getBoundingClientRect();
+    const r = cur.getBoundingClientRect();
+    return {
+      present: true,
+      current: cur.getAttribute('data-lang'),
+      inside: r.top >= m.top && r.bottom <= m.bottom && r.left >= m.left && r.right <= m.right,
+      rect: { top: +r.top.toFixed(1), bottom: +r.bottom.toFixed(1) },
+      menu: { top: +m.top.toFixed(1), bottom: +m.bottom.toFixed(1) },
+      scrollTop: Math.round(menu.scrollTop),
+    };
   };
   /**
    * 回执动效探针（--only=delivery，⑤ 那一组）：**同一节点上改 state**，
@@ -1142,6 +1346,87 @@ window.__probe = (() => {
       setTimeout(step, 16);
     };
     step();
+  });
+  /**
+   * 造一张"窗口截图"形态的 PNG：整张近黑暗垫 + 里面一个圆角浅色窗口。
+   *
+   * 为什么要这样造：真实缺陷图 image-172e3789-c585-…png（2000×1362）的字节就是这样 ——
+   * 窗口圆角外侧的近黑（≈rgb(36,36,36)）被拍死在像素里、alpha 全 255（不是透明区），
+   * 圆角半径 ≈30px（占宽 1.5%）。800×545 是它的等比缩小（800×545 圆角 12px）。
+   * 纯色夹具只能证明"容器垫底不是深色"，永远照不出这一格。
+   *
+   * ⚠️ 这段源码在 PAGE_FIXTURE 模板字符串里：注释里不许出现反引号与反斜杠。
+   */
+  H.favShotPng = (W = 800, HH = 545) => {
+    // 圆角半径恒取"宽度的 1.5%"（与真实缺陷图同一比例），换尺寸时比例不跑偏。
+    const R = Math.round(Math.max(W, HH) * 0.015);
+    const cv = document.createElement('canvas');
+    cv.width = W;
+    cv.height = HH;
+    const c = cv.getContext('2d');
+    c.fillStyle = 'rgb(36,36,36)';
+    c.fillRect(0, 0, W, HH);
+    c.fillStyle = 'rgb(244,246,249)';
+    c.beginPath();
+    c.roundRect(0, 0, W, HH, R);
+    c.fill();
+    // 一条彩色特征条：确认样本命中的是图片内容而不是背景
+    c.fillStyle = 'rgb(198,72,72)';
+    c.fillRect(Math.round(W * 0.06), Math.round(HH * 0.08), Math.round(W * 0.16), Math.round(HH * 0.09));
+    const bin = atob(cv.toDataURL('image/png').split(',')[1]);
+    const out = [];
+    for (let i = 0; i < bin.length; i += 1) out.push(bin.charCodeAt(i));
+    return out;
+  };
+  /**
+   * 对**真实合成结果**取像素：Node 侧截一张 PNG 塞回来，这里画到 canvas 上再读。
+   * 为什么要绕这一圈：暗角是合成/抗锯齿出来的，读 DOM 的 computed style 根本看不见它。
+   *
+   * w/h 是**图片内容矩形**（object-contain 之后真正的像素区），不是 img 元素框 ——
+   * 缺陷恰恰在于元素框比内容宽，元素自己的圆角根本裁不到内容角。
+   * 每角另取"角外沿对角线 5px"的底色作参考：详情底色是渐变，不能拿全局一个点当参照。
+   * 采样从 1px 起（不是 2px）：源图暗垫沿对角线只延伸约 1.9 显示 px，
+   * 网格从 2px 起会整格落在浅色区、量不到暗角（这条是踩过的坑）。
+   *
+   * ⚠️ 同上：本段在 PAGE_FIXTURE 模板字符串里，注释里不许出现反引号与反斜杠。
+   */
+  H.favSample = (b64, w, h, margin, from) => new Promise((resolve) => {
+    // from 默认 1：四角采样网格取"角内 1/2/3px"。占位态要跳过 1px 描边与裁剪抗锯齿那一圈，
+    // 传 from=4（见 runFavThumb 的 thumbCorner）。
+    const g = from || 1;
+    const img = new Image();
+    img.onload = () => {
+      const cv = document.createElement('canvas');
+      cv.width = img.width;
+      cv.height = img.height;
+      const c = cv.getContext('2d');
+      c.drawImage(img, 0, 0);
+      const at = (x, y) => {
+        const d = c.getImageData(Math.round(x), Math.round(y), 1, 1).data;
+        return [d[0], d[1], d[2]];
+      };
+      const base = margin;
+      // 图内参考：离四角都远的内容像素（这一格必须是浅色窗口内容）
+      const inner = at(base + w / 2, base + 10);
+      const corners = [];
+      for (const cy of [0, 1]) {
+        for (const cx of [0, 1]) {
+          const pts = [];
+          for (const dy of [g, g + 1, g + 2]) {
+            for (const dx of [g, g + 1, g + 2]) {
+              const x = cx ? base + w - dx : base + dx;
+              const y = cy ? base + h - dy : base + dy;
+              pts.push({ dx, dy, rgb: at(x, y) });
+            }
+          }
+          const out = at(cx ? base + w + 5 : base - 5, cy ? base + h + 5 : base - 5);
+          corners.push({ name: (cy ? 'bottom' : 'top') + '-' + (cx ? 'right' : 'left'), pts, out });
+        }
+      }
+      resolve({ corners, inner, shot: [img.width, img.height] });
+    };
+    img.onerror = () => resolve({ error: 'decode failed' });
+    img.src = 'data:image/png;base64,' + b64;
   });
   /** 读 zoomMount 累积的逐帧读数（frames 里只含图片已布局的帧）。 */
   H.zoomTake = () => ({
@@ -3818,6 +4103,7 @@ async function main() {
     const taskpaste = want("taskpaste");
     const modaltitle = want("modaltitle");
     const codeblock = want("codeblock");
+    const langdd = want("langdd");
     const inputpanel = want("inputpanel");
     const winsafe = want("winsafe");
     const logs = want("logs");
@@ -3825,7 +4111,9 @@ async function main() {
     const leak = want("leak");
     const perf = want("perf");
     const ambient = want("ambient");
+    const surfaces = want("surfaces");
     const favorites = want("favorites");
+    const favthumb = want("favthumb");
     const links = want("links");
     const diag = want("diag");
     const updater = want("updater");
@@ -4046,6 +4334,7 @@ async function main() {
     await runSegment("taskpaste", taskpaste, () => runTaskPaste(cdp, url));
     await runSegment("modaltitle", modaltitle, () => runModalTitle(cdp, url));
     await runSegment("codeblock", codeblock, () => runCodeBlock(cdp, url));
+    await runSegment("langdd", langdd, () => runLangDd(cdp, url));
     await runSegment("inputpanel", inputpanel, () => runInputPanels(cdp, url));
     await runSegment("winsafe", winsafe, () => runWindowSafe(cdp, url));
     await runSegment("logs", logs, () => runLogs(cdp, url));
@@ -4053,7 +4342,9 @@ async function main() {
     await runSegment("leak", leak, () => runLeak(cdp, url));
     await runSegment("perf", perf, () => runPerf(cdp, url));
     await runSegment("ambient", ambient, () => runAmbient(cdp, url));
+    await runSegment("surfaces", surfaces, () => runSurfaces(cdp, url));
     await runSegment("favorites", favorites, () => runFavorites(cdp, url));
+    await runSegment("favthumb", favthumb, () => runFavThumb(cdp, url));
     await runSegment("namecap", namecap, () => runNameCap(cdp, url));
     await runSegment("friendfilter", friendfilter, () => runFriendFilter(cdp, url));
     await runSegment("forwardfilter", forwardfilter, () => runForwardFilter(cdp, url));
@@ -7400,6 +7691,426 @@ async function runCodeBlock(cdp, url) {
       after: mobileAfter && [mobileAfter.scrollTop, mobileAfter.headerTop] }));
   console.log(`  · 读数（移动端 390x700 触控）：头部 top=${mobileBefore?.headerTop}px 高=${mobileBefore?.headerH}px；触摸后 top=${mobileAfter?.headerTop}px；scrollTop ${mobileBefore?.scrollTop}→${mobileAfter?.scrollTop}px；touch-action=${mobileBefore?.touchAction}；内部容器 clientHeight=${mobileBefore?.clientH}px / scrollHeight=${mobileBefore?.scrollH}px`);
   await cdp.send("Emulation.setTouchEmulationEnabled", { enabled: false }).catch(() => {});
+}
+
+/**
+ * 代码块语言下拉：**永远不出聊天区 / 下方不够就向上弹 / 限高内部滚动**（--only=langdd）。
+ *
+ * 真实缺陷（用户 2026-11-05）：「窗口小的时候下拉被聊天框底边截断，下半部分选项够不着」。
+ * 单看组件源码是看不出来的：Reka 默认只按**视口**避让（`collisionBoundary` 默认空数组），
+ * 而聊天区只是视口里的一块；16 个选项一列（16×32+14≈526px）在 640×480 里必然越界。
+ *
+ * 这一段的夹具按真实结构摆：一个固定尺寸 + `overflow-y:auto` 的 scroller（聊天区），
+ * 里面一颗 canSwitchLang 的 CodeBlock，按 align=top/bottom 贴到可见区顶部/底部。
+ * 判据全部是**真渲染读数**：
+ *   ① 弹层 `getBoundingClientRect()` 与容器矩形的四边差值全 ≥0；
+ *   ② 贴底时 `data-side="top"`（翻转生效）；贴顶时 `data-side="bottom"`；
+ *   ③ `scrollHeight > clientHeight` 时 `overflow-y:auto` + `scrollbar-gutter:stable`；
+ *   ④ 逐项 `elementFromPoint(选项中心)` 命中自身；最后一项**真点一次**并核对 emit；
+ *   ⑤ 键盘：↓ 移动高亮、Enter 确认、Esc 关闭后焦点回触发器（不掉进输入区）；
+ *   ⑥ 输入区（Composer）没有滚动祖先时，边界退到 `data-lang-menu-boundary` 面板；
+ *   ⑦ 滚动把触发器带出可视区：不自动关，但弹层仍钉在容器内、Esc 可关；
+ *   ⑧ 极窄容器：min-width 压缩 + 横向 shift 钉在容器内 + 文字 truncate，逐项仍可点。
+ *
+ * 窗口档位：用户点名的 1440×900 / 1024×700 / 900×600 / 640×480，外加产品下限 360×640
+ * （`src-tauri/tauri.conf.json` 的 minWidth=360 / minHeight=640）。
+ */
+async function runLangDd(cdp, url) {
+  const SIZES = [
+    { id: "1440x900", w: 1440, h: 900 },
+    { id: "1024x700", w: 1024, h: 700 },
+    { id: "900x600", w: 900, h: 600 },
+    { id: "640x480", w: 640, h: 480 },
+    { id: "360x640(产品下限)", w: 360, h: 640 },
+  ];
+  const POSITIONS = ["bottom", "top"];
+  // 三行短代码：块高稳定（maxHeight 160），触发器位置只由 align 决定，读数可复算。
+  const code = 'fn main() {\n    println!("langdd");\n}\n';
+  const codeProps = JSON.stringify(JSON.stringify({
+    code, language: "rust", canSwitchLang: true, recordLang: true, scrollable: true, maxHeight: "160px",
+  }));
+
+  await cdp.send("Emulation.setDeviceMetricsOverride", {
+    width: 1440, height: 900, deviceScaleFactor: 1, mobile: false,
+  });
+  await cdp.send("Page.navigate", { url });
+  await cdp.settled();
+  await sleep(3_000);
+  await cdp.eval(PAGE_FIXTURE);
+
+  const lastScenarios = [];
+  const composerScenarios = [];
+  const scrollScenarios = [];
+  const narrowScenario = [];
+  for (const size of SIZES) {
+    await cdp.send("Emulation.setDeviceMetricsOverride", {
+      width: size.w, height: size.h, deviceScaleFactor: 1, mobile: false,
+    });
+    // 聊天区 = 顶部让 48（标题栏/会话头）+ 底部让 120（输入区），宽度占满：
+    // 这一档刻意让容器**小于视口** —— 若夹具占满视口，这条判据就退化成"视口内"，等于没测。
+    const scrollerTop = 48;
+    const scrollerH = Math.max(160, size.h - scrollerTop - 120);
+    const scrollerW = size.w;
+
+    for (const align of POSITIONS) {
+      const mounted = await cdp.eval(
+        `window.__probe.install('/src/components/CodeBlock.vue', '', ${codeProps})`,
+      );
+      check(`[${size.id}/${align}] CodeBlock 挂得起来（这一格的入口）`,
+        !!mounted && mounted.ok === true, "install ok", JSON.stringify(mounted));
+      if (!mounted || mounted.ok !== true) continue;
+      await sleep(300);
+      const laid = await cdp.eval(
+        `window.__probe.langddMount(${JSON.stringify(JSON.stringify({
+          left: 0, top: scrollerTop, width: scrollerW, height: scrollerH, align,
+        }))})`,
+      );
+      check(`[${size.id}/${align}] 夹具摆好：代码块${align === "bottom" ? "贴底" : "贴顶"}，聊天区小于视口`,
+        !!laid && laid.ok === true && laid.scrollerH < size.h,
+        "scrollerH < 视口高", JSON.stringify(laid));
+      if (!laid || laid.ok !== true) continue;
+
+      const pt = await cdp.eval("window.__probe.firstMenuTrigger()");
+      check(`[${size.id}/${align}] 拿得到语言下拉的触发器`,
+        !!pt && pt.x > 0 && pt.y > 0, "坐标 >0", JSON.stringify(pt));
+      if (!pt) continue;
+      await cdp.click(pt.x, pt.y);
+      await sleep(300);
+
+      const m = await cdp.eval("window.__probe.langddMeasure()");
+      // 判据①：四边全在容器内（允许 0.5px 的亚像素舍入）。
+      check(`[${size.id}/${align}] 弹层四边都不越过聊天区`,
+        !!m && m.present === true
+          && m.deltas.left >= -0.5 && m.deltas.top >= -0.5
+          && m.deltas.right >= -0.5 && m.deltas.bottom >= -0.5,
+        "四边差值 ≥0", JSON.stringify(m && { deltas: m.deltas, menu: m.menu, area: m.scroller }));
+      // 判据②：翻转。贴底时下方只够露出块本身 ⇒ 必须弹到上方；贴顶时反之。
+      check(`[${size.id}/${align}] 下方不够时向上弹（data-side 与贴边方向相反）`,
+        !!m && m.present === true
+          && (align === "bottom" ? m.side === "top" : m.side === "bottom"),
+        align === "bottom" ? "side=top" : "side=bottom", JSON.stringify(m && { side: m.side }));
+      // 判据③：限高 + 内部滚动（不吃视口兜底）。超长列表在限高里必须自己滚。
+      const needsScroll = !!m && m.present && m.scroll.scrollHeight > m.scroll.clientHeight + 1;
+      check(`[${size.id}/${align}] 限高内部滚动（超出部分滚在弹层里，不是撑出容器）`,
+        !!m && m.present === true
+          && m.menu.h <= m.scroller.h - 14
+          && m.scroll.overflowY === "auto"
+          && m.scroll.gutter === "stable"
+          && (!needsScroll || m.scroll.clientHeight < m.scroll.scrollHeight),
+        "menu.h ≤ 容器高−14 + overflowY=auto + gutter=stable",
+        JSON.stringify(m && { menuH: m.menu.h, areaH: m.scroller.h, scroll: m.scroll, needsScroll }));
+
+      // 判据④：逐项 elementFromPoint 命中自身 + 最后一项真点。
+      const items = [];
+      if (m && m.present) {
+        for (let i = 0; i < m.itemCount; i += 1) {
+          items.push(await cdp.eval(`window.__probe.langddItem(${i})`));
+        }
+      }
+      const missed = items.filter((x) => !x || !x.present || !x.hitIsItem || !x.insideScroller);
+      check(`[${size.id}/${align}] 逐项可点：${m?.itemCount ?? 0} 个选项的 elementFromPoint 都命中自身`,
+        items.length > 0 && missed.length === 0,
+        "每一项 hitIsItem + insideScroller",
+        JSON.stringify(missed.slice(0, 3)) + ` (共 ${items.length} 项，未命中 ${missed.length})`);
+      const last = await cdp.eval("window.__probe.langddItem(-1)");
+      check(`[${size.id}/${align}] 最后一项在可见区内且命中自身（用户报的"够不着"那一格）`,
+        !!last && last.present === true && last.hitIsItem === true
+          && last.insideScroller === true && last.lang === "markdown",
+        "last: hitIsItem + insideScroller + lang=markdown",
+        JSON.stringify(last));
+      if (last && last.present) {
+        await cdp.eval("window.__probe.reset()");
+        await cdp.click(last.x, last.y);
+        await sleep(300);
+        const ev = await cdp.eval("window.__probe.events");
+        check(`[${size.id}/${align}] 真的点中最后一项：emit switch-language=markdown`,
+          Array.isArray(ev) && ev.some((e) => e[0] === "lang" && e[1] === "markdown"),
+          "账本里有 ['lang','markdown']", JSON.stringify(ev));
+      }
+      // 关掉（点最后一项已经关了；万一没关，Esc 收尾），给下一个场景一个干净起点。
+      await cdp.key("Escape", "Escape", "", 0);
+      await sleep(200);
+
+      lastScenarios.push({
+        id: size.id, align,
+        deltas: m && m.deltas,
+        side: m && m.side,
+        menuH: m && m.menu.h,
+        areaH: m && m.scroller.h,
+        scroll: m && m.scroll,
+        items: items.length,
+        missed: missed.length,
+        lastScrollTop: last && last.scrollTop,
+      });
+    }
+  }
+
+  // 判据⑤：键盘可用 —— 只在 900×600 贴底这一档做一次（其它档位是同一份 Reka 逻辑）。
+  await cdp.send("Emulation.setDeviceMetricsOverride", {
+    width: 900, height: 600, deviceScaleFactor: 1, mobile: false,
+  });
+  const km = await cdp.eval(`window.__probe.install('/src/components/CodeBlock.vue', '', ${codeProps})`);
+  if (km && km.ok === true) {
+    await sleep(300);
+    await cdp.eval(`window.__probe.langddMount(${JSON.stringify(JSON.stringify({
+      left: 0, top: 48, width: 900, height: 600 - 48 - 120, align: "bottom",
+    }))})`);
+    const pt = await cdp.eval("window.__probe.firstMenuTrigger()");
+    if (pt) {
+      await cdp.click(pt.x, pt.y);
+      await sleep(300);
+      const cur = await cdp.eval("window.__probe.langddMeasure()");
+      check("键盘：当前语言有选中态（aria-current 落在 Rust）",
+        !!cur && cur.present === true && cur.current === "Rust",
+        "current=Rust", JSON.stringify(cur && { current: cur.current }));
+      await cdp.key("ArrowDown", "ArrowDown", "", 40);
+      const afterDown = await cdp.eval("window.__probe.langddActive()");
+      check("键盘：↓ 把高亮移进菜单项（焦点没留在触发器上）",
+        !!afterDown && afterDown.role === "menuitem" && afterDown.isEditable === false,
+        "activeElement role=menuitem", JSON.stringify(afterDown));
+      await cdp.eval("window.__probe.reset()");
+      await cdp.key("Enter", "Enter", "\r", 13);
+      await sleep(250);
+      const ev = await cdp.eval("window.__probe.events");
+      check("键盘：回车确认选中并 emit（不是只关掉菜单）",
+        Array.isArray(ev) && ev.some((e) => e[0] === "lang" && e[1] === null),
+        "账本里有 ['lang',null]（auto 档）", JSON.stringify(ev));
+
+      // Esc：关掉后焦点必须回到触发器，不许掉进聊天输入区。
+      const pt2 = await cdp.eval("window.__probe.firstMenuTrigger()");
+      if (pt2) {
+        await cdp.click(pt2.x, pt2.y);
+        await sleep(300);
+        await cdp.key("Escape", "Escape", "", 0);
+        await sleep(250);
+        const afterEsc = await cdp.eval("window.__probe.langddActive()");
+        check("键盘：Esc 关闭后焦点回到语言触发器，没有掉进输入区",
+          !!afterEsc && afterEsc.open === false
+            && afterEsc.isTrigger === true && afterEsc.isEditable === false,
+          "菜单关 + activeElement=触发器",
+          JSON.stringify(afterEsc));
+      }
+    }
+  }
+
+  // 判据：打开时「当前语言」要自动滚进可见区（要求 3 的第二半）。
+  // 取最苛刻的一档：640×480 + 贴底 + 当前语言是最后一个（Markdown）。
+  await cdp.send("Emulation.setDeviceMetricsOverride", {
+    width: 640, height: 480, deviceScaleFactor: 1, mobile: false,
+  });
+  const mdProps = JSON.stringify(JSON.stringify({
+    code, language: "markdown", canSwitchLang: true, recordLang: true, scrollable: true, maxHeight: "160px",
+  }));
+  const mdMounted = await cdp.eval(`window.__probe.install('/src/components/CodeBlock.vue', '', ${mdProps})`);
+  if (mdMounted && mdMounted.ok === true) {
+    await sleep(300);
+    await cdp.eval(`window.__probe.langddMount(${JSON.stringify(JSON.stringify({
+      left: 0, top: 48, width: 640, height: 312, align: "bottom",
+    }))})`);
+    const pt = await cdp.eval("window.__probe.firstMenuTrigger()");
+    if (pt) {
+      await cdp.click(pt.x, pt.y);
+      await sleep(350);
+      const cur = await cdp.eval("window.__probe.langddCurrent()");
+      check("打开时当前语言（Markdown）被 scrollIntoView 滚进可见区",
+        !!cur && cur.present === true && cur.current === "markdown" && cur.inside === true
+          && cur.scrollTop > 0,
+        "current=markdown + inside + scrollTop>0", JSON.stringify(cur));
+      await cdp.key("Escape", "Escape", "", 0);
+    }
+  }
+
+  // ── ⑥ 输入区（Composer）：上方没有滚动容器，边界退到聊天面板 ───────────────
+  // 真实结构：Composer 挂在 ChatWindow 根节点（`data-lang-menu-boundary`）里，
+  // 触发器上方只有输入卡片，没有 overflow-y:auto 祖先。若退到视口，640×480 时
+  // 面板底边与视口底边只差 16px，弹层会重新盖住输入区/面板外。
+  for (const size of [{ id: "1024x700", w: 1024, h: 700 }, { id: "640x480", w: 640, h: 480 }]) {
+    await cdp.send("Emulation.setDeviceMetricsOverride", {
+      width: size.w, height: size.h, deviceScaleFactor: 1, mobile: false,
+    });
+    const cm = await cdp.eval("window.__probe.install('/src/components/chat/MessageComposer.vue', '', "
+      + JSON.stringify(JSON.stringify({ convId: "group:langdd" })) + ")");
+    check(`[${size.id}/composer] MessageComposer 挂得起来`, !!cm && cm.ok === true,
+      "install ok", JSON.stringify(cm));
+    if (!cm || cm.ok !== true) continue;
+    await sleep(400);
+    // 面板 = 聊天区矩形：顶部让 48（会话头），底部让 16（应用留白）。
+    const panel = await cdp.eval(`window.__probe.langddMount(${JSON.stringify(JSON.stringify({
+      panel: true, left: 0, top: 48, width: size.w, height: size.h - 48 - 16,
+    }))})`);
+    check(`[${size.id}/composer] 面板夹具贴底（输入卡片在面板底部）`,
+      !!panel && panel.ok === true && panel.panel === true,
+      "panel 夹具 ok", JSON.stringify(panel));
+    const codeBtn = await cdp.eval(`(async () => {
+      const { t } = await import('/src/i18n/index.ts');
+      const label = t('chat.composer.code');
+      const b = Array.from(document.querySelectorAll('.gosslan-composer button'))
+        .find((x) => x.getAttribute('aria-label') === label);
+      if (!b) return null;
+      const r = b.getBoundingClientRect();
+      return { x: r.x + r.width / 2, y: r.y + r.height / 2 };
+    })()`);
+    check(`[${size.id}/composer] 找得到代码模式开关`, !!codeBtn, "按钮坐标", JSON.stringify(codeBtn));
+    if (!codeBtn) continue;
+    await cdp.click(codeBtn.x, codeBtn.y);
+    await sleep(300);
+    const cpt = await cdp.eval("window.__probe.firstMenuTrigger()");
+    check(`[${size.id}/composer] 代码模式工具条里出现了语言触发器`,
+      !!cpt && cpt.x > 0 && cpt.y > 0, "触发器坐标", JSON.stringify(cpt));
+    if (!cpt) continue;
+    await cdp.click(cpt.x, cpt.y);
+    await sleep(350);
+    const m = await cdp.eval("window.__probe.langddMeasure()");
+    check(`[${size.id}/composer] 弹层四边都不越过聊天面板（不是视口）`,
+      !!m && m.present === true
+        && m.deltas.left >= -0.5 && m.deltas.top >= -0.5
+        && m.deltas.right >= -0.5 && m.deltas.bottom >= -0.5,
+      "四边差值 ≥0（对面板矩形）", JSON.stringify(m && { deltas: m.deltas, menu: m.menu, area: m.scroller }));
+    check(`[${size.id}/composer] 限高在面板内 + 内部滚动`,
+      !!m && m.present === true
+        && m.menu.h <= m.scroller.h - 14
+        && m.scroll.overflowY === "auto" && m.scroll.gutter === "stable",
+      "menu.h ≤ 面板高−14 + auto + stable",
+      JSON.stringify(m && { menuH: m.menu.h, areaH: m.scroller.h, scroll: m.scroll }));
+    const items = [];
+    if (m && m.present) {
+      for (let i = 0; i < m.itemCount; i += 1) items.push(await cdp.eval(`window.__probe.langddItem(${i})`));
+    }
+    const missed = items.filter((x) => !x || !x.present || !x.hitIsItem || !x.insideScroller);
+    const last = await cdp.eval("window.__probe.langddItem(-1)");
+    check(`[${size.id}/composer] 逐项可点、最后一项命中自身`,
+      items.length > 0 && missed.length === 0 && !!last && last.hitIsItem === true && last.insideScroller === true,
+      "全部 hitIsItem + inside",
+      JSON.stringify({ missed: missed.slice(0, 3), last }));
+    await cdp.key("Escape", "Escape", "", 0);
+    await sleep(250);
+    const after = await cdp.eval("window.__probe.langddActive()");
+    check(`[${size.id}/composer] Esc 关掉且焦点回触发器、没掉进输入框`,
+      !!after && after.open === false && after.isTrigger === true && after.isEditable === false,
+      "open=false + isTrigger", JSON.stringify(after));
+    composerScenarios.push({
+      id: size.id,
+      deltas: m && m.deltas, side: m && m.side, menuH: m && m.menu.h, areaH: m && m.scroller.h,
+      scroll: m && m.scroll, items: items.length, missed: missed.length, lastScrollTop: last && last.scrollTop,
+    });
+  }
+
+  // ── ⑦ 滚动把触发器带出可视区：保持不自动关，但菜单仍钉在容器内、Esc 可关 ──
+  await cdp.send("Emulation.setDeviceMetricsOverride", {
+    width: 900, height: 600, deviceScaleFactor: 1, mobile: false,
+  });
+  const sm = await cdp.eval(`window.__probe.install('/src/components/CodeBlock.vue', '', ${codeProps})`);
+  if (sm && sm.ok === true) {
+    await sleep(300);
+    await cdp.eval(`window.__probe.langddMount(${JSON.stringify(JSON.stringify({
+      left: 0, top: 48, width: 900, height: 600 - 48 - 120, align: "bottom", tail: 600,
+    }))})`);
+    const pt = await cdp.eval("window.__probe.firstMenuTrigger()");
+    if (pt) {
+      await cdp.click(pt.x, pt.y);
+      await sleep(300);
+      const before = await cdp.eval("window.__probe.langddMeasure()");
+      const scrolled = await cdp.eval("window.__probe.langddScroll(400)");
+      await sleep(350);
+      const during = await cdp.eval("window.__probe.langddMeasure()");
+      check("滚动：触发器被带出可视区（这一格的前提成立）",
+        !!scrolled && scrolled.ok === true && scrolled.triggerVisible === false
+          && scrolled.scrollTop === 400,
+        "triggerVisible=false + scrollTop=400", JSON.stringify(scrolled));
+      check("滚动：菜单不自动关，且仍钉在容器内（四边差值 ≥0）",
+        !!during && during.present === true
+          && during.deltas.left >= -0.5 && during.deltas.top >= -0.5
+          && during.deltas.right >= -0.5 && during.deltas.bottom >= -0.5,
+        "菜单仍在 + 四边 ≥0",
+        JSON.stringify({ before: before && before.deltas, during: during && during.deltas }));
+      await cdp.key("Escape", "Escape", "", 0);
+      await sleep(250);
+      const after = await cdp.eval("window.__probe.langddActive()");
+      check("滚动：Esc 能关掉菜单，焦点不掉进输入区",
+        !!after && after.open === false && after.isEditable === false,
+        "open=false + isEditable=false", JSON.stringify(after));
+      scrollScenarios.push({
+        before: before && before.deltas, during: during && during.deltas,
+        scrollTop: scrolled && scrolled.scrollTop, closed: after && after.open === false,
+      });
+    }
+  }
+
+  // ── ⑧ 极窄容器：min-width 压缩 + 横向 shift 钉在容器内 + 文字 truncate ─────
+  await cdp.send("Emulation.setDeviceMetricsOverride", {
+    width: 640, height: 480, deviceScaleFactor: 1, mobile: false,
+  });
+  const nm = await cdp.eval(`window.__probe.install('/src/components/CodeBlock.vue', '', ${codeProps})`);
+  if (nm && nm.ok === true) {
+    await sleep(300);
+    await cdp.eval(`window.__probe.langddMount(${JSON.stringify(JSON.stringify({
+      left: 0, top: 48, width: 120, height: 312, hostWidth: 96, align: "bottom",
+    }))})`);
+    const pt = await cdp.eval("window.__probe.firstMenuTrigger()");
+    if (pt) {
+      await cdp.click(pt.x, pt.y);
+      await sleep(350);
+      const m = await cdp.eval("window.__probe.langddMeasure()");
+      check("极窄：弹层水平方向仍钉在容器内（左右差值 ≥0）",
+        !!m && m.present === true && m.deltas.left >= -0.5 && m.deltas.right >= -0.5,
+        "left/right ≥0", JSON.stringify(m && { deltas: m.deltas, menu: m.menu, area: m.scroller }));
+      check("极窄：min-width 被压到可用宽以内（不是默认 168）",
+        !!m && m.present === true && parseFloat(m.minWidth) <= m.scroller.w - 15,
+        "minWidth ≤ 容器宽−15", JSON.stringify(m && { minWidth: m.minWidth, maxWidth: m.maxWidth, areaW: m.scroller.w }));
+      const items = [];
+      if (m && m.present) {
+        for (let i = 0; i < m.itemCount; i += 1) items.push(await cdp.eval(`window.__probe.langddItem(${i})`));
+      }
+      const missed = items.filter((x) => !x || !x.present || !x.hitIsItem || !x.insideScroller);
+      const last = await cdp.eval("window.__probe.langddItem(-1)");
+      const truncated = items.filter((x) => x && x.truncated).length;
+      check("极窄：逐项仍可点、最后一项也命中自身（宽度压缩不牺牲可点性）",
+        items.length > 0 && missed.length === 0 && !!last && last.hitIsItem === true && last.insideScroller === true,
+        "全部 hitIsItem + inside",
+        JSON.stringify({ missed: missed.slice(0, 3), last, truncated }));
+      if (last && last.present) {
+        await cdp.eval("window.__probe.reset()");
+        await cdp.click(last.x, last.y);
+        await sleep(300);
+        const ev = await cdp.eval("window.__probe.events");
+        check("极窄：真的点中最后一项：emit switch-language=markdown",
+          Array.isArray(ev) && ev.some((e) => e[0] === "lang" && e[1] === "markdown"),
+          "账本里有 ['lang','markdown']", JSON.stringify(ev));
+      }
+      narrowScenario.push({
+        deltas: m && m.deltas, menuW: m && m.menu.w, areaW: m && m.scroller.w,
+        minWidth: m && m.minWidth, maxWidth: m && m.maxWidth,
+        truncated, items: items.length, missed: missed.length, last: last && last.lang,
+      });
+      await cdp.key("Escape", "Escape", "", 0);
+    }
+  }
+
+  // 逐档读数（报告直接抄这张表）。
+  for (const s of lastScenarios) {
+    console.log(`  · 读数 ${s.id}/${s.align}：menu=${s.menuH}px / area=${s.areaH}px，`
+      + `四边差=(${s.deltas?.left},${s.deltas?.top},${s.deltas?.right},${s.deltas?.bottom})，`
+      + `side=${s.side}，scrollH=${s.scroll?.scrollHeight}/clientH=${s.scroll?.clientHeight}/scrollTop=${s.scroll?.scrollTop}`
+      + `（最后一项滚到 ${s.lastScrollTop}），逐项 ${s.items} 命中失败 ${s.missed}`);
+  }
+  for (const s of composerScenarios) {
+    console.log(`  · 读数 composer ${s.id}：menu=${s.menuH}px / panel=${s.areaH}px，`
+      + `四边差=(${s.deltas?.left},${s.deltas?.top},${s.deltas?.right},${s.deltas?.bottom})，`
+      + `side=${s.side}，scrollH=${s.scroll?.scrollHeight}/clientH=${s.scroll?.clientHeight}/scrollTop=${s.scroll?.scrollTop}`
+      + `（最后一项滚到 ${s.lastScrollTop}），逐项 ${s.items} 命中失败 ${s.missed}`);
+  }
+  for (const s of scrollScenarios) {
+    console.log(`  · 读数 滚出可视区：scrollTop=${s.scrollTop}，`
+      + `打开时四边差=(${s.before?.left},${s.before?.top},${s.before?.right},${s.before?.bottom})，`
+      + `滚出后四边差=(${s.during?.left},${s.during?.top},${s.during?.right},${s.during?.bottom})，`
+      + `Esc 后菜单关闭=${s.closed}`);
+  }
+  for (const s of narrowScenario) {
+    console.log(`  · 读数 极窄 120px：menu=${s.menuW}px / area=${s.areaW}px，`
+      + `minWidth=${s.minWidth} / maxWidth=${s.maxWidth}，`
+      + `四边差=(${s.deltas?.left},${s.deltas?.top},${s.deltas?.right},${s.deltas?.bottom})，`
+      + `truncate ${s.truncated}/${s.items}，命中失败 ${s.missed}，最后一项=${s.last}`);
+  }
 }
 
 /**
@@ -11798,6 +12509,737 @@ function deltaE00(lab1, lab2) {
   return Math.sqrt(
     (dLp / SL) ** 2 + (dCp / SC) ** 2 + (dHp / SH) ** 2 + RT * (dCp / SC) * (dHp / SH),
   );
+}
+
+/**
+ * 全应用可见面读数（`--only=surfaces`，2026-11-05）。
+ *
+ * 这不是判据段，是**读数段**：它不做 check()，只把"动效背景下每个不透明实色块"摊开，
+ * 交给人工/守卫裁决。为什么必须有：`--gosslan-chat` / `--gosslan-panel` 在亮色下就是
+ * `#ffffff`，静态扫描只能看见类名，看不见"这块到底压在什么底上、跟周边差多少"。
+ *
+ * 量五件事（每块）：computed `background-color` 与 alpha、`backdrop-filter`、
+ * 是否 `.ambient-canvas-child`、是否玻璃档（`.glass-*` / `.frost`）、
+ * 以及**截图像素采样**（合成后的真实颜色——把 screenshot 回灌进 canvas 读点，
+ * 不做 BMP 离线解析）。
+ *
+ * 组合：亮/暗 × 动效开/关 × 减少透明开/关 = 8 档（≥ 用户要求的 4 档）。
+ */
+async function runSurfaces(cdp, url) {
+  const PHASE = argv.find((a) => a.startsWith("--phase="))?.slice("--phase=".length) ?? "before";
+  const outFile = path.join(ROOT, "test-results", `surface-readings-${PHASE}.json`);
+  fs.mkdirSync(path.join(ROOT, "test-results"), { recursive: true });
+
+  await cdp.send("Page.bringToFront").catch(() => {});
+  await cdp.send("Emulation.setDeviceMetricsOverride", {
+    width: 1280, height: 800, deviceScaleFactor: 1, mobile: false,
+  }).catch(() => {});
+  await cdp.send("Emulation.setEmulatedMedia", { features: [] }).catch(() => {});
+  await cdp.send("Page.navigate", { url });
+  await cdp.settled();
+  await sleep(2_500);
+  await cdp.eval(PAGE_FIXTURE);
+
+  await cdp.eval(`(async () => {
+    if (!document.querySelector('.ambient')) {
+      const A = await import('/src/utils/ambient.ts');
+      A.installAmbient();
+    }
+  })()`);
+
+  /** 装组件 + 把探针宿主补成同一层画布纱（base 由调用方给）。 */
+  const mount = (cmp, props, base) => cdp.eval(`(async () => {
+    const r = await window.__probe.install(${JSON.stringify(cmp)}, '', ${
+      JSON.stringify(JSON.stringify(props))
+    });
+    const host = document.getElementById('probe-host');
+    if (host) {
+      host.className = (host.className + ' ambient-canvas').trim();
+      host.style.setProperty('--ambient-canvas-base', ${JSON.stringify(base)});
+      host.style.background = '';
+    }
+    return r;
+  })()`);
+
+  /** 枚举宿主内**所有**带可见底色/玻璃的原件（不是手抄清单：新加的面板会被自动抓到）。 */
+  const ENUM = `(() => {
+    const root = document.querySelector(window.__enumRoot || '#probe-host');
+    if (!root) return { ok: false, items: [] };
+    const ident = (el) => {
+      const parts = [];
+      let cur = el, depth = 0;
+      while (cur && cur !== root && depth < 5) { parts.unshift(cur.tagName.toLowerCase()); cur = cur.parentElement; depth += 1; }
+      const attrs = [...el.attributes].filter((a) => a.name.startsWith('data-')).map((a) => a.name + '=' + String(a.value).slice(0, 24));
+      const cls = [...el.classList].filter((c) => /^(gosslan-|glass-|frost|ambient-canvas|sticky|vlist)/.test(c));
+      return parts.join(' > ')
+        + (attrs.length ? '[' + attrs.join(',') + ']' : '')
+        + (cls.length ? ' .' + cls.join('.') : '');
+    };
+    const parse = (bg) => {
+      const s = bg || '';
+      // Chrome 会把 color-mix() 算成 color(srgb r g b / a) —— 字母分组条正是这种写法，
+      // 只认 rgb() 会让它整条被当成"没有底色"漏掉。
+      const cm = /color\\(srgb\\s+([^\\s/)]+)\\s+([^\\s/)]+)\\s+([^\\s/)]+)(?:\\s*\\/\\s*([^)]+))?\\)/.exec(s);
+      if (cm) {
+        const a = cm[4] == null ? 1 : Number(cm[4]);
+        return { rgb: [Number(cm[1]) * 255, Number(cm[2]) * 255, Number(cm[3]) * 255], a };
+      }
+      const m = /rgba?\\(([^)]+)\\)/.exec(s);
+      if (!m) return null;
+      const p = m[1].split(',').map((s2) => parseFloat(s2));
+      return { rgb: [p[0], p[1], p[2]], a: p.length > 3 ? p[3] : 1 };
+    };
+    const items = [];
+    const pick = (el, isRoot) => {
+      const cs = getComputedStyle(el);
+      const c = parse(cs.backgroundColor);
+      const bf = cs.backdropFilter || cs.webkitBackdropFilter || 'none';
+      if (!c && bf === 'none') return;
+      if (c && c.a <= 0.02 && bf === 'none') return;
+      const r = el.getBoundingClientRect();
+      if (r.width < 12 || r.height < 6 || r.width * r.height < 120) return;
+      if (r.bottom < 0 || r.top > window.innerHeight) return;
+      items.push({
+        path: (isRoot ? '[host]' : '') + ident(el),
+        tag: el.tagName.toLowerCase(),
+        bg: cs.backgroundColor,
+        alpha: c ? c.a : 0,
+        color: cs.color,
+        backdrop: bf,
+        canvasChild: el.classList.contains('ambient-canvas-child'),
+        glassTier: /glass-\\d|frost/.test(el.className),
+        text: (el.innerText || '').replace(/\\s+/g, ' ').trim().slice(0, 28),
+        rect: { x: r.x, y: r.y, w: r.width, h: r.height },
+      });
+    };
+    pick(root, true);
+    for (const el of root.querySelectorAll('*')) pick(el, false);
+    return { ok: true, items };
+  })()`;
+
+  /** 把刚拍的截图回灌进页面 canvas，按元素中心点取合成像素。 */
+  const samplePixels = async (points) => {
+    const shot = await cdp.send("Page.captureScreenshot", { format: "png" });
+    return cdp.eval(`(async () => {
+      const im = new Image();
+      im.src = 'data:image/png;base64,' + ${JSON.stringify(shot.data)};
+      await new Promise((res, rej) => { im.onload = () => res(true); im.onerror = () => rej(new Error('img')); });
+      const cv = document.createElement('canvas');
+      cv.width = im.width; cv.height = im.height;
+      const ctx = cv.getContext('2d', { willReadFrequently: true });
+      ctx.drawImage(im, 0, 0);
+      const sx = im.width / window.innerWidth, sy = im.height / window.innerHeight;
+      const hex = (d) => '#' + [d[0], d[1], d[2]].map((v) => v.toString(16).padStart(2, '0')).join('');
+      return ${JSON.stringify(points)}.map((p) => {
+        const x = Math.min(im.width - 1, Math.max(0, Math.round(p.x * sx)));
+        const y = Math.min(im.height - 1, Math.max(0, Math.round(p.y * sy)));
+        const d = ctx.getImageData(x, y, 1, 1).data;
+        return hex(d);
+      });
+    })()`);
+  };
+
+  const applyCombo = (c) => cdp.eval(`(() => {
+    const h = document.documentElement;
+    h.classList.toggle('dark', ${c.dark});
+    h.dataset.ambient = ${JSON.stringify(c.ambient ? "drift" : "off")};
+    if (${c.rt}) h.dataset.reducedTransparency = 'true';
+    else delete h.dataset.reducedTransparency;
+    return { dark: h.classList.contains('dark'), ambient: h.dataset.ambient, rt: h.getAttribute('data-reduced-transparency') };
+  })()`);
+
+  // ── 对比度与降级读数用的三个纯函数（WCAG 相对亮度，输入是截图采样得到的 hex）──
+  const hexRgb = (h) => (h ? [parseInt(h.slice(1, 3), 16), parseInt(h.slice(3, 5), 16), parseInt(h.slice(5, 7), 16)] : null);
+  const cssRgb = (s) => {
+    const m = /rgba?\(([^)]+)\)/.exec(s || '');
+    if (!m) return null;
+    const p = m[1].split(',').map((v) => parseFloat(v));
+    return [p[0], p[1], p[2]];
+  };
+  const alphaOf = (bg) => {
+    const s = bg || '';
+    const cm = /color\(srgb[^/]*\/\s*([^)\s]+)\)/.exec(s);
+    if (cm) return Number(cm[1]);
+    const m = /rgba?\(([^)]+)\)/.exec(s);
+    if (!m) return 0;
+    const p = m[1].split(',').map((v) => parseFloat(v));
+    return p.length > 3 ? p[3] : 1;
+  };
+  const relLum = (rgb) => {
+    const f = (v) => {
+      const x = v / 255;
+      return x <= 0.04045 ? x / 12.92 : ((x + 0.055) / 1.055) ** 2.4;
+    };
+    return 0.2126 * f(rgb[0]) + 0.7152 * f(rgb[1]) + 0.0722 * f(rgb[2]);
+  };
+  const contrastOf = (a, b) => {
+    const la = relLum(a), lb = relLum(b);
+    return (Math.max(la, lb) + 0.05) / (Math.min(la, lb) + 0.05);
+  };
+  const round2 = (v) => (v == null ? null : Number(v.toFixed(2)));
+
+  const COMBOS = [
+    { id: "light-amboff-rtOff", dark: false, ambient: false, rt: false },
+    { id: "light-ambON-rtOff", dark: false, ambient: true, rt: false },
+    { id: "light-ambON-rtON", dark: false, ambient: true, rt: true },
+    { id: "light-amboff-rtON", dark: false, ambient: false, rt: true },
+    { id: "dark-amboff-rtOff", dark: true, ambient: false, rt: false },
+    { id: "dark-ambON-rtOff", dark: true, ambient: true, rt: false },
+    { id: "dark-ambON-rtON", dark: true, ambient: true, rt: true },
+    { id: "dark-amboff-rtON", dark: true, ambient: false, rt: true },
+  ];
+
+  const measureAll = async () => {
+    const rows = [];
+    for (const c of COMBOS) {
+      await applyCombo(c);
+      await sleep(450);
+      const got = await cdp.eval(ENUM);
+      if (!got || !got.ok) { rows.push({ combo: c.id, items: [], error: "host missing" }); continue; }
+      // 取左上内缩点：容器的中心点通常落在子卡片（例如 #fff 输入卡）上，会读成假白。
+      const points = got.items.map((it) => ({
+        x: Math.round(it.rect.x + Math.min(6, it.rect.w / 4)),
+        y: Math.round(it.rect.y + Math.min(6, it.rect.h / 4)),
+      }));
+      const pixels = await samplePixels(points);
+      rows.push({
+        combo: c.id,
+        dark: c.dark,
+        ambient: c.ambient,
+        rt: c.rt,
+        items: got.items.map((it, i) => ({ ...it, sampled: pixels[i] })),
+      });
+      console.log(`  · surfaces ${c.id}: ${got.items.length} 块`);
+    }
+    return rows;
+  };
+
+  // ── ① 聊天窗口（真 ChatWindow + 80 条消息，输入卡 / 气泡 / 分割线 / 悬浮件都在） ──
+  await cdp.eval(`(() => {
+    window.__TAURI_INTERNALS__ = window.__TAURI_INTERNALS__ || {
+      metadata: { currentWindow: { label: 'main' }, currentWebview: { label: 'main', windowLabel: 'main' } },
+      invoke: async () => null, transformCallback: (cb) => cb, convertFileSrc: (p) => p,
+    };
+    if (!window.__TAURI_EVENT_PLUGIN_INTERNALS__) {
+      window.__TAURI_EVENT_PLUGIN_INTERNALS__ = { unregisterListener: () => {} };
+    }
+  })()`);
+  const chatMount = await mount("/src/components/ChatWindow.vue", { hostHeight: "760px" }, "var(--gosslan-chat)");
+  await cdp.eval("window.__probe.seedDevice('dev-me')");
+  await cdp.eval(`(async () => {
+    const { useChatStore } = await import('/src/stores/useChatStore.ts');
+    const chat = useChatStore();
+    const conv = 'peer-demo';
+    chat.conversations = [{ id: conv, kind: 'direct', name: '林岸', avatar: null,
+      last_msg: '晚点把图发你', last_ts: 1700000000000, unread: 0, mentioned: 0, pinned: 0, muted: 0 }];
+    const rows = [];
+    for (let i = 0; i < 80; i += 1) {
+      const seq = i + 1;
+      const mine = i % 2 === 1;
+      // 夹具末尾几条刻意铺成「代码块 / 文件卡 / 图片缺件占位」：虚拟列表默认贴底渲染，
+      // 放在中前段会被滚出 DOM，读数表里就只剩文本气泡。
+      const kind = i === 76 ? 'code' : i === 77 ? 'file' : i === 78 ? 'image' : 'text';
+      const content =
+        kind === 'code' ? "function hello() {\\n  return 'hi';\\n}" + seq
+        : kind === 'file' ? JSON.stringify({ name: '设计稿-' + seq + '.pdf', size: 204800, subtype: 'pdf' })
+        : kind === 'image' ? JSON.stringify({ name: '截图-' + seq + '.png', size: 102400, subtype: 'image', w: 320, h: 200 })
+        : mine ? ('今天试了下新背景，动得很慢。' + seq) : ('像玻璃后面的雾，不抢内容。' + seq);
+      rows.push({ id: seq, msg_id: 'm-sf-' + seq, local_id: 'm-sf-' + seq, conv_id: conv,
+        sender_id: mine ? 'dev-me' : 'peer-demo', sender_name: mine ? '我' : '林岸',
+        receiver_id: mine ? 'peer-demo' : 'dev-me', kind,
+        content,
+        status: 'sent', seq,
+        // 可见窗口（约末 15 条）里刻意留一个 ≥ 分组阈值的时间跳变：
+        // 这样 data-time-divider 会被真渲染出来 —— ambOff 下应读到实底，
+        // ambON 下应被 ambient-canvas-child 清成透明（这正是本轮要证的对照）。
+        ts: 1700000000000 + seq * 60_000 + (i >= 74 ? 3_600_000 : 0) });
+    }
+    chat.activeConv = conv;
+    chat.messages[conv] = rows;
+    await new Promise((r) => setTimeout(r, 900));
+  })()`);
+  const chatRows = await measureAll();
+
+  // ── ② 通讯录（真 ConversationList，view=contacts：字母分组条 / 首字母头像 / 搜索框） ──
+  const contactMount = await mount("/src/components/ConversationList.vue", { view: "contacts" }, "var(--gosslan-list)");
+  await cdp.eval(`(async () => {
+    const { useChatStore } = await import('/src/stores/useChatStore.ts');
+    const chat = useChatStore();
+    const names = ['Aria', 'Bella', 'Cara', 'Dora', 'Evan', 'Faye', 'Gale', 'Hank', 'Iris', 'Jude', 'Kai', 'Lena'];
+    chat.friends = names.map((n, i) => ({
+      device_id: 'probe-c-' + i, nickname: n, avatar: null, device_type: 'pc', online: i % 3 !== 0,
+    }));
+    chat.friendsLoaded = true;
+    await new Promise((r) => setTimeout(r, 700));
+  })()`);
+  const contactRows = await measureAll();
+
+  // ── ④ 通讯录字母分组 sticky 条：字母可读性（采样对比度）＋ 降级是否真的变实底 ──
+  // 采样点必须落在"行滚到条底下"的真实合成上：先把它下面一段滚上来，条位置不动（sticky），
+  // 底下换成一行一行的内容 —— 这样算出来的对比度才是字母压在滚动内容上的那一种。
+  const stickyRows = [];
+  for (const c of COMBOS) {
+    await applyCombo(c);
+    await sleep(260);
+    const info = await cdp.eval(`(() => {
+      const el = document.querySelector('.gosslan-sticky-veil');
+      if (!el) return { ok: false, why: 'no-sticky' };
+      let sc = el.parentElement;
+      while (sc && !(sc.scrollHeight > sc.clientHeight + 4 && /auto|scroll/.test(getComputedStyle(sc).overflowY))) sc = sc.parentElement;
+      if (sc) sc.scrollTop = Math.min(180, Math.max(0, sc.scrollHeight - sc.clientHeight));
+      const cs = getComputedStyle(el);
+      const r = el.getBoundingClientRect();
+      return {
+        ok: true, bg: cs.backgroundColor, color: cs.color,
+        backdrop: cs.backdropFilter || cs.webkitBackdropFilter || 'none',
+        rect: { x: r.x, y: r.y, w: r.width, h: r.height },
+        scrolled: sc ? sc.scrollTop : -1,
+        text: (el.innerText || '').trim().slice(0, 8),
+      };
+    })()`);
+    if (!info || !info.ok) { stickyRows.push({ combo: c.id, error: info && info.why }); continue; }
+    await sleep(220);
+    const [stickyPx, rowPx] = await samplePixels([
+      { x: Math.round(info.rect.x + info.rect.w * 0.62), y: Math.round(info.rect.y + info.rect.h / 2) },
+      { x: Math.round(info.rect.x + info.rect.w * 0.62), y: Math.round(info.rect.y + info.rect.h + 9) },
+    ]);
+    const txt = cssRgb(info.color);
+    const row = {
+      combo: c.id, ...info, stickyPx, rowPx,
+      alpha: round2(alphaOf(info.bg)),
+      contrastSticky: txt ? round2(contrastOf(txt, hexRgb(stickyPx))) : null,
+      contrastRow: txt ? round2(contrastOf(txt, hexRgb(rowPx))) : null,
+      // 字母本身是否与"条合成后的底色"撞（前者是最终可见面，后者是它要压住的行底色）
+      inkOnSticky: txt && hexRgb(stickyPx) ? contrastOf(txt, hexRgb(stickyPx)) >= 4.5 : null,
+      inkOnRow: txt && hexRgb(rowPx) ? contrastOf(txt, hexRgb(rowPx)) >= 4.5 : null,
+    };
+    stickyRows.push(row);
+    console.log(`  · sticky ${c.id}: bg=${info.bg} blur=${info.backdrop} 对比=${row.contrastSticky}/${row.contrastRow}`);
+  }
+  // 降级不是"源码里写了"就算：从**加载后的 CSSOM** 里把 @supports not / 媒体查询两条块找出来。
+  const stickyCss = await cdp.eval(`(() => {
+    const out = { supports: [], media: [] };
+    const walk = (rules, bucket) => {
+      for (const r of rules) {
+        if (r.selectorText && r.selectorText.includes('.gosslan-sticky-veil')) {
+          out[bucket].push({ cond: (r.parentRule && r.parentRule.conditionText) || '', css: r.cssText.slice(0, 220) });
+        }
+        if (!r.selectorText && r.cssRules) walk(r.cssRules, bucket);
+      }
+    };
+    for (const sh of document.styleSheets) {
+      let rules; try { rules = sh.cssRules; } catch (e) { continue; }
+      for (const r of rules) {
+        const n = r.constructor && r.constructor.name;
+        if (n === 'CSSSupportsRule' && /not/i.test(r.conditionText || '')) walk([r], 'supports');
+        if (n === 'CSSMediaRule' && /prefers-reduced-transparency|prefers-contrast/.test(r.conditionText || '')) walk([r], 'media');
+      }
+    }
+    return out;
+  })()`);
+
+  // ── ③ 会话列表（同一 ConversationList，view=chats：置顶块 / 未读徽标 / 时间标签 / 分组分隔） ──
+  const chatsMount = await mount("/src/components/ConversationList.vue", { view: "chats" }, "var(--gosslan-list)");
+  await cdp.eval(`(async () => {
+    const { useChatStore } = await import('/src/stores/useChatStore.ts');
+    const chat = useChatStore();
+    chat.conversations = [
+      { id: 'c-pin-1', kind: 'group', name: '设计评审组', avatar: null, last_msg: '明天十点同步',
+        last_ts: 1700000000000, unread: 12, mentioned: 2, pinned: 1, muted: 0, members: ['dev-me'] },
+      { id: 'c-pin-2', kind: 'direct', name: '林岸', avatar: null, last_msg: '晚点把图发你',
+        last_ts: 1699999000000, unread: 0, mentioned: 0, pinned: 1, muted: 0 },
+      { id: 'c-normal-1', kind: 'direct', name: '周予', avatar: null, last_msg: '收到，我看下',
+        last_ts: 1699995000000, unread: 3, mentioned: 1, pinned: 0, muted: 0 },
+      { id: 'c-normal-2', kind: 'direct', name: '许清', avatar: null, last_msg: '[图片]',
+        last_ts: 1699980000000, unread: 0, mentioned: 0, pinned: 0, muted: 1 },
+    ];
+    chat.activeConv = 'c-normal-1';
+    await new Promise((r) => setTimeout(r, 700));
+  })()`);
+  const chatsRows = await measureAll();
+
+  // ── ⑤ 搜索对话框（ChatSearchDialog）：外层 glass-3 的雾是否真透出 ＋ 两列去实底后层次是否还在 ──
+  const searchGroup = {
+    conv_id: "conv-sf", name: "设计评审组", kind: "group", avatar: null,
+    total: 3, latest_ts: 1700000000000,
+    messages: [
+      { msg_id: "m-sf-0", sender_id: "p1", sender_name: "小布", kind: "text",
+        content: "像玻璃后面的雾，不抢内容。", ts: 1700000000000 },
+    ],
+  };
+  await cdp.eval(`window.__probe.stubApi('searchChatHistory', ${JSON.stringify([searchGroup])})`);
+  const searchMount = await mount(
+    "/src/components/search/ChatSearchDialog.vue",
+    { open: true },
+    "var(--gosslan-chat)",
+  );
+  await sleep(400);
+  // 组件只在 props.open 由 false→true 时才自动带入关键词；这里直接以 open:true 挂载，
+  // 所以按用户真实路径补一次"在输入框里敲字"（v-model 监听 input 事件）。
+  const typed = await cdp.eval(`(() => {
+    const d = document.querySelector('[role="dialog"]');
+    if (!d) return { ok: false };
+    const input = d.querySelector('input');
+    if (!input) return { ok: false, why: 'no-input' };
+    input.focus();
+    input.value = '玻璃';
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+    return { ok: true, value: input.value };
+  })()`);
+  await sleep(1_200);
+  const dialogOk = await cdp.eval(`(() => {
+    const d = document.querySelector('[role="dialog"]');
+    if (!d) return { ok: false };
+    const r = d.getBoundingClientRect();
+    return { ok: true, w: Math.round(r.width), h: Math.round(r.height),
+      input: (d.querySelector('input') || {}).value || '',
+      buttons: d.querySelectorAll('button').length, typed: ${JSON.stringify(typed)} };
+  })()`);
+  await cdp.eval("window.__enumRoot = '[role=\"dialog\"]'");
+  const searchRows = await measureAll();
+
+  // 两列本身没有底色（正是这次改的点）⇒ ENUM 抓不到，单独读计算样式 + 分隔线几何。
+  const readSearchParts = () => cdp.eval(`(() => {
+    const cssOf = (el) => {
+      if (!el) return null;
+      const s = getComputedStyle(el);
+      const r = el.getBoundingClientRect();
+      return {
+        bg: s.backgroundColor, color: s.color,
+        backdrop: s.backdropFilter || s.webkitBackdropFilter || 'none',
+        borderRight: s.borderRightWidth + '|' + s.borderRightStyle + '|' + s.borderRightColor,
+        borderBottom: s.borderBottomWidth + '|' + s.borderBottomStyle + '|' + s.borderBottomColor,
+        rect: { x: r.x, y: r.y, w: r.width, h: r.height },
+        cls: String(el.className).slice(0, 56),
+      };
+    };
+    const card = document.querySelector('.glass-3') || document.querySelector('[role="dialog"]');
+    if (!card) return { ok: false };
+    const all = [...card.querySelectorAll('*')];
+    const box = all.find((el) => String(el.className).includes('rounded-[var(--gosslan-radius-lg)]') && String(el.className).includes('flex'));
+    const left = box ? box.children[0] : null;
+    const right = box ? box.children[1] : null;
+    const input = card.querySelector('input');
+    const field = input ? input.parentElement : null;
+    const row = left ? left.querySelector('button') : null;
+    return {
+      ok: true,
+      card: cssOf(card), left: cssOf(left), right: cssOf(right),
+      field: cssOf(field), row: cssOf(row),
+      fields: { input: !!input, box: !!box, left: !!left, right: !!right },
+    };
+  })()`);
+  await applyCombo(COMBOS[1]); // light-ambON-rtOff
+  await sleep(300);
+  const searchParts = await readSearchParts();
+  await applyCombo(COMBOS[5]); // dark-ambON-rtOff（顺序：light-* 4 条，dark-* 4 条）
+  await sleep(300);
+  const searchPartsDark = await readSearchParts();
+
+  // 外层雾是否真透出：把**弹窗背后**整页换成两个反差极大的底色，同一像素点再采样。
+  // 玻璃卡 0.94 + 遮罩 0.32 的衰减下，若背景真透上来，两次的合成色必须出现可测差值。
+  // 另加一组 A/B：把两列**加回改前的实底**（inline 临时，不改源码），差值就是"少了一层"的量。
+  const searchCorners = searchParts && searchParts.ok ? [
+    { x: Math.round(searchParts.card.rect.x + 12), y: Math.round(searchParts.card.rect.y + 12), why: "cardTL" },
+    { x: Math.round(searchParts.card.rect.x + searchParts.card.rect.w / 2), y: Math.round(searchParts.card.rect.y + searchParts.card.rect.h - 12), why: "cardBottomBlank" },
+    { x: Math.round(searchParts.left.rect.x + searchParts.left.rect.w - 14), y: Math.round(searchParts.left.rect.y + 12), why: "leftTopRightOnActiveRow" },
+  ] : null;
+  let searchBgSwap = null;
+  let searchOldPaint = null;
+  if (searchCorners) {
+    await applyCombo(COMBOS[1]); // light-ambON-rtOff
+    await sleep(280);
+    const paint = (c) => cdp.eval(`(() => { document.body.style.background = ${JSON.stringify(c)}; return getComputedStyle(document.body).backgroundColor; })()`);
+    await paint("#ff0000");
+    await sleep(220);
+    const red = await samplePixels(searchCorners);
+    await paint("#0000ff");
+    await sleep(220);
+    const blue = await samplePixels(searchCorners);
+    const now = await samplePixels(searchCorners);
+    await paint("");
+    searchBgSwap = {
+      point: searchCorners.map((p) => p.why),
+      onRed: red, onBlue: blue,
+      delta: red.map((h, i) => {
+        const a = hexRgb(h), b = hexRgb(blue[i]);
+        return round2(Math.abs(a[0] - b[0]) + Math.abs(a[1] - b[1]) + Math.abs(a[2] - b[2]));
+      }),
+    };
+    // 改前等效：两列各自加回 `--gosslan-list` / `--gosslan-chat` 实底（inline 临时，不改源码）
+    const paintCols = (on) => cdp.eval(`(() => {
+      const box = [...document.querySelector('.glass-3').querySelectorAll('*')]
+        .find((el) => String(el.className).includes('rounded-[var(--gosslan-radius-lg)]') && String(el.className).includes('flex'));
+      if (!box) return false;
+      box.children[0].style.background = ${on} ? 'var(--gosslan-list)' : '';
+      box.children[1].style.background = ${on} ? 'var(--gosslan-chat)' : '';
+      return true;
+    })()`);
+    await paintCols(true);
+    await sleep(260);
+    const before = await samplePixels(searchCorners);
+    await paintCols(false);
+    await sleep(200);
+    searchOldPaint = {
+      point: searchCorners.map((p) => p.why),
+      after: now, beforeEquivalent: before,
+      delta: now.map((h, i) => {
+        const a = hexRgb(h), b = hexRgb(before[i]);
+        return round2(Math.abs(a[0] - b[0]) + Math.abs(a[1] - b[1]) + Math.abs(a[2] - b[2]));
+      }),
+    };
+  }
+
+  // 分隔线：沿两列边界横扫黑一排像素（-3..+3），取"对两侧底色都最难看清"的那格当线色；
+  // 两侧各取 ±3px 当底色。这样读数不依赖"猜 border 像素落在哪一列"，也不靠手抄 token。
+  const readSearchDivider = () => cdp.eval(`(() => {
+    const card = document.querySelector('.glass-3') || document.querySelector('[role="dialog"]');
+    if (!card) return null;
+    const box = [...card.querySelectorAll('*')].find((el) => String(el.className).includes('rounded-[var(--gosslan-radius-lg)]') && String(el.className).includes('flex'));
+    if (!box) return null;
+    const left = box.children[0];
+    const lr = left.getBoundingClientRect(), br = box.getBoundingClientRect();
+    const cs = getComputedStyle(left);
+    return { ok: true, x: lr.x + lr.width, y: br.y + br.height - 18,
+      borderColor: cs.borderRightColor, borderWidth: cs.borderRightWidth };
+  })()`);
+  const measureDivider = async () => {
+    const info = await readSearchDivider();
+    if (!info || !info.ok) return null;
+    const xs = [-3, -2, -1, 0, 1, 2, 3];
+    const ys = [info.y, info.y - 8, info.y + 8];
+    const points = ys.flatMap((y) => xs.map((d) => ({ x: Math.round(info.x + d), y: Math.round(y), why: `d${d}` })));
+    const hexes = await samplePixels(points);
+    const rows = ys.map((y, i) => {
+      const seg = hexes.slice(i * xs.length, (i + 1) * xs.length);
+      const leftBg = hexRgb(seg[0]);
+      const rightBg = hexRgb(seg[xs.length - 1]);
+      let best = null;
+      for (let k = 0; k < seg.length; k += 1) {
+        const c = hexRgb(seg[k]);
+        if (!c) continue;
+        const cl = contrastOf(c, leftBg), cr = contrastOf(c, rightBg), m = Math.min(cl, cr);
+        if (!best || m > best.min) best = { min: m, left: cl, right: cr, hex: seg[k], d: xs[k] };
+      }
+      return {
+        y: Math.round(y), run: seg, line: best.hex, d: best.d,
+        lineVsLeft: round2(best.left), lineVsRight: round2(best.right),
+        leftBg: seg[0], rightBg: seg[xs.length - 1],
+      };
+    });
+    return { x: Math.round(info.x), borderColor: info.borderColor, borderWidth: info.borderWidth, rows };
+  };
+  let searchDividerLight = null;
+  let searchDividerDark = null;
+  if (dialogOk && dialogOk.ok) {
+    await applyCombo(COMBOS[1]); // light-ambON-rtOff
+    await sleep(300);
+    searchDividerLight = await measureDivider();
+    await applyCombo(COMBOS[5]); // dark-ambON-rtOff
+    await sleep(300);
+    searchDividerDark = await measureDivider();
+  }
+
+  // ── ⑥ 移动端底部 TabBar：窄视口 360×640 的真读数 ＋ backdrop-filter 帧耗时 A/B ──
+  await cdp.send("Emulation.setDeviceMetricsOverride", {
+    width: 360, height: 640, deviceScaleFactor: 2, mobile: true,
+  }).catch(() => {});
+  await sleep(400);
+  const layoutMount = await mount(
+    "/src/layouts/ResponsiveLayout.vue",
+    { router: true, hostHeight: "640px" },
+    "var(--gosslan-chat)",
+  );
+  await sleep(700);
+  const tabbarOk = await cdp.eval(`(() => {
+    const n = document.querySelector('nav.safe-bottom');
+    if (!n) return { ok: false };
+    const r = n.getBoundingClientRect();
+    return { ok: true, w: Math.round(r.width), h: Math.round(r.height), y: Math.round(r.y) };
+  })()`);
+  await cdp.eval("window.__enumRoot = 'nav.safe-bottom'");
+  const tabbarRows = await measureAll();
+
+  const framesOne = () => cdp.eval(`(async () => {
+    const ms = 1_500;
+    const d = [];
+    await new Promise((res) => {
+      let last = performance.now();
+      const t0 = last;
+      const step = (t) => {
+        d.push(t - last); last = t;
+        if (t - t0 < ms) requestAnimationFrame(step); else res(true);
+      };
+      requestAnimationFrame(step);
+    });
+    d.shift();
+    const s = [...d].sort((a, b) => a - b);
+    return {
+      n: d.length,
+      avg: Number((d.reduce((a, b) => a + b, 0) / d.length).toFixed(2)),
+      p95: Number((s[Math.floor(s.length * 0.95)] || 0).toFixed(2)),
+      max: Number(Math.max(...d).toFixed(2)),
+      long32: d.filter((v) => v > 32).length,
+      long50: d.filter((v) => v > 50).length,
+    };
+  })()`);
+  const setTabbarBlur = (on) => cdp.eval(`(() => {
+    const n = document.querySelector('nav.safe-bottom');
+    if (!n) return false;
+    n.style.backdropFilter = ${on} ? '' : 'none';
+    n.style.webkitBackdropFilter = ${on} ? '' : 'none';
+    const s = getComputedStyle(n);
+    return (s.backdropFilter || s.webkitBackdropFilter || 'none');
+  })()`);
+  await applyCombo(COMBOS[1]); // light-ambON-rtOff：动效开着才是用户真实看到的负载
+  await sleep(400);
+  const frames = { blurOn: [], blurOff: [] };
+  for (let i = 0; i < 2; i += 1) {
+    await setTabbarBlur(true);
+    await sleep(200);
+    frames.blurOn.push(await framesOne());
+    await setTabbarBlur(false);
+    await sleep(200);
+    frames.blurOff.push(await framesOne());
+  }
+  await setTabbarBlur(true);
+
+  // "半透明无 blur"开关（html[data-frost="off"]）：证明它只摘雾、不把 TabBar 变成实色
+  const frostOff = await cdp.eval(`(() => {
+    const n = document.querySelector('nav.safe-bottom');
+    if (!n) return { ok: false };
+    const read = () => {
+      const cs = getComputedStyle(n);
+      return { bg: cs.backgroundColor, backdrop: cs.backdropFilter || cs.webkitBackdropFilter || 'none' };
+    };
+    const before = read();
+    document.documentElement.dataset.frost = 'off';
+    const off = read();
+    delete document.documentElement.dataset.frost;
+    return { ok: true, before, off, back: read() };
+  })()`);
+
+  // 复位到产品默认，别把数据属性漏给后续段
+  await cdp.eval(`(() => {
+    const h = document.documentElement;
+    h.classList.remove('dark');
+    h.dataset.ambient = 'off';
+    delete h.dataset.reducedTransparency;
+    window.__enumRoot = null;
+  })()`);
+  await cdp.send("Emulation.setDeviceMetricsOverride", {
+    width: 1280, height: 800, deviceScaleFactor: 1, mobile: false,
+  }).catch(() => {});
+
+  /** 异常判据（只用于报告，不判红）：不透明实色、非玻璃档、非画布子层。 */
+  const LIGHT_WHITE = (c) => c && c[0] >= 244 && c[1] >= 244 && c[2] >= 244;
+  const DARK_BLACK = (c) => c && c[0] <= 26 && c[1] <= 30 && c[2] <= 38;
+  const fromHex = (h) => (h ? [parseInt(h.slice(1, 3), 16), parseInt(h.slice(3, 5), 16), parseInt(h.slice(5, 7), 16)] : null);
+
+  const flat = [];
+  for (const [surface, rows] of [["chat", chatRows], ["contacts", contactRows], ["chats", chatsRows]]) {
+    for (const row of rows) {
+      for (const it of row.items) {
+        flat.push({ surface, combo: row.combo, ...it });
+      }
+    }
+  }
+  const anomalous = flat.filter((x) => x.alpha >= 0.95 && !x.glassTier && !x.canvasChild);
+
+  const payload = {
+    phase: PHASE,
+    combos: COMBOS.map((c) => c.id),
+    chatMount: !!chatMount?.ok,
+    contactMount: !!contactMount?.ok,
+    chatsMount: !!chatsMount?.ok,
+    searchMount: !!searchMount?.ok,
+    layoutMount: !!layoutMount?.ok,
+    dialogOk,
+    tabbarOk,
+    chat: chatRows,
+    contacts: contactRows,
+    chats: chatsRows,
+    // ④ 通讯录字母分组 sticky 条
+    sticky: stickyRows,
+    stickyCss,
+    // ⑤ 搜索对话框两栏
+    search: searchRows,
+    searchParts,
+    searchPartsDark,
+    searchBgSwap,
+    searchOldPaint,
+    searchDividerLight,
+    searchDividerDark,
+    // ⑥ 移动端 TabBar（360×640 真读数 + 帧耗时 A/B + 半透明无 blur 开关）
+    tabbar: tabbarRows,
+    frames,
+    frostOff,
+  };
+  fs.writeFileSync(outFile, JSON.stringify(payload, null, 1));
+  console.log(`· surfaces 读数已写入：${outFile}`);
+
+  // 这是读数段的完整性闸，不是外观判据（外观判定在报告里人工裁决 + designGuards 静态闸）。
+  // 它防的是"段跑了但只拿到半套读数"——那种情况下面所有结论都不成立。
+  const complete =
+    chatRows.length === COMBOS.length &&
+    contactRows.length === COMBOS.length &&
+    chatsRows.length === COMBOS.length &&
+    searchRows.length === COMBOS.length &&
+    tabbarRows.length === COMBOS.length &&
+    stickyRows.length === COMBOS.length &&
+    chatRows.every((r) => r.items.length > 0) &&
+    contactRows.every((r) => r.items.length > 0) &&
+    chatsRows.every((r) => r.items.length > 0) &&
+    searchRows.every((r) => r.items.length > 0) &&
+    tabbarRows.every((r) => r.items.length > 0) &&
+    stickyRows.every((r) => r.ok === true) &&
+    !!(searchParts && searchParts.ok && searchPartsDark && searchPartsDark.ok) &&
+    !!(searchDividerLight && searchDividerLight.rows.length === 3 && searchDividerDark && searchDividerDark.rows.length === 3) &&
+    !!(frostOff && frostOff.ok) &&
+    !!(dialogOk && dialogOk.ok) &&
+    !!(tabbarOk && tabbarOk.ok);
+  check(
+    "surfaces：8 档组合 × 聊天/通讯录/会话列表/搜索对话框/TabBar 都拿到了读数，sticky 条 8 档都在",
+    complete,
+    "8/8 × 5 页 + sticky 8/8",
+    `chat=${chatRows.map((r) => r.items.length).join(",")} contacts=${contactRows.map((r) => r.items.length).join(",")} chats=${chatsRows.map((r) => r.items.length).join(",")} search=${searchRows.map((r) => r.items.length).join(",")} tabbar=${tabbarRows.map((r) => r.items.length).join(",")} sticky=${stickyRows.map((r) => (r.ok ? 1 : 0)).join(",")}`,
+  );
+  check(
+    "surfaces：sticky 条的三档降级都写在加载后的 CSSOM 里（@supports not + 媒体查询 × 2）",
+    !!(stickyCss && stickyCss.supports.length > 0 && stickyCss.media.length >= 2),
+    "@supports not ≥1 条、媒体查询 ≥2 条命中 .gosslan-sticky-veil",
+    `supports=${stickyCss?.supports?.length ?? 0} media=${stickyCss?.media?.length ?? 0} ${JSON.stringify(stickyCss?.supports?.map((x) => x.cond))}`,
+  );
+
+  const fmtDivider = (d) => {
+    if (!d || !d.rows.length) return "无读数";
+    return d.rows
+      .map((r) => `${r.line} d=${r.d} 左${r.leftBg} ${r.lineVsLeft}:1 / 右${r.rightBg} ${r.lineVsRight}:1`)
+      .join(" ｜ ");
+  };
+  console.log(`· surfaces：搜索两列分隔线（专用 token）· 亮 ${fmtDivider(searchDividerLight)}`);
+  console.log(`· surfaces：搜索两列分隔线（专用 token）· 暗 ${fmtDivider(searchDividerDark)}`);
+
+  // 报告面：只看"动效开启、减少透明关闭"那两档（那才是用户看到的常态），按路径汇总。
+  const showCombos = ["light-ambON-rtOff", "dark-ambON-rtOff"];
+  const perPath = new Map();
+  for (const x of flat) {
+    if (!showCombos.includes(x.combo)) continue;
+    if (!(x.alpha >= 0.95 && !x.glassTier && !x.canvasChild)) continue;
+    const key = x.surface + " | " + x.path;
+    if (!perPath.has(key)) perPath.set(key, { light: null, dark: null });
+    perPath.get(key)[x.combo.startsWith("light") ? "light" : "dark"] = x;
+  }
+  let count = 0;
+  for (const [key, v] of perPath) {
+    count += 1;
+    const l = v.light, d = v.dark;
+    const lb = fromHex(l?.sampled), db = fromHex(d?.sampled);
+    const flagL = l && LIGHT_WHITE(lb) ? "近纯白" : "";
+    const flagD = d && DARK_BLACK(db) ? "近纯黑" : "";
+    console.log(`  ! ${key} · bg=${l?.bg ?? "-"} · sample=${l?.sampled ?? "-"}/${d?.sampled ?? "-"} ${flagL}${flagD}`);
+  }
+  console.log(`· surfaces：异常候选 ${count} 个路径（${anomalous.length} 条读数），详见 JSON`);
 }
 
 async function runAmbient(cdp, url) {
@@ -19038,6 +20480,324 @@ async function runLightbox(cdp, url) {
   check("Esc 关闭：浮层 DOM 撤净且焦点回到 opener（FocusScope 的卸载归还）",
     s.open === false && focusBack === "opener",
     "dialog=0 且 activeElement=#opener", JSON.stringify({ s, focusBack }));
+}
+
+/**
+ * 收藏页 / 任务卡片的图片缩略图四角暗边（--only=favthumb）。
+ *
+ * 用户 2026-11-05：「收藏页里的图片缩略图，四个圆角处是黑的」—— 亮色主题、白底上四个暗角。
+ * 暗角是**合成与抗锯齿**的产物，读 computed style 看不见 ⇒ 这里截真图按像素读：
+ * 四角各取 2/4/6px 的 3×3 网格，与图内中心点做逐通道差。
+ * 阈值 4 的理由：实测干净态的噪声上限是 1（抗锯齿只抹 1 个通道档位），取 2 倍 = 4；
+ * 暗边一旦出现，实测差 ≥ 20，离阈值一个数量级。
+ */
+async function runFavThumb(cdp, url) {
+  await cdp.send("Emulation.setDeviceMetricsOverride", {
+    width: 1400, height: 900, deviceScaleFactor: 1, mobile: false,
+  }).catch(() => {});
+  await cdp.send("Page.navigate", { url });
+  await cdp.settled();
+  await sleep(3_000);
+  await cdp.eval(PAGE_FIXTURE);
+
+  const MARGIN = 12;
+  // 阈值 = 实测噪声上限的 2 倍：干净态四角×3×3×六种组合（亮/暗 × 正常/hover × 有图/占位），
+  // 连跑两次离「底色↔内容色」线段最远 2.11 / 1.16（8-bit 量化 + 底色渐变 + 亚像素对齐漂移），
+  // 2 倍 ≈ 4.22；取 4（比 2 倍略严，不是放宽）。源图暗垫一旦露出来，
+  // 亮色主题实测 ≥69、暗色主题 ≥5.2，都在阈值之上。
+  const THRESH = 4;
+  const now = Date.now();
+  // 收藏页里被用户叫"缩略图"的那张 = 右栏详情预览（kind=image 才走到详情 `<img>`）。
+  const fav = {
+    id: "fav-shot", msg_id: "m-shot", conv_id: "conv-1", sender_id: "peer-1", kind: "image",
+    content: JSON.stringify({ name: "image-172e3789.png", path: "/tmp/image-172e3789.png", size: 887271, subtype: "image" }),
+    ts: now - 60_000, favorited_at: now - 60_000,
+    media_path: "/tmp/image-172e3789.png", media_size: 887271, available: true,
+  };
+  const bytes = await cdp.eval("window.__probe.favShotPng()");
+  await cdp.eval("window.__probe.stubApi('listFavorites', " + JSON.stringify([fav]) + ")");
+  await cdp.eval("window.__probe.stubApi('readFavoritePreview', " + JSON.stringify(bytes) + ")");
+
+  const mounted = await cdp.eval("window.__probe.install('/src/components/FavoritePanel.vue', '', '')");
+  await cdp.eval(`(() => {
+    const h = document.getElementById('probe-host');
+    h.style.width = '1200px'; h.style.maxWidth = '1200px'; h.style.height = '820px';
+    h.style.display = 'block'; h.style.overflow = 'hidden';
+    return true;
+  })()`);
+  await sleep(500);
+  // 选中那条图片收藏（active 初值是 null，详情不会自己渲染）
+  await cdp.eval(`(() => {
+    const b = [...document.querySelectorAll('button')].find((x) => (x.innerText || '').includes('image-172e3789'));
+    if (b) b.click();
+    return !!b;
+  })()`);
+
+  let ready = false;
+  for (let i = 0; i < 40 && !ready; i += 1) {
+    ready = await cdp.eval(`(() => {
+      const i = [...document.querySelectorAll('img')].find((x) => String(x.src).startsWith('blob:'));
+      return !!(i && i.complete && i.naturalWidth > 0);
+    })()`);
+    if (!ready) await sleep(200);
+  }
+
+  // 元素框 + 真实内容框（object-contain 之后）。缺陷就是"元素框比内容框宽"。
+  const geo = () => cdp.eval(`(() => {
+    const i = [...document.querySelectorAll('img')].find((x) => String(x.src).startsWith('blob:'));
+    if (!i) return null;
+    const r = i.getBoundingClientRect();
+    const st = getComputedStyle(i);
+    // 渲染链逐层读数：img 自己 + 往上三层（详情栏 / 面板 / 宿主）的
+    // 底色·圆角·overflow·background-clip·isolation·内阴影 —— 用户要的就是这张表。
+    const chain = [];
+    let e = i;
+    for (let k = 0; k < 4 && e; k += 1) {
+      const s = getComputedStyle(e);
+      const q = e.getBoundingClientRect();
+      chain.push({
+        tag: e.tagName.toLowerCase() + (e.className && typeof e.className === "string" ? "." + e.className.split(/\\s+/).slice(0, 3).join(".") : ""),
+        w: Math.round(q.width), h: Math.round(q.height),
+        bg: s.backgroundColor, radius: s.borderRadius, overflow: s.overflow,
+        clip: s.backgroundClip, isolation: s.isolation, shadow: s.boxShadow,
+      });
+      e = e.parentElement;
+    }
+    return { x: r.left, y: r.top, w: r.width, h: r.height,
+      nw: i.naturalWidth, nh: i.naturalHeight, fit: st.objectFit, radius: st.borderTopLeftRadius, chain };
+  })()`);
+  const contentRect = (g) => {
+    const s = Math.min(g.w / g.nw, g.h / g.nh);
+    const cw = g.nw * s;
+    const ch = g.nh * s;
+    return { x: g.x + (g.w - cw) / 2, y: g.y + (g.h - ch) / 2, w: cw, h: ch };
+  };
+  const g0 = await geo();
+  const rect = g0 ? contentRect(g0) : null;
+
+  const sample = async (r, from) => {
+    const shot = await cdp.send("Page.captureScreenshot", {
+      format: "png",
+      clip: { x: r.x - MARGIN, y: r.y - MARGIN, width: r.w + MARGIN * 2, height: r.h + MARGIN * 2, scale: 1 },
+    });
+    return cdp.eval("window.__probe.favSample(" + JSON.stringify(shot.data) + "," + r.w + "," + r.h + "," + MARGIN + "," + (from || 1) + ")");
+  };
+  /**
+   * 四角判据：每个采样点必须落在「该角外底色 ↔ 图内容色」这条 RGB **线段**上（容差 THRESH）。
+   *
+   * 为什么是线段不是"等于两者之一"：圆角裁剪边界必然带 1px 抗锯齿，
+   * 那一圈像素是底色与内容的**线性混合**，既不等于底色也不等于内容色；
+   * 用"等于之一"会把合法的抗锯齿边全判红（实测半径 12px 时 m=117 全是这种假红）。
+   *
+   * 为什么线段能抓暗角：源图自带的近黑垫底（≈rgb(36,36,36)）不在该线段上 ——
+   * 亮色主题里它比底色与内容色都暗（偏离 ≈68~200）；暗色主题里它是**中性灰**、
+   * 而线段是从蓝黑到浅蓝，通道比例不同（整块 ≈16、半混合 ≈6），仍然出线。
+   *
+   * `fixedRefs` 用于"框里没有图"的占位态：参照改成容器自己的底色与描边色，
+   * 否则深色垫底会被当成"内容色"而恒过。
+   */
+  const distToSegment = (p, a, b) => {
+    const ab = [b[0] - a[0], b[1] - a[1], b[2] - a[2]];
+    const den = ab[0] * ab[0] + ab[1] * ab[1] + ab[2] * ab[2];
+    const ap = [p[0] - a[0], p[1] - a[1], p[2] - a[2]];
+    const t = den ? Math.min(1, Math.max(0, (ap[0] * ab[0] + ap[1] * ab[1] + ap[2] * ab[2]) / den)) : 0;
+    const q = [a[0] + t * ab[0], a[1] + t * ab[1], a[2] + t * ab[2]];
+    return Math.max(Math.abs(p[0] - q[0]), Math.abs(p[1] - q[1]), Math.abs(p[2] - q[2]));
+  };
+  const worst = (s, fixedRefs) => {
+    let m = 0;
+    let at = null;
+    const per = [];
+    for (const c of s.corners) {
+      const a = fixedRefs ? fixedRefs[0] : c.out;
+      const b = fixedRefs ? fixedRefs[1] : s.inner;
+      let cm = 0;
+      let cp = null;
+      for (const p of c.pts) {
+        const d = distToSegment(p.rgb, a, b);
+        if (d > cm) { cm = d; cp = { dx: p.dx, dy: p.dy, rgb: p.rgb }; }
+        if (d > m) { m = d; at = { corner: c.name, dx: p.dx, dy: p.dy, rgb: p.rgb, refs: [a, b], band: +d.toFixed(2) }; }
+      }
+      per.push({ corner: c.name, m: +cm.toFixed(2), rgb: cp && cp.rgb });
+    }
+    return { m, at, per };
+  };
+  const setTheme = async (dark) => {
+    await cdp.eval("(() => { document.documentElement.classList." + (dark ? "add" : "remove") + "('dark'); return true; })()");
+    await sleep(250);
+  };
+  const hoverAt = async (x, y) => {
+    await cdp.send("Input.dispatchMouseEvent", { type: "mouseMoved", x: Math.round(x), y: Math.round(y) });
+    await sleep(350);
+  };
+
+  await setTheme(false);
+  const lightNormal = await sample(rect);
+  const lightRef = worst(lightNormal);
+  check("收藏详情预览：真实字节解码出来了（像素通道这条量具不是空转）",
+    !!mounted && mounted.ok === true && ready && !!g0 && !!rect
+      && rect.w >= 100
+      && Math.max(...[0, 1, 2].map((k) => Math.abs(lightNormal.inner[k] - [244, 246, 249][k]))) <= 3,
+    "mount ok + img.complete + 内容矩形 ≥100px + 图内像素是夹具的浅色窗口",
+    JSON.stringify({ mounted, ready, geo: g0, rect, inner: lightNormal.inner }));
+  check("亮色·加载完成：四角 1/2/3px 网格落在「图内容色↔角外底色」线段上（通道差 ≤ " + THRESH + "）",
+    lightRef.m <= THRESH,
+    "四角差 ≤" + THRESH,
+    JSON.stringify({ diff: lightRef, inner: lightNormal.inner }));
+
+  await hoverAt(rect.x + rect.w / 2, rect.y + rect.h / 2);
+  const lightHover = await sample(rect);
+  await hoverAt(rect.x - 40, rect.y - 40);
+  const lightHoverRef = worst(lightHover);
+  check("亮色·hover：四角仍在「内容色↔底色」线段上，差 ≤ " + THRESH + "（悬停遮罩没有把暗边带出来）",
+    lightHoverRef.m <= THRESH,
+    "四角差 ≤" + THRESH,
+    JSON.stringify({ diff: lightHoverRef, inner: lightHover.inner }));
+
+  await setTheme(true);
+  const darkNormal = await sample(rect);
+  const darkRef = worst(darkNormal);
+  check("暗色·加载完成：四角仍在「内容色↔底色」线段上，差 ≤ " + THRESH + "（暗角不许只换主题就看不见）",
+    darkRef.m <= THRESH,
+    "四角差 ≤" + THRESH,
+    JSON.stringify({ diff: darkRef, inner: darkNormal.inner }));
+
+  await hoverAt(rect.x + rect.w / 2, rect.y + rect.h / 2);
+  const darkHover = await sample(rect);
+  await hoverAt(rect.x - 40, rect.y - 40);
+  const darkHoverRef = worst(darkHover);
+  check("暗色·hover：四角仍在「内容色↔底色」线段上，差 ≤ " + THRESH,
+    darkHoverRef.m <= THRESH,
+    "四角差 ≤" + THRESH,
+    JSON.stringify({ diff: darkHoverRef, inner: darkHover.inner }));
+
+  // 小缩略图（TodoImageThumb）的加载中占位：框里没有图，角上只该是容器自己的底色。
+  const thumbCorner = async () => {
+    await cdp.eval("window.__probe.stubApiFail('readContentPreview', '内容不存在')");
+    const mounted2 = await cdp.eval(`window.__probe.install('/src/components/TodoImageThumb.vue', '', ${
+      JSON.stringify(JSON.stringify({
+        isolated: true,
+        image: { sha256: "cid-fav-thumb", name: "thumb.png", size: 100 },
+        clickable: true,
+      }))
+    })`);
+    await cdp.eval("(() => { const h = document.getElementById('probe-host'); h.style.padding = '24px'; h.style.width = '260px'; h.style.background = '#ffffff'; return true; })()");
+    await sleep(600);
+    const box = await cdp.eval(`(() => {
+      const d = document.querySelector('#probe-host > div');
+      if (!d) return null;
+      const r = d.getBoundingClientRect();
+      const st = getComputedStyle(d);
+      const rgb = (v) => (String(v).match(/[0-9.]+/g) || []).slice(0, 3).map(Number);
+      return { x: r.left, y: r.top, w: r.width, h: r.height, bg: rgb(st.backgroundColor), border: rgb(st.borderTopColor) };
+    })()`);
+    if (!box) return { mounted2, box, skel: null };
+    // from=4：80px 容器有 1px 描边 + 8px 圆角抗锯齿，1..3px 那圈是"宿主白底↔描边"的混合，
+    // 用容器底色当参照会假红（实测 13）。往里退到 4..6px 才是容器真正画出来的底色。
+    const skel = await sample(box, 4);
+    return { mounted2, box, skel, ref: worst(skel, [box.bg, box.bg]) };
+  };
+  await setTheme(false);
+  const skelLight = await thumbCorner();
+  check("小缩略图·亮色·加载中占位：四角落在「容器底色↔描边色」线段上（通道差 ≤ " + THRESH + "，占位不写死深色垫底）",
+    !!skelLight.mounted2 && skelLight.mounted2.ok === true && !!skelLight.ref && skelLight.ref.m <= THRESH,
+    "占位四角差 ≤" + THRESH,
+    JSON.stringify({ ref: skelLight.ref, box: skelLight.box && { bg: skelLight.box.bg, border: skelLight.box.border } }));
+
+  await setTheme(true);
+  const skelDark = await thumbCorner();
+  check("小缩略图·暗色·加载中占位：四角落在「容器底色↔描边色」线段上（通道差 ≤ " + THRESH + "）",
+    !!skelDark.mounted2 && skelDark.mounted2.ok === true && !!skelDark.ref && skelDark.ref.m <= THRESH,
+    "占位四角差 ≤" + THRESH,
+    JSON.stringify({ ref: skelDark.ref, box: skelDark.box && { bg: skelDark.box.bg, border: skelDark.box.border } }));
+
+  // ── 同形缺陷的两处（用户 2026-11-05 裁决「同形缺陷一起修」）────────────────
+  // 合并记录弹窗的图片项 / 消息流图片气泡，走的是同一条判据：
+  // 元素框必须贴住内容（贴不住时下面的「元素框 == 内容框」那条先红，像素那条也红）。
+  const scenario = async (cmpPath, propsJson) => {
+    const m = await cdp.eval("window.__probe.install(" + JSON.stringify(cmpPath) + ", '', "
+      + JSON.stringify(JSON.stringify(propsJson)) + ")");
+    let ok = false;
+    for (let i = 0; i < 50 && !ok; i += 1) {
+      ok = await cdp.eval(`(() => {
+        const i = [...document.querySelectorAll('img')].find((x) => String(x.src).startsWith('blob:'));
+        return !!(i && i.complete && i.naturalWidth > 0);
+      })()`);
+      if (!ok) await sleep(200);
+    }
+    if (!ok) return { mounted: m, ready: false };
+    // CDP 的 clip 用**文档坐标**，而 getBoundingClientRect 是视口坐标 ——
+    // 前面弹窗那一段可能把页面滚了，这里不归零就会整片错位（实测错 ~12px，正好采到特征条）。
+    await cdp.eval("(() => { window.scrollTo(0, 0); return true; })()");
+    await sleep(150);
+    await setTheme(false);
+    const g = await geo();
+    const r = g ? contentRect(g) : null;
+    if (!r) return { mounted: m, ready: false, g };
+    const ln = await sample(r);
+    await hoverAt(r.x + r.w / 2, r.y + r.h / 2);
+    const lh = await sample(r);
+    await hoverAt(r.x - 40, r.y - 40);
+    await setTheme(true);
+    const dn = await sample(r);
+    await hoverAt(r.x + r.w / 2, r.y + r.h / 2);
+    const dh = await sample(r);
+    await hoverAt(r.x - 40, r.y - 40);
+    return {
+      mounted: m, ready: true, g, rect: r, inner: ln.inner,
+      light: worst(ln), lightHover: worst(lh), dark: worst(dn), darkHover: worst(dh),
+    };
+  };
+  const reportScenario = (label, s) => {
+    // 结构性判据放第一条：w-full 会把元素框撑到容器满宽，这条量的是"元素框 == 内容框"，
+    // 比像素那条更早红，也解释了"为什么像素角会露"（裁剪面与内容角脱开）。
+    const d = s.g && s.rect ? { dw: +(s.g.w - s.rect.w).toFixed(1), dh: +(s.g.h - s.rect.h).toFixed(1) } : null;
+    check(label + "：元素框贴住内容框（宽/高差 ≤1px）", !!s.ready && !!d && Math.abs(d.dw) <= 1 && Math.abs(d.dh) <= 1,
+      "元素框 == 内容框", JSON.stringify({ diff: d, element: s.g && { w: Math.round(s.g.w), h: Math.round(s.g.h), radius: s.g.radius }, content: s.rect && { w: Math.round(s.rect.w), h: Math.round(s.rect.h) } }));
+    for (const [key, title] of [["light", "亮色·加载完成"], ["lightHover", "亮色·hover"], ["dark", "暗色·加载完成"], ["darkHover", "暗色·hover"]]) {
+      const ref = s[key];
+      check(label + "·" + title + "：四角落在「内容色↔底色」线段上（差 ≤ " + THRESH + "）",
+        !!s.ready && !!ref && ref.m <= THRESH, "四角差 ≤" + THRESH, JSON.stringify({ diff: ref }));
+    }
+  };
+
+  // 合并记录弹窗：图片项要等 onMounted 的 probe 拿到字节，所以先把 readContentPreview 打桩。
+  const mergeContent = JSON.stringify({
+    title: "合并记录",
+    items: [{
+      sender: "peer-1", kind: "image", ts: now - 30_000,
+      content: JSON.stringify({ name: "image-172e3789.png", path: "/tmp/image-172e3789.png", size: 887271, sha256: "cid-shot", subtype: "image" }),
+    }],
+  });
+  await cdp.eval("window.__probe.stubApi('readContentPreview', " + JSON.stringify(bytes) + ")");
+  const merge = await scenario("/src/components/message/MergeCardModal.vue", { isolated: true, open: true, content: mergeContent });
+  reportScenario("合并记录弹窗图片", merge);
+
+  // 消息流图片气泡：**竖图 + 带尺寸** 才会露 —— 外框宽 208、内容只有约 196（左右各留 6px），
+  // 内容角缩在框内、框圆角裁不到。横图/无尺寸时元素框会自己缩到内容高，量不出问题。
+  const bubbleUrl = await cdp.eval("(() => { const b = new Uint8Array(window.__probe.favShotPng(545, 800)); return URL.createObjectURL(new Blob([b], { type: 'image/png' })); })()");
+  const bubble = await scenario("/src/components/message/MessageImageBubble.vue", { isolated: true, src: bubbleUrl, width: 545, height: 800 });
+  reportScenario("消息图片气泡", bubble);
+
+  console.log("  · favthumb 读数：" + JSON.stringify({
+    element: g0 && { w: Math.round(g0.w), h: Math.round(g0.h), radius: g0.radius, fit: g0.fit },
+    chain: g0 && g0.chain,
+    content: rect && { w: Math.round(rect.w), h: Math.round(rect.h) },
+    light: lightRef, lightHover: lightHoverRef, dark: darkRef, darkHover: darkHoverRef,
+    skelLight: skelLight.ref, skelDark: skelDark.ref,
+    // 三处同形：合并记录弹窗图片项 / 消息流图片气泡（用户 2026-11-05 裁决扩到三处）
+    merge: merge && {
+      element: merge.g && { w: Math.round(merge.g.w), h: Math.round(merge.g.h), radius: merge.g.radius },
+      content: merge.rect && { w: Math.round(merge.rect.w), h: Math.round(merge.rect.h) },
+      light: merge.light, lightHover: merge.lightHover, dark: merge.dark, darkHover: merge.darkHover,
+    },
+    bubble: bubble && {
+      element: bubble.g && { w: Math.round(bubble.g.w), h: Math.round(bubble.g.h), radius: bubble.g.radius },
+      content: bubble.rect && { w: Math.round(bubble.rect.w), h: Math.round(bubble.rect.h) },
+      light: bubble.light, lightHover: bubble.lightHover, dark: bubble.dark, darkHover: bubble.darkHover,
+    },
+  }));
+  await setTheme(false);
 }
 
 /**

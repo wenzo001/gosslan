@@ -30,6 +30,7 @@ import {
   checkGlassTiers,
   checkAmbientMotion,
   checkComposerSurface,
+  checkAmbientChromeSurfaces,
   checkSelectionContract,
   findNestedThemeRuleIssues,
   findHandRolledSegmentLoops,
@@ -55,6 +56,7 @@ import {
   findNativeSelect,
   findVHtmlSinks,
   V_HTML_ALLOWED,
+  checkContainImageClip,
 } from "./designGuards.ts";
 
 // ---------------- ⓪ 选中态/原生控件颜色必须吃主题变量（#35-N7） ----------------
@@ -4246,6 +4248,7 @@ test("㊺ 真实树：每个 var(--gosslan-*) 消费点都找得到定义（分�
     { name: "--gosslan-text-title", why: "字号阶梯 style.css:63，等 265 处内联 text-[NNpx] 接线" },
     { name: "--gosslan-text-callout", why: "字号阶梯 style.css:65，同上" },
     { name: "--gosslan-text-footnote", why: "字号阶梯 style.css:66，同上" },
+    { name: "--gosslan-text-caption", why: "字号阶梯（style.css 排版标尺段）；2026-11-06 之前它的消费点全在 StateBlock（`text-[var(--gosslan-text-caption)]` 三处），那是把字号令牌当颜色用的静默失效，已改掉 ⇒ 现在等 265 处内联 text-[NNpx] 迁移时一起接线" },
   ];
   const unused = [...defined].filter((t) => !used.has(t) && !DYNAMIC_WRITERS.some((d) => d.name === t)).sort();
   const unlisted = unused.filter((t) => !TOKEN_UNCONSUMED.some((w) => w.name === t));
@@ -6731,6 +6734,212 @@ test("CS-02 反例自证：输入卡去掉圆角或缺 1px 描边必须红", () 
   );
 });
 
+// ---------------- AC：背景动效下「该透却没透」的 chrome / float 面 ----------------
+function ambientChromeSources() {
+  const srcDir = join(import.meta.dirname, "..");
+  return {
+    chatHeader: readFileSync(join(srcDir, "components", "chat", "ChatHeader.vue"), "utf8"),
+    chatWindow: readFileSync(join(srcDir, "components", "ChatWindow.vue"), "utf8"),
+    backToLatest: readFileSync(join(srcDir, "components", "chat", "BackToLatestButton.vue"), "utf8"),
+    friendProfile: readFileSync(join(srcDir, "components", "FriendProfile.vue"), "utf8"),
+    responsiveLayout: readFileSync(join(srcDir, "layouts", "ResponsiveLayout.vue"), "utf8"),
+    messageItem: readFileSync(join(srcDir, "components", "MessageItem.vue"), "utf8"),
+    conversationList: readFileSync(join(srcDir, "components", "ConversationList.vue"), "utf8"),
+    searchDialog: readFileSync(join(srcDir, "components", "search", "ChatSearchDialog.vue"), "utf8"),
+    settingsGroup: readFileSync(join(srcDir, "components", "settings", "SettingsGroup.vue"), "utf8"),
+    dividerStrongUsers: collectVueFiles(srcDir)
+      .filter((f) => readFileSync(f, "utf8").includes("--gosslan-divider-strong"))
+      .map((f) => f.replace(srcDir + "/", ""))
+      .join("\n"),
+    styleCss: readFileSync(join(srcDir, "style.css"), "utf8"),
+  };
+}
+
+test("AC-01..06：现树里 chrome 面参与薄纱、悬浮件走 frost、无硬编码纯白", () => {
+  const issues = checkAmbientChromeSurfaces(ambientChromeSources());
+  assert.deepEqual(issues, [], issues.map((i) => `L${i.line} ${i.message}`).join("\n"));
+});
+
+// ---- AC-09..13（2026-11-05 第三轮）：sticky 条、搜索两列、设置卡片、移动 TabBar ----
+test("AC-09 反例自证：删掉一条 sticky 降级必须红", () => {
+  const src = ambientChromeSources();
+  // 只留基线，把 @supports not 那一条摘掉
+  const broken = src.styleCss.replace(
+    /@supports not \(\(backdrop-filter[\s\S]*?\n\}\n/,
+    "",
+  );
+  assert.notEqual(broken, src.styleCss, "锚点没命中：style.css 的 @supports not 块形状变了");
+  assert.ok(
+    checkAmbientChromeSurfaces({ ...src, styleCss: broken }).some((i) => i.message.includes("AC-09")),
+    "少一条降级必须报 AC-09",
+  );
+});
+
+test("AC-09 反例自证：把 sticky 基线改成纯色必须红", () => {
+  const src = ambientChromeSources();
+  const broken = src.styleCss.replace(
+    "background: color-mix(in srgb, var(--gosslan-list) 72%, transparent);",
+    "background: var(--gosslan-list);",
+  );
+  assert.notEqual(broken, src.styleCss, "锚点没命中：sticky 基线色写法变了");
+  assert.ok(
+    checkAmbientChromeSurfaces({ ...src, styleCss: broken }).some((i) => i.message.includes("AC-09")),
+    "基线退回实色必须报 AC-09",
+  );
+});
+
+test("AC-10 反例自证：字母分组条退回 list 实底必须红", () => {
+  const src = ambientChromeSources();
+  const broken = src.conversationList.replace(
+    "gosslan-sticky-veil sticky top-0",
+    "bg-[var(--gosslan-list)] sticky top-0",
+  );
+  assert.notEqual(broken, src.conversationList, "锚点没命中：字母分组条类名变了");
+  assert.ok(
+    checkAmbientChromeSurfaces({ ...src, conversationList: broken }).some((i) => i.message.includes("AC-10")),
+    "分组条退回实底必须报 AC-10",
+  );
+});
+
+test("AC-11 反例自证：搜索两列加回实底必须红", () => {
+  const src = ambientChromeSources();
+  const broken = src.searchDialog.replace(
+    "desktop:md:w-[240px] desktop:md:border-b-0 desktop:md:border-r",
+    "desktop:md:w-[240px] desktop:md:border-b-0 desktop:md:border-r bg-[var(--gosslan-list)]",
+  );
+  assert.notEqual(broken, src.searchDialog, "锚点没命中：左列类名变了");
+  assert.ok(
+    checkAmbientChromeSurfaces({ ...src, searchDialog: broken }).some((i) => i.message.includes("AC-11")),
+    "两列加回实底必须报 AC-11",
+  );
+});
+
+test("AC-12 反例自证：把设置卡片改成透明必须红", () => {
+  const src = ambientChromeSources();
+  const broken = src.settingsGroup.replace("bg-[var(--gosslan-panel)]", "");
+  assert.notEqual(broken, src.settingsGroup, "锚点没命中：SettingsGroup 的面板底色变了");
+  assert.ok(
+    checkAmbientChromeSurfaces({ ...src, settingsGroup: broken }).some((i) => i.message.includes("AC-12")),
+    "设置卡片被改成透明必须报 AC-12",
+  );
+});
+
+test("AC-13 反例自证：TabBar 退回实底 / 关掉 frost 必须红", () => {
+  const src = ambientChromeSources();
+  const cases = [
+    src.responsiveLayout.replace("safe-bottom frost absolute", "safe-bottom bg-[var(--gosslan-panel)] absolute"),
+    src.styleCss.replace('html[data-frost="off"] .frost', "html[data-frost-missing] .frost"),
+  ];
+  assert.notEqual(cases[0], src.responsiveLayout, "锚点没命中：TabBar 类名变了");
+  assert.notEqual(cases[1], src.styleCss, "锚点没命中：frost 开关没了");
+  assert.ok(
+    checkAmbientChromeSurfaces({ ...src, responsiveLayout: cases[0] }).some((i) => i.message.includes("AC-13")),
+    "TabBar 退回实底必须报 AC-13",
+  );
+  assert.ok(
+    checkAmbientChromeSurfaces({ ...src, styleCss: cases[1] }).some((i) => i.message.includes("AC-13")),
+    "开关丢失必须报 AC-13",
+  );
+});
+
+test("AC-14 反例自证：分栏线退回发丝线 / 扩散到别处 / 动全站 token 必须红", () => {
+  const src = ambientChromeSources();
+  const backToHairline = src.searchDialog.replace(
+    "border-b border-[var(--gosslan-divider-strong)]",
+    "border-b border-[var(--gosslan-divider)]",
+  );
+  const leaked = `${src.dividerStrongUsers}\ncomponents/settings/SettingsGroup.vue`;
+  const globalDivider = src.styleCss.replace("--gosslan-divider: #e2e8f0;", "--gosslan-divider: #8a94a6;");
+  assert.notEqual(backToHairline, src.searchDialog, "锚点没命中：左列分隔线 token 变了");
+  assert.notEqual(globalDivider, src.styleCss, "锚点没命中：全站发丝线定义变了");
+  assert.ok(
+    checkAmbientChromeSurfaces({ ...src, searchDialog: backToHairline }).some((i) =>
+      i.message.includes("AC-14"),
+    ),
+    "分栏线退回发丝线必须报 AC-14",
+  );
+  assert.ok(
+    checkAmbientChromeSurfaces({ ...src, dividerStrongUsers: leaked }).some((i) => i.message.includes("AC-14")),
+    "强分隔线扩散到别的组件必须报 AC-14",
+  );
+  assert.ok(
+    checkAmbientChromeSurfaces({ ...src, styleCss: globalDivider }).some((i) => i.message.includes("AC-14")),
+    "改全站发丝线必须报 AC-14",
+  );
+});
+
+test("AC-01 反例自证：把顶部栏的 ambient-canvas-child 摘掉必须红", () => {
+  const src = ambientChromeSources();
+  const reverted = src.chatHeader.replace(
+    'class="ambient-canvas-child flex shrink-0 items-center justify-between',
+    'class="flex shrink-0 items-center justify-between',
+  );
+  assert.notEqual(reverted, src.chatHeader, "锚点没命中：ChatHeader 顶栏类名变了形状");
+  assert.ok(
+    checkAmbientChromeSurfaces({ ...src, chatHeader: reverted }).some(
+      (i) => i.message.includes("AC-01") && i.message.includes("ambient-canvas-child"),
+    ),
+    "顶部栏退回实色必须报 AC-01",
+  );
+});
+
+test("AC-06 反例自证：把某处改回 `bg-[#fff]` 必须红（用户点名的纯白写法）", () => {
+  const src = ambientChromeSources();
+  const reverted = src.chatHeader.replace(
+    'class="ambient-canvas-child flex shrink-0',
+    'class="ambient-canvas-child bg-[#fff] flex shrink-0',
+  );
+  assert.notEqual(reverted, src.chatHeader, "锚点没命中：ChatHeader 顶栏类名变了形状");
+  const issues = checkAmbientChromeSurfaces({ ...src, chatHeader: reverted });
+  assert.ok(
+    issues.some((i) => i.message.includes("AC-06") && i.message.includes("bg-[#fff]")),
+    `期望 AC-06 因 bg-[#fff] 报红，实际：${JSON.stringify(issues)}`,
+  );
+});
+
+test("AC-03 反例自证：把「回到最新」改回面板实底必须红", () => {
+  const src = ambientChromeSources();
+  const reverted = src.backToLatest.replace(
+    'class="frost absolute bottom-4',
+    'class="absolute bottom-4 border border-[var(--gosslan-border)] bg-[var(--gosslan-panel)] shadow-lg',
+  );
+  assert.notEqual(reverted, src.backToLatest, "锚点没命中：BackToLatestButton 类名变了形状");
+  assert.ok(
+    checkAmbientChromeSurfaces({ ...src, backToLatest: reverted }).some(
+      (i) => i.message.includes("AC-03") && i.message.includes("gosslan-panel"),
+    ),
+    "悬浮件退回面板实底必须报 AC-03",
+  );
+});
+
+test("AC-07 反例自证：把「新的朋友」页头改回裸铺 chat 色必须红", () => {
+  const src = ambientChromeSources();
+  const reverted = src.responsiveLayout.replace(
+    'class="ambient-canvas-child flex shrink-0 items-center border-b border-[var(--gosslan-divider)] bg-[var(--gosslan-chat)] px-4"',
+    'class="flex shrink-0 items-center border-b border-[var(--gosslan-divider)] bg-[var(--gosslan-chat)] px-4"',
+  );
+  assert.notEqual(reverted, src.responsiveLayout, "锚点没命中：新的朋友页头类名变了形状");
+  const issues = checkAmbientChromeSurfaces({ ...src, responsiveLayout: reverted });
+  assert.ok(
+    issues.some((i) => i.message.includes("AC-07")),
+    `期望 AC-07 报红，实际：${JSON.stringify(issues)}`,
+  );
+});
+
+test("AC-08 反例自证：把时间分割线的条件薄纱摘掉必须红", () => {
+  const src = ambientChromeSources();
+  const reverted = src.messageItem.replace(
+    ':class="tintOn ? \'\' : \'ambient-canvas-child\'"',
+    "",
+  );
+  assert.notEqual(reverted, src.messageItem, "锚点没命中：MessageItem 分割线条件类名变了形状");
+  const issues = checkAmbientChromeSurfaces({ ...src, messageItem: reverted });
+  assert.ok(
+    issues.some((i) => i.message.includes("AC-08") && i.message.includes("showTimeDivider")),
+    `期望 AC-08 报红，实际：${JSON.stringify(issues)}`,
+  );
+});
+
 /**
  * AM-09 全库扫描：`v-press-ripple` 只许出现在主按钮、危险主按钮与发送键。
  * 为什么不是"逐个点按钮验一遍"：全站按钮都起涟漪仍能通过任何单点判据，
@@ -6751,4 +6960,80 @@ test("AM-09：v-press-ripple 只挂在主按钮与发送键", () => {
   }
   assert.deepEqual(hits.sort(), [...allowed].sort(),
     `涟漪只许挂在这三处；实际：${hits.join(", ")}`);
+});
+
+// ---------------- IP-01 内容图容器：圆角裁剪面贴住内容角（三处共用一条判据） ----------------
+// 用户 2026-11-05：收藏页的图片预览四个圆角是黑的。根因是元素框比内容框大
+// （w-full + object-contain），rounded 的裁剪面离内容角几百像素 ⇒ 源图字节里
+// 自带的近黑垫底原样露出来。判据钉的就是这个形状：裁剪面必须贴住内容角、且不许写死深色垫底。
+//
+// 三处同形（用户 2026-11-05 裁决「同形缺陷一起修，守卫扩到三处」）：
+// 收藏详情预览 / 合并记录弹窗的图片项 / 消息流图片气泡。
+
+// 每处给两对锚点：①「怎么改回违规的 w-full」②「圆角类是哪一个」。
+// 锚点必须逐处写死，不能共用一个 —— 三处的 class 排布本来就不同（气泡没有 `mx-auto`，
+// 它的竖直居中在外框的 flex 上），共用锚点会让反例在某一处静默空转。
+const CONTAIN_IMG_SITES = [
+  {
+    name: "FavoritePanel.vue",
+    file: join(import.meta.dirname, "..", "components", "FavoritePanel.vue"),
+    radius: "rounded-[var(--gosslan-radius-lg)] ",
+    toFull: ["mx-auto block ", "block w-full "],
+  },
+  {
+    name: "MergeCardModal.vue",
+    file: join(import.meta.dirname, "..", "components", "message", "MergeCardModal.vue"),
+    radius: "rounded-[var(--gosslan-radius-lg)] ",
+    toFull: ["mx-auto block ", "block w-full "],
+  },
+  {
+    name: "MessageImageBubble.vue",
+    file: join(import.meta.dirname, "..", "components", "message", "MessageImageBubble.vue"),
+    radius: "rounded-[var(--gosslan-bubble-radius)] ",
+    toFull: ["block max-w-full ", "block w-full max-w-full "],
+  },
+] as const;
+
+test("IP-01 现树：三处内容图都贴住内容角、无字面深色垫底", () => {
+  const problems: string[] = [];
+  for (const site of CONTAIN_IMG_SITES) {
+    const issues = checkContainImageClip(readFileSync(site.file, "utf8"), site.name);
+    for (const i of issues) problems.push(`${i.line} ${site.name} ${i.message}`);
+  }
+  assert.deepEqual(problems, [], problems.join("\n"));
+});
+
+test("IP-01 反例自证：三处各塞回 `w-full`、各删圆角，六条必须逐条红", () => {
+  for (const site of CONTAIN_IMG_SITES) {
+    const src = readFileSync(site.file, "utf8");
+
+    const withFull = src.replace(site.toFull[0], site.toFull[1]);
+    assert.notEqual(withFull, src, `${site.name}：锚点没命中（\`${site.toFull[0]}\` 变了），反例是空转的`);
+    const fullIssues = checkContainImageClip(withFull, site.name);
+    assert.ok(
+      fullIssues.some((i) => i.message.includes("`w-full`")),
+      `${site.name}：期望因 w-full 报红，实际：${JSON.stringify(fullIssues)}`,
+    );
+
+    const noRadius = src.replace(site.radius, "");
+    assert.notEqual(noRadius, src, `${site.name}：锚点没命中（${site.radius} 变了），反例是空转的`);
+    const radiusIssues = checkContainImageClip(noRadius, site.name);
+    assert.ok(
+      radiusIssues.some((i) => i.message.includes("缺 `rounded-")),
+      `${site.name}：期望因缺圆角报红，实际：${JSON.stringify(radiusIssues)}`,
+    );
+  }
+});
+
+test("IP-01 反例自证：把垫底写成 `bg-black` / `rgba(0,0,0,.4)` 必须红", () => {
+  const src = readFileSync(CONTAIN_IMG_SITES[0].file, "utf8");
+  for (const pad of ["bg-black", "bg-[rgba(0,0,0,0.4)]"]) {
+    const mutated = src.replace("mx-auto block max-h-72 max-w-full cursor-zoom-in", `mx-auto block max-h-72 max-w-full cursor-zoom-in ${pad}`);
+    assert.notEqual(mutated, src, `锚点没命中：预览 img 的 class 变了形状（${pad}）`);
+    const issues = checkContainImageClip(mutated, "FavoritePanel.vue");
+    assert.ok(
+      issues.some((i) => i.message.includes("字面深色")),
+      `期望因 ${pad} 报红，实际：${JSON.stringify(issues)}`,
+    );
+  }
 });

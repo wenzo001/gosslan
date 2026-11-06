@@ -231,10 +231,14 @@ onBeforeUnmount(() => {
               :aria-label="t('merge.viewImage')"
               @click="openLightbox(i)"
             >
+              <!-- ⚠️ 不许写 `w-full`：元素框会被撑成整栏宽，`object-contain` 把真实像素缩在中间，
+                   圆角落在元素框角上、裁不到内容角 ⇒ 源图自带的深色暗垫露出来
+                   （2026-11-05 收藏页同一缺陷）。让元素框**贴着内容**（`mx-auto` + `max-w-full`），
+                   裁剪只由这一处圆角负责。已知边界与判据见 docs/design-language/README.md 附录 B。 -->
               <img
                 loading="lazy" decoding="async"
                 :src="imageSlots[i]?.url"
-                class="max-h-64 w-full rounded-[var(--gosslan-radius-md)] object-contain"
+                class="mx-auto block max-h-64 max-w-full rounded-[var(--gosslan-radius-lg)] object-contain"
                 :alt="t('msg.imageMessage')"
               />
             </button>

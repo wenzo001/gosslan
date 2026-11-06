@@ -954,7 +954,7 @@ function onResizeEnd() {
           <!-- 与聊天/通讯录列表**同族**：列表底 `--gosslan-list`、行悬停 `--gosslan-list-hover`、
                行间内缩分隔线。此前是白底 + `--gosslan-hover` + 无分隔线，和别的列表对不上
                （用户 2026-09-20：「我的也是一样的问题」）。 -->
-          <div class="flex h-full flex-col overflow-y-auto bg-[var(--gosslan-list)]">
+          <div class="ambient-canvas-child flex h-full flex-col overflow-y-auto bg-[var(--gosslan-list)]">
             <!-- 头部：头像 + 昵称（点进去编辑资料） -->
             <button
               class="flex w-full shrink-0 items-center gap-3 border-b border-[var(--gosslan-divider)] px-4 py-4 text-left transition hover:bg-[var(--gosslan-list-hover)]"
@@ -1014,10 +1014,10 @@ function onResizeEnd() {
         </div>
         <!-- 新的朋友页：右侧展示好友申请列表（微信式） -->
         <div v-else-if="navState === 'contacts' && showRequests" class="flex h-full flex-col">
-          <div class="flex shrink-0 items-center border-b border-[var(--gosslan-divider)] bg-[var(--gosslan-chat)] px-4" :style="{ height: 'var(--gosslan-header-h)' }">
+          <div class="ambient-canvas-child flex shrink-0 items-center border-b border-[var(--gosslan-divider)] bg-[var(--gosslan-chat)] px-4" :style="{ height: 'var(--gosslan-header-h)' }">
             <span class="text-title font-medium">{{ t("conv.newFriends") }}</span>
           </div>
-          <div class="min-h-0 flex-1 overflow-y-auto bg-[var(--gosslan-chat)] p-2">
+          <div class="ambient-canvas-child min-h-0 flex-1 overflow-y-auto bg-[var(--gosslan-chat)] p-2">
             <FriendRequestList
               :requests="chat.pendingRequests"
               :outgoing="chat.outgoingRequests"
@@ -1110,7 +1110,7 @@ function onResizeEnd() {
          收藏列表是普通一级 tab；只有点进单条收藏（`/favorites/:favId`）才按下钻页处理。 -->
     <nav
       v-if="showMobileTabBar"
-      class="safe-bottom absolute bottom-0 left-0 right-0 z-40 flex items-center justify-around border-t border-[var(--gosslan-border)] bg-[var(--gosslan-panel)]"
+      class="safe-bottom frost absolute bottom-0 left-0 right-0 z-40 flex items-center justify-around border-t border-[var(--gosslan-border)]"
     >
       <button
         class="relative flex flex-1 flex-col items-center gap-0.5 py-2.5"

@@ -64,3 +64,93 @@ test("Composer：取消代码块不清正文；语言选择器是独立子组件
   assert.ok(!/innerHTML\s*=/.test(undo), "取消代码块不得清空输入框（保留换行与原样字符）");
   assert.match(src, /<CodeLangMenu/, "语言选择走独立 CodeLangMenu 子组件");
 });
+
+/**
+ * 守卫（2026-11-05）：语言下拉**必须**绑聊天区边界 + 限高内部滚动。
+ *
+ * 真实缺陷：弹层原先只按视口避让（Reka 的 `collisionBoundary` 默认空数组），
+ * 16 个选项一列 ≈526px，在小窗/贴底时越过消息区底边，下半截选项点不到。
+ * 运行时读数是 `scripts/check-ui-runtime.mjs --only=langdd`；这里守"写法不许退回"。
+ *
+ * 防空转：先切出真正的 `<DropdownMenuContent …>` 开标签再断言。若组件改名或标签被删，
+ * 正则全文扫描会"查不到也不红"，所以标签定位失败本身就是一条红。
+ */
+test("CodeLangMenu：弹层绑聊天区边界并限高内部滚动（防回退成绝对定位无约束）", () => {
+  const src = read("src", "components", "CodeLangMenu.vue");
+  assert.ok(src.length > 1000, "锚点失效：CodeLangMenu.vue 读不到或被改名");
+
+  const tagAt = src.indexOf("<DropdownMenuContent");
+  assert.ok(tagAt > 0, "锚点失效：找不到 DropdownMenuContent 开标签");
+  const tag = src.slice(tagAt, src.indexOf(">", tagAt));
+  assert.match(tag, /collision-boundary/, "弹层必须绑定容器边界，不能只按视口避让");
+  assert.match(tag, /collision-padding/, "边界内要留呼吸位");
+  assert.match(tag, /sticky="always"/, "不许装 limitShift：触发器滚出容器时弹层必须被压回边界内");
+  assert.match(tag, /code-lang-menu/, "限高样式必须真的挂在弹层上");
+  assert.match(tag, /:style="menuStyle"/, "极窄容器要靠内联变量压 min-width");
+  assert.ok(!/class="[^"]*absolute/.test(tag), "弹层不许退回绝对定位（它是 portal 到 body 的 fixed 层）");
+
+  // 输入区（Composer）上方没有滚动容器 ⇒ 必须退到面板标记，不是视口。
+  assert.ok(
+    src.includes('closest<HTMLElement>("[data-lang-menu-boundary]")'),
+    "找不到滚动祖先时要退到聊天面板",
+  );
+  assert.match(src, /measureMinWidth\(boundary\.value\)/, "打开时要按容器实测可用宽度");
+  const chat = read("src", "components", "ChatWindow.vue");
+  assert.match(chat, /data-lang-menu-boundary/, "聊天面板根节点必须带边界标记（否则输入区回退视口）");
+  // 极窄时文字必须 truncate，而不是把弹层撑出去。
+  assert.match(src, /<span class="min-w-0 truncate"/, "选项文字必须可省略");
+
+  const cssAt = src.indexOf(".code-lang-menu {");
+  assert.ok(cssAt < 0, "限高规则不许放回 scoped 块：弹层 class 与 data-v 落在不同节点，scoped 匹配不到");
+  const css = read("src", "style.css");
+  const cssAtGlobal = css.indexOf(".code-lang-menu {");
+  assert.ok(cssAtGlobal > 0, "锚点失效：找不到全局 .code-lang-menu 样式块");
+  const cssBlock = css.slice(cssAtGlobal, css.indexOf("}", cssAtGlobal));
+  assert.match(
+    cssBlock,
+    /max-height:\s*var\(--reka-(dropdown-menu-content-available-height|popper-available-height)/,
+    "限高必须吃 Reka 在**同一份边界**上算出的可用高度",
+  );
+  assert.match(
+    cssBlock,
+    /max-width:\s*var\(--reka-(dropdown-menu-content-available-width|popper-available-width)/,
+    "横向也必须吃同一份边界的可用宽度",
+  );
+  assert.match(
+    cssBlock,
+    /min-width:\s*var\(--gosslan-lang-menu-min,\s*168px\)/,
+    "极窄容器的 min-width 必须可被 CodeLangMenu 覆盖",
+  );
+  assert.match(cssBlock, /overflow-y:\s*auto/, "超出部分必须在弹层内部滚动");
+  assert.match(cssBlock, /scrollbar-gutter:\s*stable/, "滚动条不许盖住文字/让文字横向跳");
+
+  assert.match(src, /function resolveBoundary/, "边界必须是运行时解析的滚动容器，不许写死视口");
+  assert.match(src, /boundary\.value = resolveBoundary\(triggerEl\.value\)/, "打开时要从触发器上溯定边界");
+  assert.match(src, /scrollIntoView\(\{ block: "nearest"/, "打开时当前语言要滚进可见区");
+
+  // 反例自证：把限高拿掉，下面这条必须识别出来（证明守卫不是查空气）。
+  const mutated = css.replace(
+    /max-height:\s*var\(--reka-(dropdown-menu-content-available-height|popper-available-height)[^;]*;/,
+    "max-height: none;",
+  );
+  assert.notEqual(mutated, css, "反例自证：限高那一行没被替换到，锚点已漂");
+  const mutatedAt = mutated.indexOf(".code-lang-menu {");
+  assert.doesNotMatch(
+    mutated.slice(mutatedAt, mutated.indexOf("}", mutatedAt)),
+    /max-height:\s*var\(--reka-/,
+    "反例自证：拿掉限高后守卫必须能识别（否则等于没守）",
+  );
+
+  // 反例自证（横向）：把 max-width 拿掉，极窄容器就会横向溢出容器。
+  const mutatedW = css.replace(
+    /max-width:\s*var\(--reka-(dropdown-menu-content-available-width|popper-available-width)[^;]*;/,
+    "max-width: none;",
+  );
+  assert.notEqual(mutatedW, css, "反例自证：横向上限那一行没被替换到，锚点已漂");
+  const mutatedWAt = mutatedW.indexOf(".code-lang-menu {");
+  assert.doesNotMatch(
+    mutatedW.slice(mutatedWAt, mutatedW.indexOf("}", mutatedWAt)),
+    /max-width:\s*var\(--reka-/,
+    "反例自证：拿掉横向上限后守卫必须能识别（否则等于没守）",
+  );
+});

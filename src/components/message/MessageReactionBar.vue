@@ -243,7 +243,7 @@ onUnmounted(clearPress);
             :align="align"
             :side-offset="6"
             :collision-padding="8"
-            class="gosslan-popover-in z-[80] w-max max-w-[256px] rounded-[var(--gosslan-radius-md)] border border-[var(--gosslan-border)] bg-[var(--gosslan-panel)] px-2.5 py-1.5 text-caption leading-relaxed text-[var(--gosslan-text-2)] shadow-md"
+            class="gosslan-popover-in frost z-[80] w-max max-w-[256px] rounded-[var(--gosslan-radius-md)] px-2.5 py-1.5 text-caption leading-relaxed text-[var(--gosslan-text-2)]"
             @click.stop
           >
             <span

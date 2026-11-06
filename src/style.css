@@ -127,6 +127,11 @@
   --gosslan-card-line: rgba(0, 0, 0, 0.06);
   --gosslan-border: #e2e8f0;
   --gosslan-divider: #e2e8f0;
+  /* 专用**分栏分隔线**：只给搜索对话框左右两列用（两列都透明，没有底色差，
+     发丝线 1.16:1 撑不起"这是两栏"的层次）。全站 `--gosslan-divider` 仍是发丝线 —— 
+     它承担的是列表行之间的"轻分隔"，一次改成 3:1 会把上百处行分隔变成表格线。
+     取值按采样底色算到 ≥3:1（亮底 ≈#f5f5f7 → 3.3:1，暗底 ≈#1e293b → 3.6:1）。 */
+  --gosslan-divider-strong: #7c8798;
   --gosslan-text: #0f172a;
   /* 次要文字（说明文案 / 会话摘要 / 占位符 / 辅助图标）：11~13px 小字同样按正文标准 4.5 判。
      原 #64748b 只达 4.34（列表底）/ 4.11（卡片底），不达标 → 按项目既有的 Slate 梯度下走一档。
@@ -438,6 +443,8 @@
      ⚠️ 只动 border，分隔线（--gosslan-divider）保持更淡 —— 分隔线是"分栏"，边框是"控件"。 */
   --gosslan-border: #3a4a66;
   --gosslan-divider: #28344a;
+  /* 暗色分栏线比亮色抬亮一档：暗底上同样要 ≥3:1（详见 :root 里的同名 token 注释）。 */
+  --gosslan-divider-strong: #6b7f9e;
   --gosslan-text: #f1f5f9;
   --gosslan-text-2: #94a3b8;
   --gosslan-hover: rgba(248, 250, 252, 0.06);
@@ -1503,6 +1510,17 @@ progress {
     var(--gosslan-glass-2-shadow);
 }
 
+/* 半透明、但**不 blur** 的降级档（2026-11-05 移动端 TabBar 上实测后预留的开关）：
+   `html[data-frost="off"]` 只摘掉 backdrop-filter，保留 `--gosslan-glass-2-bg` 的半透明底色。
+   用途是移动端底部 TabBar 这类整条贴在滚动内容上方、每帧都要重新合成背板的表面：
+   真机上若出现可感的长帧，把根节点开关拨到 off 即可，不必逐组件改类名。
+   优先级说明：三档正式降级（减少透明 / 高对比度 / @supports not）写在本文件更后面且
+   选择器权重不低于这一条，所以它们仍然优先落到**实色**，这一条只负责"半透明无雾"。 */
+html[data-frost="off"] .frost {
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
+}
+
 .glass-2 {
   background: var(--gosslan-glass-2-bg);
   -webkit-backdrop-filter: var(--gosslan-glass-2-blur);
@@ -1511,6 +1529,18 @@ progress {
     inset 0 0 0 1px var(--gosslan-glass-2-border),
     inset 0 1px 0 var(--gosslan-glass-2-highlight),
     var(--gosslan-glass-2-shadow);
+}
+
+/* 字母分组 sticky 条（通讯录 A/B/C/D…）：
+   为什么不用 `.frost`：它必须**比玻璃更实**——字母要压在滚动行上，而 `.frost` 的
+   `--gosslan-glass-2-bg` 是白色系，暗色下会和大盘底脱节。这里取 `--gosslan-list`
+   的 72% 加 8px 雾化，色相与列表卷轴同源，滚过去的行只做柔化不糊字。
+   降级见文件末三档：一律退回 100% 实底（本层不带正文，实底不牺牲可读性，
+   反而正是"行滚到字母下面"时必需的遮挡）。 */
+.gosslan-sticky-veil {
+  background: color-mix(in srgb, var(--gosslan-list) 72%, transparent);
+  -webkit-backdrop-filter: blur(8px);
+  backdrop-filter: blur(8px);
 }
 
 .glass-3 {
@@ -1951,6 +1981,24 @@ img {
   box-shadow: 0 8px 28px rgba(0, 0, 0, 0.18);
 }
 
+/* 代码块语言下拉（2026-11-05）：限高 + 内部滚动。
+   为什么写在全局而不是 CodeLangMenu 的 scoped 块里：弹层是 portal 到 body 的，
+   class 落在内容节点、`data-v-*` 落在 Reka 的 popper 包装节点上 ⇒ scoped 选择器
+   根本匹配不到（实测 overflowY 仍是 visible）。
+   高度上限直接吃 Reka 在 `collisionBoundary`（聊天区）上算出的可用高度：
+   与翻转用的是同一份边界，不会出现"翻转按聊天区、限高按视口"的两套口径。
+   宽度同理：`max-width` 吃同一份边界的可用宽度，极窄容器时 `min-width` 被
+   CodeLangMenu 压到 `min(可用宽, 触发器宽)`，再由 popper 的横向 shift 钉在容器内；
+   选项文字在 `CodeLangMenu` 里套了 truncate，压缩时省略而不是溢出。 */
+.code-lang-menu {
+  min-width: var(--gosslan-lang-menu-min, 168px);
+  max-width: var(--reka-dropdown-menu-content-available-width, calc(100vw - 16px));
+  max-height: var(--reka-dropdown-menu-content-available-height, calc(100vh - 16px));
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-gutter: stable;
+}
+
 .gosslan-menu-item {
   display: flex;
   width: 100%;
@@ -2109,6 +2157,12 @@ img {
   .glass-3 {
     background: var(--gosslan-glass-3-fallback);
   }
+  /* 字母分组 sticky 条：退回 100% 实底（见 `.gosslan-sticky-veil` 定义处）。 */
+  .gosslan-sticky-veil {
+    -webkit-backdrop-filter: none;
+    backdrop-filter: none;
+    background: var(--gosslan-list);
+  }
   /* ⚠️ `.glass` 目前只用在 BaseModal 的遮罩上（`glass fixed inset-0 bg-black/40`）：
      去模糊后改用更实的压暗，遮罩才仍然是"遮罩"。若将来把 .glass 复用到别处，
      这里的覆盖需要一并重新判断。 */
@@ -2139,6 +2193,12 @@ html[data-reduced-transparency="true"] .glass {
   backdrop-filter: none;
   background: rgba(0, 0, 0, 0.62);
 }
+/* sticky 字母条直接写的是 color-mix（不走 token），所以应用内开关必须单独覆盖一次。 */
+html[data-reduced-transparency="true"] .gosslan-sticky-veil {
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
+  background: var(--gosslan-list);
+}
 
 /* 2) 提高对比度：把"边界"类 token 提到更实的档位。
    亮色原本靠阴影表达层级、边框刻意很淡（见本文件顶部注释与 design-guidelines §3.3）；
@@ -2150,6 +2210,7 @@ html[data-reduced-transparency="true"] .glass {
   :root {
     --gosslan-border: #94a3b8;
     --gosslan-divider: #a7b6c8;
+    --gosslan-divider-strong: #475569;
     --gosslan-list-hover: rgba(15, 23, 42, 0.09);
     --gosslan-hover: rgba(15, 23, 42, 0.11);
     --gosslan-window-ring: rgba(15, 23, 42, 0.45);
@@ -2157,6 +2218,7 @@ html[data-reduced-transparency="true"] .glass {
   .dark {
     --gosslan-border: #8fa3c0;
     --gosslan-divider: #6b7f9e;
+    --gosslan-divider-strong: #b7c4d6;
     --gosslan-list-hover: rgba(248, 250, 252, 0.12);
     --gosslan-hover: rgba(248, 250, 252, 0.14);
     --gosslan-window-ring: rgba(248, 250, 252, 0.5);
@@ -2171,6 +2233,11 @@ html[data-reduced-transparency="true"] .glass {
   }
   .glass-3 {
     background: var(--gosslan-glass-3-fallback);
+  }
+  .gosslan-sticky-veil {
+    -webkit-backdrop-filter: none;
+    backdrop-filter: none;
+    background: var(--gosslan-list);
   }
 }
 
@@ -2187,6 +2254,11 @@ html[data-reduced-transparency="true"] .glass {
   }
   .glass-3 {
     background: var(--gosslan-glass-3-fallback);
+  }
+  .gosslan-sticky-veil {
+    -webkit-backdrop-filter: none;
+    backdrop-filter: none;
+    background: var(--gosslan-list);
   }
 }
 
