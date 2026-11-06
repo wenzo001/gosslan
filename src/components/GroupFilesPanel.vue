@@ -28,7 +28,7 @@ import ContextMenu from "@/components/ContextMenu.vue";
 import { revealItemInDir } from "@tauri-apps/plugin-opener";
 import StateBlock from "@/components/ui/StateBlock.vue";
 import PrimaryBtn from "@/components/ui/PrimaryBtn.vue";
-import { errorText } from "@/composables/useErrorText";
+import { detailText } from "@/composables/useErrorText";
 import {
   groupFilesKey,
   invalidateGroupFiles,
@@ -74,7 +74,7 @@ const loading = computed(
 const failed = computed(() => filesQuery.isError.value);
 const loadError = computed(() =>
   filesQuery.error.value
-    ? errorText(filesQuery.error.value, t("group.files.loadFail"))
+    ? detailText(filesQuery.error.value)
     : "",
 );
 

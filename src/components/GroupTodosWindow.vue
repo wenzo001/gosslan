@@ -32,7 +32,7 @@ import StateBlock from "@/components/ui/StateBlock.vue";
 import GroupTasksBoard from "@/components/GroupTasksBoard.vue";
 import ImageLightbox from "@/components/message/ImageLightbox.vue";
 import { useImagePreviewStore } from "@/stores/useImagePreview";
-import { errorText } from "@/composables/useErrorText";
+import { detailText } from "@/composables/useErrorText";
 import { currentLocale, t } from "@/i18n";
 import { createInitScope } from "@/utils/initScope";
 import type { TodoFocus } from "@/types";
@@ -113,7 +113,7 @@ async function applyTarget(next: string | null) {
     await chat.loadGroupTodos(next);
   } catch (e) {
     // 读失败必须留下可见出口：替换成错误态 + 重试，而不是让看板停在“暂无任务”。
-    loadError.value = errorText(e, t("todo.loadFail"));
+    loadError.value = detailText(e);
   }
   const focus = await api.takeGroupTodoFocus(next).catch(() => null);
   if (!focus) return;

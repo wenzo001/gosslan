@@ -4,7 +4,7 @@ import { api, type SettingsChanged } from "@/api";
 import { isPermissionGranted, requestPermission } from "@tauri-apps/plugin-notification";
 import { applyTheme } from "@/utils/color";
 import { sleep } from "@/utils/defer";
-import { errorText } from "@/composables/useErrorText";
+import { detailText } from "@/composables/useErrorText";
 import { useDebounceFn } from "@vueuse/core";
 import { createInitScope, type InitScope } from "@/utils/initScope";
 import { NARROW_LAYOUT_QUERY, isAndroid, isIOS, resolveMobileLayout } from "@/utils/platform";
@@ -278,11 +278,16 @@ export const useAppStore = defineStore("app", () => {
   }
 
   /**
-   * 错误提示统一出口：把异常转成用户能读懂的说明再展示，原始串只进 console。
+   * 错误提示统一出口：**只上屏结论句**（调用方给的 prefix，如「添加链接失败」）。
+   *
+   * A1（2026-11-06 裁决）：长说明不进顶层 toast —— 390 宽下折两三行会盖住页头/搜索框。
+   * 详细原因仍有两个去处：① 技术串经 `detailText(..., { log: true })` 写 console；
+   * ② 有页面内错误档的落点（收藏/链接/日志/设置网络分区）自己读 `detailText`。
    * 所有 `catch` 里的错误提示都应走这里，不要自己拼 `：${e}`（见 utils/errors.ts）。
    */
   function toastError(e: unknown, prefix: string) {
-    toast(errorText(e, prefix, { log: true }), "error");
+    detailText(e, { log: true });
+    toast(prefix, "error");
   }
 
   /**

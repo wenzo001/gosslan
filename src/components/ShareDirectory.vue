@@ -10,7 +10,7 @@ import BaseModal from "@/components/BaseModal.vue";
 import StateBlock from "@/components/ui/StateBlock.vue";
 import { Download, Folder, RefreshCw } from "lucide-vue-next";
 import { formatBytes } from "@/utils/format";
-import { errorText } from "@/composables/useErrorText";
+import { detailText } from "@/composables/useErrorText";
 import { shareTreeQueryOptions } from "@/utils/shareTreeQuery";
 import type { ShareEntry } from "@/types";
 
@@ -49,7 +49,7 @@ const loading = computed(
   () => !!friendId.value && (treeQuery.isPending.value || treeQuery.isFetching.value),
 );
 const error = computed(() =>
-  treeQuery.error.value ? errorText(treeQuery.error.value, t("share.loadFail"), { log: true }) : null,
+  treeQuery.error.value ? detailText(treeQuery.error.value, { log: true }) : null,
 );
 
 function load() {

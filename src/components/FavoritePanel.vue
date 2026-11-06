@@ -37,7 +37,7 @@ import BackArrow from "@/components/ui/BackArrow.vue";
 import DangerBtn from "@/components/ui/DangerBtn.vue";
 import SecondaryBtn from "@/components/ui/SecondaryBtn.vue";
 import StateBlock from "@/components/ui/StateBlock.vue";
-import { errorText } from "@/composables/useErrorText";
+import { detailText } from "@/composables/useErrorText";
 import { useClipboard } from "@/composables/useClipboard";
 import { fmtConversationTime } from "@/utils/time";
 import { INPUT_DEFER_MS } from "@/utils/defer";
@@ -185,7 +185,7 @@ async function load() {
     loadError.value = "";
   } catch (e) {
     failed.value = true;
-    loadError.value = errorText(e, t("favorite.loadFail"));
+    loadError.value = detailText(e);
   } finally {
     loading.value = false;
     loadedOnce.value = true;

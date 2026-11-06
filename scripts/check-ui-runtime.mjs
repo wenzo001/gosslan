@@ -14430,11 +14430,18 @@ async function runErrorText(cdp, url) {
 
   const d = await dict();
   const en = await mountFail("en-US");
-  const enWant = d.enJoin.replace("{prefix}", d.enTitle).replace("{detail}", d.enRule);
+  /*
+   * 正文只取「说明」那一半（`detailText`），不能再把动作前缀拼进正文 ——
+   * 错误块的标题已经是 `logs.loadFail` 了，正文再带一次就是「加载失败：加载失败」
+   * （2026-11-06 unslop 阶段 1 的 A4）。所以期望值从 `errors.joined` 换成 `errors.rule.*`，
+   * 并留一条反例自证：正文里**出现**标题那半句即红（改回 `errorText(e, t("logs.loadFail"))` 就会命中）。
+   */
+  const enWant = d.enRule;
   check("错误文案·英文档：技术错误落到界面上是词典拼出的那句英文（不是裸 key、不是原始串）",
     en.lang === "en-US" && !!en.mounted && en.mounted.ok === true
-    && en.lines[0] === d.enTitle && en.lines[1] === enWant,
-    "标题==logs.loadFail 且正文==errors.joined 拼出的句子",
+    && en.lines[0] === d.enTitle && en.lines[1] === enWant
+    && !String(en.lines[1] || "").includes(d.enTitle),
+    "标题==logs.loadFail、正文==errors.rule.system 且不重复标题",
     JSON.stringify({ lang: en.lang, ok: en.mounted && en.mounted.ok, lines: en.lines }));
   check("错误文案·英文档：错误块整块没有中日韩字，也没有后端串（os error / 文件路径 / 裸 key 都不许上屏）",
     en.lines.length > 0 && !en.lines.some((l) => CJK.test(l))
@@ -14443,11 +14450,13 @@ async function runErrorText(cdp, url) {
     "无 CJK、无 os error/路径、无 errors. 前缀", JSON.stringify(en.lines));
 
   const zh = await mountFail("zh-CN");
-  const zhWant = d.zhJoin.replace("{prefix}", d.zhTitle).replace("{detail}", d.zhRule);
+  const zhWant = d.zhRule;
   check("错误文案·中文档：同一条错误拼成词典那句中文 ⇒ 两个出口跟的是同一个语言事实源",
     zh.lang === "zh-CN" && !!zh.mounted && zh.mounted.ok === true
-    && zh.lines[0] === d.zhTitle && zh.lines[1] === zhWant,
-    "标题/正文等于 zh 词典拼出的句子", JSON.stringify({ lang: zh.lang, lines: zh.lines }));
+    && zh.lines[0] === d.zhTitle && zh.lines[1] === zhWant
+    && !String(zh.lines[1] || "").includes(d.zhTitle),
+    "标题==logs.loadFail、正文==errors.rule.system 且不重复标题",
+    JSON.stringify({ lang: zh.lang, lines: zh.lines }));
   check("错误文案：换语言确实换了内容（两档正文互不等，且都没漏原始串）",
     zh.lines[1] !== en.lines[1] && CJK.test(String(zh.lines[1] || ""))
     && !/os error/.test(String(zh.lines[1] || "")),
@@ -21681,8 +21690,8 @@ async function runImageZoom(cdp, url) {
  *
  * 迁移前是 store 里一个数组 + 每条一个 setTimeout：无上限、无去重、屏幕可能被叠满。
  * 现在数组/停留计时/堆叠/限流/live region 都归 Reka Toast，这里读真 DOM 与真按键：
- * 去重后只剩一条、超过 limit 的置 data-limited + inert 且不可见、Esc 按库默认收起 toast 栈
- * 且不吞按键、duration 到点自动移除（用 80ms 的短计时，不等 3/6 秒）。
+ * 去重后只剩一条且重复次数显示成「×2」、超过 limit=2 的置 data-limited + inert 且不可见、
+ * Esc 按库默认收起 toast 栈且不吞按键、duration 到点自动移除（用 80ms 的短计时，不等 3/6 秒）。
  */
 async function runToast(cdp, url) {
   await cdp.send("Page.bringToFront").catch(() => {});
@@ -21708,6 +21717,10 @@ async function runToast(cdp, url) {
       visible: visible.length,
       texts: visible.map((n) => String(n.textContent || '').trim()),
       statuses: visible.map((n) => n.getAttribute('data-status')),
+      counts: visible.map((n) => {
+        const badge = n.querySelector('[data-toast-count]');
+        return badge ? String(badge.textContent || '').trim() : '';
+      }),
       limited: nodes.filter((n) => n.hasAttribute('data-limited')).length,
       inertLimited: nodes.filter((n) => n.hasAttribute('data-limited')).every((n) => n.hasAttribute('inert')),
       alerts: document.querySelectorAll('[role="alert"]').length,
@@ -21723,9 +21736,9 @@ async function runToast(cdp, url) {
   await cdp.eval("window.__pushToast('重复失败', 'error'); window.__pushToast('重复失败', 'error')");
   await sleep(200);
   s = await read();
-  check("同一 kind+文案连推两次只留一条（id 去重，不再叠两遍同一句失败）",
-    s.visible === 1 && s.texts[0] === "重复失败" && s.statuses[0] === "error",
-    "visible=1 / 重复失败 / error", JSON.stringify(s));
+  check("同一 kind+文案连推两次只留一条，并在条上累加「×2」（A1 合并计数）",
+    s.visible === 1 && s.texts[0] === "重复失败×2" && s.statuses[0] === "error" && s.counts[0] === "×2",
+    "visible=1 / 重复失败×2 / error", JSON.stringify(s));
   check("失败提示有 live region（role=alert 的 announce 节点）",
     s.alerts >= 1, "role=alert >= 1", "alerts=" + s.alerts);
 
@@ -21737,9 +21750,9 @@ async function runToast(cdp, url) {
   }
   await sleep(250);
   s = await read();
-  check("超过 limit=3 的旧条目被置 data-limited 且 inert，并且真的不可见",
-    s.visible === 3 && s.limited >= 1 && s.inertLimited === true && s.texts.includes("信息四"),
-    "visible=3 / limited>=1 / inert / 最新一条在",
+  check("同屏最多 2 条：超出 limit=2 的旧条目被置 data-limited 且 inert，并且真的不可见",
+    s.visible === 2 && s.limited >= 1 && s.inertLimited === true && s.texts.includes("信息四"),
+    "visible=2 / limited>=1 / inert / 最新一条在",
     JSON.stringify(s));
 
   // Esc 走 Reka 默认：关掉 toast 栈。这里真正要钉的回归是**不许 preventDefault** ——
@@ -21763,8 +21776,8 @@ async function runToast(cdp, url) {
   s = await read();
   const escPrevented = await cdp.eval("window.__escPrevented");
   check("Esc 按库默认收起 toast 栈，且不吞按键（defaultPrevented=false）",
-    beforeEsc === 3 && s.visible === 0 && escPrevented === false,
-    "Esc 前 3 条 / 后 0 条 / 未被 preventDefault",
+    beforeEsc === 2 && s.visible === 0 && escPrevented === false,
+    "Esc 前 2 条 / 后 0 条 / 未被 preventDefault",
     JSON.stringify({ beforeEsc, s, escPrevented }));
 
   await cdp.eval("window.__toastManager.add({ id: 'short-lived', title: '短命', status: 'info', duration: 80, type: 'background', data: { kind: 'info' } })");

@@ -522,3 +522,55 @@ test("界面文案不喊口号也不写占位话（中英两册）", () => {
   const enHits = findToneViolations(enUS as unknown as Record<string, string>);
   assert.deepEqual(enHits, [], `en-US 文案有 ${enHits.length} 处触线：\n${enHits.join("\n")}`);
 });
+
+// ---------------- 错误拼装护栏：前缀自带「重试」后缀时不得再拼一次 ----------------
+
+const RETRY_SUFFIXES = ["请稍后重试", "Please try again later"];
+
+/** 返回自带重试后缀的前缀键；`dict` 只含被测语言。 */
+function findPrefixWithRetrySuffix(
+  keys: Iterable<string>,
+  dict: Record<string, string>,
+): string[] {
+  const hits: string[] = [];
+  for (const key of keys) {
+    const value = dict[key];
+    if (value && RETRY_SUFFIXES.some((suffix) => value.includes(suffix))) hits.push(key);
+  }
+  return hits;
+}
+
+test("errorText 的动作前缀不得自带「请稍后重试」（会与 errors.retry 拼成双后缀）", () => {
+  const root = join(import.meta.dirname, "../..");
+  const files: string[] = [];
+  const walk = (dir: string) => {
+    for (const entry of readdirSync(dir, { withFileTypes: true })) {
+      const full = join(dir, entry.name);
+      if (entry.isDirectory()) {
+        if (!/node_modules|dist|target/.test(entry.name)) walk(full);
+      } else if (/\.(vue|ts)$/.test(entry.name) && !entry.name.includes(".test.")) {
+        files.push(full);
+      }
+    }
+  };
+  walk(join(root, "src"));
+
+  const prefixKeys = new Set<string>();
+  for (const file of files) {
+    const text = readFileSync(file, "utf8");
+    for (const m of text.matchAll(/errorText\([^,]+,\s*t\("([^"]+)"/g)) prefixKeys.add(m[1]);
+    // store 的 toastError 内部也走这套拼装，前缀同样不能自带后缀
+    for (const m of text.matchAll(/toastError\([^,]+,\s*t\("([^"]+)"/g)) prefixKeys.add(m[1]);
+  }
+  // 空转自证：正则若失效，扫描集合会塌成 0，这条先红。
+  assert.ok(prefixKeys.size >= 10, `扫描到的 errorText 前缀只有 ${prefixKeys.size} 个，正则可能已空转`);
+
+  // 反例自证：故意把后缀写进前缀，检测口径必须能把它逮到。
+  const demo = { "demo.prefix": "扫描失败，请稍后重试" };
+  assert.deepEqual(findPrefixWithRetrySuffix(["demo.prefix"], demo), ["demo.prefix"]);
+
+  const zhBad = findPrefixWithRetrySuffix(prefixKeys, zhCN as unknown as Record<string, string>);
+  assert.deepEqual(zhBad, [], `zh-CN 这些前缀会拼出双后缀：${zhBad.join(", ")}`);
+  const enBad = findPrefixWithRetrySuffix(prefixKeys, enUS as unknown as Record<string, string>);
+  assert.deepEqual(enBad, [], `en-US 这些前缀会拼出双后缀：${enBad.join(", ")}`);
+});

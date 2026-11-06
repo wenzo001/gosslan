@@ -50,7 +50,7 @@ import {
 import { chatSearchQueryOptions, type ChatSearchParams } from "@/utils/chatSearchQuery";
 import { MAX_SEARCH_KEYWORD_CHARS } from "@/utils/validation";
 import StateBlock from "@/components/ui/StateBlock.vue";
-import { errorText } from "@/composables/useErrorText";
+import { detailText } from "@/composables/useErrorText";
 import type { ChatSearchGroup, ChatSearchMessage } from "@/types";
 import { previewBody } from "@/utils/messages";
 
@@ -169,7 +169,7 @@ const searching = computed(
 /** 检索失败的可见出口；有结果时保持结果，空屏时换成错误+重试。 */
 const searchError = computed(() =>
   searchQuery.isError.value
-    ? errorText(searchQuery.error.value, t("search.fail"))
+    ? detailText(searchQuery.error.value)
     : "",
 );
 

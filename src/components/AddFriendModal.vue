@@ -19,6 +19,8 @@ import { MessageCircle } from "lucide-vue-next";
 import { Check } from "@/components/ui/icons";
 import { X } from "@/components/ui/icons";
 import AvatarBox from "@/components/ui/AvatarBox.vue";
+import PrimaryBtn from "@/components/ui/PrimaryBtn.vue";
+import SecondaryBtn from "@/components/ui/SecondaryBtn.vue";
 
 const props = defineProps<{ open: boolean }>();
 const emit = defineEmits<{
@@ -260,7 +262,7 @@ async function toggleChannel(ch: ChannelStatus, next: boolean) {
         /* 下面统一提示 */
       }
     }
-    if (!ok) app.toastError(e, t("friend.add.channelFailed", { err: "" }));
+    if (!ok) app.toastError(e, t("friend.add.channelFailed"));
   } finally {
     channelBusy.value = null;
     // 打开通道后自动重扫一次 —— 否则用户还得再点一下「重新扫描」
@@ -370,10 +372,10 @@ async function add(peerId: string) {
 
     <div v-else-if="chat.peers.length === 0" class="py-4">
       <div class="text-center text-sm text-[var(--gosslan-text)]">{{ t("friend.add.noPeers") }}</div>
-      <p class="mx-auto mt-1.5 max-w-[42ch] text-center text-xs leading-relaxed text-[var(--gosslan-text-2)]">
+      <p class="mx-auto mt-1.5 max-w-[42ch] text-left text-xs leading-relaxed text-[var(--gosslan-text-2)]">
         {{ emptyReason }}
       </p>
-      <p class="mx-auto mt-1 max-w-[42ch] text-center text-xs leading-relaxed text-[var(--gosslan-text-2)] opacity-70">
+      <p class="mx-auto mt-1 max-w-[42ch] text-left text-xs leading-relaxed text-[var(--gosslan-text-2)]">
         {{ t("friend.add.noPeers.hint") }}
       </p>
 
@@ -433,14 +435,9 @@ async function add(peerId: string) {
         </p>
       </div>
 
-      <button
-        type="button"
-        class="tap-safe mt-3 w-full rounded-[var(--gosslan-radius-md)] bg-[var(--gosslan-bg)] py-2 text-sm text-[var(--gosslan-text)] transition"
-        :disabled="loading"
-        @click="scan"
-      >
+      <PrimaryBtn size="large" class="mt-3 w-full" :disabled="loading" @click="scan">
         {{ t("friend.add.rescan") }}
-      </button>
+      </PrimaryBtn>
     </div>
 
     <template v-else>
@@ -558,12 +555,8 @@ async function add(peerId: string) {
     </template>
 
     <!-- 复制邀请：常驻（空态与有节点时都能拿到），跨网段口头交换设备 ID 的唯一入口 -->
-    <button
-      type="button"
-      class="tap-safe mt-2 w-full rounded-[var(--gosslan-radius-md)] bg-[var(--gosslan-bg)] py-2 text-sm text-[var(--gosslan-text-2)] transition hover:bg-[var(--gosslan-hover)]"
-      @click="copyInvite"
-    >
+    <SecondaryBtn variant="outline" size="large" class="mt-2 w-full" @click="copyInvite">
       {{ t("friend.add.copyInvite") }}
-    </button>
+    </SecondaryBtn>
   </BaseModal>
 </template>
