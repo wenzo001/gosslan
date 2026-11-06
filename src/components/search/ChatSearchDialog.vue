@@ -513,7 +513,7 @@ function showSender(group: ChatSearchGroup): boolean {
     <!-- 结果：左会话 / 右命中消息（微信同款两栏） -->
     <div class="mt-3 flex min-h-0 flex-1 flex-col overflow-hidden rounded-[var(--gosslan-radius-lg)] border border-[var(--gosslan-divider)] desktop:md:h-[52vh] desktop:md:flex-none desktop:md:flex-row">
       <!-- 左栏 -->
-      <div class="flex max-h-[38%] w-full shrink-0 flex-col overflow-y-auto border-b border-[var(--gosslan-divider)] bg-[var(--gosslan-list)] desktop:md:max-h-none desktop:md:w-[240px] desktop:md:border-b-0 desktop:md:border-r">
+      <div class="flex max-h-[38%] w-full shrink-0 flex-col overflow-y-auto border-b border-[var(--gosslan-divider-strong)] desktop:md:max-h-none desktop:md:w-[240px] desktop:md:border-b-0 desktop:md:border-r">
         <p v-if="!keyword.trim()" class="px-3 py-6 text-center text-xs text-[var(--gosslan-text-2)]">
           {{ t("search.hint") }}
         </p>
@@ -562,7 +562,7 @@ function showSender(group: ChatSearchGroup): boolean {
       </div>
 
       <!-- 右栏 -->
-      <div class="flex min-w-0 flex-1 flex-col bg-[var(--gosslan-chat)]">
+      <div class="flex min-w-0 flex-1 flex-col">
         <div class="flex h-10 shrink-0 items-center gap-2 border-b border-[var(--gosslan-divider)] px-4">
           <span
             class="min-w-0 flex-1 truncate text-body text-[var(--gosslan-text)]"

@@ -346,9 +346,12 @@ const highlighted = computed(
  * 同一件事两套观感 ⇒ 统一到多选那档浅灰。定位是 1.6s 的瞬时高亮，正常态本来没有底色，
  * 所以"闪一下浅灰"足够显眼，不需要再靠颜色区分。
  */
+const tintOn = computed(
+  () => highlighted.value || (props.selectMode && props.selected),
+);
+
 const tintClass = computed(() => {
-  const on = highlighted.value || (props.selectMode && props.selected);
-  return on ? "bg-[var(--gosslan-chat)]" : "";
+  return tintOn.value ? "bg-[var(--gosslan-chat)]" : "";
 });
 
 /**
@@ -363,8 +366,7 @@ const tintClass = computed(() => {
  * （视觉结果与原来完全一致：就是 `--gosslan-hover` 铺在 `--gosslan-chat` 上的颜色。）
  */
 const tintStyle = computed(() => {
-  const on = highlighted.value || (props.selectMode && props.selected);
-  if (!on) return undefined;
+  if (!tintOn.value) return undefined;
   return {
     backgroundColor: "var(--gosslan-chat)",
     backgroundImage: "linear-gradient(var(--gosslan-hover), var(--gosslan-hover))",
@@ -1648,6 +1650,7 @@ async function copyFileToClipboard() {
       v-if="showTimeDivider"
       data-time-divider
       class="bg-[var(--gosslan-chat)] pt-3.5 pb-2 text-center text-caption text-[var(--gosslan-text-2)]"
+      :class="tintOn ? '' : 'ambient-canvas-child'"
     >
       {{ timeDividerText }}
     </div>
@@ -1658,6 +1661,7 @@ async function copyFileToClipboard() {
     <div
       v-if="showUnreadDivider"
       class="mt-3 mb-1.5 flex items-center gap-2 bg-[var(--gosslan-chat)] px-3"
+      :class="tintOn ? '' : 'ambient-canvas-child'"
     >
       <div class="h-px flex-1 bg-[var(--gosslan-primary-soft)]"></div>
       <span class="rounded-full bg-[var(--gosslan-primary-light)] px-2 py-0.5 text-caption text-[var(--gosslan-accent-ink)]">{{ t("msg.unreadDivider") }}</span>
@@ -1810,7 +1814,7 @@ async function copyFileToClipboard() {
           <PopoverTrigger as-child>
             <button
               data-reaction-entry
-              class="tap-safe kb-reveal absolute -right-11 bottom-0 z-20 flex h-6 w-6 items-center justify-center rounded-full border border-[var(--gosslan-border)] bg-[var(--gosslan-panel)] shadow-sm transition"
+              class="tap-safe kb-reveal frost absolute -right-11 bottom-0 z-20 flex h-6 w-6 items-center justify-center rounded-full transition"
               :class="[mine ? '-left-11' : '-right-11', reactionPickerOpen ? 'kb-reveal-on' : '']"
               :style="{ bottom: `${entryBottom}px` }"
               :title="t('msg.reactionAddEntry')"

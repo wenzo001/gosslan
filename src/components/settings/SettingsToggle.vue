@@ -44,10 +44,11 @@ const emit = defineEmits<{ (e: "update:modelValue", v: boolean): void }>();
     @update:model-value="emit('update:modelValue', $event === true)"
   >
     <SwitchThumb
-      class="absolute top-0.5 flex items-center justify-center rounded-full bg-white shadow transition-all"
+      class="absolute top-0.5 left-0.5 flex items-center justify-center rounded-full bg-white shadow transition-transform duration-[var(--gosslan-duration-fast)] ease-[var(--gosslan-ease)]"
       :class="[
         size === 'md' ? 'h-5 w-5' : 'h-4 w-4',
-        modelValue ? (size === 'md' ? 'left-[22px]' : 'left-[18px]') : 'left-0.5',
+        // 位移用 transform 而不是 left：§14.6 要求动画只碰合成属性（布局位移每帧都要重排）。
+        modelValue ? (size === 'md' ? 'translate-x-[20px]' : 'translate-x-4') : 'translate-x-0',
       ]"
     >
       <!-- 乐观更新期间的小转圈：开关已经按用户意图动了，这里只是"还在跑"的提示 -->

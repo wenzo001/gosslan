@@ -2864,3 +2864,438 @@ export function checkComposerSurface(chatWindowSrc: string, composerSrc: string)
 
   return out.sort((a, b) => a.line - b.line);
 }
+
+/* ============================================================================
+ * AC —— 背景动效下「该透却没透」的 chrome / float 面（2026-11-05）
+ *
+ * 用户第二次反馈：「背景好看，但聊天窗口里还有若干该透却不透的面板很突兀」，
+ * 并把范围扩到通讯录字母分组、悬浮件。判据来自：
+ *   · `docs/design-language/liquid-glass.md` §4.1/§5.2：chrome（标题栏/侧栏/输入区外框）
+ *     与 float（右键菜单/下拉/tooltip/Toast）**不许是实色承载面**；内容面（气泡/代码块/
+ *     输入框本体/设置卡片）才要求 alpha ≥0.95。
+ *   · `ambient-motion.md` AM-11：一片雾只许铺一层纱。嵌套容器走 `.ambient-canvas-child`
+ *     （清掉自己的实色底、不再叠第二层纱），而不是自己再画一层 `color-mix` 薄纱。
+ *   · 亮色下 `--gosslan-chat` / `--gosslan-panel` **就是 #ffffff**：给 chrome 挂这两个 token
+ *     等于在流动雾面上糊一块纯白板 —— 这正是用户肉眼看到的"突兀白块"。
+ *
+ * 为什么判类名而不是判像素：这是**静态**回归闸。像素读数在 `scripts/check-ui-runtime.mjs`
+ * 的 `--only=surfaces` 段里（8 组合 × 逐元素 + 截图像素采样），那一层负责"现在长什么样"，
+ * 这一层负责"下次谁把它改回去就红"。
+ * ========================================================================== */
+
+/** 硬编码纯白：用户点名要清的四种写法（含 `bg-white` 与 `#fff` / `#ffffff` / `rgb(255,255,255)`）。 */
+export const HARD_WHITE_PATTERNS: RegExp[] = [
+  /\bbg-white\b/,
+  /\bbg-\[#fff(?:fff)?\]/i,
+  /\bbackground(?:-color)?:\s*(?:#fff(?:fff)?|white)\b/i,
+  /\bbackground(?:-color)?:\s*rgb\(\s*255\s*,\s*255\s*,\s*255\s*\)/i,
+];
+
+/** 去掉注释再扫白：注释里解释「亮色下就是 #fff」不该被判红。 */
+function stripMarkupComments(src: string): string {
+  return src.replace(/<!--[\s\S]*?-->/g, "").replace(/\/\*[\s\S]*?\*\//g, "");
+}
+
+export interface AmbientChromeSources {
+  chatHeader: string;
+  chatWindow: string;
+  backToLatest: string;
+  friendProfile: string;
+  responsiveLayout: string;
+  messageItem: string;
+  conversationList: string;
+  searchDialog: string;
+  settingsGroup: string;
+  /** 全部引用 `--gosslan-divider-strong` 的 `.vue` 文件（仓库相对路径，换行分隔）。 */
+  dividerStrongUsers: string;
+  styleCss: string;
+}
+
+const AMBIENT_CHILD = "ambient-canvas-child";
+
+export function checkAmbientChromeSurfaces(src: AmbientChromeSources): GuardIssue[] {
+  const out: GuardIssue[] = [];
+  const classesOf = (m: RegExpMatchArray): string[] => (m[1] ?? "").split(/\s+/).filter(Boolean);
+
+  // AC-01：聊天顶部栏是 chrome（L2），必须参与薄纱，不许自己画实色。
+  const header = [...src.chatHeader.matchAll(/<div[^>]*\sclass="([^"]*)"/g)].find((m) =>
+    classesOf(m).includes("bg-[var(--gosslan-chat)]"),
+  );
+  if (!header) {
+    out.push({ line: 0, message: "AC-01：ChatHeader 里找不到 `bg-[var(--gosslan-chat)]` 的顶栏容器，无法确认它是否参与薄纱。" });
+  } else if (!classesOf(header).includes(AMBIENT_CHILD)) {
+    out.push({
+      line: lineAt(src.chatHeader, header.index ?? 0),
+      message:
+        "AC-01：聊天顶部栏缺少 `.ambient-canvas-child` —— 背景动效开启时它在透明的消息区上面会露成一条纯白横条" +
+        "（亮色下 --gosslan-chat 就是 #ffffff）。",
+    });
+  }
+
+  // AC-02：输入区外框同样属于 chrome；CS-01 管"有色调"，这里管"参与薄纱"。
+  const strip = [...src.chatWindow.matchAll(/<div[^>]*\sclass="([^"]*)"/g)].filter((m) => {
+    const c = classesOf(m);
+    return c.includes("shrink-0") && c.includes("px-4") && c.includes("pt-2");
+  });
+  for (const m of strip) {
+    if (!classesOf(m).includes(AMBIENT_CHILD)) {
+      out.push({
+        line: lineAt(src.chatWindow, m.index ?? 0),
+        message:
+          "AC-02：聊天输入区外框缺少 `.ambient-canvas-child` —— 即使底色有色调，它仍是全宽不透明层，" +
+          "动效开启时会在底部压出一道与消息区无关的色带（同屏还多一层纱，违反 AM-11）。",
+      });
+    }
+  }
+
+  // AC-03：悬浮件走 float 档（glass-2 / `.frost`），不许用内容面 token 当实底。
+  const btl = [...src.backToLatest.matchAll(/<button[^>]*\sclass="([^"]*)"/g)].find((m) =>
+    classesOf(m).includes("rounded-full"),
+  );
+  if (!btl) {
+    out.push({ line: 0, message: "AC-03：BackToLatestButton 找不到圆角悬浮按钮，无法确认它的档位。" });
+  } else {
+    const c = classesOf(btl);
+    if (!c.includes("frost")) {
+      out.push({
+        line: lineAt(src.backToLatest, btl.index ?? 0),
+        message: "AC-03：「回到最新」是 L3 悬浮件，必须用 `.frost`（float 档），当前不是。",
+      });
+    }
+    if (c.includes("bg-[var(--gosslan-panel)]") || c.some((x) => HARD_WHITE_PATTERNS.some((re) => re.test(x)))) {
+      out.push({
+        line: lineAt(src.backToLatest, btl.index ?? 0),
+        message: "AC-03：「回到最新」用了 `--gosslan-panel`（亮色下 #ffffff）当实底 —— 悬浮件不许是纯白实色。",
+      });
+    }
+  }
+
+  // AC-04：聊天窗口里"绝对定位 + 全圆角 + 面板实底"的药丸一律视为悬浮件，必须走 frost。
+  for (const m of src.chatWindow.matchAll(/<div[^>]*\sclass="([^"]*)"/g)) {
+    const c = classesOf(m);
+    const floatingPill = c.includes("absolute") && c.includes("rounded-full");
+    if (!floatingPill) continue;
+    if (c.includes("bg-[var(--gosslan-panel)]") || c.includes("bg-white")) {
+      out.push({
+        line: lineAt(src.chatWindow, m.index ?? 0),
+        message: "AC-04：聊天窗口里的悬浮药丸（absolute + rounded-full）用了面板实底，改 `.frost`。",
+      });
+    }
+  }
+
+  // AC-05：资料页整页是内容区外壳，必须让画布纱透上来（与 ChatWindow 根同一条约定）。
+  const profileRoot = [...src.friendProfile.matchAll(/<div[^>]*\sclass="([^"]*)"/g)].find((m) => {
+    const c = classesOf(m);
+    return c.includes("h-full") && c.includes("flex-col") && c.includes("bg-[var(--gosslan-chat)]");
+  });
+  if (!profileRoot) {
+    out.push({ line: 0, message: "AC-05：FriendProfile 找不到整页外壳，无法确认它是否参与薄纱。" });
+  } else if (!classesOf(profileRoot).includes(AMBIENT_CHILD)) {
+    out.push({
+      line: lineAt(src.friendProfile, profileRoot.index ?? 0),
+      message: "AC-05：通讯录资料页外壳缺少 `.ambient-canvas-child` —— 背景动效下整页会是纯白板。",
+    });
+  }
+
+  // AC-06：四个源里不许再出现硬编码纯白（注释除外）。
+  const named = [
+    ["ChatHeader.vue", src.chatHeader],
+    ["ChatWindow.vue", src.chatWindow],
+    ["BackToLatestButton.vue", src.backToLatest],
+    ["FriendProfile.vue", src.friendProfile],
+  ] as const;
+  for (const [name, s] of named) {
+    const body = stripMarkupComments(s);
+    for (const re of HARD_WHITE_PATTERNS) {
+      const m = re.exec(body);
+      if (m) {
+        out.push({
+          line: lineAt(body, m.index),
+          message: `AC-06：${name} 出现硬编码纯白（\`${m[0]}\`）—— 亮/暗两侧都不会跟随主题，改用 --gosslan-* token 或 .frost。`,
+        });
+      }
+    }
+  }
+
+  // AC-07：主壳（ResponsiveLayout）里凡是拿「亮色即纯白」的 token 铺满一区的容器，
+  // 要么自己就是画布纱（`.ambient-canvas`，main/aside），要么必须挂 `.ambient-canvas-child`。
+  // 漏挂的形态：动效开启后父层已是透明的，这一块仍是实色 ⇒ 就是用户看到的「突兀白块」
+  // （2026-11-05 第二轮：通讯录/会话列表之外，「我的」页与「新的朋友」页仍在裸奔）。
+  for (const m of src.responsiveLayout.matchAll(/<[a-zA-Z][^>]*\sclass="([^"]*)"/g)) {
+    const c = classesOf(m);
+    const whitish = c.includes("bg-[var(--gosslan-chat)]") || c.includes("bg-[var(--gosslan-list)]");
+    if (!whitish) continue;
+    const isVeil = c.some((x) => x === "ambient-canvas" || x === AMBIENT_CHILD);
+    if (!isVeil) {
+      out.push({
+        line: lineAt(src.responsiveLayout, m.index ?? 0),
+        message:
+          "AC-07：ResponsiveLayout 里这一区用 `--gosslan-chat` / `--gosslan-list` 铺底（亮色下 chat 就是 #ffffff），" +
+          "但既不是 `.ambient-canvas` 也没挂 `.ambient-canvas-child` —— 动效开启后会在透明的父层上露成实色块。",
+      });
+    }
+  }
+
+  // AC-08：消息流里的时间/未读分割线是 **chrome**，不能横贯消息区铺一条纯白带；
+  // 但它同时承担"选中底色只画在消息块里、不画到时间行"的职责（用户 2026-09-21），
+  // 所以只允许一种写法：`tintOn` 为真时保持实底、否则挂 `.ambient-canvas-child`。
+  const dividers: Array<[string, RegExp]> = [
+    ["showTimeDivider", /<div[^>]*\bv-if="showTimeDivider"[^>]*>/g],
+    ["showUnreadDivider", /<div[^>]*\bv-if="showUnreadDivider"[^>]*>/g],
+  ];
+  for (const [name, re] of dividers) {
+    for (const m of src.messageItem.matchAll(re)) {
+      if (!m[0].includes("ambient-canvas-child")) {
+        out.push({
+          line: lineAt(src.messageItem, m.index ?? 0),
+          message:
+            `AC-08：消息流分割线（\`${name}\`）没有按 \`tintOn\` 条件挂 \`.ambient-canvas-child\` —— ` +
+            "动效开启时它会在透明的消息区上横贯一条纯白带。",
+        });
+      }
+    }
+  }
+
+  // AC-09：通讯录字母分组 sticky 条必须"半透明 + 雾化"，且四档降级都退回实底。
+  // 单独立判据的原因：这条条子不带正文、又必须压在滚动行上，最容易被"顺手改成纯白"
+  // （丢掉层次）或"顺手改成全透明"（行滚上来时字母糊掉）各改一次。
+  const veilRules = [...src.styleCss.matchAll(/\.gosslan-sticky-veil\s*\{/g)];
+  if (veilRules.length < 5) {
+    out.push({
+      line: 0,
+      message:
+        `AC-09：style.css 里 \`.gosslan-sticky-veil\` 规则只有 ${veilRules.length} 条，至少要 1 条基线 + 4 条降级` +
+        "（减少透明 / 应用内开关 / 高对比度 / @supports not）——少一条就意味着某一档下它会变成透明看不见。",
+    });
+  } else {
+    const at = veilRules[0].index ?? 0;
+    const base = src.styleCss.slice(at, at + 420);
+    if (
+      !/color-mix\(in srgb,\s*var\(--gosslan-list\)\s*72%,\s*transparent\)/.test(base) ||
+      !/blur\(8px\)/.test(base)
+    ) {
+      out.push({
+        line: lineAt(src.styleCss, at),
+        message: "AC-09：sticky 条的基线不是「list 72% + blur(8px)」——改阈值前先回到设计文档里的三档读数。",
+      });
+    }
+    for (let i = 1; i < veilRules.length; i += 1) {
+      const pos = veilRules[i].index ?? 0;
+      const seg = src.styleCss.slice(pos, pos + 320);
+      if (!/background:\s*var\(--gosslan-list\)/.test(seg) || !/backdrop-filter:\s*none/.test(seg)) {
+        out.push({
+          line: lineAt(src.styleCss, pos),
+          message:
+            "AC-09：sticky 条有一条降级没有退回 `background: var(--gosslan-list)` + `backdrop-filter: none` —— " +
+            "降级档会变成半透明无底，字母压在滚动行上不可读。",
+        });
+      }
+    }
+  }
+
+  // AC-10：字母分组条本身不许再挂 list/chat 实底（那会把 AC-09 的 72% 直接盖成 100%）。
+  const stickyEl = [...src.conversationList.matchAll(/<div[^>]*\sclass="([^"]*)"/g)].find((m) =>
+    classesOf(m).includes("sticky"),
+  );
+  if (!stickyEl) {
+    out.push({ line: 0, message: "AC-10：ConversationList 里找不到 `sticky` 的字母分组条，无法确认它的档位。" });
+  } else {
+    const cls = classesOf(stickyEl);
+    if (!cls.includes("gosslan-sticky-veil")) {
+      out.push({
+        line: lineAt(src.conversationList, stickyEl.index ?? 0),
+        message: "AC-10：字母分组条没有 `.gosslan-sticky-veil` —— 背景动效下它会是一条纯白实条。",
+      });
+    }
+    if (
+      cls.includes("bg-[var(--gosslan-list)]") ||
+      cls.includes("bg-[var(--gosslan-chat)]") ||
+      HARD_WHITE_PATTERNS.some((re) => re.test(cls.join(" ")))
+    ) {
+      out.push({
+        line: lineAt(src.conversationList, stickyEl.index ?? 0),
+        message: "AC-10：字母分组条自己挂了实底 token —— 会把 `.gosslan-sticky-veil` 的 72% 盖成 100%。",
+      });
+    }
+  }
+
+  // AC-11：搜索对话框左右两列必须"透明 + 一条分隔线"。
+  // 两列各挂 list/chat 实底时，外层 `.glass-3` 的雾等于被自己盖掉两层。
+  if (
+    src.searchDialog.includes("bg-[var(--gosslan-list)]") ||
+    src.searchDialog.includes("bg-[var(--gosslan-chat)]")
+  ) {
+    out.push({
+      line: 0,
+      message: "AC-11：ChatSearchDialog 里又出现 `bg-[var(--gosslan-list|chat)]` —— 两列退回实底会把外层 glass-3 的雾盖掉。",
+    });
+  }
+  if (!src.searchDialog.includes("desktop:md:border-r")) {
+    out.push({
+      line: 0,
+      message: "AC-11：两列去实底后必须留一根分隔线（`desktop:md:border-r` 找不到），否则层次不可辨。",
+    });
+  }
+
+  // AC-12：设置卡片是**内容承载面**，刻意保持实色（`docs/design-language/liquid-glass.md` §4.2 已写明）。
+  // 这条判据的存在是为了拦住下一次"该透却没透"式的误改。
+  if (!src.settingsGroup.includes("bg-[var(--gosslan-panel)]")) {
+    out.push({
+      line: 0,
+      message:
+        "AC-12：设置卡片（SettingsGroup）不再是实色面板 —— 它是内容承载面，刻意保持实色，不是漏改。要动它先改 liquid-glass.md 的口径。",
+    });
+  }
+
+  // AC-13：移动端底部 TabBar 走 float 档（`.frost`），并保留"半透明无 blur"降级开关。
+  const tabbar = [...src.responsiveLayout.matchAll(/<nav[^>]*\sclass="([^"]*)"/g)].find((m) =>
+    classesOf(m).includes("safe-bottom"),
+  );
+  if (!tabbar) {
+    out.push({ line: 0, message: "AC-13：ResponsiveLayout 里找不到 `safe-bottom` 的底部 TabBar。" });
+  } else {
+    const cls = classesOf(tabbar);
+    if (!cls.includes("frost")) {
+      out.push({
+        line: lineAt(src.responsiveLayout, tabbar.index ?? 0),
+        message: "AC-13：底部 TabBar 没走 `.frost` —— 它会是一整条压在滚动内容上的实色板。",
+      });
+    }
+    if (
+      cls.includes("bg-[var(--gosslan-panel)]") ||
+      HARD_WHITE_PATTERNS.some((re) => re.test(cls.join(" ")))
+    ) {
+      out.push({
+        line: lineAt(src.responsiveLayout, tabbar.index ?? 0),
+        message: "AC-13：底部 TabBar 自己挂了实色底（`--gosslan-panel` 亮色即 #ffffff），把 float 档盖成了实板。",
+      });
+    }
+  }
+  // 注意：匹配必须是**规则行**，不能只匹配字面量——注释里也写着这串字符，
+  // 只按字面量查会"检查还在跑但查不到规则"，属于空转。
+  if (!/^html\[data-frost="off"\]\s*\.frost\s*\{/m.test(src.styleCss)) {
+    out.push({
+      line: 0,
+      message: "AC-13：`html[data-frost=\"off\"]` 的「半透明无 blur」开关丢了 —— 真机长帧时没有退路。",
+    });
+  }
+
+  // AC-14：搜索两列的分隔线走**专用**强分隔线 token（两列都透明，发丝线撑不起层次），
+  // 但全站 `--gosslan-divider` 必须保持发丝线原值 —— 那处一次改动会波及上百处行分隔。
+  const strongDefs = [...src.styleCss.matchAll(/^\s*--gosslan-divider-strong:\s*([^;]+);/gm)];
+  if (strongDefs.length < 2) {
+    out.push({
+      line: 0,
+      message:
+        `AC-14：\`--gosslan-divider-strong\` 只有 ${strongDefs.length} 处定义（亮/暗各至少要一处）—— ` +
+        "缺一档时那个主题下的分栏线会掉回继承值。",
+    });
+  } else if (strongDefs[0][1].trim() === strongDefs[1][1].trim()) {
+    out.push({
+      line: lineAt(src.styleCss, strongDefs[1].index ?? 0),
+      message: "AC-14：`--gosslan-divider-strong` 的亮/暗两档同值 —— 暗底上那档会掉到 3:1 以下。",
+    });
+  }
+  const hairlineDefs = [...src.styleCss.matchAll(/^\s*--gosslan-divider:\s*([^;]+);/gm)];
+  if (
+    hairlineDefs.length < 2 ||
+    hairlineDefs[0][1].trim() !== "#e2e8f0" ||
+    hairlineDefs[1][1].trim() !== "#28344a"
+  ) {
+    out.push({
+      line: 0,
+      message:
+        "AC-14：全站发丝线（`--gosslan-divider`）的亮/暗原值（#e2e8f0 / #28344a）被动了 —— " +
+        "这次只允许搜索两列用专用 token，别把上百处行分隔一次性抬成表格线。",
+    });
+  }
+  const colLeft = [...src.searchDialog.matchAll(/<div[^>]*\sclass="([^"]*)"/g)].find((m) =>
+    classesOf(m).includes("desktop:md:border-r"),
+  );
+  if (!colLeft) {
+    out.push({ line: 0, message: "AC-14：ChatSearchDialog 里找不到两列分隔线（`desktop:md:border-r`）。" });
+  } else if (!classesOf(colLeft).includes("border-[var(--gosslan-divider-strong)]")) {
+    out.push({
+      line: lineAt(src.searchDialog, colLeft.index ?? 0),
+      message: "AC-14：搜索两列的分隔线没用 `--gosslan-divider-strong` —— 发丝线在两列都透明时只有 1.16:1。",
+    });
+  }
+  const strongUsers = src.dividerStrongUsers.split("\n").filter(Boolean);
+  const strayUsers = strongUsers.filter((p) => !p.endsWith("components/search/ChatSearchDialog.vue"));
+  if (strongUsers.length === 0 || strayUsers.length > 0) {
+    out.push({
+      line: 0,
+      message:
+        "AC-14：`--gosslan-divider-strong` 只允许在 ChatSearchDialog 的两列分隔处使用" +
+        `（当前引用：${strongUsers.join(", ") || "无"}）—— 别扩散成全站分隔线。`,
+    });
+  }
+
+  return out.sort((a, b) => a.line - b.line);
+}
+
+// ---------------- IP-01 图片预览：圆角裁剪面必须贴住内容角，且不许写死深色垫底 ----------------
+
+/**
+ * 判据来源（用户 2026-11-05「收藏页里的图片缩略图，四个圆角处是黑的」）：
+ *
+ * 图片字节里可能自带一圈近黑垫底 —— 截图工具把"圆角窗口 + 深色底"一起拍进了 PNG，
+ * alpha 全 255，四角 ≈ rgb(36,36,36)。只要 `rounded` 的**裁剪面**落在图片像素角上，
+ * 这圈垫底就被整圈切掉；一旦元素框比内容框大（`w-full` + `object-contain` 就是这种），
+ * 圆角落在元素框角上、离内容角几百像素（实测 910×288 的元素框里内容只有 423×288 居中），
+ * 一个像素都裁不到 ⇒ 源图自带的暗角原样露在白底上。
+ *
+ * 子判据：
+ *   ① `object-contain` 的 `<img>` 不许同时带 `w-full` —— 它把元素框撑到容器满宽，
+ *      圆角裁剪面与内容角脱开（这正是本缺陷的成因，不是审美偏好）；
+ *   ② 同一支 `<img>` 必须带 `rounded-[var(--gosslan-…radius-…)]` —— 裁剪只由它负责
+ *      （消息气泡沿用 `--gosslan-bubble-radius`，与它 18px 的外框同档；其余用 `--gosslan-radius-lg`）。
+ *      注意元素框贴住内容后，半径要比**源图自带圆角**大一档，否则重采样模糊带会露出来
+ *      （实测源图暗垫 ≈1.5% 宽 = 423px 上 6.3px，md 8px 只剩 0.5px 余量仍露，lg 12px 才有 2.3px 余量）。
+ *   ③ `<img>` 不许把垫底写成字面深色（`#000` / `black` / `rgba(0,0,0,…)`）——
+ *      它不随主题变化，亮色主题下就是一块黑色底。
+ *
+ * 为什么钉在 `object-contain` 上而不是所有 `<img>`：`object-cover` 的元素框被容器填满、
+ * 内容也铺满整框，不存在"框角离内容角几百像素"这个前提。
+ */
+const LITERAL_DARK_PAD_RE = /(?:bg-black|bg-\[(?:color:)?(?:#[0]{3}(?:[0]{3})?|black)\b|#[0]{3}(?:[0]{3})?(?![0-9a-f])|\brgba?\(\s*0\s*,\s*0\s*,\s*0\s*[,)])/i;
+
+export function checkContainImageClip(detailSrc: string, name: string): GuardIssue[] {
+  const out: GuardIssue[] = [];
+  let contain = 0;
+  for (const t of findImgTags(detailSrc)) {
+    const line = lineAt(detailSrc, t.start);
+    const hasContain = /\bobject-contain\b/.test(t.text);
+    if (hasContain) {
+      contain += 1;
+      // 必须按 class **整词**判：`max-w-full` 里也含 "w-full"，用 \b 会把合规的判成违规。
+      if (/(?:^|[\s"'])w-full(?![A-Za-z0-9_-])/.test(t.text)) {
+        out.push({
+          line,
+          message: `${name}：\`object-contain\` 的 <img> 又带上了 \`w-full\` —— 元素框会被撑成整栏宽、圆角裁剪面离开内容角，源图自带的深色圆角会露出来。改用 \`mx-auto block max-w-full\` 让元素框贴住内容。`,
+        });
+      }
+      if (!/rounded-\[var\(--gosslan-[a-z-]*radius/.test(t.text)) {
+        out.push({
+          line,
+          message: `${name}：\`object-contain\` 的 <img> 缺 \`rounded-[var(--gosslan-…radius-…)]\` —— 圆角裁剪必须由这一处负责。`,
+        });
+      }
+    }
+    const pad = t.text.match(LITERAL_DARK_PAD_RE);
+    if (pad) {
+      out.push({
+        line,
+        message: `${name}：<img> 的垫底写死成字面深色 \`${pad[0]}\` —— 主题切换时它不跟着变，亮色主题下就是一块黑底。垫底只能来自 \`var(--gosslan-…)\` 或干脆不写（露容器的底色）。`,
+      });
+    }
+  }
+  // 反例自证：锚点被删或改名时这条判据不能空转静默通过。
+  if (contain !== 1) {
+    out.push({
+      line: 0,
+      message: `${name}：应恰好有 1 支 \`object-contain\` 的 <img>（实际 ${contain} 支）—— 判据锚点变了，请同步改锚点而不是让它空转。`,
+    });
+  }
+  return out.sort((a, b) => a.line - b.line);
+}

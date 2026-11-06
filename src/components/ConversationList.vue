@@ -625,7 +625,7 @@ useEventListener(document, "click", closeFriendMenu);
         <template v-else>
           <template v-for="g in friendGroups" :key="g.letter">
             <div
-              class="sticky top-0 z-10 bg-[var(--gosslan-list)] px-3 py-1 text-caption font-medium text-[var(--gosslan-text-2)]"
+              class="gosslan-sticky-veil sticky top-0 z-10 px-3 py-1 text-caption font-medium text-[var(--gosslan-text-2)]"
             >
               {{ g.letter }}
             </div>

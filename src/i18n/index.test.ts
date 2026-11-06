@@ -455,3 +455,70 @@ test("中继探测档位的三个名字在 Rust / TS / 两种语言里是同一�
     }
   }
 });
+
+// ---------------- 文案语气护栏：不喊口号、不写占位话（unslop 判据） ----------------
+
+/**
+ * 界面文案的四类硬约束，来自 unslop 的 Copy 判据（见 docs/design-language/sources.md）：
+ *
+ * 1. 不带感叹号 —— 界面陈述事实，不替用户激动；
+ * 2. 不写「暂无」占位 —— 空态要写清「还没有什么」，而不是一个通用占位词；
+ * 3. 不用营销空话（轻松 / 一键 / 搞定 / 极致 / 丝滑 / 魔法 …）；
+ * 4. 英文同样不许 effortless / seamless / one-click / magical …
+ *
+ * 为什么放在单测里：这些是**文字层面的静态判据**，没有运行时探针能证明；
+ * 写在 i18n 词典旁边，改文案的人下一步就会跑到这条红。
+ */
+const TONE_RULES = [
+  { id: "exclamation", re: /[!！]/, hint: "删掉感叹号：界面陈述事实，不替用户激动" },
+  { id: "placeholder", re: /暂无/, hint: "写清「还没有什么」，不要用「暂无」占位" },
+  {
+    id: "filler",
+    re: /轻松|一键|搞定|极致|丝滑|魔法|黑科技|完美|畅享|随心所欲|尽在指尖/,
+    hint: "换成具体动作或状态，删掉营销形容词",
+  },
+  {
+    id: "en-filler",
+    re: /\b(effortless|seamless|one-click|magical|revolutionary|game-changing|supercharge|unleash|elevate|ultimate)\b/i,
+    hint: "replace the marketing adjective with the concrete action",
+  },
+];
+
+/** 返回 `<key> [<规则>] <修法> :: <原文>`，空数组合格。 */
+function findToneViolations(dict: Record<string, string>): string[] {
+  const hits: string[] = [];
+  for (const [key, value] of Object.entries(dict)) {
+    for (const rule of TONE_RULES) {
+      if (rule.re.test(value)) hits.push(`${key} [${rule.id}] ${rule.hint} :: ${value}`);
+    }
+  }
+  return hits;
+}
+
+test("界面文案不喊口号也不写占位话（中英两册）", () => {
+  // 反例自证：去掉任何一条规则，下面四条断言先红 —— 证明判据真的在跑，不是空转。
+  const badZh = { "demo.tone": "一键搞定！暂无数据" };
+  assert.ok(
+    findToneViolations(badZh).some((h) => h.includes("demo.tone [exclamation]")),
+    "感叹号规则失效：`一键搞定！` 没被检出",
+  );
+  assert.ok(
+    findToneViolations(badZh).some((h) => h.includes("demo.tone [placeholder]")),
+    "占位规则失效：`暂无` 没被检出",
+  );
+  assert.ok(
+    findToneViolations(badZh).some((h) => h.includes("demo.tone [filler]")),
+    "中文空话规则失效：`一键/搞定` 没被检出",
+  );
+  const badEn = { "demo.tone": "Seamless one-click magic" };
+  assert.ok(
+    findToneViolations(badEn).some((h) => h.includes("demo.tone [en-filler]")),
+    "英文空话规则失效：`seamless/one-click` 没被检出",
+  );
+
+  // 正控：真实词典必须干净。红的时候把旧文案改掉，不要往规则里加白名单。
+  const zhHits = findToneViolations(zhCN as unknown as Record<string, string>);
+  assert.deepEqual(zhHits, [], `zh-CN 文案有 ${zhHits.length} 处触线：\n${zhHits.join("\n")}`);
+  const enHits = findToneViolations(enUS as unknown as Record<string, string>);
+  assert.deepEqual(enHits, [], `en-US 文案有 ${enHits.length} 处触线：\n${enHits.join("\n")}`);
+});

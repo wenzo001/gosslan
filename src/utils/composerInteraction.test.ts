@@ -106,7 +106,9 @@ test("回到最新按钮纯圆无文字且水平居中（回退成文字胶囊�
   // 2026-11-05 按钮从 ChatWindow 抽成组件（可见性改由几何现算）。
   // 判据搬到组件里，**同时**断言 ChatWindow 真的在用这个组件 —— 否则这条检查会退化成
   // "扫一个已经没人渲染的文件"，空转还永远是绿的。
-  const marker = backToLatestSrc.indexOf('class="absolute bottom-4 left-1/2');
+  // 2026-11-05 玻璃口径落地：悬浮件从「面板实底」改成 `.frost`（glass-2），
+  // 锚点随类名一起搬；判据（纯圆 / 水平居中 / 无文字 / 热区不扩）一个字都没放宽。
+  const marker = backToLatestSrc.indexOf('class="frost absolute bottom-4 left-1/2');
   assert.ok(marker >= 0, "按钮必须存在（锚点缺失即失败）");
   const open = backToLatestSrc.lastIndexOf("<button", marker);
   const close = backToLatestSrc.indexOf("</button>", marker);

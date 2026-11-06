@@ -712,7 +712,7 @@ async function confirmDelete() {
         <!-- ⚠️ 这里**不加** `desktop:sm:border-r`：两栏靠底色分栏（列表底 vs 详情白），与聊天/通讯录页一致；
              加一条竖线反而是别的页面没有的东西（用户 2026-09-20：「收藏页两栏中间多个分割线」）。 -->
         <div
-          class="min-h-0 min-w-0 bg-[var(--gosslan-list)] desktop:sm:flex desktop:sm:w-[var(--gosslan-list-w)] desktop:sm:flex-none desktop:sm:flex-col"
+          class="ambient-canvas-child min-h-0 min-w-0 bg-[var(--gosslan-list)] desktop:sm:flex desktop:sm:w-[var(--gosslan-list-w)] desktop:sm:flex-none desktop:sm:flex-col"
           :class="app.isMobile && active ? 'hidden' : 'flex flex-1 flex-col'"
         >
           <div class="flex shrink-0 flex-col gap-2 px-2 pt-2">
@@ -829,7 +829,7 @@ async function confirmDelete() {
                （用户 2026-09-20「头部标题的返回箭头也不一样」，统一走 BackArrow 按平台适配）。 -->
           <header
             v-if="app.isMobile"
-            class="flex shrink-0 items-center gap-2 border-b border-[var(--gosslan-divider)] bg-[var(--gosslan-panel)] px-3"
+            class="ambient-canvas-child flex shrink-0 items-center gap-2 border-b border-[var(--gosslan-divider)] bg-[var(--gosslan-panel)] px-3"
             :style="{ height: 'var(--gosslan-header-h)' }"
           >
             <button
@@ -857,10 +857,24 @@ async function confirmDelete() {
               {{ active.content }}
             </div>
 
+            <!-- ⚠️ 这里**不能**用 `w-full` + `object-contain`：`w-full` 把 img 元素框撑成整栏宽
+                 （实测 910×288），而 `object-contain` 把真实像素缩成 423×288 居中；
+                 元素上的圆角在**元素框角**上、离内容角 245px，一个像素都裁不到。
+                 结果就是预览图自带的那圈近黑角（源图字节 alpha 全 255、四角 ≈rgb(36,36,36)，
+                 是截图工具把"圆角窗口 + 深色底"一起拍进去了）原样露出来 ——
+                 用户 2026-11-05「收藏页缩略图四个圆角处是黑的」。
+                 修法：让元素框**贴着内容**（去掉 `w-full`、`mx-auto` 居中），
+                 于是 `rounded` 的裁剪面与内容角重合，圆角裁剪只有这一处。
+                 ⚠️ 半径必须比源图自带圆角**大一档**：源图暗垫圆角 ≈1.5% 宽（423px 显示宽上 ≈6.3px），
+                 md（8px）只比它大 1.7px，源图自己的抗锯齿 + 2000→423 重采样的模糊带仍会露出来
+                 （实测四角残留 69/109）；lg（12px）把这条带整圈切掉（实测 0.8/1.9）。
+                 亮/暗主题都不需要额外垫底：裁掉的部分露出的是详情栏自己的底色。
+                 「源图自带暗垫 / 自带圆角」属外部素材问题（不是回归），比例边界与判据见
+                 docs/design-language/README.md 附录 B。 -->
             <img
               v-else-if="active.kind === 'image'"
               :src="thumbs[active.id] ?? ''"
-              class="max-h-72 w-full cursor-zoom-in rounded-[var(--gosslan-radius-md)] object-contain"
+              class="mx-auto block max-h-72 max-w-full cursor-zoom-in rounded-[var(--gosslan-radius-lg)] object-contain"
               :alt="displayName(active)"
               :title="t('favorite.viewImage')"
               role="button"

@@ -29,7 +29,7 @@ const emit = defineEmits<{ (e: "press"): void }>();
   <button
     type="button"
     data-back-to-latest
-    class="absolute bottom-4 left-1/2 z-10 flex h-9 w-9 -translate-x-1/2 items-center justify-center rounded-full border border-[var(--gosslan-border)] bg-[var(--gosslan-panel)] text-[var(--gosslan-text)] shadow-lg transition active:scale-[0.97]"
+    class="frost absolute bottom-4 left-1/2 z-10 flex h-9 w-9 -translate-x-1/2 items-center justify-center rounded-full text-[var(--gosslan-text)] transition active:scale-[0.97]"
     :class="
       visible
         ? 'gosslan-back-to-latest pointer-events-auto opacity-100 hover:bg-[var(--gosslan-hover)]'

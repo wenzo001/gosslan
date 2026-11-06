@@ -1719,6 +1719,7 @@ function retryHistory() {
 <template>
   <div
     ref="chatPanelRef"
+    data-lang-menu-boundary
     class="ambient-canvas-child relative flex h-full flex-col bg-[var(--gosslan-chat)]"
     :class="{ 'gosslan-shake': shaking }"
     @animationend="onShakeAnimEnd"
@@ -1851,7 +1852,7 @@ function retryHistory() {
          而不是挤在同一行 —— 否则置顶一多，置顶条自己就把消息区吃掉了。 -->
     <div
       v-if="isGroup && pinnedItems.length"
-      class="flex shrink-0 flex-col border-b border-[var(--gosslan-divider)] bg-[var(--gosslan-chat)]"
+      class="ambient-canvas-child flex shrink-0 flex-col border-b border-[var(--gosslan-divider)] bg-[var(--gosslan-chat)]"
     >
       <div class="flex items-center gap-2 px-4 py-1.5">
         <Pin class="h-3.5 w-3.5 shrink-0 text-[var(--gosslan-text-2)]" aria-hidden="true" />
@@ -2061,7 +2062,7 @@ function retryHistory() {
         <!-- 翻页失败：顶部一条可重试提示（不占列表高度，不打断滚动） -->
         <div
           v-if="historyError"
-          class="absolute inset-x-0 top-2 z-10 mx-auto flex w-fit max-w-[90%] items-center gap-2 rounded-full border border-[var(--gosslan-border)] bg-[var(--gosslan-panel)] px-3 py-1.5 text-xs text-[var(--gosslan-text-2)] shadow-lg"
+          class="frost absolute inset-x-0 top-2 z-10 mx-auto flex w-fit max-w-[90%] items-center gap-2 rounded-full px-3 py-1.5 text-xs text-[var(--gosslan-text-2)]"
           role="status"
         >
           <span class="truncate" :title="t('chat.history.loadFail')">{{ t("chat.history.loadFail") }}</span>
@@ -2079,7 +2080,7 @@ function retryHistory() {
         <!-- 翻页进行中：只在超过 180ms 才出现，避免快 IPC 闪一下 -->
         <div
           v-else-if="historyShowLoading"
-          class="absolute inset-x-0 top-2 z-10 mx-auto w-fit rounded-full bg-[var(--gosslan-panel)] px-3 py-1 text-xs text-[var(--gosslan-text-2)] shadow"
+          class="frost absolute inset-x-0 top-2 z-10 mx-auto w-fit rounded-full px-3 py-1 text-xs text-[var(--gosslan-text-2)]"
           role="status"
         >
           {{ t("chat.history.loading") }}
@@ -2117,7 +2118,7 @@ function retryHistory() {
          "横贯全宽的纯白长条"，输入卡的圆角与 1px 描边也一并被吃掉（2026-11-05 真机反馈）。
          选 bg 而不是 field：暗色下 bg = chat = #0f172a（不会像 field #2a3a52 那样在底部抬起一道亮带），
          亮色下 bg = #f1f5f9 与消息区薄纱后的杏灰只差个位数。 -->
-    <div class="shrink-0 bg-[var(--gosslan-bg)] px-4 pt-2" :style="{ paddingBottom: 'calc(env(safe-area-inset-bottom) + 8px)' }">
+    <div class="ambient-canvas-child shrink-0 bg-[var(--gosslan-bg)] px-4 pt-2" :style="{ paddingBottom: 'calc(env(safe-area-inset-bottom) + 8px)' }">
       <!-- 多选态：输入区被操作条**替换**（微信同款）。
            高度固定 4rem，与 Composer 的最小高度一致 —— 否则进出多选时消息区高度跳变，
            虚拟列表会跟着滚一下。 -->
@@ -2325,7 +2326,7 @@ function retryHistory() {
       class="pointer-events-none absolute inset-2 z-30 flex items-center justify-center rounded-[var(--gosslan-radius-lg)] border-2 border-dashed border-[var(--gosslan-primary)] bg-[var(--gosslan-primary-light)]"
     >
       <span
-        class="rounded-[var(--gosslan-radius-md)] bg-[var(--gosslan-panel)] px-3 py-2 text-body text-[var(--gosslan-text)] shadow-lg"
+        class="frost rounded-[var(--gosslan-radius-md)] px-3 py-2 text-body text-[var(--gosslan-text)]"
       >
         {{ isGroup ? t("chat.dropToGroup") : t("chat.dropToSend") }}
       </span>

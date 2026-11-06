@@ -79,3 +79,37 @@ grep -rn "bg-\[var(--gosslan-bg)\]\|bg-\[var(--gosslan-field)\]" src/components 
 ```
 
 计数会随代码变化；引用具体数字时以当次运行结果为准。
+
+## 7. unslop（方法论来源）
+
+[unslop](https://github.com/heydamir/unslop) 是 Damir Sokolovsky（[@heydamir](https://x.com/heydamir)）写的一套
+“去掉 AI 生成感”的界面判据，以 agent skill 形式分发给编码助手。它不给配色表，给的是一份**可检查的清单**：
+4px 网格、同类元素同尺寸同间距、一条 ease、一个 accent、发丝线而不是厚阴影、不画通用空态插画、
+文案不喊口号。这对 Gosslan 有用，因为本仓已经有自己的材料语言（液态玻璃三档、色雾、§11.3 动效硬约束），
+缺的是“哪些细节会让界面显出一眼生成感”的判据。
+
+**许可证：CC BY 4.0。** 本文只引用它的判据并逐条改写成本仓的落点，没有复制原文；署名与链接按许可证要求保留如上。
+它的 skill 没有 vendored 进本仓（只在一次隔离 worktree 里作为工具使用），所以仓库里不会出现它的源码副本。
+
+### 7.1 取用的判据与本仓落点
+
+| unslop 判据 | Gosslan 落点 | 证据 |
+| --- | --- | --- |
+| 空态不画通用插画，只给“结论 + 可选说明” | `StateBlock` 空态不再渲染 `ImageOff`（那颗图标语义上等于“图片加载失败”，却被日志/任务/通讯录共用） | [StateBlock.vue](../../src/components/ui/StateBlock.vue) |
+| 文案不喊口号：无感叹号、无“一键/轻松/搞定”这类空话 | 中英两册空态统一改成“还没有…”，并在单测里立了四条语气判据 | [index.test.ts](../../src/i18n/index.test.ts)、[zh-cn.ts](../../src/i18n/locales/zh-cn.ts) |
+| 不用 `hover:scale` 做悬停反馈 | 主题色色板去掉 `hover:scale-110`，按压反馈交给 `style.css` 里全局的 `:active` 位移 | [AppearanceSection.vue](../../src/components/settings/AppearanceSection.vue) |
+| 不用 `transition-all`；一条 ease、两档时长 | 开关滑块收敛为 `transition-transform` + `--gosslan-duration-fast` / `--gosslan-ease`（布局属性禁动画，见 §14.6） | [SettingsToggle.vue](../../src/components/settings/SettingsToggle.vue) |
+| 暗色靠表面层级 + 6–10% 发丝线，不堆大阴影 | Toast 的 `shadow-lg` 换成玻璃二档投影 + 10% 白描边 | [ToastList.vue](../../src/components/ToastList.vue) |
+| 层级靠字号与颜色，不靠字重（400/500，600 极少） | 全库 `font-bold` 为 0 处，标题只保留 `font-medium` | `grep -r font-bold src` |
+| 字号 token 只按语义引用 | 修掉 `text-[var(--gosslan-text-body)]` 这类把**字号 token 当颜色用**的静默失效（三处） | [StateBlock.vue](../../src/components/ui/StateBlock.vue)、[GroupFilesPanel.vue](../../src/components/GroupFilesPanel.vue) |
+
+### 7.2 没有照抄的部分
+
+- **不引入它的配色与字体表**：本仓的颜色由主题色 + 色雾生成，换一套调色板会和玻璃材料冲突。
+- **不把“九遍顺序”做成 CI 门禁**：本仓已有 `designGuards` 与 `check-ui-runtime` 两条更具体的量具，
+  再加一层顺序检查只会制造重复判据。
+- **不引入它的 node 依赖**：只在隔离 worktree 里用了一次，仓库依赖不变。体检取数走本仓既有的
+  `scripts/check-ui-runtime.mjs`（原生 CDP，不依赖 Playwright；`GOSSLAN_CHROME` 指向 Brave）。
+  本仓 `package.json` 没有 Playwright 依赖，`~/Library/Caches/ms-playwright` 里也没有任何浏览器内核
+  —— 读数全部来自本机 Brave，不需要为此装 Playwright。
+- **不改既有阈值来“变绿”**：本文所有改动都落在现有设计语言之内（玻璃三档、§11.3 动效五条、AM-15/AM-16 对比度）。

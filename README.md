@@ -116,6 +116,18 @@ Issues and pull requests are welcome. Please keep changes small, include tests f
 and keep the documentation in sync. Security-sensitive areas (protocol, crypto, database migrations)
 have extra review requirements described in `AI_RULES.md`.
 
+## Design references
+
+The interface follows this repo's own design language — see
+[docs/design-language/README.md](docs/design-language/README.md). Its copy tone and
+layout discipline were also informed by
+[unslop](https://github.com/heydamir/unslop) by Damir Sokolovsky
+([@heydamir](https://x.com/heydamir), CC BY 4.0): we used its checklist for the
+"AI-generated look" (4px grid, a single accent, hairline borders, no gradient text or
+glow, no exclamation marks) and adapted it to Gosslan's glass material. Which criteria
+were adopted — and which were deliberately left out — is recorded in
+[docs/design-language/sources.md](docs/design-language/sources.md).
+
 ## License
 
 [MIT](LICENSE) © 2026 wd.f

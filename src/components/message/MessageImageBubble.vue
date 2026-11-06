@@ -165,7 +165,7 @@ onUnmounted(clearTimer);
        解码完成只换框里的内容 ⇒ 前后 boundingClientRect 一致（探针 imgskel 现读）。 -->
   <div
     data-img-frame
-    class="relative w-52 max-w-full cursor-pointer touch-manipulation overflow-hidden rounded-[var(--gosslan-bubble-radius)]"
+    class="relative flex w-52 max-w-full cursor-pointer touch-manipulation items-center justify-center overflow-hidden rounded-[var(--gosslan-bubble-radius)]"
     :style="{ height: `${placeholderHeight}px` }"
     :data-img-state="state"
     role="button"
@@ -210,11 +210,17 @@ onUnmounted(clearTimer);
          v4.35.2 真机：自己发的和对方发的图全打不开）。
          ⚠️ 气泡热区**不再**跟着 `state` 走：加载中/已加载都一次点击开预览（见 onFrameClick）。
          虚拟列表只挂载视口附近的行，eager 不会把屏外图提前拉下来；异步解码仍由 decoding="async" 保留。 -->
+    <!-- ⚠️ 不许写 `w-full`：外框定宽 208（`w-52`）、高 288 是预留位（旧消息无尺寸时），
+         `w-full` + `object-contain` 会让元素框撑满整框、真实像素缩在中间 ⇒ 内容角缩在框中央、
+         外框圆角裁不到，源图自带的深色暗垫露出来。让元素框**贴着内容**（宽度 auto + `max-w-full`），
+         竖直居中交给外框的 flex（外框高度仍是预留值，加载前后尺寸不变）。
+         圆角沿用气泡档（与外框 18px 一致；换成 radius-lg 反而会在框内多一圈小圆角）。
+         已知边界见 docs/design-language/README.md 附录 B。 -->
     <img decoding="async" :alt="t('msg.imageMessage')"
       data-img-el
       :key="loadKey"
       :src="props.src"
-      class="block w-full rounded-[var(--gosslan-bubble-radius)] object-contain"
+      class="block max-w-full rounded-[var(--gosslan-bubble-radius)] object-contain"
       :style="{ maxHeight: `${reservedHeight}px`, height: hasKnownSize ? `${reservedHeight}px` : undefined }"
       :class="state === 'loaded' ? '' : 'hidden'"
       @load="clearTimer(); state = 'loaded'"

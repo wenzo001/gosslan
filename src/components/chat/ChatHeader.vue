@@ -83,7 +83,7 @@ function linkIcon(path: string, hop: number): { icon: LinkIconName; label: strin
 <template>
   <!-- 微信 4.0 头部：~56px 浅灰底，与消息区无缝衔接，无分割线；右侧 通话 / 更多 / 共享 -->
   <div
-    class="flex shrink-0 items-center justify-between border-b border-[var(--gosslan-divider)] bg-[var(--gosslan-chat)] px-4"
+    class="ambient-canvas-child flex shrink-0 items-center justify-between border-b border-[var(--gosslan-divider)] bg-[var(--gosslan-chat)] px-4"
     :style="{ height: 'var(--gosslan-header-h)' }"
   >
     <div class="flex min-w-0 items-center gap-1.5">

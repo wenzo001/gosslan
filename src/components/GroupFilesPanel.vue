@@ -281,7 +281,7 @@ function stateText(state: GroupFileEntry["local_state"]): string {
         {{ t("group.files.totalSize", { n: files.length, size: formatBytes(totalSize) }) }}
       </div>
 
-      <div v-if="failed && files.length > 0" class="flex items-center justify-between gap-2 rounded-[var(--gosslan-radius-md)] bg-[var(--gosslan-warning-soft)] px-2.5 py-1.5 text-xs text-[var(--gosslan-text-body)]">
+      <div v-if="failed && files.length > 0" class="flex items-center justify-between gap-2 rounded-[var(--gosslan-radius-md)] bg-[var(--gosslan-warning-soft)] px-2.5 py-1.5 text-xs text-[var(--gosslan-text-2)]">
         <span class="min-w-0 truncate" :title="loadError">{{ t("group.files.loadFail") }}</span>
         <PrimaryBtn size="default" shrink @click="load()">
           <span class="inline-flex items-center gap-1">
