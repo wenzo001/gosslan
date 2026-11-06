@@ -137,6 +137,9 @@ watch(
 
 const listenerScope = createInitScope();
 onMounted(() => {
+  // 本窗口是另一个 WebView 文档：它确实挂了一份覆盖层（模板末尾那处），
+  // 独立预览窗口投递失败时要靠它接住（见 store 里 `overlayMounted` 的说明）。
+  preview.overlayMounted = true;
   // 两条路都要：预热过 / 新建的窗口靠挂载这次取上下文；已经存在的那扇靠定向事件被叫醒。
   void api
     .getGroupTodosContext()
@@ -171,7 +174,10 @@ onMounted(() => {
     }
   })();
 });
-onUnmounted(() => listenerScope.dispose());
+onUnmounted(() => {
+  preview.overlayMounted = false;
+  listenerScope.dispose();
+});
 </script>
 
 <template>
@@ -195,7 +201,7 @@ onUnmounted(() => listenerScope.dispose());
   <ImageLightbox
     :images="preview.images"
     v-model:index="preview.index"
-    :open="preview.open"
+    :open="preview.open && !preview.inWindow"
     :origin="preview.origin"
     @close="preview.close()"
   />

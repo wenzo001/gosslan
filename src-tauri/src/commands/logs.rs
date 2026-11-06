@@ -1104,6 +1104,181 @@ pub fn open_group_todos_window(
     Err("移动端没有独立群任务窗口（任务面板是应用内弹窗）".to_string())
 }
 
+/// 图片预览窗口**关闭即销毁**（不是常驻）。
+///
+/// 用户 2026-11-06：「窗口被用户关掉后再次点击 — 关掉后能重新创建」。常驻（关闭即隐藏）
+/// 永远走不到"重新创建"那条路，而且会一直占一份 WebView；销毁后下一次点击由
+/// `ensure_preview_window` 重新建，代价是首帧要等文档加载（已有 `preview.html` 骨架遮住）。
+#[cfg(desktop)]
+const AUX_PREVIEW_RESIDENT: bool = false;
+
+/// 一次投递给预览窗口的相册上限（条数 / 名字长度 / data URL 总量）。
+///
+/// 为什么要上限：这是**远端不可信输入能直接塞进内存**的一条路径（条目来自消息载荷里的
+/// 名字与 base64），而且它是全局唯一窗口 —— 一份畸形相册会一直挂在那儿。
+/// 超限就整份拒绝，前端退回应用内覆盖层（不是"少显示几张"那种半成品）。
+#[cfg(desktop)]
+const PREVIEW_MAX_ITEMS: usize = 500;
+#[cfg(desktop)]
+const PREVIEW_MAX_NAME_LEN: usize = 200;
+#[cfg(desktop)]
+const PREVIEW_MAX_TOTAL_BYTES: usize = 32 * 1024 * 1024;
+
+/// 校验一次预览投递（纯函数，便于单测）。
+///
+/// 只验形状不验"图取不取得到"：取不到字节是预览窗口自己的事（它会显示"文件已被清理"
+/// 那套既有状态），在这里拒绝反而会让用户点了完全没反应。
+#[cfg(desktop)]
+fn validate_preview(g: &crate::state::PreviewGallery) -> Result<(), String> {
+    if g.items.is_empty() {
+        return Err("没有可预览的图片".to_string());
+    }
+    if g.items.len() > PREVIEW_MAX_ITEMS {
+        return Err(format!("一次最多预览 {PREVIEW_MAX_ITEMS} 张图"));
+    }
+    if g.index >= g.items.len() {
+        return Err("预览起始位置越界".to_string());
+    }
+    let mut bytes = 0usize;
+    for it in &g.items {
+        if it.name.chars().count() > PREVIEW_MAX_NAME_LEN {
+            return Err(format!("图片名最长 {PREVIEW_MAX_NAME_LEN} 字符"));
+        }
+        // 每条都必须可寻址：`data_src` 只接受 data URL —— `blob:` 是**发起文档**的句柄，
+        // 预览窗口拿到只会渲染成破图（用户 #40 要求"任何界面都能调用这个组件"，
+        // 那就更要把"能不能跨文档"说清楚，而不是默默显示一个坏掉的框）。
+        match (&it.msg_id, &it.cid, &it.favorite_id, &it.data_src) {
+            (Some(m), _, _, _) if !m.is_empty() => {}
+            (_, Some(c), _, _) if !c.is_empty() => {}
+            (_, _, Some(f), _) if !f.is_empty() => {}
+            (_, _, _, Some(d)) if d.starts_with("data:") => {
+                bytes += d.len();
+            }
+            _ => return Err("图片数据不可跨窗口预览".to_string()),
+        }
+    }
+    if bytes > PREVIEW_MAX_TOTAL_BYTES {
+        return Err("图片数据过大，无法跨窗口预览".to_string());
+    }
+    Ok(())
+}
+
+/// 桌面端：打开（或复用）**全局唯一**的「图片预览」窗口，并把这份相册设为它当前内容。
+///
+/// 用户 2026-09-24 #40："不同界面查看图片会替换里面的内容"；2026-11-06 再明确一次：
+/// "所有预览图片还是用图里窗口吧，但是窗实例只有一个。如果已经打开过一个，点了其他图片
+/// 就替换内容"。
+/// - label 固定 [`crate::WINDOW_PREVIEW`] ⇒ 从会话、任务、收藏点进来的都是同一个窗口；
+/// - 内容写进 [`AppState::preview_gallery`]（**当前值**，不是一次性请求）；
+/// - **已开着**：`ensure_aux_window` 只做 `unminimize + show + set_focus`（位置/尺寸/层级
+///   都不动，不会出现"关掉再打开"的空窗闪烁），再定向 `emit` 一条 `preview-gallery`
+///   叫它重新取；
+/// - **刚新建**：那条事件一定发丢（监听器还没注册），由窗口挂载时自己 `get_image_preview_gallery`。
+///   两条路都读同一份当前值，所以谁先到都一样，不存在"丢一次点击"。
+/// - **用户刚关掉**（`AUX_PREVIEW_RESIDENT = false` ⇒ 已销毁）：这里查不到窗口，走新建。
+#[cfg(desktop)]
+#[tauri::command(async)]
+pub fn open_image_preview(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, Arc<AppState>>,
+    gallery: crate::state::PreviewGallery,
+) -> Result<(), String> {
+    use tauri::Emitter;
+    validate_preview(&gallery)?;
+    *state
+        .preview_gallery
+        .lock()
+        .unwrap_or_else(|e| e.into_inner()) = Some(gallery);
+    let (win, created) = ensure_preview_window(&app, &state, true)?;
+    if !created {
+        let _ = win.emit("preview-gallery", ());
+    }
+    Ok(())
+}
+
+/// 预览窗口本体（单例：label 固定，存在就复用，不存在才新建）。
+///
+/// 复用与新建**共用这一份** builder：两条路各自写一份的话，"第一次打开和第二次打开不一样"
+/// （尺寸/标题栏/背景色少一项）这种缺陷查不出来。
+#[cfg(desktop)]
+fn ensure_preview_window(
+    app: &tauri::AppHandle,
+    state: &tauri::State<'_, Arc<AppState>>,
+    reveal: bool,
+) -> Result<(tauri::WebviewWindow, bool), String> {
+    use tauri::{WebviewUrl, WebviewWindowBuilder};
+    let bg = aux_window_background(state);
+    let title = aux_window_title(state, "图片预览", "Image preview", None);
+    // 设计尺寸 1120×820：用户要的是"比聊天界面大一圈"。`fit_aux_window` 会把它夹到
+    // 「主窗口 − 两侧各 24px」，所以**永不比主窗口大**（那条几何不变式见 logs_tests），
+    // 主窗口本身小的时候跟着缩 —— 这正是想要的，不去破不变式。
+    let geo = aux_window_geometry(app, (1120.0, 820.0), (480.0, 360.0));
+    let placed_app = app.clone(); // decorate 那几步在锁外跑 ⇒ 单独一个 handle（AppHandle 是廉价克隆）
+    let build_app = app.clone();
+    ensure_aux_window(
+        app,
+        crate::WINDOW_PREVIEW,
+        // ⚠️ 这里传 `None`（而不是 `geo`）：已存在的预览窗口**不许被重新居中** ——
+        // 用户 2026-11-06 要求复用时"位置/尺寸/层级保持不变"。`geo` 只用于**新建**那条路
+        // （下面的 `placed` 闭包）；`show_existing_aux_window` 拿到 `None` 就只 show+focus。
+        None,
+        AUX_PREVIEW_RESIDENT,
+        reveal,
+        move || {
+            WebviewWindowBuilder::new(
+                &build_app,
+                crate::WINDOW_PREVIEW,
+                WebviewUrl::App("preview.html".into()),
+            )
+            .title(title)
+            .devtools(AUX_DEVTOOLS)
+            .inner_size(1120.0, 820.0)
+            .min_inner_size(480.0, 360.0)
+            .background_color(bg)
+            .visible(false)
+            .decorations(false)
+            .resizable(true)
+            .maximizable(false)
+            .minimizable(true)
+            .closable(true)
+            .build()
+        },
+        // ↓ `placed`（锁外），理由同群任务窗那处。
+        move |win| {
+            decorate_aux_window(win, &placed_app);
+            if let Some(g) = geo {
+                apply_aux_geometry(win, g);
+                restore_aux_window_size(win, &g);
+                recenter_aux_window(win, &g);
+            }
+        },
+    )
+}
+
+/// 预览窗口取当前该显示的相册（**不清**，理由见 [`AppState::preview_gallery`]）。
+/// 不分桌面/移动：只是读一块内存。
+#[tauri::command]
+pub fn get_image_preview_gallery(
+    state: tauri::State<'_, Arc<AppState>>,
+) -> Option<crate::state::PreviewGallery> {
+    state
+        .preview_gallery
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .clone()
+}
+
+/// 移动端桩：预览窗口是桌面概念（移动端仍是应用内全屏覆盖层）。
+#[cfg(mobile)]
+#[tauri::command]
+pub fn open_image_preview(
+    _app: tauri::AppHandle,
+    _state: tauri::State<'_, Arc<AppState>>,
+    _gallery: crate::state::PreviewGallery,
+) -> Result<(), String> {
+    Err("移动端图片预览用应用内覆盖层（没有独立窗口）".to_string())
+}
+
 /// 桌面端：打开（或复用）独立的「外部链接」窗口，在窗口内加载该网址。
 ///
 /// **安全边界**（本仓库唯一一处在本机渲染第三方网页，三道锁）：

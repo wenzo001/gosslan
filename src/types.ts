@@ -265,15 +265,23 @@ export interface Group {
 /**
  * 全局图片预览里的一张图（用户 2026-09-24 #40）。
  *
- * 三种取字节的来源，按优先级：`dataSrc`（已在手边的 data URL）→ `cid`（待办描述图）
- * → `msgId`（聊天消息）。`blob:` objectURL 也可以：覆盖层就在发起它的那个文档里，
- * 不会跨窗口失效。
+ * 四种取字节的来源，按优先级：`dataSrc`（已在手边的 data URL）→ `cid`（待办描述图）
+ * → `msgId`（聊天消息）→ `favoriteId`（收藏图片）。
+ * `blob:` objectURL 只在**发起它的那个文档**里有效：覆盖层同文档，可以用；
+ * 独立预览窗口跨文档，一定要能按引用（`cid`/`msgId`/`favoriteId`）自己取回来。
  */
 export interface PreviewImage {
   name: string;
   dataSrc?: string | null;
   msgId?: string;
   cid?: string;
+  favoriteId?: string;
+}
+
+/** 一次预览投递 = 相册 + 起始下标（窗口里的左右循环就在这个数组上转）。 */
+export interface PreviewGallery {
+  items: PreviewImage[];
+  index: number;
 }
 
 export interface InterfaceInfo {

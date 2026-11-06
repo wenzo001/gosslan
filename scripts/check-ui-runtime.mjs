@@ -429,11 +429,21 @@ class Cdp {
      * 只留尾巴：这段一跑就是几百次调用，全量会把有用的那几条冲走。
      */
     this.eventTail = [];
+    /**
+     * 每次整页导航的 URL（只留最后 8 条）。
+     * `eventTail` 里每条事件被截到 120 字，`Page.frameNavigated` 的 URL 恰好被截掉 ——
+     * 而"是谁把页面 reload 掉的"只能靠这个 URL 判断（本轮为了定位一次 ~1.2 s 后的 reload 加的）。
+     */
+    this.navTail = [];
     ws.addEventListener("message", (ev) => {
       const msg = JSON.parse(typeof ev.data === "string" ? ev.data : ev.data.toString());
       if (msg.method && msg.id === undefined) {
         this.eventTail.push(`${msg.method} ${JSON.stringify(msg.params ?? {}).slice(0, 120)}`);
         if (this.eventTail.length > 24) this.eventTail.shift();
+        if (msg.method === "Page.frameNavigated") {
+          this.navTail.push(String(msg.params?.frame?.url ?? "?"));
+          if (this.navTail.length > 8) this.navTail.shift();
+        }
       }
       const w = this.waiters.get(msg.id);
       if (!w) return;
@@ -1330,6 +1340,146 @@ window.__probe = (() => {
     requestAnimationFrame(tick);
     await V.nextTick(); await V.nextTick();
     return { ok: true, origin, viewport: { w: cw, h: ch } };
+  };
+  /**
+   * 移动端覆盖层：底下放一个**真的能滚**的消息列表，用来量"手动的时候下面不能动"。
+   *
+   * 为什么必须真的能滚：只放一张图的话"底层没动"是废话 —— 没有可滚内容，量不出穿透。
+   * 列表 2600px、视口 844px，初始 scrollTop=120 / scrollY=120，任何一点点穿透都会读到差值。
+   * 覆盖层用 v-model:index / open 的可变状态，Node 侧靠 window.__moState 反复开关。
+   */
+  H.mobileOverlayMount = async (dark) => {
+    if (!window.__probe.vue) {
+      await H.install('/src/components/message/ImageLightbox.vue', '', JSON.stringify({ images: [], index: 0 }));
+    }
+    const V = window.__probe.vue;
+    if (!V) return { ok: false, why: 'no-vue' };
+    const mod = await import('/src/components/message/ImageLightbox.vue');
+    // 这一段会反复重挂（1 次手势 + 6 次尺寸×明暗）。不卸载上一份 app 就等于每次多留一整套
+    // FocusScope/Teleport/pointer 监听在 body 上 —— 实测能把 renderer 主线程拖死（CDP eval 不回包）。
+    if (window.__moApp) {
+      try { window.__moApp.unmount(); } catch { /* 已经卸掉就算了 */ }
+      window.__moApp = null;
+    }
+    const svg = "data:image/svg+xml," + encodeURIComponent(
+      "<svg xmlns='http://www.w3.org/2000/svg' width='640' height='360'><rect width='640' height='360' fill='#2f80ed'/><circle cx='120' cy='90' r='60' fill='#ffffff'/></svg>");
+    document.documentElement.classList.toggle('dark', !!dark);
+    document.body.innerHTML = '';
+    document.body.style.margin = '0';
+    const list = document.createElement('div');
+    list.id = 'probe-list';
+    list.style.cssText = 'height:100vh;overflow-y:auto;';
+    const filler = document.createElement('div');
+    filler.style.cssText = 'height:2600px;padding:24px;box-sizing:border-box;font:16px/1.8 sans-serif;color:#334155;'
+      + 'background:linear-gradient(#e2e8f0,#cbd5e1);';
+    filler.textContent = 'MESSAGE LIST';
+    list.appendChild(filler);
+    document.body.appendChild(list);
+    // 文档级也要真的能滚：列表自己 100vh 撑满视口时 document 高度 = 视口高度，
+    // window.scrollTo 不会动 —— 那样 window.scrollY 那一条就成了空判据。
+    const spacer = document.createElement('div');
+    spacer.style.cssText = 'height:800px;';
+    document.body.appendChild(spacer);
+    list.scrollTop = 120;
+    window.scrollTo(0, 120);
+    // 全局 overflow 的**基线**：本应用本身就在 body 上 overflow:hidden（桌面壳的设计），
+    // 所以"body 不是 hidden"是假判据。"开关覆盖层前后与基线一致"才是"没有残留锁"。
+    window.__moBase = {
+      body: getComputedStyle(document.body).overflow,
+      html: getComputedStyle(document.documentElement).overflow,
+    };
+    const host = document.createElement('div');
+    host.id = 'probe-host';
+    document.body.appendChild(host);
+    // 手势事件计数：用来把"手势没生效"拆成"事件根本没到"与"组件忽略了它"两种原因。
+    // 监听只在**首次**装上：每次重挂都加一套的话，7 次之后光是监听链就够把主线程拖慢。
+    window.__moEv = { down: 0, move: 0, up: 0, cancel: 0, tmove: 0, wheel: 0 };
+    if (!window.__moEvHooked) {
+      window.__moEvHooked = true;
+      document.addEventListener('pointerdown', () => { window.__moEv.down += 1; }, true);
+      document.addEventListener('pointermove', () => { window.__moEv.move += 1; }, true);
+      document.addEventListener('pointerup', () => { window.__moEv.up += 1; }, true);
+      document.addEventListener('pointercancel', () => { window.__moEv.cancel += 1; }, true);
+      document.addEventListener('touchmove', () => { window.__moEv.tmove += 1; }, true);
+      document.addEventListener('wheel', () => { window.__moEv.wheel += 1; }, true);
+    }
+    const st = V.reactive({ open: true, index: 0 });
+    window.__moState = st;
+    const images = [{ dataSrc: svg, name: 'mobile-0.svg' }];
+    const app = V.createApp({
+      setup() {
+        return () => V.h(mod.default, {
+          images,
+          index: st.index,
+          open: st.open,
+          "onUpdate:index": (i) => { st.index = i; },
+          onClose: () => { window.__probe.events.push(['close']); st.open = false; },
+        });
+      },
+    });
+    if (window.__pinia) app.use(window.__pinia);
+    app.mount(host);
+    window.__moApp = app;
+    await V.nextTick(); await V.nextTick();
+    return { ok: true, listTop: list.scrollTop, scrollY: window.scrollY };
+  };
+  /**
+   * 一次读数：点击点命中了谁（必须落在覆盖层自身节点里）、底层两处滚动值、
+   * 有没有全局 overflow 残留、图片当前 transform（用来证明平移/缩放照常生效）。
+   */
+  H.moRead = (x, y) => {
+    const img = document.querySelector('[data-lightbox-img]');
+    let root = img;
+    while (root && getComputedStyle(root).position !== 'fixed') root = root.parentElement;
+    const hit = root ? document.elementFromPoint(x, y) : null;
+    const list = document.getElementById('probe-list');
+    return {
+      hit: hit ? (hit.tagName + '.' + String(hit.className)).slice(0, 90) : null,
+      inside: !!(root && hit && root.contains(hit)),
+      overlay: root ? String(root.className).slice(0, 90) : null,
+      listTop: list ? list.scrollTop : -1,
+      scrollY: window.scrollY,
+      bodyOverflow: getComputedStyle(document.body).overflow,
+      htmlOverflow: getComputedStyle(document.documentElement).overflow,
+      tf: img ? getComputedStyle(img).transform : null,
+      inlineTf: img ? String(img.style.transform || '') : '',
+      chain: (() => {
+        const out = [];
+        let n = img;
+        while (n && out.length < 6) {
+          out.push((n.tagName || '?') + ':' + getComputedStyle(n).transform + ':' + String(n.className || '').slice(0, 40));
+          n = n.parentElement;
+        }
+        return out;
+      })(),
+      ev: window.__moEv || null,
+      base: window.__moBase || null,
+      dialog: !!document.querySelector('[role="dialog"]'),
+    };
+  };
+  /** 覆盖层根矩形 + 横向溢出（"边缘无白条 / 无横向溢出"这两条结构判据）。 */
+  H.moRect = () => {
+    const img = document.querySelector('[data-lightbox-img]');
+    let root = img;
+    while (root && getComputedStyle(root).position !== 'fixed') root = root.parentElement;
+    const r = root ? root.getBoundingClientRect() : null;
+    return {
+      rect: r ? { left: r.left, top: r.top, w: r.width, h: r.height } : null,
+      vw: innerWidth,
+      vh: innerHeight,
+      scrollW: document.documentElement.scrollWidth,
+      scrollH: document.documentElement.scrollHeight,
+    };
+  };
+  /** 关掉/打开覆盖层（走真实 store 状态那条路，不是直接抹 DOM）。 */
+  H.moOpen = (v) => { window.__moState.open = !!v; return true; };
+  /** 在底层写一次滚动，用来证明"关闭后能滚"（不是写死一个静态值）。 */
+  H.moSetScroll = (v) => {
+    const list = document.getElementById('probe-list');
+    if (!list) return { ok: false };
+    list.scrollTop = v;
+    window.scrollTo(0, v);
+    return { ok: true, listTop: list.scrollTop, scrollY: window.scrollY };
   };
   /**
    * 等浮层撤掉 —— 在页面内轮询。
@@ -4091,6 +4241,8 @@ async function main() {
     const railsync = want("railsync");
     const imgload = want("imgload");
     const imgzoom = want("imgzoom");
+    const previewwin = want("previewwin");
+    const mobileoverlay = want("mobileoverlay");
     const pinkb = want("pinkb");
     const scrollrestore = want("scrollrestore");
     const scrollshake = want("scrollshake");
@@ -4320,6 +4472,8 @@ async function main() {
     await runSegment("railsync", railsync, () => runRailSync(cdp, url));
     await runSegment("imgload", imgload, () => runImageLoad(cdp, url));
     await runSegment("imgzoom", imgzoom, () => runImageZoom(cdp, url));
+    await runSegment("previewwin", previewwin, () => runPreviewWindow(cdp, url));
+    await runSegment("mobileoverlay", mobileoverlay, () => runMobileOverlay(cdp, url));
     if (want("imgretry")) await runImageRetryPace(cdp, url);
     if (want("mergeheight")) await runMergeCardHeight(cdp, url);
     await runSegment("pinkb", pinkb, () => runPinKeyboard(cdp, url));
@@ -20810,6 +20964,346 @@ async function runFavThumb(cdp, url) {
  * 点击命中率在 MessageImageBubble 上冷（还在退避重试）/ 热（已解码）各真鼠标点 3 次，必须 3/3。
  * reduce 档另起一份：不缩放，直接落终态。
  */
+/**
+ * 移动端覆盖层的三件硬约束（用户 2026-11-06 追加）：
+ * 1) **层级真在顶层**：点击点 `elementFromPoint` 必须落在覆盖层自身节点里；
+ * 2) **手势不穿透**：真实触摸拖动/捏合时，底层列表 `scrollTop` 与 `window.scrollY` 零变化，
+ *    同时内部缩放照常生效；
+ * 3) **关闭立刻可滚**：反复开关 5 次，每次都把底层滚动重新写进去再读回来。
+ *
+ * 触摸用 CDP `Input.dispatchTouchEvent`（真事件，能触发浏览器原生滚动）——
+ * 页面内 `dispatchEvent` 造的合成事件没有默认行为，"没穿透"就变成一句空话。
+ */
+async function runMobileOverlay(cdp, url) {
+  await cdp.send("Page.bringToFront").catch(() => {});
+  await cdp.send("Emulation.setTouchEmulationEnabled", { enabled: true, maxTouchPoints: 5 }).catch(() => {});
+  await cdp.send("Emulation.setDeviceMetricsOverride", {
+    width: 390, height: 844, deviceScaleFactor: 2, mobile: true,
+  }).catch(() => {});
+  await cdp.send("Page.navigate", { url });
+  await cdp.settled();
+  await sleep(3_000);
+  await cdp.eval(PAGE_FIXTURE);
+  const view = await cdp.eval("({ w: innerWidth, h: innerHeight })");
+  check("移动端视口 390×844（mobile=true，真触摸事件）",
+    !!view && view.w === 390 && view.h === 844, "390×844", JSON.stringify(view));
+
+  const mounted = await cdp.eval("window.__probe.mobileOverlayMount(false)");
+  check("移动端覆盖层挂载：底层列表真的可滚（初始 scrollTop=120）",
+    !!mounted && mounted.ok === true && mounted.listTop === 120 && mounted.scrollY === 120,
+    "listTop/scrollY 都是 120", JSON.stringify(mounted));
+
+  // 开场 FLIP 期间 onPointerDown 会主动忽略手势（组件里 closing/pendingFlip 那条守卫），
+  // 所以量手势之前必须先等它落定，否则读到的是"手势没反应"的假红（本轮真实发生过）。
+  await sleep(900);
+
+  const scaleOf = (tf) => {
+    const m = /matrix\(([^)]+)\)/.exec(tf || "");
+    if (!m) return null;
+    const p = m[1].split(",").map(Number);
+    return { sx: p[0], sy: p[3], tx: p[4] || 0, ty: p[5] || 0 };
+  };
+  const read = (x = 195, y = 422) => cdp.eval(`window.__probe.moRead(${x}, ${y})`);
+
+  // ── ① 层级：点击点必须命中覆盖层自己，而不是底下的列表 ──────────────
+  const before = await read();
+  check("覆盖层在顶层：点击点 elementFromPoint 落在覆盖层自身节点里",
+    before.inside === true && !String(before.hit || "").includes("probe-list"),
+    "inside=true 且命中不是列表", JSON.stringify(before));
+
+  // ── ② 捏合：内部缩放照常生效（先做，因为单指平移只在放大后才有意义）────
+  await cdp.send("Input.dispatchTouchEvent", {
+    type: "touchStart", touchPoints: [
+      { x: 170, y: 420, id: 2, radiusX: 2, radiusY: 2, force: 1 },
+      { x: 220, y: 420, id: 3, radiusX: 2, radiusY: 2, force: 1 },
+    ],
+  });
+  for (let i = 1; i <= 5; i += 1) {
+    await cdp.send("Input.dispatchTouchEvent", {
+      type: "touchMove", touchPoints: [
+        { x: 170 - i * 14, y: 420, id: 2, radiusX: 2, radiusY: 2, force: 1 },
+        { x: 220 + i * 14, y: 420, id: 3, radiusX: 2, radiusY: 2, force: 1 },
+      ],
+    });
+  }
+  await cdp.send("Input.dispatchTouchEvent", { type: "touchEnd", touchPoints: [] });
+  await sleep(260);
+  const zoomed = await read();
+  const s0 = scaleOf(before.tf);
+  const s1 = scaleOf(zoomed.tf);
+  check("捏合后图片缩放 >1（内部缩放手势照常生效）",
+    !!s1 && (s1.sx > (s0 ? s0.sx : 1) + 0.03), "scale 增大",
+    `${JSON.stringify(s0)} → ${JSON.stringify(s1)}｜ev=${JSON.stringify(zoomed.ev)}｜chain=${JSON.stringify(zoomed.chain)}`);
+
+  // ── ③ 单指拖动：放大后平移照常生效，且底层零变化 ────────────────────
+  const tf0 = zoomed.tf;
+  await cdp.send("Input.dispatchTouchEvent", {
+    type: "touchStart", touchPoints: [{ x: 195, y: 420, id: 4, radiusX: 2, radiusY: 2, force: 1 }],
+  });
+  for (let i = 1; i <= 6; i += 1) {
+    await cdp.send("Input.dispatchTouchEvent", {
+      type: "touchMove", touchPoints: [{ x: 195 - i * 12, y: 420 - i * 18, id: 4, radiusX: 2, radiusY: 2, force: 1 }],
+    });
+  }
+  await cdp.send("Input.dispatchTouchEvent", { type: "touchEnd", touchPoints: [] });
+  await sleep(180);
+  const afterDrag = await read();
+  check("拖动覆盖层时底层列表 scrollTop 零变化",
+    afterDrag.listTop === before.listTop, `Δ=${afterDrag.listTop - before.listTop}`, `${before.listTop} → ${afterDrag.listTop}`);
+  check("拖动覆盖层时 window.scrollY 零变化",
+    afterDrag.scrollY === before.scrollY, `Δ=${afterDrag.scrollY - before.scrollY}`, `${before.scrollY} → ${afterDrag.scrollY}`);
+  check("拖动时图片 transform 有变化（手势没有被一起锁死）",
+    afterDrag.tf !== tf0, "transform 变了",
+    `${tf0} → ${afterDrag.tf}｜ev=${JSON.stringify(afterDrag.ev)}｜chain=${JSON.stringify(afterDrag.chain)}`);
+
+  // ── ④ 反复开关 5 次：每次关闭后都能滚，且没有全局 overflow 残留 ────────
+  for (let k = 0; k < 5; k += 1) {
+    await cdp.eval("window.__probe.moOpen(false)");
+    await sleep(320);
+    const set = await cdp.eval(`window.__probe.moSetScroll(${60 + k})`);
+    check(`第 ${k + 1} 次关闭后底层立刻可滚`,
+      !!set && set.ok === true && set.listTop === 60 + k && set.scrollY === 60 + k,
+      `写 ${60 + k} 读回 ${set && set.listTop}`, JSON.stringify(set));
+    const closed = await read();
+    check(`第 ${k + 1} 次关闭后没有全局 overflow 残留（与基线一致）`,
+      !!closed.base && closed.bodyOverflow === closed.base.body && closed.htmlOverflow === closed.base.html,
+      `body/html = 基线 ${JSON.stringify(closed.base)}`,
+      `${closed.bodyOverflow} / ${closed.htmlOverflow} vs ${JSON.stringify(closed.base)}`);
+    await cdp.eval("window.__probe.moOpen(true)");
+    await sleep(260);
+    await cdp.eval("window.__probe.moSetScroll(120)");
+  }
+
+  // ── ⑤ 三档尺寸 × 亮暗：结构判据 + 截图 ────────────────────────────
+  // 同一份挂载换视口，不再逐档重挂：重挂会反复 import 组件图（vite 偶发依赖优化 reload
+  // 会把 __probe 清掉，本轮真实读到过 `Cannot read properties of undefined (reading 'moRect')`），
+  // 而覆盖层是 fixed inset，视口一变几何就跟着变 —— 重挂对这几条结构判据没有额外信息量。
+  const dir = "test-results/preview-shots";
+  fs.mkdirSync(dir, { recursive: true });
+  await cdp.eval("window.__probe.moOpen(true)");
+  for (const [w, h] of [[360, 640], [390, 844], [430, 932]]) {
+    for (const dark of [false, true]) {
+      await cdp.send("Emulation.setDeviceMetricsOverride", {
+        width: w, height: h, deviceScaleFactor: 2, mobile: true,
+      }).catch(() => {});
+      await cdp.eval("document.documentElement.classList.toggle('dark', " + (dark ? "true" : "false") + "); true");
+      await sleep(320);
+      const m = await cdp.eval("window.__probe.moRect()");
+      check(`移动端 ${w}×${h}${dark ? "·暗" : "·亮"}：覆盖层铺满视口、无横向溢出`,
+        !!m && !!m.rect && m.rect.left === 0 && m.rect.w === w && m.scrollW <= w,
+        `rect=${m && m.rect && m.rect.w} scrollW=${m && m.scrollW}`, JSON.stringify(m));
+      const shot = await cdp.send("Page.captureScreenshot", { format: "png" });
+      const file = `${dir}/mobile-${w}x${h}-${dark ? "dark" : "light"}.png`;
+      fs.writeFileSync(file, Buffer.from(shot.data, "base64"));
+    }
+  }
+  console.log(`  · mobileoverlay 截图 → ${dir}/mobile-*.png`);
+
+  // 还原桌面口径（后面各段默认在桌面视口上跑）。
+  await cdp.send("Emulation.setTouchEmulationEnabled", { enabled: false }).catch(() => {});
+  await cdp.send("Emulation.setDeviceMetricsOverride", {
+    width: 1440, height: 900, deviceScaleFactor: 1, mobile: false,
+  }).catch(() => {});
+}
+
+/**
+ * `previewwin` 段的 Tauri IPC 桩 —— 用 `Page.addScriptToEvaluateOnNewDocument` 在
+ * **页面脚本之前**注入（晚装会触发应用 boot 自检失败 → 整页 reload，见下面调用处注释）。
+ * ⚠️ 这是 Node 的模板字符串：里面不许出现反引号。
+ */
+const PREVIEW_WIN_STUB = `
+(() => {
+  window.__pw = { gallery: null, handler: null, listens: 0, unlistens: 0, calls: [], opened: 0 };
+  // 文档身份：整页 reload 会换一个新 document ⇒ 换一个新 id。
+  // 采样前用它做"这一份文档稳住了"的判据（vite 依赖优化会发一次 full-reload）。
+  window.__pwDocId = String(Date.now()) + '.' + Math.random().toString(36).slice(2);
+  let seq = 700;
+  window.__TAURI_INTERNALS__ = {
+    metadata: { currentWindow: { label: 'preview' }, currentWebview: { label: 'preview', windowLabel: 'preview' } },
+    transformCallback: (cb) => { const id = ++seq; window['_' + id] = cb; return id; },
+    convertFileSrc: (p) => p,
+    invoke: async (cmd, args) => {
+      window.__pw.calls.push(cmd);
+      if (cmd === 'plugin:event|listen') {
+        window.__pw.listens += 1;
+        window.__pw.handler = window['_' + (args && args.handler)] || null;
+        return 1;
+      }
+      if (cmd === 'plugin:event|unlisten') { window.__pw.unlistens += 1; return null; }
+      if (cmd === 'get_image_preview_gallery') {
+        // 刻意给一点延迟：换图那一刻要先看到 loading 占位（旧图必须已经撤掉），
+        // 否则"没有任何 loading 帧"会让"不残留旧图"这条判据空转成真空。
+        await new Promise((r) => setTimeout(r, 40));
+        return window.__pw.gallery;
+      }
+      return null;
+    },
+  };
+  if (!window.__TAURI_EVENT_PLUGIN_INTERNALS__) window.__TAURI_EVENT_PLUGIN_INTERNALS__ = { unregisterListener: () => {} };
+  const svg = (c, label) => 'data:image/svg+xml;charset=utf-8,' + encodeURIComponent(
+    '<svg xmlns="http://www.w3.org/2000/svg" width="640" height="400">'
+    + '<rect width="640" height="400" fill="' + c + '"/>'
+    + '<text x="320" y="215" font-size="64" fill="#ffffff" text-anchor="middle" font-family="sans-serif">' + label + '</text></svg>');
+  window.__pwAlbums = [
+    { items: [{ name: 'A.png', dataSrc: svg('#2563eb', 'A') }, { name: 'B.png', dataSrc: svg('#16a34a', 'B') }], index: 0 },
+    { items: [{ name: 'C.png', dataSrc: svg('#dc2626', 'C') }, { name: 'A.png', dataSrc: svg('#2563eb', 'A') }], index: 1 },
+    { items: [{ name: 'B.png', dataSrc: svg('#16a34a', 'B') }, { name: 'C.png', dataSrc: svg('#dc2626', 'C') }], index: 0 },
+  ];
+  window.__pw.gallery = window.__pwAlbums[0];
+})();
+`;
+
+/**
+ * 独立预览窗口的**文档层**读数（`preview.html` 的根组件 `PreviewWindow.vue`）。
+ *
+ * 这一格回答的是用户 2026-11-06 那条："窗实例只有一个；点了其他图片就替换内容"。
+ * 真宿主里"窗口数=1"由 Rust 侧单例窗口守卫钉住（`lib_window_tests.rs` 的
+ * `preview_window_has_exactly_one_creation_site`），这里量的是**替换那一刻**：
+ * 连发 10 次 `preview-gallery`，逐帧采样 —— 文档根必须一直在（不空白）、必须是同一个节点
+ * （没有关窗再开/重挂）、且 loading 占位期间不许还挂着旧图（不残影）。
+ */
+async function runPreviewWindow(cdp, url) {
+  await cdp.send("Page.bringToFront").catch(() => {});
+  await cdp.send("Emulation.setFocusEmulationEnabled", { enabled: true }).catch(() => {});
+  await cdp.send("Emulation.setDeviceMetricsOverride", {
+    width: 1280, height: 768, deviceScaleFactor: 1, mobile: false,
+  }).catch(() => {});
+  // Tauri IPC 桩**必须在页面脚本之前**装好（`addScriptToEvaluateOnNewDocument`）。
+  // 本轮踩到的形状：挂载后约 1 秒，应用的 boot 自检拿不到 `__TAURI_INTERNALS__.invoke`，
+  // 整页 reload 一次（`Page.frameNavigated` 实测），把 `window.__pw` 和已挂载的组件一起清掉。
+  await cdp.send("Page.addScriptToEvaluateOnNewDocument", { source: PREVIEW_WIN_STUB });
+  // 直接开 `preview.html` 这一份**真文档**（不是把组件硬挂进主窗口的壳里）：
+  // 与宿主里的窗口是同一个入口（`src/entries/preview.ts` → `PreviewWindow.vue`），
+  // 第一帧还带 `#boot-preview` 骨架。代价是第一次进来时 vite 会为新发现的依赖发一次
+  // 整页 reload（`Page.frameNavigated` 实测），把采样清空 —— 所以"准备"最多重试 4 次，
+  // 判据是**重载后 `__pwDocId` 连续两次读一致、且状态已 ready**。
+  const previewUrl = new URL("preview.html", url).toString();
+  let albums = null;
+  let first = null;
+  let prepared = 0;
+  for (let attempt = 1; attempt <= 4; attempt += 1) {
+    await cdp.send("Page.navigate", { url: previewUrl });
+    await cdp.settled();
+    await sleep(2_200);
+    albums = await cdp.eval("window.__pwAlbums");
+    const before = await cdp.eval("window.__pwDocId || null");
+    await sleep(1_500);
+    const after = await cdp.eval("window.__pwDocId || null");
+    first = await cdp.eval(`(() => {
+      const el = document.querySelector('[data-preview-status]');
+      return {
+        alive: !!window.__pw, has: !!el,
+        status: el && el.getAttribute('data-status'), count: el ? Number(el.getAttribute('data-count')) : -1,
+        img: document.querySelectorAll('[data-lightbox-img]').length,
+        listens: window.__pw ? window.__pw.listens : -1, handler: !!(window.__pw && window.__pw.handler),
+        doc: window.__pwDocId || null,
+      };
+    })()`);
+    const stable = !!before && before === after && !!first && first.doc === after;
+    if (stable && first.alive && first.status === "ready") { prepared = attempt; break; }
+    console.log(`  · previewwin 第 ${attempt} 次准备没稳住（vite 依赖优化整页 reload）：docId ${before} → ${after}`);
+  }
+
+  check("相册夹具已就位（3 组、每组 2 张）",
+    Array.isArray(albums) && albums.length === 3 && albums.every((a) => a && a.items && a.items.length === 2),
+    "3 组 × 2 张", JSON.stringify(albums && albums.map((a) => a.items.map((i) => i.name))));
+  check("预览窗口文档挂得起来（AuxWindowShell + 相册）",
+    prepared > 0, `第 ${prepared} 次准备后仍在跑`, JSON.stringify({ prepared, first }));
+  check("首次挂载：相册取到并渲染出图（ready，2 张）",
+    !!first && first.status === "ready" && first.count === 2 && first.img === 1, "ready/count=2/img=1", JSON.stringify(first));
+  check("preview-gallery 订阅已建立（窗口已开着时换图靠它）",
+    !!first && first.listens >= 1 && first.handler === true, "listen≥1 且 handler 已捕获", JSON.stringify(first));
+
+  // ── 连点 10 张：逐帧采样 ─────────────────────────────────────────
+  await cdp.eval(`(() => {
+    // 采样写**字符串**而不是数组：CDP 读回大数组时偶发拿不到值（本轮实测 typeof 是 object、
+    // 读回却是 undefined）。逐帧一行 JSON 是纯字符串，读回稳定。
+    window.__pwTrace = '';
+    window.__pwTick = 0;
+    window.__pwRoot = document.querySelector('[data-preview-status]');
+    window.__pwRun = true;
+    const loop = () => {
+      window.__pwTick += 1;
+      const el = document.querySelector('[data-preview-status]');
+      window.__pwTrace += JSON.stringify({
+        t: Math.round(performance.now()),
+        has: !!el,
+        same: el === window.__pwRoot,
+        status: el ? el.getAttribute('data-status') : null,
+        count: el ? Number(el.getAttribute('data-count')) : -1,
+        index: el ? Number(el.getAttribute('data-index')) : -1,
+        imgs: document.querySelectorAll('[data-lightbox-img]').length,
+      }) + '\\n';
+      if (window.__pwRun) requestAnimationFrame(loop);
+    };
+    requestAnimationFrame(loop);
+    return true;
+  })()`);
+  console.log("  · previewwin sampling kick:", JSON.stringify(await cdp.eval("({t: typeof window.__pwTrace, run: !!window.__pwRun, root: !!window.__pwRoot})")));
+  console.log("  · previewwin alive:", JSON.stringify(await cdp.eval("({pw: !!window.__pw, albums: Array.isArray(window.__pwAlbums), probe: !!window.__probe, tick: window.__pwTick || 0})")));
+  for (let k = 1; k <= 10; k += 1) {
+    // 夹具从 Node 侧带过来，不从页面全局再读一份：`window.__pwAlbums` 在挂载后偶发不可见
+    // （本轮读到过 `undefined[0]`），而"再读一次页面变量"会把夹具状态和被测状态混在一起。
+    await cdp.eval(`(() => {
+      try {
+        window.__pw.gallery = ${JSON.stringify(albums[k % 3])};
+        if (window.__pw.handler) window.__pw.handler({ event: 'preview-gallery', payload: null, id: 1 });
+        return 'ok';
+      } catch (e) {
+        return 'ERR:' + e.message + '|href=' + location.href + '|pw=' + (typeof window.__pw);
+      }
+    })()`).then((r) => {
+      if (String(r).startsWith("ERR:")) console.log(`  · 投递 ${k} 异常：${r}｜事件尾=${JSON.stringify(cdp.eventTail.slice(-4))}`);
+    });
+    await sleep(45);
+  }
+  await sleep(700);
+  await cdp.eval("window.__pwRun = false; true");
+  const trace = await cdp.eval("window.__pwTrace");
+  console.log("  · previewwin ticks:", await cdp.eval("window.__pwTick || 0"));
+  console.log("  · previewwin 导航尾:", JSON.stringify(cdp.navTail));
+  const samples = String(trace || "").split("\n").filter((l) => l.trim()).map((l) => JSON.parse(l));
+  console.log("  · previewwin samples:", samples.length);
+  if (!Array.isArray(samples) || samples.length === 0) {
+    throw new Error("逐帧采样没拿到（__pwSamples=" + JSON.stringify(samples) + "）—— 不是产品结论，是量具没跑");
+  }
+  const blank = samples.filter((s) => !s.has).length;
+  const remount = samples.filter((s) => !s.same).length;
+  const stale = samples.filter((s) => s.status === "loading" && s.imgs > 0).length;
+  const readyEmpty = samples.filter((s) => s.status === "ready" && s.count === 0).length;
+  const last = samples[samples.length - 1];
+  // 读数行：判据只在红的时候才印 actual，绿的时候没人看得见到底采到了多少 ——
+  // 而"10 连点有没有中间态"正是要拿这些计数去汇报的，所以每次跑都印一行。
+  console.log(`  · previewwin 采样：${samples.length} 帧 blank=${blank} remount=${remount} stale=${stale} readyEmpty=${readyEmpty}`);
+  check("10 连点：采样帧里没有空白窗（文档根一直在）",
+    samples.length >= 30 && blank === 0, `samples=${samples.length} blank=${blank}`,
+    `blank=${blank} / ${samples.length} 帧`);
+  check("10 连点：始终是同一个根节点（没有关窗再开/重挂）",
+    remount === 0, `remount=${remount}`, `remount=${remount} / ${samples.length} 帧`);
+  check("10 连点：换图期不残留旧图（loading 帧里没有 [data-lightbox-img]）",
+    stale === 0, `stale=${stale}`, `stale=${stale} / ${samples.length} 帧`);
+  check("10 连点：不存在 ready 但 0 张图的中态",
+    readyEmpty === 0 && last.status === "ready" && last.count === 2,
+    `readyEmpty=${readyEmpty} 末帧=${JSON.stringify(last)}`, JSON.stringify(last));
+
+  // ── 桌面两档截图（窗口文档的同一份内容）─────────────────────────
+  const dir = "test-results/preview-shots";
+  fs.mkdirSync(dir, { recursive: true });
+  for (const [w, h] of [[1280, 768], [768, 1024]]) {
+    await cdp.send("Emulation.setDeviceMetricsOverride", {
+      width: w, height: h, deviceScaleFactor: 1, mobile: false,
+    }).catch(() => {});
+    await sleep(320);
+    const shot = await cdp.send("Page.captureScreenshot", { format: "png" });
+    fs.writeFileSync(`${dir}/desktop-${w}x${h}.png`, Buffer.from(shot.data, "base64"));
+  }
+  console.log(`  · previewwin 截图 → ${dir}/desktop-*.png`);
+
+  await cdp.send("Emulation.setDeviceMetricsOverride", {
+    width: 1440, height: 900, deviceScaleFactor: 1, mobile: false,
+  }).catch(() => {});
+}
+
 async function runImageZoom(cdp, url) {
   await cdp.send("Page.bringToFront").catch(() => {});
   await cdp.send("Emulation.setFocusEmulationEnabled", { enabled: true }).catch(() => {});

@@ -15,6 +15,7 @@ import { ChevronLeft, ChevronRight, Save } from "lucide-vue-next";
 import { RotateCcw, X } from "@/components/ui/icons";
 import { useAppStore } from "@/stores/useAppStore";
 import { loadContentPreview, loadFilePreview, type PreviewResult } from "@/utils/filePreview";
+import { loadFavoritePreview } from "@/utils/favoritePreview";
 import { PREVIEW_FAILURE_KEYS } from "@/utils/mediaAvailability";
 import { saveImageAs } from "@/utils/saveImageAs";
 import { StaleGuard } from "@/utils/staleGuard";
@@ -25,17 +26,17 @@ import { animate, motion, useMotionValue, useReducedMotion } from "@/utils/motio
  * 相册里的一张图 —— 三种来源，按下面的优先级取字节：
  *  ① `dataSrc`：已经拿到的 data URL / objectURL（合并转发卡片、旧格式消息）；
  *  ② `cid`：待办描述图片（sha256 = content store cid，载荷里没有 msg_id）；
- *  ③ `msgId`：聊天消息（走 readFilePreview）。
+ *  ③ `msgId`：聊天消息（走 readFilePreview）；
+ *  ④ `favoriteId`：收藏页（走 loadFavoritePreview）。
+ *
+ * 类型直接用 `@/types` 的 `PreviewImage`（与 api / store / 预览窗口是**同一份**线格式），
+ * 别在这里再抄一遍 —— 抄出来的第二份迟早会漏字段（2026-11-06 就真漏了 `favoriteId`，
+ * `vue-tsc` 才把它挡住）。
  */
-interface GalleryImage {
-  name: string;
-  dataSrc?: string | null;
-  msgId?: string;
-  cid?: string;
-}
+import type { PreviewImage } from "@/types";
 
 const props = defineProps<{
-  images: GalleryImage[];
+  images: PreviewImage[];
   index: number;
   open: boolean;
   /**
@@ -44,6 +45,13 @@ const props = defineProps<{
    * 关闭时用它作为缩回终点。
    */
   origin?: ImageRect | null;
+  /**
+   * 隐藏组件自带的 ✕（独立预览窗口用）。
+   *
+   * 那扇窗已经有标题栏的关闭按钮 + Esc，再画一颗 ✕ 会变成"两个关同一扇窗的按钮"；
+   * 而窗口里的"关闭"必须走 `getCurrentWindow().close()`（销毁窗口），不是收起一份覆盖层。
+   */
+  hideClose?: boolean;
 }>();
 const emit = defineEmits<{
   (e: "close"): void;
@@ -119,6 +127,10 @@ async function resolveCurrent() {
     }
     if (img.msgId) {
       put(await loadFilePreview(img.msgId, "image", img.name));
+      return;
+    }
+    if (img.favoriteId) {
+      put(await loadFavoritePreview(img.favoriteId, img.name));
       return;
     }
     put({});
@@ -629,10 +641,19 @@ useEventListener(window, "keydown", onKey);
       leave-active-class="duration-100 ease-in motion-reduce:transition-none"
       leave-to-class="opacity-0"
     >
+      <!-- 移动端手势不能穿透到底下的聊天列表（用户 2026-11-06：
+           "别点了滑动 是下面在滑，上面不滑"）。
+           · `touch-action: none`：这一层把浏览器原生平移/缩放整段禁掉 —— 图片的拖动/捏合
+             本来就是 pointer 事件实现的，禁掉原生手势不影响它们，只影响"页面跟着一起滚"；
+           · `overscroll-behavior: contain`：桌面触控板/滚轮越界时不把滚动链传给 body。
+           两处都**不碰** `document.body.overflow`：全局锁滚动是最容易漏恢复的做法
+           （用户要求"关闭后立刻可滚"），按层禁手势不存在恢复问题。
+           ⚠️ 这段说明只能写在 HTML 注释里：`:style` 的 JS 表达式里出现块注释会让
+           Vue 模板编译器报 `Unterminated comment`（2026-11-06 真实红过一次）。 -->
       <div
         v-if="open"
         class="glass fixed inset-x-0 bottom-0 top-[var(--gosslan-safe-top,0px)] z-[80] outline-none"
-        :style="{ background: 'rgba(0, 0, 0, 0.45)' }"
+        :style="{ background: 'rgba(0, 0, 0, 0.45)', touchAction: 'none', overscrollBehavior: 'contain' }"
         role="dialog"
         aria-modal="true"
         :aria-label="t('common.image')"
@@ -686,6 +707,7 @@ useEventListener(window, "keydown", onKey);
             <RotateCcw class="h-4 w-4" />
           </button>
           <button
+            v-if="!props.hideClose"
             class="tap-safe flex h-9 w-9 items-center justify-center rounded-full bg-black/35 text-white ring-1 ring-white/25 transition hover:bg-black/55"
             style="text-shadow: 0 1px 2px rgba(0,0,0,0.55); filter: drop-shadow(0 1px 2px rgba(0,0,0,0.35));"
             :title="t('common.closeEsc')" :aria-label="t('common.closeEsc')"
@@ -772,7 +794,7 @@ useEventListener(window, "keydown", onKey);
           <template v-else>
             <span>{{ note ?? t("msg.cannotPreview") }}</span>
             <button
-              v-if="current?.msgId || current?.cid"
+              v-if="current?.msgId || current?.cid || current?.favoriteId"
               type="button"
               class="tap-safe rounded-[var(--gosslan-radius-md)] bg-white/20 px-3 py-1.5 text-xs text-white ring-1 ring-white/30 transition hover:bg-white/30"
               @click.stop="resolveCurrent()"

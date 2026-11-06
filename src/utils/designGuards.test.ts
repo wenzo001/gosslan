@@ -1702,14 +1702,19 @@ test("图片预览只有一处渲染点，其余组件一律走 useImagePreviewS
       stateful.push(rel);
     }
   }
-  // 允许**两个文档各一个实例**：主窗口的覆盖层（主界面 + 移动端）与群任务窗口
-  // （任务看板里也会点开图片）。2026-11-05 桌面端独立预览窗口作废后，"全局只有一个预览"
-  // 说的是**同一时刻用户看到的界面**；这两个文档各有自己的 Pinia 实例，
-  // 同一组件、同一 FLIP、同一 store 契约，不会同时出现在用户眼前。
+  // 允许**三个文档各一个实例**：主窗口的覆盖层（主界面 + 移动端）、群任务窗口
+  // （任务看板里也会点开图片）、独立预览窗口（2026-11-06 恢复，桌面端全局单例）。
+  // "全局只有一个预览"说的是**同一时刻用户看到的界面**：每个 WebView 文档各有自己的
+  // Pinia 实例，但桌面端主窗口/任务窗口那份覆盖层在 `inWindow` 时让位，
+  // 实际画图的只有独立窗口那一份。
   assert.deepEqual(
     [...new Set(renderers)].sort(),
-    ["components/GroupTodosWindow.vue", "layouts/ResponsiveLayout.vue"],
-    `图片预览的渲染点不对：${renderers.join(", ")} —— 只许壳层覆盖层 + 群任务窗口两处`,
+    [
+      "components/GroupTodosWindow.vue",
+      "components/window/PreviewWindow.vue",
+      "layouts/ResponsiveLayout.vue",
+    ],
+    `图片预览的渲染点不对：${renderers.join(", ")} —— 只许壳层覆盖层 + 群任务窗口 + 独立预览窗口三处`,
   );
   assert.deepEqual(stateful, [], `这些组件还自己持有预览开关状态：${stateful.join(", ")}`);
   // store 侧：唯一那份实例绑在 store 上，不是本地 ref

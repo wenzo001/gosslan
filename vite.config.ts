@@ -93,6 +93,7 @@ export default defineConfig(async () => ({
         settings: resolve(here, "settings.html"),
         logs: resolve(here, "logs.html"),
         todos: resolve(here, "todos.html"),
+        preview: resolve(here, "preview.html"),
         // 启动失败那扇独立窗口（审计 A2）：数据库没开的时候，主界面那套代码一律不能
         // 再依赖，所以它必须是自己的一份文档 + 自己的入口。
         startupError: resolve(here, "startup-error.html"),

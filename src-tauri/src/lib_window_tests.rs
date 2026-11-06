@@ -549,8 +549,8 @@
             urls.push(rest[..end].to_string());
         }
         assert!(
-            urls.len() >= 4,
-            "应当能找到设置 / 日志 / 群任务 / 启动错误四个窗口的 URL，实际 {}",
+            urls.len() >= 5,
+            "应当能找到设置 / 日志 / 群任务 / 启动错误 / 图片预览五个窗口的 URL，实际 {}",
             urls.len()
         );
         assert!(
@@ -570,6 +570,9 @@
             ("logs.html", "src/entries/logs.ts"),
             ("todos.html", "src/entries/todos.ts"),
             ("startup-error.html", "src/entries/startup-error.ts"),
+            // 2026-11-06：图片预览窗口从覆盖层方案恢复成独立窗口 ⇒ 它的文档也在这一格里
+            // （否则"改了文件名忘改另一处"这类缺陷对这扇窗没有防线）。
+            ("preview.html", "src/entries/preview.ts"),
         ] {
             assert!(
                 urls.iter().any(|u| u == url),
@@ -584,6 +587,7 @@
                 "startup-error.html" => {
                     include_str!("../../startup-error.html").to_string()
                 }
+                "preview.html" => include_str!("../../preview.html").to_string(),
                 _ => unreachable!("新增 url 必须在这里补自己的 include_str!"),
             };
             assert!(
@@ -603,6 +607,9 @@
                 }
                 "src/entries/startup-error.ts" => {
                     let _ = include_str!("../../src/entries/startup-error.ts");
+                }
+                "src/entries/preview.ts" => {
+                    let _ = include_str!("../../src/entries/preview.ts");
                 }
                 _ => unreachable!("新增 entry 必须在这里补自己的 include_str!"),
             }
@@ -627,6 +634,8 @@
             "pub fn open_log_window(",
             "pub fn open_link_window(",
             "fn ensure_tasks_window(",
+            // 2026-11-06：图片预览窗恢复（全局唯一 ⇒ 与其它辅助窗口同一套「单例 + 串行创建」）。
+            "fn ensure_preview_window(",
         ] {
             let body = rust_fn_body_nth(commands, signature, 0);
             assert!(
@@ -657,8 +666,9 @@
             // **不许**是 `show_existing_aux_window`（它里面要 `recenter` ⇒ 等主线程应答的 getter，
             // 那就是"带着不可重入的锁等主线程"，见 `aux_window_create_lock_scope_never_waits_on_the_main_thread`）。
             //
-            // 2026-11-05（拍板 B）：图片预览改走应用内覆盖层，预览窗路径已删除 ⇒
-            // 快路径回到不带起始矩形的最简签名。
+            // 2026-11-05（拍板 B）：图片预览改走应用内覆盖层，预览窗路径一度被删除；
+            // 2026-11-06 用户要求恢复成独立窗口（但全局单例）⇒ 快路径仍是不带起始矩形的
+            // 最简签名，`geo = None` 时 `show_existing_aux_window` 只 show + focus。`ensure_preview_window(` 走的正是这一支。
             helper.contains("show_existing_aux_window(app, label, geo, reveal)")
                 && helper.contains("app.get_webview_window(label)"),
             "`ensure_aux_window` 必须做双重检查（锁外快路径 + 锁内存在性判定），少一次就会开出第二个窗口"
@@ -678,6 +688,9 @@
             ("const AUX_TASKS_RESIDENT: bool = ", true),
             ("const AUX_LINK_RESIDENT: bool = ", true),
             ("const AUX_WINDOWS_RESIDENT: bool = ", false),
+            // 2026-11-06：预览窗**关闭即销毁** —— 用户要求"关掉后再次点击能重新创建"，
+            // 常驻（关闭即隐藏）走不到那条路（这也是它唯一的可行性依据，别只翻布尔值）。
+            ("const AUX_PREVIEW_RESIDENT: bool = ", false),
         ] {
             let want = format!("{signature}{want_resident}");
             assert!(
@@ -695,7 +708,9 @@
         // 它常驻（`AUX_TASKS_RESIDENT = true`）⇒ 启动时那 ~23 MB 的 WebView 是**白占**的，
         // 而首开群任务是低频动作，付一次 1–2 秒完全可以接受，付完之后照样秒开。
         // 2026-11-05（拍板 B）：唯一的预热目标（图片预览窗）随覆盖层方案一起删除 ⇒
-        // 整个 `prewarm_aux_windows` 命令已不存在，这里改为正面钉住"预热路径不得复活"。
+        // 整个 `prewarm_aux_windows` 命令已不存在。2026-11-06 预览窗恢复成独立窗口，
+        // 但**没有**恢复预热：预览仍是低频动作，而预热常驻一份 WebView 是白占内存。
+        // 这条断言保留为"预热路径不得复活"的正面钉子。
         assert!(
             !commands.contains("prewarm_aux_windows"),
             "预热命令已随预览窗删除（2026-11-05 拍板 B）：不要让它在别处复活"
@@ -722,6 +737,8 @@
             "pub fn open_log_window(",
             "pub fn open_link_window(",
             "fn ensure_tasks_window(",
+            // 2026-11-06：预览窗同一套（多屏不同缩放下必须按物理像素落地）。
+            "fn ensure_preview_window(",
         ] {
             let body = rust_fn_body_nth(commands, signature, 0);
             assert!(
@@ -739,6 +756,78 @@
                  中间这段用来摆位置/尺寸，否则窗口会先在默认位置闪一下再跳过去"
             );
         }
+    }
+
+    /// **图片预览窗口只有一个创建点**（用户 2026-11-06："窗实例只有一个。如果已经打开过一个，
+    /// 点了其他图片就替换内容"）。
+    ///
+    /// 为什么用源码扫描而不是真开窗：真宿主里数 `WebviewWindow` 要 GUI 会话 + 辅助窗口权限
+    /// （CI 的 `cargo test` 里跑不了），而"每次点击多开一扇"这个回归的**唯一入口**就是
+    /// `WebviewWindowBuilder`。把它钉成「`preview.html` 全命令面只构造一次、只在一个函数里、
+    /// 那个函数只通过 `ensure_aux_window` 出手」，编译期就能挡住"连点三张图 ⇒ 三扇窗"。
+    ///
+    /// 反例自证（本轮真跑过，读数是 1 → 2）：把 `open_image_preview` 里的委托换回内联
+    /// `WebviewWindowBuilder`，① 与 ② 两条会同时红（创建点从 1 变 2；命令体里出现 builder）。
+    #[cfg(desktop)]
+    #[test]
+    fn preview_window_has_exactly_one_creation_site() {
+        let commands = all_commands_src();
+
+        // 反空转锚点：目标函数体必须先真的取到（取不到时下面 ① 的计数会是 0，
+        // 虽然 0 也不等于 1，但报错信息应该直接指出"锚点过期"）。
+        let ensure = rust_fn_body(commands, "fn ensure_preview_window(");
+        assert!(
+            !ensure.is_empty(),
+            "找不到 `ensure_preview_window` 的函数体 —— 这条守卫会变成空转"
+        );
+        assert!(
+            code_flat(&ensure).contains("WebviewUrl::App(\"preview.html\".into())"),
+            "预览窗必须打开自己的文档 preview.html（不许共用一个入口再 if/else 分窗口）"
+        );
+
+        // ① 全命令面里 `preview.html` 只被构造一次 ⇒ 不存在"第二条开窗路"。
+        let creation_sites = commands.matches("WebviewUrl::App(\"preview.html\"").count();
+        assert_eq!(
+            creation_sites, 1,
+            "预览窗口出现了 {creation_sites} 个 `WebviewUrl::App(\"preview.html\") 创建点 —— \
+             全局只能有一个（单例是用户明确要求；多出来的那条就是\"每次点击新开一扇\"）"
+        );
+
+        // ② 唯一的命令入口不许自己建窗：它只准委托给单例 helper。
+        //    （desktop / mobile 是同签名 cfg 双胞胎 ⇒ 显式选第 0 份＝desktop。）
+        let open = rust_fn_body_nth(commands, "pub fn open_image_preview(", 0);
+        assert!(
+            code_flat(&open).contains("ensure_preview_window(&app,&state,true)")
+                || code_flat(&open).contains("ensure_preview_window(&app,state,true)"),
+            "open_image_preview 必须委托给 `ensure_preview_window`（单例 + 复用）"
+        );
+        assert!(
+            !open.contains("WebviewWindowBuilder"),
+            "open_image_preview 里不许出现 `WebviewWindowBuilder` —— 那正是\"每次点击新开一扇\"的写法"
+        );
+
+        // ③ 复用分支不许动几何：传给 `ensure_aux_window` 的 geo 必须是 `None`
+        //    （用户要求复用时不闪烁、位置/尺寸/层级都不变）。
+        //    `code_flat` 只去空白、**不去注释**，而这条调用中间正夹着解释性注释
+        //    （注释里写着 `geo`），所以先把整行注释剥掉再压平，否则会读到"None 在注释后面"的假红。
+        let ensure_code = ensure
+            .lines()
+            .filter(|l| !l.trim_start().starts_with("//"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(
+            code_flat(&ensure_code)
+                .contains("ensure_aux_window(app,crate::WINDOW_PREVIEW,None,AUX_PREVIEW_RESIDENT,"),
+            "`ensure_preview_window` 必须给 `ensure_aux_window` 传 `None` 的 geo —— \
+             传 Some(geo) 会在每次复用时重新居中/改尺寸（那就是\"窗口跳一下\"）"
+        );
+
+        // ④ label 必须是那个与主窗口一致的固定常量（前端 store / capability 都按它）。
+        assert_eq!(
+            crate::WINDOW_PREVIEW,
+            "preview",
+            "预览窗 label 被改动了：前端 `inWindow` 分支与 capability 的 windows 清单都按它"
+        );
     }
 
     /// 装饰性数据**不得否决用户的动作**（2026-09-24 复查辅助窗口时找到的同形状缺陷）。
