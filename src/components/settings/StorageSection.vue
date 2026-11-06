@@ -233,7 +233,7 @@ watch(
       </button>
     </SettingsRow>
 
-    <div class="flex items-center justify-between gap-3 px-4 py-3">
+    <div class="settings-card-row flex items-center justify-between gap-3">
       <span class="min-w-0 text-xs leading-5 text-[var(--gosslan-text-2)]">
         {{ t("settings.storage.stats.media") }} <b>{{ cacheInfo?.media_count ?? 0 }}</b> {{ t("settings.storage.stats.unit") }} ·
         <b>{{ formatBytes(cacheInfo?.media_bytes ?? 0) }}</b><br />

@@ -4,7 +4,7 @@ defineProps<{ title: string; footer?: string }>();
 
 <template>
   <section>
-    <h3 class="mb-2 px-1 text-xs font-medium tracking-wide text-[var(--gosslan-text-2)]">
+    <h3 class="settings-group-caption mb-2 text-xs font-medium tracking-wide text-[var(--gosslan-text-2)]">
       {{ title }}
     </h3>
     <div
@@ -13,7 +13,7 @@ defineProps<{ title: string; footer?: string }>();
     >
       <slot />
     </div>
-    <p v-if="footer" class="mt-2 px-1 text-caption leading-relaxed text-[var(--gosslan-text-2)]">
+    <p v-if="footer" class="settings-group-caption mt-2 text-caption leading-relaxed text-[var(--gosslan-text-2)]">
       {{ footer }}
     </p>
   </section>

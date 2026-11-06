@@ -75,7 +75,7 @@ async function onFingerprintTap() {
        桌面端导航项也读同一个键 ⇒ 「标签 = 内容」（settingsStructure 守卫钉住）。
        用户 2026-09-21：「桌面版的关于和重置里没有重置」——就是这条不一致。 -->
   <SettingsGroup :title="t('settings.item.about')" :footer="t('settings.group.about.footer', { version })">
-    <div class="px-4 py-3">
+    <div class="settings-card-row">
       <div class="text-sm text-[var(--gosslan-text)]">{{ t("settings.about.fingerprint") }}</div>
       <!-- 保留 `select-text`（指纹要能手动选中复制）；`role`/`tabindex`/键盘让它同时是
            一个真按钮 —— 点了要能复制（见 `onFingerprintTap`），并就地给出结果提示。 -->

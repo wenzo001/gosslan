@@ -59,6 +59,7 @@ import {
   V_HTML_ALLOWED,
   checkContainImageClip,
   checkBackToLatestAvoidance,
+  findRawCardPadding,
 } from "./designGuards.ts";
 
 // ---------------- ⓪ 选中态/原生控件颜色必须吃主题变量（#35-N7） ----------------
@@ -2684,7 +2685,9 @@ test("默认头像选择器：选项网格来自派生清单（含自定义色�
   // 资料页对齐（用户 2026-10-22）：头像收到 64px，与右侧「输入行 + 按钮行」视觉同高并居中。
   assert.match(profile, /data-profile-avatar/, "头像框要有可量测的定位点");
   assert.match(profile, /data-profile-fields/, "右侧字段要有可量测的定位点");
-  assert.match(profile, /flex items-center gap-4 p-4/, "头像与右侧必须垂直居中（两者高度已压到接近）");
+  // 卡片内边距已收进 `settings-card-row`（㊶，16 四边）；这一格守的是「垂直居中 + gap-4」，
+  // padding 不再由本行携带，所以锚点跟着源码一起搬到新形状上（判据搬迁同时搬锚点）。
+  assert.match(profile, /settings-card-row flex items-center gap-4/, "头像与右侧必须垂直居中（两者高度已压到接近）");
   assert.match(profile, /class="h-16 w-16/, "头像 64px 才与右侧两行同高");
   const at = profile.indexOf("async function onPresetApply");
   assert.ok(at > 0, "找不到 onPresetApply —— 资料页没有接上默认头像");
@@ -7267,4 +7270,82 @@ test("BT-03 反例自证：把位移绑回 bottom 的 style 删掉必须红", ()
     issues.some((i) => i.message.includes("BT-03")),
     `删掉 style 绑定必须报 BT-03，实际：${JSON.stringify(issues)}`,
   );
+});
+
+// ---------------- ㊶ 设置分区卡片内边距只走三档类（2026-11-06） ----------------
+
+/**
+ * 用户报「关于那个卡片内边距比其它分区小」。
+ * 实测四分区卡片行 padding 全是一组 12/16（"更紧"是单行 48 vs 双行 64 的行高错觉），
+ * 真正散掉的只有 4 处自己写的 `px-4 py-2.5` / `p-4` / `px-3 py-3`。
+ * 这条判据盯的是"不许再有卡片级散值"，而不是"数字必须等于 16" —— 后者一旦改了 token，
+ * 判据会跟着假红；前者只守"必须消费同一来源"。
+ */
+
+/** 设置目录里全部 .vue（分母现数；空目录会让判据静默通过，所以必须断言份数）。 */
+function settingsSectionFiles(): Array<{ name: string; src: string }> {
+  const dir = new URL("../components/settings/", import.meta.url);
+  const names = readdirSync(dir).filter((n) => n.endsWith(".vue")).sort();
+  return names.map((name) => ({ name, src: readFileSync(join(dir.pathname, name), "utf8") }));
+}
+
+test("㊶ 真实树：设置分区 0 处卡片级散值（分母现数）", () => {
+  const files = settingsSectionFiles();
+  assert.ok(files.length >= 17, `设置目录只扫到 ${files.length} 份 .vue —— 判据可能扫错了目录`);
+  const offenders = files.flatMap((f) =>
+    findRawCardPadding(f.src).map((i) => `${f.name}:${i.line} ${i.message.split("——")[0]}`),
+  );
+  assert.deepEqual(offenders, [], offenders.join("\n"));
+});
+
+test("㊶ 反例自证：写回 `px-4 py-3` 必须命中（不许空转）", () => {
+  const broken = '<div class="flex flex-wrap items-center px-4 py-3">x</div>';
+  const hits = findRawCardPadding(broken);
+  assert.equal(hits.length, 2, `必须分别命中 px-4 / py-3，实际：${JSON.stringify(hits)}`);
+  assert.ok(hits.some((h) => h.message.includes("px-4")), "px-4 必须是冲突点");
+  assert.ok(hits.some((h) => h.message.includes("py-3")), "py-3 必须是冲突点");
+});
+
+test("㊶ 反例自证：`p-4` / `px-4 py-2.5` / `px-3 py-3` 三种真实历史写法都必须红", () => {
+  for (const cls of ["p-4", "px-4 py-2.5", "px-3 py-3", "p-3"]) {
+    const hits = findRawCardPadding(`<div class="${cls}">x</div>`);
+    assert.ok(hits.length > 0, `历史散值「${cls}」必须命中，实际 0 命中`);
+  }
+});
+
+test("㊶ 不误伤：控件级 padding（px-3 py-1.5 / p-2 / px-2.5 py-1）放行", () => {
+  const ok = `<div class="px-3 py-1.5">a</div><button class="p-2">b</button><span class="px-2.5 py-1">c</span>`;
+  assert.deepEqual(findRawCardPadding(ok), []);
+});
+
+test("㊶ 注释里的示例不算真用法（剥注释但保留行号）", () => {
+  const commented = `<!-- 旧写法：<div class="px-4 py-3"> -->\n<div class="settings-card-row">x</div>`;
+  assert.deepEqual(findRawCardPadding(commented), []);
+});
+
+test("㊶ 三档类与 token 只有一个来源：style.css 定义 + 组件真的在消费", () => {
+  const css = readFileSync(new URL("../style.css", import.meta.url), "utf8");
+  assert.match(css, /--gosslan-card-pad:\s*16px/, "卡片行标准值必须是 16px（决策 8 + space-16）");
+  assert.match(css, /--gosslan-card-pad-inset:\s*12px/, "内嵌块档必须是 12px（space-12）");
+  assert.match(css, /--gosslan-group-caption-inset:\s*4px/, "分组标题缩进必须是 4px（space-4）");
+  assert.match(
+    css,
+    /\.settings-card-row\s*\{\s*padding:\s*var\(--gosslan-card-pad\)/,
+    "`.settings-card-row` 必须直接吃 token，不许写第二份数字",
+  );
+  assert.match(
+    css,
+    /\.settings-card-inset\s*\{\s*padding:\s*var\(--gosslan-card-pad-inset\)/,
+    "`.settings-card-inset` 必须直接吃 token",
+  );
+  assert.match(
+    css,
+    /\.settings-group-caption\s*\{\s*padding-left:\s*var\(--gosslan-group-caption-inset\)/,
+    "`.settings-group-caption` 必须直接吃 token",
+  );
+
+  const row = readFileSync(new URL("../components/settings/SettingsRow.vue", import.meta.url), "utf8");
+  assert.match(row, /class="settings-card-row/, "SettingsRow 必须消费卡片行 token（分区的新行默认走它）");
+  const group = readFileSync(new URL("../components/settings/SettingsGroup.vue", import.meta.url), "utf8");
+  assert.match(group, /settings-group-caption/, "分组标题/脚注必须消费缩进 token");
 });

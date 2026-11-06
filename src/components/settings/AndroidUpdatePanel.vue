@@ -134,7 +134,7 @@ const downloadLabel = computed(() =>
 </script>
 
 <template>
-  <div class="px-4 py-3">
+  <div class="settings-card-row">
     <div class="flex items-start justify-between gap-3">
       <div class="min-w-0">
         <p class="text-sm text-[var(--gosslan-text)]">
@@ -162,7 +162,7 @@ const downloadLabel = computed(() =>
 
     <div
       v-if="showCard"
-      class="mt-3 rounded-[var(--gosslan-radius-md)] border border-[var(--gosslan-border)] bg-[var(--gosslan-bg)] p-3"
+      class="settings-card-inset mt-3 rounded-[var(--gosslan-radius-md)] border border-[var(--gosslan-border)] bg-[var(--gosslan-bg)]"
     >
       <p class="text-sm font-medium text-[var(--gosslan-text)]">
         {{ t("settings.updates.available", { version: state.info?.version ?? "" }) }}

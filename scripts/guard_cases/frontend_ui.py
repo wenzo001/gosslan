@@ -78,9 +78,11 @@ CASES: list[Case] = [
         name="键盘可达（div @click 必须报出）",
         why="`div @click` 触屏/鼠标能用但键盘够不着、读屏念成普通文本",
         file=ROOT / "src" / "components" / "settings" / "AboutSection.vue",
+        # 锚点随 ㊶ 一起搬：AboutSection 的卡片行已换成 `settings-card-row`
+        # （判据搬迁必须同时搬锚点，否则这条用例会报「锚点出现 0 次」）。
         injections=[(
-            "<div class=\"px-4 py-3\">",
-            "<div class=\"px-4 py-3\">\n      <div class=\"cursor-pointer\" @click=\"onFingerprintTap\">x</div>",
+            "<div class=\"settings-card-row\">",
+            "<div class=\"settings-card-row\">\n      <div class=\"cursor-pointer\" @click=\"onFingerprintTap\">x</div>",
         )],
         cmd=node_test("src/utils/designGuards.test.ts"),
         cwd=ROOT,
@@ -387,9 +389,10 @@ CASES: list[Case] = [
         name="截断文本要有可访问名（truncate 必须有 title）",
         why="被截断的完整内容鼠标悬停拿不到、读屏也可能拿不到",
         file=ROOT / "src" / "components" / "settings" / "AboutSection.vue",
+        # 锚点随 ㊶ 一起搬（AboutSection 的卡片行已换成 `settings-card-row`）。
         injections=[(
-            '<div class="px-4 py-3">',
-            '<div class="px-4 py-3">\n      <div class="truncate">完整名字很长很长</div>',
+            '<div class="settings-card-row">',
+            '<div class="settings-card-row">\n      <div class="truncate">完整名字很长很长</div>',
         )],
         cmd=node_test(
             "src/utils/designGuards.test.ts",
@@ -1231,5 +1234,22 @@ CASES: list[Case] = [
         cwd=ROOT,
         expect_fail_hint="切段循环又长出第二份",
         tags=["frontend", "render", "new-guards"],
+    ),
+    Case(
+        name="设置分区卡片内边距又写回散值（px-4 py-3）",
+        why="2026-11-06 用户报「关于那个卡片内边距比其它分区小」。实测四分区卡片行 padding 其实全是一组 12/16"
+        "（'更紧'是单行 48 vs 双行 64 的行高错觉），真正散掉的只有 4 处自己写的"
+        " `px-4 py-2.5` / `p-4` / `px-3 py-3`。散值只要还在，下一个分区就会照抄**最近的那个**"
+        " ⇒ 标准值迟早再散。本条注入把 `SettingsRow.vue` 的卡片行换回 `px-4 py-3`"
+        "（新分区最可能抄的那一行），必须由 ㊶ 那条判据点名并红。",
+        file=ROOT / "src" / "components" / "settings" / "SettingsRow.vue",
+        injections=[(
+            'class="settings-card-row flex flex-wrap items-center gap-x-3 gap-y-2"',
+            'class="flex flex-wrap items-center gap-x-3 gap-y-2 px-4 py-3"',
+        )],
+        cmd=node_test("src/utils/designGuards.test.ts"),
+        cwd=ROOT,
+        expect_fail_hint="设置分区又写了卡片级 padding",
+        tags=["frontend", "settings", "new-guards"],
     ),
 ]

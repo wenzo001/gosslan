@@ -3545,3 +3545,39 @@ export function checkContainImageClip(detailSrc: string, name: string): GuardIss
   }
   return out.sort((a, b) => a.line - b.line);
 }
+
+// ---------------- ㊶ 设置分区卡片内边距只走三档类 ----------------
+
+/**
+ * 设置分区里**卡片级**的内边距只许来自 `settings-card-row` / `settings-card-inset` /
+ * `settings-group-caption`，数值只留在 `--gosslan-card-pad` 族（16 / 12 / 4）。
+ *
+ * 为什么（2026-11-06 用户报「关于那个卡片内边距比其它分区小」）：实测四分区卡片行
+ * padding 其实**全是一组 12/16**（"关于更紧"是单行 48 vs 双行 64 的行高错觉），
+ * 真正散掉的只有 4 处自己写的 `px-4 py-2.5` / `p-4` / `px-3 py-3`。散值只要还在，
+ * 下一个分区就会照抄**最近的那个**，标准值迟早再散 —— 所以判据盯 token 而不是盯数字。
+ *
+ * 只认**卡片级**的档：四边 >=12（`p-3|4|5|6`）、纵向 >=12（`py-3|4|5|6`）、
+ * 横向 >=16（`px-4|5|6`）。控件自己的 `px-3 py-1.5`（输入框内边距）、色板 `p-2`
+ * 不属于卡片内边距，不受此限 —— 横向 12 正是控件的标准内距，禁掉它会误伤整片表单。
+ * HTML 注释先抹成空格（保留行号），避免注释里的说明造成假红。
+ */
+const RAW_CARD_PADDING_TOKEN_RE = /^(?:(?:p|py)-(?:3|4|5|6)|px-(?:4|5|6))$/;
+
+export function findRawCardPadding(src: string): GuardIssue[] {
+  const cleaned = src.replace(/<!--[\s\S]*?-->/g, (m) => m.replace(/[^\n]/g, " "));
+  const out: GuardIssue[] = [];
+  for (const m of cleaned.matchAll(CLASS_ATTR_RE)) {
+    for (const tok of m[1].split(/\s+/).filter(Boolean)) {
+      if (!RAW_CARD_PADDING_TOKEN_RE.test(tok)) continue;
+      out.push({
+        line: lineAt(cleaned, m.index ?? 0),
+        message:
+          `设置分区又写了卡片级 padding「${tok}」—— 卡片行一律 \`settings-card-row\`（16 四边）、` +
+          "卡片内嵌块 `settings-card-inset`（12 四边）、分组标题/脚注 `settings-group-caption`（左缩进 4）。" +
+          "数值只在 `--gosslan-card-pad` 族里（docs/decisions.md 决策 8：16px 卡片、48px 行）。",
+      });
+    }
+  }
+  return out.sort((a, b) => a.line - b.line);
+}

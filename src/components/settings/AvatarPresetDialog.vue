@@ -76,7 +76,7 @@ function onCustomColor(e: Event) {
   >
     <!-- 预览固定：放在 BaseModal 的 header 插槽里，不跟下面的选项一起滚。 -->
     <template #header>
-      <div class="flex items-center gap-4 rounded-[var(--gosslan-radius-lg)] bg-[var(--gosslan-bg)] p-3">
+      <div class="settings-card-inset flex items-center gap-4 rounded-[var(--gosslan-radius-lg)] bg-[var(--gosslan-bg)]">
         <AvatarBox
           class="h-20 w-20 shrink-0 transition-colors duration-200"
           :bg="bg"

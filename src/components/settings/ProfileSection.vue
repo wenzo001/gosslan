@@ -212,7 +212,7 @@ function processAvatar(file: File): Promise<string> {
     <!-- 头像与右侧字段**视觉同高**（用户 2026-10-22：「头像缩一下，上下左右要对齐」）：
          头像 64px；右侧 = 输入行 34 + 间距 4 + 按钮行 30 = 68px，居中后上下各差 2px，
          肉眼看是一条水平带。头像再大（80）就会比按钮行高出一截。 -->
-    <div class="flex items-center gap-4 p-4">
+    <div class="settings-card-row flex items-center gap-4">
       <!-- 头像本体交给 SelfAvatar：与导航栏、"我的"页同一数据源、同一张默认脸。
            换头像的入口从"整块红色蒙版"改成右下角标，两个理由：
            ① 蒙版写的是 `opacity-0 group-hover:opacity-100`，而 `@media (hover: none)` 会把

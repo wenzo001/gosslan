@@ -323,6 +323,20 @@
   --gosslan-item-radius: var(--gosslan-radius-md);
   --gosslan-bubble-radius: 20px;
 
+  /* ---------------- 设置分区内边距（唯一来源，2026-11-06） ----------------
+     卡片行四边内边距 = 16px。依据：`docs/decisions.md` 决策 8「设置、任务、搜索、群资料
+     用 16px 卡片、48px 行」+ `tokens.json` 的 `space-16`（usage: list row inset）。
+     单行校验：16(上) + 20(一行文字) + 16(下) = 52，正好落在 `row-height-compact` 52px。
+     分层三档（都在这里，别在各分区里另写数字）：
+       · card-pad        卡片行四边（16）
+       · card-pad-inset  卡片**内嵌块**四边（12，视觉比卡片行低一级）
+       · group-caption-inset  分组标题/脚注的左缩进（4，与 `SettingsGroup` 的 px-1 同档）
+     ⚠️ 存量散值（`px-4 py-3` / `px-4 py-2.5` / `p-4` / `px-3 py-3` / `p-3`）由
+     `designGuards.findRawCardPadding` 守着，新增分区再写散值会直接红。 */
+  --gosslan-card-pad: 16px;
+  --gosslan-card-pad-inset: 12px;
+  --gosslan-group-caption-inset: 4px;
+
   /* ---------------- 消息流排版令牌（2026-10-23 iMessage 风格基线） ----------------
      气泡圆角 20px、连续消息相邻侧 6px、群聊头像 30px、气泡宽度 ≤ 100%。
      ⚠️ **行距不在这里**：同组 4px / 换组 10px 由 `messageHeight` 的 GAP_* 一处保管，
@@ -2216,6 +2230,21 @@ img {
    判据放在唯一的外壳上，而不是逐个调用方记得传 `last` —— 漏一个就会复发。 */
 [data-settings-rows] > div:last-child.h-px {
   display: none;
+}
+
+/* 设置分区的三档内边距 —— **唯一来源**，数值见 :root 的 `--gosslan-card-pad` 族。
+   2026-11-06 起各分区不再各自写 `px-4 py-3`：关于分区看起来"更紧"其实就是行高不同
+   （单行 48 vs 双行 64），padding 一直是同一组 12/16；统一到 16 四边后所有分区一条线。
+   层级差异只允许用这两档表达：整块卡片行（card-row）与卡片内嵌块（card-inset）。
+   `settings-group-caption` 只设左缩进（分组标题 + 脚注），不参与卡片内边距。 */
+.settings-card-row {
+  padding: var(--gosslan-card-pad);
+}
+.settings-card-inset {
+  padding: var(--gosslan-card-pad-inset);
+}
+.settings-group-caption {
+  padding-left: var(--gosslan-group-caption-inset);
 }
 
 @media (prefers-reduced-transparency: reduce) {
