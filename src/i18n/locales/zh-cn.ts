@@ -69,8 +69,6 @@ export const zhCN: MessageDict = {
   "logs.filterClear": "清除过滤",
   "logs.filterCount": "匹配 {n} / {total} 条",
   "logs.filterEmpty": "没有匹配的日志。",
-  "logs.merge": "合并相同日志",
-  "logs.mergeDup": "展开相同日志",
   "logs.mergedCount": "已合并 {n} 条相同日志",
 
   // ---- 设置页主框架 ----

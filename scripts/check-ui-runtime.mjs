@@ -15325,6 +15325,18 @@ async function runGroupFiles(cdp, url) {
   check("打开面板：按群拉一次清单并渲染文件行",
     s.dialog && s.calls.join(",") === "g1" && s.files.includes("g1.bin"),
     "calls=[g1] / g1.bin", JSON.stringify({ calls: s.calls, files: s.files }));
+  // B6（2026-11-06）：夹具这条文件的 created_at=0 ⇒ `fmtConversationTime` 返回空串。
+  // 判「分隔点跟着内容一起消失」，同时正控「有内容的字段仍在」—— 否则把整行删空也能绿。
+  const meta = () => cdp.eval(`(() => {
+    const name = [...document.querySelectorAll('[role="dialog"] [title$=".bin"]')][0];
+    if (!name) return null;
+    const metaEl = name.parentElement && name.parentElement.children[1];
+    return metaEl ? (metaEl.innerText || '').replace(/\\s+/g, ' ').trim() : null;
+  })()`);
+  const m0 = await meta();
+  check("文件行元信息：时间缺失时不留悬空「·」（字段内容该在的仍在）",
+    !!m0 && !/·\s*$/.test(m0) && !/·\s*·/.test(m0) && m0.includes("KB"),
+    "元信息行 = 类型 · 大小 · 发送者（不含空时间与悬空分隔点）", JSON.stringify({ meta: m0 }));
 
   await open(false);
   await open(true);
