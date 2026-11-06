@@ -111,3 +111,28 @@
 - 构建：`npm run build` → `[frontend] ✅ vite build（5.5s）`
 - 截图（`test-results/ui-redesign/p1/`）：`desktop-1280-light/dark`、`mobile-390-light/dark`、`mobile-360-light`
 - 运行方式：worktree 内 `npx vite --port 1421` + Brave CDP 截图（不写用户工作区、不碰 1420 上你自己的 dev server）
+
+## 6. 第 2 段实施记录（图标 + 应用图标）
+
+落地：
+
+- 新增 `components/ui/iconRegistry.ts`：`lucide-vue-next` 具名导出 → **kebab 键 → 组件** 的静态表（112 键），保留 tree-shaking；`CheckCircle2 → "check-circle2"`、`ImageIcon → "image-icon"`（不剥尾 `Icon`，否则与 `Image` 撞键）。
+- 新增 `components/ui/Icon.vue`：全应用唯一渲染出口，`size ∈ {16,20,24}`（16 档描边 1.8，其余 2.0），`label` 有值当图片读、无值整枚 `aria-hidden`。
+- `navIcons.ts` 收敛为“画板四枚侧栏轮廓 → registry 键”的映射（会话=气泡、通讯录=双人、收藏=**书签**、链接=链环），尺寸档 `rail 23 / tab 21`；`NavIcon.vue` 内部改走 `Icon.vue`，不再自绘 path、不再 import lucide。
+- `fileKind.ts` / `todoCustomIcons.ts` 从“组件映射”改为“registry 键映射”（`FILE_KIND_ICON_NAMES` / `TODO_CUSTOM_ICON_NAMES`），Node 单测不再解析 lucide。
+- 53 个 UI 文件改为 `<Icon name="…">`；5 个用图标当变量的文件（`DevDiagPanel`/`FavoritePanel`/`GroupTasksBoard`/`SettingsWindow`/`ConversationListItem`）连同组件映射一并改成“名字 + Icon”。
+- 内联 `<svg>`：`TitleBar`/`GroupTasksBoard` 的图标并入 `Icon.vue`；`BubbleTail` 是几何装饰（气泡尾巴），按方案**豁免**。
+- 应用图标：画板 `brand/png/app-icon-1024.png`（1024×1024）覆盖 `src-tauri/icons/icon-source.png` 与 `icon.png`，跑 `npm run icon` 生成 36 个平台尺寸；未手改 `src-tauri` 配置、未动 Rust。
+
+豁免（`feat/code-fold` 冲突文件，合入后迁）：
+
+- `components/MessageItem.vue`、`components/message/MessageCodeBubble.vue` 仍直连 lucide；本段**主动回退** `MessageItem.vue` 的 codemod 改动，避免与 `gosslan-codefold` 那笔冲突。
+- 两个 barrel（`ui/icons.ts`、`ui/iconRegistry.ts`）是唯一允许直连 lucide 的物理入口。
+
+判据锚点搬迁（同提交，均保留反例自证）：
+
+- ㊵ 分母现算 + 扫描白名单加入 `iconRegistry.ts`（registry 本身必须直连 lucide）。
+- ⑬ 导航：从“navIcons 必须 import lucide / 值是组件”改为“登记 registry 键”，并新增 `NavIcon` 必须走 `Icon.vue`。
+- ⑰ 看板映射表：取值必须是 `iconRegistry.ts` 里真实存在的键（反例 `not-in-registry` 仍会红）。
+- 51 BackArrow：从 `<ArrowLeft v-else` 改为 `<Icon name="arrow-left" v-else`，平台分支不许合并。
+- `remindFlow` 抖动入口：锚点从 `<Zap` 改为 `name="zap"`，排序判据不变。

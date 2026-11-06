@@ -11,7 +11,7 @@ import { useMemberProfile } from "@/composables/useMemberProfile";
 import { usePressMenu } from "@/composables/usePressMenu";
 import { haptic } from "@/utils/haptics";
 import UnreadBadge from "@/components/UnreadBadge.vue";
-import { ListChecks, Megaphone, Pin } from "lucide-vue-next";
+import Icon from "@/components/ui/Icon.vue";
 import type { Conversation } from "@/types";
 import AvatarBox from "@/components/ui/AvatarBox.vue";
 
@@ -214,14 +214,16 @@ const gridTiles = computed(() => {
           :title="displayName"
         >
           <!-- 置顶标识（微信同款位置：名字左侧）。纯本地偏好，对方不可见。 -->
-          <Pin
+          <Icon
             v-if="conv.pinned"
+            name="pin"
             class="mr-1 inline-block h-3 w-3 shrink-0 -rotate-45 align-[-1px]"
             :class="active ? 'opacity-90' : 'text-[var(--gosslan-text-2)]'"
             aria-hidden="true"
           /><!-- 群公告标识：该群有当前生效的公告（用户 2026-09-17：会话列表上提醒一下） -->
-          <Megaphone
+          <Icon
             v-if="hasAnnouncement"
+            name="megaphone"
             class="mr-1 inline-block h-3 w-3 shrink-0 align-[-1px] text-[var(--gosslan-warning-ink)]"
             :aria-label="t('conv.announceBadge')"
           />{{ displayName }}
@@ -242,9 +244,9 @@ const gridTiles = computed(() => {
             class="flex items-center gap-[3px]"
             :title="t('todo.openForMe', { n: openTasks })"
           >
-            <ListChecks
+            <Icon
+              name="list-checks"
               class="h-3.5 w-3.5 text-[var(--gosslan-accent-ink)]"
-              :stroke-width="2.2"
               aria-hidden="true"
             />
             <UnreadBadge :count="openTasks" tone="info" />

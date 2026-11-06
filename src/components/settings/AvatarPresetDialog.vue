@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import Icon from "@/components/ui/Icon.vue";
 /**
  * 默认头像选择器：一个表情 + 一个背景色，可手动搭配，也可随机。
  *
@@ -10,7 +11,6 @@
  * SVG data URL，仍走 `avatar` 原有图片通道，见 `utils/avatarSeed.ts`。
  */
 import { computed, ref, watch } from "vue";
-import { Palette, Shuffle } from "lucide-vue-next";
 import { Check } from "@/components/ui/icons";
 import BaseModal from "@/components/BaseModal.vue";
 import SecondaryBtn from "@/components/ui/SecondaryBtn.vue";
@@ -93,7 +93,7 @@ function onCustomColor(e: Event) {
             class="tap-safe mt-2 inline-flex items-center gap-1.5 rounded-[var(--gosslan-radius-md)] border border-[var(--gosslan-border)] px-2.5 py-1.5 text-xs transition hover:bg-[var(--gosslan-hover)]"
             @click="randomize"
           >
-            <Shuffle class="h-3.5 w-3.5" :stroke-width="2" />
+            <Icon name="shuffle" class="h-3.5 w-3.5" :stroke-width="2" />
             {{ t("settings.profile.avatar.random") }}
           </button>
         </div>
@@ -169,7 +169,7 @@ function onCustomColor(e: Event) {
               :stroke-width="3"
               aria-hidden="true"
             />
-            <Palette v-else class="h-4 w-4 text-white drop-shadow" :stroke-width="2" aria-hidden="true" />
+            <Icon name="palette" v-else class="h-4 w-4 text-white drop-shadow" :stroke-width="2" aria-hidden="true" />
           </button>
           <input
             ref="customColorInput"

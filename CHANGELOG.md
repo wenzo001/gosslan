@@ -14,6 +14,22 @@
 
 ## [Unreleased]
 
+## [5.18.37] - 2026-11-06
+
+### 界面重构 Pulse · 第 2 段：图标 + 应用图标
+
+- 新增 `components/ui/Icon.vue` 作为全应用唯一图标出口，造型统一来自 `lucide-vue-next`
+  的 `iconRegistry.ts`（112 个静态键，保留 tree-shaking）；尺寸只走 16 / 20 / 24 三档，
+  16 档描边 1.8、其余 2.0。
+- 53 个 UI 文件的图标引用改为 `<Icon name="…">`；`navIcons.ts` 收敛为画板四枚侧栏轮廓
+  （会话 / 通讯录 / 收藏书签 / 链接），`NavIcon.vue` 内部改走 `Icon.vue`，不再自绘 path。
+- `fileKind.ts` / `todoCustomIcons.ts` 从组件映射改为 registry 键映射，Node 单测不再解析
+  图标组件库。
+- 应用图标改用画板 `AppIcon`（1024×1024 单源），`npm run icon` 重生成 macOS / Windows /
+  Android / iOS 全部尺寸；未改 Rust 与 Tauri 配置。
+- 门禁锚点随入口迁移（㊵ / ⑬ / ⑰ / 51 / remindFlow），均保留反例自证；`feat/code-fold`
+  冲突文件 `MessageItem.vue`、`MessageCodeBubble.vue` 暂留直连并在方案文档登记豁免。
+
 ## [5.18.36] - 2026-11-06
 
 ### 界面重构 Pulse · 第 1 段：tokens 与骨架

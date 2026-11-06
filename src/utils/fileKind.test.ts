@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import {
   FILE_KIND_COLORS,
-  FILE_KIND_ICONS,
+  FILE_KIND_ICON_NAMES,
   extBadgeLabel,
   fileExt,
   fileKindOf,
@@ -51,10 +51,10 @@ test("配色与图标表覆盖全部文件类型（新增类型必须同时补�
   ]);
   for (const k of kinds) {
     assert.ok(FILE_KIND_COLORS[k], `缺配色：${k}`);
-    assert.ok(FILE_KIND_ICONS[k], `缺图标：${k}`);
+    assert.ok(FILE_KIND_ICON_NAMES[k], `缺图标：${k}`);
   }
   assert.equal(kinds.size, Object.keys(FILE_KIND_COLORS).length);
-  assert.equal(kinds.size, Object.keys(FILE_KIND_ICONS).length);
+  assert.equal(kinds.size, Object.keys(FILE_KIND_ICON_NAMES).length);
 });
 
 test("配色表每个类型都有明暗两档（深色模式不能缺档）", () => {

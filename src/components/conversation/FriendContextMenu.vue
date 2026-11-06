@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import Icon from "@/components/ui/Icon.vue";
 /**
  * 联系人（通讯录）右键菜单 —— 微信式（用户需求 2026-09-12 晚 #12：
  * 「联系人的右键菜单也可以参考微信，然后有『发起聊天』和『删除』。这两个功能图标你添加上。」）。
@@ -9,7 +10,6 @@
  */
 import { DropdownMenuItem, DropdownMenuSeparator } from "reka-ui";
 import { t } from "@/i18n";
-import { MessageSquare, UserMinus } from "lucide-vue-next";
 import ContextMenu from "@/components/ContextMenu.vue";
 
 defineProps<{ x: number; y: number }>();
@@ -25,7 +25,7 @@ const emit = defineEmits<{
 <template>
   <ContextMenu :x="x" :y="y" @close="emit('close')">
     <DropdownMenuItem class="gosslan-menu-item" @select="emit('chat')">
-      <MessageSquare />
+      <Icon name="message-square" />
       {{ t("conv.startChat") }}
     </DropdownMenuItem>
     <DropdownMenuSeparator class="gosslan-menu-sep" />
@@ -33,7 +33,7 @@ const emit = defineEmits<{
       class="gosslan-menu-item gosslan-menu-item--danger"
       @select="emit('confirm')"
     >
-      <UserMinus />
+      <Icon name="user-minus" />
       {{ t("common.deleteFriend") }}
     </DropdownMenuItem>
     <div class="gosslan-menu-hint">{{ t("friend.delete.keepHistory") }}</div>

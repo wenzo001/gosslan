@@ -1,41 +1,29 @@
 /**
- * 自定义类型图标的**组件映射**（键名 → 图标组件）。
+ * 自定义类型图标的**名字映射**（键名 → `Icon.vue` 的 registry 键）。
  *
  * 为什么不放进 `utils/todos.ts`：那份是纯逻辑册（Node 单测直接 import 它，见
- * `todos.test.ts` / `messageKinds.test.ts`）。把 lucide 组件拖进去等于让所有 Node
- * 判据都去解析组件库 —— 本仓"决策与执行分两册"的立场（`imageThumb.ts` 与
- * `imageThumbnail.ts`）就是为了这个：能在 Node 里判的部分不许依赖只能在浏览器里的部分。
+ * `todos.test.ts` / `messageKinds.test.ts`）。本文件只登记字符串名、不 import 组件，
+ * Node 判据不必解析 lucide 组件库 —— 本仓"决策与执行分两册"的立场
+ * （`imageThumb.ts` 与 `imageThumbnail.ts`）就是为了这个。
  *
  * 键集合与 `TODO_CUSTOM_ICONS`（= Rust `TODO_CUSTOM_ICONS`）必须**一模一样**，
  * 由 `todoCustomIcons.test.ts` 双向对账：少一个键 ⇒ 白名单里的值渲染成空白；
  * 多一个键 ⇒ 选择器出现一个存不进载荷的选项（对端拿不到那个形状）。
  */
-import {
-  BookOpen,
-  Clock,
-  Flag,
-  Heart,
-  Sparkles,
-  Star,
-  Tag,
-  Target,
-  Wrench,
-  Zap,
-} from "lucide-vue-next";
-import type { Component } from "vue";
+import type { IconName } from "@/components/ui/iconRegistry";
 import type { TodoCustomIcon } from "./todos";
 
-export const TODO_CUSTOM_ICON_COMPONENTS: Record<TodoCustomIcon, Component> = {
-  tag: Tag,
-  flag: Flag,
-  star: Star,
-  zap: Zap,
-  wrench: Wrench,
-  heart: Heart,
-  book: BookOpen,
-  clock: Clock,
-  target: Target,
-  sparkles: Sparkles,
+export const TODO_CUSTOM_ICON_NAMES: Record<TodoCustomIcon, IconName> = {
+  tag: "tag",
+  flag: "flag",
+  star: "star",
+  zap: "zap",
+  wrench: "wrench",
+  heart: "heart",
+  book: "book-open",
+  clock: "clock",
+  target: "target",
+  sparkles: "sparkles",
 };
 
 /** 选择器里的顺序 = 白名单顺序（同一份列表，不另写一份，见那条对账判据）。 */

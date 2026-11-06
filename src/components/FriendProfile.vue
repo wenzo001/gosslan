@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import Icon from "@/components/ui/Icon.vue";
 /**
  * 好友资料页（用户 2026-09-12 晚 #14：「用户详情页的样式也参考微信。信息还是现有的」）。
  *
@@ -22,7 +23,6 @@ import { useRouter } from "vue-router";
 import { useAppStore } from "@/stores/useAppStore";
 import { useChatStore } from "@/stores/useChatStore";
 import { useClipboard } from "@/composables/useClipboard";
-import { Copy, MessageCircle, UserMinus } from "lucide-vue-next";
 import BaseModal from "@/components/BaseModal.vue";
 import BackArrow from "@/components/ui/BackArrow.vue";
 import DangerBtn from "@/components/ui/DangerBtn.vue";
@@ -172,7 +172,7 @@ const confirmRemove = ref(false);
                 class="tap-safe ml-auto inline-flex h-7 shrink-0 items-center gap-1 whitespace-nowrap rounded-full bg-primary px-3 text-meta font-medium text-white transition hover:bg-primary-hover"
                 @click="emit('send-message', friend.device_id)"
               >
-                <MessageCircle class="h-3.5 w-3.5" />
+                <Icon name="message-circle" class="h-3.5 w-3.5" />
                 {{ t("common.sendMessage") }}
               </button>
             </div>
@@ -201,7 +201,7 @@ const confirmRemove = ref(false);
                     :title="t('friend.profile.safetyCopy')" :aria-label="t('friend.profile.safetyCopy')"
                     @click="copySafetyNumber"
                   >
-                    <Copy class="h-3 w-3" />
+                    <Icon name="copy" class="h-3 w-3" />
                   </button>
                 </div>
                 <div
@@ -273,7 +273,7 @@ const confirmRemove = ref(false);
             class="tap-safe inline-flex items-center gap-1.5 rounded-full border border-[var(--gosslan-border)] px-4 py-1.5 text-meta text-[var(--gosslan-danger-ink)] transition hover:bg-[var(--gosslan-danger-soft)]"
             @click="confirmRemove = true"
           >
-            <UserMinus class="h-3.5 w-3.5" />
+            <Icon name="user-minus" class="h-3.5 w-3.5" />
             {{ t("common.deleteFriend") }}          </button>
         </div>
       </div>

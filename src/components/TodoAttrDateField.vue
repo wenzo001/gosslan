@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import Icon from "@/components/ui/Icon.vue";
 /**
  * 「关联时间」属性控件：与类型/标签同壳（见 `TodoAttrField`），面板是**自绘日历**。
  *
@@ -10,7 +11,6 @@
  * 值口径不变：`YYYY-MM-DD`，空串 = 没填；「清除」发空串（后端按"明确清空"处理）。
  */
 import { computed, ref } from "vue";
-import { ChevronDown, ChevronLeft, ChevronRight } from "lucide-vue-next";
 import TodoAttrField from "@/components/TodoAttrField.vue";
 import { currentLocale, t } from "@/i18n";
 
@@ -105,7 +105,7 @@ function pick(value: string, close: () => void) {
       >
         <span v-if="modelValue" class="min-w-0 truncate tabular-nums" :title="modelValue">{{ modelValue }}</span>
         <span v-else class="min-w-0 truncate text-[var(--gosslan-text-2)]" :title="t('todo.datePlaceholder')">{{ t("todo.datePlaceholder") }}</span>
-        <ChevronDown class="h-3.5 w-3.5 shrink-0 text-[var(--gosslan-text-2)]" aria-hidden="true" />
+        <Icon name="chevron-down" class="h-3.5 w-3.5 shrink-0 text-[var(--gosslan-text-2)]" aria-hidden="true" />
       </button>
     </template>
 
@@ -129,7 +129,7 @@ function pick(value: string, close: () => void) {
             :title="t('todo.datePrevMonth')"
             @click="shiftMonth(-1)"
           >
-            <ChevronLeft class="h-4 w-4" />
+            <Icon name="chevron-left" class="h-4 w-4" />
           </button>
           <span class="text-meta font-medium text-[var(--gosslan-text)]">{{ monthLabel }}</span>
           <button
@@ -139,7 +139,7 @@ function pick(value: string, close: () => void) {
             :title="t('todo.dateNextMonth')"
             @click="shiftMonth(1)"
           >
-            <ChevronRight class="h-4 w-4" />
+            <Icon name="chevron-right" class="h-4 w-4" />
           </button>
         </div>
         <div class="grid grid-cols-7 gap-0.5 pb-1 text-center text-caption text-[var(--gosslan-text-2)]">

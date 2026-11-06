@@ -1,6 +1,6 @@
 <script setup lang="ts">
+import Icon from "@/components/ui/Icon.vue";
 import { computed } from "vue";
-import { ChevronDown } from "lucide-vue-next";
 import { Check } from "@/components/ui/icons";
 import {
   SelectContent,
@@ -43,7 +43,7 @@ function pick(value: unknown) {
     >
       <SelectValue class="min-w-0 truncate" :title="currentLabel" />
       <SelectIcon as-child>
-        <ChevronDown class="h-3.5 w-3.5 shrink-0 opacity-55" aria-hidden="true" />
+        <Icon name="chevron-down" class="h-3.5 w-3.5 shrink-0 opacity-55" aria-hidden="true" />
       </SelectIcon>
     </SelectTrigger>
     <SelectPortal>

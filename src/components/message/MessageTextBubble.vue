@@ -1,4 +1,5 @@
 ﻿<script setup lang="ts">
+import Icon from "@/components/ui/Icon.vue";
 import { t } from "@/i18n";
 import BubbleTail from "@/components/message/BubbleTail.vue";
 import { computed, nextTick, ref, watch, type CSSProperties } from "vue";
@@ -9,7 +10,6 @@ import { useMessageSegments } from "@/composables/useMessageSegments";
 import MessageLinkText from "@/components/message/MessageLinkText.vue";
 import { mentionHighlightBg, mentionHighlightColor } from "@/utils/chatStyle";
 import { parseQuote } from "@/utils/quote";
-import { Copy } from "lucide-vue-next";
 import { Check } from "@/components/ui/icons";
 
 const props = defineProps<{
@@ -223,7 +223,7 @@ async function openLink(href: string) {
         @click="emit('copy', content)"
       >
         <Check v-if="copied" class="h-3 w-3" />
-        <Copy v-else class="h-3 w-3" />
+        <Icon name="copy" v-else class="h-3 w-3" />
         {{ copied ? t("common.copied") : t("common.copy") }}
       </button>
     </div>

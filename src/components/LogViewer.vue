@@ -1,9 +1,9 @@
 <script setup lang="ts">
+import Icon from "@/components/ui/Icon.vue";
 import { computed, onMounted, onUnmounted, ref, watch } from "vue";
 import { useEventListener } from "@vueuse/core";
 import { useVirtualizer } from "@tanstack/vue-virtual";
 import { useClipboard } from "@/composables/useClipboard";
-import { Copy, FileDown, RefreshCw, ScrollText, Search } from "lucide-vue-next";
 import { Trash2, X } from "@/components/ui/icons";
 import TitleBar from "@/components/TitleBar.vue";
 import MobilePageFrame from "@/components/MobilePageFrame.vue";
@@ -328,7 +328,7 @@ function close() {
           @click="autoRefresh = !autoRefresh; syncTimer()"
         >
           <Spinner v-if="autoRefresh" size-class="h-3.5 w-3.5" decorative />
-          <RefreshCw v-else class="h-3.5 w-3.5" />
+          <Icon name="refresh-cw" v-else class="h-3.5 w-3.5" />
           <span class="hidden sm:inline">{{ t("logs.autoRefresh") }}</span>
         </button>
         <button
@@ -337,7 +337,7 @@ function close() {
           :aria-label="t('logs.refresh')"
           @click="load"
         >
-          <RefreshCw class="h-3.5 w-3.5" />
+          <Icon name="refresh-cw" class="h-3.5 w-3.5" />
           <span class="hidden sm:inline">{{ t("logs.refresh") }}</span>
         </button>
         <button
@@ -358,7 +358,7 @@ function close() {
           :aria-label="t('logs.copyPath')"
           @click="copyLogPath"
         >
-          <ScrollText class="h-3.5 w-3.5" />
+          <Icon name="scroll-text" class="h-3.5 w-3.5" />
           <span class="hidden sm:inline">{{ pathCopied ? t("logs.copied") : t("logs.copyPath") }}</span>
         </button>
         <button
@@ -369,7 +369,7 @@ function close() {
           :disabled="exporting"
           @click="exportBundle"
         >
-          <FileDown class="h-3.5 w-3.5" />
+          <Icon name="file-down" class="h-3.5 w-3.5" />
           <span class="hidden sm:inline">{{ exporting ? t("logs.exporting") : t("logs.export") }}</span>
         </button>
         <!-- 读屏播报：只播「用户动作的结果」（复制成功 / 清空待确认）。
@@ -384,7 +384,7 @@ function close() {
           :aria-label="t('logs.copy')"
           @click="copyAll"
         >
-          <Copy class="h-3.5 w-3.5" />
+          <Icon name="copy" class="h-3.5 w-3.5" />
           <span>{{ copied ? t("logs.copied") : t("logs.copy") }}</span>
         </button>
       </div>
@@ -425,7 +425,7 @@ function close() {
 
     <!-- 过滤条：字面包含匹配，命中处高亮。 -->
     <div class="flex shrink-0 items-center gap-2 border-b border-[var(--gosslan-divider)] px-3 py-1.5">
-      <Search class="h-3.5 w-3.5 shrink-0 text-[var(--gosslan-text-2)]" />
+      <Icon name="search" class="h-3.5 w-3.5 shrink-0 text-[var(--gosslan-text-2)]" />
       <input
         v-model="filter"
         type="text"
@@ -491,7 +491,7 @@ function close() {
           @click="autoRefresh = !autoRefresh; syncTimer()"
         >
           <Spinner v-if="autoRefresh" size-class="h-3.5 w-3.5" decorative />
-          <RefreshCw v-else class="h-3.5 w-3.5" />
+          <Icon name="refresh-cw" v-else class="h-3.5 w-3.5" />
           <span class="hidden sm:inline">{{ t("logs.autoRefresh") }}</span>
         </button>
         <button
@@ -500,7 +500,7 @@ function close() {
           :aria-label="t('logs.refresh')"
           @click="load"
         >
-          <RefreshCw class="h-3.5 w-3.5" />
+          <Icon name="refresh-cw" class="h-3.5 w-3.5" />
           <span class="hidden sm:inline">{{ t("logs.refresh") }}</span>
         </button>
         <button
@@ -523,7 +523,7 @@ function close() {
           :aria-label="t('logs.copy')"
           @click="copyAll"
         >
-          <Copy class="h-3.5 w-3.5" />
+          <Icon name="copy" class="h-3.5 w-3.5" />
           <span>{{ copied ? t("logs.copied") : t("logs.copy") }}</span>
         </button>
       </template>
@@ -559,7 +559,7 @@ function close() {
       </div>
 
       <div class="flex shrink-0 items-center gap-2 border-b border-[var(--gosslan-divider)] px-3 py-1.5">
-        <Search class="h-3.5 w-3.5 shrink-0 text-[var(--gosslan-text-2)]" />
+        <Icon name="search" class="h-3.5 w-3.5 shrink-0 text-[var(--gosslan-text-2)]" />
         <input
           v-model="filter"
           type="text"

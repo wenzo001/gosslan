@@ -16,7 +16,8 @@
  * 权限由调用方（`may_change_todo` 那一族）算完传 `disabled`，本组件只管选与不选。
  */
 import { TODO_CUSTOM_ICONS, type TodoCustomIcon } from "@/utils/todos";
-import { TODO_CUSTOM_ICON_COMPONENTS, TODO_CUSTOM_ICON_LABEL_KEY } from "@/utils/todoCustomIcons";
+import Icon from "@/components/ui/Icon.vue";
+import { TODO_CUSTOM_ICON_LABEL_KEY, TODO_CUSTOM_ICON_NAMES } from "@/utils/todoCustomIcons";
 import { t as translate } from "@/i18n";
 
 const props = defineProps<{
@@ -40,8 +41,8 @@ function pick(key: TodoCustomIcon) {
     <span class="mr-0.5 text-caption text-[var(--gosslan-text-2)]">{{ translate("todo.pickIcon") }}</span>
     <!-- 无权限时只回显当前那一枚：给一排按不动的按钮会让人以为是自己点坏了 -->
     <template v-if="props.disabled">
-      <component
-        :is="TODO_CUSTOM_ICON_COMPONENTS[props.modelValue]"
+      <Icon
+        :name="TODO_CUSTOM_ICON_NAMES[props.modelValue]"
         class="h-4 w-4 text-[var(--gosslan-primary)]"
         :aria-label="translate(TODO_CUSTOM_ICON_LABEL_KEY[props.modelValue])"
         :title="translate(TODO_CUSTOM_ICON_LABEL_KEY[props.modelValue])"
@@ -63,7 +64,7 @@ function pick(key: TodoCustomIcon) {
         :title="translate(TODO_CUSTOM_ICON_LABEL_KEY[key])"
         @click="pick(key)"
       >
-        <component :is="TODO_CUSTOM_ICON_COMPONENTS[key]" class="h-4 w-4" aria-hidden="true" />
+        <Icon :name="TODO_CUSTOM_ICON_NAMES[key]" class="h-4 w-4" aria-hidden="true" />
       </button>
     </div>
   </div>

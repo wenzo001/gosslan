@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import Icon from "@/components/ui/Icon.vue";
 import { t } from "@/i18n";
 import Spinner from "@/components/ui/Spinner.vue";
 import { computed } from "vue";
@@ -8,7 +9,6 @@ import { useChatStore } from "@/stores/useChatStore";
 import { api } from "@/api";
 import BaseModal from "@/components/BaseModal.vue";
 import StateBlock from "@/components/ui/StateBlock.vue";
-import { Download, Folder, RefreshCw } from "lucide-vue-next";
 import { formatBytes } from "@/utils/format";
 import { detailText } from "@/composables/useErrorText";
 import { shareTreeQueryOptions } from "@/utils/shareTreeQuery";
@@ -85,7 +85,7 @@ async function download(e: ShareEntry) {
         @click="load"
       >
         <Spinner v-if="loading" size-class="h-4 w-4" decorative />
-        <RefreshCw v-else class="h-4 w-4" />
+        <Icon name="refresh-cw" v-else class="h-4 w-4" />
       </button>
     </div>
 
@@ -129,7 +129,7 @@ async function download(e: ShareEntry) {
         class="flex items-center gap-2 rounded-[var(--gosslan-radius-sm)] px-2 transition hover:bg-[var(--gosslan-hover)]"
         :style="{ paddingLeft: `${12 + depth(e.path) * 16}px`, height: '36px' }"
       >
-        <Folder v-if="e.is_dir" class="h-4 w-4 shrink-0 text-[var(--gosslan-warning-ink)]" />
+        <Icon name="folder" v-if="e.is_dir" class="h-4 w-4 shrink-0 text-[var(--gosslan-warning-ink)]" />
         <span class="flex-1 truncate text-sm" :title="e.name">{{ e.name }}</span>
         <span v-if="!e.is_dir" class="text-caption text-[var(--gosslan-text-2)]">{{ formatBytes(e.size) }}</span>
         <button
@@ -138,7 +138,7 @@ async function download(e: ShareEntry) {
           :title="t('common.download')" :aria-label="t('common.download')"
           @click="download(e)"
         >
-          <Download class="h-4 w-4" />
+          <Icon name="download" class="h-4 w-4" />
         </button>
       </div>
     </div>

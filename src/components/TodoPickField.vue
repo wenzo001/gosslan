@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import Icon from "@/components/ui/Icon.vue";
 /**
  * 「三选一」字段：一行标签 + 一个当前值胶囊 + 自绘菜单。
  * 详情弹窗里的 状态 / 优先级 / 类型 三格共用这一份（一个家，别复制三份菜单）。
@@ -16,7 +17,6 @@
  * 那是独立一轮。
  */
 import { ref, watch } from "vue";
-import { ChevronDown } from "lucide-vue-next";
 import {
   DropdownMenuContent,
   DropdownMenuItem,
@@ -76,7 +76,7 @@ function pick(value: string) {
             :aria-label="hint ?? label"
           >
             {{ current }}
-            <ChevronDown class="h-3 w-3" aria-hidden="true" />
+            <Icon name="chevron-down" class="h-3 w-3" aria-hidden="true" />
           </button>
         </DropdownMenuTrigger>
         <DropdownMenuPortal>

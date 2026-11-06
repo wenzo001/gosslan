@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import Icon from "@/components/ui/Icon.vue";
 import { t } from "@/i18n";
 import Spinner from "@/components/ui/Spinner.vue";
 import { computed, ref, watch } from "vue";
@@ -11,14 +12,12 @@ import SecondaryBtn from "@/components/ui/SecondaryBtn.vue";
 import { useMemberProfile } from "@/composables/useMemberProfile";
 import { DropdownMenuItem } from "reka-ui";
 import ContextMenu from "@/components/ContextMenu.vue";
-import { AtSign, UserRound } from "lucide-vue-next";
 import {
   TODO_STATUSES, TODO_STATUS_CLASS, TODO_STATUS_LABEL_KEY, foldTodos, isEffectivelyArchived, todoRowsLoadState, } from "@/utils/todos";
 import { errorText } from "@/composables/useErrorText";
 import { useImeEnterGuard } from "@/composables/useImeEnterGuard";
 import { MAX_ANNOUNCEMENT_CHARS, MAX_GROUP_NAME_CHARS } from "@/utils/validation";
 import CharCounter from "@/components/ui/CharCounter.vue";
-import { ArrowRightLeft, Crown, ListChecks, LogOut, Plus, UserMinus } from "lucide-vue-next";
 import { X } from "@/components/ui/icons";
 import type { Friend } from "@/types";
 import AvatarBox from "@/components/ui/AvatarBox.vue";
@@ -373,7 +372,7 @@ async function confirmAction() {
           <div class="min-w-0 flex-1">
             <div class="flex items-center gap-1.5">
               <span class="truncate text-sm font-medium" :title="row.name">{{ row.name }}</span>
-              <Crown v-if="group.creator === row.id" class="h-3.5 w-3.5 shrink-0 text-[var(--gosslan-warning-ink)]" :title="t('group.owner')" />
+              <Icon name="crown" v-if="group.creator === row.id" class="h-3.5 w-3.5 shrink-0 text-[var(--gosslan-warning-ink)]" :title="t('group.owner')" />
               <span v-if="row.id === myId" class="shrink-0 text-caption text-[var(--gosslan-text-2)]">{{ t("group.me") }}</span>
             </div>
             <div class="text-xs text-[var(--gosslan-text-2)]">
@@ -387,7 +386,7 @@ async function confirmAction() {
             :title="t('group.transferOwner', { name: row.name })" :aria-label="t('group.transferOwner', { name: row.name })"
             @click="transferOwner(row.id)"
           >
-            <ArrowRightLeft class="h-4 w-4" />
+            <Icon name="arrow-right-left" class="h-4 w-4" />
           </button>
           <button
             v-if="isOwner && row.id !== myId"
@@ -395,7 +394,7 @@ async function confirmAction() {
             :title="t('group.removeMember', { name: row.name })" :aria-label="t('group.removeMember', { name: row.name })"
             @click="askRemoveMember(row.id)"
           >
-            <UserMinus class="h-4 w-4" />
+            <Icon name="user-minus" class="h-4 w-4" />
           </button>
         </div>
         <div v-if="group.members.length === 0" class="py-6 text-center text-sm text-[var(--gosslan-text-2)]">
@@ -408,7 +407,7 @@ async function confirmAction() {
       <div class="rounded-[var(--gosslan-radius-lg)] border border-[var(--gosslan-border)] p-2.5">
         <div class="flex items-center justify-between gap-2">
           <div class="flex min-w-0 items-center gap-1.5 text-body font-medium">
-            <ListChecks class="h-4 w-4 shrink-0 text-[var(--gosslan-text-2)]" aria-hidden="true" />
+            <Icon name="list-checks" class="h-4 w-4 shrink-0 text-[var(--gosslan-text-2)]" aria-hidden="true" />
             <span class="truncate" :title="t('todo.title')">{{ t("todo.title") }}</span>
             <span v-if="todoSummary.total" class="shrink-0 text-caption font-normal text-[var(--gosslan-text-2)]">
               {{ t("todo.doneCount", { n: todoSummary.done, total: todoSummary.total }) }}
@@ -460,7 +459,7 @@ async function confirmAction() {
           class="flex w-full items-center justify-center gap-1.5 rounded-[var(--gosslan-radius-lg)] border border-dashed border-[var(--gosslan-border)] py-2 text-sm text-[var(--gosslan-text-2)] transition hover:bg-[var(--gosslan-hover)]"
           @click="showAdd = true"
         >
-          <Plus class="h-4 w-4" />
+          <Icon name="plus" class="h-4 w-4" />
           {{ t("group.addMember") }}
         </button>
         <div v-else class="rounded-[var(--gosslan-radius-lg)] border border-[var(--gosslan-border)] p-2">
@@ -485,7 +484,7 @@ async function confirmAction() {
             >
               <AvatarBox class="h-7 w-7 shrink-0" :id="f.device_id" :src="f.avatar" />
               <span class="min-w-0 flex-1 truncate text-sm" :title="f.nickname">{{ f.nickname }}</span>
-              <Plus class="h-3.5 w-3.5 shrink-0 text-[var(--gosslan-text-2)]" />
+              <Icon name="plus" class="h-3.5 w-3.5 shrink-0 text-[var(--gosslan-text-2)]" />
             </button>
             <div v-if="addableFriends.length === 0" class="py-3 text-center text-xs text-[var(--gosslan-text-2)]">
               {{ t("group.allInGroup") }}
@@ -500,7 +499,7 @@ async function confirmAction() {
         class="flex w-full items-center justify-center gap-1.5 rounded-[var(--gosslan-radius-lg)] border border-[var(--gosslan-border)] py-2 text-sm text-[var(--gosslan-danger-ink)] transition hover:bg-[var(--gosslan-danger-soft)]"
         @click="leaveGroup"
       >
-        <LogOut class="h-4 w-4" />
+        <Icon name="log-out" class="h-4 w-4" />
         {{ t("group.leave") }}
       </button>
       <p v-if="!isOwner" class="text-caption text-[var(--gosslan-text-2)]">
@@ -515,11 +514,11 @@ async function confirmAction() {
   <!-- N6-2 成员行右键菜单：整表一个实例，用 `ctx` 记住是那一行 -->
   <ContextMenu v-if="ctx" :x="ctx.x" :y="ctx.y" @close="ctx = null">
     <DropdownMenuItem class="gosslan-menu-item" @select="mentionMember(ctx.id)">
-      <AtSign class="h-3.5 w-3.5" />
+      <Icon name="at-sign" class="h-3.5 w-3.5" />
       {{ t("group.mentionMember") }}
     </DropdownMenuItem>
     <DropdownMenuItem class="gosslan-menu-item" @select="viewProfile(ctx.id)">
-      <UserRound class="h-3.5 w-3.5" />
+      <Icon name="user-round" class="h-3.5 w-3.5" />
       {{ t("friend.openProfile", { name: ctx.name }) }}
     </DropdownMenuItem>
   </ContextMenu>

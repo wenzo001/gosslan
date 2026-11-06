@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import Icon from "@/components/ui/Icon.vue";
 import type { CSSProperties } from "vue";
 import BubbleTail from "@/components/message/BubbleTail.vue";
 /**
@@ -32,7 +33,6 @@ import {
   type TodoStatus,
 } from "@/utils/todos";
 import { t } from "@/i18n";
-import { ChevronRight, ListTodo } from "lucide-vue-next";
 import type { MessageRecord } from "@/types";
 
 const props = defineProps<{
@@ -219,7 +219,7 @@ function statusText(s: TodoStatus): string {
       @keydown="openPanelKey"
     >
     <div class="flex items-center gap-2 px-3 pt-2.5">
-      <ListTodo class="h-4 w-4 shrink-0 text-[var(--card-action)]" />
+      <Icon name="list-todo" class="h-4 w-4 shrink-0 text-[var(--card-action)]" />
       <!-- 群内固定编号（`R12` / `B2345`）：成员各自库里同一条任务是同一个号，口头引用才对得上。
            没号（旧版本对端建的载荷里没这个键）⇒ 不显示，也不按顺序补一个（补出来的号会随集合变）。
            数字超过 4 位时这一行只显**后四位**（用户 2026-09-30 规则 5），全码有三个出口：
@@ -341,7 +341,7 @@ function statusText(s: TodoStatus): string {
       @click.stop="emit('open', todoId)"
     >
       {{ t("todo.viewMoreImages") }}
-      <ChevronRight class="h-3 w-3" />
+      <Icon name="chevron-right" class="h-3 w-3" />
     </button>
 
     <div class="mt-1.5 flex min-w-0 flex-wrap items-center gap-1 px-3">
@@ -368,7 +368,7 @@ function statusText(s: TodoStatus): string {
       @click="emit('open', todoId)"
     >
       {{ t("todo.openPanel") }}
-      <ChevronRight class="h-3 w-3" />
+      <Icon name="chevron-right" class="h-3 w-3" />
     </button>
     <!-- 内部包裹层在此闭合（带 overflow-hidden 做圆角裁切）；尖角必须放在外面，
          root 是 relative 但不 overflow-hidden，否则会被裁掉（尖角在卡片外 -5px 处）。 -->

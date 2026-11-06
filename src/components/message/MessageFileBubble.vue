@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import Icon from "@/components/ui/Icon.vue";
 import { t } from "@/i18n";
 import BubbleTail from "@/components/message/BubbleTail.vue";
 import Spinner from "@/components/ui/Spinner.vue";
@@ -7,9 +8,8 @@ import type { FileMeta } from "@/types";
 import { rgba } from "@/utils/color";
 import { formatBytes } from "@/utils/format";
 import { selectionTextWithin } from "@/utils/textSelection";
-import { FILE_KIND_COLORS, FILE_KIND_ICONS, extBadgeLabel, fileKindOf } from "@/utils/fileKind";
+import { FILE_KIND_COLORS, FILE_KIND_ICON_NAMES, extBadgeLabel, fileKindOf } from "@/utils/fileKind";
 import { useAppStore } from "@/stores/useAppStore";
-import { Download, RotateCw } from "lucide-vue-next";
 import { X } from "@/components/ui/icons";
 import type { TransferStatusTone } from "@/utils/transferState";
 
@@ -56,7 +56,7 @@ const emit = defineEmits<{
 const app = useAppStore();
 
 const kind = computed(() => fileKindOf(props.meta.name));
-const icon = computed(() => FILE_KIND_ICONS[kind.value]);
+const iconName = computed(() => FILE_KIND_ICON_NAMES[kind.value]);
 /** 强调色：失败态统一走红，其余按类型取明/暗档。 */
 const accent = computed(() => {
   const c = props.failed ? FILE_KIND_COLORS.pdf : FILE_KIND_COLORS[kind.value];
@@ -123,7 +123,7 @@ function onCardClick(e: MouseEvent) {
         class="flex h-10 w-10 shrink-0 items-center justify-center rounded-[var(--gosslan-radius-md)]"
         :style="iconWellStyle"
       >
-        <component :is="icon" v-if="!failed" class="h-5 w-5" />
+        <Icon v-if="!failed" :name="iconName" class="h-5 w-5" />
         <X v-else class="h-5 w-5" />
       </div>
       <div class="min-w-0 flex-1">
@@ -174,8 +174,8 @@ function onCardClick(e: MouseEvent) {
           :aria-label="t(contentRetry ? 'msg.imageReRequest' : 'msg.downloadFile')"
           @click="contentRetry ? emit('refetch') : emit('download')"
         >
-          <RotateCw v-if="contentRetry" class="h-3.5 w-3.5" />
-          <Download v-else class="h-3.5 w-3.5" />
+          <Icon name="rotate-cw" v-if="contentRetry" class="h-3.5 w-3.5" />
+          <Icon name="download" v-else class="h-3.5 w-3.5" />
         </button>
       </div>
     </div>

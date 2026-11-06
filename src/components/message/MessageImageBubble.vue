@@ -1,7 +1,7 @@
 <script setup lang="ts">
+import Icon from "@/components/ui/Icon.vue";
 import { t } from "@/i18n";
 import { computed, onUnmounted, ref, watch } from "vue";
-import { ImageIcon } from "lucide-vue-next";
 import { ImageOff } from "@/components/ui/icons";
 import { IMAGE_BUBBLE_HEIGHT, IMAGE_PLACEHOLDER_HEIGHT, imageBubbleHeight } from "@/utils/previewMetrics";
 import { rememberImageOrigin } from "@/utils/imageZoom";
@@ -189,7 +189,7 @@ onUnmounted(clearTimer);
       :style="{ height: `${placeholderHeight}px` }"
     >
       <ImageOff v-if="state === 'failed'" class="size-6 opacity-50" />
-      <ImageIcon v-else class="size-6 opacity-40" />
+      <Icon name="image-icon" v-else class="size-6 opacity-40" />
     </div>
     <div
       v-if="state === 'failed'"

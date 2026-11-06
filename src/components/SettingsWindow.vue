@@ -34,7 +34,8 @@ import StorageSection from "@/components/settings/StorageSection.vue";
 import SecuritySection from "@/components/settings/SecuritySection.vue";
 import AboutSection from "@/components/settings/AboutSection.vue";
 import ResetSection from "@/components/settings/ResetSection.vue";
-import { SlidersHorizontal, Wifi, Info, HardDrive } from "lucide-vue-next";
+import Icon from "@/components/ui/Icon.vue";
+import type { IconName } from "@/components/ui/iconRegistry";
 import { t } from "@/i18n";
 import { useAppStore } from "@/stores/useAppStore";
 import { api } from "@/api";
@@ -43,11 +44,11 @@ import { storageGet, storageRemove } from "@/utils/safeStorage";
 
 type SectionKey = RouteSectionKey;
 
-const DESKTOP_ICONS: Record<DesktopIconKey, unknown> = {
-  sliders: SlidersHorizontal,
-  wifi: Wifi,
-  storage: HardDrive,
-  info: Info,
+const DESKTOP_ICONS: Record<DesktopIconKey, IconName> = {
+  sliders: "sliders-horizontal",
+  wifi: "wifi",
+  storage: "hard-drive",
+  info: "info",
 };
 
 const route = useRoute();
@@ -135,7 +136,7 @@ const devDiagOpen = ref(false);
  * 通用 / 网络 / 文件与存储 / 关于。「安全」并入「关于」；
  * 「存储」「文件」与「重置与恢复」同属「文件与存储」（重置不再留在通用）。
  */
-const navItems = computed<{ key: SectionKey; label: string; icon: unknown }[]>(() =>
+const navItems = computed<{ key: SectionKey; label: string; icon: IconName }[]>(() =>
   DESKTOP_NAV.map((item) => ({
     key: item.key,
     label: t(item.labelKey),
@@ -228,7 +229,7 @@ useEventListener(window, "keydown", onKeydown);
           : 'text-[var(--gosslan-text-2)] hover:bg-[var(--gosslan-hover)] hover:text-[var(--gosslan-text)]'"
         @click="openSection(item.key)"
       >
-        <component :is="item.icon" class="h-4 w-4 shrink-0" :stroke-width="1.9" />
+        <Icon :name="item.icon" class="h-4 w-4 shrink-0" />
         <span class="min-w-0 flex-1 truncate" :title="item.label">{{ item.label }}</span>
       </button>
     </nav>

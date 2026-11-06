@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import Icon from "@/components/ui/Icon.vue";
 /**
  * 任务详情（用户 2026-09-17：列表改成「微信式极简」—— 行内只留固定编号/标题/状态/元信息，
  * **描述与图片、以及所有状态与编辑操作都收进这里**，点行打开）。
@@ -20,7 +21,6 @@ import {
   TODO_CATEGORIES, TODO_CATEGORY_LABEL_KEY, TODO_CATEGORY_PILL, TODO_PRIORITIES, TODO_PRIORITY_LABEL_KEY, TODO_PRIORITY_PILL, TODO_STATUSES, TODO_STATUS_LABEL_KEY, TODO_STATUS_PILL, isTodoTerminalStatus, todoCode, type TodoHistoryChange, type TodoHistoryEntry, type TodoCategory, type TodoItem, type TodoPriority, type TodoStatus, TODO_CUSTOM_ICON_DEFAULT, type TodoCustomIcon, } from "@/utils/todos";
 import type { TodoTagCandidate } from "@/api";
 import { fmtTodoTime } from "@/utils/time";
-import { Archive, Pencil, UserPlus } from "lucide-vue-next";
 import { RotateCcw, Trash2 } from "@/components/ui/icons";
 import { t } from "@/i18n";
 
@@ -304,7 +304,7 @@ const fullCode = computed(() =>
           :aria-label="t('todo.claim')"
           @click="emit('claim')"
         >
-          <UserPlus class="h-3.5 w-3.5" aria-hidden="true" />
+          <Icon name="user-plus" class="h-3.5 w-3.5" aria-hidden="true" />
           {{ t("todo.claim") }}
         </button>
       </div>
@@ -412,7 +412,7 @@ const fullCode = computed(() =>
             class="tap-safe flex items-center gap-1 rounded-[var(--gosslan-radius-md)] bg-[var(--gosslan-hover)] px-3 py-1.5 text-body text-[var(--gosslan-text-2)] transition hover:text-[var(--gosslan-text)]"
             @click="emit('archive')"
           >
-            <Archive class="h-3.5 w-3.5" />{{ t("todo.archive") }}
+            <Icon name="archive" class="h-3.5 w-3.5" />{{ t("todo.archive") }}
           </button>
           <span class="text-caption text-[var(--gosslan-text-2)]">{{ t("todo.archiveHint") }}</span>
         </div>
@@ -436,7 +436,7 @@ const fullCode = computed(() =>
           :aria-label="t('todo.edit')"
           @click="emit('edit')"
         >
-          <Pencil class="h-4 w-4" />
+          <Icon name="pencil" class="h-4 w-4" />
         </button>
         <button
           v-if="canDelete"

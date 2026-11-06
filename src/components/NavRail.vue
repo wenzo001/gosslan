@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import Icon from "@/components/ui/Icon.vue";
 import { computed, ref, watch } from "vue";
 import {
   DropdownMenuContent,
@@ -10,7 +11,6 @@ import {
 import { useAppStore } from "@/stores/useAppStore";
 import { useChatStore } from "@/stores/useChatStore";
 import { useExclusivePopup } from "@/composables/useExclusivePopup";
-import { MoreHorizontal, Moon, ScrollText, Settings, Sun, Download } from "lucide-vue-next";
 import UnreadBadge from "@/components/UnreadBadge.vue";
 import NavIcon from "@/components/ui/NavIcon.vue";
 import SelfAvatar from "@/components/SelfAvatar.vue";
@@ -194,7 +194,7 @@ function onMoreOpen(open: boolean) {
         :aria-label="t('nav.updateAvailable', { version: updateInfo.version })"
         @click="openUpdate"
       >
-        <Download class="h-5 w-5" />
+        <Icon name="download" class="h-5 w-5" />
         <span class="absolute right-1.5 top-1.5 h-2 w-2 rounded-full bg-[var(--gosslan-primary)]"></span>
       </button>
       <button
@@ -202,8 +202,8 @@ function onMoreOpen(open: boolean) {
         :title="app.dark ? t('nav.lightMode') : t('nav.darkMode')" :aria-label="app.dark ? t('nav.lightMode') : t('nav.darkMode')"
         @click="app.toggleDark()"
       >
-        <Sun v-if="app.dark" class="h-5 w-5" />
-        <Moon v-else class="h-5 w-5" />
+        <Icon name="sun" v-if="app.dark" class="h-5 w-5" />
+        <Icon name="moon" v-else class="h-5 w-5" />
       </button>
       <div class="relative">
         <DropdownMenuRoot :open="moreOpen" :modal="false" @update:open="onMoreOpen">
@@ -213,7 +213,7 @@ function onMoreOpen(open: boolean) {
               :title="t('nav.more')" :aria-label="t('nav.more')"
               @click.stop
             >
-              <MoreHorizontal class="h-5 w-5" />
+              <Icon name="more-horizontal" class="h-5 w-5" />
             </button>
           </DropdownMenuTrigger>
           <DropdownMenuPortal>
@@ -230,7 +230,7 @@ function onMoreOpen(open: boolean) {
                 :aria-busy="settingsOpening"
                 @select="emit('open-settings')"
               >
-                <Settings class="h-4 w-4" />
+                <Icon name="settings" class="h-4 w-4" />
                 {{ t("nav.settings") }}
               </DropdownMenuItem>
               <DropdownMenuItem
@@ -238,7 +238,7 @@ function onMoreOpen(open: boolean) {
                 :aria-busy="logsOpening"
                 @select="emit('open-logs')"
               >
-                <ScrollText class="h-4 w-4" />
+                <Icon name="scroll-text" class="h-4 w-4" />
                 {{ t("nav.logs") }}
               </DropdownMenuItem>
             </DropdownMenuContent>

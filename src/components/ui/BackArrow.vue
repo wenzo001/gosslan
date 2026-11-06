@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import Icon from "@/components/ui/Icon.vue";
 /**
  * 头部返回箭头（按平台适配）—— 应用内所有「返回 / 返回上一级」箭头的唯一实现。
  *
@@ -19,12 +20,11 @@
  * iOS 那档此前是把 `chevron-left` 的 path **逐字抄进模板**（`m15 18-6-6 6-6`），
  * 描边还从库默认的 2 改成 1.9 —— 库里已有的东西不必再画一遍。
  */
-import { ArrowLeft, ChevronLeft } from "lucide-vue-next";
 import { isIOS } from "@/utils/platform";
 </script>
 
 <template>
   <!-- iOS 用 chevron；其余平台（含桌面）用 Material 左箭头。 -->
-  <ChevronLeft v-if="isIOS" class="h-5 w-5" />
-  <ArrowLeft v-else class="h-5 w-5" />
+  <Icon name="chevron-left" v-if="isIOS" class="h-5 w-5" />
+  <Icon name="arrow-left" v-else class="h-5 w-5" />
 </template>

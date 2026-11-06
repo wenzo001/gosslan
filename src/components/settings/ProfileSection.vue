@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import Icon from "@/components/ui/Icon.vue";
 import { computed, ref, watch } from "vue";
 import { useAppStore } from "@/stores/useAppStore";
 import { useChatStore } from "@/stores/useChatStore";
@@ -7,7 +8,6 @@ import SelfAvatar from "@/components/SelfAvatar.vue";
 import AvatarPresetDialog from "@/components/settings/AvatarPresetDialog.vue";
 import { AVATAR_INPUT_LIMIT_MB, AVATAR_INPUT_MAX_BYTES, AVATAR_SIZE, pickAvatarJpeg } from "@/utils/avatarImage";
 import { AVATAR_PAIRS, avatarPresetDataUrl, avatarSeedFor, parseAvatarPreset, type AvatarSeed } from "@/utils/avatarSeed";
-import { Camera } from "lucide-vue-next";
 import { t } from "@/i18n";
 import { useSubmitGuard } from "@/composables/useSubmitGuard";
 import { useImeEnterGuard } from "@/composables/useImeEnterGuard";
@@ -232,7 +232,7 @@ function processAvatar(file: File): Promise<string> {
         <span
           class="pointer-events-none absolute -bottom-1 -right-1 flex h-6 w-6 items-center justify-center rounded-full border-2 border-[var(--gosslan-panel)] bg-[var(--gosslan-primary-active)] text-[var(--gosslan-on-primary)]"
         >
-          <Camera class="h-3.5 w-3.5" :stroke-width="2" />
+          <Icon name="camera" class="h-3.5 w-3.5" :stroke-width="2" />
         </span>
       </button>
 

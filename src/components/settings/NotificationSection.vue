@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import Icon from "@/components/ui/Icon.vue";
 /**
  * 「通知」分区（iOS 概念：设置 → 通知）。
  *
@@ -8,7 +9,6 @@
  * 与通知无关的项（语言、共享目录、存储…）一律不放 —— 那正是 2026-09-12 用户反馈的问题。
  */
 import { ref } from "vue";
-import { BellRing } from "lucide-vue-next";
 import SettingsGroup from "@/components/settings/SettingsGroup.vue";
 import SettingsRow from "@/components/settings/SettingsRow.vue";
 import SettingsToggle from "@/components/settings/SettingsToggle.vue";
@@ -87,7 +87,7 @@ async function sendTestNotification() {
         :title="t('settings.notify.test.desc')"
         @click="sendTestNotification"
       >
-        <BellRing class="h-3.5 w-3.5" />
+        <Icon name="bell-ring" class="h-3.5 w-3.5" />
         {{ testing ? t("settings.notify.test.sending") : t("settings.notify.test.btn") }}
       </button>
     </SettingsRow>

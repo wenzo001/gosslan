@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import Icon from "@/components/ui/Icon.vue";
 /**
  * 「文件与共享」分区（iOS 概念：文件位置 / App 数据位置）。
  *
@@ -17,7 +18,6 @@ import { api } from "@/api";
 import { useAppStore } from "@/stores/useAppStore";
 import SettingsGroup from "@/components/settings/SettingsGroup.vue";
 import SettingsRow from "@/components/settings/SettingsRow.vue";
-import { FolderOpen } from "lucide-vue-next";
 import { t } from "@/i18n";
 
 const props = defineProps<{ active: boolean; reloadToken?: number }>();
@@ -101,7 +101,7 @@ watch(
               :title="t('settings.storage.dir.open.title')"
               @click="openDownloadsDir"
             >
-              <FolderOpen class="h-3.5 w-3.5" />
+              <Icon name="folder-open" class="h-3.5 w-3.5" />
               {{ t("settings.storage.dir.open") }}
             </button>
             <button
@@ -120,7 +120,7 @@ watch(
           class="tap-safe flex items-center gap-1.5 rounded-[var(--gosslan-radius-md)] border border-[var(--gosslan-border)] px-3 py-1.5 text-xs transition hover:bg-[var(--gosslan-hover)]"
           @click="pickShareDir"
         >
-          <FolderOpen class="h-3.5 w-3.5" />
+          <Icon name="folder-open" class="h-3.5 w-3.5" />
           {{ t("common.chooseFolder") }}
         </button>
       </SettingsRow>

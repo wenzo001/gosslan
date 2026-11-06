@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import Icon from "@/components/ui/Icon.vue";
 /**
  * 连接类型图标的**唯一渲染处**（用户 2026-09-22：四种通道的图标各界面全局统一）。
  *
@@ -9,7 +10,6 @@
  * 没有"链路类型"可言，画任意图标都是误导。`discovered` 落到下面的 `v-else` 只是兜底，
  * 正常不会被传进来。
  */
-import { Bluetooth, Globe, Network, Router, Share2 } from "lucide-vue-next";
 import type { LinkIconName } from "@/utils/peerConnectionInfo";
 
 defineProps<{ name: LinkIconName }>();
@@ -17,12 +17,12 @@ defineProps<{ name: LinkIconName }>();
 
 <template>
   <!-- 经 N 跳 mesh 转发（桥接） -->
-  <Share2 v-if="name === 'relay'" />
+  <Icon name="share2" v-if="name === 'relay'" />
   <!-- 公网中转服务器的直连密封电路 -->
-  <Globe v-else-if="name === 'relayServer'" />
-  <Bluetooth v-else-if="name === 'bluetooth'" />
+  <Icon name="globe" v-else-if="name === 'relayServer'" />
+  <Icon name="bluetooth" v-else-if="name === 'bluetooth'" />
   <!-- 跨网段 / VPN 对端 IP 直达 -->
-  <Network v-else-if="name === 'routed'" />
+  <Icon name="network" v-else-if="name === 'routed'" />
   <!-- 局域网直连：用「路由器」而不是 WiFi 扇形（用户 2026-09-17：WiFi 让人以为走无线上网） -->
-  <Router v-else />
+  <Icon name="router" v-else />
 </template>

@@ -1575,9 +1575,22 @@ test("一级导航图标：全部走 lucide 唯一出口，选中态由 data-act
   }
   const navIcon = readFileSync(join(srcDir, "components", "ui", "NavIcon.vue"), "utf8");
   const navIcons = readFileSync(join(srcDir, "components", "ui", "navIcons.ts"), "utf8");
-  assert.match(navIcons, /from "lucide-vue-next"/, "导航图标必须来自统一图标库");
+  // 造型表改成"登记 registry 键"：仍要求来自统一图标库，但入口已收窄到 `Icon.vue`
+  // （navIcons 自己不再 import 组件）。
+  assert.match(
+    navIcons,
+    /from "@\/components\/ui\/iconRegistry"/,
+    "导航图标必须来自统一图标库（以 Icon.vue 的 registry 键登记）",
+  );
+  const registry = readFileSync(join(srcDir, "components", "ui", "iconRegistry.ts"), "utf8");
+  const registryKeys = new Set(
+    [...registry.matchAll(/^\s*"([a-z0-9-]+)":\s*[A-Za-z]/gm)].map((m) => m[1]),
+  );
+  assert.ok(registryKeys.size >= 50, `只解析出 ${registryKeys.size} 个 registry 键 ⇒ 键表形状变了`);
   for (const key of selectable) {
-    assert.match(navIcons, new RegExp(`\\b${key}:\\s*\\w+`), `图标表里少了「${key}」这一格`);
+    const hit = navIcons.match(new RegExp(`\\b${key}:\\s*"([a-z0-9-]+)"`));
+    assert.ok(hit, `图标表里少了「${key}」这一格`);
+    assert.ok(registryKeys.has(hit[1]), `「${key}」登记了 registry 里没有的键 "${hit[1]}"`);
   }
   assert.match(navIcon, /from "@\/components\/ui\/navIcons"/, "NavIcon 必须消费唯一造型表");
   assert.match(
@@ -1586,6 +1599,7 @@ test("一级导航图标：全部走 lucide 唯一出口，选中态由 data-act
     "NavIcon 没把 active 落成 data-active：外层选中态样式接了个空开关",
   );
   assert.ok(!/d="M/.test(navIcon), "NavIcon 不该再自绘 path：造型统一交给图标库");
+  assert.match(navIcon, /from "@\/components\/ui\/Icon\.vue"/, "NavIcon 必须走 Icon.vue 这一唯一出口");
   const css = readFileSync(join(srcDir, "style.css"), "utf8");
   assert.match(css, /\.nav-glyph-btn\[data-active="true"\]/, "rail 选中态样式缺失");
   assert.match(css, /\.nav-glyph-pill\[data-active="true"\]/, "底栏选中态样式缺失");
@@ -2774,27 +2788,32 @@ test("看板行首的优先级与类型图标三档一律画，不许给缺省�
   const lie =
     '<span v-if="x.priority !== \'high\'" :title="t(TODO_PRIORITY_LABEL_KEY[x.priority])"><component/></span>';
   assert.ok(/v-if|v-show/.test(lie), "抓不到条件化写法 ⇒ 上面那两条 !test 是空转");
-  // `<component :is>` 会**绕过** componentImports 那条判据（它数的是模板里的 PascalCase 标签）。
-  // 于是映射表里写错一个图标名 = 那一格静默不渲染，界面上只是"少个小图标"，没有任何东西报错。
-  // 这里把两张表的取值逐个钉成"确实在 lucide 的 import 行里"。
-  const importLine = board.match(/import \{([^}]*)\} from "lucide-vue-next";/);
-  assert.ok(importLine, "lucide 的 import 行形状变了 ⇒ 下面那段读不到名单");
-  const imported = new Set(importLine[1].split(",").map((s) => s.trim()).filter(Boolean));
+  // 映射表已改成 `Icon.vue` 的 registry 键（字符串）。写错一个键 = 那一格静默不渲染，
+  // 界面上只是"少个小图标"，没有任何东西报错 ⇒ 这里把两张表的取值逐个钉成
+  // "确实在 iconRegistry.ts 的键表里"。
+  const registry = readFileSync(join(root, "components", "ui", "iconRegistry.ts"), "utf8");
+  const registryKeys = new Set(
+    [...registry.matchAll(/^\s*"([a-z0-9-]+)":\s*[A-Za-z]/gm)].map((m) => m[1]),
+  );
+  assert.ok(registryKeys.size >= 50, `只解析出 ${registryKeys.size} 个 registry 键 ⇒ 键表形状变了，这条在测空气`);
   for (const mapName of ["PRIORITY_ICON", "CATEGORY_ICON"]) {
     const at = board.indexOf(`const ${mapName}:`);
     assert.ok(at >= 0, `${mapName} 不在了`);
     const body = board.slice(at, at + 400).split("\n};")[0];
-    const used = [...body.matchAll(/:\s*([A-Z][A-Za-z0-9]*)\s*,/g)].map((m) => m[1]);
+    const used = [...body.matchAll(/:\s*"([a-z0-9-]+)"\s*,/g)].map((m) => m[1]);
     // 优先级三档；类型四档（任务/需求/缺陷/自定义）。少一个 = 新档位静默没图标。
     const expected = mapName === "PRIORITY_ICON" ? 3 : 4;
     assert.ok(used.length === expected, `${mapName} 只数到 ${used.length} 个取值（应当是 ${expected} 档）`);
     for (const name of used) {
-      assert.ok(imported.has(name), `${mapName} 用了 ${name}，但它不在 lucide 的 import 里 ⇒ 那一格静默不渲染`);
+      assert.ok(registryKeys.has(name), `${mapName} 用了 "${name}"，但 registry 里没有这个键 ⇒ 那一格静默不渲染`);
     }
   }
-  // 反空转：上面那条必须抓得住"名字没 import"这个坏形状
-  const lieVals = [..."x: NotImportedIcon,".matchAll(/:\s*([A-Z][A-Za-z0-9]*)\s*,/g)].map((m) => m[1]);
-  assert.ok(lieVals[0] === "NotImportedIcon" && !imported.has("NotImportedIcon"), "抓不到没 import 的名字 ⇒ 空转");
+  // 反空转：上面那条必须抓得住"键不在 registry"这个坏形状
+  const lieVals = [...'x: "not-in-registry",'.matchAll(/:\s*"([a-z0-9-]+)"\s*,/g)].map((m) => m[1]);
+  assert.ok(
+    lieVals[0] === "not-in-registry" && !registryKeys.has("not-in-registry"),
+    "抓不到 registry 里没有的键 ⇒ 空转",
+  );
   // 反空转的另一半：`canClaim` 那种正当条件不许被上面的图标判据抓到（它读的是图标那一段）
   assert.ok(
     !/v-if|v-show/.test('return x.category === "requirement" && !x.archived;'),
@@ -3489,7 +3508,9 @@ test("㊵ 真实树：5 个高频语义图标只从 ui/icons.ts 引（分母现�
       else if (
         (entry.name.endsWith(".vue") || entry.name.endsWith(".ts")) &&
         !entry.name.endsWith(".test.ts") &&
-        full !== join(srcDir, "components", "ui", "icons.ts")
+        full !== join(srcDir, "components", "ui", "icons.ts") &&
+        // 图标库的唯一物理入口：registry 本身必须直连 lucide（其余文件走 Icon.vue）。
+        full !== join(srcDir, "components", "ui", "iconRegistry.ts")
       ) {
         files.push(full);
       }
@@ -4834,8 +4855,13 @@ test("51 BackArrow：两档造型都出自 lucide，且 iOS 那档的分支不�
   const src = code691(readFileSync(join(srcDir691, "components", "ui", "BackArrow.vue"), "utf8"));
   assert.ok(!SVG_ELEM_692.test(src), "BackArrow 又长出内联 svg 了");
   assert.ok(!/m15 18-6-6 6-6/.test(src), "库里的 chevron-left 又被抄了一遍");
-  assert.ok(/import \{ ArrowLeft, ChevronLeft \} from "lucide-vue-next"/.test(src), "两个箭头都该来自 lucide");
-  assert.ok(/v-if="isIOS"/.test(src) && /<ArrowLeft v-else/.test(src), "按平台给原生观感这件事是用户定的口径，不许并成一枚");
+  // 锚点已随图标入口迁移：两个箭头不再各自 import lucide 组件，而是统一走 `Icon.vue`
+  // 的 registry 键（`chevron-left` / `arrow-left` 仍是 lucide 造型）。
+  assert.ok(/import Icon from "@\/components\/ui\/Icon\.vue"/.test(src), "两个箭头都该走 Icon.vue 这一入口");
+  assert.ok(
+    /<Icon name="chevron-left" v-if="isIOS"/.test(src) && /<Icon name="arrow-left" v-else/.test(src),
+    "按平台给原生观感这件事是用户定的口径，不许并成一枚",
+  );
 });
 
 // ---------------- 52 「本窗口有自绘 caption」只有一个写者（2026-10-20，§6.94） ----------------

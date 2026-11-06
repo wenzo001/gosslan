@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import Icon from "@/components/ui/Icon.vue";
 import { computed, nextTick, ref, watch } from "vue";
 import { api } from "@/api";
 import { save as saveDialog } from "@tauri-apps/plugin-dialog";
@@ -9,7 +10,6 @@ import SettingsRow from "@/components/settings/SettingsRow.vue";
 import SettingsSelect from "@/components/ui/SettingsSelect.vue";
 import { formatBytes } from "@/utils/format";
 import { fmtDateStamp } from "@/utils/time";
-import { Download } from "lucide-vue-next";
 import { Trash2 } from "@/components/ui/icons";
 import { t } from "@/i18n";
 import type { CacheInfo } from "@/types";
@@ -228,7 +228,7 @@ watch(
         :title="t('settings.storage.export.title')"
         @click="exportChat"
       >
-        <Download class="h-3.5 w-3.5" />
+        <Icon name="download" class="h-3.5 w-3.5" />
         {{ exporting ? t("settings.storage.export.exporting") : t("settings.storage.export.btn") }}
       </button>
     </SettingsRow>

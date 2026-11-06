@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import Icon from "@/components/ui/Icon.vue";
 /**
  * 会话行右键菜单（用户 2026-09-12 晚 #3 / #10：
  * 「取消叉叉，改为统一的右键删除操作。即每一个选项都做成单击右键弹出菜单，再点击『删除』」
@@ -11,7 +12,6 @@
  */
 import { DropdownMenuItem, DropdownMenuSeparator } from "reka-ui";
 import { t } from "@/i18n";
-import { Pin, PinOff } from "lucide-vue-next";
 import { Trash2 } from "@/components/ui/icons";
 import ContextMenu from "@/components/ContextMenu.vue";
 
@@ -26,7 +26,7 @@ const emit = defineEmits<{
 <template>
   <ContextMenu :x="x" :y="y" @close="emit('close')">
     <DropdownMenuItem class="gosslan-menu-item" @select="emit('toggle-pin')">
-      <component :is="pinned ? PinOff : Pin" />
+      <Icon :name="pinned ? 'pin-off' : 'pin'" />
       {{ pinned ? t("conv.unpin") : t("conv.pin") }}
     </DropdownMenuItem>
     <div class="gosslan-menu-hint">{{ t("conv.pin.hint") }}</div>

@@ -57,7 +57,9 @@ import {
   MAX_TODO_IMAGES,
   MAX_TODO_TITLE_CHARS,
 } from "@/utils/todos";
-import { TODO_CUSTOM_ICON_COMPONENTS } from "@/utils/todoCustomIcons";
+import Icon from "@/components/ui/Icon.vue";
+import type { IconName } from "@/components/ui/iconRegistry";
+import { TODO_CUSTOM_ICON_NAMES } from "@/utils/todoCustomIcons";
 import { errorText } from "@/composables/useErrorText";
 import { useImeEnterGuard } from "@/composables/useImeEnterGuard";
 import { api } from "@/api";
@@ -74,7 +76,6 @@ import { t } from "@/i18n";
 import DangerBtn from "@/components/ui/DangerBtn.vue";
 import SecondaryBtn from "@/components/ui/SecondaryBtn.vue";
 import PrimaryBtn from "@/components/ui/PrimaryBtn.vue";
-import { Archive, Bug, CheckCircle2, ChevronDown, ChevronsDown, Circle, CircleDot, Clock, ImagePlus, Lightbulb, ListTodo, Minus, MoreHorizontal, Plus, Tag, XCircle, Zap } from "lucide-vue-next";
 import { Check, RotateCcw, Trash2, X } from "@/components/ui/icons";
 import { createInitScope, type InitScope } from "@/utils/initScope";
 
@@ -216,7 +217,7 @@ function historyFor(x: TodoItem | null): TodoHistoryEntry[] {
  * 也不要 `undefined` 让图标位置塌成空白（渲染层拿不到"为什么没有图标"这件事）。
  */
 function categoryIconOf(x: Pick<TodoItem, "category" | "customIcon">) {
-  if (x.category === "custom") return TODO_CUSTOM_ICON_COMPONENTS[x.customIcon] ?? CATEGORY_ICON.custom;
+  if (x.category === "custom") return TODO_CUSTOM_ICON_NAMES[x.customIcon] ?? CATEGORY_ICON.custom;
   return CATEGORY_ICON[x.category];
 }
 
@@ -406,12 +407,12 @@ const rowsErrorText = computed(() =>
 );
 
 /** 分组小标题的图标（与状态语汇一致：待办=空心圈、进行中=实心点、延期=时钟、做不了=叉圈、完成=对勾圈）。 */
-const STATUS_ICON: Record<TodoStatus, typeof Circle> = {
-  todo: Circle,
-  doing: CircleDot,
-  overdue: Clock,
-  impossible: XCircle,
-  done: CheckCircle2,
+const STATUS_ICON: Record<TodoStatus, IconName> = {
+  todo: "circle",
+  doing: "circle-dot",
+  overdue: "clock",
+  impossible: "x-circle",
+  done: "check-circle2",
 };
 
 /**
@@ -426,17 +427,17 @@ const STATUS_ICON: Record<TodoStatus, typeof Circle> = {
  */
 // 2026-10-12 形象化：紧急=闪电（一眼看到）、常规=一横、不急=双下箭头；
 // 区分靠形状，颜色仍只有「紧急」抢主色（两张配色表见 utils/todos.ts）。
-const PRIORITY_ICON: Record<TodoPriority, typeof Circle> = {
-  high: Zap,
-  normal: Minus,
-  low: ChevronsDown,
+const PRIORITY_ICON: Record<TodoPriority, IconName> = {
+  high: "zap",
+  normal: "minus",
+  low: "chevrons-down",
 };
-const CATEGORY_ICON: Record<TodoCategory, typeof Circle> = {
-  task: ListTodo,
-  requirement: Lightbulb,
-  bug: Bug,
+const CATEGORY_ICON: Record<TodoCategory, IconName> = {
+  task: "list-todo",
+  requirement: "lightbulb",
+  bug: "bug",
   // 自定义类型没有专属语义 ⇒ 通用「标签」图标，语义中性。
-  custom: Tag,
+  custom: "tag",
 };
 
 function statusText(s: TodoStatus): string {
@@ -1290,7 +1291,7 @@ watch(
         class="tap-safe flex shrink-0 items-center gap-1 rounded-[var(--gosslan-radius-md)] px-2.5 py-1.5 text-body text-[var(--gosslan-accent-ink)] transition hover:bg-[var(--gosslan-hover)]"
         @click="startCreate"
       >
-        <Plus class="h-4 w-4" />
+        <Icon name="plus" class="h-4 w-4" />
         {{ t("todo.create") }}
       </button>
     </div>
@@ -1393,8 +1394,8 @@ watch(
             :class="TODO_CATEGORY_PILL[x.category]"
             :title="categoryText(x)"
           >
-            <component
-              :is="categoryIconOf(x)"
+            <Icon
+              :name="categoryIconOf(x)"
               class="h-3 w-3 shrink-0"
               :class="TODO_CATEGORY_ICON_CLASS[x.category]"
               :stroke-width="2.2"
@@ -1444,8 +1445,8 @@ watch(
               :class="TODO_STATUS_BAR[g.status]"
               aria-hidden="true"
             ></span>
-            <component
-              :is="STATUS_ICON[g.status]"
+            <Icon
+              :name="STATUS_ICON[g.status]"
               class="h-4 w-4 shrink-0"
               :class="TODO_STATUS_CLASS[g.status]"
               :stroke-width="1.9"
@@ -1484,8 +1485,8 @@ watch(
                  INV-P29 要求它在，不能为了不留重复而拿掉；图标管扫一眼、字母管对账。 -->
             <span class="flex w-8 shrink-0 items-center gap-1">
               <span :title="t(TODO_PRIORITY_LABEL_KEY[x.priority])">
-                <component
-                  :is="PRIORITY_ICON[x.priority]"
+                <Icon
+                  :name="PRIORITY_ICON[x.priority]"
                   class="h-3.5 w-3.5 shrink-0"
                   :class="TODO_PRIORITY_ICON_CLASS[x.priority]"
                   :stroke-width="2.2"
@@ -1493,8 +1494,8 @@ watch(
                 />
               </span>
               <span :title="categoryText(x)">
-                <component
-                  :is="categoryIconOf(x)"
+                <Icon
+                  :name="categoryIconOf(x)"
                   class="h-3.5 w-3.5 shrink-0"
                   :class="TODO_CATEGORY_ICON_CLASS[x.category]"
                   :stroke-width="2.2"
@@ -1556,7 +1557,7 @@ watch(
                 @click.stop="toggleRowMenu(x, $event, 'status')"
               >
                 {{ statusText(x.status) }}
-                <ChevronDown class="h-3 w-3" />
+                <Icon name="chevron-down" class="h-3 w-3" />
               </button>
               <span
                 v-else
@@ -1598,7 +1599,7 @@ watch(
               :aria-expanded="rowMenuId === x.todoId && rowMenuKind === 'more'"
               @click.stop="toggleRowMenu(x, $event, 'more')"
             >
-              <MoreHorizontal class="h-4 w-4" />
+              <Icon name="more-horizontal" class="h-4 w-4" />
             </button>
           </motion.div>
         </div>
@@ -1765,7 +1766,7 @@ watch(
             class="tap-safe flex items-center gap-1 rounded-[var(--gosslan-radius-sm)] px-1.5 py-0.5 text-caption text-[var(--gosslan-accent-ink)] transition hover:bg-[var(--gosslan-hover)]"
             @click="onAddImageButton"
           >
-            <ImagePlus class="h-3.5 w-3.5" />
+            <Icon name="image-plus" class="h-3.5 w-3.5" />
             {{ t("todo.addImage") }}
           </button>
         </div>
@@ -1907,7 +1908,7 @@ watch(
           class="gosslan-menu-item flex items-center gap-1.5"
           @select="rowMenuTodo && archiveTodo(rowMenuTodo)"
         >
-          <Archive class="h-3.5 w-3.5 shrink-0" />
+          <Icon name="archive" class="h-3.5 w-3.5 shrink-0" />
           {{ t("todo.archive") }}
         </DropdownMenuItem>
       </DropdownMenuContent>

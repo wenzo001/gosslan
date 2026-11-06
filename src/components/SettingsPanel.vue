@@ -1,6 +1,6 @@
 <script setup lang="ts">
+import Icon from "@/components/ui/Icon.vue";
 import { routeLocationKey, routerKey } from "vue-router";
-import { ChevronRight } from "lucide-vue-next";
 import { computed, inject, nextTick, ref, watch } from "vue";
 import { useAppStore } from "@/stores/useAppStore";
 import BaseModal from "@/components/BaseModal.vue";
@@ -236,7 +236,7 @@ watch(
                   @click="selectSection(item.key)"
                 >
                   <span class="min-w-0 flex-1 truncate text-[var(--gosslan-text)]" :title="t(item.titleKey)">{{ t(item.titleKey) }}</span>
-                  <ChevronRight class="h-4 w-4 shrink-0 text-[var(--gosslan-text-2)]" />
+                  <Icon name="chevron-right" class="h-4 w-4 shrink-0 text-[var(--gosslan-text-2)]" />
                 </button>
               </div>
             </div>

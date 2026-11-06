@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ArrowUpCircle, CloudDownload, FolderOpen, ListChecks, Monitor, Smartphone, Users } from "lucide-vue-next";
+import Icon from "@/components/ui/Icon.vue";
 import BackArrow from "@/components/ui/BackArrow.vue";
 import MessageAvatar from "@/components/message/MessageAvatar.vue";
 import UnreadBadge from "@/components/UnreadBadge.vue";
@@ -118,8 +118,8 @@ function linkIcon(path: string, hop: number): { icon: LinkIconName; label: strin
         :title="deviceType === 'mobile' ? t('chat.header.deviceMobile') : t('chat.header.deviceDesktop')"
         :aria-label="deviceType === 'mobile' ? t('chat.header.deviceMobile') : t('chat.header.deviceDesktop')"
       >
-        <Smartphone v-if="deviceType === 'mobile'" class="h-4 w-4" />
-        <Monitor v-else class="h-4 w-4" />
+        <Icon name="smartphone" v-if="deviceType === 'mobile'" class="h-4 w-4" />
+        <Icon name="monitor" v-else class="h-4 w-4" />
       </span>
       <!-- 对方版本比本机新：头部只给一个标记（完整说明在联系人详情），
            真正看不懂的那条消息由 `UnsupportedKindBubble` 就地解释 —— 三处口径一致。 -->
@@ -129,7 +129,7 @@ function linkIcon(path: string, hop: number): { icon: LinkIconName; label: strin
         :title="t('peer.newerShort')"
         :aria-label="t('peer.newerShort')"
       >
-        <ArrowUpCircle class="h-4 w-4" />
+        <Icon name="arrow-up-circle" class="h-4 w-4" />
       </span>
       <!-- 链路徽标只在**对方在线**时显示。
            用户 2026-09-12 反馈：「现在这个用户是离线的，但是聊天框后面居然有一个『桥接 1』
@@ -155,7 +155,7 @@ function linkIcon(path: string, hop: number): { icon: LinkIconName; label: strin
         :title="t('chat.header.members')" :aria-label="t('chat.header.members')"
         @click="emit('open-members')"
       >
-        <Users class="h-[18px] w-[18px]" />
+        <Icon name="users" class="h-[18px] w-[18px]" />
       </button>
       <!-- 群文件：把该群共享过的文件汇总成一份清单（此前只能顺着聊天记录往回翻） -->
       <button
@@ -164,7 +164,7 @@ function linkIcon(path: string, hop: number): { icon: LinkIconName; label: strin
         :title="t('chat.header.files')" :aria-label="t('chat.header.files')"
         @click="emit('open-files')"
       >
-        <FolderOpen class="h-[18px] w-[18px]" />
+        <Icon name="folder-open" class="h-[18px] w-[18px]" />
       </button>
       <!-- 群任务：桌面端开独立窗口（每群一个），移动端开应用内面板。任意成员都能看，
            能改什么由面板按权限决定。 -->
@@ -181,7 +181,7 @@ function linkIcon(path: string, hop: number): { icon: LinkIconName; label: strin
              "弹窗弹出很慢，我还以为没点了，点了好几下一会才弹出来"）。
              连点会被启动器的单飞/防抖吃掉，所以"看起来没反应"必须靠这里补上。 -->
         <Spinner v-if="tasksOpening" size-class="h-[18px] w-[18px]" decorative />
-        <ListChecks v-else class="h-[18px] w-[18px]" />
+        <Icon name="list-checks" v-else class="h-[18px] w-[18px]" />
         <!-- 与我相关的未完成任务（蓝）。数字同时进 aria-label：只靠颜色区分"有活没干完"
              对读屏用户等于没有提醒。 -->
         <UnreadBadge v-if="openTasks > 0" :count="openTasks" tone="info" class="absolute -right-1.5 -top-1" />
@@ -202,7 +202,7 @@ function linkIcon(path: string, hop: number): { icon: LinkIconName; label: strin
         @click="emit('sync-history')"
       >
         <Spinner v-if="historySyncing" size-class="h-[18px] w-[18px]" decorative />
-        <CloudDownload v-else class="h-[18px] w-[18px]" />
+        <Icon name="cloud-download" v-else class="h-[18px] w-[18px]" />
       </button>
       <!-- 群管理只有一个入口（用户 2026-09-29 需求汇总四："右上角入口、编辑按钮的弹窗内容
            重复，只保留一个清晰入口"）：以前这里有「成员」和「✏️ 改名」两枚按钮，而后者
@@ -215,7 +215,7 @@ function linkIcon(path: string, hop: number): { icon: LinkIconName; label: strin
         :title="t('chat.header.share')" :aria-label="t('chat.header.share')"
         @click="emit('open-share')"
       >
-        <FolderOpen class="h-[18px] w-[18px]" />
+        <Icon name="folder-open" class="h-[18px] w-[18px]" />
       </button>
     </div>
   </div>

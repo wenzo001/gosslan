@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import Icon from "@/components/ui/Icon.vue";
 import { t } from "@/i18n";
 import Spinner from "@/components/ui/Spinner.vue";
 import { safeStorageBackend } from "../utils/safeStorage.ts";
@@ -55,7 +56,6 @@ import { activePopupKey } from "@/utils/popupRegistry";
 import { previewText } from "@/utils/messages";
 import DangerBtn from "@/components/ui/DangerBtn.vue";
 import SecondaryBtn from "@/components/ui/SecondaryBtn.vue";
-import { Bluetooth, Layers, Pin, Megaphone, Share2, Star, ShieldAlert, KeyRound } from "lucide-vue-next";
 import { Trash2, X } from "@/components/ui/icons";
 import {
   isAnnounceDismissed,
@@ -1755,7 +1755,7 @@ function retryHistory() {
       v-if="keyRotation"
       class="mx-2 mt-1 flex shrink-0 items-start gap-2 rounded-[var(--gosslan-radius-md)] border border-[var(--gosslan-warning-soft)] bg-[color-mix(in_srgb,var(--gosslan-warning)_8%,transparent)] px-3 py-2"
     >
-      <ShieldAlert class="mt-0.5 h-4 w-4 shrink-0 text-[var(--gosslan-warning-ink)]" aria-hidden="true" />
+      <Icon name="shield-alert" class="mt-0.5 h-4 w-4 shrink-0 text-[var(--gosslan-warning-ink)]" aria-hidden="true" />
       <div class="min-w-0 flex-1">
         <p class="text-meta leading-snug text-[var(--gosslan-text)]">
           {{ t("friend.keyRotated.banner", { name: keyRotation.nickname }) }}
@@ -1766,7 +1766,7 @@ function retryHistory() {
             class="tap-safe inline-flex items-center gap-1 rounded-[var(--gosslan-radius-md)] bg-[var(--gosslan-primary-active)] px-2.5 py-1 text-meta text-[var(--gosslan-on-primary)] transition hover:bg-[var(--gosslan-primary-hover)]"
             @click="syncKeysOpen = true"
           >
-            <KeyRound class="h-3 w-3" aria-hidden="true" />
+            <Icon name="key-round" class="h-3 w-3" aria-hidden="true" />
             {{ t("friend.keyRotated.sync") }}
           </button>
           <button
@@ -1827,7 +1827,7 @@ function retryHistory() {
       v-if="isGroup && announcementVisible"
       class="mx-2 mt-1 flex shrink-0 items-start gap-2 rounded-[var(--gosslan-radius-md)] border border-[var(--gosslan-warning-soft)] bg-[color-mix(in_srgb,var(--gosslan-warning)_8%,transparent)] px-3 py-2"
     >
-      <Megaphone class="mt-0.5 h-3.5 w-3.5 shrink-0 text-[var(--gosslan-warning-ink)]" aria-hidden="true" />
+      <Icon name="megaphone" class="mt-0.5 h-3.5 w-3.5 shrink-0 text-[var(--gosslan-warning-ink)]" aria-hidden="true" />
       <button
         class="tap-safe min-w-0 flex-1 truncate rounded-[var(--gosslan-radius-sm)] px-1.5 py-0.5 text-left text-meta text-[var(--gosslan-text)] transition hover:bg-[var(--gosslan-hover)]"
         :title="announcement?.text"
@@ -1855,7 +1855,7 @@ function retryHistory() {
       class="ambient-canvas-child flex shrink-0 flex-col border-b border-[var(--gosslan-divider)] bg-[var(--gosslan-chat)]"
     >
       <div class="flex items-center gap-2 px-4 py-1.5">
-        <Pin class="h-3.5 w-3.5 shrink-0 text-[var(--gosslan-text-2)]" aria-hidden="true" />
+        <Icon name="pin" class="h-3.5 w-3.5 shrink-0 text-[var(--gosslan-text-2)]" aria-hidden="true" />
         <div
           v-for="p in visiblePinned"
           :key="p.id"
@@ -1931,7 +1931,7 @@ function retryHistory() {
       v-if="btLink && !btHintDismissed"
       class="flex shrink-0 items-center gap-2 border-b border-[var(--gosslan-divider)] bg-[var(--gosslan-warning-soft)] px-4 py-1.5 text-meta leading-[18px] text-[var(--gosslan-warning-text-ink)]"
     >
-      <Bluetooth class="h-3.5 w-3.5 shrink-0" />
+      <Icon name="bluetooth" class="h-3.5 w-3.5 shrink-0" />
       <span class="min-w-0 flex-1">{{ t("chat.bt.slowHint") }}</span>
       <button
         class="tap-safe shrink-0 rounded-[var(--gosslan-radius-sm)] px-1.5 py-0.5 transition hover:bg-[var(--gosslan-hover)]"
@@ -2149,7 +2149,7 @@ function retryHistory() {
             :aria-label="t('multi.forwardPerMessage')"
             @click="startBatchForward('per-message')"
           >
-            <Share2 class="h-4 w-4" aria-hidden="true" />
+            <Icon name="share2" class="h-4 w-4" aria-hidden="true" />
             <span class="hidden sm:inline">{{ t("multi.forwardPerMessage") }}</span>
           </button>
           <button
@@ -2159,7 +2159,7 @@ function retryHistory() {
             :aria-label="t('multi.forwardMerged')"
             @click="startBatchForward('merged')"
           >
-            <Layers class="h-4 w-4" aria-hidden="true" />
+            <Icon name="layers" class="h-4 w-4" aria-hidden="true" />
             <span class="hidden sm:inline">{{ t("multi.forwardMerged") }}</span>
           </button>
           <button
@@ -2167,7 +2167,7 @@ function retryHistory() {
             :disabled="!selectedCount"
             @click="batchFavorite"
           >
-            <Star class="h-4 w-4" aria-hidden="true" />
+            <Icon name="star" class="h-4 w-4" aria-hidden="true" />
             {{ t("multi.favorite") }}
           </button>
           <button

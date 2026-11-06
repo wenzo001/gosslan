@@ -6,17 +6,8 @@
  * 面板把 pdf 显示成红色文档图标、气泡显示成别的，用户会以为是两种文件；
  * 加一个扩展名时也只改一处、不会漏改另一处（§32 一条清晰路径）。
  */
-import type { Component } from "vue";
 import { rgba } from "./color.ts";
-import {
-  FileArchive,
-  FileAudio,
-  FileCode,
-  FileImage,
-  FileSpreadsheet,
-  FileText,
-  FileVideo,
-} from "lucide-vue-next";
+import type { IconName } from "@/components/ui/iconRegistry";
 
 export type FileKind =
   | "sheet"
@@ -41,15 +32,19 @@ export const FILE_KIND_COLORS: Record<FileKind, { light: string; dark: string }>
   doc: { light: "#475569", dark: "#94a3b8" },
 };
 
-export const FILE_KIND_ICONS: Record<FileKind, Component> = {
-  sheet: FileSpreadsheet,
-  image: FileImage,
-  archive: FileArchive,
-  video: FileVideo,
-  audio: FileAudio,
-  code: FileCode,
-  pdf: FileText,
-  doc: FileText,
+/**
+ * 图标只登记名字（`Icon.vue` 的 registry 键），不在这里 import 组件：
+ * 这样本模块仍是纯数据，Node 单测不必解析 lucide；渲染统一走 `<Icon :name>`。
+ */
+export const FILE_KIND_ICON_NAMES: Record<FileKind, IconName> = {
+  sheet: "file-spreadsheet",
+  image: "file-image",
+  archive: "file-archive",
+  video: "file-video",
+  audio: "file-audio",
+  code: "file-code",
+  pdf: "file-text",
+  doc: "file-text",
 };
 
 /** 文件扩展名（小写，无扩展名时为空串）。 */
