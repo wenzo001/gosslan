@@ -4275,6 +4275,7 @@ async function main() {
     const settingsmobile = want("settingsmobile");
     const stage5mobile = want("stage5mobile");
     const stage4mobile = want("stage4mobile");
+    const stage6mobile = want("stage6mobile");
     const netcard = want("netcard");
     const composermobile = want("composermobile");
     const tasksmobile = want("tasksmobile");
@@ -4516,6 +4517,7 @@ async function main() {
     await runSegment("settingsmobile", settingsmobile, () => runSettingsMobile(cdp, url));
     await runSegment("stage5mobile", stage5mobile, () => runStage5Mobile(cdp, url));
     await runSegment("stage4mobile", stage4mobile, () => runStage4Mobile(cdp, url));
+    await runSegment("stage6mobile", stage6mobile, () => runStage6Mobile(cdp, url));
     await runSegment("netcard", netcard, () => runNetCard(cdp, url));
     await runSegment("composermobile", composermobile, () => runComposerMobile(cdp, url));
     await runSegment("tasksmobile", tasksmobile, () => runTasksMobile(cdp, url));
@@ -17605,6 +17607,142 @@ async function runNetCard(cdp, url) {
   } finally {
     await cdp.send("Emulation.clearDeviceMetricsOverride").catch(() => {});
   }
+}
+
+/**
+ * 阶段 6 的分档证据段（2026-11-06）：搜索命中 mark 换 token 后的对比度、
+ * 以及 C2 焦点框的来源复核（应当只有文本控件的 1px inset，不是 2px 外圈方框）。
+ * 360×640 / 390×844 / 430×932 + 768×800（布局组件档）+ 1280×800，亮/暗各一次。
+ */
+async function runStage6Mobile(cdp, url) {
+  const sizes = [
+    { w: 360, h: 640, tag: "360x640" },
+    { w: 390, h: 844, tag: "390x844" },
+    { w: 430, h: 932, tag: "430x932" },
+    { w: 768, h: 800, tag: "768x800" },
+    { w: 1280, h: 800, tag: "1280x800" },
+  ];
+  const dir = path.join(ROOT, "docs", "notes", "unslop-review-2026-11-06", "shots", "stage6");
+  fs.mkdirSync(dir, { recursive: true });
+  const shot = async (name) => {
+    const img = await cdp.send("Page.captureScreenshot", { format: "png" });
+    fs.writeFileSync(path.join(dir, `${name}.png`), Buffer.from(img.data, "base64"));
+  };
+  const GROUP = {
+    conv_id: "conv-probe", name: "探针会话", kind: "private", avatar: null,
+    total: 3, latest_ts: 1,
+    messages: [
+      { msg_id: "m0", sender_id: "p1", sender_name: "小布", kind: "text", content: "命中 0", ts: 1 },
+      { msg_id: "m1", sender_id: "p1", sender_name: "小布", kind: "todo",
+        content: '{"title":"命中 待办","assignees":["p1"],"status":"todo","priority":"high"}', ts: 2 },
+      { msg_id: "m2", sender_id: "p1", sender_name: "小布", kind: "image",
+        content: '{"name":"命中.png","path":"/x/命中.png","size":2048,"sha256":"ab12"}', ts: 3 },
+    ],
+  };
+  const META = `(() => {
+    const parse = (s) => {
+      const v = (s.match(/-?\\d*\\.?\\d+/g) || []).map(Number);
+      let [r = 0, g = 0, b = 0, a = 1] = v;
+      if (s.includes('color(srgb')) { r *= 255; g *= 255; b *= 255; }
+      return { r, g, b, a };
+    };
+    const opaqueBg = (el) => {
+      let cur = el;
+      while (cur) {
+        const c = parse(getComputedStyle(cur).backgroundColor);
+        if (c.a > 0.99) return c;
+        cur = cur.parentElement;
+      }
+      return { r: 255, g: 255, b: 255, a: 1 };
+    };
+    const over = (fg, bg) => ({ r: fg.r * fg.a + bg.r * (1 - fg.a),
+      g: fg.g * fg.a + bg.g * (1 - fg.a), b: fg.b * fg.a + bg.b * (1 - fg.a) });
+    const lum = (c) => {
+      const f = (v) => { v /= 255; return v <= 0.03928 ? v / 12.92 : Math.pow((v + 0.055) / 1.055, 2.4); };
+      return 0.2126 * f(c.r) + 0.7152 * f(c.g) + 0.0722 * f(c.b);
+    };
+    const ratio = (a, b) => {
+      const la = lum(a), lb = lum(b);
+      return (Math.max(la, lb) + 0.05) / (Math.min(la, lb) + 0.05);
+    };
+    const marks = [...document.querySelectorAll('mark')];
+    const first = marks[0] || null;
+    const base = first ? opaqueBg(first.parentElement || first) : { r: 255, g: 255, b: 255, a: 1 };
+    const markBg = first ? over(parse(getComputedStyle(first).backgroundColor), base) : base;
+    const markFg = first ? parse(getComputedStyle(first).color) : { r: 0, g: 0, b: 0, a: 1 };
+    const input = document.querySelector('input');
+    if (input) input.focus();
+    const inputCs = input ? getComputedStyle(input) : null;
+    const dlg = document.querySelector('[role="dialog"]');
+    const dr = dlg ? dlg.getBoundingClientRect() : null;
+    return { marks: marks.length,
+      markBg: markBg && [markBg.r, markBg.g, markBg.b].map((n) => Math.round(n)),
+      markFg: markFg && [markFg.r, markFg.g, markFg.b].map((n) => Math.round(n)),
+      contrast: +ratio(markFg, markBg).toFixed(2),
+      outlineWidth: inputCs ? inputCs.outlineWidth : '',
+      outlineStyle: inputCs ? inputCs.outlineStyle : '',
+      outlineColor: inputCs ? inputCs.outlineColor : '',
+      boxShadow: inputCs ? inputCs.boxShadow : '',
+      overflowX: document.documentElement.scrollWidth - document.documentElement.clientWidth,
+      dialog: dr ? { l: Math.round(dr.left), r: Math.round(dr.right), t: Math.round(dr.top), b: Math.round(dr.bottom),
+        vw: innerWidth, vh: innerHeight } : null };
+  })()`;
+  const rows = [];
+  for (const s of sizes) {
+    await cdp.send("Emulation.setDeviceMetricsOverride", {
+      width: s.w, height: s.h, deviceScaleFactor: s.w <= 430 ? 2 : 1, mobile: s.w < 768,
+    });
+    await cdp.send("Page.navigate", { url });
+    await cdp.settled();
+    await sleep(2_500);
+    await cdp.eval(PAGE_FIXTURE);
+    await cdp.eval(`window.__probe.install('/src/components/search/ChatSearchDialog.vue', '', ${
+      JSON.stringify(JSON.stringify({ initialKeyword: "初" }))})`);
+    await cdp.eval(`window.__probe.stubApi('searchChatHistory', ${JSON.stringify([GROUP])})`);
+    await cdp.eval("window.__probe.setOpen(true)");
+    for (let i = 0; i < 80; i += 1) {
+      const ok = await cdp.eval(`(() => {
+        const d = document.querySelector('[role="dialog"]');
+        if (!d) return false;
+        const b = d.getBoundingClientRect();
+        return b.left >= -1 && b.right <= innerWidth + 1 && b.top >= -1 && b.bottom <= innerHeight + 1;
+      })()`);
+      if (ok) break;
+      await sleep(50);
+    }
+    await cdp.eval(`window.__probe.typeKeyword('命中')`);
+    await sleep(500);
+    const light = await cdp.eval(META);
+    await shot(`search-${s.tag}-light`);
+    await cdp.eval("document.documentElement.classList.add('dark')");
+    await sleep(300);
+    const dark = await cdp.eval(META);
+    await shot(`search-${s.tag}-dark`);
+    await cdp.eval("document.documentElement.classList.remove('dark')");
+    const inView = (m) => !!m.dialog && m.dialog.l >= -1 && m.dialog.r <= m.dialog.vw + 1
+      && m.dialog.t >= -1 && m.dialog.b <= m.dialog.vh + 1;
+    check(`stage6·${s.tag}：命中 mark 对比度亮 ≥4.5 / 暗 ≥4.5、无横向溢出、弹窗不越视口`,
+      light.marks >= 3 && dark.marks >= 3 && light.contrast >= 4.5 && dark.contrast >= 4.5
+        && light.overflowX <= 0 && dark.overflowX <= 0 && inView(light) && inView(dark),
+      "marks≥3 / contrast(亮/暗)≥4.5 / overflowX≤0 / dialog 在视口内",
+      JSON.stringify({ light, dark }));
+    const outlineInvisible = (m) => {
+      if (m.outlineStyle === "none") return true;
+      const nums = (m.outlineColor.match(/[\d.]+/g) || []).map(Number);
+      const alpha = nums.length >= 4 ? nums[3] : 1;
+      return m.outlineWidth === "0px" || alpha <= 0.01;
+    };
+    check(`stage6·${s.tag}：C2 焦点提示来自文本控件的 1px inset（无 2px 可见外框）`,
+      outlineInvisible(light) && light.boxShadow.includes("inset"),
+      "outline 不可见（style=none 或 alpha≈0）/ boxShadow 含 inset",
+      JSON.stringify({ outlineWidth: light.outlineWidth, outlineStyle: light.outlineStyle,
+        outlineColor: light.outlineColor, boxShadow: light.boxShadow }));
+    rows.push({ size: s.tag, light, dark });
+  }
+  console.log("  · stage6 分档读数：" + JSON.stringify(rows.map((r) => ({
+    size: r.size, marks: r.light.marks, contrastLight: r.light.contrast, contrastDark: r.dark.contrast,
+    overflow: r.light.overflowX, focus: r.light.outlineWidth + "/" + (r.light.boxShadow.includes("inset") ? "inset" : "none"),
+  }))));
 }
 
 /**
