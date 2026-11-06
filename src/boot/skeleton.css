@@ -32,9 +32,9 @@
         /* 主色 = **用户选的主题色**：
            `theme-boot.js` 已把 localStorage 里的主题色写成 `<html>` 上的内联
            `--gosslan-primary`（它先于本样式表执行；自定义属性在使用时求值，所以顺序无关）。
-           这里引用它、兜底才是默认蓝 —— 写死 #3b82f6 会让"我"的气泡与设置/日志/群任务
+           这里引用它、兜底才是默认蓝 —— 写死具体色值会让"我"的气泡与设置/日志/群任务
            骨架的高亮块**永远是蓝色**，用户换了主题色后启动瞬间先闪一下蓝（用户 2026-09-21）。 */
-        --boot-primary: var(--gosslan-primary, #3b82f6);
+        --boot-primary: var(--gosslan-primary, #2f6bff);
         --boot-ring: rgba(31, 35, 41, 0.08);
       }
       html.dark {

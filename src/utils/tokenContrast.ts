@@ -369,8 +369,11 @@ export interface DisabledPair {
   page: string;
   /** 背后的面若半透明，先与这一层复合 */
   pageOver?: string;
-  /** α 的家 */
-  alpha: { source: string; kind: "classes" } | { source: string; kind: "rule"; selector: string };
+  /** α 的家；`solid` 表示该族已改用实色禁用墨（α 视为 1，`expect` 是那条规则的原文锚点） */
+  alpha:
+    | { source: string; kind: "classes" }
+    | { source: string; kind: "rule"; selector: string }
+    | { source: string; kind: "solid"; selector: string; expect: string };
   /** 当前实测下限：比它更淡就红（不是"达标线"，达标线见 why 与 docs §3.3） */
   min: number;
   why: string;
@@ -441,11 +444,19 @@ export const DISABLED_CONTRAST_CONTRACT: DisabledPair[] = [
     why: "右键/长按菜单里不可用的条目（桌面菜单与 ActionSheet 共用这套类）",
   },
   {
+    // 2026-11-06：正文色按画板抬到 #1f2329 后，0.62 的合成值只有 4.24（<4.5），
+    // 而 0.62 已是现有四档上限 ⇒ 本族改为**实色禁用墨** `--gosslan-text-2`（α=1）。
+    // `expect` 钉住那条规则真的在用这个 token：删掉/换掉就 red，不留空转。
     name: "禁用输入框",
-    fg: "--gosslan-text",
+    fg: "--gosslan-text-2",
     fill: "--gosslan-bg",
     page: "--gosslan-panel",
-    alpha: { source: "StyleCss", kind: "rule", selector: "select):disabled" },
+    alpha: {
+      source: "StyleCss",
+      kind: "solid",
+      selector: "select):disabled",
+      expect: "color: var(--gosslan-text-2)",
+    },
     min: 4.5,
     why: "禁用/只读输入框：这一族是唯一还过 AA 正文档的，按 4.5 硬钉",
   },
@@ -500,6 +511,21 @@ export function disabledOpacityFromRule(
   return out;
 }
 
+/**
+ * style.css 里某条规则是否真的把禁用墨写成了期望的实色。
+ *
+ * `solid` 族的 α 恒为 1，最容易退化成"常数 1 永远通过"——所以这里必须回到源码里
+ * 找到那条规则、并确认它含 `expect` 字面量；找不到就不产出读数（调用方按未决报红）。
+ */
+export function disabledRuleHasSolidColor(css: string, selector: string, expect: string): boolean {
+  const clean = css.replace(/\/\*[\s\S]*?\*\//g, "");
+  let found = false;
+  for (const m of clean.matchAll(/([^{}]*)\{([^{}]*)\}/g)) {
+    if (m[1].includes(selector) && m[2].includes(expect)) found = true;
+  }
+  return found;
+}
+
 /** 逐族核算禁用态合成对比度；`sources` 是"α 的家"的源码文本（键与契约里的 `source` 对齐）。 */
 export function auditDisabledContrast(css: string, sources: Record<string, string>): DisabledAudit {
   const scopes = parseTokenScopes(css);
@@ -521,7 +547,9 @@ export function auditDisabledContrast(css: string, sources: Record<string, strin
       // 只算一次再套两个主题等于把暗色的那一档假装没发生。
       const alphas = row.alpha.kind === "classes"
         ? disabledOpacityFromClasses(src)
-        : disabledOpacityFromRule(src, row.alpha.selector, scope);
+        : row.alpha.kind === "rule"
+          ? disabledOpacityFromRule(src, row.alpha.selector, scope)
+          : disabledRuleHasSolidColor(src, row.alpha.selector, row.alpha.expect) ? [1] : [];
       if (alphas.length === 0) {
         unresolved.push(
           `${row.name}（${theme}）：在 ${row.alpha.source} 里取不到禁用 α（写法变了？删了？token 没定义？）`,

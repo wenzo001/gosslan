@@ -9,7 +9,7 @@ import { t } from "@/i18n";
 
 const app = useAppStore();
 
-const presets = ["#3b82f6", "#00b578", "#ff6b35", "#8b5cf6", "#e53e3e", "#0ea5e9"];
+const presets = ["#2f6bff", "#00b578", "#ff6b35", "#8b5cf6", "#e53e3e", "#0ea5e9"];
 /**
  * 默认档不能再用空串当 option value：Reka 的 `SelectItem` 不渲染空串值，
  * 菜单里会少掉「系统默认」，触发器也会因匹配不到选项而一片空白

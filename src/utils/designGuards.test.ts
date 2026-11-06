@@ -6013,7 +6013,7 @@ test("56 :: style.css 的禁用规则只许走 token，不许再写字面 opacit
 
   // 阳性对照：把真树里的一条按回字面值 ⇒ 这条必须咬（不然它只是个恒真断言）。
   const mutated = readFileSync(join(import.meta.dirname, "..", "style.css"), "utf8")
-    .replace(".gosslan-menu-item:disabled {\n  opacity: var(--gosslan-disabled-alpha);", ".gosslan-menu-item:disabled {\n  opacity: 0.45;");
+    .replace(".gosslan-menu-item:disabled {\n  opacity: var(--gosslan-disabled-alpha-menu);", ".gosslan-menu-item:disabled {\n  opacity: 0.45;");
   assert.notEqual(mutated, css, "变异没落到盘上（锚点漂了）⇒ 这条对照不算证据");
   const hits: string[] = [];
   for (const m of mutated.replace(/\/\*[\s\S]*?\*\//g, "").matchAll(/([^{}]*)\{([^{}]*)\}/g)) {
