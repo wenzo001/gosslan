@@ -576,9 +576,10 @@ export const zhCN: MessageDict = {
   "chat.groupHistory.cancelRequested": "正在停止同步：当前这一页处理完就停",
   "chat.groupHistory.cancelNotRunning": "这一群现在没有正在同步",
   "chat.groupHistory.cancelled": "已停止同步（已拉到的部分保留，可点群聊顶部的同步按钮继续）",
-  // 事件监听绑定失败（实时消息/回执/在线状态全部不可用）：必须显式提示重启，
-  // 否则界面"看起来正常"却永远收不到任何事件（2026-09-23 审计 1.6）
-  "chat.eventBindFail": "实时消息监听启动失败，新消息可能收不到；请到「设置 · 网络」点「重新连接实时事件」",
+  // 事件监听绑定失败（实时消息/回执/在线状态全部不可用）。
+  // A1（2026-11-06 裁决）：toast 只留结论句；详细原因与「去哪重连」在
+  // 「设置 · 网络」的分区里（chat.eventBridgeDown + chat.eventBridgeRetry）。
+  "chat.eventBindFail": "实时消息连接失败",
   "chat.eventBridgeOk": "实时事件链路正常",
   "chat.eventBridgeDown": "实时事件链路已断开：新消息、在线状态与传输进度都不会实时到达",
   "chat.eventBridgeRetry": "重新连接实时事件",
@@ -1407,10 +1408,10 @@ export const zhCN: MessageDict = {
   "group.mentionMember": "{'@'}他",
   "friend.add.title": "添加好友",
   "friend.add.scanning": "正在扫描局域网节点…",
-  "friend.add.scanFail": "扫描失败，请稍后重试",
+  "friend.add.scanFail": "扫描失败",
   "friend.add.noPeers": "还没有发现任何可添加的设备",
   "friend.add.noPeers.hint":
-    "常见原因：① 下面的通道没开（局域网/蓝牙）② 对方没打开应用 ③ 不在同一网络。可以在这里直接打开通道，然后重新扫描。",
+    "常见原因：① 通道没开（局域网 / 蓝牙） · ② 对方没打开应用 · ③ 不在同一网络。",
   "friend.add.channel.lan": "局域网通道",
   "friend.add.channel.bluetooth": "蓝牙通道",
   "friend.add.channel.unavailable": "本机不支持（当前版本未启用）",
@@ -1440,7 +1441,7 @@ export const zhCN: MessageDict = {
   "friend.add.invite.text":
     "我在 Gosslan 上的设备 ID 是 {id}（{name}）。把这段邀请发给对方，对方添加后即可跨网段互见。",
   "friend.add.toast.inviteCopied": "邀请文案已复制",
-  "friend.add.channelFailed": "开启失败：{err}",
+  "friend.add.channelFailed": "通道开启失败",
   "friend.add.searchPlaceholder": "搜索昵称 / IP / 设备 ID",
   "friend.add.alreadyFriend": "已加好友",
   "friend.add.done": "完成",

@@ -20,7 +20,7 @@ import Spinner from "@/components/ui/Spinner.vue";
 import StateBlock from "@/components/ui/StateBlock.vue";
 import CharCounter from "@/components/ui/CharCounter.vue";
 import SecondaryBtn from "@/components/ui/SecondaryBtn.vue";
-import { errorText } from "@/composables/useErrorText";
+import { detailText } from "@/composables/useErrorText";
 import { useImeEnterGuard } from "@/composables/useImeEnterGuard";
 import { api } from "@/api";
 import { t } from "@/i18n";
@@ -76,7 +76,7 @@ const loading = computed(() => linksQuery.isFetching.value);
 /** 首屏读失败才说「读失败」；有旧快照时保留上一次读数，不把整屏换成错误页。 */
 const loadError = computed(() =>
   linksQuery.error.value && !linksQuery.data.value
-    ? errorText(linksQuery.error.value, t("links.loadFail"))
+    ? detailText(linksQuery.error.value)
     : "",
 );
 

@@ -13,7 +13,7 @@ import { useImeEnterGuard } from "@/composables/useImeEnterGuard";
 import { isAndroid } from "@/utils/platform";
 import { bleUnavailableReason } from "@/utils/bleAvailability";
 import { t } from "@/i18n";
-import { errorText, detailText } from "@/composables/useErrorText";
+import { detailText } from "@/composables/useErrorText";
 import type {RelayConfig, RelayPolicy, RelayProbe, RoutedEndpoint} from "@/types";
 
 const props = defineProps<{ active: boolean; reloadToken?: number }>();
@@ -177,7 +177,7 @@ async function rebindEvents() {
       chat.eventBridgeOk ? "success" : "error",
     );
   } catch (e) {
-    app.toast(errorText(e, t("chat.eventBindFail"), { log: true }), "error");
+    app.toastError(e, t("chat.eventBindFail"));
   } finally {
     rebinding.value = false;
   }

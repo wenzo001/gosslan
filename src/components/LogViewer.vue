@@ -12,7 +12,7 @@ import { t } from "@/i18n";
 import Spinner from "@/components/ui/Spinner.vue";
 import StateBlock from "@/components/ui/StateBlock.vue";
 import LogRows from "@/components/LogRows.vue";
-import { errorText } from "@/composables/useErrorText";
+import { detailText } from "@/composables/useErrorText";
 import { useAppStore } from "@/stores/useAppStore";
 import { isDialogCancelled, saveDestinationOf } from "@/utils/saveDestination";
 import { formatBytes } from "@/utils/format";
@@ -173,7 +173,7 @@ async function load() {
     loadError.value = "";
   } catch (e) {
     // 有旧内容时保持现状（下次轮询重试）；一屏都没有才把“读失败”说出来。
-    if (logs.value.length === 0) loadError.value = errorText(e, t("logs.loadFail"));
+    if (logs.value.length === 0) loadError.value = detailText(e);
   }
 }
 
@@ -221,7 +221,7 @@ async function copyLogPath() {
   try {
     path = (await api.getLogLocations()).current;
   } catch (e) {
-    app.toast(errorText(e, t("logs.pathCopyFail")), "error");
+    app.toastError(e, t("logs.pathCopyFail"));
     return;
   }
   if (!path) {
@@ -258,7 +258,7 @@ async function exportBundle() {
     );
   } catch (e) {
     if (isDialogCancelled(e)) return;
-    app.toast(errorText(e, t("logs.exportFail")), "error");
+    app.toastError(e, t("logs.exportFail"));
   } finally {
     exporting.value = false;
   }
@@ -278,7 +278,7 @@ function onClear() {
   void api
     .clearLogs()
     .then(load)
-    .catch((e) => app.toast(errorText(e, t("logs.clearFail")), "error"));
+    .catch((e) => app.toastError(e, t("logs.clearFail")));
 }
 
 /**
