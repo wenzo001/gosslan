@@ -4301,6 +4301,7 @@ async function main() {
     const menufit = want("menufit");
     const crashnotice = want("crashnotice");
     const hangnotice = want("hangnotice");
+    const recoverynotice = want("recoverynotice");
     const historyerr = want("historyerr");
     /**
      * 工具层段隔离 + 整段重试（2026-11-03）：段内一次 CDP 等待竞态抛错时，**不许连坐**后面所有段
@@ -4538,6 +4539,7 @@ async function main() {
     await runSegment("crashnotice", crashnotice, () => runCrashNotice(cdp, url));
     await runSegment("hangnotice", hangnotice, () => runHangNotice(cdp, url));
     await runSegment("hangnotice", hangnotice, () => runHangNotice(cdp, url));
+    await runSegment("recoverynotice", recoverynotice, () => runRecoveryNotice(cdp, url));
     await runSegment("historyerr", historyerr, () => runHistoryError(cdp, url));
     // 零判据 = 红：`--only` 选空、段内提前返回、段名不匹配都会落在这里。
     // 少了这一条，空数组的 `.every` 为真 ⇒ 屏幕打「✅ 0/0 条判据绿」还退 0（2026-10-27 实测确认）。
@@ -17742,6 +17744,161 @@ async function runStage6Mobile(cdp, url) {
   console.log("  · stage6 分档读数：" + JSON.stringify(rows.map((r) => ({
     size: r.size, marks: r.light.marks, contrastLight: r.light.contrast, contrastDark: r.dark.contrast,
     overflow: r.light.overflowX, focus: r.light.outlineWidth + "/" + (r.light.boxShadow.includes("inset") ? "inset" : "none"),
+  }))));
+}
+
+/**
+ * --only=recoverynotice：自愈提示条不许盖住可操作内容（用户 2026-11-06 截图：
+ * 顶部横幅压在左栏搜索行与右栏首行上，且自身顶部露出半截被裁的字）。
+ *
+ * 分档：1280×800 / 1024×700 / 768×800 / 640×480（矮窗重点）/ 390×844（移动端）。
+ * 每条判据都按矩形算：提示卡片 × (列表头 / 聊天头 / 全部可操作元素) 的交叠面积，
+ * 以及卡片自身的 scrollHeight-clientHeight（被自身容器裁切 = >0）。
+ */
+async function runRecoveryNotice(cdp, url) {
+  const sizes = [
+    { w: 1280, h: 800, tag: "1280x800", mobile: false },
+    { w: 1024, h: 700, tag: "1024x700", mobile: false },
+    { w: 768, h: 800, tag: "768x800", mobile: false },
+    { w: 640, h: 480, tag: "640x480", mobile: false },
+    { w: 390, h: 844, tag: "390x844", mobile: true },
+  ];
+  const dir = path.join(ROOT, "docs", "notes", "unslop-review-2026-11-06", "shots", "recoverynotice");
+  fs.mkdirSync(dir, { recursive: true });
+  const shot = async (name) => {
+    const img = await cdp.send("Page.captureScreenshot", { format: "png" });
+    fs.writeFileSync(path.join(dir, `${name}.png`), Buffer.from(img.data, "base64"));
+  };
+  const META = `(() => {
+    const card = document.querySelector('.recovery-card');
+    const notice = document.querySelector('.recovery-notice');
+    const shell = document.querySelector('#probe-host > div');
+    if (!card || !notice || !shell) return { ok: false, why: '卡片/横幅/壳 缺失' };
+    const rect = (el) => {
+      if (!el) return null;
+      const r = el.getBoundingClientRect();
+      return { l: Math.round(r.left), t: Math.round(r.top), r: Math.round(r.right), b: Math.round(r.bottom),
+        w: Math.round(r.width), h: Math.round(r.height) };
+    };
+    const area = (a, b) => {
+      if (!a || !b) return 0;
+      const w = Math.max(0, Math.min(a.r, b.r) - Math.max(a.l, b.l));
+      const h = Math.max(0, Math.min(a.b, b.b) - Math.max(a.t, b.t));
+      return w * h;
+    };
+    const cr = rect(card);
+    // 列表列不要用 querySelector('aside')：NavRail 也是 aside，会抓错。
+    // 用「搜索输入框所在的 aside」定位真实列表列；再退回搜索框本身。
+    const searchEl = shell.querySelector('input[placeholder]');
+    const listCol = searchEl ? searchEl.closest('aside') : null;
+    const listHeader = listCol ? listCol.firstElementChild : null;
+    const searchRect = rect(searchEl);
+    const main = shell.querySelector('main');
+    const cw = main ? main.firstElementChild : null;
+    const chatTop = cw ? (cw.firstElementChild || cw) : null;
+    // 标题栏（caption / 移动端搜索条）：旧定位 top:16px 正好横切这一行，
+    // 截图里"顶部露出被裁掉的半行小字"就是它的上半截。用它量化"半行字"。
+    const titleBar = shell.querySelector('[data-caption]');
+    const tr = rect(titleBar);
+    const lr = rect(listHeader && listHeader.getBoundingClientRect().width > 0 ? listHeader : searchEl);
+    const chr = rect(chatTop);
+    const operables = [...shell.querySelectorAll(
+      'button, input, a[href], [role="button"], [role="tab"], [tabindex]:not([tabindex="-1"])')]
+      .filter((el) => !notice.contains(el) && el.getBoundingClientRect().width > 0);
+    let maxOp = 0, maxOpEl = '';
+    for (const el of operables) {
+      const a = area(cr, rect(el));
+      if (a > maxOp) {
+        maxOp = a;
+        maxOpEl = el.tagName.toLowerCase()
+          + (el.getAttribute('aria-label') ? '[' + el.getAttribute('aria-label') + ']' : '')
+          + '.' + String(el.className || '').split(' ').slice(0, 2).join('.');
+      }
+    }
+    const sr = shell.getBoundingClientRect();
+    return {
+      ok: true,
+      card: cr, listTop: lr, chatTop: chr, search: searchRect, titleBar: tr,
+      searchVisible: !!searchRect && searchRect.w > 0 && searchRect.h > 0,
+      titleVisible: !!tr && tr.w > 0 && tr.h > 0,
+      overlapList: area(cr, lr), overlapChat: area(cr, chr),
+      overlapTitle: area(cr, tr), maxOp, maxOpEl,
+      clipCard: card.scrollHeight - card.clientHeight,
+      clipBand: notice.scrollHeight - notice.clientHeight,
+      inViewport: cr.t >= -1 && cr.b <= innerHeight + 1 && cr.l >= -1 && cr.r <= innerWidth + 1,
+      overflowX: document.documentElement.scrollWidth - document.documentElement.clientWidth,
+      shellBottom: Math.round(sr.bottom), shellH: Math.round(sr.height), vh: innerHeight,
+      position: getComputedStyle(notice).position,
+    };
+  })()`;
+  const rows = [];
+  for (const s of sizes) {
+    await cdp.send("Emulation.setDeviceMetricsOverride", {
+      width: s.w, height: s.h, deviceScaleFactor: s.mobile ? 2 : 1, mobile: s.mobile,
+    });
+    await cdp.send("Page.navigate", { url });
+    await cdp.settled();
+    await sleep(2_500);
+    await cdp.eval(PAGE_FIXTURE);
+    const mount = await cdp.eval(`(async () => {
+      window.__TAURI_INTERNALS__ = window.__TAURI_INTERNALS__ || {
+        metadata: { currentWindow: { label: 'main' }, currentWebview: { label: 'main', windowLabel: 'main' } },
+        invoke: async () => null, transformCallback: (cb) => cb, convertFileSrc: (p) => p,
+      };
+      window.__TAURI_EVENT_PLUGIN_INTERNALS__ = window.__TAURI_EVENT_PLUGIN_INTERNALS__ || { unregisterListener: () => {} };
+      await window.__probe.install('/src/layouts/ResponsiveLayout.vue', '', ${
+        JSON.stringify(JSON.stringify({ router: true, hostHeight: `${s.h}px` }))});
+      const vueUrl = performance.getEntriesByType('resource').map((e) => e.name || '')
+        .find((u) => u.includes('/node_modules/.vite/deps/vue.js?v='));
+      const Vue = await import(vueUrl);
+      const mod = await import('/src/components/RecoveryNotice.vue');
+      const shell = document.querySelector('#probe-host > div');
+      if (!shell) return { ok: false };
+      const host = document.createElement('div');
+      host.id = 'notice-host';
+      // 和真实插槽同一位置：TitleBar（仅桌面，带 data-caption）之后；移动端无 TitleBar，等价于 safe-top 之后。
+      const safe = shell.querySelector('.safe-top');
+      const title = shell.querySelector('[data-caption]');
+      const anchor = title || safe;
+      if (anchor) anchor.after(host);
+      else shell.insertBefore(host, shell.firstChild);
+      const app = Vue.createApp(mod.default, { kind: 'recovered', mobile: ${s.mobile} });
+      app.mount(host);
+      window.__noticeApp = app;
+      return { ok: true, position: getComputedStyle(document.querySelector('.recovery-notice')).position };
+    })()`);
+    await sleep(500);
+    const r = await cdp.eval(META);
+    await shot(`recovery-${s.tag}-light`);
+    await cdp.eval("document.documentElement.classList.add('dark')");
+    await sleep(300);
+    await shot(`recovery-${s.tag}-dark`);
+    const darkOverflow = await cdp.eval("document.documentElement.scrollWidth - document.documentElement.clientWidth");
+    await cdp.eval("document.documentElement.classList.remove('dark')");
+    check(`自愈条·${s.tag}：不盖住列表头/聊天头/标题栏（矩形交叠面积 = 0，且内容真的在场）`,
+      r.ok && r.searchVisible && r.overlapList === 0 && r.overlapChat === 0
+        && (!r.titleVisible || r.overlapTitle === 0),
+      "searchVisible / overlapList=0 / overlapChat=0 / (标题栏存在时)overlapTitle=0",
+      JSON.stringify({ search: r.search, card: r.card, listTop: r.listTop, chatTop: r.chatTop,
+        titleBar: r.titleBar, titleVisible: r.titleVisible, overlapList: r.overlapList,
+        overlapChat: r.overlapChat, overlapTitle: r.overlapTitle }));
+    check(`自愈条·${s.tag}：不和任何可操作元素交叠（按钮/输入/链接/可聚焦）`,
+      r.ok && r.maxOp === 0, "maxOp=0", JSON.stringify({ maxOp: r.maxOp, maxOpEl: r.maxOpEl }));
+    check(`自愈条·${s.tag}：自身不被容切（scrollHeight-clientHeight ≤ 0）且整卡在视口内`,
+      r.ok && r.clipCard <= 0 && r.clipBand <= 0 && r.inViewport && darkOverflow <= 0,
+      "clip=0 / inViewport / 无横向溢出",
+      JSON.stringify({ clipCard: r.clipCard, clipBand: r.clipBand, inViewport: r.inViewport,
+        overflowX: r.overflowX, darkOverflow, shellH: r.shellH, vh: r.vh, shellBottom: r.shellBottom }));
+    rows.push({ size: s.tag, mount, r });
+  }
+  console.log("  · 自愈条分档读数：" + JSON.stringify(rows.map((x) => ({
+    size: x.size, position: x.mount.position,
+    card: x.r.card && [x.r.card.l, x.r.card.t, x.r.card.r, x.r.card.b],
+    listTop: x.r.listTop && [x.r.listTop.l, x.r.listTop.t, x.r.listTop.r, x.r.listTop.b],
+    chatTop: x.r.chatTop && [x.r.chatTop.l, x.r.chatTop.t, x.r.chatTop.r, x.r.chatTop.b],
+    overlapList: x.r.overlapList, overlapChat: x.r.overlapChat, overlapTitle: x.r.overlapTitle,
+    maxOp: x.r.maxOp,
+    clipCard: x.r.clipCard, clipBand: x.r.clipBand,
   }))));
 }
 

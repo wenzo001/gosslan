@@ -327,13 +327,6 @@ onUnmounted(stopWatchdogTimers);
 </script>
 
 <template>
-  <RecoveryNotice
-    v-if="recovery"
-    :kind="recovery.kind"
-    :mobile="app.isMobile"
-    @restart="restartApp"
-    @dismiss="recovery = null"
-  />
   <CrashNotice
     v-if="crashReport"
     :report="crashReport"
@@ -359,7 +352,19 @@ onUnmounted(stopWatchdogTimers);
     :mobile="app.isMobile"
     @restart="restartApp"
   />
-  <ResponsiveLayout />
+  <ResponsiveLayout>
+    <!-- 自愈横幅走占位行插槽：系统级提示不压在任何可操作内容上。
+         用户 2026-11-06：「界面刚才无响应」横幅盖住左栏搜索行与右栏首行。 -->
+    <template #banner>
+      <RecoveryNotice
+        v-if="recovery"
+        :kind="recovery.kind"
+        :mobile="app.isMobile"
+        @restart="restartApp"
+        @dismiss="recovery = null"
+      />
+    </template>
+  </ResponsiveLayout>
   <!--
     全局后台任务入口挂在主窗口壳上，而不是某个会话里：D-18 的问题正是
     「切到别的会话就看不到还在传的文件」。它自己判断有没有活可干，

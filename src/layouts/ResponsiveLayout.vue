@@ -839,6 +839,12 @@ function onResizeEnd() {
     <!-- 顶部 caption：横贯整个窗口（盖在 rail + list + chat 三列之上），微信 4.0 顶部是整条浅灰拖拽条 -->
     <TitleBar :is-mobile="app.isMobile" />
 
+    <!-- 系统级提示占位行（自愈横幅等）：**占独立一行**，不浮在内容上。
+         用户 2026-11-06 截图：「界面刚才无响应」横幅压住了左栏搜索行与右栏首行，
+         且旧定位 `top:16px` 横切 caption，标题只剩上半截露在横幅上方。
+         放在 caption 之后、三列之前：拖动条仍可拖，横幅自身也不会再被容器裁切。 -->
+    <slot name="banner" />
+
     <!-- 桌面：rail（左）| 列表（中）| 聊天（右）三列；移动端按 mobileView 抽屉切换。
          把可拖拽的列表宽 `listW` 暴露成 CSS 变量：会话列表用内联 width，
          收藏页的左列在 `FavoritePanel` 里（拿不到这个 ref），靠 `var(--gosslan-list-w)` 共享同一宽度

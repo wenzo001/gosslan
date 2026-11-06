@@ -55,22 +55,27 @@ const suggestRestart = computed(() => props.kind === "suggest_restart");
 </template>
 
 <style scoped>
-/* 放顶部：底部位置已经被 `HangNotice` 占用，两条提示同时出现时不互相盖住。 */
+/* 占独立占位行：过去是 `position: fixed; top: 16px`，会压在左栏搜索行与右栏首行上
+   （用户 2026-11-06 截图，矮窗尤其明显）。现在由 `ResponsiveLayout` 的 #banner 插槽
+   放在流内（移动端 safe-top 之后、桌面 caption 之前），内容整体下移，横幅自身也不会
+   再被父容器裁切。z-index 保留只是为了盖住 `ambient` 的极光层，不再影响布局。 */
 .recovery-notice {
-  position: fixed;
-  top: 16px;
-  left: 50%;
-  transform: translateX(-50%);
+  position: relative;
   z-index: 59;
-  width: min(560px, calc(100vw - 24px));
+  display: flex;
+  flex: none;
+  width: 100%;
+  justify-content: center;
+  padding: 8px 12px;
   pointer-events: none;
 }
 .recovery-notice--mobile {
-  top: calc(var(--gosslan-safe-top, 0px) + 8px);
+  padding: 4px 8px;
 }
 .recovery-card {
   pointer-events: auto;
   display: flex;
+  width: min(560px, 100%);
   align-items: center;
   justify-content: space-between;
   gap: 10px;

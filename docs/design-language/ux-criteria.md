@@ -84,3 +84,19 @@ Outbox、虚拟列表、Tauri 原生化这些 unslop 原版不涉及的面向。
 5. 机器判据：`src/utils/errors.test.ts` 的 `buildToastText` 四条护栏 —— 短原因必须上屏、
    超长退回结论、技术串不上屏、全 `CODE_RULES` 中英两册扫宽与扫串。
    反例自证：上限调大 ⇒ 长原因那条红；删掉技术串判断 ⇒ 技术串那条红。
+
+### 2026-11-06 的系统级提示占位行（自愈横幅）
+
+系统提示（自愈 / 重连 / 后台任务）**不许浮在可操作内容上**，改成在 `ResponsiveLayout`
+里占一行（`#banner` 插槽，位于 caption 之后、三列之前；移动端无 caption，等价于
+safe-top 之后）。旧实现 `position: fixed; top: 16px` 有两条实测故障（用户截图）：
+
+- 1280/1024/768 宽：盖住聊天区顶部（交叠 26880 / 22944 / 16800 px²）；
+- 640/390 宽：盖住列表搜索行（33600 / 27300 px²），且与 `input` 交叠 9112 / 3718 px²；
+- 旧 `top:16px` 横切 caption（28px 高）：标题下 12px 被横幅压住、上 16px 露出，
+  即截图里"被裁掉的半行小字"（caption 交叠 6720 px²）。
+
+改后 5 档 × 亮暗：横幅与列表头 / 聊天头 / 标题栏 / 任意可操作元素的交叠面积全为 0，
+`scrollHeight-clientHeight = 0`（不再被自身容器裁切）。
+判据：`--only=recoverynotice` 15 条；反例自证：把 `.recovery-notice` 改回
+`position: fixed; top:16px` ⇒ 9 条红（640/390 的 `overlapList` 与 `maxOp` 先红）。
