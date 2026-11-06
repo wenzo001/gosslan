@@ -17630,6 +17630,10 @@ async function runSettingsMobile(cdp, url) {
         colorPresetWidths: presetRects.map((r) => +r.width.toFixed(1)),
         colorInputRight: inR ? +inR.right.toFixed(1) : null,
         colorInputWidth: inR ? +inR.width.toFixed(1) : null,
+        colorInputHeight: inR ? +inR.height.toFixed(1) : null,
+        colorInputRadius: input ? getComputedStyle(input).borderRadius : null,
+        colorPresetRadii: presets.map((b) => getComputedStyle(b).borderRadius),
+        colorPresetHeights: presetRects.map((r) => +r.height.toFixed(1)),
         colorLastPresetRight: presetRects.length ? +Math.max(...presetRects.map((r) => r.right)).toFixed(1) : null,
         colorRowRight: rowR ? +rowR.right.toFixed(1) : null,
       };
@@ -17645,7 +17649,9 @@ async function runSettingsMobile(cdp, url) {
       return [t('settings.group.general'), t('settings.item.network'),
         t('settings.item.storageFiles'), t('settings.item.about')];
     })()`);
-    const groups = await cdp.eval(`(() => [...document.querySelectorAll('[data-settings-scroll] .uppercase')]
+    // 组名锚点从 `.uppercase` 搬到 `[data-settings-group]`：B4 去掉全大写后类名不再是判据，
+    // 但「4 组且顺序固定」这条断言原样保留（2026-11-06 判据搬迁，不是放宽）。
+    const groups = await cdp.eval(`(() => [...document.querySelectorAll('[data-settings-scroll] [data-settings-group]')]
       .map((e) => (e.textContent || '').trim()).filter(Boolean))()`);
     check("移动端设置：一级列表是 4 组，顺序为 通用 / 网络 / 文件与存储 / 关于",
       JSON.stringify(groups) === JSON.stringify(groupLabels),
@@ -17668,12 +17674,21 @@ async function runSettingsMobile(cdp, url) {
       && s.colorInputWidth >= 24
       && s.colorRowRight !== null
       && s.colorInputRight <= s.colorRowRight - 1
-      && s.colorLastPresetRight <= s.colorRowRight - 1;
-    check("移动端外观：6 个预设色与自定义色都完整可见（没有把最后一个色块挤没/裁掉）",
+      && s.colorLastPresetRight <= s.colorRowRight - 1
+      // B3（2026-11-06）：自定义色入口必须与 6 个 preset **同尺寸同形状** —— 原生
+      // `<input type="color">` 不许再画出独立的圆角方块。尺寸与 preset 对齐，圆角一致。
+      && s.colorInputHeight === s.colorPresetHeights[0]
+      && s.colorPresetHeights.every((h) => h === s.colorInputHeight)
+      && Math.abs(s.colorInputWidth - s.colorPresetWidths[0]) <= 0.5
+      && s.colorInputRadius === s.colorPresetRadii[0]
+      && s.colorPresetRadii.every((r) => r === s.colorInputRadius);
+    check("移动端外观：6 个预设色与自定义色都完整可见，且自定义色与预设同尺寸同形状（没有把最后一个色块挤没/裁掉）",
       colorsOk,
-      "6 个预设宽度≥20 + 自定义色≥24 且在行内",
+      "6 个预设宽度≥20 + 自定义色≥24、与预设同宽高同圆角、且在行内",
       JSON.stringify({ presets: s.colorPresets, widths: s.colorPresetWidths,
-        inputW: s.colorInputWidth, inputRight: s.colorInputRight,
+        inputW: s.colorInputWidth, inputH: s.colorInputHeight, inputRadius: s.colorInputRadius,
+        presetHeights: s.colorPresetHeights, presetRadii: s.colorPresetRadii,
+        inputRight: s.colorInputRight,
         lastRight: s.colorLastPresetRight, rowRight: s.colorRowRight }));
 
     // 「减少透明效果」：受影响段就是外观页这一行。点了之后必须真的落到 DOM
