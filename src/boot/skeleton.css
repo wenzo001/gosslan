@@ -22,30 +22,30 @@
         box-sizing: border-box;
       }
       :root {
-        --boot-app-bg: #edf1f6;
-        --boot-caption: #e2e8f0;
-        --boot-rail: #e2e8f0;
-        --boot-list: #f1f5f9;
-        --boot-chat: #fafafa;
-        --boot-line: #dbe3ed;
-        --boot-ink: #64748b;
+        --boot-app-bg: #f2f3f5;
+        --boot-caption: #e9ebee;
+        --boot-rail: #e9ebee;
+        --boot-list: #f7f8fa;
+        --boot-chat: #ffffff;
+        --boot-line: #e5e6eb;
+        --boot-ink: #5a6068;
         /* 主色 = **用户选的主题色**：
            `theme-boot.js` 已把 localStorage 里的主题色写成 `<html>` 上的内联
            `--gosslan-primary`（它先于本样式表执行；自定义属性在使用时求值，所以顺序无关）。
            这里引用它、兜底才是默认蓝 —— 写死 #3b82f6 会让"我"的气泡与设置/日志/群任务
            骨架的高亮块**永远是蓝色**，用户换了主题色后启动瞬间先闪一下蓝（用户 2026-09-21）。 */
         --boot-primary: var(--gosslan-primary, #3b82f6);
-        --boot-ring: rgba(15, 23, 42, 0.08);
+        --boot-ring: rgba(31, 35, 41, 0.08);
       }
       html.dark {
-        --boot-app-bg: #0b1220;
-        --boot-caption: #16202f;
-        --boot-rail: #16202f;
-        --boot-list: #1e293b;
-        --boot-chat: #0f172a;
+        --boot-app-bg: #141518;
+        --boot-caption: #1c1e21;
+        --boot-rail: #1c1e21;
+        --boot-list: #1e2023;
+        --boot-chat: #242628;
         /* = 深色 --gosslan-border（骨架块也用它当填充，故跟随 border 而非 divider） */
-        --boot-line: #3a4a66;
-        --boot-ink: #94a3b8;
+        --boot-line: #34373b;
+        --boot-ink: #b4b8be;
         --boot-ring: rgba(248, 250, 252, 0.09);
       }
       body {
@@ -107,7 +107,7 @@
         padding-top: 14px;
       }
       .boot-list {
-        width: 250px;
+        width: 320px;
         flex: none;
         background: var(--boot-list);
         border-top-left-radius: 12px;
@@ -139,7 +139,7 @@
         }
       }
       .boot-head {
-        height: 48px;
+        height: 52px;
         flex: none;
         display: flex;
         flex-direction: column;
@@ -160,16 +160,16 @@
         flex: none;
         margin: 0 16px 14px;
         height: 76px;
-        border-radius: 8px; /* = token md，与真实输入框一致 */
+        border-radius: 10px; /* = token md，与真实输入框一致 */
       }
       /* macOS 骨架的标题栏与原生 28px 对齐（与 style.css 的 .platform-mac 覆盖一致） */
       html.is-mac .boot-cap {
         height: 28px;
       }
       .boot-ava {
-        width: 40px;
-        height: 40px;
-        border-radius: 6px;
+        width: 42px;
+        height: 42px;
+        border-radius: 9999px;
         flex: none;
       }
       .boot-ico {
@@ -186,18 +186,18 @@
         display: flex;
         align-items: center;
         gap: 10px;
-        margin-bottom: 14px;
+        height: 62px;
       }
       .boot-lines {
         flex: 1;
         min-width: 0;
       }
       .boot-bubble {
-        /* 与真实单行文本气泡同高（px-3 py-1.5 + 14px 行高 ≈ 32px）与同档圆角（18px）。
+        /* 与真实单行文本气泡同高（px-3 py-1.5 + 14px 行高 ≈ 32px）与同档圆角（20px）。
            旧值 38px / 6px 会让启动瞬间的气泡在切到真界面时"缩一圈"。 */
         height: 32px;
         width: 38%;
-        border-radius: 18px;
+        border-radius: 20px;
       }
       .boot-bubble.right {
         align-self: flex-end;

@@ -91,7 +91,7 @@
   /* ---------------- 布局尺寸 ----------------
      Header 高度由 TitleBar 的 padding + 图标大小决定，
      移动端 TabBar 高度 = 4rem（64px @ 根字号 16px：py-2.5 + icon h-5 + text-[11px] + border-t）。 */
-  --gosslan-header-h: 44px;
+  --gosslan-header-h: 52px;
   /* ⚠️ 这一档**必须写 rem，不许改成 64px**：TabBar 自己的几何（`py-2.5` / `h-5`）也是 rem，
      Android WebView 的 textZoom 会连根字号一起放大 ⇒ 条子变高时，rem 的占位跟着变高，
      写死 px 会让占位不够、最后一行被固定条压住（这条只有真机能验，故按单位形状钉死）。
@@ -100,26 +100,26 @@
 
   /* 主面板三档灰阶（Slate 系，对应设计规范）：rail/顶栏 #E2E8F0、列表 #F1F5F9、聊天 #F8FAFC，
      由深到浅拉开层次，面板圆角交界。 */
-  --gosslan-caption: #e2e8f0;
-  --gosslan-rail: #e2e8f0;
-  --gosslan-rail-text: #64748b;
+  --gosslan-caption: #e9ebee;
+  --gosslan-rail: #e9ebee;
+  --gosslan-rail-text: #5a6068;
   /* 选中态用**纯主题色**：rail 上是图标不是正文 —— accent-ink 是给文字用的加深档
      （primary 混黑），用户 2026-09-17：「选中颜色比主题色深」。 */
   --gosslan-rail-text-active: var(--gosslan-primary);
   --gosslan-rail-hover: rgba(15, 23, 42, 0.06);
-  --gosslan-rail-active: #cbd5e1;
-  --gosslan-list: #f1f5f9;
+  --gosslan-rail-active: #dfe2e6;
+  --gosslan-list: #f7f8fa;
   --gosslan-list-hover: rgba(15, 23, 42, 0.04);
-  --gosslan-list-active: #dbe3ed;
+  --gosslan-list-active: #eceef1;
   --gosslan-list-active-text: var(--gosslan-text);
   --gosslan-chat: #ffffff;
   --gosslan-panel: #ffffff;
-  --gosslan-bg: #f1f5f9;
+  --gosslan-bg: #f2f3f5;
   /* 输入类控件底色（搜索框 / 输入卡）：必须与所在面板拉开一档，
      否则输入框"没有边界"（暗色下 panel 与 list 同色时最容易踩）。
      亮色下故意不取白（和 panel 同值），取稍深一档 #f3f5f8 ——
      搜索框套在白 panel 里时就能自己立住，不需要靠 border 才有边界感。 */
-  --gosslan-field: #f3f5f8;
+  --gosslan-field: #f2f3f5;
   /* 中性卡片气泡底（文件 / 代码 / 无类型兜底）：不跟随主题色的那类气泡。
      必须与聊天画布**最终合成色**差一档（画布 = chat 白 + 16% 薄纱，实测 ≈#eaeef2），
      否则气泡等于没有（见 utils/previewMetrics.ts 的历史坑）。#e0e4e9 对合成画布 ≈1.10。
@@ -128,8 +128,8 @@
   --gosslan-card: #e0e4e9;
   --gosslan-card-ink: #0f172a;
   --gosslan-card-line: rgba(0, 0, 0, 0.06);
-  --gosslan-border: #e2e8f0;
-  --gosslan-divider: #e2e8f0;
+  --gosslan-border: #e5e6eb;
+  --gosslan-divider: #eef0f2;
   /* 专用**分栏分隔线**：只给搜索对话框左右两列用（两列都透明，没有底色差，
      发丝线 1.16:1 撑不起"这是两栏"的层次）。全站 `--gosslan-divider` 仍是发丝线 —— 
      它承担的是列表行之间的"轻分隔"，一次改成 3:1 会把上百处行分隔变成表格线。
@@ -138,8 +138,8 @@
   --gosslan-text: #0f172a;
   /* 次要文字（说明文案 / 会话摘要 / 辅助图标）：11~13px 小字同样按正文标准 4.5 判。
      原 #64748b 只达 4.34（列表底）/ 4.11（卡片底），不达标 → 按项目既有的 Slate 梯度下走一档。
-     现 Slate-600 #475569：卡片 6.54 / 列表 6.92 / 画布 7.26 / 面板 7.58，全部达标且仍明显浅于正文。 */
-  --gosslan-text-2: #475569;
+     现 #5a6068：卡片 5.91 / 列表 6.21 / 画布 6.55 / 面板 6.81，全部达标且仍明显浅于正文。 */
+  --gosslan-text-2: #5a6068;
   /* 占位符专用一档：比次要文字浅、但必须仍过 AA（输入框里的提示也是 12~14px 小字）。
      最差的一档是薄纱画布（chat 白 + 16% 薄纱）4.87、列表 token 4.95、字段底 4.97；
      原来跟着 --gosslan-text-2 走（6.5:1）把占位符画成了正文，和真输入值分不开。 */
@@ -244,16 +244,20 @@
      只动时长，曲线仍用 --gosslan-ease（设计规范：新增动效不另写曲线）。 */
   --gosslan-duration-shake: 520ms;
 
-  /* 版式尺寸：64px 侧栏（图标有呼吸感）+ 250px 列表栏 + 56px 头部 */
+  /* 版式尺寸：64px 侧栏（图标有呼吸感）+ 320px 列表栏 + 52px 头部 */
   --gosslan-rail-w: 64px;
-  --gosslan-list-w: 250px;
+  --gosslan-list-w: 320px;
+  /* 桌面 / 移动两种列表行高（画板 DesktopChats=62、MobileChats=64）。
+     两个值都在这里定义，组件只许读变量，不许各写一份 px。 */
+  --gosslan-row-h-desktop: 62px;
+  --gosslan-row-h-mobile: 64px;
   /* 两栏（会话列表 / 聊天头部）共用的头部高度。
      2026-09-12 按用户反馈「信息列表上面的搜索框和聊天内容区上面的信息框，占的位置太大了，
      太高了……比较紧凑、精致一点」由 56px 收紧到 52px；当晚二次反馈「顶部的高度紧凑感
      参考微信」→ 再收到 48px（微信 macOS 版头部就是这个量级）。
      ⚠️ 改这个值必须同步 `index.html` 的首屏骨架 `.boot-head`（桌面）与
-     `.boot-logs-toolbar`（日志窗口），否则首屏会跳高 4px —— 这是本项目的既有约定。 */
-  --gosslan-header-h: 48px;
+     `.boot-logs-toolbar`（日志窗口），否则首屏会跳高 —— 这是本项目的既有约定。 */
+  --gosslan-header-h: 52px;
   /* 顶部窗口拖拽条高度：caption 容纳右上三枚窗口按钮 */
   /* 自绘标题栏高度。Windows / Linux 用它承载自绘三键（与系统 caption 高度接近）。
      macOS 走下面 `.platform-mac` 的覆盖值 —— 那边要与**原生标题栏 28px** 对齐，
@@ -296,23 +300,23 @@
        ① 固定半径 —— 本应用绝大多数元素（紧凑、密集的桌面/移动控件）
        ② 胶囊 --gosslan-radius-pill —— 头像圆点、在线状态点、高强调大按钮
        ③ 同心圆角 —— 嵌套面：**内圆角 = 外圆角 − 内外间距**；不要出现内角被夹扁/外翻
-     梯度与 Tailwind 旧类一一对应（换算时用 `rounded-<size>` → 同名 token，**零观感变化**）：
-       Tailwind `rounded`=4px、`rounded-md`=6px、`rounded-lg`=8px、`rounded-xl`=12px、`rounded-2xl`=16px
+     梯度不再是 Tailwind 默认圆角的一一映射（Pulse 整体上抬一档：4/6/8/12/16 → 6/8/10/14/16）。
+     迁移时必须写 `var(--gosslan-radius-*)`，不许按旧类名换算（`rounded-md` 已经不再等于 --sm 的 8px）。
      完整规则见 docs/design-guidelines.md；**新功能默认按该文档执行**。 */
-  --gosslan-radius-xs: 4px; /* 内联小色块：@提及、行内代码 */
-  --gosslan-radius-sm: 6px; /* 紧凑控件：下拉项、工具条按钮、气泡 */
-  --gosslan-radius-md: 8px; /* 标准控件：列表行、导航项、菜单容器、输入框 */
-  --gosslan-radius-lg: 12px; /* 浮层与卡片：弹层、设置分组、代码卡片 */
+  --gosslan-radius-xs: 6px; /* 内联小色块：@提及、行内代码 */
+  --gosslan-radius-sm: 8px; /* 紧凑控件：下拉项、工具条按钮、小徽标 */
+  --gosslan-radius-md: 10px; /* 标准控件：列表行、导航项、菜单容器、输入框 */
+  --gosslan-radius-lg: 14px; /* 浮层与卡片：弹层、设置分组、代码卡片 */
   --gosslan-radius-xl: 16px; /* 大面板：模态、资料卡 */
   --gosslan-radius-pill: 9999px;
 
   /* 语义别名（保留旧名以免大范围改动；值统一来自上面的梯度） */
-  --gosslan-avatar-radius: var(--gosslan-radius-sm);
+  --gosslan-avatar-radius: 9999px;
   --gosslan-item-radius: var(--gosslan-radius-md);
-  --gosslan-bubble-radius: 18px;
+  --gosslan-bubble-radius: 20px;
 
   /* ---------------- 消息流排版令牌（2026-10-23 iMessage 风格基线） ----------------
-     气泡圆角 18px（17–19 档内）、连续消息相邻侧 6px、群聊头像 30px、气泡宽度 ≤ 80%。
+     气泡圆角 20px、连续消息相邻侧 6px、群聊头像 30px、气泡宽度 ≤ 100%。
      ⚠️ **行距不在这里**：同组 4px / 换组 10px 由 `messageHeight` 的 GAP_* 一处保管，
        渲染端（MessageItem 的 pt-1.5 / pb-1）与估高端必须同时改 —— 这里再放一份就是第二个家。
      ⚠️ **气泡内边距也不在这里**：水平 12px 三家一致（`px-3`），纵向按内容形态分档
@@ -422,7 +426,7 @@
      它自带 12% 饱和度，所以不再经 --ambient-s 二次稀释。 */
   --ambient-warm: hsl(32 12% 64%);
   /* 底层底色：接近列表灰，保证半透明浮层过渡自然 */
-  --gosslan-app-bg: #edf1f6;
+  --gosslan-app-bg: #f2f3f5;
 }
 
 .dark {
@@ -444,38 +448,38 @@
   --gosslan-primary-active: color-mix(in srgb, var(--gosslan-primary) 80%, #ffffff);
   --gosslan-primary-hover: color-mix(in srgb, var(--gosslan-primary) 74%, #ffffff);
   --gosslan-on-primary: var(--gosslan-app-bg);
-  --gosslan-caption: #16202f;
-  --gosslan-rail: #16202f;
-  --gosslan-rail-text: #94a3b8;
+  --gosslan-caption: #1c1e21;
+  --gosslan-rail: #1c1e21;
+  --gosslan-rail-text: #8a9099;
   /* 同亮色口径：图标选中态用纯主题色（accent-ink 在暗色下是 primary 混白，也不合图标用） */
   --gosslan-rail-text-active: var(--gosslan-primary);
   --gosslan-rail-hover: rgba(248, 250, 252, 0.07);
-  --gosslan-rail-active: #253246;
-  --gosslan-list: #1e293b;
+  --gosslan-rail-active: #26282b;
+  --gosslan-list: #1e2023;
   --gosslan-list-hover: rgba(248, 250, 252, 0.05);
-  --gosslan-list-active: #334155;
+  --gosslan-list-active: #2c2f33;
   --gosslan-list-active-text: var(--gosslan-text);
-  --gosslan-chat: #0f172a;
-  --gosslan-panel: #1e293b;
-  --gosslan-bg: #0f172a;
+  --gosslan-chat: #242628;
+  --gosslan-panel: #2c2f33;
+  --gosslan-bg: #141518;
   /* 暗色输入框：比 list(#1e293b) 抬亮一档 → 1.27（亮色同位置是 1.10），
      搜索框/输入卡在暗色下才有"这是一个输入框"的边界。 */
-  --gosslan-field: #2a3a52;
+  --gosslan-field: #2a2c31;
   --gosslan-card: #1c2434;
   --gosslan-card-ink: #e2e8f0;
   --gosslan-card-line: rgba(255, 255, 255, 0.08);
   /* 组件边界：暗色下原来的 #2c3a52 贴在 list 上只有 1.28 的对比，
      输入框/按钮/卡片的边"看不见"；抬到 1.64（对画布 1.74）才分辨得出。
      ⚠️ 只动 border，分隔线（--gosslan-divider）保持更淡 —— 分隔线是"分栏"，边框是"控件"。 */
-  --gosslan-border: #3a4a66;
-  --gosslan-divider: #28344a;
+  --gosslan-border: #34373b;
+  --gosslan-divider: #2c2f33;
   /* 暗色分栏线比亮色抬亮一档：暗底上同样要 ≥3:1（详见 :root 里的同名 token 注释）。 */
   --gosslan-divider-strong: #6b7f9e;
-  --gosslan-text: #f1f5f9;
-  --gosslan-text-2: #94a3b8;
+  --gosslan-text: #f2f3f5;
+  --gosslan-text-2: #b4b8be;
   /* 占位符：暗色保持与次要文字同值 —— 这是既有渲染，本次不改暗色观感。
      `.dark` 不覆盖就会继承亮色的 #5f6b7a，深底上直接读不动。 */
-  --gosslan-placeholder: #94a3b8;
+  --gosslan-placeholder: #b4b8be;
   --gosslan-hover: rgba(248, 250, 252, 0.06);
   /* 深色下 press 要"提亮"而不是压暗（暗面上再压暗几乎看不出反馈） */
   --gosslan-pressed: rgba(248, 250, 252, 0.11);
@@ -485,9 +489,9 @@
   /* 填充档与亮色同值：前景是**白字**，所以能压住它的亮度上限由 4.5 决定，与画布无关
      —— 暗色想要更鲜的红只能给"文字档"（下面那档），给填充加亮就是把白字重新推回不合格。 */
   --gosslan-danger: #d43d43;
-  /* 文字档在暗色下仍是鲜红：暗底上 #ff5548 当文字读得动（列表底 4.63 / 画布 5.65）。
+  /* 文字档在暗色下仍是鲜红：暗底上 #ff7a85 当文字读得动（面板 #2c2f33 上 ≥4.5）。
      新增 :root 的 *-ink 时这里必须成对出现。 */
-  --gosslan-danger-ink: #ff5548;
+  --gosslan-danger-ink: #ff7a85;
   --gosslan-danger-soft: rgba(255, 85, 72, 0.18);
   /* hover 朝暗混（与 :root 同方向）：实底上的白字要越 hover 越清楚。 */
   --gosslan-danger-hover: color-mix(in srgb, var(--gosslan-danger) 88%, #000000);
@@ -508,36 +512,36 @@
   --gosslan-warning-solid: #ff9f0a;
   --gosslan-success-solid: #30d158;
   /* 开关未选中轨道：暗色要**抬亮**才看得出边界（#3a4a66 vs 面板只有 1.64）。
-     取跨过 3.0 的最淡一档 #64748b：vs 面板 3.07 / vs 卡片 3.27，白滑块压它 4.76。
+     取跨过 3.0 的最淡一档 #7c8698：vs 面板 3.5 / vs 卡片 3.9，白滑块压它 4.76。
      ⚠️ 它比 `--gosslan-border` 亮得多，这是有意的：边界那一族的"该淡"是给分隔线的，
      不是给一个必须看得出开/关两态的控制件的（亮色那一档同理）。 */
-  --gosslan-toggle-off: #64748b;
+  --gosslan-toggle-off: #7c8698;
   --gosslan-status-offline: #8e8e93;
-  --gosslan-app-bg: #0b1220;
+  --gosslan-app-bg: #141518;
   --gosslan-window-ring: rgba(248, 250, 252, 0.09);
   /* 毛玻璃浮层（右键菜单 / 表情面板 / 下拉）：原来是 rgba(30,41,59,.85)，
      与列表栏 list(#1e293b) 复合后**完全同色**（对比 1.00）——浮层浮在列表上等于隐形。
      抬到 1.32（对画布 1.57）才看得出是"↑ 浮起来的一层"。 */
-  --gosslan-panel-frost: rgba(48, 62, 88, 0.9);
+  --gosslan-panel-frost: rgba(44, 47, 51, 0.92);
   /* 玻璃三档暗态（liquid-glass.md §2.2）：深蓝灰底 + 冷白描边/高光。
      ⚠️ 与 :root 成对出现，漏一档就会在暗色下继承亮态的白底（玻璃变"白板"）。 */
-  --gosslan-glass-1-bg: rgba(22, 32, 47, 0.78);
+  --gosslan-glass-1-bg: rgba(30, 32, 35, 0.78);
   --gosslan-glass-1-border: rgba(248, 250, 252, 0.14);
   --gosslan-glass-1-highlight: rgba(248, 250, 252, 0.2);
   --gosslan-glass-1-shadow: 0 1px 2px rgba(0, 0, 0, 0.3), 0 8px 24px rgba(0, 0, 0, 0.36);
-  --gosslan-glass-1-fallback: #16202f;
+  --gosslan-glass-1-fallback: #1e2023;
   --gosslan-glass-2-bg: var(--gosslan-panel-frost);
   /* TabBar 暗态沿用 frost（glass-2），与改前逐像素一致。 */
   --gosslan-tabbar-bg: var(--gosslan-glass-2-bg);
   --gosslan-glass-2-border: rgba(248, 250, 252, 0.18);
   --gosslan-glass-2-highlight: rgba(248, 250, 252, 0.24);
   --gosslan-glass-2-shadow: 0 4px 12px rgba(0, 0, 0, 0.36), 0 16px 40px rgba(0, 0, 0, 0.44);
-  --gosslan-glass-2-fallback: #1e293b;
-  --gosslan-glass-3-bg: rgba(30, 41, 59, 0.92);
+  --gosslan-glass-2-fallback: #2c2f33;
+  --gosslan-glass-3-bg: rgba(44, 47, 51, 0.92);
   --gosslan-glass-3-border: rgba(248, 250, 252, 0.2);
   --gosslan-glass-3-highlight: rgba(248, 250, 252, 0.28);
   --gosslan-glass-3-shadow: 0 24px 64px rgba(0, 0, 0, 0.5);
-  --gosslan-glass-3-fallback: #1e293b;
+  --gosslan-glass-3-fallback: #2c2f33;
   /* 环境动态层暗态：默认档 T2 = 26%（亮色 30% 各 -4pp），薄纱同步下调到 0.14。
      与 :root 的 --ambient-alpha / --ambient-s / --ambient-scale 是同一组旋钮，
      暗色只换中性灰与暖沙（深底上用更暗的灰混色，色雾才不会发白发灰）。 */

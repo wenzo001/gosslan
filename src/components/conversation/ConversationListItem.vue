@@ -157,7 +157,7 @@ const gridTiles = computed(() => {
     role="button"
     tabindex="0"
     :data-conv-row="conv.id"
-    class="group/conv relative flex h-[64px] cursor-pointer items-center gap-3 px-3 transition-colors"
+    class="group/conv relative flex h-[var(--gosslan-row-h-mobile)] cursor-pointer items-center gap-3 px-3 transition-colors desktop:h-[var(--gosslan-row-h-desktop)]"
     :class="[active
       ? 'bg-[var(--gosslan-list-active)] text-[var(--gosslan-list-active-text)]'
       : 'hover:bg-[var(--gosslan-list-hover)]',

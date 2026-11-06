@@ -3254,14 +3254,14 @@ export function checkAmbientChromeSurfaces(src: AmbientChromeSources): GuardIssu
   const hairlineDefs = [...src.styleCss.matchAll(/^\s*--gosslan-divider:\s*([^;]+);/gm)];
   if (
     hairlineDefs.length < 2 ||
-    hairlineDefs[0][1].trim() !== "#e2e8f0" ||
-    hairlineDefs[1][1].trim() !== "#28344a"
+    hairlineDefs[0][1].trim() !== "#eef0f2" ||
+    hairlineDefs[1][1].trim() !== "#2c2f33"
   ) {
     out.push({
       line: 0,
       message:
-        "AC-14：全站发丝线（`--gosslan-divider`）的亮/暗原值（#e2e8f0 / #28344a）被动了 —— " +
-        "这次只允许搜索两列用专用 token，别把上百处行分隔一次性抬成表格线。",
+        "AC-14：全站发丝线（`--gosslan-divider`）的亮/暗取值（#eef0f2 / #2c2f33）被动了 —— " +
+        "它是全站上百处行分隔的唯一来源，改它必须同步更新本锚点并重跑对比度，不许各组件另写一条分隔线。",
     });
   }
   const colLeft = [...src.searchDialog.matchAll(/<div[^>]*\sclass="([^"]*)"/g)].find((m) =>

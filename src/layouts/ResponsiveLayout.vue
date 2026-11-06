@@ -783,15 +783,16 @@ onUnmounted(() => {
   appActionScope.dispose();
 });
 
-// ---------------- 桌面端：列表栏宽度拖拽（rail 64px 固定，列表 200~420px，持久化） ----------------
+// ---------------- 桌面端：列表栏宽度拖拽（rail 64px 固定，列表 280~400px，默认 320px，持久化） ----------------
 const RAIL_W = 64;
-const LIST_W_MIN = 200;
-const LIST_W_MAX = 420;
+const LIST_W_MIN = 280;
+const LIST_W_MAX = 400;
+const LIST_W_DEFAULT = 320;
 // 键名要具名：散在调用里的裸字面量没有任何判据能看到它（appearance.test.ts 只
 // 交叉核对首屏脚本与 `*_KEY` 常量两边），改名/打错会静默丢掉用户的栏宽偏好。
 const LIST_W_KEY = "gosslan-list-w";
 const listW = ref(
-  Math.min(LIST_W_MAX, Math.max(LIST_W_MIN, Number(storageGet(LIST_W_KEY)) || 250)),
+  Math.min(LIST_W_MAX, Math.max(LIST_W_MIN, Number(storageGet(LIST_W_KEY)) || LIST_W_DEFAULT)),
 );
 const resizing = ref(false);
 
