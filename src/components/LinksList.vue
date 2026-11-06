@@ -296,6 +296,8 @@ async function importFromUrl() {
 
 /** 刷新进行中（按钮要同时显示文案「刷新中…」，不能只转圈）。 */
 const refreshBusy = ref(false);
+/** 刷新失败的页面内落点：来源条下方一行，带完整原因与原地重试；toast 只报结论（A1 修正）。 */
+const refreshError = ref<ReturnType<typeof classifyRefreshFailure> | null>(null);
 
 /**
  * 用固定来源再拉一次最新数据：成功**静默**（不弹提示、不切页面），失败才提示。
@@ -308,12 +310,15 @@ const refreshSource = createSingleFlight(async () => {
   const url = importSource.value;
   if (!url) return;
   refreshBusy.value = true;
+  refreshError.value = null;
   try {
     const res = await api.importExternalLinksFromUrl(url);
     queryClient.setQueryData(panelKey("links", ""), res.links);
   } catch (e) {
     const fail = classifyRefreshFailure(e);
-    app.toast(t(fail.key, fail.params), "error");
+    // 完整原因落在来源条下方；toast 只给结论句，避免 390 下折行遮页头（A1 修正 2026-11-06）。
+    refreshError.value = fail;
+    app.toast(t("links.refreshFail"), "error");
   } finally {
     refreshBusy.value = false;
   }
@@ -433,6 +438,23 @@ function sourceText(l: ExternalLink): string {
       >
         <Copy class="h-3.5 w-3.5" />
       </button>
+    </div>
+
+    <!-- 刷新失败的原因落点：就在来源行下方，不弹窗、不跳页；重试只重发同一次刷新。 -->
+    <div
+      v-if="refreshError"
+      data-probe="links-refresh-error"
+      class="flex shrink-0 items-start gap-1.5 border-b border-[var(--gosslan-divider)] bg-[var(--gosslan-danger-soft)] px-2 py-1.5"
+    >
+      <span class="min-w-0 flex-1 text-caption leading-relaxed text-[var(--gosslan-danger-ink)]">
+        {{ t(refreshError.key, refreshError.params) }}
+      </span>
+      <button
+        type="button"
+        class="tap-safe shrink-0 rounded-[var(--gosslan-radius-sm)] px-1.5 py-0.5 text-caption text-[var(--gosslan-danger-ink)] underline-offset-2 transition hover:underline disabled:opacity-60"
+        :disabled="refreshBusy"
+        @click="refreshSource()"
+      >{{ t("common.retry") }}</button>
     </div>
 
     <div class="min-h-0 flex-1 overflow-y-auto px-2 pb-2">

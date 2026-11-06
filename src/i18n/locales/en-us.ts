@@ -702,6 +702,7 @@ export const enUS: MessageDict = {
   "msg.copySelection": "Copy selection",
   // ---- 错误提示的**文案**（分类器在 utils/errors.ts，它一条文案都不带）----
   "errors.joined": "{prefix}: {detail}",
+  "errors.toastJoined": "{prefix} · {detail}",
   "errors.retry": "{prefix}. Please try again later.",
   "errors.retryPlain": "Please try again later.",
   "errors.rule.pubkey":
@@ -714,7 +715,7 @@ export const enUS: MessageDict = {
   "errors.rule.readStateWrite": "Read state wasn't saved to the local database; the unread badge has been restored to match it.",
   "errors.rule.kindUnsupported": "This version of Gosslan on the other side doesn't support this content type. It is saved in your local queue — tap Resend in the task center after they upgrade.",
   "errors.rule.peerKeyMissing": "We don't have the other side's encryption key yet (this relationship has never exchanged keys). Try again once they have been online.",
-  "errors.rule.auxWindow": "Couldn't open the extra window: a stale rendering environment left over from an upgrade or restart. Quit Gosslan completely and open it again to recover.",
+  "errors.rule.auxWindow": "Couldn't open the extra window · restart required",
   "errors.rule.auxWindowRestart": "Restart now",
   // B6 pilot: message-related. One code, one sentence, defined only here.
   "errors.rule.msgNotFound": "That message is no longer stored on this device (it may have been cleaned up). Refresh the conversation and try again.",
@@ -1233,6 +1234,7 @@ export const enUS: MessageDict = {
   "links.sourceCopy": "Copy URL",
   "links.sourceCopied": "URL copied",
   "links.sourceCopyFail": "Copy failed; press and hold the URL to copy it manually",
+  "links.refreshFail": "Refresh failed",
   "links.refreshFail.http": "Refresh failed: the URL returned HTTP {status}. Check that it still works, or import the link again.",
   "links.refreshFail.sourceInvalid": "Refresh failed: the URL is no longer valid or has changed. Import the link again.",
   "links.refreshFail.network": "Refresh failed: the network is unreachable. Check your connection and retry.",

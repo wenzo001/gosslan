@@ -4,6 +4,8 @@
  * 分工（本批拆干净的正是这一层）：
  *   - 本文件只做分类，**一条文案都不带**（纯函数，能被 `node --test` 直接 import）。
  *   - 文案住在 i18n 词典；拼装住在 `composables/useErrorText.ts`（那边才允许 import `@/i18n`）。
+ *   - toast 的「结论 + 一句人话原因」是**纯拼装**（见文末 `buildToastText`）：词典由调用侧
+ *     注入成 `tr`，于是长度与技术串判据也能脱离浏览器被单测（A1 修正 2026-11-06）。
  *   原来这里自带三条中文替换文案和一句「请稍后重试」尾巴 ⇒ 英文界面上端口被占、公钥拿不到
  *   这类提示永远是中文，而它们跟后端一个字的关系都没有，本来就该翻译。
  *
@@ -337,4 +339,47 @@ export function isTechnicalError(e: unknown): boolean {
   const raw = rawErrorMessage(e);
   if (!raw) return false;
   return !looksUserFacing(raw);
+}
+
+// ---------------- toast 正文：结论 + 一句人话原因 ----------------
+
+/**
+ * toast 一行放得下的上限：**40 显示列 ≈ 20 个汉字宽**（CJK / 全角按 2 列，其余按 1 列）。
+ * 超过就只留结论句，原因交给页面内错误档 —— toast 不是错误详情页。
+ */
+export const TOAST_TEXT_MAX_COLUMNS = 40;
+
+/**
+ * 不上 toast 的技术串形状：错误码 / HTTP URL / 十六进制 / 栈帧 / 换行。
+ * 这类内容只进 console（`useErrorText.toastErrorText` 的 `log`），界面上一律不出现。
+ */
+export const TOAST_TECHNICAL =
+  /(?:code=|\berr:|https?:\/\/|0x[0-9a-f]{2,}|panicked at|RUST_BACKTRACE|src\/[\w./-]+\.rs:\d+|\bat\s+\S+\s+\(.*:\d+:\d+\)|os error|\r|\n)/i;
+
+/** 估算显示列宽（只用于「能不能单行放下」这一条判据）。 */
+export function toastDisplayWidth(s: string): number {
+  let w = 0;
+  for (const ch of s) w += /[\u1100-\u115f\u2e80-\ua4cf\uac00-\ud7a3\uf900-\ufaff\uff01-\uff60\uffe0-\uffe6]/.test(ch) ? 2 : 1;
+  return w;
+}
+
+/**
+ * toast 正文 = **结论 + 一句人话原因**（如「发送失败 · 对方不是好友」）。
+ *
+ * A1 修正（2026-11-06）：失败必须给出具体原因，不能只报失败；但 toast 只有一行，
+ * 所以 ① 通用 `retry` 不算原因，不拿「请稍后重试」凑字数；② 说明里带技术串时整句退回结论；
+ * ③ 拼完超过 {@link TOAST_TEXT_MAX_COLUMNS} 列就退回结论，原因落到页面内错误档。
+ *
+ * `tr` 由调用侧注入（`t` 或测试里的词典查表），本函数因此仍是纯函数、可被 `node --test` 直接吃。
+ */
+export function buildToastText(
+  e: unknown,
+  prefix: string,
+  tr: (key: string, params?: Record<string, string | number>) => string,
+): string {
+  const v = classifyError(e);
+  const detail = v.kind === "copy" ? tr(v.key, v.params) : v.kind === "human" ? v.detail : "";
+  if (!detail || TOAST_TECHNICAL.test(detail)) return prefix;
+  const joined = tr("errors.toastJoined", { prefix, detail });
+  return toastDisplayWidth(joined) <= TOAST_TEXT_MAX_COLUMNS ? joined : prefix;
 }
