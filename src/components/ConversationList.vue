@@ -450,13 +450,10 @@ useEventListener(document, "click", closeFriendMenu);
 
 <template>
   <div ref="listRoot" class="ambient-canvas-child flex h-full flex-col bg-[var(--gosslan-list)]">
-    <!-- 列表头：搜索框（白底+细边，在浅灰栏上清晰）+ 操作按钮。
-         高度必须与右栏 ChatHeader 同源（--gosslan-header-h）并同样画下边框：
-         两栏从同一个 y 起算，只有高度与底边线都一致，那条分隔线才是**一条连续的线**。
-         之前这里是 px-3 py-2 + h-9 搜索框 = 52px（比当时右栏的 56px 矮 4px）且无底边线，
-         于是左右永远差 4px、右栏那条线在左栏没有对应物。改高度/内边距时留意这条约束。
-         2026-09-12：整条头部按用户反馈收紧（token 56→52、搜索框 h-9→h-8），
-         两栏仍**同源同一 token**，所以分隔线依旧是一条连续的线。 -->
+    <!-- 列表头：桌面为「标题行 + 搜索行」（画板 DesktopChats v2.2），移动端为顶栏 + 搜索行。
+         2026-11-06 对稿：此前桌面把标题与搜索合并成一条 52px、与右栏 ChatHeader 对齐成一条
+         连续横线，结果画板里那条「消息 / 通讯录」标题整个缺失。按画板恢复两行后，左栏比右栏
+         头部高；两栏之间仍由 `.list` 的右边框保持竖向连续分隔线。 -->
     <!-- 移动端一级页顶栏（画板 v2.2，52px）：本人头像 + 页面标题 + 新建。
          与标题栏/设置页共用 `SelfAvatar`；桌面端不走这一块（rail + 标题栏已有各自入口）。 -->
     <div
@@ -472,12 +469,12 @@ useEventListener(document, "click", closeFriendMenu);
       >
         <SelfAvatar class="h-[30px] w-[30px] rounded-full" />
         <span
-          class="absolute bottom-0 right-0 h-2.5 w-2.5 rounded-full border-2 border-[var(--gosslan-list)]"
+          class="absolute bottom-0 right-0 h-2.5 w-2.5 rounded-full shadow-[0_0_0_2px_var(--gosslan-list)]"
           :class="app.present ? 'bg-[var(--gosslan-success)]' : 'bg-[var(--gosslan-status-offline)]'"
         ></span>
       </button>
       <h1
-        class="min-w-0 flex-1 truncate text-title font-semibold text-[var(--gosslan-text)]"
+        class="min-w-0 flex-1 truncate text-page font-semibold leading-[23px] text-[var(--gosslan-text)]"
         :title="view === 'chats' ? t('nav.chats') : t('nav.contacts')"
       >
         {{ view === "chats" ? t("nav.chats") : t("nav.contacts") }}
@@ -509,39 +506,21 @@ useEventListener(document, "click", closeFriendMenu);
       </div>
     </div>
 
+    <!-- 桌面列表头（画板 DesktopChats v2.2）：50px 标题行（17px 标题 + 32px 新建按钮）
+         + 42px 搜索行。此前这里把标题和搜索合并成一条 52px，和右栏 ChatHeader 对齐成一条
+         连续分隔线；但画板的左栏就是**两行**（标题行和搜索行分开），标题「消息」不能省。
+         左栏因此比右栏头部高，两栏的分隔线仍是竖向连续的一条（`.list` 右边框）。 -->
     <div
-      class="flex shrink-0 items-center gap-1.5 border-b border-[var(--gosslan-divider)] px-3"
-      :class="app.isMobile ? 'border-b-0 py-1.5' : ''"
-      :style="app.isMobile ? undefined : { height: 'var(--gosslan-header-h)' }"
+      v-if="!app.isMobile"
+      class="flex h-[50px] shrink-0 items-center pl-4 pr-3.5"
     >
-      <!-- 搜索框底色必须用 --gosslan-field 而不是 panel：
-           暗色下 panel(#1e293b) 与本栏 list(#1e293b) 是同一个值，输入框会"消失"；
-           field 在两套主题里都与所在栏拉开一档。 -->
-      <div
-        class="flex h-9 min-w-0 flex-1 items-center gap-2 rounded-[var(--gosslan-radius-md)] border border-[var(--gosslan-border)] bg-[var(--gosslan-field)] px-2.5 transition"
+      <h2
+        class="min-w-0 flex-1 truncate text-heading font-semibold leading-[22px] text-[var(--gosslan-text)]"
+        :title="view === 'chats' ? t('nav.chats') : t('nav.contacts')"
       >
-        <Icon name="search" class="h-4 w-4 shrink-0 text-[var(--gosslan-text-2)]" />
-        <input
-          ref="searchInput"
-          v-model="keyword"
-          :maxlength="MAX_SEARCH_KEYWORD_CHARS"
-          enterkeyhint="search"
-          autocomplete="off"
-          autocorrect="off"
-          autocapitalize="off"
-          spellcheck="false"
-          class="w-full bg-transparent text-body placeholder:text-[var(--gosslan-placeholder)] outline-none focus:border-transparent"
-          :placeholder="
-            view === 'chats'
-              ? app.isMobile ? t('conv.searchLong') : t('common.search')
-              : t('common.searchContacts')
-          "
-          @keydown.enter.prevent="onSearchEnter"
-          @compositionstart="ime.onStart"
-          @compositionend="ime.onEnd"
-        />
-      </div>
-      <div v-if="!app.isMobile" class="relative flex shrink-0 items-center">
+        {{ view === "chats" ? t("nav.chats") : t("nav.contacts") }}
+      </h2>
+      <div class="relative flex shrink-0 items-center">
         <!-- 微信式：单个加号，点开下拉（添加好友 / 创建群聊）。
              开关/键盘/点外部由 Reka DropdownMenu 承担；互斥仍走全局 plusPopup。 -->
         <DropdownMenuRoot :open="plusOpen" :modal="false" @update:open="onPlusOpen">
@@ -578,6 +557,42 @@ useEventListener(document, "click", closeFriendMenu);
             </DropdownMenuContent>
           </DropdownMenuPortal>
         </DropdownMenuRoot>
+      </div>
+    </div>
+
+    <!-- 搜索行（桌面 42px：搜索壳 36px + 4px 下留白，画板 searchWrap `0 12px 4px`）。
+         搜索壳高度按既有判据固定 h-9（36px），画板标注 34px —— 差 2px 是判据妥协，
+         不为这 2px 去动 composerInteraction.test.ts 的 36/40 白名单。 -->
+    <div
+      class="flex shrink-0 items-center px-3"
+      :class="app.isMobile ? 'py-1.5' : 'h-10 pb-1'"
+    >
+      <!-- 搜索框底色必须用 --gosslan-field 而不是 panel：
+           暗色下 panel(#1e293b) 与本栏 list(#1e293b) 是同一个值，输入框会"消失"；
+           field 在两套主题里都与所在栏拉开一档。 -->
+      <div
+        class="flex h-9 min-w-0 flex-1 items-center gap-2 rounded-[var(--gosslan-radius-md)] border border-[var(--gosslan-border)] bg-[var(--gosslan-field)] px-2.5 transition"
+      >
+        <Icon name="search" class="h-[15px] w-[15px] shrink-0 text-[var(--gosslan-text-2)]" />
+        <input
+          ref="searchInput"
+          v-model="keyword"
+          :maxlength="MAX_SEARCH_KEYWORD_CHARS"
+          enterkeyhint="search"
+          autocomplete="off"
+          autocorrect="off"
+          autocapitalize="off"
+          spellcheck="false"
+          class="w-full bg-transparent text-small placeholder:text-[var(--gosslan-placeholder)] outline-none focus:border-transparent"
+          :placeholder="
+            view === 'chats'
+              ? app.isMobile ? t('conv.searchLong') : t('common.search')
+              : t('common.searchContacts')
+          "
+          @keydown.enter.prevent="onSearchEnter"
+          @compositionstart="ime.onStart"
+          @compositionend="ime.onEnd"
+        />
       </div>
     </div>
 
@@ -620,8 +635,8 @@ useEventListener(document, "click", closeFriendMenu);
           >
             <img :src="appMark" class="h-14 w-14" alt="" aria-hidden="true" draggable="false" />
           </div>
-          <h2 class="text-title font-semibold text-[var(--gosslan-text)]">{{ t("conv.noConversation") }}</h2>
-          <p class="mt-2 text-footnote leading-5 text-[var(--gosslan-text-2)]">
+          <h2 class="text-title-lg font-semibold leading-[26px] text-[var(--gosslan-text)]">{{ t("conv.noConversation") }}</h2>
+          <p class="mt-2 text-fine leading-[19px] text-[var(--gosslan-text-2)]">
             {{ t("conv.mobileEmptyHint") }}<br />
             <b class="font-medium text-[var(--gosslan-text)]">{{ t("layout.emptySubtitle") }}</b>
           </p>
@@ -635,7 +650,7 @@ useEventListener(document, "click", closeFriendMenu);
             </PrimaryBtn>
             <button
               type="button"
-              class="mt-1 h-9 w-full text-footnote font-medium text-[var(--gosslan-primary)]"
+              class="mt-1 h-9 w-full text-small font-medium text-[var(--gosslan-primary)]"
               @click="emit('open-group')"
             >
               {{ t("common.createGroup") }}
@@ -650,7 +665,7 @@ useEventListener(document, "click", closeFriendMenu);
               <Icon name="radar" class="h-4 w-4" />
             </span>
             <span class="min-w-0 flex-1">
-              <span class="block truncate text-footnote font-medium text-[var(--gosslan-text)]" :title="t('conv.discovering')">{{ t("conv.discovering") }}</span>
+              <span class="block truncate text-small font-medium text-[var(--gosslan-text)]" :title="t('conv.discovering')">{{ t("conv.discovering") }}</span>
               <span class="mt-0.5 flex items-center gap-1 text-caption text-[var(--gosslan-text-2)]">
                 <span class="h-1 w-1 rounded-full bg-[var(--gosslan-success)]" aria-hidden="true"></span>
                 {{ t("layout.chipDevices", { n: chat.peers.length }) }}
