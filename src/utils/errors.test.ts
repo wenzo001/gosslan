@@ -11,7 +11,19 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { classifyError, errorCode, ERROR_CODE_RULES, isTechnicalError, MessageKeyError, rawErrorMessage, stripErrorCode } from "./errors.ts";
+import {
+  buildToastText,
+  classifyError,
+  errorCode,
+  ERROR_CODE_RULES,
+  isTechnicalError,
+  MessageKeyError,
+  rawErrorMessage,
+  stripErrorCode,
+  TOAST_TECHNICAL,
+  TOAST_TEXT_MAX_COLUMNS,
+  toastDisplayWidth,
+} from "./errors.ts";
 import { enUS, zhCN } from "../i18n/locales.ts";
 
 const SRC = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
@@ -106,7 +118,7 @@ test("生产码里抛出的 errors.* 键都在中英词典里", () => {
     assert.ok(k in enUS, `英文词典缺 ${k}`);
     // 拼装那两把模板也要在（分类器不再自带任何一句话）。
   }
-  for (const k of ["errors.joined", "errors.retry"]) {
+  for (const k of ["errors.joined", "errors.toastJoined", "errors.retry"]) {
     assert.ok(k in zhCN && k in enUS, `拼装模板 ${k} 不在词典里`);
   }
 });
@@ -323,6 +335,78 @@ test("码只给我们看：任何一档都不许把 code=… 带上屏", () => {
   assert.equal(v.kind === "human" && v.detail.includes("code="), false, `码泄漏到界面上了：${JSON.stringify(v)}`);
   assert.equal(stripErrorCode("code=PORT_IN_USE 端口被占用"), "端口被占用");
   assert.equal(errorCode("端口被占用"), null, "没有码时必须返回 null，不能把整串当码");
+});
+
+/**
+ * toast 正文的护栏（A1 修正 2026-11-06）。
+ *
+ * 两件事必须同时成立，缺哪边链子都会空转：
+ *   ① 短原因**要**上屏（不能退回到「只报失败」）；
+ *   ② 长原因 / 技术串**不上**屏（toast 只有一行，细节留给页面内错误档 + console）。
+ */
+function trOf(dict: Record<string, string>) {
+  return (key: string, params?: Record<string, string | number>) => {
+    const tpl = dict[key];
+    if (!tpl) return key;
+    return tpl.replace(/\{(\w+)\}/g, (_m, name) => (params && name in params ? String(params[name]) : `{${name}}`));
+  };
+}
+
+test("toast 正文：短原因拼成「结论 · 原因」，长原因退回结论（两边都拿同一函数自证）", () => {
+  const tr = trOf(zhCN);
+  // ① 短原因必须真的上屏 —— 这是 A1 修正要解决的问题（只报失败越界）。
+  assert.equal(buildToastText("对方不是好友", "发送失败", tr), "发送失败 · 对方不是好友");
+  // 英文册同一形状（分隔符跟词典走，不在代码里写死）。英文后端串本身没有「人话」那一档
+  // （`looksUserFacing` 认中文），所以这里走**码 → 英文文案**这条路。
+  assert.equal(
+    buildToastText("code=GROUP_TODO_TITLE_EMPTY 原始说明", "Save failed", trOf(enUS)),
+    "Save failed · A todo needs a title.",
+  );
+  // ② 反例自证：这条真实的后端说明拼完确实超过一行，上面的「短」与下面的「长」不是同一段逻辑；
+  //    若把上限改大 / 删掉长度判断，这条样本就会重新上屏 ⇒ 断言会红。
+  const longRaw = "对方不是好友，请先扫描添加好友之后再继续聊天。";
+  const longJoined = tr("errors.toastJoined", { prefix: "发送失败", detail: longRaw });
+  assert.ok(
+    toastDisplayWidth(longJoined) > TOAST_TEXT_MAX_COLUMNS,
+    `样本只有 ${toastDisplayWidth(longJoined)} 列，不够触发长度闸 ⇒ 下面的断言会空转`,
+  );
+  assert.equal(buildToastText(longRaw, "发送失败", tr), "发送失败");
+});
+
+test("toast 正文不含技术串：URL / err: / 十六进制 / 栈帧都退回结论（样本先自证命中判据）", () => {
+  const tr = trOf(zhCN);
+  for (const raw of [
+    "请求 http://10.0.0.1:59992 失败", // 人话里带 URL
+    "写入失败 err: EACCES", // 人话里带 err:
+    "窗口创建失败 0x80070005", // 人话里带 HRESULT
+    "调用失败 at foo (bar.js:12:3)", // 人话里带栈帧
+  ]) {
+    // 先证明样本真的命中技术串判据，否则下面「退回结论」可能只是因为分类没给出 detail。
+    assert.equal(TOAST_TECHNICAL.test(raw), true, `样本没命中技术串判据：${raw}`);
+    assert.equal(buildToastText(raw, "操作失败", tr), "操作失败", `技术串被带上屏了：${raw}`);
+  }
+});
+
+test("每个错误码的说明都过 toast 闸：≤ 20 字宽、不含技术串、结论句不丢（中英两册）", () => {
+  for (const [locale, dict] of [["zh", zhCN], ["en", enUS]] as const) {
+    const tr = trOf(dict);
+    for (const [code, key] of Object.entries(ERROR_CODE_RULES)) {
+      const text = buildToastText(`code=${code} 原始说明`, "操作失败", tr);
+      assert.ok(
+        toastDisplayWidth(text) <= TOAST_TEXT_MAX_COLUMNS,
+        `${locale}/${code} 的 toast 超过一行（${toastDisplayWidth(text)} 列）：${text}`,
+      );
+      assert.equal(TOAST_TECHNICAL.test(text), false, `${locale}/${code} 把技术串带上屏了：${text}`);
+      assert.ok(text.includes("操作失败"), `${locale}/${code} 丢了结论句：${text}`);
+      assert.ok(key in dict, `${locale} 词典缺 ${key}`);
+    }
+  }
+});
+
+test("通用「请稍后重试」不算原因：读不出人话时 toast 只留结论", () => {
+  const tr = trOf(zhCN);
+  assert.equal(buildToastText(null, "操作失败", tr), "操作失败");
+  assert.equal(buildToastText("called `unwrap()` on a `None` value at src/db.rs:120", "操作失败", tr), "操作失败");
 });
 
 /**

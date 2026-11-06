@@ -9,7 +9,7 @@
  * 文件名按目录习惯叫 `use*`，但它**不是组合式**：没有响应式状态、不碰生命周期。
  */
 import { t } from "@/i18n";
-import { classifyError, isTechnicalError, rawErrorMessage } from "@/utils/errors";
+import { buildToastText, classifyError, isTechnicalError, rawErrorMessage } from "@/utils/errors";
 
 /**
  * 把任意抛出物转成一句可直接上屏的提示。
@@ -43,4 +43,20 @@ export function detailText(e: unknown, opts?: { log?: boolean }): string {
   if (v.kind === "copy") return t(v.key, v.params);
   if (v.kind === "human") return v.detail;
   return t("errors.retryPlain");
+}
+
+/**
+ * toast 正文的「结论 + 一句人话原因」—— 带 console 日志的薄包装。
+ *
+ * A1 修正（2026-11-06）：失败必须给出**具体原因**，不能只报失败；但 toast 只有一行，
+ * 所以原文超过移动端一行（约 20 个汉字宽 / 40 列）时退回结论句，原因留给页面内错误档。
+ * 错误码 / URL / 堆栈 / err 对象**一律不上屏** —— 技术串只进 console（`opts.log`）。
+ *
+ * 拼装与长度/技术串判据住在 `utils/errors.ts`（纯函数、可单测），这里只负责翻译与日志。
+ */
+export function toastErrorText(e: unknown, prefix: string, opts?: { log?: boolean }): string {
+  if (opts?.log && isTechnicalError(e)) {
+    console.warn(`[gosslan] ${prefix}: ${rawErrorMessage(e)}`, e);
+  }
+  return buildToastText(e, prefix, t);
 }

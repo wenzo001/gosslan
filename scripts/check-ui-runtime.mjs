@@ -16733,6 +16733,7 @@ async function runLinks(cdp, url) {
         sourceLabel: t('links.sourceLabel'), refresh: t('links.refresh'),
         refreshing: t('links.refreshing'), sourceCopy: t('links.sourceCopy'),
         sourceUser: t('links.source.user'), sourceUrlWith: t('links.source.urlWith'),
+        failTitle: t('links.refreshFail'),
         failHttp: t('links.refreshFail.http'), failNetwork: t('links.refreshFail.network'),
       };
     })()`);
@@ -16797,6 +16798,10 @@ async function runLinks(cdp, url) {
         refreshBusy: refreshBtn ? refreshBtn.getAttribute('aria-busy') === 'true' : null,
         refreshDisabled: refreshBtn ? refreshBtn.disabled : null,
         refreshTop: rRect ? Math.round(rRect.top - hostTop) : null,
+        refreshError: (() => {
+          const el = document.querySelector('[data-probe="links-refresh-error"]');
+          return el ? (el.innerText || '').trim() : null;
+        })(),
         events: window.__probe.events.slice(),
       };
     })()`);
@@ -17210,12 +17215,14 @@ async function runLinks(cdp, url) {
     const toastHttp = await cdp.eval("window.__probe.toastRead()");
     const st9 = await cdp.eval("window.__probe.linksStats()");
 
-    check("刷新失败（链接失效）：error toast 给出 HTTP 状态 + 检查/重新导入建议，旧数据不清空，按钮可重试",
+    // A1 修正：完整原因（HTTP 状态 + 建议）搬到来源条下方的页面内错误行；toast 只留结论。
+    check("刷新失败（链接失效）：来源行下方给出 HTTP 状态 + 检查/重新导入建议，toast 只报结论，旧数据不清空，按钮可重试",
       toastHttp.visible >= 1 && toastHttp.statuses.includes("error")
-        && toastHttp.texts.some((x) => x.includes(L.failHttp.replace("{status}", "410")))
+        && toastHttp.texts.some((x) => x.includes(L.failTitle))
+        && !!s.refreshError && s.refreshError.includes(L.failHttp.replace("{status}", "410"))
         && s.rows.length === 5 && s.refreshBusy === false && s.refreshDisabled === false,
-      "toast 含 HTTP 410 具名原因、5 行旧数据仍在、按钮恢复",
-      JSON.stringify({ toast: toastHttp.texts, rows: s.rows.length, st9 }));
+      "toast=刷新失败、页面内错误行含 HTTP 410、5 行旧数据仍在、按钮恢复",
+      JSON.stringify({ toast: toastHttp.texts, inline: s.refreshError, rows: s.rows.length, st9 }));
 
     await cdp.eval("window.__probe.remountToastHud()");
     await cdp.eval("window.__probe.linksFailNext('refreshNetwork')");
@@ -17223,12 +17230,13 @@ async function runLinks(cdp, url) {
     await sleep(600);
     s = await info();
     const toastNet = await cdp.eval("window.__probe.toastRead()");
-    check("刷新失败（网络不可达）：给网络话术而不是兜底「操作失败」，旧数据仍在",
-      toastNet.texts.some((x) => x.includes(L.failNetwork))
-        && !toastNet.texts.some((x) => x.includes("操作失败") || x.includes("Operation failed"))
+    check("刷新失败（网络不可达）：页面内错误行给网络话术而不是兜底「操作失败」，toast 只报结论，旧数据仍在",
+      toastNet.texts.some((x) => x.includes(L.failTitle))
+        && !!s.refreshError && s.refreshError.includes(L.failNetwork)
+        && !(s.refreshError || "").includes("操作失败")
         && s.rows.length === 5,
-      "toast 含网络不可达话术、无「操作失败」、5 行仍在",
-      JSON.stringify({ toast: toastNet.texts, rows: s.rows.length }));
+      "toast=刷新失败、页面内含网络不可达话术、无「操作失败」、5 行仍在",
+      JSON.stringify({ toast: toastNet.texts, inline: s.refreshError, rows: s.rows.length }));
     if (SHOT_PATH) {
       const shot = await cdp.send("Page.captureScreenshot", { format: "png" });
       fs.writeFileSync(SHOT_PATH.replace(/\.png$/, "-links.png"), Buffer.from(shot.data, "base64"));

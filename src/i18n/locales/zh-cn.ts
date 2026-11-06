@@ -718,6 +718,8 @@ export const zhCN: MessageDict = {
   // ---- 错误提示的**文案**（分类器在 utils/errors.ts，它一条文案都不带）----
   // 那两把「拼装模板」是这条链的形状：`发送失败：<说明>` / `<动作>，请稍后重试`。
   "errors.joined": "{prefix}：{detail}",
+  // toast 用中间点而不是全角冒号：一行里「结论 · 原因」更像一句话（A1 修正 2026-11-06）。
+  "errors.toastJoined": "{prefix} · {detail}",
   "errors.retry": "{prefix}，请稍后重试",
   "errors.retryPlain": "请稍后重试",
   "errors.rule.pubkey": "对方尚未上线，暂时无法加密发送。消息已保留，对方上线后会自动补发",
@@ -729,7 +731,7 @@ export const zhCN: MessageDict = {
   "errors.rule.readStateWrite": "已读状态没写进本机数据库，红点已恢复到与库里一致",
   "errors.rule.kindUnsupported": "对方这个版本的 Gosslan 还不认识这种内容，已先存在本机待发队列；等对方升级客户端后在任务中心点「重新发送」",
   "errors.rule.peerKeyMissing": "还没拿到对方的加密公钥（这条关系从没握过手），等对方上线一次再发",
-  "errors.rule.auxWindow": "辅助窗口没能打开：这是升级或重启后残留的渲染环境造成的，完全退出小院儿再打开即可恢复",
+  "errors.rule.auxWindow": "辅助窗口没能打开 · 须重启生效",
   "errors.rule.auxWindowRestart": "立即重启",
   // B6 试点批：消息类。一个码一条话，共用文案只在这里出现一次。
   "errors.rule.msgNotFound": "这条消息已经不在本机记录里（可能已被清理），刷新会话后再试",
@@ -1278,6 +1280,7 @@ export const zhCN: MessageDict = {
   "links.sourceCopy": "复制链接",
   "links.sourceCopied": "链接已复制",
   "links.sourceCopyFail": "复制失败，请长按链接手动复制",
+  "links.refreshFail": "刷新失败",
   "links.refreshFail.http": "刷新失败：链接返回 HTTP {status}，请检查该链接是否仍然可用，或重新导入链接",
   "links.refreshFail.sourceInvalid": "刷新失败：链接地址已失效或被更换，请重新导入链接",
   "links.refreshFail.network": "刷新失败：网络不可达，请检查网络后重试",
