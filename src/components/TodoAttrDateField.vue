@@ -101,7 +101,7 @@ function pick(value: string, close: () => void) {
     <template #trigger>
       <button
         type="button"
-        class="tap-safe flex h-10 w-full items-center justify-between gap-2 rounded-[var(--gosslan-radius-md)] bg-[var(--gosslan-field)] px-3 text-sm text-[var(--gosslan-text)] ring-1 ring-transparent transition hover:ring-[var(--gosslan-border)]"
+        class="tap-safe flex h-10 w-full items-center justify-between gap-2 rounded-[var(--gosslan-radius-md)] bg-[var(--gosslan-field)] px-3 text-sm text-[var(--gosslan-text)] ring-1 ring-[var(--gosslan-field-border)] transition hover:ring-[var(--gosslan-primary)]"
       >
         <span v-if="modelValue" class="min-w-0 truncate tabular-nums" :title="modelValue">{{ modelValue }}</span>
         <span v-else class="min-w-0 truncate text-[var(--gosslan-text-2)]" :title="t('todo.datePlaceholder')">{{ t("todo.datePlaceholder") }}</span>
@@ -111,7 +111,7 @@ function pick(value: string, close: () => void) {
 
     <template #readonly>
       <div
-        class="flex h-10 w-full items-center rounded-[var(--gosslan-radius-md)] bg-[var(--gosslan-field)] px-3 text-sm"
+        class="flex h-10 w-full items-center rounded-[var(--gosslan-radius-md)] bg-[var(--gosslan-field)] px-3 text-sm ring-1 ring-[var(--gosslan-field-border)]"
         :class="modelValue ? 'text-[var(--gosslan-text)]' : 'text-[var(--gosslan-text-2)]'"
       >
         {{ modelValue || t("todo.datePlaceholder") }}

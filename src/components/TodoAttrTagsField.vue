@@ -93,7 +93,7 @@ function addCustom() {
     <template #trigger>
       <button
         type="button"
-        class="tap-safe relative flex h-10 w-full items-center gap-1 overflow-hidden rounded-[var(--gosslan-radius-md)] bg-[var(--gosslan-field)] px-3 pr-8 text-left text-sm ring-1 ring-transparent transition hover:ring-[var(--gosslan-border)]"
+        class="tap-safe relative flex h-10 w-full items-center gap-1 overflow-hidden rounded-[var(--gosslan-radius-md)] bg-[var(--gosslan-field)] px-3 pr-8 text-left text-sm ring-1 ring-[var(--gosslan-field-border)] transition hover:ring-[var(--gosslan-primary)]"
         :title="hint ?? label"
         :aria-label="hint ?? label"
       >
@@ -112,7 +112,7 @@ function addCustom() {
     </template>
 
     <template #readonly>
-      <div class="flex min-h-10 w-full flex-wrap items-center gap-1 rounded-[var(--gosslan-radius-md)] bg-[var(--gosslan-field)] px-3 py-1.5 text-sm">
+      <div class="flex min-h-10 w-full flex-wrap items-center gap-1 rounded-[var(--gosslan-radius-md)] bg-[var(--gosslan-field)] px-3 py-1.5 text-sm ring-1 ring-[var(--gosslan-field-border)]">
         <template v-if="modelValue.length">
           <span
             v-for="tag in modelValue"
@@ -131,7 +131,7 @@ function addCustom() {
           v-model="input"
           :maxlength="TODO_TAG_MAX_LEN"
           :disabled="full"
-          class="tap-safe h-9 min-w-0 flex-1 rounded-[var(--gosslan-radius-sm)] bg-[var(--gosslan-field)] px-2 text-meta disabled:opacity-50"
+          class="tap-safe h-9 min-w-0 flex-1 rounded-[var(--gosslan-radius-sm)] bg-[var(--gosslan-field)] px-2 text-meta ring-1 ring-[var(--gosslan-field-border)] disabled:opacity-50"
           :placeholder="t('todo.tagsInputPlaceholder')"
           @keydown.enter="ime.enter(addCustom, $event)"
           @compositionstart="ime.onStart"

@@ -291,7 +291,7 @@ async function confirmAction() {
           <input
             v-model="nameDraft"
             :maxlength="MAX_GROUP_NAME_CHARS"
-            class="h-10 w-full rounded-[var(--gosslan-radius-md)] border border-transparent bg-[var(--gosslan-field)] px-3 py-1.5 text-sm outline-none transition focus:border-transparent"
+            class="h-10 w-full rounded-[var(--gosslan-radius-md)] border border-[var(--gosslan-field-border)] bg-[var(--gosslan-field)] px-3 py-1.5 text-sm outline-none transition focus:border-[var(--gosslan-primary)]"
             :placeholder="t('group.namePlaceholder')"
             @keydown.enter="ime.enter(saveName, $event)"
             @compositionstart="ime.onStart"
@@ -324,7 +324,7 @@ async function confirmAction() {
             v-model="announceDraft"
             :maxlength="MAX_ANNOUNCEMENT_CHARS"
             rows="3"
-            class="w-full resize-none rounded-[var(--gosslan-radius-md)] border border-transparent bg-[var(--gosslan-field)] px-3 py-2 text-sm outline-none transition focus:border-transparent"
+            class="w-full resize-none rounded-[var(--gosslan-radius-md)] border border-[var(--gosslan-field-border)] bg-[var(--gosslan-field)] px-3 py-2 text-sm outline-none transition focus:border-[var(--gosslan-primary)]"
             :placeholder="t('group.announcePlaceholder')"
             @keydown.meta.enter.prevent="ime.enter(publishAnnouncement, $event)"
             @keydown.ctrl.enter.prevent="ime.enter(publishAnnouncement, $event)"

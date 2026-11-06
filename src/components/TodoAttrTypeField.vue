@@ -79,7 +79,7 @@ function applyCustom(close: () => void) {
     <template #trigger>
       <button
         type="button"
-        class="tap-safe flex h-10 w-full items-center justify-between gap-2 rounded-[var(--gosslan-radius-md)] bg-[var(--gosslan-field)] px-3 text-sm ring-1 ring-transparent transition hover:ring-[var(--gosslan-border)]"
+        class="tap-safe flex h-10 w-full items-center justify-between gap-2 rounded-[var(--gosslan-radius-md)] bg-[var(--gosslan-field)] px-3 text-sm ring-1 ring-[var(--gosslan-field-border)] transition hover:ring-[var(--gosslan-primary)]"
         :title="hint ?? label"
         :aria-label="hint ?? label"
       >
@@ -93,7 +93,7 @@ function applyCustom(close: () => void) {
     </template>
 
     <template #readonly>
-      <div class="flex h-10 w-full items-center rounded-[var(--gosslan-radius-md)] bg-[var(--gosslan-field)] px-3">
+      <div class="flex h-10 w-full items-center rounded-[var(--gosslan-radius-md)] bg-[var(--gosslan-field)] px-3 ring-1 ring-[var(--gosslan-field-border)]">
         <span
           class="inline-flex h-6 items-center rounded-full px-2.5 text-meta font-medium leading-none"
           :class="currentClass"
@@ -123,7 +123,7 @@ function applyCustom(close: () => void) {
           ref="customInput"
           v-model="customDraft"
           :maxlength="TODO_CUSTOM_CATEGORY_MAX_LEN"
-          class="tap-safe h-9 min-w-0 flex-1 rounded-[var(--gosslan-radius-sm)] bg-[var(--gosslan-field)] px-2 text-meta"
+          class="tap-safe h-9 min-w-0 flex-1 rounded-[var(--gosslan-radius-sm)] bg-[var(--gosslan-field)] px-2 text-meta ring-1 ring-[var(--gosslan-field-border)]"
           :placeholder="t('todo.categoryCustomPlaceholder')"
           @keydown.enter="ime.enter(() => applyCustom(close), $event)"
           @compositionstart="ime.onStart"
