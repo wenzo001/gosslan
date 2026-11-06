@@ -216,7 +216,7 @@ function onOpenChange(value: boolean) {
                    `title` 里仍能看到。 -->
               <DialogTitle
                 as="h3"
-                class="line-clamp-2 min-w-0 flex-1 break-words text-base font-semibold leading-6"
+                class="line-clamp-2 min-w-0 flex-1 break-words text-title font-semibold leading-6"
                 :class="titleSelectable ? 'gosslan-selectable' : ''"
                 :title="title"
               >
