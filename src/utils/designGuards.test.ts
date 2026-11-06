@@ -2563,8 +2563,9 @@ test("本人头像只走 SelfAvatar，且只在标题栏 / 设置页各一处", 
   const surfaces = [
     {
       rel: "layouts/ResponsiveLayout.vue",
-      // 标题栏 me 位（缩小档）
-      re: /<SelfAvatar class="h-6 w-6 rounded-full" \/>/,
+      // 标题栏 me 位（28px 档；2026-11-06 对稿按画板 `.me` 28×28 由 24 抬到这里，
+      // 锚点随被钉住的值一起搬）
+      re: /<SelfAvatar class="h-7 w-7 rounded-full" \/>/,
     },
     {
       rel: "layouts/ResponsiveLayout.vue",
@@ -5073,14 +5074,14 @@ test("53 家还是那一个：四个出口齐、enter 走 isImeKey、模板接�
 
 // ── 54. 字号令牌（专项 §四，2026-10-20）────────────────────────────────
 // 不是"把 265 处换成 6 个名字"就完：像素必须逐档不变，且行高不许被 Tailwind 默认值改掉。
-test("㊿ 字号只走令牌：生产码 0 处 text-[NNpx]，且六档像素/行高映射与 config 对齐", () => {
+test("㊿ 字号只走令牌：生产码 0 处 text-[NNpx]，且画板字阶像素/行高映射与 config 对齐", () => {
   const ARB = /text-\[[0-9][0-9]*px\]/;
   const files = walk691(srcDir691).filter((f) => !f.endsWith(".css"));
   assert.ok(files.length >= 200, "只扫到 " + files.length + " 份生产码 ⇒ 路径写错了，这条是在测空气");
   const offenders = files
     .filter((f) => ARB.test(code691(readFileSync(f, "utf8"))))
     .map((f) => f.slice(srcDir691.length + 1));
-  assert.deepEqual(offenders, [], "又写死了字号（应为 micro/caption/meta/body/emphasis/title）：" + offenders.join(", "));
+  assert.deepEqual(offenders, [], "又写死了字号（应为 micro/caption/meta/fine/small/body/emphasis/row/title/heading/page/title-lg/display）：" + offenders.join(", "));
 
   // 正控：迁移前的真实形状必须被认出来；反控：令牌名本身不是 offender。
   assert.ok(ARB.test("class=\"text-[13px]\""), "签名认不出旧形状 ⇒ 这一格在测空气");
@@ -5092,12 +5093,34 @@ test("㊿ 字号只走令牌：生产码 0 处 text-[NNpx]，且六档像素/行
     ["micro", 11],
     ["caption", 11],
     ["meta", 12],
-    ["body", 13],
+    // 2026-11-06 对稿：画板 `rprev` / 空态说明 12.5px，不再并进 meta。
+    // 锚点随被钉住的值一起搬（AGENTS「判据搬迁必须同时搬锚点」）：
+    // 下面仍断言 `text-[13px]` 会被 ARB 认出 ⇒ 新增档位不许退回内联像素。
+    ["fine", 12.5],
+    // 画板 Foundations `small 13/18`。
+    ["small", 13],
+    // 2026-11-06 对稿：正文档由 13 抬到 14（画板 Foundations body = 14/20，
+    // 与 CSS 变量 --gosslan-text-body 同值）。锚点随被钉住的值一起搬。
+    ["body", 14],
     ["emphasis", 14],
+    // 桌面列表行姓名（画板 `.rname` 14.5/19）。
+    ["row", 14.5],
     ["title", 15],
+    // 2026-11-06 对稿：页面级标题 17（画板 `.listHead h2` 17/22、tokens title 17/24）。
+    ["heading", 17],
+    // 移动端一级页顶栏标题（画板 MobileChats `.topbar h1` 18/23）。
+    ["page", 18],
+    // 移动端列表空态标题（画板 MobileEmpty `.empty h2` 20/26）。
+    ["title-lg", 20],
+    // 空态标题 22（画板 `.haloWrap h3` 22/28）。
+    ["display", 22],
   ] as const) {
+    // kebab 档位（title-lg）在 config 里必须加引号，两种写法都认；值仍被钉死。
+    const hit =
+      cfg.includes(`${name}: ["${px}px", { lineHeight: "inherit" }]`) ||
+      cfg.includes(`"${name}": ["${px}px", { lineHeight: "inherit" }]`);
     assert.ok(
-      cfg.includes(`${name}: ["${px}px", { lineHeight: "inherit" }]`),
+      hit,
       `字号令牌 ${name} 必须是 ${px}px 且 line-height: inherit（行高被默认值改掉＝整站变紧）`,
     );
   }

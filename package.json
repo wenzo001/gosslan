@@ -1,7 +1,7 @@
 {
   "name": "gosslan",
   "private": true,
-  "version": "5.18.42",
+  "version": "5.18.43",
   "type": "module",
   "description": "Gosslan — 无服务器 P2P 局域网即时通讯（Tauri v2 + Vue 3 + TypeScript）",
   "scripts": {
@@ -23,7 +23,7 @@
     "test": "node --test --experimental-strip-types --disable-warning=ExperimentalWarning \"src/**/*.test.ts\" \"scripts/*.test.ts\"",
     "test:ui-runtime": "node scripts/check-ui-runtime.mjs",
     "tauri": "tauri",
-    "icon": "tauri icon src-tauri/icons/icon.png",
+    "icon": "node scripts/build-app-icons.mjs",
     "version:show": "node scripts/version.mjs show",
     "version:patch": "node scripts/version.mjs patch",
     "version:minor": "node scripts/version.mjs minor",
