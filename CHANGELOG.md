@@ -14,6 +14,23 @@
 
 ## [Unreleased]
 
+## [5.18.45] - 2026-11-06
+
+### 设置分区卡片内边距统一到 16px 单一口径
+
+用户报「设置里『关于』那栏内容的卡片内边距比其它分区小」。CDP 实测四个分区（通用 / 网络 /
+文件与存储 / 关于）的卡片行 padding 其实**全是一组 12/16**，看着更紧是单行（48px）与双行
+（64px）的行高错觉；真正散掉的只有 4 处自己写的 `px-4 py-2.5` / `p-4` / `px-3 py-3`。
+
+- 新增 `--gosslan-card-pad: 16px` / `--gosslan-card-pad-inset: 12px` /
+  `--gosslan-group-caption-inset: 4px` 与 `.settings-card-row` / `.settings-card-inset` /
+  `.settings-group-caption` 三档类，取代各分区散落的 padding 工具类（共 17 处）。
+  16px 取自 `tokens.json` 的 `space-16`（list row inset）与决策 8「设置/任务/搜索/群资料
+  用 16px 卡片、48px 行」；单行 16+20+16=52 正好落在 `row-height-compact` 52px。
+- 判据 ㊶：`findRawCardPadding` 守住"设置分区不许再写卡片级散值"，`verify-guards.py`
+  注入 `px-4 py-3` 会红（非空转自证）。`ProfileSection` 的行结构锚点随源码一起搬迁。
+- 实测：关于卡片行 12/16/12/16（48px）→ 16/16/16/16（56px），全站设置分区行统一为 16 四边。
+
 ## [5.18.44] - 2026-11-06
 
 ### 界面重构 Pulse · 终稿对稿 ②：会话列表标题行 / 搜索行 / 行内字号

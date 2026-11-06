@@ -77,7 +77,7 @@ const previewOtherStyle = computed(() => {
     <!-- 字体大小：预览气泡 + 滑块（仿微信"字体"设置）。
          上面摆一对方向相反的预览气泡（你/对方），字号实时跟随滑块变；
          下面一个 5 档离散滑块（step=1，min=0，max=4），两端 A 字标小/大。 -->
-    <div class="px-4 py-3">
+    <div class="settings-card-row">
       <div class="mb-2 flex items-baseline justify-between">
         <div class="text-sm text-[var(--gosslan-text)]">{{ t("settings.chatStyle.fontSize") }}</div>
         <div class="text-caption text-[var(--gosslan-text-2)]">
@@ -88,7 +88,7 @@ const previewOtherStyle = computed(() => {
       <!-- 预览气泡（两个反方向摆）。尖角位置和真实聊天一致——你发的右对齐、尖角朝右；对方左对齐、尖角朝左。
            但我们复用真实气泡的样式：background/color/fontSize 全部从当前主题实时算。 -->
       <div
-        class="mb-3 flex flex-col gap-2 rounded-[var(--gosslan-radius-md)] bg-[var(--gosslan-bg)] px-3 py-3"
+        class="settings-card-inset mb-3 flex flex-col gap-2 rounded-[var(--gosslan-radius-md)] bg-[var(--gosslan-bg)]"
       >
         <!-- 对方气泡（左对齐）。 -->
         <div class="flex">
@@ -138,7 +138,7 @@ const previewOtherStyle = computed(() => {
     <div class="ml-4 h-px bg-[var(--gosslan-divider)]" />
 
     <!-- 气泡配色 -->
-    <div class="px-4 py-3">
+    <div class="settings-card-row">
       <div class="mb-2 text-sm text-[var(--gosslan-text)]">{{ t("settings.chatStyle.bubble") }}</div>
       <div class="grid grid-cols-3 gap-2">
         <button

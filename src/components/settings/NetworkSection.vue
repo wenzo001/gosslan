@@ -546,7 +546,7 @@ async function removeEndpoint(address: string) {
     <div
       v-for="ep in endpoints"
       :key="ep.address"
-      class="flex items-center gap-2 px-4 py-2.5"
+      class="settings-card-row flex items-center gap-2"
     >
       <span class="min-w-0 flex-1 truncate font-mono text-body text-[var(--gosslan-text)]" :title="ep.address">
         {{ ep.address }}
@@ -568,11 +568,11 @@ async function removeEndpoint(address: string) {
       inline
       kind="empty"
       :title="t('settings.network.routed.empty')"
-      class="px-4 py-3"
+      class="settings-card-row"
     />
 
     <!-- 添加 -->
-    <div class="flex items-center gap-2 px-4 py-3">
+    <div class="settings-card-row flex items-center gap-2">
       <input
         v-model="newAddress"
         type="text"
@@ -719,9 +719,9 @@ async function removeEndpoint(address: string) {
           inline
           kind="empty"
           :title="t('settings.relay.allowlist.empty')"
-          class="px-4 py-3"
+          class="settings-card-row"
         />
-        <div v-for="f in chat.friends" :key="f.device_id" class="flex items-center gap-3 px-4 py-2.5">
+        <div v-for="f in chat.friends" :key="f.device_id" class="settings-card-row flex items-center gap-3">
           <span class="min-w-0 flex-1 truncate text-sm text-[var(--gosslan-text)]" :title="f.nickname">
             {{ f.nickname }}
           </span>

@@ -67,7 +67,7 @@ async function doClearAllData() {
   <div class="space-y-5">
     <SettingsGroup :title="t('settings.group.reset')">
       <button
-        class="flex w-full items-center justify-center gap-2 px-4 py-3 text-sm text-[var(--gosslan-text)] transition hover:bg-[var(--gosslan-hover)]"
+        class="settings-card-row flex w-full items-center justify-center gap-2 text-sm text-[var(--gosslan-text)] transition hover:bg-[var(--gosslan-hover)]"
         @click="confirmRestore = true"
       >
         <RotateCcw class="h-4 w-4" />
@@ -75,14 +75,14 @@ async function doClearAllData() {
       </button>
       <div class="ml-4 h-px bg-[var(--gosslan-divider)]" />
       <button
-        class="flex w-full items-center justify-center gap-2 px-4 py-3 text-sm text-[var(--gosslan-danger-ink)] transition hover:bg-[var(--gosslan-danger-soft)] dark:hover:bg-[var(--gosslan-danger-soft)]"
+        class="settings-card-row flex w-full items-center justify-center gap-2 text-sm text-[var(--gosslan-danger-ink)] transition hover:bg-[var(--gosslan-danger-soft)] dark:hover:bg-[var(--gosslan-danger-soft)]"
         @click="clearConfirmOpen = true"
       >
         <Trash2 class="h-4 w-4" />
         {{ t("settings.reset.clearChat") }}
       </button>
     </SettingsGroup>
-    <p class="px-1 text-center text-caption leading-relaxed text-[var(--gosslan-text-2)]">
+    <p class="settings-group-caption text-center text-caption leading-relaxed text-[var(--gosslan-text-2)]">
       {{ t("settings.reset.footnote") }}
     </p>
 
