@@ -1008,12 +1008,12 @@ function onResizeEnd() {
              两条互不相干的条件链各自命中，用户会看到「我的」下面还挂着一个空会话页（用户 2026-09-20）。 -->
         <FavoritePanel v-else-if="favoritesOpen && !app.isMobile" @close="closeFavorites" />
         <FavoritePanel v-else-if="app.isMobile && navState === 'favorites'" />
+        <!-- 链接页空态：左栏 header 已经写着「外部链接」，中央不再重复栏目名（C6）。
+             通用导航图标不当插画（A3），只留一句可执行的下一步。 -->
         <div
           v-else-if="!app.isMobile && isLinksView"
-          class="flex h-full select-none flex-col items-center justify-center gap-3 text-[var(--gosslan-text-2)]"
+          class="flex h-full select-none flex-col items-center justify-center text-[var(--gosslan-text-2)]"
         >
-          <NavIcon name="links" size-class="h-16 w-16 opacity-25" />
-          <div class="text-base">{{ t("layout.linksTitle") }}</div>
           <div class="max-w-[280px] text-center text-xs leading-relaxed opacity-70">
             {{ t("layout.linksHint") }}
           </div>
@@ -1057,11 +1057,10 @@ function onResizeEnd() {
         >
           <!-- 品牌（用户 2026-10-23：中文名改「小院儿」，且要在聊天主界面看得见）。
                只出现在**未选会话**的空态；移动端这块不在列表页，不会挤占头部。 -->
+          <!-- 空态不画 64px 通用导航图标（A3）：结论 + 一句说明 + 一个主动作就够。 -->
           <div class="text-base font-semibold tracking-wide text-[var(--gosslan-text)] opacity-85">
             {{ t("app.name") }}
           </div>
-          <NavIcon v-if="navState === 'contacts'" name="contacts" size-class="h-16 w-16 opacity-25" />
-          <NavIcon v-else name="chats" size-class="h-16 w-16 opacity-25" />
           <div class="text-base">
             {{ navState === "contacts" ? t("layout.selectContact") : t("layout.selectConversation") }}
           </div>
