@@ -1600,6 +1600,16 @@ export const zhCN: MessageDict = {
   "layout.linksHint": "在左侧选择一个链接，将在独立窗口中打开",
   "layout.routeMissing": "内容不存在或已不可访问",
   "layout.tagline": "无服务器 · 纯 P2P · 端到端加密 · 数据仅存本机",
+  "layout.emptySubtitle": "消息只在这台设备，不经过服务器。",
+  "layout.chipDevices": "{n} 台设备在线",
+  "layout.chipE2ee": "端到端加密",
+  "layout.chipServerless": "无服务器",
+  "layout.shortcutHintMac": "按 ⌘K 搜索，按 ⌘, 打开设置",
+  "layout.shortcutHint": "按 Ctrl+K 搜索，按 Ctrl+, 打开设置",
+  // 主窗口标题栏右侧功能组（画板 DesktopChats）。
+  "titlebar.devices": "局域网内 {n} 台设备在线",
+  "titlebar.search": "全局搜索",
+  "titlebar.personalize": "个性化设置",
   // 应用显示名（用户 2026-10-23：中文名由「相闻」改为「小院儿」，英文名仍是 Gosslan）。
   // ⚠️ 这只是**界面文案**的家；窗口标题/包显示名/托盘另有各自的层（HTML data-title-*、
   // InfoPlist.strings、state.rs display_name、tray.rs），改名字五层一起改。
@@ -1713,6 +1723,7 @@ export const zhCN: MessageDict = {
   // 随 `TransferCenter.vue` 一起删掉了（死文案护栏会现算引用面，别留着）。
   "task.open": "查看后台任务（{n} 个）",
   "task.title": "后台任务",
+  "task.center": "任务中心",
   "task.empty": "没有进行中的任务",
   "task.note": "这里列出还没完成的后台任务；关掉面板不会中断它们，完成后会自动消失",
   "task.to": "给 {name}",

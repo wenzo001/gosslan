@@ -1567,6 +1567,15 @@ export const enUS: MessageDict = {
   "layout.linksHint": "Pick a link on the left to open it in its own window",
   "layout.routeMissing": "This content no longer exists or is unavailable",
   "layout.tagline": "Serverless · Pure P2P · End-to-end encrypted · Data stays on device",
+  "layout.emptySubtitle": "Messages live on this device and never touch a server.",
+  "layout.chipDevices": "{n} devices online",
+  "layout.chipE2ee": "End-to-end encrypted",
+  "layout.chipServerless": "Serverless",
+  "layout.shortcutHintMac": "Press ⌘K to search, ⌘, for settings",
+  "layout.shortcutHint": "Press Ctrl+K to search, Ctrl+, for settings",
+  "titlebar.devices": "{n} devices online on the LAN",
+  "titlebar.search": "Global search",
+  "titlebar.personalize": "Personalize",
   /** English display name stays "Gosslan" (the zh side is 「小院儿」). */
   "app.name": "Gosslan",
 
@@ -1673,6 +1682,7 @@ export const enUS: MessageDict = {
   // panel and the bubble never phrase the same state two different ways.
   "task.open": "Show background tasks ({n})",
   "task.title": "Background tasks",
+  "task.center": "Task center",
   "task.empty": "Nothing in progress",
   "task.note": "This lists background tasks that haven't finished; closing the panel won't interrupt them, and finished ones disappear automatically",
   "task.to": "To {name}",

@@ -276,8 +276,12 @@ test("我的在线状态 = 任一通道在跑（两个都关才是离线，用�
     "utf8",
   );
   assert.ok(profile.includes("app.present"), "设置里『我的状态』必须读 present（不是 online）");
+  // 2026-11-06 改版：本人头像与在线点从 rail 移到主窗口标题栏（同一份状态只画一次）。
+  // 判据跟着头像走，仍然只认 `app.present`（任一通道 running），不接受 `online`。
+  const layout = readFileSync(join(ROOT, "src", "layouts", "ResponsiveLayout.vue"), "utf8");
+  assert.ok(layout.includes("app.present"), "标题栏本人头像的状态点必须读 present");
   const rail = readFileSync(join(ROOT, "src", "components", "NavRail.vue"), "utf8");
-  assert.ok(rail.includes("app.present"), "侧栏头像的状态点必须读 present");
+  assert.doesNotMatch(rail, /<SelfAvatar\b/, "rail 不再重复渲染本人头像（同一身份只出现一次）");
   const net = readFileSync(
     join(ROOT, "src", "components", "settings", "NetworkSection.vue"),
     "utf8",

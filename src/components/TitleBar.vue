@@ -265,6 +265,18 @@ onBeforeUnmount(() => {
       {{ title || t("app.name") }}
     </div>
 
+    <!-- 主窗口的右侧功能组（连接状态 / 搜索 / 个性化 / 本人头像）。
+         辅助窗口不传这个插槽 ⇒ 宽度为 0，完全不改变原来的标题栏。
+         整组是拖拽区里的可点击区域：`mousedown.stop` 防止按下按钮时把窗口拖走。 -->
+    <div
+      v-if="$slots.right"
+      data-no-drag-region
+      class="flex h-full shrink-0 items-center gap-1 pr-3"
+      @mousedown.stop
+    >
+      <slot name="right" />
+    </div>
+
     <!-- Windows/Linux：右侧三键（顶到窗口最右缘）。
          字形按 **Windows 11 Fluent** 的细线造型自绘（10×10 视觉盒、1px 线）——
          lucide 的 `Maximize2` 是双箭头、`Minus` 偏粗，与系统窗口按钮明显不像
