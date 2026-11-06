@@ -21,6 +21,7 @@ import FriendListItem from "@/components/conversation/FriendListItem.vue";
 import FriendContextMenu from "@/components/conversation/FriendContextMenu.vue";
 import ConversationContextMenu from "@/components/conversation/ConversationContextMenu.vue";
 import ConfirmDialog from "@/components/ui/ConfirmDialog.vue";
+import PrimaryBtn from "@/components/ui/PrimaryBtn.vue";
 import UnreadBadge from "@/components/UnreadBadge.vue";
 import { APP_ACTION, onAction } from "@/api";
 import { groupByInitial } from "@/utils/nameGroup";
@@ -551,21 +552,15 @@ useEventListener(document, "click", closeFriendMenu);
           <!-- 空态下一步（用户 2026-09-12 晚）：**有好友 → 发起聊天**；**一个好友都没有 →
                只有「添加好友」**（原先还并列一个「发现好友」，与本条冲突，已去掉）。
                两个入口都带一句说明文字：空态只陈述"没有会话"会让人不知所措。 -->
+          <!-- C3（2026-11-06 裁决）：左栏与中央是同一套 CTA 规格，只是容器不同：
+               左栏 narrow 用 PrimaryBtn size=xs，中央用 size=large；文案与层级一致，入口一个不删。 -->
           <template v-if="!query.trim()">
-            <button
-              v-if="chat.friends.length"
-              class="tap-safe rounded-[var(--gosslan-radius-md)] bg-[var(--gosslan-primary-active)] px-3.5 py-1.5 text-xs font-medium text-[var(--gosslan-on-primary)] transition hover:bg-[var(--gosslan-primary-hover)]"
-              @click="emit('update:view', 'contacts')"
-            >
+            <PrimaryBtn v-if="chat.friends.length" size="xs" @click="emit('update:view', 'contacts')">
               {{ t("conv.startChat") }}
-            </button>
-            <button
-              v-else
-              class="tap-safe rounded-[var(--gosslan-radius-md)] bg-[var(--gosslan-primary-active)] px-3.5 py-1.5 text-xs font-medium text-[var(--gosslan-on-primary)] transition hover:bg-[var(--gosslan-primary-hover)]"
-              @click="emit('open-add-friend')"
-            >
+            </PrimaryBtn>
+            <PrimaryBtn v-else size="xs" @click="emit('open-add-friend')">
               {{ t("common.addFriend") }}
-            </button>
+            </PrimaryBtn>
             <span class="max-w-[220px] text-caption leading-relaxed">
               {{
                 chat.friends.length
