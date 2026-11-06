@@ -859,7 +859,7 @@ function onResizeEnd() {
            本人头像与在线点从 rail 移到这里：同一份身份状态只出现一次。 -->
       <template #right>
         <span
-          class="flex h-6 items-center gap-1.5 rounded-full bg-[var(--gosslan-field)] px-2 text-caption font-medium tabular-nums text-[var(--gosslan-text-2)]"
+          class="flex h-5 items-center gap-1.5 rounded-full bg-[var(--gosslan-field)] px-2 text-caption font-medium tabular-nums text-[var(--gosslan-text-2)]"
           :title="t('titlebar.devices', { n: onlineDeviceCount })"
         >
           <span class="h-1.5 w-1.5 rounded-full bg-[var(--gosslan-success)]" aria-hidden="true"></span>
@@ -867,19 +867,19 @@ function onResizeEnd() {
         </span>
         <button
           type="button"
-          class="tap-safe flex h-7 w-7 items-center justify-center rounded-[var(--gosslan-radius-sm)] text-[var(--gosslan-text-2)] transition hover:bg-[var(--gosslan-hover)] hover:text-[var(--gosslan-text)]"
+          class="tap-safe flex h-[30px] w-[30px] items-center justify-center rounded-[var(--gosslan-radius-sm)] text-[var(--gosslan-text-2)] transition hover:bg-[var(--gosslan-hover)] hover:text-[var(--gosslan-text)]"
           :title="t('titlebar.search')" :aria-label="t('titlebar.search')"
           @click="focusSearch"
         >
-          <Icon name="search" class="h-4 w-4" />
+          <Icon name="search" class="h-[19px] w-[19px]" />
         </button>
         <button
           type="button"
-          class="tap-safe flex h-7 w-7 items-center justify-center rounded-[var(--gosslan-radius-sm)] text-[var(--gosslan-text-2)] transition hover:bg-[var(--gosslan-hover)] hover:text-[var(--gosslan-text)]"
+          class="tap-safe flex h-[30px] w-[30px] items-center justify-center rounded-[var(--gosslan-radius-sm)] text-[var(--gosslan-text-2)] transition hover:bg-[var(--gosslan-hover)] hover:text-[var(--gosslan-text)]"
           :title="t('titlebar.personalize')" :aria-label="t('titlebar.personalize')"
           @click="openAppearanceSettings"
         >
-          <Icon name="sliders-horizontal" class="h-4 w-4" />
+          <Icon name="sliders-horizontal" class="h-[19px] w-[19px]" />
         </button>
         <button
           type="button"
@@ -888,9 +888,9 @@ function onResizeEnd() {
           :aria-label="t('nav.me.openSettings', { status: app.present ? t('nav.me.online') : t('nav.me.offline') })"
           @click="openProfile"
         >
-          <SelfAvatar class="h-6 w-6 rounded-full" />
+          <SelfAvatar class="h-7 w-7 rounded-full" />
           <span
-            class="absolute -bottom-0.5 -right-0.5 h-2 w-2 rounded-full border-2 border-[var(--gosslan-caption)]"
+            class="absolute bottom-0 right-[-1px] h-[9px] w-[9px] rounded-full shadow-[0_0_0_2px_var(--gosslan-caption)]"
             :class="app.present ? 'bg-[var(--gosslan-success)]' : 'bg-[var(--gosslan-status-offline)]'"
           ></span>
         </button>
@@ -1128,10 +1128,10 @@ function onResizeEnd() {
             <!-- 品牌标记直接复用第 2 段生成的单一应用图标源（不在这里再手绘第二份 mark）。 -->
             <img :src="appMark" class="h-11 w-11" alt="" aria-hidden="true" draggable="false" />
           </div>
-          <h3 class="text-title font-semibold leading-6 tracking-[-0.01em] text-[var(--gosslan-text)]">
+          <h3 class="text-display font-semibold leading-[28px] tracking-[-0.01em] text-[var(--gosslan-text)]">
             {{ navState === "contacts" ? t("layout.selectContact") : t("layout.selectConversation") }}
           </h3>
-          <p class="mt-2 text-footnote leading-5">
+          <p class="mt-2 text-fine leading-[19px]">
             {{ t("layout.emptySubtitle") }}<br />
             <b class="font-semibold text-[var(--gosslan-text)]">{{ t("layout.tagline") }}</b>
           </p>

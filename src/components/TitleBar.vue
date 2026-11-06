@@ -256,13 +256,18 @@ onBeforeUnmount(() => {
     <div v-if="isMac" class="h-full w-[78px] shrink-0" aria-hidden="true"></div>
 
     <!-- 功能名：辅助窗口传 `title`；主窗口不传 ⇒ 退到应用显示名（用户 2026-10-23：
-         改名后在桌面标题栏也看得见），Win/Linux 的按钮仍被 flex-1 推到最右。
+         改名后在桌面标题栏也看得见）。画板 DesktopChats 的 `.title` 是**绝对居中**（12px/600），
+         所以这里脱离流式布局，左右控件仍各占自己的宽度（`pointer-events-none` 不挡点击）。
          拖拽区本身不接收点击，这里是纯文字，不影响拖拽。 -->
     <div
-      class="min-w-0 flex-1 truncate px-3 text-body font-medium text-[var(--gosslan-text-2)]"
-      :title="title || t('app.name')"
+      class="pointer-events-none absolute inset-0 flex items-center justify-center px-3"
     >
-      {{ title || t("app.name") }}
+      <span
+        class="min-w-0 truncate text-meta font-semibold tracking-[.02em] text-[var(--gosslan-text-2)]"
+        :title="title || t('app.name')"
+      >
+        {{ title || t("app.name") }}
+      </span>
     </div>
 
     <!-- 主窗口的右侧功能组（连接状态 / 搜索 / 个性化 / 本人头像）。
@@ -271,7 +276,7 @@ onBeforeUnmount(() => {
     <div
       v-if="$slots.right"
       data-no-drag-region
-      class="flex h-full shrink-0 items-center gap-1 pr-3"
+      class="ml-auto flex h-full shrink-0 items-center gap-1.5 pr-3"
       @mousedown.stop
     >
       <slot name="right" />
@@ -286,7 +291,7 @@ onBeforeUnmount(() => {
          按钮的圆角曲线与窗口边界曲线不重合，中间会夹出一条浅色月牙缝（看起来"没贴合"）。
          同理只加圆角不加宽度补偿也不行：那会让 hover 底与窗口边缘脱开。
          原生 Windows 的窗口按钮 hover 也是整块矩形、由窗口圆角裁切。 -->
-    <div v-if="!isMac" class="flex h-full items-stretch">
+    <div v-if="!isMac" class="ml-auto flex h-full items-stretch">
       <button data-no-drag-region @mousedown.stop
         v-if="showMinimize"
         class="flex w-11 items-center justify-center text-[var(--gosslan-rail-text)] transition hover:bg-[var(--gosslan-hover)] hover:text-[var(--gosslan-text)]"

@@ -35,9 +35,29 @@ export default {
         micro: ["11px", { lineHeight: "inherit" }],
         caption: ["11px", { lineHeight: "inherit" }],
         meta: ["12px", { lineHeight: "inherit" }],
-        body: ["13px", { lineHeight: "inherit" }],
+        // 2026-11-06 对稿：画板 `DesktopChats .rprev` / 空态说明是 12.5px，之前被并进
+        // meta(12) 当"半像素不重要"。它和 12px 的差别在**一行预览**上看得出来，补成独立档。
+        fine: ["12.5px", { lineHeight: "inherit" }],
+        // 画板 Foundations 的 `small 13/18`（列表次行、设置行标签）。
+        small: ["13px", { lineHeight: "inherit" }],
+        // 2026-11-06 对稿：画板 Foundations 的正文样本是 14/20，`--gosslan-text-body`
+        // 也已经是 14px；这里曾是 13px，生产码里 `text-body` 与 `text-sm`(14) 并行两档。
+        body: ["14px", { lineHeight: "inherit" }],
         emphasis: ["14px", { lineHeight: "inherit" }],
+        // 桌面列表行姓名：画板 DesktopChats `.rname` 14.5/19（移动端 `.rname` 是 15/20，
+        // 用 title 档）。之前统一按 body(14) 渲染，桌面行名比画板小 0.5px。
+        row: ["14.5px", { lineHeight: "inherit" }],
         title: ["15px", { lineHeight: "inherit" }],
+        // 画板 `.listHead h2` / `.hName` 之外的页面级标题：DesktopChats 17/22、tokens title 17/24。
+        // 之前用 title(15) 顶，列表头比画板小 2px —— 这是可见的字重差，不是"六档压缩"能解释的。
+        heading: ["17px", { lineHeight: "inherit" }],
+        // 移动端一级页顶栏标题：画板 MobileChats `.topbar h1` 18/23。
+        page: ["18px", { lineHeight: "inherit" }],
+        // 移动端列表空态标题：画板 MobileEmpty `.empty h2` 20/26（tokens title-lg 20/26）。
+        "title-lg": ["20px", { lineHeight: "inherit" }],
+        // 空态标题：画板 DesktopChats `.haloWrap h3` 22/28（移动空态同档）。
+        // 旧实现同样用 title(15) 顶，22→15 差 7px，是这一轮里最容易被一眼看出的偏差。
+        display: ["22px", { lineHeight: "inherit" }],
       },
     },
   },

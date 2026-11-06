@@ -266,13 +266,13 @@
      ⚠️ 改这个值必须同步 `index.html` 的首屏骨架 `.boot-head`（桌面）与
      `.boot-logs-toolbar`（日志窗口），否则首屏会跳高 —— 这是本项目的既有约定。 */
   --gosslan-header-h: 52px;
-  /* 顶部窗口拖拽条高度：caption 容纳右上三枚窗口按钮 */
-  /* 自绘标题栏高度。Windows / Linux 用它承载自绘三键（与系统 caption 高度接近）。
-     macOS 走下面 `.platform-mac` 的覆盖值 —— 那边要与**原生标题栏 28px** 对齐，
-     否则自绘红绿灯所在的横条比系统的高一截，并排时"按钮大小"看着就不一样
-     （用户 2026-09-12 反馈：「mac 自己写的三个关闭按钮，和原生的关闭按钮的样式好像
-     不太一样，还有大小」）。 */
-  --gosslan-title-h: 38px;
+  /* 顶部窗口拖拽条高度：caption 容纳右上功能组（画板 DesktopChats `.titlebar` = 40px）。
+     **两个平台都用 40px**：原来 macOS 压到 28px 是为了对齐自绘红绿灯，但 2026-10-23
+     起红绿灯已交回 AppKit 原生绘制，28px 的横条里 24px 头像 + 9px 在线点几乎顶满上下边，
+     右上角还被窗口 10px 圆角切到（用户 2026-11-06：「Mac 端右上角这个头像很挤」）。
+     原生按钮的纵向位置由 AppKit 固定在标题栏默认带内，不随本条变化 —— 这是平台事实，
+     不是本应用能改的；我们要负责的是内容区留出与画板一致的 40px 高度。 */
+  --gosslan-title-h: 40px;
   /* ---------------- 窗口显示安全区（桌面自绘标题栏 / 移动端为 0） ----------------
      桌面窗口是 `decorations(false)` + 自绘 caption（`TitleBar.vue`，`var(--gosslan-title-h)`），
      那条 caption 是**流内**元素。而弹窗经 portal 挂到 `<body>`、铺的是 `fixed inset-0`
@@ -286,8 +286,8 @@
      读到 980px 兜底档 ⇒ CSS 判"桌面"、手机上凭空多出一条 38px 顶边距），这条纪律见
      `tailwind.config.js` 的 `desktop:` 变体与 `docs/ARCHITECTURE-MAP.html`。
 
-     桌面取值 = `var(--gosslan-title-h)` ⇒ 跟着 `.platform-mac` 的 28px 覆盖一起走，
-     Win/Linux 38px、macOS 28px，**一处定义两平台自洽**，不需要各写一份。
+     桌面取值 = `var(--gosslan-title-h)`，两个平台统一 40px（2026-11-06 去掉 macOS 的 28px
+     覆盖），**一处定义两平台自洽**，不需要各写一份。
      移动端 = 0：移动端没有 caption（`TitleBar` 的 `v-if="!isMobile"`），
      整屏形态走的是 `env(safe-area-inset-*)`，这套变量在那边必须**不产生任何影响**。 */
   --gosslan-window-safe-top: 0px;
@@ -1730,12 +1730,9 @@ html[data-frost="off"] .frost {
     scrollbar-color: color-mix(in srgb, var(--gosslan-text-2) 50%, transparent) transparent;
   }
 }
-/* macOS：标题栏高度对齐系统（28px）。自绘红绿灯的圆心位置、与窗口顶边的距离
-   因此与原生窗口一致；配合 TitleBar 里的 12px 直径 / 8px 间距 / 13px 左边距，
-   整组与系统视觉等价。 */
-.platform-mac {
-  --gosslan-title-h: 28px;
-}
+/* macOS 不再单独压标题栏高度：红绿灯由 AppKit 原生绘制（`decorations:false` +
+   `Titled`），其纵向位置不读本变量；把 caption 压到 28px 只会让右侧功能组贴边。
+   两个平台统一 40px，见上面 `--gosslan-title-h` 的注释。 */
 
 /* 「这一扇窗口顶部有自绘 caption」⇒ 内容区的上边界 = caption 高度。
    ⚠️ 键是 `html.has-caption` 而**不是** `html:not(.is-mobile)`（2026-10-20 改的，改前是后者）：

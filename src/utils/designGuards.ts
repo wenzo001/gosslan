@@ -1567,7 +1567,7 @@ export function findTopInsetWithoutBottomInset(src: string): GuardIssue[] {
  * 判据：铺满视口的浮层外壳顶部必须读 `var(--gosslan-window-safe-top)`，不许裸 `inset-0` 盖顶。
  *
  * 为什么这是判据而不是审美：桌面窗口是 `decorations(false)` + **流内**自绘 caption
- * （`TitleBar.vue`，`var(--gosslan-title-h)`，Win 38px / macOS 28px），而弹窗经 portal 挂到
+ * （`TitleBar.vue`，`var(--gosslan-title-h)`，两平台统一 40px），而弹窗经 portal 挂到
  * `<body>`、铺的是 `fixed inset-0` ⇒ 从视口 (0,0) 起算，卡片顶部直接钻到 caption 底下，
  * 标题与右上角 ✕ 一起被压住（用户实测过的那一类）。移动端没有 caption
  * （`TitleBar` 的 `v-if="!isMobile"`），所以那套变量在移动端必须是 **0**

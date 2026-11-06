@@ -6,7 +6,7 @@
 //      LEGACY_DARK_STORAGE_KEY、stores/useAppStore.ts 的 THEME_KEY 与 FONT_KEY、i18n/index.ts 的
 //      STORAGE_KEY 保持一致 —— 由 appearance.test.ts 现解析两边比对）；
 //   ② 语言（决定骨架里的 brand 文案与 <title>）；
-//   ③ macOS 平台标记（骨架标题栏高度 28px vs 38px）。
+//   ③ macOS 平台标记（标题栏拖拽区/左侧让位用，无关高度：两平台 caption 都是 40px）。
 
       // 首屏主题：必须在样式/脚本资源就位**之前**决定亮暗与主色，
       // 否则 WebView 会先按浅色渲染再切深色（用户看到"闪一下白"）。
