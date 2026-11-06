@@ -953,6 +953,7 @@ pub fn run() {
             commands::get_group_todos_context,
             commands::open_image_preview,
             commands::get_image_preview_gallery,
+            commands::close_image_preview,
             commands::open_link_window,
             commands::list_external_links,
             commands::get_external_links_import_source,

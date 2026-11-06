@@ -819,6 +819,15 @@ export const api = {
   getImagePreviewGallery: () => invoke<PreviewGallery | null>("get_image_preview_gallery"),
   /** 窗口已经开着时的"内容换了，再取一次"提醒。 */
   onImagePreviewChanged: (cb: () => void) => listen("preview-gallery", () => cb()),
+  /**
+   * 真正关掉那扇单例预览窗（桌面端）。
+   *
+   * 只清前端状态是关不掉另一个 WebView 的：切会话（`closeIfFrom(conv:prev)`）之后
+   * 窗里还会挂着上一个会话的图。窗口关闭后 Rust 会广播 `preview-closed` 作为回声。
+   */
+  closeImagePreview: () => invoke<void>("close_image_preview"),
+  /** 预览窗已被销毁（用户亲手关窗 / 上面那条命令生效）—— 订阅方**只清状态**，不得再关窗。 */
+  onImagePreviewClosed: (cb: () => void) => listen("preview-closed", () => cb()),
 
   /** 在独立窗口里加载一个外部网址（桌面端；窗口隔离，不授予远端页面任何命令权限）。 */
   openLinkWindow: (url: string, name: string) => invoke<void>("open_link_window", { url, name }),

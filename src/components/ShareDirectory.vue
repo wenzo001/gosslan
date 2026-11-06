@@ -106,7 +106,7 @@ async function download(e: ShareEntry) {
         v-else-if="error && entries.length > 0"
         class="py-4 text-sm text-[var(--gosslan-danger-ink)]"
         role="alert"
-      >{{ error }}</div>
+      >{{ t("errors.toastJoined", { prefix: t("share.loadFail"), detail: error }) }}</div>
       <StateBlock
         v-else-if="error"
         compact

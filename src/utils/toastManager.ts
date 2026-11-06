@@ -27,11 +27,21 @@ export const toastManager = createToastManager<ToastData>();
 
 /**
  * 合并计数：只记「当前还挂着的那一条」出现了几次。
- * 条被关掉时由 `ToastList` 调 `releaseToastCount` 清掉，下一次同 key 从 ×1 重新起算。
+ * 条被关掉时由 `ToastList` 在 `update:open === false` 时调 `releaseToastCount` 清掉，
+ * 下一次同 key 从 ×1 重新起算。
+ *
+ * ⚠️ 不能用 `@close`：Reka 的 `ToastRoot` 只发
+ * `update:open / pause / resume / escapeKeyDown / swipe*`，**没有 `close`** ——
+ * 旧写法看着能编译，实际永不触发，`×N` 全会话只增不减。
  */
 const repeatCount = new Map<string, number>();
 
-/** 某条 toast 关闭（到点/手动/Esc）后清掉它的计数。 */
+/** 某条 toast 当前的累计次数（界面 `×N` 的数据源；单测也读这一格）。 */
+export function toastCountOf(id: string): number {
+  return repeatCount.get(id) ?? 0;
+}
+
+/** 某条 toast 关闭（到点/手动/Esc/滑动）后清掉它的计数。 */
 export function releaseToastCount(id: string) {
   repeatCount.delete(id);
 }
@@ -45,7 +55,7 @@ export function releaseToastCount(id: string) {
  */
 export function pushToast(text: string, kind: ToastKind = "info", action?: ToastAction) {
   const id = `${kind}:${text}`;
-  const count = (repeatCount.get(id) ?? 0) + 1;
+  const count = toastCountOf(id) + 1;
   repeatCount.set(id, count);
   toastManager.add({
     id,
