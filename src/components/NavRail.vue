@@ -13,7 +13,6 @@ import { useChatStore } from "@/stores/useChatStore";
 import { useExclusivePopup } from "@/composables/useExclusivePopup";
 import UnreadBadge from "@/components/UnreadBadge.vue";
 import NavIcon from "@/components/ui/NavIcon.vue";
-import SelfAvatar from "@/components/SelfAvatar.vue";
 import { t } from "@/i18n";
 import { updater } from "@/updater/instance";
 import { storageSet } from "@/utils/safeStorage";
@@ -81,37 +80,20 @@ function onMoreOpen(open: boolean) {
 </script>
 
 <template>
-  <!-- 微信式窄导航栏：顶部本人头像 + 中部导航图标 + 底部偏好；
+  <!-- 窄导航栏：四枚一级入口 + 底部偏好。
+       本人头像与在线点已上移到主窗口标题栏右侧（画板：标题栏 me 位），
+       同一份身份状态只出现一次，rail 不再重复渲染。
        选中项仅图标变色（主题色），不改底色，与微信一致 -->
   <aside
     class="glass-1 hidden shrink-0 select-none flex-col items-center py-3 desktop:md:flex"
     :style="{ width: 'var(--gosslan-rail-w)' }"
   >
-    <!-- 顶部：本人头像（点开设置/我）；在线点放在 overflow-hidden 按钮外层，避免被裁切 -->
-    <div class="relative shrink-0">
-      <button
-        class="block transition hover:opacity-90"
-        :class="settingsOpening ? 'opacity-60' : ''"
-        :aria-busy="settingsOpening"
-        :title="app.present ? t('nav.me.online') : t('nav.me.offline')"
-        :aria-label="t('nav.me.openSettings', { status: app.present ? t('nav.me.online') : t('nav.me.offline') })"
-        @click="emit('open-settings')"
-      >
-        <SelfAvatar class="h-10 w-10 rounded-[var(--gosslan-avatar-radius)]" />
-      </button>
-      <!-- 本人在线状态点 -->
-      <span
-        class="absolute -bottom-0.5 -right-0.5 h-2.5 w-2.5 rounded-full border-2 border-[var(--gosslan-rail)]"
-        :class="app.present ? 'bg-[var(--gosslan-success)]' : 'bg-[var(--gosslan-status-offline)]'"
-      ></span>
-    </div>
-
-    <!-- 中部：聊天 / 通讯录 / 收藏 / 链接（用户 2026-10-22 裁决统一图标库）：
+    <!-- 一级入口：聊天 / 通讯录 / 收藏 / 链接（用户 2026-10-22 裁决统一图标库）：
          四枚全部来自 `lucide-vue-next`（映射在 `components/ui/navIcons.ts`），不再自绘；
          选中态 = 描边加粗 + 药丸底 + 主题色，样式唯一出口是 `style.css` 的 `.nav-glyph*`。
          药丸是**一个常驻节点**（不随选中项重建），位置用 transform 表达 ⇒ 与左列内容
          共用同一组时长/缓动（`--gosslan-nav-switch-*`），不会再"内容切完、药丸才滑到"。 -->
-    <div class="relative mt-5 flex flex-col items-center gap-2">
+    <div class="relative flex flex-col items-center gap-2">
       <span
         aria-hidden="true"
         data-rail-pill

@@ -9,7 +9,7 @@ import { openUrl } from "@tauri-apps/plugin-opener";
 import { useEventListener } from "@vueuse/core";
 import { useAppStore } from "@/stores/useAppStore";
 import { useChatStore } from "@/stores/useChatStore";
-import { api, APP_ACTION, bindMenuEvents, NAVIGATE_TO_CONTACTS, onAction } from "@/api";
+import { api, APP_ACTION, bindMenuEvents, emitAction, NAVIGATE_TO_CONTACTS, onAction } from "@/api";
 import { launchAuxWindow, useWindowOpening } from "@/composables/useWindowLauncher";
 import { useAuxWindowFailureReport } from "@/composables/useAuxWindowFailureReport";
 import { useShortcuts } from "@/composables/useShortcuts";
@@ -39,12 +39,17 @@ import MobilePageFrame from "@/components/MobilePageFrame.vue";
 import ProfileSection from "@/components/settings/ProfileSection.vue";
 import type { ExternalLink, Friend, OutgoingFriendRequest, PendingRequest } from "@/types";
 import { selfFriendOf } from "@/utils/selfChat";
+import appMark from "@/assets/app-mark.png";
 import { locateFailureReason } from "@/utils/chatSearch";
+import { isMac } from "@/utils/platform";
 import { storageGet, storageSet } from "../utils/safeStorage.ts";
 const app = useAppStore();
 const chat = useChatStore();
 /** 全局图片预览的宿主（实例只有一个，见模板末尾那处 `<ImageLightbox>`）。 */
 const preview = useImagePreviewStore();
+
+/** 局域网里当前可见的节点数（画板标题栏 `LAN · n` 与空态 chips 同源，不另造读数）。 */
+const onlineDeviceCount = computed(() => chat.peers.length);
 
 /**
  * 导航状态——**单一数据源**，替代之前分散的 `view` + `favoritesOpen`。
@@ -258,6 +263,17 @@ function openSettings() {
     reportAuxFailure(e, t("common.operationFail"));
     settingsFallbackOpen.value = true;
   });
+}
+
+/** 标题栏「个性化」：进设置窗口的外观分区（与 NavRail 的更新入口同一套 storage 约定）。 */
+function openAppearanceSettings() {
+  storageSet("gosslan:settings-section", "appearance");
+  openSettings();
+}
+
+/** 标题栏「全局搜索」：复用既有快捷键动作，聚焦左栏搜索框（入口与 ⌘K 同一实现）。 */
+function focusSearch() {
+  emitAction(APP_ACTION.focusSearch);
 }
 
 function closeSettings() {
@@ -838,7 +854,48 @@ function onResizeEnd() {
     <div v-if="app.isMobile" class="safe-top shrink-0"></div>
 
     <!-- 顶部 caption：横贯整个窗口（盖在 rail + list + chat 三列之上），微信 4.0 顶部是整条浅灰拖拽条 -->
-    <TitleBar :is-mobile="app.isMobile" />
+    <TitleBar :is-mobile="app.isMobile">
+      <!-- 主窗口标题栏右侧功能组（画板 DesktopChats）。辅助窗口不传插槽 ⇒ 完全保持原样。
+           本人头像与在线点从 rail 移到这里：同一份身份状态只出现一次。 -->
+      <template #right>
+        <span
+          class="flex h-6 items-center gap-1.5 rounded-full bg-[var(--gosslan-field)] px-2 text-caption font-medium tabular-nums text-[var(--gosslan-text-2)]"
+          :title="t('titlebar.devices', { n: onlineDeviceCount })"
+        >
+          <span class="h-1.5 w-1.5 rounded-full bg-[var(--gosslan-success)]" aria-hidden="true"></span>
+          LAN · {{ onlineDeviceCount }}
+        </span>
+        <button
+          type="button"
+          class="tap-safe flex h-7 w-7 items-center justify-center rounded-[var(--gosslan-radius-sm)] text-[var(--gosslan-text-2)] transition hover:bg-[var(--gosslan-hover)] hover:text-[var(--gosslan-text)]"
+          :title="t('titlebar.search')" :aria-label="t('titlebar.search')"
+          @click="focusSearch"
+        >
+          <Icon name="search" class="h-4 w-4" />
+        </button>
+        <button
+          type="button"
+          class="tap-safe flex h-7 w-7 items-center justify-center rounded-[var(--gosslan-radius-sm)] text-[var(--gosslan-text-2)] transition hover:bg-[var(--gosslan-hover)] hover:text-[var(--gosslan-text)]"
+          :title="t('titlebar.personalize')" :aria-label="t('titlebar.personalize')"
+          @click="openAppearanceSettings"
+        >
+          <Icon name="sliders-horizontal" class="h-4 w-4" />
+        </button>
+        <button
+          type="button"
+          class="tap-safe relative ml-0.5 flex h-7 w-7 shrink-0 items-center justify-center"
+          :title="app.present ? t('nav.me.online') : t('nav.me.offline')"
+          :aria-label="t('nav.me.openSettings', { status: app.present ? t('nav.me.online') : t('nav.me.offline') })"
+          @click="openProfile"
+        >
+          <SelfAvatar class="h-6 w-6 rounded-full" />
+          <span
+            class="absolute -bottom-0.5 -right-0.5 h-2 w-2 rounded-full border-2 border-[var(--gosslan-caption)]"
+            :class="app.present ? 'bg-[var(--gosslan-success)]' : 'bg-[var(--gosslan-status-offline)]'"
+          ></span>
+        </button>
+      </template>
+    </TitleBar>
 
     <!-- 系统级提示占位行（自愈横幅等）：**占独立一行**，不浮在内容上。
          用户 2026-11-06 截图：「界面刚才无响应」横幅压住了左栏搜索行与右栏首行，
@@ -1065,18 +1122,24 @@ function onResizeEnd() {
         />
         <div
           v-else
-          class="flex h-full select-none flex-col items-center justify-center gap-3 text-[var(--gosslan-text-2)]"
+          data-empty-state
+          class="relative flex h-full select-none flex-col items-center justify-center px-6 text-center text-[var(--gosslan-text-2)]"
         >
-          <!-- 品牌（用户 2026-10-23：中文名改「小院儿」，且要在聊天主界面看得见）。
+          <!-- 品牌底盘：画板 DesktopChats 的 68px 奶油方块 + 应用标记（放大到 44px）。
                只出现在**未选会话**的空态；移动端这块不在列表页，不会挤占头部。 -->
-          <!-- 空态不画 64px 通用导航图标（A3）：结论 + 一句说明 + 一个主动作就够。 -->
-          <div class="text-base font-semibold tracking-wide text-[var(--gosslan-text)] opacity-85">
-            {{ t("app.name") }}
+          <div
+            class="mb-5 flex h-[68px] w-[68px] items-center justify-center rounded-[var(--gosslan-radius-xl)] bg-[var(--gosslan-orb-bg)] shadow-[inset_0_0_0_1px_var(--gosslan-orb-ring)]"
+          >
+            <!-- 品牌标记直接复用第 2 段生成的单一应用图标源（不在这里再手绘第二份 mark）。 -->
+            <img :src="appMark" class="h-11 w-11" alt="" aria-hidden="true" draggable="false" />
           </div>
-          <div class="text-base">
+          <h3 class="text-title font-semibold leading-6 tracking-[-0.01em] text-[var(--gosslan-text)]">
             {{ navState === "contacts" ? t("layout.selectContact") : t("layout.selectConversation") }}
-          </div>
-          <div class="text-xs opacity-70">{{ t("layout.tagline") }}</div>
+          </h3>
+          <p class="mt-2 text-footnote leading-5">
+            {{ t("layout.emptySubtitle") }}<br />
+            <b class="font-semibold text-[var(--gosslan-text)]">{{ t("layout.tagline") }}</b>
+          </p>
           <!-- 空态要给**下一步**，不只陈述状态（HIG：empty state should guide）。
                用户 2026-09-12 晚 #13：「聊天界面如果没有聊天信息的话，这一块左右两边有点割裂。
                他们的样式能不能统一一点？主要的功能是：1. 如果你有好友，就有一个『发起聊天』；
@@ -1087,34 +1150,66 @@ function onResizeEnd() {
                ⚠️ 通讯录页不能用「发起聊天」：那里 `navState` 已经是 contacts，
                  点它等于把同一个值再赋一次，按钮看起来活着、实际什么都不发生。
                  通讯录的空态给「添加好友」，这是这一页真正可执行的下一步。 -->
-          <template v-if="navState === 'contacts'">
-            <PrimaryBtn size="large" class="mt-1" @click="addFriendOpen = true">
-              {{ t("common.addFriend") }}
-            </PrimaryBtn>
-            <div class="text-xs opacity-70">{{ t("layout.contactHint") }}</div>
-          </template>
-          <template v-else>
-            <PrimaryBtn
-              v-if="chat.friends.length"
-              size="large"
-              class="mt-1"
-              @click="onUpdateNavState('contacts')"
+          <div class="mt-5 flex flex-col items-center gap-2">
+            <template v-if="navState === 'contacts'">
+              <PrimaryBtn size="large" @click="addFriendOpen = true">
+                <Icon name="plus" class="h-4 w-4" />
+                {{ t("common.addFriend") }}
+              </PrimaryBtn>
+              <div class="text-xs opacity-70">{{ t("layout.contactHint") }}</div>
+            </template>
+            <template v-else>
+              <PrimaryBtn
+                v-if="chat.friends.length"
+                size="large"
+                @click="onUpdateNavState('contacts')"
+              >
+                <Icon name="plus" class="h-4 w-4" />
+                {{ t("conv.startChat") }}
+              </PrimaryBtn>
+              <PrimaryBtn v-else size="large" @click="addFriendOpen = true">
+                <Icon name="plus" class="h-4 w-4" />
+                {{ t("common.addFriend") }}
+              </PrimaryBtn>
+              <div class="text-xs opacity-70">
+                {{
+                  chat.friends.length
+                    ? t("conv.emptyHintHasFriends")
+                    : chat.friendsError
+                      ? t("conv.contactsLoadFailedHint")
+                      : t("conv.emptyHintNoFriends")
+                }}
+              </div>
+            </template>
+          </div>
+
+          <!-- 状态 chip：读数与标题栏同一个来源（局域网可见节点数），不是装饰数字。 -->
+          <div class="mt-6 flex flex-wrap justify-center gap-2 text-caption font-semibold">
+            <span
+              class="flex items-center gap-1.5 rounded-full bg-[var(--gosslan-panel)] px-2.5 py-1 shadow-[inset_0_0_0_1px_var(--gosslan-border)]"
             >
-              {{ t("conv.startChat") }}
-            </PrimaryBtn>
-            <PrimaryBtn v-else size="large" class="mt-1" @click="addFriendOpen = true">
-              {{ t("common.addFriend") }}
-            </PrimaryBtn>
-            <div class="text-xs opacity-70">
-              {{
-                chat.friends.length
-                  ? t("conv.emptyHintHasFriends")
-                  : chat.friendsError
-                    ? t("conv.contactsLoadFailedHint")
-                    : t("conv.emptyHintNoFriends")
-              }}
-            </div>
-          </template>
+              <span class="h-1.5 w-1.5 rounded-full bg-[var(--gosslan-primary)]" aria-hidden="true"></span>
+              {{ t("layout.chipDevices", { n: onlineDeviceCount }) }}
+            </span>
+            <span
+              class="flex items-center gap-1.5 rounded-full bg-[var(--gosslan-panel)] px-2.5 py-1 shadow-[inset_0_0_0_1px_var(--gosslan-border)]"
+            >
+              <span class="h-1.5 w-1.5 rounded-full bg-[var(--gosslan-success)]" aria-hidden="true"></span>
+              {{ t("layout.chipE2ee") }}
+            </span>
+            <span
+              class="flex items-center gap-1.5 rounded-full bg-[var(--gosslan-panel)] px-2.5 py-1 shadow-[inset_0_0_0_1px_var(--gosslan-border)]"
+            >
+              <span class="h-1.5 w-1.5 rounded-full bg-[var(--gosslan-danger)]" aria-hidden="true"></span>
+              {{ t("layout.chipServerless") }}
+            </span>
+          </div>
+
+          <!-- 快捷键提示（画板右下角）。非 macOS 换成 Ctrl 组合，不展示平台用不了的 ⌘。 -->
+          <div class="absolute bottom-4 right-[18px] hidden items-center gap-1.5 text-caption text-[var(--gosslan-text-2)] opacity-70 desktop:md:flex">
+            <Icon name="info" class="h-3 w-3" />
+            {{ isMac ? t("layout.shortcutHintMac") : t("layout.shortcutHint") }}
+          </div>
         </div>
       </div>
     </main>

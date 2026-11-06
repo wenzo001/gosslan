@@ -19944,6 +19944,12 @@ async function runOpsCenter(cdp, url) {
       width: 1280, height: 800, deviceScaleFactor: 1, mobile: false,
     });
     await sleep(300);
+    // 先清空后台任务，让「无任务 ⇒ 不渲染数字 pill」的反例自证有确定 preimage。
+    await cdp.eval(`(async () => {
+      const S = await import('/src/stores/useChatStore.ts');
+      S.useChatStore(window.__pinia).operations = [];
+      return true;
+    })()`);
     const mountedFooter = await cdp.eval(
       "window.__probe.install('/src/components/ConversationList.vue', '', "
       + JSON.stringify(JSON.stringify({ view: "chats" })) + ")",
@@ -19961,6 +19967,9 @@ async function runOpsCenter(cdp, url) {
         present: true,
         text: host.innerText || '',
         entryText: String(entry.innerText || '').replace(/\s+/g, ' ').trim(),
+        // 页脚已从「图标+数字」改成整行入口：数字单独挂 data-task-count，
+        // 不再靠 entryText === "1"（那会随"任务中心"这类行内文案变化而空转）。
+        count: (() => { const n = entry.querySelector('[data-task-count]'); return n ? String(n.textContent || '').trim() : null; })(),
         aria: entry.getAttribute('aria-label'),
         left: Math.round(r.left), right: Math.round(r.right),
         footerBottom: fr ? Math.round(fr.bottom) : null,
@@ -19985,9 +19994,14 @@ async function runOpsCenter(cdp, url) {
       return chat.operations.length;
     })()`);
     const counted = await readFooter();
+    // 反例自证：0 件时页脚不得渲染数字 pill —— 若 `data-task-count` 被写成常驻节点，
+    // 上面那次 `foot` 读数就会拿到 "0"/空串而不是 null，这条判据随即变红。
+    check("页脚无任务时不渲染数字 pill（反例自证）",
+      foot.present && foot.count === null,
+      "count=null", JSON.stringify({ count: foot.count }));
     check("页脚入口带未完成数（与面板同一份读模型）",
-      counted.present && counted.entryText === "1",
-      "入口文本=1", JSON.stringify({ entryText: counted.entryText }));
+      counted.present && counted.count === "1",
+      "计数=1", JSON.stringify({ count: counted.count, entryText: counted.entryText }));
 
     // 点页脚入口 → 共享开关打开（面板与入口读同一个 ref）。
     const entryPoint = { x: Math.round((counted.left + counted.right) / 2), y: 0 };

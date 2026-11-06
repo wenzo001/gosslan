@@ -64,6 +64,9 @@
      取 Apple systemGray #8e8e93（原 #a3a3a3 在白底只有 2.52，连图形档 3.0 都不到）：
      面板 3.26 达标，且与暗色档同值 —— 同一个"离线"语义在两种外观下是同一个灰。 */
   --gosslan-status-offline: #8e8e93;
+  /* 空态品牌底盘（画板 DesktopChats：68px 奶油方块 + 1px 暖边）。暗色档见 .dark。 */
+  --gosslan-orb-bg: #fff8ea;
+  --gosslan-orb-ring: #f0e5c9;
   --gosslan-font-family: -apple-system, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
   /* 聊天消息字号（设置页可改，由 app store 动态覆盖） */
   --gosslan-msg-size: 14px;
@@ -104,7 +107,6 @@
   /* 主面板三档灰阶（Slate 系，对应设计规范）：rail/顶栏 #E2E8F0、列表 #F1F5F9、聊天 #F8FAFC，
      由深到浅拉开层次，面板圆角交界。 */
   --gosslan-caption: #e9ebee;
-  --gosslan-rail: #e9ebee;
   --gosslan-rail-text: #5a6068;
   /* 选中态用**纯主题色**：rail 上是图标不是正文 —— accent-ink 是给文字用的加深档
      （primary 混黑），用户 2026-09-17：「选中颜色比主题色深」。 */
@@ -451,8 +453,10 @@
   --gosslan-primary-hover: color-mix(in srgb, var(--gosslan-primary) 74%, #ffffff);
   --gosslan-on-primary: var(--gosslan-app-bg);
   --gosslan-caption: #1c1e21;
-  --gosslan-rail: #1c1e21;
   --gosslan-rail-text: #8a9099;
+  /* 空态品牌底盘暗色档：同样的暖色相压暗，避免奶油底在暗色里刺眼。 */
+  --gosslan-orb-bg: #2f2a1f;
+  --gosslan-orb-ring: #40382a;
   /* 同亮色口径：图标选中态用纯主题色（accent-ink 在暗色下是 primary 混白，也不合图标用） */
   --gosslan-rail-text-active: var(--gosslan-primary);
   --gosslan-rail-hover: rgba(248, 250, 252, 0.07);

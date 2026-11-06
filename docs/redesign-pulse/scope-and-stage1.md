@@ -143,3 +143,43 @@
 - ⑰ 看板映射表：取值必须是 `iconRegistry.ts` 里真实存在的键（反例 `not-in-registry` 仍会红）。
 - 51 BackArrow：从 `<ArrowLeft v-else` 改为 `<Icon name="arrow-left" v-else`，平台分支不许合并。
 - `remindFlow` 抖动入口：锚点从 `<Zap` 改为 `name="zap"`，排序判据不变。
+
+## 7. 第 3 段实施记录（桌面主界面）
+
+落地：
+
+- **标题栏右侧功能组**（`TitleBar.vue` 新增 `#right` 插槽，辅助窗口不传 ⇒ 宽度为 0、原样不动）：
+  `LAN · n`（`chat.peers.length`，与空态 chips 同一读数）→ 全局搜索（复用 `APP_ACTION.focusSearch`，
+  与 ⌘K 同一实现）→ 个性化（写 `gosslan:settings-section=appearance` 后开设置）→ 本人头像 + 在线点
+  （`app.present`，从 rail 上移）。整组 `mousedown.stop`，在拖拽区里仍可点击。
+- **rail 去重**：删除顶部头像块（`SelfAvatar` 不再出现在 NavRail），首个元素即导航；`--gosslan-rail`
+  随之无消费点，一并删除（亮暗两档）。
+- **列表页脚**：改为画板 listFoot —— 40px 整行按钮（`list-checks` 图标 + 「任务中心」+ 未完成数
+  + `vX.Y.Z` + chevron）。版本号保留在页脚，满足既有判据；任务数为 0 时不渲染数字 pill。
+- **新建入口**：灰色 `+` 改为画板 32×32 主题色实底方块（`--gosslan-primary-active`）。
+- **空态**：68px 品牌底盘（新增 `--gosslan-orb-bg` / `--gosslan-orb-ring`，亮暗两档）+ 44px 应用标记
+  （直接复用第 2 段 `src/assets/app-mark.png`，不手绘第二份 mark）+ 标题 + 说明 + 口号 + 主动作
+  + 状态 chips（设备数 / 端到端加密 / 无服务器）+ 右下角快捷键提示（非 macOS 显示 Ctrl 组合）。
+
+判据锚点搬迁（同提交，均保留反例自证）：
+
+- 页脚计数：`entryText === "1"` → `[data-task-count]` 文本；新增「0 件时必须没有该节点」的反例
+  （探针先清空 `chat.operations` 取得确定 preimage）。
+- 本人头像：`designGuards` 从「NavRail + ResponsiveLayout + ProfileSection 三处都用 SelfAvatar」
+  改为「标题栏 + 设置页各一处，NavRail 出现 `<SelfAvatar>` 即红」；`events.test` 的 `present`
+  锚点从 NavRail 移到 ResponsiveLayout。
+
+与画板的有意差异：
+
+| 项 | 画板 | 实现 | 原因 |
+|---|---|---|---|
+| 空态标题字号 | 22px | `text-title` 15px | 字号只走六档令牌（㊿），不新增第 7 档 |
+| chips / 快捷键提示 | 10.5px | `caption` 11px | 10px→11px 统一在第 6 段收口，中途不零散改 |
+| 空态次按钮「输入邀请码」 | 有 | 无 | 本仓没有邀请码功能，不新增功能；只保留真实的「添加好友 / 发起聊天」 |
+
+验证：
+
+- `npm test` → **1815 pass / 0 fail**（含 i18n 对称性 1668/1668、死键 0）
+- `npm run build` → `✅ vite build`
+- 截图：`test-results/ui-redesign/p3/before|after/desktop-1280-light|dark.png`
+- 运行方式：worktree 内 dev server（1421）+ Brave CDP；截图前隐藏浏览器无后端造成的 toast HUD。

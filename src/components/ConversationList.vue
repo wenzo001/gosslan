@@ -484,12 +484,13 @@ useEventListener(document, "click", closeFriendMenu);
              开关/键盘/点外部由 Reka DropdownMenu 承担；互斥仍走全局 plusPopup。 -->
         <DropdownMenuRoot :open="plusOpen" :modal="false" @update:open="onPlusOpen">
           <DropdownMenuTrigger as-child>
+            <!-- 画板：新建入口是主题色实底方块（32×32），不再是灰色图标。 -->
             <button
-              class="tap-safe flex h-7 w-7 items-center justify-center rounded-[var(--gosslan-radius-md)] text-[var(--gosslan-text-2)] transition hover:bg-[var(--gosslan-list-hover)]"
+              class="tap-safe flex h-8 w-8 items-center justify-center rounded-[var(--gosslan-radius-md)] bg-[var(--gosslan-primary-active)] text-[var(--gosslan-on-primary)] shadow-[0_4px_12px_color-mix(in_srgb,var(--gosslan-primary)_28%,transparent)] transition hover:bg-[var(--gosslan-primary-hover)]"
               :title="t('conv.addTitle')" :aria-label="t('conv.addTitle')"
               @click.stop
             >
-              <Icon name="plus" class="h-[18px] w-[18px]" />
+              <Icon name="plus" class="h-[19px] w-[19px]" />
             </button>
           </DropdownMenuTrigger>
           <DropdownMenuPortal>
@@ -663,35 +664,35 @@ useEventListener(document, "click", closeFriendMenu);
       </template>
     </div>
 
-    <!-- 品牌页脚 + 任务入口（用户 2026-10-25：药丸总挡界面，入口放到「小院儿」后面）。
+    <!-- 页脚任务入口（用户 2026-10-25：药丸总挡界面，入口收进列表页脚）。
          放在滚动容器**之外**（不随列表滚走），只在会话/联系人列表这一栏出现。
          移动端 TabBar 是 `fixed bottom-0`，页脚必须整体上抬到它之上，否则会被盖住。 -->
     <div
-      class="conv-footer-safe shrink-0 select-none border-t border-[var(--gosslan-divider)] px-3 py-1.5 text-caption text-[var(--gosslan-text-2)]"
+      class="conv-footer-safe shrink-0 select-none border-t border-[var(--gosslan-divider)] text-caption text-[var(--gosslan-text-2)]"
     >
-      <div class="flex items-center gap-1">
-        <span class="truncate opacity-70" :title="t('app.name')">{{ t("app.name") }}</span>
-        <span class="opacity-40">·</span>
-        <span class="shrink-0 tabular-nums opacity-60" :title="`v${version}`">v{{ version }}</span>
-        <span class="flex-1"></span>
-        <!-- 任务入口：图标 + 未完成数。0 件时也给入口（点开是空态），不常驻转圈。 -->
-        <button
-          type="button"
-          data-task-entry
-          class="tap-safe flex shrink-0 items-center gap-1 rounded-[var(--gosslan-radius-sm)] px-1 py-0.5 transition hover:bg-[var(--gosslan-hover)]"
-          :aria-label="taskCount > 0 ? t('task.open', { n: taskCount }) : t('task.title')"
-          :title="taskCount > 0 ? t('task.open', { n: taskCount }) : t('task.title')"
-          @click="app.openTaskCenter"
+      <!-- 页脚 = 整行任务入口（画板 listFoot 40px）：图标 + 名称 + 未完成数 + 版本 + chevron。
+           版本号仍留在这一行（判据要求页脚可见 vX.Y.Z，设置「关于」是第二处）。 -->
+      <button
+        type="button"
+        data-task-entry
+        class="tap-safe flex h-10 w-full items-center gap-2 px-3 text-left transition hover:bg-[var(--gosslan-list-hover)]"
+        :aria-label="taskCount > 0 ? t('task.open', { n: taskCount }) : t('task.title')"
+        :title="taskCount > 0 ? t('task.open', { n: taskCount }) : t('task.title')"
+        @click="app.openTaskCenter"
+      >
+        <Icon name="list-checks" class="h-4 w-4 shrink-0" />
+        <span class="shrink-0 font-medium">{{ t("task.center") }}</span>
+        <span
+          v-if="taskCount > 0"
+          data-task-count
+          class="rounded-full bg-[var(--gosslan-hover)] px-1.5 text-caption font-semibold leading-4 tabular-nums text-[var(--gosslan-text)]"
         >
-          <Icon name="list-checks" class="h-3.5 w-3.5" />
-          <span
-            v-if="taskCount > 0"
-            class="rounded-full bg-[var(--gosslan-hover)] px-1 text-caption font-semibold leading-none tabular-nums text-[var(--gosslan-text)]"
-          >
-            {{ taskCount }}
-          </span>
-        </button>
-      </div>
+          {{ taskCount }}
+        </span>
+        <span class="flex-1"></span>
+        <span class="shrink-0 tabular-nums opacity-50" :title="`v${version}`">v{{ version }}</span>
+        <Icon name="chevron-right" class="h-3.5 w-3.5 shrink-0 opacity-60" />
+      </button>
     </div>
 
 

@@ -2543,20 +2543,21 @@ test("群任务编号只有一个家：字母表与缩短规则在 todos.ts，�
 });
 
 /**
- * 本人头像只有**一个**渲染处（`SelfAvatar`），且那三处确实都在用它。
+ * 本人头像只有**一个**渲染组件（`SelfAvatar`），每个界面只画一份。
  *
  * 真实现场（2026-10-07 用户报）：同一个账号在三个地方三张脸 ——
  * 桌面导航栏是 emoji 小动物、移动端「我的」页顶部是 lucide 的 `UserCircle`（"一个蓝色的图标"）、
  * 资料页虽是 emoji 却被一层常显的红色相机蒙版整个盖住（"一个红色的卡片"）。
  * 这类缺陷**编译过、门禁绿、只有肉眼看得出**，所以必须机器盯。
  *
- * 两条一起用：正向钉"三个消费点都在"，反向钉"图片那一支没有第二个家"。
+ * 两条一起用：正向钉"消费点都在"，反向钉"rail 没有第二份身份"。
  * 只写正向会漏掉"新站点又手写一份"；只写反向会漏掉"某处被改成不渲染头像"。
  */
-test("本人头像三处都走 SelfAvatar", () => {
+test("本人头像只走 SelfAvatar，且只在标题栏 / 设置页各一处", () => {
   const srcDir = join(import.meta.dirname, "..");
+  // 2026-11-06 改版：rail 顶部的本人头像上移到主窗口标题栏（画板 me 位）。
+  // 仍是「都走 SelfAvatar」，但同一身份不再在 rail 里重复画第二份。
   const surfaces = [
-    "components/NavRail.vue",
     "layouts/ResponsiveLayout.vue",
     "components/settings/ProfileSection.vue",
   ];
@@ -2565,6 +2566,9 @@ test("本人头像三处都走 SelfAvatar", () => {
     assert.match(src, /import SelfAvatar from "@\/components\/SelfAvatar\.vue";/, `${rel} 必须 import SelfAvatar`);
     assert.match(src, /<SelfAvatar\b/, `${rel} 必须用 <SelfAvatar> 渲染本人头像`);
   }
+  // 反例自证：rail 里塞回 <SelfAvatar> 就是第二份身份，必须报。
+  const rail = readFileSync(join(srcDir, "components", "NavRail.vue"), "utf8");
+  assert.doesNotMatch(rail, /<SelfAvatar\b/, "NavRail 不该再渲染本人头像（重复身份）");
 });
 
 /**
