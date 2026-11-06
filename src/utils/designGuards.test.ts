@@ -6901,7 +6901,7 @@ test("AC-14 反例自证：分栏线退回发丝线 / 扩散到别处 / 动全�
     "border-b border-[var(--gosslan-divider)]",
   );
   const leaked = `${src.dividerStrongUsers}\ncomponents/settings/SettingsGroup.vue`;
-  const globalDivider = src.styleCss.replace("--gosslan-divider: #e2e8f0;", "--gosslan-divider: #8a94a6;");
+  const globalDivider = src.styleCss.replace("--gosslan-divider: #eef0f2;", "--gosslan-divider: #8a94a6;");
   assert.notEqual(backToHairline, src.searchDialog, "锚点没命中：左列分隔线 token 变了");
   assert.notEqual(globalDivider, src.styleCss, "锚点没命中：全站发丝线定义变了");
   assert.ok(

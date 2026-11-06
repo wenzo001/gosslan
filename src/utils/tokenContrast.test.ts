@@ -164,7 +164,7 @@ test("新增的 *-ink 档在 :root 与 .dark 都成对定义", () => {
 
 test("亮色语义色的实际取值（钉住本次审计结论）", () => {
   const { light } = parseTokenScopes(css);
-  assert.equal(light.get("--gosslan-text-2"), "#475569", "次要文字应为 Slate-600");
+  assert.equal(light.get("--gosslan-text-2"), "#5a6068", "次要文字应为设计稿 #5A6068");
   assert.equal(light.get("--gosslan-danger-ink"), "#b0170d");
   assert.equal(light.get("--gosslan-warning-ink"), "#b96e00");
   // 文字档与图标档分家：图标判 3.0，文字判 4.5 —— 一个值扛不住两条判据。
@@ -251,10 +251,10 @@ const withPrimary = (hexColor: string): string => {
  * 剩下这一条是 accent-ink 差 0.07：绿档主题色当文字用、落在会话列表底上。
  * 它不在同一次拍板范围内（要动 `--gosslan-accent-ink` 的混法，会影响全站链接/选中态），
  * 且只差 0.07，留作已知偏差。
+ * 2026-11-06 Pulse 主题把列表底抬亮到 #f7f8fa 后，这一条实测已达标（4.43 → ≥4.5），
+ * 按本节规矩从清单删除；判据本身（六套主色逐档不得新增缺口）不变。
  */
-const KNOWN_SUB_AA: Array<{ theme: string; accent: string; fg: string; bg: string; floor: number }> = [
-  { theme: "light", accent: "#00b578", fg: "--gosslan-accent-ink", bg: "--gosslan-list", floor: 4.43 },
-];
+const KNOWN_SUB_AA: Array<{ theme: string; accent: string; fg: string; bg: string; floor: number }> = [];
 
 test("六套可选主色 × 亮/暗：accent 派生档的对比度逐档核算（含已知偏差棘轮）", () => {
   const swatches = accentSwatches();

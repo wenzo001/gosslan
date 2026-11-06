@@ -173,7 +173,7 @@ export function resolveChatColors(key: string, themeColor: string, dark: boolean
  *  注意 warning 这里对应的是**图标档** `--gosslan-warning-ink`；文字档另有
  *  `--gosslan-warning-text-ink`（#8a5200），只在 `--card-warning` 的卡片兜底里用到。 */
 export const UI_TONE_INKS = {
-  danger: { light: "#b0170d", dark: "#ff5548" },
+  danger: { light: "#b0170d", dark: "#ff7a85" },
   warning: { light: "#b96e00", dark: "#ff9f0a" },
 } as const;
 
