@@ -75,7 +75,7 @@ function onChange(e: Event) {
       :min="minAttr"
       :disabled="disabled"
       :aria-label="label"
-      class="h-10 w-full rounded-[var(--gosslan-radius-md)] border border-transparent bg-[var(--gosslan-field)] px-3 py-1.5 text-sm text-[var(--gosslan-text)] outline-none transition focus:border-transparent disabled:opacity-60"
+      class="h-10 w-full rounded-[var(--gosslan-radius-md)] border border-[var(--gosslan-field-border)] bg-[var(--gosslan-field)] px-3 py-1.5 text-sm text-[var(--gosslan-text)] outline-none transition focus:border-[var(--gosslan-primary)] disabled:opacity-60"
       :class="clearable ? 'pr-14' : ''"
       @change="onChange"
     />

@@ -394,7 +394,7 @@ function close() {
       <span class="shrink-0 text-caption text-[var(--gosslan-text-2)]">{{ t("logs.mergeButton") }}</span>
       <SettingsToggle v-model="mergeDup" :label="t('logs.mergeButton')" />
       <!-- 过滤：字面包含匹配，命中处高亮。搜索框吃剩余宽度。 -->
-      <div class="ml-auto flex min-w-0 max-w-[260px] flex-1 items-center gap-1.5 rounded-[var(--gosslan-radius-sm)] bg-[var(--gosslan-field)] px-2">
+      <div class="ml-auto flex min-w-0 max-w-[260px] flex-1 items-center gap-1.5 rounded-[var(--gosslan-radius-sm)] bg-[var(--gosslan-field)] px-2 ring-1 ring-[var(--gosslan-field-border)]">
         <Icon name="search" class="h-3.5 w-3.5 shrink-0 text-[var(--gosslan-text-2)]" />
         <input
           v-model="filter"

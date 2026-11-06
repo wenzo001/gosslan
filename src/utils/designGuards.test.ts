@@ -60,6 +60,9 @@ import {
   checkContainImageClip,
   checkBackToLatestAvoidance,
   findRawCardPadding,
+  findTransparentFieldBorder,
+  findRawPlaceholderColor,
+  findMissingPlaceholderRule,
 } from "./designGuards.ts";
 
 // ---------------- ⓪ 选中态/原生控件颜色必须吃主题变量（#35-N7） ----------------
@@ -7348,4 +7351,106 @@ test("㊶ 三档类与 token 只有一个来源：style.css 定义 + 组件真�
   assert.match(row, /class="settings-card-row/, "SettingsRow 必须消费卡片行 token（分区的新行默认走它）");
   const group = readFileSync(new URL("../components/settings/SettingsGroup.vue", import.meta.url), "utf8");
   assert.match(group, /settings-group-caption/, "分组标题/脚注必须消费缩进 token");
+});
+
+// ---------------- ㊷ 输入承载面必须有可见边框（2026-11-06） ----------------
+
+/**
+ * 用户报「暗色 + 玻璃 + 浮动背景全开时看不到群管理输入框」。
+ * 根因不是特效，是输入面 `border-transparent` + 填充与背景差 1.04（暗）/1.11（亮）。
+ * 这条判据盯"输入面有没有 field-border 这一档边框"，与 tokenContrast 的 3.0 契约配套：
+ * 前者防写法回退，后者防颜色被悄悄调回接近背景。
+ */
+
+/** 递归收集 src/components 下所有 .vue（分母现数：扫不到 0 份就说明扫错了）。 */
+function allComponentFiles(): Array<{ name: string; src: string }> {
+  const root = new URL("../components/", import.meta.url).pathname;
+  const names = (readdirSync(root, { recursive: true }) as string[])
+    .filter((n) => n.endsWith(".vue"))
+    .sort();
+  return names.map((name) => ({ name, src: readFileSync(join(root, name), "utf8") }));
+}
+
+test("㊷ 真实树：所有输入承载面都有可见边框（0 处透明）", () => {
+  const files = allComponentFiles();
+  assert.ok(files.length > 100, `组件目录只扫到 ${files.length} 份 .vue —— 判据可能扫错了目录`);
+  const fieldFiles = files.filter((f) => f.src.includes("bg-[var(--gosslan-field)]"));
+  assert.ok(fieldFiles.length >= 10, `只有 ${fieldFiles.length} 份文件用到 field 底 —— 输入面清单变少了，先确认不是判据空转`);
+  const offenders = files.flatMap((f) =>
+    findTransparentFieldBorder(f.src).map((i) => `${f.name}:${i.line} ${i.message.slice(0, 40)}`),
+  );
+  assert.deepEqual(offenders, [], offenders.join("\n"));
+});
+
+test("㊷ 反例自证：border-transparent / 弱 border 必须变成 3 条红", () => {
+  const transparent = `<input class="border border-transparent bg-[var(--gosslan-field)]" />`;
+  const weak = `<input class="border border-[var(--gosslan-border)] bg-[var(--gosslan-field)]" />`;
+  const none = `<div class="bg-[var(--gosslan-field)] px-3"></div>`;
+  assert.equal(findTransparentFieldBorder(transparent).length, 1, "border-transparent 必须命中");
+  assert.equal(findTransparentFieldBorder(weak).length, 1, "--gosslan-border 弱档必须命中");
+  assert.equal(findTransparentFieldBorder(none).length, 1, "完全没有边框也必须命中");
+  assert.match(findTransparentFieldBorder(transparent)[0].message, /边框透明/, "报错要指出透明边框");
+});
+
+test("㊷ 合法写法放行：border 或 ring 走 field-border", () => {
+  const bordered = `<input class="border border-[var(--gosslan-field-border)] bg-[var(--gosslan-field)]" />`;
+  const ringed = `<div class="ring-1 ring-[var(--gosslan-field-border)] bg-[var(--gosslan-field)]"></div>`;
+  assert.deepEqual(findTransparentFieldBorder(bordered), []);
+  assert.deepEqual(findTransparentFieldBorder(ringed), []);
+});
+
+// ---------------- PH-01 占位符颜色只走 token + 顶层兜底规则（2026-11-06） ----------------
+
+/**
+ * 用户报「特效全开信息可读性下降」时量到的同族缺陷：亮色字段底上的占位符 2.21:1。
+ * 根因不是某个组件写错，而是**全仓没有顶层 `::placeholder` 规则** —— 只有 12 处散落 token 类，
+ * 其余输入框落回 UA 灰。所以判据必须两条一起：写法（每个 `placeholder:text-*` 都是 token）
+ * 与兜底（顶层规则存在且完整）。只钉其中一条都会留下一条能绕过的路径。
+ */
+
+test("PH-01 真实树：所有占位符类都是 token，且顶层兜底规则存在", () => {
+  const files = allComponentFiles();
+  assert.ok(files.length > 100, `组件目录只扫到 ${files.length} 份 .vue —— 判据可能扫错了目录`);
+  const owners = files.filter((f) => f.src.includes("placeholder:text-"));
+  assert.ok(owners.length >= 5, `只有 ${owners.length} 份文件写占位符类 —— 清单变少了，先确认不是判据空转`);
+  const offenders = files.flatMap((f) =>
+    findRawPlaceholderColor(f.src).map((i) => `${f.name}:${i.line} ${i.message.slice(0, 40)}`),
+  );
+  assert.deepEqual(offenders, [], offenders.join("\n"));
+
+  const css = readFileSync(new URL("../style.css", import.meta.url), "utf8");
+  assert.deepEqual(
+    findMissingPlaceholderRule(css),
+    [],
+    "style.css 缺少顶层 input::placeholder / textarea::placeholder 兜底规则（PH-01）",
+  );
+  assert.match(css, /input::placeholder[^}]*textarea::placeholder/s, "兜底规则必须同时覆盖 input 与 textarea");
+});
+
+test("PH-01 反例自证：写死 UA 灰 / 去 token 必须变红", () => {
+  const uaHex = `<input class="placeholder:text-[#9ca3af]" />`;
+  const text2 = `<input class="placeholder:text-[var(--gosslan-text-2)]" />`;
+  assert.equal(findRawPlaceholderColor(uaHex).length, 1, "写死 UA 灰 #9ca3af 必须命中");
+  assert.equal(findRawPlaceholderColor(text2).length, 1, "占位符借用 text-2 也必须命中（两者观感不同档）");
+  assert.match(findRawPlaceholderColor(uaHex)[0].message, /2\.21:1/, "报错要给出可复现的失败读数");
+});
+
+test("PH-01 反例自证：兜底规则缺失 / 少覆盖 / 缺 opacity 都必须变红", () => {
+  const missing = `:root { --x: 0; }`;
+  const onlyInput = `input::placeholder { color: var(--gosslan-placeholder); opacity: 1; }`;
+  const noOpacity = `input::placeholder, textarea::placeholder { color: var(--gosslan-placeholder); }`;
+  const nested = `@media (min-width: 1px) { input::placeholder, textarea::placeholder { color: var(--gosslan-placeholder); opacity: 1; } }`;
+  assert.match(findMissingPlaceholderRule(missing)[0]?.message ?? "", /找不到顶层/, "完全缺失必须命中");
+  assert.equal(findMissingPlaceholderRule(onlyInput).length, 1, "只覆盖 input 必须命中");
+  assert.equal(findMissingPlaceholderRule(noOpacity).length, 1, "缺 opacity:1 必须命中");
+  assert.equal(findMissingPlaceholderRule(nested).length, 1, "写进 @media 不算全局兜底");
+});
+
+test("PH-01 合法写法放行：token 类 / 不写类 / 完整顶层规则", () => {
+  const token = `<input class="placeholder:text-[var(--gosslan-placeholder)]" />`;
+  const none = `<input class="text-body" />`;
+  const goodCss = `input::placeholder, textarea::placeholder { color: var(--gosslan-placeholder); opacity: 1; }`;
+  assert.deepEqual(findRawPlaceholderColor(token), []);
+  assert.deepEqual(findRawPlaceholderColor(none), []);
+  assert.deepEqual(findMissingPlaceholderRule(goodCss), []);
 });

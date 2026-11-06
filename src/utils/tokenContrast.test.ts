@@ -39,6 +39,9 @@ const BROKEN = `
   --gosslan-warning-text-ink: #ff9500;
   --gosslan-warning-soft: rgba(255, 149, 0, 0.12);
   --gosslan-field: #fafafa;
+  /* 反例：边框与面板同色 ⇒ 等于没有边框（2026-11-06 真实的旧形态） */
+  --gosslan-field-border: #ffffff;
+  --gosslan-bg: #ffffff;
   --gosslan-placeholder: #94a3b8;
   --gosslan-status-offline: #a3a3a3;
   --gosslan-danger-soft: rgba(255, 59, 48, 0.12);
@@ -50,6 +53,9 @@ const BROKEN = `
   --gosslan-list: #1e293b;
   --gosslan-chat: #0f172a;
   --gosslan-card: #1c2434;
+  /* 反例：暗色边框与面板同色 ⇒ 输入框完全消失 */
+  --gosslan-field-border: #1e293b;
+  --gosslan-bg: #1e293b;
   --gosslan-text: #f1f5f9;
   --gosslan-list-active: #334155;
   --gosslan-list-active-text: var(--gosslan-text);
@@ -76,6 +82,9 @@ test("检查器能抓出「改回旧值」的违规", () => {
   // 新增契约行必须真的被尺子用上，不能只是加了行没人读。
   assert.ok(keys.includes("--gosslan-warning-text-ink on --gosslan-panel"), "未抓到 warning 文字档");
   assert.ok(keys.includes("--gosslan-placeholder on --gosslan-field"), "未抓到占位符落字段底（新契约行在空转）");
+  // 2026-11-06 新契约：输入承载面边框必须能从相邻面里分出来（旧形态 = 边框与面板同色）。
+  assert.ok(keys.includes("--gosslan-field-border on --gosslan-panel"), "未抓到输入框边框与面板同色（新契约行在空转）");
+  assert.ok(keys.includes("--gosslan-field-border on --gosslan-bg"), "未抓到输入框边框与 bg 同色（bg 那条在空转）");
   for (const f of fails) assert.ok(f.ratio < f.min, "报出的组合必须确实不达标");
 });
 

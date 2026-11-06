@@ -446,7 +446,7 @@ async function add(peerId: string) {
         autocorrect="off"
         autocapitalize="off"
         spellcheck="false"
-        class="mb-2 h-10 w-full rounded-[var(--gosslan-radius-md)] border border-transparent bg-[var(--gosslan-field)] px-3 py-1.5 text-sm outline-none transition focus:border-transparent"
+        class="mb-2 h-10 w-full rounded-[var(--gosslan-radius-md)] border border-[var(--gosslan-field-border)] bg-[var(--gosslan-field)] px-3 py-1.5 text-sm outline-none transition focus:border-[var(--gosslan-primary)]"
         :placeholder="t('friend.add.searchPlaceholder')"
       />
       <div class="max-h-72 overflow-y-auto">

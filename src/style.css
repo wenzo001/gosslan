@@ -124,11 +124,19 @@
   --gosslan-chat: #ffffff;
   --gosslan-panel: #ffffff;
   --gosslan-bg: #f2f3f5;
-  /* 输入类控件底色（搜索框 / 输入卡）：必须与所在面板拉开一档，
-     否则输入框"没有边界"（暗色下 panel 与 list 同色时最容易踩）。
-     亮色下故意不取白（和 panel 同值），取稍深一档 #f3f5f8 ——
-     搜索框套在白 panel 里时就能自己立住，不需要靠 border 才有边界感。 */
-  --gosslan-field: #f2f3f5;
+  /* 输入类控件承载面（搜索框 / 输入卡 / 群管理输入区）。
+     ⚠️ 2026-11-06 用户报「玻璃 + 浮动背景全开时看不出输入框」→ 实测旧值 #f2f3f5
+     对白 panel / 白 chat 只有 **1.11:1**、对 list #f7f8fa **1.04:1**、对 bg **1.00:1**
+     （等于没有边界；亮色最差）。现在两道一起给：
+       · 填充 #edeff3：对白 1.16（"下陷的槽"，只是辅助）
+       · 边框 `--gosslan-field-border` 直接复用既有 `--gosslan-divider-strong`（#7c8798）：
+         对白 3.64 / 对 list 3.42 / 对 bg 3.27 —— 四类相邻面全部 ≥3.0（WCAG 1.4.11 非文本档，
+         与工程里「开关未选中轨道 / 主色按钮 vs 面板」用的是同一档，不新造颜色）。
+         高对比模式下 divider-strong 有覆盖档，边框会跟着一起变强。
+     填充已经到顶：再深一档（#e9ecf0）placeholder #5f6b7a 就只剩 4.58，
+     跌破既有判据「占位符在字段底 ≥4.65」；#edeff3 是 4.71，是"看得见 + 提示字仍达标"的平衡点。 */
+  --gosslan-field: #edeff3;
+  --gosslan-field-border: var(--gosslan-divider-strong);
   /* 中性卡片气泡底（文件 / 代码 / 无类型兜底）：不跟随主题色的那类气泡。
      必须与聊天画布**最终合成色**差一档（画布 = chat 白 + 16% 薄纱，实测 ≈#eaeef2），
      否则气泡等于没有（见 utils/previewMetrics.ts 的历史坑）。#e0e4e9 对合成画布 ≈1.10。
@@ -486,9 +494,17 @@
   --gosslan-chat: #242628;
   --gosslan-panel: #2c2f33;
   --gosslan-bg: #141518;
-  /* 暗色输入框：比 list(#1e293b) 抬亮一档 → 1.27（亮色同位置是 1.10），
-     搜索框/输入卡在暗色下才有"这是一个输入框"的边界。 */
-  --gosslan-field: #2a2c31;
+  /* 暗色输入承载面：旧值 #2a2c31 与 panel #2c2f33 只有 **1.04:1**（注释里"比 list 抬亮
+     一档 → 1.27"用的是老的 #1e293b 口径，早已漂移），玻璃 + 浮动背景一开就彻底看不见。
+     2026-11-06 与亮色同一条规则重配：填充 #22252a（对 panel 1.14），边框见下一段专用值。
+     暗色改深而不是改浅：暗面层级要求输入"低于"面板。 */
+  --gosslan-field: #22252a;
+  /* 暗色**不**直接复用 divider-strong：`--only=fieldcontrast` 探针把面板底算成
+     "玻璃(0.92) + 最差背景"（白/黑/三个漂移色相各叠一遍），#6b7f9e 在白底那档只剩 **2.56**；
+     而设置里的漂浮背景本来就可能漂到浅色色团。这里给输入框专用一档 #788dae：
+     对暗 panel 3.98 / chat 4.50 / list 4.83 / bg 5.41，对最差合成底（玻璃叠白）**3.09**。
+     只动这个专用 token，全站分隔线（divider-strong）保持原值 —— 分隔线不该为输入框的边界背锅。 */
+  --gosslan-field-border: #788dae;
   --gosslan-card: #1c2434;
   --gosslan-card-ink: #e2e8f0;
   --gosslan-card-line: rgba(255, 255, 255, 0.08);
@@ -1102,6 +1118,19 @@ select,
 [contenteditable="true"],
 [contenteditable=""] {
   caret-color: var(--gosslan-primary);
+}
+
+/* 占位符统一吃 `--gosslan-placeholder`（PH-01 / 2026-11-06）。
+   之前全仓**没有**顶层 `::placeholder` 规则 ⇒ 只有 12 处散落的
+   `placeholder:text-[var(--gosslan-placeholder)]` 生效，其余输入框直接落到
+   浏览器 UA 的 `#9ca3af`：亮色字段底（#edeff3）上实测 **2.21:1**，
+   比正文 4.5 的 AA 线低了一半 —— 群管理「群名称 / 群公告」正是这 12 处之外的漏网输入框。
+   放在这里是**顶层规则**（`.dark` 不覆盖，靠 token 自己在 `.dark` 里换值），
+   `opacity: 1` 是必须的：Firefox 默认给占位符 0.54 透明度，会把 token 的对比度再打薄一半。 */
+input::placeholder,
+textarea::placeholder {
+  color: var(--gosslan-placeholder);
+  opacity: 1;
 }
 
 /* 选中态与原生控件的颜色跟随主题（#35-N7，2026-09-27）。

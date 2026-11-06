@@ -3546,6 +3546,51 @@ export function checkContainImageClip(detailSrc: string, name: string): GuardIss
   return out.sort((a, b) => a.line - b.line);
 }
 
+// ---------------- ㊷ 输入承载面必须有可见边框 ----------------
+
+/**
+ * 凡是用 `bg-[var(--gosslan-field)]` 作底的元素，**边框必须走 `--gosslan-field-border`**。
+ *
+ * 为什么（2026-11-06 用户报「暗色 + 玻璃 + 浮动背景全开时看不到输入框」）：
+ * 旧输入框一律 `border-transparent`，边界完全靠填充与背景的差值 ——
+ * 实测亮色 1.11 / 暗色 1.04，等于没有边界；特效一开（背后有薄纱与浮动色块）就更糟。
+ * 判据把"边框必须存在且是 field-border 这一档"钉住，`border-transparent` 与
+ * 更弱的 `--gosslan-border`（亮 1.28）都不许再回到输入面上。
+ *
+ * 只查同一行：`bg-[var(--gosslan-field)]` 与边框写在同一个 class 字符串里（本仓库的写法）。
+ * `ring-1 ring-[var(--gosslan-field-border)]` 也算合法（圆角搜索框用 ring 更贴合）。
+ */
+export function findTransparentFieldBorder(model: string): GuardIssue[] {
+  const cleaned = model.replace(/<!--[\s\S]*?-->/g, (m) => m.replace(/[^\n]/g, " "));
+  const out: GuardIssue[] = [];
+  for (const m of cleaned.matchAll(CLASS_ATTR_RE)) {
+    const cls = m[1];
+    if (!cls.includes("bg-[var(--gosslan-field)]")) continue;
+    // `<button>` 用 field 底不算"输入承载面"（outline 弱按钮有自己的对比度契约：
+    // primary/outline 控件 vs 面板 ≥3.0，且按钮的表面积形状与输入框不同类）。
+    const head = cleaned.slice(0, m.index ?? 0);
+    const tagStart = head.lastIndexOf("<");
+    const tag = tagStart >= 0 ? /^<([a-zA-Z][\w-]*)/.exec(head.slice(tagStart))?.[1]?.toLowerCase() : undefined;
+    if (tag === "button") continue;
+    const hasVisibleEdge =
+      cls.includes("border-[var(--gosslan-field-border)]") ||
+      cls.includes("ring-[var(--gosslan-field-border)]");
+    if (hasVisibleEdge) continue;
+    const weak =
+      cls.includes("border-transparent") || cls.includes("border-[var(--gosslan-border)]")
+        ? "边框透明或只有 --gosslan-border（亮色 1.28）"
+        : "根本没有边框/环";
+    out.push({
+      line: lineAt(cleaned, m.index ?? 0),
+      message:
+        `输入承载面（bg-[var(--gosslan-field)]）的${weak} —— 必须 ` +
+        "`border-[var(--gosslan-field-border)]` 或 `ring-1 ring-[var(--gosslan-field-border)]`。" +
+        "实测旧形态亮色 1.11 / 暗色 1.04，玻璃 + 浮动背景一开就看不见输入框（㊷ / tokenContrast 契约）。",
+    });
+  }
+  return out.sort((a, b) => a.line - b.line);
+}
+
 // ---------------- ㊶ 设置分区卡片内边距只走三档类 ----------------
 
 /**
@@ -3578,6 +3623,87 @@ export function findRawCardPadding(src: string): GuardIssue[] {
           "数值只在 `--gosslan-card-pad` 族里（docs/decisions.md 决策 8：16px 卡片、48px 行）。",
       });
     }
+  }
+  return out.sort((a, b) => a.line - b.line);
+}
+
+// ---------------- PH-01 占位符文字色只走 token，且顶层规则必须存在 ----------------
+
+/**
+ * 占位符（placeholder）**只有两种合规形态**：
+ *   1. 组件里写 `placeholder:text-[var(--gosslan-placeholder)]`；
+ *   2. 什么都不写，由 `src/style.css` 的顶层 `input::placeholder, textarea::placeholder`
+ *      规则统一接管（`color: var(--gosslan-placeholder); opacity: 1`）。
+ *
+ * 为什么（2026-11-06 实测，用户报「特效全开信息可读性下降」的同一族）：
+ * 全仓曾**没有**顶层 `::placeholder` 规则，只有 12 处散落的 token 类；
+ * 其余输入框落到浏览器 UA 的 `#9ca3af` —— 在亮色字段底 `#edeff3` 上只有 **2.21:1**，
+ * 正文 AA（4.5）的一半都不到。群管理的「群名称 / 群公告」两处正是漏网者。
+ * 这条判据同时钉住"写法"与"兜底规则存在"：只钉前者，新增输入框仍会落回 UA 灰；
+ * 只钉后者，散落的 `placeholder:text-[#9ca3af]` 仍能局部绕过。
+ */
+const PLACEHOLDER_TOKEN_CLASS = "placeholder:text-[var(--gosslan-placeholder)]";
+
+export function findRawPlaceholderColor(src: string): GuardIssue[] {
+  const cleaned = src.replace(/<!--[\s\S]*?-->/g, (m) => m.replace(/[^\n]/g, " "));
+  const out: GuardIssue[] = [];
+  for (const m of cleaned.matchAll(CLASS_ATTR_RE)) {
+    for (const tok of m[1].split(/\s+/).filter(Boolean)) {
+      if (!tok.startsWith("placeholder:text-")) continue;
+      if (tok === PLACEHOLDER_TOKEN_CLASS) continue;
+      out.push({
+        line: lineAt(cleaned, m.index ?? 0),
+        message:
+          `占位符颜色又写成了「${tok}」—— 一律 \`${PLACEHOLDER_TOKEN_CLASS}\`，` +
+          "不写则吃 style.css 顶层 `::placeholder` 规则。亮色字段底 #edeff3 上 UA 灰 #9ca3af 只有 2.21:1（PH-01）。",
+      });
+    }
+  }
+  return out.sort((a, b) => a.line - b.line);
+}
+
+export function findMissingPlaceholderRule(css: string): GuardIssue[] {
+  // 注释里可能出现花括号/伪类字样：整段抹成等长空白，保留下标与行号
+  const body = css.replace(/\/\*[\s\S]*?\*\//g, (m) => m.replace(/[^\n]/g, " "));
+  const out: GuardIssue[] = [];
+  const RULE_RE = /([^{}]*::placeholder[^{}]*)\{([^{}]*)\}/g;
+  let global = 0;
+  for (const m of body.matchAll(RULE_RE)) {
+    const selector = m[1].trim();
+    const decls = m[2];
+    const pos = m.index ?? 0;
+    const depth = (body.slice(0, pos).match(/\{/g)?.length ?? 0) - (body.slice(0, pos).match(/\}/g)?.length ?? 0);
+    const coversBoth = /\binput\b/.test(selector) && /\btextarea\b/.test(selector);
+    const hasColor = /color\s*:\s*var\(--gosslan-placeholder\)/.test(decls);
+    const hasOpacity = /opacity\s*:\s*1\s*(?:;|$)/.test(decls.replace(/\s+/g, " "));
+    if (!coversBoth || !hasColor || !hasOpacity) {
+      out.push({
+        line: lineAt(body, pos),
+        message:
+          "`::placeholder` 规则不完整 —— 必须是 `input::placeholder, textarea::placeholder` " +
+          "同时 `color: var(--gosslan-placeholder)` 与 `opacity: 1`（PH-01）。" +
+          (coversBoth ? "" : " 现在少覆盖 input 或 textarea，漏掉的那类输入框会落回 UA 灰。") +
+          (hasColor ? "" : " 颜色没有吃 token。") +
+          (hasOpacity ? "" : " 缺 opacity: 1 —— Firefox 默认 0.54 会把 token 对比度再打薄一半。"),
+      });
+      continue;
+    }
+    if (depth !== 0) {
+      out.push({
+        line: lineAt(body, pos),
+        message: `\`::placeholder\` 规则嵌在第 ${depth} 层（@media/嵌套里）—— 只在部分条件下生效，等于没有全局兜底（PH-01）。`,
+      });
+      continue;
+    }
+    global++;
+  }
+  if (global === 0 && out.length === 0) {
+    out.push({
+      line: 0,
+      message:
+        "style.css 里找不到顶层 `input::placeholder, textarea::placeholder` 规则 —— " +
+        "没有兜底时，所有未显式写 token 类的输入框都会落回 UA 的 #9ca3af（亮色字段底 2.21:1，PH-01）。",
+    });
   }
   return out.sort((a, b) => a.line - b.line);
 }

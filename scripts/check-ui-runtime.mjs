@@ -4455,6 +4455,7 @@ async function main() {
     const contactfilter = want("contactfilter");
     const navicon = want("navicon");
     const menufit = want("menufit");
+    const fieldcontrast = want("fieldcontrast");
     const crashnotice = want("crashnotice");
     const hangnotice = want("hangnotice");
     const recoverynotice = want("recoverynotice");
@@ -4667,6 +4668,7 @@ async function main() {
     await runSegment("contactfilter", contactfilter, () => runContactFilter(cdp, url));
     await runSegment("navicon", navicon, () => runNavIcon(cdp, url));
     await runSegment("menufit", menufit, () => runMenuFit(cdp, url));
+    await runSegment("fieldcontrast", fieldcontrast, () => runFieldContrast(cdp, url));
     await runSegment("diag", diag, () => runDiag(cdp, url));
     await runSegment("updater", updater, () => runUpdater(cdp, url));
     await runSegment("avatar", avatar, () => runAvatar(cdp, url));
@@ -23369,6 +23371,161 @@ async function runNavIcon(cdp, url) {
       && table.kinds.every((k) => k === "object" || k === "function"),
     "navIcons.NAV_ICONS 恰有 4 键，值为组件",
     JSON.stringify(table));
+}
+
+/**
+ * 输入承载面可读性探针（--only=fieldcontrast，2026-11-06 ⑧）。
+ *
+ * 为什么必须**在特效全开下**量：静态 tokenContrast 只能证明"token 与 token"的比值，
+ * 而用户报的是「玻璃 + 浮动背景全开时看不到输入框」—— 那时输入面背后是 `.glass-3`
+ * （亮 0.94 / 暗 0.92）叠在漂移色团上，输入面自身填充与面板的差值会被压得更低。
+ * 本段真挂 GroupMemberPanel（与用户的截图同一个面板），把 `data-ambient` 设成 `drift`、
+ * 不设 `data-frost="off"`，量三件事：
+ *   ① 边框 vs **最差**面板合成底 ≥3.0（WCAG 1.4.11 非文本档）；
+ *   ② 占位符 vs 输入面 ≥4.5（AA）且 computed 颜色就是 `--gosslan-placeholder`；
+ *   ③ 输入承载面合成 alpha ≥0.95（AM-15 的同一把尺子，只是换到"特效开"的路径上）。
+ * 末尾做一次反向对照：把边框改透明 + 占位符注回 UA 灰，同一条读数必须翻假。
+ */
+async function runFieldContrast(cdp, url) {
+  await cdp.send("Emulation.setDeviceMetricsOverride", {
+    width: 900, height: 860, deviceScaleFactor: 1, mobile: false,
+  });
+  await cdp.send("Page.navigate", { url });
+  await cdp.settled();
+  await sleep(2_000);
+  await cdp.eval(PAGE_FIXTURE);
+  // installMenu 要求页面那份 vue/pinia 已在 __probe 上 —— 先借一次普通 install 带进来。
+  await cdp.eval("window.__probe.install('/src/components/TitleBar.vue', '', '')");
+  // 复用页面里的 vue/pinia 实例（installMenu 的第二参数点名业务组件；BaseModal 会 Teleport）。
+  const mounted = await cdp.eval(`window.__probe.installMenu(${JSON.stringify(JSON.stringify({ open: true, groupId: "g1" }))}, ${JSON.stringify(JSON.stringify({
+    path: "/src/components/GroupMemberPanel.vue",
+    emits: ["close", "open-tasks", "mention", "open-profile"],
+  }))})`);
+  await sleep(400);
+  const seeded = await cdp.eval(`(async () => {
+    const { useChatStore } = await import('/src/stores/useChatStore.ts');
+    const { useAppStore } = await import('/src/stores/useAppStore.ts');
+    const chat = useChatStore(window.__pinia);
+    const app = useAppStore(window.__pinia);
+    // isOwner = group.creator === app.device.device_id ⇒ 两边都种成 dev-me，编辑区才会渲染。
+    app.device = { device_id: 'dev-me', name: 'dev-me', avatar: null };
+    chat.groups = [{ id: 'g1', name: '探针群', creator: 'dev-me', members: ['dev-me', 'bob'], avatar: null, announcement: '' }];
+    window.__probe.vue && await window.__probe.vue.nextTick();
+    return { ok: true, myId: app.device.device_id };
+  })()`);
+
+  await cdp.eval(`(() => {
+    document.documentElement.dataset.ambient = 'drift';
+    document.documentElement.removeAttribute('data-frost');
+    return true;
+  })()`);
+
+  const measure = () => cdp.eval(`(() => {
+    const nums = (c) => (c.match(/\\d+(?:.\\d+)?/g) || []).map(Number);
+    const over = (base, top) => {
+      const a = top.length >= 4 ? top[3] : 1;
+      return [0, 1, 2].map((i) => Math.round(top[i] * a + base[i] * (1 - a)));
+    };
+    const lin = (v) => { const x = v / 255; return x <= 0.03928 ? x / 12.92 : Math.pow((x + 0.055) / 1.055, 2.4); };
+    const lum = (c) => 0.2126 * lin(c[0]) + 0.7152 * lin(c[1]) + 0.0722 * lin(c[2]);
+    const ratio = (a, b) => {
+      const x = lum(a), y = lum(b);
+      return Number(((Math.max(x, y) + 0.05) / (Math.min(x, y) + 0.05)).toFixed(2));
+    };
+    const wide = [...document.querySelectorAll('input')].filter((i) => i.getBoundingClientRect().width > 100);
+    const el = wide.find((i) => i.getAttribute('placeholder')) || wide[0];
+    if (!el) return { ok: false, why: 'no-input', inputs: document.querySelectorAll('input').length };
+    const s = getComputedStyle(el);
+    const ph = getComputedStyle(el, '::placeholder');
+    const card = el.closest('.glass-3') || el.closest('[role="dialog"]') || document.body;
+    const cs = getComputedStyle(card);
+    const field = nums(s.backgroundColor);
+    const border = nums(s.borderTopColor);
+    const glass = nums(cs.backgroundColor);
+    const tokenPh = getComputedStyle(document.documentElement).getPropertyValue('--gosslan-placeholder').trim();
+    const hex2rgb = (h) => {
+      const t = h.replace('#', '');
+      return t.length === 3
+        ? [t[0] + t[0], t[1] + t[1], t[2] + t[2]].map((x) => parseInt(x, 16))
+        : [t.slice(0, 2), t.slice(2, 4), t.slice(4, 6)].map((x) => parseInt(x, 16));
+    };
+    // 最差面板底：玻璃叠在「白 / 黑 / 三个漂移色相」上，取边框与它们的最小比值。
+    const BACKDROPS = [[255, 255, 255], [0, 0, 0], [124, 92, 255], [0, 179, 164], [255, 122, 198]];
+    const glassAlpha = glass.length >= 4 ? glass[3] : 1;
+    const comps = BACKDROPS.map((b) => over(b, [glass[0], glass[1], glass[2], glassAlpha]));
+    const borderVsWorst = Math.min(...comps.map((c) => ratio(border, c)));
+    return {
+      ok: true,
+      bg: s.backgroundColor,
+      borderW: s.borderTopWidth,
+      borderColor: s.borderTopColor,
+      glassBg: cs.backgroundColor,
+      placeholderColor: ph.color,
+      placeholderOpacity: ph.opacity,
+      tokenPlaceholder: tokenPh,
+      tokenMatches: nums(ph.color).length >= 3
+        && hex2rgb(tokenPh).every((v, i) => Math.abs(v - nums(ph.color)[i]) <= 1),
+      fieldAlpha: Number((field.length >= 4 ? field[3] : 1).toFixed(3)),
+      borderVsWorst: Number(borderVsWorst.toFixed(2)),
+      phVsField: ratio(nums(ph.color), field),
+    };
+  })()`);
+
+  const boot = await cdp.eval(`(() => {
+    const inputs = document.querySelectorAll('input').length;
+    const named = [...document.querySelectorAll('input')]
+      .filter((i) => i.getBoundingClientRect().width > 100).length;
+    return { inputs, named, text: (document.body.innerText || '').slice(0, 80) };
+  })()`);
+  check("fieldcontrast 对照：群管理面板真挂上、有可量的输入框（否则下面几条是空跑）",
+    mounted && mounted.ok === true && boot.named >= 1, "mounted.ok=true 且 ≥1 个宽输入框", JSON.stringify({ mounted, boot }));
+
+  const report = {};
+  for (const dark of [false, true]) {
+    await cdp.eval(`document.documentElement.classList.toggle('dark', ${dark}); true`);
+    await sleep(300);
+    const r = await measure();
+    report[dark ? 'dark' : 'light'] = r;
+    check(`fieldcontrast：${dark ? "暗色" : "亮色"} + 玻璃/浮动背景全开时，输入面边框 vs 最差面板底 ≥3.0`,
+      r.ok === true && r.borderW !== "0px" && r.borderVsWorst >= 3.0,
+      "border 非 0px / 比值 ≥3.0", JSON.stringify(r));
+    check(`fieldcontrast：${dark ? "暗色" : "亮色"}占位符 vs 输入面 ≥4.5，且颜色就是 token`,
+      r.ok === true && r.phVsField >= 4.5 && r.tokenMatches === true && Number(r.placeholderOpacity) === 1,
+      "比值 ≥4.5 / computed=--gosslan-placeholder / opacity=1", JSON.stringify(r));
+    check(`fieldcontrast：${dark ? "暗色" : "亮色"}输入承载面合成 alpha ≥0.95（AM-15 同尺）`,
+      r.ok === true && r.fieldAlpha >= 0.95, "alpha ≥0.95", JSON.stringify({ fieldAlpha: r.fieldAlpha, bg: r.bg }));
+  }
+
+  // 反向对照：同一条读数必须能翻假（否则上面三条是空转）。
+  await cdp.eval(`(() => {
+    const wide = [...document.querySelectorAll('input')].filter((i) => i.getBoundingClientRect().width > 100);
+    const el = wide.find((i) => i.getAttribute('placeholder')) || wide[0];
+    if (!el) return false;
+    el.dataset.beforeBorder = el.style.borderColor;
+    el.style.borderColor = 'transparent';
+    const s = document.createElement('style');
+    s.id = '__fieldcontrast_before';
+    s.textContent = 'input::placeholder, textarea::placeholder { color: rgb(156,163,175) !important; opacity: 1 !important; }';
+    document.head.appendChild(s);
+    return true;
+  })()`);
+  await sleep(200);
+  const bad = await measure();
+  // 暗色 UA 灰恰好还能过 4.5（6.05），但它**不是 token** —— 真实判据里 tokenMatches 那一半会红。
+  // 所以反例的失败条件是「边框 <3.0 或 占位符比值/身份不达标」，不是两条数值同时掉。
+  check("fieldcontrast 反例：边框透明 + 占位符注回 UA 灰 ⇒ 边框与占位符判据至少各红一条（判据不空转）",
+    bad.ok === true && bad.borderVsWorst < 3.0 && (bad.phVsField < 4.5 || bad.tokenMatches !== true),
+    "border <3.0 且 (placeholder <4.5 或 颜色≠token)", JSON.stringify(bad));
+  await cdp.eval(`(() => {
+    const wide = [...document.querySelectorAll('input')].filter((i) => i.getBoundingClientRect().width > 100);
+    const el = wide.find((i) => i.getAttribute('placeholder')) || wide[0];
+    if (el) el.style.borderColor = '';
+    document.getElementById('__fieldcontrast_before')?.remove();
+    document.documentElement.dataset.ambient = 'off';
+    return true;
+  })()`);
+  console.log("  ℹ fieldcontrast 读数 → " + JSON.stringify(report));
+  void seeded;
 }
 
 /**

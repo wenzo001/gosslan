@@ -251,6 +251,15 @@ export const TOKEN_CONTRAST_CONTRACT: Record<"light" | "dark", TokenPair[]> = {
     { fg: "--gosslan-text-2", bg: "--gosslan-card", min: 4.5, why: "文件气泡里的辅助信息（10px）" },
     { fg: "--gosslan-text-2", bg: "--gosslan-chat", min: 4.5, why: "空态 / 占位提示" },
     { fg: "--gosslan-placeholder", bg: "--gosslan-field", min: 4.5, why: "输入框占位符（只准落字段底：chat 4.87 / list 4.95 也可，caption 4.40 / card 4.25 不达标，禁止落到那两档）" },
+    // 输入承载面的**边界**（2026-11-06 用户报「玻璃+浮动背景全开看不出输入框」）：
+    // 旧值 field #f2f3f5 对白 panel 1.11 / list 1.04 / bg 1.00，四类面全部等于没有边界；
+    // 这四条把"边框必须能从任何一种相邻面里分出来"钉成 3.0（WCAG 1.4.11 非文本档，
+    // 与工程里「开关未选中轨道 / 主色按钮 vs 面板」同一档；实测最紧 3.27，有余量）。
+    // 只钉 panel 会漏掉搜索框落 list、设置内嵌落 bg 的真实用法 —— 所以四类面逐个钉。
+    { fg: "--gosslan-field-border", bg: "--gosslan-panel", min: 3.0, why: "输入框边框 vs 面板（最差背景：亮色 panel 纯白）" },
+    { fg: "--gosslan-field-border", bg: "--gosslan-chat", min: 3.0, why: "输入框边框 vs 聊天画布" },
+    { fg: "--gosslan-field-border", bg: "--gosslan-list", min: 3.0, why: "会话列表里的搜索框（3.42）" },
+    { fg: "--gosslan-field-border", bg: "--gosslan-bg", min: 3.0, why: "设置内嵌块里的输入（bg 是最紧的一档 3.27）" },
     { fg: "--gosslan-list-active-text", bg: "--gosslan-list-active", min: 4.5, why: "选中的会话行标题" },
     { fg: "--gosslan-accent-ink", bg: "--gosslan-panel", min: 4.5, why: "主题色当文字（链接 / 未读标签）" },
     { fg: "--gosslan-accent-ink", bg: "--gosslan-list", min: 4.5, why: "同上，落在列表底上" },
@@ -322,6 +331,12 @@ export const TOKEN_CONTRAST_CONTRACT: Record<"light" | "dark", TokenPair[]> = {
     { fg: "--gosslan-warning-ink", bg: "--gosslan-panel", min: 3.0, why: "皇冠 / 文件夹图标" },
     { fg: "--gosslan-warning-text-ink", bg: "--gosslan-panel", min: 4.5, why: "警告文字（暗色与图标档同值：亮底上压深反而掉对比度）" },
     { fg: "--gosslan-status-offline", bg: "--gosslan-panel", min: 3.0, why: "离线状态点" },
+    // 输入承载面边框（暗色）：旧 field #2a2c31 对 panel #2c2f33 只有 1.04 —— 暗色下"完全看不见输入框"
+    // 的主因。四类相邻面同上逐条钉 3.0，暗色最紧的一档是 panel 3.98。
+    { fg: "--gosslan-field-border", bg: "--gosslan-panel", min: 3.0, why: "输入框边框 vs 暗面板（最紧的一档 3.98）" },
+    { fg: "--gosslan-field-border", bg: "--gosslan-chat", min: 3.0, why: "输入框边框 vs 暗画布（4.50）" },
+    { fg: "--gosslan-field-border", bg: "--gosslan-list", min: 3.0, why: "暗色会话列表里的搜索框（4.83）" },
+    { fg: "--gosslan-field-border", bg: "--gosslan-bg", min: 3.0, why: "暗色设置内嵌块里的输入（5.41）" },
     // 主色实底控件在暗色下**换了方向**：填充提亮（要跟 #1e293b 面板分得开），前景换成深墨
     // （--gosslan-on-primary 在 .dark 里 = --gosslan-app-bg）。这两行就是那一次换向的全部凭据：
     // 漏掉 .dark 的覆盖 ⇒ 暗色继承压深档，白字仍过 4.5 而"按钮 vs 面板"掉到 2.06~3.01 ——

@@ -1252,4 +1252,38 @@ CASES: list[Case] = [
         expect_fail_hint="设置分区又写了卡片级 padding",
         tags=["frontend", "settings", "new-guards"],
     ),
+    Case(
+        name="输入承载面边框又写回 border-transparent",
+        why="2026-11-06 用户报「暗色 + 玻璃 + 浮动背景全开时看不到群管理输入框」。根因是"
+        "输入面 `border-transparent` + 填充与背景只差 1.04（暗）/1.11（亮）—— 边界全靠填充，"
+        "特效一开就消失。本条把 `GroupMemberPanel.vue` 群名输入框的 `field-border` 换回"
+        "`border-transparent`（正是用户截图那一个框），必须由 ㊷ 判据点名并红；"
+        "同时 `tokenContrast` 里 field-border 的 3.0 契约守着颜色不许被调回接近背景。",
+        file=ROOT / "src" / "components" / "GroupMemberPanel.vue",
+        injections=[(
+            "border border-[var(--gosslan-field-border)] bg-[var(--gosslan-field)] px-3 py-1.5 text-sm outline-none",
+            "border border-transparent bg-[var(--gosslan-field)] px-3 py-1.5 text-sm outline-none",
+        )],
+        cmd=node_test("src/utils/designGuards.test.ts"),
+        cwd=ROOT,
+        expect_fail_hint="边框透明或只有",
+        tags=["frontend", "readability", "new-guards"],
+    ),
+    Case(
+        name="占位符兜底规则只覆盖 input、漏掉 textarea",
+        why="2026-11-06 修「特效全开可读性下降」时量到亮色字段底上的占位符只有 2.21:1 ——"
+        "根因是全仓没有顶层 `::placeholder` 规则，只有 12 处散落 token 类，其余落回 UA 灰 #9ca3af。"
+        "修法是把兜底规则放在 style.css 顶层同时覆盖 input/textarea 并 `opacity: 1`（Firefox 默认 0.54 会再打薄一半）。"
+        "本条把选择器删成只剩 `input::placeholder`，必须由 PH-01 判据点名并红；"
+        "少了 textarea 那一半，群公告这类多行输入又回到 2.21:1。",
+        file=ROOT / "src" / "style.css",
+        injections=[(
+            "input::placeholder,\ntextarea::placeholder {\n  color: var(--gosslan-placeholder);\n  opacity: 1;\n}",
+            "input::placeholder {\n  color: var(--gosslan-placeholder);\n  opacity: 1;\n}",
+        )],
+        cmd=node_test("src/utils/designGuards.test.ts"),
+        cwd=ROOT,
+        expect_fail_hint="`::placeholder` 规则不完整",
+        tags=["frontend", "readability", "new-guards"],
+    ),
 ]
