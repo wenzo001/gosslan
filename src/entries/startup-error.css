@@ -1,28 +1,32 @@
 /* 启动失败那扇独立窗口的样式（`startup-error.html`）。
    刻意**不**引主界面的 style.css：那一份里有整套布局与令牌，而这扇窗出现的时刻
-   数据库根本没开，页面要越小越稳。深浅色只靠系统偏好，与应用底色同源
-   （#edf1f6 / #0b1220，见 `commands/network.rs::focus_window`）。 */
+   数据库根本没开，页面要越小越稳。深浅色只靠系统偏好，取值与主界面 Pulse 令牌同源
+   （#f2f3f5 / #141518、正文 #1f2329 / #f2f3f5、主色 #2f6bff）。 */
 
 :root {
   color-scheme: light dark;
-  --se-bg: #edf1f6;
-  --se-fg: #16202e;
-  --se-muted: #5a6b81;
+  --se-bg: #f2f3f5;
+  --se-fg: #1f2329;
+  --se-muted: #5a6068;
   --se-card: #ffffff;
-  --se-border: #d3dbe6;
-  --se-accent: #2563eb;
+  --se-border: #e5e6eb;
+  --se-accent: #2f6bff;
   --se-accent-fg: #ffffff;
-  --se-danger: #b42318;
+  --se-danger: #df3146;
   --se-mono: ui-monospace, SFMono-Regular, Menlo, monospace;
 }
 
 @media (prefers-color-scheme: dark) {
   :root {
-    --se-bg: #0b1220;
-    --se-fg: #e6ecf5;
-    --se-muted: #9aabc5;
-    --se-card: #131c2c;
-    --se-border: #26334a;
+    --se-bg: #141518;
+    --se-fg: #f2f3f5;
+    --se-muted: #b4b8be;
+    --se-card: #1e2023;
+    --se-border: #34373b;
+    /* 暗色主色填充要提亮、前景换深墨（与主界面 primary-active / on-primary 同一口径）。 */
+    --se-accent: color-mix(in srgb, #2f6bff 80%, #ffffff);
+    --se-accent-fg: #141518;
+    --se-danger: #ff7a85;
   }
 }
 
@@ -56,8 +60,9 @@ body {
 
 .se-title {
   margin: 0;
-  font-size: 17px;
+  font-size: 22px;
   font-weight: 650;
+  letter-spacing: -0.01em;
 }
 
 .se-desc {
@@ -126,11 +131,11 @@ body {
 .se-btn {
   appearance: none;
   border: 1px solid var(--se-border);
-  border-radius: 9px;
+  border-radius: 10px;
   background: var(--se-card);
   color: var(--se-fg);
-  padding: 9px 16px;
-  font-size: 13.5px;
+  padding: 8px 16px;
+  font-size: 13px;
   cursor: pointer;
 }
 

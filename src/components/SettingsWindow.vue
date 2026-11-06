@@ -41,6 +41,7 @@ import { useAppStore } from "@/stores/useAppStore";
 import { api } from "@/api";
 import { updater } from "@/updater/instance";
 import { storageGet, storageRemove } from "@/utils/safeStorage";
+import { version } from "../../package.json";
 
 type SectionKey = RouteSectionKey;
 
@@ -148,6 +149,31 @@ const navItems = computed<{ key: SectionKey; label: string; icon: IconName }[]>(
 const desktopSection = computed<DesktopContainer>(() => desktopContainerForRoute(section.value));
 
 /**
+ * 侧栏分组（第 5 段按画板）：画板把 7 个导航项分成 3 组；这里 IA 仍是 4 类，
+ * 只把同一批项归到 3 个组标题下，分组标签与导航项文案是两套键。
+ */
+const NAV_GROUPS: { labelKey: string; keys: DesktopContainer[] }[] = [
+  { labelKey: "settings.window.group.app", keys: ["general"] },
+  { labelKey: "settings.window.group.data", keys: ["network", "storageFiles"] },
+  { labelKey: "settings.window.group.other", keys: ["about"] },
+];
+const navByKey = computed(() => new Map(navItems.value.map((item) => [item.key, item])));
+const navGroups = computed(() =>
+  NAV_GROUPS.map((group) => ({
+    labelKey: group.labelKey,
+    items: group.keys.map((key) => navByKey.value.get(key)!).filter(Boolean),
+  })),
+);
+
+/** 内容头一句话说明（画板每个分区标题下有一行描述）。 */
+const SECTION_DESC: Record<DesktopContainer, string> = {
+  general: "settings.window.desc.general",
+  network: "settings.window.desc.network",
+  storageFiles: "settings.window.desc.storageFiles",
+  about: "settings.window.desc.about",
+};
+
+/**
  * 侧边栏升级按钮的一次性导航键：主窗口写入，本窗口 mount/focus 时消费。
  * 只传一个导航意图。⚠️「不跨 WebView 共享 updater 状态」这句在 B5 之后**不再成立**：
  * 导航仍然只传意图，但更新**状态**现在由后端统一持有（`updater_status` / `updater-status`），
@@ -217,25 +243,40 @@ useEventListener(window, "keydown", onKeydown);
          「右边的箭头两边都不够对称」——参考图里那一列的对齐问题就出在
          左内边距与右侧留白/箭头位置不匹配。这里导航项为纯文字+图标（无展开箭头），
          一旦将来加展开子项，用同一个 `pr-2.5` 承接箭头即可保持对称。 -->
-    <nav class="glass-1 flex w-[176px] shrink-0 flex-col gap-0.5 border-r border-[var(--gosslan-divider)] px-2 py-3">
+    <nav class="glass-1 flex w-[200px] shrink-0 flex-col gap-3 border-r border-[var(--gosslan-divider)] px-2.5 py-3">
       <!-- 桌面 4 类导航不需要可见返回；⌘[ / Alt+← 键盘返回仍保留。 -->
-      <button
-        v-for="item in navItems"
-        :key="item.key"
-        class="tap-safe flex h-8 w-full items-center gap-2 rounded-[var(--gosslan-radius-md)] px-2.5 text-left text-body transition"
-        :aria-current="desktopSection === item.key ? 'true' : undefined"
-        :class="desktopSection === item.key
-          ? 'bg-[var(--gosslan-list-active)] font-medium text-[var(--gosslan-text)]'
-          : 'text-[var(--gosslan-text-2)] hover:bg-[var(--gosslan-hover)] hover:text-[var(--gosslan-text)]'"
-        @click="openSection(item.key)"
-      >
-        <Icon :name="item.icon" class="h-4 w-4 shrink-0" />
-        <span class="min-w-0 flex-1 truncate" :title="item.label">{{ item.label }}</span>
-      </button>
+      <div v-for="group in navGroups" :key="group.labelKey">
+        <p class="px-2.5 pb-1 text-micro text-[var(--gosslan-text-2)]">{{ t(group.labelKey) }}</p>
+        <button
+          v-for="item in group.items"
+          :key="item.key"
+          class="tap-safe flex h-8 w-full items-center gap-2 rounded-[var(--gosslan-radius-md)] px-2.5 text-left text-body transition"
+          :aria-current="desktopSection === item.key ? 'true' : undefined"
+          :class="desktopSection === item.key
+            ? 'bg-[var(--gosslan-primary-light)] font-medium text-[var(--gosslan-accent-ink)]'
+            : 'text-[var(--gosslan-text-2)] hover:bg-[var(--gosslan-hover)] hover:text-[var(--gosslan-text)]'"
+          @click="openSection(item.key)"
+        >
+          <Icon :name="item.icon" class="h-4 w-4 shrink-0" />
+          <span class="min-w-0 flex-1 truncate" :title="item.label">{{ item.label }}</span>
+        </button>
+      </div>
+      <!-- 侧栏底部：版本 + 自动保存说明（画板左栏页脚）。 -->
+      <div class="mt-auto border-t border-[var(--gosslan-divider)] px-2.5 pt-2.5 text-micro leading-relaxed text-[var(--gosslan-text-2)]">
+        <div>Gosslan v{{ version }}</div>
+        <div>{{ t("settings.window.footer.saved") }}</div>
+      </div>
     </nav>
 
     <!-- 右：内容区（独立滚动，切换导航不改变窗口尺寸） -->
-    <div class="scrollbar-both min-w-0 flex-1 overflow-y-auto px-5 py-4">
+    <div class="flex min-w-0 flex-1 flex-col bg-[var(--gosslan-panel)]">
+      <header class="shrink-0 px-6 pb-1 pt-3.5">
+        <h2 class="text-title font-semibold text-[var(--gosslan-text)]">
+          {{ t(DESKTOP_ROUTE_TITLE_BY_KEY[desktopSection]) }}
+        </h2>
+        <p class="mt-0.5 text-caption text-[var(--gosslan-text-2)]">{{ t(SECTION_DESC[desktopSection]) }}</p>
+      </header>
+      <div class="scrollbar-both min-h-0 flex-1 overflow-y-auto px-6 pb-2">
       <!-- 面板容器常驻（`relative` 给退场层定位）：切换分区时**不改 mode**（默认同时挂载），
            新面板立即在流里占住最终高度，旧面板绝对定位叠着淡出 ⇒ 容器高度不塌、
            不重播 enter、也不做整块位移（§11.3.7）。 -->
@@ -266,6 +307,15 @@ useEventListener(window, "keydown", onKeydown);
           </div>
         </Transition>
       </div>
+      </div>
+      <!-- 内容页脚：左侧"即时生效"，右侧"已自动保存"（画板 36px 页脚）。 -->
+      <footer class="flex h-9 shrink-0 items-center border-t border-[var(--gosslan-divider)] px-6 text-caption text-[var(--gosslan-text-2)]">
+        <span>{{ t("settings.window.footer.immediate") }}</span>
+        <span class="ml-auto inline-flex items-center gap-1 text-[var(--gosslan-success-ink)]">
+          <Icon name="check-circle2" class="h-3 w-3" />
+          {{ t("settings.window.footer.saved") }}
+        </span>
+      </footer>
     </div>
   </div>
 

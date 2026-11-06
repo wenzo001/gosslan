@@ -304,116 +304,88 @@ function close() {
       :close-to-tray="false"
     />
 
-    <!-- 顶部工具栏：过滤/刷新/清空等操作。standalone 不再重复返回键（标题栏的关闭键承担语义）。 -->
+    <!-- 顶部工具栏（画板 46px）：左侧实时状态 + 行数，右侧纯图标动作。
+         B1（2026-11-06）：功能名已在 TitleBar 上，内容区不再重复打印。 -->
     <div
-      class="flex shrink-0 items-center gap-2 border-b border-[var(--gosslan-divider)] px-3"
-      :class="'bg-[var(--gosslan-app-bg)]'"
-      :style="{ height: 'var(--gosslan-header-h)' }"
+      class="flex shrink-0 items-center gap-2 border-b border-[var(--gosslan-divider)] bg-[var(--gosslan-app-bg)] px-3.5"
+      :style="{ height: '46px' }"
     >
-      <!-- B1（2026-11-06）：功能名已在 TitleBar 上，内容区不再重复打印；这里只留计数与状态。 -->
-      <div class="flex min-w-0 items-baseline gap-2">
-        <span class="shrink-0 text-xs text-[var(--gosslan-text-2)]">
-          {{ t("logs.count", { n: logs.length }) }}
-        </span>
-      </div>
+      <span
+        class="inline-flex h-5 shrink-0 items-center gap-1.5 rounded-full px-2 text-micro"
+        :class="autoRefresh
+          ? 'bg-[var(--gosslan-success-soft)] text-[var(--gosslan-success-ink)]'
+          : 'bg-[var(--gosslan-list)] text-[var(--gosslan-text-2)]'"
+      >
+        <span
+          class="h-1.5 w-1.5 rounded-full"
+          :class="autoRefresh ? 'bg-[var(--gosslan-success)]' : 'bg-[var(--gosslan-status-offline)]'"
+        ></span>
+        {{ autoRefresh ? t("logs.live") : t("logs.paused") }}
+      </span>
+      <span class="shrink-0 text-caption text-[var(--gosslan-text-2)]">
+        {{ t("logs.count", { n: logs.length }) }}
+      </span>
 
-      <div class="ml-auto flex items-center gap-1">
-        <!-- 自动刷新开关 -->
+      <div class="ml-auto flex items-center gap-0.5">
         <button
-          class="tap-safe flex h-8 items-center gap-1.5 rounded-[var(--gosslan-radius-sm)] px-2 text-xs transition hover:bg-[var(--gosslan-hover)]"
-          :class="autoRefresh ? 'text-[var(--gosslan-accent-ink)]' : 'text-[var(--gosslan-text-2)]'"
-          :title="t('logs.autoRefresh')"
-          :aria-label="t('logs.autoRefresh')"
-          :aria-pressed="autoRefresh"
-          @click="autoRefresh = !autoRefresh; syncTimer()"
-        >
-          <Spinner v-if="autoRefresh" size-class="h-3.5 w-3.5" decorative />
-          <Icon name="refresh-cw" v-else class="h-3.5 w-3.5" />
-          <span class="hidden sm:inline">{{ t("logs.autoRefresh") }}</span>
-        </button>
-        <button
-          class="tap-safe flex h-8 items-center gap-1.5 rounded-[var(--gosslan-radius-sm)] px-2 text-xs text-[var(--gosslan-text-2)] transition hover:bg-[var(--gosslan-hover)]"
+          class="tap-safe flex h-7 w-7 items-center justify-center rounded-[var(--gosslan-radius-sm)] text-[var(--gosslan-text-2)] transition hover:bg-[var(--gosslan-hover)] hover:text-[var(--gosslan-text)]"
           :title="t('logs.refresh')"
           :aria-label="t('logs.refresh')"
           @click="load"
         >
-          <Icon name="refresh-cw" class="h-3.5 w-3.5" />
-          <span class="hidden sm:inline">{{ t("logs.refresh") }}</span>
+          <Icon name="refresh-cw" class="h-4 w-4" />
         </button>
         <button
-          class="tap-safe flex h-8 items-center gap-1.5 rounded-[var(--gosslan-radius-sm)] px-2 text-xs transition hover:bg-[var(--gosslan-hover)]"
+          class="tap-safe flex h-7 w-7 items-center justify-center rounded-[var(--gosslan-radius-sm)] transition hover:bg-[var(--gosslan-hover)]"
+          :class="copied
+            ? 'bg-[var(--gosslan-success-solid)] text-[var(--gosslan-on-primary)]'
+            : 'bg-[var(--gosslan-primary-active)] text-[var(--gosslan-on-primary)] hover:bg-[var(--gosslan-primary-hover)]'"
+          :title="t('logs.copy')"
+          :aria-label="copied ? t('logs.copied') : t('logs.copy')"
+          @click="copyAll"
+        >
+          <Icon name="copy" class="h-4 w-4" />
+        </button>
+        <button
+          class="tap-safe flex h-7 w-7 items-center justify-center rounded-[var(--gosslan-radius-sm)] transition hover:bg-[var(--gosslan-hover)]"
           :class="confirmClear ? 'text-[var(--gosslan-danger-ink)]' : 'text-[var(--gosslan-text-2)]'"
           :title="t('logs.clear')"
-          :aria-label="t('logs.clear')"
+          :aria-label="confirmClear ? t('logs.clearConfirm') : t('logs.clear')"
           @click="onClear"
         >
-          <Trash2 class="h-3.5 w-3.5" />
-          <span class="hidden sm:inline">{{ confirmClear ? t("logs.clearConfirm") : t("logs.clear") }}</span>
-        </button>
-        <!-- 日志路径与诊断包：都只读后端给的真实落点，前端不拼路径、不猜目录。 -->
-        <button
-          type="button"
-          class="tap-safe flex h-8 items-center gap-1.5 rounded-[var(--gosslan-radius-sm)] px-2 text-xs text-[var(--gosslan-text-2)] transition hover:bg-[var(--gosslan-hover)]"
-          :title="t('logs.copyPath')"
-          :aria-label="t('logs.copyPath')"
-          @click="copyLogPath"
-        >
-          <Icon name="scroll-text" class="h-3.5 w-3.5" />
-          <span class="hidden sm:inline">{{ pathCopied ? t("logs.copied") : t("logs.copyPath") }}</span>
-        </button>
-        <button
-          type="button"
-          class="tap-safe flex h-8 items-center gap-1.5 rounded-[var(--gosslan-radius-sm)] px-2 text-xs text-[var(--gosslan-text-2)] transition hover:bg-[var(--gosslan-hover)] disabled:opacity-60"
-          :title="exporting ? t('logs.exporting') : t('logs.export')"
-          :aria-label="t('logs.export')"
-          :disabled="exporting"
-          @click="exportBundle"
-        >
-          <Icon name="file-down" class="h-3.5 w-3.5" />
-          <span class="hidden sm:inline">{{ exporting ? t("logs.exporting") : t("logs.export") }}</span>
+          <Trash2 class="h-4 w-4" />
         </button>
         <!-- 读屏播报：只播「用户动作的结果」（复制成功 / 清空待确认）。
              日志正文**刻意不加 aria-live**：它是持续追加的，实时区会把读屏刷屏。 -->
         <span class="sr-only" role="status" aria-live="polite">
           {{ copied || pathCopied ? t("logs.copied") : confirmClear ? t("logs.clearConfirm") : "" }}
         </span>
-        <button
-          class="tap-safe flex h-8 items-center gap-1.5 rounded-[var(--gosslan-radius-sm)] px-2 text-xs transition"
-          :class="copied ? 'bg-[var(--gosslan-success-solid)] text-[var(--gosslan-on-primary)]' : 'bg-[var(--gosslan-primary-active)] text-[var(--gosslan-on-primary)] hover:bg-[var(--gosslan-primary-hover)]'"
-          :title="t('logs.copy')"
-          :aria-label="t('logs.copy')"
-          @click="copyAll"
-        >
-          <Icon name="copy" class="h-3.5 w-3.5" />
-          <span>{{ copied ? t("logs.copied") : t("logs.copy") }}</span>
-        </button>
       </div>
     </div>
 
-    <!-- 时间窗口过滤：最近 N 秒 / 全部。
-         一排小按钮，移动端也能点。切换后自动触发 load。 -->
+    <!-- 过滤区（画板把时间窗 / 合并 / 搜索收进同一排） -->
     <div
-      class="flex shrink-0 items-center gap-1 border-b border-[var(--gosslan-divider)] bg-[var(--gosslan-caption)] px-3 py-1"
+      class="flex shrink-0 items-center gap-1 border-b border-[var(--gosslan-divider)] bg-[var(--gosslan-caption)] px-3.5 py-1.5"
     >
       <span class="shrink-0 text-caption text-[var(--gosslan-text-2)]">{{ t("logs.window") }}</span>
       <button
         class="tap-safe rounded-[var(--gosslan-radius-sm)] px-2 py-0.5 text-caption transition"
-        :class="timeWindow === null ? 'border border-[var(--gosslan-primary)] bg-[var(--gosslan-primary-light)] font-medium text-[var(--gosslan-accent-ink)]' : 'text-[var(--gosslan-text-2)] hover:bg-[var(--gosslan-hover)]'"
+        :class="timeWindow === null ? 'bg-[var(--gosslan-primary-light)] font-medium text-[var(--gosslan-accent-ink)]' : 'text-[var(--gosslan-text-2)] hover:bg-[var(--gosslan-hover)]'"
         @click="timeWindow = null; void load()"
       >{{ t("logs.windowAll") }}</button>
       <button
         class="tap-safe rounded-[var(--gosslan-radius-sm)] px-2 py-0.5 text-caption transition"
-        :class="timeWindow === 30 ? 'border border-[var(--gosslan-primary)] bg-[var(--gosslan-primary-light)] font-medium text-[var(--gosslan-accent-ink)]' : 'text-[var(--gosslan-text-2)] hover:bg-[var(--gosslan-hover)]'"
+        :class="timeWindow === 30 ? 'bg-[var(--gosslan-primary-light)] font-medium text-[var(--gosslan-accent-ink)]' : 'text-[var(--gosslan-text-2)] hover:bg-[var(--gosslan-hover)]'"
         @click="timeWindow = 30; void load()"
       >30s</button>
       <button
         class="tap-safe rounded-[var(--gosslan-radius-sm)] px-2 py-0.5 text-caption transition"
-        :class="timeWindow === 60 ? 'border border-[var(--gosslan-primary)] bg-[var(--gosslan-primary-light)] font-medium text-[var(--gosslan-accent-ink)]' : 'text-[var(--gosslan-text-2)] hover:bg-[var(--gosslan-hover)]'"
+        :class="timeWindow === 60 ? 'bg-[var(--gosslan-primary-light)] font-medium text-[var(--gosslan-accent-ink)]' : 'text-[var(--gosslan-text-2)] hover:bg-[var(--gosslan-hover)]'"
         @click="timeWindow = 60; void load()"
       >{{ t("logs.window1m") }}</button>
       <button
         class="tap-safe rounded-[var(--gosslan-radius-sm)] px-2 py-0.5 text-caption transition"
-        :class="timeWindow === 120 ? 'border border-[var(--gosslan-primary)] bg-[var(--gosslan-primary-light)] font-medium text-[var(--gosslan-accent-ink)]' : 'text-[var(--gosslan-text-2)] hover:bg-[var(--gosslan-hover)]'"
+        :class="timeWindow === 120 ? 'bg-[var(--gosslan-primary-light)] font-medium text-[var(--gosslan-accent-ink)]' : 'text-[var(--gosslan-text-2)] hover:bg-[var(--gosslan-hover)]'"
         @click="timeWindow = 120; void load()"
       >{{ t("logs.window2m") }}</button>
       <span class="mx-1 h-3 w-px shrink-0 bg-[var(--gosslan-divider)]"></span>
@@ -421,39 +393,35 @@ function close() {
            和 4 个时间窗 chip 拆成两种形状：文字标签 + 同款 SettingsToggle。 -->
       <span class="shrink-0 text-caption text-[var(--gosslan-text-2)]">{{ t("logs.mergeButton") }}</span>
       <SettingsToggle v-model="mergeDup" :label="t('logs.mergeButton')" />
-    </div>
-
-    <!-- 过滤条：字面包含匹配，命中处高亮。 -->
-    <div class="flex shrink-0 items-center gap-2 border-b border-[var(--gosslan-divider)] px-3 py-1.5">
-      <Icon name="search" class="h-3.5 w-3.5 shrink-0 text-[var(--gosslan-text-2)]" />
-      <input
-        v-model="filter"
-        type="text"
-        :maxlength="MAX_LOG_FILTER_CHARS"
-        enterkeyhint="search"
-        autocapitalize="off"
-        autocorrect="off"
-        spellcheck="false"
-        class="min-w-0 flex-1 rounded-[var(--gosslan-radius-sm)] border border-transparent bg-transparent text-body placeholder:text-[var(--gosslan-placeholder)] outline-none transition focus:border-transparent"
-        :placeholder="t('logs.filterPlaceholder')"
-        :aria-label="t('logs.filter')"
-      />
-      <span v-if="trimmedFilter" class="shrink-0 text-xs text-[var(--gosslan-text-2)]">
-        {{ t("logs.filterCount", { n: mergedRows.length, total: logs.length }) }}
-      </span>
-      <button
-        v-if="trimmedFilter"
-        class="tap-safe flex h-6 w-6 shrink-0 items-center justify-center rounded-[var(--gosslan-radius-sm)] text-[var(--gosslan-text-2)] transition hover:bg-[var(--gosslan-hover)]"
-        :title="t('logs.filterClear')"
-        :aria-label="t('logs.filterClear')"
-        @click="filter = ''"
-      >
-        <X class="h-3.5 w-3.5" />
-      </button>
+      <!-- 过滤：字面包含匹配，命中处高亮。搜索框吃剩余宽度。 -->
+      <div class="ml-auto flex min-w-0 max-w-[260px] flex-1 items-center gap-1.5 rounded-[var(--gosslan-radius-sm)] bg-[var(--gosslan-field)] px-2">
+        <Icon name="search" class="h-3.5 w-3.5 shrink-0 text-[var(--gosslan-text-2)]" />
+        <input
+          v-model="filter"
+          type="text"
+          :maxlength="MAX_LOG_FILTER_CHARS"
+          enterkeyhint="search"
+          autocapitalize="off"
+          autocorrect="off"
+          spellcheck="false"
+          class="min-w-0 flex-1 border-0 bg-transparent py-1 text-caption text-[var(--gosslan-text)] placeholder:text-[var(--gosslan-placeholder)]"
+          :placeholder="t('logs.filterPlaceholder')"
+          :aria-label="t('logs.filter')"
+        />
+        <button
+          v-if="trimmedFilter"
+          class="tap-safe flex h-7 w-7 shrink-0 items-center justify-center rounded-[var(--gosslan-radius-sm)] text-[var(--gosslan-text-2)] transition hover:bg-[var(--gosslan-hover)]"
+          :title="t('logs.filterClear')"
+          :aria-label="t('logs.filterClear')"
+          @click="filter = ''"
+        >
+          <X class="h-3.5 w-3.5" />
+        </button>
+      </div>
     </div>
 
     <!-- 日志列表 -->
-    <div ref="logScroll" class="gosslan-selectable min-h-0 flex-1 overflow-y-auto px-3 py-2 font-mono text-body leading-relaxed">
+    <div ref="logScroll" class="gosslan-selectable min-h-0 flex-1 overflow-y-auto px-3.5 py-2 font-mono text-caption leading-relaxed">
       <StateBlock
         v-if="logs.length === 0 && loadError"
         kind="error"
@@ -462,15 +430,40 @@ function close() {
         :retry-label="t('common.retry')"
         @retry="load()"
       />
-      <div v-else-if="logs.length === 0" class="mt-16 text-center text-sm text-[var(--gosslan-text-2)]">
+      <div v-else-if="logs.length === 0" class="mt-16 text-center text-footnote text-[var(--gosslan-text-2)]">
         {{ t("logs.empty") }}
       </div>
-      <div v-else-if="mergedRows.length === 0" class="mt-16 text-center text-sm text-[var(--gosslan-text-2)]">
+      <div v-else-if="mergedRows.length === 0" class="mt-16 text-center text-footnote text-[var(--gosslan-text-2)]">
         {{ t("logs.filterEmpty") }}
       </div>
       <!-- 虚拟行模板只有一份（`LogRows.vue`）：桌面与移动两种外壳在同一时刻只挂一个，
            行内容、级别配色与 `v-memo` 判据必须完全一致（2026-10-29 审计 DUP-05）。 -->
       <LogRows v-else :items="virtualRows" :total-size="totalSize" :measure="measureRow" />
+    </div>
+
+    <!-- 底部状态条（画板 34px）：刷新状态 / 可见行数 / 路径与诊断包。
+         路径与诊断包都只读后端给的真实落点，前端不拼路径、不猜目录。 -->
+    <div
+      class="flex h-9 shrink-0 items-center gap-1.5 border-t border-[var(--gosslan-divider)] bg-[var(--gosslan-app-bg)] px-3.5 text-micro text-[var(--gosslan-text-2)]"
+    >
+      <span>{{ autoRefresh ? t("logs.autoRefresh") + " · 2s" : t("logs.paused") }}</span>
+      <span class="text-[var(--gosslan-text-2)]">·</span>
+      <span>{{ t("logs.statusCount", { n: mergedRows.length, total: logs.length }) }}</span>
+      <div class="ml-auto flex items-center gap-3">
+        <button
+          type="button"
+          class="tap-safe transition hover:text-[var(--gosslan-text)]"
+          :title="t('logs.copyPath')"
+          @click="copyLogPath"
+        >{{ pathCopied ? t("logs.copied") : t("logs.copyPath") }}</button>
+        <button
+          type="button"
+          class="tap-safe transition hover:text-[var(--gosslan-text)] disabled:opacity-60"
+          :title="exporting ? t('logs.exporting') : t('logs.export')"
+          :disabled="exporting"
+          @click="exportBundle"
+        >{{ exporting ? t("logs.exporting") : t("logs.export") }}</button>
+      </div>
     </div>
   </div>
 
