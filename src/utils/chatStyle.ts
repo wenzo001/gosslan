@@ -28,43 +28,43 @@ export const CHAT_PRESETS: ChatPreset[] = [
   {
     key: "theme",
     label: "chatStyle.preset.theme",
-    light: { mineBubble: "#bbd2ef", mineText: "#06182d", otherBubble: "#eeeef0", otherText: "#0f172a" },
+    light: { mineBubble: "#bbd2ef", mineText: "#06182d", otherBubble: "#aab5c2", otherText: "#0f172a" },
     dark: { mineBubble: "#1d4ed8", mineText: "#ffffff", otherBubble: "#1e293b", otherText: "#e2e8f0" },
   },
   {
     key: "classic",
     label: "chatStyle.preset.classic",
-    light: { mineBubble: "#bbd2ef", mineText: "#06182d", otherBubble: "#eeeef0", otherText: "#1f2937" },
+    light: { mineBubble: "#bbd2ef", mineText: "#06182d", otherBubble: "#aab5c2", otherText: "#1f2937" },
     dark: { mineBubble: "#1d4ed8", mineText: "#ffffff", otherBubble: "#252e3b", otherText: "#e5e7eb" },
   },
   {
     key: "mint",
     label: "chatStyle.preset.mint",
-    light: { mineBubble: "#a4ead0", mineText: "#092a1e", otherBubble: "#eeeef0", otherText: "#1f2937" },
+    light: { mineBubble: "#a4ead0", mineText: "#092a1e", otherBubble: "#aab5c2", otherText: "#1f2937" },
     dark: { mineBubble: "#065f46", mineText: "#ecfdf5", otherBubble: "#252e3b", otherText: "#e5e7eb" },
   },
   {
     key: "amber",
     label: "chatStyle.preset.amber",
-    light: { mineBubble: "#eccaae", mineText: "#2d1806", otherBubble: "#eeeef0", otherText: "#1f2937" },
+    light: { mineBubble: "#eccaae", mineText: "#2d1806", otherBubble: "#aab5c2", otherText: "#1f2937" },
     dark: { mineBubble: "#9a3412", mineText: "#fff7ed", otherBubble: "#252e3b", otherText: "#e5e7eb" },
   },
   {
     key: "celadon",
     label: "chatStyle.preset.celadon",
-    light: { mineBubble: "#a4eae1", mineText: "#092a26", otherBubble: "#eeeef0", otherText: "#1f2937" },
+    light: { mineBubble: "#a4eae1", mineText: "#092a26", otherBubble: "#aab5c2", otherText: "#1f2937" },
     dark: { mineBubble: "#115e59", mineText: "#f0fdfa", otherBubble: "#252e3b", otherText: "#e5e7eb" },
   },
   {
     key: "rose",
     label: "chatStyle.preset.rose",
-    light: { mineBubble: "#f1c4dc", mineText: "#2d061a", otherBubble: "#eeeef0", otherText: "#1f2937" },
+    light: { mineBubble: "#f1c4dc", mineText: "#2d061a", otherBubble: "#aab5c2", otherText: "#1f2937" },
     dark: { mineBubble: "#9d174d", mineText: "#fdf2f8", otherBubble: "#252e3b", otherText: "#e5e7eb" },
   },
   {
     key: "slate",
     label: "chatStyle.preset.slate",
-    light: { mineBubble: "#bed1f0", mineText: "#17191c", otherBubble: "#eeeef0", otherText: "#374151" },
+    light: { mineBubble: "#bed1f0", mineText: "#17191c", otherBubble: "#aab5c2", otherText: "#374151" },
     dark: { mineBubble: "#374151", mineText: "#f9fafb", otherBubble: "#1f2937", otherText: "#d1d5db" },
   },
 ];
@@ -110,9 +110,16 @@ const LIGHT_MINE_BUBBLE_S_MAX = 0.62;
 /** 亮色下气泡文字（同色相深字）的明度：0.10 ≈ 近黑、留一点色味（微信气泡上就是黑字）。 */
 const LIGHT_MINE_TEXT_L = 0.1;
 const LIGHT_MINE_TEXT_S_MAX = 0.75;
-/** 亮色下对方气泡＝浅灰，暗于近白的画布（周工定的方向：聊天区近白、气泡灰一点）。
- *  历史教训：早期对方气泡 = #f1f5f9 与画布完全同色（对比 1.00），等于没有气泡。 */
-const LIGHT_OTHER_BUBBLE = "#eeeef0";
+/** 亮色下对方气泡＝浅冷灰，按画布**最终合成色**定值（画布是 chat 白 + 16% 薄纱叠在
+ *  app-bg 上，实测 ≈#eaeef2，不是纯白）。
+ *  #aab5c2 与己方气泡 #bbd2ef 的对比 = **1.34**（护栏阈值 1.3，留 3% 余量）；
+ *  对合成画布 ≈1.87（契约色）/ 1.79（上轮实测画布）、对列表 1.77。
+ *  文字对比不受影响：最浅的预设文字 #374151 在它上面仍有 4.96。
+ *  历史教训：早期对方气泡 = #f1f5f9 与画布完全同色（对比 1.00），等于没有气泡；
+ *  后来取 #eeeef0 / #dfe3e9 时两侧只剩 1.00~1.20，读不出「哪边是我」——
+ *  1.3 这条护栏要的是**可归属性**，不是"能看见一点灰"。
+ *  守卫在 `tokenContrast.test.ts` 里按 veil 合成的画布实算，不再拿 #ffffff 当底。 */
+const LIGHT_OTHER_BUBBLE = "#aab5c2";
 
 /**
  * 暗色下柔化「我的气泡」：气泡压暗并混入深色画布，文字同步去掉纯白。
@@ -162,16 +169,18 @@ export function resolveChatColors(key: string, themeColor: string, dark: boolean
   return dark ? softenMineForDark(darkBase) : light;
 }
 
-/** 语气色（danger / warning）在亮暗两档的实值；与 `style.css` 的 token 同值，测试会对账。 */
+/** 语气色（danger / warning）在亮暗两档的实值；与 `style.css` 的 token 同值，测试会对账。
+ *  注意 warning 这里对应的是**图标档** `--gosslan-warning-ink`；文字档另有
+ *  `--gosslan-warning-text-ink`（#8a5200），只在 `--card-warning` 的卡片兜底里用到。 */
 export const UI_TONE_INKS = {
-  danger: { light: "#cc2418", dark: "#ff5548" },
-  warning: { light: "#c67600", dark: "#ff9f0a" },
+  danger: { light: "#b0170d", dark: "#ff5548" },
+  warning: { light: "#b96e00", dark: "#ff9f0a" },
 } as const;
 
 /**
  * 在给定底色上取一个**可读**的语气色。
  *
- * 用途：自己的卡片改成 `mineBubble` 底之后，`--gosslan-danger-ink` / `--gosslan-warning-ink`
+ * 用途：自己的卡片改成 `mineBubble` 底之后，`--gosslan-danger-ink`
  * 在深色实底（暗色主题）上可能只有 2~3:1。这里保留原色相，朝黑/白逐步混到 WCAG 4.5；
  * 原色已经达标就原样返回。纯函数，7 × 2 主题矩阵可在 Node 里逐格断言。
  */

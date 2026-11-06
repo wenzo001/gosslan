@@ -39,6 +39,12 @@ test("亮色：自己的气泡按 luma 定标统一到微信重量档（207±11�
   }
 });
 
+/** 两侧气泡「分不开」的唯一判据：正例与反例都走这一条，避免反例另写一套逻辑。 */
+const BUBBLE_SEPARATION_MIN = 1.3;
+function bubbleSeparationTooLow(mine: string, other: string): boolean {
+  return contrastRatio(mine, other) < BUBBLE_SEPARATION_MIN;
+}
+
 test("亮色：气泡底色保留主题色的色相（不会被混白洗成灰）", () => {
   const theme = "#3b82f6";
   const c = resolveChatColors("theme", theme, false);
@@ -48,15 +54,22 @@ test("亮色：气泡底色保留主题色的色相（不会被混白洗成灰�
   assert.ok(toHsl(c.mineBubble)[1] > 0.4, `底色饱和度掉太多：${toHsl(c.mineBubble)[1]}`);
 });
 
-test("亮色：微信式结构——画布近白，两个气泡都暗于画布，自己远深于对方", () => {
+test("亮色：画布近白，两个气泡都暗于画布，且对方气泡不靠色相也能分开", () => {
   const c = resolveChatColors("theme", "#3b82f6", false);
+  // 2026-11-06：对方气泡压到 #aab5c2 后，对方（luma 180）比己方（207）**更深** ——
+  // 这是为了把「两侧可分」拉到 1.34 的有意取舍（复核要求 ≥1.3，且明度不能只差一丁点）。
+  // 代价是对方气泡在画布上明显变重（对画布 1.87），接受：1.3 这条护栏原本就要求这个区分度。
   assert.ok(
-    luma(c.mineBubble) < luma(c.otherBubble),
-    `自己的气泡应深于对方：${luma(c.mineBubble).toFixed(0)} vs ${luma(c.otherBubble).toFixed(0)}`,
+    luma(c.otherBubble) < luma(c.mineBubble),
+    `对方气泡应比己方深：${luma(c.otherBubble).toFixed(0)} vs ${luma(c.mineBubble).toFixed(0)}`,
   );
   assert.ok(
     luma(c.otherBubble) < luma(CHAT_BG),
     `对方的气泡应比画布深（浅灰）：${luma(c.otherBubble).toFixed(0)} vs ${luma(CHAT_BG).toFixed(0)}`,
+  );
+  assert.ok(
+    luma(c.mineBubble) < luma(CHAT_BG),
+    `自己的气泡也应比画布深：${luma(c.mineBubble).toFixed(0)} vs ${luma(CHAT_BG).toFixed(0)}`,
   );
   assert.notEqual(toHsl(c.mineBubble)[0], toHsl(c.otherBubble)[0]);
 });
@@ -65,9 +78,25 @@ test("亮色：气泡与画布拉得开，不会糊在一起", () => {
   // 早前画布 #f8fafc 与纯白对方气泡对比仅 1.02，等于没有气泡（周工反馈"区分度不高"）
   const c = resolveChatColors("theme", "#3b82f6", false);
   assert.ok(contrastRatio(c.otherBubble, CHAT_BG) >= 1.08, "对方气泡与画布对比过低");
+  // 画布真实合成色 = #eaeef2（薄纱 16%），不是这里的 #ffffff ——
+  // 所以对方气泡的真实判据在 tokenContrast.test.ts（按 veil 合成，含反例自证）。
   assert.ok(contrastRatio(c.mineBubble, CHAT_BG) >= 1.3, "自己的气泡与画布对比过低");
-  // 两侧气泡之间也要能分辨
-  assert.ok(contrastRatio(c.mineBubble, c.otherBubble) >= 1.3, "两侧气泡分不开");
+  // 两侧气泡之间：自己气泡按 luma 207 定标（微信重量档，见 chatStyle.ts）。
+  // ⚠️ 1.3 是**可归属性**的下限，不是"旧配对的读数"：2026-11-06 曾把对方气泡压到
+  // #dfe3e9（与己方只剩 1.20）并顺手把阈值放到 1.18，等于"实测值 − 0.017"——
+  // 复核判定这是降阈值过关，已改回 #aab5c2（实测 1.34，留 3% 余量）并恢复 1.3。
+  // 归属不能靠色相：两者同属蓝灰，色相只差 1°（213.5 vs 212.5），靠的是明度差。
+  assert.ok(!bubbleSeparationTooLow(c.mineBubble, c.otherBubble), "两侧气泡分不开");
+});
+
+test("反例自证：两侧同色 / 近似同色必须报「分不开」", () => {
+  const c = resolveChatColors("theme", "#3b82f6", false);
+  assert.ok(bubbleSeparationTooLow(c.mineBubble, c.mineBubble), "同色必须红（1.00 < 1.3）");
+  assert.ok(bubbleSeparationTooLow(c.mineBubble, "#b9c8e4"), "近似同色必须红");
+  // 正例走同一条判据：真实配对必须绿，否则反例可能只是判据写反了。
+  assert.ok(!bubbleSeparationTooLow(c.mineBubble, c.otherBubble), "真实配对必须绿");
+  // 非空转：判据读的必须是入参颜色，把对方气泡换成只差一阶的蓝灰必须红。
+  assert.ok(bubbleSeparationTooLow(c.mineBubble, "#b8cfea"), "只差一阶的近似色必须红");
 });
 
 test("亮色：全部预设的自己气泡与画布对比 ≥ 1.25（防再次糊底）", () => {

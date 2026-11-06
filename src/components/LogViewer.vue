@@ -434,7 +434,7 @@ function close() {
         autocapitalize="off"
         autocorrect="off"
         spellcheck="false"
-        class="min-w-0 flex-1 rounded-[var(--gosslan-radius-sm)] border border-transparent bg-transparent text-body placeholder:text-[var(--gosslan-text-2)] outline-none transition focus:border-transparent"
+        class="min-w-0 flex-1 rounded-[var(--gosslan-radius-sm)] border border-transparent bg-transparent text-body placeholder:text-[var(--gosslan-placeholder)] outline-none transition focus:border-transparent"
         :placeholder="t('logs.filterPlaceholder')"
         :aria-label="t('logs.filter')"
       />
@@ -568,7 +568,7 @@ function close() {
           autocapitalize="off"
           autocorrect="off"
           spellcheck="false"
-          class="min-w-0 flex-1 rounded-[var(--gosslan-radius-sm)] border border-transparent bg-transparent text-body placeholder:text-[var(--gosslan-text-2)] outline-none transition focus:border-transparent"
+          class="min-w-0 flex-1 rounded-[var(--gosslan-radius-sm)] border border-transparent bg-transparent text-body placeholder:text-[var(--gosslan-placeholder)] outline-none transition focus:border-transparent"
           :placeholder="t('logs.filterPlaceholder')"
           :aria-label="t('logs.filter')"
         />

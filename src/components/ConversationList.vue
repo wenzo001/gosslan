@@ -472,7 +472,7 @@ useEventListener(document, "click", closeFriendMenu);
           autocorrect="off"
           autocapitalize="off"
           spellcheck="false"
-          class="w-full bg-transparent text-body placeholder:text-[var(--gosslan-text-2)] outline-none focus:border-transparent"
+          class="w-full bg-transparent text-body placeholder:text-[var(--gosslan-placeholder)] outline-none focus:border-transparent"
           :placeholder="view === 'chats' ? t('common.search') : t('common.searchContacts')"
           @keydown.enter.prevent="onSearchEnter"
           @compositionstart="ime.onStart"

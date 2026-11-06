@@ -2,14 +2,17 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
+import { contrastRatio } from "./color.ts";
 import {
   DISABLED_CONTRAST_CONTRACT,
   TOKEN_CONTRAST_CONTRACT,
   auditDisabledContrast,
+  auditLightBubbleVsCanvas,
   disabledOpacityFromClasses,
   disabledOpacityFromRule,
   findTokenContrastFailures,
   findTokenContrastUnresolved,
+  lightCanvasHex,
   parseTokenScopes,
   resolveToken,
 } from "./tokenContrast.ts";
@@ -32,6 +35,10 @@ const BROKEN = `
   --gosslan-success-ink: #047857;
   --gosslan-danger-ink: #ff3b30;
   --gosslan-warning-ink: #ff9500;
+  --gosslan-warning-text-ink: #ff9500;
+  --gosslan-warning-soft: rgba(255, 149, 0, 0.12);
+  --gosslan-field: #fafafa;
+  --gosslan-placeholder: #94a3b8;
   --gosslan-status-offline: #a3a3a3;
   --gosslan-danger-soft: rgba(255, 59, 48, 0.12);
   --gosslan-hud: rgba(38, 38, 38, 0.9);
@@ -49,13 +56,14 @@ const BROKEN = `
   --gosslan-success-ink: #30d158;
   --gosslan-danger-ink: #ff5548;
   --gosslan-warning-ink: #ff9f0a;
+  --gosslan-warning-text-ink: #ff9f0a;
   --gosslan-status-offline: #8e8e93;
   --gosslan-danger-soft: rgba(255, 85, 72, 0.18);
   --gosslan-hud: rgba(72, 72, 74, 0.92);
 }
 `;
 
-test("检查器能抓出「改回旧值」的四处违规", () => {
+test("检查器能抓出「改回旧值」的违规", () => {
   const fails = findTokenContrastFailures(BROKEN);
   const keys = fails.map((f) => `${f.fg} on ${f.bg}`);
   // 亮色：次要文字（卡片/列表底）、危险色当文字、琥珀当图标、离线点
@@ -64,6 +72,9 @@ test("检查器能抓出「改回旧值」的四处违规", () => {
   assert.ok(keys.includes("--gosslan-danger-ink on --gosslan-panel"), "未抓到 danger 当文字");
   assert.ok(keys.includes("--gosslan-warning-ink on --gosslan-panel"), "未抓到 warning 当图标");
   assert.ok(keys.includes("--gosslan-status-offline on --gosslan-panel"), "未抓到离线点");
+  // 新增契约行必须真的被尺子用上，不能只是加了行没人读。
+  assert.ok(keys.includes("--gosslan-warning-text-ink on --gosslan-panel"), "未抓到 warning 文字档");
+  assert.ok(keys.includes("--gosslan-placeholder on --gosslan-field"), "未抓到占位符落字段底（新契约行在空转）");
   for (const f of fails) assert.ok(f.ratio < f.min, "报出的组合必须确实不达标");
 });
 
@@ -154,8 +165,11 @@ test("新增的 *-ink 档在 :root 与 .dark 都成对定义", () => {
 test("亮色语义色的实际取值（钉住本次审计结论）", () => {
   const { light } = parseTokenScopes(css);
   assert.equal(light.get("--gosslan-text-2"), "#475569", "次要文字应为 Slate-600");
-  assert.equal(light.get("--gosslan-danger-ink"), "#cc2418");
-  assert.equal(light.get("--gosslan-warning-ink"), "#c67600");
+  assert.equal(light.get("--gosslan-danger-ink"), "#b0170d");
+  assert.equal(light.get("--gosslan-warning-ink"), "#b96e00");
+  // 文字档与图标档分家：图标判 3.0，文字判 4.5 —— 一个值扛不住两条判据。
+  assert.equal(light.get("--gosslan-warning-text-ink"), "#8a5200");
+  assert.equal(light.get("--gosslan-placeholder"), "#5f6b7a");
   assert.equal(light.get("--gosslan-status-offline"), "#8e8e93");
   // 填充档：承担白字的那一族（danger）必须过 4.5，所以它**不**保持系统色
   // （#ff3b30 白字只有 3.55 ⇒ 2026-09-26 压深到 #d43d43 = 4.62）；
@@ -543,5 +557,81 @@ test("禁用态契约的每一行都要有 min 与 why，且 min 不许高于 4.
       row.name !== "禁用输入框" || row.min === 4.5,
       "输入框那一族是唯一还过 AA 的，按正文档硬钉，别顺手放宽",
     );
+  }
+});
+
+// ---------------- 亮色对方气泡 vs 薄纱画布 ----------------
+//
+// 这条判据是补「按纯白算」的假绿：style.css 里 --gosslan-chat 是 #ffffff，
+// 但开启动态背景后每个区域都盖了 16% 薄纱，实际画布 ≈#eaeef2。
+// 旧测试拿 #ffffff 当底，于是 #eeeef0 气泡量出 1.16（合格），屏幕上只有 1.006（消失）。
+
+const chatStyleSrc = readFileSync(join(import.meta.dirname, "chatStyle.ts"), "utf8");
+
+test("亮色气泡 vs 薄纱画布：chat / list 两档合成底色都 ≥ 1.08", () => {
+  const audit = auditLightBubbleVsCanvas(css, chatStyleSrc);
+  assert.deepEqual(audit.unresolved, [], `画布/气泡取不到：${audit.unresolved.join(" / ")}`);
+  // 非空转：预设表 + 常量至少解出一个气泡，否则循环一格不跑、判据永远绿。
+  assert.ok(audit.rows.length >= 2, `只量到 ${audit.rows.length} 行 ⇒ 气泡或画布其中一侧没被算`);
+  const table = audit.rows
+    .map((r) => `  · ${r.bubble} vs ${r.canvasToken}（合成 ${r.canvas}）= ${r.ratio.toFixed(3)}`)
+    .join("\n");
+  console.log(`· 亮色气泡/画布合成对比：\n${table}`);
+  assert.deepEqual(
+    audit.fails.map((f) => `${f.bubble} vs ${f.canvasToken}=${f.ratio.toFixed(3)}`),
+    [],
+    `气泡与画布糊在一起：\n${audit.fails.map((f) => `  ${f.bubble} vs ${f.canvasToken}（${f.canvas}）= ${f.ratio.toFixed(3)} < ${f.min}`).join("\n")}`,
+  );
+});
+
+test("反例自证：对方气泡改回 #eeeef0（薄纱画布上的旧值）必须两档画布都红", () => {
+  const reverted = auditLightBubbleVsCanvas(css, chatStyleSrc.replaceAll("#aab5c2", "#eeeef0"));
+  assert.deepEqual(reverted.unresolved, []);
+  assert.deepEqual(
+    reverted.fails.map((f) => f.canvasToken).sort(),
+    ["--gosslan-chat", "--gosslan-list"],
+    "改回旧值必须 chat/list 两档各报一次 —— 只红一档说明另一半画布没参与计算",
+  );
+  for (const f of reverted.fails) {
+    assert.ok(f.ratio < f.min, `报红要带真实比值：${f.canvasToken} ${f.ratio.toFixed(3)} < ${f.min}`);
+    assert.equal(f.bubble, "#eeeef0", `报红的应当是改回的那个值，实际 ${f.bubble}`);
+  }
+});
+
+test("尺子确实读 veil 与底层：改薄纱会改变画布读数，删 token 报 unresolved", () => {
+  const chat = lightCanvasHex(css, "--gosslan-chat");
+  const list = lightCanvasHex(css, "--gosslan-list");
+  assert.ok(chat && list, "真实 style.css 应能合成 chat/list 两档画布");
+  assert.notEqual(chat, list, "chat 与 list 的底层 token 不同，合成色不该相同（否则两档断言是同一件事）");
+  // 16% 薄纱的白面不等于 #ffffff —— 这正是旧判据的失败形状。
+  assert.notEqual(chat, "#ffffff", "画布被算成纯白 ⇒ 薄纱没参与合成，判据又回到假绿");
+  const thicker = css.replace("--ambient-veil: 0.16;", "--ambient-veil: 0.32;");
+  assert.ok(thicker.includes("--ambient-veil: 0.32;"), "veil 锚点漂了，这条自证在空转");
+  assert.notEqual(lightCanvasHex(thicker, "--gosslan-chat"), chat, "改 veil 后画布必须跟着变");
+  const missing = css.replace("--ambient-veil: 0.16;", "--veil-removed: 0.16;");
+  assert.deepEqual(
+    auditLightBubbleVsCanvas(missing, chatStyleSrc).unresolved.length,
+    2,
+    "veil 没了 ⇒ chat/list 两档都要报『算不出画布』，不许静默跳过",
+  );
+});
+
+test("占位符 token：亮暗成对定义，亮色在画布/列表/字段底都 ≥ 4.65", () => {
+  const { light, dark } = parseTokenScopes(css);
+  // 漏写 .dark ⇒ 暗色继承亮色的 #5f6b7a，深底上直接读不动。
+  assert.ok(light.has("--gosslan-placeholder"), ":root 缺少 --gosslan-placeholder");
+  assert.ok(dark.has("--gosslan-placeholder"), ".dark 缺少 --gosslan-placeholder");
+  // 暗色本次不改观感：与次要文字同值即"零变化"。
+  assert.equal(dark.get("--gosslan-placeholder"), dark.get("--gosslan-text-2"));
+  const canvas = lightCanvasHex(css, "--gosslan-chat");
+  assert.ok(canvas, "亮色画布算不出");
+  const surfaces: Array<[string, string]> = [
+    ["--gosslan-chat（薄纱合成）", canvas],
+    ["--gosslan-list", light.get("--gosslan-list")!],
+    ["--gosslan-field", light.get("--gosslan-field")!],
+  ];
+  for (const [name, bg] of surfaces) {
+    const ratio = contrastRatio(light.get("--gosslan-placeholder")!, bg);
+    assert.ok(ratio >= 4.65, `占位符在 ${name} 上只有 ${ratio.toFixed(2)}，低于 4.65`);
   }
 });

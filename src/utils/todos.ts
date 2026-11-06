@@ -333,7 +333,7 @@ export const TODO_STATUS_LABEL_KEY: Record<TodoStatus, string> = {
 export const TODO_STATUS_CLASS: Record<TodoStatus, string> = {
   todo: "text-[var(--gosslan-text-2)]",
   doing: "text-[var(--gosslan-primary)]",
-  overdue: "text-[var(--gosslan-warning-ink)]",
+  overdue: "text-[var(--gosslan-warning-text-ink)]",
   // 做不了是**结论**而不是出错（不抢缺陷红/延期橙），用次级文本色与 X 图标表达"此路不通"。
   impossible: "text-[var(--gosslan-text-2)]",
   done: "text-[var(--gosslan-success-ink)]",
@@ -348,7 +348,7 @@ export const TODO_STATUS_CLASS: Record<TodoStatus, string> = {
 export const TODO_STATUS_PILL: Record<TodoStatus, string> = {
   todo: "bg-[var(--gosslan-hover)] text-[var(--gosslan-text-2)]",
   doing: "bg-[color-mix(in_srgb,var(--gosslan-primary)_14%,transparent)] text-[var(--gosslan-accent-ink)]",
-  overdue: "bg-[var(--gosslan-warning-soft)] text-[var(--gosslan-warning-ink)]",
+  overdue: "bg-[var(--gosslan-warning-soft)] text-[var(--gosslan-warning-text-ink)]",
   impossible: "bg-[var(--gosslan-hover)] text-[var(--gosslan-text-2)]",
   done: "bg-[var(--gosslan-success-soft)] text-[var(--gosslan-success-ink)]",
 };

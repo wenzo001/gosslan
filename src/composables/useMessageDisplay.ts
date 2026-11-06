@@ -134,7 +134,7 @@ export function useMessageDisplay(opts: {
         : "var(--gosslan-danger-ink)",
       "--card-warning": mineCard
         ? readableToneOn(colors.value.mineBubble, UI_TONE_INKS.warning[tone])
-        : "var(--gosslan-warning-ink)",
+        : "var(--gosslan-warning-text-ink)",
     };
     // 真实 hex 只在自己卡片上有（对方卡片是 CSS token，读不到 hex）——供 mention 对比度现算。
     if (mineCard) vars["--bubble-bg-raw"] = colors.value.mineBubble;

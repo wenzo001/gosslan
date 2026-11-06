@@ -4264,6 +4264,7 @@ async function main() {
     const perf = want("perf");
     const ambient = want("ambient");
     const surfaces = want("surfaces");
+    const bleed = want("bleed");
     const favorites = want("favorites");
     const favthumb = want("favthumb");
     const links = want("links");
@@ -4501,6 +4502,7 @@ async function main() {
     await runSegment("perf", perf, () => runPerf(cdp, url));
     await runSegment("ambient", ambient, () => runAmbient(cdp, url));
     await runSegment("surfaces", surfaces, () => runSurfaces(cdp, url));
+    await runSegment("bleed", bleed, () => runBleed(cdp, url));
     await runSegment("favorites", favorites, () => runFavorites(cdp, url));
     await runSegment("favthumb", favthumb, () => runFavThumb(cdp, url));
     await runSegment("namecap", namecap, () => runNameCap(cdp, url));
@@ -16379,6 +16381,292 @@ async function runUpdater(cdp, url) {
   await cdp.send("Emulation.setDeviceMetricsOverride", {
     width: 390, height: 844, deviceScaleFactor: 2, mobile: true,
   });
+}
+
+/**
+ * 移动端「聊天列穿透左侧列表」（--only=bleed，2026-11-06 用户截图 524×1024）。
+ *
+ * 定性：`aside` 与 `main` 在移动布局里**都绝对定位、都铺满整屏**，`main` 在上层（z-20），
+ * 而它自己只是一层 `--ambient-canvas-base` 的 16% 薄纱（html[data-ambient] 下与 fog 合成）。
+ * 22ee3301 把 ChatWindow 根改成 `ambient-canvas-child`（自身背景清空）之后，那 16% 的薄纱
+ * 下面直接就是平移 -30% 的 `aside`（列表），于是列表文字/底纹从薄纱里透出来。
+ * 桌面布局里 `aside` 是 in-flow（与 `main` 水平并排），没有"下层"可透，所以只在 ≤767 出现。
+ *
+ * 量法：六档宽度 × 亮/暗 × frost 开/关，读四层 computed `background-color`，再用
+ * 「把 aside 设为 visibility:hidden 前后、同一批采样点的像素差」作为**穿透量**。
+ * 修复后 aside 在聊天列下面是 `visibility:hidden`（过渡结束后才切，保留视差），
+ * 所以同点色差必须为 0；桌面档用矩形不相交做结构判据（隐藏 aside 会改布局，不能做差分）。
+ *
+ * 闸：`fog 开` 时 `main` 的 alpha 必须仍然很低（≤0.35）——不许用"把聊天列改成不透明"糊过去。
+ */
+async function runBleed(cdp, url) {
+  const WIDTHS = [1280, 900, 768, 640, 430, 390];
+  const HEIGHT = 800;
+  const MOBILE_MAX = 767;
+  const outFile = path.join(ROOT, "test-results", "bleed-readings.json");
+  const shotDir = path.join(ROOT, "test-results", "bleed-shots");
+  fs.mkdirSync(shotDir, { recursive: true });
+
+  await cdp.send("Page.bringToFront").catch(() => {});
+  await cdp.send("Emulation.setEmulatedMedia", { features: [] }).catch(() => {});
+
+  // ⚠️ 必须**在挂载前**把视口设成目标宽度：`isMobile` 的初值在 store 创建时
+  // 由 `resolveMobileLayout`（平台优先、宽度兜底）算一次，挂载后再改 ref 只会改
+  // 我们 import 到的 store，不会触发已挂载布局的重渲染（探针里没有 init 的 resize 监听）。
+  const boot = async (width) => {
+    await cdp.send("Emulation.setDeviceMetricsOverride", {
+      width, height: HEIGHT, deviceScaleFactor: 1, mobile: false,
+    }).catch(() => {});
+    await cdp.send("Page.navigate", { url });
+    await cdp.settled();
+    await sleep(2_200);
+    await cdp.eval(PAGE_FIXTURE);
+
+    await cdp.eval(`(async () => {
+      window.__TAURI_INTERNALS__ = window.__TAURI_INTERNALS__ || {
+        metadata: { currentWindow: { label: 'main' }, currentWebview: { label: 'main', windowLabel: 'main' } },
+        invoke: async () => null, transformCallback: (cb) => cb, convertFileSrc: (p) => p,
+      };
+      window.__TAURI_EVENT_PLUGIN_INTERNALS__ = window.__TAURI_EVENT_PLUGIN_INTERNALS__ || { unregisterListener: () => {} };
+      await window.__probe.install('/src/layouts/ResponsiveLayout.vue', '', ${
+        JSON.stringify(JSON.stringify({ router: true, hostHeight: `${HEIGHT}px` }))
+      });
+      const host = document.getElementById('probe-host');
+      host.className = (host.className + ' ambient-canvas').trim();
+      host.style.setProperty('--ambient-canvas-base', 'var(--gosslan-chat)');
+      host.style.background = '';
+      // ambient 层必须在 install **之后**补装：install 会把 body.innerHTML 清掉。
+      if (!document.querySelector('.ambient')) {
+        const A = await import('/src/utils/ambient.ts');
+        A.installAmbient();
+      }
+    })()`);
+
+    // 种子：列表要有真实行（穿透的像素差来自行文字），聊天列要有真实消息。
+    await cdp.eval(`(async () => {
+      const { useChatStore } = await import('/src/stores/useChatStore.ts');
+      const chat = useChatStore();
+      const conv = 'peer-demo';
+      chat.conversations = [
+        { id: conv, kind: 'single', name: '林岸', avatar: null, last_msg: '晚点把图发你', last_ts: 1700000000100, unread: 0, pinned: true },
+        { id: 'peer-2', kind: 'single', name: '安德烈 P4N', avatar: null, last_msg: '徽章做好了', last_ts: 1700000000090, unread: 2, pinned: false },
+        { id: 'peer-3', kind: 'group', name: '设计评审组', avatar: null, last_msg: '就按这个方向走', last_ts: 1700000000080, unread: 9, pinned: false },
+        { id: 'peer-4', kind: 'single', name: 'Kong', avatar: null, last_msg: '收到', last_ts: 1700000000070, unread: 0, pinned: false },
+        { id: 'peer-5', kind: 'group', name: '发版线', avatar: null, last_msg: '5.18.35 过闸', last_ts: 1700000000060, unread: 0, pinned: false },
+      ];
+      chat.messages[conv] = Array.from({ length: 18 }, (_, i) => ({
+        id: 'm' + i, conv_id: conv, sender_id: i % 2 ? conv : 'self', kind: 'text',
+        text: '第 ' + (i + 1) + ' 条：窗口缩窄后这里不应该露出列表文字。',
+        ts: 1700000000000 + i * 1000, status: 'sent', media: null,
+      }));
+      chat.activeConv = conv;
+      const R = await import('/src/router/main.ts');
+      await R.mainRouter.push({ name: 'conversation', params: { convId: conv } });
+      await new Promise((r) => setTimeout(r, 900));
+    })()`);
+    await sleep(700);
+  };
+
+  const LAYERS = `(() => {
+    const host = document.getElementById('probe-host');
+    const st = (el) => (el ? getComputedStyle(el) : null);
+    const bg = (el) => { const s = st(el); return s ? String(s.backgroundColor) : 'none'; };
+    const bf = (el) => { const s = st(el); return s ? String(s.backdropFilter || s.webkitBackdropFilter || 'none') : 'none'; };
+    const rect = (el) => { if (!el) return null; const r = el.getBoundingClientRect(); return { x: r.x, y: r.y, w: r.width, h: r.height }; };
+    const main = host ? host.querySelector('main') : null;
+    const aside = host ? host.querySelector('aside.ambient-canvas') : null;
+    const chatRoot = main ? main.querySelector('[data-lang-menu-boundary]') : null;
+    const body = chatRoot || main;
+    const listArea = body ? body.querySelector('.vlist') : null;
+    const kids = body ? [...body.querySelectorAll('.ambient-canvas-child')].filter((el) => el.className.includes('shrink-0')) : [];
+    const composer = kids.length ? kids[kids.length - 1] : null;
+    return {
+      isMobile: document.documentElement.classList.contains('is-mobile'),
+      vw: innerWidth,
+      host: { bg: bg(host), rect: rect(host) },
+      aside: {
+        exists: !!aside, vis: aside ? st(aside).visibility : 'none', pos: aside ? st(aside).position : 'none',
+        bg: bg(aside), rect: rect(aside), text: aside ? (aside.innerText || '').replace(/\\s+/g, ' ').trim().slice(0, 48) : '',
+      },
+      main: { exists: !!main, bg: bg(main), bf: bf(main), rect: rect(main) },
+      chatRoot: { exists: !!chatRoot, bg: chatRoot ? bg(chatRoot) : 'none', rect: rect(chatRoot) },
+      listArea: { bg: listArea ? bg(listArea) : 'none' },
+      composer: { bg: composer ? bg(composer) : 'none' },
+    };
+  })()`;
+
+  const alphaOf = (s) => {
+    const slash = /\/\s*([\d.]+)\s*\)/.exec(s || "");
+    if (slash) return parseFloat(slash[1]);
+    const rgba = /rgba\(\s*[\d.]+\s*,\s*[\d.]+\s*,\s*[\d.]+\s*,\s*([\d.]+)\s*\)/.exec(s || "");
+    return rgba ? parseFloat(rgba[1]) : 1;
+  };
+  const hexRgb = (h) => [parseInt(h.slice(1, 3), 16), parseInt(h.slice(3, 5), 16), parseInt(h.slice(5, 7), 16)];
+
+  const sample = async (points) => {
+    const shot = await cdp.send("Page.captureScreenshot", { format: "png" });
+    const hexes = await cdp.eval(`(async () => {
+      const im = new Image();
+      im.src = 'data:image/png;base64,' + ${JSON.stringify(shot.data)};
+      await new Promise((res, rej) => { im.onload = () => res(true); im.onerror = () => rej(new Error('img')); });
+      const cv = document.createElement('canvas');
+      cv.width = im.width; cv.height = im.height;
+      const ctx = cv.getContext('2d', { willReadFrequently: true });
+      ctx.drawImage(im, 0, 0);
+      const sx = im.width / innerWidth, sy = im.height / innerHeight;
+      const hex = (d) => '#' + [d[0], d[1], d[2]].map((v) => v.toString(16).padStart(2, '0')).join('');
+      return ${JSON.stringify(points)}.map((p) => {
+        const x = Math.min(im.width - 1, Math.max(0, Math.round(p.x * sx)));
+        const y = Math.min(im.height - 1, Math.max(0, Math.round(p.y * sy)));
+        const d = ctx.getImageData(x, y, 1, 1).data;
+        return hex(d);
+      });
+    })()`);
+    return { data: shot.data, hexes };
+  };
+
+  /** 采样点：聊天列左缘竖条（用户截图里露字的那一带）+ 底部横条。 */
+  const gridPoints = (r) => {
+    const pts = [];
+    for (let y = Math.round(r.y + 40); y <= r.y + r.h - 30; y += 10) {
+      for (const dx of [6, 18, 34, 54]) pts.push({ x: Math.round(r.x + dx), y });
+    }
+    for (let x = Math.round(r.x + 20); x <= r.x + r.w - 20; x += 24) {
+      pts.push({ x, y: Math.round(r.y + r.h - 16) });
+    }
+    return pts;
+  };
+
+  const rows = [];
+  // `isMobile` 在 store 创建时按**当时视口**算一次，探针没跑 `app.init()` 的 resize 监听，
+  // 所以每跨过 `≤767` 这条线都必须重新 boot（navigate → install）；同一布局组内只改视口。
+  const BOOT_AT = new Map([[1280, 1280], [900, 1280], [768, 1280], [640, 640], [430, 640], [390, 640]]);
+  let bootedAt = null;
+  for (const width of WIDTHS) {
+    const anchor = BOOT_AT.get(width);
+    if (bootedAt !== anchor) {
+      await boot(anchor);
+      bootedAt = anchor;
+    } else if (width !== anchor) {
+      await cdp.send("Emulation.setDeviceMetricsOverride", {
+        width, height: HEIGHT, deviceScaleFactor: 1, mobile: false,
+      }).catch(() => {});
+      await sleep(800);
+    }
+    const isMobile = width <= MOBILE_MAX;
+    // `applyIsMobile()` 是 `html.is-mobile` 的唯一写入方，探针没跑 init，这里按同一宽度兜底补上
+    // （只影响 `.conv-footer-safe` 这类布局补偿，不参与穿透定性）。
+    await cdp.eval(`(() => {
+      document.documentElement.classList.toggle('is-mobile', ${isMobile});
+      return true;
+    })()`);
+    await sleep(500);
+
+    const combos = [];
+    for (const dark of [false, true]) {
+      for (const frostOn of [true, false]) {
+        combos.push({ tag: `${dark ? "暗" : "亮"}-fog-frost${frostOn ? "on" : "off"}`, dark, fog: true, frostOn });
+      }
+    }
+    combos.push({ tag: "亮-fogoff-froston", dark: false, fog: false, frostOn: true });
+
+    for (const c of combos) {
+      await cdp.eval(`(() => {
+        const h = document.documentElement;
+        h.classList.toggle('dark', ${c.dark});
+        h.dataset.ambient = ${JSON.stringify(c.fog ? "static" : "off")};
+        if (${!c.frostOn}) h.dataset.frost = 'off'; else delete h.dataset.frost;
+        return true;
+      })()`);
+      await sleep(260);
+      const layer = await cdp.eval(LAYERS);
+      const rec = { width, tag: c.tag, isMobile, layer };
+
+      if (isMobile) {
+        const pts = gridPoints(layer.main.rect);
+        const a = await sample(pts);
+        await cdp.eval(`(() => { const a = document.querySelector('#probe-host aside.ambient-canvas'); if (a) a.style.visibility = 'hidden'; return true; })()`);
+        await sleep(160);
+        const b = await sample(pts);
+        await cdp.eval(`(() => { const a = document.querySelector('#probe-host aside.ambient-canvas'); if (a) a.style.visibility = ''; return true; })()`);
+        let maxD = 0, hit = 0, worst = null;
+        for (let i = 0; i < pts.length; i++) {
+          const x = hexRgb(a.hexes[i]), y = hexRgb(b.hexes[i]);
+          const d = Math.max(Math.abs(x[0] - y[0]), Math.abs(x[1] - y[1]), Math.abs(x[2] - y[2]));
+          if (d > maxD) { maxD = d; worst = { ...pts[i], withList: a.hexes[i], listHidden: b.hexes[i] }; }
+          if (d > 2) hit += 1;
+        }
+        rec.maxD = maxD;
+        rec.hit = hit;
+        rec.points = pts.length;
+        rec.worst = worst;
+        if ((width === 390 || width === 1280) && c.fog && c.frostOn) {
+          const name = `bleed-${width}-${c.dark ? "dark" : "light"}.png`;
+          fs.writeFileSync(path.join(shotDir, name), Buffer.from(a.data, "base64"));
+          rec.shot = name;
+        }
+      } else {
+        const ar = layer.aside.rect, mr = layer.main.rect;
+        rec.overlap = Math.max(0, Math.round(ar.x + ar.w - mr.x));
+        if (width === 1280 && c.fog && c.frostOn) {
+          const shot = await cdp.send("Page.captureScreenshot", { format: "png" });
+          const name = `bleed-${width}-${c.dark ? "dark" : "light"}.png`;
+          fs.writeFileSync(path.join(shotDir, name), Buffer.from(shot.data, "base64"));
+          rec.shot = name;
+        }
+      }
+      rows.push(rec);
+
+      const tail = isMobile
+        ? `main=${layer.main.bg} α=${alphaOf(layer.main.bg)} | aside.vis=${layer.aside.vis} pos=${layer.aside.pos} bg=${layer.aside.bg} | chat=${layer.chatRoot.bg} | 输入区=${layer.composer.bg} | Δ=${rec.maxD}(超2色阶 ${rec.hit}/${rec.points})`
+        : `aside=${layer.aside.rect ? Math.round(layer.aside.rect.x) + ".." + Math.round(layer.aside.rect.x + layer.aside.rect.w) : "-"} main.x=${Math.round(layer.main.rect.x)} 重叠=${rec.overlap}px`;
+      console.log(`  · ${width}px ${c.tag}: ${tail}`);
+    }
+
+    const light = rows.filter((r) => r.width === width && r.tag === "亮-fog-froston").pop();
+    if (isMobile) {
+      // 反向（聊天 → 列表）：`pane-under-chat` 被摘掉、`visibility` 立刻回到可见 ——
+      // 证明修复只隐藏「被盖住」的列表，没有把 push/pop 里滑出的列表一起藏掉。
+      await cdp.eval(`(async () => {
+        const R = await import('/src/router/main.ts');
+        await R.mainRouter.push({ name: 'chats' });
+        await new Promise((r) => setTimeout(r, 500));
+      })()`);
+      await sleep(400);
+      const back = await cdp.eval(LAYERS);
+      check(`穿透 ${width}px：回到列表态时列表立刻恢复可见（视差方向未被修坏）`,
+        back.aside.vis === "visible" && Math.round(back.main.rect.x) >= width,
+        "aside.visibility=visible 且 main 已滑出屏幕右缘",
+        `aside.vis=${back.aside.vis} main.x=${Math.round(back.main.rect.x)} vw=${back.vw}`);
+      await cdp.eval(`(async () => {
+        const R = await import('/src/router/main.ts');
+        await R.mainRouter.push({ name: 'conversation', params: { convId: 'peer-demo' } });
+        await new Promise((r) => setTimeout(r, 500));
+      })()`);
+      await sleep(400);
+      check(`穿透 ${width}px：列表在聊天列下面时已退出合成（aside visibility）`,
+        light.layer.aside.vis === "hidden",
+        "aside.visibility=hidden（平移结束后再切，保留视差）",
+        `aside.visibility=${light.layer.aside.vis} / position=${light.layer.aside.pos} / main=${light.layer.main.bg}`);
+      check(`穿透 ${width}px：聊天列自身画布仍允许雾穿透（未改成不透明）`,
+        alphaOf(light.layer.main.bg) <= 0.35,
+        "main 的 background alpha ≤0.35（薄纱保留）",
+        `${light.layer.main.bg} α=${alphaOf(light.layer.main.bg)}`);
+      for (const r of rows.filter((x) => x.width === width)) {
+        check(`穿透 ${width}px ${r.tag}：聊天列与左侧列表之间无可见穿透`,
+          r.maxD <= 1,
+          "隐藏列表前后同点像素差 ≤1 色阶（≈ 不存在可辨穿透）",
+          `Δ=${r.maxD} 超2色阶=${r.hit}/${r.points}${r.worst ? " 最差点=" + JSON.stringify(r.worst) : ""}`);
+      }
+    } else {
+      check(`穿透 ${width}px：桌面布局里列表与聊天列水平不交叠（不存在下层可透）`,
+        light.overlap === 0 && light.layer.aside.vis === "visible",
+        "aside.right <= main.left 且 aside.visibility=visible",
+        `重叠=${light.overlap}px aside.vis=${light.layer.aside.vis} aside=${JSON.stringify(light.layer.aside.rect)} main.x=${Math.round(light.layer.main.rect.x)}`);
+    }
+  }
+
+  fs.writeFileSync(outFile, JSON.stringify({ widths: WIDTHS, mobileMax: MOBILE_MAX, rows }, null, 2));
 }
 
 async function runFavorites(cdp, url) {

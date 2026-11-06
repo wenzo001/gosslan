@@ -878,7 +878,12 @@ function onResizeEnd() {
       :class="app.isMobile
         ? 'absolute inset-y-0 left-0 z-10 w-full ' +
           (paneAnimate ? 'transition-transform duration-[var(--gosslan-duration)] ease-[var(--gosslan-ease)] ' : '') +
-          (mobileView === 'list' && !favoritesOpen ? 'translate-x-0' : '-translate-x-[30%]')
+          (mobileView === 'list' && !favoritesOpen ? 'translate-x-0 ' : '-translate-x-[30%] ') +
+          // 被 main（z-20）盖住时整层退出合成：main 只是 16%/14% 的薄纱，列表文字会从纱下透出来
+          // （用户 2026-11-06 524×1024 实测）。visibility 的延迟切换见 style.css `.pane-under-chat`。
+          (mobileView === 'chat' || favoritesOpen
+            ? 'pane-under-chat' + (paneAnimate ? '' : ' pane-under-chat--instant')
+            : '')
         : ''"
       :inert="app.isMobile && mobileView === 'chat'"
       :style="app.isMobile ? undefined : { width: `${listW}px` }"
@@ -1121,11 +1126,11 @@ function onResizeEnd() {
          收藏列表是普通一级 tab；只有点进单条收藏（`/favorites/:favId`）才按下钻页处理。 -->
     <nav
       v-if="showMobileTabBar"
-      class="safe-bottom frost absolute bottom-0 left-0 right-0 z-40 flex items-center justify-around border-t border-[var(--gosslan-border)]"
+      class="safe-bottom frost tabbar-chrome absolute bottom-0 left-0 right-0 z-40 flex items-center justify-around border-t border-[var(--gosslan-border)]"
     >
       <button
         class="relative flex flex-1 flex-col items-center gap-0.5 py-2.5"
-        :class="navState === 'chats' ? 'text-[var(--gosslan-primary)]' : 'text-[var(--gosslan-text-2)]'"
+        :class="navState === 'chats' ? 'text-[var(--gosslan-accent-ink)]' : 'text-[var(--gosslan-text-2)]'"
         @click="selectMobileTab('chats', 'list')"
       >
         <span class="nav-glyph-pill relative" :data-active="navState === 'chats'">
@@ -1146,7 +1151,7 @@ function onResizeEnd() {
       </button>
       <button
         class="relative flex flex-1 flex-col items-center gap-0.5 py-2.5"
-        :class="navState === 'contacts' ? 'text-[var(--gosslan-primary)]' : 'text-[var(--gosslan-text-2)]'"
+        :class="navState === 'contacts' ? 'text-[var(--gosslan-accent-ink)]' : 'text-[var(--gosslan-text-2)]'"
         @click="selectMobileTab('contacts', 'list')"
       >
         <span class="nav-glyph-pill relative" :data-active="navState === 'contacts'">
@@ -1169,7 +1174,7 @@ function onResizeEnd() {
            桌面端 NavRail 也有星标按钮，风格一致。 -->
       <button
         class="relative flex flex-1 flex-col items-center gap-0.5 py-2.5"
-        :class="navState === 'favorites' ? 'text-[var(--gosslan-primary)]' : 'text-[var(--gosslan-text-2)]'"
+        :class="navState === 'favorites' ? 'text-[var(--gosslan-accent-ink)]' : 'text-[var(--gosslan-text-2)]'"
         @click="selectMobileTab('favorites', 'chat')"
       >
         <span class="nav-glyph-pill relative" :data-active="navState === 'favorites'">
@@ -1188,7 +1193,7 @@ function onResizeEnd() {
            设置/链接/日志都进「我的」，不再需要二级 sheet）。 -->
       <button
         class="relative flex flex-1 flex-col items-center gap-0.5 py-2.5"
-        :class="navState === 'me' ? 'text-[var(--gosslan-primary)]' : 'text-[var(--gosslan-text-2)]'"
+        :class="navState === 'me' ? 'text-[var(--gosslan-accent-ink)]' : 'text-[var(--gosslan-text-2)]'"
         @click="selectMobileTab('me', 'chat')"
       >
         <span class="nav-glyph-pill relative" :data-active="navState === 'me'">

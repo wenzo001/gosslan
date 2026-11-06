@@ -3286,6 +3286,119 @@ export function checkAmbientChromeSurfaces(src: AmbientChromeSources): GuardIssu
     });
   }
 
+  // AC-15：移动布局里聊天列（`main`，z-20）铺满整屏，下层会话列表（z-10，只 `-translate-x-[30%]`
+  // 做视差）**也铺满整屏**。两者都是 `.ambient-canvas` 薄纱（α 0.16/0.14），列表的行文字就从
+  // 聊天列下面透出来（用户 2026-11-06 524×1024 截图：聊天列左缘与底部持续露出半截旧列表文字）。
+  // 语义：**聊天列永远是不透明的内容承载面，只有它自己的画布允许雾穿透**；被它盖住的列表必须
+  // 整层退出合成（`visibility: hidden`），不许靠给 `main` 加 opacity / 换实底去"压住"。
+  // 反例自证在 designGuards.test.ts：删 `pane-under-chat` / 把 `visibility: hidden` 改回 visible /
+  // 去掉 240ms 延迟 / 只改一边的镜像条件，都必须红。
+  const listPane = [...src.responsiveLayout.matchAll(/<aside[^>]*>/g)].find((m) =>
+    m[0].includes("bg-[var(--gosslan-list)]"),
+  );
+  const mainPane = [...src.responsiveLayout.matchAll(/<main[^>]*>/g)].find((m) =>
+    m[0].includes("bg-[var(--gosslan-chat)]"),
+  );
+  if (!listPane) {
+    out.push({
+      line: 0,
+      message:
+        "AC-15：ResponsiveLayout 里找不到会话列表 `<aside>`（`bg-[var(--gosslan-list)]`）—— " +
+        "无法确认上层聊天列是否把它退出合成。",
+    });
+  } else {
+    const tag = listPane[0];
+    // 精确匹配独立的 `'pane-under-chat'` 字面量：`' pane-under-chat--instant'` 里也含这个子串，
+    // 只按 `includes` 判会让"把类摘掉"的反例漏红。
+    if (!/['"]pane-under-chat['"]/.test(tag)) {
+      out.push({
+        line: lineAt(src.responsiveLayout, listPane.index ?? 0),
+        message:
+          "AC-15：移动端的会话列表没有挂 `pane-under-chat` —— 它会被聊天列的 16%/14% 薄纱整片透出来" +
+          "（用户 2026-11-06：聊天列左缘/底部露出旧列表残行）。",
+      });
+    }
+    if (!/mobileView === 'chat' \|\| favoritesOpen/.test(tag)) {
+      out.push({
+        line: lineAt(src.responsiveLayout, listPane.index ?? 0),
+        message:
+          "AC-15：列表的 `pane-under-chat` 条件与 `main` 的 `translate-x-0` 不是同一判据" +
+          "（`mobileView === 'chat' || favoritesOpen`）—— 只改一边会留下" +
+          "「main 已经盖住整屏、列表还参与合成」的窗口。",
+      });
+    }
+  }
+  if (!mainPane) {
+    out.push({
+      line: 0,
+      message: "AC-15：ResponsiveLayout 里找不到聊天列 `<main>`（`bg-[var(--gosslan-chat)]`）—— 无法核对镜像条件。",
+    });
+  } else {
+    if (!/mobileView === 'chat' \|\| favoritesOpen/.test(mainPane[0])) {
+      out.push({
+        line: lineAt(src.responsiveLayout, mainPane.index ?? 0),
+        message:
+          "AC-15：`main` 的平移判据不是 `mobileView === 'chat' || favoritesOpen` —— " +
+          "它与列表的 `pane-under-chat` 必须镜像，否则会出现「聊天列还是半透明、列表已藏」或反之。",
+      });
+    }
+    if (/\bopacity-\d|opacity:\s*[\d.]+/.test(mainPane[0])) {
+      out.push({
+        line: lineAt(src.responsiveLayout, mainPane.index ?? 0),
+        message:
+          "AC-15：`main` 上出现了 opacity —— 聊天列要解决的是「下层列表参与合成」，" +
+          "给内容承载面加 opacity 会连自己的文字一起变淡，不是修法。",
+      });
+    }
+  }
+  const underRule = [...src.styleCss.matchAll(/html\.is-mobile\s*\.pane-under-chat\s*\{([\s\S]*?)\}/g)][0];
+  if (!underRule) {
+    out.push({
+      line: 0,
+      message:
+        "AC-15：style.css 里没有 `html.is-mobile .pane-under-chat` 规则 —— " +
+        "列表在被聊天列盖住时仍会参与合成（这是 2026-11-06 穿透缺陷本身）。",
+    });
+  } else {
+    const body = underRule[1];
+    if (!/visibility:\s*hidden\s*;/.test(body)) {
+      out.push({
+        line: lineAt(src.styleCss, underRule.index ?? 0),
+        message: "AC-15：`.pane-under-chat` 没有 `visibility: hidden` —— 列表文字仍会从薄纱下透出来。",
+      });
+    }
+    if (!/transition-property:\s*transform,\s*visibility\s*;/.test(body)) {
+      out.push({
+        line: lineAt(src.styleCss, underRule.index ?? 0),
+        message:
+          "AC-15：`.pane-under-chat` 的 `transition-property` 不是 `transform, visibility` —— " +
+          "visibility 必须和平移一起参与过渡，否则视差（push/pop）会在中途丢一帧。",
+      });
+    }
+    if (!/transition-delay:\s*0s,\s*var\(--gosslan-duration\)\s*;/.test(body)) {
+      out.push({
+        line: lineAt(src.styleCss, underRule.index ?? 0),
+        message:
+          "AC-15：`.pane-under-chat` 的 visibility 没有延迟到平移结束（`0s, var(--gosslan-duration)`）—— " +
+          "列表会在滑出动画一开始就消失，push/pop 的视差被吃掉。",
+      });
+    }
+  }
+  const instantRule = [...src.styleCss.matchAll(/html\.is-mobile\s*\.pane-under-chat--instant\s*\{([\s\S]*?)\}/g)][0];
+  if (!instantRule) {
+    out.push({
+      line: 0,
+      message:
+        "AC-15：缺 `html.is-mobile .pane-under-chat--instant` —— 一级 tab 瞬时切换（`paneAnimate === false`）" +
+        "会白留 240ms 延迟，期间列表仍在合成。",
+    });
+  } else if (!/transition-delay:\s*0s,\s*0s\s*;/.test(instantRule[1])) {
+    out.push({
+      line: lineAt(src.styleCss, instantRule.index ?? 0),
+      message: "AC-15：`--instant` 档没有把 visibility 的延迟清零（`transition-delay: 0s, 0s`）。",
+    });
+  }
+
   return out.sort((a, b) => a.line - b.line);
 }
 

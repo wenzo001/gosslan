@@ -1929,7 +1929,7 @@ function retryHistory() {
          就有预期，而不是看着进度条一直不动以为卡死。可关闭，切换会话后重新提示。 -->
     <div
       v-if="btLink && !btHintDismissed"
-      class="flex shrink-0 items-center gap-2 border-b border-[var(--gosslan-divider)] bg-[var(--gosslan-warning-soft)] px-4 py-1.5 text-meta leading-[18px] text-[var(--gosslan-warning-ink)]"
+      class="flex shrink-0 items-center gap-2 border-b border-[var(--gosslan-divider)] bg-[var(--gosslan-warning-soft)] px-4 py-1.5 text-meta leading-[18px] text-[var(--gosslan-warning-text-ink)]"
     >
       <Bluetooth class="h-3.5 w-3.5 shrink-0" />
       <span class="min-w-0 flex-1">{{ t("chat.bt.slowHint") }}</span>

@@ -89,7 +89,7 @@ async function download(e: ShareEntry) {
       </button>
     </div>
 
-    <div v-if="truncated && entries.length > 0" class="mb-2 rounded-[var(--gosslan-radius-sm)] bg-[var(--gosslan-warning-soft)] px-2 py-1 text-caption text-[var(--gosslan-warning-ink)]" role="status">
+    <div v-if="truncated && entries.length > 0" class="mb-2 rounded-[var(--gosslan-radius-sm)] bg-[var(--gosslan-warning-soft)] px-2 py-1 text-caption text-[var(--gosslan-warning-text-ink)]" role="status">
       {{ t("share.truncated", { count: entries.length }) }}
     </div>
 
