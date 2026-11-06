@@ -362,8 +362,8 @@ CASES: list[Case] = [
             "桌面跑一遍看不出来，只有扫 class 列表的 checkImageBubbleHeightSources 拦得住",
         file=ROOT / "src" / "components" / "message" / "MessageImageBubble.vue",
         injections=[(
-            'class="flex w-full items-center justify-center bg-[var(--gosslan-hover)]"',
-            'class="flex h-32 w-full items-center justify-center bg-[var(--gosslan-hover)]"',
+            'class="gosslan-skeleton-in flex w-full items-center justify-center bg-[var(--gosslan-hover)]"',
+            'class="gosslan-skeleton-in flex h-32 w-full items-center justify-center bg-[var(--gosslan-hover)]"',
         )],
         cmd=["node", "--test", "--experimental-strip-types", "--disable-warning=ExperimentalWarning",
              "src/utils/designGuards.test.ts"],
