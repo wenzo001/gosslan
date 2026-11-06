@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import Icon from "@/components/ui/Icon.vue";
 import Spinner from "@/components/ui/Spinner.vue";
 /**
  * 「搜索聊天记录」结果页（用户需求 2026-09-12 晚）：
@@ -27,7 +28,6 @@ import {
   DropdownMenuRoot,
   DropdownMenuTrigger,
 } from "reka-ui";
-import { ChevronRight, Search } from "lucide-vue-next";
 import { X } from "@/components/ui/icons";
 import { api } from "@/api";
 import { useAppStore } from "@/stores/useAppStore";
@@ -417,7 +417,7 @@ function showSender(group: ChatSearchGroup): boolean {
       <div
         class="flex h-9 min-w-0 flex-1 items-center gap-2 rounded-[var(--gosslan-radius-md)] border border-[var(--gosslan-border)] bg-[var(--gosslan-field)] px-3 transition"
       >
-        <Search class="h-4 w-4 shrink-0 text-[var(--gosslan-text-2)]" />
+        <Icon name="search" class="h-4 w-4 shrink-0 text-[var(--gosslan-text-2)]" />
         <input
           ref="inputRef"
           v-model="keyword"
@@ -579,7 +579,7 @@ function showSender(group: ChatSearchGroup): boolean {
             @click="enterChat"
           >
             {{ t("search.enterChat") }}
-            <ChevronRight class="h-3.5 w-3.5" />
+            <Icon name="chevron-right" class="h-3.5 w-3.5" />
           </button>
         </div>
         <div ref="listRef" class="min-h-0 flex-1 overflow-y-auto px-4 py-3">

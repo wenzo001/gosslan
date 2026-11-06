@@ -43,7 +43,7 @@ import { fmtConversationTime } from "@/utils/time";
 import { INPUT_DEFER_MS } from "@/utils/defer";
 import { MAX_LIST_FILTER_KEYWORD_CHARS } from "@/utils/validation";
 import { formatBytes } from "@/utils/format";
-import { FILE_KIND_ICONS, extBadgeLabel, fileKindOf, fileKindStyle } from "@/utils/fileKind";
+import { FILE_KIND_ICON_NAMES, extBadgeLabel, fileKindOf, fileKindStyle } from "@/utils/fileKind";
 import { openLocalFile, saveLocalFile } from "@/utils/localFile";
 import { dropFavoritePreview, favoritePreviewUrl, loadFavoritePreview, clearFavoritePreviews } from "@/utils/favoritePreview";
 import { mergeItemLine, mergeSummary, parseMergePayload } from "@/utils/mergeCard";
@@ -52,8 +52,7 @@ import { cardCopyText } from "@/utils/cardText";
 import {
   TODO_STATUS_LABEL_KEY, TODO_STATUS_PILL, isTodoStatus, type TodoImage, type TodoStatus, } from "@/utils/todos";
 import TodoImageThumb from "@/components/TodoImageThumb.vue";
-import {
-  AlignLeft, BarChart3, Code, Copy, CornerUpLeft, Download, FolderOpen, Image as ImageIcon, ListTodo, Megaphone, MoreHorizontal, ScrollText, Share2 } from "lucide-vue-next";
+import Icon from "@/components/ui/Icon.vue";
 import { Trash2, X } from "@/components/ui/icons";
 import type { FavoriteEntry, FileMeta, MsgKind } from "@/types";
 import { api } from "@/api";
@@ -356,12 +355,12 @@ function rowSubtitle(f: FavoriteEntry): string {
 }
 
 function kindIcon(f: FavoriteEntry) {
-  if (f.kind === "todo") return ListTodo;
-  if (f.kind === "poll") return BarChart3;
-  if (f.kind === "announcement") return Megaphone;
-  if (f.kind === "merge") return ScrollText;
-  if (f.kind === "image" || f.kind === "file") return FILE_KIND_ICONS[fileKindOf(displayName(f))];
-  return f.kind === "code" ? Code : AlignLeft;
+  if (f.kind === "todo") return "list-todo";
+  if (f.kind === "poll") return "bar-chart3";
+  if (f.kind === "announcement") return "megaphone";
+  if (f.kind === "merge") return "scroll-text";
+  if (f.kind === "image" || f.kind === "file") return FILE_KIND_ICON_NAMES[fileKindOf(displayName(f))];
+  return f.kind === "code" ? "code" : "align-left";
 }
 
 function kindStyle(f: FavoriteEntry) {
@@ -774,7 +773,7 @@ async function confirmDelete() {
                 class="mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-[var(--gosslan-radius-md)]"
                 :style="row.style"
               >
-                <component :is="row.icon" class="h-4 w-4" />
+                <Icon :name="row.icon" class="h-4 w-4" />
               </span>
               <span class="min-w-0 max-w-full flex-1" :class="app.isMobile ? 'pr-7' : ''">
                 <span class="block max-w-full truncate text-body text-[var(--gosslan-text)]" :title="row.title">
@@ -803,7 +802,7 @@ async function confirmDelete() {
               :aria-label="t('favorite.more')"
               @click.stop="openMenuAt($event, row.f)"
             >
-              <MoreHorizontal class="h-4 w-4" />
+              <Icon name="more-horizontal" class="h-4 w-4" />
             </button>
           </div>
           <div v-if="filtered.length === 0" class="py-8 text-center text-xs text-[var(--gosslan-text-2)]">
@@ -908,8 +907,8 @@ async function confirmDelete() {
               class="rounded-[var(--gosslan-radius-md)] bg-[var(--gosslan-panel)] p-3"
             >
               <div class="flex items-start gap-2">
-                <component
-                  :is="kindIcon(active)"
+                <Icon
+                  :name="kindIcon(active)"
                   class="mt-0.5 h-4 w-4 shrink-0 text-[var(--gosslan-text-2)]"
                   aria-hidden="true"
                 />
@@ -978,7 +977,7 @@ async function confirmDelete() {
               class="tap-safe flex min-w-14 flex-1 flex-col items-center gap-0.5 rounded-[var(--gosslan-radius-sm)] py-1.5 text-caption text-[var(--gosslan-text-2)] transition hover:bg-[var(--gosslan-hover)]"
               @click="copyItem(active)"
             >
-              <Copy class="h-4 w-4" aria-hidden="true" />
+              <Icon name="copy" class="h-4 w-4" aria-hidden="true" />
               <span class="whitespace-nowrap">{{ t("favorite.copy") }}</span>
             </button>
             <button
@@ -986,7 +985,7 @@ async function confirmDelete() {
               class="tap-safe flex min-w-14 flex-1 flex-col items-center gap-0.5 rounded-[var(--gosslan-radius-sm)] py-1.5 text-caption text-[var(--gosslan-text-2)] transition hover:bg-[var(--gosslan-hover)]"
               @click="startForward(active)"
             >
-              <Share2 class="h-4 w-4" aria-hidden="true" />
+              <Icon name="share2" class="h-4 w-4" aria-hidden="true" />
               <span class="whitespace-nowrap">{{ t("favorite.forward") }}</span>
             </button>
             <button
@@ -994,7 +993,7 @@ async function confirmDelete() {
               class="tap-safe flex min-w-14 flex-1 flex-col items-center gap-0.5 rounded-[var(--gosslan-radius-sm)] py-1.5 text-caption text-[var(--gosslan-text-2)] transition hover:bg-[var(--gosslan-hover)]"
               @click="previewImage(active)"
             >
-              <ImageIcon class="h-4 w-4" aria-hidden="true" />
+              <Icon name="image-icon" class="h-4 w-4" aria-hidden="true" />
               <span class="whitespace-nowrap">{{ t("favorite.viewImage") }}</span>
             </button>
             <button
@@ -1002,7 +1001,7 @@ async function confirmDelete() {
               class="tap-safe flex min-w-14 flex-1 flex-col items-center gap-0.5 rounded-[var(--gosslan-radius-sm)] py-1.5 text-caption text-[var(--gosslan-text-2)] transition hover:bg-[var(--gosslan-hover)]"
               @click="openItem(active)"
             >
-              <FolderOpen class="h-4 w-4" aria-hidden="true" />
+              <Icon name="folder-open" class="h-4 w-4" aria-hidden="true" />
               <span class="whitespace-nowrap">{{ t("favorite.open") }}</span>
             </button>
             <button
@@ -1010,14 +1009,14 @@ async function confirmDelete() {
               class="tap-safe flex min-w-14 flex-1 flex-col items-center gap-0.5 rounded-[var(--gosslan-radius-sm)] py-1.5 text-caption text-[var(--gosslan-text-2)] transition hover:bg-[var(--gosslan-hover)]"
               @click="saveItem(active)"
             >
-              <Download class="h-4 w-4" aria-hidden="true" />
+              <Icon name="download" class="h-4 w-4" aria-hidden="true" />
               <span class="whitespace-nowrap">{{ t("favorite.saveAs") }}</span>
             </button>
             <button
               class="tap-safe flex min-w-14 flex-1 flex-col items-center gap-0.5 rounded-[var(--gosslan-radius-sm)] py-1.5 text-caption text-[var(--gosslan-text-2)] transition hover:bg-[var(--gosslan-hover)]"
               @click="locate(active)"
             >
-              <CornerUpLeft class="h-4 w-4" aria-hidden="true" />
+              <Icon name="corner-up-left" class="h-4 w-4" aria-hidden="true" />
               <span class="whitespace-nowrap">{{ t("favorite.locate") }}</span>
             </button>
             <button
@@ -1054,15 +1053,15 @@ async function confirmDelete() {
     <!-- 行菜单：复制 / 转发 / 跳回原消息 / 删除（桌面右键与移动 ⋯ 共用一份实现） -->
     <ContextMenu v-if="menu" :x="menu.x" :y="menu.y" @close="menu = null">
       <DropdownMenuItem class="gosslan-menu-item" @select="copyItem(menu.item)">
-        <Copy />
+        <Icon name="copy" />
         {{ t("favorite.copy") }}
       </DropdownMenuItem>
       <DropdownMenuItem class="gosslan-menu-item" @select="startForward(menu.item)">
-        <Share2 />
+        <Icon name="share2" />
         {{ t("favorite.forward") }}
       </DropdownMenuItem>
       <DropdownMenuItem class="gosslan-menu-item" @select="locate(menu.item)">
-        <CornerUpLeft />
+        <Icon name="corner-up-left" />
         {{ t("favorite.locate") }}
       </DropdownMenuItem>
       <DropdownMenuSeparator class="gosslan-menu-sep" />

@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import Icon from "@/components/ui/Icon.vue";
 import type { CSSProperties } from "vue";
 import BubbleTail from "@/components/message/BubbleTail.vue";
 /**
@@ -15,7 +16,6 @@ import BubbleTail from "@/components/message/BubbleTail.vue";
  * 页脚的「查看 N 条转发消息」表达。
  */
 import { computed } from "vue";
-import { ScrollText } from "lucide-vue-next";
 import { t } from "@/i18n";
 import { mergeItemLine, parseMergePayload } from "@/utils/mergeCard.ts";
 
@@ -49,7 +49,7 @@ const previewLines = computed(() =>
     @click="emit('open')"
   >
     <div class="flex items-center gap-1.5">
-      <ScrollText class="h-4 w-4 shrink-0 text-[var(--card-ink-soft)]" aria-hidden="true" />
+      <Icon name="scroll-text" class="h-4 w-4 shrink-0 text-[var(--card-ink-soft)]" aria-hidden="true" />
       <span class="truncate text-body font-medium text-[var(--card-ink)]" :title="title">
         {{ title }}
       </span>

@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import Icon from "@/components/ui/Icon.vue";
 /**
  * 群文件面板：把该群**全部**群文件汇总成一份清单（钉钉/飞书「群文件」的等价物）。
  *
@@ -20,9 +21,8 @@ import { useMemberProfile } from "@/composables/useMemberProfile";
 import BaseModal from "@/components/BaseModal.vue";
 import { fmtConversationTime } from "@/utils/time";
 import { formatBytes } from "@/utils/format";
-import { FILE_KIND_ICONS, extBadgeLabel, fileKindOf, fileKindStyle } from "@/utils/fileKind";
+import { FILE_KIND_ICON_NAMES, extBadgeLabel, fileKindOf, fileKindStyle } from "@/utils/fileKind";
 import { openLocalFile, saveLocalFile } from "@/utils/localFile";
-import { Download, FolderOpen, RotateCw, Ban } from "lucide-vue-next";
 import { DropdownMenuItem } from "reka-ui";
 import ContextMenu from "@/components/ContextMenu.vue";
 import { revealItemInDir } from "@tauri-apps/plugin-opener";
@@ -119,7 +119,7 @@ onBeforeUnmount(stopActivityWatch);
 /** 每项的文件类型与配色 —— 与文件气泡同一套（utils/fileKind），保证同一种文件在
  *  列表和气泡里长得一样。 */
 function kindIcon(name: string) {
-  return FILE_KIND_ICONS[fileKindOf(name)];
+  return FILE_KIND_ICON_NAMES[fileKindOf(name)];
 }
 /** 徽标配色只有一份实现（`utils/fileKind`）：此前与收藏页各抄了一遍 12% 混底。 */
 function kindStyle(name: string) {
@@ -285,7 +285,7 @@ function stateText(state: GroupFileEntry["local_state"]): string {
         <span class="min-w-0 truncate" :title="loadError">{{ t("group.files.loadFail") }}</span>
         <PrimaryBtn size="default" shrink @click="load()">
           <span class="inline-flex items-center gap-1">
-            <RotateCw class="h-3.5 w-3.5" aria-hidden="true" />
+            <Icon name="rotate-cw" class="h-3.5 w-3.5" aria-hidden="true" />
             {{ t("common.retry") }}
           </span>
         </PrimaryBtn>
@@ -335,7 +335,7 @@ function stateText(state: GroupFileEntry["local_state"]): string {
             class="flex h-9 w-9 shrink-0 items-center justify-center rounded-[var(--gosslan-radius-md)]"
             :style="kindStyle(f.name)"
           >
-            <component :is="kindIcon(f.name)" class="h-[18px] w-[18px]" />
+            <Icon :name="kindIcon(f.name)" class="h-[18px] w-[18px]" />
           </div>
 
           <div class="min-w-0 flex-1">
@@ -374,7 +374,7 @@ function stateText(state: GroupFileEntry["local_state"]): string {
             :aria-label="t('group.files.refetch')"
             @click.stop="refetch(f)"
           >
-            <RotateCw class="h-3.5 w-3.5" />
+            <Icon name="rotate-cw" class="h-3.5 w-3.5" />
           </button>
           <!-- 取消入口只在「真有在途字节」的行上出现：判据见 utils/groupFileCancel。
                不给灰项 —— 已完成/未开始的行显示取消只会制造「点了没反应」的误报。 -->
@@ -386,7 +386,7 @@ function stateText(state: GroupFileEntry["local_state"]): string {
             :disabled="cancellingId === f.transfer_id"
             @click.stop="cancelGroupFile(f)"
           >
-            <Ban class="h-3.5 w-3.5" />
+            <Icon name="ban" class="h-3.5 w-3.5" />
           </button>
         </div>
         <p v-if="truncated" class="px-2 py-2 text-caption text-[var(--gosslan-text-2)]">
@@ -397,11 +397,11 @@ function stateText(state: GroupFileEntry["local_state"]): string {
     <!-- 右键菜单：整表一个实例，用 `ctx.f` 记住是那一行（与好友/会话列表同款） -->
     <ContextMenu v-if="ctx" :x="ctx.x" :y="ctx.y" @close="ctx = null">
       <DropdownMenuItem class="gosslan-menu-item" @select="saveAs(ctx.f)">
-        <Download class="h-3.5 w-3.5" />
+        <Icon name="download" class="h-3.5 w-3.5" />
         {{ t("favorite.saveAs") }}
       </DropdownMenuItem>
       <DropdownMenuItem class="gosslan-menu-item" @select="revealInFolder(ctx.f)">
-        <FolderOpen class="h-3.5 w-3.5" />
+        <Icon name="folder-open" class="h-3.5 w-3.5" />
         {{ t("common.revealInFolder") }}
       </DropdownMenuItem>
     </ContextMenu>

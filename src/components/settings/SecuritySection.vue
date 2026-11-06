@@ -1,7 +1,7 @@
 <script setup lang="ts">
+import Icon from "@/components/ui/Icon.vue";
 import SettingsGroup from "@/components/settings/SettingsGroup.vue";
 import SettingsRow from "@/components/settings/SettingsRow.vue";
-import { Lock } from "lucide-vue-next";
 import { t } from "@/i18n";
 </script>
 
@@ -13,7 +13,7 @@ import { t } from "@/i18n";
       last
     >
       <span class="flex items-center gap-1 rounded-full bg-[var(--gosslan-success-soft)] px-2.5 py-1 text-caption text-[var(--gosslan-success-ink)]">
-        <Lock class="h-3 w-3" />
+        <Icon name="lock" class="h-3 w-3" />
         {{ t("settings.security.enabled") }}
       </span>
     </SettingsRow>

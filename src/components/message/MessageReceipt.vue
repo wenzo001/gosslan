@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import Icon from "@/components/ui/Icon.vue";
 import { t } from "@/i18n";
 import Spinner from "@/components/ui/Spinner.vue";
 import { computed } from "vue";
@@ -7,7 +8,6 @@ import { useExclusivePopup } from "@/composables/useExclusivePopup";
 import { PopoverContent, PopoverPortal, PopoverRoot, PopoverTrigger } from "reka-ui";
 import type { SendState } from "@/composables/useMessageDisplay";
 import type { GroupDeliverySummary } from "@/types";
-import { CheckCheck, Clock3, HelpCircle } from "lucide-vue-next";
 import { X } from "@/components/ui/icons";
 import { AlertCircle, Check } from "@/components/ui/icons";
 import AvatarBox from "@/components/ui/AvatarBox.vue";
@@ -211,7 +211,7 @@ function readerAvatar(id: string): string | null {
       class="flex h-5 w-5 items-center justify-center text-[var(--gosslan-text-2)]"
       role="img" :title="title" :aria-label="title"
     >
-      <HelpCircle class="h-4 w-4" stroke-width="2.5" />
+      <Icon name="help-circle" class="h-4 w-4" stroke-width="2.5" />
     </span>
     <PopoverRoot v-if="readerIds.length > 0" :open="readersOpen" @update:open="onReadersOpenChange">
       <PopoverTrigger as-child>
@@ -337,7 +337,7 @@ function readerAvatar(id: string): string | null {
       :title="title"
       :aria-label="title"
     >
-      <HelpCircle class="h-4 w-4" stroke-width="2.5" />
+      <Icon name="help-circle" class="h-4 w-4" stroke-width="2.5" />
     </span>
     <!-- 四种收发状态（发送中 / 等对端上线 / 已送达 / 已读）**常驻叠在同一个固定尺寸占位里**，
          切换只做透明度交叉淡入 —— 不重建节点、不改 key、不重播缩放。
@@ -364,7 +364,7 @@ function readerAvatar(id: string): string | null {
       >
         <span class="relative flex items-center">
           <Check class="h-3.5 w-3.5 text-[var(--gosslan-text-2)]" />
-          <Clock3 class="absolute -right-1 -bottom-0.5 h-2.5 w-2.5 text-[var(--gosslan-text-2)]" />
+          <Icon name="clock3" class="absolute -right-1 -bottom-0.5 h-2.5 w-2.5 text-[var(--gosslan-text-2)]" />
         </span>
       </span>
       <span
@@ -389,7 +389,7 @@ function readerAvatar(id: string): string | null {
         class="receipt-layer" :data-active="state === 'delivered'"
         data-receipt-state="delivered" aria-hidden="true"
       >
-        <CheckCheck class="h-4 w-4 text-[var(--gosslan-text-2)]" />
+        <Icon name="check-check" class="h-4 w-4 text-[var(--gosslan-text-2)]" />
       </span>
       <!-- read：双勾主题色 —— 对方已读（TG 是蓝色，我们用 app 主题色）。
            用 primary 而不是 success：绿色在深色模式下容易跟"在线"状态混淆；
@@ -398,7 +398,7 @@ function readerAvatar(id: string): string | null {
         class="receipt-layer" :data-active="state === 'read'"
         data-receipt-state="read" aria-hidden="true"
       >
-        <CheckCheck class="h-4 w-4 text-[var(--gosslan-primary)]" />
+        <Icon name="check-check" class="h-4 w-4 text-[var(--gosslan-primary)]" />
       </span>
     </span>
     <!-- 发送中的取消键。⚠️ 必须是上面那个 `role="img"` 图标的**兄弟节点**，不能塞进它内部：

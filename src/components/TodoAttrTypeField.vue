@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import Icon from "@/components/ui/Icon.vue";
 /**
  * 「任务类型」属性控件：与关联时间/标签同壳（见 `TodoAttrField`）。
  *
@@ -9,7 +10,6 @@
  *   - 「自定义…」不立即落库，先在面板里输入名字，确认后才写（后端对空名明确拒收）。
  */
 import { nextTick, ref, watch } from "vue";
-import { ChevronDown } from "lucide-vue-next";
 import { Check } from "@/components/ui/icons";
 import CharCounter from "@/components/ui/CharCounter.vue";
 import TodoAttrField from "@/components/TodoAttrField.vue";
@@ -88,7 +88,7 @@ function applyCustom(close: () => void) {
           :class="currentClass"
           :title="current"
         >{{ current }}</span>
-        <ChevronDown class="h-3.5 w-3.5 shrink-0 text-[var(--gosslan-text-2)]" aria-hidden="true" />
+        <Icon name="chevron-down" class="h-3.5 w-3.5 shrink-0 text-[var(--gosslan-text-2)]" aria-hidden="true" />
       </button>
     </template>
 

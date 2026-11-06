@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import Icon from "@/components/ui/Icon.vue";
 import { t } from "@/i18n";
 import { addressText, linkLabelKey, linkLabelParams, maybeOffline } from "@/utils/peerConnectionInfo";
 import { computed, onUnmounted, ref, watch } from "vue";
@@ -14,8 +15,6 @@ import SettingsToggle from "@/components/settings/SettingsToggle.vue";
 import BaseModal from "@/components/BaseModal.vue";
 import { MAX_SEARCH_KEYWORD_CHARS } from "@/utils/validation";
 import { shouldProbeOnSearchMiss } from "@/utils/addFriendProbe";
-import { UserPlus } from "lucide-vue-next";
-import { MessageCircle } from "lucide-vue-next";
 import { Check } from "@/components/ui/icons";
 import { X } from "@/components/ui/icons";
 import AvatarBox from "@/components/ui/AvatarBox.vue";
@@ -476,7 +475,7 @@ async function add(peerId: string) {
             :aria-label="t('friend.add.alreadyFriend')"
             @click="emit('chat', p.device_id)"
           >
-            <MessageCircle class="h-3.5 w-3.5" />
+            <Icon name="message-circle" class="h-3.5 w-3.5" />
             {{ t("conv.startChat") }}
           </button>
           <!-- 对方已先申请加我 → 直接同意/拒绝（与「新朋友」页同一套动作） -->
@@ -523,7 +522,7 @@ async function add(peerId: string) {
                 class="tap-safe flex items-center gap-1 rounded-[var(--gosslan-radius-md)] bg-[var(--gosslan-primary-active)] px-2.5 py-1 text-xs font-medium text-[var(--gosslan-on-primary)] transition hover:bg-[var(--gosslan-primary-hover)]"
                 @click="add(p.device_id)"
               >
-                <UserPlus class="h-3 w-3" />
+                <Icon name="user-plus" class="h-3 w-3" />
                 {{ t("friend.add.addAgain") }}
               </button>
             </template>
@@ -541,7 +540,7 @@ async function add(peerId: string) {
             class="tap-safe flex items-center gap-1 rounded-[var(--gosslan-radius-md)] bg-[var(--gosslan-primary-active)] px-3 py-1.5 text-xs font-medium text-[var(--gosslan-on-primary)] transition hover:bg-[var(--gosslan-primary-hover)]"
             @click="add(p.device_id)"
           >
-            <UserPlus class="h-3.5 w-3.5" />
+            <Icon name="user-plus" class="h-3.5 w-3.5" />
             {{ t("friend.add.add") }}
           </button>
         </div>

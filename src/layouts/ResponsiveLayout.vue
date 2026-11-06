@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import Icon from "@/components/ui/Icon.vue";
 import { t } from "@/i18n";
 import { computed, ref, onMounted, onUnmounted, watch, watchEffect } from "vue";
 import { useRoute, useRouter, type RouteLocationRaw } from "vue-router";
@@ -36,7 +37,6 @@ import { useImagePreviewStore } from "@/stores/useImagePreview";
 import LinksList from "@/components/LinksList.vue";
 import MobilePageFrame from "@/components/MobilePageFrame.vue";
 import ProfileSection from "@/components/settings/ProfileSection.vue";
-import { ScrollText, Settings, UserCircle } from "lucide-vue-next";
 import type { ExternalLink, Friend, OutgoingFriendRequest, PendingRequest } from "@/types";
 import { selfFriendOf } from "@/utils/selfChat";
 import { locateFailureReason } from "@/utils/chatSearch";
@@ -993,7 +993,7 @@ function onResizeEnd() {
                  图标与桌面 NavRail 一致用 lucide 线性图标，不再用 📋 emoji（用户 2026-09-20「日志图标好奇怪」）。 -->
             <div class="flex flex-col">
               <button class="flex items-center gap-3 px-4 py-3.5 text-left transition hover:bg-[var(--gosslan-list-hover)]" @click="openSettings()">
-                <Settings class="h-5 w-5 text-[var(--gosslan-text-2)]" />
+                <Icon name="settings" class="h-5 w-5 text-[var(--gosslan-text-2)]" />
                 <span class="flex-1 text-sm">{{ t("nav.settings") }}</span>
               </button>
               <!-- 行间内缩分隔线（从文本列起 = px-4 + 20 图标 + gap-3 = 48px ⇒ ml-12），
@@ -1002,12 +1002,12 @@ function onResizeEnd() {
                    塞进 button 是非法 HTML。 -->
               <div class="ml-12 h-px shrink-0 bg-[var(--gosslan-divider)]"></div>
               <button class="flex items-center gap-3 px-4 py-3.5 text-left transition hover:bg-[var(--gosslan-list-hover)]" @click="openMobileLinks">
-                <NavIcon name="links" size-class="h-5 w-5" class="text-[var(--gosslan-text-2)]" />
+                <NavIcon name="links" variant="rail" class="text-[var(--gosslan-text-2)]" />
                 <span class="flex-1 text-sm">{{ t("nav.links") }}</span>
               </button>
               <div class="ml-12 h-px shrink-0 bg-[var(--gosslan-divider)]"></div>
               <button class="flex items-center gap-3 px-4 py-3.5 text-left transition hover:bg-[var(--gosslan-list-hover)]" @click="openLogs()">
-                <ScrollText class="h-5 w-5 text-[var(--gosslan-text-2)]" />
+                <Icon name="scroll-text" class="h-5 w-5 text-[var(--gosslan-text-2)]" />
                 <span class="flex-1 text-sm">{{ t("nav.logs") }}</span>
               </button>
             </div>
@@ -1141,7 +1141,7 @@ function onResizeEnd() {
             class="pointer-events-none absolute inset-0 rounded-full bg-[color-mix(in_srgb,var(--gosslan-primary)_13%,transparent)]"
             :transition="reducedMotion ? { duration: 0 } : { type: 'spring', stiffness: 480, damping: 36, mass: 0.7 }"
           />
-          <NavIcon name="chats" :active="navState === 'chats'" size-class="h-5 w-5" />
+          <NavIcon name="chats" :active="navState === 'chats'" variant="tab" />
           <UnreadBadge
             v-if="chat.totalUnread > 0"
             :count="chat.totalUnread"
@@ -1162,7 +1162,7 @@ function onResizeEnd() {
             class="pointer-events-none absolute inset-0 rounded-full bg-[color-mix(in_srgb,var(--gosslan-primary)_13%,transparent)]"
             :transition="reducedMotion ? { duration: 0 } : { type: 'spring', stiffness: 480, damping: 36, mass: 0.7 }"
           />
-          <NavIcon name="contacts" :active="navState === 'contacts'" size-class="h-5 w-5" />
+          <NavIcon name="contacts" :active="navState === 'contacts'" variant="tab" />
           <UnreadBadge
             v-if="chat.pendingRequests.length"
             :count="chat.pendingRequests.length"
@@ -1185,7 +1185,7 @@ function onResizeEnd() {
             class="pointer-events-none absolute inset-0 rounded-full bg-[color-mix(in_srgb,var(--gosslan-primary)_13%,transparent)]"
             :transition="reducedMotion ? { duration: 0 } : { type: 'spring', stiffness: 480, damping: 36, mass: 0.7 }"
           />
-          <NavIcon name="favorites" :active="navState === 'favorites'" size-class="h-5 w-5" />
+          <NavIcon name="favorites" :active="navState === 'favorites'" variant="tab" />
         </span>
         <span class="text-caption">{{ t("nav.favorites") }}</span>
       </button>
@@ -1204,7 +1204,7 @@ function onResizeEnd() {
             class="pointer-events-none absolute inset-0 rounded-full bg-[color-mix(in_srgb,var(--gosslan-primary)_13%,transparent)]"
             :transition="reducedMotion ? { duration: 0 } : { type: 'spring', stiffness: 480, damping: 36, mass: 0.7 }"
           />
-          <UserCircle class="nav-glyph h-5 w-5" :stroke-width="navState === 'me' ? 2.35 : 1.9" />
+          <Icon name="user-circle" class="nav-glyph h-5 w-5" :stroke-width="navState === 'me' ? 2.35 : 1.9" />
         </span>
         <span class="text-caption">{{ t("nav.me") }}</span>
       </button>

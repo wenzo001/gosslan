@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import Icon from "@/components/ui/Icon.vue";
 /* focus-ring-ok:file：本组件的**容器**带 `outline-none`（`role="menu"` / `role="dialog"` +
    `tabindex="-1"`，只用于把焦点接进来），焦点指示由内部条目/控件承担；
    给整块容器画 2px 环在全屏遮罩/弹出菜单上只会变成噪声。
@@ -11,7 +12,6 @@ import { computed, onUnmounted, ref, watch } from "vue";
 import { useEventListener } from "@vueuse/core";
 import { FocusScope, DropdownMenuItem } from "reka-ui";
 import ContextMenu from "@/components/ContextMenu.vue";
-import { ChevronLeft, ChevronRight, Save } from "lucide-vue-next";
 import { RotateCcw, X } from "@/components/ui/icons";
 import { useAppStore } from "@/stores/useAppStore";
 import { loadContentPreview, loadFilePreview, type PreviewResult } from "@/utils/filePreview";
@@ -691,7 +691,7 @@ useEventListener(window, "keydown", onKey);
             :title="t('common.saveImage')"
             @click.stop="saveImage"
           >
-            <Save class="h-4 w-4" />
+            <Icon name="save" class="h-4 w-4" />
             {{ t("common.save") }}
           </button>
           <!-- 还原到自适应尺寸：双击图片也会触发 reset，但全屏遮罩上显式放个按钮
@@ -730,7 +730,7 @@ useEventListener(window, "keydown", onKey);
             :title="t('common.prev')" :aria-label="t('common.prev')"
             @click.stop="go(-1)"
           >
-            <ChevronLeft class="h-6 w-6" />
+            <Icon name="chevron-left" class="h-6 w-6" />
           </button>
         </div>
 
@@ -742,7 +742,7 @@ useEventListener(window, "keydown", onKey);
             :title="t('common.next')" :aria-label="t('common.next')"
             @click.stop="go(1)"
           >
-            <ChevronRight class="h-6 w-6" />
+            <Icon name="chevron-right" class="h-6 w-6" />
           </button>
         </div>
 

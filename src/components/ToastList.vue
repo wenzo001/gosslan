@@ -1,6 +1,6 @@
 <script setup lang="ts">
+import Icon from "@/components/ui/Icon.vue";
 import { injectToastProviderContext, ToastClose, ToastRoot, ToastTitle, ToastViewport } from "reka-ui";
-import { CheckCircle2, Info, XCircle } from "lucide-vue-next";
 import { t as translate } from "@/i18n";
 import { releaseToastCount } from "@/utils/toastManager";
 
@@ -40,9 +40,9 @@ function onOpenChange(id: string, open: boolean) {
       :class="toast.data?.kind === 'error' ? 'bg-[var(--gosslan-danger)]' : 'bg-[var(--gosslan-hud)]'"
       @update:open="(open: boolean) => onOpenChange(toast.id, open)"
     >
-      <CheckCircle2 v-if="toast.data?.kind === 'success'" class="h-4 w-4 shrink-0" aria-hidden="true" />
-      <XCircle v-else-if="toast.data?.kind === 'error'" class="h-4 w-4 shrink-0" aria-hidden="true" />
-      <Info v-else class="h-4 w-4 shrink-0" aria-hidden="true" />
+      <Icon name="check-circle2" v-if="toast.data?.kind === 'success'" class="h-4 w-4 shrink-0" aria-hidden="true" />
+      <Icon name="x-circle" v-else-if="toast.data?.kind === 'error'" class="h-4 w-4 shrink-0" aria-hidden="true" />
+      <Icon name="info" v-else class="h-4 w-4 shrink-0" aria-hidden="true" />
       <ToastTitle class="min-w-0" />
       <!-- 同 key 重复时只加计数，不叠新条（A1 裁决）。 -->
       <span

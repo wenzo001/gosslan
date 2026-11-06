@@ -18,7 +18,8 @@ import { t } from "@/i18n";
 import Spinner from "@/components/ui/Spinner.vue";
 import { computed } from "vue";
 import { useQuery } from "@tanstack/vue-query";
-import { Bluetooth, RefreshCw, Wifi } from "lucide-vue-next";
+import Icon from "@/components/ui/Icon.vue";
+import type { IconName } from "@/components/ui/iconRegistry";
 import BaseModal from "@/components/BaseModal.vue";
 import StateBlock from "@/components/ui/StateBlock.vue";
 import { api } from "@/api";
@@ -118,8 +119,8 @@ function fmtTs(ts: number): string {
 }
 
 /** 候选链路的图标：蓝牙 / 网卡。 */
-function iconFor(kind: string) {
-  return kind === "bluetooth" ? Bluetooth : Wifi;
+function iconFor(kind: string): IconName {
+  return kind === "bluetooth" ? "bluetooth" : "wifi";
 }
 
 /** 版本行的主语：昵称优先，昵称空了退回 device_id（不显示空串）。 */
@@ -165,7 +166,7 @@ function ageText(ms: number | null): string {
           @click="refresh"
         >
           <Spinner v-if="loading" size-class="h-3.5 w-3.5" decorative />
-          <RefreshCw v-else class="h-3.5 w-3.5" />
+          <Icon v-else name="refresh-cw" class="h-3.5 w-3.5" />
           {{ loading ? t("diag.refreshing") : t("diag.refresh") }}
         </button>
       </div>
@@ -178,7 +179,7 @@ function ageText(ms: number | null): string {
             <!-- 局域网 -->
             <div class="rounded-[var(--gosslan-radius-md)] border border-[var(--gosslan-border)] p-3">
               <div class="mb-2 flex items-center gap-1.5 text-body font-medium">
-                <Wifi class="h-3.5 w-3.5 opacity-70" />
+                <Icon name="wifi" class="h-3.5 w-3.5 opacity-70" />
                 {{ t("diag.lan") }}
                 <span
                   class="ml-auto rounded-full px-2 py-0.5 text-micro"
@@ -220,7 +221,7 @@ function ageText(ms: number | null): string {
             <!-- 蓝牙 -->
             <div class="rounded-[var(--gosslan-radius-md)] border border-[var(--gosslan-border)] p-3">
               <div class="mb-2 flex items-center gap-1.5 text-body font-medium">
-                <Bluetooth class="h-3.5 w-3.5 opacity-70" />
+                <Icon name="bluetooth" class="h-3.5 w-3.5 opacity-70" />
                 {{ t("diag.bt") }}
                 <span
                   class="ml-auto max-w-[60%] truncate rounded-full px-2 py-0.5 text-micro"
@@ -274,7 +275,7 @@ function ageText(ms: number | null): string {
                 ? 'border-[var(--gosslan-primary)] bg-[var(--gosslan-primary-light)]'
                 : 'border-[var(--gosslan-border)]'"
             >
-              <component :is="iconFor(c.kind)" class="mt-0.5 h-3.5 w-3.5 shrink-0 opacity-70" />
+              <Icon :name="iconFor(c.kind)" class="mt-0.5 h-3.5 w-3.5 shrink-0 opacity-70" />
               <div class="min-w-0 flex-1">
                 <div class="flex flex-wrap items-center gap-x-2 gap-y-0.5">
                   <span class="font-medium">{{ c.name }}</span>

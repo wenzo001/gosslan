@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import Icon from "@/components/ui/Icon.vue";
 /**
  * 「回到最新」悬浮圆钮（用户 2026-11-05：截图里它的 tooltip 正压在图片上）。
  *
@@ -25,7 +26,6 @@
  *    位移直接写 `bottom`，不新增 transition 属性/曲线。
  */
 import { nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
-import { ArrowDown } from "lucide-vue-next";
 import { t } from "@/i18n";
 import { computeBackToLatestAvoidOffset } from "@/utils/backToLatest";
 
@@ -107,6 +107,6 @@ onBeforeUnmount(() => {
     :title="visible ? t('chat.backToLatest') : undefined"
     @click="emit('press')"
   >
-    <ArrowDown class="h-4 w-4" aria-hidden="true" />
+    <Icon name="arrow-down" class="h-4 w-4" aria-hidden="true" />
   </button>
 </template>

@@ -224,12 +224,14 @@ test("工具栏「抖动」入口 + 收到强提醒时把窗口拉到前台并�
     /void api\.shakeWindow\(\)\.catch/,
     "桌面端抖动**整扇窗口**（Rust 移动 OS 窗口，不是只抖聊天区）",
   );
-  // 工具栏「抖动」按钮：图标（Zap）排在表情之后，点击走 shakeConversation
+  // 工具栏「抖动」按钮：图标（zap，经 Icon.vue）排在表情之后，点击走 shakeConversation。
+  // 锚点已随图标入口迁移：原来是 lucide 的 `<Zap`，现在是 `<Icon name="zap"` —— 判据
+  // 仍然钉住"排序 + 入口"，不是钉死某一种标签写法。
   const composer = read("components/chat/MessageComposer.vue");
   assert.match(composer, /\(e: "shake"\): void;/, "输入区必须声明 shake 事件");
   assert.match(
     composer,
-    /:aria-label="t\('chat\.composer\.emoji'\)"[\s\S]{0,900}v-if="shakeEnabled"[\s\S]{0,600}Zap/,
+    /:aria-label="t\('chat\.composer\.emoji'\)"[\s\S]{0,900}v-if="shakeEnabled"[\s\S]{0,600}name="zap"/,
     "抖动的图标按钮必须排在表情按钮之后",
   );
   const win = read("components/ChatWindow.vue");

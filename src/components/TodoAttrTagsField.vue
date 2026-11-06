@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import Icon from "@/components/ui/Icon.vue";
 /**
  * 「任务标签」属性控件：多选 + 自定义输入 + 历史候选下拉。
  *
@@ -12,7 +13,6 @@
  *   - 单个标签 20 字符、单任务最多 10 个，与 Rust 侧常量同一份口径。
  */
 import { computed, ref } from "vue";
-import { ChevronDown } from "lucide-vue-next";
 import { Check } from "@/components/ui/icons";
 import CharCounter from "@/components/ui/CharCounter.vue";
 import TodoAttrField from "@/components/TodoAttrField.vue";
@@ -107,7 +107,7 @@ function addCustom() {
           <span v-if="extra > 0" class="shrink-0 text-meta text-[var(--gosslan-text-2)]">+{{ extra }}</span>
         </template>
         <span v-else class="truncate text-[var(--gosslan-text-2)]" :title="t('todo.tagsPlaceholder')">{{ t("todo.tagsPlaceholder") }}</span>
-        <ChevronDown class="absolute right-3 h-3.5 w-3.5 shrink-0 text-[var(--gosslan-text-2)]" aria-hidden="true" />
+        <Icon name="chevron-down" class="absolute right-3 h-3.5 w-3.5 shrink-0 text-[var(--gosslan-text-2)]" aria-hidden="true" />
       </button>
     </template>
 

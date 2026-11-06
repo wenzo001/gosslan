@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import Icon from "@/components/ui/Icon.vue";
 import { t } from "@/i18n";
 import { computed, nextTick, onUnmounted, ref, watch } from "vue";
 import { useEventListener } from "@vueuse/core";
@@ -15,7 +16,6 @@ import { shouldRunThrottled } from "@/utils/defer";
 import { mentionHighlightColor, resolveChatColors } from "@/utils/chatStyle";
 import { classifyPaste } from "@/utils/clipboard";
 import { isImeKey } from "@/utils/ime";
-import { Folder, Smile, SquareCode, Users, Zap } from "lucide-vue-next";
 import { X } from "@/components/ui/icons";
 import type { MsgKind } from "@/types";
 import { MENTION_ALL_TOKEN, textMentionsName } from "@/utils/messages";
@@ -1183,7 +1183,7 @@ async function onPaste(e: ClipboardEvent) {
             v-if="m.id === MENTION_ALL_ID"
             class="flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-[var(--gosslan-primary-light)] text-[var(--gosslan-primary)]"
           >
-            <Users class="h-3.5 w-3.5" aria-hidden="true" />
+            <Icon name="users" class="h-3.5 w-3.5" aria-hidden="true" />
           </span>
           <AvatarBox v-else class="h-6 w-6 shrink-0" round="full" :id="m.id" />
           <span class="min-w-0 flex-1 truncate" :title="m.name">{{ m.name }}</span>
@@ -1314,7 +1314,7 @@ async function onPaste(e: ClipboardEvent) {
               :class="emojiOpen ? 'text-[var(--gosslan-primary)]' : 'text-[var(--gosslan-text-2)] hover:bg-[var(--gosslan-hover)]'"
               :title="t('chat.composer.emoji')" :aria-label="t('chat.composer.emoji')"
             >
-              <Smile class="h-5 w-5" :stroke-width="1.75" />
+              <Icon name="smile" class="h-5 w-5" :stroke-width="1.75" />
             </button>
           </PopoverTrigger>
           <PopoverPortal>
@@ -1345,7 +1345,7 @@ async function onPaste(e: ClipboardEvent) {
           @mousedown.prevent
           @click="onShakeClick"
         >
-          <Zap class="h-5 w-5" :stroke-width="1.75" />
+          <Icon name="zap" class="h-5 w-5" />
         </button>
         <!-- @mousedown.prevent 保持编辑器焦点：否则点击按钮后焦点落到按钮上，
              紧接着按 Enter 会激活按钮（把 codeMode 再切回去）而非走编辑器 keydown 发送。 -->
@@ -1362,7 +1362,7 @@ async function onPaste(e: ClipboardEvent) {
                现改为 `SquareCode`：方形描边外框 + 内部 `</>`，既是代码语义，
                又与左 `Smile`（圆）、右 `Folder`（方）同属「几何外框 + 内部细节」一套；
                尺寸 16px / 线宽 1.75 与两侧完全一致（见上方工具栏规格说明）。 -->
-          <SquareCode class="h-5 w-5" :stroke-width="1.75" />
+          <Icon name="square-code" class="h-5 w-5" :stroke-width="1.75" />
         </button>
         <!-- 自聊只支持文本：不给附件入口（用户 2026-09-16）。粘贴/拖入文件时另给提示。 -->
         <button
@@ -1371,7 +1371,7 @@ async function onPaste(e: ClipboardEvent) {
           :title="t('chat.composer.sendFile')" :aria-label="t('chat.composer.sendFile')"
           @click="emit('attach')"
         >
-          <Folder class="h-5 w-5" :stroke-width="1.75" />
+          <Icon name="folder" class="h-5 w-5" :stroke-width="1.75" />
         </button>
         <button
           v-press-ripple

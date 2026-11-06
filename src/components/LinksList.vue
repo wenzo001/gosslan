@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import Icon from "@/components/ui/Icon.vue";
 /**
  * 左栏「链接」视图：用户配置的外部链接列表 + 增 / 改 / 删（用户 2026-09-17）。
  *
@@ -38,7 +39,6 @@ import {
   validateLinkInput,
   type LinkSourceView,
 } from "@/utils/externalLinks";
-import { Copy, Download, ExternalLink as ExternalLinkIcon, FileJson, Pencil, Plus, RefreshCw, Upload } from "lucide-vue-next";
 import { Trash2 } from "@/components/ui/icons";
 import type {
   ExternalLink,
@@ -377,7 +377,7 @@ function sourceText(l: ExternalLink): string {
         @click="refreshSource()"
       >
         <Spinner v-if="refreshBusy" size-class="h-3.5 w-3.5" decorative />
-        <RefreshCw v-else class="h-3.5 w-3.5" />
+        <Icon name="refresh-cw" v-else class="h-3.5 w-3.5" />
         <span>{{ refreshBusy ? t("links.refreshing") : t("links.refresh") }}</span>
       </button>
     </template>
@@ -391,7 +391,7 @@ function sourceText(l: ExternalLink): string {
         class="tap-safe inline-flex h-8 items-center gap-1 rounded-[var(--gosslan-radius-md)] border border-[var(--gosslan-primary)] px-2 text-meta text-[var(--gosslan-accent-ink)] transition hover:bg-[var(--gosslan-hover)]"
         @click="startAdd"
       >
-        <Plus class="h-4 w-4" />
+        <Icon name="plus" class="h-4 w-4" />
         {{ t("links.add") }}
       </button>
       <button
@@ -401,7 +401,7 @@ function sourceText(l: ExternalLink): string {
         :disabled="!!transferBusy"
         @click="openImport"
       >
-        <Upload class="h-4 w-4" />
+        <Icon name="upload" class="h-4 w-4" />
         {{ t("links.import") }}
       </button>
       <button
@@ -414,7 +414,7 @@ function sourceText(l: ExternalLink): string {
         @click="exportLinks"
       >
         <Spinner v-if="transferBusy === 'export'" size-class="h-4 w-4" decorative />
-        <Download v-else class="h-4 w-4" />
+        <Icon name="download" v-else class="h-4 w-4" />
         {{ t("links.export") }}
       </button>
     </div>
@@ -436,7 +436,7 @@ function sourceText(l: ExternalLink): string {
         :aria-label="t('links.sourceCopy')"
         @click="copySource"
       >
-        <Copy class="h-3.5 w-3.5" />
+        <Icon name="copy" class="h-3.5 w-3.5" />
       </button>
     </div>
 
@@ -512,7 +512,7 @@ function sourceText(l: ExternalLink): string {
               @click="importFile"
             >
               <Spinner v-if="transferBusy === 'file'" size-class="h-4 w-4" decorative />
-              <FileJson v-else class="h-4 w-4" />
+              <Icon name="file-json" v-else class="h-4 w-4" />
               {{ t("links.importFileAction") }}
             </button>
             <p class="mt-1.5 text-caption leading-relaxed text-[var(--gosslan-text-2)]">
@@ -678,7 +678,7 @@ function sourceText(l: ExternalLink): string {
           :title="l.url"
           @click="emit('open', l)"
         >
-          <ExternalLinkIcon class="h-4 w-4 shrink-0 text-[var(--gosslan-text-2)]" />
+          <Icon name="external-link" class="h-4 w-4 shrink-0 text-[var(--gosslan-text-2)]" />
           <span class="min-w-0 flex-1">
             <span class="block truncate text-body text-[var(--gosslan-text)]" :title="l.name">
               {{ l.name }}
@@ -698,7 +698,7 @@ function sourceText(l: ExternalLink): string {
           :aria-label="t('links.edit')"
           @click="startEdit(l)"
         >
-          <Pencil class="h-3.5 w-3.5" />
+          <Icon name="pencil" class="h-3.5 w-3.5" />
         </button>
         <button
           class="tap-safe flex h-7 w-7 shrink-0 items-center justify-center rounded-[var(--gosslan-radius-sm)] text-[var(--gosslan-text-2)] transition hover:bg-[var(--gosslan-danger-soft)] hover:text-[var(--gosslan-danger-ink)]"

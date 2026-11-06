@@ -1,9 +1,8 @@
 <script setup lang="ts">
+import Icon from "@/components/ui/Icon.vue";
 import { computed } from "vue";
 import { DropdownMenuItem, DropdownMenuSeparator } from "reka-ui";
 import { t } from "@/i18n";
-import { BellRing, Pin, PinOff, StopCircle, Undo2, Code2, FileText } from "lucide-vue-next";
-import { Copy, CornerUpLeft, ListChecks, Save, Share2, Star, TextSelect } from "lucide-vue-next";
 import type { MsgKind } from "@/types";
 import {
   isForwardableKind,
@@ -96,33 +95,33 @@ const hasCopyOps = computed(
       class="gosslan-menu-item"
       @select="emit('copy-selection')"
     >
-      <TextSelect />
+      <Icon name="text-select" />
       {{ t("msg.copySelection") }}
     </DropdownMenuItem>
     <template v-if="kind === 'text' || kind === 'code'">
       <DropdownMenuItem class="gosslan-menu-item" @select="emit('copy-text')">
-        <Copy />
+        <Icon name="copy" />
         {{ t("msg.copyMessage") }}
       </DropdownMenuItem>
     </template>
     <template v-if="kind === 'image'">
       <DropdownMenuItem class="gosslan-menu-item" @select="emit('copy-image')">
-        <Copy />
+        <Icon name="copy" />
         {{ t("common.copyImage") }}
       </DropdownMenuItem>
       <DropdownMenuItem class="gosslan-menu-item" @select="emit('save-image')">
-        <Save />
+        <Icon name="save" />
         {{ t("common.saveImage") }}
       </DropdownMenuItem>
     </template>
     <!-- 文件：保存（另存为）+ 复制（文件本体写 CF_HDROP，可在资源管理器/聊天框直接粘贴） -->
     <template v-if="kind === 'file'">
       <DropdownMenuItem class="gosslan-menu-item" @select="emit('save-file')">
-        <Save />
+        <Icon name="save" />
         {{ t("common.save") }}
       </DropdownMenuItem>
       <DropdownMenuItem class="gosslan-menu-item" @select="emit('copy-file')">
-        <Copy />
+        <Icon name="copy" />
         {{ t("common.copyFile") }}
       </DropdownMenuItem>
     </template>
@@ -135,7 +134,7 @@ const hasCopyOps = computed(
       class="gosslan-menu-item"
       @select="emit('copy-text')"
     >
-      <Copy />
+      <Icon name="copy" />
       {{ t("msg.copyMessage") }}
     </DropdownMenuItem>
 
@@ -150,44 +149,44 @@ const hasCopyOps = computed(
       class="gosslan-menu-item gosslan-menu-item--danger"
       @select="emit('cancel-send')"
     >
-      <StopCircle />
+      <Icon name="stop-circle" />
       {{ t("msg.cancelSend") }}
     </DropdownMenuItem>
 
     <DropdownMenuItem v-if="canPin" class="gosslan-menu-item" @select="emit('pin')">
-      <component :is="pinned ? PinOff : Pin" />
+      <Icon :name="pinned ? 'pin-off' : 'pin'" />
       {{ pinned ? t("msg.unpin") : t("msg.pin") }}
     </DropdownMenuItem>
     <DropdownMenuItem v-if="canRecall" class="gosslan-menu-item gosslan-menu-item--danger" @select="emit('recall')">
-      <Undo2 />
+      <Icon name="undo2" />
       {{ t("msg.recall") }}
     </DropdownMenuItem>
     <DropdownMenuItem v-if="canRender" class="gosslan-menu-item" @select="emit('render')">
-      <component :is="renderTo === 'code' ? Code2 : FileText" />
+      <Icon :name="renderTo === 'code' ? 'code2' : 'file-text'" />
       {{ renderTo === "code" ? t("msg.renderAsCode") : t("msg.renderAsText") }}
     </DropdownMenuItem>
     <DropdownMenuItem class="gosslan-menu-item" @select="emit('quote')">
-      <CornerUpLeft />
+      <Icon name="corner-up-left" />
       {{ t("common.quote") }}
     </DropdownMenuItem>
     <!-- 定位到引用消息：与微信一致 —— **这条消息引用了谁，就从菜单跳过去**。
          引用块本身也仍可点（微信同样如此），这里只是把入口补进菜单（用户 2026-09-21）。 -->
     <DropdownMenuItem v-if="quotedId" class="gosslan-menu-item" @select="emit('locate-quote')">
-      <CornerUpLeft />
+      <Icon name="corner-up-left" />
       {{ t("msg.locateQuote") }}
     </DropdownMenuItem>
     <DropdownMenuItem v-if="forwardable(kind)" class="gosslan-menu-item" @select="emit('forward')">
-      <Share2 />
+      <Icon name="share2" />
       {{ t("common.forward") }}
     </DropdownMenuItem>
     <!-- 收藏：微信的收藏是"内容留存"，放在消息流转（转发）之后，不与复制/保存混在一起 -->
     <DropdownMenuItem v-if="favoritable(kind)" class="gosslan-menu-item" @select="emit('favorite')">
-      <Star />
+      <Icon name="star" />
       {{ t("favorite.add") }}
     </DropdownMenuItem>
     <!-- 强提醒：对自己发的消息点名提醒对方（私聊默认对方；群聊由外层再选受众） -->
     <DropdownMenuItem v-if="canRemind" class="gosslan-menu-item" @select="emit('remind')">
-      <BellRing />
+      <Icon name="bell-ring" />
       {{ t("remind.menuEntry") }}
     </DropdownMenuItem>
     <!-- 分隔线同上面那条：只有真的会出现「多选」时才画 -->
@@ -195,7 +194,7 @@ const hasCopyOps = computed(
     <!-- 多选：微信放在菜单末尾（进入后是可批量转发/收藏/删除的模式）。
          待办卡片不进批量操作（见 isMultiSelectable），所以不给这个入口。 -->
     <DropdownMenuItem v-if="isMultiSelectable(kind)" class="gosslan-menu-item" @select="emit('multi-select')">
-      <ListChecks />
+      <Icon name="list-checks" />
       {{ t("multi.enter") }}
     </DropdownMenuItem>
   </ContextMenu>

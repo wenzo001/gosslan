@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import Icon from "@/components/ui/Icon.vue";
 /**
  * 代码语言选择器（发送前 + 发送后共用一份）。
  *
@@ -11,7 +12,6 @@
  * - 具体语言：按标记高亮。
  */
 import { computed, nextTick, ref, watch } from "vue";
-import { ChevronDown } from "lucide-vue-next";
 import Spinner from "@/components/ui/Spinner.vue";
 import {
   DropdownMenuContent,
@@ -224,7 +224,7 @@ function pick(value: string) {
       >
         <Spinner v-if="loading" size-class="h-3 w-3" decorative />
         <span class="max-w-[9rem] truncate" :title="currentLabel">{{ currentLabel }}</span>
-        <ChevronDown v-if="!loading" class="h-3 w-3 shrink-0" aria-hidden="true" />
+        <Icon name="chevron-down" v-if="!loading" class="h-3 w-3 shrink-0" aria-hidden="true" />
       </button>
     </DropdownMenuTrigger>
     <DropdownMenuPortal>

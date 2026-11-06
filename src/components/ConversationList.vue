@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import Icon from "@/components/ui/Icon.vue";
 import { currentLocale, t } from "@/i18n";
 import { computed, onMounted, onUnmounted, ref, watch } from "vue";
 import { useRouter } from "vue-router";
@@ -28,7 +29,6 @@ import { groupByInitial } from "@/utils/nameGroup";
 import { isSelfConversation, selfFriendOf } from "@/utils/selfChat";
 import { MAX_SEARCH_KEYWORD_CHARS } from "@/utils/validation";
 import { createInitScope } from "@/utils/initScope";
-import { Plus, ListChecks, Search, UserPlus, UsersRound } from "lucide-vue-next";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { isMac } from "@/utils/platform";
 import { dropPointToCss } from "@/utils/dropPoint";
@@ -462,7 +462,7 @@ useEventListener(document, "click", closeFriendMenu);
       <div
         class="flex h-9 min-w-0 flex-1 items-center gap-2 rounded-[var(--gosslan-radius-md)] border border-[var(--gosslan-border)] bg-[var(--gosslan-field)] px-2.5 transition"
       >
-        <Search class="h-4 w-4 shrink-0 text-[var(--gosslan-text-2)]" />
+        <Icon name="search" class="h-4 w-4 shrink-0 text-[var(--gosslan-text-2)]" />
         <input
           ref="searchInput"
           v-model="keyword"
@@ -489,7 +489,7 @@ useEventListener(document, "click", closeFriendMenu);
               :title="t('conv.addTitle')" :aria-label="t('conv.addTitle')"
               @click.stop
             >
-              <Plus class="h-[18px] w-[18px]" />
+              <Icon name="plus" class="h-[18px] w-[18px]" />
             </button>
           </DropdownMenuTrigger>
           <DropdownMenuPortal>
@@ -503,11 +503,11 @@ useEventListener(document, "click", closeFriendMenu);
               class="frost gosslan-menu z-[80]"
             >
               <DropdownMenuItem class="gosslan-menu-item" @select="emit('open-add-friend')">
-                <UserPlus />
+                <Icon name="user-plus" />
                 {{ t("common.addFriend") }}
               </DropdownMenuItem>
               <DropdownMenuItem class="gosslan-menu-item" @select="emit('open-group')">
-                <UsersRound />
+                <Icon name="users-round" />
                 {{ t("common.createGroup") }}
               </DropdownMenuItem>
               <!-- 「和自己聊天」入口已从 + 菜单移除（用户 2026-09-17）：通讯录里已有「自己」
@@ -583,7 +583,7 @@ useEventListener(document, "click", closeFriendMenu);
         >
           <span class="relative shrink-0">
             <span class="flex h-10 w-10 items-center justify-center rounded-[var(--gosslan-avatar-radius)] brand-surface text-white">
-              <UserPlus class="h-5 w-5" />
+              <Icon name="user-plus" class="h-5 w-5" />
             </span>
             <UnreadBadge
               v-if="chat.pendingRequests.length"
@@ -683,7 +683,7 @@ useEventListener(document, "click", closeFriendMenu);
           :title="taskCount > 0 ? t('task.open', { n: taskCount }) : t('task.title')"
           @click="app.openTaskCenter"
         >
-          <ListChecks class="h-3.5 w-3.5" />
+          <Icon name="list-checks" class="h-3.5 w-3.5" />
           <span
             v-if="taskCount > 0"
             class="rounded-full bg-[var(--gosslan-hover)] px-1 text-caption font-semibold leading-none tabular-nums text-[var(--gosslan-text)]"

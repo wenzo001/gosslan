@@ -12,15 +12,15 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { TODO_CUSTOM_ICONS, TODO_CUSTOM_ICON_DEFAULT } from "./todos.ts";
-import { TODO_CUSTOM_ICON_COMPONENTS, TODO_CUSTOM_ICON_LABEL_KEY } from "./todoCustomIcons.ts";
+import { TODO_CUSTOM_ICON_LABEL_KEY, TODO_CUSTOM_ICON_NAMES } from "./todoCustomIcons.ts";
 
 const ROOT = join(import.meta.dirname, "..");
 
 test("图标映射与白名单双向一致（少一个渲染空白、多一个存不进载荷）", () => {
-  const keys = Object.keys(TODO_CUSTOM_ICON_COMPONENTS).sort();
+  const keys = Object.keys(TODO_CUSTOM_ICON_NAMES).sort();
   assert.deepEqual(keys, [...TODO_CUSTOM_ICONS].sort(), "映射键集合必须与白名单同集合");
   for (const k of TODO_CUSTOM_ICONS) {
-    assert.ok(TODO_CUSTOM_ICON_COMPONENTS[k], `白名单键 ${k} 没有组件映射`);
+    assert.ok(TODO_CUSTOM_ICON_NAMES[k], `白名单键 ${k} 没有图标名映射`);
   }
 });
 
