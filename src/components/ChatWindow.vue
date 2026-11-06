@@ -1966,30 +1966,39 @@ function retryHistory() {
            规则：UI 先出、数据后到（详见 docs/design-guidelines.md §9）。
            ⚠️ 2026-10-25：骨架必须与**真实行**同形 —— 单聊两方都没有头像列、群里只有对方
            在组首显示头像 + 昵称（见 `MessageItem` 的 `avatarCol` / `showNickname`）；
-           旧骨架三行全带头像，切到真内容时整块布局会跳一次。 -->
-      <div v-if="messagesLoading" class="flex flex-col gap-2 px-4 py-4" aria-hidden="true">
+           旧骨架三行全带头像，切到真内容时整块布局会跳一次。
+           ✅ 2026-11-06：骨架改静态灰块 + 一次 240ms 淡入（不再循环脉冲，
+           循环会让「正在加载」变成持续噪声）。锚点 `data-msg-skeleton` 同时供
+           `check-ui-runtime --only=scrollswitch` 判「隐藏期间是不是纯色」，
+           改类名/结构时不要摘掉它（designGuards SK-01 会盯着）。 -->
+      <div
+        v-if="messagesLoading"
+        data-msg-skeleton
+        class="gosslan-skeleton-in flex flex-col gap-2 px-4 py-4"
+        aria-hidden="true"
+      >
         <template v-if="isGroup">
           <div class="flex items-start gap-2">
-            <div class="h-[var(--gosslan-msg-avatar)] w-[var(--gosslan-msg-avatar)] shrink-0 animate-pulse rounded-[var(--gosslan-avatar-radius)] bg-[var(--gosslan-hover)]"></div>
+            <div class="h-[var(--gosslan-msg-avatar)] w-[var(--gosslan-msg-avatar)] shrink-0 rounded-[var(--gosslan-avatar-radius)] bg-[var(--gosslan-hover)]"></div>
             <div class="flex min-w-0 flex-col gap-1.5">
-              <div class="h-2.5 w-16 animate-pulse rounded-[var(--gosslan-radius-xs)] bg-[var(--gosslan-hover)]"></div>
-              <div class="h-8 w-44 animate-pulse rounded-[var(--gosslan-bubble-radius)] bg-[var(--gosslan-hover)]"></div>
+              <div class="h-2.5 w-16 rounded-[var(--gosslan-radius-xs)] bg-[var(--gosslan-hover)]"></div>
+              <div class="h-8 w-44 rounded-[var(--gosslan-bubble-radius)] bg-[var(--gosslan-hover)]"></div>
             </div>
           </div>
           <div class="flex justify-end">
-            <div class="h-8 w-56 animate-pulse rounded-[var(--gosslan-bubble-radius)] bg-[var(--gosslan-hover)]"></div>
+            <div class="h-8 w-56 rounded-[var(--gosslan-bubble-radius)] bg-[var(--gosslan-hover)]"></div>
           </div>
           <div class="flex items-start gap-2">
-            <div class="h-[var(--gosslan-msg-avatar)] w-[var(--gosslan-msg-avatar)] shrink-0 animate-pulse rounded-[var(--gosslan-avatar-radius)] bg-[var(--gosslan-hover)]"></div>
-            <div class="h-8 w-32 animate-pulse rounded-[var(--gosslan-bubble-radius)] bg-[var(--gosslan-hover)]"></div>
+            <div class="h-[var(--gosslan-msg-avatar)] w-[var(--gosslan-msg-avatar)] shrink-0 rounded-[var(--gosslan-avatar-radius)] bg-[var(--gosslan-hover)]"></div>
+            <div class="h-8 w-32 rounded-[var(--gosslan-bubble-radius)] bg-[var(--gosslan-hover)]"></div>
           </div>
         </template>
         <template v-else>
-          <div class="h-8 w-40 animate-pulse rounded-[var(--gosslan-bubble-radius)] bg-[var(--gosslan-hover)]"></div>
+          <div class="h-8 w-40 rounded-[var(--gosslan-bubble-radius)] bg-[var(--gosslan-hover)]"></div>
           <div class="flex justify-end">
-            <div class="h-8 w-56 animate-pulse rounded-[var(--gosslan-bubble-radius)] bg-[var(--gosslan-hover)]"></div>
+            <div class="h-8 w-56 rounded-[var(--gosslan-bubble-radius)] bg-[var(--gosslan-hover)]"></div>
           </div>
-          <div class="h-8 w-32 animate-pulse rounded-[var(--gosslan-bubble-radius)] bg-[var(--gosslan-hover)]"></div>
+          <div class="h-8 w-32 rounded-[var(--gosslan-bubble-radius)] bg-[var(--gosslan-hover)]"></div>
         </template>
       </div>
       <StateBlock

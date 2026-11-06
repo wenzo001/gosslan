@@ -2775,6 +2775,61 @@ export function checkAmbientMotion(s: AmbientMotionSources): GuardIssue[] {
   return out.sort((a, b) => a.line - b.line);
 }
 
+// ---------------- SK：消息骨架必须是静态占位（2026-11-06 阶段 5 裁决） -------------
+
+/**
+ * B8：消息骨架 / 图片占位不许再用循环脉冲（`animate-pulse`）。
+ *
+ * 为什么不扫全库：`TaskCenter` 那条是**不确定进度**（"任务还在跑，不知道到哪"），
+ * 是语义表达而不是占位，且已带 `motion-reduce:animate-none`；骨架的语义只是
+ * "内容正在来"，静态灰块 + 一次淡入就够（`docs/design-guidelines.md` §11.3.7）。
+ *
+ * 分母：两个锚点（`data-msg-skeleton` / `data-img-skeleton`）必须真的在 ——
+ * 锚点被改名时探针的「隐藏期间是不是纯色」会失去参照，这条判据也不许静默扫空。
+ */
+export interface SkeletonSources {
+  /** `src/components/ChatWindow.vue` */
+  chatWindow: string;
+  /** `src/components/message/MessageImageBubble.vue` */
+  imageBubble: string;
+}
+
+/** 注释等长遮蔽（保留换行 ⇒ 行号不变）：注释里解释"不要用脉冲"不应算违规。 */
+function maskSkeletonComments(src: string): string {
+  const blank = (m: string) => m.replace(/[^\n]/g, " ");
+  return src
+    .replace(/<!--[\s\S]*?-->/g, blank)
+    .replace(/\/\*[\s\S]*?\*\//g, blank)
+    .replace(/(^|[^:])\/\/[^\n]*/g, (m, p: string) => p + " ".repeat(m.length - p.length));
+}
+
+export function checkSkeletonStatic(s: SkeletonSources): GuardIssue[] {
+  const out: GuardIssue[] = [];
+  const files: [string, string, string][] = [
+    ["components/ChatWindow.vue", s.chatWindow, "data-msg-skeleton"],
+    ["components/message/MessageImageBubble.vue", s.imageBubble, "data-img-skeleton"],
+  ];
+  for (const [file, raw, anchor] of files) {
+    // 注释先等长遮蔽：注释里解释"不要用脉冲/锚点叫什么"不应算数，
+    // 也不能让它替模板里的锚点"顶包"（锚点只在注释里出现也算缺失）。
+    const src = maskSkeletonComments(raw);
+    // 属性名按完整 token 认：`data-img-skeleton-old` 不能被当成 `data-img-skeleton` 还在。
+    if (!new RegExp(`${anchor}(?![\\w-])`).test(src)) {
+      out.push({ line: 0, message: `SK-01：${file} 缺少静态骨架锚点 ${anchor}（判据扫空之前先补回锚点）。` });
+    }
+    if (!src.includes("gosslan-skeleton-in")) {
+      out.push({ line: 0, message: `SK-01：${file} 缺少一次淡入类 gosslan-skeleton-in。` });
+    }
+    for (const m of src.matchAll(/animate-pulse/g)) {
+      out.push({
+        line: lineAt(src, m.index ?? 0),
+        message: `SK-01：${file} 又出现循环脉冲（animate-pulse）；骨架只许静态灰块 + 一次淡入。`,
+      });
+    }
+  }
+  return out.sort((a, b) => a.line - b.line);
+}
+
 // ---------------- CS：聊天输入区表面（背景动效白条回归） ----------------
 
 /**

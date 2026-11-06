@@ -4273,6 +4273,8 @@ async function main() {
     const fontsel = want("fontsel");
     const layoutstore = want("layoutstore");
     const settingsmobile = want("settingsmobile");
+    const stage5mobile = want("stage5mobile");
+    const stage4mobile = want("stage4mobile");
     const netcard = want("netcard");
     const composermobile = want("composermobile");
     const tasksmobile = want("tasksmobile");
@@ -4512,6 +4514,8 @@ async function main() {
     await runSegment("fontsel", fontsel, () => runFontSelect(cdp, url));
     await runSegment("layoutstore", layoutstore, () => runLayoutStore(cdp, url));
     await runSegment("settingsmobile", settingsmobile, () => runSettingsMobile(cdp, url));
+    await runSegment("stage5mobile", stage5mobile, () => runStage5Mobile(cdp, url));
+    await runSegment("stage4mobile", stage4mobile, () => runStage4Mobile(cdp, url));
     await runSegment("netcard", netcard, () => runNetCard(cdp, url));
     await runSegment("composermobile", composermobile, () => runComposerMobile(cdp, url));
     await runSegment("tasksmobile", tasksmobile, () => runTasksMobile(cdp, url));
@@ -6550,8 +6554,10 @@ async function runScrollHist(cdp, url) {
  * 而 headless 读 computed opacity 会停在动画起点（本仓已记：合成帧不推动画时钟）。
  * 所以这里不读 opacity 数值，改读两件**跟动画无关**的事实：
  *   · hidden —— 列表外包层当前带 opacity-0（ChatWindow 直接绑的类）；
- *   · blank  —— 视口内被行覆盖的长度不足（≤1px）**并且**没有骨架（.animate-pulse = 0）
+ *   · blank  —— 视口内被行覆盖的长度不足（≤1px）**并且**没有骨架（[data-msg-skeleton] = 0）
  *              ⇒ 用户看到的就是纯色背景。
+ *              （2026-11-06：骨架已静态化，不再带 `animate-pulse`；锚点随之搬到
+ *              `data-msg-skeleton`，designGuards SK-01 守着它不被改名。）
  * 两条判据都是产品语义：
  *   (a) 已揭示却还 blank ⇒ 就是"白一下"；
  *   (b) 隐藏期间就 blank ⇒ 遮罩期间看到的是纯色（不是"遮住追赶"，是"遮成白屏"）。
@@ -6636,7 +6642,7 @@ async function runScrollSwitch(cdp, url) {
       // 每帧**重新找**列表：未缓存会话走骨架分支时 ChatWindow 用 v-if 把整个 VirtualList
       // 卸掉（换成骨架）⇒ 抓在手里的 el 会变成游离节点，读数全是 0（第一版正控就是这么错的）。
       const cur = document.querySelector('.vlist-no-anchor');
-      const skel = document.querySelectorAll('.animate-pulse').length;
+      const skel = document.querySelectorAll('[data-msg-skeleton]').length;
       if (!cur) {
         // 列表不在：有骨架 ⇒ 视口被骨架盖住（不是空白）；没骨架 ⇒ 纯背景，按上次高度计。
         return { rows: 0, skel, blank: skel > 0 ? 0 : (window.__sw.lastH || 800),
@@ -17599,6 +17605,238 @@ async function runNetCard(cdp, url) {
   } finally {
     await cdp.send("Emulation.clearDeviceMetricsOverride").catch(() => {});
   }
+}
+
+/**
+ * 阶段 4 的移动端分档补测（2026-11-06 追加约束）：
+ * 群文件面板（B6 悬空「·」）与独立日志窗（A6 对比度 / B1 标题 / B2 开关）
+ * 必须在 360×640 / 390×844 / 430×932 三档 + 768×800（布局组件档）亮/暗各出一次读数。
+ * 桌面 1280×800 与 1440 的帧已在阶段 4 落过，不重复。
+ */
+async function runStage4Mobile(cdp, url) {
+  const sizes = [
+    { w: 360, h: 640, tag: "360x640" },
+    { w: 390, h: 844, tag: "390x844" },
+    { w: 430, h: 932, tag: "430x932" },
+    { w: 768, h: 800, tag: "768x800" },
+  ];
+  const dir = path.join(ROOT, "docs", "notes", "unslop-review-2026-11-06", "shots", "stage4");
+  fs.mkdirSync(dir, { recursive: true });
+  const shot = async (name) => {
+    const img = await cdp.send("Page.captureScreenshot", { format: "png" });
+    fs.writeFileSync(path.join(dir, `${name}.png`), Buffer.from(img.data, "base64"));
+  };
+  const LOGS = Array.from({ length: 200 }, (_, i) => ({
+    ts: 1_700_000_000_000 + i * 1000,
+    level: i % 17 === 0 ? "warn" : "info",
+    target: `probe-${i}`,
+    message: `日志行 ${String(i).padStart(3, "0")}`,
+  }));
+  for (const s of sizes) {
+    await cdp.send("Emulation.setDeviceMetricsOverride", {
+      width: s.w, height: s.h, deviceScaleFactor: s.w <= 430 ? 2 : 1, mobile: s.w < 768,
+    });
+    // 1) 群文件面板：B6 的元信息行（created_at=0 ⇒ 时间缺失）
+    await cdp.send("Page.navigate", { url });
+    await cdp.settled();
+    await sleep(2_500);
+    await cdp.eval(PAGE_FIXTURE);
+    await cdp.eval("window.__probe.groupFilesBus()");
+    const mounted = await cdp.eval("window.__probe.install('/src/components/GroupFilesPanel.vue', '', '')");
+    await cdp.eval("window.__probe.setGroup('g1')");
+    await cdp.eval("window.__probe.setOpen(true)");
+    await sleep(900);
+    const files = await cdp.eval(`(() => {
+      const dlg = document.querySelector('[role="dialog"]');
+      const row = dlg ? dlg.querySelector('[title$=".bin"]') : null;
+      const meta = row && row.parentElement ? row.parentElement.children[1] : null;
+      const metaText = meta ? meta.innerText.replace(/\\s+/g, ' ').trim() : '';
+      return { dialog: !!dlg, metaText,
+        dangling: /·\\s*$/.test(metaText) || /·\\s*·/.test(metaText),
+        overflowX: document.documentElement.scrollWidth - document.documentElement.clientWidth };
+    })()`);
+    await shot(`files-${s.tag}-light`);
+    await cdp.eval("document.documentElement.classList.add('dark')");
+    await sleep(250);
+    await shot(`files-${s.tag}-dark`);
+    check(`stage4·${s.tag}：群文件元信息时间缺失时无悬空「·」、不横向溢出`,
+      mounted && mounted.ok === true && files.dialog === true && files.dangling === false
+        && files.metaText.includes("KB") && files.overflowX <= 0,
+      "meta 含 KB / 无悬空「·」 / overflowX≤0", JSON.stringify(files));
+
+    // 2) 独立日志窗：同一份 standalone 组件 + 200 行夹具
+    await cdp.eval("window.__probe.reset()");
+    await cdp.eval(`window.__probe.stubApi('getLogs', ${JSON.stringify(LOGS)})`);
+    await cdp.eval(`(() => {
+      const pin = (h) => {
+        Object.defineProperty(document, 'hidden', { configurable: true, get: () => h });
+        Object.defineProperty(document, 'visibilityState', { configurable: true, get: () => (h ? 'hidden' : 'visible') });
+      };
+      pin(false);
+      return true;
+    })()`);
+    await cdp.eval("window.__probe.install('/src/components/LogViewer.vue', '', "
+      + JSON.stringify(JSON.stringify({ standalone: true })) + ")");
+    await sleep(900);
+    const logs = await cdp.eval(`(() => {
+      const host = document.querySelector('#probe-host');
+      const text = host ? host.innerText.replace(/\\s+/g, ' ').trim() : '';
+      return { text: text.slice(0, 120), rows: document.querySelectorAll('[data-log-row]').length,
+        overflowX: document.documentElement.scrollWidth - document.documentElement.clientWidth };
+    })()`);
+    await shot(`logs-${s.tag}-dark`);
+    await cdp.eval("document.documentElement.classList.remove('dark')");
+    await sleep(250);
+    await shot(`logs-${s.tag}-light`);
+    check(`stage4·${s.tag}：独立日志窗工具条不重复功能名、不横向溢出`,
+      logs.overflowX <= 0 && logs.text.includes("200"),
+      "工具条含条数 200 / overflowX≤0", JSON.stringify(logs));
+    console.log(`  · stage4·${s.tag} 读数：`
+      + JSON.stringify({ metaText: files.metaText, filesOverflowX: files.overflowX,
+        logsText: logs.text.slice(0, 40), logsOverflowX: logs.overflowX }));
+  }
+}
+
+/**
+ * 阶段 5 的分档证据段（2026-11-06）：骨架静态化 + 手机端色雾降档。
+ *
+ * 为什么单开一段：`scrollswitch` 只跑 1200×800 一档，而移动端结论必须按
+ * 360×640 / 390×844 / 430×932 三档 + 768×800（md 边界）+ 1280×800 分开给，亮/暗各一次。
+ * 600×800 是**真正命中**「≤767 色雾冻结」这条新分支的补点：三档手机在 JS 侧
+ * （`resolveAmbientMode` 的 narrow <480）本来就已经是 static，改动前后读数相同；
+ * 不补 600 这一档，"改了这条分支"就永远没有读数。
+ */
+async function runStage5Mobile(cdp, url) {
+  const sizes = [
+    { w: 360, h: 640, tag: "360x640" },
+    { w: 390, h: 844, tag: "390x844" },
+    { w: 430, h: 932, tag: "430x932" },
+    { w: 600, h: 800, tag: "600x800" },
+    { w: 768, h: 800, tag: "768x800" },
+    { w: 1280, h: 800, tag: "1280x800" },
+  ];
+  const dir = path.join(ROOT, "docs", "notes", "unslop-review-2026-11-06", "shots", "stage5");
+  fs.mkdirSync(dir, { recursive: true });
+  const shot = async (name) => {
+    const img = await cdp.send("Page.captureScreenshot", { format: "png" });
+    fs.writeFileSync(path.join(dir, `${name}.png`), Buffer.from(img.data, "base64"));
+  };
+  const rows = [];
+  for (const s of sizes) {
+    await cdp.send("Emulation.setDeviceMetricsOverride", {
+      width: s.w, height: s.h, deviceScaleFactor: s.w <= 430 ? 2 : 1, mobile: s.w < 768,
+    });
+    await cdp.send("Page.navigate", { url });
+    await cdp.settled();
+    await sleep(2_500);
+    await cdp.eval(PAGE_FIXTURE);
+    // 读数只测"非低端机 + 非 reduce"这一条主路径：低端机判定（cores/memory/UA）是
+    // 跑测机器的属性、不是产品行为，先显式压成 no-preference，再用产品同一入口
+    // `applyAmbientMode` 写模式（<480 = JS narrow→static；≥480 = drift，交给 CSS 判）。
+    await cdp.send("Emulation.setEmulatedMedia", {
+      features: [{ name: "prefers-reduced-motion", value: "no-preference" }],
+    });
+    await cdp.eval(`(async () => {
+      const A = await import('/src/utils/ambient.ts');
+      if (!document.querySelector('.ambient')) A.installAmbient();
+      A.applyAmbientMode(window.innerWidth < 480 ? 'static' : 'drift');
+      return true;
+    })()`);
+    await sleep(400);
+    const ambient = () => cdp.eval(`(() => {
+      const blobs = [...document.querySelectorAll('.ambient-blob')].map((b) => {
+        const st = getComputedStyle(b);
+        return { id: (b.className.match(/ambient-blob--([a-d])/) || [])[1] || '',
+          display: st.display, anim: st.animationName, dur: st.animationDuration };
+      });
+      return { mode: document.documentElement.dataset.ambient || '',
+        reduced: matchMedia('(prefers-reduced-motion: reduce)').matches,
+        media767: matchMedia('(max-width: 767px)').matches,
+        blobs, overflowX: document.documentElement.scrollWidth - document.documentElement.clientWidth };
+    })()`);
+    const light = await ambient();
+    await shot(`ambient-${s.tag}-light`);
+    await cdp.eval("document.documentElement.classList.add('dark')");
+    await sleep(250);
+    const dark = await ambient();
+    await shot(`ambient-${s.tag}-dark`);
+
+    // 骨架：activeConv 有值且 messages 还是 undefined ⇒ 真实加载态（不造替身状态）。
+    await cdp.eval(`(() => {
+      window.__TAURI_INTERNALS__ = {
+        metadata: { currentWindow: { label: 'main' }, currentWebview: { label: 'main', windowLabel: 'main' } },
+        invoke: async () => null, transformCallback: (cb) => cb, convertFileSrc: (p) => p,
+      };
+      if (!window.__TAURI_EVENT_PLUGIN_INTERNALS__) {
+        window.__TAURI_EVENT_PLUGIN_INTERNALS__ = { unregisterListener: () => {} };
+      }
+      return true;
+    })()`);
+    const mounted = await cdp.eval("window.__probe.install('/src/components/ChatWindow.vue', '', "
+      + JSON.stringify(JSON.stringify({ hostHeight: `${s.h}px` })) + ")");
+    await cdp.eval("window.__probe.seedDevice('dev-me')");
+    const skel = await cdp.eval(`(async () => {
+      const { useChatStore } = await import('/src/stores/useChatStore.ts');
+      const chat = useChatStore();
+      delete chat.messages['group:skel'];
+      chat.activeConv = 'group:skel';
+      await new Promise((r) => setTimeout(r, 800));
+      const box = document.querySelector('[data-msg-skeleton]');
+      if (!box) return { ok: false };
+      const kids = [...box.children];
+      const anim = (n) => getComputedStyle(n).animationName;
+      const r = box.getBoundingClientRect();
+      return { ok: true, kids: kids.length, kidAnim: [...new Set(kids.map(anim))],
+        boxAnim: anim(box), boxIter: getComputedStyle(box).animationIterationCount,
+        pulse: document.querySelectorAll('.animate-pulse').length,
+        overflowX: document.documentElement.scrollWidth - document.documentElement.clientWidth,
+        rect: { t: +r.top.toFixed(1), b: +r.bottom.toFixed(1), h: +r.height.toFixed(1) },
+        viewportH: window.innerHeight };
+    })()`);
+    await shot(`skeleton-${s.tag}-dark`);
+    await cdp.eval("document.documentElement.classList.remove('dark')");
+    await sleep(250);
+    await shot(`skeleton-${s.tag}-light`);
+
+    const byId = (r, id) => (r && r.blobs || []).find((b) => b.id === id) || {};
+    const frozen = s.w <= 767;
+    const narrow = s.w < 480;
+    // ≤767：A/B 在、C/D 隐藏、A/B 冻结（三档手机是 JS narrow 先冻，600 才是这条 CSS 分支）；
+    // >767：四团都在，A/B/C 漂移、D 静态底洗。
+    const ambientOk = frozen
+      ? ["a", "b"].every((id) => byId(light, id).display !== "none")
+        && ["c", "d"].every((id) => byId(light, id).display === "none")
+        && ["a", "b"].every((id) => byId(light, id).anim === "none")
+      : ["a", "b", "c", "d"].every((id) => byId(light, id).display !== "none")
+        && ["a", "b", "c"].every((id) => byId(light, id).anim !== "none")
+        && byId(light, "d").anim === "none";
+    // 归因：<480 由 JS narrow 判成 static；480–767 的 `mode` 仍是 full，冻结只可能来自
+    // 本阶段的 CSS 分支（`@media (max-width:767px)`）—— 这一句防止"改了但没量到"。
+    const attributionOk = s.w < 480 ? light.mode === "static" : light.mode !== "static";
+    check(`stage5·${s.tag}：色雾 ${frozen ? "≤767 只留 A/B 且冻结" : ">767 四团、A/B/C 漂移"}、无横向溢出、冻结归因可分辨`,
+      !!light && !!dark && ambientOk && attributionOk && light.overflowX <= 0,
+      frozen
+        ? "ab 可见 / cd 隐藏 / ab animationName=none / overflowX≤0"
+        : "abcd 可见 / abc 有 animationName / d=none / overflowX≤0",
+      JSON.stringify({ light, dark, narrow }));
+    const skelOk = !!skel && skel.ok === true
+      && skel.kids >= 3 && skel.kidAnim.length === 1 && skel.kidAnim[0] === "none"
+      && skel.boxAnim === "gosslan-skeleton-in" && skel.boxIter === "1"
+      && skel.pulse === 0 && skel.overflowX <= 0
+      && skel.rect.t >= 0 && skel.rect.b <= skel.viewportH + 1;
+    check(`stage5·${s.tag}：骨架静态（子块无动画、容器只淡入一次）、无脉冲、无横向溢出、不越视口`,
+      skelOk, "kids≥3 / kidAnim=[none] / boxAnim=gosslan-skeleton-in×1 / pulse=0 / overflowX≤0 / 0≤rect≤viewportH",
+      JSON.stringify({ mounted: mounted && mounted.ok, skel }));
+    rows.push({ size: s.tag, frozen, narrow, light, dark, skel });
+  }
+  console.log("  · stage5 分档读数：" + JSON.stringify(rows.map((r) => ({
+    size: r.size,
+    ambientMode: r.light && r.light.mode,
+    abAnim: [r.light && r.light.blobs[0] && r.light.blobs[0].anim,
+      r.light && r.light.blobs[1] && r.light.blobs[1].anim],
+    skelKids: r.skel && r.skel.kids, skelAnim: r.skel && r.skel.boxAnim,
+    skelPulse: r.skel && r.skel.pulse, overflow: r.skel && r.skel.overflowX,
+  }))));
 }
 
 async function runSettingsMobile(cdp, url) {

@@ -703,9 +703,17 @@ html[data-page-hidden="true"] .ambient-blob {
   }
 }
 
-/* 手机竖屏：只留 A/B 两团漂移（D 底洗与 C 冷团隐藏）。
-   断点必须与 JS/Tailwind 的 md 档（767px）同值，见 platform.test.ts 的布局宽度契约。 */
+/* 手机竖屏：只留 A/B 两团（D 底洗与 C 冷团隐藏）。
+   断点必须与 JS/Tailwind 的 md 档（767px）同值，见 platform.test.ts 的布局宽度契约。
+   2026-11-06 阶段 5 裁决「移动端降一档以省电」：层数已降到 2 的基础上，漂移也冻结到
+   初始帧（速度降一档到 0：雾还在、只是不动）—— 不整体降饱和、不隐藏整层。
+   JS 侧 <480 早已判成 static（utils/ambient.ts 的 `narrow`），这条让 480–767 的
+   横屏手机 / 小平板与同一口径对齐。 */
 @media (max-width: 767px) {
+  .ambient-blob--a,
+  .ambient-blob--b {
+    animation: none !important;
+  }
   .ambient-blob--c,
   .ambient-blob--d {
     display: none;
@@ -1345,8 +1353,26 @@ progress {
   animation: gosslan-msg-in var(--gosslan-duration) var(--gosslan-ease) both;
 }
 
+/* 骨架：静态灰块 + **一次** 240ms 淡入（2026-11-06 阶段 5 裁决）。
+   循环脉冲会让「正在加载」变成持续噪声；这里只回答"内容正在来"，不回答"还在等"。
+   §11.3.7：出现才播一次、状态切换不重播、reduce 档只淡入淡出（这里 reduce 直接不播）。 */
+@keyframes gosslan-skeleton-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+.gosslan-skeleton-in {
+  animation: gosslan-skeleton-in var(--gosslan-duration) var(--gosslan-ease) both;
+}
+
 @media (prefers-reduced-motion: reduce) {
   .gosslan-msg-enter {
+    animation: none;
+  }
+  .gosslan-skeleton-in {
     animation: none;
   }
 }
