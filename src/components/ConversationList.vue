@@ -24,6 +24,8 @@ import ConversationContextMenu from "@/components/conversation/ConversationConte
 import ConfirmDialog from "@/components/ui/ConfirmDialog.vue";
 import PrimaryBtn from "@/components/ui/PrimaryBtn.vue";
 import UnreadBadge from "@/components/UnreadBadge.vue";
+import SelfAvatar from "@/components/SelfAvatar.vue";
+import appMark from "@/assets/app-mark.png";
 import { APP_ACTION, onAction } from "@/api";
 import { groupByInitial } from "@/utils/nameGroup";
 import { isSelfConversation, selfFriendOf } from "@/utils/selfChat";
@@ -51,6 +53,8 @@ const emit = defineEmits<{
   (e: "open-requests"): void;
   /** 在搜索框里按回车 → 打开「搜索聊天记录」结果页（微信式分工：输入即过滤，回车进结果页） */
   (e: "search-history", keyword: string): void;
+  /** 移动端顶栏本人头像 → 打开资料页（桌面端该入口在标题栏）。 */
+  (e: "open-profile"): void;
 }>();
 
 const app = useAppStore();
@@ -452,9 +456,62 @@ useEventListener(document, "click", closeFriendMenu);
          于是左右永远差 4px、右栏那条线在左栏没有对应物。改高度/内边距时留意这条约束。
          2026-09-12：整条头部按用户反馈收紧（token 56→52、搜索框 h-9→h-8），
          两栏仍**同源同一 token**，所以分隔线依旧是一条连续的线。 -->
+    <!-- 移动端一级页顶栏（画板 v2.2，52px）：本人头像 + 页面标题 + 新建。
+         与标题栏/设置页共用 `SelfAvatar`；桌面端不走这一块（rail + 标题栏已有各自入口）。 -->
+    <div
+      v-if="app.isMobile"
+      class="flex shrink-0 items-center gap-2.5 border-b border-[var(--gosslan-divider)] pl-3 pr-1.5"
+      :style="{ height: 'var(--gosslan-mobile-header-h)' }"
+    >
+      <button
+        type="button"
+        class="relative flex h-9 w-9 shrink-0 items-center justify-center"
+        :aria-label="t('nav.me.openSettings', { status: app.present ? t('nav.me.online') : t('nav.me.offline') })"
+        @click="emit('open-profile')"
+      >
+        <SelfAvatar class="h-[30px] w-[30px] rounded-full" />
+        <span
+          class="absolute bottom-0 right-0 h-2.5 w-2.5 rounded-full border-2 border-[var(--gosslan-list)]"
+          :class="app.present ? 'bg-[var(--gosslan-success)]' : 'bg-[var(--gosslan-status-offline)]'"
+        ></span>
+      </button>
+      <h1
+        class="min-w-0 flex-1 truncate text-title font-semibold text-[var(--gosslan-text)]"
+        :title="view === 'chats' ? t('nav.chats') : t('nav.contacts')"
+      >
+        {{ view === "chats" ? t("nav.chats") : t("nav.contacts") }}
+      </h1>
+      <div class="relative flex shrink-0 items-center">
+        <DropdownMenuRoot :open="plusOpen" :modal="false" @update:open="onPlusOpen">
+          <DropdownMenuTrigger as-child>
+            <button
+              class="tap-safe flex h-8 w-8 items-center justify-center rounded-[var(--gosslan-radius-md)] bg-[var(--gosslan-primary-active)] text-[var(--gosslan-on-primary)] shadow-[0_4px_12px_color-mix(in_srgb,var(--gosslan-primary)_28%,transparent)] transition hover:bg-[var(--gosslan-primary-hover)]"
+              :title="t('conv.addTitle')" :aria-label="t('conv.addTitle')"
+              @click.stop
+            >
+              <Icon name="plus" class="h-[19px] w-[19px]" />
+            </button>
+          </DropdownMenuTrigger>
+          <DropdownMenuPortal>
+            <DropdownMenuContent align="end" :side-offset="0" :collision-padding="8" class="frost gosslan-menu z-[80]">
+              <DropdownMenuItem class="gosslan-menu-item" @select="emit('open-add-friend')">
+                <Icon name="user-plus" />
+                {{ t("common.addFriend") }}
+              </DropdownMenuItem>
+              <DropdownMenuItem class="gosslan-menu-item" @select="emit('open-group')">
+                <Icon name="users-round" />
+                {{ t("common.createGroup") }}
+              </DropdownMenuItem>
+            </DropdownMenuContent>
+          </DropdownMenuPortal>
+        </DropdownMenuRoot>
+      </div>
+    </div>
+
     <div
       class="flex shrink-0 items-center gap-1.5 border-b border-[var(--gosslan-divider)] px-3"
-      :style="{ height: 'var(--gosslan-header-h)' }"
+      :class="app.isMobile ? 'border-b-0 py-1.5' : ''"
+      :style="app.isMobile ? undefined : { height: 'var(--gosslan-header-h)' }"
     >
       <!-- 搜索框底色必须用 --gosslan-field 而不是 panel：
            暗色下 panel(#1e293b) 与本栏 list(#1e293b) 是同一个值，输入框会"消失"；
@@ -473,13 +530,17 @@ useEventListener(document, "click", closeFriendMenu);
           autocapitalize="off"
           spellcheck="false"
           class="w-full bg-transparent text-body placeholder:text-[var(--gosslan-placeholder)] outline-none focus:border-transparent"
-          :placeholder="view === 'chats' ? t('common.search') : t('common.searchContacts')"
+          :placeholder="
+            view === 'chats'
+              ? app.isMobile ? t('conv.searchLong') : t('common.search')
+              : t('common.searchContacts')
+          "
           @keydown.enter.prevent="onSearchEnter"
           @compositionstart="ime.onStart"
           @compositionend="ime.onEnd"
         />
       </div>
-      <div class="relative flex shrink-0 items-center">
+      <div v-if="!app.isMobile" class="relative flex shrink-0 items-center">
         <!-- 微信式：单个加号，点开下拉（添加好友 / 创建群聊）。
              开关/键盘/点外部由 Reka DropdownMenu 承担；互斥仍走全局 plusPopup。 -->
         <DropdownMenuRoot :open="plusOpen" :modal="false" @update:open="onPlusOpen">
@@ -548,7 +609,63 @@ useEventListener(document, "click", closeFriendMenu);
              ⇒ 有好友时主行动 = 发起聊天（切到通讯录选人），另有次行动 = 发现好友；
                 一个好友都没有时主行动 = 发现好友（去搜索添加）。
              搜索无结果时不给这些（那是"换个词"的场景，不是"没人"）。 -->
-        <div v-if="listConversations.length === 0" class="mt-16 flex flex-col items-center gap-3 text-center text-sm text-[var(--gosslan-text-2)]">
+        <!-- 移动端首启空态（画板 MobileEmpty）：整屏，品牌底盘 + 说明 + 主/次动作 + 发现设备卡 + 三条特性。 -->
+        <div
+          v-if="app.isMobile && listConversations.length === 0 && !query.trim()"
+          class="flex min-h-full flex-col items-center justify-center px-9 pb-10 text-center"
+        >
+          <div
+            class="mb-4 flex h-[68px] w-[68px] items-center justify-center rounded-[var(--gosslan-radius-xl)] bg-[var(--gosslan-panel)] shadow-[inset_0_0_0_1px_var(--gosslan-border)]"
+          >
+            <img :src="appMark" class="h-14 w-14" alt="" aria-hidden="true" draggable="false" />
+          </div>
+          <h2 class="text-title font-semibold text-[var(--gosslan-text)]">{{ t("conv.noConversation") }}</h2>
+          <p class="mt-2 text-footnote leading-5 text-[var(--gosslan-text-2)]">
+            {{ t("conv.mobileEmptyHint") }}<br />
+            <b class="font-medium text-[var(--gosslan-text)]">{{ t("layout.emptySubtitle") }}</b>
+          </p>
+          <div class="mt-5 w-full max-w-[300px]">
+            <PrimaryBtn v-if="chat.friends.length" size="large" class="w-full" @click="emit('update:view', 'contacts')">
+              {{ t("conv.startChat") }}
+            </PrimaryBtn>
+            <PrimaryBtn v-else size="large" class="w-full" @click="emit('open-add-friend')">
+              <Icon name="plus" class="h-4 w-4" />
+              {{ t("common.addFriend") }}
+            </PrimaryBtn>
+            <button
+              type="button"
+              class="mt-1 h-9 w-full text-footnote font-medium text-[var(--gosslan-primary)]"
+              @click="emit('open-group')"
+            >
+              {{ t("common.createGroup") }}
+            </button>
+          </div>
+          <div
+            class="mt-4 flex w-full max-w-[300px] items-center gap-2.5 rounded-[var(--gosslan-radius-md)] bg-[var(--gosslan-panel)] px-3 py-2.5 text-left shadow-[inset_0_0_0_1px_var(--gosslan-border)]"
+          >
+            <span
+              class="flex h-[30px] w-[30px] shrink-0 items-center justify-center rounded-full bg-[color-mix(in_srgb,var(--gosslan-success)_14%,transparent)] text-[var(--gosslan-success)]"
+            >
+              <Icon name="radar" class="h-4 w-4" />
+            </span>
+            <span class="min-w-0 flex-1">
+              <span class="block truncate text-footnote font-medium text-[var(--gosslan-text)]" :title="t('conv.discovering')">{{ t("conv.discovering") }}</span>
+              <span class="mt-0.5 flex items-center gap-1 text-caption text-[var(--gosslan-text-2)]">
+                <span class="h-1 w-1 rounded-full bg-[var(--gosslan-success)]" aria-hidden="true"></span>
+                {{ t("layout.chipDevices", { n: chat.peers.length }) }}
+              </span>
+            </span>
+          </div>
+          <div class="mt-5 flex items-center gap-2.5 text-caption text-[var(--gosslan-text-2)]">
+            <span>{{ t("layout.chipPureP2p") }}</span>
+            <span class="h-2 w-px bg-[var(--gosslan-border)]" aria-hidden="true"></span>
+            <span>{{ t("layout.chipE2ee") }}</span>
+            <span class="h-2 w-px bg-[var(--gosslan-border)]" aria-hidden="true"></span>
+            <span>{{ t("layout.chipServerless") }}</span>
+          </div>
+        </div>
+
+        <div v-if="listConversations.length === 0 && !(app.isMobile && !query.trim())" class="mt-16 flex flex-col items-center gap-3 text-center text-sm text-[var(--gosslan-text-2)]">
           <span>{{ t("conv.noConversation") }}</span>
           <!-- 空态下一步（用户 2026-09-12 晚）：**有好友 → 发起聊天**；**一个好友都没有 →
                只有「添加好友」**（原先还并列一个「发现好友」，与本条冲突，已去掉）。

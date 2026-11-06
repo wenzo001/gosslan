@@ -183,3 +183,35 @@
 - `npm run build` → `✅ vite build`
 - 截图：`test-results/ui-redesign/p3/before|after/desktop-1280-light|dark.png`
 - 运行方式：worktree 内 dev server（1421）+ Brave CDP；截图前隐藏浏览器无后端造成的 toast HUD。
+
+## 8. 第 4 段实施记录（移动端）
+
+落地：
+
+- **一级页顶栏**（`ConversationList`，`app.isMobile`）：56px，本人头像（`SelfAvatar` 30px + 在线点）
+  + 页面标题（聊天/通讯录）+ 32px 主题色新建入口；桌面端这一段不渲染。
+- **搜索行**：独立一行（`py-1.5` + 36px 输入框），移动端占位文案改为「搜索会话、联系人或消息」，
+  桌面端仍用短文案。
+- **TabBar**：`--gosslan-mobile-tabbar-h` 4rem → **3.5rem（56px）**；按钮 `py-2.5` → `py-1.5`，
+  激活药丸 `min-width: 48px`（画板 46–48）；图标仍 21、标签仍 `caption` 11。
+- **移动端首启空态**（画板 MobileEmpty）：68px 品牌底盘（复用 `assets/app-mark.png`）+ 标题
+  + 说明 + 主/次动作（添加好友·发起聊天 / 创建群聊，均为既有能力）+ 发现设备卡（`radar` 图标、
+  `chat.peers.length` 读数）+ 纯 P2P / 端到端加密 / 无服务器三条特性。
+  `radar` 加入 `iconRegistry`（lucide 唯一源），无手绘路径。
+- 桌面列表的紧凑空态保持不变（主区已有整屏空态，不重复）。
+
+与画板的有意差异：
+
+| 项 | 画板 | 实现 | 原因 |
+|---|---|---|---|
+| 顶栏标题字号 | 17px | `text-title` 15px | 字号只走六档令牌 |
+| 空态标题 | 20px | `title` 15px | 同上 |
+| Tab 标签 | 10px | `caption` 11px | 10→11 统一第 6 段，且 10px 已不可用 |
+| 移动端行高/头像 | 64 / 42 | 64 / 40 | 行高按阶段 1 令牌；头像 40 与桌面同一组件，不动尺寸契约 |
+
+验证：
+
+- `npm test` → **1818 pass / 0 fail**
+- `npm run build` → `✅ vite build（4.5s）`
+- `node scripts/check-i18n.mjs` → zh=1673 / en=1673、死键 0
+- 截图：`test-results/ui-redesign/p4/mobile-430-light|dark.png`

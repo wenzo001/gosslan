@@ -1543,6 +1543,9 @@ export const zhCN: MessageDict = {
   "conv.toast.historyDeleted": "已删除与「{name}」的聊天记录",
   "conv.addTitle": "添加好友 / 创建群聊",
   "conv.noConversation": "还没有会话",
+  "conv.searchLong": "搜索会话、联系人或消息",
+  "conv.mobileEmptyHint": "在同一局域网内添加好友即可开始。",
+  "conv.discovering": "正在局域网内发现设备",
   "conv.startChat": "发起聊天",
   "conv.delete.hint": "只删除本机的聊天记录，对方不受影响",
   "conv.emptyHintHasFriends": "从通讯录选一位好友，或在下方列表里点开一个会话",
@@ -1604,6 +1607,7 @@ export const zhCN: MessageDict = {
   "layout.chipDevices": "{n} 台设备在线",
   "layout.chipE2ee": "端到端加密",
   "layout.chipServerless": "无服务器",
+  "layout.chipPureP2p": "纯 P2P",
   "layout.shortcutHintMac": "按 ⌘K 搜索，按 ⌘, 打开设置",
   "layout.shortcutHint": "按 Ctrl+K 搜索，按 Ctrl+, 打开设置",
   // 主窗口标题栏右侧功能组（画板 DesktopChats）。
