@@ -1,0 +1,67 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>Pulse — Startup error</title>
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+  *{box-sizing:border-box}
+  body{margin:0;background:#f2f3f5;font-family:-apple-system,BlinkMacSystemFont,"PingFang SC","Microsoft YaHei","Segoe UI",sans-serif;color:#1f2329;-webkit-font-smoothing:antialiased}
+  .win{width:560px;height:400px;background:#f2f3f5;display:flex;flex-direction:column;overflow:hidden;position:relative}
+  .titlebar{height:38px;display:flex;align-items:center;padding:0 14px;position:relative;flex:0 0 auto}
+  .lights{display:flex;gap:7px;width:68px}.light{width:10px;height:10px;border-radius:999px;background:#cfc6e2}
+  .title{position:absolute;left:0;right:0;text-align:center;font-family:-apple-system,BlinkMacSystemFont,"PingFang SC","Microsoft YaHei","Segoe UI",sans-serif;font-size:11.5px;font-weight:600;color:#8a9099}
+  .body{flex:1;padding:14px 34px 22px;display:flex;flex-direction:column;align-items:center;text-align:center}
+  .orb{width:66px;height:66px;border-radius:22px;background:#ffecec;display:flex;align-items:center;justify-content:center;color:#d93a3a;box-shadow:none;position:relative;margin-bottom:14px}
+  .orb:after{content:"";position:absolute;inset:-7px;border-radius:27px;border:1.5px dashed rgba(31,35,41,.28);transform:rotate(6deg)}
+  h1{font-family:-apple-system,BlinkMacSystemFont,"PingFang SC","Microsoft YaHei","Segoe UI",sans-serif;font-size:22px;line-height:28px;font-weight:600;letter-spacing:-.02em;margin:0 0 5px}
+  p{font-size:12px;line-height:18px;color:#5a6068;margin:0 0 16px;max-width:420px}
+  p b{color:#1f2329;font-weight:600}
+  .actions{display:flex;gap:8px;margin-bottom:14px}
+  .btn{height:38px;padding:0 15px;border:0;border-radius:10px;font:inherit;font-size:12px;font-weight:600;display:inline-flex;align-items:center;gap:6px;cursor:pointer;font-family:-apple-system,BlinkMacSystemFont,"PingFang SC","Microsoft YaHei","Segoe UI",sans-serif}
+  .primary{background:#2f6bff;color:#fff;box-shadow:0 8px 20px rgba(31,35,41,.26)}
+  .secondary{background:#fff;color:#3a3f47;box-shadow:inset 0 0 0 1px #e5e6eb,0 4px 12px rgba(31,35,41,.06)}
+  .ghost{background:transparent;color:#8a9099}
+  .details{width:100%;max-width:450px;background:#fff;border-radius:12px;box-shadow:inset 0 0 0 1px #e5e6eb;overflow:hidden;text-align:left}
+  .dHead{height:36px;display:flex;align-items:center;gap:6px;padding:0 12px;font-size:10px;font-weight:600;color:#5a6068;cursor:pointer}
+  .dHead .chev{margin-left:auto;color:#8a9099}
+  .dBody{padding:0 12px 11px;font-family:"JetBrains Mono",monospace;font-size:10.5px;line-height:15px;color:#3a3f47}
+  .dBody b{color:#d93a3a;font-weight:500}
+  .dBody .dim{color:#8a9099}
+  .foot{margin-top:auto;display:flex;align-items:center;gap:6px;font-size:10px;color:#8a9099;width:100%;justify-content:center}
+  .foot a{color:#1f5ae8;font-weight:600;text-decoration:none}
+  svg{display:block}
+</style>
+<style>.win{background:#f7f8fa}</style>
+</helmet>
+<div class="win">
+  <div class="titlebar"><div class="lights"><span class="light"></span><span class="light"></span><span class="light"></span></div><span class="title">Gosslan</span></div>
+  <div class="body">
+    <div class="orb"><svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M12 7v6M12 16.5v.5"/><circle cx="12" cy="12" r="9"/></svg></div>
+    <h1>Gosslan 没能启动</h1>
+    <p>本机数据文件可能正被另一个 Gosslan 实例占用。<br><b>你的消息和好友不会丢失。</b></p>
+    <div class="actions">
+      <button class="btn primary"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 11a8 8 0 1 0-2.3 5.7"/><path d="M20 5v6h-6"/></svg>重试</button>
+      <button class="btn secondary"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2Z"/></svg>打开数据目录</button>
+      <button class="btn ghost">退出</button>
+    </div>
+    <div class="details">
+      <div class="dHead"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M12 11v5M12 7.5v.5"/></svg>错误详情 <span class="chev"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m6 9 6 6 6-6"/></svg></span></div>
+      <div class="dBody"><b>STORE_LOCKED</b> · unable to acquire data directory lock<br><span class="dim">path=~/Library/Application Support/Gosslan</span><br><span class="dim">hint=close other Gosslan windows, then retry</span></div>
+    </div>
+    <div class="foot">Gosslan 5.18.35 · <a href="#copy">复制错误信息</a> · 日志已保留</div>
+  </div>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"$preview":{"width":560,"height":400}}'>
+class Component extends DCLogic {
+  renderVals() { return {}; }
+}
+</script>
+</body>
+</html>

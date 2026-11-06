@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" fill="none" role="img" aria-label="Gosslan 小院 应用图标">
+  <rect width="1024" height="1024" fill="#2F6BFF"/>
+  <path d="M342 944V640a170 170 0 0 1 340 0v304Z" fill="#FFF8EA"/>
+  <path d="M512 470v-50" stroke="#07C160" stroke-width="28" stroke-linecap="round"/>
+  <path d="M512 442c-48 0-76-24-76-62 45 0 76 21 76 62Z" fill="#07C160"/>
+  <path d="M512 416c48 0 76-24 76-62-45 0-76 21-76 62Z" fill="#07C160"/>
+</svg>

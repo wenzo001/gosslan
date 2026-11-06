@@ -1,0 +1,108 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>Mobile — Chat style settings</title>
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+  *{box-sizing:border-box}
+  body{margin:0;background:#f4f4f1;font-family:"Inter",-apple-system,"PingFang SC","Microsoft YaHei",sans-serif;color:#17181a;-webkit-font-smoothing:antialiased}
+  .phone{width:390px;height:844px;background:#f8f8f5;display:flex;flex-direction:column;overflow:hidden}
+  .topbar{height:56px;flex:0 0 auto;display:flex;align-items:center;gap:6px;padding:0 8px 0 2px;border-bottom:1px solid #e6e7e2}
+  .back{width:44px;height:44px;border:0;border-radius:10px;background:transparent;color:#3d4045;display:flex;align-items:center;justify-content:center;cursor:pointer}
+  .back:active{background:#ecede9}
+  .topbar h1{font-size:17px;line-height:24px;font-weight:600;margin:0;flex:1}
+  .body{flex:1;overflow:hidden;padding:14px 14px 10px}
+  .groupTitle{font-size:10.5px;font-weight:500;color:#70747b;margin:0 6px 6px}
+  .card{background:#fff;border-radius:12px;box-shadow:inset 0 0 0 1px #e6e7e2;overflow:hidden;margin-bottom:16px}
+  .preview{padding:14px 14px 12px;background:#f8f8f5;border-bottom:1px solid #ecede9}
+  .pDay{text-align:center;font-size:10px;color:#8a8d92;margin-bottom:9px}
+  .pB{max-width:78%;padding:9px 13px;border-radius:18px;font-size:14px;line-height:20px;margin-bottom:4px;width:fit-content}
+  .pIn{background:#f0f1ed;color:#17181a;border-bottom-left-radius:6px;box-shadow:inset 0 0 0 1px #e4e5e0}
+  .pOut{background:#2f6beb;color:#fff;border-bottom-right-radius:6px;margin-left:auto}
+  .pMeta{font-size:9.5px;color:#8a8d92;text-align:right;margin-top:2px}
+  .row{min-height:54px;display:flex;align-items:center;gap:11px;padding:8px 14px;border-bottom:1px solid #ecede9;font-size:14px}
+  .row:last-child{border-bottom:0}
+  .rMain{flex:1;min-width:0}
+  .rLabel{font-size:14px;line-height:19px}
+  .rSub{font-size:10.5px;line-height:15px;color:#70747b;margin-top:1px}
+  .sizeRow{display:flex;align-items:center;gap:10px;padding:12px 14px 14px}
+  .sizeA{font-weight:600;color:#70747b;flex:0 0 auto}
+  .slider{flex:1;height:4px;border-radius:999px;background:#e9eae6;position:relative}
+  .slider .fill{position:absolute;left:0;top:0;bottom:0;width:52%;background:#2f6beb;border-radius:999px}
+  .slider .knob{position:absolute;left:52%;top:50%;transform:translate(-50%,-50%);width:22px;height:22px;border-radius:999px;background:#fff;box-shadow:0 1px 3px rgba(16,17,20,.24),inset 0 0 0 1px #d9dbd5}
+  .ticks{display:flex;justify-content:space-between;margin:8px 2px 0;font-size:9px;color:#8a8d92}
+  .sizeVal{font-size:10.5px;color:#5a5d63;background:#f1f2ee;border-radius:5px;padding:2px 6px;flex:0 0 auto;font-family:"JetBrains Mono",monospace}
+  .palettes{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px;padding:12px 14px 14px}
+  .pal{border-radius:10px;box-shadow:inset 0 0 0 1px #e6e7e2;padding:8px 9px;cursor:pointer;background:#fff}
+  .pal.on{box-shadow:inset 0 0 0 2px #2f6beb;background:#f8faff}
+  .pal .name{font-size:10.5px;color:#5a5d63;margin-bottom:6px;display:flex;align-items:center;justify-content:space-between}
+  .pal.on .name{color:#2356c4;font-weight:500}
+  .pal .bars{display:flex;gap:4px}
+  .pal .bars i{display:block;height:12px;border-radius:6px;flex:1}
+  .sw{width:16px;height:16px;border-radius:999px;box-shadow:inset 0 0 0 1px rgba(0,0,0,.08);flex:0 0 auto}
+  .switchRow{display:flex;align-items:center;gap:12px;padding:8px 14px;min-height:54px;border-bottom:1px solid #ecede9}
+  .switchRow:last-child{border-bottom:0}
+  .switch{width:46px;height:28px;border-radius:999px;background:#2f6beb;position:relative;border:0;padding:0;cursor:pointer;flex:0 0 auto}
+  .switch:after{content:"";position:absolute;width:24px;height:24px;border-radius:999px;background:#fff;top:2px;left:20px;box-shadow:0 1px 2px rgba(16,17,20,.2)}
+  .switch.off{background:#c9cbc5}.switch.off:after{left:2px}
+  .reset{margin:2px 0 10px;width:100%;height:44px;border:0;border-radius:10px;background:transparent;color:#2356c4;font:inherit;font-size:13px;font-weight:500;cursor:pointer}
+  .reset:active{background:#e8effd}
+  .foot{text-align:center;font-size:10px;color:#8a8d92;line-height:16px}
+  svg{display:block}
+</style>
+</helmet>
+<div class="phone">
+  <div class="topbar">
+    <button class="back" aria-label="返回"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m15 6-6 6 6 6"/></svg></button>
+    <h1>聊天样式</h1>
+  </div>
+  <div class="body">
+    <div class="card">
+      <div class="preview">
+        <div class="pDay">今天 14:20</div>
+        <div class="pB pIn">评审改到 3 点，会议室 B。</div>
+        <div class="pB pOut">收到，我把材料再顺一遍。</div>
+        <div class="pMeta">14:26 · 已读</div>
+      </div>
+      <div class="row"><div class="rMain"><div class="rLabel">字体大小</div><div class="rSub">消息正文随设置缩放，最小 12px</div></div><span class="sizeVal">14px</span></div>
+      <div class="sizeRow"><span class="sizeA" style="font-size:11px">A</span><div class="slider"><div class="fill"></div><div class="knob"></div></div><span class="sizeA" style="font-size:19px">A</span></div>
+      <div class="ticks"><span>12</span><span>13</span><span>14</span><span>15</span><span>16</span></div>
+    </div>
+
+    <p class="groupTitle">气泡配色</p>
+    <div class="card">
+      <div class="palettes">
+        <div class="pal on"><div class="name">跟随主题 <span class="sw" style="background:#2f6beb"></span></div><div class="bars"><i style="background:#f0f1ed;box-shadow:inset 0 0 0 1px #e4e5e0"></i><i style="background:#2f6beb"></i></div></div>
+        <div class="pal"><div class="name">经典蓝 <span class="sw" style="background:#2f6beb"></span></div><div class="bars"><i style="background:#eef2f8;box-shadow:inset 0 0 0 1px #e0e5ee"></i><i style="background:#2f6beb"></i></div></div>
+        <div class="pal"><div class="name">薄荷绿 <span class="sw" style="background:#1b7f52"></span></div><div class="bars"><i style="background:#eef4ef;box-shadow:inset 0 0 0 1px #dfe8e1"></i><i style="background:#1b7f52"></i></div></div>
+        <div class="pal"><div class="name">暖沙 <span class="sw" style="background:#a85d00"></span></div><div class="bars"><i style="background:#f5f0e9;box-shadow:inset 0 0 0 1px #e8e0d5"></i><i style="background:#a85d00"></i></div></div>
+        <div class="pal"><div class="name">紫罗兰 <span class="sw" style="background:#8b5cf6"></span></div><div class="bars"><i style="background:#f2eef8;box-shadow:inset 0 0 0 1px #e5dff0"></i><i style="background:#8b5cf6"></i></div></div>
+        <div class="pal"><div class="name">石墨 <span class="sw" style="background:#3d4045"></span></div><div class="bars"><i style="background:#f0f1ed;box-shadow:inset 0 0 0 1px #e4e5e0"></i><i style="background:#3d4045"></i></div></div>
+      </div>
+    </div>
+
+    <p class="groupTitle">显示效果</p>
+    <div class="card">
+      <div class="switchRow"><div class="rMain"><div class="rLabel">环境动效</div><div class="rSub">背景缓慢流动；关闭后完全静止</div></div><button class="switch off" role="switch" aria-checked="false" aria-label="环境动效"></button></div>
+      <div class="switchRow"><div class="rMain"><div class="rLabel">减少透明度</div><div class="rSub">使用不透明的标题栏与底栏</div></div><button class="switch off" role="switch" aria-checked="false" aria-label="减少透明度"></button></div>
+      <div class="switchRow"><div class="rMain"><div class="rLabel">跟随系统减少动态效果</div><div class="rSub">已检测到系统开启</div></div><span style="font-size:10.5px;color:#14663f;background:#e4f3ea;border-radius:5px;padding:2px 7px">已开启</span></div>
+    </div>
+
+    <button class="reset">恢复默认聊天样式</button>
+    <div class="foot">气泡配色会同步给聊天对象，仅影响气泡本身<br>设置立即生效</div>
+  </div>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"$preview":{"width":390,"height":844}}'>
+class Component extends DCLogic {
+  renderVals() { return {}; }
+}
+</script>
+</body>
+</html>

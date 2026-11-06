@@ -1,0 +1,89 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>Mobile — Contacts</title>
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+  *{box-sizing:border-box}
+  body{margin:0;background:#f2f3f5;font-family:-apple-system,BlinkMacSystemFont,"PingFang SC","Microsoft YaHei","Segoe UI",sans-serif;color:#1f2329;-webkit-font-smoothing:antialiased}
+  .phone{width:390px;height:844px;background:#f7f8fa;display:flex;flex-direction:column;overflow:hidden}
+  .topbar{height:56px;flex:0 0 auto;display:flex;align-items:center;padding:0 8px 0 16px;gap:8px;border-bottom:1px solid #e5e6eb}
+  .topbar h1{font-size:17px;line-height:24px;font-weight:600;margin:0;flex:1}
+  .topBtn{width:44px;height:44px;border:0;border-radius:10px;background:transparent;color:#3a3f47;display:flex;align-items:center;justify-content:center;cursor:pointer;margin-right:-4px}
+  .topBtn:active{background:#eef0f2}
+  .searchWrap{padding:6px 14px 6px;flex:0 0 auto}
+  .search{height:36px;border-radius:9px;background:#f2f3f5;display:flex;align-items:center;gap:7px;padding:0 10px;color:#8a9099;font-size:13px}
+  .rows{flex:1;overflow:hidden;min-height:0}
+  .row{height:60px;display:flex;align-items:center;gap:11px;padding:0 16px;position:relative}
+  .row:active{background:#f2f3f5}.row.sel{background:#e8f0ff}
+  .avatar{width:36px;height:36px;border-radius:999px;display:flex;align-items:center;justify-content:center;font-size:12px;font-weight:600;flex:0 0 auto;position:relative}
+  .a1{background:#dcd3ff;color:#1f5ae8}.a2{background:#f5e6dc;color:#8a4b22}.a3{background:#e0f5ef;color:#068a4a}.a4{background:#eee6f7;color:#6b4aa3}.a5{background:#ffecec;color:#d93a3a}
+  .pdot{position:absolute;right:-1px;bottom:0;width:9px;height:9px;border-radius:999px;background:#07c160;box-shadow:0 0 0 2px #f7f8fa}
+  .row.sel .pdot{box-shadow:0 0 0 2px #e8f0ff}.pdot.off{background:#a9a2b8}
+  .rmain{min-width:0;flex:1}
+  .rname{font-size:15px;line-height:20px;font-weight:500;display:flex;align-items:center;gap:5px}
+  .rname em{font-style:normal;font-size:10.5px;font-weight:400;color:#8a9099}
+  .rsub{display:flex;align-items:center;gap:5px;font-size:11px;line-height:15px;color:#8a9099;margin-top:1px}
+  .rsub i{width:5px;height:5px;border-radius:999px;background:#07c160;display:block}
+  .rsub.off i{background:#a9a2b8}
+  .section{height:30px;display:flex;align-items:center;justify-content:space-between;padding:0 16px;font-size:10.5px;font-weight:500;color:#8a9099;background:#f7f8fa}
+  .section span{font-weight:400;color:#8a9099}
+  .rbadge{min-width:18px;height:18px;padding:0 5px;border-radius:999px;background:#fa5151;color:#fff;font-size:10px;font-weight:600;line-height:18px;text-align:center;flex:0 0 auto}
+  .rlink{color:#8a9099;display:flex;flex:0 0 auto}
+  .divider{height:1px;background:#eef0f2;margin-left:63px}
+  .tabbar{height:56px;flex:0 0 auto;background:rgba(248,248,245,.96);border-top:1px solid #e5e6eb;display:flex;align-items:stretch;padding-bottom:env(safe-area-inset-bottom)}
+  .tab{flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:2px;border:0;background:transparent;color:#8a9099;font:inherit;cursor:pointer;position:relative;min-height:44px}
+  .tab .pill{width:46px;height:26px;border-radius:999px;display:flex;align-items:center;justify-content:center;position:relative}
+  .tab.on{color:#1f5ae8}.tab.on .pill{background:#e8f0ff}
+  .tab .lbl{font-size:10px;line-height:12px;font-weight:500}
+  .tab .badge{position:absolute;top:-3px;right:4px;min-width:15px;height:15px;border-radius:999px;background:#2f6bff;color:#fff;font-size:10px;font-weight:600;line-height:15px;text-align:center;padding:0 3px;box-shadow:0 0 0 2px #f7f8fa}
+  svg{display:block}
+</style>
+<style>h1,h2,h3,h4,.hName,.hTitle,.name,.pName,.rname,.fName,.fname,.cardTitle,.dTitle,.empty h3,.emptyIn h3,.bigEmpty h3,.infoName,.title,.setHead h3,.modal h3,.mHead h3,.h2,.fTitle{font-family:-apple-system,BlinkMacSystemFont,"PingFang SC","Microsoft YaHei","Segoe UI",sans-serif}</style>
+</helmet>
+<div class="phone">
+  <div class="topbar">
+    <h1>通讯录</h1>
+    <button class="topBtn" aria-label="添加好友"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M15 20v-1.5a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4V20"/><circle cx="8.5" cy="7" r="3"/><path d="M18 8v6M15 11h6"/></svg></button>
+  </div>
+  <div class="searchWrap"><div class="search"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" aria-hidden="true"><circle cx="10.5" cy="10.5" r="6.2"/><path d="m15.2 15.2 4.3 4.3"/></svg>搜索联系人</div></div>
+  <div class="rows">
+    <div class="row">
+      <div class="avatar" style="background:#e8f0ff;color:#1f5ae8"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M15 20v-1.5a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4V20"/><circle cx="8.5" cy="7" r="3.2"/><path d="M18 8v6M15 11h6"/></svg></div>
+      <div class="rmain"><div class="rname">新的朋友</div><div class="rsub">李知远 请求添加你为好友</div></div><span class="rbadge">2</span>
+    </div>
+    <div class="divider"></div>
+    <div class="section">在线 · 3 位<span>按名称排序</span></div>
+    <div class="row"><div class="avatar a1">我<span class="pdot"></span></div><div class="rmain"><div class="rname">我 <em>（本机）</em></div><div class="rsub">这台设备</div></div><span class="rlink"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="4" width="18" height="13" rx="2"/><path d="M8 21h8M12 17v4"/></svg></span></div>
+    <div class="divider"></div>
+    <div class="row sel"><div class="avatar a2">林<span class="pdot"></span></div><div class="rmain"><div class="rname">林一</div><div class="rsub">iPhone · 局域网</div></div><span class="rlink"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="2" y="5" width="14" height="10" rx="2"/><path d="M16 9h5v5h-5"/><path d="M6 19h6"/></svg></span></div>
+    <div class="divider"></div>
+    <div class="row"><div class="avatar a3">张<span class="pdot"></span></div><div class="rmain"><div class="rname">张野</div><div class="rsub">Windows · 2 跳</div></div><span class="rlink"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="3"/><path d="M5 5h3M16 5h3M5 19h3M16 19h3M5 8v3M19 8v3M5 16v-3M19 16v-3"/></svg></span></div>
+    <div class="divider"></div>
+    <div class="section">离线 · 2 位</div>
+    <div class="row"><div class="avatar a4">周<span class="pdot off"></span></div><div class="rmain"><div class="rname">周岚</div><div class="rsub off">上次 10 月 30 日</div></div></div>
+    <div class="divider"></div>
+    <div class="row"><div class="avatar a5">陈<span class="pdot off"></span></div><div class="rmain"><div class="rname">陈默</div><div class="rsub off">上次 10 月 21 日</div></div></div>
+    <div class="divider"></div>
+  </div>
+  <nav class="tabbar" aria-label="主导航">
+    <button class="tab"><span class="pill"><svg width="21" height="21" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4.5 7.5A3.5 3.5 0 0 1 8 4h8a3.5 3.5 0 0 1 3.5 3.5v5a3.5 3.5 0 0 1-3.5 3.5h-5.2L7 19v-3.1a3.5 3.5 0 0 1-2.5-3.4Z"/><path d="M8.5 8.5h7M8.5 11.5h4"/></svg><span class="badge">3</span></span><span class="lbl">聊天</span></button>
+    <button class="tab on" aria-current="page"><span class="pill"><svg width="21" height="21" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="9" cy="8" r="3.2"/><path d="M3.5 19.5v-1a5 5 0 0 1 5-5h1a5 5 0 0 1 5 5v1"/><path d="M16 5.2a3.2 3.2 0 0 1 0 5.6M17.5 13.8a4.8 4.8 0 0 1 3 4.4v1.3"/></svg><span class="badge">2</span></span><span class="lbl">通讯录</span></button>
+    <button class="tab"><span class="pill"><svg width="21" height="21" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M7 4.5A2.5 2.5 0 0 1 9.5 2h5A2.5 2.5 0 0 1 17 4.5V21l-5-3-5 3Z"/></svg></span><span class="lbl">收藏</span></button>
+    <button class="tab"><span class="pill"><svg width="21" height="21" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="8" r="3.5"/><path d="M5 20.5v-1.2a6 6 0 0 1 6-6h2a6 6 0 0 1 6 6v1.2"/></svg></span><span class="lbl">我的</span></button>
+  </nav>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"$preview":{"width":390,"height":844}}'>
+class Component extends DCLogic {
+  renderVals() { return {}; }
+}
+</script>
+</body>
+</html>

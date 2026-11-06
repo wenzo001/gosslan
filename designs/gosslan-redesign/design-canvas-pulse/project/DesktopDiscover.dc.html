@@ -1,0 +1,163 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>Pulse — Discover people</title>
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+  *{box-sizing:border-box}
+  body{margin:0;background:#f2f3f5;font-family:-apple-system,BlinkMacSystemFont,"PingFang SC","Microsoft YaHei","Segoe UI",sans-serif;color:#1f2329;-webkit-font-smoothing:antialiased}
+  .app{width:1000px;height:680px;display:flex;flex-direction:column;overflow:hidden}
+  .titlebar{height:40px;background:#e9ebee;border-bottom:1px solid #e5e6eb;display:flex;align-items:center;padding:0 12px;position:relative;flex:0 0 auto;z-index:3}
+  .lights{display:flex;gap:8px;width:76px}.light{width:11px;height:11px;border-radius:999px;background:#cfc6e2}
+  .title{position:absolute;left:0;right:0;text-align:center;font-family:-apple-system,BlinkMacSystemFont,"PingFang SC","Microsoft YaHei","Segoe UI",sans-serif;font-size:12px;font-weight:600;color:#5a6068}
+  .tbRight{margin-left:auto;display:flex;align-items:center;gap:6px}
+  .conn{display:flex;align-items:center;gap:5px;font-size:10.5px;font-weight:600;color:#068a4a;background:#e8f8ee;border-radius:999px;padding:3px 8px}
+  .conn i{width:6px;height:6px;border-radius:999px;background:#07c160;display:block}
+  .tbBtn{width:30px;height:30px;border:0;background:transparent;border-radius:9px;color:#5a6068;display:flex;align-items:center;justify-content:center;cursor:pointer}
+  .tbBtn:hover{background:#e8f0ff;color:#1f2329}
+  .stage{flex:1;position:relative;overflow:hidden;background:radial-gradient(620px 420px at 18% 4%,#e8f0ff 0%,rgba(237,232,255,0) 70%),radial-gradient(540px 400px at 86% 10%,#ffecec 0%,rgba(255,230,232,0) 68%),radial-gradient(640px 420px at 78% 92%,#e8f8ee 0%,rgba(223,249,243,0) 70%),#f2f3f5;padding:0 40px}
+  .stageHead{height:56px;display:flex;align-items:center;gap:10px;position:relative;z-index:2}
+  .back{width:36px;height:36px;border:0;border-radius:10px;background:#fff;color:#3a3f47;display:flex;align-items:center;justify-content:center;cursor:pointer;box-shadow:inset 0 0 0 1px #e5e6eb,0 4px 12px rgba(31,35,41,.08)}
+  .back:hover{background:#f7f8fa}
+  .stageHead h1{font-family:-apple-system,BlinkMacSystemFont,"PingFang SC","Microsoft YaHei","Segoe UI",sans-serif;font-size:16px;line-height:21px;font-weight:600;margin:0}
+  .stageHead .sub{font-size:10.5px;color:#8a9099;margin-top:1px}
+  .stageHead .right{margin-left:auto;display:flex;align-items:center;gap:6px}
+  .seg{display:flex;gap:2px;background:#fff;border-radius:10px;padding:3px;box-shadow:inset 0 0 0 1px #e5e6eb}
+  .seg button{height:28px;padding:0 11px;border:0;border-radius:8px;background:transparent;font:inherit;font-size:11px;font-weight:500;color:#8a9099;cursor:pointer}
+  .seg button.on{background:#e8f0ff;color:#1f5ae8;font-weight:600}
+  .close{width:36px;height:36px;border:0;border-radius:10px;background:#fff;color:#5a6068;display:flex;align-items:center;justify-content:center;cursor:pointer;box-shadow:inset 0 0 0 1px #e5e6eb}
+  .hero{display:flex;align-items:center;gap:28px;height:204px;position:relative;z-index:2}
+  .heroText{flex:1;min-width:0}
+  .kicker{display:inline-flex;align-items:center;gap:5px;font-size:10px;font-weight:700;color:#1f5ae8;background:#e8f0ff;border-radius:999px;padding:4px 9px;margin-bottom:10px}
+  .kicker i{width:5px;height:5px;border-radius:999px;background:#fa5151;display:block}
+  .heroText h2{font-family:-apple-system,BlinkMacSystemFont,"PingFang SC","Microsoft YaHei","Segoe UI",sans-serif;font-size:36px;line-height:42px;font-weight:600;letter-spacing:-.04em;margin:0 0 8px}
+  .heroText h2 em{font-style:normal;background:#2f6bff;-webkit-background-clip:text;background-clip:text;color:transparent}
+  .heroText p{font-size:12.5px;line-height:19px;color:#5a6068;margin:0;max-width:430px}
+  .heroText p b{color:#1f2329;font-weight:600}
+  .radar{width:250px;height:190px;position:relative;flex:0 0 auto}
+  .ring{position:absolute;left:50%;top:50%;border-radius:999px;border:1px solid rgba(31,35,41,.18);transform:translate(-50%,-50%)}
+  .r1{width:100px;height:100px}.r2{width:160px;height:160px}.r3{width:220px;height:220px;border-color:rgba(31,35,41,.14)}
+  .r4{width:280px;height:280px;border-color:rgba(0,194,168,.12)}
+  .core{position:absolute;left:50%;top:50%;transform:translate(-50%,-50%);width:56px;height:56px;border-radius:20px;background:#2f6bff;display:flex;align-items:center;justify-content:center;color:#fff;box-shadow:0 14px 30px rgba(31,35,41,.3)}
+  .dotAv{position:absolute;width:34px;height:34px;border-radius:999px;display:flex;align-items:center;justify-content:center;font-size:11px;font-weight:700;box-shadow:0 0 0 3px #fff,0 6px 14px rgba(31,35,41,.16)}
+  .d1{left:9%;top:18%;background:#f5e6dc;color:#8a4b22}.d2{right:8%;top:10%;background:#e0f5ef;color:#068a4a}.d3{right:2%;bottom:16%;background:#eee6f7;color:#6b4aa3}.d4{left:16%;bottom:4%;background:#f8f1e2;color:#9a6b00}
+  .channels{display:grid;grid-template-columns:1fr 1fr 0.9fr;gap:10px;position:relative;z-index:2;margin-bottom:14px}
+  .channel{background:rgba(255,255,255,.82);border-radius:14px;box-shadow:inset 0 0 0 1px #e5e6eb;padding:11px 13px;display:flex;align-items:center;gap:10px;backdrop-filter:blur(6px)}
+  .chIcon{width:34px;height:34px;border-radius:10px;display:flex;align-items:center;justify-content:center;flex:0 0 auto}
+  .on{background:#e8f8ee;color:#068a4a}.off{background:#eef0f2;color:#8a9099}
+  .chMain{min-width:0;flex:1}
+  .chName{font-size:11.5px;font-weight:600;display:flex;align-items:center;gap:5px}
+  .chName i{width:5px;height:5px;border-radius:999px;background:#07c160;display:block}
+  .chSub{font-size:10px;color:#8a9099;margin-top:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .switch{width:40px;height:23px;border-radius:999px;background:#2f6bff;position:relative;border:0;padding:0;cursor:pointer;flex:0 0 auto}
+  .switch:after{content:"";position:absolute;width:19px;height:19px;border-radius:999px;background:#fff;top:2px;left:19px;box-shadow:0 1px 2px rgba(23,18,38,.2)}
+  .switch.gray{background:#cfc6e2}.switch.gray:after{left:2px}
+  .nearHead{display:flex;align-items:baseline;gap:8px;position:relative;z-index:2;margin:2px 0 8px}
+  .nearHead h3{font-family:-apple-system,BlinkMacSystemFont,"PingFang SC","Microsoft YaHei","Segoe UI",sans-serif;font-size:14px;font-weight:600;margin:0}
+  .nearHead span{font-size:10px;color:#8a9099}
+  .nearHead .refresh{margin-left:auto;display:flex;align-items:center;gap:5px;font-size:10px;font-weight:600;color:#1f5ae8;background:#fff;border-radius:999px;padding:4px 9px;box-shadow:inset 0 0 0 1px #e5e6eb;cursor:pointer}
+  .cards{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:10px;position:relative;z-index:2}
+  .person{background:rgba(255,255,255,.9);border-radius:16px;box-shadow:inset 0 0 0 1px #e5e6eb,0 8px 22px rgba(31,35,41,.08);padding:13px;display:flex;flex-direction:column;align-items:flex-start;min-width:0}
+  .pTop{display:flex;align-items:center;gap:9px;width:100%}
+  .pAv{width:40px;height:40px;border-radius:999px;display:flex;align-items:center;justify-content:center;font-size:13px;font-weight:700;flex:0 0 auto;box-shadow:0 0 0 2px #fff,0 4px 12px rgba(31,35,41,.16);position:relative}
+  .pAv .dot{position:absolute;right:-1px;bottom:0;width:10px;height:10px;border-radius:999px;background:#07c160;box-shadow:0 0 0 2px #fff}
+  .pMain{min-width:0;flex:1}
+  .pName{font-family:-apple-system,BlinkMacSystemFont,"PingFang SC","Microsoft YaHei","Segoe UI",sans-serif;font-size:13px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .pMeta{font-size:10.5px;color:#8a9099;margin-top:1px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .pLink{display:flex;align-items:center;gap:4px;font-size:10px;font-weight:600;margin-top:8px;color:#068a4a}
+  .pLink.bluetooth{color:#9a6b00}
+  .pBtn{margin-top:10px;width:100%;height:32px;border:0;border-radius:9px;font:inherit;font-size:10.5px;font-weight:600;display:flex;align-items:center;justify-content:center;gap:5px;cursor:pointer}
+  .add{background:#2f6bff;color:#fff;box-shadow:0 6px 14px rgba(31,35,41,.24)}
+  .wait{background:#f2f3f5;color:#8a9099;cursor:default}
+  .msg{background:#e8f8ee;color:#068a4a}
+  .foot{height:42px;display:flex;align-items:center;gap:8px;position:relative;z-index:2;margin-top:12px}
+  .invite{display:flex;align-items:center;gap:7px;height:32px;padding:0 10px;border-radius:9px;background:#fff;box-shadow:inset 0 0 0 1px #e5e6eb;font-size:10.5px;color:#5a6068}
+  .invite code{font-family:"JetBrains Mono",monospace;font-size:10px;color:#1f5ae8;font-weight:500}
+  .copy{height:26px;padding:0 8px;border:0;border-radius:7px;background:#e8f0ff;color:#1f5ae8;font:inherit;font-size:10.5px;font-weight:600;cursor:pointer;margin-left:4px}
+  .foot .hint{font-size:10.5px;color:#8a9099;display:flex;align-items:center;gap:4px}
+  .foot .right{margin-left:auto;display:flex;align-items:center;gap:8px}
+  .manual{height:32px;padding:0 11px;border:0;border-radius:9px;background:transparent;color:#1f5ae8;font:inherit;font-size:10.5px;font-weight:600;cursor:pointer}
+  .manual:hover{background:#e8f0ff}
+  svg{display:block}
+</style>
+<style>.stage{background:#f7f8fa}.radar{display:none}.hero{height:150px}.heroText h2{font-size:24px;line-height:30px;letter-spacing:-.01em}</style>
+<style>
+/* v2.2 compact apple-like geometry */
+.stage{padding:0 32px}
+.stageHead{height:52px}
+.hero{height:140px}
+.heroText h2{font-size:24px;line-height:30px}
+.heroText p{font-size:13px;line-height:19px}
+.kicker{font-size:11px}
+.channels{gap:8px;margin-bottom:12px}
+.channel{border-radius:16px;padding:10px 12px}
+.chName{font-size:12px}
+.chSub{font-size:11px}
+.person{border-radius:16px;padding:12px}
+.pName{font-size:13.5px}
+.pMeta{font-size:11px}
+.pLink{font-size:10.5px}
+.pBtn{height:32px;border-radius:10px;font-size:11px}
+.nearHead h3{font-size:14px}
+.nearHead span{font-size:11px}
+</style>
+</helmet>
+<div class="app">
+  <div class="titlebar"><div class="lights"><span class="light"></span><span class="light"></span><span class="light"></span></div><span class="title">Gosslan</span><div class="tbRight"><span class="conn"><i></i>LAN · 4</span><button class="tbBtn" aria-label="更多"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" aria-hidden="true"><circle cx="5.5" cy="12" r="1.4" fill="currentColor" stroke="none"/><circle cx="12" cy="12" r="1.4" fill="currentColor" stroke="none"/><circle cx="18.5" cy="12" r="1.4" fill="currentColor" stroke="none"/></svg></button></div></div>
+
+  <div class="stage">
+    <div class="stageHead">
+      <button class="back" aria-label="返回"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M15 5.5 8.5 12l6.5 6.5"/></svg></button>
+      <div><h1>添加好友</h1><div class="sub">同一局域网内的设备会自动出现</div></div>
+      <div class="right"><div class="seg"><button class="on">附近设备</button><button>邀请码</button></div><button class="close" aria-label="关闭"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" aria-hidden="true"><path d="m6.5 6.5 11 11M17.5 6.5l-11 11"/></svg></button></div>
+    </div>
+
+    <div class="hero">
+      <div class="heroText">
+        <span class="kicker"><i></i>4 台设备 · 刚刚刷新</span>
+        <h2>局域网设备</h2>
+        <p>同一局域网、同一局域网内的设备会自动出现。<br><b>选择一位，发送好友申请。</b></p>
+      </div>
+      <div class="radar">
+        <span class="ring r1"></span><span class="ring r2"></span><span class="ring r3"></span><span class="ring r4"></span>
+        <div class="core"><svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 12h4l2-6 4 12 2-6h6"/></svg></div>
+        <div class="dotAv d1">林</div><div class="dotAv d2">周</div><div class="dotAv d3">苏</div><div class="dotAv d4">陈</div>
+      </div>
+    </div>
+
+    <div class="channels">
+      <div class="channel"><div class="chIcon on"><svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12.5a10 10 0 0 1 14 0M8.5 16a5 5 0 0 1 7 0M12 19.5h.01"/><path d="M2 9a15 15 0 0 1 20 0"/></svg></div><div class="chMain"><div class="chName"><i></i>局域网</div><div class="chSub">已开启 · 发现 4 台设备</div></div><button class="switch" role="switch" aria-checked="true" aria-label="局域网"></button></div>
+      <div class="channel"><div class="chIcon off"><svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m7 7 10 10-5 4V3l5 4L7 17"/></svg></div><div class="chMain"><div class="chName" style="color:#5a6068">蓝牙</div><div class="chSub">未开启 · 适合没有 Wi-Fi 时</div></div><button class="switch gray" role="switch" aria-checked="false" aria-label="蓝牙"></button></div>
+      <div class="channel"><div class="chIcon on"><svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3 4 6v6c0 5 3.4 8 8 9 4.6-1 8-4 8-9V6Z"/><path d="m9 12 2 2 4-4"/></svg></div><div class="chMain"><div class="chName">端到端加密</div><div class="chSub">密钥只在本机</div></div><span style="font-size:10.5px;font-weight:600;color:#068a4a;background:#e8f8ee;border-radius:999px;padding:2px 7px">已开启</span></div>
+    </div>
+
+    <div class="nearHead"><h3>附近设备</h3><span>按距离排序 · 4 台</span><span class="refresh"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 11a8 8 0 1 0-2.3 5.7"/><path d="M20 5v6h-6"/></svg>重新扫描</span></div>
+
+    <div class="cards">
+      <div class="person"><div class="pTop"><div class="pAv" style="background:#e0f5ef;color:#068a4a">苏<span class="dot"></span></div><div class="pMain"><div class="pName">苏晚</div><div class="pMeta">iPhone · 同一 Wi-Fi</div></div></div><div class="pLink"><svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12.5a10 10 0 0 1 14 0M8.5 16a5 5 0 0 1 7 0M12 19.5h.01"/></svg>局域网直达 · 2 跳</div><button class="pBtn add">打招呼</button></div>
+      <div class="person"><div class="pTop"><div class="pAv" style="background:#f5e6dc;color:#8a4b22">林<span class="dot"></span></div><div class="pMain"><div class="pName">林一</div><div class="pMeta">MacBook · 同一 Wi-Fi</div></div></div><div class="pLink"><svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12.5a10 10 0 0 1 14 0M8.5 16a5 5 0 0 1 7 0M12 19.5h.01"/></svg>已是好友 · 在线</div><button class="pBtn msg">发消息</button></div>
+      <div class="person"><div class="pTop"><div class="pAv" style="background:#eee6f7;color:#6b4aa3">周<span class="dot"></span></div><div class="pMain"><div class="pName">周岚</div><div class="pMeta">Windows · 同一 Wi-Fi</div></div></div><div class="pLink"><svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12.5a10 10 0 0 1 14 0M8.5 16a5 5 0 0 1 7 0M12 19.5h.01"/></svg>局域网直达 · 0 跳</div><button class="pBtn wait">等待确认</button></div>
+      <div class="person"><div class="pTop"><div class="pAv" style="background:#f8f1e2;color:#9a6b00">陈</div><div class="pMain"><div class="pName">陈默</div><div class="pMeta">Android · 蓝牙可达</div></div></div><div class="pLink bluetooth"><svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m7 7 10 10-5 4V3l5 4L7 17"/></svg>蓝牙 · 30–40 KB/s</div><button class="pBtn add" style="background:#fff7e6;color:#9a6b00;box-shadow:none">发送邀请</button></div>
+    </div>
+
+    <div class="foot">
+      <div class="invite">邀请码 <code>GOSSLAN-4F2A</code><button class="copy">复制</button></div>
+      <div class="hint"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M12 11v5M12 7.5v.5"/></svg>没有看到设备？确认在同一 Wi-Fi，或让对方打开添加好友页。</div>
+      <div class="right"><button class="manual">手动输入邀请码</button></div>
+    </div>
+  </div>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"$preview":{"width":1000,"height":680}}'>
+class Component extends DCLogic {
+  renderVals() { return {}; }
+}
+</script>
+</body>
+</html>

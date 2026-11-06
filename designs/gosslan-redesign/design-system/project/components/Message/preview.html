@@ -1,0 +1,152 @@
+<!-- @dsCard group="Messaging" height=720 -->
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>Message — preview</title>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+  *{box-sizing:border-box}
+  body{margin:0;padding:24px;background:#ffffff;font-family:"Inter",-apple-system,"PingFang SC","Microsoft YaHei",sans-serif;color:#17181a;font-size:14px;line-height:20px}
+  .sec{font-size:11px;font-weight:500;color:#70747b;margin:0 0 12px;letter-spacing:.02em}
+  .thread{max-width:560px;margin:0 auto}
+  .day{text-align:center;font-size:11px;color:#70747b;margin:14px 0 12px}
+  .run{display:flex;gap:8px;margin:0 0 12px;align-items:flex-start}
+  .run.own{justify-content:flex-end}
+  .av{width:24px;height:24px;border-radius:999px;background:#d9e2f7;color:#2356c4;font-size:10px;font-weight:600;display:flex;align-items:center;justify-content:center;flex:0 0 auto;margin-top:2px}
+  .av.b{background:#f3e2d6;color:#8a4d00}
+  .body{min-width:0;max-width:calc(68% - 32px)}
+  .name{font-size:11px;color:#70747b;margin:0 0 3px 2px}
+  .stack{display:flex;flex-direction:column;gap:2px}
+  .bubble{padding:8px 12px;border-radius:18px;font-size:14px;line-height:20px;white-space:pre-line;width:fit-content;max-width:100%}
+  .in{background:#f0f1ed;color:#17181a;border-bottom-left-radius:6px;box-shadow:inset 0 0 0 1px #e4e5e0}
+  .out{background:#2f6beb;color:#fff;border-bottom-right-radius:6px;margin-left:auto}
+  .meta{display:flex;align-items:center;gap:4px;font-size:11px;color:#70747b;margin-top:4px;font-variant-numeric:tabular-nums}
+  .own .meta{justify-content:flex-end}
+  .quote{display:block;padding:1px 0 1px 8px;border-left:2px solid rgba(23,24,26,.22);font-size:12px;line-height:17px;color:#5a5d63;margin-bottom:5px}
+  .out .quote{border-left-color:rgba(255,255,255,.5);color:rgba(255,255,255,.82)}
+  .file{display:flex;align-items:center;gap:10px;padding:10px 12px;background:#fff;border-radius:12px;box-shadow:inset 0 0 0 1px #e4e5e0;width:236px}
+  .ftile{width:34px;height:40px;border-radius:6px;background:#e8effd;color:#2356c4;display:flex;align-items:center;justify-content:center;flex:0 0 auto}
+  .fname{font-size:13px;font-weight:500;line-height:18px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:160px}
+  .fmeta{font-size:11px;color:#70747b;line-height:15px}
+  .img{width:220px;height:148px;border-radius:12px;background:#e9eae6;position:relative;overflow:hidden}
+  .img .sun{position:absolute;left:30px;top:28px;width:26px;height:26px;border-radius:999px;background:#f4f4f1}
+  .img .hill{position:absolute;left:-20px;bottom:-38px;width:190px;height:110px;background:#d5d7cf;transform:rotate(-8deg);border-radius:40px}
+  .img .hill2{position:absolute;right:-34px;bottom:-46px;width:150px;height:100px;background:#c7cac0;transform:rotate(9deg);border-radius:36px}
+  .img .tag{position:absolute;left:8px;bottom:8px;font-size:10px;color:#3d4045;background:rgba(255,255,255,.82);padding:2px 6px;border-radius:5px}
+  .reacts{display:flex;gap:4px;margin-top:-2px;margin-left:6px;position:relative;z-index:1}
+  .react{display:inline-flex;align-items:center;gap:3px;height:20px;padding:0 7px;border-radius:999px;background:#fff;box-shadow:inset 0 0 0 1px #e4e5e0;font-size:11px;color:#5a5d63}
+  .failed{display:flex;align-items:center;gap:5px;font-size:11px;color:#a32b22;margin-top:5px}
+  .retry{color:#2356c4;font-weight:500;text-decoration:none}
+  .receipt{display:inline-flex;align-items:center;gap:3px}
+  .dark{background:#1b1c1f;border-radius:12px;padding:16px;margin-top:20px}
+  .dark .sec{color:#8a8f98}
+  .dark .name,.dark .day,.dark .meta,.dark .fmeta{color:#8a8f98}
+  .dark .in{background:#26282d;color:#ecedef;box-shadow:inset 0 0 0 1px #303237}
+  .dark .out{background:#3568e8}
+  .dark .quote{border-left-color:rgba(236,237,239,.25);color:#a6aab2}
+  .dark .file{background:#202226;box-shadow:inset 0 0 0 1px #303237}
+  .dark .fname{color:#ecedef}
+  .dark .ftile{background:#1e2a44;color:#8fb1ff}
+  svg{display:block}
+</style>
+</head>
+<body>
+  <p class="sec">1:1 · no avatar column · run rhythm 2px / 12px</p>
+  <div class="thread">
+    <div class="day">今天 14:20</div>
+    <div class="run">
+      <div class="body">
+        <div class="stack">
+          <div class="bubble in">在楼下咖啡店等你，靠窗的位置。</div>
+          <div class="bubble in">不用急，我先改完这段。</div>
+        </div>
+        <div class="meta">14:21</div>
+      </div>
+    </div>
+    <div class="run own">
+      <div class="body">
+        <div class="stack">
+          <div class="bubble out">好，我五分钟后到。</div>
+          <div class="bubble out">要给你带一杯吗？</div>
+        </div>
+        <div class="meta">14:22 <span class="receipt"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#70747b" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m2 12 4 4L14 8"/><path d="m10 14 2 2 8-8"/></svg>已读</span></div>
+      </div>
+    </div>
+    <div class="run own">
+      <div class="body">
+        <div class="bubble out" style="max-width:320px">
+          <span class="quote">「评审改到 3 点，会议室 B」</span>
+          收到，我把材料再顺一遍。
+        </div>
+        <div class="meta">14:26 <span class="receipt"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#70747b" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="m2 12 4 4L14 8"/></svg>已发送</span></div>
+      </div>
+    </div>
+    <div class="run own">
+      <div class="body">
+        <div class="bubble out" style="padding:0;background:transparent;box-shadow:none"><div class="img"><div class="sun"></div><div class="hill"></div><div class="hill2"></div><span class="tag">IMG_2041.jpg · 1.8 MB</span></div></div>
+        <div class="meta">14:28 <span class="receipt"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#70747b" stroke-width="2" stroke-linecap="round" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg>发送中</span></div>
+      </div>
+    </div>
+    <div class="run">
+      <div class="av b">周</div>
+      <div class="body">
+        <div class="name">周岚</div>
+        <div class="stack">
+          <div class="bubble in">这套配色舒服多了。</div>
+        </div>
+        <div class="reacts"><span class="react">♥ 2</span><span class="react">👍 1</span></div>
+        <div class="meta">14:31</div>
+      </div>
+    </div>
+    <div class="run own">
+      <div class="body">
+        <div class="bubble out">周会纪要我放群文件了。</div>
+        <div class="failed">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M12 7v6M12 16.5v.5"/></svg>
+          发送失败 · <a class="retry" href="#retry">重试</a>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <p class="sec" style="margin-top:22px">Group · sender identity by avatar + name, not colour</p>
+  <div class="thread">
+    <div class="run">
+      <div class="av">林</div>
+      <div class="body">
+        <div class="name">林一</div>
+        <div class="stack"><div class="bubble in">下午的评审改到 3 点，会议室 B。</div></div>
+        <div class="meta">14:24</div>
+      </div>
+    </div>
+    <div class="run">
+      <div class="av b">阿</div>
+      <div class="body">
+        <div class="name">阿泽</div>
+        <div class="stack">
+          <div class="bubble in" style="padding:0;background:transparent;box-shadow:none">
+            <div class="file">
+              <div class="ftile"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8Z"/><path d="M14 3v5h5"/></svg></div>
+              <div><div class="fname">评审材料-v3.pdf</div><div class="fmeta">2.4 MB · 已下载</div></div>
+            </div>
+          </div>
+        </div>
+        <div class="meta">14:25</div>
+      </div>
+    </div>
+  </div>
+
+  <div class="dark">
+    <p class="sec">Dark · same hierarchy, no blue-black cast</p>
+    <div class="thread">
+      <div class="run">
+        <div class="body"><div class="bubble in">今晚还跑吗？</div><div class="meta">20:06</div></div>
+      </div>
+      <div class="run own">
+        <div class="body"><div class="bubble out">跑，老地方。</div><div class="meta">20:07 <span class="receipt"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#8a8f98" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m2 12 4 4L14 8"/><path d="m10 14 2 2 8-8"/></svg>已读</span></div></div>
+      </div>
+    </div>
+  </div>
+</body>
+</html>

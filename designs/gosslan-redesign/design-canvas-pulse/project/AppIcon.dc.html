@@ -1,0 +1,140 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>App icon — 小院 · macOS / iOS / Android / Windows</title>
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<style>
+  *{box-sizing:border-box}
+  body{margin:0;background:#f2f3f5;font-family:-apple-system,BlinkMacSystemFont,"PingFang SC","Microsoft YaHei","Segoe UI",sans-serif;color:#1f2329;-webkit-font-smoothing:antialiased}
+  .board{width:1400px;height:980px;background:#f2f3f5;padding:26px;display:flex;flex-direction:column;gap:14px;overflow:hidden}
+  .head{display:flex;align-items:flex-end;gap:12px;flex:0 0 auto}
+  .head h1{font-size:24px;line-height:30px;font-weight:600;letter-spacing:-.03em;margin:0}
+  .head p{font-size:12px;line-height:18px;color:#5a6068;margin:0 0 2px}
+  .head .badge{margin-left:auto;font-size:11px;font-weight:600;color:#1f5ae8;background:#e8f0ff;border-radius:999px;padding:4px 10px}
+  .top{display:grid;grid-template-columns:360px 1fr 330px;gap:14px;flex:0 0 auto}
+  .card{background:#fff;border-radius:18px;box-shadow:inset 0 0 0 1px #e5e6eb;padding:16px;min-width:0}
+  .hero{display:flex;flex-direction:column;align-items:center;justify-content:center;gap:10px;background:#fff;border-radius:18px;box-shadow:inset 0 0 0 1px #e5e6eb;padding:18px;position:relative;overflow:hidden}
+  .hero:before{content:"";position:absolute;width:300px;height:300px;border-radius:999px;background:#f7f8fa;left:50%;top:52%;transform:translate(-50%,-50%)}
+  .hero svg{position:relative;z-index:1;filter:drop-shadow(0 18px 34px rgba(31,35,41,.2))}
+  .hero .name{position:relative;z-index:1;font-size:20px;line-height:26px;font-weight:600}
+  .hero .sub{position:relative;z-index:1;font-size:11px;color:#8a9099}
+  .title{font-size:11px;line-height:15px;font-weight:600;color:#8a9099;letter-spacing:.04em;text-transform:uppercase;margin:0 0 9px}
+  .construct{display:flex;gap:16px;align-items:center;height:100%}
+  .gridBox{width:230px;flex:0 0 auto;border-radius:16px;background:#f7f8fa;box-shadow:inset 0 0 0 1px #eef0f2;padding:10px}
+  .gridBox svg{display:block;width:100%;height:auto}
+  .specs{display:flex;flex-direction:column;gap:7px;font-size:11px;line-height:15px;color:#5a6068;min-width:0}
+  .specs b{color:#1f2329;font-weight:600}
+  .spec{display:flex;gap:8px;align-items:flex-start}
+  .spec .dot{width:6px;height:6px;border-radius:999px;background:#2f6bff;flex:0 0 auto;margin-top:5px}
+  .variants{display:grid;grid-template-columns:repeat(3,1fr);gap:10px}
+  .variant{display:flex;flex-direction:column;align-items:center;gap:5px;background:#f7f8fa;border-radius:14px;box-shadow:inset 0 0 0 1px #eef0f2;padding:10px;font-size:10px;color:#8a9099}
+  .variant svg{display:block;filter:drop-shadow(0 6px 12px rgba(31,35,41,.16))}
+  .platforms{display:grid;grid-template-columns:repeat(4,1fr);gap:12px;flex:0 0 auto}
+  .platform{background:#fff;border-radius:16px;box-shadow:inset 0 0 0 1px #e5e6eb;padding:12px;display:flex;flex-direction:column;align-items:center;gap:8px;min-height:190px;justify-content:center}
+  .platform h3{font-size:11px;line-height:15px;font-weight:600;margin:0;color:#5a6068}
+  .platform .cap{font-size:10px;line-height:13px;color:#8a9099;text-align:center}
+  .dock{display:flex;gap:7px;align-items:flex-end;padding:7px 9px;border-radius:14px;background:rgba(255,255,255,.7);box-shadow:inset 0 0 0 1px #e5e6eb}
+  .dock .ph{width:54px;height:54px;border-radius:12px;background:#e5e6eb}
+  .iosBg{width:180px;height:140px;border-radius:20px;background:linear-gradient(145deg,#e8f0ff,#fff8ea);display:flex;flex-direction:column;align-items:center;justify-content:center;gap:5px;box-shadow:inset 0 0 0 1px #eef0f2}
+  .iosBg .lbl{font-size:9px;color:#3a3f47}
+  .masks{display:flex;gap:12px;align-items:center}
+  .mask{width:88px;height:88px;overflow:hidden;display:flex;align-items:center;justify-content:center;background:#eef2ff}
+  .mask.circle{border-radius:999px}
+  .mask.squircle{border-radius:24px}
+  .win{width:150px;height:120px;border-radius:8px;background:#2b579a;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:5px;color:#fff;font-size:9px}
+  .sizes{display:flex;align-items:flex-end;gap:16px;flex-wrap:wrap}
+  .sz{display:flex;flex-direction:column;align-items:center;gap:4px;font-size:10px;color:#8a9099}
+  .sz svg{display:block;filter:drop-shadow(0 4px 8px rgba(31,35,41,.14))}
+  .rules{display:grid;grid-template-columns:1fr 1fr;gap:12px;flex:0 0 auto}
+  .rule{border-radius:14px;padding:11px 13px;font-size:11px;line-height:16px;color:#5a6068;background:#fff;box-shadow:inset 0 0 0 1px #e5e6eb}
+  .rule h4{font-size:11px;line-height:15px;font-weight:700;margin:0 0 4px}
+  .rule.do h4{color:#068a4a}.rule.dont h4{color:#d93a3a}
+  .foot{display:flex;align-items:center;justify-content:space-between;font-size:10px;color:#8a9099;flex:0 0 auto}
+</style>
+</helmet>
+<div class="board">
+  <div class="head"><div><h1>应用图标 · 小院</h1><p>一套图标，四个平台：macOS / iOS / Android / Windows。蓝院子 + 奶油拱门 + 绿苗，缩到 16px 仍能认。</p></div><span class="badge">App icon v1 · cross-platform</span></div>
+
+  <div class="top">
+    <div class="hero">
+      <svg width="250" height="250" viewBox="0 0 1024 1024" fill="none" aria-label="Gosslan 小院 应用图标">
+        <rect width="1024" height="1024" fill="#2F6BFF"/>
+        <path d="M342 944V640a170 170 0 0 1 340 0v304Z" fill="#FFF8EA"/>
+        <path d="M512 470v-50" stroke="#07C160" stroke-width="28" stroke-linecap="round"/>
+        <path d="M512 442c-48 0-76-24-76-62 45 0 76 21 76 62Z" fill="#07C160"/>
+        <path d="M512 416c48 0 76-24 76-62-45 0-76 21-76 62Z" fill="#07C160"/>
+      </svg>
+      <div class="name">小院</div>
+      <div class="sub">Gosslan · 1024 master</div>
+    </div>
+
+    <div class="card">
+      <p class="title">Construction</p>
+      <div class="construct">
+        <div class="gridBox">
+          <svg viewBox="0 0 1024 1024" fill="none" aria-hidden="true">
+            <defs><pattern id="g64" width="64" height="64" patternUnits="userSpaceOnUse"><path d="M64 0H0V64" stroke="#e5e6eb" stroke-width="2"/></pattern></defs>
+            <rect width="1024" height="1024" fill="url(#g64)"/>
+            <rect x="80" y="80" width="864" height="864" fill="none" stroke="#fa5151" stroke-width="4" stroke-dasharray="10 8"/>
+            <rect x="0" y="0" width="1024" height="1024" fill="none" stroke="#2f6bff" stroke-width="4"/>
+            <path d="M342 944V640a170 170 0 0 1 340 0v304Z" fill="#FFF8EA" stroke="#d9b96a" stroke-width="4"/>
+            <path d="M512 470v-50M512 442c-48 0-76-24-76-62 45 0 76 21 76 62ZM512 416c48 0 76-24 76-62-45 0-76 21-76 62Z" stroke="#07C160" stroke-width="8" stroke-linecap="round"/>
+            <path d="M512 470v474M342 640h340" stroke="#2f6bff" stroke-width="4" stroke-dasharray="8 8" opacity=".55"/>
+          </svg>
+        </div>
+        <div class="specs">
+          <div class="spec"><span class="dot"></span><span><b>1024 母版</b>满版蓝色；iOS / Windows 直接使用，系统自己裁切。</span></div>
+          <div class="spec"><span class="dot" style="background:#f5c6c6"></span><span><b>安全区</b>内缩 80px；门与苗不进入边缘 80px。</span></div>
+          <div class="spec"><span class="dot" style="background:#d9b96a"></span><span><b>拱门</b>宽 340，拱顶 170，底部留 80px，避免像字母 n。</span></div>
+          <div class="spec"><span class="dot" style="background:#07c160"></span><span><b>小苗</b>在拱门正上方，两片叶子从门顶长出；16px 自动收成绿点。</span></div>
+          <div class="spec"><span class="dot" style="background:#1f2329"></span><span><b>macOS</b>另存 22.37% 连续圆角版本；源文件保留方版。</span></div>
+        </div>
+      </div>
+    </div>
+
+    <div class="card">
+      <p class="title">Variants</p>
+      <div class="variants">
+        <div class="variant"><svg width="72" height="72" viewBox="0 0 1024 1024" fill="none"><rect width="1024" height="1024" fill="#2F6BFF"/><path d="M342 944V640a170 170 0 0 1 340 0v304Z" fill="#FFF8EA"/><path d="M512 470v-50" stroke="#07C160" stroke-width="28" stroke-linecap="round"/><path d="M512 442c-48 0-76-24-76-62 45 0 76 21 76 62Z" fill="#07C160"/><path d="M512 416c48 0 76-24 76-62-45 0-76 21-76 62Z" fill="#07C160"/></svg><span>Light</span></div>
+        <div class="variant"><svg width="72" height="72" viewBox="0 0 1024 1024" fill="none"><rect width="1024" height="1024" fill="#141518"/><path d="M342 944V640a170 170 0 0 1 340 0v304Z" fill="#FFF8EA"/><path d="M512 470v-50" stroke="#07C160" stroke-width="28" stroke-linecap="round"/><path d="M512 442c-48 0-76-24-76-62 45 0 76 21 76 62Z" fill="#07C160"/><path d="M512 416c48 0 76-24 76-62-45 0-76 21-76 62Z" fill="#07C160"/></svg><span>Dark</span></div>
+        <div class="variant"><svg width="72" height="72" viewBox="0 0 1024 1024" fill="none"><rect width="1024" height="1024" fill="#E5E6EB"/><path d="M342 944V640a170 170 0 0 1 340 0v304Z" fill="#1F2329"/><path d="M512 470v-50" stroke="#1F2329" stroke-width="28" stroke-linecap="round"/><path d="M512 442c-48 0-76-24-76-62 45 0 76 21 76 62Z" fill="#1F2329"/><path d="M512 416c48 0 76-24 76-62-45 0-76 21-76 62Z" fill="#1F2329"/></svg><span>Tinted</span></div>
+      </div>
+      <p class="sub" style="font-size:10.5px;line-height:15px;color:#8a9099;margin:10px 0 0">Tinted 版本只保留形状，交给系统着色；不要自带彩虹渐变。</p>
+    </div>
+  </div>
+
+  <div class="platforms">
+    <div class="platform"><h3>macOS</h3><div class="dock"><svg width="54" height="54" viewBox="0 0 1024 1024" fill="none"><rect x="0" y="0" width="1024" height="1024" rx="229" fill="#2F6BFF"/><path d="M342 944V640a170 170 0 0 1 340 0v304Z" fill="#FFF8EA"/><path d="M512 470v-50" stroke="#07C160" stroke-width="28" stroke-linecap="round"/><path d="M512 442c-48 0-76-24-76-62 45 0 76 21 76 62Z" fill="#07C160"/><path d="M512 416c48 0 76-24 76-62-45 0-76 21-76 62Z" fill="#07C160"/></svg><span class="ph"></span><span class="ph"></span><span class="ph"></span></div><span class="cap">1024 · squircle 22.37%</span></div>
+    <div class="platform"><h3>iOS</h3><div class="iosBg"><svg width="92" height="92" viewBox="0 0 1024 1024" fill="none"><rect width="1024" height="1024" fill="#2F6BFF"/><path d="M342 944V640a170 170 0 0 1 340 0v304Z" fill="#FFF8EA"/><path d="M512 470v-50" stroke="#07C160" stroke-width="28" stroke-linecap="round"/><path d="M512 442c-48 0-76-24-76-62 45 0 76 21 76 62Z" fill="#07C160"/><path d="M512 416c48 0 76-24 76-62-45 0-76 21-76 62Z" fill="#07C160"/></svg><span class="lbl">Gosslan</span></div><span class="cap">1024 · 满版，系统圆角</span></div>
+    <div class="platform"><h3>Android</h3><div class="masks"><div class="mask circle"><svg width="92" height="92" viewBox="0 0 1024 1024" fill="none"><rect width="1024" height="1024" fill="#2F6BFF"/><path d="M342 944V640a170 170 0 0 1 340 0v304Z" fill="#FFF8EA"/><path d="M512 470v-50" stroke="#07C160" stroke-width="28" stroke-linecap="round"/><path d="M512 442c-48 0-76-24-76-62 45 0 76 21 76 62Z" fill="#07C160"/><path d="M512 416c48 0 76-24 76-62-45 0-76 21-76 62Z" fill="#07C160"/></svg></div><div class="mask squircle"><svg width="92" height="92" viewBox="0 0 1024 1024" fill="none"><rect width="1024" height="1024" fill="#2F6BFF"/><path d="M342 944V640a170 170 0 0 1 340 0v304Z" fill="#FFF8EA"/><path d="M512 470v-50" stroke="#07C160" stroke-width="28" stroke-linecap="round"/><path d="M512 442c-48 0-76-24-76-62 45 0 76 21 76 62Z" fill="#07C160"/><path d="M512 416c48 0 76-24 76-62-45 0-76 21-76 62Z" fill="#07C160"/></svg></div></div><span class="cap">adaptive · 66% safe zone</span></div>
+    <div class="platform"><h3>Windows</h3><div class="win"><svg width="60" height="60" viewBox="0 0 1024 1024" fill="none"><rect width="1024" height="1024" fill="#2F6BFF"/><path d="M342 944V640a170 170 0 0 1 340 0v304Z" fill="#FFF8EA"/><path d="M512 470v-50" stroke="#07C160" stroke-width="28" stroke-linecap="round"/><path d="M512 442c-48 0-76-24-76-62 45 0 76 21 76 62Z" fill="#07C160"/><path d="M512 416c48 0 76-24 76-62-45 0-76 21-76 62Z" fill="#07C160"/></svg><span>Gosslan</span></div><span class="cap">square tile · no mask</span></div>
+  </div>
+
+  <div class="card">
+    <p class="title">Size ladder</p>
+    <div class="sizes">
+      <div class="sz"><svg width="128" height="128" viewBox="0 0 1024 1024" fill="none"><rect width="1024" height="1024" fill="#2F6BFF"/><path d="M342 944V640a170 170 0 0 1 340 0v304Z" fill="#FFF8EA"/><path d="M512 470v-50" stroke="#07C160" stroke-width="28" stroke-linecap="round"/><path d="M512 442c-48 0-76-24-76-62 45 0 76 21 76 62Z" fill="#07C160"/><path d="M512 416c48 0 76-24 76-62-45 0-76 21-76 62Z" fill="#07C160"/></svg><span>128</span></div>
+      <div class="sz"><svg width="64" height="64" viewBox="0 0 1024 1024" fill="none"><rect width="1024" height="1024" fill="#2F6BFF"/><path d="M342 944V640a170 170 0 0 1 340 0v304Z" fill="#FFF8EA"/><path d="M512 470v-50" stroke="#07C160" stroke-width="36" stroke-linecap="round"/><path d="M512 442c-48 0-76-24-76-62 45 0 76 21 76 62Z" fill="#07C160"/><path d="M512 416c48 0 76-24 76-62-45 0-76 21-76 62Z" fill="#07C160"/></svg><span>64</span></div>
+      <div class="sz"><svg width="32" height="32" viewBox="0 0 1024 1024" fill="none"><rect width="1024" height="1024" fill="#2F6BFF"/><path d="M342 944V640a170 170 0 0 1 340 0v304Z" fill="#FFF8EA"/><path d="M512 470v-50" stroke="#07C160" stroke-width="48" stroke-linecap="round"/><circle cx="680" cy="250" r="70" fill="#07C160"/></svg><span>32</span></div>
+      <div class="sz"><svg width="16" height="16" viewBox="0 0 1024 1024" fill="none"><rect width="1024" height="1024" fill="#2F6BFF"/><path d="M342 944V640a170 170 0 0 1 340 0v304Z" fill="#FFF8EA"/><circle cx="680" cy="260" r="92" fill="#07C160"/></svg><span>16</span></div>
+      <div style="width:1px;height:52px;background:#e5e6eb"></div>
+      <span class="cap" style="font-size:11px;line-height:16px;color:#5a6068">512 / 256 与 128 同构；<b>64 以下小苗收成圆点</b>，门宽不变，避免糊成一团。</span>
+    </div>
+  </div>
+
+  <div class="rules"><div class="rule do"><h4>✓ Do</h4><p>一套满版蓝底 + 奶油拱门 + 绿苗；macOS 只加圆角，iOS/Windows 用满版，Android 用同一前景放进 66% 安全区。</p></div><div class="rule dont"><h4>✕ Don't</h4><p>不要文字、不要表情、不要嵌套第二个圆角方块、不要给小苗加细节、不要让门贴边、不要在每个平台换一套图案。</p></div></div>
+  <div class="foot"><span>Gosslan — app icon v1 · 小院</span><span>1024 master · cross-platform · light / dark / tinted</span></div>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"$preview":{"width":1400,"height":980}}'>
+class Component extends DCLogic {
+  renderVals() { return {}; }
+}
+</script>
+</body>
+</html>

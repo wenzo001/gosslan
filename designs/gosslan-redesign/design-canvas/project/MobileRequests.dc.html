@@ -1,0 +1,86 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>Mobile — Friend requests</title>
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+  *{box-sizing:border-box}
+  body{margin:0;background:#f4f4f1;font-family:"Inter",-apple-system,"PingFang SC","Microsoft YaHei",sans-serif;color:#17181a;-webkit-font-smoothing:antialiased}
+  .phone{width:390px;height:844px;background:#fff;display:flex;flex-direction:column;overflow:hidden}
+  .topbar{height:56px;flex:0 0 auto;display:flex;align-items:center;gap:6px;padding:0 8px 0 2px;border-bottom:1px solid #ecede9}
+  .back{width:44px;height:44px;border:0;border-radius:10px;background:transparent;color:#3d4045;display:flex;align-items:center;justify-content:center;cursor:pointer}
+  .back:active{background:#f1f2ee}
+  .topbar h1{font-size:17px;line-height:24px;font-weight:600;margin:0;flex:1}
+  .cnt{font-size:11px;color:#70747b;background:#f1f2ee;border-radius:999px;padding:1px 7px}
+  .topBtn{width:44px;height:44px;border:0;border-radius:10px;background:transparent;color:#3d4045;display:flex;align-items:center;justify-content:center;cursor:pointer;margin-right:-4px}
+  .tabs{display:flex;gap:2px;background:#f1f2ee;border-radius:9px;padding:2px;margin:10px 14px 6px;flex:0 0 auto}
+  .tabs button{flex:1;height:34px;border:0;border-radius:7px;background:transparent;font:inherit;font-size:12.5px;color:#5a5d63;cursor:pointer;display:flex;align-items:center;justify-content:center;gap:5px}
+  .tabs button.on{background:#fff;color:#17181a;font-weight:500;box-shadow:0 1px 2px rgba(16,17,20,.06)}
+  .tabs .n{font-size:10px;color:#70747b}
+  .body{flex:1;overflow:hidden;padding:4px 14px 10px}
+  .label{font-size:10.5px;font-weight:500;color:#70747b;margin:10px 0 4px}
+  .req{padding:12px 2px;border-bottom:1px solid #ecede9;display:flex;gap:11px;align-items:flex-start}
+  .req:last-child{border-bottom:0}
+  .avatar{width:44px;height:44px;border-radius:999px;display:flex;align-items:center;justify-content:center;font-size:14px;font-weight:600;flex:0 0 auto}
+  .a2{background:#f3e2d6;color:#8a4d00}.a3{background:#dcefe3;color:#14663f}.a4{background:#ece3f6;color:#6b3fa0}.a5{background:#f6e0e0;color:#a32b22}
+  .main{min-width:0;flex:1}
+  .name{font-size:14.5px;line-height:20px;font-weight:500}
+  .msg{font-size:12px;line-height:17px;color:#5a5d63;margin-top:2px}
+  .meta{font-size:10.5px;color:#8a8d92;margin-top:3px}
+  .actions{display:flex;gap:6px;margin-top:8px}
+  .btn{height:34px;padding:0 12px;border:0;border-radius:8px;font:inherit;font-size:12px;font-weight:500;cursor:pointer;display:flex;align-items:center;gap:4px}
+  .accept{background:#2f6beb;color:#fff}.accept:active{background:#2459ce}
+  .reject{background:#f1f2ee;color:#17181a;box-shadow:inset 0 0 0 1px #e4e5e0}
+  .withdraw{background:transparent;color:#a32b22}
+  .waiting{display:inline-flex;align-items:center;gap:4px;height:34px;font-size:11px;color:#70747b}
+  .empty{text-align:center;padding:30px 0;font-size:12px;color:#70747b}
+  .hint{display:flex;align-items:center;gap:6px;background:#f8f8f5;border-radius:9px;padding:9px 11px;font-size:10.5px;line-height:15px;color:#5a5d63;margin-top:12px}
+  .hint svg{color:#70747b;flex:0 0 auto}
+  svg{display:block}
+</style>
+</helmet>
+<div class="phone">
+  <div class="topbar">
+    <button class="back" aria-label="返回"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m15 6-6 6 6 6"/></svg></button>
+    <h1>新的朋友</h1><span class="cnt">2</span>
+    <button class="topBtn" aria-label="添加好友"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M15 20v-1.5a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4V20"/><circle cx="8.5" cy="7" r="3"/><path d="M18 8v6M15 11h6"/></svg></button>
+  </div>
+  <div class="tabs"><button class="on">收到 <span class="n">2</span></button><button>发出 <span class="n">1</span></button></div>
+  <div class="body">
+    <div class="label">收到的好友申请</div>
+    <div class="req">
+      <div class="avatar a3">李</div>
+      <div class="main"><div class="name">李知远</div><div class="msg">「我是隔壁工位的李知远，加个好友同步下评审材料。」</div><div class="meta">通过局域网发现 · 2 分钟前</div>
+        <div class="actions"><button class="btn reject">拒绝</button><button class="btn accept"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m5 12 5 5 9-10"/></svg>接受</button></div>
+      </div>
+    </div>
+    <div class="req">
+      <div class="avatar a4">苏</div>
+      <div class="main"><div class="name">苏晚</div><div class="msg">通过邀请码添加你</div><div class="meta">邀请码 · 昨天 18:40</div>
+        <div class="actions"><button class="btn reject">拒绝</button><button class="btn accept">接受</button></div>
+      </div>
+    </div>
+    <div class="label" style="margin-top:14px">发出的申请</div>
+    <div class="req">
+      <div class="avatar a5">陈</div>
+      <div class="main"><div class="name">陈默</div><div class="msg">等待对方确认</div><div class="meta">已发送 · 3 小时前</div>
+        <div class="actions"><span class="waiting"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg>等待中</span><button class="btn withdraw">撤回</button></div>
+      </div>
+    </div>
+    <div class="hint"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12.5a10 10 0 0 1 14 0M8.5 16a5 5 0 0 1 7 0M12 19.5h.01"/></svg>好友申请会同时出现在「聊天」列表顶部；接受后即可开始局域网直达聊天。</div>
+  </div>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"$preview":{"width":390,"height":844}}'>
+class Component extends DCLogic {
+  renderVals() { return {}; }
+}
+</script>
+</body>
+</html>

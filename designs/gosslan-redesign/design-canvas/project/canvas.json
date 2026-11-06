@@ -1,0 +1,381 @@
+{
+  "v": 3,
+  "attachments": {},
+  "boards": {
+    "DesktopChats.dc.html": {
+      "h": 680,
+      "page": "desktop",
+      "title": "Chats — list & empty",
+      "w": 1000,
+      "x": 0,
+      "y": 0
+    },
+    "DesktopContacts.dc.html": {
+      "h": 680,
+      "page": "desktop",
+      "title": "Contacts & friend profile",
+      "w": 1000,
+      "x": 0,
+      "y": 800
+    },
+    "DesktopDark.dc.html": {
+      "h": 680,
+      "page": "desktop",
+      "title": "Dark — offline & actions",
+      "w": 1000,
+      "x": 1200,
+      "y": 3320
+    },
+    "DesktopFavorites.dc.html": {
+      "h": 680,
+      "page": "desktop",
+      "title": "Favorites",
+      "w": 1000,
+      "x": 0,
+      "y": 1720
+    },
+    "DesktopGroupChat.dc.html": {
+      "h": 680,
+      "page": "desktop",
+      "title": "Group conversation",
+      "w": 1000,
+      "x": 2160,
+      "y": 0
+    },
+    "DesktopGroupInfo.dc.html": {
+      "h": 800,
+      "page": "desktop",
+      "title": "Group info — members, files, tasks",
+      "w": 1280,
+      "x": 2160,
+      "y": 800
+    },
+    "DesktopGroupTasks.dc.html": {
+      "h": 620,
+      "page": "desktop",
+      "title": "Group tasks window",
+      "w": 780,
+      "x": 1940,
+      "y": 2520
+    },
+    "DesktopLinks.dc.html": {
+      "h": 680,
+      "page": "desktop",
+      "title": "Links",
+      "w": 1000,
+      "x": 1080,
+      "y": 1720
+    },
+    "DesktopLogs.dc.html": {
+      "h": 560,
+      "page": "desktop",
+      "title": "Logs window",
+      "w": 760,
+      "x": 2800,
+      "y": 2520
+    },
+    "DesktopModals.dc.html": {
+      "h": 840,
+      "page": "desktop",
+      "title": "Dialogs & overlays",
+      "w": 1120,
+      "x": 0,
+      "y": 3320
+    },
+    "DesktopOneToOne.dc.html": {
+      "h": 680,
+      "page": "desktop",
+      "title": "1:1 conversation",
+      "w": 1000,
+      "x": 1080,
+      "y": 0
+    },
+    "DesktopRequests.dc.html": {
+      "h": 680,
+      "page": "desktop",
+      "title": "Requests & add friend",
+      "w": 1000,
+      "x": 1080,
+      "y": 800
+    },
+    "DesktopSearch.dc.html": {
+      "h": 680,
+      "page": "desktop",
+      "title": "Global search",
+      "w": 1000,
+      "x": 0,
+      "y": 2520
+    },
+    "DesktopSettings.dc.html": {
+      "h": 600,
+      "page": "desktop",
+      "title": "Settings window",
+      "w": 780,
+      "x": 1080,
+      "y": 2520
+    },
+    "DesktopShare.dc.html": {
+      "h": 680,
+      "page": "desktop",
+      "title": "Shared directory",
+      "w": 1000,
+      "x": 2280,
+      "y": 3320
+    },
+    "DesktopTasks.dc.html": {
+      "h": 680,
+      "page": "desktop",
+      "title": "Task center",
+      "w": 1000,
+      "x": 2160,
+      "y": 1720
+    },
+    "Foundations.dc.html": {
+      "h": 760,
+      "page": "foundations",
+      "title": "Foundations — color, type, space",
+      "w": 1120,
+      "x": 0,
+      "y": 0
+    },
+    "Layout.dc.html": {
+      "h": 880,
+      "page": "foundations",
+      "title": "Layout & responsive",
+      "w": 1120,
+      "x": 1200,
+      "y": 0
+    },
+    "MobileChats.dc.html": {
+      "h": 844,
+      "page": "mobile",
+      "title": "Chats",
+      "w": 390,
+      "x": 0,
+      "y": 0
+    },
+    "MobileContacts.dc.html": {
+      "h": 844,
+      "page": "mobile",
+      "title": "Contacts",
+      "w": 390,
+      "x": 1410,
+      "y": 0
+    },
+    "MobileDark.dc.html": {
+      "h": 844,
+      "page": "mobile",
+      "title": "Dark chat & actions",
+      "w": 390,
+      "x": 2350,
+      "y": 964
+    },
+    "MobileEmpty.dc.html": {
+      "h": 844,
+      "page": "mobile",
+      "title": "First-run empty",
+      "w": 390,
+      "x": 470,
+      "y": 1928
+    },
+    "MobileFavorites.dc.html": {
+      "h": 844,
+      "page": "mobile",
+      "title": "Favorites",
+      "w": 390,
+      "x": 0,
+      "y": 964
+    },
+    "MobileFriend.dc.html": {
+      "h": 844,
+      "page": "mobile",
+      "title": "Friend profile",
+      "w": 390,
+      "x": 1880,
+      "y": 0
+    },
+    "MobileGroupChat.dc.html": {
+      "h": 844,
+      "page": "mobile",
+      "title": "Group chat",
+      "w": 390,
+      "x": 940,
+      "y": 0
+    },
+    "MobileMe.dc.html": {
+      "h": 844,
+      "page": "mobile",
+      "title": "Me",
+      "w": 390,
+      "x": 470,
+      "y": 964
+    },
+    "MobileOneToOne.dc.html": {
+      "h": 844,
+      "page": "mobile",
+      "title": "1:1 chat",
+      "w": 390,
+      "x": 470,
+      "y": 0
+    },
+    "MobileRequests.dc.html": {
+      "h": 844,
+      "page": "mobile",
+      "title": "Friend requests",
+      "w": 390,
+      "x": 2350,
+      "y": 0
+    },
+    "MobileSearch.dc.html": {
+      "h": 844,
+      "page": "mobile",
+      "title": "Search",
+      "w": 390,
+      "x": 1880,
+      "y": 964
+    },
+    "MobileSettings.dc.html": {
+      "h": 844,
+      "page": "mobile",
+      "title": "Settings",
+      "w": 390,
+      "x": 940,
+      "y": 964
+    },
+    "MobileSettingsSection.dc.html": {
+      "h": 844,
+      "page": "mobile",
+      "title": "Chat style settings",
+      "w": 390,
+      "x": 1410,
+      "y": 964
+    },
+    "MobileStates.dc.html": {
+      "h": 844,
+      "page": "mobile",
+      "title": "Offline & failure states",
+      "w": 390,
+      "x": 0,
+      "y": 1928
+    },
+    "PrototypeDesktop.dc.html": {
+      "h": 680,
+      "is_interactive": true,
+      "page": "prototypes",
+      "title": "Interactive — desktop",
+      "w": 1000,
+      "x": 0,
+      "y": 0
+    },
+    "PrototypeMobile.dc.html": {
+      "h": 844,
+      "is_interactive": true,
+      "page": "prototypes",
+      "title": "Interactive — mobile",
+      "w": 390,
+      "x": 1080,
+      "y": 0
+    }
+  },
+  "createdOnFiles": {
+    "at": "2026-11-06T08:52:00Z",
+    "v": 1
+  },
+  "designSystems": [],
+  "launch": {
+    "view": "canvas"
+  },
+  "notes": {
+    "note-desktop": {
+      "kind": "title1",
+      "maxW": 3560,
+      "page": "desktop",
+      "text": "02 · Desktop — 1000 × 680, with 780 / 760 windows",
+      "w": 240,
+      "x": 0,
+      "y": -300
+    },
+    "note-foundations": {
+      "kind": "title1",
+      "maxW": 2300,
+      "page": "foundations",
+      "text": "01 · Foundations",
+      "w": 240,
+      "x": 0,
+      "y": -300
+    },
+    "note-mobile": {
+      "kind": "title1",
+      "maxW": 2740,
+      "page": "mobile",
+      "text": "03 · Mobile — 390 × 844",
+      "w": 240,
+      "x": 0,
+      "y": -300
+    },
+    "note-prototypes": {
+      "kind": "title1",
+      "maxW": 1500,
+      "page": "prototypes",
+      "text": "04 · Interactive prototypes — press Play",
+      "w": 240,
+      "x": 0,
+      "y": -300
+    }
+  },
+  "order": [
+    "DesktopChats.dc.html",
+    "DesktopOneToOne.dc.html",
+    "DesktopGroupChat.dc.html",
+    "DesktopContacts.dc.html",
+    "DesktopRequests.dc.html",
+    "DesktopGroupInfo.dc.html",
+    "DesktopFavorites.dc.html",
+    "DesktopLinks.dc.html",
+    "DesktopTasks.dc.html",
+    "DesktopSearch.dc.html",
+    "DesktopSettings.dc.html",
+    "DesktopGroupTasks.dc.html",
+    "DesktopLogs.dc.html",
+    "DesktopModals.dc.html",
+    "DesktopDark.dc.html",
+    "DesktopShare.dc.html",
+    "MobileChats.dc.html",
+    "MobileOneToOne.dc.html",
+    "MobileGroupChat.dc.html",
+    "MobileContacts.dc.html",
+    "MobileFriend.dc.html",
+    "MobileRequests.dc.html",
+    "MobileFavorites.dc.html",
+    "MobileMe.dc.html",
+    "MobileSettings.dc.html",
+    "MobileSettingsSection.dc.html",
+    "MobileSearch.dc.html",
+    "MobileDark.dc.html",
+    "MobileStates.dc.html",
+    "MobileEmpty.dc.html",
+    "PrototypeDesktop.dc.html",
+    "PrototypeMobile.dc.html",
+    "Foundations.dc.html",
+    "Layout.dc.html"
+  ],
+  "pages": [
+    {
+      "id": "foundations",
+      "name": "01 Foundations"
+    },
+    {
+      "id": "desktop",
+      "name": "02 Desktop"
+    },
+    {
+      "id": "mobile",
+      "name": "03 Mobile"
+    },
+    {
+      "id": "prototypes",
+      "name": "04 Prototypes"
+    }
+  ],
+  "title": "Gosslan Still — Redesign"
+}

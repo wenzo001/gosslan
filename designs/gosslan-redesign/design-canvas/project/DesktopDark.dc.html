@@ -1,0 +1,197 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>Desktop — Dark / offline</title>
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+  *{box-sizing:border-box}
+  body{margin:0;background:#0f1012;font-family:"Inter",-apple-system,"PingFang SC","Microsoft YaHei",sans-serif;color:#ecedef;-webkit-font-smoothing:antialiased}
+  .app{width:1000px;height:680px;display:flex;flex-direction:column;background:#0f1012;overflow:hidden}
+  .titlebar{height:40px;background:#141518;border-bottom:1px solid #2a2c31;display:flex;align-items:center;padding:0 14px;position:relative;flex:0 0 auto}
+  .lights{display:flex;gap:8px;width:76px}.light{width:11px;height:11px;border-radius:999px;background:#3a3d43}
+  .title{position:absolute;left:0;right:0;text-align:center;font-size:12px;font-weight:500;color:#a6aab2}
+  .tbRight{margin-left:auto;display:flex;align-items:center;gap:10px}
+  .conn{display:flex;align-items:center;gap:5px;font-size:11px;color:#f0be72;background:#332818;border-radius:999px;padding:3px 8px}
+  .conn i{width:6px;height:6px;border-radius:999px;background:#e0a045;display:block}
+  .tbBtn{width:28px;height:28px;border:0;background:transparent;border-radius:7px;color:#a6aab2;display:flex;align-items:center;justify-content:center;cursor:pointer}
+  .tbBtn:hover{background:#232529;color:#ecedef}
+  .notice{height:32px;background:#332818;color:#f0be72;display:flex;align-items:center;gap:7px;padding:0 16px;font-size:11.5px;flex:0 0 auto}
+  .notice a{margin-left:auto;color:#f0be72;font-weight:500;font-size:11px;text-decoration:none;background:rgba(240,190,114,.12);padding:3px 7px;border-radius:5px}
+  .workspace{flex:1;display:flex;min-height:0}
+  .rail{width:64px;background:#141518;border-right:1px solid #2a2c31;display:flex;flex-direction:column;align-items:center;padding:12px 0 10px;flex:0 0 auto}
+  .me{width:34px;height:34px;border-radius:999px;background:#1e2a44;color:#8fb1ff;display:flex;align-items:center;justify-content:center;font-size:13px;font-weight:600;position:relative;margin-bottom:18px}
+  .me .dot{position:absolute;right:-1px;bottom:0;width:10px;height:10px;border-radius:999px;background:#6e727a;box-shadow:0 0 0 2px #141518}
+  .nav{display:flex;flex-direction:column;gap:6px}
+  .nav button{width:38px;height:38px;border:0;border-radius:10px;background:transparent;color:#a6aab2;display:flex;align-items:center;justify-content:center;cursor:pointer;position:relative}
+  .nav button:hover{background:#232529;color:#ecedef}.nav button.on{background:#1e2a44;color:#8fb1ff}
+  .nav .badge{position:absolute;top:-2px;right:-2px;min-width:16px;height:16px;border-radius:999px;background:#3568e8;color:#fff;font-size:9px;font-weight:600;line-height:16px;text-align:center;padding:0 4px;box-shadow:0 0 0 2px #141518}
+  .railBottom{margin-top:auto;display:flex;flex-direction:column;gap:4px}
+  .list{width:320px;background:#17181b;border-right:1px solid #2a2c31;display:flex;flex-direction:column;flex:0 0 auto;min-height:0}
+  .listHead{height:52px;display:flex;align-items:center;justify-content:space-between;padding:0 14px 0 16px}
+  .listHead h2{font-size:17px;line-height:24px;font-weight:600;margin:0}
+  .newBtn{width:30px;height:30px;border:0;border-radius:8px;background:transparent;color:#a6aab2;display:flex;align-items:center;justify-content:center;cursor:pointer}
+  .newBtn:hover{background:#232529;color:#ecedef}
+  .searchWrap{padding:0 12px 8px}
+  .search{height:34px;border-radius:8px;background:#24262b;display:flex;align-items:center;gap:7px;padding:0 10px;color:#8a8f98;font-size:12px}
+  .search .kbd{margin-left:auto;font-size:10px;font-family:"JetBrains Mono",monospace;color:#8a8f98;background:#17181b;border-radius:4px;padding:1px 4px}
+  .rows{flex:1;overflow:hidden}
+  .row{height:68px;display:flex;align-items:center;gap:12px;padding:0 16px;cursor:pointer}
+  .row:hover{background:#1d1f23}.row.sel{background:#1e2a44}
+  .avatar{width:44px;height:44px;border-radius:999px;display:flex;align-items:center;justify-content:center;font-size:15px;font-weight:600;flex:0 0 auto;position:relative}
+  .avatar.sq{border-radius:12px}
+  .a1{background:#1e2a44;color:#8fb1ff}.a2{background:#33261b;color:#e3b28d}.a3{background:#163026;color:#5bd6a0}.a4{background:#2a2138;color:#c4a9e0}.a5{background:#371d1c;color:#ff9a92}
+  .pdot{position:absolute;right:-1px;bottom:0;width:11px;height:11px;border-radius:999px;background:#45c78d;box-shadow:0 0 0 2px #17181b}
+  .row.sel .pdot{box-shadow:0 0 0 2px #1e2a44}.pdot.off{background:#6e727a}
+  .rmain{min-width:0;flex:1}
+  .rline{display:flex;align-items:baseline;gap:8px}
+  .rname{font-size:15px;line-height:20px;font-weight:500;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .rtime{margin-left:auto;font-size:11px;line-height:14px;color:#8a8f98;font-variant-numeric:tabular-nums;flex:0 0 auto}
+  .rprev{display:flex;align-items:center;gap:6px;margin-top:2px}
+  .rprev > span:first-of-type{font-size:13px;line-height:18px;color:#a6aab2;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;flex:1;min-width:0}
+  .rbadge{min-width:18px;height:18px;padding:0 5px;border-radius:999px;background:#3568e8;color:#fff;font-size:10px;font-weight:600;line-height:18px;text-align:center;flex:0 0 auto}
+  .divider{height:1px;background:#26282d;margin-left:72px}
+  .listFoot{height:42px;border-top:1px solid #2a2c31;display:flex;align-items:center;gap:8px;padding:0 16px;font-size:11.5px;color:#a6aab2;background:#17181b}
+  .listFoot .n{min-width:16px;height:16px;border-radius:999px;background:#1e2a44;color:#8fb1ff;font-size:9px;font-weight:600;line-height:16px;text-align:center;padding:0 4px}
+  .listFoot .chev{margin-left:auto;color:#8a8f98}
+  .chat{flex:1;background:#1b1c1f;display:flex;flex-direction:column;min-width:0;position:relative}
+  .chatHead{height:52px;border-bottom:1px solid #26282d;display:flex;align-items:center;gap:10px;padding:0 16px;flex:0 0 auto;background:#1b1c1f;z-index:2}
+  .hAvatar{width:32px;height:32px;border-radius:999px;background:#33261b;color:#e3b28d;display:flex;align-items:center;justify-content:center;font-size:13px;font-weight:600;position:relative}
+  .hAvatar .pdot{box-shadow:0 0 0 2px #1b1c1f;width:9px;height:9px;background:#6e727a}
+  .hName{font-size:15px;line-height:20px;font-weight:600}
+  .hMeta{font-size:11px;line-height:14px;color:#8a8f98;display:flex;align-items:center;gap:5px;margin-top:1px}
+  .hActions{margin-left:auto;display:flex;align-items:center;gap:2px}
+  .hActions button{width:30px;height:30px;border:0;border-radius:8px;background:transparent;color:#a6aab2;display:flex;align-items:center;justify-content:center;cursor:pointer}
+  .hActions button:hover{background:#232529;color:#ecedef}
+  .msgs{flex:1;overflow:hidden;padding:8px 24px 16px;position:relative}
+  .thread{max-width:760px;margin:0 auto;height:100%}
+  .day{text-align:center;font-size:11px;color:#8a8f98;margin:10px 0 12px}
+  .run{display:flex;margin-bottom:12px;align-items:flex-start}
+  .run.own{justify-content:flex-end}
+  .runBody{max-width:68%;min-width:0}
+  .stack{display:flex;flex-direction:column;gap:2px}
+  .bubble{padding:8px 12px;border-radius:18px;font-size:14px;line-height:20px;width:fit-content;max-width:100%}
+  .in{background:#26282d;color:#ecedef;border-bottom-left-radius:6px;box-shadow:inset 0 0 0 1px #303237}
+  .out{background:#3568e8;color:#fff;border-bottom-right-radius:6px;margin-left:auto}
+  .meta{display:flex;align-items:center;gap:4px;font-size:11px;color:#8a8f98;margin-top:4px;font-variant-numeric:tabular-nums}
+  .own .meta{justify-content:flex-end}
+  .img{width:214px;height:144px;border-radius:12px;background:#232529;position:relative;overflow:hidden}
+  .img .sun{position:absolute;left:28px;top:26px;width:24px;height:24px;border-radius:999px;background:#3a3d43}
+  .img .hill{position:absolute;left:-18px;bottom:-36px;width:184px;height:106px;background:#2d3036;transform:rotate(-8deg);border-radius:40px}
+  .img .hill2{position:absolute;right:-30px;bottom:-44px;width:146px;height:96px;background:#34373d;transform:rotate(9deg);border-radius:36px}
+  .img .tag{position:absolute;left:8px;bottom:8px;font-size:10px;color:#c9cbd0;background:rgba(15,16,18,.8);padding:2px 6px;border-radius:5px}
+  .failed{display:flex;align-items:center;gap:5px;font-size:11px;color:#ff9a92;margin-top:5px}
+  .retry{color:#8fb1ff;font-weight:500;text-decoration:none}
+  .menu{position:absolute;right:26px;top:392px;width:200px;background:#232529;border-radius:10px;box-shadow:0 8px 24px rgba(0,0,0,.35),inset 0 0 0 1px #303237;padding:6px;z-index:4}
+  .mi{height:32px;display:flex;align-items:center;gap:9px;padding:0 9px;border:0;background:transparent;border-radius:6px;width:100%;font:inherit;font-size:12.5px;color:#ecedef;cursor:pointer;text-align:left}
+  .mi:hover{background:#2d3036}.mi svg{color:#a6aab2}
+  .mi .sc{margin-left:auto;font-size:10px;color:#8a8f98}
+  .sep{height:1px;background:#303237;margin:5px 6px}
+  .danger{color:#ff9a92}.danger svg{color:#ff9a92}.danger:hover{background:#371d1c}
+  .composer{flex:0 0 auto;border-top:1px solid #26282d;padding:10px 16px 12px;background:#1b1c1f}
+  .compRow{display:flex;align-items:flex-end;gap:8px}
+  .tools{display:flex;align-items:center;gap:1px;padding-bottom:2px}
+  .ib{width:30px;height:30px;border:0;border-radius:8px;background:transparent;color:#a6aab2;display:flex;align-items:center;justify-content:center;cursor:pointer}
+  .ib:hover{background:#232529;color:#ecedef}
+  .input{flex:1;min-height:38px;padding:9px 4px;font-size:14px;line-height:20px;color:#8a8f98}
+  .send{width:36px;height:36px;border-radius:999px;border:0;background:#3568e8;color:#fff;display:flex;align-items:center;justify-content:center;flex:0 0 auto;cursor:pointer}
+  .compHint{display:flex;align-items:center;justify-content:space-between;font-size:10px;color:#6e727a;margin:5px 2px 0 70px}
+  svg{display:block}
+</style>
+</helmet>
+<div class="app">
+  <div class="titlebar">
+    <div class="lights"><span class="light"></span><span class="light"></span><span class="light"></span></div><span class="title">Gosslan</span>
+    <div class="tbRight"><span class="conn"><i></i>正在重连</span><button class="tbBtn" aria-label="全局搜索"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.2-3.2"/></svg></button></div>
+  </div>
+  <div class="notice">
+    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12.5a10 10 0 0 1 14 0M8.5 16a5 5 0 0 1 7 0M12 19.5h.01"/><path d="m3 3 18 18"/></svg>
+    局域网连接已断开，正在重试… 已输入的内容和待发消息不会丢失。
+    <a href="#retry">立即重试</a>
+  </div>
+  <div class="workspace">
+    <div class="rail">
+      <div class="me">我<span class="dot"></span></div>
+      <div class="nav">
+        <button class="on" aria-label="聊天" aria-current="page"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 15a3 3 0 0 1-3 3H8l-4 3V6a3 3 0 0 1 3-3h10a3 3 0 0 1 3 3Z"/><path d="M9 10h6M9 13.5h4"/></svg></button>
+        <button aria-label="通讯录"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M16 20v-1.5a4 4 0 0 0-4-4H7a4 4 0 0 0-4 4V20"/><circle cx="9.5" cy="7" r="3"/><path d="M17 4.5a3 3 0 0 1 0 5.5M21 20v-1.4a3.6 3.6 0 0 0-2.6-3.4"/></svg><span class="badge">2</span></button>
+        <button aria-label="收藏"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m12 3 2.7 5.5 6.1.9-4.4 4.3 1 6-5.4-2.8-5.4 2.8 1-6-4.4-4.3 6.1-.9Z"/></svg></button>
+        <button aria-label="链接"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M10 13a5 5 0 0 0 7 0l2-2a5 5 0 0 0-7-7l-1 1"/><path d="M14 11a5 5 0 0 0-7 0l-2 2a5 5 0 0 0 7 7l1-1"/></svg></button>
+      </div>
+      <div class="railBottom"><button class="tbBtn" aria-label="切换外观"><svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 14.5A8.5 8.5 0 0 1 9.5 4a8.5 8.5 0 1 0 11 10.5Z"/></svg></button><button class="tbBtn" aria-label="更多"><svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" aria-hidden="true"><circle cx="5" cy="12" r="1"/><circle cx="12" cy="12" r="1"/><circle cx="19" cy="12" r="1"/></svg></button></div>
+    </div>
+
+    <div class="list">
+      <div class="listHead"><h2>聊天</h2><button class="newBtn" aria-label="新建会话"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg></button></div>
+      <div class="searchWrap"><div class="search"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.2-3.2"/></svg>搜索会话、联系人或消息<span class="kbd">⌘K</span></div></div>
+      <div class="rows">
+        <div class="row"><div class="avatar sq a1"><svg width="21" height="21" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M16 20v-1.5a4 4 0 0 0-4-4H7a4 4 0 0 0-4 4V20"/><circle cx="9.5" cy="7" r="3"/><path d="M17 4.5a3 3 0 0 1 0 5.5M21 20v-1.4a3.6 3.6 0 0 0-2.6-3.4"/></svg></div><div class="rmain"><div class="rline"><span class="rname">设计组</span><span class="rtime">11:34</span></div><div class="rprev"><span>[文件] 评审材料-v3.pdf</span><span class="rbadge">3</span></div></div></div>
+        <div class="divider"></div>
+        <div class="row sel"><div class="avatar a2">林<span class="pdot off"></span></div><div class="rmain"><div class="rline"><span class="rname">林一</span><span class="rtime">14:32</span></div><div class="rprev"><span>好，我五分钟后到</span></div></div></div>
+        <div class="divider"></div>
+        <div class="row"><div class="avatar a3">周<span class="pdot off"></span></div><div class="rmain"><div class="rline"><span class="rname">周岚</span><span class="rtime">昨天</span></div><div class="rprev"><span>那套配色舒服多了</span></div></div></div>
+        <div class="divider"></div>
+        <div class="row"><div class="avatar a4">阿<span class="pdot"></span></div><div class="rmain"><div class="rline"><span class="rname">阿泽</span><span class="rtime">周二</span></div><div class="rprev"><span>你：收到，我把材料再顺一遍</span></div></div></div>
+        <div class="divider"></div>
+      </div>
+      <div class="listFoot"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3v12M7 10l5 5 5-5"/><path d="M4 19h16"/></svg>任务中心<span class="n">2</span><svg class="chev" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m9 6 6 6-6 6"/></svg></div>
+    </div>
+
+    <div class="chat">
+      <div class="chatHead">
+        <div class="hAvatar">林<span class="pdot"></span></div>
+        <div><div class="hName">林一</div><div class="hMeta"><svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12.5a10 10 0 0 1 14 0M8.5 16a5 5 0 0 1 7 0M12 19.5h.01"/><path d="m3 3 18 18"/></svg>离线 · iPhone · 等待重连</div></div>
+        <div class="hActions">
+          <button aria-label="搜索消息"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.2-3.2"/></svg></button>
+          <button aria-label="共享目录"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2Z"/></svg></button>
+          <button aria-label="更多"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" aria-hidden="true"><circle cx="5" cy="12" r="1"/><circle cx="12" cy="12" r="1"/><circle cx="19" cy="12" r="1"/></svg></button>
+        </div>
+      </div>
+
+      <div class="msgs">
+        <div class="thread">
+          <div class="day">今天 14:20</div>
+          <div class="run"><div class="runBody"><div class="stack"><div class="bubble in">在楼下咖啡店等你，靠窗的位置。</div><div class="bubble in">不用急，我先改完这段。</div></div><div class="meta">14:21</div></div></div>
+          <div class="run own"><div class="runBody"><div class="stack"><div class="bubble out">好，我五分钟后到。</div><div class="bubble out">要给你带一杯吗？</div></div><div class="meta">14:22 已读</div></div></div>
+          <div class="run"><div class="runBody"><div class="bubble in">美式，谢谢。评审改到 3 点，会议室 B。</div><div class="meta">14:24</div></div></div>
+          <div class="run own"><div class="runBody"><div class="bubble out">收到，我把材料再顺一遍。</div><div class="meta">14:26 已读</div></div></div>
+          <div class="run own"><div class="runBody"><div style="margin-left:auto;width:fit-content"><div class="img"><div class="sun"></div><div class="hill"></div><div class="hill2"></div><span class="tag">IMG_2041.jpg · 1.8 MB</span></div></div><div class="meta">14:28 已读</div></div></div>
+          <div class="run own"><div class="runBody"><div class="bubble out">文件我晚点再发一次。</div><div class="failed"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M12 7v6M12 16.5v.5"/></svg>发送失败 · 对方离线 · <a class="retry" href="#retry">重试</a></div></div></div>
+        </div>
+        <div class="menu" role="menu" aria-label="消息操作">
+          <button class="mi" role="menuitem"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 17 4 12l5-5"/><path d="M4 12h10a6 6 0 0 1 6 6v1"/></svg>重试发送</button>
+          <button class="mi" role="menuitem"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>复制<span class="sc">⌘C</span></button>
+          <button class="mi" role="menuitem"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m15 17 5-5-5-5"/><path d="M20 12H10a6 6 0 0 0-6 6v1"/></svg>转发</button>
+          <div class="sep"></div>
+          <button class="mi danger" role="menuitem"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 7h16M9 7V4h6v3M6 7l1 13h10l1-13"/></svg>删除消息</button>
+        </div>
+      </div>
+
+      <div class="composer">
+        <div class="compRow">
+          <div class="tools">
+            <button class="ib" aria-label="表情"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M8.5 14.5a4 4 0 0 0 7 0M9 9.5v.5M15 9.5v.5"/></svg></button>
+            <button class="ib" aria-label="代码块"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m8 8-4 4 4 4M16 8l4 4-4 4M13 5l-2 14"/></svg></button>
+            <button class="ib" aria-label="添加附件"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m20 11-8.5 8.5a5 5 0 0 1-7-7L13 4a3.5 3.5 0 0 1 5 5l-8.5 8.5a2 2 0 0 1-3-3L14 7"/></svg></button>
+          </div>
+          <div class="input">对方离线，消息会在重连后自动发送…</div>
+          <button class="send" aria-label="发送（排队）"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 19V5M5 12l7-7 7 7"/></svg></button>
+        </div>
+        <div class="compHint"><span>离线时仍可输入，消息进入队列</span><span>重连后自动发送</span></div>
+      </div>
+    </div>
+  </div>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"$preview":{"width":1000,"height":680}}'>
+class Component extends DCLogic {
+  renderVals() { return {}; }
+}
+</script>
+</body>
+</html>

@@ -1,0 +1,82 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>Mobile — Settings</title>
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+  *{box-sizing:border-box}
+  body{margin:0;background:#f2f3f5;font-family:-apple-system,BlinkMacSystemFont,"PingFang SC","Microsoft YaHei","Segoe UI",sans-serif;color:#1f2329;-webkit-font-smoothing:antialiased}
+  .phone{width:390px;height:844px;background:#f7f8fa;display:flex;flex-direction:column;overflow:hidden}
+  .topbar{height:56px;flex:0 0 auto;display:flex;align-items:center;gap:6px;padding:0 8px 0 2px;border-bottom:1px solid #e5e6eb}
+  .back{width:44px;height:44px;border:0;border-radius:10px;background:transparent;color:#3a3f47;display:flex;align-items:center;justify-content:center;cursor:pointer}
+  .back:active{background:#eef0f2}
+  .topbar h1{font-size:17px;line-height:24px;font-weight:600;margin:0;flex:1}
+  .body{flex:1;overflow:hidden;padding:14px 14px 10px}
+  .groupTitle{font-size:10.5px;font-weight:500;color:#8a9099;margin:0 6px 6px}
+  .card{background:#fff;border-radius:14px;box-shadow:inset 0 0 0 1px #e5e6eb;overflow:hidden;margin-bottom:16px}
+  .row{min-height:54px;display:flex;align-items:center;gap:11px;padding:8px 14px;border-bottom:1px solid #eef0f2;font-size:14px;color:#1f2329;cursor:pointer}
+  .row:last-child{border-bottom:0}
+  .row:active{background:#fafaf7}
+  .ico{width:30px;height:30px;border-radius:8px;display:flex;align-items:center;justify-content:center;flex:0 0 auto}
+  .i1{background:#e8f0ff;color:#1f5ae8}.i2{background:#e8f8ee;color:#068a4a}.i3{background:#f8f1e2;color:#8a4b22}.i4{background:#eee6f7;color:#6b4aa3}.i5{background:#f2f3f5;color:#5a6068}
+  .label{flex:1;font-size:14px}
+  .sub{font-size:11px;color:#8a9099;max-width:150px;text-align:right;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .chev{color:#b0b3b9;flex:0 0 auto}
+  .avatar{width:34px;height:34px;border-radius:999px;background:#dcd3ff;color:#1f5ae8;display:flex;align-items:center;justify-content:center;font-size:13px;font-weight:600;flex:0 0 auto;position:relative}
+  .avatar .dot{position:absolute;right:-1px;bottom:0;width:9px;height:9px;border-radius:999px;background:#07c160;box-shadow:0 0 0 2px #fff}
+  .profileMain{min-width:0;flex:1}
+  .pName{font-size:14.5px;line-height:20px;font-weight:500}
+  .pSub{font-size:10.5px;line-height:14px;color:#8a9099;margin-top:1px}
+  .danger .row{color:#d93a3a}
+  .danger .ico{background:#ffecec;color:#d93a3a}
+  .foot{text-align:center;font-size:10px;color:#8a9099;line-height:16px;margin-top:6px}
+  svg{display:block}
+</style>
+<style>h1,h2,h3,h4,.hName,.hTitle,.name,.pName,.rname,.fName,.fname,.cardTitle,.dTitle,.empty h3,.emptyIn h3,.bigEmpty h3,.infoName,.title,.setHead h3,.modal h3,.mHead h3,.h2,.fTitle{font-family:-apple-system,BlinkMacSystemFont,"PingFang SC","Microsoft YaHei","Segoe UI",sans-serif}</style>
+</helmet>
+<div class="phone">
+  <div class="topbar">
+    <button class="back" aria-label="返回"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M15 5.5 8.5 12l6.5 6.5"/></svg></button>
+    <h1>设置</h1>
+  </div>
+  <div class="body">
+    <p class="groupTitle">个人</p>
+    <div class="card">
+      <div class="row"><div class="avatar">我<span class="dot"></span></div><div class="profileMain"><div class="pName">小院儿</div><div class="pSub">iPhone · 在线</div></div><svg class="chev" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m9 6 6 6-6 6"/></svg></div>
+    </div>
+
+    <p class="groupTitle">应用</p>
+    <div class="card">
+      <div class="row"><span class="ico i5"><svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3a14 14 0 0 1 0 18M12 3a14 14 0 0 0 0 18"/></svg></span><span class="label">通用</span><span class="sub">简体中文</span><svg class="chev" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m9 6 6 6-6 6"/></svg></div>
+      <div class="row"><span class="ico i1"><svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 7.5h5.5M13.5 7.5H20M4 16.5h7M15 16.5h5"/><circle cx="11.5" cy="7.5" r="2.1" fill="currentColor" stroke="none"/><circle cx="13" cy="16.5" r="2.1" fill="currentColor" stroke="none"/></svg></span><span class="label">个性化</span><span class="sub">蓝色 · 14px</span><svg class="chev" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m9 6 6 6-6 6"/></svg></div>
+      <div class="row"><span class="ico i4"><svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4.5 7.5A3.5 3.5 0 0 1 8 4h8a3.5 3.5 0 0 1 3.5 3.5v5a3.5 3.5 0 0 1-3.5 3.5h-5.2L7 19v-3.1a3.5 3.5 0 0 1-2.5-3.4Z"/><path d="M8.5 8.5h7M8.5 11.5h4"/></svg></span><span class="label">聊天样式</span><span class="sub">14px · 跟随主题</span><svg class="chev" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m9 6 6 6-6 6"/></svg></div>
+      <div class="row"><span class="ico i3"><svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M18 8a6 6 0 0 0-12 0c0 7-3 7-3 9h18c0-2-3-2-3-9"/><path d="M10 21h4"/></svg></span><span class="label">通知</span><span class="sub">已开启</span><svg class="chev" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m9 6 6 6-6 6"/></svg></div>
+    </div>
+
+    <p class="groupTitle">连接与数据</p>
+    <div class="card">
+      <div class="row"><span class="ico i2"><svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12.5a10 10 0 0 1 14 0M8.5 16a5 5 0 0 1 7 0M12 19.5h.01"/><path d="M2 9a15 15 0 0 1 20 0"/></svg></span><span class="label">网络</span><span class="sub">局域网已连接</span><svg class="chev" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m9 6 6 6-6 6"/></svg></div>
+      <div class="row"><span class="ico i5"><svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><ellipse cx="12" cy="6" rx="8" ry="3"/><path d="M4 6v6c0 1.7 3.6 3 8 3s8-1.3 8-3V6M4 12v6c0 1.7 3.6 3 8 3s8-1.3 8-3v-6"/></svg></span><span class="label">存储与文件</span><span class="sub">1.2 GB / 5 GB</span><svg class="chev" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m9 6 6 6-6 6"/></svg></div>
+      <div class="row"><span class="ico i1"><svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M12 11v5M12 7.5v.5"/></svg></span><span class="label">关于</span><span class="sub">v5.18.35</span><svg class="chev" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m9 6 6 6-6 6"/></svg></div>
+    </div>
+
+    <div class="card danger">
+      <div class="row"><span class="ico"><svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 12a9 9 0 1 0 3-6.7L3 8"/><path d="M3 3v5h5"/></svg></span><span class="label">重置</span><span class="sub">恢复默认 / 清空数据</span><svg class="chev" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m9 6 6 6-6 6"/></svg></div>
+    </div>
+    <div class="foot">设置自动保存 · 清空聊天数据不会删除好友与本机身份</div>
+  </div>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"$preview":{"width":390,"height":844}}'>
+class Component extends DCLogic {
+  renderVals() { return {}; }
+}
+</script>
+</body>
+</html>

@@ -1,0 +1,103 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>Pulse — Image preview window</title>
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+  *{box-sizing:border-box}
+  body{margin:0;background:#141518;font-family:-apple-system,BlinkMacSystemFont,"PingFang SC","Microsoft YaHei","Segoe UI",sans-serif;color:#f2f3f5;-webkit-font-smoothing:antialiased}
+  .win{width:1120px;height:820px;background:#141518;display:flex;flex-direction:column;overflow:hidden;position:relative}
+  .topbar{height:56px;display:flex;align-items:center;gap:10px;padding:0 18px;flex:0 0 auto;z-index:3}
+  .fileInfo{min-width:0}
+  .fname{font-family:-apple-system,BlinkMacSystemFont,"PingFang SC","Microsoft YaHei","Segoe UI",sans-serif;font-size:14px;line-height:19px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:360px}
+  .fmeta{font-size:10px;color:#b4b8be;margin-top:1px;display:flex;align-items:center;gap:5px}
+  .fmeta i{width:3px;height:3px;border-radius:999px;background:#6f6488;display:block}
+  .counter{font-family:"JetBrains Mono",monospace;font-size:10px;color:#b4b8be;background:#2a2d31;border-radius:999px;padding:3px 8px;margin-left:4px}
+  .right{margin-left:auto;display:flex;align-items:center;gap:5px}
+  .tool{height:32px;padding:0 10px;border:0;border-radius:9px;background:#2a2d31;color:#e8e9eb;font:inherit;font-size:10.5px;font-weight:600;display:flex;align-items:center;gap:5px;cursor:pointer;box-shadow:inset 0 0 0 1px #34373b}
+  .tool:hover{background:#2f2640}
+  .tool.primary{background:#2f6bff;color:#fff;box-shadow:0 8px 18px rgba(31,35,41,.28)}
+  .iconBtn{width:32px;height:32px;border:0;border-radius:9px;background:#2a2d31;color:#b4b8be;display:flex;align-items:center;justify-content:center;cursor:pointer;box-shadow:inset 0 0 0 1px #34373b}
+  .iconBtn:hover{background:#2f2640;color:#fff}
+  .stage{flex:1;display:flex;align-items:center;justify-content:center;position:relative;min-height:0;padding:8px 70px 0}
+  .photoWrap{position:relative;width:720px;height:470px;border-radius:20px;overflow:hidden;box-shadow:0 30px 80px rgba(0,0,0,.52),0 0 0 1px rgba(255,255,255,.08);background:#1e2023}
+  .photo{position:absolute;inset:0;background:linear-gradient(160deg,#241a45 0%,#3b2360 55%,#552847 100%)}
+  .sun{position:absolute;left:108px;top:78px;width:96px;height:96px;border-radius:999px;background:linear-gradient(135deg,#ffb400,#ff8a5b);box-shadow:0 0 70px rgba(255,154,91,.5)}
+  .hill1{position:absolute;left:-90px;bottom:-150px;width:620px;height:320px;background:#2b1c4d;border-radius:50%;transform:rotate(-7deg)}
+  .hill2{position:absolute;right:-120px;bottom:-170px;width:560px;height:330px;background:#3d2458;border-radius:50%;transform:rotate(8deg)}
+  .hill3{position:absolute;left:180px;bottom:-120px;width:480px;height:240px;background:#22183c;border-radius:50%;transform:rotate(3deg)}
+  .grain{position:absolute;inset:0;background:radial-gradient(300px 200px at 75% 20%,rgba(0,194,168,.18),transparent 70%),radial-gradient(280px 220px at 18% 80%,rgba(31,35,41,.14),transparent 70%)}
+  .imgTag{position:absolute;left:14px;bottom:14px;display:flex;align-items:center;gap:6px;background:rgba(16,13,24,.62);border-radius:999px;padding:4px 9px;font-size:10.5px;color:#e8e9eb}
+  .imgTag i{width:5px;height:5px;border-radius:999px;background:#07c160;display:block}
+  .arrow{position:absolute;top:50%;transform:translateY(-50%);width:44px;height:44px;border-radius:999px;border:0;background:#2a2d31;color:#f2f3f5;display:flex;align-items:center;justify-content:center;cursor:pointer;box-shadow:0 8px 24px rgba(0,0,0,.35),inset 0 0 0 1px #34373b;z-index:2}
+  .arrow:hover{background:#34373b}
+  .arrow.l{left:22px}.arrow.r{right:22px}
+  .bottom{flex:0 0 auto;padding:0 22px 18px;display:flex;align-items:flex-end;gap:16px;z-index:3}
+  .thumbs{display:flex;gap:8px}
+  .thumb{width:86px;height:58px;border-radius:10px;overflow:hidden;position:relative;cursor:pointer;box-shadow:inset 0 0 0 1px rgba(255,255,255,.08)}
+  .thumb.on{box-shadow:0 0 0 2px #8b7bff,0 6px 16px rgba(31,35,41,.32)}
+  .th1{background:linear-gradient(160deg,#241a45,#552847)}.th2{background:linear-gradient(135deg,#173b3a,#2a6b5e)}.th3{background:linear-gradient(135deg,#4a1e2e,#8a3a48)}.th4{background:linear-gradient(135deg,#2c2f33,#4c3a6b)}
+  .thumb span{position:absolute;left:5px;bottom:4px;font-family:"JetBrains Mono",monospace;font-size:8px;color:rgba(255,255,255,.78)}
+  .metaBlock{flex:1;min-width:0;padding-bottom:2px}
+  .metaLine{font-size:10.5px;color:#b4b8be;display:flex;align-items:center;gap:6px;flex-wrap:wrap}
+  .metaLine b{color:#f2f3f5;font-weight:600}
+  .metaLine i{width:3px;height:3px;border-radius:999px;background:#6f6488;display:block}
+  .metaHint{font-size:10px;color:#8a9099;margin-top:4px;display:flex;align-items:center;gap:5px}
+  .zoom{display:flex;align-items:center;gap:2px;background:#2a2d31;border-radius:10px;padding:3px;box-shadow:inset 0 0 0 1px #34373b;margin-bottom:8px;width:fit-content}
+  .zoom button{width:26px;height:26px;border:0;border-radius:7px;background:transparent;color:#e8e9eb;cursor:pointer}
+  .zoom button:hover{background:#34373b}
+  .zoom span{font-family:"JetBrains Mono",monospace;font-size:10px;color:#f2f3f5;min-width:42px;text-align:center}
+  .toast{position:absolute;right:22px;bottom:92px;display:flex;align-items:center;gap:8px;background:#2a2d31;border-radius:10px;box-shadow:0 12px 32px rgba(0,0,0,.4),inset 0 0 0 1px #34373b;padding:10px 12px;font-size:11px;color:#f2f3f5;z-index:4}
+  .toast .ok{width:18px;height:18px;border-radius:999px;background:rgba(31,35,41,.16);color:#5cefd6;display:flex;align-items:center;justify-content:center}
+  .toast a{margin-left:6px;color:#a8c3ff;font-weight:600;text-decoration:none;font-size:10px}
+  .hint{position:absolute;left:22px;bottom:22px;font-size:10px;color:#8a9099;display:flex;align-items:center;gap:5px}
+  svg{display:block}
+</style>
+<style>.win{background:#141518}</style>
+</helmet>
+<div class="win">
+  <div class="topbar">
+    <div class="fileInfo"><div class="fname">IMG_2041.jpg</div><div class="fmeta">来自 林一 <i></i> 10 月 28 日 14:28 <i></i> 1.8 MB</div></div>
+    <span class="counter">2 / 4</span>
+    <div class="right">
+      <button class="tool"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="10.5" cy="10.5" r="6.2"/><path d="m15.2 15.2 4.3 4.3"/></svg>定位到会话</button>
+      <button class="tool primary"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3v12M7 10l5 5 5-5"/><path d="M4 19h16"/></svg>保存</button>
+      <button class="iconBtn" aria-label="关闭"><svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="m6.5 6.5 11 11M17.5 6.5l-11 11"/></svg></button>
+    </div>
+  </div>
+
+  <div class="stage">
+    <button class="arrow l" aria-label="上一张"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.1" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M15 5.5 8.5 12l6.5 6.5"/></svg></button>
+    <div class="photoWrap">
+      <div class="photo"><div class="grain"></div><div class="sun"></div><div class="hill1"></div><div class="hill2"></div><div class="hill3"></div></div>
+      <div class="imgTag"><i></i>原图 · 4096 × 2731</div>
+    </div>
+    <button class="arrow r" aria-label="下一张"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.1" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m9 6 6 6-6 6"/></svg></button>
+  </div>
+
+  <div class="bottom">
+    <div class="thumbs"><div class="thumb th1 on"><span>1</span></div><div class="thumb th2"><span>2</span></div><div class="thumb th3"><span>3</span></div><div class="thumb th4"><span>4</span></div></div>
+    <div class="metaBlock">
+      <div class="metaLine"><b>IMG_2041.jpg</b><i></i><span>1.8 MB</span><i></i><span>原图保存在本机</span><i></i><span>已加密传输</span></div>
+      <div class="metaHint"><svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M12 11v5M12 7.5v.5"/></svg>若原图已被清理，可从对方重新获取；不会自动下载。</div>
+      <div class="zoom"><button aria-label="缩小">−</button><span>100%</span><button aria-label="放大">+</button><button aria-label="适应窗口" style="font-size:10px;width:auto;padding:0 6px">适应</button></div>
+    </div>
+  </div>
+
+  <div class="toast"><span class="ok"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m5 12 5 5 9-10"/></svg></span>已保存到「下载」<a href="#open">打开文件夹</a></div>
+  <div class="hint"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" aria-hidden="true"><path d="M12 3v12M7 10l5 5 5-5"/><path d="M4 19h16"/></svg>← → 切换 · 滚轮缩放 · 双击复位 · Esc 关闭</div>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"$preview":{"width":1120,"height":820}}'>
+class Component extends DCLogic {
+  renderVals() { return {}; }
+}
+</script>
+</body>
+</html>

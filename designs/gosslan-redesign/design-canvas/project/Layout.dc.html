@@ -1,0 +1,233 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>Layout & Responsive</title>
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+  *{box-sizing:border-box}
+  body{margin:0;background:#f4f4f1;font-family:"Inter",-apple-system,"PingFang SC","Microsoft YaHei",sans-serif;color:#17181a;-webkit-font-smoothing:antialiased}
+  .page{width:1120px;padding:36px 44px 32px}
+  .top{display:flex;align-items:flex-end;justify-content:space-between;margin-bottom:26px}
+  h1{font-size:26px;line-height:32px;font-weight:600;letter-spacing:-.02em;margin:0}
+  .sub{font-size:12.5px;line-height:18px;color:#5a5d63;margin:3px 0 0}
+  .badge{font-size:11px;font-weight:500;color:#2356c4;background:#e8effd;border-radius:999px;padding:4px 9px}
+  .cols{display:grid;grid-template-columns:1.25fr .95fr;gap:30px}
+  .secHead{display:flex;align-items:baseline;gap:9px;margin:0 0 12px}
+  .secHead h2{font-size:14px;line-height:19px;font-weight:600;margin:0}
+  .secHead span{font-size:10.5px;color:#70747b}
+  .frameWrap{margin-bottom:20px}
+  .frameLabel{display:flex;align-items:center;gap:8px;font-size:10.5px;color:#70747b;margin-bottom:6px;font-family:"JetBrains Mono",monospace}
+  .frameLabel b{color:#17181a;font-weight:600;font-family:"Inter",sans-serif;font-size:11.5px}
+  .desktop{width:700px;height:476px;border-radius:10px;overflow:hidden;background:#f4f4f1;box-shadow:0 20px 40px rgba(16,17,20,.12),inset 0 0 0 1px #d9dbd5;display:flex;flex-direction:column}
+  .tb{height:28px;background:#ecece8;display:flex;align-items:center;padding:0 10px;gap:6px;border-bottom:1px solid #e2e3de;flex:0 0 auto}
+  .dot{width:7px;height:7px;border-radius:999px;background:#cfd1ca}
+  .tb .title{font-size:8px;color:#70747b;margin-left:auto;margin-right:auto}
+  .main{flex:1;display:flex;min-height:0}
+  .rail{width:44px;background:#ecece8;border-right:1px solid #e2e3de;display:flex;flex-direction:column;align-items:center;padding-top:9px;gap:8px}
+  .rico{width:24px;height:24px;border-radius:7px;background:#e2e3de}
+  .rico.on{background:#e8effd;box-shadow:inset 0 0 0 1px #b9cdf6}
+  .list{width:224px;background:#f8f8f5;border-right:1px solid #e2e3de;padding:8px 9px}
+  .lh{height:16px;background:#ecece8;border-radius:5px;margin-bottom:7px}
+  .lrow{display:flex;gap:7px;align-items:center;padding:6px 4px;border-radius:6px}
+  .lrow.on{background:#e8effd}
+  .lav{width:20px;height:20px;border-radius:999px;background:#d9dbd5;flex:0 0 auto}
+  .lline{height:5px;border-radius:3px;background:#dedfd9;margin-bottom:4px}
+  .lline.s{width:58%}
+  .chat{flex:1;background:#fff;display:flex;flex-direction:column}
+  .ch{height:30px;border-bottom:1px solid #ecede9;display:flex;align-items:center;gap:6px;padding:0 10px}
+  .ch .a{width:17px;height:17px;border-radius:999px;background:#d9e2f7}
+  .ch .n{width:54px;height:5px;background:#dedfd9;border-radius:3px}
+  .msgs{flex:1;padding:12px 16px;display:flex;flex-direction:column;gap:7px}
+  .b{height:15px;border-radius:9px;background:#f0f1ed}
+  .b.a{background:#2f6beb;align-self:flex-end}
+  .b.w1{width:40%}.b.w2{width:52%}.b.w3{width:33%}
+  .comp{height:26px;border-top:1px solid #ecede9;display:flex;align-items:center;gap:6px;padding:0 9px}
+  .comp .f{flex:1;height:14px;border-radius:6px;background:#f1f2ee}
+  .comp .s{width:16px;height:16px;border-radius:999px;background:#2f6beb}
+  .ruler{display:flex;align-items:center;gap:6px;font-size:9px;color:#70747b;font-family:"JetBrains Mono",monospace;margin-top:5px}
+  .ruler .ln{height:1px;background:#c9cbc5;flex:1;position:relative}
+  .ruler .ln:before,.ruler .ln:after{content:"";position:absolute;top:-3px;width:1px;height:7px;background:#c9cbc5}
+  .ruler .ln:before{left:0}.ruler .ln:after{right:0}
+  .narrow{width:560px;height:362px;border-radius:10px;overflow:hidden;background:#f4f4f1;box-shadow:0 14px 28px rgba(16,17,20,.1),inset 0 0 0 1px #d9dbd5;display:flex;flex-direction:column}
+  .narrow .list{width:190px}
+  .narrow .rail{width:40px}
+  .narrow .tb{height:24px}
+  .phoneWrap{display:flex;gap:20px;align-items:flex-start}
+  .phone{width:210px;height:454px;border-radius:26px;background:#fff;overflow:hidden;box-shadow:0 20px 40px rgba(16,17,20,.16),inset 0 0 0 1px #d9dbd5;display:flex;flex-direction:column;position:relative}
+  .ph{height:34px;background:#f8f8f5;border-bottom:1px solid #ecede9;display:flex;align-items:center;justify-content:space-between;padding:0 10px}
+  .ph .t{width:62px;height:6px;border-radius:3px;background:#d6d8d2}
+  .ph .p{width:44px;height:6px;border-radius:3px;background:#d6d8d2}
+  .plist{flex:1;padding:8px 9px}
+  .psearch{height:15px;border-radius:5px;background:#f1f2ee;margin-bottom:8px}
+  .prow{display:flex;gap:7px;align-items:center;padding:6px 2px}
+  .pav{width:22px;height:22px;border-radius:999px;background:#d9dbd5;flex:0 0 auto}
+  .plines{flex:1}
+  .tabbar{height:30px;border-top:1px solid #ecede9;background:rgba(248,248,245,.94);display:flex;align-items:center;justify-content:space-around;padding-bottom:2px}
+  .tab{width:14px;height:14px;border-radius:4px;background:#d6d8d2}
+  .tab.on{background:#2f6beb}
+  .noteCard{background:#fff;border-radius:12px;padding:16px;box-shadow:inset 0 0 0 1px #e6e7e2;margin-bottom:14px}
+  .noteCard h3{font-size:12px;line-height:17px;font-weight:600;margin:0 0 9px}
+  .rule{display:flex;justify-content:space-between;gap:10px;font-size:11px;line-height:16px;padding:5px 0;border-bottom:1px solid #ecede9;color:#5a5d63}
+  .rule:last-child{border-bottom:0}
+  .rule b{color:#17181a;font-weight:500;text-align:right;flex:0 0 auto}
+  .bp{display:flex;align-items:center;gap:8px;margin-bottom:7px}
+  .bp .bar{height:6px;border-radius:3px;background:#2f6beb;opacity:.18}
+  .bp .bar.on{opacity:.9}
+  .bp .lb{font-size:10.5px;color:#5a5d63;width:96px;flex:0 0 auto}
+  .bp .v{font-size:10px;color:#70747b;font-family:"JetBrains Mono",monospace;width:64px;text-align:right}
+  .code{font-family:"JetBrains Mono",monospace;font-size:10.5px;line-height:16px;color:#5a5d63}
+  .footer{display:flex;align-items:center;justify-content:space-between;margin-top:22px;padding-top:10px;border-top:1px solid #e6e7e2;font-size:10px;color:#70747b}
+</style>
+</helmet>
+<div class="page">
+  <div class="top">
+    <div><h1>Layout & Responsive</h1><p class="sub">窗口 1000×680 为主场景，三栏优先；移动端单栏 + 4 项底栏。</p></div>
+    <span class="badge">1000 → 390</span>
+  </div>
+
+  <div class="cols">
+    <div>
+      <div class="frameWrap">
+        <div class="frameLabel"><b>Desktop main</b> 1000 × 680 · rail 64 / list 320 / chat 616</div>
+        <div class="desktop">
+          <div class="tb"><span class="dot"></span><span class="dot"></span><span class="dot"></span><span class="title">Gosslan</span><span style="width:24px"></span></div>
+          <div class="main">
+            <div class="rail">
+              <div style="width:24px;height:24px;border-radius:999px;background:#c9cbc5;margin-bottom:4px"></div>
+              <div class="rico on"></div><div class="rico"></div><div class="rico"></div><div class="rico"></div>
+              <div style="flex:1"></div><div class="rico"></div><div class="rico"></div>
+            </div>
+            <div class="list">
+              <div class="lh" style="width:44%"></div>
+              <div style="height:14px;background:#f1f2ee;border-radius:5px;margin-bottom:9px"></div>
+              <div class="lrow on"><div class="lav"></div><div style="flex:1"><div class="lline" style="width:52%"></div><div class="lline s"></div></div></div>
+              <div class="lrow"><div class="lav"></div><div style="flex:1"><div class="lline" style="width:64%"></div><div class="lline s"></div></div></div>
+              <div class="lrow"><div class="lav"></div><div style="flex:1"><div class="lline" style="width:46%"></div><div class="lline s"></div></div></div>
+              <div class="lrow"><div class="lav"></div><div style="flex:1"><div class="lline" style="width:58%"></div><div class="lline s"></div></div></div>
+            </div>
+            <div class="chat">
+              <div class="ch"><div class="a"></div><div><div class="n"></div><div style="width:36px;height:4px;background:#e6e7e2;border-radius:2px;margin-top:3px"></div></div></div>
+              <div class="msgs">
+                <div class="b w2"></div><div class="b w3"></div>
+                <div class="b a w1"></div><div class="b a w2"></div>
+                <div class="b w3"></div><div class="b a w1"></div>
+              </div>
+              <div class="comp"><div class="f"></div><div class="s"></div></div>
+            </div>
+          </div>
+        </div>
+        <div class="ruler"><span>64</span><span class="ln" style="max-width:64px"></span><span>320</span><span class="ln"></span><span>fluid ≥ 420</span></div>
+      </div>
+
+      <div class="frameWrap">
+        <div class="frameLabel"><b>Narrow desktop</b> 768–1099 · list 280–300 · no info panel</div>
+        <div class="narrow">
+          <div class="tb"><span class="dot"></span><span class="dot"></span><span class="dot"></span><span class="title">Gosslan</span><span style="width:20px"></span></div>
+          <div class="main">
+            <div class="rail"><div style="width:22px;height:22px;border-radius:999px;background:#c9cbc5;margin-bottom:3px"></div><div class="rico on"></div><div class="rico"></div><div class="rico"></div><div class="rico"></div></div>
+            <div class="list">
+              <div class="lh" style="width:46%"></div>
+              <div style="height:13px;background:#f1f2ee;border-radius:5px;margin-bottom:8px"></div>
+              <div class="lrow on"><div class="lav"></div><div style="flex:1"><div class="lline" style="width:56%"></div><div class="lline s"></div></div></div>
+              <div class="lrow"><div class="lav"></div><div style="flex:1"><div class="lline" style="width:48%"></div><div class="lline s"></div></div></div>
+              <div class="lrow"><div class="lav"></div><div style="flex:1"><div class="lline" style="width:66%"></div><div class="lline s"></div></div></div>
+            </div>
+            <div class="chat">
+              <div class="ch"><div class="a"></div><div class="n"></div></div>
+              <div class="msgs"><div class="b w2"></div><div class="b a w1"></div><div class="b w3"></div><div class="b a w2"></div></div>
+              <div class="comp"><div class="f"></div><div class="s"></div></div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div>
+      <div class="noteCard">
+        <h3>Breakpoints</h3>
+        <div class="bp"><span class="lb">≥ 1100px</span><span class="bar on" style="width:150px"></span><span class="v">3-pane</span></div>
+        <div class="bp"><span class="lb">768–1099px</span><span class="bar on" style="width:110px"></span><span class="v">3-pane</span></div>
+        <div class="bp"><span class="lb">&lt; 768px</span><span class="bar" style="width:70px"></span><span class="v">1-pane</span></div>
+        <div class="bp"><span class="lb">&lt; 380px</span><span class="bar" style="width:48px"></span><span class="v">compact</span></div>
+        <p class="code" style="margin:9px 0 0">desktop = html:not(.is-mobile)<br>mobile = platform OR width ≤ 767</p>
+      </div>
+
+      <div class="noteCard">
+        <h3>Pane geometry</h3>
+        <div class="rule"><span>Rail</span><b>64px fixed</b></div>
+        <div class="rule"><span>List</span><b>320px · 280–400</b></div>
+        <div class="rule"><span>Chat min</span><b>420px</b></div>
+        <div class="rule"><span>Thread max</span><b>760px centred</b></div>
+        <div class="rule"><span>Header</span><b>52px</b></div>
+        <div class="rule"><span>Composer</span><b>64px min</b></div>
+        <div class="rule"><span>Message bubble</span><b>≤ 560px / 68%</b></div>
+      </div>
+
+      <div class="noteCard">
+        <h3>Auxiliary windows</h3>
+        <div class="rule"><span>Settings</span><b>780 × 600 · min 560</b></div>
+        <div class="rule"><span>Group tasks</span><b>780 × 620 · min 360</b></div>
+        <div class="rule"><span>Logs</span><b>760 × 560 · min 420</b></div>
+        <div class="rule"><span>Image preview</span><b>1120 × 820 · min 480</b></div>
+        <div class="rule"><span>Link window</span><b>1000 × 720 · no app chrome</b></div>
+      </div>
+    </div>
+  </div>
+
+  <div class="secHead" style="margin-top:8px"><h2>Mobile 390 — one pane, four tabs, 44px targets</h2><span>detail hides the tab bar</span></div>
+  <div class="phoneWrap">
+    <div class="phone">
+      <div class="ph"><span class="p"></span><span class="t"></span><span style="width:10px"></span></div>
+      <div class="plist">
+        <div class="psearch"></div>
+        <div class="prow"><div class="pav"></div><div class="plines"><div class="lline" style="width:54%"></div><div class="lline s"></div></div></div>
+        <div class="prow"><div class="pav"></div><div class="plines"><div class="lline" style="width:66%"></div><div class="lline s"></div></div></div>
+        <div class="prow"><div class="pav"></div><div class="plines"><div class="lline" style="width:44%"></div><div class="lline s"></div></div></div>
+        <div class="prow"><div class="pav"></div><div class="plines"><div class="lline" style="width:60%"></div><div class="lline s"></div></div></div>
+        <div class="prow"><div class="pav"></div><div class="plines"><div class="lline" style="width:50%"></div><div class="lline s"></div></div></div>
+      </div>
+      <div class="tabbar"><span class="tab on"></span><span class="tab"></span><span class="tab"></span><span class="tab"></span></div>
+    </div>
+    <div class="phone">
+      <div class="ph"><span class="p" style="width:12px"></span><span class="t" style="width:70px"></span><span style="width:10px"></span></div>
+      <div class="msgs" style="padding:14px 12px">
+        <div class="b w2"></div><div class="b w3"></div><div class="b a w1"></div><div class="b a w2"></div><div class="b w3"></div>
+      </div>
+      <div class="comp" style="height:34px"><div class="f"></div><div class="s"></div></div>
+    </div>
+    <div style="max-width:430px">
+      <div class="noteCard" style="padding:14px">
+        <h3>Mobile rules</h3>
+        <div class="rule"><span>Top bar</span><b>56px</b></div>
+        <div class="rule"><span>Tab bar</span><b>56px + safe area</b></div>
+        <div class="rule"><span>List row</span><b>68px</b></div>
+        <div class="rule"><span>Touch target</span><b>≥ 44 × 44</b></div>
+        <div class="rule"><span>Bubble max</span><b>78%</b></div>
+        <div class="rule"><span>Detail</span><b>slides in · tab hidden</b></div>
+      </div>
+      <div class="noteCard" style="padding:14px;margin-bottom:0">
+        <h3>What never changes</h3>
+        <div class="rule"><span>Tab count</span><b>4</b></div>
+        <div class="rule"><span>Rail</span><b>64px</b></div>
+        <div class="rule"><span>Row height</span><b>68px</b></div>
+        <div class="rule"><span>Bubble radius</span><b>18px</b></div>
+      </div>
+    </div>
+  </div>
+
+  <div class="footer"><span>Gosslan Still — layout</span><span>Window shape is owned by the OS · overlays z ≤ 80 · no rounded window corners</span></div>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"$preview":{"width":1120,"height":880}}'>
+class Component extends DCLogic {
+  renderVals() { return {}; }
+}
+</script>
+</body>
+</html>

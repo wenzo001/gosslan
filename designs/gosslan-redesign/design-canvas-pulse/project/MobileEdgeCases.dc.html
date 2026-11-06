@@ -1,0 +1,183 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>Mobile edge cases — long text</title>
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<style>
+  *{box-sizing:border-box}
+  body{margin:0;background:#f2f3f5;font-family:-apple-system,BlinkMacSystemFont,"PingFang SC","Microsoft YaHei","Segoe UI",sans-serif;color:#1f2329;-webkit-font-smoothing:antialiased}
+  .board{width:1180px;height:960px;background:#f2f3f5;padding:24px;display:flex;flex-direction:column;gap:12px;overflow:hidden}
+  .head{display:flex;align-items:flex-end;gap:12px;flex:0 0 auto}
+  .head h1{font-size:20px;line-height:26px;font-weight:600;letter-spacing:-.02em;margin:0}
+  .head p{font-size:11.5px;line-height:17px;color:#5a6068;margin:0 0 2px}
+  .head .badge{margin-left:auto;font-size:10.5px;font-weight:600;color:#1f5ae8;background:#e8f0ff;border-radius:999px;padding:4px 9px}
+  .stage{flex:1;min-height:0;display:flex;gap:16px;align-items:flex-start}
+  .phone{width:390px;height:844px;background:#f7f8fa;border-radius:26px;box-shadow:0 18px 40px rgba(16,17,20,.16),inset 0 0 0 1px #d9dde2;display:flex;flex-direction:column;overflow:hidden;position:relative;flex:0 0 auto}
+  .topbar{height:52px;flex:0 0 auto;display:flex;align-items:center;gap:9px;padding:0 6px 0 12px;background:#f7f8fa;border-bottom:1px solid #e5e6eb;z-index:2}
+  .me{width:30px;height:30px;border-radius:999px;background:#dcd3ff;color:#1f5ae8;display:flex;align-items:center;justify-content:center;font-size:11px;font-weight:700;flex:0 0 auto;position:relative}
+  .me .dot{position:absolute;right:-1px;bottom:0;width:9px;height:9px;border-radius:999px;background:#07c160;box-shadow:0 0 0 2px #f7f8fa}
+  .topbar h1{font-size:18px;line-height:23px;font-weight:600;margin:0;flex:1}
+  .topBtn{width:44px;height:44px;border:0;border-radius:12px;background:transparent;color:#3a3f47;display:flex;align-items:center;justify-content:center;flex:0 0 auto}
+  .searchWrap{padding:6px 12px 4px;flex:0 0 auto}
+  .search{height:36px;border-radius:11px;background:#f2f3f5;display:flex;align-items:center;gap:7px;padding:0 11px;font-size:12.5px;color:#8a9099}
+  .section{padding:6px 14px 2px;font-size:10.5px;font-weight:700;color:#8a9099;letter-spacing:.03em}
+  .rows{flex:1;min-height:0;overflow:hidden}
+  .row{height:64px;display:flex;align-items:center;gap:10px;padding:0 14px;border-bottom:1px solid #eef0f2;min-width:0}
+  .row:last-child{border-bottom:0}
+  .av{width:42px;height:42px;border-radius:999px;background:#f5e6dc;color:#8a4b22;display:flex;align-items:center;justify-content:center;font-size:14px;font-weight:700;flex:0 0 auto;position:relative}
+  .av.sq{border-radius:13px;background:linear-gradient(#b9c8f6,#b9c8f6) left top/calc(50% - 1px) calc(50% - 1px) no-repeat,linear-gradient(#e8b28a,#e8b28a) right top/calc(50% - 1px) calc(50% - 1px) no-repeat,linear-gradient(#9fdbcd,#9fdbcd) left bottom/calc(50% - 1px) calc(50% - 1px) no-repeat,linear-gradient(#cbbbe2,#cbbbe2) right bottom/calc(50% - 1px) calc(50% - 1px) no-repeat,#e8f0ff}
+  .av .dot{position:absolute;right:-1px;bottom:0;width:9px;height:9px;border-radius:999px;background:#07c160;box-shadow:0 0 0 2px #f7f8fa}
+  .main{min-width:0;flex:1}
+  .line{display:flex;align-items:baseline;gap:7px;min-width:0}
+  .name{font-size:15px;line-height:20px;font-weight:500;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:0}
+  .time{margin-left:auto;font-size:11px;line-height:14px;color:#8a9099;flex:0 0 auto;font-variant-numeric:tabular-nums}
+  .prev{font-size:12.5px;line-height:17px;color:#5a6068;margin-top:1px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .badge{min-width:18px;height:18px;padding:0 5px;border-radius:999px;background:#fa5151;color:#fff;font-size:10.5px;font-weight:700;line-height:18px;text-align:center;flex:0 0 auto}
+  .tabbar{height:56px;flex:0 0 auto;background:#f7f8fa;border-top:1px solid #e5e6eb;display:flex;align-items:stretch;padding-bottom:env(safe-area-inset-bottom)}
+  .tab{flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:2px;color:#8a9099;font-size:10.5px;font-weight:600;position:relative}
+  .tab.on{color:#1f5ae8}
+  .tab svg{display:block;flex:0 0 auto}
+  .tab .pill{width:46px;height:26px;border-radius:999px;display:flex;align-items:center;justify-content:center;background:#e8f0ff;box-shadow:inset 0 0 0 1px #d6e3ff}
+  .tab .tb{position:absolute;top:-2px;right:6px;min-width:16px;height:16px;border-radius:999px;background:#fa5151;color:#fff;font-size:9.5px;line-height:16px;text-align:center;padding:0 3px;font-weight:700;box-shadow:0 0 0 2px #f7f8fa}
+  /* chat phone */
+  .chatTop{height:52px;flex:0 0 auto;display:flex;align-items:center;gap:8px;padding:0 8px 0 2px;background:#fff;border-bottom:1px solid #eef0f2;z-index:2}
+  .back{width:44px;height:44px;border:0;background:transparent;color:#3a3f47;display:flex;align-items:center;justify-content:center;flex:0 0 auto}
+  .gAv{width:30px;height:30px;border-radius:11px;background:#e8f0ff;color:#1f5ae8;display:flex;align-items:center;justify-content:center;font-size:11px;font-weight:700;flex:0 0 auto}
+  .hText{min-width:0;flex:1}
+  .hName{font-size:15px;line-height:19px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .hMeta{font-size:10.5px;line-height:14px;color:#8a9099;margin-top:1px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .more{width:44px;height:44px;border:0;background:transparent;color:#3a3f47;display:flex;align-items:center;justify-content:center;flex:0 0 auto}
+  .msgs{flex:1;min-height:0;overflow:hidden;padding:8px 12px;display:flex;flex-direction:column;gap:10px;background:#fff}
+  .day{text-align:center;font-size:10px;color:#8a9099;margin:2px 0 0}
+  .run{display:flex;min-width:0}
+  .run.own{justify-content:flex-end}
+  .bubble{max-width:78%;padding:8px 12px;border-radius:18px;font-size:14px;line-height:20px;overflow-wrap:anywhere;word-break:break-word;min-width:0}
+  .in{background:#f2f3f5;color:#1f2329;border-bottom-left-radius:6px;box-shadow:inset 0 0 0 1px #e5e6eb}
+  .out{background:#2f6bff;color:#fff;border-bottom-right-radius:6px}
+  .link{font-family:"JetBrains Mono","SFMono-Regular",monospace;font-size:11.5px;line-height:17px;text-decoration:underline;text-underline-offset:2px}
+  .quote{display:block;padding:1px 0 1px 8px;border-left:2px solid rgba(23,18,38,.18);font-size:11.5px;line-height:16px;color:#5a6068;margin-bottom:5px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .file{display:flex;align-items:center;gap:9px;padding:10px;border-radius:14px;background:#fff;box-shadow:inset 0 0 0 1px #e5e6eb;min-width:0}
+  .ftile{width:32px;height:38px;border-radius:8px;background:#ffecec;color:#d93a3a;display:flex;align-items:center;justify-content:center;font-size:9.5px;font-weight:700;flex:0 0 auto}
+  .fMain{min-width:0;flex:1}
+  .fName{font-size:12px;line-height:16px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .fMeta{font-size:10.5px;line-height:14px;color:#8a9099;margin-top:2px}
+  .composer{height:52px;flex:0 0 auto;display:flex;align-items:center;gap:7px;padding:7px 10px;background:#fff;border-top:1px solid #eef0f2}
+  .input{flex:1;min-width:0;height:36px;border-radius:11px;background:#f2f3f5;display:flex;align-items:center;padding:0 11px;font-size:14px;color:#1f2329;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .send{width:34px;height:34px;border-radius:999px;background:#2f6bff;color:#fff;display:flex;align-items:center;justify-content:center;flex:0 0 auto}
+  .toast{position:absolute;left:12px;right:12px;bottom:64px;z-index:5;display:flex;align-items:flex-start;gap:7px;padding:9px 11px;border-radius:12px;background:#2c2f33;color:#f2f3f5;font-size:11.5px;line-height:16px;box-shadow:0 8px 24px rgba(16,17,20,.2)}
+  .toast .ok{width:15px;height:15px;border-radius:999px;background:rgba(7,193,96,.2);color:#5cefd6;display:flex;align-items:center;justify-content:center;flex:0 0 auto;margin-top:1px}
+  .toastText{min-width:0;flex:1;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;overflow-wrap:anywhere}
+  /* notes */
+  .notes{width:300px;flex:0 0 auto;background:#fff;border-radius:16px;box-shadow:inset 0 0 0 1px #e5e6eb;padding:16px;display:flex;flex-direction:column;gap:12px}
+  .notes h2{font-size:12px;line-height:16px;font-weight:600;margin:0}
+  .rule{display:flex;gap:9px;min-width:0}
+  .rule .n{width:20px;height:20px;border-radius:7px;background:#e8f0ff;color:#1f5ae8;font-size:10.5px;font-weight:700;display:flex;align-items:center;justify-content:center;flex:0 0 auto}
+  .rule b{display:block;font-size:12px;line-height:16px;font-weight:600;margin-bottom:2px}
+  .rule p{font-size:11px;line-height:15px;color:#5a6068;margin:0;overflow-wrap:anywhere}
+  .footNote{margin-top:auto;padding-top:10px;border-top:1px solid #eef0f2;font-size:10.5px;line-height:15px;color:#8a9099}
+</style>
+</helmet>
+<div class="board">
+  <div class="head">
+    <div><h1>移动端边界情况 · 390 × 844</h1><p>顶栏标题、会话名、消息、文件与输入草稿都要有明确的收束方式。</p></div>
+    <span class="badge">v2.2 · compact</span>
+  </div>
+
+  <div class="stage">
+    <!-- phone 1: list -->
+    <div class="phone">
+      <div class="topbar"><div class="me">我<span class="dot"></span></div><h1>聊天</h1><button class="topBtn" aria-label="添加好友"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" aria-hidden="true"><path d="M12 5.5v13M5.5 12h13"/></svg></button></div>
+      <div class="searchWrap"><div class="search">搜索会话、联系人或消息</div></div>
+      <div class="section">置顶</div>
+      <div class="rows">
+        <div class="row">
+          <div class="av sq"></div>
+          <div class="main">
+            <div class="line"><span class="name">设计组 · 2026 秋季新品发布与渠道复盘临时讨论组</span><span class="time">11:34</span></div>
+            <div class="prev">周岚：评审材料的最终版已经放到群文件，文件名有点长</div>
+          </div>
+          <span class="badge">99+</span>
+        </div>
+        <div class="row">
+          <div class="av">A</div>
+          <div class="main">
+            <div class="line"><span class="name">Alexandria-Catherine_Wang_产品设计</span><span class="time">昨天</span></div>
+            <div class="prev">https://gosslan.local/share/2026/autumn/channel-review/final.pdf</div>
+          </div>
+          <span class="badge">12</span>
+        </div>
+        <div class="row">
+          <div class="av" style="background:#e0f5ef;color:#068a4a">林<span class="dot"></span></div>
+          <div class="main">
+            <div class="line"><span class="name">林一 🌙 周末勿扰</span><span class="time">周二</span></div>
+            <div class="prev">你：收到，我把材料再顺一遍，晚点发你确认</div>
+          </div>
+        </div>
+        <div class="row">
+          <div class="av" style="background:#eee6f7;color:#6b4aa3">周</div>
+          <div class="main">
+            <div class="line"><span class="name">周岚</span><span class="time">周一</span></div>
+            <div class="prev">那套配色舒服多了，我把对比图发群里</div>
+          </div>
+        </div>
+        <div class="row">
+          <div class="av" style="background:#ffecec;color:#d93a3a">阿</div>
+          <div class="main">
+            <div class="line"><span class="name">阿泽</span><span class="time">10/28</span></div>
+            <div class="prev">[文件] 渠道复盘-最终确认版-v7.pdf</div>
+          </div>
+        </div>
+      </div>
+      <div class="tabbar">
+        <div class="tab on"><span class="pill"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4.5 7.5A3.5 3.5 0 0 1 8 4h8a3.5 3.5 0 0 1 3.5 3.5v5a3.5 3.5 0 0 1-3.5 3.5h-5.2L7 19v-3.1a3.5 3.5 0 0 1-2.5-3.4Z"/><path d="M8.5 8.5h7M8.5 11.5h4"/></svg><span class="tb">3</span></span><span>聊天</span></div>
+        <div class="tab"><svg width="21" height="21" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="9" cy="8" r="3.2"/><path d="M3.5 19.5v-1a5 5 0 0 1 5-5h1a5 5 0 0 1 5 5v1"/><path d="M16 5.2a3.2 3.2 0 0 1 0 5.6M17.5 13.8a4.8 4.8 0 0 1 3 4.4v1.3"/></svg><span>通讯录</span></div>
+        <div class="tab"><svg width="21" height="21" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M7 4.5A2.5 2.5 0 0 1 9.5 2h5A2.5 2.5 0 0 1 17 4.5V21l-5-3-5 3Z"/></svg><span>收藏</span></div>
+        <div class="tab"><svg width="21" height="21" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="8" r="3.5"/><path d="M5 20.5v-1.2a6 6 0 0 1 6-6h2a6 6 0 0 1 6 6v1.2"/></svg><span>我的</span></div>
+      </div>
+    </div>
+
+    <!-- phone 2: chat -->
+    <div class="phone" style="background:#fff">
+      <div class="chatTop">
+        <button class="back" aria-label="返回"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M15 5.5 8.5 12l6.5 6.5"/></svg></button>
+        <div class="gAv">设</div>
+        <div class="hText"><div class="hName">设计组 · 2026 秋季新品发布与渠道复盘临时讨论组</div><div class="hMeta">12 位成员 · 3 人在线</div></div>
+        <button class="more" aria-label="更多"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" aria-hidden="true"><circle cx="5.5" cy="12" r="1.4" fill="currentColor" stroke="none"/><circle cx="12" cy="12" r="1.4" fill="currentColor" stroke="none"/><circle cx="18.5" cy="12" r="1.4" fill="currentColor" stroke="none"/></svg></button>
+      </div>
+      <div class="msgs">
+        <div class="day">今天 14:20</div>
+        <div class="run"><div class="bubble in">今晚的评审改到 3 点，会议室 B。材料我放在群文件里了，文件名是《2026 秋季新品发布-渠道复盘-最终确认版-v7》，包含附录和预算明细。</div></div>
+        <div class="run own"><div class="bubble out"><span class="link">https://gosslan.local/share/2026/autumn-launch/channel-review/final-materials-v7.pdf?token=8f3c2a91</span></div></div>
+        <div class="run"><div class="bubble in"><span class="quote">周岚：文件名是《2026 秋季新品发布-渠道复盘-最终确认版-v7》…</span>收到，我先把附录里的渠道数据核对一遍。</div></div>
+        <div class="run"><div class="file"><div class="ftile">PDF</div><div class="fMain"><div class="fName">2026 秋季新品发布-渠道复盘-最终确认版-v7-含附录与预算明细.pdf</div><div class="fMeta">18.4 MB · 已下载</div></div></div></div>
+      </div>
+      <div class="toast"><span class="ok">✓</span><span class="toastText">已复制 3 条消息。粘贴到其他应用后，格式会保留为纯文本；原消息中的链接仍可点击。</span></div>
+      <div class="composer"><div class="input">明天的评审材料我已经整理好了，包含附录、预算和渠道数据，你</div><div class="send"><svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 18.5v-12M7.5 11 12 6.5l4.5 4.5"/></svg></div></div>
+    </div>
+
+    <!-- notes -->
+    <div class="notes">
+      <h2>移动端收束规则</h2>
+      <div class="rule"><span class="n">1</span><div><b>顶栏标题</b><p>单行省略，右侧操作固定 44px；长群名不挤压返回和更多。</p></div></div>
+      <div class="rule"><span class="n">2</span><div><b>会话行</b><p>64px 高；名称与预览各 1 行；未读封顶 99+；时间固定宽。</p></div></div>
+      <div class="rule"><span class="n">3</span><div><b>消息气泡</b><p>最大 78%；中文换行，URL 与长单词任意断行；引用 1 行。</p></div></div>
+      <div class="rule"><span class="n">4</span><div><b>文件卡</b><p>文件名 1 行省略；大小与状态单行；图标固定 32×38。</p></div></div>
+      <div class="rule"><span class="n">5</span><div><b>输入草稿</b><p>默认 1 行，长草稿横向滚动；超过 5 行改为内部纵向滚动，发送键不动。</p></div></div>
+      <div class="rule"><span class="n">6</span><div><b>Toast</b><p>左右各 12px，最多 2 行；不遮住输入区，不推动布局。</p></div></div>
+      <div class="footNote">统一触控目标 ≥ 44px；圆角 18 / 16 / 11 / 999 四档同心。</div>
+    </div>
+  </div>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"$preview":{"width":1180,"height":960}}'>
+class Component extends DCLogic {
+  renderVals() { return {}; }
+}
+</script>
+</body>
+</html>

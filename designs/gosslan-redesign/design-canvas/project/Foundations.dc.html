@@ -1,0 +1,211 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>Foundations — Color, Type, Space</title>
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+  *{box-sizing:border-box}
+  body{margin:0;background:#f4f4f1;font-family:"Inter",-apple-system,"PingFang SC","Microsoft YaHei",sans-serif;color:#17181a;-webkit-font-smoothing:antialiased}
+  .page{width:1120px;padding:40px 44px 36px;background:#f4f4f1}
+  .top{display:flex;align-items:flex-end;justify-content:space-between;margin-bottom:30px}
+  .brand{display:flex;align-items:center;gap:12px}
+  .mark{width:38px;height:38px;border-radius:11px;background:#2f6beb;display:flex;align-items:center;justify-content:center;color:#fff}
+  h1{font-size:30px;line-height:36px;font-weight:600;letter-spacing:-.02em;margin:0}
+  .sub{font-size:13px;line-height:19px;color:#5a5d63;margin:3px 0 0}
+  .badge{font-size:11px;font-weight:500;color:#2356c4;background:#e8effd;border-radius:999px;padding:4px 9px}
+  .section{margin-bottom:30px}
+  .secHead{display:flex;align-items:baseline;gap:10px;margin-bottom:14px}
+  .secHead h2{font-size:15px;line-height:20px;font-weight:600;margin:0}
+  .secHead span{font-size:11px;color:#70747b}
+  .cols{display:grid;grid-template-columns:1.15fr 1fr;gap:28px}
+  .theme{border-radius:12px;padding:16px;box-shadow:inset 0 0 0 1px #e6e7e2}
+  .theme.light{background:#fff}
+  .theme.dark{background:#1b1c1f;box-shadow:inset 0 0 0 1px #2a2c31;color:#ecedef}
+  .theme h3{font-size:11px;font-weight:500;letter-spacing:.08em;text-transform:uppercase;margin:0 0 12px;color:#70747b}
+  .theme.dark h3{color:#8a8f98}
+  .swatches{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px}
+  .sw{display:flex;align-items:center;gap:8px;min-width:0}
+  .chip{width:26px;height:26px;border-radius:7px;box-shadow:inset 0 0 0 1px rgba(0,0,0,.08);flex:0 0 auto}
+  .sw .n{font-size:11px;line-height:14px;font-weight:500;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .sw .h{font-size:10px;line-height:13px;color:#70747b;font-family:"JetBrains Mono",monospace}
+  .theme.dark .sw .h{color:#8a8f98}
+  .ramp{display:flex;height:36px;border-radius:8px;overflow:hidden;margin-top:14px}
+  .ramp div{flex:1;display:flex;align-items:flex-end;justify-content:center;padding-bottom:4px;font-size:9px;color:rgba(255,255,255,.9)}
+  .ramp div.darkText{color:rgba(23,24,26,.72)}
+  .typeRow{display:flex;align-items:baseline;gap:16px;padding:7px 0;border-bottom:1px solid #ecede9}
+  .typeRow:last-child{border-bottom:0}
+  .typeMeta{width:104px;flex:0 0 auto;font-size:10px;color:#70747b;font-family:"JetBrains Mono",monospace}
+  .tDisplay{font-size:28px;line-height:34px;font-weight:600;letter-spacing:-.02em}
+  .tTitle{font-size:17px;line-height:24px;font-weight:600}
+  .tBody{font-size:14px;line-height:20px}
+  .tSmall{font-size:13px;line-height:18px;color:#5a5d63}
+  .tCaption{font-size:12px;line-height:16px;color:#70747b}
+  .tMicro{font-size:11px;line-height:14px;font-weight:500;color:#70747b}
+  .mono{font-family:"JetBrains Mono",monospace;font-size:12.5px;line-height:18px}
+  .spaceRow{display:flex;align-items:center;gap:12px;margin-bottom:7px}
+  .spaceRow .k{width:66px;flex:0 0 auto;font-size:10px;color:#70747b;font-family:"JetBrains Mono",monospace}
+  .spaceRow .bar{height:8px;border-radius:2px;background:#2f6beb;opacity:.82}
+  .spaceRow .v{font-size:10px;color:#70747b;font-family:"JetBrains Mono",monospace}
+  .grid3{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:18px}
+  .radii{display:flex;align-items:flex-end;gap:14px}
+  .rad{display:flex;flex-direction:column;align-items:center;gap:6px}
+  .rad .sq{width:46px;height:46px;background:#fff;box-shadow:inset 0 0 0 1px #d9dbd5}
+  .rad .lb{font-size:10px;color:#70747b;font-family:"JetBrains Mono",monospace}
+  .elev{display:flex;gap:14px}
+  .elev .card{width:104px;height:64px;border-radius:10px;background:#fff;display:flex;align-items:center;justify-content:center;font-size:10px;color:#70747b}
+  .e1{box-shadow:0 1px 2px rgba(16,17,20,.06),inset 0 0 0 1px #e6e7e2}
+  .e2{box-shadow:0 8px 24px rgba(16,17,20,.12),inset 0 0 0 1px rgba(16,17,20,.05)}
+  .e3{box-shadow:0 24px 64px rgba(9,10,12,.28)}
+  .principles{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:14px;margin-top:34px}
+  .pr{background:#fff;border-radius:10px;padding:14px 16px;box-shadow:inset 0 0 0 1px #e6e7e2}
+  .pr h4{font-size:13px;line-height:18px;font-weight:600;margin:0 0 4px}
+  .pr p{font-size:11.5px;line-height:17px;color:#5a5d63;margin:0}
+  .footer{display:flex;align-items:center;justify-content:space-between;margin-top:26px;padding-top:12px;border-top:1px solid #e6e7e2;font-size:10px;color:#70747b}
+  svg{display:block}
+</style>
+</helmet>
+<div class="page">
+  <div class="top">
+    <div class="brand">
+      <div class="mark"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 15a3 3 0 0 1-3 3H8l-4 3V6a3 3 0 0 1 3-3h10a3 3 0 0 1 3 3Z"/><path d="M8 9h8M8 13h5"/></svg></div>
+      <div><h1>Gosslan Still</h1><p class="sub">Design foundations · 局域网即时通讯 · v1.0 · 2026.11</p></div>
+    </div>
+    <span class="badge">Light + Dark</span>
+  </div>
+
+  <div class="section">
+    <div class="secHead"><h2>01 — Surfaces & Semantics</h2><span>warm neutral · one accent · state has a fill and an ink</span></div>
+    <div class="cols">
+      <div class="theme light">
+        <h3>Light</h3>
+        <div class="swatches">
+          <div class="sw"><div class="chip" style="background:#f4f4f1"></div><div><div class="n">surface-canvas</div><div class="h">#f4f4f1</div></div></div>
+          <div class="sw"><div class="chip" style="background:#ecece8"></div><div><div class="n">surface-chrome</div><div class="h">#ecece8</div></div></div>
+          <div class="sw"><div class="chip" style="background:#f8f8f5"></div><div><div class="n">surface-list</div><div class="h">#f8f8f5</div></div></div>
+          <div class="sw"><div class="chip" style="background:#fff"></div><div><div class="n">surface-content</div><div class="h">#ffffff</div></div></div>
+          <div class="sw"><div class="chip" style="background:#17181a"></div><div><div class="n">text-primary</div><div class="h">#17181a</div></div></div>
+          <div class="sw"><div class="chip" style="background:#5a5d63"></div><div><div class="n">text-secondary</div><div class="h">#5a5d63</div></div></div>
+          <div class="sw"><div class="chip" style="background:#70747b"></div><div><div class="n">text-tertiary</div><div class="h">#70747b</div></div></div>
+          <div class="sw"><div class="chip" style="background:#e6e7e2"></div><div><div class="n">border-subtle</div><div class="h">#e6e7e2</div></div></div>
+          <div class="sw"><div class="chip" style="background:#2f6beb"></div><div><div class="n">accent</div><div class="h">#2f6beb</div></div></div>
+          <div class="sw"><div class="chip" style="background:#e8effd"></div><div><div class="n">accent-soft</div><div class="h">#e8effd</div></div></div>
+          <div class="sw"><div class="chip" style="background:#1b7f52"></div><div><div class="n">success</div><div class="h">#1b7f52</div></div></div>
+          <div class="sw"><div class="chip" style="background:#a85d00"></div><div><div class="n">warning</div><div class="h">#a85d00</div></div></div>
+          <div class="sw"><div class="chip" style="background:#c0392f"></div><div><div class="n">danger</div><div class="h">#c0392f</div></div></div>
+          <div class="sw"><div class="chip" style="background:#f0f1ed"></div><div><div class="n">bubble-in</div><div class="h">#f0f1ed</div></div></div>
+        </div>
+        <div class="ramp">
+          <div style="background:#e4f3ea;color:#14663f" class="darkText">success-soft</div>
+          <div style="background:#fbf0df;color:#8a4d00" class="darkText">warning-soft</div>
+          <div style="background:#fbe9e7;color:#a32b22" class="darkText">danger-soft</div>
+          <div style="background:#e8effd;color:#2356c4" class="darkText">accent-soft</div>
+        </div>
+      </div>
+      <div class="theme dark">
+        <h3>Dark</h3>
+        <div class="swatches">
+          <div class="sw"><div class="chip" style="background:#0f1012"></div><div><div class="n">surface-canvas</div><div class="h">#0f1012</div></div></div>
+          <div class="sw"><div class="chip" style="background:#141518"></div><div><div class="n">surface-chrome</div><div class="h">#141518</div></div></div>
+          <div class="sw"><div class="chip" style="background:#17181b"></div><div><div class="n">surface-list</div><div class="h">#17181b</div></div></div>
+          <div class="sw"><div class="chip" style="background:#1b1c1f"></div><div><div class="n">surface-content</div><div class="h">#1b1c1f</div></div></div>
+          <div class="sw"><div class="chip" style="background:#ecedef"></div><div><div class="n">text-primary</div><div class="h">#ecedef</div></div></div>
+          <div class="sw"><div class="chip" style="background:#a6aab2"></div><div><div class="n">text-secondary</div><div class="h">#a6aab2</div></div></div>
+          <div class="sw"><div class="chip" style="background:#8a8f98"></div><div><div class="n">text-tertiary</div><div class="h">#8a8f98</div></div></div>
+          <div class="sw"><div class="chip" style="background:#2a2c31"></div><div><div class="n">border-subtle</div><div class="h">#2a2c31</div></div></div>
+          <div class="sw"><div class="chip" style="background:#3568e8"></div><div><div class="n">accent</div><div class="h">#3568e8</div></div></div>
+          <div class="sw"><div class="chip" style="background:#1e2a44"></div><div><div class="n">accent-soft</div><div class="h">#1e2a44</div></div></div>
+          <div class="sw"><div class="chip" style="background:#3dbe86"></div><div><div class="n">success</div><div class="h">#3dbe86</div></div></div>
+          <div class="sw"><div class="chip" style="background:#e0a045"></div><div><div class="n">warning</div><div class="h">#e0a045</div></div></div>
+          <div class="sw"><div class="chip" style="background:#e86a61"></div><div><div class="n">danger</div><div class="h">#e86a61</div></div></div>
+          <div class="sw"><div class="chip" style="background:#26282d"></div><div><div class="n">bubble-in</div><div class="h">#26282d</div></div></div>
+        </div>
+        <div class="ramp">
+          <div style="background:#163026">success-soft</div>
+          <div style="background:#332818">warning-soft</div>
+          <div style="background:#371d1c">danger-soft</div>
+          <div style="background:#1e2a44">accent-soft</div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="section">
+    <div class="secHead"><h2>02 — Type & Space</h2><span>Inter + system CJK · 8px rhythm · 11px floor</span></div>
+    <div class="cols">
+      <div>
+        <div class="typeRow"><span class="typeMeta">display 28/34</span><span class="tDisplay">把消息放回中心</span></div>
+        <div class="typeRow"><span class="typeMeta">title 17/24</span><span class="tTitle">设计组 · 5 位成员</span></div>
+        <div class="typeRow"><span class="typeMeta">body 14/20</span><span class="tBody">评审改到 3 点，会议室 B。材料我已经放到群文件。</span></div>
+        <div class="typeRow"><span class="typeMeta">small 13/18</span><span class="tSmall">你：收到，我把材料再顺一遍</span></div>
+        <div class="typeRow"><span class="typeMeta">caption 12/16</span><span class="tCaption">昨天 · 2.4 MB · 已下载</span></div>
+        <div class="typeRow"><span class="typeMeta">micro 11/14</span><span class="tMicro">周岚 · 在线 · 局域网</span></div>
+        <div class="typeRow"><span class="typeMeta">mono 12.5/18</span><span class="mono">192.168.1.24 · SHA 4F2A</span></div>
+      </div>
+      <div>
+        <div class="spaceRow"><span class="k">space-2</span><span class="bar" style="width:2px"></span><span class="v">2</span></div>
+        <div class="spaceRow"><span class="k">space-4</span><span class="bar" style="width:4px"></span><span class="v">4</span></div>
+        <div class="spaceRow"><span class="k">space-8</span><span class="bar" style="width:8px"></span><span class="v">8</span></div>
+        <div class="spaceRow"><span class="k">space-12</span><span class="bar" style="width:12px"></span><span class="v">12</span></div>
+        <div class="spaceRow"><span class="k">space-16</span><span class="bar" style="width:16px"></span><span class="v">16</span></div>
+        <div class="spaceRow"><span class="k">space-24</span><span class="bar" style="width:24px"></span><span class="v">24</span></div>
+        <div class="spaceRow"><span class="k">space-32</span><span class="bar" style="width:32px"></span><span class="v">32</span></div>
+        <div class="spaceRow"><span class="k">space-40</span><span class="bar" style="width:40px"></span><span class="v">40</span></div>
+        <div class="spaceRow"><span class="k">space-64</span><span class="bar" style="width:64px"></span><span class="v">64</span></div>
+      </div>
+    </div>
+  </div>
+
+  <div class="grid3">
+    <div>
+      <div class="secHead"><h2>03 — Radii</h2><span>concentric</span></div>
+      <div class="radii">
+        <div class="rad"><div class="sq" style="border-radius:4px"></div><span class="lb">4</span></div>
+        <div class="rad"><div class="sq" style="border-radius:8px"></div><span class="lb">8</span></div>
+        <div class="rad"><div class="sq" style="border-radius:10px"></div><span class="lb">10</span></div>
+        <div class="rad"><div class="sq" style="border-radius:12px"></div><span class="lb">12</span></div>
+        <div class="rad"><div class="sq" style="border-radius:18px"></div><span class="lb">18</span></div>
+        <div class="rad"><div class="sq" style="border-radius:999px"></div><span class="lb">full</span></div>
+      </div>
+    </div>
+    <div>
+      <div class="secHead"><h2>04 — Elevation</h2><span>only overlays float</span></div>
+      <div class="elev">
+        <div class="card e1">hairline</div>
+        <div class="card e2">menu</div>
+        <div class="card e3">dialog</div>
+      </div>
+    </div>
+    <div>
+      <div class="secHead"><h2>05 — Icons</h2><span>1.75px stroke</span></div>
+      <div style="display:flex;gap:14px;align-items:center;color:#5a5d63">
+        <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 15a3 3 0 0 1-3 3H8l-4 3V6a3 3 0 0 1 3-3h10a3 3 0 0 1 3 3Z"/></svg>
+        <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M16 20v-1.5a4 4 0 0 0-4-4H7a4 4 0 0 0-4 4V20"/><circle cx="9.5" cy="7" r="3"/><path d="M17 4.5a3 3 0 0 1 0 5.5M21 20v-1.4a3.6 3.6 0 0 0-2.6-3.4"/></svg>
+        <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m12 3 2.7 5.5 6.1.9-4.4 4.3 1 6-5.4-2.8-5.4 2.8 1-6-4.4-4.3 6.1-.9Z"/></svg>
+        <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M10 13a5 5 0 0 0 7 0l2-2a5 5 0 0 0-7-7l-1 1"/><path d="M14 11a5 5 0 0 0-7 0l-2 2a5 5 0 0 0 7 7l1-1"/></svg>
+        <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.2-3.2"/></svg>
+        <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 19V5M5 12l7-7 7 7"/></svg>
+      </div>
+    </div>
+  </div>
+
+  <div class="principles">
+    <div class="pr"><h4>消息优先</h4><p>骨架用低对比中性灰，白底只留给会话与内容。容器退后，文字向前。</p></div>
+    <div class="pr"><h4>密度是礼貌</h4><p>一屏更多会话与历史；气泡紧凑，但行高与 44px 触控区不缩水。</p></div>
+    <div class="pr"><h4>状态可见</h4><p>发送、失败、离线、传输、未读都有统一表达，不靠用户猜。</p></div>
+  </div>
+  <div class="footer"><span>Gosslan Still — foundations</span><span>No glass stacking · one accent · 4.5:1 text · 3:1 controls</span></div>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"$preview":{"width":1120,"height":760}}'>
+class Component extends DCLogic {
+  renderVals() { return {}; }
+}
+</script>
+</body>
+</html>

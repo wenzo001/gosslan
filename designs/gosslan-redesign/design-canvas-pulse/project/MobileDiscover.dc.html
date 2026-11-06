@@ -1,0 +1,119 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>Pulse — Mobile discover</title>
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+  *{box-sizing:border-box}
+  body{margin:0;background:#f2f3f5;font-family:-apple-system,BlinkMacSystemFont,"PingFang SC","Microsoft YaHei","Segoe UI",sans-serif;color:#1f2329;-webkit-font-smoothing:antialiased}
+  .phone{width:390px;height:844px;background:radial-gradient(420px 360px at 12% 0%,#e8f0ff 0%,rgba(237,232,255,0) 70%),radial-gradient(420px 340px at 95% 12%,#ffecec 0%,rgba(255,230,232,0) 68%),radial-gradient(480px 380px at 80% 100%,#e8f8ee 0%,rgba(223,249,243,0) 70%),#f2f3f5;display:flex;flex-direction:column;overflow:hidden;position:relative}
+  .topbar{height:56px;flex:0 0 auto;display:flex;align-items:center;gap:8px;padding:0 8px 0 2px}
+  .back{width:44px;height:44px;border:0;border-radius:12px;background:#fff;color:#3a3f47;display:flex;align-items:center;justify-content:center;box-shadow:inset 0 0 0 1px #e5e6eb,0 4px 12px rgba(31,35,41,.08)}
+  .back:active{background:#f7f8fa}
+  .topbar h1{font-family:-apple-system,BlinkMacSystemFont,"PingFang SC","Microsoft YaHei","Segoe UI",sans-serif;font-size:18px;font-weight:600;margin:0;flex:1}
+  .seg{display:flex;gap:2px;background:#fff;border-radius:10px;padding:3px;box-shadow:inset 0 0 0 1px #e5e6eb}
+  .seg button{height:28px;padding:0 9px;border:0;border-radius:8px;background:transparent;font:inherit;font-size:10px;font-weight:600;color:#8a9099}
+  .seg button.on{background:#e8f0ff;color:#1f5ae8}
+  .hero{padding:8px 18px 12px;flex:0 0 auto;position:relative}
+  .kicker{display:inline-flex;align-items:center;gap:5px;font-size:10.5px;font-weight:700;color:#1f5ae8;background:#e8f0ff;border-radius:999px;padding:3px 8px;margin-bottom:10px}
+  .kicker i{width:5px;height:5px;border-radius:999px;background:#fa5151;display:block}
+  .hero h2{font-family:-apple-system,BlinkMacSystemFont,"PingFang SC","Microsoft YaHei","Segoe UI",sans-serif;font-size:29px;line-height:34px;font-weight:600;letter-spacing:-.04em;margin:0 0 5px}
+  .hero h2 em{font-style:normal;background:#2f6bff;-webkit-background-clip:text;background-clip:text;color:transparent}
+  .hero p{font-size:11.5px;line-height:17px;color:#5a6068;margin:0;max-width:260px}
+  .hero p b{color:#1f2329;font-weight:600}
+  .radar{position:absolute;right:8px;top:18px;width:128px;height:128px}
+  .ring{position:absolute;left:50%;top:50%;border-radius:999px;border:1px solid rgba(31,35,41,.18);transform:translate(-50%,-50%)}
+  .r1{width:58px;height:58px}.r2{width:92px;height:92px}.r3{width:126px;height:126px;border-color:rgba(31,35,41,.14)}
+  .core{position:absolute;left:50%;top:50%;transform:translate(-50%,-50%);width:38px;height:38px;border-radius:14px;background:#2f6bff;display:flex;align-items:center;justify-content:center;color:#fff;box-shadow:0 10px 24px rgba(31,35,41,.3)}
+  .dotAv{position:absolute;width:24px;height:24px;border-radius:999px;display:flex;align-items:center;justify-content:center;font-size:8px;font-weight:700;box-shadow:0 0 0 2px #fff,0 4px 10px rgba(31,35,41,.14)}
+  .d1{left:-2px;top:22%;background:#f5e6dc;color:#8a4b22}.d2{right:0;top:6%;background:#e0f5ef;color:#068a4a}.d3{right:2%;bottom:2%;background:#eee6f7;color:#6b4aa3}
+  .channels{display:flex;gap:7px;padding:0 18px 10px;flex:0 0 auto}
+  .ch{flex:1;display:flex;align-items:center;gap:8px;background:rgba(255,255,255,.86);border-radius:12px;box-shadow:inset 0 0 0 1px #e5e6eb;padding:8px 10px}
+  .chIcon{width:28px;height:28px;border-radius:9px;display:flex;align-items:center;justify-content:center;flex:0 0 auto}
+  .on{background:#e8f8ee;color:#068a4a}.off{background:#eef0f2;color:#8a9099}
+  .chMain{min-width:0;flex:1}
+  .chName{font-size:10.5px;font-weight:600;display:flex;align-items:center;gap:4px}
+  .chName i{width:5px;height:5px;border-radius:999px;background:#07c160;display:block}
+  .chSub{font-size:10px;color:#8a9099;margin-top:1px}
+  .switch{width:34px;height:20px;border-radius:999px;background:#2f6bff;position:relative;border:0;padding:0;flex:0 0 auto}
+  .switch:after{content:"";position:absolute;width:16px;height:16px;border-radius:999px;background:#fff;top:2px;left:16px}
+  .switch.gray{background:#cfc6e2}.switch.gray:after{left:2px}
+  .nearHead{display:flex;align-items:baseline;gap:6px;padding:0 18px 6px;flex:0 0 auto}
+  .nearHead h3{font-family:-apple-system,BlinkMacSystemFont,"PingFang SC","Microsoft YaHei","Segoe UI",sans-serif;font-size:13px;font-weight:600;margin:0}
+  .nearHead span{font-size:10.5px;color:#8a9099}
+  .nearHead .refresh{margin-left:auto;display:flex;align-items:center;gap:4px;font-size:10px;font-weight:600;color:#1f5ae8;background:#fff;border-radius:999px;padding:3px 7px;box-shadow:inset 0 0 0 1px #e5e6eb}
+  .list{flex:1;overflow:hidden;padding:0 18px}
+  .person{display:flex;align-items:center;gap:10px;background:rgba(255,255,255,.9);border-radius:14px;box-shadow:inset 0 0 0 1px #e5e6eb,0 6px 18px rgba(31,35,41,.06);padding:10px;margin-bottom:8px}
+  .pAv{width:40px;height:40px;border-radius:999px;display:flex;align-items:center;justify-content:center;font-size:13px;font-weight:700;flex:0 0 auto;position:relative;box-shadow:0 0 0 2px #fff,0 4px 12px rgba(31,35,41,.16)}
+  .pAv .dot{position:absolute;right:-1px;bottom:0;width:10px;height:10px;border-radius:999px;background:#07c160;box-shadow:0 0 0 2px #fff}
+  .pMain{min-width:0;flex:1}
+  .pName{font-family:-apple-system,BlinkMacSystemFont,"PingFang SC","Microsoft YaHei","Segoe UI",sans-serif;font-size:12.5px;font-weight:600}
+  .pMeta{font-size:10.5px;color:#8a9099;margin-top:1px;display:flex;align-items:center;gap:4px}
+  .pMeta i{width:4px;height:4px;border-radius:999px;background:#07c160;display:block}
+  .pMeta.bt i{background:#ffb400}
+  .btn{height:32px;padding:0 11px;border:0;border-radius:9px;font:inherit;font-size:10px;font-weight:600;display:flex;align-items:center;gap:4px;cursor:pointer;flex:0 0 auto}
+  .add{background:#2f6bff;color:#fff;box-shadow:0 6px 14px rgba(31,35,41,.24)}
+  .wait{background:#f2f3f5;color:#8a9099}
+  .msg{background:#e8f8ee;color:#068a4a}
+  .invite{margin:6px 18px 0;display:flex;align-items:center;gap:7px;background:#fff;border-radius:12px;box-shadow:inset 0 0 0 1px #e5e6eb;padding:8px 10px;flex:0 0 auto}
+  .invite .t{font-size:10.5px;color:#8a9099}
+  .invite code{font-family:"JetBrains Mono",monospace;font-size:10px;color:#1f5ae8;font-weight:500}
+  .invite .copy{margin-left:auto;height:26px;padding:0 8px;border:0;border-radius:7px;background:#e8f0ff;color:#1f5ae8;font:inherit;font-size:10px;font-weight:700}
+  .foot{padding:8px 18px 18px;display:flex;align-items:center;gap:6px;font-size:10px;color:#8a9099;flex:0 0 auto}
+  .foot .right{margin-left:auto;color:#1f5ae8;font-weight:600}
+  svg{display:block}
+</style>
+<style>.phone{background:#f7f8fa}.radar{display:none}.hero h2{font-size:22px;line-height:27px;letter-spacing:-.01em}</style>
+<style>
+/* v2.2 compact apple-like geometry */
+.phone{background:#f7f8fa}
+.topbar{height:52px}
+.topbar h1{font-size:17px}
+.hero h2{font-size:23px;line-height:29px}
+.hero p{font-size:13px;line-height:19px}
+.person{border-radius:16px}
+.pName{font-size:14px}
+.pMeta{font-size:11px}
+.pBtn{height:32px;border-radius:10px;font-size:11px}
+</style>
+</helmet>
+<div class="phone">
+  <div class="topbar">
+    <button class="back" aria-label="返回"><svg width="21" height="21" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M15 5.5 8.5 12l6.5 6.5"/></svg></button>
+    <h1>添加好友</h1>
+    <div class="seg"><button class="on">附近</button><button>邀请码</button></div>
+  </div>
+  <div class="hero">
+    <span class="kicker"><i></i>4 台设备在线</span>
+    <h2>局域网设备</h2>
+    <p>同一局域网内的设备会自动出现。<br><b>选择一位，发送好友申请。</b></p>
+    <div class="radar"><span class="ring r1"></span><span class="ring r2"></span><span class="ring r3"></span><div class="core"><svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 12h4l2-6 4 12 2-6h6"/></svg></div><div class="dotAv d1">林</div><div class="dotAv d2">周</div><div class="dotAv d3">苏</div></div>
+  </div>
+  <div class="channels">
+    <div class="ch"><div class="chIcon on"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12.5a10 10 0 0 1 14 0M8.5 16a5 5 0 0 1 7 0M12 19.5h.01"/><path d="M2 9a15 15 0 0 1 20 0"/></svg></div><div class="chMain"><div class="chName"><i></i>局域网</div><div class="chSub">4 台设备</div></div><button class="switch" role="switch" aria-checked="true" aria-label="局域网"></button></div>
+    <div class="ch"><div class="chIcon off"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m7 7 10 10-5 4V3l5 4L7 17"/></svg></div><div class="chMain"><div class="chName" style="color:#5a6068">蓝牙</div><div class="chSub">未开启</div></div><button class="switch gray" role="switch" aria-checked="false" aria-label="蓝牙"></button></div>
+  </div>
+  <div class="nearHead"><h3>附近设备</h3><span>按距离排序</span><span class="refresh"><svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.1" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 11a8 8 0 1 0-2.3 5.7"/><path d="M20 5v6h-6"/></svg>刷新</span></div>
+  <div class="list">
+    <div class="person"><div class="pAv" style="background:#e0f5ef;color:#068a4a">苏<span class="dot"></span></div><div class="pMain"><div class="pName">苏晚</div><div class="pMeta"><i></i>iPhone · 同一 Wi-Fi · 2 跳</div></div><button class="btn add">打招呼</button></div>
+    <div class="person"><div class="pAv" style="background:#f5e6dc;color:#8a4b22">林<span class="dot"></span></div><div class="pMain"><div class="pName">林一</div><div class="pMeta"><i></i>MacBook · 已是好友</div></div><button class="btn msg">发消息</button></div>
+    <div class="person"><div class="pAv" style="background:#eee6f7;color:#6b4aa3">周<span class="dot"></span></div><div class="pMain"><div class="pName">周岚</div><div class="pMeta"><i></i>Windows · 等待确认</div></div><button class="btn wait">等待中</button></div>
+    <div class="person"><div class="pAv" style="background:#f8f1e2;color:#9a6b00">陈</div><div class="pMain"><div class="pName">陈默</div><div class="pMeta bt"><i></i>Android · 蓝牙 30–40 KB/s</div></div><button class="btn add" style="background:#fff7e6;color:#9a6b00;box-shadow:none">邀请</button></div>
+  </div>
+  <div class="invite"><span class="t">邀请码</span><code>GOSSLAN-4F2A</code><button class="copy">复制</button></div>
+  <div class="foot"><svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M12 11v5M12 7.5v.5"/></svg>没有看到设备？确认在同一 Wi-Fi<span class="right">手动输入</span></div>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"$preview":{"width":390,"height":844}}'>
+class Component extends DCLogic {
+  renderVals() { return {}; }
+}
+</script>
+</body>
+</html>

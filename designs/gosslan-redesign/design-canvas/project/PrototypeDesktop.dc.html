@@ -1,0 +1,404 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>Prototype — Desktop</title>
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+  *{box-sizing:border-box}
+  body{margin:0;background:#f4f4f1;font-family:"Inter",-apple-system,"PingFang SC","Microsoft YaHei",sans-serif;color:#17181a;-webkit-font-smoothing:antialiased}
+  .app{width:1000px;height:680px;display:flex;flex-direction:column;background:#f4f4f1;overflow:hidden;position:relative}
+  .titlebar{height:40px;background:#ecece8;border-bottom:1px solid #e2e3de;display:flex;align-items:center;padding:0 14px;position:relative;z-index:3;flex:0 0 auto}
+  .lights{display:flex;gap:8px;width:76px}.light{width:11px;height:11px;border-radius:999px;background:#cfd1ca}
+  .title{position:absolute;left:0;right:0;text-align:center;font-size:12px;font-weight:500;color:#5a5d63}
+  .tbRight{margin-left:auto;display:flex;align-items:center;gap:8px}
+  .conn{display:flex;align-items:center;gap:5px;font-size:11px;color:#14663f;background:#e4f3ea;border-radius:999px;padding:3px 8px}
+  .conn i{width:6px;height:6px;border-radius:999px;background:#22a06b;display:block}
+  .tbBtn{width:28px;height:28px;border:0;background:transparent;border-radius:7px;color:#5a5d63;display:flex;align-items:center;justify-content:center;cursor:pointer}
+  .tbBtn:hover{background:#e2e3de;color:#17181a}
+  .workspace{flex:1;display:flex;min-height:0;position:relative}
+  .rail{width:64px;background:#ecece8;border-right:1px solid #e2e3de;display:flex;flex-direction:column;align-items:center;padding:12px 0 10px;flex:0 0 auto}
+  .me{width:34px;height:34px;border-radius:999px;background:#d9e2f7;color:#2356c4;display:flex;align-items:center;justify-content:center;font-size:13px;font-weight:600;position:relative;margin-bottom:18px}
+  .me .dot{position:absolute;right:-1px;bottom:0;width:10px;height:10px;border-radius:999px;background:#22a06b;box-shadow:0 0 0 2px #ecece8}
+  .nav{display:flex;flex-direction:column;gap:6px}
+  .nav button{width:38px;height:38px;border:0;border-radius:10px;background:transparent;color:#5a5d63;display:flex;align-items:center;justify-content:center;cursor:pointer;position:relative}
+  .nav button:hover{background:#e2e3de;color:#17181a}.nav button.on{background:#e8effd;color:#2356c4}
+  .nav .badge{position:absolute;top:-2px;right:-2px;min-width:16px;height:16px;border-radius:999px;background:#2f6beb;color:#fff;font-size:9px;font-weight:600;line-height:16px;text-align:center;padding:0 4px;box-shadow:0 0 0 2px #ecece8}
+  .railBottom{margin-top:auto;display:flex;flex-direction:column;gap:4px}
+  .list{width:320px;background:#f8f8f5;border-right:1px solid #e2e3de;display:flex;flex-direction:column;flex:0 0 auto;min-height:0}
+  .listHead{height:52px;display:flex;align-items:center;justify-content:space-between;padding:0 14px 0 16px}
+  .listHead h2{font-size:17px;line-height:24px;font-weight:600;margin:0}
+  .newBtn{width:30px;height:30px;border:0;border-radius:8px;background:transparent;color:#5a5d63;display:flex;align-items:center;justify-content:center;cursor:pointer}
+  .newBtn:hover{background:#f1f2ee;color:#17181a}
+  .searchWrap{padding:0 12px 8px}
+  .search{height:34px;border-radius:8px;background:#f1f2ee;display:flex;align-items:center;gap:7px;padding:0 10px;color:#70747b;font-size:12px;cursor:pointer}
+  .search:hover{background:#ecede9}
+  .search .kbd{margin-left:auto;font-size:10px;font-family:"JetBrains Mono",monospace;color:#8a8d92;background:#f8f8f5;border-radius:4px;padding:1px 4px}
+  .rows{flex:1;overflow:hidden}
+  .row{height:68px;display:flex;align-items:center;gap:12px;padding:0 16px;cursor:pointer;position:relative}
+  .row:hover{background:#f3f4ef}.row.sel{background:#e8effd}
+  .avatar{width:44px;height:44px;border-radius:999px;display:flex;align-items:center;justify-content:center;font-size:15px;font-weight:600;flex:0 0 auto;position:relative}
+  .avatar.sq{border-radius:12px}
+  .a1{background:#d9e2f7;color:#2356c4}.a2{background:#f3e2d6;color:#8a4d00}.a3{background:#dcefe3;color:#14663f}.a4{background:#ece3f6;color:#6b3fa0}
+  .g4{display:grid;grid-template-columns:repeat(2,1fr);grid-template-rows:repeat(2,1fr);gap:2px;padding:5px;background:#e8effd}
+  .g4 span{border-radius:3px;display:block}.g4 .g1{background:#9db8ef}.g4 .g2{background:#e3b28d}.g4 .g3{background:#9bcfb0}.g4 .g4c{background:#c4a9e0}
+  .pdot{position:absolute;right:-1px;bottom:0;width:11px;height:11px;border-radius:999px;background:#22a06b;box-shadow:0 0 0 2px #f8f8f5}
+  .row.sel .pdot{box-shadow:0 0 0 2px #e8effd}.pdot.off{background:#9a9ea5}
+  .rmain{min-width:0;flex:1}
+  .rline{display:flex;align-items:baseline;gap:8px}
+  .rname{font-size:15px;line-height:20px;font-weight:500;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .rname.unread{font-weight:600}
+  .rtime{margin-left:auto;font-size:11px;line-height:14px;color:#70747b;font-variant-numeric:tabular-nums;flex:0 0 auto}
+  .rprev{display:flex;align-items:center;gap:6px;margin-top:2px}
+  .rprev > span:first-of-type{font-size:13px;line-height:18px;color:#5a5d63;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;flex:1;min-width:0}
+  .rbadge{min-width:18px;height:18px;padding:0 5px;border-radius:999px;background:#2f6beb;color:#fff;font-size:10px;font-weight:600;line-height:18px;text-align:center;flex:0 0 auto}
+  .divider{height:1px;background:#ecede9;margin-left:72px}
+  .listFoot{height:42px;border-top:1px solid #e2e3de;display:flex;align-items:center;gap:8px;padding:0 16px;font-size:11.5px;color:#5a5d63;background:#f8f8f5;cursor:pointer}
+  .listFoot:hover{background:#f1f2ee}
+  .listFoot .n{min-width:16px;height:16px;border-radius:999px;background:#e8effd;color:#2356c4;font-size:9px;font-weight:600;line-height:16px;text-align:center;padding:0 4px}
+  .listFoot .chev{margin-left:auto;color:#8a8d92}
+  .main{flex:1;background:#fff;display:flex;flex-direction:column;min-width:0;position:relative}
+  .empty{flex:1;display:flex;align-items:center;justify-content:center}
+  .emptyIn{width:360px;text-align:center;padding-bottom:16px}
+  .eicon{width:64px;height:64px;border-radius:18px;background:#f4f4f1;box-shadow:inset 0 0 0 1px #e6e7e2;color:#70747b;display:flex;align-items:center;justify-content:center;margin:0 auto 18px}
+  .emptyIn h3{font-size:20px;line-height:26px;font-weight:600;margin:0 0 7px}
+  .emptyIn p{font-size:13px;line-height:19px;color:#5a5d63;margin:0 0 20px}
+  .emptyIn p b{font-weight:500;color:#3d4045}
+  .btn{height:36px;padding:0 14px;border:0;border-radius:8px;font:inherit;font-size:13px;font-weight:500;display:inline-flex;align-items:center;gap:6px;cursor:pointer}
+  .primary{background:#2f6beb;color:#fff}.primary:hover{background:#2459ce}
+  .ghost{background:transparent;color:#2356c4}.ghost:hover{background:#e8effd}
+  .chat{flex:1;display:flex;flex-direction:column;min-height:0;position:relative}
+  .chatHead{height:52px;border-bottom:1px solid #ecede9;display:flex;align-items:center;gap:10px;padding:0 16px;flex:0 0 auto;background:#fff;z-index:2}
+  .hAvatar{width:32px;height:32px;border-radius:999px;display:flex;align-items:center;justify-content:center;font-size:13px;font-weight:600;flex:0 0 auto;position:relative}
+  .hAvatar.sq{border-radius:10px}
+  .hAvatar .pdot{box-shadow:0 0 0 2px #fff;width:9px;height:9px}
+  .hName{font-size:15px;line-height:20px;font-weight:600}
+  .hMeta{font-size:11px;line-height:14px;color:#14663f;display:flex;align-items:center;gap:5px;margin-top:1px}
+  .hMeta i{width:5px;height:5px;border-radius:999px;background:#22a06b;display:block}
+  .hActions{margin-left:auto;display:flex;align-items:center;gap:2px}
+  .hActions button{width:30px;height:30px;border:0;border-radius:8px;background:transparent;color:#5a5d63;display:flex;align-items:center;justify-content:center;cursor:pointer}
+  .hActions button:hover{background:#f1f2ee;color:#17181a}
+  .msgs{flex:1;overflow:hidden;padding:8px 24px 12px;position:relative}
+  .thread{max-width:760px;margin:0 auto;height:100%}
+  .day{text-align:center;font-size:11px;color:#70747b;margin:10px 0 12px}
+  .run{display:flex;gap:8px;margin-bottom:12px;align-items:flex-start}
+  .run.own{justify-content:flex-end}
+  .av{width:24px;height:24px;border-radius:999px;background:#f3e2d6;color:#8a4d00;display:flex;align-items:center;justify-content:center;font-size:10px;font-weight:600;flex:0 0 auto;margin-top:2px}
+  .runBody{max-width:68%;min-width:0}
+  .name{font-size:11px;line-height:14px;color:#70747b;margin:0 0 3px 2px}
+  .bubble{padding:8px 12px;border-radius:18px;font-size:14px;line-height:20px;width:fit-content;max-width:100%;cursor:pointer;transition:filter .12s ease}
+  .bubble:hover{filter:brightness(.97)}
+  .in{background:#f0f1ed;color:#17181a;border-bottom-left-radius:6px;box-shadow:inset 0 0 0 1px #e4e5e0}
+  .out{background:#2f6beb;color:#fff;border-bottom-right-radius:6px;margin-left:auto}
+  .out:hover{filter:brightness(1.05)}
+  .meta{display:flex;align-items:center;gap:4px;font-size:11px;color:#70747b;margin-top:4px;font-variant-numeric:tabular-nums}
+  .own .meta{justify-content:flex-end}
+  .composer{flex:0 0 auto;border-top:1px solid #ecede9;padding:10px 16px 12px;background:#fff}
+  .compRow{display:flex;align-items:flex-end;gap:8px}
+  .ib{width:30px;height:30px;border:0;border-radius:8px;background:transparent;color:#5a5d63;display:flex;align-items:center;justify-content:center;cursor:pointer}
+  .ib:hover{background:#f1f2ee;color:#17181a}
+  .input{flex:1;min-height:38px;padding:9px 4px;font-size:14px;line-height:20px;border:0;background:transparent;outline:none;font-family:inherit;color:#17181a}
+  .input::placeholder{color:#70747b}
+  .send{width:36px;height:36px;border-radius:999px;border:0;background:#2f6beb;color:#fff;display:flex;align-items:center;justify-content:center;flex:0 0 auto;cursor:pointer}
+  .send:hover{background:#2459ce}
+  .menuScrim{position:absolute;inset:0;z-index:4}
+  .menu{position:absolute;right:26px;bottom:96px;width:200px;background:#fff;border-radius:10px;box-shadow:0 8px 24px rgba(16,17,20,.16),inset 0 0 0 1px rgba(16,17,20,.05);padding:6px;z-index:5}
+  .mi{height:32px;display:flex;align-items:center;gap:9px;padding:0 9px;border:0;background:transparent;border-radius:6px;width:100%;font:inherit;font-size:12.5px;color:#17181a;cursor:pointer;text-align:left}
+  .mi:hover{background:#f1f2ee}.mi svg{color:#5a5d63}
+  .mi .sc{margin-left:auto;font-size:10px;color:#8a8f98}
+  .sep{height:1px;background:#ecede9;margin:5px 6px}
+  .danger{color:#a32b22}.danger svg{color:#a32b22}.danger:hover{background:#fbe9e7}
+  .toastWrap{position:absolute;right:20px;bottom:20px;z-index:7}
+  .toast{display:flex;align-items:center;gap:9px;min-height:44px;padding:10px 12px;background:#fff;border-radius:10px;box-shadow:0 8px 24px rgba(16,17,20,.16),inset 0 0 0 1px rgba(16,17,20,.05);font-size:13px;min-width:280px}
+  .toast .ok{width:20px;height:20px;border-radius:999px;background:#e4f3ea;color:#14663f;display:flex;align-items:center;justify-content:center;flex:0 0 auto}
+  .toast .x{margin-left:auto;border:0;background:transparent;color:#70747b;width:24px;height:24px;border-radius:6px;cursor:pointer;display:flex;align-items:center;justify-content:center}
+  .toast .x:hover{background:#f1f2ee}
+  .scrim{position:absolute;inset:40px 0 0 0;background:rgba(16,17,20,.38);z-index:6}
+  .panel{position:absolute;left:50%;top:50%;transform:translate(-50%,-50%);background:#fff;border-radius:12px;box-shadow:0 24px 64px rgba(9,10,12,.3);z-index:7;overflow:hidden}
+  .searchPanel{width:760px;height:520px;display:flex;flex-direction:column}
+  .spHead{padding:14px 16px 10px;border-bottom:1px solid #ecede9}
+  .spBox{height:44px;border-radius:10px;background:#f1f2ee;display:flex;align-items:center;gap:10px;padding:0 12px}
+  .spBox input{border:0;background:transparent;outline:none;font:inherit;font-size:14.5px;flex:1;color:#17181a}
+  .esc{font-size:10px;color:#70747b;background:#fff;border-radius:5px;padding:2px 6px;box-shadow:inset 0 0 0 1px #e4e5e0;font-family:"JetBrains Mono",monospace}
+  .spBody{flex:1;overflow:hidden;padding:8px 10px}
+  .hit{padding:10px 12px;border-radius:8px;cursor:pointer}
+  .hit:hover{background:#f8f8f5}
+  .hitTop{font-size:11px;color:#5a5d63;display:flex;gap:6px;align-items:center}
+  .hitTop b{color:#17181a;font-weight:500}.hitTop span{margin-left:auto;font-size:10px;color:#8a8d92}
+  .snip{font-size:12.5px;line-height:18px;color:#3d4045;margin-top:3px}
+  .snip mark{background:#dce7fd;border-radius:3px;padding:0 1px}
+  .spFoot{height:38px;border-top:1px solid #ecede9;display:flex;align-items:center;padding:0 16px;font-size:10px;color:#8a8d92}
+  .settingsPanel{width:520px;height:420px;display:flex;flex-direction:column}
+  .setHead{height:56px;display:flex;align-items:center;gap:8px;padding:0 18px;border-bottom:1px solid #ecede9}
+  .setHead h3{font-size:16px;line-height:22px;font-weight:600;margin:0;flex:1}
+  .xBtn{width:30px;height:30px;border:0;border-radius:8px;background:transparent;color:#5a5d63;display:flex;align-items:center;justify-content:center;cursor:pointer}
+  .xBtn:hover{background:#f1f2ee}
+  .setBody{flex:1;padding:14px 18px}
+  .setRow{min-height:50px;display:flex;align-items:center;gap:10px;border-bottom:1px solid #ecede9;font-size:13px}
+  .setRow:last-child{border-bottom:0}
+  .setRow .k{flex:1}
+  .setRow .v{font-size:11.5px;color:#70747b}
+  .switch{width:38px;height:22px;border-radius:999px;background:#2f6beb;position:relative;border:0;padding:0;cursor:pointer;flex:0 0 auto}
+  .switch:after{content:"";position:absolute;width:18px;height:18px;border-radius:999px;background:#fff;top:2px;left:18px}
+  .setFoot{height:44px;border-top:1px solid #ecede9;display:flex;align-items:center;padding:0 18px;font-size:10.5px;color:#8a8d92}
+  .g4{background:linear-gradient(#9db8ef,#9db8ef) left top/calc(50% - 1px) calc(50% - 1px) no-repeat,linear-gradient(#e3b28d,#e3b28d) right top/calc(50% - 1px) calc(50% - 1px) no-repeat,linear-gradient(#9bcfb0,#9bcfb0) left bottom/calc(50% - 1px) calc(50% - 1px) no-repeat,linear-gradient(#c4a9e0,#c4a9e0) right bottom/calc(50% - 1px) calc(50% - 1px) no-repeat,#e8effd}
+  svg{display:block}
+</style>
+</helmet>
+<div class="app">
+  <div class="titlebar">
+    <div class="lights"><span class="light"></span><span class="light"></span><span class="light"></span></div><span class="title">Gosslan · 交互原型</span>
+    <div class="tbRight"><span class="conn"><i></i>局域网已连接 · 4 台设备</span><button class="tbBtn" onClick="{{ openSearch }}" aria-label="全局搜索"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.2-3.2"/></svg></button><button class="tbBtn" onClick="{{ openSettings }}" aria-label="设置"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.9l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.9-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.9.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.9 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.9l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.9.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.9-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.9V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1Z"/></svg></button></div>
+  </div>
+  <div class="workspace">
+    <div class="rail">
+      <div class="me">我<span class="dot"></span></div>
+      <div class="nav">
+        <button class="on" aria-label="聊天"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 15a3 3 0 0 1-3 3H8l-4 3V6a3 3 0 0 1 3-3h10a3 3 0 0 1 3 3Z"/><path d="M9 10h6M9 13.5h4"/></svg></button>
+        <button onClick="{{ demoOnly }}" aria-label="通讯录"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M16 20v-1.5a4 4 0 0 0-4-4H7a4 4 0 0 0-4 4V20"/><circle cx="9.5" cy="7" r="3"/><path d="M17 4.5a3 3 0 0 1 0 5.5M21 20v-1.4a3.6 3.6 0 0 0-2.6-3.4"/></svg><span class="badge">2</span></button>
+        <button onClick="{{ demoOnly }}" aria-label="收藏"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m12 3 2.7 5.5 6.1.9-4.4 4.3 1 6-5.4-2.8-5.4 2.8 1-6-4.4-4.3 6.1-.9Z"/></svg></button>
+        <button onClick="{{ demoOnly }}" aria-label="链接"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M10 13a5 5 0 0 0 7 0l2-2a5 5 0 0 0-7-7l-1 1"/><path d="M14 11a5 5 0 0 0-7 0l-2 2a5 5 0 0 0 7 7l1-1"/></svg></button>
+      </div>
+      <div class="railBottom"><button class="tbBtn" onClick="{{ demoOnly }}" aria-label="切换外观"><svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></svg></button><button class="tbBtn" onClick="{{ demoOnly }}" aria-label="更多"><svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" aria-hidden="true"><circle cx="5" cy="12" r="1"/><circle cx="12" cy="12" r="1"/><circle cx="19" cy="12" r="1"/></svg></button></div>
+    </div>
+
+    <div class="list">
+      <div class="listHead"><h2>聊天</h2><button class="newBtn" onClick="{{ demoOnly }}" aria-label="新建会话"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg></button></div>
+      <div class="searchWrap"><div class="search" onClick="{{ openSearch }}" role="search"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.2-3.2"/></svg>搜索会话、联系人或消息<span class="kbd">⌘K</span></div></div>
+      <div class="rows">
+        <sc-for list="{{ convs }}" as="c" hint-placeholder-count="3">
+          <div class="{{ c.cls }}" onClick="{{ c.pick }}">
+            <div class="{{ c.avatarClass }}">
+              <sc-if value="{{ c.isPerson }}" hint-placeholder-val="{{ true }}">{{ c.initial }}<span class="{{ c.dotClass }}"></span></sc-if>
+            </div>
+            <div class="rmain">
+              <div class="rline"><span class="rname {{ c.nameClass }}">{{ c.name }}</span><span class="rtime">{{ c.time }}</span></div>
+              <div class="rprev"><span>{{ c.preview }}</span><sc-if value="{{ c.showBadge }}"><span class="rbadge">{{ c.badge }}</span></sc-if></div>
+            </div>
+          </div>
+          <div class="divider"></div>
+        </sc-for>
+      </div>
+      <div class="listFoot" onClick="{{ demoOnly }}"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3v12M7 10l5 5 5-5"/><path d="M4 19h16"/></svg>任务中心<span class="n">2</span><svg class="chev" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m9 6 6 6-6 6"/></svg></div>
+    </div>
+
+    <div class="main">
+      <sc-if value="{{ isList }}" hint-placeholder-val="{{ true }}">
+        <div class="empty"><div class="emptyIn">
+          <div class="eicon"><svg width="30" height="30" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 15a3 3 0 0 1-3 3H8l-4 3V6a3 3 0 0 1 3-3h10a3 3 0 0 1 3 3Z"/><path d="M8.5 9h7M8.5 12.5h4.5"/></svg></div>
+          <h3>选择一个会话</h3><p>消息只保存在这台设备，不经过服务器。<br><b>纯 P2P · 端到端加密 · 局域网内直达</b></p>
+          <button class="btn primary" onClick="{{ demoOnly }}"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg>添加好友</button>
+          <button class="btn ghost" onClick="{{ demoOnly }}">创建群聊</button>
+        </div></div>
+      </sc-if>
+
+      <sc-if value="{{ isChat }}" hint-placeholder-val="{{ true }}">
+        <div class="chat">
+          <div class="chatHead">
+            <div class="{{ activeAvatarClass }}">
+              <sc-if value="{{ isPersonChat }}">{{ activeInitial }}<span class="pdot"></span></sc-if>
+            </div>
+            <div><div class="hName">{{ activeTitle }}</div><div class="hMeta"><i></i>{{ activeMeta }}</div></div>
+            <div class="hActions">
+              <button onClick="{{ openSearch }}" aria-label="搜索消息"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.2-3.2"/></svg></button>
+              <button onClick="{{ demoOnly }}" aria-label="更多"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" aria-hidden="true"><circle cx="5" cy="12" r="1"/><circle cx="12" cy="12" r="1"/><circle cx="19" cy="12" r="1"/></svg></button>
+            </div>
+          </div>
+          <div class="msgs">
+            <div class="thread">
+              <div class="day">今天 14:20</div>
+              <sc-for list="{{ messages }}" as="m" hint-placeholder-count="5">
+                <div class="{{ m.runClass }}">
+                  <sc-if value="{{ m.showAvatar }}" hint-placeholder-val="{{ true }}"><div class="av">{{ m.initial }}</div></sc-if>
+                  <div class="runBody">
+                    <sc-if value="{{ m.showName }}" hint-placeholder-val="{{ true }}"><div class="name">{{ m.name }}</div></sc-if>
+                    <div class="{{ m.bubbleClass }}" onClick="{{ m.pick }}">{{ m.text }}</div>
+                    <div class="meta">{{ m.time }}<sc-if value="{{ m.own }}"> · 已读</sc-if></div>
+                  </div>
+                </div>
+              </sc-for>
+            </div>
+            <sc-if value="{{ menu }}" hint-placeholder-val="{{ true }}">
+              <div class="menuScrim" onClick="{{ closeMenu }}"></div>
+              <div class="menu" role="menu">
+                <button class="mi" onClick="{{ replyMsg }}"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 17 4 12l5-5"/><path d="M4 12h10a6 6 0 0 1 6 6v1"/></svg>回复</button>
+                <button class="mi" onClick="{{ forwardMsg }}"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m15 17 5-5-5-5"/><path d="M20 12H10a6 6 0 0 0-6 6v1"/></svg>转发</button>
+                <button class="mi" onClick="{{ copyMsg }}"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>复制<span class="sc">⌘C</span></button>
+                <button class="mi" onClick="{{ favoriteMsg }}"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m12 3 2.7 5.5 6.1.9-4.4 4.3 1 6-5.4-2.8-5.4 2.8 1-6-4.4-4.3 6.1-.9Z"/></svg>收藏</button>
+                <div class="sep"></div>
+                <button class="mi danger" onClick="{{ deleteMsg }}"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 7h16M9 7V4h6v3M6 7l1 13h10l1-13"/></svg>删除消息</button>
+              </div>
+            </sc-if>
+          </div>
+          <div class="composer">
+            <div class="compRow">
+              <button class="ib" onClick="{{ demoOnly }}" aria-label="表情"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M8.5 14.5a4 4 0 0 0 7 0M9 9.5v.5M15 9.5v.5"/></svg></button>
+              <button class="ib" onClick="{{ demoOnly }}" aria-label="添加附件"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m20 11-8.5 8.5a5 5 0 0 1-7-7L13 4a3.5 3.5 0 0 1 5 5l-8.5 8.5a2 2 0 0 1-3-3L14 7"/></svg></button>
+              <input class="input" placeholder="发消息…（试着输入并回车）" value="{{ draft }}" onInput="{{ onInput }}" onKeyDown="{{ onKey }}">
+              <button class="send" onClick="{{ send }}" aria-label="发送"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 19V5M5 12l7-7 7 7"/></svg></button>
+            </div>
+          </div>
+        </div>
+      </sc-if>
+    </div>
+
+    <sc-if value="{{ search }}" hint-placeholder-val="{{ true }}">
+      <div class="scrim" onClick="{{ closeSearch }}"></div>
+      <div class="panel searchPanel" role="dialog" aria-label="搜索消息">
+        <div class="spHead"><div class="spBox"><svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="#70747b" stroke-width="1.75" stroke-linecap="round" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.2-3.2"/></svg><input value="评审" aria-label="搜索" onInput="{{ onInput }}"><span class="esc">Esc</span><button class="xBtn" onClick="{{ closeSearch }}" aria-label="关闭"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" aria-hidden="true"><path d="m6 6 12 12M18 6 6 18"/></svg></button></div></div>
+        <div class="spBody">
+          <div class="hit" onClick="{{ pickResult }}"><div class="hitTop"><b>林一</b>在 设计组 <span>10 月 28 日 11:21</span></div><div class="snip"><mark>评审</mark>改到 3 点，会议室 B。@你 材料麻烦再顺一遍。</div></div>
+          <div class="hit" onClick="{{ pickResult }}"><div class="hitTop"><b>周岚</b>在 设计组 <span>10 月 27 日 15:02</span></div><div class="snip">下午的<mark>评审</mark>材料我放到群文件了，大家先过一遍。</div></div>
+          <div class="hit" onClick="{{ pickResult }}"><div class="hitTop"><b>林一</b> · 单聊 <span>10 月 28 日 14:24</span></div><div class="snip">美式，谢谢。<mark>评审</mark>改到 3 点，会议室 B。</div></div>
+        </div>
+        <div class="spFoot">找到 3 条结果 · 点击结果跳转到会话</div>
+      </div>
+    </sc-if>
+
+    <sc-if value="{{ settings }}" hint-placeholder-val="{{ true }}">
+      <div class="scrim" onClick="{{ closeSettings }}"></div>
+      <div class="panel settingsPanel" role="dialog" aria-label="设置">
+        <div class="setHead"><h3>设置 · 外观</h3><button class="xBtn" onClick="{{ closeSettings }}" aria-label="关闭"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" aria-hidden="true"><path d="m6 6 12 12M18 6 6 18"/></svg></button></div>
+        <div class="setBody">
+          <div class="setRow"><span class="k">外观模式</span><span class="v">跟随系统</span></div>
+          <div class="setRow"><span class="k">主题色</span><span class="v">钴蓝</span></div>
+          <div class="setRow"><span class="k">环境动效</span><button class="switch" onClick="{{ toggleDemo }}" role="switch" aria-checked="true"></button></div>
+          <div class="setRow"><span class="k">跟随系统减少动态效果</span><span class="v">已开启</span></div>
+          <div class="setRow"><span class="k">字号</span><span class="v">14px · 标准</span></div>
+        </div>
+        <div class="setFoot">这是原型中的简化设置；完整规范见 DesktopSettings 画板。</div>
+      </div>
+    </sc-if>
+
+    <sc-if value="{{ toast }}" hint-placeholder-val="{{ true }}">
+      <div class="toastWrap"><div class="toast"><span class="ok"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m5 12 5 5 9-10"/></svg></span>{{ toastText }}<button class="x" onClick="{{ closeToast }}" aria-label="关闭"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" aria-hidden="true"><path d="m6 6 12 12M18 6 6 18"/></svg></button></div></div>
+    </sc-if>
+  </div>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"$preview":{"width":1000,"height":680}}'>
+class Component extends DCLogic {
+  constructor(props) {
+    super(props);
+    this.state = {
+      view: 'list',
+      active: 'lin',
+      draft: '',
+      menu: false,
+      selected: null,
+      toast: false,
+      toastText: '',
+      search: false,
+      settings: false,
+      messages: [
+        { id: 1, own: false, text: '在楼下咖啡店等你，靠窗的位置。', time: '14:21', name: '林一' },
+        { id: 2, own: true, text: '好，我五分钟后到。', time: '14:22', name: '' },
+        { id: 3, own: false, text: '美式，谢谢。评审改到 3 点，会议室 B。', time: '14:24', name: '林一' },
+        { id: 4, own: true, text: '收到，我把材料再顺一遍。', time: '14:26', name: '' },
+        { id: 5, own: false, text: '评审材料我放群文件了，你直接下载最新版。', time: '14:31', name: '林一' }
+      ]
+    };
+  }
+  openChat(id) { this.setState({ view: 'chat', active: id, menu: false }); }
+  toast(text) { this.setState({ toast: true, toastText: text }); }
+  renderVals() {
+    const s = this.state;
+    const active = s.active === 'design'
+      ? { title: '设计组', meta: '5 位成员 · 3 人在线', initial: '', avatarClass: 'hAvatar sq g4', isGroup: true }
+      : { title: '林一', meta: '在线 · iPhone · 局域网直达', initial: '林', avatarClass: 'hAvatar a2', isGroup: false };
+    const convs = [
+      {
+        id: 'design', name: '设计组', time: '11:34', preview: '[文件] 评审材料-v3.pdf', badge: '3', showBadge: true,
+        isGroup: true, isPerson: false, initial: '', avatarClass: 'avatar sq g4', dotClass: '',
+        nameClass: s.active === 'design' ? 'unread' : 'unread',
+        cls: 'row' + (s.active === 'design' ? ' sel' : ''),
+        pick: () => this.openChat('design')
+      },
+      {
+        id: 'lin', name: '林一', time: '14:32', preview: '好，我五分钟后到', badge: '', showBadge: false,
+        isGroup: false, isPerson: true, initial: '林', avatarClass: 'avatar a2', dotClass: 'pdot',
+        nameClass: '',
+        cls: 'row' + (s.active === 'lin' ? ' sel' : ''),
+        pick: () => this.openChat('lin')
+      },
+      {
+        id: 'zhou', name: '周岚', time: '昨天', preview: '那套配色舒服多了', badge: '', showBadge: false,
+        isGroup: false, isPerson: true, initial: '周', avatarClass: 'avatar a3', dotClass: 'pdot off',
+        nameClass: '',
+        cls: 'row',
+        pick: () => this.openChat('zhou')
+      },
+      {
+        id: 'azhe', name: '阿泽', time: '周二', preview: '你：收到，我把材料再顺一遍', badge: '', showBadge: false,
+        isGroup: false, isPerson: true, initial: '阿', avatarClass: 'avatar a4', dotClass: 'pdot',
+        nameClass: '',
+        cls: 'row',
+        pick: () => this.openChat('azhe')
+      }
+    ];
+    const isGroup = active.isGroup;
+    const messages = s.messages.map((m) => ({
+      ...m,
+      runClass: 'run' + (m.own ? ' own' : ''),
+      bubbleClass: 'bubble ' + (m.own ? 'out' : 'in'),
+      showAvatar: !m.own && isGroup,
+      showName: !m.own && isGroup,
+      initial: '林',
+      pick: () => this.setState({ menu: true, selected: m.id })
+    }));
+    return {
+      isList: s.view === 'list',
+      isChat: s.view === 'chat',
+      isPersonChat: !active.isGroup,
+      isGroupChat: active.isGroup,
+      activeTitle: active.title,
+      activeMeta: active.meta,
+      activeInitial: active.initial,
+      activeAvatarClass: active.avatarClass,
+      convs,
+      messages,
+      draft: s.draft,
+      menu: s.menu,
+      toast: s.toast,
+      toastText: s.toastText,
+      search: s.search,
+      settings: s.settings,
+      openSearch: () => this.setState({ search: true }),
+      closeSearch: () => this.setState({ search: false }),
+      openSettings: () => this.setState({ settings: true }),
+      closeSettings: () => this.setState({ settings: false }),
+      closeMenu: () => this.setState({ menu: false }),
+      closeToast: () => this.setState({ toast: false }),
+      copyMsg: () => this.setState({ menu: false, toast: true, toastText: '已复制到剪贴板' }),
+      replyMsg: () => this.setState({ menu: false, toast: true, toastText: '已进入回复状态（演示）' }),
+      forwardMsg: () => this.setState({ menu: false, toast: true, toastText: '打开转发选择（演示）' }),
+      favoriteMsg: () => this.setState({ menu: false, toast: true, toastText: '已收藏这条消息' }),
+      deleteMsg: () => {
+        const id = this.state.selected;
+        this.setState({ menu: false, messages: this.state.messages.filter((m) => m.id !== id), toast: true, toastText: '已删除消息（演示）' });
+      },
+      onInput: (e) => this.setState({ draft: e.target.value }),
+      onKey: (e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); this.doSend(); } },
+      send: () => this.doSend(),
+      pickResult: () => this.setState({ search: false, view: 'chat', active: 'lin' }),
+      demoOnly: () => this.setState({ toast: true, toastText: '此原型聚焦聊天主流程；其他页面见静态画板' }),
+      toggleDemo: () => this.setState({ toast: true, toastText: '设置项切换（演示）' })
+    };
+  }
+  doSend() {
+    const text = this.state.draft.trim();
+    if (!text) return;
+    this.setState({
+      messages: this.state.messages.concat([{ id: Date.now(), own: true, text, time: '14:35', name: '' }]),
+      draft: ''
+    });
+  }
+}
+</script>
+</body>
+</html>

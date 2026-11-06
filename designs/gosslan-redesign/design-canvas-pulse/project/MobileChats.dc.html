@@ -1,0 +1,113 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>Pulse — Mobile chats</title>
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+  *{box-sizing:border-box}
+  body{margin:0;background:#f2f3f5;font-family:-apple-system,BlinkMacSystemFont,"PingFang SC","Microsoft YaHei","Segoe UI",sans-serif;color:#1f2329;-webkit-font-smoothing:antialiased}
+  .phone{width:390px;height:844px;background:#f7f8fa;display:flex;flex-direction:column;overflow:hidden;position:relative}
+  .topbar{height:56px;flex:0 0 auto;display:flex;align-items:center;padding:0 8px 0 14px;gap:10px;border-bottom:1px solid #e5e6eb;background:#f7f8fa}
+  .me{width:32px;height:32px;border-radius:999px;background:#dcd3ff;color:#1f5ae8;display:flex;align-items:center;justify-content:center;font-size:11.5px;font-weight:700;position:relative;flex:0 0 auto;box-shadow:0 0 0 2px #fff,0 4px 10px rgba(31,35,41,.18)}
+  .me .dot{position:absolute;right:-1px;bottom:0;width:10px;height:10px;border-radius:999px;background:#07c160;box-shadow:0 0 0 2px #f7f8fa}
+  .topbar h1{font-family:-apple-system,BlinkMacSystemFont,"PingFang SC","Microsoft YaHei","Segoe UI",sans-serif;font-size:19px;line-height:25px;font-weight:600;margin:0;flex:1}
+  .topBtn{width:44px;height:44px;border:0;border-radius:12px;background:transparent;color:#3a3f47;display:flex;align-items:center;justify-content:center;cursor:pointer;margin-right:-6px}
+  .topBtn:active{background:#f2f3f5}
+  .searchWrap{padding:7px 14px 5px;flex:0 0 auto}
+  .search{height:38px;border-radius:11px;background:#f2f3f5;display:flex;align-items:center;gap:7px;padding:0 11px;color:#8a9099;font-size:12.5px}
+  .section{padding:8px 16px 2px;font-size:10px;font-weight:700;color:#8a9099;display:flex;align-items:center;gap:6px;letter-spacing:.03em}
+  .pinTag{font-size:10px;background:#fff7e6;color:#9a6b00;border-radius:5px;padding:1px 6px;display:inline-flex;align-items:center;gap:3px}
+  .rows{flex:1;overflow:hidden;min-height:0}
+  .row{height:68px;display:flex;align-items:center;gap:12px;padding:0 16px;position:relative}
+  .row:active{background:#f7f8fa}
+  .avatar{width:46px;height:46px;border-radius:999px;display:flex;align-items:center;justify-content:center;font-size:15px;font-weight:700;flex:0 0 auto;position:relative;box-shadow:0 0 0 2px #f7f8fa,0 4px 12px rgba(31,35,41,.16)}
+  .avatar.sq{border-radius:14px}
+  .g4{background:linear-gradient(#b9c8f6,#b9c8f6) left top/calc(50% - 1px) calc(50% - 1px) no-repeat,linear-gradient(#e8b28a,#e8b28a) right top/calc(50% - 1px) calc(50% - 1px) no-repeat,linear-gradient(#9fdbcd,#9fdbcd) left bottom/calc(50% - 1px) calc(50% - 1px) no-repeat,linear-gradient(#cbbbe2,#cbbbe2) right bottom/calc(50% - 1px) calc(50% - 1px) no-repeat,#e8f0ff}
+  .a2{background:#f5e6dc;color:#8a4b22}.a3{background:#e0f5ef;color:#068a4a}.a4{background:#eee6f7;color:#6b4aa3}.a5{background:#ffecec;color:#d93a3a}.a6{background:#f8f1e2;color:#9a6b00}
+  .pdot{position:absolute;right:-1px;bottom:0;width:11px;height:11px;border-radius:999px;background:#07c160;box-shadow:0 0 0 2px #f7f8fa}
+  .pdot.off{background:#a9a2b8}
+  .rmain{min-width:0;flex:1}
+  .rline{display:flex;align-items:baseline;gap:8px}
+  .rname{font-size:15px;line-height:20px;font-weight:500;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .unread .rname{font-weight:600}
+  .rtime{margin-left:auto;font-size:10.5px;line-height:14px;color:#8a9099;font-variant-numeric:tabular-nums}
+  .rprev{display:flex;align-items:center;gap:6px;margin-top:2px}
+  .rprev > span:first-of-type{font-size:13px;line-height:18px;color:#5a6068;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;flex:1;min-width:0}
+  .rbadge{min-width:19px;height:19px;padding:0 5px;border-radius:999px;background:#fa5151;color:#fff;font-size:10px;font-weight:700;line-height:19px;text-align:center;flex:0 0 auto;box-shadow:0 4px 8px rgba(31,35,41,.28)}
+  .mute{color:#8a9099;display:flex;flex:0 0 auto}
+  .divider{height:1px;background:#eef0f2;margin-left:74px}
+  .tabbar{height:60px;flex:0 0 auto;background:rgba(251,248,255,.96);border-top:1px solid #e5e6eb;display:flex;align-items:stretch;padding-bottom:env(safe-area-inset-bottom);backdrop-filter:blur(10px)}
+  .tab{flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:2px;border:0;background:transparent;color:#8a9099;font:inherit;cursor:pointer;position:relative;min-height:44px}
+  .tab .pill{width:48px;height:27px;border-radius:999px;display:flex;align-items:center;justify-content:center;position:relative}
+  .tab.on{color:#1f5ae8}
+  .tab.on .pill{background:linear-gradient(135deg,#e8f0ff,#e8f0ff);box-shadow:inset 0 0 0 1px #d6e3ff}
+  .tab .lbl{font-family:-apple-system,BlinkMacSystemFont,"PingFang SC","Microsoft YaHei","Segoe UI",sans-serif;font-size:10px;line-height:12px;font-weight:600}
+  .tab .badge{position:absolute;top:-3px;right:3px;min-width:15px;height:15px;border-radius:999px;background:#fa5151;color:#fff;font-size:10px;font-weight:700;line-height:15px;text-align:center;padding:0 3px;box-shadow:0 3px 7px rgba(31,35,41,.32),0 0 0 2px #f7f8fa}
+  svg{display:block}
+</style>
+<style>
+/* v2.2 compact apple-like geometry */
+.topbar{height:52px;padding:0 6px 0 12px}
+.topbar h1{font-size:18px;line-height:23px}
+.me{width:30px;height:30px}
+.searchWrap{padding:6px 12px 4px}
+.search{height:36px;border-radius:11px}
+.section{padding:6px 14px 2px;font-size:10.5px}
+.pinTag{font-size:10px}
+.row{height:64px;gap:10px;padding:0 14px}
+.avatar{width:42px;height:42px;border-radius:999px;font-size:14px}
+.avatar.sq{border-radius:13px}
+.pdot{width:10px;height:10px}
+.rname{font-size:15px;line-height:20px}
+.rtime{font-size:11px}
+.rprev > span:first-of-type{font-size:12.5px;line-height:17px}
+.rbadge{min-width:18px;height:18px;font-size:10.5px;line-height:18px}
+.divider{margin-left:66px}
+.tabbar{height:56px}
+.tab .lbl{font-size:10.5px;line-height:13px}
+.tab .badge{font-size:10.5px;min-width:16px;height:16px;line-height:16px}
+</style>
+</helmet>
+<div class="phone">
+  <div class="topbar">
+    <div class="me">我<span class="dot"></span></div>
+    <h1>聊天</h1>
+    <button class="topBtn" aria-label="新建会话"><svg width="23" height="23" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" aria-hidden="true"><path d="M12 5.5v13M5.5 12h13"/></svg></button>
+  </div>
+  <div class="searchWrap"><div class="search" role="search"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" aria-hidden="true"><circle cx="10.5" cy="10.5" r="6.2"/><path d="m15.2 15.2 4.3 4.3"/></svg>搜索会话、联系人或消息</div></div>
+  <div class="section"><span class="pinTag">✦ 置顶</span></div>
+  <div class="rows">
+    <div class="row unread"><div class="avatar sq g4"></div><div class="rmain"><div class="rline"><span class="rname">设计组</span><span class="rtime">11:34</span></div><div class="rprev"><span>[文件] 评审材料-v3.pdf</span><span class="rbadge">3</span></div></div></div>
+    <div class="divider"></div>
+    <div class="row"><div class="avatar a2">林<span class="pdot"></span></div><div class="rmain"><div class="rline"><span class="rname">林一</span><span class="rtime">14:32</span></div><div class="rprev"><span>好，我五分钟后到</span></div></div></div>
+    <div class="divider"></div>
+    <div class="row"><div class="avatar a3">周<span class="pdot off"></span></div><div class="rmain"><div class="rline"><span class="rname">周岚</span><span class="rtime">昨天</span></div><div class="rprev"><span>那套配色舒服多了</span><span class="mute"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M18 8a6 6 0 0 0-12 0c0 7-3 7-3 9h18c0-2-3-2-3-9M10 21h4"/><path d="m3 3 18 18"/></svg></span></div></div></div>
+    <div class="divider"></div>
+    <div class="row"><div class="avatar a4">阿<span class="pdot"></span></div><div class="rmain"><div class="rline"><span class="rname">阿泽</span><span class="rtime">周二</span></div><div class="rprev"><span>你：收到，我把材料再顺一遍</span></div></div></div>
+    <div class="divider"></div>
+    <div class="row"><div class="avatar a5">苏<span class="pdot"></span></div><div class="rmain"><div class="rline"><span class="rname">苏晚</span><span class="rtime">10/24</span></div><div class="rprev"><span>今晚还跑吗？</span><span class="rbadge" style="background:#ffb400;color:#5a3b00">1</span></div></div></div>
+    <div class="divider"></div>
+    <div class="row"><div class="avatar a6">陈<span class="pdot off"></span></div><div class="rmain"><div class="rline"><span class="rname">陈默</span><span class="rtime">10/21</span></div><div class="rprev"><span>好的，明天见</span></div></div></div>
+    <div class="divider"></div>
+  </div>
+  <nav class="tabbar" aria-label="主导航">
+    <button class="tab on" aria-current="page"><span class="pill"><svg width="21" height="21" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4.5 7.5A3.5 3.5 0 0 1 8 4h8a3.5 3.5 0 0 1 3.5 3.5v5a3.5 3.5 0 0 1-3.5 3.5h-5.2L7 19v-3.1a3.5 3.5 0 0 1-2.5-3.4Z"/><path d="M8.5 8.5h7M8.5 11.5h4"/></svg><span class="badge">3</span></span><span class="lbl">聊天</span></button>
+    <button class="tab"><span class="pill"><svg width="21" height="21" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="9" cy="8" r="3.2"/><path d="M3.5 19.5v-1a5 5 0 0 1 5-5h1a5 5 0 0 1 5 5v1"/><path d="M16 5.2a3.2 3.2 0 0 1 0 5.6M17.5 13.8a4.8 4.8 0 0 1 3 4.4v1.3"/></svg><span class="badge" style="background:#ffb400;color:#5a3b00">2</span></span><span class="lbl">通讯录</span></button>
+    <button class="tab"><span class="pill"><svg width="21" height="21" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M7 4.5A2.5 2.5 0 0 1 9.5 2h5A2.5 2.5 0 0 1 17 4.5V21l-5-3-5 3Z"/></svg></span><span class="lbl">收藏</span></button>
+    <button class="tab"><span class="pill"><svg width="21" height="21" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="8" r="3.5"/><path d="M5 20.5v-1.2a6 6 0 0 1 6-6h2a6 6 0 0 1 6 6v1.2"/></svg></span><span class="lbl">我的</span></button>
+  </nav>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"$preview":{"width":390,"height":844}}'>
+class Component extends DCLogic {
+  renderVals() { return {}; }
+}
+</script>
+</body>
+</html>

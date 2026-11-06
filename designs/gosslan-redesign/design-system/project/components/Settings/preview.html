@@ -1,0 +1,70 @@
+<!-- @dsCard group="Settings" height=380 -->
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>Settings — preview</title>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+  *{box-sizing:border-box}
+  body{margin:0;padding:22px;background:#f4f4f1;font-family:"Inter",-apple-system,"PingFang SC","Microsoft YaHei",sans-serif;color:#17181a}
+  .wrap{display:flex;gap:22px;align-items:flex-start;flex-wrap:wrap}
+  .card{background:#fff;border-radius:12px;box-shadow:inset 0 0 0 1px #e6e7e2;overflow:hidden;width:420px}
+  .groupTitle{font-size:10.5px;font-weight:500;color:#70747b;margin:0 0 6px}
+  .row{min-height:52px;display:flex;align-items:center;gap:12px;padding:8px 14px;border-bottom:1px solid #ecede9}
+  .row:last-child{border-bottom:0}
+  .rText{min-width:0;flex:1}
+  .rLabel{font-size:13px;line-height:18px}
+  .rDesc{font-size:10.5px;line-height:15px;color:#70747b;margin-top:1px}
+  .seg{display:flex;gap:2px;background:#f1f2ee;border-radius:8px;padding:2px}
+  .seg button{height:28px;padding:0 9px;border:0;border-radius:6px;background:transparent;font:inherit;font-size:11.5px;color:#5a5d63}
+  .seg button.on{background:#fff;color:#17181a;font-weight:500;box-shadow:0 1px 2px rgba(16,17,20,.08)}
+  .switch{width:38px;height:22px;border-radius:999px;background:#2f6beb;position:relative;border:0;padding:0}
+  .switch:after{content:"";position:absolute;width:18px;height:18px;border-radius:999px;background:#fff;top:2px;left:18px}
+  .switch.off{background:#c9cbc5}.switch.off:after{left:2px}
+  .sel{height:30px;min-width:116px;border-radius:7px;background:#f1f2ee;border:0;font:inherit;font-size:11.5px;color:#17181a;padding:0 9px;display:flex;align-items:center;justify-content:space-between;gap:8px}
+  .slider{width:170px;height:4px;border-radius:999px;background:#e9eae6;position:relative}
+  .slider .fill{position:absolute;left:0;top:0;bottom:0;width:52%;background:#2f6beb;border-radius:999px}
+  .slider .knob{position:absolute;left:52%;top:50%;transform:translate(-50%,-50%);width:20px;height:20px;border-radius:999px;background:#fff;box-shadow:0 1px 3px rgba(16,17,20,.24),inset 0 0 0 1px #d9dbd5}
+  .danger{color:#a32b22}
+  .caption{font-size:10px;color:#70747b;margin-top:8px}
+  svg{display:block}
+</style>
+</head>
+<body>
+  <div class="wrap">
+    <div>
+      <p class="groupTitle">外观</p>
+      <div class="card">
+        <div class="row"><div class="rText"><div class="rLabel">外观模式</div><div class="rDesc">跟随系统，或固定为浅色 / 深色</div></div><div class="seg"><button class="on">跟随系统</button><button>浅色</button><button>深色</button></div></div>
+        <div class="row"><div class="rText"><div class="rLabel">主题色</div><div class="rDesc">用于按钮、选中态与自己发送的消息</div></div><div style="display:flex;gap:6px"><span style="width:18px;height:18px;border-radius:999px;background:#2f6beb;box-shadow:inset 0 0 0 1px rgba(0,0,0,.08)"></span><span style="width:18px;height:18px;border-radius:999px;background:#1b7f52;box-shadow:inset 0 0 0 1px rgba(0,0,0,.08)"></span><span style="width:18px;height:18px;border-radius:999px;background:#a85d00;box-shadow:inset 0 0 0 1px rgba(0,0,0,.08)"></span><span style="width:18px;height:18px;border-radius:999px;background:#8b5cf6;box-shadow:inset 0 0 0 1px rgba(0,0,0,.08)"></span><span style="width:18px;height:18px;border-radius:999px;background:#0e7490;box-shadow:inset 0 0 0 1px rgba(0,0,0,.08)"></span></div></div>
+        <div class="row"><div class="rText"><div class="rLabel">界面字体</div><div class="rDesc">使用系统字体以获得最佳中文渲染</div></div><button class="sel">系统默认 <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m6 9 6 6 6-6"/></svg></button></div>
+        <div class="row"><div class="rText"><div class="rLabel">减少透明度</div><div class="rDesc">标题栏与底栏改为不透明表面</div></div><button class="switch off" role="switch" aria-checked="false" aria-label="减少透明度"></button></div>
+        <div class="row"><div class="rText"><div class="rLabel">环境动效</div><div class="rDesc">关闭后背景完全静止</div></div><button class="switch" role="switch" aria-checked="true" aria-label="环境动效"></button></div>
+      </div>
+      <p class="groupTitle" style="margin-top:16px">聊天样式</p>
+      <div class="card">
+        <div class="row"><div class="rText"><div class="rLabel">字体大小</div><div class="rDesc">12 / 13 / 14 / 15 / 16</div></div><div class="slider"><div class="fill"></div><div class="knob"></div></div></div>
+        <div class="row"><div class="rText"><div class="rLabel">气泡配色</div><div class="rDesc">会同步给聊天对象</div></div><div style="display:flex;gap:5px"><span style="width:14px;height:14px;border-radius:999px;background:#2f6beb"></span><span style="width:14px;height:14px;border-radius:999px;background:#1b7f52"></span><span style="width:14px;height:14px;border-radius:999px;background:#a85d00"></span><span style="width:14px;height:14px;border-radius:999px;background:#8b5cf6"></span></div></div>
+      </div>
+      <p class="groupTitle" style="margin-top:16px">重置</p>
+      <div class="card"><div class="row"><div class="rText danger" style="font-weight:500">清空所有聊天数据</div><div style="font-size:10.5px;color:#8a8d92">保留好友与设备身份</div></div></div>
+      <p class="caption">Every row 52px · controls right-aligned · saves immediately</p>
+    </div>
+    <div style="width:250px;background:#f8f8f5;border-radius:12px;box-shadow:inset 0 0 0 1px #e6e7e2;padding:12px">
+      <p class="groupTitle" style="margin-bottom:8px">Sidebar · 9 sections</p>
+      <div style="display:flex;flex-direction:column;gap:2px;font-size:11.5px;color:#3d4045">
+        <div style="height:30px;display:flex;align-items:center;gap:8px;padding:0 8px;border-radius:7px">个人资料</div>
+        <div style="height:30px;display:flex;align-items:center;gap:8px;padding:0 8px;border-radius:7px">通用</div>
+        <div style="height:30px;display:flex;align-items:center;gap:8px;padding:0 8px;border-radius:7px;background:#e8effd;color:#2356c4;font-weight:500">外观</div>
+        <div style="height:30px;display:flex;align-items:center;gap:8px;padding:0 8px;border-radius:7px">聊天样式</div>
+        <div style="height:30px;display:flex;align-items:center;gap:8px;padding:0 8px;border-radius:7px">通知</div>
+        <div style="height:30px;display:flex;align-items:center;gap:8px;padding:0 8px;border-radius:7px">网络</div>
+        <div style="height:30px;display:flex;align-items:center;gap:8px;padding:0 8px;border-radius:7px">存储与文件</div>
+        <div style="height:30px;display:flex;align-items:center;gap:8px;padding:0 8px;border-radius:7px">关于</div>
+        <div style="height:30px;display:flex;align-items:center;gap:8px;padding:0 8px;border-radius:7px;color:#a32b22">重置</div>
+      </div>
+    </div>
+  </div>
+</body>
+</html>

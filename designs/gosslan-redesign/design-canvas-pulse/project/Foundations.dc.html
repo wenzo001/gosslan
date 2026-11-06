@@ -1,0 +1,166 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>Pulse Foundations — color, type, motion</title>
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+  *{box-sizing:border-box}
+  body{margin:0;background:#f2f3f5;font-family:-apple-system,BlinkMacSystemFont,"PingFang SC","Microsoft YaHei","Segoe UI",sans-serif;color:#1f2329;-webkit-font-smoothing:antialiased}
+  .page{width:1120px;padding:38px 42px 30px;background:#f2f3f5}
+  .top{display:flex;align-items:flex-end;justify-content:space-between;margin-bottom:28px}
+  .brand{display:flex;align-items:center;gap:13px}
+  .mark{width:42px;height:42px;border-radius:13px;background:#2f6bff;display:flex;align-items:center;justify-content:center;color:#fff;box-shadow:0 8px 20px rgba(31,35,41,.28)}
+  h1{font-family:-apple-system,BlinkMacSystemFont,"PingFang SC","Microsoft YaHei","Segoe UI",sans-serif;font-size:31px;line-height:37px;font-weight:600;letter-spacing:-.03em;margin:0}
+  .sub{font-size:13px;line-height:19px;color:#5a6068;margin:3px 0 0}
+  .badge{font-size:10.5px;font-weight:600;color:#1f5ae8;background:#e8f0ff;border-radius:999px;padding:4px 10px}
+  .section{margin-bottom:26px}
+  .secHead{display:flex;align-items:baseline;gap:10px;margin-bottom:12px}
+  .secHead h2{font-family:-apple-system,BlinkMacSystemFont,"PingFang SC","Microsoft YaHei","Segoe UI",sans-serif;font-size:15px;line-height:20px;font-weight:600;margin:0}
+  .secHead span{font-size:11px;color:#8a9099}
+  .accentGrid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px}
+  .accent{background:#fff;border-radius:16px;box-shadow:inset 0 0 0 1px #e5e6eb;overflow:hidden}
+  .accent .field{height:88px;display:flex;align-items:flex-end;padding:10px 12px;color:#fff;font-family:-apple-system,BlinkMacSystemFont,"PingFang SC","Microsoft YaHei","Segoe UI",sans-serif;font-size:12px;font-weight:600}
+  .accent .meta{padding:10px 12px 11px}
+  .accent .n{font-family:-apple-system,BlinkMacSystemFont,"PingFang SC","Microsoft YaHei","Segoe UI",sans-serif;font-size:12px;font-weight:600;margin-bottom:2px}
+  .accent .u{font-size:10.5px;line-height:15px;color:#5a6068}
+  .accent .hex{font-family:"JetBrains Mono",monospace;font-size:10.5px;color:#8a9099;margin-top:4px}
+  .cols{display:grid;grid-template-columns:1.08fr .92fr;gap:26px}
+  .typeCard{background:#fff;border-radius:16px;box-shadow:inset 0 0 0 1px #e5e6eb;padding:18px 20px}
+  .display{font-family:-apple-system,BlinkMacSystemFont,"PingFang SC","Microsoft YaHei","Segoe UI",sans-serif;font-size:40px;line-height:46px;font-weight:600;letter-spacing:-.035em;margin:0 0 4px}
+  .display em{font-style:normal;background:#2f6bff;-webkit-background-clip:text;background-clip:text;color:transparent}
+  .typeRow{display:flex;align-items:baseline;gap:14px;border-top:1px solid #eef0f2;padding:8px 0}
+  .typeRow:first-of-type{border-top:0}
+  .tm{width:106px;flex:0 0 auto;font-family:"JetBrains Mono",monospace;font-size:10.5px;color:#8a9099}
+  .tBody{font-size:14px;line-height:20px}
+  .tSmall{font-size:13px;line-height:18px;color:#5a6068}
+  .tCap{font-size:11px;line-height:14px;font-weight:500;color:#8a9099}
+  .motion{background:#fff;border-radius:16px;box-shadow:inset 0 0 0 1px #e5e6eb;padding:18px 20px}
+  .curve{height:64px;border-radius:10px;background:linear-gradient(135deg,#e8f0ff,#fff);position:relative;overflow:hidden;margin-bottom:12px}
+  .curve svg{width:100%;height:100%}
+  .mRow{display:flex;align-items:center;gap:8px;font-size:10.5px;color:#5a6068;padding:5px 0;border-bottom:1px solid #eef0f2}
+  .mRow:last-child{border-bottom:0}
+  .mRow b{font-family:"JetBrains Mono",monospace;font-size:10.5px;color:#1f2329;font-weight:500;width:66px;flex:0 0 auto}
+  .mRow span{margin-left:auto;font-family:"JetBrains Mono",monospace;font-size:10px;color:#8a9099}
+  .componentRow{display:grid;grid-template-columns:1.15fr .85fr;gap:18px}
+  .demo{background:#f7f8fa;border-radius:16px;box-shadow:inset 0 0 0 1px #e5e6eb;padding:15px 16px}
+  .demoTitle{font-size:10px;font-weight:600;color:#8a9099;letter-spacing:.06em;text-transform:uppercase;margin:0 0 10px}
+  .bubble{max-width:320px;padding:10px 14px;border-radius:20px;font-size:14px;line-height:20px;width:fit-content}
+  .in{background:#f2f3f5;color:#1f2329;border-bottom-left-radius:6px;box-shadow:inset 0 0 0 1px #e5e6eb}
+  .out{background:#2f6bff;color:#fff;border-bottom-right-radius:6px;margin-left:auto;box-shadow:0 8px 20px rgba(31,35,41,.24)}
+  .meta{font-size:10px;color:#8a9099;margin-top:5px;display:flex;align-items:center;gap:4px}
+  .meta.right{justify-content:flex-end;color:#068a4a;font-weight:500}
+  .reacts{display:flex;gap:5px;margin-top:-2px;margin-left:8px}
+  .react{height:26px;padding:0 9px;border-radius:999px;background:#fff;box-shadow:inset 0 0 0 1px #e5e6eb,0 2px 8px rgba(31,35,41,.10);display:flex;align-items:center;gap:4px;font-size:11px;color:#5a6068}
+  .pills{display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin-top:4px}
+  .btn{height:36px;padding:0 14px;border:0;border-radius:10px;font:inherit;font-size:12.5px;font-weight:600;display:inline-flex;align-items:center;gap:6px;font-family:-apple-system,BlinkMacSystemFont,"PingFang SC","Microsoft YaHei","Segoe UI",sans-serif}
+  .primary{background:#2f6bff;color:#fff;box-shadow:0 8px 20px rgba(31,35,41,.24)}
+  .soft{background:#e8f0ff;color:#1f5ae8}
+  .ghost{background:#fff;color:#3a3f47;box-shadow:inset 0 0 0 1px #e5e6eb}
+  .unread{min-width:20px;height:20px;padding:0 6px;border-radius:999px;background:#fa5151;color:#fff;font-size:10px;font-weight:700;line-height:20px;text-align:center;box-shadow:0 4px 10px rgba(31,35,41,.35)}
+  .pin{font-size:10px;font-weight:600;color:#9a6b00;background:#fff7e6;border-radius:6px;padding:2px 7px;display:inline-flex;align-items:center;gap:4px}
+  .presence{display:inline-flex;align-items:center;gap:5px;font-size:10.5px;font-weight:500;color:#068a4a;background:#e8f8ee;border-radius:999px;padding:3px 8px}
+  .presence i{width:6px;height:6px;border-radius:999px;background:#07c160;display:block}
+  .avatarRow{display:flex;align-items:center;gap:10px;margin-top:14px}
+  .av{width:40px;height:40px;border-radius:999px;display:flex;align-items:center;justify-content:center;font-size:13px;font-weight:600;box-shadow:0 0 0 2px #fff,0 4px 12px rgba(31,35,41,.18)}
+  .av1{background:#dcd3ff;color:#1f5ae8}.av2{background:#f5e6dc;color:#8a4b22}.av3{background:#e0f5ef;color:#068a4a}.av4{background:#eee6f7;color:#6b4aa3}
+  .g4{width:40px;height:40px;border-radius:14px;background:linear-gradient(#b9c8f6,#b9c8f6) left top/calc(50% - 1px) calc(50% - 1px) no-repeat,linear-gradient(#e8b28a,#e8b28a) right top/calc(50% - 1px) calc(50% - 1px) no-repeat,linear-gradient(#9fdbcd,#9fdbcd) left bottom/calc(50% - 1px) calc(50% - 1px) no-repeat,linear-gradient(#cbbbe2,#cbbbe2) right bottom/calc(50% - 1px) calc(50% - 1px) no-repeat,#e8f0ff;box-shadow:0 0 0 2px #fff,0 4px 12px rgba(31,35,41,.18)}
+  .rules{display:grid;grid-template-columns:1fr 1fr;gap:14px;margin-top:6px}
+  .rule{background:#fff;border-radius:16px;box-shadow:inset 0 0 0 1px #e5e6eb;padding:14px 16px}
+  .rule h4{font-family:-apple-system,BlinkMacSystemFont,"PingFang SC","Microsoft YaHei","Segoe UI",sans-serif;font-size:12px;font-weight:600;margin:0 0 5px;display:flex;align-items:center;gap:6px}
+  .rule p{font-size:10.5px;line-height:16px;color:#5a6068;margin:0}
+  .radiusRow{display:flex;gap:9px;margin-top:14px;align-items:flex-end}
+  .rs{display:flex;flex-direction:column;align-items:center;gap:3px;color:#8a9099;font-size:9.5px}
+  .rs i{width:32px;height:32px;background:#e8f0ff;box-shadow:inset 0 0 0 1px #d6e3ff;display:block}
+  .rs b{font-weight:500}
+  .r6 i{border-radius:6px}.r10 i{border-radius:10px}.r16 i{border-radius:16px}.r20 i{border-radius:20px}.r22 i{border-radius:22px}.r999 i{border-radius:999px}
+  .rule.dont h4{color:#d93a3a}
+  .rule.do h4{color:#068a4a}
+  .footer{display:flex;align-items:center;justify-content:space-between;margin-top:24px;padding-top:11px;border-top:1px solid #e5e6eb;font-size:10px;color:#8a9099}
+  svg{display:block}
+</style>
+<style>.display{font-size:30px;line-height:36px}</style>
+</helmet>
+<div class="page">
+  <div class="top">
+    <div class="brand">
+      <div class="mark"><svg width="23" height="23" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 12h4l2-6 4 12 2-6h6"/></svg></div>
+      <div><h1>Gosslan</h1><p class="sub">为小团队设计的局域网聊天 · 清晰、紧凑、圆润、可定制。</p></div>
+    </div>
+    <span class="badge">v2.2 · 紧凑 / 圆润 / 清晰</span>
+  </div>
+
+  <div class="section">
+    <div class="secHead"><h2>01 — Three accents, clear jobs</h2><span>蓝是主色；红只给未读/危险；绿只给在线/成功；金只给置顶</span></div>
+    <div class="accentGrid">
+      <div class="accent"><div class="field" style="background:#2f6bff">Blue</div><div class="meta"><div class="n">主蓝</div><div class="u">主按钮 / 自己消息 / 选中 / 焦点</div><div class="hex">#2F6BFF</div></div></div>
+      <div class="accent"><div class="field" style="background:#fa5151">Red</div><div class="meta"><div class="n">未读红</div><div class="u">未读 / @我 / 失败；不做主按钮</div><div class="hex">#FA5151</div></div></div>
+      <div class="accent"><div class="field" style="background:#07c160">Green</div><div class="meta"><div class="n">在线绿</div><div class="u">在线 / 成功 / 已读</div><div class="hex">#07C160</div></div></div>
+    </div>
+  </div>
+
+  <div class="cols">
+    <div class="typeCard">
+      <div class="display">为小团队设计。<br><em>局域网聊天。</em></div>
+      <p class="sub" style="margin:5px 0 14px">系统字体（PingFang SC / Microsoft YaHei / Segoe UI）；标题与正文同一套。</p>
+      <div class="typeRow"><span class="tm">display 32/38</span><span style="font-family:-apple-system,'PingFang SC','Microsoft YaHei',sans-serif;font-size:24px;line-height:30px;font-weight:600">局域网里的团队协作。</span></div>
+      <div class="typeRow"><span class="tm">title 17/24</span><span style="font-family:-apple-system,'PingFang SC','Microsoft YaHei',sans-serif;font-size:17px;line-height:24px;font-weight:600">设计组 · 5 位成员</span></div>
+      <div class="typeRow"><span class="tm">body 14/20</span><span class="tBody">评审改到 3 点，会议室 B。材料我放群文件。</span></div>
+      <div class="typeRow"><span class="tm">small 13/18</span><span class="tSmall">你：收到，我把材料再顺一遍</span></div>
+      <div class="typeRow"><span class="tm">caption 12/16</span><span class="tCap">昨天 · 2.4 MB · 已下载</span></div>
+      <div class="typeRow"><span class="tm">mono 12.5/18</span><span style="font-family:'JetBrains Mono',monospace;font-size:12px">192.168.1.24 · 4F2A</span></div>
+    </div>
+
+    <div class="motion">
+      <div class="curve">
+        <svg viewBox="0 0 360 64" preserveAspectRatio="none"><path d="M10 54 C 80 54, 120 10, 200 10 S 320 20, 350 8" fill="none" stroke="#2f6bff" stroke-width="2.5"/><circle cx="200" cy="10" r="4" fill="#fa5151"/><circle cx="350" cy="8" r="4" fill="#07c160"/></svg>
+      </div>
+      <div class="mRow"><b>120ms</b>按下 / 悬停<span>fast</span></div>
+      <div class="mRow"><b>180ms</b>发送气泡 0.96 → 1<span>base</span></div>
+      <div class="mRow"><b>220ms</b>回应贴纸弹入<span>pop</span></div>
+      <div class="mRow"><b>240ms</b>页面切换，只播一次<span>ease</span></div>
+      <div class="mRow"><b>reduce</b>只保留 120ms 淡入淡出<span>a11y</span></div>
+    </div>
+  </div>
+
+  <div class="section" style="margin-top:24px">
+    <div class="secHead"><h2>02 — The five things that make it Gosslan</h2><span>一个纯色气泡、一个红色未读、一个绿色在线、一次轻反馈、一个可定制主题</span></div>
+    <div class="componentRow">
+      <div class="demo">
+        <p class="demoTitle">Messages</p>
+        <div class="bubble in">在楼下咖啡店等你，靠窗的位置。</div>
+        <div class="meta">14:21</div>
+        <div class="bubble out" style="margin-top:8px">好，我五分钟后到。要给你带一杯吗？</div>
+        <div class="meta right"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m2 12 4 4L14 8"/><path d="m10 14 2 2 8-8"/></svg>已读</div>
+        <div class="reacts"><span class="react">♥ 2</span><span class="react">🔥 1</span></div>
+      </div>
+      <div class="demo">
+        <p class="demoTitle">Controls & signals</p>
+        <div class="pills"><button class="btn primary">添加好友</button><button class="btn soft">创建群聊</button><button class="btn ghost">稍后</button></div>
+        <div class="pills" style="margin-top:12px"><span class="unread">3</span><span class="pin">置顶</span><span class="presence"><i></i>在线 · 4 台</span></div>
+        <div class="avatarRow"><div class="av av1">林</div><div class="av av2">周</div><div class="av av3">阿</div><div class="av av4">苏</div><div class="g4"></div></div>
+        <div class="radiusRow"><div class="rs r6"><i></i><b>6</b></div><div class="rs r10"><i></i><b>10</b></div><div class="rs r16"><i></i><b>16</b></div><div class="rs r20"><i></i><b>20</b></div><div class="rs r22"><i></i><b>22</b></div><div class="rs r999"><i></i><b>999</b></div></div>
+      </div>
+    </div>
+  </div>
+
+  <div class="rules">
+    <div class="rule do"><h4>✓ Do</h4><p>用蓝做动作，用红做未读，用绿做在线；同一个在线状态只出现一次。一个屏幕最多三种强调色，标题与正文使用系统字体。</p></div>
+    <div class="rule dont"><h4>✕ Don't</h4><p>不要彩虹渐变、不要满屏 emoji、不要每张卡都发光、不要让红色做主按钮、不要用荧光色写正文。</p></div>
+  </div>
+
+  <div class="footer"><span>Gosslan — foundations v2.2</span><span>4.5:1 text · 3:1 controls · 11px floor · no permanent background motion</span></div>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"$preview":{"width":1120,"height":1150}}'>
+class Component extends DCLogic {
+  renderVals() { return {}; }
+}
+</script>
+</body>
+</html>
