@@ -20253,6 +20253,7 @@ async function runOpsCenter(cdp, url) {
         count: (() => { const n = entry.querySelector('[data-task-count]'); return n ? String(n.textContent || '').trim() : null; })(),
         aria: entry.getAttribute('aria-label'),
         left: Math.round(r.left), right: Math.round(r.right),
+        height: Math.round(r.height),
         footerBottom: fr ? Math.round(fr.bottom) : null,
         vw: innerWidth, vh: innerHeight, sw: document.documentElement.scrollWidth,
       };
@@ -20261,9 +20262,14 @@ async function runOpsCenter(cdp, url) {
     check("会话列表页脚有任务入口（不再是浮动药丸）",
       mountedFooter && mountedFooter.ok === true && foot.present === true,
       "data-task-entry 存在", JSON.stringify({ mounted: !!mountedFooter, foot }));
-    check("页脚同时显示版本号 vX.Y.Z",
-      foot.present && String(foot.text).includes(`v${pkgVersion}`),
-      `含 v${pkgVersion}`, JSON.stringify({ head: String(foot.text).slice(-80), pkgVersion }));
+    // 用户 2026-11-06 决策：版本号从页脚移到设置「关于」，页脚只留 42px 的「任务中心 · N」。
+    // 反例自证：把版本号 span 加回页脚，下面这条立刻红（pkgVersion 仍在读，别删）。
+    check("页脚不再显示版本号（反例：版本号加回页脚就红）",
+      foot.present && !String(foot.text).includes(`v${pkgVersion}`),
+      `不含 v${pkgVersion}`, JSON.stringify({ head: String(foot.text).slice(-80), pkgVersion }));
+    check("页脚入口高 42px（画板 listFoot 收紧）",
+      foot.present && foot.height === 42,
+      "height=42", JSON.stringify({ height: foot.height }));
     await cdp.eval(`(async () => {
       const S = await import('/src/stores/useChatStore.ts');
       const chat = S.useChatStore(window.__pinia);
@@ -20283,6 +20289,10 @@ async function runOpsCenter(cdp, url) {
     check("页脚入口带未完成数（与面板同一份读模型）",
       counted.present && counted.count === "1",
       "计数=1", JSON.stringify({ count: counted.count, entryText: counted.entryText }));
+    // 形如「任务中心 · 1」（分隔符带空格，数字在末尾）。英文词典下前缀不同，但形状一致。
+    check("页脚文案是「任务中心 · N」",
+      counted.present && /\s·\s1$/.test(counted.entryText),
+      "末段「· 1」", JSON.stringify({ entryText: counted.entryText }));
 
     // 点页脚入口 → 共享开关打开（面板与入口读同一个 ref）。
     const entryPoint = { x: Math.round((counted.left + counted.right) / 2), y: 0 };

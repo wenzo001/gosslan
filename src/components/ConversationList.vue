@@ -16,7 +16,6 @@ import { useChatStore } from "@/stores/useChatStore";
 import { useSearchKeyword } from "@/composables/useSearchKeyword";
 import { useExclusivePopup } from "@/composables/useExclusivePopup";
 import { useImeEnterGuard } from "@/composables/useImeEnterGuard";
-import { version } from "../../package.json";
 import ConversationListItem from "@/components/conversation/ConversationListItem.vue";
 import FriendListItem from "@/components/conversation/FriendListItem.vue";
 import FriendContextMenu from "@/components/conversation/FriendContextMenu.vue";
@@ -811,27 +810,28 @@ useEventListener(document, "click", closeFriendMenu);
     <div
       class="conv-footer-safe shrink-0 select-none border-t border-[var(--gosslan-divider)] text-caption text-[var(--gosslan-text-2)]"
     >
-      <!-- 页脚 = 整行任务入口（画板 listFoot 40px）：图标 + 名称 + 未完成数 + 版本 + chevron。
-           版本号仍留在这一行（判据要求页脚可见 vX.Y.Z，设置「关于」是第二处）。 -->
+      <!-- 页脚 = 整行任务入口（用户 2026-11-06 决策：版本号移到设置「关于」，页脚只留
+           42px 高的「任务中心 · N」）。版本号已从这一行删除。 -->
       <button
         type="button"
         data-task-entry
-        class="tap-safe flex h-10 w-full items-center gap-2 px-3 text-left transition hover:bg-[var(--gosslan-list-hover)]"
+        class="tap-safe flex h-[42px] w-full items-center gap-2 px-3 text-left transition hover:bg-[var(--gosslan-list-hover)]"
         :aria-label="taskCount > 0 ? t('task.open', { n: taskCount }) : t('task.title')"
         :title="taskCount > 0 ? t('task.open', { n: taskCount }) : t('task.title')"
         @click="app.openTaskCenter"
       >
         <Icon name="list-checks" class="h-4 w-4 shrink-0" />
         <span class="shrink-0 font-medium">{{ t("task.center") }}</span>
-        <span
-          v-if="taskCount > 0"
-          data-task-count
-          class="rounded-full bg-[var(--gosslan-hover)] px-1.5 text-caption font-semibold leading-4 tabular-nums text-[var(--gosslan-text)]"
-        >
-          {{ taskCount }}
-        </span>
+        <template v-if="taskCount > 0">
+          <span class="shrink-0 opacity-50">·</span>
+          <span
+            data-task-count
+            class="shrink-0 text-caption font-semibold tabular-nums text-[var(--gosslan-text)]"
+          >
+            {{ taskCount }}
+          </span>
+        </template>
         <span class="flex-1"></span>
-        <span class="shrink-0 tabular-nums opacity-50" :title="`v${version}`">v{{ version }}</span>
         <Icon name="chevron-right" class="h-3.5 w-3.5 shrink-0 opacity-60" />
       </button>
     </div>
