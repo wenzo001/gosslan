@@ -176,7 +176,7 @@ const downloadLabel = computed(() =>
       <MarkdownText
         v-if="state.info?.notes"
         :source="state.info.notes"
-        class="mt-1 max-h-36 overflow-y-auto text-caption leading-relaxed text-[var(--gosslan-text-2)]"
+        class="scrollbar-both mt-1 max-h-36 overflow-y-auto text-caption leading-relaxed text-[var(--gosslan-text-2)]"
       />
 
       <div v-if="state.phase === 'downloading'" class="mt-3">

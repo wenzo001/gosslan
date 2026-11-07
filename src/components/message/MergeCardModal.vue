@@ -215,7 +215,7 @@ onBeforeUnmount(() => {
         {{ t("merge.mediaNotIncluded") }}
       </div>
 
-      <div class="max-h-80 space-y-2 overflow-y-auto">
+      <div class="scrollbar-both max-h-80 space-y-2 overflow-y-auto">
         <div v-for="(it, i) in items" :key="i" class="space-y-0.5">
           <div class="flex items-baseline gap-1.5 text-caption text-[var(--gosslan-text-2)]">
             <span class="truncate font-medium" :title="it.sender">{{ it.sender }}</span>

@@ -512,7 +512,7 @@ function showSender(group: ChatSearchGroup): boolean {
     <!-- 结果：左会话 / 右命中消息（微信同款两栏） -->
     <div class="mt-3 flex min-h-0 flex-1 flex-col overflow-hidden rounded-[var(--gosslan-radius-lg)] border border-[var(--gosslan-divider)] desktop:md:h-[52vh] desktop:md:flex-none desktop:md:flex-row">
       <!-- 左栏 -->
-      <div class="flex max-h-[38%] w-full shrink-0 flex-col overflow-y-auto border-b border-[var(--gosslan-divider-strong)] desktop:md:max-h-none desktop:md:w-[240px] desktop:md:border-b-0 desktop:md:border-r">
+      <div class="scrollbar-both flex max-h-[38%] w-full shrink-0 flex-col overflow-y-auto border-b border-[var(--gosslan-divider-strong)] desktop:md:max-h-none desktop:md:w-[240px] desktop:md:border-b-0 desktop:md:border-r">
         <p v-if="!keyword.trim()" class="px-3 py-6 text-center text-xs text-[var(--gosslan-text-2)]">
           {{ t("search.hint") }}
         </p>
@@ -582,7 +582,7 @@ function showSender(group: ChatSearchGroup): boolean {
             <Icon name="chevron-right" class="h-3.5 w-3.5" />
           </button>
         </div>
-        <div ref="listRef" class="min-h-0 flex-1 overflow-y-auto px-4 py-3">
+        <div ref="listRef" class="scrollbar-both min-h-0 flex-1 overflow-y-auto px-4 py-3">
           <p
             v-if="activeGroup?.messages.length"
             class="px-2 pb-2 text-caption text-[var(--gosslan-text-2)]"

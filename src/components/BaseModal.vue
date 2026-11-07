@@ -149,7 +149,7 @@ function onOpenChange(value: boolean) {
       <DialogContent
         class="fixed inset-x-0 bottom-0 top-[var(--gosslan-safe-top)] z-[65] font-gosslan focus:outline-none"
         :class="fullscreen
-          ? 'gosslan-dialog-page ' + (contained ? 'overflow-hidden' : 'overflow-y-auto overflow-x-hidden')
+          ? 'gosslan-dialog-page ' + (contained ? 'overflow-hidden' : 'scrollbar-both overflow-y-auto overflow-x-hidden')
           : 'gosslan-dialog-card'"
         :style="app.isMobile && app.keyboardInset > 0
           ? { paddingBottom: `${app.keyboardInset + 12}px` }
@@ -236,15 +236,15 @@ function onOpenChange(value: boolean) {
               <slot name="header" />
             </div>
             <!-- 只有内容区滚：标题栏（含 ✕）始终钉在顶部，长内容从头部开始全部可达。
-                 ⚠️ **滚动条留白必须从卡片自己的右内距里让出来，不能再加一层**
-                 （2026-10-12 用户实测：「左右边距视觉上左边小、右边大，应该是一样的」）：
-                 卡片是 `p-5`（左右各 20px）。若只在滚动区加一层 `pr-8px`，右侧总留白就变成
-                 28px 而左侧仍是 20px ⇒ 正文明显偏左。所以这里给滚动区一个**负的右边距**
-                 （`-mr-[var(--gosslan-scroll-gutter)]`），把它自己那 8px 从卡片的 20px 里"借"回来：
-                 正文右边缘到卡片右边缘仍是 20px（其中 8px 供滚动条落脚、12px 净空隙），
-                 与左侧 20px 对称。
-                 macOS 是系统 overlay 滚动条（不占布局宽）⇒ 同样对称，只是那 8px 纯属呼吸感。 -->
-            <div class="min-h-0 flex-1 overflow-y-auto pr-[var(--gosslan-scroll-gutter)] -mr-[var(--gosslan-scroll-gutter)]">
+                 ⚠️ **滚动条留白必须走统一的 gutter 口径，不许用 padding/负 margin 补宽度**
+                 （2026-11-07 用户补正：「有滚动条 / 没有滚动条应该是一样的宽度」）：
+                 卡片是 `p-5`（左右各 20px）。旧写法在滚动区加 `pr-8px` 再把 -8px 右边距
+                 "借"回来，等于给滚动条单开一套宽度补偿 —— 一旦滚动条不出现，那 8px
+                 就成了右侧多出的净空隙，与左侧不对称。
+                 现在改用 `.scrollbar-both`（`scrollbar-gutter: stable both-edges`）：
+                 两种状态都各留 8px，内容盒宽度与文字起始 x 逐像素一致，视觉中心不偏。
+                 守卫：designGuards `SC-01` + 运行时 `--only=scrollstable`。 -->
+            <div class="scrollbar-both min-h-0 flex-1 overflow-y-auto">
               <slot />
             </div>
             <!-- 固定页脚（可选插槽）：**在滚动区之外**，因此永远钉在卡片底部不随内容滚走。
@@ -255,7 +255,7 @@ function onOpenChange(value: boolean) {
                  `mt-4` 与标题栏的 `mb-4` 对称；`shrink-0` 保证它不被上面的滚动区挤压。 -->
             <div
               v-if="$slots.footer"
-              class="mt-4 shrink-0 pr-[var(--gosslan-scroll-gutter)] -mr-[var(--gosslan-scroll-gutter)]"
+              class="mt-4 shrink-0"
             >
               <slot name="footer" />
             </div>

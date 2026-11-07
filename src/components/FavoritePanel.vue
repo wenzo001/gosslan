@@ -756,7 +756,7 @@ async function confirmDelete() {
               </button>
             </div>
           </div>
-          <div class="min-h-0 min-w-0 flex-1 overflow-y-auto">
+          <div class="scrollbar-both min-h-0 min-w-0 flex-1 overflow-y-auto">
           <!-- 每行：行本身是 <button>（可聚焦、可回车），移动端的「⋯」放在**兄弟层**用绝对定位
                —— 不能嵌在行按钮里（<button> 套 <button> 是非法 HTML，浏览器会把它拆出去，
                表现是"⋯ 点了没反应"或整行都被点）。 -->

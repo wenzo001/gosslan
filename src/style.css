@@ -308,8 +308,10 @@
   --gosslan-safe-top: max(var(--gosslan-window-safe-top, 0px), env(safe-area-inset-top, 0px));
   /* 滚动条留白（滚动层 / 内容区与滚动条之间）。
      2026-10-22 起全端统一使用常显细滚动条（不再在 macOS 上恢复系统 overlay）：
-     8px 轨道 + 4px 实际滑块；`--gosslan-scroll-gutter` 供需要额外呼吸感的容器复用。 */
-  --gosslan-scroll-gutter: 8px;
+     8px 轨道 + 4px 实际滑块。2026-11-07 起宽度不再由"补偿 token"各容器各写一份，
+     统一走 `.overflow-y-auto/.overflow-auto/.overflow-y-scroll` 的
+     `scrollbar-gutter: stable`（居中内容用 `.scrollbar-both` 的 both-edges）——
+     `--gosslan-scroll-gutter` 已删除，禁止再用 padding/负 margin 补滚动条宽度（SC-01）。 */
 
   /* ---------------- 圆角梯度（对齐 iOS HIG / WWDC25「Shape & Concentricity」） ----------------
      选形状看"密度与层级"，不要到处都圆：
@@ -851,9 +853,14 @@ body {
 }
 /* 滚动容器（消息区 / 列表 / 弹层）：滚到头不要把整页带出去。
    `scrollbar-gutter: stable` 让滚动条出现/消失时不改变内容宽度（长列表不会抖一下）；
-   居中内容用 `.scrollbar-both` 在两侧各留同样宽的 gutter，视觉中心不偏。 */
+   居中内容用 `.scrollbar-both` 在两侧各留同样宽的 gutter，视觉中心不偏。
+   ⚠️ 2026-11-07 用户补正：「有滚动条 / 没有滚动条应该是一样的宽度」——
+   `.overflow-y-scroll` 也必须吃同一条口径（它常显滚动条，缺这条时与 `auto` 容器差 8px）；
+   并且**禁止**用 `padding-right` / 负 margin / `scrollbar-width` 去补宽度：
+   那些都会让"有/无滚动条"两种状态出现第二套数字，守卫见 designGuards `SC-01`。 */
 .overflow-y-auto,
-.overflow-auto {
+.overflow-auto,
+.overflow-y-scroll {
   overscroll-behavior: contain;
   scrollbar-gutter: stable;
 }

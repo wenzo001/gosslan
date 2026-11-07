@@ -63,7 +63,7 @@ function confirm() {
     <p class="mb-2 text-xs text-[var(--gosslan-text-2)]">
       {{ t("remind.audienceHint") }}
     </p>
-    <div class="-mx-1 max-h-72 overflow-y-auto">
+    <div class="scrollbar-both -mx-1 max-h-72 overflow-y-auto">
       <button
         v-for="id in candidates"
         :key="id"

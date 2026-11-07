@@ -157,7 +157,7 @@ function ageText(ms: number | null): string {
 
 <template>
   <BaseModal :open="open" :title="t('diag.title')" width="max-w-3xl" @close="emit('close')">
-    <div class="max-h-[75vh] space-y-5 overflow-y-auto text-xs leading-relaxed">
+    <div class="scrollbar-both max-h-[75vh] space-y-5 overflow-y-auto text-xs leading-relaxed">
       <!-- 刷新 -->
       <div class="flex items-center justify-between">
         <button

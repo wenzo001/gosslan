@@ -98,7 +98,7 @@ async function create() {
     </div>
 
     <div class="mb-1.5 text-sm">{{ t("group.selectMembers") }}</div>
-    <div class="max-h-56 overflow-y-auto">
+    <div class="scrollbar-both max-h-56 overflow-y-auto">
       <!-- 选择行必须是**真按钮**：`div @click` 触屏/鼠标能用，键盘 Tab 不到、回车没反应，
            读屏也只会念成一段普通文本。`aria-pressed` 表达"选中/未选中"开关语义。 -->
       <button

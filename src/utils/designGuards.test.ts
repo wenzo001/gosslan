@@ -3228,8 +3228,14 @@ test("㊱ 真实树：BaseModal 的外壳层确实读了 window-safe-top，且�
     + "也不许用 `.platform-mac` 当判据（Windows/Linux 会拿不到）");
   assert.ok(!/\.platform-mac\s*\{[^}]*--gosslan-window-safe-top/.test(css),
     "--gosslan-window-safe-top 又被挂到 .platform-mac 上：Win/Linux 的 caption 会拿不到让位");
-  assert.match(css, /--gosslan-scroll-gutter:\s*\d+px/,
-    "滚动条留白间距变量必须在中央变量区定义（BaseModal 的内容区读它）");
+  // 2026-11-07（用户补正）：滚动条留白不再走 `--gosslan-scroll-gutter` 宽度补偿，
+  // 改为全局 `.scrollbar-both`（`scrollbar-gutter: stable both-edges`）。
+  // ⇒ 这条从"变量必须在"翻成"变量必须不在" + "规范类必须在"：两个方向都钉住，
+  //    防止有人把宽度补偿 hack 加回来（否则"有/无滚动条"又变成两套数字）。
+  assert.ok(!/--gosslan-scroll-gutter\s*:/.test(css),
+    "`--gosslan-scroll-gutter` 已废弃：滚动条留白改由 `.scrollbar-both` 的恒定 gutter 承担（SC-01）");
+  assert.match(css, /\.scrollbar-both\s*\{\s*scrollbar-gutter:\s*stable both-edges;/,
+    "style.css 必须提供 `.scrollbar-both`（`stable both-edges`：内容盒宽度与居中都不随滚动条出现而变）");
 
   // Reka 的 DialogContent 要求每个对话框都有可访问名称（DialogTitle）。整页形态允许不传 title，
   // 所以两条分支各要有一份 sr-only 兜底；删掉任何一份，读屏就只能报一个没有名字的对话框。
@@ -3308,16 +3314,18 @@ test("㊲ BaseModal：标题栏不塌、页脚不滚走（用户实测两条）"
   const scroller = /class="([^"]*\bmin-h-0 flex-1\b[^"]*overflow-y-auto[^"]*)"/.exec(src)?.[1] ?? "";
   assert.ok(scroller.includes("min-h-0") && scroller.includes("flex-1"),
     `滚动区必须写 \`min-h-0 flex-1\`（唯一可压缩项）。当前：${scroller}`);
-  // ②b 留白与负右边距**成对**（用户那句「左右边距看着左小右大」修的就是这一对）：
-  //    只留 `pr-[…]` 而不把同样宽度从右边距里让回来 ⇒ 右侧多出一整截净空隙。
-  //    ⚠️ 为什么源码层也要钉一条：真正"算出来对称"的判据在运行时探针（`--only=winsafe`，
-  //    还带一条撤掉就变红的反面对照），而**那一层 CI 不跑**。这里这条不证对称，
-  //    只证"这一对没被单边删掉" —— 顺序不敏感（两条各自 in 判断，不拼成一条正则）。
+  // ②b 滚动留白只许走 `.scrollbar-both`（`scrollbar-gutter: stable both-edges`）：
+  //    2026-11-07 用户补正「有滚动条 / 没有滚动条应该是一样的宽度」。
+  //    旧写法 `pr-[gutter] + -mr-[gutter]` 是给滚动条单开的宽度补偿：滚动条不出现时
+  //    那 8px 就变成右侧净空隙，与左侧不对称 —— 现在明确禁止（守卫 SC-01 也扫全站）。
+  //    ⚠️ 为什么源码层也要钉：真正"算出来两种状态逐像素相等"的判据在运行时探针
+  //    （`--only=scrollstable`，带撤掉就变红的反面对照），而**那一层 CI 不跑**。
   const GUT = "var(--gosslan-scroll-gutter)";
+  assert.ok(scroller.includes("scrollbar-both"),
+    `滚动区必须挂 \`.scrollbar-both\`（两侧恒留 gutter，宽/居中都不随滚动条变）。当前：${scroller}`);
   assert.ok(
-    scroller.includes(`pr-[${GUT}]`) && scroller.includes(`-mr-[${GUT}]`),
-    `滚动区的留白与负右边距必须成对（pr-[…] 与 -mr-[…] 在同一条 class 上）—— ` +
-      `只留 pr 就是右侧比左侧多出一截，正是用户报的那条。当前：${scroller}`,
+    !scroller.includes(`pr-[${GUT}]`) && !scroller.includes(`-mr-[${GUT}]`),
+    `滚动区不许用 pr-[…] / -mr-[…] 补滚动条宽度（两种状态会出现第二套数字）。当前：${scroller}`,
   );
 
   // ③ footer 插槽：DOM 顺序必须在滚动区之后，且自身 shrink-0（不被上面的内容区挤掉）
@@ -7453,4 +7461,153 @@ test("PH-01 合法写法放行：token 类 / 不写类 / 完整顶层规则", ()
   assert.deepEqual(findRawPlaceholderColor(token), []);
   assert.deepEqual(findRawPlaceholderColor(none), []);
   assert.deepEqual(findMissingPlaceholderRule(goodCss), []);
+});
+
+// ---------------- SC-01 滚动留白：有/无滚动条宽度与居中必须一致（2026-11-07） ----------------
+
+/**
+ * 用户 2026-11-07 补正：设置里「关于」比别的分区窄，根因是**滚动条占位**
+ * ——「有滚动条 / 没有滚动条应该是一样的宽度」。
+ *
+ * 这条判据守三件事（合并原 ⑦「焦点环被左边界裁切 + 有滚动条时内容偏左」）：
+ * 1. 全局滚动容器口径必须覆盖 `overflow-y-auto` / `overflow-auto` / `overflow-y-scroll`，
+ *    且 `.scrollbar-both` 必须是 `stable both-edges`（两侧同宽才不偏）。
+ * 2. **禁止**宽度补偿 hack：`pr-[var(--gosslan-scroll-gutter)]` / `-mr-[…]`，
+ *    以及 `scrollbar-width` / `scrollbar-color` 覆盖（会切回 overlay 滚动条，宽度又变了）。
+ * 3. 焦点环一律 `ring-inset`：外扩环在 `overflow` 容器里必然被左/右边界裁掉一边。
+ */
+
+const SCROLL_BASE = ".overflow-y-auto,\n.overflow-auto,\n.overflow-y-scroll {";
+
+/** 扫 src 下全部 .vue（SC-01 自己的遍历，别依赖别段落的 helper）。 */
+function scrollSurfaceFiles(): Array<{ name: string; src: string }> {
+  const out: Array<{ name: string; src: string }> = [];
+  const walk = (dir: URL) => {
+    for (const ent of readdirSync(dir, { withFileTypes: true })) {
+      const url = new URL(ent.name, dir);
+      if (ent.isDirectory()) {
+        if (ent.name === "node_modules" || ent.name.startsWith(".")) continue;
+        walk(new URL(`${ent.name}/`, dir));
+      } else if (ent.name.endsWith(".vue")) {
+        out.push({ name: url.pathname, src: readFileSync(url, "utf8") });
+      }
+    }
+  };
+  walk(new URL("../", import.meta.url));
+  return out;
+}
+
+/** CSS 侧缺项逐条报出；齐 → 空数组。 */
+function findScrollGutterIssues(css: string): string[] {
+  const at = css.indexOf(SCROLL_BASE);
+  if (at < 0) return ["找不到 `.overflow-y-auto/.overflow-auto/.overflow-y-scroll` 全局滚动口径"];
+  const block = css.slice(at, css.indexOf("}", at));
+  const issues: string[] = [];
+  if (!/scrollbar-gutter:\s*stable;/.test(block)) issues.push("全局滚动口径缺 `scrollbar-gutter: stable`");
+  const both = /\.scrollbar-both\s*\{([^}]*)\}/.exec(css)?.[1] ?? "";
+  if (!both) issues.push("缺 `.scrollbar-both` 类");
+  else if (!/scrollbar-gutter:\s*stable both-edges/.test(both))
+    issues.push("`.scrollbar-both` 必须是 `scrollbar-gutter: stable both-edges`（否则内容偏左）");
+  return issues;
+}
+
+/** 源码侧的宽度补偿 hack / overlay 覆盖：逐条报出。 */
+function findScrollHacks(src: string): string[] {
+  const hits: string[] = [];
+  const lines = src.split("\n");
+  lines.forEach((ln, i) => {
+    const trimmed = ln.trim();
+    if (trimmed.startsWith("//") || trimmed.startsWith("*") || trimmed.startsWith("<!--")) return;
+    if (ln.includes("gosslan-scroll-gutter")) hits.push(`第 ${i + 1} 行：滚动条宽度补偿 hack`);
+    if (/scrollbar-(width|color)\s*:/.test(ln)) hits.push(`第 ${i + 1} 行：scrollbar-width/color 覆盖`);
+  });
+  return hits;
+}
+
+/** 焦点环没写 ring-inset 的地方（外扩环会被 overflow 容器裁掉）。 */
+function findOutsetFocusRings(src: string): number[] {
+  const stripped = src.replace(/<!--[\s\S]*?-->/g, (m) => m.replace(/[^\n]/g, " "));
+  const out: number[] = [];
+  for (const m of stripped.matchAll(/class="([^"]*)"/g)) {
+    const tokens = m[1].split(/\s+/);
+    if (!tokens.some((t) => t.startsWith("focus-visible:ring-"))) continue;
+    // ring-0 / ring-offset / ring-primary 之类不产生外扩；只有 ring-<宽度> 才需要 inset。
+    const hasRing = tokens.some((t) => /^focus-visible:ring-(1|2|4|8|\[)/.test(t));
+    if (!hasRing) continue;
+    if (!tokens.includes("focus-visible:ring-inset")) {
+      out.push(stripped.slice(0, m.index ?? 0).split("\n").length);
+    }
+  }
+  return out;
+}
+
+test("SC-01 真实树：全局滚动口径齐备，且没有任何宽度补偿 hack", () => {
+  const css = readFileSync(new URL("../style.css", import.meta.url), "utf8");
+  assert.deepEqual(findScrollGutterIssues(css), [], findScrollGutterIssues(css).join("\n"));
+  const files = scrollSurfaceFiles();
+  const hacks = files.flatMap((f) => findScrollHacks(f.src).map((h) => `${f.name}:${h}`));
+  assert.deepEqual(hacks, [], `滚动容器又用了宽度补偿/overlay 覆盖：\n${hacks.join("\n")}`);
+  console.log(`· SC-01 分母：扫 ${files.length} 份 .vue，宽度补偿 hack 0 处`);
+});
+
+test("SC-01 真实树：设置/日志/群任务/会话/搜索/收藏/转发/成员都挂同一档两侧留白", () => {
+  const mustHave = [
+    "../components/SettingsWindow.vue",
+    "../components/SettingsPanel.vue",
+    "../components/BaseModal.vue",
+    "../components/LogViewer.vue",
+    "../components/GroupTasksBoard.vue",
+    "../components/ConversationList.vue",
+    "../components/search/ChatSearchDialog.vue",
+    "../components/FavoritePanel.vue",
+    "../components/message/ForwardModal.vue",
+    "../components/GroupFilesPanel.vue",
+    "../components/AddFriendModal.vue",
+    "../components/RemindAudienceDialog.vue",
+  ];
+  for (const rel of mustHave) {
+    const src = readFileSync(new URL(rel, import.meta.url), "utf8");
+    assert.ok(src.includes("scrollbar-both"), `${rel} 的滚动容器必须挂 .scrollbar-both（两侧同宽）`);
+  }
+});
+
+test("SC-01 真实树：消息里的焦点环必须内缩（外扩环会被列表/卡片裁掉一边）", () => {
+  const files = scrollSurfaceFiles();
+  const bad = files.flatMap((f) => findOutsetFocusRings(f.src).map((ln) => `${f.name}:${ln}`));
+  assert.deepEqual(bad, [], `焦点环缺 focus-visible:ring-inset（会被 overflow 裁切）：\n${bad.join("\n")}`);
+});
+
+test("SC-01 反例自证：去掉 gutter / 只留单边 / 加回补偿 hack 都必须红", () => {
+  const css = readFileSync(new URL("../style.css", import.meta.url), "utf8");
+  const mut = (from: RegExp, to: string) => {
+    const out = css.replace(from, to);
+    assert.notEqual(out, css, `反例自证：${from} 没被替换到，锚点已漂`);
+    return out;
+  };
+  assert.ok(
+    findScrollGutterIssues(mut(/scrollbar-gutter:\s*stable;/g, "scrollbar-gutter: auto;")).length > 0,
+    "去掉稳定 gutter 必须命中",
+  );
+  assert.ok(
+    findScrollGutterIssues(mut(/scrollbar-gutter:\s*stable both-edges;/g, "scrollbar-gutter: stable;")).length > 0,
+    "两侧改成单侧必须命中（内容会偏左）",
+  );
+  assert.ok(
+    findScrollGutterIssues(mut(SCROLL_BASE, ".overflow-y-auto,\n.overflow-auto {")).length > 0,
+    "漏掉 overflow-y-scroll 必须命中",
+  );
+  const hack = `<div class="overflow-y-auto pr-[var(--gosslan-scroll-gutter)] -mr-[var(--gosslan-scroll-gutter)]"></div>`;
+  assert.ok(findScrollHacks(hack).length >= 1, "补偿 hack 必须命中");
+  const overlay = `<div style="scrollbar-width: thin" class="overflow-y-auto"></div>`;
+  assert.ok(findScrollHacks(overlay).length >= 1, "scrollbar-width 覆盖必须命中");
+  assert.ok(findScrollHacks(`<div class="overflow-y-auto p-4"></div>`).length === 0, "正常容器不许误伤");
+});
+
+test("SC-01 反例自证：把 focus-visible:ring-inset 删掉必须命中（不许空转）", () => {
+  const good = `<button class="focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-primary"></button>`;
+  const badRing = `<button class="focus-visible:ring-2 focus-visible:ring-primary"></button>`;
+  assert.deepEqual(findOutsetFocusRings(good), []);
+  assert.equal(findOutsetFocusRings(badRing).length, 1, "外扩焦点环必须命中");
+  assert.deepEqual(findOutsetFocusRings(`<button class="focus-visible:ring-offset-2"></button>`), [],
+    "只写 ring-offset 不是外扩环，不许误伤");
 });

@@ -398,7 +398,7 @@ async function openConversation(row: OperationRow) {
       compact
       :title="t('task.empty')"
     />
-    <ul v-else class="max-h-[55vh] space-y-2 overflow-y-auto pr-0.5">
+    <ul v-else class="scrollbar-both max-h-[55vh] space-y-2 overflow-y-auto pr-0.5">
       <li
         v-for="row in rows"
         :key="row.id"

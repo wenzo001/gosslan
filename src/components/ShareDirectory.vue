@@ -93,7 +93,7 @@ async function download(e: ShareEntry) {
       {{ t("share.truncated", { count: entries.length }) }}
     </div>
 
-    <div class="max-h-80 overflow-y-auto">
+    <div class="scrollbar-both max-h-80 overflow-y-auto">
       <!-- 首次读取：此前这里**什么都不画**，弹窗里一片空白 ⇒ 用户分不清"在读"与"对方没有文件"。
            有旧清单时不换成整块状态（保留仍可用的数据，只在上面提示一行）。 -->
       <StateBlock
