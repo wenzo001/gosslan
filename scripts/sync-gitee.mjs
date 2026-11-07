@@ -18,6 +18,7 @@
  * 令牌只从环境变量 GITEE_TOKEN 读取；任何错误信息都会把令牌替换成 `***`。
  */
 import crypto from "node:crypto";
+import { spawnSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import process from "node:process";
@@ -277,20 +278,39 @@ async function ensureRelease(repo, tag, branch, body) {
   return updated;
 }
 
+/**
+ * 附件上传走 `curl`，不走 `fetch`。
+ *
+ * 现场（2026-11-07 演练 v5.18.78）：7MB 的 `Gosslan-arm64.app.tar.gz` 在 GitHub
+ * runner 上正好 300 秒后报 `fetch failed` —— 那是 undici 的 `bodyTimeout` 默认值，
+ * 不是 Gitee 拒绝。Node 内置 fetch 不暴露 dispatcher，改不了这个上限；curl 没有
+ * body 超时，慢链路上也能把包传完。令牌只放在 URL 查询串里，失败信息统一打码。
+ */
 async function uploadAsset(repo, releaseId, name, file) {
-  const url = new URL(`${API}/repos/${repo}/releases/${releaseId}/attach_files`);
-  url.searchParams.set("access_token", TOKEN);
-  const form = new FormData();
-  form.set("file", new Blob([fs.readFileSync(file)]), name);
-  let res;
-  try {
-    res = await fetch(url, { method: "POST", body: form });
-  } catch (e) {
-    throw new Error(redact(`上传 ${name} 请求失败：${e.message}`));
+  const url = `${API}/repos/${repo}/releases/${releaseId}/attach_files?access_token=${encodeURIComponent(TOKEN)}`;
+  const res = spawnSync(
+    "curl",
+    [
+      "-sS",
+      "--fail-with-body",
+      // 单个文件最长 30 分钟；远端 5xx/连接中断时重试 3 次（同一次重试可能留下重名附件，
+      // 下一次运行开头的“同名旧附件先删”会收敛，不会累加）。
+      "--max-time", "1800",
+      "--retry", "3",
+      "--retry-delay", "10",
+      "--retry-all-errors",
+      "-X", "POST",
+      url,
+      "-F", `file=@${file};filename=${name}`,
+    ],
+    { encoding: "utf8", maxBuffer: 10 * 1024 * 1024 },
+  );
+  if (res.error) {
+    throw new Error(redact(`上传 ${name} 启动 curl 失败：${res.error.message}`));
   }
-  if (!res.ok) {
-    const text = await res.text().catch(() => "");
-    throw new Error(redact(`上传 ${name} 返回 HTTP ${res.status}：${text.slice(0, 300)}`));
+  if (res.status !== 0) {
+    const detail = (res.stderr || res.stdout || "").trim().slice(0, 300);
+    throw new Error(redact(`上传 ${name} 失败（curl exit ${res.status}）：${detail}`));
   }
 }
 
@@ -469,8 +489,9 @@ async function main(argv) {
       await api("DELETE", `/repos/${repo}/releases/${release.id}/attach_files/${old.id}`);
       console.log(`  删除同名旧附件 ${f.name}`);
     }
+    console.log(`  开始上传 ${f.name}（${f.size} 字节）`);
     await uploadAsset(repo, release.id, f.name, f.path);
-    console.log(`  上传 ${f.name}（${f.size} 字节）`);
+    console.log(`  已上传 ${f.name}（${f.size} 字节）`);
   }
 
   await commitManifest(
