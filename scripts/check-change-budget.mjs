@@ -14,6 +14,8 @@
  *      4.18.7→4.18.10 就是标准样本(四个"小修复"互相修)。
  *   4. **版本声明一致性**:`Version-Bump` 写了就必须真 bump 四个版本清单文件,反之亦然
  *      —— trailer 不只是仪式:判据 3 拿它判"这次是不是修补"。
+ *      ⚠️ 值**只认** `patch|minor|major|none`。写成版本号（如 `Version-Bump: 5.18.77`）
+ *      等于没声明 —— 2026-11-07 的 CI 红（de4d1773）就是这一条，别再写版本号。
  *
  * ## 判据(对范围内每个 commit)
  *
@@ -138,11 +140,12 @@
  *
  * 退出码:0 = 全部通过;1 = 有 commit 超预算未声明、版本声明未落地、重复犯案,
  *         或（**仅当调用方声明了 `GOSSLAN_BUDGET_STRICT=1`**，目前只有 verify.yml）
- *         CI push→main 的范围不是事件里的 before..sha ⇒ 门禁在空转;
- *         2 = **零覆盖**(跑了但范围内没有 commit 可判,常见于本地"已 push 之后重跑")。
- *         ⇒ 2 不是 0:`verify.mjs` 会把它单列成"未覆盖项",而不是 ✅;
- *         ⇒ 出包脚本(build-android-releases.sh)把 2 当**警告**继续 —— 门禁判不到范围
- *           不该打断出包,那是另一件事。
+ *         CI push→main 的范围不是事件里的 before..sha ⇒ 门禁在空转,
+ *         或**一个 commit 都没判到**（2026-11-07 起：零覆盖 = 不可通过，不再用退出码 2）。
+ *   ⚠️ 曾经的退出码 2（零覆盖）被 `verify.mjs` 记成 ⚠️ 非红，于是"本地绿、CI 红"：
+ *      de4d1773 把 trailer 写成 `Version-Bump: 5.18.77`（判据 4 只认 patch|minor|major|none），
+ *      CI 红而本地因为 `origin/main..HEAD` 已空而零覆盖通过。现在本地空范围会退回判 HEAD
+ *      这一笔；仍判不到才退出 1。**没有"范围空即绿"这条路。**
  */
 
 import { readFileSync, existsSync } from "node:fs";
@@ -457,7 +460,7 @@ let data;
 let usedRange = null;
 /** 完整 message 是否读到了（判据 4 与犯案窗口的前置；读不到 = 停用，不是通过）。 */
 let messagesReadable = true;
-/** 本次是否**一个 commit 都没判到**（零覆盖）。零覆盖必须以退出码 2 单独说话，不能算 ✅。 */
+/** 本次是否**一个 commit 都没判到**（零覆盖）。零覆盖不是通过：2026-11-07 起直接退出 1。 */
 let zeroCoverage = false;
 /** 范围是否真来自 CI push event 的 before..sha（push→main 时这是"门禁有没有在跑"的唯一凭据）。 */
 let rangeFromEventBefore = false;
@@ -561,14 +564,15 @@ if (fromJson) {
     } catch {
       /* 空仓库等极端情形,直接用 HEAD~1 */
     }
-    const inCI = Boolean(process.env.GITHUB_EVENT_NAME);
+    // 本地不再把 `HEAD~1..HEAD` 排除（2026-11-07 事故）：原来本地在"全部已推送"时宁可报
+    // 零覆盖（退出码 2），而 verify.mjs 把 2 记成 ⚠️ 非红 ⇒ 本地绿、CI 红
+    // （de4d1773 的 `Version-Bump: 5.18.77`）。现在候选全空时退回判 HEAD 这一笔：
+    // 它正是"刚推上去、CI 正在跑"的那条，也是本地唯一没被任何门禁证明过的对象。
+    // 若连 `HEAD~1` 都没有（单 commit 仓库），才会落到零覆盖 ⇒ 退出 1（不可通过）。
     const candidates = [
       `origin/${branch}..HEAD`,
       ...(branch === "main" ? [] : ["origin/main..HEAD"]),
-      // ⚠️ `HEAD~1..HEAD` 只在 CI 上兜底。本地正相反：全部已推送时它会把"最后一个已推送
-      // commit"再判一遍 —— 那是审判历史而不是把关未来（文件头讲过这个坑），本地宁可报
-      // **零覆盖**（退出码 2），也不要既误红又假装判过了。
-      ...(inCI ? ["HEAD~1..HEAD"] : []),
+      "HEAD~1..HEAD",
     ];
     for (const c of candidates) {
       try {
@@ -589,7 +593,7 @@ if (fromJson) {
   }
   usedRange = range;
 
-  // 空范围(全部已推送)= 没有要检查的新 commit —— **零覆盖,不是通过**（见文末退出码）
+  // 空范围（例如只含根提交、连 HEAD~1 都没有）⇒ 零覆盖，不是通过（见文末退出码）
   let commitsRaw = "";
   let rangeReadable = true;
   try {
@@ -800,10 +804,10 @@ if (ok && strict && ciPushMain && !fromJson && !rangeFromEventBefore) {
 
 if (ok && zeroCoverage) {
   console.log(`  受检范围：${usedRange ?? "（fixture）"} ｜ 判到的 commit：0`);
-  console.log("\n⚠️ Change Budget **零覆盖** —— 跑了，但没有任何 commit 可判（退出码 2 ≠ 通过 0）。");
-  console.log("  本地最常见的成因：这条提交已经 push 过（origin/main..HEAD 为空）。");
+  console.log("\n✗ Change Budget **未覆盖** —— 跑了，但没有任何 commit 可判。");
+  console.log("  未覆盖 ≠ 通过（2026-11-07：范围空曾按退出码 2 被当成 ⚠️，本地绿、CI 红）。");
   console.log("  想真判一批：`node scripts/check-change-budget.mjs --range a1b2c3..HEAD`。");
-  process.exit(2);
+  process.exit(1);
 }
 
 if (ok) {

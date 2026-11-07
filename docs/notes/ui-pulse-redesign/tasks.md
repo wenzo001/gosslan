@@ -45,6 +45,39 @@
 | 34 | 缩略图被切割：「所有图片绝对不要切割」落到**缩略图**这一类（#17 只覆盖了气泡/预览窗，还漏两处 `object-cover`） | [TodoImageThumb.vue](../../../src/components/TodoImageThumb.vue)（群任务图片 80×80）、[MessageComposer.vue](../../../src/components/chat/MessageComposer.vue)（待发送 56×56） | 已完成 | `ab942506` | 两处 `object-cover → object-contain`，圆角/边框/底色不变；新增 **TH-01**（真实树断言两文件无 `object-cover` + 把 `contain` 换回 `cover` 必红的反例自证）。亮暗夹具截图：`test-results/ui-thumb-contain-2026-11-07/` | 头像仍按框裁（身份标识，不是图片内容）；收藏/转发/合并卡/气泡/预览窗原就是 `contain`，未动 |
 | 35 | 所有界面的骨架图与真实 UI 同步（用户 2026-11-07 总要求，排在全部 UI 改动之后） | [skeleton.css](../../../src/boot/skeleton.css)、5 个 HTML 骨架、[skeletonTokens.ts](../../../src/boot/skeletonTokens.ts)、[vite.config.ts](../../../vite.config.ts)、[style.css](../../../src/style.css)、6 个真实组件、designGuards SK-04 | 已完成 | 本笔 | 23 项对差表见 [density-and-scroll.md §8.2](../../design-language/density-and-scroll.md)；四类首帧跳位修掉：列表缺 50px 标题行、rail 多画 42px 头像（低 58–60）、设置/日志/预览缺 40px TitleBar、群任务顶栏 48→40；SK-04 正反 5 条（骨架写字面 px / 真实组件改回私有数字 / 删 token / 孤儿 `--boot-*` / marker 非 1 次）全绿，`designGuards` 360 条；截图 `test-results/skeleton-sync/`（5 界面 × 骨架/加载 × 1440，主窗加 390） | 骨架几何改为**构建时物化**：`--gosslan-*` 唯一来源 → `--boot-*` 注入内联样式，禁止骨架自写一套数字；画板偏差回写 `designs/gosslan-redesign/docs/decisions.md` v2.3 |
 
+## 第二批：2026-11-07 追加 11 条（A①–C⑪）
+
+> 编号 A/B/C 沿用用户给的批次清单。状态口径：**已完成** = 代码与判据都落地；
+> **已完成·待真机** = 代码与判据落地，但结论只能在用户的 Windows / 安卓设备上验收
+> （本机是 macOS，拿不到 Windows WebView2 与安卓 WebView 的渲染）。
+> 「自测方式」写的是**能复跑的命令或判据名**；没有的真机项一律写「待真机」，不写「应该没问题」。
+> 真机照做步骤见 [device-acceptance-checklist.md](./device-acceptance-checklist.md)。
+
+| # | 条目（用户原话要点） | 状态 | 提交 | 自测方式 | 缺口 |
+|---|----------------------|------|------|----------|------|
+| 36 | A① 窗口不在前台时第一下点击被吃掉：代码块/长文本弹窗、崩溃恢复条的按钮要点第二下 | 已完成 | `b3ad5bf5`（5.18.76） | **CF-01**（`node --test src/utils/designGuards.test.ts` → 369/369）：核对 `tauri.conf.json` 的 `acceptFirstMouse` 与六处 `WebviewWindowBuilder` 的 `.accept_first_mouse(true)`；两条反例（配置改回 `false`、删掉某扇窗那行）必红 | 待真机（macOS）：切到别的应用 → 直接点恢复条「知道了」，第一击应关闭 |
+| 37 | A② 启动画面「小院儿 · 正在启动中」被 macOS 红绿灯 / Windows 三键压住 | 已完成 | `3c23d2d6`（5.18.75） | **SK-03**（同一测试文件）：按声明的对齐方式算出 brand 盒（768 × 保守最宽 160），与 macOS `0–78`、Windows 右侧 `132` 求交；删掉 `justify-content: center` 必红 | 待真机（冷启动首帧）：骨架在真实 DOM 挂载前就淡出，运行时探针取不到首帧矩形，只能几何推导 |
+| 38 | A③ 崩溃恢复条/各类提示贴视口边，压到安卓状态栏与圆角 | 已完成·待真机 | `74e2629c`（5.18.72） | **SA-01/02/03**（同一测试文件）：在状态栏 24px + 圆角 24px + 视口 390×844 下判定矩形不侵入「圆外被切区域」；「统一出口」扫全仓，组件裸写 `env()` 必红 | 待真机（安卓）：`env()` 真值只有安卓 WebView 上报，桌面 Chrome 恒 0 |
+| 39 | B④ 输入框删表情：一次退格把两个表情一起删掉 | 已完成·待真机 | `478a7766`（5.18.74） | `node --test src/utils/graphemes.test.ts`（9 条：两个连着表情、ZWJ 家庭、肤色、旗帜、VS16…）；另外 `deleteOneUnitBeforeCaret` 覆盖 token 三种 caret 落位 | 待真机（安卓）：WebView 的 caret 落位形态与 IME 组合由系统决定 |
+| 40 | B⑤ 「任务中心」更名「传输队列」；移动端任务列表页页头 / `0/1 已完成` / 筛选 / 列表四套竖线并回同一条 16px | 已完成 | `da03c1c7`（5.18.78） | 文案：中英两册同步（`node scripts/check-i18n.mjs`）；几何：`GroupTasksBoard.vue` 的 `pageInset` 只输出 `px-[var(--gosslan-scroll-inset)]`，无字面 px（㊶ 守卫禁任意值） | 真机像素表未取：本批只保证「同一个 token」，实际竖线位置需截图量 |
+| 41 | B⑥ 网络诊断页双层滚动条 | 已完成 | `da03c1c7`（5.18.78） | 源码：内容区不再套外层 `max-h + overflow-y-auto`，滚动只留 `BaseModal` 的 `.gosslan-scroll`。`rg -n 'max-h\|overflow-y-auto' src/components/DevDiagPanel.vue` 仍剩 4 处，都是**子列表**（对端版本/日志尾部，`max-h-48`），不是页面第二层滚动 | 待真机：滚动条应只有一条（右侧） |
+| 42 | C⑦ 触屏长按正文不弹消息面板 | 已完成·待真机 | `da03c1c7`（5.18.78） | `node --test src/utils/longPress.test.ts`（11/11：5 环链 + 逐环反例）与 `contextMenu.test.ts`（断言 `onSelectableText: false`）；结构判据：源码再出现 `hitSelectable` / `lastTouchTextCol` 即红。口径变更见 [decision-longpress-2026-11-07.md](./decision-longpress-2026-11-07.md) | 待真机（安卓）：「选择文字」点下去后能否真的选中并复制 |
+| 43 | C⑧ 弹窗标题 / 固定头部 / 页脚的横向与纵向基线各写一套 | 已完成 | `da03c1c7`（5.18.78） | `BaseModal.vue` 标题、header 插槽、footer 统一 `--gosslan-modal-gap`（16px），fullscreen header 横向走 `--gosslan-scroll-inset`；`designGuards` 抓任意值写法 | 真机对比截图未取：设置 / 日志 / 群任务 / 预览四个窗口需各看一眼 |
+| 44 | C⑨ Windows 图标：软件内升级后仍是旧图标；Windows 11 不给应用图标加圆角 | 已完成·待真机 | 升级不刷新 `12519540`（5.18.73）；圆角 `da03c1c7`（5.18.78） | 升级：`rg -n "SHChangeNotify" src-tauri/nsis/hooks.nsh` = 1（`SHCNE_ASSOCCHANGED` 让外壳重读图标）；圆角：`icon.ico` 4368 → **6897 B**，由 `scripts/build-app-icons.mjs` 从圆角源图重出 | 待真机（Windows）：覆盖安装后桌面/任务栏图标；必要时 `ie4uinit.exe -show` 前后对照 |
+| 45 | C⑩ Windows 标题栏头像簇应在左侧，与左 R 角同圆心 | 已完成·待真机 | `f0c0e45b`（5.18.73） | **TB-01 / TB-02**（`designGuards`）：平台→头像簇侧、组内顺序、标题绝对居中、`--gosslan-caption-avatar` 与 `--gosslan-caption-inset` 同源；四条反例必红 | 待真机（Windows）：角部 4× 特写；TB-02 只是平台模拟读数 |
+| 46 | C⑪ 背景动效 Windows 与 macOS 观感不一致，需要可复制的读数 | 已完成·待真机 | `da03c1c7`（5.18.78） | `src/utils/ambientProbe.ts` 13 行取样（平台 / 四个媒体查询 / `pointer: coarse` / `html[data-ambient]` / `backdrop-filter` / 三个 `--ambient-*` / DPR / 视口）+ `DevDiagPanel` 展示与一键复制；视图层裸写 `matchMedia` 由 `designGuards` ㉟ 拦住 | 待真机（Windows）：需要用户复制一段读数回传 —— 这是唯一能证明差异的一半 |
+
+**A③ 的 TabBar 是「继承变量」，不是漏改**（证据链，三处都能现查）：
+
+1. TabBar 元素在 [ResponsiveLayout.vue](../../../src/layouts/ResponsiveLayout.vue#L1223) 第 1223 行，`class="safe-bottom frost tabbar-chrome ..."`；
+2. 它消费的选择器在 [style.css](../../../src/style.css#L1844-L1846) 第 1844–1846 行：`.safe-bottom { padding-bottom: var(--gosslan-inset-bottom) }`；
+3. 这个变量在 [style.css](../../../src/style.css#L355) 第 355 行定义为一个出口：`--gosslan-inset-bottom: max(env(safe-area-inset-bottom, 0px), var(--gosslan-inset-bottom-fallback))`，移动端 fallback 24px（第 1835 行）、桌面 0（第 351 行）。
+
+内容区的让位同样读这个变量：[ResponsiveLayout.vue](../../../src/layouts/ResponsiveLayout.vue#L1021) 第 1021 行
+`pb-[calc(var(--gosslan-mobile-tabbar-h)+var(--gosslan-inset-bottom))]`（条高 `--gosslan-mobile-tabbar-h: 3.5rem` 在 [style.css](../../../src/style.css#L107) 第 107 行）。
+本批把各组件散写的 `env()` 收进这一个 token 之后，TabBar 的底色内边距与内容区让位**同时**跟到新值 ——
+覆盖到位的判据是 SA-03「全仓裸写 `env()` 必红」，不需要在 TabBar 里再写一遍。
+
 ## 状态变更记录
 
 - 2026-11-07：建立台账（本文件）。#12–#16 回溯补齐；#17–#23 按用户队列登记；#24–#28 进「待你拍板/待做」。
@@ -134,6 +167,11 @@
   ⑤ 文档：本表 #35、[density-and-scroll.md §8](../../design-language/density-and-scroll.md)、
   [decisions.md v2.3](../../../designs/gosslan-redesign/docs/decisions.md)。
   ⑥ 截图：`test-results/skeleton-sync/`（5 界面 × 骨架/加载 × 1440；主窗加 390×844）。
+- 2026-11-07：**追加 11 条登记**（#36–#46，A①–C⑪），每条带状态 / SHA / 自测方式 / 缺口。
+  其中 6 条标 **已完成·待真机**（A③、B④、C⑦、C⑨、C⑩、C⑪）—— 代码与判据都落地，
+  但本机是 macOS，Windows WebView2 与安卓 WebView 的结论只能由用户设备验收，
+  照做步骤见 [device-acceptance-checklist.md](./device-acceptance-checklist.md)。
+  A③ 的 TabBar 是**继承变量**而非漏改，三处证据见该节正文。
 
 ## 合入记录
 
