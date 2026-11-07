@@ -640,6 +640,33 @@ const membersOpen = ref(false);
 /** 输入框实例：只为了 N6-2「@他」——成员面板关掉后把 @token 插进正文。 */
 const composerRef = ref<{ insertMention?: (m: { id: string; name: string }) => void } | null>(null);
 
+/**
+ * 输入区实测高度（含 `env(safe-area-inset-bottom)` 与 pt-2）。
+ *
+ * 2026-11-07 用户要求：输入区与消息区必须是**同一整块画布**（外层不许有色底/分割线/
+ * 第二层底），输入卡悬浮在画布上。既然悬浮，它就是覆盖层而不是占位块 ——
+ * 这段高度必须由实测驱动三处让位，缺一处就会出现"内容被输入框盖住"：
+ *  ① 消息区的 `padding-bottom`（末条消息滚不到输入框底下）；
+ *  ② 「回到最新」按钮与抖动提示的 bottom。
+ * 不用 CSS 常量：字体档位、附件行高、移动端安全区都会让实际高度变化。
+ */
+const composerShell = ref<HTMLElement | null>(null);
+const composerH = ref(0);
+let composerShellRO: ResizeObserver | null = null;
+onMounted(() => {
+  if (!composerShell.value) return;
+  const sync = () => {
+    composerH.value = Math.ceil(composerShell.value?.getBoundingClientRect().height ?? 0);
+  };
+  sync();
+  composerShellRO = new ResizeObserver(sync);
+  composerShellRO.observe(composerShell.value);
+});
+onBeforeUnmount(() => {
+  composerShellRO?.disconnect();
+  composerShellRO = null;
+});
+
 /** 成员面板右键「@他」：先关面板、等一帧再插（面板的退场动画/焦点归还完成后编辑器才拿得到焦点）。 */
 function onMemberMention(id: string) {
   const name = mentionMembers.value.find((m) => m.id === id)?.name ?? id;
@@ -1959,8 +1986,14 @@ function retryHistory() {
         {{ t("common.retry") }}
       </button>
     </div>
-    <!-- 消息区（虚拟滚动，仅纵向）：与头部同底色，无缝衔接 -->
-    <div class="ambient-canvas-child relative min-h-0 flex-1 overflow-hidden bg-[var(--gosslan-chat)]">
+    <!-- 消息区（虚拟滚动，仅纵向）：与头部同底色，无缝衔接。
+         `paddingBottom = composerH`：输入卡是**悬浮覆盖层**，这段让位保证末条消息能滚到
+         输入卡上方而不是被压在它底下（高度由 ResizeObserver 实测，字体档位/附件/安全区都会变）。 -->
+    <div
+      data-msg-area
+      class="ambient-canvas-child relative min-h-0 flex-1 overflow-hidden bg-[var(--gosslan-chat)]"
+      :style="{ paddingBottom: composerH + 'px' }"
+    >
       <!-- 加载骨架：切会话时**立即**渲染（store 的 loadMessages 完成前 messages[convId] 是 undefined）。
            没有它就会先闪一句"暂无消息，打个招呼吧"再跳出内容——既不准又显得卡。
            规则：UI 先出、数据后到（详见 docs/design-guidelines.md §9）。
@@ -2094,7 +2127,8 @@ function retryHistory() {
       <!-- 窗口抖动：会话内临时灰字（不落库、不进虚拟列表，5s 后由 store 清掉） -->
       <div
         v-if="nudgeText"
-        class="pointer-events-none absolute bottom-16 left-1/2 z-10 -translate-x-1/2 rounded-full bg-[var(--gosslan-hover)] px-3 py-1.5 text-xs text-[var(--gosslan-text-2)] shadow-sm"
+        class="pointer-events-none absolute left-1/2 z-10 -translate-x-1/2 rounded-full bg-[var(--gosslan-hover)] px-3 py-1.5 text-xs text-[var(--gosslan-text-2)] shadow-sm"
+        :style="{ bottom: `calc(${composerH}px + 1rem)` }"
       >
         {{ nudgeText }}
       </div>
@@ -2107,6 +2141,7 @@ function retryHistory() {
            就是这颗按钮在收敛窗口里残留可点、压住了图片。 -->
       <BackToLatestButton
         :visible="showBackToLatest"
+        :bottom-offset="composerH"
         @press="showBackToLatest = false; listRef?.scrollToBottom()"
       />
     </div>
@@ -2117,12 +2152,23 @@ function retryHistory() {
          之前 pb-3 留了 12px 但没有 safe-area-inset，手机底部输入框会被圆角区域压住。 -->
     <!-- Material 3 规范：组件外最小 padding 8dp (pt-2)，safe-area 下额外 8px breathing room
          （Chrome 135 edge-to-edge 推荐的最小值，Android 15+ 强制 edge-to-edge 后手势导航条必留）。 -->
-    <!-- 底色必须是**有色调**的 --gosslan-bg，不能用 --gosslan-chat（亮色下就是 #fff）。
-         背景动效开启时消息区参与薄纱、是透明的；这一条若保持纯白，就会在底部露成一条
-         "横贯全宽的纯白长条"，输入卡的圆角与 1px 描边也一并被吃掉（2026-11-05 真机反馈）。
-         选 bg 而不是 field：暗色下 bg = chat = #0f172a（不会像 field #2a3a52 那样在底部抬起一道亮带），
-         亮色下 bg = #f1f5f9 与消息区薄纱后的杏灰只差个位数。 -->
-    <div class="ambient-canvas-child shrink-0 bg-[var(--gosslan-bg)] px-4 pt-2" :style="{ paddingBottom: 'calc(env(safe-area-inset-bottom) + 8px)' }">
+    <!-- 2026-11-07 用户口径（推翻 2026-11-05 的"给外壳一层 --gosslan-bg 色底"）：
+         「输入框背后与左右空隙必须跟消息区是同一整块」—— 外壳不涂任何色，
+         画布由父级（根 `bg-[var(--gosslan-chat)]` / 薄纱时的 ambient canvas）提供，
+         输入卡自己才是那张浮起来的卡片。2026-11-05 之所以涂色，是为了避免
+         "亮色下露一条纯白长条"；现在外壳透明 + 输入卡自带 1px 描边与圆角，
+         那条白条正是"第二层底"，按用户口径必须去掉。 -->
+    <!-- 悬浮外壳：**同一块画布**（`bg-transparent`，不设 border-top / shadow / 第二层底），
+         输入卡自己才是那张浮起来的卡片。外层绝对定位压住消息区底部，高度由
+         `composerShell` 的 ResizeObserver 实测供消息区让位（见 script 里的 `composerH`）。
+         2026-11-07 用户口径：「像这种有内边距的，有滚动条、没有滚动条应该是一样的宽度」——
+         这条外壳的宽度也只由 `inset-x-0` 决定，不随滚动条出现而变。 -->
+    <div
+      ref="composerShell"
+      data-composer-shell
+      class="ambient-canvas-child absolute inset-x-0 bottom-0 z-20 bg-transparent px-4 pt-2"
+      :style="{ paddingBottom: 'calc(env(safe-area-inset-bottom) + 8px)' }"
+    >
       <!-- 多选态：输入区被操作条**替换**（微信同款）。
            高度固定 4rem，与 Composer 的最小高度一致 —— 否则进出多选时消息区高度跳变，
            虚拟列表会跟着滚一下。 -->

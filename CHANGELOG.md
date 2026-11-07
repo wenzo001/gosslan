@@ -14,6 +14,29 @@
 
 ## [Unreleased]
 
+## [5.18.50] - 2026-11-07
+
+### 输入区与消息区连成一块（输入卡悬浮，不再是一条独立实色带）
+
+用户要求「输入框背后与左右空隙必须跟消息区是**同一整块**，不许独立实色面板 / 分隔线 /
+第二层底」。此前外壳是流内 `shrink-0` + `bg-[var(--gosslan-bg)]`，亮色下就是一条横贯全宽的
+实色带，与消息区断成两块。
+
+- 外壳改 `absolute inset-x-0 bottom-0 z-20 bg-transparent px-4 pt-2`：画布交给父级，
+  只有输入卡自己是浮起的那张；底部安全区用 `calc(env(safe-area-inset-bottom) + 8px)`。
+- 透明外壳不再占位 ⇒ 让位量必须实测：`ResizeObserver` 观测外壳，`composerH` 驱动
+  消息区 `paddingBottom`、抖动提示与「回到最新」（`bottom-offset`）三处，不许写常量。
+- 实测（`--only=composerfloat`，5 档宽度 × 亮 / 暗 / 特效全开 = 15 组）：
+  外壳 `background-color rgba(0,0,0,0)`、`background-image none`、`border-top 0`、`box-shadow none`；
+  `shellH 114` 与消息区 `paddingBottom 114` 相等、两者等宽（1280/768/430/390/360 逐档一致）；
+  「回到最新」让位 `130px`；滚到底时末条消息底边距输入卡顶边 **−32px**（不遮挡）。
+  反面对照（把让位清零）：末条被盖 **+82px** —— 量具不是恒绿。
+- 守卫 CS-01 改为新口径：外壳必须 `data-composer-shell` + `bg-transparent` + `absolute`
+  + 无 `border-t`/阴影/任何底色；消息区必须 `paddingBottom: composerH` 且
+  `ResizeObserver` 实测；「回到最新」必须吃 `:bottom-offset="composerH"`。
+  BT-05 补「`bottomOffset` 必须进 `bottom` 表达式」。注入式反例（把外壳涂回
+  `--gosslan-bg`）已进 `scripts/verify-guards.py`。
+
 ## [5.18.49] - 2026-11-07
 
 ### 预览图一个像素都不许被切割（四角不再发黑）

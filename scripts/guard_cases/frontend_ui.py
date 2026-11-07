@@ -1387,4 +1387,22 @@ CASES: list[Case] = [
         expect_fail_hint="预览图写了圆角",
         tags=["frontend", "preview", "new-guards"],
     ),
+    Case(
+        name="悬浮输入区外壳被涂成实色（与消息区割成两块）",
+        why="2026-11-07 用户口径：输入框背后与左右空隙必须跟消息区是**同一整块**，"
+        "不许独立实色面板 / 分隔线 / 第二层底。修法是外壳 `absolute + bg-transparent`，"
+        "画布由父级提供，输入卡才是那张浮起的卡片；外壳脱离流后由 ResizeObserver 实测高度"
+        "驱动消息区 `paddingBottom` 与「回到最新」让位。"
+        "本条把 `bg-[var(--gosslan-bg)]` 加回外壳，必须由 CS-01 判据点名并红 ——"
+        "否则亮色下底部又会出现一条与消息区不同的实色带。",
+        file=ROOT / "src" / "components" / "ChatWindow.vue",
+        injections=[(
+            'class="ambient-canvas-child absolute inset-x-0 bottom-0 z-20 bg-transparent px-4 pt-2"',
+            'class="ambient-canvas-child absolute inset-x-0 bottom-0 z-20 bg-[var(--gosslan-bg)] px-4 pt-2"',
+        )],
+        cmd=node_test("src/utils/designGuards.test.ts"),
+        cwd=ROOT,
+        expect_fail_hint="第二层底",
+        tags=["frontend", "composer", "new-guards"],
+    ),
 ]

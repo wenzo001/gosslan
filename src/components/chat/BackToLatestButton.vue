@@ -29,7 +29,15 @@ import { nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { t } from "@/i18n";
 import { computeBackToLatestAvoidOffset } from "@/utils/backToLatest";
 
-const props = defineProps<{ visible: boolean }>();
+const props = defineProps<{
+  visible: boolean;
+  /**
+   * 悬浮输入区实测高度（px）。输入卡现在是覆盖层，消息区虽已留出 padding-bottom，
+   * 但这条按钮的定位基准是**消息区**（`bottom-4`），不让位就会被输入卡压住。
+   * 由 ChatWindow 的 ResizeObserver 实测传入，不用固定常量。
+   */
+  bottomOffset?: number;
+}>();
 const emit = defineEmits<{ (e: "press"): void }>();
 
 const root = ref<HTMLButtonElement | null>(null);
@@ -95,7 +103,7 @@ onBeforeUnmount(() => {
     type="button"
     data-back-to-latest
     class="frost absolute bottom-4 left-1/2 z-10 flex h-9 w-9 -translate-x-1/2 items-center justify-center rounded-full text-[var(--gosslan-text)] transition active:scale-[0.97]"
-    :style="avoidOffset ? { bottom: `calc(1rem + ${avoidOffset}px)` } : undefined"
+    :style="{ bottom: `calc(1rem + ${(bottomOffset ?? 0) + avoidOffset}px)` }"
     :class="
       visible
         ? 'gosslan-back-to-latest pointer-events-auto opacity-100 hover:bg-[var(--gosslan-hover)]'
