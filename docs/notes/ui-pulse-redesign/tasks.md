@@ -26,7 +26,7 @@
 | 15 | 预览窗生命周期与全局单例 | ImageLightbox、preview 窗口 | 已完成 | `57b396ce` | 见提交内实测表 | — |
 | 16 | toast 原因宽度：结论 + 一句人话原因，长原因落页面内错误档 | Toast 组件、错误档 | 已完成 | `57b396ce` | 见提交内实测表 | — |
 | 17 | 预览状态图片四角是黑的：预览图绝对不许被切割（圆角/遮罩/`overflow:hidden`/`object-fit:cover` 都不许） | ImageLightbox、MessageImageBubble、收藏/群任务/消息缩略图 | 待做 | — | — | 需同时覆盖主窗覆盖层与独立预览窗口 |
-| 18 | 群任务「标签」下拉内容一多就顶出窗口，最下面的项点不到；**全站所有同类浮层**统一：最大高度到窗口边缘、内部滚动、末项可点 | TodoAttrField/TodoAttrTagsField、SettingsSelect、ContextMenu、EmojiPicker、ActionSheet 等所有 Reka 浮层 | 进行中 | — | 探针 `--only=popclamp` 已建：桌面设置下拉 40 项 bottom=467/475、390 标签面板 bottom=632/640；撤掉限高后分别溢出 +879/+705px | 代码已写、未提交（stash） |
+| 18 | 群任务「标签」下拉内容一多就顶出窗口，最下面的项点不到；**全站所有同类浮层**统一：最大高度到窗口边缘、内部滚动、末项可点 | TodoAttrField/TodoAttrTagsField、SettingsSelect、ContextMenu、EmojiPicker、ActionSheet 等所有 Reka 浮层 | 已完成 | `12777527` | `--only=popclamp` 14/14 绿：桌面 40 项 bottom **467**/vh **475**（留 8px）、clientH 393、scrollH 1280、末项可点 rowClick=39；390 标签面板 bottom **632**/vh **640**；撤掉限高反面桌面溢出 **+879px**、390 **+705px** | 原生 `<select>` 弹层由 OS 绘制，明确豁免；PC-01 守卫 + 2 条注入式反例落地 |
 | 19 | 滚动条出现/不出现时内容宽度不一致、「关于」因此偏小；有滚动条时内容视觉偏左。与 ⑦ 焦点环合并成一件 | 所有滚动容器（设置/日志/群任务/会话列表/搜索/收藏/转发/群成员等）、BaseModal 滚动区 | 已完成 | `77133302` | 设置独立窗口实测（亮/暗各一套）：通用(会滚) vs 关于(不滚) clientW **764/764**、文字起始 x **895/895**；缩高跨临界点 deltaW **0**、deltaTextX **0**；去掉预留的反面 deltaW **-8px**。合成夹具 tall/short 内容宽差 0、auto 档差 8px。探针 `--only=scrollstable` 5/5 绿 | 已插到 #18 之前做（已完成） |
 | 20 | 焦点环被左边界裁切 + 有滚动条时内容视觉居中 | MessageItem 焦点环、滚动容器内距 | 已完成 | `77133302` | 与 #19 同一根因、同一提交：消息头像/合并卡两个焦点环改 `ring-inset`；SC-01 扫全仓 `.vue`，外扩环 0 处（改坏即红） | — |
 | 21 | 输入区像悬浮在会话底部：输入框背后与左右空隙必须与消息区同一整块背景，不许独立实色面板/分隔线/第二层底；安全区按实测输入区高度让位 | MessageComposer、ChatWindow、ResponsiveLayout、BackToLatestButton | 待做 | — | — | 不得带回白条；保住 `data-frost="off"` / reduce-transparency / contrast:more / `pane-under-chat` |
@@ -43,3 +43,6 @@
 - 2026-11-07：建立台账（本文件）。#12–#16 回溯补齐；#17–#23 按用户队列登记；#24–#28 进「待你拍板/待做」。
 - 2026-11-07：**#19 / #20 完成**（`77133302`）。按用户补正把「滚动条占位」与 ⑦「内容偏左」合并成一件，
   插到 #18 之前做完；SC-01 守卫 + 注入式反例落地。#18 仍为「进行中」（代码在 stash）。
+- 2026-11-07：**#18 完成**（`12777527`）。共享限高口径 + `POPOVER_EDGE` 单一来源；
+  `--only=popclamp` 14/14、`verify-guards --only 限高` 2 条注入式反例全绿。
+  顺带修好 `codeBlockLayout` 自证锚点：共享块必须排在 `.code-lang-menu` 之后（否则假绿）。
