@@ -84,13 +84,10 @@ for guard in \
   echo "==> $guard"
   st=0
   node "$guard" || st=$?
-  # 退出码 2 = Change Budget 的「零覆盖」：跑了，但受检范围内一个 commit 都没有
-  # （本地 push 之后再跑必然是空集）。**出包不该被"门禁没东西可判"打断** ——
-  # 判范围是 verify.yml 的职责（那边用 GOSSLAN_BUDGET_STRICT=1 把空转判成红）。
-  if [ "$st" -eq 2 ]; then
-    echo "   ⚠️ 零覆盖：这道门禁这次没判到东西，继续出包（不是放行，是它无对象可判）"
-    st=0
-  fi
+  # 2026-11-07：这里原来把退出码 2（Change Budget 的「零覆盖」）吞成通过，理由是
+  # "出包不该被门禁判不到范围打断"。现在零覆盖已经并入退出码 1（未覆盖 ≠ 通过），
+  # 而浅克隆正是零覆盖的成因 —— 所以改成让 checkout 取两个提交（build-android.yml），
+  # 而不是继续给"判不到"发通行证。判不到就是红，构建停下，先修 checkout。
   if [ "$st" -ne 0 ]; then
     echo "❌ 守卫失败：$guard" >&2
     exit 1

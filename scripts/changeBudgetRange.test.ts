@@ -113,6 +113,21 @@ test("反例自证：删掉 HEAD~1..HEAD 候选（旧行为），同一场景退
   assert.match(r.stdout, /未覆盖/, "旧行为会走零覆盖通道 —— 这条断言证明新候选行是承重的");
 });
 
+test("浅克隆（fetch-depth: 1）判不到任何 commit 时：红，并指出是 checkout 只给了一个提交", () => {
+  // 2026-11-07 Android 出包真实事故：build-android 用默认 `fetch-depth: 1`，
+  // `HEAD~1` 不存在 ⇒ 兜底候选也没有对象 ⇒ 门禁红、出包停。
+  // 这里重放浅克隆：断言它红（不是静默通过），并要求说清修法（fetch-depth: 2）。
+  const src = makeRepo("Version-Bump: 1.0.1", { pushAll: true });
+  const cloneDir = mkdtempSync(join(tmpdir(), "gosslan-budget-shallow-"));
+  execFileSync("git", ["clone", "-q", "--depth", "1", `file://${src}`, cloneDir], { encoding: "utf8" });
+
+  const r = runBudget(cloneDir);
+  assert.equal(r.status, 1, "浅克隆判不到对象时必须红");
+  assert.match(r.stdout, /未覆盖/);
+  assert.match(r.stdout, /浅克隆/, "必须点明成因是浅克隆");
+  assert.match(r.stdout, /fetch-depth: 2/, "必须给出可执行的修法");
+});
+
 test("正常有范围时行为不变：未推送的合规提交照旧通过", () => {
   const dir = makeRepo("Version-Bump: patch", { pushAll: false });
   const r = runBudget(dir);

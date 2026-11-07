@@ -12,8 +12,9 @@ permissions:
 # 这一步的守卫清单里含 `check-change-budget.mjs`（scripts/build-android-releases.sh），
 # 而它在 push 事件上要判的范围是 `github.event.before..github.sha` —— 该变量**不是** Actions
 # 默认提供的，不映射就只能退到 `HEAD~1..HEAD`（判的不是"本次推送"）。
-# 这里**不开** `GOSSLAN_BUDGET_STRICT`：出包不该因为门禁判不到范围而被打断，
-# 那个硬失败属于 verify.yml。
+# 这里**不开** `GOSSLAN_BUDGET_STRICT`（那套"范围必须等于事件 before..sha"的硬失败属于
+# verify.yml）。但"判不到对象"现在一律是红 —— 2026-11-07 起零覆盖不再有 ⚠️ 通道，
+# 所以下面 Checkout 显式取两个提交，让 `HEAD~1..HEAD` 真的有对象可判。
 env:
   GITHUB_EVENT_BEFORE: ${{ github.event.before }}
 
@@ -24,6 +25,12 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          # 出包脚本会跑 Change Budget 守卫，而它判的是 `HEAD~1..HEAD`。
+          # 默认 `fetch-depth: 1` 的浅克隆里 `HEAD~1` 不存在 ⇒ 门禁"没有对象可判"，
+          # 2026-11-07 就是这样把 Android 出包整条拦死的（零覆盖不再是 ⚠️ 而是红）。
+          # 取两个提交就够：多一个父提交，判据就有对象。
+          fetch-depth: 2
 
       - name: Setup Node
         uses: actions/setup-node@v4
