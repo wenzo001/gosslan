@@ -24,6 +24,7 @@ import {
   DropdownMenuRoot,
   DropdownMenuTrigger,
 } from "reka-ui";
+import { POPOVER_EDGE } from "@/utils/popoverBounds";
 
 const props = defineProps<{
   /** 行左边的字段名（如「类型」）。 */
@@ -83,7 +84,7 @@ function pick(value: string) {
           <DropdownMenuContent
             align="end"
             :side-offset="4"
-            :collision-padding="8"
+            :collision-padding="POPOVER_EDGE"
             class="gosslan-menu frost z-[80]"
           >
             <DropdownMenuItem

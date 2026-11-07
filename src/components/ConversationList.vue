@@ -34,6 +34,7 @@ import { createInitScope } from "@/utils/initScope";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { isMac } from "@/utils/platform";
 import { dropPointToCss } from "@/utils/dropPoint";
+import { POPOVER_EDGE } from "@/utils/popoverBounds";
 import { useDropSend, type DropTarget } from "@/composables/useDropSend";
 import DropSendConfirm from "@/components/chat/DropSendConfirm.vue";
 import type { Conversation, Friend } from "@/types";
@@ -490,7 +491,7 @@ useEventListener(document, "click", closeFriendMenu);
             </button>
           </DropdownMenuTrigger>
           <DropdownMenuPortal>
-            <DropdownMenuContent align="end" :side-offset="0" :collision-padding="8" class="frost gosslan-menu z-[80]">
+            <DropdownMenuContent align="end" :side-offset="0" :collision-padding="POPOVER_EDGE" class="frost gosslan-menu z-[80]">
               <DropdownMenuItem class="gosslan-menu-item" @select="emit('open-add-friend')">
                 <Icon name="user-plus" />
                 {{ t("common.addFriend") }}
@@ -540,7 +541,7 @@ useEventListener(document, "click", closeFriendMenu);
             <DropdownMenuContent
               align="end"
               :side-offset="0"
-              :collision-padding="8"
+              :collision-padding="POPOVER_EDGE"
               class="frost gosslan-menu z-[80]"
             >
               <DropdownMenuItem class="gosslan-menu-item" @select="emit('open-add-friend')">

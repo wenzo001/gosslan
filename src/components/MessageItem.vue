@@ -61,6 +61,7 @@ import type { ReminderPhase, ReminderState } from "@/utils/reminders";
 import { StaleGuard } from "@/utils/staleGuard";
 import { api } from "@/api";
 import { loadGroupFileSummary } from "@/utils/groupSummaryCache";
+import { POPOVER_EDGE } from "@/utils/popoverBounds";
 
 const props = withDefaults(
   defineProps<{
@@ -1831,7 +1832,7 @@ async function copyFileToClipboard() {
               side="top"
               align="center"
               :side-offset="8"
-              :collision-padding="8"
+              :collision-padding="POPOVER_EDGE"
               hide-when-detached
               class="gosslan-popover-in z-[80] border-0 bg-transparent p-0 shadow-none"
               @open-auto-focus.prevent

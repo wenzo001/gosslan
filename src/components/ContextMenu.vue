@@ -20,6 +20,7 @@ import {
   DropdownMenuPortal,
   DropdownMenuRoot,
 } from "reka-ui";
+import { POPOVER_EDGE } from "@/utils/popoverBounds";
 
 const props = defineProps<{
   x: number;
@@ -84,7 +85,7 @@ function onOpenChange(open: boolean) {
         align="start"
         :side-offset="0"
         :align-offset="0"
-        :collision-padding="8"
+        :collision-padding="POPOVER_EDGE"
         class="frost gosslan-menu select-none outline-none"
         :class="zClass ?? 'z-[70]'"
         aria-orientation="vertical"

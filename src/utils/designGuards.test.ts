@@ -7953,14 +7953,39 @@ test("PC-01 真实树：不走 `.gosslan-menu` 的自绘浮层也挂共享限高
   assert.doesNotMatch(search, /gosslan-menu[^"]*max-h-/, "搜索筛选下拉不许再写死 max-h-64");
 });
 
-test("PC-01 边距只有一个来源：popoverBounds 导出 8，关键浮层真的在消费", () => {
+test("PC-01 边距只有一个来源：全站 collision-padding 都吃 POPOVER_EDGE（字面量 8 必须红）", () => {
   const bounds = readFileSync(new URL("./popoverBounds.ts", import.meta.url), "utf8");
   assert.match(bounds, /export const POPOVER_EDGE = 8;/, "POPOVER_EDGE 必须固定为 8px");
-  for (const rel of ["../components/TodoAttrField.vue", "../components/ui/SettingsSelect.vue"]) {
-    const src = readFileSync(new URL(rel, import.meta.url), "utf8");
-    assert.ok(src.includes('from "@/utils/popoverBounds"'), `${rel} 必须从统一来源取贴边值`);
-    assert.ok(src.includes(':collision-padding="POPOVER_EDGE"'), `${rel} 的 collisionPadding 必须吃 POPOVER_EDGE`);
-  }
+
+  // 2026-11-07：分母从「两个关键组件」扩到**全站 .vue**。之前只盯 2 个文件，
+  // 实际还有 13 处硬编码 `8` 没人管（复审 R6）。扫描面必须覆盖全部组件。
+  const users = allVueSources().filter((f) => f.src.includes("collision-padding"));
+  const occurrences = users.reduce(
+    (n, f) => n + (f.src.match(/collision-padding/g)?.length ?? 0),
+    0,
+  );
+  assert.ok(
+    occurrences >= 15,
+    `只扫到 ${users.length} 个文件 / ${occurrences} 处 collision-padding，扫描面可能漏了`,
+  );
+  const isOffender = (src: string) =>
+    !src.includes('from "@/utils/popoverBounds"') ||
+    !src.includes(':collision-padding="POPOVER_EDGE"');
+  const offenders = users.filter((f) => isOffender(f.src));
+  assert.deepEqual(
+    offenders.map((f) => f.name),
+    [],
+    "这些组件的 collisionPadding 没有统一吃 POPOVER_EDGE",
+  );
+  // 反例自证：同一个判定必须能认出字面量 8，也必须放过正例（否则零 offenders 只是空转）。
+  assert.ok(isOffender('<DropdownMenuContent :collision-padding="8" />'), "字面量 8 没被认出");
+  assert.ok(
+    !isOffender(
+      '<script>import { POPOVER_EDGE } from "@/utils/popoverBounds";</script>' +
+        '<DropdownMenuContent :collision-padding="POPOVER_EDGE" />',
+    ),
+    "正例被判成 offenders",
+  );
 });
 
 test("PC-01 反例自证：删限高 / 删内部滚动 / 边距归零都必须红", () => {
