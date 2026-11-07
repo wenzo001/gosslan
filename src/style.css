@@ -251,6 +251,28 @@
   --gosslan-ease-spring: cubic-bezier(0.34, 1.56, 0.64, 1);
   --gosslan-duration-fast: 150ms;
   --gosslan-duration: 240ms;
+  /* 动效阶梯（2026-11-07 收敛，规格 docs/design-language/motion-system.md）：
+     只有这几档，组件与 CSS 都不许再写裸毫秒。
+       instant    按压/连点这类"立刻要看到"的反馈
+       fast       hover、变色、菜单淡入淡出
+       fade       只动 opacity 的入场（浮层/回执）
+       duration   位移类入场（卡片/页面），桌面档
+       exit       位移类出场：永远比入场短一档（"回哪儿去"不该让人等）
+       slow       大幅位移（抽屉/整页），移动端由 html.is-mobile 再抬一档
+     特殊节奏（不是"档"，是物理过程本身）：ripple / flash / shake / spin / ambient。 */
+  --gosslan-duration-instant: 100ms;
+  --gosslan-duration-exit-fast: 120ms;
+  --gosslan-duration-fade: 200ms;
+  --gosslan-duration-exit: 180ms;
+  --gosslan-duration-slow: 320ms;
+  --gosslan-duration-ripple: 560ms;
+  --gosslan-duration-flash: 800ms;
+  /* 浮层**来源锚点**：位移类入场必须声明它从哪儿来、回哪儿去。
+     `--gosslan-motion-origin-*` 是默认（居中），具体浮层在自己的规则里覆盖：
+     卡片 50% 100%（从下往上）、顶部 toast 50% 0%（从上往下）、右侧页 100% 50%。 */
+  --gosslan-motion-origin-x: 50%;
+  --gosslan-motion-origin-y: 50%;
+
   /* 桌面左侧导航"指示条 ↔ 内容"的时间轴（2026-11-04 用户反馈：内容已经切过去、
      药丸才滞后滑过去，观感不真实）。两者**必须共用这一组常量**：
      指示条（`.rail-active-pill` 的 transition）与左列内容（`.conv-view-fade-*`
@@ -941,8 +963,9 @@ html[data-ambient="static"] .ambient-blob {
   background: radial-gradient(closest-side, var(--gosslan-on-primary), transparent 70%);
   transform: translate3d(-50%, -50%, 0) scale(0.55);
   opacity: 0.12;
-  animation: press-ripple-in 560ms var(--gosslan-ease) forwards;
+  animation: press-ripple-in var(--gosslan-duration-ripple) var(--gosslan-ease) forwards;
 }
+/* @motion-origin: 50% 50% —— 按压涟漪以点击点为圆心（translate -50% 已把它居中） */
 @keyframes press-ripple-in {
   from {
     transform: translate3d(-50%, -50%, 0) scale(0.55);
@@ -1227,7 +1250,7 @@ select:focus {
 /* 输入框自增高：高度值由 JS 写 inline px，这里只负责把「撑高 / 回落」做成短过渡。
    回落刻意用同一段短时长（140ms），不要拖沓；reduce 档直接落到目标高度。 */
 .gosslan-composer-editor {
-  transition: height 140ms var(--gosslan-ease);
+  transition: height var(--gosslan-duration-fast) var(--gosslan-ease);
 }
 
 @media (prefers-reduced-motion: reduce) {
@@ -1239,7 +1262,7 @@ select:focus {
 /* 「回到最新」按钮只播 fade——不位移/不缩放，因此无需给 reduce 另写降级；
    节点只在从有到无/无到有时挂载，未读数变化不会重播。 */
 .gosslan-back-to-latest {
-  animation: gosslan-back-to-latest-in 160ms var(--gosslan-ease);
+  animation: gosslan-back-to-latest-in var(--gosslan-duration-fast) var(--gosslan-ease);
 }
 
 @keyframes gosslan-back-to-latest-in {
@@ -1318,7 +1341,7 @@ progress {
    但没有任何自定义过渡的普通按钮也自动获得"按下去有反应"的原生手感。 */
 :where(button:not(:disabled):not([data-no-press])) {
   transition:
-    transform 110ms var(--gosslan-ease-spring),
+    transform var(--gosslan-duration-instant) var(--gosslan-ease-spring),
     background-color var(--gosslan-duration-fast) var(--gosslan-ease),
     color var(--gosslan-duration-fast) var(--gosslan-ease),
     opacity var(--gosslan-duration-fast) var(--gosslan-ease);
@@ -1355,7 +1378,7 @@ progress {
 .nav-glyph-btn,
 .nav-glyph-pill {
   transition:
-    transform 220ms var(--gosslan-ease-spring),
+    transform var(--gosslan-duration-fade) var(--gosslan-ease-spring),
     background-color var(--gosslan-duration-fast) var(--gosslan-ease),
     color var(--gosslan-duration-fast) var(--gosslan-ease);
 }
@@ -1438,12 +1461,14 @@ progress {
   position: relative;
   flex: none;
 }
+/* @motion-origin: 50% 50% —— 回执在固定 16×16 槽位里原地出现，锚点就是槽位中心 */
 @keyframes gosslan-receipt-in {
   from { opacity: 0; transform: scale(0.55); }
   to { opacity: 1; transform: scale(1); }
 }
 .receipt-slot-appear {
-  animation: gosslan-receipt-in 200ms var(--gosslan-ease-spring);
+  transform-origin: 50% 50%;
+  animation: gosslan-receipt-in var(--gosslan-duration-fade) var(--gosslan-ease-spring);
 }
 .receipt-layer {
   position: absolute;
@@ -1452,35 +1477,42 @@ progress {
   align-items: center;
   justify-content: center;
   opacity: 0;
-  transition: opacity 140ms var(--gosslan-ease);
+  transition: opacity var(--gosslan-duration-fast) var(--gosslan-ease);
 }
 .receipt-layer[data-active="true"] {
   opacity: 1;
 }
 
 /* Toast 进出场：Reka 负责生命周期，这里只补观感。 */
+/* @motion-origin: 50% 0% —— toast 从屏幕顶沿的挂点往下落，回程沿原路收回去 */
 @keyframes gosslan-toast-in {
   from { opacity: 0; transform: translateY(-8px) scale(0.96); }
   to { opacity: 1; transform: translateY(0) scale(1); }
 }
+/* @motion-origin: 50% 0% —— 出场沿入场原路回去 */
 @keyframes gosslan-toast-out {
   from { opacity: 1; transform: translateY(0) scale(1); }
   to { opacity: 0; transform: translateY(-6px) scale(0.97); }
+}
+.gosslan-toast {
+  transform-origin: 50% 0%;
 }
 .gosslan-toast[data-state="open"] {
   animation: gosslan-toast-in var(--gosslan-duration) var(--gosslan-ease-spring);
 }
 .gosslan-toast[data-state="closed"] {
-  animation: gosslan-toast-out 160ms var(--gosslan-ease) forwards;
+  animation: gosslan-toast-out var(--gosslan-duration-fast) var(--gosslan-ease) forwards;
 }
 
 /* 未读徽标出现时弹一下（只在挂载时触发，数字变化不重复播）。 */
+/* @motion-origin: 50% 50% —— 徽标在原来的位置弹一下，不位移 */
 @keyframes gosslan-badge-pop {
   from { opacity: 0; transform: scale(0.6); }
   to { opacity: 1; transform: scale(1); }
 }
 .unread-badge {
-  animation: gosslan-badge-pop 220ms var(--gosslan-ease-spring);
+  transform-origin: 50% 50%;
+  animation: gosslan-badge-pop var(--gosslan-duration-fade) var(--gosslan-ease-spring);
 }
 
 @media (prefers-reduced-motion: reduce) {
@@ -1492,7 +1524,7 @@ progress {
     to { opacity: 1; }
   }
   .receipt-slot-appear {
-    animation: gosslan-receipt-fade 120ms var(--gosslan-ease);
+    animation: gosslan-receipt-fade var(--gosslan-duration-exit-fast) var(--gosslan-ease);
   }
   .gosslan-toast[data-state],
   .unread-badge {
@@ -1651,7 +1683,7 @@ progress {
   }
 }
 .todo-row-flash {
-  animation: gosslan-todo-flash 0.8s var(--gosslan-ease) 2;
+  animation: gosslan-todo-flash var(--gosslan-duration-flash) var(--gosslan-ease) 2;
 }
 /* 减弱动态效果：换成静态描边（"是哪一条"这件事不能因为关了动画就丢掉） */
 @media (prefers-reduced-motion: reduce) {
@@ -2259,10 +2291,10 @@ img {
   to { opacity: 0; }
 }
 .gosslan-menu[data-state="open"] {
-  animation: gosslan-menu-fade-in 160ms var(--gosslan-ease);
+  animation: gosslan-menu-fade-in var(--gosslan-duration-fast) var(--gosslan-ease);
 }
 .gosslan-menu[data-state="closed"] {
-  animation: gosslan-menu-fade-out 140ms var(--gosslan-ease) forwards;
+  animation: gosslan-menu-fade-out var(--gosslan-duration-exit-fast) var(--gosslan-ease) forwards;
 }
 
 .gosslan-menu {
@@ -2616,21 +2648,32 @@ html[data-reduced-transparency="true"] .gosslan-sticky-veil {
    --------------------------------------------------------------------------- */
 @keyframes gosslan-dialog-fade-in { from { opacity: 0; } to { opacity: 1; } }
 @keyframes gosslan-dialog-fade-out { from { opacity: 1; } to { opacity: 0; } }
+/* @motion-origin: 50% 100% —— 卡片从下方升起，回程落回下方 */
 @keyframes gosslan-dialog-pop-in { from { opacity: 0; transform: translateY(8px) scale(0.96); } to { opacity: 1; transform: translateY(0) scale(1); } }
+/* @motion-origin: 50% 100% —— 出场沿同一条路径回落（比入场短一档） */
 @keyframes gosslan-dialog-pop-out { from { opacity: 1; transform: translateY(0) scale(1); } to { opacity: 0; transform: translateY(4px) scale(0.97); } }
 @keyframes gosslan-dialog-page-in { from { transform: translateX(100%); opacity: 0.4; } to { transform: translateX(0); opacity: 1; } }
 @keyframes gosslan-dialog-page-out { from { transform: translateX(0); opacity: 1; } to { transform: translateX(100%); opacity: 0.4; } }
 @keyframes gosslan-dialog-sheet-in { from { transform: translateY(100%); } to { transform: translateY(0); } }
 @keyframes gosslan-dialog-sheet-out { from { transform: translateY(0); } to { transform: translateY(100%); } }
 
-.gosslan-dialog-overlay[data-state="open"] { animation: gosslan-dialog-fade-in 200ms var(--gosslan-ease); }
-.gosslan-dialog-overlay[data-state="closed"] { animation: gosslan-dialog-fade-out 150ms var(--gosslan-ease) forwards; }
+.gosslan-dialog-overlay[data-state="open"] { animation: gosslan-dialog-fade-in var(--gosslan-duration-fade) var(--gosslan-ease); }
+.gosslan-dialog-overlay[data-state="closed"] { animation: gosslan-dialog-fade-out var(--gosslan-duration-exit-fast) var(--gosslan-ease) forwards; }
 .gosslan-dialog-card[data-state="open"] { animation: gosslan-dialog-pop-in var(--gosslan-duration) var(--gosslan-ease-spring); }
-.gosslan-dialog-card[data-state="closed"] { animation: gosslan-dialog-pop-out 160ms var(--gosslan-ease) forwards; }
+.gosslan-dialog-card[data-state="closed"] { animation: gosslan-dialog-pop-out var(--gosslan-duration-exit) var(--gosslan-ease) forwards; }
 .gosslan-dialog-page[data-state="open"] { animation: gosslan-dialog-page-in var(--gosslan-duration) var(--gosslan-ease); }
-.gosslan-dialog-page[data-state="closed"] { animation: gosslan-dialog-page-out var(--gosslan-duration) var(--gosslan-ease) forwards; pointer-events: none; }
-.gosslan-dialog-sheet[data-state="open"] { animation: gosslan-dialog-sheet-in 260ms var(--gosslan-ease-spring); }
-.gosslan-dialog-sheet[data-state="closed"] { animation: gosslan-dialog-sheet-out 180ms var(--gosslan-ease) forwards; }
+.gosslan-dialog-page[data-state="closed"] { animation: gosslan-dialog-page-out var(--gosslan-duration-exit) var(--gosslan-ease) forwards; pointer-events: none; }
+.gosslan-dialog-sheet[data-state="open"] { animation: gosslan-dialog-sheet-in var(--gosslan-duration-slow) var(--gosslan-ease-spring); }
+.gosslan-dialog-sheet[data-state="closed"] { animation: gosslan-dialog-sheet-out var(--gosslan-duration-exit) var(--gosslan-ease) forwards; }
+
+/* 来源锚点（规格 §2）：位移类入场必须能回答"从哪儿来、回哪儿去"。
+   卡片从下方 8px 处升起 ⇒ 锚点在底边中点；整页从右侧推入 ⇒ 锚点在右缘；
+   底部抽屉从屏幕下沿来 ⇒ 锚点在底边。
+   只做 opacity 的浮层（菜单/提示）不需要锚点：它们没有"方向"可言，
+   硬加一个 origin 只会让缩放方向出错。 */
+.gosslan-dialog-card { transform-origin: var(--gosslan-motion-origin-x) 100%; }
+.gosslan-dialog-page { transform-origin: 100% var(--gosslan-motion-origin-y); }
+.gosslan-dialog-sheet { transform-origin: var(--gosslan-motion-origin-x) 100%; }
 
 /* 卡片形态的内容根铺满视口，只承担"居中 + 滚动"。Reka 的 DismissableLayer 会给它写
    内联 pointer-events:auto（顶层图层要接事件），普通类名压不过 ⇒ 这里用 !important 把
@@ -2654,6 +2697,14 @@ html[data-reduced-transparency="true"] .gosslan-sticky-veil {
   .settings-swap-leave-active {
     transition: none;
   }
+}
+
+/* 移动档（2026-11-07）：曲线不变，位移更长（整页 push/pop、抽屉）⇒ 时间抬一档；
+   出场仍短于入场。桌面/移动共用同一组档名，只换值，不在组件里分叉。 */
+html.is-mobile {
+  --gosslan-duration: 280ms;
+  --gosslan-duration-exit: 200ms;
+  --gosslan-duration-slow: 360ms;
 }
 
 /* 会话列表页脚：移动布局下让开固定 TabBar，避免任务入口/版本行被底栏盖住。
