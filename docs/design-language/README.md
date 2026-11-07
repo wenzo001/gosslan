@@ -29,6 +29,7 @@
 | [liquid-glass.md](./liquid-glass.md) | 玻璃怎么分层、每层什么职责、模糊/透明度具体数值、什么情况禁止、性能红线 |
 | [controls.md](./controls.md) | 按钮与输入框的尺寸、状态、颜色、圆角、间距、错误态，以及语义 token 命名 |
 | [ambient-motion.md](./ambient-motion.md) | 背景怎么动：候选方案对比、色雾/颗粒/涟漪的数值规格、性能红线、降级与开关、可机器验收的判据 |
+| [motion-system.md](./motion-system.md) | 全站交互动效：时长阶梯、来源锚点与返回路径、入场/出场与桌面/移动分档、reduce 降级、三条判据与反例 |
 | [ux-criteria.md](./ux-criteria.md) | 改界面时的 15 条硬约束（G-1 ～ G-15）：不许碰什么、什么算改坏、冲突时按什么顺序让步 |
 | [sources.md](./sources.md) | 每条结论的来源与置信度：官方 / 逆向观察 / 社区共识 / 个人推断 |
 

@@ -2872,8 +2872,13 @@ export function checkAmbientMotion(s: AmbientMotionSources): GuardIssue[] {
   }
 
   // AM-09：涟漪 560ms、scale .55→1.25，且只由显式指令触发。
-  if (!/\.press-ripple[\s\S]*animation\s*:\s*press-ripple-in\s+560ms/.test(css)) {
-    out.push({ line: 0, message: "AM-09：涟漪必须是 560ms 的 press-ripple-in。" });
+  // 2026-11-07：时长迁到 `--gosslan-duration-ripple`（motion-system §2 的物理节奏档），
+  // 判据跟着搬 —— 同时钉住令牌值，别让"用了令牌"变成空转（值被改成 100ms 也要红）。
+  if (
+    !/\.press-ripple[\s\S]*animation\s*:\s*press-ripple-in\s+var\(--gosslan-duration-ripple\)/.test(css) ||
+    !/--gosslan-duration-ripple:\s*560ms/.test(css)
+  ) {
+    out.push({ line: 0, message: "AM-09：涟漪必须是 560ms（--gosslan-duration-ripple）的 press-ripple-in。" });
   }
   if (!/@keyframes press-ripple-in[\s\S]*scale\(0\.55\)[\s\S]*scale\(1\.25\)/.test(css)) {
     out.push({ line: 0, message: "AM-09：涟漪关键帧缺少 scale(.55) → scale(1.25)。" });
