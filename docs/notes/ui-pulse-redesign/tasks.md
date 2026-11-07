@@ -142,3 +142,15 @@
 - **CI 预警**：push 事件判据仍会看到 `8130a4ee..65ad570d` 这个窗口 ⇒ 判据 3 会在这一次 CI 上红一次
   （负责人已接受该信号）；按 `scripts/check-change-budget.mjs` 注释的处置口径，**下一次推送的新范围**
   窗口自然清空。
+
+## 待做（发版后动作，勿提前执行）
+
+- **删除 v5.18.71 的 Windows 资产（两个 `-setup.exe`）** —— 用户 2026-11-07 拍板：
+  「Windows 有严重的 bug，下个版本发布完之后，这个版本可以删掉了」。
+  - 范围：只删 `v5.18.71` Release 里的 Windows 安装包（`*_x64-setup.exe` / `*_arm64-setup.exe`）；
+    macOS 与 Android 资产**保留**（用户只点名 Windows）。
+  - 触发条件（必须同时满足，缺一不可）：① 下一版（≥ 5.18.74）Release 已发布；
+    ② `latest.json` 的 `version` 已指向新版、且四平台条目都指向新版 URL。
+    现在**不能删**：`latest.json` 仍指 v5.18.71，提前删会让自动更新 404。
+  - 执行后核对：`gh release view v5.18.71 --json assets` 只剩 macOS / Android；
+    `latest.json` 不受影响；在「合入记录」里补一行带 SHA 的记账。
