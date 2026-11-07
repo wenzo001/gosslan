@@ -14,6 +14,13 @@
 
 ## [Unreleased]
 
+## [5.18.66] - 2026-11-07
+
+### 红绿灯重定位去掉多余借用（clippy 复绿）
+
+- `center_traffic_lights` 的两个调用点本来拿到的就是 `&NSWindow`，去掉 `&ns_window`;
+  `cargo clippy --all-targets --features bluetooth -- -D warnings` 复绿（29.36s）。
+
 ## [5.18.65] - 2026-11-07
 
 ### 判据注释与台账对齐（CN-01/CN-02、G-13、IP-01）
