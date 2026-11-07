@@ -8877,15 +8877,21 @@ test("PG-01 反例自证：header 插槽退回 mb-3 / 去掉横向 token 必须�
   assert.match(modalGapProblems(broken, css).join("\n"), /header 插槽/, "旧写法必须被抓到");
 });
 
-/** 移动端整页的内容基线：页头、看板头部/筛选、列表内容都必须在 `--gosslan-scroll-inset` 上。 */
+/** 内容基线：页头、看板头部、工具行、列表内容都必须在 `--gosslan-scroll-inset` 上。 */
 function pageInsetProblems(board: string, panel: string, modal: string): string[] {
   const bad: string[] = [];
-  const row = /:class="pageInset \? 'px-\[var\(--gosslan-scroll-inset\)\]' : ''"/g;
-  if ((board.match(row) ?? []).length < 2) {
-    bad.push("看板头部/筛选行没有补 pageInset 横向内距 ⇒ 「0/1 已完成」贴边、与列表错位");
+  const inset = "px-[var(--gosslan-scroll-inset)]";
+  const header = board.slice(board.indexOf("<!-- 头部"), board.indexOf("<!-- 工具行"));
+  const toolbar = board.slice(board.indexOf("<!-- 工具行"), board.indexOf("<!-- 内容区"));
+  if (!header.includes(inset)) {
+    bad.push("看板头部没有常驻 `--gosslan-scroll-inset` ⇒ 「0/1 已完成」贴边、与列表错位");
   }
-  if (!panel.includes(':page-inset="fullscreen"')) {
-    bad.push("GroupTasksPanel 没把 fullscreen 传给看板的 pageInset");
+  if (!toolbar.includes(inset)) {
+    bad.push("筛选工具行没有常驻 `--gosslan-scroll-inset` ⇒ 第一条 chip 的左缘与内容卡错位");
+  }
+  // 分形态两套基线是错的：同一个看板在弹窗 / 独立窗口 / 整页里必须落在同一条竖线。
+  if (/\bpageInset\b/.test(board) || panel.includes(":page-inset")) {
+    bad.push("条件内距（pageInset）又回来了 ⇒ 弹窗/独立窗口会比整页少 16px");
   }
   if (!modal.includes("bg-[var(--gosslan-panel)] px-[var(--gosslan-scroll-inset)]")) {
     bad.push("fullscreen 页头不再是 16px 基线 ⇒ 标题与内容错位");
@@ -8893,23 +8899,35 @@ function pageInsetProblems(board: string, panel: string, modal: string): string[
   return bad;
 }
 
-test("PG-02 移动整页：页头 / 标题 / 按钮 / 列表落在同一条 16px 竖线", () => {
+test("PG-02 整页/弹窗/独立窗口：页头 / 工具行 / 列表落在同一条 16px 竖线", () => {
   const board = readFileSync(join(PG_SRC, "components", "GroupTasksBoard.vue"), "utf8");
   const panel = readFileSync(join(PG_SRC, "components", "GroupTasksPanel.vue"), "utf8");
   const modal = readFileSync(join(PG_SRC, "components", "BaseModal.vue"), "utf8");
   assert.deepEqual(pageInsetProblems(board, panel, modal), []);
 });
 
-test("PG-02 反例自证：抽掉看板的 pageInset 内距必须红", () => {
+test("PG-02 反例自证：抽掉工具行的内距必须红", () => {
   const board = readFileSync(join(PG_SRC, "components", "GroupTasksBoard.vue"), "utf8");
   const panel = readFileSync(join(PG_SRC, "components", "GroupTasksPanel.vue"), "utf8");
   const modal = readFileSync(join(PG_SRC, "components", "BaseModal.vue"), "utf8");
   const broken = board.replace(
-    ":class=\"pageInset ? 'px-[var(--gosslan-scroll-inset)]' : ''\"",
-    "",
+    "flex shrink-0 flex-wrap items-center gap-1.5 px-[var(--gosslan-scroll-inset)] pb-3",
+    "flex shrink-0 flex-wrap items-center gap-1.5 pb-3",
   );
   assert.notEqual(broken, board, "fixture 没替换成功 ⇒ 这条在测空气");
-  assert.match(pageInsetProblems(broken, panel, modal).join("\n"), /0\/1 已完成/, "必须指出贴边问题");
+  assert.match(pageInsetProblems(broken, panel, modal).join("\n"), /工具行/, "必须指出错位");
+});
+
+test("PG-02 反例自证：头部退回条件内距也必须红", () => {
+  const board = readFileSync(join(PG_SRC, "components", "GroupTasksBoard.vue"), "utf8");
+  const panel = readFileSync(join(PG_SRC, "components", "GroupTasksPanel.vue"), "utf8");
+  const modal = readFileSync(join(PG_SRC, "components", "BaseModal.vue"), "utf8");
+  const broken = board.replace(
+    "flex items-center justify-between gap-2 px-[var(--gosslan-scroll-inset)] pb-2",
+    "flex items-center justify-between gap-2 pb-2",
+  );
+  assert.notEqual(broken, board, "fixture 没替换成功 ⇒ 这条在测空气");
+  assert.match(pageInsetProblems(broken, panel, modal).join("\n"), /看板头部/, "必须指出贴边");
 });
 
 /** 网络诊断只许 BaseModal 那一层滚动；同时它要能产出可复制的背景动效读数。 */

@@ -86,13 +86,6 @@ const props = defineProps<{
   /** 整页壳里撑满剩余高度，滚动只留给下面的任务列表。 */
   fill?: boolean;
   /**
-   * 整页形态（移动端 `BaseModal fullscreen`）：内容壳**不带**横向内距，
-   * 看板头部/筛选行要自己补 `--gosslan-scroll-inset`，才能与下方滚动列表的内容缩进
-   * 落在同一条竖线上（用户 2026-11-07：「0-1 已完成 左内距缺失 + 标题/按钮/列表左右不对齐」）。
-   * 卡片弹窗/独立窗口/成员页的父级已经有这层内距 ⇒ 不传。
-   */
-  pageInset?: boolean;
-  /**
    * 打开看板时要**直达详情**的那条任务（用户 #23：点时间线上的任务卡片，不是只把看板翻开）。
    * 独立窗口形态没有这个入参（跨文档传参要新造通道，见 `ChatWindow.openTasks` 的注释），
    * 所以只在应用内弹窗/移动端生效。
@@ -1287,11 +1280,11 @@ watch(
 
 <template>
   <div ref="boardRoot" class="flex flex-col" :class="standalone || fill ? 'h-full min-h-0' : ''">
-    <!-- 头部：统计 + 新建 -->
-    <div
-      class="flex items-center justify-between gap-2 pb-2"
-      :class="pageInset ? 'px-[var(--gosslan-scroll-inset)]' : ''"
-    >
+    <!-- 头部：统计 + 新建。
+         横向内距**常驻**：下面内容区是 `.gosslan-scroll`（自带 16px 基线），头部若只在
+         fullscreen 才补，卡片弹窗/独立窗口里就会比列表少这 16px（用户 2026-11-07：
+         「标题/按钮/列表左右不对齐」）。同一条基线分形态写两套，本身就是错。 -->
+    <div class="flex items-center justify-between gap-2 px-[var(--gosslan-scroll-inset)] pb-2">
       <div class="min-w-0 flex-1 truncate text-xs text-[var(--gosslan-text-2)]" :title="t('todo.title')">
         <template v-if="todos.length">{{ t("todo.doneCount", { n: doneCount, total: todos.length }) }}</template>
         <template v-else>{{ t("todo.title") }}</template>
@@ -1306,20 +1299,27 @@ watch(
       </button>
     </div>
 
-    <!-- 筛选：独立胶囊 chips（与收藏过滤 / 日志时间窗口同款） -->
+    <!-- 工具行：筛选 chips。
+         与内容区靠**间距 + 层级**分开，不加分割线：
+           · 间距：这一行 `pb-3`，内容区不再额外 `pt` ⇒ 12px 的呼吸；
+           · 层级：内容区是一张抬起的 panel 卡片，工具行不铺底色，只留控件自身。
+         选中态与行 hover 是**两种不同强度**，不许撞：
+           · 选中 = 实底主色（primary-active + on-primary 成对），一眼是"当前档"；
+           · 行 hover = 5% 中性 tint（列表里的临时指向）；
+           · 控件 hover = 12% 主色 tint（"这里可点"），与行 hover 的中性灰刻意区分。
+         圆角按控件体系取 `radius-sm`（工具条按钮），与内容卡的 `radius-lg` 形成内外两档。 -->
     <div
       v-if="todos.length"
-      class="flex shrink-0 flex-wrap items-center gap-1"
-      :class="pageInset ? 'px-[var(--gosslan-scroll-inset)]' : ''"
+      class="flex shrink-0 flex-wrap items-center gap-1.5 px-[var(--gosslan-scroll-inset)] pb-3"
     >
       <button
         v-for="f in FILTERS"
         :key="f.key"
         type="button"
-        class="tap-safe rounded-full px-2.5 py-1 text-xs transition"
+        class="tap-safe h-7 rounded-[var(--gosslan-radius-sm)] px-3 text-xs transition-colors"
         :class="filter === f.key
-          ? 'border border-[var(--gosslan-primary)] bg-[var(--gosslan-primary-light)] font-medium text-[var(--gosslan-accent-ink)]'
-          : 'border border-transparent text-[var(--gosslan-text-2)] hover:bg-[var(--gosslan-hover)]'"
+          ? 'bg-[var(--gosslan-primary-active)] font-medium text-[var(--gosslan-on-primary)]'
+          : 'text-[var(--gosslan-text-2)] hover:bg-[var(--gosslan-primary-light)] hover:text-[var(--gosslan-accent-ink)]'"
         :aria-pressed="filter === f.key"
         @click="filter = f.key"
       >
@@ -1331,8 +1331,9 @@ watch(
       </button>
     </div>
 
-    <!-- 内容区：弹窗形态由 BaseModal 自己滚；窗口形态撑满剩余空间 -->
-    <div class="gosslan-scroll overflow-y-auto pt-2" :class="standalone || fill ? 'min-h-0 flex-1' : ''">
+    <!-- 内容区：弹窗形态由 BaseModal 自己滚；窗口形态撑满剩余空间。
+         工具行已经用 `pb-3` 给出间距 ⇒ 这里不再叠 `pt`，否则上下留白会比左右大得多。 -->
+    <div class="gosslan-scroll overflow-y-auto" :class="standalone || fill ? 'min-h-0 flex-1' : ''">
       <!-- 首屏还在路上：**必须**是"正在加载"而不是空态。窗口现在先挂载、数据后台取
            （用户 2026-09-24 报"弹窗弹出很慢"），没有这一档的话首帧会理直气壮地显示
            「暂无任务」—— 那是假空态，比慢更糟。两种形态都判：应用内弹窗同样要先读
