@@ -14,6 +14,23 @@
 
 ## [Unreleased]
 
+## [5.18.54] - 2026-11-07
+
+### 桌面设置左栏改为 9 分区双栏（原 4 容器）
+
+用户 2026-11-06「3 可以」：设置 9 分区双栏。桌面左栏现在与移动端**同名同序**：
+个人资料 / 通用 / 外观 / 聊天气泡 / 通知 / 网络 / 文件与存储 / 关于 / 重置。
+
+- `settingsManifest.ts`：「4 容器」归并层退役（`DesktopContainer` / `DESKTOP_CONTAINER_BY_ROUTE`
+  / `desktopContainerForRoute` 删除），`DESKTOP_NAV` 从 4 项改为 9 项；`chatStyle` 提升为桌面共用路由；
+  旧路由键 `files / storage / security` 仍合法，经新增 `DESKTOP_LEGACY_LANDING` 落到所属页。
+- `SettingsWindow.vue`：9 个导航项各自一页；桌面独有的「文件」「安全」留在归属页
+  （文件与存储 / 关于），不另立导航项。侧栏仍是 3 个视觉分组（应用 / 连接与数据 / 其他）。
+- 守卫：`settingsStructure.test.ts` / `settingsDeepLink.test.ts` 的 golden 与深链矩阵按 9 分区重标定；
+  新增「桌面 9 项与移动端同名同序」断言；完整性反控仍保留「漏映射必须 missing」的反例自证。
+- i18n：新增 5 条 `settings.window.desc.*`（profile / appearance / chatStyle / notification / reset），
+  中英同步；general 描述收窄为「语言与地区」。
+
 ## [5.18.53] - 2026-11-07
 
 ### 会话列表页脚：版本号移出，42px「任务中心 · N」

@@ -12,13 +12,12 @@ import { join } from "node:path";
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import {
-  DESKTOP_CONTAINER_BY_ROUTE,
+  DESKTOP_LEGACY_LANDING,
   DESKTOP_NAV,
   MOBILE_ALIASES,
   MOBILE_GROUPS,
   MOBILE_SECTIONS,
   ROUTE_SECTIONS,
-  desktopContainerForRoute,
   normalizeMobileSectionKey,
   resolveDesktopRouteKey,
   resolveMobileSectionKey,
@@ -28,44 +27,31 @@ const srcDir = join(import.meta.dirname, "..");
 const read = (rel: string) => readFileSync(join(srcDir, rel), "utf8");
 
 /**
- * 4 个顶层容器 → 标签键 → 该容器内渲染的分区组件（firstGroupKey 只对单组件容器生效）。
+ * 9 个桌面分区 → 导航标签键 → 该页渲染的分区组件。
  *
- * 2026-10-25（用户第 4 版口径）：通用 / 网络 / 文件与存储 / 关于。
- * 「文件与存储」= 存储 + 文件 + 重置与恢复；「安全」并入「关于」。
+ * 2026-11-07（用户 11-06「3 可以」）：桌面从 4 容器改为 **9 分区双栏**，
+ * 与移动端同名同序。桌面独有的「文件」归在文件与存储页、「安全」归在关于页。
  */
 const EXPECTED = [
-  {
-    key: "general",
-    labelKey: "settings.group.general",
-    components: [
-      "ProfileSection",
-      "GeneralSection",
-      "AppearanceSection",
-      "ChatStyleSection",
-      "NotificationSection",
-    ],
-    firstGroupKey: null,
-  },
-  {
-    key: "network",
-    labelKey: "settings.item.network",
-    components: ["NetworkSection"],
-    firstGroupKey: null,
-  },
+  { key: "profile", labelKey: "settings.item.profile", components: ["ProfileSection"] },
+  { key: "general", labelKey: "settings.item.general", components: ["GeneralSection"] },
+  { key: "appearance", labelKey: "settings.item.appearance", components: ["AppearanceSection"] },
+  { key: "chatStyle", labelKey: "settings.item.chatStyle", components: ["ChatStyleSection"] },
+  { key: "notifications", labelKey: "settings.item.notification", components: ["NotificationSection"] },
+  { key: "network", labelKey: "settings.item.network", components: ["NetworkSection"] },
   {
     key: "storageFiles",
     labelKey: "settings.item.storageFiles",
-    // 存储、文件与重置与恢复同属这一组（重置不再留在通用）。
-    components: ["StorageSection", "FilesSection", "ResetSection"],
-    firstGroupKey: null,
+    // 存储 + 文件同属这一页（重置单独一页）。
+    components: ["StorageSection", "FilesSection"],
   },
   {
     key: "about",
     labelKey: "settings.item.about",
-    // 安全并入关于，不再单独一组。
+    // 安全并入关于，不另立导航项。
     components: ["SecuritySection", "AboutSection"],
-    firstGroupKey: null,
   },
+  { key: "reset", labelKey: "settings.item.reset", components: ["ResetSection"] },
 ] as const;
 
 test("每个顶层导航项都渲染了它承诺的分区组件（标签即内容）", () => {
@@ -74,8 +60,7 @@ test("每个顶层导航项都渲染了它承诺的分区组件（标签即内�
     const nav = DESKTOP_NAV.find((n) => n.key === item.key);
     assert.ok(nav, `SettingsWindow 导航清单缺 ${item.key}`);
     assert.equal(nav.labelKey, item.labelKey, `导航项 ${item.key} 的标签键变了`);
-    // 4 个顶层容器：条件写作 `desktopSection === 'key'`；各容器内渲染多个组件。
-    const at = win.indexOf(`desktopSection === '${item.key}'`);
+    const at = win.indexOf(`section === '${item.key}'`);
     assert.ok(at >= 0, `SettingsWindow 里没有 ${item.key} 的渲染分支`);
     const window_ = win.slice(Math.max(0, at - 250), at + 2500);
     for (const component of item.components) {
@@ -87,18 +72,22 @@ test("每个顶层导航项都渲染了它承诺的分区组件（标签即内�
   }
 });
 
-test("单组件容器的第一组标题与导航标签同名（通用/网络是容器，豁免）", () => {
-  for (const item of EXPECTED) {
-    if (!item.firstGroupKey) continue;
-    const component = item.components[0];
-    const src = read(`components/settings/${component}.vue`);
-    const titles = [...src.matchAll(/:title="t\('([^']+)'\)"/g)].map((m) => m[1]);
-    assert.ok(titles.length > 0, `${component} 应有 SettingsGroup 标题`);
-    assert.equal(
-      titles[0],
-      item.firstGroupKey,
-      `${component} 的第一组标题是 ${titles[0]}，与导航标签 ${item.firstGroupKey} 不一致`,
-    );
+test("桌面左栏 = 9 个分区，与移动端同名同序（用户 11-06「3 可以」）", () => {
+  // 移动端 9 项的顺序；桌面复数 notifications 对应移动单数 notification。
+  const desktopOrder = MOBILE_SECTIONS.map((s) =>
+    s.key === "notification" ? "notifications" : s.key,
+  );
+  assert.equal(DESKTOP_NAV.length, 9, `桌面导航应为 9 项，实际 ${DESKTOP_NAV.length}`);
+  assert.deepEqual(
+    DESKTOP_NAV.map((n) => n.key),
+    desktopOrder,
+    "桌面导航顺序与移动端不一致",
+  );
+  for (const s of MOBILE_SECTIONS) {
+    const desktopKey = s.key === "notification" ? "notifications" : s.key;
+    const nav = DESKTOP_NAV.find((n) => n.key === desktopKey);
+    assert.ok(nav, `桌面导航缺 ${desktopKey}`);
+    assert.equal(nav.labelKey, s.titleKey, `${desktopKey} 的标签键与移动端条目名不一致`);
   }
 });
 
@@ -261,31 +250,23 @@ const MOBILE_COMPONENTS_GOLDEN = {
 } as const;
 
 const DESKTOP_NAV_GOLDEN = [
-  { key: "general", labelKey: "settings.group.general", iconKey: "sliders" },
+  { key: "profile", labelKey: "settings.item.profile", iconKey: "user" },
+  { key: "general", labelKey: "settings.item.general", iconKey: "sliders" },
+  { key: "appearance", labelKey: "settings.item.appearance", iconKey: "palette" },
+  { key: "chatStyle", labelKey: "settings.item.chatStyle", iconKey: "bubble" },
+  { key: "notifications", labelKey: "settings.item.notification", iconKey: "bell" },
   { key: "network", labelKey: "settings.item.network", iconKey: "wifi" },
   { key: "storageFiles", labelKey: "settings.item.storageFiles", iconKey: "storage" },
   { key: "about", labelKey: "settings.item.about", iconKey: "info" },
+  { key: "reset", labelKey: "settings.item.reset", iconKey: "rotate" },
 ] as const;
-
-const DESKTOP_CONTAINER_GOLDEN = {
-  profile: "general",
-  general: "general",
-  notifications: "general",
-  appearance: "general",
-  network: "network",
-  files: "storageFiles",
-  storage: "storageFiles",
-  storageFiles: "storageFiles",
-  security: "about",
-  about: "about",
-  reset: "storageFiles",
-} as const;
 
 const ROUTE_SECTIONS_GOLDEN = [
   "profile",
   "general",
   "notifications",
   "appearance",
+  "chatStyle",
   "network",
   "files",
   "storage",
@@ -296,29 +277,30 @@ const ROUTE_SECTIONS_GOLDEN = [
 ] as const;
 
 /**
- * 每个路由键在两个外壳里的落点。
- *
- * `desktop` 是 `SettingsWindow` 的 4 容器之一；`routeValid=false` 的两个键
- * （`chatStyle` / `notification`）是**移动端专属**，桌面路由不认识它们，由跨端兼容表
- * 映射到内容所在容器（`notification → notifications`、`chatStyle → general`）。
- * `mobile` 是两个端都能落到真实分区：桌面复数 `notifications` → 移动单数 `notification`；
- * 未知键在两端都回落默认分区并提示，不再退回一级列表或停在空页。
+ * 每个路由键在桌面那一栏落到哪一页（`chatStyle` 2026-11-07 起是桌面共用路由；
+ * `files/storage/security` 是旧键，落到所属页：storageFiles / about）。
  */
 const DEEP_LINK_MATRIX = [
-  { routeKey: "profile", routeValid: true, desktop: "general", mobile: "profile" },
+  { routeKey: "profile", routeValid: true, desktop: "profile", mobile: "profile" },
   { routeKey: "general", routeValid: true, desktop: "general", mobile: "general" },
-  { routeKey: "notifications", routeValid: true, desktop: "general", mobile: "notification" },
-  { routeKey: "appearance", routeValid: true, desktop: "general", mobile: "appearance" },
+  { routeKey: "notifications", routeValid: true, desktop: "notifications", mobile: "notification" },
+  { routeKey: "appearance", routeValid: true, desktop: "appearance", mobile: "appearance" },
+  { routeKey: "chatStyle", routeValid: true, desktop: "chatStyle", mobile: "chatStyle" },
   { routeKey: "network", routeValid: true, desktop: "network", mobile: "network" },
   { routeKey: "files", routeValid: true, desktop: "storageFiles", mobile: "storageFiles" },
   { routeKey: "storage", routeValid: true, desktop: "storageFiles", mobile: "storageFiles" },
   { routeKey: "storageFiles", routeValid: true, desktop: "storageFiles", mobile: "storageFiles" },
   { routeKey: "security", routeValid: true, desktop: "about", mobile: "about" },
   { routeKey: "about", routeValid: true, desktop: "about", mobile: "about" },
-  { routeKey: "reset", routeValid: true, desktop: "storageFiles", mobile: "reset" },
-  { routeKey: "chatStyle", routeValid: false, desktop: "general", mobile: "chatStyle" },
-  { routeKey: "notification", routeValid: false, desktop: "general", mobile: "notification" },
+  { routeKey: "reset", routeValid: true, desktop: "reset", mobile: "reset" },
+  { routeKey: "notification", routeValid: false, desktop: "notifications", mobile: "notification" },
 ] as const;
+
+/** 桌面深链落点：合法路由先按旧键表归位，再交给导航清单。 */
+function desktopLanding(routeKey: string): string {
+  const res = resolveDesktopRouteKey(routeKey);
+  return (DESKTOP_LEGACY_LANDING as Record<string, string>)[res.key] ?? res.key;
+}
 
 /** 从源码里切一个以 `};` 收尾的对象块。 */
 function sourceBlock(src: string, marker: string, endMarker: string): string {
@@ -356,7 +338,7 @@ test("设置清单 golden：移动/桌面/路由三份键集、顺序、别名�
     DESKTOP_NAV.map((n) => ({ key: n.key, labelKey: n.labelKey, iconKey: n.iconKey })),
     DESKTOP_NAV_GOLDEN.map((n) => ({ ...n })),
   );
-  assert.deepEqual({ ...DESKTOP_CONTAINER_BY_ROUTE }, { ...DESKTOP_CONTAINER_GOLDEN });
+  assert.deepEqual({ ...DESKTOP_LEGACY_LANDING }, { files: "storageFiles", storage: "storageFiles", security: "about" });
   assert.deepEqual([...ROUTE_SECTIONS], [...ROUTE_SECTIONS_GOLDEN]);
 
   // 两个外壳真的在消费清单，而不是各自又留一份数组。
@@ -366,12 +348,12 @@ test("设置清单 golden：移动/桌面/路由三份键集、顺序、别名�
   assert.ok(panel.includes("resolveMobileSectionKey"), "SettingsPanel 没消费别名归一");
   assert.ok(win.includes('from "@/utils/settingsManifest"'), "SettingsWindow 没接清单");
   assert.ok(win.includes("DESKTOP_NAV"), "SettingsWindow 没消费 DESKTOP_NAV");
-  assert.ok(win.includes("desktopContainerForRoute"), "SettingsWindow 没消费容器映射");
+  assert.ok(win.includes("DESKTOP_LEGACY_LANDING"), "SettingsWindow 没消费旧路由落点表");
   assert.ok(win.includes("resolveDesktopRouteKey"), "SettingsWindow 没消费跨端兼容解析");
   assert.ok(router.includes("ROUTE_SECTIONS"), "router/settings.ts 没消费 ROUTE_SECTIONS");
 });
 
-test("设置深链矩阵：每个路由键的桌面容器/移动落点/未知键回退与现状一致", () => {
+test("设置深链矩阵：每个路由键的桌面落点/移动落点/未知键回退与现状一致", () => {
   const panel = read("components/SettingsPanel.vue");
   const win = read("components/SettingsWindow.vue");
 
@@ -382,9 +364,9 @@ test("设置深链矩阵：每个路由键的桌面容器/移动落点/未知键
       `路由键 ${row.routeKey} 的合法性变了（期望 ${row.routeValid}）`,
     );
     assert.equal(
-      desktopContainerForRoute(resolveDesktopRouteKey(row.routeKey).key),
+      desktopLanding(row.routeKey),
       row.desktop,
-      `路由键 ${row.routeKey} 的桌面容器变了（期望 ${row.desktop}）`,
+      `路由键 ${row.routeKey} 的桌面落点变了（期望 ${row.desktop}）`,
     );
     const resolved = resolveMobileSectionKey(row.routeKey);
     assert.equal(
@@ -406,7 +388,7 @@ test("设置深链矩阵：每个路由键的桌面容器/移动落点/未知键
     "桌面回落没有可理解的提示",
   );
   assert.ok(
-    win.includes('router.replace({ name: "settings-section", params: { key: res.key } })'),
+    win.includes('router.replace({ name: "settings-section", params: { key: canonical ?? res.key } })'),
     "桌面未知路由键不再 replace 到解析后的落点",
   );
   assert.ok(panel.includes("resolveMobileSectionKey"), "移动端分区不再走解析器");
@@ -420,15 +402,20 @@ test("设置深链矩阵：每个路由键的桌面容器/移动落点/未知键
   );
 });
 
-test("设置清单完整性反控：每个路由键都有容器映射，漏映射必须被抓住", () => {
-  const missing = ROUTE_SECTIONS.filter((key) => !(key in DESKTOP_CONTAINER_BY_ROUTE));
-  assert.deepEqual(missing, [], "有路由键没有桌面容器映射");
+test("设置清单完整性反控：每个路由键都落到导航里真实存在的一页，漏映射必须被抓住", () => {
+  const navKeys = DESKTOP_NAV.map((n) => n.key) as string[];
+  // 这里刻意不走 resolveDesktopRouteKey：未知键会被兜底成 general，检查器就空转了。
+  const landingOf = (key: string) =>
+    (DESKTOP_LEGACY_LANDING as Record<string, string>)[key] ?? key;
+  const missing = ROUTE_SECTIONS.filter((key) => !navKeys.includes(landingOf(key)));
+  assert.deepEqual(missing, [], "有路由键没有可渲染的桌面分区");
 
   // 反控：往合成清单里加一个不存在的 key，同一个检查器必须说 missing。
   const synthetic = [...ROUTE_SECTIONS, "ghost"];
-  const syntheticMissing = synthetic.filter((key) => !(key in DESKTOP_CONTAINER_BY_ROUTE));
+  const syntheticMissing = synthetic.filter((key) => !navKeys.includes(landingOf(key)));
   assert.deepEqual(syntheticMissing, ["ghost"], "漏映射检查器在空集上恒绿");
 
-  assert.equal(desktopContainerForRoute("ghost"), "general", "未知路由键不再落到 general");
+  assert.equal(resolveDesktopRouteKey("ghost").key, "general");
+  assert.ok(navKeys.includes(landingOf("general")));
   assert.equal(normalizeMobileSectionKey("ghost"), "ghost", "未知移动端键被错误归一");
 });

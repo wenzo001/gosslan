@@ -15,12 +15,13 @@ import { test } from "node:test";
 import {
   DEFAULT_DESKTOP_ROUTE,
   DEFAULT_MOBILE_SECTION,
+  DESKTOP_LEGACY_LANDING,
+  DESKTOP_NAV,
   DESKTOP_ONLY_SECTIONS,
   MOBILE_ALIASES,
   MOBILE_ONLY_SECTIONS,
   MOBILE_SECTIONS,
   ROUTE_SECTIONS,
-  desktopContainerForRoute,
   resolveDesktopRouteKey,
   resolveMobileSectionKey,
 } from "./settingsManifest.ts";
@@ -30,17 +31,24 @@ const read = (rel: string) => readFileSync(join(srcDir, rel), "utf8");
 
 const MOBILE_KEYS = MOBILE_SECTIONS.map((s) => s.key) as string[];
 const ROUTE_KEYS = [...ROUTE_SECTIONS] as string[];
-const DESKTOP_CONTAINERS = ["general", "network", "storageFiles", "about"] as const;
+const DESKTOP_NAV_KEYS = DESKTOP_NAV.map((n) => n.key) as string[];
+
+/** 桌面深链落点：合法路由先按旧键表归位，再交给 9 分区导航。 */
+const desktopLanding = (key: string): string => {
+  const resolved = resolveDesktopRouteKey(key).key;
+  return (DESKTOP_LEGACY_LANDING as Record<string, string>)[resolved] ?? resolved;
+};
 
 test("两端分区差异清单：共有 / 仅桌面 / 仅移动逐项固定", () => {
   const common = ROUTE_KEYS.filter((key) => MOBILE_KEYS.includes(key));
   const desktopOnly = ROUTE_KEYS.filter((key) => !MOBILE_KEYS.includes(key));
   const mobileOnly = MOBILE_KEYS.filter((key) => !ROUTE_KEYS.includes(key));
 
-  assert.deepEqual(common, ["profile", "general", "appearance", "network", "storageFiles", "about", "reset"]);
+  assert.deepEqual(common, ["profile", "general", "appearance", "chatStyle", "network", "storageFiles", "about", "reset"]);
   // files / storage / security 是桌面仍在用的旧路由键，移动端用别名接住（不是死键）。
   assert.deepEqual(desktopOnly, ["notifications", "files", "storage", "security"]);
-  assert.deepEqual(mobileOnly, ["chatStyle", "notification"]);
+  // chatStyle 2026-11-07 起已是桌面共用路由，只剩单数 notification 是移动端专属。
+  assert.deepEqual(mobileOnly, ["notification"]);
 });
 
 test("双向兼容表：桌面键 ↔ 移动键在两个上下文都落到预期分区", () => {
@@ -73,12 +81,12 @@ test("历史别名：旧 mobile 键与 desktop 路由键都不会落空", () => 
     assert.equal(mobile.aliased, true, `旧键 ${legacy} 没有走移动端别名`);
     assert.equal(mobile.fallback, false, `旧键 ${legacy} 不应该回落到默认分区`);
 
-    // desktop：三条旧键本身就是合法路由，且容器与移动端落点一致。
+    // desktop：三条旧键本身就是合法路由，且落到与移动端落点相同的页面。
     const desktop = resolveDesktopRouteKey(legacy);
     assert.equal(desktop.fallback, false, `旧键 ${legacy} 在桌面端落空了`);
     assert.equal(
-      desktopContainerForRoute(desktop.key),
-      desktopContainerForRoute(target),
+      desktopLanding(desktop.key),
+      desktopLanding(target),
       `旧键 ${legacy} 在桌面端与移动端打开了不同区域`,
     );
   }
@@ -90,8 +98,8 @@ test("逐个分区矩阵：desktop 与 mobile 两种上下文都返回真实分�
     assert.ok(ROUTE_KEYS.includes(desktop.key), `desktop 上下文：${key} → ${desktop.key} 不存在`);
     assert.equal(desktop.fallback, false, `desktop 上下文：合法路由键 ${key} 不应回落`);
     assert.ok(
-      (DESKTOP_CONTAINERS as readonly string[]).includes(desktopContainerForRoute(desktop.key)),
-      `desktop 上下文：${key} 没有对应的渲染容器`,
+      DESKTOP_NAV_KEYS.includes(desktopLanding(desktop.key)),
+      `desktop 上下文：${key} 没有对应的渲染分区`,
     );
 
     const mobile = resolveMobileSectionKey(key);
@@ -123,7 +131,8 @@ test("未知/不存在分区：两端都回落到同一个明确的默认分区�
     assert.equal(desktop.fallback, true, `desktop 未知键 ${JSON.stringify(raw)} 没标记回落`);
     assert.equal(desktop.aliased, false, `desktop 未知键 ${JSON.stringify(raw)} 不应伪装成别名`);
   }
-  assert.equal(desktopContainerForRoute(DEFAULT_DESKTOP_ROUTE), "general");
+  assert.equal(resolveDesktopRouteKey(DEFAULT_DESKTOP_ROUTE).key, "general");
+  assert.ok(DESKTOP_NAV_KEYS.includes(desktopLanding(DEFAULT_DESKTOP_ROUTE)));
 });
 
 test("两个外壳消费解析器、渲染全部落点并给出提示（不白屏、不静默）", () => {
@@ -142,11 +151,11 @@ test("两个外壳消费解析器、渲染全部落点并给出提示（不白�
       `SettingsPanel 缺 ${key} 的渲染分支`,
     );
   }
-  // 桌面 4 容器同理。
-  for (const container of DESKTOP_CONTAINERS) {
+  // 桌面 9 分区同理（导航键就是渲染键）。
+  for (const key of DESKTOP_NAV_KEYS) {
     assert.ok(
-      win.includes(`desktopSection === '${container}'`) || win.includes(`desktopSection === "${container}"`),
-      `SettingsWindow 缺 ${container} 的渲染分支`,
+      win.includes(`section === '${key}'`) || win.includes(`section === "${key}"`),
+      `SettingsWindow 缺 ${key} 的渲染分支`,
     );
   }
 
