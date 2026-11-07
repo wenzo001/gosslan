@@ -2211,7 +2211,7 @@ const LITERAL_RADIUS_RE = /^rounded(?:-[trbl]{1,2})?-(sm|md|lg|xl|2xl|3xl|\[[^\]
  * **明确保留**的三个语义别名（`--gosslan-avatar-radius` / `--gosslan-item-radius` /
  * `--gosslan-bubble-radius`，见 docs/design-guidelines.md §1.2 末行）。
  */
-const TOKEN_RADIUS_RE = /^rounded(?:-[trbl]{1,2})?-\[var\(--gosslan-[a-z-]+\)\]$/;
+const TOKEN_RADIUS_RE = /^rounded(?:-[trbl]{1,2})?-\[var\(--gosslan-[a-z0-9-]+\)\]$/;
 
 export function findLiteralRadiusClasses(src: string): GuardIssue[] {
 
@@ -3751,4 +3751,99 @@ export function findMissingPlaceholderRule(css: string): GuardIssue[] {
     });
   }
   return out.sort((a, b) => a.line - b.line);
+}
+
+// ---------------- CN：同心几何（品牌底盘内标记 / 窗口右上角头像） ----------------
+
+/**
+ * 同心圆角的唯一判据：**内圆角 = 外圆角 − 内外间距**（下限 0）。
+ *
+ * 1) 品牌底盘（68px orb，外圆角 16）里塞的是 `app-mark.png` —— 位图自带**方形**蓝底。
+ *    不削角就会在圆角底盘的四角露出直角（2026-11-07 用户反馈：「中心图标直方形与圆角
+ *    矩形不协调」）。内圆角必须由「外圆角 − 每边内距」算出来，不许手写死值：
+ *       · 44px 标记：68−44 每边 12 ⇒ 16−12 = 4
+ *       · 56px 标记：68−56 每边 6  ⇒ 16−6  = 10
+ *
+ * 2) 主窗右上角：头像是 28px 圆、标题栏 40px ⇒ 上下内距各 6。右侧簇若仍留 12，
+ *    右上角就是「左宽右窄」（用户原话）。等内距 + macOS 26 的 20px 窗口圆角
+ *    正好满足 20−6 = 14 = 头像半径（严格同心）；Windows 11（8px）退化为等内距 fallback。
+ *
+ * 反例自证：删掉标记上的 `rounded-[var(--gosslan-orb-mark-*)]`、把 `pr-1.5` 改回 `pr-3`、
+ * 或把内距算错的 calc 写进 style.css —— 都必须红。
+ */
+export function checkConcentricGeometry(src: {
+  styleCss: string;
+  titleBar: string;
+  layout: string;
+  conversationList: string;
+}): GuardIssue[] {
+  const out: GuardIssue[] = [];
+  const ORB_SIZE = 68;
+  const outer = Number(src.styleCss.match(/--gosslan-radius-xl\s*:\s*(\d+)px/)?.[1] ?? 0);
+  if (!outer) {
+    out.push({ line: 0, message: "CN-01：style.css 里读不到 `--gosslan-radius-xl` —— 同心圆角没有基准。" });
+  }
+
+  const sites = [
+    { file: "ResponsiveLayout.vue", src: src.layout, size: 44, token: "--gosslan-radius-orb-mark-44" },
+    { file: "ConversationList.vue", src: src.conversationList, size: 56, token: "--gosslan-radius-orb-mark-56" },
+  ];
+  for (const site of sites) {
+    const inset = (ORB_SIZE - site.size) / 2;
+    const expected = Math.max(outer - inset, 0);
+
+    const imgTag = [...site.src.matchAll(/<img[^>]*>/g)]
+      .map((m) => m[0])
+      .find((t) => t.includes("appMark"));
+    if (!imgTag) {
+      out.push({ line: 0, message: `CN-01：${site.file} 里找不到 \`appMark\` 标记位图 —— 同心圆角契约已漂。` });
+    } else if (!imgTag.includes(`rounded-[var(${site.token})]`)) {
+      out.push({
+        line: lineAt(site.src, site.src.indexOf(imgTag)),
+        message:
+          `CN-01：${site.file} 的 ${site.size}px 标记位图没有同心圆角（应为 \`rounded-[var(${site.token})]\`）` +
+          ` —— 方形蓝底会在 ${ORB_SIZE}px 圆角底盘里露出直角（应为 ${expected}px）。`,
+      });
+    }
+
+    const calc = new RegExp(
+      `${site.token}\\s*:\\s*calc\\(\\s*var\\(--gosslan-radius-xl\\)\\s*-\\s*${inset}px\\s*\\)`,
+    );
+    if (!calc.test(src.styleCss)) {
+      out.push({
+        line: 0,
+        message:
+          `CN-01：\`${site.token}\` 必须是 \`calc(var(--gosslan-radius-xl) - ${inset}px)\`` +
+          `（${ORB_SIZE}−${site.size} 每边 ${inset}px ⇒ 内圆角 ${expected}px）—— 手写死值会随外圆角漂。`,
+      });
+    }
+  }
+
+  // 2) 右上角头像：右内距必须等于纵向内距（(标题栏高 − 头像边长)/2）。
+  const titleH = Number(src.styleCss.match(/--gosslan-title-h\s*:\s*(\d+)px/)?.[1] ?? 0);
+  const rightSlot = src.titleBar.match(/<div[^>]*\bv-if="\$slots\.right"[^>]*>/)?.[0] ?? "";
+  if (!rightSlot) {
+    out.push({ line: 0, message: 'CN-02：TitleBar 里找不到 `v-if="$slots.right"` 的右侧簇 —— 无法确认右上角内距。' });
+  }
+  const avatarTag = [...src.layout.matchAll(/<SelfAvatar[^>]*>/g)].map((m) => m[0]).find((t) => t.includes("h-7"));
+  if (!avatarTag) {
+    out.push({ line: 0, message: "CN-02：主窗右侧簇里找不到 `h-7 w-7` 的本人头像 —— 同心几何的基准已漂。" });
+  } else if (titleH) {
+    const avatarPx = Number(avatarTag.match(/\bh-7\b/) ? 28 : 0);
+    const expectPr = (titleH - avatarPx) / 2;
+    const prToken = rightSlot?.match(/\bpr-(\d+(?:\.\d+)?)/)?.[1];
+    const actualPr = prToken ? Number(prToken) * 4 : -1;
+    if (actualPr !== expectPr) {
+      out.push({
+        line: lineAt(src.titleBar, src.titleBar.indexOf(rightSlot ?? "")),
+        message:
+          `CN-02：右上角右内距 \`pr-${prToken ?? "?"}\`（${actualPr}px）与头像纵向内距 ${expectPr}px 不等` +
+          `（${titleH}px 标题栏里的 ${avatarPx}px 圆）—— 右上角会一边宽一边窄，也不与窗口圆角同心。`,
+      });
+    }
+  }
+  if (!titleH && !out.some((i) => i.message.startsWith("CN-02"))) {
+    out.push({ line: 0, message: "CN-02：style.css 的 `--gosslan-title-h` 读不到 —— 头像同心几何的基准丢了。" });
+  }
+  return out;
 }

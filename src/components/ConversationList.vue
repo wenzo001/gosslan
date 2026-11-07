@@ -631,9 +631,18 @@ useEventListener(document, "click", closeFriendMenu);
           class="flex min-h-full flex-col items-center justify-center px-9 pb-10 text-center"
         >
           <div
+            data-orb
             class="mb-4 flex h-[68px] w-[68px] items-center justify-center rounded-[var(--gosslan-radius-xl)] bg-[var(--gosslan-panel)] shadow-[inset_0_0_0_1px_var(--gosslan-border)]"
           >
-            <img :src="appMark" class="h-14 w-14" alt="" aria-hidden="true" draggable="false" />
+            <!-- 标记位图自带方形蓝底，按同心圆角削角（68−56 每边 6，16−6=10）。 -->
+            <img
+              data-orb-mark="56"
+              :src="appMark"
+              class="h-14 w-14 rounded-[var(--gosslan-radius-orb-mark-56)]"
+              alt=""
+              aria-hidden="true"
+              draggable="false"
+            />
           </div>
           <h2 class="text-title-lg font-semibold leading-[26px] text-[var(--gosslan-text)]">{{ t("conv.noConversation") }}</h2>
           <p class="mt-2 text-fine leading-[19px] text-[var(--gosslan-text-2)]">

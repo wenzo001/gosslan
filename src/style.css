@@ -328,6 +328,15 @@
   --gosslan-radius-xl: 16px; /* 大面板：模态、资料卡 */
   --gosslan-radius-pill: 9999px;
 
+  /* ---------------- 品牌底盘（68px orb）内嵌标记的同心圆角（2026-11-07） ----------------
+     标记位图 app-mark.png 自带**方形**蓝底；直接塞进 16px 圆角底盘会在四角露出直角。
+     按上面第 ③ 类规则算：内圆角 = 外圆角 − 内外间距
+       · desktop/mobile 空态：68 − 44 = 24，每边 12 → 16 − 12 = 4px
+       · 列表页移动端空态：68 − 56 = 12，每边 6 → 16 − 6 = 10px
+     两处都必须用 token，不许写字面量（designGuards CN-01 守着）。 */
+  --gosslan-radius-orb-mark-44: calc(var(--gosslan-radius-xl) - 12px);
+  --gosslan-radius-orb-mark-56: calc(var(--gosslan-radius-xl) - 6px);
+
   /* 语义别名（保留旧名以免大范围改动；值统一来自上面的梯度） */
   --gosslan-avatar-radius: 9999px;
   --gosslan-item-radius: var(--gosslan-radius-md);

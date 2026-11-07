@@ -4458,6 +4458,7 @@ async function main() {
     const scrollstable = want("scrollstable");
     const previewclip = want("previewclip");
     const composerfloat = want("composerfloat");
+    const concentric = want("concentric");
     const todosync = want("todosync");
     const tododelete = want("tododelete");
     const todoarchive = want("todoarchive");
@@ -4702,6 +4703,7 @@ async function main() {
     await runSegment("scrollstable", scrollstable, () => runScrollStable(cdp, url));
     await runSegment("previewclip", previewclip, () => runPreviewClip(cdp, url));
     await runSegment("composerfloat", composerfloat, () => runComposerFloat(cdp, url));
+    await runSegment("concentric", concentric, () => runConcentric(cdp, url));
     await runSegment("todosync", todosync, () => runTodoSync(cdp, url));
     await runSegment("tododelete", tododelete, () => runTodoDelete(cdp, url));
     await runSegment("todoarchive", todoarchive, () => runTodoArchive(cdp, url));
@@ -26187,6 +26189,142 @@ async function runComposerFloat(cdp, url) {
       document.documentElement.classList.remove('dark');
       return true;
     })()`).catch(() => {});
+  }
+}
+
+/**
+ * ⑤+⑥ 同心几何：内圆角 = 外圆角 − 内外间距（2026-11-07）。
+ *
+ * 两件事一起量：
+ *   · 品牌底盘（68px orb，外圆角 16）里的方形标记位图：44px → 4px、56px → 10px；
+ *   · 主窗右上角头像：右内距必须等于纵向内距（40px 标题栏 / 28px 圆 ⇒ 各 6），
+ *     且与 macOS 26 的 ~20px 窗口圆角同心（圆心偏差 ≤1px）。
+ * 反面对照：把右侧簇的 padding-right 改回 12px，内距差必须跳出来（否则量具恒绿）。
+ */
+async function runConcentric(cdp, url) {
+  const shotDir = path.join(ROOT, "test-results", "ui-2026-11-07");
+  fs.mkdirSync(shotDir, { recursive: true });
+  await cdp.send("Page.bringToFront").catch(() => {});
+  await cdp.send("Emulation.setEmulatedMedia", { features: [] }).catch(() => {});
+  const HEIGHT = 800;
+
+  const boot = async (width, mobile) => {
+    await cdp.send("Emulation.setDeviceMetricsOverride", {
+      width, height: HEIGHT, deviceScaleFactor: 1, mobile,
+    }).catch(() => {});
+    await cdp.send("Page.navigate", { url });
+    await cdp.settled();
+    await sleep(2_200);
+    await cdp.eval(PAGE_FIXTURE);
+    await cdp.eval(`(async () => {
+      window.__TAURI_INTERNALS__ = {
+        metadata: { currentWindow: { label: 'main' }, currentWebview: { label: 'main', windowLabel: 'main' } },
+        invoke: async () => null, transformCallback: (cb) => cb, convertFileSrc: (p) => p,
+      };
+      window.__TAURI_EVENT_PLUGIN_INTERNALS__ = window.__TAURI_EVENT_PLUGIN_INTERNALS__ || { unregisterListener: () => {} };
+      document.documentElement.setAttribute('data-ambient', 'off');
+      await window.__probe.install('/src/layouts/ResponsiveLayout.vue', '', ${
+        JSON.stringify(JSON.stringify({ router: true, hostHeight: `${HEIGHT}px` }))
+      });
+      return true;
+    })()`);
+    await sleep(800);
+  };
+
+  const ORB = `(() => {
+    const orb = document.querySelector('[data-orb]');
+    const mark = document.querySelector('[data-orb-mark]');
+    if (!orb || !mark) return null;
+    const r = orb.getBoundingClientRect();
+    const m = mark.getBoundingClientRect();
+    return {
+      orbSize: +r.width.toFixed(2),
+      orbRadius: getComputedStyle(orb).borderTopLeftRadius,
+      markSize: +m.width.toFixed(2),
+      markRadius: getComputedStyle(mark).borderTopLeftRadius,
+      inset: +(((r.width - m.width) / 2)).toFixed(2),
+    };
+  })()`;
+
+  const AVATAR = `(() => {
+    const host = document.getElementById('probe-host');
+    const btn = document.querySelector('.tap-safe.relative');
+    if (!host || !btn) return null;
+    const hr = host.getBoundingClientRect();
+    const br = btn.getBoundingClientRect();
+    const bh = getComputedStyle(host);
+    const hostRight = hr.right - (parseFloat(bh.borderRightWidth) || 0);
+    const hostTop = hr.top + (parseFloat(bh.borderTopWidth) || 0);
+    const radius = Math.min(br.width, br.height) / 2;
+    const WINDOW_CORNER = 20; // macOS 26 系统窗口圆角（Windows 11 为 8，见任务台账 #23）
+    return {
+      gapTop: +(br.top - hostTop).toFixed(2),
+      gapRight: +(hostRight - br.right).toFixed(2),
+      avatar: +br.width.toFixed(2),
+      radius: +radius.toFixed(2),
+      devX: +Math.abs((hostRight - br.right) + radius - WINDOW_CORNER).toFixed(2),
+      devY: +Math.abs((br.top - hostTop) + radius - WINDOW_CORNER).toFixed(2),
+      isMac: /Mac/.test(navigator.userAgent),
+    };
+  })()`;
+
+  const rows = {};
+  try {
+    await boot(1280, false);
+    rows.desktopOrb = await cdp.eval(ORB);
+    rows.avatar = await cdp.eval(AVATAR);
+    const shot = await cdp.send("Page.captureScreenshot", { format: "png" });
+    fs.writeFileSync(path.join(shotDir, "concentric-desktop-1280.png"), Buffer.from(shot.data, "base64"));
+
+    // 反面对照：把右侧簇的右内距改回 12px，内距差必须 ≠ 0。
+    rows.avatarCounter = await cdp.eval(`(() => {
+      const slot = document.querySelector('[data-no-drag-region]');
+      if (!slot) return null;
+      slot.style.paddingRight = '12px';
+      const host = document.getElementById('probe-host');
+      const btn = document.querySelector('.tap-safe.relative');
+      const hr = host.getBoundingClientRect();
+      const br = btn.getBoundingClientRect();
+      const bh = getComputedStyle(host);
+      const out = {
+        gapTop: +(br.top - (hr.top + (parseFloat(bh.borderTopWidth) || 0))).toFixed(2),
+        gapRight: +((hr.right - (parseFloat(bh.borderRightWidth) || 0)) - br.right).toFixed(2),
+      };
+      slot.style.paddingRight = '';
+      return out;
+    })()`);
+
+    await boot(390, true);
+    rows.mobileOrb = await cdp.eval(ORB);
+    const shot2 = await cdp.send("Page.captureScreenshot", { format: "png" });
+    fs.writeFileSync(path.join(shotDir, "concentric-mobile-390.png"), Buffer.from(shot2.data, "base64"));
+
+    console.log("  ℹ 同心读数：" + JSON.stringify(rows));
+
+    check("桌面品牌底盘：68px 外圆角 16px，44px 方形标记削成同心 4px（内距 12）",
+      !!rows.desktopOrb && rows.desktopOrb.orbSize === 68 && rows.desktopOrb.orbRadius === "16px"
+        && rows.desktopOrb.markSize === 44 && rows.desktopOrb.markRadius === "4px"
+        && rows.desktopOrb.inset === 12,
+      "orb 68/16 + mark 44/4 + inset 12", JSON.stringify(rows.desktopOrb));
+
+    check("移动端品牌底盘：56px 方形标记削成同心 10px（内距 6）",
+      !!rows.mobileOrb && rows.mobileOrb.markSize === 56 && rows.mobileOrb.markRadius === "10px"
+        && rows.mobileOrb.inset === 6,
+      "mark 56/10 + inset 6", JSON.stringify(rows.mobileOrb));
+
+    check("右上角头像：右内距 == 纵向内距（各 6px，差 ≤1px）",
+      !!rows.avatar && Math.abs(rows.avatar.gapTop - rows.avatar.gapRight) <= 1,
+      "|gapTop - gapRight| <= 1", JSON.stringify(rows.avatar));
+
+    check("右上角头像与窗口圆角同心（圆心偏差 ≤1px；非 macOS 走等距 fallback）",
+      !!rows.avatar && (!rows.avatar.isMac || (rows.avatar.devX <= 1 && rows.avatar.devY <= 1)),
+      "devX/devY <= 1（macOS）", JSON.stringify(rows.avatar));
+
+    check("反面对照：右内距改回 12px 后两向内距差必须 ≥5px（否则量具恒绿）",
+      !!rows.avatarCounter && Math.abs(rows.avatarCounter.gapTop - rows.avatarCounter.gapRight) >= 5,
+      "counter |gapTop - gapRight| >= 5", JSON.stringify(rows.avatarCounter));
+  } finally {
+    await cdp.send("Emulation.clearDeviceMetricsOverride").catch(() => {});
   }
 }
 

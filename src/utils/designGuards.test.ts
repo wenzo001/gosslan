@@ -31,6 +31,7 @@ import {
   checkAmbientMotion,
   checkSkeletonStatic,
   checkComposerSurface,
+  checkConcentricGeometry,
   checkAmbientChromeSurfaces,
   checkSelectionContract,
   findNestedThemeRuleIssues,
@@ -3466,6 +3467,11 @@ test("㊴ 字面圆角 → 报；token / full / none / 注释 → 放行（夹�
 
   const ok = `<template><div class="rounded-[var(--gosslan-radius-md)]"></div><span class="rounded-full"></span><em class="rounded-none"></em></template>`;
   assert.deepEqual(findLiteralRadiusClasses(ok), []);
+
+  // 派生 token 带数字（同心圆角按「外圆角 − 内距」算出的 4px/10px），仍属于 token 而非字面值
+  // （2026-11-07 首跑真实假阳性：`[a-z-]+` 会把 `--gosslan-radius-orb-mark-44` 判成字面量）。
+  const numbered = `<template><img class="rounded-[var(--gosslan-radius-orb-mark-44)]"><em class="rounded-[var(--gosslan-radius-orb-mark-56)]"></template>`;
+  assert.deepEqual(findLiteralRadiusClasses(numbered), [], "带数字的 --gosslan-* token 必须放行");
 
   // 规范明确保留的三个语义别名不能被当成字面值（2026-10-18 首跑真实假阳性）
   const aliases = `<template><div class="rounded-[var(--gosslan-avatar-radius)]"></div><div class="rounded-[var(--gosslan-item-radius)]"></div><div class="rounded-[var(--gosslan-bubble-radius)]"></div></template>`;
@@ -7832,4 +7838,60 @@ test("PC-01 反例自证：给 `.gosslan-menu` 写回 max-h-64 必须命中（�
   // 不误伤：菜单条目 / 提示行 / 只在注释里出现的旧写法。
   const ok = `<div class="gosslan-menu-item max-h-64"></div><!-- <div class="gosslan-menu max-h-64"></div> -->`;
   assert.deepEqual(findMenuHardMaxHeight(ok), []);
+});
+
+// ---------------- CN：同心几何 ----------------------------
+
+function concentricSources() {
+  const root = join(import.meta.dirname, "..", "..");
+  const read = (rel: string) => readFileSync(join(root, rel), "utf8");
+  return {
+    styleCss: read("src/style.css"),
+    titleBar: read("src/components/TitleBar.vue"),
+    layout: read("src/layouts/ResponsiveLayout.vue"),
+    conversationList: read("src/components/ConversationList.vue"),
+  };
+}
+
+test("CN-01/02：现树品牌底盘标记同心削角、右上角头像内距相等", () => {
+  const src = concentricSources();
+  const issues = checkConcentricGeometry(src);
+  assert.deepEqual(issues, [], issues.map((i) => `L${i.line} ${i.message}`).join("\n"));
+});
+
+test("CN-01 反例自证：删掉标记的同心圆角必须红", () => {
+  const src = concentricSources();
+  const broken = src.layout.replace("h-11 w-11 rounded-[var(--gosslan-radius-orb-mark-44)]", "h-11 w-11");
+  assert.notEqual(broken, src.layout, "锚点没命中：标记位图的 class 形状变了");
+  const issues = checkConcentricGeometry({ ...src, layout: broken });
+  assert.ok(
+    issues.some((i) => i.message.includes("CN-01") && i.message.includes("44px")),
+    `删掉 44px 标记的同心圆角必须报 CN-01，实际：${JSON.stringify(issues)}`,
+  );
+});
+
+test("CN-01 反例自证：把内距算错（12px → 8px）必须红", () => {
+  const src = concentricSources();
+  const broken = src.styleCss.replace(
+    "--gosslan-radius-orb-mark-44: calc(var(--gosslan-radius-xl) - 12px)",
+    "--gosslan-radius-orb-mark-44: calc(var(--gosslan-radius-xl) - 8px)",
+  );
+  assert.notEqual(broken, src.styleCss, "锚点没命中：44px 标记的圆角 token 变了形状");
+  const issues = checkConcentricGeometry({ ...src, styleCss: broken });
+  assert.ok(
+    issues.some((i) => i.message.includes("CN-01") && i.message.includes("12px")),
+    `内距算错必须报 CN-01，实际：${JSON.stringify(issues)}`,
+  );
+});
+
+test("CN-02 反例自证：右上角内距改回 pr-3（12px）必须红", () => {
+  const src = concentricSources();
+  const broken = src.titleBar.replace('class="ml-auto flex h-full shrink-0 items-center gap-1.5 pr-1.5"',
+    'class="ml-auto flex h-full shrink-0 items-center gap-1.5 pr-3"');
+  assert.notEqual(broken, src.titleBar, "锚点没命中：右侧簇的 class 变了形状");
+  const issues = checkConcentricGeometry({ ...src, titleBar: broken });
+  assert.ok(
+    issues.some((i) => i.message.includes("CN-02") && i.message.includes("12px")),
+    `右上角内距不等必须报 CN-02，实际：${JSON.stringify(issues)}`,
+  );
 });

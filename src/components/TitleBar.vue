@@ -273,10 +273,14 @@ onBeforeUnmount(() => {
     <!-- 主窗口的右侧功能组（连接状态 / 搜索 / 个性化 / 本人头像）。
          辅助窗口不传这个插槽 ⇒ 宽度为 0，完全不改变原来的标题栏。
          整组是拖拽区里的可点击区域：`mousedown.stop` 防止按下按钮时把窗口拖走。 -->
+    <!-- 右侧簇的右内距必须与头像的**纵向**内距相等（6px）：头像是 28px 圆，落在 40px 标题栏里
+         上下各 6；右侧再留 12 就会在右上角出现"左宽右窄"（2026-11-07 用户反馈）。
+         等内距 + macOS 26 的 20px 窗口圆角正好满足 r_inner = r_outer − inset（20−6=14=头像半径）；
+         Windows 11（8px 窗口圆角）退化为等内距 fallback，见 docs/notes/ui-pulse-redesign/tasks.md #23。 -->
     <div
       v-if="$slots.right"
       data-no-drag-region
-      class="ml-auto flex h-full shrink-0 items-center gap-1.5 pr-3"
+      class="ml-auto flex h-full shrink-0 items-center gap-1.5 pr-1.5"
       @mousedown.stop
     >
       <slot name="right" />
