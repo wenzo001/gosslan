@@ -323,3 +323,34 @@ test("发布门禁：Verify 绿了照常发布", () => {
   );
 });
 
+// ---------------------------------------------------------------------------
+//  发布任务的并发组（2026-11-07 实锤：v5.18.78 丢了 Windows 普通版附件）
+// ---------------------------------------------------------------------------
+
+/**
+ * 四条构建腿（macOS / Android / Windows / Windows-WebView2）各有一个 `挂到 Release` 任务。
+ * 它们曾经共用一个 `publish-release-<tag>` 组，本意只是"别同时创建"。
+ *
+ * GitHub 的语义不是排队到底：同一个组**只保留「1 条在跑 + 1 条排队」**，后到的排队会
+ * 把先排队的取消掉。v5.18.78 实测：Windows 普通版的发布任务在排队时被取消，
+ * `x64-setup.exe` / `arm64-setup.exe` 一个都没挂上去，updater-manifest 只能空等 45 分钟。
+ *
+ * 判据：组名必须带 `${{ github.workflow }}`（每条腿各串行各的）。
+ * 反例：把组名改回 `publish-release-${{ github.ref_name }}` ⇒ 本用例红。
+ * 跨 workflow 的创建竞争由脚本自身的幂等预检 + 退避重试兜住（见 publish-release-assets.sh 头注释）。
+ */
+test("★ 四条发布腿的并发组必须各自独立（共用组会取消排队中的那条）", () => {
+  const files = ["build.yml", "build-macos.yml", "build-android.yml", "build-windows-webview2.yml"];
+  for (const f of files) {
+    const src = readFileSync(join(import.meta.dirname, "..", ".github", "workflows", f), "utf8");
+    const m = src.match(/group:\s*(publish-release-[^\n]+)/);
+    assert.ok(m, `${f}：找不到发布任务的 concurrency 组`);
+    const group = m[1].trim();
+    assert.ok(
+      group.includes("${{ github.workflow }}"),
+      `${f} 的组名是 \`${group}\` —— 四条腿共用同一个组时，GitHub 只留「1 在跑 + 1 排队」，` +
+        "后到的排队会把先排队的取消（v5.18.78 就这样丢掉了 Windows 普通版的 setup.exe）",
+    );
+  }
+});
+

@@ -269,9 +269,10 @@ jobs:
     # ★ 2026-10-25 实锤：v5.8.0 的 Release 列表里出现了 **4 个同 tag 草稿**，只有 1 个带资产；
     #   `updater-manifest` 的 `head -1` 恰好挑中空的那个 ⇒ 白等 45 分钟超时。
     #   根因：四条腿**同时**查询"Release 不存在"→ 四条都创建成功（GitHub 不拦同 tag 并发创建）。
-    #   并发组只在 `release` 任务上（构建仍并行），由 GitHub 跨 workflow 串行化同一个 tag 的发布。
+    #   组名必须带 `github.workflow`（2026-11-07：共用组会让后到的排队把先排队的取消掉，
+    #   v5.18.78 实测 Windows 普通版的 `挂到 Release` 因此被取消，附件少一档）。
     concurrency:
-      group: publish-release-${{ github.ref_name }}
+      group: publish-release-${{ github.ref_name }}-${{ github.workflow }}
       cancel-in-progress: false
     runs-on: ubuntu-latest
     timeout-minutes: 30
