@@ -125,7 +125,7 @@ watch(
     v-if="open"
     ref="panelRef"
     data-emoji-panel
-    class="frost w-[min(360px,calc(100vw-2rem))] select-none rounded-[var(--gosslan-radius-lg)] border border-[var(--gosslan-border)] shadow-[var(--gosslan-glass-2-shadow)]"
+    class="gosslan-pop-clamp frost w-[min(360px,calc(100vw-2rem))] select-none rounded-[var(--gosslan-radius-lg)] border border-[var(--gosslan-border)] shadow-[var(--gosslan-glass-2-shadow)]"
     role="dialog"
     :aria-label="t('chat.composer.emoji')"
     tabindex="-1"

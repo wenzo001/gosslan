@@ -7611,3 +7611,145 @@ test("SC-01 反例自证：把 focus-visible:ring-inset 删掉必须命中（不
   assert.deepEqual(findOutsetFocusRings(`<button class="focus-visible:ring-offset-2"></button>`), [],
     "只写 ring-offset 不是外扩环，不许误伤");
 });
+
+// ---------------- PC-01 浮层限高只走一处口径（2026-11-07） ----------------
+
+/**
+ * 用户报「群任务的标签下拉，标签一多就顶出窗口，最下面的项点不到」。
+ *
+ * 统一规则：最大高度 = 触发器到**窗口可视边缘**的可用空间（Reka 的
+ * `--reka-popper-available-height`，已扣 `collisionPadding`），放不下就内部滚动。
+ * 这条判据守两件事：
+ * 1. `style.css` 那处共享类必须真的写着限高 + 内部滚动 + 稳定滚动条槽；
+ * 2. 任何组件都不许在 `.gosslan-menu` 的 class 里再写死 `max-h-*`（第二套口径）。
+ */
+
+const POP_EDGE_RE = /--gosslan-pop-edge:\s*(\d+)px/;
+const POP_CLAMP_SELECTOR = ".gosslan-menu,\n.gosslan-pop-clamp {";
+
+/** 从一份 CSS 里切出共享限高块；切不到就返回空串（调用方必须把它当成锚点失效）。 */
+function popClampBlock(css: string): string {
+  const at = css.indexOf(POP_CLAMP_SELECTOR);
+  if (at < 0) return "";
+  return css.slice(at, css.indexOf("}", at));
+}
+
+/** 共享限高块缺项 → 逐条报出；全齐 → 空数组。 */
+function findPopClampIssues(css: string): string[] {
+  const block = popClampBlock(css);
+  if (!block) return ["找不到 `.gosslan-menu, .gosslan-pop-clamp` 共享限高块（浮层没有统一口径）"];
+  const issues: string[] = [];
+  if (!/max-height:\s*var\(--reka-popper-available-height/.test(block))
+    issues.push("共享限高块没有吃 `--reka-popper-available-height`（弹层会顶出窗口）");
+  if (!/max-width:\s*var\(--reka-popper-available-width/.test(block))
+    issues.push("共享限高块没有吃 `--reka-popper-available-width`（弹层会横向溢出）");
+  if (!/overflow-y:\s*auto/.test(block)) issues.push("共享限高块没有 `overflow-y: auto`（超出部分被裁）");
+  if (!/overscroll-behavior:\s*contain/.test(block))
+    issues.push("共享限高块没有 `overscroll-behavior: contain`（滚到底会带动页面");
+  if (!/scrollbar-gutter:\s*stable/.test(block))
+    issues.push("共享限高块没有 `scrollbar-gutter: stable`（滚动条会盖字/横向跳）");
+  const edge = css.match(POP_EDGE_RE);
+  if (!edge || Number(edge[1]) < 8)
+    issues.push("`--gosslan-pop-edge` 必须 ≥ 8px（浮层贴边至少留一个安全边距）");
+  return issues;
+}
+
+/** 扫描一份 .vue：class 里同时出现 `gosslan-menu` 这个 token 与 `max-h-*` ⇒ 第二套口径。 */
+function findMenuHardMaxHeight(src: string): Array<{ line: number; cls: string }> {
+  const stripped = src.replace(/<!--[\s\S]*?-->/g, (m) => m.replace(/[^\n]/g, " "));
+  const out: Array<{ line: number; cls: string }> = [];
+  for (const m of stripped.matchAll(/class="([^"]*)"/g)) {
+    const tokens = m[1].split(/[\s]+/);
+    if (!tokens.includes("gosslan-menu")) continue;
+    const hard = tokens.find((t) => /^max-h-/.test(t));
+    if (!hard) continue;
+    out.push({ line: stripped.slice(0, m.index ?? 0).split("\n").length, cls: m[1] });
+  }
+  return out;
+}
+
+function allVueSources(): Array<{ name: string; src: string }> {
+  const root = new URL("../", import.meta.url);
+  const out: Array<{ name: string; src: string }> = [];
+  const walk = (dir: URL) => {
+    for (const ent of readdirSync(dir, { withFileTypes: true })) {
+      const url = new URL(ent.name, dir);
+      if (ent.isDirectory()) {
+        if (ent.name === "node_modules" || ent.name.startsWith(".")) continue;
+        walk(new URL(`${ent.name}/`, dir));
+      } else if (ent.name.endsWith(".vue")) {
+        out.push({ name: url.pathname, src: readFileSync(url, "utf8") });
+      }
+    }
+  };
+  walk(root);
+  return out;
+}
+
+test("PC-01 真实树：共享限高块齐备，2026-11-07 无一处 `.gosslan-menu` 再写死 max-h（分母现数）", () => {
+  const css = readFileSync(new URL("../style.css", import.meta.url), "utf8");
+  assert.deepEqual(findPopClampIssues(css), [], findPopClampIssues(css).join("\n"));
+
+  const files = allVueSources();
+  assert.ok(files.length >= 60, `只扫到 ${files.length} 份 .vue —— 判据可能扫错目录`);
+  const offenders = files.flatMap((f) =>
+    findMenuHardMaxHeight(f.src).map((i) => `${f.name}:${i.line} ${i.cls}`),
+  );
+  assert.deepEqual(offenders, [], `浮层又写死了 max-height（应走共享限高块）：\n${offenders.join("\n")}`);
+  console.log(`· PC-01 分母：扫 ${files.length} 份 .vue，硬写 max-h 的 .gosslan-menu 0 处`);
+});
+
+test("PC-01 真实树：不走 `.gosslan-menu` 的自绘浮层也挂共享限高", () => {
+  const emoji = readFileSync(new URL("../components/EmojiPicker.vue", import.meta.url), "utf8");
+  assert.match(emoji, /data-emoji-panel[\s\S]*?class="gosslan-pop-clamp/, "表情面板必须挂 `.gosslan-pop-clamp`");
+  const receipt = readFileSync(new URL("../components/message/MessageReceipt.vue", import.meta.url), "utf8");
+  assert.match(receipt, /data-readers-popover[\s\S]*?class="gosslan-pop-clamp/, "已读名单必须挂 `.gosslan-pop-clamp`");
+  const search = readFileSync(new URL("../components/search/ChatSearchDialog.vue", import.meta.url), "utf8");
+  assert.doesNotMatch(search, /gosslan-menu[^"]*max-h-/, "搜索筛选下拉不许再写死 max-h-64");
+});
+
+test("PC-01 边距只有一个来源：popoverBounds 导出 8，关键浮层真的在消费", () => {
+  const bounds = readFileSync(new URL("./popoverBounds.ts", import.meta.url), "utf8");
+  assert.match(bounds, /export const POPOVER_EDGE = 8;/, "POPOVER_EDGE 必须固定为 8px");
+  for (const rel of ["../components/TodoAttrField.vue", "../components/ui/SettingsSelect.vue"]) {
+    const src = readFileSync(new URL(rel, import.meta.url), "utf8");
+    assert.ok(src.includes('from "@/utils/popoverBounds"'), `${rel} 必须从统一来源取贴边值`);
+    assert.ok(src.includes(':collision-padding="POPOVER_EDGE"'), `${rel} 的 collisionPadding 必须吃 POPOVER_EDGE`);
+  }
+});
+
+test("PC-01 反例自证：删限高 / 删内部滚动 / 边距归零都必须红", () => {
+  const css = readFileSync(new URL("../style.css", import.meta.url), "utf8");
+  const mut = (from: RegExp, to: string) => {
+    const out = css.replace(from, to);
+    if (out === css) throw new Error(`反例自证：${from} 没被替换到，锚点已漂`);
+    return out;
+  };
+  assert.ok(
+    findPopClampIssues(mut(/max-height:\s*var\(--reka-popper-available-height[^;]*;/g, "max-height: none;")).length > 0,
+    "删掉限高必须命中",
+  );
+  assert.ok(
+    findPopClampIssues(mut(/overflow-y:\s*auto;/g, "overflow: visible;")).length > 0,
+    "删掉内部滚动必须命中",
+  );
+  assert.ok(
+    findPopClampIssues(mut(POP_EDGE_RE, "--gosslan-pop-edge: 0px;")).length > 0,
+    "边距归零必须命中",
+  );
+  // 空转自证：共享块整段消失也必须红。
+  assert.ok(
+    findPopClampIssues(mut(POP_CLAMP_SELECTOR, ".gosslan-menu {\n")).length > 0,
+    "共享块缺失必须命中",
+  );
+});
+
+test("PC-01 反例自证：给 `.gosslan-menu` 写回 max-h-64 必须命中（不许空转）", () => {
+  const broken = '<div class="gosslan-menu frost z-[80] max-h-64"></div>';
+  const hits = findMenuHardMaxHeight(broken);
+  assert.equal(hits.length, 1, `必须命中一处，实际：${JSON.stringify(hits)}`);
+  assert.ok(hits[0].cls.includes("max-h-64"), "命中的必须是那处 max-h");
+  // 不误伤：菜单条目 / 提示行 / 只在注释里出现的旧写法。
+  const ok = `<div class="gosslan-menu-item max-h-64"></div><!-- <div class="gosslan-menu max-h-64"></div> -->`;
+  assert.deepEqual(findMenuHardMaxHeight(ok), []);
+});

@@ -247,7 +247,7 @@ function readerAvatar(id: string): string | null {
         >
           <div
             data-readers-popover
-            class="frost max-h-60 overflow-y-auto rounded-[var(--gosslan-radius-md)] border border-[var(--gosslan-border)] p-1.5 text-xs shadow-[var(--gosslan-glass-2-shadow)]"
+            class="gosslan-pop-clamp frost rounded-[var(--gosslan-radius-md)] border border-[var(--gosslan-border)] p-1.5 text-xs shadow-[var(--gosslan-glass-2-shadow)]"
           >
             <div class="px-2 py-1 text-[var(--gosslan-text-2)]">{{ t("msg.readMembers", { n: readerIds.length }) }}</div>
             <div

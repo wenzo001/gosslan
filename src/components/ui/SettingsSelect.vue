@@ -14,6 +14,7 @@ import {
   SelectValue,
   SelectViewport,
 } from "reka-ui";
+import { POPOVER_EDGE } from "@/utils/popoverBounds";
 
 export type SelectValueOption = string | number;
 
@@ -50,7 +51,7 @@ function pick(value: unknown) {
       <SelectContent
         position="popper"
         :side-offset="4"
-        :collision-padding="8"
+        :collision-padding="POPOVER_EDGE"
         class="gosslan-menu frost z-[80]"
       >
         <SelectViewport>
