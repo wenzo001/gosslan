@@ -1405,4 +1405,20 @@ CASES: list[Case] = [
         expect_fail_hint="第二层底",
         tags=["frontend", "composer", "new-guards"],
     ),
+    Case(
+        name="品牌底盘里的方形标记没削同心圆角",
+        why="2026-11-07 用户反馈：空态品牌底盘（68px 圆角 16）里塞了 44px 的 app-mark.png，"
+        "位图自带方形蓝底，四角在圆角底盘里露成直角（「中心图标直方形与圆角矩形不协调」）。"
+        "正解是同心圆角：r_inner = r_outer − 每边内距（68−44=24，每边 12 ⇒ 16−12=4px）。"
+        "本条把 `rounded-[var(--gosslan-radius-orb-mark-44)]` 摘掉，必须由 CN-01 点名并红。",
+        file=ROOT / "src" / "layouts" / "ResponsiveLayout.vue",
+        injections=[(
+            '<img data-orb-mark="44" :src="appMark" class="h-11 w-11 rounded-[var(--gosslan-radius-orb-mark-44)]"',
+            '<img data-orb-mark="44" :src="appMark" class="h-11 w-11"',
+        )],
+        cmd=node_test("src/utils/designGuards.test.ts"),
+        cwd=ROOT,
+        expect_fail_hint="标记位图没有同心圆角",
+        tags=["frontend", "concentric", "new-guards"],
+    ),
 ]

@@ -1123,10 +1123,13 @@ function onResizeEnd() {
           <!-- 品牌底盘：画板 DesktopChats 的 68px 奶油方块 + 应用标记（放大到 44px）。
                只出现在**未选会话**的空态；移动端这块不在列表页，不会挤占头部。 -->
           <div
+            data-orb
             class="mb-5 flex h-[68px] w-[68px] items-center justify-center rounded-[var(--gosslan-radius-xl)] bg-[var(--gosslan-orb-bg)] shadow-[inset_0_0_0_1px_var(--gosslan-orb-ring)]"
           >
-            <!-- 品牌标记直接复用第 2 段生成的单一应用图标源（不在这里再手绘第二份 mark）。 -->
-            <img :src="appMark" class="h-11 w-11" alt="" aria-hidden="true" draggable="false" />
+            <!-- 品牌标记直接复用第 2 段生成的单一应用图标源（不在这里再手绘第二份 mark）。
+                 标记位图自带方形蓝底，必须按「内圆角 = 外圆角 − 间距」削角（68−44 每边 12，
+                 16−12=4），否则圆角底盘里会露出直角（2026-11-07 用户反馈）。 -->
+            <img data-orb-mark="44" :src="appMark" class="h-11 w-11 rounded-[var(--gosslan-radius-orb-mark-44)]" alt="" aria-hidden="true" draggable="false" />
           </div>
           <h3 class="text-display font-semibold leading-[28px] tracking-[-0.01em] text-[var(--gosslan-text)]">
             {{ navState === "contacts" ? t("layout.selectContact") : t("layout.selectConversation") }}
