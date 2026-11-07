@@ -180,28 +180,62 @@ async function api(method, apiPath, { query = {}, json, allow404 = false } = {})
   const url = new URL(`${API}${apiPath}`);
   for (const [k, v] of Object.entries(query)) url.searchParams.set(k, v);
   url.searchParams.set("access_token", TOKEN);
-  let res;
-  try {
-    res = await fetch(url, {
-      method,
-      headers: json ? { "Content-Type": "application/json" } : undefined,
-      body: json ? JSON.stringify(json) : undefined,
-    });
-  } catch (e) {
-    throw new Error(redact(`Gitee API ${method} ${apiPath} 请求失败：${e.message}`));
+  // 现场（2026-11-07）：跨洋链路会偶发 TLS/连接中断（`fetch failed`），GET/DELETE/PATCH
+  // 重试 3 次（2s/5s/10s）；POST 不重试，避免重复建 release/tag。
+  const attempts = ["GET", "DELETE", "PATCH"].includes(method) ? 4 : 1;
+  let lastError = "";
+  for (let attempt = 0; attempt < attempts; attempt += 1) {
+    let res;
+    try {
+      res = await fetch(url, {
+        method,
+        headers: json ? { "Content-Type": "application/json" } : undefined,
+        body: json ? JSON.stringify(json) : undefined,
+      });
+    } catch (e) {
+      lastError = `请求失败：${e.message}`;
+      if (attempt < attempts - 1) {
+        await sleep([2000, 5000, 10000][attempt] ?? 10000);
+        continue;
+      }
+      break;
+    }
+    if ([502, 503, 504].includes(res.status) && attempt < attempts - 1) {
+      lastError = `HTTP ${res.status}`;
+      await sleep([2000, 5000, 10000][attempt] ?? 10000);
+      continue;
+    }
+    if (res.status === 404 && allow404) return null;
+    if (!res.ok) {
+      const text = await res.text().catch(() => "");
+      throw new Error(redact(`Gitee API ${method} ${apiPath} 返回 HTTP ${res.status}：${text.slice(0, 300)}`));
+    }
+    if (res.status === 204) return null;
+    const text = await res.text();
+    try {
+      return text ? JSON.parse(text) : null;
+    } catch {
+      throw new Error(redact(`Gitee API ${method} ${apiPath} 返回非 JSON：${text.slice(0, 200)}`));
+    }
   }
-  if (res.status === 404 && allow404) return null;
-  if (!res.ok) {
-    const text = await res.text().catch(() => "");
-    throw new Error(redact(`Gitee API ${method} ${apiPath} 返回 HTTP ${res.status}：${text.slice(0, 300)}`));
+  throw new Error(redact(`Gitee API ${method} ${apiPath} ${attempts} 次尝试后失败：${lastError}`));
+}
+
+/**
+ * 匿名 HEAD 取已有附件的 content-length。Gitee 的附件列表接口不返回 size，
+ * 只能这样判断“上一次跑到一半留下的文件是不是完整”，避免每次重跑都把 74MB 重传一遍。
+ */
+function publicAssetSize(repo, tag, name) {
+  const res = spawnSync("curl", ["-sIL", "--max-time", "60", giteeDownloadUrl(repo, tag, name)], {
+    encoding: "utf8",
+  });
+  if (res.status !== 0) return -1;
+  let size = -1;
+  for (const line of res.stdout.split(/\r?\n/)) {
+    const m = /^content-length:\s*(\d+)/i.exec(line.trim());
+    if (m) size = Number(m[1]);
   }
-  if (res.status === 204) return null;
-  const text = await res.text();
-  try {
-    return text ? JSON.parse(text) : null;
-  } catch {
-    throw new Error(redact(`Gitee API ${method} ${apiPath} 返回非 JSON：${text.slice(0, 200)}`));
-  }
+  return size;
 }
 
 async function listAll(apiPath, query = {}) {
@@ -514,6 +548,11 @@ async function main(argv) {
         const f = queue.shift();
         const old = existing.find((a) => a.name === f.name);
         if (old) {
+          const remoteSize = publicAssetSize(repo, tag, f.name);
+          if (remoteSize === f.size) {
+            console.log(`  已存在且大小一致，跳过 ${f.name}（${f.size} 字节）`);
+            continue;
+          }
           await api("DELETE", `/repos/${repo}/releases/${release.id}/attach_files/${old.id}`);
           console.log(`  删除同名旧附件 ${f.name}`);
         }
