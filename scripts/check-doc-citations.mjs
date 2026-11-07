@@ -222,6 +222,9 @@ const PATH_ALLOW = new Map([
   ["docs/acceptance/native-experience-round-1.md", "2026-10-21 已归档到 docs/archive/acceptance/"],
   // 已删除、但报告里作为"当时的暂存状态"被点名（该删除已随 5.0.38 提交）
   ["src/composables/useDeferredRef.ts", "该文件已随 5.0.38 删除；rc-5.0-report 记的是当时的暂存状态"],
+  // 2026-11-07 归档的 M-4 评审计划里点名"要删的"就是它，删除已按该计划落地 ⇒ 提及它本身
+  // 就是"它没了"的记录（同上面三份 docs/ 的过时件口径），不是"仓库里应该还有这个文件"的断言。
+  ["src/components/ui/icons.ts", "M-4 计划点名的删除目标，已按 ui-pulse-redesign 落地删除"],
   // 签名钥匙按最新要求**绝不入库**（`.gitignore` 明确排除）：发行版钥匙只存在于
   // GitHub Actions Secrets 与本机；CI 的 `release.keystore` 是构建时注入/复制出来的。
   // 文档里的人眼路径是操作说明，不是"仓库里应该有这个文件"的断言 ⇒ 属于门禁不适用。
