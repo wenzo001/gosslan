@@ -6864,17 +6864,18 @@ function composerSources() {
   return {
     chatWindow: readFileSync(join(srcDir, "components", "ChatWindow.vue"), "utf8"),
     composer: readFileSync(join(srcDir, "components", "chat", "MessageComposer.vue"), "utf8"),
+    styleCss: readFileSync(join(srcDir, "style.css"), "utf8"),
   };
 }
 
-test("CS-01/02：现树输入区外壳透明（与消息区同一整块）、输入卡圆角与 1px 描边恒定", () => {
-  const { chatWindow, composer } = composerSources();
-  const issues = checkComposerSurface(chatWindow, composer);
+test("CS-01/02：现树输入区外壳透明（与消息区同一整块）、输入卡圆角 22px 与 1px 描边恒定", () => {
+  const { chatWindow, composer, styleCss } = composerSources();
+  const issues = checkComposerSurface(chatWindow, composer, styleCss);
   assert.deepEqual(issues, [], issues.map((i) => `L${i.line} ${i.message}`).join("\n"));
 });
 
 test("CS-01 反例自证：把外壳涂成实色 / 加分隔线 / 删实测让位 必须红", () => {
-  const { chatWindow, composer } = composerSources();
+  const { chatWindow, composer, styleCss } = composerSources();
   // 2026-11-07 用户口径：输入区与消息区必须连成一块 —— 任何第二层底都要红。
   const painted = chatWindow.replace(
     "class=\"ambient-canvas-child absolute inset-x-0 bottom-0 z-20 bg-transparent px-4 pt-2\"",
@@ -6882,14 +6883,14 @@ test("CS-01 反例自证：把外壳涂成实色 / 加分隔线 / 删实测让�
   );
   assert.notEqual(painted, chatWindow, "锚点没命中：输入区外壳的 class 变了形状");
   assert.ok(
-    checkComposerSurface(painted, composer).some((i) => i.message.includes("CS-01") && i.message.includes("第二层底")),
+    checkComposerSurface(painted, composer, styleCss).some((i) => i.message.includes("CS-01") && i.message.includes("第二层底")),
     "给外壳铺第二层底必须报 CS-01",
   );
 
   const divided = chatWindow.replace("bg-transparent px-4 pt-2", "bg-transparent border-t border-[var(--gosslan-divider)] px-4 pt-2");
   assert.notEqual(divided, chatWindow, "锚点没命中：输入区外壳缺 border-t 反例");
   assert.ok(
-    checkComposerSurface(divided, composer).some((i) => i.message.includes("CS-01") && i.message.includes("border-t")),
+    checkComposerSurface(divided, composer, styleCss).some((i) => i.message.includes("CS-01") && i.message.includes("border-t")),
     "加分隔线必须报 CS-01",
   );
 
@@ -6899,27 +6900,35 @@ test("CS-01 反例自证：把外壳涂成实色 / 加分隔线 / 删实测让�
   );
   assert.notEqual(noReserve, chatWindow, "锚点没命中：消息区 paddingBottom 绑定变了形状");
   assert.ok(
-    checkComposerSurface(noReserve, composer).some((i) => i.message.includes("CS-01") && i.message.includes("paddingBottom")),
+    checkComposerSurface(noReserve, composer, styleCss).some((i) => i.message.includes("CS-01") && i.message.includes("paddingBottom")),
     "把实测让位换回固定值必须报 CS-01",
   );
 });
 
-test("CS-02 反例自证：输入卡去掉圆角或缺 1px 描边必须红", () => {
-  const { chatWindow, composer } = composerSources();
-  const noRadius = composer.replace("rounded-[var(--gosslan-radius-md)] border ", "border ");
+test("CS-02 反例自证：输入卡去掉 22px 圆角 / 圆角值漂回 10px / 缺 1px 描边必须红", () => {
+  const { chatWindow, composer, styleCss } = composerSources();
+  const noRadius = composer.replace("rounded-[var(--gosslan-radius-2xl)] border ", "border ");
   assert.notEqual(noRadius, composer, "锚点没命中：输入卡圆角类变了形状");
   assert.ok(
-    checkComposerSurface(chatWindow, noRadius).some((i) => i.message.includes("圆角")),
+    checkComposerSurface(chatWindow, noRadius, styleCss).some((i) => i.message.includes("圆角")),
     "去掉圆角必须报 CS-02",
   );
 
+  // 只删类名不够：值漂回 10px 也必须红（否则「22px 判据」是空的）。
+  const drifted = styleCss.replace("--gosslan-radius-2xl: 22px;", "--gosslan-radius-2xl: 10px;");
+  assert.notEqual(drifted, styleCss, "锚点没命中：--gosslan-radius-2xl 的定义变了形状");
+  assert.ok(
+    checkComposerSurface(chatWindow, composer, drifted).some((i) => i.message.includes("CS-02") && i.message.includes("22px")),
+    "圆角 token 值漂回 10px 必须报 CS-02",
+  );
+
   const noBorder = composer.replace(
-    "rounded-[var(--gosslan-radius-md)] border border-[var(--gosslan-field-border)]",
-    "rounded-[var(--gosslan-radius-md)]",
+    "rounded-[var(--gosslan-radius-2xl)] border border-[var(--gosslan-field-border)]",
+    "rounded-[var(--gosslan-radius-2xl)]",
   );
   assert.notEqual(noBorder, composer, "锚点没命中：输入卡描边类变了形状");
   assert.ok(
-    checkComposerSurface(chatWindow, noBorder).some((i) => i.message.includes("描边")),
+    checkComposerSurface(chatWindow, noBorder, styleCss).some((i) => i.message.includes("描边")),
     "去掉 1px 描边必须报 CS-02",
   );
 });
