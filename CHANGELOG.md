@@ -14,6 +14,37 @@
 
 ## [Unreleased]
 
+## [5.18.74] - 2026-11-07
+
+### 输入框删表情：一次退格只删一个「用户眼里的表情」（用户 2026-11-07 安卓真机反馈）
+
+用户：「输入框里添加两个表情，按一下删除，两个表情就同时被删除了；一个表情在用户角度
+应该像一个字一样。」
+
+- **底层结构**：表情不是纯文本，是 `contentEditable=false` 的 `<span class="emoji-token">`
+  （里面是 `<img>`），插入时后面补一个 NBSP；`@提及` 同机制。发送时读回 `data-emoji`。
+- **根因（两处叠加）**：
+  1. 退格只接管了「caret 在 NBSP 里 offset=1」一种形状（旧 `deleteMentionBeforeCaret`），
+     caret 落在 token 内部 / token 紧后 / 元素节点下标（Android WebView 常见）时全放给
+     默认行为 —— 相邻原子 span 会被 WebView 当同一段成批删除。
+  2. `normalizeEmpty` 只看 `textContent`：token 里的 `<img>` 文本为空，**只剩表情的草稿会被
+     当空壳整个清掉**（这是「一次全没」的另一半）。
+- **修**：
+  - 新增 `deleteOneUnitBeforeCaret()`：先按 `tokenRangeBeforeCaret()` 覆盖三种 caret 落位删
+    「token + 尾随 NBSP」，再对**原生 emoji 文本**用 `Intl.Segmenter`（grapheme）按字素簇删；
+    普通中英文仍交回浏览器，保住原生 undo 与输入法行为。
+  - `Delete` 前向删同一口径（`deleteOneUnitAfterCaret` / `tokenRangeAfterCaret`）。
+  - 有选区时一律放行（用户选中的整段都该删）；IME 组合由 `imeKey` 提前放行。
+  - `normalizeEmpty` 遇到 `.emoji-token` / `.mention-token` 直接返回，不再吞表情。
+- **判据**：`src/utils/graphemes.test.ts` 9 条（两个连着表情、ZWJ 家庭、肤色、旗帜、VS16、
+  前向删、越界；含「按 UTF-16 删会留孤立代理」的反例）；`designGuards.test.ts` ED-01～04
+  钉住「两条删除键都走统一入口 / 必须用 Segmenter / normalizeEmpty 不许吞 token」，
+  反例（放回浏览器、`deleteData(offset-1,1)`、旧函数回潮）全部必红。
+- `node --test src/utils/designGuards.test.ts` → 354/354；`graphemes.test.ts` → 9/9。
+
+**验证边界**：本机 macOS，DOM 事件路径靠源码判据 + 纯函数测试；安卓 WebView 里 caret
+落位与真实退格行为仍需装新包后在真机复核。
+
 ## [5.18.73] - 2026-11-07
 
 ### Windows 标题栏镜像：头像簇移到左侧，与左 R 角同圆心（用户 2026-11-07 真机反馈）

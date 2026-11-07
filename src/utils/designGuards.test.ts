@@ -72,6 +72,7 @@ import {
   findRawSafeAreaEnvIssues,
   checkTitlebarMirror,
   captionAvatarRect,
+  checkComposerUnitDelete,
   EDGE_STATUS_BAR_PX,
   EDGE_CORNER_RADIUS_PX,
 } from "./designGuards.ts";
@@ -8556,3 +8557,61 @@ test("TB-02 平台模拟：Windows 头像距左 6 / 距上 6；macOS 距右 6 / 
   assert.notEqual(wrong.x, win.x, "两侧镜像必须产生不同的 x —— 否则这条在测空气");
   assert.ok(Math.abs(wrong.x - 6) > 1, `反例：Windows 放右时距左应为 1246px，实际 ${wrong.x}`);
 });
+
+// ── ED. 输入框「一个表情 = 一个字」的删除契约（2026-11-07）────────────────
+// 用户 2026-11-07 安卓真机：「两个表情连着时按一下删除，两个同时被删」。
+const ED_FIXTURE = {
+  composer: readFileSync(join(srcDir691, "components", "chat", "MessageComposer.vue"), "utf8"),
+  graphemes: readFileSync(join(srcDir691, "utils", "graphemes.ts"), "utf8"),
+};
+
+test("ED-01 真实树：退格/前向删都走字素簇入口，normalizeEmpty 不吞表情 token", () => {
+  assert.deepEqual(checkComposerUnitDelete(ED_FIXTURE), [], "输入框删除契约已漂");
+});
+
+test("ED-02 反例自证：改回「交给浏览器」+ 按 UTF-16 删，必须红", () => {
+  const brokenComposer = ED_FIXTURE.composer
+    // 1. Backspace 不再接管（旧形状：放给浏览器默认行为）
+    .replace(
+      /if \(deleteOneUnitBeforeCaret\(\)\) \{/,
+      "if (false) {",
+    )
+    // 2. 前向删也不再接管
+    .replace(/if \(deleteOneUnitAfterCaret\(\)\) \{/, "if (false) {")
+    // 3. 原生 emoji 改回按 UTF-16 单位删
+    .replace(/node\.deleteData\(start, offset - start\);/, "node.deleteData(offset - 1, 1);")
+    // 4. 旧实现回潮
+    .replace("function tokenRangeBeforeCaret", "function deleteMentionBeforeCaret");
+  assert.notEqual(brokenComposer, ED_FIXTURE.composer, "fixture 没替换成功 ⇒ 这条在测空气");
+  const msgs = checkComposerUnitDelete({ ...ED_FIXTURE, composer: brokenComposer })
+    .map((i) => i.message)
+    .join("\n");
+  assert.match(msgs, /Backspace 必须走/, msgs);
+  assert.match(msgs, /Delete 必须走/, msgs);
+  assert.match(msgs, /按 UTF-16 单位删/, msgs);
+  assert.match(msgs, /deleteMentionBeforeCaret/, msgs);
+});
+
+test("ED-03 反例自证：normalizeEmpty 只看文本 → 只剩表情时会被清空，必须红", () => {
+  const broken = ED_FIXTURE.composer.replace(
+    /if \(el\.querySelector\("\.mention-token, \.emoji-token"\)\) return;/,
+    "",
+  );
+  assert.notEqual(broken, ED_FIXTURE.composer, "fixture 没替换成功 ⇒ 这条在测空气");
+  const msgs = checkComposerUnitDelete({ ...ED_FIXTURE, composer: broken })
+    .map((i) => i.message)
+    .join("\n");
+  assert.match(msgs, /normalizeEmpty.*token/s, msgs);
+});
+
+test("ED-04 反例自证：graphemes 退回自己数 code unit（无 Segmenter）必须红", () => {
+  const broken = ED_FIXTURE.graphemes
+    .replace(/Intl as unknown as \{/, "({} as unknown as {")
+    .replace(/granularity: "grapheme"/g, 'granularity: "word"');
+  const msgs = checkComposerUnitDelete({ ...ED_FIXTURE, graphemes: broken })
+    .map((i) => i.message)
+    .join("\n");
+  assert.match(msgs, /Intl\.Segmenter|Segmenter/, msgs);
+  assert.match(msgs, /granularity/, msgs);
+});
+

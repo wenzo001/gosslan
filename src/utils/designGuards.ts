@@ -4349,3 +4349,114 @@ export function captionAvatarRect(o: {
   const sideGap = o.platform === "macos" ? o.viewportWidth - (x + o.avatarPx) : x;
   return { x, y, width: o.avatarPx, height: o.avatarPx, topGap: y, sideGap };
 }
+
+// ---------------- ED. 输入框「一个表情 = 一个字」的删除契约 ----------------
+
+export interface ComposerUnitDeleteSources {
+  /** `src/components/chat/MessageComposer.vue` 源码 */
+  composer: string;
+  /** `src/utils/graphemes.ts` 源码 */
+  graphemes: string;
+}
+
+/**
+ * 一次退格只能删「用户眼里的一个单位」（用户 2026-11-07 安卓真机反馈）。
+ *
+ * 为什么要源码级判据而不是只写纯函数测试：真正被用户按到的路径是 `onKeydown` 里
+ * 那条 `Backspace` 分支 —— 只要它漏回默认行为，字素簇函数写得再对也没人调用
+ * （旧实现 `deleteMentionBeforeCaret` 就只覆盖了「offset=1 且前一个字符是 NBSP」
+ * 一种 caret 形状，其余全交给 WebView 成批删除）。所以这里同时钉三件事：
+ *   1. 两条删除键都走统一入口；
+ *   2. 原生 emoji 必须按字素簇（`Intl.Segmenter`）切，不许按 UTF-16 单位切；
+ *   3. `normalizeEmpty` 不许把「只剩 token」的草稿当空壳清掉。
+ *
+ * 反例自证见 `designGuards.test.ts` 的 ED-02。
+ */
+export function checkComposerUnitDelete(o: ComposerUnitDeleteSources): GuardIssue[] {
+  const out: GuardIssue[] = [];
+  // 注释要抹成空格再扫（保留换行 ⇒ 行号不变）：注释里提到旧函数名/旧写法，
+  // 不应该让判据误判成"旧实现还在"或"新实现还在"（两种空转都出现过）。
+  const src = o.composer.replace(/\/\*[\s\S]*?\*\//g, (m) => m.replace(/[^\n]/g, " "))
+    .replace(/(^|[^:])\/\/[^\n]*/g, (m, p1: string) => p1 + " ".repeat(m.length - p1.length));
+
+  const backspaceAt = src.indexOf('e.key === "Backspace"');
+  if (backspaceAt < 0) {
+    out.push({ line: 0, message: "ED-01：输入框找不到 Backspace 分支 —— 删除契约已失效。" });
+  } else if (!/deleteOneUnitBeforeCaret\s*\(\s*\)/.test(src.slice(backspaceAt, backspaceAt + 400))) {
+    out.push({
+      line: lineAt(src, backspaceAt),
+      message:
+        "ED-01：Backspace 必须走 `deleteOneUnitBeforeCaret()`（token 一次一个 + 原生 emoji 按字素簇）。" +
+        "直接放给浏览器时，相邻 `contentEditable=false` span 会被 WebView 一次删掉多个。",
+    });
+  }
+
+  const deleteAt = src.indexOf('e.key === "Delete"');
+  if (deleteAt < 0) {
+    out.push({ line: 0, message: "ED-01：输入框找不到 Delete 分支 —— 前向删与退格必须是同一口径。" });
+  } else if (!/deleteOneUnitAfterCaret\s*\(\s*\)/.test(src.slice(deleteAt, deleteAt + 400))) {
+    out.push({
+      line: lineAt(src, deleteAt),
+      message: "ED-01：Delete 必须走 `deleteOneUnitAfterCaret()`，否则前向删仍会成批吃表情。",
+    });
+  }
+
+  // 旧实现只认一种 caret 形状，且只删 NBSP + token；留着重开会让修复被悄悄回退。
+  if (/\bdeleteMentionBeforeCaret\b/.test(src)) {
+    out.push({
+      line: lineAt(src, src.indexOf("deleteMentionBeforeCaret")),
+      message:
+        "ED-01：`deleteMentionBeforeCaret` 已被 `deleteOneUnitBeforeCaret` 取代 —— " +
+        "它只覆盖 offset=1 且前一个字符是 NBSP 这一种落位，其余形状会漏回 WebView。",
+    });
+  }
+
+  // 按 UTF-16 单位删 = 用户报的那个 bug 本身。
+  const utf16 = /deleteData\s*\(\s*(?:offset\s*-\s*1|start\s*-\s*1|[\w.]+\s*-\s*1)\s*,\s*1\s*\)/.exec(src);
+  if (utf16) {
+    out.push({
+      line: lineAt(src, utf16.index),
+      message:
+        "ED-01：`deleteData(x - 1, 1)` 是按 UTF-16 单位删 —— 代理对/ZWJ/肤色会被切一半。" +
+        "必须用 `graphemeStartBefore` / `graphemeEndAfter` 的字素边界。",
+    });
+  }
+  if (/slice\s*\(\s*0\s*,\s*offset\s*-\s*1\s*\)/.test(src)) {
+    out.push({
+      line: lineAt(src, src.indexOf("slice(0, offset - 1)")),
+      message: "ED-01：`slice(0, offset - 1)` 是按 UTF-16 单位删 —— 与用户反馈的现象完全一致。",
+    });
+  }
+
+  // 只剩 token 的草稿不是空草稿：表情是 <img>，textContent 为空。
+  const normAt = src.indexOf("function normalizeEmpty");
+  if (normAt < 0) {
+    out.push({ line: 0, message: "ED-01：找不到 `normalizeEmpty` —— 空壳规范化契约已漂。" });
+  } else {
+    const body = src.slice(normAt, normAt + 700);
+    if (!/querySelector\(\s*["'][^"']*(?:emoji|mention)-token[^"']*["']\s*\)/.test(body)) {
+      out.push({
+        line: lineAt(src, normAt),
+        message:
+          "ED-01：`normalizeEmpty` 必须排除 `.emoji-token` / `.mention-token` —— " +
+          "表情 token 里是 `<img>`，textContent 为空，只按文本判断会把「只剩表情」整个清空。",
+      });
+    }
+  }
+
+  // 字素边界必须真的用它，而不是自己数 code unit。
+  if (!/Intl[\s\S]{0,120}Segmenter/.test(o.graphemes)) {
+    out.push({
+      line: 0,
+      message: "ED-01：`utils/graphemes.ts` 必须用 `Intl.Segmenter`（grapheme）求字素边界。",
+    });
+  }
+  if (!/granularity\s*:\s*["']grapheme["']/.test(o.graphemes)) {
+    out.push({ line: 0, message: "ED-01：`Intl.Segmenter` 必须显式声明 `granularity: \"grapheme\"`。" });
+  }
+  if (!/export function graphemeStartBefore/.test(o.graphemes) || !/export function needsGraphemeDelete/.test(o.graphemes)) {
+    out.push({ line: 0, message: "ED-01：`graphemes.ts` 的 `graphemeStartBefore` / `needsGraphemeDelete` 必须存在。" });
+  }
+
+  return out;
+}
