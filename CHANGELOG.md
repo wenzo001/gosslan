@@ -14,6 +14,18 @@
 
 ## [Unreleased]
 
+## [5.18.61] - 2026-11-07
+
+### 首帧骨架跟住真实布局 + 新增 SK-02 几何对账判据
+
+- `.boot-cap` 38 → 40（=`--gosslan-title-h`），移动端相应改 `calc(40px + env(...))`。
+- 删掉 `html.is-mac .boot-cap { height: 28px }`（它对齐的 `.platform-mac` 覆盖已不存在）。
+- 列表补 50px 标题行（`boot-title-row` + CSS 占位块），搜索条 28→36 + 列表内距对齐 `px-3`，
+  骨架输入卡圆角 10 → 22（跟 `--gosslan-radius-2xl`）。
+- 新增 `SK-02 checkBootSkeletonGeometry`：标题栏 / 对话头 / 列表标题行 / 输入卡圆角四项
+  与 `style.css` token 和 `ConversationList.vue` 对账；反例自证 cap 41、删标题行、
+  恢复 28px 覆盖都必须红。
+
 ## [5.18.60] - 2026-11-07
 
 ### ㊶ 判据补任意值/单轴/`!` 前缀，扫描域扩到设置外壳

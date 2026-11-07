@@ -80,7 +80,7 @@
         box-shadow: inset 0 0 0 1px var(--boot-ring);
       }
       .boot-cap {
-        height: 38px;
+        height: 40px; /* = `--gosslan-title-h`（2026-11-07 审查 M-1：38 起的跳位） */
         flex: none;
         display: flex;
         align-items: center;
@@ -111,7 +111,29 @@
         flex: none;
         background: var(--boot-list);
         border-top-left-radius: 12px;
-        padding: 12px 10px;
+        padding: 0 12px; /* = 真实列表搜索行 `px-3` */
+      }
+      /* 桌面列表头的 50px 标题行（与 ConversationList 的 `h-[50px]` 同级）。
+         2026-11-07 审查 M-1：骨架此前只有搜索条、没有标题行，冷启动时整列会话行
+         比真实位置高 50px，每次开窗都跳一次。 */
+      .boot-title-row {
+        height: 50px;
+        flex: none;
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        padding: 0 2px 0 4px; /* 叠加列表 12px = 真实 `pl-4 pr-3.5`（16 / 14） */
+      }
+      .boot-list-title-line {
+        width: 56px;
+        height: 15px;
+        border-radius: 4px;
+      }
+      .boot-list-plus {
+        width: 32px;
+        height: 32px;
+        margin-left: auto;
+        border-radius: 10px;
       }
       .boot-chat {
         flex: 1;
@@ -134,7 +156,7 @@
           border-top-left-radius: 0;
         }
         .boot-cap {
-          height: calc(38px + env(safe-area-inset-top));
+          height: calc(40px + env(safe-area-inset-top));
           padding-top: env(safe-area-inset-top);
         }
       }
@@ -160,12 +182,10 @@
         flex: none;
         margin: 0 16px 14px;
         height: 76px;
-        border-radius: 10px; /* = token md，与真实输入框一致 */
+        border-radius: 22px; /* = `--gosslan-radius-2xl`，输入卡外壳（2026-11-07 起 10→22） */
       }
-      /* macOS 骨架的标题栏与原生 28px 对齐（与 style.css 的 .platform-mac 覆盖一致） */
-      html.is-mac .boot-cap {
-        height: 28px;
-      }
+      /* macOS 不再有 28px 标题栏覆盖：style.css 的 `.platform-mac` 覆盖已于 2026-11-06 删除，
+         两平台统一 40px。2026-11-07 审查 M-1 删掉这条指向已不存在对象的对齐规则。 */
       .boot-ava {
         width: 42px;
         height: 42px;
@@ -178,9 +198,9 @@
         border-radius: 6px;
       }
       .boot-search {
-        height: 28px;
+        height: 36px; /* = 真实搜索壳 `h-9` */
         border-radius: 8px;
-        margin-bottom: 14px;
+        margin: 2px 0 10px;
       }
       .boot-row {
         display: flex;
@@ -214,6 +234,8 @@
       .boot-bubble,
       .boot-composer,
       .boot-lines i,
+      .boot-list-title-line,
+      .boot-list-plus,
       .boot-title-line,
       .boot-sub-line {
         background: var(--boot-line);
