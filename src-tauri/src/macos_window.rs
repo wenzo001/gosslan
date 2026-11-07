@@ -78,7 +78,7 @@ pub fn use_native_titlebar(window: &tauri::WebviewWindow) {
             btn.setHidden(false);
         }
     }
-    center_traffic_lights(&ns_window);
+    center_traffic_lights(ns_window);
 }
 
 /// AppKit 标准标题栏高度（points）。macOS 11+ 三颗键默认在这个 28pt 条里居中 ⇒ 中心距顶 14pt。
@@ -153,7 +153,7 @@ pub fn set_traffic_lights_hidden(window: &tauri::WebviewWindow, hidden: bool) {
     }
     if !hidden {
         // AppKit 在重新显示后会按默认 28pt 标题条复位，重新居中一次。
-        center_traffic_lights(&ns_window);
+        center_traffic_lights(ns_window);
     }
 }
 
