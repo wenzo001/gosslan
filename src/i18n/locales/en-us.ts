@@ -227,7 +227,7 @@ export const enUS: MessageDict = {
   "settings.appearance.ambient.off": "Off",
   "settings.appearance.ambient.drift": "Slow Drift",
   "settings.appearance.reducedTransparency": "Reduce Transparency",
-  "settings.appearance.reducedTransparency.desc": "Renders glass surfaces as solid colors and freezes background motion; layout is unchanged. Follows the system by default.",
+  "settings.appearance.reducedTransparency.desc": "Renders glass surfaces as solid colors; layout and background motion are unchanged. Follows the system by default.",
   "settings.appearance.reducedTransparency.aria": "Reduce transparency",
   "settings.appearance.reducedTransparency.off": "Off",
   "settings.appearance.reducedTransparency.on": "Reduce",

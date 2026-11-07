@@ -401,6 +401,32 @@ document.addEventListener("visibilitychange", () => {
 
 **不要用 `@property` 动画渐变停点**：即使 `--angle` 是数字、可插值，动画它仍然每帧重绘整层渐变，`getKeyframes()` 里也看不到 `transform`/`opacity` —— 属于硬线 1 的实质违反，必须判红。
 
+### 6.4 三层优先级（2026-11-07 定，覆盖此前的"透明降级连带动效"）
+
+一台 Windows 机器的读数是 `prefers-reduced-motion: off`、`prefers-reduced-transparency: on`、
+`html[data-ambient]: drift`，雾却整层看不见。根因不是动效偏好，而是当时把
+「减少透明」和「减少动效」绑成了一件事：透明降级块里顺手写了 `.ambient { display: none }`。
+系统关掉「透明效果」（Windows 默认就这么干）的用户，等于被迫关掉了背景动效。
+
+现在两个关注点分开，档位只按这三层解析（实现见 [utils/ambient.ts](../../src/utils/ambient.ts) 文件头）：
+
+| 层 | 来源 | 判定 |
+| --- | --- | --- |
+| 1 | **软件显式** | 设置里选过「关闭」/「缓慢流动」→ 直接按它，系统偏好不再参与 |
+| 2 | **系统** | 用户从未动过开关，且 `prefers-reduced-motion: reduce` → 静态雾（不重播、不位移） |
+| 3 | **内置默认** | 前两层都没有 → 流动；低端机 / 视口 < 480 降静态雾 |
+
+- **`prefers-reduced-transparency` 只降级玻璃**（退实底），**永远不参与档位解析**，也不许把
+  `.ambient` 整层隐藏（`AM-07` 判据盯着这一点）。`prefers-contrast: more` / `forced-colors: active`
+  仍然整层隐藏 —— 那是"系统要求高对比"，与"不要模糊"不是一回事。
+- **"没设过"与"设成了默认值"必须分得开**：存储键只有一个，`readStoredAmbientRaw()` 返回
+  `null` 才表示没设过；设置页显示用的 `readStoredAmbient()` 会把系统偏好折算成默认值，
+  两者不能合并（合并后用户永远无法用软件开关覆盖系统偏好）。
+- **显式「流动」要能压过系统 reduce**：只靠 CSS 的 `@media (prefers-reduced-motion: reduce)` 做不到，
+  所以 `ambient.ts` 同时写 `html[data-ambient-motion="force"]`，冻结块写成
+  `html:not([data-ambient-motion="force"]) .ambient-blob { animation: none }`。涟漪不在此列 ——
+  它是交互反馈，不属于背景氛围。
+
 ---
 
 ## 7. 验收判据
@@ -416,8 +442,8 @@ document.addEventListener("visibilitychange", () => {
 | AM-03 | 属性白名单 | 每个动画 `effect.getKeyframes()` 的属性集合 | ⊆ `{transform, opacity}` | 任选一帧改成 `filter: blur(24px)` ⇒ 红 |
 | AM-04 | 无逐帧 JS | 源码扫描 ambient 实现文件（`.css` / `.ts`） | 不含 `requestAnimationFrame` / `setInterval` / `getContext(` / `WebGL` / `canvas` | 加一个 rAF 漂移循环 ⇒ 红；同时断言“扫到了目标文件”，防空转 |
 | AM-05 | 隐藏暂停 | 钉住 `document.hidden = true` 后 200ms | running 数 = 0；恢复后回到 ≤3 | 删掉 `visibilitychange` 监听 ⇒ 红 |
-| AM-06 | 减少动态效果冻结 | `Emulation.setEmulatedMedia` 设 `prefers-reduced-motion: reduce` | 动画数 = 0，且 `transform` 等于 0% 帧矩阵 | 改成 `animation-duration: 30s`（还在动）⇒ 红 |
-| AM-07 | 降低透明度 | 模拟 `prefers-reduced-transparency: reduce` | ambient 子树 `display: none`（动画数 0） | 只把 `opacity` 降到 0.2（仍参与采样）⇒ 红 |
+| AM-06 | 减少动态效果冻结（**可以让位给软件显式选择**） | `Emulation.setEmulatedMedia` 设 `prefers-reduced-motion: reduce`，且软件未显式选「缓慢流动」 | 动画数 = 0，且 `transform` 等于 0% 帧矩阵；软件显式选了「缓慢流动」时（`html[data-ambient-motion="force"]`）动画必须仍在跑 | 改成 `animation-duration: 30s`（还在动）⇒ 红；显式「流动」后仍冻结 ⇒ 红 |
+| AM-07 | 高对比 / 强制色整层隐藏（**`prefers-reduced-transparency` 不在此列**） | 模拟 `prefers-contrast: more` 或 `forced-colors: active` | ambient 子树 `display: none`（动画数 0） | 只把 `opacity` 降到 0.2（仍参与采样）⇒ 红；把 `prefers-reduced-transparency` 塞回隐藏块 ⇒ 红 |
 | AM-08 | 空闲 CPU | 复用 `GOSSLAN_IDLE_MS=900000` 两段 15 分钟 | 每段 `cpuPct < 1` | 把阈值调大 ⇒ 不允许 |
 | AM-09 | 3s 空闲 CPU | 复用 perf 段 `TaskDuration` 增量 | ≤600ms | 实测超线 ⇒ 红 |
 | AM-10 | 滚动帧时间 | 复用 perf 段 1.2s 连续滚动 | p50 ≤ max(17, 关闭 ambient 时的 p50 + 2) ms；长帧 ≤10；max ≤600ms | ambient 版 p50 = 20ms ⇒ 红 |

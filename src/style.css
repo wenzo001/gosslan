@@ -889,9 +889,13 @@ html[data-page-hidden="true"] .ambient-blob {
   animation-play-state: paused;
 }
 /* AM-06：reduce 档是**冻结**，不是减速 —— 四条动画一律 animation:none，getAnimations 归零。
-   底色仍留在初始帧，所以不会出现"一片死灰"。 */
+   底色仍留在初始帧，所以不会出现"一片死灰"。
+   ⚠️ 2026-11-07 起这一条**让位给软件内的显式选择**：`data-ambient-motion="force"`
+   表示用户在设置里明确选了「背景动效 = 缓慢流动」，此时系统 reduce 不再冻结它
+   （三层优先级：软件 > 系统 > 默认，见 utils/ambient.ts 文件头）。涟漪仍然关闭 ——
+   它是交互反馈，不是背景氛围。 */
 @media (prefers-reduced-motion: reduce) {
-  .ambient-blob {
+  html:not([data-ambient-motion="force"]) .ambient-blob {
     animation: none !important;
   }
   .press-ripple {
@@ -2689,10 +2693,14 @@ html.is-mobile .pane-under-chat--instant {
   overflow-anchor: none;
 }
 
-/* AM-07：降级 —— 减少透明度 / 高对比 / 强制色 时整层不渲染。
+/* AM-07：降级 —— **高对比 / 强制色** 时整层不渲染。
+   ⚠️ 2026-11-07 起 `prefers-reduced-transparency: reduce` **不在这一组里**：
+   那是"Windows 关掉透明效果"，它只该让玻璃层退实底（见上面的玻璃降级块），
+   不该把背景雾一起摘掉。绑在一起的后果是用户那台 Windows 上 `data-ambient` 仍是
+   `drift`、雾却整层 `display:none`（"动效出不来"）。
    放在文件末尾：checkGlassTiers 用 `exec` 找**第一个** reduced-transparency 媒体块当玻璃降级块，
    这条必须排在它后面，否则会抢走玻璃降级的判据位置（AM-07 的判据自己再单独扫）。 */
-@media (prefers-reduced-transparency: reduce), (prefers-contrast: more), (forced-colors: active) {
+@media (prefers-contrast: more), (forced-colors: active) {
   .ambient {
     display: none !important;
   }
