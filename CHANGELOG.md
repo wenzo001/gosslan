@@ -14,6 +14,16 @@
 
 ## [Unreleased]
 
+## [5.18.71] - 2026-11-07
+
+### 归档：UI 复核计划与报告（`docs/notes/ui-pulse-review-2026-11-07/`）
+
+- 从 `/Users/wendongfu/Documents/code/gosslan-ui-review-353a634d` 原样拷入 `plan.md` / `report.md`
+  （md5 与原件逐字一致，未改措辞），避免该 worktree 清理后链接变死。
+- `scripts/check-doc-citations.mjs` 的 `PATH_ALLOW` 增一条带理由的登记：
+  `src/components/ui/icons.ts` 是 M-4 计划里点名的**删除目标**，删除已随 ui-pulse-redesign 落地；
+  计划文档提到它，记的是"它没了"，不是"仓库里应该还有"。**没有放宽任何其他判据**。
+
 ## [5.18.70] - 2026-11-07
 
 ### 修复：文档引用守卫补扫未跟踪 `.md`（并纠正上一笔的档位声明）
