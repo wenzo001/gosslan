@@ -317,7 +317,7 @@ function stateText(state: GroupFileEntry["local_state"]): string {
         :title="t('group.files.empty')"
       />
 
-      <div v-else class="scrollbar-both max-h-80 space-y-0.5 overflow-y-auto">
+      <div v-else class="gosslan-scroll max-h-80 space-y-0.5 overflow-y-auto">
         <div
           v-for="f in files"
           :key="f.transfer_id"

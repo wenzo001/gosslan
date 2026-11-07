@@ -1093,7 +1093,7 @@ function onResizeEnd() {
           <div class="ambient-canvas-child flex shrink-0 items-center border-b border-[var(--gosslan-divider)] bg-[var(--gosslan-chat)] px-4" :style="{ height: 'var(--gosslan-header-h)' }">
             <span class="text-title font-medium">{{ t("conv.newFriends") }}</span>
           </div>
-          <div class="ambient-canvas-child min-h-0 flex-1 overflow-y-auto bg-[var(--gosslan-chat)] p-2">
+          <div class="ambient-canvas-child gosslan-scroll min-h-0 flex-1 overflow-y-auto bg-[var(--gosslan-chat)] py-2">
             <FriendRequestList
               :requests="chat.pendingRequests"
               :outgoing="chat.outgoingRequests"
@@ -1341,7 +1341,7 @@ function onResizeEnd() {
              先按「资料卡走满宽」删掉 p-4，用户随后回报「个人资料周围没有边距」并拍板恢复
              —— 满宽那版是拿**卡片内部**的按钮排布说的，不是要卡片贴屏幕边。
              别再删这一层：卡片的圆角与描边需要页边距才看得出来。 -->
-        <div class="scrollbar-both min-h-0 flex-1 overflow-y-auto overflow-x-hidden p-4">
+        <div class="gosslan-scroll min-h-0 flex-1 overflow-y-auto overflow-x-hidden py-4">
           <ProfileSection :active="profileOpen" :reload-token="profileReloadToken" />
         </div>
       </MobilePageFrame>

@@ -970,9 +970,13 @@ CASES: list[Case] = [
         "     `.scrollbar-both`（`scrollbar-gutter: stable both-edges`）。"
         "     真「算出来对称」的判据在运行时探针（--only=scrollstable，并带一条撤掉预留必变红的反向"
         "     对照），而那层 CI 不跑 => 这里先钉住「两侧没被拆成单边」。"
-        "     注入 = 把 `stable both-edges` 拆成 `stable`（只剩滚动条那一侧）。",
+        "     注入 = 把 `.scrollbar-both` 的 `stable both-edges` 拆成 `stable`（只剩滚动条那一侧）。"
+        "     ⚠️ 必须锚在 `.scrollbar-both` 整块上：裸写 `scrollbar-gutter: stable both-edges;` 会先"
+        "     命中 `.gosslan-scroll`，判据报的是 SC-02 的文案、这条 Case 的期望串对不上（2026-11-07 真红过）。",
         file=ROOT / "src" / "style.css",
-        injections=[("scrollbar-gutter: stable both-edges;", "scrollbar-gutter: stable;")],
+        injections=[
+            (".scrollbar-both {\n  scrollbar-gutter: stable both-edges;", ".scrollbar-both {\n  scrollbar-gutter: stable;"),
+        ],
         cmd=node_test(
             "src/utils/designGuards.test.ts",
             "src/utils/longPress.test.ts",
@@ -1308,12 +1312,13 @@ CASES: list[Case] = [
         name="滚动容器重新用 padding 补偿滚动条宽度",
         why="上一轮临时把 BaseModal 的内容区做成 `pr-[var(--gosslan-scroll-gutter)] -mr-[…]`，"
         "那是「靠内距 + 负边距把滚动条位置抵掉」的宽度补偿 hack：一旦滚动条出现/消失，"
-        "内容盒宽仍然变，且内容不居中。2026-11-07 统一改成 `.scrollbar-both` 的恒定 gutter。"
+        "内容盒宽仍然变，且内容不居中。2026-11-07 统一改成 `.gosslan-scroll` 的"
+        "「两侧恒定 gutter + 固定 8px 空隙」。"
         "本条把补偿 hack 加回去，必须由 SC-01 判据点名并红（判据明令禁止这类 hack）。",
         file=ROOT / "src" / "components" / "BaseModal.vue",
         injections=[(
-            'class="scrollbar-both min-h-0 flex-1 overflow-y-auto"',
-            'class="scrollbar-both min-h-0 flex-1 overflow-y-auto pr-[var(--gosslan-scroll-gutter)]"',
+            'class="gosslan-scroll min-h-0 flex-1 overflow-y-auto"',
+            'class="gosslan-scroll min-h-0 flex-1 overflow-y-auto pr-[var(--gosslan-scroll-gutter)]"',
         )],
         cmd=node_test("src/utils/designGuards.test.ts"),
         cwd=ROOT,

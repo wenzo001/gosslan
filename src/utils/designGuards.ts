@@ -3663,9 +3663,9 @@ export function findRawCardPadding(src: string): GuardIssue[] {
       out.push({
         line: lineAt(cleaned, m.index ?? 0),
         message:
-          `设置分区又写了卡片级 padding「${tok}」—— 卡片行一律 \`settings-card-row\`（16 四边）、` +
-          "卡片内嵌块 `settings-card-inset`（12 四边）、分组标题/脚注 `settings-group-caption`（左缩进 4）。" +
-          "数值只在 `--gosslan-card-pad` 族里（docs/decisions.md 决策 8：16px 卡片、48px 行）。",
+          `设置分区又写了卡片级 padding「${tok}」—— 卡片行一律 \`settings-card-row\`（12 四边）、` +
+          "卡片内嵌块 `settings-card-inset`（8 四边）、分组标题/脚注 `settings-group-caption`（左缩进 4）。" +
+          "数值只在 `--gosslan-card-pad` 族里（2026-11-07 按 VS Code compact 收紧：16→12、12→8）。",
       });
     }
   }
