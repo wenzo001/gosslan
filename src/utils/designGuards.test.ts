@@ -6914,7 +6914,7 @@ test("CS-02 反例自证：输入卡去掉圆角或缺 1px 描边必须红", () 
   );
 
   const noBorder = composer.replace(
-    "rounded-[var(--gosslan-radius-md)] border border-[var(--gosslan-border)]",
+    "rounded-[var(--gosslan-radius-md)] border border-[var(--gosslan-field-border)]",
     "rounded-[var(--gosslan-radius-md)]",
   );
   assert.notEqual(noBorder, composer, "锚点没命中：输入卡描边类变了形状");

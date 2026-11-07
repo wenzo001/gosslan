@@ -23785,6 +23785,42 @@ async function runFieldContrast(cdp, url) {
       r.ok === true && r.fieldAlpha >= 0.95, "alpha ≥0.95", JSON.stringify({ fieldAlpha: r.fieldAlpha, bg: r.bg }));
   }
 
+  // 高对比档（2026-11-07 审计第 8 条）：暗色 + prefers-contrast:more 的字段边框必须
+  // 比常规暗色更亮。没有这格，`--gosslan-field-border` 在高对比块里"漏抬"就量不出来。
+  const lumaOf = (c) => {
+    const n = (c.match(/\d+(?:\.\d+)?/g) || []).map(Number);
+    const lin = (v) => { const x = v / 255; return x <= 0.03928 ? x / 12.92 : Math.pow((x + 0.055) / 1.055, 2.4); };
+    return 0.2126 * lin(n[0]) + 0.7152 * lin(n[1]) + 0.0722 * lin(n[2]);
+  };
+  await cdp.send("Emulation.setEmulatedMedia", {
+    media: "",
+    features: [{ name: "prefers-contrast", value: "more" }],
+  });
+  await cdp.eval(`document.documentElement.classList.add('dark'); true`);
+  await sleep(300);
+  const hc = await measure();
+  report.darkHighContrast = hc;
+  check("fieldcontrast：暗色 + prefers-contrast:more 的字段边框比常规暗色更亮，且仍 ≥3.0",
+    hc.ok === true && lumaOf(hc.borderColor) > lumaOf(report.dark.borderColor) + 0.05 && hc.borderVsWorst >= 3.0,
+    "亮度差 >0.05 / 比值 ≥3.0",
+    JSON.stringify({ hcBorder: hc.borderColor, baseBorder: report.dark.borderColor, hcRatio: hc.borderVsWorst }));
+  // 反例自证：把字段边框注回常规暗色值 ⇒ 上面的"更亮"必须翻假，证明这一格没空转。
+  await cdp.eval(`(() => {
+    document.documentElement.style.setProperty('--gosslan-field-border', '#788dae');
+    return true;
+  })()`);
+  await sleep(200);
+  const hcBad = await measure();
+  check("fieldcontrast 反例：高对比档把字段边框注回 #788dae ⇒ \"更亮\"判据必须翻假（判据不空转）",
+    hcBad.ok === true && !(lumaOf(hcBad.borderColor) > lumaOf(report.dark.borderColor) + 0.05),
+    "亮度差消失", JSON.stringify({ borderColor: hcBad.borderColor }));
+  await cdp.eval(`(() => {
+    document.documentElement.style.removeProperty('--gosslan-field-border');
+    document.documentElement.classList.remove('dark');
+    return true;
+  })()`);
+  await cdp.send("Emulation.setEmulatedMedia", { media: "", features: [] });
+
   // 反向对照：同一条读数必须能翻假（否则上面三条是空转）。
   await cdp.eval(`(() => {
     const wide = [...document.querySelectorAll('input')].filter((i) => i.getBoundingClientRect().width > 100);
