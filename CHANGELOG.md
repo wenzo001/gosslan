@@ -14,6 +14,18 @@
 
 ## [Unreleased]
 
+## [5.18.59] - 2026-11-07
+
+### 输入卡外壳圆角 10 → 22（画板值）
+
+- 新增 token `--gosslan-radius-2xl: 22px`（画板 `tokens.json`「radius-2xl · composer shell」，
+  decisions v2.2 第 7 条：控件 10 / 卡片 14 / 气泡 20 / 外壳 22）。
+- `MessageComposer` 输入卡 `rounded-[var(--gosslan-radius-md)]`（10px）→
+  `rounded-[var(--gosslan-radius-2xl)]`（22px）。
+- `CS-02` 重标定：既校验类名用的是 2xl 档，也校验 `--gosslan-radius-2xl` 实际是 22px；
+  反例自证补一条「值漂回 10px 必须红」，避免只认类名空转。
+- 读数：输入卡外圆角 10px → 22px。
+
 ## [5.18.58] - 2026-11-07
 
 ### 暗色高对比档抬字段边框 + 输入卡改走字段 token

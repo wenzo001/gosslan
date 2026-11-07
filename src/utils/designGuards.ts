@@ -2858,8 +2858,9 @@ export function checkSkeletonStatic(s: SkeletonSources): GuardIssue[] {
  *
  * @param chatWindowSrc `src/components/ChatWindow.vue`
  * @param composerSrc   `src/components/chat/MessageComposer.vue`
+ * @param styleCss      `src/style.css`（CS-02 要对账 `--gosslan-radius-2xl` 的实际像素值）
  */
-export function checkComposerSurface(chatWindowSrc: string, composerSrc: string): GuardIssue[] {
+export function checkComposerSurface(chatWindowSrc: string, composerSrc: string, styleCss: string): GuardIssue[] {
   const out: GuardIssue[] = [];
   const classesOf = (tag: string): string[] => {
     const m = tag.match(/\bclass="([^"]*)"/);
@@ -2944,10 +2945,17 @@ export function checkComposerSurface(chatWindowSrc: string, composerSrc: string)
     out.push({ line: 0, message: "CS-02：MessageComposer 里找不到 `.gosslan-composer` 输入卡，无法确认圆角与描边。" });
   } else {
     const c = classesOf(card[0]);
-    if (!c.includes("rounded-[var(--gosslan-radius-md)]")) {
+    if (!c.includes("rounded-[var(--gosslan-radius-2xl)]")) {
       out.push({
         line: lineAt(composerSrc, card.index ?? 0),
-        message: "CS-02：输入卡缺少 `rounded-[var(--gosslan-radius-md)]` —— 圆角必须不随玻璃档位变化。",
+        message: "CS-02：输入卡缺少 22px 圆角（`rounded-[var(--gosslan-radius-2xl)]`）—— 外壳按画板是 22px（不是 md 的 10px），且必须不随玻璃档位变化。",
+      });
+    }
+    const shellRadius = Number(styleCss.match(/--gosslan-radius-2xl\s*:\s*(\d+)px/)?.[1] ?? 0);
+    if (shellRadius !== 22) {
+      out.push({
+        line: 0,
+        message: `CS-02：\`--gosslan-radius-2xl\` 必须是 22px（画板 composer shell），实际 ${shellRadius || "缺失"}px —— 类名对上了但值漂了等于没改。`,
       });
     }
     if (!c.includes("border") || !c.includes("border-[var(--gosslan-field-border)]")) {
