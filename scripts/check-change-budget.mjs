@@ -806,6 +806,19 @@ if (ok && zeroCoverage) {
   console.log(`  受检范围：${usedRange ?? "（fixture）"} ｜ 判到的 commit：0`);
   console.log("\n✗ Change Budget **未覆盖** —— 跑了，但没有任何 commit 可判。");
   console.log("  未覆盖 ≠ 通过（2026-11-07：范围空曾按退出码 2 被当成 ⚠️，本地绿、CI 红）。");
+  // 2026-11-07 真实事故：四个构建 workflow 用 `fetch-depth: 1` 浅克隆，`HEAD~1` 不存在，
+  // 于是"退回判 HEAD 这一笔"这一步本身没有对象 —— 构建步骤被自己的门禁拦死。
+  // 门禁的判断没错（未覆盖就是不可通过），错的是 checkout 只给了一个提交；这里把路指出来。
+  let shallow = false;
+  try {
+    shallow = git("rev-parse", "--is-shallow-repository").trim() === "true";
+  } catch {
+    /* 老 git 没有这个开关：按非浅克隆处理，消息里不提它 */
+  }
+  if (shallow) {
+    console.log("  原因：当前是**浅克隆**，只取到一个提交（`HEAD~1` 不存在），没有任何可比的范围。");
+    console.log("  修法：把这个 job 的 `actions/checkout` 改为 `fetch-depth: 2`（或多个），再跑。");
+  }
   console.log("  想真判一批：`node scripts/check-change-budget.mjs --range a1b2c3..HEAD`。");
   process.exit(1);
 }
