@@ -78,6 +78,49 @@ pub fn use_native_titlebar(window: &tauri::WebviewWindow) {
             btn.setHidden(false);
         }
     }
+    center_traffic_lights(&ns_window);
+}
+
+/// AppKit 标准标题栏高度（points）。macOS 11+ 三颗键默认在这个 28pt 条里居中 ⇒ 中心距顶 14pt。
+#[cfg(target_os = "macos")]
+const APPKIT_TITLEBAR_H: f64 = 28.0;
+
+/// 应用自绘标题栏高度，**必须与 `src/style.css` 的 `--gosslan-title-h` 相等**（当前 40px）。
+/// 2026-11-07 用户 #29：红绿灯改竖向后不再贴顶，要在 40px 的头条里竖向居中。
+/// ⚠️ 改 `--gosslan-title-h` 时这里必须同步（两处相差 1px 就会看起来"低/高半格"）。
+#[cfg(target_os = "macos")]
+const APP_TITLEBAR_H: f64 = 40.0;
+
+/// macOS：把系统红绿灯在自绘标题栏里**竖向居中**。
+///
+/// AppKit 把三颗键放在它自己的 28pt 标题条里（中心距顶 14pt）；我们的标题条是
+/// `--gosslan-title-h`（40px）⇒ 目标中心距顶 20px。坐标系是 NSView 非翻转（原点在左下），
+/// 所以目标 `origin.y = 28 − 20 − 按钮高/2`。
+///
+/// ⚠️ 用**绝对目标位置**而不是"再下移 6pt"：本函数会在窗口 resize / 重新显示时重复调用，
+/// 相对位移会越挪越低；绝对定位无论 AppKit 是否复位 frame，结果都一样（幂等）。
+///
+/// 调用时机：`use_native_titlebar` 设完 styleMask 后一次；`set_traffic_lights_hidden(false)`
+/// 重新显示时再一次 —— AppKit 在 resize / 重新布局后会把键的 frame 复位到默认位置。
+#[cfg(target_os = "macos")]
+fn center_traffic_lights(ns_window: &objc2_app_kit::NSWindow) {
+    use objc2_app_kit::NSWindowButton;
+    use objc2_foundation::NSPoint;
+
+    if APP_TITLEBAR_H <= APPKIT_TITLEBAR_H {
+        return;
+    }
+    for button in [
+        NSWindowButton::CloseButton,
+        NSWindowButton::MiniaturizeButton,
+        NSWindowButton::ZoomButton,
+    ] {
+        if let Some(btn) = ns_window.standardWindowButton(button) {
+            let frame = btn.frame();
+            let y = APPKIT_TITLEBAR_H - APP_TITLEBAR_H / 2.0 - frame.size.height / 2.0;
+            btn.setFrameOrigin(NSPoint::new(frame.origin.x, y));
+        }
+    }
 }
 
 /// macOS：显示 / 隐藏系统红绿灯（窄窗口切到移动布局时用）。
@@ -107,6 +150,10 @@ pub fn set_traffic_lights_hidden(window: &tauri::WebviewWindow, hidden: bool) {
         if let Some(btn) = ns_window.standardWindowButton(button) {
             btn.setHidden(hidden);
         }
+    }
+    if !hidden {
+        // AppKit 在重新显示后会按默认 28pt 标题条复位，重新居中一次。
+        center_traffic_lights(&ns_window);
     }
 }
 

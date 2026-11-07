@@ -231,6 +231,24 @@ test("macOS 窄窗口：系统红绿灯由 isMobile 驱动收起/恢复", () => 
     "utf8",
   );
   assert.ok(rust.includes("pub fn set_traffic_lights_hidden"), "Rust 没有实现收起系统三键");
+  // 2026-11-07 #29：红绿灯要在自绘标题栏里竖向居中，Rust 的标题栏高度必须等于 CSS token。
+  // 反例：把 APP_TITLEBAR_H 改成 52（旧画板值）这条立刻红 —— 两侧差 1px 就会"低半格"。
+  const style = readFileSync(
+    join(import.meta.dirname, "..", "..", "src", "style.css"),
+    "utf8",
+  );
+  const cssTitleH = Number(style.match(/--gosslan-title-h:\s*(\d+)px/)?.[1]);
+  const rustTitleH = Number(rust.match(/APP_TITLEBAR_H: f64 = ([0-9.]+)/)?.[1]);
+  assert.ok(cssTitleH > 0, "style.css 里找不到 --gosslan-title-h");
+  assert.equal(
+    rustTitleH,
+    cssTitleH,
+    `macos_window.rs 的 APP_TITLEBAR_H=${rustTitleH} 与 --gosslan-title-h=${cssTitleH} 不一致`,
+  );
+  assert.ok(
+    /center_traffic_lights\(&ns_window\)/.test(rust),
+    "system traffic lights 没有居中调用（#29 的要求）",
+  );
   const cmds = readFileSync(
     join(import.meta.dirname, "..", "..", "src-tauri", "src", "commands", "window.rs"),
     "utf8",
