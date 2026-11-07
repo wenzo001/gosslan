@@ -29,13 +29,13 @@
 | 18 | 群任务「标签」下拉内容一多就顶出窗口，最下面的项点不到；**全站所有同类浮层**统一：最大高度到窗口边缘、内部滚动、末项可点 | TodoAttrField/TodoAttrTagsField、SettingsSelect、ContextMenu、EmojiPicker、ActionSheet 等所有 Reka 浮层 | 已完成 | `12777527` | `--only=popclamp` 14/14 绿：桌面 40 项 bottom **467**/vh **475**（留 8px）、clientH 393、scrollH 1280、末项可点 rowClick=39；390 标签面板 bottom **632**/vh **640**；撤掉限高反面桌面溢出 **+879px**、390 **+705px** | 原生 `<select>` 弹层由 OS 绘制，明确豁免；PC-01 守卫 + 2 条注入式反例落地 |
 | 19 | 滚动条出现/不出现时内容宽度不一致、「关于」因此偏小；有滚动条时内容视觉偏左。与 ⑦ 焦点环合并成一件 | 所有滚动容器（设置/日志/群任务/会话列表/搜索/收藏/转发/群成员等）、BaseModal 滚动区 | 已完成 | `77133302` | 设置独立窗口实测（亮/暗各一套）：通用(会滚) vs 关于(不滚) clientW **764/764**、文字起始 x **895/895**；缩高跨临界点 deltaW **0**、deltaTextX **0**；去掉预留的反面 deltaW **-8px**。合成夹具 tall/short 内容宽差 0、auto 档差 8px。探针 `--only=scrollstable` 5/5 绿 | 已插到 #18 之前做（已完成） |
 | 20 | 焦点环被左边界裁切 + 有滚动条时内容视觉居中 | MessageItem 焦点环、滚动容器内距 | 已完成 | `77133302` | 与 #19 同一根因、同一提交：消息头像/合并卡两个焦点环改 `ring-inset`；SC-01 扫全仓 `.vue`，外扩环 0 处（改坏即红） | — |
-| 21 | 输入区像悬浮在会话底部：输入框背后与左右空隙必须与消息区同一整块背景，不许独立实色面板/分隔线/第二层底；安全区按实测输入区高度让位 | MessageComposer、ChatWindow、ResponsiveLayout、BackToLatestButton | 待做 | — | — | 不得带回白条；保住 `data-frost="off"` / reduce-transparency / contrast:more / `pane-under-chat` |
+| 21 | 输入区像悬浮在会话底部：输入框背后与左右空隙必须与消息区同一整块背景，不许独立实色面板/分隔线/第二层底；安全区按实测输入区高度让位 | MessageComposer、ChatWindow、ResponsiveLayout、BackToLatestButton | 已完成 | `5667a87f` | `--only=composerfloat` 6/6 绿（5 宽 × 亮/暗/特效全开 = 15 组）：外壳 bg **rgba(0,0,0,0)**、无 border-top/阴影；shellH **114** == paddingBottom **114**；两者等宽；「回到最新」让位 **130px**；滚到底末条距卡顶 **-32px**；反面对照（让位清零）被盖 **+82px**。CS-01 改新口径 + BT-05；注入式反例全绿 | `data-frost="off"` / reduce-transparency / contrast:more / `pane-under-chat` 均未改动 |
 | 22 | 中心图标直方形与圆角矩形不协调：图标同心圆角（或充满裁切） | Icon 容器、各处图标底 | 待做 | — | — | 与 #23 合并做 |
 | 23 | 窗口圆角/头像同心几何：右上角间距左右不等 | 头像、窗口圆角、卡片 | 待做 | — | — | `r_inner = r_outer − inset`；保住 `--gosslan-title-h: 40px` 与头像簇 |
 | 24 | 群任务/预览/日志/启动错误四处与画板的结构性差异（分栏+标签页+优先级图标+新建入口、深色顶栏+缩略图+元数据） | GroupTodosWindow、ImageLightbox、LogViewer、启动错误页 | 待你拍板 | — | — | 排进后续版本 or 维持现状 |
 | 25 | macOS `.icns` 无 dark/tinted 容器，是否换打包格式支持 macOS 26 | 打包脚本、图标产物 | 待你拍板 | — | — | — |
 | 26 | 7 项画板妥协（按钮圆角 8 vs 9、LAN 字号 11 vs 10.5、搜索壳 36 vs 34、搜索字号 13 vs 12、未读徽标 16/11 vs 18/10.5、orb 圆角 16 vs 20、红绿灯纵向错位） | 对应组件 | 待你拍板 | — | — | 哪些必须消除、哪些接受 |
-| 27 | 发版节奏：这批是否并进一次 5.18.46 | 版本清单、CHANGELOG | 待你拍板 | — | 当前分支 5.18.46 | 合入策略见 #28 |
+| 27 | 发版节奏：这批是否并进一次 5.18.46 | 版本清单、CHANGELOG | 待你拍板 | — | 当前分支 5.18.50（#17–#21 各一笔 patch） | 合入策略见 #28 |
 | 28 | 全部做完 rebase 到最新 main、ff-only 合入并推；Change Budget 判据 3 按「负责人接受」记账，不动阈值 | 分支 `feat/ui-pulse-redesign-wip`、main | 待做 | — | — | 判据 4 必须双向绿；不 force、不打 tag、不删分支 |
 
 ## 状态变更记录
@@ -48,3 +48,6 @@
   顺带修好 `codeBlockLayout` 自证锚点：共享块必须排在 `.code-lang-menu` 之后（否则假绿）。
 - 2026-11-07：**#17 完成**（`572117bd`）。灯箱 `rounded-none + object-contain`、stage 不裁切；
   `--only=previewclip` 5/5、CE-01 注入式反例全绿。
+- 2026-11-07：**#21 完成**（`5667a87f`）。输入区外壳改 `absolute + bg-transparent`（不再有第二层底），
+  让位量由 `ResizeObserver` 实测 `composerH`；`--only=composerfloat` 6/6、
+  CS-01 新口径 + BT-05 + 注入式反例全绿。版本 5.18.50。
