@@ -36,7 +36,7 @@
 | 25 | macOS `.icns` 无 dark/tinted 容器，是否换打包格式支持 macOS 26 | 打包脚本、图标产物 | 已完成 | `—` | **拍板 B：维持现状，发版前再评估** | 换格式会动打包链路，属发版决策 |
 | 26 | 7 项画板妥协（按钮圆角 8 vs 9、LAN 字号 11 vs 10.5、搜索壳 36 vs 34、搜索字号 13 vs 12、未读徽标 16/11 vs 18/10.5、orb 圆角 16 vs 20、红绿灯纵向错位） | 对应组件 | 已完成 | `—` | **拍板 B**：只消除 orb 圆角（16→20）与红绿灯错位两项（→ 新行 #29 待做），其余五项保留 | 保留五项各自挡着的判据：①按钮圆角 8 vs 9 —— ㊴ 守卫禁止字面圆角，只认 `--gosslan-radius-*` 三档（md 10 / lg 14 / xl 16，[style.css](../../../src/style.css#L326-L328)）；②LAN 字号 11 vs 10.5、④搜索字号 13 vs 12、⑤徽标 16/11 vs 18/10.5 —— 字号只有五档 token 15/14/13/12/11，11 是"正文最小可用字号"下限，10.5 无档可落（[style.css](../../../src/style.css#L79-L96)）；③搜索壳 36 vs 34 —— 外壳高度对齐 HIG 最小点按目标判据（`designGuards.ts` 44px 下限一节），内壳不再单独开档 |
 | 27 | 发版节奏：这批是否并进一次 5.18.46 | 版本清单、CHANGELOG | 待你拍板 | `—` | 已按"一条一 patch"落地，当前分支 **5.18.51**（#17–#23 各一笔 patch） | 是否再压成一次对外发版由负责人定；合入见 #28 |
-| 28 | 全部做完 rebase 到最新 main、ff-only 合入并推；Change Budget 判据 3 按「负责人接受」记账，不动阈值 | 分支 `feat/ui-pulse-redesign-wip`、main | 已完成 | 见下方"合入记录" | 判据 4 **双向绿**（逐笔 `Version-Bump: patch / 版本文件 4/4`）；判据 3 的 `presentation: 5 次` 按负责人接受，记录在 [change-budget-acceptance-2026-11-07.md](./change-budget-acceptance-2026-11-07.md) | 未 force、未打 tag、未删分支/worktree |
+| 28 | 全部做完 rebase 到最新 main、ff-only 合入并推；Change Budget 判据 3 按「负责人接受」记账，不动阈值 | 分支 `feat/ui-pulse-redesign-wip`、main | 已完成 | `65ad570d`（`main` `4c90c89f → 65ad570d`） | 判据 4 **双向绿**（逐笔 `Version-Bump: patch / 版本文件 4/4`）；判据 3 的 `presentation: 5 次` 按负责人接受，记录在 [change-budget-acceptance-2026-11-07.md](./change-budget-acceptance-2026-11-07.md)；`origin/main` = `65ad570d`，本批 0 merge commit | 未 force、未打 tag、未删分支/worktree；本次 push 的 CI 会在判据 3 上红一次（已接受） |
 | 29 | 拍板 B 遗留的两项要消除：orb 圆角 16→20、红绿灯纵向错位 | [style.css](../../../src/style.css#L328-L338)（`--gosslan-radius-xl` 与 orb 标记 token）、ResponsiveLayout/ConversationList orb、TitleBar 红绿灯让位 | 待做 | `—` | — | 改 `--gosslan-radius-xl` 会连带 `--gosslan-radius-orb-mark-44/-56` 内距（12/6 → 8/14）与 CN-01/CN-02 数字，必须同笔重跑 `--only=concentric`，不能混进已验过的这批 |
 
 ## 状态变更记录
@@ -66,4 +66,24 @@
 
 ## 合入记录
 
-（`#28` 合入后由收尾步骤填写）
+- **基线与 rebase**：`git fetch origin --prune` → `origin/main` = `8130a4ee`（未变）；`git rebase origin/main`
+  返回「当前分支 feat/ui-pulse-redesign-wip 是最新的。」（`git rev-list --left-right --count origin/main...HEAD`
+  = `0 27`，即 0 behind / 27 ahead；无冲突、未 `--force`）。
+- **trailer 修复（判据 4 双向绿）**：8 笔把 `Version-Bump:` 写成版本号的提交（rebase 后
+  `4d3b759e` / `b99f035a` / `023b6745` / `bf37fea9` / `a0a35ab7` / `5b18d3eb` / `bcee9d42` / `735fb3d3`）
+  统一改写为 `Version-Bump: patch`；改后 `--range origin/main..HEAD` 逐笔
+  `Version-Bump: patch / 版本文件 4/4`。版本清单四文件一致：**5.18.51**。
+- **verify:full**：末行 `❌ 失败 1 步（共 560.2s）`；30/31 步 ✅（含 npm test 28.5s、英文 locale 复跑
+  29.4s、build 25.0s、cargo clippy 38.0s、Rust 单测 118.8s、护栏非空转 270.8s、Android 21.5s），
+  唯一红项 **Change Budget 判据 3**（`presentation: 5 次`），按负责人接受并记账，见
+  [change-budget-acceptance-2026-11-07.md](./change-budget-acceptance-2026-11-07.md)。
+- **ff-only 进 main**：`main` `4c90c89f` → `65ad570d`（`git merge-base --is-ancestor main 65ad570d` 为真）。
+  主工作区当时检出的是 `feat/ui-pulse-redesign`（070c785c）、**未检出 `main`**，因此用
+  `git fetch . 65ad570d:main`（ff-only 语义）推进引用，**不动主工作区文件**。
+- **推送**：`git push origin main` → `8130a4ee..65ad570d  main -> main`；
+  `git rev-parse origin/main` = `65ad570d`。
+- **形状**：本批 27 笔；`git log --merges 8130a4ee..65ad570d` 为空（0 merge commit）；
+  未打 tag、未删分支、未删 worktree；`feat/code-fold` / `gosslan-codefold` 未重做未删除。
+- **CI 预警**：push 事件判据仍会看到 `8130a4ee..65ad570d` 这个窗口 ⇒ 判据 3 会在这一次 CI 上红一次
+  （负责人已接受该信号）；按 `scripts/check-change-budget.mjs` 注释的处置口径，**下一次推送的新范围**
+  窗口自然清空。
