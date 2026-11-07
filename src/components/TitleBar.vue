@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import Icon from "@/components/ui/Icon.vue";
 /**
  * 自绘标题栏（caption）—— **主窗口与所有「应用自己的」辅助窗口共用这一份**。
  *
@@ -15,7 +16,6 @@ import { onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { useEventListener } from "@vueuse/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { api } from "@/api";
-import { X } from "@/components/ui/icons";
 import { isMac } from "@/utils/platform";
 import { t } from "@/i18n";
 import { createInitScope } from "@/utils/initScope";
@@ -331,7 +331,7 @@ onBeforeUnmount(() => {
         :aria-label="closeToTray ? t('window.closeToTray') : t('window.close')"
         @click="api.windowClose()"
       >
-        <X class="h-3.5 w-3.5" />
+        <Icon name="x" class="h-3.5 w-3.5" />
       </button>
     </div>
   </div>

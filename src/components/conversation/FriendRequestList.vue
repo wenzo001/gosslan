@@ -1,7 +1,6 @@
 <script setup lang="ts">
+import Icon from "@/components/ui/Icon.vue";
 import { t } from "@/i18n";
-import { Check } from "@/components/ui/icons";
-import { X } from "@/components/ui/icons";
 import type { OutgoingFriendRequest, PendingRequest } from "@/types";
 import AvatarBox from "@/components/ui/AvatarBox.vue";
 
@@ -63,7 +62,7 @@ const emit = defineEmits<{
           :title="t('common.collapse')" :aria-label="t('common.collapse')"
           @click="emit('close')"
         >
-          <X class="h-3.5 w-3.5" />
+          <Icon name="x" class="h-3.5 w-3.5" />
         </button>
       </div>
       <div v-for="r in requests" :key="r.from" class="flex h-16 items-center gap-2.5 px-3">
@@ -77,14 +76,14 @@ const emit = defineEmits<{
           :title="t('common.agree')" :aria-label="t('common.agree')"
           @click="emit('accept', r)"
         >
-          <Check class="h-4 w-4" />
+          <Icon name="check" class="h-4 w-4" />
         </button>
         <button
           class="tap-safe flex h-7 w-7 shrink-0 items-center justify-center rounded-full border border-[var(--gosslan-border)] text-[var(--gosslan-text-2)] transition hover:bg-[var(--gosslan-hover)]"
           :title="t('common.reject')" :aria-label="t('common.reject')"
           @click="emit('reject', r)"
         >
-          <X class="h-4 w-4" />
+          <Icon name="x" class="h-4 w-4" />
         </button>
       </div>
     </div>
@@ -98,7 +97,7 @@ const emit = defineEmits<{
         :title="t('common.collapse')" :aria-label="t('common.collapse')"
         @click="emit('close')"
       >
-        <X class="h-3.5 w-3.5" />
+        <Icon name="x" class="h-3.5 w-3.5" />
       </button>
     </div>
   </div>

@@ -1,7 +1,6 @@
 <script setup lang="ts">
 import Icon from "@/components/ui/Icon.vue";
 import { computed } from "vue";
-import { Check } from "@/components/ui/icons";
 import {
   SelectContent,
   SelectIcon,
@@ -64,7 +63,7 @@ function pick(value: unknown) {
           >
             <SelectItemText class="truncate" :title="o.label">{{ o.label }}</SelectItemText>
             <SelectItemIndicator class="ml-auto">
-              <Check class="h-4 w-4" aria-hidden="true" />
+              <Icon name="check" class="h-4 w-4" aria-hidden="true" />
             </SelectItemIndicator>
           </SelectItem>
         </SelectViewport>

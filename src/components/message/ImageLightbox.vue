@@ -12,7 +12,6 @@ import { computed, onUnmounted, ref, watch } from "vue";
 import { useEventListener } from "@vueuse/core";
 import { FocusScope, DropdownMenuItem } from "reka-ui";
 import ContextMenu from "@/components/ContextMenu.vue";
-import { RotateCcw, X } from "@/components/ui/icons";
 import { useAppStore } from "@/stores/useAppStore";
 import { loadContentPreview, loadFilePreview, type PreviewResult } from "@/utils/filePreview";
 import { loadFavoritePreview } from "@/utils/favoritePreview";
@@ -704,7 +703,7 @@ useEventListener(window, "keydown", onKey);
             :title="t('common.resetZoom')" :aria-label="t('common.resetZoom')"
             @click.stop="reset()"
           >
-            <RotateCcw class="h-4 w-4" />
+            <Icon name="rotate-ccw" class="h-4 w-4" />
           </button>
           <button
             v-if="!props.hideClose"
@@ -713,7 +712,7 @@ useEventListener(window, "keydown", onKey);
             :title="t('common.closeEsc')" :aria-label="t('common.closeEsc')"
             @click.stop="requestClose"
           >
-            <X class="h-5 w-5" />
+            <Icon name="x" class="h-5 w-5" />
           </button>
         </div>
 

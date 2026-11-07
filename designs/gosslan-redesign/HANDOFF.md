@@ -133,7 +133,8 @@
 - 设计：`IconSet.dc.html` + `brand/icons.svg`。实现时建议新建本地图标注册表（例如 `src/components/ui/icons/`），按名称导出同一套 path；桌面/移动/辅助窗口共用。
 - 高频替换：chat / contacts / favorites / links / me / back / plus / send / search / more / attach / close / settings。
 - 收藏图标改为**书签**；设置改为**两条滑杆**；调色盘图标统一为设置滑杆。
-- 图标尺寸：rail 23、tab 21、header 20、inline 16；16px 时描边 1.8px；点击热区 ≥44px。
+- 图标尺寸：rail 23、tab 21、header 20、inline 16；描边统一 2px（回执错误 / 群任务等强调处由调用方显式覆盖）；点击热区 ≥44px。
+  （2026-11-07 收敛：`<Icon>` 不再有 `size` prop，盒尺寸只由消费方 class 决定；原「16px 时描边 1.8px」从未生效，已合并进这条。）
 
 ### 4.5 应用图标
 

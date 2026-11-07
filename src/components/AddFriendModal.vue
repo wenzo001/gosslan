@@ -15,8 +15,6 @@ import SettingsToggle from "@/components/settings/SettingsToggle.vue";
 import BaseModal from "@/components/BaseModal.vue";
 import { MAX_SEARCH_KEYWORD_CHARS } from "@/utils/validation";
 import { shouldProbeOnSearchMiss } from "@/utils/addFriendProbe";
-import { Check } from "@/components/ui/icons";
-import { X } from "@/components/ui/icons";
 import AvatarBox from "@/components/ui/AvatarBox.vue";
 import PrimaryBtn from "@/components/ui/PrimaryBtn.vue";
 import SecondaryBtn from "@/components/ui/SecondaryBtn.vue";
@@ -485,7 +483,7 @@ async function add(peerId: string) {
               :disabled="responding[p.device_id]"
               @click="respond(p.device_id, true)"
             >
-              <Check class="h-4 w-4" />
+              <Icon name="check" class="h-4 w-4" />
             </button>
             <button
               class="tap-safe flex h-7 w-7 shrink-0 items-center justify-center rounded-full border border-[var(--gosslan-border)] text-[var(--gosslan-text-2)] transition hover:bg-[var(--gosslan-hover)] disabled:opacity-50"
@@ -493,7 +491,7 @@ async function add(peerId: string) {
               :disabled="responding[p.device_id]"
               @click="respond(p.device_id, false)"
             >
-              <X class="h-4 w-4" />
+              <Icon name="x" class="h-4 w-4" />
             </button>
           </span>
           <!-- 我发出、还没被处理 → 「等待对方同意」+ 可取消；撤回后保留一行终态并可再次添加 -->
@@ -531,7 +529,7 @@ async function add(peerId: string) {
             disabled
             class="flex cursor-default items-center gap-1 rounded-[var(--gosslan-radius-md)] bg-[var(--gosslan-hover)] px-3 py-1.5 text-xs font-medium text-[var(--gosslan-text-2)]"
           >
-            <Check class="h-3.5 w-3.5" />
+            <Icon name="check" class="h-3.5 w-3.5" />
             {{ t("friend.add.done") }}
           </button>
           <button

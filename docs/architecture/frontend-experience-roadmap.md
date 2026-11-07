@@ -9,7 +9,7 @@
 |---|---|---|
 | `.vue` 文件 | **83** | `find src -name '*.vue' | wc -l` |
 | 手写 `<svg>` | **10 处 / 3 个文件**（TitleBar 5、NavRail 4、BackArrow 1；GroupTasksBoard 1 处是注释） | `grep -rn '<svg' src --include='*.vue'` |
-| 图标源 | 仅 `lucide-vue-next`；`components/ui/icons.ts` 是语义入口（现有 7 个名字） | `grep -rn lucide-vue-next src --include='*.vue'` |
+| 图标源 | 仅 `lucide-vue-next`；`components/ui/iconRegistry.ts` 是名字登记表、`Icon.vue` 是唯一渲染出口（116 个键） | `grep -rn lucide-vue-next src --include='*.vue'` |
 | 空态实现 | **20 个文件、≥5 套内联样式**，无共享组件 | 见 §3 清单 |
 | 只转圈无重试 | GroupFilesPanel / FavoritePanel / GroupTasksBoard / ChatWindow / LinksList / ChatSearchDialog | 盘点记录（子代理，已抽读核对） |
 | 图片预览 | 原独立预览窗的 IPC 失败/空相册静默白屏（P1 已修）；窗口路径已于 2026-11-05 删除，桌面统一走应用内 `ImageLightbox` 覆盖层，该失败面不复存在 | `src/components/message/ImageLightbox.vue` |
@@ -24,7 +24,7 @@
 | ReUI | 仅模式参考 | React/shadcn 生态，不能作为 Vue 依赖 |
 | reka-ui | **已引入（5.0）** | 实际接入 **10 类原语**：Dialog / DropdownMenu / FocusScope / Switch / RadioGroup / Slider / Select / Toast / HoverCard / Popover，**23 个 `.vue`** 直接 import（复跑：`grep -rlE "from \"reka-ui\"" src --include='*.vue' \| wc -l`）。⚠️ 此前这里把 `ContextMenu` 算成 reka 原语——**不是**：右键菜单走的是 reka 的 `DropdownMenu`，`ContextMenu.vue` 是我们自己的公共壳。`@headlessui/vue` 已删除。证据见 `open-source-replacement-matrix.md` 第 1 节 |
 | shadcn-vue | 不引入 | 生成源码体系与现有 token/组件并行，迁移成本大于收益 |
-| Lucide | 保留为唯一图标源 | 现有 `ui/icons.ts` 静态入口；P3 把剩余手写 SVG 收口 |
+| Lucide | 保留为唯一图标源 | `iconRegistry.ts` 登记名字 + `<Icon name>` 渲染；P3 把剩余手写 SVG 收口 |
 | TanStack Query | **已引入（5.0，面板级）** | **5 个真实面板**：群文件 / 共享目录 / 搜索聊天记录 / 诊断快照（以上纯读）+ **外部链接（读+写**，`LinksList` 用 mutation 写回同一个键**）**；Pinia/SQLite 仍是消息状态机事实源。复跑：`grep -rl "useQuery" src --include='*.vue'`。边界见 `open-source-replacement-matrix.md` 第 2 节与 §6.90/§6.98 |
 | TanStack Virtual | **已引入（日志页）** | `LogViewer` 两条外壳已迁 `useVirtualizer`；消息列表 `VirtualList` 按 P7 实测与业务锚定语义保留（C），见矩阵第 2 节 |
 | TanStack Table/Router/Form | 不引入 | 无复杂表格；多窗口 HTML 入口 + 手写导航 |

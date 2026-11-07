@@ -2,7 +2,6 @@
 import Icon from "@/components/ui/Icon.vue";
 import { t } from "@/i18n";
 import { computed, onUnmounted, ref, watch } from "vue";
-import { ImageOff } from "@/components/ui/icons";
 import { IMAGE_BUBBLE_HEIGHT, IMAGE_PLACEHOLDER_HEIGHT, imageBubbleHeight } from "@/utils/previewMetrics";
 import { rememberImageOrigin } from "@/utils/imageZoom";
 
@@ -188,7 +187,7 @@ onUnmounted(clearTimer);
       class="gosslan-skeleton-in flex w-full items-center justify-center bg-[var(--gosslan-hover)]"
       :style="{ height: `${placeholderHeight}px` }"
     >
-      <ImageOff v-if="state === 'failed'" class="size-6 opacity-50" />
+      <Icon name="image-off" v-if="state === 'failed'" class="size-6 opacity-50" />
       <Icon name="image-icon" v-else class="size-6 opacity-40" />
     </div>
     <div

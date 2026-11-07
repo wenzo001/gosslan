@@ -10,7 +10,6 @@ import Icon from "@/components/ui/Icon.vue";
  *   - 「自定义…」不立即落库，先在面板里输入名字，确认后才写（后端对空名明确拒收）。
  */
 import { nextTick, ref, watch } from "vue";
-import { Check } from "@/components/ui/icons";
 import CharCounter from "@/components/ui/CharCounter.vue";
 import TodoAttrField from "@/components/TodoAttrField.vue";
 import { t } from "@/i18n";
@@ -111,7 +110,7 @@ function applyCustom(close: () => void) {
         :aria-current="o.value === modelValue ? 'true' : undefined"
         @click="pick(o.value, close)"
       >
-        <Check v-if="o.value === modelValue" class="h-3.5 w-3.5 shrink-0" aria-hidden="true" />
+        <Icon name="check" v-if="o.value === modelValue" class="h-3.5 w-3.5 shrink-0" aria-hidden="true" />
         <span v-else class="h-3.5 w-3.5 shrink-0" aria-hidden="true"></span>
         <span class="min-w-0 flex-1 truncate" :title="o.value === 'custom' && customValue ? customValue : o.label">
           {{ o.value === "custom" && customValue ? customValue : o.label }}

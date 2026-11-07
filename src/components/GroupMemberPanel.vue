@@ -19,7 +19,6 @@ import { errorText } from "@/composables/useErrorText";
 import { useImeEnterGuard } from "@/composables/useImeEnterGuard";
 import { MAX_ANNOUNCEMENT_CHARS, MAX_GROUP_NAME_CHARS } from "@/utils/validation";
 import CharCounter from "@/components/ui/CharCounter.vue";
-import { X } from "@/components/ui/icons";
 import type { Friend } from "@/types";
 import AvatarBox from "@/components/ui/AvatarBox.vue";
 
@@ -475,7 +474,7 @@ async function confirmAction() {
               :title="t('common.collapse')" :aria-label="t('common.collapse')"
               @click="showAdd = false"
             >
-              <X class="h-3.5 w-3.5" />
+              <Icon name="x" class="h-3.5 w-3.5" />
             </button>
           </div>
           <div>

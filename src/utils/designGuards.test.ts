@@ -49,7 +49,9 @@ import {
   findImgTags,
   checkTodoCardImageLimit,
   findLiteralRadiusClasses,
-  findDirectSemanticIconImports,
+  findDirectLucideImports,
+  findUnknownIconNames,
+  findIconSizeDrift,
   findHandWrittenSolidDangerButtons,
   findHandWrittenCancelButtons,
   findHandWrittenOutlineButtons,
@@ -3511,47 +3513,37 @@ test("㊴ 真实树：全 src 的 .vue 没有字面圆角（分母现算）", ()
   console.log(`· ㊴ 分母：扫 ${files.length} 份 .vue，字面圆角 0 处`);
 });
 
-// ---------------- ㊵ 高频语义图标只从 ui/icons.ts 引 ----------------
+// ---------------- ㊵ 图标只有一个出口：Icon.vue（M-4/M-5） ----------------
 
-/**
- * 分母**从入口自己解析**，不在测试里手抄名单。
- *
- * 真实教训：入口 `ui/icons.ts` 导出 7 个名字，而这里原先手抄了 5 个 ——
- * `ImageOff`/`AlertCircle` 从此不在网内，`MessageItem.vue` 与 `MessageImageBubble.vue`
- * 两处直连 `lucide-vue-next` 的 `ImageOff` 一直漏报，而判据照旧打「直连 0 处」。
- * 手抄清单每加一个入口名字都要记得回来补，这条迟早再漂一次。
- */
-const ICON_BARREL_PATH = join(import.meta.dirname, "..", "components", "ui", "icons.ts");
-const SEMANTIC_ICON_NAMES = (
-  readFileSync(ICON_BARREL_PATH, "utf8").match(/export \{([^}]+)\} from "lucide-vue-next"/)?.[1] ?? ""
-)
-  .split(",")
-  .map((s) => s.trim())
-  .filter(Boolean);
-// 非空转下限：入口一旦被清空，上面的解析会得到空数组 ⇒ "全库 0 处违规"会假绿。
-assert.ok(
-  SEMANTIC_ICON_NAMES.length >= 5,
-  `只从 ui/icons.ts 解析出 ${SEMANTIC_ICON_NAMES.length} 个名字 ⇒ 分母塌了，这条判据不再成立`,
+const REGISTRY_PATH = join(import.meta.dirname, "..", "components", "ui", "iconRegistry.ts");
+
+/** 分母从登记表自己现解析（`"kebab": Component` 行），不手抄名单。 */
+const ICON_KEYS = new Set(
+  [...readFileSync(REGISTRY_PATH, "utf8").matchAll(/^\s*"([a-z0-9-]+)":\s*\w+,$/gm)].map((m) => m[1]),
 );
+// 非空转下限：登记表一旦解析失败（键行格式漂了），"全库 0 处未知键"会假绿。
+assert.ok(ICON_KEYS.size >= 100, `只从 iconRegistry.ts 解析出 ${ICON_KEYS.size} 个键 ⇒ 分母塌了`);
 
-test("㊵ 高频语义图标直连 lucide → 报；走入口 → 放行（夹具）", () => {
-  const buggy = `<script setup lang="ts">\nimport { Loader2, X } from "lucide-vue-next";\n</script>`;
-  assert.equal(findDirectSemanticIconImports(buggy, SEMANTIC_ICON_NAMES).length, 2);
-  const swallowed = `<script setup lang="ts">\nimport { computed, ref } from "vue";\nimport { api } from "@/api";\nimport { Loader2, RotateCw } from "lucide-vue-next";\n</script>`;
-  assert.equal(
-    findDirectSemanticIconImports(swallowed, SEMANTIC_ICON_NAMES).length,
-    1,
-    "跨多条 import 也必须逐条匹配（旧正则把前面的 import 吞进来 ⇒ 直连 Loader2 漏报）",
-  );
+test("㊵ 直连 lucide → 报；走 Icon.vue → 放行（夹具）", () => {
+  const single = `<script setup lang="ts">\nimport { Loader2, X } from "lucide-vue-next";\n</script>`;
+  assert.equal(findDirectLucideImports(single).length, 1);
 
-  const ok = `<script setup lang="ts">\nimport { Loader2, X } from "@/components/ui/icons";\n</script>`;
-  assert.deepEqual(findDirectSemanticIconImports(ok, SEMANTIC_ICON_NAMES), []);
+  // 旧正则的坑：跨行具名 import 也要命中（否则改个换行就漏报）。
+  const multi = `<script setup lang="ts">\nimport {\n  BellRing,\n  Copy,\n} from "lucide-vue-next";\n</script>`;
+  assert.equal(findDirectLucideImports(multi).length, 1);
 
-  const escaped = `<!-- icon-entry-ok -->\n<script setup lang="ts">\nimport { X } from "lucide-vue-next";\n</script>`;
-  assert.deepEqual(findDirectSemanticIconImports(escaped, SEMANTIC_ICON_NAMES), []);
+  const def = `<script setup lang="ts">\nimport Copy from "lucide-vue-next";\n</script>`;
+  assert.equal(findDirectLucideImports(def).length, 1);
+
+  const ok = `<script setup lang="ts">\nimport Icon from "@/components/ui/Icon.vue";\n</script>`;
+  assert.deepEqual(findDirectLucideImports(ok), []);
+
+  // 反例自证：注释里提到 lucide 不算 import（别把文档说明判红）。
+  const commentOnly = `<script setup lang="ts">\n// 造型来自 lucide-vue-next，登记在 iconRegistry.ts\n</script>`;
+  assert.deepEqual(findDirectLucideImports(commentOnly), []);
 });
 
-test("㊵ 真实树：5 个高频语义图标只从 ui/icons.ts 引（分母现算）", () => {
+test("㊵ 真实树：除 iconRegistry.ts 外零直连 lucide", () => {
   const srcDir = join(import.meta.dirname, "..");
   const files: string[] = [];
   (function walk(dir: string) {
@@ -3561,9 +3553,8 @@ test("㊵ 真实树：5 个高频语义图标只从 ui/icons.ts 引（分母现�
       else if (
         (entry.name.endsWith(".vue") || entry.name.endsWith(".ts")) &&
         !entry.name.endsWith(".test.ts") &&
-        full !== join(srcDir, "components", "ui", "icons.ts") &&
-        // 图标库的唯一物理入口：registry 本身必须直连 lucide（其余文件走 Icon.vue）。
-        full !== join(srcDir, "components", "ui", "iconRegistry.ts")
+        // 唯一允许直连 lucide 的物理入口。
+        full !== REGISTRY_PATH
       ) {
         files.push(full);
       }
@@ -3573,18 +3564,65 @@ test("㊵ 真实树：5 个高频语义图标只从 ui/icons.ts 引（分母现�
 
   const bad: string[] = [];
   for (const f of files) {
-    for (const issue of findDirectSemanticIconImports(readFileSync(f, "utf8"), SEMANTIC_ICON_NAMES)) {
+    for (const issue of findDirectLucideImports(readFileSync(f, "utf8"))) {
       bad.push(`${f.replace(srcDir + "/", "")}:${issue.line}  ${issue.message}`);
     }
   }
   assert.deepEqual(bad, [], `以下位置仍直连 lucide：\n${bad.join("\n")}`);
 
-  // 阳性对照：入口必须真的导出这 5 个名字（否则"全库 0 处"只是没人可引）
-  const barrel = readFileSync(join(srcDir, "components", "ui", "icons.ts"), "utf8");
-  for (const name of SEMANTIC_ICON_NAMES) {
-    assert.ok(new RegExp(`\\b${name}\\b`).test(barrel), `ui/icons.ts 必须导出 ${name}`);
+  // 阳性对照：登记表必须真的还是唯一入口（它自己不 import lucide，这条就失去意义）。
+  assert.match(readFileSync(REGISTRY_PATH, "utf8"), /from "lucide-vue-next"/);
+  // 旧 barrel 必须已经删除（留着就是第二条并行出口）。
+  assert.equal(existsSync(join(srcDir, "components", "ui", "icons.ts")), false, "ui/icons.ts 应已删除");
+
+  console.log(`· ㊵ 分母：扫 ${files.length} 份源码，直连 lucide 0 处；登记键 ${ICON_KEYS.size} 个`);
+});
+
+test("㊵ 模板里字面量 Icon 名必须登记过（夹具 + 真实树）", () => {
+  const ok = `<Icon name="check" /><Icon :name="pinned ? 'pin' : 'pin-off'" />`;
+  assert.deepEqual(findUnknownIconNames(ok, ICON_KEYS), []);
+
+  // 反例：键打错一个字母 → 静默空 svg，必须报。
+  const typo = `<Icon name="check-circle-2" />`;
+  assert.equal(findUnknownIconNames(typo, ICON_KEYS).length, 1);
+
+  const srcDir = join(import.meta.dirname, "..");
+  const vueFiles: string[] = [];
+  (function walk(dir: string) {
+    for (const entry of readdirSync(dir, { withFileTypes: true })) {
+      const full = join(dir, entry.name);
+      if (entry.isDirectory()) walk(full);
+      else if (entry.name.endsWith(".vue")) vueFiles.push(full);
+    }
+  })(srcDir);
+  assert.ok(vueFiles.length > 100, `只扫到 ${vueFiles.length} 份 .vue ⇒ 分母塌了`);
+
+  const bad: string[] = [];
+  for (const f of vueFiles) {
+    for (const issue of findUnknownIconNames(readFileSync(f, "utf8"), ICON_KEYS)) {
+      bad.push(`${f.replace(srcDir + "/", "")}:${issue.line}  ${issue.message}`);
+    }
   }
-  console.log(`· ㊵ 分母：扫 ${files.length} 份源码，高频语义图标直连 lucide 0 处`);
+  assert.deepEqual(bad, [], `以下 Icon 名不在登记表里：\n${bad.join("\n")}`);
+});
+
+test("M-5：Icon.vue 不再有 size prop / 按 size 算描边的分支", () => {
+  const iconVue = readFileSync(join(import.meta.dirname, "..", "components", "ui", "Icon.vue"), "utf8");
+  assert.deepEqual(findIconSizeDrift(iconVue), [], "Icon.vue 又长回了并行尺寸机制");
+
+  // 反例自证：把 prop 与描边分支写回去必须红（否则这条判据只是读空气）。
+  const revived = iconVue.replace(
+    "const props = withDefaults(",
+    "const props = withDefaults(",
+  ).replace(
+    "{ label: \"\" },",
+    "{ label: \"\", size: 20 },",
+  ).replace(
+    "const icon = computed(() => ICON_COMPONENTS[props.name]);",
+    "const icon = computed(() => ICON_COMPONENTS[props.name]);\nconst strokeWidth = props.size === 16 ? 1.8 : 2;",
+  );
+  const issues = findIconSizeDrift(revived);
+  assert.equal(issues.length, 2, "size prop 与 strokeWidth 分支各该报一次");
 });
 
 // ---------------- 取消键只走 SecondaryBtn（2026-10-28 动作按钮收口） ----------------

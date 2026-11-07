@@ -14,6 +14,23 @@
 
 ## [Unreleased]
 
+## [5.18.64] - 2026-11-07
+
+### 图标收敛成一套出口：删 `ui/icons.ts`，`Icon.vue` 去掉并行尺寸机制（M-4/M-5）
+
+- 删除并行 barrel `src/components/ui/icons.ts`（7 个名字的再导出）；36 个 `ui/icons` /
+  `lucide-vue-next` 直连点全部改为 `<Icon name="…" />`，登记表补 `check` 键（现有 116 个）。
+  `MessageItem.vue` 的 13 枚直连 lucide + `MessageCodeBubble.vue` 的 `Copy` 一并收口；
+  动态 `<component :is="Code2/FileText">` 改 `:name` 表达式，渲染不变。
+- `Icon.vue` 删除 `size` prop 与 `size === 16 ? 1.8 : 2` 分支：191 个 `<Icon>` 里 137 个用
+  `h-*` 覆盖尺寸，prop 从未被显式传过 ⇒ 文档的 1.8 与实现的 2 是两条平行定义。收敛后盒尺寸
+  只走 class、描边固定 2px，个别强调处（回执 2.5 / 群任务 2.2 / 导航选中 2.35）仍用
+  `:stroke-width` 显式覆盖。`NavIcon` 去掉与 23/21 互斥的 `:size="24"`。
+- ㊵ 重写：不再按名字白名单放行，改为「除 `iconRegistry.ts` 外全库禁止直连 lucide」；
+  新增「字面量 `<Icon name>` 必须在登记表里」判据（键打错会静默空 svg）。两条都带反例自证。
+- 文档同步：HANDOFF §4.4 的「16px 描边 1.8」并入「统一 2px」；架构矩阵 / 前端路线书的
+  图标入口指向 `iconRegistry.ts` + `Icon.vue`。
+
 ## [5.18.63] - 2026-11-07
 
 ### 删除死开关 `data-frost="off"`（M-7）

@@ -1,6 +1,6 @@
 <script setup lang="ts">
+import Icon from "@/components/ui/Icon.vue";
 import { computed, reactive, ref, watch } from "vue";
-import { Trash2 } from "@/components/ui/icons";
 import { api } from "@/api";
 import { useAppStore } from "@/stores/useAppStore";
 import { useChatStore } from "@/stores/useChatStore";
@@ -557,7 +557,7 @@ async function removeEndpoint(address: string) {
         :title="t('settings.network.routed.remove')"
         @click="removeEndpoint(ep.address)"
       >
-        <Trash2 :size="14" />
+        <Icon name="trash2" class="h-3.5 w-3.5" />
       </button>
     </div>
     <div v-if="endpoints.length" class="ml-4 h-px bg-[var(--gosslan-divider)]" />

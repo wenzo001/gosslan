@@ -24,7 +24,6 @@ const props = withDefaults(
 <template>
   <Icon
     :name="NAV_ICONS[props.name]"
-    :size="24"
     :class="[NAV_ICON_SIZE_CLASS[props.variant], 'nav-glyph']"
     :data-active="props.active ? 'true' : 'false'"
   />

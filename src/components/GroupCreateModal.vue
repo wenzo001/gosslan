@@ -1,11 +1,11 @@
 <script setup lang="ts">
+import Icon from "@/components/ui/Icon.vue";
 import { t } from "@/i18n";
 import { ref, watch } from "vue";
 import { useRouter } from "vue-router";
 import { useAppStore } from "@/stores/useAppStore";
 import { useChatStore } from "@/stores/useChatStore";
 import BaseModal from "@/components/BaseModal.vue";
-import { Check } from "@/components/ui/icons";
 import { useSubmitGuard } from "@/composables/useSubmitGuard";
 import { useImeEnterGuard } from "@/composables/useImeEnterGuard";
 import { groupNameSchema, MAX_GROUP_NAME_CHARS } from "@/utils/validation";
@@ -113,7 +113,7 @@ async function create() {
           class="flex h-4 w-4 items-center justify-center rounded-[var(--gosslan-radius-xs)] border"
           :class="selected.includes(f.device_id) ? 'border-primary bg-[var(--gosslan-primary-active)]' : 'border-[var(--gosslan-border)]'"
         >
-          <Check v-if="selected.includes(f.device_id)" class="h-3 w-3 text-[var(--gosslan-on-primary)]" />
+          <Icon name="check" v-if="selected.includes(f.device_id)" class="h-3 w-3 text-[var(--gosslan-on-primary)]" />
         </div>
         <AvatarBox class="h-8 w-8" :id="f.device_id" :src="f.avatar" />
         <span class="flex-1 text-sm">{{ f.nickname }}</span>
