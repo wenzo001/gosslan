@@ -14,6 +14,14 @@
 
 ## [Unreleased]
 
+## [5.18.67] - 2026-11-07
+
+### 红绿灯判据锚点跟上真实签名
+
+- clippy 修复（5.18.66）把 `center_traffic_lights(&ns_window)` 去借用成 `center_traffic_lights(ns_window)`，
+  而 `titleBarIcons.test.ts` 的正则仍钉着旧签名 ⇒ 本地 `npm test` 与远端 Verify（前端 / Android / 护栏非空转）
+  红在同一行。锚点跟到真实签名，断言强度不变（该文件 9 pass）。
+
 ## [5.18.66] - 2026-11-07
 
 ### 红绿灯重定位去掉多余借用（clippy 复绿）
