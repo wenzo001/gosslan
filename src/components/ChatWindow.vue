@@ -1894,7 +1894,7 @@ function retryHistory() {
         </button>
       </div>
       <!-- 展开态：纵向列出全部置顶，带高度上限（置顶再多也不会吃掉消息区） -->
-      <div v-if="pinsExpanded" class="max-h-32 overflow-y-auto px-4 pb-1.5">
+      <div v-if="pinsExpanded" class="scrollbar-both max-h-32 overflow-y-auto px-4 pb-1.5">
         <div
           v-for="p in pinnedItems"
           :key="`all-${p.id}`"

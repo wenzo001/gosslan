@@ -421,7 +421,7 @@ function close() {
     </div>
 
     <!-- 日志列表 -->
-    <div ref="logScroll" class="gosslan-selectable min-h-0 flex-1 overflow-y-auto px-3.5 py-2 font-mono text-caption leading-relaxed">
+    <div ref="logScroll" class="scrollbar-both gosslan-selectable min-h-0 flex-1 overflow-y-auto px-3.5 py-2 font-mono text-caption leading-relaxed">
       <StateBlock
         v-if="logs.length === 0 && loadError"
         kind="error"
@@ -575,7 +575,7 @@ function close() {
         </button>
       </div>
 
-      <div ref="logScroll" class="gosslan-selectable min-h-0 flex-1 overflow-y-auto px-3 py-2 font-mono text-body leading-relaxed">
+      <div ref="logScroll" class="scrollbar-both gosslan-selectable min-h-0 flex-1 overflow-y-auto px-3 py-2 font-mono text-body leading-relaxed">
         <StateBlock
           v-if="logs.length === 0 && loadError"
           kind="error"

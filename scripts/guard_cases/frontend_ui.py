@@ -963,22 +963,23 @@ CASES: list[Case] = [
         tags=["frontend", "new-guards", "todo"],
     ),
     Case(
-        name="弹窗滚动区把留白配对拆成单边必须被抓住（用户那句「左小右大」）",
-        why="卡片 p-5 左右各 20px。滚动区给正文留出滚动条落脚的 8px，就必须同时把同样宽度从右侧"
-        "     边距里让回来，否则右侧净留白比左侧多出一截 —— 这正是用户 2026-10-12 报的那条。"
-        "     真「算出来对称」的判据在运行时探针（--only=winsafe，并带一条撤掉修复必变红的反向"
-        "     对照），而那层 CI 不跑 => 这里先钉住「这一对没被单边删掉」。"
-        "     注入 = 只删滚动区那条负右边距（页脚那一处同一对故意留着，证明锚点取的是滚动区那一行）。",
-        file=ROOT / "src" / "components" / "BaseModal.vue",
-        injections=[("overflow-y-auto pr-[var(--gosslan-scroll-gutter)] -mr-[var(--gosslan-scroll-gutter)]",
-                     "overflow-y-auto pr-[var(--gosslan-scroll-gutter)]")],
+        name="滚动条留白从「两侧」拆成「单边」必须被抓住（用户那句「左小右大」）",
+        why="卡片 p-5 左右各 20px。滚动区给正文留出滚动条落脚的 8px，就必须同时把同样宽度从左侧"
+        "     补回来，否则右侧净留白比左侧多出一截 —— 这正是用户 2026-10-12 报的那条。"
+        "     2026-11-07 用户补正后，这一对从「`pr-[…] -mr-[…]` 补偿 hack」统一换成规范类"
+        "     `.scrollbar-both`（`scrollbar-gutter: stable both-edges`）。"
+        "     真「算出来对称」的判据在运行时探针（--only=scrollstable，并带一条撤掉预留必变红的反向"
+        "     对照），而那层 CI 不跑 => 这里先钉住「两侧没被拆成单边」。"
+        "     注入 = 把 `stable both-edges` 拆成 `stable`（只剩滚动条那一侧）。",
+        file=ROOT / "src" / "style.css",
+        injections=[("scrollbar-gutter: stable both-edges;", "scrollbar-gutter: stable;")],
         cmd=node_test(
             "src/utils/designGuards.test.ts",
             "src/utils/longPress.test.ts",
             "src/utils/titleBarIcons.test.ts",
         ),
         cwd=ROOT,
-        expect_fail_hint="必须成对",
+        expect_fail_hint="否则内容偏左",
         tags=["frontend", "new-guards", "modal"],
     ),
     Case(
@@ -1285,5 +1286,38 @@ CASES: list[Case] = [
         cwd=ROOT,
         expect_fail_hint="`::placeholder` 规则不完整",
         tags=["frontend", "readability", "new-guards"],
+    ),
+    Case(
+        name="滚动容器去掉 scrollbar-gutter 预留（有/无滚动条宽度又变两套）",
+        why="2026-11-07 用户补正：设置里「关于」比别的分区窄，根因是滚动条占位 ——"
+        "「有滚动条 / 没有滚动条应该是一样的宽度」。修法是把全局滚动口径钉成"
+        "`scrollbar-gutter: stable`（两侧版 `.scrollbar-both` 用 `stable both-edges`）。"
+        "本条把全局口径里的那行删掉（等价于回退到默认 auto），必须由 SC-01 判据点名并红 ——"
+        "否则「通用」和「关于」的内容盒宽会差 8px，用户看到的偏窄问题回来。",
+        file=ROOT / "src" / "style.css",
+        injections=[(
+            ".overflow-y-auto,\n.overflow-auto,\n.overflow-y-scroll {\n  overscroll-behavior: contain;\n  scrollbar-gutter: stable;\n}",
+            ".overflow-y-auto,\n.overflow-auto,\n.overflow-y-scroll {\n  overscroll-behavior: contain;\n}",
+        )],
+        cmd=node_test("src/utils/designGuards.test.ts"),
+        cwd=ROOT,
+        expect_fail_hint="全局滚动口径缺",
+        tags=["frontend", "scroll", "new-guards"],
+    ),
+    Case(
+        name="滚动容器重新用 padding 补偿滚动条宽度",
+        why="上一轮临时把 BaseModal 的内容区做成 `pr-[var(--gosslan-scroll-gutter)] -mr-[…]`，"
+        "那是「靠内距 + 负边距把滚动条位置抵掉」的宽度补偿 hack：一旦滚动条出现/消失，"
+        "内容盒宽仍然变，且内容不居中。2026-11-07 统一改成 `.scrollbar-both` 的恒定 gutter。"
+        "本条把补偿 hack 加回去，必须由 SC-01 判据点名并红（判据明令禁止这类 hack）。",
+        file=ROOT / "src" / "components" / "BaseModal.vue",
+        injections=[(
+            'class="scrollbar-both min-h-0 flex-1 overflow-y-auto"',
+            'class="scrollbar-both min-h-0 flex-1 overflow-y-auto pr-[var(--gosslan-scroll-gutter)]"',
+        )],
+        cmd=node_test("src/utils/designGuards.test.ts"),
+        cwd=ROOT,
+        expect_fail_hint="宽度补偿 hack",
+        tags=["frontend", "scroll", "new-guards"],
     ),
 ]

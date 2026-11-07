@@ -14,6 +14,26 @@
 
 ## [Unreleased]
 
+## [5.18.47] - 2026-11-07
+
+### 滚动条出现/不出现：内容宽度与居中必须一致（有/无滚动条 = 同一套数）
+
+用户补正设置里「关于」面板偏窄的根因：**不是卡片内边距**，而是别的分区有滚动条占 8px，
+「关于」内容短、没有滚动条 —— 「有滚动条 / 没有滚动条应该是一样的宽度」。
+
+- 全局滚动口径补齐 `.overflow-y-scroll`，统一 `scrollbar-gutter: stable`；
+  两侧同宽场景用 `.scrollbar-both`（`scrollbar-gutter: stable both-edges`），
+  删掉 BaseModal 里 `pr-[var(--gosslan-scroll-gutter)] -mr-[…]` 的宽度补偿 hack。
+- 设置、日志、群任务、会话列表、搜索、收藏、转发、群成员等 20+ 滚动面统一挂 `.scrollbar-both`。
+- 消息里的焦点环一律 `focus-visible:ring-inset`（外扩环会被 `overflow` 容器裁掉左/右一边，
+  与"有滚动条时内容偏左"是同一根因，合并处理）。
+- CDP 实测（设置独立窗口，亮/暗各一套）：会滚的「通用」与不滚的「关于」
+  `clientW = 764 / 764`、文字起始 `x = 895 / 895`；缩高跨过滚动条临界点
+  `deltaW = 0`、`deltaTextX = 0`；去掉预留策略的反面对照 `deltaW = -8px`（证明量具不是恒绿）。
+- 守卫 SC-01：滚动容器必须声明预留策略、禁止 `padding`/负边距补偿与
+  `scrollbar-width|color` 覆盖、焦点环必须内缩；两条注入式反例（删 gutter / 加回补偿 hack）
+  均由 `scripts/verify-guards.py --only 滚动` 证明会红。
+
 ## [5.18.46] - 2026-11-07
 
 ### ⑧ 玻璃 + 浮动背景全开时输入框看不清 / 信息可读性下降

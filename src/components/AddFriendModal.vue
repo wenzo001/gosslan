@@ -449,7 +449,7 @@ async function add(peerId: string) {
         class="mb-2 h-10 w-full rounded-[var(--gosslan-radius-md)] border border-[var(--gosslan-field-border)] bg-[var(--gosslan-field)] px-3 py-1.5 text-sm outline-none transition focus:border-[var(--gosslan-primary)]"
         :placeholder="t('friend.add.searchPlaceholder')"
       />
-      <div class="max-h-72 overflow-y-auto">
+      <div class="scrollbar-both max-h-72 overflow-y-auto">
         <div
           v-for="p in filteredPeers.list"
           :key="p.device_id"

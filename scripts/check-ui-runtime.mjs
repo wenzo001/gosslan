@@ -4403,6 +4403,7 @@ async function main() {
     const scrollhist = want("scrollhist");
     const scrollswitch = want("scrollswitch");
     const scrollinput = want("scrollinput");
+    const scrollstable = want("scrollstable");
     const todosync = want("todosync");
     const tododelete = want("tododelete");
     const todoarchive = want("todoarchive");
@@ -4643,6 +4644,7 @@ async function main() {
     await runSegment("scrollhist", scrollhist, () => runScrollHist(cdp, url));
     await runSegment("scrollswitch", scrollswitch, () => runScrollSwitch(cdp, url));
     await runSegment("scrollinput", scrollinput, () => runScrollInput(cdp, url));
+    await runSegment("scrollstable", scrollstable, () => runScrollStable(cdp, url));
     await runSegment("todosync", todosync, () => runTodoSync(cdp, url));
     await runSegment("tododelete", tododelete, () => runTodoDelete(cdp, url));
     await runSegment("todoarchive", todoarchive, () => runTodoArchive(cdp, url));
@@ -25315,5 +25317,250 @@ async function runInputPanels(cdp, url) {
     "开 → 点外 → 关，且草稿含 @", JSON.stringify({ openedAgain, outsideClick }));
 }
 
+
+/**
+ * ⑦（合并版，2026-11-07）：**滚动条出现/消失不许改变内容宽度**。
+ *
+ * 用户补正：「关于」那个分区比别的窄，根因不是卡片内边距 —— 别的分区有滚动条（占 8px），
+ * 「关于」内容短、没有滚动条，于是内容盒宽了 8px。用户口径：「有滚动条 / 没有滚动条应该
+ * 是一样的宽度」。
+ *
+ * 判据分三层（全部运行时，不读 CSS 源码）：
+ *  1. 同一设置窗口里切「通用」（会滚）与「关于」（通常不滚）：内容盒宽 / 卡片 x / 文字起始 x
+ *     三组数逐像素相等；
+ *  2. 把窗口高度从 700 缩到 420，让「关于」跨过滚动条出现的临界点：同一容器宽度差必须为 0；
+ *  3. 反面对照：把 scroller 的 `scrollbar-gutter` 改成 `auto`（等价于"没有预留策略"），
+ *     同样跨临界点 ⇒ 宽度必须真的差 8px（证明这套量具不是恒绿）。
+ *
+ * 亮/暗各一套。覆盖式滚动条那一半的说明见 style.css：本应用用 `::-webkit-scrollbar` 8px
+ * **常显**（不是系统 overlay），所以"覆盖式 gutter=0"这一支在真机上不会出现；探针读到的
+ * `scrollbar-gutter` 与 `offsetWidth-clientWidth` 一起记账，两种引擎口径都能对上。
+ *
+ * 其余滚动面（日志 / 群任务 / 会话列表 / 搜索 / 收藏 / 转发 / 群成员 / 各类弹窗）共用
+ * 同一组规范类（`.overflow-y-auto` + `.scrollbar-both`），静态守卫 SC-01 逐个文件钉住；
+ * 本段再把"规范类在两种状态下宽度不变"用一份合成夹具量一遍，避免只靠类名推断。
+ */
+async function runScrollStable(cdp, url) {
+  const shotDir = path.join(ROOT, "test-results", "ui-2026-11-07");
+  fs.mkdirSync(shotDir, { recursive: true });
+  await cdp.send("Page.bringToFront").catch(() => {});
+  await cdp.send("Emulation.setEmulatedMedia", { features: [] }).catch(() => {});
+
+  /** 读"右栏滚动容器"的几何：内容盒宽、卡片 x、文字起始 x、以及滚动条自身宽度。 */
+  const READ = `(() => {
+    const s = [...document.querySelectorAll('div')].find((el) => {
+      const c = String(el.className || '');
+      return c.includes('scrollbar-both') && c.includes('overflow-y-auto') && el.getClientRects().length > 0;
+    });
+    if (!s) return null;
+    const cs = getComputedStyle(s);
+    const rectOf = (el) => { if (!el) return null; const b = el.getBoundingClientRect();
+      return { x: +b.x.toFixed(2), w: +b.width.toFixed(2), r: +b.right.toFixed(2) }; };
+    const visible = [...s.querySelectorAll('*')].filter((el) => el.getClientRects().length > 0);
+    const card = visible.find((el) => {
+      const c = String(el.className || '');
+      return (c.includes('rounded-') || c.includes('settings-group')) && el.querySelector('span, p, label, input, button');
+    });
+    const textEl = visible.find((el) => {
+      const tag = el.tagName.toLowerCase();
+      if (!/^(span|p|h2|label)$/.test(tag)) return false;
+      return (el.textContent || '').trim().length > 0 && !el.children.length;
+    });
+    return {
+      gutter: cs.scrollbarGutter,
+      padL: cs.paddingLeft, padR: cs.paddingRight,
+      offW: +s.offsetWidth.toFixed(2), clientW: +s.clientWidth.toFixed(2),
+      barW: +(s.offsetWidth - s.clientWidth).toFixed(2),
+      scrollH: s.scrollHeight, clientH: s.clientHeight,
+      canScroll: s.scrollHeight > s.clientHeight + 1,
+      card: rectOf(card), text: rectOf(textEl),
+      textTxt: textEl ? (textEl.textContent || '').trim().slice(0, 16) : null,
+    };
+  })()`;
+
+  /** 合成夹具：同一组规范类，内容高 = 可滚 / 不可滚两档，量内容盒宽与居中偏移。 */
+  const CANON = `(() => {
+    const mk = (id, tall, gutter) => {
+      const wrap = document.createElement('div');
+      wrap.setAttribute('data-canon', id);
+      wrap.style.cssText = 'position:fixed;left:0;top:0;width:320px;height:180px;';
+      const s = document.createElement('div');
+      s.className = 'overflow-y-auto scrollbar-both';
+      s.style.cssText = 'box-sizing:border-box;width:320px;height:180px;padding:0 20px;background:#fff;';
+      if (gutter) s.style.scrollbarGutter = gutter;
+      const inner = document.createElement('div');
+      inner.style.height = tall ? '900px' : '60px';
+      inner.textContent = id;
+      s.appendChild(inner);
+      wrap.appendChild(s);
+      document.body.appendChild(wrap);
+      const cs = getComputedStyle(s);
+      return {
+        id,
+        gutter: cs.scrollbarGutter,
+        clientW: +s.clientWidth.toFixed(2),
+        barW: +(s.offsetWidth - s.clientWidth).toFixed(2),
+        innerW: +inner.getBoundingClientRect().width.toFixed(2),
+        innerX: +inner.getBoundingClientRect().x.toFixed(2),
+        canScroll: s.scrollHeight > s.clientHeight + 1,
+      };
+    };
+    const a = mk('tall', true, '');
+    const b = mk('short', false, '');
+    const c = mk('short-auto', false, 'auto');
+    const d = mk('tall-auto', true, 'auto');
+    // 只拆自己建的四个 wrap（绝不许动 #probe-host —— 里面挂着设置窗口）
+    for (const el of [...document.querySelectorAll('[data-canon]')]) el.remove();
+    return { a, b, c, d };
+  })()`;
+
+  const nav = async (key) => {
+    await cdp.eval(`(async () => {
+      const R = await import('/src/router/main.ts');
+      await R.mainRouter.push({ name: 'settings-section', params: { key: ${JSON.stringify(key)} } });
+      await new Promise((r) => setTimeout(r, 800));
+      return true;
+    })()`);
+    await sleep(700);
+  };
+  const setHeight = async (h) => {
+    await cdp.send("Emulation.setDeviceMetricsOverride", {
+      width: 980, height: h, deviceScaleFactor: 1, mobile: false,
+    }).catch(() => {});
+    await sleep(700);
+  };
+  const setDark = async (dark) => {
+    await cdp.eval(`(() => { document.documentElement.classList.toggle('dark', ${dark}); return true; })()`);
+    await sleep(400);
+  };
+  const shot = async (name) => {
+    const s = await cdp.send("Page.captureScreenshot", { format: "png" });
+    fs.writeFileSync(path.join(shotDir, name + ".png"), Buffer.from(s.data, "base64"));
+  };
+
+  try {
+    await setHeight(700);
+    await cdp.send("Page.navigate", { url });
+    await cdp.settled();
+    await sleep(3_000);
+    await cdp.eval(PAGE_FIXTURE);
+    const mounted = await cdp.eval("window.__probe.install('/src/components/SettingsWindow.vue', '', "
+      + JSON.stringify(JSON.stringify({ router: true, hostHeight: "700px" })) + ")");
+    await sleep(900);
+    if (!mounted || mounted.ok !== true) {
+      check("设置独立窗口挂得起来（滚动宽度那条判据的前置）", false, "install ok", JSON.stringify(mounted));
+      return;
+    }
+
+    // 规范类合成夹具（独立于设置窗口）：先量一次，后面两条判据共用这份读数。
+    const canon = await cdp.eval(CANON);
+    console.log("  ℹ 规范类合成夹具（可滚/不可滚 + 去掉 gutter 的反面）：" + JSON.stringify(canon));
+
+    // 「关于」内容（安全 + 关于 + 更新卡）比一般窗口还高，必须放到足够高的视口才有"不滚"那一档
+    // （实测 1100 仍会滚 ⇒ 不是窗口不够高，是内容真的长；2200 下 clientH ~2065 > scrollH 1619）。
+    const TALL_H = 2200;
+    const rows = [];
+    for (const dark of [false, true]) {
+      await setDark(dark);
+      // ① 「通用」（会滚）vs「关于」（不滚）—— 同一窗口、同一容器。
+      await nav("general");
+      await setHeight(700);
+      const gen = await cdp.eval(READ);
+      await nav("about");
+      await setHeight(TALL_H);
+      const about = await cdp.eval(READ);
+      // ② 逐步缩高，取"第一次出现滚动条"的那一档 —— 这就是用户说的"缩到刚好触发滚动条"。
+      let narrowH = null;
+      let aboutNarrow = null;
+      for (const h of [900, 800, 700, 620, 540, 460, 380]) {
+        await setHeight(h);
+        const r = await cdp.eval(READ);
+        if (r && r.canScroll) { aboutNarrow = r; narrowH = h; break; }
+      }
+      // ③ 反面对照：回到"不滚"那一档，把预留策略改成 auto，再缩到同一条临界高度。
+      const setGutter = async (v) => cdp.eval(`(() => {
+        const s = [...document.querySelectorAll('div')].find((el) => {
+          const c = String(el.className || '');
+          return c.includes('scrollbar-both') && c.includes('overflow-y-auto') && el.getClientRects().length > 0;
+        });
+        if (s) s.style.scrollbarGutter = ${JSON.stringify(v)};
+        return !!s;
+      })()`);
+      await setHeight(TALL_H);
+      await setGutter("auto");
+      const narrowH2 = narrowH ?? 700;
+      await setHeight(narrowH2);
+      const counter = await cdp.eval(READ);
+      await setGutter("");
+      await setHeight(TALL_H);
+      const counterDeltaW = (about && counter && typeof about.clientW === "number"
+        && typeof counter.clientW === "number") ? +(about.clientW - counter.clientW).toFixed(2) : null;
+      rows.push({ dark, gen, about, aboutNarrow, narrowH, counter, counterDeltaW });
+
+      // 截图各取"该档真实样子"：通用 700（滚动条在）、关于 2200（不滚、无滚动条）。
+      await nav("general");
+      await setHeight(700);
+      await shot(`scrollstable-${dark ? "dark" : "light"}-general`);
+      await nav("about");
+      await setHeight(TALL_H);
+      await shot(`scrollstable-${dark ? "dark" : "light"}-about`);
+    }
+
+    const d = (a, b, k) => (a && b && typeof a[k] === "number" && typeof b[k] === "number"
+      ? +(a[k] - b[k]).toFixed(2) : null);
+    const out = rows.map((r) => ({
+      dark: r.dark,
+      clientW: [r.gen?.clientW, r.about?.clientW],
+      textX: [r.gen?.text?.x, r.about?.text?.x],
+      barW: [r.gen?.barW, r.about?.barW],
+      canScroll: [r.gen?.canScroll, r.about?.canScroll],
+      h: { gen: [r.gen?.scrollH, r.gen?.clientH], about: [r.about?.scrollH, r.about?.clientH] },
+      narrow: {
+        at: r.narrowH,
+        clientW: [r.about?.clientW, r.aboutNarrow?.clientW],
+        textX: [r.about?.text?.x, r.aboutNarrow?.text?.x],
+        canScroll: r.aboutNarrow?.canScroll,
+        barW: r.aboutNarrow?.barW,
+        deltaW: d(r.about, r.aboutNarrow, "clientW"),
+        deltaTextX: d(r.about?.text, r.aboutNarrow?.text, "x"),
+      },
+      counter: r.counter ? {
+        canScroll: r.counter.canScroll, barW: r.counter.barW, gutter: r.counter.gutter,
+        deltaW: r.counterDeltaW,
+      } : null,
+    }));
+    console.log("  ℹ 滚动宽度读数（设置独立窗口）：" + JSON.stringify(out));
+
+    check("设置窗口：会滚的「通用」与不滚的「关于」内容盒宽逐像素相等（亮/暗两套）",
+      rows.every((r) => r.gen && r.about && r.about.canScroll === false
+        && Math.abs(r.gen.clientW - r.about.clientW) <= 0.5),
+      "「关于」不滚且两者 clientWidth 差 <= 0.5px", JSON.stringify(out.map((o) => o.clientW)));
+
+    check("设置窗口：「通用」与「关于」的文字起始 x 相等（不是只量盒子）",
+      rows.every((r) => r.gen?.text && r.about?.text && Math.abs(r.gen.text.x - r.about.text.x) <= 1),
+      "文字起始 x 差 <= 1px", JSON.stringify(out.map((o) => o.textX)));
+
+    check("设置窗口：缩高跨过滚动条临界点后，同一容器宽度与文字 x 差都为 0（亮/暗两套）",
+      rows.every((r) => r.aboutNarrow && r.narrowH
+        && d(r.about, r.aboutNarrow, "clientW") === 0
+        && d(r.about?.text, r.aboutNarrow?.text, "x") === 0),
+      "deltaW = 0 且 deltaTextX = 0", JSON.stringify(out.map((o) => o.narrow)));
+
+    check("反面对照：去掉 scrollbar-gutter 预留后，跨临界点必须真的变宽（≥ 7px），否则量具恒绿",
+      rows.every((r) => r.counter && typeof r.counterDeltaW === "number"
+        && Math.abs(r.counterDeltaW) >= 7),
+      "|deltaW| >= 7px", JSON.stringify(out.map((o) => o.counter)));
+
+    check("规范类合成夹具：.scrollbar-both 可滚/不可滚两档内容宽相等；改成 auto 后必须出现 ≥7px 差值",
+      !!canon && canon.a && canon.b && canon.c && canon.d
+        && canon.a.canScroll === true && canon.b.canScroll === false
+        && Math.abs(canon.a.innerW - canon.b.innerW) <= 0.5
+        && Math.abs(canon.a.innerX - canon.b.innerX) <= 0.5
+        && Math.abs(canon.c.innerW - canon.d.innerW) >= 7,
+      "tall/short 内容宽与 x 差 <= 0.5px；auto 档差 >= 7px", JSON.stringify(canon));
+  } finally {
+    await cdp.send("Emulation.clearDeviceMetricsOverride").catch(() => {});
+  }
+}
 
 await main();

@@ -77,7 +77,7 @@ async function openLink(href: string) {
       scrollable
       max-height="60vh"
     />
-    <div v-else class="max-h-[70vh] overflow-y-auto">
+    <div v-else class="scrollbar-both max-h-[70vh] overflow-y-auto">
       <div
         class="gosslan-selectable whitespace-pre-wrap break-words text-sm leading-relaxed text-[var(--gosslan-text)]"
         :style="{ wordBreak: 'break-word' }"

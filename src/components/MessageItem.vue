@@ -1720,7 +1720,7 @@ async function copyFileToClipboard() {
         <button
           v-if="atGroupStart"
           type="button"
-          class="tap-safe shrink-0 rounded-[var(--gosslan-avatar-radius)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary"
+          class="tap-safe shrink-0 rounded-[var(--gosslan-avatar-radius)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-primary"
           :aria-label="t('friend.openProfile', { name: avatarName })"
           @click="emit('open-profile', message.sender_id)"
         >
@@ -1967,7 +1967,7 @@ async function copyFileToClipboard() {
           <button
             v-else-if="message.kind === 'image' && attachmentMissing"
             type="button"
-            class="flex w-52 cursor-pointer flex-col items-center justify-center gap-1 rounded-[var(--gosslan-bubble-radius)] bg-[var(--gosslan-hover)] text-caption text-[var(--gosslan-text-2)] transition hover:bg-[var(--gosslan-pressed)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary"
+            class="flex w-52 cursor-pointer flex-col items-center justify-center gap-1 rounded-[var(--gosslan-bubble-radius)] bg-[var(--gosslan-hover)] text-caption text-[var(--gosslan-text-2)] transition hover:bg-[var(--gosslan-pressed)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-primary"
             :class="mine ? 'self-end' : 'self-start'"
             :style="{ height: `${IMAGE_PLACEHOLDER_HEIGHT}px` }"
             :aria-disabled="mine ? 'true' : undefined"

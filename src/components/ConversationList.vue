@@ -602,7 +602,7 @@ useEventListener(document, "click", closeFriendMenu);
          ⚠️ 条高读 `--gosslan-mobile-tabbar-h`（家 = `src/style.css`），与 `ResponsiveLayout` 主内容区
          那份占位同源 —— 这里再抄一个字面量，改一处就会让另一处的最后一行被压住（判据 ㊻）。 -->
     <div
-      class="flex-1 select-none overflow-y-auto"
+      class="scrollbar-both flex-1 select-none overflow-y-auto"
       :class="[
         viewFadeClass,
         app.isMobile && !app.keyboardOpen ? 'pb-[calc(var(--gosslan-mobile-tabbar-h)+env(safe-area-inset-bottom))]' : '',
