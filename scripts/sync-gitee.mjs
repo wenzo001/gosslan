@@ -272,7 +272,9 @@ async function ensureRelease(repo, tag, branch, body) {
     return created;
   }
   const updated = await api("PATCH", `/repos/${repo}/releases/${existing.id}`, {
-    json: { name: `Gosslan ${tag}`, body },
+    // Gitee 的更新接口要求 `tag_name` 必填（缺了会 400 "tag_name is missing"），
+    // 与 GitHub 允许只改 name/body 不同。
+    json: { tag_name: tag, name: `Gosslan ${tag}`, body },
   });
   console.log(`已更新 release ${tag}（id ${updated.id}）`);
   return updated;
