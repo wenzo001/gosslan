@@ -140,7 +140,8 @@ Gitee 侧的 `scripts/sync-gitee.mjs` 不重新生成桌面清单，而是**复�
   所以默认只保留最近 8 个 release（约 590MB），更早的 release 自动删除，GitHub 全量保留。
 - 清理前会打印完整 dry-run 计划；当前 tag 的 release 被硬编码排除，固定清单在仓库分支上，
   不在 release 附件里，所以清理不会碰 `latest.json`。
-- `workflow_dispatch` 默认 `dry_run=true`；确认计划后再用 `dry_run=false` 真跑。
+- `workflow_dispatch` 默认 `dry_run=true`：**只跳过清理**，镜像、上传与清单提交照常执行；
+  要真正删旧 release 时必须显式传 `dry_run=false`，并先看一遍 dry-run 打印的删除计划。
 - WebView2 内置档（`*-webview2-bundled.exe`）**不镜像到 Gitee**；国内需要该档的用户
   走 GitHub Release 或其它渠道。它本来也不进入更新清单。
 

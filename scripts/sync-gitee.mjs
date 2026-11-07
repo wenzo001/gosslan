@@ -422,6 +422,13 @@ function parseArgs(argv) {
   };
   const keepRaw = Number(arg("keep", String(DEFAULT_KEEP)));
   const keep = Number.isFinite(keepRaw) && keepRaw >= 1 ? Math.floor(keepRaw) : DEFAULT_KEEP;
+  const mode = arg("mode", process.env.SYNC_MODE || "full");
+  if (!["full", "prepare", "upload", "finalize"].includes(mode)) {
+    throw new Error(`非法 mode：${mode}（可选 full/prepare/upload/finalize）`);
+  }
+  const shards = Math.max(1, Number(arg("shards", process.env.SHARDS || "1")) || 1);
+  const shard = Number(arg("shard", process.env.SHARD || "0")) || 0;
+  if (shard < 0 || shard >= shards) throw new Error(`非法 shard：${shard}/${shards}`);
   return {
     tag: arg("tag") || process.env.TAG || "",
     assetsDir: arg("assets-dir", process.env.ASSETS_DIR || "assets"),
@@ -429,11 +436,14 @@ function parseArgs(argv) {
     githubRepo: process.env.GITHUB_REPO || "wenzo001/gosslan",
     keep,
     dryRun: argv.includes("--dry-run") || process.env.DRY_RUN === "1",
+    mode,
+    shard,
+    shards,
   };
 }
 
 async function main(argv) {
-  const { tag, assetsDir, repo, githubRepo, keep, dryRun } = parseArgs(argv);
+  const { tag, assetsDir, repo, githubRepo, keep, dryRun, mode, shard, shards } = parseArgs(argv);
   setToken(process.env.GITEE_TOKEN || "");
   if (!TOKEN) throw new Error("缺少 GITEE_TOKEN");
   if (!/^v\d+\.\d+\.\d+$/.test(tag)) throw new Error(`非法 tag：${tag}`);
@@ -484,27 +494,43 @@ async function main(argv) {
     `GitHub 原版：https://github.com/${githubRepo}/releases/tag/${tag}${skippedNote}`;
   const release = await ensureRelease(repo, tag, branch, body);
 
-  const existing = await listAll(`/repos/${repo}/releases/${release.id}/attach_files`);
-  // 现场（2026-11-07）：GitHub runner 直连 Gitee 上传约 10KB/s，单个 release 74MB
-  // 串行要两个多小时。按连接限速的特征 ⇒ 4 路并发明显更快，失败仍靠同名先删再传收敛。
-  const CONCURRENCY = 4;
-  const queue = [...uploads];
-  async function uploadWorker() {
-    while (queue.length > 0) {
-      const f = queue.shift();
-      const old = existing.find((a) => a.name === f.name);
-      if (old) {
-        await api("DELETE", `/repos/${repo}/releases/${release.id}/attach_files/${old.id}`);
-        console.log(`  删除同名旧附件 ${f.name}`);
+  if (mode === "prepare") {
+    console.log(`prepare 完成：release ${tag}（id ${release.id}）就绪`);
+    return;
+  }
+
+  // 现场（2026-11-07）：GitHub runner 直连 Gitee 上传只有 ~10KB/s，74MB 串行要两个多小时。
+  // 单个进程 4 路并发只提到 ~15KB/s，判断是 per-IP 限速 ⇒ workflow 用多个 job（不同 runner IP）
+  // 分片，每个分片再并发 3 路。`--shard i/n` 只上传 i % n 的文件，其它文件由别的分片负责。
+  const mine = uploads.filter((_, i) => i % shards === shard);
+  if (shards > 1) console.log(`分片 ${shard}/${shards}：本片 ${mine.length} 个文件`);
+
+  if (mode !== "finalize") {
+    const existing = await listAll(`/repos/${repo}/releases/${release.id}/attach_files`);
+    const CONCURRENCY = shards > 1 ? 3 : 4;
+    const queue = [...mine];
+    async function uploadWorker() {
+      while (queue.length > 0) {
+        const f = queue.shift();
+        const old = existing.find((a) => a.name === f.name);
+        if (old) {
+          await api("DELETE", `/repos/${repo}/releases/${release.id}/attach_files/${old.id}`);
+          console.log(`  删除同名旧附件 ${f.name}`);
+        }
+        console.log(`  开始上传 ${f.name}（${f.size} 字节）`);
+        await uploadAsset(repo, release.id, f.name, f.path);
+        console.log(`  已上传 ${f.name}（${f.size} 字节）`);
       }
-      console.log(`  开始上传 ${f.name}（${f.size} 字节）`);
-      await uploadAsset(repo, release.id, f.name, f.path);
-      console.log(`  已上传 ${f.name}（${f.size} 字节）`);
+    }
+    await Promise.all(
+      Array.from({ length: Math.min(CONCURRENCY, queue.length) }, () => uploadWorker()),
+    );
+
+    if (mode === "upload") {
+      console.log(`upload 分片 ${shard}/${shards} 完成`);
+      return;
     }
   }
-  await Promise.all(
-    Array.from({ length: Math.min(CONCURRENCY, uploads.length) }, () => uploadWorker()),
-  );
 
   await commitManifest(
     repo,
