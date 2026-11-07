@@ -23,7 +23,7 @@ type NavState = (typeof NAV_STATES)[number];
 
 /** 桌面 rail 的四个按钮顺序（模板里也是这个顺序）：药丸下标按它算。 */
 const RAIL_ORDER: NavState[] = ["chats", "contacts", "favorites", "links"];
-/** 相邻两项的步距 = 按钮 `h-11`(44px) + 列 `gap-2`(8px)。两处一致，别只改一边。 */
+/** 相邻两项的步距 = 按钮 `--gosslan-nav-item`(44px) + 列 `gap-2`(8px)。两处一致，别只改一边。 */
 const RAIL_ITEM_STRIDE = 52;
 
 const props = defineProps<{
@@ -98,14 +98,14 @@ function onMoreOpen(open: boolean) {
       <span
         aria-hidden="true"
         data-rail-pill
-        class="rail-active-pill pointer-events-none absolute inset-x-0 top-0 h-11 rounded-[var(--gosslan-radius-lg)] bg-[color-mix(in_srgb,var(--gosslan-primary)_13%,transparent)]"
+        class="rail-active-pill pointer-events-none absolute inset-x-0 top-0 h-[var(--gosslan-nav-item)] rounded-[var(--gosslan-radius-lg)] bg-[color-mix(in_srgb,var(--gosslan-primary)_13%,transparent)]"
         :style="{
           transform: `translateY(${pillIndex * RAIL_ITEM_STRIDE}px)`,
           opacity: pillIndex >= 0 ? 1 : 0,
         }"
       />
       <button
-        class="nav-glyph-btn relative flex h-11 w-11 items-center justify-center rounded-[var(--gosslan-radius-lg)] transition"
+        class="nav-glyph-btn relative flex h-[var(--gosslan-nav-item)] w-[var(--gosslan-nav-item)] items-center justify-center rounded-[var(--gosslan-radius-lg)] transition"
         :class="navState === 'chats'
           ? 'text-[var(--gosslan-rail-text-active)]'
           : 'text-[var(--gosslan-rail-text)] hover:bg-[var(--gosslan-rail-hover)]'"
@@ -122,7 +122,7 @@ function onMoreOpen(open: boolean) {
         />
       </button>
       <button
-        class="nav-glyph-btn relative flex h-11 w-11 items-center justify-center rounded-[var(--gosslan-radius-lg)] transition"
+        class="nav-glyph-btn relative flex h-[var(--gosslan-nav-item)] w-[var(--gosslan-nav-item)] items-center justify-center rounded-[var(--gosslan-radius-lg)] transition"
         :class="navState === 'contacts'
           ? 'text-[var(--gosslan-rail-text-active)]'
           : 'text-[var(--gosslan-rail-text)] hover:bg-[var(--gosslan-rail-hover)]'"
@@ -140,7 +140,7 @@ function onMoreOpen(open: boolean) {
       </button>
       <!-- 收藏（微信最左侧栏就是这个位置）。 -->
       <button
-        class="nav-glyph-btn relative flex h-11 w-11 items-center justify-center rounded-[var(--gosslan-radius-lg)] transition"
+        class="nav-glyph-btn relative flex h-[var(--gosslan-nav-item)] w-[var(--gosslan-nav-item)] items-center justify-center rounded-[var(--gosslan-radius-lg)] transition"
         :class="navState === 'favorites'
           ? 'text-[var(--gosslan-rail-text-active)]'
           : 'text-[var(--gosslan-rail-text)] hover:bg-[var(--gosslan-rail-hover)]'"
@@ -154,7 +154,7 @@ function onMoreOpen(open: boolean) {
       <!-- 外部链接：点开把左列切成「链接」列表（用户 2026-09-17）。图标用**指南针**造型
            （用户指定：链接入口要有"探索/发现"的指向感，而不是一条链子）。 -->
       <button
-        class="nav-glyph-btn relative flex h-11 w-11 items-center justify-center rounded-[var(--gosslan-radius-lg)] transition"
+        class="nav-glyph-btn relative flex h-[var(--gosslan-nav-item)] w-[var(--gosslan-nav-item)] items-center justify-center rounded-[var(--gosslan-radius-lg)] transition"
         :class="navState === 'links'
           ? 'text-[var(--gosslan-rail-text-active)]'
           : 'text-[var(--gosslan-rail-text)] hover:bg-[var(--gosslan-rail-hover)]'"
@@ -172,7 +172,7 @@ function onMoreOpen(open: boolean) {
     <div class="mt-auto flex flex-col items-center gap-2">
       <button
         v-if="updateInfo"
-        class="relative flex h-11 w-11 items-center justify-center rounded-[var(--gosslan-radius-lg)] text-[var(--gosslan-rail-text)] transition hover:bg-[var(--gosslan-rail-hover)]"
+        class="relative flex h-[var(--gosslan-nav-item)] w-[var(--gosslan-nav-item)] items-center justify-center rounded-[var(--gosslan-radius-lg)] text-[var(--gosslan-rail-text)] transition hover:bg-[var(--gosslan-rail-hover)]"
         :title="t('nav.updateAvailable', { version: updateInfo.version })"
         :aria-label="t('nav.updateAvailable', { version: updateInfo.version })"
         @click="openUpdate"
@@ -181,7 +181,7 @@ function onMoreOpen(open: boolean) {
         <span class="absolute right-1.5 top-1.5 h-2 w-2 rounded-full bg-[var(--gosslan-primary)]"></span>
       </button>
       <button
-        class="flex h-11 w-11 items-center justify-center rounded-[var(--gosslan-radius-lg)] text-[var(--gosslan-rail-text)] transition hover:bg-[var(--gosslan-rail-hover)]"
+        class="flex h-[var(--gosslan-nav-item)] w-[var(--gosslan-nav-item)] items-center justify-center rounded-[var(--gosslan-radius-lg)] text-[var(--gosslan-rail-text)] transition hover:bg-[var(--gosslan-rail-hover)]"
         :title="app.dark ? t('nav.lightMode') : t('nav.darkMode')" :aria-label="app.dark ? t('nav.lightMode') : t('nav.darkMode')"
         @click="app.toggleDark()"
       >
@@ -192,7 +192,7 @@ function onMoreOpen(open: boolean) {
         <DropdownMenuRoot :open="moreOpen" :modal="false" @update:open="onMoreOpen">
           <DropdownMenuTrigger as-child>
             <button
-              class="flex h-11 w-11 items-center justify-center rounded-[var(--gosslan-radius-lg)] text-[var(--gosslan-rail-text)] transition hover:bg-[var(--gosslan-rail-hover)]"
+              class="flex h-[var(--gosslan-nav-item)] w-[var(--gosslan-nav-item)] items-center justify-center rounded-[var(--gosslan-radius-lg)] text-[var(--gosslan-rail-text)] transition hover:bg-[var(--gosslan-rail-hover)]"
               :title="t('nav.more')" :aria-label="t('nav.more')"
               @click.stop
             >

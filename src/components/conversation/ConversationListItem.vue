@@ -157,7 +157,7 @@ const gridTiles = computed(() => {
     role="button"
     tabindex="0"
     :data-conv-row="conv.id"
-    class="group/conv relative flex h-[var(--gosslan-row-h-mobile)] cursor-pointer items-center gap-2.5 px-3.5 transition-colors desktop:h-[var(--gosslan-row-h-desktop)]"
+    class="group/conv relative flex h-[var(--gosslan-row-h-mobile)] cursor-pointer items-center gap-2.5 px-[var(--gosslan-row-pad-x)] transition-colors desktop:h-[var(--gosslan-row-h-desktop)]"
     :class="[active
       ? 'bg-[var(--gosslan-list-active)] text-[var(--gosslan-list-active-text)]'
       : 'hover:bg-[var(--gosslan-list-hover)]',
@@ -176,7 +176,7 @@ const gridTiles = computed(() => {
       <!-- 群聊：微信式 2x2 九宫格头像；单聊：单头像 -->
       <div
         v-if="conv.kind === 'group' && gridTiles.length"
-        class="grid h-[42px] w-[42px] grid-cols-2 grid-rows-2 gap-px overflow-hidden rounded-[var(--gosslan-avatar-radius)] bg-[var(--gosslan-divider)]"
+        class="grid h-[var(--gosslan-row-avatar)] w-[var(--gosslan-row-avatar)] grid-cols-2 grid-rows-2 gap-px overflow-hidden rounded-[var(--gosslan-avatar-radius)] bg-[var(--gosslan-divider)]"
       >
         <AvatarBox
           v-for="(t, i) in gridTiles"
@@ -189,7 +189,7 @@ const gridTiles = computed(() => {
       </div>
       <AvatarBox
         v-else
-        class="h-[42px] w-[42px]"
+        class="h-[var(--gosslan-row-avatar)] w-[var(--gosslan-row-avatar)]"
         :class="online === false ? 'grayscale opacity-70' : ''"
         :id="conv.id"
         :src="conv.avatar"

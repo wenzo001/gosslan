@@ -19,13 +19,29 @@
          用户 2026-09-12 明确要求「它的骨架图也需要单独配置」——所以它是独立的一套，
          不是聊天三栏，也不是日志页。由 src/entries/settings.ts 在数据就绪后撤掉。 -->
     <div id="boot-settings" class="boot-skeleton" aria-hidden="true">
+      <div class="boot-win-title"><span></span></div>
+      <div class="boot-set-main">
       <div class="boot-set-nav">
-        <i class="blk active"></i>
-        <i class="blk"></i>
-        <i class="blk"></i>
-        <i class="blk"></i>
-        <i class="blk"></i>
-        <i class="blk"></i>
+        <!-- 分组结构照抄真实导航：组标题（11px）+ 组内 32px 行**无间隙**，组与组之间 `gap-3`。
+             旧骨架是 6 条等距行、没有标题，切窗时第一项会整体上移约 44px。 -->
+        <div class="boot-nav-group">
+          <span class="boot-set-label blk"></span>
+          <i class="blk active"></i>
+          <i class="blk"></i>
+          <i class="blk"></i>
+          <i class="blk"></i>
+          <i class="blk"></i>
+        </div>
+        <div class="boot-nav-group">
+          <span class="boot-set-label blk"></span>
+          <i class="blk"></i>
+          <i class="blk"></i>
+          <i class="blk"></i>
+        </div>
+        <div class="boot-nav-group">
+          <span class="boot-set-label blk"></span>
+          <i class="blk"></i>
+        </div>
       </div>
       <div class="boot-set-body">
         <div class="boot-set-group blk"></div>
@@ -39,6 +55,7 @@
           <div class="boot-set-row"><span class="lbl blk"></span><span class="ctl blk"></span></div>
           <div class="boot-set-row"><span class="lbl blk"></span><span class="ctl blk"></span></div>
         </div>
+      </div>
       </div>
     </div>
     <div id="app"></div>

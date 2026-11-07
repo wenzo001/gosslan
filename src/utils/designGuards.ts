@@ -46,6 +46,16 @@
 import { REDUCED_MOTION_QUERY } from "./platform.ts";
 import { countNewlines } from "./newlines.ts";
 
+/** SK-04 的几何同源判据与规则表（唯一来源在 `src/boot/skeletonTokens.ts`）。 */
+export {
+  checkBootSkeletonTokens,
+  BOOT_TOKEN_RULES,
+  BOOT_TOKENS_MARKER,
+  buildBootTokens,
+  readStyleToken,
+  type BootTokenRule,
+} from "../boot/skeletonTokens.ts";
+
 export interface GuardIssue {
   /** 源文件行号（1 基）；0 表示与具体行无关（整文件级问题） */
   line: number;
@@ -2914,44 +2924,40 @@ export interface BootSkeletonSources {
  *
  * 反例自证：把 `.boot-cap` 改成 41 / 删掉 `boot-title-row` / 恢复 `html.is-mac .boot-cap`
  * 都必须红 —— 否则这条判据只是「两边都读了一遍」的空转。
+ *
+ * 2026-11-07 骨架同步：数值本身已搬到 `src/boot/skeletonTokens.ts`（构建时从 style.css 物化），
+ * 本函数只守「结构占位还在、并且真的接了 var(--boot-*)」，数值同源由 SK-04 守。
  */
 export function checkBootSkeletonGeometry(s: BootSkeletonSources): GuardIssue[] {
   const out: GuardIssue[] = [];
-  const val = (src: string, re: RegExp) => {
-    const m = re.exec(src);
-    return m ? Number(m[1]) : NaN;
-  };
-  const titleH = val(s.styleCss, /--gosslan-title-h:\s*(\d+)px/);
-  const headerH = val(s.styleCss, /--gosslan-header-h:\s*(\d+)px/);
-  const shellRadius = val(s.styleCss, /--gosslan-radius-2xl:\s*(\d+)px/);
-  const capH = val(s.skeletonCss, /\.boot-cap\s*\{[^}]*?height:\s*(\d+)px/);
-  const headH = val(s.skeletonCss, /\.boot-head\s*\{[^}]*?height:\s*(\d+)px/);
-  const titleRowH = val(s.skeletonCss, /\.boot-title-row\s*\{[^}]*?height:\s*(\d+)px/);
-  const composerRadius = val(s.skeletonCss, /\.boot-composer\s*\{[^}]*?border-radius:\s*(\d+)px/);
+  const usesVar = (re: RegExp) => re.test(s.skeletonCss);
 
-  if (capH !== titleH) {
-    out.push({ line: 0, message: `SK-02：骨架标题栏 ${capH}px ≠ \`--gosslan-title-h\` ${titleH}px（首帧会跳位）。` });
+  if (!usesVar(/\.boot-cap\s*\{[^}]*height:\s*var\(--boot-title-h\)/)) {
+    out.push({ line: 0, message: "SK-02：骨架标题栏没有接上 `var(--boot-title-h)`（与真实标题栏不同源，首帧会跳位）。" });
   }
   if (/html\.is-mac\s+\.boot-cap/.test(s.skeletonCss)) {
     out.push({ line: 0, message: "SK-02：骨架里还留着 `html.is-mac .boot-cap` 的 28px 覆盖（`.platform-mac` 已删除）。" });
   }
-  if (headH !== headerH) {
-    out.push({ line: 0, message: `SK-02：骨架对话头 ${headH}px ≠ \`--gosslan-header-h\` ${headerH}px。` });
+  if (!usesVar(/\.boot-head\s*\{[^}]*height:\s*var\(--boot-header-h\)/)) {
+    out.push({ line: 0, message: "SK-02：骨架对话头没有接上 `var(--boot-header-h)`。" });
   }
-  if (!Number.isFinite(titleRowH) || titleRowH !== 50 || !/h-\[50px\]/.test(s.conversationList)) {
+  if (!usesVar(/\.boot-title-row\s*\{[^}]*height:\s*var\(--boot-list-title-h\)/)) {
     out.push({
       line: 0,
-      message: `SK-02：骨架列表标题行 ${titleRowH}px 与真实 \`h-[50px]\` 对不上（缺这一行整列会话会整体上移 50px）。`,
+      message: "SK-02：骨架列表标题行没有接上 `var(--boot-list-title-h)`（缺这一行整列会话会整体上移 50px）。",
+    });
+  }
+  if (!/h-\[var\(--gosslan-list-title-h\)\]/.test(s.conversationList)) {
+    out.push({
+      line: 0,
+      message: "SK-02：真实列表标题行没有引用 `--gosslan-list-title-h` —— 骨架与真实布局不再是同一份来源。",
     });
   }
   if (!/<div class="boot-title-row">/.test(s.indexHtml)) {
     out.push({ line: 0, message: "SK-02：index.html 缺 `boot-title-row` 占位，CSS 里的 50px 行等于没渲染。" });
   }
-  if (composerRadius !== shellRadius) {
-    out.push({
-      line: 0,
-      message: `SK-02：骨架输入卡圆角 ${composerRadius}px ≠ \`--gosslan-radius-2xl\` ${shellRadius}px。`,
-    });
+  if (!usesVar(/\.boot-composer\s*\{[^}]*border-radius:\s*var\(--boot-radius-2xl\)/)) {
+    out.push({ line: 0, message: "SK-02：骨架输入卡圆角没有接上 `var(--boot-radius-2xl)`。" });
   }
   return out;
 }

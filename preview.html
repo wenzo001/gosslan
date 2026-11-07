@@ -15,7 +15,10 @@
   <body>
     <!-- 预览窗口骨架：居中的一块大图占位（形状与真图一致，撤掉时不会"跳一下"）。 -->
     <div id="boot-preview" class="boot-skeleton" aria-hidden="true">
-      <div class="boot-preview-frame"></div>
+      <div class="boot-win-title"><span></span></div>
+      <div class="boot-preview-body">
+        <div class="boot-preview-frame"></div>
+      </div>
     </div>
     <div id="app"></div>
     <script type="module" src="/src/entries/preview.ts"></script>

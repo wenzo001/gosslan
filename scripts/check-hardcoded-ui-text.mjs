@@ -76,6 +76,9 @@ const SKIP_FILES = new Set([
   "src/utils/designGuards.ts",
   "src/utils/tokenContrast.ts",
   "src/utils/templateBranches.ts",
+  // 骨架几何同源判据的规则表与错误消息（只供构建期 vite 插件与 designGuards 使用，
+  // 不进任何渲染树；与 designGuards.ts 同一类）。
+  "src/boot/skeletonTokens.ts",
 ]);
 
 /** 整目录跳过。 */

@@ -64,6 +64,10 @@ import {
   checkBackToLatestAvoidance,
   findRawCardPadding,
   checkBootSkeletonGeometry,
+  checkBootSkeletonTokens,
+  BOOT_TOKEN_RULES,
+  BOOT_TOKENS_MARKER,
+  buildBootTokens,
   checkBootCapBrandSafe,
   checkAcceptFirstMouse,
   findTransparentFieldBorder,
@@ -6928,14 +6932,14 @@ test("SK-02：首帧骨架几何与真实布局逐项对账（标题栏 / 标题
   assert.match(src.indexHtml, /boot-title-row/);
 });
 
-test("SK-02 反例自证：cap 41 / 删标题行 / 恢复 28px macOS 覆盖必须红", () => {
+test("SK-02 反例自证：cap 写回字面 41 / 删标题行 / 恢复 28px macOS 覆盖必须红", () => {
   const src = bootSkeletonSources();
 
   const capDrift = src.skeletonCss.replace(
-    "height: 40px; /* = `--gosslan-title-h`",
-    "height: 41px; /*",
+    "height: var(--boot-title-h);",
+    "height: 41px;",
   );
-  assert.notEqual(capDrift, src.skeletonCss, "锚点没命中：.boot-cap 的 height 注释变了形状");
+  assert.notEqual(capDrift, src.skeletonCss, "锚点没命中：.boot-cap 的 height 变了形状");
   assert.ok(
     checkBootSkeletonGeometry({ ...src, skeletonCss: capDrift }).some((i) => i.message.includes("SK-02") && i.message.includes("标题栏")),
     "cap 40→41 必须红",
@@ -6977,6 +6981,98 @@ test("SK-03 反例自证：去掉居中后文案回到 14px，必须与红绿灯
   assert.ok(
     issues.some((i) => i.message.includes("SK-03") && i.message.includes("红绿灯")),
     `去掉居中必须红（左对齐 14px 会压在 0–78px 的红绿灯区里），实际：${JSON.stringify(issues)}`,
+  );
+});
+
+// ---------------- SK-04：骨架几何与真实布局同一个来源 ----------------
+
+/**
+ * 真实布局里「必须引用同一个 token」的组件。
+ * 每加一条规则就要在这里加一份源码 —— 这是判据不空转的分母。
+ */
+function bootTokenSources() {
+  const srcDir = join(import.meta.dirname, "..");
+  const read = (p: string) => readFileSync(join(srcDir, p), "utf8");
+  return {
+    skeletonCss: read("boot/skeleton.css"),
+    styleCss: read("style.css"),
+    sources: {
+      "style.css": read("style.css"),
+      "components/TitleBar.vue": read("components/TitleBar.vue"),
+      "components/chat/ChatHeader.vue": read("components/chat/ChatHeader.vue"),
+      "components/NavRail.vue": read("components/NavRail.vue"),
+      "layouts/ResponsiveLayout.vue": read("layouts/ResponsiveLayout.vue"),
+      "components/conversation/ConversationListItem.vue": read("components/conversation/ConversationListItem.vue"),
+      "components/ConversationList.vue": read("components/ConversationList.vue"),
+      "components/SettingsWindow.vue": read("components/SettingsWindow.vue"),
+      "components/LogViewer.vue": read("components/LogViewer.vue"),
+      "components/chat/MessageComposer.vue": read("components/chat/MessageComposer.vue"),
+      "components/settings/SettingsGroup.vue": read("components/settings/SettingsGroup.vue"),
+    },
+  };
+}
+
+test("SK-04：骨架几何全部由 style.css token 物化（骨架里没有第二套数字）", () => {
+  const src = bootTokenSources();
+  const issues = checkBootSkeletonTokens(src);
+  assert.deepEqual(issues, [], issues.map((i) => i.message).join("\n"));
+
+  // 分母自证：规则表非空、注入标记恰好在、每条规则的值都真能从 style.css 读到。
+  assert.ok(BOOT_TOKEN_RULES.length >= 14, `规则数 ${BOOT_TOKEN_RULES.length} 太少`);
+  assert.equal(src.skeletonCss.split(BOOT_TOKENS_MARKER).length - 1, 1);
+  const built = buildBootTokens(src.styleCss);
+  assert.deepEqual(built.missing, []);
+  assert.equal(built.values["--boot-title-h"], "40px");
+  assert.equal(built.values["--boot-row-h-desktop"], "62px");
+});
+
+test("SK-04 反例自证：骨架写回字面 px / 删 token / 真实组件不再引用 token，三种都必须红", () => {
+  const src = bootTokenSources();
+
+  // ① 骨架写回字面数字（这次是列表行高 62）。
+  const literal = src.skeletonCss.replace(
+    "height: var(--boot-row-h-desktop);",
+    "height: 62px;",
+  );
+  assert.notEqual(literal, src.skeletonCss, "锚点没命中：.boot-row 的 height 变了形状");
+  assert.ok(
+    checkBootSkeletonTokens({ ...src, skeletonCss: literal }).some(
+      (i) => i.message.includes("SK-04") && i.message.includes("字面 px"),
+    ),
+    "骨架写回 62px 必须红",
+  );
+
+  // ② style.css 删掉 token —— 构建会拿不到值（这里判「缺失」）。
+  const noToken = src.styleCss.replace(/--gosslan-row-avatar:\s*42px;/, "");
+  assert.notEqual(noToken, src.styleCss, "锚点没命中：--gosslan-row-avatar 的定义变了形状");
+  assert.ok(
+    checkBootSkeletonTokens({ ...src, styleCss: noToken }).some(
+      (i) => i.message.includes("SK-04") && i.message.includes("--gosslan-row-avatar"),
+    ),
+    "删掉 token 必须红",
+  );
+
+  // ③ 真实组件改回私有数字 —— 骨架"同源"到一个没人用的变量，等于空转。
+  const noConsumer = src.sources["components/ConversationList.vue"].replace(
+    "h-[var(--gosslan-list-title-h)]",
+    "h-[50px]",
+  );
+  assert.notEqual(noConsumer, src.sources["components/ConversationList.vue"], "锚点没命中：列表标题行的类名变了形状");
+  assert.ok(
+    checkBootSkeletonTokens({
+      ...src,
+      sources: { ...src.sources, "components/ConversationList.vue": noConsumer },
+    }).some((i) => i.message.includes("SK-04") && i.message.includes("ConversationList.vue")),
+    "真实组件不再引用 token 必须红",
+  );
+
+  // ④ 孤儿变量：骨架用了规则表里没有的 --boot-*（构建后是未定义值）。
+  const orphan = src.skeletonCss.replace(BOOT_TOKENS_MARKER, `${BOOT_TOKENS_MARKER}\n.boot-x { height: var(--boot-nope); }`);
+  assert.ok(
+    checkBootSkeletonTokens({ ...src, skeletonCss: orphan }).some(
+      (i) => i.message.includes("SK-04") && i.message.includes("--boot-nope"),
+    ),
+    "孤儿 --boot-* 必须红",
   );
 });
 

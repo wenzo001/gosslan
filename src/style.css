@@ -268,12 +268,27 @@
      两个值都在这里定义，组件只许读变量，不许各写一份 px。 */
   --gosslan-row-h-desktop: 62px;
   --gosslan-row-h-mobile: 64px;
+  /* 列表行内的头像边长与左右内距（桌面/移动同一个值）。
+     会话行与首屏骨架 `.boot-ava` / `.boot-row` 都必须读这里 —— 骨架不再私藏 42 / 12 两个数。 */
+  --gosslan-row-avatar: 42px;
+  --gosslan-row-pad-x: 14px;
+  /* 列表标题行（`ConversationList` 的「聊天 / 新建」那一行）与搜索壳高度。
+     骨架 `.boot-title-row` / `.boot-search` 与本行共用；2026-11-07 审查 M-1 的
+     「整列会话跳 50px」就是标题行缺失，现在由 SK-04 判据钉住。 */
+  --gosslan-list-title-h: 50px;
+  --gosslan-search-h: 36px;
+  /* 侧栏一级入口的方形热区（`NavRail` 的 `h-11 w-11`）与首屏骨架 `.boot-nav-item`。 */
+  --gosslan-nav-item: 44px;
+  /* 设置窗口左栏宽度（`SettingsWindow` 的 `w-[200px]`）。骨架曾写 176，切窗时整栏跳 24px。 */
+  --gosslan-settings-nav-w: 200px;
+  /* 辅助窗口顶部工具条（日志窗口，画板 46px）。此前三处各写一套：46 / 48 / 52。 */
+  --gosslan-toolbar-h: 46px;
   /* 两栏（会话列表 / 聊天头部）共用的头部高度。
      2026-09-12 按用户反馈「信息列表上面的搜索框和聊天内容区上面的信息框，占的位置太大了，
      太高了……比较紧凑、精致一点」由 56px 收紧到 52px；当晚二次反馈「顶部的高度紧凑感
      参考微信」→ 再收到 48px（微信 macOS 版头部就是这个量级）。
-     ⚠️ 改这个值必须同步 `index.html` 的首屏骨架 `.boot-head`（桌面）与
-     `.boot-logs-toolbar`（日志窗口），否则首屏会跳高 —— 这是本项目的既有约定。 */
+     ⚠️ 改这个值不用再手工同步骨架：`src/boot/skeletonTokens.ts` 在构建时把本文件的
+     几何 token 物化进内联骨架样式，SK-04 判据会拦住"骨架自己写一套数字"。 */
   --gosslan-header-h: 52px;
   /* 顶部窗口拖拽条高度：caption 容纳右上功能组（画板 DesktopChats `.titlebar` = 40px）。
      **两个平台都用 40px**：原来 macOS 压到 28px 是为了对齐自绘红绿灯，但 2026-10-23
