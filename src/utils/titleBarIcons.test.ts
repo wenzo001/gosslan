@@ -245,8 +245,10 @@ test("macOS 窄窗口：系统红绿灯由 isMobile 驱动收起/恢复", () => 
     cssTitleH,
     `macos_window.rs 的 APP_TITLEBAR_H=${rustTitleH} 与 --gosslan-title-h=${cssTitleH} 不一致`,
   );
+  // 锚点跟着真实签名走：2026-11-07 的 clippy 修复去掉了多余的 `&`（needless_borrow），
+  // 调用变成 `center_traffic_lights(ns_window)`。断言强度不变：调用必须存在。
   assert.ok(
-    /center_traffic_lights\(&ns_window\)/.test(rust),
+    /center_traffic_lights\(ns_window\)/.test(rust),
     "system traffic lights 没有居中调用（#29 的要求）",
   );
   const cmds = readFileSync(
