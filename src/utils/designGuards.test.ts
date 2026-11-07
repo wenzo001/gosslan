@@ -6846,24 +6846,40 @@ function composerSources() {
   };
 }
 
-test("CS-01/02：现树输入区外框有色调、输入卡圆角与 1px 描边恒定", () => {
+test("CS-01/02：现树输入区外壳透明（与消息区同一整块）、输入卡圆角与 1px 描边恒定", () => {
   const { chatWindow, composer } = composerSources();
   const issues = checkComposerSurface(chatWindow, composer);
   assert.deepEqual(issues, [], issues.map((i) => `L${i.line} ${i.message}`).join("\n"));
 });
 
-test("CS-01 反例自证：外框底色改回 --gosslan-chat（纯白）必须红", () => {
+test("CS-01 反例自证：把外壳涂成实色 / 加分隔线 / 删实测让位 必须红", () => {
   const { chatWindow, composer } = composerSources();
-  // 模拟回归：把「有色调 surface」改回「亮色下等于纯白」的 chat token。
-  const reverted = chatWindow.replace(
-    "bg-[var(--gosslan-bg)] px-4 pt-2",
-    "bg-[var(--gosslan-chat)] px-4 pt-2",
+  // 2026-11-07 用户口径：输入区与消息区必须连成一块 —— 任何第二层底都要红。
+  const painted = chatWindow.replace(
+    "class=\"ambient-canvas-child absolute inset-x-0 bottom-0 z-20 bg-transparent px-4 pt-2\"",
+    "class=\"ambient-canvas-child absolute inset-x-0 bottom-0 z-20 bg-[var(--gosslan-bg)] px-4 pt-2\"",
   );
-  assert.notEqual(reverted, chatWindow, "锚点没命中：输入区外框的底色类变了形状");
-  const issues = checkComposerSurface(reverted, composer);
+  assert.notEqual(painted, chatWindow, "锚点没命中：输入区外壳的 class 变了形状");
   assert.ok(
-    issues.some((i) => i.message.includes("CS-01") && i.message.includes("纯白")),
-    `期望 CS-01 因纯白报红，实际：${JSON.stringify(issues)}`,
+    checkComposerSurface(painted, composer).some((i) => i.message.includes("CS-01") && i.message.includes("第二层底")),
+    "给外壳铺第二层底必须报 CS-01",
+  );
+
+  const divided = chatWindow.replace("bg-transparent px-4 pt-2", "bg-transparent border-t border-[var(--gosslan-divider)] px-4 pt-2");
+  assert.notEqual(divided, chatWindow, "锚点没命中：输入区外壳缺 border-t 反例");
+  assert.ok(
+    checkComposerSurface(divided, composer).some((i) => i.message.includes("CS-01") && i.message.includes("border-t")),
+    "加分隔线必须报 CS-01",
+  );
+
+  const noReserve = chatWindow.replace(
+    ":style=\"{ paddingBottom: composerH + 'px' }\"",
+    ":style=\"{ paddingBottom: '80px' }\"",
+  );
+  assert.notEqual(noReserve, chatWindow, "锚点没命中：消息区 paddingBottom 绑定变了形状");
+  assert.ok(
+    checkComposerSurface(noReserve, composer).some((i) => i.message.includes("CS-01") && i.message.includes("paddingBottom")),
+    "把实测让位换回固定值必须报 CS-01",
   );
 });
 
@@ -7272,7 +7288,7 @@ test("BT-02 反例自证：删掉未读分割线的 data 钩子必须红", () =>
 test("BT-03 反例自证：把位移绑回 bottom 的 style 删掉必须红", () => {
   const src = backToLatestSources();
   const broken = src.button.replace(
-    /\n\s*:style="avoidOffset \? \{ bottom: `calc\(1rem \+ \$\{avoidOffset\}px\)` \} : undefined"/,
+    ':style="{ bottom: `calc(1rem + ${(bottomOffset ?? 0) + avoidOffset}px)` }"',
     "",
   );
   assert.notEqual(broken, src.button, "锚点没命中：:style 绑定那一行的形状变了");
@@ -7280,6 +7296,20 @@ test("BT-03 反例自证：把位移绑回 bottom 的 style 删掉必须红", ()
   assert.ok(
     issues.some((i) => i.message.includes("BT-03")),
     `删掉 style 绑定必须报 BT-03，实际：${JSON.stringify(issues)}`,
+  );
+});
+
+test("BT-05 反例自证：把悬浮输入区让位从 bottom 里摘掉必须红", () => {
+  const src = backToLatestSources();
+  const broken = src.button.replace(
+    "${(bottomOffset ?? 0) + avoidOffset}px",
+    "${avoidOffset}px",
+  );
+  assert.notEqual(broken, src.button, "锚点没命中：bottom 表达式里的 bottomOffset 不见了");
+  const issues = checkBackToLatestAvoidance({ ...src, button: broken });
+  assert.ok(
+    issues.some((i) => i.message.includes("BT-05")),
+    `摘掉 bottomOffset 必须报 BT-05，实际：${JSON.stringify(issues)}`,
   );
 });
 

@@ -4457,6 +4457,7 @@ async function main() {
     const scrollinput = want("scrollinput");
     const scrollstable = want("scrollstable");
     const previewclip = want("previewclip");
+    const composerfloat = want("composerfloat");
     const todosync = want("todosync");
     const tododelete = want("tododelete");
     const todoarchive = want("todoarchive");
@@ -4700,6 +4701,7 @@ async function main() {
     await runSegment("scrollinput", scrollinput, () => runScrollInput(cdp, url));
     await runSegment("scrollstable", scrollstable, () => runScrollStable(cdp, url));
     await runSegment("previewclip", previewclip, () => runPreviewClip(cdp, url));
+    await runSegment("composerfloat", composerfloat, () => runComposerFloat(cdp, url));
     await runSegment("todosync", todosync, () => runTodoSync(cdp, url));
     await runSegment("tododelete", tododelete, () => runTodoDelete(cdp, url));
     await runSegment("todoarchive", todoarchive, () => runTodoArchive(cdp, url));
@@ -25977,6 +25979,214 @@ async function runScrollStable(cdp, url) {
       "tall/short 内容宽与 x 差 <= 0.5px；auto 档差 >= 7px", JSON.stringify(canon));
   } finally {
     await cdp.send("Emulation.clearDeviceMetricsOverride").catch(() => {});
+  }
+}
+
+/**
+ * ④ 悬浮输入区：输入卡与消息区必须是**同一整块画布**（2026-11-07 用户口径）。
+ *
+ * 外壳 `absolute + bg-transparent` 之后不再占位，让位量必须由 ResizeObserver 实测：
+ * 量四件事 —— 外壳真透明 / 消息区 paddingBottom == 外壳高度 / 「回到最新」让位 /
+ * 滚到底时末条消息不被输入卡盖住；再拿「把让位清零」的反面证明量具有牙。
+ */
+async function runComposerFloat(cdp, url) {
+  const shotDir = path.join(ROOT, "test-results", "ui-2026-11-07");
+  fs.mkdirSync(shotDir, { recursive: true });
+  await cdp.send("Page.bringToFront").catch(() => {});
+  await cdp.send("Emulation.setEmulatedMedia", { features: [] }).catch(() => {});
+  await cdp.send("Emulation.setDeviceMetricsOverride", {
+    width: 1280, height: 800, deviceScaleFactor: 1, mobile: false,
+  }).catch(() => {});
+
+  const READ = `(() => {
+    const shell = document.querySelector('[data-composer-shell]');
+    const msg = document.querySelector('[data-msg-area]');
+    const card = document.querySelector('.gosslan-composer');
+    const btn = document.querySelector('[data-back-to-latest]');
+    const scroller = document.querySelector('.vlist-no-anchor');
+    if (!shell || !msg || !card || !scroller) return null;
+    const cs = getComputedStyle(shell);
+    const sr = shell.getBoundingClientRect();
+    const mr = msg.getBoundingClientRect();
+    const cr = card.getBoundingClientRect();
+    const br = btn ? btn.getBoundingClientRect() : null;
+    return {
+      shellBg: cs.backgroundColor,
+      shellImg: cs.backgroundImage,
+      borderTop: parseFloat(cs.borderTopWidth) || 0,
+      shadow: cs.boxShadow,
+      shellH: +sr.height.toFixed(2),
+      shellW: +sr.width.toFixed(2),
+      msgW: +mr.width.toFixed(2),
+      msgPadBottom: +((parseFloat(getComputedStyle(msg).paddingBottom) || 0)).toFixed(2),
+      cardTop: +cr.top.toFixed(2),
+      scrollerBottom: +scroller.getBoundingClientRect().bottom.toFixed(2),
+      gapBtn: br ? +(mr.bottom - br.bottom).toFixed(2) : null,
+    };
+  })()`;
+
+  const SCROLL = `(() => {
+    const s = document.querySelector('.vlist-no-anchor');
+    if (!s) return false;
+    s.scrollTop = s.scrollHeight;
+    return true;
+  })()`;
+
+  /** 末条消息（最大 index）的底边相对输入卡顶边：>0 表示被盖住。 */
+  const LASTROW = `(() => {
+    const s = document.querySelector('.vlist-no-anchor');
+    const card = document.querySelector('.gosslan-composer');
+    if (!s || !card) return null;
+    const rows = [...s.querySelectorAll('[data-vlist-index]')].map((n) => {
+      const r = n.getBoundingClientRect();
+      return { idx: Number(n.getAttribute('data-vlist-index')), bottom: r.bottom };
+    }).filter((r) => Number.isFinite(r.idx));
+    if (!rows.length) return null;
+    const maxIdx = Math.max(...rows.map((r) => r.idx));
+    const last = rows.find((r) => r.idx === maxIdx);
+    const cardTop = card.getBoundingClientRect().top;
+    return {
+      lastIdx: maxIdx,
+      lastBottom: +last.bottom.toFixed(2),
+      cardTop: +cardTop.toFixed(2),
+      coveredPx: +(last.bottom - cardTop).toFixed(2),
+    };
+  })()`;
+
+  const setTheme = async (dark, ambient) => {
+    await cdp.eval(`(() => {
+      document.documentElement.classList.toggle('dark', ${dark});
+      document.documentElement.setAttribute('data-ambient', ${JSON.stringify(ambient)});
+      document.documentElement.removeAttribute('data-frost');
+      return true;
+    })()`);
+    await sleep(500);
+  };
+  const setWidth = async (w) => {
+    await cdp.send("Emulation.setDeviceMetricsOverride", {
+      width: w, height: 800, deviceScaleFactor: 1, mobile: w <= 430,
+    }).catch(() => {});
+    await sleep(700);
+  };
+  const setPad = async (v) => cdp.eval(`(() => {
+    const m = document.querySelector('[data-msg-area]');
+    if (!m) return false;
+    m.style.paddingBottom = ${JSON.stringify(v)};
+    return true;
+  })()`);
+  const shot = async (name) => {
+    const s = await cdp.send("Page.captureScreenshot", { format: "png" });
+    fs.writeFileSync(path.join(shotDir, name + ".png"), Buffer.from(s.data, "base64"));
+  };
+
+  const rows = [];
+  try {
+    await cdp.send("Page.navigate", { url });
+    await cdp.settled();
+    await sleep(3_000);
+    await cdp.eval(PAGE_FIXTURE);
+    await cdp.eval(`(() => {
+      window.__TAURI_INTERNALS__ = {
+        metadata: { currentWindow: { label: 'main' }, currentWebview: { label: 'main', windowLabel: 'main' } },
+        invoke: async () => null, transformCallback: (cb) => cb, convertFileSrc: (p) => p,
+      };
+      if (!window.__TAURI_EVENT_PLUGIN_INTERNALS__) {
+        window.__TAURI_EVENT_PLUGIN_INTERNALS__ = { unregisterListener: () => {} };
+      }
+    })()`);
+    const mounted = await cdp.eval(
+      "window.__probe.install('/src/components/ChatWindow.vue', '', '{\"hostHeight\":\"800px\"}')",
+    );
+    check("ChatWindow 挂得起来（悬浮输入区的入口）",
+      !!mounted && mounted.ok === true, "install ok", JSON.stringify(mounted));
+    await cdp.eval("window.__probe.seedDevice('dev-me')");
+
+    await cdp.eval(`(async () => {
+      const { useChatStore } = await import('/src/stores/useChatStore.ts');
+      const chat = useChatStore();
+      const conv = 'group:float';
+      const rows = [];
+      for (let i = 0; i < 60; i += 1) {
+        const seq = i + 1;
+        rows.push({ id: seq, msg_id: 'm-float-' + seq, local_id: 'm-float-' + seq, conv_id: conv,
+          sender_id: 'dev-me', sender_name: '我', receiver_id: 'float', kind: 'text',
+          content: ('第' + seq + '条，悬浮输入区让位对照。').repeat(3),
+          status: 'sent', seq, ts: 1700000000000 + seq * 1000 });
+      }
+      chat.activeConv = conv;
+      chat.messages[conv] = rows;
+      await new Promise((r) => setTimeout(r, 1200));
+      return true;
+    })()`);
+
+    const states = [
+      { name: "light", dark: false, ambient: "off" },
+      { name: "dark", dark: true, ambient: "off" },
+      { name: "dark-drift", dark: true, ambient: "drift" },
+    ];
+    const widths = [1280, 768, 430, 390, 360];
+    for (const st of states) {
+      await setTheme(st.dark, st.ambient);
+      for (const w of widths) {
+        await setWidth(w);
+        const before = await cdp.eval(READ);
+        await cdp.eval(SCROLL);
+        await sleep(500);
+        const last = await cdp.eval(LASTROW);
+        // 反面对照：把让位清零，末条必须真的被输入卡盖住（证明量具有牙）。
+        await setPad("0px");
+        await cdp.eval(SCROLL);
+        await sleep(400);
+        const counter = await cdp.eval(LASTROW);
+        // 还原必须写回实测高度：写空会让内联 style 空着（Vue 已渲染过，不会再补）。
+        await setPad(`${before.shellH}px`);
+        await sleep(200);
+        rows.push({ ...st, w, before, last, counter });
+        if (w === 1280 || w === 390) await shot(`composerfloat-${st.name}-${w}`);
+      }
+    }
+
+    const isTransparent = (bg) => /rgba\(0, 0, 0, 0\)|transparent/.test(String(bg));
+    console.log("  ℹ 悬浮输入区读数：" + JSON.stringify(rows.map((r) => ({
+      s: r.name, w: r.w,
+      h: r.before?.shellH, pad: r.before?.msgPadBottom,
+      wShell: r.before?.shellW, wMsg: r.before?.msgW,
+      bg: r.before?.shellBg, border: r.before?.borderTop, shadow: r.before?.shadow,
+      gapBtn: r.before?.gapBtn, covered: r.last?.coveredPx, counterCovered: r.counter?.coveredPx,
+    }))));
+
+    check("外壳在亮/暗/特效全开 与 5 档宽度下都是真透明：无底色、无背景图、无 border-top、无阴影",
+      rows.every((r) => r.before && isTransparent(r.before.shellBg)
+        && r.before.shellImg === "none" && r.before.borderTop === 0
+        && (r.before.shadow === "none" || r.before.shadow === "")),
+      "bg transparent + no image + border-top 0 + shadow none",
+      JSON.stringify(rows.map((r) => r.before?.shellBg)));
+
+    check("消息区让位 == 外壳实测高度（差 ≤1px），且两者等宽（同一整块画布）",
+      rows.every((r) => r.before && Math.abs(r.before.msgPadBottom - r.before.shellH) <= 1
+        && Math.abs(r.before.shellW - r.before.msgW) <= 0.5),
+      "|pad - shellH| <= 1 且 |shellW - msgW| <= 0.5",
+      JSON.stringify(rows.map((r) => [r.before?.shellH, r.before?.msgPadBottom])));
+
+    check("「回到最新」让位 ≥ 外壳高度 + 16px（不被输入卡压住）",
+      rows.every((r) => r.before && typeof r.before.gapBtn === "number"
+        && r.before.gapBtn >= r.before.shellH + 15),
+      "gapBtn >= shellH + 15", JSON.stringify(rows.map((r) => r.before?.gapBtn)));
+
+    check("滚到底时末条消息底边不越过输入卡顶边（盖住 px ≤ 0.5）",
+      rows.every((r) => r.last && r.last.coveredPx <= 0.5),
+      "coveredPx <= 0.5", JSON.stringify(rows.map((r) => r.last?.coveredPx)));
+
+    check("反面对照：把消息区让位清零后末条必须被输入卡盖住（≥20px，否则量具恒绿）",
+      rows.every((r) => r.counter && r.counter.coveredPx >= 20),
+      "counter coveredPx >= 20", JSON.stringify(rows.map((r) => r.counter?.coveredPx)));
+  } finally {
+    await cdp.send("Emulation.clearDeviceMetricsOverride").catch(() => {});
+    await cdp.eval(`(() => {
+      document.documentElement.removeAttribute('data-ambient');
+      document.documentElement.classList.remove('dark');
+      return true;
+    })()`).catch(() => {});
   }
 }
 

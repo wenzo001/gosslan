@@ -2830,79 +2830,114 @@ export function checkSkeletonStatic(s: SkeletonSources): GuardIssue[] {
   return out.sort((a, b) => a.line - b.line);
 }
 
-// ---------------- CS：聊天输入区表面（背景动效白条回归） ----------------
+// ---------------- CS：聊天输入区表面（与消息区同一整块画布） ----------------
 
 /**
- * 亮色下等同于纯白的 token。拿它们当输入区外框底色，背景动效开启时会在底部露成白条
- * （`--gosslan-chat` / `--gosslan-panel` 在 light 下就是 #ffffff）。
- */
-const COMPOSER_WHITE_TOKENS = new Set(["--gosslan-chat", "--gosslan-panel"]);
-
-/**
- * 允许作为输入区外框底色的有色调 token。
- * 三道玻璃降级（reduced-transparency / prefers-reduced-transparency / `@supports not (backdrop-filter)`）
- * 只换 `--gosslan-glass-*-*`，不会把这几个刷白 —— 所以在八种组合里它们都保持有色调。
- */
-const COMPOSER_TINTED_TOKENS = new Set(["--gosslan-field", "--gosslan-bg", "--gosslan-app-bg"]);
-
-/**
- * 聊天输入区外框必须是**有色调**的表面，且输入卡的圆角与 1px 描边不随档位变化。
+ * 聊天输入区外壳必须与消息区是**同一整块画布**：透明、无分隔线、无阴影、无第二层底；
+ * 输入卡的圆角与 1px 描边不随档位变化。
  *
  * 2026-11-05 真机反馈（5.18.30，Windows）：「开背景动效后底部输入区整条变成纯白长条，
- * 圆角和玻璃感全丢」。根因不在玻璃降级 —— 输入区里没有 `backdrop-filter`，
- * 而是外框用了 `--gosslan-chat`（light 下就是 #fff）：背景动效开启时消息区参与薄纱、
- * 是透明的，这一条保持纯白，于是横贯全宽露出来，卡片的 8px 圆角与 1px 描边也被同色吃掉。
+ * 圆角和玻璃感全丢」——当时的修法是给外壳一层有色调 `--gosslan-bg`。
+ * 2026-11-07 用户口径**推翻该修法**：「输入框背后与左右空隙必须跟消息区是同一整块，
+ * 不许独立实色面板/分隔线/第二层底」。纯白长条的正解不是换个颜色再铺一层，
+ * 而是**这一层底色根本不该存在**：外壳透明，画布由父级提供，输入卡才是那张浮起的卡片。
+ *
+ * 外壳一旦透明就必须脱离文档流（`absolute`），高度不再由流内占位提供——
+ * 所以必须自己实测高度让消息区让位，缺一处就会被输入卡盖住：
+ *   · 消息区 `paddingBottom = composerH`（ResizeObserver 实测，不许写常量）；
+ *   · 「回到最新」与抖动提示吃同一个 `composerH`。
+ *
+ * 反例自证：把外壳涂成任何 `bg-[var(--…)]` / 加 `border-t` / 加 `shadow` / 删掉
+ * `data-composer-shell` / 把消息区 `paddingBottom` 换回固定值 —— 都必须红。
  *
  * @param chatWindowSrc `src/components/ChatWindow.vue`
  * @param composerSrc   `src/components/chat/MessageComposer.vue`
  */
 export function checkComposerSurface(chatWindowSrc: string, composerSrc: string): GuardIssue[] {
   const out: GuardIssue[] = [];
-  const classesOf = (m: RegExpMatchArray): string[] => (m[1] ?? "").split(/\s+/).filter(Boolean);
+  const classesOf = (tag: string): string[] => {
+    const m = tag.match(/\bclass="([^"]*)"/);
+    return (m?.[1] ?? "").split(/\s+/).filter(Boolean);
+  };
 
-  // 外框：`shrink-0` + `px-4` + `pt-2` 那一条（包住 MessageComposer 与多选操作条）。
-  const strips = [...chatWindowSrc.matchAll(/<div[^>]*\bclass="([^"]*)"/g)].filter((m) => {
-    const c = classesOf(m);
-    return c.includes("shrink-0") && c.includes("px-4") && c.includes("pt-2");
-  });
-  if (strips.length !== 1) {
+  // 外壳：用 `data-composer-shell` 锚点定位（不再靠 `shrink-0 + px-4 + pt-2` 这组会变的类）。
+  const shells = [...chatWindowSrc.matchAll(/<div[^>]*\bdata-composer-shell[^>]*>/g)];
+  if (shells.length !== 1) {
     out.push({
       line: 0,
-      message: `CS-01：聊天输入区外框应恰好 1 处（shrink-0 + px-4 + pt-2），实际 ${strips.length} 处 —— 无法确认它的底色。`,
+      message: `CS-01：聊天输入区外壳应恰好 1 处（\`data-composer-shell\`），实际 ${shells.length} 处 —— 无法确认它是否与消息区同一整块画布。`,
     });
   }
-  for (const m of strips) {
-    const token = classesOf(m)
-      .map((c) => c.match(/^bg-\[var\((--[a-z0-9-]+)\)\]$/)?.[1])
-      .find(Boolean);
-    if (!token) {
+  for (const m of shells) {
+    const tag = m[0];
+    const c = classesOf(tag);
+    const line = lineAt(chatWindowSrc, m.index ?? 0);
+    if (!c.includes("bg-transparent")) {
+      const bg = c.find((t) => t.startsWith("bg-") && t !== "bg-transparent");
       out.push({
-        line: lineAt(chatWindowSrc, m.index ?? 0),
-        message: "CS-01：聊天输入区外框缺少静态 `bg-[var(--token)]` 底色 —— 背景动效开启时无法保证它与消息区同调。",
+        line,
+        message: bg
+          ? `CS-01：聊天输入区外壳涂了 \`${bg}\` —— 这是第二层底，会与消息区割成两块（用户 2026-11-07 明确禁止）。`
+          : "CS-01：聊天输入区外壳缺少 `bg-transparent` —— 底色必须显式交给父级画布，否则会继承成实色面板。",
       });
-    } else if (COMPOSER_WHITE_TOKENS.has(token)) {
-      out.push({
-        line: lineAt(chatWindowSrc, m.index ?? 0),
-        message:
-          `CS-01：聊天输入区外框用了 \`${token}\`（亮色下就是 #ffffff）—— 背景动效开启时消息区是透明的，` +
-          "这条会在底部露成横贯全宽的纯白长条。改用有色调的 --gosslan-field（或 --gosslan-bg / --gosslan-app-bg）。",
-      });
-    } else if (!COMPOSER_TINTED_TOKENS.has(token)) {
-      out.push({
-        line: lineAt(chatWindowSrc, m.index ?? 0),
-        message: `CS-01：聊天输入区外框底色 \`${token}\` 不在允许的有色调清单（--gosslan-field / --gosslan-bg / --gosslan-app-bg）里。`,
-      });
+    }
+    if (c.some((t) => /^border-t(?:-|$)/.test(t))) {
+      out.push({ line, message: "CS-01：聊天输入区外壳出现 `border-t` —— 用户要求输入区与消息区连成一块，不许分隔线。" });
+    }
+    if (c.some((t) => /^shadow(?:-|$)|^drop-shadow-/.test(t))) {
+      out.push({ line, message: "CS-01：聊天输入区外壳出现投影类 —— 外壳不是浮起的那张卡，投影只属于输入卡自己。" });
+    }
+    if (c.includes("shrink-0")) {
+      out.push({ line, message: "CS-01：聊天输入区外壳仍是流内 `shrink-0` —— 透明外壳必须 `absolute` 脱离流并由实测高度让位。" });
+    }
+    for (const needle of ["absolute", "inset-x-0", "bottom-0"]) {
+      if (!c.includes(needle)) {
+        out.push({ line, message: `CS-01：聊天输入区外壳缺 \`${needle}\` —— 它必须以覆盖层形式压在消息区底部。` });
+      }
     }
   }
 
+  // 消息区：必须吃实测高度让位（写死常量会随字体档/附件行高/移动端安全区失效）。
+  const msgArea = [...chatWindowSrc.matchAll(/<div[^>]*>/g)]
+    .map((m) => m[0])
+    .find((tag) => {
+      const c = classesOf(tag);
+      return c.includes("relative") && c.includes("min-h-0") && c.includes("flex-1") && c.includes("overflow-hidden");
+    });
+  if (!msgArea) {
+    out.push({ line: 0, message: "CS-01：找不到消息区（`relative min-h-0 flex-1 overflow-hidden`），无法确认输入区让位。" });
+  } else if (!msgArea.includes("paddingBottom: composerH")) {
+    out.push({
+      line: lineAt(chatWindowSrc, chatWindowSrc.indexOf(msgArea)),
+      message: "CS-01：消息区没有 `paddingBottom: composerH` —— 透明外壳不再占位，末条消息会被输入卡盖住。",
+    });
+  }
+  // 高度必须实测：ResizeObserver 观测外壳本身，不许用常量/百分比。
+  if (!/new ResizeObserver\(/.test(chatWindowSrc) || !chatWindowSrc.includes("observe(composerShell.value)")) {
+    out.push({
+      line: 0,
+      message: "CS-01：输入区高度没有 `ResizeObserver` 实测（`observe(composerShell.value)` 找不到）—— 让位量会过期。",
+    });
+  }
+  // 「回到最新」必须吃同一个实测高度。
+  const btl = chatWindowSrc.match(/<BackToLatestButton[\s\S]*?\/>/)?.[0] ?? "";
+  if (!btl) {
+    out.push({ line: 0, message: "CS-01：找不到 `<BackToLatestButton … />` —— 无法确认它是否让位。" });
+  } else if (!btl.includes(':bottom-offset="composerH"')) {
+    out.push({
+      line: lineAt(chatWindowSrc, chatWindowSrc.indexOf(btl)),
+      message: "CS-01：「回到最新」没有吃 `:bottom-offset=\"composerH\"` —— 会被悬浮输入卡压住。",
+    });
+  }
+
   // 输入卡：圆角与 1px 描边必须是**静态常数**，不随玻璃三档/降级档变化。
-  const card = [...composerSrc.matchAll(/<div[^>]*\bclass="([^"]*)"/g)].find((m) =>
-    classesOf(m).includes("gosslan-composer"),
+  const card = [...composerSrc.matchAll(/<div[^>]*>/g)].find((m) =>
+    classesOf(m[0]).includes("gosslan-composer"),
   );
   if (!card) {
     out.push({ line: 0, message: "CS-02：MessageComposer 里找不到 `.gosslan-composer` 输入卡，无法确认圆角与描边。" });
   } else {
-    const c = classesOf(card);
+    const c = classesOf(card[0]);
     if (!c.includes("rounded-[var(--gosslan-radius-md)]")) {
       out.push({
         line: lineAt(composerSrc, card.index ?? 0),
@@ -3456,10 +3491,20 @@ export function checkBackToLatestAvoidance(src: BackToLatestAvoidSources): Guard
   }
 
   // BT-03：位移只能通过 `bottom` 生效；没有 `:style` 绑定等于算完不落地。
-  if (!/:style="\s*avoidOffset\s*\?/.test(btn) || !btn.includes("calc(1rem +")) {
+  const styleBind = btn.match(/:style="([^"]*)"/)?.[1] ?? "";
+  if (!styleBind.includes("calc(1rem +") || !styleBind.includes("avoidOffset")) {
     out.push({
       line: lineAt(btn, btn.indexOf(":style") === -1 ? 0 : btn.indexOf(":style")),
       message: "BT-03：「回到最新」的 `avoidOffset` 没有绑到 `bottom`（`calc(1rem + …)` 找不到）—— 避让不会生效。",
+    });
+  }
+
+  // BT-05：悬浮输入区让位（`bottomOffset`）必须真的进入同一个 `bottom` 表达式。
+  // 输入卡脱离流之后，这条按钮的基准位在消息区底部，不让位就会被输入卡压住。
+  if (!styleBind.includes("bottomOffset") || !btn.includes("bottomOffset?: number")) {
+    out.push({
+      line: 0,
+      message: "BT-05：「回到最新」没有把悬浮输入区实测高度 `bottomOffset` 绑进 `bottom` —— 按钮会被输入卡压住。",
     });
   }
 
