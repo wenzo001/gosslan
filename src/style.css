@@ -2225,7 +2225,7 @@ img {
 .code-lang-menu {
   min-width: var(--gosslan-lang-menu-min, 168px);
   max-width: var(--reka-dropdown-menu-content-available-width, calc(100vw - 16px));
-  max-height: var(--reka-dropdown-menu-content-available-height, calc(100vh - 16px));
+  max-height: var(--reka-dropdown-menu-content-available-height, calc(100dvh - 16px));
   overflow-y: auto;
   overscroll-behavior: contain;
   scrollbar-gutter: stable;
@@ -2242,7 +2242,8 @@ img {
    各组件自己的别名（`--reka-dropdown-menu-content-*` / `--reka-popover-content-*` /
    `--reka-select-content-*`）全都指向它 ⇒ 一处口径、没有第二套数字。
    `collisionPadding` 在各调用点统一传 `POPOVER_EDGE`（8px），
-   所以这个变量本身已经扣过安全边距；下面的 `100vh - 2*8px` 只是没拿到变量时的兜底。
+   所以这个变量本身已经扣过安全边距；下面的 `100dvh - 2*8px` 只是没拿到变量时的兜底
+   （2026-11-07 审查 M-6：移动端 WebView 的 `100vh` 含地址栏高度，改用 `100dvh`）。
 
    消费方：`.gosslan-menu`（所有 Reka 菜单/下拉/气泡面板）+ `.gosslan-pop-clamp`
    （不走 `.gosslan-menu` 外观、但同样 portal 到 body 的自绘浮层，如表情面板、已读名单）。
@@ -2255,7 +2256,7 @@ img {
 .gosslan-menu,
 .gosslan-pop-clamp {
   max-width: var(--reka-popper-available-width, calc(100vw - var(--gosslan-pop-edge) * 2));
-  max-height: var(--reka-popper-available-height, calc(100vh - var(--gosslan-pop-edge) * 2));
+  max-height: var(--reka-popper-available-height, calc(100dvh - var(--gosslan-pop-edge) * 2));
   overflow-y: auto;
   overflow-x: hidden;
   overscroll-behavior: contain;

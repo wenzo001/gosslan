@@ -7963,8 +7963,8 @@ function findPopClampIssues(css: string): string[] {
   const block = popClampBlock(css);
   if (!block) return ["找不到 `.gosslan-menu, .gosslan-pop-clamp` 共享限高块（浮层没有统一口径）"];
   const issues: string[] = [];
-  if (!/max-height:\s*var\(--reka-popper-available-height/.test(block))
-    issues.push("共享限高块没有吃 `--reka-popper-available-height`（弹层会顶出窗口）");
+  if (!/max-height:\s*var\(--reka-popper-available-height,\s*calc\(100dvh/.test(block))
+    issues.push("共享限高块没有吃 `--reka-popper-available-height` 或兜底不是 `100dvh`（移动端 `100vh` 含地址栏，弹层会顶出窗口）");
   if (!/max-width:\s*var\(--reka-popper-available-width/.test(block))
     issues.push("共享限高块没有吃 `--reka-popper-available-width`（弹层会横向溢出）");
   if (!/overflow-y:\s*auto/.test(block)) issues.push("共享限高块没有 `overflow-y: auto`（超出部分被裁）");
@@ -8091,6 +8091,31 @@ test("PC-01 反例自证：删限高 / 删内部滚动 / 边距归零都必须�
     findPopClampIssues(mut(POP_CLAMP_SELECTOR, ".gosslan-menu {\n")).length > 0,
     "共享块缺失必须命中",
   );
+  // M-6：兜底退回 100vh 也必须红（移动端 WebView 的 100vh 含地址栏）。
+  assert.ok(
+    findPopClampIssues(
+      mut(/calc\(100dvh - var\(--gosslan-pop-edge\) \* 2\)/g, "calc(100vh - var(--gosslan-pop-edge) * 2)"),
+    ).length > 0,
+    "兜底退回 100vh 必须命中",
+  );
+});
+
+test("M-6：@成员下拉上限收进 popoverBounds.ts，组件里不许再写 max-h-44", () => {
+  const srcDir = join(import.meta.dirname, "..");
+  const composer = readFileSync(join(srcDir, "components", "chat", "MessageComposer.vue"), "utf8");
+  const bounds = readFileSync(join(srcDir, "utils", "popoverBounds.ts"), "utf8");
+  const mentionIssues = (src: string) => {
+    const out: string[] = [];
+    if (/max-h-44/.test(src)) out.push("组件里又写死了 max-h-44（第二套限高口径）");
+    if (!/MENTION_POP_MAX_H/.test(src)) out.push("没有引用 popoverBounds.ts 的 MENTION_POP_MAX_H");
+    return out;
+  };
+  assert.deepEqual(mentionIssues(composer), []);
+  assert.match(bounds, /export const MENTION_POP_MAX_H = 176/);
+  // 反例自证：把上限写回类名 ⇒ 同一条判据必须报。
+  const hardCoded = composer.replace("class=\"frost absolute bottom-full", 'class="frost absolute max-h-44 bottom-full');
+  assert.notEqual(hardCoded, composer, "锚点没命中：@成员下拉的 class 变了形状");
+  assert.ok(mentionIssues(hardCoded).length > 0, "写回 max-h-44 必须报");
 });
 
 // ---------------- CE-01 预览图绝对不许被切割（2026-11-07） ----------------

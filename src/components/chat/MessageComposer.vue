@@ -29,7 +29,7 @@ import AvatarBox from "@/components/ui/AvatarBox.vue";
 import { composerMaxHeight, clampComposerHeight } from "@/utils/composerLayout";
 import { pastedImageRejection, type PastedImageRejection } from "@/utils/composerAttachments";
 import { emojiUrl } from "@/utils/emoji";
-import { POPOVER_EDGE } from "@/utils/popoverBounds";
+import { MENTION_POP_MAX_H, POPOVER_EDGE } from "@/utils/popoverBounds";
 
 const props = defineProps<{
   /** 会话切换时聚焦输入框（切换会话 = 新会话，重置草稿由父组件卸载/挂载决定）。 */
@@ -1168,7 +1168,8 @@ async function onPaste(e: ClipboardEvent) {
       <!-- 群聊 @ 成员选择：输入 @ 后浮出，↑↓ 导航 / Enter 或点击选中 -->
       <div
         v-if="mention && mentionFiltered.length > 0"
-        class="frost absolute bottom-full left-2 right-2 z-30 mb-2 max-h-44 overflow-y-auto rounded-[var(--gosslan-radius-md)] border border-[var(--gosslan-border)] p-1 shadow-[var(--gosslan-glass-2-shadow)]"
+        class="frost absolute bottom-full left-2 right-2 z-30 mb-2 overflow-y-auto rounded-[var(--gosslan-radius-md)] border border-[var(--gosslan-border)] p-1 shadow-[var(--gosslan-glass-2-shadow)]"
+        :style="{ maxHeight: `${MENTION_POP_MAX_H}px` }"
       >
         <div class="px-2 py-1 text-caption text-[var(--gosslan-text-2)]">{{ t("chat.composer.remind") }}</div>
         <button
