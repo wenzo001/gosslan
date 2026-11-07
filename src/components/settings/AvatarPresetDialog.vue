@@ -11,7 +11,6 @@ import Icon from "@/components/ui/Icon.vue";
  * SVG data URL，仍走 `avatar` 原有图片通道，见 `utils/avatarSeed.ts`。
  */
 import { computed, ref, watch } from "vue";
-import { Check } from "@/components/ui/icons";
 import BaseModal from "@/components/BaseModal.vue";
 import SecondaryBtn from "@/components/ui/SecondaryBtn.vue";
 import PrimaryBtn from "@/components/ui/PrimaryBtn.vue";
@@ -139,7 +138,7 @@ function onCustomColor(e: Event) {
           :title="c"
           @click="bg = c"
         >
-          <Check
+          <Icon name="check"
             v-if="c === bg"
             class="h-4 w-4 text-white drop-shadow"
             :stroke-width="3"
@@ -163,7 +162,7 @@ function onCustomColor(e: Event) {
             :aria-label="t('settings.profile.avatar.customColor')"
             :title="t('settings.profile.avatar.customColor')"
           >
-            <Check
+            <Icon name="check"
               v-if="customSelected"
               class="h-4 w-4 text-white drop-shadow"
               :stroke-width="3"

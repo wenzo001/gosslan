@@ -2238,37 +2238,91 @@ export function findLiteralRadiusClasses(src: string): GuardIssue[] {
   return out.sort((a, b) => a.line - b.line);
 }
 
-// ---------------- ㊵ 高频语义图标只从 ui/icons.ts 引 ----------------
+// ---------------- ㊵ 图标只有一个出口：Icon.vue（M-4/M-5） ----------------
 
 /**
- * 检查直接从 `lucide-vue-next` 导入的高频语义图标。
+ * 检查除登记表以外任何文件直连 `lucide-vue-next`。
  *
- * 为什么：`components/ui/icons.ts` 是这 5 个语义的稳定入口；继续从 lucide 直接引
- * 会让"换图标库 / 统一尺寸"又变成多点修改。只判 import 语句，不猜模板用法；
- * 临时过渡可用文件级 `icon-entry-ok` 逃生阀。
+ * 为什么：`components/ui/iconRegistry.ts` 是**唯一**允许 import lucide 的文件，
+ * 组件一律 `<Icon name="…" />`（尺寸/描边/aria 的唯一出口）。旧实现有多条并行通道
+ * —— `ui/icons.ts` 再导出 7 个名字、3 个文件直连 lucide —— 同 6 个 glyph 定义两遍，
+ * "换图标库 / 统一尺寸"每次都要多点修改。2026-11-07 收敛后这条判据不再按名字放行，
+ * 而是整条 import 禁止（名字再全也挡不住第 8 个新名字漏网）。
+ *
+ * ⚠️ 不要用 `[\s\S]*?`：它会从文件里**前面的** `import {` 一路吞到这条 lucide import
+ * （2026-10-18 实测导致 12 处漏报）。这里 `^import` 锚行首 + `[^;}]*` 不跨语句。
  */
-export function findDirectSemanticIconImports(src: string, names: string[]): GuardIssue[] {
-  if (src.includes("icon-entry-ok")) return [];
+export function findDirectLucideImports(src: string): GuardIssue[] {
   const out: GuardIssue[] = [];
-  // ⚠️ 不要用 `[\s\S]*?`：它会从文件里**前面的** `import {` 一路吞到这条 lucide import，
-  // 最后一个名字会带上 `import { ` 前缀，`imported.includes(name)` 于是漏报（2026-10-18 实测
-  // GroupFilesPanel / MergeCardModal 直连 Loader2 而判据报 0 处）。`[^}]*` 只吃到本条的 `}`。
-  const re = /^import\s*\{([^}]*)\}\s*from\s*["']lucide-vue-next["'];?/gm;
+  const re = /^import\s+(?:type\s+)?(?:[^;}\n]*|\{[^}]*\})\s*from\s*["']lucide-vue-next["'];?/gm;
   for (const m of src.matchAll(re)) {
-    const imported = m[1]
-      .split(",")
-      .map((s) => s.trim())
-      .filter(Boolean)
-      .map((s) => s.split(/\s+as\s+/)[0].trim());
-    for (const name of names) {
-      if (!imported.includes(name)) continue;
-      out.push({
-        line: lineAt(src, m.index ?? 0),
-        message:
-          `高频语义图标 \`${name}\` 必须从 \`@/components/ui/icons\` 引，` +
-          "不要直接引 `lucide-vue-next`（入口是换图标库/统一尺寸时唯一要改的地方）。",
-      });
-    }
+    out.push({
+      line: lineAt(src, m.index ?? 0),
+      message:
+        "图标直连 `lucide-vue-next` —— 组件必须 `<Icon name=\"…\" />`，名字登记在 " +
+        "`components/ui/iconRegistry.ts`（唯一允许 import lucide 的文件）。",
+    });
+  }
+  return out.sort((a, b) => a.line - b.line);
+}
+
+/**
+ * 检查 `Icon.vue` 是否又长回「尺寸 prop + 描边分支」（M-5 收敛后的守卫）。
+ *
+ * 为什么：`size={16|20|24}` 与 `size === 16 ? 1.8 : 2` 曾经是文档里的规则，但 191 个
+ * `<Icon>` 里 137 个用 `h-*` class 覆盖尺寸，prop 从未被显式传过 ⇒ 分支永不执行，
+ * 文档（1.8）与实现（恒 2）变成两条平行定义。2026-11-07 收敛成一条：盒尺寸走 class、
+ * 描边走 lucide 的 2px（个别强调处用 `:stroke-width` 显式覆盖）。这条判据防止它漂回去。
+ */
+export function findIconSizeDrift(src: string): GuardIssue[] {
+  const scriptStart = src.indexOf("<script");
+  const scriptEnd = src.indexOf("</script>");
+  if (scriptStart < 0 || scriptEnd < 0) {
+    return [{ line: 1, message: "Icon.vue 缺少 `<script>` 段 —— 判据读不到 props。" }];
+  }
+  const body = src
+    .slice(scriptStart, scriptEnd)
+    .replace(/\/\*[\s\S]*?\*\//g, "")
+    .replace(/^\s*\/\/.*$/gm, "");
+  const out: GuardIssue[] = [];
+  const prop = /\bsize\s*\??\s*:/.exec(body);
+  if (prop) {
+    out.push({
+      line: lineAt(body, prop.index ?? 0),
+      message:
+        "`Icon.vue` 又声明了 `size` prop —— 尺寸只有一个机制（消费方 `h-*` / `w-*` class），" +
+        "prop 与 class 并存时只有后者生效（M-5）。",
+    });
+  }
+  const stroke = /\bstrokeWidth\b/.exec(body);
+  if (stroke) {
+    out.push({
+      line: lineAt(body, stroke.index ?? 0),
+      message:
+        "`Icon.vue` 又按 `size` 算描边了 —— 描边统一 2px，个别强调处由调用方显式 " +
+        "`:stroke-width` 覆盖（M-5）。",
+    });
+  }
+  return out;
+}
+
+/**
+ * 检查模板里**字面量**的 `<Icon name="…" />` 是否真的登记过。
+ *
+ * 为什么：registry 是 `Record<string, Component>` 的字面量对象，键打错一个字母不会
+ * 报错、只会静默渲染成空 `<svg>`。分母从 registry 自己现解析（`"kebab": Component`
+ * 行），不手抄名单。动态 `:name="expr"` 静态不可判，跳过。
+ */
+export function findUnknownIconNames(src: string, known: ReadonlySet<string>): GuardIssue[] {
+  const out: GuardIssue[] = [];
+  // `(?<![:.\w-])` 排除 `:name=` / `v-bind:name=` —— 动态名静态不可判，跳过。
+  const re = /<Icon\s[^>]*?(?<![:.\w-])name="([^"]*)"/g;
+  for (const m of src.matchAll(re)) {
+    if (known.has(m[1])) continue;
+    out.push({
+      line: lineAt(src, m.index ?? 0),
+      message: `\`<Icon name="${m[1]}" />\` 的键不在 iconRegistry.ts 里 —— 这一格会静默不渲染。`,
+    });
   }
   return out.sort((a, b) => a.line - b.line);
 }

@@ -9,7 +9,6 @@ import CodeBlock from "@/components/CodeBlock.vue";
 import { useMessageSegments } from "@/composables/useMessageSegments";
 import MessageLinkText from "@/components/message/MessageLinkText.vue";
 import { mentionHighlightBg, mentionHighlightColor } from "@/utils/chatStyle";
-import { Check } from "@/components/ui/icons";
 
 const props = defineProps<{
   open: boolean;
@@ -114,7 +113,7 @@ async function openLink(href: string) {
         :class="copied ? 'text-[var(--gosslan-primary)]' : ''"
         @click="emit('copy', content)"
       >
-        <Check v-if="copied" class="h-3 w-3" />
+        <Icon name="check" v-if="copied" class="h-3 w-3" />
         <Icon name="copy" v-else class="h-3 w-3" />
         {{ copied ? t("common.copied") : t("common.copy") }}
       </button>

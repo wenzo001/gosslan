@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import Icon from "@/components/ui/Icon.vue";
 /**
  * 群聊强提醒 · 受众选择弹窗（第一版不默认全群）。
  *
@@ -7,7 +8,6 @@
  * `useMemberProfile`，与群成员面板一致。
  */
 import { computed, ref, watch } from "vue";
-import { Check } from "@/components/ui/icons";
 import BaseModal from "@/components/BaseModal.vue";
 import SecondaryBtn from "@/components/ui/SecondaryBtn.vue";
 import PrimaryBtn from "@/components/ui/PrimaryBtn.vue";
@@ -87,7 +87,7 @@ function confirm() {
           v-if="selected.has(id)"
           class="flex h-5 w-5 items-center justify-center rounded-full bg-[var(--gosslan-primary-active)] text-[var(--gosslan-on-primary)]"
         >
-          <Check class="h-3.5 w-3.5" />
+          <Icon name="check" class="h-3.5 w-3.5" />
         </span>
         <span v-else class="h-5 w-5 rounded-full border border-[var(--gosslan-divider)]" />
       </button>

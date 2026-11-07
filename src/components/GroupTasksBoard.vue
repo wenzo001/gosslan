@@ -76,7 +76,6 @@ import { t } from "@/i18n";
 import DangerBtn from "@/components/ui/DangerBtn.vue";
 import SecondaryBtn from "@/components/ui/SecondaryBtn.vue";
 import PrimaryBtn from "@/components/ui/PrimaryBtn.vue";
-import { Check, RotateCcw, Trash2, X } from "@/components/ui/icons";
 import { createInitScope, type InitScope } from "@/utils/initScope";
 import { POPOVER_EDGE } from "@/utils/popoverBounds";
 
@@ -1419,7 +1418,7 @@ watch(
             :aria-label="t('todo.restore')"
             @click.stop="restoreTodo(x)"
           >
-            <RotateCcw class="h-4 w-4" />
+            <Icon name="rotate-ccw" class="h-4 w-4" />
           </button>
           <!-- 删除已归档（用户 2026-10-27：「已归档的可以加一个删除功能」，全体群成员都能删）。
                走的是与详情同一条二次确认 + 墓碑广播，不另开路径；未归档任务这一格不出现
@@ -1432,7 +1431,7 @@ watch(
             :aria-label="t('todo.remove')"
             @click.stop="pendingDelete = x"
           >
-            <Trash2 class="h-4 w-4" />
+            <Icon name="trash2" class="h-4 w-4" />
           </button>
         </div>
       </template>
@@ -1582,7 +1581,7 @@ watch(
               :aria-label="t('todo.complete')"
               @click.stop="completeTodo(x)"
             >
-              <Check class="h-4 w-4" />
+              <Icon name="check" class="h-4 w-4" />
             </button>
             <!-- 「更多」次级菜单（用户 2026-11-05 #1/#2）：归档原先与 ✓完成 是行尾两枚
                  同尺寸同色的圆钮。完成后那一行落到「已完成」分组，同一坐标上换成归档 ——
@@ -1806,7 +1805,7 @@ watch(
                 :aria-label="t('common.delete')"
                 @click="removeImage(i)"
               >
-                <X class="h-3 w-3" />
+                <Icon name="x" class="h-3 w-3" />
               </button>
             </div>
           </div>
@@ -1830,7 +1829,7 @@ watch(
             :aria-pressed="draft.assignees.includes(id)"
             @click="toggleAssignee(id)"
           >
-            <Check v-if="draft.assignees.includes(id)" class="h-3.5 w-3.5" />
+            <Icon name="check" v-if="draft.assignees.includes(id)" class="h-3.5 w-3.5" />
             {{ memberProfile(id).name }}
           </button>
         </div>

@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import Icon from "@/components/ui/Icon.vue";
 /**
  * 全应用唯一的加载指示器。
  *
@@ -6,7 +7,6 @@
  * 冻成静止帧，"正在加载"与"卡死"不可区分。这里把旋转收在一个类里，reduce 档直接停掉
  * 动画，但保留 `role="status"` + 可访问名（旁边有文字的用 `decorative` 避免重复播报）。
  */
-import { Loader2 } from "@/components/ui/icons";
 import { t } from "@/i18n";
 
 const props = withDefaults(
@@ -29,7 +29,7 @@ const props = withDefaults(
     :aria-busy="props.decorative ? undefined : 'true'"
     class="inline-flex items-center justify-center"
   >
-    <Loader2 :class="props.sizeClass" class="spinner-icon shrink-0" :stroke-width="2" aria-hidden="true" />
+    <Icon name="loader2" :class="props.sizeClass" class="spinner-icon shrink-0" :stroke-width="2" aria-hidden="true" />
     <span v-if="!props.decorative" class="sr-only">{{ props.label || t("common.loading") }}</span>
   </span>
 </template>

@@ -4,7 +4,6 @@ import { computed, onMounted, onUnmounted, ref, watch } from "vue";
 import { useEventListener } from "@vueuse/core";
 import { useVirtualizer } from "@tanstack/vue-virtual";
 import { useClipboard } from "@/composables/useClipboard";
-import { Trash2, X } from "@/components/ui/icons";
 import TitleBar from "@/components/TitleBar.vue";
 import MobilePageFrame from "@/components/MobilePageFrame.vue";
 import { api } from "@/api";
@@ -353,7 +352,7 @@ function close() {
           :aria-label="confirmClear ? t('logs.clearConfirm') : t('logs.clear')"
           @click="onClear"
         >
-          <Trash2 class="h-4 w-4" />
+          <Icon name="trash2" class="h-4 w-4" />
         </button>
         <!-- 读屏播报：只播「用户动作的结果」（复制成功 / 清空待确认）。
              日志正文**刻意不加 aria-live**：它是持续追加的，实时区会把读屏刷屏。 -->
@@ -415,7 +414,7 @@ function close() {
           :aria-label="t('logs.filterClear')"
           @click="filter = ''"
         >
-          <X class="h-3.5 w-3.5" />
+          <Icon name="x" class="h-3.5 w-3.5" />
         </button>
       </div>
     </div>
@@ -499,7 +498,7 @@ function close() {
           :aria-label="t('logs.clear')"
           @click="onClear"
         >
-          <Trash2 class="h-3.5 w-3.5" />
+          <Icon name="trash2" class="h-3.5 w-3.5" />
           <span class="hidden sm:inline">{{ confirmClear ? t("logs.clearConfirm") : t("logs.clear") }}</span>
         </button>
         <span class="sr-only" role="status" aria-live="polite">
@@ -571,7 +570,7 @@ function close() {
           :aria-label="t('logs.filterClear')"
           @click="filter = ''"
         >
-          <X class="h-3.5 w-3.5" />
+          <Icon name="x" class="h-3.5 w-3.5" />
         </button>
       </div>
 

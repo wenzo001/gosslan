@@ -39,7 +39,6 @@ import {
   validateLinkInput,
   type LinkSourceView,
 } from "@/utils/externalLinks";
-import { Trash2 } from "@/components/ui/icons";
 import type {
   ExternalLink,
   ExternalLinkImportPreview,
@@ -707,7 +706,7 @@ function sourceText(l: ExternalLink): string {
           :aria-label="t('links.remove')"
           @click="remove(l)"
         >
-          <Trash2 class="h-3.5 w-3.5" />
+          <Icon name="trash2" class="h-3.5 w-3.5" />
         </button>
         <!-- 行间内缩分隔线：从文本列起（px-2 + 按钮 px-1.5 + 16 图标 + gap-2 = 38px） -->
         <div class="pointer-events-none absolute bottom-0 left-[38px] right-0 h-px bg-[var(--gosslan-divider)]"></div>

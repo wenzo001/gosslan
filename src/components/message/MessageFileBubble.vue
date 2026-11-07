@@ -10,7 +10,6 @@ import { formatBytes } from "@/utils/format";
 import { selectionTextWithin } from "@/utils/textSelection";
 import { FILE_KIND_COLORS, FILE_KIND_ICON_NAMES, extBadgeLabel, fileKindOf } from "@/utils/fileKind";
 import { useAppStore } from "@/stores/useAppStore";
-import { X } from "@/components/ui/icons";
 import type { TransferStatusTone } from "@/utils/transferState";
 
 const props = defineProps<{
@@ -124,7 +123,7 @@ function onCardClick(e: MouseEvent) {
         :style="iconWellStyle"
       >
         <Icon v-if="!failed" :name="iconName" class="h-5 w-5" />
-        <X v-else class="h-5 w-5" />
+        <Icon name="x" v-else class="h-5 w-5" />
       </div>
       <div class="min-w-0 flex-1">
         <div class="gosslan-card-text line-clamp-2 break-all text-body font-medium leading-snug">{{ meta.name }}</div>
@@ -165,7 +164,7 @@ function onCardClick(e: MouseEvent) {
           :aria-label="t('msg.cancelSend')"
           @click.stop="emit('cancel')"
         >
-          <X class="h-3.5 w-3.5" />
+          <Icon name="x" class="h-3.5 w-3.5" />
         </button>
         <button
           v-else

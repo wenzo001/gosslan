@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import Icon from "@/components/ui/Icon.vue";
 import { computed, onBeforeUnmount, ref, watch, type CSSProperties } from "vue";
 import { useAppStore } from "@/stores/useAppStore";
 import { useChatStore } from "@/stores/useChatStore";
@@ -54,8 +55,6 @@ import UnsupportedKindBubble from "@/components/message/UnsupportedKindBubble.vu
 import MessageContextMenu from "@/components/message/MessageContextMenu.vue";
 import RemindAudienceDialog from "@/components/RemindAudienceDialog.vue";
 import ActionSheet from "@/components/ActionSheet.vue";
-import { BellRing, Code2, Copy, CornerUpLeft, FileText, ListChecks, Pin, Save, Share2, Smile, Star, TextSelect, Undo2 } from "lucide-vue-next";
-import { Check, ImageOff } from "@/components/ui/icons";
 import type { MessageRecord, MsgKind } from "@/types";
 import type { ReminderPhase, ReminderState } from "@/utils/reminders";
 import { StaleGuard } from "@/utils/staleGuard";
@@ -1768,7 +1767,7 @@ async function copyFileToClipboard() {
             : 'border-[var(--gosslan-border)] bg-[var(--gosslan-panel)]',
         ]"
       >
-        <Check v-if="selected" class="h-2.5 w-2.5 text-[var(--gosslan-on-primary)]" :stroke-width="2.5" aria-hidden="true" />
+        <Icon name="check" v-if="selected" class="h-2.5 w-2.5 text-[var(--gosslan-on-primary)]" :stroke-width="2.5" aria-hidden="true" />
       </span>
 
       <!-- 尾巴的纵向位置自 2026-10-24 起不再依赖行顶/昵称行：它挂在气泡**左下/右下角、
@@ -1823,7 +1822,7 @@ async function copyFileToClipboard() {
               :title="t('msg.reactionAddEntry')"
               :aria-label="t('msg.reactionAddEntry')"
             >
-              <Smile class="h-3.5 w-3.5 text-[var(--gosslan-text-2)]" :stroke-width="1.75" />
+              <Icon name="smile" class="h-3.5 w-3.5 text-[var(--gosslan-text-2)]" :stroke-width="1.75" />
             </button>
           </PopoverTrigger>
           <PopoverPortal>
@@ -1975,7 +1974,7 @@ async function copyFileToClipboard() {
             :aria-disabled="mine ? 'true' : undefined"
             @click="mine ? undefined : refetchContent()"
           >
-            <ImageOff class="h-6 w-6 opacity-50" />
+            <Icon name="image-off" class="h-6 w-6 opacity-50" />
             <span>{{ t("msg.imageCleaned") }}</span>
             <!-- 「向对方重新索取」是收件方才成立的出口：自己发出去的那张图，对端是接收方，
                  向它要一份既拿不到原图也没有意义。自己这一支只说清「为什么看不见了」。 -->
@@ -2132,7 +2131,7 @@ async function copyFileToClipboard() {
       ]"
       :title="reminderRosterTitle || undefined"
     >
-      <BellRing class="h-3 w-3" />
+      <Icon name="bell-ring" class="h-3 w-3" />
       {{ reminderPhaseLabel }}
     </span>
     <button
@@ -2232,7 +2231,7 @@ async function copyFileToClipboard() {
         class="flex items-center gap-3 px-4 py-3 text-left text-title text-[var(--gosslan-text)] transition active:bg-[var(--gosslan-hover)]"
         @click="closeActionSheet(); copyFromMenu()"
       >
-        <Copy class="h-5 w-5 text-[var(--gosslan-text-2)]" />
+        <Icon name="copy" class="h-5 w-5 text-[var(--gosslan-text-2)]" />
         {{ t("msg.copyMessage") }}
       </button>
       <!-- 「选择文字」：非正文区长按打开面板后的「全选」快捷入口。
@@ -2245,7 +2244,7 @@ async function copyFileToClipboard() {
         class="flex items-center gap-3 px-4 py-3 text-left text-title text-[var(--gosslan-text)] transition active:bg-[var(--gosslan-hover)]"
         @click="enterTextSelect"
       >
-        <TextSelect class="h-5 w-5 text-[var(--gosslan-text-2)]" />
+        <Icon name="text-select" class="h-5 w-5 text-[var(--gosslan-text-2)]" />
         {{ t("common.selectText") }}
       </button>
       <template v-if="message.kind === 'image'">
@@ -2253,14 +2252,14 @@ async function copyFileToClipboard() {
           class="flex items-center gap-3 px-4 py-3 text-left text-title text-[var(--gosslan-text)] transition active:bg-[var(--gosslan-hover)]"
           @click="copyImage"
         >
-          <Copy class="h-5 w-5 text-[var(--gosslan-text-2)]" />
+          <Icon name="copy" class="h-5 w-5 text-[var(--gosslan-text-2)]" />
           {{ t("common.copyImage") }}
         </button>
         <button
           class="flex items-center gap-3 px-4 py-3 text-left text-title text-[var(--gosslan-text)] transition active:bg-[var(--gosslan-hover)]"
           @click="saveImage"
         >
-          <Save class="h-5 w-5 text-[var(--gosslan-text-2)]" />
+          <Icon name="save" class="h-5 w-5 text-[var(--gosslan-text-2)]" />
           {{ t("common.saveImage") }}
         </button>
       </template>
@@ -2269,14 +2268,14 @@ async function copyFileToClipboard() {
           class="flex items-center gap-3 px-4 py-3 text-left text-title text-[var(--gosslan-text)] transition active:bg-[var(--gosslan-hover)]"
           @click="saveFileTo"
         >
-          <Save class="h-5 w-5 text-[var(--gosslan-text-2)]" />
+          <Icon name="save" class="h-5 w-5 text-[var(--gosslan-text-2)]" />
           {{ t("common.save") }}
         </button>
         <button
           class="flex items-center gap-3 px-4 py-3 text-left text-title text-[var(--gosslan-text)] transition active:bg-[var(--gosslan-hover)]"
           @click="copyFileToClipboard"
         >
-          <Copy class="h-5 w-5 text-[var(--gosslan-text-2)]" />
+          <Icon name="copy" class="h-5 w-5 text-[var(--gosslan-text-2)]" />
           {{ t("common.copyFile") }}
         </button>
       </template>
@@ -2284,7 +2283,7 @@ async function copyFileToClipboard() {
         class="flex items-center gap-3 px-4 py-3 text-left text-title text-[var(--gosslan-text)] transition active:bg-[var(--gosslan-hover)]"
         @click="doQuote"
       >
-        <CornerUpLeft class="h-5 w-5 text-[var(--gosslan-text-2)]" />
+        <Icon name="corner-up-left" class="h-5 w-5 text-[var(--gosslan-text-2)]" />
         {{ t("common.quote") }}
       </button>
 
@@ -2296,7 +2295,7 @@ async function copyFileToClipboard() {
         class="flex items-center gap-3 px-4 py-3 text-left text-title text-[var(--gosslan-text)] transition active:bg-[var(--gosslan-hover)]"
         @click="closeActionSheet(); emit('pin')"
       >
-        <Pin class="h-5 w-5 text-[var(--gosslan-text-2)]" />
+        <Icon name="pin" class="h-5 w-5 text-[var(--gosslan-text-2)]" />
         {{ pinned ? t("msg.unpin") : t("msg.pin") }}
       </button>
 
@@ -2308,7 +2307,7 @@ async function copyFileToClipboard() {
         class="flex items-center gap-3 px-4 py-3 text-left text-title text-[var(--gosslan-danger-ink)] transition active:bg-[var(--gosslan-hover)]"
         @click="doRecall"
       >
-        <Undo2 class="h-5 w-5" />
+        <Icon name="undo2" class="h-5 w-5" />
         {{ t("msg.recall") }}
       </button>
       <button
@@ -2316,8 +2315,8 @@ async function copyFileToClipboard() {
         class="flex items-center gap-3 px-4 py-3 text-left text-title text-[var(--gosslan-text)] transition active:bg-[var(--gosslan-hover)]"
         @click="doRender"
       >
-        <component
-          :is="renderTo === 'code' ? Code2 : FileText"
+        <Icon
+          :name="renderTo === 'code' ? 'code2' : 'file-text'"
           class="h-5 w-5 text-[var(--gosslan-text-2)]"
         />
         {{ renderTo === "code" ? t("msg.renderAsCode") : t("msg.renderAsText") }}
@@ -2327,7 +2326,7 @@ async function copyFileToClipboard() {
         class="flex items-center gap-3 px-4 py-3 text-left text-title text-[var(--gosslan-text)] transition active:bg-[var(--gosslan-hover)]"
         @click="doForward"
       >
-        <Share2 class="h-5 w-5 text-[var(--gosslan-text-2)]" />
+        <Icon name="share2" class="h-5 w-5 text-[var(--gosslan-text-2)]" />
         {{ t("common.forward") }}
       </button>
       <!-- 收藏：与桌面右键菜单同一份判据（`favoritable`，含卡片类）与同一份 emit（`doFavorite`）。
@@ -2338,7 +2337,7 @@ async function copyFileToClipboard() {
         class="flex items-center gap-3 px-4 py-3 text-left text-title text-[var(--gosslan-text)] transition active:bg-[var(--gosslan-hover)]"
         @click="doFavorite"
       >
-        <Star class="h-5 w-5 text-[var(--gosslan-text-2)]" />
+        <Icon name="star" class="h-5 w-5 text-[var(--gosslan-text-2)]" />
         {{ t("favorite.add") }}
       </button>
       <!-- 强提醒：与桌面菜单同源（canRemindEntry）；两套独立模板都必须有 -->
@@ -2347,7 +2346,7 @@ async function copyFileToClipboard() {
         class="flex items-center gap-3 px-4 py-3 text-left text-title text-[var(--gosslan-text)] transition active:bg-[var(--gosslan-hover)]"
         @click="doRemind"
       >
-        <BellRing class="h-5 w-5 text-[var(--gosslan-text-2)]" />
+        <Icon name="bell-ring" class="h-5 w-5 text-[var(--gosslan-text-2)]" />
         {{ t("remind.menuEntry") }}
       </button>
       <!-- 定位到引用消息：本条引用了谁就从菜单跳过去（与微信一致，用户 2026-09-21）。
@@ -2357,7 +2356,7 @@ async function copyFileToClipboard() {
         class="flex items-center gap-3 px-4 py-3 text-left text-title text-[var(--gosslan-text)] transition active:bg-[var(--gosslan-hover)]"
         @click="closeActionSheet(); emit('locate', quotedMsgId)"
       >
-        <CornerUpLeft class="h-5 w-5 text-[var(--gosslan-text-2)]" />
+        <Icon name="corner-up-left" class="h-5 w-5 text-[var(--gosslan-text-2)]" />
         {{ t("msg.locateQuote") }}
       </button>
       <!-- 多选：移动端同样要有入口（桌面右键菜单是另一套模板）。
@@ -2367,7 +2366,7 @@ async function copyFileToClipboard() {
         class="flex items-center gap-3 border-t border-[var(--gosslan-divider)] px-4 py-3 text-left text-title text-[var(--gosslan-text)] transition active:bg-[var(--gosslan-hover)]"
         @click="doMultiSelect"
       >
-        <ListChecks class="h-5 w-5 text-[var(--gosslan-text-2)]" />
+        <Icon name="list-checks" class="h-5 w-5 text-[var(--gosslan-text-2)]" />
         {{ t("multi.enter") }}
       </button>
     </div>

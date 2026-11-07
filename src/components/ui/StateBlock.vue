@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import Icon from "@/components/ui/Icon.vue";
 import Spinner from "@/components/ui/Spinner.vue";
 /**
  * 公共异步状态块：加载 / 空 / 错误 + 重试。
@@ -20,7 +21,6 @@ import Spinner from "@/components/ui/Spinner.vue";
  */
 import { computed } from "vue";
 import PrimaryBtn from "@/components/ui/PrimaryBtn.vue";
-import { AlertCircle, RotateCcw } from "@/components/ui/icons";
 
 const props = withDefaults(
   defineProps<{
@@ -87,7 +87,7 @@ const iconClass = computed(() =>
       :class="inline ? '' : 'shrink-0'"
       class="text-[var(--gosslan-text-2)]"
     />
-    <AlertCircle
+    <Icon name="alert-circle"
       v-else-if="showIcon"
       :class="[iconClass, inline ? '' : 'shrink-0']"
       class="text-[var(--gosslan-text-2)]"
@@ -111,7 +111,7 @@ const iconClass = computed(() =>
     </button>
     <PrimaryBtn v-else-if="kind === 'error' && retryLabel" shrink @click="$emit('retry')">
       <span class="inline-flex items-center gap-1.5">
-        <RotateCcw class="h-4 w-4" aria-hidden="true" />
+        <Icon name="rotate-ccw" class="h-4 w-4" aria-hidden="true" />
         {{ retryLabel }}
       </span>
     </PrimaryBtn>

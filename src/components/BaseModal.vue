@@ -1,7 +1,7 @@
 <script setup lang="ts">
+import Icon from "@/components/ui/Icon.vue";
 import { DialogContent, DialogOverlay, DialogPortal, DialogRoot, DialogTitle } from "reka-ui";
 import { nextTick, watch } from "vue";
-import { X } from "@/components/ui/icons";
 import { useBackLayer } from "@/composables/useBackLayer";
 import BackArrow from "@/components/ui/BackArrow.vue";
 import { useAppStore } from "@/stores/useAppStore";
@@ -227,7 +227,7 @@ function onOpenChange(value: boolean) {
                 :title="t('common.close')" :aria-label="t('common.close')"
                 @click="emit('close')"
               >
-                <X class="h-4 w-4" />
+                <Icon name="x" class="h-4 w-4" />
               </button>
             </div>
             <!-- 固定头部（可选插槽）：**不参与下面滚动区的滚动**。给「预览/摘要固定、

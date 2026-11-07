@@ -53,7 +53,6 @@ import {
   TODO_STATUS_LABEL_KEY, TODO_STATUS_PILL, isTodoStatus, type TodoImage, type TodoStatus, } from "@/utils/todos";
 import TodoImageThumb from "@/components/TodoImageThumb.vue";
 import Icon from "@/components/ui/Icon.vue";
-import { Trash2, X } from "@/components/ui/icons";
 import type { FavoriteEntry, FileMeta, MsgKind } from "@/types";
 import { api } from "@/api";
 
@@ -1021,7 +1020,7 @@ async function confirmDelete() {
               class="tap-safe flex min-w-14 flex-1 flex-col items-center gap-0.5 rounded-[var(--gosslan-radius-sm)] py-1.5 text-caption text-[var(--gosslan-danger-ink)] transition hover:bg-[var(--gosslan-danger-soft)]"
               @click="askDelete(active)"
             >
-              <Trash2 class="h-4 w-4" aria-hidden="true" />
+              <Icon name="trash2" class="h-4 w-4" aria-hidden="true" />
               <span class="whitespace-nowrap">{{ t("favorite.delete") }}</span>
             </button>
           </div>
@@ -1039,7 +1038,7 @@ async function confirmDelete() {
         </p>
         <div class="mt-3 flex justify-end gap-2">
           <SecondaryBtn size="large" @click="pendingDelete = null">
-            <X class="h-3.5 w-3.5" />{{ t("common.cancel") }}
+            <Icon name="x" class="h-3.5 w-3.5" />{{ t("common.cancel") }}
           </SecondaryBtn>
           <DangerBtn size="large" @click="confirmDelete">
             {{ t("common.delete") }}
@@ -1067,7 +1066,7 @@ async function confirmDelete() {
         class="gosslan-menu-item gosslan-menu-item--danger"
         @select="askDelete(menu.item)"
       >
-        <Trash2 />
+        <Icon name="trash2" />
         {{ t("favorite.delete") }}
       </DropdownMenuItem>
     </ContextMenu>

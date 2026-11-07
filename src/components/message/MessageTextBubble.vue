@@ -10,7 +10,6 @@ import { useMessageSegments } from "@/composables/useMessageSegments";
 import MessageLinkText from "@/components/message/MessageLinkText.vue";
 import { mentionHighlightBg, mentionHighlightColor } from "@/utils/chatStyle";
 import { parseQuote } from "@/utils/quote";
-import { Check } from "@/components/ui/icons";
 
 const props = defineProps<{
   content: string;
@@ -222,7 +221,7 @@ async function openLink(href: string) {
         :class="copied ? 'opacity-100' : 'opacity-70 hover:opacity-100'"
         @click="emit('copy', content)"
       >
-        <Check v-if="copied" class="h-3 w-3" />
+        <Icon name="check" v-if="copied" class="h-3 w-3" />
         <Icon name="copy" v-else class="h-3 w-3" />
         {{ copied ? t("common.copied") : t("common.copy") }}
       </button>

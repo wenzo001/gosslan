@@ -13,7 +13,6 @@ import Icon from "@/components/ui/Icon.vue";
  *   - 单个标签 20 字符、单任务最多 10 个，与 Rust 侧常量同一份口径。
  */
 import { computed, ref } from "vue";
-import { Check } from "@/components/ui/icons";
 import CharCounter from "@/components/ui/CharCounter.vue";
 import TodoAttrField from "@/components/TodoAttrField.vue";
 import { t } from "@/i18n";
@@ -160,7 +159,7 @@ function addCustom() {
         :aria-pressed="isSelected(row.tag)"
         @click="toggle(row.tag)"
       >
-        <Check v-if="isSelected(row.tag)" class="h-3.5 w-3.5 shrink-0" aria-hidden="true" />
+        <Icon name="check" v-if="isSelected(row.tag)" class="h-3.5 w-3.5 shrink-0" aria-hidden="true" />
         <span v-else class="h-3.5 w-3.5 shrink-0" aria-hidden="true"></span>
         <span class="min-w-0 flex-1 truncate" :title="row.tag">{{ row.tag }}</span>
         <span v-if="row.use_count > 0" class="shrink-0 text-caption tabular-nums text-[var(--gosslan-text-2)]">{{ row.use_count }}</span>

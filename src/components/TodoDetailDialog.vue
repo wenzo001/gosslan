@@ -21,7 +21,6 @@ import {
   TODO_CATEGORIES, TODO_CATEGORY_LABEL_KEY, TODO_CATEGORY_PILL, TODO_PRIORITIES, TODO_PRIORITY_LABEL_KEY, TODO_PRIORITY_PILL, TODO_STATUSES, TODO_STATUS_LABEL_KEY, TODO_STATUS_PILL, isTodoTerminalStatus, todoCode, type TodoHistoryChange, type TodoHistoryEntry, type TodoCategory, type TodoItem, type TodoPriority, type TodoStatus, TODO_CUSTOM_ICON_DEFAULT, type TodoCustomIcon, } from "@/utils/todos";
 import type { TodoTagCandidate } from "@/api";
 import { fmtTodoTime } from "@/utils/time";
-import { RotateCcw, Trash2 } from "@/components/ui/icons";
 import { t } from "@/i18n";
 
 const props = defineProps<{
@@ -423,7 +422,7 @@ const fullCode = computed(() =>
           class="tap-safe flex items-center gap-1 rounded-[var(--gosslan-radius-md)] bg-[var(--gosslan-hover)] px-3 py-1.5 text-body text-[var(--gosslan-text-2)] transition hover:text-[var(--gosslan-text)]"
           @click="emit('restore')"
         >
-          <RotateCcw class="h-3.5 w-3.5" />{{ t("todo.restore") }}
+          <Icon name="rotate-ccw" class="h-3.5 w-3.5" />{{ t("todo.restore") }}
         </button>
 
         <span class="flex-1"></span>
@@ -446,7 +445,7 @@ const fullCode = computed(() =>
           :aria-label="t('todo.remove')"
           @click="emit('remove')"
         >
-          <Trash2 class="h-4 w-4" />
+          <Icon name="trash2" class="h-4 w-4" />
         </button>
       </div>
     </template>

@@ -8,8 +8,6 @@ import { useExclusivePopup } from "@/composables/useExclusivePopup";
 import { PopoverContent, PopoverPortal, PopoverRoot, PopoverTrigger } from "reka-ui";
 import type { SendState } from "@/composables/useMessageDisplay";
 import type { GroupDeliverySummary } from "@/types";
-import { X } from "@/components/ui/icons";
-import { AlertCircle, Check } from "@/components/ui/icons";
 import AvatarBox from "@/components/ui/AvatarBox.vue";
 import { POPOVER_EDGE } from "@/utils/popoverBounds";
 
@@ -184,28 +182,28 @@ function readerAvatar(id: string): string | null {
       :title="retryTitle" :aria-label="t('msg.resend')"
       @click="emit('retry')"
     >
-      <AlertCircle class="h-4 w-4" stroke-width="2.5" />
+      <Icon name="alert-circle" class="h-4 w-4" stroke-width="2.5" />
     </button>
     <span
       v-else-if="state === 'failed'"
       class="flex h-5 w-5 items-center justify-center text-[var(--gosslan-danger-ink)]"
       role="img" :title="title" :aria-label="title"
     >
-      <AlertCircle class="h-4 w-4" stroke-width="2.5" />
+      <Icon name="alert-circle" class="h-4 w-4" stroke-width="2.5" />
     </span>
     <span
       v-else-if="state === 'partial_cancelled'"
       class="flex h-5 w-5 items-center justify-center text-[var(--gosslan-warning-ink)]"
       role="img" :title="title" :aria-label="title"
     >
-      <AlertCircle class="h-4 w-4" stroke-width="2.5" />
+      <Icon name="alert-circle" class="h-4 w-4" stroke-width="2.5" />
     </span>
     <span
       v-else-if="state === 'cancelled'"
       class="flex h-5 w-5 items-center justify-center text-[var(--gosslan-danger-ink)]"
       role="img" :title="title" :aria-label="title"
     >
-      <AlertCircle class="h-4 w-4" stroke-width="2.5" />
+      <Icon name="alert-circle" class="h-4 w-4" stroke-width="2.5" />
     </span>
     <span
       v-else-if="state === 'unknown'"
@@ -288,7 +286,7 @@ function readerAvatar(id: string): string | null {
       :title="retryTitle" :aria-label="t('msg.resend')"
       @click="emit('retry')"
     >
-      <AlertCircle class="h-4 w-4" stroke-width="2.5" />
+      <Icon name="alert-circle" class="h-4 w-4" stroke-width="2.5" />
     </button>
     <!-- 没有真通道的失败：同一颗红色感叹号退化成**纯指示**，读屏仍能报出"发送失败"。 -->
     <span
@@ -298,7 +296,7 @@ function readerAvatar(id: string): string | null {
       :title="title"
       :aria-label="title"
     >
-      <AlertCircle class="h-4 w-4" stroke-width="2.5" />
+      <Icon name="alert-circle" class="h-4 w-4" stroke-width="2.5" />
     </span>
     <!-- 已取消：自己按下的取消也是"停在这里"的状态，按同一套视觉给红色感叹号；
          能算出真通道时同样可以再发一次（判据在 `utils/resendChannel`）。 -->
@@ -309,7 +307,7 @@ function readerAvatar(id: string): string | null {
       :title="retryTitle" :aria-label="t('msg.resend')"
       @click="emit('retry')"
     >
-      <AlertCircle class="h-4 w-4" stroke-width="2.5" />
+      <Icon name="alert-circle" class="h-4 w-4" stroke-width="2.5" />
     </button>
     <span
       v-else-if="state === 'cancelled'"
@@ -318,7 +316,7 @@ function readerAvatar(id: string): string | null {
       :title="title"
       :aria-label="title"
     >
-      <AlertCircle class="h-4 w-4" stroke-width="2.5" />
+      <Icon name="alert-circle" class="h-4 w-4" stroke-width="2.5" />
     </span>
     <span
       v-else-if="state === 'partial_cancelled'"
@@ -327,7 +325,7 @@ function readerAvatar(id: string): string | null {
       :title="title"
       :aria-label="title"
     >
-      <AlertCircle class="h-4 w-4" stroke-width="2.5" />
+      <Icon name="alert-circle" class="h-4 w-4" stroke-width="2.5" />
     </span>
     <!-- 状态未知：兜底可见性。以前这份映射不认识的取值会走 default 空串 ⇒ 图标位全空，
          读屏也读不到；用户只能猜"是不是发出去了"。 -->
@@ -364,7 +362,7 @@ function readerAvatar(id: string): string | null {
         data-receipt-state="sending-waiting" aria-hidden="true"
       >
         <span class="relative flex items-center">
-          <Check class="h-3.5 w-3.5 text-[var(--gosslan-text-2)]" />
+          <Icon name="check" class="h-3.5 w-3.5 text-[var(--gosslan-text-2)]" />
           <Icon name="clock3" class="absolute -right-1 -bottom-0.5 h-2.5 w-2.5 text-[var(--gosslan-text-2)]" />
         </span>
       </span>
@@ -373,7 +371,7 @@ function readerAvatar(id: string): string | null {
         data-receipt-state="sending" aria-hidden="true"
       >
         <span class="relative flex items-center">
-          <Check class="h-3.5 w-3.5 text-[var(--gosslan-text-2)]" />
+          <Icon name="check" class="h-3.5 w-3.5 text-[var(--gosslan-text-2)]" />
           <Spinner class="absolute -right-1 -bottom-0.5 text-[var(--gosslan-text-2)]" size-class="h-2.5 w-2.5" decorative />
         </span>
       </span>
@@ -383,7 +381,7 @@ function readerAvatar(id: string): string | null {
         class="receipt-layer" :data-active="state === 'sent'"
         data-receipt-state="sent" aria-hidden="true"
       >
-        <Check class="h-3.5 w-3.5 text-[var(--gosslan-text-2)]" />
+        <Icon name="check" class="h-3.5 w-3.5 text-[var(--gosslan-text-2)]" />
       </span>
       <!-- delivered：双勾灰色 —— 对方设备已收到但还没打开看。 -->
       <span
@@ -413,7 +411,7 @@ function readerAvatar(id: string): string | null {
       data-cancel-send
       @click="emit('cancel')"
     >
-      <X class="h-3.5 w-3.5" stroke-width="2.5" />
+      <Icon name="x" class="h-3.5 w-3.5" stroke-width="2.5" />
     </button>
   </span>
 </template>

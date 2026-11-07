@@ -16,7 +16,6 @@ import { shouldRunThrottled } from "@/utils/defer";
 import { mentionHighlightColor, resolveChatColors } from "@/utils/chatStyle";
 import { classifyPaste } from "@/utils/clipboard";
 import { isImeKey } from "@/utils/ime";
-import { X } from "@/components/ui/icons";
 import type { MsgKind } from "@/types";
 import { MENTION_ALL_TOKEN, textMentionsName } from "@/utils/messages";
 import { isMentionLead } from "@/utils/linkify";
@@ -1207,7 +1206,7 @@ async function onPaste(e: ClipboardEvent) {
           :title="t('chat.composer.cancelQuote')" :aria-label="t('chat.composer.cancelQuote')"
           @click="emit('close-quote')"
         >
-          <X class="h-3.5 w-3.5" />
+          <Icon name="x" class="h-3.5 w-3.5" />
         </button>
       </div>
       <!-- 待发送图片：粘贴进输入框后先出现在这里，可删、可继续打字，按发送键才真正发出。
@@ -1236,7 +1235,7 @@ async function onPaste(e: ClipboardEvent) {
             @mousedown.prevent
             @click="removePendingImage(image)"
           >
-            <X class="h-2.5 w-2.5" />
+            <Icon name="x" class="h-2.5 w-2.5" />
           </button>
         </div>
       </div>

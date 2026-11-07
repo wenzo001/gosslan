@@ -56,7 +56,6 @@ import { activePopupKey } from "@/utils/popupRegistry";
 import { previewText } from "@/utils/messages";
 import DangerBtn from "@/components/ui/DangerBtn.vue";
 import SecondaryBtn from "@/components/ui/SecondaryBtn.vue";
-import { Trash2, X } from "@/components/ui/icons";
 import {
   isAnnounceDismissed,
   readAnnounceSeen,
@@ -1801,7 +1800,7 @@ function retryHistory() {
             class="tap-safe inline-flex items-center gap-1 rounded-[var(--gosslan-radius-md)] border border-[var(--gosslan-border)] px-2.5 py-1 text-meta text-[var(--gosslan-danger-ink)] transition hover:bg-[var(--gosslan-hover)]"
             @click="removeKeyPeerOpen = true"
           >
-            <Trash2 class="h-3 w-3" aria-hidden="true" />
+            <Icon name="trash2" class="h-3 w-3" aria-hidden="true" />
             {{ t("friend.keyRotated.remove") }}
           </button>
         </div>
@@ -1869,7 +1868,7 @@ function retryHistory() {
         :aria-label="t('group.announceDismiss')"
         @click="dismissAnnouncement"
       >
-        <X class="h-3.5 w-3.5" />
+        <Icon name="x" class="h-3.5 w-3.5" />
       </button>
     </div>
 
@@ -1909,7 +1908,7 @@ function retryHistory() {
             :aria-label="t('msg.unpin')"
             @click.stop="togglePin(p.id)"
           >
-            <X class="h-3 w-3" aria-hidden="true" />
+            <Icon name="x" class="h-3 w-3" aria-hidden="true" />
           </button>
         </div>
         <button
@@ -1945,7 +1944,7 @@ function retryHistory() {
             :aria-label="t('msg.unpin')"
             @click.stop="togglePin(p.id)"
           >
-            <X class="h-3 w-3" aria-hidden="true" />
+            <Icon name="x" class="h-3 w-3" aria-hidden="true" />
           </button>
         </div>
       </div>
@@ -1966,7 +1965,7 @@ function retryHistory() {
         :aria-label="t('chat.bt.dismiss')"
         @click="btHintDismissed = true"
       >
-        <X class="h-3.5 w-3.5" />
+        <Icon name="x" class="h-3.5 w-3.5" />
       </button>
     </div>
 
@@ -2216,7 +2215,7 @@ function retryHistory() {
             :disabled="!selectedCount"
             @click="confirmBatchDelete = true"
           >
-            <Trash2 class="h-4 w-4" aria-hidden="true" />
+            <Icon name="trash2" class="h-4 w-4" aria-hidden="true" />
             {{ t("multi.delete") }}
           </button>
         </div>
@@ -2274,7 +2273,7 @@ function retryHistory() {
             class="tap-safe flex items-center gap-1 rounded-[var(--gosslan-radius-md)] px-3 py-1.5 text-body text-[var(--gosslan-text-2)] transition hover:bg-[var(--gosslan-danger-soft)] hover:text-[var(--gosslan-danger-ink)]"
             @click="announceDeleteArmed = true"
           >
-            <Trash2 class="h-3.5 w-3.5" />
+            <Icon name="trash2" class="h-3.5 w-3.5" />
             {{ t("group.announceDeleteTitle") }}
           </button>
           <template v-else>

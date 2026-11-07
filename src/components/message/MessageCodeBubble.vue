@@ -1,13 +1,12 @@
 <script setup lang="ts">
+import Icon from "@/components/ui/Icon.vue";
 import { t } from "@/i18n";
 import BubbleTail from "@/components/message/BubbleTail.vue";
 import { computed, ref } from "vue";
 import CodeBlock from "@/components/CodeBlock.vue";
 import { CODE_CLAMP_HEIGHT, CODE_SURFACE, codePreviewRemainingLines } from "@/utils/previewMetrics";
-import { Copy } from "lucide-vue-next";
 import { DropdownMenuItem } from "reka-ui";
 import ContextMenu from "@/components/ContextMenu.vue";
-import { Check } from "@/components/ui/icons";
 
 const props = defineProps<{
   /** inline code 消息取消息正文，代码附件取本地读到的文本。 */
@@ -84,7 +83,7 @@ function copyFromMenu() {
   >
     <ContextMenu v-if="ctx" :x="ctx.x" :y="ctx.y" @close="ctx = null">
       <DropdownMenuItem class="gosslan-menu-item" @select="copyFromMenu">
-        <Copy class="h-3.5 w-3.5" />
+        <Icon name="copy" class="h-3.5 w-3.5" />
         {{ t("common.copy") }}
       </DropdownMenuItem>
     </ContextMenu>
@@ -150,8 +149,8 @@ function copyFromMenu() {
         :class="copied ? 'opacity-100' : 'opacity-70 hover:opacity-100'"
         @click="emit('copy', code)"
       >
-        <Check v-if="copied" class="h-3 w-3" />
-        <Copy v-else class="h-3 w-3" />
+        <Icon name="check" v-if="copied" class="h-3 w-3" />
+        <Icon name="copy" v-else class="h-3 w-3" />
         {{ copied ? t("common.copied") : t("common.copy") }}
       </button>
     </div>

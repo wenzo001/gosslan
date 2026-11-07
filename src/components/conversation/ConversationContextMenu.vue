@@ -12,7 +12,6 @@ import Icon from "@/components/ui/Icon.vue";
  */
 import { DropdownMenuItem, DropdownMenuSeparator } from "reka-ui";
 import { t } from "@/i18n";
-import { Trash2 } from "@/components/ui/icons";
 import ContextMenu from "@/components/ContextMenu.vue";
 
 defineProps<{ x: number; y: number; pinned: boolean }>();
@@ -35,7 +34,7 @@ const emit = defineEmits<{
       class="gosslan-menu-item gosslan-menu-item--danger"
       @select="emit('delete')"
     >
-      <Trash2 />
+      <Icon name="trash2" />
       {{ t("conv.delete") }}
     </DropdownMenuItem>
     <div class="gosslan-menu-hint">{{ t("conv.delete.hint") }}</div>

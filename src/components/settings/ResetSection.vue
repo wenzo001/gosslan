@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import Icon from "@/components/ui/Icon.vue";
 /**
  * 「重置与数据」设置分区：恢复默认 + 清除聊天数据（破坏性，二次确认）。
  * （2026-10-23：桌面已并入「通用」容器，不再是独立导航项。）
@@ -13,8 +14,6 @@ import { useAppStore } from "@/stores/useAppStore";
 import { useChatStore } from "@/stores/useChatStore";
 import ConfirmDialog from "@/components/ui/ConfirmDialog.vue";
 import SettingsGroup from "@/components/settings/SettingsGroup.vue";
-import { RotateCcw } from "@/components/ui/icons";
-import { Trash2 } from "@/components/ui/icons";
 import { t } from "@/i18n";
 
 const emit = defineEmits<{ (e: "restored"): void }>();
@@ -70,7 +69,7 @@ async function doClearAllData() {
         class="settings-card-row flex w-full items-center justify-center gap-2 text-sm text-[var(--gosslan-text)] transition hover:bg-[var(--gosslan-hover)]"
         @click="confirmRestore = true"
       >
-        <RotateCcw class="h-4 w-4" />
+        <Icon name="rotate-ccw" class="h-4 w-4" />
         {{ t("settings.reset.restore") }}
       </button>
       <div class="ml-4 h-px bg-[var(--gosslan-divider)]" />
@@ -78,7 +77,7 @@ async function doClearAllData() {
         class="settings-card-row flex w-full items-center justify-center gap-2 text-sm text-[var(--gosslan-danger-ink)] transition hover:bg-[var(--gosslan-danger-soft)] dark:hover:bg-[var(--gosslan-danger-soft)]"
         @click="clearConfirmOpen = true"
       >
-        <Trash2 class="h-4 w-4" />
+        <Icon name="trash2" class="h-4 w-4" />
         {{ t("settings.reset.clearChat") }}
       </button>
     </SettingsGroup>

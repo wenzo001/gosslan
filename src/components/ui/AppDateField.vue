@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import Icon from "@/components/ui/Icon.vue";
 /**
  * 统一日期字段：原生 `<input type="date">` 的薄封装。
  *
@@ -19,7 +20,6 @@
  */
 import { computed } from "vue";
 import { t } from "@/i18n";
-import { X } from "@/components/ui/icons";
 
 const props = withDefaults(
   defineProps<{
@@ -89,7 +89,7 @@ function onChange(e: Event) {
       :aria-label="t('common.clear')"
       @click="emit('update:modelValue', '')"
     >
-      <X class="h-3.5 w-3.5" />
+      <Icon name="x" class="h-3.5 w-3.5" />
     </button>
   </div>
 </template>

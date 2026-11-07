@@ -27,7 +27,6 @@ import {
   DropdownMenuRoot,
   DropdownMenuTrigger,
 } from "reka-ui";
-import { X } from "@/components/ui/icons";
 import { api } from "@/api";
 import { useAppStore } from "@/stores/useAppStore";
 import { useImeEnterGuard } from "@/composables/useImeEnterGuard";
@@ -442,7 +441,7 @@ function showSender(group: ChatSearchGroup): boolean {
           :title="t('search.clear')" :aria-label="t('search.clear')"
           @click="keyword = ''"
         >
-          <X class="h-3 w-3" />
+          <Icon name="x" class="h-3 w-3" />
         </button>
       </div>
 

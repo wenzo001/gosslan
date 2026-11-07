@@ -10,7 +10,6 @@ import SettingsRow from "@/components/settings/SettingsRow.vue";
 import SettingsSelect from "@/components/ui/SettingsSelect.vue";
 import { formatBytes } from "@/utils/format";
 import { fmtDateStamp } from "@/utils/time";
-import { Trash2 } from "@/components/ui/icons";
 import { t } from "@/i18n";
 import type { CacheInfo } from "@/types";
 
@@ -245,7 +244,7 @@ watch(
         :title="t('settings.storage.clean.title')"
         @click="askCleanNow"
       >
-        <Trash2 class="h-3.5 w-3.5" />
+        <Icon name="trash2" class="h-3.5 w-3.5" />
         {{ t("settings.storage.clean.btn") }}
       </button>
     </div>
