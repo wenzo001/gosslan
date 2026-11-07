@@ -14,6 +14,30 @@
 
 ## [Unreleased]
 
+## [5.18.73] - 2026-11-07
+
+### Windows 标题栏镜像：头像簇移到左侧，与左 R 角同圆心（用户 2026-11-07 真机反馈）
+
+用户：「Windows 端三大金刚键在右边，那头像、设置、在线绿点应该对称地放在左边；头像的弧度
+跟左边的 R 角要对齐，就是同心圆这种距离。」
+
+- **镜像的是按钮所在侧，不是整条翻转**：macOS 红绿灯在左 ⇒ 头像簇靠右；Windows 三键在右
+  ⇒ 头像簇靠左（`flex-row-reverse`，组内顺序变为 头像 → 设置 → 搜索 → LAN）。标题仍
+  `absolute inset-0` 绝对居中，不依赖两侧内容宽度。
+- **数值同源**：`style.css` 新增 `--gosslan-caption-avatar: 28px` 与
+  `--gosslan-caption-inset: calc((var(--gosslan-title-h) - var(--gosslan-caption-avatar)) / 2)`
+  = 6px；两个平台分支只切方向，不切数字。
+- **同心公式**：窗角半径 R、头像半径 r、距上/左均为 d ⇒ 两圆心重合需 `d = R − r`；
+  本应用 macOS R=10、r=14 ⇒ −4；Windows R=10/12 ⇒ −4/−2（负值，严格同心不可行，因为
+  28px 头像比窗角弧还大）。故口径取等距内缩 d = (40−28)/2 = **6**，距上 = 距左/右。
+- **判据**：`checkTitlebarMirror`（TB-01）断言平台→头像簇侧、组内顺序、绝对居中、
+  两侧 token 同源；`captionAvatarRect`（TB-02）给两平台模拟矩形读数。反例（Windows 放右 /
+  一侧 12px / token 改手写 / 标题回流式）全部必红。
+- `node --test src/utils/designGuards.test.ts` → 350/350。
+
+**验证边界**：本机 macOS，拿不到 Windows WebView2 渲染；TB-02 是平台模拟读数，不是真机。
+Windows/macOS 角部 4× 特写待真机补拍。
+
 ## [5.18.72] - 2026-11-07
 
 ### 屏幕边缘安全区：崩溃恢复条压在安卓状态栏下（用户 2026-11-07 真机反馈）

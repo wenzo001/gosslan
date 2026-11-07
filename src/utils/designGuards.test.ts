@@ -70,6 +70,8 @@ import {
   safeInsetPx,
   findEdgeIntrusions,
   findRawSafeAreaEnvIssues,
+  checkTitlebarMirror,
+  captionAvatarRect,
   EDGE_STATUS_BAR_PX,
   EDGE_CORNER_RADIUS_PX,
 } from "./designGuards.ts";
@@ -2592,8 +2594,8 @@ test("本人头像只走 SelfAvatar，且只在标题栏 / 设置页各一处", 
     {
       rel: "layouts/ResponsiveLayout.vue",
       // 标题栏 me 位（28px 档；2026-11-06 对稿按画板 `.me` 28×28 由 24 抬到这里，
-      // 锚点随被钉住的值一起搬）
-      re: /<SelfAvatar class="h-7 w-7 rounded-full" \/>/,
+      // 锚点随被钉住的值一起搬；2026-11-07 起尺寸读同源 token `--gosslan-caption-avatar`）
+      re: /<SelfAvatar class="h-\[var\(--gosslan-caption-avatar\)\] w-\[var\(--gosslan-caption-avatar\)\] rounded-full" \/>/,
     },
     {
       rel: "layouts/ResponsiveLayout.vue",
@@ -8345,15 +8347,17 @@ test("CN-01 反例自证：把内距算错（12px → 8px）必须红", () => {
   );
 });
 
-test("CN-02 反例自证：右上角内距改回 pr-3（12px）必须红", () => {
+test("CN-02 反例自证：边缘内距改回手写 12px 必须红", () => {
   const src = concentricSources();
-  const broken = src.titleBar.replace('class="ml-auto flex h-full shrink-0 items-center gap-1.5 pr-1.5"',
-    'class="ml-auto flex h-full shrink-0 items-center gap-1.5 pr-3"');
-  assert.notEqual(broken, src.titleBar, "锚点没命中：右侧簇的 class 变了形状");
+  const broken = src.titleBar.replace(
+    "pr-[var(--gosslan-caption-inset)]",
+    "pr-3",
+  );
+  assert.notEqual(broken, src.titleBar, "锚点没命中：头像簇的 class 变了形状");
   const issues = checkConcentricGeometry({ ...src, titleBar: broken });
   assert.ok(
-    issues.some((i) => i.message.includes("CN-02") && i.message.includes("12px")),
-    `右上角内距不等必须报 CN-02，实际：${JSON.stringify(issues)}`,
+    issues.some((i) => i.message.includes("CN-02")),
+    `边缘内距不读同源 token 必须报 CN-02，实际：${JSON.stringify(issues)}`,
   );
 });
 
@@ -8454,4 +8458,101 @@ test("SA-03 证据链与同类：viewport-fit=cover / enableEdgeToEdge / 四枚�
   }
   const composer = code691(readFileSync(join(srcDir691, "components/ChatWindow.vue"), "utf8"));
   assert.match(composer, /paddingBottom:\s*'calc\(var\(--gosslan-inset-bottom\) \+ 8px\)'/, "输入区没跟手势条安全区");
+});
+
+// ── TB. 标题栏镜像：平台 → 头像簇所在侧（2026-11-07）────────────────────
+// 用户 2026-11-07（Windows）：「三大金刚键是在右边，那头像应该是相对称的、在左边居左然后对称显示」。
+const TB_FIXTURE = {
+  titleBar: readFileSync(join(srcDir691, "components", "TitleBar.vue"), "utf8"),
+  layout: readFileSync(join(srcDir691, "layouts", "ResponsiveLayout.vue"), "utf8"),
+  styleCss: readFileSync(join(srcDir691, "style.css"), "utf8"),
+};
+
+test("TB-01 真实树：macOS 头像簇靠右、Windows 靠左，两侧内距同源且等于头像纵向内距", () => {
+  assert.deepEqual(checkTitlebarMirror(TB_FIXTURE), [], "标题栏镜像契约已漂");
+
+  // 口径写死成断言：镜像的是「按钮在哪侧」，不是整条翻转。
+  const cls = TB_FIXTURE.titleBar.match(/isMac\s*\?\s*'([^']*)'\s*:\s*'([^']*)'/);
+  assert.ok(cls, "头像簇必须显式表达平台镜像");
+  assert.match(cls[1], /\bml-auto\b/, "macOS（红绿灯在左）头像簇必须靠右");
+  assert.match(cls[1], /pr-\[var\(--gosslan-caption-inset\)\]/, "macOS 右侧内距必须读同源 token");
+  assert.doesNotMatch(cls[2], /\bml-auto\b/, "Windows（三键在右）头像簇必须靠左");
+  assert.match(cls[2], /\bflex-row-reverse\b/, "Windows 组内顺序必须镜像（头像在最左）");
+  assert.match(cls[2], /pl-\[var\(--gosslan-caption-inset\)\]/, "Windows 左侧内距必须读同一个 token");
+  assert.equal(
+    TB_FIXTURE.styleCss.match(/--gosslan-caption-avatar\s*:\s*(\d+)px/)?.[1],
+    "28",
+    "头像尺寸 token 应为 28px",
+  );
+  assert.equal(
+    (40 - 28) / 2,
+    6,
+    "内距 = (title-h 40 − avatar 28)/2 = 6 —— 距上 = 距左/右，才与窗角同圆心",
+  );
+});
+
+test("TB-01 反例自证：Windows 仍把头像簇放右侧（ml-auto）必须红", () => {
+  const broken = TB_FIXTURE.titleBar.replace(
+    "'flex-row-reverse pl-[var(--gosslan-caption-inset)]'",
+    "'ml-auto pr-[var(--gosslan-caption-inset)]'",
+  );
+  assert.notEqual(broken, TB_FIXTURE.titleBar, "fixture 没替换成功 ⇒ 这条在测空气");
+  const msgs = checkTitlebarMirror({ ...TB_FIXTURE, titleBar: broken })
+    .map((i) => i.message)
+    .join("\n");
+  assert.match(msgs, /Windows 分支仍用 `ml-auto`/, msgs);
+});
+
+test("TB-01 反例自证：一侧内距改成 12px 必须红（不再等距、也不同心）", () => {
+  const broken = TB_FIXTURE.titleBar.replace("pl-[var(--gosslan-caption-inset)]", "pl-3");
+  assert.notEqual(broken, TB_FIXTURE.titleBar, "fixture 没替换成功 ⇒ 这条在测空气");
+  const msgs = checkTitlebarMirror({ ...TB_FIXTURE, titleBar: broken })
+    .map((i) => i.message)
+    .join("\n");
+  assert.match(msgs, /两平台内距不等/, msgs);
+});
+
+test("TB-01 反例自证：内距 token 改成手写死值必须红（六边形不同源）", () => {
+  const broken = TB_FIXTURE.styleCss.replace(
+    "--gosslan-caption-inset: calc((var(--gosslan-title-h) - var(--gosslan-caption-avatar)) / 2);",
+    "--gosslan-caption-inset: 6px;",
+  );
+  assert.notEqual(broken, TB_FIXTURE.styleCss, "fixture 没替换成功 ⇒ 这条在测空气");
+  const msgs = checkTitlebarMirror({ ...TB_FIXTURE, styleCss: broken })
+    .map((i) => i.message)
+    .join("\n");
+  assert.match(msgs, /必须是 `calc\(/, msgs);
+});
+
+test("TB-01 反例自证：标题改回流式居中（不脱离布局）必须红", () => {
+  const broken = TB_FIXTURE.titleBar.replace(
+    "pointer-events-none absolute inset-0 flex items-center justify-center px-3",
+    "pointer-events-none flex flex-1 items-center justify-center px-3",
+  );
+  assert.notEqual(broken, TB_FIXTURE.titleBar, "fixture 没替换成功 ⇒ 这条在测空气");
+  const msgs = checkTitlebarMirror({ ...TB_FIXTURE, titleBar: broken })
+    .map((i) => i.message)
+    .join("\n");
+  assert.match(msgs, /标题必须绝对居中/, msgs);
+});
+
+// TB-02：平台模拟的矩形读数（不是真机读数；真机仍需 Windows/macOS 各截一张角部特写）。
+// 口径：距上 = 距左（Windows）/ 距右（macOS），容差 ≤1px。
+test("TB-02 平台模拟：Windows 头像距左 6 / 距上 6；macOS 距右 6 / 距上 6", () => {
+  const base = { viewportWidth: 1280, titleH: 40, avatarPx: 28, insetPx: 6 };
+  const win = captionAvatarRect({ ...base, platform: "windows" });
+  const mac = captionAvatarRect({ ...base, platform: "macos" });
+
+  assert.equal(win.x, 6, "Windows：头像左缘距窗口左边 = inset");
+  assert.equal(win.y, 6, "Windows：头像上缘距标题栏上边 = inset");
+  assert.ok(Math.abs(win.topGap - win.sideGap) <= 1, `Windows 距上 ${win.topGap} ≠ 距左 ${win.sideGap}`);
+
+  assert.equal(mac.x, 1280 - 6 - 28, "macOS：头像右缘距窗口右边 = inset");
+  assert.equal(mac.y, 6, "macOS：头像上缘距标题栏上边 = inset");
+  assert.ok(Math.abs(mac.topGap - mac.sideGap) <= 1, `macOS 距上 ${mac.topGap} ≠ 距右 ${mac.sideGap}`);
+
+  // 反例自证：Windows 若仍按 macOS 的右侧公式摆，x 会落到 1246，与左侧 inset 不等。
+  const wrong = captionAvatarRect({ ...base, platform: "macos" });
+  assert.notEqual(wrong.x, win.x, "两侧镜像必须产生不同的 x —— 否则这条在测空气");
+  assert.ok(Math.abs(wrong.x - 6) > 1, `反例：Windows 放右时距左应为 1246px，实际 ${wrong.x}`);
 });

@@ -243,7 +243,6 @@ onBeforeUnmount(() => {
     v-if="!isMobile"
     class="glass-1 relative z-[85] flex shrink-0 select-none items-center"
     data-caption
-    :class="isMac ? 'justify-start pl-0' : 'justify-end'"
     :style="{ height: 'var(--gosslan-title-h)' }"
     @mousedown="onDragStart"
     @dblclick="onTitlebarDblClick"
@@ -270,17 +269,26 @@ onBeforeUnmount(() => {
       </span>
     </div>
 
-    <!-- 主窗口的右侧功能组（连接状态 / 搜索 / 个性化 / 本人头像）。
+    <!-- 主窗口的功能组（连接状态 / 搜索 / 个性化 / 本人头像）。
          辅助窗口不传这个插槽 ⇒ 宽度为 0，完全不改变原来的标题栏。
-         整组是拖拽区里的可点击区域：`mousedown.stop` 防止按下按钮时把窗口拖走。 -->
-    <!-- 右侧簇的右内距必须与头像的**纵向**内距相等（6px）：头像是 28px 圆，落在 40px 标题栏里
-         上下各 6；右侧再留 12 就会在右上角出现"左宽右窄"（2026-11-07 用户反馈）。
-         等内距 + macOS 26 的 20px 窗口圆角正好满足 r_inner = r_outer − inset（20−6=14=头像半径）；
-         Windows 11（8px 窗口圆角）退化为等内距 fallback，见 docs/notes/ui-pulse-redesign/tasks.md #23。 -->
+         整组是拖拽区里的可点击区域：`mousedown.stop` 防止按下按钮时把窗口拖走。
+
+         ⚠️ **按平台镜像的是"按钮在哪一侧"，不是整条标题栏左右翻转**（用户 2026-11-07：
+         「Windows 端三大金刚键是在右边，那头像应该是相对称的、在左边居左然后对称显示」）：
+           · macOS：系统红绿灯在左 ⇒ 头像簇靠右（`ml-auto`），右侧内距 = `--gosslan-caption-inset`；
+           · Windows/Linux：三键在右 ⇒ 头像簇靠左（`flex-row-reverse` 让 DOM 顺序倒过来：
+             头像 → 设置 → 搜索 → LAN），左侧内距读同一个 token。
+         数值同源：内距与头像边长都在 `style.css` 的 `--gosslan-caption-inset` /
+         `--gosslan-caption-avatar`，两个平台分支只切方向，不切数字。
+         内距必须等于 (标题栏高 − 头像边长)/2：头像 28px 落在 40px 条里上下各 6，水平再留
+         别的值就会在窗口角上"一边宽一边窄"，也不与窗外圆角同圆心（推导见 style.css 注释）。 -->
     <div
       v-if="$slots.right"
       data-no-drag-region
-      class="ml-auto flex h-full shrink-0 items-center gap-1.5 pr-1.5"
+      class="flex h-full shrink-0 items-center gap-1.5"
+      :class="isMac
+        ? 'ml-auto pr-[var(--gosslan-caption-inset)]'
+        : 'flex-row-reverse pl-[var(--gosslan-caption-inset)]'"
       @mousedown.stop
     >
       <slot name="right" />
