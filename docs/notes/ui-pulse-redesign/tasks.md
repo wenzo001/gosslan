@@ -37,9 +37,11 @@
 | 26 | 7 项画板妥协（按钮圆角 8 vs 9、LAN 字号 11 vs 10.5、搜索壳 36 vs 34、搜索字号 13 vs 12、未读徽标 16/11 vs 18/10.5、orb 圆角 16 vs 20、红绿灯纵向错位） | 对应组件 | 已完成 | `—` | **拍板 B**：只消除 orb 圆角（16→20）与红绿灯错位两项（→ 新行 #29 待做），其余五项保留 | 保留五项各自挡着的判据：①按钮圆角 8 vs 9 —— ㊴ 守卫禁止字面圆角，只认 `--gosslan-radius-*` 三档（md 10 / lg 14 / xl **20**，[style.css](../../../src/style.css)）；②LAN 字号 11 vs 10.5、④搜索字号 13 vs 12、⑤徽标 16/11 vs 18/10.5 —— 字号只有五档 token 15/14/13/12/11，11 是"正文最小可用字号"下限，10.5 无档可落（[style.css](../../../src/style.css#L79-L96)）；③搜索壳 36 vs 34 —— 外壳高度对齐 HIG 最小点按目标判据（`designGuards.ts` 44px 下限一节），内壳不再单独开档 |
 | 27 | 发版节奏：这批是否并进一次 5.18.46 | 版本清单、CHANGELOG | 待你拍板 | `—` | 已按"一条一 patch"落地，当前分支 **5.18.51**（#17–#23 各一笔 patch） | 是否再压成一次对外发版由负责人定；合入见 #28 |
 | 28 | 全部做完 rebase 到最新 main、ff-only 合入并推；Change Budget 判据 3 按「负责人接受」记账，不动阈值 | 分支 `feat/ui-pulse-redesign-wip`、main | 已完成 | `65ad570d`（`main` `4c90c89f → 65ad570d`） | 判据 4 **双向绿**（逐笔 `Version-Bump: patch / 版本文件 4/4`）；判据 3 的 `presentation: 5 次` 按负责人接受，记录在 [change-budget-acceptance-2026-11-07.md](./change-budget-acceptance-2026-11-07.md)；`origin/main` = `65ad570d`，本批 0 merge commit | 未 force、未打 tag、未删分支/worktree；本次 push 的 CI 会在判据 3 上红一次（已接受） |
-| 29 | 拍板 B 遗留的两项要消除：orb 圆角 16→20、红绿灯纵向错位 | [style.css](../../../src/style.css)（`--gosslan-radius-xl` 与 orb 标记 token）、ResponsiveLayout/ConversationList orb、TitleBar 红绿灯让位 | 进行中 | orb 已改（本笔）；红绿灯「待你拍板」 | `--gosslan-radius-xl: 16px → 20px`；`orb-mark-44: 16−12=4 → 20−12=8`；`orb-mark-56: 16−6=10 → 20−6=14`；CN-01/CN-02 由 calc 自动跟到 8/14（`designGuards` 327 条全绿） | **红绿灯纵向错位做不了**：只能用 Rust/窗口层改原生灯 y（`use_native_titlebar` 固定 AppKit 28pt 条 = 灯心 y14，而标题栏内容心 y20），本批边界「不动 Rust」⇒ 需你裁决是否放行 Rust |
+| 29 | 拍板 B 遗留的两项要消除：orb 圆角 16→20、红绿灯纵向错位 | [style.css](../../../src/style.css)（`--gosslan-radius-xl` 与 orb 标记 token）、ResponsiveLayout/ConversationList orb、TitleBar 红绿灯让位 | 已完成 | orb `735fb3d3`（本批）；红绿灯 `689e6ae4` | `--gosslan-radius-xl: 16px → 20px`；`orb-mark-44: 16−12=4 → 20−12=8`；`orb-mark-56: 16−6=10 → 20−6=14`（CN-01/CN-02 由 calc 自动跟到 8/14）。红绿灯：`center_traffic_lights` 按 `origin.y = 28 − 40/2 − 按钮高/2` 重排，中心 **14pt → 20pt**（下移 6pt）；`cargo check` 通过、`titleBarIcons` 9 pass | 红绿灯需窗口层改原生灯 ⇒ 用户已放行 Rust（仅 `macos_window.rs`，协议/数据库未动） |
 | 30 | 群任务表单「右边又被裁切、和滚动条贴得太近」（用户两轮实测） | 全局滚动口径 [style.css](../../../src/style.css) + 14 个内容页滚动容器（BaseModal / Settings / Log / GroupTasks / Search / Favorite / Forward / Members / FriendRequests 等） | 已完成 | 本笔 | 结构改为「内容区 │ 固定空隙 8px │ 固定滚动条带 8px」：`--gosslan-scroll-track: 8px`、`--gosslan-scroll-gap: var(--gosslan-gutter)`、`--gosslan-scroll-inset: 16px`；`scrollbar-gutter: stable both-edges` ⇒ 有/无滚动条内容盒宽度逐像素相等且左右对称；删掉 `pr-0.5`/`-mx-1`/`-mx-5` 三处宽度补偿。守卫 SC-02 正反 4 条 + 14 页消费清单全绿 | 像素读数/4× 特写需真机截图，待用户重启 dev 后补；红绿灯无关 |
 | 31 | 页面内边距过大，按 VS Code compact 整档收紧（紧凑但井然有序） | [style.css](../../../src/style.css) 密度刻度 + SettingsPanel（分组间距）/ SettingsRow（行高下限）/ BaseModal·SettingsWindow（标题页脚对齐） | 已完成 | 本笔 | 依据：VS Code `window.density.layout=compact` 三条定义（更短标题栏 / 去掉部件间空隙 / 收紧面板内部间距，1.136 与 1.141 更新说明）；本应用无「部件间空隙」，只收紧内距与行高：`card-pad 16→12`、`card-pad-inset 12→8`、`section-gap 20→16`、`row-min-h 40`（下限 40，移动端命中仍 ≥44）、`gutter 8`。㊶ 判据跟着换挡（旧 16 现在判红），DE-01 正反 4 条绿 | 一屏可见条目数/亮暗截图需真机；`control-h` 未新开档（控件高度已由各行自有 `h-*` 与 HIG 判据管，避免两套口径） |
+| 32 | 审计报告 9 条落地（页脚版本号 / 设置左栏 / 单聊自己消息 / 群头像 / #29 / 碰撞内距 / 右余量 / 暗色高对比字段边框 / 输入卡 22px） | ConversationList、SettingsPanel、SettingsWindow、MessageItem/MessageReceipt、MessageComposer、style.css、popoverBounds | 已完成 | `3b73eafe` · `08d6e4a3` · `250ef2c5` · `689e6ae4` · `e178e085` · `4ec8b35e` · `68d30156` | 页脚删版本号 → 42px「任务中心 · N」（探针判据同步）；设置左栏 9 分区双栏、散值归零；自己消息气泡 36 / 内距 2 / 换组 12 / 68% / 560px；群头像 24；红绿灯 14pt→20pt；碰撞内距 13 处收成 `POPOVER_EDGE`；`--gosslan-field-border` 暗色高对比抬到 `divider-strong`（7.6:1）；输入卡 10→22px（`CS-02` 按 `--gosslan-radius-2xl` 现读） | #32 的 `--only=fieldcontrast` 新增暗色 + `prefers-contrast:more` 格（比常规暗色更亮 >0.05 且 ≥3.0） |
+| 33 | 独立审查报告 M-1~M-7 + B-1 落地 | 骨架/index.html、Icon.vue/iconRegistry、designGuards、popoverBounds/MessageComposer、style.css/TabBar、tauri.conf.json | 进行中（仅 B-1 待你拍板） | M-2·M-3 `0575a8af`；M-1 `eaf23970`；M-6 `4308a76f`；M-7 `2b59612e`；M-4·M-5 `18003179` | M-1 骨架 `.boot-cap` 38→40、补 50px 标题行、搜索 28→36、composer 22，新增 SK-02 几何对账；M-2 ㊶ 补任意值/单轴/`!` 前缀（`p-[16px]`/`pt-4 pb-4`/`!p-4` 必红）；M-3 扫描域扩到 `Settings*`；M-4 删 `ui/icons.ts`（36 点收口）；M-5 删 `size` prop 与 1.8 分支；M-6 `MENTION_POP_MAX_H=176` + 兜底 `100dvh`（Reka 实测写入 `--reka-popper-available-height`）；M-7 删死开关 | **B-1 窄窗不动**：360 下 `360−64(rail)−280(list) = 16`，方案 A 救不回；需你批准 `tauri.conf.json minWidth = 704`（方案 B）后再加几何守卫与四档读数 |
 
 ## 状态变更记录
 
@@ -72,6 +74,14 @@
   #27 发版节奏仍为「待你拍板」。
 - 2026-11-07：**#28 完成**。8 笔写成版本号的 `Version-Bump` trailer（`.36/.37/.38/.47/.48/.49/.50/.51`）
   在推送前统一改写为 `Version-Bump: patch`；判据 4 双向绿，判据 3 保持负责人接受。
+- 2026-11-07：**#32 完成**（审计 9 条）。页脚 `3b73eafe`、设置左栏 `08d6e4a3`、自消息/群头像 `250ef2c5`、
+  #29 红绿灯 `689e6ae4`、碰撞内距 `e178e085`、暗色高对比边框 `4ec8b35e`、输入卡 22px `68d30156`；
+  版本 5.18.52 → 5.18.59。CN-01/CN-02 注释同步到 20/8/14；G-13 登记品牌 orb 例外、IP-01 登记灯箱豁免。
+- 2026-11-07：**#33 六项完成**（审查 M-1~M-7，仅 B-1 待拍板）。M-2·M-3 `0575a8af`、M-1 `eaf23970`、
+  M-6 `4308a76f`、M-7 `2b59612e`、M-4·M-5 `18003179`；版本 5.18.60 → 5.18.64。
+  ㊵ 从「名字白名单」改为「除 `iconRegistry.ts` 外禁直连 lucide」+「Icon 字面量名必须登记」。
+  `designGuards` 336 条全绿；`npm test` 1862 pass；`npm run build` 12.2s。
+- 2026-11-07：**#33 的 B-1 仍未动**（等用户批准 `tauri.conf.json minWidth = 704`）。
 
 ## 合入记录
 

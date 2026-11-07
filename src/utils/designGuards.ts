@@ -3682,6 +3682,11 @@ export function checkBackToLatestAvoidance(src: BackToLatestAvoidSources): Guard
  *
  * 为什么钉在 `object-contain` 上而不是所有 `<img>`：`object-cover` 的元素框被容器填满、
  * 内容也铺满整框，不存在"框角离内容角几百像素"这个前提。
+ *
+ * 显式豁免（2026-11-07 登记）：`ImageLightbox.vue` 的全屏灯箱**不**套这条 —— 用户 #17
+ * 要求预览图本身 0 圆角（大图不裁边），且灯箱的 `object-contain` 元素框由图片比例决定、
+ * 四角落在深色幕底上，不存在"圆角裁剪面脱开内容角"的白底暗角。扫描域保持
+ * `FavoritePanel` / `MergeCardModal` / `MessageImageBubble` 三处，不要顺手扩到灯箱。
  */
 const LITERAL_DARK_PAD_RE = /(?:bg-black|bg-\[(?:color:)?(?:#[0]{3}(?:[0]{3})?|black)\b|#[0]{3}(?:[0]{3})?(?![0-9a-f])|\brgba?\(\s*0\s*,\s*0\s*,\s*0\s*[,)])/i;
 
@@ -3916,11 +3921,12 @@ export function findMissingPlaceholderRule(css: string): GuardIssue[] {
 /**
  * 同心圆角的唯一判据：**内圆角 = 外圆角 − 内外间距**（下限 0）。
  *
- * 1) 品牌底盘（68px orb，外圆角 16）里塞的是 `app-mark.png` —— 位图自带**方形**蓝底。
- *    不削角就会在圆角底盘的四角露出直角（2026-11-07 用户反馈：「中心图标直方形与圆角
- *    矩形不协调」）。内圆角必须由「外圆角 − 每边内距」算出来，不许手写死值：
- *       · 44px 标记：68−44 每边 12 ⇒ 16−12 = 4
- *       · 56px 标记：68−56 每边 6  ⇒ 16−6  = 10
+ * 1) 品牌底盘（68px orb，外圆角 `--gosslan-radius-xl` = 20）里塞的是 `app-mark.png` ——
+ *    位图自带**方形**蓝底。不削角就会在圆角底盘的四角露出直角（2026-11-07 用户反馈：
+ *    「中心图标直方形与圆角矩形不协调」）。内圆角必须由「外圆角 − 每边内距」算出来，
+ *    不许手写死值（下面 `outer` / `inset` 现读现算，token 也是 calc）：
+ *       · 44px 标记：68−44 每边 12 ⇒ 20−12 = 8
+ *       · 56px 标记：68−56 每边 6  ⇒ 20−6  = 14
  *
  * 2) 主窗右上角：头像是 28px 圆、标题栏 40px ⇒ 上下内距各 6。右侧簇若仍留 12，
  *    右上角就是「左宽右窄」（用户原话）。等内距 + macOS 26 的 20px 窗口圆角

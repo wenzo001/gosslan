@@ -34,7 +34,7 @@ Outbox、虚拟列表、Tauri 原生化这些 unslop 原版不涉及的面向。
 | G-10 | 正文文本对比度 ≥4.5:1 | 改动页复算全绿（口径同 AM-15/AM-16） | 出现 3.24 这类读数 | 对比度脚本 + 截图 |
 | G-11 | 4px 网格与同类同尺寸 | 新样式只用 2 / 4 的倍数（控件内 nudge 允许 2）；同类行同高同 gap | 出现 `mt-[13px]`、`py-[11px]` 式一次性值 | `designGuards` |
 | G-12 | 一个 accent、发丝线代替厚阴影 | 新浮层用 `--gosslan-glass-2-shadow`；不新增第二个强调色 | 新增 `shadow-xl`、彩色描边、把状态色当装饰 | `designGuards` |
-| G-13 | 空态不画通用插画 | 空态只有文字 + 至多一个动作；品牌签名只用本产品事实 | 用 64px `NavIcon` 或通用图形当插画 | 截图对照 |
+| G-13 | 空态不画通用插画 | 空态只有文字 + 至多一个动作；品牌签名只用本产品事实。**例外（2026-11-07 登记）**：68px 品牌底盘（orb + `app-mark.png`，用户 #22 明确要求的同心几何）是产品签名，不算通用插画 | 用 64px `NavIcon` 或通用图形当插画 | 截图对照 |
 | G-14 | 动效只动 color/bg/border/opacity/transform，一条 ease | `docs/design-guidelines.md` §14.6 与 §11.3.7 不触线；`transition-all` 计数不增；骨架/占位无循环脉冲（SK-01） | 新增 `transition-[left]`、`hover:scale`、新元素上的循环脉冲 | `designGuards`（SK-01）+ `receiptMotion.test.ts` |
 | G-15 | 文案只说一次，不喊口号、不写占位话 | `npm test` 语气守卫 0 触线；标题与说明不同义重复 | 新增「重磅」「一键搞定」「暂无」；标题=说明 | `src/i18n/index.test.ts` |
 | G-16 | 失败提示分层：toast = **结论 + 一句人话原因**（原因自身 ≤ 一行 40 显示列 ≈ 20 字宽，可折到第二行）；同屏 ≤2 条；同 key 合并不叠条；超长/技术串只留结论，原因落到页面内错误档；不新增跳转动作按钮 | 结论句 + 原因各自放得下一行（如「发送失败 · 对方不是好友」；英文长前缀可折成两行）；技术串（错误码 / URL / 十六进制 / 栈帧）只在 console；重复同 key 显示「×N」；390 下 toast 在底部，不压页头/搜索框/列表首行 | 只报失败、不给具体原因；toast 里塞超过一行的段落；原因里带 `err:`/`http`/`0x`/栈帧；同屏出现第 3 条；新增「去设置」类按钮；390 顶部被盖住 | `src/utils/errors.test.ts`（`buildToastText` 四条护栏）+ `--only=toast,links` 探针 + 390 截图 |
