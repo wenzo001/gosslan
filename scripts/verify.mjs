@@ -465,6 +465,17 @@ const steps = [
   },
   {
     group: "frontend",
+    name: "Markdown（markdownlint-cli2，固定版本）",
+    why:
+      "CI 的静态检查腿一直在跑 markdownlint，而本地 `verify:full` 过去不跑 ⇒ 行首 `#2564ff` 这类" +
+      "伪标题（MD018）只会在推上去之后红（2026-09-27 MD010、2026-11-07 MD018 都漏过一次）。" +
+      "这里固定与 CI 同一版本，把这条腿搬进本地全量层",
+    cwd: ROOT,
+    cmd: WIN ? "npx.cmd" : "npx",
+    args: ["--yes", "markdownlint-cli2@0.18.1"],
+  },
+  {
+    group: "frontend",
     name: "前端测试（npm test）",
     why: "前端全部断言，含 i18n 语气判据「界面文案不喊口号也不写占位话」（中英两册）。条数交给 npm test 自己打印 —— 写死在这里一定会腐烂",
     cwd: ROOT,
