@@ -23,6 +23,7 @@ import { api } from "@/api";
 import { useAppStore } from "@/stores/useAppStore";
 import { useChatStore } from "@/stores/useChatStore";
 import { loadContentPreview, type PreviewResult } from "@/utils/filePreview";
+import { rememberImageOrigin } from "@/utils/imageZoom";
 import type { TodoImage } from "@/utils/todos";
 import { t } from "@/i18n";
 
@@ -136,6 +137,11 @@ watch(
 
 onBeforeUnmount(cancelRetry);
 
+function rememberOrigin(e: PointerEvent) {
+  // 记下缩略图矩形，灯箱才能从这里放大、关闭时缩回这里（拿不到就退化为居中放大）。
+  if (props.clickable) rememberImageOrigin(e.currentTarget);
+}
+
 function open(e: Event) {
   // ⚠️ **不看 `url`**（用户 2026-09-29：「从任务列表进入某个任务后，查看图片时可能打不开图片预览」）：
   // 缩略图和大图是在**两个不同文档**里各读一次的（主窗口这份 vs 独立预览窗口那份，各自的
@@ -163,6 +169,7 @@ function open(e: Event) {
     :role="clickable ? 'button' : undefined"
     :tabindex="clickable ? 0 : undefined"
     :aria-label="clickable ? t('todo.viewImage') : undefined"
+    @pointerdown="rememberOrigin"
     @click="open"
     @keydown.enter.prevent="open"
     @keydown.space.prevent="open"

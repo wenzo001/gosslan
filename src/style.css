@@ -274,11 +274,10 @@
   --gosslan-motion-origin-y: 50%;
 
   /* 桌面左侧导航"指示条 ↔ 内容"的时间轴（2026-11-04 用户反馈：内容已经切过去、
-     药丸才滞后滑过去，观感不真实）。两者**必须共用这一组常量**：
-     指示条（`.rail-active-pill` 的 transition）与左列内容（`.conv-view-fade-*`
-     的 animation）都读它，别在两处各写一个毫秒数/曲线。 */
-  --gosslan-nav-switch-duration: 140ms;
-  --gosslan-nav-switch-ease: var(--gosslan-ease);
+     药丸才滞后滑过去，观感不真实）。两者**必须共用同一个档位**：指示条
+     （`.rail-active-pill` 的 transition）与左列内容（`.conv-view-fade-*` 的 animation）
+     都读 `--gosslan-duration-fast` / `--gosslan-ease`，不再单独养一组 140ms 常量
+     —— 140 不在阶梯里，改阶梯时它不跟（2026-11-07 收编）。 */
   /* 窗口抖动：一次提醒需要几下来回摆动才看得出是"抖动"，比结构性变化更长。
      只动时长，曲线仍用 --gosslan-ease（设计规范：新增动效不另写曲线）。 */
   --gosslan-duration-shake: 520ms;
@@ -1406,12 +1405,12 @@ progress {
 
 /* 桌面 rail 的选中药丸：**同一个节点常驻**，位置只由 `transform: translateY()` 表达。
    ⚠️ 不用 motion-v 共享布局弹簧（2026-11-04 用户反馈：内容已经切过去、药丸才滞后滑过去）。
-   位移与左列内容的淡入共用 `--gosslan-nav-switch-*`（时间轴同刻开始、同刻结束）；
+   位移与左列内容的淡入共用 `--gosslan-duration-fast`（时间轴同刻开始、同刻结束）；
    快速连点时 CSS transition 会**从当前计算值就地改目标**，不排队补播中间项。 */
 .rail-active-pill {
   transition:
-    transform var(--gosslan-nav-switch-duration) var(--gosslan-nav-switch-ease),
-    opacity var(--gosslan-nav-switch-duration) var(--gosslan-nav-switch-ease);
+    transform var(--gosslan-duration-fast) var(--gosslan-ease),
+    opacity var(--gosslan-duration-fast) var(--gosslan-ease);
 }
 
 /* 桌面左列内容切换：与药丸同一组时长/缓动做一次淡入（内容本身是硬换的，
@@ -1427,10 +1426,10 @@ progress {
   to { opacity: 1; }
 }
 .conv-view-fade-a {
-  animation: gosslan-conv-view-in-a var(--gosslan-nav-switch-duration) var(--gosslan-nav-switch-ease);
+  animation: gosslan-conv-view-in-a var(--gosslan-duration-fast) var(--gosslan-ease);
 }
 .conv-view-fade-b {
-  animation: gosslan-conv-view-in-b var(--gosslan-nav-switch-duration) var(--gosslan-nav-switch-ease);
+  animation: gosslan-conv-view-in-b var(--gosslan-duration-fast) var(--gosslan-ease);
 }
 
 @media (prefers-reduced-motion: reduce) {
@@ -1685,12 +1684,21 @@ progress {
 .todo-row-flash {
   animation: gosslan-todo-flash var(--gosslan-duration-flash) var(--gosslan-ease) 2;
 }
+/* 删除看板任务：先淡出再真正移除（行本身有共享 layout 动画，不能再叠 TransitionGroup）。 */
+.todo-row-leaving {
+  opacity: 0;
+  transition: opacity var(--gosslan-duration-exit-fast) var(--gosslan-ease);
+  pointer-events: none;
+}
 /* 减弱动态效果：换成静态描边（"是哪一条"这件事不能因为关了动画就丢掉） */
 @media (prefers-reduced-motion: reduce) {
   .todo-row-flash {
     animation: none;
     outline: 2px solid var(--gosslan-primary);
     outline-offset: -2px;
+  }
+  .todo-row-leaving {
+    transition: none;
   }
 }
 
@@ -2434,15 +2442,46 @@ img {
   color: var(--gosslan-text-2);
 }
 
+/* 列表行的增删（会话 / 收藏 / 群成员）：只给"消失"做出场，新增沿用列表自身节奏。
+   不给 scale（无锚点缩放是规范禁止项），只淡出 + 轻微上移；`.list-row-move`
+   让下方行平滑补位，避免"删完突然一跳"。
+   出场取 `--gosslan-duration-exit-fast`（120ms）：删除是用户已经确认过的动作，
+   反馈要快，不要拖住列表；入场用 `fast`（150ms）—— 新行不该比旧行离场更慢。 */
+.list-row-move {
+  transition: transform var(--gosslan-duration-fast) var(--gosslan-ease);
+}
+.list-row-enter-active {
+  transition:
+    opacity var(--gosslan-duration-fast) var(--gosslan-ease),
+    transform var(--gosslan-duration-fast) var(--gosslan-ease);
+}
+.list-row-leave-active {
+  transition:
+    opacity var(--gosslan-duration-exit-fast) var(--gosslan-ease),
+    transform var(--gosslan-duration-exit-fast) var(--gosslan-ease);
+  pointer-events: none;
+}
+.list-row-enter-from,
+.list-row-leave-to {
+  opacity: 0;
+  transform: translateY(-4px);
+}
+
 /* 移动端详情页转场：进入从右滑入，**返回时反向**（从左侧回位 / 向右滑出）。
-   方向由路由层级深度决定（`router/main.ts` 的 navigationDirection），不是按页面写死。 */
+   方向由路由层级深度决定（`router/main.ts` 的 navigationDirection），不是按页面写死。
+   ⚠️ 出场走 `--gosslan-duration-exit`（180 / 移动 200），必须**短于**入场
+   （规范 §2「出场不长于入场」）：退场时下一屏已经在下面等，拖久了像卡住。 */
 .page-slide-enter-active,
-.page-slide-leave-active,
-.page-slide-back-enter-active,
-.page-slide-back-leave-active {
+.page-slide-back-enter-active {
   transition:
     transform var(--gosslan-duration) var(--gosslan-ease),
     opacity var(--gosslan-duration-fast) var(--gosslan-ease);
+}
+.page-slide-leave-active,
+.page-slide-back-leave-active {
+  transition:
+    transform var(--gosslan-duration-exit) var(--gosslan-ease),
+    opacity var(--gosslan-duration-exit-fast) var(--gosslan-ease);
 }
 .page-slide-enter-from,
 .page-slide-leave-to {
@@ -2694,7 +2733,10 @@ html[data-reduced-transparency="true"] .gosslan-sticky-veil {
   .page-slide-back-enter-active,
   .page-slide-back-leave-active,
   .settings-swap-enter-active,
-  .settings-swap-leave-active {
+  .settings-swap-leave-active,
+  .list-row-move,
+  .list-row-enter-active,
+  .list-row-leave-active {
     transition: none;
   }
 }

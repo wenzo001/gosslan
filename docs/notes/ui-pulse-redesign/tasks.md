@@ -172,6 +172,21 @@
   但本机是 macOS，Windows WebView2 与安卓 WebView 的结论只能由用户设备验收，
   照做步骤见 [device-acceptance-checklist.md](./device-acceptance-checklist.md)。
   A③ 的 TabBar 是**继承变量**而非漏改，三处证据见该节正文。
+- 2026-11-07：**#14 从「只有规范」补成「代码已落地」**（8 条缺口逐条闭环，未动 Rust）。
+  ① 移动 TabBar 药丸：spring(480/36/0.7) → `--gosslan-duration-fast`(150ms) + `--gosslan-ease`
+  （高频短距，240 在移动端"还没停稳"、100 接近瞬移）；② page-slide 出场拆到
+  `--gosslan-duration-exit`(180/200) + `exit-fast`，不再与入场同 240；③ `--gosslan-nav-switch-*`
+  的裸 140ms 收编为 `--gosslan-duration-fast`；④ 灯箱 FLIP 时长改读令牌（无明显来源时仍居中放大），
+  `TodoImageThumb` 补记来源矩形；⑤ 会话 / 收藏 / 群成员三处删除走 `<TransitionGroup name="list-row">`，
+  看板行删除用 `.todo-row-leaving` 淡出（避让 motion-v layout 的 transform 争用）；⑥ 骨架呼吸登记为
+  `--boot-breathe: 1.5s`（启动专用、不进交互阶梯）；⑦ `motionSystem.test.ts` 增 ④ 扫描全部 `.vue`
+  （数字 `duration-*`、非令牌 `duration-[…]`、`type:'spring'`、`stiffness/damping/mass`、数字
+  `duration`、`ease:"…"`），含 `duration-[300ms]` 反例与 ≥100 文件防空转；⑧ reduce 逐项：位移/缩放归零、
+  状态变化仍可见（末条清单见代码注释与判据 ③）。
+  门禁：`motionSystem+motionContinuity+designGuards+receiptMotion` 392 pass / 0 fail；`npm test`
+  1937 pass / 0 fail；`npx vue-tsc --noEmit` exit 0；`npm run build` ✓（4.03s）。
+  截图：`test-results/motion-2026-11-07/lightbox-{1-start,2-mid,3-end,4-reduce}.png`
+  （中间帧 96×96@(200,120) → 402.7×289.8@(176.8,100.1) → 1020×680；reduce 档 transform:none 且可见）。
 
 ## 合入记录
 

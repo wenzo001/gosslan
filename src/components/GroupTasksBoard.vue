@@ -33,6 +33,8 @@ import { dropPointToCss } from "@/utils/dropPoint";
 import { useAppStore } from "@/stores/useAppStore";
 import { useChatStore } from "@/stores/useChatStore";
 import { motion, useReducedMotion } from "@/utils/motion";
+import { motionEase, motionMs, motionSeconds } from "@/utils/motionTokens";
+import { sleep } from "@/utils/defer";
 import { useMemberProfile } from "@/composables/useMemberProfile";
 import { useMentionContext } from "@/composables/useMentionContext";
 import BaseModal from "@/components/BaseModal.vue";
@@ -100,6 +102,22 @@ const props = defineProps<{
 
 const app = useAppStore();
 const reducedMotion = useReducedMotion();
+
+/**
+ * 任务行在分组之间移动（改状态/归档）属于"结构性变化"，取 `--gosslan-duration`
+ * （桌面 240 / 移动 280），与弹窗、整页转场同一档；曲线走同一个 `--gosslan-ease`。
+ * 原来是 stiffness 500 / damping 40 的弹簧，参数不在任何令牌里，改令牌时它不跟。
+ * reduced-motion 下时长归零：行直接落到新分组，状态变化本身仍然可见。
+ */
+const todoLayoutTransition = computed(() =>
+  reducedMotion.value
+    ? { duration: 0 }
+    : {
+        type: "tween" as const,
+        duration: motionSeconds("--gosslan-duration"),
+        ease: motionEase(),
+      },
+);
 const chat = useChatStore();
 /** 全局图片预览（#40）：本组件只给数组与来源标记，渲染与切换在那唯一的一份实例里。 */
 const preview = useImagePreviewStore();
@@ -1244,17 +1262,29 @@ async function restoreTodo(x: TodoItem) {
 
 // ---------------- 删除（破坏性且广播给全群 ⇒ 二次确认） ----------------
 const pendingDelete = ref<TodoItem | null>(null);
+/**
+ * 正在播"删除出场"的行。看板的行本身走 motion-v 的共享 layout 动画（位置会动），
+ * 再叠一层 TransitionGroup 会和它抢 transform；所以这里用**淡出后再生效**的方式：
+ * 先给行挂 `.todo-row-leaving`，等一个出场档再真正改数据。
+ * reduce 下等待为 0：行立即消失，删除结果仍然可见。
+ */
+const leavingRowId = ref<string | null>(null);
 
 async function confirmDelete() {
   const x = pendingDelete.value;
   pendingDelete.value = null;
   if (!x || !props.groupId) return;
+  const wait = reducedMotion.value ? 0 : motionMs("--gosslan-duration-exit-fast");
+  leavingRowId.value = x.todoId;
+  if (wait > 0) await sleep(wait);
   try {
     await chat.updateTodo(props.groupId, x, { deleted: true });
     app.toast(t("todo.removeDone"), "success");
     if (detailId.value === x.todoId) closeDetail();
   } catch (e) {
     app.toastError(e, t("todo.removeFail"));
+  } finally {
+    leavingRowId.value = null;
   }
 }
 
@@ -1371,7 +1401,7 @@ watch(
           v-for="x in archivedTodos"
           :key="x.todoId"
           :data-todo-row="x.todoId"
-          :class="{ 'todo-row-flash': flashRowId === x.todoId }"
+          :class="{ 'todo-row-flash': flashRowId === x.todoId, 'todo-row-leaving': leavingRowId === x.todoId }"
           class="relative flex items-center gap-2.5 border-b border-[var(--gosslan-divider)] px-3 py-2.5 transition last:border-b-0 hover:bg-[var(--gosslan-hover)]"
         >
           <!-- 状态色条（用户 2026-09-24 #37）：与活动列表同一套语言，色值走 `TODO_STATUS_BAR` 唯一映射 -->
@@ -1481,9 +1511,9 @@ watch(
             :key="x.todoId"
             :layout="!reducedMotion"
             :layout-id="`todo:${x.todoId}`"
-            :transition="reducedMotion ? { duration: 0 } : { type: 'spring', stiffness: 500, damping: 40 }"
+            :transition="todoLayoutTransition"
             :data-todo-row="x.todoId"
-            :class="{ 'todo-row-flash': flashRowId === x.todoId }"
+            :class="{ 'todo-row-flash': flashRowId === x.todoId, 'todo-row-leaving': leavingRowId === x.todoId }"
             class="relative flex items-center gap-2.5 border-b border-[var(--gosslan-divider)] px-3 py-2.5 transition last:border-b-0 hover:bg-[var(--gosslan-hover)]"
           >
             <!-- 状态色条：整行左缘一道 2px（判据与颜色都在 `TODO_STATUS_BAR` 一处，

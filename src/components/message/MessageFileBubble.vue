@@ -203,7 +203,7 @@ function onCardClick(e: MouseEvent) {
       >
         <!-- 用 scaleX 而不是 width：进度更新只触发合成层，不参与布局（长列表里尤其重要）。 -->
         <div
-          class="h-full origin-left rounded-full bg-[var(--card-action)] transition-transform duration-300 ease-[var(--gosslan-ease)]"
+          class="h-full origin-left rounded-full bg-[var(--card-action)] transition-transform duration-[var(--gosslan-duration-slow)] ease-[var(--gosslan-ease)]"
           :style="{ transform: `scaleX(${Math.min(1, Math.max(0, progress ?? 0))})` }"
         ></div>
       </div>

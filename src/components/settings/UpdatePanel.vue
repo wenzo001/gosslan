@@ -152,7 +152,7 @@ function formatDate(seconds: number | null | undefined): string {
                和同一屏里的其它传输进度条（ChatWindow / MessageFileBubble）口径一致。 -->
           <div
             v-if="progressPercent !== null"
-            class="h-full origin-left rounded-full bg-[var(--gosslan-primary)] transition-transform duration-200 ease-[var(--gosslan-ease)]"
+            class="h-full origin-left rounded-full bg-[var(--gosslan-primary)] transition-transform duration-[var(--gosslan-duration-fade)] ease-[var(--gosslan-ease)]"
             :style="{ transform: `scaleX(${progressPercent / 100})` }"
           ></div>
           <div v-else class="h-full w-1/3 animate-none rounded-full bg-[var(--gosslan-primary)] opacity-60"></div>

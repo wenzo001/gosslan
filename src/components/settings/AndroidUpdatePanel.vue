@@ -190,7 +190,7 @@ const downloadLabel = computed(() =>
         >
           <div
             v-if="progressPercent !== null"
-            class="h-full origin-left rounded-full bg-[var(--gosslan-primary)] transition-transform duration-200 ease-[var(--gosslan-ease)]"
+            class="h-full origin-left rounded-full bg-[var(--gosslan-primary)] transition-transform duration-[var(--gosslan-duration-fade)] ease-[var(--gosslan-ease)]"
             :style="{ transform: `scaleX(${progressPercent / 100})` }"
           ></div>
           <div v-else class="h-full w-1/3 rounded-full bg-[var(--gosslan-primary)] opacity-60"></div>

@@ -84,7 +84,10 @@
   禁止在 `<style>` / 内联样式里写毫秒数。
 - Tailwind 的 `transition-*` / `duration-*` 只用于颜色与 opacity；位移与缩放走上面的类。
 - `motion-v` 只承担 CSS 做不到的三类（共享元素、FLIP、手势连续动画），入口仍是
-  `src/utils/motion/index.ts`。
+  `src/utils/motion/index.ts`；它的 `duration` / `ease` 必须经 `src/utils/motionTokens.ts`
+  现读 CSS 令牌，禁止写数字秒数、弹簧参数或 `"easeOut"` 这类系统曲线名。
+- 列表增删统一挂 `list-row`（会话 / 收藏 / 群成员）：入场 `fast`、出场 `exit-fast`、
+  下方行用 `move` 平滑补位；不要给行加无锚点的 scale。
 
 ## 7. 新增动效 checklist
 
@@ -102,5 +105,6 @@
 | ① | `style.css` 的 `animation` / `transition` 不含裸毫秒 | 塞 `.rogue { animation: rogue-in 300ms … }` |
 | ② | 每个 <1 的 `scale` 入场都有 `@motion-origin`；全文无 `scale(0)` | 删掉某条锚点注释；把 `scale(.96)` 改成 `scale(0)` |
 | ③ | `prefers-reduced-motion` 块不把有状态浮层设成 `opacity:0` / `visibility:hidden` / `display:none` | 在 reduce 块里给 dialog 写 `opacity: 0` |
+| ④ | `src/**/*.vue` 里没有 Tailwind 数字时长、motion-v 弹簧、数字 `duration`、系统曲线名 | 写 `duration-[300ms]`、`type: 'spring'`、`duration: 0.24`、`ease: "easeOut"` |
 
 执行：`node --test src/utils/motionSystem.test.ts`（已并入 `npm test`）。

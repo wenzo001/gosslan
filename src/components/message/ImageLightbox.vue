@@ -20,6 +20,7 @@ import { saveImageAs } from "@/utils/saveImageAs";
 import { StaleGuard } from "@/utils/staleGuard";
 import { useBackLayer } from "@/composables/useBackLayer";
 import { animate, motion, useMotionValue, useReducedMotion } from "@/utils/motion";
+import { motionEase, motionSeconds } from "@/utils/motionTokens";
 
 /**
  * 相册里的一张图 —— 三种来源，按下面的优先级取字节：
@@ -184,17 +185,22 @@ const tyMV = useMotionValue(0);
  * 再把四个变换分量收回恒等。翻到下一张（状态切换）**不重播**缩放，避免"每翻一张都先缩一下"。
  * `prefers-reduced-motion` 下直接切换，不缩放。
  * 纯 transform，不碰 left/top/width/height —— 不重排，也就没有横向滑动感。
+ *
+ * 时长与曲线全部来自令牌：打开用 `--gosslan-duration`（桌面 240 / 移动 280），
+ * 收起用 `--gosslan-duration-exit`（180 / 200，短于入场，满足"出场不长于入场"）；
+ * 曲线统一 `--gosslan-ease`，不再写 `easeOut` / `easeIn` 两条系统曲线。
+ * 组件里出现字面毫秒会被 `motionSystem.test.ts` 判红。
  */
-const FLIP_OPEN = { duration: 0.24, ease: "easeOut" } as const;
-const FLIP_CLOSE = { duration: 0.16, ease: "easeIn" } as const;
+const flipTween = (direction: "open" | "close") => ({
+  duration: motionSeconds(direction === "open" ? "--gosslan-duration" : "--gosslan-duration-exit"),
+  ease: motionEase(),
+});
 /**
  * 没有源矩形时的退化档（键盘/菜单打开）：**居中放大**。
  * 只改 scale、位移恒为 0，因此不可能出现任何横向滑动；
  * 起点取 0.92 而不是 0（查看器里的图已经占满大半屏，从 0 长出来会像"炸开"）。
  */
 const CENTER_ZOOM_FROM = 0.92;
-const CENTER_OPEN = { duration: 0.24, ease: "easeOut" } as const;
-const CENTER_CLOSE = { duration: 0.16, ease: "easeIn" } as const;
 /** 收场动画播完后再留一小段，让"缩回原图位置"真的被看见（而不是最后一帧还没到位就撤浮层）。 */
 const CLOSE_HOLD_MS = 60;
 const flipScaleX = useMotionValue(1);
@@ -282,7 +288,7 @@ function onImageLoad(e?: Event) {
     flipScaleY.set(CENTER_ZOOM_FROM);
     setTranslate(0, 0);
   }
-  const tween = flip ? FLIP_OPEN : CENTER_OPEN;
+  const tween = flipTween("open");
   requestAnimationFrame(() => {
     if (!props.open || closing.value) return;
     // 先让图片以**起点姿态**显示出来（此时 transform 已写到 DOM），再在下一帧开始收回恒等：
@@ -327,7 +333,7 @@ function requestClose() {
   closing.value = true;
   stopFlipAnims();
   clearFlipTimer();
-  const tween = o ? FLIP_CLOSE : CENTER_CLOSE;
+  const tween = flipTween("close");
   const back = o ? flipTransform(base, o) : null;
   const toX = back ? back.scaleX : CENTER_ZOOM_FROM;
   const toY = back ? back.scaleY : CENTER_ZOOM_FROM;
@@ -412,11 +418,12 @@ function reset(instant = false) {
     tyMV.set(0);
     return;
   }
-  // 双击/点复位键：弹性回到原位；手势本身仍是直接跟手。
+  // 双击/点复位键：走同一套令牌（高频直接操作，用 fast 档），不再用弹簧。
+  const resetTween = { duration: motionSeconds("--gosslan-duration-fast"), ease: motionEase() };
   resetAnims = [
-    animate(scaleMV, 1, { type: "spring", stiffness: 420, damping: 40 }),
-    animate(txMV, 0, { duration: 0.18 }),
-    animate(tyMV, 0, { duration: 0.18 }),
+    animate(scaleMV, 1, resetTween),
+    animate(txMV, 0, resetTween),
+    animate(tyMV, 0, resetTween),
   ];
 }
 
@@ -635,9 +642,9 @@ useEventListener(window, "keydown", onKey);
 <template>
   <Teleport to="body">
     <Transition
-      enter-active-class="duration-150 ease-out motion-reduce:transition-none"
+      enter-active-class="duration-[var(--gosslan-duration-fast)] ease-[var(--gosslan-ease)] motion-reduce:transition-none"
       enter-from-class="opacity-0"
-      leave-active-class="duration-100 ease-in motion-reduce:transition-none"
+      leave-active-class="duration-[var(--gosslan-duration-exit-fast)] ease-[var(--gosslan-ease)] motion-reduce:transition-none"
       leave-to-class="opacity-0"
     >
       <!-- 移动端手势不能穿透到底下的聊天列表（用户 2026-11-06：
