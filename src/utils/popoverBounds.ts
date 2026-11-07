@@ -19,3 +19,12 @@ export const POPOVER_EDGE = 8;
 
 /** CSS 侧的 token 名，供不经过 Reka props 的自绘浮层在需要时读同一档。 */
 export const POPOVER_EDGE_TOKEN = "--gosslan-pop-edge";
+
+/**
+ * 自绘 @成员下拉的高度上限（2026-11-07 审查 M-6：`max-h-44` 也收进本文件）。
+ *
+ * 它锚在输入卡**上方**（`bottom-full`），不能吃 `.gosslan-pop-clamp` 的
+ * `100dvh` 兜底 —— 那会向上顶出窗口而不是内部滚动。固定 11 行 × 16px：
+ * 足够看清候选，又不会盖住半屏消息。改这一档就改这里，别在组件里写 `max-h-44`。
+ */
+export const MENTION_POP_MAX_H = 176;

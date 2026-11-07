@@ -14,6 +14,17 @@
 
 ## [Unreleased]
 
+## [5.18.62] - 2026-11-07
+
+### 浮层限高收口：@成员下拉进 popoverBounds，兜底改 100dvh
+
+- `MENTION_POP_MAX_H = 176` 落到 `popoverBounds.ts`，`MessageComposer` 的 `max-h-44` 改为
+  `:style` 读同一常量（自绘下拉锚在输入卡上方，不能吃 100dvh 兜底）。
+- 共享限高块的兜底 `100vh` → `100dvh`（移动端 WebView 的 `100vh` 含地址栏）。
+- 已核对 Reka：`node_modules/reka-ui/dist/Popper/PopperContent.js` 确实写入
+  `--reka-popper-available-height`，限高不是空开关。
+- PC-01 增「兜底退回 100vh 必须红」；新增 M-6 用例与「写回 max-h-44 必须报」反例。
+
 ## [5.18.61] - 2026-11-07
 
 ### 首帧骨架跟住真实布局 + 新增 SK-02 几何对账判据
