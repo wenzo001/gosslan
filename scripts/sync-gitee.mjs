@@ -485,16 +485,26 @@ async function main(argv) {
   const release = await ensureRelease(repo, tag, branch, body);
 
   const existing = await listAll(`/repos/${repo}/releases/${release.id}/attach_files`);
-  for (const f of uploads) {
-    const old = existing.find((a) => a.name === f.name);
-    if (old) {
-      await api("DELETE", `/repos/${repo}/releases/${release.id}/attach_files/${old.id}`);
-      console.log(`  删除同名旧附件 ${f.name}`);
+  // 现场（2026-11-07）：GitHub runner 直连 Gitee 上传约 10KB/s，单个 release 74MB
+  // 串行要两个多小时。按连接限速的特征 ⇒ 4 路并发明显更快，失败仍靠同名先删再传收敛。
+  const CONCURRENCY = 4;
+  const queue = [...uploads];
+  async function uploadWorker() {
+    while (queue.length > 0) {
+      const f = queue.shift();
+      const old = existing.find((a) => a.name === f.name);
+      if (old) {
+        await api("DELETE", `/repos/${repo}/releases/${release.id}/attach_files/${old.id}`);
+        console.log(`  删除同名旧附件 ${f.name}`);
+      }
+      console.log(`  开始上传 ${f.name}（${f.size} 字节）`);
+      await uploadAsset(repo, release.id, f.name, f.path);
+      console.log(`  已上传 ${f.name}（${f.size} 字节）`);
     }
-    console.log(`  开始上传 ${f.name}（${f.size} 字节）`);
-    await uploadAsset(repo, release.id, f.name, f.path);
-    console.log(`  已上传 ${f.name}（${f.size} 字节）`);
   }
+  await Promise.all(
+    Array.from({ length: Math.min(CONCURRENCY, uploads.length) }, () => uploadWorker()),
+  );
 
   await commitManifest(
     repo,
