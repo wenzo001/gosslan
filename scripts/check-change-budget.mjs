@@ -483,6 +483,8 @@ if (argv.includes("--staged")) {
   // hook 模式读 `.git/COMMIT_EDITMSG` 的第一行非注释 —— **与正式判据只读 subject 同口径**。
   // 分级走的是**同一个** classify()，不另写第二份口径。
   let subject = "";
+  /** commit-msg 原文（含正文）：判据 4 读的是 trailer，不在标题里。 */
+  let rawMessage = "";
   if (commitMsgFile) {
     let raw = "";
     try {
@@ -491,6 +493,7 @@ if (argv.includes("--staged")) {
       console.error(`✗ 读不到提交信息文件 ${commitMsgFile}（${e.message}）—— 无法判定标记，拒绝放行。`);
       process.exit(1);
     }
+    rawMessage = raw;
     subject = raw.split("\n").find((l) => l.trim() && !l.startsWith("#")) ?? "";
   }
   const r = classify({ sha: "(staged)", message: subject, files: staged });
@@ -512,6 +515,32 @@ if (argv.includes("--staged")) {
       process.exit(1);
     }
     console.log(`✓ 提交标题「${subject}」带齐了本档要求的标记。`);
+    // 判据 4 也在这里判完再放行（2026-11-08 补）：此前只判标记，于是
+    // `Version-Bump: none` 却动了 `.github/` / `scripts/` 也能过，推上去才在 CI 判红 ——
+    // 与文件头那段"推完才发现"是同一个病。这里用的仍是下面正式判据的同一组谓词。
+    const bump = declaredBump({ message: rawMessage });
+    const releaseSubject = /^chore\(release\)/.test(subject.trim());
+    const noneBad = bump === "none" ? noneViolations({ paths: staged.map((f) => f.path) }) : [];
+    const missing = bump && bump !== "none" ? missingVersionFiles({ files: staged }) : [];
+    const unbumped = !bump && !releaseSubject && missing.length === 0;
+    if (noneBad.length || missing.length || unbumped) {
+      if (noneBad.length) {
+        console.error("✗ 提交被拦下：声明了 `Version-Bump: none` 但不成立：");
+        for (const x of noneBad) console.error(`   - ${x}`);
+        console.error("  ⇒ 免提版只给纯文档改动；动了代码/脚本/CI/依赖/版本清单就改用真档位。");
+      }
+      if (missing.length) {
+        console.error(
+          `✗ 提交被拦下：声明了 \`Version-Bump: ${bump}\`，但 ${missing.length}/${VERSION_FILES.length} ` +
+            `个版本清单文件没进暂存区：${missing.join(", ")}`,
+        );
+        console.error(`  ⇒ 跑 \`npm run version:${bump}\`，把四个文件一起 add 再提交。`);
+      }
+      if (unbumped) {
+        console.error("✗ 提交被拦下：四个版本清单文件都动了却没声明 `Version-Bump: patch|minor|major`。");
+      }
+      process.exit(1);
+    }
   }
   // 判据 4 那一半也提前说：它是"提交之后才判得动"的另一条，同样只能在提交前提醒。
   const appCode = staged.filter((f) => !isExempt(f.path) && isAppCodePath(f.path));
@@ -523,7 +552,7 @@ if (argv.includes("--staged")) {
   console.log("  不计入的：docs/ .github/ scripts/ *.md *.txt，以及那五个版本清单文件。");
   console.log(
     commitMsgFile
-      ? "  ⚠️ 这是 commit-msg hook 的门禁模式：缺标记 exit 1；正式判据仍在提交后那一跑。"
+      ? "  ⚠️ 这是 commit-msg hook 的门禁模式：缺标记 / 判据 4 不成立都 exit 1；正式判据仍在提交后那一跑。"
       : "  ⚠️ 量具：永远退 0；判定权仍在提交后那次正式跑（hook 模式见 --commit-msg-file）。",
   );
   process.exit(0);
