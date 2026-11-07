@@ -14,6 +14,30 @@
 
 ## [Unreleased]
 
+## [5.18.76] - 2026-11-07
+
+### 非活动窗口的第一下点击被吃掉（用户 2026-11-07 实测）
+
+用户：「代码块 / 长文本弹窗、崩溃恢复提示的『知道了』，第一下点击无效，要点第二下。」
+
+- **先排除 DOM**：`CrashNotice.vue` 的四个按钮与关闭键全是 `@click`，容器
+  `pointer-events: none` + 卡片 `pointer-events: auto`（保留背景可点穿），
+  没有 `mousedown` 外部关闭，也没有动画期 `pointer-events` 锁。
+  长文本 / 代码块弹窗走 `BaseModal`（Reka Dialog），按钮同样是 `@click`。
+  ⇒ 不是 DOM 层吃掉，而是 **macOS 的窗口激活语义**：窗口不在前台时，
+  第一击只激活窗口、不投递给 webview（`acceptFirstMouse` 默认 `false`）。
+- **修**：主窗口在 `tauri.conf.json` 加 `"acceptFirstMouse": true`；
+  运行时创建的六扇窗（设置 / 日志 / 群任务 / 预览 / 外链 / 启动错误）逐个在
+  `.build()` 前加 `.accept_first_mouse(true)`。非 macOS 上该调用是 no-op，
+  Windows / Android 行为不变。
+- **判据**：新增 **CF-01**（`checkAcceptFirstMouse`）—— 同时核对
+  `app.windows[]` 的配置项与每个 `WebviewWindowBuilder::new(` 链式调用；
+  `designGuards.test.ts` 真实树 + 两条反例（配置改回 `false`、删掉某扇窗的
+  `.accept_first_mouse(true)`）全部必红。`node --test src/utils/designGuards.test.ts` → 358/358。
+
+**验证边界**：本机 macOS。根因是窗口级行为，无法用 DOM 探针复现；修后需要
+「点别的应用 → 直接点恢复条按钮」在真机上复核一次（第一击应直接关闭）。
+
 ## [5.18.75] - 2026-11-07
 
 ### 启动画面文案被系统标题栏按钮压住（用户 2026-11-07 macOS 实测）
