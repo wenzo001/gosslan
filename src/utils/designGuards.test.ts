@@ -3322,8 +3322,8 @@ test("㊲ BaseModal：标题栏不塌、页脚不滚走（用户实测两条）"
   //    ⚠️ 为什么源码层也要钉：真正"算出来两种状态逐像素相等"的判据在运行时探针
   //    （`--only=scrollstable`，带撤掉就变红的反面对照），而**那一层 CI 不跑**。
   const GUT = "var(--gosslan-scroll-gutter)";
-  assert.ok(scroller.includes("scrollbar-both"),
-    `滚动区必须挂 \`.scrollbar-both\`（两侧恒留 gutter，宽/居中都不随滚动条变）。当前：${scroller}`);
+  assert.ok(scroller.includes("gosslan-scroll") || scroller.includes("scrollbar-both"),
+    `滚动区必须挂 \`.gosslan-scroll\`/\`.scrollbar-both\`（两侧恒留 gutter + 固定空隙）。当前：${scroller}`);
   assert.ok(
     !scroller.includes(`pr-[${GUT}]`) && !scroller.includes(`-mr-[${GUT}]`),
     `滚动区不许用 pr-[…] / -mr-[…] 补滚动条宽度（两种状态会出现第二套数字）。当前：${scroller}`,
@@ -7372,8 +7372,10 @@ test("㊶ 注释里的示例不算真用法（剥注释但保留行号）", () =
 
 test("㊶ 三档类与 token 只有一个来源：style.css 定义 + 组件真的在消费", () => {
   const css = readFileSync(new URL("../style.css", import.meta.url), "utf8");
-  assert.match(css, /--gosslan-card-pad:\s*16px/, "卡片行标准值必须是 16px（决策 8 + space-16）");
-  assert.match(css, /--gosslan-card-pad-inset:\s*12px/, "内嵌块档必须是 12px（space-12）");
+  // 2026-11-07 第三轮按 VS Code compact 整档收紧：16→12、12→8（依据见 style.css"密度刻度"段）。
+  // 判据跟着换挡，不是放宽：老值 16 现在判红，取值仍只有一个来源。
+  assert.match(css, /--gosslan-card-pad:\s*12px/, "卡片行标准值必须是 12px（compact 档）");
+  assert.match(css, /--gosslan-card-pad-inset:\s*8px/, "内嵌块档必须是 8px（compact 档）");
   assert.match(css, /--gosslan-group-caption-inset:\s*4px/, "分组标题缩进必须是 4px（space-4）");
   assert.match(
     css,
@@ -7603,8 +7605,200 @@ test("SC-01 真实树：设置/日志/群任务/会话/搜索/收藏/转发/成�
   ];
   for (const rel of mustHave) {
     const src = readFileSync(new URL(rel, import.meta.url), "utf8");
-    assert.ok(src.includes("scrollbar-both"), `${rel} 的滚动容器必须挂 .scrollbar-both（两侧同宽）`);
+    assert.ok(
+      src.includes("gosslan-scroll") || src.includes("scrollbar-both"),
+      `${rel} 的滚动容器必须挂 .gosslan-scroll / .scrollbar-both（两侧同宽 + 固定空隙）`,
+    );
   }
+});
+
+// ---------------- DE-02 文档数字 ↔ 代码 token 对账（2026-11-07） ----------------
+
+/** 标准文档里的刻度表必须与 `style.css` 的 token 逐条相等；漂了就红（防止"文档一套、代码一套"）。 */
+function findDocDrift(doc: string, css: string): string[] {
+  const out: string[] = [];
+  let counted = 0;
+  const num = (name: string) => Number(css.match(new RegExp(`--gosslan-${name}:\\s*(\\d+)px`))?.[1]) || 0;
+  const gutter = num("gutter");
+  const track = num("scroll-track");
+  for (const line of doc.split("\n")) {
+    const m = line.match(/^\| `--gosslan-([a-z0-9-]+)` \| (\d+(?:px|%)) /);
+    if (!m) continue;
+    counted++;
+    const [, name, value] = m;
+    const cssVal = css.match(new RegExp(`--gosslan-${name}:\\s*(\\d+(?:px|%))`))?.[1];
+    if (!cssVal) {
+      // 派生 token 在 CSS 里是 var()/calc()，文档写的是"算出来的数"，按来源 token 对账。
+      const derived = name === "scroll-gap" ? gutter : name === "scroll-inset" ? track + gutter : 0;
+      if (derived && value === `${derived}px`) continue;
+      out.push(`文档里的 \`--gosslan-${name}\` 在 style.css 里找不到，且不是可推导的派生值`);
+    } else if (cssVal !== value) out.push(`\`--gosslan-${name}\`：文档 ${value} ≠ 代码 ${cssVal}`);
+  }
+  if (counted < 8) out.push(`只对账到 ${counted} 条（<8），判据可能空转`);
+  return out;
+}
+
+test("DE-02 真实树：density-and-scroll.md 的刻度表与 style.css token 一致", () => {
+  const doc = readFileSync(new URL("../../docs/design-language/density-and-scroll.md", import.meta.url), "utf8");
+  const css = readFileSync(new URL("../style.css", import.meta.url), "utf8");
+  assert.deepEqual(findDocDrift(doc, css), [], findDocDrift(doc, css).join("\n"));
+});
+
+test("DE-02 反例自证：把文档里的 card-pad 改回 16px 必须红", () => {
+  const doc = readFileSync(new URL("../../docs/design-language/density-and-scroll.md", import.meta.url), "utf8");
+  const css = readFileSync(new URL("../style.css", import.meta.url), "utf8");
+  const drifted = doc.replace(
+    "| `--gosslan-card-pad` | 12px |",
+    "| `--gosslan-card-pad` | 16px |",
+  );
+  assert.notEqual(drifted, doc, "反例自证：文档锚点已漂，没替换到 card-pad 行");
+  assert.ok(findDocDrift(drifted, css).length > 0, "文档数字与代码 token 不一致时必须命中");
+});
+
+// ---------------- SC-02 滚动条带 + 空隙（2026-11-07 第二轮） ----------------
+
+/**
+ * 用户实测第二轮：「右边又被裁切、和滚动条贴得太近」。
+ * SC-01 只保证"有/无滚动条宽度一致"（gutter 的宽度**恰好等于滚动条自身**），
+ * 内容右缘与滚动条带之间仍然是 0px 空隙 ⇒ 焦点环/hover 环外沿仍会压到滚动条上。
+ *
+ * SC-02 守结构本身：
+ *   内容区 | 固定空隙 `--gosslan-scroll-gap` | 固定滚动条带 `--gosslan-scroll-track`
+ * 1. 两枚 token 必须存在；`track` 与 `::-webkit-scrollbar { width }` 逐像素一致；
+ * 2. `gap` 复用 `--gosslan-radius-sm`（不新造数值），且 `track + gap == --gosslan-card-pad`；
+ * 3. `.gosslan-scroll` 必须同时写 `scrollbar-gutter: stable both-edges` 与
+ *    `padding-inline: var(--gosslan-scroll-gap)`；
+ * 4. 内容页滚动容器必须消费 `.gosslan-scroll`（不许各自补 padding）。
+ */
+
+function findScrollGapIssues(css: string): string[] {
+  const issues: string[] = [];
+  const block = /\.gosslan-scroll\s*\{([^}]*)\}/.exec(css)?.[1] ?? "";
+  if (!block) issues.push("缺 `.gosslan-scroll` 类（内容页滚动容器没有统一口径）");
+  else {
+    if (!/scrollbar-gutter:\s*stable both-edges/.test(block))
+      issues.push("`.gosslan-scroll` 缺 `scrollbar-gutter: stable both-edges`（内容会偏左）");
+    if (!/padding-inline:\s*var\(--gosslan-scroll-gap\)/.test(block))
+      issues.push("`.gosslan-scroll` 缺 `padding-inline: var(--gosslan-scroll-gap)`（内容会贴滚动条带）");
+  }
+  const track = Number(css.match(/--gosslan-scroll-track:\s*(\d+)px/)?.[1]);
+  if (!track) issues.push("缺 `--gosslan-scroll-track`（滚动条带宽度没有唯一来源）");
+  const barRaw = /::-webkit-scrollbar\s*\{\s*width:\s*([^;]+);/.exec(css)?.[1].trim();
+  const barIsToken = !!barRaw && barRaw.includes("--gosslan-scroll-track");
+  const bar = Number(barRaw?.match(/(\d+)px/)?.[1]);
+  if (!barRaw) issues.push("找不到 `::-webkit-scrollbar { width }`（锚点失效，判据会空转）");
+  else if (!barIsToken && track && bar !== track)
+    issues.push(`滚动条带 ${track}px 与 ::-webkit-scrollbar 宽度 ${bar}px 不一致`);
+  const gap = css.match(/--gosslan-scroll-gap:\s*([^;]+);/)?.[1].trim() ?? "";
+  if (!gap) issues.push("缺 `--gosslan-scroll-gap`（内容与滚动条带之间没有固定空隙）");
+  else if (!gap.includes("--gosslan-gutter"))
+    issues.push("`--gosslan-scroll-gap` 必须复用密度刻度的 `--gosslan-gutter`（不许新造数值）");
+  const gutter = Number(css.match(/--gosslan-gutter:\s*(\d+)px/)?.[1]);
+  if (track && gutter && track + gutter !== 16)
+    issues.push(`track(${track}) + gutter(${gutter}) = ${track + gutter} ≠ 16（滚动条带 + 空隙的固定缩进）`);
+  if (!/--gosslan-scroll-inset:\s*calc\(var\(--gosslan-scroll-track\)\s*\+\s*var\(--gosslan-scroll-gap\)\)/.test(css))
+    issues.push("缺 `--gosslan-scroll-inset`（标题/页脚与内容没有同一条竖线）");
+  return issues;
+}
+
+test("SC-02 真实树：滚动条带 + 空隙 + scroll-inset 三者对账", () => {
+  const css = readFileSync(new URL("../style.css", import.meta.url), "utf8");
+  assert.deepEqual(findScrollGapIssues(css), [], findScrollGapIssues(css).join("\n"));
+});
+
+test("SC-02 真实树：内容页滚动容器必须消费 .gosslan-scroll", () => {
+  const pages = [
+    "../components/BaseModal.vue",
+    "../components/SettingsWindow.vue",
+    "../components/SettingsPanel.vue",
+    "../components/LogViewer.vue",
+    "../components/GroupTasksBoard.vue",
+    "../components/search/ChatSearchDialog.vue",
+    "../components/FavoritePanel.vue",
+    "../components/message/ForwardModal.vue",
+    "../components/GroupFilesPanel.vue",
+    "../components/AddFriendModal.vue",
+    "../components/RemindAudienceDialog.vue",
+    "../components/FriendProfile.vue",
+    "../components/LinksList.vue",
+    "../layouts/ResponsiveLayout.vue",
+  ];
+  for (const rel of pages) {
+    const src = readFileSync(new URL(rel, import.meta.url), "utf8");
+    assert.ok(src.includes("gosslan-scroll"), `${rel} 的滚动容器必须消费 .gosslan-scroll（空隙唯一来源）`);
+  }
+});
+
+test("SC-02 反例自证：删掉空隙 / 改滚动条带宽度 / 只留单侧都必须红", () => {
+  const css = readFileSync(new URL("../style.css", import.meta.url), "utf8");
+  const mut = (from: RegExp, to: string) => {
+    const out = css.replace(from, to);
+    assert.notEqual(out, css, `反例自证：${from} 没被替换到，锚点已漂`);
+    return out;
+  };
+  assert.ok(
+    findScrollGapIssues(mut(/padding-inline:\s*var\(--gosslan-scroll-gap\);/, "padding-inline: 0px;")).length > 0,
+    "把预留空隙删掉必须命中",
+  );
+  assert.ok(
+    findScrollGapIssues(mut("--gosslan-scroll-track: 8px;", "--gosslan-scroll-track: 10px;")).length > 0,
+    "滚动条带宽度与 ::-webkit-scrollbar 不一致必须命中",
+  );
+  assert.ok(
+    findScrollGapIssues(mut(/\.gosslan-scroll\s*\{\s*scrollbar-gutter:\s*stable both-edges;/, ".gosslan-scroll { scrollbar-gutter: stable;")).length > 0,
+    "只留单侧 gutter 必须命中",
+  );
+  assert.ok(
+    findScrollGapIssues(mut(/--gosslan-scroll-gap:\s*var\(--gosslan-gutter\);/, "--gosslan-scroll-gap: 5px;")).length > 0,
+    "空隙新造数值（且破坏对账）必须命中",
+  );
+  assert.ok(
+    findScrollGapIssues(mut(/--gosslan-scroll-inset:\s*calc\(var\(--gosslan-scroll-track\)\s*\+\s*var\(--gosslan-scroll-gap\)\);/, "--gosslan-scroll-inset: 0px;")).length > 0,
+    "删掉 scroll-inset（标题与内容对齐）必须命中",
+  );
+});
+
+// ---------------- DE 密度刻度（2026-11-07 第三轮） ----------------
+
+/** 密度五档必须成对、且命中区域不能低于下限（VS Code compact 只收紧内距，不牺牲可点性）。 */
+function findDensityIssues(css: string): string[] {
+  const out: string[] = [];
+  const grab = (name: string) =>
+    Number(css.match(new RegExp(`--gosslan-${name}:\\s*(\\d+)px`))?.[1]);
+  const cardPad = grab("card-pad");
+  const inset = grab("card-pad-inset");
+  const sectionGap = grab("section-gap");
+  const rowMin = grab("row-min-h");
+  const gutter = grab("gutter");
+  for (const [name, v] of [["card-pad", cardPad], ["card-pad-inset", inset],
+    ["section-gap", sectionGap], ["row-min-h", rowMin], ["gutter", gutter]] as const) {
+    if (!v) out.push(`缺 \`--gosslan-${name}\``);
+  }
+  if (cardPad && inset && inset > cardPad) out.push("内嵌块内距不得大于卡片行内距");
+  if (rowMin && rowMin < 40) out.push(`row-min-h ${rowMin} < 40（内容页可点行低于下限）`);
+  return out;
+}
+
+test("DE-01 真实树：密度刻度成对、可点行不低于 40", () => {
+  const css = readFileSync(new URL("../style.css", import.meta.url), "utf8");
+  assert.deepEqual(findDensityIssues(css), [], findDensityIssues(css).join("\n"));
+});
+
+test("DE-01 反例自证：行高压到 32 / 内嵌块大于卡片行 都必须红", () => {
+  const css = readFileSync(new URL("../style.css", import.meta.url), "utf8");
+  const mut = (from: string, to: string) => {
+    const out = css.replace(from, to);
+    assert.notEqual(out, css, `反例自证：${from} 没被替换到，锚点已漂`);
+    return out;
+  };
+  assert.ok(
+    findDensityIssues(mut("--gosslan-row-min-h: 40px;", "--gosslan-row-min-h: 32px;")).length > 0,
+    "可点行压到 32px 必须命中",
+  );
+  assert.ok(
+    findDensityIssues(mut("--gosslan-card-pad-inset: 8px;", "--gosslan-card-pad-inset: 14px;")).length > 0,
+    "内嵌块内距大于卡片行必须命中",
+  );
 });
 
 test("SC-01 真实树：消息里的焦点环必须内缩（外扩环会被列表/卡片裁掉一边）", () => {

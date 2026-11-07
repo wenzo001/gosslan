@@ -25758,7 +25758,7 @@ async function runPreviewClip(cdp, url) {
  * `scrollbar-gutter` 与 `offsetWidth-clientWidth` 一起记账，两种引擎口径都能对上。
  *
  * 其余滚动面（日志 / 群任务 / 会话列表 / 搜索 / 收藏 / 转发 / 群成员 / 各类弹窗）共用
- * 同一组规范类（`.overflow-y-auto` + `.scrollbar-both`），静态守卫 SC-01 逐个文件钉住；
+ * 同一组规范类（`.overflow-y-auto` + `.gosslan-scroll` / `.scrollbar-both`），静态守卫 SC-01 逐个文件钉住；
  * 本段再把"规范类在两种状态下宽度不变"用一份合成夹具量一遍，避免只靠类名推断。
  */
 async function runScrollStable(cdp, url) {
@@ -25771,7 +25771,8 @@ async function runScrollStable(cdp, url) {
   const READ = `(() => {
     const s = [...document.querySelectorAll('div')].find((el) => {
       const c = String(el.className || '');
-      return c.includes('scrollbar-both') && c.includes('overflow-y-auto') && el.getClientRects().length > 0;
+      const isPanelScroll = c.includes('gosslan-scroll') || c.includes('scrollbar-both');
+      return isPanelScroll && c.includes('overflow-y-auto') && el.getClientRects().length > 0;
     });
     if (!s) return null;
     const cs = getComputedStyle(s);
@@ -25830,9 +25831,43 @@ async function runScrollStable(cdp, url) {
     const b = mk('short', false, '');
     const c = mk('short-auto', false, 'auto');
     const d = mk('tall-auto', true, 'auto');
-    // 只拆自己建的四个 wrap（绝不许动 #probe-host —— 里面挂着设置窗口）
+    // ⑤ .gosslan-scroll（14 个内容页统一消费的那一档）：量「控件右缘 ↔ 滚动条带左缘」的固定空隙，
+    //    并当场把 padding-inline 清零，证明这条读数有牙（0 与 8 是可区分的两个数）。
+    const mkG = () => {
+      const wrap = document.createElement('div');
+      wrap.setAttribute('data-canon', 'gosslan');
+      wrap.style.cssText = 'position:fixed;left:0;top:200px;width:320px;height:180px;';
+      const s = document.createElement('div');
+      s.className = 'gosslan-scroll overflow-y-auto';
+      s.style.cssText = 'box-sizing:border-box;width:320px;height:180px;background:#fff;';
+      const inner = document.createElement('div');
+      inner.style.height = '900px';
+      s.appendChild(inner);
+      wrap.appendChild(s);
+      document.body.appendChild(wrap);
+      const cs = getComputedStyle(s);
+      const sr = s.getBoundingClientRect();
+      const barW = +(s.offsetWidth - s.clientWidth).toFixed(2); // both-edges ⇒ 两侧合计
+      const trackW = barW / 2;
+      const gap = () => +(sr.right - trackW - inner.getBoundingClientRect().right).toFixed(2);
+      const gapL = () => +(inner.getBoundingClientRect().left - sr.left - trackW).toFixed(2);
+      const withPad = { gapR: gap(), gapL: gapL() };
+      s.style.paddingInline = '0px';
+      const noPad = { gapR: gap(), gapL: gapL() };
+      s.style.paddingInline = '';
+      return {
+        id: 'gosslan',
+        padL: +(parseFloat(cs.paddingLeft) || 0).toFixed(2),
+        padR: +(parseFloat(cs.paddingRight) || 0).toFixed(2),
+        barW, trackW: +trackW.toFixed(2),
+        gapR: withPad.gapR, gapL: withPad.gapL,
+        noPadR: noPad.gapR,
+      };
+    };
+    const g = mkG();
+    // 只拆自己建的五个 wrap（绝不许动 #probe-host —— 里面挂着设置窗口）
     for (const el of [...document.querySelectorAll('[data-canon]')]) el.remove();
-    return { a, b, c, d };
+    return { a, b, c, d, g };
   })()`;
 
   const nav = async (key) => {
@@ -25902,7 +25937,8 @@ async function runScrollStable(cdp, url) {
       const setGutter = async (v) => cdp.eval(`(() => {
         const s = [...document.querySelectorAll('div')].find((el) => {
           const c = String(el.className || '');
-          return c.includes('scrollbar-both') && c.includes('overflow-y-auto') && el.getClientRects().length > 0;
+          const isPanelScroll = c.includes('gosslan-scroll') || c.includes('scrollbar-both');
+          return isPanelScroll && c.includes('overflow-y-auto') && el.getClientRects().length > 0;
         });
         if (s) s.style.scrollbarGutter = ${JSON.stringify(v)};
         return !!s;
@@ -25979,6 +26015,13 @@ async function runScrollStable(cdp, url) {
         && Math.abs(canon.a.innerX - canon.b.innerX) <= 0.5
         && Math.abs(canon.c.innerW - canon.d.innerW) >= 7,
       "tall/short 内容宽与 x 差 <= 0.5px；auto 档差 >= 7px", JSON.stringify(canon));
+
+    check("规范类合成夹具：`.gosslan-scroll` 控件与滚动条带之间左右各留 8px（不是贴边）",
+      !!(canon && canon.g) && canon.g.barW === 16 && canon.g.trackW === 8
+        && canon.g.padL === 8 && canon.g.padR === 8
+        && canon.g.gapR === 8 && canon.g.gapL === 8
+        && canon.g.noPadR === 0,
+      "gapL = gapR = 8px，且 padding 清零后 gapR = 0（这条读数有牙）", JSON.stringify(canon && canon.g));
   } finally {
     await cdp.send("Emulation.clearDeviceMetricsOverride").catch(() => {});
   }
@@ -26301,16 +26344,16 @@ async function runConcentric(cdp, url) {
 
     console.log("  ℹ 同心读数：" + JSON.stringify(rows));
 
-    check("桌面品牌底盘：68px 外圆角 16px，44px 方形标记削成同心 4px（内距 12）",
-      !!rows.desktopOrb && rows.desktopOrb.orbSize === 68 && rows.desktopOrb.orbRadius === "16px"
-        && rows.desktopOrb.markSize === 44 && rows.desktopOrb.markRadius === "4px"
+    check("桌面品牌底盘：68px 外圆角 20px，44px 方形标记削成同心 8px（内距 12）",
+      !!rows.desktopOrb && rows.desktopOrb.orbSize === 68 && rows.desktopOrb.orbRadius === "20px"
+        && rows.desktopOrb.markSize === 44 && rows.desktopOrb.markRadius === "8px"
         && rows.desktopOrb.inset === 12,
-      "orb 68/16 + mark 44/4 + inset 12", JSON.stringify(rows.desktopOrb));
+      "orb 68/20 + mark 44/8 + inset 12", JSON.stringify(rows.desktopOrb));
 
-    check("移动端品牌底盘：56px 方形标记削成同心 10px（内距 6）",
-      !!rows.mobileOrb && rows.mobileOrb.markSize === 56 && rows.mobileOrb.markRadius === "10px"
+    check("移动端品牌底盘：56px 方形标记削成同心 14px（内距 6）",
+      !!rows.mobileOrb && rows.mobileOrb.markSize === 56 && rows.mobileOrb.markRadius === "14px"
         && rows.mobileOrb.inset === 6,
-      "mark 56/10 + inset 6", JSON.stringify(rows.mobileOrb));
+      "mark 56/14 + inset 6", JSON.stringify(rows.mobileOrb));
 
     check("右上角头像：右内距 == 纵向内距（各 6px，差 ≤1px）",
       !!rows.avatar && Math.abs(rows.avatar.gapTop - rows.avatar.gapRight) <= 1,

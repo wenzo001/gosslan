@@ -212,9 +212,9 @@ watch(
       <div
         ref="scrollEl"
         data-settings-scroll
-        class="scrollbar-both min-h-0 flex-1 overflow-y-scroll overflow-x-hidden overscroll-contain"
+        class="gosslan-scroll min-h-0 flex-1 overflow-y-scroll overflow-x-hidden overscroll-contain"
       >
-        <div class="p-4">
+        <div class="py-4">
           <!-- 一级页：分组列表 -->
           <div v-if="mobileNav === null">
             <div v-for="g in GROUPS" :key="g.key" class="mb-5 last:mb-0">
@@ -243,7 +243,7 @@ watch(
           </div>
 
           <!-- 二级页：完整 Section 组件（与一级页同一个滚动容器、同一份 p-4 边距） -->
-          <div v-else class="space-y-5">
+          <div v-else class="space-y-[var(--gosslan-section-gap)]">
             <ProfileSection v-if="mobileNav === 'profile'" :active="open" :reload-token="reloadToken" />
             <GeneralSection v-else-if="mobileNav === 'general'" />
             <AppearanceSection v-else-if="mobileNav === 'appearance'" />
@@ -270,7 +270,7 @@ watch(
 
   <!-- 桌面端：卡片式弹窗（独立窗口见 `SettingsWindow.vue`；这里保留给「窗口不可用」的场景） -->
   <BaseModal v-else :open="open" :title="t('settings.title')" width="max-w-xl" @close="emit('close')">
-    <div class="scrollbar-both -mx-5 -mb-5 max-h-[75vh] space-y-5 overflow-y-auto overflow-x-hidden rounded-b-[var(--gosslan-radius-xl)] bg-[var(--gosslan-bg)] p-5">
+    <div class="gosslan-scroll -mb-5 max-h-[75vh] space-y-[var(--gosslan-section-gap)] overflow-y-auto overflow-x-hidden rounded-b-[var(--gosslan-radius-xl)] bg-[var(--gosslan-bg)] py-5">
       <ProfileSection :active="open" :reload-token="reloadToken" />
       <GeneralSection />
       <NotificationSection />

@@ -14,6 +14,48 @@
 
 ## [Unreleased]
 
+## [5.18.52] - 2026-11-07
+
+### 滚动容器的「内容 → 滚动条带」固定 8px 空隙（用户两轮实测）
+
+根因不是"滚动条占位"（上一版已用 `scrollbar-gutter: stable` 解决宽度一致），而是 gutter 的宽度
+**恰好就是滚动条自身**（8px）：内容右缘与滚动条带之间空隙为 0，焦点/hover 环的外沿压到滚动条上，
+看起来就是"右边被切了一条、贴得太近"。
+
+- 结构固定为三段：**内容区 │ 固定空隙 8px │ 固定滚动条带 8px**。
+  新增 `--gosslan-scroll-track: 8px`（与 `::-webkit-scrollbar { width }` 同源）、
+  `--gosslan-scroll-gap: var(--gosslan-gutter)`、`--gosslan-scroll-inset: 16px`（标题/页脚/内容同一条竖线）。
+- 新类 `.gosslan-scroll` = `scrollbar-gutter: stable both-edges` + `padding-inline: var(--gosslan-scroll-gap)`：
+  有/无滚动条时内容盒宽度逐像素相等且左右对称；14 个内容页滚动容器统一消费它
+  （BaseModal / Settings / Log / GroupTasks / Search / Favorite / Forward / GroupFiles / AddFriend / Remind / FriendProfile / Links / 好友请求 / 移动端页面）。
+  删掉 `pr-0.5`、`-mx-1`、`-mx-5` 三处宽度补偿写法。
+- 守卫：`SC-02` 正反 4 条（删空隙 / 改带宽度 / 只留单侧 / 新造 gap 数值都必须红）。
+- 运行时读数（`node scripts/check-ui-runtime.mjs --only=scrollstable` 6/6）：合成夹具
+  `padL=padR=8 / trackW=8 / gapL=gapR=8`，把 `padding-inline` 清零后 `gapR=0`；
+  设置窗口「通用|关于」`clientW 764=764`、跨临界点 `deltaW=0 / deltaTextX=0`，反面对照 `deltaW=-8`。
+
+### 密度整档收紧（对齐 VS Code compact）
+
+依据 VS Code 对 `window.density.layout=compact` 的三条定义（更短的标题栏、去掉各部件之间的空隙、
+收紧面板内部间距；见 1.136 / 1.141 更新说明与 Custom Layout 文档）。本应用是单窗三栏，没有
+"部件间空隙"可去，因此只收紧内距与行高：
+
+- **`card-pad` 16 → 12、`card-pad-inset` 12 → 8、`section-gap` 20 → 16**，`row-min-h` 固定 40
+  （可点行下限，移动端命中区仍 ≥44），`gutter` 固定 8。
+- `BaseModal` 卡片横向内距改由滚动层承担（`p-5` → `py-5`，标题/固定头部/页脚吃
+  `--gosslan-scroll-inset`），29 个既有调用方左右各收紧 12px。
+- `㊶` 判据跟着换挡（旧值 16 现在判红），新增 `DE-01`「行高下限 40 + 内嵌块不得大于卡片行」正反自证。
+- **会话列表与消息流不动**：62/64 行高是画板定的，也是触控目标。
+
+### 品牌底盘圆角 16 → 20（拍板 B 剩余项之一）
+
+`--gosslan-radius-xl` 16 → 20px，orb 标记按「内圆角 = 外圆角 − 内距」自动跟到 44px→8px、56px→14px；
+`--only=concentric` 实测：`orbRadius 20px / mark44 8px / mark56 14px / inset 12·6`，5/5 绿。
+
+> 红绿灯纵向错位**未做**：原生灯位于 AppKit 固定的 28pt 标题条（灯心 y14），标题栏内容心 y20，
+> 只能从窗口层（Rust）改灯位；本批边界要求不动 Rust，留待裁决。
+
+
 ## [5.18.51] - 2026-11-07
 
 ### 同心几何：品牌底盘标记削角 + 右上角头像内距相等

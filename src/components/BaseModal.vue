@@ -149,7 +149,7 @@ function onOpenChange(value: boolean) {
       <DialogContent
         class="fixed inset-x-0 bottom-0 top-[var(--gosslan-safe-top)] z-[65] font-gosslan focus:outline-none"
         :class="fullscreen
-          ? 'gosslan-dialog-page ' + (contained ? 'overflow-hidden' : 'scrollbar-both overflow-y-auto overflow-x-hidden')
+          ? 'gosslan-dialog-page ' + (contained ? 'overflow-hidden' : 'gosslan-scroll overflow-y-auto overflow-x-hidden')
           : 'gosslan-dialog-card'"
         :style="app.isMobile && app.keyboardInset > 0
           ? { paddingBottom: `${app.keyboardInset + 12}px` }
@@ -190,13 +190,13 @@ function onOpenChange(value: boolean) {
                  内容贴着屏幕底边 ⇒ iOS 上最后一行落在 Home Indicator 底下。写成 max() 是为了
                  **不丢原有的 p-4**（桌面 env()=0 时结果仍是 1rem，视觉零变化）；
                  同一个写法在 `ActionSheet.vue:53` 已经在用，不另立第三种。 -->
-            <div class="flex min-h-0 flex-1 flex-col p-4 pb-[max(env(safe-area-inset-bottom),1rem)]">
+            <div class="flex min-h-0 flex-1 flex-col py-4 pb-[max(env(safe-area-inset-bottom),1rem)]">
               <slot />
             </div>
           </div>
           <div
             v-else
-            class="glass-3 pointer-events-auto my-auto flex max-h-[calc(100vh-var(--gosslan-safe-top)-2rem)] w-full flex-col rounded-[var(--gosslan-radius-xl)] p-5 text-left align-middle text-[var(--gosslan-text)]"
+            class="glass-3 pointer-events-auto my-auto flex max-h-[calc(100vh-var(--gosslan-safe-top)-2rem)] w-full flex-col rounded-[var(--gosslan-radius-xl)] py-5 text-left align-middle text-[var(--gosslan-text)]"
             :class="width"
             :style="app.isMobile && app.keyboardInset > 0
               ? { maxHeight: `calc(100vh - var(--gosslan-safe-top) - ${app.keyboardInset + 12}px - 2rem)` }
@@ -209,7 +209,7 @@ function onOpenChange(value: boolean) {
                  "标题被从上面切掉一截"。现在：标题栏 `shrink-0`、内容区 `min-h-0 flex-1`
                  （唯一可压缩项）、滚动区自己消化溢出 ⇒ 窗口再矮，标题与 ✕ 也完整可见且可点。 -->
             <DialogTitle v-if="!title" class="sr-only">{{ t("common.dialog") }}</DialogTitle>
-            <div v-if="title" class="mb-4 flex shrink-0 items-start justify-between gap-3">
+            <div v-if="title" class="mb-4 flex shrink-0 items-start justify-between gap-3 px-[var(--gosslan-scroll-inset)]">
               <!-- 标题最多两行，超长（尤其是一长串没有空格的字符）强制断词 + 省略：
                    用户 2026-10-25 实测群任务标题把弹窗撑出屏幕边缘。`break-words`
                    让 `overflow-wrap: break-word` 对无空格长串也生效；全码在 hover 的
@@ -232,19 +232,17 @@ function onOpenChange(value: boolean) {
             </div>
             <!-- 固定头部（可选插槽）：**不参与下面滚动区的滚动**。给「预览/摘要固定、
                  只滚选项列表」这类弹窗用（默认没有这个插槽 ⇒ 29 个既有调用方零变化）。 -->
-            <div v-if="$slots.header" class="mb-3 shrink-0">
+            <div v-if="$slots.header" class="mb-3 shrink-0 px-[var(--gosslan-scroll-inset)]">
               <slot name="header" />
             </div>
             <!-- 只有内容区滚：标题栏（含 ✕）始终钉在顶部，长内容从头部开始全部可达。
-                 ⚠️ **滚动条留白必须走统一的 gutter 口径，不许用 padding/负 margin 补宽度**
-                 （2026-11-07 用户补正：「有滚动条 / 没有滚动条应该是一样的宽度」）：
-                 卡片是 `p-5`（左右各 20px）。旧写法在滚动区加 `pr-8px` 再把 -8px 右边距
-                 "借"回来，等于给滚动条单开一套宽度补偿 —— 一旦滚动条不出现，那 8px
-                 就成了右侧多出的净空隙，与左侧不对称。
-                 现在改用 `.scrollbar-both`（`scrollbar-gutter: stable both-edges`）：
-                 两种状态都各留 8px，内容盒宽度与文字起始 x 逐像素一致，视觉中心不偏。
-                 守卫：designGuards `SC-01` + 运行时 `--only=scrollstable`。 -->
-            <div class="scrollbar-both min-h-0 flex-1 overflow-y-auto">
+                 ⚠️ **滚动条留白只走 `.gosslan-scroll` 这一处口径**（2026-11-07 第二轮，用户实测：
+                 「右边又被裁切、和滚动条贴得太近」）。卡片横向内距改由滚动层承担——
+                 `gutter 8px（滚动条带本身）+ padding-inline 8px（空隙）` = `--gosslan-scroll-inset`（16px）；
+                 标题/固定头部/页脚同样吃这 16px，三者左右对齐。
+                 旧写法（卡片 `p-5` 再在滚动区加补偿）会让右侧空隙与左侧不对称。
+                 守卫：designGuards `SC-01`/`SC-02` + 运行时 `--only=scrollstable`。 -->
+            <div class="gosslan-scroll min-h-0 flex-1 overflow-y-auto">
               <slot />
             </div>
             <!-- 固定页脚（可选插槽）：**在滚动区之外**，因此永远钉在卡片底部不随内容滚走。
@@ -255,7 +253,7 @@ function onOpenChange(value: boolean) {
                  `mt-4` 与标题栏的 `mb-4` 对称；`shrink-0` 保证它不被上面的滚动区挤压。 -->
             <div
               v-if="$slots.footer"
-              class="mt-4 shrink-0"
+              class="mt-4 shrink-0 px-[var(--gosslan-scroll-inset)]"
             >
               <slot name="footer" />
             </div>

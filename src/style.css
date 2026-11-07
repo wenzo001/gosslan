@@ -325,14 +325,14 @@
   --gosslan-radius-sm: 8px; /* 紧凑控件：下拉项、工具条按钮、小徽标 */
   --gosslan-radius-md: 10px; /* 标准控件：列表行、导航项、菜单容器、输入框 */
   --gosslan-radius-lg: 14px; /* 浮层与卡片：弹层、设置分组、代码卡片 */
-  --gosslan-radius-xl: 16px; /* 大面板：模态、资料卡 */
+  --gosslan-radius-xl: 20px; /* 大面板：模态、资料卡、68px 品牌底盘（#29：16→20，对齐画板与 macOS 26 的 20px 窗口圆角） */
   --gosslan-radius-pill: 9999px;
 
   /* ---------------- 品牌底盘（68px orb）内嵌标记的同心圆角（2026-11-07） ----------------
-     标记位图 app-mark.png 自带**方形**蓝底；直接塞进 16px 圆角底盘会在四角露出直角。
-     按上面第 ③ 类规则算：内圆角 = 外圆角 − 内外间距
-       · desktop/mobile 空态：68 − 44 = 24，每边 12 → 16 − 12 = 4px
-       · 列表页移动端空态：68 − 56 = 12，每边 6 → 16 − 6 = 10px
+     标记位图 app-mark.png 自带**方形**蓝底；直接塞进圆角底盘会在四角露出直角。
+     按上面第 ③ 类规则算：内圆角 = 外圆角 − 内外间距（外圆角 20px 见 #29）
+       · desktop/mobile 空态：68 − 44 = 24，每边 12 → 20 − 12 = 8px
+       · 列表页移动端空态：68 − 56 = 12，每边 6 → 20 − 6 = 14px
      两处都必须用 token，不许写字面量（designGuards CN-01 守着）。 */
   --gosslan-radius-orb-mark-44: calc(var(--gosslan-radius-xl) - 12px);
   --gosslan-radius-orb-mark-56: calc(var(--gosslan-radius-xl) - 6px);
@@ -342,19 +342,59 @@
   --gosslan-item-radius: var(--gosslan-radius-md);
   --gosslan-bubble-radius: 20px;
 
-  /* ---------------- 设置分区内边距（唯一来源，2026-11-06） ----------------
-     卡片行四边内边距 = 16px。依据：`docs/decisions.md` 决策 8「设置、任务、搜索、群资料
-     用 16px 卡片、48px 行」+ `tokens.json` 的 `space-16`（usage: list row inset）。
-     单行校验：16(上) + 20(一行文字) + 16(下) = 52，正好落在 `row-height-compact` 52px。
+  /* ---------------- 设置分区内边距（唯一来源，2026-11-06；2026-11-07 收紧） ----------------
+     **现值 card-pad = 12px（旧值 16px）。** 换档依据见下面"密度刻度"一段：用户要求按
+     VS Code compact 的「收紧面板内部间距」整档收紧，不是局部调小。旧值 16 的依据是
+     `docs/decisions.md` 决策 8「设置、任务、搜索、群资料用 16px 卡片、48px 行」，
+     该条的行高口径（48px 行）仍然有效，只把内距这一档下调到 12。
+     单行校验：12(上) + 20(一行文字) + 12(下) = 44 ≥ `row-min-h` 40，仍高于触控下限。
      分层三档（都在这里，别在各分区里另写数字）：
-       · card-pad        卡片行四边（16）
-       · card-pad-inset  卡片**内嵌块**四边（12，视觉比卡片行低一级）
+       · card-pad        卡片行四边（12）
+       · card-pad-inset  卡片**内嵌块**四边（8，视觉比卡片行低一级）
        · group-caption-inset  分组标题/脚注的左缩进（4，与 `SettingsGroup` 的 px-1 同档）
      ⚠️ 存量散值（`px-4 py-3` / `px-4 py-2.5` / `p-4` / `px-3 py-3` / `p-3`）由
      `designGuards.findRawCardPadding` 守着，新增分区再写散值会直接红。 */
-  --gosslan-card-pad: 16px;
-  --gosslan-card-pad-inset: 12px;
+  --gosslan-card-pad: 12px;
+  --gosslan-card-pad-inset: 8px;
   --gosslan-group-caption-inset: 4px;
+
+  /* ---------------- 密度刻度（唯一来源，2026-11-07 第三轮） ----------------
+     用户：「有些页面的内边距过于大了 …… 我希望的是一种紧凑但井然有序、不要信息过载，
+     参考最新版 VS Code 的 compact 模式」。VS Code 官方对 `window.density.layout=compact`
+     的定义是三条（不是一串散值）：**更短的标题栏 / 去掉 workbench 各部件之间的空隙 /
+     收紧面板内部间距**（来源：VS Code 1.136 与 1.141 更新说明、Custom Layout 文档）。
+     映射到本应用（单窗三栏，没有"部件间空隙"可去，只剩内距与行高两档）：
+
+       · gutter 8              滚动条带与内容之间的固定空隙（= SC-02 的空隙）
+       · card-pad 12           内容页卡片行四边（**旧标准 16 → 12**，本批收紧一档）
+       · card-pad-inset 8      卡片内嵌块四边（旧 12 → 8）
+       · section-gap 16        分区之间（旧 `space-y-5` 20 → 16）
+       · row-min-h 40          内容页可点行最小高度（视觉可紧；移动端命中区仍 ≥44）
+
+     ⚠️ **会话列表与消息流不消费这几档**：行的 62/64 是画板定的，也是触控目标。
+     ⚠️ 内容页不许再写卡片级字面量（`px-4 py-3` / `p-4` …），`findRawCardPadding` 守着。 */
+  --gosslan-gutter: 8px;
+  --gosslan-section-gap: 16px;
+  --gosslan-row-min-h: 40px;
+
+  /* ---------------- 滚动条带与空隙（唯一来源，2026-11-07 第二轮） ----------------
+     用户实测补正：「右边又被裁切、和滚动条贴得太近」。上一版只做到"有/无滚动条宽度一致"
+     （`scrollbar-gutter: stable`），但 gutter 的宽度**恰好就是滚动条自身**（8px）⇒ 内容右缘
+     与滚动条带之间空隙为 0，焦点环/hover 环的外沿仍会压到滚动条上，看起来就是"被切了一条"。
+
+     结构定义（三段，不再一处一处补）：
+       内容区 | 固定空隙 8px | 固定滚动条带 8px
+     · `--gosslan-scroll-track` 必须与 `::-webkit-scrollbar { width }` 逐像素一致（守卫 SC-02）；
+     · `--gosslan-scroll-gap` 复用密度刻度的 `--gosslan-gutter`（8px），不新造数值；
+     · 二者相加 = `--gosslan-scroll-inset`（16px）：面板滚动的内容缩进、
+       以及标题/页脚等"与内容对齐"的固定件都用它，保证一条竖线。 */
+  --gosslan-scroll-track: 8px;
+  --gosslan-scroll-gap: var(--gosslan-gutter);
+  --gosslan-scroll-inset: calc(var(--gosslan-scroll-track) + var(--gosslan-scroll-gap));
+  /* thumb 三态浓度（`color-mix` 的百分比；对比度读数见下面"滚动条规范"）： */
+  --gosslan-scrollbar-thumb: 72%;
+  --gosslan-scrollbar-thumb-active: 88%;
+  --gosslan-scrollbar-track: 12%;
 
   /* ---------------- 浮层贴边安全边距（唯一来源，2026-11-07） ----------------
      所有从触发器展开、内容可能变长的浮层（下拉 / 菜单 / 气泡面板），
@@ -879,6 +919,22 @@ body {
 .overflow-y-scroll {
   overscroll-behavior: contain;
   scrollbar-gutter: stable;
+}
+/* 面板级滚动容器（内容页统一口径，2026-11-07 第二轮）：
+     `scrollbar-gutter: stable both-edges` → 有/无滚动条时内容盒宽度逐像素相等、左右对称；
+     `padding-inline: var(--gosslan-scroll-gap)` → 内容与滚动条带之间固定留 8px 空隙。
+     两者相加 = `--gosslan-scroll-inset`（16px）：标题/页脚/内容共用同一条竖线。
+   ⚠️ 空隙**只能**由这里产生：不许在调用点写 `pr-*` / `-mr-*` / 条件 padding 补偿宽度，
+     否则"有/无滚动条"又出现第二套数字（守卫 SC-01/SC-02）。 */
+.gosslan-scroll {
+  scrollbar-gutter: stable both-edges;
+  overscroll-behavior: contain;
+  padding-inline: var(--gosslan-scroll-gap);
+}
+/* 滚动条带宽度也是 token 本身（与全局 `::-webkit-scrollbar` 的 8px 同源）：
+   任何容器改带宽都只改 `--gosslan-scroll-track` 一处，守卫 SC-02 对账。 */
+.gosslan-scroll::-webkit-scrollbar {
+  width: var(--gosslan-scroll-track);
 }
 .scrollbar-both {
   scrollbar-gutter: stable both-edges;
@@ -1767,33 +1823,48 @@ html[data-frost="off"] .frost {
   }
 }
 
-/* 细滚动条：**全端常显**（用户 2026-10-22：滚动面板要能看见位置）。
-   纯 CSS 原生滚动条，零 JS、零额外 DOM；8px 轨道 + 4px 实际滑块（2px 透明边），
-   颜色走主题 token，暗色自动跟随。不要改回 macOS overlay —— 系统 overlay 默认
-   滚动时才浮出，用户会以为"没有滚动条"。 */
+/* 滚动条规范（全站唯一来源，2026-11-07 第四轮）：
+   用户：「所有可滚动区域，滚动条的位置和功能要让人舒服，不要遮挡内容，并且还能找得到」。
+   四条硬约束（详见 `docs/design-language/density-and-scroll.md`）：
+     ① 不占内容：滚动条只在 `--gosslan-scroll-track`（8px）的**独立带**里，
+        内容侧另有 `--gosslan-scroll-gap`（8px）空隙 ⇒ thumb 任何状态都不压在文字/控件上；
+     ② 找得到：静止态 thumb 就可见（**不靠"滚动时才浮出"**，macOS overlay 那条路已弃用）；
+        对比度实测（WCAG 2.x 公式，`--gosslan-text-2` 混到 panel 上）：
+          静态 72% → 亮 3.35:1 / 暗 4.30:1（≥3:1）
+          hover/拖动 88% → 亮 4.78:1 / 暗 5.62:1
+          轨道 12% → 亮 1.18:1 / 暗 1.27:1（低一档但可辨）
+     ③ 带内变化：hover/拖动只把**内容盒**从 4px 加到 6px（border 2→1px），
+        总宽始终 8px ⇒ 不位移、不抖动、不挤压内容；
+     ④ 不叠加：全站只用这一套原生 `::-webkit-scrollbar`，不另造私有滚动条。 */
 ::-webkit-scrollbar {
-  width: 8px;
-  height: 8px;
+  width: var(--gosslan-scroll-track);
+  height: var(--gosslan-scroll-track);
 }
 ::-webkit-scrollbar-thumb {
-  background: color-mix(in srgb, var(--gosslan-text-2) 50%, transparent);
+  background: color-mix(in srgb, var(--gosslan-text-2) var(--gosslan-scrollbar-thumb), transparent);
   border: 2px solid transparent;
   background-clip: content-box;
   border-radius: var(--gosslan-radius-pill);
 }
-::-webkit-scrollbar-thumb:hover {
-  background: color-mix(in srgb, var(--gosslan-text-2) 70%, transparent);
-  border: 2px solid transparent;
+::-webkit-scrollbar-thumb:hover,
+::-webkit-scrollbar-thumb:active {
+  background: color-mix(in srgb, var(--gosslan-text-2) var(--gosslan-scrollbar-thumb-active), transparent);
+  /* 4px → 6px：增量留在 8px 带内（border 只吃内侧），不会让 thumb 越界或让内容重排 */
+  border-width: 1px;
   background-clip: content-box;
 }
 ::-webkit-scrollbar-track {
+  background: color-mix(in srgb, var(--gosslan-text-2) var(--gosslan-scrollbar-track), transparent);
+}
+::-webkit-scrollbar-corner {
   background: transparent;
 }
 /* Firefox：只在**不支持** ::-webkit-scrollbar 时启用标准属性，避免覆盖上面的细滑块。 */
 @supports not selector(::-webkit-scrollbar) {
   * {
     scrollbar-width: thin;
-    scrollbar-color: color-mix(in srgb, var(--gosslan-text-2) 50%, transparent) transparent;
+    scrollbar-color: color-mix(in srgb, var(--gosslan-text-2) var(--gosslan-scrollbar-thumb), transparent)
+      color-mix(in srgb, var(--gosslan-text-2) var(--gosslan-scrollbar-track), transparent);
   }
 }
 /* macOS 不再单独压标题栏高度：红绿灯由 AppKit 原生绘制（`decorations:false` +
@@ -2322,6 +2393,7 @@ img {
    `settings-group-caption` 只设左缩进（分组标题 + 脚注），不参与卡片内边距。 */
 .settings-card-row {
   padding: var(--gosslan-card-pad);
+  min-height: var(--gosslan-row-min-h);
 }
 .settings-card-inset {
   padding: var(--gosslan-card-pad-inset);

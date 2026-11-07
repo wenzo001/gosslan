@@ -122,7 +122,7 @@ const kindLabel = computed(() => KIND_LABELS[props.kind] ?? t("msg.message"));
         class="h-10 w-full rounded-[var(--gosslan-radius-md)] border border-[var(--gosslan-field-border)] bg-[var(--gosslan-field)] px-3 py-1.5 text-body outline-none placeholder:text-[var(--gosslan-placeholder)] focus:border-[var(--gosslan-primary)]"
       />
 
-      <div class="scrollbar-both max-h-64 select-none overflow-y-auto">
+      <div class="gosslan-scroll max-h-64 select-none overflow-y-auto">
         <!-- 选中态用**内缩**环（ring-inset）：Tailwind 的 ring 默认画在元素**外面**，
              而本行在 `overflow-y-auto` 的滚动容器里 —— 外扩的 1px 会被容器裁掉左右两边
              （`overflow-y: auto` 会把 `overflow-x` 一并算成 auto），上下则压到相邻的 52px 行上，

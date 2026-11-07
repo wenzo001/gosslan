@@ -457,7 +457,7 @@ function sourceText(l: ExternalLink): string {
       >{{ t("common.retry") }}</button>
     </div>
 
-    <div class="scrollbar-both min-h-0 flex-1 overflow-y-auto px-2 pb-2">
+    <div class="gosslan-scroll min-h-0 flex-1 overflow-y-auto pb-2">
       <!-- 新增 / 编辑：只负责一条链接的名称与网址。 -->
       <BaseModal
         :open="dialogOpen"

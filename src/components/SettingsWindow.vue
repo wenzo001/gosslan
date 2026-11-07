@@ -270,13 +270,13 @@ useEventListener(window, "keydown", onKeydown);
 
     <!-- 右：内容区（独立滚动，切换导航不改变窗口尺寸） -->
     <div class="flex min-w-0 flex-1 flex-col bg-[var(--gosslan-panel)]">
-      <header class="shrink-0 px-6 pb-1 pt-3.5">
+      <header class="shrink-0 px-[var(--gosslan-scroll-inset)] pb-1 pt-3.5">
         <h2 class="text-title font-semibold text-[var(--gosslan-text)]">
           {{ t(DESKTOP_ROUTE_TITLE_BY_KEY[desktopSection]) }}
         </h2>
         <p class="mt-0.5 text-caption text-[var(--gosslan-text-2)]">{{ t(SECTION_DESC[desktopSection]) }}</p>
       </header>
-      <div class="scrollbar-both min-h-0 flex-1 overflow-y-auto px-6 pb-2">
+      <div class="gosslan-scroll min-h-0 flex-1 overflow-y-auto pb-2">
       <!-- 面板容器常驻（`relative` 给退场层定位）：切换分区时**不改 mode**（默认同时挂载），
            新面板立即在流里占住最终高度，旧面板绝对定位叠着淡出 ⇒ 容器高度不塌、
            不重播 enter、也不做整块位移（§11.3.7）。 -->
@@ -309,7 +309,7 @@ useEventListener(window, "keydown", onKeydown);
       </div>
       </div>
       <!-- 内容页脚：左侧"即时生效"，右侧"已自动保存"（画板 36px 页脚）。 -->
-      <footer class="flex h-9 shrink-0 items-center border-t border-[var(--gosslan-divider)] px-6 text-caption text-[var(--gosslan-text-2)]">
+      <footer class="flex h-9 shrink-0 items-center border-t border-[var(--gosslan-divider)] px-[var(--gosslan-scroll-inset)] text-caption text-[var(--gosslan-text-2)]">
         <span>{{ t("settings.window.footer.immediate") }}</span>
         <span class="ml-auto inline-flex items-center gap-1 text-[var(--gosslan-success-ink)]">
           <Icon name="check-circle2" class="h-3 w-3" />
