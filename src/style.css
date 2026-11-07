@@ -1724,16 +1724,11 @@ progress {
   background: var(--gosslan-tabbar-bg);
 }
 
-/* 半透明、但**不 blur** 的降级档（2026-11-05 移动端 TabBar 上实测后预留的开关）：
-   `html[data-frost="off"]` 只摘掉 backdrop-filter，保留 `--gosslan-glass-2-bg` 的半透明底色。
-   用途是移动端底部 TabBar 这类整条贴在滚动内容上方、每帧都要重新合成背板的表面：
-   真机上若出现可感的长帧，把根节点开关拨到 off 即可，不必逐组件改类名。
-   优先级说明：三档正式降级（减少透明 / 高对比度 / @supports not）写在本文件更后面且
-   选择器权重不低于这一条，所以它们仍然优先落到**实色**，这一条只负责"半透明无雾"。 */
-html[data-frost="off"] .frost {
-  -webkit-backdrop-filter: none;
-  backdrop-filter: none;
-}
+/* 半透明、但**不 blur** 的降级档在 2026-11-07 删除（审查 M-7）：
+   `html[data-frost="off"]` 全仓没有任何 setAttribute 入口，只有 devtools 能触发，
+   等于给"真机长帧的退路"写了个永远拨不动的开关。真实降级入口是
+   `html[data-reduced-transparency="true"]`（设置里的「减少透明效果」，用户 2026-11-05 批准），
+   它同时摘雾并落到实底 token，比这条更强；见本文件后面的同一条开关块。 */
 
 .glass-2 {
   background: var(--gosslan-glass-2-bg);

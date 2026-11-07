@@ -3340,12 +3340,13 @@ export function checkAmbientChromeSurfaces(src: AmbientChromeSources): GuardIssu
       });
     }
   }
-  // 注意：匹配必须是**规则行**，不能只匹配字面量——注释里也写着这串字符，
-  // 只按字面量查会"检查还在跑但查不到规则"，属于空转。
-  if (!/^html\[data-frost="off"\]\s*\.frost\s*\{/m.test(src.styleCss)) {
+  // 2026-11-07 审查 M-7：`html[data-frost="off"]` 是死开关（全仓无 setAttribute），已删除。
+  // 真实降级入口是 `data-reduced-transparency`，由 AM-07 守着（那个块同时摘雾并落实底），
+  // 所以这里不再断言 frost 开关；反向自证改为"谁把死开关加回来就红"。
+  if (/^html\[data-frost="off"\]\s*\.frost\s*\{/m.test(src.styleCss)) {
     out.push({
       line: 0,
-      message: "AC-13：`html[data-frost=\"off\"]` 的「半透明无 blur」开关丢了 —— 真机长帧时没有退路。",
+      message: "AC-13：死开关 `html[data-frost=\"off\"]` 又回来了 —— 它没有 setAttribute 入口，只有 devtools 能拨。",
     });
   }
 

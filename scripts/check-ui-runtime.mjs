@@ -13832,8 +13832,9 @@ async function runSurfaces(cdp, url) {
   }
   await setTabbarBlur(true);
 
-  // "半透明无 blur"开关（html[data-frost="off"]）：证明它只摘雾、不把 TabBar 变成实色
-  const frostOff = await cdp.eval(`(() => {
+  // 真实降级入口（审查 M-7）：`html[data-frost="off"]` 已删（全仓无 setAttribute，拨不动）。
+  // 改测用户真正能开的「减少透明效果」：摘雾 + 背景落到实底 token。
+  const reduceOn = await cdp.eval(`(() => {
     const n = document.querySelector('nav.safe-bottom');
     if (!n) return { ok: false };
     const read = () => {
@@ -13841,10 +13842,10 @@ async function runSurfaces(cdp, url) {
       return { bg: cs.backgroundColor, backdrop: cs.backdropFilter || cs.webkitBackdropFilter || 'none' };
     };
     const before = read();
-    document.documentElement.dataset.frost = 'off';
-    const off = read();
-    delete document.documentElement.dataset.frost;
-    return { ok: true, before, off, back: read() };
+    document.documentElement.dataset.reducedTransparency = 'true';
+    const on = read();
+    delete document.documentElement.dataset.reducedTransparency;
+    return { ok: true, before, on, back: read() };
   })()`);
 
   // 复位到产品默认，别把数据属性漏给后续段
@@ -13898,10 +13899,10 @@ async function runSurfaces(cdp, url) {
     searchOldPaint,
     searchDividerLight,
     searchDividerDark,
-    // ⑥ 移动端 TabBar（360×640 真读数 + 帧耗时 A/B + 半透明无 blur 开关）
+    // ⑥ 移动端 TabBar（360×640 真读数 + 帧耗时 A/B + 「减少透明效果」真实开关）
     tabbar: tabbarRows,
     frames,
-    frostOff,
+    reduceOn,
   };
   fs.writeFileSync(outFile, JSON.stringify(payload, null, 1));
   console.log(`· surfaces 读数已写入：${outFile}`);
@@ -13923,7 +13924,7 @@ async function runSurfaces(cdp, url) {
     stickyRows.every((r) => r.ok === true) &&
     !!(searchParts && searchParts.ok && searchPartsDark && searchPartsDark.ok) &&
     !!(searchDividerLight && searchDividerLight.rows.length === 3 && searchDividerDark && searchDividerDark.rows.length === 3) &&
-    !!(frostOff && frostOff.ok) &&
+    !!(reduceOn && reduceOn.ok) &&
     !!(dialogOk && dialogOk.ok) &&
     !!(tabbarOk && tabbarOk.ok);
   check(
@@ -13931,6 +13932,12 @@ async function runSurfaces(cdp, url) {
     complete,
     "8/8 × 5 页 + sticky 8/8",
     `chat=${chatRows.map((r) => r.items.length).join(",")} contacts=${contactRows.map((r) => r.items.length).join(",")} chats=${chatsRows.map((r) => r.items.length).join(",")} search=${searchRows.map((r) => r.items.length).join(",")} tabbar=${tabbarRows.map((r) => r.items.length).join(",")} sticky=${stickyRows.map((r) => (r.ok ? 1 : 0)).join(",")}`,
+  );
+  check(
+    "surfaces：「减少透明效果」真实开关摘雾并把 TabBar 换到实底（M-7）",
+    !!(reduceOn && reduceOn.ok && reduceOn.on.backdrop === "none" && reduceOn.on.bg !== reduceOn.before.bg),
+    "backdrop none + 背景换实底",
+    JSON.stringify(reduceOn),
   );
   check(
     "surfaces：sticky 条的三档降级都写在加载后的 CSSOM 里（@supports not + 媒体查询 × 2）",
