@@ -14,6 +14,22 @@
 
 ## [Unreleased]
 
+## [5.18.70] - 2026-11-07
+
+### 修复：文档引用守卫补扫未跟踪 `.md`（并纠正上一笔的档位声明）
+
+- **漏网原因**：`scripts/check-doc-citations.mjs` 的扫描集原来只取 `git ls-files`（已跟踪文件）。
+  新写的文档在 `git add` 之前对这条判据**完全隐形** ⇒ 本地 `verify:full` 绿、CI 一提交就红。
+  实测：归档 `docs/notes/ui-pulse-redesign/requirements-audit-2026-11-07.md` 后本地跑守卫报
+  "1236 处裸路径全部指向真实文件"，CI 在 `0ed00db1` 上立刻报 2 处断裂
+  （报告写的 `docs/decisions.md` / `docs/edge-cases.md` 早已搬到 `designs/gosslan-redesign/docs/`）。
+- **修法**：扫描集追加 `git ls-files --others --exclude-standard '*.md'`，只多收**未被 `.gitignore`
+  忽略**的未跟踪文件，**不放宽任何一条判据**（解析不到仍然红）。反例自证：新建一份含
+  `docs/definitely-not-here-20261107.md` 的未跟踪文档 ⇒ 守卫红并点名该行；删掉后回到绿。
+- **档位记账**：`f123869f` 改了 `scripts/` 却写 `Version-Bump: none` —— Change Budget 判据 4 的
+  纯文档白名单**不含 `scripts/`**（"改动半径"那条把 `scripts/` 排除在外，二者口径不同，容易看错）。
+  动脚本就必须走真档位；本笔按 patch 补齐五处版本清单。
+
 ## [5.18.69] - 2026-11-07
 
 ### 修复：设置窗口「关于」页边距比带滚动条的分区小（按像素结案）
