@@ -1221,10 +1221,11 @@ async function onPaste(e: ClipboardEvent) {
           :key="image.hash"
           class="relative h-14 w-14 shrink-0 overflow-hidden rounded-[var(--gosslan-radius-sm)] border border-[var(--gosslan-border)] bg-[var(--gosslan-hover)]"
         >
+          <!-- 用户 2026-11-07：「所有图片绝对不要切割」⇒ 待发送缩略图同样等比完整呈现（不用 cover 裁边） -->
           <img
             :src="image.objectUrl"
             :alt="image.file.name"
-            class="h-full w-full object-cover"
+            class="h-full w-full object-contain"
             draggable="false"
           />
           <button

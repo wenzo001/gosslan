@@ -7932,6 +7932,44 @@ test("SC-03 反例自证：把常驻轨道改回 auto 必须红", () => {
   assert.ok(findSettingsTrackIssues(mutated).length > 0, "改回 auto 必须命中（不许空转）");
 });
 
+// ---------------- TH 图片缩略图：等比完整呈现，不切割 ----------------
+// 用户 2026-11-07：「所有图片绝对不要切割」。大图（灯箱/气泡/收藏/转发/合并卡）早已是
+// `object-contain`（CE-01 钉住），漏的是**缩略图**这一类：方框固定、内容被 `object-cover`
+// 裁掉长图/宽图的边。头像不在本条管辖内 —— 头像是「按框裁」的身份标识，不是图片内容。
+const THUMB_FILES = [
+  "../components/TodoImageThumb.vue",
+  "../components/chat/MessageComposer.vue",
+] as const;
+
+/** 返回缩略图里所有仍在裁切的 `<img>`（`object-cover` ⇒ 命中）。 */
+function findThumbCropIssues(src: string): string[] {
+  const issues: string[] = [];
+  for (const m of src.matchAll(/<img\b[^>]*>/gs)) {
+    const tag = m[0].replace(/\s+/g, " ");
+    if (/\bobject-cover\b/.test(tag)) {
+      issues.push(`缩略图 <img> 用了 object-cover（会裁掉图片边缘）：${tag.slice(0, 140)}`);
+    }
+  }
+  return issues;
+}
+
+test("TH-01 真实树：缩略图全部 object-contain（不切割）", () => {
+  for (const rel of THUMB_FILES) {
+    const src = readFileSync(new URL(rel, import.meta.url), "utf8");
+    assert.deepEqual(findThumbCropIssues(src), [], `${rel}\n${findThumbCropIssues(src).join("\n")}`);
+  }
+});
+
+test("TH-01 反例自证：缩略图改回 object-cover 必须红", () => {
+  for (const rel of THUMB_FILES) {
+    const src = readFileSync(new URL(rel, import.meta.url), "utf8");
+    // 只替换 `<img … class="…">` 里那一处（注释里也有 `object-contain` 字样，先命中注释就等于空转）。
+    const mutated = src.replace(/(<img\b[^>]*class="[^"]*)\bobject-contain\b/, "$1object-cover");
+    assert.notEqual(mutated, src, `${rel}：锚点已漂，脚本里找不到 object-contain`);
+    assert.ok(findThumbCropIssues(mutated).length > 0, `${rel}：改回 cover 必须命中（不许空转）`);
+  }
+});
+
 // ---------------- DE 密度刻度（2026-11-07 第三轮） ----------------
 
 /** 密度五档必须成对、且命中区域不能低于下限（VS Code compact 只收紧内距，不牺牲可点性）。 */
