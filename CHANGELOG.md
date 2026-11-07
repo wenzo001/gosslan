@@ -38,6 +38,22 @@
 **验证边界**：本机 macOS，拿不到 Windows WebView2 渲染；TB-02 是平台模拟读数，不是真机。
 Windows/macOS 角部 4× 特写待真机补拍。
 
+### Windows 图标：软件内升级后仍显示旧图标
+
+用户 2026-11-07：「我是软件内升级的，升级完成之后图标好像没有更新」。
+
+- **打包层（已正确）**：`bundle.icon` 含 `icons/icon.ico`（md5 `c8f15ff7e43d5574cbc4892d5365afce`，
+  6 档尺寸、4368B、mtime 11-06 22:58）；NSIS 的 `installerIcon` / `uninstallerIcon` 也指向它。
+  新图标提交 `81eb7de0`（11-07 10:12）是 `v5.18.71`（11-07 15:40）的祖先 ⇒ 包里带的是新图标。
+- **安装层（已正确）**：`hooks.nsh` 会把目标指向本应用 exe 的快捷方式删除重建，
+  `IconLocation` 指回新 exe，不存在复用旧 LNK。
+- **根因判定：Explorer 图标缓存**。覆盖安装后 exe 路径与快捷方式路径都没变，Explorer 的
+  `iconcache_*.db` 会继续用旧图。安装器收尾新增
+  `SHChangeNotify(SHCNE_ASSOCCHANGED, SHCNF_IDLIST, 0, 0)`，让外壳重读图标/关联。
+- **仍待真机确认**：本机无 Windows，无法复现「覆盖安装 → 桌面图标是否即时刷新」；
+  若仍有残留，需在 Windows 上对照 `ie4uinit.exe -show` 前后截图。
+
+
 ## [5.18.72] - 2026-11-07
 
 ### 屏幕边缘安全区：崩溃恢复条压在安卓状态栏下（用户 2026-11-07 真机反馈）
