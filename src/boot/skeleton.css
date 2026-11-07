@@ -84,6 +84,11 @@
         flex: none;
         display: flex;
         align-items: center;
+        /* 文案必须**水平居中**，与真实标题栏的绝对居中标题同构。
+           2026-11-07 用户实测：骨架把 brand 左对齐在 14px，macOS 原生红绿灯占 0–78px、
+           Windows 三大金刚键占右侧 132px —— 左对齐时文案正好压在系统按钮下面。
+           居中后最窄桌面窗（768）下文案盒 304–464，两侧系统区都不相交（SK-03 钉住）。 */
+        justify-content: center;
         padding: 0 14px;
       }
       .boot-brand {

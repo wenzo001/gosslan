@@ -64,6 +64,7 @@ import {
   checkBackToLatestAvoidance,
   findRawCardPadding,
   checkBootSkeletonGeometry,
+  checkBootCapBrandSafe,
   findTransparentFieldBorder,
   findRawPlaceholderColor,
   findMissingPlaceholderRule,
@@ -6950,6 +6951,31 @@ test("SK-02 反例自证：cap 41 / 删标题行 / 恢复 28px macOS 覆盖必�
   assert.ok(
     checkBootSkeletonGeometry({ ...src, skeletonCss: macOverride }).some((i) => i.message.includes("SK-02") && i.message.includes("is-mac")),
     "恢复 28px macOS 覆盖必须红",
+  );
+});
+
+// ---------------- SK-03：启动文案不许压在系统按钮下面 ----------------
+
+test("SK-03：骨架启动文案居中，macOS 红绿灯 / Windows 三键两侧都不相交", () => {
+  const src = bootSkeletonSources();
+  const issues = checkBootCapBrandSafe(src);
+  assert.deepEqual(issues, [], issues.map((i) => i.message).join("\n"));
+  // 分母自证：被判据依赖的两个锚点都真的在。
+  assert.match(src.skeletonCss, /\.boot-cap\s*\{[^}]*justify-content:\s*center/);
+  assert.match(src.indexHtml, /class="boot-brand"/);
+});
+
+test("SK-03 反例自证：去掉居中后文案回到 14px，必须与红绿灯区相交而报红", () => {
+  const src = bootSkeletonSources();
+  const leftAligned = src.skeletonCss.replace(
+    /(\.boot-cap\s*\{[^}]*?)\n\s*justify-content:\s*center;/,
+    "$1",
+  );
+  assert.notEqual(leftAligned, src.skeletonCss, "锚点没命中：`.boot-cap` 的 justify-content 变了形状");
+  const issues = checkBootCapBrandSafe({ ...src, skeletonCss: leftAligned });
+  assert.ok(
+    issues.some((i) => i.message.includes("SK-03") && i.message.includes("红绿灯")),
+    `去掉居中必须红（左对齐 14px 会压在 0–78px 的红绿灯区里），实际：${JSON.stringify(issues)}`,
   );
 });
 
