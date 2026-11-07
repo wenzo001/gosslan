@@ -318,7 +318,7 @@ CASES: list[Case] = [
             :aria-label="t('msg.unpin')"
             @click.stop="togglePin(p.id)"
           >
-            <X class="h-3 w-3" aria-hidden="true" />
+            <Icon name="x" class="h-3 w-3" aria-hidden="true" />
           </button>""",
             """<span
             class="tap-safe hover-reveal-op flex h-4 w-4 shrink-0 items-center justify-center rounded-full opacity-0 transition group-hover/pin:opacity-100"
@@ -1334,7 +1334,7 @@ CASES: list[Case] = [
         "否则 40 项标签会把面板撑到 1345px 高、末项在窗口外点不到。",
         file=ROOT / "src" / "style.css",
         injections=[(
-            "  max-height: var(--reka-popper-available-height, calc(100vh - var(--gosslan-pop-edge) * 2));\n",
+            "  max-height: var(--reka-popper-available-height, calc(100dvh - var(--gosslan-pop-edge) * 2));\n",
             "",
         )],
         cmd=node_test("src/utils/designGuards.test.ts"),
@@ -1357,7 +1357,7 @@ CASES: list[Case] = [
             "          <DropdownMenuContent\n"
             '            align="end"\n'
             '            :side-offset="0"\n'
-            '            :collision-padding="8"\n'
+            '            :collision-padding="POPOVER_EDGE"\n'
             '            class="frost gosslan-menu z-[80]"',
             '            {{ senderName ?? t("search.sender") }}\n'
             "          </button>\n"
@@ -1366,7 +1366,7 @@ CASES: list[Case] = [
             "          <DropdownMenuContent\n"
             '            align="end"\n'
             '            :side-offset="0"\n'
-            '            :collision-padding="8"\n'
+            '            :collision-padding="POPOVER_EDGE"\n'
             '            class="frost gosslan-menu z-[80] max-h-64"',
         )],
         cmd=node_test("src/utils/designGuards.test.ts"),
