@@ -38,6 +38,8 @@ import { POPOVER_EDGE } from "@/utils/popoverBounds";
 import { useDropSend, type DropTarget } from "@/composables/useDropSend";
 import DropSendConfirm from "@/components/chat/DropSendConfirm.vue";
 import type { Conversation, Friend } from "@/types";
+// 主界面版本号：唯一数据源就是 package.json（与设置「关于」同一个 import），不许第二处手写。
+import { version } from "../../package.json";
 
 const props = defineProps<{
   view: "chats" | "contacts";
@@ -61,6 +63,14 @@ const emit = defineEmits<{
 const app = useAppStore();
 const router = useRouter();
 const chat = useChatStore();
+
+/**
+ * 页脚右端那一行版本号。
+ * 形态按用户 2026-11-07 定的口径：小字、最浅可用一档、纯展示（不参与点击）。
+ * 值只能是 `package.json` 的 version —— 判据 `src/utils/appVersion.test.ts` 会红在
+ * "第二个手写版本号"上；改版本时只跑 `npm run version:set`，不要来这里改。
+ */
+const appVersion = `v${version}`;
 
 /**
  * 「一次都没读到 且 有失败记录」⇒ 错误档（INV-P36：读失败不许画成空态）。
@@ -811,30 +821,41 @@ useEventListener(document, "click", closeFriendMenu);
     <div
       class="conv-footer-safe shrink-0 select-none border-t border-[var(--gosslan-divider)] text-caption text-[var(--gosslan-text-2)]"
     >
-      <!-- 页脚 = 整行任务入口（用户 2026-11-06 决策：版本号移到设置「关于」，页脚只留
-           42px 高的「任务中心 · N」）。版本号已从这一行删除。 -->
-      <button
-        type="button"
-        data-task-entry
-        class="tap-safe flex h-[42px] w-full items-center gap-2 px-3 text-left transition hover:bg-[var(--gosslan-list-hover)]"
-        :aria-label="taskCount > 0 ? t('task.open', { n: taskCount }) : t('task.title')"
-        :title="taskCount > 0 ? t('task.open', { n: taskCount }) : t('task.title')"
-        @click="app.openTaskCenter"
-      >
-        <Icon name="arrow-right-left" class="h-4 w-4 shrink-0" />
-        <span class="shrink-0 font-medium">{{ t("task.center") }}</span>
-        <template v-if="taskCount > 0">
-          <span class="shrink-0 opacity-50">·</span>
-          <span
-            data-task-count
-            class="shrink-0 text-caption font-semibold tabular-nums text-[var(--gosslan-text)]"
-          >
-            {{ taskCount }}
-          </span>
-        </template>
-        <span class="flex-1"></span>
-        <Icon name="chevron-right" class="h-3.5 w-3.5 shrink-0 opacity-60" />
-      </button>
+      <!-- 页脚 = 任务入口 + 右端版本号（用户 2026-11-07 决策：主界面要能一瞟看到当前版本，
+           桌面与移动共用这一个落点；「关于」里那份保留）。
+           ⚠️ 版本号必须是**纯展示**：`pointer-events-none` ⇒ 不吃点击，也绝不包成「关于」的入口。 -->
+      <div class="flex items-center">
+        <button
+          type="button"
+          data-task-entry
+          class="tap-safe flex h-[42px] min-w-0 flex-1 items-center gap-2 px-3 text-left transition hover:bg-[var(--gosslan-list-hover)]"
+          :aria-label="taskCount > 0 ? t('task.open', { n: taskCount }) : t('task.title')"
+          :title="taskCount > 0 ? t('task.open', { n: taskCount }) : t('task.title')"
+          @click="app.openTaskCenter"
+        >
+          <Icon name="arrow-right-left" class="h-4 w-4 shrink-0" />
+          <span class="shrink-0 font-medium">{{ t("task.center") }}</span>
+          <template v-if="taskCount > 0">
+            <span class="shrink-0 opacity-50">·</span>
+            <span
+              data-task-count
+              class="shrink-0 text-caption font-semibold tabular-nums text-[var(--gosslan-text)]"
+            >
+              {{ taskCount }}
+            </span>
+          </template>
+          <span class="flex-1"></span>
+          <Icon name="chevron-right" class="h-3.5 w-3.5 shrink-0 opacity-60" />
+        </button>
+        <!-- 版本号：11px 最小一档 + 第二档灰（`--gosslan-text-3` 从来没定义过，见
+             docs/architecture/refactor-5.0-report.md；要更浅就得新造色档并过对比度账）。
+             数据源只有 package.json 一处（与「关于」同一个 import），判据见 appVersion.test.ts。 -->
+        <span
+          data-app-version
+          class="pointer-events-none shrink-0 select-none pr-3 text-caption tabular-nums text-[var(--gosslan-text-2)] opacity-70"
+          aria-hidden="true"
+        >{{ appVersion }}</span>
+      </div>
     </div>
 
 
