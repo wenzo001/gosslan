@@ -306,7 +306,23 @@
      为什么是 `max()` 而不是相加：两个世界里各有一半恒为 0，相加等于把**同一个物理避让读两遍**
      （图片预览右上工具条正是这样被推到 2×caption + 16px，2026-10-20 用真几何量出来：钉 44px
      时 delta=60 而不是 16）；真机上万一两者同时不为 0，该让开的也是较大的那一个，不是它们的和。 */
-  --gosslan-safe-top: max(var(--gosslan-window-safe-top, 0px), env(safe-area-inset-top, 0px));
+  --gosslan-safe-top: max(var(--gosslan-window-safe-top, 0px), var(--gosslan-inset-top));
+  /* ---------------- 屏幕边缘安全区：四条边的**唯一出口**（2026-11-07） ----------------
+     用户 2026-11-07（安卓真机）：「看看通知是不是都在安全区域内，别压到通知栏和底部…
+     不要太靠四个圆角的弧度内」。所有贴边/悬浮元素（崩溃恢复条、Toast、卡顿条、
+     版本错配条、TabBar、输入区、底部弹层）只许读下面四枚 + `--gosslan-corner-safe`，
+     **不许各自再写一份 `env(safe-area-inset-*)`**（守卫 SA-02 扫全仓）。
+     桌面（html 无 `.is-mobile`）回落 = 0 ⇒ 视觉与改动前逐像素相同；移动端回落非 0：
+     WebView 不报 inset 时 env()=0，绝不能因此贴边。
+     为什么 `max()` 而不是相加：环境变量与回落描述的是同一块物理区域。 */
+  --gosslan-inset-top-fallback: 0px;
+  --gosslan-inset-bottom-fallback: 0px;
+  --gosslan-inset-side-fallback: 0px;
+  --gosslan-corner-safe: 0px;
+  --gosslan-inset-top: max(env(safe-area-inset-top, 0px), var(--gosslan-inset-top-fallback));
+  --gosslan-inset-bottom: max(env(safe-area-inset-bottom, 0px), var(--gosslan-inset-bottom-fallback));
+  --gosslan-inset-left: max(env(safe-area-inset-left, 0px), var(--gosslan-inset-side-fallback), var(--gosslan-corner-safe));
+  --gosslan-inset-right: max(env(safe-area-inset-right, 0px), var(--gosslan-inset-side-fallback), var(--gosslan-corner-safe));
   /* 滚动条留白（滚动层 / 内容区与滚动条之间）。
      2026-10-22 起全端统一使用常显细滚动条（不再在 macOS 上恢复系统 overlay）：
      8px 轨道 + 4px 实际滑块。2026-11-07 起宽度不再由"补偿 token"各容器各写一份，
@@ -1777,12 +1793,21 @@ progress {
 }
 
 /* 移动端安全区 */
+/* 移动端安全区回落：env() 为 0 时仍要留出合理的物理避让。
+   24px = 常见状态栏 / 手势条高度；8px = 圆角屏左右内缩；24px = 圆角弧度参考值。 */
+html.is-mobile {
+  --gosslan-inset-top-fallback: 24px;
+  --gosslan-inset-bottom-fallback: 24px;
+  --gosslan-inset-side-fallback: 8px;
+  --gosslan-corner-safe: 24px;
+}
+
 .safe-top {
-  height: env(safe-area-inset-top);
+  height: var(--gosslan-inset-top);
 }
 
 .safe-bottom {
-  padding-bottom: env(safe-area-inset-bottom);
+  padding-bottom: var(--gosslan-inset-bottom);
 }
 
 /* 预览操作条按钮（代码块底栏 / 全文弹窗共用）：
@@ -2596,7 +2621,7 @@ html[data-reduced-transparency="true"] .gosslan-sticky-veil {
    判据与布局同源：`html.is-mobile`（`useAppStore.applyIsMobile()` 独家写），
    不再在组件里抄一份 `app.isMobile`。 */
 html.is-mobile .conv-footer-safe {
-  margin-bottom: calc(var(--gosslan-mobile-tabbar-h) + env(safe-area-inset-bottom));
+  margin-bottom: calc(var(--gosslan-mobile-tabbar-h) + var(--gosslan-inset-bottom));
 }
 
 /* 移动布局：聊天列（`main`，z-20）铺满整屏时，下层的会话列表（z-10，只 `-translate-x-[30%]`

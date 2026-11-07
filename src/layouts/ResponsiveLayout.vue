@@ -1018,7 +1018,7 @@ function onResizeEnd() {
            两处各抄一份就会漂移（改一处、最后一行被压住），判据 ㊻ 守着这一条。 -->
       <div
         class="min-h-0 flex flex-1 flex-col desktop:md:pb-0"
-        :class="showMobileTabBar ? 'pb-[calc(var(--gosslan-mobile-tabbar-h)+env(safe-area-inset-bottom))]' : ''"
+        :class="showMobileTabBar ? 'pb-[calc(var(--gosslan-mobile-tabbar-h)+var(--gosslan-inset-bottom))]' : ''"
         :style="app.isMobile && app.keyboardInset > 0
           ? { paddingBottom: `${app.keyboardInset + 8}px` }
           : undefined"

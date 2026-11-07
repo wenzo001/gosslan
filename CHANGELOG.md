@@ -14,6 +14,29 @@
 
 ## [Unreleased]
 
+## [5.18.72] - 2026-11-07
+
+### 屏幕边缘安全区：崩溃恢复条压在安卓状态栏下（用户 2026-11-07 真机反馈）
+
+用户报「上次软件崩溃的那个提示不在安全区域内」，随后扩到全部提示：「别压到通知栏和底部，
+就像 iOS 的安全区域一样，不要太靠四个圆角的弧度内」。
+
+- **根因**：`CrashNotice.vue` 移动端写的是 `top: 0; left: 0; right: 0`，直接贴视口边。
+  安卓侧 `enableEdgeToEdge()` 已让 WebView 铺到状态栏下（`index.html` 也有
+  `viewport-fit=cover`），所以 `env()` 是真值，只是那条提示没读它。
+- **统一出口**：`style.css` 新增 `--gosslan-inset-top/-bottom/-left/-right` 与
+  `--gosslan-corner-safe`，全部取 `max(env(...), fallback)`；移动端回落 24/24/8/24px，
+  桌面回落全 0 ⇒ macOS / Windows 视觉零位移。组件只许读变量，不再各写一份 `env()`。
+- **同类一起改**：恢复条、`ToastHud`、`HangNotice`、`VersionMismatchNotice`、
+  `MobilePageFrame`、`FavoritePanel`、`ActionSheet`、`BaseModal`、`ImageLightbox`、
+  `ResponsiveLayout` 底栏占位、`ConversationList`、`ChatWindow` 输入区。
+- **判据**：`designGuards` 新增 SA-01/02/03 —— 在状态栏 24px + 圆角 24px + 视口 390×844
+  下按「被切掉的圆外区域」判定矩形不侵入；反例（去掉 inset）必红；统一出口扫全仓，
+  裸写 `env()` 必红。`node --test src/utils/designGuards.test.ts` → 344/344。
+
+**真机边界**：`env()` 在桌面 Chrome 恒 0，安卓 WebView 是否真上报 inset、状态栏实际高度与
+圆角半径只能靠安卓真机/模拟器验证；本机给出的只是「按 insets 注入后的预期位置」推导。
+
 ## [5.18.71] - 2026-11-07
 
 ### 归档：UI 复核计划与报告（`docs/notes/ui-pulse-review-2026-11-07/`）

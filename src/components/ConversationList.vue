@@ -605,7 +605,7 @@ useEventListener(document, "click", closeFriendMenu);
       class="scrollbar-both flex-1 select-none overflow-y-auto"
       :class="[
         viewFadeClass,
-        app.isMobile && !app.keyboardOpen ? 'pb-[calc(var(--gosslan-mobile-tabbar-h)+env(safe-area-inset-bottom))]' : '',
+        app.isMobile && !app.keyboardOpen ? 'pb-[calc(var(--gosslan-mobile-tabbar-h)+var(--gosslan-inset-bottom))]' : '',
       ]"
     >
       <template v-if="view === 'chats'">

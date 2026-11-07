@@ -51,7 +51,7 @@ const backAria = () => props.backLabel ?? t("common.back");
 <template>
   <div
     :class="mode === 'overlay'
-      ? 'fixed inset-0 z-[60] flex flex-col bg-[var(--gosslan-bg)] pt-[env(safe-area-inset-top)]'
+      ? 'fixed inset-0 z-[60] flex flex-col bg-[var(--gosslan-bg)] pt-[var(--gosslan-inset-top)]'
       : 'flex h-full min-h-0 flex-col'"
   >
     <!-- 统一头部：返回键（BackArrow，按平台适配）+ 标题 + 右侧操作区。
