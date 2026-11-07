@@ -14,6 +14,16 @@
 
 ## [Unreleased]
 
+## [5.18.63] - 2026-11-07
+
+### 删除死开关 `data-frost="off"`（M-7）
+
+- 全仓没有任何 `setAttribute("data-frost")`，只有 devtools 能拨；该 CSS 规则与
+  「真机长帧的退路」承诺一并删除。真实降级入口是用户已批准的「减少透明效果」
+  （`html[data-reduced-transparency="true"]`，同时摘雾并落到实底 token）。
+- AC-13 改为反向自证：谁把 `html[data-frost="off"]` 加回 CSS 就红。
+- `check-ui-runtime` 的 TabBar 段改测真实开关：摘雾 + 背景换实底。
+
 ## [5.18.62] - 2026-11-07
 
 ### 浮层限高收口：@成员下拉进 popoverBounds，兜底改 100dvh

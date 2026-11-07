@@ -7073,24 +7073,22 @@ test("AC-12 反例自证：把设置卡片改成透明必须红", () => {
   );
 });
 
-test("AC-13 反例自证：TabBar 退回实底 / 关掉 frost 必须红", () => {
+test("AC-13 反例自证：TabBar 退回实底必须红；死开关 data-frost 不得复活（M-7）", () => {
   const src = ambientChromeSources();
-  const cases = [
-    src.responsiveLayout.replace(
-      "safe-bottom frost tabbar-chrome absolute",
-      "safe-bottom bg-[var(--gosslan-panel)] absolute",
-    ),
-    src.styleCss.replace('html[data-frost="off"] .frost', "html[data-frost-missing] .frost"),
-  ];
-  assert.notEqual(cases[0], src.responsiveLayout, "锚点没命中：TabBar 类名变了");
-  assert.notEqual(cases[1], src.styleCss, "锚点没命中：frost 开关没了");
+  const solidTabbar = src.responsiveLayout.replace(
+    "safe-bottom frost tabbar-chrome absolute",
+    "safe-bottom bg-[var(--gosslan-panel)] absolute",
+  );
+  assert.notEqual(solidTabbar, src.responsiveLayout, "锚点没命中：TabBar 类名变了");
   assert.ok(
-    checkAmbientChromeSurfaces({ ...src, responsiveLayout: cases[0] }).some((i) => i.message.includes("AC-13")),
+    checkAmbientChromeSurfaces({ ...src, responsiveLayout: solidTabbar }).some((i) => i.message.includes("AC-13")),
     "TabBar 退回实底必须报 AC-13",
   );
+  // M-7：`html[data-frost="off"]` 无入口已删除；谁把它加回 CSS 都必须红。
+  const revived = `${src.styleCss}\nhtml[data-frost="off"] .frost { backdrop-filter: none; }\n`;
   assert.ok(
-    checkAmbientChromeSurfaces({ ...src, styleCss: cases[1] }).some((i) => i.message.includes("AC-13")),
-    "开关丢失必须报 AC-13",
+    checkAmbientChromeSurfaces({ ...src, styleCss: revived }).some((i) => i.message.includes("data-frost")),
+    "死开关复活必须报",
   );
 });
 
