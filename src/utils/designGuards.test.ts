@@ -5924,10 +5924,16 @@ test("自动更新：端点/公钥/插件/命令/单飞/取消/发布链都真�
   const root = join(import.meta.dirname, "..");
   const repo = join(root, "..");
   const conf = JSON.parse(readFileSync(join(repo, "src-tauri", "tauri.conf.json"), "utf8"));
-  assert.equal(
-    conf.plugins?.updater?.endpoints?.[0],
-    "https://github.com/wenzo001/gosslan/releases/latest/download/latest.json",
-    "更新端点必须是 latest.json，且只托管在 GitHub Releases",
+  // 端点契约（2026-11-07 起）：Gitee 镜像优先（国内可达），GitHub Releases 兜底；
+  // 两条都必须指向 latest.json 清单。用**整表相等**而不是"包含"：多挂一个来路不明的源、
+  // 或者把顺序调成 GitHub 优先，都会在这里判红。
+  assert.deepEqual(
+    conf.plugins?.updater?.endpoints,
+    [
+      "https://gitee.com/fwdq/gosslan-releases/raw/master/updates/latest.json",
+      "https://github.com/wenzo001/gosslan/releases/latest/download/latest.json",
+    ],
+    "更新端点必须只有 Gitee 镜像 + GitHub Releases 两条 latest.json（Gitee 优先）",
   );
   const pubkey = String(conf.plugins?.updater?.pubkey ?? "");
   assert.ok(pubkey.length > 80, "pubkey 不能为空/占位");

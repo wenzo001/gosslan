@@ -329,7 +329,10 @@ mod tests {
             .unwrap();
         assert_eq!(arm64.size, 17521727);
         assert_eq!(arm64.sha256.as_deref(), Some("c".repeat(64).as_str()));
-        assert_eq!(select_asset(&release.assets, "arm64-v8a").unwrap().size, 17521727);
+        assert_eq!(
+            select_asset(&release.assets, "arm64-v8a").unwrap().size,
+            17521727
+        );
         assert!(select_asset(&release.assets, "x86_64").is_none());
     }
 
