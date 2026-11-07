@@ -82,6 +82,16 @@
   ㊵ 从「名字白名单」改为「除 `iconRegistry.ts` 外禁直连 lucide」+「Icon 字面量名必须登记」。
   `designGuards` 336 条全绿；`npm test` 1862 pass；`npm run build` 12.2s。
 - 2026-11-07：**#33 的 B-1 仍未动**（等用户批准 `tauri.conf.json minWidth = 704`）。
+- 2026-11-07：全批收尾两笔：`26fc8710` 修 #29 引入的 clippy `needless_borrow`（红绿灯两个
+  调用点去掉 `&ns_window`，版本 5.18.66）；`a70f5a33` 把三条注入锚点跟着真实形状搬家
+  （`<X>`→`<Icon name="x">`、`100vh`→`100dvh`、`:collision-padding="8"`→`POPOVER_EDGE`）
+  并删掉清单里已不存在的 `ui/icons.ts` 行。
+- 2026-11-07：当前门禁：`npm test` 1862 pass / 0 fail（中英复跑均绿）；`npm run build` ✓；
+  `cargo fmt` ✓；`cargo clippy -D warnings` ✓（29.36s）；`cargo test` 1560 passed；
+  `verify-guards.py --list` exit 0；`check-doc-citations` 1227 处裸路径全绿。
+  **Change Budget 判据 3 仍红**：本分支最近 5 个 patch 提交里 presentation 占 5 次
+  （`e4d54f6/1800317/2b59612/4308a76/eaf2397`）—— 这是「同领域连打补丁」的既有信号，
+  脚本注明处置口径只有「负责人接受」或「分次推送使每次范围只含 1 笔」。
 
 ## 合入记录
 
