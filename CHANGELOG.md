@@ -14,6 +14,25 @@
 
 ## [Unreleased]
 
+## [5.18.48] - 2026-11-07
+
+### 下拉/气泡浮层不再顶出窗口（含群任务标签列表）
+
+用户报「群任务的标签下拉，一多就顶出窗口，最下面的项点不到」。根因是各浮层各写一套
+`max-h-*`，既不按窗口可用空间算，也没有内部滚动。
+
+- 统一规则：`max-height` = 触发器到**窗口可视边缘**的可用空间（Reka `--reka-popper-available-height`，
+  已扣 8px `collisionPadding`），放不下就在浮层内部滚动，不裁切、不外溢。
+  `.gosslan-menu` / `.gosslan-pop-clamp` 一处口径；删掉各站点的硬写 `max-h-*`。
+- 新增 `src/utils/popoverBounds.ts`：`POPOVER_EDGE = 8`，`collisionPadding` 单一来源。
+- 40 项标签下拉：`rect.bottom` 467 / 视口 475（留 8px 边距）、`clientH` 393、`scrollH` 1280，
+  可滚到末项且末项可点（`rowClick` 记录到 39）。
+- 390 窄窗标签面板：`rect.bottom` 632 / 视口 640，选中项开面板即可见。
+- 反面对照：撤掉本规则后桌面溢出 **+879px**、390 溢出 **+705px**。
+- 守卫 PC-01：共享限高块必须齐备（宽/高/内部滚动/overscroll/稳定滚动条槽/边距 ≥8px），
+  禁止 `.gosslan-menu` 再写死 `max-h-*`，贴边值只允许来自 `popoverBounds`；
+  两条注入式反例（删 max-height / 加回 `max-h-64`）已进 `scripts/verify-guards.py`。
+
 ## [5.18.47] - 2026-11-07
 
 ### 滚动条出现/不出现：内容宽度与居中必须一致（有/无滚动条 = 同一套数）

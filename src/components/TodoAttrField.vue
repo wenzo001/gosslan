@@ -10,8 +10,9 @@
  * `TodoAttrDateField`（自绘日历）、`TodoAttrTypeField`（类型下拉）、`TodoAttrTagsField`（多选标签）。
  * 不再各写一套高度与面板 —— 这正是用户报「日期面板和标签下拉长得不一样」的根因。
  */
-import { ref, watch } from "vue";
+import { nextTick, ref, watch } from "vue";
 import { PopoverContent, PopoverPortal, PopoverRoot, PopoverTrigger } from "reka-ui";
+import { POPOVER_EDGE } from "@/utils/popoverBounds";
 
 const props = defineProps<{
   /** 字段名（如「任务标签」）。 */
@@ -32,6 +33,26 @@ watch(
 );
 // 面板开合对外广播：日期字段要借此把日历光标拉回当前值所在的月份。
 watch(open, (v) => emit("open-change", v));
+
+/**
+ * 打开时把**已选项**滚进可见区（2026-11-07）。
+ *
+ * 面板现在统一限高 + 内部滚动（`.gosslan-menu` 读 Reka 的 available-height），
+ * 候选一多，第一个可见项可能不是当前值 ⇒ 用户以为"没选中"。
+ * 三个字段（日期/类型/标签）用同一块壳，所以同一条规则放在这里：
+ * 打开后找第一个带选中态的条目，`scrollIntoView({block:"nearest"})` 只滚到刚好可见，
+ * 不把面板整体跳到中间。标签面板里多个已选项时，以**第一个**为准。
+ */
+function revealSelected() {
+  nextTick(() => {
+    const panel = document.querySelector("[data-attr-popover]");
+    const picked = panel?.querySelector('[aria-selected="true"], [aria-pressed="true"], [aria-current="true"]');
+    (picked as HTMLElement | null)?.scrollIntoView({ block: "nearest" });
+  });
+}
+watch(open, (v) => {
+  if (v) revealSelected();
+});
 </script>
 
 <template>
@@ -52,9 +73,10 @@ watch(open, (v) => emit("open-change", v));
         <PopoverPortal>
           <!-- 面板尺寸/圆角/阴影/行高全部来自 `.gosslan-menu`：日期日历与标签下拉用的是**同一块**壳。 -->
           <PopoverContent
+            data-attr-popover
             align="start"
             :side-offset="4"
-            :collision-padding="8"
+            :collision-padding="POPOVER_EDGE"
             class="gosslan-menu frost z-[80] w-[280px]"
           >
             <slot name="panel" :close="() => (open = false)" />

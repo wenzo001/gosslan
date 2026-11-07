@@ -1320,4 +1320,53 @@ CASES: list[Case] = [
         expect_fail_hint="宽度补偿 hack",
         tags=["frontend", "scroll", "new-guards"],
     ),
+    Case(
+        name="浮层共享限高块被删掉 max-height（弹层又会顶出窗口）",
+        why="2026-11-07 用户报「群任务标签下拉一多就顶出窗口，最下面的项点不到」。"
+        "统一规则是把最大高度交给 Reka 的 `--reka-popper-available-height`"
+        "（触发器到窗口可视边缘的可用空间，已扣 8px collisionPadding），放不下就内部滚动。"
+        "本条删掉共享块里的 `max-height`，必须由 PC-01 判据点名并红 ——"
+        "否则 40 项标签会把面板撑到 1345px 高、末项在窗口外点不到。",
+        file=ROOT / "src" / "style.css",
+        injections=[(
+            "  max-height: var(--reka-popper-available-height, calc(100vh - var(--gosslan-pop-edge) * 2));\n",
+            "",
+        )],
+        cmd=node_test("src/utils/designGuards.test.ts"),
+        cwd=ROOT,
+        expect_fail_hint="没有吃 `--reka-popper-available-height`",
+        tags=["frontend", "popover", "new-guards"],
+    ),
+    Case(
+        name="搜索筛选下拉又写死 max-h-64（第二套限高口径）",
+        why="搜索的发送者筛选下拉原来在 class 里写死 `max-h-64`，与共享限高块是两套口径："
+        "窗口一变高它就比别的浮层矮、窗口一矮它又和可用高度不一致。"
+        "2026-11-07 统一只留共享块那一套。本条把 `max-h-64` 加回 `.gosslan-menu` 的 class 里，"
+        "必须由 PC-01 判据点名并红。",
+        file=ROOT / "src" / "components" / "search" / "ChatSearchDialog.vue",
+        injections=[(
+            '            {{ senderName ?? t("search.sender") }}\n'
+            "          </button>\n"
+            "        </DropdownMenuTrigger>\n"
+            "        <DropdownMenuPortal>\n"
+            "          <DropdownMenuContent\n"
+            '            align="end"\n'
+            '            :side-offset="0"\n'
+            '            :collision-padding="8"\n'
+            '            class="frost gosslan-menu z-[80]"',
+            '            {{ senderName ?? t("search.sender") }}\n'
+            "          </button>\n"
+            "        </DropdownMenuTrigger>\n"
+            "        <DropdownMenuPortal>\n"
+            "          <DropdownMenuContent\n"
+            '            align="end"\n'
+            '            :side-offset="0"\n'
+            '            :collision-padding="8"\n'
+            '            class="frost gosslan-menu z-[80] max-h-64"',
+        )],
+        cmd=node_test("src/utils/designGuards.test.ts"),
+        cwd=ROOT,
+        expect_fail_hint="浮层又写死了 max-height",
+        tags=["frontend", "popover", "new-guards"],
+    ),
 ]

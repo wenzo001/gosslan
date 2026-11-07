@@ -461,7 +461,7 @@ function showSender(group: ChatSearchGroup): boolean {
             align="end"
             :side-offset="0"
             :collision-padding="8"
-            class="frost gosslan-menu z-[80] max-h-64 overflow-y-auto"
+            class="frost gosslan-menu z-[80]"
           >
             <DropdownMenuItem class="gosslan-menu-item" @select="chooseSender(null)">
               {{ t("search.sender.all") }}

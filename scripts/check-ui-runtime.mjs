@@ -1163,6 +1163,58 @@ window.__probe = (() => {
       triggerClass: 'max-w-[180px]',
     }),
   );
+  /** 长列表版设置下拉（--only=popclamp）：40 项，必然超出任何窗口的可用高度。 */
+  H.selectMountLong = async () => H.install(
+    '/src/components/ui/SettingsSelect.vue',
+    '<button id="opener">opener</button>',
+    JSON.stringify({
+      isolated: true,
+      liveModel: true,
+      options: Array.from({ length: 40 }, (_, i) => ({
+        // 当前值 'b' 放在第 31 项：打开时 Reka 要把已选项聚焦/滚进可见区，
+        // 放在顶部就测不出"长列表里已选项还看得见"这件事。
+        value: i === 30 ? 'b' : 'v' + i,
+        label: '选项 ' + String(i + 1).padStart(2, '0'),
+      })),
+      selectLabel: '长列表',
+      triggerClass: 'max-w-[220px]',
+    }),
+  );
+  /**
+   * 群任务「标签」字段的合成面板（--only=popclamp，2026-11-07）。
+   *
+   * 单挂 TodoAttrField，用 40 行假标签填 panel 槽：审的是**那一块壳**
+   * （.gosslan-menu 读 Reka available-height + 内部滚动），不是业务行内容。
+   * 第 3 行标成已选（0 基），用来判"打开时已选项可见"（TodoAttrField 的 revealSelected）。
+   */
+  H.attrMount = async (rowsJson) => {
+    const V = window.__probe.vue;
+    if (!V) return { ok: false, why: 'no-vue' };
+    const mod = await import('/src/components/TodoAttrField.vue');
+    document.body.innerHTML = '';
+    const host = document.createElement('div');
+    host.id = 'probe-host';
+    document.body.appendChild(host);
+    const rows = JSON.parse(rowsJson);
+    const app = V.createApp({
+      setup() {
+        return () => V.h(mod.default, { label: '标签', hint: '点选' }, {
+          trigger: () => V.h('button', { id: 'opener', 'data-probe-opener': '' }, '选择标签'),
+          panel: () => V.h('div', { 'data-probe-panel': '' }, rows.map((t, i) => V.h('button', {
+            class: 'gosslan-menu-item w-full text-left',
+            'data-probe-row': String(i),
+            'aria-pressed': i === 2 ? 'true' : 'false',
+            onClick: () => { window.__probe.rowClick = i; },
+          }, t))),
+        });
+      },
+    });
+    if (window.__pinia) app.use(window.__pinia);
+    app.mount(host);
+    window.__probe.app = app;
+    await V.nextTick(); await V.nextTick();
+    return { ok: true };
+  };
   /**
    * 右键菜单专用挂载：把 MessageContextMenu 包在"父组件收到 close 就卸载"的状态里。
    * 普通 install 只把 emit 记进账本、不会卸载组件 ⇒ "关掉之后 DOM 是否撤净"无法读。
@@ -4456,6 +4508,7 @@ async function main() {
     const contactfilter = want("contactfilter");
     const navicon = want("navicon");
     const menufit = want("menufit");
+    const popclamp = want("popclamp");
     const fieldcontrast = want("fieldcontrast");
     const crashnotice = want("crashnotice");
     const hangnotice = want("hangnotice");
@@ -4670,6 +4723,7 @@ async function main() {
     await runSegment("contactfilter", contactfilter, () => runContactFilter(cdp, url));
     await runSegment("navicon", navicon, () => runNavIcon(cdp, url));
     await runSegment("menufit", menufit, () => runMenuFit(cdp, url));
+    await runSegment("popclamp", popclamp, () => runPopClamp(cdp, url));
     await runSegment("fieldcontrast", fieldcontrast, () => runFieldContrast(cdp, url));
     await runSegment("diag", diag, () => runDiag(cdp, url));
     await runSegment("updater", updater, () => runUpdater(cdp, url));
@@ -15732,6 +15786,223 @@ async function runMenuFit(cdp, url) {
   } finally {
     await cdp.send("Emulation.clearDeviceMetricsOverride").catch(() => {});
   }
+}
+
+/**
+ * 浮层限高那一段（--only=popclamp，2026-11-07）。
+ *
+ * 用户报「群任务的标签下拉，标签一多就顶出窗口，最下面的项点不到」，
+ * 并要求全站同类浮层统一：最大高度 = 到窗口边缘的可用空间，放不下内部滚动。
+ *
+ * 这一段的读数和 `.gosslan-menu` / `.gosslan-pop-clamp` 的共享规则同源：
+ * - 设置下拉（40 项，模拟设置窗口里的长枚举）在桌面视口；
+ * - 群任务标签面板（40 行，单挂 TodoAttrField 的真实壳）在 390 / 360 窄窗。
+ *
+ * 每处都判四件：整块在视口内（贴边 ≥1px）、内容超出时真的可滚、
+ * 滚到底末项在视口内且命中元素就是它自己（可点）、已选项打开即可见。
+ * 反向对照把 inline `max-height:none / overflow:visible` 注回去，
+ * 同一条 inside 读数必须翻假 —— 证明判据咬得住，不是空转。
+ */
+async function runPopClamp(cdp, url) {
+  /** 读数台账：失败时 check 会打印；成功时末尾统一打一行，方便把改前/改后写进里程碑。 */
+  const report = {};
+  const readMenu = (sel) => cdp.eval(`(() => {
+    const el = document.querySelector(${JSON.stringify(sel)});
+    if (!el) return { present: false, reason: 'not-found' };
+    // Select 的滚动容器是内层 viewport，不是 role=listbox 那一层（它 overflow:hidden）；
+    // 自绘面板的滚动容器就是它自己。两处都读，才能量到"真的可滚"。
+    const scroller = el.querySelector('[data-reka-select-viewport]') || el;
+    const r = el.getBoundingClientRect();
+    const sr = scroller.getBoundingClientRect();
+    const vw = window.innerWidth, vh = window.innerHeight;
+    const cs = getComputedStyle(el);
+    const rows = [...el.querySelectorAll('[role="option"],[data-probe-row]')];
+    const last = rows[rows.length - 1] || null;
+    const lr = last ? last.getBoundingClientRect() : null;
+    const picked = el.querySelector('[aria-selected="true"], [aria-pressed="true"], [data-state="checked"]');
+    const pr = picked ? picked.getBoundingClientRect() : null;
+    const fits = (q) => !!q && q.top >= -1 && q.bottom <= vh + 1 && q.left >= -1 && q.right <= vw + 1;
+    const fitsScroll = (q) => !!q && q.top >= sr.top - 1 && q.bottom <= sr.bottom + 1;
+    let hit = false;
+    if (lr && lr.width && lr.height) {
+      const h = document.elementFromPoint((lr.left + lr.right) / 2, (lr.top + lr.bottom) / 2);
+      hit = !!h && (h === last || last.contains(h));
+    }
+    return {
+      present: true, vw, vh,
+      rect: { left: Math.round(r.left), top: Math.round(r.top), right: Math.round(r.right), bottom: Math.round(r.bottom) },
+      inside: r.left >= -1 && r.top >= -1 && r.right <= vw + 1 && r.bottom <= vh + 1,
+      maxH: cs.maxHeight, overflowY: cs.overflowY,
+      scrollH: scroller.scrollHeight, clientH: scroller.clientHeight,
+      canScroll: scroller.scrollHeight > scroller.clientHeight + 1,
+      rows: rows.length,
+      pickedVisible: fits(pr) && fitsScroll(pr),
+      lastVisible: fits(lr) && fitsScroll(lr),
+      lastHit: hit,
+      lastRect: lr ? { top: Math.round(lr.top), bottom: Math.round(lr.bottom) } : null,
+    };
+  })()`);
+
+  const toBottom = (sel) => cdp.eval(`(() => {
+    const el = document.querySelector(${JSON.stringify(sel)});
+    if (!el) return -1;
+    const scroller = el.querySelector('[data-reka-select-viewport]') || el;
+    scroller.scrollTop = scroller.scrollHeight;
+    return scroller.scrollTop;
+  })()`);
+
+  const bootPage = async () => {
+    await cdp.send("Page.navigate", { url });
+    await cdp.settled();
+    await sleep(2_000);
+    await cdp.eval(PAGE_FIXTURE);
+    await cdp.eval("window.__probe.install('/src/components/TitleBar.vue', '', '')");
+  };
+
+  const SHOT_DIR = "test-results/ui-2026-11-07";
+  const shot = async (name) => {
+    fs.mkdirSync(SHOT_DIR, { recursive: true });
+    const s = await cdp.send("Page.captureScreenshot", { format: "png" });
+    const p = `${SHOT_DIR}/${name}.png`;
+    fs.writeFileSync(p, Buffer.from(s.data, "base64"));
+    console.log("  📷 浮层限高取证帧 → " + p);
+  };
+  /** 亮暗各一帧：切 html.dark 后等一帧，再切回亮色（不留残留）。 */
+  const shotPair = async (name) => {
+    await cdp.eval("document.documentElement.classList.remove('dark')");
+    await sleep(150);
+    await shot(`${name}-light`);
+    await cdp.eval("document.documentElement.classList.add('dark')");
+    await sleep(150);
+    await shot(`${name}-dark`);
+    await cdp.eval("document.documentElement.classList.remove('dark')");
+    await sleep(100);
+  };
+
+  const rows = JSON.stringify(Array.from({ length: 40 }, (_, i) => `标签 ${String(i + 1).padStart(2, "0")}`));
+
+  // ---- ① 桌面视口：设置窗口里的长枚举下拉（40 项） ----
+  await cdp.send("Emulation.clearDeviceMetricsOverride").catch(() => {});
+  await bootPage();
+  const mountedSel = await cdp.eval("window.__probe.selectMountLong()");
+  await sleep(300);
+  check("对照：长列表设置下拉挂得上（挂不上下面几条就是空跑）",
+    !!mountedSel && mountedSel.ok === true, "mount ok", JSON.stringify(mountedSel));
+  await cdp.eval(`(() => {
+    const t = document.querySelector('#probe-host [role="combobox"]');
+    t && t.focus();
+    return true;
+  })()`);
+  await cdp.key("ArrowDown", "ArrowDown", "", 40);
+  await sleep(700);
+  const desk = await readMenu('[role="listbox"]');
+  report.desktop = desk;
+  check("设置下拉 40 项：整块在桌面视口内、真的可滚、限高就是共享口径（不是 none）",
+    desk.present === true && desk.rows === 40 && desk.inside === true
+      && desk.canScroll === true && /px/.test(desk.maxH || "") && desk.overflowY === "auto",
+    "inside=true / rows=40 / canScroll / maxH=px / overflowY=auto",
+    JSON.stringify(desk));
+  check("设置下拉 40 项：打开时当前值可见（不会被长列表挤没）",
+    desk.present === true && desk.pickedVisible === true,
+    "pickedVisible=true", JSON.stringify({ pickedVisible: desk.pickedVisible }));
+  await shotPair("popclamp-settings-select");
+  await toBottom('[role="listbox"]');
+  await sleep(150);
+  const deskBottom = await readMenu('[role="listbox"]');
+  check("设置下拉 40 项：滚到底末项在视口内，且命中元素就是末项（点得到）",
+    deskBottom.present === true && deskBottom.lastVisible === true && deskBottom.lastHit === true,
+    "lastVisible=true / lastHit=true", JSON.stringify(deskBottom));
+
+  // 反向对照：把限高撤掉，同一条 inside 必须翻假。
+  await cdp.eval(`(() => {
+    const el = document.querySelector('[role="listbox"]');
+    if (!el) return false;
+    el.dataset.probeNoClamp = '1';
+    el.style.maxHeight = 'none';
+    el.style.overflowY = 'visible';
+    el.scrollTop = 0;
+    return true;
+  })()`);
+  await sleep(200);
+  const deskBad = await readMenu('[role="listbox"]');
+  report.desktopWithoutClamp = deskBad;
+  check("对照：撤掉共享限高 ⇒ 设置下拉同一条 inside 读数真的翻假（判据不空转）",
+    deskBad.present === true && deskBad.inside === false && deskBad.rect.bottom > deskBad.vh + 1,
+    "撤掉后 inside=false 且 bottom 越过视口", JSON.stringify(deskBad));
+  await cdp.eval(`(() => {
+    const el = document.querySelector('[role="listbox"]');
+    if (!el) return false;
+    el.style.maxHeight = ''; el.style.overflowY = ''; el.removeAttribute('data-probe-no-clamp');
+    return true;
+  })()`);
+  await sleep(200);
+  const deskRestored = await readMenu('[role="listbox"]');
+  check("对照可逆：样式换回后设置下拉又回到视口内（对照不留残留）",
+    deskRestored.present === true && deskRestored.inside === true,
+    "inside=true", JSON.stringify(deskRestored));
+
+  // ---- ② 群任务标签面板：390×640（主窗窄档） ----
+  for (const [w, h] of [[390, 640], [360, 640]]) {
+    await cdp.send("Emulation.setDeviceMetricsOverride", {
+      width: w, height: h, deviceScaleFactor: 2, mobile: true,
+    });
+    try {
+      await bootPage();
+      const mountedAttr = await cdp.eval(`window.__probe.attrMount(${JSON.stringify(rows)})`);
+      await sleep(250);
+      check(`对照：${w} 宽标签面板挂得上（挂不上下面几条就是空跑）`,
+        !!mountedAttr && mountedAttr.ok === true, "mount ok", JSON.stringify(mountedAttr));
+      await cdp.eval(`(() => {
+        const t = document.querySelector('#opener');
+        t && t.click();
+        return true;
+      })()`);
+      await sleep(500);
+      const tag = await readMenu('[data-attr-popover]');
+      report[`tag${w}`] = tag;
+      check(`群任务标签面板 40 项 @${w}: 整块在窗口内、可滚、已选项打开即可见`,
+        tag.present === true && tag.rows === 40 && tag.inside === true && tag.canScroll === true
+          && tag.pickedVisible === true,
+        "inside / canScroll / pickedVisible", JSON.stringify(tag));
+      await toBottom('[data-attr-popover]');
+      await sleep(200);
+      await cdp.eval("window.__probe.rowClick = -1");
+      const tagBottom = await readMenu('[data-attr-popover]');
+      if (tagBottom.lastRect) {
+        await cdp.click(
+          (tagBottom.rect.left + tagBottom.rect.right) / 2,
+          (tagBottom.lastRect.top + tagBottom.lastRect.bottom) / 2,
+        );
+      }
+      await sleep(120);
+      const clicked = await cdp.eval("window.__probe.rowClick");
+      check(`群任务标签面板 40 项 @${w}: 滚到底末项在窗口内、命中即末项、点击真的落到末行`,
+        tagBottom.present === true && tagBottom.lastVisible === true && tagBottom.lastHit === true
+          && clicked === 39,
+        "lastVisible / lastHit / rowClick=39",
+        JSON.stringify({ lastVisible: tagBottom.lastVisible, lastHit: tagBottom.lastHit, clicked }));
+      if (w === 390) await shotPair("popclamp-group-tag-390");
+
+      // 反向对照：撤掉限高 ⇒ 同一条 inside 翻假。
+      await cdp.eval(`(() => {
+        const el = document.querySelector('[data-attr-popover]');
+        if (!el) return false;
+        el.style.maxHeight = 'none';
+        el.style.overflowY = 'visible';
+        el.scrollTop = 0;
+        return true;
+      })()`);
+      await sleep(200);
+      const tagBad = await readMenu('[data-attr-popover]');
+      report[`tag${w}WithoutClamp`] = tagBad;
+      check(`对照：${w} 宽撤掉共享限高 ⇒ 标签面板同一条 inside 真的翻假`,
+        tagBad.present === true && tagBad.inside === false && tagBad.rect.bottom > tagBad.vh + 1,
+        "撤掉后 inside=false", JSON.stringify(tagBad));
+    } finally {
+      await cdp.send("Emulation.clearDeviceMetricsOverride").catch(() => {});
+    }
+  }
+  console.log("  ℹ popclamp 读数 → " + JSON.stringify(report));
 }
 
 /**

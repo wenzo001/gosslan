@@ -347,6 +347,13 @@
   --gosslan-card-pad-inset: 12px;
   --gosslan-group-caption-inset: 4px;
 
+  /* ---------------- 浮层贴边安全边距（唯一来源，2026-11-07） ----------------
+     所有从触发器展开、内容可能变长的浮层（下拉 / 菜单 / 气泡面板），
+     与**窗口可视边缘**之间至少留 8px。Reka 的 `collisionPadding` 也吃这个数；
+     这里再兜一层：即使某个组件忘了传 `--reka-popper-available-height`，
+     限高仍按 `100vh - 2 * 8px` 收口，不会顶出窗口。 */
+  --gosslan-pop-edge: 8px;
+
   /* ---------------- 消息流排版令牌（2026-10-23 iMessage 风格基线） ----------------
      气泡圆角 20px、连续消息相邻侧 6px、群聊头像 30px、气泡宽度 ≤ 100%。
      ⚠️ **行距不在这里**：同组 4px / 换组 10px 由 `messageHeight` 的 GAP_* 一处保管，
@@ -2126,6 +2133,37 @@ img {
   max-width: var(--reka-dropdown-menu-content-available-width, calc(100vw - 16px));
   max-height: var(--reka-dropdown-menu-content-available-height, calc(100vh - 16px));
   overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-gutter: stable;
+}
+
+/* ---------------- 浮层限高统一口径（2026-11-07） ----------------
+   用户报「群任务的标签下拉，标签一多就顶出窗口，最下面的项点不到」。
+
+   规则：浮层最大高度 = 触发器到**窗口可视边缘**的可用空间，放不下就内部滚动，
+   不裁切、不外溢、不撑开窗口；横向同理。
+
+   为什么只读 `--reka-popper-available-height`：Reka 的 PopperContent 在
+   `collisionPadding` 上算完 detectOverflow 后把可用宽高写到内容元素上，
+   各组件自己的别名（`--reka-dropdown-menu-content-*` / `--reka-popover-content-*` /
+   `--reka-select-content-*`）全都指向它 ⇒ 一处口径、没有第二套数字。
+   `collisionPadding` 在各调用点统一传 `POPOVER_EDGE`（8px），
+   所以这个变量本身已经扣过安全边距；下面的 `100vh - 2*8px` 只是没拿到变量时的兜底。
+
+   消费方：`.gosslan-menu`（所有 Reka 菜单/下拉/气泡面板）+ `.gosslan-pop-clamp`
+   （不走 `.gosslan-menu` 外观、但同样 portal 到 body 的自绘浮层，如表情面板、已读名单）。
+   ⚠️ 原生 `<select>` 无法控制弹层（OS 绘制），不在此规则内。
+
+   ⚠️ 顺序约束：本块必须排在 `.code-lang-menu` **之后**。
+   `src/utils/codeBlockLayout.test.ts` 的反例自证用 `css.replace(第一条 max-height 正则)`
+   来拿掉语言下拉的限高，它认的是"第一条匹配"；这条规则若排到上面，
+   被拿掉的就是本块、语言下拉那条自证会变成假绿（2026-11-07 实测红过一次）。 */
+.gosslan-menu,
+.gosslan-pop-clamp {
+  max-width: var(--reka-popper-available-width, calc(100vw - var(--gosslan-pop-edge) * 2));
+  max-height: var(--reka-popper-available-height, calc(100vh - var(--gosslan-pop-edge) * 2));
+  overflow-y: auto;
+  overflow-x: hidden;
   overscroll-behavior: contain;
   scrollbar-gutter: stable;
 }

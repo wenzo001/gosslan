@@ -159,7 +159,7 @@ function onContentClick() {
         <div
           ref="card"
           :style="cardStyle"
-          class="glass-3 rounded-t-[var(--gosslan-radius-xl)] px-2 pt-2 pb-[max(env(safe-area-inset-bottom),0.5rem)]"
+          class="glass-3 max-h-[calc(100dvh_-_var(--gosslan-pop-edge)*2)] overflow-y-auto overscroll-contain rounded-t-[var(--gosslan-radius-xl)] px-2 pt-2 pb-[max(env(safe-area-inset-bottom),0.5rem)]"
         >
           <!-- 抓取区：grabber + 标题行。`touch-none` 必须有 —— 不关掉浏览器手势，
                下拉会被当成滚动/橡皮筋overscroll，pointermove 根本发不到这里。
