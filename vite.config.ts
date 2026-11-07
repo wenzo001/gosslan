@@ -3,6 +3,7 @@ import vue from "@vitejs/plugin-vue";
 import { fileURLToPath, URL } from "node:url";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
+import { BOOT_TOKENS_MARKER, buildBootTokens } from "./src/boot/skeletonTokens";
 
 const here = fileURLToPath(new URL(".", import.meta.url));
 
@@ -27,6 +28,20 @@ const isDebugBuild = process.env.TAURI_ENV_DEBUG === "true";
  */
 function inlineBoot(): Plugin {
   const read = (p: string) => readFileSync(resolve(here, p), "utf8");
+  /**
+   * 骨架几何 token：`style.css` 是唯一来源，构建时物化成 `:root{--boot-*}`。
+   *
+   * 骨架样式先于 `style.css` 执行，运行时读不到 `--gosslan-*`；所以这里把值抄进内联样式，
+   * 并由 SK-04 判据保证「骨架只写 var(--boot-*)、真实组件引用同一个 --gosslan-*」。
+   * 缺 token 直接失败 —— 不允许静默退回骨架自己的数字（那正是漂移的开始）。
+   */
+  const bootTokens = () => {
+    const built = buildBootTokens(read("src/style.css"));
+    if (built.missing.length) {
+      throw new Error(`gosslan:inline-boot 缺少骨架几何 token：${built.missing.join("、")}`);
+    }
+    return built.decls;
+  };
   return {
     name: "gosslan:inline-boot",
     transformIndexHtml: {
@@ -39,7 +54,7 @@ function inlineBoot(): Plugin {
           )
           .replace(
             "<!-- GOSSLAN_SKELETON_CSS -->",
-            `<style>\n${read("src/boot/skeleton.css")}    </style>`,
+            `<style>\n${read("src/boot/skeleton.css").replace(BOOT_TOKENS_MARKER, bootTokens())}    </style>`,
           )
           .replace(
             "<!-- GOSSLAN_BOOT_GUARD -->",

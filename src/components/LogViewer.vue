@@ -307,7 +307,7 @@ function close() {
          B1（2026-11-06）：功能名已在 TitleBar 上，内容区不再重复打印。 -->
     <div
       class="flex shrink-0 items-center gap-2 border-b border-[var(--gosslan-divider)] bg-[var(--gosslan-app-bg)] px-3.5"
-      :style="{ height: '46px' }"
+      :style="{ height: 'var(--gosslan-toolbar-h)' }"
     >
       <span
         class="inline-flex h-5 shrink-0 items-center gap-1.5 rounded-full px-2 text-micro"

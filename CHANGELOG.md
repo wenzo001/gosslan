@@ -14,6 +14,40 @@
 
 ## [Unreleased]
 
+## [5.18.77] - 2026-11-07
+
+### 首屏骨架与真实界面同源，启动不再跳位（用户 2026-11-07 总要求）
+
+用户：「最后如果所有的 UI 改完了，把所有界面的骨架图也同步跟现在的 UI 同步。」
+
+- **根因**：骨架（`src/boot/skeleton.css` + 5 个 HTML）与真实布局各写一份数字，
+  真实值在 `style.css` 的 token 或组件类名里，改一边另一边不会红。逐项对差量到 23 处，
+  其中四类会在切到真界面时整块位移：
+  - 列表缺 50px 标题行 ⇒ 整列会话低 50px（审查报的「跳 50px」）；
+  - rail 多画一个本人头像（42px + 16 间距）⇒ 四个入口低 58–60px；
+  - 设置 / 日志 / 预览三窗缺 40px 自绘标题栏 ⇒ 整屏上移 40px；
+  - 群任务顶栏 48px「左标题 + 右新建」⇒ 真实是 40px 居中 TitleBar（8px + 结构差）。
+  其余：设置左栏 176→200、左栏内距 8→10 且补组标题、日志工具条 48→46 与内距 12→14、
+  移动行高 62→64、搜索壳上下留白 48→40、搜索圆角 8→10、列表左上圆角 12→0、
+  群任务内容内距 12→16、卡片圆角 12→14。
+- **改法（一份来源）**：`src/style.css` 的 `--gosslan-*` 是唯一来源；
+  新增 `src/boot/skeletonTokens.ts` 声明「谁跟谁同源」，`vite.config.ts` 在构建时读
+  `style.css` 把值物化成 `--boot-*` 注入内联样式（骨架先于 `style.css` 执行，运行时读不到那边变量）；
+  `skeleton.css` 受管几何只许 `var(--boot-*)`。真实组件同步改为引用同一批 token
+  （`NavRail`、`ConversationList`、`ConversationListItem`、`SettingsWindow`、`LogViewer`）。
+- **判据**：新增 **SK-04**（`checkBootSkeletonTokens`）四向校验 —— 骨架接了 `var(--boot-*)`、
+  同一规则不许字面 px、每个 `--boot-*` 在 `style.css` 有来源、真实组件确实引用同一 token；
+  四条反例（改回字面 px / 删真实组件引用 / 删 token / 孤儿 `--boot-*`）全部必红。
+  `node --test src/utils/designGuards.test.ts` → 360/360。
+- **文档**：`docs/design-language/density-and-scroll.md` §8（机制 + 23 项对差表）、
+  `designs/gosslan-redesign/docs/decisions.md` v2.3（7 项画板妥协最终状态 + 新增口径）、
+  `docs/notes/ui-pulse-redesign/tasks.md` #35。
+- **证据**：`test-results/skeleton-sync/` —— 5 个界面 × 骨架态/加载完成态 1440×900，
+  主窗另有 390×844。骨架态用 `--blink-settings=scriptEnabled=false` 冻结首帧。
+
+**验证边界**：截图为 Chromium 内核（Brave headless）在 macOS 上的渲染，不是 WKWebView 真机读数；
+几何由同一批 token 计算、不依赖内核，但像素级截图仍建议在真机窗口复核一次。
+
 ## [5.18.76] - 2026-11-07
 
 ### 非活动窗口的第一下点击被吃掉（用户 2026-11-07 实测）

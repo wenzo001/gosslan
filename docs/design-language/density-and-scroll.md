@@ -86,14 +86,96 @@
 - `SC-02`：`track + gap = 16`；`.gosslan-scroll` 必须同时有两侧 gutter 与 `padding-inline`；反例 4 条。
 - `DE-01`：密度五档成对、`row-min-h ≥ 40`；反例 2 条。
 - `DE-02`：**本文表格里的数字必须与 `style.css` token 逐条相等**；反例是把文档数字改掉。
+- `SK-04`：**首屏骨架与真实布局同源**（见 §8）；反例 4 条（骨架写回字面 px、真实组件改回私有数字、
+  删 token、骨架引用未定义变量）。
 
 ## 7. 复现与截图
 
 ```bash
-node --test --experimental-strip-types src/utils/designGuards.test.ts   # SC-01/02 + DE-01/02
+node --test --experimental-strip-types src/utils/designGuards.test.ts   # SC-01/02 + DE-01/02 + SK-04
 node scripts/check-scroll-contrast.mjs                                  # 三态对比度读数
 node scripts/check-ui-runtime.mjs --only=concentric                     # orb 20 / mark 8·14
 ```
 
 截图（亮暗 × 特效开）落在 `test-results/ui-2026-11-07/`：设置、日志、群任务的改前/改后，
 以及静止 / hover / 拖动三态的滚动条特写。
+
+## 8. 首屏骨架同构（Boot Skeleton Parity）
+
+> 状态：**已落地**（2026-11-07，版本 5.18.77）。用户总要求：「所有 UI 改完之后，
+> 把所有界面的骨架图也同步跟现在的 UI 同步」。
+>
+> **口径**：骨架不是"另一套样式"，而是同一套几何在**首帧**的投影。真实布局改一格，
+> 骨架必须跟着改；两边各写一份数字即视为缺陷（`SK-04` 判红）。
+
+### 8.1 为什么不能直接写 `var(--gosslan-*)`
+
+骨架样式由 `vite.config.ts` 的 `gosslan:inline-boot` 插件内联进每个 HTML 的 `<head>`，
+**先于** `src/style.css` 执行（后者由模块脚本加载）。首帧那一刻 `--gosslan-*` 还没有定义，
+直接引用会全部失效、骨架塌成一堆无高无宽的块。
+
+因此几何走**构建时物化**：
+
+| 步骤 | 位置 | 说明 |
+| --- | --- | --- |
+| ① 来源 | [`src/style.css`](../../src/style.css) `:root` | 唯一一份 `--gosslan-{title-h, header-h, rail-w, list-w, row-h-desktop, row-h-mobile, row-avatar, row-pad-x, list-title-h, search-h, nav-item, settings-nav-w, toolbar-h, radius-*, bubble-radius}` |
+| ② 规则表 | [`src/boot/skeletonTokens.ts`](../../src/boot/skeletonTokens.ts) `BOOT_TOKEN_RULES` | 只声明「谁跟谁同源」与「骨架里必须出现在哪条规则」，**不写数值** |
+| ③ 物化 | `vite.config.ts` → `buildBootTokens()` | 读 `style.css`，在 `skeleton.css` 的 `/* GOSSLAN_BOOT_TOKENS */` 处注入 `:root { --boot-*: … }`；任一 token 缺失 → **构建直接失败**，不静默回落 |
+| ④ 消费 | [`src/boot/skeleton.css`](../../src/boot/skeleton.css) | 受管几何只许 `var(--boot-*)`，同一规则里出现字面 px 即红 |
+| ⑤ 真值 | 各真实组件 | 必须引用与 `--boot-*` 同名的 `--gosslan-*`，否则骨架"同源"到一个没人用的变量，判据空转 |
+
+### 8.2 2026-11-07 对差表（骨架改前 → 真实）
+
+只列**会看得见**的差异；「差」是切到真界面时的位移量。
+
+| # | 界面 | 项 | 骨架改前 | 真实（改后同源） | 差 |
+| --- | --- | --- | --- | --- | --- |
+| 1 | 主窗 | 窗口标题栏 | 40 | `--gosslan-title-h` 40 | 0（M-1 已修 38→40） |
+| 2 | 主窗 rail | 顶部头像 | 42px 头像 + 16 间距 | **没有头像**（本人在标题栏右上） | 首项低 **58px**（+padding 14→12 ⇒ 60） |
+| 3 | 主窗 rail | 入口节距 | 22 图形 + gap 16 = **38** | 44 热区 + gap 8 = **52** | 每项 14px，第 4 项累计 **42px** |
+| 4 | 主窗列表 | 标题行 | **缺失** | `--gosslan-list-title-h` 50 | 整列会话低 **50px**（审查报的"跳 50px"） |
+| 5 | 主窗列表 | 左上圆角 | 12 | **0**（用户：最右栏左上圆角很怪） | 12px |
+| 6 | 主窗列表 | 行左右基线 | 12 / 12（列表 padding 承担） | `--gosslan-row-pad-x` 14 / 14 | 各 2px |
+| 7 | 主窗列表 | 行高 | 桌面 62 / 移动 62 | 62 / **64** | 移动每行 2px，20 行累计 40px |
+| 8 | 主窗列表 | 头像 / 搜索壳高 | 42 / 36 | 42 / 36 | 0 |
+| 9 | 主窗列表 | 搜索壳上下留白 | 上 2 + 下 10 = **48** | 上 0 + 下 4 = **40**（`h-10 pb-1`） | 行起点高 **8px** |
+| 10 | 主窗列表 | 搜索圆角 | 8 | `--gosslan-radius-md` 10 | 2px |
+| 11 | 设置 | 自绘标题栏 | **缺失** | 40（`AuxWindowShell`） | 整屏上移 **40px** |
+| 12 | 设置 | 左栏宽 | 176 | `--gosslan-settings-nav-w` 200 | **24px** |
+| 13 | 设置 | 左栏内距 / 组间 | 8 / 2（6 条等距，无组标题） | 10 / 12，组标题 11px 字号 × 1.5 行高 = 16.5 + `pb-1` 4，组内 32 无间隙 | 首项位置 + 后续累积 |
+| 13b | 设置 | 内容左右基线 | 20 | **16**（`scrollbar-gutter` 8 + `scroll-gap` 8） | 卡片右移 4px，与标题/页脚不在一条竖线 |
+| 14 | 设置 | 卡片圆角 | 12 | `--gosslan-radius-lg` 14 | 2px |
+| 15 | 日志 | 自绘标题栏 | **缺失** | 40 | 整屏上移 **40px** |
+| 16 | 日志 | 工具条高 | 48 | `--gosslan-toolbar-h` 46 | 2px |
+| 17 | 日志 | 工具条左块 | 返回键 32 + 标题 96 | live 64 + count 28（真实两个小标签） | 结构差 |
+| 18 | 日志 | 工具条内距 / 间距 | 12 / 10 | 14（`px-3.5`）/ 8（`gap-2`） | 2px |
+| 19 | 群任务 | 顶栏 | 48、左标题 + 右按钮 | 40、**居中** TitleBar（无按钮） | 8px + 结构差 |
+| 20 | 群任务 | 内容内距 / 卡片圆角 | 12 / 12 | 16（`p-4`）/ 14 | 4px / 2px |
+| 21 | 预览 | 自绘标题栏 | **缺失** | 40 | 整屏上移 **40px** |
+| 22 | 预览 | 外框圆角 | 12 | 14 | 2px |
+| 23 | 主窗聊天 | 输入卡 / 气泡圆角 | 22 / 20（字面） | `--gosslan-radius-2xl` 22 / `--gosslan-bubble-radius` 20 | 0（改的是同源，不是数值） |
+
+### 8.3 四类首帧跳位（本次修掉）
+
+1. **列表整体低 50px**：骨架缺 50px 列表标题行（#4）。这是审查报的那一条。
+2. **rail 四个入口低 58–60px**：骨架多画了一个不存在的本人头像（#2）。
+3. **子窗整屏上移 40px**：设置 / 日志 / 预览三个窗口的自绘 TitleBar 没画（#11 #15 #21）。
+4. **群任务顶栏多 8px 且结构不对**：48px「左标题 + 右侧新建」→ 40px 居中 TitleBar（#19）。
+
+移动端另有两条：行高必须 64（#7）、标题栏要叠加 `env(safe-area-inset-top)` 且 rail/chat 不出现。
+
+### 8.4 判据与复现
+
+```bash
+node --test src/utils/designGuards.test.ts    # SK-02（结构锚点）+ SK-04（同源，4 条反例）
+npm run build                               # 构建期缺 token 会直接失败
+```
+
+`SK-04` 反向自证（任一必须红）：把 `.boot-cap` 改回 `height: 40px`、删掉真实组件里的
+`--gosslan-list-title-h`、从 `style.css` 删掉 `--gosslan-row-avatar`、骨架里写一个无来源的
+`var(--boot-nope)`。
+
+截图（骨架态 vs 加载完成态，1440×900；主窗另有 390×844）：`test-results/skeleton-sync/`，
+文件名为 `{index,settings,logs,todos,preview}-{skeleton,loaded}-1440.png` 与
+`index-{skeleton,loaded}-390.png`。骨架态用 `--blink-settings=scriptEnabled=false` 冻结首帧，
+加载态用 dev server + `--virtual-time-budget=4000`（8000 会撞 10s 的 `UI_READY_TIMEOUT` 失败卡）。

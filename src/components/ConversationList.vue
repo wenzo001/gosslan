@@ -512,7 +512,7 @@ useEventListener(document, "click", closeFriendMenu);
          左栏因此比右栏头部高，两栏的分隔线仍是竖向连续的一条（`.list` 右边框）。 -->
     <div
       v-if="!app.isMobile"
-      class="flex h-[50px] shrink-0 items-center pl-4 pr-3.5"
+      class="flex h-[var(--gosslan-list-title-h)] shrink-0 items-center pl-4 pr-3.5"
     >
       <h2
         class="min-w-0 flex-1 truncate text-heading font-semibold leading-[22px] text-[var(--gosslan-text)]"
@@ -571,7 +571,7 @@ useEventListener(document, "click", closeFriendMenu);
            暗色下 panel(#1e293b) 与本栏 list(#1e293b) 是同一个值，输入框会"消失"；
            field 在两套主题里都与所在栏拉开一档。 -->
       <div
-        class="flex h-9 min-w-0 flex-1 items-center gap-2 rounded-[var(--gosslan-radius-md)] border border-[var(--gosslan-field-border)] bg-[var(--gosslan-field)] px-2.5 transition"
+        class="flex h-[var(--gosslan-search-h)] min-w-0 flex-1 items-center gap-2 rounded-[var(--gosslan-radius-md)] border border-[var(--gosslan-field-border)] bg-[var(--gosslan-field)] px-2.5 transition"
       >
         <Icon name="search" class="h-[15px] w-[15px] shrink-0 text-[var(--gosslan-text-2)]" />
         <input

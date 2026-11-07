@@ -43,6 +43,7 @@
 | 32 | 审计报告 9 条落地（页脚版本号 / 设置左栏 / 单聊自己消息 / 群头像 / #29 / 碰撞内距 / 右余量 / 暗色高对比字段边框 / 输入卡 22px） | ConversationList、SettingsPanel、SettingsWindow、MessageItem/MessageReceipt、MessageComposer、style.css、popoverBounds | 已完成 | `3b73eafe` · `08d6e4a3` · `250ef2c5` · `689e6ae4` · `e178e085` · `4ec8b35e` · `68d30156` | 页脚删版本号 → 42px「任务中心 · N」（探针判据同步）；设置左栏 9 分区双栏、散值归零；自己消息气泡 36 / 内距 2 / 换组 12 / 68% / 560px；群头像 24；红绿灯 14pt→20pt；碰撞内距 13 处收成 `POPOVER_EDGE`；`--gosslan-field-border` 暗色高对比抬到 `divider-strong`（7.6:1）；输入卡 10→22px（`CS-02` 按 `--gosslan-radius-2xl` 现读） | #32 的 `--only=fieldcontrast` 新增暗色 + `prefers-contrast:more` 格（比常规暗色更亮 >0.05 且 ≥3.0） |
 | 33 | 独立审查报告 M-1~M-7 + B-1 复核 | 骨架/index.html、Icon.vue/iconRegistry、designGuards、popoverBounds/MessageComposer、style.css/TabBar | 已完成 | M-2·M-3 `0575a8af`；M-1 `eaf23970`；M-6 `4308a76f`；M-7 `2b59612e`；M-4·M-5 `18003179` | M-1 骨架 `.boot-cap` 38→40、补 50px 标题行、搜索 28→36、composer 22，新增 SK-02 几何对账；M-2 ㊶ 补任意值/单轴/`!` 前缀（`p-[16px]`/`pt-4 pb-4`/`!p-4` 必红）；M-3 扫描域扩到 `Settings*`；M-4 删 `ui/icons.ts`（36 点收口）；M-5 删 `size` prop 与 1.8 分支；M-6 `MENTION_POP_MAX_H=176` + 兜底 `100dvh`（Reka 实测写入 `--reka-popper-available-height`）；M-7 删死开关 | **B-1 复核结论：断点无 bug，`tauri.conf.json` 未改**。≤767 均走移动布局（rail 隐藏、list/main 全宽），768 起桌面三列；`main` 任五档实宽都不为 0。原报告「360 时 main=0」是纯几何推算、漏掉移动布局路径 |
 | 34 | 缩略图被切割：「所有图片绝对不要切割」落到**缩略图**这一类（#17 只覆盖了气泡/预览窗，还漏两处 `object-cover`） | [TodoImageThumb.vue](../../../src/components/TodoImageThumb.vue)（群任务图片 80×80）、[MessageComposer.vue](../../../src/components/chat/MessageComposer.vue)（待发送 56×56） | 已完成 | `ab942506` | 两处 `object-cover → object-contain`，圆角/边框/底色不变；新增 **TH-01**（真实树断言两文件无 `object-cover` + 把 `contain` 换回 `cover` 必红的反例自证）。亮暗夹具截图：`test-results/ui-thumb-contain-2026-11-07/` | 头像仍按框裁（身份标识，不是图片内容）；收藏/转发/合并卡/气泡/预览窗原就是 `contain`，未动 |
+| 35 | 所有界面的骨架图与真实 UI 同步（用户 2026-11-07 总要求，排在全部 UI 改动之后） | [skeleton.css](../../../src/boot/skeleton.css)、5 个 HTML 骨架、[skeletonTokens.ts](../../../src/boot/skeletonTokens.ts)、[vite.config.ts](../../../vite.config.ts)、[style.css](../../../src/style.css)、6 个真实组件、designGuards SK-04 | 已完成 | 本笔 | 23 项对差表见 [density-and-scroll.md §8.2](../../design-language/density-and-scroll.md)；四类首帧跳位修掉：列表缺 50px 标题行、rail 多画 42px 头像（低 58–60）、设置/日志/预览缺 40px TitleBar、群任务顶栏 48→40；SK-04 正反 5 条（骨架写字面 px / 真实组件改回私有数字 / 删 token / 孤儿 `--boot-*` / marker 非 1 次）全绿，`designGuards` 360 条；截图 `test-results/skeleton-sync/`（5 界面 × 骨架/加载 × 1440，主窗加 390） | 骨架几何改为**构建时物化**：`--gosslan-*` 唯一来源 → `--boot-*` 注入内联样式，禁止骨架自写一套数字；画板偏差回写 `designs/gosslan-redesign/docs/decisions.md` v2.3 |
 
 ## 状态变更记录
 
@@ -118,6 +119,21 @@
   **Change Budget 判据 3 仍红**：本分支最近 5 个 patch 提交里 presentation 占 5 次
   （`e4d54f6/1800317/2b59612/4308a76/eaf2397`）—— 这是「同领域连打补丁」的既有信号，
   脚本注明处置口径只有「负责人接受」或「分次推送使每次范围只含 1 笔」。
+- 2026-11-07：**#35 完成**（骨架与真实 UI 同源）。用户总要求原文：「所有 UI 改完之后，
+  把所有界面的骨架图也同步跟现在的 UI 同步」。
+  ① 清单：`index.html`（桌面三栏 + 移动单列）、`settings.html`、`logs.html`、`todos.html`、
+  `preview.html` 五套首屏骨架，样式全部内联自 `src/boot/skeleton.css`。
+  ② 对差：23 项逐条量到根因 —— 列表缺 50px 标题行、rail 多画 42px 头像（低 58–60）、
+  设置/日志/预览缺 40px TitleBar、群任务顶栏 48→40、设置左栏 176→200、日志工具条 48→46、
+  移动行高 62→64、搜索壳留白 48→40、列表左上圆角 12→0。
+  ③ 同步口径：`style.css` 的 `--gosslan-*` 是唯一来源，`vite.config.ts` 在构建时把值物化成
+  `--boot-*` 注入内联样式（骨架先于 `style.css` 执行，运行时读不到那边变量）；
+  骨架只许 `var(--boot-*)`，真实组件必须引用同名 `--gosslan-*`。
+  ④ 判据：新增 **SK-04**（`checkBootSkeletonTokens`），四向校验 + 四条反例（骨架写字面 px /
+  真实组件改回私有数字 / 删 token / 孤儿 `--boot-*`）；`designGuards` 360/360 绿。
+  ⑤ 文档：本表 #35、[density-and-scroll.md §8](../../design-language/density-and-scroll.md)、
+  [decisions.md v2.3](../../../designs/gosslan-redesign/docs/decisions.md)。
+  ⑥ 截图：`test-results/skeleton-sync/`（5 界面 × 骨架/加载 × 1440；主窗加 390×844）。
 
 ## 合入记录
 
