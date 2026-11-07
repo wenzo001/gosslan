@@ -1839,7 +1839,7 @@ function retryHistory() {
           :aria-label="groupHistoryText"
         >
           <div
-            class="h-full origin-left rounded-full bg-[var(--gosslan-primary)] transition-transform duration-200 ease-[var(--gosslan-ease)]"
+            class="h-full origin-left rounded-full bg-[var(--gosslan-primary)] transition-transform duration-[var(--gosslan-duration-fade)] ease-[var(--gosslan-ease)]"
             :style="{ transform: `scaleX(${(groupHistoryPercent ?? 0) / 100})` }"
           ></div>
         </div>
@@ -2045,7 +2045,7 @@ function retryHistory() {
       <ErrorBoundary v-else>
         <VirtualList
           ref="listRef"
-          class="h-full transition-opacity duration-150 ease-out"
+          class="h-full transition-opacity duration-[var(--gosslan-duration-fast)] ease-[var(--gosslan-ease)]"
         :class="listSwitching ? 'opacity-0' : 'opacity-100'"
         :items="messages"
         live

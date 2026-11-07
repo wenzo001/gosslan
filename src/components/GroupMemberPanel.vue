@@ -349,8 +349,8 @@ async function confirmAction() {
         <p v-else class="px-3 py-2 text-sm text-[var(--gosslan-text-2)]">{{ t("group.announceEmpty") }}</p>
       </div>
 
-      <!-- 当前成员 -->
-      <div class="space-y-0.5">
+      <!-- 当前成员：移除成员后该行淡出，余下成员平滑补位（规范：删除要有出场） -->
+      <TransitionGroup name="list-row" tag="div" class="space-y-0.5">
         <div
           v-for="row in memberRows"
           :key="row.id"
@@ -397,13 +397,13 @@ async function confirmAction() {
             <Icon name="user-minus" class="h-4 w-4" />
           </button>
         </div>
+        </TransitionGroup>
         <StateBlock
           v-if="group.members.length === 0"
           kind="empty"
           compact
           :title="t('group.noMembers')"
         />
-      </div>
 
       <!-- 群任务分区：只给"有几项、各什么状态"+入口，完整列表在 GroupTasksPanel
            （成员面板已经装了成员列表 + 添加成员，再塞一张任务清单会把两个用途挤在一起） -->

@@ -77,7 +77,7 @@ function onCustomColor(e: Event) {
     <template #header>
       <div class="settings-card-inset flex items-center gap-4 rounded-[var(--gosslan-radius-lg)] bg-[var(--gosslan-bg)]">
         <AvatarBox
-          class="h-20 w-20 shrink-0 transition-colors duration-200"
+          class="h-20 w-20 shrink-0 transition-colors duration-[var(--gosslan-duration-fade)]"
           :bg="bg"
           :emoji="emoji"
           aria-hidden="true"

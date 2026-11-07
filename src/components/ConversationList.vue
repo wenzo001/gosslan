@@ -619,17 +619,21 @@ useEventListener(document, "click", closeFriendMenu);
       ]"
     >
       <template v-if="view === 'chats'">
-        <ConversationListItem
-          v-for="c in listConversations"
-          :key="c.id"
-          v-memo="[c.last_ts, c.last_msg, c.unread, c.avatar, c.name, chat.activeConv === c.id, isOnline(c.id), chat.friends.length, chat.groups.length, dropRowId === c.id, currentLocale()]"
-          :conv="c"
-          :active="chat.activeConv === c.id"
-          :online="isOnline(c.id)"
-          :drop-active="dropRowId === c.id"
-          @open="openConv"
-          @context="onConvContext"
-        />
+        <!-- 删除会话/好友时行淡出并让下方行平滑补位（规范：删除要有出场）。
+             容器只是块级包裹，不参与形态；reduced-motion 下立即移除，状态仍然可见。 -->
+        <TransitionGroup name="list-row" tag="div">
+          <ConversationListItem
+            v-for="c in listConversations"
+            :key="c.id"
+            v-memo="[c.last_ts, c.last_msg, c.unread, c.avatar, c.name, chat.activeConv === c.id, isOnline(c.id), chat.friends.length, chat.groups.length, dropRowId === c.id, currentLocale()]"
+            :conv="c"
+            :active="chat.activeConv === c.id"
+            :online="isOnline(c.id)"
+            :drop-active="dropRowId === c.id"
+            @open="openConv"
+            @context="onConvContext"
+          />
+        </TransitionGroup>
         <!-- 空态（用户需求 #7）：「兜底的界面，也不一定是要加好友。如果有好友的情况下，
              就会有一个『发起聊天』，然后去选好友。如果一个好友都没有的话，就是发现好友。」
              ⇒ 有好友时主行动 = 发起聊天（切到通讯录选人），另有次行动 = 发现好友；

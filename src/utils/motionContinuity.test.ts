@@ -9,7 +9,8 @@ import { join } from "node:path";
  * 判据不是"看起来对"，而是**旧实现一定红**：
  * - 设置分区：`mode="out-in"`（空档塌高）或 `translateY`（整块位移）出现即红；
  * - 图片外框：外框节点必须挂 `height: placeholderHeight`（旧实现解码后缩一次）；
- * - 桌面导航：rail 药丸不许再用 motion-v 共享布局弹簧，位移与内容淡入必须读同一组 CSS 常量。
+ * - 桌面导航：rail 药丸不许再用 motion-v 共享布局弹簧，位移与内容淡入必须读同一档阶梯令牌
+ *   （`--gosslan-duration-fast` / `--gosslan-ease`；旧的 140ms 专用常量已收编）。
  *
  * 文件末尾给每条判据喂一次**旧写法**，证明它们不是空转。
  */
@@ -91,12 +92,12 @@ test("桌面导航：常驻药丸 + 同一组时间轴常量，不再用共享�
   assert.ok(navRail.includes("RAIL_ITEM_STRIDE"), "步距要与 h-11 + gap-2 对齐");
 
   const pill = cssRule(css, ".rail-active-pill", "transition:");
-  assert.match(pill, /--gosslan-nav-switch-duration/, "药丸位移必须读共享时长");
-  assert.match(pill, /--gosslan-nav-switch-ease/, "药丸位移必须读共享缓动");
+  assert.match(pill, /--gosslan-duration-fast/, "药丸位移必须读阶梯里的 fast 档（140ms 已收编）");
+  assert.match(pill, /--gosslan-ease/, "药丸位移必须读全站曲线");
 
   const fadeA = cssRule(css, ".conv-view-fade-a", "animation:");
-  assert.match(fadeA, /--gosslan-nav-switch-duration/, "内容淡入必须读同一时长");
-  assert.match(fadeA, /--gosslan-nav-switch-ease/, "内容淡入必须读同一缓动");
+  assert.match(fadeA, /--gosslan-duration-fast/, "内容淡入必须读同一档位");
+  assert.match(fadeA, /--gosslan-ease/, "内容淡入必须读同一曲线");
 
   assert.ok(convList.includes("conv-view-fade-a") && convList.includes("conv-view-fade-b"), "左列要挂淡入类");
   assert.ok(

@@ -1,16 +1,23 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
-import { join } from "node:path";
+import { readFileSync, readdirSync, statSync } from "node:fs";
+import { join, relative } from "node:path";
 
 /**
  * 动效规范的可执行判据（规格：docs/design-language/motion-system.md）。
  *
- * 这里只扫 `src/style.css`：它是全站动效的**唯一**声明面（组件只挂类名 / 读令牌）。
+ * 覆盖两个声明面：
+ *   - `src/style.css`：全站动效的主声明面（组件只挂类名 / 读令牌）；
+ *   - `src/**\/*.vue`：组件里可能绕过 CSS 的两条暗道 —— Tailwind 的
+ *     `duration-*` 硬值，以及 motion-v 的 `spring` 参数 / 数字时长。
+ *     2026-11-07 之前这里只扫 CSS，灯箱的 `duration-150` 与移动 Tab 的
+ *     `stiffness: 480` 都在盲区里，判据全绿但组件各有各的时长。
+ *
  * 三条硬约束各自带反例，反例不通过就等于判据在空转：
  *   ① 时长只能取阶梯令牌，不许再写裸毫秒；
  *   ② 带缩放的入场必须声明来源锚点（`@motion-origin`），且 `scale(0)` 一律禁止；
  *   ③ `prefers-reduced-motion` 只许去动效，不许把状态本身藏掉。
+ *   ④ `.vue` 里不许出现 Tailwind 数字时长、motion-v 弹簧、数字 duration、系统曲线名。
  */
 const CSS = readFileSync(join(import.meta.dirname, "..", "style.css"), "utf8");
 
@@ -164,4 +171,97 @@ test("③ 反例自证：reduce 里把状态 opacity:0 必须红", () => {
   );
   assert.notEqual(broken, CSS, "fixture 没替换成功");
   assert.match(reducedMotionProblems(broken).join("\n"), /opacity:0/, "状态被藏掉却没红");
+});
+
+// ---------------- ④ .vue 里绕开令牌的时长 / 弹簧 ----------------
+
+/** 递归收集 `src` 下的 `.vue`（判据要扫全部，不给某个目录开后门）。 */
+export function collectVueFiles(dir: string): string[] {
+  const out: string[] = [];
+  for (const name of readdirSync(dir)) {
+    const full = join(dir, name);
+    const st = statSync(full);
+    if (st.isDirectory()) out.push(...collectVueFiles(full));
+    else if (name.endsWith(".vue")) out.push(full);
+  }
+  return out;
+}
+
+function lineOf(src: string, index: number): number {
+  let n = 1;
+  for (let i = 0; i < index; i++) if (src[i] === "\n") n++;
+  return n;
+}
+
+/**
+ * ④ 组件里的动效写法必须走令牌。
+ *
+ * 拦四类：
+ *   1. Tailwind 数字档 `duration-150` / `duration-300`（不在阶梯里，改令牌不会跟）；
+ *   2. 任意值 `duration-[300ms]`（同上）；阶梯令牌的 `var(...)` 放行，
+ *      `duration-[0ms]` 放行（"没有动效"）；
+ *   3. motion-v 弹簧（`type: "spring"` / `stiffness` / `damping` / `mass`）——
+ *      弹簧参数无法映射到阶梯令牌；
+ *   4. `duration: 0.24` 这类数字秒数、`ease: "easeOut"` 这类系统曲线名 ——
+ *      组件必须经 `utils/motionTokens.ts` 现读令牌。`duration: 0` 放行（reduce 档）。
+ */
+export function vueMotionProblems(src: string): string[] {
+  const bad: string[] = [];
+  const at = (i: number) => `第 ${lineOf(src, i)} 行`;
+
+  for (const m of src.matchAll(/\bduration-(\d+(?:\.\d+)?)\b/g)) {
+    if (Number(m[1]) !== 0) bad.push(`Tailwind 数字时长 duration-${m[1]} @ ${at(m.index ?? 0)}`);
+  }
+  for (const m of src.matchAll(/\bduration-\[([^\]]+)\]/g)) {
+    const v = m[1].trim();
+    if (v === "0" || v === "0ms" || v === "0s") continue;
+    if (/^var\(--gosslan-duration(?:-[\w-]+)?\)$/.test(v)) continue;
+    bad.push(`任意值时长 duration-[${v}] @ ${at(m.index ?? 0)}（只认阶梯令牌的 var(...)）`);
+  }
+  if (/\btype:\s*['"]spring['"]/.test(src)) bad.push("motion-v 弹簧 type: 'spring'");
+  for (const m of src.matchAll(/\b(stiffness|damping|mass)\s*:/g)) {
+    bad.push(`motion-v 弹簧参数 ${m[1]} @ ${at(m.index ?? 0)}`);
+  }
+  for (const m of src.matchAll(/\bduration\s*:\s*(\d+(?:\.\d+)?)/g)) {
+    if (Number(m[1]) !== 0) bad.push(`数字时长 duration: ${m[1]} @ ${at(m.index ?? 0)}`);
+  }
+  for (const m of src.matchAll(/\bease\s*:\s*['"]([^'"]+)['"]/g)) {
+    bad.push(`系统曲线名 ease: "${m[1]}" @ ${at(m.index ?? 0)}（应读 --gosslan-ease）`);
+  }
+  return bad;
+}
+
+const SRC = join(import.meta.dirname, "..");
+const VUE_FILES = collectVueFiles(SRC);
+
+test("④ 组件里不许写硬编码时长 / 弹簧 / 系统曲线", () => {
+  const bad = VUE_FILES.flatMap((f) =>
+    vueMotionProblems(readFileSync(f, "utf8")).map((p) => `${relative(SRC, f)}: ${p}`),
+  );
+  assert.deepEqual(bad, []);
+});
+
+test("④ 判据确实扫到了组件（防空转）", () => {
+  assert.ok(VUE_FILES.length >= 100, `只扫到 ${VUE_FILES.length} 个 .vue，扫描根目录可能错了`);
+});
+
+test("④ 反例自证：duration-[300ms] / spring / duration: 0.24 / ease: 'easeOut' 都必须红", () => {
+  const cases = [
+    '<div class="transition duration-[300ms]"></div>',
+    '<div class="transition duration-150"></div>',
+    ':transition="{ type: \'spring\', stiffness: 480, damping: 36 }"',
+    'animate(el, 1, { duration: 0.24 })',
+    'animate(el, 1, { duration: 0.24, ease: "easeOut" })',
+  ];
+  for (const c of cases) {
+    assert.ok(vueMotionProblems(c).length > 0, `反例没被检出 ⇒ 判据在空转：${c}`);
+  }
+  // 正例：令牌写法必须放行，否则判据会把正确写法也判红。
+  for (const ok of [
+    '<div class="transition duration-[var(--gosslan-duration-fast)]"></div>',
+    'animate(el, 1, { duration: motionSeconds("--gosslan-duration"), ease: motionEase() })',
+    'transition: { duration: 0 }',
+  ]) {
+    assert.deepEqual(vueMotionProblems(ok), [], `令牌写法被误判：${ok}`);
+  }
 });

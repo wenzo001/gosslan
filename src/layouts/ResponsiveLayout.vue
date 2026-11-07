@@ -5,6 +5,7 @@ import { computed, ref, onMounted, onUnmounted, watch, watchEffect } from "vue";
 import { useRoute, useRouter, type RouteLocationRaw } from "vue-router";
 import { navigationDirection } from "@/router/main";
 import { motion, useReducedMotion } from "@/utils/motion";
+import { motionEase, motionSeconds } from "@/utils/motionTokens";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { useEventListener } from "@vueuse/core";
 import { useAppStore } from "@/stores/useAppStore";
@@ -91,6 +92,22 @@ function navOfRoute(): NavState {
 }
 
 const reducedMotion = useReducedMotion();
+
+/**
+ * 移动端 Tab 药丸：高频、短距离（同一枚药丸在四个图标间滑动）。
+ * 取 `--gosslan-duration-fast`（150ms）—— 240ms 在移动端会让"点了之后还没停稳"，
+ * 100ms 又接近瞬移；曲线与全站同一个 `--gosslan-ease`，不再单独养一条弹簧。
+ * reduced-motion 下时长归零：药丸直接出现在目标位置，选中态仍然可见。
+ */
+const tabPillTransition = computed(() =>
+  reducedMotion.value
+    ? { duration: 0 }
+    : {
+        type: "tween" as const,
+        duration: motionSeconds("--gosslan-duration-fast"),
+        ease: motionEase(),
+      },
+);
 
 const navState = computed<NavState>(() =>
   route.meta.overlay ? lastNav.value : navOfRoute(),
@@ -1232,7 +1249,7 @@ function onResizeEnd() {
             v-if="navState === 'chats'"
             layout-id="tab-active"
             class="pointer-events-none absolute inset-0 rounded-full bg-[color-mix(in_srgb,var(--gosslan-primary)_13%,transparent)]"
-            :transition="reducedMotion ? { duration: 0 } : { type: 'spring', stiffness: 480, damping: 36, mass: 0.7 }"
+            :transition="tabPillTransition"
           />
           <NavIcon name="chats" :active="navState === 'chats'" variant="tab" />
           <UnreadBadge
@@ -1253,7 +1270,7 @@ function onResizeEnd() {
             v-if="navState === 'contacts'"
             layout-id="tab-active"
             class="pointer-events-none absolute inset-0 rounded-full bg-[color-mix(in_srgb,var(--gosslan-primary)_13%,transparent)]"
-            :transition="reducedMotion ? { duration: 0 } : { type: 'spring', stiffness: 480, damping: 36, mass: 0.7 }"
+            :transition="tabPillTransition"
           />
           <NavIcon name="contacts" :active="navState === 'contacts'" variant="tab" />
           <UnreadBadge
@@ -1276,7 +1293,7 @@ function onResizeEnd() {
             v-if="navState === 'favorites'"
             layout-id="tab-active"
             class="pointer-events-none absolute inset-0 rounded-full bg-[color-mix(in_srgb,var(--gosslan-primary)_13%,transparent)]"
-            :transition="reducedMotion ? { duration: 0 } : { type: 'spring', stiffness: 480, damping: 36, mass: 0.7 }"
+            :transition="tabPillTransition"
           />
           <NavIcon name="favorites" :active="navState === 'favorites'" variant="tab" />
         </span>
@@ -1295,7 +1312,7 @@ function onResizeEnd() {
             v-if="navState === 'me'"
             layout-id="tab-active"
             class="pointer-events-none absolute inset-0 rounded-full bg-[color-mix(in_srgb,var(--gosslan-primary)_13%,transparent)]"
-            :transition="reducedMotion ? { duration: 0 } : { type: 'spring', stiffness: 480, damping: 36, mass: 0.7 }"
+            :transition="tabPillTransition"
           />
           <Icon name="user-circle" class="nav-glyph h-5 w-5" :stroke-width="navState === 'me' ? 2.35 : 1.9" />
         </span>

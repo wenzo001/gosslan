@@ -431,7 +431,7 @@ async function openConversation(row: OperationRow) {
         <div class="mt-2 h-1 overflow-hidden rounded-full bg-[var(--gosslan-border)]">
           <div
             v-if="row.progress !== null"
-            class="h-full origin-left rounded-full bg-[var(--gosslan-primary)] transition-transform duration-200"
+            class="h-full origin-left rounded-full bg-[var(--gosslan-primary)] transition-transform duration-[var(--gosslan-duration-fade)]"
             :style="{ transform: `scaleX(${clampProgress(row.progress)})` }"
           />
           <div

@@ -759,6 +759,9 @@ async function confirmDelete() {
           <!-- 每行：行本身是 <button>（可聚焦、可回车），移动端的「⋯」放在**兄弟层**用绝对定位
                —— 不能嵌在行按钮里（<button> 套 <button> 是非法 HTML，浏览器会把它拆出去，
                表现是"⋯ 点了没反应"或整行都被点）。 -->
+          <!-- 取消收藏后行淡出、下方行平滑补位（规范：删除要有出场）。
+               用无 tag 的 TransitionGroup，避免多一层包裹影响行内绝对定位。 -->
+          <TransitionGroup name="list-row">
           <div v-for="row in rows" :key="row.f.id" class="relative min-w-0 overflow-hidden">
             <button
               class="flex w-full min-w-0 items-start gap-2.5 overflow-hidden px-3 py-2.5 text-left transition"
@@ -804,6 +807,7 @@ async function confirmDelete() {
               <Icon name="more-horizontal" class="h-4 w-4" />
             </button>
           </div>
+          </TransitionGroup>
           <StateBlock v-if="filtered.length === 0" kind="empty" :title="t('favorite.noMatch')" />
         </div>
         </div>
