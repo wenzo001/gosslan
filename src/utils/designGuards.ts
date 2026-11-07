@@ -2836,6 +2836,71 @@ export function checkSkeletonStatic(s: SkeletonSources): GuardIssue[] {
   return out.sort((a, b) => a.line - b.line);
 }
 
+// ---------------- SK：首帧骨架 vs 真实布局 ----------------
+
+export interface BootSkeletonSources {
+  /** `src/boot/skeleton.css` */
+  skeletonCss: string;
+  /** `src/style.css` */
+  styleCss: string;
+  /** `index.html` */
+  indexHtml: string;
+  /** `src/components/ConversationList.vue` */
+  conversationList: string;
+}
+
+/**
+ * SK-02：`index.html` 的首帧骨架必须和真实布局逐项对得上。
+ *
+ * 为什么需要这条：骨架是"点开瞬间"唯一的画面，它差 2px 用户看到的就是整屏跳一下；
+ * 但这类偏移没有任何运行时探针能抓到（骨架在真实 DOM 挂载前就消失了）。
+ * 2026-11-07 审查 M-1 实测漂移：标题栏 38 vs 真实 40、列表少了整整 50px 标题行、
+ * 还留着一条引用已删除 `.platform-mac` 的 28px 覆盖。
+ *
+ * 反例自证：把 `.boot-cap` 改成 41 / 删掉 `boot-title-row` / 恢复 `html.is-mac .boot-cap`
+ * 都必须红 —— 否则这条判据只是「两边都读了一遍」的空转。
+ */
+export function checkBootSkeletonGeometry(s: BootSkeletonSources): GuardIssue[] {
+  const out: GuardIssue[] = [];
+  const val = (src: string, re: RegExp) => {
+    const m = re.exec(src);
+    return m ? Number(m[1]) : NaN;
+  };
+  const titleH = val(s.styleCss, /--gosslan-title-h:\s*(\d+)px/);
+  const headerH = val(s.styleCss, /--gosslan-header-h:\s*(\d+)px/);
+  const shellRadius = val(s.styleCss, /--gosslan-radius-2xl:\s*(\d+)px/);
+  const capH = val(s.skeletonCss, /\.boot-cap\s*\{[^}]*?height:\s*(\d+)px/);
+  const headH = val(s.skeletonCss, /\.boot-head\s*\{[^}]*?height:\s*(\d+)px/);
+  const titleRowH = val(s.skeletonCss, /\.boot-title-row\s*\{[^}]*?height:\s*(\d+)px/);
+  const composerRadius = val(s.skeletonCss, /\.boot-composer\s*\{[^}]*?border-radius:\s*(\d+)px/);
+
+  if (capH !== titleH) {
+    out.push({ line: 0, message: `SK-02：骨架标题栏 ${capH}px ≠ \`--gosslan-title-h\` ${titleH}px（首帧会跳位）。` });
+  }
+  if (/html\.is-mac\s+\.boot-cap/.test(s.skeletonCss)) {
+    out.push({ line: 0, message: "SK-02：骨架里还留着 `html.is-mac .boot-cap` 的 28px 覆盖（`.platform-mac` 已删除）。" });
+  }
+  if (headH !== headerH) {
+    out.push({ line: 0, message: `SK-02：骨架对话头 ${headH}px ≠ \`--gosslan-header-h\` ${headerH}px。` });
+  }
+  if (!Number.isFinite(titleRowH) || titleRowH !== 50 || !/h-\[50px\]/.test(s.conversationList)) {
+    out.push({
+      line: 0,
+      message: `SK-02：骨架列表标题行 ${titleRowH}px 与真实 \`h-[50px]\` 对不上（缺这一行整列会话会整体上移 50px）。`,
+    });
+  }
+  if (!/<div class="boot-title-row">/.test(s.indexHtml)) {
+    out.push({ line: 0, message: "SK-02：index.html 缺 `boot-title-row` 占位，CSS 里的 50px 行等于没渲染。" });
+  }
+  if (composerRadius !== shellRadius) {
+    out.push({
+      line: 0,
+      message: `SK-02：骨架输入卡圆角 ${composerRadius}px ≠ \`--gosslan-radius-2xl\` ${shellRadius}px。`,
+    });
+  }
+  return out;
+}
+
 // ---------------- CS：聊天输入区表面（与消息区同一整块画布） ----------------
 
 /**

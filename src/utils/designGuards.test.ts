@@ -61,6 +61,7 @@ import {
   checkContainImageClip,
   checkBackToLatestAvoidance,
   findRawCardPadding,
+  checkBootSkeletonGeometry,
   findTransparentFieldBorder,
   findRawPlaceholderColor,
   findMissingPlaceholderRule,
@@ -6854,6 +6855,55 @@ test("SK-01 反例自证：锚点被改名必须红（否则探针与判据同�
   assert.ok(
     issues.some((i) => i.message.includes("SK-01") && i.message.includes("data-img-skeleton")),
     `期望 SK-01 报红，实际：${JSON.stringify(issues)}`,
+  );
+});
+
+// ---------------- SK-02：首帧骨架 vs 真实布局 ----------------
+
+function bootSkeletonSources() {
+  const srcDir = join(import.meta.dirname, "..");
+  return {
+    skeletonCss: readFileSync(join(srcDir, "boot", "skeleton.css"), "utf8"),
+    styleCss: readFileSync(join(srcDir, "style.css"), "utf8"),
+    indexHtml: readFileSync(join(srcDir, "..", "index.html"), "utf8"),
+    conversationList: readFileSync(join(srcDir, "components", "ConversationList.vue"), "utf8"),
+  };
+}
+
+test("SK-02：首帧骨架几何与真实布局逐项对账（标题栏 / 标题行 / 对话头 / 输入卡圆角）", () => {
+  const src = bootSkeletonSources();
+  const issues = checkBootSkeletonGeometry(src);
+  assert.deepEqual(issues, [], issues.map((i) => i.message).join("\n"));
+  // 分母自证：两边被比的锚点都真的在，判据不是在扫空气。
+  assert.match(src.styleCss, /--gosslan-title-h:\s*40px/);
+  assert.match(src.skeletonCss, /\.boot-title-row/);
+  assert.match(src.indexHtml, /boot-title-row/);
+});
+
+test("SK-02 反例自证：cap 41 / 删标题行 / 恢复 28px macOS 覆盖必须红", () => {
+  const src = bootSkeletonSources();
+
+  const capDrift = src.skeletonCss.replace(
+    "height: 40px; /* = `--gosslan-title-h`",
+    "height: 41px; /*",
+  );
+  assert.notEqual(capDrift, src.skeletonCss, "锚点没命中：.boot-cap 的 height 注释变了形状");
+  assert.ok(
+    checkBootSkeletonGeometry({ ...src, skeletonCss: capDrift }).some((i) => i.message.includes("SK-02") && i.message.includes("标题栏")),
+    "cap 40→41 必须红",
+  );
+
+  const noTitleRow = src.indexHtml.replace('<div class="boot-title-row">', '<div class="boot-title-row-x">');
+  assert.notEqual(noTitleRow, src.indexHtml, "锚点没命中：index.html 的标题行占位变了形状");
+  assert.ok(
+    checkBootSkeletonGeometry({ ...src, indexHtml: noTitleRow }).some((i) => i.message.includes("SK-02") && i.message.includes("boot-title-row")),
+    "删掉标题行占位必须红",
+  );
+
+  const macOverride = `${src.skeletonCss}\nhtml.is-mac .boot-cap { height: 28px; }\n`;
+  assert.ok(
+    checkBootSkeletonGeometry({ ...src, skeletonCss: macOverride }).some((i) => i.message.includes("SK-02") && i.message.includes("is-mac")),
+    "恢复 28px macOS 覆盖必须红",
   );
 });
 
