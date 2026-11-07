@@ -41,7 +41,7 @@
 | 30 | 群任务表单「右边又被裁切、和滚动条贴得太近」（用户两轮实测） | 全局滚动口径 [style.css](../../../src/style.css) + 14 个内容页滚动容器（BaseModal / Settings / Log / GroupTasks / Search / Favorite / Forward / Members / FriendRequests 等） | 已完成 | 本笔 | 结构改为「内容区 │ 固定空隙 8px │ 固定滚动条带 8px」：`--gosslan-scroll-track: 8px`、`--gosslan-scroll-gap: var(--gosslan-gutter)`、`--gosslan-scroll-inset: 16px`；`scrollbar-gutter: stable both-edges` ⇒ 有/无滚动条内容盒宽度逐像素相等且左右对称；删掉 `pr-0.5`/`-mx-1`/`-mx-5` 三处宽度补偿。守卫 SC-02 正反 4 条 + 14 页消费清单全绿 | 像素读数/4× 特写需真机截图，待用户重启 dev 后补；红绿灯无关 |
 | 31 | 页面内边距过大，按 VS Code compact 整档收紧（紧凑但井然有序） | [style.css](../../../src/style.css) 密度刻度 + SettingsPanel（分组间距）/ SettingsRow（行高下限）/ BaseModal·SettingsWindow（标题页脚对齐） | 已完成 | 本笔 | 依据：VS Code `window.density.layout=compact` 三条定义（更短标题栏 / 去掉部件间空隙 / 收紧面板内部间距，1.136 与 1.141 更新说明）；本应用无「部件间空隙」，只收紧内距与行高：`card-pad 16→12`、`card-pad-inset 12→8`、`section-gap 20→16`、`row-min-h 40`（下限 40，移动端命中仍 ≥44）、`gutter 8`。㊶ 判据跟着换挡（旧 16 现在判红），DE-01 正反 4 条绿 | 一屏可见条目数/亮暗截图需真机；`control-h` 未新开档（控件高度已由各行自有 `h-*` 与 HIG 判据管，避免两套口径） |
 | 32 | 审计报告 9 条落地（页脚版本号 / 设置左栏 / 单聊自己消息 / 群头像 / #29 / 碰撞内距 / 右余量 / 暗色高对比字段边框 / 输入卡 22px） | ConversationList、SettingsPanel、SettingsWindow、MessageItem/MessageReceipt、MessageComposer、style.css、popoverBounds | 已完成 | `3b73eafe` · `08d6e4a3` · `250ef2c5` · `689e6ae4` · `e178e085` · `4ec8b35e` · `68d30156` | 页脚删版本号 → 42px「任务中心 · N」（探针判据同步）；设置左栏 9 分区双栏、散值归零；自己消息气泡 36 / 内距 2 / 换组 12 / 68% / 560px；群头像 24；红绿灯 14pt→20pt；碰撞内距 13 处收成 `POPOVER_EDGE`；`--gosslan-field-border` 暗色高对比抬到 `divider-strong`（7.6:1）；输入卡 10→22px（`CS-02` 按 `--gosslan-radius-2xl` 现读） | #32 的 `--only=fieldcontrast` 新增暗色 + `prefers-contrast:more` 格（比常规暗色更亮 >0.05 且 ≥3.0） |
-| 33 | 独立审查报告 M-1~M-7 + B-1 落地 | 骨架/index.html、Icon.vue/iconRegistry、designGuards、popoverBounds/MessageComposer、style.css/TabBar、tauri.conf.json | 进行中（仅 B-1 待你拍板） | M-2·M-3 `0575a8af`；M-1 `eaf23970`；M-6 `4308a76f`；M-7 `2b59612e`；M-4·M-5 `18003179` | M-1 骨架 `.boot-cap` 38→40、补 50px 标题行、搜索 28→36、composer 22，新增 SK-02 几何对账；M-2 ㊶ 补任意值/单轴/`!` 前缀（`p-[16px]`/`pt-4 pb-4`/`!p-4` 必红）；M-3 扫描域扩到 `Settings*`；M-4 删 `ui/icons.ts`（36 点收口）；M-5 删 `size` prop 与 1.8 分支；M-6 `MENTION_POP_MAX_H=176` + 兜底 `100dvh`（Reka 实测写入 `--reka-popper-available-height`）；M-7 删死开关 | **B-1 窄窗不动**：360 下 `360−64(rail)−280(list) = 16`，方案 A 救不回；需你批准 `tauri.conf.json minWidth = 704`（方案 B）后再加几何守卫与四档读数 |
+| 33 | 独立审查报告 M-1~M-7 + B-1 复核 | 骨架/index.html、Icon.vue/iconRegistry、designGuards、popoverBounds/MessageComposer、style.css/TabBar | 已完成 | M-2·M-3 `0575a8af`；M-1 `eaf23970`；M-6 `4308a76f`；M-7 `2b59612e`；M-4·M-5 `18003179` | M-1 骨架 `.boot-cap` 38→40、补 50px 标题行、搜索 28→36、composer 22，新增 SK-02 几何对账；M-2 ㊶ 补任意值/单轴/`!` 前缀（`p-[16px]`/`pt-4 pb-4`/`!p-4` 必红）；M-3 扫描域扩到 `Settings*`；M-4 删 `ui/icons.ts`（36 点收口）；M-5 删 `size` prop 与 1.8 分支；M-6 `MENTION_POP_MAX_H=176` + 兜底 `100dvh`（Reka 实测写入 `--reka-popper-available-height`）；M-7 删死开关 | **B-1 复核结论：断点无 bug，`tauri.conf.json` 未改**。≤767 均走移动布局（rail 隐藏、list/main 全宽），768 起桌面三列；`main` 任五档实宽都不为 0。原报告「360 时 main=0」是纯几何推算、漏掉移动布局路径 |
 
 ## 状态变更记录
 
@@ -81,7 +81,20 @@
   M-6 `4308a76f`、M-7 `2b59612e`、M-4·M-5 `18003179`；版本 5.18.60 → 5.18.64。
   ㊵ 从「名字白名单」改为「除 `iconRegistry.ts` 外禁直连 lucide」+「Icon 字面量名必须登记」。
   `designGuards` 336 条全绿；`npm test` 1862 pass；`npm run build` 12.2s。
-- 2026-11-07：**#33 的 B-1 仍未动**（等用户批准 `tauri.conf.json minWidth = 704`）。
+- 2026-11-07：**B-1 复核完成**（负责人裁决：不批 `minWidth 704`，先查断点）。Brave headless + CDP
+  实测五档（Chromium 内核，`matchMedia` 判定与 WKWebView 同源）：
+
+  | 窗宽 | 实际布局 | rail | list | main |
+  |------|----------|------|------|------|
+  | 360 | 移动（`html.is-mobile`） | 0（`display:none`） | 360（absolute w-full） | 360 |
+  | 390 | 移动 | 0 | 390 | 390 |
+  | 430 | 移动 | 0 | 430 | 430 |
+  | 767 | 移动 | 0 | 767 | 767 |
+  | 768 | 桌面三列 | 64 | 320 | 384 |
+
+  `main` 的 `min-w-0` / `flex-1` 仍在，但移动态是 `absolute w-full`、不参与 flex 分配 ⇒ 不争空间。
+  最窄桌面组合（768 + 列表上限 400）= main 304，仍 > 0。结论：断点正确启用，`main` 任一档都不为 0，
+  原报告「360 时 main=0」漏掉了移动布局路径；`tauri.conf.json` 未改动。
 - 2026-11-07：全批收尾两笔：`26fc8710` 修 #29 引入的 clippy `needless_borrow`（红绿灯两个
   调用点去掉 `&ns_window`，版本 5.18.66）；`a70f5a33` 把三条注入锚点跟着真实形状搬家
   （`<X>`→`<Icon name="x">`、`100vh`→`100dvh`、`:collision-padding="8"`→`POPOVER_EDGE`）
