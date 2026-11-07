@@ -1,17 +1,24 @@
-# 自动更新（Tauri Updater + GitHub Releases）
+# 自动更新（Tauri Updater + Gitee 固定清单 / GitHub 备份）
 
-> 方案：**Tauri 官方 updater 插件 + GitHub Releases 静态清单**。不建更新服务器、不买域名；
-> 清单固定为 `https://github.com/wenzo001/gosslan/releases/latest/download/latest.json`。
+> 方案：**Tauri 官方 updater 插件 + Gitee 固定静态清单 + GitHub Release 备份**。不建更新服务器、不买域名。
+> 客户端同时写两条地址，**Gitee 在前、GitHub 在后**：
+>
+> 1. `https://gitee.com/fwdq/gosslan-releases/raw/master/updates/latest.json`
+> 2. `https://github.com/wenzo001/gosslan/releases/latest/download/latest.json`
+>
+> Tauri 只在下一条返回 **非 2XX** 时才回退（官方文档原文：“only continue to the next url if a
+> non-2XX status code is returned”）。所以 Gitee 返回 200 的**旧清单不会**回退 GitHub；
+> 同步失败必须在 Actions 里红，不能静默。
 
 ## 1. 架构与平台范围
 
 | 平台 | 分发渠道 | 应用内更新 | 状态 |
 |---|---|---|---|
-| Windows x64 / arm64 | GitHub Release（NSIS 基础档） | 官方 updater（NSIS） | 已接通/已配置；**真实安装重启未验** |
-| Windows（内置 WebView2 档） | GitHub Release | 不进入更新清单 | 手动更新；见 §7 |
-| macOS arm64 / x86_64 | GitHub Release（DMG + updater `.app.tar.gz`） | 官方 updater | 已接通/已配置；**真实安装重启、公证未验** |
+| Windows x64 / arm64 | Gitee Release（镜像）+ GitHub Release（备份） | 官方 updater（NSIS），Gitee 清单优先 | 已配置；**真实安装重启未验** |
+| Windows（内置 WebView2 档） | GitHub Release（**Gitee 不镜像**，单文件 >100MB） | 不进入更新清单 | 手动更新；需从 GitHub 下载；见 §7 |
+| macOS arm64 / x86_64 | Gitee Release（镜像）+ GitHub Release（备份） | 官方 updater，Gitee 清单优先 | 已配置；**真实安装重启、公证未验** |
 | Linux | 无发布 workflow | 未配置 | 暂不支持（无发布产物/渠道） |
-| Android | GitHub Release APK | 不支持桌面安装器更新 | 从发布页手动下载 APK |
+| Android | Gitee Release（镜像）+ GitHub Release（备份） | 应用内更新先读 Gitee 固定清单，失败/清单过期退 GitHub API | 已配置；**真机安装未验** |
 | iOS | 无发布 workflow | 不支持 | 暂不支持 |
 
 客户端流程（`src/updater/`）：
@@ -40,6 +47,10 @@
 8. `updater-manifest.yml` 由 **tag push** 触发（不是 `release: published`）：用 `GITHUB_TOKEN`
    创建的 Release 不会再启动新的 workflow run（GitHub 防递归），写在 release 事件上会让
    `latest.json` 永远不生成。它轮询等 Release 与四平台产物齐，再生成并校验清单。
+   发布完成后，同一个 workflow 末尾的 `sync-gitee` job 调用 `sync-gitee.yml` 把资产与
+   固定清单镜像到 Gitee；**这一步失败会让整条发布 workflow 红**，不是可选项。
+   手工补跑用 `workflow_dispatch` 直接跑 `sync-gitee.yml`（指定已发布 tag），不会重跑
+   GitHub 清单生成、不会动已发布的 GitHub Release。
 
 ## 2. 签名与密钥
 
@@ -71,12 +82,24 @@
    Android APK / macOS dmg，45 分钟上限），下载、生成并上传 `latest.json`，
    然后才 `--draft=false` 发布，最后用公开 URL 校验 200 与四平台齐全。
    草稿对 `releases/tags/<tag>` 会 404，所以这一步全程用列表 API 按 release id 读写。
-5. 校验：
-   `curl -fsSL https://github.com/wenzo001/gosslan/releases/latest/download/latest.json`
-   应含 `darwin-aarch64` / `darwin-x86_64` / `windows-x86_64` / `windows-aarch64`，
-   且 `version` 与 tag 一致。
-6. 重复发布/版本冲突：`publish-release-assets.sh` 幂等创建/补附件；
+5. **Gitee 镜像**（`updater-manifest.yml` → `sync-gitee` job，或手工 `sync-gitee.yml`）：
+   - 从 GitHub Release 下载同一批资产；`>100MB` 的 WebView2 内置包跳过（Gitee 单附件上限 100MB）；
+   - 在 `fwdq/gosslan-releases` 建同名 tag/release 并上传附件（幂等：同名旧附件先删再传）；
+   - 用 GitHub 的 `latest.json` 重写四个桌面 URL 为 Gitee 下载地址，签名原样复用；
+   - 追加 `android-aarch64` / `android-armv7`，带 `url + size + sha256`，供 Android 客户端校验；
+   - 把结果提交到 **固定路径** `updates/latest.json`（`master` 分支，每次覆盖）；
+   - 匿名拉回固定清单、逐个平台 URL 探测、完整下载一个桌面产物与一个 APK 并比对 sha256；
+   - 清理更早的 Gitee release，只保留最近 `keep` 个（默认 8），**当前 tag 永不删**。
+6. 校验：
+   ```bash
+   curl -fsSL https://gitee.com/fwdq/gosslan-releases/raw/master/updates/latest.json
+   curl -fsSL https://github.com/wenzo001/gosslan/releases/latest/download/latest.json
+   ```
+   两份清单应含 `darwin-aarch64` / `darwin-x86_64` / `windows-x86_64` / `windows-aarch64`，
+   `version` 与 tag 一致；Gitee 版额外含两个 Android 平台。
+7. 重复发布/版本冲突：`publish-release-assets.sh` 幂等创建/补附件；
    `latest.json` 重传先按资产 id 删除再上传（等价 `--clobber`）；同版本重复发 tag 会覆盖旧资产，**不要**这么做。
+   Gitee 侧同样幂等：release 存在就更新，同名附件先删再传，固定清单用 Contents API 覆盖提交。
 
 ### 3.1 发不出去时的三种真形状（2026-10-22 实测，都踩过）
 
@@ -102,6 +125,25 @@
 - `notes` 从 CHANGELOG 对应版本小节提取。
 - 单元判据：`node --test scripts/updaterManifest.test.ts`。
 
+Gitee 侧的 `scripts/sync-gitee.mjs` 不重新生成桌面清单，而是**复用 GitHub 的 `latest.json`**：
+
+- 四个桌面平台只改 `url` 的基地址，`signature` 原样保留（不重签）；
+- 追加两个 Android 平台（`url` + `size` + `sha256`），签名字段留空是刻意的：
+  Android 走 sha256 校验，不用 minisign；
+- 版本号必须与 tag 逐字一致；缺任一桌面平台、缺任一 Android 平台直接红；
+- `latest.json` 本身不重复上传为 release 附件，只提交固定路径；
+- 单元判据：`node --test scripts/sync-gitee.test.ts`。
+
+## 4.1 Gitee 配额、清理与边界
+
+- **单附件 100MB / 仓库附件总量 1G**（Gitee Help）。每个 release 不传 WebView2 时约 74MB，
+  所以默认只保留最近 8 个 release（约 590MB），更早的 release 自动删除，GitHub 全量保留。
+- 清理前会打印完整 dry-run 计划；当前 tag 的 release 被硬编码排除，固定清单在仓库分支上，
+  不在 release 附件里，所以清理不会碰 `latest.json`。
+- `workflow_dispatch` 默认 `dry_run=true`；确认计划后再用 `dry_run=false` 真跑。
+- WebView2 内置档（`*-webview2-bundled.exe`）**不镜像到 Gitee**；国内需要该档的用户
+  走 GitHub Release 或其它渠道。它本来也不进入更新清单。
+
 ## 5. 过渡版本与老用户
 
 - **本文件不抄版本号**：线上最新版本读
@@ -111,6 +153,21 @@
 - 在它的 `latest.json` 生成之前，客户端检查会 404/网络失败 → 静默（符合离线零打扰）。
 - Windows 内置 WebView2 档（`-webview2-bundled.exe`）不进入清单：它接近 200MB，
   走官方 `Update::download` 会让客户端内存峰值过大；这一档用户需手动更新，或后续单开通道。
+  它也超过 Gitee 单附件 100MB，**不会镜像到 Gitee**，只能从 GitHub Release 下载。
+
+### 5.1 Gitee 优先的过渡与摘除条件
+
+- **本次端点改动只在下一个构建版本生效**：已经安装的旧版本仍只读 GitHub 清单，
+  它会先更新到“双地址版本”；从那一版起才真正 Gitee 优先。
+- 过渡期至少要覆盖**两个连续版本**，且每个版本都满足：
+  1. `sync-gitee` job 绿；
+  2. Gitee 固定清单匿名 200，四个桌面 URL + 两个 Android URL 都可匿名下载；
+  3. 演练时完整下载的桌面产物与 APK sha256 与 GitHub 原件一致；
+  4. 没有收到“检查更新失败/回退 GitHub”的用户反馈。
+- 满足以上条件后，才把 GitHub 那条从 `tauri.conf.json` 的 `endpoints` 里摘掉；
+  GitHub Release 继续作为归档与 WebView2 下载渠道保留，不删。
+- 过渡期 Gitee 同步失败必须立刻修：因为 Gitee 一旦返回 200 的旧清单，桌面客户端**不会**
+  自动回退 GitHub，用户会看不到新版本。
 
 ## 6. 已执行测试 / 未覆盖项
 
@@ -168,6 +225,27 @@
   updater 新增禁止降级判据（前端 `downgrade` 错误格 1 条 + Rust 六向对照 + 闸门位置守卫），
   本轮**未重跑**真实签名打包（与上一段 2026-10-22 的打包结论不冲突，那次的签名链路仍然有效）。
 
+- **2026-11-07 Gitee 优先改造（本轮）**：
+  - `node --test scripts/sync-gitee.test.ts`：**7/7**（桌面 URL 重写、Android 条目、
+    跳过策略、保留排序/当前 tag 保护、URL 解码、令牌打码）。
+  - `cargo test --lib android_update_core`：**9/9**（新增固定清单解析：只取 Android 平台、
+    缺版本/缺 Android 条目报错、缺 sha256 留给后续校验）。
+  - `cargo check --target aarch64-linux-android --lib`：**Finished**（Android 分支编译通过；
+    仅剩并行会话既有 `EVENT_PREVIEW_CLOSED` 未使用告警）。
+  - 真实 Gitee 演练结果见 §6.1；**真机安装与桌面真实签名校验仍未验**。
+
+### 6.1 Gitee 端到端演练（2026-11-07，tag v5.18.78）
+
+用 `workflow_dispatch` 直接跑 `sync-gitee.yml`，只读 GitHub 已发布资产，不重跑发布、不动已发布 Release：
+
+- 空仓库初始化：`README.md` 占位提交 → `master` 分支 → tag/release；
+- 上传 14 个资产（跳过 2 个 WebView2 内置包与 `latest.json`）；
+- 固定清单匿名可读，版本与 tag 一致，四桌面 + 两 Android 平台齐全；
+- 完整下载 `windows-x86_64` 与 `android-aarch64`，sha256 与 GitHub 原件一致；
+- 清理计划 dry-run 输出后，只保留最近 8 个 release。
+
+> 具体命令与原文输出记录在本次交付说明中；如果这里与 Actions 日志冲突，以 Actions 日志为准。
+
 **未验**（必须明说）：
 
 - 真实签名产物下载 → 签名校验 → NSIS/DMG 安装 → 重启后新版本启动（需要配 Secrets、
@@ -182,4 +260,9 @@
 - 官方 `Update::download` **把整包放内存**（不是流式落盘），取消时随 future drop 释放；
   因此更新清单只指向基础 NSIS / `.app.tar.gz`，不指向 190MB 的 WebView2 内置档。
 - 检查失败静默；没有“网络恢复后自动重试”，只有用户手动检查（满足不轮询/不无限重试）。
-- 服务器端只有 GitHub Releases；无自建服务、无域名、无数据库。
+- 服务器端是 Gitee Release + GitHub Release 两份静态资产；无自建服务、无域名、无数据库。
+- Gitee 配额：单附件 100MB、仓库总量 1G ⇒ WebView2 档不镜像，旧 release 只保留 8 个；
+  配额逼近时同步 job 会先红，不要靠“传上去再说”。
+- Gitee raw 清单有约 60 秒 CDN 缓存；发布后最多一分钟内客户端仍可能读到上一版清单。
+- 桌面端 Gitee 返回 200 的旧清单不会回退 GitHub；Android 端额外做了“低于当前版本判过期”
+  并退 GitHub 的兜底，但两端都以“同步 job 必须绿”为最终保障。

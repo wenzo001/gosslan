@@ -1,0 +1,137 @@
+name: Sync release to Gitee
+
+# 把已发布的 GitHub Release 镜像到 Gitee，并维护固定清单 updates/latest.json。
+#
+# 触发方式：
+# - workflow_call：由 `Publish updater manifest` 在 Release 发布后调用（主路径）；
+# - workflow_dispatch：手工补跑任意已发布 tag（演练/回填用）；
+# - release: published：只兜底"人手动发布"的 Release。注意本仓正常发版是
+#   `GITHUB_TOKEN` 发布，GitHub 不会为它再启动 workflow，所以主路径必须靠上面两条，
+#   不能只监听 release: published。
+#
+# 安全：
+# - GITEE_TOKEN 只从 secret 读，第一步就 ::add-mask::，脚本任何错误都会把 token 替换成 ***；
+# - Gitee 侧单附件 100MB、仓库总量 1G ⇒ WebView2 内置包跳过，旧 release 只保留最近 keep 个；
+# - 当前 tag 的 release 永不进入清理清单，固定清单所在分支的提交也不受影响。
+
+on:
+  workflow_call:
+    inputs:
+      tag:
+        description: "要同步的 tag（vX.Y.Z）"
+        required: true
+        type: string
+      keep:
+        description: "Gitee 保留最近多少个 release"
+        required: false
+        default: "8"
+        type: string
+      dry_run:
+        description: "只打印清理计划，不实际删除"
+        required: false
+        default: false
+        type: boolean
+    secrets:
+      GITEE_TOKEN:
+        required: true
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "要同步的 tag（vX.Y.Z）"
+        required: true
+        type: string
+      keep:
+        description: "Gitee 保留最近多少个 release"
+        required: false
+        default: "8"
+        type: string
+      dry_run:
+        description: "只打印清理计划，不实际删除"
+        required: false
+        default: true
+        type: boolean
+  release:
+    types: [published]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: sync-gitee-${{ inputs.tag || github.event.release.tag_name }}
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    env:
+      TAG: ${{ inputs.tag || github.event.release.tag_name }}
+      GITEE_REPO: fwdq/gosslan-releases
+      GITHUB_REPO: ${{ github.repository }}
+      KEEP: ${{ inputs.keep || '8' }}
+      DRY_RUN: ${{ inputs.dry_run && '1' || '0' }}
+    steps:
+      - name: Mask Gitee token
+        env:
+          GITEE_TOKEN: ${{ secrets.GITEE_TOKEN }}
+        run: echo "::add-mask::$GITEE_TOKEN"
+
+      - name: Validate tag
+        env:
+          GITEE_TOKEN: ${{ secrets.GITEE_TOKEN }}
+        run: |
+          set -euo pipefail
+          if ! printf '%s' "$TAG" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+$'; then
+            echo "非法 tag：$TAG" >&2
+            exit 1
+          fi
+          if ! printf '%s' "$KEEP" | grep -Eq '^[1-9][0-9]*$'; then
+            echo "非法 keep：$KEEP" >&2
+            exit 1
+          fi
+          if [ -z "${GITEE_TOKEN:-}" ]; then
+            echo "缺少 GITEE_TOKEN secret" >&2
+            exit 1
+          fi
+
+      # 不能用 tag 的 checkout：演练 v5.18.78 时该 tag 还没有本脚本，资产改为按 tag
+      # 从 GitHub API 下载。release 事件取默认分支；workflow_dispatch 取被派发的 ref（这样
+      # 分支上的演练能拿到未合并的脚本）；workflow_call 取调用方（manifest job）的提交。
+      - name: Checkout sync script
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event_name == 'release' && github.event.repository.default_branch || github.sha }}
+          sparse-checkout: |
+            scripts/sync-gitee.mjs
+            scripts/updater-manifest.mjs
+          fetch-depth: 1
+
+      # 只下 <=100MB 的资产；WebView2 内置包在 Gitee 侧必然超限，提前跳过省带宽。
+      # latest.json 也一并下载：Gitee 清单以它为准重写 URL，签名原样复用。
+      - name: Download GitHub release assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          mkdir -p assets
+          gh api "repos/$GITHUB_REPO/releases/tags/$TAG" > /tmp/release.json
+          jq -r '.assets[] | [.id, .name, .size] | @tsv' /tmp/release.json > /tmp/assets.tsv
+          while IFS=$'\t' read -r id name size; do
+            if [ "$size" -gt 104857600 ]; then
+              echo "跳过 >100MB：$name（$size 字节）"
+              continue
+            fi
+            gh api "repos/$GITHUB_REPO/releases/assets/$id" \
+              -H "Accept: application/octet-stream" -H "Cache-Control: no-cache" > "assets/$name"
+          done < /tmp/assets.tsv
+          test -s assets/latest.json
+          echo "下载完成：$(find assets -type f | wc -l | tr -d ' ') 个文件"
+
+      - name: Sync to Gitee
+        env:
+          GITEE_TOKEN: ${{ secrets.GITEE_TOKEN }}
+        run: |
+          set -euo pipefail
+          args=(--tag "$TAG" --assets-dir assets --repo "$GITEE_REPO" --keep "$KEEP")
+          if [ "$DRY_RUN" = "1" ]; then args+=(--dry-run); fi
+          node scripts/sync-gitee.mjs "${args[@]}"

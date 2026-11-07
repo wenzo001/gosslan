@@ -34,6 +34,8 @@ use tokio::io::AsyncWriteExt;
 #[cfg(target_os = "android")]
 use crate::android_update_core as core;
 
+const GITEE_MANIFEST: &str =
+    "https://gitee.com/fwdq/gosslan-releases/raw/master/updates/latest.json";
 const RELEASE_API: &str = "https://api.github.com/repos/wenzo001/gosslan/releases/latest";
 const CHECK_TIMEOUT: Duration = Duration::from_secs(15);
 const DOWNLOAD_TIMEOUT: Duration = Duration::from_secs(30 * 60);
@@ -264,19 +266,16 @@ fn clear_apk(state: &AndroidUpdaterSession) {
 }
 
 #[cfg(target_os = "android")]
-async fn fetch_update(
-    app: &AppHandle,
-    state: &AndroidUpdaterSession,
-) -> Result<Option<AndroidUpdateInfo>, String> {
-    let current = app.package_info().version.to_string();
-    let client = reqwest::Client::builder()
-        .timeout(CHECK_TIMEOUT)
-        .build()
-        .map_err(|e| coded(E_NETWORK, format!("网络客户端初始化失败（{e}）")))?;
+async fn fetch_manifest_body(
+    client: &reqwest::Client,
+    url: &str,
+    accept: &str,
+    current: &str,
+) -> Result<String, String> {
     let resp = client
-        .get(RELEASE_API)
+        .get(url)
         .header("User-Agent", format!("Gosslan/{current}"))
-        .header("Accept", "application/vnd.github+json")
+        .header("Accept", accept)
         .send()
         .await
         .map_err(|e| {
@@ -302,28 +301,34 @@ async fn fetch_update(
         return Err(coded(code, detail));
     }
 
-    let body = resp
-        .text()
+    resp.text()
         .await
-        .map_err(|e| coded(E_NETWORK, format!("读取发布信息失败（{e}）")))?;
-    let release = core::parse_release_json(&body)?;
-    if !core::version_is_newer(&current, &release.version) {
+        .map_err(|e| coded(E_NETWORK, format!("读取发布信息失败（{e}）")))
+}
+
+/// 把清单转成缓存 + 下载信息。两种来源（Gitee 固定清单 / GitHub API）共用这一段，
+/// 保证版本比较、ABI 选包、sha256 必填、旧 APK 清理的口径完全一致。
+#[cfg(target_os = "android")]
+fn prepare_update(
+    app: &AppHandle,
+    state: &AndroidUpdaterSession,
+    current: &str,
+    release: core::ReleaseInfo,
+) -> Result<Option<AndroidUpdateInfo>, String> {
+    if !core::version_is_newer(current, &release.version) {
         return Ok(None);
     }
 
-    let asset = core::select_asset(&release.assets, core::abi_name()).ok_or_else(|| {
-        coded(
-            E_NO_ASSET,
-            format!("当前设备架构（{}）没有对应安装包", core::abi_name()),
-        )
-    })?;
+    let abi = core::abi_name();
+    let asset = core::select_asset(&release.assets, abi)
+        .ok_or_else(|| coded(E_NO_ASSET, format!("当前设备架构（{abi}）没有对应安装包")))?;
     let sha256 = asset
         .sha256
         .clone()
         .ok_or_else(|| coded(E_NO_DIGEST, "发布信息缺少 sha256，无法校验安装包"))?;
 
     let info = AndroidUpdateInfo {
-        current_version: current,
+        current_version: current.to_string(),
         version: release.version.clone(),
         notes: release.notes,
         size: asset.size,
@@ -336,9 +341,80 @@ async fn fetch_update(
         });
     }
     let dir = updates_dir(app)?;
-    let keep = format!("gosslan-{}-{}.apk", release.version, core::abi_name());
+    let keep = format!("gosslan-{}-{abi}.apk", release.version);
     cleanup_other_apks(&dir, &keep);
     Ok(Some(info))
+}
+
+/// Gitee 固定清单优先。清单 200 但版本低于当前版本时判为“清单过期”并返回错误，
+/// 让外层退 GitHub —— 桌面的 Gitee 旧清单不会回退，Android 这里多一层兜底。
+#[cfg(target_os = "android")]
+async fn fetch_from_gitee(
+    client: &reqwest::Client,
+    current: &str,
+    app: &AppHandle,
+    state: &AndroidUpdaterSession,
+) -> Result<Option<AndroidUpdateInfo>, String> {
+    let body = fetch_manifest_body(client, GITEE_MANIFEST, "application/json", current).await?;
+    let release = core::parse_fixed_manifest(&body)?;
+    if !core::version_is_newer(current, &release.version) {
+        let same = core::normalize_version(&release.version) == core::normalize_version(current);
+        if same {
+            return Ok(None);
+        }
+        return Err(coded(
+            E_PARSE,
+            format!(
+                "Gitee 清单版本 {} 低于当前版本 {current}，判定为过期",
+                release.version
+            ),
+        ));
+    }
+    prepare_update(app, state, current, release)
+}
+
+#[cfg(target_os = "android")]
+async fn fetch_from_github(
+    client: &reqwest::Client,
+    current: &str,
+    app: &AppHandle,
+    state: &AndroidUpdaterSession,
+) -> Result<Option<AndroidUpdateInfo>, String> {
+    let body = fetch_manifest_body(
+        client,
+        RELEASE_API,
+        "application/vnd.github+json",
+        current,
+    )
+    .await?;
+    let release = core::parse_release_json(&body)?;
+    prepare_update(app, state, current, release)
+}
+
+#[cfg(target_os = "android")]
+async fn fetch_update(
+    app: &AppHandle,
+    state: &AndroidUpdaterSession,
+) -> Result<Option<AndroidUpdateInfo>, String> {
+    let current = app.package_info().version.to_string();
+    let client = reqwest::Client::builder()
+        .timeout(CHECK_TIMEOUT)
+        .build()
+        .map_err(|e| coded(E_NETWORK, format!("网络客户端初始化失败（{e}）")))?;
+
+    match fetch_from_gitee(&client, &current, app, state).await {
+        Ok(result) => Ok(result),
+        Err(gitee_err) => {
+            if crate::logging::log_throttled("android_update_gitee_fallback", 300_000) {
+                eprintln!(
+                    "[gosslan-updater] Gitee 清单不可用，回退 GitHub（code={}）",
+                    extract_code(&gitee_err).unwrap_or_else(|| "UNKNOWN".into())
+                );
+            }
+            // 最终错误保持 GitHub 的口径，前端已有的 code 映射不变。
+            fetch_from_github(&client, &current, app, state).await
+        }
+    }
 }
 
 #[cfg(target_os = "android")]
