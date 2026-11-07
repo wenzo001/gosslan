@@ -374,11 +374,11 @@ const tintStyle = computed(() => {
 });
 
 /**
- * 正文块（气泡行 / 提示行）要不要自己带 6px **上**间距。
+ * 正文块（气泡行 / 提示行）要不要自己带 10px **上**间距。
  *
- * 那 6px 原本来自列表项的 `py-1.5`，现在改由"本项的第一个可见块"承担（消息块那层只留 `pb-1` = 4px，见模板）：
+ * 那 10px 是"换组"档，由"本项的第一个可见块"承担（消息块那层只留 `pb-0.5` = 2px，见模板）：
  * 底色要包住整块、相邻块要相接，所以正文块的盒子必须从列表项的上边缘就开始。
- * 但分割行压在正文块上面时不能重复给 —— 分割行的 `pt` 里已经含了这 6px（见模板）。
+ * 但分割行压在正文块上面时不能重复给 —— 分割行的 `pt` 里已经含了这 10px（见模板）。
  */
 const needsTopPad = computed(() => !showTimeDivider.value && !props.showUnreadDivider);
 
@@ -1609,18 +1609,18 @@ async function copyFileToClipboard() {
        或消息行上：挪回 `.group/msg` 就露出那 4px 白缝；挪到消息行则连"头像上面 / 气泡下面"
        的 6px 内边距都没有了 —— 这几条都被用户逐个否过。 -->
   <div class="group/msg" :class="tintClass" :style="tintStyle">
-    <!-- 消息块：纵向只留 **`pb-1`(4px)** 这一条下间距，它同时是"同一发送者连续消息"的组内留白；
-         组首（`atGroupStart`）再自己带 `pt-1.5`(6px) ⇒ 组与组之间是 4+6=10px。
-         分割行压在上面时不带那 6px（见 needsTopPad），免得重复给间距。
+    <!-- 消息块：纵向只留 **`pb-0.5`(2px)** 这一条下间距，它同时是"同一发送者连续消息"的组内留白；
+         组首（`atGroupStart`）再自己带 `pt-2.5`(10px) ⇒ 组与组之间是 2+10=12px。
+         分割行压在上面时不带那 10px（见 needsTopPad），免得重复给间距。
          这两档的分母在 `messageKinds`（MSG_GAP_TIGHT / MSG_GAP_NEW）+ `messageHeight`（GAP_BASE）——
          **改这里的类名必须同时改那两处**，否则虚拟列表的占位与真实画法会岔开、相邻消息互相遮挡。
          ⚠️ 别改回 `pb-1.5`：那是"每条都空 6px"的旧口径，连续消息看起来一条一条散着，
          与「同一人连发就是厚厚的一块气泡流」相反。 -->
     <div
-      class="relative pb-1"
+      class="relative pb-0.5"
     >
     <!-- 多选态：透明覆盖层 + 左侧勾选框，两者都**绝对定位**，不进 flex 流。
-         为什么必须这样：气泡宽度是 `max-w-[var(--gosslan-msg-max)]`（= 78%），勾选框若作为 flex 兄弟插进来会挤窄气泡、
+         为什么必须这样：气泡宽度是 `min(--gosslan-msg-max 68%, --gosslan-msg-max-px 560px)`，勾选框若作为 flex 兄弟插进来会挤窄气泡、
          正文折行变多，而虚拟列表按 `previewMetrics.COLUMNS_PER_LINE` 估的高度不会跟着变
          ⇒ 相邻消息互相遮挡（`messageHeight` 文件头专门写过这个坑）。
          覆盖层的第二个作用：多选时气泡里的链接/图片/引用点击都不该响应，它一并吃掉。
@@ -1670,14 +1670,14 @@ async function copyFileToClipboard() {
     </div>
 
     <!-- 提示行（系统消息 / 已撤回）：微信式居中灰字，**通栏**、无头像、无气泡。
-         之所以是"消息行"的**兄弟节点**而不是它内部的一支：放进消息行就会带上 36px 头像
-         和 `max-w-[var(--gosslan-msg-max)]`（= 78%） 的列宽，居中后仍偏向一侧、看着还是一条普通消息 ——
+         之所以是"消息行"的**兄弟节点**而不是它内部的一支：放进消息行就会带上 24px 头像
+         和 `min(--gosslan-msg-max 68%, 560px)` 的列宽，居中后仍偏向一侧、看着还是一条普通消息 ——
          那正是用户 2026-09-16 报的问题。
-         纵向间距同正文块：上间距看 `needsTopPad`（分割行会自己带），下间距由消息块那层的 `pb-1`。 -->
+         纵向间距同正文块：上间距看 `needsTopPad`（分割行会自己带），下间距由消息块那层的 `pb-0.5`。 -->
     <div
       v-if="isTip"
       class="px-4 text-center text-xs text-[var(--gosslan-text-2)]"
-      :class="needsTopPad && atGroupStart ? 'pt-1.5' : ''"
+      :class="needsTopPad && atGroupStart ? 'pt-2.5' : ''"
     >
       {{ message.kind === "recalled" ? t(recalledTextKey) : message.content }}
     </div>
@@ -1690,12 +1690,12 @@ async function copyFileToClipboard() {
          ⚠️ 这里只动横向内边距：高度估算用的 `COLUMNS_PER_LINE` 是**常量**、不随宽度变，
          所以不会破坏 VirtualList 的估算（横向挪动与"相邻消息互相遮挡"那个坑无关）。 -->
     <!-- 正文块（气泡行）：**只带条件性的上间距** `pt-1.5`（分割行压在上面时由分割行带），
-         下间距统一由消息块那层的 `pb-1`(4px) 出（底色要包到那一层）。 -->
+         下间距统一由消息块那层的 `pb-0.5`(2px) 出（底色要包到那一层）。 -->
     <div
       v-else
       class="relative flex items-start gap-2 px-4 transition"
       :class="[
-        needsTopPad && atGroupStart ? 'pt-1.5' : '',
+        needsTopPad && atGroupStart ? 'pt-2.5' : '',
         mine ? 'flex-row-reverse' : '',
         selectMode && !mine ? 'pl-10' : '',
       ]"
@@ -1747,20 +1747,21 @@ async function copyFileToClipboard() {
            var() 解析失败会让整条声明被丢弃（选中态变成无色圆 + 看不见的白勾）。
            ⚠️ 竖向**对齐头像**，不是行的垂直居中（用户 2026-09-21：「微信的那个 radio 和头像对齐的」）：
            长消息里"行居中"会把圈甩到消息中间去。所以锚点挂在**消息行**上（`absolute` 的
-           包含块 = 行的 padding box），`top-0`/`top-1.5` 对齐行的 content 顶（= 头像顶，
-           行有 `pt-1.5` 时补上那 6px）＋ `mt-1.5`(6px) —— 头像 `--gosslan-msg-avatar` 高 30px、
-           圈 18px，(30 − 18) / 2 = 6 ⇒ 两者竖向中心重合。**头像尺寸改过一次的教训**：
-           这里原来是 `mt-2`(8px)，配的是 36px 的头像；头像换成 30px 后不跟着改就会低 2px。
+           包含块 = 行的 padding box），`top-0`/`top-2.5` 对齐行的 content 顶（= 头像顶，
+           行有 `pt-2.5` 时补上那 10px）＋ `mt-[3px]` —— 头像 `--gosslan-msg-avatar` 高 24px、
+           圈 18px，(24 − 18) / 2 = 3 ⇒ 两者竖向中心重合。**头像尺寸改过一次的教训**：
+           这里原来是 `mt-2`(8px)，配的是 36px 的头像；头像换成 24px 后必须跟着改，否则低 3px。
            用标准间距类而不是 `calc(...)`：Tailwind 的任意值里漏一个空格就是**整条声明被丢弃**，
            而这条没有任何判据兜着（探针量的是气泡边缘，不是勾选圈）。
-           横向 12px（`left-3`）：别人的行由 `pl-10`(40px) 把头像整排让开（圈 12..30 + 间隙 + 头像 40 起），
+           横向 12px（`left-3`）：别人的行由消息行自身的 `--gosslan-msg-gutter`
+           （circle 16 + 头像 24 + 间隙 8 = 48px）把头像整排让开（圈 12..30，头像 48 起），
            自己的行消息在右侧、左边是空的，圈落在整行的选中底色之内。
            `z-20` 压在选中覆盖层（z-10）之上，但 `pointer-events-none` ⇒ 点击仍落到覆盖层。 -->
       <span
         v-if="selectMode && isMultiSelectable(message.kind)"
-        class="pointer-events-none absolute left-3 z-20 mt-1.5 flex h-[18px] w-[18px] items-center justify-center rounded-full border transition"
+        class="pointer-events-none absolute left-3 z-20 mt-[3px] flex h-[18px] w-[18px] items-center justify-center rounded-full border transition"
         :class="[
-          needsTopPad ? 'top-1.5' : 'top-0',
+          needsTopPad ? 'top-2.5' : 'top-0',
           selected
             ? 'border-primary bg-[var(--gosslan-primary-active)]'
             : 'border-[var(--gosslan-border)] bg-[var(--gosslan-panel)]',
@@ -1779,7 +1780,7 @@ async function copyFileToClipboard() {
            ⚠️ 触屏长按从这一列起手（不再只挂消息行）：昵称/引用块等非正文区也能开面板。 -->
       <div
         data-msg-col
-        class="msg-stack relative flex min-w-0 max-w-[var(--gosslan-msg-max)] flex-col"
+        class="msg-stack relative flex min-w-0 flex-col"
         :data-pos="groupSide"
         :class="mine ? 'items-end' : 'items-start'"
         :style="showNickname ? { '--bubble-tail-corner': '2px' } : undefined"
@@ -2072,9 +2073,9 @@ async function copyFileToClipboard() {
           />
 
           <!-- 已知但没有专门渲染分支的 kind：按纯文本兜底。
-               排版必须与 MessageTextBubble 一致（py-1.5 / leading-normal），
+               排版必须与 MessageTextBubble 一致（py-2 / leading-[1.4286]），
                否则虚拟列表按 `previewMetrics.TEXT_BUBBLE_PADDING` 估的高度会对不上。 -->
-          <div v-else class="select-text px-3 py-1.5 text-sm leading-normal break-all" :style="bubbleStyle">
+          <div v-else class="select-text px-3 py-2 text-sm leading-[1.4286] break-all" :style="bubbleStyle">
             {{ message.content }}
           </div>
             </div>
@@ -2115,7 +2116,7 @@ async function copyFileToClipboard() {
 
   <!-- 强提醒标识：气泡下方一条（发起方看总览/接收方看本机相），接收方未确认时带「我知道了」。
        让出多少由 `avatarGutterClass` 现算：有头像列的那侧让
-       `--gosslan-msg-gutter`（= 行的 16 + 头像列 30 + 间隙 8），没有头像列的那侧只让行的
+       `--gosslan-msg-gutter`（= 行的 16 + 头像列 24 + 间隙 8 = 48px），没有头像列的那侧只让行的
        16px 内边距 —— 这两档各被实测判红过一次：写死 60 让胶囊离气泡边 44px（撤头像列之后），
        而只让 16 又会在真有头像列的那行压进气泡。 -->
   <div

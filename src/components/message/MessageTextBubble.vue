@@ -155,7 +155,7 @@ async function openLink(href: string) {
 <template>
   <!-- 气泡排版（用户 2026-09-12 反馈：「气泡高度太高了，不如微信里和谐；字重又太细了，
        一眼看上去不够清晰」）：
-       - 纵向内边距 py-1.5(12px 合计) 与 leading-normal(行高 1.5)：更紧凑、更接近微信；
+       - 纵向内边距 py-2(16px 合计) + leading-[1.4286]（14px 字号下行高 20px）⇒ 内容盒 36px；
        - `font-medium`(500)：比默认 400 更清晰，又不至于到 600 显得"加粗标题"。
        ⚠️ 这三个值都被 `utils/previewMetrics.ts` 的 `TEXT_LINE_RATIO` / `TEXT_BUBBLE_PADDING`
        镜像用于虚拟列表高度估算 —— **改这里必须同步改那里**，否则相邻消息会互相遮挡
@@ -166,7 +166,7 @@ async function openLink(href: string) {
        刻意**不用** `.gosslan-selectable` 这个类：它同时是"移动端长按让路给原生选字"的
        标记，标到气泡根上会让长按再也弹不出操作面板（气泡正是长按的主落点）。 -->
   <div
-    class="group gosslan-bubble-text select-text relative min-w-0 px-3 py-1.5 font-medium leading-normal"
+    class="group gosslan-bubble-text select-text relative min-w-0 px-3 py-2 font-medium leading-[1.4286]"
     :class="selectMode ? 'gosslan-selecting' : ''"
     :style="finalStyle"
   >

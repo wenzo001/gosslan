@@ -25,7 +25,7 @@ const expanded = ref(false);
 </script>
 
 <template>
-  <div class="select-text px-3 py-1.5 text-sm leading-normal" :style="bubbleStyle">
+  <div class="select-text px-3 py-2 text-sm leading-[1.4286]" :style="bubbleStyle">
     <div class="font-medium">{{ t("msg.unsupportedKind") }}</div>
     <button
       class="tap-safe mt-1 text-xs opacity-70 transition hover:opacity-100"

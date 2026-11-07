@@ -480,15 +480,15 @@ test("shouldShowNickname：群聊只在组首显示；单聊/自己/提示行一
 });
 
 // ---------------- 组内 / 换组的上间距（2026-10-23） ----------------
-// 渲染端（MessageItem 的 pt-1.5 / pb-1）与估高端（messageHeight）都取这一个函数。
+// 渲染端（MessageItem 的 pt-2.5 / pb-0.5）与估高端（messageHeight）都取这一个函数。
 // 为什么不在 messageHeight 上直接测：它要 `@/utils/*` 别名，node --test 加载不了
 // （实测 ERR_MODULE_NOT_FOUND: @/utils）⇒ 能跑真值表的只有这一个零依赖的家。
 
-test("messageTopGap：组首/孤立 6px、组内 0、分割行自己带间距所以是 0", () => {
-  assert.equal(MSG_GAP_NEW, 6);
+test("messageTopGap：组首/孤立 10px、组内 0、分割行自己带间距所以是 0", () => {
+  assert.equal(MSG_GAP_NEW, 10);
   assert.equal(MSG_GAP_TIGHT, 0);
   for (const side of ["single", "first"] as const) {
-    assert.equal(messageTopGap(side, false), 6, `${side} 应给换组间距`);
+    assert.equal(messageTopGap(side, false), 10, `${side} 应给换组间距`);
     assert.equal(messageTopGap(side, true), 0, `${side} 上方有分割行时不叠加间距`);
   }
   for (const side of ["middle", "last"] as const) {

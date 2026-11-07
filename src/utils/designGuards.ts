@@ -788,23 +788,29 @@ export function checkBubbleMetricsCoupling(
   const line = lineAt(bubbleSrc, at);
   const classes = (tag.match(/\bclass="([^"]*)"/)?.[1] ?? "").split(/\s+/).filter(Boolean);
 
-  // 行高：必须先能识别出 `leading-*`，再从度量文件取比值。
+  // 行高：先认 `leading-*` 具名档，再认 `leading-[1.4286]` 任意值档（2026-11-07 起气泡用后者）。
   const leadingClass = classes.find((c) => c in LEADING_RATIO);
+  const arbitraryLeading = classes.find((c) => /^leading-\[[0-9.]+\]$/.test(c));
+  const leadingValue = arbitraryLeading
+    ? Number(arbitraryLeading.slice("leading-[".length, -1))
+    : leadingClass
+      ? LEADING_RATIO[leadingClass]
+      : undefined;
   const ratioRaw = metricsSrc.match(/TEXT_LINE_RATIO\s*=\s*([\d.]+)/)?.[1];
-  if (!leadingClass || ratioRaw === undefined) {
+  if (leadingValue === undefined || ratioRaw === undefined) {
     out.push({
       line,
       message:
-        "无法核对气泡行高：组件缺少可识别的 `leading-*` 类，或度量文件里找不到 `TEXT_LINE_RATIO`。" +
+        "无法核对气泡行高：组件缺少可识别的 `leading-*` / `leading-[N]` 类，或度量文件里找不到 `TEXT_LINE_RATIO`。" +
         "两者必须成对存在，否则虚拟列表无法估算高度。",
     });
-  } else if (Math.abs(LEADING_RATIO[leadingClass] - Number(ratioRaw)) > 1e-9) {
+  } else if (Math.abs(leadingValue - Number(ratioRaw)) > 1e-6) {
     out.push({
       line,
       message:
-        `气泡用 \`${leadingClass}\`（行高 ${LEADING_RATIO[leadingClass]}），` +
+        `气泡用 \`${leadingClass ?? arbitraryLeading}\`（行高 ${leadingValue}），` +
         `但预览度量 \`TEXT_LINE_RATIO\` = ${ratioRaw} —— 两边不一致会让虚拟列表的` +
-        `高度估算与真实渲染对不上（相邻消息遮挡）。把度量值改成 ${LEADING_RATIO[leadingClass]}。`,
+        `高度估算与真实渲染对不上（相邻消息遮挡）。把度量值改成 ${leadingValue}。`,
     });
   }
 

@@ -257,12 +257,13 @@ export type MessageGroupSide = "single" | "first" | "middle" | "last";
  * （实测 `ERR_MODULE_NOT_FOUND: @/utils`），所以「间距给几」这一层只能在零依赖模块里跑真值表；
  * 依赖 DOM 的那一半由 `check-ui-runtime --only=rowpair` 量矩形。
  *
- * 0 / 6 —— 配合每条消息恒定的 4px 下边距，组内合计 4px、换组合计 10px（设计基线 2–4 / 8–12）。
+ * 0 / 10 —— 配合每条消息恒定的 **2px** 下边距，组内合计 2px、换组合计 12px
+ * （画板 2026-11-07：组内 2 / 换组 12；旧口径是 4 / 10）。
  */
 export const MSG_GAP_TIGHT = 0;
-export const MSG_GAP_NEW = 6;
+export const MSG_GAP_NEW = 10;
 
-/** 这一条上方该留多少：分割行自己带间距（0），组首/孤立 6px，组内 0。 */
+/** 这一条上方该留多少：分割行自己带间距（0），组首/孤立 10px，组内 0。 */
 export function messageTopGap(side: MessageGroupSide, hasDivider: boolean): number {
   if (hasDivider) return 0;
   return side === "first" || side === "single" ? MSG_GAP_NEW : MSG_GAP_TIGHT;

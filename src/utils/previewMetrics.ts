@@ -38,12 +38,12 @@ export const CODE_PREVIEW_LINES = 8;
 export const CODE_SURFACE = { dark: "#161b22", light: "#eaeef3" } as const;
 
 /** 文本气泡：`leading-normal` = 1.5 倍行距（原 1.625 即 `leading-relaxed`，
- *  2026-09-12 按用户反馈「气泡太高、不如微信和谐」收紧）。
- *  ⚠️ 与 `MessageTextBubble.vue` 的 `leading-normal` 成对，改一个必须改另一个。 */
-const TEXT_LINE_RATIO = 1.5;
-/** 文本气泡：`py-1.5` 纵向内边距合计 12px（原 `py-2` = 16px，同一次收紧）。
- *  ⚠️ 与 `MessageTextBubble.vue` / `MessageItem.vue` 兜底气泡的 `py-1.5` 成对。 */
-const TEXT_BUBBLE_PADDING = 12;
+ *  2026-09-12 按用户反馈「气泡太高、不如微信和谐」收紧；2026-11-07 按画板回到
+ *  36px 内容盒：8px 上下内距 + 20px 行高（20/14 = 1.4286）。
+ *  ⚠️ 与 `MessageTextBubble.vue` 的 `leading-[1.4286]` 成对，改一个必须改另一个。 */
+const TEXT_LINE_RATIO = 1.4286;
+/** 文本气泡：`py-2` 纵向内边距合计 16px（8 + 20 行高的另一半）。 */
+const TEXT_BUBBLE_PADDING = 16;
 /** MessageItem 给文本气泡统一保留 1px 描边，透明描边也会计入盒模型高度。 */
 const TEXT_BUBBLE_BORDER = 2;
 /** 文本气泡内长文本操作条：mt-1.5(6) + pt-1.5(6) + border-top(1) + text-xs 行高(16)。 */
@@ -59,9 +59,10 @@ const CODE_PADDING = 12;
 const CODE_LINE_HEIGHT = 20;
 /** 代码块下方操作条：mt-1(4) + py-1(8) + leading-4(16)。 */
 const CODE_ACTION_BAR = 28;
-/** 一个视觉行的半角列数（气泡 max-w 78%（`--gosslan-msg-max`）实测 ≈40 个半角字符 / 14px 正文）。
+/** 一个视觉行的半角列数（气泡 max-w 68%（`--gosslan-msg-max`，上限 560px）
+ *  实测 ≈35 个半角字符 / 14px 正文；78% 时代是 40）。
  *  改 MessageItem 的气泡宽度上限时，这里必须同步（偏小只会多留白，偏大会遮挡下一条）。 */
-const COLUMNS_PER_LINE = 40;
+const COLUMNS_PER_LINE = 35;
 /** COLUMNS_PER_LINE 对应的基准字号；字号变大时每行放不下的字符按比例减少。 */
 const BASE_FONT_PX = 14;
 
