@@ -4456,6 +4456,7 @@ async function main() {
     const scrollswitch = want("scrollswitch");
     const scrollinput = want("scrollinput");
     const scrollstable = want("scrollstable");
+    const previewclip = want("previewclip");
     const todosync = want("todosync");
     const tododelete = want("tododelete");
     const todoarchive = want("todoarchive");
@@ -4698,6 +4699,7 @@ async function main() {
     await runSegment("scrollswitch", scrollswitch, () => runScrollSwitch(cdp, url));
     await runSegment("scrollinput", scrollinput, () => runScrollInput(cdp, url));
     await runSegment("scrollstable", scrollstable, () => runScrollStable(cdp, url));
+    await runSegment("previewclip", previewclip, () => runPreviewClip(cdp, url));
     await runSegment("todosync", todosync, () => runTodoSync(cdp, url));
     await runSegment("tododelete", tododelete, () => runTodoDelete(cdp, url));
     await runSegment("todoarchive", todoarchive, () => runTodoArchive(cdp, url));
@@ -25588,6 +25590,150 @@ async function runInputPanels(cdp, url) {
     "开 → 点外 → 关，且草稿含 @", JSON.stringify({ openedAgain, outsideClick }));
 }
 
+
+/**
+ * ③ 预览图不许被切割（2026-11-07）。
+ *
+ * 用户报「预览状态图片四角是黑的」。判据全部走运行时，不读 CSS 源码：
+ *  1. 预览图的 `border-radius` 必须是 0、`object-fit` 必须是 `contain`；
+ *  2. 从图片到 `data-lightbox-stage` 之间不许出现任何 `overflow != visible` 的祖先；
+ *  3. 图片矩形四角用 `elementFromPoint` 命中图片本身（被遮住/裁掉就命中别人）；
+ *  4. 图片四周安全边距 ≥ 8px；
+ *  5. 反面对照：给 stage 加 `overflow:hidden` + 给图片加 18px 圆角 ⇒ 上面 1/2 必须真的红。
+ *
+ * 用带四角标记的 SVG data URL：四角各一块纯红方块，长宽比 4:3（不是 1:1），
+ * 这样 `cover` 一裁就会把左右两块切掉，肉眼和截图都能看出来。
+ */
+async function runPreviewClip(cdp, url) {
+  const shotDir = path.join(ROOT, "test-results", "ui-2026-11-07");
+  fs.mkdirSync(shotDir, { recursive: true });
+  await cdp.send("Page.bringToFront").catch(() => {});
+  await cdp.send("Emulation.setDeviceMetricsOverride", {
+    width: 980, height: 700, deviceScaleFactor: 1, mobile: false,
+  }).catch(() => {});
+
+  const svg = [
+    '<svg xmlns="http://www.w3.org/2000/svg" width="400" height="300">',
+    '<rect width="400" height="300" fill="#ffffff"/>',
+    '<rect x="0" y="0" width="56" height="56" fill="#ff0000"/>',
+    '<rect x="344" y="0" width="56" height="56" fill="#00ff00"/>',
+    '<rect x="0" y="244" width="56" height="56" fill="#0000ff"/>',
+    '<rect x="344" y="244" width="56" height="56" fill="#ff00ff"/>',
+    '<text x="200" y="160" font-size="28" text-anchor="middle" fill="#111">preview 400x300</text>',
+    "</svg>",
+  ].join("");
+  const dataUrl = "data:image/svg+xml;base64," + Buffer.from(svg).toString("base64");
+
+  const READ = `(() => {
+    const img = document.querySelector('[data-lightbox-img]');
+    const stage = document.querySelector('[data-lightbox-stage]');
+    if (!img || !stage) return null;
+    const cs = getComputedStyle(img);
+    const r = img.getBoundingClientRect();
+    const clipping = [];
+    let el = img.parentElement;
+    while (el && el !== document.body) {
+      const c = getComputedStyle(el);
+      const ov = [c.overflow, c.overflowX, c.overflowY].join('/');
+      if (!/visible\\/visible\\/visible/.test(ov)) clipping.push(el.tagName + '.' + (el.className || '').toString().slice(0, 40) + ' → ' + ov);
+      el = el.parentElement;
+    }
+    const pts = [[r.left + 3, r.top + 3], [r.right - 3, r.top + 3], [r.left + 3, r.bottom - 3], [r.right - 3, r.bottom - 3]];
+    const hits = pts.map(([x, y]) => {
+      const e = document.elementFromPoint(x, y);
+      return e && e === img ? 'img' : (e ? e.tagName + '.' + String(e.className || '').slice(0, 30) : 'none');
+    });
+    return {
+      radius: cs.borderRadius,
+      objectFit: cs.objectFit,
+      box: { x: +r.x.toFixed(1), y: +r.y.toFixed(1), w: +r.width.toFixed(1), h: +r.height.toFixed(1) },
+      natural: [img.naturalWidth, img.naturalHeight],
+      margin: {
+        left: +(r.left).toFixed(1), top: +(r.top).toFixed(1),
+        right: +(innerWidth - r.right).toFixed(1), bottom: +(innerHeight - r.bottom).toFixed(1),
+      },
+      clipping, cornerHit: hits,
+      stageOverflow: getComputedStyle(stage).overflow,
+    };
+  })()`;
+
+  const setDark = async (dark) => {
+    await cdp.eval(`(() => { document.documentElement.classList.toggle('dark', ${dark}); return true; })()`);
+    await sleep(400);
+  };
+  const shot = async (name) => {
+    const s = await cdp.send("Page.captureScreenshot", { format: "png" });
+    fs.writeFileSync(path.join(shotDir, name + ".png"), Buffer.from(s.data, "base64"));
+  };
+  const mount = async () => {
+    const props = {
+      images: [{ name: "corner.svg", dataSrc: dataUrl }],
+      index: 0,
+      open: true,
+    };
+    return cdp.eval("window.__probe.install('/src/components/message/ImageLightbox.vue', '', "
+      + JSON.stringify(JSON.stringify(props)) + ")");
+  };
+
+  try {
+    await cdp.send("Page.navigate", { url });
+    await cdp.settled();
+    await sleep(3_000);
+    await cdp.eval(PAGE_FIXTURE);
+    const installed = await mount();
+    await sleep(1_400);
+    if (!installed || installed.ok !== true) {
+      check("灯箱挂得起来（预览不裁切判据的前置）", false, "install ok", JSON.stringify(installed));
+      return;
+    }
+
+    const rows = [];
+    for (const dark of [false, true]) {
+      await setDark(dark);
+      await sleep(400);
+      const r = await cdp.eval(READ);
+      await shot(`previewclip-${dark ? "dark" : "light"}`);
+      rows.push({ dark, r });
+    }
+    console.log("  ℹ 预览图读数：" + JSON.stringify(rows.map((x) => ({ dark: x.dark, ...x.r }))));
+
+    check("预览图：border-radius = 0 且 object-fit = contain（亮/暗两套）",
+      rows.every((x) => x.r && (x.r.radius === "0px" || x.r.radius === "0")
+        && x.r.objectFit === "contain"),
+      "radius 0 / contain", JSON.stringify(rows.map((x) => [x.r?.radius, x.r?.objectFit])));
+
+    check("预览图：到 stage 之间没有任何 overflow 裁切祖先",
+      rows.every((x) => x.r && x.r.clipping.length === 0),
+      "clipping = []", JSON.stringify(rows.map((x) => x.r?.clipping)));
+
+    check("预览图：四角 elementFromPoint 都必须命中图片本身（被遮/被裁就命中别的）",
+      rows.every((x) => x.r && x.r.cornerHit.every((h) => h === "img")),
+      "4/4 命中 img", JSON.stringify(rows.map((x) => x.r?.cornerHit)));
+
+    check("预览图：四周安全边距 ≥ 8px，且原图 400×300 完整落在视口内",
+      rows.every((x) => x.r && Math.min(x.r.margin.left, x.r.margin.top, x.r.margin.right, x.r.margin.bottom) >= 8
+        && x.r.natural[0] === 400 && x.r.natural[1] === 300),
+      "min margin >= 8px 且 natural 400x300", JSON.stringify(rows.map((x) => [x.r?.margin, x.r?.natural])));
+
+    // 反面对照：stage 加 overflow:hidden、图片加 18px 圆角 —— 读数必须真的变坏。
+    await cdp.eval(`(() => {
+      const img = document.querySelector('[data-lightbox-img]');
+      const stage = document.querySelector('[data-lightbox-stage]');
+      if (img) img.style.borderRadius = '18px';
+      if (stage) stage.style.overflow = 'hidden';
+      return true;
+    })()`);
+    await sleep(400);
+    const broken = await cdp.eval(READ);
+    console.log("  ℹ 反面对照读数：" + JSON.stringify(broken));
+    check("反面对照：stage 加 overflow:hidden + 图片加 18px 圆角后，radius 与裁剪祖先必须双双变坏",
+      !!broken && broken.radius !== "0px" && broken.clipping.length > 0,
+      "radius != 0 且 clipping 非空",
+      JSON.stringify(broken && { radius: broken.radius, clipping: broken.clipping }));
+  } finally {
+    await cdp.send("Emulation.clearDeviceMetricsOverride").catch(() => {});
+  }
+}
 
 /**
  * ⑦（合并版，2026-11-07）：**滚动条出现/消失不许改变内容宽度**。

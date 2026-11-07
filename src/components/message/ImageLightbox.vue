@@ -752,14 +752,21 @@ useEventListener(window, "keydown", onKey);
         <template v-if="src">
           <!-- 手势的 x/y/scale 走 MotionValue（在 Vue 渲染周期外执行）。
                ⚠️ 不再挂 layoutId：缩略图侧已经不做 layout 补间，单边保留只是一段死契约。 -->
-          <div class="flex items-center justify-center">
+          <div class="flex items-center justify-center" data-lightbox-stage>
             <!-- 打开/关闭的缩放是**纯 transform**（scaleX/scaleY + 中心对齐平移），
                  不写 left/top/width/height：布局位移会重排，也会把"一路向右滑"的观感带回来。
-                 `opacity` 只在开场量尺寸那一帧藏住图片，避免先闪一帧终态再缩小。 -->
+                 `opacity` 只在开场量尺寸那一帧藏住图片，避免先闪一帧终态再缩小。
+
+                 ⚠️ 预览态**绝对不许切割图片**（用户 2026-11-07：预览图四角是黑的）：
+                 · 不写圆角 → 显式 `rounded-none`（源码锚点，防止将来有人为了"好看"补圆角）；
+                 · 不写 `overflow-hidden`（任何祖先都不许），图片外框贴着内容；
+                 · 必须 `object-contain`：`cover` 会把长图/宽图裁掉上下或左右；
+                 · 安全边距由 `max-h-[85vh] max-w-[88vw]` 给（不是靠裁剪）。
+                 `data-lightbox-stage` 是探针锚点：它和 img 之间不许出现裁切祖先。 -->
             <motion.img :alt="current?.name || t('msg.imagePreview')"
               data-lightbox-img
               :src="src"
-              class="max-h-[85vh] max-w-[88vw] touch-none select-none shadow-2xl"
+              class="rounded-none object-contain max-h-[85vh] max-w-[88vw] touch-none select-none shadow-2xl"
               :style="{
                 x: txMV,
                 y: tyMV,

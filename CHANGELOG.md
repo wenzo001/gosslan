@@ -14,6 +14,22 @@
 
 ## [Unreleased]
 
+## [5.18.49] - 2026-11-07
+
+### 预览图一个像素都不许被切割（四角不再发黑）
+
+用户报「预览状态图片四角是黑的」。预览态（主窗灯箱 + 独立预览窗口 + 收藏/群任务/消息缩略图点开）
+必须完整显示原图：
+
+- 灯箱图显式 `rounded-none` + `object-contain`，不写 `overflow-hidden`，任何祖先都不许裁切；
+  安全边距由 `max-h-[85vh] max-w-[88vw]` 给（不是靠裁剪）。
+- `data-lightbox-stage` 作为探针锚点：图片到它之间不允许出现 `overflow != visible`。
+- 实测（带四角标记的 400×300 SVG，亮/暗各一套）：`border-radius 0px`、`object-fit contain`、
+  裁剪祖先 `[]`、四角 `elementFromPoint` 4/4 命中图片、四周边距 `290/220/290/180`；
+  反面对照（stage 加 `overflow:hidden` + 图片 18px 圆角）读数双双变坏。
+- 守卫 CE-01：预览图必须 `rounded-none` + `object-contain`，stage 不许 `overflow-hidden`/圆角；
+  注入式反例（同时补圆角 + 加裁切祖先）已进 `scripts/verify-guards.py`。
+
 ## [5.18.48] - 2026-11-07
 
 ### 下拉/气泡浮层不再顶出窗口（含群任务标签列表）

@@ -1369,4 +1369,22 @@ CASES: list[Case] = [
         expect_fail_hint="浮层又写死了 max-height",
         tags=["frontend", "popover", "new-guards"],
     ),
+    Case(
+        name="预览图被补圆角 + 外层 overflow-hidden（四角又会变黑）",
+        why="2026-11-07 用户报「预览状态图片四角是黑的」。预览态必须一个像素都不丢："
+        "圆角 / overflow-hidden / object-fit:cover 都会切掉四角或上下边。"
+        "本条同时给灯箱图补 18px 圆角、给 stage 加 `overflow-hidden`，"
+        "CE-01 的失败消息里必须同时点名这两处（**一个用例改同一份文件的两处**："
+        "拆成两条并行跑会互相注入/回滚同一个文件，量具本身会打架 —— 2026-11-07 实测）。",
+        file=ROOT / "src" / "components" / "message" / "ImageLightbox.vue",
+        injections=[
+            ("rounded-none object-contain", "rounded-[18px] object-contain"),
+            ('class="flex items-center justify-center" data-lightbox-stage',
+             'class="flex items-center justify-center overflow-hidden" data-lightbox-stage'),
+        ],
+        cmd=node_test("src/utils/designGuards.test.ts"),
+        cwd=ROOT,
+        expect_fail_hint="预览图写了圆角",
+        tags=["frontend", "preview", "new-guards"],
+    ),
 ]
