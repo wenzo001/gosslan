@@ -8,11 +8,12 @@
 //! | 「按在文字上长按没反应，按到气泡边上才弹」 | 命中 `.gosslan-selectable` 就不起定时器，而正文**整块**都是它 |
 //! | 「一放手立马就缩回去了」 | 弹面板那一下抬手指会被 HeadlessUI 的 outside-click 当成"点了外面" |
 //!
-//! ⚠️ 2026-10-23 产品口径变了（用户：「移动端必须保留系统原生的选中文字与复制菜单」）：
-//! 触屏下**长按正文 = 系统原生选字**（选区手柄 + 系统复制菜单），自定义底部分面板只在
-//! **非正文**区域（内边距 / 昵称 / 引用块 / 卡片）长按时出现。因此命中可选正文时
-//! **必须**返回 false —— 这与 2026-09-13 那版（正文不可选、长按一律弹面板）相反，
-//! 不要把旧注释/旧判据当成现行契约。
+//! ⚠️ 2026-11-07 口径回退（用户安卓实测：「安卓长按文字失效（图片长按仍在）」）：
+//! 2026-10-23 那版让"长按正文 = 系统原生选字"，但在安卓 WebView 上正文长按几乎没有
+//! 可见反馈（面板不弹、系统选字也不稳），而图片长按仍有面板 ⇒ 用户感知就是"文字长按坏了"。
+//! 现在恢复成聊天软件通行口径：**触屏长按正文先弹自定义面板**，系统原生选字仍保留 ——
+//! 走面板里的「选择文字」进入（`textSelecting` 打开后本判据让路）。
+//! 因此这里**不再**按"落点是否在可选正文里"否决；不要再把 2026-10-23 的旧结论写回来。
 //!
 //! 前两条是**判据**问题（这里），第三条是**事件时序**问题（见 `MessageItem` 里
 //! `swallowLongPressRelease` 的说明，这里只用 `shouldSwallowLongPressRelease` 表达规则）。
@@ -35,29 +36,20 @@ export interface LongPressContext {
    * 而是"这一步没有菜单可弹"。
    */
   multiSelect: boolean;
-  /**
-   * 手指落点命中了 `.gosslan-selectable`（"可选正文"标记）。
-   *
-   * 触屏下只有这一层是 `user-select: text`（见 style.css 的 `pointer: coarse` 块）：
-   * 命中它 = 长按交给系统原生选字；没命中（气泡内边距 / 昵称 / 引用块 / 卡片）= 自定义面板。
-   */
-  hitSelectable: boolean;
 }
 
 /**
  * 这次 `touchstart` 要不要启动自定义长按面板的定时器。
  *
- * 现行口径（2026-10-23）：**正文长按归系统原生选字**，自定义面板只在非正文区域起步。
+ * 现行口径（2026-11-07）：触屏长按正文**也**弹自定义面板，原生选字改从面板「选择文字」进入。
  * 这条判据只决定"要不要起定时器"，不决定 `contextmenu` 拦不拦 —— 后者见
  * `utils/contextMenu.ts` 与 `MessageItem.onContextMenu` 的移动端分支。
  */
 export function shouldStartLongPress(c: LongPressContext): boolean {
   if (!c.isMobile) return false; // 桌面端走右键菜单
   if (c.isSystem) return false; // 系统消息没有菜单
-  if (c.selectMode) return false; // 「选择文字」快捷模式：长按归系统选区手柄
+  if (c.selectMode) return false; // 「选择文字」模式：长按归系统选区手柄
   if (c.multiSelect) return false; // 多选模式：这一点是勾选，不弹菜单（见字段说明）
-  // 触屏下可选正文 = 系统原生选字的入口；此时再起定时器会同时弹出两个菜单。
-  if (c.hitSelectable) return false;
   return true;
 }
 

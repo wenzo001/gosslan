@@ -821,7 +821,7 @@ useEventListener(document, "click", closeFriendMenu);
         :title="taskCount > 0 ? t('task.open', { n: taskCount }) : t('task.title')"
         @click="app.openTaskCenter"
       >
-        <Icon name="list-checks" class="h-4 w-4 shrink-0" />
+        <Icon name="arrow-right-left" class="h-4 w-4 shrink-0" />
         <span class="shrink-0 font-medium">{{ t("task.center") }}</span>
         <template v-if="taskCount > 0">
           <span class="shrink-0 opacity-50">·</span>

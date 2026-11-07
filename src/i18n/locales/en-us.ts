@@ -730,7 +730,7 @@ export const enUS: MessageDict = {
   "errors.rule.fileSelfChat": "Images and files can't be sent in a chat with yourself. Use text instead.",
   "errors.rule.localWriteFailed": "This device couldn't save the message (disk may be full or busy). Free up space and try again.",
   "errors.rule.readStateWrite": "Read state wasn't saved to the local database; the unread badge has been restored to match it.",
-  "errors.rule.kindUnsupported": "This version of Gosslan on the other side doesn't support this content type. It is saved in your local queue — tap Resend in the task center after they upgrade.",
+  "errors.rule.kindUnsupported": "This version of Gosslan on the other side doesn't support this content type. It is saved in your local queue — tap Resend in the transfer queue after they upgrade.",
   "errors.rule.peerKeyMissing": "We don't have the other side's encryption key yet (this relationship has never exchanged keys). Try again once they have been online.",
   "errors.rule.auxWindow": "Couldn't open the extra window · restart required",
   "errors.rule.auxWindowRestart": "Restart now",
@@ -911,17 +911,17 @@ export const enUS: MessageDict = {
   "msg.readMembers": "Readers ({n})",
   "msg.resend": "Resend",
   "msg.resendFail": "This message can't be resent right now",
-  "msg.resendConfirm": "Resend this message? The other side will receive it again. You can watch and cancel it in the task center.",
+  "msg.resendConfirm": "Resend this message? The other side will receive it again. You can watch and cancel it in the transfer queue.",
   "msg.sendFailed": "Send failed",
   // Shown with `messages.fail_code` (DB v14→v15). "Send failed" alone leaves nothing to act on:
   // these four each point at a different next step.
   "msg.sendFailedWith": "Send failed: {reason}",
   // Block 3: two distinct failure classes, each with a concrete next step.
   "msg.fail.retryExpired":
-    "Not delivered: the recipient is online, but there was no usable direct link or relay at the time. Next: keep the recipient and the relay nodes online (or add the same relay in the recipient's network settings), then tap Retry in the task center.",
+    "Not delivered: the recipient is online, but there was no usable direct link or relay at the time. Next: keep the recipient and the relay nodes online (or add the same relay in the recipient's network settings), then tap Retry in the transfer queue.",
   "msg.fail.peerOfflineExpired":
-    "Not delivered: the recipient stayed offline the whole time (kept for 7 days). Next: once they are online with the app open, tap Retry in the task center.",
-  "msg.fail.kindUnsupported": "This version of Gosslan on the other side doesn't support this content type, so waiting won't help. After they upgrade, tap Resend in the task center.",
+    "Not delivered: the recipient stayed offline the whole time (kept for 7 days). Next: once they are online with the app open, tap Retry in the transfer queue.",
+  "msg.fail.kindUnsupported": "This version of Gosslan on the other side doesn't support this content type, so waiting won't help. After they upgrade, tap Resend in the transfer queue.",
   "msg.fail.peerKeyMissing": "We don't have the other side's encryption key, so this can't be sent. Tap Resend once they have been online.",
   "msg.fail.orphanAtStart": "This was still sending when the app restarted with no pending queue, so it is treated as undelivered",
   "msg.fail.peerDeleted": "This contact is no longer in your friends list, so the message was not delivered",
@@ -1602,6 +1602,10 @@ export const enUS: MessageDict = {
 
   // ---- Network diagnostics (developer) ----
   "diag.title": "Network Diagnostics (Developer)",
+  "diag.bgTitle": "Ambient motion readout",
+  "diag.bgNote": "If Windows and macOS look different, copy this whole block to the developer: it records the system media queries, the active mode, and blur support.",
+  "diag.bgCopy": "Copy diagnostics",
+  "diag.bgCopied": "Copied",
   "diag.refreshing": "Refreshing…",
   "diag.refresh": "Refresh Data",
   "diag.mode": "Mode: ",
@@ -1698,14 +1702,14 @@ export const enUS: MessageDict = {
   "send.stalled": "Network stalled, waiting to recover…",
   "send.noProgress": "Transfer stopped: no progress for {secs}s. Cancel and send again.",
   "send.queued": "Queued…",
-  // ---- Unified background task center (owner request, 2026-10-23) ----
+  // ---- Unified background transfer queue (owner request, 2026-10-23) ----
   // Row text reuses send.sendingPct / send.receivingPct / send.queued so the
   // panel and the bubble never phrase the same state two different ways.
-  "task.open": "Show background tasks ({n})",
-  "task.title": "Background tasks",
-  "task.center": "Task center",
+  "task.open": "Show transfer queue ({n})",
+  "task.title": "Transfer queue",
+  "task.center": "Transfer queue",
   "task.empty": "Nothing in progress",
-  "task.note": "This lists background tasks that haven't finished; closing the panel won't interrupt them, and finished ones disappear automatically",
+  "task.note": "This lists tasks that haven't finished; closing the panel won't interrupt them, and finished ones disappear automatically",
   "task.to": "To {name}",
   "task.from": "From {name}",
   "task.attempts": "Retried {n} times",

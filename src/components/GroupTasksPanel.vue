@@ -67,6 +67,7 @@ const count = computed(
       :group-id="groupId"
       :open="open"
       :fill="fullscreen"
+      :page-inset="fullscreen"
       :focus="focus ?? null"
     />
   </BaseModal>

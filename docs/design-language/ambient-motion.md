@@ -540,3 +540,30 @@ blobs.forEach((el) =>
 | CIEDE2000 ΔE00 ≈1.0 为理论可辨下限，1.5 适合“并排一眼看出” | CIE 色差通用解释（社区口径） | B |
 | 本仓空闲 CPU 0.09%、无 rAF 长驻、滚动 p50 17ms | 本任务前序会话实测与 `check-ui-runtime.mjs` 读数 | A（本机口径） |
 | 滚动时偶发的 50 / 100 ms 单帧长帧是**机器调度噪声**，不是色团合成的常驻代价；AM-10 的判定口径不变 | 2026-11-05 实测：drift / off **交替各 3 遍**，三轮共 18 个窗口；p50 两档常态均为 17 ms，长帧在**开关两档都出现**，最重的一次长帧簇（`long=8` / `p50=50 ms`）出现在 **off** 档 | A（本机口径） |
+
+---
+
+## 11. 平台媒体查询对照（2026-11-07）
+
+用户反馈「Windows 和 macOS 背景动效不一样」。同一份 CSS 在两套 WebView 里会分叉的**只有**下面
+这几个查询与能力探测；`--ambient-*` 让渡给系统设置的档位也由它们决定。诊断入口：
+**网络诊断 › 背景动效读数 › 复制诊断信息**（实现：`utils/ambientProbe.ts`，只取样不判断）。
+
+| 查询 / 探测 | 改动什么 | macOS（WKWebView） | Windows（WebView2） | 诊断字段 |
+| --- | --- | --- | --- | --- |
+| `prefers-reduced-motion: reduce` | 关掉漂移，只留静态色雾 | 跟随「减弱动态效果」 | 跟随「动画效果」开关 | 同名行 |
+| `prefers-reduced-transparency: reduce` | 降低薄纱/模糊，正文面更实 | **不生效**（WebKit 未实现） | 跟随「透明效果」开关 | 同名行 |
+| `prefers-contrast: more` | 提高分隔线与正文对比 | 仅在辅助功能里开启时 | 跟随「对比度主题」 | 同名行 |
+| `forced-colors: active` | 高对比模式下退回系统色 | 基本不触发 | 高对比主题会触发 | 同名行 |
+| `pointer: coarse` | 触屏档的密度与点击目标 | 触控板仍为 fine | 触屏设备为 coarse | 同名行 |
+| `backdrop-filter` 支持探测 | 不支持时退回纯色面 | 支持（但大面积 blur 有内存代价） | 支持 | `backdrop-filter: supported / unsupported` |
+| `<html data-ambient>` | 实际生效档位（off / drift） | 由 `utils/ambient.ts` 写入 | 同左 | `html[data-ambient]` |
+
+判读规则：
+
+1. 两平台 `data-ambient` 不同 ⇒ 先看 `prefers-reduced-motion` / `prefers-reduced-transparency`
+   是否有 `on`，那是系统设置让渡，不是缺陷。
+2. `data-ambient` 相同但观感不同 ⇒ 看 `backdrop-filter` 与 `devicePixelRatio`：
+   Windows 常见 125% / 150% 缩放，薄纱在非整数缩放下更明显。
+3. 三项查询都为 `off`、`data-ambient` 也相同，仍然有差异 ⇒ 剩余变量在 WebView 合成器，不在本仓 CSS；
+   带上整段复制内容与截图再开单，不要再改 α 口径。

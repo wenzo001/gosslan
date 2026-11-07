@@ -49,11 +49,16 @@ try {
   rmSync(staging, { recursive: true, force: true });
 }
 
-// macOS：只换 .icns，其它平台继续用满版方图（Windows/iOS 由系统自己加圆角）。
+// macOS：只换 .icns，其它平台继续用满版方图。
+// Windows：任务栏 / 资源管理器 / 安装包只认 `icon.ico`，而 **Windows 11 不会给应用图标
+// 自动加圆角**（它只给窗口加圆角）—— 满版方图在浅色任务栏上就是一个硬边方块（用户
+// 2026-11-07：「Windows 图标要圆角」）。因此 `.ico` 也用画好 22.37% 圆角的同一张源图生成。
+// `Square*Logo.png` 是 Microsoft Store 的画布尺寸，仍保持满版方图，不在这里改。
 const macDir = mkdtempSync(join(tmpdir(), "gosslan-mac-icon-"));
 try {
   runIcon(join(brand, "app-icon-macos.svg"), macDir);
   cpSync(join(macDir, "icon.icns"), join(outDir, "icon.icns"));
+  cpSync(join(macDir, "icon.ico"), join(outDir, "icon.ico"));
 } finally {
   rmSync(macDir, { recursive: true, force: true });
 }

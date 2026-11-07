@@ -34,7 +34,7 @@ import { previewBody } from "@/utils/messages";
 import type { MessageGroupSide } from "@/utils/messageKinds";
 import { cancelSendChannelFor } from "@/utils/cancelSend";
 import { cancelOutcome, groupResendNotice, messageCancelNotice } from "@/utils/cancelFeedback";
-import { hasTextSelection, isSelectableTextTarget, selectionTextWithin } from "@/utils/textSelection";
+import { hasTextSelection, selectionTextWithin } from "@/utils/textSelection";
 import { detectCode } from "@/utils/codeDetect";
 import { t } from "@/i18n";
 import MessageAvatar from "@/components/message/MessageAvatar.vue";
@@ -445,26 +445,17 @@ function openContextMenu(e: MouseEvent, selectedText: string) {
 }
 
 /**
- * 触屏上最近一次落在可选正文上的触摸**属于哪条消息的内容列**。
- *
- * WebKit 有时会把 contextmenu 的 target 从文本节点上提到气泡根/列上；只按 `e.target`
- * 判会误拦系统选字。这里记住"这次触摸起点是正文"的那一列，同一列内的 contextmenu 也放行；
- * 换到非正文触摸时立刻清空（长按昵称/卡片仍然走自定义面板）。
- */
-let lastTouchTextCol: Element | null = null;
-
-/**
  * contextmenu 的统一入口（处理器挂在本条消息的 `[data-msg-col]` 上，见模板）。
  *
  * 两条互斥分支，**桌面与触屏策略刻意不同**：
  *  · 桌面：一律 preventDefault 并弹自定义消息菜单；有有效选区时把选区文本快照带进菜单，
  *    由菜单里的「复制选中内容」负责只复制选中部分（「复制消息」仍复制整条）。
- *  · 触屏：可选正文上的 contextmenu **完全让给 WebView**（系统选字手柄 + 系统复制菜单），
- *    这里只 stopPropagation，避免 `App.vue` 的全局兜底在"选区还没建立"的那一帧再 prevent 一次；
- *    非正文区域才 prevent，自定义面板由长按定时器负责。
+ *  · 触屏：一律 preventDefault 并交给长按定时器弹自定义面板 —— 正文与图片同一套。
+ *    系统原生选字不从长按进入，改由面板「选择文字」进入（`textSelecting` 为真时放行，
+ *    见 `utils/contextMenu.ts`）。
  *
- * ⚠️ 2026-10-23 之前桌面是"有选区就放行原生菜单"，用户实测右键气泡偶尔弹 WebKit 菜单
- * （之前双击选过词，选区还在）⇒ 现在桌面不再按选区放行。
+ * ⚠️ 2026-11-07：安卓实测「长按文字没反应、图片还有面板」⇒ 撤销 2026-10-23 的
+ * "触屏正文 contextmenu 全让给 WebView"分支。现在触屏不再按落点区分正文/非正文。
  */
 function onContextMenu(e: MouseEvent) {
   // 表情回应的笑脸按钮**在 data-msg-col 里**（绝对定位到气泡外侧）：它是控件，不是消息内容，
@@ -479,16 +470,13 @@ function onContextMenu(e: MouseEvent) {
 
   const mobile = app.isMobile;
   const hasSelection = hasTextSelection();
-  // target 本身是可选正文，或者本次触摸起点是正文、WebKit 把 target 上提到了同一列里的元素。
-  const sameColAsTextTouch = mobile && !!lastTouchTextCol
-    && e.target instanceof Element && e.target.closest("[data-msg-col]") === lastTouchTextCol;
-  const onSelectableText = isSelectableTextTarget(e.target) || sameColAsTextTouch;
   if (
     !shouldPreventContextMenu({
       isMobile: mobile,
       textSelecting: textSelecting.value,
       hasSelection,
-      onSelectableText,
+      // 触屏不再按"落点是不是正文"放行：正文长按也归自定义面板（2026-11-07 口径回退）。
+      onSelectableText: false,
     })
   ) {
     if (mobile) e.stopPropagation();
@@ -520,11 +508,12 @@ function closeContextMenu() {
 // 桌面端走右键菜单（MessageContextMenu），移动端没有右键，用长按唤出底部操作面板。
 const sheetOpen = ref(false);
 /**
- * 移动端「选择文字」快捷模式（2026-10-23 口径更新）。
+ * 移动端「选择文字」模式（2026-11-07 口径回退，见
+ * `docs/notes/ui-pulse-redesign/decision-longpress-2026-11-07.md`）。
  *
- * 正文长按现在**直接**进入系统原生选字（见 style.css 的 `pointer: coarse` 块与
- * `utils/longPress.ts`）；本模式不再负责“开放正文选择”，只作为**非正文区长按面板**
- * 里的「全选」快捷入口：`MessageTextBubble` 会自动全选，随后交给系统手柄/工具条。
+ * 触屏长按正文先弹自定义面板（与图片一致）；本状态是面板里「选择文字」那一项的开关：
+ * 为真时 `MessageTextBubble` 落 `.gosslan-selecting`，`style.css` 的 coarse 块才把
+ * `user-select` 放开成 `text`，并自动全选整条正文，交给系统手柄/工具条。
  */
 const textSelecting = ref(false);
 let longPressTimer: ReturnType<typeof setTimeout> | null = null;
@@ -601,7 +590,7 @@ watch(sheetOpen, (open) => {
   }
 });
 
-/** 「全选」快捷入口：关掉面板 → 本条气泡自动全选（原生选字本来就可直接长按进入）。 */
+/** 「选择文字」入口：关掉面板 → 本条气泡开放原生选字并自动全选（触屏唯一入口）。 */
 function enterTextSelect() {
   closeActionSheet();
   textSelecting.value = true;
@@ -623,21 +612,16 @@ watch(textSelecting, (on) => {
 function onTouchStart(e: TouchEvent) {
   cancelLongPress();
   const el = e.target as HTMLElement | null;
-  lastTouchTextCol = isSelectableTextTarget(e.target)
-    ? (el?.closest("[data-msg-col]") ?? null)
-    : null;
   // 表情回应的笑脸按钮在 data-msg-col 里（绝对定位）：它是控件，长按不归消息面板。
   // 回应条（2026-10-24 起是气泡底栏）同理：胶囊自己有一套长按看名单的手势。
   if (el?.closest("[data-reaction-entry], [data-reaction-strip]")) return;
   // 判据收在 `utils/longPress.ts`（纯函数、真值表单测）：
-  // 桌面走右键 / 系统消息没有菜单 / 选字模式与多选让路 /
-  // **触屏命中可选正文 ⇒ 不起定时器**，把长按完整留给系统原生选字（手柄+系统复制菜单）。
+  // 桌面走右键 / 系统消息没有菜单 / 选字模式与多选让路 / 其余（含正文）都起定时器。
   const canStart = shouldStartLongPress({
     isMobile: app.isMobile,
     isSystem: isTip.value,
     selectMode: textSelecting.value,
     multiSelect: props.selectMode,
-    hitSelectable: !!el?.closest(".gosslan-selectable"),
   });
   if (!canStart) return;
   const t0 = e.touches[0];

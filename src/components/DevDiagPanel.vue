@@ -16,7 +16,7 @@
  */
 import { t } from "@/i18n";
 import Spinner from "@/components/ui/Spinner.vue";
-import { computed } from "vue";
+import { computed, ref, watch } from "vue";
 import { useQuery } from "@tanstack/vue-query";
 import Icon from "@/components/ui/Icon.vue";
 import type { IconName } from "@/components/ui/iconRegistry";
@@ -27,9 +27,10 @@ import { useChatStore } from "@/stores/useChatStore";
 import { errorText } from "@/composables/useErrorText";
 import { panelQueryOptions } from "@/utils/panelQuery";
 import { fmtClock } from "@/utils/time";
+import { ambientProbeText, readAmbientProbe, type AmbientProbeRow } from "@/utils/ambientProbe";
 import type { BackgroundDiag, DiscoveryDiag, PeerVersionDiag, RuntimeDiag } from "@/types";
 
-defineProps<{ open: boolean }>();
+const props = defineProps<{ open: boolean }>();
 const emit = defineEmits<{ (e: "close"): void }>();
 
 /**
@@ -93,6 +94,30 @@ const loadError = computed(() =>
 function refresh() {
   // refetch 自带单飞：连点两次不会发出两条命令（旧实现会）。
   void diagQuery.refetch();
+  refreshBgProbe();
+}
+
+/**
+ * 背景动效差异诊断（用户 2026-11-07：Windows 与 macOS 观感不一致，要先拿到可复制的读数）。
+ *
+ * 取样在 `utils/ambientProbe.ts`（视图层不许裸写 matchMedia / 平台判断，见 designGuards ㉟）；
+ * 这里只负责展示与一键复制。规格见 docs/design-language/ambient-motion.md。
+ */
+const bgProbe = ref<AmbientProbeRow[]>([]);
+const bgCopied = ref(false);
+
+function refreshBgProbe() { bgProbe.value = readAmbientProbe(); }
+// 打开面板时重采样（本文件不许自己写一次性挂载钩子：诊断快照的拉取统一交给 Query，见 panelQuery 守卫）。
+watch(() => props.open, (open) => { if (open) refreshBgProbe(); }, { immediate: true });
+
+async function copyBgProbe() {
+  try {
+    await navigator.clipboard.writeText(ambientProbeText(bgProbe.value));
+  } catch {
+    return;
+  }
+  bgCopied.value = true;
+  window.setTimeout(() => { bgCopied.value = false; }, 1600);
 }
 
 /** 局域网是否在跑（只有它决定"局域网发现"那一块显不显示）。 */
@@ -157,7 +182,9 @@ function ageText(ms: number | null): string {
 
 <template>
   <BaseModal :open="open" :title="t('diag.title')" width="max-w-3xl" @close="emit('close')">
-    <div class="scrollbar-both max-h-[75vh] space-y-5 overflow-y-auto text-xs leading-relaxed">
+    <!-- 只保留 BaseModal 内容区那一层滚动（`.gosslan-scroll`）。这里再套 `max-h + overflow-y-auto`
+         会同时出现两条滚动条（用户 2026-11-07：「网络诊断页双层滚动条」）。 -->
+    <div class="space-y-5 text-xs leading-relaxed">
       <!-- 刷新 -->
       <div class="flex items-center justify-between">
         <button
@@ -495,6 +522,29 @@ function ageText(ms: number | null): string {
         :retry-label="t('common.retry')"
         @retry="refresh"
       />
+
+      <!-- 背景动效差异诊断（用户 2026-11-07）：与网络数据无关，永远显示 —
+           它记录的是这台机器此刻的媒体查询与档位，出问题时整段复制即可。 -->
+      <section class="rounded-[var(--gosslan-radius-md)] border border-[var(--gosslan-divider)] p-3">
+        <div class="mb-2 flex items-center justify-between gap-2">
+          <h3 class="m-0 text-sm font-semibold">{{ t("diag.bgTitle") }}</h3>
+          <button
+            type="button"
+            class="inline-flex items-center gap-1.5 rounded-[var(--gosslan-radius-sm)] px-2.5 py-1 transition hover:bg-[var(--gosslan-hover)]"
+            @click="copyBgProbe"
+          >
+            <Icon name="copy" class="h-3.5 w-3.5" />
+            {{ bgCopied ? t("diag.bgCopied") : t("diag.bgCopy") }}
+          </button>
+        </div>
+        <p class="mb-2 opacity-60">{{ t("diag.bgNote") }}</p>
+        <dl class="grid grid-cols-[minmax(0,1fr)_auto] gap-x-3 gap-y-1">
+          <template v-for="row in bgProbe" :key="row.label">
+            <dt class="truncate font-mono opacity-70" :title="row.label">{{ row.label }}</dt>
+            <dd class="truncate text-right font-mono" :title="row.value">{{ row.value }}</dd>
+          </template>
+        </dl>
+      </section>
     </div>
   </BaseModal>
 </template>

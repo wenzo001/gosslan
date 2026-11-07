@@ -29,19 +29,28 @@ const base = {
   isSystem: false,
   selectMode: false,
   multiSelect: false,
-  hitSelectable: false,
 };
 
-test("长按判据：触屏下按在可选正文上**不起**自定义面板（系统原生选字优先）", () => {
-  // 手指落在 `.gosslan-selectable` 正文上 ⇒ 放手让 WebView 进入原生选字/系统复制菜单。
-  // 2026-10-23 产品口径：移动端必须保留系统原生选字；再起 500ms 定时器会同时弹两个菜单。
-  assert.equal(
-    shouldStartLongPress({ ...base, hitSelectable: true }),
-    false,
-    "正文是可选的 ⇒ 长按归系统选区（手柄 + 系统复制菜单）；自定义面板只在非正文区起",
+test("长按判据：触屏下按在正文上也**起**自定义面板（安卓 2026-11-07 口径回退）", () => {
+  // 2026-11-07 用户安卓实测：「长按文字失效（图片长按仍在）」。
+  // 根因：命中 `.gosslan-selectable` 就不起定时器，而正文整块都是它 ⇒ 文字上长按没有面板；
+  // 图片不可选 ⇒ 面板照弹。现在正文与图片同一套：先弹面板，原生选字从面板「选择文字」进入。
+  assert.equal(shouldStartLongPress(base), true, "触屏长按正文必须弹面板（否则安卓上文字长按=没反应）");
+});
+
+test("长按判据反例：把 `hitSelectable` 否决写回去必须红（判据里不许再有这个字段）", () => {
+  const src = readFileSync(join(import.meta.dirname, "longPress.ts"), "utf8");
+  assert.doesNotMatch(
+    src,
+    /hitSelectable/,
+    "`hitSelectable` 已是历史字段：加回来等于让安卓正文长按再次失效（这条就是反例自证）",
   );
-  // 按在气泡内边距/昵称/引用块/卡片（没命中 selectable）⇒ 起自定义面板
-  assert.equal(shouldStartLongPress(base), true);
+  // 正控：合成一份"旧判据"必须被同一条匹配器咬住 —— 否则上面的 doesNotMatch 可能只是在测 air。
+  assert.match(
+    "if (c.hitSelectable) return false;",
+    /hitSelectable/,
+    "反例自证失效：匹配器认不出旧判据的写法",
+  );
 });
 
 test("长按判据：桌面端走右键、系统消息没有菜单、选字/多选模式让路", () => {
@@ -116,17 +125,102 @@ test("操作面板：点任何一项都必须收起（引用/转发会跳到别�
 test("MessageItem：长按判据必须走 utils/longPress 的纯函数，并传全语境", () => {
   const item = read("components/MessageItem.vue");
   assert.match(item, /shouldStartLongPress\(\{/, "长按判据必须调用纯函数（别在组件里再写一份 if）");
-  for (const field of ["isMobile", "isSystem", "selectMode", "multiSelect", "hitSelectable"]) {
+  for (const field of ["isMobile", "isSystem", "selectMode", "multiSelect"]) {
     assert.match(
       item,
       new RegExp(`${field}:`),
       `必须把 \`${field}\` 传给判据 —— 少传一个就等于那条规则失效`,
     );
   }
-  assert.match(item, /hitSelectable:\s*!!el\?\.closest\("\.gosslan-selectable"\)/,
-    "`hitSelectable` 必须真的按 `.gosslan-selectable` 判定（可选正文的标记）");
-  assert.doesNotMatch(item, /insideTextBubble/,
-    "`insideTextBubble` 已从判据删除（触屏正文现在就是可选正文；留着只会误导下一个人）");
+  // 2026-11-07 口径回退：触屏正文也要弹面板 ⇒ 组件不许再把 `hitSelectable` 传进去。
+  assert.doesNotMatch(
+    item,
+    /hitSelectable/,
+    "`hitSelectable` 已从判据删除（触屏正文与图片同一套：先弹面板）；加回来安卓长按文字会再次失效",
+  );
+  assert.match(
+    item,
+    /onSelectableText:\s*false/,
+    "触屏 contextmenu 必须一律拦下（原生选字改从面板「选择文字」进入），不许再按落点放行",
+  );
+  assert.doesNotMatch(item, /lastTouchTextCol/,
+    "`lastTouchTextCol` 随旧口径一起删除；留着只会让 contextmenu 又按落点分流");
+});
+
+/**
+ * 「选择文字」→ 真能选字的 5 环链。缺任一环都等于按钮是假的：
+ * ① 面板入口 → ② 状态位 → ③ 传参 → ④ 类名 → ⑤ CSS 开放 user-select。
+ * 决策记录见 docs/notes/ui-pulse-redesign/decision-longpress-2026-11-07.md。
+ */
+function selectionChainProblems(item: string, bubble: string, css: string): string[] {
+  const bad: string[] = [];
+  if (!/@click="enterTextSelect"/.test(item)) {
+    bad.push("① 面板里没有「选择文字」入口");
+  }
+  if (!/function enterTextSelect\(\)[\s\S]{0,200}?textSelecting\.value = true/.test(item)) {
+    bad.push("② enterTextSelect 没有打开 textSelecting");
+  }
+  if (!/:select-mode="textSelecting"/.test(item)) {
+    bad.push("③ textSelecting 没有传给气泡（select-mode）");
+  }
+  if (!/selectMode \? 'gosslan-selecting' : ''/.test(bubble)) {
+    bad.push("④ 气泡根没有落 gosslan-selecting");
+  }
+  if (!/\[data-msg-col\] \.gosslan-selecting \* \{\s*-webkit-user-select:\s*text;\s*user-select:\s*text;/.test(css)) {
+    bad.push("⑤ coarse 档没有为 .gosslan-selecting 开放 user-select:text");
+  }
+  return bad;
+}
+
+test("「选择文字」可验证链：入口 → textSelecting → select-mode → gosslan-selecting → user-select:text", () => {
+  const item = read("components/MessageItem.vue");
+  const bubble = read("components/message/MessageTextBubble.vue");
+  const css = readFileSync(join(srcDir, "style.css"), "utf8");
+  assert.deepEqual(selectionChainProblems(item, bubble, css), []);
+});
+
+/**
+ * 只挖掉 coarse 档 `.gosslan-selecting` 那条规则的声明体，保留选择器空壳。
+ * ⚠️ 不能对整份 CSS 做 `replace(声明序列)`：`.gosslan-selectable`（桌面档）与它
+ * 逐字同形，replace 命中的是**第一处**，删完 `.gosslan-selecting` 原样还在 ——
+ * 反例就会"拆了也绿"，这正是这套自证要防的空转。
+ */
+function dropSelectingDeclarations(css: string): string {
+  const at = css.indexOf("[data-msg-col] .gosslan-selecting *");
+  if (at < 0) throw new Error("找不到 coarse 档 .gosslan-selecting 规则（判据锚点已漂移）");
+  const open = css.indexOf("{", at);
+  const close = css.indexOf("}", open);
+  if (open < 0 || close < 0) throw new Error("coarse 档 .gosslan-selecting 规则括号不成对");
+  return css.slice(0, open + 1) + css.slice(close);
+}
+
+test("「选择文字」反例自证：拆掉任意一环都必须红", () => {
+  const item = read("components/MessageItem.vue");
+  const bubble = read("components/message/MessageTextBubble.vue");
+  const css = readFileSync(join(srcDir, "style.css"), "utf8");
+  const noDeclCss = dropSelectingDeclarations(css);
+  // 正控：真的只删了那一条规则里的 `user-select: text`，别处（`.gosslan-selectable`）没被误伤。
+  assert.match(css, /\[data-msg-col\] \.gosslan-selecting \* \{[\s\S]{0,200}?user-select:\s*text;/, "锚点不在预期位置");
+  assert.doesNotMatch(
+    noDeclCss,
+    /\[data-msg-col\] \.gosslan-selecting \* \{[\s\S]{0,200}?user-select:\s*text;/,
+    "反例构造失败：目标声明没被删掉，下面的断言等于测空气",
+  );
+  assert.match(noDeclCss, /\.gosslan-selectable \{[\s\S]{0,120}?user-select:\s*text;/, "误伤了桌面档的 .gosslan-selectable");
+  const cases: Array<[string, string, string, string, RegExp]> = [
+    ["入口", item.replace('@click="enterTextSelect"', ""), bubble, css, /①/],
+    ["状态位", item.replace("textSelecting.value = true;", ""), bubble, css, /②/],
+    ["传参", item.replace(':select-mode="textSelecting"', ""), bubble, css, /③/],
+    ["类名", item, bubble.replace("selectMode ? 'gosslan-selecting' : ''", ""), css, /④/],
+    ["样式", item, bubble, noDeclCss, /⑤/],
+  ];
+  for (const [name, nextItem, nextBubble, nextCss, want] of cases) {
+    assert.match(
+      selectionChainProblems(nextItem, nextBubble, nextCss).join("\n"),
+      want,
+      `拆掉「${name}」这一环后判据仍然绿 ⇒ 判据空转`,
+    );
+  }
 });
 
 test("MessageItem：面板展开期间必须在 window 捕获阶段吞掉抬手那一下", () => {

@@ -16,16 +16,17 @@
  */
 export interface ContextMenuGuard {
   isMobile: boolean;
-  /** 移动端「选择文字」模式（面板里的"全选"快捷入口）。 */
+  /** 移动端「选择文字」模式（面板里的入口；为真时才把 contextmenu 让给系统工具条）。 */
   textSelecting: boolean;
   /** 当前有非折叠选区（`window.getSelection()` 的同一判据）。 */
   hasSelection: boolean;
   /**
    * 本次 contextmenu 的落点（或本次触摸的起点）在**可选正文**上。
    *
-   * 只看 `hasSelection` 不够：系统工具条出现之前那一帧选区可能还没建立，而 WebView
-   * 已经把 contextmenu 派发出来了。落点是正文时也必须放行，否则系统选字会被全局
-   * 兜底吃掉（用户要求：移动端长按文字必须能进原生选字）。
+   * ⚠️ 2026-11-07 口径回退后 `MessageItem` 一律传 `false`：触屏长按正文归自定义面板，
+   * 原生选字只从面板「选择文字」进入（决策见
+   * `docs/notes/ui-pulse-redesign/decision-longpress-2026-11-07.md`）。这个分支保留给
+   * 「已经进入选择模式 / 已有选区」之外的落点判断，调用方不要再用它放行正文长按。
    */
   onSelectableText: boolean;
 }
