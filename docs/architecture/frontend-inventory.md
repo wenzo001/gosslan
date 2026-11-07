@@ -170,7 +170,6 @@
 | `src/components/ui/ConfirmDialog.vue` | A-公共UI | 68 | — |
 | `src/components/ui/DangerBtn.vue` | A-公共UI | 47 | — |
 | `src/components/ui/ErrorBoundary.vue` | A-公共UI | 47 | `vue` |
-| `src/components/ui/icons.ts` | A-公共UI | 15 | `lucide-vue-next` |
 | `src/components/ui/LinkIcon.vue` | A-公共UI | 28 | `lucide-vue-next` |
 | `src/components/ui/MarkdownText.vue` | A-公共UI | 102 | `@tauri-apps/plugin-opener` `vue` |
 | `src/components/ui/NavIcon.vue` | A-公共UI | 32 | — |
@@ -397,7 +396,7 @@
 | Drawer / Table / Tree / 分页 | Drawer、Table：0 处；树只有一个共享目录树（`components/ShareDirectory.vue` 113 行） | — | **不引入 / 保留自研** | TanStack Table 与抽屉此前已判过（矩阵第 1 节：无复杂表格）；树是"本机磁盘 + 协议目录"两种数据源的合并展示，库给不了 |
 | 虚拟滚动（日志） | `components/LogViewer.vue` | `@tanstack/vue-virtual` `useVirtualizer` | **直接替换（已完成）** | 两条外壳已迁；实测读数在报告 §6.18 与矩阵第 2 节 |
 | 虚拟滚动（消息列表） | `components/VirtualList.vue`(525) | 不用库 | **保留自研** | 它承担的不是"虚拟化"而是**业务锚定**：切会话定位未读、prepend 不跳位、`unreadJump`/`swap`、回收行后仍要能回填高度（`utils/messageHeight.ts`）。前一轮 P7 实测过替换代价（矩阵第 2 节 C 档），重做只会在无读数情况下换掉一条已验证的链路 |
-| 图标 | `components/ui/icons.ts`（高频语义图标唯一入口）+ 其余直连 | `lucide-vue-next` | **局部复用** | 判据 ㊵ 从 `icons.ts` 现解析分母（报告 §6.28 修掉手抄清单漂移） |
+| 图标 | `iconRegistry.ts`（名字登记，116 键）+ `Icon.vue`（唯一渲染出口） | `lucide-vue-next` | **局部复用** | 判据 ㊵ 现扫「除 `iconRegistry.ts` 外禁直连 lucide」+「字面量 `Icon name` 必须登记」（2026-11-07 M-4：旧 barrel 已删除） |
 | 代码高亮 | `utils/highlight.ts`(29) + `components/CodeBlock.vue`(130) | `highlight.js` | **组合替换** | 词法归库，映射/降级/主题自研 |
 | 主题 / 暗色 | `boot/theme-boot.js`（首帧裸 JS）、`stores/useAppStore.ts`（`matchMedia` 两处监听）、`composables/useDocumentDark.ts`(27)、`utils/appearance.ts`(56) | 不用库 | **保留自研（已有机器等价判据，P0 复核完）** | 规则的家是 `utils/appearance.ts`（纯函数 + 单测）；第二份在 `src/boot/theme-boot.js` —— 它由 vite 的 inline-boot 插件内联成**裸脚本**、必须早于 bundle 执行，所以 import 不到本模块，复制是平台约束。两份是否等价由 `appearance.test.ts` 用替身环境**把那段脚本真跑一遍**逐例对照（不是注释提醒）。本轮另外做两件事：① 该脚本的注释把下一个人指向 `useAppStore.readLocalAppearance()`，而**那个符号全仓不存在** ⇒ 改成真名并说明为何必须有两份；② `appearance.ts` 头注释仍说第二份在 `index.html`（早已搬走）⇒ 一并改准；③ 新加一条判据：**注释里点名的符号必须真在导出里**，再指空就红 |
 | 无障碍静态判据 | `utils/a11yLabels.ts`(131)、`utils/designGuards.ts`(2041) | — | **保留（工具码）** | 只被 `npm test`/门禁读，不进产物；不计进业务成果 |
