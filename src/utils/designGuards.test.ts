@@ -7744,6 +7744,56 @@ test("PC-01 反例自证：删限高 / 删内部滚动 / 边距归零都必须�
   );
 });
 
+// ---------------- CE-01 预览图绝对不许被切割（2026-11-07） ----------------
+
+/**
+ * 用户报「预览状态图片四角是黑的」。
+ *
+ * 预览态（灯箱 / 独立预览窗）的图**一个像素都不许丢**：圆角、`overflow-hidden`、
+ * `object-fit: cover`、`w-full` 撑框，任何一项都会切掉四角或上下边。
+ * 缩略图（气泡 / 待办格子 / 收藏列表）可以按容器裁，但点开后的预览必须是原图。
+ */
+function findPreviewCropIssues(src: string): string[] {
+  const imgTag = src.match(/<motion\.img[\s\S]*?data-lightbox-img[\s\S]*?>/)?.[0];
+  if (!imgTag) return ["找不到 `data-lightbox-img` 的 <motion.img> 锚点（预览图契约已漂）"];
+  const issues: string[] = [];
+  if (!/rounded-none/.test(imgTag)) issues.push("预览图缺 `rounded-none`（四角会被圆角切掉）");
+  if (/rounded-\[/.test(imgTag)) issues.push("预览图写了圆角");
+  if (/overflow-hidden/.test(imgTag)) issues.push("预览图写了 `overflow-hidden`");
+  if (!/object-contain/.test(imgTag)) issues.push("预览图缺 `object-contain`（`cover` 会裁边）");
+  if (/object-cover/.test(imgTag)) issues.push("预览图写了 `object-cover`");
+  // stage 是 img 唯一的外部框（两者之间没有其它元素），所以直接查它的开标签即可。
+  // ⚠️ 不许用 `indexOf("data-lightbox-stage")` 再切区间：注释里也写了这个词，会切错位置。
+  const stageTag = src.match(/<div[^>]*data-lightbox-stage[^>]*>/)?.[0] ?? "";
+  if (!stageTag) issues.push("缺 `data-lightbox-stage` 锚点（裁剪祖先没处查）");
+  if (/overflow-hidden/.test(stageTag)) issues.push("预览图的 stage 出现 `overflow-hidden`");
+  if (/rounded-(?!none)/.test(stageTag)) issues.push("预览图的 stage 出现圆角");
+  return issues;
+}
+
+test("CE-01 真实树：灯箱预览图不圆角、不裁切、必须 object-contain（含 stage 之间无裁剪祖先）", () => {
+  const src = readFileSync(new URL("../components/message/ImageLightbox.vue", import.meta.url), "utf8");
+  assert.deepEqual(findPreviewCropIssues(src), [], findPreviewCropIssues(src).join("\n"));
+  const preview = readFileSync(new URL("../components/window/PreviewWindow.vue", import.meta.url), "utf8");
+  assert.match(preview, /<ImageLightbox/, "独立预览窗口必须复用同一个灯箱（否则两套裁剪口径）");
+});
+
+test("CE-01 反例自证：补圆角 / 加 overflow-hidden / 改 object-cover 都必须红", () => {
+  const src = readFileSync(new URL("../components/message/ImageLightbox.vue", import.meta.url), "utf8");
+  const mut = (from: string | RegExp, to: string) => {
+    const out = src.replace(from as never, to);
+    if (out === src) throw new Error(`反例自证：${from} 没被替换到，锚点已漂`);
+    return out;
+  };
+  assert.ok(findPreviewCropIssues(mut("rounded-none object-contain", "rounded-[18px] object-contain")).length > 0,
+    "加圆角必须命中");
+  assert.ok(findPreviewCropIssues(mut('class="flex items-center justify-center" data-lightbox-stage',
+    'class="flex items-center justify-center overflow-hidden" data-lightbox-stage')).length > 0,
+    "裁剪祖先必须命中");
+  assert.ok(findPreviewCropIssues(mut("rounded-none object-contain", "rounded-none object-cover")).length > 0,
+    "cover 必须命中");
+});
+
 test("PC-01 反例自证：给 `.gosslan-menu` 写回 max-h-64 必须命中（不许空转）", () => {
   const broken = '<div class="gosslan-menu frost z-[80] max-h-64"></div>';
   const hits = findMenuHardMaxHeight(broken);
