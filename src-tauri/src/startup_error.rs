@@ -132,6 +132,9 @@ pub fn open(app: &tauri::AppHandle) {
     .always_on_top(true)
     .center()
     .visible(true)
+    // 这扇窗在应用启动失败时弹出，用户多半是从别的应用切过来 ⇒ 第一击必须直接落到按钮上
+    // （macOS 默认只激活窗口、吃掉这一击；非 macOS 上是 no-op）。
+    .accept_first_mouse(true)
     .build();
     if let Err(e) = built {
         eprintln!("[gosslan] 错误窗口建不出来（code=STARTUP_ERROR_WINDOW_FAILED）：{e}");

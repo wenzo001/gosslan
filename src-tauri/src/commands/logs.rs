@@ -734,6 +734,10 @@ pub fn open_log_window(
             .maximizable(false)
             .minimizable(true)
             .closable(true)
+            // 非活动窗口的第一下点击要**同时**落到 webview 上（用户 2026-11-07 实测：
+            // 恢复条「知道了」与长文本弹窗的按钮第一下无效）。macOS 默认只激活窗口、
+            // 吃掉这一击；Windows 本就直通，此调用在非 macOS 上是 no-op。
+            .accept_first_mouse(true)
             .build()
         },
         // ↓ 这段是 `placed`：**创建锁外**执行。decorate / 摆位要么问窗口几何（等主线程应答的
@@ -800,6 +804,10 @@ pub fn open_settings_window(
             .maximizable(false)
             .minimizable(true)
             .closable(true)
+            // 非活动窗口的第一下点击要**同时**落到 webview 上（用户 2026-11-07 实测：
+            // 恢复条「知道了」与长文本弹窗的按钮第一下无效）。macOS 默认只激活窗口、
+            // 吃掉这一击；Windows 本就直通，此调用在非 macOS 上是 no-op。
+            .accept_first_mouse(true)
             .build()
         },
         // ↓ 这段是 `placed`：**创建锁外**执行。decorate / 摆位要么问窗口几何（等主线程应答的
@@ -961,6 +969,8 @@ fn ensure_tasks_window(
             .maximizable(false)
             .minimizable(true)
             .closable(true)
+            // 同 open_log_window：非活动窗口第一击也要落到 webview。
+            .accept_first_mouse(true)
             .build()
         },
         // ↓ `placed`（锁外）：这几步全要问窗口自己的外框/所在屏 ⇒ 绝不能挪进创建锁里。
@@ -1241,6 +1251,8 @@ fn ensure_preview_window(
             .maximizable(false)
             .minimizable(true)
             .closable(true)
+            // 同 open_log_window：非活动窗口第一击也要落到 webview。
+            .accept_first_mouse(true)
             .build()
         },
         // ↓ `placed`（锁外），理由同群任务窗那处。
@@ -1380,6 +1392,8 @@ pub fn open_link_window(
             .min_inner_size(420.0, 320.0)
             .background_color(bg)
             .visible(false)
+            // 同 open_log_window：非活动窗口第一击也要落到 webview。
+            .accept_first_mouse(true)
             .build()
         },
         // ↓ `placed`（锁外）。外链窗保留系统标题栏 ⇒ 不 decorate（见 decorate_aux_window 的警告），

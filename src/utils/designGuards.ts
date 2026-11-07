@@ -2956,6 +2956,68 @@ export function checkBootSkeletonGeometry(s: BootSkeletonSources): GuardIssue[] 
   return out;
 }
 
+/**
+ * CF-01：每一扇窗都必须接受「非活动窗口的第一击」（`acceptFirstMouse`）。
+ *
+ * 2026-11-07 用户实测：崩溃恢复条的「知道了」、长文本 / 代码块弹窗里的按钮，
+ * **第一下点击无效，要点第二下**。这不是 DOM 的问题 —— 那几个按钮全都是 `@click`
+ * （`CrashNotice.vue` 的容器还是 `pointer-events: none` + 卡片 `auto`），
+ * 而是 macOS 的默认窗口行为：窗口不在前台时，第一击只激活窗口、不投递给 webview。
+ * Tauri 的开关就是 `acceptFirstMouse`（builder 上是 `accept_first_mouse(true)`）。
+ *
+ * 判据同时盯两处，缺一即红：
+ *   ① `tauri.conf.json` 里 `app.windows[]` 每一项都是 `acceptFirstMouse: true`
+ *      （主窗口走配置、不走 Rust builder）；
+ *   ② 每个 `WebviewWindowBuilder::new(` 的链式调用里，`build()` 之前有
+ *      `.accept_first_mouse(true)` —— 设置 / 日志 / 群任务 / 预览 / 外链 / 启动错误
+ *      六扇窗都是运行时建的，漏一扇就等于那扇窗的第一击还是会丢。
+ * 反例自证：把某一处删掉（或配置改回 false）必须报红。
+ */
+export function checkAcceptFirstMouse(s: { confJson: string; rustSources: string[] }): GuardIssue[] {
+  const out: GuardIssue[] = [];
+
+  let conf: unknown;
+  try {
+    conf = JSON.parse(s.confJson);
+  } catch {
+    return [{ line: 0, message: "CF-01：`tauri.conf.json` 解析失败，无法核对 `acceptFirstMouse`。" }];
+  }
+  const windows = (conf as { app?: { windows?: Array<Record<string, unknown>> } })?.app?.windows;
+  if (!Array.isArray(windows) || windows.length === 0) {
+    out.push({ line: 0, message: "CF-01：`app.windows` 为空 —— 判据会扫空。" });
+  } else {
+    windows.forEach((w, i) => {
+      if (w?.acceptFirstMouse !== true) {
+        out.push({
+          line: 0,
+          message:
+            `CF-01：\`app.windows[${i}]\`（label=${String(w?.label ?? "?")}）没有 \`acceptFirstMouse: true\` —— ` +
+            "macOS 上非活动窗口的第一下点击只激活窗口、按钮要点两次。",
+        });
+      }
+    });
+  }
+
+  const marker = "WebviewWindowBuilder::new(";
+  for (const src of s.rustSources) {
+    let idx = src.indexOf(marker);
+    while (idx >= 0) {
+      const end = src.indexOf(".build()", idx);
+      const chain = end < 0 ? src.slice(idx) : src.slice(idx, end);
+      if (!/\.accept_first_mouse\(true\)/.test(chain)) {
+        out.push({
+          line: lineAt(src, idx),
+          message:
+            "CF-01：这扇运行时创建的窗口没有 `.accept_first_mouse(true)` —— " +
+            "macOS 上它的按钮第一击会被窗口激活吃掉。加在 `.build()` 之前。",
+        });
+      }
+      idx = src.indexOf(marker, idx + marker.length);
+    }
+  }
+  return out.sort((a, b) => a.line - b.line);
+}
+
 /** 桌面三栏的最窄宽度（= 断点；更窄走移动布局，没有桌面 caption 系统按钮）。 */
 const BOOT_NARROW_DESKTOP_W = 768;
 /** macOS 原生红绿灯占位：与 `TitleBar.vue` 的 `w-[78px]` 同一来源。 */

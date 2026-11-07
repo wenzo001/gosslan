@@ -65,6 +65,7 @@ import {
   findRawCardPadding,
   checkBootSkeletonGeometry,
   checkBootCapBrandSafe,
+  checkAcceptFirstMouse,
   findTransparentFieldBorder,
   findRawPlaceholderColor,
   findMissingPlaceholderRule,
@@ -6976,6 +6977,64 @@ test("SK-03 反例自证：去掉居中后文案回到 14px，必须与红绿灯
   assert.ok(
     issues.some((i) => i.message.includes("SK-03") && i.message.includes("红绿灯")),
     `去掉居中必须红（左对齐 14px 会压在 0–78px 的红绿灯区里），实际：${JSON.stringify(issues)}`,
+  );
+});
+
+// ---------------- CF-01：非活动窗口的第一击必须落到按钮上 ----------------
+
+function windowSources() {
+  const srcDir = join(import.meta.dirname, "..");
+  const rustDir = join(srcDir, "..", "src-tauri", "src");
+  const rustSources: string[] = [];
+  const walk = (dir: string) => {
+    for (const ent of readdirSync(dir, { withFileTypes: true })) {
+      const p = join(dir, ent.name);
+      if (ent.isDirectory()) walk(p);
+      // `*_tests.rs` 里提到的 `WebviewWindowBuilder::new(` 是字符串夹具，不是真建窗。
+      else if (ent.name.endsWith(".rs") && !ent.name.endsWith("_tests.rs")) {
+        rustSources.push(readFileSync(p, "utf8"));
+      }
+    }
+  };
+  walk(rustDir);
+  return {
+    confJson: readFileSync(join(srcDir, "..", "src-tauri", "tauri.conf.json"), "utf8"),
+    rustSources,
+  };
+}
+
+test("CF-01：所有窗口都接受非活动窗口的第一击（acceptFirstMouse / accept_first_mouse）", () => {
+  const src = windowSources();
+  const issues = checkAcceptFirstMouse(src);
+  assert.deepEqual(issues, [], issues.map((i) => i.message).join("\n"));
+  // 分母自证：主窗口配置与至少两处运行时建窗都真的被扫到了。
+  assert.match(src.confJson, /"acceptFirstMouse":\s*true/);
+  const builders = src.rustSources.reduce(
+    (n, s) => n + (s.match(/WebviewWindowBuilder::new\(/g)?.length ?? 0),
+    0,
+  );
+  assert.ok(builders >= 6, `分母不足：只扫到 ${builders} 处运行时建窗，期望 ≥6`);
+});
+
+test("CF-01 反例自证：配置改回 false / 删掉某扇窗的 accept_first_mouse 必须红", () => {
+  const src = windowSources();
+
+  const confOff = src.confJson.replace(/"acceptFirstMouse":\s*true/, '"acceptFirstMouse": false');
+  assert.notEqual(confOff, src.confJson, "锚点没命中：tauri.conf.json 的 acceptFirstMouse 变了形状");
+  assert.ok(
+    checkAcceptFirstMouse({ ...src, confJson: confOff }).some(
+      (i) => i.message.includes("CF-01") && i.message.includes("app.windows"),
+    ),
+    "主窗口 acceptFirstMouse=false 必须红",
+  );
+
+  const stripped = src.rustSources.map((s) => s.replace(/\s*\.accept_first_mouse\(true\)/, ""));
+  assert.notDeepEqual(stripped, src.rustSources, "锚点没命中：Rust 里没有 .accept_first_mouse(true)");
+  assert.ok(
+    checkAcceptFirstMouse({ ...src, rustSources: stripped }).some(
+      (i) => i.message.includes("CF-01") && i.message.includes("accept_first_mouse"),
+    ),
+    "删掉运行时窗口的 accept_first_mouse 必须红",
   );
 });
 
