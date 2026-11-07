@@ -244,8 +244,19 @@ const PATHREF = /`((?:src|src-tauri|docs|scripts|perf|examples)\/[A-Za-z0-9_./-]
  */
 const DESIGN_BUNDLES = ["designs/gosslan-redesign/"];
 
-const pathDocs = execFileSync("git", ["ls-files", "*.md"], { cwd: ROOT, encoding: "utf8" })
-  .split("\n")
+// 2026-11-07：**必须把"新增但还没 add"的 .md 也算进来**。原来只取 `git ls-files`（已跟踪），
+// 新写的文档在 `git add` 之前对这条判据完全隐形 —— 实测就这样漏过一次：
+// 归档一份审计报告后本地跑 `check-doc-citations` 全绿（文件还没 add），提交推上去 CI 立刻红
+// （两份 `docs/decisions.md` / `docs/edge-cases.md` 早已搬到 `designs/gosslan-redesign/docs/`）。
+// 那是典型的"检查还在跑、但查不到东西"：绿不代表守住。`--others --exclude-standard`
+// 只多收**未被 .gitignore 忽略**的未跟踪文件，不放宽任何一条判据。
+const pathDocs = [
+  ...execFileSync("git", ["ls-files", "*.md"], { cwd: ROOT, encoding: "utf8" }).split("\n"),
+  ...execFileSync("git", ["ls-files", "--others", "--exclude-standard", "*.md"], {
+    cwd: ROOT,
+    encoding: "utf8",
+  }).split("\n"),
+]
   .filter(Boolean)
   .filter(
     (f) =>
