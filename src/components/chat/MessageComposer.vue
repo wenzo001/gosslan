@@ -16,6 +16,12 @@ import { shouldRunThrottled } from "@/utils/defer";
 import { mentionHighlightColor, resolveChatColors } from "@/utils/chatStyle";
 import { classifyPaste } from "@/utils/clipboard";
 import { isImeKey } from "@/utils/ime";
+import {
+  graphemeEndAfter,
+  graphemeStartBefore,
+  needsGraphemeDelete,
+  needsGraphemeForwardDelete,
+} from "@/utils/graphemes";
 import type { MsgKind } from "@/types";
 import { MENTION_ALL_TOKEN, textMentionsName } from "@/utils/messages";
 import { isMentionLead } from "@/utils/linkify";
@@ -326,9 +332,14 @@ const composerMentionFg = computed(() =>
 /** 清空但残留空壳（空的 div/br）时规范化为真·空，让 :empty 的 placeholder 回来。 */
 function normalizeEmpty() {
   const el = editorRef.value;
+  if (!el) return;
+  // ⚠️ 表情 token 里是 `<img>`，`textContent` 读出来是空（token 后面那个 NBSP 也会被
+  // trim 掉）—— 只按文本判断会把「只剩表情」的草稿整个清空。用户 2026-11-07 报的
+  // 「两个表情一次退格全没」里就有这一层：正常的程序化删除也会走到这里。
+  if (el.querySelector(".mention-token, .emoji-token")) return;
   // 用 textContent 而非 innerText：innerText 会强制同步 reflow（对超长文本极慢），
   // 这里只需判断"是否空壳"，textContent 语义足够且不触发布局。
-  if (el && (el.textContent ?? "").trim() === "") el.innerHTML = "";
+  if ((el.textContent ?? "").trim() === "") el.innerHTML = "";
 }
 
 watch(codeMode, () => nextTick(() => autoResize()));
@@ -613,11 +624,24 @@ function onKeydown(e: KeyboardEvent) {
     e.preventDefault();
     return;
   }
-  // 微信式 token 联删：caret 前是「token + 尾随 nbsp」时一次退格删掉两者
-  // （token 本身是原子，浏览器默认已整删；只补 nbsp 这一格的差距）。
-  if (e.key === "Backspace" && !e.isComposing && deleteMentionBeforeCaret()) {
-    e.preventDefault();
-    return;
+  // 一次退格只删「用户眼里的一个表情」：
+  //   · 图节点（emoji-token / mention-token）是原子 —— 由我们接管，永远只删一个；
+  //   · 原生 emoji 文本按字素簇删（两个连着的 😀😀 只删后一个）。
+  // 为什么不能交给浏览器：相邻的 `contentEditable=false` 原子 span 在部分 WebView
+  // 上会被当同一个 editing host 一次删掉（用户 2026-11-07 安卓真机：两个表情一次退格全没）。
+  // 有选区时一律放行（用户选中的整段都该删）；输入法组合由上面的 `imeKey` 提前放行。
+  if (e.key === "Backspace" && !e.isComposing && !e.metaKey && !e.ctrlKey && !e.altKey) {
+    if (deleteOneUnitBeforeCaret()) {
+      e.preventDefault();
+      return;
+    }
+  }
+  // 前向删同一口径：一次只删一个 token / 一个字素簇（否则 `Delete` 也会成批吃表情）。
+  if (e.key === "Delete" && !e.isComposing && !e.metaKey && !e.ctrlKey && !e.altKey) {
+    if (deleteOneUnitAfterCaret()) {
+      e.preventDefault();
+      return;
+    }
   }
   // @ 选择器打开时：↑↓ 导航、Enter 选中（吞掉发送）、Esc 关闭，其余键正常输入
   if (mention.value && mentionFiltered.value.length > 0) {
@@ -838,25 +862,215 @@ function applyMention(member: { id: string; name: string }) {
   persistDraft();
 }
 
-/** caret 前是「token 尾随的 nbsp」→ 连 token 一起删（微信式一次退格删全）。
- *  token 紧邻 caret（无 nbsp）的场景交给浏览器：原子 span 本就整块删除。 */
-function deleteMentionBeforeCaret(): boolean {
+/**
+ * caret 前紧邻的原子 token 范围（`Backspace` 用）。
+ *
+ * 为什么不能只认「offset === 1 且 text[0] === NBSP」这一种形状（旧 `deleteMentionBeforeCaret`）：
+ * 浏览器把 caret 报在三种不同位置，另外两种就漏给了默认行为 ——
+ *   a) caret 在 token 自己里面（部分 WebKit 会把 caret 放进 `contentEditable=false` 的 span）；
+ *   b) caret 在 token **后面**那个文本节点的 offset 0（紧贴 token、还没越过 NBSP）；
+ *   c) caret 在编辑器/块元素的子节点下标上（Android WebView 常见），前一个子节点是 token，
+ *      或前一个子节点是 token 尾随的 NBSP 文本。
+ * 漏掉的形状里，两个相邻原子 span 会被 WebView 当同一段一起删 —— 这正是用户 2026-11-07
+ * 报的「两个表情一次退格全没」。
+ *
+ * 返回的 Range 已覆盖「token（+ 尾随 NBSP）」，调用方删除后 caret 落在删除点。
+ */
+function tokenRangeBeforeCaret(): Range | null {
+  const el = editorRef.value;
+  const sel = window.getSelection();
+  if (!el || !sel || sel.rangeCount === 0 || !sel.isCollapsed) return null;
+  const node = sel.focusNode;
+  const offset = sel.focusOffset;
+  if (!node || !el.contains(node)) return null;
+
+  const range = document.createRange();
+
+  // a) caret 在 token 内部：整个 token 是一个删除单位。
+  const host = node.nodeType === Node.TEXT_NODE ? node.parentNode : node;
+  if (host && isTokenSpan(host)) {
+    range.selectNode(host);
+    return range;
+  }
+
+  if (node.nodeType === Node.TEXT_NODE) {
+    const textNode = node as Text;
+    const text = textNode.data ?? "";
+    const prev = textNode.previousSibling;
+    if (!isTokenSpan(prev)) return null;
+    range.setStartBefore(prev as Node);
+    if (offset === 0) {
+      // b1) caret 紧贴 token 之后、NBSP 之前：只删 token，保留那个 NBSP。
+      range.setEnd(textNode, 0);
+    } else if (offset === 1 && text[0] === "\u00A0") {
+      // b2) caret 在尾随 NBSP 之后（正常退格路径）：token + NBSP 一起删，
+      //     否则每删一个表情都要多按一次退格（用户眼里的"一个字"变成两步）。
+      range.setEnd(textNode, 1);
+    } else {
+      return null;
+    }
+    return range;
+  }
+
+  // c) caret 报在元素节点上：用「前一个子节点」判断。
+  if (node.nodeType === Node.ELEMENT_NODE && offset > 0) {
+    const prev = (node as Element).childNodes[offset - 1] ?? null;
+    if (isTokenSpan(prev)) {
+      range.setStartBefore(prev!);
+      range.setEnd(node, offset);
+      return range;
+    }
+    // token 后面还挂着 NBSP 文本：那个 NBSP 属于 token 这个单位。
+    if (prev && prev.nodeType === Node.TEXT_NODE && (prev.textContent ?? "") === "\u00A0") {
+      const token = prev.previousSibling;
+      if (isTokenSpan(token)) {
+        range.setStartBefore(token!);
+        range.setEnd(node, offset);
+        return range;
+      }
+    }
+  }
+  return null;
+}
+
+/** caret 后紧邻的原子 token 范围（`Delete` 前向删用），与 `tokenRangeBeforeCaret` 对称。 */
+function tokenRangeAfterCaret(): Range | null {
+  const el = editorRef.value;
+  const sel = window.getSelection();
+  if (!el || !sel || sel.rangeCount === 0 || !sel.isCollapsed) return null;
+  const node = sel.focusNode;
+  const offset = sel.focusOffset;
+  if (!node || !el.contains(node)) return null;
+
+  const range = document.createRange();
+
+  const host = node.nodeType === Node.TEXT_NODE ? node.parentNode : node;
+  if (host && isTokenSpan(host)) {
+    range.selectNode(host);
+    return range;
+  }
+
+  /** 从 token 起点向右扩到「token + 它尾随的 NBSP」。 */
+  const selectTokenWithTail = (token: Node) => {
+    range.setStartBefore(token);
+    range.setEndAfter(token);
+    const tail = token.nextSibling;
+    if (tail && tail.nodeType === Node.TEXT_NODE && (tail.textContent ?? "").startsWith("\u00A0")) {
+      range.setEnd(tail, 1);
+    }
+    return range;
+  };
+
+  if (node.nodeType === Node.TEXT_NODE) {
+    const textNode = node as Text;
+    const text = textNode.data ?? "";
+    const next = textNode.nextSibling;
+    if (offset !== text.length || !isTokenSpan(next)) return null;
+    range.setStart(textNode, offset);
+    return selectTokenWithTail(next as Node);
+  }
+
+  if (node.nodeType === Node.ELEMENT_NODE) {
+    const next = (node as Element).childNodes[offset] ?? null;
+    if (isTokenSpan(next)) {
+      range.setStart(node, offset);
+      return selectTokenWithTail(next as Node);
+    }
+  }
+  return null;
+}
+
+/**
+ * 程序化删除之后的收尾：走与 `onInput` 同一组投影，补上浏览器不会替我们做的那些事。
+ *
+ * 直接改 DOM 不发 `input` 事件 ⇒ 不手动同步就会出现「只剩表情时发送键还亮着」
+ * 「删掉 @ 之后候选列表还挂着」「草稿里还留着刚删掉的表情」。
+ */
+function afterProgrammaticDelete() {
+  normalizeEmpty();
+  syncDraftState();
+  autoResize();
+  updateMentionState();
+  persistDraft();
+  scheduleCodeDetect();
+}
+
+/** 有选区（非折叠）时返回 false，把「用户选中的整段都删」交回浏览器。 */
+function hasNonCollapsedSelection(): boolean {
+  const sel = window.getSelection();
+  return !!sel && sel.rangeCount > 0 && !sel.isCollapsed;
+}
+
+function collapseCaretTo(range: Range) {
+  const sel = window.getSelection();
+  if (!sel) return;
+  range.collapse(true);
+  sel.removeAllRanges();
+  sel.addRange(range);
+}
+
+/**
+ * 一次退格只删「用户眼里的一个单位」。
+ *
+ * 返回 true = 已由我们处理（调用方 `preventDefault`）；false = 交回浏览器默认行为。
+ *
+ * 分工：
+ *   · 原子 token（表情 / @提及）：我们接管 —— 相邻 span 在部分 WebView 上会被成批删掉；
+ *   · 原生 emoji 文本：只有跨多个 code unit 的字素簇才接管（按 `Intl.Segmenter` 的
+ *     字素边界删）；普通英文/中文交回浏览器，保住它的 undo 栈与输入法行为。
+ */
+function deleteOneUnitBeforeCaret(): boolean {
   const el = editorRef.value;
   if (!el) return false;
+  if (hasNonCollapsedSelection()) return false;
+
+  const tokenRange = tokenRangeBeforeCaret();
+  if (tokenRange) {
+    tokenRange.deleteContents();
+    collapseCaretTo(tokenRange);
+    afterProgrammaticDelete();
+    return true;
+  }
+
   const ctx = caretContext();
   if (!ctx) return false;
   const { node, offset } = ctx;
-  const text = node.textContent ?? "";
-  if (offset !== 1 || text[offset - 1] !== "\u00A0") return false;
-  const prev = node.previousSibling;
-  if (!isTokenSpan(prev) || !prev) return false;
+  const data = node.data ?? "";
+  if (!needsGraphemeDelete(data, offset)) return false;
+  const start = graphemeStartBefore(data, offset);
+  node.deleteData(start, offset - start);
   const range = document.createRange();
-  range.setStartBefore(prev);
-  range.setEnd(node, 1);
-  range.deleteContents();
-  normalizeEmpty();
-  // 退格删 token 也不触发 input（浏览器不会为原子 span 的变化发 input）。
-  persistDraft();
+  range.setStart(node, start);
+  collapseCaretTo(range);
+  afterProgrammaticDelete();
+  return true;
+}
+
+/** `Delete` 前向删：与退格同一口径（一个 token / 一个字素簇）。 */
+function deleteOneUnitAfterCaret(): boolean {
+  const el = editorRef.value;
+  if (!el) return false;
+  if (hasNonCollapsedSelection()) return false;
+
+  const tokenRange = tokenRangeAfterCaret();
+  if (tokenRange) {
+    tokenRange.deleteContents();
+    collapseCaretTo(tokenRange);
+    afterProgrammaticDelete();
+    return true;
+  }
+
+  const ctx = caretContext();
+  if (!ctx) return false;
+  const { node, offset } = ctx;
+  const data = node.data ?? "";
+  if (!needsGraphemeForwardDelete(data, offset)) return false;
+  const end = graphemeEndAfter(data, offset);
+  node.deleteData(offset, end - offset);
+  const range = document.createRange();
+  range.setStart(node, offset);
+  collapseCaretTo(range);
+  afterProgrammaticDelete();
   return true;
 }
 
