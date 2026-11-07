@@ -4,7 +4,7 @@
 >
 > - 代码基线：`origin/main` = `353a634dc02e01205421bcc511c67713e244ab22`（`git fetch origin --prune` 后读数；`65ad570d` 之后只有 `20dbbdc9`、`65d8b712`、`353a634d` 三笔文档/锚点修正，**没有新的裁切修复**）。
 > - 审计 worktree：`/private/tmp/gosslan-audit-20261107`（detached at `353a634d`，独立新建，未使用主工作区，未动 `gosslan-redesign` / `gosslan-codefold`）。
-> - 设计基线：`designs/gosslan-redesign/HANDOFF.md`、`design-system-pulse/project/tokens.json`、`docs/decisions.md`、`docs/edge-cases.md`；`docs/design-language/ux-criteria.md`；`docs/design-guidelines.md`。
+> - 设计基线：`designs/gosslan-redesign/HANDOFF.md`、`designs/design-system-pulse/project/tokens.json`、`designs/gosslan-redesign/docs/decisions.md`、`designs/gosslan-redesign/docs/edge-cases.md`；`docs/design-language/ux-criteria.md`；`docs/design-guidelines.md`。
 > - 需求来源：`docs/notes/ui-pulse-redesign/tasks.md`（#1–#29）、`docs/notes/unslop-review-2026-11-06/{plan,report}.md`、`docs/notes/narrow-glass-strips-5.18.34.md`、`decisions.md:209-225`（用户 2026-11-06 明确回复「1–5 可以」）、`git log 2026-11-05..2026-11-07`。
 > - 台账状态**未采信**：每一行都回到源码核过；台账自报「已完成」但代码不成立的，本表按代码改判。
 
