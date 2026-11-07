@@ -14,6 +14,20 @@
 
 ## [Unreleased]
 
+## [5.19.0] - 2026-11-07
+
+### 分发与更新
+- 发版产物新增 Gitee 镜像：GitHub Release 发布后由 `sync-gitee` job 同步同名 tag/release 与附件，
+  并维护固定清单 `https://gitee.com/fwdq/gosslan-releases/raw/master/updates/latest.json`；
+  桌面清单复用 GitHub 的签名，不重签；Android 条目补 `sha256` 与 `size`。
+- Gitee 单附件上限 100MB、仓库总量 1G：两个 WebView2 内置包不镜像（本来也不进更新清单），
+  旧 release 默认只保留最近 8 个（当前 tag 永不删），清理前打印完整 dry-run 清单。
+  WebView2 档仍从 GitHub Release 下载。
+- 桌面检查更新改为 Gitee 固定清单优先、GitHub 只作备份：`endpoints` 两条，Gitee 返回非 2XX
+  才回退；签名的生成与校验逻辑不变。
+- Android 检查更新同样先读 Gitee 固定清单（失败、缺 Android 条目或清单版本低于当前版本时
+  回退 GitHub Releases API），APK 仍按 `sha256` + 大小校验；协议与数据库不变。
+
 ## [5.18.78] - 2026-11-07
 
 ### 界面重构

@@ -4,6 +4,7 @@
 //! 而命令层 / JNI 桥只有 Android 目标才会编译。把容易写错的格式逻辑与平台胶水拆开，
 //! 才能在 CI 的 mac/linux 上提前发现回归。
 
+use std::collections::HashMap;
 use std::fs::File;
 use std::io::Read;
 use std::path::Path;
@@ -48,6 +49,26 @@ struct RawAsset {
     digest: Option<String>,
 }
 
+/// Gitee 固定清单（`updates/latest.json`）的顶层结构。桌面平台会被忽略，
+/// 只取 `android-*` 条目；桌面客户端读同一个文件时也不会看 Android 条目。
+#[derive(Debug, Deserialize)]
+struct RawFixedManifest {
+    version: String,
+    #[serde(default)]
+    notes: Option<String>,
+    #[serde(default)]
+    platforms: HashMap<String, RawFixedPlatform>,
+}
+
+#[derive(Debug, Deserialize)]
+struct RawFixedPlatform {
+    url: String,
+    #[serde(default)]
+    size: u64,
+    #[serde(default)]
+    sha256: Option<String>,
+}
+
 /// GitHub Releases API 的返回体 → `ReleaseInfo`。
 ///
 /// 不依赖 `semver`（它只对桌面目标声明）：版本合法性在这里只做最小校验，
@@ -70,6 +91,41 @@ pub fn parse_release_json(json: &str) -> Result<ReleaseInfo, String> {
     Ok(ReleaseInfo {
         version,
         notes: raw.body,
+        assets,
+    })
+}
+
+/// Gitee 固定清单 → `ReleaseInfo`。
+///
+/// 只保留 `android-*` 平台；文件名从 url 末尾取（APK 文件名只含 `[A-Za-z0-9._-]`，
+/// 不依赖百分号解码）。没有 Android 条目时返回错误 —— 调用方会退 GitHub，
+/// 不会把“桌面清单”当成“没有安卓更新”。
+pub fn parse_fixed_manifest(json: &str) -> Result<ReleaseInfo, String> {
+    let raw: RawFixedManifest = serde_json::from_str(json)
+        .map_err(|e| format!("code=ANDROID_UPDATE_MANIFEST：Gitee 清单解析失败（{e}）"))?;
+    let version = normalize_version(&raw.version)
+        .ok_or_else(|| "code=ANDROID_UPDATE_MANIFEST：Gitee 清单缺少可解析的版本号".to_string())?;
+    let mut assets = Vec::new();
+    for (platform, entry) in raw.platforms {
+        if !platform.starts_with("android-") {
+            continue;
+        }
+        let Some(name) = entry.url.rsplit('/').next().filter(|n| !n.is_empty()) else {
+            continue;
+        };
+        assets.push(ReleaseAsset {
+            name: name.to_string(),
+            url: entry.url,
+            size: entry.size,
+            sha256: entry.sha256.as_deref().and_then(parse_digest),
+        });
+    }
+    if assets.is_empty() {
+        return Err("code=ANDROID_UPDATE_MANIFEST：Gitee 清单没有 Android 平台".to_string());
+    }
+    Ok(ReleaseInfo {
+        version,
+        notes: raw.notes,
         assets,
     })
 }
@@ -242,6 +298,59 @@ mod tests {
                 ]
             }}"#
         )
+    }
+
+    fn sample_fixed_json() -> String {
+        let digest = "c".repeat(64);
+        format!(
+            r#"{{
+                "version": "5.18.78",
+                "notes": "本次更新修复了若干问题",
+                "pub_date": "2026-01-01T00:00:00Z",
+                "platforms": {{
+                    "darwin-aarch64": {{"signature":"desktop-sig","url":"https://example.com/Gosslan-arm64.app.tar.gz"}},
+                    "android-aarch64": {{"signature":"","url":"https://example.com/gosslan-5.18.78-arm64-v8a-release.apk","size":17521727,"sha256":"{digest}"}},
+                    "android-armv7": {{"signature":"","url":"https://example.com/gosslan-5.18.78-armeabi-v7a-release.apk","size":13066897,"sha256":"{digest}"}}
+                }}
+            }}"#
+        )
+    }
+
+    #[test]
+    fn fixed_manifest_keeps_android_platforms_only() {
+        let release = parse_fixed_manifest(&sample_fixed_json()).unwrap();
+        assert_eq!(release.version, "5.18.78");
+        assert_eq!(release.notes.as_deref(), Some("本次更新修复了若干问题"));
+        assert_eq!(release.assets.len(), 2);
+        let arm64 = release
+            .assets
+            .iter()
+            .find(|a| a.name.ends_with("-arm64-v8a-release.apk"))
+            .unwrap();
+        assert_eq!(arm64.size, 17521727);
+        assert_eq!(arm64.sha256.as_deref(), Some("c".repeat(64).as_str()));
+        assert_eq!(select_asset(&release.assets, "arm64-v8a").unwrap().size, 17521727);
+        assert!(select_asset(&release.assets, "x86_64").is_none());
+    }
+
+    #[test]
+    fn fixed_manifest_requires_version_and_android_entries() {
+        assert!(parse_fixed_manifest(r#"{"platforms":{}}"#).is_err());
+        assert!(parse_fixed_manifest(
+            r#"{"version":"5.18.78","platforms":{"darwin-aarch64":{"url":"https://example.com/a"}}}"#
+        )
+        .is_err());
+        assert!(parse_fixed_manifest("not json").is_err());
+    }
+
+    #[test]
+    fn fixed_manifest_without_sha256_is_rejected_later() {
+        let release = parse_fixed_manifest(
+            r#"{"version":"5.18.78","platforms":{"android-aarch64":{"url":"https://example.com/a.apk","size":1}}}"#,
+        )
+        .unwrap();
+        assert!(release.assets[0].sha256.is_none());
+        assert_eq!(release.assets[0].size, 1);
     }
 
     #[test]
