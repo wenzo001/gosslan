@@ -295,7 +295,12 @@ useEventListener(window, "keydown", onKeydown);
         </h2>
         <p class="mt-0.5 text-caption text-[var(--gosslan-text-2)]">{{ t(SECTION_DESC[section]) }}</p>
       </header>
-      <div class="gosslan-scroll min-h-0 flex-1 overflow-y-auto pb-2">
+      <!-- 滚动条**常驻**（`overflow-y-scroll` 而不是 `auto`）：WKWebView 只在真的出现滚动条时
+           才兑现 `scrollbar-gutter: stable both-edges` 的两侧预留，不滚的分区（「关于」）因此比
+           标题/会滚的分区各多出 8px，肉眼就是"关于页边距变小"（2026-11-07 用户第三次报）。
+           让滚动条常驻 ⇒ 两类分区走同一档几何；空轨道与有滚动条时同一底色，看不出差别。
+           不要改成 `auto`，也不要在分区里补 padding（SC-01 / 运行时几何判据守着）。 -->
+      <div class="gosslan-scroll min-h-0 flex-1 overflow-y-scroll pb-2">
       <!-- 面板容器常驻（`relative` 给退场层定位）：切换分区时**不改 mode**（默认同时挂载），
            新面板立即在流里占住最终高度，旧面板绝对定位叠着淡出 ⇒ 容器高度不塌、
            不重播 enter、也不做整块位移（§11.3.7）。 -->
