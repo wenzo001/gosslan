@@ -14,6 +14,15 @@
 
 ## [Unreleased]
 
+## [5.18.68] - 2026-11-07
+
+### 托盘未读红跟到新的危险红 `#df3146`
+
+- pulse 把 `--gosslan-danger` 定到 `#df3146`（白字 4.50），但 `tray::dot::UNREAD_RED` 与它的
+  `include_str!("../../src/style.css")` 断言仍钉着 `#d43d43` ⇒ **Windows Rust 单测**红
+  （该模块只在 Windows 编译，macOS 本地 `cargo test` 根本看不到这一条）。
+- 同步托盘常量与测试断言，并把设计契约表、`danger-soft` 实值、两处代码注释跟到新值。
+
 ## [5.18.67] - 2026-11-07
 
 ### 红绿灯判据锚点跟上真实签名

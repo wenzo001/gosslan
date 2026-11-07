@@ -297,7 +297,8 @@ export const TOKEN_CONTRAST_CONTRACT: Record<"light" | "dark", TokenPair[]> = {
     // 红底白字这一族（未读徽标 / 删除按钮 / 错误 toast / 图片预览的删除浮层）。
     // 2026-09-26 无障碍实测：原来 `--gosslan-danger` 是 Apple 系统红 #ff3b30，白字只有 **3.55**，
     // 暗色 #ff5548 只有 **3.16** ⇒ 站内每一处红底白字都不合格，而这张表过去没覆盖到它。
-    // 现在填充档改深红 `#d43d43`（白字 4.62），hover 从"朝白混"改成"朝暗混"（越 hover 对比度越高）。
+    // 现在填充档是 `#df3146`（白字 4.50，2026-11-07 pulse 取更贴画板的一档；此前 `#d43d43` 为 4.62），
+    // hover 从"朝白混"改成"朝暗混"（越 hover 对比度越高）。
     { fg: "#ffffff", bg: "--gosslan-danger", min: 4.5, why: "红徽标数字 / 删除按钮 / 错误 toast（11–14px 白字）" },
     { fg: "#ffffff", bg: "--gosslan-danger-hover", min: 4.5, why: "上面那一族的 hover 态（混色结果，按实算判）" },
     // 语义色「实底档」这一族（2026-10-24 补）。缺它之前的形状：橙与绿只有"状态点"和"文字"两档，
