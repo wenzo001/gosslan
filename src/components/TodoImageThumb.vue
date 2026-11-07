@@ -167,11 +167,13 @@ function open(e: Event) {
     @keydown.enter.prevent="open"
     @keydown.space.prevent="open"
   >
+    <!-- 用户 2026-11-07：「所有图片绝对不要切割」。缩略图也按等比完整呈现 ⇒ `object-contain`
+         （不是 `cover`）。方框固定 80×80、圆角与底色照旧，只是不再裁掉长图/宽图的边。 -->
     <img
       v-if="url"
       :src="url"
       :alt="t('msg.imageMessage')"
-      class="h-full w-full object-cover"
+      class="h-full w-full object-contain"
       loading="lazy"
     />
     <div
