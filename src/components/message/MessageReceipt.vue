@@ -11,6 +11,7 @@ import type { GroupDeliverySummary } from "@/types";
 import { X } from "@/components/ui/icons";
 import { AlertCircle, Check } from "@/components/ui/icons";
 import AvatarBox from "@/components/ui/AvatarBox.vue";
+import { POPOVER_EDGE } from "@/utils/popoverBounds";
 
 const props = defineProps<{
   state: SendState;
@@ -241,7 +242,7 @@ function readerAvatar(id: string): string | null {
           side="bottom"
           align="end"
           :side-offset="6"
-          :collision-padding="8"
+          :collision-padding="POPOVER_EDGE"
           hide-when-detached
           class="gosslan-popover-in z-[80] border-0 bg-transparent p-0 shadow-none"
         >

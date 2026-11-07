@@ -14,6 +14,18 @@
 
 ## [Unreleased]
 
+## [5.18.57] - 2026-11-07
+
+### 13 处硬编码 collision-padding="8" 收成单一来源
+
+- 11 个组件（NavRail / MessageComposer / CodeLangMenu / ConversationList×2 / ChatSearchDialog×2 /
+  TodoPickField / ContextMenu / GroupTasksBoard / MessageReactionBar / MessageReceipt / MessageItem）
+  全部改吃 `POPOVER_EDGE`（`utils/popoverBounds.ts`，值仍为 8）。
+- 守卫分母从「两个关键组件」扩到**全站 .vue**：`designGuards.test.ts` 扫描全部组件，
+  断言每处 collision-padding 都 import 并消费 `POPOVER_EDGE`；反例自证用判定函数
+  对字面量 8（必须红）与正例（必须绿）各跑一次。
+- 读数：字面量 `:collision-padding="8"` 13 → 0；消费 POPOVER_EDGE 的组件 2 → 13。
+
 ## [5.18.56] - 2026-11-07
 
 ### macOS 系统红绿灯在 40px 自绘标题栏里竖向居中（#29）

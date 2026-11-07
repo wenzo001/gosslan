@@ -28,6 +28,7 @@ import {
   codeLanguageLabel,
   normalizeCodeLanguage,
 } from "@/utils/codeLanguages";
+import { POPOVER_EDGE } from "@/utils/popoverBounds";
 
 const props = defineProps<{
   /** `null` = 自动识别；`plaintext` = 纯文本；其它为规范语言名。 */
@@ -241,7 +242,7 @@ function pick(value: string) {
       <DropdownMenuContent
         align="end"
         :side-offset="4"
-        :collision-padding="8"
+        :collision-padding="POPOVER_EDGE"
         :collision-boundary="boundary ? [boundary] : []"
         :reference="pinnedReference"
         sticky="always"

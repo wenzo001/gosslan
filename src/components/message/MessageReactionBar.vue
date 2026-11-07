@@ -35,6 +35,7 @@ import { t } from "@/i18n";
 import { emojiUrl } from "@/utils/emoji";
 import { summarizeActors, ROSTER_VISIBLE, type ReactionChip } from "@/utils/reactions";
 import { canHover } from "@/utils/platform";
+import { POPOVER_EDGE } from "@/utils/popoverBounds";
 import { useChatStore } from "@/stores/useChatStore";
 import { HoverCardContent, HoverCardPortal, HoverCardRoot, HoverCardTrigger } from "reka-ui";
 
@@ -242,7 +243,7 @@ onUnmounted(clearPress);
             side="top"
             :align="align"
             :side-offset="6"
-            :collision-padding="8"
+            :collision-padding="POPOVER_EDGE"
             class="gosslan-popover-in frost z-[80] w-max max-w-[256px] rounded-[var(--gosslan-radius-md)] px-2.5 py-1.5 text-caption leading-relaxed text-[var(--gosslan-text-2)]"
             @click.stop
           >

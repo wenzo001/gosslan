@@ -78,6 +78,7 @@ import SecondaryBtn from "@/components/ui/SecondaryBtn.vue";
 import PrimaryBtn from "@/components/ui/PrimaryBtn.vue";
 import { Check, RotateCcw, Trash2, X } from "@/components/ui/icons";
 import { createInitScope, type InitScope } from "@/utils/initScope";
+import { POPOVER_EDGE } from "@/utils/popoverBounds";
 
 const props = defineProps<{
   groupId: string | null;
@@ -1885,7 +1886,7 @@ watch(
         side="bottom"
         align="end"
         :side-offset="4"
-        :collision-padding="8"
+        :collision-padding="POPOVER_EDGE"
         class="gosslan-menu frost z-[70]"
         :style="{ width: `${rowMenuPos.width}px` }"
       >

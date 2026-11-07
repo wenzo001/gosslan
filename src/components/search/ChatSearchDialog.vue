@@ -52,6 +52,7 @@ import StateBlock from "@/components/ui/StateBlock.vue";
 import { detailText } from "@/composables/useErrorText";
 import type { ChatSearchGroup, ChatSearchMessage } from "@/types";
 import { previewBody } from "@/utils/messages";
+import { POPOVER_EDGE } from "@/utils/popoverBounds";
 
 const props = defineProps<{ open: boolean; initialKeyword?: string; routeDriven?: boolean }>();
 const emit = defineEmits<{
@@ -460,7 +461,7 @@ function showSender(group: ChatSearchGroup): boolean {
           <DropdownMenuContent
             align="end"
             :side-offset="0"
-            :collision-padding="8"
+            :collision-padding="POPOVER_EDGE"
             class="frost gosslan-menu z-[80]"
           >
             <DropdownMenuItem class="gosslan-menu-item" @select="chooseSender(null)">
@@ -493,7 +494,7 @@ function showSender(group: ChatSearchGroup): boolean {
           <DropdownMenuContent
             align="end"
             :side-offset="0"
-            :collision-padding="8"
+            :collision-padding="POPOVER_EDGE"
             class="frost gosslan-menu z-[80]"
           >
             <DropdownMenuItem

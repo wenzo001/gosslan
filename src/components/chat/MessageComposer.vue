@@ -29,6 +29,7 @@ import AvatarBox from "@/components/ui/AvatarBox.vue";
 import { composerMaxHeight, clampComposerHeight } from "@/utils/composerLayout";
 import { pastedImageRejection, type PastedImageRejection } from "@/utils/composerAttachments";
 import { emojiUrl } from "@/utils/emoji";
+import { POPOVER_EDGE } from "@/utils/popoverBounds";
 
 const props = defineProps<{
   /** 会话切换时聚焦输入框（切换会话 = 新会话，重置草稿由父组件卸载/挂载决定）。 */
@@ -1323,7 +1324,7 @@ async function onPaste(e: ClipboardEvent) {
               side="top"
               align="start"
               :side-offset="8"
-              :collision-padding="8"
+              :collision-padding="POPOVER_EDGE"
               class="gosslan-popover-in z-[80] border-0 bg-transparent p-0 shadow-none"
               @open-auto-focus.prevent
               @close-auto-focus.prevent

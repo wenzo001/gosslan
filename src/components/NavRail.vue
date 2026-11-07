@@ -11,6 +11,7 @@ import {
 import { useAppStore } from "@/stores/useAppStore";
 import { useChatStore } from "@/stores/useChatStore";
 import { useExclusivePopup } from "@/composables/useExclusivePopup";
+import { POPOVER_EDGE } from "@/utils/popoverBounds";
 import UnreadBadge from "@/components/UnreadBadge.vue";
 import NavIcon from "@/components/ui/NavIcon.vue";
 import { t } from "@/i18n";
@@ -204,7 +205,7 @@ function onMoreOpen(open: boolean) {
               side="right"
               align="end"
               :side-offset="8"
-              :collision-padding="8"
+              :collision-padding="POPOVER_EDGE"
               class="frost gosslan-menu z-[80]"
             >
               <DropdownMenuItem
