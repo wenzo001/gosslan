@@ -3666,14 +3666,38 @@ export function findTransparentFieldBorder(model: string): GuardIssue[] {
  * 不属于卡片内边距，不受此限 —— 横向 12 正是控件的标准内距，禁掉它会误伤整片表单。
  * HTML 注释先抹成空格（保留行号），避免注释里的说明造成假红。
  */
-const RAW_CARD_PADDING_TOKEN_RE = /^(?:(?:p|py)-(?:3|4|5|6)|px-(?:4|5|6))$/;
+const RAW_CARD_PADDING_TOKEN_RE = /^(!)?(p|px|py|pt|pr|pb|pl|ps|pe)-(\[[^\]]+\]|[0-9]+(?:\.[0-9]+)?)$/;
+
+/**
+ * 把 padding token 换算成 px，再按轴判档。为什么不只认具名档（2026-11-07 审查 M-2）：
+ * 旧正则只认 `p-3..6`/`py-3..6`/`px-4..6`，于是 `p-[16px]`（任意值）与
+ * `pt-4 pb-4`（单轴拆写）都能绕过 —— 判据看起来绿，实际没拦住任何东西。
+ * 任意值里带 `var()`/`calc()` 的放行（那本来就是 token 消费的正确写法）。
+ */
+function isRawCardPadding(tok: string): boolean {
+  const m = RAW_CARD_PADDING_TOKEN_RE.exec(tok);
+  if (!m) return false;
+  const axis = m[2];
+  const raw = m[3];
+  let px: number;
+  if (raw.startsWith("[")) {
+    const inner = raw.slice(1, -1).trim();
+    const v = /^([0-9.]+)(px|rem|em)?$/.exec(inner);
+    if (!v) return false;
+    const n = Number(v[1]);
+    px = v[2] === "rem" || v[2] === "em" ? n * 16 : n;
+  } else {
+    px = Number(raw) * 4;
+  }
+  return px >= (axis === "px" ? 16 : 12);
+}
 
 export function findRawCardPadding(src: string): GuardIssue[] {
   const cleaned = src.replace(/<!--[\s\S]*?-->/g, (m) => m.replace(/[^\n]/g, " "));
   const out: GuardIssue[] = [];
   for (const m of cleaned.matchAll(CLASS_ATTR_RE)) {
     for (const tok of m[1].split(/\s+/).filter(Boolean)) {
-      if (!RAW_CARD_PADDING_TOKEN_RE.test(tok)) continue;
+      if (!isRawCardPadding(tok)) continue;
       out.push({
         line: lineAt(cleaned, m.index ?? 0),
         message:

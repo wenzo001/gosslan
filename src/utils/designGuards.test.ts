@@ -7357,7 +7357,16 @@ test("BT-05 反例自证：把悬浮输入区让位从 bottom 里摘掉必须红
 function settingsSectionFiles(): Array<{ name: string; src: string }> {
   const dir = new URL("../components/settings/", import.meta.url);
   const names = readdirSync(dir).filter((n) => n.endsWith(".vue")).sort();
-  return names.map((name) => ({ name, src: readFileSync(join(dir.pathname, name), "utf8") }));
+  // 扫描域不能只盯 `components/settings/`：设置外壳（SettingsPanel / SettingsWindow 等）
+  // 就在 components 根下，2026-11-07 审查 M-3 实测那里的 `px-4 py-3` 完全在视野外。
+  const root = new URL("../components/", import.meta.url);
+  const shellNames = readdirSync(root)
+    .filter((n) => n.startsWith("Settings") && n.endsWith(".vue"))
+    .sort();
+  return [
+    ...names.map((name) => ({ name, path: join(dir.pathname, name) })),
+    ...shellNames.map((name) => ({ name, path: join(root.pathname, name) })),
+  ].map(({ name, path }) => ({ name, src: readFileSync(path, "utf8") }));
 }
 
 test("㊶ 真实树：设置分区 0 处卡片级散值（分母现数）", () => {
@@ -7381,6 +7390,17 @@ test("㊶ 反例自证：`p-4` / `px-4 py-2.5` / `px-3 py-3` 三种真实历史�
   for (const cls of ["p-4", "px-4 py-2.5", "px-3 py-3", "p-3"]) {
     const hits = findRawCardPadding(`<div class="${cls}">x</div>`);
     assert.ok(hits.length > 0, `历史散值「${cls}」必须命中，实际 0 命中`);
+  }
+});
+
+test("㊶ 反例自证：任意值 / 单轴拆写 / `!` 前缀都不能绕过（2026-11-07 审查 M-2）", () => {
+  for (const cls of ["p-[16px]", "pt-4 pb-4", "!p-4", "px-[16px]", "pl-[12px]"]) {
+    const hits = findRawCardPadding(`<div class="${cls}">x</div>`);
+    assert.ok(hits.length > 0, `「${cls}」必须命中，实际 0 命中（旧正则的空转点）`);
+  }
+  // 反向：token 消费写法与控件级任意值必须放行，别把「挡住空转」变成「一律报红」。
+  for (const cls of ["p-[var(--gosslan-card-pad)]", "py-[var(--gosslan-card-pad-inset)]", "p-[6px]", "px-[10px]"]) {
+    assert.deepEqual(findRawCardPadding(`<div class="${cls}">x</div>`), [], `「${cls}」是合规写法，不该报`);
   }
 });
 

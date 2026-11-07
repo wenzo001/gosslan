@@ -262,7 +262,7 @@ useEventListener(window, "keydown", onKeydown);
          「右边的箭头两边都不够对称」——参考图里那一列的对齐问题就出在
          左内边距与右侧留白/箭头位置不匹配。这里导航项为纯文字+图标（无展开箭头），
          一旦将来加展开子项，用同一个 `pr-2.5` 承接箭头即可保持对称。 -->
-    <nav class="glass-1 flex w-[200px] shrink-0 flex-col gap-3 border-r border-[var(--gosslan-divider)] px-2.5 py-3">
+    <nav class="glass-1 flex w-[200px] shrink-0 flex-col gap-3 border-r border-[var(--gosslan-divider)] px-2.5 py-[var(--gosslan-card-pad)]">
       <!-- 桌面 9 分区导航不需要可见返回；⌘[ / Alt+← 键盘返回仍保留。 -->
       <div v-for="group in navGroups" :key="group.labelKey">
         <p class="px-2.5 pb-1 text-micro text-[var(--gosslan-text-2)]">{{ t(group.labelKey) }}</p>
@@ -289,7 +289,7 @@ useEventListener(window, "keydown", onKeydown);
 
     <!-- 右：内容区（独立滚动，切换导航不改变窗口尺寸） -->
     <div class="flex min-w-0 flex-1 flex-col bg-[var(--gosslan-panel)]">
-      <header class="shrink-0 px-[var(--gosslan-scroll-inset)] pb-1 pt-3.5">
+      <header class="shrink-0 px-[var(--gosslan-scroll-inset)] pb-1 pt-[var(--gosslan-section-gap)]">
         <h2 class="text-title font-semibold text-[var(--gosslan-text)]">
           {{ t(DESKTOP_ROUTE_TITLE_BY_KEY[section]) }}
         </h2>

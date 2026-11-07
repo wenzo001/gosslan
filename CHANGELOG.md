@@ -14,6 +14,17 @@
 
 ## [Unreleased]
 
+## [5.18.60] - 2026-11-07
+
+### ㊶ 判据补任意值/单轴/`!` 前缀，扫描域扩到设置外壳
+
+- `findRawCardPadding` 从"只认 `p-3..6` / `py-3..6` / `px-4..6` 具名档"改为先换算 px 再按轴判档：
+  `p-[16px]`、`pt-4 pb-4`、`!p-4`、`px-[16px]` 现在都红；`p-[var(--gosslan-card-pad)]` 等
+  真正的 token 消费写法放行。
+- 扫描域从 `components/settings/` 扩到 `components/Settings*.vue`（设置外壳），顺手把
+  `SettingsPanel.vue` 的 `py-4`/`px-4 py-3`、`SettingsWindow.vue` 的 `py-3`/`pt-3.5` 换成 token。
+- 反例自证：五条绕过写法各一条命中，四条合规写法零命中。
+
 ## [5.18.59] - 2026-11-07
 
 ### 输入卡外壳圆角 10 → 22（画板值）

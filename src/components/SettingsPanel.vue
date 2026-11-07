@@ -214,7 +214,7 @@ watch(
         data-settings-scroll
         class="gosslan-scroll min-h-0 flex-1 overflow-y-scroll overflow-x-hidden overscroll-contain"
       >
-        <div class="py-4">
+        <div class="py-[var(--gosslan-card-pad)]">
           <!-- 一级页：分组列表 -->
           <div v-if="mobileNav === null">
             <div v-for="g in GROUPS" :key="g.key" class="mb-5 last:mb-0">
@@ -231,7 +231,7 @@ watch(
                   v-for="(item, idx) in g.items"
                   :key="item.key"
                   data-no-press
-                  class="flex w-full items-center gap-3 px-4 py-3 text-left text-emphasis transition-colors active:bg-[var(--gosslan-pressed)]"
+                  class="settings-card-row flex w-full items-center gap-3 text-left text-emphasis transition-colors active:bg-[var(--gosslan-pressed)]"
                   :class="idx > 0 ? 'border-t border-[var(--gosslan-divider)]' : ''"
                   @click="selectSection(item.key)"
                 >
@@ -242,7 +242,7 @@ watch(
             </div>
           </div>
 
-          <!-- 二级页：完整 Section 组件（与一级页同一个滚动容器、同一份 p-4 边距） -->
+          <!-- 二级页：完整 Section 组件（与一级页同一个滚动容器、同一份 `--gosslan-card-pad` 边距） -->
           <div v-else class="space-y-[var(--gosslan-section-gap)]">
             <ProfileSection v-if="mobileNav === 'profile'" :active="open" :reload-token="reloadToken" />
             <GeneralSection v-else-if="mobileNav === 'general'" />
@@ -270,7 +270,7 @@ watch(
 
   <!-- 桌面端：卡片式弹窗（独立窗口见 `SettingsWindow.vue`；这里保留给「窗口不可用」的场景） -->
   <BaseModal v-else :open="open" :title="t('settings.title')" width="max-w-xl" @close="emit('close')">
-    <div class="gosslan-scroll -mb-5 max-h-[75vh] space-y-[var(--gosslan-section-gap)] overflow-y-auto overflow-x-hidden rounded-b-[var(--gosslan-radius-xl)] bg-[var(--gosslan-bg)] py-5">
+    <div class="gosslan-scroll -mb-5 max-h-[75vh] space-y-[var(--gosslan-section-gap)] overflow-y-auto overflow-x-hidden rounded-b-[var(--gosslan-radius-xl)] bg-[var(--gosslan-bg)] py-[var(--gosslan-section-gap)]">
       <ProfileSection :active="open" :reload-token="reloadToken" />
       <GeneralSection />
       <NotificationSection />
