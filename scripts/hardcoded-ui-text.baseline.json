@@ -31,6 +31,12 @@
     "src/utils/messages.ts": {
       "所有人": 1
     },
+    "src/utils/motionTokens.ts": {
+      "(空)": 2,
+      "`动效令牌 ${token} 不是 cubic-bezier：${raw || \"(空)\"}`": 1,
+      "`动效令牌 ${token} 的值不是时长：${raw || \"(空)\"}`": 1,
+      "`动效令牌只能在浏览器里读取：${token}`": 1
+    },
     "src/utils/quote.ts": {
       "「引用": 1,
       "」": 3,

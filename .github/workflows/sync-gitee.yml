@@ -120,7 +120,7 @@ jobs:
           jq -r '.assets[] | [.id, .name, .size] | @tsv' /tmp/release.json > /tmp/assets.tsv
           while IFS=$'\t' read -r id name size; do
             if [ "$size" -gt 104857600 ]; then
-              echo "跳过 >100MB：$name（$size 字节）"
+              echo "跳过 >100MB：${name}（$size 字节）"
               continue
             fi
             gh api "repos/$GITHUB_REPO/releases/assets/$id" \
