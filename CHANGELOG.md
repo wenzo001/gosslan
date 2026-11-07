@@ -14,6 +14,19 @@
 
 ## [Unreleased]
 
+## [5.18.58] - 2026-11-07
+
+### 暗色高对比档抬字段边框 + 输入卡改走字段 token
+
+- `@media (prefers-contrast: more) .dark` 补 `--gosslan-field-border: var(--gosslan-divider-strong)`
+  （#788dae → #b7c4d6）。常规暗色那条 #788dae 是为「玻璃叠浅色色团」留的最低档；高对比档
+  玻璃已退回实底，不再需要为浅底合成让路。
+- `MessageComposer` 输入卡描边从 `--gosslan-border`（#34373b，暗色对 panel 只有 1.64）
+  改为 `--gosslan-field-border`，与搜索框/群管理输入区同一来源。
+- `check-ui-runtime --only=fieldcontrast` 增一格「暗色 + prefers-contrast:more 边框比常规
+  暗色更亮且 ≥3.0」，并带反例自证（把边框注回 #788dae 必须翻假）。
+- 读数：暗色高对比字段边框 #788dae → #b7c4d6（对面板 #2c2f33 约 4.0 → 7.6）。
+
 ## [5.18.57] - 2026-11-07
 
 ### 13 处硬编码 collision-padding="8" 收成单一来源

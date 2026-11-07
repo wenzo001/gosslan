@@ -2493,6 +2493,12 @@ html[data-reduced-transparency="true"] .gosslan-sticky-veil {
     --gosslan-border: #8fa3c0;
     --gosslan-divider: #6b7f9e;
     --gosslan-divider-strong: #b7c4d6;
+    /* 输入框专用边框在高对比档必须一起抬（2026-11-07 审计第 8 条）。
+       常规暗色的 #788dae 是"玻璃叠在浅色色团"那一档的最低值；高对比档里玻璃已退回
+       实底（见本块末尾 `.glass-*`），不存在浅底合成，于是直接跟随 divider-strong。
+       反例：删掉这一行 → 高对比档边框退回 #788dae，`--only=fieldcontrast` 的
+       "比常规暗色更亮"读数会翻假。 */
+    --gosslan-field-border: var(--gosslan-divider-strong);
     --gosslan-list-hover: rgba(248, 250, 252, 0.12);
     --gosslan-hover: rgba(248, 250, 252, 0.14);
     --gosslan-window-ring: rgba(248, 250, 252, 0.5);

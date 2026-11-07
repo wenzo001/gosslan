@@ -2950,10 +2950,10 @@ export function checkComposerSurface(chatWindowSrc: string, composerSrc: string)
         message: "CS-02：输入卡缺少 `rounded-[var(--gosslan-radius-md)]` —— 圆角必须不随玻璃档位变化。",
       });
     }
-    if (!c.includes("border") || !c.includes("border-[var(--gosslan-border)]")) {
+    if (!c.includes("border") || !c.includes("border-[var(--gosslan-field-border)]")) {
       out.push({
         line: lineAt(composerSrc, card.index ?? 0),
-        message: "CS-02：输入卡缺少 1px 全档描边（`border border-[var(--gosslan-border)]`）。",
+        message: "CS-02：输入卡缺少 1px 全档描边（`border border-[var(--gosslan-field-border)]`）。",
       });
     }
   }
