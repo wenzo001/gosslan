@@ -1528,8 +1528,8 @@ export function checkTextFieldFocusRing(css: string, composer: string): GuardIss
  * 我在 HTML 注释里写了 `.safe-bottom` 这个词 ⇒ 把底部内距真删掉，判据照样绿。
  * 注释能喂饱的判据不是判据。
  */
-const TOP_INSET_RE = /pt-\[env\(safe-area-inset-top[^\]]*\)\]/;
-const BOTTOM_INSET_RE = /\bsafe-bottom\b|pb-\[[^\]]*env\(safe-area-inset-bottom/;
+const TOP_INSET_RE = /pt-\[(?:env\(safe-area-inset-top[^\]]*\)|var\(--gosslan-inset-top\))\]/;
+const BOTTOM_INSET_RE = /\bsafe-bottom\b|pb-\[[^\]]*(?:env\(safe-area-inset-bottom|var\(--gosslan-inset-bottom\))/;
 
 /**
  * 检查"用 `pt-[env(safe-area-inset-top)]` 给自己让开状态栏/挖孔"的全屏形态有没有同时让开底部。
@@ -1556,10 +1556,11 @@ export function findTopInsetWithoutBottomInset(src: string): GuardIssue[] {
     {
       line: lineAt(src, hits[hit].index),
       message:
-        "写了 `pt-[env(safe-area-inset-top)]` 却没写底部安全区 —— 这是整屏形态（overlay 页 / fullscreen 弹窗），" +
+        "写了 `pt-[env(safe-area-inset-*)]`（或统一出口 `pt-[var(--gosslan-inset-top)]`）却没写底部安全区 —— " +
+        "这是整屏形态（overlay 页 / fullscreen 弹窗），" +
         "顶部让开了状态栏，底部那一层内容会落在 iOS Home Indicator（≈34px）或 Android 手势条底下，" +
         "滚到最后一行正好看不见它。两种改法：① 给**滚动那一层**加现成工具类 `safe-bottom`；" +
-        "② 那一层本来有自己的 `pb`/`p-*` 时写 `pb-[max(env(safe-area-inset-bottom),1rem)]` " +
+        "② 那一层本来有自己的 `pb`/`p-*` 时写 `pb-[max(var(--gosslan-inset-bottom),1rem)]` " +
         "（`max()` 保住原有的内距，桌面 `env()`=0 时视觉零变化）。" +
         "⚠️ 判据只看类名里有没有人读底部内距（注释里提一个字不算 ⇒ 别指望写注释过关），" +
         "也不判挂在哪一层 —— 那一半要真机看（Smoke-11）。" +
@@ -4010,4 +4011,124 @@ export function checkConcentricGeometry(src: {
     out.push({ line: 0, message: "CN-02：style.css 的 `--gosslan-title-h` 读不到 —— 头像同心几何的基准丢了。" });
   }
   return out;
+}
+
+// ---------------- SA 屏幕边缘安全区：四条边一个口径（2026-11-07） ----------------
+/**
+ * 用户 2026-11-07（安卓真机）：「看看通知是不是都在安全区域内，别压到通知栏和底部，
+ * 就像 iOS 的安全区域一样，不要太靠四个圆角的弧度内。」
+ *
+ * 统一入口是 `style.css` 里的四枚变量（`--gosslan-inset-top/-bottom/-left/-right`）+
+ * `--gosslan-corner-safe`；组件只许读变量，不许各自再写 `env(safe-area-inset-*)`
+ * （`boot/skeleton.css` 是首屏骨架，App 还没写 `html.is-mobile`，单独豁免）。
+ * 桌面环境 `env()`=0 且回落=0 ⇒ 改动对 macOS/Windows 是零位移。
+ */
+export const EDGE_STATUS_BAR_PX = 24;
+export const EDGE_NAV_BAR_PX = 24;
+export const EDGE_CORNER_RADIUS_PX = 24;
+
+export type EdgeRect = { top: number; right: number; bottom: number; left: number };
+
+/** 安全区统一算法：环境读数与回落取 `max`，绝不把两者相加。 */
+export function safeInsetPx(envPx: number, fallbackPx: number): number {
+  return Math.max(envPx, fallbackPx);
+}
+
+/**
+ * 矩形是否侵入状态栏、导航条、或四个屏幕圆角的「被切掉」区域。
+ *
+ * 圆角判定按**弧度**算，不是"离边小于 r 就算"：以左上角为例，被切掉的是
+ * `x<r && y<r` 且在圆外的部分；矩形只要没伸进那块区域，就仍在可视面内。
+ * 返回空数组 = 四条边界都合规。
+ */
+export function findEdgeIntrusions(
+  rect: EdgeRect,
+  opts: {
+    width: number;
+    height: number;
+    statusBarPx?: number;
+    navBarPx?: number;
+    cornerPx?: number;
+  },
+): string[] {
+  const statusBarPx = opts.statusBarPx ?? EDGE_STATUS_BAR_PX;
+  const navBarPx = opts.navBarPx ?? EDGE_NAV_BAR_PX;
+  const r = opts.cornerPx ?? EDGE_CORNER_RADIUS_PX;
+  const issues: string[] = [];
+
+  if (rect.top < statusBarPx) {
+    issues.push(`顶边 ${rect.top}px < 状态栏 ${statusBarPx}px`);
+  }
+  if (rect.bottom > opts.height - navBarPx) {
+    issues.push(`底边 ${rect.bottom}px > 导航条上缘 ${opts.height - navBarPx}px`);
+  }
+
+  const corners: Array<{
+    name: string;
+    cx: number;
+    cy: number;
+    x0: number;
+    x1: number;
+    y0: number;
+    y1: number;
+    farX: number;
+    farY: number;
+  }> = [
+    { name: "左上", cx: r, cy: r, x0: 0, x1: r, y0: 0, y1: r, farX: 0, farY: 0 },
+    { name: "右上", cx: opts.width - r, cy: r, x0: opts.width - r, x1: opts.width, y0: 0, y1: r, farX: 1, farY: 0 },
+    { name: "左下", cx: r, cy: opts.height - r, x0: 0, x1: r, y0: opts.height - r, y1: opts.height, farX: 0, farY: 1 },
+    {
+      name: "右下",
+      cx: opts.width - r,
+      cy: opts.height - r,
+      x0: opts.width - r,
+      x1: opts.width,
+      y0: opts.height - r,
+      y1: opts.height,
+      farX: 1,
+      farY: 1,
+    },
+  ];
+
+  for (const c of corners) {
+    const x0 = Math.max(rect.left, c.x0);
+    const x1 = Math.min(rect.right, c.x1);
+    const y0 = Math.max(rect.top, c.y0);
+    const y1 = Math.min(rect.bottom, c.y1);
+    if (x0 >= x1 || y0 >= y1) continue;
+    // 重叠区里离圆心最远的角，就是最有可能落进「圆外被切掉」区域的那一点。
+    const farX = c.farX === 0 ? x0 : x1;
+    const farY = c.farY === 0 ? y0 : y1;
+    const d = Math.hypot(farX - c.cx, farY - c.cy);
+    if (d > r) {
+      issues.push(`${c.name}圆角区：矩形最近点 (${farX},${farY}) 距圆心 ${d.toFixed(1)}px > 半径 ${r}px`);
+    }
+  }
+  return issues;
+}
+
+/**
+ * 统一出口守卫：除 `style.css`（变量定义处）与首屏骨架外，任何文件都不许再裸写
+ * `env(safe-area-inset-*)` —— 各写一份就会漂移，而且桌面回落值无法集中调。
+ */
+export function findRawSafeAreaEnvIssues(files: Array<{ path: string; src: string }>): GuardIssue[] {
+  const issues: GuardIssue[] = [];
+  for (const file of files) {
+    if (/(^|\/)style\.css$/.test(file.path)) continue;
+    if (/(^|\/)boot\/skeleton\.css$/.test(file.path)) continue;
+    const code = stripComments(
+      file.src
+        .replace(/<!--[\s\S]*?-->/g, (c) => c.replace(/[^\n]/g, " "))
+        .replace(/^\s*\/\/.*$/gm, (c) => c.replace(/[^\n]/g, " ")),
+    );
+    for (const m of code.matchAll(/env\(\s*safe-area-inset-(?:top|bottom|left|right)/g)) {
+      issues.push({
+        line: lineAt(code, m.index ?? 0),
+        message:
+          `裸写 \`env(safe-area-inset-*)\`（${file.path}）—— 边缘安全区只能从统一出口读：` +
+          "`var(--gosslan-inset-top/-bottom/-left/-right)`；圆角内缩读 `var(--gosslan-corner-safe)`。",
+      });
+    }
+  }
+  return issues;
 }

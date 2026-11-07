@@ -43,14 +43,14 @@ const text = computed(() =>
 .hang-notice {
   position: fixed;
   left: 50%;
-  bottom: 16px;
+  bottom: calc(var(--gosslan-inset-bottom) + 16px);
   transform: translateX(-50%);
   z-index: 59;
   width: min(560px, calc(100vw - 24px));
   pointer-events: none;
 }
 .hang-notice--mobile {
-  bottom: calc(var(--gosslan-mobile-tabbar-h, 56px) + 10px);
+  bottom: calc(var(--gosslan-inset-bottom) + var(--gosslan-mobile-tabbar-h, 56px) + 10px);
 }
 .hang-card {
   pointer-events: auto;

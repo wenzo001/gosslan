@@ -2166,7 +2166,7 @@ function retryHistory() {
       ref="composerShell"
       data-composer-shell
       class="ambient-canvas-child absolute inset-x-0 bottom-0 z-20 bg-transparent px-4 pt-2"
-      :style="{ paddingBottom: 'calc(env(safe-area-inset-bottom) + 8px)' }"
+      :style="{ paddingBottom: 'calc(var(--gosslan-inset-bottom) + 8px)' }"
     >
       <!-- 多选态：输入区被操作条**替换**（微信同款）。
            高度固定 4rem，与 Composer 的最小高度一致 —— 否则进出多选时消息区高度跳变，

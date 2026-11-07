@@ -813,7 +813,7 @@ useEventListener(window, "keydown", onKey);
         <!-- 底部提示：计数 + 操作说明 -->
         <div
           class="absolute left-1/2 -translate-x-1/2 rounded-full bg-black/55 px-3 py-1 text-xs text-white/95 shadow-lg ring-1 ring-white/20"
-          :style="{ bottom: 'calc(env(safe-area-inset-bottom, 0px) + 1.25rem)', textShadow: '0 1px 2px rgba(0,0,0,0.6)' }"
+          :style="{ bottom: 'calc(var(--gosslan-inset-bottom) + 1.25rem)', textShadow: '0 1px 2px rgba(0,0,0,0.6)' }"
         >
           <template v-if="hasMultiple">{{ t("msg.lightbox.multiHint", { i: index + 1, n: images.length }) }}</template>
           <template v-else>{{ t("msg.lightbox.singleHint") }}</template>

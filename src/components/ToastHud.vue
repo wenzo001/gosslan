@@ -29,12 +29,12 @@ import { t } from "@/i18n";
 <style scoped>
 /* 桌面：顶部 1rem（让开安全区）。 */
 .gosslan-toast-hud {
-  top: calc(env(safe-area-inset-top, 0px) + 1rem);
+  top: calc(var(--gosslan-inset-top) + 1rem);
 }
 /* 移动布局：两根手指宽的头区（标题 + 搜索）是导航入口，不能被消息条盖住；
    抬到 TabBar 之上既避开头部，也不会压住聊天输入区最下面那一排按钮。 */
 html.is-mobile .gosslan-toast-hud {
   top: auto;
-  bottom: calc(env(safe-area-inset-bottom, 0px) + var(--gosslan-mobile-tabbar-h) + 1rem);
+  bottom: calc(var(--gosslan-inset-bottom) + var(--gosslan-mobile-tabbar-h) + 1rem);
 }
 </style>

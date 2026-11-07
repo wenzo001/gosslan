@@ -164,7 +164,7 @@ function onOpenChange(value: boolean) {
         <div
           :class="fullscreen
             ? (contained ? 'flex h-full items-stretch justify-center' : 'flex min-h-full items-stretch justify-center')
-            : 'flex min-h-full justify-center p-4 pb-[max(env(safe-area-inset-bottom),1rem)]'"
+            : 'flex min-h-full justify-center p-4 pb-[max(var(--gosslan-inset-bottom),1rem)]'"
         >
           <div
             v-if="fullscreen"
@@ -190,7 +190,7 @@ function onOpenChange(value: boolean) {
                  内容贴着屏幕底边 ⇒ iOS 上最后一行落在 Home Indicator 底下。写成 max() 是为了
                  **不丢原有的 p-4**（桌面 env()=0 时结果仍是 1rem，视觉零变化）；
                  同一个写法在 `ActionSheet.vue:53` 已经在用，不另立第三种。 -->
-            <div class="flex min-h-0 flex-1 flex-col py-4 pb-[max(env(safe-area-inset-bottom),1rem)]">
+            <div class="flex min-h-0 flex-1 flex-col py-4 pb-[max(var(--gosslan-inset-bottom),1rem)]">
               <slot />
             </div>
           </div>

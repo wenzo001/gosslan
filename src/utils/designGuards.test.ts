@@ -67,6 +67,11 @@ import {
   findTransparentFieldBorder,
   findRawPlaceholderColor,
   findMissingPlaceholderRule,
+  safeInsetPx,
+  findEdgeIntrusions,
+  findRawSafeAreaEnvIssues,
+  EDGE_STATUS_BAR_PX,
+  EDGE_CORNER_RADIUS_PX,
 } from "./designGuards.ts";
 
 // ---------------- ⓪ 选中态/原生控件颜色必须吃主题变量（#35-N7） ----------------
@@ -2900,7 +2905,7 @@ test("真实树：每个写了顶部安全区的 .vue 都也写了底部（分�
   for (const f of files) {
     const src = readFileSync(f, "utf8");
     const rel = f.replace(srcDir + "/", "");
-    if (!/pt-\[env\(safe-area-inset-top/.test(src)) continue;
+    if (!/pt-\[(?:env\(safe-area-inset-top|var\(--gosslan-inset-top\))/.test(src)) continue;
     sites.push(rel);
     for (const issue of findTopInsetWithoutBottomInset(src)) {
       bad.push(`${rel}:${issue.line}  ${issue.message.slice(0, 40)}`);
@@ -4507,7 +4512,7 @@ test("㊻ 真实树：底栏占位不许多处各抄一份尺寸（分母现数�
  * 而底栏遮挡与安全区的口径正是从那个家里漂走的东西（收藏页今天就是抄的那一份）。
  * 三段齐全才算壳 —— 只写了 `fixed inset-0` 的普通铺满层（灯箱、遮罩）是另一族，不该被这一条管。
  */
-const OVERLAY_SHELL_SHAPES = ["fixed inset-0", "z-[60]", "pt-[env(safe-area-inset-top)]"];
+const OVERLAY_SHELL_SHAPES = ["fixed inset-0", "z-[60]", "pt-[var(--gosslan-inset-top)]"];
 const OVERLAY_SHELL_HOUSE = "components/MobilePageFrame.vue";
 // 已登记的同形抄本（棘轮：只许变小，迁走一格就把名字删掉，别把上限调高）。
 // ★ `FavoritePanel.vue` 这格不是"还没来得及迁"，是 §6.75 读过实现之后判的**保留自研**，理由钉在这里免得被当默认豁免：
@@ -4527,7 +4532,7 @@ function hasOverlayShell(text: string): boolean {
 
 test("㊼ 形状：三段齐全才算整屏壳；少一段不算、注释里的示例不算", () => {
   assert.equal(
-    hasOverlayShell(`<template><div class="fixed inset-0 z-[60] pt-[env(safe-area-inset-top)]" /></template>`),
+    hasOverlayShell(`<template><div class="fixed inset-0 z-[60] pt-[var(--gosslan-inset-top)]" /></template>`),
     true,
     "三段齐全要认出来（这就是抄本的形状）",
   );
@@ -4537,7 +4542,7 @@ test("㊼ 形状：三段齐全才算整屏壳；少一段不算、注释里的�
     "没让开顶部安全区的普通铺满层是另一族，不该被这一条禁",
   );
   assert.equal(
-    hasOverlayShell(`<!-- 抄本示例：<div class="fixed inset-0 z-[60] pt-[env(safe-area-inset-top)]" /> -->`),
+    hasOverlayShell(`<!-- 抄本示例：<div class="fixed inset-0 z-[60] pt-[var(--gosslan-inset-top)]" /> -->`),
     false,
     "注释里的示例不许被数成抄本",
   );
@@ -4842,8 +4847,8 @@ test("㊿ style.css 里那枚出口只定义一次，且取 max 不是相加", (
   const hits = css.match(/--gosslan-safe-top:\s*max\([^)]*\)/g) || [];
   assert.equal(hits.length, 1, "出口定义应当只有一处，实得 " + hits.length + " 处");
   assert.ok(
-    /--gosslan-safe-top:\s*max\(var\(--gosslan-window-safe-top, 0px\), env\(safe-area-inset-top, 0px\)\)/.test(css),
-    "出口必须是 max(window, env)：相加会把同一个物理避让读两遍",
+    /--gosslan-safe-top:\s*max\(var\(--gosslan-window-safe-top, 0px\), var\(--gosslan-inset-top\)\)/.test(css),
+    "出口必须是 max(window, 统一安全区)：相加会把同一个物理避让读两遍",
   );
 });
 
@@ -4881,10 +4886,10 @@ test("㊿ 图片灯箱：外壳读出口、那个只为绕过 caption 而存在�
   assert.ok(!/topInset/.test(lb), "prop 还在（" + (lb.match(/topInset/g) || []).length + " 处）：外壳已经读同一枚，它是没有活干的兼容层");
   // 2026-11-05（拍板 B）：桌面独立预览窗已删除 ⇒ 原来"预览窗不许手动传 top-inset"那半条
   // 跟着窗口一起消失（再断言 `PreviewWindow.vue` 的存在就是让判据空转）。
-  // 页面级整屏覆盖（没有外层 shell 让它们靠）必须继续自己读 env —— 这条不许被"统一"顺手删掉。
+  // 页面级整屏覆盖（没有外层 shell 让它们靠）必须继续读统一出口 —— 这条不许被"统一"顺手删掉。
   const pageOwners = ["components/MobilePageFrame.vue", "components/FavoritePanel.vue"]
-    .filter((r) => /pt-\[env\(safe-area-inset-top/.test(code691(readFileSync(join(srcDir691, r), "utf8"))));
-  assert.equal(pageOwners.length, 2, "页面级覆盖壳自己读 env 的那两格被动了：" + pageOwners.join(","));
+    .filter((r) => /pt-\[var\(--gosslan-inset-top\)/.test(code691(readFileSync(join(srcDir691, r), "utf8"))));
+  assert.equal(pageOwners.length, 2, "页面级覆盖壳自己读安全区的那两格被动了：" + pageOwners.join(","));
 });
 
 // ── 51. 图标单一家（专项 §三，§6.92）──────────────────────────────────
@@ -8350,4 +8355,103 @@ test("CN-02 反例自证：右上角内距改回 pr-3（12px）必须红", () =>
     issues.some((i) => i.message.includes("CN-02") && i.message.includes("12px")),
     `右上角内距不等必须报 CN-02，实际：${JSON.stringify(issues)}`,
   );
+});
+
+// ── SA. 屏幕边缘安全区：四条边一个口径（2026-11-07）────────────────────
+// 用户 2026-11-07（安卓真机）：「看看通知是不是都在安全区域内，别压到通知栏和底部，
+// 就像 iOS 的安全区域一样，不要太靠四个圆角的弧度内。」
+// 真实视口取 390×844（常见安卓直板机），状态栏 / 手势条各 24px、圆角半径 24px。
+const SA_VIEWPORT = { width: 390, height: 844 };
+const SA_NOTICE_H = 120;
+
+test("SA-01 崩溃恢复条：env=0 与 env=24 两种读数都不压状态栏 / 导航条 / 圆角", () => {
+  const src = readFileSync(join(srcDir691, "components", "CrashNotice.vue"), "utf8");
+  const code = code691(src);
+  assert.match(code, /top:\s*calc\(var\(--gosslan-inset-top\) \+ 8px\)/, "恢复条顶部必须读统一出口 + 8px 缝");
+  assert.match(code, /left:\s*var\(--gosslan-inset-left\)/, "左边必须读统一出口");
+  assert.match(code, /right:\s*var\(--gosslan-inset-right\)/, "右边必须读统一出口");
+
+  for (const envTop of [0, 24]) {
+    const top = safeInsetPx(envTop, EDGE_STATUS_BAR_PX) + 8;
+    const side = safeInsetPx(0, 8);
+    const rect = { top, bottom: top + SA_NOTICE_H, left: side, right: SA_VIEWPORT.width - side };
+    assert.deepEqual(
+      findEdgeIntrusions(rect, SA_VIEWPORT),
+      [],
+      `env(safe-area-inset-top)=${envTop} 时恢复条压进了安全区：${JSON.stringify(rect)}`,
+    );
+  }
+});
+
+test("SA-01 反例自证：inset 去掉（top=8 / 侧边=0）必须红，贴角必须报圆角", () => {
+  const bare = { top: 8, bottom: 8 + SA_NOTICE_H, left: 0, right: SA_VIEWPORT.width };
+  const issues = findEdgeIntrusions(bare, SA_VIEWPORT);
+  assert.ok(issues.some((i) => i.includes("状态栏")), "去掉顶部 inset 却没报状态栏：" + issues.join("; "));
+  assert.ok(issues.some((i) => i.includes("圆角")), "贴角矩形却没报圆角：" + issues.join("; "));
+
+  const cornerOnly = findEdgeIntrusions(
+    { top: 0, bottom: 40, left: 0, right: 40 },
+    { ...SA_VIEWPORT, statusBarPx: 0, navBarPx: 0 },
+  );
+  assert.ok(cornerOnly.some((i) => i.includes("左上圆角")), "左上角必须被圆角判据咬住：" + cornerOnly.join("; "));
+  assert.equal(EDGE_CORNER_RADIUS_PX, 24);
+});
+
+test("SA-02 统一出口：除 style.css / 首屏骨架外，生产码里没有第二份 env(safe-area-inset-*)", () => {
+  const files = walk691(srcDir691).map((f) => ({
+    path: f.replace(srcDir691 + "/", ""),
+    src: readFileSync(f, "utf8"),
+  }));
+  assert.ok(files.length >= 200, "只扫到 " + files.length + " 份生产码 ⇒ 路径写错了，这条是在测空气");
+  assert.deepEqual(findRawSafeAreaEnvIssues(files), [], "有人绕开统一出口裸写 env()");
+
+  // 反例：新组件裸写必须红；定义处（style.css）与首屏骨架豁免。
+  assert.equal(
+    findRawSafeAreaEnvIssues([
+      { path: "components/NewThing.vue", src: `<div :style="{ top: 'env(safe-area-inset-top)' }" />` },
+    ]).length,
+    1,
+    "裸写 env 的新组件必须报红",
+  );
+  assert.deepEqual(
+    findRawSafeAreaEnvIssues([{ path: "style.css", src: "--x: env(safe-area-inset-top);" }]),
+    [],
+    "变量定义处必须豁免",
+  );
+});
+
+test("SA-03 证据链与同类：viewport-fit=cover / enableEdgeToEdge / 四枚变量 / 底部条都读出口", () => {
+  const indexHtml = readFileSync(join(srcDir691, "..", "index.html"), "utf8");
+  assert.match(indexHtml, /viewport-fit=cover/, "index.html 缺 viewport-fit=cover ⇒ env() 恒 0");
+
+  const mainActivity = readFileSync(
+    join(
+      srcDir691,
+      "..",
+      "src-tauri/gen/android/app/src/main/java/com/gosslan/app/MainActivity.kt",
+    ),
+    "utf8",
+  );
+  assert.match(mainActivity, /enableEdgeToEdge\(\)/, "MainActivity 没开 edge-to-edge ⇒ WebView 没铺到状态栏下");
+
+  const css = readFileSync(join(srcDir691, "style.css"), "utf8");
+  for (const token of [
+    "--gosslan-inset-top:",
+    "--gosslan-inset-bottom:",
+    "--gosslan-inset-left:",
+    "--gosslan-inset-right:",
+    "--gosslan-corner-safe:",
+  ]) {
+    assert.ok(css.includes(token), "统一出口缺 " + token);
+  }
+  assert.match(css, /html\.is-mobile\s*\{[^}]*--gosslan-inset-top-fallback:\s*24px/s, "移动端顶部回落必须非 0");
+  assert.match(css, /html\.is-mobile\s*\{[^}]*--gosslan-inset-bottom-fallback:\s*24px/s, "移动端底部回落必须非 0");
+  assert.match(css, /html\.is-mobile\s*\{[^}]*--gosslan-inset-side-fallback:\s*8px/s, "移动端侧面回落必须非 0");
+
+  for (const rel of ["components/HangNotice.vue", "components/VersionMismatchNotice.vue"]) {
+    const code = code691(readFileSync(join(srcDir691, rel), "utf8"));
+    assert.match(code, /bottom:\s*calc\(var\(--gosslan-inset-bottom\)/, rel + " 的移动端底边没读统一出口");
+  }
+  const composer = code691(readFileSync(join(srcDir691, "components/ChatWindow.vue"), "utf8"));
+  assert.match(composer, /paddingBottom:\s*'calc\(var\(--gosslan-inset-bottom\) \+ 8px\)'/, "输入区没跟手势条安全区");
 });

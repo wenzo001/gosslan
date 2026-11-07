@@ -92,9 +92,15 @@ const extra = computed(() => {
   pointer-events: none;
 }
 .crash-notice--mobile {
-  top: 0;
-  left: 0;
-  right: 0;
+  /* 用户 2026-11-07（安卓真机）：崩溃恢复条压在状态栏底下。
+     `env()` 只有在 `viewport-fit=cover` + 安卓侧真把 WebView 铺到状态栏下时才是真值
+     （`index.html` 有 cover，`MainActivity` 调 `enableEdgeToEdge()`）。
+     ⚠️ 回落值必须**非 0**：WebView 不报 inset 时 `env()`=0，`top: 0` 就直接贴边。
+     `max(env, 24px) + 8px` ⇒ 至少 32px，落在 24px 状态栏之下还留 8px 缝。
+     左右同理：竖屏至少 8px 圆角安全距离，横屏挖孔按 inset 让开。 */
+  top: calc(var(--gosslan-inset-top) + 8px);
+  left: var(--gosslan-inset-left);
+  right: var(--gosslan-inset-right);
 }
 .crash-card {
   pointer-events: auto;
@@ -108,7 +114,9 @@ const extra = computed(() => {
 }
 .crash-notice--mobile .crash-card {
   width: 100%;
-  border-radius: 0 0 var(--gosslan-item-radius, 12px) var(--gosslan-item-radius, 12px);
+  /* 左右各有 8px 安全距离后，它不再贴屏幕边 ⇒ 四个角都要圆（旧写法只圆下面两角，
+     是「紧贴状态栏的一条」的造型；现在它是一张浮卡）。 */
+  border-radius: var(--gosslan-item-radius, 12px);
 }
 .crash-head {
   display: flex;
