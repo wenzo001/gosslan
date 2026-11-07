@@ -38,12 +38,12 @@ function todoIdOf(m: MessageRecord): string | null {
 
 /**
  * 行距（2026-10-23 改成按「消息组」给，不再是一个常数）：
- *   组内相邻（same sender / 5 分钟内 / 都是 text|code）= 4px，换组 = 10px。
- * 实现是「本行恒定 4px 下边距 + 行首 0/6px 上间距」，两者相加正好是 4 / 10。
+ *   组内相邻（same sender / 5 分钟内 / 都是 text|code）= 2px，换组 = 12px。
+ * 实现是「本行恒定 2px 下边距 + 行首 0/10px 上间距」，两者相加正好是 2 / 12。
  * ⚠️ 与 `MessageItem` 的 `GAP_BASE` / `GAP_TOP_*` 成对，与 `messageKinds.groupSide` 同一个判定。
  */
-const GAP_BASE = 4;
-// 上间距的两个档（0 / 6）住在 messageKinds.messageTopGap：零依赖模块才跑得动真值表。
+const GAP_BASE = 2;
+// 上间距的两个档（0 / 10）住在 messageKinds.messageTopGap：零依赖模块才跑得动真值表。
 /** 群聊昵称行：leading-none(11) + mb-[7px](7) = 18px。
  *  字号/行高改动必须同步这里与 MessageItem 的昵称行（两者是同一份高度的两处表达）。
  *  行高取 leading-none 是为了让墨迹贴住行盒顶、与头像顶边齐平（行高 1.5 会往下推 ~3.7px，看着"名字偏低"）。 */

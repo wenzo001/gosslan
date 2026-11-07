@@ -403,19 +403,22 @@
      限高仍按 `100vh - 2 * 8px` 收口，不会顶出窗口。 */
   --gosslan-pop-edge: 8px;
 
-  /* ---------------- 消息流排版令牌（2026-10-23 iMessage 风格基线） ----------------
-     气泡圆角 20px、连续消息相邻侧 6px、群聊头像 30px、气泡宽度 ≤ 100%。
-     ⚠️ **行距不在这里**：同组 4px / 换组 10px 由 `messageHeight` 的 GAP_* 一处保管，
-       渲染端（MessageItem 的 pt-1.5 / pb-1）与估高端必须同时改 —— 这里再放一份就是第二个家。
+  /* ---------------- 消息流排版令牌（2026-11-07 画板基线） ----------------
+     气泡圆角 20px、连续消息相邻侧 6px、群聊头像 24px、气泡宽度 ≤ 68% 且 ≤ 560px。
+     ⚠️ **行距不在这里**：同组 2px / 换组 12px 由 `messageHeight` 的 GAP_BASE +
+       `messageKinds.MSG_GAP_NEW` 一处保管，渲染端（MessageItem 的 pb-0.5 / pt-2.5）
+       与估高端必须同时改 —— 这里再放一份就是第二个家。
      ⚠️ **气泡内边距也不在这里**：水平 12px 三家一致（`px-3`），纵向按内容形态分档
-       （文本 6 / 合并卡 8 / 文件卡 10）。文本那一档 6px 单侧是**有意的紧凑选择**，
-       验收基线写进 `docs/design-guidelines.md` §8.3，别按"规范说 7–8px"判它不合格；
-       它的成对方是 `previewMetrics.TEXT_BUBBLE_PADDING`（12 = 两侧合计），
+       （文本 8 / 合并卡 8 / 文件卡 10）。文本那一档 8px 单侧来自画板 36px 内容盒，
+       成对方是 `previewMetrics.TEXT_BUBBLE_PADDING`（16 = 两侧合计），
        由 `designGuards.checkBubbleMetricsCoupling` 守着渲染端与估高端。
-     ⚠️ 气泡宽度与 `previewMetrics.COLUMNS_PER_LINE` 成对（估高按列数折行），改这里必须现算那里。 */
+     ⚠️ 气泡宽度与 `previewMetrics.COLUMNS_PER_LINE` 成对（35 列，78%/40 列是旧口径）。 */
   --gosslan-bubble-radius-tight: 6px;
-  --gosslan-msg-avatar: 30px;
-  --gosslan-msg-max: 78%;
+  --gosslan-msg-avatar: 24px;
+  --gosslan-msg-max: 68%;
+  /* 气泡宽度的像素上限（画板 2026-11-07：68% / 560px）。`min()` 的另一半在 `.msg-stack`。
+     ⚠️ 与 `previewMetrics.COLUMNS_PER_LINE` 成对（35 列），改上限必须现算列数。 */
+  --gosslan-msg-max-px: 560px;
   /* 兄弟节点（表情回应条 / 强提醒条）要和气泡的左/右边缘对齐时让出的那一列：
      = 消息行的 `px-4`(16) + 头像列(--gosslan-msg-avatar) + 行 `gap-2`(8)。
      ⚠️ 那 16 与 8 写在 `MessageItem.vue:1330` 的行 class 上，这里再抄一份是**有意的**：
@@ -1978,6 +1981,12 @@ html.has-caption {
      用 inset 简写而不是单独写 bottom，避免与 `.bubble-tail` 的定位契约被重复钉一次。 */
   inset: auto 10px 0 auto;
   z-index: -1;
+}
+
+/* 气泡列宽上限：68% 与 560px 取小（画板 2026-11-07）。放在类里而不是
+   `max-w-[var(...)]`，是因为 `min()` 里的逗号会让 Tailwind 任意值转义成两个类名。 */
+.msg-stack {
+  max-width: min(var(--gosslan-msg-max), var(--gosslan-msg-max-px));
 }
 
 /* 连续消息合并那一格：**这里没有规则**。四角（相邻侧收成 --gosslan-bubble-radius-tight、

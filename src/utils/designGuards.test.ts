@@ -382,9 +382,24 @@ test("逃生阀：带 truncate-title-ok 注释的文件整体跳过", () => {
 // ---------------- ⑤ 气泡排版必须与虚拟列表高度度量一致 ----------------
 //
 // 真实背景：`previewMetrics.ts` 的 `TEXT_LINE_RATIO` / `TEXT_BUBBLE_PADDING`
-// 是气泡组件 `leading-*` / `py-*` 的镜像。2026-09-12 按用户反馈把气泡从
-// `py-2 + leading-relaxed` 收紧到 `py-1.5 + leading-normal` 时，**两处必须同时改**
+// 是气泡组件 `leading-*` / `py-*` 的镜像。2026-09-12 收紧到 `py-1.5 + leading-normal`；
+// 2026-11-07 画板回到 36px 内容盒，改成 `py-2 + leading-[1.4286]`（两处必须同时改）
 // —— 只改一处不会报错、不会让任何行为测试变红，只有滚动到相邻消息才会互相遮挡。
+
+test("任意值行高 leading-[1.4286] 也要核对（不能只认具名档）", () => {
+  const bubble = `<template>
+  <div class="group relative min-w-0 px-3 py-2 leading-[1.4286]"></div>
+</template>`;
+  const ok = `const TEXT_LINE_RATIO = 1.4286;\nconst TEXT_BUBBLE_PADDING = 16;`;
+  assert.deepEqual(checkBubbleMetricsCoupling(bubble, ok), []);
+  // 反例：度量退回旧口径 1.5 必须红，并指出组件实际行高 1.4286。
+  const bad = checkBubbleMetricsCoupling(
+    bubble,
+    `const TEXT_LINE_RATIO = 1.5;\nconst TEXT_BUBBLE_PADDING = 16;`,
+  );
+  assert.equal(bad.length, 1);
+  assert.match(bad[0].message, /1\.4286/);
+});
 
 test("复现风险：气泡行高与度量不一致 → 报出并给出应改的数值", () => {
   const bubble = `<template>

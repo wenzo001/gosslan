@@ -99,20 +99,9 @@ const BLACK_RGB: [number, number, number] = [0, 0, 0];
 const DARK_MINE_BUBBLE_LUMA = 74;
 /** 暗色下自己气泡文字的目标亮度：纯白 #ffffff 在暗底上过曝，压一档更耐看。 */
 const DARK_MINE_TEXT_LUMA = 212;
-/** 亮色下自己气泡的目标 luma：与微信亮色绿气泡 #9df29f 同档（207，与画布差 43）。
- *  按 luma 定标而非按 HSL 明度定标——绿色 G 分量天然高、蓝紫天然低，同一个 L 下
- *  蓝气泡比绿气泡"重"一截（L0.78 的蓝 #9CBDF2 luma 185，比微信重 22），
- *  周工反馈的"怪"即源于此。二分明度让每种主题色的气泡都落在同一视觉重量档。 */
-const LIGHT_MINE_BUBBLE_LUMA = 207;
-/** 亮色浅底的饱和度上限：0.62 雾感（周工拍板 C 档）——足够有色区分归属，
- *  又不与全局 Slate 灰阶 UI 打架；0.77 的原饱和在近白画布上偏"糖果感/系统高亮感"。 */
-const LIGHT_MINE_BUBBLE_S_MAX = 0.62;
-/** 亮色下气泡文字（同色相深字）的明度：0.10 ≈ 近黑、留一点色味（微信气泡上就是黑字）。 */
-const LIGHT_MINE_TEXT_L = 0.1;
-const LIGHT_MINE_TEXT_S_MAX = 0.75;
 /** 亮色下对方气泡＝浅冷灰，按画布**最终合成色**定值（画布是 chat 白 + 16% 薄纱叠在
  *  app-bg 上，实测 ≈#eaeef2，不是纯白）。
- *  #aab5c2 与己方气泡 #bbd2ef 的对比 = **1.34**（护栏阈值 1.3，留 3% 余量）；
+ *  与己方 accent 实底（默认蓝 #2f6bff）的对比 = **3.45**（护栏阈值 1.3，留余量）；
  *  对合成画布 ≈1.87（契约色）/ 1.79（上轮实测画布）、对列表 1.77。
  *  文字对比不受影响：最浅的预设文字 #374151 在它上面仍有 4.96。
  *  历史教训：早期对方气泡 = #f1f5f9 与画布完全同色（对比 1.00），等于没有气泡；
@@ -136,26 +125,41 @@ function softenMineForDark(c: ChatPresetColors): ChatPresetColors {
 
 
 
+/** 亮色「accent 实底 + 白字」：白字对比 ≥ **4.8** 的主题色原样返回；
+ *  不够深的（琥珀/天蓝/绿）保持色相与饱和、只压明度到刚好达标，不掺灰也不换色相。
+ *  ⚠️ 门槛取 4.8 而不是 4.5：@mention 高亮色要在同一实底上再取 ≥4.5，
+ *  若气泡底与白字只剩 4.50，任何带色相的高亮都到不了 4.5（只剩纯白可选），
+ *  所以给实底留 0.3 的余量。用户要的是 accent 实色，而 #f59e0b 这类亮 accent
+ *  白字只有 2.2，不改明度就只能连 AA 一起放弃。守卫在 `chatStyle.test.ts`。 */
+function solidAccentForWhite(themeColor: string): string {
+  const min = 4.8;
+  if (contrastRatio("#ffffff", themeColor) >= min) return themeColor;
+  const [h, s, l0] = toHsl(themeColor);
+  let l = l0;
+  let out = themeColor;
+  while (l > 0.12 && contrastRatio("#ffffff", out) < min) {
+    l = Math.max(0.12, l - 0.02);
+    out = hslToHex(h, s, l);
+  }
+  return out;
+}
+
 /**
  * 解析某预设的实际气泡配色。"theme" 预设按主题色运行时派生：
- * 亮色：自己的气泡 = 主题色的浅调（luma 定标到微信档）+ 同色相深字；
- * 对方气泡 = 浅灰底 + 深字。暗色：主题色实底 + 白字，走 softenMineForDark 压暗。
+ * 亮色/暗色都是**主题色实底 + 白字**（用户 2026-11-06「4 可以」：
+ * 单聊无头像列 + 自己气泡 accent 实色白字）；暗色再走 softenMineForDark 压暗。
+ * 对方气泡 = 浅灰底 + 深字（亮色）/ 深灰底 + 浅字（暗色）。
  */
 export function resolveChatColors(key: string, themeColor: string, dark: boolean): ChatPresetColors {
   const preset = findPreset(key);
   if (preset.key !== "theme") return dark ? softenMineForDark(preset.dark) : preset.light;
 
-  // 亮色：微信式浅底深字——自己的气泡取主题色的浅调、字取同色相深调，
-  // 与对方的浅灰气泡同为浅底，只靠色相区分归属。
-  // 两步派生：① adjustHsl 把主题色提到浅调（HSL L=0.78 保色相鲜度，限 S=0.62 避免糖果感），
-  //          ② mixToLuma 朝白色精确提亮到 luma 207（微信绿气泡同档）。
-  //            蓝/绿/橙/紫同 L 值下 luma 不同，按 luma 定标才能让每种主题色的气泡视觉重量一致。
-  // 文字：同色相深字（L=0.10，S 限 0.75），与浅底同色相只靠明度区分。
-  const [h] = toHsl(themeColor);
-  const lightBubbleBase = hslToHex(h, LIGHT_MINE_BUBBLE_S_MAX, 0.78);
+  // 亮色：accent 实底 + 白字。
+  // 白字对比度不总是够（例如琥珀 #f59e0b 白字只有 2.2），所以保持色相/饱和、
+  // 只把明度压到「白字 ≥ 4.5」为止；原本就够深的主题色（默认蓝）原样不动。
   const light: ChatPresetColors = {
-    mineBubble: mixToLuma(lightBubbleBase, [255, 255, 255], LIGHT_MINE_BUBBLE_LUMA),
-    mineText: adjustHsl(themeColor, { l: LIGHT_MINE_TEXT_L, sMax: LIGHT_MINE_TEXT_S_MAX }),
+    mineBubble: solidAccentForWhite(themeColor),
+    mineText: "#ffffff",
     otherBubble: LIGHT_OTHER_BUBBLE,
     otherText: "#0f172a",
   };
@@ -206,20 +210,30 @@ export function fontPx(size: FontSizeKey): number {
  * （气泡 inline style 的 background / 输入框面板的近似底），预设差异天然被覆盖。
  * 返回空串表示极端底色下无解，调用方回退 inherit（退化为加粗+浅底，即旧行为）。
  *
- * bubbleBg 省略或为空（inline style 与 DOM 都读不到真实底色）时不做试算，直接取
- * 梯度末端 —— 暗色最浅档 / 亮色最深档：梯度本身就是"离主题中性底越来越远"的排序，
- * 末端对任何主题内底色对比度最高。反过来若由调用方自带兜底色，就等于把主题 token 的
- * 值抄进组件（此前两处抄的还是不同的值），token 一改这边静默失准。
+ * 2026-11-07 修正：亮色自己气泡改为 accent 实底后，"只看明暗模式"已经不够 ——
+ * 深底上必须往**亮**调走才够 4.5。现在按 `bubbleBg` 的 luma 选方向（<140 视为深底）。
+ *
+ * bubbleBg 省略或为空（inline style 与 DOM 都读不到真实底色）时不做试算，按默认
+ * 普通底（亮色深调 / 暗色亮调）返回：这是主题内非 accent 底色的安全档。
+ * 反过来若由调用方自带兜底色，就等于把主题 token 的值抄进组件（此前两处抄的还是不同的值）。
  */
 export function mentionHighlightColor(
   themeColor: string,
   dark: boolean,
   bubbleBg?: string,
 ): string {
-  const levels = dark ? [0.82, 0.86, 0.9, 0.94] : [0.32, 0.28, 0.24, 0.2, 0.16, 0.12];
+  const deep = [0.32, 0.28, 0.24, 0.2, 0.16, 0.12];
+  const bright = [0.82, 0.86, 0.9, 0.94, 0.97, 0.985];
   const sMax = dark ? 0.75 : 0.85;
-  if (!bubbleBg) return adjustHsl(themeColor, { l: levels[levels.length - 1], sMax });
-  for (const l of levels) {
+  if (!bubbleBg) {
+    // 底色未知：按"主题内的普通底色"取深调（亮色）/亮调（暗色）。
+    const levels = dark ? bright : deep;
+    return adjustHsl(themeColor, { l: levels[levels.length - 1], sMax });
+  }
+  // 2026-11-07 起亮色自己气泡是 accent 实底（深底）：方向必须看底色明暗，
+  // 否则在深蓝底上继续往深压永远到不了 4.5（会返回空串 ⇒ 回退 inherit）。
+  const levelSet = dark || luma(bubbleBg) < 140 ? bright : deep;
+  for (const l of levelSet) {
     const fg = adjustHsl(themeColor, { l, sMax });
     if (contrastRatio(fg, bubbleBg) >= 4.5) return fg;
   }
