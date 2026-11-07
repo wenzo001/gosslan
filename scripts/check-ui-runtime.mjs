@@ -25793,22 +25793,26 @@ async function runPreviewClip(cdp, url) {
 }
 
 /**
- * ⑦（合并版，2026-11-07）：**滚动条出现/消失不许改变内容宽度**。
+ * ⑦（合并版，2026-11-07，第三次按像素重写）：**滚动条出现/消失不许改变内容宽度**。
  *
- * 用户补正：「关于」那个分区比别的窄，根因不是卡片内边距 —— 别的分区有滚动条（占 8px），
- * 「关于」内容短、没有滚动条，于是内容盒宽了 8px。用户口径：「有滚动条 / 没有滚动条应该
- * 是一样的宽度」。
+ * 用户第三次报同一症状：「关于」那个分区的页边距比上面带滚动条的分区小。
+ * WKWebView 实测（设置窗口默认 780×600）：
+ *   会滚分区 card 216..764（clientW 572 / offsetW 580）；不滚分区 card 208..772（clientW 580）。
+ * 根因不在 padding：WKWebView **只在真的出现滚动条时**才兑现 `scrollbar-gutter: stable both-edges`；
+ * 不滚的分区两侧 gutter 一个像素都没有 ⇒ 比标题竖线（`--gosslan-scroll-inset`）各宽 8px。
+ * Chromium 会无条件下预留，所以这条差异在 Chromium 上看不见 —— 前几轮"声明存在"的判据因此全绿。
  *
- * 判据分三层（全部运行时，不读 CSS 源码）：
- *  1. 同一设置窗口里切「通用」（会滚）与「关于」（通常不滚）：内容盒宽 / 卡片 x / 文字起始 x
- *     三组数逐像素相等；
- *  2. 把窗口高度从 700 缩到 420，让「关于」跨过滚动条出现的临界点：同一容器宽度差必须为 0；
- *  3. 反面对照：把 scroller 的 `scrollbar-gutter` 改成 `auto`（等价于"没有预留策略"），
- *     同样跨临界点 ⇒ 宽度必须真的差 8px（证明这套量具不是恒绿）。
+ * 修法：共享容器的滚动条**常驻**（`overflow-y-scroll`），两类分区走同一档几何。
  *
- * 亮/暗各一套。覆盖式滚动条那一半的说明见 style.css：本应用用 `::-webkit-scrollbar` 8px
- * **常显**（不是系统 overlay），所以"覆盖式 gutter=0"这一支在真机上不会出现；探针读到的
- * `scrollbar-gutter` 与 `offsetWidth-clientWidth` 一起记账，两种引擎口径都能对上。
+ * 判据分四层（全部运行时，不读 CSS 源码）：
+ *  1. 同一设置窗口里切「通用」（会滚）与「关于」（不滚）：内容盒宽 / 卡片 x / 文字起始 x 相等；
+ *  2. 卡片**左/右缘**必须与标题那条竖线逐像素相等，且两分区之间也相等（阈值 0，不是 0.5/1px）；
+ *  3. 共享容器 computed `overflow-y` 必须是 `scroll`（常驻轨道）；反例改回 `auto` 读数必须真的变成 auto；
+ *  4. 反面对照：把 `scrollbar-gutter` 改成 `auto`（等价于"没有两侧预留"），跨临界点必须真的差 ≥7px。
+ *
+ * 亮/暗各一套。**引擎边界**：Chromium 里 `auto` 与 `scroll` 的几何完全相同（第 3 层的反例只能
+ * 证明"读数跟着真实 computed 值走"）；真实的 WKWebView 几何用 `scripts/probes/settings-gutter-wk.swift`
+ * 单独量（macOS only），那边的 208..772 → 216..764 是本条缺陷的直接证据。
  *
  * 其余滚动面（日志 / 群任务 / 会话列表 / 搜索 / 收藏 / 转发 / 群成员 / 各类弹窗）共用
  * 同一组规范类（`.overflow-y-auto` + `.gosslan-scroll` / `.scrollbar-both`），静态守卫 SC-01 逐个文件钉住；
@@ -25825,7 +25829,10 @@ async function runScrollStable(cdp, url) {
     const s = [...document.querySelectorAll('div')].find((el) => {
       const c = String(el.className || '');
       const isPanelScroll = c.includes('gosslan-scroll') || c.includes('scrollbar-both');
-      return isPanelScroll && c.includes('overflow-y-auto') && el.getClientRects().length > 0;
+      // 2026-11-07：设置窗口的滚动容器改成**常驻轨道**（overflow-y-scroll）之后，
+      // 这里必须两种都认；只认 auto 会让整段找不到容器 ⇒ 静默空转。
+      const hasScroll = c.includes('overflow-y-auto') || c.includes('overflow-y-scroll');
+      return isPanelScroll && hasScroll && el.getClientRects().length > 0;
     });
     if (!s) return null;
     const cs = getComputedStyle(s);
@@ -25843,12 +25850,16 @@ async function runScrollStable(cdp, url) {
     });
     return {
       gutter: cs.scrollbarGutter,
+      overflowY: cs.overflowY,
       padL: cs.paddingLeft, padR: cs.paddingRight,
       offW: +s.offsetWidth.toFixed(2), clientW: +s.clientWidth.toFixed(2),
       barW: +(s.offsetWidth - s.clientWidth).toFixed(2),
       scrollH: s.scrollHeight, clientH: s.clientHeight,
       canScroll: s.scrollHeight > s.clientHeight + 1,
       card: rectOf(card), text: rectOf(textEl),
+      // 标题（header h2）走 px-[var(--gosslan-scroll-inset)]，是内容页"那条竖线"的基准；
+      // 卡片的左右缘必须与它逐像素相等 —— 这才是用户说的"看起来一致"。
+      header: rectOf(s.parentElement ? s.parentElement.querySelector('h2') : null),
       textTxt: textEl ? (textEl.textContent || '').trim().slice(0, 16) : null,
     };
   })()`;
@@ -25971,43 +25982,57 @@ async function runScrollStable(cdp, url) {
     const rows = [];
     for (const dark of [false, true]) {
       await setDark(dark);
-      // ① 「通用」（会滚）vs「关于」（不滚）—— 同一窗口、同一容器。
+      // ① 三类分区、同一窗口、同一容器、同一宽度：
+      //   「通用」（默认高度下是否溢出随内容而定）/「网络」（一定溢出 ⇒ 用户说的"上面带滚动条的那块很正常"）
+      //   /「关于」（默认高度下不滚 ⇒ 用户报的那块）。x 只取决于容器内缩，与视口高度无关。
       await nav("general");
       await setHeight(700);
       const gen = await cdp.eval(READ);
       await nav("about");
       await setHeight(TALL_H);
       const about = await cdp.eval(READ);
-      // ② 逐步缩高，取"第一次出现滚动条"的那一档 —— 这就是用户说的"缩到刚好触发滚动条"。
-      let narrowH = null;
-      let aboutNarrow = null;
-      for (const h of [900, 800, 700, 620, 540, 460, 380]) {
-        await setHeight(h);
-        const r = await cdp.eval(READ);
-        if (r && r.canScroll) { aboutNarrow = r; narrowH = h; break; }
-      }
-      // ③ 反面对照：回到"不滚"那一档，把预留策略改成 auto，再缩到同一条临界高度。
+      await nav("network");
+      await setHeight(700);
+      const net = await cdp.eval(READ);
+      // ② 反面对照：回到"不滚"那一档（关于 @700），把预留策略改成 auto。
       const setGutter = async (v) => cdp.eval(`(() => {
         const s = [...document.querySelectorAll('div')].find((el) => {
           const c = String(el.className || '');
           const isPanelScroll = c.includes('gosslan-scroll') || c.includes('scrollbar-both');
-          return isPanelScroll && c.includes('overflow-y-auto') && el.getClientRects().length > 0;
+          const hasScroll = c.includes('overflow-y-auto') || c.includes('overflow-y-scroll');
+          return isPanelScroll && hasScroll && el.getClientRects().length > 0;
         });
         if (s) s.style.scrollbarGutter = ${JSON.stringify(v)};
         return !!s;
       })()`);
-      await setHeight(TALL_H);
+      await nav("about");
+      await setHeight(700);
       await setGutter("auto");
-      const narrowH2 = narrowH ?? 700;
-      await setHeight(narrowH2);
       const counter = await cdp.eval(READ);
       await setGutter("");
       await setHeight(TALL_H);
+      // 反面对照 ②：把"常驻轨道"改回 `auto`。Chromium 里 auto+stable both-edges 的几何与 scroll
+      // 完全相同（这正是这条 bug 在 Chromium 上看不出来的原因），所以这里只能证明**读数跟着
+      // 真实 computed 值走**：改回 auto 后 overflowY 必须真的读成 auto，否则那条判据读的是常量。
+      const setOverflowY = async (v) => cdp.eval(`(() => {
+        const s = [...document.querySelectorAll('div')].find((el) => {
+          const c = String(el.className || '');
+          const hasScroll = c.includes('overflow-y-auto') || c.includes('overflow-y-scroll');
+          return (c.includes('gosslan-scroll') || c.includes('scrollbar-both')) && hasScroll
+            && el.getClientRects().length > 0;
+        });
+        if (s) s.style.overflowY = ${JSON.stringify(v)};
+        return !!s;
+      })()`);
+      await setOverflowY("auto");
+      const overflowAuto = await cdp.eval(READ);
+      await setOverflowY("");
+      await setHeight(TALL_H);
       const counterDeltaW = (about && counter && typeof about.clientW === "number"
         && typeof counter.clientW === "number") ? +(about.clientW - counter.clientW).toFixed(2) : null;
-      rows.push({ dark, gen, about, aboutNarrow, narrowH, counter, counterDeltaW });
+      rows.push({ dark, gen, about, net, counter, counterDeltaW, overflowAuto });
 
-      // 截图各取"该档真实样子"：通用 700（滚动条在）、关于 2200（不滚、无滚动条）。
+      // 截图各取"该档真实样子"：通用 700（滚动条在）、关于 2200（内容不滚，但轨道常驻）。
       await nav("general");
       await setHeight(700);
       await shot(`scrollstable-${dark ? "dark" : "light"}-general`);
@@ -26021,23 +26046,24 @@ async function runScrollStable(cdp, url) {
     const out = rows.map((r) => ({
       dark: r.dark,
       clientW: [r.gen?.clientW, r.about?.clientW],
+      overflowY: [r.gen?.overflowY, r.about?.overflowY],
+      card: { gen: r.gen?.card, about: r.about?.card },
+      header: { gen: r.gen?.header, about: r.about?.header },
       textX: [r.gen?.text?.x, r.about?.text?.x],
       barW: [r.gen?.barW, r.about?.barW],
       canScroll: [r.gen?.canScroll, r.about?.canScroll],
       h: { gen: [r.gen?.scrollH, r.gen?.clientH], about: [r.about?.scrollH, r.about?.clientH] },
       narrow: {
-        at: r.narrowH,
-        clientW: [r.about?.clientW, r.aboutNarrow?.clientW],
-        textX: [r.about?.text?.x, r.aboutNarrow?.text?.x],
-        canScroll: r.aboutNarrow?.canScroll,
-        barW: r.aboutNarrow?.barW,
-        deltaW: d(r.about, r.aboutNarrow, "clientW"),
-        deltaTextX: d(r.about?.text, r.aboutNarrow?.text, "x"),
+        netCanScroll: r.net?.canScroll,
+        clientW: [r.net?.clientW, r.about?.clientW],
+        cardX: [r.net?.card?.x, r.about?.card?.x],
+        cardR: [r.net?.card?.r, r.about?.card?.r],
       },
       counter: r.counter ? {
         canScroll: r.counter.canScroll, barW: r.counter.barW, gutter: r.counter.gutter,
         deltaW: r.counterDeltaW,
       } : null,
+      overflowAuto: r.overflowAuto ? { overflowY: r.overflowAuto.overflowY, barW: r.overflowAuto.barW } : null,
     }));
     console.log("  ℹ 滚动宽度读数（设置独立窗口）：" + JSON.stringify(out));
 
@@ -26046,17 +26072,47 @@ async function runScrollStable(cdp, url) {
         && Math.abs(r.gen.clientW - r.about.clientW) <= 0.5),
       "「关于」不滚且两者 clientWidth 差 <= 0.5px", JSON.stringify(out.map((o) => o.clientW)));
 
+    // 2026-11-07（用户第三次报，按像素结案）：卡片**左/右边缘**必须与标题那条竖线、
+    // 以及与另一个分区**完全相同**（阈值 0，不许 0.5/1px 的模糊档）。这条是"看起来一致"的
+    // 直接读数 —— 用户说的不是盒子宽，而是卡片离窗口两边的留白。
+    check("设置窗口：两类分区的卡片左/右缘与标题竖线逐像素相等（阈值 0）",
+      rows.every((r) => {
+        const ps = [r.gen, r.about];
+        return ps.every((p) => p && p.card && p.header
+          && d(p.card, p.header, "x") === 0 && d(p.card, p.header, "r") === 0)
+          && d(r.gen?.card, r.about?.card, "x") === 0
+          && d(r.gen?.card, r.about?.card, "r") === 0;
+      }),
+      "card.x === header.x 且 card.right === header.right，两分区亦相同（0px）",
+      JSON.stringify(out.map((o) => ({ card: o.card, header: o.header }))));
+
+    // 常驻轨道：无论当前分区滚不滚，容器都必须已经"有滚动条"（`overflow-y: scroll`）。
+    // 为什么必须是常驻：WKWebView 只在真的出现滚动条时才兑现 `stable both-edges` 的两侧预留，
+    // 不滚的分区因此比会滚的分区各宽 8px（Chromium 会无条件下预留 ⇒ 这条 bug 只在 WKWebView 出现）。
+    check("设置窗口：共享滚动容器常驻轨道（computed overflow-y === scroll），两类分区同一档",
+      rows.every((r) => r.gen?.overflowY === "scroll" && r.about?.overflowY === "scroll"),
+      "gen/about 的 computed overflow-y 都是 scroll", JSON.stringify(out.map((o) => o.overflowY)));
+
+    check("反面对照：把常驻轨道改回 auto，读数必须真的变成 auto（否则上面那条读的是常量）",
+      rows.every((r) => r.overflowAuto?.overflowY === "auto"),
+      "改回 auto 后 computed overflow-y === auto", JSON.stringify(out.map((o) => o.overflowAuto)));
+
     check("设置窗口：「通用」与「关于」的文字起始 x 相等（不是只量盒子）",
       rows.every((r) => r.gen?.text && r.about?.text && Math.abs(r.gen.text.x - r.about.text.x) <= 1),
       "文字起始 x 差 <= 1px", JSON.stringify(out.map((o) => o.textX)));
 
-    check("设置窗口：缩高跨过滚动条临界点后，同一容器宽度与文字 x 差都为 0（亮/暗两套）",
-      rows.every((r) => r.aboutNarrow && r.narrowH
-        && d(r.about, r.aboutNarrow, "clientW") === 0
-        && d(r.about?.text, r.aboutNarrow?.text, "x") === 0),
-      "deltaW = 0 且 deltaTextX = 0", JSON.stringify(out.map((o) => o.narrow)));
+    // 第三个分区（网络）与「关于」逐像素对账：`canScroll` 在探针环境里可能为 false（探针没有
+    // Tauri 数据，内容比真机短），所以这里只断言几何 —— 真机"会滚/不滚"这一对的像素证明在
+    // `scripts/probes/settings-gutter-wk.swift`（WKWebView，780×600：网络 216..764 / 关于修前 208..772）。
+    check("设置窗口：另一个分区（网络）与「关于」卡片左/右缘、内容盒宽逐像素相等（0px）",
+      rows.every((r) => r.net && r.about
+        && r.net.clientW === r.about.clientW
+        && d(r.net.card, r.about.card, "x") === 0
+        && d(r.net.card, r.about.card, "r") === 0),
+      "net/about 的 clientW / card.x / card.right 全为 0px 差",
+      JSON.stringify(out.map((o) => o.narrow)));
 
-    check("反面对照：去掉 scrollbar-gutter 预留后，跨临界点必须真的变宽（≥ 7px），否则量具恒绿",
+    check("反面对照：去掉 scrollbar-gutter 预留后，不滚的分区必须真的变宽（≥ 7px），否则量具恒绿",
       rows.every((r) => r.counter && typeof r.counterDeltaW === "number"
         && Math.abs(r.counterDeltaW) >= 7),
       "|deltaW| >= 7px", JSON.stringify(out.map((o) => o.counter)));

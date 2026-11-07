@@ -7888,6 +7888,50 @@ test("SC-02 反例自证：删掉空隙 / 改滚动条带宽度 / 只留单侧�
   );
 });
 
+// ---------------- SC-03 设置窗口「常驻滚动轨道」（2026-11-07 第三次，按像素） ----------------
+//
+// 用户第三次报同一个症状：「关于」页边距比上面带滚动条的分区小。
+// 实测（WKWebView，780×600 = 设置窗口默认尺寸）：
+//   会滚的分区  card 216..764（clientW 572 / offsetW 580，滚动条 8px）
+//   不滚的分区  card 208..772（clientW 580，**gutter 一个像素都没有**）
+// 根因：WKWebView 只在**真的出现滚动条**时才兑现 `scrollbar-gutter: stable both-edges`；
+// 内容不溢出 ⇒ 两侧预留全部消失 ⇒ 卡片比标题那条竖线（`--gosslan-scroll-inset`）各宽 8px。
+// Chromium 会无条件预留 ⇒ 这条差异在 Chromium 上永远看不出来（所以前几轮"声明存在"的判据全绿）。
+//
+// 修法（不许在分区里补 padding）：让共享容器的滚动条**常驻**（`overflow-y-scroll`），
+// 两类分区走同一档几何。判据：共享容器必须 `overflow-y-scroll`，且不许回 `auto`。
+
+/** 取设置窗口里挂 `.gosslan-scroll` 的那个标签的 class 串。 */
+function settingsScrollClass(src: string): string {
+  return /<div\s+class="([^"]*\bgosslan-scroll\b[^"]*)"/.exec(src)?.[1] ?? "";
+}
+
+function findSettingsTrackIssues(src: string): string[] {
+  const cls = settingsScrollClass(src);
+  if (!cls) return ["SettingsWindow.vue 里找不到挂 `.gosslan-scroll` 的滚动容器"];
+  const issues: string[] = [];
+  if (!cls.includes("overflow-y-scroll"))
+    issues.push("共享滚动容器必须 `overflow-y-scroll`（常驻轨道）；`auto` 在不滚的分区上会让 WKWebView 丢掉两侧 gutter");
+  if (/\boverflow-y-auto\b/.test(cls)) issues.push("共享滚动容器不许同时写 `overflow-y-auto`（会覆盖常驻轨道）");
+  return issues;
+}
+
+test("SC-03 真实树：设置窗口共享滚动容器常驻轨道", () => {
+  const src = readFileSync(new URL("../components/SettingsWindow.vue", import.meta.url), "utf8");
+  assert.deepEqual(findSettingsTrackIssues(src), [], findSettingsTrackIssues(src).join("\n"));
+});
+
+test("SC-03 反例自证：把常驻轨道改回 auto 必须红", () => {
+  const src = readFileSync(new URL("../components/SettingsWindow.vue", import.meta.url), "utf8");
+  // 只替换 class 串里的那一处（注释里也写了 `overflow-y-scroll`，不能让它先被替换掉）。
+  const mutated = src.replace(
+    /(class="[^"]*\bgosslan-scroll\b[^"]*)\boverflow-y-scroll\b/,
+    "$1overflow-y-auto",
+  );
+  assert.notEqual(mutated, src, "反例自证：class 串里的 `overflow-y-scroll` 没被替换到，锚点已漂");
+  assert.ok(findSettingsTrackIssues(mutated).length > 0, "改回 auto 必须命中（不许空转）");
+});
+
 // ---------------- DE 密度刻度（2026-11-07 第三轮） ----------------
 
 /** 密度五档必须成对、且命中区域不能低于下限（VS Code compact 只收紧内距，不牺牲可点性）。 */
