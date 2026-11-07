@@ -14,6 +14,19 @@
 
 ## [Unreleased]
 
+## [5.18.56] - 2026-11-07
+
+### macOS 系统红绿灯在 40px 自绘标题栏里竖向居中（#29）
+
+- `macos_window.rs`：新增 `center_traffic_lights`，按绝对目标位置 `origin.y = 28 − 40/2 − 按钮高/2`
+  重排三颗键（幂等，不随 resize 越挪越低）；`use_native_titlebar` 与
+  `set_traffic_lights_hidden(false)` 都调用一次。
+- 常量 `APP_TITLEBAR_H = 40` 必须与 `--gosslan-title-h` 相等；
+  `titleBarIcons.test.ts` 新增对账断言（改成 52/28 等旧值即红），并断言居中函数被调用。
+
+读数：红绿灯中心距窗口顶从默认 14pt → 20pt（下移 6pt）；四角圆角 orb 底盘 16→20px
+（`--gosslan-radius-xl` 连带 `orb-mark-44/-56` 内距 12/6 → 8/14，concentric 5/5 已重跑）。
+
 ## [5.18.55] - 2026-11-07
 
 ### 单聊亮色自己消息改 accent 实底白字 + 气泡 36px / 组距 2-12 / 68%-560px；群聊头像 24px
