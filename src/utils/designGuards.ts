@@ -3984,28 +3984,41 @@ export function checkConcentricGeometry(src: {
     }
   }
 
-  // 2) 右上角头像：右内距必须等于纵向内距（(标题栏高 − 头像边长)/2）。
+  // 2) 标题栏头像：边缘内距必须等于纵向内距（(标题栏高 − 头像边长)/2），两平台同源。
+  //    ⚠️ 2026-11-07 起内距/头像尺寸抽成 `--gosslan-caption-inset` / `--gosslan-caption-avatar`，
+  //    判据跟着搬：只认 token 引用，不再认 `pr-1.5` 这类手写数字（数字会随标题栏高度漂）。
   const titleH = Number(src.styleCss.match(/--gosslan-title-h\s*:\s*(\d+)px/)?.[1] ?? 0);
+  const avatarPx = Number(src.styleCss.match(/--gosslan-caption-avatar\s*:\s*(\d+)px/)?.[1] ?? 0);
   const rightSlot = src.titleBar.match(/<div[^>]*\bv-if="\$slots\.right"[^>]*>/)?.[0] ?? "";
   if (!rightSlot) {
-    out.push({ line: 0, message: 'CN-02：TitleBar 里找不到 `v-if="$slots.right"` 的右侧簇 —— 无法确认右上角内距。' });
+    out.push({ line: 0, message: 'CN-02：TitleBar 里找不到 `v-if="$slots.right"` 的头像簇 —— 无法确认角部内距。' });
   }
-  const avatarTag = [...src.layout.matchAll(/<SelfAvatar[^>]*>/g)].map((m) => m[0]).find((t) => t.includes("h-7"));
+  const avatarTag = [...src.layout.matchAll(/<SelfAvatar[^>]*>/g)]
+    .map((m) => m[0])
+    .find((t) => t.includes("--gosslan-caption-avatar") || t.includes("h-7"));
   if (!avatarTag) {
-    out.push({ line: 0, message: "CN-02：主窗右侧簇里找不到 `h-7 w-7` 的本人头像 —— 同心几何的基准已漂。" });
-  } else if (titleH) {
-    const avatarPx = Number(avatarTag.match(/\bh-7\b/) ? 28 : 0);
-    const expectPr = (titleH - avatarPx) / 2;
-    const prToken = rightSlot?.match(/\bpr-(\d+(?:\.\d+)?)/)?.[1];
-    const actualPr = prToken ? Number(prToken) * 4 : -1;
-    if (actualPr !== expectPr) {
-      out.push({
-        line: lineAt(src.titleBar, src.titleBar.indexOf(rightSlot ?? "")),
-        message:
-          `CN-02：右上角右内距 \`pr-${prToken ?? "?"}\`（${actualPr}px）与头像纵向内距 ${expectPr}px 不等` +
-          `（${titleH}px 标题栏里的 ${avatarPx}px 圆）—— 右上角会一边宽一边窄，也不与窗口圆角同心。`,
-      });
-    }
+    out.push({ line: 0, message: "CN-02：主窗头像簇里找不到读 `--gosslan-caption-avatar` 的本人头像 —— 同心几何的基准已漂。" });
+  }
+  const insetExpr = src.styleCss.match(/--gosslan-caption-inset\s*:\s*([^;]+);/)?.[1] ?? "";
+  if (!/calc\(\s*\(\s*var\(--gosslan-title-h\)\s*-\s*var\(--gosslan-caption-avatar\)\s*\)\s*\/\s*2\s*\)/.test(insetExpr)) {
+    out.push({
+      line: 0,
+      message:
+        "CN-02：`--gosslan-caption-inset` 必须是 `calc((var(--gosslan-title-h) - var(--gosslan-caption-avatar)) / 2)`" +
+        ` —— 当前是 \`${insetExpr || "（缺失）"}\`（${titleH || "?"}px 标题栏 / ${avatarPx || "?"}px 头像 ⇒ 应为 ${(titleH - avatarPx) / 2}px）。`,
+    });
+  }
+  const slotCls = rightSlot.match(/:class="([^"]*)"/)?.[1] ?? "";
+  const slotPrToken = /\bpr-\[var\(--gosslan-caption-inset\)\]/.test(slotCls);
+  const slotPlToken = /\bpl-\[var\(--gosslan-caption-inset\)\]/.test(slotCls);
+  if (!slotPrToken || !slotPlToken) {
+    out.push({
+      line: lineAt(src.titleBar, src.titleBar.indexOf(rightSlot)),
+      message:
+        "CN-02：头像簇的两个平台分支都必须读 `--gosslan-caption-inset`" +
+        "（`pr-[var(--gosslan-caption-inset)]` / `pl-[var(--gosslan-caption-inset)]`）—— " +
+        "角部内距与头像纵向内距必须同源，否则右上/左上角会一边宽一边窄。",
+    });
   }
   if (!titleH && !out.some((i) => i.message.startsWith("CN-02"))) {
     out.push({ line: 0, message: "CN-02：style.css 的 `--gosslan-title-h` 读不到 —— 头像同心几何的基准丢了。" });
@@ -4131,4 +4144,208 @@ export function findRawSafeAreaEnvIssues(files: Array<{ path: string; src: strin
     }
   }
   return issues;
+}
+
+// ---------------- TB 标题栏镜像：按钮在哪一侧，头像簇就去另一侧（2026-11-07） ----------------
+/**
+ * 用户 2026-11-07（Windows 真机截图）：「三大金刚键是在右边，那头像应该是相对称的、
+ * 在左边居左然后对称显示」。
+ *
+ * 镜像的是**按钮所在侧**，不是整条标题栏左右翻转：
+ *   · macOS：系统红绿灯在左 ⇒ 头像簇靠右（`ml-auto`），右侧内距 = 头像纵向内距；
+ *   · Windows/Linux：三键在右 ⇒ 头像簇靠左，左侧内距 = 同一个值。
+ *
+ * 两条硬约束：
+ * 1. 两侧内距必须相等，且都等于 `(标题栏高 − 头像边长)/2` —— 头像 28px 落在 40px 条里
+ *    上下各 6，水平再留别的值就会在窗口角上一边宽一边窄，也破坏与窗外圆角的同心关系
+ *    （macOS 20px 圆角 ⇒ 内圆 20−6=14=头像半径）。
+ * 2. 标题必须**绝对居中**（脱离流式布局），不能靠左右两侧内容宽度凑出来 —— 否则
+ *    Windows 上左侧头像簇比 macOS 的 78px 红绿灯占位窄，标题会肉眼可见地偏左。
+ */
+export function checkTitlebarMirror(src: {
+  titleBar: string;
+  layout: string;
+  styleCss: string;
+}): GuardIssue[] {
+  const out: GuardIssue[] = [];
+  const { titleBar, layout, styleCss } = src;
+
+  // 1) 头像簇：平台 → 侧别
+  const slotTag = titleBar.match(/<div[^>]*\bv-if="\$slots\.right"[^>]*>/)?.[0] ?? "";
+  if (!slotTag) {
+    return [{ line: 0, message: "TB-01：TitleBar 里找不到 `v-if=\"$slots.right\"` 的头像簇 —— 无法判定它落在哪一侧。" }];
+  }
+  const classExpr = slotTag.match(/:class="([^"]*)"/)?.[1] ?? "";
+  const ternary = classExpr.match(/isMac\s*\?\s*'([^']*)'\s*:\s*'([^']*)'/);
+  if (!ternary) {
+    out.push({
+      line: lineAt(titleBar, titleBar.indexOf(slotTag)),
+      message:
+        "TB-01：头像簇必须用 `:class=\"isMac ? '…' : '…'\"` 显式表达镜像（macOS 靠右、Windows 靠左），" +
+        `当前是 \`${classExpr || "（无 :class）"}\` —— 平台分叉写死在一侧就必然有一端撞系统按钮。`,
+    });
+    return out;
+  }
+  const macCls = ternary[1];
+  const winCls = ternary[2];
+
+  if (!/\bml-auto\b/.test(macCls)) {
+    out.push({
+      line: lineAt(titleBar, titleBar.indexOf(slotTag)),
+      message: "TB-01：macOS 分支的头像簇缺 `ml-auto` —— 红绿灯在左，它必须被推到右侧。",
+    });
+  }
+  if (/\bml-auto\b/.test(winCls)) {
+    out.push({
+      line: lineAt(titleBar, titleBar.indexOf(slotTag)),
+      message:
+        "TB-01：Windows 分支仍用 `ml-auto` 把头像簇推到右侧 —— 用户 2026-11-07 报的就是它压着三大金刚键；" +
+        "Windows 上按钮在右，头像簇必须在左（无 `ml-auto`）。",
+    });
+  }
+  if (!/\bflex-row-reverse\b/.test(winCls)) {
+    out.push({
+      line: lineAt(titleBar, titleBar.indexOf(slotTag)),
+      message:
+        "TB-01：Windows 分支缺 `flex-row-reverse` —— 组内顺序必须镜像成「头像 → 设置 → 搜索 → LAN」，" +
+        "否则头像会落在簇的最右边，又贴回系统三键。",
+    });
+  }
+  if (/\bflex-row-reverse\b/.test(macCls)) {
+    out.push({
+      line: lineAt(titleBar, titleBar.indexOf(slotTag)),
+      message: "TB-01：macOS 分支不许 `flex-row-reverse` —— 头像在红绿灯对侧的最右端才是原设计。",
+    });
+  }
+  const macPr = macCls.match(/\bpr-(\d+(?:\.\d+)?)/)?.[1];
+  const winPl = winCls.match(/\bpl-(\d+(?:\.\d+)?)/)?.[1];
+  const macToken = /\bpr-\[var\(--gosslan-caption-inset\)\]/.test(macCls);
+  const winToken = /\bpl-\[var\(--gosslan-caption-inset\)\]/.test(winCls);
+  if (!macPr && !macToken) {
+    out.push({ line: lineAt(titleBar, titleBar.indexOf(slotTag)), message: "TB-01：macOS 分支缺右侧内距（`pr-[var(--gosslan-caption-inset)]`）。" });
+  }
+  if (!winPl && !winToken) {
+    out.push({ line: lineAt(titleBar, titleBar.indexOf(slotTag)), message: "TB-01：Windows 分支缺左侧内距（`pl-[var(--gosslan-caption-inset)]`）。" });
+  }
+
+  // 2) 系统按钮仍在右侧，且只在非 macOS 渲染
+  const sysTag = titleBar.match(/<div[^>]*\bv-if="!isMac"[^>]*>/)?.[0] ?? "";
+  if (!sysTag) {
+    out.push({ line: 0, message: "TB-01：找不到 `v-if=\"!isMac\"` 的系统按钮组 —— 三键该固定在右侧。" });
+  } else if (!/\bml-auto\b/.test(sysTag)) {
+    out.push({
+      line: lineAt(titleBar, titleBar.indexOf(sysTag)),
+      message: "TB-01：系统三键组缺 `ml-auto` —— 头像簇改到左侧后，它不会被推到最右缘。",
+    });
+  }
+
+  // 3) macOS 红绿灯占位仍在左侧（顺序即位置：它必须排在任何右侧簇之前）
+  const macSpacerAt = titleBar.search(/<div[^>]*\bv-if="isMac"[^>]*\bw-\[\d+px\][^>]*>/);
+  if (macSpacerAt < 0) {
+    out.push({ line: 0, message: "TB-01：找不到 macOS 红绿灯占位块 —— 系统按钮会盖住标题左侧。" });
+  } else {
+    const spacerTag = titleBar.match(/<div[^>]*\bv-if="isMac"[^>]*\bw-\[\d+px\][^>]*>/)?.[0] ?? "";
+    if (!/w-\[78px\]/.test(spacerTag)) {
+      out.push({
+        line: lineAt(titleBar, macSpacerAt),
+        message: "TB-01：macOS 红绿灯占位宽度变了（应保持 78px）—— 与原生三键的实际占位不符。",
+      });
+    }
+    if (macSpacerAt > titleBar.indexOf(slotTag)) {
+      out.push({ line: lineAt(titleBar, macSpacerAt), message: "TB-01：红绿灯占位必须排在头像簇之前（它在屏幕左侧）。" });
+    }
+  }
+
+  // 4) 标题绝对居中，不依赖两侧内容宽度
+  const titleCentered =
+    /class="[^"]*\babsolute inset-0\b[^"]*\bjustify-center\b/.test(titleBar) ||
+    (/left-1\/2/.test(titleBar) && /-translate-x-1\/2/.test(titleBar));
+  if (!titleCentered) {
+    out.push({
+      line: 0,
+      message:
+        "TB-01：标题必须绝对居中（`absolute inset-0 … justify-center` 或 `left-1/2 -translate-x-1/2`）—— " +
+        "靠左右内容宽度凑出来的居中，在 Windows（左头像簇）与 macOS（左 78px 红绿灯）之间必然偏移。",
+    });
+  }
+
+  // 5) 两侧内距同源、相等，且等于头像纵向内距 —— 数值只许从 style.css 的两个 token 来
+  const titleH = Number(styleCss.match(/--gosslan-title-h\s*:\s*(\d+)px/)?.[1] ?? 0);
+  const avatarPx = Number(styleCss.match(/--gosslan-caption-avatar\s*:\s*(\d+)px/)?.[1] ?? 0);
+  const insetExpr = styleCss.match(/--gosslan-caption-inset\s*:\s*([^;]+);/)?.[1] ?? "";
+  const avatarTag = [...layout.matchAll(/<SelfAvatar[^>]*>/g)]
+    .map((m) => m[0])
+    .find((t) => t.includes("--gosslan-caption-avatar") || t.includes("h-7"));
+  if (!titleH) {
+    out.push({ line: 0, message: "TB-01：style.css 里读不到 `--gosslan-title-h` —— 无法核对内距。" });
+  }
+  if (!avatarPx) {
+    out.push({ line: 0, message: "TB-01：style.css 里读不到 `--gosslan-caption-avatar` —— 头像尺寸没有同源 token。" });
+  }
+  if (!/calc\(\s*\(\s*var\(--gosslan-title-h\)\s*-\s*var\(--gosslan-caption-avatar\)\s*\)\s*\/\s*2\s*\)/.test(insetExpr)) {
+    out.push({
+      line: 0,
+      message:
+        "TB-01：`--gosslan-caption-inset` 必须是 `calc((var(--gosslan-title-h) - var(--gosslan-caption-avatar)) / 2)`" +
+        ` —— 当前是 \`${insetExpr || "（缺失）"}\`；手写死值会在改标题栏高度或头像尺寸时静默不同心。`,
+    });
+  }
+  if (!macToken || !winToken) {
+    out.push({
+      line: lineAt(titleBar, titleBar.indexOf(slotTag)),
+      message:
+        "TB-01：两平台分支必须直接读 `--gosslan-caption-inset`（`pr-[var(--gosslan-caption-inset)]` / " +
+        "`pl-[var(--gosslan-caption-inset)]`）—— 镜像只切方向，不切数字。",
+    });
+  }
+  if (!avatarTag) {
+    out.push({ line: 0, message: "TB-01：主窗头像簇里找不到读 `--gosslan-caption-avatar` 的本人头像 —— 内距基准已漂。" });
+  }
+  if (titleH && avatarPx) {
+    const expect = (titleH - avatarPx) / 2;
+    const macPx = macToken ? expect : macPr ? Number(macPr) * 4 : null;
+    const winPx = winToken ? expect : winPl ? Number(winPl) * 4 : null;
+    if (macPx !== null && winPx !== null && macPx !== winPx) {
+      out.push({
+        line: lineAt(titleBar, titleBar.indexOf(slotTag)),
+        message: `TB-01：两平台内距不等（macOS ${macPx}px vs Windows ${winPx}px）—— 镜像后必须等距，否则换端就换观感。`,
+      });
+    }
+    for (const [side, px] of [
+      ["macOS", macPx],
+      ["Windows", winPx],
+    ] as const) {
+      if (px !== null && px !== expect) {
+        out.push({
+          line: lineAt(titleBar, titleBar.indexOf(slotTag)),
+          message:
+            `TB-01：${side} 内距 ${px}px ≠ 头像纵向内距 ${expect}px（${titleH}px 标题栏里的 ${avatarPx}px 圆，` +
+            "距上 = 距左/右才同心）—— 窗口角上会一边宽一边窄。",
+        });
+      }
+    }
+  }
+
+  return out;
+}
+
+/**
+ * 标题栏头像的**平台模拟矩形**（TB-02 的运行时读数口径，2026-11-07）。
+ *
+ * ⚠️ 这不是真机读数：本机是 macOS，拿不到 Windows WebView2 的渲染。它把
+ * `TitleBar.vue` 的布局约束（靠哪一侧、内距多少、条高多少、头像多大）折成矩形，
+ * 让"距上 = 距左（Windows）/ 距右（macOS）"这条同心口径在两种平台下都能被断言。
+ * 真机仍需 Windows/macOS 各截一张 4× 角部特写核对（见交付说明）。
+ */
+export function captionAvatarRect(o: {
+  platform: "macos" | "windows";
+  viewportWidth: number;
+  titleH: number;
+  avatarPx: number;
+  insetPx: number;
+}): { x: number; y: number; width: number; height: number; topGap: number; sideGap: number } {
+  const y = (o.titleH - o.avatarPx) / 2;
+  const x = o.platform === "macos" ? o.viewportWidth - o.insetPx - o.avatarPx : o.insetPx;
+  const sideGap = o.platform === "macos" ? o.viewportWidth - (x + o.avatarPx) : x;
+  return { x, y, width: o.avatarPx, height: o.avatarPx, topGap: y, sideGap };
 }

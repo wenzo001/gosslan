@@ -282,6 +282,23 @@
      原生按钮的纵向位置由 AppKit 固定在标题栏默认带内，不随本条变化 —— 这是平台事实，
      不是本应用能改的；我们要负责的是内容区留出与画板一致的 40px 高度。 */
   --gosslan-title-h: 40px;
+  /* 标题栏头像簇的两个同源尺寸（2026-11-07 Windows 镜像）。
+     **两平台同值，只有镜像方向不同**：macOS 红绿灯在左 ⇒ 头像簇靠右；Windows 三键在右
+     ⇒ 头像簇靠左（`TitleBar.vue` 的 `:class` 三元只切方向，不切数值）。
+
+     `--gosslan-caption-inset` = (标题栏高 − 头像边长)/2 = (40−28)/2 = **6px**，
+     这就是头像距上边 = 距左/右边的那一个 d。
+
+     同心公式（用户 2026-11-07：「头像的弧度跟左边的 R 角要对齐……同心圆的这种距离」）：
+       记窗口圆角半径 R、头像半径 r、头像距上/左均为 d；
+       两圆心重合 ⇒ d + r = R ⇒ **d = R − r**。
+       · 本应用 macOS contentView 圆角 R=10（`macos_window.rs`）、r=14 ⇒ d = −4（负值）；
+       · Windows 11 窗角 R≈8–12 ⇒ R=10 时 −4、R=12 时 −2，同样为负。
+       ⇒ 28px 头像（r=14）比窗角弧还大，**严格同心在几何上不可能**。本项目的口径因此是
+       "等距内缩"：d=(40−28)/2=6，上下左右同值；当 R 与 r 同量级时，视觉上就是同一套圆心
+       （若未来窗角做到 R=20，则该式给出 20−14=6，与等距内缩恰好重合成严格同心）。 */
+  --gosslan-caption-avatar: 28px;
+  --gosslan-caption-inset: calc((var(--gosslan-title-h) - var(--gosslan-caption-avatar)) / 2);
   /* ---------------- 窗口显示安全区（桌面自绘标题栏 / 移动端为 0） ----------------
      桌面窗口是 `decorations(false)` + 自绘 caption（`TitleBar.vue`，`var(--gosslan-title-h)`），
      那条 caption 是**流内**元素。而弹窗经 portal 挂到 `<body>`、铺的是 `fixed inset-0`

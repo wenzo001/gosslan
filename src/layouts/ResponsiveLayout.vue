@@ -883,12 +883,12 @@ function onResizeEnd() {
         </button>
         <button
           type="button"
-          class="tap-safe relative ml-0.5 flex h-7 w-7 shrink-0 items-center justify-center"
+          class="tap-safe relative flex h-[var(--gosslan-caption-avatar)] w-[var(--gosslan-caption-avatar)] shrink-0 items-center justify-center"
           :title="app.present ? t('nav.me.online') : t('nav.me.offline')"
           :aria-label="t('nav.me.openSettings', { status: app.present ? t('nav.me.online') : t('nav.me.offline') })"
           @click="openProfile"
         >
-          <SelfAvatar class="h-7 w-7 rounded-full" />
+          <SelfAvatar class="h-[var(--gosslan-caption-avatar)] w-[var(--gosslan-caption-avatar)] rounded-full" />
           <span
             class="absolute bottom-0 right-[-1px] h-[9px] w-[9px] rounded-full shadow-[0_0_0_2px_var(--gosslan-caption)]"
             :class="app.present ? 'bg-[var(--gosslan-success)]' : 'bg-[var(--gosslan-status-offline)]'"
