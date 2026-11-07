@@ -21,6 +21,7 @@ import {
   applyAmbientSetting,
   isAmbientSetting,
   readStoredAmbient,
+  readStoredAmbientRaw,
   saveStoredAmbient,
   type AmbientSetting,
 } from "@/utils/ambient";
@@ -89,14 +90,22 @@ export const useAppStore = defineStore("app", () => {
   /**
    * 背景动效档位：`off` / `drift`（默认 drift，见 docs/design-language/ambient-motion.md）。
    * 启动值先读 localStorage（与主题色/字体同一套"先本地后后端"），后端快照到了再覆盖。
-   * 系统级 reduce / reduced-transparency 不在这里改档位 —— 由 CSS 冻结或隐藏，避免两份真相。
-   * **应用内**「减少透明效果」例外：WKWebView 读不到系统特性，由 `reducedTransparency` 驱动
-   * ambient 进 `static`（冻结到初始帧，不隐藏）。
+   * 档位解析只有一处（utils/ambient.ts 的 `resolveAmbient`）：软件显式 > 系统
+   * `prefers-reduced-motion` > 内置默认。系统「减少透明」**不**参与档位解析 ——
+   * 它只让玻璃退实底（2026-11-07 修正，见该文件头）。
    */
   const ambientMotion = ref<AmbientSetting>(readStoredAmbient());
 
+  /**
+   * 背景动效的**显式选择**：`null` = 从未设过（跟随系统 `prefers-reduced-motion`）。
+   * 与 `ambientMotion`（给界面显示的生效值）分开存，才能表达"没设过"与"设成了默认值"
+   * 是两件事 —— 三层优先级的第一层只认这里。见 utils/ambient.ts 文件头。
+   */
+  const ambientMotionExplicit = ref<AmbientSetting | null>(readStoredAmbientRaw());
+
   function setAmbientMotion(v: AmbientSetting) {
     ambientMotion.value = v;
+    ambientMotionExplicit.value = v;
     saveStoredAmbient(v);
     applyAmbientSetting(v);
     void persistSettings();
@@ -593,7 +602,9 @@ export const useAppStore = defineStore("app", () => {
         // appearanceMode = 用户的**意图**，重启后据此恢复。
         darkMode: dark.value,
         appearanceMode: appearance.value,
-        ambientMotion: ambientMotion.value,
+        // 只写**显式选择**（null = 从未设过，后端不落库，重启后继续跟随系统）。
+        // 写生效值（ambientMotion）会把系统偏好固化成用户选择，三层优先级的第一层就失效了。
+        ambientMotion: ambientMotionExplicit.value,
         // 只有用户显式选过才写（null = 跟随系统；后端不落库）。
         reducedTransparency: reducedTransparencyExplicit.value,
         notifyEnabled: notifyEnabled.value,
@@ -760,12 +771,16 @@ export const useAppStore = defineStore("app", () => {
         appearance.value = s.darkMode ? "dark" : "light";
         storageSet(APPEARANCE_STORAGE_KEY, appearance.value);
       }
-      // 背景动效（null/脏值 → drift）。这是跨窗口同步入口：设置窗口一改，主窗口立刻跟着换。
+      // 背景动效（null/脏值 = 从未设过 → 跟随系统）。这是跨窗口同步入口：设置窗口一改，主窗口立刻跟着换。
+      // ⚠️ 不能把 null 折算成 drift：那会让"没设过"变成"设成了默认值"，此后系统
+      // `prefers-reduced-motion` 再也不生效（三层优先级的第 2 层被永久跳过）。
       if (has("ambientMotion")) {
-        const v = isAmbientSetting(s.ambientMotion) ? s.ambientMotion : "drift";
-        ambientMotion.value = v;
-        saveStoredAmbient(v);
-        applyAmbientSetting(v);
+        const explicit = isAmbientSetting(s.ambientMotion) ? s.ambientMotion : null;
+        ambientMotionExplicit.value = explicit;
+        if (explicit === null) storageRemove(AMBIENT_STORAGE_KEY);
+        else saveStoredAmbient(explicit);
+        ambientMotion.value = readStoredAmbient();
+        applyAmbientSetting(explicit);
       }
       // 减少透明效果（null = 从未显式选择，继续跟随系统）。与 ambient 一样走同一段应用逻辑，
       // 否则"设置窗口里打开开关、主窗口玻璃仍是半透明"会是一处长期漂移。
@@ -1015,9 +1030,11 @@ export const useAppStore = defineStore("app", () => {
     boundIp.value = null;
     chatStyle.value = { ...DEFAULT_CHAT_STYLE };
     peerStyles.value = {};
-    ambientMotion.value = "drift";
     storageRemove(AMBIENT_STORAGE_KEY);
-    applyAmbientSetting("drift");
+    ambientMotionExplicit.value = null;
+    ambientMotion.value = readStoredAmbient();
+    // 回到"从未设过"：由三层优先级重新解析（系统 reduce 时会是 off/static，而不是硬写 drift）。
+    applyAmbientSetting(null);
     // 「减少透明效果」也回到"从未选择"（继续跟随系统），并把 DOM 上的实底降级撤掉。
     reducedTransparencyExplicit.value = null;
     saveStoredReducedTransparency(null);

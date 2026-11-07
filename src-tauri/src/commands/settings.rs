@@ -14,9 +14,10 @@ pub struct Settings {
     /// 与 `dark_mode` 的关系：`appearance_mode` 是**用户意图**，`dark_mode` 是**解析后的结果**
     /// （跟随系统时由前端按系统偏好解析后回写），二者同时持久化，互不冲突。
     pub appearance_mode: Option<String>,
-    /// 背景动效："off" | "drift"（缺省视为 drift，亮/暗 α 由 CSS 管，不进设置）。
+    /// 背景动效："off" | "drift"。`None` = 用户从未显式选择（前端按三层优先级解析：
+    /// 软件显式 > 系统 `prefers-reduced-motion` > 内置默认 drift；亮/暗 α 由 CSS 管，不进设置）。
     pub ambient_motion: Option<String>,
-    /// 应用内「减少透明效果」：true = 玻璃退实底 + 动效冻结。
+    /// 应用内「减少透明效果」：true = 玻璃/模糊退实底（**不**影响背景动效，两层关注点已分开）。
     /// `None` = 用户从未显式选择（前端按系统偏好解析；WKWebView 读不到系统特性时按关闭）。
     pub reduced_transparency: Option<bool>,
     /// 桌面通知开关（缺省视为开启——否则用户会漏消息且不知道有开关）。
@@ -183,7 +184,7 @@ pub fn settings_patch_values(db: &rusqlite::Connection, changed: &[&str]) -> ser
 /// appearance_mode 的合法取值：脏值一律忽略（宁可回落"跟随系统"，也不要写进库）。
 const APPEARANCE_MODES: [&str; 3] = ["system", "light", "dark"];
 
-/// ambient_motion 的合法取值：脏值忽略（缺省由前端按 drift 显示）。
+/// ambient_motion 的合法取值：脏值忽略（`None` = 从未设过，由前端按三层优先级解析）。
 const AMBIENT_MODES: [&str; 2] = ["off", "drift"];
 
 /// language 的合法取值：脏值一律忽略（回落"跟随系统"）。

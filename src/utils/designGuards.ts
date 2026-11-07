@@ -2786,7 +2786,7 @@ export function checkAmbientMotion(s: AmbientMotionSources): GuardIssue[] {
     });
   }
 
-  // AM-06：reduce 档必须 animation:none（只改时长不算）。
+  // AM-06：reduce 档必须 animation:none（只改时长不算），且必须**让位给软件显式选择**。
   const reduceAt = css.indexOf(`@media ${REDUCED_MOTION_QUERY}`);
   if (reduceAt < 0) {
     out.push({ line: 0, message: "AM-06：缺少 prefers-reduced-motion 降级块。" });
@@ -2795,17 +2795,62 @@ export function checkAmbientMotion(s: AmbientMotionSources): GuardIssue[] {
     if (!/\.ambient-blob[\s\S]*animation\s*:\s*none/.test(tail)) {
       out.push({ line: lineAt(css, reduceAt), message: "AM-06：reduce 档没有 `animation: none`（必须冻结，不是减速）。" });
     }
+    // 三层优先级：软件显式选了「流动」时，系统 reduce 不许冻结它（2026-11-07 用户口径）。
+    if (!/html:not\(\[data-ambient-motion="force"\]\)\s+\.ambient-blob/.test(tail)) {
+      out.push({
+        line: lineAt(css, reduceAt),
+        message:
+          'AM-06：reduce 冻结块必须写成 `html:not([data-ambient-motion="force"]) .ambient-blob`' +
+          "（软件显式选「流动」时系统偏好要让位）。",
+      });
+    }
   }
 
-  // AM-07：减少透明度 / 高对比 / 强制色 → 整层隐藏。
-  // 用最后一次出现：玻璃降级块也在同一条媒体查询上，环境层那条故意排在文件末尾。
-  const hideAt = css.lastIndexOf("@media (prefers-reduced-transparency: reduce)");
-  if (hideAt < 0) {
-    out.push({ line: 0, message: "AM-07：缺少 prefers-reduced-transparency 降级。" });
-  } else {
-    const tail = css.slice(hideAt, hideAt + 220);
-    if (!/\.ambient[\s\S]*display\s*:\s*none/.test(tail)) {
-      out.push({ line: lineAt(css, hideAt), message: "AM-07：降级块里 .ambient 没有 display:none。" });
+  // AM-07：**高对比 / 强制色** → 整层隐藏。
+  // ⚠️ `prefers-reduced-transparency` 只许降级玻璃（退实底），**不许**把 .ambient 藏掉：
+  // 2026-11-07 一台 Windows（系统「透明效果」关闭）读数 `data-ambient: drift` 却看不到雾，
+  // 就是因为这条媒体查询也被塞进了隐藏块。两个关注点必须分开。
+  const mediaBlocks = [...css.matchAll(/@media([^{]*)\{/g)].map((m) => {
+    const start = (m.index ?? 0) + m[0].length;
+    let depth = 1;
+    let i = start;
+    while (i < css.length && depth > 0) {
+      if (css[i] === "{") depth++;
+      else if (css[i] === "}") depth--;
+      i++;
+    }
+    return { query: m[1].trim(), body: css.slice(start, i - 1), at: m.index ?? 0 };
+  });
+  // `(?![\w-])`：`.ambient-canvas-child` 是另一族（玻璃表面的类名），不参与这条判定。
+  const hideBlocks = mediaBlocks.filter((b) => /\.ambient(?![\w-])[\s\S]*?display\s*:\s*none/.test(b.body));
+  if (!hideBlocks.length) {
+    out.push({ line: 0, message: "AM-07：缺少「高对比 / 强制色」隐藏 .ambient 的媒体块。" });
+  }
+  for (const b of hideBlocks) {
+    if (/prefers-reduced-transparency/.test(b.query)) {
+      out.push({
+        line: lineAt(css, b.at),
+        message:
+          "AM-07：`prefers-reduced-transparency` 又把 .ambient 整层隐藏了 —— 它只许降级玻璃，" +
+          "不许关闭背景雾（会让系统关掉「透明效果」的用户看不到动效）。",
+      });
+    }
+  }
+
+  if (s.ambientSource) {
+    const js = stripJsComments(s.ambientSource);
+    if (/reducedTransparency|prefers-reduced-transparency/.test(js)) {
+      out.push({
+        line: lineAt(js, js.search(/reducedTransparency|prefers-reduced-transparency/)),
+        message: "AM-07：ambient 档位解析里出现 reduced-transparency —— 它只许降级玻璃，不许参与动效判定。",
+      });
+    }
+    if (!/dataset\.ambientMotion\s*=\s*setting\s*===\s*"drift"\s*\?\s*"force"/.test(js)) {
+      out.push({
+        line: 0,
+        message:
+          "AM-06：ambient.ts 必须写 `data-ambient-motion=\"force\"`（软件显式选「流动」时让系统 reduce 让位）。",
+      });
     }
   }
 

@@ -6874,6 +6874,36 @@ test("AM-06 反例自证：reduce 档只改时长不冻结必须红", () => {
   assert.ok(issues.some((x) => x.message.includes("AM-06")), `期望 AM-06 报红，实际：${JSON.stringify(issues)}`);
 });
 
+test("AM-06 反例自证：reduce 冻结块不再给软件显式选择让位必须红", () => {
+  const css = ambientCss().replace(
+    'html:not([data-ambient-motion="force"]) .ambient-blob',
+    ".ambient-blob",
+  );
+  const issues = checkAmbientMotion({ ...ambientSources(), css });
+  assert.ok(issues.some((x) => x.message.includes("AM-06")), `期望 AM-06 报红，实际：${JSON.stringify(issues)}`);
+});
+
+test("AM-07 反例自证：把 prefers-reduced-transparency 塞回隐藏块必须红", () => {
+  const css = ambientCss().replace(
+    "@media (prefers-contrast: more), (forced-colors: active) {",
+    "@media (prefers-reduced-transparency: reduce), (prefers-contrast: more), (forced-colors: active) {",
+  );
+  const issues = checkAmbientMotion({ ...ambientSources(), css });
+  assert.ok(
+    issues.some((x) => x.message.includes("AM-07") && x.message.includes("prefers-reduced-transparency")),
+    `期望 AM-07 报红，实际：${JSON.stringify(issues)}`,
+  );
+});
+
+test("AM-07 反例自证：整套隐藏 .ambient 的媒体块删掉必须红", () => {
+  const css = ambientCss().replace(
+    "@media (prefers-contrast: more), (forced-colors: active) {\n  .ambient {\n    display: none !important;\n  }\n}",
+    "",
+  );
+  const issues = checkAmbientMotion({ ...ambientSources(), css });
+  assert.ok(issues.some((x) => x.message.includes("AM-07")), `期望 AM-07 报红，实际：${JSON.stringify(issues)}`);
+});
+
 // ---------------- SK：消息骨架静态化（2026-11-06 阶段 5 裁决） ----------------
 
 function skeletonSources() {

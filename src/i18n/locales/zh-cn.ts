@@ -221,7 +221,7 @@ export const zhCN: MessageDict = {
   "settings.appearance.ambient.off": "关闭",
   "settings.appearance.ambient.drift": "缓慢流动",
   "settings.appearance.reducedTransparency": "减少透明效果",
-  "settings.appearance.reducedTransparency.desc": "玻璃层与弹窗退回实色、背景动效冻结；不影响布局。默认跟随系统。",
+  "settings.appearance.reducedTransparency.desc": "玻璃层与弹窗退回实色；不影响布局，也不影响背景动效。默认跟随系统。",
   "settings.appearance.reducedTransparency.aria": "减少透明效果",
   "settings.appearance.reducedTransparency.off": "关闭",
   "settings.appearance.reducedTransparency.on": "减少透明",

@@ -10,7 +10,6 @@
  * `null` 表示用户从未显式选择过 —— 这种状态不落库，重启后继续跟随系统；
  * 一旦用户在设置里选了任一档，就以显式值为准。
  */
-import { setAmbientFrozen } from "./ambient.ts";
 import { storageGet, storageRemove, storageSet } from "./safeStorage.ts";
 
 /** localStorage 键（只作启动首帧快路径，真值在后端 settings 的 `reduced_transparency`）。 */
@@ -57,15 +56,16 @@ export function resolveReducedTransparency(
 }
 
 /**
- * 应用开关：写 `<html>` 属性（CSS 退实底）+ 冻结/解冻动效背景。
+ * 应用开关：写 `<html>` 属性（CSS 退实底）。
  *
- * 冻结走 ambient 的 `static` 档（停在初始帧），**不是** `off`（隐藏）——
- * 用户明确要求「冻结到初始帧」。不改任何布局。
+ * ⚠️ 不再连带冻结背景动效（2026-11-07 用户 Windows 读数触发的口径修正）：
+ * 「减少透明」只该管玻璃/模糊这一层；雾要不要飘归「背景动效」开关与
+ * `prefers-reduced-motion` 管。两条绑在一起时，Windows 关掉系统「透明效果」
+ * 会让整个动态背景消失 —— 用户看到的就是"动效出不来"。
  */
 export function applyReducedTransparency(on: boolean): void {
   if (typeof document === "undefined") return;
   document.documentElement.setAttribute(REDUCED_TRANSPARENCY_ATTR, String(on));
-  setAmbientFrozen(on);
 }
 
 /** 每个窗口启动时调用一次（必须在 `installAmbient()` 之前，否则首帧会闪一下色雾）。 */

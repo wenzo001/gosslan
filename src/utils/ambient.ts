@@ -11,26 +11,51 @@
  *   · 不建 rAF / setInterval 循环，涟漪也是每次交互一个定时器（AM-04）。
  *   · 不在 JS 里吐 `canvas` / `getImageData` 等逐帧像素路径（AM-04 扫描口径）。
  *   · 页面隐藏时暂停（AM-05）；reduce 档冻结而不是减速（AM-06）。
+ *
+ * ## 三层优先级（2026-11-07 定，用户 Windows 读数触发）
+ *
+ * 系统 `prefers-reduced-transparency: reduce`（Windows 关掉"透明效果"）**只**降级玻璃/模糊，
+ * 不再连带关闭背景漂移；`prefers-reduced-motion: reduce` 仍然冻结动效（那是它的本意）。
+ * 软件内开关优先于系统偏好，系统偏好只在用户从未动过开关时作为初始默认：
+ *
+ *   软件显式（存了 "off" / "drift"） > 系统 media query > 内置默认（drift，低端机降 static）
+ *
+ * `readStoredAmbientRaw()` 返回 `null` = 从未设过；`readStoredAmbient()` 是"视图想要的默认值"
+ * （给设置开关显示用），两者不能合并成一个 —— 合并就分不清"没设过"与"设成了默认值"。
  */
+import { REDUCED_MOTION_QUERY } from "./platform.ts";
 import { storageGet, storageSet } from "./safeStorage.ts";
 
 export type AmbientSetting = "off" | "drift";
 export type AmbientMode = "off" | "static" | "drift";
+/** 最终档位是谁定的：软件开关 / 系统偏好 / 内置默认。诊断面板要显示它。 */
+export type AmbientSource = "software" | "system" | "default";
 
 export const AMBIENT_STORAGE_KEY = "gosslan.ambientMotion";
 
-/** 用户档位只有两档：关闭 / 缓慢流动（默认后者）。 */
+/** 用户档位只有两档：关闭 / 缓慢流动。 */
 export function isAmbientSetting(v: unknown): v is AmbientSetting {
   return v === "off" || v === "drift";
 }
 
-export function readStoredAmbient(): AmbientSetting {
+/** 用户**显式**选过的档位；`null` = 从未设过（跟随系统）。 */
+export function readStoredAmbientRaw(): AmbientSetting | null {
   const raw = storageGet(AMBIENT_STORAGE_KEY);
-  return isAmbientSetting(raw) ? raw : "drift";
+  return isAmbientSetting(raw) ? raw : null;
+}
+
+/** 视图用的默认值：没设过时，系统冻结动效就把开关显示成关，否则显示流动。 */
+export function readStoredAmbient(): AmbientSetting {
+  return readStoredAmbientRaw() ?? (prefersReducedMotion() ? "off" : "drift");
 }
 
 export function saveStoredAmbient(v: AmbientSetting): void {
   storageSet(AMBIENT_STORAGE_KEY, v);
+}
+
+export function prefersReducedMotion(): boolean {
+  if (typeof window === "undefined" || typeof window.matchMedia !== "function") return false;
+  return window.matchMedia(REDUCED_MOTION_QUERY).matches;
 }
 
 export interface AmbientEnv {
@@ -40,28 +65,35 @@ export interface AmbientEnv {
   narrow?: boolean;
 }
 
-/**
- * 设置 + 环境 → 实际模式。
- * reduced-motion / **系统级** reduced-transparency 不在这里判：它们由 CSS 直接接管
- * （前者冻结、后者整层隐藏），否则 JS 与 CSS 两份真相会打架。
- * 例外是**应用内**「减少透明效果」开关：WKWebView 读不到系统特性，只能由 JS 把
- * `frozen` 置真后走 `static`（冻结到初始帧，不隐藏）。见 `reducedTransparency.ts`。
- */
-export function resolveAmbientMode(setting: AmbientSetting, env: AmbientEnv = {}): AmbientMode {
-  if (setting === "off") return "off";
-  if (env.coarse || env.narrow) return "static";
-  return "drift";
+export interface AmbientResolution {
+  mode: AmbientMode;
+  source: AmbientSource;
 }
 
 /**
- * 应用内「减少透明效果」是否生效：生效时动效背景冻结到初始帧（`static`）。
- * 只影响 `drift` 档；用户明确关掉背景动效（`off`）时仍然隐藏，二者不冲突。
+ * 设置 + 环境 + 系统动效偏好 → 实际模式 + 来源。
+ *
+ * ⚠️ 这里**不看** `prefers-reduced-transparency`：那是玻璃层的降级（style.css 里退实底），
+ * 与"雾要不要飘"是两个关注点。2026-11-07 之前它俩被绑在一起，Windows 关掉透明效果就
+ * 连动效一起没了（用户读数 `prefers-reduced-transparency: reduce: on` + `data-ambient: drift`
+ * 之外的机器直接看不到雾）。
  */
-let frozen = false;
+export function resolveAmbient(
+  setting: AmbientSetting | null,
+  env: AmbientEnv = {},
+  systemReducedMotion = false,
+): AmbientResolution {
+  if (setting === "off") return { mode: "off", source: "software" };
+  if (setting === "drift") {
+    return { mode: env.coarse || env.narrow ? "static" : "drift", source: "software" };
+  }
+  if (systemReducedMotion) return { mode: "static", source: "system" };
+  return { mode: env.coarse || env.narrow ? "static" : "drift", source: "default" };
+}
 
-export function setAmbientFrozen(v: boolean): void {
-  frozen = v;
-  applyAmbientSetting(readStoredAmbient());
+/** 兼容旧调用：只要档位，不要来源。 */
+export function resolveAmbientMode(setting: AmbientSetting, env: AmbientEnv = {}): AmbientMode {
+  return resolveAmbient(setting, env, prefersReducedMotion()).mode;
 }
 
 function detectCoarse(): boolean {
@@ -88,12 +120,24 @@ export function applyAmbientMode(mode: AmbientMode): void {
   document.documentElement.dataset.ambient = mode;
 }
 
-export function applyAmbientSetting(setting: AmbientSetting): void {
-  if (setting === "off") {
-    applyAmbientMode("off");
-    return;
-  }
-  applyAmbientMode(frozen ? "static" : resolveAmbientMode(setting, detectEnv()));
+/**
+ * 按三层优先级落档，并告诉 CSS「用户显式选了流动」。
+ *
+ * `data-ambient-motion="force"` 是给 AM-06 的让位开关：CSS 的
+ * `@media` reduced-motion 冻结块写成
+ * `html:not([data-ambient-motion="force"]) .ambient-blob { animation: none }` ——
+ * 只有用户**显式**选过流动时才让系统偏好失效（requirement 2026-11-07）。
+ */
+export function applyAmbientSetting(setting: AmbientSetting | null): void {
+  if (typeof document === "undefined") return;
+  const res = resolveAmbient(setting, detectEnv(), prefersReducedMotion());
+  document.documentElement.dataset.ambient = res.mode;
+  document.documentElement.dataset.ambientMotion = setting === "drift" ? "force" : "auto";
+}
+
+/** 当前生效档位的来源（诊断面板用）。判断口径与 `applyAmbientSetting` 完全同源。 */
+export function currentAmbientResolution(): AmbientResolution {
+  return resolveAmbient(readStoredAmbientRaw(), detectEnv(), prefersReducedMotion());
 }
 
 let installed = false;
@@ -102,7 +146,7 @@ let installed = false;
 export function installAmbient(): void {
   if (installed || typeof document === "undefined") return;
   installed = true;
-  applyAmbientSetting(readStoredAmbient());
+  applyAmbientSetting(readStoredAmbientRaw());
 
   const host = document.createElement("div");
   host.className = "ambient";
@@ -127,13 +171,19 @@ export function installAmbient(): void {
   syncHidden();
   document.addEventListener("visibilitychange", syncHidden);
 
+  // 只重算档位：用户没设过时，系统"减少动态效果"在会话中途切换也要跟着变。
+  const onMotionPref = () => applyAmbientSetting(readStoredAmbientRaw());
+  if (typeof window.matchMedia === "function") {
+    window.matchMedia(REDUCED_MOTION_QUERY).addEventListener("change", onMotionPref);
+  }
+
   // 窗口尺寸变化只重算"是否窄屏/低端"，不重建 DOM；低频事件，不构成逐帧开销。
   let resizeTimer: ReturnType<typeof setTimeout> | null = null;
   window.addEventListener("resize", () => {
     if (resizeTimer) clearTimeout(resizeTimer);
     resizeTimer = setTimeout(() => {
       resizeTimer = null;
-      applyAmbientSetting(readStoredAmbient());
+      applyAmbientSetting(readStoredAmbientRaw());
     }, 180);
   });
 }
