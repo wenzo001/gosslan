@@ -95,6 +95,24 @@
   ${If} $R7 == 1
     StrCpy $NoShortcutMode 1
   ${EndIf}
+
+  ; ── 让 Explorer 丢掉 exe 的旧图标缓存（2026-11-07 用户报「软件内升级后图标还是旧的」）──
+  ;
+  ; 分层证据（详见 CHANGELOG 5.18.73 的「Windows 图标」小节）：
+  ;   · 打包层已正确：`bundle.icon` 含 `icons/icon.ico`，NSIS 的 installerIcon /
+  ;     uninstallerIcon 也指向它；新图标提交 81eb7de0（11-07 10:12）是 v5.18.71
+  ;     （11-07 15:40）的祖先，包里带的就是新图标。
+  ;   · 安装层已正确：本钩子会把目标指向本应用 exe 的快捷方式删掉重建，IconLocation
+  ;     指回 `$INSTDIR\${MAINBINARYNAME}.exe`，不存在复用旧 LNK 的问题。
+  ;   · 剩下的就是缓存层：Explorer 的 `iconcache_*.db` 按"路径 + 写入时间"缓存 exe 图标，
+  ;     覆盖安装（同一个 exe 路径、同一条快捷方式）后经常仍然显示旧图，直到缓存被重建。
+  ;
+  ; `SHChangeNotify(SHCNE_ASSOCCHANGED, SHCNF_IDLIST, 0, 0)` 是 Windows 官方提供的
+  ; "让外壳重新读图标/关联"的通知，安装器收尾时发一次，等于替用户做了"重启 Explorer"。
+  ; 它不改任何文件、不依赖管理员权限；失败也不影响安装（System::Call 报错会被 ClearErrors 吃掉）。
+  ClearErrors
+  System::Call 'shell32::SHChangeNotify(i 0x08000000, i 0x0000, p 0, p 0)'
+  ClearErrors
 !macroend
 
 ; 安装器路标（覆盖安装/升级时写一行「目标版本 + 安装目录」）。
