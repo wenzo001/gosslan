@@ -2956,6 +2956,77 @@ export function checkBootSkeletonGeometry(s: BootSkeletonSources): GuardIssue[] 
   return out;
 }
 
+/** 桌面三栏的最窄宽度（= 断点；更窄走移动布局，没有桌面 caption 系统按钮）。 */
+const BOOT_NARROW_DESKTOP_W = 768;
+/** macOS 原生红绿灯占位：与 `TitleBar.vue` 的 `w-[78px]` 同一来源。 */
+const BOOT_MAC_TRAFFIC_W = 78;
+/** Windows 三大金刚键：3 × `w-11`(44px)。 */
+const BOOT_WIN_CAPTION_W = 132;
+/**
+ * 骨架 brand 文案的保守最大宽度。
+ * 12px 字号下「小院儿 · 正在启动…」≈ 108px、"Gosslan · Starting…" ≈ 104px；
+ * 留到 160 兜住字体回退（用户自选字体可能更宽）与后续文案变长。
+ */
+const BOOT_BRAND_MAX_W = 160;
+
+/**
+ * SK-03：首屏骨架的启动文案不许压在系统标题栏按钮下面。
+ *
+ * 2026-11-07 用户实测（macOS）：「小院儿 · 正在启动…」被红绿灯盖住。
+ * 根因不是字号也不是高度，而是 `.boot-cap` 把 brand **左对齐**：它落在 14px，
+ * 而 macOS 红绿灯占 0–78px、Windows 三大金刚键占右侧 132px —— 两侧系统区都会压到文案。
+ * 真实的 `TitleBar` 标题是**绝对居中**的，骨架也必须同构，所以修法是居中而不是让位。
+ *
+ * 判据不是"文件里出现过 justify-content"，而是按声明的对齐方式**算出** brand 盒
+ * （最窄桌面窗 768 × 保守最宽 160），再分别与 macOS / Windows 的系统按钮区求交。
+ * 反例自证：删掉 `justify-content: center` 后 brand 回到 14px，与红绿灯区相交 ⇒ 必红。
+ */
+export function checkBootCapBrandSafe(s: { skeletonCss: string; indexHtml: string }): GuardIssue[] {
+  const out: GuardIssue[] = [];
+  const cap = /\.boot-cap\s*\{([^}]*)\}/.exec(s.skeletonCss);
+  if (!cap) {
+    return [{ line: 0, message: "SK-03：找不到 `.boot-cap` 规则 —— 无法核对启动文案与系统按钮的避让。" }];
+  }
+  if (!/<div class="boot-cap">[\s\S]*?class="boot-brand"/.test(s.indexHtml)) {
+    out.push({ line: 0, message: "SK-03：`index.html` 的 `.boot-cap` 里找不到 `.boot-brand` —— 判据会扫空。" });
+  }
+
+  const body = cap[1];
+  const centered = /justify-content:\s*center/.test(body);
+  // 左内距：显式 `padding-left` 优先，否则从 `padding` 简写里取水平值，缺省 0。
+  const padLeftDecl = /padding-left:\s*(\d+)px/.exec(body);
+  const padShort = /(?:^|[^-])padding:\s*([^;]+);/.exec(body);
+  let padLeft = 0;
+  if (padLeftDecl) {
+    padLeft = Number(padLeftDecl[1]);
+  } else if (padShort) {
+    const parts = padShort[1].trim().split(/\s+/);
+    const horizontal = parts.length >= 2 ? parts[1] : parts[0];
+    padLeft = Number((/(\d+)px/.exec(horizontal) ?? [])[1] ?? 0);
+  }
+
+  const brandLeft = centered ? (BOOT_NARROW_DESKTOP_W - BOOT_BRAND_MAX_W) / 2 : padLeft;
+  const brandRight = brandLeft + BOOT_BRAND_MAX_W;
+
+  if (brandLeft < BOOT_MAC_TRAFFIC_W) {
+    out.push({
+      line: 0,
+      message:
+        `SK-03：骨架启动文案左缘 ${brandLeft}px 侵入 macOS 红绿灯区（0–${BOOT_MAC_TRAFFIC_W}px）。` +
+        "`.boot-cap` 必须 `justify-content: center`（真实标题栏的标题是绝对居中的）。",
+    });
+  }
+  if (brandRight > BOOT_NARROW_DESKTOP_W - BOOT_WIN_CAPTION_W) {
+    out.push({
+      line: 0,
+      message:
+        `SK-03：骨架启动文案右缘 ${brandRight}px 侵入 Windows 三大金刚键区` +
+        `（${BOOT_NARROW_DESKTOP_W - BOOT_WIN_CAPTION_W}–${BOOT_NARROW_DESKTOP_W}px）。`,
+    });
+  }
+  return out;
+}
+
 // ---------------- CS：聊天输入区表面（与消息区同一整块画布） ----------------
 
 /**
