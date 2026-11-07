@@ -814,8 +814,8 @@ CASES: list[Case] = [
         "     全站六处容器里搜索面板那两处漏了）。注入 = 把 sender 菜单的 frost 摘掉；"
         "     2026-10-18 迁 Reka 后菜单内容改由 DropdownMenuContent 承载，锚点跟着新形状走。",
         file=ROOT / "src" / "components" / "search" / "ChatSearchDialog.vue",
-        injections=[('class="frost gosslan-menu z-[80] max-h-64 overflow-y-auto"',
-                     'class="gosslan-menu z-[80] max-h-64 overflow-y-auto"')],
+        injections=[('class="frost gosslan-menu z-[80]"\n          >\n            <DropdownMenuItem class="gosslan-menu-item" @select="chooseSender(null)">',
+                     'class="gosslan-menu z-[80]"\n          >\n            <DropdownMenuItem class="gosslan-menu-item" @select="chooseSender(null)">')],
         cmd=node_test("src/utils/designGuards.test.ts"),
         cwd=ROOT,
         expect_fail_hint="发现透明得能看见底下一层的自绘菜单",
