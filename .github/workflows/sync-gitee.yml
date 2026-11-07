@@ -63,7 +63,9 @@ concurrency:
 jobs:
   sync:
     runs-on: ubuntu-latest
-    timeout-minutes: 60
+    # 上传 14 个文件约 72MB；Gitee 对海外 runner 的吞吐不稳定，单个文件最长给 30 分钟
+    #（curl --max-time），整条 job 留足余量。
+    timeout-minutes: 90
     env:
       TAG: ${{ inputs.tag || github.event.release.tag_name }}
       GITEE_REPO: fwdq/gosslan-releases
