@@ -445,6 +445,11 @@
   --gosslan-scroll-track: 8px;
   --gosslan-scroll-gap: var(--gosslan-gutter);
   --gosslan-scroll-inset: calc(var(--gosslan-scroll-track) + var(--gosslan-scroll-gap));
+  /* 弹窗「标题/固定头部 → 内容」的纵向间距只此一档（2026-11-07 用户：
+     「弹窗 header 与内容间距定档」）。标题、header 插槽、footer 三处必须同值 ——
+     此前标题/页脚 16px、header 插槽 12px，同一张弹窗里出现两种节奏。
+     守卫：designGuards `MD-01`。 */
+  --gosslan-modal-gap: 1rem;
   /* thumb 三态浓度（`color-mix` 的百分比；对比度读数见下面"滚动条规范"）： */
   --gosslan-scrollbar-thumb: 72%;
   --gosslan-scrollbar-thumb-active: 88%;
@@ -1071,18 +1076,14 @@ select,
   user-select: text;
 }
 
-/* ── 触屏：**正文**可原生选字；其余消息内容不可选，长按归自定义消息面板 ──
+/* ── 触屏：正文默认不选字，长按先弹面板；「选择文字」模式下才开放原生选字 ──
  *
- * 用户 2026-10-23：「移动端必须保留系统原生的选中文字与复制菜单」——长按正文要能进
- * 系统选区（手柄 + 系统复制菜单），不能再用"整块气泡不可选、只有菜单里的二级入口"那套
- * （那是 2026-09-13 ~ 2026-10-23 的旧模型，已被本段取代）。
- *
- * 边界与右键一致：`[data-msg-col]` 是消息内容列。
- *   · 正文层 `.gosslan-selectable` ⇒ user-select:text（唯一可原生选字的区域）；
- *   · 昵称 / 引用块 / 卡片文字 / 气泡内边距 ⇒ none（长按这些非正文区才开 Gosslan 面板）。
- * 两边同时放开会"长按一次进来两个菜单"（系统选区菜单 + 自定义面板），所以必须成对收放。
- *
- * 桌面（鼠标）没有长按冲突 ⇒ 保持默认可拖选（见上面 `.gosslan-selectable`）。
+ * 2026-11-07 用户安卓实测：「长按文字失效（图片长按仍在）」——上一版让正文层默认可选，
+ * 长按正文直接被 WebView 接管去做系统选字，自定义面板永远不弹；图片不可选 ⇒ 面板照弹，
+ * 于是只剩"文字长按没反应"。现在恢复聊天软件通行口径：
+ *   · 长按正文 / 图片 / 气泡内边距 ⇒ 同一个自定义面板；
+ *   · 面板里的「选择文字」进入 `.gosslan-selecting` ⇒ 整列重新开放原生选字与复制工具条。
+ * 桌面（鼠标）不受影响：保持默认可拖选（见上面 `.gosslan-selectable`）。
  * ⚠️ 只写 `pointer: coarse`，不要再加 `position` 之类会与工具类打架的声明
  *   （见 style.css 末尾的级联护栏）。 */
 @media (pointer: coarse) {
@@ -1090,15 +1091,17 @@ select,
     -webkit-user-select: none;
     user-select: none;
   }
+  /* 正文层与气泡根都压住：气泡根的 `select-text` 工具类只为桌面拖选而留。
+     若这里重新放开正文，长按会同时拉起系统选区与自定义面板（两个菜单打架）。 */
+  [data-msg-col] .gosslan-bubble-text,
   [data-msg-col] .gosslan-selectable {
-    -webkit-user-select: text;
-    user-select: text;
-    -webkit-touch-callout: default;
+    -webkit-user-select: none;
+    user-select: none;
+    -webkit-touch-callout: none;
   }
-  /* 「选择文字」模式：从非正文区长按打开面板后的「全选」快捷入口；
-     选中范围含引用块/正文，因此整列重新开放（正文本来就已开放）。 */
+  /* 「选择文字」模式：从长按面板进入后，整列（引用块 + 正文 + 代码）重新开放原生选字。 */
   [data-msg-col] .gosslan-selecting,
-  [data-msg-col] .gosslan-selecting .gosslan-selectable {
+  [data-msg-col] .gosslan-selecting * {
     -webkit-user-select: text;
     user-select: text;
     -webkit-touch-callout: default;

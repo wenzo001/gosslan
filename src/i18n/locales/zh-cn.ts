@@ -746,7 +746,7 @@ export const zhCN: MessageDict = {
   "errors.rule.fileSelfChat": "和自己聊天暂不支持发送图片或文件，请改用文字。",
   "errors.rule.localWriteFailed": "本机没能写入这条消息（可能是磁盘已满或被占用），清理后重试一次",
   "errors.rule.readStateWrite": "已读状态没写进本机数据库，红点已恢复到与库里一致",
-  "errors.rule.kindUnsupported": "对方这个版本的 Gosslan 还不认识这种内容，已先存在本机待发队列；等对方升级客户端后在任务中心点「重新发送」",
+  "errors.rule.kindUnsupported": "对方这个版本的 Gosslan 还不认识这种内容，已先存在本机待发队列；等对方升级客户端后在传输队列点「重新发送」",
   "errors.rule.peerKeyMissing": "还没拿到对方的加密公钥（这条关系从没握过手），等对方上线一次再发",
   "errors.rule.auxWindow": "辅助窗口没能打开 · 须重启生效",
   "errors.rule.auxWindowRestart": "立即重启",
@@ -928,18 +928,18 @@ export const zhCN: MessageDict = {
   "msg.resend": "重新发送",
   // 原地重投被拒（已送达 / 状态已变）或入队失败。不许静默 —— 用户按了按钮就得有回音。
   "msg.resendFail": "这条消息现在无法重发",
-  "msg.resendConfirm": "重新发送这条消息？对方会再收到一次，任务中心可以看到进度并取消。",
+  "msg.resendConfirm": "重新发送这条消息？对方会再收到一次，传输队列可以看到进度并取消。",
   "msg.sendFailed": "发送失败",
   // 有 `messages.fail_code`（DB v14→v15）时把原因接在后面。只说"发送失败"用户无从下手：
   // 这四格各自对应一件不同的事（等对方上线 / 重发 / 加回好友 / 别再发给那个人）。
   "msg.sendFailedWith": "发送失败：{reason}",
   // Block 3：失败要拆两类并给出下一步。这一格是「对方在线，但当时没有可用的直连或中转」。
   "msg.fail.retryExpired":
-    "这条消息没能送达：对方在线，但当时没有可用的直连或中转。下一步：让对方和中间节点保持在线（或在对方网络设置里加入同一中继），然后在任务中心点「重新发送」。",
+    "这条消息没能送达：对方在线，但当时没有可用的直连或中转。下一步：让对方和中间节点保持在线（或在对方网络设置里加入同一中继），然后在传输队列点「重新发送」。",
   // Block 3 另一格：对方全程离线（熬满 7 天保留窗口），下一步是等对方上线再重发。
   "msg.fail.peerOfflineExpired":
-    "这条消息没能送达：对方一直离线（已保留 7 天）。下一步：等对方上线、打开应用后，在任务中心点「重新发送」。",
-  "msg.fail.kindUnsupported": "对方这个版本的 Gosslan 不支持这种内容，再等也不会送达；对方升级后可在任务中心点「重新发送」",
+    "这条消息没能送达：对方一直离线（已保留 7 天）。下一步：等对方上线、打开应用后，在传输队列点「重新发送」。",
+  "msg.fail.kindUnsupported": "对方这个版本的 Gosslan 不支持这种内容，再等也不会送达；对方升级后可在传输队列点「重新发送」",
   "msg.fail.peerKeyMissing": "还没拿到对方的加密公钥，这条发不出去；等对方上线一次再点「重新发送」",
   "msg.fail.orphanAtStart": "本机重启时这条还卡在发送中，且已没有待发队列，按未送达处理",
   "msg.fail.peerDeleted": "对方已不在好友列表，这条没有送达",
@@ -1028,7 +1028,7 @@ export const zhCN: MessageDict = {
   "msg.cancelSend.requested": "已请求取消发送",
   "msg.cancelSend.alreadyDone": "这一单已经传完，无法取消",
   "msg.cancelSend.fail": "取消发送失败",
-  // 取消**消息**（不是文件）的七种结论。两个调用方（任务中心、气泡菜单）共用这一组，
+  // 取消**消息**（不是文件）的七种结论。两个调用方（传输队列、气泡菜单）共用这一组，
   // 文案只存在于这里 —— 群消息的部分送达让"取消成功/已送达"两句二元判断不够用了。
   "msg.cancelSend.delivered": "这条消息已经送达，不能取消",
   "msg.cancelSend.partial": "已取消剩余 {remaining} 人的发送（{delivered} 人已收到，可在气泡上补发）",
@@ -1638,6 +1638,10 @@ export const zhCN: MessageDict = {
 
   // ---- 网络诊断（开发者） ----
   "diag.title": "网络诊断（开发者）",
+  "diag.bgTitle": "背景动效读数",
+  "diag.bgNote": "Windows / macOS 观感不同时，把这一段整段复制给开发者：它同时记录系统媒体查询、当前档位与模糊能力。",
+  "diag.bgCopy": "复制诊断信息",
+  "diag.bgCopied": "已复制",
   "diag.refreshing": "刷新中...",
   "diag.refresh": "刷新数据",
   "diag.mode": "模式：",
@@ -1737,16 +1741,16 @@ export const zhCN: MessageDict = {
   "send.stalled": "网络停滞，等待恢复…",
   "send.noProgress": "传输已停止：{secs} 秒没有任何进展，可以取消后重发",
   "send.queued": "排队中…",
-  // ---- 统一后台任务中心（负责人 2026-10-23：能看见、能取消、看得懂卡在哪个节点）----
+  // ---- 统一后台传输队列（负责人 2026-10-23：能看见、能取消、看得懂卡在哪个节点）----
   // 行内那句「发送中 62%」复用 send.sendingPct / send.receivingPct / send.queued：
   // 面板与气泡对同一件事说同一句话，用户不必学第二套措辞。
   // 原来那八条 `transfer.pill/open/title/empty/note/cancel/cancelDone/cancelFail`
   // 随 `TransferCenter.vue` 一起删掉了（死文案护栏会现算引用面，别留着）。
-  "task.open": "查看后台任务（{n} 个）",
-  "task.title": "后台任务",
-  "task.center": "任务中心",
+  "task.open": "查看传输队列（{n} 个）",
+  "task.title": "传输队列",
+  "task.center": "传输队列",
   "task.empty": "没有进行中的任务",
-  "task.note": "这里列出还没完成的后台任务；关掉面板不会中断它们，完成后会自动消失",
+  "task.note": "这里列出还没完成的任务；关掉面板不会中断它们，完成后会自动消失",
   "task.to": "给 {name}",
   "task.from": "来自 {name}",
   "task.attempts": "已重试 {n} 次",
@@ -1758,7 +1762,7 @@ export const zhCN: MessageDict = {
   "task.contentCancelDone": "这一单已经结束，无需取消",
   "task.retryNow": "立即重试",
   "task.resendMessage": "重新发送",
-  // 静默动作没有正文可显示：任务中心按业务 kind 说类型（抖动优先于强提醒）。
+  // 静默动作没有正文可显示：传输队列按业务 kind 说类型（抖动优先于强提醒）。
   "task.messageKind.reaction": "表情回应",
   "task.messageKind.recall": "撤回",
   "task.messageKind.remind": "强提醒",
@@ -1796,7 +1800,7 @@ export const zhCN: MessageDict = {
   "transfer.blocked.retryExhausted": "重试次数已用尽，可直接取消",
   "transfer.blocked.waitingRetry": "等待下次重试",
   "transfer.blocked.peerOffline": "对方离线，上线后会自动重试",
-  // 下面三条是任务中心独有的格子：等对方回执 / 在本机补发队列里 / 群里没人再有这份内容。
+  // 下面三条是传输队列独有的格子：等对方回执 / 在本机补发队列里 / 群里没人再有这份内容。
   "transfer.blocked.waitingAck": "已经发到对方那儿，等对方确认",
   "transfer.blocked.queuedByBackend": "在本机队列里排着，会自己继续",
   "transfer.blocked.noSource": "暂时找不到有这份数据的设备",

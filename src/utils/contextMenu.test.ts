@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { shouldPreventContextMenu } from "./contextMenu.ts";
 import { tsFnBody } from "./tsSource.ts";
 
-test("shouldPreventContextMenu：桌面一律拦；触屏正文/选字/有选区让位系统", () => {
+test("shouldPreventContextMenu：桌面一律拦；触屏选字模式/已有选区让位系统（正文长按归面板）", () => {
   const cases = [
     // 用户 2026-10-23：桌面只要之前选过任何文字，右键气泡就会弹 WebKit 原生菜单 ⇒ 桌面一律拦。
     { isMobile: false, textSelecting: false, hasSelection: true, onSelectableText: false, expected: true },
@@ -50,10 +50,12 @@ test("MessageItem 右键边界 = 消息内容列；桌面带选区快照，触�
     "没有排除表情回应条（已并入气泡、落在消息列内）⇒ 右键胶囊会弹消息菜单");
   assert.doesNotMatch(item, /@contextmenu\.prevent=/, "不许再有无条件 prevent");
   assert.match(item, /shouldPreventContextMenu\(/, "必须调用共享判据");
-  assert.match(item, /onSelectableText/, "必须把「落点是否可选正文」传给闸门");
-  // 触屏放行时要 stopPropagation：App.vue 的全局兜底在"选区还没建立"那帧会再 prevent 一次。
+  // 2026-11-07 口径回退：触屏正文长按归自定义面板 ⇒ 落点判断必须显式传 false
+  // （决策见 docs/notes/ui-pulse-redesign/decision-longpress-2026-11-07.md）。
+  assert.match(item, /onSelectableText:\s*false/, "触屏 contextmenu 不再按落点放行（必须显式传 false）");
+  // 触屏放行（选择模式 / 已有选区）时要 stopPropagation：App.vue 的全局兜底在那帧会再 prevent 一次。
   assert.match(item, /if \(mobile\) e\.stopPropagation\(\);/,
-    "触屏正文放行 path 没有 stopPropagation（会被 App 全局兜底吃掉）");
+    "触屏放行 path 没有 stopPropagation（会被 App 全局兜底吃掉）");
   // 闸门说拦 ⇒ 先 preventDefault 再开自定义菜单；移动端只拦不弹（面板归长按）。
   assert.match(item, /e\.preventDefault\(\);[\s\S]{0,220}?openContextMenu\(e,/,
     "onContextMenu 没有「先 preventDefault 再开菜单」");

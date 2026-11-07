@@ -410,7 +410,7 @@ function showSender(group: ChatSearchGroup): boolean {
     width="max-w-3xl"
     @close="emit('close')"
   >
-    <div class="flex min-h-0 flex-1 flex-col">
+    <div class="flex min-h-0 flex-1 flex-col" :class="app.isMobile ? 'px-[var(--gosslan-scroll-inset)]' : ''">
     <!-- 搜索框 + 筛选 -->
     <div class="flex shrink-0 items-center gap-2">
       <div

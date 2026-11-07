@@ -86,6 +86,13 @@ const props = defineProps<{
   /** 整页壳里撑满剩余高度，滚动只留给下面的任务列表。 */
   fill?: boolean;
   /**
+   * 整页形态（移动端 `BaseModal fullscreen`）：内容壳**不带**横向内距，
+   * 看板头部/筛选行要自己补 `--gosslan-scroll-inset`，才能与下方滚动列表的内容缩进
+   * 落在同一条竖线上（用户 2026-11-07：「0-1 已完成 左内距缺失 + 标题/按钮/列表左右不对齐」）。
+   * 卡片弹窗/独立窗口/成员页的父级已经有这层内距 ⇒ 不传。
+   */
+  pageInset?: boolean;
+  /**
    * 打开看板时要**直达详情**的那条任务（用户 #23：点时间线上的任务卡片，不是只把看板翻开）。
    * 独立窗口形态没有这个入参（跨文档传参要新造通道，见 `ChatWindow.openTasks` 的注释），
    * 所以只在应用内弹窗/移动端生效。
@@ -1281,7 +1288,10 @@ watch(
 <template>
   <div ref="boardRoot" class="flex flex-col" :class="standalone || fill ? 'h-full min-h-0' : ''">
     <!-- 头部：统计 + 新建 -->
-    <div class="flex items-center justify-between gap-2 pb-2">
+    <div
+      class="flex items-center justify-between gap-2 pb-2"
+      :class="pageInset ? 'px-[var(--gosslan-scroll-inset)]' : ''"
+    >
       <div class="min-w-0 flex-1 truncate text-xs text-[var(--gosslan-text-2)]" :title="t('todo.title')">
         <template v-if="todos.length">{{ t("todo.doneCount", { n: doneCount, total: todos.length }) }}</template>
         <template v-else>{{ t("todo.title") }}</template>
@@ -1297,7 +1307,11 @@ watch(
     </div>
 
     <!-- 筛选：独立胶囊 chips（与收藏过滤 / 日志时间窗口同款） -->
-    <div v-if="todos.length" class="flex shrink-0 flex-wrap items-center gap-1">
+    <div
+      v-if="todos.length"
+      class="flex shrink-0 flex-wrap items-center gap-1"
+      :class="pageInset ? 'px-[var(--gosslan-scroll-inset)]' : ''"
+    >
       <button
         v-for="f in FILTERS"
         :key="f.key"

@@ -171,7 +171,7 @@ function onOpenChange(value: boolean) {
             class="flex h-full w-full flex-col bg-[var(--gosslan-app-bg)] text-left text-[var(--gosslan-text)]"
           >
             <header
-              class="flex shrink-0 items-center gap-2 border-b border-[var(--gosslan-divider)] bg-[var(--gosslan-panel)] px-3"
+              class="flex shrink-0 items-center gap-2 border-b border-[var(--gosslan-divider)] bg-[var(--gosslan-panel)] px-[var(--gosslan-scroll-inset)]"
               :style="{ height: 'var(--gosslan-header-h)' }"
             >
               <button
@@ -209,7 +209,7 @@ function onOpenChange(value: boolean) {
                  "标题被从上面切掉一截"。现在：标题栏 `shrink-0`、内容区 `min-h-0 flex-1`
                  （唯一可压缩项）、滚动区自己消化溢出 ⇒ 窗口再矮，标题与 ✕ 也完整可见且可点。 -->
             <DialogTitle v-if="!title" class="sr-only">{{ t("common.dialog") }}</DialogTitle>
-            <div v-if="title" class="mb-4 flex shrink-0 items-start justify-between gap-3 px-[var(--gosslan-scroll-inset)]">
+            <div v-if="title" class="mb-[var(--gosslan-modal-gap)] flex shrink-0 items-start justify-between gap-3 px-[var(--gosslan-scroll-inset)]">
               <!-- 标题最多两行，超长（尤其是一长串没有空格的字符）强制断词 + 省略：
                    用户 2026-10-25 实测群任务标题把弹窗撑出屏幕边缘。`break-words`
                    让 `overflow-wrap: break-word` 对无空格长串也生效；全码在 hover 的
@@ -232,7 +232,7 @@ function onOpenChange(value: boolean) {
             </div>
             <!-- 固定头部（可选插槽）：**不参与下面滚动区的滚动**。给「预览/摘要固定、
                  只滚选项列表」这类弹窗用（默认没有这个插槽 ⇒ 29 个既有调用方零变化）。 -->
-            <div v-if="$slots.header" class="mb-3 shrink-0 px-[var(--gosslan-scroll-inset)]">
+            <div v-if="$slots.header" class="mb-[var(--gosslan-modal-gap)] shrink-0 px-[var(--gosslan-scroll-inset)]">
               <slot name="header" />
             </div>
             <!-- 只有内容区滚：标题栏（含 ✕）始终钉在顶部，长内容从头部开始全部可达。
@@ -253,7 +253,7 @@ function onOpenChange(value: boolean) {
                  `mt-4` 与标题栏的 `mb-4` 对称；`shrink-0` 保证它不被上面的滚动区挤压。 -->
             <div
               v-if="$slots.footer"
-              class="mt-4 shrink-0 px-[var(--gosslan-scroll-inset)]"
+              class="mt-[var(--gosslan-modal-gap)] shrink-0 px-[var(--gosslan-scroll-inset)]"
             >
               <slot name="footer" />
             </div>

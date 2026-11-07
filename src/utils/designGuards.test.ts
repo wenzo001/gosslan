@@ -3335,8 +3335,9 @@ test("㊱ 真实树：全 src 的 .vue 里没有一处「可见浮层裸 inset-0
 test("㊲ BaseModal：标题栏不塌、页脚不滚走（用户实测两条）", () => {
   const src = readFileSync(join(import.meta.dirname, "..", "components", "BaseModal.vue"), "utf8");
 
-  // ① 标题栏必须 shrink-0（它现在是 `mb-4 flex shrink-0 items-start justify-between gap-3`）
-  const titleCls = /class="([^"]*\bmb-4\b[^"]*)"/.exec(src)?.[1] ?? "";
+  // ① 标题栏必须 shrink-0（它现在是 `mb-[var(--gosslan-modal-gap)] flex shrink-0 items-start …`；
+  //    2026-11-07 起纵向间距统一走 `--gosslan-modal-gap`，不再写死 mb-4 / mb-3 两档）
+  const titleCls = /class="([^"]*\bmb-\[var\(--gosslan-modal-gap\)\][^"]*)"/.exec(src)?.[1] ?? "";
   assert.ok(titleCls.includes("shrink-0"),
     `标题栏 class 必须含 shrink-0 —— 否则 max-h 夹住卡片时 flex 会把它压扁，`
     + `表现为「窗口一缩小头部就被缩上去一些」。当前：${titleCls}`);
@@ -3369,12 +3370,12 @@ test("㊲ BaseModal：标题栏不塌、页脚不滚走（用户实测两条）"
   assert.ok(footerIdx > scrollIdx,
     `#footer 必须在滚动区之后 —— 顺序即 DOM 顺序，写前面就又被内容区顶出去了\n`
     + `  scrollIdx=${scrollIdx} footerIdx=${footerIdx}`);
-  // footer 外壳那层也要 shrink-0 + mt-4（与标题栏 mb-4 对称）
+  // footer 外壳那层也要 shrink-0 + 与标题栏同一个间距 token（2026-11-07：定一档，不再 mt-4/mb-3 混用）
   const footerWrap = /v-if="\$slots\.footer"[\s\S]{0,400}?class="([^"]*)"/.exec(src)?.[1] ?? "";
   assert.ok(footerWrap.includes("shrink-0"),
     `footer 外壳必须 shrink-0（否则滚动区会把按钮区挤没）。当前：${footerWrap}`);
-  assert.ok(footerWrap.includes("mt-4"),
-    `footer 外壳必须与标题栏的 mb-4 对称（间距一致）。当前：${footerWrap}`);
+  assert.ok(footerWrap.includes("mt-[var(--gosslan-modal-gap)]"),
+    `footer 外壳必须与标题栏用同一个 --gosslan-modal-gap（间距定一档）。当前：${footerWrap}`);
   // 页脚绝不能自己变成滚动容器（否则它又跟着内容滚了）
   assert.ok(!footerWrap.includes("overflow-"),
     `footer 外壳不许带滚动（它就得钉在卡片底部）。当前：${footerWrap}`);
@@ -5756,23 +5757,28 @@ test("图片预览切换键：定位 translate 不许挂在按钮上，也不许
  * 昵称/引用块/卡片/内边距都不可选 ⇒ 长按这些区域才归自定义消息面板。
  * 如果退回"整个气泡不可选"的老写法，长按正文就再也进不了系统选区 —— 这正是用户报的那条。
  */
-test("触屏选字契约：消息内容列里只有正文可原生选字（不再整块关掉）", () => {
+test("触屏选字契约：正文默认不选字、长按先弹面板；「选择文字」才开放原生选字", () => {
   const css = readFileSync(join(import.meta.dirname, "..", "style.css"), "utf8");
-  const anchor = css.indexOf("触屏：**正文**可原生选字");
+  const anchor = css.indexOf("触屏：正文默认不选字");
   assert.ok(anchor > 0, "找不到触屏选字契约那段注释（style.css 结构变了？）");
-  const block = css.slice(anchor, anchor + 1400);
+  const block = css.slice(anchor, anchor + 1600);
   assert.match(block, /@media \(pointer: coarse\)/, "契约没有落在 pointer: coarse 里");
   assert.match(block, /\[data-msg-col\]\s*\{[\s\S]{0,140}?user-select:\s*none/,
-    "消息内容列（非正文）没有关闭原生选字 ⇒ 长按昵称/卡片会同时拉系统选区与自定义面板");
+    "消息内容列没有关闭原生选字 ⇒ 长按昵称/卡片会同时拉系统选区与自定义面板");
+  // 2026-11-07 口径：正文层与气泡根都必须压住（否则长按文字被 WebView 接管，面板不弹）。
   assert.match(block,
-    /\[data-msg-col\] \.gosslan-selectable\s*\{[\s\S]{0,180}?user-select:\s*text[\s\S]{0,100}?-webkit-touch-callout:\s*default/,
-    "正文没有显式开放 user-select:text + touch-callout:default ⇒ 移动端长按进不了系统选字/复制工具条");
-  assert.doesNotMatch(block, /\.gosslan-bubble-text \.gosslan-selectable[\s\S]{0,60}?user-select:\s*none/,
-    "又回到「整块气泡不可选」的老契约 ⇒ 长按正文弹不出系统选字");
-  // 正控：旧写法必须被上面的缺席判据认出来
-  const legacy = "@media (pointer: coarse) { .gosslan-bubble-text .gosslan-selectable { user-select: none; } }";
-  assert.match(legacy, /\.gosslan-bubble-text \.gosslan-selectable[\s\S]{0,60}?user-select:\s*none/,
-    "正控失效：旧契约的签名没认出来");
+    /\[data-msg-col\] \.gosslan-bubble-text,\s*\[data-msg-col\] \.gosslan-selectable\s*\{[\s\S]{0,160}?user-select:\s*none/,
+    "正文层没有重新压住 user-select:none ⇒ 安卓长按文字又只剩系统选字、自定义面板不弹");
+  assert.match(block,
+    /\.gosslan-selecting[\s\S]{0,200}?user-select:\s*text[\s\S]{0,120}?-webkit-touch-callout:\s*default/,
+    "「选择文字」模式没有开放 user-select:text + touch-callout:default ⇒ 面板进入后仍然选不了字");
+  // 反例自证：把「正文默认开放」的旧写法喂给匹配器必须被咬住 —— 否则上面的判据可能在测 air。
+  const legacy = "[data-msg-col] .gosslan-selectable { user-select: text; -webkit-touch-callout: default; }";
+  assert.match(legacy, /user-select:\s*text[\s\S]{0,120}?-webkit-touch-callout:\s*default/,
+    "反例自证失效：旧契约的签名没认出来");
+  assert.doesNotMatch(block,
+    /\[data-msg-col\] \.gosslan-selectable\s*\{[^}]*?user-select:\s*text/,
+    "正文层又回到默认可原生选字 ⇒ 长按文字不再弹面板（用户报的那条）");
 });
 
 test("收藏列表是普通一级 tab，底栏显示条件不再为收藏开特例", () => {
@@ -8796,3 +8802,134 @@ test("ED-04 反例自证：graphemes 退回自己数 code unit（无 Segmenter�
   assert.match(msgs, /granularity/, msgs);
 });
 
+
+// ---------------- PG：弹窗 / 整页几何基线（用户 2026-11-07 实测） ----------------
+
+const PG_SRC = join(import.meta.dirname, "..");
+
+/** 弹窗标题、header 插槽、页脚的横向基线与纵向间距：三处必须同一档。 */
+function modalGapProblems(modal: string, css: string): string[] {
+  const bad: string[] = [];
+  if (!/--gosslan-modal-gap:\s*1rem;/.test(css)) {
+    bad.push("`--gosslan-modal-gap` 必须定义成 1rem（16px）");
+  }
+  const needs = [
+    ["mb-[var(--gosslan-modal-gap)] flex shrink-0 items-start", "标题"],
+    ["mb-[var(--gosslan-modal-gap)] shrink-0 px-[var(--gosslan-scroll-inset)]", "header 插槽"],
+    ["mt-[var(--gosslan-modal-gap)] shrink-0 px-[var(--gosslan-scroll-inset)]", "footer"],
+    [
+      "border-b border-[var(--gosslan-divider)] bg-[var(--gosslan-panel)] px-[var(--gosslan-scroll-inset)]",
+      "fullscreen 头部",
+    ],
+  ];
+  for (const [snippet, name] of needs) {
+    if (!modal.includes(snippet)) {
+      bad.push(`弹窗${name}没有落在 --gosslan-modal-gap / --gosslan-scroll-inset 上`);
+    }
+  }
+  return bad;
+}
+
+test("PG-01 弹窗 header 与内容左右同基线、纵向间距定一档（不是 12/16 两种）", () => {
+  const css = readFileSync(join(PG_SRC, "style.css"), "utf8");
+  const modal = readFileSync(join(PG_SRC, "components", "BaseModal.vue"), "utf8");
+  assert.deepEqual(modalGapProblems(modal, css), []);
+});
+
+test("PG-01 反例自证：header 插槽退回 mb-3 / 去掉横向 token 必须红", () => {
+  const css = readFileSync(join(PG_SRC, "style.css"), "utf8");
+  const modal = readFileSync(join(PG_SRC, "components", "BaseModal.vue"), "utf8");
+  const broken = modal.replace(
+    "mb-[var(--gosslan-modal-gap)] shrink-0 px-[var(--gosslan-scroll-inset)]",
+    "mb-3 shrink-0 px-3",
+  );
+  assert.notEqual(broken, modal, "fixture 没替换成功 ⇒ 这条在测空气");
+  assert.match(modalGapProblems(broken, css).join("\n"), /header 插槽/, "旧写法必须被抓到");
+});
+
+/** 移动端整页的内容基线：页头、看板头部/筛选、列表内容都必须在 `--gosslan-scroll-inset` 上。 */
+function pageInsetProblems(board: string, panel: string, modal: string): string[] {
+  const bad: string[] = [];
+  const row = /:class="pageInset \? 'px-\[var\(--gosslan-scroll-inset\)\]' : ''"/g;
+  if ((board.match(row) ?? []).length < 2) {
+    bad.push("看板头部/筛选行没有补 pageInset 横向内距 ⇒ 「0/1 已完成」贴边、与列表错位");
+  }
+  if (!panel.includes(':page-inset="fullscreen"')) {
+    bad.push("GroupTasksPanel 没把 fullscreen 传给看板的 pageInset");
+  }
+  if (!modal.includes("bg-[var(--gosslan-panel)] px-[var(--gosslan-scroll-inset)]")) {
+    bad.push("fullscreen 页头不再是 16px 基线 ⇒ 标题与内容错位");
+  }
+  return bad;
+}
+
+test("PG-02 移动整页：页头 / 标题 / 按钮 / 列表落在同一条 16px 竖线", () => {
+  const board = readFileSync(join(PG_SRC, "components", "GroupTasksBoard.vue"), "utf8");
+  const panel = readFileSync(join(PG_SRC, "components", "GroupTasksPanel.vue"), "utf8");
+  const modal = readFileSync(join(PG_SRC, "components", "BaseModal.vue"), "utf8");
+  assert.deepEqual(pageInsetProblems(board, panel, modal), []);
+});
+
+test("PG-02 反例自证：抽掉看板的 pageInset 内距必须红", () => {
+  const board = readFileSync(join(PG_SRC, "components", "GroupTasksBoard.vue"), "utf8");
+  const panel = readFileSync(join(PG_SRC, "components", "GroupTasksPanel.vue"), "utf8");
+  const modal = readFileSync(join(PG_SRC, "components", "BaseModal.vue"), "utf8");
+  const broken = board.replace(
+    ":class=\"pageInset ? 'px-[var(--gosslan-scroll-inset)]' : ''\"",
+    "",
+  );
+  assert.notEqual(broken, board, "fixture 没替换成功 ⇒ 这条在测空气");
+  assert.match(pageInsetProblems(broken, panel, modal).join("\n"), /0\/1 已完成/, "必须指出贴边问题");
+});
+
+/** 网络诊断只许 BaseModal 那一层滚动；同时它要能产出可复制的背景动效读数。 */
+function diagPanelProblems(src: string): string[] {
+  const bad: string[] = [];
+  if (/max-h-\[75vh\]/.test(src)) bad.push("内容区又自带 max-h-[75vh] ⇒ 双层滚动条回来了");
+  if (/scrollbar-both[^"]*overflow-y-auto/.test(src)) bad.push("内容区又套了一层 overflow-y-auto");
+  if (!/const bgProbe = ref/.test(src)) bad.push("背景动效读数区块不见了");
+  if (!/navigator\.clipboard\.writeText/.test(src)) bad.push("诊断信息必须能一键复制");
+  return bad;
+}
+
+test("PG-03 网络诊断：单层滚动 + 可复制的背景动效读数", () => {
+  const src = readFileSync(join(PG_SRC, "components", "DevDiagPanel.vue"), "utf8");
+  assert.deepEqual(diagPanelProblems(src), []);
+});
+
+test("PG-03 反例自证：把内层 max-h/overflow 写回去必须红", () => {
+  const fixture = '<div class="scrollbar-both max-h-[75vh] space-y-5 overflow-y-auto text-xs">';
+  assert.match(diagPanelProblems(fixture).join("\n"), /双层滚动条/, "旧写法必须被抓到");
+});
+
+test("PG-04 Windows 的 icon.ico 必须走圆角源图（Windows 11 不会替你加圆角）", () => {
+  const script = readFileSync(join(PG_SRC, "..", "scripts", "build-app-icons.mjs"), "utf8");
+  assert.match(
+    script,
+    /runIcon\(join\(brand, "app-icon-macos\.svg"\), macDir\);[\s\S]*?cpSync\(join\(macDir, "icon\.ico"\), join\(outDir, "icon\.ico"\)\);/,
+    "圆角源图那一趟没有复制 icon.ico ⇒ Windows 任务栏又是方块",
+  );
+});
+
+test("PG-04 反例自证：删掉 icon.ico 的复制必须红", () => {
+  const script = readFileSync(join(PG_SRC, "..", "scripts", "build-app-icons.mjs"), "utf8");
+  const broken = script.replace('cpSync(join(macDir, "icon.ico"), join(outDir, "icon.ico"));', "");
+  assert.notEqual(broken, script, "fixture 没替换成功 ⇒ 这条在测空气");
+  const re =
+    /runIcon\(join\(brand, "app-icon-macos\.svg"\), macDir\);[\s\S]*?cpSync\(join\(macDir, "icon\.ico"\), join\(outDir, "icon\.ico"\)\);/;
+  assert.equal(re.test(broken), false, "删掉 icon.ico 复制后判据仍为绿 ⇒ 判据空转");
+});
+
+test("PG-05 「传输队列」改名与图标：中英文与入口一起换，旧名不许回流", () => {
+  const zh = readFileSync(join(PG_SRC, "i18n", "locales", "zh-cn.ts"), "utf8");
+  const en = readFileSync(join(PG_SRC, "i18n", "locales", "en-us.ts"), "utf8");
+  const list = readFileSync(join(PG_SRC, "components", "ConversationList.vue"), "utf8");
+  assert.match(zh, /"task\.center": "传输队列"/);
+  assert.match(zh, /"task\.title": "传输队列"/);
+  assert.doesNotMatch(zh, /任务中心/, "旧名「任务中心」还在文案里");
+  assert.match(en, /"task\.center": "Transfer queue"/);
+  assert.doesNotMatch(en, /Task center/i);
+  assert.match(list, /name="arrow-right-left"/, "入口图标没换成传输语义");
+  // 反例自证：旧名一旦写回，匹配器必须咬住。
+  assert.match('"task.center": "任务中心"', /任务中心/);
+});
