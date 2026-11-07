@@ -134,6 +134,11 @@ Gitee 侧的 `scripts/sync-gitee.mjs` 不重新生成桌面清单，而是**复�
 - `latest.json` 本身不重复上传为 release 附件，只提交固定路径；
 - 单元判据：`node --test scripts/sync-gitee.test.ts`。
 
+执行结构是 `prepare` → `upload`×5（matrix，每个分片一个独立 runner IP，片内 3 路并发）→
+`finalize`。原因：现场实测 GitHub runner 到 Gitee 上传被限速在 ~10KB/s，单 job 串行 74MB
+要两个多小时，必定超过 job 超时。`GET/DELETE/PATCH` 遇 TLS 中断或 502-504 会重试 3 次；
+重跑时先匿名 HEAD 比对 `content-length`，已完整的附件直接跳过，不会把整包重传一遍。
+
 ## 4.1 Gitee 配额、清理与边界
 
 - **单附件 100MB / 仓库附件总量 1G**（Gitee Help）。每个 release 不传 WebView2 时约 74MB，
@@ -237,15 +242,22 @@ Gitee 侧的 `scripts/sync-gitee.mjs` 不重新生成桌面清单，而是**复�
 
 ### 6.1 Gitee 端到端演练（2026-11-07，tag v5.18.78）
 
-用 `workflow_dispatch` 直接跑 `sync-gitee.yml`，只读 GitHub 已发布资产，不重跑发布、不动已发布 Release：
+用 `workflow_dispatch` 直接跑 `sync-gitee.yml`
+（[run 42395461687](https://github.com/wenzo001/gosslan/actions/runs/42395461687)），
+只读 GitHub 已发布资产，不重跑发布、不动已发布 Release：
 
 - 空仓库初始化：`README.md` 占位提交 → `master` 分支 → tag/release；
-- 上传 14 个资产（跳过 2 个 WebView2 内置包与 `latest.json`）；
-- 固定清单匿名可读，版本与 tag 一致，四桌面 + 两 Android 平台齐全；
-- 完整下载 `windows-x86_64` 与 `android-aarch64`，sha256 与 GitHub 原件一致；
-- 清理计划 dry-run 输出后，只保留最近 8 个 release。
+- 上传 14 个资产，跳过 1 个（`latest.json` 走固定路径）与 2 个 WebView2 内置包（>100MB）；
+- 固定清单匿名可读：HTTP 200、`version 5.18.78`、四桌面 + 两 Android 平台齐全；
+- 14 个附件全部从 Gitee 匿名完整下载，sha256 与 GitHub 原件**逐字节一致**；
+  `.sig` 也一致 ⇒ 签名没被改动，客户端用原公钥即可校验；
+- 清理 dry-run：0 个可删（当时只有 1 个 release），当前 tag 未被误删；
+- 演练暴露的真实约束：GitHub runner → Gitee 上传被限速在 ~10KB/s，单 job 串行 74MB 会超时，
+  所以拆成 5 个分片 job（每片 3 路并发）；跨洋链路偶发 `fetch failed`，API 已加 3 次重试，
+  重跑时用匿名 HEAD 比大小跳过已完整附件。
 
-> 具体命令与原文输出记录在本次交付说明中；如果这里与 Actions 日志冲突，以 Actions 日志为准。
+> 未验：桌面客户端在真机上点“检查更新”走 Gitee 清单的完整链路（需打包后实测）；
+> Android 真机安装同样未验。命令与原文输出记录在本次交付说明中。
 
 **未验**（必须明说）：
 
