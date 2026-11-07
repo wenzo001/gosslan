@@ -6,8 +6,8 @@
  *
  * 三份键集本来就不等价，不能合并成一份：
  *  · 移动端有 `chatStyle` 与单数 `notification`；
- *  · 独立设置窗口路由有复数 `notifications`，没有 `chatStyle` / 单数 `notification`；
- *  · 桌面 4 容器只认 `general / network / storageFiles / about`，旧键走别名/默认容器。
+ *  · 独立设置窗口路由有复数 `notifications`（`chatStyle` 2026-11-07 起也进了桌面路由）；
+ *  · 桌面左栏 9 个分区（与移动端同名同序，原 4 容器的归并层已退役）。
  * 任何“看起来可以合并”的改动都必须先过 `settingsStructure.test.ts` 的深链矩阵。
  */
 
@@ -27,6 +27,7 @@ export type RouteSectionKey =
   | "general"
   | "notifications"
   | "appearance"
+  | "chatStyle"
   | "network"
   | "files"
   | "storage"
@@ -35,9 +36,16 @@ export type RouteSectionKey =
   | "about"
   | "reset";
 
-export type DesktopContainer = "general" | "network" | "storageFiles" | "about";
-
-export type DesktopIconKey = "sliders" | "wifi" | "storage" | "info";
+export type DesktopIconKey =
+  | "user"
+  | "sliders"
+  | "palette"
+  | "bubble"
+  | "bell"
+  | "wifi"
+  | "storage"
+  | "info"
+  | "rotate";
 
 /** 移动端二级页：key、标题键、所属分组（按界面顺序）。 */
 export const MOBILE_SECTIONS = [
@@ -98,9 +106,8 @@ export const DESKTOP_ONLY_SECTIONS = {
 } as const satisfies Record<string, MobileSectionKey>;
 
 export const MOBILE_ONLY_SECTIONS = {
-  /** 移动端分区键 → 桌面路由键（落到包含该内容的容器） */
+  /** 移动端分区键 → 桌面路由键（chatStyle 2026-11-07 起已是桌面共用路由，不再走兼容表） */
   notification: "notifications",
-  chatStyle: "general",
 } as const satisfies Record<string, RouteSectionKey>;
 
 /** 未知/不存在分区的统一回落点：两端共有且一定存在。 */
@@ -111,8 +118,9 @@ export const DEFAULT_DESKTOP_ROUTE: RouteSectionKey = "general";
 export const DESKTOP_ROUTE_TITLE_BY_KEY: Record<RouteSectionKey, string> = {
   profile: "settings.item.profile",
   general: "settings.item.general",
-  notifications: "settings.group.notifications",
+  notifications: "settings.item.notification",
   appearance: "settings.item.appearance",
+  chatStyle: "settings.item.chatStyle",
   network: "settings.item.network",
   files: "settings.item.storageFiles",
   storage: "settings.item.storageFiles",
@@ -165,12 +173,13 @@ export function resolveDesktopRouteKey(raw: string): SectionResolution<RouteSect
   return { key: DEFAULT_DESKTOP_ROUTE, known: false, aliased: false, fallback: true };
 }
 
-/** 独立设置窗口的有效路由键（顺序与旧实现一致）。 */
+/** 独立设置窗口的有效路由键（顺序与旧实现一致；`chatStyle` 2026-11-07 从移动端专属提升为共用）。 */
 export const ROUTE_SECTIONS = [
   "profile",
   "general",
   "notifications",
   "appearance",
+  "chatStyle",
   "network",
   "files",
   "storage",
@@ -180,39 +189,35 @@ export const ROUTE_SECTIONS = [
   "reset",
 ] as const satisfies readonly RouteSectionKey[];
 
-/** 路由键 → 桌面 4 容器。旧键保留，未知键由函数兜底到 general。 */
-export const DESKTOP_CONTAINER_BY_ROUTE: Record<RouteSectionKey, DesktopContainer> = {
-  profile: "general",
-  general: "general",
-  notifications: "general",
-  appearance: "general",
-  network: "network",
-  files: "storageFiles",
-  storage: "storageFiles",
-  storageFiles: "storageFiles",
-  security: "about",
-  about: "about",
-  reset: "storageFiles",
-};
-
-/** 桌面左侧导航（顺序即界面顺序）。 */
+/**
+ * 桌面左侧导航 = **9 个分区，与移动端同名同序**（用户 2026-11-06「3 可以」：
+ * 设置 9 分区双栏，原 4 容器归并退役）。旧路由键（files / storage / security）
+ * 仍合法，深链落到它们所属的那一页：files/storage → storageFiles，security → about。
+ */
 export const DESKTOP_NAV = [
-  { key: "general", labelKey: "settings.group.general", iconKey: "sliders" },
+  { key: "profile", labelKey: "settings.item.profile", iconKey: "user" },
+  { key: "general", labelKey: "settings.item.general", iconKey: "sliders" },
+  { key: "appearance", labelKey: "settings.item.appearance", iconKey: "palette" },
+  { key: "chatStyle", labelKey: "settings.item.chatStyle", iconKey: "bubble" },
+  { key: "notifications", labelKey: "settings.item.notification", iconKey: "bell" },
   { key: "network", labelKey: "settings.item.network", iconKey: "wifi" },
   { key: "storageFiles", labelKey: "settings.item.storageFiles", iconKey: "storage" },
   { key: "about", labelKey: "settings.item.about", iconKey: "info" },
+  { key: "reset", labelKey: "settings.item.reset", iconKey: "rotate" },
 ] as const satisfies readonly {
-  key: DesktopContainer;
+  key: RouteSectionKey;
   labelKey: string;
   iconKey: DesktopIconKey;
 }[];
 
+/** 旧路由键 → 导航里真实存在的那一页（不再有 4 容器归并层）。 */
+export const DESKTOP_LEGACY_LANDING: Partial<Record<RouteSectionKey, RouteSectionKey>> = {
+  files: "storageFiles",
+  storage: "storageFiles",
+  security: "about",
+};
+
 /** 移动端旧键归一；未知键原样返回，由调用方判 SECTIONS 是否存在。 */
 export function normalizeMobileSectionKey(key: string): string {
   return (MOBILE_ALIASES as Record<string, string>)[key] ?? key;
-}
-
-/** 路由键 → 桌面容器；未知键与旧实现一致落到 general。 */
-export function desktopContainerForRoute(key: string): DesktopContainer {
-  return (DESKTOP_CONTAINER_BY_ROUTE as Record<string, DesktopContainer>)[key] ?? "general";
 }

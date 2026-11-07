@@ -13,11 +13,10 @@ import { computed, onMounted, onUnmounted, ref, watch } from "vue";
 import { useRoute, useRouter } from "vue-router";
 import { useEventListener } from "@vueuse/core";
 import {
+  DESKTOP_LEGACY_LANDING,
   DESKTOP_NAV,
   DESKTOP_ROUTE_TITLE_BY_KEY,
-  desktopContainerForRoute,
   resolveDesktopRouteKey,
-  type DesktopContainer,
   type DesktopIconKey,
   type RouteSectionKey,
 } from "@/utils/settingsManifest";
@@ -46,10 +45,15 @@ import { version } from "../../package.json";
 type SectionKey = RouteSectionKey;
 
 const DESKTOP_ICONS: Record<DesktopIconKey, IconName> = {
+  user: "user-round",
   sliders: "sliders-horizontal",
+  palette: "palette",
+  bubble: "message-square",
+  bell: "bell-ring",
   wifi: "wifi",
   storage: "hard-drive",
   info: "info",
+  rotate: "rotate-ccw",
 };
 
 const route = useRoute();
@@ -64,7 +68,10 @@ const app = useAppStore();
 const sectionResolution = computed(() =>
   resolveDesktopRouteKey(String(route.params.key ?? "profile")),
 );
-const section = computed<SectionKey>(() => sectionResolution.value.key);
+/** 旧路由键（files / storage / security）落到导航里真实存在的那一页。 */
+const section = computed<SectionKey>(
+  () => DESKTOP_LEGACY_LANDING[sectionResolution.value.key] ?? sectionResolution.value.key,
+);
 
 watch(
   () => [
@@ -75,14 +82,17 @@ watch(
   ] as const,
   () => {
     const res = sectionResolution.value;
-    if (!res.aliased && !res.fallback) return;
-    app.toast(
-      t("settings.toast.sectionFallback", {
-        section: t(DESKTOP_ROUTE_TITLE_BY_KEY[res.key]),
-      }),
-      "info",
-    );
-    void router.replace({ name: "settings-section", params: { key: res.key } });
+    const canonical = DESKTOP_LEGACY_LANDING[res.key];
+    if (!res.aliased && !res.fallback && !canonical) return;
+    if (res.aliased || res.fallback) {
+      app.toast(
+        t("settings.toast.sectionFallback", {
+          section: t(DESKTOP_ROUTE_TITLE_BY_KEY[res.key]),
+        }),
+        "info",
+      );
+    }
+    void router.replace({ name: "settings-section", params: { key: canonical ?? res.key } });
   },
   { immediate: true },
 );
@@ -133,9 +143,10 @@ const devDiagOpen = ref(false);
  *   现在标签也用**条目名**（`settings.item.about` / `settings.group.reset`，与移动端列表同一批键），
  *   与各自分区内的第一组标题一一对应（`settingsStructure` 守卫钉住）。
  *
- * 2026-10-25 用户追加（第 4 版）：桌面与移动端统一为 **4 类** ——
- * 通用 / 网络 / 文件与存储 / 关于。「安全」并入「关于」；
- * 「存储」「文件」与「重置与恢复」同属「文件与存储」（重置不再留在通用）。
+ * 2026-11-07 用户「3 可以」：桌面左栏 = **9 个分区，与移动端同名同序**
+ * （个人资料 / 通用 / 外观 / 聊天气泡 / 通知 / 网络 / 文件与存储 / 关于 / 重置）。
+ * 原「4 容器」归并层退役：每个导航项就是它自己那一页；桌面独有的「文件」与「安全」
+ * 仍留在各自归属的页里（文件 → 文件与存储；安全 → 关于），不另立导航项。
  */
 const navItems = computed<{ key: SectionKey; label: string; icon: IconName }[]>(() =>
   DESKTOP_NAV.map((item) => ({
@@ -145,16 +156,16 @@ const navItems = computed<{ key: SectionKey; label: string; icon: IconName }[]>(
   })),
 );
 
-/** 4 个顶层容器；旧深链键仍有效，只是映射到对应容器。 */
-const desktopSection = computed<DesktopContainer>(() => desktopContainerForRoute(section.value));
-
 /**
- * 侧栏分组（第 5 段按画板）：画板把 7 个导航项分成 3 组；这里 IA 仍是 4 类，
- * 只把同一批项归到 3 个组标题下，分组标签与导航项文案是两套键。
+ * 侧栏分组：9 项归到 3 个组标题下（画板左栏的视觉分段）。
+ * 分组只影响视觉，不改变任何一页的归属。
  */
-const NAV_GROUPS: { labelKey: string; keys: DesktopContainer[] }[] = [
-  { labelKey: "settings.window.group.app", keys: ["general"] },
-  { labelKey: "settings.window.group.data", keys: ["network", "storageFiles"] },
+const NAV_GROUPS: { labelKey: string; keys: RouteSectionKey[] }[] = [
+  {
+    labelKey: "settings.window.group.app",
+    keys: ["profile", "general", "appearance", "chatStyle", "notifications"],
+  },
+  { labelKey: "settings.window.group.data", keys: ["network", "storageFiles", "reset"] },
   { labelKey: "settings.window.group.other", keys: ["about"] },
 ];
 const navByKey = computed(() => new Map(navItems.value.map((item) => [item.key, item])));
@@ -166,11 +177,19 @@ const navGroups = computed(() =>
 );
 
 /** 内容头一句话说明（画板每个分区标题下有一行描述）。 */
-const SECTION_DESC: Record<DesktopContainer, string> = {
+const SECTION_DESC: Record<RouteSectionKey, string> = {
+  profile: "settings.window.desc.profile",
   general: "settings.window.desc.general",
+  notifications: "settings.window.desc.notification",
+  appearance: "settings.window.desc.appearance",
+  chatStyle: "settings.window.desc.chatStyle",
   network: "settings.window.desc.network",
+  files: "settings.window.desc.storageFiles",
+  storage: "settings.window.desc.storageFiles",
   storageFiles: "settings.window.desc.storageFiles",
+  security: "settings.window.desc.about",
   about: "settings.window.desc.about",
+  reset: "settings.window.desc.reset",
 };
 
 /**
@@ -244,15 +263,15 @@ useEventListener(window, "keydown", onKeydown);
          左内边距与右侧留白/箭头位置不匹配。这里导航项为纯文字+图标（无展开箭头），
          一旦将来加展开子项，用同一个 `pr-2.5` 承接箭头即可保持对称。 -->
     <nav class="glass-1 flex w-[200px] shrink-0 flex-col gap-3 border-r border-[var(--gosslan-divider)] px-2.5 py-3">
-      <!-- 桌面 4 类导航不需要可见返回；⌘[ / Alt+← 键盘返回仍保留。 -->
+      <!-- 桌面 9 分区导航不需要可见返回；⌘[ / Alt+← 键盘返回仍保留。 -->
       <div v-for="group in navGroups" :key="group.labelKey">
         <p class="px-2.5 pb-1 text-micro text-[var(--gosslan-text-2)]">{{ t(group.labelKey) }}</p>
         <button
           v-for="item in group.items"
           :key="item.key"
           class="tap-safe flex h-8 w-full items-center gap-2 rounded-[var(--gosslan-radius-md)] px-2.5 text-left text-body transition"
-          :aria-current="desktopSection === item.key ? 'true' : undefined"
-          :class="desktopSection === item.key
+          :aria-current="section === item.key ? 'true' : undefined"
+          :class="section === item.key
             ? 'bg-[var(--gosslan-primary-light)] font-medium text-[var(--gosslan-accent-ink)]'
             : 'text-[var(--gosslan-text-2)] hover:bg-[var(--gosslan-hover)] hover:text-[var(--gosslan-text)]'"
           @click="openSection(item.key)"
@@ -272,9 +291,9 @@ useEventListener(window, "keydown", onKeydown);
     <div class="flex min-w-0 flex-1 flex-col bg-[var(--gosslan-panel)]">
       <header class="shrink-0 px-[var(--gosslan-scroll-inset)] pb-1 pt-3.5">
         <h2 class="text-title font-semibold text-[var(--gosslan-text)]">
-          {{ t(DESKTOP_ROUTE_TITLE_BY_KEY[desktopSection]) }}
+          {{ t(DESKTOP_ROUTE_TITLE_BY_KEY[section]) }}
         </h2>
-        <p class="mt-0.5 text-caption text-[var(--gosslan-text-2)]">{{ t(SECTION_DESC[desktopSection]) }}</p>
+        <p class="mt-0.5 text-caption text-[var(--gosslan-text-2)]">{{ t(SECTION_DESC[section]) }}</p>
       </header>
       <div class="gosslan-scroll min-h-0 flex-1 overflow-y-auto pb-2">
       <!-- 面板容器常驻（`relative` 给退场层定位）：切换分区时**不改 mode**（默认同时挂载），
@@ -283,26 +302,36 @@ useEventListener(window, "keydown", onKeydown);
       <div class="relative">
         <Transition name="settings-swap">
           <div :key="section">
-            <div v-if="desktopSection === 'general'" class="space-y-5">
+            <div v-if="section === 'profile'" class="space-y-5">
               <ProfileSection :active="true" :reload-token="reloadToken" />
+            </div>
+            <div v-else-if="section === 'general'" class="space-y-5">
               <GeneralSection />
+            </div>
+            <div v-else-if="section === 'appearance'" class="space-y-5">
               <AppearanceSection />
+            </div>
+            <div v-else-if="section === 'chatStyle'" class="space-y-5">
               <ChatStyleSection />
+            </div>
+            <div v-else-if="section === 'notifications'" class="space-y-5">
               <NotificationSection />
             </div>
-            <div v-else-if="desktopSection === 'network'" class="space-y-5">
+            <div v-else-if="section === 'network'" class="space-y-5">
               <NetworkSection :active="true" :reload-token="reloadToken" />
             </div>
-            <div v-else-if="desktopSection === 'storageFiles'" class="space-y-5">
-              <!-- 2026-10-25（第 4 版）：存储、文件、重置与恢复同属「文件与存储」。 -->
+            <div v-else-if="section === 'storageFiles'" class="space-y-5">
+              <!-- 存储 + 文件同属「文件与存储」（重置是同一分类下的另一页）。 -->
               <StorageSection :active="true" :reload-token="reloadToken" />
               <FilesSection :active="true" :reload-token="reloadToken" />
-              <ResetSection @restored="reloadToken++" />
             </div>
-            <div v-else-if="desktopSection === 'about'" class="space-y-5">
+            <div v-else-if="section === 'about'" class="space-y-5">
               <!-- 安全并入关于（用户 2026-10-25：桌面不再单独一组）。 -->
               <SecuritySection />
               <AboutSection @dev-open="devDiagOpen = true" />
+            </div>
+            <div v-else-if="section === 'reset'" class="space-y-5">
+              <ResetSection @restored="reloadToken++" />
             </div>
           </div>
         </Transition>
