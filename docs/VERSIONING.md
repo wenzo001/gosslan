@@ -7,6 +7,9 @@
 > `Cargo.lock`，它自己断言），见 §3 第 5 条。
 > `npm run version:check` 是同一件事的**记账口径**，历史上是红的、没进 CI。
 > 依据：SemVer 的"一次发布取最高档" + conventional commits 的类型约定。
+> **硬闸的边界（2026-11-08）**：判据 4 与 commit-msg 钩子（共用 `semver.mjs` 的
+> `bumpConsistencyProblems`）只判**双向一致** —— 写了声明就必须四条清单齐、四条齐就必须写；
+> 只动 1–3 个清单（例如只改 `package.json` 脚本）或不动清单的提交不要求声明、也不拦。
 
 ## 1. 三档判据（小 / 中 / 大）
 
