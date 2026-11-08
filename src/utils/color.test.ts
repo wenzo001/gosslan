@@ -1,11 +1,9 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
-import { join } from "node:path";
 import {
   hexToRgb,
   rgba,
-    mixHex,
+  mixHex,
   luma,
   mixToLuma,
   contrastRatio,
@@ -13,7 +11,8 @@ import {
   toHsl,
   hslToHex,
   applyTheme,
-    } from "./color.ts";
+} from "./color.ts";
+import { SEED_TOKENS, seedTokens } from "./themePalette.ts";
 
 test("hexToRgb 解析 6 位与 3 位 hex", () => {
   assert.deepEqual(hexToRgb("#3b82f6"), [59, 130, 246]);
@@ -25,14 +24,14 @@ test("rgba 输出带透明度", () => {
   assert.equal(rgba("#3b82f6", 0.12), "rgba(59, 130, 246, 0.12)");
 });
 
-test("applyTheme 只管主色与字体：派生档不许在 JS 里重算，默认档不留内联", () => {
-  // 这条钉的是"一份实现"。以前 JS 按 8% 算一份、style.css 又硬编一份近似值，两份比例不同；
-  // 首屏脚本只来得及写主色 ⇒ 按钮已换色而 hover/浅底还是蓝色。现在派生只有 CSS 一处。
-  // 默认档（空串）同样不在 JS 里抄兜底栈 —— 清掉内联，让 style.css 的 token 当唯一来源。
+test("applyTheme 写的是求解后的 6 个种子档 + 字体：不再直接写用户原值", () => {
+  // 这条钉的是"一份实现"的另一半：派生只有 utils/themePalette.ts 一处，JS 不再抄比例。
+  // 用户可以在取色器里选纯白/纯黑/荧光色 ⇒ 直接写 `--gosslan-primary: 原值` 会派生白底白字，
+  // 所以 applyTheme 必须写 seedTokens 的结果（含填充/hover/active/前景/accent-ink/浅底）。
   const set: Array<[string, string]> = [];
   const removed: string[] = [];
   const saved = (globalThis as { document?: unknown }).document;
-  (globalThis as { document?: unknown }).document = {
+  const fake = () => ({
     documentElement: {
       style: {
         setProperty: (k: string, v: string) => {
@@ -43,9 +42,10 @@ test("applyTheme 只管主色与字体：派生档不许在 JS 里重算，默�
         },
       },
     },
-  };
+  });
   const picked = "'JetBrains Mono', Consolas, monospace";
   try {
+    (globalThis as { document?: unknown }).document = fake();
     applyTheme("#d43d43", picked);
   } finally {
     if (saved === undefined) delete (globalThis as { document?: unknown }).document;
@@ -53,87 +53,64 @@ test("applyTheme 只管主色与字体：派生档不许在 JS 里重算，默�
   }
   assert.deepEqual(
     set.map(([k]) => k),
-    ["--gosslan-primary", "--gosslan-font-family"],
-    `applyTheme 多写或少写了变量：${JSON.stringify(set)}`,
+    [...SEED_TOKENS, "--gosslan-font-family"],
+    `applyTheme 多写或少写了变量：${JSON.stringify(set.map(([k]) => k))}`,
   );
-  assert.equal(set[0][1], "#d43d43");
-  assert.equal(set[1][1], picked);
+  const light = Object.fromEntries(set) as Record<string, string>;
+  const expected = seedTokens("#d43d43", "light");
+  for (const k of SEED_TOKENS) assert.equal(light[k], expected[k], `${k} 与求解器不一致`);
+  assert.equal(light["--gosslan-font-family"], picked);
 
+  // 默认字体档：清掉内联，让 style.css 的 token 当唯一来源。
   set.length = 0;
   removed.length = 0;
-  (globalThis as { document?: unknown }).document = {
-    documentElement: {
-      style: {
-        setProperty: (k: string, v: string) => {
-          set.push([k, v]);
-        },
-        removeProperty: (k: string) => {
-          removed.push(k);
-        },
-      },
-    },
-  };
   try {
+    (globalThis as { document?: unknown }).document = fake();
     applyTheme("#d43d43", "");
   } finally {
     if (saved === undefined) delete (globalThis as { document?: unknown }).document;
     else (globalThis as { document?: unknown }).document = saved;
   }
-  assert.deepEqual(set.map(([k]) => k), ["--gosslan-primary"], `默认档不该再写一份兜底栈：${JSON.stringify(set)}`);
   assert.deepEqual(removed, ["--gosslan-font-family"], "默认档必须清掉内联，让 style.css 的 token 生效");
+  assert.equal(set.length, SEED_TOKENS.length, `默认档仍应写 6 个种子档：${JSON.stringify(set)}`);
 });
 
-test("hover/active/light 由主色 color-mix 派生，且两档外观方向相反", () => {
-  const css = readFileSync(join(import.meta.dirname, "..", "style.css"), "utf8").replace(
-    /\/\*[\s\S]*?\*\//g,
-    "",
+test("外观决定填充方向：亮色压深承白字，暗色提亮换深墨", () => {
+  // 亮/暗的最差底色与推进方向不同（见 style.css 顶部那 0.003 窗口的推导），
+  // 所以同一颗主色在两档外观下必须给出**不同**的填充与前景，而不是同一份值换个背景用。
+  const seed = "#2f6bff";
+  const light = seedTokens(seed, "light");
+  const dark = seedTokens(seed, "dark");
+
+  assert.ok(
+    luma(light["--gosslan-primary-hover"]) < luma(light["--gosslan-primary"]) &&
+      luma(light["--gosslan-primary-active"]) < luma(light["--gosslan-primary-hover"]),
+    "亮色：hover / active 必须逐档更深（白字压在实底上，越按越清楚）",
   );
-  // 作用域按**行首**认，且必须两边分别解析：2026-10-24 之后 hover/active 在 :root 朝黑混、
-  // 在 .dark 朝白混（同一对 token、相反方向）。用"全文第一个匹配"读出来的只有亮色那份，
-  // 于是"暗色少写一条覆盖"这种缺陷在这条判据上根本不会红。
-  const scope = (re: RegExp) => re.exec(css)?.[1] ?? "";
-  const rootBlock = scope(/^:root\s*\{([\s\S]*?)^\}/m);
-  const darkBlock = scope(/^\.dark\s*\{([\s\S]*?)^\}/m);
-  const decl = (where: string, token: string) => {
-    const m = new RegExp(`--gosslan-${token}:\\s*([^;]+);`).exec(where);
-    return m ? m[1].trim() : "";
-  };
-  // 正控：解析面先要认得出真实声明，否则下面的断言全绿只是因为正则坏了。
-  assert.ok(rootBlock.length > 0 && darkBlock.length > 0, "没解析到 :root / .dark 两个作用域块");
-  assert.ok(decl(rootBlock, "primary-light").length > 0, "没解析到 --gosslan-primary-light");
-
-  const mixPct = (v: string) => {
-    const m = /^color-mix\(in srgb,\s*var\(--gosslan-primary\)\s+([\d.]+)%\s*,\s*(#[0-9a-fA-F]{3,6}|transparent)\s*\)$/.exec(v);
-    return m ? { pct: Number(m[1]), other: m[2].toLowerCase() } : null;
-  };
-
-  // 形状判据（两档共用）：必须是**从 --gosslan-primary 现派生**的 color-mix，不许写回硬编色值。
-  for (const [where, name] of [[rootBlock, ":root"], [darkBlock, ".dark"]] as const) {
-    for (const token of ["primary-hover", "primary-active"]) {
-      if (!where.includes(`--gosslan-${token}`)) continue; // 这一档允许只在 :root 定义（light 就是）
-      const d = mixPct(decl(where, token));
-      assert.ok(d, `${name} 的 ${token} 必须是 color-mix(in srgb, var(--gosslan-primary) N%, 某色)，实际 "${decl(where, token)}"`);
-    }
-  }
-
-  // 方向判据：亮色压深（承载白字）；暗色提亮（前景换成深墨，填充要贴得住暗面板）。
-  const light = { hover: mixPct(decl(rootBlock, "primary-hover")), active: mixPct(decl(rootBlock, "primary-active")) };
-  const dark = { hover: mixPct(decl(darkBlock, "primary-hover")), active: mixPct(decl(darkBlock, "primary-active")) };
-  for (const [k, v] of Object.entries(light)) {
-    assert.ok(v && v.other === "#000000", `:root 的 primary-${k} 必须朝 #000000 压深：白字压在填充上要过 4.5:1`);
-  }
-  for (const [k, v] of Object.entries(dark)) {
-    assert.ok(v && v.other === "#ffffff", `.dark 的 primary-${k} 必须朝 #ffffff 提亮：深底上再压深，按钮和面板只剩 2~3:1`);
-  }
-  // hover 必须是"更强调的那一档"：亮色更深（比例更小 = 混进的黑更多）、暗色更亮。
-  assert.ok(light.hover!.pct < light.active!.pct, "亮色 hover 要比 active 再深一档（混黑比例更高）");
-  assert.ok(dark.hover!.pct < dark.active!.pct, "暗色 hover 要比 active 再亮一档（混白比例更高）");
-
-  // light 档（半透明底）仍走透明混法：跟着主色换 RGBA，不写死。
-  assert.match(decl(rootBlock, "primary-light"), /var\(--gosslan-primary\)/, "primary-light 必须跟着主色");
-  // 前景档两边都要有：暗色漏一条就继承亮色的白，压在提亮档上只剩 1.6~2.0。
-  assert.ok(/--gosslan-on-primary:\s*#ffffff;/.test(rootBlock), ":root 的 --gosslan-on-primary 必须是白");
-  assert.ok(/--gosslan-on-primary:\s*var\(--gosslan-[a-z-]+\);/.test(darkBlock), ".dark 必须换掉前景档（不能留白）");
+  assert.ok(
+    luma(dark["--gosslan-primary-hover"]) > luma(dark["--gosslan-primary"]) &&
+      luma(dark["--gosslan-primary-active"]) > luma(dark["--gosslan-primary-hover"]),
+    "暗色：hover / active 必须逐档更亮（深底上再压深，按钮和面板只剩 2~3:1）",
+  );
+  assert.equal(light["--gosslan-on-primary"], "#ffffff", "亮色实底配白字");
+  assert.ok(
+    luma(dark["--gosslan-primary"]) > luma(seed) && luma(dark["--gosslan-on-primary"]) < 80,
+    `暗色必须换成"亮填充 + 深墨"：填充 ${dark["--gosslan-primary"]} 前景 ${dark["--gosslan-on-primary"]}`,
+  );
+  // accent-ink（主色当文字）必须能在它实际落的那层面底上读出来 —— 而不是"比填充更极端"：
+  // 暗色下填充与 accent-ink 都取在 L≈0.85，谁更亮没有意义，有意义的是 vs 面底的比例。
+  assert.ok(
+    luma(light["--gosslan-accent-ink"]) < luma(light["--gosslan-primary"]),
+    "亮色 accent-ink 要比填充更深（它压在白面上）",
+  );
+  assert.ok(
+    contrastRatio(dark["--gosslan-accent-ink"], "#2e2f31") >= 4.5,
+    `暗色 accent-ink 压在面板底上不足 4.5:1：${contrastRatio(dark["--gosslan-accent-ink"], "#2e2f31")}`,
+  );
+  assert.ok(
+    contrastRatio(light["--gosslan-accent-ink"], "#e2e3e7") >= 4.5,
+    `亮色 accent-ink 压在卡片底上不足 4.5:1：${contrastRatio(light["--gosslan-accent-ink"], "#e2e3e7")}`,
+  );
 });
 
 test("luma: 黑白两端为 0/255，中间色介于其间", () => {

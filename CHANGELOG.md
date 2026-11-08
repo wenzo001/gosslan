@@ -34,6 +34,12 @@
   标题/正文都不再像是我们的 bug，并给**可执行**入口「修复 WebView2 运行时」（打开微软官方
   下载页）；后端没有归因码时不许冒充环境问题。
 - 单实例交接 / 更新安装器接管都是正常路径：不再弹「上次运行异常退出」横幅。
+- 全局配色改为「以主色为种子求解」：在 OKLCH 里沿亮度轴取「刚好达标」的一档，每一档同时过
+  APCA `|Lc|` 与 WCAG 比值双约束；亮暗两套走同一套算法，不再两套手挑色。纯白 / 纯黑 /
+  荧光 / 极低亮度的自定义主色都收敛到可读（不再出现白底白字），填充档按背景亮度自动选浅/深前景。
+  静态数值由 `scripts/dump-theme-tokens.mjs` 生成，首屏脚本与 `utils/themePalette.ts` 逐值一致
+  （切换亮暗时重算整套阶梯，深色不再继承亮色的内联值）。方案与出处见
+  [docs/design-language/theme-contrast.md](docs/design-language/theme-contrast.md)。
 
 ### 测试
 - Rust：`classify_previous_exit` 各格逐条钉，含反例 —— `BOOT_WINDOW_BUILD_START` 之后已有启动
@@ -42,6 +48,11 @@
 - 探针 `--only=crashnotice` 8 条（新增环境类标题 / 正文 / 修复入口 + 「没有归因码」反例）。
 - `crashReport.test.ts`：`updater` / `single_instance` 不提示、`early_exit` 提示；
   `started_at` / `last_seen` 分行，且含混的 `time:` 不许再出现。
+- `themePalette.test.ts`：六套预设 + 极端值（纯白/纯黑/荧光/`#010101`/非法串）+ 48 个确定性随机色
+  × 明暗的全量矩阵（正文 / 次文本 / 占位 / 按钮 / 主题色文字 / 图标 / 边框 / 状态点，APCA + WCAG
+  双阈值），带「把校正摘掉 / 阈值调低必须红」的反例自证；`theme-boot.js` 与 TS 求解器逐 token 对照。
+- 修 `src-tauri/test-baseline.*.txt`：上一轮改名后的两条 `logging` 用例仍留在基线里（清单守卫恒红），
+  按源码门控重新同步 macos / windows 两份基线。
 
 ## [5.19.23] - 2026-11-08
 

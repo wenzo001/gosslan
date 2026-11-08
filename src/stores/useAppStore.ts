@@ -416,11 +416,19 @@ export const useAppStore = defineStore("app", () => {
   }
 
   function applyThemeNow() {
-    applyTheme(themeColor.value, fontFamily.value);
+    // 亮/暗的最差底色与推进方向不同 ⇒ 必须把当前实际外观一起交给调色板求解。
+    applyTheme(themeColor.value, fontFamily.value, dark.value);
   }
 
+  /**
+   * 切换亮暗：先翻类名，再**重算整套主题色**。
+   *
+   * 派生阶梯（hover/active/on-primary/accent-ink）现在由算法按外观求解，写在 <html> 的内联样式上；
+   * 只翻类名不重算，暗色会继承亮色那一套内联值 —— 症状正是"深色下按钮还是浅色档"。
+   */
   function applyDarkNow() {
     document.documentElement.classList.toggle("dark", dark.value);
+    applyThemeNow();
   }
 
   /** 聊天字号落到全局 CSS 变量（消息气泡 / 输入框引用）。 */

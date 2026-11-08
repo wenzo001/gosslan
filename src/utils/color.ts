@@ -1,4 +1,6 @@
-// 颜色工具：hex/HSL 解析、感知亮度与 WCAG 对比度；主题色的 hover/active/浅底三档交给 CSS color-mix。
+// 颜色工具：hex/HSL 解析、感知亮度与 WCAG 对比度；主题色的派生阶梯由 themePalette 在 OKLCH 里求解。
+
+import { seedTokens } from "./themePalette.ts";
 
 export function hexToRgb(hex: string): [number, number, number] {
   let h = hex.replace("#", "").trim();
@@ -113,14 +115,17 @@ export function contrastRatio(a: string, b: string): number {
 /**
  * 把主题色与字体注入 CSS 变量。
  *
- * 只写这两件事：`hover/active/light` 三档由 `style.css` 用 `color-mix()` 从
- * `--gosslan-primary` 现派生（同一家里 `--gosslan-primary-soft/-ring/--gosslan-accent-ink`
- * 本来就是这么做的）。以前 JS 也算一份、CSS 又硬编一份近似值，两份比例不同 ⇒
- * 首屏脚本只来得及写主色，那三档还留在出厂蓝上（按钮已换色、hover 与浅底还是蓝色）。
+ * 强调色**不再直接写用户原值**：用户可以在取色器里选纯白/纯黑/荧光色，固定混色比例
+ * 会派生出"白底白字"。现在交给 `seedTokens` 在 OKLCH 里求解（APCA + WCAG 双约束；
+ * 算法与阈值见 docs/design-language/theme-contrast.md；首屏脚本是同一算法的第二份实现）。
+ *
+ * `dark` 必须传当前实际外观：亮/暗的最差底色与推进方向不同，写的是**当前模式**的那一套
+ * 内联值。外观切换时 `useAppStore.applyDarkNow()` 会重跑本函数，因此不需要往 <style> 里塞两套。
  */
-export function applyTheme(color: string, fontFamily: string) {
+export function applyTheme(color: string, fontFamily: string, dark = false) {
   const root = document.documentElement;
-  root.style.setProperty("--gosslan-primary", color);
+  const vars = seedTokens(color, dark ? "dark" : "light");
+  for (const [name, value] of Object.entries(vars)) root.style.setProperty(name, value);
   // 默认档不在 JS 里抄一份兜底栈：清掉内联，让 style.css 的 --gosslan-font-family 生效
   //（首屏脚本与骨架走的是同一个 token ⇒ 两边不可能再算出两个不同的"系统默认"）。
   if (fontFamily) root.style.setProperty("--gosslan-font-family", fontFamily);
