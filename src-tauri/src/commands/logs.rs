@@ -481,6 +481,7 @@ fn aux_window_geometry(
     app: &tauri::AppHandle,
     ideal: (f64, f64),
     min: (f64, f64),
+    inset: f64,
 ) -> Option<AuxWindowGeometry> {
     let main = app.get_webview_window(crate::WINDOW_MAIN)?;
     // 主窗口所在显示器的缩放：子窗口要跟主窗口"看起来"一样大，就用它的缩放把设计尺寸换成物理。
@@ -496,13 +497,35 @@ fn aux_window_geometry(
         scale,
         ideal,
         min,
+        inset,
     ))
+}
+
+/// 群任务窗口的设计尺寸 = **主窗口在 `tauri.conf.json` 里的 width/height**（同一处来源）。
+///
+/// 用户 2026-11-08：「默认点击展开的初始窗口应该跟主窗口一模一样大，因为现在它有点窄」。
+/// 之前这里写死 780×620，等于在主窗口之外又养了一份尺寸真源 —— 以后改主窗口尺寸时它会漂。
+///
+/// 读不到 main 的配置时返回 `None`：调用方退回 Tauri 的默认尺寸，**不在这里补一份
+/// 780×620 当影子真源**（那正是这条要消灭的东西）。
+#[cfg(desktop)]
+fn main_window_design_size(app: &tauri::AppHandle) -> Option<(f64, f64)> {
+    app.config()
+        .app
+        .windows
+        .iter()
+        .find(|w| w.label == crate::WINDOW_MAIN)
+        .map(|w| (w.width, w.height))
+        .filter(|(w, h)| *w > 0.0 && *h > 0.0)
 }
 
 /// [`aux_window_geometry`] 的**纯计算**部分（拿不到主窗口尺寸的那些查询不在里面）。
 ///
 /// 抽出来的理由只有一个：能在 `cargo test` 里直接验"永远不比主窗口大 + 居中"这两条 ——
 /// 它们都是**几何不变式**，靠真机肉眼是量不准的（用户报的就是"没居中、还比主窗口大"）。
+///
+/// `inset`（逻辑像素）= 子窗口与主窗口边缘的留边。一般窗口传 [`AUX_WINDOW_MARGIN`]；
+/// 群任务窗口传 `0.0` —— 用户要求它与主窗口**一模一样大**（2026-11-08）。
 #[cfg(desktop)]
 fn fit_aux_window(
     main_size: (u32, u32),
@@ -510,10 +533,13 @@ fn fit_aux_window(
     scale: f64,
     ideal: (f64, f64),
     min: (f64, f64),
+    inset: f64,
 ) -> AuxWindowGeometry {
     // 逻辑 → 物理（用主窗口所在显示器的缩放）
     let px = |v: f64| (v * scale).round().max(1.0) as u32;
-    let margin = px(AUX_WINDOW_MARGIN);
+    // `px()` 会把 0 抬到 1（0 尺寸没意义）；但 0 留边是合法诉求（群任务窗口要与主窗口同尺寸），
+    // 所以这里单独短路，别让 1px 把"一模一样大"变成"差 2px"。
+    let margin = if inset > 0.0 { px(inset) } else { 0 };
     // 目标是主窗口内"两侧各留 margin"的那块区域；设计尺寸装不下就缩到刚好装下。
     let fit = |want: u32, avail: u32| want.min(avail.saturating_sub(2 * margin).max(1));
     let (w, h) = (fit(px(ideal.0), main_size.0), fit(px(ideal.1), main_size.1));
@@ -700,7 +726,7 @@ pub fn open_log_window(
     let build_app = app.clone();
     // 尺寸与位置按主窗口算（见 aux_window_geometry 的说明）；窗口是**关闭即销毁**的，
     // 每次打开都新建 ⇒ 每次都按主窗口重新居中（不存在"用户摆好的窗口"）。
-    let geo = aux_window_geometry(&app, (760.0, 560.0), (420.0, 320.0));
+    let geo = aux_window_geometry(&app, (760.0, 560.0), (420.0, 320.0), AUX_WINDOW_MARGIN);
     ensure_aux_window(
         &app,
         crate::WINDOW_LOGS,
@@ -778,7 +804,7 @@ pub fn open_settings_window(
     let placed_app = app.clone(); // decorate 那几步在锁外跑 ⇒ 单独一个 handle（AppHandle 是廉价克隆）
     let build_app = app.clone(); // 同 open_log_window：闭包要 `'static`，不能再借 `app`
                                  // 尺寸与位置按主窗口算，理由见 aux_window_geometry。
-    let geo = aux_window_geometry(&app, (780.0, 600.0), (560.0, 420.0));
+    let geo = aux_window_geometry(&app, (780.0, 600.0), (560.0, 420.0), AUX_WINDOW_MARGIN);
     ensure_aux_window(
         &app,
         crate::WINDOW_SETTINGS,
@@ -940,7 +966,11 @@ fn ensure_tasks_window(
     use tauri::{WebviewUrl, WebviewWindowBuilder};
     let bg = aux_window_background(state);
     let title = aux_window_title(state, "群任务", "Group Tasks", Some(group_name));
-    let geo = aux_window_geometry(app, (780.0, 620.0), (360.0, 420.0));
+    // 用户 2026-11-08：默认展开要与主窗口**一模一样大**（之前 780×620 偏窄）。
+    // 设计尺寸读主窗口在 tauri.conf.json 里的 width/height（同一处来源，改主窗口时这里不漂），
+    // 且 inset=0 —— 不留那 24px 衬边，否则只会得到「主窗口 − 48px」而不是同尺寸。
+    let design = main_window_design_size(app);
+    let geo = design.and_then(|d| aux_window_geometry(app, d, (360.0, 420.0), 0.0));
     let placed_app = app.clone(); // decorate 那几步在锁外跑 ⇒ 单独一个 handle（AppHandle 是廉价克隆）
     let build_app = app.clone();
     ensure_aux_window(
@@ -950,16 +980,14 @@ fn ensure_tasks_window(
         AUX_TASKS_RESIDENT,
         reveal,
         move || {
-            WebviewWindowBuilder::new(
+            let mut builder = WebviewWindowBuilder::new(
                 &build_app,
                 crate::WINDOW_TASKS,
                 WebviewUrl::App("todos.html".into()),
             )
             .title(title)
             .devtools(AUX_DEVTOOLS)
-            // 设计尺寸 780×620（用户 2026-09-21 实机反馈：560 太瘦长、1080 太大）；
-            // `fit_aux_window` 会夹到「主窗口 − 两侧各 24px」⇒ 永不比主窗口大。
-            .inner_size(780.0, 620.0)
+            // 最小尺寸 360×420 保留：窄窗回退单栏的规则不受初始尺寸影响。
             .min_inner_size(360.0, 420.0)
             .background_color(bg)
             // 隐藏创建：`ensure_aux_window` 在几何落地后才 show，中间这段用来摆位置与尺寸。
@@ -970,8 +998,12 @@ fn ensure_tasks_window(
             .minimizable(true)
             .closable(true)
             // 同 open_log_window：非活动窗口第一击也要落到 webview。
-            .accept_first_mouse(true)
-            .build()
+            .accept_first_mouse(true);
+            // 初始尺寸与主窗口同源；读不到就交给 Tauri 默认尺寸 —— 绝不在这里再写一份数字。
+            if let Some((w, h)) = design {
+                builder = builder.inner_size(w, h);
+            }
+            builder.build()
         },
         // ↓ `placed`（锁外）：这几步全要问窗口自己的外框/所在屏 ⇒ 绝不能挪进创建锁里。
         move |win| {
@@ -1222,7 +1254,7 @@ fn ensure_preview_window(
     // 设计尺寸 1120×820：用户要的是"比聊天界面大一圈"。`fit_aux_window` 会把它夹到
     // 「主窗口 − 两侧各 24px」，所以**永不比主窗口大**（那条几何不变式见 logs_tests），
     // 主窗口本身小的时候跟着缩 —— 这正是想要的，不去破不变式。
-    let geo = aux_window_geometry(app, (1120.0, 820.0), (480.0, 360.0));
+    let geo = aux_window_geometry(app, (1120.0, 820.0), (480.0, 360.0), AUX_WINDOW_MARGIN);
     let placed_app = app.clone(); // decorate 那几步在锁外跑 ⇒ 单独一个 handle（AppHandle 是廉价克隆）
     let build_app = app.clone();
     let (win, created) = ensure_aux_window(
@@ -1371,7 +1403,7 @@ pub fn open_link_window(
     let build_app = app.clone();
     let build_title = title.clone();
     let build_url = parsed.clone();
-    let geo = aux_window_geometry(&app, (1000.0, 720.0), (420.0, 320.0));
+    let geo = aux_window_geometry(&app, (1000.0, 720.0), (420.0, 320.0), AUX_WINDOW_MARGIN);
     let (win, created) = ensure_aux_window(
         &app,
         crate::WINDOW_LINK,

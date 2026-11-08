@@ -37,7 +37,7 @@ mod tests {
         for (ideal, min) in cases {
             for (size, scale) in mains {
                 for main_pos in origins {
-                    let g = fit_aux_window(size, main_pos, scale, ideal, min);
+                    let g = fit_aux_window(size, main_pos, scale, ideal, min, AUX_WINDOW_MARGIN);
                     assert!(
                         g.size.0 <= size.0 && g.size.1 <= size.1,
                         "子窗口 {:?} 不能比主窗口 {:?} 大（ideal={ideal:?} scale={scale}）",
@@ -74,9 +74,9 @@ mod tests {
             }
         }
         // 装得下时必须**保持设计尺寸 × 主窗口缩放**（不能因为主窗口大就无限放大）
-        let g = fit_aux_window((1600, 1000), (0, 0), 1.0, (780.0, 600.0), (560.0, 420.0));
+        let g = fit_aux_window((1600, 1000), (0, 0), 1.0, (780.0, 600.0), (560.0, 420.0), AUX_WINDOW_MARGIN);
         assert_eq!(g.size, (780, 600), "主窗口够大时应保持设计尺寸");
-        let g = fit_aux_window((3000, 2000), (0, 0), 1.5, (780.0, 600.0), (560.0, 420.0));
+        let g = fit_aux_window((3000, 2000), (0, 0), 1.5, (780.0, 600.0), (560.0, 420.0), AUX_WINDOW_MARGIN);
         assert_eq!(
             g.size,
             (1170, 900),
@@ -84,7 +84,7 @@ mod tests {
         );
         assert_eq!(g.min, (840, 630), "最小尺寸也要按同一缩放换成物理值");
         // 装不下时把边距留够（24 逻辑像素 × 缩放）
-        let g = fit_aux_window((700, 500), (0, 0), 1.0, (780.0, 600.0), (560.0, 420.0));
+        let g = fit_aux_window((700, 500), (0, 0), 1.0, (780.0, 600.0), (560.0, 420.0), AUX_WINDOW_MARGIN);
         assert_eq!(
             g.size,
             (
@@ -92,7 +92,7 @@ mod tests {
                 500 - 2 * AUX_WINDOW_MARGIN as u32
             )
         );
-        let g = fit_aux_window((800, 600), (0, 0), 2.0, (780.0, 600.0), (560.0, 420.0));
+        let g = fit_aux_window((800, 600), (0, 0), 2.0, (780.0, 600.0), (560.0, 420.0), AUX_WINDOW_MARGIN);
         assert_eq!(
             g.size,
             (
@@ -100,6 +100,47 @@ mod tests {
                 600 - 2 * (AUX_WINDOW_MARGIN * 2.0) as u32
             )
         );
+    }
+
+    /// 群任务窗口与主窗口**同尺寸**（用户 2026-11-08：「应该跟主窗口一模一样大」）。
+    ///
+    /// inset=0 是关键：旧口径下子窗口总比主窗口窄 48px，设计尺寸再等于主窗口也只能得到
+    /// 「主窗口 − 48px」。这条同时钉两件事：ideal=主窗口尺寸 + inset=0 时结果完全相等；
+    /// 以及 inset 一旦写回 24，结果立刻收窄（反例自证，证明这条不是恒真）。
+    #[cfg(desktop)]
+    #[test]
+    fn tasks_window_matches_the_main_window_exactly() {
+        use super::{fit_aux_window, AUX_WINDOW_MARGIN};
+        let main = (1000u32, 680u32);
+        let g = fit_aux_window(main, (0, 0), 1.0, (1000.0, 680.0), (360.0, 420.0), 0.0);
+        assert_eq!(g.size, main, "inset=0 + ideal=主窗口 ⇒ 一模一样大");
+        assert_eq!(g.min, (360, 420), "最小尺寸不动（窄窗回退单栏照旧）");
+        // 反例自证：inset 回到常规的 24 ⇒ 结果必须变小，否则上面那条判据在测空气。
+        let padded = fit_aux_window(main, (0, 0), 1.0, (1000.0, 680.0), (360.0, 420.0), AUX_WINDOW_MARGIN);
+        assert_eq!(padded.size, (1000 - 48, 680 - 48), "有衬边时必然窄 48px");
+        assert_ne!(padded.size, g.size, "两种 inset 必须产出不同尺寸");
+    }
+
+    /// 群任务窗口的初始尺寸**只有一处来源**：主窗口在 `tauri.conf.json` 的 width/height。
+    ///
+    /// 纯计算那条只能证明"给对 ideal 就得到对尺寸"，证明不了 `ensure_tasks_window`
+    /// 真的去读了主窗口配置 —— 写死 780×620 时它照样绿。所以这条查接线，并反向禁止
+    /// 第二份数字再出现（同 `recenter_aux_window_actually_uses_the_placement_rules` 的做法）。
+    #[cfg(desktop)]
+    #[test]
+    fn tasks_window_size_comes_from_the_main_window_config() {
+        let src = include_str!("logs.rs");
+        let start = src
+            .find("fn ensure_tasks_window")
+            .expect("ensure_tasks_window 必须还在（改名了就把这条一起改掉）");
+        let body = &src[start..start + src[start..].find("\n}\n").expect("函数收尾") + 3];
+        assert!(body.contains("main_window_design_size("), "必须先读主窗口配置");
+        assert!(body.contains("(360.0, 420.0), 0.0"), "inset 必须是 0（与主窗口同尺寸）");
+        assert!(body.contains("builder.inner_size(w, h)"), "builder 初始尺寸必须来自同一份 design");
+        assert!(!body.contains("780.0, 620.0"), "不许再写死第二份 780×620");
+        assert!(!body.contains("inner_size(780.0"), "不许再写死初始尺寸");
+        // 反空转：切片必须只切到这一个函数（下一个函数是 task_window_group）
+        assert!(!body.contains("fn task_window_group"), "切片吃进了后面的函数 ⇒ 上面几条恒真");
     }
 
     /// 独立窗口**永远不许有一截掉在屏幕外**。
@@ -111,13 +152,13 @@ mod tests {
     #[cfg(desktop)]
     #[test]
     fn aux_windows_are_kept_inside_the_monitor_work_area() {
-        use super::{clamp_pos_into_rect, fit_aux_window};
+        use super::{clamp_pos_into_rect, fit_aux_window, AUX_WINDOW_MARGIN};
         // 主屏工作区 1512×863，顶部让给菜单栏 ⇒ 左上角 y 不是 0 而是 37
         let screen = (0i32, 37i32, 1512u32, 863u32);
 
         // ① 复现用户那一屏：主窗口被拖到屏幕顶上（甚至顶出屏幕），窗外框维持原来的大尺寸。
         let main_pos = (600i32, -120i32);
-        let g = fit_aux_window((700, 400), main_pos, 1.0, (1120.0, 820.0), (480.0, 360.0));
+        let g = fit_aux_window((700, 400), main_pos, 1.0, (1120.0, 820.0), (480.0, 360.0), AUX_WINDOW_MARGIN);
         let raw = g.centered_pos((1120, 820)); // 旧摆法：按主窗口居中，尺寸用真实外框
         assert!(
             raw.1 < screen.1,
