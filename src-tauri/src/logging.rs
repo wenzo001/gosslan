@@ -684,8 +684,13 @@ pub(crate) fn classify_write_failure(e: &std::io::Error) -> Option<&'static str>
 }
 
 /// 上一轮是怎么结束的。**判定依据是"缺席"**：进程被 `kill -9`、OOM killer、
-/// 看门狗强杀、拔电源这几类死法在进程内部**永远留不下任何东西**，能区分它们的
+/// 拔电源这几类死法在进程内部**永远留不下任何东西**，能区分它们的
 /// 只有"有没有崩溃现场块"与"有没有正常退出路标"这两个在场/缺席的组合。
+///
+/// ⚠️ **"我们主动结束"必须与"被外部杀死"分开记**（2026-11-08）：
+/// 重启（走 `----- 正常退出`）、更新安装器接管（`UPDATER_INSTALL_BEGIN`）、
+/// 单实例交接（守卫在插件 setup 里 `exit(0)`）都是**正常路径**，不许混进
+/// `SilentKill` —— 那会让用户在每次双击、每次更新后都看到"上次运行异常退出"。
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum PreviousExit {
     /// 现场文件里什么都没有（首次运行或被清档）
@@ -708,6 +713,19 @@ pub enum PreviousExit {
     /// `code=SIGTERM_RECEIVED` 再走正常退出流程。与 `SilentKill` 分开 ——
     /// 那一类在进程内部留不下任何东西，这一类**留得下**（信号是被捕获的）。
     Sigterm,
+    /// 上一轮是被**更新安装器**结束的：`code=UPDATER_INSTALL_BEGIN` / `UPDATER_RESTART`
+    /// 写在安装器接管之前。这是更新流程的正常一步，既不是崩溃也不含"被杀"的意思。
+    Updater,
+    /// 上一轮是**单实例交接**：新进程写下了 `启动尝试`，在插件 setup 里被单实例守卫
+    /// `cleanup_before_exit()` + `process::exit(0)` 结束 —— 事件循环一行都没跑。
+    /// 2026-11-08 真机形状（pid=43148 只有启动尝试、没有 `BOOT_WINDOW_BUILD_START`）：
+    /// 旧口径把它归进 `SilentKill`，用户每双击一次就多一条"上次异常退出"。
+    SingleInstance,
+    /// 上一轮**进了事件循环**（写过 `BOOT_WINDOW_BUILD_START`），但在 WebView2/主窗口
+    /// 就绪之前就没了：既没有退出路标也没有崩溃块。运行环境初始化失败（例如 WebView2
+    /// 创建超时，那时 panic 钩子可能来不及跑）或外部终止都会长成这样 ⇒ 不硬断言成
+    /// `SilentKill`（"被外部杀死"）。
+    EarlyExit,
 }
 
 /// 上一次运行留给本次启动的结构化报告（启动时算一次，命令只 clone）。
@@ -717,12 +735,20 @@ pub enum PreviousExit {
 #[derive(Clone, Serialize, Debug)]
 #[serde(rename_all = "camelCase")]
 pub struct PreviousRunReport {
-    /// `panic` | `silent_kill` | `startup_failed` | `abort` | `sigterm` | `clean` | `no_history`
+    /// `panic` | `silent_kill` | `startup_failed` | `abort` | `sigterm` | `updater` |
+    /// `single_instance` | `early_exit` | `clean` | `no_history`
     pub kind: String,
     /// 机器码（`BOOT_PREV_*`），用于检索/口述。
     pub code: String,
     /// 上一轮启动时刻（现场文件里的 UTC 文本）。
+    ///
+    /// ⚠️ 这是**起点**，不是结束时刻：一份报告的 `at` 是最后一行的 `----- 启动`。
+    /// 2026-11-08 用户把 `time: 10:21:50` 读成了"10:21 那次结束"——它其实是那一轮
+    /// 的启动时刻（结束发生在 10:53 之后）。结束时刻只能从 `last_seen_at` 靠近。
     pub at: Option<String>,
+    /// 上一轮**最后一条原生行**的时刻（`@YYYY-MM-DD HH:MM:SS`，同 `at` 的 UTC 文本）。
+    /// 用于把"起点"和"最后活着的时刻"分开读，避免把整段运行时长误当成崩溃时刻。
+    pub last_seen_at: Option<String>,
     /// 上一轮的版本号。
     pub version: Option<String>,
     /// 崩溃位置与消息（panic / 分配失败留痕）。
@@ -749,6 +775,7 @@ impl Default for PreviousRunReport {
             kind: "no_history".to_string(),
             code: "BOOT_PREV_NO_HISTORY".to_string(),
             at: None,
+            last_seen_at: None,
             version: None,
             panic: None,
             hang: None,
@@ -809,13 +836,13 @@ fn is_hang_native_line(line: &str) -> bool {
 /// 总是它们之一 ⇒ 真实结束方式被顶成 `NoHistory`，`silent_kill` 变成不可达分支。
 fn is_periodic_diag_native_line(line: &str) -> bool {
     let line = strip_note_prefix(line);
-    line.starts_with("code=RUNTIME_MEM ")
-        || line.starts_with("code=COMMIT_PRESSURE ")
-        // 启动阶段的两条路标（WebView2 创建开始 / 事件循环就绪）也是正交事实：
-        // 进程在就绪后被静默杀掉时，最后一条原生行就会是它们 ⇒ 不剔掉的话
-        // `silent_kill` 又变成不可达分支（与 HANG 族同一个坑）。
-        || line.starts_with("code=BOOT_WINDOW_BUILD_START ")
-        || line.starts_with("code=BOOT_WINDOW_READY ")
+    line.starts_with("code=RUNTIME_MEM ") || line.starts_with("code=COMMIT_PRESSURE ")
+    // ⚠️ `BOOT_WINDOW_BUILD_START` / `BOOT_WINDOW_READY` **不在这里**（2026-11-08 改）：
+    // 它们写在 `----- 启动` **之前**（`lib.rs`：build 之后写前者、`RunEvent::Ready` 写后者，
+    // logger 在 setup 里才建），所以"走到过 logger 的运行"永远不会以它们结尾 ——
+    // 旧注释担心的"静默杀后最后一条是它们"并不成立。反过来，它们正是
+    // `PreviousExit::EarlyExit` 的唯一证据（进程进了事件循环却没到 logger）。剔掉就等于
+    // 把这条分支变成永远不可达的空转检查。
 }
 
 /// 从一行现场文本里取 panic 位置与消息。
@@ -955,6 +982,9 @@ pub fn build_previous_run_report(
         PreviousExit::SilentKill => ("silent_kill", "BOOT_PREV_SILENT_KILL"),
         PreviousExit::Abort => ("abort", "BOOT_PREV_ABORT"),
         PreviousExit::Sigterm => ("sigterm", "BOOT_PREV_SIGTERM"),
+        PreviousExit::Updater => ("updater", "BOOT_PREV_UPDATER"),
+        PreviousExit::SingleInstance => ("single_instance", "BOOT_PREV_SINGLE_INSTANCE"),
+        PreviousExit::EarlyExit => ("early_exit", "BOOT_PREV_EARLY_EXIT"),
         PreviousExit::Clean => ("clean", "BOOT_PREV_CLEAN"),
         PreviousExit::NoHistory => ("no_history", "BOOT_PREV_NO_HISTORY"),
     };
@@ -979,6 +1009,15 @@ pub fn build_previous_run_report(
             .map(|s| s.to_string())
             .filter(|s| !s.is_empty());
     }
+    // 最后一条**属于上一轮**的原生行的时刻。剔除尾部的 `>>> 启动尝试`：它们由下一轮的
+    // bootstrap 写，时间戳比上一轮结束更晚（2026-11-08 真机：10:53:02 结束、14:18:30 启动尝试，
+    // 不剔除就会把"最后活着"读成 14:18）。
+    report.last_seen_at = run
+        .iter()
+        .rev()
+        .filter(|l| !l.starts_with(">>> 启动尝试"))
+        .filter_map(|l| line_utc(l))
+        .next();
     if let Some(p) = run.iter().rev().find_map(|l| parse_panic_line(l)) {
         report.ble_suspect = panic_ble_suspect(&p);
         report.reason = panic_reason(&p);
@@ -1021,8 +1060,12 @@ pub fn classify_previous_exit(native_lines: &[String]) -> PreviousExit {
     }
     let native_lines = &lines[..end];
     if native_lines.is_empty() {
-        // 只剩启动尝试 ⇒ 进程起来过、连 logger 都没走到就没了（被单实例守卫顶掉 / 崩在初始化前）。
-        return PreviousExit::SilentKill;
+        // 只剩启动尝试 ⇒ 进程在**事件循环之前**就没了。我们自己的代码里唯一会这样退出的路径是
+        // 单实例守卫：插件 setup 里 `cleanup_before_exit()` + `process::exit(0)`，连
+        // `BOOT_WINDOW_BUILD_START`（`build()` 之后才写）都写不出来。2026-11-08 真机现场正是
+        // 这个形状（pid=43148 只有启动尝试，18 秒后另一次启动成功）。它是**正常交接**，
+        // 不是事故 ⇒ 不许再归进 `SilentKill`（旧口径让用户每双击一次就多一条"上次异常退出"）。
+        return PreviousExit::SingleInstance;
     }
     if native_lines.iter().any(|l| l.starts_with("===== 崩溃现场")) {
         return PreviousExit::Panic;
@@ -1058,6 +1101,16 @@ pub fn classify_previous_exit(native_lines: &[String]) -> PreviousExit {
     {
         return PreviousExit::Sigterm;
     }
+    // 更新安装器接管：`UPDATER_INSTALL_BEGIN` / `UPDATER_RESTART` 写在安装器结束本进程**之前**
+    // （`commands/updater.rs`）。这是我们自己走的更新流程，不是崩溃、也不是"被杀"。
+    if native_lines
+        .iter()
+        .rev()
+        .take_while(|l| !l.starts_with("----- 启动 "))
+        .any(|l| l.contains("code=UPDATER_INSTALL_BEGIN") || l.contains("code=UPDATER_RESTART"))
+    {
+        return PreviousExit::Updater;
+    }
     // 只看**最后一条**：更早的 BOOT_FAILED 后面若已经有正常退出路标，那是后来恢复过了。
     if native_lines
         .last()
@@ -1067,7 +1120,21 @@ pub fn classify_previous_exit(native_lines: &[String]) -> PreviousExit {
     }
     match native_lines.last() {
         Some(l) if l.starts_with("----- 正常退出 ") => PreviousExit::Clean,
-        Some(l) if l.starts_with("----- 启动 ") => PreviousExit::SilentKill,
+        // 走过 logger（有启动路标）却没留下退出路标 ⇒ 静默消失。不能只看 `last()`：
+        // HANG / 诊断族被剔掉后，启动之后写的 `BOOT_WINDOW_BUILD_START` 等路标会浮到最后
+        // （2026-11-08 真机现场正是 启动 → BUILD_START → HANG 的形状）。
+        _ if native_lines.iter().any(|l| l.starts_with("----- 启动 ")) => {
+            PreviousExit::SilentKill
+        }
+        // 进了事件循环、但主窗口/WebView2 还没就绪就没了（`BOOT_WINDOW_BUILD_START` 写在
+        // `build()` 之后、`app.run` 之前）。这个窗口里只有"环境初始化失败"与"外部终止"两种，
+        // 硬说成 `SilentKill` 等于替用户断言"被杀了" ⇒ 单独记。
+        _ if native_lines
+            .iter()
+            .any(|l| l.contains("code=BOOT_WINDOW_BUILD_START")) =>
+        {
+            PreviousExit::EarlyExit
+        }
         _ => PreviousExit::NoHistory,
     }
 }
@@ -1785,26 +1852,62 @@ impl Logger {
             // 上次收尾判定：把"在场/缺席"两个信号合成一句结论写进同一块文本里。
             // 级别沿用旧规则（有崩溃块 ⇒ error），新信息只加文本，不动既有判据的形状。
             let verdict_kind = classify_previous_exit(&native);
-            let verdict = match verdict_kind {
-                PreviousExit::Clean => "上次收尾判定：正常退出（有退出路标）",
-                PreviousExit::Panic => "上次收尾判定：panic 现场（见上面的崩溃现场块）",
+            let prev_last_seen = self
+                .previous_report
+                .get()
+                .and_then(|r| r.last_seen_at.clone());
+            let mut verdict = match verdict_kind {
+                PreviousExit::Clean => "上次收尾判定：正常退出（有退出路标）".to_string(),
+                PreviousExit::Panic => "上次收尾判定：panic 现场（见上面的崩溃现场块）".to_string(),
                 PreviousExit::StartupFailed => {
-                    "上次收尾判定：启动被安全中止（身份/数据库校验失败；数据库未被修改）"
+                    "上次收尾判定：启动被安全中止（身份/数据库校验失败；数据库未被修改）".to_string()
                 }
                 PreviousExit::SilentKill => concat!(
-                    "上次收尾判定：异常终止 —— 只有启动路标，既无正常退出路标也无崩溃现场。",
-                    "可能是强杀（kill -9 / 看门狗 / 拔电）或 OOM；这几类死法在进程内部留不下任何东西，",
-                    "只能这样按缺席归类"
-                ),
+                    "上次收尾判定：没有留下退出记录 —— 既无正常退出路标，也无崩溃现场。",
+                    "系统关机、任务管理器/安全软件强制结束、断电、内存耗尽都会长成这样；",
+                    "这几类死法在进程内部留不下任何东西，只能按缺席归类"
+                )
+                .to_string(),
                 PreviousExit::Abort => {
                     "上次收尾判定：分配器 abort（见上面的「重分配失败」行；请求字节数就写在里面）"
+                        .to_string()
                 }
                 PreviousExit::Sigterm => concat!(
                     "上次收尾判定：被外部终止（SIGTERM）—— 信号被捕获并留痕",
                     "（code=SIGTERM_RECEIVED），随后走了正常退出流程。不是崩溃"
-                ),
-                PreviousExit::NoHistory => "上次收尾判定：现场文件里没有可判定的路标",
+                )
+                .to_string(),
+                PreviousExit::Updater => concat!(
+                    "上次收尾判定：由更新安装器结束（UPDATER_INSTALL_BEGIN 写在接管之前）——",
+                    "这是更新流程的正常一步，不是崩溃"
+                )
+                .to_string(),
+                PreviousExit::SingleInstance => concat!(
+                    "上次收尾判定：单实例交接 —— 另一次启动由已在运行的实例接管，",
+                    "本进程在事件循环之前就退出了（正常路径，不是崩溃）"
+                )
+                .to_string(),
+                PreviousExit::EarlyExit => concat!(
+                    "上次收尾判定：启动早期结束 —— 已进事件循环，但主窗口/WebView2 还没就绪就没了。",
+                    "要么是运行环境初始化失败（如 WebView2 创建超时），要么被外部结束；",
+                    "没有退出路标也没有崩溃块，不判定为「被杀」"
+                )
+                .to_string(),
+                PreviousExit::NoHistory => "上次收尾判定：现场文件里没有可判定的路标".to_string(),
             };
+            // 起点（`----- 启动`）与"最后活着"是两件事：2026-11-08 用户把报告里的
+            // `time: 10:21:50` 读成了"10:21 那次结束"，而它其实是那一轮的**启动**时刻。
+            if matches!(
+                verdict_kind,
+                PreviousExit::Panic
+                    | PreviousExit::SilentKill
+                    | PreviousExit::EarlyExit
+                    | PreviousExit::Abort
+            ) {
+                if let Some(t) = prev_last_seen.as_deref() {
+                    verdict.push_str(&format!("（最后记录到 {t}，此后没有任何路标）"));
+                }
+            }
             let verdict_code = match verdict_kind {
                 PreviousExit::Clean => "BOOT_PREV_CLEAN",
                 PreviousExit::Panic => "BOOT_PREV_PANIC",
@@ -1812,6 +1915,9 @@ impl Logger {
                 PreviousExit::SilentKill => "BOOT_PREV_SILENT_KILL",
                 PreviousExit::Abort => "BOOT_PREV_ABORT",
                 PreviousExit::Sigterm => "BOOT_PREV_SIGTERM",
+                PreviousExit::Updater => "BOOT_PREV_UPDATER",
+                PreviousExit::SingleInstance => "BOOT_PREV_SINGLE_INSTANCE",
+                PreviousExit::EarlyExit => "BOOT_PREV_EARLY_EXIT",
                 PreviousExit::NoHistory => "BOOT_PREV_NO_HISTORY",
             };
             let verdict_line = format!("{verdict} code={verdict_code}");
@@ -1825,7 +1931,8 @@ impl Logger {
                 PreviousExit::Panic
                 | PreviousExit::SilentKill
                 | PreviousExit::Abort
-                | PreviousExit::StartupFailed => Level::Warn,
+                | PreviousExit::StartupFailed
+                | PreviousExit::EarlyExit => Level::Warn,
                 _ => Level::Info,
             };
             if let Err(r) = self.append_file(now_ms(), v_level, "boot", &verdict_line) {
@@ -1959,6 +2066,15 @@ pub(crate) fn format_utc(ms: i64) -> String {
         dt.minute(),
         dt.second()
     )
+}
+
+/// 原生行尾部的 UTC 时刻：`…  @2026-11-08 10:53:02 版本 …` ⇒ `2026-11-08 10:53:02`。
+/// 解析不出来返回 `None`（不拿当前时间凑，与 [`parse_utc_to_ms`] 同一口径）。
+fn line_utc(text: &str) -> Option<String> {
+    let rest = text.rsplit_once('@')?.1;
+    let (utc, _) = rest.split_once(" 版本 ").unwrap_or((rest, ""));
+    let utc = utc.trim();
+    parse_utc_to_ms(utc).map(|_| utc.to_string())
 }
 
 /// UTC `YYYY-MM-DD HH:MM:SS` → Unix 毫秒。解析不出来返回 `None`，不拿当前时间凑。
@@ -2384,13 +2500,56 @@ mod tests {
             classify_previous_exit(&mk(&["----- 启动 a", ">>> 启动尝试：进程已起"])),
             PreviousExit::SilentKill
         );
-        // 只有 bootstrap 行 ⇒ 起来过但没走到 logger ⇒ 异常终止，而不是"没有历史"
+        // **只有** bootstrap 行 ⇒ 进程在事件循环之前就退了：这是单实例守卫那条正常路径
+        // （2026-11-08 真机 pid=43148），不是"被外部杀死"。
         assert_eq!(
             classify_previous_exit(&mk(&[">>> 启动尝试：进程已起"])),
+            PreviousExit::SingleInstance
+        );
+        // 反向：进了事件循环（写过 BOOT_WINDOW_BUILD_START）却没到 logger ⇒ 早期结束，
+        // 也不许借用 SilentKill 的"被杀"口吻。
+        assert_eq!(
+            classify_previous_exit(&mk(&[
+                ">>> 启动尝试：进程已起",
+                ">>> code=BOOT_WINDOW_BUILD_START 事件循环启动（WebView2 创建在此步）",
+            ])),
+            PreviousExit::EarlyExit
+        );
+        // 反向：BOOT_WINDOW_BUILD_START 只说明"进过事件循环"，后面已经有启动路标时，
+        // 结束形式仍按最后一条判（不许被早期路标抢走）。
+        assert_eq!(
+            classify_previous_exit(&mk(
+                &[">>> code=BOOT_WINDOW_BUILD_START x", "----- 启动 a",]
+            )),
             PreviousExit::SilentKill
         );
-        // 反向：空输入仍是"首次运行/被清档"，不许被上面那条改写成异常终止
+        // 反向：空输入仍是"首次运行/被清档"，不许被上面那条改写成任何"结束"类
         assert_eq!(classify_previous_exit(&mk(&[])), PreviousExit::NoHistory);
+    }
+
+    /// 2026-11-08（Windows 真机）：更新安装器接管前会写 `UPDATER_INSTALL_BEGIN`。
+    /// 旧口径里它落到 `NoHistory`（横幅不弹、日志也没有结论）；现在必须单列成 `Updater`，
+    /// 既不能混成 `SilentKill`，也不能混成"没有历史"。
+    #[test]
+    fn updater_taking_over_is_its_own_kind() {
+        let mk = |s: &[&str]| -> Vec<String> { s.iter().map(|x| x.to_string()).collect() };
+        assert_eq!(
+            classify_previous_exit(&mk(&[
+                "----- 启动 a",
+                ">>> code=UPDATER_INSTALL_BEGIN version=5.19.11 pid=36200（这一步之后进程被安装器结束属正常）",
+            ])),
+            PreviousExit::Updater
+        );
+        // 反向：上一轮自己的 UPDATER 路标之后又有启动路标 ⇒ 那一段已翻篇，不许把旧路标
+        // 套到新一轮头上（`take_while` 只看最后一个启动路标之后的行）。
+        assert_eq!(
+            classify_previous_exit(&mk(&[
+                "----- 启动 a",
+                ">>> code=UPDATER_INSTALL_BEGIN version=1.0.0 pid=1",
+                "----- 启动 b",
+            ])),
+            PreviousExit::SilentKill
+        );
     }
 
     /// 审计 A5（2026-10-31 隔离 HOME 实跑复现）：全新安装首启曾被判成 `silent_kill`，
@@ -2398,8 +2557,12 @@ mod tests {
     /// 修法是给 bootstrap 那行带上 `pid=`，用归属把"本轮自己的早期痕迹"和
     /// "上一轮死在 `Logger::new` 之前"分开（写入点见 `lib.rs` 的 crash-bootstrap）。
     /// **三格一起钉**：只钉第一格等于允许后人"顺手把横幅整个关掉"。
+    ///
+    /// 2026-11-08 追加：那个"死在 logger 之前"的形状已被真机定位为**单实例交接**
+    /// （守卫在插件 setup 里 `exit(0)`，连 `BOOT_WINDOW_BUILD_START` 都写不出来）⇒
+    /// 现在归 `single_instance`（不弹横幅），不再借 `silent_kill` 的"被杀"口吻。
     #[test]
-    fn first_run_is_no_history_while_a_foreign_bootstrap_still_reads_silent_kill() {
+    fn first_run_is_no_history_while_a_foreign_bootstrap_reads_single_instance() {
         let own = format!("pid={}", std::process::id());
         let crash = std::path::Path::new("crash.log");
         let dir = std::path::Path::new(".");
@@ -2421,20 +2584,22 @@ mod tests {
             "首启必须是 no_history（`shouldShowCrashNotice` 对它返回 false）"
         );
 
-        // ② 上一轮真的死在 logger 之前（启动尝试行是**别的 pid**）⇒ 检测能力必须留着
+        // ② 上一轮真的死在 logger 之前（启动尝试行是**别的 pid**）⇒ 检测能力必须留着，
+        //    但归到"单实例交接"这一格（不是 no_history，也不是 silent_kill）
         let dead = vec![
             ">>> 启动尝试：进程已起，logger 尚未建立 pid=999999".to_string(),
             marker.clone(),
         ];
         assert!(
             !last_run_slice(&dead).is_empty(),
-            "外来的启动尝试必须仍被切成『上一轮』，否则静默死亡再也读不到"
+            "外来的启动尝试必须仍被切成『上一轮』，否则早期退出再也读不到"
         );
+        let r = build_previous_run_report(&dead, crash, dir);
         assert_eq!(
-            build_previous_run_report(&dead, crash, dir).kind,
-            "silent_kill",
-            "真·早期死亡不许被降级成 no_history"
+            r.kind, "single_instance",
+            "真·早期退出不许被降级成 no_history，也不许冒称 silent_kill"
         );
+        assert_eq!(r.code, "BOOT_PREV_SINGLE_INSTANCE");
 
         // ③ 旧版本留下的现场文件（那一行没有 pid）⇒ 按"外来"处理，与改动前逐字同形
         let legacy = vec![
@@ -2443,9 +2608,39 @@ mod tests {
         ];
         assert_eq!(
             build_previous_run_report(&legacy, crash, dir).kind,
-            "silent_kill",
+            "single_instance",
             "读不到 pid 时不许猜成『本轮自己』"
         );
+    }
+
+    /// 2026-11-08 真机：报告里的 `at` 是**上一轮的启动时刻**（用户把它读成了崩溃时刻）。
+    /// 结束时刻只能从 `last_seen_at` 靠近，并且必须剔除尾部属于**下一轮**的启动尝试行。
+    #[test]
+    fn report_last_seen_is_the_previous_runs_last_line_not_the_next_bootstrap() {
+        let dir = std::env::temp_dir().join(format!("gosslan-last-seen-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let crash = dir.join("c-crash.log");
+        std::fs::write(
+            &crash,
+            concat!(
+                "----- 启动 2026-11-08 02:21:50 版本 5.19.11 · windows-x86_64 · release\n",
+                ">>> code=BOOT_WINDOW_BUILD_START 事件循环启动（WebView2 创建在此步）  @2026-11-08 02:21:51 版本 5.19.11\n",
+                ">>> HANG scope=main_thread seconds=3  @2026-11-08 02:53:01 版本 5.19.11\n",
+                ">>> 启动尝试：进程已起，logger 尚未建立 pid=43148  @2026-11-08 06:18:30 版本 5.19.11\n",
+                "----- 启动 2026-11-08 06:18:49 版本 5.19.11 · windows-x86_64 · release\n",
+            ),
+        )
+        .unwrap();
+        let raw = read_tail_lines(&crash, PREV_CRASH_TAIL_BYTES);
+        let r = build_previous_run_report(&raw, &crash, &dir);
+        assert_eq!(r.at.as_deref(), Some("2026-11-08 02:21:50"), "起点");
+        assert_eq!(
+            r.last_seen_at.as_deref(),
+            Some("2026-11-08 02:53:01"),
+            "最后一条属于上一轮的行；下一轮的启动尝试（06:18:30）不许冒充"
+        );
+        assert_eq!(r.kind, "silent_kill");
     }
 
     /// 10-21 真机现场：`>>> 重分配失败：请求 326350 字节 … ⇒ 分配器即将 abort`。
@@ -2525,23 +2720,24 @@ mod tests {
             .map(|e| e.message.clone())
             .collect::<Vec<_>>()
             .join("\n");
-        assert!(text3.contains("异常终止"), "实际文本：{text3}");
+        assert!(text3.contains("没有留下退出记录"), "实际文本：{text3}");
         assert!(
             text3.contains("code=BOOT_PREV_SILENT_KILL"),
-            "异常终止也要有可检索错误码，实际文本：{text3}"
+            "没有退出记录也要有可检索错误码，实际文本：{text3}"
         );
         let _ = std::fs::remove_dir_all(&clean);
         let _ = std::fs::remove_dir_all(&kill);
     }
 
     /// 全新安装的**真实**形状：现场文件里只有本进程自己的「启动尝试 pid=<本进程>」。
-    /// 这一轮既不该弹横幅（A5 已保证报告是 `no_history`），也不该往日志文件落「异常终止」——
+    /// 这一轮既不该弹横幅（A5 已保证报告是 `no_history`），也不该往日志文件落"异常终止"——
     /// 2026-10-31 复核发现只修了报告那一侧，这块判定仍按 raw 过滤 ⇒ 两处说反话。
     ///
-    /// 反控：把 pid 换成别的值（上一轮真的死在 logger 之前）⇒ 判定必须照旧是异常终止，
-    /// 否则这条修复就是"把静默死亡检测顺手关掉"。
+    /// 反控（2026-11-08 改口径）：把 pid 换成别的值（上一轮真的死在 logger 之前）⇒ 判定必须
+    /// 仍**有结论**（不许被顺手关掉），但结论是"单实例交接"这一格 ——
+    /// 不许再冒称"异常终止/被杀"（那是把正常交接说成事故）。
     #[test]
-    fn fresh_install_writes_no_silent_kill_verdict_while_a_foreign_bootstrap_still_does() {
+    fn fresh_install_writes_no_verdict_while_a_foreign_bootstrap_reads_as_handoff() {
         let verdict_text = |dir: &std::path::Path, crash: &str| -> (String, String) {
             let _ = std::fs::remove_dir_all(dir);
             std::fs::create_dir_all(dir).unwrap();
@@ -2565,7 +2761,7 @@ mod tests {
             &format!(">>> 启动尝试：进程已起，logger 尚未建立 pid={own}\n"),
         );
         assert!(
-            !mem.contains("异常终止"),
+            !mem.contains("没有留下退出记录"),
             "全新安装不该出现异常终止判定：{mem}"
         );
         assert!(
@@ -2579,8 +2775,12 @@ mod tests {
             ">>> 启动尝试：进程已起，logger 尚未建立 pid=999999\n",
         );
         assert!(
-            mem2.contains("异常终止") && disk2.contains("BOOT_PREV_SILENT_KILL"),
-            "外来 pid 的启动尝试必须仍判异常终止（检测能力不许被顺手关掉）：mem={mem2} disk={disk2}"
+            mem2.contains("单实例交接") && disk2.contains("BOOT_PREV_SINGLE_INSTANCE"),
+            "外来 pid 的启动尝试必须仍判出结论（检测能力不许被顺手关掉）：mem={mem2} disk={disk2}"
+        );
+        assert!(
+            !mem2.contains("BOOT_PREV_SILENT_KILL") && !disk2.contains("BOOT_PREV_SILENT_KILL"),
+            "单实例交接不许被写成『被杀』：mem={mem2} disk={disk2}"
         );
 
         let _ = std::fs::remove_dir_all(&dir_fresh);

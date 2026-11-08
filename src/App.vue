@@ -201,6 +201,17 @@ function restartApp() {
 }
 
 /**
+ * 「修复 WebView2 运行时」：环境类启动失败（`reason: ENV_WEBVIEW_CREATE_TIMEOUT`）的
+ * 可执行指引。打开微软官方的 WebView2 下载页（Evergreen Bootstrapper 与修复说明都在那一页），
+ * 不替用户静默做任何安装动作 —— 装什么、装哪一档应由用户决定。
+ */
+function fixWebviewRuntime() {
+  void api
+    .openLinkWindow("https://developer.microsoft.com/microsoft-edge/webview2/", "WebView2")
+    .catch((e) => reportAuxFailure(e, t("common.operationFail")));
+}
+
+/**
  * 启动对账：前端打包版本 vs 后端 `APP_VERSION`。
  *
  * 只在正式构建里做（开发时 Vite 用磁盘前端、Cargo 用工作区版本，二者短暂不同是正常的，
@@ -335,6 +346,7 @@ onUnmounted(stopWatchdogTimers);
     @open-logs="openCrashLogs"
     @restart="restartApp"
     @re-enable-ble="reEnableBluetoothFromNotice"
+    @fix-webview="fixWebviewRuntime"
     @dismiss="crashDismissed = true"
   />
   <HangNotice

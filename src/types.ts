@@ -606,11 +606,20 @@ export interface HangDetail {
  * 启动时由后端从现场文件算一次；前端只读字段，不解析日志文本。
  */
 export interface PreviousRunReport {
-  /** panic | abort | silent_kill | startup_failed | sigterm | clean | no_history */
+  /**
+   * panic | abort | silent_kill | startup_failed | sigterm | updater | single_instance |
+   * early_exit | clean | no_history
+   */
   kind: string;
   /** BOOT_PREV_* */
   code: string;
+  /**
+   * 上一轮**启动**时刻。⚠️ 不是结束时刻：报告取的是最后一条 `----- 启动` 行的时间。
+   * 结束时刻只能从 `lastSeenAt` 靠近。
+   */
   at: string | null;
+  /** 上一轮最后一条原生行的时刻（结束时刻的下界）；进程静默消失时这是唯一的时间证据。 */
+  lastSeenAt?: string | null;
   version: string | null;
   panic: PanicDetail | null;
   hang: HangDetail | null;

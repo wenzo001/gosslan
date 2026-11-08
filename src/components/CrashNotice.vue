@@ -15,12 +15,36 @@ defineEmits<{
   openLogs: [];
   restart: [];
   reEnableBle: [];
+  fixWebview: [];
   dismiss: [];
 }>();
 
+/**
+ * 运行环境初始化失败（WebView2 创建超时）不是我们的代码缺陷：后端给了机器归因码
+ * `ENV_WEBVIEW_CREATE_TIMEOUT`，标题与正文都按"环境"口径说，并给一个可执行的修复入口。
+ * 2026-11-08 用户要求："兜不住的必须准确标成环境原因，语气不能像我们的 bug"。
+ */
+const isEnvFailure = computed(() => props.report.reason === "ENV_WEBVIEW_CREATE_TIMEOUT");
+/** 外部终止 / 启动早期结束：不是崩溃，也不是我们的缺陷。 */
+const isExternal = computed(
+  () =>
+    !isEnvFailure.value &&
+    (props.report.kind === "silent_kill" || props.report.kind === "early_exit"),
+);
+
+const title = computed(() =>
+  isEnvFailure.value
+    ? t("crash.titleEnv")
+    : isExternal.value
+      ? t("crash.titleExternal")
+      : t("crash.title"),
+);
+
 const body = computed(() => {
   const r = props.report;
+  if (isEnvFailure.value) return t("crash.envWebviewTimeout");
   if (r.kind === "silent_kill") return t("crash.silentKill");
+  if (r.kind === "early_exit") return t("crash.earlyExit");
   if (r.kind === "startup_failed") return t("crash.startupFailed");
   if (r.kind === "abort") return t("crash.abort");
   const base = t("crash.body", {
@@ -48,14 +72,25 @@ const extra = computed(() => {
   <div class="crash-notice" :class="{ 'crash-notice--mobile': mobile }">
     <section class="crash-card" role="alert" aria-live="polite">
       <header class="crash-head">
-        <span class="crash-title">{{ t("crash.title") }}</span>
+        <span class="crash-title">{{ title }}</span>
         <button class="crash-close" type="button" :aria-label="t('crash.dismiss')" @click="$emit('dismiss')">
           ×
         </button>
       </header>
       <p class="crash-body">{{ body }}</p>
+      <p v-if="report.lastSeenAt" class="crash-lastseen">
+        {{ t("crash.lastSeen", { time: report.lastSeenAt }) }}
+      </p>
       <p v-if="extra" class="crash-extra">{{ extra }}</p>
       <div class="crash-actions">
+        <button
+          v-if="isEnvFailure"
+          type="button"
+          class="crash-btn crash-btn--primary"
+          @click="$emit('fixWebview')"
+        >
+          {{ t("crash.fixWebview") }}
+        </button>
         <button type="button" class="crash-btn" @click="$emit('copy')">{{ t("crash.copy") }}</button>
         <button type="button" class="crash-btn" @click="$emit('openLogs')">
           {{ t("crash.openLogs") }}
@@ -148,6 +183,12 @@ const extra = computed(() => {
 }
 .crash-extra {
   margin: 6px 0 0;
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--gosslan-text-2);
+}
+.crash-lastseen {
+  margin: 4px 0 0;
   font-size: 12px;
   line-height: 1.5;
   color: var(--gosslan-text-2);

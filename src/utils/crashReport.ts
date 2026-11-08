@@ -11,7 +11,10 @@ export function formatCrashReport(r: PreviousRunReport): string {
     "Gosslan 上一轮运行报告 / previous run report",
     `code: ${r.code}`,
     `kind: ${r.kind}`,
-    `time: ${r.at ?? "(unknown)"}`,
+    // `at` 是**起点**、`last_seen` 是最后一条现场记录。分开写是因为 2026-11-08 用户把
+    // `time: 10:21:50` 读成了"10:21 那次结束"（其实那一轮那时才刚启动）。
+    `started_at: ${r.at ?? "(unknown)"}`,
+    `last_seen: ${r.lastSeenAt ?? "(unknown)"}`,
     `version: ${r.version ?? "(unknown)"}`,
   ];
   if (r.panic) {
@@ -32,9 +35,23 @@ export function formatCrashReport(r: PreviousRunReport): string {
   return lines.join("\n");
 }
 
-/** 这份报告该不该在界面上提示（clean / no_history 不打扰）。 */
+/**
+ * 这份报告该不该在界面上提示。
+ *
+ * - `clean`（正常退出）/ `no_history`（没有可判定路标）不打扰；
+ * - `updater`（更新安装器接管）/ `single_instance`（单实例交接）/ `sigterm`（外部发的
+ *   正常终止信号）都是**正常路径**，也不打扰 —— 2026-11-08 用户要求："我们主动结束"
+ *   不能和"被外部杀死"混成一个提示；
+ * - `early_exit`（进了事件循环却没到 logger）是真实异常，要提示。
+ */
 export function shouldShowCrashNotice(kind: string): boolean {
-  return kind === "panic" || kind === "silent_kill" || kind === "startup_failed" || kind === "abort";
+  return (
+    kind === "panic" ||
+    kind === "silent_kill" ||
+    kind === "startup_failed" ||
+    kind === "abort" ||
+    kind === "early_exit"
+  );
 }
 
 /** 复制到剪贴板：优先异步 API，失败回退到隐藏 textarea（WKWebView 下也可靠）。 */
