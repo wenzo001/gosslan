@@ -733,6 +733,12 @@ pub struct PreviousRunReport {
     pub recent_panic_count: u32,
     /// 崩溃点是否落在蓝牙模块（决定本次是否暂停蓝牙自动开启）。
     pub ble_suspect: bool,
+    /// panic 的机器归因码（只认证据齐备的类别，其余 `None`）。
+    ///
+    /// 2026-11-08 真机：Windows 上的 `failed to create webview`（`HRESULT 0x800705B4`
+    /// 超时）发生在 tauri `setup()` 第一步 —— 比我们的 setup hook 更早，业务代码一行
+    /// 都还没跑；它和业务 panic 混在同一个 `BOOT_PREV_PANIC` 里就说不清是谁的问题。
+    pub reason: Option<String>,
     pub crash_log: String,
     pub log_dir: String,
 }
@@ -748,6 +754,7 @@ impl Default for PreviousRunReport {
             hang: None,
             recent_panic_count: 0,
             ble_suspect: false,
+            reason: None,
             crash_log: String::new(),
             log_dir: String::new(),
         }
@@ -802,7 +809,13 @@ fn is_hang_native_line(line: &str) -> bool {
 /// 总是它们之一 ⇒ 真实结束方式被顶成 `NoHistory`，`silent_kill` 变成不可达分支。
 fn is_periodic_diag_native_line(line: &str) -> bool {
     let line = strip_note_prefix(line);
-    line.starts_with("code=RUNTIME_MEM ") || line.starts_with("code=COMMIT_PRESSURE ")
+    line.starts_with("code=RUNTIME_MEM ")
+        || line.starts_with("code=COMMIT_PRESSURE ")
+        // 启动阶段的两条路标（WebView2 创建开始 / 事件循环就绪）也是正交事实：
+        // 进程在就绪后被静默杀掉时，最后一条原生行就会是它们 ⇒ 不剔掉的话
+        // `silent_kill` 又变成不可达分支（与 HANG 族同一个坑）。
+        || line.starts_with("code=BOOT_WINDOW_BUILD_START ")
+        || line.starts_with("code=BOOT_WINDOW_READY ")
 }
 
 /// 从一行现场文本里取 panic 位置与消息。
@@ -833,6 +846,21 @@ fn ble_marker(s: &str) -> bool {
 
 fn panic_ble_suspect(d: &PanicDetail) -> bool {
     ble_marker(&d.location) || ble_marker(&d.message)
+}
+
+/// WebView2 环境创建超时（Windows `HRESULT 0x800705B4` = `ERROR_TIMEOUT`）。
+///
+/// 发生位置是 tauri `setup()` 的第一步
+/// （`WebViewWindowBuilder::from_config(...).build()?`），比本应用的 `.setup(...)`
+/// 更早 ⇒ 现场里不会有任何本应用的启动日志。2026-11-08 真机：进程起来 130 s 后
+/// 才 panic，message 里带 `failed to create webview` 与 `0x800705B4`。
+pub const REASON_WEBVIEW_CREATE_TIMEOUT: &str = "ENV_WEBVIEW_CREATE_TIMEOUT";
+
+/// panic 的机器归因码：只认**证据齐备**的那一类，其余返回 `None`（不猜）。
+fn panic_reason(d: &PanicDetail) -> Option<String> {
+    let msg = d.message.to_ascii_lowercase();
+    let webview_timeout = msg.contains("failed to create webview") || msg.contains("0x800705b4");
+    webview_timeout.then(|| REASON_WEBVIEW_CREATE_TIMEOUT.to_string())
 }
 
 fn hang_ble_suspect(op: &str) -> bool {
@@ -953,6 +981,7 @@ pub fn build_previous_run_report(
     }
     if let Some(p) = run.iter().rev().find_map(|l| parse_panic_line(l)) {
         report.ble_suspect = panic_ble_suspect(&p);
+        report.reason = panic_reason(&p);
         report.panic = Some(p);
     }
     report.hang = parse_hang(run);
@@ -3563,6 +3592,34 @@ mod tests {
         assert!(r.ble_suspect);
         assert_eq!(r.recent_panic_count, 1);
         assert_eq!(r.crash_log, "/x/crash.log");
+    }
+
+    /// 2026-11-08 真机：WebView2 创建超时必须标成环境类，普通业务 panic 不许被误标。
+    ///
+    /// panic 发生在 tauri `setup()` 第一步（建 config 窗口），比本应用的 setup hook 更早，
+    /// 现场里不会有任何本应用的启动日志 —— 这条判据是给下一轮报告"分清是谁的问题"用的。
+    #[test]
+    fn previous_run_report_marks_webview_create_timeout_as_env() {
+        let raw = lines(&[
+            "----- 启动 2026-11-08 07:20:28 版本 5.19.11 · windows-x86_64 · release · 设备 [dev:x] · 运行 aa -----",
+            ">>> 启动尝试 pid=31116",
+            ">>> panic @ C:\\Users\\runneradmin\\.cargo\\registry\\src\\index.crates.io-1949cf8c6b5b557f\\tauri-2.12.5\\src\\app.rs:1444:11：Failed to setup app: runtime error: failed to create webview: WebView2 error: WindowsError(Error { code: HRESULT(0x800705B4), message: \"由于超时时间已过，该操作返回。\" })",
+            "----- 启动 2026-11-08 10:21:50 版本 5.19.11 · windows-x86_64 · release · 设备 [dev:x] · 运行 bb -----",
+        ]);
+        let r =
+            build_previous_run_report(&raw, std::path::Path::new("c"), std::path::Path::new("d"));
+        assert_eq!(r.kind, "panic");
+        assert_eq!(r.code, "BOOT_PREV_PANIC");
+        assert_eq!(r.reason.as_deref(), Some(REASON_WEBVIEW_CREATE_TIMEOUT));
+        // 反例：普通业务 panic 不带归因码（"不猜"）。
+        let other = lines(&[
+            "----- 启动 2026-11-08 07:20:28 版本 5.19.11 · windows-x86_64 · release · 设备 [dev:x] · 运行 aa -----",
+            ">>> panic @ src/network/x.rs:10:5：boom",
+            "----- 启动 2026-11-08 10:21:50 版本 5.19.11 · windows-x86_64 · release · 设备 [dev:x] · 运行 bb -----",
+        ]);
+        let r =
+            build_previous_run_report(&other, std::path::Path::new("c"), std::path::Path::new("d"));
+        assert_eq!(r.reason, None, "普通 panic 不许被标成环境类");
     }
 
     #[test]

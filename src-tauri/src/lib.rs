@@ -995,7 +995,18 @@ pub fn run() {
             std::process::exit(1);
         }
     };
+    // WebView2 创建发生在事件循环 `Ready` 里（tauri `setup()` 第一步建 config 窗口），
+    // 比我们的 `.setup(...)` 更早；它超时时 `RunEvent::Ready` 永远不到。这两条路标是
+    // "我们自己的启动路径"与"运行环境初始化失败"的分界（2026-11-08 真机
+    // `HRESULT 0x800705B4`：进程起来 130 s 后才 panic，现场里没有一行本应用的启动日志）。
+    crate::logging::crash_note(
+        ">>> code=BOOT_WINDOW_BUILD_START 事件循环启动（WebView2 创建在此步）",
+    );
     app.run(|app_handle, event| {
+        // 走到这里说明建窗口/WebView2 都成功了（上一轮那次超时会停在 BUILD_START）。
+        if matches!(event, tauri::RunEvent::Ready) {
+            crate::logging::crash_note(">>> code=BOOT_WINDOW_READY 主窗口与 WebView2 已创建");
+        }
         // 正常退出路标。为什么必须有它：现场文件此前只有两种行（"启动"与"崩溃现场"），
         // 于是"最后一条是启动"被当成"上次不是 panic 死的" —— 但这句话把两种完全不同的事
         // 混成了一个：**用户自己正常退了** 和 **被 kill -9 / OOM / 看门狗强杀**。

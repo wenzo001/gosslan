@@ -18,6 +18,8 @@ export function formatCrashReport(r: PreviousRunReport): string {
     lines.push(`panic: ${r.panic.location}`);
     if (r.panic.message) lines.push(`message: ${r.panic.message}`);
   }
+  // 只写后端能确凿给出的归因码（区分"我们自己的代码"与"运行环境初始化失败"）。
+  if (r.reason) lines.push(`reason: ${r.reason}`);
   if (r.hang) {
     lines.push(
       `hang: ${r.hang.seconds}s last_op=${r.hang.lastOp ?? "unknown"} ended=${r.hang.ended}`,
