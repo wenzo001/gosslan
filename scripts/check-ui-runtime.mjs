@@ -22799,7 +22799,10 @@ async function runLightbox(cdp, url) {
     const dlg = document.querySelector('[role="dialog"]');
     if (!dlg) return null;
     const btns = [...dlg.querySelectorAll('button')];
-    const bar = btns.length ? btns[0].parentElement : null;
+    // 2026-11-08：预览按画板加了顶栏之后，"第一颗按钮的父节点"不再是工具条容器
+    // （顶栏在 DOM 里更靠前，但它自己不放按钮；底栏缩略图也是按钮）。判据要量的东西没变
+    // —— 工具条相对外壳的偏移 —— 所以把锚点搬到工具条自己的稳定标记上，而不是放宽阈值。
+    const bar = dlg.querySelector('[data-lightbox-tools]') ?? (btns.length ? btns[0].parentElement : null);
     const d = dlg.getBoundingClientRect();
     const b = bar ? bar.getBoundingClientRect() : null;
     return {
@@ -23622,6 +23625,50 @@ async function runPreviewWindow(cdp, url) {
   check("preview-gallery 订阅已建立（窗口已开着时换图靠它）",
     !!first && first.listens >= 1 && first.handler === true, "listen≥1 且 handler 已捕获", JSON.stringify(first));
 
+  // ── 画板结构：深色顶栏 / 底部缩略图条 / 缩放与元数据（2026-11-08）─────────
+  // 这一格量的是"三条 chrome 与图片安全区的相对位置"，不是像素级外观：
+  // 顶栏和缩略图条都不许盖住图片，否则"图片绝不裁切"会退化成"被 UI 压掉一截"。
+  await sleep(400);
+  const chrome = await cdp.eval(`(() => {
+    const q = (s) => document.querySelector(s);
+    const img = q('[data-lightbox-img]');
+    const top = q('[data-lightbox-topbar]');
+    const bottom = q('[data-lightbox-bottom]');
+    const thumbs = q('[data-lightbox-thumbs]');
+    const tr = top ? top.getBoundingClientRect() : null;
+    const br = bottom ? bottom.getBoundingClientRect() : null;
+    const ir = img ? img.getBoundingClientRect() : null;
+    const text = (el) => (el ? (el.textContent || '').replace(/\\s+/g, ' ').trim() : '');
+    return {
+      name: text(top),
+      counter: text(q('[data-lightbox-counter]')),
+      dim: text(q('[data-lightbox-dim]')),
+      topH: tr ? +tr.height.toFixed(1) : -1,
+      imgTop: ir ? +ir.top.toFixed(1) : -1,
+      imgBottom: ir ? +ir.bottom.toFixed(1) : -1,
+      topBottom: tr ? +tr.bottom.toFixed(1) : -1,
+      bottomTop: br ? +br.top.toFixed(1) : -1,
+      thumbs: thumbs ? thumbs.querySelectorAll('button').length : -1,
+      active: thumbs ? thumbs.querySelectorAll('button[aria-current="true"]').length : -1,
+      zoom: text(q('[data-lightbox-zoom]')),
+      imgs: document.querySelectorAll('[data-lightbox-img]').length,
+    };
+  })()`);
+  check("预览窗口：深色顶栏显示文件名 + 计数（画板 DesktopPreviewWindow）",
+    !!chrome && chrome.topH >= 55 && chrome.name.includes("A.png") && chrome.counter.includes("1 / 2"),
+    "顶栏 56px、A.png、1 / 2", JSON.stringify(chrome));
+  check("预览窗口：底部缩略图条 2 张、当前张唯一高亮",
+    !!chrome && chrome.thumbs === 2 && chrome.active === 1,
+    "thumbs=2 / active=1", JSON.stringify(chrome));
+  check("预览窗口：图片安全区夹在顶栏与缩略图条之间（两条 chrome 不吃图）",
+    !!chrome && chrome.imgs === 1
+      && chrome.imgTop >= chrome.topBottom - 0.5 && chrome.imgBottom <= chrome.bottomTop + 0.5,
+    "顶栏底 ≤ 图片顶、图片底 ≤ 底栏顶",
+    `img[${chrome && chrome.imgTop}, ${chrome && chrome.imgBottom}] / bar[${chrome && chrome.topBottom}, ${chrome && chrome.bottomTop}]`);
+  check("预览窗口：缩放读数 100%、元数据取到原图尺寸（不另发请求）",
+    !!chrome && chrome.zoom === "100%" && /640\s*×\s*400/.test(chrome.dim),
+    "zoom=100% / 原图 · 640 × 400", JSON.stringify(chrome));
+
   // ── 连点 10 张：逐帧采样 ─────────────────────────────────────────
   await cdp.eval(`(() => {
     // 采样写**字符串**而不是数组：CDP 读回大数组时偶发拿不到值（本轮实测 typeof 是 object、
@@ -24029,7 +24076,14 @@ async function runImageZoom(cdp, url) {
 
   await cdp.eval("window.__probe.zoomMount()");
   await sleep(760);
-  await cdp.click(30, 30);
+  // 2026-11-08：预览按画板加了顶栏后，原来固定的 (30,30) 落进顶栏 —— 顶栏属于 chrome，
+  // 点它不该关窗。判据本身没变（点遮罩要关窗），把落点改成"顶栏下方、图片左侧"的真空遮罩区。
+  const shadePoint = await cdp.eval(`(() => {
+    const bar = document.querySelector('[data-lightbox-topbar]');
+    const r = bar ? bar.getBoundingClientRect() : null;
+    return { x: 20, y: Math.round((r ? r.bottom : 0) + 40) };
+  })()`);
+  await cdp.click(shadePoint.x, shadePoint.y);
   await waitClosed();
   await sleep(120);
   const maskClosed = await cdp.eval("window.__probe.zoomTake()");

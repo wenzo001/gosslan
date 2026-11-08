@@ -112,28 +112,8 @@ async function resolveCurrent() {
     if (resolveGuard.isCurrent("current", tok)) apply(r);
   };
   try {
-    if (!img) {
-      // 同步分支也一律走 put：被更新的一次抢走后，"清空"同样不该执行
-      put({});
-      return;
-    }
-    if (img.dataSrc) {
-      put({ url: img.dataSrc });
-      return;
-    }
-    if (img.cid) {
-      put(await loadContentPreview(img.cid, img.name));
-      return;
-    }
-    if (img.msgId) {
-      put(await loadFilePreview(img.msgId, "image", img.name));
-      return;
-    }
-    if (img.favoriteId) {
-      put(await loadFavoritePreview(img.favoriteId, img.name));
-      return;
-    }
-    put({});
+    // 同步分支也一律走 put：被更新的一次抢走后，"清空"同样不该执行
+    put(await loadImageSrc(img));
   } finally {
     if (resolveGuard.isCurrent("current", tok)) resolving.value = false;
   }
@@ -177,6 +157,65 @@ const ty = ref(0);
 const scaleMV = useMotionValue(1);
 const txMV = useMotionValue(0);
 const tyMV = useMotionValue(0);
+
+/**
+ * 底栏/顶栏的**元数据**：当前图的原图尺寸（自然像素）与缩放读数。
+ * 尺寸只在图片真正解码后才有（`onImageLoad` 里从 naturalWidth/Height 取），
+ * 不额外请求任何东西；缩放百分比读的就是手势那一份 `scale`，不是第二份状态。
+ */
+const naturalSize = ref<{ w: number; h: number } | null>(null);
+const zoomPct = computed(() => Math.round(scale.value * 100));
+/** 元数据文案只在这里拼一次：顶栏/照片角标/底栏共用，避免三处各写一遍尺寸格式。 */
+const sizeText = computed(() => (naturalSize.value
+  ? t("msg.lightbox.originalSize", { w: naturalSize.value.w, h: naturalSize.value.h })
+  : ""));
+const hintText = computed(() => (hasMultiple.value
+  ? t("msg.lightbox.multiHint", { i: props.index + 1, n: props.images.length })
+  : t("msg.lightbox.singleHint")));
+
+/**
+ * 底部缩略图条只给"当前这张前后各 6 张"取字节。
+ *
+ * 相册可能是整段会话的全部图片（`ChatWindow` 会把已加载消息里的图收进来），全量取字节
+ * 会把 IPC 打满；`loadFilePreview` 的并发闸只有 3，排队反而让当前这张更慢。
+ * 翻到别处时窗口跟着滚过去，旧缓存留着（回翻不用再取）。
+ */
+const THUMB_WINDOW = 6;
+const thumbSrc = ref<Record<number, string>>({});
+let thumbGen = 0;
+
+/** 三种来源（dataSrc / cid / msgId / favoriteId）共用同一份取字节口径，灯箱本体与缩略图都走它。 */
+function loadImageSrc(img: PreviewImage | null): Promise<PreviewResult> {
+  if (!img) return Promise.resolve({});
+  if (img.dataSrc) return Promise.resolve({ url: img.dataSrc });
+  if (img.cid) return loadContentPreview(img.cid, img.name);
+  if (img.msgId) return loadFilePreview(img.msgId, "image", img.name);
+  if (img.favoriteId) return loadFavoritePreview(img.favoriteId, img.name);
+  return Promise.resolve({});
+}
+
+// 换了一整个相册（独立窗口被替换内容 / 灯箱换入口）：旧索引的缩略图与尺寸都作废。
+// 注册顺序在下面的加载 watcher 之前 ⇒ 同一轮里先清空再取新的。
+watch(() => props.images, () => {
+  thumbSrc.value = {};
+  naturalSize.value = null;
+});
+
+watch(() => props.index, () => {
+  naturalSize.value = null;
+});
+
+watch([() => props.images, () => props.index], async () => {
+  const gen = ++thumbGen;
+  const from = Math.max(0, props.index - THUMB_WINDOW);
+  const to = Math.min(props.images.length, props.index + THUMB_WINDOW + 1);
+  for (let i = from; i < to; i += 1) {
+    if (thumbSrc.value[i]) continue;
+    const src = (await loadImageSrc(props.images[i] ?? null)).url;
+    if (gen !== thumbGen) return;
+    if (src) thumbSrc.value = { ...thumbSrc.value, [i]: src };
+  }
+}, { immediate: true });
 
 /**
  * 打开/关闭的 FLIP 缩放（用户 2026-11-05：「点图片应该放大缩小，现在只有一下位移感」）。
@@ -262,6 +301,10 @@ function onImageLoad(e?: Event) {
     ? target
     : (dialogRef.value?.querySelector<HTMLImageElement>("[data-lightbox-img]") ?? null);
   if (!el || !props.open || closing.value) return;
+  // 顶栏/底栏显示的"原图 · W × H"就取这一次解码后的自然尺寸，不另发请求。
+  if (el.naturalWidth > 0 && el.naturalHeight > 0) {
+    naturalSize.value = { w: el.naturalWidth, h: el.naturalHeight };
+  }
   stopFlipAnims();
   clearFlipTimer();
   flipScaleX.set(1);
@@ -631,6 +674,11 @@ watch(
  */
 const dialogRef = ref<HTMLElement | null>(null);
 
+/** 函数式模板 ref：`as-child` 克隆子 vnode 时，字符串 ref 在有的时序下没落到 `dialogRef` 上（2026-11-08 实测）。 */
+function setDialogRef(el: unknown) {
+  dialogRef.value = el instanceof HTMLElement ? el : null;
+}
+
 function onMountAutoFocus(event: Event) {
   event.preventDefault();
   dialogRef.value?.focus();
@@ -659,7 +707,7 @@ useEventListener(window, "keydown", onKey);
       <div
         v-if="open"
         class="glass fixed inset-x-0 bottom-0 top-[var(--gosslan-safe-top,0px)] z-[80] outline-none"
-        :style="{ background: 'rgba(0, 0, 0, 0.45)', touchAction: 'none', overscrollBehavior: 'contain' }"
+        :style="{ background: 'rgba(0, 0, 0, 0.45)', touchAction: 'none', overscrollBehavior: 'contain', '--lb-top-h': '56px', '--lb-bottom-h': '86px' }"
         role="dialog"
         aria-modal="true"
         :aria-label="t('common.image')"
@@ -671,8 +719,43 @@ useEventListener(window, "keydown", onKey);
              这样「Teleport 根节点是 fixed」的判据与几何都不动）：
              `as-child` 把容器落在下一颗 div 上（不新增包装层），`loop` + `trapped`
              负责 Tab 环与焦点逃逸拉回；关闭卸载时由它把焦点还给打开前的元素。 -->
+        <!-- 图片主体只占顶栏与底栏之间的那块（安全区）：两侧都按 --lb-*-h 让位，
+             所以放大后的图不会钻到顶栏/缩略图条底下。 -->
         <FocusScope :trapped="open" loop as-child @mount-auto-focus="onMountAutoFocus">
-        <div ref="dialogRef" tabindex="-1" class="flex h-full w-full items-center justify-center outline-none">
+        <div
+          :ref="setDialogRef"
+          tabindex="-1"
+          class="flex h-full w-full items-center justify-center outline-none"
+          :style="{
+            paddingTop: 'calc(var(--lb-top-h) + 8px)',
+            paddingBottom: 'calc(var(--lb-bottom-h) + var(--gosslan-inset-bottom, 0px) + 8px)',
+          }"
+        >
+        <!-- 深色顶栏（画板 DesktopPreviewWindow）：文件名 + 计数在左，工具在右上。
+             它只是一层背景条，工具簇仍是自己的定位层（右上 1rem）—— "让位只算一遍"
+             的判据量的是工具簇，不会被这层条的高度拐一遍。 -->
+        <div
+          class="absolute inset-x-0 top-0 z-[5] flex h-14 items-center gap-3 bg-black/45 px-4 pr-[12rem] backdrop-blur-sm"
+          data-lightbox-topbar
+          @pointerdown.stop
+          @click.stop
+        >
+          <div class="min-w-0">
+            <div class="truncate text-body font-semibold text-white" :title="current?.name">
+              {{ current?.name }}
+            </div>
+            <div class="mt-0.5 h-[13px] truncate text-caption text-white/65" data-lightbox-dim :title="sizeText">
+              {{ sizeText }}
+            </div>
+          </div>
+          <span
+            v-if="hasMultiple"
+            class="shrink-0 rounded-full bg-white/10 px-2 py-0.5 font-mono text-caption text-white/80"
+            data-lightbox-counter
+          >
+            {{ index + 1 }} / {{ images.length }}
+          </span>
+        </div>
         <!-- 右上操作区：保存 + 关闭（与其它弹窗一致的样式） -->
         <!-- 右上操作区的竖直位置：**让位只由外壳那一层做**，这一层只留自己 1rem 的视觉边距。
              历史三步都在这里加码，所以把它写清楚免得有人再加回来：
@@ -687,6 +770,7 @@ useEventListener(window, "keydown", onKey);
         <div
           class="absolute right-4 z-10 flex items-center gap-1"
           :style="{ top: '1rem' }"
+          data-lightbox-tools
         >
           <!-- 加 drop-shadow 让白字在白色图片上也可见（问题修复：白背景白字→隐形）。
                用户 2026-10-23 追加：一律再加一圈 ring 描边 —— 阴影在纯白图 + 浅色遮罩下
@@ -759,6 +843,7 @@ useEventListener(window, "keydown", onKey);
           <!-- 手势的 x/y/scale 走 MotionValue（在 Vue 渲染周期外执行）。
                ⚠️ 不再挂 layoutId：缩略图侧已经不做 layout 补间，单边保留只是一段死契约。 -->
           <div class="flex items-center justify-center" data-lightbox-stage>
+            <div class="relative">
             <!-- 打开/关闭的缩放是**纯 transform**（scaleX/scaleY + 中心对齐平移），
                  不写 left/top/width/height：布局位移会重排，也会把"一路向右滑"的观感带回来。
                  `opacity` 只在开场量尺寸那一帧藏住图片，避免先闪一帧终态再缩小。
@@ -767,12 +852,14 @@ useEventListener(window, "keydown", onKey);
                  · 不写圆角 → 显式 `rounded-none`（源码锚点，防止将来有人为了"好看"补圆角）；
                  · 不写 `overflow-hidden`（任何祖先都不许），图片外框贴着内容；
                  · 必须 `object-contain`：`cover` 会把长图/宽图裁掉上下或左右；
-                 · 安全边距由 `max-h-[85vh] max-w-[88vw]` 给（不是靠裁剪）。
+                 · 安全边距由 max-h/max-w 给（不是靠裁剪），且 max-h 现在按**顶栏 + 缩略图条
+                   之后**的可用高度算（`100dvh - 外壳让位 - 两条 chrome`），不是旧的 85vh ——
+                   否则图会钻到那两条底下。
                  `data-lightbox-stage` 是探针锚点：它和 img 之间不许出现裁切祖先。 -->
             <motion.img :alt="current?.name || t('msg.imagePreview')"
               data-lightbox-img
               :src="src"
-              class="rounded-none object-contain max-h-[85vh] max-w-[88vw] touch-none select-none shadow-2xl"
+              class="rounded-none object-contain max-w-[88vw] touch-none select-none shadow-2xl"
               :style="{
                 x: txMV,
                 y: tyMV,
@@ -780,6 +867,7 @@ useEventListener(window, "keydown", onKey);
                 scaleX: flipScaleX,
                 scaleY: flipScaleY,
                 opacity: imgReady ? 1 : 0,
+                maxHeight: 'calc(100dvh - var(--gosslan-safe-top, 0px) - var(--lb-top-h) - var(--lb-bottom-h) - 16px)',
                 cursor: scale > 1 ? (dragging ? 'grabbing' : 'grab') : 'zoom-in',
               }"
               draggable="false"
@@ -793,6 +881,16 @@ useEventListener(window, "keydown", onKey);
               @pointercancel="onPointerUp"
               @error="onImageError"
             />
+            <!-- 画板上的"原图 · W × H"角标：贴着照片内左下，pointer-events-none 不挡手势/探针取角。 -->
+            <div
+              v-if="naturalSize"
+              class="pointer-events-none absolute bottom-3 left-3 flex items-center gap-1.5 rounded-full bg-black/60 px-2.5 py-1 text-caption text-white/90 ring-1 ring-white/15"
+              data-lightbox-tag
+            >
+              <span class="h-1.5 w-1.5 rounded-full bg-emerald-400"></span>
+              {{ sizeText }}
+            </div>
+            </div>
           </div>
         </template>
         <div
@@ -817,13 +915,81 @@ useEventListener(window, "keydown", onKey);
           </template>
         </div>
 
-        <!-- 底部提示：计数 + 操作说明 -->
+        <!-- 底部：缩略图条 + 元数据 + 缩放读数（画板 DesktopPreviewWindow）。
+             整条与顶栏同层：点它不关窗（`@click.stop`），滚轮缩放仍归外壳处理。
+             缩略图 `object-contain`，与主图同一条"绝不裁切"口径。 -->
         <div
-          class="absolute left-1/2 -translate-x-1/2 rounded-full bg-black/55 px-3 py-1 text-xs text-white/95 shadow-lg ring-1 ring-white/20"
-          :style="{ bottom: 'calc(var(--gosslan-inset-bottom) + 1.25rem)', textShadow: '0 1px 2px rgba(0,0,0,0.6)' }"
+          class="absolute inset-x-0 bottom-0 z-[6] flex items-end gap-4 px-4 pt-1"
+          :style="{ paddingBottom: 'calc(var(--gosslan-inset-bottom, 0px) + 0.75rem)' }"
+          data-lightbox-bottom
+          @pointerdown.stop
+          @click.stop
         >
-          <template v-if="hasMultiple">{{ t("msg.lightbox.multiHint", { i: index + 1, n: images.length }) }}</template>
-          <template v-else>{{ t("msg.lightbox.singleHint") }}</template>
+          <div v-if="hasMultiple" class="flex min-w-0 flex-1 gap-2 overflow-x-auto pb-0.5" data-lightbox-thumbs>
+            <button
+              v-for="(img, i) in images"
+              :key="i"
+              type="button"
+              class="tap-safe flex h-[58px] w-[86px] shrink-0 items-center justify-center rounded-[var(--gosslan-radius-md)] bg-black/50 transition"
+              :class="i === index ? 'ring-2 ring-white/85' : 'ring-1 ring-white/15 opacity-70 hover:opacity-100'"
+              :title="img?.name"
+              :aria-label="t('msg.lightbox.thumbLabel', { i: i + 1 })"
+              :aria-current="i === index ? 'true' : undefined"
+              @click.stop="emit('update:index', i)"
+            >
+              <img
+                v-if="thumbSrc[i]"
+                :src="thumbSrc[i]"
+                class="h-full w-full object-contain"
+                alt=""
+                loading="lazy"
+                decoding="async"
+                draggable="false"
+              />
+              <span v-else class="font-mono text-caption text-white/55">{{ i + 1 }}</span>
+            </button>
+          </div>
+          <div class="hidden min-w-0 max-w-[280px] shrink-0 sm:block">
+            <div class="truncate text-caption text-white/70" :title="current?.name ?? ''">
+              <span class="font-semibold text-white/90">{{ current?.name }}</span>
+              <template v-if="naturalSize"> · {{ naturalSize.w }} × {{ naturalSize.h }}</template>
+              <template v-if="hasMultiple"> · {{ index + 1 }} / {{ images.length }}</template>
+            </div>
+            <div class="mt-1 truncate text-caption text-white/55" :title="hintText">{{ hintText }}</div>
+          </div>
+          <div class="flex shrink-0 items-center gap-0.5 rounded-[var(--gosslan-radius-md)] bg-black/45 p-1 ring-1 ring-white/15">
+            <button
+              type="button"
+              class="tap-safe flex h-7 w-7 items-center justify-center rounded-[var(--gosslan-radius-sm)] text-white/85 transition hover:bg-white/10 disabled:opacity-35"
+              :title="t('msg.lightbox.zoomOut')"
+              :aria-label="t('msg.lightbox.zoomOut')"
+              :disabled="scale <= 1"
+              @click.stop="zoomBy(-0.2)"
+            >
+              <Icon name="minus" class="h-3.5 w-3.5" />
+            </button>
+            <span
+              class="min-w-[46px] text-center font-mono text-caption text-white/85"
+              data-lightbox-zoom
+            >{{ zoomPct }}%</span>
+            <button
+              type="button"
+              class="tap-safe flex h-7 w-7 items-center justify-center rounded-[var(--gosslan-radius-sm)] text-white/85 transition hover:bg-white/10"
+              :title="t('msg.lightbox.zoomIn')"
+              :aria-label="t('msg.lightbox.zoomIn')"
+              @click.stop="zoomBy(0.2)"
+            >
+              <Icon name="plus" class="h-3.5 w-3.5" />
+            </button>
+            <button
+              type="button"
+              class="tap-safe ml-0.5 rounded-[var(--gosslan-radius-sm)] px-2 py-1 text-caption text-white/85 transition hover:bg-white/10"
+              :title="t('common.resetZoom')"
+              @click.stop="reset()"
+            >
+              {{ t("msg.lightbox.zoomFit") }}
+            </button>
+          </div>
         </div>
         </div>
         </FocusScope>
