@@ -14,6 +14,17 @@
 
 ## [Unreleased]
 
+## [5.19.10] - 2026-11-08
+
+### 发布说明
+- 本次 `v5.19.10` 一并包含 `5.19.8` / `5.19.9` 两节的全部内容（这两版只提了版本号、未打 tag 对外），
+  明细见下方两节：左列列表竖线合一与分栏把手命中区、网络诊断一页一层滚动条、
+  长文本 / 超长代码在进 DOM 前按字符预算截断（结尾是真实「…」）。
+- README 与安装说明对齐现状：Gitee 镜像入口、Windows `*-setup-webview2-bundled.exe` 的离线用途、
+  Node.js 22+（`.node-version` 钉 22.23.2）与 Rust 1.77+（`rust-version`）的实际口径，中英两册同步。
+- Change Budget 门禁两处空转修复：纯文档提交不再被要求补 `Version-Bump`（`README.zh-CN.md`
+  也进纯文档白名单）；`--staged` 改为读**当前所在仓库**的暂存区，回归用例用临时仓库两头钉住。
+
 ## [5.19.9] - 2026-11-08
 
 ### 性能与可读性
@@ -173,330 +184,29 @@
 **验证边界**：截图为 Chromium 内核（Brave headless）在 macOS 上的渲染，不是 WKWebView 真机读数；
 几何由同一批 token 计算、不依赖内核，但像素级截图仍建议在真机窗口复核一次。
 
-## [5.18.76] - 2026-11-07
 
-### 非活动窗口的第一下点击被吃掉（用户 2026-11-07 实测）
-
-用户：「代码块 / 长文本弹窗、崩溃恢复提示的『知道了』，第一下点击无效，要点第二下。」
-
-- **先排除 DOM**：`CrashNotice.vue` 的四个按钮与关闭键全是 `@click`，容器
-  `pointer-events: none` + 卡片 `pointer-events: auto`（保留背景可点穿），
-  没有 `mousedown` 外部关闭，也没有动画期 `pointer-events` 锁。
-  长文本 / 代码块弹窗走 `BaseModal`（Reka Dialog），按钮同样是 `@click`。
-  ⇒ 不是 DOM 层吃掉，而是 **macOS 的窗口激活语义**：窗口不在前台时，
-  第一击只激活窗口、不投递给 webview（`acceptFirstMouse` 默认 `false`）。
-- **修**：主窗口在 `tauri.conf.json` 加 `"acceptFirstMouse": true`；
-  运行时创建的六扇窗（设置 / 日志 / 群任务 / 预览 / 外链 / 启动错误）逐个在
-  `.build()` 前加 `.accept_first_mouse(true)`。非 macOS 上该调用是 no-op，
-  Windows / Android 行为不变。
-- **判据**：新增 **CF-01**（`checkAcceptFirstMouse`）—— 同时核对
-  `app.windows[]` 的配置项与每个 `WebviewWindowBuilder::new(` 链式调用；
-  `designGuards.test.ts` 真实树 + 两条反例（配置改回 `false`、删掉某扇窗的
-  `.accept_first_mouse(true)`）全部必红。`node --test src/utils/designGuards.test.ts` → 358/358。
-
-**验证边界**：本机 macOS。根因是窗口级行为，无法用 DOM 探针复现；修后需要
-「点别的应用 → 直接点恢复条按钮」在真机上复核一次（第一击应直接关闭）。
-
-## [5.18.75] - 2026-11-07
-
-### 启动画面文案被系统标题栏按钮压住（用户 2026-11-07 macOS 实测）
-
-用户：「启动的时候『小院儿 · 正在启动中』被左上角红绿灯挡住了。」
-
-- **根因**：首屏骨架 `.boot-cap` 把 brand **左对齐**在 `padding-left: 14px`。
-  macOS 原生红绿灯占 `0–78px`（`TitleBar.vue` 的 `w-[78px]` 占位同源），
-  Windows 三大金刚键占右侧 `132px`（3 × `w-11`）—— 两侧系统区都会压到文案。
-  水平重叠：macOS 侧 `14–78 = 64px`；纵向文案盒落在 40px 标题栏的 `14–26px`，
-  恰好是系统按钮的垂直中心带。
-- **修**：`.boot-cap` 改 `justify-content: center`，与真实 `TitleBar` 的绝对居中标题同构；
-  最窄桌面窗 768 下文案盒 `304–464`，距红绿灯右缘 226px、距 Windows 三键左缘 172px。
-  移动端（≤767px）继承同一居中，不受影响。
-- **判据**：新增 **SK-03**（`checkBootCapBrandSafe`）—— 按声明的对齐方式**算出** brand 盒
-  （768 × 保守最宽 160），分别与 macOS `0–78` / Windows 右侧 `132` 求交；
-  `designGuards.test.ts` 真实树 + 反例（删掉 `justify-content: center` 后回到 14px 必与红绿灯相交）2 条。
-  `node --test src/utils/designGuards.test.ts` → 356/356。
-
-**验证边界**：本机 macOS。骨架在真实 DOM 挂载前就淡出，无法用运行时探针取首帧矩形；
-本条是 CSS 声明 + 几何推导，真机首帧需要冷启动录屏复核。
-
-## [5.18.74] - 2026-11-07
-
-### 输入框删表情：一次退格只删一个「用户眼里的表情」（用户 2026-11-07 安卓真机反馈）
-
-用户：「输入框里添加两个表情，按一下删除，两个表情就同时被删除了；一个表情在用户角度
-应该像一个字一样。」
-
-- **底层结构**：表情不是纯文本，是 `contentEditable=false` 的 `<span class="emoji-token">`
-  （里面是 `<img>`），插入时后面补一个 NBSP；`@提及` 同机制。发送时读回 `data-emoji`。
-- **根因（两处叠加）**：
-  1. 退格只接管了「caret 在 NBSP 里 offset=1」一种形状（旧 `deleteMentionBeforeCaret`），
-     caret 落在 token 内部 / token 紧后 / 元素节点下标（Android WebView 常见）时全放给
-     默认行为 —— 相邻原子 span 会被 WebView 当同一段成批删除。
-  2. `normalizeEmpty` 只看 `textContent`：token 里的 `<img>` 文本为空，**只剩表情的草稿会被
-     当空壳整个清掉**（这是「一次全没」的另一半）。
-- **修**：
-  - 新增 `deleteOneUnitBeforeCaret()`：先按 `tokenRangeBeforeCaret()` 覆盖三种 caret 落位删
-    「token + 尾随 NBSP」，再对**原生 emoji 文本**用 `Intl.Segmenter`（grapheme）按字素簇删；
-    普通中英文仍交回浏览器，保住原生 undo 与输入法行为。
-  - `Delete` 前向删同一口径（`deleteOneUnitAfterCaret` / `tokenRangeAfterCaret`）。
-  - 有选区时一律放行（用户选中的整段都该删）；IME 组合由 `imeKey` 提前放行。
-  - `normalizeEmpty` 遇到 `.emoji-token` / `.mention-token` 直接返回，不再吞表情。
-- **判据**：`src/utils/graphemes.test.ts` 9 条（两个连着表情、ZWJ 家庭、肤色、旗帜、VS16、
-  前向删、越界；含「按 UTF-16 删会留孤立代理」的反例）；`designGuards.test.ts` ED-01～04
-  钉住「两条删除键都走统一入口 / 必须用 Segmenter / normalizeEmpty 不许吞 token」，
-  反例（放回浏览器、`deleteData(offset-1,1)`、旧函数回潮）全部必红。
-- `node --test src/utils/designGuards.test.ts` → 354/354；`graphemes.test.ts` → 9/9。
-
-**验证边界**：本机 macOS，DOM 事件路径靠源码判据 + 纯函数测试；安卓 WebView 里 caret
-落位与真实退格行为仍需装新包后在真机复核。
-
-## [5.18.73] - 2026-11-07
-
-### Windows 标题栏镜像：头像簇移到左侧，与左 R 角同圆心（用户 2026-11-07 真机反馈）
-
-用户：「Windows 端三大金刚键在右边，那头像、设置、在线绿点应该对称地放在左边；头像的弧度
-跟左边的 R 角要对齐，就是同心圆这种距离。」
-
-- **镜像的是按钮所在侧，不是整条翻转**：macOS 红绿灯在左 ⇒ 头像簇靠右；Windows 三键在右
-  ⇒ 头像簇靠左（`flex-row-reverse`，组内顺序变为 头像 → 设置 → 搜索 → LAN）。标题仍
-  `absolute inset-0` 绝对居中，不依赖两侧内容宽度。
-- **数值同源**：`style.css` 新增 `--gosslan-caption-avatar: 28px` 与
-  `--gosslan-caption-inset: calc((var(--gosslan-title-h) - var(--gosslan-caption-avatar)) / 2)`
-  = 6px；两个平台分支只切方向，不切数字。
-- **同心公式**：窗角半径 R、头像半径 r、距上/左均为 d ⇒ 两圆心重合需 `d = R − r`；
-  本应用 macOS R=10、r=14 ⇒ −4；Windows R=10/12 ⇒ −4/−2（负值，严格同心不可行，因为
-  28px 头像比窗角弧还大）。故口径取等距内缩 d = (40−28)/2 = **6**，距上 = 距左/右。
-- **判据**：`checkTitlebarMirror`（TB-01）断言平台→头像簇侧、组内顺序、绝对居中、
-  两侧 token 同源；`captionAvatarRect`（TB-02）给两平台模拟矩形读数。反例（Windows 放右 /
-  一侧 12px / token 改手写 / 标题回流式）全部必红。
-- `node --test src/utils/designGuards.test.ts` → 350/350。
-
-**验证边界**：本机 macOS，拿不到 Windows WebView2 渲染；TB-02 是平台模拟读数，不是真机。
-Windows/macOS 角部 4× 特写待真机补拍。
-
-### Windows 图标：软件内升级后仍显示旧图标
-
-用户 2026-11-07：「我是软件内升级的，升级完成之后图标好像没有更新」。
-
-- **打包层（已正确）**：`bundle.icon` 含 `icons/icon.ico`（md5 `c8f15ff7e43d5574cbc4892d5365afce`，
-  6 档尺寸、4368B、mtime 11-06 22:58）；NSIS 的 `installerIcon` / `uninstallerIcon` 也指向它。
-  新图标提交 `81eb7de0`（11-07 10:12）是 `v5.18.71`（11-07 15:40）的祖先 ⇒ 包里带的是新图标。
-- **安装层（已正确）**：`hooks.nsh` 会把目标指向本应用 exe 的快捷方式删除重建，
-  `IconLocation` 指回新 exe，不存在复用旧 LNK。
-- **根因判定：Explorer 图标缓存**。覆盖安装后 exe 路径与快捷方式路径都没变，Explorer 的
-  `iconcache_*.db` 会继续用旧图。安装器收尾新增
-  `SHChangeNotify(SHCNE_ASSOCCHANGED, SHCNF_IDLIST, 0, 0)`，让外壳重读图标/关联。
-- **仍待真机确认**：本机无 Windows，无法复现「覆盖安装 → 桌面图标是否即时刷新」；
-  若仍有残留，需在 Windows 上对照 `ie4uinit.exe -show` 前后截图。
-
-
-## [5.18.72] - 2026-11-07
-
-### 屏幕边缘安全区：崩溃恢复条压在安卓状态栏下（用户 2026-11-07 真机反馈）
-
-用户报「上次软件崩溃的那个提示不在安全区域内」，随后扩到全部提示：「别压到通知栏和底部，
-就像 iOS 的安全区域一样，不要太靠四个圆角的弧度内」。
-
-- **根因**：`CrashNotice.vue` 移动端写的是 `top: 0; left: 0; right: 0`，直接贴视口边。
-  安卓侧 `enableEdgeToEdge()` 已让 WebView 铺到状态栏下（`index.html` 也有
-  `viewport-fit=cover`），所以 `env()` 是真值，只是那条提示没读它。
-- **统一出口**：`style.css` 新增 `--gosslan-inset-top/-bottom/-left/-right` 与
-  `--gosslan-corner-safe`，全部取 `max(env(...), fallback)`；移动端回落 24/24/8/24px，
-  桌面回落全 0 ⇒ macOS / Windows 视觉零位移。组件只许读变量，不再各写一份 `env()`。
-- **同类一起改**：恢复条、`ToastHud`、`HangNotice`、`VersionMismatchNotice`、
-  `MobilePageFrame`、`FavoritePanel`、`ActionSheet`、`BaseModal`、`ImageLightbox`、
-  `ResponsiveLayout` 底栏占位、`ConversationList`、`ChatWindow` 输入区。
-- **判据**：`designGuards` 新增 SA-01/02/03 —— 在状态栏 24px + 圆角 24px + 视口 390×844
-  下按「被切掉的圆外区域」判定矩形不侵入；反例（去掉 inset）必红；统一出口扫全仓，
-  裸写 `env()` 必红。`node --test src/utils/designGuards.test.ts` → 344/344。
-
-**真机边界**：`env()` 在桌面 Chrome 恒 0，安卓 WebView 是否真上报 inset、状态栏实际高度与
-圆角半径只能靠安卓真机/模拟器验证；本机给出的只是「按 insets 注入后的预期位置」推导。
-
-## [5.18.71] - 2026-11-07
-
-### 归档：UI 复核计划与报告（`docs/notes/ui-pulse-review-2026-11-07/`）
-
-- 从 `/Users/wendongfu/Documents/code/gosslan-ui-review-353a634d` 原样拷入 `plan.md` / `report.md`
-  （md5 与原件逐字一致，未改措辞），避免该 worktree 清理后链接变死。
-- `scripts/check-doc-citations.mjs` 的 `PATH_ALLOW` 增一条带理由的登记：
-  `src/components/ui/icons.ts` 是 M-4 计划里点名的**删除目标**，删除已随 ui-pulse-redesign 落地；
-  计划文档提到它，记的是"它没了"，不是"仓库里应该还有"。**没有放宽任何其他判据**。
-
-## [5.18.46] - 2026-11-07
-
-### ⑧ 玻璃 + 浮动背景全开时输入框看不清 / 信息可读性下降
-
-用户报「群管理输入框在暗色 + 玻璃 + 浮动背景全开时几乎看不到，亮色比暗色更差；
-特效不能降低信息的可视性」。CDP 实测（特效开、合成背景采样）：输入面与面板的差值
-亮色 **1.06:1**、暗色 **1.05:1**，等于没有边界；根因是输入面用了 `border-transparent`
-且填充与面板只差 1.04~1.11。
-
-- 输入面统一两道：填充 `--gosslan-field`（亮 #edeff3 / 暗 #22252a，对面板 1.16 / 1.14），
-  边框 `--gosslan-field-border`（亮沿用 `divider-strong` #7c8798；暗**专用** #788dae ——
-  探针把面板底算成「玻璃(0.92) + 最差背景」（白/黑/三漂移色相各叠一遍），
-  `#6b7f9e` 在白底那档只剩 2.56，`#788dae` 是 3.09）。共 29 个组件把
-  `border-transparent` 换成字段边框 token。
-- 占位符补全局兜底：`input::placeholder, textarea::placeholder` 走
-  `--gosslan-placeholder` + `opacity: 1`。此前全仓没有这条规则，只有 12 处散落 token 类，
-  其余落回 UA 灰 #9ca3af —— 亮色字段底上只有 **2.21:1**；群名称 / 群公告两处正是漏网的。
-  修后亮色 **4.71:1**、暗色 **7.72:1**。
-- 判据：㊷ `findTransparentFieldBorder`（同批 5.18.45 已落）、PH-01
-  `findRawPlaceholderColor` + `findMissingPlaceholderRule`，以及运行时
-  `--only=fieldcontrast`（真挂群管理面板、`data-ambient=drift` 不关玻璃，量边框 vs
-  最差面板底 ≥3.0、占位符 ≥4.5 且 computed=token、输入面 alpha ≥0.95；末尾反例
-  把边框改透明 + 占位符注回 UA 灰，判据必须翻假）。
-- 实测（改前 → 改后）：群管理输入框框体 vs 面板 暗 **1.05 → 4.05**、
-  亮 **1.06 → 3.27**；占位符 亮 **2.29 → 4.71**。
-
-## [5.18.45] - 2026-11-06
-
-### 设置分区卡片内边距统一到 16px 单一口径
-
-用户报「设置里『关于』那栏内容的卡片内边距比其它分区小」。CDP 实测四个分区（通用 / 网络 /
-文件与存储 / 关于）的卡片行 padding 其实**全是一组 12/16**，看着更紧是单行（48px）与双行
-（64px）的行高错觉；真正散掉的只有 4 处自己写的 `px-4 py-2.5` / `p-4` / `px-3 py-3`。
-
-- 新增 `--gosslan-card-pad: 16px` / `--gosslan-card-pad-inset: 12px` /
-  `--gosslan-group-caption-inset: 4px` 与 `.settings-card-row` / `.settings-card-inset` /
-  `.settings-group-caption` 三档类，取代各分区散落的 padding 工具类（共 17 处）。
-  16px 取自 `tokens.json` 的 `space-16`（list row inset）与决策 8「设置/任务/搜索/群资料
-  用 16px 卡片、48px 行」；单行 16+20+16=52 正好落在 `row-height-compact` 52px。
-- 判据 ㊶：`findRawCardPadding` 守住"设置分区不许再写卡片级散值"，`verify-guards.py`
-  注入 `px-4 py-3` 会红（非空转自证）。`ProfileSection` 的行结构锚点随源码一起搬迁。
-- 实测：关于卡片行 12/16/12/16（48px）→ 16/16/16/16（56px），全站设置分区行统一为 16 四边。
-
-## [5.18.44] - 2026-11-06
-
-### 界面重构 Pulse · 终稿对稿 ②：会话列表标题行 / 搜索行 / 行内字号
-
-- 桌面左栏恢复画板的 50px「聊天」标题行（h2 17/22/600），新建入口回到这一行；
-  此前把标题与搜索并成一条 52px 头，与画板 `.listHead` + `.searchWrap` 的两段结构不符。
-- 搜索独立成行：壳 36（画板 34，判据 `composerInteraction.test.ts` 36/40 白名单内，
-  记妥协）、字号 13、图标 15。
-- 行内按画板：姓名 14.5/19（移动 15/20）、预览 12.5/17、行 62 / 内距 14 / gap 10 /
-  头像 42 / 分隔线左缩进 66。
-- 移动端 topbar h1 18/23，移动空态 h2 20/26。
-
-## [5.18.43] - 2026-11-06
-
-### 界面重构 Pulse · 终稿对稿 ①：标题栏 40 / 头像簇 / 画板字阶
-
-- 标题栏高度两平台统一 40px（画板 DesktopChats `.titlebar` 40）；原先 macOS 28 / Windows 38
-  的分叉删除。影响面：主窗口与所有自绘 caption 的辅助窗口（设置 / 日志 / 预览）。
-- 标题回到画板的**绝对居中** 12px/600/.02em；原 `text-footnote` 并不是 Tailwind 字号键
-  （死类 ⇒ 一直继承 16px），同一轮把三处同类死类一并换成真实令牌。
-- 右侧功能组按画板取值：按钮 30×30 / 图标 19 / 组内 gap 6 / 右内距 12；本人头像 28；
-  在线点 9px 改外发光 2px 环（原来的 `border-2` 在 border-box 下把 9px 吃掉一半，且溢出栏底 2px）。
-- 字阶补齐画板真实档位：12.5 / 13 / 14.5 / 17 / 18 / 20 / 22（fine / small / row / heading /
-  page / title-lg / display）；判据 ㊿ 从「六档压缩」改为「画板字阶」，SelfAvatar 锚点随
-  24→28 一起搬到 `h-7`（锚点随被钉住的值一起搬）。
-- 未选会话空态按画板取 22/28 与 12.5/19。
-
-## [5.18.42] - 2026-11-06
-
-### 界面重构 Pulse · 第 6 段：状态收敛 / 边界 / 字号与验收
-
-- 空态 / 错误态 / 加载态收敛到 `StateBlock` 单一出口，并新增 `inline` 密度（设置分组与
-  摘要行的一行提示）；会话列表、任务中心、链接、日志、搜索、群任务、群成员、
-  网络设置、收藏、转发、建群、添加好友的空/错误/加载块全部迁入，替换掉的零散实现已删除。
-- 修掉「新的朋友」页同一空态渲染两遍：`ResponsiveLayout` 里重复的那一份删除，
-  由 `FriendRequestList` 自己承担（一个状态只出现一次）。
-- 字号：`micro` 由 10px 抬到 11px（全站不再有 10px 文本），`caption` 同值、语义分工保留；
-  受牵连的日志状态条、设置侧栏分组标题与诊断标签随 11px 行高一起重排。
-- 截断文本全部带 `title` / `aria-label`（`designGuards` 全量扫描为 0 违规）；
-  长代码块维持 `pre-wrap` 折行、240 帧内不产生横向滚动。
-- i18n：不新增键，zh / en 仍各自 1685，死键 0（本段只搬运既有文案到统一状态块）。
-- 判据搬迁：A 档「读失败 ⇒ 界面错误档」从盯组件里的 `role="alert"` 改为盯
-  `StateBlock` 错误档 + `StateBlock` 自带 `role="alert"`，并保留手写块反例自证；
-  字号令牌判据的 `micro` 期望同步为 11px。
-- 修掉一条恒真判据：本人头像那条只断言「文件里出现过 `<SelfAvatar`」，标题栏那处
-  让断言永远成立，注入用例抓不到「我的」页被删。改为钉标题栏 h-6 与「我的」页 h-14
-  两个具体落点，非空转用例已复跑通过（改坏即红、恢复逐字节一致）。
-
-## [5.18.41] - 2026-11-06
-
-### 界面重构 Pulse · 第 5 段：独立窗口与浮层
-
-- 设置窗口：侧栏 200px、3 组分组标签、主题色高亮选中项、底部版本/自动保存页脚；
-  内容区增加标题 + 一行说明的头部与 36px 页脚（即时生效 / 已自动保存）。
-- 日志窗口：工具栏收为「实时」状态药丸 + 行数 + 纯图标动作；时间窗、合并、搜索合并成一行；
-  底部新增状态条（刷新状态 / 可见行数 / 日志路径 / 诊断包）；日志正文按画板降到 11px。
-- 浮层：`BaseModal` 标题从 16px 改走 `text-title` 令牌（15px），与画板同一套字号。
-- 启动错误窗口：取色对齐 Pulse（`#f2f3f5` / `#141518`、正文 `#1f2329`、主色 `#2f6bff`、
-  危险实底 `#df3146`），标题 22px、按钮圆角 10px。
-- 群任务与图片预览的画板是分栏/标签页 + 缩略图/缩放等新交互，本段只记差异、不改功能。
-
-## [5.18.40] - 2026-11-06
-
-### 界面重构 Pulse · 第 4 段：移动端
-
-- 移动端一级页新增 56px 顶栏（本人头像 + 页面标题 + 主题色新建入口），搜索独立成行；
-  桌面端不渲染这一段。
-- TabBar 高度由 64px 收到画板的 56px，激活药丸最小 48px；图标 21 / 标签 11 不变。
-- 移动端首启空态按画板重排：品牌底盘 + 主/次动作（添加好友 / 创建群聊，均为既有能力）
-  + 局域网发现设备卡 + 三条特性；`radar` 图标进统一注册表。
-
-## [5.18.39] - 2026-11-06
-
-### 界面重构 Pulse · 第 3 段：桌面主界面
-
-- 主窗口标题栏增加画板右侧功能组（`LAN · n` 设备数、全局搜索、个性化、本人头像 + 在线点）；
-  本人头像从 rail 顶部上移，同一份身份状态只渲染一次（rail 首个入口现在就是导航）。
-- 会话列表页脚从「品牌 + 小图标」改为画板 listFoot：整行 40px 任务入口
-  （图标 + 任务中心 + 未完成数 + 版本号 + chevron），版本判据仍在页脚可见。
-- 列表「新建」从灰色图标改为画板 32×32 主题色实底方块。
-- 未选会话空态按画板重排：68px 品牌底盘（复用第 2 段应用图标单源）+ 标题 + 说明
-  + 口号 + 主动作 + 状态 chips（设备数 / 端到端加密 / 无服务器）+ 右下角快捷键提示。
-- 新增 `--gosslan-orb-bg` / `--gosslan-orb-ring`（亮暗两档）；删除已无消费点的 `--gosslan-rail`。
-- 判据随实现搬迁并保留反例：页脚计数改锚 `[data-task-count]`（0 件必须不渲染数字 pill）、
-  本人头像判据从 NavRail 移到标题栏（rail 出现 `<SelfAvatar>` 即红）。
-- 与画板的有意差异：空态标题受「字号只走六档令牌」约束取 `title` 15px（画板 22px）；
-  chips / 快捷键提示取 `caption` 11px（画板 10.5px，10px→11px 统一在第 6 段收口）。
-
-## [5.18.38] - 2026-11-06
-
-### 界面重构 Pulse · 第 1 段追加 token 修正（全部按画板取值）
-
-- 正文色改为画板 `#1f2329`；三条被击穿的对比度契约用现有 token / 现有档位真回补，未删判据：
-  多选工具栏 `disabled:opacity-40 → 50`（2.41→3.16 / 门槛 2.5）、菜单禁用新增
-  `--gosslan-disabled-alpha-menu: 0.6`（3.16→4.24 / 门槛 3.3）、禁用输入框改实色禁用墨
-  `--gosslan-text-2`（4.24→5.72 / 门槛 4.5）。判据新增 `solid` 族并保留反例自证。
-- 主色出厂默认改为画板 `#2f6bff`（`style.css` / `useAppStore` / `skeleton.css` / 设置色板第一格），
-  用户已保存的主题色不变。
-- 危险填充按画板 `#f04452` 实测白字 3.71:1 不达标，取最近更深一档 `#df3146`（4.50:1、ΔE76=5.5），
-  文字档维持画板 `#ff7a85`；这是全仓唯一允许偏离画板的填充色，读数已写进差异表。
-
-## [5.18.37] - 2026-11-06
-
-### 界面重构 Pulse · 第 2 段：图标 + 应用图标
-
-- 新增 `components/ui/Icon.vue` 作为全应用唯一图标出口，造型统一来自 `lucide-vue-next`
-  的 `iconRegistry.ts`（112 个静态键，保留 tree-shaking）；尺寸只走 16 / 20 / 24 三档，
-  16 档描边 1.8、其余 2.0。
-- 53 个 UI 文件的图标引用改为 `<Icon name="…">`；`navIcons.ts` 收敛为画板四枚侧栏轮廓
-  （会话 / 通讯录 / 收藏书签 / 链接），`NavIcon.vue` 内部改走 `Icon.vue`，不再自绘 path。
-- `fileKind.ts` / `todoCustomIcons.ts` 从组件映射改为 registry 键映射，Node 单测不再解析
-  图标组件库。
-- 应用图标改用画板 `AppIcon`（1024×1024 单源），`npm run icon` 重生成 macOS / Windows /
-  Android / iOS 全部尺寸；未改 Rust 与 Tauri 配置。
-- 门禁锚点随入口迁移（㊵ / ⑬ / ⑰ / 51 / remindFlow），均保留反例自证；`feat/code-fold`
-  冲突文件 `MessageItem.vue`、`MessageCodeBubble.vue` 暂留直连并在方案文档登记豁免。
-
-## [5.18.36] - 2026-11-06
-
-### 界面重构 Pulse · 第 1 段：tokens 与骨架
-
-- 语义 token 换到 Pulse 中性表面：画布 / 列表 / 聊天 / 面板 / 输入框 / 边框 / 分隔线两档重标；glass-1/2/3 三档与 `prefers-reduced-transparency`、`contrast: more` 降级保持不变。
-- 骨架尺寸按画板落地：头部 52px、列表 320px（拖拽 280~400px）、桌面行高 62px / 移动 64px；首屏骨架、圆角梯度、头像与气泡半径同步。
-- 对比度与禁用态契约跟着新取值重标：暗色危险文字档 `#ff7a85`、开关关态 `#7c8698`、暗色占位符与次要文字同值。
-
-
-## 历史版本摘要（5.18.25 及更早，全文见 [归档](docs/archive/notes/changelog-archive.md)）
+## 历史版本摘要（5.18.36 及更早，全文见 [归档](docs/archive/notes/changelog-archive.md)）
 
 > 由 `scripts/compress-changelog.mjs` 生成（`--keep 12`）：这里只留「版本 + 一句话主旨」，
 > 全文逐字在归档；带 〔破坏性〕〔协议〕〔安全〕的版本，压缩前正文命中了对应关键字。
 
+- **5.18.76**（2026-11-07）— 非活动窗口的第一下点击被吃掉（用户 2026-11-07 实测）
+- **5.18.75**（2026-11-07）— 启动画面文案被系统标题栏按钮压住（用户 2026-11-07 macOS 实测） 〔协议〕
+- **5.18.74**（2026-11-07）— 输入框删表情：一次退格只删一个「用户眼里的表情」（用户 2026-11-07 安卓真机反馈）
+- **5.18.73**（2026-11-07）— Windows 标题栏镜像：头像簇移到左侧，与左 R 角同圆心（用户 2026-11-07 真机反馈）
+- **5.18.72**（2026-11-07）— 屏幕边缘安全区：崩溃恢复条压在安卓状态栏下（用户 2026-11-07 真机反馈）
+- **5.18.71**（2026-11-07）— 归档：UI 复核计划与报告（docs/notes/ui-pulse-review-2026-11-07/）
+- **5.18.46**（2026-11-07）— ⑧ 玻璃 + 浮动背景全开时输入框看不清 / 信息可读性下降
+- **5.18.45**（2026-11-06）— 设置分区卡片内边距统一到 16px 单一口径
+- **5.18.44**（2026-11-06）— 界面重构 Pulse · 终稿对稿 ②：会话列表标题行 / 搜索行 / 行内字号
+- **5.18.43**（2026-11-06）— 界面重构 Pulse · 终稿对稿 ①：标题栏 40 / 头像簇 / 画板字阶
+- **5.18.42**（2026-11-06）— 界面重构 Pulse · 第 6 段：状态收敛 / 边界 / 字号与验收 〔协议〕
+- **5.18.41**（2026-11-06）— 界面重构 Pulse · 第 5 段：独立窗口与浮层
+- **5.18.40**（2026-11-06）— 界面重构 Pulse · 第 4 段：移动端
+- **5.18.39**（2026-11-06）— 界面重构 Pulse · 第 3 段：桌面主界面 〔安全〕
+- **5.18.38**（2026-11-06）— 界面重构 Pulse · 第 1 段追加 token 修正（全部按画板取值）
+- **5.18.37**（2026-11-06）— 界面重构 Pulse · 第 2 段：图标 + 应用图标
+- **5.18.36**（2026-11-06）— 界面重构 Pulse · 第 1 段：tokens 与骨架
 - **5.18.35**（2026-11-06）— 玻璃表面：聊天与全应用「该透却没透」统一（glass/chat-surfaces）
 - **5.18.34**（2026-11-05）— 图片预览：桌面改走应用内覆盖层，独立预览窗口路径整体删除（本批因 5.18.33 被占用改挂 5.18.34） 〔协议〕
 - **5.18.33**（2026-11-05）— 修复：自己的文本气泡与尾巴之间的浅色缝（第三次同一处）
