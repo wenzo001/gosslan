@@ -60,7 +60,7 @@
 | 38 | A③ 崩溃恢复条/各类提示贴视口边，压到安卓状态栏与圆角 | 已完成·待真机 | `74e2629c`（5.18.72） | **SA-01/02/03**（同一测试文件）：在状态栏 24px + 圆角 24px + 视口 390×844 下判定矩形不侵入「圆外被切区域」；「统一出口」扫全仓，组件裸写 `env()` 必红 | 待真机（安卓）：`env()` 真值只有安卓 WebView 上报，桌面 Chrome 恒 0 |
 | 39 | B④ 输入框删表情：一次退格把两个表情一起删掉 | 已完成·待真机 | `478a7766`（5.18.74） | `node --test src/utils/graphemes.test.ts`（9 条：两个连着表情、ZWJ 家庭、肤色、旗帜、VS16…）；另外 `deleteOneUnitBeforeCaret` 覆盖 token 三种 caret 落位 | 待真机（安卓）：WebView 的 caret 落位形态与 IME 组合由系统决定 |
 | 40 | B⑤ 「任务中心」更名「传输队列」；移动端任务列表页页头 / `0/1 已完成` / 筛选 / 列表四套竖线并回同一条 16px | 已完成 | `da03c1c7`（5.18.78） | 文案：中英两册同步（`node scripts/check-i18n.mjs`）；几何：`GroupTasksBoard.vue` 的 `pageInset` 只输出 `px-[var(--gosslan-scroll-inset)]`，无字面 px（㊶ 守卫禁任意值） | 真机像素表未取：本批只保证「同一个 token」，实际竖线位置需截图量 |
-| 41 | B⑥ 网络诊断页双层滚动条 | 已完成 | `da03c1c7`（5.18.78）；子列表 `本笔`（5.19.5） | 第一层 5.18.78 去掉；本笔把剩下 4 处**子列表**（蓝牙退避 / 对端版本 / 连接活性 / 群文件日志）的 `max-h-48 + overflow-y-auto` 一并去掉——用户口径「一页只有一层滚动条，子列表不应再套一层」，随内容展开，长列表靠数据源上界兜底（群文件日志只留 50 行）。判据 PG-03 从只盯 `max-h-[75vh]` 扩到全文件任意 `class="… max-h-* / overflow-*-auto …"`，新增反例「子列表 `max-h-48` 必红」；运行时探针 `--only=diag` 5/5：`shellH 335 / shellSH 2359`（壳确实在滚）、`inner 0`；把 `max-h-48` 写回一处 ⇒ FAIL 并报 `sh 316 / ch 192` | — |
+| 41 | B⑥ 网络诊断页双层滚动条 | 已完成 | `da03c1c7`（5.18.78）；子列表 `e6ec21a3`（5.19.6） | 第一层 5.18.78 去掉；5.19.6 把剩下 4 处**子列表**（蓝牙退避 / 对端版本 / 连接活性 / 群文件日志）的 `max-h-48 + overflow-y-auto` 一并去掉——用户口径「一页只有一层滚动条，子列表不应再套一层」，随内容展开，长列表靠数据源上界兜底（群文件日志只留 50 行）。判据 PG-03 从只盯 `max-h-[75vh]` 扩到全文件任意 `class="… max-h-* / overflow-*-auto …"`，新增反例「子列表 `max-h-48` 必红」；运行时探针 `--only=diag` 5/5：`shellH 335 / shellSH 2359`（壳确实在滚）、`inner 0`；把 `max-h-48` 写回一处 ⇒ FAIL 并报 `sh 316 / ch 192` | — |
 | 42 | C⑦ 触屏长按正文不弹消息面板 | 已完成·待真机 | `da03c1c7`（5.18.78） | `node --test src/utils/longPress.test.ts`（11/11：5 环链 + 逐环反例）与 `contextMenu.test.ts`（断言 `onSelectableText: false`）；结构判据：源码再出现 `hitSelectable` / `lastTouchTextCol` 即红。口径变更见 [decision-longpress-2026-11-07.md](./decision-longpress-2026-11-07.md) | 待真机（安卓）：「选择文字」点下去后能否真的选中并复制 |
 | 43 | C⑧ 弹窗标题 / 固定头部 / 页脚的横向与纵向基线各写一套 | 已完成 | `da03c1c7`（5.18.78） | `BaseModal.vue` 标题、header 插槽、footer 统一 `--gosslan-modal-gap`（16px），fullscreen header 横向走 `--gosslan-scroll-inset`；`designGuards` 抓任意值写法 | 真机对比截图未取：设置 / 日志 / 群任务 / 预览四个窗口需各看一眼 |
 | 44 | C⑨ Windows 图标：软件内升级后仍是旧图标；Windows 11 不给应用图标加圆角 | 已完成·待真机 | 升级不刷新 `12519540`（5.18.73）；圆角 `da03c1c7`（5.18.78） | 升级：`rg -n "SHChangeNotify" src-tauri/nsis/hooks.nsh` = 1（`SHCNE_ASSOCCHANGED` 让外壳重读图标）；圆角：`icon.ico` 4368 → **6897 B**，由 `scripts/build-app-icons.mjs` 从圆角源图重出 | 待真机（Windows）：覆盖安装后桌面/任务栏图标；必要时 `ie4uinit.exe -show` 前后对照 |
@@ -228,6 +228,11 @@
   - 反例自证：把 `max-h-48` 写回蓝牙退避一处 → FAIL，读数 `inner [{cls:"max-h-48 …", sh:316, ch:192}]`，
     随后还原。
 - **未改**：`.screenshots/`、`docs/notes/ui-pulse-redesign/candidates/` 两个未跟踪目录未动。
+- **顺带修掉一条夜间假红（`5ee92e8a`，5.19.7）**：`verify-guards --only "Presence 不得内联大头像"`
+  在夜间 cargo 通道连红 —— 注入确实把用例改红了，但用例声明的 `expect_fail_hint="broadcast_presence"`
+  在 2026-11-04 那次「payload 构造搬进 `presence_payload_b64`」后就已经不是倒下的那句断言。
+  关键词跟着搬到「Presence payload 必须过 hello_avatar_for_wire」，注入点与断言一个字没动；
+  单跑该用例 → ✅ 1 条通过。这是本仓点过名的形状：判据搬了、锚点没搬，检查还在跑却查不到东西。
 
 ## 待做（发版后动作，勿提前执行）
 
