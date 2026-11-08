@@ -41,6 +41,17 @@ test("只有异常/启动中止才提示；正常退出不打扰", () => {
   assert.equal(shouldShowCrashNotice("sigterm"), false);
 });
 
+test("环境类崩溃带原因码；没有证据时不写", () => {
+  const env = formatCrashReport({
+    ...report,
+    bleSuspect: false,
+    reason: "ENV_WEBVIEW_CREATE_TIMEOUT",
+  });
+  assert.match(env, /reason: ENV_WEBVIEW_CREATE_TIMEOUT/);
+  // 反例：后端没给归因码 ⇒ 不许凭空补一行（那会把"不知道"说成"知道"）。
+  assert.doesNotMatch(formatCrashReport({ ...report, reason: null }), /reason:/);
+});
+
 test("卡死记录也进复制文本（未配对时附在报告里）", () => {
   const s = formatCrashReport({
     ...report,

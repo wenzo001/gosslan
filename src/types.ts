@@ -616,6 +616,11 @@ export interface PreviousRunReport {
   hang: HangDetail | null;
   recentPanicCount: number;
   bleSuspect: boolean;
+  /**
+   * panic 的机器归因码（目前只有 `ENV_WEBVIEW_CREATE_TIMEOUT`：WebView2 创建超时，
+   * 属于运行环境初始化失败，发生在我们的 setup hook 之前）。没有确凿证据时后端不给。
+   */
+  reason?: string | null;
   crashLog: string;
   logDir: string;
 }

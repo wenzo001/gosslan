@@ -1,4 +1,4 @@
-# 更新日志归档（0.1.0 ~ 5.18.76）
+# 更新日志归档（0.1.0 ~ 5.19.7）
 
 从 `CHANGELOG.md` 分卷而来：2026-10-07 迁入 4.31.41 及更早；2026-11-03 由 `scripts/compress-changelog.mjs` 再把 4.32.0 ~ 5.16.89 逐字搬入。下面所有小节的内容与搬入前**逐字相同**，没有改写、没有补全、没有删掉任何一条。未发布小节与最近 12 个版本的全文仍在 [`../../../CHANGELOG.md`](../../../CHANGELOG.md)。
 
@@ -12,6 +12,138 @@
 
 > 2026-11-07 发布 v5.18.71 时，5.18.47 ~ 5.18.70 的逐笔明细被合并成对外的一段说明；
 > 下面这一块是合并前那些小节的**原文逐字**保留（顺序仍是新→旧），供追溯，不代表对外口径。
+
+## [5.19.7] - 2026-11-08
+
+### 工程
+- 夜间护栏不再假红：「Presence 不得内联大头像」这条非空转用例的关键词仍写着 `broadcast_presence`，
+  而注入点在 2026-11-04 已随 payload 构造搬进 `presence_payload_b64`，倒下的断言换了名字。
+  关键词跟着搬到「Presence payload 必须过 hello_avatar_for_wire」；注入点与断言未动。
+
+## [5.19.6] - 2026-11-08
+
+### 可读性
+- 网络诊断页真正只剩一层滚动条：对端版本、蓝牙退避、连接活性、群文件日志四处子列表此前各自
+  带 `max-h-48 + overflow-y-auto`，滚轮停在其中任一格上只滚那半屏。现在四处随内容展开，
+  滚动统一交给弹窗内容区；群文件日志仍由数据源只留最近 50 行兜底，长的不会失控。
+  判据 PG-03 补反例：子列表再出现 `max-h-*` / `overflow-*-auto` 即红。
+
+### 分发与更新
+- 本版起检查更新先读 Gitee 固定清单，GitHub 只作兜底。5.19.0 的代码已是这个顺序，
+  但 5.18.78 及更早安装包内置的仍是 GitHub 端点 —— 升级到本版之后，Gitee 镜像才真正接管。
+
+## [5.19.5] - 2026-11-08
+
+### 工程
+- Gitee 同步抗抖动：`GET/DELETE/PATCH` 遇 TLS/连接中断或 502-504 重试 3 次（2s/5s/10s）；
+  重跑时先用匿名 HEAD 比对 `content-length`，大小一致就跳过，不再把已传完的 74MB 重传一遍。
+
+## [5.19.4] - 2026-11-08
+
+### 工程
+- Gitee 同步改成分片上传：`prepare` 建 tag/release，`upload` ×5（matrix，各自独立 runner IP，
+  每片 3 路并发）只传 `i % 5` 的文件，`finalize` 再提交清单、匿名校验与清理。
+  原因是实测单 runner 上传被限速在 ~10KB/s，74MB 需两个多小时才会超时。
+
+## [5.19.3] - 2026-11-08
+
+### 工程
+- 提交前硬闸补齐判据 4：`Version-Bump: none` 却动了脚本 / CI / 依赖，或声明了 bump 却没把四个版本清单
+  文件一起提交，现在在 `git commit` 那一刻就 exit 1，不再等推上去才在 CI 判红。
+
+## [5.19.2] - 2026-11-08
+
+### 工程
+- 修正更新端点判据：与「Gitee 镜像优先、GitHub 兜底」的新顺序对齐（判据改成整表相等，
+  多挂源或调换顺序仍会判红）；`android_update_core` 的测试断言按 rustfmt 折行，恢复 `cargo fmt --check`。
+
+## [5.19.1] - 2026-11-08
+
+### 动效
+- 移动端底部 TabBar 选中药丸：弹簧动画换成时长档（`--gosslan-duration-fast`）并统一走全站缓动曲线，
+  高频短距的切换不再有"抬手了还没停稳"的尾巴。
+- 整页 push/pop：出场时长改用 `--gosslan-duration-exit`（180ms，移动 200ms），短于入场，
+  返回上一页不再与进入一样慢。
+- 桌面 rail 选中药丸：原 140ms 常量收编进令牌阶梯（`--gosslan-duration-fast`），全站不再有阶梯外时长。
+- 图片灯箱：从缩略图位置放大、关闭缩回原位的通道补到任务图片入口，放大/收起时长与曲线改读令牌；
+  手势复位与遮罩淡入淡出同步去掉字面毫秒。
+- 群任务看板：行内布局动画改走令牌；删除任务先淡出再落库，不再"点完立刻消失"。
+- 会话列表、收藏列表、群成员列表的行增删统一为同一组位移+透明度过渡（只做 4px 位移，不缩放）；
+  骨架屏呼吸周期登记为启动专用令牌 `--boot-breathe`。
+
+### 无障碍
+- `prefers-reduced-motion` 下逐项核对：位移与缩放全部归零，但选中、出现、消失等状态变化仍然可见，
+  不会退化成"点了没反应"。
+
+### 工程
+- 动效判据从只扫 `style.css` 扩到全部 `.vue`：Tailwind 数字时长、非令牌 `duration-[…]`、motion-v 弹簧参数、
+  数字 `duration`、系统曲线名都会判红，并带 `duration-[300ms]` 反例自证与"至少扫到 100 个文件"防空转。
+
+## [5.19.0] - 2026-11-07
+
+### 分发与更新
+- 发版产物新增 Gitee 镜像：GitHub Release 发布后由 `sync-gitee` job 同步同名 tag/release 与附件，
+  并维护固定清单 `https://gitee.com/fwdq/gosslan-releases/raw/master/updates/latest.json`；
+  桌面清单复用 GitHub 的签名，不重签；Android 条目补 `sha256` 与 `size`。
+- Gitee 单附件上限 100MB、仓库总量 1G：两个 WebView2 内置包不镜像（本来也不进更新清单），
+  旧 release 默认只保留最近 8 个（当前 tag 永不删），清理前打印完整 dry-run 清单。
+  WebView2 档仍从 GitHub Release 下载。
+- 桌面检查更新改为 Gitee 固定清单优先、GitHub 只作备份：`endpoints` 两条，Gitee 返回非 2XX
+  才回退；签名的生成与校验逻辑不变。
+- Android 检查更新同样先读 Gitee 固定清单（失败、缺 Android 条目或清单版本低于当前版本时
+  回退 GitHub Releases API），APK 仍按 `sha256` + 大小校验；协议与数据库不变。
+
+## [5.18.78] - 2026-11-07
+
+### 界面重构
+- 「任务中心」更名为「传输队列」，入口图标换成双向箭头；面板标题、入口 aria 与中英文文案同步。
+
+### 可读性
+- 移动端任务列表页：页头、`0/1 已完成`、筛选与列表回到同一条 16px 竖线（此前页头 12px、看板头部 0px、列表 16px 三套基线）。
+- 网络诊断页只剩一层滚动条：去掉内容区自带的 `max-h + overflow-y-auto`，滚动统一交给弹窗壳。
+- 弹窗标题、固定头部与页脚的横向基线统一走 `--gosslan-scroll-inset`，纵向间距定为一档 `--gosslan-modal-gap`（16px，此前 header 插槽是 12px）。
+- 背景动效新增「背景动效读数」：媒体查询、当前档位与模糊能力可整段复制；Windows/macOS 对照写进 `docs/design-language/ambient-motion.md`。
+
+### 交互手感
+- 触屏长按正文重新弹出消息面板：此前正文层默认可原生选字，安卓上长按文字被系统选字接管、面板不弹（图片仍弹）；现在正文与图片同一套，「选择文字」进入后恢复原生选字与复制工具条。
+
+### 修复
+- Windows 关掉系统「透明效果」后背景动效不再一起消失：`prefers-reduced-transparency` 只让玻璃退实底，不再连带关闭背景雾；软件内「背景动效」开关优先于系统偏好，系统偏好只在从未动过开关时作为默认。背景动效读数同时会显示当前生效判定的来源（软件 / 系统 / 默认）。
+- Windows 任务栏与安装包图标改为圆角（Windows 11 不会替应用图标加圆角），`icon.ico` 改用与 macOS 同款的圆角源图生成。
+
+## [5.18.77] - 2026-11-07
+
+### 首屏骨架与真实界面同源，启动不再跳位（用户 2026-11-07 总要求）
+
+用户：「最后如果所有的 UI 改完了，把所有界面的骨架图也同步跟现在的 UI 同步。」
+
+- **根因**：骨架（`src/boot/skeleton.css` + 5 个 HTML）与真实布局各写一份数字，
+  真实值在 `style.css` 的 token 或组件类名里，改一边另一边不会红。逐项对差量到 23 处，
+  其中四类会在切到真界面时整块位移：
+  - 列表缺 50px 标题行 ⇒ 整列会话低 50px（审查报的「跳 50px」）；
+  - rail 多画一个本人头像（42px + 16 间距）⇒ 四个入口低 58–60px；
+  - 设置 / 日志 / 预览三窗缺 40px 自绘标题栏 ⇒ 整屏上移 40px；
+  - 群任务顶栏 48px「左标题 + 右新建」⇒ 真实是 40px 居中 TitleBar（8px + 结构差）。
+  其余：设置左栏 176→200、左栏内距 8→10 且补组标题、日志工具条 48→46 与内距 12→14、
+  移动行高 62→64、搜索壳上下留白 48→40、搜索圆角 8→10、列表左上圆角 12→0、
+  群任务内容内距 12→16、卡片圆角 12→14。
+- **改法（一份来源）**：`src/style.css` 的 `--gosslan-*` 是唯一来源；
+  新增 `src/boot/skeletonTokens.ts` 声明「谁跟谁同源」，`vite.config.ts` 在构建时读
+  `style.css` 把值物化成 `--boot-*` 注入内联样式（骨架先于 `style.css` 执行，运行时读不到那边变量）；
+  `skeleton.css` 受管几何只许 `var(--boot-*)`。真实组件同步改为引用同一批 token
+  （`NavRail`、`ConversationList`、`ConversationListItem`、`SettingsWindow`、`LogViewer`）。
+- **判据**：新增 **SK-04**（`checkBootSkeletonTokens`）四向校验 —— 骨架接了 `var(--boot-*)`、
+  同一规则不许字面 px、每个 `--boot-*` 在 `style.css` 有来源、真实组件确实引用同一 token；
+  四条反例（改回字面 px / 删真实组件引用 / 删 token / 孤儿 `--boot-*`）全部必红。
+  `node --test src/utils/designGuards.test.ts` → 360/360。
+- **文档**：`docs/design-language/density-and-scroll.md` §8（机制 + 23 项对差表）、
+  `designs/gosslan-redesign/docs/decisions.md` v2.3（7 项画板妥协最终状态 + 新增口径）、
+  `docs/notes/ui-pulse-redesign/tasks.md` #35。
+- **证据**：`test-results/skeleton-sync/` —— 5 个界面 × 骨架态/加载完成态 1440×900，
+  主窗另有 390×844。骨架态用 `--blink-settings=scriptEnabled=false` 冻结首帧。
+
+**验证边界**：截图为 Chromium 内核（Brave headless）在 macOS 上的渲染，不是 WKWebView 真机读数；
+几何由同一批 token 计算、不依赖内核，但像素级截图仍建议在真机窗口复核一次。
 
 ## [5.18.76] - 2026-11-07
 

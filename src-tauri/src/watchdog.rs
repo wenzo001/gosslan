@@ -104,7 +104,10 @@ pub(crate) struct RecoverInput {
     pub active: bool,
     /// 主窗口当前是否处于聚焦态。
     pub focused: bool,
-    /// 距最近一次 `Focused(true)` 多久（ms）。
+    /// 距最近一次 `Focused(true)` 多久（ms）；**从未收到过 Focused 事件时为 `i64::MAX`**。
+    ///
+    /// 这个哨兵是"不知道"而不是"很久以前"：失焦门只对**明确收到过 `Focused(false)`**
+    /// 的机器生效，否则老口径不变（见 [`recover_decision`] 的 G0'）。
     pub since_focus_ms: i64,
     /// 聚焦之后有没有来过**新**心跳。
     pub hb_since_focus: bool,
@@ -135,6 +138,8 @@ pub(crate) enum RecoverDecision {
     Restart,
     /// 限流窗口内次数用尽 ⇒ 只写 `code=UI_AUTO_RECOVER_BLOCKED`。
     Blocked,
+    /// 明确失焦（切走 / 隐藏到托盘 / 最小化）⇒ 用户看不见这张界面，只取证不动作。
+    SkipUnfocused,
 }
 
 /// 自愈决策。顺序是刻意的：
@@ -145,8 +150,10 @@ pub(crate) enum RecoverDecision {
 /// 4. 未到 20 s ⇒ 交给 3 s/10 s 两档继续诊断/通知；
 /// 5. 限流 ⇒ `Blocked`；
 /// 6. G2（主线程也停摆）⇒ reload 排不进事件循环，未到升级点就等，到了直接 `Restart`；
-/// 7. 整棵 WebView2 树零指令（`tree_silent`）⇒ reload 排得进去也不会被执行，直接 `Restart`；
-/// 8. 其余 ⇒ `Reload`。
+/// 7. **明确失焦**（收到过 `Focused(false)`）⇒ `SkipUnfocused`：用户看不见这张界面，
+///    reload/重启只会清掉他的状态，还可能撞上 WebView2 创建超时（2026-11-08 真机）；
+/// 8. 整棵 WebView2 树零指令（`tree_silent`）⇒ reload 排得进去也不会被执行，直接 `Restart`；
+/// 9. 其余 ⇒ `Reload`。
 pub(crate) fn recover_decision(i: &RecoverInput) -> RecoverDecision {
     // G1' 的"聚焦空档"：窗口已聚焦 ≥5 s，且聚焦之后**一次新心跳都没有**。
     let focus_gap = !i.active && i.focused && i.since_focus_ms >= FOCUS_GAP_MS && !i.hb_since_focus;
@@ -169,6 +176,17 @@ pub(crate) fn recover_decision(i: &RecoverInput) -> RecoverDecision {
         } else {
             RecoverDecision::None
         };
+    }
+    // G0'：**明确**失焦才算。`since_focus_ms == i64::MAX` 表示没收到过任何 Focused 事件
+    // ⇒ 不知道窗口在不在前台，仍按老口径判，不把"未知"折成"后台"（否则从此不再自愈）。
+    //
+    // 2026-11-08 真机现场：两次停摆（06:58 / 07:19）窗口都在后台（`focused=false`），
+    // 前端 `active` 却停在过期值 `true` ⇒ 旧逻辑 reload → verify 超时 → 重启；20 分钟里
+    // 重启两次，第二次新进程创建 WebView2 时撞上 `ERROR_TIMEOUT`（`failed to create webview`）。
+    // 窗口失焦时用户根本看不见这张界面，重载没有意义；等他切回来时 `Focused(true)`
+    // 会让 G1' 重新判一次（"一显示就白屏"仍然兜得住）。
+    if !i.focused && i.since_focus_ms != i64::MAX {
+        return RecoverDecision::SkipUnfocused;
     }
     if i.tree_silent {
         return RecoverDecision::Restart;
@@ -619,6 +637,7 @@ fn run<R: tauri::Runtime>(app: tauri::AppHandle<R>, state: Arc<crate::state::App
                 RecoverDecision::FocusGap => Some("focus_gap"),
                 RecoverDecision::Reload | RecoverDecision::Restart => Some("stall"),
                 RecoverDecision::Blocked => Some("blocked"),
+                RecoverDecision::SkipUnfocused => Some("unfocused"),
             };
             match code {
                 None => recover_episode = None,
@@ -645,6 +664,12 @@ fn run<R: tauri::Runtime>(app: tauri::AppHandle<R>, state: Arc<crate::state::App
                                     tree_procs_base,
                                     tree_procs_now,
                                 },
+                            )),
+                            "unfocused" => crate::logging::crash_note(&format!(
+                                ">>> code=UI_AUTO_RECOVER_SKIPPED reason=unfocused \
+                                 stale_ms={stale} since_focus_ms={since_focus} \
+                                 main_stall_ms={main_stall} hb_age_ms={}",
+                                now - hb
                             )),
                             _ => crate::logging::crash_note(&format!(
                                 ">>> code=UI_AUTO_RECOVER_BLOCKED reason=rate_limit \
@@ -950,6 +975,42 @@ mod tests {
             RecoverDecision::None,
             "托盘隐藏/最小化被节流不是停摆"
         );
+        // G0'：**明确**失焦（收到过 Focused(false)）⇒ 只取证不动作。
+        // 2026-11-08 那台两次停摆都在后台（focused=false、active 卡在过期的 true），
+        // 旧逻辑 reload → verify 超时 → 重启，第二次新进程撞上 WebView2 创建超时。
+        assert_eq!(
+            recover_decision(&RecoverInput {
+                stale_ms: 33_000,
+                focused: false,
+                since_focus_ms: 3_000,
+                ..base
+            }),
+            RecoverDecision::SkipUnfocused,
+            "窗口在后台时用户看不见，reload/重启只会清掉他的状态"
+        );
+        // 反例：从未收到 Focused 事件（since=MAX）⇒ 不把"未知"当后台，仍按老口径 reload。
+        assert_eq!(
+            recover_decision(&RecoverInput {
+                stale_ms: UI_STALL_RELOAD_MS,
+                focused: false,
+                since_focus_ms: i64::MAX,
+                hb_since_focus: false,
+                ..base
+            }),
+            RecoverDecision::Reload,
+            "没收到过 Focused 事件时不能停掉自愈（否则老机器从此不再恢复）"
+        );
+        // 反例：主线程停到升级点 ⇒ 进程已经死了，前台后台都要救（G2 优先于失焦门）。
+        assert_eq!(
+            recover_decision(&RecoverInput {
+                stale_ms: 40_000,
+                focused: false,
+                since_focus_ms: 3_000,
+                main_stall_ms: MAIN_STALL_ESCALATE_MS,
+                ..base
+            }),
+            RecoverDecision::Restart
+        );
         // G1'：聚焦后 5 s 仍无新心跳，但 stale < 20 s ⇒ 只取证（防"刚显示瞬间"误伤）。
         assert_eq!(
             recover_decision(&RecoverInput {
@@ -1024,9 +1085,11 @@ mod tests {
         let stuck = RecoverInput {
             stale_ms: UI_STALL_RELOAD_MS,
             active: true,
-            focused: false,
-            since_focus_ms: 600_000,
-            hb_since_focus: false,
+            // 这一条只测"树静默 ⇒ 跳过没用的 reload"，所以给一个**在前台**的窗口：
+            // 失焦门是另一条判据（见 `recover_decision_covers_*` 的 G0' 用例）。
+            focused: true,
+            since_focus_ms: 100,
+            hb_since_focus: true,
             main_stall_ms: 1_000,
             enabled: true,
             reloads_in_window: 0,
@@ -1126,6 +1189,7 @@ mod tests {
             "code=UI_RENDERER_RECOVERED",
             "code=UI_AUTO_RECOVER_FAILED",
             "code=UI_AUTO_RECOVER_BLOCKED",
+            "code=UI_AUTO_RECOVER_SKIPPED reason=unfocused",
             "code=UI_AUTORECOVER_DISABLED reason=env",
         ] {
             assert!(src.contains(needle), "缺了具名码 {needle}");
