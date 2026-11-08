@@ -57,3 +57,14 @@
 
 - 判据 3 的这一笔红按负责人接受；判据 1 / 2 / 4 与 `verify:full` 其余步骤保持绿。
 - `Version-Bump` 双向判据不变：声明 `patch` ⇔ 四个版本清单文件同提交改动。
+
+## 推送后实测（2026-11-08）
+
+- 推送：`6263356e..f83f6efb`（14 笔）一次性推到 `origin/main`。
+- Verify（run `42480697130`）：**唯一红步就是判据 3**，窗口为
+  `presentation: 3 次(f83f6ef, af3e0eb, c271fc9)`，与本节开头接受的那一格同形；
+  其余 20 步（含 `npm test` 中英两遍、`npm run build`、护栏非空转、文档/引用对账）全绿。
+- 同批构建：macOS、Windows（x64 + ARM64）成功；Android 仍在跑（它只判 `HEAD~1..HEAD`，单笔 patch，不受影响）。
+- 收口正路：按规则 ①「下一次推送的新范围里窗口自然清空」——本记录落笔这一次 docs 推送后，
+  受检范围变成单笔零影响提交，判据 3 窗口清空；随后在该提交上打 `v5.19.23`。
+  **没有**用 `GOSSLAN_SKIP_VERIFY_GATE` 绕发布门禁，发布仍要求 Verify 为 success。
