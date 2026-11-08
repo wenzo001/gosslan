@@ -4581,6 +4581,7 @@ async function main() {
     const railsync = want("railsync");
     const imgload = want("imgload");
     const imgzoom = want("imgzoom");
+    const backjump = want("backjump");
     const previewwin = want("previewwin");
     const mobileoverlay = want("mobileoverlay");
     const pinkb = want("pinkb");
@@ -4827,6 +4828,7 @@ async function main() {
     await runSegment("railsync", railsync, () => runRailSync(cdp, url));
     await runSegment("imgload", imgload, () => runImageLoad(cdp, url));
     await runSegment("imgzoom", imgzoom, () => runImageZoom(cdp, url));
+    await runSegment("backjump", backjump, () => runBackJump(cdp, url));
     await runSegment("previewwin", previewwin, () => runPreviewWindow(cdp, url));
     await runSegment("mobileoverlay", mobileoverlay, () => runMobileOverlay(cdp, url));
     if (want("imgretry")) await runImageRetryPace(cdp, url);
@@ -23957,6 +23959,89 @@ async function runImageZoom(cdp, url) {
   check("回到最新：离底时点它 → 按钮收到 press（可见即真的接上了）",
     back200Events.filter((e) => e[0] === "back").length === 1,
     "back=1", JSON.stringify(back200Events));
+  await cdp.send("Emulation.clearDeviceMetricsOverride").catch(() => {});
+}
+
+/**
+ * 「回到最新」位置恒定段（--only=backjump，2026-11-08）。
+ *
+ * 用户报：上下滚动时这颗圆钮一直在上下跳动。旧实现每帧按滚动位置实测
+ * `[data-time-divider]` / `[data-unread-divider]` 与按钮矩形是否相交，相交就按
+ * 「行高 + 8px」逐级上移（最多 3 步 ≈ 108px）—— 分割行滚过按钮的那一刻就跳一格，
+ * 滚回去又跳回来。本段用一个真滚动容器把分割行"滚过"按钮，按 20px 步长连续滚 40 步，
+ * 每步等两帧再采样 `getBoundingClientRect().top`，要求**整条序列只有一个值**。
+ *
+ * 判据即反例：把动态位移改回来（任何跟随滚动位置的 `avoidOffset`）⇒ 唯一值 > 1 ⇒ 红。
+ */
+async function runBackJump(cdp, url) {
+  await cdp.send("Page.bringToFront").catch(() => {});
+  await cdp.send("Emulation.setDeviceMetricsOverride", {
+    width: 900, height: 700, deviceScaleFactor: 1, mobile: false,
+  }).catch(() => {});
+  await cdp.send("Page.navigate", { url });
+  await cdp.settled();
+  await sleep(3_000);
+  await cdp.eval(PAGE_FIXTURE);
+  const mounted = await cdp.eval(`(async () => {
+    if (!window.__probe.vue) {
+      await window.__probe.install('/src/components/UnreadBadge.vue', '', JSON.stringify({ count: 1 }));
+    }
+    const V = window.__probe.vue;
+    if (!V) return { ok: false, why: 'no-vue' };
+    const mod = await import('/src/components/chat/BackToLatestButton.vue');
+    window.__probe.reset();
+    document.body.innerHTML = '';
+    const host = document.createElement('div');
+    host.id = 'bj-host';
+    host.style.cssText = 'position:fixed;left:0;top:0;width:480px;height:520px;background:#111;';
+    document.body.appendChild(host);
+    const sc = document.createElement('div');
+    sc.id = 'bj-scroll';
+    sc.style.cssText = 'position:absolute;inset:0;overflow-y:auto;';
+    let rows = '<div style="height:240px"></div>';
+    for (let i = 1; i <= 8; i += 1) {
+      rows += '<div data-time-divider style="height:28px;margin:0 12px">10月' + i + '日 16:21</div>'
+        + '<div style="height:300px"></div>';
+    }
+    sc.innerHTML = rows + '<div style="height:240px"></div>';
+    const st = V.reactive({ visible: true });
+    const app = V.createApp({
+      setup() {
+        return () => V.h(mod.default, { visible: st.visible, bottomOffset: 96 });
+      },
+    });
+    if (window.__pinia) app.use(window.__pinia);
+    app.mount(host);
+    host.insertBefore(sc, host.firstChild);
+    window.__probe.bjScroll = (top) => { sc.scrollTop = top; return sc.scrollTop; };
+    window.__probe.bjTop = () => {
+      const b = document.querySelector('[data-back-to-latest]');
+      if (!b) return null;
+      const r = b.getBoundingClientRect();
+      return { top: Math.round(r.top * 100) / 100, cssBottom: getComputedStyle(b).bottom };
+    };
+    return { ok: true, max: sc.scrollHeight - sc.clientHeight };
+  })()`);
+  if (!mounted || !mounted.ok) {
+    check("回到最新:夹具挂载（工具层）", false, "mount ok", JSON.stringify(mounted));
+    return;
+  }
+  await sleep(200);
+  const series = [];
+  for (let i = 0; i <= 40; i += 1) {
+    await cdp.eval(`window.__probe.bjScroll(${i * 20})`);
+    await cdp.eval("new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)))");
+    series.push(await cdp.eval("window.__probe.bjTop()"));
+  }
+  const tops = series.map((s) => (s ? s.top : null));
+  const uniq = [...new Set(tops)];
+  const span = Math.max(...tops) - Math.min(...tops);
+  console.log("· backjump top 序列（0→800px，每 20px 一采样）:", JSON.stringify(tops));
+  console.log("· backjump 唯一值:", JSON.stringify(uniq), "跨度:", span, "px");
+  check("回到最新：连续滚动 0→800px 时 top 恒定（不许按滚动位置位移）",
+    uniq.length === 1 && span === 0,
+    "唯一值 1 个、跨度 0px",
+    `唯一值 ${uniq.length} 个 ${JSON.stringify(uniq)}、跨度 ${Math.round(span * 100) / 100}px`);
   await cdp.send("Emulation.clearDeviceMetricsOverride").catch(() => {});
 }
 

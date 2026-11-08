@@ -61,7 +61,7 @@ import {
   findVHtmlSinks,
   V_HTML_ALLOWED,
   checkContainImageClip,
-  checkBackToLatestAvoidance,
+  checkBackToLatestStable,
   findRawCardPadding,
   checkBootSkeletonGeometry,
   checkBootSkeletonTokens,
@@ -7593,70 +7593,73 @@ test("IP-01 反例自证：把垫底写成 `bg-black` / `rgba(0,0,0,.4)` 必须�
   }
 });
 
-// ---------------- BT：「回到最新」不许压在时间/未读分割行上（2026-11-06） ----------------
+// ---------------- BT：「回到最新」位置必须恒定（2026-11-08 取代 11-06 的实测避让） ----------------
 function backToLatestSources() {
   const srcDir = join(import.meta.dirname, "..");
   return {
     button: readFileSync(join(srcDir, "components", "chat", "BackToLatestButton.vue"), "utf8"),
-    messageItem: readFileSync(join(srcDir, "components", "MessageItem.vue"), "utf8"),
   };
 }
 
-test("BT-01..04：现树里「回到最新」按实测矩形避让、热区/不可见态未变", () => {
-  const issues = checkBackToLatestAvoidance(backToLatestSources());
+test("BT-01..04：现树里「回到最新」位置只由 bottomOffset 决定，热区/不可见态未变", () => {
+  const issues = checkBackToLatestStable(backToLatestSources());
   assert.deepEqual(issues, [], issues.map((i) => `L${i.line} ${i.message}`).join("\n"));
 });
 
-test("BT-01 反例自证：把避让关掉（offset 恒为 0）必须红", () => {
+test("BT-01 反例自证：把跟随滚动位置的位移改回来必须红（用户报的跳动就是它）", () => {
   const src = backToLatestSources();
+  // 复刻 11-06 的实现形状：滚动时按 avoidOffset 重算 bottom。
   const broken = src.button.replace(
-    "avoidOffset.value = computeBackToLatestAvoidOffset(base, dividers);",
-    "avoidOffset.value = 0;",
-  );
-  assert.notEqual(broken, src.button, "锚点没命中：避让调用那一行的形状变了");
-  const issues = checkBackToLatestAvoidance({ ...src, button: broken });
-  assert.ok(
-    issues.some((i) => i.message.includes("BT-01") && i.message.includes("avoidOffset")),
-    `关掉避让必须报 BT-01，实际：${JSON.stringify(issues)}`,
-  );
-});
-
-test("BT-02 反例自证：删掉未读分割线的 data 钩子必须红", () => {
-  const src = backToLatestSources();
-  const broken = src.messageItem.replace("      data-unread-divider\n", "");
-  assert.notEqual(broken, src.messageItem, "锚点没命中：未读分割线的 data-unread-divider 不在了");
-  const issues = checkBackToLatestAvoidance({ ...src, messageItem: broken });
-  assert.ok(
-    issues.some((i) => i.message.includes("BT-02") && i.message.includes("data-unread-divider")),
-    `删掉钩子必须报 BT-02，实际：${JSON.stringify(issues)}`,
-  );
-});
-
-test("BT-03 反例自证：把位移绑回 bottom 的 style 删掉必须红", () => {
-  const src = backToLatestSources();
-  const broken = src.button.replace(
+    ':style="{ bottom: `calc(1rem + ${bottomOffset ?? 0}px)` }"',
     ':style="{ bottom: `calc(1rem + ${(bottomOffset ?? 0) + avoidOffset}px)` }"',
-    "",
   );
   assert.notEqual(broken, src.button, "锚点没命中：:style 绑定那一行的形状变了");
-  const issues = checkBackToLatestAvoidance({ ...src, button: broken });
+  const issues = checkBackToLatestStable({ button: broken });
   assert.ok(
-    issues.some((i) => i.message.includes("BT-03")),
-    `删掉 style 绑定必须报 BT-03，实际：${JSON.stringify(issues)}`,
+    issues.some((i) => i.message.includes("BT-01") && i.message.includes("avoidOffset")),
+    `把动态位移改回来必须报 BT-01，实际：${JSON.stringify(issues)}`,
   );
 });
 
-test("BT-05 反例自证：把悬浮输入区让位从 bottom 里摘掉必须红", () => {
+test("BT-02 反例自证：把 bottomOffset 从 bottom 表达式里摘掉必须红", () => {
   const src = backToLatestSources();
   const broken = src.button.replace(
-    "${(bottomOffset ?? 0) + avoidOffset}px",
-    "${avoidOffset}px",
+    'calc(1rem + ${bottomOffset ?? 0}px)',
+    "calc(1rem + 0px)",
   );
   assert.notEqual(broken, src.button, "锚点没命中：bottom 表达式里的 bottomOffset 不见了");
-  const issues = checkBackToLatestAvoidance({ ...src, button: broken });
+  const issues = checkBackToLatestStable({ button: broken });
   assert.ok(
-    issues.some((i) => i.message.includes("BT-05")),
-    `摘掉 bottomOffset 必须报 BT-05，实际：${JSON.stringify(issues)}`,
+    issues.some((i) => i.message.includes("BT-02")),
+    `摘掉 bottomOffset 必须报 BT-02，实际：${JSON.stringify(issues)}`,
+  );
+});
+
+test("BT-03 反例自证：给出现动画叠一个 translate-y 必须红", () => {
+  const src = backToLatestSources();
+  const broken = src.button.replace(
+    "gosslan-back-to-latest pointer-events-auto opacity-100",
+    "gosslan-back-to-latest translate-y-1 pointer-events-auto opacity-100",
+  );
+  assert.notEqual(broken, src.button, "锚点没命中：可见态那一串 class 变了形状");
+  const issues = checkBackToLatestStable({ button: broken });
+  assert.ok(
+    issues.some((i) => i.message.includes("BT-03")),
+    `出现动画带位移必须报 BT-03，实际：${JSON.stringify(issues)}`,
+  );
+});
+
+test("BT-04 反例自证：把扩热区写法加回来（::after）必须红", () => {
+  const src = backToLatestSources();
+  const broken = src.button.replace(
+    "rounded-full text-[var(--gosslan-text)]",
+    "rounded-full text-[var(--gosslan-text)] after:absolute after:inset-0",
+  );
+  assert.notEqual(broken, src.button, "锚点没命中：按钮本体 class 变了形状");
+  const issues = checkBackToLatestStable({ button: broken });
+  assert.ok(
+    issues.some((i) => i.message.includes("BT-04")),
+    `扩热区必须报 BT-04，实际：${JSON.stringify(issues)}`,
   );
 });
 

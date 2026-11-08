@@ -19,17 +19,18 @@ import Icon from "@/components/ui/Icon.vue";
  *    `active:scale-[0.97]` 是 Tailwind 的**组合 transform**（含 `translate(var(--tw-translate-x)…)`），
  *    既保住水平居中又保留按下去的缩小反馈。
  *
- * ④ **不许压住时间/未读分割行**（2026-11-06 用户拍板）：`bottom-4` 是基准位，
- *    按钮可见时实测自己与可视区内 `[data-time-divider]` / `[data-unread-divider]` 的矩形，
- *    相交才按「行高 + 8px」上移（最多 3 步，见 `computeBackToLatestAvoidOffset`）；
- *    不相交就回到基准位 —— 绝不"永远抬高"去压消息正文。
- *    位移直接写 `bottom`，不新增 transition 属性/曲线。
+ * ④ **位置必须恒定**（2026-11-08 用户报"上下滚动时一直在上下跳动"后改，取代 11-06 的实测避让）。
+ *    旧实现在滚动/尺寸变化时实测自己与 `[data-time-divider]` / `[data-unread-divider]`
+ *    是否相交，相交就按「行高 + 8px」逐级上移（最多 3 步）—— 分割行滚过按钮的那一刻跳一格，
+ *    滚回去又跳回来。运行时探针 `--only=backjump` 实测：连滚 0→800px，`top` 序列出现
+ *    `372 → 336 → 300 → 372`，唯一值 3 个、跨度 72px。
+ *    现在只认一个位置：`bottom: calc(1rem + bottomOffset)`（输入区高度由 ChatWindow 实测传入）。
+ *    不读滚动位置、不测量分割行、不挂 scroll/resize 监听；出现/消失只走透明度，不带位移。
+ *    代价（明确记账）：分割行滚到按钮脚下时会被圆钮压住一角 —— 用户选择"位置稳定"优先。
  */
-import { nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { t } from "@/i18n";
-import { computeBackToLatestAvoidOffset } from "@/utils/backToLatest";
 
-const props = defineProps<{
+defineProps<{
   visible: boolean;
   /**
    * 悬浮输入区实测高度（px）。输入卡现在是覆盖层，消息区虽已留出 padding-bottom，
@@ -39,71 +40,14 @@ const props = defineProps<{
   bottomOffset?: number;
 }>();
 const emit = defineEmits<{ (e: "press"): void }>();
-
-const root = ref<HTMLButtonElement | null>(null);
-const avoidOffset = ref(0);
-let raf = 0;
-
-/** 实测避让：基准位矩形 → 分割行矩形 → 需要上移多少。 */
-function measure() {
-  raf = 0;
-  const btn = root.value;
-  if (!btn || !props.visible) return;
-  // `getBoundingClientRect` 读到的已经是"上移后"的位置；先把 offset 加回去，
-  // 否则每次重算都在上一次结果上再抬一次，按钮会一路往上爬。
-  const r = btn.getBoundingClientRect();
-  const base = {
-    top: r.top + avoidOffset.value,
-    bottom: r.bottom + avoidOffset.value,
-    left: r.left,
-    right: r.right,
-  };
-  const scope = btn.parentElement;
-  const dividers = scope
-    ? Array.from(scope.querySelectorAll<HTMLElement>("[data-time-divider], [data-unread-divider]"))
-        .map((el) => el.getBoundingClientRect())
-        // overscan 会渲染视口外的行，先筛掉（重叠判据本身也会排除，这里省点算术）。
-        .filter((x) => x.bottom > 0 && x.top < window.innerHeight)
-    : [];
-  avoidOffset.value = computeBackToLatestAvoidOffset(base, dividers);
-}
-
-function schedule() {
-  if (!props.visible || raf) return;
-  raf = requestAnimationFrame(measure);
-}
-
-watch(
-  () => props.visible,
-  (v) => {
-    if (!v) {
-      avoidOffset.value = 0;
-      return;
-    }
-    nextTick(schedule);
-  },
-);
-
-// 滚动/窗口尺寸变化时分割行的位置会变：只重算位移，不改出现阈值（`gap > 150` 仍由 VirtualList 驱动）。
-onMounted(() => {
-  document.addEventListener("scroll", schedule, { capture: true, passive: true });
-  window.addEventListener("resize", schedule);
-});
-onBeforeUnmount(() => {
-  document.removeEventListener("scroll", schedule, { capture: true });
-  window.removeEventListener("resize", schedule);
-  if (raf) cancelAnimationFrame(raf);
-  raf = 0;
-});
 </script>
 
 <template>
   <button
-    ref="root"
     type="button"
     data-back-to-latest
     class="frost absolute bottom-4 left-1/2 z-10 flex h-9 w-9 -translate-x-1/2 items-center justify-center rounded-full text-[var(--gosslan-text)] transition active:scale-[0.97]"
-    :style="{ bottom: `calc(1rem + ${(bottomOffset ?? 0) + avoidOffset}px)` }"
+    :style="{ bottom: `calc(1rem + ${bottomOffset ?? 0}px)` }"
     :class="
       visible
         ? 'gosslan-back-to-latest pointer-events-auto opacity-100 hover:bg-[var(--gosslan-hover)]'
