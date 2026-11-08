@@ -6844,12 +6844,17 @@ function ambientSources() {
   return {
     css: ambientCss(),
     ambientSource: readFileSync(join(import.meta.dirname, "..", "utils", "ambient.ts"), "utf8"),
+    capabilitySource: readFileSync(join(import.meta.dirname, "..", "utils", "ambientCapability.ts"), "utf8"),
     rippleSource: readFileSync(join(import.meta.dirname, "..", "directives", "pressRipple.ts"), "utf8"),
   };
 }
 
-test("AM-01…12：现树 style.css 必须 0 条报红", () => {
+test("AM-01…13：现树 style.css + 两个实现文件必须 0 条报红", () => {
   assert.deepEqual(checkAmbientMotion(ambientSources()), []);
+  // 防空转：AM-17 的两份文件真被扫到了（删文件/改名时上面那条会变绿）
+  const src = ambientSources();
+  assert.match(src.capabilitySource, /REDUCED_TRANSPARENCY_QUERY/);
+  assert.match(src.ambientSource, /readAmbientCapability\(/);
 });
 
 test("AM-03 反例自证：把关键帧里的 transform 换成 filter: blur() 必须红", () => {
@@ -6908,6 +6913,39 @@ test("AM-07 反例自证：整套隐藏 .ambient 的媒体块删掉必须红", (
   );
   const issues = checkAmbientMotion({ ...ambientSources(), css });
   assert.ok(issues.some((x) => x.message.includes("AM-07")), `期望 AM-07 报红，实际：${JSON.stringify(issues)}`);
+});
+
+test("AM-17 反例自证：能力闸被绕开（ambient.ts 直接拼透明查询）必须红", () => {
+  const src = ambientSources();
+  const ambientSource = src.ambientSource.replaceAll(
+    "readAmbientCapability()",
+    "window.matchMedia('(prefers-reduced-transparency: reduce)').matches ? 1 : 0",
+  );
+  const issues = checkAmbientMotion({ ...src, ambientSource });
+  assert.ok(
+    issues.some((x) => x.message.includes("AM-17")),
+    `期望 AM-17 报红，实际：${JSON.stringify(issues)}`,
+  );
+});
+
+test("AM-17 反例自证：能力闸少问 -webkit- 前缀必须红", () => {
+  const src = ambientSources();
+  const capabilitySource = src.capabilitySource.replace('supports("-webkit-backdrop-filter", "blur(2px)")', "false");
+  const issues = checkAmbientMotion({ ...src, capabilitySource });
+  assert.ok(
+    issues.some((x) => x.message.includes("AM-17") && x.message.includes("-webkit-backdrop-filter")),
+    `期望 AM-17 报红，实际：${JSON.stringify(issues)}`,
+  );
+});
+
+test("AM-06 反例自证：force 改回按用户设置写（能力落 off 时仍写 force）必须红", () => {
+  const src = ambientSources();
+  const ambientSource = src.ambientSource.replace(
+    /dataset\.ambientMotion\s*=\s*res\.mode\s*===\s*"drift"\s*\?\s*"force"/,
+    'dataset.ambientMotion = setting === "drift" ? "force"',
+  );
+  const issues = checkAmbientMotion({ ...src, ambientSource });
+  assert.ok(issues.some((x) => x.message.includes("AM-06")), `期望 AM-06 报红，实际：${JSON.stringify(issues)}`);
 });
 
 // ---------------- SK：消息骨架静态化（2026-11-06 阶段 5 裁决） ----------------

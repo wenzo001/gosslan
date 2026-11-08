@@ -226,6 +226,8 @@ export const enUS: MessageDict = {
   "settings.appearance.ambient.aria": "Background motion",
   "settings.appearance.ambient.off": "Off",
   "settings.appearance.ambient.drift": "Slow Drift",
+  "settings.appearance.ambient.unavailable.transparency": "Transparency effects are off in your system, so background motion is unavailable. Turn them back on in system settings to enable it here.",
+  "settings.appearance.ambient.unavailable.backdropFilter": "This runtime does not support background blur, so background motion cannot be enabled.",
   "settings.appearance.reducedTransparency": "Reduce Transparency",
   "settings.appearance.reducedTransparency.desc": "Renders glass surfaces as solid colors; layout and background motion are unchanged. Follows the system by default.",
   "settings.appearance.reducedTransparency.aria": "Reduce transparency",

@@ -26,6 +26,11 @@ import {
   type AmbientSetting,
 } from "@/utils/ambient";
 import {
+  readAmbientCapability,
+  watchAmbientCapability,
+  type AmbientCapability,
+} from "@/utils/ambientCapability";
+import {
   applyReducedTransparency,
   readStoredReducedTransparency,
   resolveReducedTransparency,
@@ -103,7 +108,24 @@ export const useAppStore = defineStore("app", () => {
    */
   const ambientMotionExplicit = ref<AmbientSetting | null>(readStoredAmbientRaw());
 
+  /**
+   * 背景动效的**能力**（系统「透明效果」/ `backdrop-filter`），与用户选择分开存。
+   * 不可用时设置页置灰、显示为关，但 `ambientMotionExplicit` 一个字不改 ——
+   * 能力恢复后自动回到用户原来选的那一档（用户 2026-11-08 的原话：
+   * "别把用户主动选过和能力不支持混为一谈"）。
+   */
+  const ambientCapability = ref<AmbientCapability>(readAmbientCapability());
+
+  /** 能力变化后重算显示档位与 DOM 落档；**不写库**（能力不是用户选择）。 */
+  function syncAmbientCapability() {
+    ambientCapability.value = readAmbientCapability();
+    ambientMotion.value = readStoredAmbient(ambientCapability.value);
+    applyAmbientSetting(ambientMotionExplicit.value);
+  }
+
   function setAmbientMotion(v: AmbientSetting) {
+    // 控件已经是 disabled，这里是第二道闸：任何其它入口（快捷指令/测试）也改不了无效档位。
+    if (!ambientCapability.value.available) return;
     ambientMotion.value = v;
     ambientMotionExplicit.value = v;
     saveStoredAmbient(v);
@@ -779,6 +801,7 @@ export const useAppStore = defineStore("app", () => {
         ambientMotionExplicit.value = explicit;
         if (explicit === null) storageRemove(AMBIENT_STORAGE_KEY);
         else saveStoredAmbient(explicit);
+        // 显示值同时受能力闸约束：另一窗口改了偏好，这里也要按本窗口的能力重算。
         ambientMotion.value = readStoredAmbient();
         applyAmbientSetting(explicit);
       }
@@ -977,6 +1000,8 @@ export const useAppStore = defineStore("app", () => {
 
     // 注册系统外观监听（跟随系统模式下，用户在系统设置里切换要即时生效，不必重启）
     scope.onDispose(watchSystemAppearance());
+    // 背景动效能力（系统「透明效果」切换）：能力变化只重算档位与置灰状态，不写库。
+    scope.onDispose(watchAmbientCapability(syncAmbientCapability));
     scope.onDispose(watchKeyboard());
 
     await refreshEnvironment();
@@ -1194,6 +1219,8 @@ export const useAppStore = defineStore("app", () => {
     setAppearance,
     ambientMotion,
     setAmbientMotion,
+    /** 背景动效能力（不可用时设置页置灰并写明原因） */
+    ambientCapability,
     /** 减少透明效果（生效值：显式选择优先，否则跟随系统） */
     reducedTransparency,
     setReducedTransparency,

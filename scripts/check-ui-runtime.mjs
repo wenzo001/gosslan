@@ -4610,6 +4610,7 @@ async function main() {
     const leak = want("leak");
     const perf = want("perf");
     const ambient = want("ambient");
+    const ambientcap = want("ambientcap");
     const surfaces = want("surfaces");
     const bleed = want("bleed");
     const listmetrics = want("listmetrics");
@@ -4879,6 +4880,7 @@ async function main() {
     await runSegment("fontsel", fontsel, () => runFontSelect(cdp, url));
     await runSegment("layoutstore", layoutstore, () => runLayoutStore(cdp, url));
     await runSegment("settingsmobile", settingsmobile, () => runSettingsMobile(cdp, url));
+    await runSegment("ambientcap", ambientcap, () => runAmbientCapability(cdp, url));
     await runSegment("stage5mobile", stage5mobile, () => runStage5Mobile(cdp, url));
     await runSegment("stage4mobile", stage4mobile, () => runStage4Mobile(cdp, url));
     await runSegment("stage6mobile", stage6mobile, () => runStage6Mobile(cdp, url));
@@ -14493,14 +14495,18 @@ async function runAmbient(cdp, url) {
     "total=0 / animationName=none", JSON.stringify({ reduceMatch, total: reduced.total,
       anim: reduced.blobAnimation.map((b) => b.name) }));
 
-  // ── ⑤ reduced-transparency / 高对比 / 强制色：整层隐藏 ──────────
+  // ── ⑤ 能力闸：reduced-transparency / 高对比 / 强制色：整层隐藏 ──────────
+  // 2026-11-08 口径变了：透明那条不再由 CSS 媒体块隐藏，而是能力闸把档位落成 off
+  // （`data-ambient="off"` → 整层 display:none），设置页同时显示为关且不可选。
   await cdp.send("Emulation.setEmulatedMedia", {
     features: [{ name: "prefers-reduced-transparency", value: "reduce" }],
   });
   await sleep(300);
   const noTransparency = await readAmbient();
-  check("ambient：AM-07 prefers-reduced-transparency → .ambient display:none",
-    noTransparency.display === "none", "display=none", "display=" + noTransparency.display);
+  check("ambient：AM-17 能力闸 prefers-reduced-transparency → data-ambient=off 且整层隐藏",
+    noTransparency.mode === "off" && noTransparency.display === "none",
+    "mode=off / display=none",
+    JSON.stringify({ mode: noTransparency.mode, display: noTransparency.display }));
   await cdp.send("Emulation.setEmulatedMedia", {
     features: [{ name: "prefers-contrast", value: "more" }],
   });
@@ -19817,6 +19823,83 @@ async function runStage5Mobile(cdp, url) {
     skelKids: r.skel && r.skel.kids, skelAnim: r.skel && r.skel.boxAnim,
     skelPulse: r.skel && r.skel.pulse, overflow: r.skel && r.skel.overflowX,
   }))));
+}
+
+/**
+ * 背景动效「能力闸」两态读数（`--only=ambientcap`，2026-11-08 用户要求）。
+ *
+ * 要证明的不是"代码里有 disabled 这几个字"，而是**两种机器状态下设置页长什么样**：
+ *  ① 能力可用：两档都能点，默认显示「缓慢流动」；
+ *  ② 能力不支持（系统关掉「透明效果」）：两档都点不了、显示为关、下面一行换成原因。
+ *
+ * 为什么用两次导航而不是切换媒体后原地读：能力在 store 建仓时读一次（运行期只有媒体查询那一半
+ * 有 change 事件），`SettingsPanel` 是隔离挂载的、不跑应用 `init()`。两次独立启动 = 两次真实启动路径，
+ * 读数不会依赖"探针碰巧把监听也带起来了"。
+ */
+async function runAmbientCapability(cdp, url) {
+  await cdp.send("Page.bringToFront").catch(() => {});
+  await cdp.send("Emulation.setDeviceMetricsOverride", {
+    width: 390, height: 844, deviceScaleFactor: 2, mobile: true,
+  });
+  const bootAppearance = async () => {
+    await cdp.send("Page.navigate", { url });
+    await cdp.settled();
+    await sleep(3_000);
+    await cdp.eval(PAGE_FIXTURE);
+    await cdp.eval("window.__probe.stubApi('saveSettings', null)");
+    await cdp.eval("window.__probe.install('/src/components/SettingsPanel.vue', '', "
+      + JSON.stringify(JSON.stringify({ open: true, isolated: true })) + ")");
+    await sleep(800);
+    await cdp.eval(`(() => {
+      const b = [...document.querySelectorAll('button')].find((x) => (x.textContent || '').trim() === '外观');
+      if (b) b.click();
+    })()`);
+    await sleep(600);
+  };
+  const readRow = () => cdp.eval(`(() => {
+    // 行根用 .settings-card-row（SettingsRow 的根类）；不挂自定义属性 —— SettingsRow 有两个
+    // 根节点，fallthrough 属性会直接失效（Vue 只警告不报错，探针会静默读到 null）。
+    // ⚠️ 这段在模板字符串里：注释不许出现反引号与反斜杠。
+    const group = [...document.querySelectorAll('[role="radiogroup"]')]
+      .find((g) => /背景动效|Background Motion/i.test(g.getAttribute('aria-label') || ''));
+    const row = group ? group.closest('.settings-card-row') : null;
+    const items = group ? [...group.querySelectorAll('[role="radio"]')] : [];
+    return {
+      found: !!row,
+      labels: items.map((b) => (b.textContent || '').trim()),
+      disabled: items.map((b) => b.disabled || b.getAttribute('aria-disabled') === 'true'
+        || b.hasAttribute('data-disabled')),
+      checked: items.map((b) => b.getAttribute('data-state') === 'checked'
+        || b.getAttribute('aria-checked') === 'true'),
+      text: row ? (row.innerText || '').replace(/\\s+/g, ' ').slice(0, 200) : '',
+      mode: document.documentElement.dataset.ambient || '',
+    };
+  })()`);
+
+  await cdp.send("Emulation.setEmulatedMedia", { features: [] });
+  await bootAppearance();
+  const ok = await readRow();
+  check("背景动效·能力可用：两档都可选、默认选中「缓慢流动」",
+    ok.found === true && ok.labels.length === 2
+      && ok.disabled.length === 2 && ok.disabled.every((d) => d === false)
+      && ok.checked[0] === true, // 档位顺序 drift,off ⇒ 第一项（缓慢流动）被选中
+    "row 在 / 2 档 / disabled=false ×2 / 选中「缓慢流动」",
+    JSON.stringify(ok));
+
+  await cdp.send("Emulation.setEmulatedMedia", {
+    features: [{ name: "prefers-reduced-transparency", value: "reduce" }],
+  });
+  await bootAppearance();
+  const no = await readRow();
+  check("背景动效·能力不支持：默认关、不可选、写明原因（存储里的用户选择不被改写）",
+    no.found === true && no.disabled.length === 2 && no.disabled.every((d) => d === true)
+      && /透明效果|Transparency effects/i.test(no.text)
+      && no.checked[1] === true, // 档位顺序 drift,off ⇒ 第二项（关闭）被选中
+    "disabled=true ×2 + 原因文案 + 选中「关闭」",
+    JSON.stringify(no));
+
+  await cdp.send("Emulation.setEmulatedMedia", { features: [] });
+  await sleep(200);
 }
 
 async function runSettingsMobile(cdp, url) {

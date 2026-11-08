@@ -12,24 +12,31 @@
  *   · 不在 JS 里吐 `canvas` / `getImageData` 等逐帧像素路径（AM-04 扫描口径）。
  *   · 页面隐藏时暂停（AM-05）；reduce 档冻结而不是减速（AM-06）。
  *
- * ## 三层优先级（2026-11-07 定，用户 Windows 读数触发）
+ * ## 三层优先级 + 能力闸（2026-11-08 定）
  *
- * 系统 `prefers-reduced-transparency: reduce`（Windows 关掉"透明效果"）**只**降级玻璃/模糊，
- * 不再连带关闭背景漂移；`prefers-reduced-motion: reduce` 仍然冻结动效（那是它的本意）。
- * 软件内开关优先于系统偏好，系统偏好只在用户从未动过开关时作为初始默认：
+ * **能力闸先于一切用户意图**：系统要求减少透明（Windows 关掉「透明效果」）或内核不支持
+ * `backdrop-filter` 时，动效根本出不来 —— 这时给一个"能选却无效"的开关只会让用户以为坏了。
+ * 能力不可用时档位固定落 `off`、来源记 `capability`，但**不落库**；能力恢复后回到用户
+ * 显式选过的值（从未选过则回到下面三层）。能力的判定只在 `utils/ambientCapability.ts` 一处。
+ *
+ * 能力可用时，档位按这三层解析：
  *
  *   软件显式（存了 "off" / "drift"） > 系统 media query > 内置默认（drift，低端机降 static）
  *
- * `readStoredAmbientRaw()` 返回 `null` = 从未设过；`readStoredAmbient()` 是"视图想要的默认值"
+ * `readStoredAmbientRaw()` 返回 `null` = 从未设过；`readStoredAmbient()` 是"视图想要的显示值"
  * （给设置开关显示用），两者不能合并成一个 —— 合并就分不清"没设过"与"设成了默认值"。
  */
+import { readAmbientCapability, watchAmbientCapability, type AmbientCapability } from "./ambientCapability.ts";
 import { REDUCED_MOTION_QUERY } from "./platform.ts";
 import { storageGet, storageSet } from "./safeStorage.ts";
 
 export type AmbientSetting = "off" | "drift";
 export type AmbientMode = "off" | "static" | "drift";
-/** 最终档位是谁定的：软件开关 / 系统偏好 / 内置默认。诊断面板要显示它。 */
-export type AmbientSource = "software" | "system" | "default";
+/**
+ * 最终档位是谁定的：软件开关 / 系统偏好 / 内置默认 / **能力不支持**。
+ * 诊断面板要显示它；`capability` 时设置页显示为关且不可选（用户选择仍留在存储里）。
+ */
+export type AmbientSource = "software" | "system" | "default" | "capability";
 
 export const AMBIENT_STORAGE_KEY = "gosslan.ambientMotion";
 
@@ -44,8 +51,12 @@ export function readStoredAmbientRaw(): AmbientSetting | null {
   return isAmbientSetting(raw) ? raw : null;
 }
 
-/** 视图用的默认值：没设过时，系统冻结动效就把开关显示成关，否则显示流动。 */
-export function readStoredAmbient(): AmbientSetting {
+/**
+ * 视图用的显示值：能力不可用 ⇒ 恒显示「关闭」（但不改写存储与显式选择）；
+ * 能力可用 ⇒ 没设过时把系统 `prefers-reduced-motion` 折算成默认，设过就按用户的值。
+ */
+export function readStoredAmbient(capability: AmbientCapability = readAmbientCapability()): AmbientSetting {
+  if (!capability.available) return "off";
   return readStoredAmbientRaw() ?? (prefersReducedMotion() ? "off" : "drift");
 }
 
@@ -71,19 +82,20 @@ export interface AmbientResolution {
 }
 
 /**
- * 设置 + 环境 + 系统动效偏好 → 实际模式 + 来源。
+ * 设置 + 环境 + 系统动效偏好 + 能力 → 实际模式 + 来源。
  *
- * ⚠️ 这里**不看** `prefers-reduced-transparency`：那是玻璃层的降级（style.css 里退实底），
- * 与"雾要不要飘"是两个关注点。2026-11-07 之前它俩被绑在一起，Windows 关掉透明效果就
- * 连动效一起没了（用户读数 `prefers-reduced-transparency: reduce: on` + `data-ambient: drift`
- * 之外的机器直接看不到雾）。
+ * 能力不可用（系统关「透明效果」/ 无 `backdrop-filter`）时，无论用户选过什么都落 `off`
+ * —— 这不是"替用户改选择"：存储里的显式值一个字没动，能力恢复后原样生效。
+ * 能力判定本身不许进这个文件，只经 `ambientCapability.ts` 的 `capability` 入参（AM-17）。
  */
 export function resolveAmbient(
   setting: AmbientSetting | null,
   env: AmbientEnv = {},
   systemReducedMotion = false,
+  capability: AmbientCapability = { available: true, reason: null },
 ): AmbientResolution {
   if (setting === "off") return { mode: "off", source: "software" };
+  if (!capability.available) return { mode: "off", source: "capability" };
   if (setting === "drift") {
     return { mode: env.coarse || env.narrow ? "static" : "drift", source: "software" };
   }
@@ -91,9 +103,9 @@ export function resolveAmbient(
   return { mode: env.coarse || env.narrow ? "static" : "drift", source: "default" };
 }
 
-/** 兼容旧调用：只要档位，不要来源。 */
+/** 兼容旧调用：只要档位，不要来源。能力闸同样生效（不许绕开它拿到"能漂"的答案）。 */
 export function resolveAmbientMode(setting: AmbientSetting, env: AmbientEnv = {}): AmbientMode {
-  return resolveAmbient(setting, env, prefersReducedMotion()).mode;
+  return resolveAmbient(setting, env, prefersReducedMotion(), readAmbientCapability()).mode;
 }
 
 function detectCoarse(): boolean {
@@ -121,23 +133,25 @@ export function applyAmbientMode(mode: AmbientMode): void {
 }
 
 /**
- * 按三层优先级落档，并告诉 CSS「用户显式选了流动」。
+ * 按三层优先级 + 能力闸落档，并告诉 CSS「用户显式选了流动」。
  *
  * `data-ambient-motion="force"` 是给 AM-06 的让位开关：CSS 的
  * `@media` reduced-motion 冻结块写成
  * `html:not([data-ambient-motion="force"]) .ambient-blob { animation: none }` ——
- * 只有用户**显式**选过流动时才让系统偏好失效（requirement 2026-11-07）。
+ * 只有**真的在漂**（`res.mode === "drift"`）时才让系统偏好失效。
+ * 用实际模式而不是用户设置：能力闸把档位落成 off、低端机落成 static 时，
+ * 再写 `force` 就是在诊断面板上撒谎（"软件压过了系统 reduce"其实没有）。
  */
 export function applyAmbientSetting(setting: AmbientSetting | null): void {
   if (typeof document === "undefined") return;
-  const res = resolveAmbient(setting, detectEnv(), prefersReducedMotion());
+  const res = resolveAmbient(setting, detectEnv(), prefersReducedMotion(), readAmbientCapability());
   document.documentElement.dataset.ambient = res.mode;
-  document.documentElement.dataset.ambientMotion = setting === "drift" ? "force" : "auto";
+  document.documentElement.dataset.ambientMotion = res.mode === "drift" ? "force" : "auto";
 }
 
 /** 当前生效档位的来源（诊断面板用）。判断口径与 `applyAmbientSetting` 完全同源。 */
 export function currentAmbientResolution(): AmbientResolution {
-  return resolveAmbient(readStoredAmbientRaw(), detectEnv(), prefersReducedMotion());
+  return resolveAmbient(readStoredAmbientRaw(), detectEnv(), prefersReducedMotion(), readAmbientCapability());
 }
 
 let installed = false;
@@ -176,6 +190,9 @@ export function installAmbient(): void {
   if (typeof window.matchMedia === "function") {
     window.matchMedia(REDUCED_MOTION_QUERY).addEventListener("change", onMotionPref);
   }
+  // 能力闸的变化要重算（Windows 用户中途打开/关闭「透明效果」）。`CSS.supports` 那半没有
+  // change 事件，也不变（换内核 = 重启应用），见 ambientCapability.ts 的注释。
+  watchAmbientCapability(onMotionPref);
 
   // 窗口尺寸变化只重算"是否窄屏/低端"，不重建 DOM；低频事件，不构成逐帧开销。
   let resizeTimer: ReturnType<typeof setTimeout> | null = null;
