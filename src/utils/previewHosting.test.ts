@@ -37,6 +37,10 @@ const RUST_LOGS = readFileSync(join(ROOT, "..", "src-tauri", "src", "commands", 
 const RUST_LIB = readFileSync(join(ROOT, "..", "src-tauri", "src", "lib.rs"), "utf8");
 const RUST_STATE = readFileSync(join(ROOT, "..", "src-tauri", "src", "state.rs"), "utf8");
 const API = read("api/index.ts");
+const RUST_WINDOW_CMD = readFileSync(
+  join(ROOT, "..", "src-tauri", "src", "commands", "window.rs"),
+  "utf8",
+);
 
 test("关闭按钮只有一颗，且三条出口都先播回缩再收场", () => {
   // 正面：✕ 必须在，且接回 requestClose。
@@ -192,6 +196,50 @@ test("恢复的预览窗口文件确实存在（正面分母）", () => {
   for (const rel of ["entries/preview.ts", "components/window/PreviewWindow.vue", "utils/previewGalleryState.ts"]) {
     assert.ok(existsSync(join(ROOT, rel)), `${rel} 缺失 ⇒ 独立窗口打不开`);
   }
+});
+
+/**
+ * 双击手势（2026-11-09）：**只做全屏切换**，不再缩放。
+ *
+ * 用户口径：「双击那个查看图片的窗口可以全屏切换」+「双击只用于最大化/全屏切换，不加第二个
+ * 含义」。缩放仍在滚轮 / − / % / + / 适应（以及移动端双指）上。
+ *
+ * 退出全屏由平台还原窗口 frame ⇒ 回到双击前的尺寸（不需要我们自己 `set_inner_size`，
+ * 那条补间 2026-11-05 已否决）。
+ *
+ * 反例自证：把模板改回 `@dblclick="reset()"` ⇒ 第一条断言点名报红。
+ */
+test("双击只切换全屏，不再缩放", () => {
+  assert.match(LIGHTBOX, /@dblclick="toggleFullscreen"/, "双击没接全屏切换");
+  assert.equal(
+    LIGHTBOX.includes('@dblclick="reset()"'),
+    false,
+    "双击又变回缩放了（一个手势两个含义）",
+  );
+  assert.match(LIGHTBOX, /api\.windowToggleFullscreen\(\)/, "双击没调窗口全屏命令（不是 CSS 伪全屏）");
+  assert.match(
+    API,
+    /windowToggleFullscreen: \(\) => invoke<boolean>\("window_toggle_fullscreen"\)/,
+    "api 没暴露 windowToggleFullscreen",
+  );
+  assert.match(
+    RUST_WINDOW_CMD,
+    /pub fn window_toggle_fullscreen\(window: tauri::WebviewWindow\)[\s\S]{0,400}?set_fullscreen/,
+    "Rust 没有真正的全屏切换命令体",
+  );
+  assert.match(RUST_LIB, /commands::window_toggle_fullscreen,/, "全屏命令没注册进 invoke_handler");
+  // 缩放的其余途径必须都还在（否则"删掉双击缩放"就真的少了放大入口）。
+  assert.match(LIGHTBOX, /@wheel="onWheel"/, "滚轮缩放不见了");
+  assert.match(LIGHTBOX, /@click\.stop="zoomBy\(-0\.2\)"/, "减号按钮不见了");
+  assert.match(LIGHTBOX, /@click\.stop="zoomBy\(0\.2\)"/, "加号按钮不见了");
+  assert.match(LIGHTBOX, /@click\.stop="reset\(\)"/, "「适应」按钮不见了");
+  // Esc 与关闭按钮口径不变：仍走 requestClose（只加手势，不改关闭语义）。
+  assert.match(LIGHTBOX, /@click\.stop="requestClose"/, "✕ 不再走 requestClose");
+  assert.match(
+    LIGHTBOX,
+    /if \(e\.key === "Escape"\) \{\s*requestClose\(\);/,
+    "Esc 不再走 requestClose",
+  );
 });
 
 /**

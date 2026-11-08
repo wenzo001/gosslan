@@ -23837,7 +23837,7 @@ async function runMobileOverlay(cdp, url) {
  */
 const PREVIEW_WIN_STUB = `
 (() => {
-  window.__pw = { gallery: null, handler: null, listens: 0, unlistens: 0, calls: [], opened: 0 };
+  window.__pw = { gallery: null, handler: null, listens: 0, unlistens: 0, calls: [], opened: 0, fs: false };
   // 文档身份：整页 reload 会换一个新 document ⇒ 换一个新 id。
   // 采样前用它做"这一份文档稳住了"的判据（vite 依赖优化会发一次 full-reload）。
   window.__pwDocId = String(Date.now()) + '.' + Math.random().toString(36).slice(2);
@@ -23860,6 +23860,8 @@ const PREVIEW_WIN_STUB = `
         await new Promise((r) => setTimeout(r, 40));
         return window.__pw.gallery;
       }
+      // 双击的唯一含义（2026-11-09）：全屏切换。桩只记状态，OS 层由 Rust set_fullscreen 落地。
+      if (cmd === 'window_toggle_fullscreen') { window.__pw.fs = !window.__pw.fs; return window.__pw.fs; }
       return null;
     },
   };
@@ -24213,6 +24215,37 @@ async function runPreviewWindow(cdp, url) {
   check("10 连点：不存在 ready 但 0 张图的中态",
     readyEmpty === 0 && last.status === "ready" && last.count === 2,
     `readyEmpty=${readyEmpty} 末帧=${JSON.stringify(last)}`, JSON.stringify(last));
+
+  // ── 双击 = 全屏切换（唯一含义；缩放不再走双击）─────────────────
+  // 读数口径：双击前后桩里的全屏状态必须 false→true→false（命令是 window_toggle_fullscreen）；
+  // OS 层的全屏由 Rust `set_fullscreen` 落地，退出时平台还原原窗口 frame。
+  const dblOnImage = async () => cdp.eval(`(() => {
+    const el = document.querySelector('[data-lightbox-img]') || document.querySelector('[data-preview-status]');
+    if (!el) return 'no-el';
+    el.dispatchEvent(new MouseEvent('dblclick', { bubbles: true }));
+    return 'ok';
+  })()`);
+  const fsBefore = await cdp.eval("!!(window.__pw && window.__pw.fs)");
+  await dblOnImage();
+  await sleep(200);
+  const fsOn = await cdp.eval("!!(window.__pw && window.__pw.fs)");
+  // 全屏那一下图片仍要**完整显示**（object-contain，显示比例 = 原图比例）。
+  const fitOn = await cdp.eval(`(() => {
+    const img = document.querySelector('[data-lightbox-img]');
+    if (!img) return null;
+    const r = img.getBoundingClientRect();
+    return { fit: getComputedStyle(img).objectFit, w: Math.round(r.width), h: Math.round(r.height),
+      shown: +(r.width / r.height).toFixed(3), natural: +(img.naturalWidth / img.naturalHeight).toFixed(3) };
+  })()`);
+  await dblOnImage();
+  await sleep(200);
+  const fsOff = await cdp.eval("!!(window.__pw && window.__pw.fs)");
+  check("双击：一次进入全屏、再一次退出（前后状态 false→true→false）",
+    fsBefore === false && fsOn === true && fsOff === false,
+    "false → true → false", JSON.stringify({ fsBefore, fsOn, fsOff }));
+  check("全屏进出后图片仍不裁切（object-contain，显示比例 = 原图比例）",
+    !!fitOn && fitOn.fit === "contain" && Math.abs(fitOn.shown - fitOn.natural) < 0.02,
+    "contain + 比例一致", JSON.stringify(fitOn));
 
   // ── 桌面两档截图（窗口文档的同一份内容）─────────────────────────
   const dir = "test-results/preview-shots";
@@ -26246,10 +26279,12 @@ async function runTasksRealtime(cdp, url) {
   await cdp.eval(SETUP);
   await cdp.eval("window.__probe.todoBus()");
 
-  /** 读看板当下：筛选标签页（DOM 顺序 = mine/all/created/archived）、列表行标题、弹窗文本。 */
+  /** 读看板当下：筛选标签页（DOM 顺序 = all/mine/created/archived）、列表行标题、弹窗文本。 */
   const view = async () =>
     cdp.eval(`(() => {
       const pills = Array.from(document.querySelectorAll('[role="tab"]')).map((b) => ({
+        key: b.getAttribute('data-filter'),
+        label: (b.textContent || '').replace(/\\s+/g, ' ').trim(),
         pressed: b.getAttribute('aria-selected') === 'true',
         count: Number((b.querySelector('span') || {}).textContent || '0'),
       }));
@@ -26283,10 +26318,14 @@ async function runTasksRealtime(cdp, url) {
   await waitFor(async () => (await view()).uniqTitles.includes("写周报"), 4_000);
 
   const v0 = await view();
-  check("初始：看板列出 A，默认筛选「给我的」且计数 all=1/mine=1/created=0/archived=0",
-    v0.pills.length === 4 && v0.uniqTitles.includes("写周报")
+  // 身份（seedDevice）刻意在 install 之后才种：这是**真实时序**的一种（渲染先起、身份后到）。
+  // 默认页签必须等到身份已知才判；否则「我的」被数成 0、锁死在「全部」（5.20.0 实际缺陷）。
+  check("初始：看板列出 A，页签顺序 全部→我的→我创建→已归档，默认选中「我的」，计数 all=1/mine=1/created=0/archived=0",
+    v0.pills.length === 4
+      && v0.pills.map((p) => p.key).join(",") === "all,mine,created,archived"
       && v0.pills.map((p) => p.count).join(",") === "1,1,0,0"
-      && v0.pills[0].pressed === true,
+      && v0.pills.find((p) => p.pressed)?.key === "mine"
+      && v0.uniqTitles.includes("写周报"),
     "行=" + JSON.stringify(v0.uniqTitles) + " pills=" + JSON.stringify(v0.pills), JSON.stringify(v0.pills));
   const reads0 = (await cdp.eval("window.__probe.todoStats()")).reads;
   if (SHOT_PATH) {
@@ -26384,12 +26423,12 @@ async function runTasksRealtime(cdp, url) {
   check("更新前展开的详情弹窗仍开着，且内容已是改名后的 A（展开态保留 + 内容实时）",
     v1.dialogs === 1 && v1.dialogText.includes("周报已发出") && !v1.dialogText.includes("订场地"),
     "dialog 跟到新标题", "dialogs=" + v1.dialogs);
-  check("筛选没被实时更新重置（仍停在「给我的」）",
-    v1.pills[0].pressed === true, "mine pressed", JSON.stringify(v1.pills.map((p) => p.pressed)));
+  check("筛选没被实时更新重置（仍停在「我的」）",
+    v1.pills.find((p) => p.pressed)?.key === "mine", "mine pressed", JSON.stringify(v1.pills.map((p) => p.pressed)));
 
   // —— 切到「全部」，再来一批重复/旧序事件：筛选保留、终态不被旧帧回滚 ——
   await cdp.eval(`(() => {
-    document.querySelectorAll('[role="tab"]')[1].click();
+    document.querySelector('[role="tab"][data-filter="all"]').click();
     return true;
   })()`);
   await sleep(150);
@@ -26401,19 +26440,20 @@ async function runTasksRealtime(cdp, url) {
   const v2 = await view();
   check("旧 seq / 重复事件后：列表不回滚到旧标题（DB 快照是真相），筛选仍在「全部」",
     v2.uniqTitles.includes("周报已发出") && !v2.uniqTitles.includes("写周报")
-      && v2.pills[1].pressed === true,
+      && v2.pills.find((p) => p.pressed)?.key === "all",
     JSON.stringify(v2.uniqTitles), JSON.stringify(v2.uniqTitles));
 
   // —— 归档筛选：C 在归档里，且只有它一条 ——
   await cdp.eval(`(() => {
-    document.querySelectorAll('[role="tab"]')[3].click();
+    document.querySelector('[role="tab"][data-filter="archived"]').click();
     return true;
   })()`);
   await sleep(150);
   const v3 = await view();
+  const archivedPill = v3.pills.find((p) => p.key === "archived");
   check("「已归档」里正好是 C 一条（归档计数与列表一致）",
-    v3.pills[3].count === 1 && v3.uniqTitles.length === 1 && v3.uniqTitles[0] === "订场地",
-    JSON.stringify(v3.uniqTitles) + " count=" + v3.pills[3].count, JSON.stringify(v3.uniqTitles));
+    archivedPill?.count === 1 && v3.uniqTitles.length === 1 && v3.uniqTitles[0] === "订场地",
+    JSON.stringify(v3.uniqTitles) + " count=" + archivedPill?.count, JSON.stringify(v3.uniqTitles));
 
   // —— 取消订阅：之后的事件不再触发重读（监听器真的被摘掉，没有泄漏的第二条）——
   await cdp.eval(`(() => { window.__unwatch(); return true; })()`);
@@ -26441,7 +26481,7 @@ async function runTasksRealtime(cdp, url) {
     return true;
   })()`);
   await cdp.eval(`(() => {
-    document.querySelectorAll('[role="tab"]')[1].click(); // 回「全部」看活动行
+    document.querySelector('[role="tab"][data-filter="all"]').click(); // 回「全部」看活动行
     return true;
   })()`);
   await waitFor(async () => (await view()).uniqTitles.includes("新任务 D"), 3_000);
@@ -26462,6 +26502,28 @@ async function runTasksRealtime(cdp, url) {
       && v6.pills.map((p) => p.count).join(",") === "3,3,0,1",
     "3,3,0,1", JSON.stringify({ t: v6.uniqTitles, pills: v6.pills.map((p) => p.count) }));
   void finalRows;
+
+  // —— 「我的」为空 ⇒ 实际选中「全部」（用户 2026-11-09 要求这条读数）——
+  // 换一个**不是任何任务负责人**的身份重新挂看板：mine=0，默认必须落到「全部」，
+  // 不能停在空空的「我的」上。身份仍在 install 之后种（同一时序），所以这条同时守住
+  // 「身份晚到也不能先判」。
+  const mountBoard = () => cdp.eval(`window.__probe.install('/src/components/GroupTasksBoard.vue', '', ${JSON.stringify(JSON.stringify({ groupId: "g1", open: true }))})`);
+  await mountBoard();
+  await cdp.eval(`window.__probe.seedDevice('probe-other')`);
+  await waitFor(async () => {
+    const v = await view();
+    return v.pills.length === 4 && v.pills.find((p) => p.key === "mine")?.count === 0;
+  }, 4_000);
+  const vEmpty = await view();
+  check("「我的」为空：默认选中「全部」（不停在空的「我的」）",
+    vEmpty.pills.find((p) => p.pressed)?.key === "all"
+      && vEmpty.pills.find((p) => p.key === "mine")?.count === 0,
+    "mine=0 ⇒ 选中 all", JSON.stringify(vEmpty.pills));
+
+  // 还原身份与看板，后续检查继续按 probe-me 跑
+  await mountBoard();
+  await cdp.eval(`window.__probe.seedDevice('probe-me')`);
+  await waitFor(async () => (await view()).pills.map((p) => p.count).join(",") === "3,3,0,1", 4_000);
 
   // 第三档（overdue）那一行本段原本没有，必须自己造一条**创建记录**（`kind:'todo'` 那条带绝对号，
   // `foldTodos` 只认它；`todo_update` 不行）。两条实测到的前提，写在这里省下一次重复踩：
@@ -26516,7 +26578,7 @@ async function runTasksRealtime(cdp, url) {
   //    `npm test` 1362/1362 绿、`--only=msgovf` 78/78 绿，此前**没有任何一层**看得见。
   const T_DONE_ROW = "周报已发出"; // status=done ⇒ 条应为 success-solid
   const T_TODO_ROW = "修打印机"; // status=todo  ⇒ 条应为 status-offline（中性灰）
-  await cdp.eval(`(() => { const b = document.querySelectorAll('[role="tab"]')[1];
+  await cdp.eval(`(() => { const b = document.querySelector('[role="tab"][data-filter="all"]');
     if (b) b.click(); return !!b; })()`); // 切「全部」：两行都得在 DOM 里
   /**
    * 按行标题找到那一行左缘那道 2px 色条，读它自己的底色；顺带回读整行文字与当前行标题清单。
@@ -26564,12 +26626,11 @@ async function runTasksRealtime(cdp, url) {
     const solidD = await pageColor(cdp, "--gosslan-success-solid");
     const plainD = await pageColor(cdp, "--gosslan-success");
     const offline = await pageColor(cdp, "--gosslan-status-offline");
-    // 「不等于压线那一档」是**只有亮档才成立**的断言：暗档里 `--gosslan-success` 与
-    // `--gosslan-success-solid` 实测同为 rgb(48, 209, 88)（两档值在暗档收敛，`warning` 那对同形）。
-    // 把它写成两档都断 ⇒ 暗档那格永远不可能绿（第一版正是这么错的）。
-    // 所以拆两件事：画没画在 solid 上（两档都要）＋ 这两档 token 值本身的关系（单独钉住，
-    // 上面那格的口径依赖它；暗档哪天不收敛了得有人被提醒）。
-    const mustDiffer = dark === false;
+    // 两档在**亮暗两个外观下都必须可区分**：`--gosslan-*` 是状态点/色条档（对面板判 3.0），
+    // `--gosslan-*-solid` 是实底填充档（对深墨/白字判 4.5）。2026-11-09 配色求解重做后，
+    // 暗色也不再收敛成同一个值（旧注释里的“暗档同值”是当时那版求解器的实测，已过时）。
+    // 所以 `mustDiffer` 不再分外观：两档一样就等于把“实底”和“状态点”混成了同一个语义。
+    const mustDiffer = true;
     check(`色条绑定·${tn}：done 行的左缘条画的就是 success-solid${mustDiffer ? "（且不是压线 2.54 的 success 档）" : ""}`,
       sameColor(bars.d, solidD) && (!mustDiffer || !sameColor(bars.d, plainD)),
       mustDiffer ? `== ${solidD} 且 != ${plainD}` : `== ${solidD}`,
@@ -26583,10 +26644,10 @@ async function runTasksRealtime(cdp, url) {
       sameColor(bars.o, solidW) && (!mustDiffer || !sameColor(bars.o, plainW)),
       mustDiffer ? `== ${solidW} 且 != ${plainW}` : `== ${solidW}`,
       `${bars.o}｜solid=${solidW}｜plain=${plainW}`);
-    check(`色条绑定·${tn}：warning 与 warning-solid 是否同值（亮=不同色 / 暗=同值）—— 上面那格口径的前提`,
-      sameColor(plainW, solidW) === dark, `同值=${dark}`, `warning 同值=${sameColor(plainW, solidW)}`);
-    check(`色条绑定·${tn}：success 与 success-solid 是否同值（亮=不同色 / 暗=同值）—— 上面两格口径的前提`,
-      sameColor(plainD, solidD) === dark, `同值=${dark}`, `success 同值=${sameColor(plainD, solidD)}`);
+    check(`色条绑定·${tn}：warning 与 warning-solid 是**两个可区分的档**（状态点档 ≠ 实底档）`,
+      !sameColor(plainW, solidW), `!= ${plainW} / ${solidW}`, `warning=${plainW}｜solid=${solidW}`);
+    check(`色条绑定·${tn}：success 与 success-solid 是**两个可区分的档**（状态点档 ≠ 实底档）`,
+      !sameColor(plainD, solidD), `!= ${plainD} / ${solidD}`, `success=${plainD}｜solid=${solidD}`);
   }
   const backBar = await setAppearance(cdp, wasDarkBar === true);
   check("色条绑定不外溢：跑完回到进页面时那一档（store 与 class 都要回来）",
@@ -26785,10 +26846,10 @@ async function runTaskPane(cdp, url) {
     const wide = await read();
     check("两栏（780）：左列就是 410px", Math.abs(wide.listW - 410) <= 1, "410±1", String(wide.listW));
     check("两栏（780）：右栏仍可用（≥280px）", wide.detailW >= 280, ">=280", String(wide.detailW));
-    check("两栏（780）：页签顺序 = 我的/全部/我创建/已归档",
-      wide.tabs.length === 4 && wide.tabs[0].startsWith("我的") && wide.tabs[1].startsWith("全部")
+    check("两栏（780）：页签顺序 = 全部/我的/我创建/已归档",
+      wide.tabs.length === 4 && wide.tabs[0].startsWith("全部") && wide.tabs[1].startsWith("我的")
         && wide.tabs[2].startsWith("我创建") && wide.tabs[3].startsWith("已归档"),
-      "我的,全部,我创建,已归档", JSON.stringify(wide.tabs));
+      "全部,我的,我创建,已归档", JSON.stringify(wide.tabs));
     check("两栏（780）：默认落在「我的」", wide.active.startsWith("我的"), "我的", wide.active);
     check("两栏（780）：详情常驻右栏，不再弹窗",
       wide.dialogs === 0 && !!wide.titles[0] && wide.detailText.includes(wide.titles[0]),
@@ -26990,13 +27051,13 @@ async function runTaskPane(cdp, url) {
       JSON.stringify({ rows: kbBack.rows, detail: kbBack.detailText.slice(0, 40) }));
 
     // 筛选后原选中项不在结果里：必须回落，不许「右边有内容、左边没有对应行」。
-    const clickTab = (i) => cdp.eval(`(() => {
-      const tabs = Array.from(document.querySelectorAll('#probe-host [role="tab"]'));
-      if (!tabs[${i}]) return false;
-      tabs[${i}].click();
+    const clickTab = (key) => cdp.eval(`(() => {
+      const tab = document.querySelector('#probe-host [role="tab"][data-filter="${key}"]');
+      if (!tab) return false;
+      tab.click();
       return true;
     })()`);
-    await clickTab(1); // 全部
+    await clickTab("all");
     await sleep(500);
     const clickedC = await cdp.eval(`(() => {
       const b = Array.from(document.querySelectorAll('#probe-host button.min-w-0.flex-1'))
@@ -27012,7 +27073,7 @@ async function runTaskPane(cdp, url) {
       "C 选中 + 右栏=他建的",
       JSON.stringify({ rows: cSel.rows, detail: cSel.detailText.slice(0, 40) }));
     await shot("taskpane-selected");
-    await clickTab(0); // 我的
+    await clickTab("mine");
     await sleep(600);
     const back = await read();
     const firstRow = back.rows[0];

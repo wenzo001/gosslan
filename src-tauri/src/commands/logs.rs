@@ -564,6 +564,62 @@ fn fit_aux_window(
     }
 }
 
+/// 只读查看型辅助窗的几何：尺寸默认**等同主窗口设计尺寸**（用户 2026-11-09 最新口径；
+/// 此前"更大"已被这句取代），**上限是主窗口所在屏的工作区**（不是主窗口本身）——
+/// 工作区装不下时才回退。
+///
+/// 与 [`fit_aux_window`] 的区别只有"拿谁当上限"：那条不变式（子窗口永不比主窗口大）是给
+/// 设置 / 群任务用的；预览 / 日志要的是"和主窗口一样大"，所以夹到显示器工作区即可，
+/// 仍保证不会有一截掉到屏幕外。位置照样以主窗口为参照居中（随后 `recenter_aux_window`
+/// 会再钳进工作区）。
+#[cfg(desktop)]
+fn window_geometry_in_work_area(
+    app: &tauri::AppHandle,
+    design: (f64, f64),
+    min: (f64, f64),
+) -> Option<AuxWindowGeometry> {
+    let main = app.get_webview_window(crate::WINDOW_MAIN)?;
+    let scale = main.scale_factor().ok()?;
+    let outer = main.outer_size().ok()?;
+    let origin = main.outer_position().ok()?;
+    if outer.width == 0 || outer.height == 0 {
+        return None;
+    }
+    let work = aux_anchor_rect(app, &main)?;
+    Some(fit_window_in_work_area(
+        (outer.width, outer.height),
+        (origin.x, origin.y),
+        scale,
+        design,
+        min,
+        (work.2, work.3),
+    ))
+}
+
+/// [`window_geometry_in_work_area`] 的纯计算部分（不查窗口/显示器，便于单测）。
+///
+/// `work_area`（物理像素）= 主窗口所在屏的可用宽高（已扣菜单栏/任务栏）。
+#[cfg(desktop)]
+fn fit_window_in_work_area(
+    main_size: (u32, u32),
+    main_pos: (i32, i32),
+    scale: f64,
+    ideal: (f64, f64),
+    min: (f64, f64),
+    work_area: (u32, u32),
+) -> AuxWindowGeometry {
+    let px = |v: f64| (v * scale).round().max(1.0) as u32;
+    let fit = |want: u32, avail: u32| want.min(avail.max(1));
+    let (w, h) = (fit(px(ideal.0), work_area.0), fit(px(ideal.1), work_area.1));
+    AuxWindowGeometry {
+        main_size,
+        main_pos,
+        size: (w, h),
+        // 与 fit_aux_window 同一格：最小尺寸不能大于实际尺寸，否则系统会把窗口顶回最小值。
+        min: (px(min.0).min(w), px(min.1).min(h)),
+    }
+}
+
 /// 把几何**落地到新窗口**上（物理像素）。必须在 `show()` 之前调用，且窗口要隐藏着建。
 #[cfg(desktop)]
 fn apply_aux_geometry(win: &tauri::WebviewWindow, geo: AuxWindowGeometry) {
@@ -767,27 +823,28 @@ pub fn open_log_window(
     // 闭包再 move 走同一个 handle 会借不过（且闭包必须 `'static` 才能交给 Tauri 创建）。
     let placed_app = app.clone(); // decorate 那几步在锁外跑 ⇒ 单独一个 handle（AppHandle 是廉价克隆）
     let build_app = app.clone();
-    // 尺寸与位置按主窗口算（见 aux_window_geometry 的说明）；窗口是**关闭即销毁**的，
-    // 每次打开都新建 ⇒ 每次都按主窗口重新居中（不存在"用户摆好的窗口"）。
-    let geo = aux_window_geometry(&app, (760.0, 560.0), (420.0, 320.0), AUX_WINDOW_MARGIN);
-    ensure_aux_window(
+    // 尺寸与位置按主窗口算（见 window_geometry_in_work_area 的说明）；窗口是**关闭即销毁**的，
+    // 每次打开都新建 ⇒ 每次都按主窗口重新居中。默认尺寸 = 主窗口设计尺寸（用户 2026-11-09
+    // 最新口径），装不下时才夹到主窗口所在屏的工作区；本次运行内拖过的尺寸由内存记住。
+    let design = main_window_design_size(&app);
+    let geo = design.and_then(|d| window_geometry_in_work_area(&app, d, (420.0, 320.0)));
+    let result = ensure_aux_window(
         &app,
         crate::WINDOW_LOGS,
         geo,
         AUX_WINDOWS_RESIDENT,
         true, // reveal：真的要把这扇窗显示出来
         move || {
-            WebviewWindowBuilder::new(
+            let mut builder = WebviewWindowBuilder::new(
                 &build_app,
                 crate::WINDOW_LOGS,
                 WebviewUrl::App("logs.html".into()),
             )
             .title(title)
             .devtools(AUX_DEVTOOLS)
-            // 设计尺寸只作**初值**（拿不到主窗口时它就是最终值）：真正的几何在 build 之后用
+            // 设计尺寸只作**初值**（拿不到主窗口配置时两处都不设）：真正的几何在 build 之后用
             // 物理像素落地 —— builder 的 `position` / `inner_size` 只有逻辑坐标，多屏不同缩放时
             // 会被 tao 按"逐个显示器试算"选错屏（详见 aux_window_geometry）。
-            .inner_size(760.0, 560.0)
             .min_inner_size(420.0, 320.0)
             // 背景色跟随主题：窗口的静态背景色只能是浅/深之一，暗色主题下不先设对就会"闪一下白"
             // （与主窗口冷启动白闪同源）。放在 builder 上（而不是 build 之后再 set），
@@ -806,8 +863,12 @@ pub fn open_log_window(
             // 非活动窗口的第一下点击要**同时**落到 webview 上（用户 2026-11-07 实测：
             // 恢复条「知道了」与长文本弹窗的按钮第一下无效）。macOS 默认只激活窗口、
             // 吃掉这一击；Windows 本就直通，此调用在非 macOS 上是 no-op。
-            .accept_first_mouse(true)
-            .build()
+            .accept_first_mouse(true);
+            // 初始尺寸与主窗口同源（真正落地仍由 `apply_aux_geometry` 用物理像素做）。
+            if let Some((w, h)) = design {
+                builder = builder.inner_size(w, h);
+            }
+            builder.build()
         },
         // ↓ 这段是 `placed`：**创建锁外**执行。decorate / 摆位要么问窗口几何（等主线程应答的
         // getter），要么只是入队即返回的 setter —— 留在锁里就是"带着不可重入的锁等主线程"。
@@ -815,11 +876,16 @@ pub fn open_log_window(
             decorate_aux_window(win, &placed_app);
             if let Some(g) = geo {
                 apply_aux_geometry(win, g);
+                // 本次运行里拖过的尺寸（**只在内存**，不落盘）：夹进最小尺寸与工作区后还原。
+                apply_session_size(win, crate::WINDOW_LOGS, g);
             }
         },
-    )
-    .map(|_| ())
-    .map_err(|e| e.to_string())
+    );
+    // 只有新建出来的那扇窗才挂记忆（复用路径不会走到这里：这扇窗关闭即销毁）。
+    if let Ok((win, true)) = &result {
+        install_session_size_memory(win, crate::WINDOW_LOGS);
+    }
+    result.map(|_| ()).map_err(|e| e.to_string())
 }
 
 /// 移动端桩：移动端的日志是**整页**（`LogViewer` 的全屏分支），没有独立窗口。
@@ -1198,6 +1264,94 @@ pub fn open_group_todos_window(
 #[cfg(desktop)]
 const AUX_PREVIEW_RESIDENT: bool = false;
 
+/// 只读查看型辅助窗「本次运行内」记住的尺寸（**物理像素**，按 label 分开存）。
+///
+/// 用户 2026-11-09：「用户拖动大小的话应该有一个临时的缓存记忆，下次重启后就重置恢复」。
+/// 所以这里**只有进程内这一份内存**：不落盘，也不进 `tauri-plugin-window-state`
+/// （`lib.rs` 的 denylist 已把 `preview` 排除；日志窗本来就在 denylist 里）。
+/// 进程退出 ⇒ 归零 ⇒ 下次启动回到默认尺寸。
+///
+/// 为什么挂在进程上而不是窗口上：这几扇窗是"关闭即销毁"（[`AUX_PREVIEW_RESIDENT`]），
+/// 挂在窗口上的记忆会跟着窗口一起没掉。
+#[cfg(desktop)]
+static AUX_SESSION_SIZES: std::sync::Mutex<Vec<(&'static str, (u32, u32))>> =
+    std::sync::Mutex::new(Vec::new());
+
+/// 读本次运行里记住的尺寸（没有就是 `None` ⇒ 用默认尺寸）。
+#[cfg(desktop)]
+fn remembered_aux_size(label: &str) -> Option<(u32, u32)> {
+    AUX_SESSION_SIZES
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .iter()
+        .find(|(l, _)| *l == label)
+        .map(|(_, size)| *size)
+}
+
+/// 记住用户拖动后的尺寸（只在关窗那一刻写，见 [`ensure_preview_window`] / [`ensure_log_window`]）。
+#[cfg(desktop)]
+fn remember_aux_size(label: &'static str, size: (u32, u32)) {
+    if size.0 == 0 || size.1 == 0 {
+        return;
+    }
+    let mut sizes = AUX_SESSION_SIZES
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
+    match sizes.iter_mut().find(|(l, _)| *l == label) {
+        Some(slot) => slot.1 = size,
+        None => sizes.push((label, size)),
+    }
+}
+
+/// 给一扇"关闭即销毁"的只读窗挂上会话内尺寸记忆（**只写内存**，不碰任何文件）。
+///
+/// - `Resized`：把尺寸抄进一个普通 `Mutex`；全屏/最大化那一下不算"用户拖动的窗口尺寸"，
+///   否则下次开窗会直接铺满、退出全屏也回不到原尺寸；
+/// - `CloseRequested`：关窗前写进进程级内存（销毁后再开就能还原）。
+///
+/// ⚠️ 回调跑在 wry 主线程：这里只碰内存与**内联执行**的 `is_fullscreen` / `is_maximized`
+/// （tauri-runtime-wry 的 `send_user_message` 对主线程直接处理、不发消息等回包），
+/// 不做任何需要排队到主线程的事 —— 见 `install_hide_on_close`。
+#[cfg(desktop)]
+fn install_session_size_memory(win: &tauri::WebviewWindow, label: &'static str) {
+    let w = win.clone();
+    let last_size: std::sync::Arc<std::sync::Mutex<Option<(u32, u32)>>> =
+        std::sync::Arc::new(std::sync::Mutex::new(None));
+    let last_size_evt = last_size.clone();
+    win.on_window_event(move |event| match event {
+        tauri::WindowEvent::Resized(size) => {
+            if !w.is_fullscreen().unwrap_or(false) && !w.is_maximized().unwrap_or(false) {
+                *last_size_evt
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner()) = Some((size.width, size.height));
+            }
+        }
+        tauri::WindowEvent::CloseRequested { .. } => {
+            // 全屏/最大化状态下关窗：`last_size` 还停在进入那一档（上面的分支刻意没记），
+            // 用它还原正好是"原窗口尺寸"。
+            if let Some(size) = *last_size_evt.lock().unwrap_or_else(|e| e.into_inner()) {
+                remember_aux_size(label, size);
+            }
+        }
+        _ => {}
+    });
+}
+
+/// 新建窗口时把本次运行记下的尺寸落地（夹进「最小尺寸 / 主窗口所在屏的工作区」）。
+///
+/// 没有记忆就什么都不做（保留调用方算出的默认尺寸）。
+#[cfg(desktop)]
+fn apply_session_size(win: &tauri::WebviewWindow, label: &str, g: AuxWindowGeometry) {
+    let Some(want) = remembered_aux_size(label) else {
+        return;
+    };
+    let max = aux_anchor_rect(win.app_handle(), win)
+        .map(|r| (r.2, r.3))
+        .unwrap_or(g.size);
+    let (w, h) = clamp_aux_size(want, g.min, max);
+    let _ = win.set_size(tauri::Size::Physical(tauri::PhysicalSize::new(w, h)));
+}
+
 /// 一次投递给预览窗口的相册上限（条数 / 名字长度 / data URL 总量）。
 ///
 /// 为什么要上限：这是**远端不可信输入能直接塞进内存**的一条路径（条目来自消息载荷里的
@@ -1295,10 +1449,11 @@ fn ensure_preview_window(
     use tauri::{WebviewUrl, WebviewWindowBuilder};
     let bg = aux_window_background(state);
     let title = aux_window_title(state, "图片预览", "Image preview", None);
-    // 设计尺寸 1120×820：用户要的是"比聊天界面大一圈"。`fit_aux_window` 会把它夹到
-    // 「主窗口 − 两侧各 24px」，所以**永不比主窗口大**（那条几何不变式见 logs_tests），
-    // 主窗口本身小的时候跟着缩 —— 这正是想要的，不去破不变式。
-    let geo = aux_window_geometry(app, (1120.0, 820.0), (480.0, 360.0), AUX_WINDOW_MARGIN);
+    // 默认尺寸：**等同主窗口设计尺寸**（`tauri.conf.json` 那一处真源，用户 2026-11-09
+    // 最新口径），装不下时才夹到主窗口所在屏的工作区。读不到主窗口配置时两处都不设，
+    // 交给 Tauri 默认尺寸，**不再写死 1120×820 当影子真源**。
+    let design = main_window_design_size(app);
+    let geo = design.and_then(|d| window_geometry_in_work_area(app, d, (480.0, 360.0)));
     let placed_app = app.clone(); // decorate 那几步在锁外跑 ⇒ 单独一个 handle（AppHandle 是廉价克隆）
     let build_app = app.clone();
     let (win, created) = ensure_aux_window(
@@ -1311,14 +1466,13 @@ fn ensure_preview_window(
         AUX_PREVIEW_RESIDENT,
         reveal,
         move || {
-            WebviewWindowBuilder::new(
+            let mut builder = WebviewWindowBuilder::new(
                 &build_app,
                 crate::WINDOW_PREVIEW,
                 WebviewUrl::App("preview.html".into()),
             )
             .title(title)
             .devtools(AUX_DEVTOOLS)
-            .inner_size(1120.0, 820.0)
             .min_inner_size(480.0, 360.0)
             .background_color(bg)
             .visible(false)
@@ -1328,15 +1482,22 @@ fn ensure_preview_window(
             .minimizable(true)
             .closable(true)
             // 同 open_log_window：非活动窗口第一击也要落到 webview。
-            .accept_first_mouse(true)
-            .build()
+            .accept_first_mouse(true);
+            // 初始尺寸与主窗口同源（真正落地仍由 `apply_aux_geometry` 用物理像素做）。
+            if let Some((w, h)) = design {
+                builder = builder.inner_size(w, h);
+            }
+            builder.build()
         },
         // ↓ `placed`（锁外），理由同群任务窗那处。
         move |win| {
             decorate_aux_window(win, &placed_app);
             if let Some(g) = geo {
                 apply_aux_geometry(win, g);
-                restore_aux_window_size(win, &g, None);
+                // 本次运行里用户拖过的尺寸：内存里有就还原（夹进「最小尺寸 / 主窗口那块屏的
+                // 工作区」），没有就用刚算出的默认值。**不碰 window-state** —— 预览窗已在
+                // `lib.rs` 的 denylist 里，重启一定回到默认。
+                apply_session_size(win, crate::WINDOW_PREVIEW, g);
                 recenter_aux_window(win, &g);
             }
         },
@@ -1349,10 +1510,14 @@ fn ensure_preview_window(
     // ⚠️ 只在 `created` 那条路上挂：复用时 `on_window_event` 会累积，销毁一次就广播 N 次。
     // ⚠️ 只发信号，**不**在这里碰任何窗口 —— 回收状态是前端的事（store 只清状态，
     // 不得再调 `close_image_preview`，否则形成回环）。
+    //
+    // 同一条窗口的 `Resized` / `CloseRequested` 还负责「本次运行内记住用户拖过的尺寸」，
+    // 见 [`install_session_size_memory`]（只写内存，不落盘）。
     if created {
         use crate::state::EVENT_PREVIEW_CLOSED;
         use tauri::Emitter;
         let app = app.clone();
+        install_session_size_memory(&win, crate::WINDOW_PREVIEW);
         win.on_window_event(move |event| {
             if matches!(event, tauri::WindowEvent::Destroyed) {
                 let _ = app.emit(EVENT_PREVIEW_CLOSED, ());

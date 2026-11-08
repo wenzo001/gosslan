@@ -463,6 +463,8 @@ export const api = {
   windowMinimize: () => invoke<void>("window_minimize"),
   windowToggleMaximize: () => invoke<boolean>("window_toggle_maximize"),
   windowIsMaximized: () => invoke<boolean>("window_is_maximized"),
+  /** 切换**当前窗口**全屏（预览窗双击的唯一含义，2026-11-09）；返回切换后的状态。 */
+  windowToggleFullscreen: () => invoke<boolean>("window_toggle_fullscreen"),
   windowClose: () => invoke<void>("window_close"),
   /** macOS：窄窗口（前端移动布局）时把系统红绿灯收起 / 拉宽后放回（其它平台空操作）。 */
   setNativeTitlebarButtonsHidden: (hidden: boolean) =>
