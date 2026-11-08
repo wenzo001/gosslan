@@ -22831,6 +22831,9 @@ async function runLightbox(cdp, url) {
       modal: dlg ? dlg.getAttribute('aria-modal') : null,
       buttons: btns.length,
       focusIndex: btns.indexOf(ae),
+      // 2026-11-08：缩放组并进顶栏后，DOM 第一颗是「缩小」，100% 时它是 disabled ⇒ 不可聚焦。
+      // Tab 环的"第一颗"口径从"下标 0"搬成"第一颗可聚焦"（阈值没放宽，量的仍是同一件事）。
+      firstEnabled: btns.findIndex((b) => !b.disabled),
       focusInScope: !!(scope && ae && (scope === ae || scope.contains(ae))),
       focusIsScope: !!(scope && ae === scope),
       focusId: ae ? (ae.id || ae.tagName) : 'null',
@@ -22878,8 +22881,13 @@ async function runLightbox(cdp, url) {
    *
    * 量法（不用源码里"有没有读那个变量"当判据 —— 那种断言只会跟着注释走）：
    * 把 `--gosslan-window-safe-top` 钉成 44px（桌面 caption 的替身，env 在 Chrome 恒 0），
-   * 读**外壳自己的 top** 与**工具条相对外壳的偏移**。工具条的 containing block 就是这层
-   * fixed 外壳，所以"让位算两遍"会直接表现为 delta = 44 + 16 而不是 16。
+   * 读**外壳自己的 top** 与**顶栏/工具条相对外壳的偏移**。
+   *
+   * 2026-11-08 语义搬迁（同一件事，换了个形状）：工具不再独立浮在 `top:1rem`，
+   * 而是并进顶栏那一行（用户要求"缩放不要压图"）。判据从"delta≈16"搬成两条：
+   *   ① 顶栏贴外壳顶（delta≈0）—— 让位仍然只在外壳这一层算一次；
+   *   ② 工具条整块落在顶栏矩形内 —— 它不可能再单独去和 caption/safe-top 相加。
+   * 放宽阈值那种事没做：平移后"算两遍"会直接表现为 `barTop > shellTop`。
    * ⚠️ 这一格买不到移动端的 `env(safe-area-inset-top)` 那一半 —— Chrome 里 env 恒 0，
    *    真机那半只有 iOS/Android 可证（§6.91 末尾的验证步骤）。
    */
@@ -22896,19 +22904,26 @@ async function runLightbox(cdp, url) {
     // （顶栏在 DOM 里更靠前，但它自己不放按钮；底栏缩略图也是按钮）。判据要量的东西没变
     // —— 工具条相对外壳的偏移 —— 所以把锚点搬到工具条自己的稳定标记上，而不是放宽阈值。
     const bar = dlg.querySelector('[data-lightbox-tools]') ?? (btns.length ? btns[0].parentElement : null);
+    const topbar = dlg.querySelector('[data-lightbox-topbar]');
     const d = dlg.getBoundingClientRect();
     const b = bar ? bar.getBoundingClientRect() : null;
+    const t = topbar ? topbar.getBoundingClientRect() : null;
     return {
       shellTop: +d.top.toFixed(1),
       barTop: b ? +b.top.toFixed(1) : null,
-      delta: b ? +(b.top - d.top).toFixed(1) : null,
+      topbarDelta: t ? +(t.top - d.top).toFixed(1) : null,
+      toolsInside: !!b && !!t
+        && b.top >= t.top - 0.5 && b.bottom <= t.bottom + 0.5
+        && b.left >= t.left - 0.5 && b.right <= t.right + 0.5,
     };
   })()`);
   check("钉住 44px 让位后：外壳自己从 44px 起算（让位挂在外壳这一层，一处生效）",
     !!geo && geo.shellTop === 44, "shellTop=44", JSON.stringify(geo));
-  check("右上工具条相对外壳只留 1rem（桌面把 caption 算两遍 ⇒ 这条红）",
-    !!geo && geo.delta !== null && Math.abs(geo.delta - 16) <= 0.6,
-    "delta≈16", JSON.stringify(geo));
+  check("顶栏贴外壳顶部（工具并入顶栏后仍只让位一次，delta≈0）",
+    !!geo && geo.topbarDelta !== null && Math.abs(geo.topbarDelta) <= 0.6,
+    "topbarDelta≈0", JSON.stringify(geo));
+  check("保存/关闭/缩放整块落在顶栏矩形内（不再有独立浮层压图）",
+    !!geo && geo.toolsInside === true, "toolsInside=true", JSON.stringify(geo));
   await cdp.eval(`(() => {
     document.documentElement.style.removeProperty('--gosslan-window-safe-top');
     return 1;
@@ -22916,9 +22931,9 @@ async function runLightbox(cdp, url) {
 
   await cdp.key("Tab", "Tab", "", 9);
   s = await read();
-  check("Tab 从容器流到第一颗按钮（保存）",
-    s.focusInScope && s.focusIndex === 0,
-    "focusIndex=0", JSON.stringify(s));
+  check("Tab 从容器流到第一颗**可聚焦**按钮（缩放组 − 在 100% 时 disabled ⇒ 跳过）",
+    s.focusInScope && s.firstEnabled >= 0 && s.focusIndex === s.firstEnabled,
+    "focusIndex=firstEnabled", JSON.stringify(s));
 
   // 焦点陷阱的判据：从**最后一颗**按钮再按 Tab，必须回到第一颗；
   // 没有 FocusScope 时这里会离开浮层（落到背景页面 / 浏览器 chrome）。
@@ -22930,15 +22945,16 @@ async function runLightbox(cdp, url) {
   })()`);
   await cdp.key("Tab", "Tab", "", 9);
   s = await read();
-  check("Tab 环：从最后一颗按钮再 Tab 回到第一颗（旧实现会逃出浮层）",
-    s.focusInScope && s.focusIndex === 0,
-    "focusInScope 且 focusIndex=0", JSON.stringify(s));
+  check("Tab 环：从最后一颗按钮再 Tab 回到第一颗可聚焦按钮（旧实现会逃出浮层）",
+    s.focusInScope && s.firstEnabled >= 0 && s.focusIndex === s.firstEnabled,
+    "focusInScope 且 focusIndex=firstEnabled", JSON.stringify(s));
 
-  // Shift+Tab 反向环：从第一颗回到最后一颗。
+  // Shift+Tab 反向环：从第一颗（可聚焦的）回到最后一颗。
   await cdp.eval(`(() => {
     const dlg = document.querySelector('[role="dialog"]');
     const btns = dlg ? [...dlg.querySelectorAll('button')] : [];
-    if (btns.length) btns[0].focus();
+    const first = btns.find((b) => !b.disabled);
+    if (first) first.focus();
     return btns.length;
   })()`);
   await cdp.send("Input.dispatchKeyEvent", {
@@ -23721,13 +23737,14 @@ async function runPreviewWindow(cdp, url) {
   // ── 画板结构：深色顶栏 / 底部缩略图条 / 缩放与元数据（2026-11-08）─────────
   // 这一格量的是"三条 chrome 与图片安全区的相对位置"，不是像素级外观：
   // 顶栏和缩略图条都不许盖住图片，否则"图片绝不裁切"会退化成"被 UI 压掉一截"。
+  // 2026-11-08 第二条（用户标红"底下重复又压图"）之后，底部只剩缩略图条：
+  // 文件名/尺寸/计数/缩放**只在顶栏出现一次**，所以这里同时数一遍"谁有几份"。
   await sleep(400);
   const chrome = await cdp.eval(`(() => {
     const q = (s) => document.querySelector(s);
     const img = q('[data-lightbox-img]');
     const top = q('[data-lightbox-topbar]');
     const bottom = q('[data-lightbox-bottom]');
-    const thumbs = q('[data-lightbox-thumbs]');
     const tr = top ? top.getBoundingClientRect() : null;
     const br = bottom ? bottom.getBoundingClientRect() : null;
     const ir = img ? img.getBoundingClientRect() : null;
@@ -23741,9 +23758,12 @@ async function runPreviewWindow(cdp, url) {
       imgBottom: ir ? +ir.bottom.toFixed(1) : -1,
       topBottom: tr ? +tr.bottom.toFixed(1) : -1,
       bottomTop: br ? +br.top.toFixed(1) : -1,
-      thumbs: thumbs ? thumbs.querySelectorAll('button').length : -1,
-      active: thumbs ? thumbs.querySelectorAll('button[aria-current="true"]').length : -1,
+      bottomText: text(bottom),
+      thumbs: document.querySelectorAll('[data-lightbox-thumb]').length,
+      active: document.querySelectorAll('[data-lightbox-thumb][aria-current="true"]').length,
       zoom: text(q('[data-lightbox-zoom]')),
+      zooms: document.querySelectorAll('[data-lightbox-zoom]').length,
+      counters: document.querySelectorAll('[data-lightbox-counter]').length,
       imgs: document.querySelectorAll('[data-lightbox-img]').length,
     };
   })()`);
@@ -23761,6 +23781,162 @@ async function runPreviewWindow(cdp, url) {
   check("预览窗口：缩放读数 100%、元数据取到原图尺寸（不另发请求）",
     !!chrome && chrome.zoom === "100%" && /640\s*×\s*400/.test(chrome.dim),
     "zoom=100% / 原图 · 640 × 400", JSON.stringify(chrome));
+  check("预览窗口：元数据/缩放/计数各只有一份（底部不再重复顶栏的信息）",
+    !!chrome && chrome.zooms === 1 && chrome.counters === 1
+      && !/100%|640\s*×\s*400|1\s*\/\s*2/.test(chrome.bottomText),
+    "zoom×1 / counter×1 / 底栏无读数", JSON.stringify({
+      zooms: chrome && chrome.zooms, counters: chrome && chrome.counters,
+      bottomText: chrome && chrome.bottomText,
+    }));
+
+  // ── 缩略图：统一比例 / 同心圆角 / hover 与选中各一层（用户 2026-11-08）────────
+  // 三条都量**计算样式与几何**（不是类名）：类名在、样式没生效，或两个分支各画一层，
+  // 只有读实际读数才抓得住。反例自证紧跟其后（临时把 DOM 改成坏形状，必须能翻红）。
+  const THUMB_RATIO = 86 / 58;
+  const thumbIssues = (list) => {
+    const ratio = [];
+    const radius = [];
+    const layers = [];
+    (list || []).forEach((t, i) => {
+      if (t.fit !== "cover") ratio.push(`#${i} object-fit=${t.fit}`);
+      if (!(t.iw > 0 && t.ih > 0) || Math.abs(t.iw / t.ih - THUMB_RATIO) > 0.02) ratio.push(`#${i} ${t.iw}×${t.ih}`);
+      if (Math.abs((t.outerRadius - t.innerRadius) - t.pad) > 0.6) {
+        radius.push(`#${i} 外 ${t.outerRadius} − 内 ${t.innerRadius} ≠ pad ${t.pad}`);
+      }
+      if (t.ringLayers > 1) layers.push(`#${i} ${t.ringLayers} 层描边`);
+    });
+    return { ratio, radius, layers };
+  };
+  // 「几层描边」= box-shadow 里**画得出来**的层数：顶层逗号切分（括号内不算），
+  // 再剔掉全透明占位层 —— Tailwind 的 ring 会连带输出 `rgba(0,0,0,0) 0 0 0 0` 这类
+  // 不画任何东西的占位，数进层数会把"只有一层"误判成三层（本轮首跑真实红过）。
+  const RING_COUNT_JS = `
+    const visibleLayers = (shadow) => {
+      if (!shadow || shadow === 'none') return 0;
+      const segs = []; let depth = 0; let cur = '';
+      for (const ch of shadow) {
+        if (ch === '(') depth += 1;
+        if (ch === ')') depth -= 1;
+        if (ch === ',' && depth === 0) { segs.push(cur.trim()); cur = ''; } else cur += ch;
+      }
+      if (cur.trim()) segs.push(cur.trim());
+      return segs.filter((s) => {
+        const m = /rgba?\(([^)]*)\)/.exec(s);
+        const alphaZero = (() => {
+          if (!m) return false;
+          const parts = m[1].split(',').map((x) => x.trim());
+          return parts.length === 4 && Number(parts[3]) === 0;
+        })();
+        // 偏移/模糊/扩散全 0 的层画不出任何东西（就是上面说的占位层）。
+        const nums = (s.replace(/rgba?\([^)]*\)/g, '').match(/-?[\\d.]+px/g) || []).map(parseFloat);
+        const noGeometry = nums.length >= 3 && nums.every((n) => n === 0);
+        return !alphaZero && !noGeometry;
+      }).length;
+    };
+  `;
+  const shot = await cdp.eval(`(() => {
+    ${RING_COUNT_JS}
+    const btns = () => [...document.querySelectorAll('[data-lightbox-thumb]')];
+    const read = () => btns().map((b) => {
+      const r = b.getBoundingClientRect();
+      const img = b.querySelector('[data-lightbox-thumb-img]');
+      const ir = img ? img.getBoundingClientRect() : null;
+      const bs = getComputedStyle(b);
+      const is = img ? getComputedStyle(img) : null;
+      const shadow = bs.boxShadow;
+      return {
+        active: b.getAttribute('aria-current') === 'true',
+        w: +r.width.toFixed(2), h: +r.height.toFixed(2),
+        pad: parseFloat(bs.paddingTop),
+        outerRadius: parseFloat(bs.borderTopLeftRadius),
+        iw: ir ? +ir.width.toFixed(2) : -1,
+        ih: ir ? +ir.height.toFixed(2) : -1,
+        innerRadius: is ? parseFloat(is.borderTopLeftRadius) : -1,
+        fit: is ? is.objectFit : '',
+        ringLayers: visibleLayers(shadow),
+        shadow,
+      };
+    });
+    const out = { before: read(), broken: {} };
+    const img0 = btns()[0] && btns()[0].querySelector('[data-lightbox-thumb-img]');
+    const act = btns().find((b) => b.getAttribute('aria-current') === 'true');
+    if (img0) {
+      // 反例 1：内图比例不再统一（宽度被压窄 ⇒ 与 86:58 不符）
+      img0.style.width = '70%';
+      out.broken.ratio = read();
+      img0.style.width = '';
+      // 反例 2：不再裁切（object-fit 换成 contain）
+      img0.style.objectFit = 'contain';
+      out.broken.fit = read();
+      img0.style.objectFit = '';
+      // 反例 3：内图圆角归零 ⇒ 与外框不再同心
+      img0.style.borderRadius = '0px';
+      out.broken.radius = read();
+      img0.style.borderRadius = '';
+    }
+    if (act) {
+      // 反例 4：选中项再叠一层描边（两层 shadow）
+      const prev = act.style.boxShadow;
+      act.style.boxShadow = '0 0 0 2px rgb(255,0,0), 0 0 0 4px rgb(0,255,0)';
+      out.broken.layers = read();
+      act.style.boxShadow = prev;
+    }
+    out.after = read();
+    return out;
+  })()`);
+  const thumbBefore = thumbIssues(shot && shot.before);
+  console.log("  ℹ 缩略图读数 → " + JSON.stringify((shot && shot.before) || null));
+  check("预览窗口·缩略图：统一 86:58 且 object-cover（各按原图比例会把条带撑得高低不齐）",
+    !!shot && shot.before.length === 2 && thumbBefore.ratio.length === 0,
+    "两张都 86:58 / cover", JSON.stringify(thumbBefore.ratio));
+  check("预览窗口·缩略图：外框圆角 − 内图圆角 = 内边距（严格同心）",
+    !!shot && shot.before.length === 2 && thumbBefore.radius.length === 0,
+    "外 10 − 内 8 = pad 2", JSON.stringify(thumbBefore.radius));
+  check("预览窗口·缩略图：选中只一层描边（ring-1 被 ring-2 顶替，不叠两层）",
+    !!shot && shot.before.filter((t) => t.active).length === 1 && thumbBefore.layers.length === 0,
+    "选中层数=1", JSON.stringify(shot && shot.before.map((t) => ({ a: t.active, n: t.ringLayers }))));
+
+  const brokenThumbs = {
+    ratio: thumbIssues(shot && shot.broken.ratio).ratio.length > 0,
+    fit: thumbIssues(shot && shot.broken.fit).ratio.length > 0,
+    radius: thumbIssues(shot && shot.broken.radius).radius.length > 0,
+    layers: thumbIssues(shot && shot.broken.layers).layers.length > 0,
+  };
+  check("反例自证：比例被改 / 去掉 cover / 圆角归零 / 叠第二层描边 —— 四种坏形状都必须翻红",
+    brokenThumbs.ratio && brokenThumbs.fit && brokenThumbs.radius && brokenThumbs.layers,
+    "四条反例全红", JSON.stringify(brokenThumbs));
+
+  // hover：真指针移到"非当前"那张上，它必须**只多一层淡边**（层数仍是 1，颜色变亮），
+  // 且不许把选中项那层描边顶掉/叠成两层。
+  const hoverTarget = await cdp.eval(`(() => {
+    const b = [...document.querySelectorAll('[data-lightbox-thumb]')]
+      .find((x) => x.getAttribute('aria-current') !== 'true');
+    if (!b) return null;
+    const r = b.getBoundingClientRect();
+    return { x: Math.round(r.left + r.width / 2), y: Math.round(r.top + r.height / 2) };
+  })()`);
+  if (hoverTarget) {
+    await cdp.send("Input.dispatchMouseEvent", { type: "mouseMoved", x: hoverTarget.x, y: hoverTarget.y, buttons: 0 });
+    await sleep(200);
+  }
+  const hoverState = await cdp.eval(`(() => {
+    ${RING_COUNT_JS}
+    const btns = [...document.querySelectorAll('[data-lightbox-thumb]')];
+    const pick = (b) => {
+      const shadow = getComputedStyle(b).boxShadow;
+      return { active: b.getAttribute('aria-current') === 'true', layers: visibleLayers(shadow), shadow };
+    };
+    return { all: btns.map(pick), hovered: btns.length > 1 ? pick(btns.find((b) => b.getAttribute('aria-current') !== 'true') || btns[0]) : null };
+  })()`);
+  check("预览窗口·缩略图：hover 只给一层淡边（不与选中态叠成两层）",
+    !!hoverState && !!hoverState.hovered
+      && hoverState.hovered.layers === 1 && hoverState.all.every((t) => t.layers <= 1)
+      // 只数层数不够：层数恒为 1 时"hover 根本没生效"也会绿 ⇒ 再要求描边颜色真的变了。
+      && !!shot && shot.before.length > 1 && hoverState.hovered.shadow !== shot.before[1].shadow,
+    "每张 1 层描边，且 hover 那张颜色变了", JSON.stringify({
+      idle: shot && shot.before[1] && shot.before[1].shadow,
+      hovered: hoverState && hoverState.hovered,
+    }));
 
   // ── 连点 10 张：逐帧采样 ─────────────────────────────────────────
   await cdp.eval(`(() => {

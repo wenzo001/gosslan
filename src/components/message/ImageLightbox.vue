@@ -159,19 +159,17 @@ const txMV = useMotionValue(0);
 const tyMV = useMotionValue(0);
 
 /**
- * 底栏/顶栏的**元数据**：当前图的原图尺寸（自然像素）与缩放读数。
+ * 顶栏的**元数据**：当前图的原图尺寸（自然像素）与缩放读数。
  * 尺寸只在图片真正解码后才有（`onImageLoad` 里从 naturalWidth/Height 取），
  * 不额外请求任何东西；缩放百分比读的就是手势那一份 `scale`，不是第二份状态。
+ * ⚠️ 这两项**只在顶栏出现一次**（用户 2026-11-08：底部再写一遍既重复又压图）。
  */
 const naturalSize = ref<{ w: number; h: number } | null>(null);
 const zoomPct = computed(() => Math.round(scale.value * 100));
-/** 元数据文案只在这里拼一次：顶栏/照片角标/底栏共用，避免三处各写一遍尺寸格式。 */
+/** 尺寸文案只在这里拼一次：顶栏是它唯一的消费点。 */
 const sizeText = computed(() => (naturalSize.value
   ? t("msg.lightbox.originalSize", { w: naturalSize.value.w, h: naturalSize.value.h })
   : ""));
-const hintText = computed(() => (hasMultiple.value
-  ? t("msg.lightbox.multiHint", { i: props.index + 1, n: props.images.length })
-  : t("msg.lightbox.singleHint")));
 
 /**
  * 底部缩略图条只给"当前这张前后各 6 张"取字节。
@@ -707,7 +705,7 @@ useEventListener(window, "keydown", onKey);
       <div
         v-if="open"
         class="glass fixed inset-x-0 bottom-0 top-[var(--gosslan-safe-top,0px)] z-[80] outline-none"
-        :style="{ background: 'rgba(0, 0, 0, 0.45)', touchAction: 'none', overscrollBehavior: 'contain', '--lb-top-h': '56px', '--lb-bottom-h': '86px' }"
+        :style="{ background: 'rgba(0, 0, 0, 0.45)', touchAction: 'none', overscrollBehavior: 'contain', '--lb-top-h': '56px', '--lb-bottom-h': hasMultiple ? '78px' : '0px' }"
         role="dialog"
         aria-modal="true"
         :aria-label="t('common.image')"
@@ -731,16 +729,16 @@ useEventListener(window, "keydown", onKey);
             paddingBottom: 'calc(var(--lb-bottom-h) + var(--gosslan-inset-bottom, 0px) + 8px)',
           }"
         >
-        <!-- 深色顶栏（画板 DesktopPreviewWindow）：文件名 + 计数在左，工具在右上。
-             它只是一层背景条，工具簇仍是自己的定位层（右上 1rem）—— "让位只算一遍"
-             的判据量的是工具簇，不会被这层条的高度拐一遍。 -->
+        <!-- 深色顶栏（画板 DesktopPreviewWindow）：文件名 / 原图尺寸 / 计数在左，工具在右。
+             ⚠️ 这些信息与缩放**只在这里出现一次**（用户 2026-11-08：底部再写一遍既重复又压图）。
+             工具区并进顶栏这一行 ⇒ 不占图片可用高度；顶栏高 56px 已算进 `--lb-top-h`。 -->
         <div
-          class="absolute inset-x-0 top-0 z-[5] flex h-14 items-center gap-3 bg-black/45 px-4 pr-[12rem] backdrop-blur-sm"
+          class="absolute inset-x-0 top-0 z-[5] flex h-14 items-center gap-3 bg-black/45 px-4 backdrop-blur-sm"
           data-lightbox-topbar
           @pointerdown.stop
           @click.stop
         >
-          <div class="min-w-0">
+          <div class="min-w-0 flex-1">
             <div class="truncate text-body font-semibold text-white" :title="current?.name">
               {{ current?.name }}
             </div>
@@ -755,58 +753,65 @@ useEventListener(window, "keydown", onKey);
           >
             {{ index + 1 }} / {{ images.length }}
           </span>
+          <!-- 右上操作区：缩放 + 保存 + 关闭。
+               ⚠️ 工具条竖直方向**只由顶栏这一行决定**（不再是独立 absolute 层加 top:1rem）：
+               2026-09-12 安卓状态栏、2026-10-12 桌面 caption 两次"让位算两遍"都是在独立层上叠出来的；
+               现在外壳已经让开 `--gosslan-safe-top`，这一层只负责在 56px 里居中。
+               缩放组在小屏隐藏（<sm）：移动端以双指/双击缩放为主，顶栏要留给文件名与保存。 -->
+          <div class="flex shrink-0 items-center gap-1" data-lightbox-tools>
+            <div class="hidden items-center gap-0.5 rounded-full bg-black/35 p-0.5 ring-1 ring-white/25 sm:flex">
+              <button
+                type="button"
+                class="tap-safe flex h-7 w-7 items-center justify-center rounded-full text-white/85 transition-colors hover:bg-white/15 disabled:opacity-35"
+                :title="t('msg.lightbox.zoomOut')"
+                :aria-label="t('msg.lightbox.zoomOut')"
+                :disabled="scale <= 1"
+                @click.stop="zoomBy(-0.2)"
+              >
+                <Icon name="minus" class="h-3.5 w-3.5" />
+              </button>
+              <span class="min-w-[42px] text-center font-mono text-caption text-white/85" data-lightbox-zoom>
+                {{ zoomPct }}%
+              </span>
+              <button
+                type="button"
+                class="tap-safe flex h-7 w-7 items-center justify-center rounded-full text-white/85 transition-colors hover:bg-white/15"
+                :title="t('msg.lightbox.zoomIn')"
+                :aria-label="t('msg.lightbox.zoomIn')"
+                @click.stop="zoomBy(0.2)"
+              >
+                <Icon name="plus" class="h-3.5 w-3.5" />
+              </button>
+              <button
+                type="button"
+                class="tap-safe rounded-full px-2 py-1 text-caption text-white/85 transition-colors hover:bg-white/15"
+                :title="t('common.resetZoom')"
+                @click.stop="reset()"
+              >
+                {{ t("msg.lightbox.zoomFit") }}
+              </button>
+            </div>
+            <!-- 保存按钮既有样式不动（白字在白色图片上靠 ring 描边兜底）。 -->
+            <button
+              class="flex h-9 items-center gap-1.5 rounded-full bg-black/35 px-3 text-body text-white ring-1 ring-white/25 transition hover:bg-black/55"
+              style="text-shadow: 0 1px 2px rgba(0,0,0,0.55); filter: drop-shadow(0 1px 2px rgba(0,0,0,0.35));"
+              :title="t('common.saveImage')"
+              @click.stop="saveImage"
+            >
+              <Icon name="save" class="h-4 w-4" />
+              {{ t("common.save") }}
+            </button>
+            <button
+              v-if="!props.hideClose"
+              class="tap-safe flex h-9 w-9 items-center justify-center rounded-full bg-black/35 text-white ring-1 ring-white/25 transition hover:bg-black/55"
+              style="text-shadow: 0 1px 2px rgba(0,0,0,0.55); filter: drop-shadow(0 1px 2px rgba(0,0,0,0.35));"
+              :title="t('common.closeEsc')" :aria-label="t('common.closeEsc')"
+              @click.stop="requestClose"
+            >
+              <Icon name="x" class="h-5 w-5" />
+            </button>
+          </div>
         </div>
-        <!-- 右上操作区：保存 + 关闭（与其它弹窗一致的样式） -->
-        <!-- 右上操作区的竖直位置：**让位只由外壳那一层做**，这一层只留自己 1rem 的视觉边距。
-             历史三步都在这里加码，所以把它写清楚免得有人再加回来：
-             · 2026-09-12 用户实测「安卓端图片预览右上角的保存和叉叉与状态栏重叠」⇒ 这里加了
-               `env(safe-area-inset-top)`；
-             · 2026-10-12 桌面主窗那一份没让开自绘 caption ⇒ 这里又加了 `--gosslan-window-safe-top`
-               （同一天外壳也加了让位，两处就叠成了两遍）；
-             · 2026-10-20 把「谁让开顶部」收成一个出口 `--gosslan-safe-top`（桌面=caption、移动端=
-               刘海/状态栏，取 max 不是相加）挂在**外壳**上，这一层的两个补丁一起删。
-             真浏览器量过：钉 44px 时旧写法 delta=60（44+16），现在 delta=16。
-             ⚠️ 桌面/移动端都是这一份覆盖层，关闭出口固定为：这颗 ✕、Esc、点遮罩。 -->
-        <div
-          class="absolute right-4 z-10 flex items-center gap-1"
-          :style="{ top: '1rem' }"
-          data-lightbox-tools
-        >
-          <!-- 加 drop-shadow 让白字在白色图片上也可见（问题修复：白背景白字→隐形）。
-               用户 2026-10-23 追加：一律再加一圈 ring 描边 —— 阴影在纯白图 + 浅色遮罩下
-               仍然会糊掉，描边是几何边界，不依赖对比度。 -->
-          <button
-            class="flex h-9 items-center gap-1.5 rounded-full bg-black/35 px-3 text-body text-white ring-1 ring-white/25 transition hover:bg-black/55"
-            style="text-shadow: 0 1px 2px rgba(0,0,0,0.55); filter: drop-shadow(0 1px 2px rgba(0,0,0,0.35));"
-            :title="t('common.saveImage')"
-            @click.stop="saveImage"
-          >
-            <Icon name="save" class="h-4 w-4" />
-            {{ t("common.save") }}
-          </button>
-          <!-- 还原到自适应尺寸：双击图片也会触发 reset，但全屏遮罩上显式放个按钮
-               更符合"放大后总要缩回去"的直觉（用户 2026-09-19）。只在 scale≠1 时显示，
-               否则跟关闭按钮堆成一团显得多余。 -->
-          <button
-            v-if="scale !== 1"
-            class="tap-safe flex h-9 w-9 items-center justify-center rounded-full bg-black/35 text-white ring-1 ring-white/25 transition hover:bg-black/55"
-            style="text-shadow: 0 1px 2px rgba(0,0,0,0.55); filter: drop-shadow(0 1px 2px rgba(0,0,0,0.35));"
-            :title="t('common.resetZoom')" :aria-label="t('common.resetZoom')"
-            @click.stop="reset()"
-          >
-            <Icon name="rotate-ccw" class="h-4 w-4" />
-          </button>
-          <button
-            v-if="!props.hideClose"
-            class="tap-safe flex h-9 w-9 items-center justify-center rounded-full bg-black/35 text-white ring-1 ring-white/25 transition hover:bg-black/55"
-            style="text-shadow: 0 1px 2px rgba(0,0,0,0.55); filter: drop-shadow(0 1px 2px rgba(0,0,0,0.35));"
-            :title="t('common.closeEsc')" :aria-label="t('common.closeEsc')"
-            @click.stop="requestClose"
-          >
-            <Icon name="x" class="h-5 w-5" />
-          </button>
-        </div>
-
         <!-- 上一张。⚠️ 控件底必须是**实色/深色**，不是 white/10：白图放大时
              `bg-white/10` 完全看不见（用户 2026-10-23：「白色图片放大看不清」）。
              ⚠️ 竖向居中交给**外层 div** 的 `-translate-y-1/2`，按钮自己不带定位 transform：
@@ -881,15 +886,6 @@ useEventListener(window, "keydown", onKey);
               @pointercancel="onPointerUp"
               @error="onImageError"
             />
-            <!-- 画板上的"原图 · W × H"角标：贴着照片内左下，pointer-events-none 不挡手势/探针取角。 -->
-            <div
-              v-if="naturalSize"
-              class="pointer-events-none absolute bottom-3 left-3 flex items-center gap-1.5 rounded-full bg-black/60 px-2.5 py-1 text-caption text-white/90 ring-1 ring-white/15"
-              data-lightbox-tag
-            >
-              <span class="h-1.5 w-1.5 rounded-full bg-emerald-400"></span>
-              {{ sizeText }}
-            </div>
             </div>
           </div>
         </template>
@@ -915,81 +911,51 @@ useEventListener(window, "keydown", onKey);
           </template>
         </div>
 
-        <!-- 底部：缩略图条 + 元数据 + 缩放读数（画板 DesktopPreviewWindow）。
-             整条与顶栏同层：点它不关窗（`@click.stop`），滚轮缩放仍归外壳处理。
-             缩略图 `object-contain`，与主图同一条"绝不裁切"口径。 -->
+        <!-- 底部：**只留缩略图条**（画板 DesktopPreviewWindow）。
+             ⚠️ 文件名 / 原图尺寸 / 计数 / 缩放读数已经全部在顶栏出现（用户 2026-11-08：
+             "我标红的两块其实上面已经有了……底下放大缩小有点影响看图"）——
+             一个状态只在顶栏出现一次，这里不再复制第二份，也不放任何浮层压图。
+             单图时整条不渲染（没有"缩略图"这个概念），外壳的 `--lb-bottom-h` 同步为 0。
+             缩略图统一 86×58（画板 `.thumb` 的尺寸，≈1.48:1）并 `object-cover` 填满：
+             按各自原图比例显示会让条带高低不齐、选中框跟着跳。
+             ⚠️ 大图仍是 `object-contain`（TH-01 绝不裁切）—— 裁切只发生在这条缩略图里。
+             同心圆角：外框 --gosslan-radius-md (10px) + p-0.5 (2px)，内图 --gosslan-radius-sm (8px)，
+             10 − 2 = 8。hover 与选中**共用同一个 ring 属性**（ring-1 ↔ ring-2），
+             不会叠成两层描边；切换只改颜色/宽度，不缩放、不改圆角比例（否则边缘缺角）。 -->
         <div
-          class="absolute inset-x-0 bottom-0 z-[6] flex items-end gap-4 px-4 pt-1"
+          v-if="hasMultiple"
+          class="absolute inset-x-0 bottom-0 z-[6] flex items-center gap-2 overflow-x-auto px-4 pt-1"
           :style="{ paddingBottom: 'calc(var(--gosslan-inset-bottom, 0px) + 0.75rem)' }"
           data-lightbox-bottom
           @pointerdown.stop
           @click.stop
         >
-          <div v-if="hasMultiple" class="flex min-w-0 flex-1 gap-2 overflow-x-auto pb-0.5" data-lightbox-thumbs>
-            <button
-              v-for="(img, i) in images"
-              :key="i"
-              type="button"
-              class="tap-safe flex h-[58px] w-[86px] shrink-0 items-center justify-center rounded-[var(--gosslan-radius-md)] bg-black/50 transition"
-              :class="i === index ? 'ring-2 ring-white/85' : 'ring-1 ring-white/15 opacity-70 hover:opacity-100'"
-              :title="img?.name"
-              :aria-label="t('msg.lightbox.thumbLabel', { i: i + 1 })"
-              :aria-current="i === index ? 'true' : undefined"
-              @click.stop="emit('update:index', i)"
-            >
-              <img
-                v-if="thumbSrc[i]"
-                :src="thumbSrc[i]"
-                class="h-full w-full object-contain"
-                alt=""
-                loading="lazy"
-                decoding="async"
-                draggable="false"
-              />
-              <span v-else class="font-mono text-caption text-white/55">{{ i + 1 }}</span>
-            </button>
-          </div>
-          <div class="hidden min-w-0 max-w-[280px] shrink-0 sm:block">
-            <div class="truncate text-caption text-white/70" :title="current?.name ?? ''">
-              <span class="font-semibold text-white/90">{{ current?.name }}</span>
-              <template v-if="naturalSize"> · {{ naturalSize.w }} × {{ naturalSize.h }}</template>
-              <template v-if="hasMultiple"> · {{ index + 1 }} / {{ images.length }}</template>
-            </div>
-            <div class="mt-1 truncate text-caption text-white/55" :title="hintText">{{ hintText }}</div>
-          </div>
-          <div class="flex shrink-0 items-center gap-0.5 rounded-[var(--gosslan-radius-md)] bg-black/45 p-1 ring-1 ring-white/15">
-            <button
-              type="button"
-              class="tap-safe flex h-7 w-7 items-center justify-center rounded-[var(--gosslan-radius-sm)] text-white/85 transition hover:bg-white/10 disabled:opacity-35"
-              :title="t('msg.lightbox.zoomOut')"
-              :aria-label="t('msg.lightbox.zoomOut')"
-              :disabled="scale <= 1"
-              @click.stop="zoomBy(-0.2)"
-            >
-              <Icon name="minus" class="h-3.5 w-3.5" />
-            </button>
-            <span
-              class="min-w-[46px] text-center font-mono text-caption text-white/85"
-              data-lightbox-zoom
-            >{{ zoomPct }}%</span>
-            <button
-              type="button"
-              class="tap-safe flex h-7 w-7 items-center justify-center rounded-[var(--gosslan-radius-sm)] text-white/85 transition hover:bg-white/10"
-              :title="t('msg.lightbox.zoomIn')"
-              :aria-label="t('msg.lightbox.zoomIn')"
-              @click.stop="zoomBy(0.2)"
-            >
-              <Icon name="plus" class="h-3.5 w-3.5" />
-            </button>
-            <button
-              type="button"
-              class="tap-safe ml-0.5 rounded-[var(--gosslan-radius-sm)] px-2 py-1 text-caption text-white/85 transition hover:bg-white/10"
-              :title="t('common.resetZoom')"
-              @click.stop="reset()"
-            >
-              {{ t("msg.lightbox.zoomFit") }}
-            </button>
-          </div>
+          <button
+            v-for="(img, i) in images"
+            :key="i"
+            type="button"
+            class="tap-safe flex h-[62px] w-[90px] shrink-0 items-center justify-center rounded-[var(--gosslan-radius-md)] bg-black/40 p-0.5 transition-colors"
+            :class="i === index
+              ? 'ring-2 ring-[var(--gosslan-primary)]'
+              : 'ring-1 ring-white/15 hover:ring-white/45'"
+            :title="img?.name"
+            :aria-label="t('msg.lightbox.thumbLabel', { i: i + 1 })"
+            :aria-current="i === index ? 'true' : undefined"
+            data-lightbox-thumb
+            @click.stop="emit('update:index', i)"
+          >
+            <img
+              v-if="thumbSrc[i]"
+              :src="thumbSrc[i]"
+              class="h-full w-full rounded-[var(--gosslan-radius-sm)] object-cover"
+              alt=""
+              loading="lazy"
+              decoding="async"
+              draggable="false"
+              data-lightbox-thumb-img
+            />
+            <span v-else class="font-mono text-caption text-white/55">{{ i + 1 }}</span>
+          </button>
         </div>
         </div>
         </FocusScope>
