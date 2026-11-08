@@ -44,13 +44,17 @@ const confirming = ref(false);
 /**
  * 弹窗只在三种情况下自动关掉：
  * 1. 系统安装器已接管（`waiting-user`）—— 再挡在前面就是挡住系统确认框；
- * 2. 装完了 / 失败了 —— 结论已经落到面板上，弹窗留着没有信息量。
+ * 2. 装完了（`installed`）—— 应用即将被替换，这正是"重启前一刻"；
  * 其余时刻（含 `preparing`/`launching` 的静默期）**保持打开**。
+ *
+ * ⚠️ 2026-11-08 改：失败（`failed`）**不再关框**。以前这里一并关掉，用户看到的是
+ * "弹窗消失"，得自己去面板上找那行红字；现在框留在原地、把可读原因写进正文，
+ * 按钮从「确认安装」切成「关闭」—— 这就是"从 loading 退回可读的失败态"。
  */
 watch(
   () => [props.state.phase, props.state.installStep] as const,
   () => {
-    if (props.state.phase === "failed" || props.state.phase === "installed") {
+    if (props.state.phase === "installed") {
       confirming.value = false;
     } else if (installerTookOver(props.state)) {
       confirming.value = false;
@@ -59,6 +63,19 @@ watch(
 );
 
 const busy = computed(() => isInstallBusy(props.state));
+/** 失败后弹窗正文换成可读原因（与状态行同一份词典）。 */
+const confirmError = computed(() =>
+  confirming.value && props.state.phase === "failed" ? t(errorKey.value) : "",
+);
+
+function onConfirm() {
+  // 失败后这个键是「关闭」：只关框；重试在卡片上按失败位置给（下载失败重下 / 安装失败重装）。
+  if (props.state.phase === "failed") {
+    confirming.value = false;
+    return;
+  }
+  emit("install");
+}
 
 const stepText = computed(() => {
   const step: AndroidInstallStep | null = props.state.installStep;
@@ -281,18 +298,25 @@ const downloadLabel = computed(() =>
     </div>
 
     <!-- 核心修复：确认后**不立刻关**。`busy` 期间两个按钮都禁用、✕/返回也无效，
-         直到 `installStep === "waiting-user"` 才由上面的 watch 关掉。 -->
+         直到 `installStep === "waiting-user"` 才由上面的 watch 关掉。
+         2026-11-08：失败也不再关框，正文换成可读原因，确认键切成「关闭」。 -->
     <ConfirmDialog
       :open="confirming"
       :title="t('settings.androidUpdate.install')"
-      :confirm-label="t('settings.updates.confirm')"
-      :body="t('settings.androidUpdate.confirmInstall')"
-      :note="t('settings.androidUpdate.confirmNote')"
+      :confirm-label="state.phase === 'failed' ? t('common.close') : t('settings.updates.confirm')"
       :danger="false"
       :busy="busy"
       :busy-label="stepText"
       @cancel="confirming = false"
-      @confirm="emit('install')"
-    />
+      @confirm="onConfirm"
+    >
+      <p v-if="confirmError" class="text-sm leading-relaxed text-[var(--gosslan-text)]" role="alert">
+        {{ confirmError }}
+      </p>
+      <p v-else class="text-sm leading-relaxed text-[var(--gosslan-text)]">
+        {{ t("settings.androidUpdate.confirmInstall") }}
+      </p>
+      <p class="text-xs text-[var(--gosslan-text-2)]">{{ t("settings.androidUpdate.confirmNote") }}</p>
+    </ConfirmDialog>
   </div>
 </template>

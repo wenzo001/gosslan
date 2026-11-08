@@ -18,12 +18,44 @@ const emit = defineEmits<{
 }>();
 
 const confirming = ref(false);
+/**
+ * 用户已经点过「确认安装」，动作还在飞。
+ *
+ * 2026-11-08 用户直报：点了确认弹窗立刻消失，中间那段"复查版本 / 写安装包"完全没反馈。
+ * 现在确认后弹窗**保持打开**并切 loading，只在两个时刻关：
+ *   · `installing`（service 在调 `adapter.install()` **之前**就写这个相位 ⇒ 正好是重启前一刻）；
+ *   · 复查发现更高版本（`available` + superseded）—— 结论已经落到卡片上，留着弹窗没有信息量。
+ * 失败（`error`）**不关**：弹窗里直接给出可读的失败原因，而不是"消失 + 去别处找"。
+ */
+const installPending = ref(false);
 watch(
   () => props.state.phase,
-  () => {
-    confirming.value = false;
+  (phase) => {
+    if (phase === "installing" || phase === "up-to-date" || phase === "available") {
+      confirming.value = false;
+      installPending.value = false;
+    } else if (phase === "error") {
+      installPending.value = false;
+    }
   },
 );
+
+const confirmBusy = computed(() => confirming.value && installPending.value && props.state.phase !== "error");
+/** 弹窗内的失败原文（与状态行同一个词典，不另造一套措辞）。 */
+const confirmError = computed(() =>
+  confirming.value && props.state.phase === "error" ? t(errorKey.value) : "",
+);
+
+function onConfirm() {
+  // 失败后这个键已经是「关闭」：只关框，不重试（重试在卡片上按失败位置给）。
+  if (props.state.phase === "error") {
+    confirming.value = false;
+    installPending.value = false;
+    return;
+  }
+  installPending.value = true;
+  emit("install");
+}
 
 const progressPercent = computed<number | null>(() => {
   const { downloaded, total } = props.state;
@@ -219,15 +251,25 @@ function formatDate(seconds: number | null | undefined): string {
       {{ t("settings.updates.installing") }}
     </p>
 
+    <!-- 2026-11-08：确认后**不立刻关**。busy 期间两键禁用、Esc/✕/遮罩都吞掉，
+         直到 service 写 `installing`（真正重启前一刻）才关；失败则留在框里给出原因。 -->
     <ConfirmDialog
       :open="confirming"
       :title="t('settings.updates.install')"
-      :confirm-label="t('settings.updates.confirm')"
-      :body="t('settings.updates.confirmInstall')"
-      :note="t('settings.updates.confirmNote')"
+      :confirm-label="state.phase === 'error' ? t('common.close') : t('settings.updates.confirm')"
       :danger="false"
+      :busy="confirmBusy"
+      :busy-label="t('settings.updates.installing')"
       @cancel="confirming = false"
-      @confirm="confirming = false; emit('install')"
-    />
+      @confirm="onConfirm"
+    >
+      <p v-if="confirmError" class="text-sm leading-relaxed text-[var(--gosslan-text)]" role="alert">
+        {{ confirmError }}
+      </p>
+      <p v-else class="text-sm leading-relaxed text-[var(--gosslan-text)]">
+        {{ t("settings.updates.confirmInstall") }}
+      </p>
+      <p class="text-xs text-[var(--gosslan-text-2)]">{{ t("settings.updates.confirmNote") }}</p>
+    </ConfirmDialog>
   </div>
 </template>

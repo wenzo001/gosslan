@@ -5959,6 +5959,19 @@ test("自动更新：端点/公钥/插件/命令/单飞/取消/发布链都真�
   assert.doesNotMatch(ui, /\brelaunch\b/, "UI 不许绕过用户确认直接重启");
   assert.match(ui, /confirming = true/, "安装必须先经过确认");
   assert.match(ui, /role="progressbar"/, "下载必须有 progressbar 语义");
+  // 2026-11-08 用户直报：点了确认弹窗立刻消失，中间那段没反馈。
+  // 现在必须 busy 留在框里，且**不许**再出现「先关框再 emit」的写法。
+  assert.doesNotMatch(ui, /confirming = false;\s*emit\('install'\)/, "确认键不许先关框再安装");
+  assert.match(ui, /:busy="confirmBusy"/, "确认后必须保持 loading 状态而不是关框");
+  assert.match(ui, /phase === "installing"/, "只有进入 installing（重启前一刻）才关框");
+  assert.match(ui, /role="alert"/, "安装失败的原因要留在弹窗里可读");
+
+  const androidUi = readFileSync(join(root, "components", "settings", "AndroidUpdatePanel.vue"), "utf8");
+  assert.match(androidUi, /:busy="busy"/, "安卓确认后同样保持 loading");
+  assert.doesNotMatch(androidUi, /phase === "failed" \|\| props\.state\.phase === "installed"/,
+    "安卓失败时不许把弹窗直接关掉（要留在框里给可读原因）");
+  assert.match(androidUi, /state\.phase === 'failed' \? t\('common\.close'\)/, "安卓失败后确认键切成「关闭」");
+  assert.match(androidUi, /role="alert"/, "安卓失败原因要留在弹窗里可读");
 
   const entry = readFileSync(join(root, "entries", "main.ts"), "utf8");
   assert.equal((entry.match(/scheduleAutoUpdateCheck\(updater\)/g) ?? []).length, 1, "启动检查必须只在主入口调度一次");
