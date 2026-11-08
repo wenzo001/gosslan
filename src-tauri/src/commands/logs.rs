@@ -501,6 +501,16 @@ fn aux_window_geometry(
     ))
 }
 
+/// 群任务窗口在"与主窗口同尺寸"之前的**旧写死默认**（逻辑像素，2026-11-08 之前）。
+///
+/// 为什么要专门记住这个数：`tauri_plugin_window_state` 会按 label 把上一版默认尺寸
+/// （780×620）落到 `.window-state.json`。用户**从没拉过**窗口时，这份落盘值并不是
+/// "用户的偏好"，只是旧默认的历史残留 —— 它会被 [`restore_aux_window_size`] 原样还原，
+/// 把新的设计尺寸（= 主窗口 1000×680）顶掉（用户 2026-11-08 复核仍觉得窄）。
+/// 落盘尺寸**恰好等于**这个值 ⇒ 视为"用户没拉过"，落回设计尺寸；真拉过的值必须尊重。
+#[cfg(desktop)]
+const TASKS_LEGACY_DEFAULT_SIZE: (f64, f64) = (780.0, 620.0);
+
 /// 群任务窗口的设计尺寸 = **主窗口在 `tauri.conf.json` 里的 width/height**（同一处来源）。
 ///
 /// 用户 2026-11-08：「默认点击展开的初始窗口应该跟主窗口一模一样大，因为现在它有点窄」。
@@ -586,8 +596,16 @@ fn apply_aux_geometry(win: &tauri::WebviewWindow, geo: AuxWindowGeometry) {
 ///
 /// 还原出来的尺寸**以设计尺寸为上限**（下钳到最小尺寸）：换默认尺寸时不会被状态文件里
 /// 的历史大尺寸顶回去（本轮刚把 1080×780 改小，那把已经落过盘）。想放开上限就改这里。
+///
+/// `legacy_default`（**逻辑像素**）= 这个窗口"换默认尺寸之前"的那一档旧写死默认。
+/// 落盘尺寸恰好落在它上面 ⇒ 用户从没拉过、只是旧默认的历史残留 ⇒ **落回设计尺寸**；
+/// 传 `None` 的窗口不参与这条（例如预览窗的默认值没变过）。
 #[cfg(desktop)]
-fn restore_aux_window_size(win: &tauri::WebviewWindow, geo: &AuxWindowGeometry) {
+fn restore_aux_window_size(
+    win: &tauri::WebviewWindow,
+    geo: &AuxWindowGeometry,
+    legacy_default: Option<(f64, f64)>,
+) {
     use tauri::{PhysicalSize, Size};
     use tauri_plugin_window_state::{StateFlags, WindowExt};
     // 没有保存过状态时它会把"当前尺寸"写进缓存（等于设计尺寸），不影响下面的钳制。
@@ -597,10 +615,35 @@ fn restore_aux_window_size(win: &tauri::WebviewWindow, geo: &AuxWindowGeometry) 
     let Ok(cur) = win.inner_size() else {
         return;
     };
-    let (w, h) = clamp_aux_size((cur.width, cur.height), geo.min, geo.size);
+    // 旧默认的落盘值不是"用户的偏好"：它是模板自己留下的历史残留。
+    // 忽略它、按设计尺寸落地（`apply_aux_geometry` 原本要落的那个值）。
+    let want = match legacy_default {
+        Some((lw, lh)) => {
+            let scale = win.scale_factor().unwrap_or(1.0);
+            let legacy = ((lw * scale).round() as u32, (lh * scale).round() as u32);
+            if is_legacy_default_size((cur.width, cur.height), legacy) {
+                geo.size
+            } else {
+                (cur.width, cur.height)
+            }
+        }
+        None => (cur.width, cur.height),
+    };
+    let (w, h) = clamp_aux_size(want, geo.min, geo.size);
     if (w, h) != (cur.width, cur.height) {
         let _ = win.set_size(Size::Physical(PhysicalSize::new(w, h)));
     }
+}
+
+/// 落盘尺寸是不是"旧默认的历史残留"（纯计算，便于单测）。
+///
+/// 两端都是**物理像素**；`legacy` 由调用方用 `scale_factor` 把逻辑旧默认换算过来。
+/// ±2px 容差：1.25x / 1.5x 这类缩放下 `780 × 1.25 = 975`，用户从没拉过时的落盘值
+/// 可能因为取整差一两个像素 —— 只差这一点点的值仍然是那份旧默认，不能当用户偏好。
+#[cfg(desktop)]
+fn is_legacy_default_size(saved: (u32, u32), legacy: (u32, u32)) -> bool {
+    let near = |a: u32, b: u32| (a as i64 - b as i64).abs() <= 2;
+    near(saved.0, legacy.0) && near(saved.1, legacy.1)
 }
 
 /// [`restore_aux_window_size`] 的纯计算部分（便于单测）：把还原出来的尺寸夹进 `[min, max]`。
@@ -1012,7 +1055,8 @@ fn ensure_tasks_window(
                 apply_aux_geometry(win, g);
                 // 先还原用户拉过的尺寸，再按**当时**的外框重算居中 —— 顺序反了就偏半个差值
                 // （用户 2026-09-21：「每次弹出来都不居中」）。只记尺寸、不记位置。
-                restore_aux_window_size(win, &g);
+                // 旧默认（780×620）的落盘值视为"用户没拉过"，落回设计尺寸。
+                restore_aux_window_size(win, &g, Some(TASKS_LEGACY_DEFAULT_SIZE));
                 recenter_aux_window(win, &g);
             }
         },
@@ -1292,7 +1336,7 @@ fn ensure_preview_window(
             decorate_aux_window(win, &placed_app);
             if let Some(g) = geo {
                 apply_aux_geometry(win, g);
-                restore_aux_window_size(win, &g);
+                restore_aux_window_size(win, &g, None);
                 recenter_aux_window(win, &g);
             }
         },

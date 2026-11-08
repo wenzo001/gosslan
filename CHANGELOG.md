@@ -14,6 +14,28 @@
 
 ## [Unreleased]
 
+## [5.19.23] - 2026-11-08
+
+### 界面
+- 群任务页签条不再出现竖向滚动条：`overflow-x: auto` 会把纵向计算成 `auto`，页签下划线
+  只越界 1px（`-bottom-px`）就长出 8px 竖滚动条（探针实测 `barW=8 / vOver=1`）。下划线改
+  `bottom-0` 留在内容盒内，并加全局规则 `.overflow-x-auto/.overflow-x-scroll
+  { overflow-y: hidden; scrollbar-gutter: auto }` —— 横排条永远没有纵向滚动条、不预留纵向槽位。
+- 同类排查：全仓 4 处横排滚动容器（附件条 / 灯箱缩略图 / 群任务页签 / 收藏工具行）一并覆盖，
+  没有"横排 + 纵向滚动族"的叠用。
+- 群任务窗口尺寸回落：上一版写死默认 780×620 已被窗口状态插件落盘（2x 屏 1560×1240），
+  用户没拉过也会被这份历史值顶掉新默认（= 主窗口 1000×680）。现在落盘值恰好等于旧默认
+  （±2px 容差）时视为"从没拉过"、落回设计尺寸；用户真拉过的值照旧尊重。
+
+### 测试
+- `designGuards` 新增 `SC-04`：全仓静态扫描"横排容器叠纵向滚动/槽位"（token 精确匹配，
+  避开 `px-[var(--gosslan-scroll-inset)]` 这类子串），加 `style.css` 全局规则锚点与两条反例自证。
+- `check-ui-runtime` 的 `taskpane` 段新增运行时判据：`role=tablist` 真的被量到 + 横排容器
+  `barW=0 / vOver=0 / gutter=auto`，带"加回 `overflow-y: scroll`"与"加回
+  `scrollbar-gutter: stable`"两条反例自证。
+- Rust 补两条判据：`is_legacy_default_size`（旧默认识别 + 用户尺寸保留）与
+  `ensure_tasks_window` 真把 `Some(TASKS_LEGACY_DEFAULT_SIZE)` 传下去（预览窗传 `None`）。
+
 ## [5.19.22] - 2026-11-08
 
 ### 界面

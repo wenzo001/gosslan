@@ -26757,6 +26757,89 @@ async function runTaskPane(cdp, url) {
       JSON.stringify({ d: wide1000.dialogs, first: wide1000.titles[0] }));
     await shot("taskpane-1000");
 
+    // ---------------- 横排容器不许吃纵向滚动（2026-11-08 用户截图：页签挂着一条竖滚动条） ----------------
+    // 量法全部读**运行时**：竖滚动条宽度 = offsetWidth − clientWidth − 左右边框（本仓全局
+    // `::-webkit-scrollbar` 固定 8px ⇒ 真有槽位就不会是 0）；溢出量 = scrollHeight − clientHeight；
+    // 槽位 = 计算后的 scrollbar-gutter。横排判定：单行（高 ≤64）且 overflowX ∈ auto/scroll
+    // —— `overflow-x-auto` 会把另一轴的 `visible` 计算成 `auto`，正是本次缺陷的入口。
+    const readStrips = () => cdp.eval(`(() => {
+      const out = [];
+      for (const el of document.querySelectorAll('#probe-host *')) {
+        const s = getComputedStyle(el);
+        const h = el.getBoundingClientRect().height;
+        if (!(h > 0 && h <= 64)) continue;
+        const hx = s.overflowX === 'auto' || s.overflowX === 'scroll';
+        const stable = (s.scrollbarGutter || '').indexOf('stable') >= 0;
+        if (!hx && !stable) continue;
+        const bw = (parseFloat(s.borderLeftWidth) || 0) + (parseFloat(s.borderRightWidth) || 0);
+        out.push({
+          role: el.getAttribute('role') || '',
+          cls: String(el.className || '').slice(0, 120),
+          h: Math.round(h),
+          barW: Math.round(el.offsetWidth - el.clientWidth - bw),
+          vOver: Math.round(el.scrollHeight - el.clientHeight),
+          gutter: s.scrollbarGutter,
+          overflowY: s.overflowY,
+          horizontal: hx,
+        });
+      }
+      return out;
+    })()`);
+    /** 一条问题都不许有：有竖滚动条 / 有纵向溢出 / 在横排上预留了会生效的纵向槽位。 */
+    const stripProblems = (rows) => rows.filter((r) => (r.horizontal && (r.barW > 0 || r.vOver > 0))
+      || (r.gutter.indexOf('stable') >= 0 && r.overflowY !== 'visible'));
+    const strips = await readStrips();
+    check("横排容器：role=tablist 那一条真的被量到（空集不许当绿）",
+      strips.some((r) => r.role === "tablist"), "量到 role=tablist", JSON.stringify(strips));
+    check("横排容器：没有纵向滚动条、没有纵向溢出、不预留纵向槽位",
+      stripProblems(strips).length === 0,
+      "barW=0 / vOver=0 / gutter=auto",
+      JSON.stringify(stripProblems(strips).length ? stripProblems(strips) : strips));
+    // 反例自证①：把 `overflow-y: scroll` 加回去 ⇒ 竖滚动条回来 ⇒ 必须翻红。
+    const forcedBar = await cdp.eval(`(() => {
+      const el = document.querySelector('#probe-host [role="tablist"]');
+      if (!el) return null;
+      const prev = el.style.overflowY;
+      el.style.overflowY = 'scroll';
+      const s = getComputedStyle(el);
+      const bw = (parseFloat(s.borderLeftWidth) || 0) + (parseFloat(s.borderRightWidth) || 0);
+      const row = {
+        role: 'tablist', cls: 'forced-scroll', h: Math.round(el.getBoundingClientRect().height),
+        barW: Math.round(el.offsetWidth - el.clientWidth - bw),
+        vOver: Math.round(el.scrollHeight - el.clientHeight),
+        gutter: s.scrollbarGutter, overflowY: s.overflowY, horizontal: true,
+      };
+      el.style.overflowY = prev;
+      return row;
+    })()`);
+    check("反例自证①：页签加回 overflow-y: scroll 时判据必须翻红",
+      !!forcedBar && stripProblems([forcedBar]).length === 1,
+      "翻红（barW>0）", JSON.stringify(forcedBar));
+    // 反例自证②：横排上预留纵向槽位（scrollbar-gutter: stable）同样必须翻红。
+    const forcedGutter = await cdp.eval(`(() => {
+      const el = document.querySelector('#probe-host [role="tablist"]');
+      if (!el) return null;
+      const prevY = el.style.overflowY;
+      const prevG = el.style.scrollbarGutter;
+      el.style.overflowY = 'auto';
+      el.style.scrollbarGutter = 'stable';
+      const s = getComputedStyle(el);
+      const bw = (parseFloat(s.borderLeftWidth) || 0) + (parseFloat(s.borderRightWidth) || 0);
+      const row = {
+        role: 'tablist', cls: 'forced-gutter', h: Math.round(el.getBoundingClientRect().height),
+        barW: Math.round(el.offsetWidth - el.clientWidth - bw),
+        vOver: Math.round(el.scrollHeight - el.clientHeight),
+        gutter: s.scrollbarGutter, overflowY: s.overflowY, horizontal: true,
+      };
+      el.style.overflowY = prevY;
+      el.style.scrollbarGutter = prevG;
+      return row;
+    })()`);
+    check("反例自证②：横排上 scrollbar-gutter: stable 时判据必须翻红",
+      !!forcedGutter && forcedGutter.gutter.indexOf('stable') >= 0
+        && stripProblems([forcedGutter]).length === 1,
+      "翻红（gutter=stable）", JSON.stringify(forcedGutter));
+
     // ---------------- 选中态（2026-11-08：右栏有内容，左列必须能一眼看出是哪一条） ----------------
     const sel0 = await read();
     check("两栏（选中态）：默认选中首条——恰好一行 aria-current，底色 = 主色淡底",

@@ -70,7 +70,7 @@ const rowLevelBg = (lv: string) =>
       <button
         type="button"
         v-memo="memoDeps(v, selectedKey)"
-        class="flex w-full cursor-pointer items-start gap-2 rounded px-1 py-0.5 text-left transition"
+        class="flex w-full cursor-pointer select-text items-start gap-2 rounded px-1 py-0.5 text-left transition"
         :class="[rowLevelBg(v.row.level), selectedKey === v.row.key ? 'bg-[var(--gosslan-primary-light)]' : 'hover:bg-[var(--gosslan-hover)]']"
         :data-log-key="v.row.key"
         @click="emit('select', v.row.key)"

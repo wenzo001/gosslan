@@ -246,6 +246,57 @@ mod tests {
         assert_eq!(clamp_aux_size((500, 500), (900, 900), (780, 620)), (900, 900));
     }
 
+    /// 落盘的"旧默认尺寸"必须被认出来，用户**真拉过**的尺寸必须保留（2026-11-08）。
+    ///
+    /// 背景：上一版默认是写死的 780×620，窗口状态插件把它落进了 `.window-state.json`
+    /// （2x 屏 = 1560×1240）。用户从没拉过窗口时，`restore_aux_window_size` 会把这坨
+    /// 历史残留原样还原，把新的设计尺寸（= 主窗口 1000×680）顶掉 —— 用户复核仍觉得窄。
+    #[cfg(desktop)]
+    #[test]
+    fn legacy_default_persisted_size_is_dropped_but_user_sizes_are_kept() {
+        use super::is_legacy_default_size;
+        // 2x 屏上旧默认 780×620 的落盘值 = 1560×1240 ⇒ 是历史残留，必须丢
+        assert!(is_legacy_default_size((1560, 1240), (1560, 1240)));
+        // ±2px 取整容差（1.25x / 1.5x 这类缩放下落盘值可能差一两个像素）
+        assert!(is_legacy_default_size((1562, 1238), (1560, 1240)));
+        // 用户真拉过的尺寸必须保留（哪怕只差出容差一点点）
+        assert!(!is_legacy_default_size((1700, 1300), (1560, 1240)));
+        assert!(!is_legacy_default_size((1563, 1240), (1560, 1240)));
+        // 只有一侧命中也不算旧默认（否则"用户只调了高度"会被整扇丢掉）
+        assert!(!is_legacy_default_size((1560, 1300), (1560, 1240)));
+    }
+
+    /// 群任务窗必须**接上**旧默认回落；预览窗不许参与（它的默认值没变过）。
+    ///
+    /// 纯计算那条只证明"认得出旧默认"，证明不了 `ensure_tasks_window` 真的把
+    /// `Some(TASKS_LEGACY_DEFAULT_SIZE)` 传了下去 —— 不接线的修复等于没修。
+    #[cfg(desktop)]
+    #[test]
+    fn tasks_window_wires_the_legacy_default_drop() {
+        let src = include_str!("logs.rs");
+        let start = src
+            .find("fn ensure_tasks_window")
+            .expect("ensure_tasks_window 必须还在（改名了就把这条一起改掉）");
+        let body = &src[start..start + src[start..].find("\n}\n").expect("函数收尾") + 3];
+        assert!(
+            body.contains("restore_aux_window_size(win, &g, Some(TASKS_LEGACY_DEFAULT_SIZE))"),
+            "群任务窗必须把旧默认传进去，否则落盘的历史尺寸又会顶掉新默认"
+        );
+        // 常数值本身必须真是旧写死的那一档，否则"旧默认"换成别的数这条判据就认不出来。
+        let decl = src
+            .split("const TASKS_LEGACY_DEFAULT_SIZE")
+            .nth(1)
+            .expect("TASKS_LEGACY_DEFAULT_SIZE 必须还在");
+        let decl = &decl[..decl.find(';').expect("常量声明收尾")];
+        assert!(decl.contains("780.0"), "旧默认宽度必须是 780");
+        assert!(decl.contains("620.0"), "旧默认高度必须是 620");
+        // 预览窗的默认尺寸没变过 ⇒ 不许跟着回落（否则会把用户拉过的预览尺寸也清掉）。
+        assert!(
+            src.contains("restore_aux_window_size(win, &g, None)"),
+            "预览窗必须传 None（它的默认值没变过）"
+        );
+    }
+
     /// `generate_handler!` 里列出的命令在**移动端也必须存在**。
     ///
     /// 为什么必须守：`lib.rs` 的 `generate_handler!` 是**无条件**列出命令名的，而

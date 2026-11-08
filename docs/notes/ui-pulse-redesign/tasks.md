@@ -276,3 +276,40 @@
     现在**不能删**：`latest.json` 仍指 v5.18.71，提前删会让自动更新 404。
   - 执行后核对：`gh release view v5.18.71 --json assets` 只剩 macOS / Android；
     `latest.json` 不受影响；在「合入记录」里补一行带 SHA 的记账。
+
+## Review 收口（2026-11-08 · `63b94626..HEAD`）
+
+范围：UI 四组改造、预览、群任务两栏、日志窗口、启动错误、崩溃取证。
+
+### 修了什么
+
+- **群任务详情流水每渲染扫全表**：模板里写的是 `:history="historyFor(detailItem)"`，
+  而 `buildTodoHistory` 要按 todoId 过滤**整个群的全量任务行**。两栏形态右栏常驻后，
+  父组件任何状态变化（切筛选、乐观状态、标签候选回来）都会重算一次。
+  改为 `const detailHistory = computed(() => historyFor(detailItem.value))`，右栏与弹窗共用。
+- **日志行丢掉文本选择**：行从 `<div>` 改成 `<button>`（键盘可达 + 选中态），但全局
+  `button, [role=button]` 把 `user-select` 关了、且按钮的 UA 样式是直接命中不靠继承，
+  `.gosslan-selectable` 罩不住 ⇒ 用户没法再拖选一行日志。补 `select-text`，
+  行号 / 时间 / 级别仍是 `select-none`（复制时不混入 chrome）。
+
+### 记账了（review 过、确认不改）
+
+- **灯箱缩略图条渲染全部 N 个按钮**：图片字节仍只取当前 ±6（`thumbWindow`），其余 N-13 个
+  是空框 + 序号，无解码无 IPC。整条虚拟化会让「点任意一张跳过去」消失，收益不抵代价。
+- **`LogRows` 的 `v-memo` 不含 locale**：切语言时 `title="合并 ×N"` 要等下次数据变化才更新
+  （正文是 `v-html` 预格式化，不受影响）。把 locale 塞进 memo 依赖 = 切语言时全量重渲染，
+  为一条 tooltip 不值。
+- **watchdog `G0'`（失焦且无用户动作 ⇒ 跳过自动重载）连带跳过 `tree_silent`**：决策注释里写明
+  理由（后台窗口看不见，重载反而丢现场）；重新聚焦后 G1/G2 仍会照常升级。
+- **`UpdatePanel.installPending` 只靠 `installing / up-to-date / available / error` 收尾**：
+  service 的相位机在每条路径都写终态，不加"超时自动解锁"的兜底（那会把真实失败伪装成可重试）。
+
+### 没发现问题
+
+- 单一来源：群任务两栏 = `detailId` + `detailItem`（实时查折叠结果）；预览 = `props.index`
+  （顶栏 / 缩略图 / 键盘共用）；日志 = `selectedKey` + `selectedRow` computed（行被筛掉自动收栏）。
+- 无新增每帧测量：两栏宽度走 `ResizeObserver`，日志虚拟化走 `useVirtualizer`（`measureElement`
+  由库调度），灯箱 `scale` 的重渲染是改前既有行为。
+- 错误路径：空列表（右栏 `StateBlock empty` / 日志空态）、取不到版本（启动错误页 + 更新面板失败行）、
+  窗口状态落盘异常（`restore_state` 失败直接返回，走设计尺寸）、开窗失败（具名 toast，不哑掉）。
+

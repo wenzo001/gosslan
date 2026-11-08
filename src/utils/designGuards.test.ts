@@ -8321,6 +8321,127 @@ test("SC-03 反例自证：把常驻轨道改回 auto 必须红", () => {
   assert.ok(findSettingsTrackIssues(mutated).length > 0, "改回 auto 必须命中（不许空转）");
 });
 
+// ---------------- SC-04 横排容器不许吃纵向滚动条/纵向槽位（2026-11-08） ----------------
+//
+// 用户实测（截图）：群任务页签条「我的 / 全部 / 我创建 / 已归档」右侧挂着一条竖滚动条。
+// 根因**不是** `scrollbar-gutter: stable` 被套上去，而是 CSS 规定
+// `overflow-x: auto` 会把另一轴的 `visible` 计算成 `auto` ⇒ 页签下划线写的是
+// `-bottom-px`（只越界 1px），于是 `scrollHeight - clientHeight = 1`，真的长出
+// 8px 竖滚动条（探针读数 `barW=8 / vOver=1 / overflowY=auto`）。
+//
+// 定式：**固定高度的横排容器永远不许有纵向滚动条、也不许预留纵向槽位**
+// （标签条 / 工具行 / 状态条 / 面包屑一类）。修法是 `style.css` 的全局
+// `.overflow-x-auto/.overflow-x-scroll { overflow-y: hidden; scrollbar-gutter: auto }`；
+// 这一条盯两件事：① 全局规则不许被改回去；② 模板里不许把纵向滚动族又叠到横排容器上。
+
+/** class 属性按空白切 token（**精确匹配**，不能用 includes：
+ *  `px-[var(--gosslan-scroll-inset)]` 含子串 `gosslan-scroll`，includes 会误报）。 */
+function classTokens(cls: string): string[] {
+  return cls.split(/\s+/).filter(Boolean);
+}
+
+const H_STRIP_TOKENS = new Set(["overflow-x-auto", "overflow-x-scroll"]);
+/** 要求"纵向滚动/纵向槽位"的族：横排条跟它们叠用就一定要么长出滚动条、要么留槽。 */
+const V_TRACK_TOKENS = new Set([
+  "overflow-y-auto",
+  "overflow-y-scroll",
+  "overflow-auto",
+  "gosslan-scroll",
+  "scrollbar-both",
+]);
+
+/** 返回模板里"横排容器同时要求纵向滚动/槽位"的位置（空数组 = 合规）。 */
+function findStripVerticalTrackIssues(src: string): { line: number; message: string }[] {
+  const issues: { line: number; message: string }[] = [];
+  for (const m of src.matchAll(/class="([^"]*)"/g)) {
+    const tokens = classTokens(m[1]);
+    if (!tokens.some((tk) => H_STRIP_TOKENS.has(tk))) continue;
+    const hits = tokens.filter((tk) => V_TRACK_TOKENS.has(tk));
+    // 任意值语法 `[scrollbar-gutter:stable]` / `[scrollbar-gutter:stable_both-edges]`
+    const gutter = tokens.filter((tk) => /^\[scrollbar-gutter:/.test(tk));
+    if (hits.length === 0 && gutter.length === 0) continue;
+    const line = src.slice(0, m.index ?? 0).split("\n").length;
+    issues.push({
+      line,
+      message:
+        `横排容器同时要求纵向滚动/槽位（${[...hits, ...gutter].join(" ")}）`
+        + " ⇒ 固定高度横排条会长出竖滚动条或预留竖槽位",
+    });
+  }
+  return issues;
+}
+
+/** `style.css` 里"横排只许横向滚"的全局规则是否齐备。 */
+function horizontalStripRuleIssues(css: string): string[] {
+  const issues: string[] = [];
+  const block = /\.overflow-x-auto\s*,\s*\.overflow-x-scroll\s*\{([^}]*)\}/.exec(css)?.[1];
+  if (!block) {
+    issues.push(
+      "style.css 缺 `.overflow-x-auto, .overflow-x-scroll { … }` 全局规则"
+      + "（横排容器就没有统一口径，`overflow-x: auto` 会把纵向算成 auto）",
+    );
+    return issues;
+  }
+  if (!/overflow-y:\s*hidden/.test(block))
+    issues.push("全局横排滚动规则缺 `overflow-y: hidden`（纵向会被算成 auto，长出竖滚动条）");
+  if (!/scrollbar-gutter:\s*auto/.test(block))
+    issues.push("全局横排滚动规则缺 `scrollbar-gutter: auto`（不许给横排条预留纵向槽位）");
+  return issues;
+}
+
+test("SC-04 真实树：全部 .vue 里没有「横排 + 纵向滚动/槽位」的叠用", () => {
+  const srcDir = join(import.meta.dirname, "..");
+  const files = collectVueFiles(srcDir);
+  assert.ok(files.length > 20, `应扫描到全部组件，实际 ${files.length} 个`);
+  const bad: string[] = [];
+  let strips = 0;
+  for (const f of files) {
+    const src = readFileSync(f, "utf8");
+    strips += (src.match(/\boverflow-x-(?:auto|scroll)\b/g) ?? []).length;
+    for (const issue of findStripVerticalTrackIssues(src)) {
+      bad.push(`${f.replace(srcDir + "/", "")}:${issue.line}  ${issue.message}`);
+    }
+  }
+  // 判据不能空转：真有横排滚动容器被扫到（当前 4 处：附件条 / 灯箱缩略图 / 群任务页签 / 收藏工具行）。
+  assert.ok(strips >= 4, `应扫到 ≥4 处横排滚动容器，实际 ${strips} 处（判据可能在空转）`);
+  assert.deepEqual(bad, [], `以下横排容器要求了纵向滚动/槽位：\n${bad.join("\n")}`);
+});
+
+test("SC-04 真实树：style.css 的横排滚动全局规则齐备", () => {
+  const css = readFileSync(new URL("../style.css", import.meta.url), "utf8");
+  assert.deepEqual(horizontalStripRuleIssues(css), [], horizontalStripRuleIssues(css).join("\n"));
+});
+
+test("SC-04 反例自证：横排叠 gosslan-scroll / 纵向 scroll 都必须命中", () => {
+  const withStrip = `<div class="flex shrink-0 items-center gap-1 overflow-x-auto border-b">`;
+  assert.deepEqual(findStripVerticalTrackIssues(withStrip), [], "纯横排不该报");
+  const withVertical = `<div class="flex overflow-x-auto gosslan-scroll">`;
+  assert.equal(findStripVerticalTrackIssues(withVertical).length, 1, "横排叠 .gosslan-scroll 必须报");
+  const withYScroll = `<div class="flex overflow-x-auto overflow-y-scroll">`;
+  assert.equal(findStripVerticalTrackIssues(withYScroll).length, 1, "横排叠 overflow-y-scroll 必须报");
+  const withGutter = `<div class="flex overflow-x-auto [scrollbar-gutter:stable]">`;
+  assert.equal(findStripVerticalTrackIssues(withGutter).length, 1, "横排叠 scrollbar-gutter 必须报");
+  // 反例的**反例**：任意值语法里出现 gosslan-scroll 子串不许误报（真实代码里就有）。
+  const substring = `<div class="flex overflow-x-auto px-[var(--gosslan-scroll-inset)]">`;
+  assert.deepEqual(findStripVerticalTrackIssues(substring), [], "子串 `gosslan-scroll` 不许误报");
+});
+
+test("SC-04 反例自证：把 `overflow-y: hidden` 改回 auto 必须红（全局规则不许空转）", () => {
+  const css = readFileSync(new URL("../style.css", import.meta.url), "utf8");
+  const broken = css.replace(
+    /(\.overflow-x-auto\s*,\s*\.overflow-x-scroll\s*\{[^}]*overflow-y:\s*)hidden/,
+    "$1auto",
+  );
+  assert.notEqual(broken, css, "反例自证：`overflow-y: hidden` 没被替换到，锚点已漂");
+  assert.ok(horizontalStripRuleIssues(broken).length > 0, "改回 auto 必须命中（不许空转）");
+  const noGutter = css.replace(
+    /(\.overflow-x-auto\s*,\s*\.overflow-x-scroll\s*\{[^}]*scrollbar-gutter:\s*)auto/,
+    "$1stable",
+  );
+  assert.notEqual(noGutter, css, "反例自证：`scrollbar-gutter: auto` 没被替换到，锚点已漂");
+  assert.ok(horizontalStripRuleIssues(noGutter).length > 0, "把横排槽位改回 stable 必须命中");
+});
+
 // ---------------- TH 图片缩略图：等比完整呈现，不切割 ----------------
 // 用户 2026-11-07：「所有图片绝对不要切割」。大图（灯箱/气泡/收藏/转发/合并卡）早已是
 // `object-contain`（CE-01 钉住），漏的是**缩略图**这一类：方框固定、内容被 `object-cover`
