@@ -17689,12 +17689,16 @@ async function runFavorites(cdp, url) {
  * ② 读数到达 ⇒ 模式 / 绑定 IP / TCP 监听 / 版本行都在屏上；
  * ③ 刷新失败 ⇒ 旧读数仍在、整屏**没有**被「诊断数据读取失败」替换（`error && !diag` 那道闸）；
  * ④ 反控 ⇒ 没有旧快照时同一套失败**必须**把「诊断数据读取失败」说出来，
- *    否则③只是"永远不会报错"的别名。
+ *    否则③只是"永远不会报错"的别名；
+ * ⑤ 一页只有一层滚动条（用户 2026-11-08）⇒ 弹窗壳在滚，而它内部**没有任何**子容器自己可滚。
+ *    夹具把三份列表都塞满 16 条，先证壳真的溢出，否则"内层没滚"只是量空气。
  */
 async function runDiag(cdp, url) {
   // 与本文件其它段同一口径：先把页面拉到前台，避免被遮挡时过渡停在中途。
   await cdp.send("Page.bringToFront").catch(() => {});
   await cdp.send("Emulation.setFocusEmulationEnabled", { enabled: true }).catch(() => {});
+  // 三份列表都塞满：这一段要量「一页只有一层滚动条」，空列表会让那一格变成量空气。
+  const many = (n, f) => Array.from({ length: n }, (_, i) => f(i));
   const DIAG = {
     mode: "lan",
     bound_ip: "192.168.1.9",
@@ -17711,15 +17715,23 @@ async function runDiag(cdp, url) {
     last_announce_recv: 0,
     candidates: [],
     bluetooth: {
-      feature_compiled: false, enabled: false, available: false, running: false, peers: 0,
-      activity: "idle", scan_window_ms: 0, scan_interval_ms: 0, last_scan_ts: 0,
-      last_scan_total: 0, last_scan_matched: 0, backoff: [], no_dial: 0,
+      feature_compiled: true, enabled: true, available: true, running: true, peers: 3,
+      activity: "active", scan_window_ms: 1000, scan_interval_ms: 500, last_scan_ts: 0,
+      last_scan_total: 3, last_scan_matched: 3,
+      backoff: many(16, (i) => ({ id: `dev-${i}-backoff`, failures: i + 1, remaining_ms: 30_000 })),
+      no_dial: 2,
     },
     protocol_version: 1,
     // 探针自己造的一串，**故意不写真实版本号**：免得产品一升版本这条判据就漂。
     app_version: "probe-9.9",
-    peer_versions: [],
-    conn_health: [],
+    peer_versions: many(16, (i) => ({
+      device_id: `peer-${i}`, nickname: `对端 ${i}`, protocol_version: 1, app_version: "probe-peer",
+    })),
+    conn_health: many(16, (i) => ({
+      device_id: `dev-${i}`, conn_id: `c-${i}`, endpoint: `192.168.1.9:6001${i}`,
+      path_kind: "tcp", last_write_seen_ms: 0, last_read_seen_ms: 0,
+      write_age_ms: 1000, read_age_ms: 2000, healthy: i % 2 === 0, consecutive_failures: 0,
+    })),
   };
   const boot = async () => {
     await cdp.send("Page.navigate", { url });
@@ -17758,6 +17770,30 @@ async function runDiag(cdp, url) {
       && t2.includes("probe-9.9") && !t2.includes("加载中"),
     "含 局域网/192.168.1.9/60012/probe-9.9 且无「加载中」",
     JSON.stringify({ head: String(t2).slice(0, 200) }));
+
+  // ⑤ 一页只有一层滚动条：内容里除弹窗壳外，不许再有第二个能滚的容器。
+  //    先确认壳自己确实在滚 —— 否则内容没溢出时"内层也没滚"是量空气。
+  const scroll = await cdp.eval(`(() => {
+    const shell = document.querySelector('.gosslan-scroll');
+    if (!shell) return { shell: false };
+    const inner = [...shell.querySelectorAll('*')].filter((el) => {
+      const s = getComputedStyle(el);
+      return /(auto|scroll)/.test(s.overflowY) && el.scrollHeight > el.clientHeight + 1;
+    });
+    return {
+      shell: true,
+      shellScrolls: shell.scrollHeight > shell.clientHeight + 1,
+      shellH: shell.clientHeight, shellSH: shell.scrollHeight,
+      inner: inner.map((el) => ({
+        cls: String(el.className || '').slice(0, 60),
+        sh: el.scrollHeight, ch: el.clientHeight,
+      })),
+    };
+  })()`);
+  check("诊断面板：一页只有一层滚动条（内容区在滚，子列表一个都不许自己滚）",
+    scroll.shell === true && scroll.shellScrolls === true && scroll.inner.length === 0,
+    "弹窗壳可滚 且 内层可滚容器 0 个",
+    JSON.stringify(scroll));
 
   await cdp.eval("window.__probe.diagFailWith('ipc down')");
   const clicked = await clickRefresh();

@@ -8936,11 +8936,22 @@ test("PG-02 反例自证：头部退回条件内距也必须红", () => {
   assert.match(pageInsetProblems(broken, panel, modal).join("\n"), /看板头部/, "必须指出贴边");
 });
 
-/** 网络诊断只许 BaseModal 那一层滚动；同时它要能产出可复制的背景动效读数。 */
+/** 网络诊断只许 BaseModal 那一层滚动（子列表也不许再套）；同时它要能产出可复制的背景动效读数。 */
 function diagPanelProblems(src: string): string[] {
   const bad: string[] = [];
   if (/max-h-\[75vh\]/.test(src)) bad.push("内容区又自带 max-h-[75vh] ⇒ 双层滚动条回来了");
   if (/scrollbar-both[^"]*overflow-y-auto/.test(src)) bad.push("内容区又套了一层 overflow-y-auto");
+  // 子列表同样不许（用户 2026-11-08：「一页只有一层滚动条，子列表不应再套一层」）：
+  // 半屏高的小格会把滚轮吃掉，下面的内容得"剥洋葱"一样一格一格滑。
+  // 担心列表太长就压数据源的上界（群文件日志只留最近 50 行），不要再靠 CSS 限高。
+  const scrollClasses = [...src.matchAll(/class="([^"]*)"/g)]
+    .map((m) => m[1])
+    .filter((cls) => /\bmax-h-|\boverflow-(?:y-)?auto\b/.test(cls));
+  if (scrollClasses.length) {
+    bad.push(
+      `又出现 ${scrollClasses.length} 处自带限高/滚动的子列表 ⇒ 一页只剩一层滚动条的约定被破坏`,
+    );
+  }
   if (!/const bgProbe = ref/.test(src)) bad.push("背景动效读数区块不见了");
   if (!/navigator\.clipboard\.writeText/.test(src)) bad.push("诊断信息必须能一键复制");
   return bad;
@@ -8954,6 +8965,13 @@ test("PG-03 网络诊断：单层滚动 + 可复制的背景动效读数", () =>
 test("PG-03 反例自证：把内层 max-h/overflow 写回去必须红", () => {
   const fixture = '<div class="scrollbar-both max-h-[75vh] space-y-5 overflow-y-auto text-xs">';
   assert.match(diagPanelProblems(fixture).join("\n"), /双层滚动条/, "旧写法必须被抓到");
+});
+
+test("PG-03 反例自证：子列表限高（max-h-48）也必须红", () => {
+  // 2026-11-08 之前就是这个形状：四处子列表各带 max-h-48 + overflow-y-auto，
+  // 而当时只盯 max-h-[75vh]，于是"一页一层滚动条"的约定只落在正文、没落到列表上。
+  const fixture = '<div class="mt-1 max-h-48 space-y-0.5 overflow-y-auto font-mono text-caption">';
+  assert.match(diagPanelProblems(fixture).join("\n"), /子列表/, "子列表限高必须被抓到");
 });
 
 test("PG-04 Windows 的 icon.ico 必须走圆角源图（Windows 11 不会替你加圆角）", () => {
