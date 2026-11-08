@@ -261,8 +261,17 @@ const fail = (msg) => {
   console.error(msg);
 };
 
+/**
+ * `git` 的工作目录：`--staged` 判的是「**我此刻站着的这个仓库**的暂存区」
+ * （commit-msg hook 由 git 在仓库根运行；回归测试在临时仓库里跑），其余模式仍锚 `ROOT`
+ * —— `git log` 的路径必须与 `classify()` 的仓库相对路径同一口径。
+ * 2026-11-08：此前这里恒为 `ROOT`，于是 `--staged` 在别的仓库里跑也会去读本仓暂存区
+ * （`semverNone.test.ts` 的临时仓库用例因此判的是本仓，反例②假绿）。
+ */
+const GIT_CWD = argv.includes("--staged") ? process.cwd() : ROOT;
+
 function git(...args) {
-  return execFileSync("git", args, { cwd: ROOT, encoding: "utf8", maxBuffer: 64 * 1024 * 1024 });
+  return execFileSync("git", args, { cwd: GIT_CWD, encoding: "utf8", maxBuffer: 64 * 1024 * 1024 });
 }
 
 // ---------------- 领域归属 ----------------
@@ -521,8 +530,13 @@ if (argv.includes("--staged")) {
     const bump = declaredBump({ message: rawMessage });
     const releaseSubject = /^chore\(release\)/.test(subject.trim());
     const noneBad = bump === "none" ? noneViolations({ paths: staged.map((f) => f.path) }) : [];
-    const missing = bump && bump !== "none" ? missingVersionFiles({ files: staged }) : [];
-    const unbumped = !bump && !releaseSubject && missing.length === 0;
+    // ⚠️ 这里必须**与 bump 无关地**先数一遍暂存区动了几个清单文件。
+    // 以前写成 `bump && bump !== "none" ? missingVersionFiles(...) : []`，于是没写 trailer 的提交
+    // `missing` 恒为 `[]` ⇒ `unbumped` 恒真 ⇒ **任何纯文档提交都被拦下**（2026-11-08 实测：
+    // 只改两个 README 的提交被要求补 `Version-Bump`）。判据本身没变，只是别让谓词自己空转。
+    const missingManifests = missingVersionFiles({ files: staged });
+    const missing = bump && bump !== "none" ? missingManifests : [];
+    const unbumped = !bump && !releaseSubject && missingManifests.length === 0;
     if (noneBad.length || missing.length || unbumped) {
       if (noneBad.length) {
         console.error("✗ 提交被拦下：声明了 `Version-Bump: none` 但不成立：");
