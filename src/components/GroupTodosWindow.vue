@@ -195,7 +195,7 @@ onUnmounted(() => {
     />
     <div v-else class="min-h-0 flex-1 overflow-hidden p-4">
       <!-- `:key` 是换群必须做的重置：筛选/草稿/展开态都属于上一个群，留着就是串群。 -->
-      <GroupTasksBoard :key="groupId" ref="boardRef" :group-id="groupId" standalone />
+      <GroupTasksBoard :key="groupId" ref="boardRef" :group-id="groupId" standalone two-pane />
     </div>
   </AuxWindowShell>
   <ImageLightbox

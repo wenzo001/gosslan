@@ -8,7 +8,7 @@
  * **固定编号 + 标题 + 状态 + 元信息**（描述/图片/所有操作点开**任务详情**看，见 `TodoDetailDialog`），
  * 这样行高统一（不再"行高参差、满屏 pill"）。
  *
- * **归档**：不再自动归档（完成只记 `doneAt`）——「已归档」是筛选里的一个胶囊（带计数），
+ * **归档**：不再自动归档（完成只记 `doneAt`）——「已归档」是顶部标签页里的一档（带计数），
  * 完成后可手动归档（**全体群成员都可以**，用户 2026-09-24 #37），
  * 没手动归档的满 7 天由 `isEffectivelyArchived` 自动归档。
  *
@@ -19,7 +19,7 @@
  * `canArchiveOrReopenTodo` 是显示用的镜像）—— 界面只是"不给按钮"，真正的拦截在后端命令里。
  */
 import { computed, nextTick, onBeforeUnmount, onUnmounted, ref, watch } from "vue";
-import { useEventListener } from "@vueuse/core";
+import { useEventListener, useResizeObserver } from "@vueuse/core";
 import {
   DropdownMenuContent,
   DropdownMenuItem,
@@ -41,6 +41,8 @@ import BaseModal from "@/components/BaseModal.vue";
 import StateBlock from "@/components/ui/StateBlock.vue";
 import { useImagePreviewStore } from "@/stores/useImagePreview";
 import TodoDetailDialog from "@/components/TodoDetailDialog.vue";
+import TodoDetailActions from "@/components/TodoDetailActions.vue";
+import TodoDetailFields from "@/components/TodoDetailFields.vue";
 import TodoImageThumb from "@/components/TodoImageThumb.vue";
 import TodoPickField from "@/components/TodoPickField.vue";
 import TodoIconPicker from "@/components/TodoIconPicker.vue";
@@ -85,6 +87,12 @@ const props = defineProps<{
   groupId: string | null;
   open?: boolean;
   standalone?: boolean;
+  /**
+   * 独立窗口形态的「左列表 + 右详情」两栏（用户 2026-11-08）。
+   * 只在容器够宽时生效：窗口被拖窄会回退单栏（详情仍走原弹窗），
+   * 数据仍是这一份 `foldTodos` 结果，不复制第二份状态。
+   */
+  twoPane?: boolean;
   /** 整页壳里撑满剩余高度，滚动只留给下面的任务列表。 */
   fill?: boolean;
   /**
@@ -244,13 +252,13 @@ function categoryText(x: Pick<TodoItem, "category" | "customCategory">): string 
   return n.text ?? t(n.key);
 }
 
-// ---------------- 筛选（全部 / 给我的 / 我创建的 / 已归档） ----------------
+// ---------------- 筛选（我的 / 全部 / 我创建 / 已归档） ----------------
 
 type TodoFilter = "all" | "mine" | "created" | "archived";
 
 const FILTERS: { key: TodoFilter; labelKey: string }[] = [
-  { key: "all", labelKey: "todo.filter.all" },
   { key: "mine", labelKey: "todo.filter.mine" },
+  { key: "all", labelKey: "todo.filter.all" },
   { key: "created", labelKey: "todo.filter.created" },
   { key: "archived", labelKey: "todo.filter.archived" },
 ];
@@ -546,6 +554,9 @@ const detailItem = computed(
 const detailArchived = computed(() => (detailItem.value ? isEffectivelyArchived(detailItem.value) : false));
 
 function openDetail(x: TodoItem) {
+  // 两栏形态里右栏常驻：换选另一条时，把上一条按来源打开的相册收掉，
+  // 否则右栏已经换了任务、大图还停在旧任务那几张。
+  if (detailId.value && detailId.value !== x.todoId) preview.closeIfFrom(`task:${detailId.value}`);
   detailId.value = x.todoId;
   // 详情里的标签候选要反映"别端刚用过"的最新计数，打开时重读一次（失败不影响编辑）。
   void loadTagCandidates();
@@ -579,6 +590,37 @@ defineExpose({ focusTodo });
 const flashRowId = ref<string | null>(null);
 let flashTimer: ReturnType<typeof setTimeout> | undefined;
 const boardRoot = ref<HTMLElement | null>(null);
+/** 容器实测宽度（两栏判据，不靠窗口 media query：看板在弹窗里也会被壳挤窄）。 */
+const rootWidth = ref(0);
+useResizeObserver(boardRoot, (entries) => {
+  rootWidth.value = Math.round(entries[0]?.contentRect.width ?? boardRoot.value?.clientWidth ?? 0);
+});
+/**
+ * 两栏只在独立窗口 + 容器 ≥700px 时启用：780 窗口内容宽约 748，
+ * 左栏 410 + 右栏 338 够用；再窄就回退单栏（详情仍走原弹窗），
+ * 避免右栏被挤到不可用。
+ */
+const twoPaneMode = computed(() => !!props.twoPane && rootWidth.value >= 700);
+const paneCode = computed(() =>
+  detailItem.value ? todoCode(detailItem.value.category, detailItem.value.number)?.full ?? "" : "",
+);
+// 两栏进窗时右栏常驻：没有选中项就落到当前筛选的第一条（不改筛选，也不新造状态）。
+// 源里要看**首条的 id**（而不是只看 `todos.length`）：挂载时身份/折叠结果可能还没就绪，
+// 只看长度会在"长度为 0 的那一拍"错过，之后再没机会补选。
+watch(
+  [
+    twoPaneMode,
+    filter,
+    () => filteredActive.value[0]?.todoId ?? null,
+    () => archivedTodos.value[0]?.todoId ?? null,
+  ],
+  () => {
+    if (!twoPaneMode.value || detailItem.value) return;
+    const first = filter.value === "archived" ? archivedTodos.value[0] : filteredActive.value[0];
+    if (first) openDetail(first);
+  },
+  { immediate: true },
+);
 
 /**
  * 滚到这一行并闪一下 —— 卡片上半区点进来的落点。
@@ -1309,7 +1351,17 @@ watch(
 </script>
 
 <template>
-  <div ref="boardRoot" class="flex flex-col" :class="standalone || fill ? 'h-full min-h-0' : ''">
+  <div
+    ref="boardRoot"
+    class="flex"
+    :class="[standalone || fill ? 'h-full min-h-0' : '', twoPaneMode ? 'flex-row' : 'flex-col']"
+  >
+    <!-- 两栏：左列固定 410px（窄窗回退单栏）。单栏形态用 `contents` 让下面的
+         头部/工具行/列表继续直接参与外层 flex，不新增一层布局。 -->
+    <div
+      class="flex min-h-0 flex-col"
+      :class="twoPaneMode ? 'w-[410px] shrink-0 border-r border-[var(--gosslan-divider)]' : 'contents'"
+    >
     <!-- 头部：统计 + 新建。
          横向内距**常驻**：下面内容区是 `.gosslan-scroll`（自带 16px 基线），头部若只在
          fullscreen 才补，卡片弹窗/独立窗口里就会比列表少这 16px（用户 2026-11-07：
@@ -1329,40 +1381,42 @@ watch(
       </button>
     </div>
 
-    <!-- 工具行：筛选 chips。
-         与内容区靠**间距 + 层级**分开，不加分割线：
-           · 间距：这一行 `pb-3`，内容区不再额外 `pt` ⇒ 12px 的呼吸；
-           · 层级：内容区是一张抬起的 panel 卡片，工具行不铺底色，只留控件自身。
-         选中态与行 hover 是**两种不同强度**，不许撞：
-           · 选中 = 实底主色（primary-active + on-primary 成对），一眼是"当前档"；
-           · 行 hover = 5% 中性 tint（列表里的临时指向）；
-           · 控件 hover = 12% 主色 tint（"这里可点"），与行 hover 的中性灰刻意区分。
-         圆角按控件体系取 `radius-sm`（工具条按钮），与内容卡的 `radius-lg` 形成内外两档。 -->
+    <!-- 工具行：标签页（我的 / 全部 / 我创建 / 已归档）。
+         画板形态是**底边下划线**，与行内的状态胶囊区分开：标签页表达"当前视图"，
+         胶囊表达"这条任务的状态"，两者不再共用同一种实底块。
+         选中 ≠ 行 hover：选中只有主色文字 + 下划线，行 hover 仍是中性 tint。 -->
     <div
       v-if="todos.length"
-      class="flex shrink-0 flex-wrap items-center gap-1.5 px-[var(--gosslan-scroll-inset)] pb-3"
+      class="flex shrink-0 items-center gap-1 overflow-x-auto border-b border-[var(--gosslan-divider)] px-[var(--gosslan-scroll-inset)]"
+      role="tablist"
     >
       <button
         v-for="f in FILTERS"
         :key="f.key"
         type="button"
-        class="tap-safe h-7 rounded-[var(--gosslan-radius-sm)] px-3 text-xs transition-colors"
+        role="tab"
+        class="tap-safe relative h-9 shrink-0 px-2.5 text-xs transition-colors"
         :class="filter === f.key
-          ? 'bg-[var(--gosslan-primary-active)] font-medium text-[var(--gosslan-on-primary)]'
-          : 'text-[var(--gosslan-text-2)] hover:bg-[var(--gosslan-primary-light)] hover:text-[var(--gosslan-accent-ink)]'"
-        :aria-pressed="filter === f.key"
+          ? 'font-medium text-[var(--gosslan-accent-ink)]'
+          : 'text-[var(--gosslan-text-2)] hover:text-[var(--gosslan-text)]'"
+        :aria-selected="filter === f.key"
         @click="filter = f.key"
       >
         {{ t(f.labelKey) }}
         <span
           v-if="counts[f.key] !== undefined"
-          class="ml-1 rounded-full px-1 text-caption leading-4 tabular-nums opacity-70"
+          class="ml-1 tabular-nums opacity-70"
         >{{ counts[f.key] }}</span>
+        <span
+          v-if="filter === f.key"
+          class="absolute inset-x-1 -bottom-px h-0.5 rounded-full bg-current"
+          aria-hidden="true"
+        ></span>
       </button>
     </div>
 
     <!-- 内容区：弹窗形态由 BaseModal 自己滚；窗口形态撑满剩余空间。
-         工具行已经用 `pb-3` 给出间距 ⇒ 这里不再叠 `pt`，否则上下留白会比左右大得多。 -->
+         标签页自带下边框，内容区直接接上，不再额外叠 `pt`。 -->
     <div class="gosslan-scroll overflow-y-auto" :class="standalone || fill ? 'min-h-0 flex-1' : ''">
       <!-- 首屏还在路上：**必须**是"正在加载"而不是空态。窗口现在先挂载、数据后台取
            （用户 2026-09-24 报"弹窗弹出很慢"），没有这一档的话首帧会理直气壮地显示
@@ -1653,11 +1707,67 @@ watch(
       </template>
       </div>
     </div>
+    </div>
+
+    <!-- 右栏：详情常驻（仅两栏形态）。字段区/操作条与弹窗共用
+         `TodoDetailFields` / `TodoDetailActions`，不复制第二套详情实现。 -->
+    <div v-if="twoPaneMode" class="flex min-h-0 min-w-0 flex-1 flex-col">
+      <template v-if="detailItem">
+        <div class="flex shrink-0 items-center gap-2 border-b border-[var(--gosslan-divider)] px-[var(--gosslan-scroll-inset)] py-2.5">
+          <span
+            v-if="paneCode"
+            class="shrink-0 font-mono text-caption tabular-nums text-[var(--gosslan-text-2)]"
+            :title="codeTip(detailItem)"
+          >{{ paneCode }}</span>
+          <h3
+            class="min-w-0 flex-1 truncate text-body font-medium text-[var(--gosslan-text)]"
+            :title="detailItem.title"
+          >{{ detailItem.title }}</h3>
+        </div>
+        <div class="gosslan-scroll min-h-0 flex-1 overflow-y-auto px-[var(--gosslan-scroll-inset)] py-3">
+          <TodoDetailFields
+            :item="detailItem"
+            :can-change-status="canChangeStatus(detailItem)"
+            :can-edit-attributes="myMembership"
+            :can-claim="canClaim(detailItem)"
+            :tag-candidates="tagCandidates"
+            :name-of="(id: string) => memberProfile(id).name"
+            :mention-names="mentionNames"
+            :self-mention="selfMention"
+            :history="historyFor(detailItem)"
+            :source-key="`task:${detailItem.todoId}`"
+            @status="(s: TodoStatus) => detailItem && setStatus(detailItem, s)"
+            @priority="(p: TodoPriority) => detailItem && setPriority(detailItem, p)"
+            @category="(c: TodoCategory, name?: string) => detailItem && setCategory(detailItem, c, name)"
+            @icon="(i: TodoCustomIcon) => detailItem && setIcon(detailItem, i)"
+            @related-on="(v: string) => detailItem && setRelatedOn(detailItem, v)"
+            @tags="(tags: string[]) => detailItem && setTagsFor(detailItem, tags)"
+            @claim="detailItem && claim(detailItem)"
+          />
+        </div>
+        <div class="shrink-0 border-t border-[var(--gosslan-divider)] px-[var(--gosslan-scroll-inset)] py-2.5">
+          <TodoDetailActions
+            :item="detailItem"
+            :archived="detailArchived"
+            :can-archive="canArchive(detailItem)"
+            :can-restore="canReopen(detailItem)"
+            :can-edit-structure="canEditStructure(detailItem)"
+            :can-edit-assignees="canEditAssigneesOf(detailItem)"
+            :can-delete="canDelete(detailItem)"
+            @archive="detailItem && archiveTodo(detailItem)"
+            @restore="detailItem && restoreTodo(detailItem)"
+            @edit="detailItem && editFromDetail(detailItem)"
+            @remove="detailItem && (pendingDelete = detailItem)"
+          />
+        </div>
+      </template>
+      <StateBlock v-else kind="empty" :title="t('todo.paneEmpty')" />
+    </div>
   </div>
 
-  <!-- 任务详情：描述/图片 + 状态与编辑等全部操作 -->
+  <!-- 任务详情：描述/图片 + 状态与编辑等全部操作（单栏形态；两栏时右栏常驻，不再弹窗） -->
   <TodoDetailDialog
-    :open="!!detailItem"
+    :open="!!detailItem && !twoPaneMode"
     :item="detailItem"
     :history="historyFor(detailItem)"
     :archived="detailArchived"
