@@ -14,6 +14,13 @@
 
 ## [Unreleased]
 
+## [5.19.7] - 2026-11-08
+
+### 工程
+- 夜间护栏不再假红：「Presence 不得内联大头像」这条非空转用例的关键词仍写着 `broadcast_presence`，
+  而注入点在 2026-11-04 已随 payload 构造搬进 `presence_payload_b64`，倒下的断言换了名字。
+  关键词跟着搬到「Presence payload 必须过 hello_avatar_for_wire」；注入点与断言未动。
+
 ## [5.19.6] - 2026-11-08
 
 ### 可读性

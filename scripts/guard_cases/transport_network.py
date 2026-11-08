@@ -32,7 +32,11 @@ CASES: list[Case] = [
         )],
         cmd=cargo("test", "--lib", "presence_caps_inline_avatar"),
         cwd=TAURI,
-        expect_fail_hint="broadcast_presence",
+        # 2026-11-08：注入点 `hello_avatar_for_wire` 在 2026-11-04 随 payload 构造搬进
+        # `presence_payload_b64`，倒下的断言也从「broadcast_presence 不再走统一构造」变成
+        # 「Presence payload 必须过闸门」⇒ 关键词必须跟着搬。旧关键词留着会变成假红：
+        # 护栏真的红了、但失败输出里找不到声明的那句话（夜间 cargo 通道连红）。
+        expect_fail_hint="Presence payload 必须过 hello_avatar_for_wire",
         tags=["rust", "new-guards"],
     ),
     Case(
