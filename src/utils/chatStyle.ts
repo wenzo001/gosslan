@@ -175,10 +175,12 @@ export function resolveChatColors(key: string, themeColor: string, dark: boolean
 
 /** 语气色（danger / warning）在亮暗两档的实值；与 `style.css` 的 token 同值，测试会对账。
  *  注意 warning 这里对应的是**图标档** `--gosslan-warning-ink`；文字档另有
- *  `--gosslan-warning-text-ink`（#8a5200），只在 `--card-warning` 的卡片兜底里用到。 */
+ *  `--gosslan-warning-text-ink`（2026-11-08 求解器重算后与图标档同值 #724200 / #ffc690）。
+ *  2026-11-08 起 `--gosslan-danger-ink` 也由求解器统一重算（亮 #950023 / 暗 #ffc2c0），
+ *  这里跟着搬 —— 两处不一致时 chatStyle.test.ts 的"逐值相等"会红。 */
 export const UI_TONE_INKS = {
-  danger: { light: "#b0170d", dark: "#ff7a85" },
-  warning: { light: "#b96e00", dark: "#ff9f0a" },
+  danger: { light: "#950023", dark: "#ffc2c0" },
+  warning: { light: "#724200", dark: "#ffc690" },
 } as const;
 
 /**

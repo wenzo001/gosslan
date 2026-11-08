@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import { applyTheme } from "./color.ts";
+import { seedTokens } from "./themePalette.ts";
 import {
   APPEARANCE_STORAGE_KEY,
   LEGACY_DARK_STORAGE_KEY,
@@ -177,6 +178,33 @@ test("首屏脚本（src/boot/theme-boot.js）与 utils/appearance 的解析结�
       `首屏脚本与 store 的判定不一致：appearance=${String(c.appearance)} legacy=${String(c.legacyDark)} ` +
         `系统深色=${c.systemDark} → 脚本=${actual}，期望=${expected}`,
     );
+  }
+});
+
+// 主题色阶梯也有两份实现（utils/themePalette.ts ↔ theme-boot.js）：首帧必须已经**校正过**
+// 对比度，不能先按未校正的 color-mix 默认值渲染一帧再换。两份输出逐例逐值对照。
+test("首屏脚本派生的主题色阶梯与 utils/themePalette 逐值一致", () => {
+  // 主题色存储键取 store 里的事实来源（不手抄，改名会在这里红）。
+  const storeSrc = readFileSync(join(import.meta.dirname, "..", "stores", "useAppStore.ts"), "utf8");
+  const keyMatch = /const THEME_KEY = "([^"]+)"/.exec(storeSrc);
+  assert.ok(keyMatch, "useAppStore.ts 里解析不到 THEME_KEY（判据本身失效）");
+  const themes = ["#2f6bff", "#ffffff", "#000000", "#ffff00", "#00b578", "not-a-color"];
+  for (const appearance of ["light", "dark"] as const) {
+    for (const themeColor of themes) {
+      const expected = seedTokens(themeColor, appearance);
+      const boot = runBootScript({
+        appearance,
+        systemDark: appearance === "dark",
+        extra: { [keyMatch[1]]: themeColor },
+      });
+      for (const [name, value] of Object.entries(expected)) {
+        assert.equal(
+          boot.style[name],
+          value,
+          `首屏脚本与 applyTheme 的 ${name} 不一致（${appearance} / ${themeColor}）`,
+        );
+      }
+    }
   }
 });
 
@@ -479,7 +507,12 @@ test("★某一枚键抛错只许带走它自己：主色/字体/语言必须照
     extra: { [themeKey]: "#123456", [fontKey]: "monospace", [localeKey]: "zh-CN" },
   });
   assert.equal(r.dark, false, "外观读不到时按浅色（不许猜成深色）");
-  assert.equal(r.style["--gosslan-primary"], "#123456", "主色不许被外观那一枚的抛错带走");
+  // 落地的是「可读性算法求解后的填充」（深种子会被抬到 L=.36，不能黑到看不见），语义仍是主色必须落地。
+  assert.equal(
+    r.style["--gosslan-primary"],
+    seedTokens("#123456", "light")["--gosslan-primary"],
+    "主色不许被外观那一枚的抛错带走",
+  );
   assert.equal(r.style["--gosslan-font-family"], "monospace", "字体不许被外观那一枚的抛错带走");
   assert.equal(r.lang, "zh-CN", "首帧语言不许被外观那一枚的抛错带走");
 });
@@ -507,7 +540,11 @@ test("★matchMedia 抛错或不存在时，主色/字体/语言必须照样各�
       matchMediaThrows: how,
       extra: { [themeKey]: "#123456", [fontKey]: "serif" },
     });
-    assert.equal(r.style["--gosslan-primary"], "#123456", `matchMedia ${label}时主色必须照样落地`);
+    assert.equal(
+      r.style["--gosslan-primary"],
+      seedTokens("#123456", "light")["--gosslan-primary"],
+      `matchMedia ${label}时主色必须照样落地`,
+    );
     assert.equal(r.style["--gosslan-font-family"], "serif", `matchMedia ${label}时字体必须照样落地`);
     assert.ok(r.lang === "zh-CN" || r.lang === "en-US", `matchMedia ${label}时语言仍要给一个（读不到就按兜底档）`);
     assert.equal(r.dark, false, `matchMedia ${label}时按浅色 —— 问不到就不许瞎猜深色`);
@@ -515,5 +552,7 @@ test("★matchMedia 抛错或不存在时，主色/字体/语言必须照样各�
   // 正控：可用时仍要跟随系统深色，否则"全关掉"就能骗过上面那四句。
   const ok = runBootScript({ systemDark: true, extra: { [themeKey]: "#123456" } });
   assert.equal(ok.dark, true, "matchMedia 可用时 system 档必须仍然点亮 dark");
-  assert.equal(ok.style["--gosslan-primary"], "#123456");
+  // 深色下主色要按可读性算法提亮（#123456 直接铺在 #2c2f33 上只有 1.05，等于看不见），
+  // 所以这里断的不是"原值"，而是"算法在同外观下的求解值"——语义仍是"主色必须落地"。
+  assert.equal(ok.style["--gosslan-primary"], seedTokens("#123456", "dark")["--gosslan-primary"]);
 });

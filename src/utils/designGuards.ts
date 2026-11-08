@@ -3646,13 +3646,13 @@ export function checkAmbientChromeSurfaces(src: AmbientChromeSources): GuardIssu
   const hairlineDefs = [...src.styleCss.matchAll(/^\s*--gosslan-divider:\s*([^;]+);/gm)];
   if (
     hairlineDefs.length < 2 ||
-    hairlineDefs[0][1].trim() !== "#eef0f2" ||
-    hairlineDefs[1][1].trim() !== "#2c2f33"
+    hairlineDefs[0][1].trim() !== "#eef0f3" ||
+    hairlineDefs[1][1].trim() !== "#2e2f31"
   ) {
     out.push({
       line: 0,
       message:
-        "AC-14：全站发丝线（`--gosslan-divider`）的亮/暗取值（#eef0f2 / #2c2f33）被动了 —— " +
+        "AC-14：全站发丝线（`--gosslan-divider`）的亮/暗取值（#eef0f3 / #2e2f31）被动了 —— " +
         "它是全站上百处行分隔的唯一来源，改它必须同步更新本锚点并重跑对比度，不许各组件另写一条分隔线。",
     });
   }
