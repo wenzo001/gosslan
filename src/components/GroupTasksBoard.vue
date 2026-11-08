@@ -252,21 +252,30 @@ function categoryText(x: Pick<TodoItem, "category" | "customCategory">): string 
   return n.text ?? t(n.key);
 }
 
-// ---------------- 筛选（我的 / 全部 / 我创建 / 已归档） ----------------
+// ---------------- 筛选（全部 / 我的 / 我创建 / 已归档） ----------------
 
 type TodoFilter = "all" | "mine" | "created" | "archived";
 
+/** 标签顺序固定为「全部 → 我的 → 我创建 → 已归档」（用户 2026-11-08）。 */
 const FILTERS: { key: TodoFilter; labelKey: string }[] = [
-  { key: "mine", labelKey: "todo.filter.mine" },
   { key: "all", labelKey: "todo.filter.all" },
+  { key: "mine", labelKey: "todo.filter.mine" },
   { key: "created", labelKey: "todo.filter.created" },
   { key: "archived", labelKey: "todo.filter.archived" },
 ];
 
-// 默认落在「给我的」而不是「全部」（用户 2026-09-29 需求汇总七：「默认选中关于我的 Tab，
-// 不要一进来就选中全部」）。刻意**不持久化**：这是一次进入的默认视野，不是用户设置的偏好；
-// 上一次手动切到哪一档不该决定这一次进来看见什么（同一条理由也适用于下面关面板时的复位）。
+// 默认落在「我的」（用户 2026-09-29 需求汇总七：「默认选中关于我的 Tab」）；
+// 「我的」里没有任务时退回「全部」（用户 2026-11-08）。刻意**不持久化**：这是一次进入的
+// 默认视野，不是用户设置的偏好；上一次手动切到哪一档不该决定这一次进来看见什么。
 const filter = ref<TodoFilter>("mine");
+/**
+ * 本次打开是否已经判过默认页签 —— 保证「只在打开时判一次」。
+ *
+ * 判的时机必须是**数据到齐之后**（`firstScreenLoading` 落下来）：提前判会拿空的「我的」
+ * 先选中「全部」，等任务回来再跳回「我的」，用户看到的是选中态闪一下。
+ * 判过之后用户手动切到哪一档都不再被拉回，哪怕某一刻「我的」恰好被清空。
+ */
+const filterSettled = ref(false);
 
 /**
  * 行内状态菜单：同一时间只开一个（行是 v-for，不能每行一个 bool）。
@@ -432,6 +441,23 @@ const rowsErrorText = computed(() =>
     : "",
 );
 
+/**
+ * 打开时判一次默认页签（用户 2026-11-08）：
+ * - 数据没到齐不判（`firstScreenLoading`），**读失败也不判**（`rowsState` 不是 ready）——
+ *   否则一次失败会被当成"「我的」是空的"，等重试成功再被锁在「全部」；
+ * - 「我的」一条都没有 ⇒ 退回「全部」；「全部」也空就交给空态呈现（`todo.empty`）；
+ * - 判过就锁住（`filterSettled`）：之后用户手动切到哪一档都不再被拉回。
+ */
+watch(
+  [() => !firstScreenLoading.value && rowsState.value.status === "ready", () => counts.value.mine],
+  ([dataReady, mine]) => {
+    if (!dataReady || filterSettled.value) return;
+    filterSettled.value = true;
+    if (mine === 0) filter.value = "all";
+  },
+  { immediate: true },
+);
+
 /** 分组小标题的图标（与状态语汇一致：待办=空心圈、进行中=实心点、延期=时钟、做不了=叉圈、完成=对勾圈）。 */
 const STATUS_ICON: Record<TodoStatus, IconName> = {
   todo: "circle",
@@ -586,6 +612,8 @@ function focusTodo(id: string, mode: "detail" | "highlight" = "detail") {
   const x = todos.value.find((t) => t.todoId === id);
   if (!x) return;
   filter.value = isEffectivelyArchived(x) ? "archived" : "all";
+  // 定向跳转是"用户已经指明了要看哪一屏"，不是默认视野 ⇒ 锁住，别让随后落定的默认页签把它拽回去。
+  filterSettled.value = true;
   if (mode === "highlight") {
     void flashTodoRow(id);
     return;
@@ -1408,6 +1436,7 @@ watch(
       closeRowMenu();
       for (const k of keys) if (k) preview.closeIfFrom(k);
       filter.value = "mine";
+      filterSettled.value = false;
     }
   },
 );
@@ -1444,7 +1473,7 @@ watch(
       </button>
     </div>
 
-    <!-- 工具行：标签页（我的 / 全部 / 我创建 / 已归档）。
+    <!-- 工具行：标签页（全部 / 我的 / 我创建 / 已归档）。
          画板形态是**底边下划线**，与行内的状态胶囊区分开：标签页表达"当前视图"，
          胶囊表达"这条任务的状态"，两者不再共用同一种实底块。
          选中 ≠ 行 hover：选中只有主色文字 + 下划线，行 hover 仍是中性 tint。 -->
