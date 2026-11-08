@@ -30,26 +30,42 @@
       </div>
     </div>
     <main id="root" class="se-root" aria-live="polite">
+      <div class="se-orb" aria-hidden="true">
+        <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M12 7v6M12 16.5v.5"/><circle cx="12" cy="12" r="9"/></svg>
+      </div>
       <h1 class="se-title" data-i18n="startupError.title">数据打不开，应用无法启动</h1>
       <p class="se-desc" id="se-desc" data-i18n="startupError.descLoading">正在读取失败原因…</p>
-      <pre class="se-detail" id="se-detail"></pre>
-      <dl class="se-dirs" id="se-dirs" hidden>
-        <div class="se-dir">
-          <dt data-i18n="startupError.dataDir">数据目录</dt>
-          <dd id="se-data-dir"></dd>
-        </div>
-        <div class="se-dir">
-          <dt data-i18n="startupError.logDir">日志目录</dt>
-          <dd id="se-log-dir"></dd>
-        </div>
-      </dl>
       <p class="se-safety"><span data-i18n="startupError.safetyPrefix">「重试」只会重新尝试打开现有的数据：</span><b data-i18n="startupError.safetyBold">不会删除、覆盖或重建任何文件</b><span data-i18n="startupError.safetySuffix">。如果这台机器上原本的数据又可用了（磁盘挂载回来、占用释放、权限改对），重试就能直接进去。</span></p>
       <div class="se-actions">
         <button type="button" class="se-btn primary" id="se-retry" data-i18n="startupError.retry">重试</button>
         <button type="button" class="se-btn" id="se-open-dir" data-i18n="startupError.openDataDir">打开数据目录</button>
-        <button type="button" class="se-btn" id="se-quit" data-i18n="startupError.quit">退出</button>
+        <button type="button" class="se-btn ghost" id="se-quit" data-i18n="startupError.quit">退出</button>
       </div>
+      <!-- 错误详情默认收起：这一窗的首要任务是"告诉用户怎么办"，不是展示堆栈。
+           用原生 <details> 而不是脚本开关 —— 错误窗口里少一份 JS 状态就少一处失败面。 -->
+      <details class="se-details" id="se-details">
+        <summary class="se-details-head">
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M12 11v5M12 7.5v.5"/></svg>
+          <span data-i18n="startupError.details">错误详情</span>
+          <span class="se-chev" aria-hidden="true"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m6 9 6 6 6-6"/></svg></span>
+        </summary>
+        <div class="se-details-body">
+          <pre class="se-detail" id="se-detail"></pre>
+          <dl class="se-dirs" id="se-dirs" hidden>
+            <div class="se-dir">
+              <dt data-i18n="startupError.dataDir">数据目录</dt>
+              <dd id="se-data-dir"></dd>
+            </div>
+            <div class="se-dir">
+              <dt data-i18n="startupError.logDir">日志目录</dt>
+              <dd id="se-log-dir"></dd>
+            </div>
+          </dl>
+        </div>
+      </details>
       <p class="se-status" id="se-status" role="status"></p>
+      <!-- 版本行走 `get_app_version`（纯构建号，不碰数据库）：错误窗里唯一安全的"环境信息"。 -->
+      <footer class="se-foot"><span id="se-version">Gosslan</span></footer>
     </main>
     <script type="module" src="/src/entries/startup-error.ts"></script>
   </body>

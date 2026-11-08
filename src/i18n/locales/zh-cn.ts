@@ -394,6 +394,8 @@ export const zhCN: MessageDict = {
   // 所以由入口在首帧把 `data-i18n` 逐个填成 `t(key)`。
   "startupError.title": "数据打不开，应用无法启动",
   "startupError.descLoading": "正在读取失败原因…",
+  "startupError.details": "错误详情",
+  "startupError.version": "Gosslan {version}",
   "startupError.dataDir": "数据目录",
   "startupError.logDir": "日志目录",
   // 安全说明拆成三段是因为中间那句 `<b>` 要加粗：中文这里不留空格，

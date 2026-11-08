@@ -26,6 +26,7 @@ const dirsEl = text("se-dirs");
 const dataDirEl = text("se-data-dir");
 const logDirEl = text("se-log-dir");
 const statusEl = text("se-status");
+const versionEl = text("se-version");
 const retryBtn = document.getElementById("se-retry") as HTMLButtonElement | null;
 const openBtn = document.getElementById("se-open-dir") as HTMLButtonElement | null;
 const quitBtn = document.getElementById("se-quit") as HTMLButtonElement | null;
@@ -67,6 +68,22 @@ window.onerror = (message) => {
   // 返回 false：仍让原始错误进控制台，方便接 devtools 时看得更全。
   return false;
 };
+
+/**
+ * 底部版本行。`get_app_version` 只读构建号（不碰数据库、不依赖 `AppState`），
+ * 是这扇窗里唯一安全的"环境信息" —— 用户报错时能直接说出自己跑的是哪一版。
+ *
+ * 取不到时保留 HTML 里那句 "Gosslan" 兜底：版本号不是看错的必要条件，
+ * 不能因为它失败就把状态行染红（那会让用户以为启动又多了个错）。
+ */
+async function loadVersion(): Promise<void> {
+  try {
+    const version = await api.getAppVersion();
+    if (versionEl && version) versionEl.textContent = t("startupError.version", { version });
+  } catch {
+    /* 静默保留兜底文案。 */
+  }
+}
 
 async function loadInfo(): Promise<void> {
   try {
@@ -127,4 +144,5 @@ quitBtn?.addEventListener("click", () => void onQuit());
 
 // 骨架必须由本入口撤掉：这扇窗不跑 Vue 挂载，`gosslan:app-ready` 永远不会派发，
 // 而骨架是一块 `position:fixed; inset:0` 的遮罩 —— 不撤就是"错误窗口里一片空白"。
-void loadInfo().finally(() => dismissBoot());
+// 版本行与失败原因并行取（两条都是轻量命令），都落地后再撤骨架，避免首帧闪一下空版本。
+void Promise.allSettled([loadInfo(), loadVersion()]).finally(() => dismissBoot());

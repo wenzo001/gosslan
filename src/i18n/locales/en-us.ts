@@ -398,6 +398,8 @@ export const enUS: MessageDict = {
   // between them, English does — hence the trailing space on safetyPrefix.
   "startupError.title": "Data won't open — the app can't start",
   "startupError.descLoading": "Reading the failure reason…",
+  "startupError.details": "Error details",
+  "startupError.version": "Gosslan {version}",
   "startupError.dataDir": "Data folder",
   "startupError.logDir": "Log folder",
   "startupError.safetyPrefix": "“Retry” only tries to reopen your existing data: ",

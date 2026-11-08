@@ -11396,39 +11396,111 @@ async function runI18nShots(cdp, url) {
 }
 
 /**
- * 启动失败窗的**静态外壳**（2026-11-04）：这扇窗出现在"数据库都打不开"的时刻，
- * 它自己就是最后一道人话出口 —— 静态文案漏翻一门语言，用户看到的就是中英混排。
+ * 启动失败窗的**静态外壳**（2026-11-04；2026-11-08 按画板补 66px orb / 可折叠详情 / 版本行）。
  *
  * 三条口径：
  * 1. 语言必须在**加载前**写进 localStorage：入口的 `t()` 在模块加载时取一次
  *    （这扇窗不跑 Vue 挂载，没有响应式），加载后再切不会重填静态外壳。
- * 2. 同时补一个最小 Tauri 桩，让 `startup_error_info` 返回真实形状的载荷 ——
- *    否则截图里只有"后端没应答"，看不出目录行（`<dt>`）也都是词典来的。
+ * 2. 同时补一个最小 Tauri 桩，让 `startup_error_info` 与 `get_app_version` 返回真实形状的
+ *    载荷 —— 否则截图里只有"后端没应答"，看不出目录行与版本行也都是真实取数。
  * 3. 后端原因文案（`<pre>`）由 Rust 产出、这一层不翻译（B6 欠账），所以两张图里
  *    那一段仍是中文；判据只盯**静态外壳**，别把"后端没翻译"误判成这一段红。
+ *
+ * 2026-11-08 新增（画板 DesktopStartupError）：orb 必须是 66×66，详情默认收起、
+ * 展开后正文才有几何高度，版本行走 `get_app_version`；安全说明**不许被折叠进去**。
+ * 反例自证：把 orb 改小 / 圆角归零 / 详情强制展开 / 版本清空，对应判据都必须翻红。
  */
 async function runStartupError(cdp, url) {
   const shotDir = path.join(ROOT, "test-results", "i18n-shots");
   fs.mkdirSync(shotDir, { recursive: true });
+  const PROBE_VERSION = "9.9.9-probe";
   const LANGS = [
     {
       loc: "zh-CN", h1: "数据打不开，应用无法启动",
       retry: "重试", open: "打开数据目录", quit: "退出",
       safety: "不会删除、覆盖或重建任何文件", dirs: ["数据目录", "日志目录"],
+      details: "错误详情",
     },
     {
       loc: "en-US", h1: "Data won't open — the app can't start",
       retry: "Retry", open: "Open data folder", quit: "Quit",
       safety: "it never deletes, overwrites, or recreates any file", dirs: ["Data folder", "Log folder"],
+      details: "Error details",
     },
   ];
-  const readShell = () => cdp.eval("(() => {"
-    + "const q = (s) => { const e = document.querySelector(s); return e ? e.textContent : ''; };"
-    + "const dirs = document.querySelector('#se-dirs');"
-    + "return { lang: document.documentElement.lang, h1: q('.se-title'), desc: q('#se-desc'),"
-    + " dirs: [...document.querySelectorAll('.se-dir dt')].map((x) => x.textContent),"
-    + " safety: q('.se-safety'), retry: q('#se-retry'), open: q('#se-open-dir'), quit: q('#se-quit'),"
-    + " dirsHidden: dirs ? dirs.hidden : true }; })()");
+  const readShell = () => cdp.eval(`(() => {
+    const q = (s) => { const e = document.querySelector(s); return e ? e.textContent : ''; };
+    const visible = (e) => {
+      if (!e) return false;
+      const r = e.getBoundingClientRect();
+      return r.width > 0 && r.height > 0;
+    };
+    const orb = document.querySelector('.se-orb');
+    const orbR = orb ? orb.getBoundingClientRect() : null;
+    const orbS = orb ? getComputedStyle(orb) : null;
+    const ring = orb ? getComputedStyle(orb, '::after') : null;
+    const details = document.querySelector('#se-details');
+    const body = details ? details.querySelector('.se-details-body') : null;
+    const head = details ? details.querySelector('.se-details-head') : null;
+    const detailsR = details ? details.getBoundingClientRect() : null;
+    const headR = head ? head.getBoundingClientRect() : null;
+    return {
+      lang: document.documentElement.lang,
+      h1: q('.se-title'), desc: q('#se-desc'),
+      dirs: [...document.querySelectorAll('.se-dir dt')].map((x) => x.textContent),
+      safety: q('.se-safety'), safetyVisible: visible(document.querySelector('.se-safety')),
+      retry: q('#se-retry'), open: q('#se-open-dir'), quit: q('#se-quit'),
+      detailsTitle: q('.se-details-head span'),
+      detailsOpen: details ? details.open : null,
+      bodyH: body ? +body.getBoundingClientRect().height.toFixed(2) : -1,
+      detailsH: detailsR ? +detailsR.height.toFixed(2) : -1,
+      headH: headR ? +headR.height.toFixed(2) : -1,
+      dataDirText: q('#se-data-dir'),
+      version: q('#se-version'), versionVisible: visible(document.querySelector('#se-version')),
+      orb: orbR ? {
+        w: +orbR.width.toFixed(2), h: +orbR.height.toFixed(2),
+        radius: parseFloat(orbS.borderTopLeftRadius),
+        ringStyle: ring ? ring.borderTopStyle : '',
+        ringWidth: ring ? parseFloat(ring.borderTopWidth) : -1,
+        ringInset: ring ? parseFloat(ring.top) : 0,
+      } : null,
+    };
+  })()`);
+  /** orb 的形状判据：66×66 / 圆角 22 / 外圈 1.5px 虚线且向外扩 7px。 */
+  const orbProblems = (r) => {
+    const bad = [];
+    if (!r || !r.orb) return ["orb 缺失"];
+    const o = r.orb;
+    if (Math.abs(o.w - 66) > 0.5 || Math.abs(o.h - 66) > 0.5) bad.push(`${o.w}×${o.h} ≠ 66×66`);
+    if (Math.abs(o.radius - 22) > 0.5) bad.push(`radius ${o.radius} ≠ 22`);
+    if (o.ringStyle !== "dashed") bad.push(`外圈 ${o.ringStyle} ≠ dashed`);
+    // CSS 写的是 1.5px；Chromium 的**计算值**会把亚像素边框宽度吸附成整数像素，
+    // 所以这里接受 1–2px（读 0 或 ≥3 才是真有人改了样式）；非有限值按缺失处理。
+    if (!Number.isFinite(o.ringWidth) || o.ringWidth < 1 || o.ringWidth > 2) {
+      bad.push(`外圈宽 ${o.ringWidth} 不在 1–2（CSS 1.5px）`);
+    }
+    if (!Number.isFinite(o.ringInset) || Math.abs(o.ringInset + 7) > 0.5) bad.push(`外圈 inset ${o.ringInset} ≠ -7`);
+    return bad;
+  };
+  /**
+   * 详情收起判据：`<details>` 收起时，整卡高度必须只等于标题行高度。
+   *
+   * 为什么不量正文 `getBoundingClientRect`：现代 Chromium 对收起内容用的是
+   * `content-visibility: hidden` 语义 —— 子节点**仍参与布局**，矩形高度不为 0，
+   * 用「正文高度 === 0」判收起会永远红（本轮首跑真实红过）。用户能看到的"收起"
+   * 就是整卡不因正文变高，所以按卡片与标题行的高度差来判。
+   */
+  const detailsProblems = (r) => {
+    const bad = [];
+    if (!r) return ["读数缺失"];
+    if (r.detailsOpen !== false) bad.push(`默认 open=${r.detailsOpen}`);
+    if (!(r.detailsH > 0) || r.detailsH - r.headH > 4) {
+      // 收起时整卡 = 标题行 + 上下各 1px 边框（共 2px），所以留 4px 余量；
+      // 展开后差值会到几十 px，两种状态在这里能清楚分开。
+      bad.push(`收起时整卡 ${r.detailsH} 比标题行 ${r.headH} 高出 >4px`);
+    }
+    return bad;
+  };
 
   for (const L of LANGS) {
     const injected = await cdp.send("Page.addScriptToEvaluateOnNewDocument", {
@@ -11440,7 +11512,8 @@ async function runStartupError(cdp, url) {
         + "invoke: async (cmd) => (cmd === 'startup_error_info'"
         + " ? { message: 'code=DB_OPEN_FAILED 数据库文件打不开：Permission denied (os error 13)',"
         + " dataDir: '/Users/probe/Library/Application Support/Gosslan',"
-        + " logDir: '/Users/probe/Library/Logs/Gosslan' } : null) };",
+        + " logDir: '/Users/probe/Library/Logs/Gosslan' }"
+        + " : cmd === 'get_app_version' ? '" + PROBE_VERSION + "' : null) };",
     });
     await cdp.send("Page.navigate", { url: url + "startup-error.html" });
     await cdp.settled();
@@ -11454,13 +11527,84 @@ async function runStartupError(cdp, url) {
       JSON.stringify([L.retry, L.open, L.quit]), JSON.stringify([r.retry, r.open, r.quit]));
     check(`${L.loc}：目录名两行走词典（${L.dirs.join(" / ")}）`,
       r.dirs.join("|") === L.dirs.join("|"), L.dirs.join("|"), r.dirs.join("|"));
-    check(`${L.loc}：安全说明（含加粗那句）走词典——静态壳里最容易漏的一段`,
-      r.safety.includes(L.safety), L.safety, JSON.stringify(r.safety));
+    check(`${L.loc}：安全说明（含加粗那句）走词典且没被折进详情——静态壳里最容易漏的一段`,
+      r.safety.includes(L.safety) && r.safetyVisible, `${L.safety}（可见）`, JSON.stringify(r.safety));
     check(`${L.loc}：<html lang> 跟着语言走`,
       r.lang === L.loc, L.loc, JSON.stringify(r.lang));
-    // 前提自证：桩生效了，目录行才看得见 —— 否则上面那条判据在"全都没渲染"时也可能绿。
-    check(`${L.loc}：后端应答后目录行确实显示（截图不是空壳）`,
-      r.dirsHidden === false, "dirs 可见", JSON.stringify(r.dirsHidden));
+
+    // 画板三件：66px orb / 可折叠详情 / 底部版本行（轻量取数）。
+    const brokenOrb = orbProblems(r);
+    check(`${L.loc}：orb 是 66×66、圆角 22、外圈 1.5px 虚线（向外扩 7px）`,
+      brokenOrb.length === 0, "66×66 / r22 / dashed 1.5 / -7", JSON.stringify(brokenOrb));
+    const brokenDetails = detailsProblems(r);
+    check(`${L.loc}：错误详情默认收起（整卡只剩标题行，不占首屏）`,
+      brokenDetails.length === 0, "open=false / 卡片高=标题行", JSON.stringify(brokenDetails));
+    check(`${L.loc}：详情标题走词典（${L.details}）`,
+      r.detailsTitle === L.details, L.details, JSON.stringify(r.detailsTitle));
+    check(`${L.loc}：底部版本行来自 get_app_version（Gosslan ${PROBE_VERSION}）`,
+      r.version === `Gosslan ${PROBE_VERSION}` && r.versionVisible,
+      `Gosslan ${PROBE_VERSION}`, JSON.stringify(r.version));
+    // 前提自证：桩生效了，后端应答已落进详情体（收起不影响文本落地）。
+    check(`${L.loc}：后端应答落进详情体（数据目录文本已填充，截图不是空壳）`,
+      r.dataDirText.includes("Application Support/Gosslan"),
+      "文本已填充", JSON.stringify(r.dataDirText));
+
+    // 展开详情：正文必须真的出现，目录行随之可见。
+    const opened = await cdp.eval(`(() => {
+      const d = document.querySelector('#se-details');
+      d.open = true;
+      const head = d.querySelector('.se-details-head');
+      const row = document.querySelector('#se-data-dir');
+      const rr = row ? row.getBoundingClientRect() : null;
+      const dr = d.getBoundingClientRect();
+      const hr = head.getBoundingClientRect();
+      return { detailsH: +dr.height.toFixed(2), headH: +hr.height.toFixed(2),
+        rowVisible: !!rr && rr.height > 0 };
+    })()`);
+    check(`${L.loc}：展开详情后整卡高于标题行、目录行可见`,
+      !!opened && opened.detailsH > opened.headH + 10 && opened.rowVisible,
+      "卡片高>标题行 / rowVisible", JSON.stringify(opened));
+
+    // 反例自证：把四件改坏，对应判据必须翻红（证明上面几条没空转）。
+    const broken = await cdp.eval(`(() => {
+      const orb = document.querySelector('.se-orb');
+      const details = document.querySelector('#se-details');
+      const ver = document.querySelector('#se-version');
+      const readOrb = () => {
+        const r = orb.getBoundingClientRect();
+        const s = getComputedStyle(orb);
+        const ring = getComputedStyle(orb, '::after');
+        return { w: +r.width.toFixed(2), h: +r.height.toFixed(2),
+          radius: parseFloat(s.borderTopLeftRadius),
+          ringStyle: ring.borderTopStyle, ringWidth: parseFloat(ring.borderTopWidth),
+          ringInset: parseFloat(ring.top) };
+      };
+      const out = {};
+      orb.style.width = '40px';
+      out.smallOrb = readOrb();
+      orb.style.width = '';
+      orb.style.borderRadius = '0px';
+      out.zeroRadius = readOrb();
+      orb.style.borderRadius = '';
+      details.open = true;
+      const dHead = details.querySelector('.se-details-head');
+      out.detailsForcedOpen = { detailsOpen: details.open,
+        detailsH: +details.getBoundingClientRect().height.toFixed(2),
+        headH: +dHead.getBoundingClientRect().height.toFixed(2) };
+      details.open = false;
+      const prevVer = ver.textContent;
+      ver.textContent = '';
+      out.emptyVersion = ver.textContent;
+      ver.textContent = prevVer;
+      return out;
+    })()`);
+    const counterOk = !!broken
+      && orbProblems({ orb: broken.smallOrb }).length > 0
+      && orbProblems({ orb: broken.zeroRadius }).length > 0
+      && detailsProblems(broken.detailsForcedOpen).length > 0
+      && broken.emptyVersion === "";
+    check(`${L.loc}：反例自证——orb 改小 / 圆角归零 / 详情强制展开 / 版本清空，四条都必须翻红`,
+      counterOk, "四条反例全红", JSON.stringify(broken));
 
     const s = await cdp.send("Page.captureScreenshot", { format: "png" });
     const file = path.join(shotDir, `${L.loc}-4-startup-error.png`);
