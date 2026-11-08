@@ -4571,6 +4571,7 @@ async function main() {
     const select = want("select");
     const task = want("task");
     const tasksrt = want("tasksrt");
+    const taskpane = want("taskpane");
     const accent = want("accent");
     const convbadge = want("convbadge");
     const caption = want("caption");
@@ -4818,6 +4819,7 @@ async function main() {
     await runSegment("select", select, () => runSelect(cdp, url));
     await runSegment("task", task, () => runTaskCard(cdp, url));
     await runSegment("tasksrt", tasksrt, () => runTasksRealtime(cdp, url));
+    await runSegment("taskpane", taskpane, () => runTaskPane(cdp, url));
     await runSegment("accent", accent, () => runAccent(cdp, url));
     await runSegment("convbadge", convbadge, () => runConvBadge(cdp, url));
     await runSegment("caption", caption, () => runCaption(cdp, url));
@@ -25717,11 +25719,11 @@ async function runTasksRealtime(cdp, url) {
   await cdp.eval(SETUP);
   await cdp.eval("window.__probe.todoBus()");
 
-  /** 读看板当下：筛选胶囊（DOM 顺序 = all/mine/created/archived）、列表行标题、弹窗文本。 */
+  /** 读看板当下：筛选标签页（DOM 顺序 = mine/all/created/archived）、列表行标题、弹窗文本。 */
   const view = async () =>
     cdp.eval(`(() => {
-      const pills = Array.from(document.querySelectorAll('button[aria-pressed]')).map((b) => ({
-        pressed: b.getAttribute('aria-pressed') === 'true',
+      const pills = Array.from(document.querySelectorAll('[role="tab"]')).map((b) => ({
+        pressed: b.getAttribute('aria-selected') === 'true',
         count: Number((b.querySelector('span') || {}).textContent || '0'),
       }));
       // 行标题按钮：活动列表与归档列表都是 button.min-w-0.flex-1
@@ -25757,7 +25759,7 @@ async function runTasksRealtime(cdp, url) {
   check("初始：看板列出 A，默认筛选「给我的」且计数 all=1/mine=1/created=0/archived=0",
     v0.pills.length === 4 && v0.uniqTitles.includes("写周报")
       && v0.pills.map((p) => p.count).join(",") === "1,1,0,0"
-      && v0.pills[1].pressed === true,
+      && v0.pills[0].pressed === true,
     "行=" + JSON.stringify(v0.uniqTitles) + " pills=" + JSON.stringify(v0.pills), JSON.stringify(v0.pills));
   const reads0 = (await cdp.eval("window.__probe.todoStats()")).reads;
   if (SHOT_PATH) {
@@ -25856,11 +25858,11 @@ async function runTasksRealtime(cdp, url) {
     v1.dialogs === 1 && v1.dialogText.includes("周报已发出") && !v1.dialogText.includes("订场地"),
     "dialog 跟到新标题", "dialogs=" + v1.dialogs);
   check("筛选没被实时更新重置（仍停在「给我的」）",
-    v1.pills[1].pressed === true, "mine pressed", JSON.stringify(v1.pills.map((p) => p.pressed)));
+    v1.pills[0].pressed === true, "mine pressed", JSON.stringify(v1.pills.map((p) => p.pressed)));
 
   // —— 切到「全部」，再来一批重复/旧序事件：筛选保留、终态不被旧帧回滚 ——
   await cdp.eval(`(() => {
-    document.querySelectorAll('button[aria-pressed]')[0].click();
+    document.querySelectorAll('[role="tab"]')[1].click();
     return true;
   })()`);
   await sleep(150);
@@ -25872,12 +25874,12 @@ async function runTasksRealtime(cdp, url) {
   const v2 = await view();
   check("旧 seq / 重复事件后：列表不回滚到旧标题（DB 快照是真相），筛选仍在「全部」",
     v2.uniqTitles.includes("周报已发出") && !v2.uniqTitles.includes("写周报")
-      && v2.pills[0].pressed === true,
+      && v2.pills[1].pressed === true,
     JSON.stringify(v2.uniqTitles), JSON.stringify(v2.uniqTitles));
 
   // —— 归档筛选：C 在归档里，且只有它一条 ——
   await cdp.eval(`(() => {
-    document.querySelectorAll('button[aria-pressed]')[3].click();
+    document.querySelectorAll('[role="tab"]')[3].click();
     return true;
   })()`);
   await sleep(150);
@@ -25912,7 +25914,7 @@ async function runTasksRealtime(cdp, url) {
     return true;
   })()`);
   await cdp.eval(`(() => {
-    document.querySelectorAll('button[aria-pressed]')[0].click(); // 回「全部」看活动行
+    document.querySelectorAll('[role="tab"]')[1].click(); // 回「全部」看活动行
     return true;
   })()`);
   await waitFor(async () => (await view()).uniqTitles.includes("新任务 D"), 3_000);
@@ -25987,7 +25989,7 @@ async function runTasksRealtime(cdp, url) {
   //    `npm test` 1362/1362 绿、`--only=msgovf` 78/78 绿，此前**没有任何一层**看得见。
   const T_DONE_ROW = "周报已发出"; // status=done ⇒ 条应为 success-solid
   const T_TODO_ROW = "修打印机"; // status=todo  ⇒ 条应为 status-offline（中性灰）
-  await cdp.eval(`(() => { const b = document.querySelectorAll('button[aria-pressed]')[0];
+  await cdp.eval(`(() => { const b = document.querySelectorAll('[role="tab"]')[1];
     if (b) b.click(); return !!b; })()`); // 切「全部」：两行都得在 DOM 里
   /**
    * 按行标题找到那一行左缘那道 2px 色条，读它自己的底色；顺带回读整行文字与当前行标题清单。
@@ -26147,6 +26149,140 @@ async function runTasksRealtime(cdp, url) {
  *    几何读数全部走现成的 `window.__probe.floatLayer(sel)`（它同时给 inViewport、被谁裁、
  *    有没有打断层链的祖先），不在这里另开第二份几何家。
  */
+/**
+ * 群任务窗口「左列表 410px + 右详情常驻」两栏（`--only=taskpane`）。
+ *
+ * 只钉结构契约，不钉画板文案：780 内容宽时左列 410±1、右栏还有 ≥280；
+ * 680 时回退单栏（右栏消失、点行才开原弹窗）。筛选页签顺序按画板
+ * 我的/全部/我创建/已归档，默认「我的」——`--only=tasksrt` 继续管实时同步。
+ */
+async function runTaskPane(cdp, url) {
+  await cdp.send("Emulation.setDeviceMetricsOverride", {
+    width: 1000, height: 760, deviceScaleFactor: 1, mobile: false,
+  });
+  try {
+    await cdp.send("Page.navigate", { url });
+    await cdp.settled();
+    await sleep(3_000);
+    await cdp.eval(PAGE_FIXTURE);
+    await cdp.eval(`(async () => {
+      window.GID = 'g1'; window.CONV = 'group:g1';
+      window.ME = 'probe-me'; window.OTHER = 'probe-other';
+      window.__mk = (id, seq, kind, def, ts) => ({
+        msg_id: 'm-' + id + '-' + seq, sender_id: window.OTHER, conv_id: window.CONV,
+        kind, seq, ts, status: 'read',
+        content: JSON.stringify(Object.assign({
+          todo_id: id, title: id, assignees: [window.ME], status: 'todo',
+          creator: window.OTHER, deleted: false, description: '', images: [],
+          archived: false, done_at: null, number: 0, priority: 'normal', category: 'task',
+        }, def)),
+      });
+      return true;
+    })()`);
+    await cdp.eval("window.__probe.todoBus()");
+    const now = Date.now();
+    await cdp.eval(`window.__TASKS = [
+      window.__mk('A', 1, 'todo', { title: '写周报', number: 1, priority: 'high' }, ${now}),
+      window.__mk('B', 2, 'todo', { title: '对账单', number: 2 }, ${now + 1}),
+    ]`);
+    await cdp.eval("window.__probe.todoRows(window.__TASKS)");
+    await cdp.eval(`window.__probe.install('/src/components/GroupTasksBoard.vue', '', ${JSON.stringify(JSON.stringify({
+      groupId: "g1", open: true, fill: true, twoPane: true, hostHeight: 620,
+    }))})`);
+    await cdp.eval("window.__probe.seedDevice('probe-me')");
+    // 用 `fill` 而不是 `standalone`：后者的首屏门是 `todosLoadedOnce`，只由真实窗口入口
+    // `GroupTodosWindow` 的 `loadGroupTodos` 置位；探针直连组件时没有这条入口。
+    // 两栏的高度契约由 `fill` 同样满足（都是 `h-full min-h-0`），宽度与回退规则不受影响。
+    await cdp.eval("document.querySelector('#probe-host').style.width = '780px'");
+    // 结构读数：两栏时根节点正好两个孩子（左列 / 右栏）；单栏时孩子是 display:contents 的包装。
+    const read = () => cdp.eval(`(() => {
+      const host = document.querySelector('#probe-host');
+      const root = host && host.firstElementChild;
+      const kids = root ? Array.from(root.children) : [];
+      const list = kids[0] || null;
+      const detail = kids.length > 1 ? kids[1] : null;
+      const tabs = root ? Array.from(root.querySelectorAll('[role="tab"]')) : [];
+      const active = tabs.find((b) => b.getAttribute('aria-selected') === 'true');
+      return {
+        hostW: host ? Math.round(host.getBoundingClientRect().width) : 0,
+        listW: list ? Math.round(list.getBoundingClientRect().width) : 0,
+        detailW: detail ? Math.round(detail.getBoundingClientRect().width) : 0,
+        hasDetail: !!detail,
+        tabs: tabs.map((b) => (b.textContent || '').trim()),
+        active: active ? (active.textContent || '').trim() : '',
+        detailText: detail ? (detail.textContent || '') : '',
+        listText: list ? (list.textContent || '') : '',
+        dialogs: document.querySelectorAll('[role="dialog"]').length,
+        dialogText: Array.from(document.querySelectorAll('[role="dialog"]'))
+          .map((d) => d.textContent || '').join(' '),
+        titles: Array.from(host.querySelectorAll('button.min-w-0.flex-1'))
+          .map((b) => (((b.querySelector('.truncate') || {}).textContent) || '').trim()),
+        rowTexts: Array.from(host.querySelectorAll('button.min-w-0.flex-1'))
+          .map((b) => (b.textContent || '').trim()),
+      };
+    })()`);
+    const until = async (fn, ms = 3_000) => {
+      const t0 = Date.now();
+      while (Date.now() - t0 < ms) {
+        if (await fn()) return true;
+        await sleep(100);
+      }
+      return false;
+    };
+    await until(async () => {
+      const r = await read();
+      return r.listW > 0 && r.hasDetail && r.titles.includes("写周报");
+    }, 5_000);
+    const wide = await read();
+    check("两栏（780）：左列就是 410px", Math.abs(wide.listW - 410) <= 1, "410±1", String(wide.listW));
+    check("两栏（780）：右栏仍可用（≥280px）", wide.detailW >= 280, ">=280", String(wide.detailW));
+    check("两栏（780）：页签顺序 = 我的/全部/我创建/已归档",
+      wide.tabs.length === 4 && wide.tabs[0].startsWith("我的") && wide.tabs[1].startsWith("全部")
+        && wide.tabs[2].startsWith("我创建") && wide.tabs[3].startsWith("已归档"),
+      "我的,全部,我创建,已归档", JSON.stringify(wide.tabs));
+    check("两栏（780）：默认落在「我的」", wide.active.startsWith("我的"), "我的", wide.active);
+    check("两栏（780）：详情常驻右栏，不再弹窗",
+      wide.dialogs === 0 && !!wide.titles[0] && wide.detailText.includes(wide.titles[0]),
+      "右栏 = 列表首条 + 0 dialog", JSON.stringify({ d: wide.dialogs, first: wide.titles[0], text: wide.detailText.slice(0, 30), list: wide.listText.slice(0, 60) }));
+
+    const shotDir = path.join(ROOT, "test-results", "ui-2026-11-08");
+    fs.mkdirSync(shotDir, { recursive: true });
+    const shot = async (name) => {
+      const s = await cdp.send("Page.captureScreenshot", { format: "png" });
+      fs.writeFileSync(path.join(shotDir, `${name}.png`), Buffer.from(s.data, "base64"));
+    };
+    await shot("taskpane-780");
+
+    // 窄窗回退：把宿主压到 680（窗口最小宽度以下是真实场景），右栏必须让位给单栏弹窗。
+    await cdp.eval("document.querySelector('#probe-host').style.width = '680px'");
+    await sleep(400);
+    const narrow = await read();
+    check("窄窗（680）：回退单栏，右栏不再占位",
+      narrow.listW === 0 && !narrow.hasDetail,
+      "list 无自身宽度 + 无右栏", JSON.stringify({ listW: narrow.listW, hasDetail: narrow.hasDetail }));
+    // 宽窗自动落到第一条后，切窄会按"已有选中项"直接开弹窗 —— 先收掉，才能验"点行才开"。
+    if (narrow.dialogs >= 1) {
+      await cdp.send("Input.dispatchKeyEvent", { type: "keyDown", key: "Escape", code: "Escape", windowsVirtualKeyCode: 27 });
+      await cdp.send("Input.dispatchKeyEvent", { type: "keyUp", key: "Escape", code: "Escape", windowsVirtualKeyCode: 27 });
+      await sleep(400);
+    }
+    const clicked = await cdp.eval(`(() => {
+      const b = Array.from(document.querySelectorAll('#probe-host button.min-w-0.flex-1'))
+        .find((x) => (x.textContent || '').includes('写周报'));
+      if (b) b.click();
+      return !!b;
+    })()`);
+    await sleep(800);
+    const narrowOpen = await read();
+    check("窄窗（680）：点行仍打开原详情弹窗",
+      clicked && narrowOpen.dialogs >= 1 && narrowOpen.dialogText.includes("写周报"),
+      "clicked + >=1 dialog", JSON.stringify({ clicked, dialogs: narrowOpen.dialogs, rows: narrowOpen.rowTexts }));
+    await shot("taskpane-680");
+  } finally {
+    await cdp.send("Emulation.clearDeviceMetricsOverride").catch(() => {});
+  }
+}
+
 async function runInputPanels(cdp, url) {
   await cdp.send("Page.navigate", { url });
   await cdp.settled(); // 段间导航竞态收进活体探针（工具层，不动判据）

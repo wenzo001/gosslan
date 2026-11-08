@@ -32,7 +32,8 @@ test("任务详情：切到「自定义…」立刻展开并聚焦名字输入�
 
 test("任务看板/详情都通过 TodoAttrTypeField 复用同一份聚焦实现", () => {
   const board = readFileSync(join(root, "src/components/GroupTasksBoard.vue"), "utf8");
-  const detail = readFileSync(join(root, "src/components/TodoDetailDialog.vue"), "utf8");
+  // 2026-11-08：详情字段区拆到 `TodoDetailFields.vue`（弹窗与群任务窗口右栏共用）。
+  const detail = readFileSync(join(root, "src/components/TodoDetailFields.vue"), "utf8");
   assert.match(board, /<TodoAttrTypeField/, "看板表单必须走统一类型控件");
   assert.match(detail, /<TodoAttrTypeField/, "详情弹窗必须走统一类型控件");
   assert.ok(

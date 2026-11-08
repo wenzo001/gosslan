@@ -143,8 +143,8 @@ CASES: list[Case] = [
         "     而 `submitDraft` 读的是当前 `props.groupId` ⇒ 上一个群的半成品会被真的建进这个群。",
         file=ROOT / "src" / "components" / "GroupTodosWindow.vue",
         injections=[(
-            '<GroupTasksBoard :key="groupId" ref="boardRef" :group-id="groupId" standalone />',
-            '<GroupTasksBoard ref="boardRef" :group-id="groupId" standalone />',
+            '<GroupTasksBoard :key="groupId" ref="boardRef" :group-id="groupId" standalone two-pane />',
+            '<GroupTasksBoard ref="boardRef" :group-id="groupId" standalone two-pane />',
         )],
         cmd=node_test("src/utils/channelState.test.ts"),
         cwd=ROOT,

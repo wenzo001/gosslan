@@ -2438,7 +2438,11 @@ const stripShapeComments = (s: string): string =>
 // 同弹窗里「状态」早就是自绘菜单（`.gosslan-menu`），一处原生一处自绘才会只坏一半。
 test("详情弹窗的三选一字段只许走自绘组件，不许再出现原生 select", () => {
   const root = join(import.meta.dirname, "..");
-  const dialog = stripShapeComments(readFileSync(join(root, "components", "TodoDetailDialog.vue"), "utf8"));
+  // 2026-11-08：字段区拆到 `TodoDetailFields.vue`（弹窗与群任务窗口右栏共用），
+  // 判据跟着字段走；同时钉住弹窗确实挂了这份共用字段，避免两个宿主各长一套。
+  const dialog = stripShapeComments(readFileSync(join(root, "components", "TodoDetailFields.vue"), "utf8"));
+  const shell = stripShapeComments(readFileSync(join(root, "components", "TodoDetailDialog.vue"), "utf8"));
+  assert.match(shell, /<TodoDetailFields\b/, "详情弹窗没挂共用字段区 ⇒ 弹窗与右栏会各长一套");
   const pick = stripShapeComments(readFileSync(join(root, "components", "TodoPickField.vue"), "utf8"));
   // 2026-11-05 三件属性统一后：状态/优先级仍走 TodoPickField，类型走 TodoAttrTypeField。
   assert.equal(
@@ -9071,8 +9075,8 @@ test("PG-02 反例自证：抽掉工具行的内距必须红", () => {
   const panel = readFileSync(join(PG_SRC, "components", "GroupTasksPanel.vue"), "utf8");
   const modal = readFileSync(join(PG_SRC, "components", "BaseModal.vue"), "utf8");
   const broken = board.replace(
-    "flex shrink-0 flex-wrap items-center gap-1.5 px-[var(--gosslan-scroll-inset)] pb-3",
-    "flex shrink-0 flex-wrap items-center gap-1.5 pb-3",
+    "flex shrink-0 items-center gap-1 overflow-x-auto border-b border-[var(--gosslan-divider)] px-[var(--gosslan-scroll-inset)]",
+    "flex shrink-0 items-center gap-1 overflow-x-auto border-b border-[var(--gosslan-divider)]",
   );
   assert.notEqual(broken, board, "fixture 没替换成功 ⇒ 这条在测空气");
   assert.match(pageInsetProblems(broken, panel, modal).join("\n"), /工具行/, "必须指出错位");
