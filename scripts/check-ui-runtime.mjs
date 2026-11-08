@@ -4476,6 +4476,7 @@ async function main() {
     const ambient = want("ambient");
     const surfaces = want("surfaces");
     const bleed = want("bleed");
+    const listmetrics = want("listmetrics");
     const favorites = want("favorites");
     const favthumb = want("favthumb");
     const links = want("links");
@@ -4615,6 +4616,7 @@ async function main() {
         for (const k of Object.keys(STATE_COUNTS)) STATE_COUNTS[k] = snapCounts[k];
         lastCellMark = `段 ${name} 首抛（已回滚到段前）`;
         console.log(`  · 段 ${name} 第一次抛错（工具竞态候选）：${m1} —— 回滚本段半程结果，重载页面整段重试一次`);
+        if (process.env.GOSSLAN_PROBE_DEBUG_STACK) console.log(String(e1 && e1.stack || "").slice(0, 2000));
       }
       try {
         await freshTab();
@@ -4721,6 +4723,7 @@ async function main() {
     await runSegment("ambient", ambient, () => runAmbient(cdp, url));
     await runSegment("surfaces", surfaces, () => runSurfaces(cdp, url));
     await runSegment("bleed", bleed, () => runBleed(cdp, url));
+    await runSegment("listmetrics", listmetrics, () => runListMetrics(cdp, url));
     await runSegment("favorites", favorites, () => runFavorites(cdp, url));
     await runSegment("favthumb", favthumb, () => runFavThumb(cdp, url));
     await runSegment("namecap", namecap, () => runNameCap(cdp, url));
@@ -17453,6 +17456,310 @@ async function runBleed(cdp, url) {
   }
 
   fs.writeFileSync(outFile, JSON.stringify({ widths: WIDTHS, mobileMax: MOBILE_MAX, rows }, null, 2));
+}
+
+/**
+ * 分栏把手命中区 vs 列表滚动条带 + 两个列表面板的内容竖线（2026-11-08）。
+ *
+ * 用户实测缺陷：左列与会话区之间的拖拽把手把左列滚动条盖住 ⇒ 想点滚动条只会触发左右拖拽。
+ * 这一节把"这一下点击该归谁"变成可重跑的读数：把手矩形 ∩ 滚动条带矩形必须为 0，
+ * 且滚动条带中点的 elementFromPoint 必须落在滚动容器里（不是把手）。
+ * 反例自证：把把手内联改回旧值（左 -4px / 右 +4px，等价 `-mx-1`），同一测点立刻变成把手 ⇒ 判据红。
+ *
+ * 同时量外部链接 / 收藏两个左列面板：头部内容线、工具栏按钮左缘、行 hover 矩形左右缘。
+ * 口径是"一页只有一条内容竖线，hover 通宽且左右对称内距"（用户 2026-11-08）。
+ */
+async function runListMetrics(cdp, url) {
+  const outFile = path.join(ROOT, "test-results", "list-metrics.json");
+  fs.mkdirSync(path.dirname(outFile), { recursive: true });
+  const out = {};
+  const page = (fnBody) => cdp.eval("(() => {" + fnBody + "})()");
+
+  const MEASURE_SPLIT = `
+    const host = document.getElementById('probe-host');
+    const rect = (el) => {
+      if (!el) return null;
+      const b = el.getBoundingClientRect();
+      return { l: +b.left.toFixed(1), r: +b.right.toFixed(1), t: +b.top.toFixed(1), b: +b.bottom.toFixed(1), w: +b.width.toFixed(1), h: +b.height.toFixed(1) };
+    };
+    // 页面上有两个 <aside>：NavRail(64) 与左列列表。取宽的那一个（宽度 > 100）。
+    const asides = host ? [...host.querySelectorAll('aside')] : [];
+    const aside = asides.filter((a) => a.getBoundingClientRect().width > 100)[0] || asides[0] || null;
+    const sc = aside ? aside.querySelector('.scrollbar-both, .gosslan-scroll') : null;
+    const handles = host ? [...host.querySelectorAll('div')].filter((d) => {
+      const s = getComputedStyle(d);
+      return s.cursor === 'col-resize' && d.getBoundingClientRect().width > 0 && d.offsetParent !== null;
+    }) : [];
+    const hd = handles[0] || null;
+    const scR = rect(sc);
+    const sbw = sc ? sc.offsetWidth - sc.clientWidth : 0;
+    const band = scR ? { l: +(scR.r - sbw).toFixed(1), r: scR.r, t: scR.t, b: scR.b } : null;
+    const hR = rect(hd);
+    const ov = (a, b2) => (a && b2) ? Math.max(0, +(Math.min(a.r, b2.r) - Math.max(a.l, b2.l)).toFixed(1)) : 0;
+    const ovY = (a, b2) => (a && b2) ? Math.max(0, +(Math.min(a.b, b2.b) - Math.max(a.t, b2.t)).toFixed(1)) : 0;
+    const at = (x, y) => {
+      const e = document.elementFromPoint(x, y);
+      if (!e) return null;
+      return {
+        tag: e.tagName,
+        isHandle: !!hd && (e === hd || hd.contains(e)),
+        inScroller: !!sc && (e === sc || sc.contains(e)),
+        cls: String(e.className || '').slice(0, 60),
+      };
+    };
+    const midY = scR ? (scR.t + scR.b) / 2 : 0;
+    return {
+      aside: rect(aside), scroller: scR, sbw,
+      band, handle: hR,
+      overlapX: ov(hR, band), overlapY: ovY(hR, band),
+      hitBandCenter: band ? at(band.l + sbw / 2, midY) : null,
+      hitBandEdge: band ? at(band.r - 1, midY) : null,
+      listW: aside ? Math.round(aside.getBoundingClientRect().width) : 0,
+      scrollTop: sc ? Math.round(sc.scrollTop) : 0,
+    };`;
+
+  const MEASURE_PANEL = `
+    const host = document.getElementById('probe-host');
+    const rect = (el) => {
+      if (!el) return null;
+      const b = el.getBoundingClientRect();
+      return { l: +b.left.toFixed(1), r: +b.right.toFixed(1), w: +b.width.toFixed(1), h: +b.height.toFixed(1) };
+    };
+    const num = (v) => parseFloat(v) || 0;
+    const header = host ? host.querySelector('header') : null;
+    const hPadL = header ? num(getComputedStyle(header).paddingLeft) : 0;
+    const hPadR = header ? num(getComputedStyle(header).paddingRight) : 0;
+    // hover 面的定位口径：类名里写了 hover:bg 的那一层 = 底色真正铺开的矩形（不靠猜 DOM 层级）。
+    // 取**最宽**的那一层：行 hover 通宽，行内 32×32 的图标按钮也带 hover:bg（不是行）。
+    const hoverEls = host ? [...host.querySelectorAll('[class*="hover:bg"]')]
+      .filter((el) => el.getBoundingClientRect().height >= 28 && el.getBoundingClientRect().width > 0) : [];
+    const row = hoverEls.slice().sort((a, b) => b.getBoundingClientRect().width - a.getBoundingClientRect().width)[0] || null;
+    // 注意：CSS 选择器列表按**文档顺序**匹配，不是按列表顺序。探针宿主自己也挂了
+    // .scrollbar-both，所以必须显式先取 .gosslan-list-scroll（列表列的唯一口径）。
+    // ★ 这段是模板字符串正文：注释里**不能出现反引号**，否则会把字符串提前闭合并让整段变成 node 代码
+    //   （2026-11-08 踩过：报错 "both is not defined"，指向的却是注释行）。
+    const sc = host
+      ? (host.querySelector('.gosslan-list-scroll') || host.querySelector('.scrollbar-both, .gosslan-scroll'))
+      : null;
+    const scR = rect(sc);
+    const sbw = sc ? sc.offsetWidth - sc.clientWidth : 0;
+    const scPadL = sc ? num(getComputedStyle(sc).paddingLeft) : 0;
+    const scCls = sc ? String(sc.className) : '';
+    const hostR = host ? host.getBoundingClientRect() : null;
+    const back = host ? host.querySelector('button[aria-label="返回"]') : null;
+    const search = host ? host.querySelector('input[type="search"], input[placeholder]') : null;
+    return {
+      host: host ? { l: +hostR.left.toFixed(1), r: +hostR.right.toFixed(1), w: +hostR.width.toFixed(1) } : null,
+      header: rect(header), headerPadL: hPadL, headerPadR: hPadR,
+      headerContentL: header ? +(header.getBoundingClientRect().left + hPadL).toFixed(1) : null,
+      headerContentR: header ? +(header.getBoundingClientRect().right - hPadR).toFixed(1) : null,
+      back: rect(back), search: rect(search),
+      scroller: scR, sbw,
+      scPadL, scCls,
+      row: rect(row),
+      rowPadL: row ? num(getComputedStyle(row).paddingLeft) : 0,
+      rowPadR: row ? num(getComputedStyle(row).paddingRight) : 0,
+      rowText: row ? (row.innerText || '').replace(/\\s+/g, ' ').trim().slice(0, 24) : '',
+      rowBg: row ? getComputedStyle(row).backgroundColor : 'none',
+      hovers: hoverEls.length,
+    };`;
+
+  const bootLayout = async () => {
+    await cdp.send("Emulation.setDeviceMetricsOverride", { width: 1280, height: 800, deviceScaleFactor: 1, mobile: false }).catch(() => {});
+    await cdp.send("Page.navigate", { url });
+    await cdp.settled();
+    await sleep(2_200);
+    await cdp.eval(PAGE_FIXTURE);
+    await cdp.eval(`(async () => {
+      window.__TAURI_INTERNALS__ = window.__TAURI_INTERNALS__ || {
+        metadata: { currentWindow: { label: 'main' }, currentWebview: { label: 'main', windowLabel: 'main' } },
+        invoke: async () => null, transformCallback: (cb) => cb, convertFileSrc: (p) => p,
+      };
+      window.__TAURI_EVENT_PLUGIN_INTERNALS__ = window.__TAURI_EVENT_PLUGIN_INTERNALS__ || { unregisterListener: () => {} };
+      await window.__probe.install('/src/layouts/ResponsiveLayout.vue', '', ${JSON.stringify(JSON.stringify({ router: true, hostHeight: "800px" }))});
+      const { useChatStore } = await import('/src/stores/useChatStore.ts');
+      const chat = useChatStore();
+      chat.conversations = Array.from({ length: 40 }, (_, i) => ({
+        id: 'c' + i, kind: i % 3 ? 'single' : 'group', name: '联系人 ' + (i + 1), avatar: null,
+        last_msg: '第 ' + (i + 1) + ' 条预览', last_ts: 1700000000000 - i * 1000, unread: 0, pinned: false,
+      }));
+      chat.messages['c0'] = Array.from({ length: 12 }, (_, i) => ({
+        id: 'm' + i, conv_id: 'c0', sender_id: i % 2 ? 'c0' : 'self', kind: 'text',
+        text: '第 ' + (i + 1) + ' 条消息', ts: 1700000000000 + i * 1000, status: 'sent', media: null,
+      }));
+      chat.activeConv = 'c0';
+      const R = await import('/src/router/main.ts');
+      await R.mainRouter.push({ name: 'conversation', params: { convId: 'c0' } });
+      await new Promise((r) => setTimeout(r, 600));
+    })()`);
+    await sleep(700);
+  };
+
+  const bootPanel = async (cmp, stubExpr, width, height) => {
+    await cdp.send("Emulation.setDeviceMetricsOverride", { width: width + 60, height: height + 60, deviceScaleFactor: 1, mobile: false }).catch(() => {});
+    await cdp.send("Page.navigate", { url });
+    await cdp.settled();
+    await sleep(2_500);
+    await cdp.eval(PAGE_FIXTURE);
+    await cdp.eval(stubExpr);
+    const mounted = await cdp.eval(`window.__probe.install('${cmp}', '', '')`);
+    await cdp.eval(`(() => {
+      const h = document.getElementById('probe-host');
+      h.style.width = '${width}px';
+      h.style.maxWidth = '${width}px';
+      h.style.height = '${height}px';
+      h.style.display = 'block';
+      h.style.overflow = 'hidden';
+      return true;
+    })()`);
+    await sleep(500);
+    return mounted;
+  };
+
+  const shot = async (name) => {
+    const r = await cdp.send("Page.captureScreenshot", { format: "png" });
+    const f = path.join(ROOT, "test-results", "list-metrics", name + ".png");
+    fs.mkdirSync(path.dirname(f), { recursive: true });
+    fs.writeFileSync(f, Buffer.from(r.data, "base64"));
+    return f;
+  };
+  /** 把当前面板**内联**改回改前几何（旧类名 + 旧 px），用来拍"改前"对照图与读数。 */
+  const injectOld = () => page(`
+    const host = document.getElementById('probe-host');
+    const sc = host.querySelector('.gosslan-list-scroll');
+    if (sc) sc.className = sc.className.replace('gosslan-list-scroll', 'gosslan-scroll');
+    const rows = [...host.querySelectorAll('[class*="hover:bg"]')].sort((a, b) => b.offsetWidth - a.offsetWidth);
+    if (rows[0]) { rows[0].style.paddingLeft = '8px'; rows[0].style.paddingRight = '8px'; }
+    const h = host.querySelector('header');
+    if (h) { h.style.paddingLeft = '8px'; h.style.paddingRight = '8px'; }
+    const seq = [...host.querySelectorAll('div')].filter((d) => d.className.includes('flex shrink-0 flex-col gap-2'));
+    if (seq[0]) { seq[0].style.paddingLeft = '8px'; }
+    return true;`);
+
+  try {
+    // ── ① 分栏把手 vs 左列滚动条（会话列表 ↔ 会话区）────────────────────────
+    await bootLayout();
+    out.before = await page(MEASURE_SPLIT);
+    const b = out.before;
+    check("分栏把手命中矩形不覆盖左列滚动条带（重叠宽度必须为 0）",
+      b.sbw > 0 && b.overlapX === 0,
+      "sbw>0 且 overlapX=0（纵向重叠是设计使然，不算）",
+      `sbw=${b.sbw} overlapX=${b.overlapX} handle=${JSON.stringify(b.handle)} band=${JSON.stringify(b.band)}`);
+    check("滚动条最右一列像素归滚动容器（把手不许盖住它）",
+      !!b.hitBandEdge && b.hitBandEdge.inScroller === true && b.hitBandEdge.isHandle === false,
+      "elementFromPoint(带最右缘) 落在滚动容器内且不是把手",
+      JSON.stringify(b.hitBandEdge));
+
+    // 滚动条上按下：原生翻页必须生效（scrollTop 变化）
+    const bandCx = b.band ? b.band.l + b.sbw / 2 : 0;
+    const bandCy = b.band ? (b.band.t + b.band.b) / 2 : 0;
+    const top0 = b.scrollTop;
+    await cdp.send("Input.dispatchMouseEvent", { type: "mousePressed", x: bandCx, y: bandCy, button: "left", clickCount: 1 });
+    await cdp.send("Input.dispatchMouseEvent", { type: "mouseReleased", x: bandCx, y: bandCy, button: "left", clickCount: 1 });
+    await sleep(400);
+    const top1 = await cdp.eval(`(() => {
+      const sc = document.querySelector('#probe-host aside .scrollbar-both, #probe-host aside .gosslan-scroll');
+      return sc ? Math.round(sc.scrollTop) : 0;
+    })()`);
+    out.scrollbarClick = { before: top0, after: top1 };
+    check("在滚动条上按下能滚动左列（这一下没有被把手抢走）",
+      top1 > top0,
+      "点击滚动条轨道后 scrollTop 增大",
+      JSON.stringify(out.scrollbarClick));
+
+    // 把手上按下 + 拖动：listW 必须跟着变，且拖动期间 body 光标是 col-resize
+    const hx = b.handle ? (b.handle.l + b.handle.r) / 2 : 0;
+    const hy = b.handle ? b.handle.t + 240 : 0;
+    await cdp.send("Input.dispatchMouseEvent", { type: "mousePressed", x: hx, y: hy, button: "left", clickCount: 1 });
+    const bodyCursor = await cdp.eval("document.body.style.cursor");
+    await cdp.send("Input.dispatchMouseEvent", { type: "mouseMoved", x: hx + 40, y: hy, button: "left", buttons: 1 });
+    await sleep(120);
+    const during = await page(MEASURE_SPLIT);
+    await cdp.send("Input.dispatchMouseEvent", { type: "mouseReleased", x: hx + 40, y: hy, button: "left", clickCount: 1 });
+    await sleep(200);
+    out.drag = { from: b.listW, during: during.listW, cursor: bodyCursor };
+    check("在把手上按下能拖动（listW 变化 + 拖动中光标 col-resize）",
+      during.listW >= b.listW + 30 && bodyCursor === "col-resize",
+      "listW 至少 +30 且 body.style.cursor=col-resize",
+      JSON.stringify(out.drag));
+
+    // 反例自证：把把手内联改回旧 `-mx-1`（左 -4 / 右 +4）⇒ 同一点位命中把手
+    await page(`
+      const hd = [...document.querySelectorAll('#probe-host div')].find((d) => getComputedStyle(d).cursor === 'col-resize' && d.offsetParent !== null);
+      if (hd) { hd.style.marginLeft = '-4px'; hd.style.marginRight = '4px'; }
+      return !!hd;`);
+    await sleep(120);
+    out.counter = await page(MEASURE_SPLIT);
+    const c = out.counter;
+    check("反例自证：把手改回旧覆盖值（-mx-1）时，滚动条带最右缘立刻归把手 ⇒ 上面那条会红",
+      c.overlapX > 0 && !!c.hitBandEdge && c.hitBandEdge.isHandle === true,
+      "overlapX>0 且 elementFromPoint(带最右缘).isHandle=true",
+      `overlapX=${c.overlapX} hitEdge=${JSON.stringify(c.hitBandEdge)}`);
+
+    // ── ② 外部链接面板：头部 / 工具栏 / 行 hover 内容竖线 ─────────────────
+    const links = [
+      { id: "l1", name: "公司内网", url: "https://intra.example.com", source: "user", remoteUrl: "" },
+      { id: "l2", name: "产品文档", url: "https://docs.example.com", source: "url:https://backup.example.com/links.json", remoteUrl: "https://docs.example.com" },
+      { id: "l3", name: "设计规范", url: "https://design.example.com", source: "user", remoteUrl: "" },
+    ];
+    const mountedLinks = await bootPanel("/src/components/LinksList.vue", `window.__probe.linksStore(${JSON.stringify(links)})`, 360, 700);
+    out.links = await page(MEASURE_PANEL);
+    fs.writeFileSync(outFile, JSON.stringify(out, null, 2));
+    const L = out.links;
+    const lBandOk = !!mountedLinks && mountedLinks.ok === true && !!L.row && !!L.scroller
+      && Math.abs(L.row.l - L.scroller.l) <= 1
+      && Math.abs(L.row.r - (L.scroller.r - L.sbw)) <= 1;
+    const lPadOk = !!L.row && L.rowPadL === L.rowPadR && L.rowPadL > 0;
+    const lLineOk = L.headerContentL !== null && !!L.row && Math.abs(L.headerContentL - (L.row.l + L.rowPadL)) <= 1;
+    check("外部链接面板：行 hover 面通宽（左缘=容器左缘，右缘=滚动条左缘）", lBandOk,
+      "row.l == scroller.l 且 row.r == scroller.r - sbw",
+      `row=${JSON.stringify(L.row)} scroller=${JSON.stringify(L.scroller)} sbw=${L.sbw}`);
+    check("外部链接面板：行内距左右对称且非零", lPadOk,
+      "rowPadL == rowPadR > 0",
+      `padL=${L.rowPadL} padR=${L.rowPadR}`);
+    check("外部链接面板：头部内容线 = 行内容线（同一条竖线）", lLineOk,
+      "|headerContentL - (row.l + rowPadL)| ≤ 1px",
+      `headerContentL=${L.headerContentL} row.l=${L.row && L.row.l} rowPadL=${L.rowPadL} headerPadL=${L.headerPadL}`);
+    await shot("links-after");
+    await injectOld();
+    out.linksOld = await page(MEASURE_PANEL);
+    await shot("links-before");
+    fs.writeFileSync(outFile, JSON.stringify(out, null, 2));
+
+    // ── ③ 收藏面板 ───────────────────────────────────────────────────────
+    const now = Date.now();
+    const favs = [
+      { id: "f1", msg_id: "m1", conv_id: "c0", sender_id: "peer-1", kind: "text", content: "收藏的文本：核对列表排版。", ts: now - 90_000, favorited_at: now - 60_000, media_path: null, media_size: 0, available: true },
+      { id: "f2", msg_id: "m2", conv_id: "c0", sender_id: "peer-1", kind: "file", content: JSON.stringify({ name: "季度报告.pdf", path: "/tmp/a.pdf", size: 2048, subtype: "file" }), ts: now - 120_000, favorited_at: now - 120_000, media_path: "/tmp/a.pdf", media_size: 2048, available: true },
+    ];
+    const mountedFav = await bootPanel("/src/components/FavoritePanel.vue", `window.__probe.stubApi('listFavorites', ${JSON.stringify(favs)})`, 420, 700);
+    out.favorites = await page(MEASURE_PANEL);
+    fs.writeFileSync(outFile, JSON.stringify(out, null, 2));
+    const F = out.favorites;
+    const fBandOk = !!mountedFav && mountedFav.ok === true && !!F.row && !!F.scroller
+      && Math.abs(F.row.l - F.scroller.l) <= 1
+      && Math.abs(F.row.r - (F.scroller.r - F.sbw)) <= 1;
+    const fPadOk = !!F.row && F.rowPadL === F.rowPadR && F.rowPadL > 0;
+    check("收藏面板：行 hover 面通宽（左缘=容器左缘，右缘=滚动条左缘）", fBandOk,
+      "row.l == scroller.l 且 row.r == scroller.r - sbw",
+      `row=${JSON.stringify(F.row)} scroller=${JSON.stringify(F.scroller)} sbw=${F.sbw}`);
+    check("收藏面板：行内距左右对称且非零", fPadOk,
+      "rowPadL == rowPadR > 0",
+      `padL=${F.rowPadL} padR=${F.rowPadR}`);
+    // 收藏面板没有 <header>（头部是自绘的返回键 + 标题行）：内容竖线用搜索框左缘代表。
+    const favLine = F.search ? F.search.l : (F.back ? F.back.l : null);
+    check("收藏面板：行内容线与搜索框左缘同为一条竖线",
+      favLine !== null && !!F.row && Math.abs(favLine - (F.row.l + F.rowPadL)) <= 1,
+      "|搜索框左缘 - (row.l + rowPadL)| ≤ 1px",
+      `search.l=${favLine} back=${JSON.stringify(F.back)} row.l=${F.row && F.row.l} rowPadL=${F.rowPadL}`);
+    await shot("favorites-after");
+    await injectOld();
+    out.favoritesOld = await page(MEASURE_PANEL);
+    await shot("favorites-before");
+    fs.writeFileSync(outFile, JSON.stringify(out, null, 2));
+  } finally {
+    fs.writeFileSync(outFile, JSON.stringify(out, null, 2));
+  }
 }
 
 async function runFavorites(cdp, url) {

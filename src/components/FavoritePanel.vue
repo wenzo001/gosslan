@@ -716,7 +716,7 @@ async function confirmDelete() {
           class="ambient-canvas-child min-h-0 min-w-0 bg-[var(--gosslan-list)] desktop:sm:flex desktop:sm:w-[var(--gosslan-list-w)] desktop:sm:flex-none desktop:sm:flex-col"
           :class="app.isMobile && active ? 'hidden' : 'flex flex-1 flex-col'"
         >
-          <div class="flex shrink-0 flex-col gap-2 px-2 pt-2">
+          <div class="flex shrink-0 flex-col gap-2 px-3 pt-2">
             <!-- 桌面端返回/关闭：收藏是整页，必须给显式出口（修 D-C；移动端用底部 tab 返回）。 -->
             <div v-if="!app.isMobile" class="flex items-center gap-1.5">
               <button
@@ -755,7 +755,7 @@ async function confirmDelete() {
               </button>
             </div>
           </div>
-          <div class="gosslan-scroll min-h-0 min-w-0 flex-1 overflow-y-auto">
+          <div class="gosslan-list-scroll min-h-0 min-w-0 flex-1 overflow-y-auto">
           <!-- 每行：行本身是 <button>（可聚焦、可回车），移动端的「⋯」放在**兄弟层**用绝对定位
                —— 不能嵌在行按钮里（<button> 套 <button> 是非法 HTML，浏览器会把它拆出去，
                表现是"⋯ 点了没反应"或整行都被点）。 -->

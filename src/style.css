@@ -1027,6 +1027,19 @@ body {
 .scrollbar-both {
   scrollbar-gutter: stable both-edges;
 }
+/* 左列列表（会话列表 / 外部链接 / 收藏左栏）专用口径（2026-11-08）：
+   只预留滚动条那一侧的空带，**不预留左侧**。
+   为什么不用 `stable both-edges`：左侧空带的宽度 = 平台滚动条宽度，头部/工具栏没法用固定
+   px 对上它，于是「头部按钮和列表内容不在同一条竖线」在不同平台上差 4~16px 不等（用户实测：
+   外部链接、收藏两个面板）。列表行的 hover 面本身是通宽的，行内容用固定 `px-3`，
+   头部也用 `px-3` ⇒ 竖线对齐与滚动条宽度无关。内容盒宽度仍由 `stable` 保证不跳。 */
+.gosslan-list-scroll {
+  scrollbar-gutter: stable;
+  overscroll-behavior: contain;
+}
+.gosslan-list-scroll::-webkit-scrollbar {
+  width: var(--gosslan-scroll-track);
+}
 /* 搜索/筛选小胶囊（「发送人」「日期」这类开关）。
    与 `.gosslan-menu` 同族取值：圆角用统一 token、颜色全部走语义变量 —— 不写死微信色值。 */
 .gosslan-filter-chip {
