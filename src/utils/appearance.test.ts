@@ -556,3 +556,26 @@ test("★matchMedia 抛错或不存在时，主色/字体/语言必须照样各�
   // 所以这里断的不是"原值"，而是"算法在同外观下的求解值"——语义仍是"主色必须落地"。
   assert.equal(ok.style["--gosslan-primary"], seedTokens("#123456", "dark")["--gosslan-primary"]);
 });
+
+/**
+ * 拖色不许跟着 60Hz 的 `input` 每帧跑一遍求解器（2026-11-09 review）。
+ *
+ * 一次 `buildThemeTokens` ≈2.9ms，颜色选择器拖动时 `input` 按帧率来 ⇒ 裸调等于每秒
+ * 把 170ms 丢在主线程上。这里只钉"连续输入走按帧合并、离散点击同步落地"这个形状，
+ * 数值性能仍由人测（判据不做计时，避免 CI 抖动）。
+ */
+test("拖色按帧合并：连续输入不逐 event 求解，点选仍同步落地", () => {
+  const src = readFileSync(join(import.meta.dirname, "..", "stores", "useAppStore.ts"), "utf8");
+  const body = src.slice(src.indexOf("function setThemeColor("), src.indexOf("function setFontFamily("));
+  assert.ok(body.length > 0, "没解析到 setThemeColor 的函数体，判据本身失效");
+  const coalesced = (b: string) => /if \(continuous\) applyThemeNextFrame\(\)/.test(b);
+  assert.ok(coalesced(body), "连续输入没有走按帧合并 —— 拖动时每个 input 都会同步算一遍主题");
+  assert.match(body, /flushThemeFrame\(\);\s*\n\s*applyThemeNow\(\);/, "离散点击必须先撤掉排队帧再同步落地");
+  // 反例自证：改回"每次都同步 applyThemeNow()"，上面那条必须红。
+  const naive = body.replace("if (continuous) applyThemeNextFrame();", "applyThemeNow();");
+  assert.notEqual(naive, body, "反例构造失败");
+  assert.equal(coalesced(naive), false, "反例没有让判据变红 —— 这条判据是空转");
+  // 合并器本身必须是 rAF（不是 setTimeout 0，也不是"存个标记等下次 input 再算"）。
+  assert.match(src, /themeFrame = requestAnimationFrame\(/, "按帧合并没有用 requestAnimationFrame");
+  assert.match(src, /cancelAnimationFrame\(themeFrame\)/, "同步落地前没有撤掉排队帧");
+});

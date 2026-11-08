@@ -421,6 +421,29 @@ export const useAppStore = defineStore("app", () => {
   }
 
   /**
+   * 连续拖色时把重算合并到**一帧一次**。
+   *
+   * 求解器一次 ~2.9ms（`buildThemeTokens` 实测），颜色选择器的 `input` 事件按帧率来
+   * （拖动时 60/s）⇒ 裸调等于把主线程的 17% 丢在算色上，拖动会掉帧。
+   * 只对连续输入生效：点色板格子这种离散操作必须**同步**落地（见 `setThemeColor`）。
+   */
+  let themeFrame = 0;
+  function applyThemeNextFrame() {
+    if (themeFrame) return;
+    themeFrame = requestAnimationFrame(() => {
+      themeFrame = 0;
+      applyThemeNow();
+    });
+  }
+  /** 同步落地前先把排着的那一帧撤掉，避免同一轮里算两遍、也避免旧值覆盖新值。 */
+  function flushThemeFrame() {
+    if (!themeFrame) return;
+    cancelAnimationFrame(themeFrame);
+    themeFrame = 0;
+    applyThemeNow();
+  }
+
+  /**
    * 切换亮暗：先翻类名，再**重算整套主题色**。
    *
    * 派生阶梯（hover/active/on-primary/accent-ink）现在由算法按外观求解，写在 <html> 的内联样式上；
@@ -742,7 +765,12 @@ export const useAppStore = defineStore("app", () => {
   function setThemeColor(c: string, continuous = false) {
     themeColor.value = c;
     storageSet(THEME_KEY, c);
-    applyThemeNow();
+    // 拖动时按帧合并（一道 ~2.9ms 的求解不该跟着 60Hz 的 input 跑）；点选时同步落地。
+    if (continuous) applyThemeNextFrame();
+    else {
+      flushThemeFrame();
+      applyThemeNow();
+    }
     if (continuous) persistSoon();
     else void persistSettings();
   }
@@ -861,7 +889,8 @@ export const useAppStore = defineStore("app", () => {
       // 副作用（改 CSS 变量 / 类名）只在相关键真的变了时跑：补丁路径下这是常态，
       // 每次设置事件都全量重刷一遍样式纯属浪费。
       if (!opts.partial || has("themeColor") || has("fontFamily") || has("darkMode") || has("appearanceMode")) {
-        applyThemeNow();
+        // `applyDarkNow()` 内部已经先翻 `.dark` 类再 `applyThemeNow()`；
+        // 再单独调一次只会把同一道求解算两遍（~2.9ms × 2）。
         applyDarkNow();
       }
       if (!opts.partial || has("chatStyle") || has("peerStyles")) applyChatStyleNow();

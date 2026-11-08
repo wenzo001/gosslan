@@ -20,10 +20,11 @@
      是"主题没关联上"最典型的破绽。改主题时这一条必须成对出现。 */
   color-scheme: light;
 
-  /* 品牌色：出厂默认值（画板 Pulse 强调/按钮色 #2F6BFF）。用户在设置里改色时 `applyTheme`
-     只往 <html> 写 --gosslan-primary 这一个变量，下面三档由 CSS 现派生（与 --soft/--ring/accent-ink
-     同一套做法）。以前这里是两份实现：:root 硬编一份出厂蓝的近似值、utils/color.ts 的
-     lighten/darken 按另一个比例再算一份 ⇒ 首屏会出现"主色已换成用户的、hover/浅底还是出厂蓝"的分裂。 */
+  /* 品牌色：出厂默认值（画板 Pulse 强调/按钮色 #2F6BFF）。运行时 `applyTheme` 会把
+     **求解后的整组 token**（primary / hover / active / on-primary / accent-ink …，
+     共 SEED_TOKENS 那么多项）以 inline 写到 <html>，这里的静态值只是"JS 还没跑时的首帧"，
+     由 `node scripts/dump-theme-tokens.mjs` 从求解器生成、`themePalette.test.ts` 逐值对照
+     —— 不要手改数字。 */
   /* 出厂默认主色 = 画板 Pulse 蓝；用户自选值由 theme-boot.js 以 inline 覆盖，不受影响。 */
   /* 2026-11-08 起这一档是**求解后的填充色**（不是用户原始种子）：种子 #2f6bff 在 OKLCH 里
      保持色相、把 L 压到"白字刚好过 4.55 / APCA 78"的一档 = #356ae8。原始种子只留在 app 状态里，
@@ -45,8 +46,8 @@
   --gosslan-primary-hover: #2b5fdc;
   /* 承载白字的填充档。六套可选主色逐档核算由 tokenContrast.test.ts 判（主色是 inline 写在
      <html> 上的，静态解析看不见 ⇒ 那一节把 :root 的主色声明逐档替换后再重算全表）。
-     2026-10-23 实测：混黑 15%（=85% 主色）时绿 #00b578 白字只有 3.61、橙 3.83、天蓝 3.76，
-     三档不过 AA 4.5 ⇒ 压到 28% 黑（=72% 主色），六档实测最低 4.85、出厂蓝 6.30。
+     数值不再手算混色比例：由求解器沿 OKLCH 亮度轴取"白字刚好达标"的一档，阈值见
+     docs/design-language/theme-contrast.md。
      ⚠️ 这一档**只准当填充面**：以前 `ConversationListItem` 的任务图标拿它当文字色用，
      "压深填充"对那是反方向的。主题色当文字/图标用一律走 --gosslan-accent-ink（同色相、按外观调明度）；
      压在填充**上面**的前景走 --gosslan-on-primary。 */
@@ -61,14 +62,13 @@
   --gosslan-primary-soft: color-mix(in srgb, var(--gosslan-primary) 25%, transparent);
   --gosslan-primary-ring: color-mix(in srgb, var(--gosslan-primary) 50%, transparent);
   /* 主题色当「文字/图标」用时的可读版本（--gosslan-primary 只作填充面）。
-     直接用主题色写字，亮色下 3.7 / 暗色下 4.0，都够不到正文 4.5——老坑见 chatStyle.ts。
-     按 Apple 的做法「同色相、按外观调明度」：亮色压暗、暗色提亮，
-     两者都取 72% 主题色 + 28% 黑/白。六套预置主题色实测 4.43~7.10（亮）/ 5.10~7.11（暗）
-     —— 这六个数是 tokenContrast.test.ts「六套可选主色」那一节逐档算出来的，别手抄改新值；
-     亮色那格的 4.43 是绿色 #00b578 落在列表底上，已登记为该节的已知偏差（离 4.5 差 0.07）。
+     直接用主题色写字够不到正文对比度（老坑见 chatStyle.ts）⇒ 求解器按 Apple 的做法
+     「同色相、按外观调明度」给出一档：亮色压暗、暗色提亮，具体数值由
+     `node scripts/dump-theme-tokens.mjs` 生成，六套预置主题色与随机色的达标由
+     tokenContrast.test.ts 判定（别手抄改新值）。
      因为主色是用户可选、且由 applyTheme 以 inline style 写在 <html> 上，
      暗色版本**不能**靠 `.dark { --gosslan-primary: … }` 覆盖（inline 优先级更高），
-     只能用 color-mix 派生出这个独立 token —— 这正是本项目保留它的原因。 */
+     所以这是一个独立的 token。 */
   --gosslan-accent-ink: #1b44aa;
   /* 功能绿：填充/状态点用（在线点、成功态）。暗色档见 .dark。 */
   --gosslan-success: #00aa6f;
