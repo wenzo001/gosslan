@@ -15,6 +15,14 @@ import { storageGet, storageRemove, storageSet } from "./safeStorage.ts";
 /** localStorage 键（只作启动首帧快路径，真值在后端 settings 的 `reduced_transparency`）。 */
 export const REDUCED_TRANSPARENCY_STORAGE_KEY = "gosslan.reducedTransparency";
 
+/**
+ * 系统「减少透明」的媒体查询（单一字面量）。
+ *
+ * 两处读者：本文件判玻璃降级；`utils/ambientCapability.ts` 判背景动效**能力**（2026-11-08）。
+ * 各写一份字面量的后果是只有一处跟着改 —— 同一个坑在 `REDUCED_MOTION_QUERY` 上已经踩过。
+ */
+export const REDUCED_TRANSPARENCY_QUERY = "(prefers-reduced-transparency: reduce)";
+
 /** `<html>` 上的开关属性；CSS 只认这一个属性（不另加类名）。 */
 export const REDUCED_TRANSPARENCY_ATTR = "data-reduced-transparency";
 
@@ -41,7 +49,7 @@ export function saveStoredReducedTransparency(v: boolean | null): void {
 export function systemPrefersReducedTransparency(): boolean {
   if (typeof window === "undefined" || typeof window.matchMedia !== "function") return false;
   try {
-    return window.matchMedia("(prefers-reduced-transparency: reduce)").matches;
+    return window.matchMedia(REDUCED_TRANSPARENCY_QUERY).matches;
   } catch {
     return false;
   }

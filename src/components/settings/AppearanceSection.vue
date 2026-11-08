@@ -51,6 +51,17 @@ const ambientOptions = computed(() => [
   { value: "off", label: t("settings.appearance.ambient.off") },
 ]);
 /**
+ * 能力不支持时（系统关「透明效果」/ 内核没有 `backdrop-filter`），说明文字换成**原因**
+ * 而不是原来的功能介绍 —— 否则用户看到"缓慢流动的柔和色雾"却选不了，会更困惑。
+ * 判定只在 utils/ambientCapability.ts 一处（视图不碰 matchMedia / CSS.supports，护栏 ㉟）。
+ */
+const ambientDescription = computed(() => {
+  const reason = app.ambientCapability.reason;
+  if (reason === "reduced-transparency") return t("settings.appearance.ambient.unavailable.transparency");
+  if (reason === "no-backdrop-filter") return t("settings.appearance.ambient.unavailable.backdropFilter");
+  return t("settings.appearance.ambient.desc");
+});
+/**
  * 「减少透明效果」两档。WKWebView 不实现系统级 `prefers-reduced-transparency`，
  * 所以必须是应用内开关；默认跟随系统（读不到系统偏好 → 关闭），见 utils/reducedTransparency.ts。
  */
@@ -81,12 +92,13 @@ const transparencyOptions = computed(() => [
 
     <SettingsRow
       :label="t('settings.appearance.ambient')"
-      :description="t('settings.appearance.ambient.desc')"
+      :description="ambientDescription"
     >
       <SegmentedControl
         :model-value="app.ambientMotion"
         :options="ambientOptions"
         size="sm"
+        :disabled="!app.ambientCapability.available"
         :aria-label="t('settings.appearance.ambient.aria')"
         @update:model-value="(v) => app.setAmbientMotion(v as 'off' | 'drift')"
       />

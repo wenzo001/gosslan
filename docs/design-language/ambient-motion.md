@@ -265,7 +265,7 @@
 | 条件 | 行为 | 依据 |
 | --- | --- | --- |
 | `prefers-reduced-motion: reduce` | **冻结**：`animation: none`，保留静态色雾（停在初始帧） | 用户要求“少动”，不是“动慢一点” |
-| `prefers-reduced-transparency: reduce` | **整层隐藏**：ambient `display: none`，回到纯平色 + 玻璃实底 | 与 [style.css](../../src/style.css#L1828) 的既有降级同一原则 |
+| `prefers-reduced-transparency: reduce` | **能力闸**：档位固定落 `off`（`data-ambient="off"` → 整层隐藏），设置页显示为关、两档都不可选，并写明原因；**不写库**（2026-11-08） | 用户口径：能力放不出效果时，给一个"开着却看不到"的开关等于误导 |
 | `prefers-contrast: more` | 同“整层隐藏” | 背景带色会让正文对比度随位置漂移 |
 | `forced-colors: active` | 整层隐藏 | 系统强制配色下不引入自绘颜色 |
 | 窗口 `document.hidden` | `animation-play-state: paused`（不断点、不重建） | 恢复时从原相位继续，避免“回来突然跳一下” |
@@ -401,30 +401,42 @@ document.addEventListener("visibilitychange", () => {
 
 **不要用 `@property` 动画渐变停点**：即使 `--angle` 是数字、可插值，动画它仍然每帧重绘整层渐变，`getKeyframes()` 里也看不到 `transform`/`opacity` —— 属于硬线 1 的实质违反，必须判红。
 
-### 6.4 三层优先级（2026-11-07 定，覆盖此前的"透明降级连带动效"）
+### 6.4 三层优先级 + 能力闸（2026-11-08 修订）
 
 一台 Windows 机器的读数是 `prefers-reduced-motion: off`、`prefers-reduced-transparency: on`、
-`html[data-ambient]: drift`，雾却整层看不见。根因不是动效偏好，而是当时把
-「减少透明」和「减少动效」绑成了一件事：透明降级块里顺手写了 `.ambient { display: none }`。
-系统关掉「透明效果」（Windows 默认就这么干）的用户，等于被迫关掉了背景动效。
+`html[data-ambient]: drift`，雾却整层看不见。2026-11-07 的修法是把透明降级块里的
+`.ambient { display: none }` 删掉；2026-11-08 用户重新拍板为**显式能力闸**：
 
-现在两个关注点分开，档位只按这三层解析（实现见 [utils/ambient.ts](../../src/utils/ambient.ts) 文件头）：
+> 系统层本身禁用时（Windows「透明效果」关闭，或 `backdrop-filter` 不可用），设置里的
+> 「背景动效」默认关闭、置为不可选并写明原因，避免用户开着却看不到效果。
+
+两次的机制差别是这条的关键：现在不是"CSS 顺手隐藏"，而是 JS 把档位落成 `off`、
+设置页同步显示为关且**不可点**，并给出原因。用户看得见"为什么"，原来的选择也还在。
+
+档位只按这四层解析（实现见 [utils/ambient.ts](../../src/utils/ambient.ts) 文件头）：
 
 | 层 | 来源 | 判定 |
 | --- | --- | --- |
+| 0 | **能力闸** | 系统 `prefers-reduced-transparency: reduce`，或内核同时不支持 `backdrop-filter` / `-webkit-backdrop-filter` → `off`，来源记 `capability` |
 | 1 | **软件显式** | 设置里选过「关闭」/「缓慢流动」→ 直接按它，系统偏好不再参与 |
 | 2 | **系统** | 用户从未动过开关，且 `prefers-reduced-motion: reduce` → 静态雾（不重播、不位移） |
 | 3 | **内置默认** | 前两层都没有 → 流动；低端机 / 视口 < 480 降静态雾 |
 
-- **`prefers-reduced-transparency` 只降级玻璃**（退实底），**永远不参与档位解析**，也不许把
-  `.ambient` 整层隐藏（`AM-07` 判据盯着这一点）。`prefers-contrast: more` / `forced-colors: active`
-  仍然整层隐藏 —— 那是"系统要求高对比"，与"不要模糊"不是一回事。
-- **"没设过"与"设成了默认值"必须分得开**：存储键只有一个，`readStoredAmbientRaw()` 返回
+- **能力判定只有一个出口**：[utils/ambientCapability.ts](../../src/utils/ambientCapability.ts)。
+  `ambient.ts` 不许自己拼透明查询（`AM-13` 盯着），视图层也不许碰 `matchMedia` / `CSS.supports`（护栏 ㉟）。
+  `backdrop-filter` 必须同时问 `-webkit-` 前缀，与 `style.css` 的
+  `@supports not ((backdrop-filter) or (-webkit-backdrop-filter))` 同口径。
+- **"用户主动选过"与"能力不支持"必须分得开**：能力不可用时只改**显示值与 DOM 档位**，
+  存储里的显式值一个字不动；能力恢复后原样回到用户那一档。设置页置灰 + 原因文案由
+  `ambientCapability.reason` 驱动，不把"能力默认"写进设置。
+- **"没设过"与"设成了默认值"同样要分得开**：存储键只有一个，`readStoredAmbientRaw()` 返回
   `null` 才表示没设过；设置页显示用的 `readStoredAmbient()` 会把系统偏好折算成默认值，
   两者不能合并（合并后用户永远无法用软件开关覆盖系统偏好）。
 - **显式「流动」要能压过系统 reduce**：只靠 CSS 的 `@media (prefers-reduced-motion: reduce)` 做不到，
   所以 `ambient.ts` 同时写 `html[data-ambient-motion="force"]`，冻结块写成
-  `html:not([data-ambient-motion="force"]) .ambient-blob { animation: none }`。涟漪不在此列 ——
+  `html:not([data-ambient-motion="force"]) .ambient-blob { animation: none }`。
+  `force` 按**实际模式**写（`res.mode === "drift"`）：能力闸把档位落成 `off`、低端机落成
+  `static` 时写 `force`，只会让诊断面板把"能力关掉"错报成"软件压过系统"。涟漪不在此列 ——
   它是交互反馈，不属于背景氛围。
 
 ---
@@ -443,7 +455,7 @@ document.addEventListener("visibilitychange", () => {
 | AM-04 | 无逐帧 JS | 源码扫描 ambient 实现文件（`.css` / `.ts`） | 不含 `requestAnimationFrame` / `setInterval` / `getContext(` / `WebGL` / `canvas` | 加一个 rAF 漂移循环 ⇒ 红；同时断言“扫到了目标文件”，防空转 |
 | AM-05 | 隐藏暂停 | 钉住 `document.hidden = true` 后 200ms | running 数 = 0；恢复后回到 ≤3 | 删掉 `visibilitychange` 监听 ⇒ 红 |
 | AM-06 | 减少动态效果冻结（**可以让位给软件显式选择**） | `Emulation.setEmulatedMedia` 设 `prefers-reduced-motion: reduce`，且软件未显式选「缓慢流动」 | 动画数 = 0，且 `transform` 等于 0% 帧矩阵；软件显式选了「缓慢流动」时（`html[data-ambient-motion="force"]`）动画必须仍在跑 | 改成 `animation-duration: 30s`（还在动）⇒ 红；显式「流动」后仍冻结 ⇒ 红 |
-| AM-07 | 高对比 / 强制色整层隐藏（**`prefers-reduced-transparency` 不在此列**） | 模拟 `prefers-contrast: more` 或 `forced-colors: active` | ambient 子树 `display: none`（动画数 0） | 只把 `opacity` 降到 0.2（仍参与采样）⇒ 红；把 `prefers-reduced-transparency` 塞回隐藏块 ⇒ 红 |
+| AM-07 | 高对比 / 强制色整层隐藏（**`prefers-reduced-transparency` 不在此列**：它由 AM-17 的能力闸处理，不是靠 CSS 媒体块） | 模拟 `prefers-contrast: more` 或 `forced-colors: active` | ambient 子树 `display: none`（动画数 0） | 只把 `opacity` 降到 0.2（仍参与采样）⇒ 红；把 `prefers-reduced-transparency` 塞回隐藏块 ⇒ 红 |
 | AM-08 | 空闲 CPU | 复用 `GOSSLAN_IDLE_MS=900000` 两段 15 分钟 | 每段 `cpuPct < 1` | 把阈值调大 ⇒ 不允许 |
 | AM-09 | 3s 空闲 CPU | 复用 perf 段 `TaskDuration` 增量 | ≤600ms | 实测超线 ⇒ 红 |
 | AM-10 | 滚动帧时间 | 复用 perf 段 1.2s 连续滚动 | p50 ≤ max(17, 关闭 ambient 时的 p50 + 2) ms；长帧 ≤10；max ≤600ms | ambient 版 p50 = 20ms ⇒ 红 |
@@ -453,6 +465,7 @@ document.addEventListener("visibilitychange", () => {
 | AM-14 | 中点稳定性 | 画面正中 64×64：① 任意两档；② 同一档 `t=0` 与 `t=+20s` | ① **ΔE00 ≤ 0.5**；② **ΔE00 ≤ 0.5** | 静态 D 团被做成动画、或档位把中点一起染色 ⇒ 红 |
 | AM-15 | 正文承载面不透明 | 静态扫描（或运行时 `getComputedStyle`）：消息气泡、卡片、输入框、列表行容器的 `background-color` alpha | **alpha ≥ 0.95**（含 `--gosslan-*` 主题变量解析后的值） | 把气泡底改成 `rgba(255,255,255,0.7)` 换取更浓色雾 ⇒ 红 |
 | AM-16 | 画布直绘文字对比度 | 清单逐个量：空状态标题/说明、时间戳、分组标题、背景上的注解；取该文字所在位置的最坏合成底（薄纱 + 该点叠的色团按档位 α） | **≥4.5:1**；不达标必须降该层 α，或给该文字加局部实色底（alpha ≥0.95） | T4 下把时间戳直接画在 48%（亮）/ 44%（暗）色团上、又不加局部底 ⇒ 红 |
+| AM-17 | 能力闸单一出口 + 设置页不可选 | ① 源码：`ambient.ts` 只调 `readAmbientCapability()` 并把不可用落成 `source: "capability"`，不得出现透明查询字面量；`ambientCapability.ts` 两个能力条件都要问（`REDUCED_TRANSPARENCY_QUERY` + `backdrop-filter` / `-webkit-backdrop-filter`）；② 运行时：`--only=ambientcap` 两次启动（媒体查询正常 / `prefers-reduced-transparency: reduce`）读设置行 | ① 0 条报红；② 正常态两档 `disabled=false` 且选中「缓慢流动」；不支持态两档 `disabled=true`、选中「关闭」、行内出现原因文案 | ① 把透明查询直接写进 `ambient.ts`、或能力闸少问 `-webkit-` ⇒ 红；② 不支持态仍可点、或仍显示「缓慢流动」、或说明文字没换 ⇒ 红 |
 
 **采样区定义：动团带，不是中点。**
 

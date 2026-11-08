@@ -18,6 +18,7 @@
  * 平台与输入方式只能有一个出口。
  */
 import { currentAmbientResolution, readStoredAmbientRaw } from "@/utils/ambient";
+import { readAmbientCapability, supportsBackdropFilterBy } from "@/utils/ambientCapability";
 import { REDUCED_MOTION_QUERY } from "@/utils/platform";
 import {
   readStoredReducedTransparency,
@@ -45,6 +46,7 @@ export function readAmbientProbe(): AmbientProbeRow[] {
         : navigator.platform || "?";
 
   const ambient = currentAmbientResolution();
+  const capability = readAmbientCapability();
   const transparencyExplicit = readStoredReducedTransparency();
   const transparencySource =
     transparencyExplicit === null
@@ -81,8 +83,15 @@ export function readAmbientProbe(): AmbientProbeRow[] {
     },
     { label: "ambient resolved from", value: ambient.source },
     { label: "software ambient setting", value: readStoredAmbientRaw() ?? "unset" },
+    {
+      label: "ambient capability (gates the setting, 2026-11-08)",
+      value: capability.available ? "available" : `unavailable: ${capability.reason}`,
+    },
     { label: "transparency resolved from", value: transparencySource },
-    { label: "backdrop-filter", value: CSS.supports("backdrop-filter", "blur(2px)") ? "supported" : "unsupported" },
+    {
+      label: "backdrop-filter (backdrop-filter or -webkit-, same as style.css @supports)",
+      value: supportsBackdropFilterBy((p, v) => CSS.supports(p, v)) ? "supported" : "unsupported",
+    },
     { label: "--ambient-alpha", value: readToken("--ambient-alpha") },
     { label: "--ambient-veil", value: readToken("--ambient-veil") },
     { label: "--ambient-scale", value: readToken("--ambient-scale") },

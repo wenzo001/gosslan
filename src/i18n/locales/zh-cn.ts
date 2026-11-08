@@ -220,6 +220,8 @@ export const zhCN: MessageDict = {
   "settings.appearance.ambient.aria": "背景动效",
   "settings.appearance.ambient.off": "关闭",
   "settings.appearance.ambient.drift": "缓慢流动",
+  "settings.appearance.ambient.unavailable.transparency": "系统已关闭“透明效果”，背景动效当前不可用；在系统设置里重新打开透明效果后即可选择。",
+  "settings.appearance.ambient.unavailable.backdropFilter": "当前运行环境不支持背景模糊，背景动效不可用，无法开启。",
   "settings.appearance.reducedTransparency": "减少透明效果",
   "settings.appearance.reducedTransparency.desc": "玻璃层与弹窗退回实色；不影响布局，也不影响背景动效。默认跟随系统。",
   "settings.appearance.reducedTransparency.aria": "减少透明效果",

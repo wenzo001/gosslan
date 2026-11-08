@@ -2690,8 +2690,10 @@ export function findHandRolledSegmentLoops(src: string): GuardIssue[] {
 export interface AmbientMotionSources {
   /** `src/style.css` */
   css: string;
-  /** `src/utils/ambient.ts`（可选：给了就一起扫 AM-04/05） */
+  /** `src/utils/ambient.ts`（可选：给了就一起扫 AM-04/05/17） */
   ambientSource?: string;
+  /** `src/utils/ambientCapability.ts`（可选：给了就扫 AM-17 的能力闸单一出口） */
+  capabilitySource?: string;
   /** `src/directives/pressRipple.ts`（可选：给了就扫 AM-09/10） */
   rippleSource?: string;
 }
@@ -2839,17 +2841,48 @@ export function checkAmbientMotion(s: AmbientMotionSources): GuardIssue[] {
 
   if (s.ambientSource) {
     const js = stripJsComments(s.ambientSource);
+    // AM-17 的另一半：`ambient.ts` 不许自己拼透明相关判定，只能经能力闸的入参。
+    // 2026-11-08 口径变了（能力不支持 ⇒ 落 off），但"单一出口"这条没变：
+    // 把 `prefers-reduced-transparency` 直接写进档位解析，等于第二份能力判定。
     if (/reducedTransparency|prefers-reduced-transparency/.test(js)) {
       out.push({
         line: lineAt(js, js.search(/reducedTransparency|prefers-reduced-transparency/)),
-        message: "AM-07：ambient 档位解析里出现 reduced-transparency —— 它只许降级玻璃，不许参与动效判定。",
+        message:
+          "AM-17：ambient 档位解析里直接出现 reduced-transparency —— 能力只能经 " +
+          "utils/ambientCapability.ts 的 `capability` 入参进入（单一出口）。",
       });
     }
-    if (!/dataset\.ambientMotion\s*=\s*setting\s*===\s*"drift"\s*\?\s*"force"/.test(js)) {
+    if (!/readAmbientCapability\(/.test(js) || !/source:\s*"capability"/.test(js)) {
       out.push({
         line: 0,
         message:
-          "AM-06：ambient.ts 必须写 `data-ambient-motion=\"force\"`（软件显式选「流动」时让系统 reduce 让位）。",
+          "AM-17：ambient.ts 缺少能力闸（要么没调 `readAmbientCapability()`，要么没把不可用落成 " +
+          '`source: "capability"`）。能力不支持时不给选、显示为关，是 2026-11-08 的硬口径。',
+      });
+    }
+    if (!/dataset\.ambientMotion\s*=\s*res\.mode\s*===\s*"drift"\s*\?\s*"force"/.test(js)) {
+      out.push({
+        line: 0,
+        message:
+          'AM-06：ambient.ts 必须按**实际模式**写 `data-ambient-motion="force"`' +
+          "（真的在漂时才让系统 reduce 让位；能力闸落 off 时还写 force 就是撒谎）。",
+      });
+    }
+  }
+
+  // AM-17：能力闸的判定面必须完整（两个能力条件）且在唯一一个文件里。
+  if (s.capabilitySource) {
+    const js = stripJsComments(s.capabilitySource);
+    if (!/REDUCED_TRANSPARENCY_QUERY/.test(js)) {
+      out.push({
+        line: 0,
+        message: "AM-17：能力闸没有用 `REDUCED_TRANSPARENCY_QUERY`（系统关「透明效果」这一档丢了，或自己拼了第二份字面量）。",
+      });
+    }
+    if (!/backdrop-filter/.test(js) || !/-webkit-backdrop-filter/.test(js)) {
+      out.push({
+        line: 0,
+        message: "AM-17：能力闸必须同时问 `backdrop-filter` 与 `-webkit-backdrop-filter`（与 style.css 的 @supports 同口径）。",
       });
     }
   }

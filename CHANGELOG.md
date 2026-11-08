@@ -14,6 +14,19 @@
 
 ## [Unreleased]
 
+## [5.19.12] - 2026-11-08
+
+### 背景动效
+- 系统层放不出效果时，设置里的「背景动效」**默认关闭、两档都不可选，并写明原因**：
+  Windows 关掉系统「透明效果」（`prefers-reduced-transparency: reduce`）或内核不支持
+  `backdrop-filter` / `-webkit-backdrop-filter` 时，档位落 `off`、来源记「能力」（诊断面板可见），
+  设置行说明文字换成原因句。
+- 能力判定与用户选择**分开存**：不可用时只改显示值与 DOM 档位，存储里的显式值一个字不动；
+  能力恢复（系统重新打开透明效果）后原样回到用户原来那一档。系统偏好在会话中途切换会即时重算。
+- 能力判定只有一处出口 `src/utils/ambientCapability.ts`（判据 **AM-17**：`ambient.ts` 不得自己拼透明查询、
+  两个 `backdrop-filter` 属性都要问；运行时探针 `--only=ambientcap` 读设置页两态）。
+  `data-ambient-motion="force"` 改为按**实际模式**写：能力把档位落成关时不再谎报「软件压过系统」。
+
 ## [5.19.11] - 2026-11-08
 
 ### 修复
