@@ -831,11 +831,11 @@ useEventListener(document, "click", closeFriendMenu);
       <!-- 页脚 = 任务入口 + 右端版本号（用户 2026-11-07 决策：主界面要能一瞟看到当前版本，
            桌面与移动共用这一个落点；「关于」里那份保留）。
            ⚠️ 版本号必须是**纯展示**：`pointer-events-none` ⇒ 不吃点击，也绝不包成「关于」的入口。 -->
-      <div class="conv-footer-row flex items-center gap-2 pr-3">
+      <div class="conv-footer-row flex items-center gap-2">
         <button
           type="button"
           data-task-entry
-          class="tap-safe flex h-[42px] min-w-0 flex-1 items-center gap-2 px-3 text-left transition hover:bg-[var(--gosslan-list-hover)]"
+          class="tap-safe flex h-[42px] min-w-0 flex-1 items-center gap-2 px-3 text-left transition hover:bg-[var(--gosslan-list-hover)] desktop:px-4"
           :aria-label="taskCount > 0 ? t('task.open', { n: taskCount }) : t('task.title')"
           :title="taskCount > 0 ? t('task.open', { n: taskCount }) : t('task.title')"
           @click="app.openTaskCenter"
@@ -859,12 +859,15 @@ useEventListener(document, "click", closeFriendMenu);
         <!-- 版本号：11px 最小一档 + 第二档灰（`--gosslan-text-3` 从来没定义过，见
              docs/architecture/refactor-5.0-report.md；要更浅就得新造色档并过对比度账）。
              数据源只有 package.json 一处（与「关于」同一个 import），判据见 appVersion.test.ts。
-             宽度按最长形态（`v` + 三段三位数，共 12ch）预留：`tabular-nums` 下每位等宽，
-             短版本也不会让右边的 hover 区跟着变宽；`shrink-0` + `whitespace-nowrap`
-             保证它永不被压缩、永不换行（用户 2026-11-08）。 -->
+             四周对称内边距（`p-2`）—— 之前只有右侧 `pr-3`，看起来像单边留白（用户 2026-11-08）；
+             与 hover 区之间的 8px 由行上的 `gap-2` 提供，不并进内边距。
+             宽度按最长形态（`v` + 三段三位数，共 12ch）+ 左右内边距（1rem）预留：
+             `tabular-nums` 下每位等宽，短版本也不会让右边的 hover 区跟着变宽；
+             `min-w` 是**下限**不是定宽 ⇒ 容器变宽 / 版本号变长时这块只会变宽、右对齐不变；
+             `shrink-0` + `whitespace-nowrap` 保证它永不被压缩、永不换行（用户 2026-11-08）。 -->
         <span
           data-app-version
-          class="pointer-events-none min-w-[12ch] shrink-0 select-none whitespace-nowrap text-right text-caption tabular-nums text-[var(--gosslan-text-2)] opacity-70"
+          class="pointer-events-none min-w-[calc(12ch+1rem)] shrink-0 select-none whitespace-nowrap p-2 text-right text-caption tabular-nums text-[var(--gosslan-text-2)] opacity-70"
           aria-hidden="true"
         >{{ appVersion }}</span>
       </div>
@@ -944,8 +947,9 @@ useEventListener(document, "click", closeFriendMenu);
  *
  * 用容器查询而不是视口宽度 —— 桌面侧栏宽 280–400（`ResponsiveLayout` 的 LIST_W_MIN/MAX），
  * 与视口无关；移动端整列铺满，窗口再窄也不会把两者叠到一起。
- * 阈值 240px ≈ 「图标 + 任务中心 + 计数 + chevron + 两侧内边距」(≈140) + 版本号 12ch(≈73) + 间距；
- * 低于它版本号先消失。桌面最低 280px 时两者都放得下，所以正常情况下看不到这一步。
+ * 阈值 240px ≈ 「图标 + 任务中心 + 计数 + chevron + 两侧内边距」(桌面 `px-4` 下 ≈148)
+ * + 版本号 12ch + 加左右内边距(≈89) + 间距 8；低于它版本号先消失。
+ * 桌面最低 280px 时两者都放得下，所以正常情况下看不到这一步。
  */
 .conv-footer-row {
   container-type: inline-size;
