@@ -17399,9 +17399,46 @@ async function runUpdater(cdp, url) {
     if (b) b.click();
     return !!b;
   })()`);
+  await sleep(500);
+  const dlgAfter = await cdp.eval(`(() => {
+    const d = document.querySelector('[role="dialog"]');
+    return { open: !!d, txt: d ? (d.innerText || '').replace(/\\s+/g, ' ').slice(0, 120) : '' };
+  })()`);
+  check("应用更新：取消确认后框关闭（什么都没装）", dlgAfter.open === false, "dialog 已关闭", JSON.stringify(dlgAfter));
+
+  // 2026-11-08 用户直报：点「确认安装」后弹窗不应立刻消失 —— 应切 loading 并留到重启前一刻。
+  await cdp.eval(`(() => {
+    const b = [...document.querySelectorAll('button')].find((x) => (x.innerText || '').includes('安装并重启'));
+    if (b) b.click();
+    return !!b;
+  })()`);
   await sleep(200);
-  const dlgAfter = await cdp.eval("!!document.querySelector('[role=\"dialog\"]')");
-  check("应用更新：取消确认后框关闭（什么都没装）", dlgAfter === false, "dialog 已关闭", JSON.stringify({ dlgAfter }));
+  await cdp.eval(`(() => {
+    const d = document.querySelector('[role="dialog"]');
+    const b = d ? [...d.querySelectorAll('button')].find((x) => (x.innerText || '').trim() === '确认安装') : null;
+    if (b) b.click();
+    return !!b;
+  })()`);
+  await sleep(300);
+  const dlgBusy = await cdp.eval(`(() => {
+    const d = document.querySelector('[role="dialog"]');
+    if (!d) return { open: false };
+    // 只看页脚两个键：标题栏的 ✕ 由 onCancel 的 busy 守卫吞掉（不改它的 disabled 属性）。
+    const footer = [...d.querySelectorAll('button')].filter((b) => {
+      const s = (b.innerText || '').trim();
+      return s === '取消' || s.includes('正在安装');
+    });
+    return {
+      open: true,
+      footer: footer.map((b) => ({ txt: (b.innerText || '').trim().slice(0, 24), disabled: b.disabled })),
+      txt: (d.innerText || '').slice(0, 160),
+    };
+  })()`);
+  check("应用更新：点确认后弹窗不消失，切 loading 且两键禁用",
+    dlgBusy.open === true && Array.isArray(dlgBusy.footer) && dlgBusy.footer.length === 2
+      && dlgBusy.footer.every((b) => b.disabled === true) && /正在安装/.test(dlgBusy.txt),
+    "dialog 仍在 / 取消与主键 disabled / 主键显示安装中",
+    JSON.stringify(dlgBusy));
 
   // 下载一半失败：要说清楚已下多少、重试从头
   await mount({ ...base, phase: "error", error: "network", downloaded: 40, total: 100 });
