@@ -62,6 +62,15 @@
 4. **可用性**：thumb 最小长度由 WebKit 原生保证；点击轨道翻页、滚轮/触控/键盘（PageUp/Down、Home/End）都由原生滚动行为提供。
 5. **不叠加**：全站只用一套原生 `::-webkit-scrollbar`；Firefox 走 `scrollbar-color` 回退；
    不出现"私有滚动条 + 系统滚动条"两层。
+6. **一页一层**：同一屏只留一层滚动条。子列表随内容展开或折叠，不再自套
+   `max-h-* + overflow-y-auto`（2026-11-08 诊断页四处子列表已按此收口，判据 `PG-03`）。
+7. **左列只预留右侧**：会话列表之外的两个左列列表面板（外部链接、收藏左栏）用
+   `.gosslan-list-scroll`（`scrollbar-gutter: stable`，**不**用 `both-edges`）。
+   原因：`both-edges` 的左侧空带宽度 = 平台滚动条宽度，头部/工具栏没法用固定 px 对上它 ⇒
+   同一列出现多条内容竖线（实测差 4~16px）。左列的行内容统一 `px-3`、行 hover 面通宽
+   （左缘 = 容器左缘，右缘 = 滚动条带左缘），竖线与滚动条宽度、平台解耦。
+   框架层（`MobilePageFrame` 等）在左列里必须 `scroll=false`，否则它的 `both-edges`
+   左侧空带会把内层列表整体推离头部竖线（实测 8px）。判据 `LH-01`。
 
 ## 5. 验收表（逐面板）
 
@@ -75,6 +84,7 @@
 | 收藏 | `.gosslan-scroll` | 8px | 4px / 6px | 是 | 3.35 / 4.30 : 1 | 否 |
 | 转发 / 群文件 / @提醒 | `.gosslan-scroll` | 8px | 4px / 6px | 是 | 3.35 / 4.30 : 1 | 否 |
 | 会话列表 / 消息流 | `.scrollbar-both` | 8px | 4px / 6px | 是 | 3.35 / 4.30 : 1 | 否（行高 62/64 不动） |
+| 左列：外部链接 / 收藏左栏 | `.gosslan-list-scroll` | 8px（仅右侧） | 4px / 6px | 是 | 3.35 / 4.30 : 1 | 否（行 hover 通宽） |
 
 > 读数口径：带/thumb 来自 `style.css` 的 token 与 border 计算；对比度按 WCAG 2.x 公式，
 > 把 `--gosslan-text-2` 以 72% / 88% / 12% 混到 `--gosslan-panel` 上计算，亮暗两个主题各算一次。
@@ -84,6 +94,10 @@
 
 - `SC-01`：滚动容器必须挂 `.gosslan-scroll` / `.scrollbar-both`；焦点环必须 `ring-inset`。
 - `SC-02`：`track + gap = 16`；`.gosslan-scroll` 必须同时有两侧 gutter 与 `padding-inline`；反例 4 条。
+- `LH-01`：左列列表面板必须挂 `.gosslan-list-scroll`、行/头部/工具栏同为 `px-3`、
+  框架层 `scroll=false`；反例 3 条（换回 `.gosslan-scroll` / 行改回 `px-2` / 去掉 `:scroll="false"`）。
+- `SP-01`：分栏把手命中区整体落在 main 一侧（`-mr-2`，收藏页 `left` 不加 `-4`），
+  不得覆盖左列滚动条带；反例 2 条（`-mx-1` / `left` 改回 `- 4`）。
 - `DE-01`：密度五档成对、`row-min-h ≥ 40`；反例 2 条。
 - `DE-02`：**本文表格里的数字必须与 `style.css` token 逐条相等**；反例是把文档数字改掉。
 - `SK-04`：**首屏骨架与真实布局同源**（见 §8）；反例 4 条（骨架写回字面 px、真实组件改回私有数字、
@@ -95,6 +109,7 @@
 node --test --experimental-strip-types src/utils/designGuards.test.ts   # SC-01/02 + DE-01/02 + SK-04
 node scripts/check-scroll-contrast.mjs                                  # 三态对比度读数
 node scripts/check-ui-runtime.mjs --only=concentric                     # orb 20 / mark 8·14
+node scripts/check-ui-runtime.mjs --only=listmetrics                    # 左列竖线 + 分栏把手 vs 滚动条带（11 条）
 ```
 
 截图（亮暗 × 特效开）落在 `test-results/ui-2026-11-07/`：设置、日志、群任务的改前/改后，

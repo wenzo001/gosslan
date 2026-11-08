@@ -8081,7 +8081,6 @@ test("SC-02 真实树：内容页滚动容器必须消费 .gosslan-scroll", () =
     "../components/AddFriendModal.vue",
     "../components/RemindAudienceDialog.vue",
     "../components/FriendProfile.vue",
-    "../components/LinksList.vue",
     "../layouts/ResponsiveLayout.vue",
   ];
   for (const rel of pages) {
@@ -8117,6 +8116,107 @@ test("SC-02 反例自证：删掉空隙 / 改滚动条带宽度 / 只留单侧�
     findScrollGapIssues(mut(/--gosslan-scroll-inset:\s*calc\(var\(--gosslan-scroll-track\)\s*\+\s*var\(--gosslan-scroll-gap\)\);/, "--gosslan-scroll-inset: 0px;")).length > 0,
     "删掉 scroll-inset（标题与内容对齐）必须命中",
   );
+});
+
+// ---------------- LH-01 左列列表内容竖线（2026-11-08） ----------------
+//
+// 用户实测（两张截图）：外部链接面板、收藏面板「列表 hover、上面按钮的间距和对齐」不舒服。
+// 量出来的根因不是 hover 底色本身，而是**同一列里有三条不同竖线**：
+//   头部 `px-3`(12) ｜ 工具栏 `px-2`(8) ｜ 列表行 = 左侧空带 + padding（16~24，随平台滚动条宽度变）
+// `scrollbar-gutter: stable both-edges` 的左侧空带宽度**等于平台滚动条宽度**
+// （WKWebView 还会按"是否真的溢出"开关它，见 SC-03 注释），头部用固定 px 永远对不上。
+// 修法：左列列表走 `.gosslan-list-scroll`（只预留滚动条那一侧），头部/工具栏/行统一 `px-3`
+// ⇒ 竖线恒为 12px，与滚动条宽度和平台都无关；行 hover 面因容器无 padding 而通宽。
+
+/** 左列列表的「竖线不一致」问题；空数组 = 合规。 */
+function findListLineIssues(src: string, isFavorite: boolean): string[] {
+  const issues: string[] = [];
+  if (!src.includes("gosslan-list-scroll"))
+    issues.push("左列滚动容器没有消费 .gosslan-list-scroll（both-edges 会带回左侧空带）");
+  if (!isFavorite && /\bgosslan-scroll\b/.test(src))
+    issues.push("仍在用 .gosslan-scroll（左侧空带随平台滚动条宽度变，头部对不上）");
+  // 桌面左列**只许一层滚动条**：框架内容区若仍 `overflow-y-auto`，它自带 both-edges，
+  // 左侧空带会把内层列表整体推开半个滚动条宽（探针实测 8px），而头部不在那一层里。
+  if (!isFavorite && !/<MobilePageFrame[\s\S]{0,240}:scroll="false"/.test(src))
+    issues.push("MobilePageFrame 仍自己滚动（`:scroll=\"false\"` 缺失）⇒ 列表被它自身的左侧 gutter 推离头部竖线");
+  // 行 / 头部 / 工具栏必须同为 px-3（12px）：任一处回到 px-2 或改成 px-4 都必须红。
+  const anchors = isFavorite
+    ? [
+        "flex shrink-0 flex-col gap-2 px-3 pt-2",
+        "flex w-full min-w-0 items-start gap-2.5 overflow-hidden px-3 py-2.5 text-left transition",
+      ]
+    : [
+        "gap-1 border-b border-[var(--gosslan-divider)] px-3 py-1.5",
+        "gap-1.5 border-b border-[var(--gosslan-divider)] px-3 py-1",
+        "flex items-center gap-0.5 px-3 py-1.5 transition hover:bg-[var(--gosslan-list-hover)]",
+      ];
+  for (const a of anchors)
+    if (!src.includes(a)) issues.push(`没找到「${a.slice(0, 48)}…」⇒ 这一处的内容竖线不在 12px 上`);
+  return issues;
+}
+
+test("LH-01 真实树：外部链接 / 收藏左列的内容竖线全部落在 px-3", () => {
+  const links = readFileSync(new URL("../components/LinksList.vue", import.meta.url), "utf8");
+  const fav = readFileSync(new URL("../components/FavoritePanel.vue", import.meta.url), "utf8");
+  assert.deepEqual(findListLineIssues(links, false), [], findListLineIssues(links, false).join("\n"));
+  assert.deepEqual(findListLineIssues(fav, true), [], findListLineIssues(fav, true).join("\n"));
+});
+
+test("LH-01 反例自证：换回 .gosslan-scroll / 行改回 px-2 必须红", () => {
+  const links = readFileSync(new URL("../components/LinksList.vue", import.meta.url), "utf8");
+  const back = links.replace("gosslan-list-scroll", "gosslan-scroll");
+  assert.notEqual(back, links, "反例自证：锚点已漂");
+  assert.ok(findListLineIssues(back, false).length > 0, "换回 .gosslan-scroll 必须命中");
+  const narrow = links.replace(
+    "flex items-center gap-0.5 px-3 py-1.5 transition",
+    "flex items-center gap-0.5 px-2 py-1.5 transition",
+  );
+  assert.notEqual(narrow, links, "反例自证：行锚点已漂");
+  assert.ok(findListLineIssues(narrow, false).length > 0, "行内容缩进改回 8px 必须命中");
+  const twoScroll = links.replaceAll(':scroll="false"', "");
+  assert.notEqual(twoScroll, links, "反例自证：`:scroll=\"false\"` 锚点已漂");
+  assert.ok(findListLineIssues(twoScroll, false).length > 0, "框架重新自己滚动（两层滚动条）必须命中");
+});
+
+// ---------------- SP-01 分栏把手不抢滚动条（2026-11-08） ----------------
+//
+// 用户实测：左列与会话区之间的拖拽把手把左列滚动条盖住，点滚动条只会触发左右拖拽。
+// 根因：把手 `w-2` + `-mx-1` 向两侧各探 4px ⇒ 覆盖滚动条带最右 4px（实测重叠 4px）。
+// 修法：命中区整条落在 main 一侧（`-mr-2` 抵消布局宽度，净占位 0；收藏页那条 `left` 不再 `- 4`）。
+// 判据只看"负外边距的朝向"与"收藏页 left 的偏移"，不认 z-index（那是硬压，不是切开命中区）。
+
+function findSplitterIssues(src: string): string[] {
+  const issues: string[] = [];
+  const handles = [...src.matchAll(/class="[^"]*\bw-2\b[^"]*cursor-col-resize[^"]*"/g)].map((m) => m[0]);
+  if (handles.length < 2) issues.push(`只找到 ${handles.length} 条分栏把手（应为 2：会话列表 / 收藏页）`);
+  for (const h of handles) {
+    if (/(?:^|\s)-mx-/.test(h) || /(?:^|\s)-ml-/.test(h))
+      issues.push(`把手向列表一侧探出（${h.slice(0, 40)}…）⇒ 会盖住滚动条带`);
+  }
+  // 静态 class 之外的 `:class` 绑定也要看：从每条把手往后 240 字（覆盖同一标签的 :class 行）。
+  for (const m of src.matchAll(/cursor-col-resize/g)) {
+    const block = src.slice(m.index ?? 0, (m.index ?? 0) + 240);
+    if (/(?:^|[\s"'])-mx-/.test(block) || /(?:^|[\s"'])-ml-/.test(block))
+      issues.push("把手的 :class 绑定里有向左探出的负外边距（会盖住滚动条带）");
+  }
+  if (!/-mr-2/.test(src)) issues.push("把手缺 `-mr-2`（命中区没有整体落在 main 一侧）");
+  if (/RAIL_W \+ listW - 4/.test(src)) issues.push("收藏页把手仍向列表一侧多探 4px（left 还在 `- 4`）");
+  return issues;
+}
+
+test("SP-01 真实树：分栏把手命中区整体落在 main 一侧", () => {
+  const src = readFileSync(new URL("../layouts/ResponsiveLayout.vue", import.meta.url), "utf8");
+  assert.deepEqual(findSplitterIssues(src), [], findSplitterIssues(src).join("\n"));
+});
+
+test("SP-01 反例自证：把手改回 -mx-1 / 收藏页 left 改回 -4 必须红", () => {
+  const src = readFileSync(new URL("../layouts/ResponsiveLayout.vue", import.meta.url), "utf8");
+  const oldMargin = src.replaceAll("-mr-2", "-mx-1");
+  assert.notEqual(oldMargin, src, "反例自证：-mr-2 锚点已漂");
+  assert.ok(findSplitterIssues(oldMargin).length > 0, "改回 -mx-1（覆盖滚动条）必须命中");
+  const oldLeft = src.replace("`${RAIL_W + listW}px`", "`${RAIL_W + listW - 4}px`");
+  assert.notEqual(oldLeft, src, "反例自证：收藏页 left 锚点已漂");
+  assert.ok(findSplitterIssues(oldLeft).length > 0, "收藏页 left 改回 -4 必须命中");
 });
 
 // ---------------- SC-03 设置窗口「常驻滚动轨道」（2026-11-07 第三次，按像素） ----------------

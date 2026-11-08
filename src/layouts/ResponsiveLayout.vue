@@ -828,18 +828,27 @@ const listW = ref(
   Math.min(LIST_W_MAX, Math.max(LIST_W_MIN, Number(storageGet(LIST_W_KEY)) || LIST_W_DEFAULT)),
 );
 const resizing = ref(false);
+/**
+ * 抓取偏移：把手命中区整体落在 main 一侧（见模板注释），按下点不在交界线上，
+ * 不记这个偏移的话第一次 pointermove 会把列表宽度瞬移到鼠标位置（最多 +8px 跳一下）。
+ */
+const resizeGrabDX = ref(0);
 
 function onResizeStart(e: PointerEvent) {
   // 只认鼠标左键：中键/右键拖拽不该改变列表宽度（右键还会弹系统菜单）
   if (e.button !== 0) return;
   resizing.value = true;
+  resizeGrabDX.value = e.clientX - (RAIL_W + listW.value);
   (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
   document.body.style.cursor = "col-resize";
   document.body.style.userSelect = "none";
 }
 function onResizeMove(e: PointerEvent) {
   if (!resizing.value) return;
-  listW.value = Math.min(LIST_W_MAX, Math.max(LIST_W_MIN, e.clientX - RAIL_W));
+  listW.value = Math.min(
+    LIST_W_MAX,
+    Math.max(LIST_W_MIN, e.clientX - RAIL_W - resizeGrabDX.value),
+  );
 }
 /**
  * 结束拖拽。除了正常抬手，还要覆盖：指针被系统抢走（`lostpointercapture`）、
@@ -980,13 +989,15 @@ function onResizeEnd() {
       />
     </aside>
 
-    <!-- 拖拽分隔条：悬浮叠在列表/聊天交界上（负外边距抵消布局宽度），不留缝；
+    <!-- 拖拽分隔条：命中区**整体落在 main 一侧**（`-mr-2` 抵消 8px 布局宽度，净占位 0），
+         不再用 `-mx-1` 向两侧各探 4px —— 那样会盖住左列滚动条带最右 4px，
+         用户点滚动条只会触发左右拖拽（2026-11-08 实测）。滚动条带永远归滚动条。
          平时透明，悬停/拖拽时高亮。收藏打开时这一列已收起，这条跟着消失
          （收藏页另有下面那条，见下）。 -->
     <div
       v-if="!app.isMobile && !favoritesOpen"
       class="relative z-10 hidden w-2 cursor-col-resize transition-colors hover:bg-[var(--gosslan-divider)] desktop:md:block"
-      :class="resizing ? '-mx-1 bg-[var(--gosslan-divider)]' : '-mx-1'"
+      :class="resizing ? '-mr-2 bg-[var(--gosslan-divider)]' : '-mr-2'"
       @pointerdown="onResizeStart"
       @pointermove="onResizeMove"
       @pointerup="onResizeEnd"
@@ -997,12 +1008,14 @@ function onResizeEnd() {
     <!-- 收藏页（整页态）的拖拽条：它的左列渲染在 `FavoritePanel` 里（不是上面的 `<aside>`），
          所以要单独挂一条 —— 绝对定位到「rail + listW」处（main 的左缘就是 rail 右缘），
          复用同一份 `listW` 与拖拽逻辑。这样收藏页的左列宽度与会话列表完全一致、且同样可拖
-         （用户 2026-09-20：「宽度和其他页面不一样，而且不能拖动调整」）。 -->
+         （用户 2026-09-20：「宽度和其他页面不一样，而且不能拖动调整」）。
+         左缘**正好压在交界线**上、整条向 main 一侧铺开（不再 `- 4`）：
+         否则会盖住收藏左列的滚动条带（同日实测的同一根因）。 -->
     <div
       v-if="!app.isMobile && favoritesOpen"
       class="absolute inset-y-0 z-10 w-2 cursor-col-resize transition-colors hover:bg-[var(--gosslan-divider)]"
       :class="resizing ? 'bg-[var(--gosslan-divider)]' : ''"
-      :style="{ left: `${RAIL_W + listW - 4}px` }"
+      :style="{ left: `${RAIL_W + listW}px` }"
       @pointerdown="onResizeStart"
       @pointermove="onResizeMove"
       @pointerup="onResizeEnd"

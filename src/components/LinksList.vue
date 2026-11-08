@@ -354,12 +354,17 @@ function sourceText(l: ExternalLink): string {
 
 <template>
   <!-- 统一框架头部：标题 + 新增按钮（右上角）由 MobilePageFrame 提供；
-       移动端是覆盖层带返回键，桌面端内嵌在左列（无返回键，标题栏保留）。 -->
+       移动端是覆盖层带返回键，桌面端内嵌在左列（无返回键，标题栏保留）。
+       `:scroll="false"`：整页只有**一层**滚动条（下面那个 `.gosslan-list-scroll`）。
+       若让框架内容区也 `overflow-y-auto`（默认），它自带 `scrollbar-gutter: stable both-edges`，
+       左侧空带会把内层列表整体右推半个滚动条宽（实测 8px），头部却不在那层里 ⇒
+       「头部按钮与列表内容不在同一条竖线」（2026-11-08 探针读数 headerContentL=12 / row 内容线 20）。 -->
   <MobilePageFrame
     :mode="app.isMobile ? 'overlay' : 'inline'"
     :header="true"
     :show-back="app.isMobile"
     :title="t('links.title')"
+    :scroll="false"
     @back="emit('back')"
   >
     <!-- 刷新放在标题栏右侧：小尺寸、不挤正文；进行中时按钮上直接写「刷新中…」。 -->
@@ -384,7 +389,7 @@ function sourceText(l: ExternalLink): string {
     <!-- 三个入口同一行、同一档样式（用户 2026-10-23：一个大蓝按钮在上、一个描边按钮在下，
          既突兀又不像一组）。图标只作辅助，文案才是主标识；「添加」保留主色描边表达层级，
          不再用整块实底按钮 —— 左栏最窄只有 200px，实底大按钮会把标题挤没。 -->
-    <div class="flex shrink-0 flex-wrap items-center gap-1 border-b border-[var(--gosslan-divider)] px-2 py-1.5">
+    <div class="flex shrink-0 flex-wrap items-center gap-1 border-b border-[var(--gosslan-divider)] px-3 py-1.5">
       <button
         type="button"
         class="tap-safe inline-flex h-8 items-center gap-1 rounded-[var(--gosslan-radius-md)] border border-[var(--gosslan-primary)] px-2 text-meta text-[var(--gosslan-accent-ink)] transition hover:bg-[var(--gosslan-hover)]"
@@ -422,7 +427,7 @@ function sourceText(l: ExternalLink): string {
     <div
       v-if="importSource"
       data-probe="links-source"
-      class="flex shrink-0 items-center gap-1.5 border-b border-[var(--gosslan-divider)] px-2 py-1"
+      class="flex shrink-0 items-center gap-1.5 border-b border-[var(--gosslan-divider)] px-3 py-1"
       :title="importSource"
     >
       <span class="shrink-0 text-caption text-[var(--gosslan-text-2)]">{{ t("links.sourceLabel") }}</span>
@@ -443,7 +448,7 @@ function sourceText(l: ExternalLink): string {
     <div
       v-if="refreshError"
       data-probe="links-refresh-error"
-      class="flex shrink-0 items-start gap-1.5 border-b border-[var(--gosslan-divider)] bg-[var(--gosslan-danger-soft)] px-2 py-1.5"
+      class="flex shrink-0 items-start gap-1.5 border-b border-[var(--gosslan-divider)] bg-[var(--gosslan-danger-soft)] px-3 py-1.5"
     >
       <span class="min-w-0 flex-1 text-caption leading-relaxed text-[var(--gosslan-danger-ink)]">
         {{ t(refreshError.key, refreshError.params) }}
@@ -456,7 +461,7 @@ function sourceText(l: ExternalLink): string {
       >{{ t("common.retry") }}</button>
     </div>
 
-    <div class="gosslan-scroll min-h-0 flex-1 overflow-y-auto pb-2">
+    <div class="gosslan-list-scroll min-h-0 flex-1 overflow-y-auto pb-2">
       <!-- 新增 / 编辑：只负责一条链接的名称与网址。 -->
       <BaseModal
         :open="dialogOpen"
@@ -669,7 +674,7 @@ function sourceText(l: ExternalLink): string {
       <div
         v-for="l in links"
         :key="l.id"
-        class="relative flex items-center gap-0.5 px-2 py-1.5 transition hover:bg-[var(--gosslan-list-hover)]"
+        class="relative flex items-center gap-0.5 px-3 py-1.5 transition hover:bg-[var(--gosslan-list-hover)]"
       >
         <button
           class="tap-safe flex min-w-0 flex-1 items-center gap-2 rounded-[var(--gosslan-radius-sm)] px-1.5 py-1.5 text-left"
@@ -708,8 +713,8 @@ function sourceText(l: ExternalLink): string {
         >
           <Icon name="trash2" class="h-3.5 w-3.5" />
         </button>
-        <!-- 行间内缩分隔线：从文本列起（px-2 + 按钮 px-1.5 + 16 图标 + gap-2 = 38px） -->
-        <div class="pointer-events-none absolute bottom-0 left-[38px] right-0 h-px bg-[var(--gosslan-divider)]"></div>
+        <!-- 行间内缩分隔线：从文本列起（px-3 + 按钮 px-1.5 + 16 图标 + gap-2 = 42px） -->
+        <div class="pointer-events-none absolute bottom-0 left-[42px] right-0 h-px bg-[var(--gosslan-divider)]"></div>
       </div>
     </div>
   </MobilePageFrame>

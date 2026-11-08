@@ -234,6 +234,31 @@
   关键词跟着搬到「Presence payload 必须过 hello_avatar_for_wire」，注入点与断言一个字没动；
   单跑该用例 → ✅ 1 条通过。这是本仓点过名的形状：判据搬了、锚点没搬，检查还在跑却查不到东西。
 
+## 收口记录（2026-11-08 · 左列竖线 + 分栏把手）
+
+- **C：左列列表的两条内容竖线（外部链接 / 收藏左栏）** —— 用户先问「这块有改吗」，核实结论是
+  **没改过**（`73c1e89a` 只动群任务筛选行与 PG-02）。改前读数（探针 `--only=listmetrics`，
+  容器 420 宽）：外部链接 `headerContentL=8 / 行左缘 16 / 行内距 8`（≈ 三条竖线）；
+  收藏 `search.l=8 / 行左缘 16`。根因：`.scrollbar-both` 的 `both-edges` 左侧空带 = 平台滚动条宽度，
+  而头部用固定 `px-2` 去对。改后：`headerContentL=12 / row.l=0 / rowPadL=rowPadR=12`（两条竖线合一）。
+- **改了什么**：新增 `.gosslan-list-scroll`（只预留右侧滚动条带），`LinksList` / `FavoritePanel`
+  左栏消费它；行、工具栏、来源条、错误条、搜索容器统一 `px-3`；行内缩分隔线 38 → 42px。
+- **第二处根因（本轮新发现）**：`LinksList` 外层 `MobilePageFrame` 默认自己滚动，它的
+  `both-edges` 左侧空带把内层列表整体右推 8px（`row.l=8` vs `headerContentL=12`）。
+  改法是 `:scroll="false"` —— 一页只留一层滚动条，竖线才可能对齐。
+- **D：分栏把手抢走左列滚动条** —— 实测把手盒 `[384, 392]`、滚动条带 `[368, 384]`，
+  横向重叠 **4px**（`-mx-1` 各探 4px），`elementFromPoint(383)` 命中把手 ⇒ 用户点不到滚动条。
+  改为 `-mr-2`（净占位 0，整条落在 main 一侧）、收藏页 `left` 去掉 `- 4`，并补 `resizeGrabDX`
+  避免按下点不在交界线上时第一次 pointermove 跳 8px。
+- **判据**：`LH-01`（竖线/一层滚动，3 条反例）/ `SP-01`（负边距朝向，2 条反例）；
+  `node --test src/utils/designGuards.test.ts` → **378 pass / 0 fail**。
+- **运行时读数**（`--only=listmetrics` → **11 绿 / 0 FAIL**，`test-results/list-metrics.json`）：
+  `overlapX=0`、`elementFromPoint(带最右缘).inScroller=true`、滚动条按下 `scrollTop 0→549`、
+  把手下按下拖动 `listW 320→360` 且 `body.cursor=col-resize`、反例注入 `-mx-1` 后
+  `overlapX=4` 且最右缘归把手。
+- **截图**：`test-results/list-metrics/links-{before,after}.png`、`favorites-{before,after}.png`。
+- **未改**：`.screenshots/`、`docs/notes/ui-pulse-redesign/candidates/` 两个未跟踪目录未动。
+
 ## 待做（发版后动作，勿提前执行）
 
 - **删除 v5.18.71 的 Windows 资产（两个 `-setup.exe`）** —— 用户 2026-11-07 拍板：
