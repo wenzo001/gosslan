@@ -68,11 +68,15 @@ test("反例：把版本号改成可点按钮（当成第二个「关于」入�
 
 // ---------------- 页脚排版（用户 2026-11-08） ----------------
 //
-// 四条契约，任何一条被改回去都要红：
+// 六条契约，任何一条被改回去都要红：
 //   1. hover 高亮只属于任务入口，**不许贴到版本文本**：两者是兄弟节点，中间有间距 token；
-//   2. 版本号宽度按最长形态（`v100.100.100` = 12ch）预留，`tabular-nums` + `text-right`；
-//   3. `shrink-0` + `whitespace-nowrap` —— 任何宽度下都不被压缩、不换行；
-//   4. 容器窄到放不下时**先隐藏版本号**，任务入口保留。
+//   2. 版本号四周内边距**对称**（单个 `p-*`，不许 `pr-*` / `px-*` 这种单侧或分轴写法）；
+//   3. 版本号宽度按最长形态（`v` + 三段三位数 = 12ch）**加上左右内边距**预留，
+//      `tabular-nums` + `text-right`；
+//   4. `shrink-0` + `whitespace-nowrap` + 没有 `max-w` / 定宽 / `truncate` / `overflow-hidden`
+//      —— 任何宽度下都不被压缩、不换行；容器变宽时只会变宽（只增不缩）；
+//   5. 任务入口在 PC 端按桌面尺度加宽（`desktop:px-*`），移动端保持原来的档；
+//   6. 容器窄到放不下时**先隐藏版本号**，任务入口保留。
 export function checkFooterLayout(src: string): string[] {
   const issues: string[] = [];
   const row = src.match(/<div\s+class="conv-footer-row[^"]*"[^>]*>/);
@@ -82,7 +86,17 @@ export function checkFooterLayout(src: string): string[] {
     if (!/\bgap-[1-9]/.test(row[0])) {
       issues.push("页脚行缺少间距 token（gap-*）—— hover 高亮会直接贴到版本号上。");
     }
-    if (!/\bpr-3\b/.test(row[0])) issues.push("页脚行右侧内边距（pr-3）丢了，版本号会贴着窗口边缘。");
+    // 单侧留白是这次要根治的形状（旧实现只有右侧 `pr-3`）。
+    if (/\bp[rtbl]-/.test(row[0])) {
+      issues.push("页脚行带单侧内边距 —— 留白必须落在版本号自己的对称内边距里。");
+    }
+  }
+
+  const btn = src.match(/<button[^>]*data-task-entry[^>]*>/);
+  if (!btn) {
+    issues.push("找不到 `<button data-task-entry>`。");
+  } else if (!/\bdesktop:px-/.test(btn[0]) || !/\bpx-\d/.test(btn[0])) {
+    issues.push("任务入口没有在 PC 端按桌面尺度加宽（缺 `desktop:px-*`）—— 可点区域仍然偏窄。");
   }
 
   const span = src.match(/<span[^>]*data-app-version[^>]*>/);
@@ -99,9 +113,29 @@ export function checkFooterLayout(src: string): string[] {
   ] as const) {
     if (!cls.includes(needle)) issues.push(`${why}（缺 \`${needle}\`）。`);
   }
-  if (!/min-w-\[\d+ch\]/.test(cls)) {
-    issues.push("版本号没有按 `ch` 预留固定最小宽度 —— 短版本会让右边留白随版本号宽度变化。");
+  // 对称内边距：只认单个 `p-N`；`pr-*` / `px-*` / `py-*` 都是不对称或分轴写法。
+  const pTokens = [...cls.matchAll(/\bp([xytrbl])?-\d+(?:\.\d+)?/g)].map((m) => m[0]);
+  const symmetric = pTokens.filter((t) => /^p-\d/.test(t));
+  if (symmetric.length !== 1 || pTokens.length !== 1) {
+    issues.push(
+      `版本号内边距必须四周对称（只写一个 \`p-*\`），现在是 ${pTokens.length ? pTokens.join(" ") : "没有内边距"}。`,
+    );
   }
+  // 预留宽度 = 12ch（最长版本形态）+ 左右内边距；少算了内边距，长版本会顶开布局。
+  if (!/min-w-\[calc\(\s*12ch\s*\+\s*[\d.]+rem\s*\)\]/.test(cls)) {
+    issues.push("版本号没有按 `12ch + 左右内边距` 预留最小宽度 —— 长版本会把布局顶开。");
+  }
+  // 只增不缩：任何定宽 / 上限 / 裁剪都会让它在该宽的时候缩回去。
+  // 先把 `min-w-[…]` 剥掉再找死宽，否则 `min-w-[calc…]` 里的 `w-[` 会误伤自己。
+  const withoutMinW = cls.replace(/min-w-\[[^\]]*\]/g, "");
+  for (const [re, why] of [
+    [/\bmax-w-/, "版本号带了 `max-w-*` —— 容器变宽时它不会跟着放宽"],
+    [/\bw-\[|\bw-\d/, "版本号被写成定宽 —— 长版本会溢出或被压窄"],
+    [/\btruncate\b|\boverflow-hidden\b|\bline-clamp-/, "版本号会被裁剪 —— 长版本直接看不见"],
+  ] as const) {
+    if (re.test(withoutMinW)) issues.push(`${why}。`);
+  }
+  if (/\bmin-w-0\b/.test(withoutMinW)) issues.push("版本号带了 `min-w-0` —— 压缩保护失效。");
   if (/\bhover:/.test(cls)) issues.push("版本号自己带 hover 样式 —— hover 高亮只能属于任务入口。");
 
   // 版本号必须是任务入口的**兄弟**（在 </button> 之后）：放进按钮里就等于 hover 背景罩住它。
@@ -125,8 +159,27 @@ test("页脚排版：真实源码通过", () => {
 });
 
 test("反例：去掉页脚行的间距（hover 贴到版本号）⇒ 红", () => {
-  const src = readFileSync(COMPONENT, "utf8").replace('class="conv-footer-row flex items-center gap-2 pr-3"', 'class="conv-footer-row flex items-center pr-3"');
+  const src = readFileSync(COMPONENT, "utf8").replace(
+    'class="conv-footer-row flex items-center gap-2"',
+    'class="conv-footer-row flex items-center"',
+  );
   assert.ok(checkFooterLayout(src).some((x) => x.includes("间距")), "缺 gap-* 必须报红");
+});
+
+test("反例：把内边距改回单侧（只有右侧留白）⇒ 红", () => {
+  const src = readFileSync(COMPONENT, "utf8").replace("whitespace-nowrap p-2 ", "whitespace-nowrap pr-2 ");
+  assert.ok(checkFooterLayout(src).some((x) => x.includes("对称")), "单侧内边距必须报红");
+  // 行级单侧内边距同样算回退（旧实现就是行上 `pr-3`）。
+  const rowSide = readFileSync(COMPONENT, "utf8").replace(
+    'class="conv-footer-row flex items-center gap-2"',
+    'class="conv-footer-row flex items-center gap-2 pr-3"',
+  );
+  assert.ok(checkFooterLayout(rowSide).some((x) => x.includes("单侧")), "行级单侧留白必须报红");
+});
+
+test("反例：把传输队列宽度收回旧值（去掉 PC 端加宽）⇒ 红", () => {
+  const src = readFileSync(COMPONENT, "utf8").replace(" desktop:px-4", "");
+  assert.ok(checkFooterLayout(src).some((x) => x.includes("加宽")), "缺 desktop:px-* 必须报红");
 });
 
 test("反例：版本号允许换行 / 允许被压缩 ⇒ 红", () => {
@@ -136,9 +189,32 @@ test("反例：版本号允许换行 / 允许被压缩 ⇒ 红", () => {
     "去掉 whitespace-nowrap 必须报红",
   );
   assert.ok(
-    checkFooterLayout(src.replace("min-w-[12ch] shrink-0", "min-w-[12ch]")).some((x) => x.includes("shrink-0")),
+    checkFooterLayout(src.replace("1rem)] shrink-0 select-none", "1rem)] select-none")).some((x) =>
+      x.includes("shrink-0"),
+    ),
     "去掉 shrink-0 必须报红",
   );
+});
+
+test("反例：容器变窄时压缩版本区（加 max-w / 定宽）⇒ 红", () => {
+  const src = readFileSync(COMPONENT, "utf8");
+  assert.ok(
+    checkFooterLayout(src.replace("1rem)] shrink-0 select-none", "1rem)] shrink-0 max-w-[8ch] select-none")).some(
+      (x) => x.includes("max-w"),
+    ),
+    "加 max-w 必须报红",
+  );
+  assert.ok(
+    checkFooterLayout(src.replace("1rem)] shrink-0 select-none", "1rem)] shrink-0 w-[8ch] select-none")).some((x) =>
+      x.includes("定宽"),
+    ),
+    "改成定宽必须报红",
+  );
+});
+
+test("反例：预留宽度里漏掉内边距（只写 12ch）⇒ 红", () => {
+  const src = readFileSync(COMPONENT, "utf8").replace("min-w-[calc(12ch+1rem)]", "min-w-[12ch]");
+  assert.ok(checkFooterLayout(src).some((x) => x.includes("12ch")), "漏算内边距必须报红");
 });
 
 test("反例：把版本号塞进任务入口按钮里（hover 罩住它）⇒ 红", () => {
