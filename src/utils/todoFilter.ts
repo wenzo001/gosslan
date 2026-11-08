@@ -15,6 +15,14 @@ export interface DefaultFilterInput {
   open: boolean;
   /** 数据是否真到齐（`rowsState === ready`；加载中与读失败都不算）。 */
   dataReady: boolean;
+  /**
+   * 「我是谁」是否已知（`myId` 非空）。
+   *
+   * 缺这一条会把"身份还没读回来"当成"「我的」里一条都没有"：`isAssignedToMe` 对空 `myId`
+   * 恒为 false ⇒ `mineCount = 0` ⇒ 一旦判过就锁在「全部」，之后身份到位也不再重判
+   * （2026-11-09 用户在 5.20.0 发布版上看到的就是这个：默认没落在「我的」）。
+   */
+  selfKnown: boolean;
   /** 「我的」里的任务条数。 */
   mineCount: number;
   /** 本次打开是否已经判过（判过即锁，用户手动切过也不再被拉回）。 */
@@ -28,6 +36,6 @@ export interface DefaultFilterInput {
  * 否则会把"这次没数据"误当成"默认页签选错了"。
  */
 export function decideDefaultFilter(i: DefaultFilterInput): TodoFilter | null {
-  if (!i.open || !i.dataReady || i.settled) return null;
+  if (!i.open || !i.dataReady || !i.selfKnown || i.settled) return null;
   return i.mineCount === 0 ? "all" : "mine";
 }

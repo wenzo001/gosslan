@@ -730,9 +730,13 @@ pub fn run() {
                 // 设置/日志窗口是**关闭即销毁**（每次开窗由 `aux_window_geometry` 重新摆位），
                 // 不让插件按 label 恢复旧几何/最大化 —— 否则会与重新居中打架
                 // （用户 2026-09-17：这两个窗口改为"关闭即销毁"，见 commands.rs 的
-                // `AUX_WINDOWS_RESIDENT`）。其余窗口（群任务 / 预览 / 外链）都是**固定 label 的常驻窗**，
-                // 几何由 `apply_aux_geometry` + `restore_aux_window_size` 自己管，插件不参与按 label 恢复。
-                .with_denylist(&[WINDOW_SETTINGS, WINDOW_LOGS])
+                // `AUX_WINDOWS_RESIDENT`）。
+                // 预览窗口（2026-11-09）：拖动后的尺寸**只在本次运行内记住**（进程内内存，
+                // 见 commands.rs 的 `PREVIEW_SESSION_SIZE`），不落盘 ⇒ 必须在插件这里排除，
+                // 否则重启后插件又按 label 把上一次的尺寸/位置恢复回来。
+                // 其余常驻窗（群任务 / 外链）的几何由 `apply_aux_geometry` +
+                // `restore_aux_window_size` 自己管，插件不参与按 label 恢复。
+                .with_denylist(&[WINDOW_SETTINGS, WINDOW_LOGS, WINDOW_PREVIEW])
                 .build(),
         );
     }
@@ -876,6 +880,7 @@ pub fn run() {
             commands::window_minimize,
             commands::window_toggle_maximize,
             commands::window_is_maximized,
+            commands::window_toggle_fullscreen,
             commands::window_close,
             commands::set_native_titlebar_buttons_hidden,
             commands::send_group_message,

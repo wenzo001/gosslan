@@ -143,6 +143,127 @@ mod tests {
         assert!(!body.contains("fn task_window_group"), "切片吃进了后面的函数 ⇒ 上面几条恒真");
     }
 
+    /// 预览窗默认尺寸 = **主窗口设计尺寸**，只被显示器工作区夹（2026-11-09 最新口径）。
+    ///
+    /// 用户原话（最新）：「默认尺寸...等同聊天主窗口设计尺寸」；此前"更大"的要求被这句取代。
+    /// 旧实现把预览窗交给 `fit_aux_window`（不变式：子窗口永不比主窗口大）⇒ 默认 1120×820
+    /// 一落地就被夹成「主窗口 − 48px」，比聊天窗口还小。这条钉住三件事：
+    /// 等尺寸、上限是工作区、min ≤ size。
+    #[cfg(desktop)]
+    #[test]
+    fn preview_window_default_matches_main_and_is_clamped_to_work_area() {
+        use super::{clamp_aux_size, fit_aux_window, fit_window_in_work_area, AUX_WINDOW_MARGIN};
+        let main = (1000u32, 680u32);
+        let design = (main.0 as f64, main.1 as f64);
+
+        // 常见桌面（1512×863 工作区）：与主窗口设计尺寸完全一致。
+        let g = fit_window_in_work_area(main, (0, 0), 1.0, design, (480.0, 360.0), (1512, 863));
+        assert_eq!(g.size, main, "预览窗默认必须等同主窗口设计尺寸");
+
+        // 反例自证：换回旧的"子窗口永不比主窗口大"，结果必然更小 ⇒ 上面那条不是恒真。
+        let old = fit_aux_window(main, (0, 0), 1.0, design, (480.0, 360.0), AUX_WINDOW_MARGIN);
+        assert!(
+            old.size.0 < g.size.0 && old.size.1 < g.size.1,
+            "旧口径（夹到主窗口再减衬边）必须产出更小的窗口，实际 {:?} vs {:?}",
+            old.size,
+            g.size
+        );
+
+        // 小屏：工作区装不下 ⇒ 回退到工作区，绝不超出；min 不许被顶到比实际尺寸还大。
+        let small = fit_window_in_work_area(main, (0, 0), 1.0, design, (480.0, 360.0), (1024, 700));
+        assert_eq!(small.size, (1000, 680), "1000×680 装得下就原样");
+        let tiny_screen =
+            fit_window_in_work_area(main, (0, 0), 1.0, design, (480.0, 360.0), (900, 600));
+        assert_eq!(tiny_screen.size, (900, 600), "装不下时夹到工作区");
+        assert!(tiny_screen.min.0 <= tiny_screen.size.0 && tiny_screen.min.1 <= tiny_screen.size.1);
+
+        // 高 DPI：按主窗口缩放换成物理像素（工作区本身已是物理值）。
+        let hidpi =
+            fit_window_in_work_area((2000, 1360), (0, 0), 2.0, design, (480.0, 360.0), (3024, 1726));
+        assert_eq!(hidpi.size, (2000, 1360));
+        assert_eq!(hidpi.min, (960, 720));
+
+        // 极小工作区：min 压到实际尺寸，不违反"min ≤ size"（否则系统会把窗口顶回去）。
+        let tiny = fit_window_in_work_area(main, (0, 0), 1.0, design, (480.0, 360.0), (320, 200));
+        assert_eq!(tiny.size, (320, 200));
+        assert!(tiny.min.0 <= tiny.size.0 && tiny.min.1 <= tiny.size.1);
+
+        // 会话内记忆的还原边界：不低于最小尺寸、不超出工作区、正常值原样保留。
+        assert_eq!(clamp_aux_size((200, 150), (480, 360), (1512, 863)), (480, 360));
+        assert_eq!(clamp_aux_size((4000, 3000), (480, 360), (1512, 863)), (1512, 863));
+        assert_eq!(clamp_aux_size((900, 700), (480, 360), (1512, 863)), (900, 700));
+    }
+
+    /// 预览窗的尺寸**来源与记忆方式**必须接线（纯计算那条证明不了"谁在用它"）。
+    ///
+    /// - 默认：直接读主窗口设计尺寸（`main_window_design_size`），不许再有第二份写死数字；
+    /// - 拖动后：只在进程内存里记（`install_session_size_memory` / `apply_session_size`），
+    ///   **不许**走 `restore_aux_window_size`（那是 window-state 的落盘状态，重启会回来）；
+    /// - 插件侧必须把 `preview` 加进 denylist，否则它仍会替我们落盘。
+    #[cfg(desktop)]
+    #[test]
+    fn preview_window_size_is_session_only_and_reads_the_main_design() {
+        let src = include_str!("logs.rs");
+        let start = src
+            .find("fn ensure_preview_window")
+            .expect("ensure_preview_window 必须还在（改名了就把这条一起改掉）");
+        let body = &src[start..start + src[start..].find("\n}\n").expect("函数收尾") + 3];
+
+        // 默认尺寸的来源：直接就是主窗口设计尺寸（不许再叠一层自己的常量）
+        assert!(body.contains("main_window_design_size("), "默认尺寸必须先读主窗口配置");
+        assert!(
+            body.contains("if let Some((w, h)) = design"),
+            "builder 的初始尺寸也必须来自同一份 design（读不到就不设，不许补影子常量）"
+        );
+        assert!(!body.contains("1120.0"), "不许再写死旧的 1120 宽");
+        assert!(!body.contains("820.0"), "不许再写死旧的 820 高");
+
+        // 会话内记忆：读（新建还原）与写（关窗记录）都接到这个函数上
+        assert!(
+            body.contains("install_session_size_memory(&win, crate::WINDOW_PREVIEW)"),
+            "必须在新建时挂上本次运行内的尺寸记忆"
+        );
+        assert!(
+            body.contains("apply_session_size(win, crate::WINDOW_PREVIEW, g)"),
+            "新建时必须还原本次运行记下的尺寸"
+        );
+
+        // 记忆器本身的两条硬口径：全屏/最大化那一档不算"用户拖动的窗口尺寸"；只在关窗时落内存。
+        let helper = src
+            .split("fn install_session_size_memory")
+            .nth(1)
+            .expect("install_session_size_memory 必须还在");
+        let helper = &helper[..helper.find("\n}\n").expect("函数收尾") + 3];
+        assert!(helper.contains("tauri::WindowEvent::Resized(size)"), "必须从 Resized 事件抄尺寸");
+        assert!(
+            helper.contains("tauri::WindowEvent::CloseRequested"),
+            "必须等到关窗那一刻才写内存（默认尺寸那次 set_size 不算用户拖动）"
+        );
+        assert!(
+            helper.contains("is_fullscreen()"),
+            "全屏那一下的 Resized 不许记进会话尺寸（否则下次开窗直接铺满、退出也回不到原尺寸）"
+        );
+        assert!(helper.contains("is_maximized()"), "最大化那一档同理不许记");
+
+        // 不落盘：既不许读状态文件，也不许把尺寸写进 window-state
+        assert!(
+            !body.contains("restore_aux_window_size("),
+            "预览窗不许走 window-state 的落盘还原（重启必须回默认）"
+        );
+
+        // 反空转：切片必须只到本函数（下一个函数是 get_image_preview_gallery）
+        assert!(
+            !body.contains("fn get_image_preview_gallery"),
+            "切片吃进了后面的函数 ⇒ 上面几条恒真"
+        );
+
+        let lib = include_str!("../lib.rs");
+        assert!(
+            lib.contains(".with_denylist(&[WINDOW_SETTINGS, WINDOW_LOGS, WINDOW_PREVIEW])"),
+            "window-state 插件必须把 preview 排除，否则它仍会按 label 落盘/恢复"
+        );
+    }
+
     /// 独立窗口**永远不许有一截掉在屏幕外**。
     ///
     /// 上面那条不变式管的是**创建那一刻**（子窗口不比主窗口大）。这一条管的是它管不到的
@@ -266,7 +387,7 @@ mod tests {
         assert!(!is_legacy_default_size((1560, 1300), (1560, 1240)));
     }
 
-    /// 群任务窗必须**接上**旧默认回落；预览窗不许参与（它的默认值没变过）。
+    /// 群任务窗必须**接上**旧默认回落；预览窗**不许**参与任何落盘还原。
     ///
     /// 纯计算那条只证明"认得出旧默认"，证明不了 `ensure_tasks_window` 真的把
     /// `Some(TASKS_LEGACY_DEFAULT_SIZE)` 传了下去 —— 不接线的修复等于没修。
@@ -290,10 +411,18 @@ mod tests {
         let decl = &decl[..decl.find(';').expect("常量声明收尾")];
         assert!(decl.contains("780.0"), "旧默认宽度必须是 780");
         assert!(decl.contains("620.0"), "旧默认高度必须是 620");
-        // 预览窗的默认尺寸没变过 ⇒ 不许跟着回落（否则会把用户拉过的预览尺寸也清掉）。
+        // 预览窗（2026-11-09 改为会话内记忆）**不许**再走落盘还原：
+        // `restore_aux_window_size` 读的是 `tauri-plugin-window-state` 的磁盘状态，
+        // 调一次就等于"重启后还记着上次尺寸"，与用户要求相反。
+        let preview = src
+            .split("fn ensure_preview_window")
+            .nth(1)
+            .expect("ensure_preview_window 必须还在");
+        let preview_body =
+            &preview[..preview.find("\n}\n").expect("ensure_preview_window 收尾") + 3];
         assert!(
-            src.contains("restore_aux_window_size(win, &g, None)"),
-            "预览窗必须传 None（它的默认值没变过）"
+            !preview_body.contains("restore_aux_window_size("),
+            "预览窗不许再调 `restore_aux_window_size` —— 它的尺寸只在本次运行内记住，重启回默认"
         );
     }
 

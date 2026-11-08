@@ -16,6 +16,7 @@ import { useAppStore } from "@/stores/useAppStore";
 import { loadContentPreview, loadFilePreview, type PreviewResult } from "@/utils/filePreview";
 import { loadFavoritePreview } from "@/utils/favoritePreview";
 import { PREVIEW_FAILURE_KEYS } from "@/utils/mediaAvailability";
+import { api } from "@/api";
 import { saveImageAs } from "@/utils/saveImageAs";
 import { StaleGuard } from "@/utils/staleGuard";
 import { useBackLayer } from "@/composables/useBackLayer";
@@ -429,7 +430,7 @@ const pointers = new Map<number, { x: number; y: number }>();
 /** 双指手势的起点：两指距离与当时的倍率。 */
 let pinchStart: { distance: number; scale: number } | null = null;
 
-/** 复位（双击 / 复位键 / `0` 键）的弹性动画句柄。 */
+/** 复位（复位键 / `0` 键 / 滚轮缩到 1 以下）的弹性动画句柄。 */
 let resetAnims: ReturnType<typeof animate>[] = [];
 /**
  * 停掉尚未落定的复位弹性。
@@ -459,13 +460,30 @@ function reset(instant = false) {
     tyMV.set(0);
     return;
   }
-  // 双击/点复位键：走同一套令牌（高频直接操作，用 fast 档），不再用弹簧。
+  // 点复位键：走同一套令牌（高频直接操作，用 fast 档），不再用弹簧。
   const resetTween = { duration: motionSeconds("--gosslan-duration-fast"), ease: motionEase() };
   resetAnims = [
     animate(scaleMV, 1, resetTween),
     animate(txMV, 0, resetTween),
     animate(tyMV, 0, resetTween),
   ];
+}
+
+/**
+ * 双击 = **全屏切换**（进入 / 退出）。用户 2026-11-09：
+ * 「双击那个查看图片的窗口可以全屏切换」「双击只用于最大化/全屏切换，不加第二个含义」。
+ *
+ * 一个手势只给一个含义：原来双击是"缩放复位"，现在统一成全屏；缩放仍在滚轮 /
+ * − / % / + / 适应 / 双指上，不再有第二套双击语义。
+ * 退出全屏由系统还原窗口 frame ⇒ 回到双击前的尺寸，不需要我们 `setInnerSize`
+ * （那条补间 2026-11-05 已否决）。
+ */
+async function toggleFullscreen() {
+  try {
+    await api.windowToggleFullscreen();
+  } catch {
+    /* 移动端窗口本身就是全屏（命令返回 false）；失败不该影响看图 */
+  }
 }
 
 function zoomBy(delta: number) {
@@ -757,7 +775,8 @@ useEventListener(window, "keydown", onKey);
                ⚠️ 工具条竖直方向**只由顶栏这一行决定**（不再是独立 absolute 层加 top:1rem）：
                2026-09-12 安卓状态栏、2026-10-12 桌面 caption 两次"让位算两遍"都是在独立层上叠出来的；
                现在外壳已经让开 `--gosslan-safe-top`，这一层只负责在 56px 里居中。
-               缩放组在小屏隐藏（<sm）：移动端以双指/双击缩放为主，顶栏要留给文件名与保存。 -->
+               缩放组在小屏隐藏（<sm）：移动端以双指缩放为主（双击已统一改作全屏切换，
+               不再承担缩放），顶栏要留给文件名与保存。 -->
           <div class="flex shrink-0 items-center gap-1" data-lightbox-tools>
             <div class="hidden items-center gap-0.5 rounded-full bg-black/35 p-0.5 ring-1 ring-white/25 sm:flex">
               <button
@@ -873,13 +892,13 @@ useEventListener(window, "keydown", onKey);
                 scaleY: flipScaleY,
                 opacity: imgReady ? 1 : 0,
                 maxHeight: 'calc(100dvh - var(--gosslan-safe-top, 0px) - var(--lb-top-h) - var(--lb-bottom-h) - 16px)',
-                cursor: scale > 1 ? (dragging ? 'grabbing' : 'grab') : 'zoom-in',
+                cursor: scale > 1 ? (dragging ? 'grabbing' : 'grab') : 'default',
               }"
               draggable="false"
               @load="onImageLoad"
               @click.stop
               @contextmenu="openMenu"
-              @dblclick="reset()"
+              @dblclick="toggleFullscreen"
               @pointerdown="onPointerDown"
               @pointermove="onPointerMove"
               @pointerup="onPointerUp"

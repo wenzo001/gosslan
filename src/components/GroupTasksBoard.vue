@@ -446,6 +446,8 @@ const rowsErrorText = computed(() =>
  *   下一次打开沿用上一次的判断（甚至把「我的」已清空的情况锁在「我的」）；
  * - 数据没到齐不判（`firstScreenLoading`），**读失败也不判**（`rowsState` 不是 ready）——
  *   否则一次失败会被当成"「我的」是空的"，等重试成功再被锁在「全部」；
+ * - **身份没回来也不判**（`myId` 为空）：那样会先把「我的」数成 0、锁死在「全部」，
+ *   身份到位后也不再重判（5.20.0 发布版上用户实际看到的就是这一格）；
  * - 「我的」一条都没有 ⇒ 退回「全部」；「全部」也空就交给空态呈现（`todo.empty`）；
  * - 判过就锁住（`filterSettled`）：之后用户手动切到哪一档都不再被拉回。
  *
@@ -456,12 +458,14 @@ watch(
     () => props.open !== false,
     () => !firstScreenLoading.value && rowsState.value.status === "ready",
     () => counts.value.mine,
+    () => myId.value !== "",
   ],
-  ([open, dataReady, mine]) => {
+  ([open, dataReady, mine, selfKnown]) => {
     const next = decideDefaultFilter({
       open,
       dataReady,
       mineCount: mine,
+      selfKnown,
       settled: filterSettled.value,
     });
     if (!next) return;
@@ -1500,6 +1504,7 @@ watch(
         :key="f.key"
         type="button"
         role="tab"
+        :data-filter="f.key"
         class="tap-safe relative h-9 shrink-0 px-2.5 text-xs transition-colors"
         :class="filter === f.key
           ? 'font-medium text-[var(--gosslan-accent-ink)]'

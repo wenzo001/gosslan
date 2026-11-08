@@ -106,6 +106,32 @@ pub fn window_is_maximized(_app: tauri::AppHandle) -> bool {
     false
 }
 
+/// 切换**当前窗口**全屏，返回切换后的状态。
+///
+/// 预览窗的双击手势只做这一件事（用户 2026-11-09：「双击那个查看图片的窗口可以全屏切换」
+/// 「双击只用于最大化/全屏切换，不加第二个含义」）。缩放仍走滚轮 / −%+ / 适应 / 双指。
+///
+/// ## 为什么用全屏而不是最大化
+///
+/// 全屏进出由平台保存/还原窗口 frame（tao 的 `macos/util/async.rs` 会存 `saved_style` +
+/// saved frame）⇒ 退出后**一定**回到双击前的窗口尺寸，不需要我们再记一份"原尺寸"。
+/// 另外见 [`window_toggle_maximize`] 的注释：Borderless 窗上 `set_maximized` 能用，
+/// 但 `set_fullscreen` **更稳**（缺 `Titled|Resizable` 位时它自己临时补位）。
+#[cfg(desktop)]
+#[tauri::command]
+pub fn window_toggle_fullscreen(window: tauri::WebviewWindow) -> bool {
+    let next = !window.is_fullscreen().unwrap_or(false);
+    let _ = window.set_fullscreen(next);
+    next
+}
+
+/// 移动端窗口本身就是全屏，没有"切换"可言。
+#[cfg(mobile)]
+#[tauri::command]
+pub fn window_toggle_fullscreen(_app: tauri::AppHandle) -> bool {
+    false
+}
+
 /// 关闭**当前窗口**。
 ///
 /// **主窗口 = 隐藏**（托盘语义：关掉窗口 ≠ 退出应用，与 `tray.rs` 的 CloseRequested 一致）；
