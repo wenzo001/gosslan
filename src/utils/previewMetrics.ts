@@ -8,6 +8,8 @@
 
 import { fontPx, type FontSizeKey } from "@/utils/chatStyle";
 import { parseQuote, quoteBody } from "@/utils/quote";
+// 列宽只有一把尺：截断（进 DOM 前切哪一刀）与估算（要不要截、多高）必须同源。
+import { columnWidth } from "@/utils/previewTruncate";
 // 连续消息合并的时间窗与时间分割线同值：超过它一定有一条分割行，组自然断开（唯一家在这里）。
 import { GROUP_GAP_MS } from "@/utils/messageKinds";
 
@@ -66,12 +68,14 @@ const COLUMNS_PER_LINE = 35;
 /** COLUMNS_PER_LINE 对应的基准字号；字号变大时每行放不下的字符按比例减少。 */
 const BASE_FONT_PX = 14;
 
-/** 全角字符（CJK 及常用全角标点、emoji）按 2 个半角列计，其余按 1 列。 */
-function columnWidth(s: string): number {
-  let n = 0;
-  for (const ch of s) n += (ch.codePointAt(0) ?? 0) > 0x2e80 ? 2 : 1;
-  return n;
-}
+/** 折叠态代码**首帧**的列数兜底（挂载后由 `usePreviewColumns` 换成实测值）。
+ *  最宽气泡 560px − pre 左右内边距 28px = 532px；12.5px 等宽字符 ≈ 7.5px ⇒ ≈70 列。
+ *  刻意取"最宽情形"：首帧宁可真被裁掉一列，也不要先给一个"只有四行"的短预览再跳长。 */
+export const CODE_PREVIEW_COLUMNS = 70;
+
+/** 全角字符（CJK 及常用全角标点、emoji）按 2 个半角列计，其余按 1 列。
+ *  ⚠️ 实现唯一来源是 `utils/previewTruncate.ts` 的 `columnWidth`（本文件顶部已导入）：
+ *  截断切哪一刀与这里算几行必须同一个口径，抄第二份迟早会分叉。 */
 
 /** pre-wrap / whitespace-pre-wrap 下的视觉行数：每个逻辑行按列数折行后累加。 */
 export function visualLineCount(content: string, columnsPerLine: number): number {
@@ -84,7 +88,9 @@ export function visualLineCount(content: string, columnsPerLine: number): number
 
 // ---------------- 文本 ----------------
 
-function textColumns(fontSize: FontSizeKey): number {
+/** 一屏能放多少个半角列（按当前正文字号换算）。
+ *  `MessageTextBubble` 用它做**截断预算的初值**：字号档位一变，估算端与渲染端一起变。 */
+export function textColumns(fontSize: FontSizeKey): number {
   return Math.max(12, Math.round((COLUMNS_PER_LINE * BASE_FONT_PX) / fontPx(fontSize)));
 }
 

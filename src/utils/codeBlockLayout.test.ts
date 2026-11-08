@@ -127,7 +127,19 @@ test("MessageCodeBubble：折叠态是 fill+clipped（不是滚动容器），�
   assert.doesNotMatch(clampedBlock, /\bscrollable\b/, "折叠态不许把代码区变成滚动容器");
   assert.match(clampedBlock, /overflow-hidden/, "外层必须裁掉溢出，避免第二根滚动条");
   assert.match(clampedBlock, /data-code-fold="clamped"/, "折叠态要有可被运行时探针量到的标记");
-  assert.match(clampedBlock, /code-clip-fade/, "截断要有淡出遮罩");
+  // 2026-11-08 起：截断在进 DOM 之前完成（字符预算 + 真实「…」），渐隐遮罩必须撤掉。
+  assert.doesNotMatch(clampedBlock, /code-clip-fade/, "不许退回渐隐遮罩（结尾已有真实省略号）");
+  assert.match(clampedBlock, /:code="previewCode\.text"/, "折叠态必须把**截断后**的预览交给 CodeBlock");
+  assert.match(clampedBlock, /:total-lines="totalLines"/, "头部行数必须是文件真实行数，不能跟着预览变成 8");
+  // 反例自证：把预览换回整段原文，上面那条必须识别出来（= 整段塞进 DOM）。
+  const mutatedRaw = src.replace(':code="previewCode.text"', ':code="code"');
+  assert.notEqual(mutatedRaw, src, "反例自证：折叠态的 :code 没被替换到，锚点已漂");
+  const rawAt = mutatedRaw.indexOf('v-if="clamped"');
+  assert.doesNotMatch(
+    mutatedRaw.slice(rawAt, mutatedRaw.indexOf("v-else", rawAt)),
+    /:code="previewCode\.text"/,
+    "反例自证：换回整段原文后守卫必须能识别（否则等于没守）",
+  );
   // 反例自证：把 clipped 改回 scrollable，上面这条必须识别出来。
   const mutated = src.replace(/\n        fill\n        clipped/, "\n        fill\n        scrollable");
   assert.notEqual(mutated, src, "反例自证：折叠态的 fill+clipped 没被替换到，锚点已漂");

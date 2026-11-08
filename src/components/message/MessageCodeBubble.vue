@@ -4,7 +4,9 @@ import { t } from "@/i18n";
 import BubbleTail from "@/components/message/BubbleTail.vue";
 import { computed, ref } from "vue";
 import CodeBlock from "@/components/CodeBlock.vue";
-import { CODE_CLAMP_HEIGHT, CODE_SURFACE, codePreviewRemainingLines } from "@/utils/previewMetrics";
+import { CODE_CLAMP_HEIGHT, CODE_PREVIEW_COLUMNS, CODE_PREVIEW_LINES, CODE_SURFACE, codePreviewRemainingLines } from "@/utils/previewMetrics";
+import { clampPreview } from "@/utils/previewTruncate";
+import { usePreviewColumns } from "@/composables/usePreviewColumns";
 import { DropdownMenuItem } from "reka-ui";
 import ContextMenu from "@/components/ContextMenu.vue";
 
@@ -48,6 +50,29 @@ const tailBg = computed(() => surface.value);
 
 /** 折叠态被截掉的逻辑行数：操作条上给出「还有 N 行」的可发现信号（短块为 0）。 */
 const hiddenLines = computed(() => (props.clamped ? codePreviewRemainingLines(props.code) : 0));
+
+/**
+ * 进 DOM 的代码：折叠态按「8 行 × 本格实际列数」的字符预算切短、结尾补真实「…」。
+ *
+ * 为什么要切在进 DOM 之前：折叠态过去是把**整段**代码交给 CodeBlock，Shiki 把几百行全量
+ * 高亮成 `<span>` 再让 `overflow:hidden` 裁掉 —— 用户实测一条 681 行的代码消息，
+ * 首屏就要为它建上千个节点，滚动时整列重排。切短之后进 DOM 的只有 8 行。
+ *
+ * 列数首帧用 `CODE_PREVIEW_COLUMNS` 兜底，挂载后换成实测值（量的是 pre 自己）。
+ * 切在**送进 CodeBlock 之前**，所以高亮器看到的正文本身就是截断后的完整行，
+ * 不存在"半个标签"或"半截高亮"。
+ */
+const foldEl = ref<HTMLElement | null>(null);
+const columns = usePreviewColumns(
+  () => foldEl.value?.querySelector("pre.code-pre") ?? null,
+  CODE_PREVIEW_COLUMNS,
+);
+const previewCode = computed(() => {
+  if (!props.clamped) return { text: props.code, truncated: false };
+  return clampPreview(props.code, { lines: CODE_PREVIEW_LINES, columns: columns.value });
+});
+/** 头部「· N 行」永远是**文件真实行数**，不跟着截断后的预览走。 */
+const totalLines = computed(() => props.code.split("\n").length);
 
 /** 右键菜单坐标（N6-1：代码块右键 →「复制」，与底栏按钮走同一个 emit）。 */
 const ctx = ref<{ x: number; y: number } | null>(null);
@@ -94,15 +119,18 @@ function copyFromMenu() {
     <!-- 折叠态（用户 2026-11-06：「代码在消息列表不需要滚动，只展示固定几行，余下截断，
          展开滚动展示」）：父层锁死 CODE_CLAMP_HEIGHT，CodeBlock 撑满但**不是滚动容器**
          （`clipped` ⇒ pre 是 overflow:hidden）⇒ 滚轮/触控事件冒泡给外层消息列表。
-         底部再压一层同色渐隐 + 操作条上的「还有 N 行」，让"被截断"可发现。 -->
+         2026-11-08 起截断发生在**进 DOM 之前**（`previewCode`），末尾是真实「…」，
+         因此去掉了那层同色渐隐遮罩 —— 遮罩只是在掩饰"被裁了半行"，而现在是切在行尾。 -->
     <div
       v-if="clamped"
+      ref="foldEl"
       data-code-fold="clamped"
       class="relative overflow-hidden rounded-t-[var(--gosslan-radius-sm)]"
       :style="{ height: `${CODE_CLAMP_HEIGHT}px`, background: surface }"
     >
       <CodeBlock
-        :code="code"
+        :code="previewCode.text"
+        :total-lines="totalLines"
         :language="language"
         :can-switch-lang="canSwitchLang"
         :switching="switching"
@@ -110,12 +138,6 @@ function copyFromMenu() {
         fill
         clipped
         @switch-language="emit('switch-lang', $event)"
-      />
-      <div
-        v-if="hiddenLines > 0"
-        class="code-clip-fade pointer-events-none absolute inset-x-0 bottom-0 h-4"
-        aria-hidden="true"
-        :style="{ background: `linear-gradient(to bottom, transparent, ${surface})` }"
       />
     </div>
     <CodeBlock
