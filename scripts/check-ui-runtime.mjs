@@ -26619,9 +26619,9 @@ async function runTasksRealtime(cdp, url) {
 /**
  * 群任务窗口「左列表 410px + 右详情常驻」两栏（`--only=taskpane`）。
  *
- * 只钉结构契约，不钉画板文案：780 内容宽时左列 410±1、右栏还有 ≥280；
- * 680 时回退单栏（右栏消失、点行才开原弹窗）。筛选页签顺序按画板
- * 我的/全部/我创建/已归档，默认「我的」——`--only=tasksrt` 继续管实时同步。
+ * 只钉结构契约，不钉画板文案：1000（群任务窗口初始宽度 = 主窗口 1000×680）与 780
+ * 两种内容宽时左列 410±1、右栏还有 ≥280；680 时回退单栏（右栏消失、点行才开原弹窗）。
+ * 筛选页签顺序按画板 我的/全部/我创建/已归档，默认「我的」——`--only=tasksrt` 继续管实时同步。
  */
 async function runTaskPane(cdp, url) {
   await cdp.send("Emulation.setDeviceMetricsOverride", {
@@ -26719,6 +26719,21 @@ async function runTaskPane(cdp, url) {
       fs.writeFileSync(path.join(shotDir, `${name}.png`), Buffer.from(s.data, "base64"));
     };
     await shot("taskpane-780");
+
+    // 初始尺寸改成「与主窗口同尺寸」（2026-11-08：读 tauri.conf.json 的 1000×680）——
+    // 两栏在这个真实初始宽度下必须照旧：左列 410、右栏 ≥280、仍不弹窗。
+    await cdp.eval("document.querySelector('#probe-host').style.width = '1000px'");
+    await sleep(400);
+    const wide1000 = await read();
+    check("两栏（1000，初始尺寸）：左列仍是 410px",
+      Math.abs(wide1000.listW - 410) <= 1, "410±1", String(wide1000.listW));
+    check("两栏（1000，初始尺寸）：右栏仍可用（≥280px）",
+      wide1000.detailW >= 280, ">=280", String(wide1000.detailW));
+    check("两栏（1000，初始尺寸）：详情仍常驻右栏、不弹窗",
+      wide1000.dialogs === 0 && !!wide1000.titles[0] && wide1000.detailText.includes(wide1000.titles[0]),
+      "右栏 = 列表首条 + 0 dialog",
+      JSON.stringify({ d: wide1000.dialogs, first: wide1000.titles[0] }));
+    await shot("taskpane-1000");
 
     // 窄窗回退：把宿主压到 680（窗口最小宽度以下是真实场景），右栏必须让位给单栏弹窗。
     await cdp.eval("document.querySelector('#probe-host').style.width = '680px'");
