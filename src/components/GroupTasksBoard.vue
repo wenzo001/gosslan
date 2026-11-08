@@ -604,23 +604,78 @@ const twoPaneMode = computed(() => !!props.twoPane && rootWidth.value >= 700);
 const paneCode = computed(() =>
   detailItem.value ? todoCode(detailItem.value.category, detailItem.value.number)?.full ?? "" : "",
 );
-// 两栏进窗时右栏常驻：没有选中项就落到当前筛选的第一条（不改筛选，也不新造状态）。
-// 源里要看**首条的 id**（而不是只看 `todos.length`）：挂载时身份/折叠结果可能还没就绪，
-// 只看长度会在"长度为 0 的那一拍"错过，之后再没机会补选。
+/**
+ * 当前视图里**看得见**的行，按屏幕顺序（分组 → 状态 → 行）。
+ *
+ * 只此一份：键盘上下、筛选后回填、选中态判据都读它。三处各写一份"当前列表"，
+ * 迟早会出现"右栏跟的是筛选前那条、左列高亮的是筛选后那条"（用户 2026-11-08 报的就是这个）。
+ */
+const visibleTodos = computed(() =>
+  filter.value === "archived" ? archivedTodos.value : grouped.value.flatMap((g) => g.items),
+);
+/** 右栏当前那条是否还在左列里 —— 不在就是"右边有内容、左边没有对应行"，必须当场纠正。 */
+const selectedInView = computed(
+  () => !!detailId.value && visibleTodos.value.some((x) => x.todoId === detailId.value),
+);
+
+/**
+ * 行的选中态：**只在两栏形态**成立（单栏时详情是弹窗，左列被盖住，高亮没有对照物）。
+ * 配方按画板 `.task.sel`：主色淡底一层；hover 另给中性 tint，二者同层不叠加 ——
+ * 选中行上悬停仍是主色淡底，不会变成"两层颜色"或"选中被 hover 盖掉"。
+ */
+function isRowSelected(id: string): boolean {
+  return twoPaneMode.value && detailId.value === id;
+}
+function rowBgClass(id: string): string {
+  return isRowSelected(id)
+    ? "bg-[var(--gosslan-primary-light)] hover:bg-[var(--gosslan-primary-light)]"
+    : "hover:bg-[var(--gosslan-hover)]";
+}
+
+/**
+ * 两栏进窗时右栏常驻，且**任何时候**都要与左列当前视图对得上：
+ * - 没有选中 → 落到当前筛选的第一条；
+ * - 有选中但筛选/切标签后它不在结果里 → 回落到第一条（画板没画空态优先的规则，
+ *   选"回落"：右栏常驻的意义就是"总有东西可看"）；
+ * - 当前视图一条都不剩 → 清掉选中，右栏显示空态（`todo.paneEmpty`）。
+ */
 watch(
   [
     twoPaneMode,
     filter,
-    () => filteredActive.value[0]?.todoId ?? null,
-    () => archivedTodos.value[0]?.todoId ?? null,
+    () => visibleTodos.value.map((x) => x.todoId).join("|"),
   ],
   () => {
-    if (!twoPaneMode.value || detailItem.value) return;
-    const first = filter.value === "archived" ? archivedTodos.value[0] : filteredActive.value[0];
+    if (!twoPaneMode.value || selectedInView.value) return;
+    const first = visibleTodos.value[0];
     if (first) openDetail(first);
+    else closeDetail();
   },
   { immediate: true },
 );
+
+/**
+ * 键盘上下切选中（用户 2026-11-08：「左边点击、右边显示详情，却没有选中态」）。
+ *
+ * 只接管 ↑/↓：Enter / Space 仍是行内按钮自己的语义，Tab 也照旧走焦点顺序。
+ * 移动后把焦点带到新行 —— 否则第二下方向键会落回 document，键盘切一条就断了。
+ */
+async function onListKeydown(e: KeyboardEvent) {
+  if (!twoPaneMode.value || (e.key !== "ArrowDown" && e.key !== "ArrowUp")) return;
+  const rows = visibleTodos.value;
+  if (!rows.length) return;
+  e.preventDefault();
+  const at = rows.findIndex((x) => x.todoId === detailId.value);
+  const next = at < 0 ? 0 : Math.min(Math.max(at + (e.key === "ArrowDown" ? 1 : -1), 0), rows.length - 1);
+  const target = rows[next];
+  if (target.todoId === detailId.value) return;
+  openDetail(target);
+  await nextTick();
+  // 同 `flashTodoRow`：按 dataset 找行，不把 id 拼进选择器。
+  const all = boardRoot.value?.querySelectorAll<HTMLElement>("[data-todo-row]");
+  const row = all ? Array.from(all).find((r) => r.dataset.todoRow === target.todoId) : undefined;
+  row?.querySelector<HTMLElement>("button")?.focus();
+}
 
 /**
  * 滚到这一行并闪一下 —— 卡片上半区点进来的落点。
@@ -1417,7 +1472,7 @@ watch(
 
     <!-- 内容区：弹窗形态由 BaseModal 自己滚；窗口形态撑满剩余空间。
          标签页自带下边框，内容区直接接上，不再额外叠 `pt`。 -->
-    <div class="gosslan-scroll overflow-y-auto" :class="standalone || fill ? 'min-h-0 flex-1' : ''">
+    <div class="gosslan-scroll overflow-y-auto" :class="standalone || fill ? 'min-h-0 flex-1' : ''" @keydown="onListKeydown">
       <!-- 首屏还在路上：**必须**是"正在加载"而不是空态。窗口现在先挂载、数据后台取
            （用户 2026-09-24 报"弹窗弹出很慢"），没有这一档的话首帧会理直气壮地显示
            「暂无任务」—— 那是假空态，比慢更糟。两种形态都判：应用内弹窗同样要先读
@@ -1455,8 +1510,9 @@ watch(
           v-for="x in archivedTodos"
           :key="x.todoId"
           :data-todo-row="x.todoId"
-          :class="{ 'todo-row-flash': flashRowId === x.todoId, 'todo-row-leaving': leavingRowId === x.todoId }"
-          class="relative flex items-center gap-2.5 border-b border-[var(--gosslan-divider)] px-3 py-2.5 transition last:border-b-0 hover:bg-[var(--gosslan-hover)]"
+          :class="[{ 'todo-row-flash': flashRowId === x.todoId, 'todo-row-leaving': leavingRowId === x.todoId }, rowBgClass(x.todoId)]"
+          :aria-current="isRowSelected(x.todoId) ? 'true' : undefined"
+          class="relative flex items-center gap-2.5 border-b border-[var(--gosslan-divider)] px-3 py-2.5 transition last:border-b-0"
         >
           <!-- 状态色条（用户 2026-09-24 #37）：与活动列表同一套语言，色值走 `TODO_STATUS_BAR` 唯一映射 -->
           <span
@@ -1567,8 +1623,9 @@ watch(
             :layout-id="`todo:${x.todoId}`"
             :transition="todoLayoutTransition"
             :data-todo-row="x.todoId"
-            :class="{ 'todo-row-flash': flashRowId === x.todoId, 'todo-row-leaving': leavingRowId === x.todoId }"
-            class="relative flex items-center gap-2.5 border-b border-[var(--gosslan-divider)] px-3 py-2.5 transition last:border-b-0 hover:bg-[var(--gosslan-hover)]"
+            :class="[{ 'todo-row-flash': flashRowId === x.todoId, 'todo-row-leaving': leavingRowId === x.todoId }, rowBgClass(x.todoId)]"
+            :aria-current="isRowSelected(x.todoId) ? 'true' : undefined"
+            class="relative flex items-center gap-2.5 border-b border-[var(--gosslan-divider)] px-3 py-2.5 transition last:border-b-0"
           >
             <!-- 状态色条：整行左缘一道 2px（判据与颜色都在 `TODO_STATUS_BAR` 一处，
                  与分组头、状态胶囊同族）。底色会盖掉 hover/选中态、四色同屏也花，所以只做一条。 -->

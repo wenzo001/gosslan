@@ -26651,6 +26651,8 @@ async function runTaskPane(cdp, url) {
     await cdp.eval(`window.__TASKS = [
       window.__mk('A', 1, 'todo', { title: '写周报', number: 1, priority: 'high' }, ${now}),
       window.__mk('B', 2, 'todo', { title: '对账单', number: 2 }, ${now + 1}),
+      // C 只派给别人：用来验「选中项被筛选掉后必须回落」（2026-11-08 选中态那条）。
+      window.__mk('C', 3, 'todo', { title: '他建的', number: 3, assignees: [window.OTHER] }, ${now + 2}),
     ]`);
     await cdp.eval("window.__probe.todoRows(window.__TASKS)");
     await cdp.eval(`window.__probe.install('/src/components/GroupTasksBoard.vue', '', ${JSON.stringify(JSON.stringify({
@@ -26670,6 +26672,19 @@ async function runTaskPane(cdp, url) {
       const detail = kids.length > 1 ? kids[1] : null;
       const tabs = root ? Array.from(root.querySelectorAll('[role="tab"]')) : [];
       const active = tabs.find((b) => b.getAttribute('aria-selected') === 'true');
+      // 选中态判据要读**计算后的底色**：主色淡底由 color-mix 现算，
+      // 拿 class 名比对等于只验了自己写的字符串。tint 也在这里现量一份参照。
+      const tintProbe = document.createElement('div');
+      tintProbe.style.background = 'var(--gosslan-primary-light)';
+      document.body.appendChild(tintProbe);
+      const tint = getComputedStyle(tintProbe).backgroundColor;
+      tintProbe.remove();
+      const rows = Array.from(host.querySelectorAll('[data-todo-row]')).map((r) => ({
+        id: r.dataset.todoRow,
+        current: r.getAttribute('aria-current'),
+        bg: getComputedStyle(r).backgroundColor,
+        title: (((r.querySelector('.truncate') || {}).textContent) || '').trim(),
+      }));
       return {
         hostW: host ? Math.round(host.getBoundingClientRect().width) : 0,
         listW: list ? Math.round(list.getBoundingClientRect().width) : 0,
@@ -26686,8 +26701,15 @@ async function runTaskPane(cdp, url) {
           .map((b) => (((b.querySelector('.truncate') || {}).textContent) || '').trim()),
         rowTexts: Array.from(host.querySelectorAll('button.min-w-0.flex-1'))
           .map((b) => (b.textContent || '').trim()),
+        rows, tint,
       };
     })()`);
+    /** 选中态的唯一判据：恰好一行 aria-current，且它的底色 = 主色淡底；其余行透明。 */
+    const selectedOk = (r) => {
+      const sel = r.rows.filter((x) => x.current === "true");
+      return sel.length === 1 && sel[0].bg === r.tint
+        && r.rows.filter((x) => x.current !== "true").every((x) => x.bg === "rgba(0, 0, 0, 0)");
+    };
     const until = async (fn, ms = 3_000) => {
       const t0 = Date.now();
       while (Date.now() - t0 < ms) {
@@ -26734,6 +26756,129 @@ async function runTaskPane(cdp, url) {
       "右栏 = 列表首条 + 0 dialog",
       JSON.stringify({ d: wide1000.dialogs, first: wide1000.titles[0] }));
     await shot("taskpane-1000");
+
+    // ---------------- 选中态（2026-11-08：右栏有内容，左列必须能一眼看出是哪一条） ----------------
+    const sel0 = await read();
+    check("两栏（选中态）：默认选中首条——恰好一行 aria-current，底色 = 主色淡底",
+      selectedOk(sel0), "1 行淡底 + 其余透明", JSON.stringify({ rows: sel0.rows, tint: sel0.tint }));
+    // 反例自证：把选中行底色清成透明，上面那条判据必须翻红（否则它只是在验"有两行"）。
+    const brokenSel = await cdp.eval(`(() => {
+      const host = document.querySelector('#probe-host');
+      const tp = document.createElement('div');
+      tp.style.background = 'var(--gosslan-primary-light)';
+      document.body.appendChild(tp);
+      const tint = getComputedStyle(tp).backgroundColor;
+      tp.remove();
+      const rows = Array.from(host.querySelectorAll('[data-todo-row]'));
+      const sel = rows.find((r) => r.getAttribute('aria-current') === 'true');
+      const prev = sel ? sel.style.background : '';
+      if (sel) sel.style.background = 'rgba(0, 0, 0, 0)';
+      const broken = {
+        tint,
+        rows: rows.map((r) => ({
+          id: r.dataset.todoRow,
+          current: r.getAttribute('aria-current'),
+          bg: getComputedStyle(r).backgroundColor,
+        })),
+      };
+      if (sel) sel.style.background = prev;
+      return broken;
+    })()`);
+    check("反例自证：选中行底色被清成透明时判据必须翻红", !selectedOk(brokenSel),
+      "翻红", JSON.stringify(brokenSel.rows));
+
+    // hover 与选中必须是**两层不同的东西**：悬停一条**未选中**行 → 中性 tint；
+    // 选中行底色不变（主色淡底不会被 hover 盖掉）。
+    const unsel = sel0.rows.find((x) => x.current !== "true");
+    const unselRect = unsel ? await cdp.eval(`(() => {
+      const row = Array.from(document.querySelectorAll('#probe-host [data-todo-row]'))
+        .find((r) => r.dataset.todoRow === '${unsel.id}');
+      if (!row) return null;
+      const r = row.getBoundingClientRect();
+      return { x: Math.round(r.x + r.width / 2), y: Math.round(r.y + r.height / 2) };
+    })()`) : null;
+    if (unselRect) {
+      await cdp.send("Input.dispatchMouseEvent", { type: "mouseMoved", x: unselRect.x, y: unselRect.y });
+      await sleep(300);
+    }
+    const hov = await read();
+    const hovUnsel = hov.rows.find((x) => x.id === (unsel && unsel.id));
+    const hovSel = hov.rows.find((x) => x.current === "true");
+    check("两栏（hover vs 选中）：hover 只给中性 tint，选中仍是主色淡底、两者不同",
+      !!hovUnsel && !!hovSel && hovUnsel.bg !== "rgba(0, 0, 0, 0)"
+        && hovUnsel.bg !== hov.tint && hovSel.bg === hov.tint,
+      "悬停行=中性 tint / 选中行=淡底",
+      JSON.stringify({ hover: hovUnsel && hovUnsel.bg, sel: hovSel && hovSel.bg, tint: hov.tint }));
+    await cdp.send("Input.dispatchMouseEvent", { type: "mouseMoved", x: 2, y: 2 });
+    await sleep(250);
+
+    // 键盘 ↑/↓：按**屏幕顺序**移动一条，选中与右栏必须一起动。
+    // 不假设初始选中哪一条（列表是异步落地的，选中会保留已可见的那条），只按当前 DOM 顺序算邻居。
+    const keyOn = (id, key) => cdp.eval(`(() => {
+      const row = Array.from(document.querySelectorAll('#probe-host [data-todo-row]'))
+        .find((r) => r.dataset.todoRow === '${id}');
+      const btn = row && row.querySelector('button');
+      if (!btn) return false;
+      btn.focus();
+      btn.dispatchEvent(new KeyboardEvent('keydown', { key: '${key}', bubbles: true }));
+      return true;
+    })()`);
+    const order = sel0.rows.map((x) => x.id);
+    const selIdx = order.indexOf(sel0.rows.find((x) => x.current === "true")?.id);
+    const key = selIdx < order.length - 1 ? "ArrowDown" : "ArrowUp";
+    const wantId = order[key === "ArrowDown" ? selIdx + 1 : selIdx - 1];
+    await keyOn(order[selIdx], key);
+    await sleep(500);
+    const kb = await read();
+    const kbSel = kb.rows.find((x) => x.current === "true");
+    const wantTitle = kb.rows.find((x) => x.id === wantId)?.title;
+    check(`两栏（键盘 ${key === "ArrowDown" ? "↓" : "↑"}）：选中按屏幕顺序移动一条，右栏同步`,
+      !!kbSel && kbSel.id === wantId && !!wantTitle && kb.detailText.includes(wantTitle),
+      `${wantId} 选中 + 右栏=${wantTitle}`,
+      JSON.stringify({ rows: kb.rows, detail: kb.detailText.slice(0, 40) }));
+    // 反向再来一次：回到原来那条（证明不是"只会往前跳"）。
+    await keyOn(wantId, key === "ArrowDown" ? "ArrowUp" : "ArrowDown");
+    await sleep(500);
+    const kbBack = await read();
+    check("两栏（键盘反向）：选中回到上一条，右栏同步",
+      kbBack.rows.find((x) => x.id === order[selIdx])?.current === "true"
+        && kbBack.detailText.includes(kbBack.rows.find((x) => x.id === order[selIdx])?.title || "\u0000"),
+      `${order[selIdx]} 选中 + 右栏同步`,
+      JSON.stringify({ rows: kbBack.rows, detail: kbBack.detailText.slice(0, 40) }));
+
+    // 筛选后原选中项不在结果里：必须回落，不许「右边有内容、左边没有对应行」。
+    const clickTab = (i) => cdp.eval(`(() => {
+      const tabs = Array.from(document.querySelectorAll('#probe-host [role="tab"]'));
+      if (!tabs[${i}]) return false;
+      tabs[${i}].click();
+      return true;
+    })()`);
+    await clickTab(1); // 全部
+    await sleep(500);
+    const clickedC = await cdp.eval(`(() => {
+      const b = Array.from(document.querySelectorAll('#probe-host button.min-w-0.flex-1'))
+        .find((x) => (x.textContent || '').includes('他建的'));
+      if (b) b.click();
+      return !!b;
+    })()`);
+    await sleep(500);
+    const cSel = await read();
+    check("两栏（全部）：点「他建的」后 C 行选中、右栏同步",
+      clickedC && cSel.rows.find((x) => x.id === "C")?.current === "true"
+        && cSel.detailText.includes("他建的"),
+      "C 选中 + 右栏=他建的",
+      JSON.stringify({ rows: cSel.rows, detail: cSel.detailText.slice(0, 40) }));
+    await shot("taskpane-selected");
+    await clickTab(0); // 我的
+    await sleep(600);
+    const back = await read();
+    const firstRow = back.rows[0];
+    check("两栏（筛选回落）：C 被「我的」筛掉后回落到首行，左右不再错位",
+      back.rows.length === 2 && !!firstRow && firstRow.current === "true"
+        && !back.listText.includes("他建的") && !!firstRow.title
+        && back.detailText.includes(firstRow.title),
+      "首行选中 + 无 C + 右栏=首行标题",
+      JSON.stringify({ ids: back.rows.map((x) => x.id), cur: back.rows.filter((x) => x.current === "true").map((x) => x.id), detail: back.detailText.slice(0, 40) }));
 
     // 窄窗回退：把宿主压到 680（窗口最小宽度以下是真实场景），右栏必须让位给单栏弹窗。
     await cdp.eval("document.querySelector('#probe-host').style.width = '680px'");
