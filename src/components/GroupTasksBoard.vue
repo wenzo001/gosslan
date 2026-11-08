@@ -29,6 +29,7 @@ import {
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { isAndroid, isMac } from "@/utils/platform";
+import { decideDefaultFilter, type TodoFilter } from "@/utils/todoFilter";
 import { dropPointToCss } from "@/utils/dropPoint";
 import { useAppStore } from "@/stores/useAppStore";
 import { useChatStore } from "@/stores/useChatStore";
@@ -254,8 +255,6 @@ function categoryText(x: Pick<TodoItem, "category" | "customCategory">): string 
 
 // ---------------- 筛选（全部 / 我的 / 我创建 / 已归档） ----------------
 
-type TodoFilter = "all" | "mine" | "created" | "archived";
-
 /** 标签顺序固定为「全部 → 我的 → 我创建 → 已归档」（用户 2026-11-08）。 */
 const FILTERS: { key: TodoFilter; labelKey: string }[] = [
   { key: "all", labelKey: "todo.filter.all" },
@@ -443,17 +442,31 @@ const rowsErrorText = computed(() =>
 
 /**
  * 打开时判一次默认页签（用户 2026-11-08）：
+ * - 面板关着不判：关着的时候数据照样会变（同步、收到新任务），那时提前落定会让
+ *   下一次打开沿用上一次的判断（甚至把「我的」已清空的情况锁在「我的」）；
  * - 数据没到齐不判（`firstScreenLoading`），**读失败也不判**（`rowsState` 不是 ready）——
  *   否则一次失败会被当成"「我的」是空的"，等重试成功再被锁在「全部」；
  * - 「我的」一条都没有 ⇒ 退回「全部」；「全部」也空就交给空态呈现（`todo.empty`）；
  * - 判过就锁住（`filterSettled`）：之后用户手动切到哪一档都不再被拉回。
+ *
+ * 判定本身在 `utils/todoFilter.ts`（纯函数，带单测）——这里只负责把真值填进去。
  */
 watch(
-  [() => !firstScreenLoading.value && rowsState.value.status === "ready", () => counts.value.mine],
-  ([dataReady, mine]) => {
-    if (!dataReady || filterSettled.value) return;
+  [
+    () => props.open !== false,
+    () => !firstScreenLoading.value && rowsState.value.status === "ready",
+    () => counts.value.mine,
+  ],
+  ([open, dataReady, mine]) => {
+    const next = decideDefaultFilter({
+      open,
+      dataReady,
+      mineCount: mine,
+      settled: filterSettled.value,
+    });
+    if (!next) return;
     filterSettled.value = true;
-    if (mine === 0) filter.value = "all";
+    filter.value = next;
   },
   { immediate: true },
 );
