@@ -113,6 +113,11 @@ Change Budget 的分级必须在**提交那一刻**过闸，不能等推完再�
 - **手工兜底**：`node scripts/check-change-budget.mjs --staged`（量具，永远 exit 0），
   先看清"这次是 L1/L2/L3、该带哪个标记"再写标题。标记必须写在**标题行**；`Version-Bump:`
   trailer 写在正文，且声明了就必须真改四个版本清单文件。
+- **`Version-Bump` 的硬闸只判双向一致（2026-11-08 定）**：写了 `patch|minor|major` 就必须同提交
+  动满 `package.json` / `package-lock.json` / `src-tauri/Cargo.toml` / `src-tauri/tauri.conf.json`
+  这四个，四个都动了也必须写；**只动 1–3 个（例如只改 `package.json` 里的脚本）或一个都不动，
+  不要求声明、钩子也不拦**（"该写却没写"是 `npm run version:check` 的记账口径，不是这道闸）。
+  钩子与 CI 判据 4 共用 `scripts/semver.mjs` 的 `bumpConsistencyProblems`，不存在第二份口径。
 - **失败代价（真实发生两次）**：`c58c425` 推完才发现红、在 CI 上红了三趟；`3051f73` 推完才发现
   L3 缺 `[impact]`，因为**不改写已推送历史**，只能 `revert` + 重放，多出两笔提交。
   推完就改不动 —— 所以这一步不是提醒，是闸。

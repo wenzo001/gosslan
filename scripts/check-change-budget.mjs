@@ -105,6 +105,13 @@
  * 它只读**第一行非注释**（与正式判据只读 subject 的口径一致），避免"正文里写了标记、
  * hook 放行、正式判据却看不见"的第二套语义。hook 由 `npm run hooks:install` 安装，
  * `npm install` 也会自动装（见 package.json 的 `prepare`）。
+ *
+ * **判据 4 在钩子与 CI 之间只有一份实现（2026-11-08 收口）**：三支判定原来在两边各抄一遍，
+ * 于是一处改动另一处不动 = "提交时放过、推上去判红"。现在两边都调
+ * `semver.mjs::bumpConsistencyProblems`。它的边界就是**双向一致**：写了
+ * `Version-Bump` 必须四条清单齐，四条齐必须写；只动 1–3 个清单（例如只改 `package.json`
+ * 里的脚本）或不动清单 ⇒ **不要求声明、也不拦**。"该写却没写"是 `version:check` 的记账
+ * 口径（未进 CI），不是这道硬闸的口径。
  * ⚠️ 它挡不住 `--no-verify`、别人机器上的提交、以及直接在远端合并的 patch ——
  * 所以 CI 那一跑仍是最终判据，这一层只是把"推完才发现"提前到 commit 那一刻。
  *
@@ -158,7 +165,13 @@ import domainMap from "../docs/domains.data.mjs";
 // #139：领域归属必须认这条既有口径 —— 测试文件不算应用码（semver.mjs 里那条注释就是理由：
 // 「每次补用例都被迫提版本号 ⇒ 版本号会通胀」。Change Budget 的犯案窗口原先没读它，
 // 于是一条只动 `*.test.ts` 的提交也被算成「同一领域反复打补丁」的第 3 票（2026-09-28 实测）。
-import { isAppCodePath, noneViolations, VERSION_FILES as SEMVER_VERSION_FILES } from "./semver.mjs";
+import {
+  BUMP_JUDGED_FILES,
+  bumpConsistencyProblems,
+  isAppCodePath,
+  isReleaseCommit,
+  VERSION_FILES as SEMVER_VERSION_FILES,
+} from "./semver.mjs";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -186,24 +199,12 @@ const OFFENDER_WINDOW = 5;
 const OFFENDER_LIMIT = 3;
 
 /**
- * 判据 4 对账用的四个版本清单文件。
- * ⚠️ 这一格以前写的是"`scripts/version.mjs` 直接写这四个,`Cargo.lock` 由 cargo 构建时
- * 同步、可以合法地晚一版" —— 那个**理由已经反了**:version.mjs 现在写**五处**(这四个 +
- * `Cargo.lock`),且 lock 晚一版会被它自己 `exit 1` 拒掉(见 version.mjs 第 5 步)。
- * 判据这边仍然只要这四个,但成立的理由换成"那一处已由 version.mjs 断言,不在这里重复数一遍",
- * 不是"它可以不一致"。
+ * 规模判据（判据 1/2）**永远不数**的文件 = 五个版本清单（四个对账的 + `Cargo.lock`）。
+ * 名单从 `semver.mjs` 那一份 import，不抄第二份清单：判据 4 与版本工具必须读同一张表。
+ * 多出 `Cargo.lock` 是因为判据 4 不要求它，而一次 bump 现在**必然**把它一起带上
+ * （`version.mjs` 第 5 步的机器改动，几百行）。理由见文件头「版本清单文件永不计入预算」。
  */
-// 名单从 `semver.mjs` 那一份 import（见上面的 import 行）：原来这里是**手抄的第二份**，
-// 而判据 4 与版本工具必须读同一张清单——两处各抄一次就是本仓点过名的漂移形状。
-const VERSION_FILES = SEMVER_VERSION_FILES.filter((p) => p !== "src-tauri/Cargo.lock");
-
-/**
- * 规模判据（判据 1/2）**永远不数**的文件 = 上面那四个 + `Cargo.lock`。
- * 与 `VERSION_FILES` 同源，不抄第二份清单；多出 `Cargo.lock` 是因为判据 4 不要求它，
- * 而一次 bump 现在**必然**把它一起带上（`version.mjs` 第 5 步的机器改动，几百行）。
- * 理由见文件头「版本清单文件永不计入预算」那一段。
- */
-const VERSION_MANIFESTS = new Set([...VERSION_FILES, "src-tauri/Cargo.lock"]);
+const VERSION_MANIFESTS = new Set(SEMVER_VERSION_FILES);
 
 /** `Version-Bump: patch|minor|major|none` trailer(整行,允许行首尾空白)。 */
 const BUMP_DECL = /^Version-Bump:[ \t]*(patch|minor|major|none)[ \t]*$/im;
@@ -217,12 +218,6 @@ function fullMessage(commit) {
 function declaredBump(commit) {
   const m = fullMessage(commit).match(BUMP_DECL);
   return m ? m[1].toLowerCase() : null;
-}
-
-/** 四个版本清单文件里这个 commit 没动的那些。 */
-function missingVersionFiles(commit) {
-  const have = new Set(commit.files.map((f) => f.path.replaceAll("\\", "/")));
-  return VERSION_FILES.filter((p) => !have.has(p));
 }
 
 /** merge 提交不参与版本声明判定(bump 由被合并的那条 commit 或 release commit 承担)。 */
@@ -524,43 +519,33 @@ if (argv.includes("--staged")) {
       process.exit(1);
     }
     console.log(`✓ 提交标题「${subject}」带齐了本档要求的标记。`);
-    // 判据 4 也在这里判完再放行（2026-11-08 补）：此前只判标记，于是
-    // `Version-Bump: none` 却动了 `.github/` / `scripts/` 也能过，推上去才在 CI 判红 ——
-    // 与文件头那段"推完才发现"是同一个病。这里用的仍是下面正式判据的同一组谓词。
-    const bump = declaredBump({ message: rawMessage });
-    const releaseSubject = /^chore\(release\)/.test(subject.trim());
-    const noneBad = bump === "none" ? noneViolations({ paths: staged.map((f) => f.path) }) : [];
-    // ⚠️ 这里必须**与 bump 无关地**先数一遍暂存区动了几个清单文件。
-    // 以前写成 `bump && bump !== "none" ? missingVersionFiles(...) : []`，于是没写 trailer 的提交
-    // `missing` 恒为 `[]` ⇒ `unbumped` 恒真 ⇒ **任何纯文档提交都被拦下**（2026-11-08 实测：
-    // 只改两个 README 的提交被要求补 `Version-Bump`）。判据本身没变，只是别让谓词自己空转。
-    const missingManifests = missingVersionFiles({ files: staged });
-    const missing = bump && bump !== "none" ? missingManifests : [];
-    const unbumped = !bump && !releaseSubject && missingManifests.length === 0;
-    if (noneBad.length || missing.length || unbumped) {
-      if (noneBad.length) {
-        console.error("✗ 提交被拦下：声明了 `Version-Bump: none` 但不成立：");
-        for (const x of noneBad) console.error(`   - ${x}`);
+    // 判据 4（2026-11-08 收成一份谓词）：钩子与 CI 现在调用**同一个**
+    // `bumpConsistencyProblems`，不再各抄一遍三支判定 —— 两处各写一份就是
+    // "提交时放过、推上去判红"的分叉形状。边界与正式判据完全一致：
+    // 只动 1–3 个清单（例如只改 `package.json` 脚本）或不动清单 ⇒ 不要求声明、也不拦。
+    const problems4 = bumpConsistencyProblems({
+      message: rawMessage,
+      subject,
+      paths: staged.map((f) => f.path),
+    });
+    if (problems4.length) {
+      for (const x of problems4) console.error(`✗ 提交被拦下：${x}`);
+      if (/^Version-Bump:[ \t]*none[ \t]*$/im.test(rawMessage)) {
         console.error("  ⇒ 免提版只给纯文档改动；动了代码/脚本/CI/依赖/版本清单就改用真档位。");
-      }
-      if (missing.length) {
-        console.error(
-          `✗ 提交被拦下：声明了 \`Version-Bump: ${bump}\`，但 ${missing.length}/${VERSION_FILES.length} ` +
-            `个版本清单文件没进暂存区：${missing.join(", ")}`,
-        );
-        console.error(`  ⇒ 跑 \`npm run version:${bump}\`，把四个文件一起 add 再提交。`);
-      }
-      if (unbumped) {
-        console.error("✗ 提交被拦下：四个版本清单文件都动了却没声明 `Version-Bump: patch|minor|major`。");
       }
       process.exit(1);
     }
   }
-  // 判据 4 那一半也提前说：它是"提交之后才判得动"的另一条，同样只能在提交前提醒。
+  // 判据 4 的边界提前说清楚（2026-11-08 纠偏）：这道闸硬判的**只有双向一致** ——
+  // 写了声明就必须四条清单齐、四条齐就必须写。它**不判**「该写却没写」：
+  // 只动 1–3 个清单（如只改 `package.json` 脚本）或不动清单的提交不要求声明、也不会被拦。
+  // 以前这里写的是"动了应用码 ⇒ 要写 `Version-Bump:` 并真改四个清单"，把 `version:check`
+  // 的记账口径说成了本闸口径 —— 说的话与实际会拦的形状不一致，就是"知行不一"。
   const appCode = staged.filter((f) => !isExempt(f.path) && isAppCodePath(f.path));
   if (appCode.length > 0) {
     console.log(
-      `⇒ 这次动了应用码（${appCode.length} 个文件）⇒ 同一条提交里要写 \`Version-Bump:\` 并真改那四个版本清单文件（判据 4 双向判）。`,
+      `⇒ 这次动了应用码（${appCode.length} 个文件）：按 docs/VERSIONING.md §3 应在同一条提交里写 ` +
+        `\`Version-Bump:\` 并真改四个清单；本闸硬判的只有双向一致（声明 ⇔ 四条全动）。`,
     );
   }
   console.log("  不计入的：docs/ .github/ scripts/ *.md *.txt，以及那五个版本清单文件。");
@@ -705,41 +690,27 @@ if (!messagesReadable) {
   for (const commit of data.commits) {
     if (isMerge(commit)) continue;
     const bump = declaredBump(commit);
-    // `none` 的合法性只认 semver 那一份谓词（同一判据两处各写一遍 = 迟早说反话）。
-    const noneBad = bump === "none" ? noneViolations({ paths: commit.files.map((f) => f.path) }) : [];
-    const missing = missingVersionFiles(commit);
-    const allPresent = missing.length === 0;
-    const releaseSubject = /^chore\(release\)/.test(commit.message.split("\n")[0].trim());
+    const subject = commit.message.split("\n")[0].trim();
+    // 与 commit-msg 钩子**同一个**谓词（`semver.mjs::bumpConsistencyProblems`）：
+    // 三支判定只有一份实现，钩子与 CI 不可能说两句话。
+    const problems4 = bumpConsistencyProblems({
+      message: fullMessage(commit),
+      subject,
+      paths: commit.files.map((f) => f.path),
+    });
     checked += 1;
-    if (bump === "none" && noneBad.length) {
-      fail(
-        `  ✗ ${commit.sha} 声明了 \`Version-Bump: none\` 但不成立：\n` +
-          noneBad.map((x) => `      - ${x}`).join("\n") +
-          `\n      ⇒ 免提版只给纯文档改动；动了代码/脚本/CI/依赖/版本清单就改用真档位。`,
-      );
-    } else if (bump && bump !== "none" && !allPresent) {
-      fail(
-        `  ✗ ${commit.sha} 声明了 \`Version-Bump: ${bump}\`，但 ${missing.length}/${VERSION_FILES.length} ` +
-          `个版本清单文件没动：${missing.join(", ")} —— 声明没落地就是没 bump。` +
-          `跑 \`npm run version:${bump}\` 把这四个文件一起提上来；删掉 trailer 不是解法 —— ` +
-          `真 bump 缺声明同样判红，而且犯案窗口会看不见这一版。`,
-      );
-    } else if (!bump && allPresent && !releaseSubject) {
-      fail(
-        `  ✗ ${commit.sha} 动了全部 ${VERSION_FILES.length} 个版本清单文件（一次真 bump）` +
-          `却没声明 \`Version-Bump: patch|minor|major\` —— 缺声明 ⇒ 犯案窗口无法判断这次是不是修补。`,
-      );
-    } else {
-      console.log(
-        `  ✓ ${commit.sha} ${bump ? `Version-Bump: ${bump}` : "无声明"}` +
-          (allPresent
-            ? " / 版本文件 4/4"
-            : bump === "none"
-              ? " / 未碰版本清单（none 已按白名单核对）"
-              : "") +
-          (!bump && allPresent && releaseSubject ? "（chore(release) 豁免声明）" : ""),
-      );
+    if (problems4.length) {
+      for (const x of problems4) fail(`  ✗ ${commit.sha} ${x}`);
+      continue;
     }
+    const have = new Set(commit.files.map((f) => f.path.replaceAll("\\", "/")));
+    const present = BUMP_JUDGED_FILES.filter((p) => have.has(p)).length;
+    console.log(
+      `  ✓ ${commit.sha} ${bump ? `Version-Bump: ${bump}` : "无声明"}` +
+        ` / 版本文件 ${present}/${BUMP_JUDGED_FILES.length}` +
+        (bump ? "" : "（未全动 ⇒ 不要求声明）") +
+        (!bump && isReleaseCommit({ subject }) ? "（chore(release) 豁免声明）" : ""),
+    );
   }
   if (checked === 0) console.log("  (范围内没有需要判定的 commit)");
 }

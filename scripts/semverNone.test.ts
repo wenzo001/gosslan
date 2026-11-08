@@ -173,7 +173,62 @@ test("钩子路径：纯文档无 trailer 放行；四个清单都动却无声�
     writeFileSync(msgFile, "chore: 改版本号\n");
     const red = gate(msgFile);
     assert.equal(red.status, 1, red.stdout + red.stderr);
-    assert.match(red.stdout + red.stderr, /四个版本清单文件都动了却没声明/);
+    assert.match(red.stdout + red.stderr, /动了全部 4 个版本清单文件（一次真 bump）却没声明/);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+/**
+ * 判据 4 的**边界**（2026-11-08 收口）：钩子与 CI 共用 `semver.mjs::bumpConsistencyProblems`，
+ * 硬判的只有双向一致。这里钉住"不会误伤"的那半边 —— 只动 1–3 个清单、或不动清单的提交
+ * 不要求声明；同时钉住"声明了就必须四条齐"的那半边，防止有人为了少拦而把闸整个拆掉。
+ *
+ * 为什么这三条必须一起测：单测谓词证明不了钩子真的调它；只测"放行"又会漏掉"闸没关"。
+ * 三条一起，任一支判定被删都会有一条红。
+ */
+test("钩子路径边界：只动 1–3 个清单（含只改 package.json 脚本）不要求声明；声明了就必须四条齐", () => {
+  const dir = mkdtempSync(path.join(ROOT, ".tmp-budget-hook-"));
+  const git = (...args: string[]) => spawnSync("git", args, { cwd: dir, encoding: "utf8" });
+  const gate = (msgFile: string) =>
+    spawnSync(
+      process.execPath,
+      [path.join(ROOT, "scripts/check-change-budget.mjs"), "--staged", "--commit-msg-file", msgFile],
+      { cwd: dir, encoding: "utf8" },
+    );
+  try {
+    git("init", "-q");
+    git("config", "user.email", "t@example.com");
+    git("config", "user.name", "t");
+    const manifests = VERSION_FILES.filter((p) => p !== "src-tauri/Cargo.lock");
+    for (const p of [...manifests, "src/utils/a.ts"]) {
+      mkdirSync(path.dirname(path.join(dir, p)), { recursive: true });
+      writeFileSync(path.join(dir, p), "{}\n");
+    }
+    git("add", "-A");
+    git("commit", "-q", "-m", "chore: base");
+
+    const msgFile = path.join(dir, "msg.txt");
+    // ① 只改 package.json（脚本字段）+ 无 trailer ⇒ 不误伤
+    writeFileSync(path.join(dir, "package.json"), JSON.stringify({ scripts: { a: "x" } }) + "\n");
+    git("add", "package.json");
+    writeFileSync(msgFile, "chore: 改 package.json 脚本\n");
+    const scriptOnly = gate(msgFile);
+    assert.equal(scriptOnly.status, 0, `只改脚本不许被要求声明\n${scriptOnly.stdout}${scriptOnly.stderr}`);
+
+    // ② 同一份暂存区，声明了 patch ⇒ 必须红：另外三条清单没进这次提交
+    writeFileSync(msgFile, "chore: 改 package.json 脚本\n\nVersion-Bump: patch\n");
+    const incomplete = gate(msgFile);
+    assert.equal(incomplete.status, 1, "声明了 bump 却只带一条清单，必须红");
+    assert.match(incomplete.stdout + incomplete.stderr, /3\/4 个版本清单文件没进这次提交/);
+
+    // ③ 补到 3 条清单、仍不声明 ⇒ 放行（缺的那条由 version 工具负责，不由本闸拦）
+    appendFileSync(path.join(dir, "src-tauri/Cargo.toml"), "\n");
+    appendFileSync(path.join(dir, "src-tauri/tauri.conf.json"), "\n");
+    git("add", "src-tauri/Cargo.toml", "src-tauri/tauri.conf.json");
+    writeFileSync(msgFile, "chore: 改三条清单\n");
+    const three = gate(msgFile);
+    assert.equal(three.status, 0, `只动 3 条清单不要求声明\n${three.stdout}${three.stderr}`);
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }

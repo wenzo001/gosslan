@@ -48,6 +48,14 @@ export const VERSION_FILES = [
 ];
 export const VERSION_MANIFEST_SET = new Set(VERSION_FILES);
 
+/**
+ * 判据 4 对账用的四个清单文件 = 五个版本清单里除去 `src-tauri/Cargo.lock`。
+ *
+ * 为什么少一个：`version.mjs` 一次写五处，`Cargo.lock` 晚一版会被它自己 `exit 1` 拒掉
+ * ⇒ 那一处已有机器断言，判据 4 不重复数它（数了反而会要求"手工把 lock 也 add"）。
+ */
+export const BUMP_JUDGED_FILES = VERSION_FILES.filter((p) => p !== "src-tauri/Cargo.lock");
+
 /** 解析 `type(scope)!: summary`。 */
 export function parseSubject(subject) {
   const m = /^([a-z]+)(\([^)]*\))?(!)?:\s*(.*)$/.exec(subject.trim());
@@ -174,6 +182,52 @@ export function noneViolations(row) {
     out.push(`这些路径不在纯文档白名单内：${bad.slice(0, 8).join(", ")}${bad.length > 8 ? ` …共 ${bad.length} 条` : ""}`);
   }
   return out;
+}
+
+/**
+ * **判据 4 的唯一判定**（commit-msg 钩子与 CI 正式判据共用这一份，2026-11-08 收口）。
+ *
+ * 规则只有双向一致，没有第三档：
+ *  · 写了 `Version-Bump: patch|minor|major` ⇒ 这次提交必须把四个清单文件一起带上；
+ *  · 四个清单文件都带上了 ⇒ 必须写声明（`chore(release)` 的版本号本身就是声明）；
+ *  · 写了 `none` ⇒ 路径必须全在纯文档白名单里（见 `noneViolations`）。
+ *
+ * **不判「该写却没写」**：只动 1–3 个清单（例如只改 `package.json` 里的脚本）、或一个清单都
+ * 不动的普通提交，不要求声明、也不会被拦 —— 那是 `version:check` 的记账口径（未进 CI），
+ * 不是这道硬闸的口径。两边混起来会让"改一行脚本"被迫提一次版本号（判据 4 的文件头
+ * 「不写 trailer」那段记过同一件事）。
+ *
+ * 为什么必须收成一个函数：钩子与 CI 原先各抄一遍这三支，一处改了另一处不动就是
+ * "提交时放过、推上去判红"—— 本仓点过名的分叉形状。
+ *
+ * @param {{message?: string, subject?: string, paths?: string[]}} row
+ * @returns {string[]} 问题清单（完整可读句）；空数组 = 声明与落地一致
+ */
+export function bumpConsistencyProblems({ message = "", subject = "", paths = [] } = {}) {
+  const norm = paths.map((p) => String(p).replaceAll("\\", "/"));
+  const bump = parseBumpTrailer(message);
+  // 标题：钩子模式读 COMMIT_EDITMSG 时由调用方给；CI 模式给的是 `%s`。兜底取第一行非注释。
+  const head = subject || message.split("\n").find((l) => l.trim() && !l.startsWith("#")) || "";
+  const missing = BUMP_JUDGED_FILES.filter((p) => !norm.includes(p));
+  if (bump === "none") {
+    return noneViolations({ paths: norm }).map((x) => `声明了 \`Version-Bump: none\` 但不成立：${x}`);
+  }
+  if (bump) {
+    return missing.length
+      ? [
+          `声明了 \`Version-Bump: ${bump}\`，但 ${missing.length}/${BUMP_JUDGED_FILES.length} 个版本清单文件没进这次提交：` +
+            `${missing.join(", ")} —— 声明没落地就是没 bump。跑 \`npm run version:${bump}\` 把这四个文件一起提上来；` +
+            `删掉 trailer 不是解法（四个都动了不声明同样判红，犯案窗口也会看不见这一版）。`,
+        ]
+      : [];
+  }
+  if (isReleaseCommit({ subject: head })) return [];
+  return missing.length === 0
+    ? [
+        `动了全部 ${BUMP_JUDGED_FILES.length} 个版本清单文件（一次真 bump）却没声明 ` +
+          `\`Version-Bump: patch|minor|major\` —— 缺声明 ⇒ 犯案窗口无法判断这次是不是修补。`,
+      ]
+    : [];
 }
 /** 这条提交是否**不该欠版本号**：既有的 `[plan]` 零影响豁免 + 成立的 `none`。 */
 export function noBumpOwed(row) {
